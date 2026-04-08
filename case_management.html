@@ -1343,7 +1343,7 @@ function renderTimeline() {
             </div>
             <div class="tl-content">${ev.Summary || '-'}</div>
             ${ev.RelationName ? `<div class="tl-sub">${ev.RelationName}</div>` : ''}
-            ${ev.PDFPath ? `<div class="tl-attachment" onclick="loadPdf('${ev.PDFPath}', '${ev.Summary || 'FAX'}')">📄 PDF を表示</div>` : ''}
+            ${ev.AttachedPDFPath ? `<div class="tl-attachment" onclick="loadPdf('${ev.AttachedPDFPath}', '${ev.Summary || 'FAX'}')">📄 PDF を表示</div>` : ''}
           </div>
         </div>`;
     }).join('');
@@ -1786,9 +1786,8 @@ function selectTriage(spId) {
   document.getElementById('triageAiBadge').innerHTML = conf
     ? `<span class="badge ${confMap[conf] || 'badge-gray'}">AI信頼度：${conf}</span>` : '';
 
-  // PDF表示（ハイパーリンク型列はオブジェクト {Url,Description} で返るため文字列を抽出）
-  const pdfRaw = e.添付PDFパス || e.PDFPath || '';
-  const pdfPath = typeof pdfRaw === 'object' ? (pdfRaw.Url || '') : pdfRaw;
+  // PDF表示（1行テキスト型列）
+  const pdfPath = e.AttachedPDFPath || '';
   if (pdfPath) {
     currentTriagePdfUrl = pdfPath;
     document.getElementById('triagePdfName').textContent = e.Title || 'FAX';
@@ -1805,17 +1804,26 @@ async function loadPdfWithAuth(url, areaId) {
   const area = document.getElementById(areaId);
   area.innerHTML = '<div class="loading-spinner">PDF読み込み中...</div>';
   try {
-    const token = await getToken();
-    // Graph APIで一時ダウンロードURLを取得
-    const res = await fetch(url, {
-      headers: { Authorization: 'Bearer ' + token }
-    });
-    if (res.ok) {
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      area.innerHTML = `<iframe class="pdf-frame" src="${blobUrl}"></iframe>`;
+    const sid = await getSiteId();
+
+    // SharePoint URLからサイト以下のファイルパスを抽出
+    // 例: https://hanaokacorp.sharepoint.com/sites/msteams_7aab51/FAX_PDFStorage/Inbox/xxx.pdf
+    //  → /FAX_PDFStorage/Inbox/xxx.pdf
+    const siteBase = 'https://hanaokacorp.sharepoint.com/sites/msteams_7aab51';
+    let filePath = url.startsWith(siteBase) ? url.slice(siteBase.length) : url;
+    // クエリパラメータ除去
+    filePath = filePath.split('?')[0];
+    // URLデコード（%E5%8F%97... → 日本語）
+    filePath = decodeURIComponent(filePath);
+
+    // Graph API で driveItem を取得 → @microsoft.graph.downloadUrl は CORS不要の一時URL
+    const item = await graphGet(`/sites/${sid}/drive/root:${filePath}`);
+    const downloadUrl = item['@microsoft.graph.downloadUrl'];
+
+    if (downloadUrl) {
+      area.innerHTML = `<iframe class="pdf-frame" src="${downloadUrl}"></iframe>`;
     } else {
-      area.innerHTML = `<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">PDF表示エラー（${res.status}）<br><small>「別タブで開く」をご利用ください</small></div></div>`;
+      area.innerHTML = `<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">ダウンロードURL取得失敗<br><small>「別タブで開く」をご利用ください</small></div></div>`;
     }
   } catch(e) {
     area.innerHTML = `<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">PDF取得エラー<br><small>${e.message}</small></div></div>`;
