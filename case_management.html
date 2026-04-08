@@ -1095,6 +1095,7 @@ let faxViewItems = [];
 let currentTriageId = null;
 let currentFaxViewId = null;
 let faxViewFilter = 'undone';
+let faxDriveId = null; // FAX_PDFStorageドライブIDキャッシュ
 
 // ============================================================
 // INIT
@@ -1800,24 +1801,37 @@ function selectTriage(spId) {
   renderTriageList();
 }
 
+// FAX_PDFStorage ドライブID取得（キャッシュあり）
+async function getFaxDriveId() {
+  if (faxDriveId) return faxDriveId;
+  const sid = await getSiteId();
+  const drives = await graphGet(`/sites/${sid}/drives`);
+  const drive = drives.value.find(d => d.name === SP.pdfLibrary);
+  if (!drive) throw new Error('FAX_PDFStorage ドライブが見つかりません');
+  faxDriveId = drive.id;
+  return faxDriveId;
+}
+
 async function loadPdfWithAuth(url, areaId) {
   const area = document.getElementById(areaId);
   area.innerHTML = '<div class="loading-spinner">PDF読み込み中...</div>';
   try {
     const sid = await getSiteId();
+    const driveId = await getFaxDriveId();
 
-    // SharePoint URLからサイト以下のファイルパスを抽出
+    // SharePoint URLからライブラリ内パスを抽出
     // 例: https://hanaokacorp.sharepoint.com/sites/msteams_7aab51/FAX_PDFStorage/Inbox/xxx.pdf
-    //  → /FAX_PDFStorage/Inbox/xxx.pdf
+    //  → /Inbox/xxx.pdf
     const siteBase = 'https://hanaokacorp.sharepoint.com/sites/msteams_7aab51';
-    let filePath = url.startsWith(siteBase) ? url.slice(siteBase.length) : url;
-    // クエリパラメータ除去
-    filePath = filePath.split('?')[0];
-    // URLデコード（%E5%8F%97... → 日本語）
-    filePath = decodeURIComponent(filePath);
+    let fullPath = url.startsWith(siteBase) ? url.slice(siteBase.length) : url;
+    fullPath = fullPath.split('?')[0];
+    fullPath = decodeURIComponent(fullPath);
+    // /FAX_PDFStorage/Inbox/xxx.pdf → /Inbox/xxx.pdf
+    const libPrefix = '/' + SP.pdfLibrary;
+    const filePath = fullPath.startsWith(libPrefix) ? fullPath.slice(libPrefix.length) : fullPath;
 
-    // Graph API で driveItem を取得 → @microsoft.graph.downloadUrl は CORS不要の一時URL
-    const item = await graphGet(`/sites/${sid}/drive/root:${filePath}`);
+    // driveItemを取得 → @microsoft.graph.downloadUrl はCORS不要の署名済み一時URL
+    const item = await graphGet(`/sites/${sid}/drives/${driveId}/root:${filePath}`);
     const downloadUrl = item['@microsoft.graph.downloadUrl'];
 
     if (downloadUrl) {
