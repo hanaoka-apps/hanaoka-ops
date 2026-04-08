@@ -1,0 +1,1609 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FAX受付管理システム</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script>
+// MSALが読み込めなかった場合のフォールバック
+window.addEventListener('error', function(e) {
+  if (e.filename && e.filename.includes('msal')) {
+    document.getElementById('loginError').textContent = 'MSALライブラリの読み込みに失敗しました。ページを再読み込みしてください。';
+    document.getElementById('loginError').style.display = 'block';
+  }
+});
+</script>
+<style>
+:root {
+  --bg: #f5f6fa;
+  --surface: #ffffff;
+  --surface2: #f0f2f7;
+  --border: #e2e6ed;
+  --accent: #185FA5;
+  --accent2: #3B6D11;
+  --accent3: #854F0B;
+  --danger: #A32D2D;
+  --text: #1a1d2e;
+  --text-muted: #6b7194;
+  --ms-blue: #0078d4;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; min-height: 100vh; font-size: 13px; }
+
+/* ===== LOGIN ===== */
+#loginScreen {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 100vh; gap: 20px; padding: 20px;
+}
+.login-logo {
+  width: 56px; height: 56px; background: var(--ms-blue); border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 700; color: #fff;
+}
+.login-title { font-size: 20px; font-weight: 600; }
+.login-subtitle { font-size: 13px; color: var(--text-muted); text-align: center; max-width: 300px; line-height: 1.6; }
+.login-btn {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--ms-blue); color: #fff; border: none; border-radius: 6px;
+  padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.login-btn:hover { opacity: 0.9; }
+.login-error { color: var(--danger); font-size: 12px; }
+
+/* ===== APP ===== */
+#app { display: none; flex-direction: column; height: 100vh; }
+
+/* トップバー */
+.topbar {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 0 16px; height: 48px; display: flex; align-items: center;
+  justify-content: space-between; flex-shrink: 0;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-title { font-size: 15px; font-weight: 600; }
+.view-tabs { display: flex; gap: 4px; }
+.view-tab {
+  padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
+  font-size: 12px; cursor: pointer; background: var(--surface); color: var(--text-muted);
+}
+.view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.user-chip {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 16px; padding: 3px 10px 3px 4px; font-size: 12px; color: var(--text-muted);
+}
+.user-avatar {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ms-blue); display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: #fff;
+}
+.logout-btn {
+  background: none; border: 1px solid var(--border); color: var(--text-muted);
+  border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.logout-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ===== サマリーバー ===== */
+.summary-bar {
+  display: flex; gap: 10px; padding: 10px 16px;
+  background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.summary-card {
+  background: var(--surface2); border-radius: 8px; padding: 8px 16px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.summary-label { font-size: 10px; color: var(--text-muted); }
+.summary-value { font-size: 20px; font-weight: 600; }
+.sv-danger { color: var(--danger); }
+.sv-warning { color: var(--accent3); }
+.sv-normal { color: var(--accent); }
+
+/* ===== ステータスバー ===== */
+.status-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; font-size: 12px; background: var(--surface2);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.status-dot { width: 7px; height: 7px; border-radius: 50%; }
+.status-bar.loading .status-dot { background: #EF9F27; animation: pulse 1s infinite; }
+.status-bar.success .status-dot { background: #639922; }
+.status-bar.error .status-dot { background: var(--danger); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ===== メインレイアウト ===== */
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* 左：案件リスト */
+.case-panel {
+  width: 320px; min-width: 320px; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; background: var(--surface);
+}
+.panel-header {
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.panel-header-title { font-size: 12px; font-weight: 600; }
+.panel-count { font-size: 11px; color: var(--text-muted); }
+.search-row { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.search-input {
+  width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px; background: var(--surface2);
+  color: var(--text); outline: none;
+}
+.filter-row { display: flex; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.filter-btn {
+  padding: 3px 10px; border-radius: 10px; border: 1px solid var(--border);
+  font-size: 11px; cursor: pointer; background: var(--surface); color: var(--text-muted);
+  white-space: nowrap;
+}
+.filter-btn.active { background: #E6F1FB; color: var(--accent); border-color: #B5D4F4; }
+.case-list { flex: 1; overflow-y: auto; }
+.case-item {
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  cursor: pointer; display: flex; gap: 8px; align-items: flex-start;
+}
+.case-item:hover { background: var(--surface2); }
+.case-item.active { background: #E6F1FB; border-left: 2px solid var(--accent); }
+.urgency-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+.urg-high { background: #E24B4A; }
+.urg-mid { background: #EF9F27; }
+.urg-low { background: #97C459; }
+.case-body { flex: 1; min-width: 0; }
+.case-top { display: flex; justify-content: space-between; margin-bottom: 2px; }
+.case-id-label { font-size: 11px; color: var(--text-muted); }
+.case-deadline { font-size: 11px; font-weight: 500; }
+.dl-over { color: var(--danger); }
+.dl-near { color: var(--accent3); }
+.dl-ok { color: var(--text-muted); }
+.case-company { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+.case-meta { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.badge { font-size: 10px; padding: 2px 7px; border-radius: 10px; }
+.badge-blue { background: #E6F1FB; color: #185FA5; }
+.badge-green { background: #EAF3DE; color: #3B6D11; }
+.badge-amber { background: #FAEEDA; color: #854F0B; }
+.badge-red { background: #FCEBEB; color: #A32D2D; }
+.badge-gray { background: #F1EFE8; color: #5F5E5A; }
+.badge-purple { background: #EEEDFE; color: #534AB7; }
+.case-note { font-size: 11px; color: var(--text-muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 右：詳細パネル */
+.detail-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.detail-header {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--surface); flex-shrink: 0;
+}
+.detail-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+.detail-id-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+.detail-company { font-size: 16px; font-weight: 600; }
+.detail-badges { display: flex; gap: 6px; align-items: center; }
+.detail-meta { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+.detail-field { display: flex; flex-direction: column; gap: 2px; }
+.field-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.field-value { font-size: 12px; font-weight: 500; }
+.action-row { display: flex; gap: 6px; }
+.btn {
+  padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
+  font-size: 12px; cursor: pointer; background: var(--surface); color: var(--text);
+}
+.btn:hover { background: var(--surface2); }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { opacity: 0.9; }
+.btn-green { background: var(--accent2); color: #fff; border-color: var(--accent2); }
+.btn-green:hover { opacity: 0.9; }
+
+/* 詳細ボディ */
+.detail-body { display: flex; flex: 1; overflow: hidden; }
+
+/* タイムライン */
+.timeline-panel {
+  width: 280px; min-width: 280px; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; background: var(--surface);
+}
+.timeline-scroll { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.tl-section-label {
+  font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 10px; font-weight: 500;
+}
+.tl-item { display: flex; gap: 8px; margin-bottom: 14px; }
+.tl-line-wrap { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+.tl-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 3px; flex-shrink: 0; }
+.tl-dot-fax-in { background: #185FA5; }
+.tl-dot-fax-out { background: #3B6D11; }
+.tl-dot-supplier { background: #1D9E75; }
+.tl-dot-comment { background: #888780; }
+.tl-dot-system { background: #7F77DD; }
+.tl-vline { width: 1px; background: var(--border); flex: 1; margin-top: 3px; }
+.tl-body { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+.tl-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.tl-type { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
+.type-fax-in { background: #E6F1FB; color: #185FA5; }
+.type-fax-out { background: #EAF3DE; color: #3B6D11; }
+.type-supplier { background: #E1F5EE; color: #0F6E56; }
+.type-comment { background: #F1EFE8; color: #5F5E5A; }
+.type-system { background: #EEEDFE; color: #534AB7; }
+.tl-date { font-size: 11px; color: var(--text-muted); }
+.tl-content { font-size: 12px; line-height: 1.5; }
+.tl-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.tl-attachment {
+  display: flex; align-items: center; gap: 5px; margin-top: 5px;
+  padding: 4px 7px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 5px; font-size: 11px; color: var(--text-muted); cursor: pointer;
+}
+.tl-attachment:hover { color: var(--accent); }
+
+/* コメントフォーム */
+.comment-form {
+  border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
+}
+.form-tabs { display: flex; border-bottom: 1px solid var(--border); }
+.form-tab {
+  flex: 1; padding: 7px 0; text-align: center; font-size: 12px;
+  cursor: pointer; color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+}
+.form-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+.form-body { padding: 10px 12px; }
+.form-row { display: flex; gap: 6px; margin-bottom: 7px; }
+.form-select {
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--surface); color: var(--text); outline: none;
+}
+.form-input {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--surface); color: var(--text); outline: none;
+}
+.form-textarea {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--surface); color: var(--text);
+  outline: none; resize: none; font-family: inherit; margin-bottom: 7px;
+}
+.form-actions { display: flex; gap: 6px; }
+.upload-zone {
+  border: 1px dashed var(--border); border-radius: 6px; padding: 12px;
+  text-align: center; cursor: pointer; background: var(--surface2); margin-bottom: 7px;
+}
+.upload-zone-text { font-size: 12px; color: var(--text-muted); }
+.upload-zone-sub { font-size: 11px; color: var(--text-muted); opacity: 0.7; margin-top: 2px; }
+.file-preview {
+  display: none; align-items: center; gap: 8px; padding: 6px 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; margin-bottom: 7px; font-size: 12px;
+}
+.file-remove { font-size: 11px; color: var(--text-muted); cursor: pointer; margin-left: auto; }
+
+/* PDFビューア */
+.pdf-panel { flex: 1; display: flex; flex-direction: column; background: var(--surface2); }
+.pdf-toolbar {
+  padding: 7px 14px; border-bottom: 1px solid var(--border);
+  background: var(--surface); display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.pdf-filename { font-size: 11px; color: var(--text-muted); flex: 1; }
+.pdf-area { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.pdf-empty {
+  text-align: center; color: var(--text-muted);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.pdf-empty-icon { font-size: 40px; opacity: 0.4; }
+.pdf-empty-text { font-size: 13px; }
+.pdf-frame { width: 100%; height: 100%; border: none; border-radius: 6px; }
+
+/* ===== 新規案件登録モーダル ===== */
+.reg-modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5); z-index: 1100;
+  align-items: flex-start; justify-content: center;
+  padding-top: 40px; overflow-y: auto;
+}
+.reg-modal-overlay.open { display: flex; }
+.reg-modal {
+  background: var(--surface); border-radius: 10px;
+  width: 520px; box-shadow: 0 8px 40px rgba(0,0,0,0.2);
+  margin-bottom: 40px;
+}
+.reg-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.reg-modal-title { font-size: 14px; font-weight: 600; }
+.reg-modal-close {
+  background: none; border: none; font-size: 18px;
+  cursor: pointer; color: var(--text-muted); line-height: 1;
+}
+.reg-modal-close:hover { color: var(--text); }
+.reg-modal-body { padding: 16px 18px; }
+.reg-section-label {
+  font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+  letter-spacing: 0.05em; font-weight: 500;
+  margin: 14px 0 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.reg-row { display: flex; gap: 10px; margin-bottom: 10px; }
+.reg-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.reg-field.full { flex: 1 0 100%; }
+.reg-label { font-size: 11px; color: var(--text-muted); }
+.reg-label .req { color: var(--danger); margin-left: 2px; }
+.reg-input, .reg-select, .reg-textarea {
+  padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--surface2); color: var(--text);
+  outline: none; font-family: inherit;
+}
+.reg-input:focus, .reg-select:focus, .reg-textarea:focus {
+  border-color: var(--accent); background: var(--surface);
+}
+.reg-input.error { border-color: var(--danger); }
+.reg-textarea { resize: vertical; min-height: 60px; }
+.reg-autocomplete-wrap { position: relative; }
+.reg-autocomplete-list {
+  position: absolute; top: 100%; left: 0; right: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  z-index: 10; max-height: 160px; overflow-y: auto; display: none;
+}
+.reg-autocomplete-item {
+  padding: 7px 10px; font-size: 12px; cursor: pointer;
+}
+.reg-autocomplete-item:hover { background: var(--surface2); }
+.reg-autocomplete-code { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+.reg-checkbox-row { display: flex; align-items: center; gap: 6px; }
+.reg-checkbox { width: 14px; height: 14px; cursor: pointer; }
+.reg-checkbox-label { font-size: 12px; }
+.reg-modal-footer {
+  display: flex; gap: 8px; padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+.reg-cancel { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); font-size: 12px; cursor: pointer; }
+.reg-cancel:hover { background: var(--surface2); }
+.reg-submit { flex: 2; padding: 8px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.reg-submit:hover { opacity: .9; }
+.reg-submit:disabled { opacity: .4; cursor: default; }
+.reg-error-msg { font-size: 11px; color: var(--danger); margin-top: 8px; display: none; }
+
+/* ===== モーダル ===== */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45); z-index: 1000;
+  align-items: center; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface); border-radius: 10px;
+  padding: 20px; width: 340px; box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+.modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+.modal-status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 14px; }
+.modal-status-btn {
+  padding: 9px 10px; border-radius: 7px; border: 1px solid var(--border);
+  font-size: 12px; cursor: pointer; background: var(--surface2);
+  color: var(--text); text-align: center; transition: all .15s;
+}
+.modal-status-btn:hover { border-color: var(--accent); color: var(--accent); background: #E6F1FB; }
+.modal-status-btn.selected { border-color: var(--accent); color: #fff; background: var(--accent); }
+.modal-actions { display: flex; gap: 8px; }
+.modal-cancel { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); font-size: 12px; cursor: pointer; }
+.modal-cancel:hover { background: var(--surface2); }
+.modal-ok { flex: 2; padding: 8px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.modal-ok:hover { opacity: .9; }
+.modal-ok:disabled { opacity: .4; cursor: default; }
+
+/* 空状態 */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; color: var(--text-muted); gap: 8px;
+}
+.empty-icon { font-size: 32px; opacity: 0.4; }
+.empty-text { font-size: 13px; }
+
+/* ローディング */
+.loading-spinner {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: var(--text-muted); gap: 8px; font-size: 13px;
+}
+</style>
+</head>
+<body>
+
+<!-- ===== 新規案件登録モーダル ===== -->
+<div class="reg-modal-overlay" id="regModal">
+  <div class="reg-modal" onclick="event.stopPropagation()">
+    <div class="reg-modal-header">
+      <span class="reg-modal-title">📝 新規案件登録</span>
+      <button class="reg-modal-close" onclick="closeRegModal()">✕</button>
+    </div>
+    <div class="reg-modal-body">
+
+      <!-- 必須項目 -->
+      <div class="reg-row">
+        <div class="reg-field full">
+          <label class="reg-label">案件名<span class="req">*</span></label>
+          <input class="reg-input" id="regTitle" placeholder="例：トラスコ中山 見積依頼 4/8" maxlength="100">
+        </div>
+      </div>
+
+      <div class="reg-row">
+        <div class="reg-field full">
+          <label class="reg-label">得意先名<span class="req">*</span></label>
+          <div class="reg-autocomplete-wrap">
+            <input class="reg-input" id="regCompanyName" placeholder="社名を入力（候補が表示されます）" autocomplete="off" oninput="onCompanyInput(this.value)">
+            <div class="reg-autocomplete-list" id="companyList"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="reg-row">
+        <div class="reg-field">
+          <label class="reg-label">得意先コード</label>
+          <input class="reg-input" id="regCompanyCode" placeholder="自動入力 or 手入力">
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">エントリーポイント<span class="req">*</span></label>
+          <select class="reg-select" id="regEntryPoint" onchange="onEntryPointChange()">
+            <option value="">選択してください</option>
+            <option value="FAX">FAX</option>
+            <option value="電話">電話</option>
+            <option value="メール">メール</option>
+            <option value="EDI">EDI</option>
+            <option value="その他">その他</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="reg-row">
+        <div class="reg-field">
+          <label class="reg-label">案件種別<span class="req">*</span></label>
+          <select class="reg-select" id="regCaseType" onchange="onEntryPointChange()">
+            <option value="">選択してください</option>
+            <option value="見積依頼">見積依頼</option>
+            <option value="注文書">注文書</option>
+            <option value="納期確認">納期確認</option>
+            <option value="納期変更依頼">納期変更依頼</option>
+            <option value="送り状依頼">送り状依頼</option>
+            <option value="納品書依頼">納品書依頼</option>
+            <option value="注文取消">注文取消</option>
+            <option value="広告その他">広告その他</option>
+            <option value="その他">その他</option>
+          </select>
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">担当者<span class="req">*</span></label>
+          <input class="reg-input" id="regAssignedTo" placeholder="担当者名">
+        </div>
+      </div>
+
+      <!-- ステータス自動表示 -->
+      <div class="reg-row" id="autoStatusRow" style="display:none">
+        <div class="reg-field full">
+          <label class="reg-label">自動設定ステータス</label>
+          <div style="padding:5px 9px;background:var(--surface2);border-radius:6px;font-size:12px;color:var(--accent);font-weight:500" id="autoStatusLabel">-</div>
+        </div>
+      </div>
+
+      <!-- 任意項目 -->
+      <div class="reg-section-label">任意項目</div>
+
+      <div class="reg-row">
+        <div class="reg-field">
+          <label class="reg-label">受注番号</label>
+          <input class="reg-input" id="regOrderNumber" placeholder="SMILEの受注番号">
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">優先度</label>
+          <select class="reg-select" id="regPriority">
+            <option value="中">中（デフォルト）</option>
+            <option value="高">高</option>
+            <option value="低">低</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="reg-row">
+        <div class="reg-field">
+          <label class="reg-label">連携先部署</label>
+          <select class="reg-select" id="regLinkedDept">
+            <option value="なし">なし</option>
+            <option value="営業部">営業部</option>
+            <option value="第一工場">第一工場</option>
+            <option value="技術部">技術部</option>
+            <option value="品質管理">品質管理</option>
+          </select>
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">発生フェーズ</label>
+          <select class="reg-select" id="regPhase">
+            <option value="">未設定</option>
+            <option value="見積フェーズ">見積フェーズ</option>
+            <option value="受注フェーズ">受注フェーズ</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="reg-row">
+        <div class="reg-field">
+          <label class="reg-label">対応期限</label>
+          <input class="reg-input" id="regDueDate" type="date">
+        </div>
+        <div class="reg-field" style="justify-content:flex-end;padding-bottom:4px">
+          <div class="reg-checkbox-row" style="margin-top:auto">
+            <input class="reg-checkbox" id="regUrgent" type="checkbox">
+            <label class="reg-checkbox-label" for="regUrgent">至急フラグ</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="reg-row">
+        <div class="reg-field full">
+          <label class="reg-label">備考</label>
+          <textarea class="reg-textarea" id="regNotes" placeholder="特記事項があれば入力"></textarea>
+        </div>
+      </div>
+
+      <div class="reg-error-msg" id="regErrorMsg"></div>
+    </div>
+
+    <div class="reg-modal-footer">
+      <button class="reg-cancel" onclick="closeRegModal()">キャンセル</button>
+      <button class="reg-submit" id="regSubmitBtn" onclick="submitNewCase()">登録する</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ステータス更新モーダル ===== -->
+<div class="modal-overlay" id="statusModal" onclick="closeStatusModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">ステータス変更</div>
+    <div class="modal-status-grid">
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'見積対応中')">見積対応中</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'工場回答待ち')">工場回答待ち</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'見積回答済み（注文書待ち）')" style="font-size:11px">見積回答済み<br>（注文書待ち）</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'注文書受領')">注文書受領</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'受注入力済み')">受注入力済み</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'納期調整中')">納期調整中</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'出荷手配中')">出荷手配中</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'納品完了')">✅ 納品完了</div>
+      <div class="modal-status-btn" style="color:var(--text-muted)" onclick="selectStatusBtn(this,'取消クローズ')">取消クローズ</div>
+      <div class="modal-status-btn" style="color:var(--text-muted)" onclick="selectStatusBtn(this,'失注クローズ')">失注クローズ</div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="document.getElementById('statusModal').classList.remove('open')">キャンセル</button>
+      <button class="modal-ok" id="modalOkBtn" onclick="confirmStatusUpdate()" disabled>更新する</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ログイン画面 ===== -->
+<div id="loginScreen">
+  <div class="login-logo">花</div>
+  <div class="login-title">FAX受付管理システム</div>
+  <div class="login-subtitle">花岡車輌株式会社<br>業務センター 受付業務一元管理</div>
+  <button class="login-btn" id="loginBtn">
+    Microsoft アカウントでサインイン
+  </button>
+  <div class="login-error" id="loginError" style="display:none;"></div>
+</div>
+
+<!-- ===== アプリ画面 ===== -->
+<div id="app" style="display:none; flex-direction:column; height:100vh;">
+
+  <!-- トップバー -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <div class="topbar-title">📠 FAX受付管理</div>
+      <div class="view-tabs">
+        <div class="view-tab active" onclick="switchView('all')">全案件</div>
+        <div class="view-tab" onclick="switchView('factory')">工場ビュー</div>
+        <div class="view-tab" onclick="switchView('done')">完了済み</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button class="btn" onclick="loadCases()">🔄 更新</button>
+      <div class="user-chip">
+        <div class="user-avatar" id="userAvatar">?</div>
+        <span id="userName">読み込み中</span>
+      </div>
+      <button class="logout-btn" id="logoutBtn">サインアウト</button>
+    </div>
+  </div>
+
+  <!-- サマリーバー -->
+  <div class="summary-bar">
+    <div class="summary-card">
+      <span class="summary-label">未対応</span>
+      <span class="summary-value sv-danger" id="cnt-pending">-</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">要確認FAX</span>
+      <span class="summary-value sv-warning" id="cnt-review">-</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">工場回答待ち</span>
+      <span class="summary-value sv-warning" id="cnt-factory">-</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">本日期限</span>
+      <span class="summary-value sv-danger" id="cnt-today">-</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">対応中</span>
+      <span class="summary-value sv-normal" id="cnt-inprogress">-</span>
+    </div>
+  </div>
+
+  <!-- ステータスバー -->
+  <div class="status-bar loading" id="statusBar">
+    <div class="status-dot"></div>
+    <span id="statusText">接続中...</span>
+  </div>
+
+  <!-- メインレイアウト -->
+  <div class="main">
+
+    <!-- 左：案件リスト -->
+    <div class="case-panel">
+      <div class="panel-header">
+        <span class="panel-header-title">案件リスト</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="panel-count" id="caseCount">0件</span>
+          <button class="btn btn-primary" style="padding:3px 10px;font-size:11px" onclick="openRegModal()">＋ 新規</button>
+        </div>
+      </div>
+      <div class="search-row">
+        <input class="search-input" id="searchInput" type="text" placeholder="得意先・案件IDで検索..." oninput="filterCases()">
+      </div>
+      <div class="filter-row">
+        <div class="filter-btn active" onclick="setFilter('all', this)">すべて</div>
+        <div class="filter-btn" onclick="setFilter('pending', this)">未対応</div>
+        <div class="filter-btn" onclick="setFilter('factory', this)">工場待ち</div>
+        <div class="filter-btn" onclick="setFilter('urgent', this)">至急</div>
+        <div class="filter-btn" onclick="setFilter('today', this)">本日期限</div>
+      </div>
+      <div class="case-list" id="caseList">
+        <div class="loading-spinner">読み込み中...</div>
+      </div>
+    </div>
+
+    <!-- 右：詳細パネル -->
+    <div class="detail-panel">
+
+      <!-- 案件未選択時 -->
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">📋</div>
+        <div class="empty-text">案件を選択してください</div>
+      </div>
+
+      <!-- 案件詳細 -->
+      <div id="detailContent" style="display:none; flex-direction:column; height:100%;">
+
+        <!-- 案件ヘッダー -->
+        <div class="detail-header">
+          <div class="detail-top">
+            <div>
+              <div class="detail-id-label" id="detailCaseId">-</div>
+              <div class="detail-company" id="detailCompany">-</div>
+            </div>
+            <div class="detail-badges" id="detailBadges"></div>
+          </div>
+          <div class="detail-meta">
+            <div class="detail-field">
+              <span class="field-label">ステータス</span>
+              <span class="field-value" id="detailStatus">-</span>
+            </div>
+            <div class="detail-field">
+              <span class="field-label">担当者</span>
+              <span class="field-value" id="detailAssignee">-</span>
+            </div>
+            <div class="detail-field">
+              <span class="field-label">連携先</span>
+              <span class="field-value" id="detailDept">-</span>
+            </div>
+            <div class="detail-field">
+              <span class="field-label">対応期限</span>
+              <span class="field-value" id="detailDueDate">-</span>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="btn btn-primary" onclick="updateStatus()">ステータス更新</button>
+            <button class="btn btn-green" onclick="linkFactory()">工場へ依頼</button>
+            <button class="btn" onclick="closeCase()">完了にする</button>
+          </div>
+        </div>
+
+        <!-- 詳細ボディ -->
+        <div class="detail-body">
+
+          <!-- タイムライン -->
+          <div class="timeline-panel">
+            <div class="timeline-scroll" id="timelineContent">
+              <div class="loading-spinner">読み込み中...</div>
+            </div>
+
+            <!-- コメント・FAX登録フォーム -->
+            <div class="comment-form">
+              <div class="form-tabs">
+                <div class="form-tab active" id="tabComment" onclick="switchFormTab('comment')">コメント追加</div>
+                <div class="form-tab" id="tabFax" onclick="switchFormTab('fax')">送信FAX登録</div>
+              </div>
+
+              <!-- コメントフォーム -->
+              <div class="form-body" id="formComment">
+                <div class="form-row">
+                  <select class="form-select" id="commentType">
+                    <option>コメント</option>
+                    <option>工場確認</option>
+                    <option>営業連携</option>
+                    <option>電話対応</option>
+                    <option>その他</option>
+                  </select>
+                  <input class="form-input" id="commentText" placeholder="例：工場 納期回答 5/1確定">
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-primary" style="flex:1;" onclick="addComment()">追加</button>
+                  <button class="btn" onclick="addCommentWithStatus()">ステータスも更新</button>
+                </div>
+              </div>
+
+              <!-- 送信FAXフォーム -->
+              <div class="form-body" id="formFax" style="display:none;">
+                <div class="upload-zone" onclick="triggerFileInput()">
+                  <div class="upload-zone-text">クリックしてPDFを選択</div>
+                  <div class="upload-zone-sub">またはドラッグ＆ドロップ</div>
+                </div>
+                <input type="file" id="faxFileInput" accept=".pdf" style="display:none;" onchange="onFileSelected(this)">
+                <div class="file-preview" id="filePreview">
+                  <span>📄</span>
+                  <span id="fileName">-</span>
+                  <span class="file-remove" onclick="removeFile()">✕</span>
+                </div>
+                <textarea class="form-textarea" id="faxMemo" rows="2" placeholder="内容メモ（任意）"></textarea>
+                <div class="form-actions">
+                  <button class="btn btn-green" style="flex:1;" onclick="registerFax()">送信FAXとして登録</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PDFビューア -->
+          <div class="pdf-panel">
+            <div class="pdf-toolbar">
+              <span class="pdf-filename" id="pdfFilename">PDFを選択してください</span>
+              <button class="btn" onclick="openPdfNewTab()">別タブで開く</button>
+            </div>
+            <div class="pdf-area" id="pdfArea">
+              <div class="pdf-empty">
+                <div class="pdf-empty-icon">📄</div>
+                <div class="pdf-empty-text">FAX履歴からPDFを選択</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// MSAL CONFIG
+// ============================================================
+const MSAL_CONFIG = {
+  auth: {
+    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
+    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
+    redirectUri: window.location.origin + window.location.pathname,
+  },
+  cache: { cacheLocation: 'sessionStorage' }
+};
+const SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.ReadWrite.All'];
+
+// ============================================================
+// SharePoint設定
+// ============================================================
+const SP = {
+  site: 'hanaokacorp.sharepoint.com:/sites/msteams_7aab51:',
+  caseListId: '674a2392-9a62-40f8-aab9-afebbb9f762a',
+  eventListId: 'a7cee65e-1815-4992-b2fc-79d7cd9e6d05',
+  pdfLibrary: 'FAX_PDFStorage',
+  masterLibrary: 'SharedMasters',
+};
+
+// ============================================================
+// STATE
+// ============================================================
+let msalInstance = null;
+let account = null;
+let siteId = null;
+let currentFilter = 'all';
+let currentCaseId = null;
+let currentPdfUrl = null;
+let cases = [];
+let events = [];
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+  if (typeof msal === 'undefined') {
+    document.getElementById('loginError').textContent = 'MSALライブラリが読み込めませんでした。ページを再読み込みしてください。';
+    document.getElementById('loginError').style.display = 'block';
+    return;
+  }
+  msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    account = accounts[0];
+    showApp();
+    await loadCases();
+  }
+
+  document.getElementById('loginBtn').onclick = login;
+  document.getElementById('logoutBtn').onclick = logout;
+}
+
+// ============================================================
+// AUTH
+// ============================================================
+async function login() {
+  try {
+    document.getElementById('loginError').style.display = 'none';
+    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    account = result.account;
+    showApp();
+    await loadCases();
+  } catch(e) {
+    document.getElementById('loginError').textContent = 'サインインに失敗しました: ' + e.message;
+    document.getElementById('loginError').style.display = 'block';
+  }
+}
+
+function logout() {
+  msalInstance.logoutPopup({ account });
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+}
+
+async function getToken() {
+  try {
+    const res = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+    return res.accessToken;
+  } catch {
+    const res = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
+    return res.accessToken;
+  }
+}
+
+function showApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  const app = document.getElementById('app');
+  app.style.display = 'flex';
+  const name = account.name || account.username;
+  document.getElementById('userName').textContent = name.split(' ')[0];
+  document.getElementById('userAvatar').textContent = name.charAt(0).toUpperCase();
+}
+
+// ============================================================
+// GRAPH API ヘルパー
+// ============================================================
+async function graphGet(url) {
+  const token = await getToken();
+  const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (!res.ok) throw new Error(`Graph API エラー: ${res.status} ${url}`);
+  return res.json();
+}
+
+async function graphPost(url, body) {
+  const token = await getToken();
+  const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`Graph API エラー: ${res.status}`);
+  return res.json();
+}
+
+async function graphPatch(url, body) {
+  const token = await getToken();
+  const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`Graph API エラー: ${res.status}`);
+  return res.json();
+}
+
+async function getSiteId() {
+  if (siteId) return siteId;
+  const data = await graphGet(`/sites/${SP.site}`);
+  siteId = data.id;
+  return siteId;
+}
+
+// ============================================================
+// データ取得
+// ============================================================
+async function loadCases() {
+  setStatus('loading', '案件データを読み込み中...');
+  try {
+    const sid = await getSiteId();
+    const data = await graphGet(
+      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=200`
+    );
+    cases = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    renderCaseList();
+    updateSummary();
+    setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
+  } catch(e) {
+    setStatus('error', 'エラー: ' + e.message);
+    console.error(e);
+  }
+}
+
+async function loadEvents(caseId) {
+  try {
+    const sid = await getSiteId();
+    // ODataフィルターを使わず全件取得→クライアント側でフィルタ
+    // （SharePoint列内部名とAPIフィールド名の不一致を回避）
+    const data = await graphGet(
+      `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
+    );
+    const allEvents = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    // 列内部名の揺れに対応（CaseId / 案件ID / CaseID など）
+    events = allEvents.filter(e => {
+      const val = e.CaseId || e['\u6848\u4ef6ID'] || e['CaseID'] || e['\u6848\u4ef6Id'] || '';
+      return String(val) === String(caseId);
+    });
+    // 日時昇順ソート
+    events.sort((a, b) => new Date(a.EventDate || 0) - new Date(b.EventDate || 0));
+    renderTimeline();
+  } catch(e) {
+    document.getElementById('timelineContent').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><div class="empty-text">\u30a4\u30d9\u30f3\u30c8\u53d6\u5f97\u30a8\u30e9\u30fc<br><small style="color:var(--danger);font-size:10px">${e.message}</small></div></div>`;
+    console.error('[loadEvents]', e);
+  }
+}
+
+// ============================================================
+// レンダリング
+// ============================================================
+function renderCaseList() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  let filtered = cases.filter(c => {
+    if (q && !String(c.CaseId || '').toLowerCase().includes(q) && !String(c.CompanyName || '').toLowerCase().includes(q)) return false;
+    if (currentFilter === 'pending') return c.Status === '未対応';
+    if (currentFilter === 'factory') return c.Status === '工場回答待ち';
+    if (currentFilter === 'urgent') return c.UrgentFlag === true;
+    if (currentFilter === 'today') {
+      if (!c.DueDate) return false;
+      const today = new Date().toDateString();
+      return new Date(c.DueDate).toDateString() === today;
+    }
+    if (currentFilter === 'done') return ['納品完了','取消クローズ','失注クローズ'].includes(c.Status);
+    if (currentFilter === 'all') return !['納品完了','取消クローズ','失注クローズ'].includes(c.Status);
+    return true;
+  });
+
+  document.getElementById('caseCount').textContent = filtered.length + '件';
+
+  if (!filtered.length) {
+    document.getElementById('caseList').innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">案件がありません</div></div>';
+    return;
+  }
+
+  document.getElementById('caseList').innerHTML = filtered.map(c => {
+    const urgClass = c.UrgentFlag ? 'urg-high' : getUrgencyClass(c.DueDate);
+    const deadlineText = formatDeadline(c.DueDate);
+    const statusBadge = getStatusBadge(c.Status);
+    const typeBadge = getTypeBadge(c.CaseType);
+    return `
+      <div class="case-item ${c.CaseId === currentCaseId ? 'active' : ''}" onclick="selectCase('${c.CaseId}')">
+        <div class="urgency-dot ${urgClass}"></div>
+        <div class="case-body">
+          <div class="case-top">
+            <span class="case-id-label">${c.CaseId || '-'}</span>
+            <span class="case-deadline ${getDeadlineClass(c.DueDate)}">${deadlineText}</span>
+          </div>
+          <div class="case-company">${c.CompanyName || '-'}</div>
+          <div class="case-meta">
+            ${typeBadge}
+            ${statusBadge}
+            ${c.UrgentFlag ? '<span class="badge badge-red">至急</span>' : ''}
+          </div>
+          ${c.Title ? `<div class="case-note">${c.Title}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderTimeline() {
+  if (!events.length) {
+    document.getElementById('timelineContent').innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">イベントなし</div></div>';
+    return;
+  }
+
+  const html = `<div class="tl-section-label">タイムライン (${events.length}件)</div>` +
+    events.map((ev, i) => {
+      const dotClass = getEventDotClass(ev.EventType);
+      const typeClass = getEventTypeClass(ev.EventType);
+      const isLast = i === events.length - 1;
+      return `
+        <div class="tl-item">
+          <div class="tl-line-wrap">
+            <div class="tl-dot ${dotClass}"></div>
+            ${!isLast ? '<div class="tl-vline"></div>' : ''}
+          </div>
+          <div class="tl-body">
+            <div class="tl-header">
+              <span class="tl-type ${typeClass}">${ev.EventType || '-'}</span>
+              <span class="tl-date">${formatDate(ev.EventDate)}</span>
+            </div>
+            <div class="tl-content">${ev.Summary || '-'}</div>
+            ${ev.RelationName ? `<div class="tl-sub">${ev.RelationName}</div>` : ''}
+            ${ev.PDFPath ? `<div class="tl-attachment" onclick="loadPdf('${ev.PDFPath}', '${ev.Summary || 'FAX'}')">📄 PDF を表示</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+
+  document.getElementById('timelineContent').innerHTML = html;
+}
+
+function updateSummary() {
+  const active = cases.filter(c => !['納品完了','取消クローズ','失注クローズ'].includes(c.Status));
+  document.getElementById('cnt-pending').textContent = active.filter(c => c.Status === '未対応').length;
+  document.getElementById('cnt-factory').textContent = active.filter(c => c.Status === '工場回答待ち').length;
+  document.getElementById('cnt-inprogress').textContent = active.filter(c => c.Status === '対応中').length;
+
+  const today = new Date().toDateString();
+  document.getElementById('cnt-today').textContent = active.filter(c => c.DueDate && new Date(c.DueDate).toDateString() === today).length;
+  document.getElementById('cnt-review').textContent = '確認中';
+}
+
+// ============================================================
+// 案件選択
+// ============================================================
+function selectCase(caseId) {
+  currentCaseId = caseId;
+  const c = cases.find(x => x.CaseId === caseId);
+  if (!c) return;
+
+  document.getElementById('emptyState').style.display = 'none';
+  const dc = document.getElementById('detailContent');
+  dc.style.display = 'flex';
+
+  document.getElementById('detailCaseId').textContent = c.CaseId + (c.OrderNumber ? ' / 受注: ' + c.OrderNumber : '');
+  document.getElementById('detailCompany').textContent = c.CompanyName || '-';
+  document.getElementById('detailStatus').textContent = c.Status || '-';
+  document.getElementById('detailAssignee').textContent = c.AssignedTo?.LookupValue || '-';
+  document.getElementById('detailDept').textContent = c.LinkedDept || 'なし';
+  document.getElementById('detailDueDate').textContent = c.DueDate ? formatDate(c.DueDate) : '未設定';
+
+  const badges = [];
+  if (c.UrgentFlag) badges.push('<span class="badge badge-red">至急</span>');
+  if (c.CaseType) badges.push(`<span class="badge badge-blue">${c.CaseType}</span>`);
+  if (c.Status) badges.push(getStatusBadge(c.Status));
+  document.getElementById('detailBadges').innerHTML = badges.join('');
+
+  document.getElementById('timelineContent').innerHTML = '<div class="loading-spinner">読み込み中...</div>';
+  loadEvents(caseId);
+
+  renderCaseList();
+}
+
+// ============================================================
+// アクション
+// ============================================================
+async function addComment() {
+  const type = document.getElementById('commentType').value;
+  const text = document.getElementById('commentText').value.trim();
+  if (!text || !currentCaseId) return;
+
+  try {
+    const sid = await getSiteId();
+    const now = new Date().toISOString();
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: currentCaseId,
+        EventType: type,
+        EventDate: now,
+        RelationType: '社内',
+        Summary: text,
+      }
+    });
+    document.getElementById('commentText').value = '';
+    await loadEvents(currentCaseId);
+    const tl = document.getElementById('timelineContent');
+    if (tl) tl.scrollTop = tl.scrollHeight;
+  } catch(e) {
+    alert('登録エラー: ' + e.message);
+  }
+}
+
+async function addCommentWithStatus() {
+  await addComment();
+  updateStatus();
+}
+
+// ============================================================
+// 新規案件登録
+// ============================================================
+let companyMaster = []; // 得意先マスタキャッシュ
+let regAutoStatus = '';
+
+async function openRegModal() {
+  // フォームリセット
+  ['regTitle','regCompanyName','regCompanyCode','regOrderNumber','regNotes'].forEach(id => {
+    document.getElementById(id).value = '';
+    document.getElementById(id).classList.remove('error');
+  });
+  document.getElementById('regEntryPoint').value = '';
+  document.getElementById('regCaseType').value = '';
+  document.getElementById('regAssignedTo').value =
+    (account && (account.name || account.username)) ? (account.name || account.username).split(' ')[0] : '';
+  document.getElementById('regPriority').value = '中';
+  document.getElementById('regLinkedDept').value = 'なし';
+  document.getElementById('regPhase').value = '';
+  document.getElementById('regDueDate').value = '';
+  document.getElementById('regUrgent').checked = false;
+  document.getElementById('autoStatusRow').style.display = 'none';
+  document.getElementById('regErrorMsg').style.display = 'none';
+  document.getElementById('companyList').style.display = 'none';
+  document.getElementById('regSubmitBtn').disabled = false;
+  regAutoStatus = '';
+
+  document.getElementById('regModal').classList.add('open');
+
+  // 得意先マスタ読み込み（未ロード時のみ）
+  if (!companyMaster.length) loadCompanyMaster();
+}
+
+function closeRegModal() {
+  document.getElementById('regModal').classList.remove('open');
+  document.getElementById('companyList').style.display = 'none';
+}
+
+// エントリーポイント→ステータス自動設定
+function onEntryPointChange() {
+  const ep = document.getElementById('regEntryPoint').value;
+  const caseType = document.getElementById('regCaseType').value;
+  const map = {
+    '見積依頼': '見積対応中',
+    '注文書':   '注文書受領',
+    '納期確認': '納期調整中',
+    '納期変更依頼': '納期調整中',
+  };
+  // 案件種別が選択されていればそちらで判定、なければエントリーポイントで判定
+  regAutoStatus = map[caseType] || map[ep] || '未対応';
+  if (ep) {
+    document.getElementById('autoStatusRow').style.display = 'flex';
+    document.getElementById('autoStatusLabel').textContent = regAutoStatus;
+  } else {
+    document.getElementById('autoStatusRow').style.display = 'none';
+  }
+}
+
+// 得意先マスタ読み込み（SharedMasters CSV）
+async function loadCompanyMaster() {
+  try {
+    const sid = await getSiteId();
+    // SharedMastersドキュメントライブラリからCSVを取得
+    const res = await graphGet(
+      `/sites/${sid}/drives?$select=id,name`
+    );
+    const drive = res.value.find(d => d.name === SP.masterLibrary);
+    if (!drive) return;
+    const fileRes = await fetch(
+      `https://graph.microsoft.com/v1.0/sites/${sid}/drives/${drive.id}/root:/company_master/company_master.csv:/content`,
+      { headers: { Authorization: 'Bearer ' + await getToken() } }
+    );
+    if (!fileRes.ok) return;
+    const csv = await fileRes.text();
+    companyMaster = parseCompanyCSV(csv);
+    console.log('[companyMaster] loaded:', companyMaster.length, 'items');
+  } catch(e) {
+    console.warn('[companyMaster] load failed:', e.message);
+    // マスタが読めなくても手入力で続行可
+  }
+}
+
+function parseCompanyCSV(csv) {
+  const lines = csv.split('\n').slice(1); // ヘッダー除く
+  return lines.map(line => {
+    const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    return { code: cols[0] || '', name: cols[1] || '' };
+  }).filter(r => r.name);
+}
+
+// 得意先名入力→候補表示
+function onCompanyInput(val) {
+  const list = document.getElementById('companyList');
+  if (!val || val.length < 1) { list.style.display = 'none'; return; }
+  const hits = companyMaster.filter(c =>
+    c.name.includes(val) || c.code.includes(val)
+  ).slice(0, 8);
+  if (!hits.length) { list.style.display = 'none'; return; }
+  list.innerHTML = hits.map(c => `
+    <div class="reg-autocomplete-item" onclick="selectCompany('${c.code}','${c.name.replace(/'/g,"\\'")}')">
+      <div>${c.name}</div>
+      ${c.code ? `<div class="reg-autocomplete-code">${c.code}</div>` : ''}
+    </div>`).join('');
+  list.style.display = 'block';
+}
+
+function selectCompany(code, name) {
+  document.getElementById('regCompanyName').value = name;
+  document.getElementById('regCompanyCode').value = code;
+  document.getElementById('companyList').style.display = 'none';
+}
+
+// 案件ID採番
+async function generateCaseId() {
+  try {
+    const sid = await getSiteId();
+    const data = await graphGet(
+      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$select=fields/CaseId&$top=500`
+    );
+    const year = new Date().getFullYear();
+    const ids = data.value
+      .map(v => v.fields?.CaseId || '')
+      .filter(id => id.startsWith('EST-' + year + '-'))
+      .map(id => parseInt(id.split('-')[2]) || 0);
+    const next = ids.length ? Math.max(...ids) + 1 : 1;
+    return `EST-${year}-${String(next).padStart(3, '0')}`;
+  } catch(e) {
+    // フォールバック：タイムスタンプベース
+    return `EST-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`;
+  }
+}
+
+// バリデーション
+function validateRegForm() {
+  let ok = true;
+  const required = [
+    { id: 'regTitle', label: '案件名' },
+    { id: 'regCompanyName', label: '得意先名' },
+    { id: 'regCaseType', label: '案件種別' },
+    { id: 'regEntryPoint', label: 'エントリーポイント' },
+    { id: 'regAssignedTo', label: '担当者' },
+  ];
+  const msgs = [];
+  required.forEach(f => {
+    const el = document.getElementById(f.id);
+    if (!el.value.trim()) {
+      el.classList.add('error');
+      msgs.push(f.label);
+      ok = false;
+    } else {
+      el.classList.remove('error');
+    }
+  });
+  const errEl = document.getElementById('regErrorMsg');
+  if (!ok) {
+    errEl.textContent = '必須項目を入力してください：' + msgs.join('、');
+    errEl.style.display = 'block';
+  } else {
+    errEl.style.display = 'none';
+  }
+  return ok;
+}
+
+// 登録実行
+async function submitNewCase() {
+  if (!validateRegForm()) return;
+  const btn = document.getElementById('regSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = '登録中...';
+
+  try {
+    const sid = await getSiteId();
+    const caseId = await generateCaseId();
+    const now = new Date().toISOString();
+    const ep = document.getElementById('regEntryPoint').value;
+    const caseType = document.getElementById('regCaseType').value;
+
+    // ステータス決定
+    const statusMap = {
+      '見積依頼': '見積対応中',
+      '注文書':   '注文書受領',
+      '納期確認': '納期調整中',
+      '納期変更依頼': '納期調整中',
+    };
+    const status = statusMap[caseType] || statusMap[ep] || '未対応';
+
+    // 対応期限
+    const dueDateVal = document.getElementById('regDueDate').value;
+    const dueDate = dueDateVal ? new Date(dueDateVal).toISOString() : null;
+
+    // 案件登録（POST）
+    const fields = {
+      Title: document.getElementById('regTitle').value.trim(),
+      CaseId: caseId,
+      CompanyName: document.getElementById('regCompanyName').value.trim(),
+      CompanyCode: document.getElementById('regCompanyCode').value.trim(),
+      CaseType: caseType,
+      EntryPoint: ep,
+      Status: status,
+      AssignedTo: document.getElementById('regAssignedTo').value.trim(),
+      Priority: document.getElementById('regPriority').value,
+      UrgentFlag: document.getElementById('regUrgent').checked,
+      LinkedDept: document.getElementById('regLinkedDept').value,
+      Notes: document.getElementById('regNotes').value.trim(),
+      LastEventDate: now,
+    };
+    if (document.getElementById('regOrderNumber').value.trim())
+      fields.OrderNumber = document.getElementById('regOrderNumber').value.trim();
+    if (document.getElementById('regPhase').value)
+      fields.Phase = document.getElementById('regPhase').value;
+    if (dueDate) fields.DueDate = dueDate;
+
+    await graphPost(`/sites/${sid}/lists/${SP.caseListId}/items`, { fields });
+
+    // 初期イベント自動登録
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: caseId,
+        EventType: 'コメント',
+        EventDate: now,
+        RelationType: '社内',
+        Summary: `【${ep}】で受付。手動登録。`,
+      }
+    });
+
+    // モーダルを閉じて案件リスト更新
+    closeRegModal();
+    setStatus('loading', '案件を登録しました。リストを更新中...');
+    await loadCases();
+
+    // 新しく登録した案件を自動選択
+    const newCase = cases.find(c => c.CaseId === caseId);
+    if (newCase) selectCase(caseId);
+    setStatus('success', `案件「${caseId}」を登録しました`);
+
+  } catch(e) {
+    const errEl = document.getElementById('regErrorMsg');
+    errEl.textContent = '登録エラー: ' + e.message;
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = '登録する';
+  }
+}
+
+// ============================================================
+// ステータスモーダル
+// ============================================================
+let selectedStatus = null;
+
+function openStatusModal() {
+  if (!currentCaseId) return;
+  selectedStatus = null;
+  const cur = (cases.find(c => c.CaseId === currentCaseId) || {}).Status || '';
+  document.querySelectorAll('.modal-status-btn').forEach(btn => {
+    btn.classList.toggle('selected', cur !== '' && btn.textContent.replace(/\n/g,'').trim() === cur);
+  });
+  document.getElementById('modalOkBtn').disabled = true;
+  document.getElementById('statusModal').classList.add('open');
+}
+
+function selectStatusBtn(el, status) {
+  document.querySelectorAll('.modal-status-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedStatus = status;
+  document.getElementById('modalOkBtn').disabled = false;
+}
+
+async function confirmStatusUpdate() {
+  if (!selectedStatus) return;
+  document.getElementById('statusModal').classList.remove('open');
+  await updateCaseStatus(selectedStatus);
+  selectedStatus = null;
+}
+
+function updateStatus() { openStatusModal(); }
+
+async function updateCaseStatus(newStatus) {
+  if (!newStatus || !currentCaseId) return;
+  const item = cases.find(c => c.CaseId === currentCaseId);
+  if (!item || !item._spId) {
+    alert('案件のSharePoint IDが見つかりません。案件リストを更新してください。');
+    return;
+  }
+  try {
+    setStatus('loading', 'ステータスを更新中...');
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, {
+      Status: newStatus
+    });
+    item.Status = newStatus;
+    const now = new Date().toISOString();
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: currentCaseId,
+        EventType: 'ステータス変更',
+        EventDate: now,
+        RelationType: '社内',
+        Summary: 'ステータス → ' + newStatus,
+      }
+    });
+    renderCaseList();
+    selectCase(currentCaseId);
+    updateSummary();
+    setStatus('success', 'ステータスを「' + newStatus + '」に更新しました');
+  } catch(e) {
+    setStatus('error', '更新エラー: ' + e.message);
+    alert('ステータス更新エラー: ' + e.message);
+  }
+}
+
+function closeCase() {
+  if (confirm('この案件を完了にしますか？')) {
+    updateCaseStatus('納品完了');
+  }
+}
+
+function linkFactory() {
+  alert('工場依頼機能は実装中です');
+}
+
+function triggerFileInput() {
+  document.getElementById('faxFileInput').click();
+}
+
+function onFileSelected(input) {
+  if (input.files.length > 0) {
+    document.getElementById('fileName').textContent = input.files[0].name;
+    document.getElementById('filePreview').style.display = 'flex';
+  }
+}
+
+function removeFile() {
+  document.getElementById('faxFileInput').value = '';
+  document.getElementById('filePreview').style.display = 'none';
+}
+
+function registerFax() {
+  alert('送信FAX登録機能は実装中です');
+}
+
+function loadPdf(url, name) {
+  currentPdfUrl = url;
+  document.getElementById('pdfFilename').textContent = name;
+  document.getElementById('pdfArea').innerHTML = `<iframe class="pdf-frame" src="${url}"></iframe>`;
+}
+
+function openPdfNewTab() {
+  if (currentPdfUrl) window.open(currentPdfUrl, '_blank');
+}
+
+// ============================================================
+// UI ヘルパー
+// ============================================================
+function switchView(view) {
+  document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  currentFilter = view;
+  renderCaseList();
+}
+
+function setFilter(filter, el) {
+  currentFilter = filter;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderCaseList();
+}
+
+function filterCases() { renderCaseList(); }
+
+function switchFormTab(tab) {
+  document.getElementById('tabComment').classList.toggle('active', tab === 'comment');
+  document.getElementById('tabFax').classList.toggle('active', tab === 'fax');
+  document.getElementById('formComment').style.display = tab === 'comment' ? 'block' : 'none';
+  document.getElementById('formFax').style.display = tab === 'fax' ? 'block' : 'none';
+}
+
+function setStatus(type, text) {
+  const bar = document.getElementById('statusBar');
+  bar.className = 'status-bar ' + type;
+  document.getElementById('statusText').textContent = text;
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function formatDeadline(dateStr) {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  const today = new Date();
+  const diff = Math.floor((d - today) / (1000*60*60*24));
+  if (diff < 0) return `期限超過 ${d.getMonth()+1}/${d.getDate()}`;
+  if (diff === 0) return `本日 ${d.getMonth()+1}/${d.getDate()}`;
+  return `${d.getMonth()+1}/${d.getDate()}`;
+}
+
+function getDeadlineClass(dateStr) {
+  if (!dateStr) return 'dl-ok';
+  const diff = Math.floor((new Date(dateStr) - new Date()) / (1000*60*60*24));
+  if (diff < 0) return 'dl-over';
+  if (diff === 0) return 'dl-near';
+  return 'dl-ok';
+}
+
+function getUrgencyClass(dateStr) {
+  if (!dateStr) return 'urg-low';
+  const diff = Math.floor((new Date(dateStr) - new Date()) / (1000*60*60*24));
+  if (diff < 0) return 'urg-high';
+  if (diff <= 1) return 'urg-mid';
+  return 'urg-low';
+}
+
+function getStatusBadge(status) {
+  const map = {
+    '未対応': 'badge-red',
+    '工場回答待ち': 'badge-amber',
+    '見積対応中': 'badge-blue',
+    '見積回答済み（注文書待ち）': 'badge-blue',
+    '注文書受領': 'badge-blue',
+    '受注入力済み': 'badge-purple',
+    '納期調整中': 'badge-amber',
+    '出荷手配中': 'badge-purple',
+    '納品完了': 'badge-green',
+    '取消クローズ': 'badge-gray',
+    '失注クローズ': 'badge-gray',
+  };
+  const cls = map[status] || 'badge-gray';
+  return `<span class="badge ${cls}">${status}</span>`;
+}
+
+function getTypeBadge(type) {
+  if (!type) return '';
+  const map = {
+    '見積依頼': 'badge-blue',
+    '注文書': 'badge-green',
+    '注文取消': 'badge-red',
+    '納期確認': 'badge-amber',
+    '納期変更依頼': 'badge-amber',
+  };
+  const cls = map[type] || 'badge-gray';
+  return `<span class="badge ${cls}">${type}</span>`;
+}
+
+function getEventDotClass(type) {
+  if (!type) return 'tl-dot-comment';
+  if (type.includes('受信') && type.includes('得意先')) return 'tl-dot-fax-in';
+  if (type.includes('送信')) return 'tl-dot-fax-out';
+  if (type.includes('仕入先')) return 'tl-dot-supplier';
+  if (type.includes('ステータス')) return 'tl-dot-system';
+  return 'tl-dot-comment';
+}
+
+function getEventTypeClass(type) {
+  if (!type) return 'type-comment';
+  if (type.includes('受信') && type.includes('得意先')) return 'type-fax-in';
+  if (type.includes('送信')) return 'type-fax-out';
+  if (type.includes('仕入先')) return 'type-supplier';
+  if (type.includes('ステータス')) return 'type-system';
+  return 'type-comment';
+}
+
+// ============================================================
+// 起動
+// ============================================================
+window.addEventListener('load', init);
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.reg-autocomplete-wrap')) {
+    const list = document.getElementById('companyList');
+    if (list) list.style.display = 'none';
+  }
+});
+</script>
+</body>
+</html>
