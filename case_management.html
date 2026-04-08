@@ -645,8 +645,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
       </div>
       <div class="filter-row">
         <div class="filter-btn active" onclick="setFilter('all', this)">すべて</div>
-        <div class="filter-btn" onclick="setFilter('pending', this)">🔴 未対応</div>
-        <div class="filter-btn" onclick="setFilter('new-arrival', this)">🟠 新着あり</div>
+        <div class="filter-btn" onclick="setFilter('attention', this)">🔴 要対応</div>
         <div class="filter-btn" onclick="setFilter('wip', this)">🟡 業セ対応中</div>
         <div class="filter-btn" onclick="setFilter('ext', this)">⚪ 外部依頼中</div>
         <div class="filter-btn" onclick="setFilter('escalated', this)">⏰ 催促</div>
@@ -721,7 +720,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
               <!-- コメントフォーム -->
               <div class="form-body" id="formComment">
                 <div class="form-row">
-                  <select class="form-select" id="commentType">
+                  <select class="form-select" id="commentType" onchange="onCommentTypeChange()">
                     <optgroup label="対応内容">
                       <option>見積回答作成中</option>
                       <option>注文書確認中</option>
@@ -743,14 +742,33 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
                   </select>
                   <input class="form-input" id="commentText" placeholder="例：工場 納期回答 5/1確定">
                 </div>
-                <div class="form-actions">
+                <div id="statusSuggest" style="display:none;margin-bottom:7px;padding:7px 9px;background:#E6F1FB;border:1px solid #B5D4F4;border-radius:6px;font-size:12px;color:#185FA5;">
+                  <span id="statusSuggestText"></span>
+                  <div style="display:flex;gap:6px;margin-top:6px">
+                    <button class="btn btn-primary" style="flex:1;padding:4px 8px;font-size:11px" onclick="addCommentAndUpdateStatus()">コメント追加＋ステータス更新</button>
+                    <button class="btn" style="padding:4px 8px;font-size:11px" onclick="addComment()">コメントのみ</button>
+                  </div>
+                </div>
+                <div id="statusNoSuggest" class="form-actions">
                   <button class="btn btn-primary" style="flex:1;" onclick="addComment()">追加</button>
-                  <button class="btn" onclick="addCommentWithStatus()">ステータスも更新</button>
                 </div>
               </div>
 
               <!-- 送信FAXフォーム -->
               <div class="form-body" id="formFax" style="display:none;">
+                <div class="form-row" style="margin-bottom:7px">
+                  <select class="form-select" id="faxType" onchange="onFaxTypeChange()" style="width:100%">
+                    <option value="">送付種別を選択</option>
+                    <option value="見積回答送付">見積回答送付</option>
+                    <option value="注文請書送付">注文請書送付</option>
+                    <option value="納品書・送り状送付">納品書・送り状送付</option>
+                    <option value="納期回答送付">納期回答送付</option>
+                    <option value="その他送付">その他送付</option>
+                  </select>
+                </div>
+                <div id="faxStatusSuggest" style="display:none;margin-bottom:7px;padding:7px 9px;background:#E6F1FB;border:1px solid #B5D4F4;border-radius:6px;font-size:12px;color:#185FA5;">
+                  <span id="faxStatusSuggestText"></span>
+                </div>
                 <div class="upload-zone" onclick="triggerFileInput()">
                   <div class="upload-zone-text">クリックしてPDFを選択</div>
                   <div class="upload-zone-sub">またはドラッグ＆ドロップ</div>
@@ -763,7 +781,8 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
                 </div>
                 <textarea class="form-textarea" id="faxMemo" rows="2" placeholder="内容メモ（任意）"></textarea>
                 <div class="form-actions">
-                  <button class="btn btn-green" style="flex:1;" onclick="registerFax()">送信FAXとして登録</button>
+                  <button class="btn btn-green" style="flex:1;" onclick="registerFax()">登録</button>
+                  <button class="btn" onclick="registerFaxAndUpdateStatus()" id="faxWithStatusBtn" style="display:none">登録＋ステータス更新</button>
                 </div>
               </div>
             </div>
@@ -1011,8 +1030,7 @@ function renderCaseList() {
   applyEscalation();
   let filtered = cases.filter(c => {
     if (q && !String(c.CaseId || '').toLowerCase().includes(q) && !String(c.CompanyName || '').toLowerCase().includes(q)) return false;
-    if (currentFilter === 'pending')     return c.Status === '未対応';
-    if (currentFilter === 'new-arrival') return c.Status === '新着あり' || c._escalated;
+    if (currentFilter === 'attention')    return c.Status === '未対応' || c.NewArrival === true || c.NewArrival === 'Yes' || c._escalated;
     if (currentFilter === 'wip')         return c.Status === '業セ対応中';
     if (currentFilter === 'ext')         return EXT_STATUSES.includes(c.Status);
     if (currentFilter === 'escalated')   return c._escalated;
@@ -1172,6 +1190,42 @@ function selectCase(caseId) {
 }
 
 // ============================================================
+// コメント種別→ステータス提案
+// ============================================================
+const COMMENT_STATUS_MAP = {
+  '工場確認':        { status: '工場依頼中',      msg: '工場へ依頼しますか？ → ステータスを「工場依頼中」に更新できます' },
+  '仕入先確認':      { status: '仕入先依頼中',     msg: '仕入先へ依頼しますか？ → ステータスを「仕入先依頼中」に更新できます' },
+  '得意先連絡':      { status: '得意先回答待ち',   msg: '得意先の回答待ちですか？ → ステータスを「得意先回答待ち」に更新できます' },
+  '見積回答作成中':  { status: '業セ対応中',       msg: '業セ対応中に更新しますか？ → ステータスを「業セ対応中」に更新できます' },
+  '注文書確認中':    { status: '業セ対応中',       msg: '業セ対応中に更新しますか？' },
+  '受注入力中':      { status: '業セ対応中',       msg: '業セ対応中に更新しますか？' },
+  '納品書・送り状送付中': { status: '業セ対応中',  msg: '業セ対応中に更新しますか？' },
+};
+
+function onCommentTypeChange() {
+  const type = document.getElementById('commentType').value;
+  const suggest = document.getElementById('statusSuggest');
+  const noSuggest = document.getElementById('statusNoSuggest');
+  const suggestText = document.getElementById('statusSuggestText');
+
+  if (COMMENT_STATUS_MAP[type]) {
+    suggestText.textContent = COMMENT_STATUS_MAP[type].msg;
+    suggest.style.display = 'block';
+    noSuggest.style.display = 'none';
+  } else {
+    suggest.style.display = 'none';
+    noSuggest.style.display = 'flex';
+  }
+}
+
+async function addCommentAndUpdateStatus() {
+  const type = document.getElementById('commentType').value;
+  const map = COMMENT_STATUS_MAP[type];
+  await addComment();
+  if (map) await updateCaseStatus(map.status);
+}
+
+// ============================================================
 // アクション
 // ============================================================
 async function addComment() {
@@ -1210,11 +1264,6 @@ async function addComment() {
   } catch(e) {
     alert('登録エラー: ' + e.message);
   }
-}
-
-async function addCommentWithStatus() {
-  await addComment();
-  updateStatus();
 }
 
 // ============================================================
@@ -1556,8 +1605,79 @@ function removeFile() {
   document.getElementById('filePreview').style.display = 'none';
 }
 
-function registerFax() {
-  alert('送信FAX登録機能は実装中です');
+const FAX_STATUS_MAP = {
+  '見積回答送付':      { status: '得意先回答待ち', msg: '得意先の返答待ちですか？→「得意先回答待ち」に更新できます' },
+  '注文請書送付':      { status: '業セ対応中',     msg: '業セ対応中に更新しますか？' },
+  '納品書・送り状送付': { status: '業セ対応中',    msg: '業セ対応中に更新しますか？' },
+  '納期回答送付':      { status: '得意先回答待ち', msg: '得意先の返答待ちですか？→「得意先回答待ち」に更新できます' },
+};
+
+function onFaxTypeChange() {
+  const type = document.getElementById('faxType').value;
+  const suggest = document.getElementById('faxStatusSuggest');
+  const suggestText = document.getElementById('faxStatusSuggestText');
+  const withStatusBtn = document.getElementById('faxWithStatusBtn');
+  if (FAX_STATUS_MAP[type]) {
+    suggestText.textContent = FAX_STATUS_MAP[type].msg;
+    suggest.style.display = 'block';
+    withStatusBtn.style.display = 'inline-block';
+  } else {
+    suggest.style.display = 'none';
+    withStatusBtn.style.display = 'none';
+  }
+}
+
+async function registerFax() {
+  const type = document.getElementById('faxType').value;
+  const memo = document.getElementById('faxMemo').value.trim();
+  if (!type) { alert('送付種別を選択してください'); return; }
+  if (!currentCaseId) return;
+
+  try {
+    const sid = await getSiteId();
+    const now = new Date().toISOString();
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: currentCaseId,
+        EventType: type,
+        EventDate: now,
+        RelationType: '得意先',
+        Summary: memo || type,
+      }
+    });
+    // LastAction更新
+    const item = cases.find(c => c.CaseId === currentCaseId);
+    if (item && item._spId) {
+      await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, {
+        LastAction: type,
+        NewArrival: false,
+      });
+      item.LastAction = type;
+      item.NewArrival = false;
+    }
+    // フォームリセット
+    document.getElementById('faxType').value = '';
+    document.getElementById('faxMemo').value = '';
+    document.getElementById('faxStatusSuggest').style.display = 'none';
+    document.getElementById('faxWithStatusBtn').style.display = 'none';
+    removeFile();
+    await loadEvents(currentCaseId);
+    const tl = document.getElementById('timelineContent');
+    if (tl) tl.scrollTop = tl.scrollHeight;
+    renderCaseList();
+    setStatus('success', `「${type}」を登録しました`);
+  } catch(e) {
+    alert('登録エラー: ' + e.message);
+  }
+}
+
+async function registerFaxAndUpdateStatus() {
+  const type = document.getElementById('faxType').value;
+  await registerFax();
+  if (FAX_STATUS_MAP[type]) {
+    await updateCaseStatus(FAX_STATUS_MAP[type].status);
+  }
 }
 
 function loadPdf(url, name) {
@@ -1654,7 +1774,7 @@ function getTypeBadge(type) {
 function getEventDotClass(type) {
   if (!type) return 'tl-dot-comment';
   if (type.includes('受信') && type.includes('得意先')) return 'tl-dot-fax-in';
-  if (type.includes('送信')) return 'tl-dot-fax-out';
+  if (type.includes('送信') || type.includes('送付')) return 'tl-dot-fax-out';
   if (type.includes('仕入先')) return 'tl-dot-supplier';
   if (type.includes('ステータス')) return 'tl-dot-system';
   return 'tl-dot-comment';
