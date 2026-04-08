@@ -12,6 +12,11 @@ window.addEventListener('error', function(e) {
     document.getElementById('loginError').textContent = 'MSALライブラリの読み込みに失敗しました。ページを再読み込みしてください。';
     document.getElementById('loginError').style.display = 'block';
   }
+  // MSALが内部でSVGを操作しようとする際のエラーを無視
+  if (e.message && e.message.includes('querySelector') && e.message.includes('svg')) {
+    e.preventDefault();
+    return true;
+  }
 });
 </script>
 <style>
@@ -289,7 +294,34 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .pdf-empty-text { font-size: 13px; }
 .pdf-frame { width: 100%; height: 100%; border: none; border-radius: 6px; }
 
-/* 空状態 */
+/* ===== モーダル ===== */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45); z-index: 1000;
+  align-items: center; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface); border-radius: 10px;
+  padding: 20px; width: 340px; box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+.modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+.modal-status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 14px; }
+.modal-status-btn {
+  padding: 9px 10px; border-radius: 7px; border: 1px solid var(--border);
+  font-size: 12px; cursor: pointer; background: var(--surface2);
+  color: var(--text); text-align: center; transition: all .15s;
+}
+.modal-status-btn:hover { border-color: var(--accent); color: var(--accent); background: #E6F1FB; }
+.modal-status-btn.selected { border-color: var(--accent); color: #fff; background: var(--accent); }
+.modal-status-btn.status-close { color: var(--text-muted); }
+.modal-status-btn.status-close:hover { border-color: #888; color: #555; background: var(--surface2); }
+.modal-actions { display: flex; gap: 8px; }
+.modal-cancel { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); font-size: 12px; cursor: pointer; }
+.modal-cancel:hover { background: var(--surface2); }
+.modal-ok { flex: 2; padding: 8px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.modal-ok:hover { opacity: .9; }
+.modal-ok:disabled { opacity: .4; cursor: default; }
 .empty-state {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   height: 100%; color: var(--text-muted); gap: 8px;
@@ -305,6 +337,29 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 </style>
 </head>
 <body>
+
+<!-- ===== ステータス更新モーダル ===== -->
+<div class="modal-overlay" id="statusModal" onclick="closeStatusModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">ステータス変更</div>
+    <div class="modal-status-grid" id="statusBtnGrid">
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'見積対応中')">見積対応中</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'工場回答待ち')">工場回答待ち</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'見積回答済み（注文書待ち）')">見積回答済み<br>（注文書待ち）</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'注文書受領')">注文書受領</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'受注入力済み')">受注入力済み</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'納期調整中')">納期調整中</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'出荷手配中')">出荷手配中</div>
+      <div class="modal-status-btn" onclick="selectStatusBtn(this,'納品完了')">✅ 納品完了</div>
+      <div class="modal-status-btn status-close" onclick="selectStatusBtn(this,'取消クローズ')">取消クローズ</div>
+      <div class="modal-status-btn status-close" onclick="selectStatusBtn(this,'失注クローズ')">失注クローズ</div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeStatusModal()">キャンセル</button>
+      <button class="modal-ok" id="modalOkBtn" onclick="confirmStatusUpdate()" disabled>更新する</button>
+    </div>
+  </div>
+</div>
 
 <!-- ===== ログイン画面 ===== -->
 <div id="loginScreen">
@@ -666,13 +721,18 @@ async function loadCases() {
     const data = await graphGet(
       `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=200`
     );
-    cases = data.value.map(v => v.fields);
+    cases = data.value.map(v => ({ _spId: v.id, ...v.fields }));
     renderCaseList();
     updateSummary();
     setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
   } catch(e) {
     setStatus('error', 'エラー: ' + e.message);
-    console.error(e);
+    console.error('[loadCases]', e);
+    document.getElementById('caseList').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">⚠️</div>
+        <div class="empty-text">データ取得エラー<br><small style="font-size:10px;color:var(--danger)">${e.message}</small></div>
+      </div>`;
   }
 }
 
@@ -682,7 +742,7 @@ async function loadEvents(caseId) {
     const data = await graphGet(
       `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$filter=fields/CaseId eq '${caseId}'&$orderby=fields/EventDate asc`
     );
-    events = data.value.map(v => ({ id: v.id, ...v.fields }));
+    events = data.value.map(v => ({ _spId: v.id, ...v.fields }));
     renderTimeline();
   } catch(e) {
     document.getElementById('timelineContent').innerHTML = '<div class="loading-spinner">イベント取得エラー</div>';
@@ -817,6 +877,44 @@ function selectCase(caseId) {
 }
 
 // ============================================================
+// ステータスモーダル
+// ============================================================
+let selectedStatus = null;
+
+function openStatusModal() {
+  if (!currentCaseId) return;
+  selectedStatus = null;
+  // 現在のステータスをハイライト
+  const currentStatus = cases.find(c => c.CaseId === currentCaseId)?.Status;
+  document.querySelectorAll('.modal-status-btn').forEach(btn => {
+    btn.classList.remove('selected');
+    if (btn.textContent.replace('\n','').trim().includes(currentStatus)) btn.classList.add('selected');
+  });
+  document.getElementById('modalOkBtn').disabled = true;
+  document.getElementById('statusModal').classList.add('open');
+}
+
+function closeStatusModal(e) {
+  if (e && e.target !== document.getElementById('statusModal')) return;
+  document.getElementById('statusModal').classList.remove('open');
+  selectedStatus = null;
+}
+
+function selectStatusBtn(el, status) {
+  document.querySelectorAll('.modal-status-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedStatus = status;
+  document.getElementById('modalOkBtn').disabled = false;
+}
+
+async function confirmStatusUpdate() {
+  if (!selectedStatus) return;
+  document.getElementById('statusModal').classList.remove('open');
+  await updateCaseStatus(selectedStatus);
+  selectedStatus = null;
+}
+
+// ============================================================
 // アクション
 // ============================================================
 async function addComment() {
@@ -839,6 +937,9 @@ async function addComment() {
     });
     document.getElementById('commentText').value = '';
     await loadEvents(currentCaseId);
+    // タイムラインを最下部にスクロール
+    const tl = document.getElementById('timelineContent');
+    if (tl) tl.scrollTop = tl.scrollHeight;
   } catch(e) {
     alert('登録エラー: ' + e.message);
   }
@@ -850,27 +951,48 @@ async function addCommentWithStatus() {
 }
 
 function updateStatus() {
-  const newStatus = prompt('新しいステータスを入力:\n見積対応中 / 工場回答待ち / 見積回答済み（注文書待ち）\n注文書受領 / 受注入力済み / 納期調整中 / 出荷手配中 / 納品完了');
-  if (!newStatus) return;
-  updateCaseStatus(newStatus);
+  openStatusModal();
 }
 
 async function updateCaseStatus(newStatus) {
+  if (!newStatus || !currentCaseId) return;
+  const item = cases.find(c => c.CaseId === currentCaseId);
+  if (!item || !item._spId) {
+    alert('案件のSharePoint IDが見つかりません。案件リストを更新してください。');
+    return;
+  }
   try {
+    setStatus('loading', 'ステータスを更新中...');
     const sid = await getSiteId();
-    const item = cases.find(c => c.CaseId === currentCaseId);
-    if (!item) return;
-
-    // itemのIDが必要（案件リストのSharePoint内部ID）
-    // TODO: loadCases時にitem.idも保存する
-    alert('ステータス更新機能は実装中です: ' + newStatus);
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, {
+      Status: newStatus
+    });
+    // ローカルデータも即時更新
+    item.Status = newStatus;
+    // イベントにステータス変更履歴を追加
+    const now = new Date().toISOString();
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: currentCaseId,
+        EventType: 'ステータス変更',
+        EventDate: now,
+        RelationType: 'システム',
+        Summary: `ステータス → ${newStatus}`,
+      }
+    });
+    renderCaseList();
+    selectCase(currentCaseId);
+    updateSummary();
+    setStatus('success', `ステータスを「${newStatus}」に更新しました`);
   } catch(e) {
-    alert('更新エラー: ' + e.message);
+    setStatus('error', '更新エラー: ' + e.message);
+    alert('ステータス更新エラー: ' + e.message);
   }
 }
 
 function closeCase() {
-  if (confirm('この案件を完了にしますか？')) {
+  if (confirm('この案件を「納品完了」にしますか？')) {
     updateCaseStatus('納品完了');
   }
 }
