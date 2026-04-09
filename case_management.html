@@ -200,6 +200,17 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .view-value-strong { font-size: 14px; font-weight: 700; background: #fff; }
 .view-value-box { background: var(--surface2); padding: 8px 10px; line-height: 1.6; }
 .view-value-review { background: #FFF8E1; border-color: #F0D88A; color: #5C4A00; padding: 8px 10px; line-height: 1.6; }
+/* 案件管理：PDFタブ行 */
+.pdf-tabs { display: flex; gap: 2px; padding: 6px 10px 0 10px; background: var(--surface2); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
+.pdf-tabs::-webkit-scrollbar { height: 6px; }
+.pdf-tabs::-webkit-scrollbar-thumb { background: #D4D2CC; border-radius: 3px; }
+.pdf-tab { flex-shrink: 0; padding: 6px 12px; font-size: 11px; color: var(--text-muted); background: #F1EFE8; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px; transition: background 0.12s; }
+.pdf-tab:hover { background: #E6F1FB; color: #185FA5; }
+.pdf-tab.active { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--accent); border-bottom: 2px solid var(--surface); position: relative; z-index: 2; }
+.pdf-tab-icon { font-size: 12px; }
+.pdf-tab-date { font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.pdf-tab.active .pdf-tab-date { color: var(--accent); }
+.pdf-tabs-empty { padding: 8px 12px; font-size: 11px; color: var(--text-muted); }
 
 /* 右：詳細パネル */
 .detail-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -1110,6 +1121,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 
           <!-- PDFビューア -->
           <div class="pdf-panel">
+            <!-- PDFタブ行（案件に紐づくイベントのPDFを新しい順に並べる） -->
+            <div class="pdf-tabs" id="pdfTabs">
+              <div class="pdf-tabs-empty">案件を選択するとPDFタブが表示されます</div>
+            </div>
             <div class="pdf-toolbar">
               <span class="pdf-filename" id="pdfFilename">PDFを選択してください</span>
               <button class="btn" onclick="openPdfNewTab()">別タブで開く</button>
@@ -1349,12 +1364,18 @@ async function loadEvents(caseId) {
     const allEvents = data.value.map(v => ({ _spId: v.id, ...v.fields }));
     // 内部名 CaseId で統一
     events = allEvents.filter(e => String(e.CaseId || '') === String(caseId));
-    // 日時昇順ソート
-    events.sort((a, b) => new Date(b.EventDate || 0) - new Date(a.EventDate || 0)); // 新しい順
+    // 日時降順ソート（新しい順）
+    events.sort((a, b) => new Date(b.EventDate || 0) - new Date(a.EventDate || 0));
     renderTimeline();
+    renderPdfTabs();
+    // 最新のPDFを自動で開く
+    const firstPdfIdx = events.findIndex(ev => ev.AttachedPDFPath);
+    if (firstPdfIdx >= 0) selectTimelinePdf(firstPdfIdx);
   } catch(e) {
     document.getElementById('timelineContent').innerHTML =
       `<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><div class="empty-text">\u30a4\u30d9\u30f3\u30c8\u53d6\u5f97\u30a8\u30e9\u30fc<br><small style="color:var(--danger);font-size:10px">${e.message}</small></div></div>`;
+    const tabs = document.getElementById('pdfTabs');
+    if (tabs) tabs.innerHTML = '<div class="pdf-tabs-empty">イベント取得エラー</div>';
     console.error('[loadEvents]', e);
   }
 }
@@ -2717,14 +2738,51 @@ function loadPdf(url, name) {
 function selectTimelinePdf(idx) {
   const ev = events[idx];
   if (!ev || !ev.AttachedPDFPath) return;
-  // アクティブ表示
+  // タイムライン側のアクティブ表示
   document.querySelectorAll('#timelineContent .tl-item').forEach(el => el.classList.remove('tl-active'));
   const el = document.querySelector(`#timelineContent .tl-item[data-tl-idx="${idx}"]`);
   if (el) el.classList.add('tl-active');
-  // ファイル名はSummaryより、URLの末尾ファイル名が分かりやすい
+  // PDFタブ側のアクティブ表示
+  document.querySelectorAll('#pdfTabs .pdf-tab').forEach(t => t.classList.remove('active'));
+  const tab = document.querySelector(`#pdfTabs .pdf-tab[data-tab-idx="${idx}"]`);
+  if (tab) {
+    tab.classList.add('active');
+    tab.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  }
+  // ファイル名
   const fileName = (ev.AttachedPDFPath.split('/').pop() || '').split('?')[0] || 'FAX';
   const decoded = decodeURIComponent(fileName);
   loadPdf(ev.AttachedPDFPath, decoded);
+}
+
+// 案件管理タブ：PDFタブ行を描画（AttachedPDFPathを持つeventsを新しい順）
+function renderPdfTabs() {
+  const tabs = document.getElementById('pdfTabs');
+  if (!tabs) return;
+  const pdfEvents = events
+    .map((ev, i) => ({ ev, idx: i }))
+    .filter(x => x.ev.AttachedPDFPath);
+  if (!pdfEvents.length) {
+    tabs.innerHTML = '<div class="pdf-tabs-empty">この案件にはPDFが紐づいていません</div>';
+    return;
+  }
+  // events自体が新しい順ソート済みなので、そのままの順序でOK
+  tabs.innerHTML = pdfEvents.map(({ ev, idx }) => {
+    const iconMap = {
+      '受信': '📥',
+      '送信': '📤',
+    };
+    const et = ev.EventType || '';
+    const icon = et.includes('受信') ? '📥' : et.includes('送信') ? '📤' : '📄';
+    const label = et.replace(/（.*?）/g, '') || 'FAX';
+    const date = formatDate(ev.EventDate);
+    return `
+      <div class="pdf-tab" data-tab-idx="${idx}" onclick="selectTimelinePdf(${idx})" title="${escapeHtml(ev.Summary || '')}">
+        <span class="pdf-tab-icon">${icon}</span>
+        <span>${escapeHtml(label)}</span>
+        <span class="pdf-tab-date">${date}</span>
+      </div>`;
+  }).join('');
 }
 
 function openPdfNewTab() {
