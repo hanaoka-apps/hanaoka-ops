@@ -171,6 +171,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .badge-purple { background: #EEEDFE; color: #534AB7; }
 .case-note { font-size: 11px; color: var(--text-muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .case-last-action { font-size: 11px; color: var(--accent); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+/* Phase2: AIが要確認マーク付けたFAX */
+.case-item.needs-review { border-left: 3px solid #F5B700; background: #FFFBEE; }
+.case-item.needs-review:hover { background: #FFF6D6; }
+.case-item.needs-review.active { background: #FFF1C2; border-left: 3px solid #E0A300; }
+.case-review-hint { font-size: 11px; color: #8A6600; margin-top: 3px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-review-mark { display: inline-block; margin-left: 6px; color: #E0A300; font-size: 11px; }
 
 /* 右：詳細パネル */
 .detail-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -737,6 +743,11 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
             </div>
             <!-- サマリー -->
             <div style="background:var(--surface2);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;line-height:1.6;" id="triageSummary">-</div>
+            <!-- 要確認ポイント（ReviewFlag=true のときだけ表示） -->
+            <div id="triageReviewBox" style="display:none;background:#FFF8E1;border-left:3px solid #F5B700;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;line-height:1.6;">
+              <div style="font-weight:700;color:#B38600;margin-bottom:4px;">⚠ 要確認ポイント（AI）</div>
+              <div id="triageReviewReason" style="white-space:pre-wrap;color:#5C4A00;">-</div>
+            </div>
             <!-- 仕訳アクション -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
               <button class="btn btn-primary" onclick="triageAs('案件管理','新規')" style="font-size:11px;">📋 新規案件として登録</button>
@@ -1342,12 +1353,13 @@ function renderTimeline() {
           </div>
           <div class="tl-body">
             <div class="tl-header">
-              <span class="tl-type ${typeClass}">${ev.EventType || '-'}</span>
+              <span class="tl-type ${typeClass}">${escapeHtml(ev.EventType || '-')}</span>
+              ${ev.ReviewFlag ? `<span class="tl-review-mark" title="${escapeHtml(ev.ReviewReason || '要確認')}">⚠</span>` : ''}
               <span class="tl-date">${formatDate(ev.EventDate)}</span>
             </div>
-            <div class="tl-content">${ev.Summary || '-'}</div>
-            ${ev.RelationName ? `<div class="tl-sub">${ev.RelationName}</div>` : ''}
-            ${ev.AttachedPDFPath ? `<div class="tl-attachment" onclick="loadPdf('${ev.AttachedPDFPath}', '${ev.Summary || 'FAX'}')">📄 PDF を表示</div>` : ''}
+            <div class="tl-content">${escapeHtml(ev.Summary || '-')}</div>
+            ${ev.RelationName ? `<div class="tl-sub">${escapeHtml(ev.RelationName)}</div>` : ''}
+            ${ev.AttachedPDFPath ? `<div class="tl-attachment" onclick="loadPdf('${escapeHtml(ev.AttachedPDFPath)}', '${escapeHtml(ev.Summary || 'FAX')}')">📄 PDF を表示</div>` : ''}
           </div>
         </div>`;
     }).join('');
@@ -1753,16 +1765,26 @@ function renderTriageList() {
   }
   document.getElementById('triageList').innerHTML = triageItems.map(e => {
     const isActive = e._spId === currentTriageId ? 'active' : '';
+    const needsReview = !!e.ReviewFlag;
+    const reviewClass = needsReview ? 'needs-review' : '';
+    const dotClass = needsReview ? 'urg-high' : 'urg-mid';
+    const reviewBadge = needsReview
+      ? '<span class="badge badge-amber" style="margin-left:6px;">⚠要確認</span>'
+      : '';
+    const reasonHint = (needsReview && e.ReviewReason)
+      ? `<div class="case-review-hint">💬 ${escapeHtml(e.ReviewReason).slice(0, 60)}${e.ReviewReason.length > 60 ? '…' : ''}</div>`
+      : '';
     return `
-      <div class="case-item ${isActive}" onclick="selectTriage('${e._spId}')">
-        <div class="urgency-dot urg-high"></div>
+      <div class="case-item ${isActive} ${reviewClass}" onclick="selectTriage('${e._spId}')">
+        <div class="urgency-dot ${dotClass}"></div>
         <div class="case-body">
           <div class="case-top">
-            <span class="case-id-label">${e.EventType || 'FAX受信'}</span>
+            <span class="case-id-label">${escapeHtml(e.EventType || 'FAX受信')}${reviewBadge}</span>
             <span class="case-deadline dl-ok">${formatDate(e.EventDate)}</span>
           </div>
-          <div class="case-company">${e.RelationName || '-'}</div>
-          <div class="case-note">${e.Summary || '-'}</div>
+          <div class="case-company">${escapeHtml(e.RelationName || '-')}</div>
+          <div class="case-note">${escapeHtml(e.Summary || '-')}</div>
+          ${reasonHint}
         </div>
       </div>`;
   }).join('');
@@ -1788,7 +1810,16 @@ function selectTriage(spId) {
   const conf = e.AI信頼度 || e.AIConfidence || '';
   const confMap = { '高': 'badge-green', '中': 'badge-amber', '低': 'badge-red' };
   document.getElementById('triageAiBadge').innerHTML = conf
-    ? `<span class="badge ${confMap[conf] || 'badge-gray'}">AI信頼度：${conf}</span>` : '';
+    ? `<span class="badge ${confMap[conf] || 'badge-gray'}">AI信頼度：${escapeHtml(conf)}</span>` : '';
+
+  // 要確認ポイント（ReviewFlag=true のときだけ表示）
+  const reviewBox = document.getElementById('triageReviewBox');
+  if (e.ReviewFlag && e.ReviewReason) {
+    reviewBox.style.display = 'block';
+    document.getElementById('triageReviewReason').textContent = e.ReviewReason;
+  } else {
+    reviewBox.style.display = 'none';
+  }
 
   // PDF表示（1行テキスト型列）
   const pdfPath = e.AttachedPDFPath || '';
@@ -2427,6 +2458,13 @@ function getEventTypeClass(type) {
   if (type.includes('仕入先')) return 'type-supplier';
   if (type.includes('ステータス')) return 'type-system';
   return 'type-comment';
+}
+
+// HTMLエスケープ: innerHTML に入れる前に必ず通す
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 // ============================================================
