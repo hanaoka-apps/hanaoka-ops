@@ -242,10 +242,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 
 /* タイムライン */
 .timeline-panel {
-  width: 280px; min-width: 280px; border-right: 1px solid var(--border);
+  width: 340px; min-width: 300px; border-right: 1px solid var(--border);
   display: flex; flex-direction: column; background: var(--surface);
 }
-.timeline-scroll { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.timeline-scroll { flex: 1; overflow-y: auto; padding: 12px 16px; }
 .tl-section-label {
   font-size: 10px; color: var(--text-muted); text-transform: uppercase;
   letter-spacing: 0.05em; margin-bottom: 10px; font-weight: 500;
@@ -262,7 +262,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .tl-dot-comment { background: #888780; }
 .tl-dot-system { background: #7F77DD; }
 .tl-vline { width: 1px; background: var(--border); flex: 1; margin-top: 3px; }
-.tl-body { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+.tl-body { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
 .tl-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .tl-type { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
 .type-fax-in { background: #E6F1FB; color: #185FA5; }
@@ -1001,6 +1001,15 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
         <div class="filter-btn" onclick="setFilter('ext', this)">⚪ 外部依頼中</div>
         <div class="filter-btn" onclick="setFilter('escalated', this)">⏰ 催促</div>
       </div>
+      <div style="display:flex;align-items:center;gap:6px;padding:4px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">
+        <span>並替:</span>
+        <select id="caseSortSelect" onchange="renderCaseList()" style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text);outline:none">
+          <option value="status">ステータス優先</option>
+          <option value="assignee">担当者別</option>
+          <option value="company">得意先名順</option>
+          <option value="date">期限順</option>
+        </select>
+      </div>
       <div class="case-list" id="caseList">
         <div class="loading-spinner">読み込み中...</div>
       </div>
@@ -1398,19 +1407,40 @@ function renderCaseList() {
     return true;
   });
 
-  // ソート：赤→オレンジ→黄→外部→その他
-  const priority = (s, na) => {
+  // ソート
+  const sortMode = document.getElementById('caseSortSelect')?.value || 'status';
+  const statusPriority = (s, na) => {
     if (na) return 1;
     if (s === '未対応') return 0;
     if (s === '業セ対応中') return 2;
     if (EXT_STATUSES.includes(s)) return 3;
     return 4;
   };
-  filtered.sort((a, b) => {
-    const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
-    const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
-    return priority(a.Status, na_a) - priority(b.Status, na_b);
-  });
+  if (sortMode === 'assignee') {
+    filtered.sort((a, b) => {
+      const aa = (a.AssignedTo?.LookupValue || a.AssignedTo || 'zzz').toString();
+      const ba = (b.AssignedTo?.LookupValue || b.AssignedTo || 'zzz').toString();
+      if (aa !== ba) return aa.localeCompare(ba, 'ja');
+      const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
+      const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
+      return statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b);
+    });
+  } else if (sortMode === 'company') {
+    filtered.sort((a, b) => (a.CompanyName || '').localeCompare(b.CompanyName || '', 'ja'));
+  } else if (sortMode === 'date') {
+    filtered.sort((a, b) => {
+      const da = a.DueDate || '9999';
+      const db = b.DueDate || '9999';
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+  } else {
+    // デフォルト: ステータス優先
+    filtered.sort((a, b) => {
+      const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
+      const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
+      return statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b);
+    });
+  }
 
   document.getElementById('caseCount').textContent = filtered.length + '件';
 
@@ -1426,6 +1456,8 @@ function renderCaseList() {
     const statusBadge = getStatusBadge(c.Status, na);
     const typeBadge = getTypeBadge(c.CaseType);
     const lastAction = c.LastAction ? `<div class="case-last-action">└ ${c.LastAction}</div>` : '';
+    const assignee = c.AssignedTo?.LookupValue || c.AssignedTo || '';
+    const assigneeTag = assignee ? `<span class="badge badge-purple">${escapeHtml(assignee)}</span>` : '';
     return `
       <div class="case-item ${c.CaseId === currentCaseId ? 'active' : ''}" onclick="selectCase('${c.CaseId}')">
         <div class="urgency-dot ${urgClass}"></div>
@@ -1439,6 +1471,7 @@ function renderCaseList() {
             ${typeBadge}
             ${statusBadge}
             ${c.UrgentFlag ? '<span class="badge badge-red">至急</span>' : ''}
+            ${assigneeTag}
           </div>
           ${lastAction}
         </div>
@@ -2738,6 +2771,30 @@ function onFaxTypeChange() {
   }
 }
 
+async function uploadPdfToSharePoint(file) {
+  // FAX_PDFStorage/Sent/ にPDFをアップロードし、SharePoint URLを返す
+  const sid = await getSiteId();
+  const driveId = await getFaxDriveId();
+  const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const safeName = `sent_${ts}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  const uploadPath = `/Sent/${safeName}`;
+
+  const token = await getToken();
+  const url = `https://graph.microsoft.com/v1.0/sites/${sid}/drives/${driveId}/root:${uploadPath}:/content`;
+  const resp = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': file.type || 'application/pdf',
+    },
+    body: file,
+  });
+  if (!resp.ok) throw new Error(`PDF upload failed: ${resp.status} ${resp.statusText}`);
+  const data = await resp.json();
+  // SharePoint Web URL を構築
+  return `https://hanaokacorp.sharepoint.com/sites/msteams_7aab51/FAX_PDFStorage/Sent/${safeName}`;
+}
+
 async function registerFax() {
   const type = document.getElementById('faxType').value;
   const memo = document.getElementById('faxMemo').value.trim();
@@ -2745,18 +2802,32 @@ async function registerFax() {
   if (!currentCaseId) return;
 
   try {
+    setStatus('loading', 'FAXを登録中...');
     const sid = await getSiteId();
     const now = new Date().toISOString();
-    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
-      fields: {
-        Title: 'EV-' + Date.now(),
-        CaseId: currentCaseId,
-        EventType: type,
-        EventDate: now,
-        RelationType: '得意先',
-        Summary: memo || type,
-      }
-    });
+
+    // PDFが選択されていればSharePointにアップロード
+    let attachedPdfPath = '';
+    const fileInput = document.getElementById('faxFileInput');
+    if (fileInput.files.length > 0) {
+      setStatus('loading', 'PDFをアップロード中...');
+      attachedPdfPath = await uploadPdfToSharePoint(fileInput.files[0]);
+    }
+
+    const fields = {
+      Title: 'EV-' + Date.now(),
+      CaseId: currentCaseId,
+      EventType: type,
+      EventDate: now,
+      RelationType: '得意先',
+      Summary: memo || type,
+    };
+    if (attachedPdfPath) {
+      fields.AttachedPDFPath = attachedPdfPath;
+    }
+
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields });
+
     // LastAction更新
     const item = cases.find(c => c.CaseId === currentCaseId);
     if (item && item._spId) {
@@ -2780,6 +2851,7 @@ async function registerFax() {
     setStatus('success', `「${type}」を登録しました`);
   } catch(e) {
     alert('登録エラー: ' + e.message);
+    setStatus('error', '登録に失敗しました');
   }
 }
 
