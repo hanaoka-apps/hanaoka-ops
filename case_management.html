@@ -1602,8 +1602,12 @@ async function addComment() {
 // ============================================================
 let companyMaster = []; // 得意先マスタキャッシュ
 let regAutoStatus = '';
+// 1次仕訳から新規案件登録モーダルを開いた場合の元FAXイベントID
+// 登録「成功後」にだけ SortKubun='案件管理' を書き戻すため、ここに退避しておく。
+// モーダルを閉じただけなら triage の未仕訳一覧から FAX が消えないようにするのが狙い。
+let regSourceTriageId = null;
 
-async function openRegModal() {
+async function openRegModal(sourceTriageId) {
   // フォームリセット
   ['regTitle','regCompanyName','regCompanyCode','regOrderNumber','regNotes'].forEach(id => {
     document.getElementById(id).value = '';
@@ -1624,6 +1628,36 @@ async function openRegModal() {
   document.getElementById('regSubmitBtn').disabled = false;
   regAutoStatus = '';
 
+  // 1次仕訳から呼ばれた場合はAI抽出情報をプリフィル
+  regSourceTriageId = sourceTriageId || null;
+  if (regSourceTriageId) {
+    const src = triageItems.find(x => x._spId === regSourceTriageId);
+    if (src) {
+      // 得意先名 ← RelationName
+      if (src.RelationName) {
+        document.getElementById('regCompanyName').value = src.RelationName;
+        // マスタからコードを引ければセット
+        const hit = companyMaster.find(c => c.name === src.RelationName);
+        if (hit) document.getElementById('regCompanyCode').value = hit.code || '';
+      }
+      // メモ/備考 ← Summary
+      if (src.Summary) {
+        document.getElementById('regNotes').value = src.Summary;
+      }
+      // FAX受信由来なのでエントリーポイントを「FAX」に
+      const epSel = document.getElementById('regEntryPoint');
+      if (epSel) {
+        const hasFaxOpt = Array.from(epSel.options).some(o => o.value === 'FAX');
+        if (hasFaxOpt) {
+          epSel.value = 'FAX';
+          try { onEntryPointChange(); } catch(_) {}
+        }
+      }
+      // 案件名を仮生成
+      try { autoGenTitle(); } catch(_) {}
+    }
+  }
+
   document.getElementById('regModal').classList.add('open');
 
   // 得意先マスタ読み込み（未ロード時のみ）
@@ -1633,6 +1667,8 @@ async function openRegModal() {
 function closeRegModal() {
   document.getElementById('regModal').classList.remove('open');
   document.getElementById('companyList').style.display = 'none';
+  // 閉じただけでは triage側は更新しない（誤って閉じてもFAXが未仕訳から消えないように）
+  regSourceTriageId = null;
 }
 
 // 案件名自動生成
@@ -1824,10 +1860,40 @@ async function submitNewCase() {
       }
     });
 
+    // 1次仕訳から呼び出された場合、元FAXイベントを「案件管理」に確定させる
+    // （モーダルを閉じただけのキャンセル時には触らない＝未仕訳一覧に残る）
+    const sourceId = regSourceTriageId;
+    if (sourceId) {
+      try {
+        await graphPatch(
+          `/sites/${sid}/lists/${SP.eventListId}/items/${sourceId}/fields`,
+          { SortKubun: '案件管理', CaseId: caseId }
+        );
+        // triage のメモリ側からも除外
+        triageItems = triageItems.filter(x => x._spId !== sourceId);
+        if (currentTriageId === sourceId) {
+          currentTriageId = null;
+          const detail = document.getElementById('triageDetail');
+          const listMode = document.getElementById('triageListMode');
+          if (detail) detail.style.display = 'none';
+          if (listMode) listMode.style.display = 'flex';
+          const triagePdfName = document.getElementById('triagePdfName');
+          if (triagePdfName) triagePdfName.textContent = 'FAXを選択するとPDFが表示されます';
+          const pdfArea = document.getElementById('triagePdfArea');
+          if (pdfArea) pdfArea.innerHTML = '<div class="pdf-empty" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">FAXを選択するとPDFが表示されます</div></div>';
+        }
+        try { renderTriageList(); } catch(_) {}
+      } catch(patchErr) {
+        console.warn('[submitNewCase] triage patch failed:', patchErr.message);
+      }
+    }
+
     // モーダルを閉じて案件リスト更新
     closeRegModal();
     setStatus('loading', '案件を登録しました。リストを更新中...');
     await loadCases();
+    // 1次仕訳側のイベントも再読込（案件管理タブと整合させるため）
+    try { await loadEvents(); } catch(_) {}
 
     // 新しく登録した案件を自動選択
     const newCase = cases.find(c => c.CaseId === caseId);
@@ -2256,9 +2322,11 @@ function triageAs(kubun, sub) {
     return;
   }
   if (kubun === '案件管理' && sub === '新規') {
-    // 新規登録モーダルを開いて仕訳処理
-    updateTriageKubun(kubun);
-    openRegModal();
+    // 新規登録モーダルを開く。
+    // SortKubunの更新は「登録成功後」に submitNewCase で行う。
+    // こうすればモーダルを誤って閉じてもFAXは未仕訳一覧に残る。
+    // AI抽出情報のプリフィルのため currentTriageId を渡す。
+    openRegModal(currentTriageId);
     return;
   }
   updateTriageKubun(kubun);
