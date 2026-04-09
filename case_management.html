@@ -676,8 +676,8 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
     </div>
   </div>
 
-  <!-- サマリーバー -->
-  <div class="summary-bar">
+  <!-- サマリーバー（案件管理タブのみ表示） -->
+  <div class="summary-bar" id="summaryBar">
     <div class="summary-card">
       <span class="summary-label">🔴 未対応</span>
       <span class="summary-value sv-danger" id="cnt-pending">-</span>
@@ -716,25 +716,30 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
     <!-- 1次仕訳パネル（2カラム：左=リスト+詳細スライド / 右=PDF大表示） -->
     <div id="triageView" style="display:flex;flex:1;overflow:hidden;min-height:0;">
 
-      <!-- 左カラム（固定幅：リスト上部 + 詳細スライド下部） -->
+      <!-- 左カラム（固定幅：一覧モード ⇔ 詳細モードを排他切替） -->
       <div style="width:360px;min-width:360px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--surface);overflow:hidden;">
 
-        <!-- リストヘッダー -->
-        <div class="panel-header" style="flex-shrink:0;">
-          <span class="panel-header-title">未仕訳FAX</span>
-          <span class="panel-count" id="triageCount">0件</span>
+        <!-- 一覧モード -->
+        <div id="triageListMode" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;">
+          <div class="panel-header" style="flex-shrink:0;">
+            <span class="panel-header-title">未仕訳FAX</span>
+            <span class="panel-count" id="triageCount">0件</span>
+          </div>
+          <div class="case-list" id="triageList" style="flex:1;overflow-y:auto;min-height:80px;">
+            <div class="loading-spinner">読み込み中...</div>
+          </div>
+          <div id="triageEmpty" style="padding:14px;text-align:center;color:var(--text-muted);font-size:11px;border-top:1px solid var(--border);">
+            FAXを選択すると詳細画面に切り替わります
+          </div>
         </div>
 
-        <!-- 未仕訳リスト（詳細展開時に縮む） -->
-        <div class="case-list" id="triageList" style="flex:1;overflow-y:auto;min-height:80px;">
-          <div class="loading-spinner">読み込み中...</div>
-        </div>
-
-        <!-- 詳細エリア（カード選択でスライド展開） -->
-        <div id="triageEmpty" style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px;flex-shrink:0;">
-          ↑ FAXを選択すると詳細が表示されます
-        </div>
-        <div id="triageDetail" style="display:none;flex-direction:column;flex-shrink:0;border-top:2px solid var(--accent);background:var(--surface);overflow-y:auto;max-height:55%;">
+        <!-- 詳細モード（FAX選択時に一覧と排他的に表示） -->
+        <div id="triageDetail" style="display:none;flex:1;flex-direction:column;background:var(--surface);overflow-y:auto;min-height:0;">
+          <!-- 戻るバー -->
+          <div style="position:sticky;top:0;z-index:15;background:var(--surface);border-bottom:1px solid var(--border);padding:8px 12px;display:flex;align-items:center;gap:8px;">
+            <button class="btn" onclick="backToTriageList()" style="font-size:12px;padding:4px 10px;">← 一覧に戻る</button>
+            <span style="font-size:11px;color:var(--text-muted);" id="triageBackHint"></span>
+          </div>
           <!-- 編集モード時のsticky保存バー -->
           <div class="triage-save-bar" id="triageSaveBar">
             <div class="left">✏ 編集モード — 変更は保存するまで反映されません</div>
@@ -1841,9 +1846,14 @@ function selectTriage(spId) {
   const e = triageItems.find(x => x._spId === spId);
   if (!e) return;
 
-  document.getElementById('triageEmpty').style.display = 'none';
+  // 一覧モードを隠して詳細モードへ
+  document.getElementById('triageListMode').style.display = 'none';
   const detail = document.getElementById('triageDetail');
   detail.style.display = 'flex';
+  // 戻るヒントに件数表示
+  const idx = triageItems.findIndex(x => x._spId === spId);
+  document.getElementById('triageBackHint').textContent =
+    `${idx + 1} / ${triageItems.length} 件目`;
 
   document.getElementById('triageEventId').textContent = e.Title || e.EventId || '-';
   document.getElementById('triageCompany').textContent = e.RelationName || '-';
@@ -1893,6 +1903,21 @@ const EDITABLE_EVENT_TYPES = [
 ];
 const EDITABLE_RELATION_TYPES = ['得意先', '仕入先', 'その他'];
 const EDITABLE_CONFIDENCES = ['高', '中', '低'];
+
+function backToTriageList() {
+  if (triageEditingMode) {
+    if (!confirm('編集中の変更が破棄されます。一覧に戻りますか？')) return;
+    exitEditMode();
+  }
+  currentTriageId = null;
+  document.getElementById('triageDetail').style.display = 'none';
+  document.getElementById('triageListMode').style.display = 'flex';
+  // PDF表示もリセット
+  document.getElementById('triagePdfName').textContent = 'FAXを選択するとPDFが表示されます';
+  const pdfArea = document.getElementById('triagePdfArea');
+  pdfArea.innerHTML = '<div class="pdf-empty" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">FAXを選択するとPDFが表示されます</div></div>';
+  renderTriageList();
+}
 
 function enterEditMode() {
   if (!currentTriageId) return;
@@ -2232,11 +2257,15 @@ async function updateTriageKubun(kubun, dept, caseId) {
     if (dept) fields.AssignedDept = dept;
     if (caseId) fields.CaseId = caseId;
     await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${e._spId}/fields`, fields);
-    // リストから除外して再表示
+    // リストから除外して一覧モードへ戻す
     triageItems = triageItems.filter(x => x._spId !== currentTriageId);
     currentTriageId = null;
     document.getElementById('triageDetail').style.display = 'none';
-    document.getElementById('triageEmpty').style.display = 'flex';
+    document.getElementById('triageListMode').style.display = 'flex';
+    // PDF表示をリセット
+    document.getElementById('triagePdfName').textContent = 'FAXを選択するとPDFが表示されます';
+    const pdfArea = document.getElementById('triagePdfArea');
+    pdfArea.innerHTML = '<div class="pdf-empty" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">FAXを選択するとPDFが表示されます</div></div>';
     renderTriageList();
     setStatus('success', `「${kubun}」に仕訳しました`);
   } catch(err) {
@@ -2560,16 +2589,19 @@ function switchMainTab(tab) {
   const faxMgmt = document.getElementById('faxMgmtView');
   const caseMgmt = document.getElementById('caseMgmtView');
   const mainEl = document.querySelector('.main');
+  const summaryBar = document.getElementById('summaryBar');
 
   if (tab === 'fax') {
     if (faxMgmt) faxMgmt.style.display = 'flex';
     if (caseMgmt) caseMgmt.style.display = 'none';
     if (mainEl) mainEl.style.display = 'none';
+    if (summaryBar) summaryBar.style.display = 'none';
     switchFaxSubTab('triage');
   } else {
     if (faxMgmt) faxMgmt.style.display = 'none';
     if (caseMgmt) caseMgmt.style.display = 'flex';
     if (mainEl) mainEl.style.display = 'flex';
+    if (summaryBar) summaryBar.style.display = '';
     switchCaseSubTab('all');
     // 案件データがまだなら読み込む
     if (!cases.length) loadCases();
