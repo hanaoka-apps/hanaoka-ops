@@ -800,6 +800,44 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
   </div>
 </div>
 
+<!-- 案件統合モーダル -->
+<div class="reg-modal-overlay" id="mergeModal" onclick="closeMergeModal()">
+  <div class="reg-modal" onclick="event.stopPropagation()" style="width:480px">
+    <div class="reg-modal-header">
+      <span class="reg-modal-title">🔗 既存案件に統合</span>
+      <button class="reg-modal-close" onclick="closeMergeModal()">✕</button>
+    </div>
+    <div class="reg-modal-body">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        この案件に紐づくイベント（FAX受信・コメント等）を、選択した既存案件にすべて移動します。<br>統合元の案件は削除されます。
+      </div>
+
+      <div style="margin-bottom:6px">
+        <div class="card-label" style="margin-bottom:4px">統合元（この案件）</div>
+        <div id="mergeSourceInfo" style="padding:8px 10px;background:var(--surface2);border-radius:6px;font-size:12px;border:1px solid var(--border)">-</div>
+      </div>
+
+      <div style="margin:12px 0 4px">
+        <div class="card-label" style="margin-bottom:4px">統合先（既存案件を検索）</div>
+        <input class="reg-input" id="mergeSearchInput" placeholder="得意先名・案件ID・案件名で検索..." oninput="searchMergeCases(this.value)" autocomplete="off" style="width:100%">
+      </div>
+
+      <div id="mergeSearchResults" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface);margin-bottom:12px">
+        <div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">検索してください</div>
+      </div>
+
+      <div id="mergeTargetInfo" style="display:none;padding:8px 10px;background:#EBF5EB;border:1px solid #B5D9B5;border-radius:6px;font-size:12px;margin-bottom:12px">
+        <span style="font-weight:600">統合先：</span><span id="mergeTargetLabel">-</span>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="closeMergeModal()" style="padding:6px 16px;font-size:12px">キャンセル</button>
+        <button class="btn btn-primary" id="mergeConfirmBtn" onclick="executeMerge()" disabled style="padding:6px 16px;font-size:12px">⚠ 統合する</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== ログイン画面 ===== -->
 <div id="loginScreen">
   <div class="login-logo">花</div>
@@ -1254,6 +1292,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
                   <div class="card-value" id="cardLastAction" style="color:var(--accent)">-</div>
                 </div>
               </details>
+              <!-- 案件統合ボタン -->
+              <div class="card-section" style="border-top:1px solid var(--border);padding-top:10px">
+                <button class="btn" onclick="openMergeModal()" style="width:100%;padding:6px;font-size:11px;color:var(--text-muted);border:1px dashed var(--border);background:none;cursor:pointer" title="この案件のイベントを既存の別案件に統合します">🔗 既存案件に統合</button>
+              </div>
             </div>
 
             <!-- 案件情報（編集モード） -->
@@ -1754,6 +1796,149 @@ function refreshCardView(c) {
   setCard('cardOrderNumber', c.OrderNumber);
   setCard('cardNotes', c.Notes);
   setCard('cardLastAction', c.LastAction);
+}
+
+// ============================================================
+// 案件統合
+// ============================================================
+let mergeTargetCaseId = null;
+
+function openMergeModal() {
+  if (!currentCaseId) return;
+  const c = cases.find(x => x.CaseId === currentCaseId);
+  if (!c) return;
+
+  mergeTargetCaseId = null;
+  document.getElementById('mergeSourceInfo').textContent = `${c.CaseId}  ${c.Title || c.CompanyName || '-'}`;
+  document.getElementById('mergeSearchInput').value = '';
+  document.getElementById('mergeSearchResults').innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">検索してください</div>';
+  document.getElementById('mergeTargetInfo').style.display = 'none';
+  document.getElementById('mergeConfirmBtn').disabled = true;
+  document.getElementById('mergeModal').classList.add('open');
+  setTimeout(() => document.getElementById('mergeSearchInput').focus(), 100);
+}
+
+function closeMergeModal() {
+  document.getElementById('mergeModal').classList.remove('open');
+  mergeTargetCaseId = null;
+}
+
+function searchMergeCases(query) {
+  const q = query.trim().toLowerCase();
+  const container = document.getElementById('mergeSearchResults');
+  if (!q) {
+    container.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">検索してください</div>';
+    return;
+  }
+
+  // 現在の案件を除外して検索
+  const results = cases.filter(c =>
+    c.CaseId !== currentCaseId &&
+    (
+      (c.CaseId || '').toLowerCase().includes(q) ||
+      (c.CompanyName || '').toLowerCase().includes(q) ||
+      (c.Title || '').toLowerCase().includes(q) ||
+      (c.CompanyCode || '').toLowerCase().includes(q)
+    )
+  ).slice(0, 20);
+
+  if (!results.length) {
+    container.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">該当する案件がありません</div>';
+    return;
+  }
+
+  container.innerHTML = results.map(c => {
+    const status = c.Status || '-';
+    const done = DONE_STATUSES.includes(status);
+    return `<div class="merge-case-item" onclick="selectMergeTarget('${c.CaseId}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px;transition:background 0.1s" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-weight:600;color:var(--accent)">${c.CaseId}</span>
+        <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${done?'#EBF5EB':'var(--surface2)'};color:${done?'var(--accent2)':'var(--text-muted)'}">${status}</span>
+      </div>
+      <div style="margin-top:2px;color:var(--text)">${c.Title || c.CompanyName || '-'}</div>
+      <div style="margin-top:1px;color:var(--text-muted);font-size:11px">${c.CompanyName || ''}</div>
+    </div>`;
+  }).join('');
+}
+
+function selectMergeTarget(caseId) {
+  const c = cases.find(x => x.CaseId === caseId);
+  if (!c) return;
+  mergeTargetCaseId = caseId;
+  document.getElementById('mergeTargetInfo').style.display = 'block';
+  document.getElementById('mergeTargetLabel').textContent = `${c.CaseId}  ${c.Title || c.CompanyName || '-'}`;
+  document.getElementById('mergeConfirmBtn').disabled = false;
+}
+
+async function executeMerge() {
+  if (!currentCaseId || !mergeTargetCaseId) return;
+  const sourceCase = cases.find(c => c.CaseId === currentCaseId);
+  const targetCase = cases.find(c => c.CaseId === mergeTargetCaseId);
+  if (!sourceCase || !targetCase) return;
+
+  const msg = `案件を統合します。\n\n` +
+    `統合元: ${sourceCase.CaseId} ${sourceCase.Title || ''}\n` +
+    `統合先: ${targetCase.CaseId} ${targetCase.Title || ''}\n\n` +
+    `統合元のイベントがすべて統合先に移動し、統合元は削除されます。\nよろしいですか？`;
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById('mergeConfirmBtn');
+  btn.disabled = true;
+  btn.textContent = '処理中...';
+
+  try {
+    const sid = await getSiteId();
+
+    // 1. 統合元に紐づくイベントを全取得
+    const eventsData = await graphGet(
+      `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$filter=fields/CaseId eq '${currentCaseId}'&$top=500`
+    );
+    const events = eventsData.value || [];
+
+    // 2. 各イベントのCaseIdを統合先に書き換え
+    for (const ev of events) {
+      await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${ev.id}/fields`, {
+        CaseId: mergeTargetCaseId
+      });
+    }
+
+    // 3. 統合元の案件にタイムラインイベントを追加（履歴として）
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: mergeTargetCaseId,
+        EventType: '案件統合',
+        EventDate: new Date().toISOString(),
+        RelationType: '社内',
+        Summary: `${sourceCase.CaseId}（${sourceCase.Title || sourceCase.CompanyName || ''}）から統合 — ${events.length}件のイベントを移動`,
+      }
+    });
+
+    // 4. 統合元の案件を削除
+    const token = await getToken();
+    const delRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/lists/${SP.caseListId}/items/${sourceCase._spId}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!delRes.ok) throw new Error(`案件削除エラー: ${delRes.status}`);
+
+    // 5. ローカルデータを更新
+    cases = cases.filter(c => c.CaseId !== currentCaseId);
+
+    closeMergeModal();
+    alert(`統合完了: ${events.length}件のイベントを ${targetCase.CaseId} に移動しました。`);
+
+    // 統合先の案件を表示
+    currentCaseId = mergeTargetCaseId;
+    selectCase(mergeTargetCaseId);
+    renderCaseList();
+
+  } catch(e) {
+    alert('統合エラー: ' + e.message);
+    console.error(e);
+    btn.disabled = false;
+    btn.textContent = '⚠ 統合する';
+  }
 }
 
 // ============================================================
