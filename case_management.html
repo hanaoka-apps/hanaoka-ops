@@ -1044,7 +1044,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 
   <!-- FAX履歴ビュー -->
   <div id="faxHistoryWrapper" style="display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0;">
-    <div id="faxView" style="display:flex;flex:1;overflow:hidden;min-height:0;">
+    <div id="faxView" style="flex:1;overflow:hidden;min-height:0;">
       <div style="display:flex;flex:1;overflow:hidden;">
         <!-- 左：FAX対応リスト -->
         <div class="case-panel">
@@ -1079,7 +1079,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
           </div>
         </div>
         <!-- 右：FAX対応詳細 -->
-        <div class="detail-panel">
+        <div class="detail-panel" style="display:flex">
           <div class="empty-state" id="faxViewEmpty">
             <div class="empty-icon">📠</div>
             <div class="empty-text">FAXを選択してください</div>
@@ -1136,9 +1136,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
   <!-- 案件管理ビュー -->
   <div id="caseMgmtView" style="display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0;">
     <!-- 案件管理サブタブ（一覧モードのみ表示） -->
-    <div id="caseSubTabs" style="display:flex;gap:4px;padding:6px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">
+    <div id="caseSubTabs" style="display:flex;gap:4px;padding:6px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap">
       <div class="filter-btn active" id="subtab-all" onclick="switchCaseSubTab('all')">全案件</div>
-      <div class="filter-btn" id="subtab-factory" onclick="switchCaseSubTab('factory')">工場ビュー</div>
+      <div class="filter-btn" id="subtab-factory" onclick="switchCaseSubTab('factory')">工場（全体）</div>
+      <div class="filter-btn" id="subtab-factory1" onclick="switchCaseSubTab('factory1')">第一工場</div>
+      <div class="filter-btn" id="subtab-factory2" onclick="switchCaseSubTab('factory2')">第二工場</div>
+      <div class="filter-btn" id="subtab-factory3" onclick="switchCaseSubTab('factory3')">第三工場</div>
       <div class="filter-btn" id="subtab-done" onclick="switchCaseSubTab('done')">完了済み</div>
     </div>
 
@@ -1239,6 +1242,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
                   <input type="date" class="compact-date-input" id="detailDueDateInput" onchange="quickUpdateDueDate(this.value)">
                 </div>
               </div>
+            </div>
+
+            <!-- 工場回答状況（工場ステータス時のみ表示） -->
+            <div id="factoryProgressPanel" class="card-section" style="display:none;background:var(--surface2);border-radius:6px;padding:8px 12px;margin:0 12px">
+              <div class="card-label" style="margin-bottom:6px">🏭 工場回答状況</div>
+              <div id="factoryProgressList"></div>
             </div>
 
             <!-- 案件情報（閲覧モード） -->
@@ -1453,7 +1462,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 // ============================================================
 // ステータス定数
 // ============================================================
-const STATUS_ENUM = ['業務セ', '営業', '受注入力担当', '第一工場', '第二工場', '第三工場', '仕入先', '得意先'];
+const STATUS_ENUM = ['業務セ', '営業', '受注入力担当', '工場', '仕入先', '得意先'];
 
 // 完了系ステータス
 const DONE_STATUSES = ['完了'];
@@ -1462,7 +1471,15 @@ const EXT_STATUSES = ['仕入先', '得意先'];
 // 業務セ対応中
 const WIP_STATUSES = ['業務セ'];
 // 工場ステータス
-const FACTORY_STATUSES = ['第一工場', '第二工場', '第三工場'];
+const FACTORY_STATUSES = ['工場'];
+const FACTORY_OPTIONS = ['第一工場', '第二工場', '第三工場'];
+
+// SharePoint Choice列（配列）/ テキスト列（カンマ区切り）を統一的に配列化
+function toArray(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  return String(val).split(',').filter(Boolean);
+}
 // 営業ステータス
 const SALES_STATUSES = ['営業'];
 // 催促チェックのデフォルト日数
@@ -1685,7 +1702,134 @@ function populateAssigneeSelects() {
 // インライン更新：ステータス
 async function quickUpdateStatus(newStatus) {
   if (!newStatus || !currentCaseId) return;
-  await updateCaseStatus(newStatus);
+  if (newStatus === '工場') {
+    showFactoryPicker();
+    return;
+  }
+  // 工場以外のステータスに変更 → 工場関連フィールドをクリア
+  await updateCaseStatus(newStatus, { clearFactory: true });
+}
+
+// 工場選択ピッカー
+function showFactoryPicker() {
+  // 既存のピッカーを消す
+  dismissFactoryPicker();
+  const c = cases.find(x => x.CaseId === currentCaseId);
+  const existingTargets = toArray(c?.FactoryTargets);
+
+  const picker = document.createElement('div');
+  picker.id = 'factoryPicker';
+  picker.style.cssText = 'padding:10px 14px;background:#FFF8E1;border-bottom:1px solid #E8DDA0;font-size:12px;flex-shrink:0';
+  picker.innerHTML = `
+    <div style="font-weight:600;margin-bottom:6px">🏭 確認先の工場を選択（複数可）</div>
+    <div style="display:flex;gap:12px;margin-bottom:8px">
+      ${FACTORY_OPTIONS.map(f => `
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" class="factory-check" value="${f}" ${existingTargets.includes(f) ? 'checked' : ''}>
+          <span>${f}</span>
+        </label>
+      `).join('')}
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-primary" style="padding:4px 14px;font-size:11px" onclick="confirmFactoryPicker()">確定</button>
+      <button class="btn" style="padding:4px 14px;font-size:11px" onclick="dismissFactoryPicker()">キャンセル</button>
+    </div>
+  `;
+
+  // カードパネルの操作コントロールの直後に挿入
+  const cardPanel = document.getElementById('caseCardPanel');
+  if (cardPanel) {
+    const controlSection = cardPanel.querySelector('.card-section');
+    if (controlSection) controlSection.after(picker);
+  }
+}
+
+function dismissFactoryPicker() {
+  const p = document.getElementById('factoryPicker');
+  if (p) p.remove();
+  // ドロップダウンを元に戻す
+  const c = cases.find(x => x.CaseId === currentCaseId);
+  const sel = document.getElementById('detailStatusSelect');
+  if (c && sel) sel.value = c.Status;
+}
+
+async function confirmFactoryPicker() {
+  const checks = document.querySelectorAll('#factoryPicker .factory-check:checked');
+  const targets = Array.from(checks).map(c => c.value);
+  if (!targets.length) {
+    alert('工場を1つ以上選択してください');
+    return;
+  }
+  dismissFactoryPicker();
+  await updateCaseStatus('工場', { factoryTargets: targets });
+}
+
+// 工場回答を記録
+async function markFactoryResponded(factoryName) {
+  if (!currentCaseId) return;
+  const item = cases.find(c => c.CaseId === currentCaseId);
+  if (!item || !item._spId) return;
+
+  const responded = toArray(item.FactoryResponded);
+  if (responded.includes(factoryName)) return; // 既に回答済み
+  responded.push(factoryName);
+
+  try {
+    const sid = await getSiteId();
+    const newVal = responded.join(',');
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, {
+      FactoryResponded: newVal
+    });
+    item.FactoryResponded = newVal;
+
+    // タイムラインに記録
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
+      fields: {
+        Title: 'EV-' + Date.now(),
+        CaseId: currentCaseId,
+        EventType: '工場回答',
+        EventDate: new Date().toISOString(),
+        RelationType: '社内',
+        Summary: factoryName + ' 回答済み',
+      }
+    });
+
+    // 全工場が回答済みか確認
+    const targets = toArray(item.FactoryTargets);
+    const allDone = targets.every(t => responded.includes(t));
+    if (allDone) {
+      showFactoryAllDoneSuggestion();
+    }
+
+    selectCase(currentCaseId);
+    await loadEvents(currentCaseId);
+    setStatus('success', factoryName + ' の回答を記録しました');
+  } catch(e) {
+    setStatus('error', '更新エラー: ' + e.message);
+  }
+}
+
+// 全工場回答済み → 業務セ戻し提案
+function showFactoryAllDoneSuggestion() {
+  const bar = document.createElement('div');
+  bar.id = 'factoryDoneSuggest';
+  bar.style.cssText = 'padding:8px 14px;background:#EBF5EB;border-bottom:1px solid #B5D9B5;display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0';
+  bar.innerHTML = `✅ 全工場から回答が揃いました！ <button class="btn btn-primary" style="padding:4px 12px;font-size:11px" onclick="acceptFactoryDone()">業務セに戻す</button> <button class="btn" style="padding:3px 8px;font-size:11px;margin-left:auto" onclick="this.parentElement.remove()">✕</button>`;
+
+  const timeline = document.querySelector('.timeline-panel');
+  if (timeline) {
+    const old = document.getElementById('factoryDoneSuggest');
+    if (old) old.remove();
+    timeline.insertBefore(bar, timeline.firstChild);
+  }
+}
+
+async function acceptFactoryDone() {
+  const bar = document.getElementById('factoryDoneSuggest');
+  if (bar) bar.remove();
+  await updateCaseStatus('業務セ', { clearFactory: true });
+  const sel = document.getElementById('detailStatusSelect');
+  if (sel) sel.value = '業務セ';
 }
 
 // インライン更新：担当者
@@ -1796,6 +1940,40 @@ function refreshCardView(c) {
   setCard('cardOrderNumber', c.OrderNumber);
   setCard('cardNotes', c.Notes);
   setCard('cardLastAction', c.LastAction);
+
+  // 工場回答状況パネル
+  renderFactoryProgress(c);
+}
+
+function renderFactoryProgress(c) {
+  const panel = document.getElementById('factoryProgressPanel');
+  const list = document.getElementById('factoryProgressList');
+  if (!panel || !list) return;
+
+  if (c.Status !== '工場' || !c.FactoryTargets) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = 'block';
+  const targets = toArray(c.FactoryTargets);
+  const responded = toArray(c.FactoryResponded);
+
+  list.innerHTML = targets.map(f => {
+    const done = responded.includes(f);
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:12px">${done ? '✅' : '⏳'} ${f}</span>
+      ${done
+        ? '<span style="font-size:10px;color:var(--accent2);font-weight:600">回答済み</span>'
+        : `<button class="btn btn-primary" style="padding:2px 10px;font-size:10px" onclick="markFactoryResponded('${f}')">回答記録</button>`
+      }
+    </div>`;
+  }).join('');
+
+  // 全回答済みチェック
+  if (targets.length > 0 && targets.every(t => responded.includes(t))) {
+    showFactoryAllDoneSuggestion();
+  }
 }
 
 // ============================================================
@@ -2018,7 +2196,10 @@ function getFilteredCases() {
     }
     if (currentFilter === 'gyosei')     return c.Status === '業務セ' || c.Status === '受注入力担当';
     if (currentFilter === 'sales')      return c.Status === '営業';
-    if (currentFilter === 'factory')    return FACTORY_STATUSES.includes(c.Status);
+    if (currentFilter === 'factory')    return c.Status === '工場';
+    if (currentFilter === 'factory1')   return c.Status === '工場' && toArray(c.FactoryTargets).includes('第一工場');
+    if (currentFilter === 'factory2')   return c.Status === '工場' && toArray(c.FactoryTargets).includes('第二工場');
+    if (currentFilter === 'factory3')   return c.Status === '工場' && toArray(c.FactoryTargets).includes('第三工場');
     if (currentFilter === 'ext')        return EXT_STATUSES.includes(c.Status);
     if (currentFilter === 'escalated')  return c._escalated;
     if (currentFilter === 'done')       return DONE_STATUSES.includes(c.Status);
@@ -2032,7 +2213,7 @@ function getFilteredCases() {
     if (s === '業務セ') return 0;
     if (s === '受注入力担当') return 0.5;
     if (s === '営業') return 2;
-    if (FACTORY_STATUSES.includes(s)) return 2.5;
+    if (s === '工場') return 2.5;
     if (EXT_STATUSES.includes(s)) return 3;
     return 4;
   };
@@ -2096,7 +2277,7 @@ function renderCaseList() {
     const rows = filtered.map(c => {
       const na = c.NewArrival === true || c.NewArrival === 'Yes';
       const dot = getStatusDotHtml(c.Status, na);
-      const statusBadge = getStatusBadge(c.Status, na);
+      const statusBadge = getStatusBadge(c.Status, na, c);
       const assignee = c.AssignedTo?.LookupValue || c.AssignedTo || '';
       const deadlineText = formatDeadline(c.DueDate);
       const dlClass = getDeadlineClass(c.DueDate);
@@ -2180,7 +2361,7 @@ function updateSummary() {
   document.getElementById('cnt-sales').textContent =
     active.filter(c => c.Status === '営業').length;
   document.getElementById('cnt-factory').textContent =
-    active.filter(c => FACTORY_STATUSES.includes(c.Status)).length;
+    active.filter(c => c.Status === '工場').length;
   document.getElementById('cnt-ext').textContent =
     active.filter(c => EXT_STATUSES.includes(c.Status)).length;
   document.getElementById('cnt-new-arrival').textContent = naCount;
@@ -2270,7 +2451,7 @@ function selectCase(caseId) {
 // コメント種別→ステータス提案
 // ============================================================
 const STATUS_SUGGEST_MAP = {
-  '工場確認': { label: '工場', statuses: FACTORY_STATUSES, default: '第一工場' },
+  '工場確認': { label: '工場', statuses: FACTORY_STATUSES, default: '工場' },
   '営業連携': { label: '営業', statuses: SALES_STATUSES, default: '営業' },
 };
 
@@ -3413,7 +3594,7 @@ async function confirmStatusUpdate() {
 
 function updateStatus() { openStatusModal(); }
 
-async function updateCaseStatus(newStatus) {
+async function updateCaseStatus(newStatus, opts = {}) {
   if (!newStatus || !currentCaseId) return;
   const item = cases.find(c => c.CaseId === currentCaseId);
   if (!item || !item._spId) {
@@ -3423,10 +3604,27 @@ async function updateCaseStatus(newStatus) {
   try {
     setStatus('loading', 'ステータスを更新中...');
     const sid = await getSiteId();
-    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, {
-      Status: newStatus
-    });
+    const fields = { Status: newStatus };
+    // 工場ステータスの場合は対象工場をセット
+    if (opts.factoryTargets) {
+      fields.FactoryTargets = opts.factoryTargets; // 配列で送る（SharePoint Choice列）
+      fields.FactoryResponded = '';
+      item.FactoryTargets = opts.factoryTargets;
+      item.FactoryResponded = '';
+    }
+    // 工場以外に変更する場合はクリア
+    if (opts.clearFactory) {
+      fields.FactoryTargets = [];
+      fields.FactoryResponded = '';
+      item.FactoryTargets = [];
+      item.FactoryResponded = '';
+    }
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, fields);
     item.Status = newStatus;
+
+    let summary = 'ステータス → ' + newStatus;
+    if (opts.factoryTargets) summary += '（' + opts.factoryTargets.join('・') + '）';
+
     const now = new Date().toISOString();
     await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
       fields: {
@@ -3435,7 +3633,7 @@ async function updateCaseStatus(newStatus) {
         EventType: 'ステータス変更',
         EventDate: now,
         RelationType: '社内',
-        Summary: 'ステータス → ' + newStatus,
+        Summary: summary,
       }
     });
     renderCaseList();
@@ -3697,7 +3895,7 @@ function switchMainTab(tab) {
 }
 
 function switchCaseSubTab(sub) {
-  ['all','factory','done'].forEach(s => {
+  ['all','factory','factory1','factory2','factory3','done'].forEach(s => {
     const el = document.getElementById('subtab-' + s);
     if (el) el.classList.toggle('active', s === sub);
   });
@@ -3797,18 +3995,26 @@ function getUrgencyClass(status, newArrival) {
   if (status === '業務セ') return 'urg-high';
   if (status === '受注入力担当') return 'urg-high';
   if (status === '営業') return 'urg-mid';
-  if (FACTORY_STATUSES.includes(status)) return 'urg-wip';
+  if (status === '工場') return 'urg-wip';
   if (EXT_STATUSES.includes(status)) return 'urg-ext';
   return 'urg-low';
 }
 
-function getStatusBadge(status, newArrival) {
+function getStatusBadge(status, newArrival, caseObj) {
   if (!status) return '';
   if (newArrival) return '<span class="badge badge-orange">🟠 新着あり</span>';
   if (status === '業務セ') return '<span class="badge badge-red">🔴 業務セ</span>';
   if (status === '受注入力担当') return '<span class="badge badge-purple">🟣 受注入力</span>';
   if (status === '営業') return '<span class="badge badge-orange">🟠 営業</span>';
-  if (FACTORY_STATUSES.includes(status)) return `<span class="badge badge-amber">🟡 ${status}</span>`;
+  if (status === '工場') {
+    const targets = toArray(caseObj?.FactoryTargets);
+    const responded = toArray(caseObj?.FactoryResponded);
+    const sub = targets.length ? ' (' + targets.map(t => {
+      const short = t.replace('工場','');
+      return responded.includes(t) ? `<s style="opacity:0.5">${short}</s>` : short;
+    }).join('・') + ')' : '';
+    return `<span class="badge badge-amber">🟡 工場${sub}</span>`;
+  }
   if (status === '仕入先') return `<span class="badge badge-blue">🔵 仕入先</span>`;
   if (status === '得意先') return `<span class="badge badge-blue">🔵 得意先</span>`;
   if (status === '完了') return '<span class="badge badge-green">✅ 完了</span>';
