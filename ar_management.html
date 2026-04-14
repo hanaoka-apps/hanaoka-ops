@@ -519,18 +519,6 @@ function escHtml(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function matchStatusBadge(status) {
-  const map = {
-    '未処理':           'badge-gray',
-    '消込済':           'badge-green',
-    '要確認':           'badge-orange',
-    '違算調査中':       'badge-red',
-    'SMILEエクスポート済': 'badge-blue',
-    'SMILE入力済':      'badge-purple',
-  };
-  return `<span class="badge ${map[status] || 'badge-gray'}">${escHtml(status || '未処理')}</span>`;
-}
-
 // CSV parser (handles quoted fields)
 function parseCSV(text, encoding) {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
@@ -576,9 +564,13 @@ function renderDashboard() {
     .reduce((s, l) => s + (Number(l.NextMonthBalance) || 0), 0);
   const unprocessed = ledger.filter(l => l.MatchStatus === '未処理' || !l.MatchStatus);
   const reconciled = ledger.filter(l => l.MatchStatus === '消込済');
+  const partial = ledger.filter(l => l.MatchStatus === '一部消込');
+  const overpaid = ledger.filter(l => l.MatchStatus === '過入金');
   const investigating = ledger.filter(l => l.MatchStatus === '違算調査中');
   const smileWaiting = ledger.filter(l => l.MatchStatus === '消込済');
   const unmatchedPayments = payments.filter(p => p.Status === '未処理' || !p.Status);
+  const partialTotal = partial.reduce((s,l) => s + (Number(l.NextMonthBalance)||0), 0);
+  const overpaidTotal = Math.abs(overpaid.reduce((s,l) => s + (Number(l.NextMonthBalance)||0), 0));
 
   return `
     <div class="section-header">
@@ -602,10 +594,15 @@ function renderDashboard() {
         <div class="big-num">${reconciled.length}</div>
         <div class="sub-num">SMILEエクスポート待ち</div>
       </div>
-      <div class="dash-card ${investigating.length > 0 ? 'danger' : 'ok'}">
-        <h4>違算調査中</h4>
-        <div class="big-num">${investigating.length}</div>
-        <div class="sub-num">¥${fmtNum(investigating.reduce((s,l) => s + Math.abs(Number(l.Discrepancy)||0), 0))}</div>
+      <div class="dash-card ${partial.length > 0 ? 'warn' : 'ok'}">
+        <h4>一部消込（不足）</h4>
+        <div class="big-num">${partial.length}</div>
+        <div class="sub-num">残¥${fmtNum(partialTotal)}</div>
+      </div>
+      <div class="dash-card ${overpaid.length > 0 ? 'danger' : 'ok'}">
+        <h4>過入金</h4>
+        <div class="big-num">${overpaid.length}</div>
+        <div class="sub-num">超¥${fmtNum(overpaidTotal)}</div>
       </div>
       <div class="dash-card ${unmatchedPayments.length > 0 ? 'warn' : 'ok'}">
         <h4>未消込入金</h4>
@@ -614,12 +611,42 @@ function renderDashboard() {
       </div>
     </div>
 
-    <div class="section-title mb-8">得意先別 未回収残高 TOP10</div>
+    ${(partial.length > 0 || overpaid.length > 0) ? `
+    <div class="section-title mb-8 mt-16">⚠ 違算表（要フォロー）</div>
+    ${renderDiscrepancyTable(partial, overpaid)}
+    ` : ''}
+
+    <div class="section-title mb-8 mt-16">得意先別 未回収残高 TOP10</div>
     ${renderTopCustomers(ledger)}
 
     <div class="section-title mb-8 mt-16">最近の入金（直近20件）</div>
     ${renderRecentPayments(payments)}
   `;
+}
+
+// 違算表（不足・過入金まとめ）
+function renderDiscrepancyTable(partial, overpaid) {
+  const all = [...partial, ...overpaid].sort((a, b) => Math.abs(Number(b.NextMonthBalance)||0) - Math.abs(Number(a.NextMonthBalance)||0));
+  if (all.length === 0) return '<div class="text-muted">なし</div>';
+  return `<table class="data-table">
+    <thead><tr><th>消込日</th><th>得意先</th><th>締年月</th><th class="text-right">請求</th><th class="text-right">入金</th><th class="text-right">差額</th><th>状態</th><th>アクション</th></tr></thead>
+    <tbody>${all.map(l => {
+      const bal = Number(l.NextMonthBalance) || 0;
+      const isOver = bal < 0;
+      const balDisp = isOver ? `<span style="color:#991B1B;font-weight:600">+¥${fmtNum(Math.abs(bal))}</span>` : `<span style="color:#92400E;font-weight:600">-¥${fmtNum(bal)}</span>`;
+      return `<tr>
+        <td class="td-muted nowrap">${fmtDate(l.MatchDate)}</td>
+        <td class="truncate">${escHtml(l.CustCode)} ${escHtml(l.BillingName)}</td>
+        <td class="td-muted">${escHtml(l.ClosingYM || '')}</td>
+        <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
+        <td class="td-num">¥${fmtNum(l.PayTotal)}</td>
+        <td class="td-num">${balDisp}</td>
+        <td>${matchStatusBadge(l.MatchStatus)}</td>
+        <td><button class="btn btn-outline btn-sm" onclick="showLedgerDetail('${l._spId}')">詳細</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
 }
 
 function renderTopCustomers(ledger) {
@@ -1379,10 +1406,12 @@ function renderReconcile() {
     </div>
     <div class="section-desc">入金レコードに対して売掛を紐付けます。入金を選択 → 対応する請求を検索・選択 → 消込確定。</div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
       <div class="dash-card info"><h4>未処理入金</h4><div class="big-num">${unmatchedPay.length}件</div><div class="sub-num">¥${fmtNum(unmatchedPay.reduce((s,p) => s + (Number(p.Amount)||0), 0))}</div></div>
       <div class="dash-card warn"><h4>未処理請求</h4><div class="big-num">${unmatchedLedger.length}件</div><div class="sub-num">¥${fmtNum(unmatchedLedger.reduce((s,l) => s + (Number(l.CurrentBilling)||0), 0))}</div></div>
       <div class="dash-card ok"><h4>消込済</h4><div class="big-num">${DATA.ledger.filter(l => l.MatchStatus === '消込済').length}件</div></div>
+      <div class="dash-card warn"><h4>一部消込</h4><div class="big-num">${DATA.ledger.filter(l => l.MatchStatus === '一部消込').length}件</div><div class="sub-num">残¥${fmtNum(DATA.ledger.filter(l => l.MatchStatus === '一部消込').reduce((s,l) => s + (Number(l.NextMonthBalance)||0), 0))}</div></div>
+      <div class="dash-card error"><h4>過入金</h4><div class="big-num">${DATA.ledger.filter(l => l.MatchStatus === '過入金').length}件</div><div class="sub-num">超¥${fmtNum(Math.abs(DATA.ledger.filter(l => l.MatchStatus === '過入金').reduce((s,l) => s + (Number(l.NextMonthBalance)||0), 0)))}</div></div>
     </div>
 
     <div class="flex gap-8 mb-8">
@@ -1395,7 +1424,59 @@ function renderReconcile() {
       </select>
     </div>
     <div id="reconcileListContainer">${renderReconcileList_inner(filtered)}</div>
+
+    <div class="section-header" style="margin-top:32px">
+      <div class="section-title" style="font-size:14px">消込済レコード（取消可）</div>
+      <select class="form-select" style="width:auto" id="reconciledFilter" onchange="renderReconciledList()">
+        <option value="all">全て</option>
+        <option value="消込済">消込済のみ</option>
+        <option value="一部消込">一部消込のみ</option>
+        <option value="過入金">過入金のみ</option>
+      </select>
+    </div>
+    <div id="reconciledListContainer">${renderReconciledList_inner('all')}</div>
   `;
+}
+
+function renderReconciledList() {
+  const f = document.getElementById('reconciledFilter')?.value || 'all';
+  const container = document.getElementById('reconciledListContainer');
+  if (container) container.innerHTML = renderReconciledList_inner(f);
+}
+
+function renderReconciledList_inner(filterType) {
+  let items = DATA.ledger.filter(l => isReconciledStatus(l.MatchStatus));
+  if (filterType !== 'all') items = items.filter(l => l.MatchStatus === filterType);
+  items = items.sort((a, b) => (b.MatchDate || '').localeCompare(a.MatchDate || ''));
+
+  const badgeFor = (s) => {
+    if (s === '消込済') return '<span class="badge badge-green">消込済</span>';
+    if (s === '一部消込') return '<span class="badge" style="background:#FEF3C7;color:#92400E">一部消込</span>';
+    if (s === '過入金') return '<span class="badge" style="background:#FEE2E2;color:#991B1B">過入金</span>';
+    return `<span class="badge badge-gray">${escHtml(s)}</span>`;
+  };
+
+  return `<table class="data-table">
+    <thead><tr><th>消込日</th><th>得意先</th><th>請求</th><th class="text-right">入金</th><th class="text-right">残/超</th><th>状態</th><th>アクション</th></tr></thead>
+    <tbody>${items.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">該当レコードなし</td></tr>' :
+    items.slice(0, 100).map(l => {
+      const bal = Number(l.NextMonthBalance) || 0;
+      const balDisp = bal === 0 ? '—' : (bal > 0 ? `<span style="color:#92400E">残¥${fmtNum(bal)}</span>` : `<span style="color:#991B1B">超¥${fmtNum(Math.abs(bal))}</span>`);
+      return `<tr>
+        <td class="td-muted nowrap">${fmtDate(l.MatchDate)}</td>
+        <td class="truncate">${escHtml(l.CustCode)} ${escHtml(l.BillingName)}</td>
+        <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
+        <td class="td-num">¥${fmtNum(l.PayTotal)}</td>
+        <td class="td-num">${balDisp}</td>
+        <td>${badgeFor(l.MatchStatus)}</td>
+        <td>
+          <button class="btn btn-outline btn-sm" onclick="showLedgerDetail('${l._spId}')">詳細</button>
+          <button class="btn btn-sm" style="background:#FEE2E2;color:#991B1B" onclick="unreconcileLedgerItem('${l._spId}')">取消</button>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
 }
 
 function renderReconcileList() {
@@ -1726,7 +1807,7 @@ async function confirmMultiReconcile() {
         PayTotal: payAmount, AdjTotal: adjTotal,
         NextMonthBalance: nextBalance,
         Discrepancy: 0,
-        MatchStatus: nextBalance === 0 ? '消込済' : '要確認',
+        MatchStatus: computeMatchStatus(payAmount + adjTotal, nextBalance),
         MatchDate: new Date().toISOString(),
         MatchedBy: account?.name || '',
         PayerNameUsed: pay.PayerNameRaw || pay.DensaiDebtorName || '',
@@ -2022,7 +2103,7 @@ async function confirmReconcile(spId) {
   fields.AdjTotal = fields.AdjOffset + fields.AdjDiscount + fields.AdjFee + fields.AdjPromo + fields.AdjOther + fields.AdjFxGainLoss;
   fields.NextMonthBalance = (Number(item.CurrentBilling) || 0) - fields.PayTotal - fields.AdjTotal;
   fields.Discrepancy = 0;
-  fields.MatchStatus = fields.NextMonthBalance === 0 ? '消込済' : '要確認';
+  fields.MatchStatus = computeMatchStatus(fields.PayTotal + fields.AdjTotal, fields.NextMonthBalance);
   fields.MatchDate = new Date().toISOString();
   fields.MatchedBy = account?.name || '';
 
@@ -2063,6 +2144,77 @@ async function confirmReconcile(spId) {
     renderPage();
   } catch(e) {
     setStatus('error', '消込エラー: ' + e.message);
+  }
+}
+
+// ============================================================
+// MatchStatus 判定ヘルパー
+// 消込済   : 入金=請求 (NextMonthBalance == 0)
+// 一部消込 : 入金あり、不足あり (NextMonthBalance > 0)
+// 過入金   : 入金が請求を超過 (NextMonthBalance < 0)
+// 未処理   : 入金なし
+// ============================================================
+function computeMatchStatus(paidAmount, nextBalance) {
+  if (!paidAmount || paidAmount === 0) return '未処理';
+  if (nextBalance === 0) return '消込済';
+  if (nextBalance > 0) return '一部消込';
+  return '過入金';
+}
+
+function isReconciledStatus(s) {
+  return s === '消込済' || s === '一部消込' || s === '過入金' || s === '要確認';
+}
+
+// ============================================================
+// 消込取消
+// ============================================================
+async function unreconcileLedgerItem(spId) {
+  const item = DATA.ledger.find(l => l._spId === spId);
+  if (!item) return;
+  const linkedPayIds = String(item.LinkedPaymentIds || '').split(',').map(s => s.trim()).filter(Boolean);
+  const linkedPayments = DATA.payments.filter(p => linkedPayIds.includes(String(p._spId)));
+
+  let confirmMsg = `以下の消込を取り消します。\n\n`;
+  confirmMsg += `売掛: ${item.CustCode} ${item.BillingName}\n`;
+  confirmMsg += `入金合計: ¥${fmtNum(item.PayTotal)} / 調整: ¥${fmtNum(item.AdjTotal)}\n`;
+  confirmMsg += `紐付け入金: ${linkedPayments.length}件\n\n`;
+  confirmMsg += `取消後、台帳は「未処理」に戻り、入金は「未消込」に戻ります。\nよろしいですか？`;
+  if (!confirm(confirmMsg)) return;
+
+  try {
+    setStatus('loading', '消込を取消中...');
+    const resetFields = {
+      PayTransfer: 0, PayDensai: 0, PayCashAmt: 0,
+      AdjOffset: 0, AdjDiscount: 0, AdjFee: 0,
+      AdjPromo: 0, AdjOther: 0, AdjFxGainLoss: 0,
+      PayTotal: 0, AdjTotal: 0,
+      NextMonthBalance: 0, Discrepancy: 0,
+      MatchStatus: '未処理',
+      MatchDate: null, MatchedBy: '',
+      PayerNameUsed: '', LinkedPaymentIds: '',
+      MatchMethod: '', ReconcileNote: '',
+    };
+    await spUpdateItem(SP.ledger, item._spId, resetFields);
+    Object.assign(item, resetFields);
+
+    // 紐付け入金を未消込に戻す
+    for (const p of linkedPayments) {
+      try {
+        await spUpdateItem(SP.payments, p._spId, { Status: '未消込', MatchedLedgerId: 0 });
+        p.Status = '未消込';
+        p.MatchedLedgerId = '';
+      } catch(e) { console.error('Payment unreset error:', e); }
+    }
+
+    await logAudit('消込取消', 'AR_Ledger', item.ID, item.CustCode || '',
+      `消込取消: 入金¥${fmtNum(resetFields.PayTotal)} 紐付け入金${linkedPayments.length}件を解除`, '', '');
+
+    setStatus('success', `消込取消完了: ${item.CustCode} ${item.BillingName}`);
+    closeModal();
+    renderPage();
+  } catch(e) {
+    console.error(e);
+    setStatus('error', '取消エラー: ' + e.message);
   }
 }
 
@@ -2808,11 +2960,25 @@ function showLedgerDetail(spId) {
     </div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal()">閉じる</button>
-      ${l.MatchStatus !== '消込済' && l.MatchStatus !== 'SMILEエクスポート済' && l.MatchStatus !== 'SMILE入力済' ?
+      ${isReconciledStatus(l.MatchStatus) && l.MatchStatus !== 'SMILEエクスポート済' && l.MatchStatus !== 'SMILE入力済' ?
+        `<button class="btn btn-sm" style="background:#FEE2E2;color:#991B1B" onclick="unreconcileLedgerItem('${spId}')">消込取消</button>` : ''}
+      ${(l.MatchStatus === '未処理' || !l.MatchStatus) ?
         `<button class="btn btn-primary" onclick="closeModal();openReconcileModal('${spId}')">消込へ</button>` : ''}
     </div>
   `;
   showModal();
+}
+
+// MatchStatusに応じたバッジHTMLを返す
+function matchStatusBadge(status) {
+  if (status === '消込済') return '<span class="badge badge-green">消込済</span>';
+  if (status === '一部消込') return '<span class="badge" style="background:#FEF3C7;color:#92400E">一部消込</span>';
+  if (status === '過入金') return '<span class="badge" style="background:#FEE2E2;color:#991B1B">過入金</span>';
+  if (status === '要確認') return '<span class="badge" style="background:#FEF3C7;color:#92400E">要確認</span>';
+  if (status === 'SMILEエクスポート済') return '<span class="badge badge-blue">SMILE出力済</span>';
+  if (status === 'SMILE入力済') return '<span class="badge badge-blue">SMILE入力済</span>';
+  if (!status || status === '未処理') return '<span class="badge badge-gray">未処理</span>';
+  return `<span class="badge badge-gray">${escHtml(status)}</span>`;
 }
 
 // ============================================================
