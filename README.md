@@ -6,4 +6,5 @@
 
 | システム | URL |
 |---------|-----|
-| 受付案件管理システム | [case_management.html](https://hanaoka-apps.github.io/hanaoka-ops/case_management.html) |
+| 受付案件管理システム | [case_management.html](case_management.html) |
+| 売掛管理システム | [ar_management.html](ar_management.html) |
