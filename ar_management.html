@@ -885,6 +885,20 @@ function hwKanaToFw(str) {
   return result;
 }
 
+// Hiragana → Full-width Katakana (ぁ-ん → ァ-ン)
+function hiraToKata(str) {
+  return str.replace(/[\u3041-\u3096]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60));
+}
+
+// Normalize for search: half-width kana → full-width kana, hiragana → katakana, uppercase
+function normalizeForSearch(str) {
+  if (!str) return '';
+  let s = hwKanaToFw(str);       // ｶﾅ → カナ
+  s = hiraToKata(s);             // かな → カナ
+  s = s.replace(/[Ａ-Ｚａ-ｚ０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  return s.toUpperCase();
+}
+
 function normalizePayerName(raw) {
   if (!raw) return '';
   let s = raw.trim();
@@ -1313,14 +1327,17 @@ function renderReconcile() {
 }
 
 function renderReconcileList() {
-  const searchText = (document.getElementById('reconcileSearch')?.value || '').toLowerCase();
+  const rawSearch = document.getElementById('reconcileSearch')?.value || '';
   const typeFilter = document.getElementById('reconcileFilter')?.value || '';
   let filtered = DATA.payments.filter(p => p.Status === '未処理' || p.Status === '自動候補あり' || !p.Status);
-  if (searchText) filtered = filtered.filter(p =>
-    (p.PayerNameRaw || '').toLowerCase().includes(searchText) ||
-    (p.PayerNameNorm || '').toLowerCase().includes(searchText) ||
-    String(p.Amount).includes(searchText)
-  );
+  if (rawSearch.trim()) {
+    const normSearch = normalizeForSearch(rawSearch);
+    filtered = filtered.filter(p =>
+      normalizeForSearch(p.PayerNameRaw || '').includes(normSearch) ||
+      normalizeForSearch(p.PayerNameNorm || '').includes(normSearch) ||
+      String(p.Amount).includes(rawSearch)
+    );
+  }
   if (typeFilter === '自動候補あり') filtered = filtered.filter(p => p.Status === '自動候補あり');
   else if (typeFilter) filtered = filtered.filter(p => (p.Note || '').includes(typeFilter));
   filtered = filtered.sort((a, b) => new Date(b.TransDate) - new Date(a.TransDate));
@@ -1429,16 +1446,18 @@ function openPaymentReconcile(paySpId) {
 }
 
 function searchBillingForPayment() {
-  const q = (document.getElementById('rc_billingSearch')?.value || '').toLowerCase();
+  const rawQ = document.getElementById('rc_billingSearch')?.value || '';
   const container = document.getElementById('rc_billingSearchResults');
-  if (!container || !q) { if (container) container.innerHTML = ''; return; }
+  if (!container || !rawQ.trim()) { if (container) container.innerHTML = ''; return; }
 
+  const normQ = normalizeForSearch(rawQ);
   const unmatchedLedger = DATA.ledger.filter(l => l.MatchStatus === '未処理' || !l.MatchStatus);
-  const results = unmatchedLedger.filter(l =>
-    (l.BillingName || '').toLowerCase().includes(q) ||
-    (l.CustCode || '').includes(q) ||
-    (l.BillingCode || '').includes(q)
-  ).slice(0, 20);
+  const results = unmatchedLedger.filter(l => {
+    const normName = normalizeForSearch(l.BillingName || '');
+    const normCode = (l.CustCode || '').toUpperCase();
+    const normBillingCode = (l.BillingCode || '').toUpperCase();
+    return normName.includes(normQ) || normCode.includes(normQ) || normBillingCode.includes(normQ);
+  }).slice(0, 20);
 
   container.innerHTML = results.length === 0 ? '<div class="text-muted" style="font-size:12px;padding:8px">該当する請求が見つかりません</div>' : `
     <table class="data-table">
@@ -1577,18 +1596,19 @@ function updateReconcileCalc(item) {
 
 // Search unmatched payments in reconcile modal
 function filterReconcilePayments() {
-  const nameQ = (document.getElementById('rc_paySearch')?.value || '').toLowerCase();
+  const rawNameQ = document.getElementById('rc_paySearch')?.value || '';
   const amtQ = document.getElementById('rc_payAmountSearch')?.value || '';
   const container = document.getElementById('rc_paySearchResults');
   if (!container) return;
 
-  if (!nameQ && !amtQ) { container.innerHTML = ''; return; }
+  if (!rawNameQ && !amtQ) { container.innerHTML = ''; return; }
 
+  const normQ = normalizeForSearch(rawNameQ);
   let results = DATA.payments.filter(p => p.Status !== '消込済' && p.Status !== '対象外');
-  if (nameQ) results = results.filter(p =>
-    (p.PayerNameRaw || '').toLowerCase().includes(nameQ) ||
-    (p.PayerNameNorm || '').toLowerCase().includes(nameQ) ||
-    (p.Note || '').toLowerCase().includes(nameQ)
+  if (normQ) results = results.filter(p =>
+    normalizeForSearch(p.PayerNameRaw || '').includes(normQ) ||
+    normalizeForSearch(p.PayerNameNorm || '').includes(normQ) ||
+    normalizeForSearch(p.Note || '').includes(normQ)
   );
   if (amtQ) {
     const amt = parseInt(amtQ, 10);
