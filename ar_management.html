@@ -770,11 +770,13 @@ async function handleBankCsvUpload(event) {
       ${newItems.length > 0 ? `
       <div class="import-preview">
         <table class="data-table">
-          <thead><tr><th>日付</th><th>振込依頼人</th><th class="text-right">金額</th></tr></thead>
+          <thead><tr><th>日付</th><th>区分</th><th>振込依頼人</th><th>摘要</th><th class="text-right">金額</th></tr></thead>
           <tbody>${newItems.slice(0, 50).map(p => `
             <tr>
               <td class="td-muted">${fmtDate(p.TransDate)}</td>
+              <td><span class="badge badge-blue">${escHtml(p.TransType || '')}</span></td>
               <td>${escHtml(p.PayerNameRaw)}</td>
+              <td class="td-muted">${escHtml(p.Tekiyou || '')}</td>
               <td class="td-num">¥${fmtNum(p.Amount)}</td>
             </tr>`).join('')}
           </tbody>
@@ -795,27 +797,43 @@ async function handleBankCsvUpload(event) {
 }
 
 function parseZenginCSV(rows, accountType) {
-  // Zengin CSV: variable format but typically:
-  // Col 0: Date (YYYY/MM/DD or similar), Col 1: Transaction type, Col 2: Amount
-  // Col 3: Balance, Col 4: Payer name, etc.
-  // Adapt based on actual bank format
+  // SMBC Web21 全銀形式（CSV）
+  // Row types: 1=ヘッダー, 2=明細データ, 8=トレーラー, 9=エンド
+  // Type-2 cols (20 columns):
+  //  0: データ区分(2)  1: 照会番号  2: 勘定日(YYMMDD 令和)  3: 預入・払出日
+  //  4: 入払区分(1=入金,2=出金)  5: 取引区分  6: 取引金額(12桁0埋め)
+  //  7: うち他店券金額  8: 交換呈示日  9: 不渡返還日
+  // 10: 手形・小切手区分  11: 手形・小切手番号  12: 僚店番号
+  // 13: 振込依頼人コード  14: 振込依頼人名  15: 仕向銀行名
+  // 16: 仕向支店名  17: 摘要内容  18: EDI情報  19: ダミー
+  const TORIHIKI_MAP = {'11':'振込','12':'大口振込','13':'交換','14':'振替','15':'ATM','16':'CD','17':'手取立','18':'他店自振','19':'他店振込'};
   const results = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (r.length < 5) continue;
-    // Typical Zengin: date, deposit/withdrawal flag, amount, balance, payer, bank, branch
-    const dateStr = r[0];
-    const amount = parseInt(String(r[2]).replace(/[,\s]/g, ''), 10);
-    const payerName = r[4] || '';
+  let bankName = '', branchName = '';
+  for (const r of rows) {
+    // Type 1 = header: extract bank/branch info
+    if (r[0] === '1' && r.length >= 10) {
+      bankName = r[7] || ''; branchName = r[9] || '';
+      continue;
+    }
+    // Only process type 2 (transaction data)
+    if (r[0] !== '2' || r.length < 18) continue;
+    // 入金のみ (入払区分=1)
+    if (r[4] !== '1') continue;
 
-    if (!dateStr || isNaN(amount) || amount <= 0) continue;
+    const amount = parseInt(String(r[6]).replace(/^0+/, '') || '0', 10);
+    if (amount <= 0) continue;
 
-    // Parse date
-    let transDate;
-    const m = dateStr.match(/(\d{4})\/?(\d{1,2})\/?(\d{1,2})/);
-    if (m) {
-      transDate = `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
-    } else continue;
+    // 勘定日: 令和YYMMDD → YYYY-MM-DD (令和Y年 = 2018+Y)
+    const dStr = r[2];
+    const yy = parseInt(dStr.substring(0, 2), 10);
+    const mm = dStr.substring(2, 4);
+    const dd = dStr.substring(4, 6);
+    const yyyy = 2018 + yy;
+    const transDate = `${yyyy}-${mm}-${dd}`;
+
+    // 振込依頼人名 (col14) → メイン, なければ摘要内容 (col17)
+    const payerName = (r[14] || '').trim() || (r[17] || '').trim();
+    const tekiyou = (r[17] || '').trim();
 
     results.push({
       TransDate: transDate,
@@ -824,9 +842,11 @@ function parseZenginCSV(rows, accountType) {
       Amount: amount,
       PayerNameRaw: payerName,
       PayerNameNorm: normalizePayerName(payerName),
-      PayerCode: r[7] || '',
-      SenderBank: r[5] || '',
-      SenderBranch: r[6] || '',
+      PayerCode: (r[13] || '').trim(),
+      SenderBank: (r[15] || '').trim() || bankName,
+      SenderBranch: (r[16] || '').trim() || branchName,
+      TransType: TORIHIKI_MAP[r[5]] || r[5] || '',
+      Tekiyou: tekiyou !== payerName ? tekiyou : '',
       Status: '未処理',
     });
   }
@@ -918,9 +938,13 @@ async function importBankPayments() {
     // Batch create in SharePoint
     let created = 0;
     for (const item of matched) {
+      // Build note from TransType + Tekiyou (not SP columns)
+      const noteParts = [item.TransType, item.Tekiyou].filter(Boolean);
+      const { TransType, Tekiyou, ...spFields } = item;
       const newItem = await spCreateItem(SP.payments, {
         Title: `PAY-${item.TransDate}-${Date.now()}`,
-        ...item,
+        ...spFields,
+        Note: noteParts.length > 0 ? noteParts.join(' / ') : '',
       });
       DATA.payments.push(newItem);
       created++;
