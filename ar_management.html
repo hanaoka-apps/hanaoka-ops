@@ -687,7 +687,10 @@ function renderPayments() {
 
     <div id="bankImportPreview"></div>
 
-    <div class="section-title mb-8 mt-16">入金レコード一覧</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;margin-bottom:8px">
+      <div class="section-title" style="margin:0">入金レコード一覧</div>
+      <button class="btn btn-danger btn-sm" onclick="purgeAllPayments()" style="font-size:11px">🗑 入金データ全件削除</button>
+    </div>
     <div class="flex gap-8 mb-8">
       <select class="form-select" style="width:auto" id="paymentFilterStatus" onchange="renderPaymentTable()">
         <option value="">全て</option>
@@ -927,6 +930,29 @@ function fuzzyScore(a, b) {
   let intersection = 0;
   bg1.forEach(b => { if (bg2.has(b)) intersection++; });
   return bg1.size + bg2.size > 0 ? (2 * intersection) / (bg1.size + bg2.size) : 0;
+}
+
+async function purgeAllPayments() {
+  const total = DATA.payments.length;
+  if (total === 0) { alert('削除対象の入金データがありません。'); return; }
+  if (!confirm(`⚠️ 入金データ ${total}件を全てSharePointから削除します。\nこの操作は取り消せません。よろしいですか？`)) return;
+
+  setStatus('loading', `入金データ ${total}件を削除中...`);
+  let deleted = 0, failed = 0;
+  // Delete in batches of 10 for parallelism
+  const batchSize = 10;
+  for (let i = 0; i < DATA.payments.length; i += batchSize) {
+    const batch = DATA.payments.slice(i, i + batchSize);
+    const results = await Promise.allSettled(
+      batch.map(p => spDeleteItem(SP.payments, p._spId))
+    );
+    results.forEach(r => { if (r.status === 'fulfilled') deleted++; else failed++; });
+    setStatus('loading', `削除中... ${deleted}/${total}件完了`);
+  }
+  DATA.payments = [];
+  setStatus('success', `✅ ${deleted}件削除完了${failed > 0 ? `（${failed}件失敗）` : ''}`);
+  await logAudit('PURGE_PAYMENTS', 'AR_Payments', 0, '', `入金データ全件削除: ${deleted}件削除`, '', '');
+  document.querySelector('.main-content').innerHTML = renderPayments();
 }
 
 async function importBankPayments() {
