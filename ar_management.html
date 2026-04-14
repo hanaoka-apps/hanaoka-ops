@@ -1445,6 +1445,29 @@ function markPaymentExcluded(paySpId) {
   });
 }
 
+// 名寄せ辞書から過去の消込・控除パターンを参考表示
+function buildNameDictHintHtml(pay) {
+  const payerName = (pay.PayerNameRaw || pay.DensaiDebtorName || '').trim();
+  if (!payerName) return '';
+  const normPayer = normalizePayerName(payerName);
+  const matches = DATA.namedict.filter(d => d.IsActive !== false && normalizePayerName(d.PayerPattern) === normPayer);
+  if (matches.length === 0) return '';
+  const hints = matches.map(m => {
+    let html = `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">`;
+    html += `<div><span style="font-weight:600">${escHtml(m.BillingCode || '')}</span> ${escHtml(m.BillingName || '')}</div>`;
+    html += `<div style="font-size:11px;color:var(--text-muted)">消込${m.HitCount || 0}回</div>`;
+    html += `</div>`;
+    if (m.LastAdjustment) {
+      html += `<div style="font-size:11px;color:#b45309;padding:2px 0 4px 8px">⚠ 前回調整: ${escHtml(m.LastAdjustment)}（${fmtDate(m.LastAdjustmentDate)}）</div>`;
+    }
+    return html;
+  }).join('');
+  return `<div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:10px;margin-bottom:12px">
+    <div style="font-size:11px;font-weight:600;color:#92400E;margin-bottom:6px">📖 名寄せ辞書の履歴</div>
+    ${hints}
+  </div>`;
+}
+
 // 入金起点の消込モーダル: Step1=請求選択, Step2=金額入力
 function openPaymentReconcile(paySpId) {
   const pay = DATA.payments.find(p => p._spId === paySpId);
@@ -1486,6 +1509,8 @@ function openPaymentReconcile(paySpId) {
         <div><div class="form-label">ソース</div><div><span class="badge badge-blue">${escHtml(pay.DataSource || '')}</span></div></div>
       </div>
     </div>
+
+    ${buildNameDictHintHtml(pay)}
 
     <div class="form-label">対応する請求を選択（複数選択可）</div>
 
@@ -1719,9 +1744,10 @@ async function confirmMultiReconcile() {
         } catch(e) { console.error('Payment link error:', e); }
       }
     }
-    // 名寄せ辞書に自動登録（各売掛に対して）
+    // 名寄せ辞書に自動登録（各売掛に対して・調整情報付き）
+    const adjInfo = (multiFee || multiDiscount || multiOther) ? { fee: multiFee, discount: multiDiscount, other: multiOther } : null;
     for (const item of billings) {
-      await autoRegisterNameDict(applied, item);
+      await autoRegisterNameDict(applied, item, adjInfo);
     }
 
     window._appliedPayments = [];
@@ -2020,8 +2046,10 @@ async function confirmReconcile(spId) {
     }
     window._appliedPayments = [];
 
-    // 名寄せ辞書に自動登録（振込依頼人名 → 請求先コード）
-    await autoRegisterNameDict(applied, item);
+    // 名寄せ辞書に自動登録（振込依頼人名 → 請求先コード・調整情報付き）
+    const adjInfo1to1 = (fields.AdjFee || fields.AdjDiscount || fields.AdjOther) ?
+      { fee: fields.AdjFee, discount: fields.AdjDiscount, other: fields.AdjOther } : null;
+    await autoRegisterNameDict(applied, item, adjInfo1to1);
 
     await logAudit('消込確定', 'AR_Ledger', item.ID, item.CustCode, `消込: PayTotal=${fields.PayTotal}, AdjTotal=${fields.AdjTotal}, 次月繰越=${fields.NextMonthBalance}, 依頼人=${fields.PayerNameUsed || '手入力'}`);
     setStatus('success', `消込保存完了: ${item.CustCode} ${item.BillingName}`);
@@ -2032,42 +2060,68 @@ async function confirmReconcile(spId) {
   }
 }
 
-async function autoRegisterNameDict(appliedPayments, ledgerItem) {
+async function autoRegisterNameDict(appliedPayments, ledgerItem, adjustmentInfo) {
   if (!appliedPayments || appliedPayments.length === 0) return;
   for (const ap of appliedPayments) {
     const payerName = (ap.payerNameRaw || '').trim();
     if (!payerName) continue;
 
+    // Build adjustment note (手数料/割引/その他)
+    const adjParts = [];
+    if (adjustmentInfo) {
+      if (adjustmentInfo.fee)      adjParts.push(`手数料:¥${fmtNum(adjustmentInfo.fee)}`);
+      if (adjustmentInfo.discount) adjParts.push(`割引:¥${fmtNum(adjustmentInfo.discount)}`);
+      if (adjustmentInfo.other)    adjParts.push(`その他:¥${fmtNum(adjustmentInfo.other)}`);
+    }
+    const adjNote = adjParts.length > 0 ? adjParts.join(' / ') : '';
+
     // Check if already in dictionary
     const normPayer = normalizePayerName(payerName);
+    const billingCode = ledgerItem.BillingCode || ledgerItem.CustCode;
     const existing = DATA.namedict.find(d =>
-      normalizePayerName(d.Pattern) === normPayer && d.BillingCode === (ledgerItem.BillingCode || ledgerItem.CustCode)
+      normalizePayerName(d.PayerPattern) === normPayer && d.BillingCode === billingCode
     );
     if (existing) {
-      // Update hit count
+      // Update hit count + last adjustment info
       try {
         const newHit = (parseInt(existing.HitCount) || 0) + 1;
-        await spUpdateItem(SP.namedict, existing._spId, { HitCount: newHit });
+        const updateFields = { HitCount: newHit };
+        if (adjNote) {
+          updateFields.LastAdjustment = adjNote;
+          updateFields.LastAdjustmentDate = new Date().toISOString();
+        }
+        await spUpdateItem(SP.namedict, existing._spId, updateFields);
         existing.HitCount = newHit;
+        if (adjNote) {
+          existing.LastAdjustment = adjNote;
+          existing.LastAdjustmentDate = updateFields.LastAdjustmentDate;
+        }
       } catch(e) { console.error('NameDict hit update error:', e); }
       continue;
     }
 
     // New entry: register
     try {
-      const newItem = await spCreateItem(SP.namedict, {
-        Title: payerName,
-        Pattern: payerName,
-        MatchType: '完全一致',
-        BillingCode: ledgerItem.BillingCode || ledgerItem.CustCode,
+      const regFields = {
+        Title: `ND-${Date.now()}`,
+        PayerPattern: payerName,
+        MatchType: '銀行名義',
+        BillingCode: billingCode,
         BillingName: ledgerItem.BillingName || '',
         CompanyCode: ledgerItem.CompanyCode || '',
         HitCount: 1,
         IsActive: true,
         Source: '消込自動登録',
-      });
+        CreatedBy: account?.name || '',
+        CreatedDate: new Date().toISOString(),
+      };
+      if (adjNote) {
+        regFields.LastAdjustment = adjNote;
+        regFields.LastAdjustmentDate = new Date().toISOString();
+      }
+      const newItem = await spCreateItem(SP.namedict, regFields);
       DATA.namedict.push(newItem);
-      console.log(`[AR] 名寄せ辞書に自動登録: ${payerName} → ${ledgerItem.BillingCode || ledgerItem.CustCode} ${ledgerItem.BillingName}`);
+      console.log(`[AR] 名寄せ辞書に自動登録: ${payerName} → ${billingCode} ${ledgerItem.BillingName}${adjNote ? ' ' + adjNote : ''}`);
     } catch(e) { console.error('NameDict auto-register error:', e); }
   }
 }
@@ -2453,8 +2507,8 @@ function renderNameDictTable() {
   );
 
   const html = `<table class="data-table">
-    <thead><tr><th>パターン</th><th>種別</th><th>請求先コード</th><th>請求先名</th><th>ヒット</th><th>有効</th></tr></thead>
-    <tbody>${items.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">データなし</td></tr>' :
+    <thead><tr><th>パターン</th><th>種別</th><th>請求先コード</th><th>請求先名</th><th>ヒット</th><th>最終調整</th><th>有効</th></tr></thead>
+    <tbody>${items.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">データなし</td></tr>' :
     items.map(n => `
       <tr>
         <td class="mono">${escHtml(n.PayerPattern)}</td>
@@ -2462,6 +2516,7 @@ function renderNameDictTable() {
         <td class="td-code">${escHtml(n.BillingCode)}</td>
         <td>${escHtml(n.BillingName)}</td>
         <td class="td-muted">${n.HitCount || 0}</td>
+        <td class="td-muted" style="font-size:11px">${n.LastAdjustment ? escHtml(n.LastAdjustment) : '—'}</td>
         <td>${n.IsActive !== false ? '<span class="badge badge-green">有効</span>' : '<span class="badge badge-gray">無効</span>'}</td>
       </tr>`).join('')}
     </tbody>
