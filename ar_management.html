@@ -1661,6 +1661,11 @@ async function confirmMultiReconcile() {
         } catch(e) { console.error('Payment link error:', e); }
       }
     }
+    // 名寄せ辞書に自動登録（各売掛に対して）
+    for (const item of billings) {
+      await autoRegisterNameDict(applied, item);
+    }
+
     window._appliedPayments = [];
     window._selectedBillings = [];
 
@@ -1940,12 +1945,55 @@ async function confirmReconcile(spId) {
     }
     window._appliedPayments = [];
 
+    // 名寄せ辞書に自動登録（振込依頼人名 → 請求先コード）
+    await autoRegisterNameDict(applied, item);
+
     await logAudit('消込確定', 'AR_Ledger', item.ID, item.CustCode, `消込: PayTotal=${fields.PayTotal}, AdjTotal=${fields.AdjTotal}, 次月繰越=${fields.NextMonthBalance}, 依頼人=${fields.PayerNameUsed || '手入力'}`);
     setStatus('success', `消込保存完了: ${item.CustCode} ${item.BillingName}`);
     closeModal();
     renderPage();
   } catch(e) {
     setStatus('error', '消込エラー: ' + e.message);
+  }
+}
+
+async function autoRegisterNameDict(appliedPayments, ledgerItem) {
+  if (!appliedPayments || appliedPayments.length === 0) return;
+  for (const ap of appliedPayments) {
+    const payerName = (ap.payerNameRaw || '').trim();
+    if (!payerName) continue;
+
+    // Check if already in dictionary
+    const normPayer = normalizePayerName(payerName);
+    const existing = DATA.namedict.find(d =>
+      normalizePayerName(d.Pattern) === normPayer && d.BillingCode === (ledgerItem.BillingCode || ledgerItem.CustCode)
+    );
+    if (existing) {
+      // Update hit count
+      try {
+        const newHit = (parseInt(existing.HitCount) || 0) + 1;
+        await spUpdateItem(SP.namedict, existing._spId, { HitCount: newHit });
+        existing.HitCount = newHit;
+      } catch(e) { console.error('NameDict hit update error:', e); }
+      continue;
+    }
+
+    // New entry: register
+    try {
+      const newItem = await spCreateItem(SP.namedict, {
+        Title: payerName,
+        Pattern: payerName,
+        MatchType: '完全一致',
+        BillingCode: ledgerItem.BillingCode || ledgerItem.CustCode,
+        BillingName: ledgerItem.BillingName || '',
+        CompanyCode: ledgerItem.CompanyCode || '',
+        HitCount: 1,
+        IsActive: true,
+        Source: '消込自動登録',
+      });
+      DATA.namedict.push(newItem);
+      console.log(`[AR] 名寄せ辞書に自動登録: ${payerName} → ${ledgerItem.BillingCode || ledgerItem.CustCode} ${ledgerItem.BillingName}`);
+    } catch(e) { console.error('NameDict auto-register error:', e); }
   }
 }
 
