@@ -1174,21 +1174,33 @@ function processBillingRows(rows) {
     const numCols = rows[headerIdx].length;
     const isDetailed = numCols >= 17;
 
-    // Extract billing month and closing day from row 1 or 2
+    // Extract billing month and closing day from header rows
     // e.g. "2026年 2月10日締" → closingYM="2026-02", closingDay=10
+    // Search up to 5 rows to be safe (header can be in different positions)
     let closingYM = '', closingDay = 0;
-    for (let i = 0; i < Math.min(3, rows.length); i++) {
+    for (let i = 0; i < Math.min(5, rows.length); i++) {
       const text = rows[i].join(' ');
-      const m = text.match(/(\d{4})年\s*(\d{1,2})月(\d{1,2})日締/);
+      // Pattern 1: "2026年 2月10日締" (full pattern with closing day)
+      const m = text.match(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日締/);
       if (m) {
         closingYM = `${m[1]}-${m[2].padStart(2,'0')}`;
         closingDay = parseInt(m[3], 10);
+        break;
+      }
+      // Pattern 2: "2月10日" without 締 but with year elsewhere
+      const m1b = text.match(/(\d{4})年/);
+      const m1c = text.match(/(\d{1,2})月\s*(\d{1,2})日/);
+      if (m1b && m1c) {
+        closingYM = `${m1b[1]}-${m1c[1].padStart(2,'0')}`;
+        closingDay = parseInt(m1c[2], 10);
         break;
       }
       // Fallback: month only (no closing day)
       const m2 = text.match(/(\d{4})年\s*(\d{1,2})月/);
       if (m2) { closingYM = `${m2[1]}-${m2[2].padStart(2,'0')}`; break; }
     }
+    // If closingDay is still 0 but closingYM detected, try to infer from DueDate later
+    console.log('[AR] ClosingDay extraction:', { closingYM, closingDay });
 
     // Parse data rows
     const dataRows = rows.slice(headerIdx + 1);
@@ -1265,7 +1277,7 @@ function processBillingRows(rows) {
 
       // Auto-detect TxType + closing day
       item.TxType = '通常';
-      item.ClosingDay = closingDay;
+      if (closingDay > 0) item.ClosingDay = closingDay;
       item.MatchStatus = '未処理';
 
       items.push(item);
@@ -1439,6 +1451,7 @@ function openPaymentReconcile(paySpId) {
 
   window._selectedPayment = pay;
   window._appliedPayments = [{ spId: paySpId, payerNameRaw: pay.PayerNameRaw || '', amount: pay.Amount, source: pay.DataSource, dataSource: pay.DataSource }];
+  window._selectedBillings = [];  // 複数売掛選択用
 
   // Find candidate billings
   const cc = pay.CompanyCode || '';
@@ -1473,19 +1486,22 @@ function openPaymentReconcile(paySpId) {
       </div>
     </div>
 
-    <div class="form-label">対応する請求を選択</div>
+    <div class="form-label">対応する請求を選択（複数選択可）</div>
+
+    <div id="rc_selectedSummary" style="display:none;background:#EAF3DE;border:1px solid #c6e1a0;border-radius:8px;padding:10px;margin-bottom:12px">
+    </div>
 
     ${autoCandidates.length > 0 ? `
     <div class="form-label" style="font-size:11px;color:var(--text-muted)">自動候補</div>
     <table class="data-table" style="margin-bottom:12px">
-      <thead><tr><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th><th>選択</th></tr></thead>
+      <thead><tr><th style="width:40px">✓</th><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th></tr></thead>
       <tbody>${autoCandidates.map(l => `
-        <tr>
+        <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}')" style="cursor:pointer">
+          <td><input type="checkbox" class="rc-billing-cb" data-spid="${l._spId}" data-amount="${l.CurrentBilling || 0}"></td>
           <td class="td-code">${escHtml(l.CustCode)}</td>
           <td class="truncate">${escHtml(l.BillingName)}</td>
           <td class="td-muted">${l.ClosingYM}</td>
           <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
-          <td><button class="btn btn-primary btn-sm" onclick="selectBillingForPayment('${l._spId}')">選択</button></td>
         </tr>`).join('')}
       </tbody>
     </table>` : ''}
@@ -1497,9 +1513,132 @@ function openPaymentReconcile(paySpId) {
 
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-success" id="rc_multiConfirm" style="display:none" onclick="confirmMultiReconcile()">消込確定</button>
     </div>
   `;
   showModal();
+}
+
+function toggleBillingSelection(spId) {
+  const cb = document.querySelector(`.rc-billing-cb[data-spid="${spId}"]`);
+  if (!cb) return;
+  cb.checked = !cb.checked;
+  const row = document.getElementById('rc_row_' + spId);
+  if (row) row.style.background = cb.checked ? '#EAF3DE' : '';
+  updateBillingSelectionSummary();
+}
+
+function updateBillingSelectionSummary() {
+  const pay = window._selectedPayment;
+  if (!pay) return;
+
+  const checks = document.querySelectorAll('.rc-billing-cb:checked');
+  const selectedItems = [];
+  let totalBilling = 0;
+  checks.forEach(cb => {
+    const spId = cb.dataset.spid;
+    const item = DATA.ledger.find(l => l._spId === spId);
+    if (item) {
+      selectedItems.push(item);
+      totalBilling += Number(item.CurrentBilling) || 0;
+    }
+  });
+  window._selectedBillings = selectedItems;
+
+  const summary = document.getElementById('rc_selectedSummary');
+  const confirmBtn = document.getElementById('rc_multiConfirm');
+
+  if (selectedItems.length === 0) {
+    summary.style.display = 'none';
+    confirmBtn.style.display = 'none';
+    return;
+  }
+
+  const diff = pay.Amount - totalBilling;
+  const diffColor = diff === 0 ? 'var(--success)' : 'var(--danger)';
+  const diffLabel = diff === 0 ? '一致' : (diff > 0 ? `過入金 +¥${fmtNum(diff)}` : `不足 ¥${fmtNum(diff)}`);
+
+  summary.style.display = 'block';
+  summary.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>
+        <strong>${selectedItems.length}件選択中</strong>
+        <span style="margin-left:8px">請求合計: <strong>¥${fmtNum(totalBilling)}</strong></span>
+      </div>
+      <div style="font-size:14px;font-weight:700;color:${diffColor}">
+        入金 ¥${fmtNum(pay.Amount)} − 請求 ¥${fmtNum(totalBilling)} = ${diffLabel}
+      </div>
+    </div>
+    ${selectedItems.length === 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">1件だけなら詳細入力画面で調整額も入力可</div>' : ''}
+  `;
+
+  confirmBtn.style.display = 'inline-flex';
+  confirmBtn.textContent = selectedItems.length === 1 ? '詳細入力へ →' : `消込確定（${selectedItems.length}件）`;
+}
+
+async function confirmMultiReconcile() {
+  const pay = window._selectedPayment;
+  const billings = window._selectedBillings || [];
+  if (!pay || billings.length === 0) return;
+
+  // 1件選択なら従来の詳細入力画面へ
+  if (billings.length === 1) {
+    selectBillingForPayment(billings[0]._spId);
+    return;
+  }
+
+  // 複数件: 各売掛に入金を按分（まずは全額消込=請求額をそのまま入金扱い）
+  if (!confirm(`${billings.length}件の売掛に対して入金 ¥${fmtNum(pay.Amount)} を消込します。\n各請求は全額入金として処理されます。よろしいですか？`)) return;
+
+  try {
+    setStatus('loading', `${billings.length}件の消込を保存中...`);
+    const applied = window._appliedPayments || [];
+
+    for (const item of billings) {
+      const billing = Number(item.CurrentBilling) || 0;
+      const fields = {
+        PayTransfer: pay.DataSource === 'でんさい' ? 0 : billing,
+        PayDensai: pay.DataSource === 'でんさい' ? billing : 0,
+        PayCashAmt: 0, AdjOffset: 0, AdjDiscount: 0, AdjFee: 0,
+        AdjPromo: 0, AdjOther: 0, AdjFxGainLoss: 0,
+        PayTotal: billing, AdjTotal: 0,
+        NextMonthBalance: 0,
+        Discrepancy: 0,
+        MatchStatus: '消込済',
+        MatchDate: new Date().toISOString(),
+        MatchedBy: account?.name || '',
+        PayerNameUsed: pay.PayerNameRaw || pay.DensaiDebtorName || '',
+        LinkedPaymentIds: pay._spId,
+        MatchMethod: pay.DataSource === 'でんさい' ? 'でんさい' : '振込',
+        ReconcileNote: `一括消込（${billings.length}件）入金¥${fmtNum(pay.Amount)}`,
+      };
+      await spUpdateItem(SP.ledger, item._spId, fields);
+      Object.assign(item, fields);
+    }
+
+    // Update payment status
+    for (const ap of applied) {
+      const p = DATA.payments.find(pp => pp._spId === ap.spId);
+      if (p) {
+        try {
+          await spUpdateItem(SP.payments, ap.spId, { Status: '消込済', MatchedLedgerId: billings.map(b => b.ID).join(',') });
+          p.Status = '消込済';
+        } catch(e) { console.error('Payment link error:', e); }
+      }
+    }
+    window._appliedPayments = [];
+    window._selectedBillings = [];
+
+    await logAudit('消込', 'AR_Ledger', null, billings[0]?.BillingCode || '',
+      `一括消込: ${billings.length}件 入金¥${fmtNum(pay.Amount)} 振込人:${pay.PayerNameRaw || ''}`, null, null);
+
+    closeModal();
+    setStatus('success', `消込完了: ${billings.length}件 — ${pay.PayerNameRaw || ''}`);
+    renderPage();
+  } catch(e) {
+    console.error(e);
+    setStatus('error', '消込エラー: ' + e.message);
+  }
 }
 
 function searchBillingForPayment() {
@@ -1518,15 +1657,18 @@ function searchBillingForPayment() {
 
   container.innerHTML = results.length === 0 ? '<div class="text-muted" style="font-size:12px;padding:8px">該当する請求が見つかりません</div>' : `
     <table class="data-table">
-      <thead><tr><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th><th>選択</th></tr></thead>
-      <tbody>${results.map(l => `
-        <tr>
+      <thead><tr><th style="width:40px">✓</th><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th></tr></thead>
+      <tbody>${results.map(l => {
+        const alreadyChecked = (window._selectedBillings || []).some(b => b._spId === l._spId);
+        return `
+        <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}')" style="cursor:pointer;${alreadyChecked ? 'background:#EAF3DE' : ''}">
+          <td><input type="checkbox" class="rc-billing-cb" data-spid="${l._spId}" data-amount="${l.CurrentBilling || 0}" ${alreadyChecked ? 'checked' : ''}></td>
           <td class="td-code">${escHtml(l.CustCode)}</td>
           <td class="truncate">${escHtml(l.BillingName)}</td>
           <td class="td-muted">${l.ClosingYM}</td>
           <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
-          <td><button class="btn btn-primary btn-sm" onclick="selectBillingForPayment('${l._spId}')">選択</button></td>
-        </tr>`).join('')}
+        </tr>`;
+      }).join('')}
       </tbody>
     </table>`;
 }
