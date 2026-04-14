@@ -198,8 +198,8 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI','Yu Gothic',s
   <!-- Navigation tabs -->
   <div class="nav-bar" id="navBar">
     <div class="nav-tab active" data-page="dashboard">ダッシュボード</div>
-    <div class="nav-tab" data-page="payments">入金取込</div>
     <div class="nav-tab" data-page="billing">請求取込</div>
+    <div class="nav-tab" data-page="payments">入金取込</div>
     <div class="nav-tab" data-page="reconcile">消込</div>
     <div class="nav-tab" data-page="smile-export">SMILEエクスポート</div>
     <div class="nav-tab" data-page="checkpoints">チェックポイント</div>
@@ -1272,56 +1272,197 @@ async function importBillingItems() {
 // RECONCILIATION PAGE
 // ============================================================
 function renderReconcile() {
-  const unmatched = DATA.ledger.filter(l => l.MatchStatus === '未処理' || !l.MatchStatus);
-  const byCompany = {};
-  unmatched.forEach(l => {
-    const cc = l.CompanyCode || companyCode(l.CustCode);
-    if (!byCompany[cc]) byCompany[cc] = { name: l.BillingName, items: [], total: 0 };
-    byCompany[cc].items.push(l);
-    byCompany[cc].total += Number(l.CurrentBilling) || 0;
-  });
+  // === 入金起点の消込画面 ===
+  const unmatchedPay = DATA.payments.filter(p => p.Status === '未処理' || p.Status === '自動候補あり' || !p.Status);
+  const searchText = (document.getElementById('reconcileSearch')?.value || '').toLowerCase();
 
-  const companies = Object.entries(byCompany).sort((a,b) => b[1].total - a[1].total);
+  let filtered = unmatchedPay;
+  if (searchText) filtered = filtered.filter(p =>
+    (p.PayerNameRaw || '').toLowerCase().includes(searchText) ||
+    (p.PayerNameNorm || '').toLowerCase().includes(searchText) ||
+    (p.MatchedBillingName || '').toLowerCase().includes(searchText) ||
+    String(p.Amount).includes(searchText)
+  );
+  filtered = filtered.sort((a, b) => new Date(b.TransDate) - new Date(a.TransDate));
+
+  const unmatchedLedger = DATA.ledger.filter(l => l.MatchStatus === '未処理' || !l.MatchStatus);
 
   return `
     <div class="section-header">
       <div class="section-title">消込</div>
     </div>
-    <div class="section-desc">未処理の請求に対して入金を紐付けます。会社コードでグルーピング表示。</div>
+    <div class="section-desc">入金レコードに対して売掛を紐付けます。入金を選択 → 対応する請求を検索・選択 → 消込確定。</div>
 
-    <div class="flex gap-8 mb-8">
-      <input class="form-input" style="width:300px" placeholder="会社コード or 得意先名で検索..." id="reconcileSearch" oninput="renderPage()">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="dash-card info"><h4>未処理入金</h4><div class="big-num">${unmatchedPay.length}件</div><div class="sub-num">¥${fmtNum(unmatchedPay.reduce((s,p) => s + (Number(p.Amount)||0), 0))}</div></div>
+      <div class="dash-card warn"><h4>未処理請求</h4><div class="big-num">${unmatchedLedger.length}件</div><div class="sub-num">¥${fmtNum(unmatchedLedger.reduce((s,l) => s + (Number(l.CurrentBilling)||0), 0))}</div></div>
+      <div class="dash-card ok"><h4>消込済</h4><div class="big-num">${DATA.ledger.filter(l => l.MatchStatus === '消込済').length}件</div></div>
     </div>
 
-    ${companies.length === 0 ? '<div class="text-muted">未処理の請求はありません。</div>' :
-    companies.map(([cc, group]) => `
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;overflow:hidden">
-        <div style="padding:10px 14px;background:var(--surface2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleReconcileGroup('${cc}')">
-          <div>
-            <span class="td-code" style="font-size:13px">${cc}</span>
-            <span style="margin-left:8px;font-weight:600">${escHtml(group.name)}</span>
-            <span class="badge badge-amber" style="margin-left:8px">${group.items.length}件</span>
-          </div>
-          <div class="td-num" style="font-size:14px;font-weight:600">¥${fmtNum(group.total)}</div>
-        </div>
-        <div id="rg-${cc}" class="hidden">
-          <table class="data-table" style="box-shadow:none">
-            <thead><tr><th>得意先コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th><th class="text-right">入金</th><th>アクション</th></tr></thead>
-            <tbody>${group.items.map(l => `
-              <tr>
-                <td class="td-code">${escHtml(l.CustCode)}</td>
-                <td class="truncate">${escHtml(l.BillingName)}</td>
-                <td class="td-muted">${escHtml(l.ClosingYM)}</td>
-                <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
-                <td class="td-num">${l.PayTotal ? '¥' + fmtNum(l.PayTotal) : '—'}</td>
-                <td><button class="btn btn-primary btn-sm" onclick="openReconcileModal('${l._spId}')">消込</button></td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `).join('')}
+    <div class="flex gap-8 mb-8">
+      <input class="form-input" style="width:300px" placeholder="依頼人名・金額で検索..." id="reconcileSearch" oninput="renderReconcileList()">
+      <select class="form-select" style="width:auto" id="reconcileFilter" onchange="renderReconcileList()">
+        <option value="">全ての未処理入金</option>
+        <option value="自動候補あり">自動候補あり</option>
+        <option value="振込">振込のみ</option>
+        <option value="交換">交換のみ</option>
+      </select>
+    </div>
+    <div id="reconcileListContainer">${renderReconcileList_inner(filtered)}</div>
   `;
+}
+
+function renderReconcileList() {
+  const searchText = (document.getElementById('reconcileSearch')?.value || '').toLowerCase();
+  const typeFilter = document.getElementById('reconcileFilter')?.value || '';
+  let filtered = DATA.payments.filter(p => p.Status === '未処理' || p.Status === '自動候補あり' || !p.Status);
+  if (searchText) filtered = filtered.filter(p =>
+    (p.PayerNameRaw || '').toLowerCase().includes(searchText) ||
+    (p.PayerNameNorm || '').toLowerCase().includes(searchText) ||
+    String(p.Amount).includes(searchText)
+  );
+  if (typeFilter === '自動候補あり') filtered = filtered.filter(p => p.Status === '自動候補あり');
+  else if (typeFilter) filtered = filtered.filter(p => (p.Note || '').includes(typeFilter));
+  filtered = filtered.sort((a, b) => new Date(b.TransDate) - new Date(a.TransDate));
+  const container = document.getElementById('reconcileListContainer');
+  if (container) container.innerHTML = renderReconcileList_inner(filtered);
+}
+
+function renderReconcileList_inner(filtered) {
+  return `<table class="data-table">
+    <thead><tr><th>日付</th><th>ソース</th><th>振込依頼人</th><th class="text-right">金額</th><th>候補</th><th>アクション</th></tr></thead>
+    <tbody>${filtered.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">未処理の入金はありません</td></tr>' :
+    filtered.slice(0, 200).map(p => `
+      <tr>
+        <td class="td-muted nowrap">${fmtDate(p.TransDate)}</td>
+        <td><span class="badge badge-blue">${escHtml(p.DataSource || '')}</span></td>
+        <td class="truncate">${escHtml(p.PayerNameRaw || p.DensaiDebtorName || '—')}</td>
+        <td class="td-num">¥${fmtNum(p.Amount)}</td>
+        <td>${p.MatchedBillingName ? `<span class="badge badge-green">${escHtml(p.MatchedBillingName)}</span>` : '<span class="badge badge-gray">未紐付</span>'}</td>
+        <td>
+          <button class="btn btn-primary btn-sm" onclick="openPaymentReconcile('${p._spId}')">消込</button>
+          <button class="btn btn-outline btn-sm" onclick="markPaymentExcluded('${p._spId}')" title="対象外にする">除外</button>
+        </td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function markPaymentExcluded(paySpId) {
+  if (!confirm('この入金を対象外にしますか？')) return;
+  spUpdateItem(SP.payments, paySpId, { Status: '対象外' }).then(() => {
+    const p = DATA.payments.find(x => x._spId === paySpId);
+    if (p) p.Status = '対象外';
+    renderPage();
+    setStatus('success', '対象外に変更しました');
+  });
+}
+
+// 入金起点の消込モーダル: Step1=請求選択, Step2=金額入力
+function openPaymentReconcile(paySpId) {
+  const pay = DATA.payments.find(p => p._spId === paySpId);
+  if (!pay) return;
+
+  window._selectedPayment = pay;
+  window._appliedPayments = [{ spId: paySpId, payerNameRaw: pay.PayerNameRaw || '', amount: pay.Amount, source: pay.DataSource, dataSource: pay.DataSource }];
+
+  // Find candidate billings
+  const cc = pay.CompanyCode || '';
+  const billingCode = pay.MatchedBillingCode || '';
+  const unmatchedLedger = DATA.ledger.filter(l => l.MatchStatus === '未処理' || !l.MatchStatus);
+
+  // Auto candidates: match by company code or billing code
+  let autoCandidates = [];
+  if (cc || billingCode) {
+    autoCandidates = unmatchedLedger.filter(l =>
+      (cc && (l.CompanyCode === cc || companyCode(l.CustCode) === cc)) ||
+      (billingCode && (l.BillingCode === billingCode || l.CustCode === billingCode))
+    );
+  }
+
+  const modal = document.getElementById('modalContent');
+  modal.innerHTML = `
+    <div class="modal-title">消込 — 入金レコード</div>
+
+    <div style="background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div class="form-label">振込依頼人</div>
+          <div style="font-size:14px;font-weight:600">${escHtml(pay.PayerNameRaw || pay.DensaiDebtorName || '—')}</div>
+        </div>
+        <div>
+          <div class="form-label">入金額</div>
+          <div style="font-size:20px;font-weight:700;color:var(--accent)">¥${fmtNum(pay.Amount)}</div>
+        </div>
+        <div><div class="form-label">日付</div><div>${fmtDate(pay.TransDate)}</div></div>
+        <div><div class="form-label">ソース</div><div><span class="badge badge-blue">${escHtml(pay.DataSource || '')}</span></div></div>
+      </div>
+    </div>
+
+    <div class="form-label">対応する請求を選択</div>
+
+    ${autoCandidates.length > 0 ? `
+    <div class="form-label" style="font-size:11px;color:var(--text-muted)">自動候補</div>
+    <table class="data-table" style="margin-bottom:12px">
+      <thead><tr><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th><th>選択</th></tr></thead>
+      <tbody>${autoCandidates.map(l => `
+        <tr>
+          <td class="td-code">${escHtml(l.CustCode)}</td>
+          <td class="truncate">${escHtml(l.BillingName)}</td>
+          <td class="td-muted">${l.ClosingYM}</td>
+          <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
+          <td><button class="btn btn-primary btn-sm" onclick="selectBillingForPayment('${l._spId}')">選択</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : ''}
+
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input class="form-input" id="rc_billingSearch" placeholder="得意先名・コードで検索..." style="flex:1" oninput="searchBillingForPayment()">
+    </div>
+    <div id="rc_billingSearchResults"></div>
+
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
+    </div>
+  `;
+  showModal();
+}
+
+function searchBillingForPayment() {
+  const q = (document.getElementById('rc_billingSearch')?.value || '').toLowerCase();
+  const container = document.getElementById('rc_billingSearchResults');
+  if (!container || !q) { if (container) container.innerHTML = ''; return; }
+
+  const unmatchedLedger = DATA.ledger.filter(l => l.MatchStatus === '未処理' || !l.MatchStatus);
+  const results = unmatchedLedger.filter(l =>
+    (l.BillingName || '').toLowerCase().includes(q) ||
+    (l.CustCode || '').includes(q) ||
+    (l.BillingCode || '').includes(q)
+  ).slice(0, 20);
+
+  container.innerHTML = results.length === 0 ? '<div class="text-muted" style="font-size:12px;padding:8px">該当する請求が見つかりません</div>' : `
+    <table class="data-table">
+      <thead><tr><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th><th>選択</th></tr></thead>
+      <tbody>${results.map(l => `
+        <tr>
+          <td class="td-code">${escHtml(l.CustCode)}</td>
+          <td class="truncate">${escHtml(l.BillingName)}</td>
+          <td class="td-muted">${l.ClosingYM}</td>
+          <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
+          <td><button class="btn btn-primary btn-sm" onclick="selectBillingForPayment('${l._spId}')">選択</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+// Step 2: After selecting billing, show reconcile form
+function selectBillingForPayment(ledgerSpId) {
+  const item = DATA.ledger.find(l => l._spId === ledgerSpId);
+  const pay = window._selectedPayment;
+  if (!item || !pay) return;
+
+  window._selectedLedger = item;
+  openReconcileModal(ledgerSpId, pay);
 }
 
 function toggleReconcileGroup(cc) {
@@ -1329,18 +1470,24 @@ function toggleReconcileGroup(cc) {
   if (el) el.classList.toggle('hidden');
 }
 
-function openReconcileModal(spId) {
+function openReconcileModal(spId, preselectedPayment) {
   const item = DATA.ledger.find(l => l._spId === spId);
   if (!item) return;
 
-  // Reset applied payments tracking
-  window._appliedPayments = [];
+  // If coming from payment-first flow, keep _appliedPayments; otherwise reset
+  if (!preselectedPayment) {
+    window._appliedPayments = [];
+  }
 
   const cc = item.CompanyCode || companyCode(item.CustCode);
-  const candidatePayments = DATA.payments.filter(p =>
+  const candidatePayments = preselectedPayment ? [] : DATA.payments.filter(p =>
     (p.CompanyCode === cc || p.MatchedBillingCode === item.BillingCode || p.MatchedBillingCode === item.CustCode) &&
     (p.Status !== '消込済' && p.Status !== '対象外')
   );
+
+  // Pre-fill amount from selected payment
+  const preAmount = preselectedPayment ? preselectedPayment.Amount : 0;
+  const preField = preselectedPayment && preselectedPayment.DataSource === 'でんさい' ? 'PayDensai' : 'PayTransfer';
 
   const modal = document.getElementById('modalContent');
   modal.innerHTML = `
@@ -1359,8 +1506,8 @@ function openReconcileModal(spId) {
 
     <div class="form-label">入金・調整入力（SMILE取引区分対応）</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
-      <div class="form-group"><label class="form-label">振込(2)</label><input class="form-input td-num" id="rc_PayTransfer" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">でんさい(4)</label><input class="form-input td-num" id="rc_PayDensai" type="number" value="0"></div>
+      <div class="form-group"><label class="form-label">振込(2)</label><input class="form-input td-num" id="rc_PayTransfer" type="number" value="${preField === 'PayTransfer' ? preAmount : 0}"></div>
+      <div class="form-group"><label class="form-label">でんさい(4)</label><input class="form-input td-num" id="rc_PayDensai" type="number" value="${preField === 'PayDensai' ? preAmount : 0}"></div>
       <div class="form-group"><label class="form-label">現金(1)</label><input class="form-input td-num" id="rc_PayCashAmt" type="number" value="0"></div>
       <div class="form-group"><label class="form-label">相殺(3)</label><input class="form-input td-num" id="rc_AdjOffset" type="number" value="0"></div>
       <div class="form-group"><label class="form-label">売上割引(12)</label><input class="form-input td-num" id="rc_AdjDiscount" type="number" value="0"></div>
@@ -1378,7 +1525,7 @@ function openReconcileModal(spId) {
     <div id="rc_calc" style="padding:12px;background:var(--surface2);border-radius:8px;margin:12px 0;font-family:Consolas,monospace;font-size:12px"></div>
 
     ${candidatePayments.length > 0 ? `
-    <div class="form-label mt-8">対応候補の入金レコード</div>
+    <div class="form-label mt-8">🔗 自動候補の入金レコード</div>
     <table class="data-table" style="margin-bottom:12px">
       <thead><tr><th>日付</th><th>依頼人</th><th class="text-right">金額</th><th>信頼度</th><th>選択</th></tr></thead>
       <tbody>${candidatePayments.map(p => `
@@ -1391,6 +1538,13 @@ function openReconcileModal(spId) {
         </tr>`).join('')}
       </tbody>
     </table>` : ''}
+
+    <div class="form-label mt-8">🔍 入金レコード検索（振込依頼人名・金額で絞り込み）</div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input class="form-input" id="rc_paySearch" placeholder="依頼人名で検索..." style="flex:1" oninput="filterReconcilePayments()">
+      <input class="form-input" id="rc_payAmountSearch" placeholder="金額で検索..." type="number" style="width:140px" oninput="filterReconcilePayments()">
+    </div>
+    <div id="rc_paySearchResults" style="max-height:200px;overflow-y:auto"></div>
 
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
@@ -1419,6 +1573,42 @@ function updateReconcileCalc(item) {
 
   const btn = document.getElementById('rc_confirm');
   if (btn) btn.disabled = false;
+}
+
+// Search unmatched payments in reconcile modal
+function filterReconcilePayments() {
+  const nameQ = (document.getElementById('rc_paySearch')?.value || '').toLowerCase();
+  const amtQ = document.getElementById('rc_payAmountSearch')?.value || '';
+  const container = document.getElementById('rc_paySearchResults');
+  if (!container) return;
+
+  if (!nameQ && !amtQ) { container.innerHTML = ''; return; }
+
+  let results = DATA.payments.filter(p => p.Status !== '消込済' && p.Status !== '対象外');
+  if (nameQ) results = results.filter(p =>
+    (p.PayerNameRaw || '').toLowerCase().includes(nameQ) ||
+    (p.PayerNameNorm || '').toLowerCase().includes(nameQ) ||
+    (p.Note || '').toLowerCase().includes(nameQ)
+  );
+  if (amtQ) {
+    const amt = parseInt(amtQ, 10);
+    if (!isNaN(amt)) results = results.filter(p => String(p.Amount).includes(String(amt)));
+  }
+  results = results.slice(0, 20);
+
+  container.innerHTML = results.length === 0 ? '<div class="text-muted" style="font-size:12px;padding:8px">該当なし</div>' : `
+    <table class="data-table">
+      <thead><tr><th>日付</th><th>ソース</th><th>依頼人</th><th class="text-right">金額</th><th>選択</th></tr></thead>
+      <tbody>${results.map(p => `
+        <tr>
+          <td class="td-muted">${fmtDate(p.TransDate)}</td>
+          <td><span class="badge badge-blue">${escHtml(p.DataSource || '')}</span></td>
+          <td class="truncate">${escHtml(p.PayerNameRaw || p.DensaiDebtorName || '')}</td>
+          <td class="td-num">¥${fmtNum(p.Amount)}</td>
+          <td><button class="btn btn-primary btn-sm" onclick="applyPaymentToReconcile('${p._spId}', ${p.Amount}, '${p.DataSource}')">適用</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
 }
 
 // Track applied payments for learning data
