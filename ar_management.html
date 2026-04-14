@@ -1507,6 +1507,8 @@ function openPaymentReconcile(paySpId) {
       </tbody>
     </table>` : ''}
 
+    ${buildAmountCandidatesHtml(pay, unmatchedLedger, autoCandidates)}
+
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <input class="form-input" id="rc_billingSearch" placeholder="得意先名・コードで検索..." style="flex:1" oninput="searchBillingForPayment()">
     </div>
@@ -1518,6 +1520,62 @@ function openPaymentReconcile(paySpId) {
     </div>
   `;
   showModal();
+}
+
+function buildAmountCandidatesHtml(pay, unmatchedLedger, autoCandidates) {
+  const amt = Number(pay.Amount) || 0;
+  if (amt <= 0) return '';
+
+  // Exclude items already shown in auto candidates
+  const autoSpIds = new Set(autoCandidates.map(l => l._spId));
+  const remaining = unmatchedLedger.filter(l => !autoSpIds.has(l._spId));
+
+  // Exact match
+  const exact = remaining.filter(l => Number(l.CurrentBilling) === amt);
+  // Near match: within ±1% or ±1000 (whichever is larger) — covers typical bank fees
+  const tolerance = Math.max(amt * 0.01, 1000);
+  const near = remaining.filter(l => {
+    const b = Number(l.CurrentBilling) || 0;
+    const diff = Math.abs(b - amt);
+    return diff > 0 && diff <= tolerance && !exact.includes(l);
+  }).sort((a, b) => Math.abs((Number(a.CurrentBilling)||0) - amt) - Math.abs((Number(b.CurrentBilling)||0) - amt))
+    .slice(0, 10);
+
+  if (exact.length === 0 && near.length === 0) return '';
+
+  // If there are already auto candidates from name matching, make this collapsed
+  const collapsed = autoCandidates.length > 0;
+
+  const renderRows = (items) => items.map(l => {
+    const diff = (Number(l.CurrentBilling) || 0) - amt;
+    const diffText = diff === 0 ? '<span style="color:var(--success);font-weight:600">一致</span>'
+      : `<span style="color:var(--warn)">${diff > 0 ? '+' : ''}¥${fmtNum(diff)}</span>`;
+    return `
+      <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}', event)" style="cursor:pointer">
+        <td><input type="checkbox" class="rc-billing-cb" data-spid="${l._spId}" data-amount="${l.CurrentBilling || 0}"></td>
+        <td class="td-code">${escHtml(l.CustCode)}</td>
+        <td class="truncate">${escHtml(l.BillingName)}</td>
+        <td class="td-muted">${l.ClosingYM}</td>
+        <td class="td-num">¥${fmtNum(l.CurrentBilling)}</td>
+        <td class="td-num">${diffText}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div style="margin-bottom:12px">
+      <div class="form-label" style="font-size:11px;color:var(--text-muted);cursor:pointer" onclick="document.getElementById('rc_amtCandidates').classList.toggle('hidden')">
+        💰 金額候補（${exact.length + near.length}件） ${collapsed ? '▶ クリックで展開' : ''}
+      </div>
+      <div id="rc_amtCandidates" ${collapsed ? 'class="hidden"' : ''}>
+        <table class="data-table">
+          <thead><tr><th style="width:40px">✓</th><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th><th class="text-right">差額</th></tr></thead>
+          <tbody>
+            ${renderRows(exact)}
+            ${near.length > 0 ? renderRows(near) : ''}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function toggleBillingSelection(spId, evt) {
@@ -1764,15 +1822,15 @@ function openReconcileModal(spId, preselectedPayment) {
 
     <div class="form-label">入金・調整入力（SMILE取引区分対応）</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
-      <div class="form-group"><label class="form-label">振込(2)</label><input class="form-input td-num" id="rc_PayTransfer" type="number" value="${preField === 'PayTransfer' ? preAmount : 0}"></div>
-      <div class="form-group"><label class="form-label">でんさい(4)</label><input class="form-input td-num" id="rc_PayDensai" type="number" value="${preField === 'PayDensai' ? preAmount : 0}"></div>
-      <div class="form-group"><label class="form-label">現金(1)</label><input class="form-input td-num" id="rc_PayCashAmt" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">相殺(3)</label><input class="form-input td-num" id="rc_AdjOffset" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">売上割引(12)</label><input class="form-input td-num" id="rc_AdjDiscount" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">支払手数料(13)</label><input class="form-input td-num" id="rc_AdjFee" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">販促費(9)</label><input class="form-input td-num" id="rc_AdjPromo" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">調整(6)</label><input class="form-input td-num" id="rc_AdjOther" type="number" value="0"></div>
-      <div class="form-group"><label class="form-label">為替差損益</label><input class="form-input td-num" id="rc_AdjFxGainLoss" type="number" value="0"></div>
+      <div class="form-group"><label class="form-label">振込(2)</label><input class="form-input td-num rc-amt" id="rc_PayTransfer" type="text" inputmode="numeric" value="${preField === 'PayTransfer' ? fmtNum(preAmount) : '0'}"></div>
+      <div class="form-group"><label class="form-label">でんさい(4)</label><input class="form-input td-num rc-amt" id="rc_PayDensai" type="text" inputmode="numeric" value="${preField === 'PayDensai' ? fmtNum(preAmount) : '0'}"></div>
+      <div class="form-group"><label class="form-label">現金(1)</label><input class="form-input td-num rc-amt" id="rc_PayCashAmt" type="text" inputmode="numeric" value="0"></div>
+      <div class="form-group"><label class="form-label">相殺(3)</label><input class="form-input td-num rc-amt" id="rc_AdjOffset" type="text" inputmode="numeric" value="0"></div>
+      <div class="form-group"><label class="form-label">売上割引(12)</label><input class="form-input td-num rc-amt" id="rc_AdjDiscount" type="text" inputmode="numeric" value="0"></div>
+      <div class="form-group"><label class="form-label">支払手数料(13)</label><input class="form-input td-num rc-amt" id="rc_AdjFee" type="text" inputmode="numeric" value="0"></div>
+      <div class="form-group"><label class="form-label">販促費(9)</label><input class="form-input td-num rc-amt" id="rc_AdjPromo" type="text" inputmode="numeric" value="0"></div>
+      <div class="form-group"><label class="form-label">調整(6)</label><input class="form-input td-num rc-amt" id="rc_AdjOther" type="text" inputmode="numeric" value="0"></div>
+      <div class="form-group"><label class="form-label">為替差損益</label><input class="form-input td-num rc-amt" id="rc_AdjFxGainLoss" type="text" inputmode="numeric" value="0"></div>
     </div>
 
     <div class="form-group">
@@ -1810,16 +1868,33 @@ function openReconcileModal(spId, preselectedPayment) {
     </div>
   `;
 
-  // Auto-calculate on input
-  modal.querySelectorAll('input[type="number"]').forEach(el => {
+  // Auto-calculate on input + comma formatting for amount fields
+  modal.querySelectorAll('.rc-amt').forEach(el => {
     el.addEventListener('input', () => updateReconcileCalc(item));
+    el.addEventListener('focus', () => {
+      // フォーカス時: カンマを外して生数字に
+      const raw = parseInt(String(el.value).replace(/[,\s]/g, ''), 10) || 0;
+      el.value = raw === 0 ? '' : String(raw);
+      el.select();
+    });
+    el.addEventListener('blur', () => {
+      // ブラー時: カンマ区切りに戻す
+      const raw = parseInt(String(el.value).replace(/[,\s]/g, ''), 10) || 0;
+      el.value = fmtNum(raw);
+    });
   });
   updateReconcileCalc(item);
   showModal();
 }
 
+// カンマ入りテキストから数値を取得するヘルパー
+function rcVal(id) {
+  const el = document.getElementById(id);
+  return parseInt(String(el?.value || '0').replace(/[,\s]/g, ''), 10) || 0;
+}
+
 function updateReconcileCalc(item) {
-  const v = id => parseInt(document.getElementById(id)?.value) || 0;
+  const v = rcVal;
   const payTotal = v('rc_PayTransfer') + v('rc_PayDensai') + v('rc_PayCashAmt');
   const adjTotal = v('rc_AdjOffset') + v('rc_AdjDiscount') + v('rc_AdjFee') + v('rc_AdjPromo') + v('rc_AdjOther') + v('rc_AdjFxGainLoss');
   const billing = Number(item.CurrentBilling) || 0;
@@ -1876,7 +1951,7 @@ window._appliedPayments = window._appliedPayments || [];
 function applyPaymentToReconcile(paySpId, amount, source) {
   const field = source === 'でんさい' ? 'rc_PayDensai' : 'rc_PayTransfer';
   const el = document.getElementById(field);
-  if (el) el.value = (parseInt(el.value) || 0) + amount;
+  if (el) el.value = fmtNum(rcVal(field) + amount);
   el.dispatchEvent(new Event('input'));
 
   // Track which payment was applied
@@ -1897,7 +1972,7 @@ async function confirmReconcile(spId) {
   const item = DATA.ledger.find(l => l._spId === spId);
   if (!item) return;
 
-  const v = id => parseInt(document.getElementById(id)?.value) || 0;
+  const v = rcVal;
   const fields = {
     PayTransfer: v('rc_PayTransfer'),
     PayDensai: v('rc_PayDensai'),
