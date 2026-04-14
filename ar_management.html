@@ -756,9 +756,16 @@ async function handleBankCsvUpload(event) {
 
     if (rows.length < 2) throw new Error('データが見つかりません');
 
-    // Parse Zengin format
-    const accountType = document.getElementById('accountType').value;
-    const parsed = parseZenginCSV(rows, accountType);
+    // Parse Zengin format (auto-detect account type from header)
+    const manualType = document.getElementById('accountType').value;
+    const { items: parsed, detectedAccountType } = parseZenginCSV(rows, manualType);
+    const accountType = detectedAccountType || manualType;
+
+    // Auto-set dropdown to match detected type
+    if (detectedAccountType) {
+      const sel = document.getElementById('accountType');
+      if (sel) sel.value = detectedAccountType;
+    }
 
     // Check duplicates (normalize dates: SP returns ISO "2026-03-02T00:00:00Z", CSV gives "2026-03-02")
     const dateOnly = d => (d || '').substring(0, 10);
@@ -766,10 +773,11 @@ async function handleBankCsvUpload(event) {
     const newItems = parsed.filter(p => !existingKeys.has(dateOnly(p.TransDate) + '|' + Number(p.Amount) + '|' + (p.PayerNameRaw || '')));
     const dupes = parsed.length - newItems.length;
 
+    const autoLabel = detectedAccountType ? '（自動判定）' : '';
     preview.innerHTML = `
       <div class="cp-result pass">
         <div class="cp-title">読み込み結果: ${parsed.length}件（新規: ${newItems.length}件、重複スキップ: ${dupes}件）</div>
-        <div class="cp-detail">${file.name} / ${accountType}預金</div>
+        <div class="cp-detail">${file.name} / ${accountType}預金 ${autoLabel}</div>
       </div>
       ${newItems.length > 0 ? `
       <div class="import-preview">
@@ -786,7 +794,7 @@ async function handleBankCsvUpload(event) {
           </tbody>
         </table>
       </div>
-      <button class="btn btn-primary mt-8" onclick="importBankPayments()">取り込み実行（${newItems.length}件）</button>
+      <button class="btn btn-primary mt-8" id="btnImportBank" onclick="importBankPayments()">取り込み実行（${newItems.length}件）</button>
       ` : '<div class="text-muted mt-8">新規データはありません。</div>'}
     `;
 
@@ -800,23 +808,19 @@ async function handleBankCsvUpload(event) {
   }
 }
 
-function parseZenginCSV(rows, accountType) {
+function parseZenginCSV(rows, accountTypeOverride) {
   // SMBC Web21 全銀形式（CSV）
   // Row types: 1=ヘッダー, 2=明細データ, 8=トレーラー, 9=エンド
-  // Type-2 cols (20 columns):
-  //  0: データ区分(2)  1: 照会番号  2: 勘定日(YYMMDD 令和)  3: 預入・払出日
-  //  4: 入払区分(1=入金,2=出金)  5: 取引区分  6: 取引金額(12桁0埋め)
-  //  7: うち他店券金額  8: 交換呈示日  9: 不渡返還日
-  // 10: 手形・小切手区分  11: 手形・小切手番号  12: 僚店番号
-  // 13: 振込依頼人コード  14: 振込依頼人名  15: 仕向銀行名
-  // 16: 仕向支店名  17: 摘要内容  18: EDI情報  19: ダミー
+  // Header (type 1) col[11]: 預金種目 1=普通, 2=当座, 3=納税準備, 4=通知, 5=別段, 9=その他
+  const YOKIN_MAP = {'1':'普通','2':'当座','3':'納税準備','4':'通知','5':'別段','9':'その他'};
   const TORIHIKI_MAP = {'11':'振込','12':'大口振込','13':'交換','14':'振替','15':'ATM','16':'CD','17':'手取立','18':'他店自振','19':'他店振込'};
   const results = [];
-  let bankName = '', branchName = '';
+  let bankName = '', branchName = '', detectedAccountType = '';
   for (const r of rows) {
-    // Type 1 = header: extract bank/branch info
+    // Type 1 = header: extract bank/branch info + account type
     if (r[0] === '1' && r.length >= 10) {
       bankName = r[7] || ''; branchName = r[9] || '';
+      if (r.length > 11) detectedAccountType = YOKIN_MAP[r[11]] || '';
       continue;
     }
     // Only process type 2 (transaction data)
@@ -839,6 +843,7 @@ function parseZenginCSV(rows, accountType) {
     const payerName = (r[14] || '').trim() || (r[17] || '').trim();
     const tekiyou = (r[17] || '').trim();
 
+    const accountType = detectedAccountType || accountTypeOverride;
     results.push({
       TransDate: transDate,
       DataSource: accountType === '普通' ? '普通CSV' : '当座CSV',
@@ -854,7 +859,7 @@ function parseZenginCSV(rows, accountType) {
       Status: '未処理',
     });
   }
-  return results;
+  return { items: results, detectedAccountType };
 }
 
 // Half-width katakana → Full-width katakana map
@@ -962,6 +967,8 @@ async function importBankPayments() {
 
   window._bankImporting = true;                // ← ロック
   window._pendingBankImport = null;            // ← 即クリアして再クリック無効化
+  const btn = document.getElementById('btnImportBank');
+  if (btn) { btn.disabled = true; btn.textContent = '取り込み中...'; }
   setStatus('loading', `${items.length}件を取り込み中...`);
 
   try {
@@ -1274,7 +1281,7 @@ function processBillingRows(rows) {
           </tbody>
         </table>
       </div>
-      <button class="btn btn-primary mt-8" onclick="importBillingItems()">取り込み実行（${newItems.length}件）</button>
+      <button class="btn btn-primary mt-8" id="btnImportBilling" onclick="importBillingItems()">取り込み実行（${newItems.length}件）</button>
       ` : ''}
     `;
 
@@ -1291,6 +1298,8 @@ async function importBillingItems() {
 
   window._billingImporting = true;               // ← ロック
   window._pendingBillingImport = null;           // ← 即クリア
+  const btn = document.getElementById('btnImportBilling');
+  if (btn) { btn.disabled = true; btn.textContent = '取り込み中...'; }
   setStatus('loading', `売掛台帳 ${items.length}件を取り込み中...`);
 
   try {
