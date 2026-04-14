@@ -1496,7 +1496,7 @@ function openPaymentReconcile(paySpId) {
     <table class="data-table" style="margin-bottom:12px">
       <thead><tr><th style="width:40px">✓</th><th>コード</th><th>得意先名</th><th>締年月</th><th class="text-right">請求額</th></tr></thead>
       <tbody>${autoCandidates.map(l => `
-        <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}')" style="cursor:pointer">
+        <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}', event)" style="cursor:pointer">
           <td><input type="checkbox" class="rc-billing-cb" data-spid="${l._spId}" data-amount="${l.CurrentBilling || 0}"></td>
           <td class="td-code">${escHtml(l.CustCode)}</td>
           <td class="truncate">${escHtml(l.BillingName)}</td>
@@ -1519,10 +1519,11 @@ function openPaymentReconcile(paySpId) {
   showModal();
 }
 
-function toggleBillingSelection(spId) {
+function toggleBillingSelection(spId, evt) {
   const cb = document.querySelector(`.rc-billing-cb[data-spid="${spId}"]`);
   if (!cb) return;
-  cb.checked = !cb.checked;
+  // チェックボックス自体のクリックはブラウザが自動トグルするので二重にしない
+  if (!evt || evt.target !== cb) cb.checked = !cb.checked;
   const row = document.getElementById('rc_row_' + spId);
   if (row) row.style.background = cb.checked ? '#EAF3DE' : '';
   updateBillingSelectionSummary();
@@ -1554,7 +1555,13 @@ function updateBillingSelectionSummary() {
     return;
   }
 
-  const diff = pay.Amount - totalBilling;
+  // Get existing adjustment values if already rendered
+  const existingFee = document.getElementById('rc_multiFee')?.value || '0';
+  const existingDiscount = document.getElementById('rc_multiDiscount')?.value || '0';
+  const existingOther = document.getElementById('rc_multiOther')?.value || '0';
+
+  const adjTotal = (parseInt(existingFee) || 0) + (parseInt(existingDiscount) || 0) + (parseInt(existingOther) || 0);
+  const diff = pay.Amount + adjTotal - totalBilling;
   const diffColor = diff === 0 ? 'var(--success)' : 'var(--danger)';
   const diffLabel = diff === 0 ? '一致' : (diff > 0 ? `過入金 +¥${fmtNum(diff)}` : `不足 ¥${fmtNum(diff)}`);
 
@@ -1566,10 +1573,15 @@ function updateBillingSelectionSummary() {
         <span style="margin-left:8px">請求合計: <strong>¥${fmtNum(totalBilling)}</strong></span>
       </div>
       <div style="font-size:14px;font-weight:700;color:${diffColor}">
-        入金 ¥${fmtNum(pay.Amount)} − 請求 ¥${fmtNum(totalBilling)} = ${diffLabel}
+        入金¥${fmtNum(pay.Amount)}${adjTotal ? ` + 調整¥${fmtNum(adjTotal)}` : ''} − 請求¥${fmtNum(totalBilling)} = ${diffLabel}
       </div>
     </div>
-    ${selectedItems.length === 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">1件だけなら詳細入力画面で調整額も入力可</div>' : ''}
+    ${selectedItems.length >= 2 ? `
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:end">
+      <div style="flex:1"><div style="font-size:10px;color:var(--text-muted)">支払手数料</div><input class="form-input" id="rc_multiFee" type="number" value="${existingFee}" style="font-size:12px;padding:4px 8px" oninput="updateBillingSelectionSummary()"></div>
+      <div style="flex:1"><div style="font-size:10px;color:var(--text-muted)">売上割引</div><input class="form-input" id="rc_multiDiscount" type="number" value="${existingDiscount}" style="font-size:12px;padding:4px 8px" oninput="updateBillingSelectionSummary()"></div>
+      <div style="flex:1"><div style="font-size:10px;color:var(--text-muted)">その他調整</div><input class="form-input" id="rc_multiOther" type="number" value="${existingOther}" style="font-size:12px;padding:4px 8px" oninput="updateBillingSelectionSummary()"></div>
+    </div>` : '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">1件だけなら詳細入力画面で調整額も入力可</div>'}
   `;
 
   confirmBtn.style.display = 'inline-flex';
@@ -1587,30 +1599,52 @@ async function confirmMultiReconcile() {
     return;
   }
 
-  // 複数件: 各売掛に入金を按分（まずは全額消込=請求額をそのまま入金扱い）
-  if (!confirm(`${billings.length}件の売掛に対して入金 ¥${fmtNum(pay.Amount)} を消込します。\n各請求は全額入金として処理されます。よろしいですか？`)) return;
+  // 複数件: 各売掛に入金を按分、調整額は最後の1件に集約
+  const multiFee = parseInt(document.getElementById('rc_multiFee')?.value) || 0;
+  const multiDiscount = parseInt(document.getElementById('rc_multiDiscount')?.value) || 0;
+  const multiOther = parseInt(document.getElementById('rc_multiOther')?.value) || 0;
+  const multiAdj = multiFee + multiDiscount + multiOther;
+  const totalBilling = billings.reduce((s, b) => s + (Number(b.CurrentBilling) || 0), 0);
+  const finalDiff = pay.Amount + multiAdj - totalBilling;
+
+  let confirmMsg = `${billings.length}件の売掛に対して入金 ¥${fmtNum(pay.Amount)} を消込します。`;
+  if (multiAdj) confirmMsg += `\n調整額: ¥${fmtNum(multiAdj)}（手数料:${multiFee} 割引:${multiDiscount} 他:${multiOther}）`;
+  if (finalDiff !== 0) confirmMsg += `\n⚠️ 差額 ¥${fmtNum(finalDiff)} が発生します（繰越残高に反映）。`;
+  confirmMsg += '\nよろしいですか？';
+  if (!confirm(confirmMsg)) return;
 
   try {
     setStatus('loading', `${billings.length}件の消込を保存中...`);
     const applied = window._appliedPayments || [];
 
-    for (const item of billings) {
+    for (let idx = 0; idx < billings.length; idx++) {
+      const item = billings[idx];
       const billing = Number(item.CurrentBilling) || 0;
+      const isLast = idx === billings.length - 1;
+      // 調整額は最後の1件にまとめる
+      const fee = isLast ? multiFee : 0;
+      const discount = isLast ? multiDiscount : 0;
+      const other = isLast ? multiOther : 0;
+      const adjTotal = fee + discount + other;
+      const payAmount = billing - adjTotal;
+      const nextBalance = isLast ? finalDiff : 0;
+
       const fields = {
-        PayTransfer: pay.DataSource === 'でんさい' ? 0 : billing,
-        PayDensai: pay.DataSource === 'でんさい' ? billing : 0,
-        PayCashAmt: 0, AdjOffset: 0, AdjDiscount: 0, AdjFee: 0,
-        AdjPromo: 0, AdjOther: 0, AdjFxGainLoss: 0,
-        PayTotal: billing, AdjTotal: 0,
-        NextMonthBalance: 0,
+        PayTransfer: pay.DataSource === 'でんさい' ? 0 : payAmount,
+        PayDensai: pay.DataSource === 'でんさい' ? payAmount : 0,
+        PayCashAmt: 0, AdjOffset: 0,
+        AdjDiscount: discount, AdjFee: fee,
+        AdjPromo: 0, AdjOther: other, AdjFxGainLoss: 0,
+        PayTotal: payAmount, AdjTotal: adjTotal,
+        NextMonthBalance: nextBalance,
         Discrepancy: 0,
-        MatchStatus: '消込済',
+        MatchStatus: nextBalance === 0 ? '消込済' : '要確認',
         MatchDate: new Date().toISOString(),
         MatchedBy: account?.name || '',
         PayerNameUsed: pay.PayerNameRaw || pay.DensaiDebtorName || '',
         LinkedPaymentIds: pay._spId,
         MatchMethod: pay.DataSource === 'でんさい' ? 'でんさい' : '振込',
-        ReconcileNote: `一括消込（${billings.length}件）入金¥${fmtNum(pay.Amount)}`,
+        ReconcileNote: `一括消込（${billings.length}件）入金¥${fmtNum(pay.Amount)}${multiAdj ? ` 調整¥${fmtNum(multiAdj)}` : ''}`,
       };
       await spUpdateItem(SP.ledger, item._spId, fields);
       Object.assign(item, fields);
@@ -1661,7 +1695,7 @@ function searchBillingForPayment() {
       <tbody>${results.map(l => {
         const alreadyChecked = (window._selectedBillings || []).some(b => b._spId === l._spId);
         return `
-        <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}')" style="cursor:pointer;${alreadyChecked ? 'background:#EAF3DE' : ''}">
+        <tr id="rc_row_${l._spId}" onclick="toggleBillingSelection('${l._spId}', event)" style="cursor:pointer;${alreadyChecked ? 'background:#EAF3DE' : ''}">
           <td><input type="checkbox" class="rc-billing-cb" data-spid="${l._spId}" data-amount="${l.CurrentBilling || 0}" ${alreadyChecked ? 'checked' : ''}></td>
           <td class="td-code">${escHtml(l.CustCode)}</td>
           <td class="truncate">${escHtml(l.BillingName)}</td>
