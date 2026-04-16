@@ -1118,6 +1118,14 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
         <div class="filter-btn" onclick="setFaxViewFilter('done',this)">✅ 完了済み</div>
         <div class="filter-btn" onclick="setFaxViewFilter('all',this)">すべて</div>
       </div>
+      <!-- FAXテキスト検索＆日付フィルター -->
+      <div style="display:flex;align-items:center;gap:6px;padding:4px 12px;border-bottom:1px solid var(--border);background:var(--surface);font-size:11px">
+        <input class="search-input" id="faxSearchInput" type="text" placeholder="得意先・内容で検索..." oninput="renderFaxViewList()" style="flex:1;padding:4px 8px;font-size:11px">
+        <input type="date" id="faxDateFrom" onchange="renderFaxViewList()" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text)">
+        <span style="color:var(--text-muted)">〜</span>
+        <input type="date" id="faxDateTo" onchange="renderFaxViewList()" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text)">
+        <button onclick="document.getElementById('faxSearchInput').value='';document.getElementById('faxDateFrom').value='';document.getElementById('faxDateTo').value='';renderFaxViewList()" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;background:var(--surface);color:var(--text-muted)" title="クリア">✕</button>
+      </div>
     </div>
 
     <!-- FAXメイン（一覧 / 詳細 切り替え） -->
@@ -1157,6 +1165,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
             <div id="faxViewActionArea">
               <textarea class="form-textarea" id="faxViewComment" rows="3" placeholder="対応内容を入力（必須）" style="margin-bottom:7px"></textarea>
               <button class="btn btn-green" onclick="completeFaxView()" style="width:100%">✅ 完了にする</button>
+              <div style="margin-top:10px;display:flex;gap:6px;">
+                <button class="btn" onclick="faxViewLinkToCase()" style="flex:1;font-size:11px;padding:5px 8px;">📋 案件に紐付け</button>
+                <button class="btn" onclick="faxViewBackToUntriaged()" style="flex:1;font-size:11px;padding:5px 8px;">↩ 未仕訳に戻す</button>
+              </div>
             </div>
             <div id="faxViewDoneArea" style="display:none;padding:8px;background:#EAF3DE;border-radius:6px;font-size:12px;color:#3B6D11">
               <div id="faxViewDoneInfo"></div>
@@ -1214,6 +1226,14 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
         <input class="search-input" id="assigneeFilter" type="text" placeholder="担当者で絞り込み..." oninput="renderCaseList()" style="flex:1;padding:4px 8px;font-size:11px">
         <button id="assigneePinBtn" onclick="toggleAssigneePin()" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;background:var(--surface);color:var(--text-muted);white-space:nowrap" title="担当者を固定/解除">📌</button>
         <button onclick="clearAssigneeFilter()" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;background:var(--surface);color:var(--text-muted)" title="クリア">✕</button>
+      </div>
+      <!-- 日付範囲フィルター -->
+      <div id="dateFilterRow" style="display:flex;align-items:center;gap:6px;padding:4px 12px;border-bottom:1px solid var(--border);background:var(--surface);font-size:11px">
+        <span style="color:var(--text-muted);white-space:nowrap">期間:</span>
+        <input type="date" id="dateFrom" onchange="renderCaseList()" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text)">
+        <span style="color:var(--text-muted)">〜</span>
+        <input type="date" id="dateTo" onchange="renderCaseList()" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text)">
+        <button onclick="document.getElementById('dateFrom').value='';document.getElementById('dateTo').value='';renderCaseList()" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;background:var(--surface);color:var(--text-muted)" title="日付クリア">✕</button>
       </div>
       <div class="filter-row">
         <div class="filter-btn active" onclick="setFilter('all', this)">すべて</div>
@@ -1680,6 +1700,9 @@ function showApp() {
   const name = account.name || account.username;
   document.getElementById('userName').textContent = name.split(' ')[0];
   document.getElementById('userAvatar').textContent = name.charAt(0).toUpperCase();
+  // 自動更新（3分ポーリング）開始
+  startAutoRefresh();
+
   // 担当者メンバーをAPIから取得→LookupId解決→選択肢を初期化
   // この Promise を assigneeMembersReady に保存し、loadCases が待機できるようにする
   assigneeMembersReady = fetchAssigneeMembers().then(() => {
@@ -2385,11 +2408,21 @@ function isDetailMode() {
 function getFilteredCases() {
   const q = document.getElementById('searchInput').value.toLowerCase();
   const aq = (document.getElementById('assigneeFilter')?.value || '').toLowerCase();
+  const dateFrom = document.getElementById('dateFrom')?.value || '';
+  const dateTo = document.getElementById('dateTo')?.value || '';
   applyEscalation();
   let filtered = cases.filter(c => {
     if (aq) {
       const assignee = (c.AssignedTo?.LookupValue || c.AssignedTo || '').toString().toLowerCase();
       if (!assignee.includes(aq)) return false;
+    }
+    // 日付範囲フィルター（受取日 = LastEventDate or Modified ベース）
+    if (dateFrom || dateTo) {
+      const d = c.LastEventDate || c.Modified || '';
+      if (!d) return false;
+      const dStr = d.slice(0, 10); // YYYY-MM-DD
+      if (dateFrom && dStr < dateFrom) return false;
+      if (dateTo && dStr > dateTo) return false;
     }
     if (q) {
       const haystack = [
@@ -3667,6 +3700,28 @@ function renderFaxViewList() {
   if (faxViewFilter === 'undone') filtered = filtered.filter(e => e.CompletedFlag !== true);
   if (faxViewFilter === 'done')   filtered = filtered.filter(e => e.CompletedFlag === true);
 
+  // テキスト検索
+  const fq = (document.getElementById('faxSearchInput')?.value || '').toLowerCase();
+  if (fq) {
+    filtered = filtered.filter(e => {
+      const hay = [e.RelationName, e.CaseName, e.Summary, e.EventType, e.Title]
+        .map(v => String(v || '').toLowerCase()).join(' ');
+      return hay.includes(fq);
+    });
+  }
+  // 日付フィルター
+  const fDateFrom = document.getElementById('faxDateFrom')?.value || '';
+  const fDateTo = document.getElementById('faxDateTo')?.value || '';
+  if (fDateFrom || fDateTo) {
+    filtered = filtered.filter(e => {
+      const d = (e.EventDate || '').slice(0, 10);
+      if (!d) return false;
+      if (fDateFrom && d < fDateFrom) return false;
+      if (fDateTo && d > fDateTo) return false;
+      return true;
+    });
+  }
+
   // 部署別の未対応件数をタブに反映
   const deptCount = (dept) => {
     const src = faxViewItems.filter(e => e.CompletedFlag !== true);
@@ -3822,6 +3877,66 @@ async function completeFaxView() {
     setStatus('success', '完了処理しました');
   } catch(err) {
     alert('完了処理エラー: ' + err.message);
+  }
+}
+
+// FAX対応から案件管理に紐付け（既存案件を選択 or 新規案件登録）
+async function faxViewLinkToCase() {
+  const e = faxViewItems.find(x => x._spId === currentFaxViewId);
+  if (!e) return;
+  const choice = confirm('既存案件に紐付けますか？\n\n「OK」→ 案件ID入力\n「キャンセル」→ 新規案件登録');
+  if (choice) {
+    const caseId = prompt('紐付ける案件ID を入力（例: EST-2026-3601）:');
+    if (!caseId || !caseId.trim()) return;
+    const target = cases.find(c => c.CaseId === caseId.trim());
+    if (!target) { alert('案件が見つかりません: ' + caseId); return; }
+    try {
+      const sid = await getSiteId();
+      await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${e._spId}/fields`, {
+        SortKubun: '案件管理',
+        CaseId: caseId.trim(),
+      });
+      faxViewItems = faxViewItems.filter(x => x._spId !== currentFaxViewId);
+      currentFaxViewId = null;
+      backToFaxList();
+      setStatus('success', `案件 ${caseId} に紐付けました`);
+    } catch(err) {
+      alert('紐付けエラー: ' + err.message);
+    }
+  } else {
+    // 新規案件登録モーダルを開く（triage側と同じ仕組みを使う）
+    pendingTriageEventId = e._spId;
+    openRegModal();
+    // プリフィル
+    if (e.RelationName) document.getElementById('regCompanyName').value = e.RelationName;
+    if (e.CaseName) {
+      document.getElementById('regTitle').value =
+        (e.RelationName ? e.RelationName + ' ' : '') + e.CaseName;
+    }
+  }
+}
+
+// FAX対応から未仕訳に戻す
+async function faxViewBackToUntriaged() {
+  const e = faxViewItems.find(x => x._spId === currentFaxViewId);
+  if (!e) return;
+  if (!confirm('未仕訳に戻しますか？\n受信トレイの未仕訳一覧に再表示されます。')) return;
+  try {
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${e._spId}/fields`, {
+      SortKubun: '未仕訳',
+      AssignedDept: '',
+      CompletedFlag: false,
+      CompletedBy: '',
+      CompletedAt: null,
+      CompletedNote: '',
+    });
+    faxViewItems = faxViewItems.filter(x => x._spId !== currentFaxViewId);
+    currentFaxViewId = null;
+    backToFaxList();
+    setStatus('success', '未仕訳に戻しました');
+  } catch(err) {
+    alert('戻しエラー: ' + err.message);
   }
 }
 
@@ -4170,9 +4285,36 @@ function switchMainTab(tab) {
       mainEl.classList.remove('detail-mode');
     }
     switchCaseSubTab('all');
-    if (!cases.length) loadCases();
-    else renderCaseList();
+    // タブ切替時は常にリロード（他ユーザーの変更を反映）
+    loadCases();
   }
+}
+
+// ============================================================
+// 自動更新（ポーリング）
+// ============================================================
+let autoRefreshTimer = null;
+const AUTO_REFRESH_INTERVAL = 3 * 60 * 1000; // 3分
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  autoRefreshTimer = setInterval(() => {
+    // アクティブなタブに応じてデータ再取得（詳細表示中は更新しない＝操作中の邪魔をしない）
+    const triageW = document.getElementById('triageWrapper');
+    const faxHistW = document.getElementById('faxHistoryWrapper');
+    const caseMgmt = document.getElementById('caseMgmtView');
+    if (triageW && triageW.style.display !== 'none') {
+      loadTriageList();
+    } else if (faxHistW && faxHistW.style.display !== 'none' && !currentFaxViewId) {
+      loadFaxViewList();
+    } else if (caseMgmt && caseMgmt.style.display !== 'none' && !currentCaseId) {
+      loadCases();
+    }
+  }, AUTO_REFRESH_INTERVAL);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
 }
 
 function switchCaseSubTab(sub) {
