@@ -1534,11 +1534,14 @@ const SALES_STATUSES = ['営業'];
 const DEFAULT_ESCALATION_DAYS = 3;
 
 // ============================================================
-// 担当者リスト（編集するだけで変更可能）
+// 担当者リスト（M365グループ「業務センター」メンバーを動的取得）
 // ============================================================
-const MEMBER_LIST = [
-  '利根川', '大山', '高田', 'GAO', '川島', '小林', '矢野',
-];
+// 業務センター グループ ID（M365グループ）
+const ASSIGNEE_GROUP_ID = '554523f0-81a4-4f74-be2a-948ffc12469b';
+// 取得したメンバーのキャッシュ（{displayName, mail, upn, id, spLookupId}の配列）
+let assigneeMembers = [];
+// UPN→SharePoint LookupId のキャッシュ（ensureUser結果）
+const upnToLookupIdCache = {};
 
 // ============================================================
 // MSAL CONFIG
@@ -1644,6 +1647,19 @@ async function getToken() {
   }
 }
 
+// SharePoint REST API 用のトークン（audience が graph とは別）
+// ensureUser などは Graph API に相当する機能がないので直接 SP REST を叩く必要がある
+const SP_SCOPES = ['https://hanaokacorp.sharepoint.com/AllSites.Write'];
+async function getSharePointToken() {
+  try {
+    const res = await msalInstance.acquireTokenSilent({ scopes: SP_SCOPES, account });
+    return res.accessToken;
+  } catch {
+    const res = await msalInstance.acquireTokenPopup({ scopes: SP_SCOPES });
+    return res.accessToken;
+  }
+}
+
 function showApp() {
   document.getElementById('loginScreen').style.display = 'none';
   const app = document.getElementById('app');
@@ -1660,8 +1676,10 @@ function showApp() {
   const name = account.name || account.username;
   document.getElementById('userName').textContent = name.split(' ')[0];
   document.getElementById('userAvatar').textContent = name.charAt(0).toUpperCase();
-  // 担当者選択肢を初期化
-  populateAssigneeSelects();
+  // 担当者メンバーをAPIから取得→選択肢を初期化（非同期、失敗しても他は動く）
+  fetchAssigneeMembers().then(() => {
+    populateAssigneeSelects();
+  }).catch(e => console.error('担当者メンバー取得失敗:', e));
 }
 
 // ============================================================
@@ -1706,6 +1724,95 @@ async function getSiteId() {
 }
 
 // ============================================================
+// 担当者メンバー取得（業務センターグループ）
+// ============================================================
+// グループメンバーをGraph APIから取得して assigneeMembers にキャッシュ
+async function fetchAssigneeMembers() {
+  try {
+    const data = await graphGet(
+      `/groups/${ASSIGNEE_GROUP_ID}/members/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName&$top=100`
+    );
+    // displayName順でソート
+    assigneeMembers = (data.value || [])
+      .filter(u => u.displayName && u.userPrincipalName)
+      .map(u => ({
+        id: u.id,
+        displayName: u.displayName,
+        mail: u.mail || u.userPrincipalName,
+        upn: u.userPrincipalName,
+        spLookupId: null, // 必要時にensureUserで埋める
+      }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
+    return assigneeMembers;
+  } catch (e) {
+    console.error('メンバー取得エラー:', e);
+    assigneeMembers = [];
+    return [];
+  }
+}
+
+// UPN（またはメール）を SharePoint サイトの LookupId（SP 内部のユーザーID）に変換
+// 1) まず Graph 経由で User Information List から検索（既にサイトに訪れた人なら見つかる）
+// 2) 見つからなければ SP REST の ensureUser でサイトにユーザーを登録して ID を取得
+// 結果はキャッシュ。
+async function ensureUserLookupId(upnOrMail) {
+  if (!upnOrMail) return null;
+  const key = upnOrMail.toLowerCase();
+  if (upnToLookupIdCache[key]) return upnToLookupIdCache[key];
+
+  // --- 方法1: Graph API で User Information List を検索 ---
+  try {
+    const sid = await getSiteId();
+    // User Information List はシステムリストで、サイトに一度でもアクセスしたユーザーが格納される
+    // EMail フィールドで検索
+    const filter = `fields/EMail eq '${upnOrMail.replace(/'/g, "''")}'`;
+    const url = `/sites/${sid}/lists/user%20information%20list/items?$expand=fields($select=id,Title,EMail,UserName)&$filter=${encodeURIComponent(filter)}`;
+    const data = await graphGet(url);
+    if (data.value && data.value.length > 0) {
+      const id = parseInt(data.value[0].id, 10);
+      if (!Number.isNaN(id)) {
+        upnToLookupIdCache[key] = id;
+        const m = assigneeMembers.find(x => x.upn.toLowerCase() === key || x.mail.toLowerCase() === key);
+        if (m) m.spLookupId = id;
+        return id;
+      }
+    }
+  } catch (e) {
+    console.warn('User Information List 検索失敗（フォールバック）:', e.message);
+  }
+
+  // --- 方法2: SharePoint REST の ensureUser でサイトにユーザー登録 ---
+  try {
+    const spToken = await getSharePointToken();
+    const webUrl = `https://hanaokacorp.sharepoint.com/sites/msteams_7aab51`;
+    const res = await fetch(`${webUrl}/_api/web/ensureUser`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + spToken,
+        'Content-Type': 'application/json;odata=verbose',
+        Accept: 'application/json;odata=verbose',
+      },
+      body: JSON.stringify({ logonName: `i:0#.f|membership|${upnOrMail}` }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`ensureUser失敗 ${res.status}: ${txt.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const lookupId = data.d?.Id ?? data.Id;
+    if (lookupId) {
+      upnToLookupIdCache[key] = lookupId;
+      const m = assigneeMembers.find(x => x.upn.toLowerCase() === key || x.mail.toLowerCase() === key);
+      if (m) m.spLookupId = lookupId;
+    }
+    return lookupId;
+  } catch (e) {
+    console.error('ensureUserLookupId エラー:', upnOrMail, e);
+    return null;
+  }
+}
+
+// ============================================================
 // ユーティリティ関数
 // ============================================================
 
@@ -1735,14 +1842,16 @@ function toggleSummaryBar() {
   }
 }
 
-// 担当者選択肢を初期化
+// 担当者選択肢を初期化（value = UPN, text = displayName）
 function populateAssigneeSelects() {
   const selects = ['regAssignedTo', 'detailAssigneeSelect'];
+  const options = '<option value="">-</option>' +
+    assigneeMembers.map(m => `<option value="${m.upn}">${m.displayName}</option>`).join('');
   selects.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     const current = el.value;
-    el.innerHTML = '<option value="">-</option>' + MEMBER_LIST.map(m => `<option value="${m}">${m}</option>`).join('');
+    el.innerHTML = options;
     if (current) el.value = current;
   });
 }
@@ -1880,15 +1989,28 @@ async function acceptFactoryDone() {
   if (sel) sel.value = '業務セ';
 }
 
-// インライン更新：担当者
+// インライン更新：担当者（Person型、newAssignee は UPN または '' でクリア）
 async function quickUpdateAssignee(newAssignee) {
   if (!currentCaseId) return;
   const item = cases.find(c => c.CaseId === currentCaseId);
   if (!item || !item._spId) return;
   try {
     const sid = await getSiteId();
-    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, { AssignedTo: newAssignee });
-    item.AssignedTo = newAssignee;
+    let patchBody;
+    let displayForLocal = null;
+    if (!newAssignee) {
+      // クリア
+      patchBody = { 'AssignedToLookupId@odata.type': 'Edm.Int32', AssignedToLookupId: null };
+    } else {
+      const lookupId = await ensureUserLookupId(newAssignee);
+      if (!lookupId) throw new Error(`ユーザー解決失敗: ${newAssignee}`);
+      patchBody = { AssignedToLookupId: lookupId };
+      const m = assigneeMembers.find(x => x.upn === newAssignee);
+      displayForLocal = m ? m.displayName : newAssignee;
+    }
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, patchBody);
+    // ローカル側のcasesを更新（表示用に LookupValue 構造で）
+    item.AssignedTo = displayForLocal ? { LookupValue: displayForLocal } : null;
     renderCaseList();
     setStatus('success', '担当者を更新しました');
   } catch(e) { setStatus('error', '更新エラー: ' + e.message); }
@@ -2478,8 +2600,12 @@ function selectCase(caseId) {
 
   const assigneeSelect = document.getElementById('detailAssigneeSelect');
   if (assigneeSelect) {
-    const currentAssignee = c.AssignedTo?.LookupValue || c.AssignedTo || '';
-    assigneeSelect.innerHTML = '<option value="">-</option>' + MEMBER_LIST.map(m => `<option value="${m}" ${currentAssignee === m ? 'selected' : ''}>${m}</option>`).join('');
+    // 現在のdisplayName（AssignedTo.LookupValue）から対応するUPNを逆引き
+    const currentDisplay = c.AssignedTo?.LookupValue || '';
+    const currentMember = assigneeMembers.find(m => m.displayName === currentDisplay);
+    const currentUpn = currentMember ? currentMember.upn : '';
+    assigneeSelect.innerHTML = '<option value="">-</option>' +
+      assigneeMembers.map(m => `<option value="${m.upn}" ${currentUpn === m.upn ? 'selected' : ''}>${m.displayName}</option>`).join('');
   }
 
   const dueDateInput = document.getElementById('detailDueDateInput');
@@ -2814,6 +2940,10 @@ async function submitNewCase() {
     const dueDate = dueDateVal ? new Date(dueDateVal).toISOString() : null;
 
     // 案件登録（POST）
+    // 担当者UPN → SharePoint LookupId に変換
+    const assigneeUpn = document.getElementById('regAssignedTo').value.trim();
+    const assigneeLookupId = assigneeUpn ? await ensureUserLookupId(assigneeUpn) : null;
+
     const fields = {
       Title: document.getElementById('regTitle').value.trim(),
       CaseId: caseId,
@@ -2822,13 +2952,13 @@ async function submitNewCase() {
       CaseType: '',
       EntryPoint: ep,
       Status: status,
-      AssignedTo: document.getElementById('regAssignedTo').value.trim(),
       Priority: document.getElementById('regPriority').value,
       UrgentFlag: document.getElementById('regUrgent').checked,
       LinkedDept: document.getElementById('regLinkedDept').value,
       Notes: document.getElementById('regNotes').value.trim(),
       LastEventDate: now,
     };
+    if (assigneeLookupId) fields.AssignedToLookupId = assigneeLookupId;
     if (document.getElementById('regOrderNumber').value.trim())
       fields.OrderNumber = document.getElementById('regOrderNumber').value.trim();
     if (document.getElementById('regPhase').value)
