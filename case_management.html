@@ -252,6 +252,13 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .badge-orange { background: #FEF0E6; color: #C05C10; }
 .badge-purple { background: #EEEDFE; color: #534AB7; }
 .case-note { font-size: 11px; color: var(--text-muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.case-casename {
+  font-size: 13px; color: var(--accent); font-weight: 600;
+  margin-top: 4px; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 2px 7px; background: #E6F1FB; border-radius: 4px;
+  display: inline-block; max-width: 100%;
+}
 .case-last-action { font-size: 11px; color: var(--accent); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 /* Phase2: AIが要確認マーク付けたFAX */
 .case-item.needs-review { border-left: 3px solid #F5B700; background: #FFFBEE; }
@@ -1544,7 +1551,7 @@ const MSAL_CONFIG = {
   },
   cache: { cacheLocation: 'sessionStorage' }
 };
-const SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.ReadWrite.All'];
+const SCOPES = ['User.Read', 'User.ReadBasic.All', 'Sites.ReadWrite.All', 'Files.ReadWrite.All', 'GroupMember.Read.All'];
 
 // ============================================================
 // SharePoint設定
@@ -2633,8 +2640,8 @@ async function openRegModal(sourceTriageId) {
           try { onEntryPointChange(); } catch(_) {}
         }
       }
-      // 案件名を仮生成
-      try { autoGenTitle(); } catch(_) {}
+      // 案件名を仮生成（CaseName優先、無ければ従来ロジック）
+      try { autoGenTitle(src.CaseName || ''); } catch(_) {}
     }
   }
 
@@ -2652,10 +2659,16 @@ function closeRegModal() {
 }
 
 // 案件名自動生成
-function autoGenTitle() {
+// caseName が渡された場合（triage→新規登録時）：「得意先名 CaseName」
+// それ以外（純新規）：「得意先名_MMDD」
+function autoGenTitle(caseName) {
   const company = document.getElementById('regCompanyName').value.trim();
   const titleEl = document.getElementById('regTitle');
   if (!company) return;
+  if (caseName && caseName.trim()) {
+    titleEl.value = `${company} ${caseName.trim()}`;
+    return;
+  }
   const today = new Date();
   const mmdd = String(today.getMonth() + 1).padStart(2,'0') + String(today.getDate()).padStart(2,'0');
   const parts = [company, mmdd].filter(Boolean);
@@ -2944,7 +2957,7 @@ function renderTriageList() {
             <span class="case-deadline dl-ok">${formatDate(e.EventDate)}</span>
           </div>
           <div class="case-company">${escapeHtml(e.RelationName || '-')}</div>
-          ${caseName ? `<div class="case-note" style="color:var(--accent);font-weight:500">${escapeHtml(caseName)}</div>` : ''}
+          ${caseName ? `<div class="case-casename">${escapeHtml(caseName)}</div>` : ''}
           <div class="case-note">${escapeHtml(e.Summary || '-')}</div>
           ${reasonHint}
         </div>
@@ -3703,9 +3716,16 @@ async function updateCaseStatus(newStatus, opts = {}) {
       item.FactoryResponded = '';
     }
     // 工場以外に変更する場合はクリア
+    // ⚠ SharePoint Choice複数列に [] を送ると 400 を返すため、
+    //    現在値が空でない時だけ null でクリアを送る
     if (opts.clearFactory) {
-      fields.FactoryTargets = [];
-      fields.FactoryResponded = '';
+      const currentTargets = toArray(item.FactoryTargets);
+      if (currentTargets.length > 0) {
+        fields.FactoryTargets = null; // 空にする
+      }
+      if (item.FactoryResponded) {
+        fields.FactoryResponded = '';
+      }
       item.FactoryTargets = [];
       item.FactoryResponded = '';
     }
