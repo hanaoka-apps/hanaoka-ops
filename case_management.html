@@ -1542,6 +1542,10 @@ const ASSIGNEE_GROUP_ID = '554523f0-81a4-4f74-be2a-948ffc12469b';
 let assigneeMembers = [];
 // UPN→SharePoint LookupId のキャッシュ（ensureUser結果）
 const upnToLookupIdCache = {};
+// LookupId→displayName の逆引きテーブル（loadCases 内で使う）
+const lookupIdToDisplayName = {};
+// fetchAssigneeMembers の完了 Promise（loadCases が待機用）
+let assigneeMembersReady = null;
 
 // ============================================================
 // MSAL CONFIG
@@ -1676,8 +1680,13 @@ function showApp() {
   const name = account.name || account.username;
   document.getElementById('userName').textContent = name.split(' ')[0];
   document.getElementById('userAvatar').textContent = name.charAt(0).toUpperCase();
-  // 担当者メンバーをAPIから取得→選択肢を初期化（非同期、失敗しても他は動く）
-  fetchAssigneeMembers().then(() => {
+  // 担当者メンバーをAPIから取得→LookupId解決→選択肢を初期化
+  // この Promise を assigneeMembersReady に保存し、loadCases が待機できるようにする
+  assigneeMembersReady = fetchAssigneeMembers().then(() => {
+    // 逆引きテーブル構築: LookupId → displayName
+    assigneeMembers.forEach(m => {
+      if (m.spLookupId) lookupIdToDisplayName[m.spLookupId] = m.displayName;
+    });
     populateAssigneeSelects();
   }).catch(e => console.error('担当者メンバー取得失敗:', e));
 }
@@ -1740,9 +1749,22 @@ async function fetchAssigneeMembers() {
         displayName: u.displayName,
         mail: u.mail || u.userPrincipalName,
         upn: u.userPrincipalName,
-        spLookupId: null, // 必要時にensureUserで埋める
+        spLookupId: null,
       }))
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
+
+    // 全メンバーの SharePoint LookupId を事前解決（逆引きテーブル構築）
+    // これにより loadCases 時に LookupId → displayName を即座に解決できる
+    await Promise.all(
+      assigneeMembers.map(m =>
+        ensureUserLookupId(m.upn).catch(e => {
+          console.warn(`LookupId解決失敗 ${m.upn}:`, e.message);
+          return null;
+        })
+      )
+    );
+    console.log('[fetchAssigneeMembers] メンバー＆LookupId解決完了:',
+      assigneeMembers.map(m => `${m.displayName}(id=${m.spLookupId})`));
     return assigneeMembers;
   } catch (e) {
     console.error('メンバー取得エラー:', e);
@@ -2295,11 +2317,25 @@ async function executeMerge() {
 async function loadCases() {
   setStatus('loading', '案件データを読み込み中...');
   try {
+    // 担当者LookupId逆引きテーブルが準備されるまで待つ
+    if (assigneeMembersReady) await assigneeMembersReady;
+
     const sid = await getSiteId();
     const data = await graphGet(
       `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=200`
     );
-    cases = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    cases = data.value.map(v => {
+      const obj = { _spId: v.id, ...v.fields };
+      // Graph API は Person 型フィールドから AssignedToLookupId (数値ID) しか返さない
+      // displayName は lookupIdToDisplayName テーブルから逆引きする
+      const lid = obj.AssignedToLookupId ? parseInt(obj.AssignedToLookupId, 10) : null;
+      if (lid && lookupIdToDisplayName[lid]) {
+        obj.AssignedTo = { LookupValue: lookupIdToDisplayName[lid], LookupId: lid };
+      } else if (lid) {
+        obj.AssignedTo = { LookupValue: `(ID:${lid})`, LookupId: lid };
+      }
+      return obj;
+    });
     renderCaseList();
     updateSummary();
     setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
