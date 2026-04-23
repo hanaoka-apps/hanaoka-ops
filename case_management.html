@@ -3687,28 +3687,36 @@ async function updateCaseStatus(newStatus, opts = {}) {
   try {
     setStatus('loading', 'ステータスを更新中...');
     const sid = await getSiteId();
-    const fields = { Status: newStatus };
-    // 工場ステータスの場合は対象工場をセット
+    const itemUrl = `/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`;
+
+    // ★ 2段階PATCH: まずStatusだけ送り、次にFactoryTargetsを送る
+    // → どちらが400を起こしているか完全に切り分けるため
+
+    // Step1: Statusのみ
+    console.log('🔵 STEP1: Statusのみ送信', { Status: newStatus });
+    await graphPatch(itemUrl, { Status: newStatus });
+    console.log('✅ STEP1成功: Status =', newStatus);
+    item.Status = newStatus;
+
+    // Step2: 工場ステータスの場合はFactoryTargetsを別PATCHで送る
     if (opts.factoryTargets) {
-      fields.FactoryTargets = opts.factoryTargets; // ✅ 配列のまま送る（Graph APIは配列を要求）
-      fields.FactoryResponded = null; // ✅ Choiceフィールドのクリアはnullで送る（""は400エラーになる）
+      console.log('🔵 STEP2: FactoryTargetsのみ送信', { FactoryTargets: opts.factoryTargets });
+      await graphPatch(itemUrl, { FactoryTargets: opts.factoryTargets });
+      console.log('✅ STEP2成功: FactoryTargets =', opts.factoryTargets);
       item.FactoryTargets = opts.factoryTargets;
       item.FactoryResponded = '';
     }
-    // 工場以外に変更する場合はクリア
-    // ✅ SharePoint Choice複数列のクリアはnullで送る
+
+    // clearFactory: FactoryTargetsを空にする
     if (opts.clearFactory) {
       const currentTargets = toArray(item.FactoryTargets);
       if (currentTargets.length > 0) {
-        fields.FactoryTargets = null; // ✅ nullでクリア
-      }
-      if (item.FactoryResponded) {
-        fields.FactoryResponded = null; // ✅ Choiceフィールドのクリアはnull
+        console.log('🔵 clearFactory: FactoryTargets = []');
+        await graphPatch(itemUrl, { FactoryTargets: [] });
       }
       item.FactoryTargets = [];
       item.FactoryResponded = '';
     }
-    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, fields);
     item.Status = newStatus;
     let summary = 'ステータス → ' + newStatus;
     if (opts.factoryTargets) summary += '（' + opts.factoryTargets.join('・') + '）';
