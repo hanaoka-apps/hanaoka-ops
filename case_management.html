@@ -427,6 +427,36 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
   border-radius: 5px; font-size: 11px; color: var(--text-muted); cursor: pointer;
 }
 .tl-attachment:hover { color: var(--accent); }
+/* コンパクトモード */
+.tl-compact .tl-item { margin-bottom: 4px; padding: 2px 4px; }
+.tl-compact .tl-body { border: none; background: transparent; padding: 2px 6px; }
+.tl-compact .tl-header { margin-bottom: 1px; }
+.tl-compact .tl-content { font-size: 11px; line-height: 1.4; color: var(--text-muted); }
+.tl-compact .tl-sub { display: none; }
+.tl-compact .tl-vline { margin-top: 1px; }
+.tl-compact .tl-dot { width: 7px; height: 7px; margin-top: 4px; }
+/* タイムラインツールバー */
+.tl-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 16px 2px; border-bottom: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted); flex-shrink: 0; background: var(--surface);
+}
+.tl-toolbar-count { font-weight: 500; }
+.btn-tl-compact {
+  padding: 2px 8px; font-size: 10px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--surface2); cursor: pointer; color: var(--text-muted);
+  transition: background 0.1s;
+}
+.btn-tl-compact:hover { background: var(--hover); }
+.btn-tl-compact.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* コメント削除ボタン */
+.tl-delete-btn {
+  margin-left: auto; padding: 1px 5px; font-size: 10px; border: 1px solid #DDBBBB;
+  border-radius: 4px; background: transparent; cursor: pointer; color: #B04040;
+  opacity: 0; transition: opacity 0.15s;
+}
+.tl-item:hover .tl-delete-btn { opacity: 1; }
+.tl-delete-btn:hover { background: #FFF0F0; }
 /* コメントフォーム */
 .comment-form {
   border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
@@ -1181,6 +1211,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
           <option value="assignee">担当者別</option>
           <option value="company">得意先名順</option>
           <option value="date">期限順</option>
+          <option value="received">受取日順</option>
         </select>
       </div>
       <div class="case-list" id="caseList">
@@ -1356,6 +1387,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
           </div>
           <!-- タイムライン（中央25%） -->
           <div class="timeline-panel">
+            <div class="tl-toolbar" id="tlToolbar" style="display:none">
+              <span class="tl-toolbar-count" id="tlCount"></span>
+              <button class="btn-tl-compact" id="btnTlCompact" onclick="toggleTlCompact()" title="コンパクト表示切替">コンパクト</button>
+            </div>
             <div class="timeline-scroll" id="timelineContent">
               <div class="loading-spinner">読み込み中...</div>
             </div>
@@ -1650,6 +1685,19 @@ async function graphPatch(url, body) {
   }
   return res.json();
 }
+async function graphDelete(url) {
+  const token = await getToken();
+  const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
+    method: 'DELETE',
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { const errJson = await res.json(); detail = JSON.stringify(errJson?.error || errJson); } catch(e) {}
+    throw new Error(`Graph API DELETE エラー: ${res.status} - ${detail}`);
+  }
+  // 204 No Content が正常レスポンス
+}
 async function getSiteId() {
   if (siteId) return siteId;
   const data = await graphGet(`/sites/${SP.site}`);
@@ -1904,12 +1952,19 @@ function showFactoryAllDoneSuggestion() {
     timeline.insertBefore(bar, timeline.firstChild);
   }
 }
+let _acceptingFactoryDone = false;
 async function acceptFactoryDone() {
-  const bar = document.getElementById('factoryDoneSuggest');
-  if (bar) bar.remove();
-  await updateCaseStatus('業務セ', { clearFactory: true });
-  const sel = document.getElementById('detailStatusSelect');
-  if (sel) sel.value = '業務セ';
+  if (_acceptingFactoryDone) return; // 二重実行防止
+  _acceptingFactoryDone = true;
+  try {
+    const bar = document.getElementById('factoryDoneSuggest');
+    if (bar) bar.remove();
+    await updateCaseStatus('業務セ', { clearFactory: true });
+    const sel = document.getElementById('detailStatusSelect');
+    if (sel) sel.value = '業務セ';
+  } finally {
+    _acceptingFactoryDone = false;
+  }
 }
 // インライン更新：担当者（Person型、newAssignee は UPN または '' でクリア）
 async function quickUpdateAssignee(newAssignee) {
@@ -2307,6 +2362,13 @@ function getFilteredCases() {
       const db = b.DueDate || '9999';
       return da < db ? -1 : da > db ? 1 : 0;
     });
+  } else if (sortMode === 'received') {
+    // 受取日（FAX受信日）= Created 降順（新しい順）
+    filtered.sort((a, b) => {
+      const da = a.Created || '';
+      const db = b.Created || '';
+      return da > db ? -1 : da < db ? 1 : 0;
+    });
   } else {
     filtered.sort((a, b) => {
       const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
@@ -2372,7 +2434,7 @@ function renderCaseList() {
             <th>得意先名</th>
             <th>案件名</th>
             <th>ステータス</th>
-            <th>内容</th>
+            <th>備考</th>
             <th>担当</th>
             <th>期限</th>
           </tr>
@@ -2381,19 +2443,61 @@ function renderCaseList() {
       </table>`;
   }
 }
+let tlCompactMode = false;
+function toggleTlCompact() {
+  tlCompactMode = !tlCompactMode;
+  const btn = document.getElementById('btnTlCompact');
+  if (btn) btn.classList.toggle('active', tlCompactMode);
+  const scroll = document.getElementById('timelineContent');
+  if (scroll) scroll.classList.toggle('tl-compact', tlCompactMode);
+}
+// ステータス変更系イベントか判定（削除不可）
+function isStatusEvent(eventType) {
+  const statusTypes = ['ステータス変更', '工場回答', '案件作成'];
+  return statusTypes.some(t => (eventType || '').includes(t));
+}
+async function deleteTimelineEvent(eventItemId, evIdx) {
+  if (!confirm('このコメントを削除しますか？\n（この操作は取り消せません）')) return;
+  try {
+    setStatus('loading', 'コメントを削除中...');
+    const sid = await getSiteId();
+    await graphDelete(`/sites/${sid}/lists/${SP.eventListId}/items/${eventItemId}`);
+    events.splice(evIdx, 1);
+    renderTimeline();
+    setStatus('success', 'コメントを削除しました');
+  } catch(e) {
+    setStatus('error', '削除エラー: ' + e.message);
+  }
+}
 function renderTimeline() {
+  const toolbar = document.getElementById('tlToolbar');
   if (!events.length) {
+    if (toolbar) toolbar.style.display = 'none';
     document.getElementById('timelineContent').innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">イベントなし</div></div>';
     return;
   }
-  const html = `<div class="tl-section-label">タイムライン (${events.length}件)</div>` +
-    events.map((ev, i) => {
+  // ツールバー表示
+  if (toolbar) {
+    toolbar.style.display = 'flex';
+    const countEl = document.getElementById('tlCount');
+    if (countEl) countEl.textContent = `タイムライン ${events.length}件`;
+    const btn = document.getElementById('btnTlCompact');
+    if (btn) btn.classList.toggle('active', tlCompactMode);
+  }
+  const scroll = document.getElementById('timelineContent');
+  if (scroll) scroll.classList.toggle('tl-compact', tlCompactMode);
+
+  const html = events.map((ev, i) => {
       const dotClass = getEventDotClass(ev.EventType);
       const typeClass = getEventTypeClass(ev.EventType);
       const isLast = i === events.length - 1;
       const hasPdf = !!ev.AttachedPDFPath;
+      const canDelete = !isStatusEvent(ev.EventType) && ev._spId;
       const clickAttr = hasPdf
         ? ` onclick="selectTimelinePdf(${i})" title="クリックでPDFを表示"`
+        : '';
+      const deleteBtn = canDelete
+        ? `<button class="tl-delete-btn" onclick="event.stopPropagation();deleteTimelineEvent(${ev._spId},${i})" title="コメントを削除">🗑</button>`
         : '';
       return `
         <div class="tl-item${hasPdf ? ' has-pdf' : ''}" data-tl-idx="${i}"${clickAttr}>
@@ -2407,6 +2511,7 @@ function renderTimeline() {
               ${ev.ReviewFlag ? `<span class="tl-review-mark" title="${escapeHtml(ev.ReviewReason || '要確認')}">⚠</span>` : ''}
               <span class="tl-date">${formatDate(ev.EventDate)}</span>
               ${hasPdf ? '<span class="tl-pdf-icon" style="margin-left:auto;font-size:12px;color:#185FA5;" title="PDF添付あり">📄</span>' : ''}
+              ${deleteBtn}
             </div>
             <div class="tl-content">${escapeHtml(ev.Summary || '-')}</div>
             ${ev.RelationName ? `<div class="tl-sub">${escapeHtml(ev.RelationName)}</div>` : ''}
@@ -4112,10 +4217,10 @@ function getUrgencyClass(status, newArrival) {
 }
 function getStatusBadge(status, newArrival, caseObj) {
   if (!status) return '';
-  if (newArrival) return '<span class="badge badge-orange">🟠 新着あり</span>';
-  if (status === '業務セ') return '<span class="badge badge-red">🔴 業務セ</span>';
-  if (status === '受注入力担当') return '<span class="badge badge-purple">🟣 受注入力</span>';
-  if (status === '営業') return '<span class="badge badge-orange">🟠 営業</span>';
+  const bell = newArrival ? ' <span title="新着あり" style="font-size:11px">🔔</span>' : '';
+  if (status === '業務セ') return `<span class="badge badge-red">🔴 業務セ${bell}</span>`;
+  if (status === '受注入力担当') return `<span class="badge badge-purple">🟣 受注入力${bell}</span>`;
+  if (status === '営業') return `<span class="badge badge-orange">🟠 営業${bell}</span>`;
   if (status === '工場') {
     const targets = toArray(caseObj?.FactoryTargets);
     const responded = toArray(caseObj?.FactoryResponded);
@@ -4123,12 +4228,12 @@ function getStatusBadge(status, newArrival, caseObj) {
       const short = t.replace('工場','');
       return responded.includes(t) ? `<s style="opacity:0.5">${short}</s>` : short;
     }).join('・') + ')' : '';
-    return `<span class="badge badge-amber">🟡 工場${sub}</span>`;
+    return `<span class="badge badge-amber">🟡 工場${sub}${bell}</span>`;
   }
-  if (status === '仕入先') return `<span class="badge badge-blue">🔵 仕入先</span>`;
-  if (status === '得意先') return `<span class="badge badge-blue">🔵 得意先</span>`;
-  if (status === '完了') return '<span class="badge badge-green">✅ 完了</span>';
-  return `<span class="badge badge-gray">${status}</span>`;
+  if (status === '仕入先') return `<span class="badge badge-blue">🔵 仕入先${bell}</span>`;
+  if (status === '得意先') return `<span class="badge badge-blue">🔵 得意先${bell}</span>`;
+  if (status === '完了') return `<span class="badge badge-green">✅ 完了${bell}</span>`;
+  return `<span class="badge badge-gray">${status}${bell}</span>`;
 }
 function getTypeBadge(type) {
   if (!type) return '';
