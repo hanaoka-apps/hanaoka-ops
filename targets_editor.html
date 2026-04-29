@@ -389,6 +389,12 @@ dialog.app-dialog.wide { max-width: 800px; }
   font-family: inherit;
 }
 .dlg-form-row input[type="number"] { font-family: "Inter", monospace; font-weight: 600; text-align: right; }
+/* 数値入力のスピンボタンを非表示（誤操作防止） */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+input[type="number"] { -moz-appearance: textfield; }
 .dlg-form-row .help-text {
   font-size: 11px; color: var(--gray); margin-top: 3px;
 }
@@ -907,8 +913,8 @@ function bindUI() {
     };
   });
 
-  document.getElementById('btnAdd').onclick = openAddDialog;
-  document.getElementById('btnBulk').onclick = openBulkDialog;
+  document.getElementById('btnAdd').onclick = () => openAddDialog();
+  document.getElementById('btnBulk').onclick = () => openBulkDialog();
   document.getElementById('btnRefresh').onclick = async () => {
     showToast('再読込中...', 'info');
     await withRetry(loadAllItems, '再読込');
@@ -1931,7 +1937,8 @@ let bulkPlan = null;
 function openBulkDialog(restrictToScope) {
   const cat = currentCat;
   const useAmount = CATEGORIES[cat].valueKind === 'amount';
-  const restrict = restrictToScope || '';
+  // restrictToScope が文字列でない場合（イベント等が誤って渡された場合）は空に
+  const restrict = (typeof restrictToScope === 'string') ? restrictToScope : '';
 
   // 対象候補の集計
   const candidates = allItems.filter(i =>
@@ -1939,15 +1946,27 @@ function openBulkDialog(restrictToScope) {
   );
   const filtered = restrict ? candidates.filter(i => i.fields.ScopeKey === restrict) : candidates;
 
+  // スコープ候補（重複排除して降順ソート）
+  const scopeOptions = Array.from(new Set(candidates.map(i => `${i.fields.ScopeKey}|${i.fields.ScopeName || i.fields.ScopeKey}`)))
+    .map(s => s.split('|'))
+    .sort((a, b) => a[1].localeCompare(b[1]));
+
+  const restrictName = restrict
+    ? (candidates.find(i => i.fields.ScopeKey === restrict)?.fields.ScopeName || restrict)
+    : '';
+
   const html = `
     <div class="dlg-info">
-      💡 ${restrict ? `<strong>${escapeHtml(restrict)}</strong> の` : ''}${candidates.length}件 ${restrict ? `（うちこのスコープ ${filtered.length}件）` : ''}に対して一括操作を実行します
+      💡 ${restrict ? `<strong>${escapeHtml(restrictName)}</strong> の` : ''}${candidates.length}件${restrict ? `（うちこのスコープ ${filtered.length}件）` : ''}に対して一括操作を実行します
     </div>
     <div class="dlg-section">
       <h4>① 対象を絞り込む</h4>
       <div class="dlg-form-row">
         <label>スコープ</label>
-        <input type="text" id="bulk_filter_scope" value="${escapeAttr(restrict)}" placeholder="（空=全件）部分一致">
+        <select id="bulk_filter_scope">
+          <option value="">— 全スコープ（${candidates.length}件）—</option>
+          ${scopeOptions.map(([k, n]) => `<option value="${escapeAttr(k)}" ${k === restrict ? 'selected' : ''}>${escapeHtml(n)}${k !== n ? ` (${escapeHtml(k)})` : ''}</option>`).join('')}
+        </select>
       </div>
       ${useAmount ? `
       <div class="dlg-form-row">
@@ -2026,10 +2045,8 @@ function previewBulk() {
   let candidates = allItems.filter(i =>
     CATEGORIES[cat].targetTypes.includes(i.fields?.TargetType) && i.fields.IsLatest === true
   );
-  const scope = document.getElementById('bulk_filter_scope').value.trim();
-  if (scope) candidates = candidates.filter(i =>
-    (i.fields.ScopeKey || '').includes(scope) || (i.fields.ScopeName || '').includes(scope)
-  );
+  const scope = document.getElementById('bulk_filter_scope').value;
+  if (scope) candidates = candidates.filter(i => i.fields.ScopeKey === scope);
   if (useAmount) {
     const period = document.getElementById('bulk_filter_period').value;
     if (period === 'annual') candidates = candidates.filter(i => i.fields.TargetType === '部門年間');
