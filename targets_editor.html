@@ -1204,7 +1204,7 @@ function renderListView(cat, grouped, groupKeys) {
 
 function renderMatrixView(cat, grouped, groupKeys) {
   const monthlyType = cat === 'dept' ? '部門月次' : (cat === 'ytd_plan' ? '部門累計月次' : '担当者月次');
-  const annualType = cat === 'dept' ? '部門年間' : (cat === 'ytd_plan' ? null : null);
+  const annualType = cat === 'dept' ? '部門年間' : null;
 
   const byScope = {};
   for (const k of groupKeys) {
@@ -1235,14 +1235,12 @@ function renderMatrixView(cat, grouped, groupKeys) {
 
   let scopes = Object.keys(byScope);
   if (scopes.length === 0) {
-    // dept/ytd_plan は6拠点の空マトリクスを表示
     if (cat === 'dept' || cat === 'ytd_plan') {
-      const fy = 2025; // FY2025
+      // 空マトリクスを表示（6拠点 × 12ヶ月の入力グリッド）
       for (const p of KNOWN_PARENTS) {
         let parentName = '';
         if (['本社','大阪支店','名古屋営業所'].includes(p)) parentName = '国内営業部';
-        else if (p === '国内営業部') parentName = '全社';
-        else if (p === 'ソリューション営業部') parentName = '全社';
+        else if (p === '国内営業部' || p === 'ソリューション営業部') parentName = '全社';
         byScope[p] = { name: p, parent: parentName, months: {} };
       }
       scopes = Object.keys(byScope);
@@ -1253,19 +1251,15 @@ function renderMatrixView(cat, grouped, groupKeys) {
 
   const allMonths = new Set();
   for (const s of scopes) for (const m in byScope[s].months) allMonths.add(m);
-  let months;
-  if (allMonths.size === 0 && (cat === 'dept' || cat === 'ytd_plan')) {
-    // 12ヶ月生成（FY2025 = 202504～202603）
+  let months = Array.from(allMonths).sort();
+  if (months.length === 0 && (cat === 'dept' || cat === 'ytd_plan')) {
+    // 空マトリクス用に FY2025 (202504〜202603) の12ヶ月を生成
     const fyStartY = 2025;
-    const list = [];
     for (let i = 0; i < 12; i++) {
       let y = fyStartY, m = 4 + i;
       if (m > 12) { y++; m -= 12; }
-      list.push(String(y * 100 + m).padStart(6, '0'));
+      months.push(String(y * 100 + m).padStart(6, '0'));
     }
-    months = list;
-  } else {
-    months = Array.from(allMonths).sort();
   }
 
   // 値の最大値を求めてヒートマップ用
@@ -1374,22 +1368,18 @@ function bindRowButtons(grouped) {
     };
   });
 
-  // 空セル（data-key なし）クリック時 → 新規追加ダイアログ（scope + ym プリフィル）
-  document.querySelectorAll('.matrix-tbl td.month-cell:not([data-key])').forEach(td => {
+  // 空セル（data-new-ym 付き）クリック時 → 新規追加ダイアログ（scope+ym プリフィル）
+  document.querySelectorAll('.matrix-tbl td.month-cell[data-new-ym]').forEach(td => {
     td.style.cursor = 'pointer';
     td.addEventListener('click', () => {
       const scope = td.closest('tr')?.dataset?.scope;
       const ym = td.dataset.newYm;
       openAddDialog();
       setTimeout(() => {
-        if (scope) {
-          const scopeInput = document.getElementById('add_scope');
-          if (scopeInput) scopeInput.value = scope;
-        }
-        if (ym) {
-          const ymInput = document.getElementById('add_ym');
-          if (ymInput) ymInput.value = ym;
-        }
+        const sc = document.getElementById('add_scope');
+        if (sc && scope) sc.value = scope;
+        const ymInput = document.getElementById('add_ym');
+        if (ymInput && ym) ymInput.value = ym;
       }, 100);
     });
   });
@@ -1572,7 +1562,7 @@ function openAddDialog() {
       <div class="dlg-form-row"><label>FY<span class="req">*</span></label><input type="number" id="add_fy" value="2025"></div>
       <div class="dlg-form-row">
         <label>スコープ名<span class="req">*</span></label>
-        <input type="text" id="add_scope" placeholder="例: 福岡支店" list="dl_scopes">
+        <input type="text" id="add_scope" placeholder="例: 全社" list="dl_scopes">
         <datalist id="dl_scopes">${KNOWN_PARENTS.map(p => `<option value="${escapeAttr(p)}">`).join('')}</datalist>
       </div>
       <div class="dlg-form-row">
@@ -1585,12 +1575,10 @@ function openAddDialog() {
         <input type="number" id="add_ym" placeholder="例: 202604" min="200001" max="209912">
       </div>
       <div class="dlg-form-row" id="add_value_row">
-        <label>金額（円）<span class="req">*</span></label>
+        <label>累計目標額（円）<span class="req">*</span></label>
         <input type="number" id="add_value" step="1000" value="0">
       </div>
-      <div class="dlg-info" id="add_multimonth_tip">
-        💡 累計目標を月次で入力します。下のチェックで「<strong>1年分（12ヶ月）まとめて登録</strong>」も可能
-      </div>
+      <div class="dlg-info">💡 各月の "その月時点の累計目標額" を入力します。1年分（12ヶ月）まとめて登録も可能</div>
       <div class="dlg-form-row">
         <label></label>
         <label style="font-size:12px; color:var(--ink); display:flex; gap:6px; align-items:center; padding:6px 10px; background:white; border:1px solid #d1d5db; border-radius:6px; width:fit-content;">
@@ -1893,8 +1881,8 @@ function openFillAllDialog(scopeKey) {
 function openDeleteDialog(versions) {
   const f = (versions.find(v => v.fields.IsLatest === true) || versions[versions.length - 1]).fields;
   const cat = currentCat;
-  const monthlyType = cat === 'dept' ? '部門月次' : (cat === 'rep' ? '担当者月次' : null);
-  const annualType = cat === 'dept' ? '部門年間' : (cat === 'ytd_plan' ? null : null);
+  const monthlyType = cat === 'dept' ? '部門月次' : (cat === 'ytd_plan' ? '部門累計月次' : (cat === 'rep' ? '担当者月次' : null));
+  const annualType = cat === 'dept' ? '部門年間' : null;
 
   // 同じスコープに紐づく他の行を集計
   let cascadeCandidates = [];
@@ -2348,7 +2336,18 @@ async function processImportFile(file) {
   if (lines.length < 2) { showToast('CSVに行がありません', 'error'); return; }
   const headers = lines[0].split(',').map(s => s.trim().replace(/^"|"$/g, ''));
   const rows = [];
-  for (let i = 1; i < lines
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCSVLine(lines[i]);
+    if (cols.length < headers.length) cols.push(...new Array(headers.length - cols.length).fill(''));
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = cols[idx]; });
+    rows.push(row);
+  }
+  importedRows = rows;
+  showImportPreview(rows, headers);
+  document.getElementById('importDlgExecute').disabled = false;
+}
+
 function parseCSVLine(line) {
   const result = [];
   let cur = '', inQuote = false;
@@ -2358,158 +2357,131 @@ function parseCSVLine(line) {
       if (inQuote && line[i+1] === '"') { cur += '"'; i++; }
       else inQuote = !inQuote;
     } else if (c === ',' && !inQuote) {
-      result.push(cur);
-      cur = '';
-    } else {
-      cur += c;
-    }
+      result.push(cur); cur = '';
+    } else cur += c;
   }
   result.push(cur);
-  return result;
+  return result.map(s => s.trim());
+}
+
+function showImportPreview(rows, headers) {
+  const preview = document.getElementById('importPreview');
+  let html = '<table><thead><tr>' + headers.map(h => `<th>${escapeHtml(h)}</th>`).join('') + '</tr></thead><tbody>';
+  for (const row of rows.slice(0, 20)) {
+    html += '<tr>' + headers.map(h => `<td>${escapeHtml(row[h] || '')}</td>`).join('') + '</tr>';
+  }
+  html += '</tbody></table>';
+  preview.innerHTML = html;
+  document.getElementById('importStats').textContent = `${rows.length}行 (プレビュー: 先頭${Math.min(20, rows.length)}行)`;
+  document.getElementById('importPreviewSection').style.display = '';
 }
 
 async function executeImport() {
   if (!importedRows) return;
   const buttons = document.querySelectorAll('#importDialog .dlg-btn');
   buttons.forEach(b => b.disabled = true);
-  try {
-    const cat = currentCat;
-    const byType = {};
-    for (const row of importedRows) {
-      const tt = row.TargetType;
-      if (!byType[tt]) byType[tt] = [];
-      byType[tt].push(row);
-    }
-    let itemCount = 0;
-    for (const [tt, rows] of Object.entries(byType)) {
-      for (const row of rows) {
-        const fields = {
-          FY: parseInt(row.FY) || 2026,
-          TargetType: row.TargetType,
-          ScopeKey: row.ScopeKey,
-          ScopeName: row.ScopeName,
-          SubScope: row.SubScope || '',
-          ParentScope: row.ParentScope || '',
-          YearMonth: row.YearMonth ? parseInt(row.YearMonth) : 0,
-          VersionLabel: row.VersionLabel || '期首',
-          VersionOrder: parseInt(row.VersionOrder) || 1,
-          Amount: row.Amount ? parseInt(row.Amount) : 0,
-          Ratio: row.Ratio ? parseFloat(row.Ratio) : 0,
-          MatchingKeys: row.MatchingKeys || '',
-          RevisionReason: row.RevisionReason || ''
-        };
-        await postItem(fields);
-        itemCount++;
-      }
-    }
-    showToast(`${itemCount}件をインポートしました`, 'success');
-    document.getElementById('importDialog').close();
-    importedRows = null;
-    await loadAllItems();
-    renderCurrentCategory();
-  } catch(e) {
-    console.error(e);
-    showToast('インポート失敗: ' + e.message, 'error');
-  } finally {
-    buttons.forEach(b => b.disabled = false);
-  }
-}
+  let success = 0, failed = 0;
 
-function showImportPreview(rows, headers) {
-  let html = '<table><thead><tr>';
-  for (const h of headers) html += `<th>${escapeHtml(h)}</th>`;
-  html += '</tr></thead><tbody>';
-  for (const row of rows.slice(0, 10)) {
-    html += '<tr>';
-    for (const h of headers) html += `<td>${escapeHtml(String(row[h] || ''))}</td>`;
-    html += '</tr>';
-  }
-  html += '</tbody></table>';
-  if (rows.length > 10) html += `<p style="font-size:11px; color:var(--gray); margin-top:8px;">他 ${rows.length - 10} 行</p>`;
-  document.getElementById('importPreview').innerHTML = html;
-}
-
-async function init() {
-  const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  const accessToken = hashParams.get('access_token');
-
-  if (!accessToken) {
+  for (const row of importedRows) {
     try {
-      const result = await msalInstance.acquireTokenSilent(tokenRequest);
-      sessionStorage.setItem('accessToken', result.accessToken);
-      window.location.hash = '#access_token=' + result.accessToken;
+      const fields = {};
+      ['FY', 'YearMonth', 'VersionOrder'].forEach(k => {
+        if (row[k] && !isNaN(parseInt(row[k]))) fields[k] = parseInt(row[k]);
+      });
+      ['Amount', 'Ratio'].forEach(k => {
+        if (row[k] && !isNaN(parseFloat(row[k]))) fields[k] = parseFloat(row[k]);
+      });
+      ['Title', 'TargetType', 'ScopeKey', 'ScopeName', 'SubScope', 'ParentScope', 'VersionLabel', 'MatchingKeys', 'RevisionReason'].forEach(k => {
+        if (row[k]) fields[k] = row[k];
+      });
+      if (!fields.Title && fields.TargetType && fields.ScopeKey) {
+        const fy = fields.FY || 2025;
+        const sub = fields.SubScope || '';
+        const ym = fields.YearMonth || '';
+        const ord = fields.VersionOrder || 1;
+        fields.Title = [fy, fields.TargetType, fields.ScopeKey, sub, ym, `v${ord}`].filter(Boolean).join('_');
+      }
+      fields.IsLatest = true;
+      if (!fields.EffectiveFrom) fields.EffectiveFrom = new Date().toISOString().split('T')[0];
+      if (!fields.VersionLabel) fields.VersionLabel = '期首';
+      if (!fields.VersionOrder) fields.VersionOrder = 1;
+
+      await postItem(fields);
+      success++;
     } catch(e) {
-      console.log('Silent acquisition failed, prompting for login:', e);
+      console.error('import row failed:', row, e);
+      failed++;
     }
-    return;
   }
-
-  sessionStorage.setItem('accessToken', accessToken);
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-
-  try {
-    const response = await fetch('https://graph.microsoft.com/v1.0/me', {
-      headers: { 'Authorization': 'Bearer ' + accessToken }
-    });
-    const user = await response.json();
-    document.getElementById('userName').textContent = user.displayName || user.userPrincipalName;
-  } catch(e) {
-    console.error('Failed to fetch user:', e);
-  }
-
-  currentCat = 'dept';
-  bindCategoryTabs();
-  bindToolbar();
-  bindAddDialog();
-  bindEditDialog();
-  bindImportDialog();
-  bindMatrixEventHandlers();
-
+  showToast(`インポート完了: 成功${success}件 / 失敗${failed}件`, failed > 0 ? 'error' : 'success');
+  document.getElementById('importDialog').close();
+  importedRows = null;
+  document.getElementById('importDlgExecute').disabled = true;
   await loadAllItems();
   renderCurrentCategory();
-
-  setInterval(async () => {
-    await loadAllItems();
-    if (document.getElementById('addDialog').open || document.getElementById('editDialog').open || document.getElementById('importDialog').open) return;
-    renderCurrentCategory();
-  }, 30000);
+  buttons.forEach(b => b.disabled = false);
 }
 
-window.addEventListener('load', () => {
-  msalInstance.handleRedirectPromise().then(result => {
-    if (result) {
-      init();
-    } else {
-      init();
-    }
-  }).catch(error => {
-    console.error('MSAL error:', error);
-    document.getElementById('loginError').textContent = 'ログインエラーが発生しました。';
-    document.getElementById('loginError').style.display = 'block';
+function openImportDialog() {
+  document.getElementById('importDialog').showModal();
+}
+
+// ============================================================
+// Graph API ヘルパー
+// ============================================================
+async function patchItem(itemId, fields) {
+  await graphFetch(`/sites/${SP.siteId}/lists/${SP.targetsListId}/items/${itemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields }),
   });
-});
+}
 
-document.getElementById('loginBtn').addEventListener('click', () => {
-  msalInstance.loginPopup(loginRequest)
-    .then(result => {
-      sessionStorage.setItem('accessToken', result.accessToken);
-      init();
-    })
-    .catch(error => {
-      console.error('Login failed:', error);
-      document.getElementById('loginError').textContent = error.errorMessage || 'ログインに失敗しました。';
-      document.getElementById('loginError').style.display = 'block';
-    });
-});
+async function postItem(fields) {
+  await graphFetch(`/sites/${SP.siteId}/lists/${SP.targetsListId}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields }),
+  });
+}
 
-document.getElementById('logoutBtn').addEventListener('click', () => {
-  msalInstance.logout();
-  sessionStorage.removeItem('accessToken');
-  document.getElementById('app').style.display = 'none';
-  document.getElementById('loginScreen').style.display = 'flex';
-  document.getElementById('loginError').style.display = 'none';
-});
+// ============================================================
+// UI制御
+// ============================================================
+function showApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+}
+
+function showLoginError(msg) {
+  const e = document.getElementById('loginError');
+  e.textContent = msg;
+  e.style.display = 'block';
+}
+
+function showToast(msg, kind = 'success', opts = {}) {
+  const t = document.createElement('div');
+  t.className = `toast ${kind}`;
+  let html = `<span class="toast-msg">${escapeHtml(msg)}</span>`;
+  if (opts.retry) html += `<button class="toast-retry">🔄 再試行</button>`;
+  html += `<button class="toast-close">×</button>`;
+  t.innerHTML = html;
+  document.body.appendChild(t);
+
+  if (opts.retry) {
+    t.querySelector('.toast-retry').onclick = () => {
+      t.remove();
+      opts.retry();
+    };
+  }
+  t.querySelector('.toast-close').onclick = () => t.remove();
+  setTimeout(() => { if (t.parentNode) t.remove(); }, opts.retry ? 10000 : 3500);
+}
+
+// ============================================================
+// 起動
+// ============================================================
+init().catch(e => showLoginError('初期化エラー: ' + e.message));
 </script>
 </body>
 </html>
