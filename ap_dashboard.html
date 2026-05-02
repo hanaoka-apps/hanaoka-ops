@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>支払管理ダッシュボード | 花岡車輌</title>
+  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+  <style>
+    :root {
+      --primary:    #1a5fa8;
+      --primary-dk: #134680;
+      --accent:     #e8412e;
+      --success:    #2e7d52;
+      --warning:    #c07a00;
+      --danger:     #c0392b;
+      --bg:         #f4f6f9;
+      --card-bg:    #ffffff;
+      --border:     #dde2ec;
+      --text:       #1e2533;
+      --muted:      #6b7a99;
+      --shadow:     0 1px 4px rgba(0,0,0,.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Meiryo', 'Hiragino Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* ─── ヘッダー ─── */
+    header {
+      background: var(--primary);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 52px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+      position: sticky; top: 0; z-index: 100;
+    }
+    header .logo { font-size: 16px; font-weight: 700; letter-spacing: .04em; }
+    header .logo span { opacity: .7; font-weight: 400; font-size: 13px; margin-left: 10px; }
+    header .user-info { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    header .user-info .name { opacity: .9; }
+    header button { background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.3); color: #fff; padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: background .15s; }
+    header button:hover { background: rgba(255,255,255,.25); }
+
+    /* ─── ログイン画面 ─── */
+    #login-view {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: calc(100vh - 52px); gap: 20px;
+    }
+    #login-view h2 { font-size: 20px; color: var(--primary); }
+    #login-view p { color: var(--muted); font-size: 14px; }
+    #login-btn {
+      background: var(--primary); color: #fff; border: none; padding: 12px 36px;
+      border-radius: 6px; font-size: 15px; font-weight: 700; cursor: pointer;
+      transition: background .15s; display: flex; align-items: center; gap: 8px;
+    }
+    #login-btn:hover { background: var(--primary-dk); }
+
+    /* ─── メインコンテンツ ─── */
+    #app-view { display: none; padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+    /* ─── 月選択バー ─── */
+    .month-bar {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+      background: var(--card-bg); padding: 12px 16px; border-radius: 8px;
+      border: 1px solid var(--border); box-shadow: var(--shadow);
+    }
+    .month-bar label { font-size: 13px; color: var(--muted); font-weight: 600; }
+    .month-bar select {
+      border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px;
+      font-size: 14px; background: #fff; cursor: pointer;
+    }
+    .month-bar .refresh-btn {
+      margin-left: auto; background: var(--primary); color: #fff; border: none;
+      padding: 6px 16px; border-radius: 4px; font-size: 13px; cursor: pointer;
+    }
+    .month-bar .refresh-btn:hover { background: var(--primary-dk); }
+    #loading-msg { font-size: 13px; color: var(--muted); }
+
+    /* ─── アラートバナー ─── */
+    #alert-banner {
+      display: none;
+      background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px;
+      padding: 12px 16px; margin-bottom: 20px; font-size: 14px; color: #664d00;
+    }
+    #alert-banner.danger { background: #fdecea; border-color: var(--danger); color: var(--danger); }
+    #alert-banner .alert-items { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
+    #alert-banner .alert-chip {
+      background: rgba(0,0,0,.07); border-radius: 20px; padding: 3px 10px;
+      font-size: 12px; cursor: pointer; text-decoration: underline;
+    }
+
+    /* ─── 支払日区分カード ─── */
+    .payment-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+    @media(max-width: 768px) { .payment-cards { grid-template-columns: 1fr; } }
+
+    .payment-card {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+      padding: 18px; box-shadow: var(--shadow); position: relative; overflow: hidden;
+    }
+    .payment-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 4px;
+    }
+    .payment-card.day-10::before  { background: #4a90d9; }
+    .payment-card.day-20::before  { background: #8e44ad; }
+    .payment-card.day-end::before { background: #e67e22; }
+
+    .payment-card .card-title {
+      font-size: 15px; font-weight: 700; color: var(--primary); margin-bottom: 12px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .payment-card .card-title .badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600;
+    }
+    .badge-ok     { background: #d4edda; color: var(--success); }
+    .badge-wait   { background: #fff3cd; color: var(--warning); }
+    .badge-return { background: #fdecea; color: var(--danger); }
+    .badge-none   { background: #e9ecef; color: var(--muted); }
+
+    .payment-card .amount {
+      font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 4px;
+    }
+    .payment-card .amount span { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+    .payment-card .count { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+
+    .status-breakdown { display: flex; flex-direction: column; gap: 5px; }
+    .status-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+    .status-label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-nyuryoku  { background: #adb5bd; }
+    .dot-kakunin   { background: #ffc107; }
+    .dot-kessai    { background: #4a90d9; }
+    .dot-haraisumi { background: var(--success); }
+    .dot-modoshi   { background: var(--danger); }
+    .status-count { font-weight: 700; color: var(--text); }
+
+    /* ─── サマリーテーブル ─── */
+    .section-title {
+      font-size: 15px; font-weight: 700; color: var(--primary);
+      margin-bottom: 12px; padding-bottom: 6px;
+      border-bottom: 2px solid var(--primary);
+    }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .summary-card {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px 16px; box-shadow: var(--shadow); text-align: center;
+    }
+    .summary-card .s-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .summary-card .s-value { font-size: 22px; font-weight: 700; color: var(--primary); }
+    .summary-card .s-sub   { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* ─── 明細テーブル ─── */
+    .table-wrap {
+      background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 10px; box-shadow: var(--shadow); overflow-x: auto;
+      margin-bottom: 24px;
+    }
+    .table-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px 12px; border-bottom: 1px solid var(--border);
+    }
+    .table-header .title { font-size: 14px; font-weight: 700; color: var(--primary); }
+    .table-header .filter-group { display: flex; gap: 8px; align-items: center; }
+    .filter-group select { font-size: 12px; border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #f8f9fc; padding: 9px 14px; text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { padding: 10px 14px; border-bottom: 1px solid #f0f3fa; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f8f9fc; }
+
+    .status-badge {
+      display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
+    .s-入力中   { background: #e9ecef; color: #495057; }
+    .s-確認待   { background: #fff3cd; color: #664d00; }
+    .s-決裁待   { background: #cce5ff; color: #004085; }
+    .s-支払済   { background: #d4edda; color: #155724; }
+    .s-差戻し   { background: #fdecea; color: var(--danger); font-weight: 700; }
+
+    .amount-cell { font-weight: 600; text-align: right; white-space: nowrap; }
+    .empty-row td { text-align: center; color: var(--muted); padding: 30px; }
+
+    /* ─── スナックバー ─── */
+    #snackbar {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #323232; color: #fff; padding: 10px 20px; border-radius: 6px;
+      font-size: 13px; display: none; z-index: 999;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">花岡車輌<span>支払管理システム</span></div>
+  <div class="user-info">
+    <span class="name" id="user-name"></span>
+    <button onclick="signOut()">サインアウト</button>
+  </div>
+</header>
+
+<!-- ログイン前 -->
+<div id="login-view">
+  <h2>支払管理ダッシュボード</h2>
+  <p>花岡車輌株式会社の Microsoft アカウントでサインインしてください</p>
+  <button id="login-btn" onclick="signIn()">
+    <svg width="18" height="18" viewBox="0 0 21 21" fill="none"><path d="M10 0H0v10h10V0z" fill="#F25022"/><path d="M21 0H11v10h10V0z" fill="#7FBA00"/><path d="M10 11H0v10h10V11z" fill="#00A4EF"/><path d="M21 11H11v10h10V11z" fill="#FFB900"/></svg>
+    Microsoft アカウントでサインイン
+  </button>
+</div>
+
+<!-- ログイン後 -->
+<div id="app-view">
+
+  <!-- 月選択 -->
+  <div class="month-bar">
+    <label>対象年月</label>
+    <select id="month-select" onchange="loadData()"></select>
+    <button class="refresh-btn" onclick="loadData()">🔄 更新</button>
+    <span id="loading-msg"></span>
+  </div>
+
+  <!-- アラートバナー -->
+  <div id="alert-banner"></div>
+
+  <!-- 支払日区分カード -->
+  <div class="payment-cards">
+    <div class="payment-card day-10" id="card-10"></div>
+    <div class="payment-card day-20" id="card-20"></div>
+    <div class="payment-card day-end" id="card-end"></div>
+  </div>
+
+  <!-- サマリー -->
+  <div class="section-title">📊 今月の支払サマリー</div>
+  <div class="summary-grid" id="summary-grid"></div>
+
+  <!-- 明細テーブル -->
+  <div class="table-wrap">
+    <div class="table-header">
+      <span class="title">📋 支払明細一覧</span>
+      <div class="filter-group">
+        <select id="filter-status" onchange="renderTable()">
+          <option value="">全ステータス</option>
+          <option value="入力中">入力中</option>
+          <option value="確認待">確認待</option>
+          <option value="決裁待">決裁待</option>
+          <option value="支払済">支払済</option>
+          <option value="差戻し">差戻し</option>
+        </select>
+        <select id="filter-category" onchange="renderTable()">
+          <option value="">全区分</option>
+          <option value="本社経費">本社経費</option>
+          <option value="本社仕入">本社仕入</option>
+          <option value="工場経費">工場経費</option>
+          <option value="工場仕入">工場仕入</option>
+          <option value="口座振替">口座振替</option>
+        </select>
+      </div>
+    </div>
+    <table id="items-table">
+      <thead>
+        <tr>
+          <th>支払日区分</th>
+          <th>支払区分</th>
+          <th>支払先名</th>
+          <th>支払手段</th>
+          <th>金額（税込）</th>
+          <th>ステータス</th>
+          <th>仕訳</th>
+        </tr>
+      </thead>
+      <tbody id="items-tbody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<div id="snackbar"></div>
+
+<script>
+// ============================================================
+// 設定
+// ============================================================
+const MSAL_CONFIG = {
+  auth: {
+    clientId:    'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
+    authority:   'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
+    redirectUri: 'https://hanaoka-apps.github.io/hanaoka-ops/ap_dashboard.html',
+  },
+  cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
+};
+
+const SCOPES       = ['User.Read', 'Sites.ReadWrite.All'];
+const GRAPH_BASE   = 'https://graph.microsoft.com/v1.0';
+const AP_SITE_ID   = 'hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
+const LIST_NAME    = 'AP_PaymentSlip';
+
+let msalApp, currentAccount, allItems = [], fieldMap = {};
+
+// ============================================================
+// 認証
+// ============================================================
+async function initMsal() {
+  msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalApp.initialize();
+  const resp = await msalApp.handleRedirectPromise();
+  if (resp) currentAccount = resp.account;
+  else {
+    const accounts = msalApp.getAllAccounts();
+    if (accounts.length > 0) currentAccount = accounts[0];
+  }
+  if (currentAccount) await showApp();
+}
+
+async function signIn() {
+  await msalApp.loginRedirect({ scopes: SCOPES });
+}
+
+function signOut() {
+  msalApp.logoutRedirect({ postLogoutRedirectUri: window.location.href });
+}
+
+async function getToken() {
+  try {
+    const r = await msalApp.acquireTokenSilent({ scopes: SCOPES, account: currentAccount });
+    return r.accessToken;
+  } catch {
+    const r = await msalApp.acquireTokenRedirect({ scopes: SCOPES });
+    return r?.accessToken;
+  }
+}
+
+async function showApp() {
+  document.getElementById('login-view').style.display  = 'none';
+  document.getElementById('app-view').style.display    = 'block';
+  document.getElementById('user-name').textContent = currentAccount.name || currentAccount.username;
+  initMonthSelector();
+  await loadData();
+}
+
+// ============================================================
+// 月セレクター
+// ============================================================
+function initMonthSelector() {
+  const sel = document.getElementById('month-select');
+  const now = new Date();
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const val = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = val;
+    if (i === 0) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function selectedMonth() {
+  return document.getElementById('month-select').value;
+}
+
+// ============================================================
+// データ取得
+// ============================================================
+async function graphGet(path) {
+  const token = await getToken();
+  const res = await fetch(`${GRAPH_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[${res.status}] ${path}`);
+  return res.json();
+}
+
+async function buildFieldMap() {
+  if (Object.keys(fieldMap).length) return; // キャッシュ済み
+  const listsData = await graphGet(`/sites/${AP_SITE_ID}/lists`);
+  const list = listsData.value.find(l => l.displayName === LIST_NAME);
+  if (!list) throw new Error(`リスト "${LIST_NAME}" が見つかりません`);
+  window._listId = list.id;
+
+  const colData = await graphGet(`/sites/${AP_SITE_ID}/lists/${list.id}/columns`);
+  colData.value.forEach(c => { fieldMap[c.displayName] = c.name; });
+}
+
+function fv(fields, displayName) {
+  const key = fieldMap[displayName];
+  return key ? (fields[key] ?? '') : '';
+}
+
+async function loadData() {
+  setLoading(true);
+  try {
+    await buildFieldMap();
+    const listId = window._listId;
+    const month = selectedMonth();
+
+    // 全件取得（500件まで）＋ クライアント側で月フィルタ
+    let items = [], next = `/sites/${AP_SITE_ID}/lists/${listId}/items?$expand=fields&$top=500`;
+    while (next) {
+      const data = await graphGet(next);
+      items = items.concat(data.value || []);
+      next = data['@odata.nextLink']
+        ? data['@odata.nextLink'].replace(GRAPH_BASE, '')
+        : null;
+    }
+
+    // 選択月でフィルタ
+    allItems = items.filter(item => fv(item.fields, '対象年月') === month);
+    renderAll();
+  } catch (e) {
+    showSnack('データ取得エラー: ' + e.message);
+    console.error(e);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function setLoading(on) {
+  document.getElementById('loading-msg').textContent = on ? '読み込み中...' : '';
+}
+
+// ============================================================
+// レンダリング
+// ============================================================
+function renderAll() {
+  renderCards();
+  renderSummary();
+  renderAlerts();
+  renderTable();
+}
+
+// 支払日区分カード
+function renderCards() {
+  const defs = [
+    { id: 'card-10',  key: '10日',  label: '毎月10日払い',  icon: '📅' },
+    { id: 'card-20',  key: '20日',  label: '毎月20日払い',  icon: '📅' },
+    { id: 'card-end', key: '月末',  label: '月末払い',       icon: '📅' },
+  ];
+  for (const def of defs) {
+    const items = allItems.filter(it => fv(it.fields, '支払日区分') === def.key);
+    const totalAmt = items.reduce((s, it) => s + (parseFloat(fv(it.fields, '金額_税込')) || 0), 0);
+    const statusCount = {};
+    items.forEach(it => {
+      const st = fv(it.fields, '支払ステータス') || '入力中';
+      statusCount[st] = (statusCount[st] || 0) + 1;
+    });
+
+    const alertCount = (statusCount['確認待'] || 0) + (statusCount['差戻し'] || 0);
+    const badge = alertCount > 0
+      ? `<span class="badge badge-wait">⚠ ${alertCount}件 要対応</span>`
+      : items.length > 0
+        ? `<span class="badge badge-ok">✓ 正常</span>`
+        : `<span class="badge badge-none">データなし</span>`;
+
+    const statusRows = [
+      { key: '入力中',  dotClass: 'dot-nyuryoku' },
+      { key: '確認待',  dotClass: 'dot-kakunin' },
+      { key: '決裁待',  dotClass: 'dot-kessai' },
+      { key: '支払済',  dotClass: 'dot-haraisumi' },
+      { key: '差戻し',  dotClass: 'dot-modoshi' },
+    ].filter(r => statusCount[r.key])
+     .map(r => `
+      <div class="status-row">
+        <span class="status-label"><span class="status-dot ${r.dotClass}"></span>${r.key}</span>
+        <span class="status-count">${statusCount[r.key]}件</span>
+      </div>`).join('');
+
+    document.getElementById(def.id).innerHTML = `
+      <div class="card-title">${def.icon} ${def.label} ${badge}</div>
+      <div class="amount">${totalAmt > 0 ? '¥' + totalAmt.toLocaleString() : '—'}<span>${items.length}件</span></div>
+      <div class="count">${items.length} 件の支払明細</div>
+      <div class="status-breakdown">${statusRows || '<div style="font-size:12px;color:var(--muted)">データなし</div>'}</div>`;
+  }
+}
+
+// サマリーカード
+function renderSummary() {
+  const totalAmt    = allItems.reduce((s, it) => s + (parseFloat(fv(it.fields, '金額_税込')) || 0), 0);
+  const paid        = allItems.filter(it => fv(it.fields, '支払ステータス') === '支払済').length;
+  const waiting     = allItems.filter(it => ['確認待','決裁待'].includes(fv(it.fields, '支払ステータス'))).length;
+  const modoshi     = allItems.filter(it => fv(it.fields, '支払ステータス') === '差戻し').length;
+
+  const catAmts = {};
+  allItems.forEach(it => {
+    const cat = fv(it.fields, '支払区分') || 'その他';
+    catAmts[cat] = (catAmts[cat] || 0) + (parseFloat(fv(it.fields, '金額_税込')) || 0);
+  });
+
+  const grid = document.getElementById('summary-grid');
+  const cards = [
+    { label: '支払総額（税込）', value: '¥' + totalAmt.toLocaleString(), sub: `全 ${allItems.length} 件` },
+    { label: '支払完了',         value: paid,    sub: '件' },
+    { label: '承認待ち',         value: waiting, sub: '件', warn: waiting > 0 },
+    { label: '差し戻し',         value: modoshi, sub: '件', danger: modoshi > 0 },
+  ];
+
+  grid.innerHTML = cards.map(c => `
+    <div class="summary-card">
+      <div class="s-label">${c.label}</div>
+      <div class="s-value" style="${c.warn ? 'color:var(--warning)' : c.danger ? 'color:var(--danger)' : ''}">${c.value}</div>
+      <div class="s-sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+// アラートバナー
+function renderAlerts() {
+  const banner   = document.getElementById('alert-banner');
+  const modoshis = allItems.filter(it => fv(it.fields, '支払ステータス') === '差戻し');
+  const waitings = allItems.filter(it => fv(it.fields, '支払ステータス') === '確認待');
+
+  if (modoshis.length === 0 && waitings.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  let html = '';
+  if (modoshis.length > 0) {
+    html += `<strong>⚠ 差し戻し ${modoshis.length}件</strong> — 入力者による修正が必要です`;
+    html += '<div class="alert-items">' +
+      modoshis.slice(0, 5).map(it =>
+        `<span class="alert-chip">${fv(it.fields, '支払先名') || '(名称なし)'}</span>`
+      ).join('') +
+      (modoshis.length > 5 ? `<span class="alert-chip">他 ${modoshis.length - 5}件</span>` : '') +
+      '</div>';
+  }
+  if (waitings.length > 0) {
+    if (html) html += '<br><br>';
+    html += `<strong>🔔 確認待ち ${waitings.length}件</strong> — 承認者の確認が必要です`;
+  }
+
+  banner.innerHTML = html;
+  banner.className = modoshis.length > 0 ? 'danger' : '';
+  banner.style.display = 'block';
+}
+
+// 明細テーブル
+function renderTable() {
+  const filterStatus   = document.getElementById('filter-status').value;
+  const filterCategory = document.getElementById('filter-category').value;
+
+  let rows = allItems;
+  if (filterStatus)   rows = rows.filter(it => fv(it.fields, '支払ステータス') === filterStatus);
+  if (filterCategory) rows = rows.filter(it => fv(it.fields, '支払区分')       === filterCategory);
+
+  // 金額降順ソート
+  rows.sort((a, b) =>
+    (parseFloat(fv(b.fields, '金額_税込')) || 0) -
+    (parseFloat(fv(a.fields, '金額_税込')) || 0)
+  );
+
+  const tbody = document.getElementById('items-tbody');
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">表示できるデータがありません</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(it => {
+    const f      = it.fields;
+    const status = fv(f, '支払ステータス') || '入力中';
+    const jStatus = fv(f, '仕訳ステータス') || '未着手';
+    const amt    = parseFloat(fv(f, '金額_税込')) || 0;
+    return `<tr>
+      <td>${fv(f, '支払日区分') || '—'}</td>
+      <td>${fv(f, '支払区分') || '—'}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fv(f, '支払先名') || '—'}</td>
+      <td>${fv(f, '支払手段') || '—'}</td>
+      <td class="amount-cell">¥${amt.toLocaleString()}</td>
+      <td><span class="status-badge s-${status}">${status}</span></td>
+      <td style="font-size:11px;color:var(--muted)">${jStatus}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+function showSnack(msg) {
+  const el = document.getElementById('snackbar');
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+initMsal().catch(e => {
+  console.error('MSAL初期化エラー:', e);
+  showSnack('認証エラー: ' + e.message);
+});
+</script>
+</body>
+</html>
