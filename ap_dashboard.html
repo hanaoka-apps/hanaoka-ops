@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>支払管理ダッシュボード | 花岡車輌</title>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/dist/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
   <style>
     :root {
       --primary:    #1a5fa8;
@@ -279,13 +279,13 @@
 
 <script>
 // ============================================================
-// 設定
+// 設定（sales_dashboard.htmlと同じパターン）
 // ============================================================
 const MSAL_CONFIG = {
   auth: {
     clientId:    'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
     authority:   'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    redirectUri: 'https://hanaoka-apps.github.io/hanaoka-ops/ap_dashboard.html',
+    redirectUri: window.location.origin + window.location.pathname,
   },
   cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
 };
@@ -295,38 +295,46 @@ const GRAPH_BASE   = 'https://graph.microsoft.com/v1.0';
 const AP_SITE_ID   = 'hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const LIST_NAME    = 'AP_PaymentSlip';
 
-let msalApp, currentAccount, allItems = [], fieldMap = {};
+let msalInstance = null, currentAccount = null, allItems = [], fieldMap = {};
 
 // ============================================================
-// 認証
+// 認証（sales_dashboard.htmlと同じpopup方式）
 // ============================================================
 async function initMsal() {
-  msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
-  await msalApp.initialize();
-  const resp = await msalApp.handleRedirectPromise();
-  if (resp) currentAccount = resp.account;
-  else {
-    const accounts = msalApp.getAllAccounts();
-    if (accounts.length > 0) currentAccount = accounts[0];
+  msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    currentAccount = accounts[0];
+    msalInstance.setActiveAccount(currentAccount);
+    await showApp();
   }
-  if (currentAccount) await showApp();
 }
 
 async function signIn() {
-  await msalApp.loginRedirect({ scopes: SCOPES });
+  try {
+    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    currentAccount = result.account;
+    msalInstance.setActiveAccount(currentAccount);
+    await showApp();
+  } catch (e) {
+    if (e.errorCode !== 'user_cancelled') showSnack('サインインエラー: ' + e.message);
+  }
 }
 
 function signOut() {
-  msalApp.logoutRedirect({ postLogoutRedirectUri: window.location.href });
+  msalInstance.logoutPopup({ account: currentAccount });
 }
 
 async function getToken() {
   try {
-    const r = await msalApp.acquireTokenSilent({ scopes: SCOPES, account: currentAccount });
+    const r = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account: currentAccount });
     return r.accessToken;
   } catch {
-    const r = await msalApp.acquireTokenRedirect({ scopes: SCOPES });
-    return r?.accessToken;
+    const r = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
+    currentAccount = r.account;
+    return r.accessToken;
   }
 }
 
