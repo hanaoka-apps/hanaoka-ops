@@ -783,13 +783,6 @@ function reindexFY(rows){
 }
 reindexFY(ROWS);
 if (Array.isArray(RAW.order_rows)) reindexFY(RAW.order_rows);
-// オフィス名の揺れを補正（2025/04以降「大阪」→「大阪支店」、「名古屋」→「名古屋営業所」に変更された）
-function normalizeBase(rows){
-  for (const r of rows) {
-    if (r[IDX.base] === '大阪')   r[IDX.base] = '大阪支店';
-    if (r[IDX.base] === '名古屋') r[IDX.base] = '名古屋営業所';
-  }
-}
 const YEN_OKU = 100000000;
 const YEN_MAN = 10000;
 const FREIGHT_RE = /(運賃|送料|運送|諸掛)/;
@@ -799,16 +792,12 @@ function isFreight(r){
   const blob = (r[IDX.dai_bunrui]||"") + " " + (r[IDX.sho_bunrui]||"") + " " + (r[IDX.item_nm]||"");
   return FREIGHT_RE.test(blob);
 }
-// 課税区分「消費税等」の明細行を除外（売上明細出力CSVのEK列相当、item_nmに「消費税等」として格納）
-function isConsumptionTax(r){
-  return String(r[IDX.item_nm] || "").startsWith('消費税等');
-}
 function isStockRep(r){
   // 当初「在庫」担当者を除外していたが、全社基準値(2,326,600,715)に合わせるため除外しない方針に変更
   return false;
 }
 function isSalesRow(r){
-  return !isStockRep(r) && !isConsumptionTax(r);
+  return !isStockRep(r);
 }
 // 拠点間移動/内部ゼロ行: 単価=0 もしくは 数量=0 もしくは 金額=0 の行は
 // 実売ではないため重点商品の数量集計から除外する (ユーザー要望: RIDE=115台基準)
@@ -900,8 +889,8 @@ const CUST_FOLD_MAP = [
   { re: /ユニソル|ﾕﾆｿﾙ/,                 canon: "ユニソル" },
   { re: /yuasa|ユアサ商事|ユアサ|ﾕｱｻ/i,  canon: "YUASA" },
   { re: /サカエ|ｻｶｴ/,                    canon: "サカエ" },
-  { re: /トヨタl\s*&?\s*f|トヨタエル|ﾄﾖﾀL/i, canon: "トヨタL&F" },
-  { re: /ロジスネクスト|ﾛｼﾞｽﾈｸｽﾄ|三菱ロジス|三菱重工ロジス/i, canon: "ロジスネクスト" },
+  { re: /トヨタL\s*&?\s*F|トヨタエル|ﾄﾖﾀL|toyota\s*l\s*&?\s*f|アンビック/i, canon: "トヨタL&F" },
+  { re: /ロジスネクスト|ﾛｼﾞｽﾈｸｽﾄ|三菱ロジス|三菱重工ロジス|mitsubishi\s*logisnext|logisnext|TCM|UniCarriers|ﾕﾆｷｬﾘｱ/i, canon: "ロジスネクスト" },
   // 直販EC: 本社・大阪・名古屋 が別登録されているが1つに集約
   { re: /直販ec|直販EC|楽天|amazon|ﾓﾉﾀﾛｳ|モノタロウ|自社ec|じゃんぱら|yahoo.*ショッピング/i, canon: "直販EC" },
   // サウスワース: サウスワース / ｻｳｽﾜｰｽ / サウスワース上海 / ｻｳｽﾜｰｽ上海 等をまとめる
@@ -2147,9 +2136,9 @@ function populateCrossSelect(){
     return;
   }
   if (crossPivot === "directec") {
-    // 直販EC タブ: major_cust（得意先社名の集約値）が厳密に "EC直販" の行のみ。
+    // 直販EC タブ: custKey で正規化された "直販EC" の行のみ（CUST_FOLD_MAPで楽天・モノタロウ等を統合）
     // 選択肢は cust_abbr（得意先略称）別の年度合計を列挙して選べるようにする。
-    const ecRows = fyRows(curFY).filter(r=> r[IDX.major_cust] === "EC直販");
+    const ecRows = fyRows(curFY).filter(r=> custKey(r) === "直販EC");
     const optAll = document.createElement("option");
     optAll.value = ""; optAll.textContent = "全EC直販（合計）";
     sel.appendChild(optAll);
@@ -2426,10 +2415,10 @@ function renderCross(){
     if (!isSalesRow(r)) return false;           // 在庫担当除外（現状は false 固定）
     if (!matchBase(r, base)) return false;
     if (excludeFreight && isFreight(r)) return false;
-    // 直販EC: major_cust === "EC直販" のみ（ソリューションEC等の派生は含まない）
+    // 直販EC: custKey で正規化された "直販EC" のみ（CUST_FOLD_MAPのcanonと一致）
     // 品目コード "FR"（運賃・送料専用コード）は常に除外（数量汚染対策）
     if (crossPivot === "directec") {
-      if (r[IDX.major_cust] !== "EC直販") return false;
+      if (custKey(r) !== "直販EC") return false;
       const cd = String(r[IDX.item_cd] || "").toUpperCase();
       if (cd === "FR" || cd.startsWith("FR/")) return false;
       if (qNorm) {
@@ -3043,9 +3032,6 @@ async function loadFacts() {
   RAW.rows = facts.rows || [];
   RAW.order_rows = facts.order_rows || [];
   RAW.build_meta = facts.build_meta || {};
-  // オフィス名の揺れを補正
-  normalizeBase(RAW.rows);
-  normalizeBase(RAW.order_rows);
 }
 
 // ============================================================
