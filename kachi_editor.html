@@ -258,6 +258,7 @@ footer b{color:var(--goldDark)}
 <div class="mode-tabs" role="tablist">
   <button class="mode-tab on" data-mode="standard">📋 標準原価（機種別）</button>
   <button class="mode-tab" data-mode="monthly">📅 月別原価（マトリクス）</button>
+  <button class="mode-tab" data-mode="target">🎯 年間目標台数</button>
 </div>
 
 <div class="toolbar">
@@ -308,6 +309,31 @@ footer b{color:var(--goldDark)}
   </div>
 </div>
 
+<!-- ===== 年間目標台数タブ ===== -->
+<div class="edit-card" id="card-target" style="display:none">
+  <h2>🎯 重点機種 × 年間目標台数</h2>
+  <p style="font-size:12px; color:var(--gray); margin:0 0 12px">
+    各機種の <b>年間目標台数（台/FY）</b> を入力してください。期間中の累計実績／月割進捗の判定に使用されます。
+  </p>
+  <div class="tbl-wrap">
+    <table class="cost-tbl" id="targetTbl">
+      <thead>
+        <tr>
+          <th>カテゴリ</th>
+          <th>機種</th>
+          <th>品目コード</th>
+          <th class="r">前年同期実績(台)</th>
+          <th>年間目標(台)</th>
+          <th class="r">対前年</th>
+          <th>備考</th>
+          <th>状態</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
 <footer>
   <div>Hanaoka Vehicle Co., Ltd. — 付加価値 原価エディタ</div>
   <div style="margin-top:6px">SharePoint「営業目標管理」リスト連携 / TargetType=「重点機種_標準原価」「重点機種_月別原価」</div>
@@ -336,9 +362,10 @@ const SP = {
   targetsListId: '9cb1ee3e-8af9-4f6a-a910-78b12385437e',
 };
 
-// 原価用 TargetType
+// 原価/目標 用 TargetType
 const TT_STANDARD = '重点機種_標準原価';
 const TT_MONTHLY  = '重点機種_月別原価';
+const TT_TARGET   = '重点機種_年間目標台数';
 
 // ============================================================
 // 重点機種マスタ
@@ -384,10 +411,11 @@ const CAT_COLOR = {
 // ============================================================
 let msalInstance = null;
 let account = null;
-let allItems = [];        // SharePointから取得した原価アイテム
-let currentMode = "standard"; // "standard" | "monthly"
-let dirtyMap = new Map(); // key → { code, ym(0=標準), value, note, originalItem? }
-let avgPriceMap = new Map(); // 品目コード → 期間平均単価（埋め込みデータから算出）
+let allItems = [];        // SharePointから取得した原価/目標アイテム
+let currentMode = "standard"; // "standard" | "monthly" | "target"
+let dirtyMap = new Map(); // key → { code, ym/fy, value, note, type, originalItem? }
+let avgPriceMap = new Map(); // 品目コード → 全期間平均単価
+let qtyByCodeFy = new Map(); // 品目コード → Map<fy, qty>（前年実績比較用）
 
 // ============================================================
 // 起動
@@ -508,7 +536,7 @@ async function loadAllItems(){
   // クライアントフィルタ
   allItems = items.filter(it => {
     const tt = it.fields && it.fields.TargetType;
-    return tt === TT_STANDARD || tt === TT_MONTHLY;
+    return tt === TT_STANDARD || tt === TT_MONTHLY || tt === TT_TARGET;
   });
   // IsLatest=true のみ採用（バージョン管理対応）
   allItems = allItems.filter(it => it.fields && (it.fields.IsLatest === true || it.fields.IsLatest === undefined));
@@ -543,6 +571,7 @@ async function loadAvgPrices(){
     const codes = new Set(ITEM_MASTER.map(m => m.code));
     const all = ((cur && cur.rows) || []).concat((hist && hist.rows) || []);
     const m = new Map();
+    qtyByCodeFy.clear();
     for (const r of all) {
       if (r[23] === 2) continue; // 返品
       if (r[20] === 0 || r[21] === 0 || r[22] === 0) continue; // 内部移動
@@ -550,6 +579,13 @@ async function loadAvgPrices(){
       if (!codes.has(cd)) continue;
       if (!m.has(cd)) m.set(cd, {qty:0, amt:0});
       const o = m.get(cd); o.qty += r[20]; o.amt += r[21];
+      // FY計算（4月開始）
+      const ym = r[0];
+      const yy = Math.floor(ym/100), mm = ym%100;
+      const fy = mm >= 4 ? yy : yy - 1;
+      if (!qtyByCodeFy.has(cd)) qtyByCodeFy.set(cd, new Map());
+      const fyMap = qtyByCodeFy.get(cd);
+      fyMap.set(fy, (fyMap.get(fy) || 0) + r[20]);
     }
     avgPriceMap.clear();
     for (const [cd, o] of m) avgPriceMap.set(cd, o.qty > 0 ? o.amt / o.qty : null);
@@ -563,11 +599,14 @@ async function loadAvgPrices(){
 // ============================================================
 function render(){
   document.getElementById('itemCount').textContent = ITEM_MASTER.length;
-  document.getElementById('currentMode').textContent = currentMode === "standard" ? "標準原価" : "月別原価";
+  const modeLabel = currentMode === "standard" ? "標準原価" : currentMode === "monthly" ? "月別原価" : "年間目標台数";
+  document.getElementById('currentMode').textContent = modeLabel;
   document.getElementById('card-standard').style.display = currentMode === "standard" ? "" : "none";
   document.getElementById('card-monthly').style.display  = currentMode === "monthly"  ? "" : "none";
+  document.getElementById('card-target').style.display   = currentMode === "target"   ? "" : "none";
   if (currentMode === "standard") renderStandard();
-  else renderMonthly();
+  else if (currentMode === "monthly") renderMonthly();
+  else if (currentMode === "target") renderTarget();
   updateDirtyCount();
 }
 
@@ -576,6 +615,9 @@ function getStandardItem(code){
 }
 function getMonthlyItem(code, ym){
   return allItems.find(it => it.fields.TargetType === TT_MONTHLY && it.fields.ScopeKey === code && (it.fields.YearMonth|0) === ym);
+}
+function getTargetItem(code, fy){
+  return allItems.find(it => it.fields.TargetType === TT_TARGET && it.fields.ScopeKey === code && (it.fields.FY|0) === fy);
 }
 
 function renderStandard(){
@@ -715,6 +757,90 @@ function renderMonthly(){
   });
 }
 
+function renderTarget(){
+  const fy = parseInt(document.getElementById('targetFY').value);
+  const prevFy = fy - 1;
+  const tbody = document.querySelector("#targetTbl tbody");
+  let html = "";
+  for (const cat of CAT_ORDER) {
+    const items = ITEM_MASTER.filter(m => m.cat === cat);
+    if (!items.length) continue;
+    html += `<tr class="cat-row"><td colspan="8" style="color:${CAT_COLOR[cat]}">▼ ${cat}（${items.length}機種）</td></tr>`;
+    for (const m of items) {
+      const it = getTargetItem(m.code, fy);
+      const tgt = it ? (it.fields.Amount || "") : "";
+      const note = it ? (it.fields.RevisionReason || "") : "";
+      const dirtyKey = "T|" + m.code + "|" + fy;
+      const dirty = dirtyMap.has(dirtyKey);
+      const showVal = dirty ? (dirtyMap.get(dirtyKey).value == null ? "" : dirtyMap.get(dirtyKey).value) : tgt;
+      const showNote = dirty ? (dirtyMap.get(dirtyKey).note || "") : note;
+      // 前年同期実績
+      const prevQty = (qtyByCodeFy.get(m.code) && qtyByCodeFy.get(m.code).get(prevFy)) || null;
+      const useTgt = dirty ? dirtyMap.get(dirtyKey).value : (tgt || null);
+      const yoy = (prevQty && useTgt && prevQty > 0) ? ((useTgt / prevQty - 1) * 100) : null;
+      const yoyCls = yoy == null ? "muted" : (yoy >= 0 ? "pos" : "neg");
+      const yoyTxt = yoy == null ? "—" : (yoy > 0 ? "+" : "") + yoy.toFixed(1) + "%";
+      const status = dirty ? "未保存" : (it ? "登録済" : "未登録");
+      const sCls = dirty ? "dirty" : (it ? "saved" : "");
+      html += `<tr class="${dirty?'dirty':''}" data-code="${m.code}">
+        <td class="cat" style="color:${CAT_COLOR[cat]}">${cat}</td>
+        <td class="nm">${m.name}</td>
+        <td class="cd">${m.code}</td>
+        <td class="r">${prevQty == null ? "—" : Math.round(prevQty).toLocaleString()}</td>
+        <td class="input"><input type="number" min="0" step="1" data-code="${m.code}" data-fy="${fy}" class="target-input" value="${showVal}" placeholder="台/年"></td>
+        <td class="margin ${yoyCls}">${yoyTxt}</td>
+        <td class="note"><input type="text" data-code="${m.code}" class="target-note" value="${(showNote+'').replace(/"/g,'&quot;')}" placeholder="備考"></td>
+        <td class="status ${sCls}">${status}</td>
+      </tr>`;
+    }
+  }
+  tbody.innerHTML = html;
+  tbody.querySelectorAll(".target-input").forEach(inp => {
+    inp.addEventListener("input", () => onTargetInputChanged(inp));
+  });
+  tbody.querySelectorAll(".target-note").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const tr = inp.closest("tr");
+      const cInp = tr ? tr.querySelector(".target-input") : null;
+      if (cInp) onTargetInputChanged(cInp);
+    });
+  });
+}
+
+function onTargetInputChanged(inp){
+  const code = inp.dataset.code;
+  const fy = parseInt(inp.dataset.fy);
+  const v = inp.value === "" ? null : parseInt(inp.value);
+  const key = "T|" + code + "|" + fy;
+  const orig = getTargetItem(code, fy);
+  const origVal = orig ? (orig.fields.Amount || null) : null;
+  const noteEl = inp.closest("tr") ? inp.closest("tr").querySelector(".target-note") : null;
+  const note = noteEl ? noteEl.value.trim() : "";
+  if (v === origVal && (note === "" || (orig && note === orig.fields.RevisionReason))) {
+    dirtyMap.delete(key);
+  } else {
+    dirtyMap.set(key, { type:"target", code, fy, value: v, note, original: orig });
+  }
+  const tr = inp.closest("tr");
+  if (tr) tr.classList.toggle("dirty", dirtyMap.has(key));
+  // 前年比即時更新
+  const prevFy = fy - 1;
+  const prevQty = (qtyByCodeFy.get(code) && qtyByCodeFy.get(code).get(prevFy)) || null;
+  const yoy = (prevQty && v && prevQty > 0) ? ((v / prevQty - 1) * 100) : null;
+  const mEl = tr ? tr.querySelector(".margin") : null;
+  if (mEl) {
+    mEl.className = "margin " + (yoy == null ? "muted" : (yoy >= 0 ? "pos" : "neg"));
+    mEl.textContent = yoy == null ? "—" : (yoy > 0 ? "+" : "") + yoy.toFixed(1) + "%";
+  }
+  const stEl = tr ? tr.querySelector(".status") : null;
+  if (stEl) {
+    if (dirtyMap.has(key)) { stEl.textContent = "未保存"; stEl.className = "status dirty"; }
+    else if (orig) { stEl.textContent = "登録済"; stEl.className = "status saved"; }
+    else { stEl.textContent = "未登録"; stEl.className = "status"; }
+  }
+  updateDirtyCount();
+}
+
 function updateDirtyCount(){
   const n = dirtyMap.size;
   document.getElementById('dirtyCount').textContent = n;
@@ -748,44 +874,55 @@ async function saveAll(){
   document.getElementById('lastSavedAt').textContent = new Date().toLocaleString("ja-JP");
 }
 
-async function saveOne({ code, ym, value, note, original }){
-  const isStandard = (ym === 0);
-  const targetType = isStandard ? TT_STANDARD : TT_MONTHLY;
-  const itemMaster = ITEM_MASTER.find(m => m.code === code);
-  const fy = isStandard ? 2026 : (Math.floor(ym/100) - ((ym%100) < 4 ? 1 : 0));
+async function saveOne(change){
+  const itemMaster = ITEM_MASTER.find(m => m.code === change.code);
+  const isTarget = change.type === "target";
 
-  if (value == null) {
-    // 削除（実際にはAmount=0 + IsLatest=falseで論理削除も可。ここではAmountをnullに）
-    if (original) {
-      await patchItem(original.id, { Amount: 0, RevisionReason: (note || "値削除") });
+  let targetType, fy, ym;
+  if (isTarget) {
+    targetType = TT_TARGET;
+    fy = change.fy;
+    ym = 0;
+  } else {
+    ym = change.ym;
+    const isStandard = (ym === 0);
+    targetType = isStandard ? TT_STANDARD : TT_MONTHLY;
+    fy = isStandard ? 2026 : (Math.floor(ym/100) - ((ym%100) < 4 ? 1 : 0));
+  }
+
+  if (change.value == null) {
+    // 削除（Amount=0 + 削除理由を記録）
+    if (change.original) {
+      await patchItem(change.original.id, { Amount: 0, RevisionReason: (change.note || "値削除") });
     }
     return;
   }
 
-  if (original) {
+  if (change.original) {
     // 更新（上書き）
-    const fields = { Amount: value };
-    if (note) fields.RevisionReason = note;
-    await patchItem(original.id, fields);
+    const fields = { Amount: change.value };
+    if (change.note) fields.RevisionReason = change.note;
+    await patchItem(change.original.id, fields);
   } else {
     // 新規作成
+    const titleSuffix = isTarget ? `_FY${fy}` : (ym ? `_${ym}` : '');
     const fields = {
-      Title: `${fy}_${targetType}_${code}_v1${ym ? '_' + ym : ''}`,
+      Title: `${fy}_${targetType}_${change.code}_v1${titleSuffix}`,
       FY: fy,
       TargetType: targetType,
-      ScopeKey: code,
-      ScopeName: itemMaster ? itemMaster.name : code,
+      ScopeKey: change.code,
+      ScopeName: itemMaster ? itemMaster.name : change.code,
       SubScope: itemMaster ? itemMaster.cat : "",
       ParentScope: "",
       VersionLabel: "期首",
       VersionOrder: 1,
-      MatchingKeys: code,
+      MatchingKeys: change.code,
       EffectiveFrom: new Date().toISOString().split('T')[0],
-      RevisionReason: note || "",
+      RevisionReason: change.note || "",
       IsLatest: true,
-      Amount: value,
+      Amount: change.value,
     };
-    if (!isStandard) fields.YearMonth = ym;
+    if (!isTarget && ym) fields.YearMonth = ym;
     await postItem(fields);
   }
 }
@@ -811,7 +948,7 @@ function bindUI(){
     render();
     showToast("再読込しました", "success");
   };
-  document.getElementById('targetFY').onchange = () => { if (currentMode === "monthly") render(); };
+  document.getElementById('targetFY').onchange = () => { if (currentMode === "monthly" || currentMode === "target") render(); };
   document.getElementById('initFromAvgBtn').onclick = () => {
     const ratio = parseFloat(document.getElementById('initRatio').value) / 100;
     if (!ratio || isNaN(ratio)) return;
