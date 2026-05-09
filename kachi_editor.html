@@ -288,6 +288,7 @@ footer b{color:var(--goldDark)}
           <th>品目コード</th>
           <th class="r">期間平均単価(円)</th>
           <th>標準原価(円/台)</th>
+          <th>最安販売金額(円/台)</th>
           <th class="r">付加価値率</th>
           <th>備考（改訂理由など）</th>
           <th>状態</th>
@@ -363,9 +364,10 @@ const SP = {
 };
 
 // 原価/目標 用 TargetType
-const TT_STANDARD = '重点機種_標準原価';
-const TT_MONTHLY  = '重点機種_月別原価';
-const TT_TARGET   = '重点機種_年間目標台数';
+const TT_STANDARD  = '重点機種_標準原価';
+const TT_MONTHLY   = '重点機種_月別原価';
+const TT_TARGET    = '重点機種_年間目標台数';
+const TT_MIN_PRICE = '重点機種_最安販売金額';
 
 // ============================================================
 // 重点機種マスタ
@@ -536,7 +538,7 @@ async function loadAllItems(){
   // クライアントフィルタ
   allItems = items.filter(it => {
     const tt = it.fields && it.fields.TargetType;
-    return tt === TT_STANDARD || tt === TT_MONTHLY || tt === TT_TARGET;
+    return tt === TT_STANDARD || tt === TT_MONTHLY || tt === TT_TARGET || tt === TT_MIN_PRICE;
   });
   // IsLatest=true のみ採用（バージョン管理対応）
   allItems = allItems.filter(it => it.fields && (it.fields.IsLatest === true || it.fields.IsLatest === undefined));
@@ -619,6 +621,9 @@ function getMonthlyItem(code, ym){
 function getTargetItem(code, fy){
   return allItems.find(it => it.fields.TargetType === TT_TARGET && it.fields.ScopeKey === code && (it.fields.FY|0) === fy);
 }
+function getMinPriceItem(code){
+  return allItems.find(it => it.fields.TargetType === TT_MIN_PRICE && it.fields.ScopeKey === code);
+}
 
 function renderStandard(){
   const tbody = document.querySelector("#standardTbl tbody");
@@ -626,27 +631,34 @@ function renderStandard(){
   for (const cat of CAT_ORDER) {
     const items = ITEM_MASTER.filter(m => m.cat === cat);
     if (!items.length) continue;
-    html += `<tr class="cat-row"><td colspan="8" style="color:${CAT_COLOR[cat]}">▼ ${cat}（${items.length}機種）</td></tr>`;
+    html += `<tr class="cat-row"><td colspan="9" style="color:${CAT_COLOR[cat]}">▼ ${cat}（${items.length}機種）</td></tr>`;
     for (const m of items) {
       const it = getStandardItem(m.code);
+      const itMin = getMinPriceItem(m.code);
       const cost = it ? (it.fields.Amount || "") : "";
       const note = it ? (it.fields.RevisionReason || "") : "";
       const avg = avgPriceMap.get(m.code);
       const dirty = dirtyMap.has(m.code + "|0");
+      const dirtyMin = dirtyMap.has("MP|" + m.code);
       const dirtyVal = dirty ? dirtyMap.get(m.code + "|0").value : null;
       const showCost = dirty ? (dirtyVal == null ? "" : dirtyVal) : cost;
       const showNote = dirty ? (dirtyMap.get(m.code + "|0").note || "") : note;
+      const minPrice = itMin ? (itMin.fields.Amount || "") : "";
+      const showMin = dirtyMin ? (dirtyMap.get("MP|" + m.code).value == null ? "" : dirtyMap.get("MP|" + m.code).value) : minPrice;
       const useCost = dirty ? dirtyVal : (cost || null);
       const margin = (avg && useCost) ? ((avg - useCost) / avg * 100) : null;
       const mCls = margin == null ? "muted" : (margin >= 30 ? "pos" : margin >= 15 ? "warn" : "neg");
-      const status = dirty ? "未保存" : (it ? "登録済" : "未登録");
-      const sCls = dirty ? "dirty" : (it ? "saved" : "");
-      html += `<tr class="${dirty?'dirty':''}" data-code="${m.code}">
+      const isAnyDirty = dirty || dirtyMin;
+      const isRegistered = !!it || !!itMin;
+      const status = isAnyDirty ? "未保存" : (isRegistered ? "登録済" : "未登録");
+      const sCls = isAnyDirty ? "dirty" : (isRegistered ? "saved" : "");
+      html += `<tr class="${isAnyDirty?'dirty':''}" data-code="${m.code}">
         <td class="cat" style="color:${CAT_COLOR[cat]}">${cat}</td>
         <td class="nm">${m.name}</td>
         <td class="cd">${m.code}</td>
         <td class="r">${avg == null ? "—" : Math.round(avg).toLocaleString()}</td>
         <td class="input"><input type="number" min="0" step="100" data-code="${m.code}" data-ym="0" class="cost-input" value="${showCost}" placeholder="円/台"></td>
+        <td class="input"><input type="number" min="0" step="100" data-code="${m.code}" class="minprice-input" value="${showMin}" placeholder="円/台" title="赤字承認の閾値"></td>
         <td class="margin ${mCls}">${margin == null ? "—" : margin.toFixed(1) + "%"}</td>
         <td class="note"><input type="text" data-code="${m.code}" class="cost-note" value="${(showNote+'').replace(/"/g,'&quot;')}" placeholder="改訂理由など"></td>
         <td class="status ${sCls}">${status}</td>
@@ -661,6 +673,30 @@ function renderStandard(){
   tbody.querySelectorAll(".cost-note").forEach(inp => {
     inp.addEventListener("input", () => onNoteInputChanged(inp));
   });
+  tbody.querySelectorAll(".minprice-input").forEach(inp => {
+    inp.addEventListener("input", () => onMinPriceInputChanged(inp));
+  });
+}
+
+function onMinPriceInputChanged(inp){
+  const code = inp.dataset.code;
+  const v = inp.value === "" ? null : parseInt(inp.value);
+  const key = "MP|" + code;
+  const orig = getMinPriceItem(code);
+  const origVal = orig ? (orig.fields.Amount || null) : null;
+  if (v === origVal) dirtyMap.delete(key);
+  else dirtyMap.set(key, { type:"minprice", code, value: v, note:"", original: orig });
+  const tr = inp.closest("tr");
+  if (tr) tr.classList.toggle("dirty", dirtyMap.has(code + "|0") || dirtyMap.has(key));
+  const stEl = tr ? tr.querySelector(".status") : null;
+  if (stEl) {
+    const dirty = dirtyMap.has(code + "|0") || dirtyMap.has(key);
+    const reg = !!getStandardItem(code) || !!orig;
+    if (dirty) { stEl.textContent = "未保存"; stEl.className = "status dirty"; }
+    else if (reg) { stEl.textContent = "登録済"; stEl.className = "status saved"; }
+    else { stEl.textContent = "未登録"; stEl.className = "status"; }
+  }
+  updateDirtyCount();
 }
 
 function onCostInputChanged(inp){
@@ -877,11 +913,16 @@ async function saveAll(){
 async function saveOne(change){
   const itemMaster = ITEM_MASTER.find(m => m.code === change.code);
   const isTarget = change.type === "target";
+  const isMinPrice = change.type === "minprice";
 
   let targetType, fy, ym;
   if (isTarget) {
     targetType = TT_TARGET;
     fy = change.fy;
+    ym = 0;
+  } else if (isMinPrice) {
+    targetType = TT_MIN_PRICE;
+    fy = 2026;
     ym = 0;
   } else {
     ym = change.ym;
@@ -922,7 +963,7 @@ async function saveOne(change){
       IsLatest: true,
       Amount: change.value,
     };
-    if (!isTarget && ym) fields.YearMonth = ym;
+    if (!isTarget && !isMinPrice && ym) fields.YearMonth = ym;
     await postItem(fields);
   }
 }
@@ -952,7 +993,7 @@ function bindUI(){
   document.getElementById('initFromAvgBtn').onclick = () => {
     const ratio = parseFloat(document.getElementById('initRatio').value) / 100;
     if (!ratio || isNaN(ratio)) return;
-    if (!confirm(`期間平均単価×${(ratio*100).toFixed(0)}%で「標準原価」を初期化します（既存値も上書き）。よろしいですか？`)) return;
+    if (!confirm("期間平均単価×" + (ratio*100).toFixed(0) + "%で「標準原価」を初期化します（既存値も上書き）。よろしいですか？")) return;
     let n = 0;
     for (const m of ITEM_MASTER) {
       const avg = avgPriceMap.get(m.code);
@@ -961,24 +1002,21 @@ function bindUI(){
       const orig = getStandardItem(m.code);
       const origVal = orig ? (orig.fields.Amount || null) : null;
       if (v !== origVal) {
-        dirtyMap.set(m.code + "|0", { code: m.code, ym: 0, value: v, note: `期間平均単価×${(ratio*100).toFixed(0)}%で初期化`, original: orig });
+        dirtyMap.set(m.code + "|0", { code: m.code, ym: 0, value: v, note: "期間平均単価×" + (ratio*100).toFixed(0) + "%で初期化", original: orig });
         n++;
       }
     }
     render();
-    showToast(`${n}機種を初期化しました（保存ボタンで反映）`, "success");
+    showToast(n + "機種を初期化しました（保存ボタンで反映）", "success");
   };
 }
 
-// ============================================================
-// Toast/info
-// ============================================================
 function showToast(msg, kind = "success", opts = {}){
   const t = document.createElement("div");
-  t.className = `toast ${kind}`;
-  let html = `<span>${escapeHtml(msg)}</span>`;
-  if (opts.retry) html += `<button class="toast-retry">🔄 再試行</button>`;
-  html += `<button class="toast-close">×</button>`;
+  t.className = "toast " + kind;
+  let html = '<span>' + escapeHtml(msg) + '</span>';
+  if (opts.retry) html += '<button class="toast-retry">🔄 再試行</button>';
+  html += '<button class="toast-close">×</button>';
   t.innerHTML = html;
   document.body.appendChild(t);
   if (opts.retry) {
@@ -987,9 +1025,7 @@ function showToast(msg, kind = "success", opts = {}){
   t.querySelector(".toast-close").onclick = () => t.remove();
   setTimeout(() => { if (t.parentNode) t.remove(); }, opts.retry ? 10000 : 3500);
 }
-function showInfo(msg){
-  console.log("[INFO]", msg);
-}
+function showInfo(msg){ console.log("[INFO]", msg); }
 function escapeHtml(s){
   return String(s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 }
