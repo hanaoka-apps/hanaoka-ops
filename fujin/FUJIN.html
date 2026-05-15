@@ -271,23 +271,20 @@ function _fujinStartAuth() {
         </div>
       </div>`;
     document.getElementById("_fujinLoginBtn").onclick = async () => {
-      if (!window._fujinMsal || typeof window._fujinMsal.loginPopup !== "function") {
+      if (!window._fujinMsal || typeof window._fujinMsal.loginRedirect !== "function") {
         showLogin("認証ライブラリが正しく読み込めていません。ページを再読み込みしてください (Cmd+Shift+R)。");
         return;
       }
       try {
-        const result = await window._fujinMsal.loginPopup({
+        // loginRedirect: ページ全体を Microsoft 認証ページに遷移させる方式
+        // ポップアップを使わないので Safari/Chrome のサードパーティクッキー問題を回避できる
+        // 認証完了後、redirectUri に戻ってきて handleRedirectPromise() で結果を取得
+        await window._fujinMsal.loginRedirect({
           scopes: ["User.Read"],
           prompt: "select_account"
         });
-        if (result && result.account) {
-          window._fujinMsal.setActiveAccount(result.account);
-          showApp(result.account);
-        } else {
-          showLogin("サインインに失敗しました (アカウント取得不可)。Azure AD のリダイレクトURI登録を確認してください: " + window.location.origin + window.location.pathname);
-        }
+        // loginRedirect 実行後はページ遷移するため、この行に到達しない
       } catch(e) {
-        // 詳細なエラー情報を表示 (errorCode, errorMessage, name など)
         const ec = e && (e.errorCode || e.name) || "";
         const em = e && (e.errorMessage || e.message) || String(e);
         let hint = "";
@@ -340,36 +337,52 @@ function _fujinStartAuth() {
     return;
   }
 
-  // 初期化 → 必ずサインイン画面表示 (SSO自動通過は禁止)
+  // 初期化フロー
+  // 1. initialize()
+  // 2. handleRedirectPromise() で リダイレクト戻り時の認証情報を受け取る
+  //    - 戻り直後なら response.account あり → showApp
+  //    - 通常アクセスなら null → showLogin (サインインボタン表示)
   msalInstance.initialize()
     .then(() => msalInstance.handleRedirectPromise())
-    .then(() => {
-      // 過去アカウントを全削除して必ず明示的サインインを要求
-      try {
-        const all = msalInstance.getAllAccounts();
-        all.forEach(a => {
-          try {
-            if (typeof msalInstance.removeAccount === "function") {
-              msalInstance.removeAccount(a);
-            }
-          } catch(_){}
-        });
-      } catch(_){}
-      // sessionStorage の MSAL キー手動削除
-      try {
-        Object.keys(sessionStorage).forEach(k => {
-          if (k.indexOf("msal.") === 0 || k.indexOf("login.windows.net") >= 0 || k.indexOf("login.microsoftonline.com") >= 0) {
-            try { sessionStorage.removeItem(k); } catch(_){}
-          }
-        });
-      } catch(_){}
+    .then((response) => {
       _hideCheckingOverlay();
-      showLogin();
+      if (response && response.account) {
+        // Microsoft認証から戻ってきた直後: 認証成功 → アプリ表示
+        msalInstance.setActiveAccount(response.account);
+        showApp(response.account);
+      } else {
+        // 通常アクセス: 過去アカウントを全削除して必ず明示的サインインを要求
+        try {
+          const all = msalInstance.getAllAccounts();
+          all.forEach(a => {
+            try {
+              if (typeof msalInstance.removeAccount === "function") {
+                msalInstance.removeAccount(a);
+              }
+            } catch(_){}
+          });
+        } catch(_){}
+        // sessionStorage の MSAL キー手動削除
+        try {
+          Object.keys(sessionStorage).forEach(k => {
+            if (k.indexOf("msal.") === 0 || k.indexOf("login.windows.net") >= 0 || k.indexOf("login.microsoftonline.com") >= 0) {
+              try { sessionStorage.removeItem(k); } catch(_){}
+            }
+          });
+        } catch(_){}
+        showLogin();
+      }
     })
     .catch((err) => {
-      console.error("MSAL init error:", err);
+      console.error("MSAL init/redirect error:", err);
       _hideCheckingOverlay();
-      showLogin("認証初期化エラー: " + (err && err.message ? err.message : err));
+      const ec = err && (err.errorCode || err.name) || "";
+      const em = err && (err.errorMessage || err.message) || String(err);
+      let hint = "";
+      if (ec === "AADSTS50011" || em.indexOf("redirect_uri") >= 0 || em.indexOf("AADSTS50011") >= 0) {
+        hint = '<br><br><b>★リダイレクトURI未登録です★</b><br>Azure ADの「花岡車輌 業務アプリ」SPAリダイレクトURIに下記を追加してください:<br><code style="font-size:11px;background:#fef3c7;padding:2px 6px;border-radius:3px;display:inline-block;margin-top:4px">' + window.location.origin + window.location.pathname + '</code>';
+      }
+      showLogin("認証初期化エラー [" + ec + "]: " + em + hint);
     });
 }
 
