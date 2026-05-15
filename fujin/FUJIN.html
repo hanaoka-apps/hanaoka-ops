@@ -102,6 +102,32 @@ header .meta .v { font-weight:600; }
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <style id="_fujin_auth_style">
   html._fujin_pending body { visibility: hidden; }
+  /* 認証確認中オーバーレイ (全画面、目視確認用) */
+  ._fujin_overlay {
+    position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;
+    background:linear-gradient(135deg,#1e3a8a 0%,#3b82f6 100%);color:#fff;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+    font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Meiryo',sans-serif;
+  }
+  ._fujin_overlay .logo { font-size:48px; animation: _fujin_pulse 1.5s infinite ease-in-out; }
+  ._fujin_overlay .msg { font-size:18px;font-weight:700;letter-spacing:.04em; }
+  ._fujin_overlay .sub { font-size:12px;opacity:.85;margin-top:-6px; }
+  ._fujin_overlay .spinner {
+    width:32px;height:32px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;
+    border-radius:50%;animation:_fujin_spin 0.8s linear infinite;
+  }
+  @keyframes _fujin_spin { to { transform: rotate(360deg); } }
+  @keyframes _fujin_pulse { 0%,100% { opacity:1; } 50% { opacity:.6; } }
+  /* 認証成功トースト */
+  ._fujin_toast {
+    position:fixed;top:60px;right:14px;z-index:2147483646;
+    background:#16a34a;color:#fff;padding:10px 18px;border-radius:8px;
+    font-size:13px;font-weight:700;box-shadow:0 4px 16px rgba(22,163,74,.4);
+    font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;
+    animation: _fujin_toast_in .3s ease-out, _fujin_toast_out .3s ease-in 4.5s forwards;
+  }
+  @keyframes _fujin_toast_in { from { transform: translateX(20px); opacity: 0; } }
+  @keyframes _fujin_toast_out { to { transform: translateX(20px); opacity: 0; } }
   ._fujin_login_box {
     display:flex;justify-content:center;align-items:center;min-height:100vh;
     font-family:"Hiragino Sans","Meiryo",sans-serif;background:#f4f5f7;margin:0;
@@ -131,6 +157,29 @@ header .meta .v { font-weight:600; }
   // ページを一旦非表示にしてサインイン確認
   document.documentElement.classList.add("_fujin_pending");
 
+  // 認証確認中オーバーレイを即座に表示 (目視で「ゲートが動いている」と分かるように)
+  function _showCheckingOverlay() {
+    if (document.getElementById("_fujinCheckOverlay")) return;
+    const ov = document.createElement("div");
+    ov.id = "_fujinCheckOverlay";
+    ov.className = "_fujin_overlay";
+    ov.innerHTML = '<div class="logo">🔐</div><div class="msg">FUJIN サインイン確認中</div><div class="sub">花岡車輌 Microsoft 365 アカウントを照合しています</div><div class="spinner"></div>';
+    (document.body || document.documentElement).appendChild(ov);
+  }
+  function _hideCheckingOverlay() {
+    const ov = document.getElementById("_fujinCheckOverlay");
+    if (ov) ov.remove();
+  }
+  function _showSuccessToast(username) {
+    const t = document.createElement("div");
+    t.className = "_fujin_toast";
+    t.textContent = "✅ 認証OK: " + (username || "認証済");
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 5000);
+  }
+  if (document.body) _showCheckingOverlay();
+  else document.addEventListener("DOMContentLoaded", _showCheckingOverlay, { once: true });
+
   const FUJIN_AUTH_CONFIG = {
     auth: {
       clientId: "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
@@ -143,6 +192,7 @@ header .meta .v { font-weight:600; }
 
   function showLogin(errorMsg){
     document.documentElement.classList.remove("_fujin_pending");
+    _hideCheckingOverlay();
     document.body.className = "_fujin_login_box";
     document.body.innerHTML = `
       <div class="card">
@@ -157,7 +207,18 @@ header .meta .v { font-weight:600; }
       </div>`;
     document.getElementById("_fujinLoginBtn").onclick = async () => {
       try {
-        await window._fujinMsal.loginRedirect({ scopes: ["User.Read"], prompt: "select_account" });
+        // loginPopup を使う (sales_dashboard.html と同じパターン)
+        // prompt: "login" で毎回必ずサインイン画面を表示 (SSO自動通過を完全防止)
+        const result = await window._fujinMsal.loginPopup({
+          scopes: ["User.Read"],
+          prompt: "login"
+        });
+        if (result && result.account) {
+          window._fujinMsal.setActiveAccount(result.account);
+          showApp(result.account);
+        } else {
+          showLogin("サインインに失敗しました");
+        }
       } catch(e) {
         showLogin("サインインエラー: " + (e.message||e));
       }
@@ -167,6 +228,8 @@ header .meta .v { font-weight:600; }
   function showApp(account){
     document.documentElement.classList.remove("_fujin_pending");
     window._fujinUser = account;
+    _hideCheckingOverlay();
+    _showSuccessToast(account.username || account.name);
     // ページ右上にユーザー名・サインアウトボタンを表示
     // body準備を待ってから挿入 (重いiframe読み込み中でも確実に出るように)
     function _insertUserBar() {
@@ -195,18 +258,18 @@ header .meta .v { font-weight:600; }
   msalInstance.initialize()
     .then(() => msalInstance.handleRedirectPromise())
     .then((response) => {
-      if (response && response.account) {
-        msalInstance.setActiveAccount(response.account);
-        showApp(response.account);
-        return;
-      }
-      const accounts = msalInstance.getAllAccounts();
-      if (accounts.length > 0) {
-        msalInstance.setActiveAccount(accounts[0]);
-        showApp(accounts[0]);
-      } else {
-        showLogin();
-      }
+      // ★ 重要: 過去のセッションキャッシュは破棄して必ずログイン画面を表示する
+      // 自動通過を許すと「サインイン状態が見えにくい」「Mac M365 SSO で勝手に通る」問題が起きる
+      // sales_dashboard.html と同じく、ユーザーが明示的にサインインボタンを押す方式に統一
+      try {
+        const all = msalInstance.getAllAccounts();
+        all.forEach(a => {
+          // キャッシュ削除して毎回ログインを強制
+          try { msalInstance.clearCache({ account: a }); } catch(_){}
+        });
+      } catch(_){}
+      _hideCheckingOverlay();
+      showLogin();
     })
     .catch((err) => {
       console.error("MSAL init error:", err);
