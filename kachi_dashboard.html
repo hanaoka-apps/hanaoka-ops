@@ -1403,6 +1403,18 @@ async function spInitMsal(){
     _spMsal.setActiveAccount(_spAccount);
     return true;
   }
+  // 既存のM365セッションがあれば無操作サインインを試行（ポップアップ無し）
+  try {
+    const r = await _spMsal.ssoSilent({ scopes: SP_SCOPES });
+    if (r && r.account) {
+      _spAccount = r.account;
+      _spMsal.setActiveAccount(_spAccount);
+      console.log("✅ ssoSilent成功:", _spAccount.username);
+      return true;
+    }
+  } catch(e) {
+    console.log("ssoSilent失敗（手動サインインが必要）:", e.errorCode || e.message);
+  }
   return false;
 }
 
@@ -1538,11 +1550,134 @@ async function spAutoLoad(){
     const ok = await spInitMsal();
     if (ok) {
       await spLoadCosts();
-      // 反映後に再計算
       if (typeof recompute === "function") recompute();
-      // 原価入力タブは廃止
+      // ログイン成功時、自動再取得タイマーを開始
+      startAutoSync();
     }
   } catch(e) { console.warn("spAutoLoad:", e.message); }
+}
+
+// ============================================================
+// 自動同期（共有データの最新化）
+// ============================================================
+// 1分ごとにSharePointから再取得し、誰かが原価/目標を更新すれば
+// 全員のダッシュボードに自動反映する
+const AUTO_SYNC_INTERVAL_MS = 60 * 1000; // 60秒
+let _autoSyncTimer = null;
+let _lastSyncSnapshot = null;
+let _autoSyncEnabled = true;
+
+function snapshotSpData(){
+  // 現在のSP由来データの簡易ハッシュ（変更検知用）
+  const items = COST_DATA && COST_DATA.items ? COST_DATA.items : {};
+  const sig = [];
+  for (const cd of Object.keys(items).sort()) {
+    const c = items[cd];
+    sig.push(cd + ":" + (c.cost || 0));
+    if (c.monthly) {
+      for (const ym of Object.keys(c.monthly).sort()) sig.push(cd + "/" + ym + ":" + c.monthly[ym]);
+    }
+  }
+  for (const [cd, p] of [...(MIN_PRICE_DATA || new Map()).entries()].sort()) sig.push("MP:" + cd + ":" + p);
+  for (const [cd, fyMap] of [...(TARGET_QTY || new Map()).entries()].sort()) {
+    for (const [fy, q] of [...fyMap.entries()].sort()) sig.push("T:" + cd + ":" + fy + ":" + q);
+  }
+  return sig.join("|");
+}
+
+function startAutoSync(){
+  if (_autoSyncTimer) return; // 多重起動防止
+  _lastSyncSnapshot = snapshotSpData();
+  _autoSyncTimer = setInterval(autoSyncTick, AUTO_SYNC_INTERVAL_MS);
+  updateAutoSyncBadge();
+  console.log("🔄 自動同期開始（" + (AUTO_SYNC_INTERVAL_MS/1000) + "秒間隔）");
+}
+
+function stopAutoSync(){
+  if (_autoSyncTimer) { clearInterval(_autoSyncTimer); _autoSyncTimer = null; }
+  updateAutoSyncBadge();
+}
+
+async function autoSyncTick(){
+  if (!_spAccount || !_autoSyncEnabled) return;
+  try {
+    // サイレントで再取得（updateSpStatusは出さない）
+    const before = _lastSyncSnapshot;
+    await spLoadCostsQuiet();
+    const after = snapshotSpData();
+    if (before !== after) {
+      _lastSyncSnapshot = after;
+      if (typeof recompute === "function") recompute();
+      flash("🔄 共有データを更新（誰かが原価/目標を変更）");
+    }
+    updateAutoSyncBadge();
+  } catch(e) {
+    console.warn("自動同期エラー:", e.message);
+  }
+}
+
+// 静かなSharePoint読み込み（ステータス更新無し）
+async function spLoadCostsQuiet(){
+  if (!_spAccount) return false;
+  let url = `/sites/${SP_CONFIG.siteId}/lists/${SP_CONFIG.targetsListId}/items?$expand=fields&$top=2000`;
+  let items = [];
+  while (url) {
+    const r = await spGraphGet(url);
+    items = items.concat(r.value || []);
+    url = r['@odata.nextLink'] ? r['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0', '') : null;
+  }
+  const relItems = items.filter(it => {
+    const tt = it.fields && it.fields.TargetType;
+    if (tt !== SP_TT_STANDARD && tt !== SP_TT_MONTHLY && tt !== SP_TT_TARGET && tt !== SP_TT_MIN_PRICE) return false;
+    if (it.fields.IsLatest === false) return false;
+    return true;
+  });
+  if (!COST_DATA || typeof COST_DATA !== "object") COST_DATA = { useMonthly:false, items:{} };
+  // 一旦リセット（削除されたアイテムを反映）
+  COST_DATA.items = {};
+  TARGET_QTY = new Map();
+  MIN_PRICE_DATA = new Map();
+  let hasMonthly = false;
+  for (const it of relItems) {
+    const f = it.fields;
+    const cd = f.ScopeKey;
+    if (!cd) continue;
+    const amt = (typeof f.Amount === "number") ? f.Amount : (parseFloat(f.Amount) || null);
+    if (amt == null || amt <= 0) continue;
+    if (f.TargetType === SP_TT_STANDARD) {
+      if (!COST_DATA.items[cd]) COST_DATA.items[cd] = {};
+      COST_DATA.items[cd].cost = amt;
+      if (f.RevisionReason) COST_DATA.items[cd].note = f.RevisionReason;
+    } else if (f.TargetType === SP_TT_MONTHLY) {
+      if (!COST_DATA.items[cd]) COST_DATA.items[cd] = {};
+      const ym = parseInt(f.YearMonth);
+      if (!isNaN(ym) && ym > 0) {
+        if (!COST_DATA.items[cd].monthly) COST_DATA.items[cd].monthly = {};
+        COST_DATA.items[cd].monthly[ym] = amt;
+        hasMonthly = true;
+      }
+    } else if (f.TargetType === SP_TT_TARGET) {
+      const fy = parseInt(f.FY);
+      if (!isNaN(fy)) {
+        if (!TARGET_QTY.has(cd)) TARGET_QTY.set(cd, new Map());
+        TARGET_QTY.get(cd).set(fy, amt);
+      }
+    } else if (f.TargetType === SP_TT_MIN_PRICE) {
+      MIN_PRICE_DATA.set(cd, amt);
+    }
+  }
+  if (hasMonthly) COST_DATA.useMonthly = true;
+  saveCostData();
+  return true;
+}
+
+function updateAutoSyncBadge(){
+  const el = document.getElementById('spStatus');
+  if (!el || !_spAccount) return;
+  const now = new Date().toLocaleString("ja-JP", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  const base = el.dataset.base || el.innerHTML;
+  if (!el.dataset.base) el.dataset.base = base;
+  el.innerHTML = el.dataset.base + ' <span style="margin-left:8px; padding:2px 8px; background:rgba(47,166,121,0.15); color:var(--green); border-radius:999px; font-size:10px; font-weight:600">🔄 自動同期中（最終 ' + now + '）</span>';
 }
 
 // ============================================================
@@ -1575,10 +1710,9 @@ function bindEvents(){
   document.getElementById("displayMode").addEventListener("change", recompute);
 
   // 機種ピッカーは廃止 - 重点機種マスタ全件を常時対象
-  // サマリーテーブル列ソート
   bindSummarySort();
 
-  // SharePoint連携（メイン画面の上部バー）
+  // SharePoint連携
   const spLoginBtn = document.getElementById("spLoginBtn");
   const spLogoutBtn = document.getElementById("spLogoutBtn");
   if (spLoginBtn) spLoginBtn.addEventListener("click", async () => {
@@ -1588,18 +1722,21 @@ function bindEvents(){
       if (ok) {
         recompute();
         flash("✅ SharePointから原価/目標を読み込みました");
+        startAutoSync();
       }
     } catch(e){
       updateSpStatus("❌ サインイン失敗: " + (e.message || e));
     }
   });
   if (spLogoutBtn) spLogoutBtn.addEventListener("click", () => {
+    stopAutoSync();
     spLogout();
     flash("サインアウトしました");
   });
 
-  // ファイル直接ロード
-  document.getElementById("loadCurFile").addEventListener("change", async (e) => {
+  // ファイル直接ロード（データ取込タブは非表示だが念のため）
+  const lc = document.getElementById("loadCurFile");
+  if (lc) lc.addEventListener("change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
     showLoader("今期JSONを読み込み中…");
     try {
@@ -1611,7 +1748,8 @@ function bindEvents(){
     } catch(err){ showLoader("読み込みエラー: " + err.message, true); }
     e.target.value = "";
   });
-  document.getElementById("loadHistFile").addEventListener("change", async (e) => {
+  const lh = document.getElementById("loadHistFile");
+  if (lh) lh.addEventListener("change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
     showLoader("昨期JSONを読み込み中…");
     try {
@@ -1649,4 +1787,3 @@ spAutoLoad();
 </script>
 </body>
 </html>
-                                                                                                                                                                                              
