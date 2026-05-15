@@ -99,7 +99,9 @@ header .meta .v { font-weight:600; }
 </style>
 
 <!-- ============ MSAL.js 認証ゲート (Microsoft Entra ID) ============ -->
-<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<!-- MSAL.js v2.38.3 (統一構成ルール準拠 / 万一のCDN障害用に async + onerror) -->
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"
+        onerror="window._fujinMsalLoadFailed=true;"></script>
 <style id="_fujin_auth_style">
   html._fujin_pending body { visibility: hidden; }
   /* 認証確認中オーバーレイ (全画面、目視確認用) */
@@ -180,6 +182,31 @@ header .meta .v { font-weight:600; }
   if (document.body) _showCheckingOverlay();
   else document.addEventListener("DOMContentLoaded", _showCheckingOverlay, { once: true });
 
+  // 安全網: 8秒経っても初期化が完了しなければ強制的にサインイン画面 or エラー表示
+  setTimeout(function(){
+    if (document.getElementById("_fujinCheckOverlay")) {
+      _hideCheckingOverlay();
+      if (typeof msal === "undefined" || window._fujinMsalLoadFailed) {
+        showLogin("認証ライブラリ (MSAL.js) を読み込めませんでした。ネットワーク接続を確認のうえ、ページを再読み込みしてください。");
+      } else {
+        showLogin("認証初期化がタイムアウトしました。再度サインインしてください。");
+      }
+    }
+  }, 8000);
+
+  // MSAL がロードできていない場合は即座にエラー表示
+  if (typeof msal === "undefined" || window._fujinMsalLoadFailed) {
+    _hideCheckingOverlay();
+    if (document.body) {
+      showLogin("認証ライブラリ (MSAL.js) を読み込めませんでした。ネットワーク接続を確認のうえ、ページを再読み込みしてください。");
+    } else {
+      document.addEventListener("DOMContentLoaded", function(){
+        showLogin("認証ライブラリ (MSAL.js) を読み込めませんでした。ネットワーク接続を確認のうえ、ページを再読み込みしてください。");
+      }, { once: true });
+    }
+    return;
+  }
+
   const FUJIN_AUTH_CONFIG = {
     auth: {
       clientId: "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
@@ -255,17 +282,30 @@ header .meta .v { font-weight:600; }
   const msalInstance = new msal.PublicClientApplication(FUJIN_AUTH_CONFIG);
   window._fujinMsal = msalInstance;
 
-  msalInstance.initialize()
+  // 初期化 → 必ずサインイン画面表示 (SSO自動通過は禁止)
+  // 失敗しても確実にログイン画面に進めるよう、シンプルな async/await 風で組む
+  Promise.resolve()
+    .then(() => msalInstance.initialize())
     .then(() => msalInstance.handleRedirectPromise())
-    .then((response) => {
-      // ★ 重要: 過去のセッションキャッシュは破棄して必ずログイン画面を表示する
-      // 自動通過を許すと「サインイン状態が見えにくい」「Mac M365 SSO で勝手に通る」問題が起きる
-      // sales_dashboard.html と同じく、ユーザーが明示的にサインインボタンを押す方式に統一
+    .then(() => {
+      // ★ 過去アカウントを全削除 (v2 互換の removeAccount を使用)
       try {
         const all = msalInstance.getAllAccounts();
         all.forEach(a => {
-          // キャッシュ削除して毎回ログインを強制
-          try { msalInstance.clearCache({ account: a }); } catch(_){}
+          try {
+            // v2: removeAccount, v3 でも互換
+            if (typeof msalInstance.removeAccount === "function") {
+              msalInstance.removeAccount(a);
+            }
+          } catch(_){}
+        });
+      } catch(_){}
+      // sessionStorage 内の MSAL キーも手動削除 (二重防御)
+      try {
+        Object.keys(sessionStorage).forEach(k => {
+          if (k.indexOf("msal.") === 0 || k.indexOf("login.windows.net") >= 0 || k.indexOf("login.microsoftonline.com") >= 0) {
+            try { sessionStorage.removeItem(k); } catch(_){}
+          }
         });
       } catch(_){}
       _hideCheckingOverlay();
@@ -273,7 +313,8 @@ header .meta .v { font-weight:600; }
     })
     .catch((err) => {
       console.error("MSAL init error:", err);
-      showLogin("認証初期化エラー: " + (err.message||err));
+      _hideCheckingOverlay();
+      showLogin("認証初期化エラー: " + (err && err.message ? err.message : err));
     });
 })();
 </script>
