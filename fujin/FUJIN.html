@@ -99,9 +99,46 @@ header .meta .v { font-weight:600; }
 </style>
 
 <!-- ============ MSAL.js 認証ゲート (Microsoft Entra ID) ============ -->
-<!-- MSAL.js v2.38.3 (統一構成ルール準拠 / 万一のCDN障害用に async + onerror) -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"
-        onerror="window._fujinMsalLoadFailed=true;"></script>
+<!-- MSAL.js を複数CDNフォールバックで読み込む (社内ネットワークでブロックされても通るように) -->
+<script>
+(function() {
+  const cdns = [
+    "https://alcdn.msftauth.net/browser/2.38.3/js/msal-browser.min.js",
+    "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js",
+    "https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js",
+    "https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"
+  ];
+  window._fujinMsalLoading = true;
+  let idx = 0;
+  function tryNext() {
+    if (idx >= cdns.length) {
+      window._fujinMsalLoadFailed = true;
+      window._fujinMsalLoading = false;
+      console.error("[FUJIN] 全てのMSAL CDNが失敗しました");
+      // ロード失敗イベントを発火
+      try { document.dispatchEvent(new Event("_fujinMsalReady")); } catch(_){}
+      return;
+    }
+    const url = cdns[idx++];
+    const s = document.createElement("script");
+    s.src = url;
+    s.async = false;
+    s.onload = function() {
+      console.log("[FUJIN] MSAL loaded from:", url);
+      window._fujinMsalCdn = url;
+      window._fujinMsalLoading = false;
+      try { document.dispatchEvent(new Event("_fujinMsalReady")); } catch(_){}
+    };
+    s.onerror = function() {
+      console.warn("[FUJIN] MSAL CDN失敗:", url);
+      s.remove();
+      tryNext();
+    };
+    document.head.appendChild(s);
+  }
+  tryNext();
+})();
+</script>
 <style id="_fujin_auth_style">
   html._fujin_pending body { visibility: hidden; }
   /* 認証確認中オーバーレイ (全画面、目視確認用) */
@@ -151,7 +188,8 @@ header .meta .v { font-weight:600; }
   ._fujin_login_box .err { background:#fef2f2;color:#991b1b;padding:10px 14px;border-radius:6px;font-size:12px;margin-top:14px;border:1px solid #fecaca }
 </style>
 <script>
-(function(){
+// MSALロード完了を待ってから認証ゲートを起動 (CDN フォールバック対応)
+function _fujinStartAuth() {
   // iframe内なら親のサインイン状態を共有 → 認証チェックスキップ
   if (window.parent !== window) {
     return;
@@ -233,12 +271,17 @@ header .meta .v { font-weight:600; }
         </div>
       </div>`;
     document.getElementById("_fujinLoginBtn").onclick = async () => {
+      // 防御: MSALインスタンス未準備の場合は明確にエラー表示
+      if (!window._fujinMsal || typeof window._fujinMsal.loginPopup !== "function") {
+        showLogin("認証ライブラリが正しく読み込めていません。ページを再読み込みしてください (Cmd+Shift+R)。");
+        return;
+      }
       try {
         // loginPopup を使う (sales_dashboard.html と同じパターン)
-        // prompt: "login" で毎回必ずサインイン画面を表示 (SSO自動通過を完全防止)
+        // prompt: "select_account" で毎回アカウント選択画面を表示
         const result = await window._fujinMsal.loginPopup({
           scopes: ["User.Read"],
-          prompt: "login"
+          prompt: "select_account"
         });
         if (result && result.account) {
           window._fujinMsal.setActiveAccount(result.account);
@@ -247,7 +290,7 @@ header .meta .v { font-weight:600; }
           showLogin("サインインに失敗しました");
         }
       } catch(e) {
-        showLogin("サインインエラー: " + (e.message||e));
+        showLogin("サインインエラー: " + (e && e.message ? e.message : e));
       }
     };
   }
@@ -279,28 +322,36 @@ header .meta .v { font-weight:600; }
     setTimeout(_insertUserBar, 5000);
   }
 
-  const msalInstance = new msal.PublicClientApplication(FUJIN_AUTH_CONFIG);
-  window._fujinMsal = msalInstance;
+  // MSAL インスタンス作成 (例外時はエラー表示)
+  let msalInstance = null;
+  try {
+    msalInstance = new msal.PublicClientApplication(FUJIN_AUTH_CONFIG);
+    window._fujinMsal = msalInstance;
+  } catch(constructErr) {
+    console.error("MSAL constructor failed:", constructErr);
+    _hideCheckingOverlay();
+    if (document.body) {
+      showLogin("MSAL初期化失敗: " + (constructErr && constructErr.message ? constructErr.message : constructErr));
+    }
+    return;
+  }
 
   // 初期化 → 必ずサインイン画面表示 (SSO自動通過は禁止)
-  // 失敗しても確実にログイン画面に進めるよう、シンプルな async/await 風で組む
-  Promise.resolve()
-    .then(() => msalInstance.initialize())
+  msalInstance.initialize()
     .then(() => msalInstance.handleRedirectPromise())
     .then(() => {
-      // ★ 過去アカウントを全削除 (v2 互換の removeAccount を使用)
+      // 過去アカウントを全削除して必ず明示的サインインを要求
       try {
         const all = msalInstance.getAllAccounts();
         all.forEach(a => {
           try {
-            // v2: removeAccount, v3 でも互換
             if (typeof msalInstance.removeAccount === "function") {
               msalInstance.removeAccount(a);
             }
           } catch(_){}
         });
       } catch(_){}
-      // sessionStorage 内の MSAL キーも手動削除 (二重防御)
+      // sessionStorage の MSAL キー手動削除
       try {
         Object.keys(sessionStorage).forEach(k => {
           if (k.indexOf("msal.") === 0 || k.indexOf("login.windows.net") >= 0 || k.indexOf("login.microsoftonline.com") >= 0) {
@@ -316,6 +367,50 @@ header .meta .v { font-weight:600; }
       _hideCheckingOverlay();
       showLogin("認証初期化エラー: " + (err && err.message ? err.message : err));
     });
+}
+
+// MSAL CDN フォールバックロードの完了を待ってから _fujinStartAuth を呼ぶ
+(function() {
+  function _waitAndStart() {
+    // すでにロード済みなら即起動
+    if (typeof msal !== "undefined") {
+      _fujinStartAuth();
+      return;
+    }
+    // ロード失敗フラグが立っていればエラー表示
+    if (window._fujinMsalLoadFailed) {
+      if (window.parent !== window) return;  // iframe内はスキップ
+      document.addEventListener("DOMContentLoaded", function() {
+        // showLogin相当の表示
+        document.body.className = "_fujin_login_box";
+        document.body.innerHTML = '<div class="card"><h1>🌬 FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリ (MSAL.js) をどのCDNからも読み込めませんでした。<br>社内ネットワークでブロックされている可能性があります。<br>システム管理者に下記URLが社外通信可能か確認を依頼してください:<br><br>・alcdn.msftauth.net<br>・alcdn.msauth.net<br>・unpkg.com<br>・cdn.jsdelivr.net</div></div>';
+      }, { once: true });
+      return;
+    }
+    // ロード中: イベント or タイムアウト
+    document.addEventListener("_fujinMsalReady", function() {
+      if (typeof msal !== "undefined") _fujinStartAuth();
+      else if (window.parent === window) {
+        document.body.className = "_fujin_login_box";
+        document.body.innerHTML = '<div class="card"><h1>🌬 FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリを読み込めませんでした。社内ネットワーク管理者に CDN へのアクセス可否を確認してください。</div></div>';
+      }
+    }, { once: true });
+    // 10秒タイムアウト
+    setTimeout(function() {
+      if (typeof msal === "undefined" && window.parent === window) {
+        if (document.body) {
+          document.body.className = "_fujin_login_box";
+          document.body.innerHTML = '<div class="card"><h1>🌬 FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリ読み込みがタイムアウトしました (10秒)。ネットワーク接続を確認してください。</div></div>';
+        }
+      }
+    }, 10000);
+  }
+  // DOM ready
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", _waitAndStart, { once: true });
+  } else {
+    _waitAndStart();
+  }
 })();
 </script>
 <!-- ============ 認証ゲート ここまで ============ -->
