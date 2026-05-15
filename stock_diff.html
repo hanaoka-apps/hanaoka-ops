@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>在庫前日比 - FUJIN</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans","Noto Sans JP", sans-serif;
+  color: #1f2937; background: #f8fafc;
+}
+body { display: flex; flex-direction: column; overflow: hidden; }
+.head {
+  height: 48px; background: linear-gradient(135deg, #be185d 0%, #ec4899 100%); color: #fff;
+  display: flex; align-items: center; padding: 0 18px; gap: 14px; flex-shrink: 0;
+}
+.head h1 { font-size: 15px; font-weight: 700; margin: 0; letter-spacing: .02em; }
+.head .meta { font-size: 11px; opacity: .9; }
+.body { flex: 1; overflow: auto; padding: 18px 20px 40px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; max-width: 1100px; }
+.card {
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px;
+  cursor: pointer; transition: all .15s;
+}
+.card:hover { border-color: #ec4899; box-shadow: 0 4px 12px rgba(236,72,153,.15); transform: translateY(-1px); }
+.card.active { border-color: #ec4899; background: #fdf2f8; }
+.card .lbl { font-size: 12px; color: #64748b; font-weight: 600; margin-bottom: 6px; }
+.card .cnt { font-size: 28px; font-weight: 700; color: #1f2937; line-height: 1; }
+.card .desc { font-size: 10.5px; color: #94a3b8; margin-top: 8px; line-height: 1.4; }
+.card[data-cat="new_minus"] .cnt    { color: #dc2626; }
+.card[data-cat="minus_worsen"] .cnt { color: #b91c1c; }
+.card[data-cat="sudden_zero"] .cnt  { color: #ea580c; }
+.card[data-cat="big_decrease"] .cnt { color: #d97706; }
+.card[data-cat="big_increase"] .cnt { color: #0891b2; }
+.note {
+  margin: 16px 0 14px; padding: 10px 14px; background: #fef9c3; border: 1px solid #fde047;
+  border-radius: 8px; font-size: 12px; color: #78350f; line-height: 1.6; max-width: 1100px;
+}
+.detail {
+  margin-top: 18px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+  max-width: 1100px; overflow: hidden;
+}
+.detail .dh { padding: 10px 16px; background: #f1f5f9; border-bottom: 1px solid #e5e7eb;
+  font-size: 13px; font-weight: 700; color: #1e3a8a; display: flex; justify-content: space-between; align-items: center; }
+.detail .dh .csv { font-size: 11px; padding: 4px 10px; background: #1e40af; color: #fff;
+  border: none; border-radius: 5px; cursor: pointer; font-family: inherit; font-weight: 600; }
+.detail table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.detail th { padding: 7px 10px; background: #f8fafc; color: #475569; font-weight: 600; text-align: left; border-bottom: 2px solid #e5e7eb; position: sticky; top: 0; }
+.detail td { padding: 6px 10px; border-bottom: 1px solid #f1f5f9; font-variant-numeric: tabular-nums; }
+.detail .num { text-align: right; }
+.detail .neg { color: #dc2626; font-weight: 600; }
+.detail .pos { color: #166534; }
+.detail .code { font-family: "SF Mono","Menlo",monospace; color: #1e40af; font-weight: 600; }
+.detail .empty { padding: 30px; text-align: center; color: #94a3b8; }
+.no-data { text-align: center; padding: 60px 20px; color: #94a3b8; }
+.no-data .ico { font-size: 64px; opacity: .3; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+
+<div class="head">
+  <h1>📊 在庫前日比アラート</h1>
+  <span class="meta" id="metaSpan">—</span>
+</div>
+
+<div class="body" id="body">
+  <div class="note" id="noteBox" style="display:none">
+    <strong id="notePrev">—</strong> から <strong id="noteToday">—</strong> への変化を5カテゴリで検知しています。
+    カードをクリックすると詳細リストが表示されます。
+  </div>
+  <div class="cards" id="cards"></div>
+  <div id="detail"></div>
+</div>
+
+<script>
+let DIFF = null;
+let SELECTED = null;
+
+const CATS = [
+  { key: "new_minus",    label: "新規マイナス",   desc: "前日0以上→今日マイナス。出荷で在庫切れ発生" },
+  { key: "minus_worsen", label: "マイナス悪化",   desc: "既にマイナスがさらに深掘り(10以上)" },
+  { key: "sudden_zero",  label: "急消滅",         desc: "前日プラス→今日ちょうど0。出荷集中" },
+  { key: "big_decrease", label: "大量減少",       desc: "減少幅100以上 かつ 減少率30%以上" },
+  { key: "big_increase", label: "大量増加",       desc: "増加幅100以上。棚卸調整 or 入庫" },
+];
+
+async function load() {
+  try {
+    const res = await fetch("stock_snapshots/_last_diff.json?v=" + Date.now());
+    if (!res.ok) throw new Error("fetch failed: " + res.status);
+    DIFF = await res.json();
+  } catch (e) {
+    document.getElementById("body").innerHTML = `
+      <div class="no-data">
+        <div class="ico">📭</div>
+        <div style="font-size:14px;color:#475569">前日比データがまだありません</div>
+        <div style="font-size:11px;margin-top:8px">明日のビルド後にここに表示されます (初回ビルド時は比較対象前日がないためスキップ)</div>
+      </div>`;
+    return;
+  }
+  renderCards();
+}
+
+function renderCards() {
+  document.getElementById("metaSpan").textContent =
+    `生成: ${DIFF.generated||"?"}`;
+  if (DIFF.prev_date) {
+    document.getElementById("noteBox").style.display = "block";
+    document.getElementById("notePrev").textContent = DIFF.prev_date;
+    document.getElementById("noteToday").textContent = DIFF.today_date || "?";
+  }
+  const sum = DIFF.summary || {};
+  const html = CATS.map(c => `
+    <div class="card" data-cat="${c.key}">
+      <div class="lbl">${c.label}</div>
+      <div class="cnt">${(sum[c.key]||0).toLocaleString()}</div>
+      <div class="desc">${c.desc}</div>
+    </div>
+  `).join("");
+  document.getElementById("cards").innerHTML = html;
+  document.querySelectorAll(".card[data-cat]").forEach(el => {
+    el.addEventListener("click", () => renderDetail(el.dataset.cat));
+  });
+}
+
+function renderDetail(cat) {
+  SELECTED = cat;
+  document.querySelectorAll(".card[data-cat]").forEach(el => el.classList.toggle("active", el.dataset.cat === cat));
+  const arr = (DIFF[cat] || []).slice().sort((a,b) => Math.abs(b.diff) - Math.abs(a.diff));
+  const catLabel = (CATS.find(c => c.key === cat) || {}).label || cat;
+  const truncated = (DIFF.summary||{})[cat+"_truncated"];
+  if (arr.length === 0) {
+    document.getElementById("detail").innerHTML = `
+      <div class="detail">
+        <div class="dh"><span>${catLabel}</span></div>
+        <div class="empty">該当する品目はありません 🎉</div>
+      </div>`;
+    return;
+  }
+  const headerHtml = `
+    <div class="dh">
+      <span>${catLabel}（${arr.length.toLocaleString()}件${truncated?' / 全件は上位500件のみ表示':''}）</span>
+      <button class="csv" id="csvBtn">📥 CSVダウンロード</button>
+    </div>`;
+  const tableRows = arr.map(r => {
+    const diffCls = r.diff < 0 ? "neg" : (r.diff > 0 ? "pos" : "");
+    return `<tr>
+      <td><span class="code">${escapeHtml(r.code)}</span></td>
+      <td class="num">${formatNum(r.prev)}</td>
+      <td class="num">${formatNum(r.today)}</td>
+      <td class="num ${diffCls}">${r.diff>0?'+':''}${formatNum(r.diff)}</td>
+      ${cat==="big_decrease" ? `<td class="num">${(r.rate*100).toFixed(0)}%</td>` : ''}
+    </tr>`;
+  }).join("");
+  const rateCol = cat === "big_decrease" ? '<th class="num">減少率</th>' : '';
+  document.getElementById("detail").innerHTML = `
+    <div class="detail">
+      ${headerHtml}
+      <div style="max-height:60vh;overflow:auto">
+        <table>
+          <thead><tr><th>品目コード</th><th class="num">前日(${DIFF.prev_date||'?'})</th><th class="num">今日(${DIFF.today_date||'?'})</th><th class="num">差</th>${rateCol}</tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  document.getElementById("csvBtn").addEventListener("click", () => downloadCsv(cat, arr));
+}
+
+function downloadCsv(cat, arr) {
+  const catLabel = (CATS.find(c => c.key === cat) || {}).label || cat;
+  const headers = ["品目コード", `前日(${DIFF.prev_date})`, `今日(${DIFF.today_date})`, "差"];
+  if (cat === "big_decrease") headers.push("減少率");
+  const lines = [headers.join(",")];
+  for (const r of arr) {
+    const row = [r.code, r.prev, r.today, r.diff];
+    if (cat === "big_decrease") row.push((r.rate*100).toFixed(0) + "%");
+    lines.push(row.join(","));
+  }
+  const blob = new Blob(["﻿" + lines.join("\r\n")], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const ts = new Date().toISOString().slice(0,16).replace(/[-T:]/g,"");
+  a.href = url; a.download = `在庫前日比_${catLabel}_${ts}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function escapeHtml(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function formatNum(n){
+  if (n === undefined || n === null) return "—";
+  return Number(n).toLocaleString(undefined, {maximumFractionDigits: 2});
+}
+
+load();
+</script>
+</body>
+</html>
