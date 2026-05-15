@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>FUJIN 統合ダッシュボード</title>
+<style>
+:root {
+  --bg:#f4f5f7; --panel:#fff; --line:#e5e7eb; --muted:#6b7280; --text:#1f2937;
+  --primary:#2563eb; --primary-dark:#1e3a8a; --primary-bg:#eff6ff;
+  --header-h:56px; --tab-h:56px;
+}
+* { box-sizing:border-box; }
+html, body { margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif; color:var(--text); background:var(--bg); }
+
+/* ===== ヘッダ ===== */
+header {
+  height:var(--header-h); display:flex; align-items:center; justify-content:space-between;
+  padding:0 20px; background:linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+  color:#fff; box-shadow:0 1px 3px rgba(0,0,0,.08);
+}
+header .brand { display:flex; align-items:center; gap:12px; }
+header .brand-logo { font-size:22px; }
+header .brand-text h1 { margin:0; font-size:16px; font-weight:600; letter-spacing:.02em; }
+header .brand-text .tagline { font-size:11px; opacity:.85; margin-top:1px; }
+header .meta { display:flex; gap:16px; align-items:center; font-size:12px; }
+header .meta .k { opacity:.7; margin-right:4px; }
+header .meta .v { font-weight:600; }
+
+/* ===== タブバー（ピル型）===== */
+.tabbar {
+  height:var(--tab-h); display:flex; align-items:center; background:#f8fafc;
+  border-bottom:1px solid var(--line); padding:0 16px; gap:6px; position:relative;
+}
+.tab {
+  display:flex; align-items:center; gap:8px;
+  height:40px; padding:0 20px; border:1px solid transparent; background:transparent;
+  border-radius:999px; cursor:pointer;
+  font-size:14px; font-weight:600; color:#64748b;
+  transition:all .15s ease; font-family:inherit; white-space:nowrap;
+}
+.tab .tab-icon { font-size:16px; line-height:1; }
+.tab .tab-label { letter-spacing:.02em; }
+.tab:hover { background:#fff; color:var(--primary); border-color:var(--line); }
+.tab.active {
+  background:linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  color:#fff; border-color:#1e40af;
+  box-shadow:0 2px 6px rgba(37,99,235,.3), 0 0 0 3px rgba(37,99,235,.1);
+}
+.tab.active:hover { color:#fff; }
+
+/* その他メニュー */
+.other-btn {
+  margin-left:auto; display:flex; align-items:center; gap:4px;
+  height:40px; padding:0 16px; border:1px solid transparent; background:transparent;
+  cursor:pointer; font-size:13px; color:#64748b; font-family:inherit;
+  border-radius:999px; font-weight:500;
+}
+.other-btn:hover { background:#fff; color:var(--text); border-color:var(--line); }
+.other-btn.has-active { background:#fff; color:var(--primary); border-color:var(--primary); font-weight:600; }
+.other-menu {
+  position:absolute; top:calc(var(--tab-h) - 4px); right:16px; background:#fff; border:1px solid var(--line);
+  border-radius:10px; box-shadow:0 12px 28px rgba(0,0,0,.14); padding:6px; min-width:340px;
+  display:none; z-index:100;
+}
+.other-menu.open { display:block; }
+.other-item {
+  display:flex; justify-content:space-between; align-items:center; padding:10px 12px;
+  text-decoration:none; color:var(--text); font-size:13px; border-radius:6px; cursor:pointer;
+}
+.other-item:hover { background:var(--primary-bg); color:var(--primary-dark); }
+.other-item.active { background:var(--primary-bg); color:var(--primary-dark); font-weight:600; }
+.other-item .other-mtime { font-size:10.5px; color:var(--muted); }
+.other-sep { height:1px; background:var(--line); margin:6px 8px; }
+.other-note { padding:6px 12px; font-size:10.5px; color:var(--muted); font-style:italic; }
+
+/* ===== コンテンツ ===== */
+.content {
+  height: calc(100vh - var(--header-h) - var(--tab-h));
+  background:#fff; position:relative; overflow:hidden;
+}
+.content iframe {
+  width:100%; height:100%; border:none; display:block; background:#fff;
+}
+.content-empty {
+  display:flex; align-items:center; justify-content:center; height:100%;
+  color:var(--muted); font-size:14px;
+}
+.loader {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  color:var(--muted); font-size:13px;
+}
+
+/* ===== レスポンシブ ===== */
+@media (max-width:900px) {
+  header .meta { display:none; }
+  .tab { padding:0 10px; font-size:12px; }
+  .tab-mtime { display:none; }
+}
+</style>
+
+<!-- ============ MSAL.js 認証ゲート (Microsoft Entra ID) ============ -->
+<!-- MSAL.js v3.10.0 (sales_dashboard.html と同じバージョン・CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"
+        crossorigin="anonymous"
+        onerror="window._fujinMsalLoadFailed=true;"></script>
+<style id="_fujin_auth_style">
+  html._fujin_pending body { visibility: hidden; }
+  /* 認証確認中オーバーレイ (全画面、目視確認用) */
+  ._fujin_overlay {
+    position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;
+    background:linear-gradient(135deg,#1e3a8a 0%,#3b82f6 100%);color:#fff;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+    font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Meiryo',sans-serif;
+  }
+  ._fujin_overlay .logo { font-size:48px; animation: _fujin_pulse 1.5s infinite ease-in-out; }
+  ._fujin_overlay .msg { font-size:18px;font-weight:700;letter-spacing:.04em; }
+  ._fujin_overlay .sub { font-size:12px;opacity:.85;margin-top:-6px; }
+  ._fujin_overlay .spinner {
+    width:32px;height:32px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;
+    border-radius:50%;animation:_fujin_spin 0.8s linear infinite;
+  }
+  @keyframes _fujin_spin { to { transform: rotate(360deg); } }
+  @keyframes _fujin_pulse { 0%,100% { opacity:1; } 50% { opacity:.6; } }
+  /* 認証成功トースト */
+  ._fujin_toast {
+    position:fixed;top:60px;right:14px;z-index:2147483646;
+    background:#16a34a;color:#fff;padding:10px 18px;border-radius:8px;
+    font-size:13px;font-weight:700;box-shadow:0 4px 16px rgba(22,163,74,.4);
+    font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;
+    animation: _fujin_toast_in .3s ease-out, _fujin_toast_out .3s ease-in 4.5s forwards;
+  }
+  @keyframes _fujin_toast_in { from { transform: translateX(20px); opacity: 0; } }
+  @keyframes _fujin_toast_out { to { transform: translateX(20px); opacity: 0; } }
+  ._fujin_login_box {
+    display:flex;justify-content:center;align-items:center;min-height:100vh;
+    font-family:"Hiragino Sans","Meiryo",sans-serif;background:#f4f5f7;margin:0;
+  }
+  ._fujin_login_box .card {
+    background:#fff;border-radius:12px;padding:40px 48px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.08);text-align:center;max-width:420px;
+    border:1px solid #e5e7eb;
+  }
+  ._fujin_login_box h1 { font-size:26px;margin:0 0 8px;color:#1e293b;letter-spacing:.04em }
+  ._fujin_login_box .sub { color:#64748b;font-size:13px;margin:0 0 28px }
+  ._fujin_login_box button {
+    background:linear-gradient(135deg,#0078d4 0%,#005a9e 100%);color:#fff;border:none;
+    padding:14px 32px;border-radius:8px;font-size:14px;cursor:pointer;font-weight:600;
+    box-shadow:0 4px 12px rgba(0,120,212,.3);transition:all .15s;
+  }
+  ._fujin_login_box button:hover { transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,120,212,.4) }
+  ._fujin_login_box .note { font-size:11px;color:#94a3b8;margin-top:20px;line-height:1.6 }
+  ._fujin_login_box .err { background:#fef2f2;color:#991b1b;padding:10px 14px;border-radius:6px;font-size:12px;margin-top:14px;border:1px solid #fecaca }
+</style>
+<script>
+(function(){
+  // iframe内なら親のサインイン状態を共有 → 認証チェックスキップ
+  if (window.parent !== window) {
+    return;
+  }
+  // ページを一旦非表示にしてサインイン確認
+  document.documentElement.classList.add("_fujin_pending");
+
+  // 認証確認中オーバーレイを即座に表示 (目視で「ゲートが動いている」と分かるように)
+  function _showCheckingOverlay() {
+    if (document.getElementById("_fujinCheckOverlay")) return;
+    const ov = document.createElement("div");
+    ov.id = "_fujinCheckOverlay";
+    ov.className = "_fujin_overlay";
+    ov.innerHTML = '<div class="logo">🔐</div><div class="msg">FUJIN サインイン確認中</div><div class="sub">花岡車輌 Microsoft 365 アカウントを照合しています</div><div class="spinner"></div>';
+    (document.body || document.documentElement).appendChild(ov);
+  }
+  function _hideCheckingOverlay() {
+    const ov = document.getElementById("_fujinCheckOverlay");
+    if (ov) ov.remove();
+  }
+  function _showSuccessToast(username) {
+    const t = document.createElement("div");
+    t.className = "_fujin_toast";
+    t.textContent = "✅ 認証OK: " + (username || "認証済");
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 5000);
+  }
+  if (document.body) _showCheckingOverlay();
+  else document.addEventListener("DOMContentLoaded", _showCheckingOverlay, { once: true });
+
+  // 安全網: 8秒経っても初期化が完了しなければ強制的にサインイン画面 or エラー表示
+  setTimeout(function(){
+    if (document.getElementById("_fujinCheckOverlay")) {
+      _hideCheckingOverlay();
+      if (typeof msal === "undefined" || window._fujinMsalLoadFailed) {
+        showLogin("認証ライブラリ (MSAL.js) を読み込めませんでした。ネットワーク接続を確認のうえ、ページを再読み込みしてください。");
+      } else {
+        showLogin("認証初期化がタイムアウトしました。再度サインインしてください。");
+      }
+    }
+  }, 8000);
+
+  // MSAL がロードできていない場合は即座にエラー表示
+  if (typeof msal === "undefined" || window._fujinMsalLoadFailed) {
+    _hideCheckingOverlay();
+    if (document.body) {
+      showLogin("認証ライブラリ (MSAL.js) を読み込めませんでした。ネットワーク接続を確認のうえ、ページを再読み込みしてください。");
+    } else {
+      document.addEventListener("DOMContentLoaded", function(){
+        showLogin("認証ライブラリ (MSAL.js) を読み込めませんでした。ネットワーク接続を確認のうえ、ページを再読み込みしてください。");
+      }, { once: true });
+    }
+    return;
+  }
+
+  const FUJIN_AUTH_CONFIG = {
+    auth: {
+      clientId: "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
+      authority: "https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad",
+      redirectUri: window.location.origin + window.location.pathname,
+      navigateToLoginRequestUrl: false
+    },
+    cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false }
+  };
+
+  function showLogin(errorMsg){
+    document.documentElement.classList.remove("_fujin_pending");
+    _hideCheckingOverlay();
+    document.body.className = "_fujin_login_box";
+    document.body.innerHTML = `
+      <div class="card">
+        <h1>🌬 FUJIN</h1>
+        <div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div>
+        <button id="_fujinLoginBtn">🔐 Microsoft アカウントでサインイン</button>
+        ${errorMsg ? '<div class="err">'+errorMsg+'</div>' : ''}
+        <div class="note">
+          M365アカウントでのサインインが必要です。<br>
+          組織管理者から付与されたアカウントを使用してください。
+        </div>
+      </div>`;
+    document.getElementById("_fujinLoginBtn").onclick = async () => {
+      // 防御: MSALインスタンス未準備の場合は明確にエラー表示
+      if (!window._fujinMsal || typeof window._fujinMsal.loginPopup !== "function") {
+        showLogin("認証ライブラリが正しく読み込めていません。ページを再読み込みしてください (Cmd+Shift+R)。");
+        return;
+      }
+      try {
+        // loginPopup を使う (sales_dashboard.html と同じパターン)
+        // prompt: "select_account" で毎回アカウント選択画面を表示
+        const result = await window._fujinMsal.loginPopup({
+          scopes: ["User.Read"],
+          prompt: "select_account"
+        });
+        if (result && result.account) {
+          window._fujinMsal.setActiveAccount(result.account);
+          showApp(result.account);
+        } else {
+          showLogin("サインインに失敗しました");
+        }
+      } catch(e) {
+        showLogin("サインインエラー: " + (e && e.message ? e.message : e));
+      }
+    };
+  }
+
+  function showApp(account){
+    document.documentElement.classList.remove("_fujin_pending");
+    window._fujinUser = account;
+    _hideCheckingOverlay();
+    _showSuccessToast(account.username || account.name);
+    // ページ右上にユーザー名・サインアウトボタンを表示
+    // body準備を待ってから挿入 (重いiframe読み込み中でも確実に出るように)
+    function _insertUserBar() {
+      if (document.getElementById("_fujinUserBar")) return;  // 二重挿入防止
+      const bar = document.createElement("div");
+      bar.id = "_fujinUserBar";
+      bar.style.cssText = "position:fixed;top:8px;right:14px;z-index:2147483647;background:rgba(255,255,255,.98);border:1px solid #c7d2fe;border-radius:18px;padding:5px 14px;font-size:11px;color:#1e3a8a;display:flex;align-items:center;gap:8px;box-shadow:0 2px 10px rgba(30,58,138,.18);font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;font-weight:600";
+      bar.innerHTML = '<span>👤 ' + (account.username||account.name||'認証済') + '</span><button id="_fujinLogoutBtn" style="background:none;border:none;color:#1e40af;cursor:pointer;font-size:11px;text-decoration:underline;padding:0;font-weight:600">サインアウト</button>';
+      document.body.appendChild(bar);
+      document.getElementById("_fujinLogoutBtn").onclick = () => window._fujinMsal.logoutRedirect();
+    }
+    if (document.body) {
+      _insertUserBar();
+    } else {
+      document.addEventListener("DOMContentLoaded", _insertUserBar, { once: true });
+    }
+    // 念のため重いiframe読み込み後にも再挿入チャンス (5秒以内に必ず出す)
+    setTimeout(_insertUserBar, 500);
+    setTimeout(_insertUserBar, 2000);
+    setTimeout(_insertUserBar, 5000);
+  }
+
+  // MSAL インスタンス作成 (例外時はエラー表示)
+  let msalInstance = null;
+  try {
+    msalInstance = new msal.PublicClientApplication(FUJIN_AUTH_CONFIG);
+    window._fujinMsal = msalInstance;
+  } catch(constructErr) {
+    console.error("MSAL constructor failed:", constructErr);
+    _hideCheckingOverlay();
+    if (document.body) {
+      showLogin("MSAL初期化失敗: " + (constructErr && constructErr.message ? constructErr.message : constructErr));
+    }
+    return;
+  }
+
+  // 初期化 → 必ずサインイン画面表示 (SSO自動通過は禁止)
+  msalInstance.initialize()
+    .then(() => msalInstance.handleRedirectPromise())
+    .then(() => {
+      // 過去アカウントを全削除して必ず明示的サインインを要求
+      try {
+        const all = msalInstance.getAllAccounts();
+        all.forEach(a => {
+          try {
+            if (typeof msalInstance.removeAccount === "function") {
+              msalInstance.removeAccount(a);
+            }
+          } catch(_){}
+        });
+      } catch(_){}
+      // sessionStorage の MSAL キー手動削除
+      try {
+        Object.keys(sessionStorage).forEach(k => {
+          if (k.indexOf("msal.") === 0 || k.indexOf("login.windows.net") >= 0 || k.indexOf("login.microsoftonline.com") >= 0) {
+            try { sessionStorage.removeItem(k); } catch(_){}
+          }
+        });
+      } catch(_){}
+      _hideCheckingOverlay();
+      showLogin();
+    })
+    .catch((err) => {
+      console.error("MSAL init error:", err);
+      _hideCheckingOverlay();
+      showLogin("認証初期化エラー: " + (err && err.message ? err.message : err));
+    });
+})();
+</script>
+<!-- ============ 認証ゲート ここまで ============ -->
+
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-logo">🌬</div>
+    <div class="brand-text">
+      <h1>FUJIN 統合ダッシュボード</h1>
+      <div class="tagline">生産管理AI判定システム（プロトタイプ統合版）</div>
+    </div>
+  </div>
+  <div class="meta">
+    <div><span class="k">データ基準日</span><span class="v">2026-04-25 <span style="background:#fbbf24;color:#7c2d12;padding:1px 8px;border-radius:6px;font-size:10.5px;font-weight:700;margin-left:6px">⚠ 19日前 ・ SMILE→SharedMasters同期確認</span></span></div>
+    <div><span class="k">統合版生成</span><span class="v">2026-05-14 13:21</span></div>
+  </div>
+</header>
+
+<div class="tabbar">
+      <button class="tab" data-tab="stock_detective" data-src="stock_detective.html" title="出荷で在庫エラーが出たら品目コードを貼り付け→構成ツリーで原因確認。5/11切替対応。"><span class="tab-icon">🔎</span><span class="tab-label">在庫探偵</span></button>
+      <button class="tab" data-tab="arrange" data-src="results_production_2355.html" title="未確定手配のAI判定。FUJINの本丸。"><span class="tab-icon">⚡</span><span class="tab-label">手配確定</span></button>
+      <button class="tab" data-tab="work" data-src="work_instruction.html" title="品目コード+製番(オプション)で構成ツリーを参照する辞書ツール。1台あたりの取数のみ表示、印刷・CSV出力可。"><span class="tab-icon">🔧</span><span class="tab-label">品目構成検索</span></button>
+  <button class="other-btn" id="other-btn">⋯ その他 ▾</button>
+  <div class="other-menu" id="other-menu">
+        <a class="other-item" data-tab="seiban_progress" data-src="seiban_progress.html"><span class="other-label">🏭 製番進捗 (要修正)</span><span class="other-mtime">日次自動更新</span></a>
+        <a class="other-item" data-tab="today" data-src="today.html"><span class="other-label">🏠 今日やること</span><span class="other-mtime">日次自動更新</span></a>
+        <a class="other-item" data-tab="ordtrack" data-src="order_tracking.html"><span class="other-label">📋 受注追跡</span><span class="other-mtime">日次自動更新</span></a>
+        <div class="other-sep"></div>
+        <a class="other-item" data-tab="stock_diff" data-src="stock_diff.html"><span class="other-label">📊 在庫前日比アラート</span><span class="other-mtime">日次自動更新</span></a>
+        <a class="other-item" data-tab="phase2_diff" data-src="phase2_diff.html"><span class="other-label">🔬 Phase 2 差分（製番別BOM判定 検証用）</span><span class="other-mtime">日次自動更新</span></a>
+        <a class="other-item" data-tab="diff" data-src="①差分フロー分析_0421.html"><span class="other-label">📊 差分フロー分析 (4/16→4/21)</span><span class="other-mtime">2026-04-21 17:48</span></a>
+        <a class="other-item" data-tab="past" data-src="過去未完了_318件.html"><span class="other-label">📋 過去未完了 318件</span><span class="other-mtime">2026-04-19 20:06</span></a>
+        <a class="other-item" data-tab="rosenzu" data-src="α路線図プロトタイプ_0421.html"><span class="other-label">🗺 α路線図（ビジョン）</span><span class="other-mtime">2026-04-21 17:50</span></a>
+        <div class="other-sep"></div>
+        <a class="other-item" data-tab="old_ai" data-src="AI手配判断アシスタント.html"><span class="other-label">[旧版] AI手配判断アシスタント (4/14)</span><span class="other-mtime">2026-04-14 16:09</span></a>
+        <a class="other-item" data-tab="old_view" data-src="手配確定ビューア.html"><span class="other-label">[旧版] 手配確定ビューア (4/11)</span><span class="other-mtime">2026-04-11 18:21</span></a>
+        <div class="other-note">※ 旧版は確認用に保持。運用は新版を使用してください。</div>
+  </div>
+</div>
+
+<div class="content">
+  <iframe id="main-frame" src="about:blank" title="FUJIN タブコンテンツ"></iframe>
+</div>
+
+<script>
+const frame = document.getElementById('main-frame');
+const tabs = document.querySelectorAll('.tab');
+const otherBtn = document.getElementById('other-btn');
+const otherMenu = document.getElementById('other-menu');
+const otherItems = document.querySelectorAll('.other-item');
+
+function openTab(id, src, extra) {
+  if (!src) return;
+  // アクティブ表示
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === id));
+  // その他メニューの強調解除
+  otherItems.forEach(o => o.classList.remove('active'));
+  otherBtn.classList.remove('has-active');
+  // iframe 切替（extra hash付与で遷移先に追加情報を渡す）
+  const finalSrc = extra ? (src.indexOf('#') >= 0 ? src + '&' + extra : src + '#' + extra) : src;
+  if (frame.dataset.currentTab !== id || extra) {
+    frame.src = finalSrc;
+    frame.dataset.currentTab = id;
+  }
+  // URL hash 更新
+  const newHash = '#tab=' + id + (extra ? '&' + extra : '');
+  if (location.hash !== newHash) {
+    history.replaceState(null, '', newHash);
+  }
+  // その他メニューを閉じる
+  otherMenu.classList.remove('open');
+}
+
+// hash 変更検知（受注追跡 → 手配確定にcode付きで飛ぶ用 / 構成ツリー → 品目構成検索 戻り復元用）
+// tab= 以外のパラメタを全て extra として子iframeに伝搬
+function _extractExtraFromHash() {
+  const params = location.hash.replace(/^#/, '').split('&');
+  const extra = params.filter(p => p && !p.startsWith('tab=')).join('&');
+  return extra || null;
+}
+window.addEventListener('hashchange', () => {
+  const m = location.hash.match(/tab=([^&]+)/);
+  if (!m) return;
+  const id = m[1];
+  const extra = _extractExtraFromHash();
+  const tab = Array.from(tabs).find(t => t.dataset.tab === id);
+  if (tab) {
+    openTab(id, tab.dataset.src, extra);
+  }
+});
+
+// タブクリック
+tabs.forEach(t => {
+  t.addEventListener('click', () => openTab(t.dataset.tab, t.dataset.src));
+});
+
+// その他メニュー
+otherBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  otherMenu.classList.toggle('open');
+});
+document.addEventListener('click', (e) => {
+  if (!otherMenu.contains(e.target)) otherMenu.classList.remove('open');
+});
+otherItems.forEach(it => {
+  it.addEventListener('click', () => {
+    // その他のタブは上部タブをアクティブにせず、その他ボタンを強調
+    tabs.forEach(t => t.classList.remove('active'));
+    otherItems.forEach(o => o.classList.remove('active'));
+    if (it.dataset.src) {
+      frame.src = it.dataset.src;
+      frame.dataset.currentTab = it.dataset.tab;
+      it.classList.add('active');
+      otherBtn.classList.add('has-active');
+      history.replaceState(null, '', '#tab=' + it.dataset.tab);
+    }
+    otherMenu.classList.remove('open');
+  });
+});
+
+// 初期表示: URL hash優先 → なければ「在庫探偵」(軽量, 20KB)
+// 手配確定(results_production_2355.html, 7.5MB)を初期にするとメモリ食い潰しの恐れ
+function init() {
+  const m = location.hash.match(/tab=([^&]+)/);
+  const wantId = m ? m[1] : 'stock_detective';
+  const extra = _extractExtraFromHash();
+  // 上部タブ
+  const foundTab = Array.from(tabs).find(t => t.dataset.tab === wantId);
+  if (foundTab) {
+    openTab(wantId, foundTab.dataset.src, extra);
+    return;
+  }
+  // その他
+  const foundOther = Array.from(otherItems).find(t => t.dataset.tab === wantId);
+  if (foundOther && foundOther.dataset.src) {
+    frame.src = foundOther.dataset.src;
+    frame.dataset.currentTab = wantId;
+    return;
+  }
+  // fallback (= 手配確定タブ)
+  openTab('stock_detective', 'stock_detective.html');
+}
+init();
+</script>
+</body>
+</html>
