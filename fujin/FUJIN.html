@@ -99,6 +99,9 @@ header .meta .v { font-weight:600; }
 </style>
 
 <!-- ============ MSAL.js 認証ゲート (Microsoft Entra ID) ============ -->
+<!-- HTMLパース時点から本体を非表示 (認証完了まで一瞬たりとも見せない) -->
+<style id="_fujin_preauth_style">html.fujin-pre-auth body { visibility: hidden !important; }</style>
+<script>document.documentElement.classList.add("fujin-pre-auth");</script>
 <!-- MSAL.js を複数CDNフォールバックで読み込む (社内ネットワークでブロックされても通るように) -->
 <script>
 (function() {
@@ -257,6 +260,7 @@ function _fujinStartAuth() {
 
   function showLogin(errorMsg){
     document.documentElement.classList.remove("_fujin_pending");
+    document.documentElement.classList.remove("fujin-pre-auth");  // ログイン画面を表示するため一旦解除
     _hideCheckingOverlay();
     document.body.className = "_fujin_login_box";
     document.body.innerHTML = `
@@ -298,6 +302,7 @@ function _fujinStartAuth() {
 
   function showApp(account){
     document.documentElement.classList.remove("_fujin_pending");
+    document.documentElement.classList.remove("fujin-pre-auth");  // 本体表示を解除
     window._fujinUser = account;
     _hideCheckingOverlay();
     _showSuccessToast(account.username || account.name);
@@ -349,6 +354,15 @@ function _fujinStartAuth() {
       if (response && response.account) {
         // Microsoft認証から戻ってきた直後: 認証成功 → アプリ表示
         msalInstance.setActiveAccount(response.account);
+        // ★ 重要: 認証情報(コード/トークン)を含むURLハッシュをクリアする
+        // これをしないと、認証戻りハッシュ「#code=1.AWsAo... 」が iframe (在庫探偵等) に
+        // 「品目コード検索クエリ」として渡されて誤動作する
+        try {
+          if (window.history && window.history.replaceState) {
+            const cleanUrl = window.location.origin + window.location.pathname + window.location.search;
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+        } catch(_){}
         showApp(response.account);
       } else {
         // 通常アクセス: 過去アカウントを全削除して必ず明示的サインインを要求
@@ -506,9 +520,16 @@ function openTab(id, src, extra) {
 
 // hash 変更検知（受注追跡 → 手配確定にcode付きで飛ぶ用 / 構成ツリー → 品目構成検索 戻り復元用）
 // tab= 以外のパラメタを全て extra として子iframeに伝搬
+// 注意: MSAL.js 認証戻り直後はhashに code=, state=, session_state= などが残るため、これらは除外
 function _extractExtraFromHash() {
   const params = location.hash.replace(/^#/, '').split('&');
-  const extra = params.filter(p => p && !p.startsWith('tab=')).join('&');
+  const MSAL_PREFIXES = ['code=', 'state=', 'session_state=', 'client_info=', 'error=', 'error_description=', 'id_token=', 'access_token='];
+  const extra = params.filter(p => {
+    if (!p) return false;
+    if (p.startsWith('tab=')) return false;
+    if (MSAL_PREFIXES.some(pre => p.startsWith(pre))) return false;
+    return true;
+  }).join('&');
   return extra || null;
 }
 window.addEventListener('hashchange', () => {
