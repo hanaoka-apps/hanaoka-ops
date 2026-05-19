@@ -94,7 +94,10 @@ def download_csv(token, filename):
             continue
     if text is None:
         raise RuntimeError(f"{filename} のエンコーディング判別失敗")
-    reader = csv.reader(io.StringIO(text))
+    # 区切り文字を自動判定（タブ区切り or カンマ区切り）
+    first_line = text.splitlines()[0] if text.strip() else ''
+    delimiter = '\t' if first_line.count('\t') > first_line.count(',') else ','
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows = list(reader)
     if not rows:
         raise RuntimeError(f"{filename} が空")
@@ -214,6 +217,7 @@ def transform_sales(header, rows):
 # ---------- 受注明細変換 ----------
 def transform_orders(header, rows):
     h = header
+    print(f"  受注CSV列数: {len(h)}, 先頭5列: {h[:5]}", flush=True)
     idx = {
         'voucher_date': find_idx(h, '受注日付'),
         'ym':           find_idx(h, '年月度'),
