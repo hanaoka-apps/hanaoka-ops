@@ -95,23 +95,9 @@ def download_csv(token, filename):
     if text is None:
         raise RuntimeError(f"{filename} のエンコーディング判別失敗")
     # 区切り文字を自動判定（タブ区切り or カンマ区切り）
+    # SMILE の受注明細はクォート付きTSV、売上明細はCSV
     first_line = text.splitlines()[0] if text.strip() else ''
     delimiter = '\t' if first_line.count('\t') > first_line.count(',') else ','
-    # SMILE の TSV エクスポートは各行全体が " で囲まれている特殊形式
-    # （例: "受注日付\t""年月度""\t..." ）。これを通常の TSV に正規化する。
-    # CSV（カンマ区切り）の場合は標準形式なので何もしない。
-    if delimiter == '\t' and first_line.startswith('"') and first_line.rstrip().endswith('"'):
-        lines = text.splitlines()
-        cleaned_lines = []
-        for line in lines:
-            stripped = line.rstrip()
-            if stripped.startswith('"') and stripped.endswith('"'):
-                # 行全体クォートを除去し、内部の "" を " に戻す
-                inner = stripped[1:-1].replace('""', '"')
-                cleaned_lines.append(inner)
-            else:
-                cleaned_lines.append(line)
-        text = '\n'.join(cleaned_lines)
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows = list(reader)
     if not rows:
