@@ -97,17 +97,22 @@ def download_csv(token, filename):
     # 区切り文字を自動判定（タブ区切り or カンマ区切り）
     first_line = text.splitlines()[0] if text.strip() else ''
     delimiter = '\t' if first_line.count('\t') > first_line.count(',') else ','
-    # 行全体が " で囲まれている場合（SMILEのTSVエクスポート形式）を処理
-    # 例: "受注日付\t""年月度""\t..." → 各行の先頭/末尾の " を除去してから読む
-    lines = text.splitlines()
-    cleaned_lines = []
-    for line in lines:
-        if line.startswith('"') and line.endswith('"'):
-            # 行全体クォートを除去し、内部の "" を " に戻す
-            line = line[1:-1].replace('""', '"')
-        cleaned_lines.append(line)
-    cleaned_text = '\n'.join(cleaned_lines)
-    reader = csv.reader(io.StringIO(cleaned_text), delimiter=delimiter)
+    # SMILE の TSV エクスポートは各行全体が " で囲まれている特殊形式
+    # （例: "受注日付\t""年月度""\t..." ）。これを通常の TSV に正規化する。
+    # CSV（カンマ区切り）の場合は標準形式なので何もしない。
+    if delimiter == '\t' and first_line.startswith('"') and first_line.rstrip().endswith('"'):
+        lines = text.splitlines()
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.rstrip()
+            if stripped.startswith('"') and stripped.endswith('"'):
+                # 行全体クォートを除去し、内部の "" を " に戻す
+                inner = stripped[1:-1].replace('""', '"')
+                cleaned_lines.append(inner)
+            else:
+                cleaned_lines.append(line)
+        text = '\n'.join(cleaned_lines)
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows = list(reader)
     if not rows:
         raise RuntimeError(f"{filename} が空")
