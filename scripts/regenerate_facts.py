@@ -88,17 +88,13 @@ def download_csv(token, filename):
     for enc in ('utf-8-sig', 'utf-8', 'shift_jis', 'cp932'):
         try:
             candidate = raw.decode(enc)
-            if candidate.count('�') < len(candidate) * 0.001:
+            if candidate.count(' ') < len(candidate) * 0.001:
                 text = candidate; break
         except UnicodeDecodeError:
             continue
     if text is None:
         raise RuntimeError(f"{filename} のエンコーディング判別失敗")
-    # 区切り文字を自動判定（タブ区切り or カンマ区切り）
-    # SMILE の受注明細はクォート付きTSV、売上明細はCSV
-    first_line = text.splitlines()[0] if text.strip() else ''
-    delimiter = '\t' if first_line.count('\t') > first_line.count(',') else ','
-    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    reader = csv.reader(io.StringIO(text))
     rows = list(reader)
     if not rows:
         raise RuntimeError(f"{filename} が空")
@@ -117,6 +113,51 @@ def upload_json(token, filename, data):
     }, data=body, timeout=300)
     r.raise_for_status()
     return r.json()
+
+
+# ============================================================
+# CSV型検証 (RPA命名ミス・人為差替え対策)
+# ファイル名と中身の一致を信用せず、必ずヘッダ先頭20列で型判定する
+# ============================================================
+def detect_csv_type(header):
+    """先頭20列のヘッダ文字列を見て、CSVがどの種類かを判定して返す。
+    返り値: "uriage" (売上明細) / "juchu" (受注明細) / "hachu" (発注明細) / "unknown"
+    """
+    cleaned = [str(h).replace('﻿', '').strip() for h in header[:20]]
+    head_str = ",".join(cleaned)
+    has_cust    = "得意先" in head_str
+    has_supplier= ("仕入先" in head_str or "取引先" in head_str)
+    is_uriage = ("伝票日付" in head_str and "明細区分" in head_str and has_cust)
+    is_juchu  = (("受注日付" in head_str or "受注№" in head_str or "受注No" in head_str) and has_cust)
+    is_hachu  = (("発注日付" in head_str or "発注№" in head_str or "発注No" in head_str) and has_supplier)
+    # 優先順位: 発注 → 受注 → 売上 (より固有な特徴から判定)
+    if is_hachu and not (is_uriage or is_juchu): return "hachu"
+    if is_juchu and not is_uriage:               return "juchu"
+    if is_uriage:                                return "uriage"
+    return "unknown"
+
+
+def verify_csv_type(filename, header, expected_type):
+    """CSV ヘッダから検出した型が期待型と一致するかチェック。
+    一致しない場合は例外を投げる(=GitHub Actionsを失敗させる=古いJSONを上書きさせない)
+    """
+    actual = detect_csv_type(header)
+    type_label = {
+        "uriage": "売上明細",
+        "juchu":  "受注明細",
+        "hachu":  "発注明細",
+        "unknown":"不明",
+    }
+    print(f"     型判定: {type_label.get(actual, actual)} (期待: {type_label.get(expected_type, expected_type)})", flush=True)
+    if actual != expected_type:
+        raise RuntimeError(
+            f"❌ {filename} の中身が期待と違います!\n"
+            f"   期待: {type_label.get(expected_type, expected_type)} ({expected_type})\n"
+            f"   実際: {type_label.get(actual, actual)} ({actual})\n"
+            f"   先頭ヘッダ20列: {','.join(str(h).strip() for h in header[:20])}\n"
+            f"   → RPA出力ミスの可能性。SharedMasters の CSV を確認してください。\n"
+            f"   → 安全のため処理を中断します（古い dashboard_facts.json は上書きされません）。"
+        )
 
 
 # ---------- 変換ヘルパー ----------
@@ -218,7 +259,6 @@ def transform_sales(header, rows):
 # ---------- 受注明細変換 ----------
 def transform_orders(header, rows):
     h = header
-    print(f"  受注CSV列数: {len(h)}, 先頭5列: {h[:5]}", flush=True)
     idx = {
         'voucher_date': find_idx(h, '受注日付'),
         'ym':           find_idx(h, '年月度'),
@@ -298,7 +338,9 @@ def main():
 
     print("\n📥 当期 CSV ダウンロード...", flush=True)
     h_curr, r_curr = download_csv(token, INPUT_CSVS['sales_curr'])
+    verify_csv_type(INPUT_CSVS['sales_curr'], h_curr, "uriage")
     h_ord, r_ord = download_csv(token, INPUT_CSVS['orders'])
+    verify_csv_type(INPUT_CSVS['orders'], h_ord, "juchu")
 
     print("\n🔧 当期データ変換中...", flush=True)
     sales_curr = transform_sales(h_curr, r_curr)
