@@ -555,7 +555,69 @@ function fileToJson(file){
     fr.readAsText(file);
   });
 }
+// ============================================================
+// JSON型検証（SharedMastersのファイル名取り違え対策）
+// ----------------------------------------------------------------
+// このアプリは「売上(受注)データ」のみを期待しています。
+// もし発注明細やその他のデータが誤って入った場合、警告して読込を中止します。
+// 検査項目（位置ベース、columnsは IDX 参照）：
+//   [20] 数量, [21] 金額, [22] 単価, [23] kind が数値
+//   [7]  伝票日付 が YYYYMMDD っぽい
+//   [18] 品目コード が文字列
+// ============================================================
+function validateSalesRows(rows, label){
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { ok: false, reason: `${label}: rowsが空または配列でない` };
+  }
+  // サンプル先頭10行で型をチェック
+  const sample = rows.slice(0, Math.min(10, rows.length));
+  let badCount = 0;
+  const reasons = [];
+  for (const r of sample) {
+    if (!Array.isArray(r) || r.length < 24) { badCount++; continue; }
+    if (typeof r[20] !== "number") { badCount++; reasons.push(`[20]数量が数値でない: ${typeof r[20]}`); continue; }
+    if (typeof r[21] !== "number") { badCount++; reasons.push(`[21]金額が数値でない: ${typeof r[21]}`); continue; }
+    if (typeof r[22] !== "number") { badCount++; reasons.push(`[22]単価が数値でない: ${typeof r[22]}`); continue; }
+    if (typeof r[23] !== "number" || (r[23] !== 1 && r[23] !== 2 && r[23] !== 0)) {
+      badCount++; reasons.push(`[23]kindが1/2/0でない: ${r[23]}`); continue;
+    }
+    if (typeof r[18] !== "string") { badCount++; reasons.push(`[18]品目コードが文字列でない`); continue; }
+    // 日付 [7] は YYYYMMDD 形式（8文字 or 数値）
+    const d = r[7];
+    if (d && typeof d === "string" && d.length !== 8) { badCount++; reasons.push(`[7]伝票日付がYYYYMMDD形式でない: ${d}`); continue; }
+  }
+  if (badCount >= sample.length / 2) {
+    return {
+      ok: false,
+      reason: `${label}: 売上データの構造ではありません（${badCount}/${sample.length}行が不正）。\n` +
+              `想定: 数量[20]=数値, 金額[21]=数値, 単価[22]=数値, kind[23]=1/2, 品目コード[18]=文字列\n` +
+              `検出: ${reasons.slice(0,3).join(' / ')}\n` +
+              `→ SharedMastersから誤ったファイルが供給されていないか確認してください（発注明細出力.csv が受注明細の中身だった事例があります）`
+    };
+  }
+  return { ok: true };
+}
+
 function applyData(){
+  // ===== 型検証（発注/受注ミックス対策）=====
+  if (ROWS_CUR && ROWS_CUR.length > 0) {
+    const v = validateSalesRows(ROWS_CUR, "今期JSON (dashboard_facts.json)");
+    if (!v.ok) {
+      console.error("[validateSalesRows]", v.reason);
+      showLoader(`⚠ データ検証エラー:<br><pre style="text-align:left; font-size:11px; white-space:pre-wrap; color:var(--red); margin:8px">${v.reason}</pre>`, true);
+      ROWS_CUR = []; // 不正データは破棄
+    }
+  }
+  if (ROWS_HIST && ROWS_HIST.length > 0) {
+    const v = validateSalesRows(ROWS_HIST, "昨期JSON (dashboard_facts_history.json)");
+    if (!v.ok) {
+      console.error("[validateSalesRows]", v.reason);
+      // 昨期は欠けても今期だけで動作可能なので、警告のみ
+      console.warn("⚠ 昨期データを破棄しました:", v.reason);
+      ROWS_HIST = [];
+    }
+  }
+
   // 売上行のみフィルタ（kind=2返品 / 内部移動 / 運賃を除外）
   const merged = (ROWS_CUR || []).concat(ROWS_HIST || []);
   ROWS = merged.filter(r => isSalesRow(r) && !isFreight(r));
@@ -1684,7 +1746,6 @@ function updateAutoSyncBadge(){
 // イベントバインド
 // ============================================================
 function bindEvents(){
-  // ページ切替
   document.querySelectorAll(".page-tab").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".page-tab").forEach(b => b.classList.toggle("on", b === btn));
@@ -1694,7 +1755,6 @@ function bindEvents(){
     });
   });
 
-  // 期間
   document.getElementById("fromYm").addEventListener("change", () => {
     document.getElementById("periodPreset").value = "custom";
     recompute();
@@ -1709,10 +1769,8 @@ function bindEvents(){
   });
   document.getElementById("displayMode").addEventListener("change", recompute);
 
-  // 機種ピッカーは廃止 - 重点機種マスタ全件を常時対象
   bindSummarySort();
 
-  // SharePoint連携
   const spLoginBtn = document.getElementById("spLoginBtn");
   const spLogoutBtn = document.getElementById("spLogoutBtn");
   if (spLoginBtn) spLoginBtn.addEventListener("click", async () => {
@@ -1734,7 +1792,6 @@ function bindEvents(){
     flash("サインアウトしました");
   });
 
-  // ファイル直接ロード（データ取込タブは非表示だが念のため）
   const lc = document.getElementById("loadCurFile");
   if (lc) lc.addEventListener("change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
