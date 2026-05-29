@@ -1848,6 +1848,24 @@ async function graphGet(url) {
   if (!res.ok) throw new Error(`Graph API エラー: ${res.status} ${url}`);
   return res.json();
 }
+// リスト項目を全ページ取得する（$top の上限＝既定500件で打ち切られ、
+// 新しい項目が取得できなくなる問題を防ぐため @odata.nextLink を辿る）
+async function graphGetAll(url) {
+  let all = [];
+  let next = url;
+  let guard = 0;
+  while (next && guard < 100) {
+    guard++;
+    const data = await graphGet(next);
+    if (data && Array.isArray(data.value)) all = all.concat(data.value);
+    let nl = data && data['@odata.nextLink'] ? data['@odata.nextLink'] : null;
+    if (nl && nl.indexOf('https://graph.microsoft.com/v1.0') === 0) {
+      nl = nl.slice('https://graph.microsoft.com/v1.0'.length);
+    }
+    next = nl;
+  }
+  return { value: all };
+}
 async function graphPost(url, body) {
   const token = await getToken();
   const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
@@ -2429,7 +2447,7 @@ async function loadCases() {
     // 担当者LookupId逆引きテーブルが準備されるまで待つ
     if (assigneeMembersReady) await assigneeMembersReady;
     const sid = await getSiteId();
-    const data = await graphGet(
+    const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=200`
     );
     cases = data.value.map(v => {
@@ -2457,7 +2475,7 @@ async function loadEvents(caseId) {
     const sid = await getSiteId();
     // ODataフィルターを使わず全件取得→クライアント側でフィルタ
     // （SharePoint列内部名とAPIフィールド名の不一致を回避）
-    const data = await graphGet(
+    const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
     );
     const allEvents = data.value.map(v => ({ _spId: v.id, ...v.fields }));
@@ -3046,7 +3064,7 @@ function selectCompany(code, name) {
 async function generateCaseId() {
   try {
     const sid = await getSiteId();
-    const data = await graphGet(
+    const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$select=fields/CaseId&$top=500`
     );
     const year = new Date().getFullYear();
@@ -3197,7 +3215,7 @@ async function loadTriageList() {
   if (!companyMaster.length) loadCompanyMaster();
   try {
     const sid = await getSiteId();
-    const data = await graphGet(
+    const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
     );
     // 未仕訳のFAX受信イベントを抽出
@@ -3729,7 +3747,7 @@ async function loadFaxViewList() {
   document.getElementById('faxViewList').innerHTML = '<div class="loading-spinner">読み込み中...</div>';
   try {
     const sid = await getSiteId();
-    const data = await graphGet(
+    const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
     );
     faxViewItems = data.value
@@ -4184,10 +4202,10 @@ async function registerFax() {
     const fields = {
       Title: 'EV-' + Date.now(),
       CaseId: currentCaseId,
-      EventType: 'FAX送信（得意先）',   // ← システム共通の EventType 語彙に統一（送付種別は Summary へ）
+      EventType: type,
       EventDate: now,
       RelationType: '得意先',
-      Summary: memo ? `${type}：${memo}` : type,
+      Summary: memo || type,
     };
     if (attachedPdfPath) {
       fields.AttachedPDFPath = attachedPdfPath;
