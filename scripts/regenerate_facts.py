@@ -8,9 +8,18 @@ GitHub Actions から毎日実行される想定。
   - dashboard_facts_history.json  ← 過去年度の事実データ（不変、prep_history で1回作成）
   - 売上明細出力.csv               ← 当期の売上（SMILEが毎日更新）
   - 受注明細出力.csv               ← 当期の受注（SMILEが毎日更新）
+  - 目標_部門目標出力.csv          ← 部門別月次目標（RPAが毎日更新）
+  - 目標_担当者目標出力.csv        ← 担当者別月次目標（RPAが毎日更新）
 
 出力 (SharedMasters):
   - dashboard_facts.json (上書き)
+    {
+      "rows": [...],
+      "order_rows": [...],
+      "dept_monthly_targets": { "全社": {"202504": 200000000, ...}, ... },
+      "rep_monthly_targets":  { "000067": {"202504": 4800000, ...}, ... },
+      "build_meta": {...}
+    }
 
 環境変数:
   AZURE_TENANT_ID    - テナントID
@@ -36,8 +45,10 @@ DRIVE_ID = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8"
 
 HISTORY_JSON = 'dashboard_facts_history.json'
 INPUT_CSVS = {
-    'sales_curr': '売上明細出力.csv',
-    'orders':     '受注明細出力.csv',
+    'sales_curr':   '売上明細出力.csv',
+    'orders':       '受注明細出力.csv',
+    'dept_targets': '目標_部門目標出力.csv',
+    'rep_targets':  '目標_担当者目標出力.csv',
 }
 OUTPUT_JSON = 'dashboard_facts.json'
 
@@ -117,20 +128,27 @@ def upload_json(token, filename, data):
 
 # ============================================================
 # CSV型検証 (RPA命名ミス・人為差替え対策)
-# ファイル名と中身の一致を信用せず、必ずヘッダ先頭20列で型判定する
 # ============================================================
 def detect_csv_type(header):
     """先頭20列のヘッダ文字列を見て、CSVがどの種類かを判定して返す。
-    返り値: "uriage" (売上明細) / "juchu" (受注明細) / "hachu" (発注明細) / "unknown"
+    返り値: "uriage"/"juchu"/"hachu"/"mokuhyo_bumon"/"mokuhyo_tanto"/"unknown"
     """
     cleaned = [str(h).replace('﻿', '').strip() for h in header[:20]]
     head_str = ",".join(cleaned)
     has_cust    = "得意先" in head_str
     has_supplier= ("仕入先" in head_str or "取引先" in head_str)
+    # 売上明細・受注明細・発注明細
     is_uriage = ("伝票日付" in head_str and "明細区分" in head_str and has_cust)
     is_juchu  = (("受注日付" in head_str or "受注№" in head_str or "受注No" in head_str) and has_cust)
     is_hachu  = (("発注日付" in head_str or "発注№" in head_str or "発注No" in head_str) and has_supplier)
-    # 優先順位: 発注 → 受注 → 売上 (より固有な特徴から判定)
+    # 目標CSV (部門/担当者)
+    has_taisho_ym = "対象年月度" in head_str
+    has_jun_uriage = "純売上金額" in head_str
+    is_mokuhyo_bumon = (has_taisho_ym and has_jun_uriage and "部門コード" in head_str and "部門名" in head_str)
+    is_mokuhyo_tanto = (has_taisho_ym and has_jun_uriage and "担当者コード" in head_str and "担当者名" in head_str)
+    # 優先順位
+    if is_mokuhyo_bumon: return "mokuhyo_bumon"
+    if is_mokuhyo_tanto: return "mokuhyo_tanto"
     if is_hachu and not (is_uriage or is_juchu): return "hachu"
     if is_juchu and not is_uriage:               return "juchu"
     if is_uriage:                                return "uriage"
@@ -138,14 +156,13 @@ def detect_csv_type(header):
 
 
 def verify_csv_type(filename, header, expected_type):
-    """CSV ヘッダから検出した型が期待型と一致するかチェック。
-    一致しない場合は例外を投げる(=GitHub Actionsを失敗させる=古いJSONを上書きさせない)
-    """
     actual = detect_csv_type(header)
     type_label = {
         "uriage": "売上明細",
         "juchu":  "受注明細",
         "hachu":  "発注明細",
+        "mokuhyo_bumon": "目標_部門目標",
+        "mokuhyo_tanto": "目標_担当者目標",
         "unknown":"不明",
     }
     print(f"     型判定: {type_label.get(actual, actual)} (期待: {type_label.get(expected_type, expected_type)})", flush=True)
@@ -179,6 +196,16 @@ def to_int(s):
 def normalize_zenkaku(s):
     if not s: return s
     return s.replace('ｿﾘｭｰｼｮﾝ', 'ソリューション')
+
+def normalize_rep_code(s):
+    """担当者コードを6桁0埋めに正規化（販売明細と整合させる）"""
+    if not s: return ""
+    s = str(s).strip()
+    if not s: return ""
+    # 数値のみなら6桁0埋め
+    if s.isdigit():
+        return s.zfill(6)
+    return s
 
 def fy_from_ym(ym):
     if not ym or ym < 100000:
@@ -322,6 +349,68 @@ def transform_orders(header, rows):
     return out
 
 
+# ---------- 目標_部門目標 変換 ----------
+def transform_dept_targets(header, rows):
+    """部門目標CSV を {部門名: {年月: 金額}, ...} に変換
+    F列「変更後純売上」を採用（変更なしの時は D=F、変更時は F が現行目標）
+    """
+    h = header
+    idx = {
+        'bumon_cd':   find_idx(h, '部門コード'),
+        'bumon_nm':   find_idx(h, '部門名'),
+        'ym':         find_idx(h, '対象年月度'),
+        'orig_amt':   find_idx(h, '純売上金額'),
+        'cur_amt':    find_idx(h, '変更後純売上金額') or find_idx(h, '変更後純売上'),
+    }
+    missing = [k for k, v in idx.items() if v is None]
+    if missing:
+        raise RuntimeError(f"列が見つからない (dept_targets): {missing}")
+    out = {}
+    for row in rows:
+        if len(row) < max(idx.values()) + 1: continue
+        ym = to_int(row[idx['ym']])
+        if ym == 0: continue
+        scope = (row[idx['bumon_nm']] or '').strip()
+        scope = normalize_zenkaku(scope)
+        if not scope: continue
+        # F列 変更後 を優先、空なら D列 純売上
+        cur = to_float(row[idx['cur_amt']])
+        orig = to_float(row[idx['orig_amt']])
+        amount = cur if cur > 0 else orig
+        if scope not in out: out[scope] = {}
+        out[scope][str(ym)] = amount
+    return out
+
+
+# ---------- 目標_担当者目標 変換 ----------
+def transform_rep_targets(header, rows):
+    """担当者目標CSV を {担当者コード(6桁0埋め): {年月: 金額}, ...} に変換"""
+    h = header
+    idx = {
+        'rep_cd':     find_idx(h, '担当者コード'),
+        'rep_nm':     find_idx(h, '担当者名'),
+        'ym':         find_idx(h, '対象年月度'),
+        'orig_amt':   find_idx(h, '純売上金額'),
+        'cur_amt':    find_idx(h, '変更後純売上金額') or find_idx(h, '変更後純売上'),
+    }
+    missing = [k for k, v in idx.items() if v is None]
+    if missing:
+        raise RuntimeError(f"列が見つからない (rep_targets): {missing}")
+    out = {}
+    for row in rows:
+        if len(row) < max(idx.values()) + 1: continue
+        ym = to_int(row[idx['ym']])
+        if ym == 0: continue
+        rep_cd = normalize_rep_code(row[idx['rep_cd']])
+        if not rep_cd: continue
+        cur = to_float(row[idx['cur_amt']])
+        orig = to_float(row[idx['orig_amt']])
+        amount = cur if cur > 0 else orig
+        if rep_cd not in out: out[rep_cd] = {}
+        out[rep_cd][str(ym)] = amount
+    return out
+
+
 # ---------- メイン ----------
 def main():
     started = time.time()
@@ -336,11 +425,15 @@ def main():
     history_rows = history.get('rows', [])
     print(f"  履歴 rows: {len(history_rows):,}件 (FY {history.get('build_meta', {}).get('historical_fy_max', '?')} まで)")
 
-    print("\n📥 当期 CSV ダウンロード...", flush=True)
+    print("\n📥 当期 CSV ダウンロード & 型検証...", flush=True)
     h_curr, r_curr = download_csv(token, INPUT_CSVS['sales_curr'])
     verify_csv_type(INPUT_CSVS['sales_curr'], h_curr, "uriage")
     h_ord, r_ord = download_csv(token, INPUT_CSVS['orders'])
     verify_csv_type(INPUT_CSVS['orders'], h_ord, "juchu")
+    h_dt, r_dt = download_csv(token, INPUT_CSVS['dept_targets'])
+    verify_csv_type(INPUT_CSVS['dept_targets'], h_dt, "mokuhyo_bumon")
+    h_rt, r_rt = download_csv(token, INPUT_CSVS['rep_targets'])
+    verify_csv_type(INPUT_CSVS['rep_targets'], h_rt, "mokuhyo_tanto")
 
     print("\n🔧 当期データ変換中...", flush=True)
     sales_curr = transform_sales(h_curr, r_curr)
@@ -348,15 +441,27 @@ def main():
     orders = transform_orders(h_ord, r_ord)
     print(f"  当期受注: {len(orders):,}件")
 
+    print("\n🎯 目標データ変換中...", flush=True)
+    dept_targets = transform_dept_targets(h_dt, r_dt)
+    rep_targets = transform_rep_targets(h_rt, r_rt)
+    dept_total_keys = sum(len(v) for v in dept_targets.values())
+    rep_total_keys  = sum(len(v) for v in rep_targets.values())
+    print(f"  部門目標: {len(dept_targets)} 部門 / {dept_total_keys} レコード")
+    print(f"  担当者目標: {len(rep_targets)} 担当者 / {rep_total_keys} レコード")
+
     # マージ
     rows = history_rows + sales_curr
     yms = [r[0] for r in rows if r[0]]
     facts = {
         'rows': rows,
         'order_rows': orders,
+        'dept_monthly_targets': dept_targets,
+        'rep_monthly_targets':  rep_targets,
         'build_meta': {
             'sales_count': len(rows),
             'orders_count': len(orders),
+            'dept_targets_count': dept_total_keys,
+            'rep_targets_count':  rep_total_keys,
             'ym_min': min(yms) if yms else 0,
             'ym_max': max(yms) if yms else 0,
             'history_count': len(history_rows),
@@ -368,6 +473,8 @@ def main():
     print(f"\n📊 集計:")
     print(f"  rows total: {len(rows):,} (履歴 {len(history_rows):,} + 当期 {len(sales_curr):,})")
     print(f"  order_rows: {len(orders):,}")
+    print(f"  dept_monthly_targets: {dept_total_keys:,} keys")
+    print(f"  rep_monthly_targets:  {rep_total_keys:,} keys")
     print(f"  ym range:   {facts['build_meta']['ym_min']} 〜 {facts['build_meta']['ym_max']}")
 
     print(f"\n📤 dashboard_facts.json をアップロード...", flush=True)
