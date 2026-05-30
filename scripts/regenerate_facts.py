@@ -97,7 +97,7 @@ def download_csv(token, filename):
     raw = r.content
     text = None
     tried = []
-    # Phase 1: 厳密デコード ＋ 文字化け率0.5%以下なら採用 (0.1%→0.5%に緩和)
+    # Phase 1: 厳密デコード ＋ 文字化け率0.5%以下なら採用
     for enc in ('utf-8-sig', 'utf-8', 'shift_jis', 'cp932'):
         try:
             candidate = raw.decode(enc)
@@ -111,7 +111,7 @@ def download_csv(token, filename):
         except UnicodeDecodeError as e:
             tried.append(f"{enc}:UnicodeDecodeError@byte{e.start}")
             continue
-    # Phase 2: 厳密失敗時は cp932(replace) でフォールバック (化け率5%以下なら採用)
+    # Phase 2: 厳密失敗時は cp932(replace) でフォールバック
     if text is None:
         print(f"     [警告] 厳密判別失敗。試行: {tried}", flush=True)
         try:
@@ -125,11 +125,27 @@ def download_csv(token, filename):
             print(f"     [エラー] cp932(replace)失敗: {e}", flush=True)
     if text is None:
         raise RuntimeError(f"{filename} のエンコーディング判別失敗 (試行: {tried})")
-    reader = csv.reader(io.StringIO(text))
+
+    # === 区切り文字を自動検出 (CSV/TSV/セミコロン/パイプ対応) ===
+    # 先頭4KBを使って判定
+    sample = text[:4096]
+    delim = None
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=',\t;|')
+        delim = dialect.delimiter
+    except csv.Error:
+        # Sniffer 失敗時: 1行目に含まれる候補のうち最多のものを採用
+        first_line = sample.split('\n')[0]
+        counts = {d: first_line.count(d) for d in [',', '\t', ';', '|']}
+        delim = max(counts, key=counts.get) if max(counts.values()) > 0 else ','
+    delim_label = {',':'カンマ','\t':'タブ',';':'セミコロン','|':'パイプ'}.get(delim, repr(delim))
+    print(f"     区切り文字: {delim_label}", flush=True)
+
+    reader = csv.reader(io.StringIO(text), delimiter=delim)
     rows = list(reader)
     if not rows:
         raise RuntimeError(f"{filename} が空")
-    print(f"     {len(rows) - 1} 行")
+    print(f"     {len(rows) - 1} 行 / {len(rows[0])} 列")
     return rows[0], rows[1:]
 
 
