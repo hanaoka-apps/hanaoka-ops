@@ -164,8 +164,10 @@ def detect_csv_type(header):
     # 目標CSV (部門/担当者)
     has_taisho_ym = "対象年月度" in head_str
     has_jun_uriage = "純売上金額" in head_str
-    is_mokuhyo_bumon = (has_taisho_ym and has_jun_uriage and "部門コード" in head_str and "部門名" in head_str)
-    is_mokuhyo_tanto = (has_taisho_ym and has_jun_uriage and "担当者コード" in head_str and "担当者名" in head_str)
+    has_bumon_cd  = ("部門コード"  in head_str or "部門ｺｰﾄﾞ"  in head_str)
+    has_tanto_cd  = ("担当者コード" in head_str or "担当者ｺｰﾄﾞ" in head_str)
+    is_mokuhyo_bumon = (has_taisho_ym and has_jun_uriage and has_bumon_cd and "部門名" in head_str)
+    is_mokuhyo_tanto = (has_taisho_ym and has_jun_uriage and has_tanto_cd and "担当者名" in head_str)
     # 優先順位
     if is_mokuhyo_bumon: return "mokuhyo_bumon"
     if is_mokuhyo_tanto: return "mokuhyo_tanto"
@@ -375,12 +377,13 @@ def transform_dept_targets(header, rows):
     F列「変更後純売上」を採用（変更なしの時は D=F、変更時は F が現行目標）
     """
     h = header
+    # 列名は半角カナ・全角カナ両対応
     idx = {
-        'bumon_cd':   find_idx(h, '部門コード'),
+        'bumon_cd':   find_idx(h, '部門コード') if find_idx(h, '部門コード') is not None else find_idx(h, '部門ｺｰﾄﾞ'),
         'bumon_nm':   find_idx(h, '部門名'),
         'ym':         find_idx(h, '対象年月度'),
         'orig_amt':   find_idx(h, '純売上金額'),
-        'cur_amt':    find_idx(h, '変更後純売上金額') or find_idx(h, '変更後純売上'),
+        'cur_amt':    find_idx(h, '変更後純売上金額') if find_idx(h, '変更後純売上金額') is not None else find_idx(h, '変更後純売上'),
     }
     missing = [k for k, v in idx.items() if v is None]
     if missing:
@@ -406,12 +409,13 @@ def transform_dept_targets(header, rows):
 def transform_rep_targets(header, rows):
     """担当者目標CSV を {担当者コード(6桁0埋め): {年月: 金額}, ...} に変換"""
     h = header
+    # 列名は半角カナ・全角カナ両対応
     idx = {
-        'rep_cd':     find_idx(h, '担当者コード'),
+        'rep_cd':     find_idx(h, '担当者コード') if find_idx(h, '担当者コード') is not None else find_idx(h, '担当者ｺｰﾄﾞ'),
         'rep_nm':     find_idx(h, '担当者名'),
         'ym':         find_idx(h, '対象年月度'),
         'orig_amt':   find_idx(h, '純売上金額'),
-        'cur_amt':    find_idx(h, '変更後純売上金額') or find_idx(h, '変更後純売上'),
+        'cur_amt':    find_idx(h, '変更後純売上金額') if find_idx(h, '変更後純売上金額') is not None else find_idx(h, '変更後純売上'),
     }
     missing = [k for k, v in idx.items() if v is None]
     if missing:
