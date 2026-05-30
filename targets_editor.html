@@ -310,6 +310,12 @@ header.top .logout-btn:hover { background: rgba(201,166,107,0.15); }
 .matrix-tbl td.heat-3 { background: rgba(46,166,121, 0.18); }
 .matrix-tbl td.heat-4 { background: rgba(46,166,121, 0.28); }
 .matrix-tbl td.heat-5 { background: rgba(46,166,121, 0.40); color: var(--navy); font-weight: 700; }
+.matrix-tbl td.csv-locked {
+  background: rgba(201, 166, 107, 0.10) !important;
+  cursor: not-allowed !important;
+  position: relative;
+}
+.matrix-tbl td.csv-locked:hover { background: rgba(201, 166, 107, 0.18) !important; }
 .matrix-tbl td.total-cell { background: linear-gradient(90deg, #fffbe6, #fff7d6); font-weight: 800; color: var(--navy); }
 .matrix-tbl td.mismatch { background: linear-gradient(135deg, var(--redLight), #fee2e2); color: var(--red); font-weight: 700; }
 .matrix-tbl td.match { background: linear-gradient(135deg, var(--greenLight), #d1fae5); color: var(--green); }
@@ -756,7 +762,46 @@ const SCOPES = ['User.Read', 'Sites.ReadWrite.All'];
 const SP = {
   siteId: 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23',
   targetsListId: '9cb1ee3e-8af9-4f6a-a910-78b12385437e',
+  mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
 };
+
+// CSV由来のデータストア（dashboard_facts.json から読込）
+let csvTargets = { dept: {}, rep: {} };
+// CSV部門名 → 正式名のマッピング (ダッシュボードと同じロジック)
+const _csvScopeMap = (csvName) => {
+  if (!csvName) return csvName;
+  const s = String(csvName).trim();
+  if (s === "全社") return "全社";
+  if (s.includes("ソリュ") || s.includes("ｿﾘｭ")) return "ソリューション営業部";
+  if (s.includes("国内")) return "国内営業部";
+  if (s.includes("本社") || s === "東京") return "本社";
+  if (s.includes("大阪")) return "大阪支店";
+  if (s.includes("名古屋")) return "名古屋営業所";
+  return s;
+};
+async function loadFacts() {
+  try {
+    const t = await getToken();
+    const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+    if (!res.ok) {
+      console.warn('[targets_editor] dashboard_facts.json 取得失敗:', res.status);
+      return;
+    }
+    const facts = await res.json();
+    const dept = {};
+    for (const csvScope in (facts.dept_monthly_targets || {})) {
+      const scope = _csvScopeMap(csvScope);
+      if (!dept[scope]) dept[scope] = {};
+      Object.assign(dept[scope], facts.dept_monthly_targets[csvScope]);
+    }
+    csvTargets.dept = dept;
+    csvTargets.rep  = facts.rep_monthly_targets || {};
+    console.log('[targets_editor] CSV由来目標:', Object.keys(dept).length, '部門 /', Object.keys(csvTargets.rep).length, '担当者');
+  } catch (e) {
+    console.warn('[targets_editor] loadFacts エラー:', e);
+  }
+}
 
 const CATEGORIES = {
   dept: { label: '部門目標', targetTypes: ['部門年間', '部門月次'], matrixSupport: true, valueKind: 'amount', defaultView: 'matrix', icon: '🏢' },
@@ -821,7 +866,7 @@ function logout() {
 async function onLoginSuccess() {
   document.getElementById('userName').textContent = account.username || '';
   showApp();
-  await loadAllItems();
+  await Promise.all([loadAllItems(), loadFacts()]);
   renderCurrentCategory();
 }
 
@@ -1233,6 +1278,37 @@ function renderMatrixView(cat, grouped, groupKeys) {
     }
   }
 
+  // CSV由来データを byScope に注入 (部門目標 / 担当者目標 のみ、累計部門目標は対象外)
+  if (cat === 'dept' && csvTargets.dept) {
+    for (const scope in csvTargets.dept) {
+      if (!byScope[scope]) {
+        let parentName = '';
+        if (['本社','大阪支店','名古屋営業所'].includes(scope)) parentName = '国内営業部';
+        else if (scope === '国内営業部' || scope === 'ソリューション営業部') parentName = '全社';
+        byScope[scope] = { name: scope, parent: parentName, months: {} };
+      }
+      for (const ym in csvTargets.dept[scope]) {
+        const v = csvTargets.dept[scope][ym];
+        if (v > 0) {
+          byScope[scope].months[ym] = { val: v, hasRev: false, key: null, isDeleted: false, isCsv: true };
+        }
+      }
+    }
+  }
+  if (cat === 'rep' && csvTargets.rep) {
+    for (const code in csvTargets.rep) {
+      if (!byScope[code]) {
+        byScope[code] = { name: code, parent: '', months: {} };
+      }
+      for (const ym in csvTargets.rep[code]) {
+        const v = csvTargets.rep[code][ym];
+        if (v > 0) {
+          byScope[code].months[ym] = { val: v, hasRev: false, key: null, isDeleted: false, isCsv: true };
+        }
+      }
+    }
+  }
+
   let scopes = Object.keys(byScope);
   if (scopes.length === 0) {
     if (cat === 'dept' || cat === 'ytd_plan') {
@@ -1309,7 +1385,13 @@ function renderMatrixView(cat, grouped, groupKeys) {
       const v = cell ? cell.val : 0;
       monthlySum += v;
       const heatCls = heatLevel(v);
-      html += `<td class="month-cell ${heatCls}${cell?.hasRev ? ' has-rev' : ''}" ${cell ? `data-key="${escapeAttr(cell.key)}"` : `data-new-ym="${m}"`}>${v ? fmtMan(v) : '—'}</td>`;
+      const isCsv = cell?.isCsv;
+      const csvCls = isCsv ? ' csv-locked' : '';
+      const cellTag = isCsv
+        ? `class="month-cell ${heatCls} csv-locked" title="CSV同期: SharedMastersの目標CSVが源泉です（編集不可）"`
+        : `class="month-cell ${heatCls}${cell?.hasRev ? ' has-rev' : ''}" ${cell ? `data-key="${escapeAttr(cell.key)}"` : `data-new-ym="${m}"`}`;
+      const cellContent = (v ? fmtMan(v) : '—') + (isCsv ? ' <span style="font-size:9px;opacity:0.55;margin-left:2px">🔄</span>' : '');
+      html += `<td ${cellTag}>${cellContent}</td>`;
     }
     html += `<td class="total-cell">${monthlySum ? fmtMan(monthlySum) : '—'}</td>`;
     if (annualType) {
