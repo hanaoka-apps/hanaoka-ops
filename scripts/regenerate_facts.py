@@ -334,7 +334,10 @@ def transform_orders(header, rows):
     }
     missing = [k for k, v in idx.items() if v is None]
     if missing:
-        raise RuntimeError(f"列が見つからない (orders): {missing}")
+        raise RuntimeError(
+            f"列が見つからない (orders): {missing}\n"
+            f"  ヘッダ実際 ({len(header)}列): {header}"
+        )
     out = []
     for row in rows:
         if len(row) < max(idx.values()) + 1: continue
@@ -462,8 +465,13 @@ def main():
     print("\n🔧 当期データ変換中...", flush=True)
     sales_curr = transform_sales(h_curr, r_curr)
     print(f"  当期売上: {len(sales_curr):,}件")
-    orders = transform_orders(h_ord, r_ord)
-    print(f"  当期受注: {len(orders):,}件")
+    try:
+        orders = transform_orders(h_ord, r_ord)
+        print(f"  当期受注: {len(orders):,}件")
+    except Exception as e:
+        print(f"  ⚠️ 受注明細処理エラー: {e}", flush=True)
+        print(f"  → 受注データは空として続行（売上ダッシュボードは動作可能）", flush=True)
+        orders = []
 
     print("\n🎯 目標データ変換中...", flush=True)
     dept_targets = transform_dept_targets(h_dt, r_dt)
