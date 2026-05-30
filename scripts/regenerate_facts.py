@@ -96,15 +96,35 @@ def download_csv(token, filename):
     r = graph_get(token, url)
     raw = r.content
     text = None
+    tried = []
+    # Phase 1: 厳密デコード ＋ 文字化け率0.5%以下なら採用 (0.1%→0.5%に緩和)
     for enc in ('utf-8-sig', 'utf-8', 'shift_jis', 'cp932'):
         try:
             candidate = raw.decode(enc)
-            if candidate.count(' ') < len(candidate) * 0.001:
-                text = candidate; break
-        except UnicodeDecodeError:
+            bad = candidate.count('\ufffd')
+            ratio = bad / max(len(candidate), 1)
+            tried.append(f"{enc}:OK化け{bad}({ratio*100:.3f}%)")
+            if ratio < 0.005:
+                text = candidate
+                print(f"     エンコーディング: {enc}" + (f" (化け文字 {bad}文字)" if bad else ""), flush=True)
+                break
+        except UnicodeDecodeError as e:
+            tried.append(f"{enc}:UnicodeDecodeError@byte{e.start}")
             continue
+    # Phase 2: 厳密失敗時は cp932(replace) でフォールバック (化け率5%以下なら採用)
     if text is None:
-        raise RuntimeError(f"{filename} のエンコーディング判別失敗")
+        print(f"     [警告] 厳密判別失敗。試行: {tried}", flush=True)
+        try:
+            candidate = raw.decode('cp932', errors='replace')
+            bad = candidate.count('\ufffd')
+            ratio = bad / max(len(candidate), 1)
+            print(f"     [フォールバック] cp932(replace): 不正バイト率 {ratio*100:.2f}% ({bad}/{len(candidate)})", flush=True)
+            if ratio < 0.05:
+                text = candidate
+        except Exception as e:
+            print(f"     [エラー] cp932(replace)失敗: {e}", flush=True)
+    if text is None:
+        raise RuntimeError(f"{filename} のエンコーディング判別失敗 (試行: {tried})")
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
     if not rows:
