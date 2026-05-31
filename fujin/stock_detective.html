@@ -205,7 +205,7 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 <div class="searchbar">
   <div class="title"><span class="ico">🌲</span><span>構成ツリー</span></div>
   <div class="input-wrap">
-    <input id="q" type="search" placeholder="品目コードを貼り付けてEnter (例: UDALS / 21082001000)" autofocus>
+    <input id="q" type="search" placeholder="品目コード or 品目名 (例: UDALS / ダンディ / 21082001000)" autofocus autocomplete="off">
     <button class="go" id="go">探す</button>
   </div>
   <button class="clear" id="clear" title="クリア">✕</button>
@@ -284,6 +284,8 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 <script src="orphan_items.js" onerror="window.ORPHAN_ITEMS=[];window.ORPHAN_META={generated:'未生成',basis_date:'-',n_active:0,n_prohibited:0};"></script>
 <!-- 製番別BOM / 品目→製番マップ (build_work_instructions.py が生成) -->
 <script src="work_instructions.js" onerror="window.WI_ITEM_SEIBANS={};window.WI_BOM_BY_SEIBAN={};"></script>
+<!-- 品目名マップ / 受注詳細データ (build_item_history.py が生成) -->
+<script src="item_history.js" onerror="window.ITEM_HISTORY={items:{},item_names:{},seiban_to_order:{},sales_order_details:{}};"></script>
 
 <script>
 // 固定エイリアス参照(件数サフィックスのある版は build_enhanced_summary.py が両方出力)
@@ -399,16 +401,137 @@ function reloadFrame(code, seiban){
     setSbModeBadge('default', '');
   }
 }
-function search(){
-  const code = (q.value || "").trim();
-  if (!code) { showWelcome(); return; }
-  // 製番セレクタを準備
+// 全角半角・大文字小文字を正規化した検索キー
+function _normSearchKey(s){
+  if(!s) return "";
+  return String(s)
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[　]/g, " ")
+    .replace(/[ー－−–—]/g, "-")
+    .toLowerCase()
+    .trim();
+}
+
+// 入力文字列から最終的な品目コードを解決する
+//   結果: { code: 解決されたコード(無ければ""), candidates: 候補リスト [{code, name}], reason: "exact"/"multi"/"none" }
+//   完全一致なら code を返す。部分一致は候補リストとして返して、ユーザーに選ばせる。
+function _resolveItemCode(input){
+  const result = { code:"", candidates:[], reason:"none" };
+  if(!input) return result;
+  const trimmed = input.trim();
+  const itemNames = (window.ITEM_HISTORY && window.ITEM_HISTORY.item_names) || {};
+  // 1. datalist選択値: 「CODE 品目名」形式 (先頭部分が品目マスタにあればそれを採用)
+  const m = trimmed.match(/^(\S+)\s+/);
+  if(m && itemNames[m[1]]){
+    result.code = m[1]; result.reason = "exact"; return result;
+  }
+  // 2. 大文字化して品目マスタにヒット = 完全一致
+  const upper = trimmed.toUpperCase();
+  if(itemNames[upper]){
+    result.code = upper; result.reason = "exact"; return result;
+  }
+  // 3. そのままの文字列で品目マスタにヒット
+  if(itemNames[trimmed]){
+    result.code = trimmed; result.reason = "exact"; return result;
+  }
+  // 4. 品目名で部分一致検索: 候補を集める (自動で1個を採用しない、ユーザーに選ばせる)
+  const needle = _normSearchKey(trimmed);
+  if(needle){
+    const candidates = [];
+    for(const [code, name] of Object.entries(itemNames)){
+      if(_normSearchKey(code).indexOf(needle) >= 0 || _normSearchKey(name).indexOf(needle) >= 0){
+        candidates.push({code, name});
+        if(candidates.length >= 30) break;
+      }
+    }
+    if(candidates.length === 1){
+      // 候補1件のみ = 一意に決まる
+      result.code = candidates[0].code; result.reason = "exact";
+    } else if(candidates.length > 1){
+      result.candidates = candidates; result.reason = "multi";
+    }
+  }
+  return result;
+}
+
+// 候補が複数あるとき選ばせるシンプルなドロップダウン UI
+function _showCandidatesPicker(candidates){
+  // 既存のピッカーを削除
+  const old = document.getElementById("_candPicker");
+  if(old) old.remove();
+  const picker = document.createElement("div");
+  picker.id = "_candPicker";
+  picker.style.cssText = "position:absolute;background:#fff;border:1px solid #cbd5e1;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.18);max-height:340px;overflow-y:auto;z-index:9999;min-width:360px;font-size:12px";
+  // 入力枠の真下に配置
+  const rect = q.getBoundingClientRect();
+  picker.style.top = (rect.bottom + window.scrollY + 4) + "px";
+  picker.style.left = (rect.left + window.scrollX) + "px";
+  picker.innerHTML = `<div style="padding:8px 10px;background:#f8fafc;border-bottom:1px solid var(--line);color:#475569;font-size:11px;font-weight:600">候補 ${candidates.length}件 — クリックで構成ツリーを開く</div>` +
+    candidates.map(c =>
+      `<div class="_cand-item" data-code="${c.code.replace(/[<>"&]/g,'')}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid #f1f5f9;display:flex;gap:10px">
+        <span class="mono" style="color:#1e40af;font-family:'SF Mono',Menlo,monospace;min-width:130px">${c.code.replace(/[<>"&]/g,'')}</span>
+        <span style="color:#334155">${String(c.name||'').replace(/[<>"&]/g,'')}</span>
+      </div>`
+    ).join("");
+  document.body.appendChild(picker);
+  // ホバー強調
+  picker.querySelectorAll("._cand-item").forEach(el => {
+    el.addEventListener("mouseenter", () => el.style.background = "#eff6ff");
+    el.addEventListener("mouseleave", () => el.style.background = "");
+    el.addEventListener("click", () => {
+      const code = el.dataset.code;
+      q.value = code;
+      picker.remove();
+      _doSearchWithCode(code);
+    });
+  });
+  // 外クリックで閉じる
+  setTimeout(() => {
+    const closeOnOutside = (e) => {
+      if(!picker.contains(e.target) && e.target !== q){
+        picker.remove();
+        document.removeEventListener("click", closeOnOutside);
+      }
+    };
+    document.addEventListener("click", closeOnOutside);
+  }, 50);
+}
+
+// 確定したコードでiframe更新
+function _doSearchWithCode(code){
   refreshSbOptions(code);
   sbSel.value = '';
   sbWrap.classList.add('active');
   reloadFrame(code, '');
-  saveRecent(code);
+  try { saveRecent(code); } catch(e){ console.warn("saveRecent failed:", e); }
 }
+
+function search(){
+  const raw = (q.value || "").trim();
+  console.log("[stock_detective.search] raw=", raw);
+  if (!raw) { showWelcome(); return; }
+  const r = _resolveItemCode(raw);
+  console.log("[stock_detective.search] resolved=", r);
+  if(r.reason === "exact" && r.code){
+    // 完全一致: そのまま遷移
+    if(r.code !== raw) q.value = r.code;
+    _doSearchWithCode(r.code);
+    return;
+  }
+  if(r.reason === "multi"){
+    // 複数候補: ユーザーに選ばせる (自動遷移しない)
+    _showCandidatesPicker(r.candidates);
+    return;
+  }
+  // 候補なし: 大文字化して試行 (iframe側でエラー画面が出る)
+  const fallback = raw.toUpperCase();
+  q.value = fallback;
+  _doSearchWithCode(fallback);
+}
+
+// 検索候補は datalist ではなく自作ピッカー (_showCandidatesPicker) に統一
+// 雅さん 2026-05-23: 「検索欄ですが被ってしまっております」→ datalist併用を廃止
+// Enter/「探す」ボタンで search() が呼ばれ、複数候補なら _showCandidatesPicker でリスト表示
 // 製番変更時: iframeを再読込
 sbSel.addEventListener('change', () => {
   const code = (q.value || "").trim();
