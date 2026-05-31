@@ -84,6 +84,7 @@ header .meta{margin-left:auto;font-size:10.5px;opacity:.85}
 .detail-table .mono{font-family:"SF Mono","Menlo",monospace;font-size:10.5px}
 .detail-table tr.confirmed{background:#f8fafc}
 .detail-table tr.unconfirmed{background:#fef9c3}
+.detail-table tr.overdue{background:#fff1f2}  /* 過去日付+確定済=遅延アラート */
 .detail-table .item-link{color:#1e40af;cursor:pointer;text-decoration:underline}
 .detail-table .item-link:hover{color:#1e3a8a}
 .used-in-chip{display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;padding:0 5px;margin:0 2px 0 0;font-size:10px;line-height:1.5;white-space:nowrap}
@@ -166,6 +167,7 @@ header .meta{margin-left:auto;font-size:10.5px;opacity:.85}
 .status-badge{font-size:9.5px;padding:1px 5px;border-radius:3px;font-weight:600}
 .status-badge.confirmed{background:#d1fae5;color:#065f46}
 .status-badge.unconfirmed{background:#fef3c7;color:#854d0e}
+.status-badge.overdue{background:#fee2e2;color:#991b1b}  /* 遅延確定済バッジ */
 
 /* iPad/スマホ対応 (雅さん 2026-05-24: 詳細リストが見えない問題を強化) */
 @media (max-width: 1024px) {
@@ -840,6 +842,10 @@ const planFlagPlugin = {
 // ===== グラフ描画 =====
 function renderChart(){
   const daily = filteredDaily();
+  // 今日の日付文字列 (YYYY/MM/DD) — 遅延判定用
+  const _cn = new Date();
+  const CHART_TODAY = (window.YAMA_DATA && window.YAMA_DATA.as_of) ||
+    `${_cn.getFullYear()}/${String(_cn.getMonth()+1).padStart(2,'0')}/${String(_cn.getDate()).padStart(2,'0')}`;
   const dowJp = ['日','月','火','水','木','金','土'];
   // 雅さん 2026-05-25: コンパクトに「5/25月」(先頭0なし)
   const labels = daily.map(d => {
@@ -866,10 +872,15 @@ function renderChart(){
         return Math.round(sum*10)/10;
       });
       if(dataArr.every(v => v === 0)) continue; // 全部0ならdataset追加しない
+      // 確定済で過去日付のバーは赤(遅延アラート色)、それ以外は通常色
+      const normalColor = colorForKindStatus(kind, status);
+      const bgColor = (status === "確定済")
+        ? daily.map(d => d.date < CHART_TODAY ? "rgba(239,68,68,0.82)" : normalColor)
+        : normalColor;
       datasets.push({
         label: `${KIND_LABEL[kind]} (${status})`,
         data: dataArr,
-        backgroundColor: colorForKindStatus(kind, status),
+        backgroundColor: bgColor,
         borderWidth: 0,
         stack: "stk",
         _kind: kind, _status: status,
@@ -1500,6 +1511,10 @@ function renderDetail(){
         <span style="color:#0ea5e9;font-size:10px;margin-left:4px">[${days}日<span style="color:#64748b">/${bizDays}営業日</span>]</span>
       </span>`;
   };
+  // 今日の日付文字列 (遅延判定)
+  const _dn = new Date();
+  const DETAIL_TODAY = (window.YAMA_DATA && window.YAMA_DATA.as_of) ||
+    `${_dn.getFullYear()}/${String(_dn.getMonth()+1).padStart(2,'0')}/${String(_dn.getDate()).padStart(2,'0')}`;
   _detailRecs = recs.slice(0, state.detailLimit);
   const rows = _detailRecs.map((r,i) => {
     const sd = r.start_date || r.date;
@@ -1578,7 +1593,11 @@ function renderDetail(){
       }
     }
     const idsCell = `<td class="ids-cell">${ids.length ? ids.join('') : '<span style="color:#cbd5e1;font-size:10.5px">—</span>'}</td>`;
-    return `<tr class="${r.status==='確定済'?'confirmed':'unconfirmed'}"
+    // 過去日付+確定済=遅延アラート
+    const _isOverdue = r.status === '確定済' && r.date < DETAIL_TODAY;
+    const _rowCls = _isOverdue ? 'overdue' : (r.status==='確定済' ? 'confirmed' : 'unconfirmed');
+    const _badgeCls = _isOverdue ? 'overdue' : (r.status==='確定済' ? 'confirmed' : 'unconfirmed');
+    return `<tr class="${_rowCls}"
     data-idx="${i}"
     onmouseenter="highlightBatch('${escapeHtml(sd)}','${escapeHtml(ed)}','${kind}','${status}',${r.qty},'${escapeHtml(label).replace(/'/g,'&apos;')}','${escapeHtml(r.item_code||'')}','${escapeHtml(recordKey)}')"
     onmouseleave="clearHighlight()">
@@ -1589,7 +1608,7 @@ function renderDetail(){
     <td>${escapeHtml(r.item_name||'')}</td>
     <td class="mono">${r.seiban && r.seiban !== '-' && r.seiban !== '00' ? `<span class="seiban-link" onclick="event.stopPropagation();openChipDetail('so',${i})" title="クリックで受注詳細">${escapeHtml(r.seiban)}</span>` : escapeHtml(r.seiban||'-')}</td>
     <td class="num">${Math.round(r.qty)}</td>
-    <td><span class="status-badge ${r.status==='確定済'?'confirmed':'unconfirmed'}">${escapeHtml(r.status)}</span></td>
+    <td><span class="status-badge ${_badgeCls}">${escapeHtml(r.status)}</span></td>
     ${ordererCell}
     ${idsCell}
     ${usedInCell}
