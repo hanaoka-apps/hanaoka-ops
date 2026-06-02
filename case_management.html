@@ -1973,11 +1973,19 @@ function showApp() {
 // ============================================================
 // GRAPH API ヘルパー
 // ============================================================
-async function graphGet(url) {
+async function graphGet(url, _retry) {
+  _retry = _retry || 0;
   const token = await getToken();
   const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
     headers: { Authorization: 'Bearer ' + token }
   });
+  // 429（スロットリング）は Retry-After を尊重して数回までリトライ
+  if (res.status === 429 && _retry < 5) {
+    let wait = parseInt(res.headers.get('Retry-After') || '', 10);
+    if (isNaN(wait)) wait = Math.min(2 ** _retry, 16);
+    await new Promise(r => setTimeout(r, wait * 1000));
+    return graphGet(url, _retry + 1);
+  }
   if (!res.ok) throw new Error(`Graph API エラー: ${res.status} ${url}`);
   return res.json();
 }
@@ -2616,11 +2624,8 @@ async function loadCases() {
       }
       return obj;
     });
-    // 旧「受注入力担当」案件をSharePoint側も書き換え（初回のみ・以後は対象なし）
-    cases.filter(c => c._migrate && c._spId).forEach(c => {
-      graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${c._spId}/fields`, { Status: '業務セ', CaseType: '受注入力' })
-        .catch(e => console.warn('作業区分移行失敗', c.CaseId, e.message));
-    });
+    // 旧「受注入力担当」は毎回メモリ上で 業務セ＋作業区分=受注入力 に正規化して表示する。
+    // SharePoint側の一括書き換えは並列PATCHのバーストで429（スロットリング）を招くため行わない。
     renderCaseList();
     updateSummary();
     setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
