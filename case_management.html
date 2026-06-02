@@ -2864,6 +2864,26 @@ async function deleteTimelineEvent(eventItemId, evIdx) {
     setStatus('error', '削除エラー: ' + e.message);
   }
 }
+// FAX受信イベントを受信トレイ（未仕訳）に戻す（誤仕訳のリカバリ）
+async function returnEventToTriage(eventItemId, evIdx) {
+  if (!confirm('このFAXを受信トレイ（未仕訳）に戻しますか？\nこの案件のタイムラインから外れ、受信トレイの未仕訳一覧に再表示されます。')) return;
+  try {
+    setStatus('loading', '受信トレイに戻しています...');
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${eventItemId}/fields`, {
+      SortKubun: '未仕訳',
+      CaseId: '',
+    });
+    if (typeof evIdx === 'number' && events[evIdx]) { events.splice(evIdx, 1); }
+    renderTimeline();
+    renderPdfTabs();
+    // LastAction等は変更しない。受信トレイ側が開いていれば再読込
+    try { if (typeof loadTriageList === 'function') await loadTriageList(); } catch(_) {}
+    setStatus('success', '受信トレイ（未仕訳）に戻しました');
+  } catch(e) {
+    setStatus('error', '戻しエラー: ' + e.message);
+  }
+}
 function renderTimeline() {
   const toolbar = document.getElementById('tlToolbar');
   if (!events.length) {
@@ -2894,6 +2914,11 @@ function renderTimeline() {
       const deleteBtn = canDelete
         ? `<button class="tl-delete-btn" onclick="event.stopPropagation();deleteTimelineEvent(${ev._spId},${i})" title="コメントを削除">🗑</button>`
         : '';
+      // FAX受信イベントは受信トレイ（未仕訳）へ戻せる（誤仕訳のリカバリ）
+      const isReceivedFax = (ev.EventType || '').includes('受信') && !!ev._spId;
+      const returnBtn = isReceivedFax
+        ? `<button class="tl-delete-btn" style="color:#185FA5;border-color:#B5D4F4;margin-left:4px" onclick="event.stopPropagation();returnEventToTriage(${ev._spId},${i})" title="受信トレイ（未仕訳）に戻す">↩ 受信トレイ</button>`
+        : '';
       return `
         <div class="tl-item${hasPdf ? ' has-pdf' : ''}" data-tl-idx="${i}"${clickAttr}>
           <div class="tl-line-wrap">
@@ -2906,7 +2931,7 @@ function renderTimeline() {
               ${ev.ReviewFlag ? `<span class="tl-review-mark" title="${escapeHtml(ev.ReviewReason || '要確認')}">⚠</span>` : ''}
               <span class="tl-date">${formatDate(ev.EventDate)}</span>
               ${hasPdf ? '<span class="tl-pdf-icon" style="margin-left:auto;font-size:12px;color:#185FA5;" title="PDF添付あり">📄</span>' : ''}
-              ${deleteBtn}
+              ${deleteBtn}${returnBtn}
             </div>
             <div class="tl-content">${escapeHtml(ev.Summary || '-')}</div>
             ${ev.RelationName ? `<div class="tl-sub">${escapeHtml(ev.RelationName)}</div>` : ''}
