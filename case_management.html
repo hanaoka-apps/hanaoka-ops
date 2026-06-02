@@ -3275,6 +3275,8 @@ async function openOrderEntryModal() {
   oePdfFiles = []; renderOePdfList();
   const err = document.getElementById('oeErrorMsg'); if (err) err.style.display = 'none';
   const list = document.getElementById('oeCustomerList'); if (list) list.style.display = 'none';
+  const oeBtn = document.getElementById('oeSubmitBtn');
+  if (oeBtn) { oeBtn.disabled = false; oeBtn.textContent = '受注入力依頼を登録'; }
   document.getElementById('orderEntryModal').classList.add('open');
   // 得意先候補のためマスタを確実にロード（未ロードのまま入力されると候補が出ないため）
   if (!companyMaster.length) { try { await loadCompanyMaster(); } catch(_) {} }
@@ -3361,14 +3363,22 @@ async function uploadOrderPdf(file) {
   const uploadPath = `/OrderEntry/${safeName}`;
   const token = await getToken();
   const url = `https://graph.microsoft.com/v1.0/sites/${sid}/drives/${driveId}/root:${uploadPath}:/content`;
-  const resp = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': file.type || 'application/pdf' },
-    body: file,
-  });
-  if (!resp.ok) throw new Error(`PDF upload failed: ${resp.status} ${resp.statusText}`);
-  await resp.json();
-  return `https://hanaokacorp.sharepoint.com/sites/msteams_7aab51/FAX_PDFStorage/OrderEntry/${safeName}`;
+  // ハング防止：60秒で打ち切り（権限/ネットワーク不調でも全体を固めない）
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': file.type || 'application/pdf' },
+      body: file,
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) throw new Error(`PDF upload failed: ${resp.status} ${resp.statusText}`);
+    await resp.json();
+    return `https://hanaokacorp.sharepoint.com/sites/msteams_7aab51/FAX_PDFStorage/OrderEntry/${safeName}`;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 async function submitOrderEntry() {
   const btn = document.getElementById('oeSubmitBtn');
@@ -3440,7 +3450,7 @@ async function submitOrderEntry() {
     // 注文書PDF（複数可）：1ファイル＝1イベント（各PDFがタイムラインのPDFタブに表示される）
     for (let i = 0; i < oePdfFiles.length; i++) {
       const f = oePdfFiles[i];
-      btn.textContent = `PDFをアップロード中... (${i + 1}/${oePdfFiles.length})`;
+      btn.textContent = oePdfFiles.length > 1 ? `PDFを保存中… (${i + 1}/${oePdfFiles.length})` : 'PDFを保存中…';
       try {
         const url = await uploadOrderPdf(f);
         await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: {
@@ -3461,6 +3471,7 @@ async function submitOrderEntry() {
     setStatus('success', `受注入力依頼「${caseId}」を登録しました`);
   } catch(e) {
     err.textContent = '登録エラー: ' + e.message; err.style.display = 'block';
+  } finally {
     btn.disabled = false; btn.textContent = '受注入力依頼を登録';
   }
 }
@@ -3469,7 +3480,7 @@ async function generateCaseId() {
   try {
     const sid = await getSiteId();
     const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$select=fields/CaseId&$top=500`
+      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=500`
     );
     const year = new Date().getFullYear();
     const ids = data.value
