@@ -1314,6 +1314,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
         <div class="filter-btn active" onclick="setFilter('all', this)">すべて</div>
         <div class="filter-btn" onclick="setFilter('gyosei', this)">🔴 業務セ</div>
         <div class="filter-btn" onclick="setFilter('juchunyuryoku', this)">🟣 受注入力</div>
+        <div class="filter-btn" onclick="setFilter('okurijo', this)">📦 送り状・納品書</div>
         <div class="filter-btn" onclick="setFilter('sales', this)">🟠 営業</div>
         <div class="filter-btn" onclick="setFilter('factory', this)">🟡 工場</div>
         <div class="filter-btn" onclick="setFilter('ext', this)">🔵 外部</div>
@@ -1369,6 +1370,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
               <div>
                 <div class="card-label">ステータス</div>
                 <select class="compact-status-select" id="detailStatusSelect" onchange="quickUpdateStatus(this.value)"></select>
+              </div>
+              <div>
+                <div class="card-label">業務センター作業区分</div>
+                <select class="compact-status-select" id="detailWorkStageSelect" onchange="quickUpdateWorkStage(this.value)"></select>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                 <div>
@@ -1788,7 +1793,15 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 // ============================================================
 // ステータス定数
 // ============================================================
-const STATUS_ENUM = ['業務セ', '営業', '受注入力担当', '工場', '仕入先', '得意先'];
+const STATUS_ENUM = ['業務セ', '営業', '工場', '仕入先', '得意先']; // 所在専用（受注入力担当は作業区分へ移行）
+// 業務センター内の作業区分（所在=業務セ の中の作業段階。未使用列 CaseType を転用して保存）
+const WORKSTAGE_ENUM = ['受注入力', '送り状・納品書送付'];
+function getWorkStage(c) { return (c && c.CaseType) || ''; }
+function workStageBadge(stage) {
+  if (stage === '受注入力') return '<span class="badge badge-purple">🟣 受注入力</span>';
+  if (stage === '送り状・納品書送付') return '<span class="badge badge-blue">📦 送り状・納品書</span>';
+  return '';
+}
 // 完了系ステータス
 const DONE_STATUSES = ['完了'];
 // 外部依頼中ステータス（仕入先待ち、得意先回答待ち）
@@ -2183,6 +2196,21 @@ async function quickUpdateStatus(newStatus) {
   // 工場以外のステータスに変更 → 工場関連フィールドをクリア
   await updateCaseStatus(newStatus, { clearFactory: true });
 }
+// 業務センター作業区分（CaseType列）を更新
+async function quickUpdateWorkStage(newStage) {
+  if (!currentCaseId) return;
+  const item = cases.find(c => c.CaseId === currentCaseId);
+  if (!item || !item._spId) return;
+  try {
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${item._spId}/fields`, { CaseType: newStage || '' });
+    item.CaseType = newStage || '';
+    renderCaseList();
+    setStatus('success', newStage ? `作業区分を「${newStage}」に更新しました` : '作業区分を解除しました');
+  } catch(e) {
+    setStatus('error', '作業区分の更新に失敗: ' + e.message);
+  }
+}
 // 工場選択ピッカー
 function showFactoryPicker() {
   // 既存のピッカーを消す
@@ -2576,6 +2604,8 @@ async function loadCases() {
     );
     cases = data.value.map(v => {
       const obj = { _spId: v.id, ...v.fields };
+      // 旧ステータス「受注入力担当」→ 所在=業務セ ＋ 作業区分=受注入力 へ移行
+      if (obj.Status === '受注入力担当') { obj.Status = '業務セ'; obj.CaseType = '受注入力'; obj._migrate = true; }
       // Graph API は Person 型フィールドから AssignedToLookupId (数値ID) しか返さない
       // displayName は lookupIdToDisplayName テーブルから逆引きする
       const lid = obj.AssignedToLookupId ? parseInt(obj.AssignedToLookupId, 10) : null;
@@ -2585,6 +2615,11 @@ async function loadCases() {
         obj.AssignedTo = { LookupValue: `(ID:${lid})`, LookupId: lid };
       }
       return obj;
+    });
+    // 旧「受注入力担当」案件をSharePoint側も書き換え（初回のみ・以後は対象なし）
+    cases.filter(c => c._migrate && c._spId).forEach(c => {
+      graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${c._spId}/fields`, { Status: '業務セ', CaseType: '受注入力' })
+        .catch(e => console.warn('作業区分移行失敗', c.CaseId, e.message));
     });
     renderCaseList();
     updateSummary();
@@ -2602,7 +2637,7 @@ async function loadEvents(caseId) {
     const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
     );
-    const allEvents = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    const allEvents = data.value.map(v => ({ _spId: v.id, _author: (v.createdBy && v.createdBy.user && v.createdBy.user.displayName) || '', ...v.fields }));
     // 内部名 CaseId で統一
     events = allEvents.filter(e => String(e.CaseId || '') === String(caseId));
     // 日時降順ソート（新しい順）
@@ -2659,8 +2694,9 @@ function getFilteredCases() {
       ].map(v => String(v || '').toLowerCase()).join(' ');
       if (!haystack.includes(q)) return false;
     }
-    if (currentFilter === 'gyosei')        return c.Status === '業務セ' || c.Status === '受注入力担当';
-    if (currentFilter === 'juchunyuryoku') return c.Status === '受注入力担当';
+    if (currentFilter === 'gyosei')        return c.Status === '業務セ';
+    if (currentFilter === 'juchunyuryoku') return getWorkStage(c) === '受注入力';
+    if (currentFilter === 'okurijo')       return getWorkStage(c) === '送り状・納品書送付';
     if (currentFilter === 'sales')      return c.Status === '営業';
     if (currentFilter === 'factory')    return c.Status === '工場';
     if (currentFilter === 'factory1')   return c.Status === '工場' && toArray(c.FactoryTargets).includes('第一工場');
@@ -2773,7 +2809,7 @@ function renderCaseList() {
           <td class="td-date">${dateStr}</td>
           <td class="td-company">${escapeHtml(c.CompanyName || '-')}</td>
           <td class="td-summary">${escapeHtml(caseName)}</td>
-          <td class="td-status-cell">${statusBadge}</td>
+          <td class="td-status-cell">${statusBadge}${getWorkStage(c) ? ' ' + workStageBadge(getWorkStage(c)) : ''}</td>
           <td class="td-summary">${escapeHtml(summary)}</td>
           <td class="td-assignee">${escapeHtml(assignee)}</td>
           <td class="td-deadline ${dlClass}">${deadlineText}</td>
@@ -2869,6 +2905,7 @@ function renderTimeline() {
             </div>
             <div class="tl-content">${escapeHtml(ev.Summary || '-')}</div>
             ${ev.RelationName ? `<div class="tl-sub">${escapeHtml(ev.RelationName)}</div>` : ''}
+            ${ev._author ? `<div class="tl-sub" style="color:#9a9a9a">🖊 ${escapeHtml(ev._author)}</div>` : ''}
           </div>
         </div>`;
     }).join('');
@@ -2878,7 +2915,7 @@ function updateSummary() {
   const active = cases.filter(c => !DONE_STATUSES.includes(c.Status));
   const naCount = active.filter(c => c.NewArrival === true || c.NewArrival === 'Yes').length;
   document.getElementById('cnt-pending').textContent =
-    active.filter(c => c.Status === '業務セ' || c.Status === '受注入力担当').length;
+    active.filter(c => c.Status === '業務セ').length;
   document.getElementById('cnt-sales').textContent =
     active.filter(c => c.Status === '営業').length;
   document.getElementById('cnt-factory').textContent =
@@ -2939,6 +2976,11 @@ function selectCase(caseId) {
   if (statusSelect) {
     // 完了はヘッダーの完了ボタンに一本化（ドロップダウンには含めない）
     statusSelect.innerHTML = STATUS_ENUM.map(s => `<option value="${s}" ${c.Status === s ? 'selected' : ''}>${s}</option>`).join('');
+  }
+  const workStageSelect = document.getElementById('detailWorkStageSelect');
+  if (workStageSelect) {
+    workStageSelect.innerHTML = '<option value="">（なし）</option>' +
+      WORKSTAGE_ENUM.map(w => `<option value="${w}" ${(c.CaseType || '') === w ? 'selected' : ''}>${w}</option>`).join('');
   }
   const assigneeSelect = document.getElementById('detailAssigneeSelect');
   if (assigneeSelect) {
@@ -3043,6 +3085,7 @@ async function addComment() {
 // 新規案件登録
 // ============================================================
 let companyMaster = []; // 得意先マスタキャッシュ
+let companyMasterLoading = false; // 多重・無限ロード防止
 let regAutoStatus = '';
 // 1次仕訳から新規案件登録モーダルを開いた場合の元FAXイベントID
 // 登録「成功後」にだけ SortKubun='案件管理' を書き戻すため、ここに退避しておく。
@@ -3143,8 +3186,10 @@ async function loadCompanyMaster() {
     );
     const drive = res.value.find(d => d.name === SP.masterLibrary);
     if (!drive) return;
+    // SharedMasters 直下の「得意先マスタ.csv」（日本語名はURLエンコード）
+    const masterPath = 'root:/' + encodeURIComponent('得意先マスタ.csv') + ':/content';
     const fileRes = await fetch(
-      `https://graph.microsoft.com/v1.0/sites/${sid}/drives/${drive.id}/root:/company_master/company_master.csv:/content`,
+      `https://graph.microsoft.com/v1.0/sites/${sid}/drives/${drive.id}/${masterPath}`,
       { headers: { Authorization: 'Bearer ' + await getToken() } }
     );
     if (!fileRes.ok) return;
@@ -3231,7 +3276,15 @@ function oeFieldVal(inputId, orderCbId) {
 function onOeCustomerInput(val) {
   const list = document.getElementById('oeCustomerList');
   if (!val || val.length < 1) { list.style.display = 'none'; return; }
-  if (!companyMaster.length) { loadCompanyMaster().then(() => onOeCustomerInput(val)); return; }
+  if (!companyMaster.length) {
+    // マスタ未ロード時のみ1回だけ取得を試みる（CSVが無い等で空のままでも再帰ループしない）
+    if (!companyMasterLoading) {
+      companyMasterLoading = true;
+      loadCompanyMaster().finally(() => { companyMasterLoading = false; if (companyMaster.length) onOeCustomerInput(val); });
+    }
+    list.style.display = 'none';
+    return;
+  }
   const hits = companyMaster.filter(c => c.name.includes(val) || c.code.includes(val)).slice(0, 8);
   if (!hits.length) { list.style.display = 'none'; return; }
   list.innerHTML = hits.map(c => `
@@ -3335,7 +3388,8 @@ async function submitOrderEntry() {
       CompanyName: (customer === '注文書記載' ? '' : customer),
       CompanyCode: document.getElementById('oeCustomerCode').value.trim(),
       EntryPoint: 'その他',
-      Status: '受注入力担当',
+      Status: '業務セ',
+      CaseType: '受注入力',
       Priority: '中',
       LinkedDept: '営業部',
       Notes: notes,
