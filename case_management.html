@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>受付案件管理システム</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 // MSALが読み込めなかった場合のフォールバック
 window.addEventListener('error', function(e) {
@@ -3958,6 +3959,44 @@ async function getFaxDriveId() {
   faxDriveId = drive.id;
   return faxDriveId;
 }
+// PDF.js で画面内にPDFを描画（モバイル向け。iframe非対応ブラウザでも表示できる）
+async function renderPdfInline(srcUrl, area) {
+  try {
+    if (!window.pdfjsLib) throw new Error('PDF.js未読込');
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+    area.innerHTML = '<div class="loading-spinner">PDF描画中...</div>';
+    const res = await fetch(srcUrl);
+    const buf = await res.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'width:100%;height:100%;overflow:auto;background:#525659;padding:8px 0;-webkit-overflow-scrolling:touch;';
+    area.innerHTML = '';
+    area.appendChild(wrap);
+    const containerWidth = area.clientWidth || wrap.clientWidth || 360;
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.max(0.5, (containerWidth - 16) / base.width);
+      const vp = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width; canvas.height = vp.height;
+      canvas.style.cssText = 'display:block;margin:0 auto 8px;max-width:100%;box-shadow:0 1px 4px rgba(0,0,0,.4);background:#fff;';
+      wrap.appendChild(canvas);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    }
+  } catch(e) {
+    console.warn('PDF.js描画失敗:', e.message);
+    area.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px;padding:20px;">
+        <div style="font-size:40px;">📄</div>
+        <div style="font-size:13px;color:var(--text-muted);text-align:center;">画面内に表示できませんでした</div>
+        <a href="${srcUrl}" target="_blank" rel="noopener"
+           style="padding:10px 24px;background:var(--accent);color:#fff;border-radius:8px;font-size:14px;font-weight:600;text-decoration:none;">📂 PDFを開く</a>
+      </div>`;
+  }
+}
 async function loadPdfWithAuth(url, areaId) {
   const area = document.getElementById(areaId);
   area.innerHTML = '<div class="loading-spinner">PDF読み込み中...</div>';
@@ -3987,16 +4026,8 @@ async function loadPdfWithAuth(url, areaId) {
       // downloadUrlは署名済みURL（認証不要）なので直接fetchできる
       const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
       if (isMobile) {
-        // iOS Safari はiframe内blobURLのPDF表示不可 → リンクボタンで対応
-        area.innerHTML = `
-          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;padding:20px;">
-            <div style="font-size:48px;">📄</div>
-            <div style="font-size:13px;color:var(--text-muted);text-align:center;">スマホではPDFを別タブで開いてご確認ください</div>
-            <a href="${downloadUrl}" target="_blank" rel="noopener"
-               style="display:inline-block;padding:10px 24px;background:var(--accent);color:#fff;border-radius:8px;font-size:14px;font-weight:600;text-decoration:none;">
-              📂 PDFを開く
-            </a>
-          </div>`;
+        // モバイルはブラウザがPDFをinline表示できないため PDF.js で画面内に描画
+        await renderPdfInline(downloadUrl, area);
       } else {
         const res = await fetch(downloadUrl);
         const blob = await res.blob();
