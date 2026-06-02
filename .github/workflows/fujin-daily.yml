@@ -1,0 +1,74 @@
+name: FUJIN 日次ビルド
+
+# 毎日 21:30 UTC = 06:30 JST に自動実行
+# dashboard_facts（21:00 UTC）より後に実行
+on:
+  schedule:
+    - cron: "30 21 * * *"
+  workflow_dispatch: # 手動実行（テスト・緊急時）
+
+permissions:
+  contents: write # fujin/ をコミット・プッシュするために必要
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── リポジトリ取得 ──────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Python セットアップ ──────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install openpyxl msal requests
+
+      # ── SharePoint から CSV を取得 → data/ に保存 ───────────────
+      - name: Download CSVs from SharedMasters
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: python scripts/download_shared_masters.py
+
+      # ── ビルド（出力先: auth_dist/） ─────────────────────────────
+      - name: Build yama data (山リスト)
+        run: python scripts/build_yama.py
+
+      - name: Build item history (品目出入り)
+        run: python scripts/build_item_history.py
+
+      - name: Build auth wrapper (FUJIN.html 再生成)
+        run: |
+          if [ -f scripts/auth_wrapper.py ]; then
+            python scripts/auth_wrapper.py
+          else
+            echo "auth_wrapper.py が見つかりません (スキップ)"
+          fi
+
+      # ── auth_dist/ → fujin/ に同期 ────────────────────────────
+      # auth_dist/ はビルド作業領域。GitHub Pages の実体は fujin/
+      - name: Sync auth_dist to fujin/
+        run: rsync -a --delete auth_dist/ fujin/
+
+      # ── GitHub Pages へコミット＆プッシュ ────────────────────────
+      - name: Commit and push fujin/
+        run: |
+          git config user.email "m.hanaoka@hanaoka-corp.co.jp"
+          git config user.name "FUJIN Auto Build"
+          git add fujin/
+          if git diff --cached --quiet; then
+            echo "変更なし。push をスキップします。"
+          else
+            BUILD_DT=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
+            git commit -m "Auto build ${BUILD_DT}"
+            git push
+            echo "GitHub Pages へのプッシュ完了: ${BUILD_DT}"
+          fi
