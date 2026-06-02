@@ -1974,17 +1974,29 @@ function showApp() {
 // ============================================================
 // GRAPH API ヘルパー
 // ============================================================
+// ===== スロットリング対策：グローバル一時停止ゲート =====
+// 1件でも429が出たら解除時刻まで全Graph呼び出しを一斉に待たせ、リトライ嵐を防ぐ
+let graphPausedUntil = 0;
+async function graphGate() {
+  const w = graphPausedUntil - Date.now();
+  if (w > 0) await new Promise(r => setTimeout(r, w));
+}
+function graphSetPause(res, retry) {
+  let wait = parseInt(res.headers.get('Retry-After') || '', 10);
+  if (isNaN(wait)) wait = Math.min(2 ** (retry || 0), 30);
+  graphPausedUntil = Math.max(graphPausedUntil, Date.now() + wait * 1000);
+  return wait * 1000;
+}
 async function graphGet(url, _retry) {
   _retry = _retry || 0;
+  await graphGate();
   const token = await getToken();
   const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
     headers: { Authorization: 'Bearer ' + token }
   });
-  // 429（スロットリング）は Retry-After を尊重して数回までリトライ
-  if (res.status === 429 && _retry < 5) {
-    let wait = parseInt(res.headers.get('Retry-After') || '', 10);
-    if (isNaN(wait)) wait = Math.min(2 ** _retry, 16);
-    await new Promise(r => setTimeout(r, wait * 1000));
+  if (res.status === 429 && _retry < 3) {
+    const ms = graphSetPause(res, _retry);
+    await new Promise(r => setTimeout(r, ms));
     return graphGet(url, _retry + 1);
   }
   if (!res.ok) throw new Error(`Graph API エラー: ${res.status} ${url}`);
@@ -2008,13 +2020,20 @@ async function graphGetAll(url) {
   }
   return { value: all };
 }
-async function graphPost(url, body) {
+async function graphPost(url, body, _retry) {
+  _retry = _retry || 0;
+  await graphGate();
   const token = await getToken();
   const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
+  if (res.status === 429 && _retry < 3) {
+    const ms = graphSetPause(res, _retry);
+    await new Promise(r => setTimeout(r, ms));
+    return graphPost(url, body, _retry + 1);
+  }
   if (!res.ok) {
     let detail = '';
     try { const errJson = await res.json(); detail = JSON.stringify(errJson?.error || errJson); } catch(e) {}
@@ -2023,14 +2042,20 @@ async function graphPost(url, body) {
   }
   return res.json();
 }
-async function graphPatch(url, body) {
+async function graphPatch(url, body, _retry) {
+  _retry = _retry || 0;
+  await graphGate();
   const token = await getToken();
-  console.log('📤 PATCH', url, JSON.stringify(body, null, 2)); // デバッグ用ログ
   const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
     method: 'PATCH',
     headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
+  if (res.status === 429 && _retry < 3) {
+    const ms = graphSetPause(res, _retry);
+    await new Promise(r => setTimeout(r, ms));
+    return graphPatch(url, body, _retry + 1);
+  }
   if (!res.ok) {
     let detail = '';
     try { const errJson = await res.json(); detail = JSON.stringify(errJson?.error || errJson); } catch(e) {}
