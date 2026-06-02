@@ -820,6 +820,13 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
     </div>
     <div class="reg-modal-body">
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">各項目は入力するか、注文書に記載がある場合は「注文書記載」にチェックしてください。</div>
+      <!-- 依頼元（営業担当者） -->
+      <div class="reg-row">
+        <div class="reg-field full">
+          <label class="reg-label">依頼元（営業担当者名）<span class="req">*</span></label>
+          <input class="reg-input" id="oeSalesPerson" placeholder="例：山田 太郎">
+        </div>
+      </div>
       <!-- 得意先（マスタ補完） -->
       <div class="reg-row">
         <div class="reg-field full">
@@ -889,11 +896,19 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
           </div>
         </div>
       </div>
-      <!-- 注文書PDF -->
+      <!-- 注文書PDF（複数可・ドラッグ&ドロップ対応） -->
       <div class="reg-row">
         <div class="reg-field full">
-          <label class="reg-label">注文書PDF（任意）</label>
-          <input type="file" id="oePdf" accept=".pdf" style="font-size:12px">
+          <label class="reg-label">注文書PDF（任意・複数可）</label>
+          <div class="upload-zone" id="oeUploadZone" onclick="document.getElementById('oePdfInput').click()"
+               ondragover="event.preventDefault();event.stopPropagation();this.classList.add('drag-over')"
+               ondragleave="this.classList.remove('drag-over')"
+               ondrop="oeHandleDrop(event)">
+            <div class="upload-zone-text">クリックしてPDFを選択</div>
+            <div class="upload-zone-sub">またはドラッグ＆ドロップ（複数可）</div>
+          </div>
+          <input type="file" id="oePdfInput" accept=".pdf" multiple style="display:none" onchange="oeAddFiles(this.files); this.value='';">
+          <div id="oePdfList" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
         </div>
       </div>
       <div class="reg-error-msg" id="oeErrorMsg"></div>
@@ -3172,8 +3187,8 @@ function selectCompany(code, name) {
 // ============================================================
 // 受注入力依頼フォーム（営業→業務センター）
 // ============================================================
-function openOrderEntryModal() {
-  ['oeCustomer','oeCustomerCode','oeDeliveryCompany','oeRecipient','oeAddress','oePhone','oeDeliveryDate'].forEach(id => {
+async function openOrderEntryModal() {
+  ['oeSalesPerson','oeCustomer','oeCustomerCode','oeDeliveryCompany','oeRecipient','oeAddress','oePhone','oeDeliveryDate'].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.value = ''; el.disabled = false; el.style.background = ''; }
   });
@@ -3181,11 +3196,12 @@ function openOrderEntryModal() {
     const el = document.getElementById(id); if (el) el.checked = false;
   });
   document.querySelectorAll('input[name="oeFactory"], input[name="oeAnswer"]').forEach(r => r.checked = false);
-  const f = document.getElementById('oePdf'); if (f) f.value = '';
+  oePdfFiles = []; renderOePdfList();
   const err = document.getElementById('oeErrorMsg'); if (err) err.style.display = 'none';
   const list = document.getElementById('oeCustomerList'); if (list) list.style.display = 'none';
-  if (!companyMaster.length) loadCompanyMaster();
   document.getElementById('orderEntryModal').classList.add('open');
+  // 得意先候補のためマスタを確実にロード（未ロードのまま入力されると候補が出ないため）
+  if (!companyMaster.length) { try { await loadCompanyMaster(); } catch(_) {} }
 }
 function closeOrderEntryModal() {
   document.getElementById('orderEntryModal').classList.remove('open');
@@ -3215,6 +3231,7 @@ function oeFieldVal(inputId, orderCbId) {
 function onOeCustomerInput(val) {
   const list = document.getElementById('oeCustomerList');
   if (!val || val.length < 1) { list.style.display = 'none'; return; }
+  if (!companyMaster.length) { loadCompanyMaster().then(() => onOeCustomerInput(val)); return; }
   const hits = companyMaster.filter(c => c.name.includes(val) || c.code.includes(val)).slice(0, 8);
   if (!hits.length) { list.style.display = 'none'; return; }
   list.innerHTML = hits.map(c => `
@@ -3228,6 +3245,28 @@ function selectOeCustomer(code, name) {
   document.getElementById('oeCustomer').value = name;
   document.getElementById('oeCustomerCode').value = code;
   document.getElementById('oeCustomerList').style.display = 'none';
+}
+// 注文書PDF（複数可）の選択管理
+let oePdfFiles = [];
+function oeAddFiles(fileList) {
+  for (const f of fileList) {
+    if (!f.name.toLowerCase().endsWith('.pdf')) continue;
+    if (oePdfFiles.some(x => x.name === f.name && x.size === f.size)) continue;
+    oePdfFiles.push(f);
+  }
+  renderOePdfList();
+}
+function oeHandleDrop(e) {
+  e.preventDefault();
+  const z = document.getElementById('oeUploadZone'); if (z) z.classList.remove('drag-over');
+  if (e.dataTransfer && e.dataTransfer.files) oeAddFiles(e.dataTransfer.files);
+}
+function oeRemoveFile(idx) { oePdfFiles.splice(idx, 1); renderOePdfList(); }
+function renderOePdfList() {
+  const el = document.getElementById('oePdfList'); if (!el) return;
+  el.innerHTML = oePdfFiles.map((f, i) =>
+    `<div class="file-preview" style="display:flex"><span>📄</span><span>${escapeHtml(f.name)}</span><span class="file-remove" onclick="oeRemoveFile(${i})">✕</span></div>`
+  ).join('');
 }
 // 注文書PDFを FAX_PDFStorage/OrderEntry/ にアップロード
 async function uploadOrderPdf(file) {
@@ -3250,9 +3289,11 @@ async function uploadOrderPdf(file) {
 async function submitOrderEntry() {
   const btn = document.getElementById('oeSubmitBtn');
   const err = document.getElementById('oeErrorMsg');
+  const salesPerson = document.getElementById('oeSalesPerson').value.trim();
   const customer = oeFieldVal('oeCustomer', 'oeCustomerOrder');
   const deliveryDate = oeFieldVal('oeDeliveryDate', 'oeDeliveryDateOrder');
   const msgs = [];
+  if (!salesPerson) msgs.push('営業担当者名');
   if (!customer) msgs.push('得意先');
   if (!deliveryDate) msgs.push('納品日');
   if (msgs.length) { err.textContent = '必須項目を入力してください：' + msgs.join('、'); err.style.display = 'block'; return; }
@@ -3271,6 +3312,7 @@ async function submitOrderEntry() {
     const answer = (document.querySelector('input[name="oeAnswer"]:checked') || {}).value || '未選択';
     const notes = [
       '【受注入力依頼（営業）】',
+      '営業担当者: ' + (salesPerson || '-'),
       '得意先: ' + (customer || '-'),
       '納品先会社名: ' + (deliveryCompany || '-'),
       '受取人名: ' + (recipient || '-'),
@@ -3301,25 +3343,32 @@ async function submitOrderEntry() {
     };
     if (assigneeLookupId) fields.AssignedToLookupId = assigneeLookupId;
     await graphPost(`/sites/${sid}/lists/${SP.caseListId}/items`, { fields });
-    // PDFアップロード（任意）
-    let pdfPath = '';
-    const fileEl = document.getElementById('oePdf');
-    const file = fileEl && fileEl.files.length ? fileEl.files[0] : null;
-    if (file) {
-      btn.textContent = 'PDFをアップロード中...';
-      try { pdfPath = await uploadOrderPdf(file); } catch(e) { console.warn('注文書PDFアップロード失敗:', e.message); }
-    }
-    // 初期イベント（依頼内容＋PDF添付）
-    const evFields = {
+    // 初期イベント（依頼内容）
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: {
       Title: 'EV-' + Date.now(),
       CaseId: caseId,
       EventType: 'コメント',
       EventDate: now,
       RelationType: '社内',
-      Summary: '【受注入力依頼】営業より受付。\n' + notes,
-    };
-    if (pdfPath) evFields.AttachedPDFPath = pdfPath;
-    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: evFields });
+      Summary: '【受注入力依頼】' + salesPerson + ' より受付。\n' + notes,
+    }});
+    // 注文書PDF（複数可）：1ファイル＝1イベント（各PDFがタイムラインのPDFタブに表示される）
+    for (let i = 0; i < oePdfFiles.length; i++) {
+      const f = oePdfFiles[i];
+      btn.textContent = `PDFをアップロード中... (${i + 1}/${oePdfFiles.length})`;
+      try {
+        const url = await uploadOrderPdf(f);
+        await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: {
+          Title: 'EV-' + Date.now() + '-' + i,
+          CaseId: caseId,
+          EventType: 'コメント',
+          EventDate: new Date(Date.now() + i * 1000).toISOString(),
+          RelationType: '社内',
+          Summary: '注文書PDF: ' + f.name,
+          AttachedPDFPath: url,
+        }});
+      } catch(e) { console.warn('注文書PDFアップロード失敗:', f.name, e.message); }
+    }
     closeOrderEntryModal();
     setStatus('loading', '受注入力依頼を登録しました。リストを更新中...');
     await loadCases();
