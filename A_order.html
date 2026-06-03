@@ -345,6 +345,20 @@ async function graphPost(url, body) {
   return res.json();
 }
 
+async function graphPatch(url, body) {
+  const token = await getToken();
+  const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Graph API error ${res.status}: ${errText}`);
+  }
+  return res.json();
+}
+
 async function onLoginSuccess(account) {
   document.getElementById('loginView').style.display = 'none';
   document.getElementById('mainView').style.display = 'block';
@@ -645,56 +659,65 @@ async function saveOrder() {
   const dueDateISO = dueDate ? dueDate + 'T00:00:00Z' : null;
   const responseDateISO = responseDate ? responseDate + 'T00:00:00Z' : null;
 
+  // 段階的保存：最小限フィールドで作成 → 成功したら他のフィールドをPATCHで追加
   for (const s of splits) {
-    // 表示名 → 内部名に自動変換
-    const rawFields = {
+    // ステップ1: 最小限フィールドのみで作成（Title + テキスト・数値・日付のみ。Choice列は後で）
+    const minimalRaw = {
       'Title': kintone,
-      'kintone番号': kintone,
-      'kintone依頼番号': kintone,
       '客先名': customerName,
-      '客先コード': customerName, // 客先コードカラムがあれば客先名で代用
-      '機種名': modelName,
       '機種型式': modelName,
-      '表面処理': s.surface,
-      '数量': s.qty,
+      '機種名': modelName,
       '台数': s.qty,
+      '数量': s.qty,
       '希望納期': dueDateISO,
-      '担当営業': salesperson,
-      'ステータス': '新規',  // 必須の可能性に備えてデフォルト値を設定
       '備考': s.note ? (memo ? memo + ' | ' + s.note : s.note) : memo,
     };
     if (responseDateISO) {
-      rawFields['客先回答納期'] = responseDateISO;
-      rawFields['回答納期'] = responseDateISO;
+      minimalRaw['客先回答納期'] = responseDateISO;
     }
 
-    // T01受注に実在するフィールドのみを抽出して、内部名に変換
-    const fields = {};
+    const minimalFields = {};
     const skippedFields = [];
-    Object.entries(rawFields).forEach(([displayName, value]) => {
-      const internalName = orderColumns[displayName];
-      if (internalName && value !== null && value !== undefined && value !== '') {
-        fields[internalName] = value;
-      } else if (!internalName && value) {
-        skippedFields.push(displayName);
+    Object.entries(minimalRaw).forEach(([dn, v]) => {
+      const inm = orderColumns[dn];
+      if (inm && v !== null && v !== undefined && v !== '') {
+        minimalFields[inm] = v;
+      } else if (!inm && v) {
+        skippedFields.push(dn);
       }
     });
+    if (!minimalFields.Title) minimalFields.Title = kintone;
 
-    if (!fields.Title) fields.Title = kintone;
+    log('ステップ1: 最小限フィールドで作成', { surface: s.surface, fields: minimalFields, skippedFields });
 
-    log('保存リクエスト', { surface: s.surface, qty: s.qty, fields, スキップされた項目: skippedFields });
-
+    let itemId = null;
     try {
       const result = await graphPost(
         `/sites/${siteId}/lists/${encodeURIComponent(CONFIG.lists.order)}/items`,
-        { fields }
+        { fields: minimalFields }
       );
-      results.push({ surface: s.surface, qty: s.qty, id: result.id });
-      log('保存成功', { id: result.id, surface: s.surface });
+      itemId = result.id;
+      log('ステップ1 成功', { id: itemId, surface: s.surface });
     } catch (e) {
-      errors.push({ surface: s.surface, error: e.message });
-      log('保存エラー', { surface: s.surface, error: e.message });
+      log('ステップ1 エラー', { surface: s.surface, error: e.message });
+      errors.push({ surface: s.surface, error: 'ステップ1失敗: ' + e.message });
+      continue;
     }
+
+    // ステップ2: 表面処理を追加（Choice列の可能性、エラーなら飛ばす）
+    if (orderColumns['表面処理']) {
+      try {
+        await graphPatch(
+          `/sites/${siteId}/lists/${encodeURIComponent(CONFIG.lists.order)}/items/${itemId}/fields`,
+          { [orderColumns['表面処理']]: s.surface }
+        );
+        log('ステップ2 表面処理 追加成功', { surface: s.surface });
+      } catch (e) {
+        log('ステップ2 表面処理 エラー（無視して継続）', { error: e.message });
+      }
+    }
+
+    results.push({ surface: s.surface, qty: s.qty, id: itemId });
   }
 
   document.getElementById('saveBtn').disabled = false;
