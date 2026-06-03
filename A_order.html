@@ -164,11 +164,12 @@
       </div>
     </div>
 
-    <!-- 担当営業 -->
+    <!-- 担当営業（T01受注にカラムが存在しない場合は保存スキップ） -->
     <div class="form-row">
-      <label>担当営業<span class="req">*</span></label>
+      <label>担当営業</label>
       <div class="field">
         <input type="text" id="salesperson" placeholder="例：佐藤 健一">
+        <div class="field-desc">T01受注に「担当営業」カラムが無い場合は保存されません（任意）</div>
       </div>
     </div>
 
@@ -616,7 +617,7 @@ async function saveOrder() {
   const salesperson = document.getElementById('salesperson').value.trim();
   const memo = document.getElementById('memo').value.trim();
 
-  if (!kintone || !customerId || !modelId || !dueDate || !salesperson) {
+  if (!kintone || !customerId || !modelId || !dueDate) {
     showStatus('必須項目（*）が未入力です', 'error');
     return;
   }
@@ -640,6 +641,10 @@ async function saveOrder() {
   const results = [];
   const errors = [];
 
+  // 日付をISO 8601形式に変換
+  const dueDateISO = dueDate ? dueDate + 'T00:00:00Z' : null;
+  const responseDateISO = responseDate ? responseDate + 'T00:00:00Z' : null;
+
   for (const s of splits) {
     // 表示名 → 内部名に自動変換
     const rawFields = {
@@ -647,35 +652,37 @@ async function saveOrder() {
       'kintone番号': kintone,
       'kintone依頼番号': kintone,
       '客先名': customerName,
+      '客先コード': customerName, // 客先コードカラムがあれば客先名で代用
       '機種名': modelName,
       '機種型式': modelName,
       '表面処理': s.surface,
       '数量': s.qty,
       '台数': s.qty,
-      '希望納期': dueDate,
+      '希望納期': dueDateISO,
       '担当営業': salesperson,
+      'ステータス': '新規',  // 必須の可能性に備えてデフォルト値を設定
       '備考': s.note ? (memo ? memo + ' | ' + s.note : s.note) : memo,
     };
-    if (responseDate) {
-      rawFields['客先回答納期'] = responseDate;
-      rawFields['回答納期'] = responseDate;
+    if (responseDateISO) {
+      rawFields['客先回答納期'] = responseDateISO;
+      rawFields['回答納期'] = responseDateISO;
     }
 
     // T01受注に実在するフィールドのみを抽出して、内部名に変換
     const fields = {};
+    const skippedFields = [];
     Object.entries(rawFields).forEach(([displayName, value]) => {
       const internalName = orderColumns[displayName];
-      if (internalName) {
+      if (internalName && value !== null && value !== undefined && value !== '') {
         fields[internalName] = value;
+      } else if (!internalName && value) {
+        skippedFields.push(displayName);
       }
     });
 
-    // Titleは必ず含める（無いとSharePointが拒否することがある）
-    if (!fields.Title && orderColumns['Title']) {
-      fields.Title = kintone;
-    }
+    if (!fields.Title) fields.Title = kintone;
 
-    log('保存リクエスト（内部名変換後）', { surface: s.surface, qty: s.qty, fields });
+    log('保存リクエスト', { surface: s.surface, qty: s.qty, fields, スキップされた項目: skippedFields });
 
     try {
       const result = await graphPost(
