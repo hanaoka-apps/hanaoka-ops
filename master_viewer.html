@@ -166,8 +166,11 @@ const MSAL_CONFIG = {
 // 読み取り専用スコープ（いずれもアプリに委任許可済み）
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
 
-// SharedMasters ライブラリの Drive ID（業務アプリ設定より）
-const DRIVE_ID = 'b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
+// SharePoint サイト / SharedMasters ライブラリ（業務アプリ設定より）
+const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
+// PDF記載のDrive ID（OCR等で不正な場合に備えフォールバック扱い。通常は実行時にサイトから解決する）
+const FALLBACK_DRIVE_ID = 'b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
+let driveId = null;
 
 // ============================================================
 // データセット定義
@@ -249,10 +252,26 @@ async function graphGet(url){
   if(!r.ok) throw new Error(`Graph ${r.status}: ${url}`);
   return r.json();
 }
+// SharedMasters ライブラリのDrive IDをサイトから解決（PDFのDrive ID不正対策）
+async function resolveDriveId(){
+  if(driveId) return driveId;
+  try{
+    const data=await graphGet(`/sites/${SITE_ID}/drives?$select=id,name,webUrl&$top=100`);
+    const drives=data.value||[];
+    const hit=drives.find(d=>d.name==='SharedMasters')
+            || drives.find(d=>/SharedMasters/i.test(d.name||''))
+            || drives.find(d=>/SharedMasters/i.test(d.webUrl||''));
+    if(hit){ driveId=hit.id; console.log('SharedMasters driveId:', driveId); return driveId; }
+    console.warn('SharedMastersライブラリが見つかりません。利用可能なドライブ:', drives.map(d=>d.name));
+  }catch(e){ console.warn('drive解決失敗、フォールバックID使用', e); }
+  driveId=FALLBACK_DRIVE_ID;
+  return driveId;
+}
 // パス指定でアイテム取得 → downloadUrl 経由で本体取得（リダイレクト先へAuthヘッダを送らずCORS回避）
 // 注: @microsoft.graph.downloadUrl は既定で返るプロパティで、$select には指定不可（指定すると400）
 async function fetchCsvText(fname){
-  const meta=await graphGet(`/drives/${DRIVE_ID}/root:/${encodeURIComponent(fname)}`);
+  const did=await resolveDriveId();
+  const meta=await graphGet(`/drives/${did}/root:/${encodeURIComponent(fname)}`);
   const dl=meta['@microsoft.graph.downloadUrl'];
   if(!dl) throw new Error('downloadUrl が取得できません: '+fname);
   const r=await fetch(dl);
