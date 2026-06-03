@@ -34,7 +34,7 @@ REQUIRED_FILES = [
     "品目手順マスタ.csv",
     "仕入先マスタ.csv",
     "生産計画出力.csv",
-    "有効在庫一覧.txt",
+    "有効在庫一覧表.csv",
 ]
 
 # 任意ファイル（なくても続行）
@@ -67,6 +67,22 @@ def get_token(tenant_id: str, client_id: str, client_secret: str) -> str:
     return result["access_token"]
 
 
+def get_file_last_modified(token: str, filename: str) -> str:
+    """SharePoint上のファイルのlastModifiedDateTime(JST)を返す。取得失敗時は空文字。"""
+    encoded = requests.utils.quote(filename, safe="")
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded}"
+    res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    if res.status_code == 200:
+        from datetime import timezone, timedelta
+        dt_str = res.json().get("lastModifiedDateTime", "")
+        if dt_str:
+            from datetime import datetime
+            dt_utc = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            dt_jst = dt_utc.astimezone(timezone(timedelta(hours=9)))
+            return dt_jst.strftime("%Y-%m-%d %H:%M")
+    return ""
+
+
 def download_file(token: str, filename: str, dest_dir: Path, required: bool) -> bool:
     """ファイルをダウンロードして dest_dir に保存。成功したら True を返す。"""
     encoded = requests.utils.quote(filename, safe="")
@@ -80,8 +96,7 @@ def download_file(token: str, filename: str, dest_dir: Path, required: bool) -> 
         print(f"  [OK] {filename} ({size_kb:.0f} KB)")
         return True
     elif res.status_code == 404:
-        level = "WARN" if not required else "WARN"
-        print(f"  [{level}] {filename} が SharedMasters に見つかりません (スキップ)")
+        print(f"  [WARN] {filename} が SharedMasters に見つかりません (スキップ)")
         return False
     else:
         raise RuntimeError(
@@ -125,6 +140,17 @@ def main():
             download_file(token, f, DATA, required=False)
         except RuntimeError as e:
             print(f"  [WARN] {e}")
+
+    # 有効在庫一覧表.csv の SharePoint 側 lastModifiedDateTime を保存
+    # → build_shell.py が現在庫基準日として使用する
+    print()
+    print("=== 現在庫基準日メタデータ取得 ===")
+    stock_mtime = get_file_last_modified(token, "有効在庫一覧表.csv")
+    if stock_mtime:
+        (DATA / "_stock_mtime.txt").write_text(stock_mtime, encoding="utf-8")
+        print(f"  [OK] 有効在庫一覧表.csv の最終更新: {stock_mtime} (JST) → data/_stock_mtime.txt")
+    else:
+        print("  [WARN] 有効在庫一覧表.csv のメタデータ取得失敗")
 
     print()
     if missing_required:

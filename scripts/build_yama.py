@@ -1196,33 +1196,40 @@ def main():
 
 
 def _update_fujin_meta(build_dt):
-    """FUJIN.html (ソース + auth_dist) のヘッダー最終更新日をビルド日時に同期する"""
+    """FUJIN.html (ソース + auth_dist) のヘッダー最終更新日をビルド日時に同期する。
+    現在庫基準日は 有効在庫一覧表.csv の SharePoint 更新時刻 (data/_stock_mtime.txt) を優先。
+    """
     import re
-    mmdd     = build_dt.strftime("%m-%d")
-    dt_str   = build_dt.strftime("%Y-%m-%d %H:%M")
-    # 対象ファイル: ソースと配置先の両方
+    mmdd   = build_dt.strftime("%m-%d")
+    dt_str = build_dt.strftime("%Y-%m-%d %H:%M")
+
+    # 現在庫基準日: _stock_mtime.txt があればそちらを使用、なければビルド日時
+    _mtime_file = DATA / "_stock_mtime.txt"
+    if _mtime_file.exists():
+        stock_dt_str = _mtime_file.read_text(encoding="utf-8").strip() or dt_str
+    else:
+        stock_dt_str = dt_str
+
     targets = [BASE / "FUJIN.html", BASE / "auth_dist" / "FUJIN.html"]
     for path in targets:
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
-        # 「最終更新 MM-DD」を今日付に
         text = re.sub(r'最終更新 \d{2}-\d{2}', f'最終更新 {mmdd}', text)
-        # ツールチップ内の各行 (YYYY-MM-DD HH:MM 形式) を今日付に
         text = re.sub(
             r'(<b>データ基準日</b>)\s*[\d-]+ [\d:]+',
             rf'\1 {dt_str}', text
         )
         text = re.sub(
             r'(<b>現在庫基準日</b>)\s*[\d-]+ [\d:]+',
-            rf'\1 {dt_str}', text
+            rf'\1 {stock_dt_str}', text   # ← 有効在庫一覧表.csv の更新日時
         )
         text = re.sub(
             r'(<b>統合版生成</b>)\s*[\d-]+ [\d:]+',
             rf'\1 {dt_str}', text
         )
         path.write_text(text, encoding="utf-8")
-        print(f"[更新] {path.name} 最終更新 → {mmdd}")
+        print(f"[更新] {path.name} 最終更新 → {mmdd} / 現在庫基準日 → {stock_dt_str}")
 
 
 if __name__ == "__main__":
