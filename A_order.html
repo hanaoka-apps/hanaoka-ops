@@ -243,6 +243,7 @@ let msalInstance = null;
 let siteId = null;
 let customers = [];
 let models = [];
+let orderColumns = {}; // T01受注のカラム情報: displayName → internalName
 
 function log(msg, data) {
   const ts = new Date().toLocaleTimeString();
@@ -354,11 +355,37 @@ async function onLoginSuccess(account) {
     siteId = siteData.id;
     log('サイトID取得', { siteId });
     await loadMasters();
+    await loadOrderSchema();
     hideStatus();
   } catch (e) {
     log('サイト接続エラー', { error: e.message });
     showStatus('SharePoint接続エラー: ' + e.message, 'error');
   }
+}
+
+// T01受注のカラム情報を取得（表示名 → 内部名の変換マップを作成）
+async function loadOrderSchema() {
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists/${encodeURIComponent(CONFIG.lists.order)}/columns`);
+    orderColumns = {};
+    const summary = [];
+    data.value.forEach(col => {
+      if (!col.readOnly) {
+        // displayName と name（内部名）の両方をキーとして登録
+        orderColumns[col.displayName] = col.name;
+        orderColumns[col.name] = col.name; // 内部名でも引けるように
+        summary.push(`${col.displayName} → ${col.name}`);
+      }
+    });
+    log('🔧 T01受注のカラム情報（表示名 → 内部名）', summary);
+  } catch (e) {
+    log('T01受注スキーマ取得エラー', { error: e.message });
+  }
+}
+
+// 表示名から内部名を取得
+function f(displayName) {
+  return orderColumns[displayName] || displayName;
 }
 
 async function loadMasters() {
@@ -614,20 +641,41 @@ async function saveOrder() {
   const errors = [];
 
   for (const s of splits) {
-    const fields = {
-      Title: kintone,
-      kintone番号: kintone,
-      客先名: customerName,
-      機種名: modelName,
-      表面処理: s.surface,
-      数量: s.qty,
-      希望納期: dueDate,
-      担当営業: salesperson,
-      備考: s.note ? (memo ? memo + ' | ' + s.note : s.note) : memo,
+    // 表示名 → 内部名に自動変換
+    const rawFields = {
+      'Title': kintone,
+      'kintone番号': kintone,
+      'kintone依頼番号': kintone,
+      '客先名': customerName,
+      '機種名': modelName,
+      '機種型式': modelName,
+      '表面処理': s.surface,
+      '数量': s.qty,
+      '台数': s.qty,
+      '希望納期': dueDate,
+      '担当営業': salesperson,
+      '備考': s.note ? (memo ? memo + ' | ' + s.note : s.note) : memo,
     };
-    if (responseDate) fields.客先回答納期 = responseDate;
+    if (responseDate) {
+      rawFields['客先回答納期'] = responseDate;
+      rawFields['回答納期'] = responseDate;
+    }
 
-    log('保存リクエスト', { surface: s.surface, qty: s.qty, fields });
+    // T01受注に実在するフィールドのみを抽出して、内部名に変換
+    const fields = {};
+    Object.entries(rawFields).forEach(([displayName, value]) => {
+      const internalName = orderColumns[displayName];
+      if (internalName) {
+        fields[internalName] = value;
+      }
+    });
+
+    // Titleは必ず含める（無いとSharePointが拒否することがある）
+    if (!fields.Title && orderColumns['Title']) {
+      fields.Title = kintone;
+    }
+
+    log('保存リクエスト（内部名変換後）', { surface: s.surface, qty: s.qty, fields });
 
     try {
       const result = await graphPost(
