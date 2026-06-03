@@ -242,6 +242,7 @@ const msalConfig = {
 const SCOPES = ['Sites.ReadWrite.All', 'User.Read'];
 let msalInstance = null;
 let siteId = null;
+let orderListId = null; // T01受注のリストID
 let customers = [];
 let models = [];
 let orderColumns = {}; // T01受注のカラム情報: displayName → internalName
@@ -370,6 +371,7 @@ async function onLoginSuccess(account) {
     siteId = siteData.id;
     log('サイトID取得', { siteId });
     await loadMasters();
+    await loadOrderListId();
     await loadOrderSchema();
     hideStatus();
   } catch (e) {
@@ -378,21 +380,51 @@ async function onLoginSuccess(account) {
   }
 }
 
+// T01受注のリストID取得
+async function loadOrderListId() {
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists?$select=id,name,displayName`);
+    for (const list of data.value || []) {
+      if (list.displayName === CONFIG.lists.order || list.name === CONFIG.lists.order) {
+        orderListId = list.id;
+        log('🔑 T01受注 ListID取得', { listId: orderListId, displayName: list.displayName, name: list.name });
+        return;
+      }
+    }
+    log('⚠ T01受注 ListIDが見つかりません', data.value?.map(l => l.displayName));
+  } catch (e) {
+    log('T01受注ListID取得エラー', { error: e.message });
+  }
+}
+
 // T01受注のカラム情報を取得（表示名 → 内部名の変換マップを作成）
 async function loadOrderSchema() {
+  if (!orderListId) {
+    log('⚠ ListIDが未取得のためスキーマ取得できません');
+    return;
+  }
   try {
-    const data = await graphFetch(`/sites/${siteId}/lists/${encodeURIComponent(CONFIG.lists.order)}/columns`);
+    const data = await graphFetch(`/sites/${siteId}/lists/${orderListId}/columns`);
     orderColumns = {};
     const summary = [];
+    const colDetails = [];
     data.value.forEach(col => {
       if (!col.readOnly) {
-        // displayName と name（内部名）の両方をキーとして登録
         orderColumns[col.displayName] = col.name;
-        orderColumns[col.name] = col.name; // 内部名でも引けるように
+        orderColumns[col.name] = col.name;
         summary.push(`${col.displayName} → ${col.name}`);
+        // 詳細情報も収集（必須/型）
+        colDetails.push({
+          表示名: col.displayName,
+          内部名: col.name,
+          必須: col.required || false,
+          型: col.text ? 'text' : col.number ? 'number' : col.dateTime ? 'date' : col.choice ? 'choice' : col.boolean ? 'boolean' : '?',
+          選択肢: col.choice?.choices,
+        });
       }
     });
     log('🔧 T01受注のカラム情報（表示名 → 内部名）', summary);
+    log('🔧 T01受注のカラム詳細（型・必須・選択肢）', colDetails);
   } catch (e) {
     log('T01受注スキーマ取得エラー', { error: e.message });
   }
@@ -655,65 +687,63 @@ async function saveOrder() {
   const results = [];
   const errors = [];
 
-  // 日付をISO 8601形式に変換
+  if (!orderListId) {
+    showStatus('T01受注リストのIDが取得できていません。ページを再読込してください。', 'error');
+    document.getElementById('saveBtn').disabled = false;
+    return;
+  }
+
   const dueDateISO = dueDate ? dueDate + 'T00:00:00Z' : null;
   const responseDateISO = responseDate ? responseDate + 'T00:00:00Z' : null;
 
-  // 段階的保存：最小限フィールドで作成 → 成功したら他のフィールドをPATCHで追加
+  // 完全インクリメンタル保存：Title のみで作成 → 1フィールドずつ PATCH で追加
   for (const s of splits) {
-    // ステップ1: 最小限フィールドのみで作成（Title + テキスト・数値・日付のみ。Choice列は後で）
-    const minimalRaw = {
-      'Title': kintone,
-      '客先名': customerName,
-      '機種型式': modelName,
-      '機種名': modelName,
-      '台数': s.qty,
-      '数量': s.qty,
-      '希望納期': dueDateISO,
-      '備考': s.note ? (memo ? memo + ' | ' + s.note : s.note) : memo,
-    };
-    if (responseDateISO) {
-      minimalRaw['客先回答納期'] = responseDateISO;
-    }
-
-    const minimalFields = {};
-    const skippedFields = [];
-    Object.entries(minimalRaw).forEach(([dn, v]) => {
-      const inm = orderColumns[dn];
-      if (inm && v !== null && v !== undefined && v !== '') {
-        minimalFields[inm] = v;
-      } else if (!inm && v) {
-        skippedFields.push(dn);
-      }
-    });
-    if (!minimalFields.Title) minimalFields.Title = kintone;
-
-    log('ステップ1: 最小限フィールドで作成', { surface: s.surface, fields: minimalFields, skippedFields });
+    // ステップ0: 最も基本 — Title だけで作成
+    const baseFields = { Title: kintone };
+    log('🔬 ステップ0: Title のみで作成テスト', baseFields);
 
     let itemId = null;
     try {
       const result = await graphPost(
-        `/sites/${siteId}/lists/${encodeURIComponent(CONFIG.lists.order)}/items`,
-        { fields: minimalFields }
+        `/sites/${siteId}/lists/${orderListId}/items`,
+        { fields: baseFields }
       );
       itemId = result.id;
-      log('ステップ1 成功', { id: itemId, surface: s.surface });
+      log('✓ ステップ0 成功', { id: itemId });
     } catch (e) {
-      log('ステップ1 エラー', { surface: s.surface, error: e.message });
-      errors.push({ surface: s.surface, error: 'ステップ1失敗: ' + e.message });
+      log('✗ ステップ0 失敗', { error: e.message });
+      errors.push({ surface: s.surface, error: 'ステップ0(Title)失敗: ' + e.message });
       continue;
     }
 
-    // ステップ2: 表面処理を追加（Choice列の可能性、エラーなら飛ばす）
-    if (orderColumns['表面処理']) {
+    // ステップ1〜: 1フィールドずつ PATCH で追加。失敗しても続行
+    const fieldsToAdd = [
+      { displayName: '客先名', value: customerName },
+      { displayName: '客先コード', value: customerName },
+      { displayName: '機種型式', value: modelName },
+      { displayName: '機種名', value: modelName },
+      { displayName: '台数', value: s.qty },
+      { displayName: '数量', value: s.qty },
+      { displayName: '希望納期', value: dueDateISO },
+      { displayName: '客先回答納期', value: responseDateISO },
+      { displayName: '担当営業', value: salesperson },
+      { displayName: '備考', value: s.note ? (memo ? memo + ' | ' + s.note : s.note) : memo },
+      { displayName: '表面処理', value: s.surface },
+    ];
+
+    for (const f of fieldsToAdd) {
+      const internalName = orderColumns[f.displayName];
+      if (!internalName) continue;
+      if (f.value === null || f.value === undefined || f.value === '') continue;
+
       try {
         await graphPatch(
-          `/sites/${siteId}/lists/${encodeURIComponent(CONFIG.lists.order)}/items/${itemId}/fields`,
-          { [orderColumns['表面処理']]: s.surface }
+          `/sites/${siteId}/lists/${orderListId}/items/${itemId}/fields`,
+          { [internalName]: f.value }
         );
-        log('ステップ2 表面処理 追加成功', { surface: s.surface });
+        log(`✓ ${f.displayName} 追加成功`, { value: f.value });
       } catch (e) {
-        log('ステップ2 表面処理 エラー（無視して継続）', { error: e.message });
+        log(`✗ ${f.displayName} 追加失敗`, { value: f.value, error: e.message });
       }
     }
 
