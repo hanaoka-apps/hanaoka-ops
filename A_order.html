@@ -404,27 +404,62 @@ async function loadAllItems(listName) {
   return items;
 }
 
-// 表示用：フィールドから「名前らしき」値を抽出
-function extractDisplayName(item) {
+// 表示用：フィールドから「名前らしき」値を抽出（検索クエリ優先）
+function extractDisplayName(item, query) {
   const f = item.fields || {};
-  const candidates = ['客先名', '社名', '会社名', '機種型式', '機種名', '型式', 'Title', 'LinkTitle'];
+
+  // 1. 検索クエリがあれば、クエリを含むフィールドを優先（数値でない場合）
+  if (query && query.trim()) {
+    const qNorm = normalizeText(query);
+    for (const [k, v] of Object.entries(f)) {
+      if (typeof v === 'string' && v.trim() && !k.startsWith('_') && !k.startsWith('@')
+          && k !== 'ContentType' && k !== 'Edit' && k !== '@odata.etag') {
+        if (normalizeText(v).includes(qNorm) && !/^\d+$/.test(v.trim())) {
+          return v;
+        }
+      }
+    }
+  }
+
+  // 2. 名前らしい名前のフィールドを優先
+  const candidates = ['客先名', '社名', '会社名', '取引先名', '正式社名', '機種型式', '機種名', '型式', '製品名'];
   for (const key of candidates) {
     if (f[key] && typeof f[key] === 'string' && f[key].trim()) return f[key];
   }
-  for (const [k, v] of Object.entries(f)) {
-    if (typeof v === 'string' && v.trim() && !k.startsWith('_') && !k.startsWith('@') && k !== 'ContentType') return v;
+
+  // 3. Titleフィールド（ただし数字のみは除外）
+  if (f.Title && typeof f.Title === 'string' && f.Title.trim() && !/^\d+$/.test(f.Title.trim())) {
+    return f.Title;
   }
-  return '（名前なし）';
+
+  // 4. 最初の意味のある文字列フィールド（数字のみは除外）
+  for (const [k, v] of Object.entries(f)) {
+    if (typeof v === 'string' && v.trim() && !k.startsWith('_') && !k.startsWith('@')
+        && k !== 'ContentType' && k !== 'Edit' && k !== 'Title' && k !== 'LinkTitle'
+        && !/^\d+$/.test(v.trim())) {
+      return v;
+    }
+  }
+
+  // 5. 最後の手段：Title または LinkTitle
+  return f.Title || f.LinkTitle || '（名前なし）';
 }
 
 function extractSubInfo(item) {
   const f = item.fields || {};
-  const subKeys = ['客先コード', 'コード', '取引先コード', '所在地', '住所', '都道府県', '機種カテゴリ', 'カテゴリ', '備考'];
   const parts = [];
+
+  // Titleが数字（コード）の場合は補助情報として表示
+  if (f.Title && typeof f.Title === 'string' && /^\d+$/.test(f.Title.trim())) {
+    parts.push(`コード:${f.Title}`);
+  }
+
+  // その他の補助フィールド
+  const subKeys = ['客先コード', 'コード', '取引先コード', '所在地', '住所', '都道府県', '機種カテゴリ', 'カテゴリ', 'field_1', 'field_3', 'field_5'];
   for (const key of subKeys) {
-    if (f[key] && typeof f[key] === 'string' && f[key].trim()) {
+    if (f[key] && typeof f[key] === 'string' && f[key].trim() && f[key] !== extractDisplayName(item)) {
       parts.push(f[key]);
-      if (parts.length >= 2) break;
+      if (parts.length >= 3) break;
     }
   }
   return parts.join(' / ');
@@ -457,7 +492,7 @@ function setupAutocomplete(inputId, resultsId, selectedId, data) {
       results.innerHTML = '<div class="ac-item" style="color:#aaa;">該当なし — デバッグ情報でフィールド名を確認</div>';
     } else {
       results.innerHTML = matches.map(m => {
-        const display = extractDisplayName(m);
+        const display = extractDisplayName(m, q);  // クエリを渡して該当フィールド優先
         const sub = extractSubInfo(m);
         const id = m.id;
         const safeDisplay = display.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
