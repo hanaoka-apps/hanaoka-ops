@@ -357,10 +357,12 @@ const MSAL_CONFIG = {
   },
   cache: { cacheLocation: 'sessionStorage' }
 };
-const SCOPES = ['User.Read', 'Sites.ReadWrite.All'];
+const SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.Read.All'];
 const SP = {
   siteId: 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23',
   targetsListId: '9cb1ee3e-8af9-4f6a-a910-78b12385437e',
+  // sales_dashboard.html / kachi_dashboard.html と同じ SharedMasters
+  mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
 };
 
 // 原価/目標 用 TargetType
@@ -547,29 +549,41 @@ async function loadAllItems(){
 }
 
 // ============================================================
-// 期間平均単価（埋め込みデータからローカル計算 or 同ディレクトリの付加価値対策.htmlからは引かない）
+// 期間平均単価・前年実績の計算
+// データ源：OneDrive (SharedMasters) の dashboard_facts.json / dashboard_facts_history.json
+// Microsoft Graph API経由で取得（sales_dashboard.html と同パターン）
 // ============================================================
 async function loadAvgPrices(){
-  // 同ディレクトリのJSONから読込試行（CORS許可済みのGitHub Pages前提）
+  if (!account || !msalInstance) {
+    console.warn("loadAvgPrices: 未サインインのためスキップ");
+    return;
+  }
   try {
-    const candidates = [
-      "./dashboard_facts.json",
-      "https://hanaoka-apps.github.io/hanaoka-ops/dashboard_facts.json",
-    ];
-    let cur = null;
-    for (const u of candidates) {
-      try { cur = await (await fetch(u, {cache:"no-store"})).json(); console.log("✅ avg loaded from", u); break; }
-      catch(e){ console.warn("avg fetch fail:", u); }
-    }
-    let hist = null;
-    const histCands = [
-      "./dashboard_facts_history.json",
-      "https://hanaoka-apps.github.io/hanaoka-ops/dashboard_facts_history.json",
-    ];
-    for (const u of histCands) {
-      try { hist = await (await fetch(u, {cache:"no-store"})).json(); console.log("✅ histAvg loaded from", u); break; }
-      catch(e){}
-    }
+    const t = await getToken();
+    let cur = null, hist = null;
+    // 今期データ
+    try {
+      const urlCur = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+      const res = await fetch(urlCur, { headers: { Authorization: 'Bearer ' + t } });
+      if (res.ok) {
+        cur = await res.json();
+        console.log("✅ dashboard_facts.json OneDriveから取得:", (cur.rows || []).length, "行");
+      } else {
+        console.warn("dashboard_facts.json取得失敗:", res.status);
+      }
+    } catch(e) { console.warn("dashboard_facts.json fetch error:", e.message); }
+    // 昨期データ
+    try {
+      const urlHist = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts_history.json:/content`;
+      const res = await fetch(urlHist, { headers: { Authorization: 'Bearer ' + t } });
+      if (res.ok) {
+        hist = await res.json();
+        console.log("✅ dashboard_facts_history.json OneDriveから取得:", (hist.rows || []).length, "行");
+      } else {
+        console.warn("dashboard_facts_history.json取得失敗:", res.status);
+      }
+    } catch(e) { console.warn("history fetch error:", e.message); }
+
     const codes = new Set(ITEM_MASTER.map(m => m.code));
     const all = ((cur && cur.rows) || []).concat((hist && hist.rows) || []);
     const m = new Map();
@@ -1037,4 +1051,3 @@ init();
 </script>
 </body>
 </html>
- 
