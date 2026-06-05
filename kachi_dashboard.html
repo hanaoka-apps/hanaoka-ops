@@ -269,7 +269,7 @@ footer b{color:var(--goldDark)}
   <!-- ===== SharePoint連携バー（原価/目標エディタへの導線） ===== -->
   <div id="spBar" style="margin-top:12px; padding:10px 16px; background:var(--paper); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); display:flex; align-items:center; gap:10px; flex-wrap:wrap">
     <span style="font-size:12px; color:var(--gray); font-weight:600">SharePoint:</span>
-    <button class="btn primary" id="spLoginBtn" style="padding:6px 14px; font-size:12px">🔐 サインインして原価/目標を読込</button>
+    <button class="btn primary" id="spLoginBtn" style="padding:6px 14px; font-size:12px">🔐 サインインして最新データを読込（売上＋原価＋目標）</button>
     <button class="btn ghost sm" id="spLogoutBtn" style="display:none">サインアウト</button>
     <a href="kachi_editor.html" target="_blank" class="btn" style="text-decoration:none; padding:6px 14px; font-size:12px">✏ 原価/目標エディタを開く</a>
     <span id="spStatus" style="font-size:11px; color:var(--gray); margin-left:auto"></span>
@@ -1441,10 +1441,12 @@ const SP_MSAL_CONFIG = {
   },
   cache: { cacheLocation: 'sessionStorage' }
 };
-const SP_SCOPES = ['User.Read', 'Sites.ReadWrite.All'];
+const SP_SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.Read.All'];
 const SP_CONFIG = {
   siteId: 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23',
   targetsListId: '9cb1ee3e-8af9-4f6a-a910-78b12385437e',
+  // sales_dashboard.html と同じ SharedMasters ドライブから dashboard_facts.json を取得
+  mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
 };
 const SP_TT_STANDARD = '重点機種_標準原価';
 const SP_TT_MONTHLY  = '重点機種_月別原価';
@@ -1606,11 +1608,54 @@ function updateSpStatus(msg){
   el.innerHTML = msg;
 }
 
+// ============================================================
+// OneDrive (SharedMasters) からの売上データ取得
+// sales_dashboard.html と同じパターン
+// ============================================================
+async function spLoadFacts(){
+  if (!_spAccount) return false;
+  try {
+    updateSpStatus("⏳ OneDriveから売上データを取得中…");
+    const t = await spGetToken();
+    // 今期データ
+    const urlCur = `https://graph.microsoft.com/v1.0/drives/${SP_CONFIG.mastersDriveId}/root:/dashboard_facts.json:/content`;
+    const resCur = await fetch(urlCur, { headers: { Authorization: 'Bearer ' + t } });
+    if (resCur.ok) {
+      const json = await resCur.json();
+      ROWS_CUR = json.rows || [];
+      META_CUR = json.build_meta || null;
+      console.log("✅ dashboard_facts.json OneDriveから取得:", ROWS_CUR.length, "行");
+    } else {
+      console.warn("dashboard_facts.json取得失敗:", resCur.status);
+    }
+    // 昨期データ
+    const urlHist = `https://graph.microsoft.com/v1.0/drives/${SP_CONFIG.mastersDriveId}/root:/dashboard_facts_history.json:/content`;
+    const resHist = await fetch(urlHist, { headers: { Authorization: 'Bearer ' + t } });
+    if (resHist.ok) {
+      const json = await resHist.json();
+      ROWS_HIST = json.rows || [];
+      META_HIST = json.build_meta || null;
+      console.log("✅ dashboard_facts_history.json OneDriveから取得:", ROWS_HIST.length, "行");
+    } else {
+      console.warn("dashboard_facts_history.json取得失敗:", resHist.status);
+    }
+    applyData();
+    return true;
+  } catch(e) {
+    console.error("spLoadFacts失敗:", e);
+    updateSpStatus("❌ 売上データ取得失敗: " + e.message);
+    return false;
+  }
+}
+
 // 起動時にSharePointが既ログインなら自動取得
 async function spAutoLoad(){
   try {
     const ok = await spInitMsal();
     if (ok) {
+      // 1) 売上データ（OneDrive）
+      await spLoadFacts();
+      // 2) 原価・目標（SharePoint List）
       await spLoadCosts();
       if (typeof recompute === "function") recompute();
       // ログイン成功時、自動再取得タイマーを開始
@@ -1663,18 +1708,50 @@ function stopAutoSync(){
 async function autoSyncTick(){
   if (!_spAccount || !_autoSyncEnabled) return;
   try {
-    // サイレントで再取得（updateSpStatusは出さない）
+    // サイレントで再取得
     const before = _lastSyncSnapshot;
+    // 売上データも更新（OneDrive）
+    const beforeYmMax = (META_CUR && META_CUR.ym_max) || 0;
+    await spLoadFactsQuiet();
     await spLoadCostsQuiet();
     const after = snapshotSpData();
-    if (before !== after) {
+    const afterYmMax = (META_CUR && META_CUR.ym_max) || 0;
+    if (before !== after || beforeYmMax !== afterYmMax) {
       _lastSyncSnapshot = after;
       if (typeof recompute === "function") recompute();
-      flash("🔄 共有データを更新（誰かが原価/目標を変更）");
+      if (beforeYmMax !== afterYmMax) flash("🔄 売上データが更新されました（" + afterYmMax + "まで）");
+      else flash("🔄 共有データを更新（誰かが原価/目標を変更）");
     }
     updateAutoSyncBadge();
   } catch(e) {
     console.warn("自動同期エラー:", e.message);
+  }
+}
+
+// 静かなOneDrive売上データ取得
+async function spLoadFactsQuiet(){
+  if (!_spAccount) return false;
+  try {
+    const t = await spGetToken();
+    const urlCur = `https://graph.microsoft.com/v1.0/drives/${SP_CONFIG.mastersDriveId}/root:/dashboard_facts.json:/content`;
+    const resCur = await fetch(urlCur, { headers: { Authorization: 'Bearer ' + t } });
+    if (resCur.ok) {
+      const json = await resCur.json();
+      ROWS_CUR = json.rows || [];
+      META_CUR = json.build_meta || null;
+    }
+    const urlHist = `https://graph.microsoft.com/v1.0/drives/${SP_CONFIG.mastersDriveId}/root:/dashboard_facts_history.json:/content`;
+    const resHist = await fetch(urlHist, { headers: { Authorization: 'Bearer ' + t } });
+    if (resHist.ok) {
+      const json = await resHist.json();
+      ROWS_HIST = json.rows || [];
+      META_HIST = json.build_meta || null;
+    }
+    applyData();
+    return true;
+  } catch(e) {
+    console.warn("spLoadFactsQuiet:", e.message);
+    return false;
   }
 }
 
@@ -1776,10 +1853,12 @@ function bindEvents(){
   if (spLoginBtn) spLoginBtn.addEventListener("click", async () => {
     try {
       await spLogin();
+      // 売上データもOneDriveから取得（sales_dashboardと同じ場所）
+      await spLoadFacts();
       const ok = await spLoadCosts();
       if (ok) {
         recompute();
-        flash("✅ SharePointから原価/目標を読み込みました");
+        flash("✅ 売上・原価・目標を全てSharePoint/OneDriveから読み込みました");
         startAutoSync();
       }
     } catch(e){
