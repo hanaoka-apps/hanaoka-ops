@@ -546,13 +546,11 @@ function getDateRange(){
   if(state.period === "custom" && state.from && state.to){
     return {from: state.from, to: state.to};
   }
-  // today をローカル日付で取得（YAMA_DATA.as_of があればそれを使う）
+  // baseDate は常に実際の今日を使う
+  // ※ YAMA_DATA.as_of はデータの基準日(ビルド日)なので、チャートの「今日」とは別
+  //   as_of を使うと「今日ボタン」がデータ基準日(5/31等)を指してしまう
   const _now = new Date();
-  const today = (window.YAMA_DATA && window.YAMA_DATA.as_of) ||
-    `${_now.getFullYear()}/${String(_now.getMonth()+1).padStart(2,'0')}/${String(_now.getDate()).padStart(2,'0')}`;
-  // baseDate: YMD をローカルパーツから構築してタイムゾーンズレを防ぐ
-  const [ty,tm,td] = today.replace(/-/g,'/').split('/').map(Number);
-  const baseDate = new Date(ty, tm-1, td);
+  const baseDate = new Date(_now.getFullYear(), _now.getMonth(), _now.getDate());
   if(state.dateOffset) baseDate.setDate(baseDate.getDate() + state.dateOffset);
   const days = parseInt(state.period) || 30;
   const isShort = days <= 14;
@@ -836,6 +834,33 @@ const planFlagPlugin = {
     }
     ctx.globalAlpha = 1.0;
     ctx.restore();
+  }
+};
+
+// ===== 今日ハイライトプラグイン =====
+// 今日の列に薄い黄色の帯と「今日」ラベルを重ねて描画
+const todayBandPlugin = {
+  id: 'todayBand',
+  beforeDatasetsDraw(c) {
+    const todayStr = _d2ymd(new Date());
+    const todayIdx = (typeof daily !== 'undefined' ? daily : []).findIndex(d => d.date === todayStr);
+    if(todayIdx < 0) return;  // 表示範囲外の場合はスキップ
+    const xa = c.scales.x;
+    const ya = c.scales.y;
+    const ctx2 = c.ctx;
+    // バー1本分の幅 (隣のカテゴリ幅の半分)
+    const half = xa.getPixelForValue(Math.min(todayIdx + 1, c.data.labels.length - 1)) - xa.getPixelForValue(todayIdx);
+    const xCenter = xa.getPixelForValue(todayIdx);
+    ctx2.save();
+    // 帯（薄い黄色）
+    ctx2.fillStyle = 'rgba(251,191,36,0.18)';
+    ctx2.fillRect(xCenter - half * 0.5, ya.top, half, ya.bottom - ya.top);
+    // 上部「今日」ラベル
+    ctx2.font = 'bold 10px sans-serif';
+    ctx2.textAlign = 'center';
+    ctx2.fillStyle = '#b45309';
+    ctx2.fillText('今日', xCenter, ya.top - 3);
+    ctx2.restore();
   }
 };
 
@@ -1193,7 +1218,7 @@ function renderChart(){
     data: {labels, datasets},
     // 雅さん 2026-05-25: 境界線(白線)が赤スライスの上に被って区切られる問題対策で、
     //   先に inlineItems(境界線+ラベル) を描き、最後に batchSlice(赤スライス) を上に重ねる
-    plugins: [inlineItemsPlugin, batchSlicePlugin, planFlagPlugin],
+    plugins: [inlineItemsPlugin, batchSlicePlugin, planFlagPlugin, todayBandPlugin],
     options: {
       responsive: true, maintainAspectRatio: false,
       datasets: {
@@ -1258,8 +1283,10 @@ function renderChart(){
         x:{
           stacked:true,
           ticks:{
-            font:{size:10},
+            font: (ctx)=> daily[ctx.index]?.date === CHART_TODAY
+              ? {size:10, weight:'bold'} : {size:10},
             color: (ctx)=>{
+              if(daily[ctx.index]?.date === CHART_TODAY) return "#b45309"; // 今日=アンバー太字
               const dow = dowList[ctx.index];
               if(dow === 0) return "#dc2626";  // 日曜=赤
               if(dow === 6) return "#2563eb";  // 土曜=青
@@ -1268,6 +1295,7 @@ function renderChart(){
           },
           grid:{
             color: (ctx)=>{
+              if(daily[ctx.index]?.date === CHART_TODAY) return "rgba(251,191,36,0.5)"; // 今日=黄
               const dow = dowList[ctx.index];
               if(dow === 0) return "rgba(220,38,38,0.12)";  // 日曜
               if(dow === 6) return "rgba(37,99,235,0.08)";  // 土曜
