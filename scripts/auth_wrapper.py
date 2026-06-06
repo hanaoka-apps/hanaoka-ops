@@ -452,9 +452,14 @@ for fname in TARGETS_AUTH:
     count_auth += 1
 
 # 認証なしでそのままコピー（iframe先のHTML群）
+# ROOT直下になければ static/ フォルダをフォールバックとして使用
+# （GitHub Actions では ROOT に静的ファイルがないため static/ から取得）
+STATIC_DIR = ROOT / "static"
 print("\n[そのままコピー(iframe先・親FUJIN.htmlの認証で保護)]")
 for fname in TARGETS_PLAIN:
     src = ROOT / fname
+    if not src.exists() and STATIC_DIR.exists():
+        src = STATIC_DIR / fname
     if not src.exists():
         print(f"  ⚠ {fname}: 存在せずスキップ")
         continue
