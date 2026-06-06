@@ -518,3 +518,38 @@ print(f"サイズ: {len(HTML):,} chars")
 print(f"データ基準日: {data_basis}")
 print(f"主要タブ: {[t['label'] for t in TABS]}")
 print(f"その他: {len([t for t in OTHER if t['id']!='sep'])}件")
+
+# ── 静的タブHTMLを auth_dist/ にコピー ──────────────────────────────────
+# auth_wrapper.py はROOT直下のファイルをコピーするが、GitHub Actions では
+# ROOTに静的HTMLがない。build_shell.py 時点でまとめてコピーすることで確実に配置する。
+import shutil as _shutil
+_auth_dist = ROOT / "auth_dist"
+_static_dir = ROOT / "static"
+if _auth_dist.exists() and _static_dir.exists():
+    print(f"\n[静的ファイルコピー] {_static_dir} → {_auth_dist}")
+    _copied = 0
+    for _item in _static_dir.iterdir():
+        if _item.name.startswith('.'):
+            # .nojekyll 等の隠しファイルもコピー
+            _dst = _auth_dist / _item.name
+            _shutil.copy2(_item, _dst)
+            _copied += 1
+            continue
+        if _item.is_file():
+            _dst = _auth_dist / _item.name
+            _shutil.copy2(_item, _dst)
+            _copied += 1
+        elif _item.is_dir():
+            _dst = _auth_dist / _item.name
+            if _dst.exists():
+                _shutil.rmtree(_dst)
+            _shutil.copytree(_item, _dst)
+            _copied += 1
+    print(f"  コピー完了: {_copied} 件")
+    # .nojekyll がなければ作成 (GitHub Pages の Jekyll 処理を無効化)
+    _nojekyll = _auth_dist / ".nojekyll"
+    if not _nojekyll.exists():
+        _nojekyll.touch()
+        print(f"  .nojekyll 作成")
+elif not _static_dir.exists():
+    print(f"[WARN] static/ フォルダが存在しません: {_static_dir}")
