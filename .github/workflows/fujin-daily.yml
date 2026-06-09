@@ -29,6 +29,20 @@ jobs:
       - name: Install dependencies
         run: pip install openpyxl msal requests
 
+      # ── 手配判定の入力一式を展開 ────────────────────────────────
+      # fujin_build_inputs.zip に case_packets/ ・ infer/results/(AI判定) ・
+      # infer/rules_hints.jsonl ・ infer/build_enhanced_summary.py を同梱。
+      # 2,125件のcase_packetを個別コミットせず、zip1個で持ち込み展開する運用。
+      # これらは手配の案件セット(更新は雅さんが手動でzipを差し替えた時のみ)。
+      - name: Unpack build inputs (case_packets / infer)
+        run: |
+          if [ -f fujin_build_inputs.zip ]; then
+            unzip -o -q fujin_build_inputs.zip -d .
+            echo "展開完了: case_packets $(ls case_packets/case_*.txt 2>/dev/null | wc -l)件 / infer/results $(ls infer/results/*.json 2>/dev/null | wc -l)件"
+          else
+            echo "[WARN] fujin_build_inputs.zip が無いため results_production の生成をスキップします"
+          fi
+
       # ── SharePoint から CSV を取得 → data/ に保存 ───────────────
       - name: Download CSVs from SharedMasters
         env:
@@ -53,6 +67,19 @@ jobs:
       - name: Build shell (FUJIN.html 統合シェル・現在庫基準日設定)
         run: python scripts/build_shell.py
 
+      # ── 手配確定/構成ツリー本体 (results_production.html) を生成 ──
+      # download_shared_masters.py が落とした最新CSV(data/)を読んで生成。
+      # 出力は infer/results_production.html (安定版エイリアス)。
+      # zip未展開でスクリプトが無い場合はスキップ(既存のresults_production.htmlを温存)。
+      - name: Build results_production (手配確定 / 構成ツリー本体)
+        run: |
+          if [ -f infer/build_enhanced_summary.py ]; then
+            python infer/build_enhanced_summary.py
+            echo "生成: infer/results_production.html ($(du -h infer/results_production.html | cut -f1))"
+          else
+            echo "[WARN] infer/build_enhanced_summary.py が無いためスキップ"
+          fi
+
       - name: Build auth wrapper (FUJIN.html 認証ゲート挿入)
         run: |
           if [ -f scripts/auth_wrapper.py ]; then
@@ -61,11 +88,30 @@ jobs:
             echo "auth_wrapper.py が見つかりません (スキップ)"
           fi
 
+      # ── results_production.html を auth_dist/ に配置 ──────────────
+      # 認証ラッパーの後に置くことで非ラップのまま配置(親FUJIN.htmlが認証済みで
+      # iframeは同一オリジン読込のため、results_production側に認証ゲートは不要)。
+      # この後の rsync auth_dist/→fujin/ で配信される。
+      - name: Place results_production.html into auth_dist
+        run: |
+          if [ -f infer/results_production.html ]; then
+            cp infer/results_production.html auth_dist/results_production.html
+            echo "配置完了: auth_dist/results_production.html"
+          else
+            echo "[WARN] infer/results_production.html が無いため配置スキップ(既存版を温存)"
+          fi
+
       # ── auth_dist/ → fujin/ に同期 ────────────────────────────
       # auth_dist/ はビルド作業領域。GitHub Pages の実体は fujin/
+      #
+      # 【重要】--delete を使わないこと。
+      # results_production.html は通常この日次ビルドで生成・配置されるが、
+      # 万一 zip 未展開や生成失敗で auth_dist に無い場合でも、--delete だと
+      # コミット済み(=直近成功時)の fujin/results_production.html を削除→push して
+      # しまい、構成ツリー/手配確定タブが File not found 404 になる。
+      # よって --delete は付けず、生成物の上書きコピーに留めて既存版を温存する。
       - name: Sync auth_dist to fujin/
-      run: rsync -a auth_dist/ fujin/
-    
+        run: rsync -a auth_dist/ fujin/
 
       # ── 静的タブHTML/JSをfujin/に直接コピー ─────────────────────
       # static/ はビルドスクリプトが生成しない静的アセット（タブHTML等）
