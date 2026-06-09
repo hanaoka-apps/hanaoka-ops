@@ -234,13 +234,33 @@ const SCOPES = ['Sites.ReadWrite.All', 'User.Read'];
 let msalInstance = null;
 let siteId = null;
 let listIds = {};      // 各リストの ListID
-let routeColumns = {}; // T03工程ルートのカラム情報
+let allColumns = {};   // {listKey: {displayName: internalName}} - 全リストのカラム情報
 
 let orders = [];
 let routeTemplates = [];
 let processes = [];
 let partners = [];
 let selectedOrder = null;
+
+// 表示名から内部名を取得
+function colName(listKey, displayName) {
+  return allColumns[listKey]?.[displayName] || null;
+}
+
+// アイテムから表示名指定でフィールド値取得（内部名で取得→直接表示名で取得→null）
+function fld(item, listKey, ...displayNames) {
+  for (const dn of displayNames) {
+    const internal = colName(listKey, dn);
+    if (internal && item.fields?.[internal] != null && item.fields[internal] !== '') {
+      return item.fields[internal];
+    }
+    // フォールバック：表示名がそのまま内部名のケース
+    if (item.fields?.[dn] != null && item.fields[dn] !== '') {
+      return item.fields[dn];
+    }
+  }
+  return '';
+}
 
 // =========================================================
 // 共通：ログ・ステータス
@@ -418,6 +438,9 @@ async function onLoginSuccess(account) {
     showStatus('リストID取得中...', 'loading');
     await loadAllListIds();
 
+    showStatus('カラム情報を取得中...', 'loading');
+    await loadAllSchemas();
+
     showStatus('マスタ・データ読込中...', 'loading');
     await Promise.all([
       loadOrders(),
@@ -425,8 +448,6 @@ async function onLoginSuccess(account) {
       loadProcesses(),
       loadPartners(),
     ]);
-
-    await loadRouteSchema();
 
     initOrderFilters();
     renderOrderList();
@@ -505,47 +526,45 @@ async function loadPartners() {
   if (!listIds.partner) { log('⚠ M05協力工場 ListIDなし'); return; }
   partners = await loadAllItems(listIds.partner);
   log('協力工場読込完了', { count: partners.length });
+  if (partners.length > 0) {
+    log('🔍 M05協力工場 サンプル', partners[0].fields);
+  }
 }
 
-async function loadRouteSchema() {
-  if (!listIds.route) { log('⚠ T03工程ルート ListIDなし'); return; }
-  try {
-    const data = await graphFetch(`/sites/${siteId}/lists/${listIds.route}/columns`);
-    routeColumns = {};
-    const summary = [];
-    data.value.forEach(col => {
-      if (!col.readOnly) {
-        routeColumns[col.displayName] = col.name;
-        routeColumns[col.name] = col.name;
-        summary.push(`${col.displayName} → ${col.name}`);
-      }
-    });
-    log('🔧 T03工程ルートのカラム情報（表示名 → 内部名）', summary);
-  } catch (e) {
-    log('スキーマ取得エラー', { error: e.message });
+async function loadAllSchemas() {
+  for (const [key, listId] of Object.entries(listIds)) {
+    if (!listId) continue;
+    try {
+      const data = await graphFetch(`/sites/${siteId}/lists/${listId}/columns`);
+      const mapping = {};
+      const summary = [];
+      data.value.forEach(col => {
+        if (!col.readOnly) {
+          mapping[col.displayName] = col.name;
+          mapping[col.name] = col.name;
+          summary.push(`${col.displayName} → ${col.name}`);
+        }
+      });
+      allColumns[key] = mapping;
+      log(`🔧 ${key} カラム情報`, summary);
+    } catch (e) {
+      log(`${key} スキーマ取得エラー`, { error: e.message });
+    }
   }
 }
 
 // =========================================================
 // 受注一覧の表示・フィルター
 // =========================================================
-function getOrderField(o, displayNames) {
-  for (const dn of displayNames) {
-    const v = o.fields?.[dn];
-    if (v != null && v !== '') return v;
-  }
-  return '';
-}
-
 function getOrderInfo(o) {
   return {
     id: o.id,
     kintone: o.fields?.Title || '',
-    customer: getOrderField(o, ['客先名', '客先', 'customer_x540d_']),
-    model:    getOrderField(o, ['機種型式', '機種名', '機種']),
-    surface:  getOrderField(o, ['表面処理']),
-    qty:      getOrderField(o, ['台数', '数量']),
-    due:      getOrderField(o, ['希望納期']),
+    customer: fld(o, 'order', '客先名', '客先', '客先コード'),
+    model:    fld(o, 'order', '機種型式', '機種名', '機種'),
+    surface:  fld(o, 'order', '表面処理'),
+    qty:      fld(o, 'order', '台数', '数量'),
+    due:      fld(o, 'order', '希望納期'),
   };
 }
 
@@ -748,19 +767,17 @@ function addRoute(initial) {
   function getProcessSearchableText(p) {
     const f = p.fields || {};
     return Object.entries(f)
-      .filter(([k, v]) => typeof v === 'string' && !k.startsWith('_') && !k.startsWith('@'))
+      .filter(([k, v]) => typeof v === 'string' && !k.startsWith('_OData') && !k.startsWith('@'))
       .map(([k, v]) => v)
       .join(' ');
   }
 
   function getProcessName(p) {
-    const f = p.fields || {};
-    return f.工程名 || f.field_1 || f.field_2 || '';
+    return fld(p, 'process', '工程名');
   }
 
   function getProcessBan(p) {
-    const f = p.fields || {};
-    return f.主担当班 || f.field_3 || f.担当班 || '';
+    return fld(p, 'process', '主担当班', '担当班');
   }
 
   searchInput.addEventListener('input', () => {
@@ -906,7 +923,7 @@ async function saveRoute() {
     ];
 
     for (const f of fieldsToAdd) {
-      const internalName = routeColumns[f.displayName];
+      const internalName = colName('route', f.displayName);
       if (!internalName) continue;
       if (f.value === null || f.value === undefined || f.value === '') continue;
 
