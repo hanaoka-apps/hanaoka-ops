@@ -56,6 +56,21 @@ TABS = [
         "src": ARRANGE_SRC,
         "desc": "未確定手配のAI判定。FUJINの本丸。",
     },
+    # 2026-06-10 復元: 6/6のbuild_shell.py編集で誤って消えていたメインタブを再追加。
+    {
+        "id": "yama",
+        "label": "山リスト",
+        "icon": "🏔",
+        "src": "yama.html",
+        "desc": "社内工程と外注/購買の負荷を作業区・仕入先別に棒グラフで可視化。生産能力の俯瞰と先のコミット判断に。",
+    },
+    {
+        "id": "reverse",
+        "label": "逆引き検証",
+        "icon": "🔍",
+        "src": "reverse_validation.html",
+        "desc": "計画/受注からBOM展開・L/T逆算し、在庫・手配の現状と照合して『本当に間に合うか』を検証する逆引きビュー。",
+    },
     {
         "id": "usage",
         "label": "使い方",
