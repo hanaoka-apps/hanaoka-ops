@@ -101,7 +101,10 @@
 
 <header>
   <h1>🛠 B画面 — 工程ルート入力</h1>
-  <div class="user-info" id="userInfo">未ログイン</div>
+  <div style="display:flex; gap:14px; align-items:center;">
+    <span class="debug-toggle" onclick="toggleDebug()" style="color:#b0bec5; cursor:pointer; font-size:12px;">🔧 デバッグ情報</span>
+    <div class="user-info" id="userInfo">未ログイン</div>
+  </div>
 </header>
 
 <main>
@@ -185,10 +188,10 @@
       <button class="btn btn-primary" id="saveBtn" onclick="saveRoute()">💾 T03工程ルートへ保存</button>
     </div>
   </div>
+</div>
 
-  <div class="debug-panel hidden" id="debugPanel">
+<div class="debug-panel hidden" id="debugPanel" style="max-width:1200px; margin: 12px auto;">
     <div id="debugLog">起動中...</div>
-  </div>
 </div>
 
 </main>
@@ -274,8 +277,51 @@ function escapeHtml(s) {
 
 function normalize(s) {
   if (!s) return '';
-  let r = s.replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  let r = String(s).replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
   return r.replace(/　/g, ' ').toLowerCase();
+}
+
+// アイテムから「表示名らしき」値を抽出（数値Titleならその他フィールドを探す）
+function extractDisplayName(item, query) {
+  const f = item.fields || {};
+
+  // クエリありの場合：クエリを含む非数値フィールドを優先
+  if (query && query.trim()) {
+    const qn = normalize(query);
+    for (const [k, v] of Object.entries(f)) {
+      if (typeof v === 'string' && v.trim() && !k.startsWith('_') && !k.startsWith('@')
+          && k !== 'ContentType' && k !== 'Edit') {
+        if (normalize(v).includes(qn) && !/^\d+$/.test(v.trim())) {
+          return v;
+        }
+      }
+    }
+  }
+
+  // 名前らしいフィールドを優先
+  const candidates = ['客先名', '社名', '会社名', '取引先名', '正式社名',
+                      '機種型式', '機種名', '型式',
+                      '工程名',
+                      '協力工場名', '工場名', '取引先名'];
+  for (const key of candidates) {
+    if (f[key] && typeof f[key] === 'string' && f[key].trim()) return f[key];
+  }
+
+  // Title（数値のみ除外）
+  if (f.Title && typeof f.Title === 'string' && f.Title.trim() && !/^\d+$/.test(f.Title.trim())) {
+    return f.Title;
+  }
+
+  // 最初の非数値文字列フィールド
+  for (const [k, v] of Object.entries(f)) {
+    if (typeof v === 'string' && v.trim() && !k.startsWith('_') && !k.startsWith('@')
+        && k !== 'ContentType' && k !== 'Edit' && k !== 'Title' && k !== 'LinkTitle'
+        && !/^\d+$/.test(v.trim())) {
+      return v;
+    }
+  }
+
+  return f.Title || f.LinkTitle || '（名前なし）';
 }
 
 // =========================================================
@@ -679,7 +725,14 @@ function addRoute(initial) {
     <td>
       <select class="partner">
         <option value="">なし（内製）</option>
-        ${partners.map(p => `<option value="${p.id}" ${p.id===initial?.partnerCode?'selected':''}>${escapeHtml(p.fields?.Title||'')}</option>`).join('')}
+        ${partners.map(p => {
+          const displayName = extractDisplayName(p);
+          const titleCode = p.fields?.Title || '';
+          const label = (titleCode && /^\d+$/.test(titleCode))
+            ? `${displayName}（${titleCode}）`
+            : displayName;
+          return `<option value="${p.id}" ${p.id===initial?.partnerCode?'selected':''}>${escapeHtml(label)}</option>`;
+        }).join('')}
       </select>
     </td>
     <td><input type="number" class="hours" min="0" step="0.1" value="${initial?.hoursPerDay||''}" placeholder="例：2.5"></td>
@@ -688,30 +741,64 @@ function addRoute(initial) {
   `;
   tbody.appendChild(tr);
 
-  // 工程検索のオートコンプリート設定
+  // 工程検索のオートコンプリート設定（全フィールド対象検索）
   const searchInput = tr.querySelector('.proc-search');
   const acResults = tr.querySelector('.ac-results');
+
+  function getProcessSearchableText(p) {
+    const f = p.fields || {};
+    return Object.entries(f)
+      .filter(([k, v]) => typeof v === 'string' && !k.startsWith('_') && !k.startsWith('@'))
+      .map(([k, v]) => v)
+      .join(' ');
+  }
+
+  function getProcessName(p) {
+    const f = p.fields || {};
+    return f.工程名 || f.field_1 || f.field_2 || '';
+  }
+
+  function getProcessBan(p) {
+    const f = p.fields || {};
+    return f.主担当班 || f.field_3 || f.担当班 || '';
+  }
+
   searchInput.addEventListener('input', () => {
-    const q = normalize(searchInput.value);
-    if (!q) { acResults.classList.remove('active'); return; }
+    const raw = searchInput.value.trim();
+    if (!raw) { acResults.classList.remove('active'); return; }
+
+    const q = normalize(raw);
+
+    // processesが空ならログでアラート
+    if (processes.length === 0) {
+      acResults.innerHTML = '<div class="ac-item" style="color:#c0392b;">⚠ M03工程マスタが読み込まれていません</div>';
+      acResults.classList.add('active');
+      log('工程検索エラー：processes配列が空');
+      return;
+    }
+
     const matches = processes.filter(p => {
-      const code = String(p.fields?.Title || '');
-      const name = String(p.fields?.工程名 || p.fields?.field_1 || '');
-      return normalize(code).includes(q) || normalize(name).includes(q);
+      const text = normalize(getProcessSearchableText(p));
+      return text.includes(q);
     }).slice(0, 30);
+
+    log(`工程検索 "${raw}"`, { 検索結果件数: matches.length, 全件数: processes.length });
+
     acResults.innerHTML = matches.length === 0
-      ? '<div class="ac-item" style="color:#aaa;">該当なし</div>'
+      ? '<div class="ac-item" style="color:#aaa;">該当なし（M03の最初のサンプルをデバッグ情報で確認）</div>'
       : matches.map(m => {
-          const code = m.fields?.Title || '';
-          const name = m.fields?.工程名 || m.fields?.field_1 || '';
-          const ban = m.fields?.主担当班 || '';
+          const code = String(m.fields?.Title || '');
+          const name = getProcessName(m);
+          const ban = getProcessBan(m);
           return `<div class="ac-item" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}">
             <b>${escapeHtml(code)}</b> ${escapeHtml(name)}<span class="small"> ${escapeHtml(ban)}</span>
           </div>`;
         }).join('');
     acResults.classList.add('active');
+
     acResults.querySelectorAll('.ac-item').forEach(item => {
-      item.addEventListener('click', () => {
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
         const c = item.dataset.code;
         const n = item.dataset.name;
         const b = item.dataset.ban;
