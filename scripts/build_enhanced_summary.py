@@ -2629,6 +2629,37 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
 .dv-tab.active .dv-tab-n{background:#3b82f6}
 .dv-tabpane{display:none;flex:1;overflow-y:auto;padding:14px 16px}
 .dv-tabpane.active{display:block}
+.dv-tl-heading{font-size:11px;color:#64748b;font-weight:700;margin:0 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line);letter-spacing:.04em}
+.dv-tl-heading .dv-tl-asof{float:right;color:#94a3b8;font-weight:400;font-size:10.5px}
+.dv-tl-filter{display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:5px 7px;background:#f8fafc;border:1px solid var(--line);border-radius:5px}
+.dv-tl-filter input{flex:1;padding:4px 7px;font-size:11.5px;border:1px solid #cbd5e1;border-radius:3px;font-family:inherit}
+.dv-tl-filter input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,.15)}
+.dv-tl-filter .dv-tl-count{font-size:10.5px;color:#64748b;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dv-tl-filter button{padding:2px 7px;font-size:10.5px;border:1px solid #cbd5e1;background:#fff;border-radius:3px;cursor:pointer;color:#475569}
+.dv-tl-filter button:hover{background:#f1f5f9}
+.dv-tl-table{width:100%;font-size:11px;border-collapse:separate;border-spacing:0;table-layout:fixed}
+.dv-tl-table thead{position:sticky;top:0;z-index:20}
+.dv-tl-table th{text-align:left;padding:4px 6px;background:#f1f5f9;font-weight:700;color:#475569;border-bottom:1px solid #cbd5e1;font-size:10.5px;white-space:nowrap;cursor:help;box-shadow:0 1px 0 #cbd5e1}
+.dv-tl-table td{padding:3px 6px;vertical-align:middle;border-bottom:1px solid #e5e7eb;line-height:1.3;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dv-tl-table tr{transition:background .1s}
+.dv-tl-table tr:hover td{filter:brightness(.97)}
+.dv-tl-table .mono{font-family:"SF Mono","Menlo",monospace}
+.dv-tl-table .td-kind{white-space:nowrap;font-weight:700;font-size:11px}
+.dv-tl-table .td-date{white-space:nowrap;font-family:"SF Mono","Menlo",monospace;font-size:10.5px}
+.dv-tl-table .td-seiban{font-family:"SF Mono","Menlo",monospace;font-size:10.5px;font-weight:600;color:#1e293b}
+.dv-tl-table .td-procsup{color:#475569;font-size:10.5px}
+.dv-tl-table tr.dv-tl-today td{
+  background:#dbeafe;color:#1e3a8a;text-align:center;font-size:11px;padding:0;font-weight:700;
+  border-top:2px solid #2563eb;border-bottom:2px solid #2563eb;white-space:normal;
+  position:sticky;top:28px;bottom:0;z-index:15;
+}
+.dv-tl-today .dv-tl-today-bar{padding:5px 8px;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+.dv-tl-stock{display:inline-flex;align-items:baseline;gap:6px;background:#1e40af;color:#fff;border-radius:10px;padding:3px 12px;font-size:11px}
+.dv-tl-stock b{font-size:14px;font-variant-numeric:tabular-nums;font-weight:700}
+.dv-tl-stock .sep{opacity:0.5;margin:0 2px}
+.dv-tl-stock .lbl-sub{opacity:0.85;font-size:10.5px;margin-left:4px}
+.dv-tl-stock.bad{background:#b91c1c}
+.dv-tl-stock-note{font-size:9.5px;color:#475569;font-weight:400;padding:3px 8px 4px;line-height:1.3;text-align:center;background:#eff6ff}
 
 /* 品目詳細パネル */
 .dv-info-block{margin-bottom:14px}
@@ -3032,8 +3063,8 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
     <div class="dv-side" id="dvSide">
       <div class="dv-tabs">
         <button class="dv-tab active" data-tab="info">品目詳細</button>
-        <button class="dv-tab" data-tab="tehai" title="FUJIN手配確定画面に出ている未確定手配。確定済の動いている手配ではない">未確定 <span class="dv-tab-n" id="dvNTehai">0</span></button>
-        <button class="dv-tab" data-tab="dispose" title="未確定手配のうちAI判定で放置/削除候補と判定されたもの">削除候補 <span class="dv-tab-n" id="dvNDispose">0</span></button>
+        <button class="dv-tab" data-tab="tehai" data-tip="ツリー上にある全品目の入出庫(実績&予定)を時系列で表示">関連品目の出入り <span class="dv-tab-n" id="dvNTehai">0</span></button>
+        <button class="dv-tab" data-tab="dispose" data-tip="選択している品目1個だけの入出庫(実績&予定)を時系列で表示">選択品目の出入り <span class="dv-tab-n" id="dvNDispose">0</span></button>
       </div>
       <div class="dv-tabpane active" id="dvTabInfo"></div>
       <div class="dv-tabpane" id="dvTabTehai"></div>
@@ -3084,11 +3115,25 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
   </div>
 </div>
 
+<!-- 品目実績データ (受入・製造指図・受注辞書) -- item_history.js が先読みされ window.ITEM_HISTORY をセット -->
+<!-- 失敗 (ファイル無し等) しても本体は動作する。 -->
+<script src="item_history.js" onerror="console.warn('[item_history.js] 読込失敗 (ファイル未配置の可能性)')"></script>
 <!-- 製番別BOM (品目構成検索タブ用に生成済の work_instructions.js を流用) -->
 <!-- 詳細パネルのBOMツリー表示で、手配の製番に応じてBOMを切替えるために使用 -->
 <script src="work_instructions.js"
         onerror="window.WI_BOM_DEFAULT={};window.WI_BOM_BY_SEIBAN={};console.warn('[FUJIN] work_instructions.js not found, fallback to merged BOM');"></script>
 <script>
+// ---------- 品目実績データ(受入・製造指図・受注辞書) ----------
+// item_history.js が <script>タグで先読みされ window.ITEM_HISTORY をセットしている前提。
+// 読み込まれていない場合 (古いビルド or 未配置) は空辞書で動作 (実績タブが空になるだけ)
+let ITEM_HISTORY = (typeof window !== "undefined" && window.ITEM_HISTORY)
+  ? window.ITEM_HISTORY
+  : {as_of:"", window_start:"", items:{}, seiban_to_order:{}};
+if(ITEM_HISTORY && ITEM_HISTORY.items){
+  console.log(`[item_history] 読込OK: 品目数=${Object.keys(ITEM_HISTORY.items).length}, as_of=${ITEM_HISTORY.as_of||"—"}`);
+} else {
+  console.warn("[item_history] window.ITEM_HISTORY 未定義 → 実績タブは未確定のみで動作。item_history.js を配置してください");
+}
 const DATA = __DATA__;
 const NAMES = __NAMES__;
 const TODAY = "__TODAY__";
@@ -4593,18 +4638,33 @@ function dvSwitchTab(tab){
   if(tab==="dispose") dvRenderTabDispose();
 }
 function dvUpdateTabCounts(){
-  // 手配中 = フォーカスのrid数（recordあり）
-  const rootCode = detailRecord?.code;
-  if(!rootCode){return;}
-  // ツリー範囲内の record 集計
+  // ツリー全体タブ: ツリー範囲内の未確定件数 (主要注目)
   const treeCodes = new Set((dvLayout?.nodes||[]).map(n=>n.code));
-  let ntehai = 0, ndispose = 0;
+  let ntehai = 0;
   treeCodes.forEach(c=>{
     const ni = NODE_INFO[c] || {};
     if(ni.rid) ntehai += ni.rid.length;
-    if(dvIsDispose(c) && ni.rid) ndispose += ni.rid.length;
   });
   document.getElementById("dvNTehai").textContent = ntehai;
+
+  // この品目タブ: 選択中品目の合計件数 (受入+製造+売上+未確定+受注+計画)
+  let ndispose = 0;
+  if(detailFocus && ITEM_HISTORY){
+    const hist = (ITEM_HISTORY.items||{})[detailFocus];
+    if(hist){
+      ndispose += (hist.receipts||[]).length;
+      ndispose += (hist.production||[]).length;
+      ndispose += (hist.sales||[]).length;
+      ndispose += (hist.consumption||[]).length;
+      ndispose += (hist.purchase_orders_conf||[]).length;
+      ndispose += (hist.process_orders_conf||[]).length;
+      ndispose += (hist.sales_orders||[]).length;
+      ndispose += (hist.production_plans||[]).length;
+      ndispose += (hist.planned_consumption||[]).length;
+    }
+    // 未確定: DATAから
+    ndispose += (DATA||[]).filter(d=>d.code===detailFocus).length;
+  }
   document.getElementById("dvNDispose").textContent = ndispose;
 }
 
@@ -4962,48 +5022,481 @@ function showOrderTracking(code, idx){
 }
 function closeOrderModal(){document.getElementById("orderModal").classList.remove("show");}
 
-// ---- 右ペイン: 手配中タブ ----------------------------------------------
-// ソート状態を保持(列クリックで昇降切替)
-let _dvTehaiSort = {col:"sd", asc:true};
+// ---- タイムラインタブ共通: 検索ノーマライズ、エントリ構築、テーブル描画 --------
+let _dvTreeFilter = "";
+function _normSearch(s){
+  if(!s) return "";
+  // 全角英数 → 半角、全角スペース→半角、ハイフン類を統一
+  return String(s)
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[　]/g, " ")
+    .replace(/[ー－−–—]/g, "-")
+    .toLowerCase()
+    .trim();
+}
+
+// ---------- 時系列タイムライン共通ヘルパ ----------
+// 入力: 品目コードの配列 (1個でもOK)
+// 出力: 時系列ソート済みの統合エントリ配列
+// 各エントリ: {kind:"receipt"|"production"|"unconfirmed", date, code, ...}
+
+function buildTimelineEntries(codes){
+  if(!ITEM_HISTORY) ITEM_HISTORY = {items:{}, seiban_to_order:{}};
+  const entries = [];
+  // 計画と未確定の二重表示を抑制: 計画にある製番の未確定はスキップ (2026-05-22 雅さん指示)
+  // K製番ベースで「計画」と「社内手配未確定」が同じ製番・同じ数量で並走するため
+  const planSeibansByCode = {};
+  codes.forEach(code=>{
+    const hist = (ITEM_HISTORY.items||{})[code];
+    if(hist && hist.production_plans){
+      const set = new Set();
+      hist.production_plans.forEach(p=>{ if(p.seiban) set.add(p.seiban); });
+      planSeibansByCode[code] = set;
+    }
+  });
+  codes.forEach(code=>{
+    const hist = (ITEM_HISTORY.items||{})[code];
+    if(hist){
+      (hist.receipts||[]).forEach(r=>{
+        entries.push({
+          kind:"receipt", date:r.date, code,
+          seiban:r.seiban, order_no:r.order_no, customer_po:r.customer_po,
+          tehai_no:r.tehai_no, hat_no:r.hat_no, arrival_no:r.arrival_no,
+          qty:r.qty, unit:r.unit, supplier:r.supplier, warehouse:r.warehouse,
+          complete:r.complete
+        });
+      });
+      (hist.production||[]).forEach(p=>{
+        entries.push({
+          kind:"production", date:p.date, code,
+          seiban:p.seiban, tehai_no:p.tehai_no, tehai_type:p.tehai_type,
+          route_no:p.route_no, process_code:p.process_code, process_name:p.process_name,
+          supplier:p.supplier, qty:p.qty, unit:p.unit,
+          reported_qty:p.reported_qty, purchased_qty:p.purchased_qty,
+          remaining_status:p.remaining_status, force_complete:p.force_complete,
+          planned_date:p.planned_date, due_date:p.due_date
+        });
+      });
+      // 売上実績 (過去の出庫)
+      (hist.sales||[]).forEach(s=>{
+        entries.push({
+          kind:"sales", date:s.date, code,
+          seiban:s.seiban, sales_no:s.sales_no, shipment_no:s.shipment_no,
+          customer:s.customer, qty:s.qty, unit:s.unit
+        });
+      });
+      // BOM消費 (親の製造実績で投入された分、出庫扱い)
+      (hist.consumption||[]).forEach(c=>{
+        entries.push({
+          kind:"consumption", date:c.date, code,
+          seiban:c.parent_seiban,  // 親製番(子の製番として扱う)
+          parent_code:c.parent_code,
+          parent_tehai_no:c.parent_tehai_no,
+          qty:c.qty, qty_per:c.qty_per,
+          process_name:c.process_name
+        });
+      });
+      // 受注残 (出庫予定)
+      (hist.sales_orders||[]).forEach(s=>{
+        entries.push({
+          kind:"sales_order", date:s.date, code,
+          seiban:s.seiban, order_no:s.order_no, order_id:s.order_id,
+          customer:s.customer,
+          qty:s.remaining_qty, total_qty:s.qty, sold_qty:s.sold_qty,
+          unit:s.unit,
+          due:s.due, shipment_date:s.shipment_date, manufacture_date:s.manufacture_date,
+          complete:s.complete, order_type:s.order_type
+        });
+      });
+      // 生産計画 (製造予定)
+      (hist.production_plans||[]).forEach(p=>{
+        entries.push({
+          kind:"plan", date:p.date, code,
+          seiban:p.seiban,
+          qty:p.remaining_qty, total_qty:p.qty, done_qty:p.done_qty,
+          unit:p.unit, status:p.status
+        });
+      });
+      // 消費予定 (計画由来 + 未確定由来)
+      (hist.planned_consumption||[]).forEach(pc=>{
+        entries.push({
+          kind:"planned_consumption", date:pc.date, code,
+          seiban:pc.parent_seiban,
+          parent_code:pc.parent_code,
+          qty:pc.qty, qty_per:pc.qty_per,
+          plan_status:pc.plan_status,
+          source:pc.source  // "生産計画" or "未確定手配"
+        });
+      });
+      // 発注済 (確定済_購買発注、未入荷)
+      (hist.purchase_orders_conf||[]).forEach(o=>{
+        entries.push({
+          kind:"purchase_order_conf", date:o.date, code,
+          seiban:o.seiban, hat_no:o.hat_no, tehai_no:o.tehai_no,
+          supplier:o.supplier, qty:o.qty, unit:o.unit,
+          order_date:o.order_date, shipment_date:o.shipment_date,
+          customer_po:o.customer_po
+        });
+      });
+      // 製造中 (確定済_工程手配、未完成)
+      (hist.process_orders_conf||[]).forEach(o=>{
+        entries.push({
+          kind:"process_in_progress", date:o.date, code,
+          seiban:o.seiban, tehai_no:o.tehai_no,
+          process_code:o.process_code, process_name:o.process_name,
+          supplier:o.supplier,
+          qty:o.remaining_qty, total_qty:o.qty, reported_qty:o.reported_qty,
+          unit:o.unit
+        });
+      });
+    }
+    // 未確定: DATA配列 (グローバル)から該当品目を抽出
+    const planSeibans = planSeibansByCode[code];
+    (DATA||[]).filter(d=>d.code===code).forEach(r=>{
+      // 計画が同製番で存在する場合は未確定をスキップ (重複抑制)
+      if(planSeibans && r.sb && planSeibans.has(r.sb)) return;
+      // 日付も製番も数量も無い「空エントリ」は除外 (UDALSなど親品目で発生、2026-05-23 雅さん指摘)
+      if(!r.sd && !r.sb && (r.qty == null || r.qty === "" || r.qty === 0)) return;
+      // 受注№逆引き: 製番経由
+      let orderNos = [];
+      if(r.sb){
+        const list = (ITEM_HISTORY.seiban_to_order||{})[r.sb] || [];
+        orderNos = list.map(e=>e.order_no);
+      }
+      entries.push({
+        kind:"unconfirmed", date:r.sd||"", code:r.code,
+        seiban:r.sb, order_nos:orderNos,
+        tehai_no:r.tn||"", arr_type:r.at, qty:r.qty, unit:r.un||"",
+        ol:r.ol, ok:r.ok, verdict:r.aj, source:r.src
+      });
+    });
+  });
+  // 日付昇順
+  entries.sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  return entries;
+}
+
+// kind→アイコン/色 マップ + 種別の説明テキスト (実績/予定 + 詳細)
+//  実績入庫2種 (受入=緑, 製造=青) / 実績出庫2種 (売上=ピンク, 消費=茶色)
+//  確定予定入庫2種 (発注済=エメラルド, 製造中=インディゴ) ← 既に確定してる
+//  予定入庫2種 (未確定=黄, 計画=紫) / 予定出庫2種 (受注=オレンジ, 消費予定=薄茶)
+
+// kind→アイコン/色 マップ + 種別の説明テキスト
+const KIND_META = {
+  receipt:             {ico:"📥", lbl:"受入",     bg:"#ecfdf5", bd:"#10b981", fg:"#065f46", tip:"📥 受入【実績・入庫】 検収済の購買入庫"},
+  production:          {ico:"🏭", lbl:"製造",     bg:"#eff6ff", bd:"#3b82f6", fg:"#1e3a8a", tip:"🏭 製造【実績・入庫】 製造指図の報告済(工程展開)"},
+  sales:               {ico:"💸", lbl:"売上",     bg:"#fdf2f8", bd:"#ec4899", fg:"#9d174d", tip:"💸 売上【実績・出庫】 出荷済の売上計上"},
+  consumption:         {ico:"🔧", lbl:"消費",     bg:"#fef3c7", bd:"#d97706", fg:"#78350f", tip:"🔧 消費【実績・出庫】 親品目の製造実績でBOM展開された消費(理論値)"},
+  purchase_order_conf: {ico:"📦", lbl:"発注済",   bg:"#d1fae5", bd:"#059669", fg:"#064e3b", tip:"📦 発注済【確定予定・入庫】 既に購買発注済み、未入荷分"},
+  process_in_progress: {ico:"⚙",  lbl:"製造中",   bg:"#dbeafe", bd:"#2563eb", fg:"#1e3a8a", tip:"⚙ 製造中【確定予定・入庫】 既に工程指示済み、残量あり"},
+  unconfirmed:         {ico:"⏳", lbl:"未確定",   bg:"#fef9c3", bd:"#facc15", fg:"#854d0e", tip:"⏳ 未確定【予定・入庫】 SMILE手配確定画面の未確定行、これから依頼する候補"},
+  sales_order:         {ico:"📤", lbl:"受注",     bg:"#fff7ed", bd:"#fb923c", fg:"#9a3412", tip:"📤 受注【予定・出庫】 未完納の受注残、これから出荷予定"},
+  plan:                {ico:"📋", lbl:"計画",     bg:"#f5f3ff", bd:"#a78bfa", fg:"#5b21b6", tip:"📋 計画【予定・入庫】 生産計画(K製番)の未完成分"},
+  planned_consumption: {ico:"🔮", lbl:"消費予定", bg:"#fffbeb", bd:"#fbbf24", fg:"#92400e", tip:"🔮 消費予定【予定・出庫】 親品目の計画/未確定がBOM展開された消費予定(理論値)"},
+};
+
+// 受注ラベル -> 即時tooltip説明テキスト
+
+const ORDER_LABEL_DESC = {
+  "売上済(J製番経由)": "親(J)製番経由で見ると最終製品はすでに売上済み=本品目を作る必要なし=強制完納の候補",
+  "売上済(製番経由)":  "親製番経由で見ると最終製品はすでに売上済み=本品目を作る必要なし=強制完納の候補",
+  "売上済":            "受注品が既に売上計上済み。残手配は強制完納の候補",
+  "受注のため(J製番経由)": "親(J)製番経由で受注に紐付く手配。受注のために必要な品目",
+  "受注のため":        "未引当受注に紐付く手配。納期管理の対象",
+  "古い受注の残り":    "受注は古く、ほぼ完納だが残量が残っている状態。確認推奨",
+  "計画放置疑い":      "生産計画から長期間動いていない疑い。優先度低い",
+  "期限超過":          "納期が今日より過去。要確認/対処",
+  "長期放置":          "長期間ステータスが変わっていない手配",
+  "受注履歴なし":      "受注実績との紐付け不能。BOM親追跡が必要",
+  "BOM最上位":         "BOM最上位品目(製品)。下位の手配を統括",
+  "ゾンビ手配":        "受注も生産計画も紐付かない孤立した手配。削除候補",
+  "要確認の遅れ":      "期限超過していて、AI判定が「要確認」"
+};
+
+function olTipText(label){
+  if(!label) return "";
+  if(ORDER_LABEL_DESC[label]) return label + " — " + ORDER_LABEL_DESC[label];
+  // 部分一致(J製番経由などの揺れ吸収)
+  for(const k of Object.keys(ORDER_LABEL_DESC)){
+    if(label.indexOf(k)>=0) return label + " — " + ORDER_LABEL_DESC[k];
+  }
+  return label;
+}
+
+// 今日基準で過去/未来を分けたHTMLを生成
+
+function renderTimelineTable(entries, opts){
+  opts = opts || {};
+  const today = (ITEM_HISTORY && ITEM_HISTORY.as_of) || TODAY;
+  const past = entries.filter(e => e.date && e.date <= today);
+  const future = entries.filter(e => !e.date || e.date > today);
+  // 並び順: 「今日を中央に過去↑/未来↓」=> 過去(古→新)→今日線→未来(近→遠)
+  let html = `<div class="dv-tl">`;
+  // 見出し: 「出入り（実績&予定）」+ 基準日 + 表示範囲
+  html += `<div class="dv-tl-heading">出入り（実績&予定）<span class="dv-tl-asof">表示は前後2ヶ月 ／ 基準日 ${today||"—"}</span></div>`;
+  if(!entries.length){
+    html += `<div class="dv-empty">対象データなし</div></div>`;
+    return html;
+  }
+  // 列幅再設計: サイドパネル幅860px(レスポンシブ縮小可)
+  // 2026-05-23: 数量列に「残:N」(予測在庫)を併記するため拡張 66 → 110
+  html += `<table class="dv-tl-table"><colgroup>
+    <col style="width:108px"><col style="width:78px">${opts.showCode?'<col style="width:96px">':''}<col style="width:122px"><col><col style="width:140px"><col style="width:70px"><col style="width:68px"><col style="width:64px">
+  </colgroup><thead><tr>
+    <th data-tip="出入りの日付。実績は伝票日付、予定は手配予定日">日付</th>
+    <th data-tip="受入=検収済入庫実績／製造=製造指図(工程展開)／未確定=SMILE手配確定画面の未確定行">種別</th>
+    ${opts.showCode?'<th data-tip="その出入りに紐付く品目コード">品目</th>':''}
+    <th data-tip="その出入りに紐付くSMILE製番。コピー用に省略せず全文表示。99%は別採番(K/M製番)で親と機械的に紐付かない">製番</th>
+    <th data-tip="製造の場合: 工程名+手順№/手配先。受入の場合: 仕入先。未確定の場合: 手配種別">工程・仕入先</th>
+    <th style="text-align:right" data-tip="数量: 出庫はマイナス記号付き。未来行の右に「残:N」=予測在庫(現在庫±入出庫予定の積算、BOM理論値・棚卸補正未反映)。マイナス予測の日には⚠">数量 / 残</th>
+    <th data-tip="手配№/入荷№/発注№のうち代表値1つ。受入は入荷№優先">番号</th>
+    <th data-tip="紐付く受注№。製造・未確定は製番→受注辞書から逆引き。K製番(別採番)は紐付け情報がないため空になる">受注№</th>
+    <th data-tip="完納/部分完納/強制完納/受注ラベル等。「売上済(J製番経由)」=最終製品はもう売り上がっているのに本品目の手配がまだ残っている＝強制完納の候補">状態</th>
+  </tr></thead><tbody>`;
+  function rowHtml(e){
+    const M = KIND_META[e.kind];
+    // 製番セル: 単独・全文表示 (コピペ用に省略しない)
+    const seibanRaw = e.seiban || "";
+    const seibanCell = seibanRaw
+      ? `<span class="td-seiban" data-tip="${escapeHtml(seibanRaw)}">${escapeHtml(seibanRaw)}</span>`
+      : `<span style="color:#cbd5e1">—</span>`;
+    // 工程・仕入先 セル
+    let procSupCell;
+    if(e.kind==="production"){
+      const proc = `${escapeHtml(e.process_name||"")}${e.route_no?` #${escapeHtml(e.route_no)}`:""}`;
+      const sup = e.supplier?` / ${escapeHtml(e.supplier)}`:"";
+      const full = (e.process_name||"") + (e.route_no?` #${e.route_no}`:"") + (e.supplier?` / ${e.supplier}`:"");
+      procSupCell = `<span class="td-procsup" data-tip="${escapeHtml(full)}">${proc}<span style="color:#64748b">${sup}</span></span>`;
+    } else if(e.kind==="receipt"){
+      procSupCell = `<span class="td-procsup" data-tip="仕入先: ${escapeHtml(e.supplier||"-")}">${escapeHtml(e.supplier||"-")}</span>`;
+    } else if(e.kind==="sales"){
+      procSupCell = `<span class="td-procsup" data-tip="売上得意先: ${escapeHtml(e.customer||"-")}">${escapeHtml(e.customer||"-")}</span>`;
+    } else if(e.kind==="consumption"){
+      const procStr = e.process_name ? ` / ${escapeHtml(e.process_name)}` : "";
+      procSupCell = `<span class="td-procsup" data-tip="この品目は親品目「${e.parent_code}」の製造実績で消費されました(報告済${(e.qty/e.qty_per).toFixed(1)}台 × 取数${e.qty_per})。BOM理論値なので歩留まり・廃棄は反映されない">親:${escapeHtml(e.parent_code||"")}<span style="color:#94a3b8">${procStr}</span></span>`;
+    } else if(e.kind==="planned_consumption"){
+      const sourceLabel = e.source === "未確定手配" ? "未確定" : (e.source || "計画");
+      procSupCell = `<span class="td-procsup" data-tip="この品目は親品目「${e.parent_code}」の${sourceLabel}(${e.plan_status||''}) × 取数${e.qty_per} で消費される予定。BOM理論値">親:${escapeHtml(e.parent_code||"")} <span style="color:#94a3b8">(${escapeHtml(sourceLabel)})</span></span>`;
+    } else if(e.kind==="purchase_order_conf"){
+      const poStr = e.customer_po ? ` / 客先注番: ${escapeHtml(e.customer_po)}` : "";
+      procSupCell = `<span class="td-procsup" data-tip="発注済(購買or外注組立) / 仕入先: ${escapeHtml(e.supplier||"")}${poStr}。受注№欄は空にしています(発注番号はSMILE上で時系列で再利用され、受注№と数字が同じでも別件のことが多いため誤関連付け回避)">${escapeHtml(e.supplier||"-")}</span>`;
+    } else if(e.kind==="process_in_progress"){
+      const procStr = e.process_name ? ` (${escapeHtml(e.process_name)})` : "";
+      const sup = e.supplier ? ` / ${escapeHtml(e.supplier)}` : "";
+      procSupCell = `<span class="td-procsup" data-tip="製造中 (手配数${e.total_qty||0} / 報告済${e.reported_qty||0} / 残${e.qty||0})">工程${procStr}<span style="color:#64748b">${sup}</span></span>`;
+    } else if(e.kind==="sales_order"){
+      const ot = e.order_type ? ` <span style="color:#94a3b8;font-size:9.5px">[${escapeHtml(e.order_type)}]</span>` : "";
+      procSupCell = `<span class="td-procsup" data-tip="受注得意先: ${escapeHtml(e.customer||"-")}${e.order_type?' / 受注区分: '+escapeHtml(e.order_type):''}">${escapeHtml(e.customer||"-")}${ot}</span>`;
+    } else if(e.kind==="plan"){
+      procSupCell = `<span class="td-procsup" data-tip="生産計画。ステータス: ${escapeHtml(e.status||"-")}">生産計画 <span style="color:#94a3b8;font-size:9.5px">[${escapeHtml(e.status||"-")}]</span></span>`;
+    } else {
+      procSupCell = `<span class="td-procsup" data-tip="未確定: 手配種別 ${escapeHtml(e.arr_type||"-")}">${escapeHtml(e.arr_type||"-")}</span>`;
+    }
+    // 数量セル: 製造は報告済優先 / 受注・計画は残量 / 受入・未確定はそのまま
+    // 整数化: 「69.0 / 69」混合は見にくいので四捨五入で揃える (雅さん 2026-05-22)
+    // NaN対策: 文字列で来る可能性があるので parseFloat で安全化
+    let qtyShown = e.qty;
+    if(e.kind==="production" && e.reported_qty > 0) qtyShown = e.reported_qty;
+    let qtyInt = null;
+    if(qtyShown != null && qtyShown !== ""){
+      const _n = typeof qtyShown === "number" ? qtyShown : parseFloat(qtyShown);
+      if(!isNaN(_n)) qtyInt = Math.round(_n);
+    }
+    // 出庫(売上・受注・消費・消費予定)はマイナス記号で表現
+    const qtyPrefix = (e.kind==="sales_order" || e.kind==="sales" || e.kind==="consumption" || e.kind==="planned_consumption") ? "−" : "";
+    // 予測在庫(残)を併記: 未来行のみ。マイナスなら⚠
+    let predictedHtml = "";
+    if(e._predicted !== undefined && e._predicted !== null){
+      const p = e._predicted;
+      const isBad = p < 0;
+      predictedHtml = `<br><span style="display:inline-block;font-size:9px;color:${isBad?'#b91c1c':'#64748b'};background:${isBad?'#fee2e2':'#f1f5f9'};padding:0 4px;border-radius:8px;font-weight:${isBad?'700':'400'};margin-top:1px" data-tip="予測在庫(現在庫±入出庫予定の積算)。BOM理論値ベース">残${p<0?'':':'}${p}${isBad?' ⚠':''}</span>`;
+    }
+    const qtyHtml = qtyInt!=null
+      ? `${qtyPrefix}${escapeHtml(String(qtyInt))}${e.unit?` <span style="color:#94a3b8;font-size:9.5px">${escapeHtml(e.unit)}</span>`:""}${predictedHtml}`
+      : `<span style="color:#cbd5e1">—</span>${predictedHtml}`;
+    // 番号セル
+    let numTxt = "";
+    if(e.kind==="receipt"){
+      numTxt = e.arrival_no || e.hat_no || e.tehai_no || "";
+    } else if(e.kind==="sales"){
+      numTxt = e.shipment_no || e.sales_no || "";
+    } else if(e.kind==="consumption"){
+      numTxt = e.parent_tehai_no || "";
+    } else if(e.kind==="purchase_order_conf"){
+      numTxt = e.hat_no || e.tehai_no || "";
+    } else if(e.kind==="process_in_progress"){
+      numTxt = e.tehai_no || "";
+    } else if(e.kind==="sales_order"){
+      numTxt = e.order_id || ""; // オーダー№(社外向け番号)
+    } else if(e.kind==="plan"){
+      numTxt = "";
+    } else {
+      numTxt = e.tehai_no || "";
+    }
+    const numCell = numTxt
+      ? `<span class="mono" style="font-size:10px" data-tip="${escapeHtml(numTxt)}">${escapeHtml(numTxt)}</span>`
+      : `<span style="color:#cbd5e1">—</span>`;
+    // 受注№セル
+    let orderCell;
+    let orderNoFirst = "";
+    let orderRest = 0;
+    if(e.kind==="sales_order"){
+      orderNoFirst = e.order_no || "";
+    } else if(e.kind==="unconfirmed"){
+      const list = e.order_nos||[];
+      orderNoFirst = list[0]||"";
+      orderRest = Math.max(0, list.length-1);
+    } else if(e.kind==="receipt" || e.kind==="sales"){
+      orderNoFirst = e.order_no||"";
+    } else if(e.kind==="purchase_order_conf"){
+      // 発注済: 製番経由の受注紐付けは「番号が同じでも別件」を生む誤関連付け
+      // 客先注番も受注№と紛らわしいので出さず、空セル(—)にする
+      // (2026-05-23 雅さん指摘: 受注№ HMM75104 と表示されると客先注番が受注番号に見えて混乱)
+      orderNoFirst = "";
+    } else {
+      // production / plan / consumption: 製番→受注辞書
+      const list = (ITEM_HISTORY && ITEM_HISTORY.seiban_to_order && ITEM_HISTORY.seiban_to_order[e.seiban]) || [];
+      orderNoFirst = list[0]?.order_no || "";
+      orderRest = Math.max(0, list.length-1);
+    }
+    orderCell = orderNoFirst
+      ? `<span class="mono" style="font-size:10px;color:#1e40af;cursor:pointer;text-decoration:underline" data-tip="クリックで受注詳細を表示" onclick="event.stopPropagation();openOrderDetail('${escapeHtml(orderNoFirst)}')">${escapeHtml(orderNoFirst)}</span>${orderRest?`<span style="font-size:9px;color:#94a3b8"> +${orderRest}</span>`:""}`
+      : `<span style="color:#cbd5e1">—</span>`;
+    // 状態セル
+    let statusCell;
+    if(e.kind==="production"){
+      const isForce = e.force_complete && e.force_complete.indexOf("強制")>=0;
+      const s = e.remaining_status||"-";
+      const isComplete = s.indexOf("完納")>=0 || isForce;
+      const c = isComplete ? {bg:"#d1fae5", fg:"#065f46"} : {bg:"#fef3c7", fg:"#92400e"};
+      statusCell = `<span style="font-size:10px;color:${c.fg};background:${c.bg};padding:1px 5px;border-radius:3px" data-tip="${escapeHtml(s+(isForce?' (強制完納)':''))}">${escapeHtml(s)}${isForce?" 強制":""}</span>`;
+    } else if(e.kind==="receipt"){
+      statusCell = `<span style="font-size:10px;color:#065f46;background:#d1fae5;padding:1px 5px;border-radius:3px">${escapeHtml(e.complete||"完納")}</span>`;
+    } else if(e.kind==="sales"){
+      statusCell = `<span style="font-size:10px;color:#9d174d;background:#fce7f3;padding:1px 5px;border-radius:3px">出荷済</span>`;
+    } else if(e.kind==="consumption"){
+      statusCell = `<span style="font-size:10px;color:#78350f;background:#fed7aa;padding:1px 5px;border-radius:3px" data-tip="BOM理論値(親の報告済数量×取数)。歩留まり・廃棄は反映されない">投入済</span>`;
+    } else if(e.kind==="planned_consumption"){
+      statusCell = `<span style="font-size:10px;color:#92400e;background:#fef3c7;padding:1px 5px;border-radius:3px" data-tip="親が完成すれば消費される予定。BOM理論値">投入予定</span>`;
+    } else if(e.kind==="purchase_order_conf"){
+      statusCell = `<span style="font-size:10px;color:#064e3b;background:#d1fae5;padding:1px 5px;border-radius:3px" data-tip="購買発注or外注組立委託の確定済・未入荷分。納期に入荷予定。番号が受注№と同じ場合でも内容(品目・数量)は全く別件のことが多い。発注番号はSMILE上で時系列で再利用される運用">発注済</span>`;
+    } else if(e.kind==="process_in_progress"){
+      const isStarted = (e.reported_qty||0) > 0;
+      statusCell = `<span style="font-size:10px;color:#1e3a8a;background:#dbeafe;padding:1px 5px;border-radius:3px" data-tip="工程指示済み・残量あり。製造中">${isStarted?"進行中":"未着手"}</span>`;
+    } else if(e.kind==="sales_order"){
+      const c = (e.complete||"").indexOf("部分")>=0 ? {bg:"#fed7aa", fg:"#9a3412"} : {bg:"#ffedd5", fg:"#9a3412"};
+      statusCell = `<span style="font-size:10px;color:${c.fg};background:${c.bg};padding:1px 5px;border-radius:3px" data-tip="${escapeHtml('受注残: '+(e.qty||0)+' / 総数: '+(e.total_qty||0)+' / 売上済: '+(e.sold_qty||0)+(e.due?' / 納期 '+e.due:''))}">${escapeHtml(e.complete||"未完納")}</span>`;
+    } else if(e.kind==="plan"){
+      // 状態が数値コード(SMILEの生値)だと意味不明なので名称か固定文言にfallback
+      let planStatus = e.status || "";
+      if(!planStatus || /^\d+$/.test(planStatus)) planStatus = "計画中";
+      statusCell = `<span style="font-size:10px;color:#5b21b6;background:#ede9fe;padding:1px 5px;border-radius:3px" data-tip="${escapeHtml('計画数: '+(e.total_qty||0)+' / 完成済: '+(e.done_qty||0)+' / 残: '+(e.qty||0))}">${escapeHtml(planStatus)}</span>`;
+    } else {
+      // 未確定: 受注ラベルは表示せず、シンプルに「未確定」と出す(雅さん2026-05-22:判定詳細はノイズ)
+      // ラベルが必要なら hover で確認
+      const tipBase = olTipText(e.ol||"");
+      statusCell = `<span style="font-size:10px;color:#854d0e;background:#fef3c7;padding:1px 5px;border-radius:3px" data-tip="${escapeHtml(tipBase||'未確定')}">未確定</span>`;
+    }
+    const rowStyle = `background:${M.bg};border-left:3px solid ${M.bd}`;
+    const codeCell = opts.showCode
+      ? `<td><span class="dv-link" style="font-size:10.5px" onclick="setDetailFocus('${escapeHtml(e.code)}')" title="${escapeHtml(e.code)}">${escapeHtml(e.code)}</span></td>`
+      : "";
+    // 日付セル: 受注の場合は3つの納期を併記してtooltip (出荷予定日 / 受注納期 / 製造納期)
+    //   雅さん指摘 2026-05-23: 構成内の1品でも発注確定すると製造納期が変えられないSMILE仕様
+    let dateCellHtml;
+    if(e.kind==="sales_order"){
+      const ship = e.shipment_date || "";
+      const nouki = e.due || "";
+      const mfg = e.manufacture_date || "";
+      const tip = `表示=出荷予定日基準 / 出荷予定日:${ship||"—"} / 受注納期:${nouki||"—"} / 製造納期:${mfg||"—"} ※構成内の1品でも発注確定すると製造納期は変えられない(SMILE仕様)ためズレることあり`;
+      const warn = (mfg && ship && mfg < ship) ? ` <span data-tip="製造納期(${escapeHtml(mfg)})が出荷予定日(${escapeHtml(ship)})より過去。構成内の発注確定で製造納期が固定された可能性" style="color:#b45309;font-size:9.5px;cursor:help">⚠</span>` : "";
+      dateCellHtml = `<td class="td-date" data-tip="${escapeHtml(tip)}">${escapeHtml(e.date||"-")}${warn}</td>`;
+    } else {
+      dateCellHtml = `<td class="td-date">${escapeHtml(e.date||"-")}</td>`;
+    }
+    return `<tr style="${rowStyle}">
+      ${dateCellHtml}
+      <td class="td-kind" style="color:${M.fg}" data-tip="${escapeHtml(M.tip||M.lbl)}">${M.lbl}</td>
+      ${codeCell}
+      <td>${seibanCell}</td>
+      <td>${procSupCell}</td>
+      <td style="text-align:right;white-space:normal;overflow:visible;line-height:1.5">${qtyHtml}</td>
+      <td>${numCell}</td>
+      <td>${orderCell}</td>
+      <td>${statusCell}</td>
+    </tr>`;
+  }
+  past.forEach(e=>{ html += rowHtml(e); });
+  // 未来側の予測在庫を積算 (選択品目タブのみ、現在庫を基準に増減を反映)
+  // 雅さん 2026-05-23: A案 採用「未来側だけ推移を出す」
+  // 入庫予定(+): purchase_order_conf, process_in_progress, unconfirmed, plan
+  // 出庫予定(-): sales_order, planned_consumption
+  if(opts.showStock && opts.stockCode){
+    const ni0 = NODE_INFO[opts.stockCode] || {};
+    let runStock = (ni0.cur !== undefined && ni0.cur !== null) ? ni0.cur : null;
+    if(runStock !== null){
+      future.forEach(e => {
+        const qNum = parseFloat(e.qty);
+        if(isNaN(qNum)){ e._predicted = runStock; return; }
+        let delta = 0;
+        if(e.kind === "purchase_order_conf" || e.kind === "process_in_progress" ||
+           e.kind === "unconfirmed" || e.kind === "plan"){
+          delta = Math.round(qNum);
+        } else if(e.kind === "sales_order" || e.kind === "planned_consumption"){
+          delta = -Math.round(qNum);
+        }
+        runStock = runStock + delta;
+        e._predicted = runStock;
+      });
+    }
+  }
+  // 今日線: 青系で本体に馴染ませる + 現在庫・有効在庫を1チップに併記
+  // ni.cur = 物理在庫 (有効在庫一覧表 現在庫数列, 全社合算)
+  // ni.e   = SMILE有効在庫 (未確定_購買手配CSV 有効在庫数列, 全社合算)
+  const ncolCol = opts.showCode ? 9 : 8;
+  let stockChip = "";
+  let stockNote = "";
+  if(opts.showStock && opts.stockCode){
+    const ni = NODE_INFO[opts.stockCode] || {};
+    // 有効在庫は混乱要因なので青タグから外す (雅さん 2026-05-22)。現在庫のみ表示。
+    if(ni.cur !== undefined && ni.cur !== null){
+      const cls = ni.cur < 0 ? "bad" : "";
+      stockChip = `<span class="dv-tl-stock ${cls}"><span data-tip="SMILE「有効在庫一覧表」現在庫数列(全社合算)。物理在庫の確認値">現在庫</span> <b>${ni.cur}</b></span>`;
+      stockNote = `<div class="dv-tl-stock-note">※ 全社合算の在庫数。倉庫・ロケーション別の内訳ではありません</div>`;
+    }
+  }
+  html += `<tr class="dv-tl-today" id="dvTlToday"><td colspan="${ncolCol}">
+    <div class="dv-tl-today-bar">▼ 今日 ${today||"—"} ▼${stockChip}</div>
+    ${stockNote}
+  </td></tr>`;
+  future.forEach(e=>{ html += rowHtml(e); });
+  html += `</tbody></table></div>`;
+  return html;
+}
+
+// ---------- 品目詳細タブ ナビボタン (各セクションへスクロール) ----------
+
+// ---- 右ペイン: 関連品目の出入りタブ (ツリー全品目のタイムライン) ----------
 function dvRenderTabTehai(){
   if(!dvLayout){document.getElementById("dvTabTehai").innerHTML='<div class="dv-empty">—</div>';return;}
-  const treeCodes = new Set(dvLayout.nodes.map(n=>n.code));
+  const treeCodesArr = dvLayout.nodes.map(n=>n.code);
+  const treeCodes = new Set(treeCodesArr);
   const recs = [];
   treeCodes.forEach(c=>{
     const ni = NODE_INFO[c] || {};
     if(ni.rid) ni.rid.forEach(id=>{const r=DATA.find(d=>d.id===id); if(r) recs.push(r);});
   });
-  if(!recs.length){document.getElementById("dvTabTehai").innerHTML='<div class="dv-empty">ツリー内に手配行はありません</div>';return;}
 
   // 同一品目を別製番が手配している重複検出 (重複バッジ表示用)
-  // dupSeibanMap[code] = Set([sb1, sb2, ...]) — その品目を手配している製番群
   const dupSeibanMap = {};
   recs.forEach(r => {
     if(!dupSeibanMap[r.code]) dupSeibanMap[r.code] = new Set();
     if(r.sb) dupSeibanMap[r.code].add(r.sb);
   });
-  // 2つ以上の製番が同じ品目を手配 = 重複
   const dupCodes = Object.keys(dupSeibanMap).filter(c => dupSeibanMap[c].size >= 2);
   const dupRows = recs.filter(r => dupSeibanMap[r.code] && dupSeibanMap[r.code].size >= 2);
 
-  // 製番継承判定 (機能概説書 7-2-6 より):
-  //   手配方式=需要数 → 親(J)製番継承 → 機械的追跡可能
-  //   手配方式=在庫参照 → 別M製番採番 → 機械的追跡不可
-  //   ※在庫引当=する なら在庫参照でも継承可能だが、現状品目マスタの該当区分が不明確なため
-  //     手配方式名のみで判定する (Phase 1)
-  function arrModeBadge(code){
-    const ni = NODE_INFO[code] || {};
-    const am = (ni.pm && ni.pm.am) || "";
-    if(!am) return "";
-    if(am.indexOf("需要数") >= 0){
-      return ` <span title="手配方式: ${escapeHtml(am)} → 親(J)製番継承品目。機械的追跡可能" style="background:#dcfce7;color:#166534;padding:0 5px;border-radius:3px;font-size:9px;font-weight:700;border:1px solid #86efac">💎需継承</span>`;
-    }
-    if(am.indexOf("在庫参照") >= 0){
-      return ` <span title="手配方式: ${escapeHtml(am)} → 別M製番が採番される(親製番と機械的に紐付けられない)" style="background:#fef3c7;color:#92400e;padding:0 5px;border-radius:3px;font-size:9px;font-weight:700;border:1px solid #fbbf24">📦別採番</span>`;
-    }
-    return "";
-  }
-  // 継承可能/不可の件数集計(サマリーで使う)
+  // 製番継承内訳 (機能概説書 7-2-6 より)
   let n_inherit = 0, n_separate = 0;
   recs.forEach(r => {
     const ni = NODE_INFO[r.code] || {};
@@ -5012,102 +5505,136 @@ function dvRenderTabTehai(){
     else if(am.indexOf("在庫参照") >= 0) n_separate++;
   });
 
-  // ソート (デフォルト=予定日昇順、ヘッダクリックで切替)
-  const sortKeyFn = {
-    sd: r => r.sd || "9999/99/99",
-    code: r => r.code || "",
-    sb: r => r.sb || "",
-    at: r => r.at || "",
-    qty: r => parseFloat(r.qty)||0,
-  };
-  const kf = sortKeyFn[_dvTehaiSort.col] || sortKeyFn.sd;
-  recs.sort((a,b)=>{
-    const ka = kf(a), kb = kf(b);
-    if(ka < kb) return _dvTehaiSort.asc ? -1 : 1;
-    if(ka > kb) return _dvTehaiSort.asc ? 1 : -1;
-    return 0;
-  });
-
-  // サマリー: 重複検出のハイライト + 製番継承可否
+  // サマリーブロック (実績を含まない、未確定だけの統計)
   const dupBlock = dupCodes.length > 0
     ? `<div style="padding:8px 12px;background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;font-size:11px;line-height:1.5;color:#78350f">
-        ⚠ <b>${recs.length}件中、${dupCodes.length}品目(${dupRows.length}手配)が複数製番で並行手配されています。</b><br>
+        ⚠ <b>未確定${recs.length}件中、${dupCodes.length}品目(${dupRows.length}手配)が複数製番で並行手配されています。</b><br>
         統合・強制完納の候補になり得るので確認推奨。
        </div>`
     : `<div style="padding:6px 10px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;font-size:11px;color:#065f46">
-        ✓ ${recs.length}件中、同一品目で複数製番が並行手配しているものはなし。
+        ✓ 未確定${recs.length}件中、同一品目で複数製番が並行手配しているものはなし。
        </div>`;
   const inheritBlock = `<div style="margin-top:6px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:11px;line-height:1.6;color:#1e3a8a">
     📊 <b>製番継承の内訳</b>(機能概説書 7-2-6 製番について より)<br>
     <span style="background:#dcfce7;color:#166534;padding:0 5px;border-radius:3px;font-weight:700;border:1px solid #86efac">💎需継承</span> ${n_inherit}件: 親(J)製番継承 = 機械的追跡可能 ／
     <span style="background:#fef3c7;color:#92400e;padding:0 5px;border-radius:3px;font-weight:700;border:1px solid #fbbf24">📦別採番</span> ${n_separate}件: 別M製番採番 = 親と機械的紐付不可
    </div>`;
-  const sumHtml = `<div style="margin:0 0 8px">${dupBlock}${inheritBlock}</div>`;
+  const sumHtml = `<div style="margin:0 0 10px">${dupBlock}${inheritBlock}</div>`;
 
-  // ソート可能ヘッダ
-  const _sortArrow = c => _dvTehaiSort.col === c ? (_dvTehaiSort.asc ? " ▲" : " ▼") : "";
-  const _th = (col, label) => `<th class="dv-tehai-sortable" data-col="${col}" style="cursor:pointer;user-select:none">${label}${_sortArrow(col)}</th>`;
-  let html = sumHtml + `<table class="dv-list-table">
-    <thead><tr>${_th("sd","予定日")}${_th("code","コード")}${_th("sb","製番")}${_th("at","種別")}<th style="text-align:right">${_sortArrow("qty")?'<span class="dv-tehai-sortable" data-col="qty" style="cursor:pointer">数'+_sortArrow("qty")+'</span>':'<span class="dv-tehai-sortable" data-col="qty" style="cursor:pointer">数</span>'}</th><th>受注ラベル</th></tr></thead><tbody>`;
-  recs.slice(0,200).forEach(r=>{
-    const isDup = dupSeibanMap[r.code] && dupSeibanMap[r.code].size >= 2;
-    const dupBadge = isDup
-      ? ` <span title="この品目は ${dupSeibanMap[r.code].size}製番で並行手配中" style="background:#fef3c7;color:#92400e;padding:0 5px;border-radius:3px;font-size:9px;font-weight:700;border:1px solid #fbbf24">⚠重複${dupSeibanMap[r.code].size}</span>`
-      : '';
-    const arrBadge = arrModeBadge(r.code);
-    const trStyle = isDup ? ' style="background:#fffbeb"' : '';
-    html += `<tr${trStyle} onclick="setDetailFocus('${escapeHtml(r.code)}')">
-      <td class="mono" style="font-size:10.5px;white-space:nowrap">${escapeHtml(r.sd||"")}</td>
-      <td><span class="dv-link" style="font-size:10.5px">${escapeHtml(r.code)}</span>${arrBadge}${dupBadge}</td>
-      <td class="mono" style="font-size:10px">${escapeHtml(r.sb||"-")}</td>
-      <td style="font-size:10px">${escapeHtml(r.at||"-")}</td>
-      <td style="text-align:right;font-size:10.5px">${escapeHtml(r.qty||"")}</td>
-      <td><span class="bd ${olBadgeCls(r.ok)}" style="font-size:9.5px;display:inline-block;line-height:1.3">${olIcon(r.ok)} ${escapeHtml(r.ol||"")}</span></td>
-    </tr>`;
+  // === タイムライン構築 (ツリー範囲全体) ===
+  const allEntries = buildTimelineEntries(treeCodesArr);
+  // フィルタ適用 (品目コード/品目名/製番 部分一致、全角半角正規化)
+  const filter = _normSearch(_dvTreeFilter||"");
+  const filtered = !filter ? allEntries : allEntries.filter(e=>{
+    const code = _normSearch(e.code||"");
+    const name = _normSearch(NAMES[e.code]||"");
+    const sb = _normSearch(e.seiban||"");
+    return code.indexOf(filter)>=0 || name.indexOf(filter)>=0 || sb.indexOf(filter)>=0;
   });
-  html += `</tbody></table>`;
-  if(recs.length > 200) html += `<div class="dv-empty">…他 ${recs.length-200} 件</div>`;
+  // 実績 (受入+製造) vs 予定 (未確定+受注+計画)
+  const isImpl = e => e.kind==="receipt" || e.kind==="production";
+  const n_past = filtered.filter(isImpl).length;
+  const n_future = filtered.filter(e=>!isImpl(e)).length;
+
+  // 検索フィルタUI (datalist でライブ候補表示 / 全角半角どちらでも検索可)
+  // datalistは「ツリー範囲内のコード+名前」を候補に。
+  const candidateOpts = treeCodesArr.slice(0, 500).map(c=>{
+    const nm = NAMES[c] || (NODE_INFO[c]?.n) || "";
+    const v = nm ? `${c}  ${nm}` : c;
+    return `<option value="${escapeHtml(v)}">`;
+  }).join("");
+  const filterHtml = `<div class="dv-tl-filter">
+    <input type="search" id="dvTreeFilterInput" list="dvTreeFilterList" placeholder="コード/名前/製番で絞り込み (全角半角どちらでもOK)" value="${escapeHtml(_dvTreeFilter)}" autocomplete="off">
+    <datalist id="dvTreeFilterList">${candidateOpts}</datalist>
+    ${filter?`<button type="button" id="dvTreeFilterClear" title="クリア">×</button>`:''}
+    <span class="dv-tl-count">実績 ${n_past} / 予定 ${n_future}</span>
+  </div>`;
+
+  const html = sumHtml + filterHtml + renderTimelineTable(filtered, {showCode:true});
   document.getElementById("dvTabTehai").innerHTML = html;
-  // ヘッダクリックでソート切替
-  document.querySelectorAll(".dv-tehai-sortable").forEach(el => {
-    el.addEventListener("click", e => {
-      e.stopPropagation();
-      const col = el.dataset.col;
-      if(_dvTehaiSort.col === col) _dvTehaiSort.asc = !_dvTehaiSort.asc;
-      else { _dvTehaiSort.col = col; _dvTehaiSort.asc = true; }
+  _scrollTabToToday("dvTabTehai");
+
+  // 検索フィルタのバインド (再レンダリングしても入力フォーカスは維持したい)
+  const fi = document.getElementById("dvTreeFilterInput");
+  if(fi){
+    // フォーカス/カーソル位置を維持
+    if(_dvTreeFilter){ fi.focus(); fi.setSelectionRange(_dvTreeFilter.length, _dvTreeFilter.length); }
+    fi.addEventListener("input", e=>{
+      _dvTreeFilter = e.target.value;
       dvRenderTabTehai();
     });
+  }
+  const cb = document.getElementById("dvTreeFilterClear");
+  if(cb) cb.addEventListener("click", ()=>{ _dvTreeFilter=""; dvRenderTabTehai(); });
+}
+
+// タイムライン描画後、タブ内スクロール位置を「今日」行が中央に来るよう調整
+// 親(モーダル)を巻き込まないよう scrollIntoView は使わない
+
+function _scrollTabToToday(tabPaneId){
+  // DOM反映後に走らせる
+  requestAnimationFrame(()=>{
+    const pane = document.getElementById(tabPaneId);
+    const todayRow = pane && pane.querySelector("#dvTlToday");
+    if(!pane || !todayRow) return;
+    const paneRect = pane.getBoundingClientRect();
+    const rowRect = todayRow.getBoundingClientRect();
+    const currentTop = pane.scrollTop;
+    const desiredScroll = currentTop + (rowRect.top - paneRect.top) - (pane.clientHeight / 2) + (rowRect.height / 2);
+    pane.scrollTop = Math.max(0, desiredScroll);
   });
 }
 
-// ---- 右ペイン: 削除候補タブ -------------------------------------------
+// ---- 右ペイン: 「この品目」タブ (選択中品目1個の実績+未確定時系列) -------
+
+// ---- 右ペイン: 選択品目の出入りタブ (選択中品目1個のタイムライン) --------
 function dvRenderTabDispose(){
-  if(!dvLayout){document.getElementById("dvTabDispose").innerHTML='<div class="dv-empty">—</div>';return;}
-  const treeCodes = new Set(dvLayout.nodes.map(n=>n.code));
-  const recs = [];
-  treeCodes.forEach(c=>{
-    if(!dvIsDispose(c)) return;
-    const ni = NODE_INFO[c] || {};
-    if(ni.rid) ni.rid.forEach(id=>{const r=DATA.find(d=>d.id===id); if(r) recs.push(r);});
-  });
-  if(!recs.length){document.getElementById("dvTabDispose").innerHTML='<div class="dv-empty">ツリー内に削除候補はありません</div>';return;}
-  recs.sort((a,b)=>(a.sd||"").localeCompare(b.sd||""));
-  let html = `<div style="font-size:11px;color:#475569;margin-bottom:10px">ゾンビ手配 / 古い受注の残り / 計画放置疑い / 売上済(親経由) を集計</div>
-    <table class="dv-list-table">
-    <thead><tr><th>受注ラベル</th><th>コード</th><th>製番</th><th style="text-align:right">数</th><th>予定日</th></tr></thead><tbody>`;
-  recs.slice(0,200).forEach(r=>{
-    html += `<tr onclick="setDetailFocus('${escapeHtml(r.code)}')">
-      <td><span class="bd ${olBadgeCls(r.ok)}" style="font-size:9.5px;display:inline-block;line-height:1.3">${olIcon(r.ok)} ${escapeHtml(r.ol||"")}</span></td>
-      <td><span class="dv-link" style="font-size:10.5px">${escapeHtml(r.code)}</span></td>
-      <td class="mono" style="font-size:10px">${escapeHtml(r.sb||"-")}</td>
-      <td style="text-align:right;font-size:10.5px">${escapeHtml(r.qty||"")}</td>
-      <td class="mono" style="font-size:10px">${escapeHtml(r.sd||"")}</td>
-    </tr>`;
-  });
-  html += `</tbody></table>`;
-  if(recs.length > 200) html += `<div class="dv-empty">…他 ${recs.length-200} 件</div>`;
-  document.getElementById("dvTabDispose").innerHTML = html;
+  const code = detailFocus;
+  const pane = document.getElementById("dvTabDispose");
+  if(!code){
+    pane.innerHTML = '<div class="dv-empty">品目が選択されていません。左のツリー or 表から品目を選んでください。</div>';
+    return;
+  }
+  const name = NAMES[code] || (NODE_INFO[code] && NODE_INFO[code].n) || "";
+  const entries = buildTimelineEntries([code]);
+  const n_receipt = entries.filter(e=>e.kind==="receipt").length;
+  const n_production = entries.filter(e=>e.kind==="production").length;
+  const n_salesActual = entries.filter(e=>e.kind==="sales").length;
+  const n_consumption = entries.filter(e=>e.kind==="consumption").length;
+  const n_poConf = entries.filter(e=>e.kind==="purchase_order_conf").length;
+  const n_procConf = entries.filter(e=>e.kind==="process_in_progress").length;
+  const n_unconfirmed = entries.filter(e=>e.kind==="unconfirmed").length;
+  const n_salesOrder = entries.filter(e=>e.kind==="sales_order").length;
+  const n_plan = entries.filter(e=>e.kind==="plan").length;
+  const n_plannedCons = entries.filter(e=>e.kind==="planned_consumption").length;
+
+  // ヘッダー (選択中品目 + 集計)
+  const headerHtml = `
+    <div style="padding:8px 10px;background:#f8fafc;border:1px solid var(--line);border-radius:5px;margin-bottom:8px">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+        <span style="font-family:monospace;font-size:13px;font-weight:700;color:#1e3a8a">${escapeHtml(code)}</span>
+        ${name?`<span style="font-size:11.5px;color:#334155">${escapeHtml(name)}</span>`:""}
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px;font-size:10.5px">
+        <span style="background:#ecfdf5;color:#065f46;padding:1px 7px;border-radius:9px;border:1px solid #a7f3d0">受入 ${n_receipt}</span>
+        <span style="background:#eff6ff;color:#1e3a8a;padding:1px 7px;border-radius:9px;border:1px solid #bfdbfe">製造 ${n_production}</span>
+        <span style="background:#fdf2f8;color:#9d174d;padding:1px 7px;border-radius:9px;border:1px solid #f9a8d4">売上 ${n_salesActual}</span>
+        <span style="background:#fef3c7;color:#78350f;padding:1px 7px;border-radius:9px;border:1px solid #d97706">消費 ${n_consumption}</span>
+        <span style="background:#d1fae5;color:#064e3b;padding:1px 7px;border-radius:9px;border:1px solid #059669">発注済 ${n_poConf}</span>
+        <span style="background:#dbeafe;color:#1e3a8a;padding:1px 7px;border-radius:9px;border:1px solid #2563eb">製造中 ${n_procConf}</span>
+        <span style="background:#fef9c3;color:#854d0e;padding:1px 7px;border-radius:9px;border:1px solid #facc15">未確定 ${n_unconfirmed}</span>
+        <span style="background:#fff7ed;color:#9a3412;padding:1px 7px;border-radius:9px;border:1px solid #fdba74">受注 ${n_salesOrder}</span>
+        <span style="background:#f5f3ff;color:#5b21b6;padding:1px 7px;border-radius:9px;border:1px solid #c4b5fd">計画 ${n_plan}</span>
+        <span style="background:#fffbeb;color:#92400e;padding:1px 7px;border-radius:9px;border:1px solid #fbbf24">消費予定 ${n_plannedCons}</span>
+      </div>
+    </div>`;
+  // showCode:true でツリー中タブと同じ列構成にする (品目列を表示)
+  pane.innerHTML = headerHtml + renderTimelineTable(entries, {showCode:true, showStock:true, stockCode:code});
+  _scrollTabToToday("dvTabDispose");
 }
+
+// ツールバーバインドはDOMロード後に初期化（一度だけ）
+
 
 // ツールバーバインドはDOMロード後に初期化（一度だけ）
 let dvToolbarBound = false;
