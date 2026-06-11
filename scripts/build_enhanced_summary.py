@@ -3118,6 +3118,8 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
 <!-- 品目実績データ (受入・製造指図・受注辞書) -- item_history.js が先読みされ window.ITEM_HISTORY をセット -->
 <!-- 失敗 (ファイル無し等) しても本体は動作する。 -->
 <script src="item_history.js" onerror="console.warn('[item_history.js] 読込失敗 (ファイル未配置の可能性)')"></script>
+<!-- 2026-06-10 セキュリティ移行: 親FUJIN.htmlがSharePointから認証取得した item_history を優先採用 -->
+<script>(function(){try{if(window.parent&&window.parent!==window&&window.parent._fujinItemHistory){window.ITEM_HISTORY=window.parent._fujinItemHistory;console.log("[item_history] 親(SharePoint認証fetch)を採用");}}catch(_){}})();</script>
 <!-- 製番別BOM (品目構成検索タブ用に生成済の work_instructions.js を流用) -->
 <!-- 詳細パネルのBOMツリー表示で、手配の製番に応じてBOMを切替えるために使用 -->
 <script src="work_instructions.js"
