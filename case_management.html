@@ -2522,15 +2522,11 @@ function searchMergeCases(query) {
     return;
   }
   // 現在の案件を除外して検索
-  const results = cases.filter(c =>
-    c.CaseId !== currentCaseId &&
-    (
-      normJa(c.CaseId).includes(q) ||
-      normJa(c.CompanyName).includes(q) ||
-      normJa(c.Title).includes(q) ||
-      normJa(c.CompanyCode).includes(q)
-    )
-  ).slice(0, 20);
+  const results = cases.filter(c => {
+    if (c.CaseId === currentCaseId) return false;
+    const hay = [c.CaseId, c.CompanyName, c.Title, c.CompanyCode].map(normJa).join(' ');
+    return matchTokens(hay, q);
+  }).slice(0, 20);
   if (!results.length) {
     container.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">該当する案件がありません</div>';
     return;
@@ -2716,6 +2712,13 @@ function normJa(s) {
     .toLowerCase()
     .trim();
 }
+// スペース区切りの複数キーワードAND検索（全角/半角スペースともnormJaで正規化済み）
+function matchTokens(haystack, normQuery) {
+  // データ側・クエリ側ともスペースを無視（「サカエ新潟」=「サカエ 新潟」=「サカエ　新潟」）
+  const H = String(haystack).replace(/\s+/g, '');
+  const toks = String(normQuery || '').split(/\s+/).filter(Boolean);
+  return toks.length === 0 || toks.every(t => H.includes(t));
+}
 function getFilteredCases() {
   const q = normJa(document.getElementById('searchInput').value);
   const aq = (document.getElementById('assigneeFilter')?.value || '').toLowerCase();
@@ -2744,7 +2747,7 @@ function getFilteredCases() {
         c.LastAction, c.EntryPoint,
         c.LinkedDept, c.OrderNumber,
       ].map(v => normJa(v)).join(' ');
-      if (!haystack.includes(q)) return false;
+      if (!matchTokens(haystack, q)) return false;
     }
     // アーカイブ案件は専用フィルタでのみ表示（通常一覧・サマリ用フィルタからは除外）
     const isArchived = c.Status === 'アーカイブ';
@@ -3733,8 +3736,7 @@ function filterTriage() { renderTriageList(); }
 function renderTriageList() {
   const q = normJa(document.getElementById('triageSearchInput')?.value || '');
   const list = q
-    ? triageItems.filter(e => [e.RelationName, e.CaseName, e.Summary, e.EventType, e.SenderFax]
-        .map(v => normJa(v)).join(' ').includes(q))
+    ? triageItems.filter(e => matchTokens([e.RelationName, e.CaseName, e.Summary, e.EventType, e.SenderFax].map(normJa).join(' '), q))
     : triageItems;
   document.getElementById('triageCount').textContent =
     q ? `${list.length} / ${triageItems.length}件` : `${triageItems.length}件`;
@@ -4179,9 +4181,7 @@ function onTriageLinkSearch(val) {
   const q = normJa(val);
   const active = cases.filter(c =>
     !['完了'].includes(c.Status) &&
-    (normJa(c.CaseId).includes(q) ||
-     normJa(c.CompanyName).includes(q) ||
-     normJa(c.Title).includes(q))
+    matchTokens([c.CaseId, c.CompanyName, c.Title].map(normJa).join(' '), q)
   ).slice(0, 8);
   if (!active.length) { list.style.display = 'none'; return; }
   list.innerHTML = active.map(c => `
@@ -4324,7 +4324,7 @@ function renderFaxViewList() {
     filtered = filtered.filter(e => {
       const hay = [e.RelationName, e.CaseName, e.Summary, e.EventType, e.Title]
         .map(v => normJa(v)).join(' ');
-      return hay.includes(fq);
+      return matchTokens(hay, fq);
     });
   }
   // 日付フィルター（EventDateはUTCなのでローカル日付に変換して比較）
