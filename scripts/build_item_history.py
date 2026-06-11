@@ -938,11 +938,12 @@ def main():
     print(f"[出力] {js_path}  ({js_path.stat().st_size:,} bytes)")
     print(f"      品目数 {len(items)}, 製番→受注辞書 {len(seiban_to_order)}件")
 
-    # auth_distにもコピー (file://で開いた場合 fetch は使えないので .js を本命にする)
-    if AUTH_DIST.exists():
-        (AUTH_DIST / "item_history.json").write_text(payload, encoding="utf-8")
-        (AUTH_DIST / "item_history.js").write_text(f"window.ITEM_HISTORY = {payload};\n", encoding="utf-8")
-        print(f"[配置] {AUTH_DIST}/item_history.json と item_history.js")
+    # 2026-06-10 セキュリティ移行(段階B): item_history(仕入先名・金額を含む)を
+    # 公開Pages(fujin/)に置かない。auth_dist へのコピーを廃止し、代わりに
+    # scripts/upload_fujin_data.py が SharePoint(SharedMasters)へアップロードする。
+    # 画面側は auth_wrapper の認証fetchで window._fujinItemHistory を取得する。
+    # ※ data/item_history.json は upload_fujin_data.py のアップロード元として残す。
+    print("[配置] item_history は auth_dist にコピーしない(SharePoint認証配信へ移行済)")
 
 
 if __name__ == "__main__":

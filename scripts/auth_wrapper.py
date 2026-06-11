@@ -256,15 +256,14 @@ function _fujinStartAuth() {
     window._fujinAuthReady = true;
     _hideCheckingOverlay();
     _showSuccessToast(account.username || account.name);
-    // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
-    try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
 
-    // ★ 2026-06-10 セキュリティ移行(段階A): item_history を SharePoint から認証取得
+    // ★ 2026-06-10 セキュリティ移行: item_history を SharePoint から認証取得
     //   仕入先名・金額を含む item_history を公開Pagesに置かず、ログインユーザーの
     //   トークンで SharedMasters ドライブから取得し window._fujinItemHistory に保存する。
-    //   各画面(構成ツリー/山リスト/手配確定)は親のこの値を優先利用し、
-    //   無ければ従来の同梱 item_history.js にフォールバックする(段階Bで同梱を廃止)。
-    //   window._fujinItemHistoryPromise: 取得完了を待ちたい画面用のPromise。
+    //   各画面(構成ツリー/山リスト/手配確定)は親のこの値を採用する。
+    //   ※ _fujin_auth_ready の dispatch より前に Promise を生成すること。
+    //     シェルの init() はこの Promise 完了(または最大6秒)を待ってからタブを開くため、
+    //     先に window._fujinItemHistoryPromise が存在している必要がある。
     try {
       var _SP_DRIVE = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
       window._fujinItemHistoryPromise = window._fujinMsal
@@ -281,10 +280,13 @@ function _fujinStartAuth() {
           return d;
         })
         .catch(function(e){
-          console.warn("[item_history] SharePoint取得 失敗→同梱ファイルにフォールバック:", (e && (e.errorCode || e.message)) || e);
+          console.warn("[item_history] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
           return null;
         });
-    } catch(e) { console.error("[item_history] 例外:", e); }
+    } catch(e) { console.error("[item_history] 例外:", e); window._fujinItemHistoryPromise = Promise.resolve(null); }
+
+    // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
+    try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示
     // body準備を待ってから挿入 (重いiframe読み込み中でも確実に出るように)
     function _insertUserBar() {
