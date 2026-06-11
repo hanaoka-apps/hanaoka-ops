@@ -388,15 +388,14 @@ function _fujinStartAuth() {
     window._fujinAuthReady = true;
     _hideCheckingOverlay();
     _showSuccessToast(account.username || account.name);
-    // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
-    try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
 
-    // ★ 2026-06-10 セキュリティ移行(段階A): item_history を SharePoint から認証取得
+    // ★ 2026-06-10 セキュリティ移行: item_history を SharePoint から認証取得
     //   仕入先名・金額を含む item_history を公開Pagesに置かず、ログインユーザーの
     //   トークンで SharedMasters ドライブから取得し window._fujinItemHistory に保存する。
-    //   各画面(構成ツリー/山リスト/手配確定)は親のこの値を優先利用し、
-    //   無ければ従来の同梱 item_history.js にフォールバックする(段階Bで同梱を廃止)。
-    //   window._fujinItemHistoryPromise: 取得完了を待ちたい画面用のPromise。
+    //   各画面(構成ツリー/山リスト/手配確定)は親のこの値を採用する。
+    //   ※ _fujin_auth_ready の dispatch より前に Promise を生成すること。
+    //     シェルの init() はこの Promise 完了(または最大6秒)を待ってからタブを開くため、
+    //     先に window._fujinItemHistoryPromise が存在している必要がある。
     try {
       var _SP_DRIVE = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
       window._fujinItemHistoryPromise = window._fujinMsal
@@ -413,10 +412,13 @@ function _fujinStartAuth() {
           return d;
         })
         .catch(function(e){
-          console.warn("[item_history] SharePoint取得 失敗→同梱ファイルにフォールバック:", (e && (e.errorCode || e.message)) || e);
+          console.warn("[item_history] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
           return null;
         });
-    } catch(e) { console.error("[item_history] 例外:", e); }
+    } catch(e) { console.error("[item_history] 例外:", e); window._fujinItemHistoryPromise = Promise.resolve(null); }
+
+    // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
+    try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示
     // body準備を待ってから挿入 (重いiframe読み込み中でも確実に出るように)
     function _insertUserBar() {
@@ -584,9 +586,9 @@ function _fujinStartAuth() {
     <span class="i-icon">ℹ</span>
     <span class="meta-info-text">最終更新 06-11</span>
     <span class="meta-tip">
-      <b>データ基準日</b> 2026-06-11 16:35<br>
+      <b>データ基準日</b> 2026-06-11 16:49<br>
       <b>現在庫基準日</b> 2026-06-10 12:19<br>
-      <b>統合版生成</b> 2026-06-11 16:36
+      <b>統合版生成</b> 2026-06-11 16:50
     </span>
   </span>
 </header>
@@ -803,7 +805,18 @@ function init() {
 function _fujinStartInit() {
   if (window._fujinAuthAlreadyInitialized) return;
   window._fujinAuthAlreadyInitialized = true;
-  init();
+  // 2026-06-10 セキュリティ移行(段階B): item_history は公開Pagesに置かず認証fetchで取得する。
+  // 親の取得完了(window._fujinItemHistoryPromise)または最大6秒を待ってからタブを開くことで、
+  // 初回タブ表示時に window._fujinItemHistory が揃っており、競合で出入りが空にならない。
+  var _ihp = window._fujinItemHistoryPromise;
+  if (_ihp && typeof _ihp.then === "function") {
+    var _started = false;
+    var _go = function(){ if (_started) return; _started = true; init(); };
+    _ihp.then(_go, _go);
+    setTimeout(_go, 6000);  // フォールバック: 取得が遅延/失敗してもUIは出す(出入りは縮退)
+  } else {
+    init();
+  }
 }
 // file:// で開かれた場合は認証ゲート不要なので即時実行 (2026-05-22 雅さん指示)
 if (window.location.protocol === "file:") {
