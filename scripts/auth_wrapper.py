@@ -233,7 +233,7 @@ function _fujinStartAuth() {
         // ポップアップを使わないので Safari/Chrome のサードパーティクッキー問題を回避できる
         // 認証完了後、redirectUri に戻ってきて handleRedirectPromise() で結果を取得
         await window._fujinMsal.loginRedirect({
-          scopes: ["User.Read"],
+          scopes: ["User.Read", "Files.Read.All"],
           prompt: "select_account"
         });
         // loginRedirect 実行後はページ遷移するため、この行に到達しない
@@ -258,6 +258,26 @@ function _fujinStartAuth() {
     _showSuccessToast(account.username || account.name);
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
+
+    // ★ 2026-06-10 セキュリティ移行 検証ステップ (非破壊・コンソール出力のみ)
+    //   目的: FUJIN画面がログイン後、ユーザートークンで SharedMasters ドライブの
+    //   ファイルを取得できるかを確認する。成功すれば「データを公開Pagesに置かず
+    //   SharePointから認証取得する」方式に移行できる(段階2以降)。
+    //   既存のデータ読込には一切影響しない(結果をconsoleに出すだけ)。
+    try {
+      var _SP_DRIVE = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      window._fujinMsal.acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE + "/root:/dashboard_facts.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken } });
+        })
+        .then(function(res){ console.log("[SP検証] HTTPステータス:", res.status); return res.ok ? res.json() : null; })
+        .then(function(d){
+          if (d) { console.log("[SP検証] ✅ SharePoint取得 成功 (keys=" + Object.keys(d).length + ")。認証fetch方式に移行可能。"); }
+          else   { console.warn("[SP検証] ⚠ 取得できたが本文が空/非JSON。"); }
+        })
+        .catch(function(e){ console.error("[SP検証] ❌ 失敗:", (e && (e.errorCode || e.message)) || e); });
+    } catch(e) { console.error("[SP検証] ❌ 例外:", e); }
     // ページ右上にユーザー名・サインアウトボタンを表示
     // body準備を待ってから挿入 (重いiframe読み込み中でも確実に出るように)
     function _insertUserBar() {
