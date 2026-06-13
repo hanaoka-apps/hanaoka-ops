@@ -2119,6 +2119,7 @@ html_tpl = r"""<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FUJIN 手配判断ダッシュボード</title>
 <style>
 :root{
@@ -3714,7 +3715,10 @@ function openDetail(id){
   detailRecord = r;
   detailFocus = r.code;
   dvFilters = {over:false, common:false, dispose:false, search:"", state:null};
-  dvZoom = 1.0;
+  // 2026-06-13 雅さん指示: 検索/行クリックで開いた時は全体縮小ではなく、
+  // 起点(検索品目)を拡大してフォーカス表示する(描画後 dvScrollFocusToCenter で中央寄せ)。
+  // 全体を見たい時は「Fit」ボタンで明示的に。
+  dvZoom = 1.8;
   document.querySelectorAll("#mainTable tbody tr").forEach(tr=>tr.classList.toggle("selected", tr.dataset.id===id));
 
   // 上部メタ

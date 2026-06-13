@@ -27,7 +27,7 @@ AUTH_GATE_SCRIPT = """
 <style id="_fujin_preauth_style">
   html.fujin-pre-auth body { visibility: hidden !important; }
   /* 認証バッジ用の余白を header に確保 (バッジと「データ基準日」表示が重ならないように) */
-  header { padding-right: 180px !important; }
+  header { padding-right: 250px !important; }  /* 右上のユーザーバー(👤 + サインアウト)と「最終更新」表示の重なり回避(2026-06-13 余白拡大) */
   @media (max-width: 900px) { header { padding-right: 60px !important; } }
 </style>
 <script>document.documentElement.classList.add("fujin-pre-auth");</script>
