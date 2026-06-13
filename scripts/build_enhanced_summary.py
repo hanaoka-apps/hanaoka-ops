@@ -3136,14 +3136,19 @@ if(ITEM_HISTORY && ITEM_HISTORY.items){
 } else {
   console.warn("[item_history] window.ITEM_HISTORY 未定義 → 実績タブは未確定のみで動作。item_history.js を配置してください");
 }
-const DATA = __DATA__;
-const NAMES = __NAMES__;
+// 2026-06-13 セキュリティ移行: 手配/在庫/受注/BOM/品目情報の本体データは公開Pagesに
+// 埋め込まず、FUJIN本体がSharePointから認証取得した window.top._fujinResultsData から読む。
+// (results_production.html 自体は描画コードのみ＝公開しても機微データを含まない)
+const _RP = (function(){ try { var _t = window.top; return (_t && _t._fujinResultsData) || {}; } catch(_) { return {}; } })();
+if (!_RP.DATA) { console.warn("[results_production] window.top._fujinResultsData 未取得 → データ空で描画(縮退)"); }
+const DATA = _RP.DATA || [];
+const NAMES = _RP.NAMES || {};
 const TODAY = "__TODAY__";
 const LEDGER_DATE = "__LEDGER_DATE__";  // 有効在庫一覧 の作成日(現在庫の基準日)
 const LEDGER_DAYS_OLD = __LEDGER_DAYS_OLD__;  // 何日前のデータか(3以上で警告)
-const BOM_P2C = __BOM_P2C__;  // parent → [children]  (merged: 全製番＋通常 → 子方向ツリー描画では使用しない)
-const BOM_C2P = __BOM_C2P__;  // child → [parents]   (merged: 親方向の上り探索に使用)
-const NODE_INFO = __NODE_INFO__;  // code → {n, e, d, s, rid, ol}
+const BOM_P2C = _RP.BOM_P2C || {};  // parent → [children]  (merged: 全製番＋通常 → 子方向ツリー描画では使用しない)
+const BOM_C2P = _RP.BOM_C2P || {};  // child → [parents]   (merged: 親方向の上り探索に使用)
+const NODE_INFO = _RP.NODE_INFO || {};  // code → {n, e, d, s, rid, ol}
 
 // ============================================================
 // 製番別BOM対応 (Phase 1): 詳細パネルのツリーは手配の製番でBOMを切替
@@ -6152,12 +6157,23 @@ html_out = (html_tpl
     .replace("__TODAY__", TODAY.strftime("%Y/%m/%d"))
     .replace("__LEDGER_DATE__", stock_basis_date_ledger or "未取得")
     .replace("__LEDGER_DAYS_OLD__", str(_ledger_days_old))
-    .replace("__DATA__", json.dumps(js_rows, ensure_ascii=False))
-    .replace("__NAMES__", json.dumps(item_names, ensure_ascii=False))
-    .replace("__BOM_P2C__", json.dumps(bom_p2c, ensure_ascii=False))
-    .replace("__BOM_C2P__", json.dumps(bom_c2p, ensure_ascii=False))
-    .replace("__NODE_INFO__", json.dumps(node_info, ensure_ascii=False))
 )
+
+# ── 2026-06-13 セキュリティ移行: 本体データを results_production.html に埋め込まない ──
+# 手配記録(DATA)・品目名(NAMES)・BOM(P2C/C2P)・品目情報/在庫(NODE_INFO) を別JSONに出力し、
+# scripts/upload_fujin_data.py が SharePoint へアップロード。画面は window.top._fujinResultsData
+# から認証取得して読む。results_production.html 自体は描画コードのみ(機微データ非含有)になる。
+_rp_data = {
+    "DATA": js_rows,
+    "NAMES": item_names,
+    "BOM_P2C": bom_p2c,
+    "BOM_C2P": bom_c2p,
+    "NODE_INFO": node_info,
+}
+_rp_path = DATA / "results_production_data.json"
+_rp_path.write_text(json.dumps(_rp_data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+print(f"[データ分離] {_rp_path.name} ({_rp_path.stat().st_size:,} bytes) → SharePoint認証配信へ")
+
 html_path = INFER / f"results_production_{len(records)}.html"
 html_path.write_text(html_out, encoding="utf-8")
 print(f"html saved: {html_path}")
