@@ -222,7 +222,7 @@ function _fujinStartAuth() {
     document.body.className = "_fujin_login_box";
     document.body.innerHTML = `
       <div class="card">
-        <h1>🌬 FUJIN</h1>
+        <h1>FUJIN</h1>
         <div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div>
         <button id="_fujinLoginBtn">🔐 Microsoft アカウントでサインイン</button>
         ${errorMsg ? '<div class="err">'+errorMsg+'</div>' : ''}
@@ -436,7 +436,7 @@ function _fujinStartAuth() {
       document.addEventListener("DOMContentLoaded", function() {
         // showLogin相当の表示
         document.body.className = "_fujin_login_box";
-        document.body.innerHTML = '<div class="card"><h1>🌬 FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリ (MSAL.js) をどのCDNからも読み込めませんでした。<br>社内ネットワークでブロックされている可能性があります。<br>システム管理者に下記URLが社外通信可能か確認を依頼してください:<br><br>・alcdn.msftauth.net<br>・alcdn.msauth.net<br>・unpkg.com<br>・cdn.jsdelivr.net</div></div>';
+        document.body.innerHTML = '<div class="card"><h1>FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリ (MSAL.js) をどのCDNからも読み込めませんでした。<br>社内ネットワークでブロックされている可能性があります。<br>システム管理者に下記URLが社外通信可能か確認を依頼してください:<br><br>・alcdn.msftauth.net<br>・alcdn.msauth.net<br>・unpkg.com<br>・cdn.jsdelivr.net</div></div>';
       }, { once: true });
       return;
     }
@@ -445,7 +445,7 @@ function _fujinStartAuth() {
       if (typeof msal !== "undefined") _fujinStartAuth();
       else if (window.parent === window) {
         document.body.className = "_fujin_login_box";
-        document.body.innerHTML = '<div class="card"><h1>🌬 FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリを読み込めませんでした。社内ネットワーク管理者に CDN へのアクセス可否を確認してください。</div></div>';
+        document.body.innerHTML = '<div class="card"><h1>FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリを読み込めませんでした。社内ネットワーク管理者に CDN へのアクセス可否を確認してください。</div></div>';
       }
     }, { once: true });
     // 10秒タイムアウト
@@ -453,7 +453,7 @@ function _fujinStartAuth() {
       if (typeof msal === "undefined" && window.parent === window) {
         if (document.body) {
           document.body.className = "_fujin_login_box";
-          document.body.innerHTML = '<div class="card"><h1>🌬 FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリ読み込みがタイムアウトしました (10秒)。ネットワーク接続を確認してください。</div></div>';
+          document.body.innerHTML = '<div class="card"><h1>FUJIN</h1><div class="sub">花岡車輌株式会社 生産管理ダッシュボード</div><div class="err">認証ライブラリ読み込みがタイムアウトしました (10秒)。ネットワーク接続を確認してください。</div></div>';
         }
       }
     }, 10000);
