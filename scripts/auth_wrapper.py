@@ -28,7 +28,15 @@ AUTH_GATE_SCRIPT = """
   html.fujin-pre-auth body { visibility: hidden !important; }
   /* 認証バッジ用の余白を header に確保 (バッジと「データ基準日」表示が重ならないように) */
   header { padding-right: 250px !important; }  /* 右上のユーザーバー(👤 + サインアウト)と「最終更新」表示の重なり回避(2026-06-13 余白拡大) */
-  @media (max-width: 900px) { header { padding-right: 60px !important; } }
+  /* スマホ/タブレット: ユーザーバーをコンパクト化してタブが隠れないように(2026-06-13) */
+  @media (max-width: 900px) {
+    header { padding-right: 8px !important; }
+    #_fujinUserBar { top:6px !important; right:8px !important; padding:3px 8px !important; font-size:10px !important; gap:5px !important; max-width:42vw; }
+    #_fujinUserBar .ub-name { max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #_fujinUserBar #_fujinLogoutBtn { font-size:10px !important; }
+    /* タブはヘッダー幅に収まらない分を横スクロール(タブ自体は隠れず指で送れる) */
+    header .tabbar { padding-right: 44vw; }
+  }
 </style>
 <script>document.documentElement.classList.add("fujin-pre-auth");</script>
 <!-- MSAL.js を複数CDNフォールバックで読み込む (社内ネットワークでブロックされても通るように) -->
@@ -343,7 +351,7 @@ function _fujinStartAuth() {
       // ユーザー名は @ より前だけ表示 (UI幅節約)。フルアドレスは title属性でhover時表示
       const fullName = account.username || account.name || '認証済';
       const shortName = fullName.indexOf('@') > 0 ? fullName.split('@')[0] : fullName;
-      bar.innerHTML = '<span title="' + fullName + '">👤 ' + shortName + '</span><button id="_fujinLogoutBtn" style="background:none;border:none;color:#1e40af;cursor:pointer;font-size:11px;text-decoration:underline;padding:0;font-weight:600">サインアウト</button>';
+      bar.innerHTML = '<span class="ub-name" title="' + fullName + '">👤 ' + shortName + '</span><button id="_fujinLogoutBtn" style="background:none;border:none;color:#1e40af;cursor:pointer;font-size:11px;text-decoration:underline;padding:0;font-weight:600;flex-shrink:0">サインアウト</button>';
       document.body.appendChild(bar);
       document.getElementById("_fujinLogoutBtn").onclick = () => window._fujinMsal.logoutRedirect();
     }
