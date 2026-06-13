@@ -285,6 +285,28 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[item_history] 例外:", e); window._fujinItemHistoryPromise = Promise.resolve(null); }
 
+    // ★ 2026-06-11 セキュリティ移行: yama_data(山積み台数) も SharePoint から認証取得
+    //   item_history と同方式。山リスト画面は window.top._fujinYamaData を採用する。
+    try {
+      var _SP_DRIVE2 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      window._fujinYamaDataPromise = window._fujinMsal
+        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE2 + "/root:/yama_data.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken } });
+        })
+        .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+        .then(function(d){
+          window._fujinYamaData = d;
+          console.log("[yama_data] ✅ SharePointから認証取得 成功");
+          return d;
+        })
+        .catch(function(e){
+          console.warn("[yama_data] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
+          return null;
+        });
+    } catch(e) { console.error("[yama_data] 例外:", e); window._fujinYamaDataPromise = Promise.resolve(null); }
+
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示

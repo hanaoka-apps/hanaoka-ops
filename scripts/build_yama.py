@@ -1186,10 +1186,11 @@ def main():
     print(f"      [社内] 作業区{len(wp_int)} / 日{len(daily_int)} / レコード{len(rec_internal):,}")
     print(f"      [外注] 仕入先{len(wp_ext)} / 日{len(daily_ext)} / レコード{len(rec_external):,}")
 
-    if AUTH_DIST.exists():
-        (AUTH_DIST / "yama_data.json").write_text(payload, encoding="utf-8")
-        (AUTH_DIST / "yama_data.js").write_text(f"window.YAMA_DATA = {payload};\n", encoding="utf-8")
-        print(f"[配置] {AUTH_DIST}/yama_data.json と yama_data.js")
+    # 2026-06-11 セキュリティ移行: yama_data(山積み台数)を公開Pages(fujin/)に置かない。
+    # auth_dist へのコピーを廃止し、scripts/upload_fujin_data.py が SharePoint へアップロード、
+    # 画面側は auth_wrapper の認証fetch(window._fujinYamaData)で取得する。
+    # ※ data/yama_data.json は upload_fujin_data.py のアップロード元として残す。
+    print("[配置] yama_data は auth_dist にコピーしない(SharePoint認証配信へ移行済)")
 
     # FUJIN.html の「最終更新」メタ情報をビルド日時に書き換える
     _update_fujin_meta(TODAY)

@@ -33,7 +33,8 @@ DATA = BASE / "data"
 
 # アップロード対象: (ローカルパス, SharePoint上の名前)
 TARGETS = [
-    (DATA / "item_history.json", "item_history.json"),
+    (DATA / "item_history.json", "item_history.json"),  # 仕入先名・金額(最機微)
+    (DATA / "yama_data.json", "yama_data.json"),         # 山積み台数 (2026-06-11追加)
 ]
 
 
