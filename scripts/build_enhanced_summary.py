@@ -2549,6 +2549,17 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
 
 /* ツールバー */
 .dv-toolbar{display:flex;justify-content:space-between;align-items:center;padding:8px 16px;background:#f8fafc;border-bottom:1px solid var(--line);font-size:12px;flex-wrap:wrap;gap:8px}
+/* スマホ/タブレット(2026-06-13): 絞り込み(検索)と凡例を既定で畳み、ツリーを大きく表示。
+   「⚙ 絞込」トグルで開閉。ズーム/Fit/全画面は常時表示。PC(>900px)は従来通り全表示。 */
+.dv-mob-toggle{display:none}
+@media (max-width: 900px){
+  .dv-mob-toggle{display:inline-flex;align-items:center;gap:4px}
+  .dv-toolbar .dv-tools-left{display:none}
+  .dv-legend{display:none}
+  body.dv-mob-filters .dv-toolbar .dv-tools-left{display:flex;flex-wrap:wrap;width:100%;margin-top:6px}
+  body.dv-mob-filters .dv-legend{display:block}
+  .dv-toolbar{padding:6px 10px}
+}
 .dv-tools-left,.dv-tools-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dv-tools-left label{display:flex;align-items:center;gap:4px;cursor:pointer;color:#475569}
 .dv-tools-left input[type=search]{padding:5px 10px;border:1px solid var(--line);border-radius:6px;font-size:12px;width:200px;font-family:inherit}
@@ -2998,6 +3009,7 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
   </div>
   <!-- ツールバー -->
   <div class="dv-toolbar">
+    <button class="dv-btn dv-mob-toggle" onclick="document.body.classList.toggle('dv-mob-filters')" title="絞り込み・凡例の表示/非表示">⚙ 絞込</button>
     <div class="dv-tools-left">
       <label><input type="checkbox" id="dvFltOver"> 納期超過のみ</label>
       <label><input type="checkbox" id="dvFltCommon"> 共通品のみ</label>
