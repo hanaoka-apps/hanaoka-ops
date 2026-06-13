@@ -2559,6 +2559,9 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
   body.dv-mob-filters .dv-toolbar .dv-tools-left{display:flex;flex-wrap:wrap;width:100%;margin-top:6px}
   body.dv-mob-filters .dv-legend{display:block}
   .dv-toolbar{padding:6px 10px}
+  /* 凡例を畳んでいる間は、凡例用に空けていた下120pxの隙間を無くしてツリーを最下部まで広げる */
+  .dv-svg-host{bottom:0}
+  body.dv-mob-filters .dv-svg-host{bottom:120px}
 }
 .dv-tools-left,.dv-tools-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dv-tools-left label{display:flex;align-items:center;gap:4px;cursor:pointer;color:#475569}
