@@ -417,6 +417,28 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[item_history] 例外:", e); window._fujinItemHistoryPromise = Promise.resolve(null); }
 
+    // ★ 2026-06-11 セキュリティ移行: yama_data(山積み台数) も SharePoint から認証取得
+    //   item_history と同方式。山リスト画面は window.top._fujinYamaData を採用する。
+    try {
+      var _SP_DRIVE2 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      window._fujinYamaDataPromise = window._fujinMsal
+        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE2 + "/root:/yama_data.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken } });
+        })
+        .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+        .then(function(d){
+          window._fujinYamaData = d;
+          console.log("[yama_data] ✅ SharePointから認証取得 成功");
+          return d;
+        })
+        .catch(function(e){
+          console.warn("[yama_data] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
+          return null;
+        });
+    } catch(e) { console.error("[yama_data] 例外:", e); window._fujinYamaDataPromise = Promise.resolve(null); }
+
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示
@@ -584,11 +606,11 @@ function _fujinStartAuth() {
   </div><!-- /.tabbar -->
   <span class="meta-info" id="meta-info-tooltip">
     <span class="i-icon">ℹ</span>
-    <span class="meta-info-text">最終更新 06-12</span>
+    <span class="meta-info-text">最終更新 06-13</span>
     <span class="meta-tip">
-      <b>データ基準日</b> 2026-06-12 22:59<br>
+      <b>データ基準日</b> 2026-06-13 01:43<br>
       <b>現在庫基準日</b> 2026-06-13 03:19<br>
-      <b>統合版生成</b> 2026-06-12 23:00
+      <b>統合版生成</b> 2026-06-13 01:44
     </span>
   </span>
 </header>
@@ -808,12 +830,14 @@ function _fujinStartInit() {
   // 2026-06-10 セキュリティ移行(段階B): item_history は公開Pagesに置かず認証fetchで取得する。
   // 親の取得完了(window._fujinItemHistoryPromise)または最大6秒を待ってからタブを開くことで、
   // 初回タブ表示時に window._fujinItemHistory が揃っており、競合で出入りが空にならない。
-  var _ihp = window._fujinItemHistoryPromise;
-  if (_ihp && typeof _ihp.then === "function") {
+  var _ps = [];
+  if (window._fujinItemHistoryPromise) _ps.push(window._fujinItemHistoryPromise);
+  if (window._fujinYamaDataPromise)    _ps.push(window._fujinYamaDataPromise);
+  if (_ps.length) {
     var _started = false;
     var _go = function(){ if (_started) return; _started = true; init(); };
-    _ihp.then(_go, _go);
-    setTimeout(_go, 6000);  // フォールバック: 取得が遅延/失敗してもUIは出す(出入りは縮退)
+    Promise.all(_ps).then(_go, _go);
+    setTimeout(_go, 6000);  // フォールバック: 取得が遅延/失敗してもUIは出す(該当データは縮退)
   } else {
     init();
   }
