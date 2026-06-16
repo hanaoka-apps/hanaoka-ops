@@ -177,6 +177,10 @@
     .s-決裁待   { background: #cce5ff; color: #004085; }
     .s-支払済   { background: #d4edda; color: #155724; }
     .s-差戻し   { background: #fdecea; color: var(--danger); font-weight: 700; }
+    .s-確定済ロック { background: #cfe9dd; color: #14532d; font-weight: 600; }
+
+    /* 相殺パネル */
+    #offset-panel .chip { background: #eef2f9; border:1px solid var(--border); border-radius: 14px; padding: 3px 10px; font-size: 12px; }
 
     .amount-cell { font-weight: 600; text-align: right; white-space: nowrap; }
     .empty-row td { text-align: center; color: var(--muted); padding: 30px; }
@@ -234,6 +238,10 @@
   <div class="section-title">📊 今月の支払サマリー</div>
   <div class="summary-grid" id="summary-grid"></div>
 
+  <!-- 相殺対象先（マスタ・月に依存しない） -->
+  <div class="section-title">🔁 相殺対象先（自動支払対象外・手動で正味確定）</div>
+  <div id="offset-panel" class="table-wrap" style="padding:12px 16px;font-size:13px;color:var(--muted);margin-bottom:24px">読み込み中...</div>
+
   <!-- 明細テーブル -->
   <div class="table-wrap">
     <div class="table-header">
@@ -244,6 +252,7 @@
           <option value="入力中">入力中</option>
           <option value="確認待">確認待</option>
           <option value="決裁待">決裁待</option>
+          <option value="確定済（ロック）">確定済（ロック）</option>
           <option value="支払済">支払済</option>
           <option value="差戻し">差戻し</option>
         </select>
@@ -344,6 +353,28 @@ async function showApp() {
   document.getElementById('user-name').textContent = currentAccount.name || currentAccount.username;
   initMonthSelector();
   await loadData();
+  loadOffsetVendors();   // 相殺先（マスタ）を別途読み込み
+}
+
+// 相殺対象先（AP_OffsetVendor）を読み込んでパネル表示
+async function loadOffsetVendors() {
+  const panel = document.getElementById('offset-panel');
+  try {
+    const lists = await graphGet(`/sites/${AP_SITE_ID}/lists`);
+    const list = lists.value.find(l => l.displayName === 'AP_OffsetVendor');
+    if (!list) { panel.textContent = 'AP_OffsetVendor が見つかりません'; return; }
+    const cols = await graphGet(`/sites/${AP_SITE_ID}/lists/${list.id}/columns`);
+    const fm = {}; cols.value.forEach(c => { fm[c.displayName] = c.name; });
+    const data = await graphGet(`/sites/${AP_SITE_ID}/lists/${list.id}/items?$expand=fields&$top=200`);
+    const rows = (data.value || []).filter(it => it.fields[fm['相殺フラグ']]);
+    if (rows.length === 0) { panel.textContent = '相殺対象先はありません'; return; }
+    const names = rows.map(it => it.fields[fm['仕入先名']] || it.fields[fm['仕入先コード']] || '(名称なし)');
+    panel.innerHTML =
+      `<strong style="color:var(--text)">${rows.length}社</strong> が相殺対象です。買掛をそのまま支払わず、売掛と相殺した正味を手動で確定してください。` +
+      `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">${names.map(n => `<span class="chip">${n}</span>`).join('')}</div>`;
+  } catch (e) {
+    panel.textContent = '相殺先の読み込みエラー: ' + e.message;
+  }
 }
 
 // ============================================================
@@ -464,6 +495,7 @@ function renderCards() {
       { key: '入力中',  dotClass: 'dot-nyuryoku' },
       { key: '確認待',  dotClass: 'dot-kakunin' },
       { key: '決裁待',  dotClass: 'dot-kessai' },
+      { key: '確定済（ロック）', dotClass: 'dot-kessai' },
       { key: '支払済',  dotClass: 'dot-haraisumi' },
       { key: '差戻し',  dotClass: 'dot-modoshi' },
     ].filter(r => statusCount[r.key])
@@ -573,7 +605,7 @@ function renderTable() {
       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fv(f, '支払先名') || '—'}</td>
       <td>${fv(f, '支払手段') || '—'}</td>
       <td class="amount-cell">¥${amt.toLocaleString()}</td>
-      <td><span class="status-badge s-${status}">${status}</span></td>
+      <td><span class="status-badge s-${status.replace(/[（）()]/g,'')}">${status}</span></td>
       <td style="font-size:11px;color:var(--muted)">${jStatus}</td>
     </tr>`;
   }).join('');
