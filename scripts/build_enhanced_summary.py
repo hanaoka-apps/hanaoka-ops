@@ -3166,6 +3166,8 @@ const BOM_P2C = _RP.BOM_P2C || {};  // parent → [children]  (merged: 全製番
 const BOM_C2P = _RP.BOM_C2P || {};  // child → [parents]   (merged: 親方向の上り探索に使用)
 const NODE_INFO = _RP.NODE_INFO || {};  // code → {n, e, d, s, rid, ol}
 const KOUTEI_MASTER = _RP.KOUTEI_MASTER || [];  // 工程マスタ全件(工程検索用。手配に出ない工程も含む)
+const ITEM_MASTER = _RP.ITEM_MASTER || [];      // 品目マスタ全件(品目検索用)
+const SUPPLIER_MASTER = _RP.SUPPLIER_MASTER || [];  // 手配先マスタ全件(仕入先+作業区)
 
 // ============================================================
 // 製番別BOM対応 (Phase 1): 詳細パネルのツリーは手配の製番でBOMを切替
@@ -5982,6 +5984,13 @@ function buildMasterLists(){
       _kouteiMaster.push({code:k.code, name:k.name||"", kbn:k.kbn||(k.code.startsWith("1")?"外注":"社内")});
     }
   });
+  // 手配先・品目もマスタ全件を先に投入(手配に出ないものも検索可能に)。雅さん 2026-06-17
+  SUPPLIER_MASTER.forEach(s=>{
+    if(s.code && !sseen.has(s.code)){ sseen.add(s.code); _supplierMaster.push({code:s.code, name:s.name||""}); }
+  });
+  ITEM_MASTER.forEach(it=>{
+    if(it.code && !iseen.has(it.code)){ iseen.add(it.code); _itemMaster.push({code:it.code, name:it.name||"", ct:it.ct, ctL:ctLabel(it.ct)}); }
+  });
   DATA.forEach(r=>{
     if(r.kc && !kseen.has(r.kc)){
       kseen.add(r.kc);
@@ -6213,6 +6222,70 @@ try:
 except Exception as _e:
     print(f"[工程マスタ] 読込失敗(工程検索は手配由来のみ): {_e}")
 
+# 品目マスタ全件(品目検索モーダル用)。手配に出ない品目も検索できるようにする。
+# 雅さん 2026-06-17: 品目検索が手配由来の836件しか出ていなかった件の対策(品目マスタは約5,000件)。
+_item_master = []
+try:
+    _pim = _master_path("品目マスタ.txt")
+    if _pim and _pim.exists():
+        _d = _detect_delim(_pim)
+        with open(_pim, encoding="utf-8-sig", errors="replace") as _f:
+            _rd = csv.reader(_f, delimiter=_d)
+            next(_rd, None)  # ヘッダ1行
+            _seen_im = set()
+            for _row in _rd:
+                if len(_row) < 2:
+                    continue
+                _c = _row[0].strip().strip('"')
+                if not _c or _c in _seen_im or _c.startswith("<") or _c == "品目ｺｰﾄﾞ":
+                    continue
+                _seen_im.add(_c)
+                _item_master.append({"code": _c, "name": _row[1].strip().strip('"'), "ct": code_type(_c)})
+        print(f"[品目master] 品目検索用に{len(_item_master):,}件読込: {_pim}")
+    else:
+        print("[品目master] 品目マスタが見つからず(品目検索は手配由来のみ)")
+except Exception as _e:
+    print(f"[品目master] 読込失敗(品目検索は手配由来のみ): {_e}")
+
+# 手配先マスタ全件(手配先検索モーダル用) = 仕入先マスタ(外注) + 作業区マスタ(社内)。
+# 雅さん 2026-06-17: 手配先検索が手配由来の7件しか出ていなかった件の対策。
+_supplier_master = []
+_seen_sup = set()
+
+
+def _add_sup(code, name):
+    code = (code or "").strip().strip('"')
+    name = (name or "").strip().strip('"')
+    if code and name and code not in _seen_sup:
+        _seen_sup.add(code)
+        _supplier_master.append({"code": code, "name": name})
+
+
+for _fname in ["仕入先マスタ.csv", "作業区マスタ.csv"]:
+    try:
+        _ps = _master_path(_fname)
+        if not _ps or not _ps.exists():
+            print(f"[手配先master] {_fname} 見つからず(スキップ)")
+            continue
+        _d = _detect_delim(_ps)
+        with open(_ps, encoding="utf-8-sig", errors="replace") as _f:
+            _rd = csv.reader(_f, delimiter=_d)
+            _hdr = [h.strip().strip('"') for h in next(_rd, [])]
+            # コード列 = 「ｺｰﾄﾞ/コード」を含む最初の列。名前列 = 「略称」優先、無ければ「名」を含む列。
+            _ci = next((i for i, h in enumerate(_hdr) if ("ｺｰﾄﾞ" in h or "コード" in h)), 0)
+            _ni = next((i for i, h in enumerate(_hdr) if "略称" in h), None)
+            if _ni is None:
+                _ni = next((i for i, h in enumerate(_hdr) if ("名" in h and "ｺｰﾄﾞ" not in h and "コード" not in h)), 1)
+            _n0 = 0
+            for _row in _rd:
+                if len(_row) <= max(_ci, _ni):
+                    continue
+                _add_sup(_row[_ci], _row[_ni]); _n0 += 1
+        print(f"[手配先master] {_fname}: {_n0:,}行 (code列='{_hdr[_ci] if _ci < len(_hdr) else _ci}', 名列='{_hdr[_ni] if _ni < len(_hdr) else _ni}')")
+    except Exception as _e:
+        print(f"[手配先master] {_fname} 読込失敗: {_e}")
+print(f"[手配先master] 手配先検索用に{len(_supplier_master):,}件読込")
+
 _rp_data = {
     "DATA": js_rows,
     "NAMES": item_names,
@@ -6220,6 +6293,8 @@ _rp_data = {
     "BOM_C2P": bom_c2p,
     "NODE_INFO": node_info,
     "KOUTEI_MASTER": _koutei_master,
+    "ITEM_MASTER": _item_master,
+    "SUPPLIER_MASTER": _supplier_master,
 }
 _rp_path = DATA / "results_production_data.json"
 _rp_path.write_text(json.dumps(_rp_data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
