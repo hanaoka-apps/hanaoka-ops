@@ -675,7 +675,7 @@ function reloadGrid() {
 }
 
 // ========== Save ==========
-// 1セル保存（新規=全フィールドを1POSTで / 既存=計画台数のみPATCH）
+// 1セル保存（新規=Title POST + 全フィールド PATCH一括 / 既存=計画台数のみPATCH）
 async function saveOneCell(cell, orderInfo) {
   const { date, existingId, procCode, procName, routeId, planQty } = cell;
 
@@ -688,9 +688,16 @@ async function saveOneCell(cell, orderInfo) {
     return { ...cell, action: 'update' };
   }
 
-  // 新規作成：全フィールドを1POSTで（1API）
+  // 新規作成：(1) Title だけで POST、(2) 全フィールドを1回のPATCHで送信
   const titleStr = `${orderInfo.kintone} ${date} ${procCode}`;
-  const fields = { Title: titleStr };
+
+  // Step 1: POST with Title only（確実に成功する）
+  const created = await graphPost(`/sites/${siteId}/lists/${listIds.daily}/items`,
+    { fields: { Title: titleStr } });
+  const newId = created.id;
+
+  // Step 2: 全フィールドを1回のPATCHで送信
+  const patchBody = {};
 
   const textFieldMap = {
     '計画台数': planQty,
@@ -702,7 +709,7 @@ async function saveOneCell(cell, orderInfo) {
   };
   Object.entries(textFieldMap).forEach(([dn, v]) => {
     const internal = colName('daily', dn);
-    if (internal && v != null && v !== '') fields[internal] = v;
+    if (internal && v != null && v !== '') patchBody[internal] = v;
   });
 
   const lookupFieldMap = {
@@ -711,11 +718,26 @@ async function saveOneCell(cell, orderInfo) {
   };
   Object.entries(lookupFieldMap).forEach(([dn, id]) => {
     const internal = colName('daily', dn);
-    if (internal && id) fields[internal + 'LookupId'] = parseInt(id);
+    if (internal && id) patchBody[internal + 'LookupId'] = parseInt(id);
   });
 
-  const created = await graphPost(`/sites/${siteId}/lists/${listIds.daily}/items`, { fields });
-  return { ...cell, action: 'create', newId: created.id };
+  if (Object.keys(patchBody).length > 0) {
+    try {
+      await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${newId}/fields`, patchBody);
+    } catch (e) {
+      // 一括PATCHが失敗した場合は1フィールドずつにフォールバック（堅牢化）
+      log(`一括PATCH失敗、1フィールドずつ再試行 ${date} ${procCode}`, { error: e.message });
+      for (const [k, v] of Object.entries(patchBody)) {
+        try {
+          await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${newId}/fields`, { [k]: v });
+        } catch (err) {
+          log(`  ✗ ${k} 失敗`, { value: v, error: err.message });
+        }
+      }
+    }
+  }
+
+  return { ...cell, action: 'create', newId };
 }
 
 async function saveGrid() {
@@ -767,25 +789,4 @@ async function saveGrid() {
         log(`✗ ${c.date} ${c.procCode}`, { error: errMsg });
       }
     });
-    completed += batch.length;
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    showStatus(`SharePointへ保存中... ${completed} / ${cells.length} セル（${elapsed}秒経過）`, 'loading');
-  }
-
-  const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-  document.getElementById('saveBtn').disabled = false;
-  updateDirtyCount();
-
-  const newCount = results.filter(r => r.action === 'create').length;
-  const updateCount = results.filter(r => r.action === 'update').length;
-
-  if (errors.length === 0) {
-    showStatus(`✓ ${results.length}セル 保存完了（新規${newCount} / 更新${updateCount}） — ${totalTime}秒`, 'success');
-  } else {
-    showStatus(`⚠ ${results.length}件成功、${errors.length}件エラー（${totalTime}秒）\n${errors.slice(0,5).map(e=>`${e.date} ${e.procCode}: ${e.error}`).join('\n')}`, 'error');
-  }
-}
-</script>
-
-</body>
-</html>
+    completed += batch.len
