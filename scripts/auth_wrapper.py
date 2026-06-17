@@ -339,6 +339,29 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[results_production] 例外:", e); window._fujinResultsDataPromise = Promise.resolve(null); }
 
+    // ★ 2026-06-13 製番進捗(seiban_progress)も SharePoint から認証取得。
+    //   画面(seiban_progress.html)は window.top._fujinSeibanData を読む。
+    try {
+      var _SP_DRIVE4 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      window._fujinSeibanDataPromise = window._fujinMsal
+        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE4 + "/root:/seiban_progress.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken } });
+        })
+        .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+        .then(function(d){
+          window._fujinSeibanData = d;
+          var n = (d && d.seibans) ? d.seibans.length : 0;
+          console.log("[seiban_progress] ✅ SharePointから認証取得 成功 (製番" + n + ")");
+          return d;
+        })
+        .catch(function(e){
+          console.warn("[seiban_progress] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
+          return null;
+        });
+    } catch(e) { console.error("[seiban_progress] 例外:", e); window._fujinSeibanDataPromise = Promise.resolve(null); }
+
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示

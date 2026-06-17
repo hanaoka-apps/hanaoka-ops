@@ -36,6 +36,7 @@ TARGETS = [
     (DATA / "item_history.json", "item_history.json"),  # 仕入先名・金額(最機微)
     (DATA / "yama_data.json", "yama_data.json"),         # 山積み台数 (2026-06-11追加)
     (DATA / "results_production_data.json", "results_production_data.json"),  # 手配/在庫/受注/BOM (2026-06-13追加)
+    (DATA / "seiban_progress.json", "seiban_progress.json"),  # 製番進捗(受注/部品/手配状態) (2026-06-13追加)
 ]
 
 
