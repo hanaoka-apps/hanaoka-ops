@@ -80,18 +80,64 @@ def _sf(s):
         return 0.0
 
 
+def _row_workplace(row):
+    """手配行が持つ手配先名(=実際の作業区)を返す。雅さん 2026-06-17:
+       工程マスタ参照だけだと工程000201(ロボット溶接)等が引けず第二工場が落ちる。
+       行の手配先名(例: 第二工場 ロボット班)を直接作業区に使うのが正しい。"""
+    for k in ("手配先名略称", "手配先略称", "手配先名１", "手配先名1", "手配先名"):
+        v = (row.get(k) or "").strip().strip('"')
+        if v and "使用禁止" not in v:
+            return v
+    return ""
+
+
 def _detect_delimiter(path):
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         first = f.readline()
     return "\t" if first.count("\t") > first.count(",") else ","
 
 
+# 2026-06-13: 工程マスタ未登録の工程コードを「黙ってスキップ」せず暫定表示する仕組み。
+# 例: 000201(第二工場フレーム)が工程マスタ未登録で山リストから丸ごと漏れていた事故対策。
+# 工程コード接頭(0001=第一/0002=第二/0003=第三, 1xxxxx=外注)から工場を推定し暫定作業区にする。
+def _fallback_wp(code):
+    c = (code or "").strip().strip('"')
+    if not c or c == "000000":
+        return None  # 無効コードは従来通りスキップ
+    if c.startswith("0001"):   fac = "第一工場"
+    elif c.startswith("0002"): fac = "第二工場"
+    elif c.startswith("0003"): fac = "第三工場"
+    elif c.startswith("1"):
+        return {"workplace": f"外注(未登録 {c})", "internal": False}
+    else:
+        fac = "その他工程"
+    return {"workplace": f"{fac}(未登録工程 {c})", "internal": True}
+
+class _WpMap(dict):
+    """工程→作業区マップ。未登録コードは _fallback_wp で暫定値を返す(in/[]/get すべて対応)。"""
+    def __contains__(self, code):
+        return dict.__contains__(self, code) or (_fallback_wp(code) is not None)
+    def __getitem__(self, code):
+        if dict.__contains__(self, code):
+            return dict.__getitem__(self, code)
+        fb = _fallback_wp(code)
+        if fb is None:
+            raise KeyError(code)
+        return fb
+    def get(self, code, default=None):
+        if dict.__contains__(self, code):
+            return dict.__getitem__(self, code)
+        fb = _fallback_wp(code)
+        return fb if fb is not None else default
+
+
 def load_process_workplace_map():
     """工程コード → {手配先名(作業区), 内外区分} のマップ。
-       社内も社外も両方含める (社内は社内工程の山、社外は外注の山として別途集計)"""
+       社内も社外も両方含める (社内は社内工程の山、社外は外注の山として別途集計)
+       工程マスタ未登録の工程コードは _WpMap が工場推定で暫定作業区を返す(漏れ防止)。"""
     p = SHARED / "工程マスタ.csv"
     delim = _detect_delimiter(p)
-    proc_to_wp = {}
+    proc_to_wp = _WpMap()
     n_internal = 0
     n_external = 0
     with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
@@ -115,6 +161,41 @@ def load_process_workplace_map():
             else:
                 n_external += 1
     print(f"[工程マスタ] 工程→作業区マップ: 社内{n_internal}件, 社外{n_external}件 / 合計{len(proc_to_wp)}キー")
+    return proc_to_wp
+
+
+def enrich_wp_map_from_arrangements(proc_to_wp):
+    """手配データ各行の『工程コード→手配先名』から、工程マスタ未登録の工程を補完する。
+       雅さん 2026-06-17: 工程000201(ロボット溶接)等は工程マスタに無いが、手配行は
+       手配先名(第二工場 ロボット班)を持つ。これを正規の作業区として学習し、
+       _WpMap の『未登録工程』フォールバック表記を出さない(第二工場が落ちる事故の本筋対策)。"""
+    sources = [
+        ("確定済_工程手配一覧.csv", "工程コード"),
+        ("製造指図出力.csv", "工程ｺｰﾄﾞ"),
+        ("未確定_購買手配データ.csv", "工程コード"),
+    ]
+    added = 0
+    for fname, pcol in sources:
+        p = SHARED / fname
+        if not p.exists():
+            p = DATA / fname
+        if not p.exists():
+            continue
+        delim = _detect_delimiter(p)
+        with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
+            for row in csv.DictReader(f, delimiter=delim):
+                code = (row.get(pcol) or "").strip().strip('"')
+                if not code or code == "000000":
+                    continue
+                if dict.__contains__(proc_to_wp, code):
+                    continue  # 工程マスタに既にあるものは尊重
+                wp = _row_workplace(row)
+                if not wp:
+                    continue
+                proc_to_wp[code] = {"workplace": wp, "internal": not code.startswith("1")}
+                added += 1
+    if added:
+        print(f"[工程補完] 手配データから工程→作業区を{added}件学習(工程マスタ未登録分・例:000201ロボット溶接→第二工場ロボット班)")
     return proc_to_wp
 
 
@@ -336,7 +417,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 records.append({
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
-                    "workplace": wp_info["workplace"],
+                    "workplace": _row_workplace(row) or wp_info["workplace"],
                     "process_code": proc_code,
                     "process_name": (row.get("工程略称") or "").strip().strip('"'),
                     "item_code": (row.get("品目コード") or "").strip().strip('"'),
@@ -382,7 +463,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 records.append({
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
-                    "workplace": wp_info["workplace"],
+                    "workplace": _row_workplace(row) or wp_info["workplace"],
                     "process_code": proc_code,
                     "process_name": (row.get("工程名") or "").strip().strip('"'),
                     "item_code": (row.get("品目ｺｰﾄﾞ") or "").strip().strip('"'),
@@ -426,7 +507,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 records.append({
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
-                    "workplace": wp_info["workplace"],
+                    "workplace": _row_workplace(row) or wp_info["workplace"],
                     "process_code": proc_code,
                     "process_name": (row.get("工程略称") or "").strip().strip('"'),
                     "item_code": (row.get("品目コード") or "").strip().strip('"'),
@@ -1099,6 +1180,7 @@ def main():
     print(f"[期間] {PAST_WINDOW.strftime('%Y/%m/%d')} 〜 {HORIZON.strftime('%Y/%m/%d')}")
     print()
     proc_to_wp = load_process_workplace_map()
+    proc_to_wp = enrich_wp_map_from_arrangements(proc_to_wp)
     supplier_map = load_supplier_map()
     item_to_final_wp, item_route_lt_map = load_item_final_workplace_map(proc_to_wp)
     # 雅さん 2026-05-24: 購買詳細に「使用先(最終製品)」を出すため BOM 親辿りマップを構築
