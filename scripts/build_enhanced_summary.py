@@ -3165,6 +3165,7 @@ const LEDGER_DAYS_OLD = __LEDGER_DAYS_OLD__;  // 何日前のデータか(3以�
 const BOM_P2C = _RP.BOM_P2C || {};  // parent → [children]  (merged: 全製番＋通常 → 子方向ツリー描画では使用しない)
 const BOM_C2P = _RP.BOM_C2P || {};  // child → [parents]   (merged: 親方向の上り探索に使用)
 const NODE_INFO = _RP.NODE_INFO || {};  // code → {n, e, d, s, rid, ol}
+const KOUTEI_MASTER = _RP.KOUTEI_MASTER || [];  // 工程マスタ全件(工程検索用。手配に出ない工程も含む)
 
 // ============================================================
 // 製番別BOM対応 (Phase 1): 詳細パネルのツリーは手配の製番でBOMを切替
@@ -5974,6 +5975,13 @@ let csmCurrentTarget = null, csmCurrentList = [], csmCurrentCols = [];
 
 function buildMasterLists(){
   const kseen = new Set(), sseen = new Set(), iseen = new Set();
+  // まず工程マスタ全件を投入(手配に出ない工程も検索できるように)。雅さん 2026-06-17
+  KOUTEI_MASTER.forEach(k=>{
+    if(k.code && !kseen.has(k.code)){
+      kseen.add(k.code);
+      _kouteiMaster.push({code:k.code, name:k.name||"", kbn:k.kbn||(k.code.startsWith("1")?"外注":"社内")});
+    }
+  });
   DATA.forEach(r=>{
     if(r.kc && !kseen.has(r.kc)){
       kseen.add(r.kc);
@@ -6182,12 +6190,36 @@ html_out = (html_tpl
 # 手配記録(DATA)・品目名(NAMES)・BOM(P2C/C2P)・品目情報/在庫(NODE_INFO) を別JSONに出力し、
 # scripts/upload_fujin_data.py が SharePoint へアップロード。画面は window.top._fujinResultsData
 # から認証取得して読む。results_production.html 自体は描画コードのみ(機微データ非含有)になる。
+# 工程マスタ全件(工程検索モーダル用)。手配レコードに出ない工程も検索できるようにする。
+# 雅さん 2026-06-17: 工程検索が手配由来の7件しか出ていなかった件の対策。
+_koutei_master = []
+try:
+    _kp = SHARED / "工程マスタ.csv"
+    if not _kp.exists():
+        _kp = DATA / "工程マスタ.csv"
+    if _kp.exists():
+        with open(_kp, encoding="utf-8-sig", errors="replace") as _kf:
+            for _row in csv.DictReader(_kf):
+                _c = (_row.get("工程ｺｰﾄﾞ") or _row.get("工程コード") or "").strip().strip('"')
+                _n = (_row.get("工程名") or _row.get("工程略称") or "").strip().strip('"')
+                _io = (_row.get("内外区分名") or "").strip().strip('"')
+                if not _c or _c == "000000":
+                    continue
+                _koutei_master.append({"code": _c, "name": _n,
+                                       "kbn": _io or ("外注" if _c.startswith("1") else "社内")})
+        print(f"[工程マスタ] 工程検索用に{len(_koutei_master)}件読込: {_kp}")
+    else:
+        print("[工程マスタ] 見つからず(工程検索は手配由来のみになる)")
+except Exception as _e:
+    print(f"[工程マスタ] 読込失敗(工程検索は手配由来のみ): {_e}")
+
 _rp_data = {
     "DATA": js_rows,
     "NAMES": item_names,
     "BOM_P2C": bom_p2c,
     "BOM_C2P": bom_c2p,
     "NODE_INFO": node_info,
+    "KOUTEI_MASTER": _koutei_master,
 }
 _rp_path = DATA / "results_production_data.json"
 _rp_path.write_text(json.dumps(_rp_data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
