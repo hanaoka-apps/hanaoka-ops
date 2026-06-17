@@ -675,6 +675,49 @@ function reloadGrid() {
 }
 
 // ========== Save ==========
+// 1セル保存（新規=全フィールドを1POSTで / 既存=計画台数のみPATCH）
+async function saveOneCell(cell, orderInfo) {
+  const { date, existingId, procCode, procName, routeId, planQty } = cell;
+
+  if (existingId) {
+    // 既存レコード更新：計画台数のみPATCH（1API）
+    const internal = colName('daily','計画台数');
+    if (!internal) throw new Error('計画台数カラムが見つかりません');
+    await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${existingId}/fields`,
+      { [internal]: planQty });
+    return { ...cell, action: 'update' };
+  }
+
+  // 新規作成：全フィールドを1POSTで（1API）
+  const titleStr = `${orderInfo.kintone} ${date} ${procCode}`;
+  const fields = { Title: titleStr };
+
+  const textFieldMap = {
+    '計画台数': planQty,
+    '日付': date + 'T00:00:00Z',
+    '工程コード': procCode,
+    '工程名': procName,
+    '機種型式': orderInfo.model,
+    '客先名': orderInfo.customer,
+  };
+  Object.entries(textFieldMap).forEach(([dn, v]) => {
+    const internal = colName('daily', dn);
+    if (internal && v != null && v !== '') fields[internal] = v;
+  });
+
+  const lookupFieldMap = {
+    '指図番号': orderInfo.id,
+    '工程ルートID': routeId,
+  };
+  Object.entries(lookupFieldMap).forEach(([dn, id]) => {
+    const internal = colName('daily', dn);
+    if (internal && id) fields[internal + 'LookupId'] = parseInt(id);
+  });
+
+  const created = await graphPost(`/sites/${siteId}/lists/${listIds.daily}/items`, { fields });
+  return { ...cell, action: 'create', newId: created.id };
+}
+
 async function saveGrid() {
   if (!selectedOrder) return;
   if (!listIds.daily) { showStatus('T03日次運用ListIDなし', 'error'); return; }
@@ -683,78 +726,63 @@ async function saveGrid() {
   if (dirtyInputs.length === 0) { showStatus('変更がありません', 'info'); return; }
 
   document.getElementById('saveBtn').disabled = true;
-  showStatus(`SharePointへ ${dirtyInputs.length}セルを保存中...`, 'loading');
-
   const orderInfo = getOrderInfo(selectedOrder);
-  const results = [], errors = [];
 
-  for (const inp of dirtyInputs) {
+  // セル情報を収集
+  const cells = dirtyInputs.map(inp => {
     const td = inp.closest('td');
     const tr = td.closest('tr');
-    const date = td.dataset.date;
-    const existingId = td.dataset.existingId;
-    const procCode = tr.dataset.procCode;
-    const procName = tr.dataset.procName;
-    const ban = tr.dataset.ban;
-    const seq = tr.dataset.seq;
-    const routeId = tr.dataset.routeId;
-    const planQty = parseFloat(inp.value)||0;
+    return {
+      inp, td, tr,
+      date: td.dataset.date,
+      existingId: td.dataset.existingId,
+      procCode: tr.dataset.procCode,
+      procName: tr.dataset.procName,
+      ban: tr.dataset.ban,
+      routeId: tr.dataset.routeId,
+      planQty: parseFloat(inp.value) || 0,
+    };
+  });
 
-    try {
-      if (existingId) {
-        // PATCH 既存レコード
-        const internalPlanQty = colName('daily','計画台数');
-        if (internalPlanQty) {
-          await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${existingId}/fields`,
-            { [internalPlanQty]: planQty });
-          log(`✓ 既存更新 ${date} ${procCode}=${planQty}`);
-          results.push({ date, procCode, action: 'update', qty: planQty });
-        }
+  // 並列保存（同時5セル）
+  const CONCURRENCY = 5;
+  const results = [], errors = [];
+  let completed = 0;
+  const startTime = Date.now();
+
+  for (let i = 0; i < cells.length; i += CONCURRENCY) {
+    const batch = cells.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map(c => saveOneCell(c, orderInfo)));
+    settled.forEach((r, idx) => {
+      const c = batch[idx];
+      if (r.status === 'fulfilled') {
+        const result = r.value;
+        results.push(result);
+        c.td.dataset.orig = String(c.planQty);
+        if (result.newId) c.td.dataset.existingId = result.newId;
+        c.inp.classList.remove('dirty');
       } else {
-        // POST 新規レコード（Title + 基本フィールド）
-        const titleStr = `${orderInfo.kintone} ${date} ${procCode}`;
-        const created = await graphPost(`/sites/${siteId}/lists/${listIds.daily}/items`, { fields: { Title: titleStr } });
-        const newId = created.id;
-        log(`✓ 新規作成 ${date} ${procCode} ID:${newId}`);
-
-        // 各フィールドを PATCH
-        const fieldsToAdd = [
-          { dn: '日付', value: date+'T00:00:00Z' },
-          { dn: '計画台数', value: planQty },
-          { dn: '工程コード', value: procCode },
-          { dn: '工程名', value: procName },
-          { dn: '機種型式', value: orderInfo.model },
-          { dn: '客先名', value: orderInfo.customer },
-          { dn: '指図番号', value: orderInfo.id, lookup: true },
-          { dn: '工程ルートID', value: routeId, lookup: true },
-        ];
-        for (const f of fieldsToAdd) {
-          const internal = colName('daily', f.dn);
-          if (!internal) continue;
-          if (f.value===null || f.value==='') continue;
-          try {
-            const body = f.lookup ? { [internal+'LookupId']: parseInt(f.value) } : { [internal]: f.value };
-            await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${newId}/fields`, body);
-          } catch (e) { log(`  ✗ ${f.dn} 失敗`, { error: e.message }); }
-        }
-        td.dataset.existingId = newId;
-        results.push({ date, procCode, action: 'create', qty: planQty });
+        const errMsg = r.reason?.message || String(r.reason);
+        errors.push({ ...c, error: errMsg });
+        log(`✗ ${c.date} ${c.procCode}`, { error: errMsg });
       }
-      td.dataset.orig = String(planQty);
-      inp.classList.remove('dirty');
-    } catch (e) {
-      log(`✗ ${date} ${procCode} エラー`, { error: e.message });
-      errors.push({ date, procCode, error: e.message });
-    }
+    });
+    completed += batch.length;
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    showStatus(`SharePointへ保存中... ${completed} / ${cells.length} セル（${elapsed}秒経過）`, 'loading');
   }
 
+  const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
   document.getElementById('saveBtn').disabled = false;
   updateDirtyCount();
 
+  const newCount = results.filter(r => r.action === 'create').length;
+  const updateCount = results.filter(r => r.action === 'update').length;
+
   if (errors.length === 0) {
-    showStatus(`✓ ${results.length}セル 保存完了（新規${results.filter(r=>r.action==='create').length} / 更新${results.filter(r=>r.action==='update').length}）`, 'success');
+    showStatus(`✓ ${results.length}セル 保存完了（新規${newCount} / 更新${updateCount}） — ${totalTime}秒`, 'success');
   } else {
-    showStatus(`⚠ ${results.length}件成功、${errors.length}件エラー\n${errors.slice(0,5).map(e=>`${e.date} ${e.procCode}: ${e.error}`).join('\n')}`, 'error');
+    showStatus(`⚠ ${results.length}件成功、${errors.length}件エラー（${totalTime}秒）\n${errors.slice(0,5).map(e=>`${e.date} ${e.procCode}: ${e.error}`).join('\n')}`, 'error');
   }
 }
 </script>
