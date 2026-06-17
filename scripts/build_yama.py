@@ -408,13 +408,13 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 qty = _sf(row.get("手配数量"))
                 reported = _sf(row.get("報告済数量"))
                 remaining = qty - reported
-                if remaining <= 0: continue
+                if qty <= 0: continue
                 tehai_no = (row.get("手配番号") or "").strip().strip('"')
                 seiban = (row.get("製番") or row.get("製　番") or "").strip().strip('"')
                 key = (scope, "確定済", seiban, proc_code, tehai_no)
                 if key in seen_keys: continue
                 seen_keys.add(key)
-                records.append({
+                _base = {
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
                     "workplace": _row_workplace(row) or wp_info["workplace"],
@@ -423,12 +423,15 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "item_code": (row.get("品目コード") or "").strip().strip('"'),
                     "item_name": (row.get("品目名") or row.get("品目名１") or "").strip().strip('"'),
                     "seiban": seiban,
-                    "qty": round(remaining, 1),
                     "tehai_no": tehai_no,
-                    "status": "確定済",
                     "kind": kind_default,
                     "source": "確定済_工程手配",
-                })
+                }
+                # 雅さん 2026-06-17: 同じ納期位置で「受入済(報告済)=グレー実績」+「残=赤確定済」を積む
+                if reported > 0:
+                    records.append({**_base, "qty": round(reported, 1), "status": "実績"})
+                if remaining > 0:
+                    records.append({**_base, "qty": round(remaining, 1), "status": "確定済"})
 
     # 2. 製造指図出力.csv (残量あり=未完成) - 確定済工程一覧の補完 (両者に同じデータあり得る、tehai_noで排他)
     p2 = SHARED / "製造指図出力.csv"
@@ -454,13 +457,13 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 qty = _sf(row.get("手配数量"))
                 reported = _sf(row.get("報告済数量"))
                 remaining = qty - reported
-                if remaining <= 0: continue
+                if qty <= 0: continue
                 tehai_no = (row.get("手配№") or "").strip().strip('"')
                 seiban = (row.get("製番") or "").strip().strip('"')
                 key = (scope, "確定済", seiban, proc_code, tehai_no)
                 if key in seen_keys: continue
                 seen_keys.add(key)
-                records.append({
+                _base = {
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
                     "workplace": _row_workplace(row) or wp_info["workplace"],
@@ -469,12 +472,15 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "item_code": (row.get("品目ｺｰﾄﾞ") or "").strip().strip('"'),
                     "item_name": (row.get("品目名") or "").strip().strip('"'),
                     "seiban": seiban,
-                    "qty": round(remaining, 1),
                     "tehai_no": tehai_no,
-                    "status": "確定済",
                     "kind": kind_default,
-                    "source": "製造指図明細",
-                })
+                    "source": "製造指図",
+                }
+                # 雅さん 2026-06-17: 受入済(報告済)=グレー実績 + 残=赤確定済 を同じ納期位置に積む
+                if reported > 0:
+                    records.append({**_base, "qty": round(reported, 1), "status": "実績"})
+                if remaining > 0:
+                    records.append({**_base, "qty": round(remaining, 1), "status": "確定済"})
 
     # 3. 未確定_購買手配データ.csv (社内工程の未確定)
     p3 = SHARED / "未確定_購買手配データ.csv"
@@ -771,9 +777,9 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                             "status": "実績", "source": "受入明細",
                         }
                         if wp_info["internal"]:
-                            rec["kind"] = "manufacture"
-                            rec_int.append(rec)
-                            cnt_int += 1
+                            # 雅さん 2026-06-17: 社内受入(=工程完了)は load_records の報告済グレーを
+                            # 納期位置に積むようにしたため、ここでは積まない(二重計上防止)。
+                            pass
                         else:
                             rec["kind"] = "external"
                             rec_ext.append(rec)
@@ -798,89 +804,11 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
     else:
         print(f"[実績/受入] 受入明細出力.csv が見つかりません")
 
-    # 1b. 社内製造の完納実績 (確定済_工程手配一覧 の報告済数量から、雅さん 2026-05-25 Q3=必要)
-    p_proc = SHARED / "確定済_工程手配一覧.csv"
-    if p_proc.exists():
-        try:
-            delim = _detect_delimiter(p_proc)
-            with open(p_proc, "r", encoding="utf-8-sig", errors="replace") as f:
-                reader = csv.DictReader(f, delimiter=delim)
-                cnt_int_act = 0
-                for row in reader:
-                    proc_code = (row.get("工程コード") or "").strip().strip('"')
-                    if proc_code not in proc_to_wp: continue
-                    wp_info = proc_to_wp[proc_code]
-                    if not wp_info["internal"]: continue  # 社内のみ
-                    reported = _sf(row.get("報告済数量"))
-                    if reported <= 0: continue
-                    # 完納/中間報告日 = 操作日付 or 手配日付 (実績日として最も近いもの)
-                    d_raw = row.get("操作日付（年月日）", "") or row.get("操作日付", "") or row.get("報告日付（年月日）", "") or row.get("手配納期(年月日）", "") or row.get("手配納期（年月日）", "")
-                    d = _parse_date(d_raw)
-                    if d is None: continue
-                    if d < PAST_WINDOW or d > TODAY: continue
-                    code = (row.get("品目コード") or "").strip().strip('"')
-                    name = (row.get("品目名") or row.get("品目名１") or "").strip().strip('"')
-                    seiban = (row.get("製番") or row.get("製　番") or "").strip().strip('"').strip()
-                    dstr = _norm_date(d_raw)
-                    rec_int.append({
-                        "date": dstr, "start_date": dstr,
-                        "workplace": wp_info["workplace"],
-                        "process_code": proc_code,
-                        "process_name": (row.get("工程略称") or "").strip().strip('"'),
-                        "item_code": code, "item_name": name,
-                        "seiban": seiban, "qty": reported,
-                        "kind": "manufacture", "status": "実績",
-                        "source": "工程手配報告済",
-                    })
-                    cnt_int_act += 1
-                print(f"[実績/社内製造] 工程手配の報告済 {cnt_int_act:,}件")
-        except Exception as e:
-            print(f"[実績/社内製造] 読込エラー: {e}")
-
-    # 1c. 製造指図出力.csv の完了済レコード (報告済数量 >= 手配数量)
-    # 2026-05-31 雅さん要望: 完了済の作業指示を過去実績としてグラフに表示
-    p_seiz = SHARED / "製造指図出力.csv"
-    if p_seiz.exists():
-        try:
-            delim = _detect_delimiter(p_seiz)
-            with open(p_seiz, "r", encoding="utf-8-sig", errors="replace") as f:
-                reader = csv.DictReader(f, delimiter=delim)
-                cnt_done = 0
-                for row in reader:
-                    proc_code = (row.get("工程ｺｰﾄﾞ") or "").strip().strip('"')
-                    if proc_code not in proc_to_wp: continue
-                    wp_info = proc_to_wp[proc_code]
-                    if not wp_info["internal"]: continue  # 社内のみ
-                    qty = _sf(row.get("手配数量"))
-                    reported = _sf(row.get("報告済数量"))
-                    if reported <= 0: continue  # 未着手はスキップ
-                    remaining = qty - reported
-                    if remaining > 0: continue  # 未完了はスキップ (確定済として別途取込済み)
-                    # 完了済: 手配納期を実績日として使用
-                    end_raw = row.get("手配納期(年月日)", "") or row.get("手配予定日(年月日)", "")
-                    d = _parse_date(end_raw)
-                    if d is None: continue
-                    if d < PAST_WINDOW or d > TODAY: continue
-                    code = (row.get("品目ｺｰﾄﾞ") or "").strip().strip('"')
-                    name = (row.get("品目名") or "").strip().strip('"')
-                    seiban = (row.get("製番") or "").strip().strip('"').strip()
-                    dstr = _norm_date(end_raw)
-                    rec_int.append({
-                        "date": dstr, "start_date": dstr,
-                        "workplace": wp_info["workplace"],
-                        "process_code": proc_code,
-                        "process_name": (row.get("工程名") or "").strip().strip('"'),
-                        "item_code": code, "item_name": name,
-                        "seiban": seiban, "qty": reported,
-                        "kind": "manufacture", "status": "実績",
-                        "source": "製造指図完了",
-                    })
-                    cnt_done += 1
-            print(f"[実績/製造指図完了] {cnt_done:,}件")
-        except Exception as e:
-            print(f"[実績/製造指図完了] 読込エラー: {e}")
-    else:
-        print(f"[実績/製造指図完了] 製造指図出力.csv が見つかりません")
+    # 1b/1c は廃止 (雅さん 2026-06-17):
+    #   工程手配・製造指図の「報告済(=受入済)」は load_records 側で『納期位置にグレー実績』として
+    #   積むよう変更した。ここで過去操作日にも積むと二重計上になるため、過去取込はしない。
+    #   (旧 1b=確定済_工程手配一覧の報告済 / 旧 1c=製造指図出力の完了済 を過去実績として取込していた)
+    print("[実績/社内製造] 報告済は load_records の納期位置グレー実績へ移行(過去取込は廃止)")
 
     # 2. 売上明細出力.csv (出荷実績)
     # ※ load_shipment_records で status="実績" として既に取込済みのため、ここでは重複ロードしない
