@@ -25,7 +25,11 @@ import csv
 import json
 import os
 import collections
+from datetime import datetime
 from pathlib import Path
+
+# 基準日(今日)。これより納期が過去の製番/計画は「終わったもの」として一覧から除外する。
+TODAY = datetime.now().strftime("%Y/%m/%d")
 
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT.parent if ROOT.name == "scripts" else ROOT
@@ -220,6 +224,8 @@ if p_ord:
         pnm.setdefault(code, (r.get(onm) or "").strip().strip('"'))
         if comp == "完納":
             continue
+        if due and due < TODAY:  # 納期が過去=終わったもの(または期限超過)は出さない
+            continue
         SB.append({"sb": sb, "k": "J", "it": code,
                    "cu": (r.get(ocu) or "").strip().strip('"'),
                    "due": due, "q": round(q, 1), "rem": round(max(q - sold, 0), 1)})
@@ -242,6 +248,8 @@ if p_plan:
         if rem <= 0:
             continue
         due = min(pdue.get(code, []) or [nd(r.get(ppd))])
+        if due and due < TODAY:  # 納期が過去=終わったもの(または期限超過)は出さない
+            continue
         SB.append({"sb": sb, "k": "K", "it": code, "cu": "",
                    "due": due, "q": round(pq, 1), "rem": round(rem, 1)})
         pnm.setdefault(code, (r.get(pnmn) or "").strip().strip('"'))
