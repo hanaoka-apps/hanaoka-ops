@@ -407,12 +407,27 @@ async function loadDailyForOrder(orderId, kintone) {
   if (!listIds.daily) { dailyRecords = []; return; }
   const all = await loadAllItems(listIds.daily);
   log(`T03日次運用 全件 ${all.length}件 読込`);
+  if (all.length > 0) log('🔍 T03日次運用 サンプル（最初の1件）', all[0].fields);
+
+  const lookupCol = colName('daily','指図番号');
   dailyRecords = all.filter(d => {
     const indicator = fld(d,'daily','指図番号','kintone番号');
-    const lookupId = d.fields?.[colName('daily','指図番号') + 'LookupId'];
-    return String(indicator)===String(kintone) || String(lookupId)===String(orderId);
+    const lookupId = lookupCol ? d.fields?.[lookupCol + 'LookupId'] : null;
+    const title = String(d.fields?.Title||'');
+    // 複数の方法で一致確認（Title prefix が最も確実）
+    return (indicator && String(indicator)===String(kintone))
+        || (lookupId && String(lookupId)===String(orderId))
+        || title.startsWith(kintone+' ')
+        || title === kintone;
   });
-  log(`選択受注の日次レコード ${dailyRecords.length}件`);
+  log(`選択受注の日次レコード ${dailyRecords.length}件（kintone="${kintone}", orderId=${orderId}）`);
+  if (dailyRecords.length === 0 && all.length > 0) {
+    log('⚠ 一致なし — 最初の3件のTitle/指図番号サンプル', all.slice(0,3).map(d => ({
+      id: d.id, Title: d.fields?.Title,
+      指図番号: fld(d,'daily','指図番号'),
+      指図番号LookupId: lookupCol ? d.fields?.[lookupCol+'LookupId'] : null,
+    })));
+  }
 }
 
 // ========== Order list ==========
@@ -475,7 +490,7 @@ async function selectOrder(id) {
   showStatus('工程ルートと日次データ読込中...', 'loading');
   document.getElementById('gridWrap').innerHTML = '<div class="empty-state">読込中...</div>';
   try {
-    loadOrderRoutes(i.kintone);
+    loadOrderRoutes(i.kintone, id);
     await loadDailyForOrder(id, i.kintone);
     renderGrid();
     hideStatus();
@@ -485,17 +500,28 @@ async function selectOrder(id) {
   }
 }
 
-function loadOrderRoutes(kintone) {
+function loadOrderRoutes(kintone, orderId) {
+  const lookupCol = colName('route','受注ID');
   orderRoutes = routes.filter(r => {
     const ind = fld(r,'route','指図番号','kintone番号');
-    const titleStart = String(r.fields?.Title||'').startsWith(kintone+' ');
-    return String(ind)===String(kintone) || titleStart;
+    const lookupId = lookupCol ? r.fields?.[lookupCol + 'LookupId'] : null;
+    const title = String(r.fields?.Title||'');
+    return (ind && String(ind)===String(kintone))
+        || (lookupId && orderId && String(lookupId)===String(orderId))
+        || title.startsWith(kintone+' ')
+        || title === kintone;
   }).sort((a,b) => {
     const sa = parseInt(fld(a,'route','工程順序','順序')||0);
     const sb = parseInt(fld(b,'route','工程順序','順序')||0);
     return sa - sb;
   });
-  log(`選択受注の工程ルート ${orderRoutes.length}件`);
+  log(`選択受注の工程ルート ${orderRoutes.length}件（kintone="${kintone}", orderId=${orderId}）`);
+  if (orderRoutes.length === 0 && routes.length > 0) {
+    log('⚠ 一致なし — 最初の3件のTitle/受注IDサンプル', routes.slice(0,3).map(r => ({
+      id: r.id, Title: r.fields?.Title,
+      受注IDLookupId: lookupCol ? r.fields?.[lookupCol+'LookupId'] : null,
+    })));
+  }
 }
 
 // ========== Month selector ==========
@@ -770,7 +796,7 @@ async function saveGrid() {
   document.getElementById('saveBtn').disabled = false;
   updateDirtyCount();
   if (errors.length === 0) {
-    showStatus(`✓ ${results.length}セル アサイン保存完了 �— ${total}秒`, 'success');
+    showStatus(`✓ ${results.length}セル アサイン保存完了 �— ${total}秒`, 'success');
   } else {
     showStatus(`⚠ ${results.length}件成功、${errors.length}件エラー（${total}秒）\n${errors.slice(0,5).map(e=>e.error).join('\n')}`, 'error');
   }
