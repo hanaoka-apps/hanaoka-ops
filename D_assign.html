@@ -112,11 +112,15 @@
   .debug-toggle { font-size: 12px; color: #b0bec5; cursor: pointer; }
 
   /* 作業員サジェスト */
-  .ac-results { position: fixed; background: white; border: 1px solid #ccc; max-height: 220px; overflow-y: auto; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; font-size: 11.5px; min-width: 200px; }
+  .ac-results { position: fixed; background: white; border: 1px solid #ccc; max-height: 320px; overflow-y: auto; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; font-size: 12px; min-width: 240px; }
   .ac-results.active { display: block; }
-  .ac-item { padding: 5px 9px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+  .ac-item { padding: 7px 11px; cursor: pointer; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .ac-item:hover { background: #eaf2f8; }
-  .ac-item .small { font-size: 10px; color: #888; }
+  .ac-item .small { font-size: 10.5px; color: #888; }
+  .ac-item.duplicate { background: #fff8ec; }
+  .ac-item.duplicate:hover { background: #ffe9bf; }
+  .ac-item .dup-warn { background: #c0392b; color: white; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 700; }
+  .ac-divider { padding: 4px 11px; background: #f0f4f8; font-size: 10px; color: #888; font-weight: 700; border-bottom: 1px solid #ddd; }
 
   /* 作業員バッジ */
   .worker-counts { background: #fafbfc; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; font-size: 11.5px; }
@@ -680,38 +684,75 @@ function renderGrid() {
   updateWorkerCounts();
 }
 
+// 同日に他セルでアサイン済みの作業員コード一覧を取得（自セル除く）
+function getSameDayAssignedCodes(currentInput) {
+  const td = currentInput.closest('td');
+  if (!td) return new Map();
+  const date = td.dataset.date;
+  const map = new Map(); // code → {procName, cellEl}
+  document.querySelectorAll(`td.assign-cell[data-date="${date}"] .worker-input`).forEach(inp => {
+    if (inp === currentInput) return;
+    const code = inp.dataset.workerCode;
+    if (!code) return;
+    const cellTd = inp.closest('td');
+    const cellTr = cellTd.closest('tr');
+    const procName = cellTr.querySelector('.col-fix2 b')?.textContent || '?';
+    map.set(code, { procName, inp });
+  });
+  return map;
+}
+
 function setupWorkerSearch(input) {
   const results = document.createElement('div');
   results.className = 'ac-results';
   document.body.appendChild(results);
   input._acResults = results;
 
-  input.addEventListener('input', () => {
-    const raw = input.value.trim();
-    if (!raw) {
-      input.dataset.workerCode = '';
-      input.dataset.workerName = '';
-      markDirty(input);
-      results.classList.remove('active');
-      return;
+  function showCandidates(query) {
+    const sameDay = getSameDayAssignedCodes(input);
+    let candidates;
+    if (!query) {
+      // 空入力時：全作業員を表示（クリックだけで選択可能）
+      candidates = workers.slice(0, 100);
+    } else {
+      const q = normalize(query);
+      candidates = workers.filter(w => normalize(getSearchableText(w)).includes(q)).slice(0, 50);
     }
-    const q = normalize(raw);
-    const matches = workers.filter(w => normalize(getSearchableText(w)).includes(q)).slice(0, 20);
-    results.innerHTML = matches.length===0
-      ? '<div class="ac-item" style="color:#aaa;">該当なし</div>'
-      : matches.map(w => {
+    if (candidates.length === 0) {
+      results.innerHTML = '<div class="ac-item" style="color:#aaa;">該当なし</div>';
+    } else {
+      results.innerHTML = '<div class="ac-divider">クリックで選択 / 赤バッジは同日他工程に割当中</div>' +
+        candidates.map(w => {
           const code = getWorkerCode(w);
           const name = getWorkerName(w);
           const ban = getWorkerBan(w);
-          return `<div class="ac-item" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}">
-            <b>${escapeHtml(name)}</b> <span class="small">${escapeHtml(code)} ${escapeHtml(ban)}</span>
+          const dup = sameDay.get(code);
+          const dupBadge = dup ? `<span class="dup-warn">同日「${escapeHtml(dup.procName)}」割当中</span>` : '';
+          return `<div class="ac-item ${dup?'duplicate':''}" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}">
+            <span><b>${escapeHtml(name)}</b> <span class="small">${escapeHtml(code)} ${escapeHtml(ban)}</span></span>
+            ${dupBadge}
           </div>`;
         }).join('');
+    }
     positionDropdown(input, results);
     results.classList.add('active');
     results.querySelectorAll('.ac-item').forEach(it => it.addEventListener('mousedown', e => {
       e.preventDefault();
-      const code = it.dataset.code, name = it.dataset.name;
+      const code = it.dataset.code || '';
+      const name = it.dataset.name || '';
+      if (!code) { results.classList.remove('active'); return; }
+      const dup = sameDay.get(code);
+      if (dup) {
+        const ans = confirm(`${name}さんは同日に他工程「${dup.procName}」に既に割当中です。\n\n[OK]→既存を解除して当セルに移動\n[キャンセル]→このまま重複でアサイン`);
+        if (ans) {
+          // 既存セルを解除
+          dup.inp.value = '';
+          dup.inp.dataset.workerCode = '';
+          dup.inp.dataset.workerName = '';
+          markDirty(dup.inp);
+        }
+        // どちらの場合も新セルに代入を進める
+      }
       input.value = name;
       input.dataset.workerCode = code;
       input.dataset.workerName = name;
@@ -719,6 +760,16 @@ function setupWorkerSearch(input) {
       results.classList.remove('active');
       updateWorkerCounts();
     }));
+  }
+
+  input.addEventListener('focus', () => showCandidates(input.value));
+  input.addEventListener('input', () => {
+    if (!input.value.trim()) {
+      input.dataset.workerCode = '';
+      input.dataset.workerName = '';
+      markDirty(input);
+    }
+    showCandidates(input.value);
   });
   input.addEventListener('blur', () => setTimeout(() => results.classList.remove('active'), 200));
 }
