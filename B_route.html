@@ -56,7 +56,9 @@
   .btn-add-row { background: white; color: #2c5b8a; border: 1px dashed #2c5b8a; padding: 7px 14px; border-radius: 4px; font-size: 12.5px; cursor: pointer; width: 100%; margin-top: 8px; }
 
   .ac-wrap { position: relative; }
-  .ac-results { position: fixed; background: white; border: 1px solid #ccc; max-height: 260px; overflow-y: auto; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; font-size: 12px; min-width: 240px; }
+  .ac-results { position: fixed; background: white; border: 1px solid #ccc; max-height: 320px; overflow-y: auto; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; font-size: 12px; min-width: 280px; }
+  input.proc-search.invalid { background: #fef5f5 !important; border-color: #c0392b !important; }
+  input.proc-search.invalid::placeholder { color: #c0392b; }
   .ac-results.active { display: block; }
   .ac-item { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
   .ac-item:hover { background: #eaf2f8; }
@@ -234,6 +236,11 @@ function positionDropdown(input, results) {
 }
 // スクロール時に開いているドロップダウンを閉じる
 window.addEventListener('scroll', () => {
+  const t = arguments[0]?.target;
+  if (t instanceof Element) {
+    if (t.classList && t.classList.contains('ac-results')) return;
+    if (typeof t.closest === 'function' && t.closest('.ac-results')) return;
+  }
   document.querySelectorAll('.ac-results.active').forEach(r => r.classList.remove('active'));
 }, true);
 function fld(item, listKey, ...displayNames) {
@@ -550,35 +557,53 @@ function addRoute(initial) {
 function setupProcessSearch(tr) {
   const input = tr.querySelector('.proc-search');
   const results = tr.querySelector('.proc-search').closest('.ac-wrap').querySelector('.ac-results');
-  input.addEventListener('input', () => {
-    const raw = input.value.trim();
-    if (!raw) { results.classList.remove('active'); return; }
+
+  function showCandidates(query) {
     if (processes.length === 0) {
-      results.innerHTML = '<div class="ac-item" style="color:#c0392b;">⚠ M03工程マスタが空（デバッグ情報を確認）</div>';
-      results.classList.add('active'); return;
+      results.innerHTML = '<div class="ac-item" style="color:#c0392b;">⚠ M03工程マスタが空</div>';
+      positionDropdown(input, results);
+      results.classList.add('active');
+      return;
     }
-    const q = normalize(raw);
-    const matches = processes.filter(p => normalize(getSearchableText(p)).includes(q)).slice(0,30);
-    log(`工程検索 "${raw}"`, { 件数: matches.length, 全件: processes.length, 最初の1件のフィールド: matches[0]?.fields });
-    results.innerHTML = matches.length===0
-      ? '<div class="ac-item" style="color:#aaa;">該当なし</div>'
-      : matches.map(m=>{
+    let candidates;
+    if (!query) {
+      candidates = processes.slice(0, 100); // 空入力：全工程表示
+    } else {
+      const q = normalize(query);
+      candidates = processes.filter(p => normalize(getSearchableText(p)).includes(q)).slice(0, 50);
+    }
+    if (candidates.length === 0) {
+      results.innerHTML = '<div class="ac-item" style="color:#aaa;">該当なし</div>';
+    } else {
+      results.innerHTML = '<div class="ac-divider" style="padding:4px 11px;background:#f0f4f8;font-size:10px;color:#888;font-weight:700;border-bottom:1px solid #ddd;">クリックで選択 / 「工程名 / 担当班」</div>' +
+        candidates.map(m=>{
           const code = String(m.fields?.Title||'');
           const name = fld(m,'process','工程名') || '';
           const ban  = fld(m,'process','主担当班','担当班') || '';
           return `<div class="ac-item" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}">
-            <b>${escapeHtml(code)}</b> ${escapeHtml(name)}<span class="small"> ${escapeHtml(ban)}</span></div>`;
+            <b>${escapeHtml(name)}</b> <span class="small">${escapeHtml(code)} / ${escapeHtml(ban)}</span></div>`;
         }).join('');
+    }
     positionDropdown(input, results);
     results.classList.add('active');
-    results.querySelectorAll('.ac-item').forEach(it => it.addEventListener('mousedown', e=>{
+    results.querySelectorAll('.ac-item[data-code]').forEach(it => it.addEventListener('mousedown', e=>{
       e.preventDefault();
       input.value = `${it.dataset.code} ${it.dataset.name}`;
       input.dataset.code = it.dataset.code;
       input.dataset.name = it.dataset.name;
+      input.classList.remove('invalid');
       if (it.dataset.ban) tr.querySelector('.ban').value = it.dataset.ban;
       results.classList.remove('active');
     }));
+  }
+
+  input.addEventListener('focus', () => showCandidates(input.value));
+  input.addEventListener('input', () => {
+    // ユーザーが手入力した瞬間にコード未選択扱いに（バリデーション目的）
+    input.dataset.code = '';
+    input.dataset.name = '';
+    input.classList.add('invalid');
+    showCandidates(input.value);
   });
   input.addEventListener('blur', ()=>setTimeout(()=>results.classList.remove('active'),200));
 }
@@ -626,6 +651,71 @@ function resetRoute() {
 }
 
 // ========== Save ==========
+// 1行を Title POST + 全フィールド1回PATCH で保存（高速化）
+async function saveOneRoute(entry, orderInfo) {
+  const titleStr = `${orderInfo.kintone} #${entry.seq} ${entry.procCode}`;
+  // ステップ1: Title のみで POST
+  const created = await graphPost(`/sites/${siteId}/lists/${listIds.route}/items`,
+    { fields: { Title: titleStr } });
+  const newId = created.id;
+
+  // ステップ2: 残りフィールドを一括 PATCH
+  const patchBody = {};
+  const textMap = {
+    '指図番号': orderInfo.kintone,
+    'kintone番号': orderInfo.kintone,
+    '客先名': orderInfo.customer,
+    '機種型式': orderInfo.model,
+    '表面処理': orderInfo.surface,
+    '工程順序': entry.seq, '順序': entry.seq,
+    '工程コード': entry.procCode,
+    '工程名': entry.procName,
+    '担当班': entry.ban, '主担当班': entry.ban,
+    '1日1人台数': entry.hours, '標準工数': entry.hours,
+    '備考': entry.note,
+  };
+  Object.entries(textMap).forEach(([dn, v]) => {
+    const internal = colName('route', dn);
+    if (internal && v != null && v !== '') patchBody[internal] = v;
+  });
+  const lookupMap = {
+    '受注ID': orderInfo.id,
+    '担当協力工場コード': entry.partnerId,
+  };
+  Object.entries(lookupMap).forEach(([dn, id]) => {
+    const internal = colName('route', dn);
+    if (internal && id) patchBody[internal + 'LookupId'] = parseInt(id);
+  });
+
+  if (Object.keys(patchBody).length > 0) {
+    try {
+      await graphPatch(`/sites/${siteId}/lists/${listIds.route}/items/${newId}/fields`, patchBody);
+    } catch (e) {
+      // 一括失敗時は1フィールドずつにフォールバック
+      log(`一括PATCH失敗、1フィールドずつ再試行 順序${entry.seq}`, { error: e.message });
+      for (const [k, v] of Object.entries(patchBody)) {
+        try { await graphPatch(`/sites/${siteId}/lists/${listIds.route}/items/${newId}/fields`, { [k]: v }); }
+        catch (err) { log(`  ✗ ${k} 失敗`, { value: v, error: err.message }); }
+      }
+    }
+  }
+  return { seq: entry.seq, id: newId, procCode: entry.procCode };
+}
+
+async function saveOneRouteWithRetry(entry, orderInfo, maxRetries = 2) {
+  for (let i = 0; i <= maxRetries; i++) {
+    try { return await saveOneRoute(entry, orderInfo); }
+    catch (e) {
+      const msg = String(e.message || '');
+      if ((msg.includes('409') || msg.includes('500')) && i < maxRetries) {
+        await new Promise(r => setTimeout(r, 150 * (i+1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 async function saveRoute() {
   if (!selectedOrder) { showStatus('受注が選択されていません','error'); return; }
   if (!listIds.route) { showStatus('T03工程ルートのListIDが取得できていません','error'); return; }
@@ -633,67 +723,79 @@ async function saveRoute() {
   const rows = [...document.querySelectorAll('#routeBody tr')];
   if (rows.length === 0) { showStatus('工程を1行以上追加してください','error'); return; }
 
+  // バリデーション：全行が procCode を持つことを確認
   const entries = [];
+  const invalidRows = [];
   for (const tr of rows) {
     const seq = parseInt(tr.querySelector('.seq').value || 0);
     const ps = tr.querySelector('.proc-search');
     const procCode = ps.dataset.code || '';
     const procName = ps.dataset.name || '';
+    if (!procCode) {
+      invalidRows.push(seq);
+      ps.classList.add('invalid');
+      continue;
+    }
     const ban = tr.querySelector('.ban').value;
     const partnerId = tr.querySelector('.partner-search').dataset.id || '';
     const hours = parseFloat(tr.querySelector('.hours').value || 0);
     const note = tr.querySelector('.note').value.trim();
-    if (!procCode) { showStatus(`順序${seq}：工程未選択。M03から工程を選んでください`,'error'); return; }
     entries.push({ seq, procCode, procName, ban, partnerId, hours, note });
+  }
+  if (invalidRows.length > 0) {
+    showStatus(`⚠ 順序 ${invalidRows.join(', ')} の工程が未選択です。サジェストから選択してください`, 'error');
+    return;
+  }
+
+  // 既存ルート確認
+  const existing = routes.filter(r => {
+    const ind = fld(r,'route','指図番号','kintone番号');
+    const titleStart = String(r.fields?.Title||'').startsWith(info.kintone+' ');
+    return String(ind)===String(info.kintone) || titleStart;
+  });
+  if (existing.length > 0) {
+    const choice = confirm(`既に ${existing.length}件 の工程ルートが登録されています。\n\n[OK] 既存を全削除して入れ替える\n[キャンセル] このまま追加保存（重複の可能性あり）`);
+    if (choice) {
+      showStatus(`既存${existing.length}件を削除中...`, 'loading');
+      document.getElementById('saveBtn').disabled = true;
+      for (const r of existing) {
+        try {
+          const t = await getToken();
+          const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listIds.route}/items/${r.id}`,
+            { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
+          if (!res.ok) log(`削除失敗 ID:${r.id}`, { status: res.status });
+          else log(`✓ 既存削除 ID:${r.id}`);
+        } catch (e) { log(`削除エラー ID:${r.id}`, { error: e.message }); }
+      }
+      routes = routes.filter(r => !existing.some(ex => ex.id === r.id));
+    }
   }
 
   document.getElementById('saveBtn').disabled = true;
-  showStatus(`SharePointへ ${entries.length} 工程を保存中...`, 'loading');
+  const startTime = Date.now();
+  const CONCURRENCY = 3;
   const results = [], errors = [];
+  let completed = 0;
 
-  for (const e of entries) {
-    const titleStr = `${info.kintone} #${e.seq} ${e.procCode}`;
-    let itemId = null;
-    try {
-      const r = await graphPost(`/sites/${siteId}/lists/${listIds.route}/items`, { fields: { Title: titleStr } });
-      itemId = r.id;
-      log(`✓ 順序${e.seq} 作成成功 ID:${itemId}`);
-    } catch (err) {
-      log(`✗ 順序${e.seq} 作成失敗`, { error: err.message });
-      errors.push({ seq: e.seq, error: err.message }); continue;
-    }
-    const fieldsToAdd = [
-      { dn: '受注ID', value: info.id, lookup: true },
-      { dn: '指図番号', value: info.kintone },
-      { dn: 'kintone番号', value: info.kintone },
-      { dn: '客先名', value: info.customer },
-      { dn: '機種型式', value: info.model },
-      { dn: '表面処理', value: info.surface },
-      { dn: '工程順序', value: e.seq }, { dn: '順序', value: e.seq },
-      { dn: '工程コード', value: e.procCode },
-      { dn: '工程名', value: e.procName },
-      { dn: '担当班', value: e.ban }, { dn: '主担当班', value: e.ban },
-      { dn: '担当協力工場コード', value: e.partnerId, lookup: true },
-      { dn: '1日1人台数', value: e.hours }, { dn: '標準工数', value: e.hours },
-      { dn: '備考', value: e.note },
-    ];
-    for (const f of fieldsToAdd) {
-      const internal = colName('route', f.dn);
-      if (!internal) continue;
-      if (f.value===null || f.value===undefined || f.value==='') continue;
-      try {
-        const body = f.lookup ? { [internal+'LookupId']: parseInt(f.value) } : { [internal]: f.value };
-        await graphPatch(`/sites/${siteId}/lists/${listIds.route}/items/${itemId}/fields`, body);
-        log(`  ✓ ${f.dn} 追加`);
-      } catch (err) { log(`  ✗ ${f.dn} 失敗`, { value: f.value, error: err.message }); }
-    }
-    results.push({ seq: e.seq, id: itemId, procCode: e.procCode });
+  for (let i = 0; i < entries.length; i += CONCURRENCY) {
+    const batch = entries.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map(e => saveOneRouteWithRetry(e, info)));
+    settled.forEach((r, idx) => {
+      const e = batch[idx];
+      if (r.status === 'fulfilled') { results.push(r.value); log(`✓ 順序${e.seq} 保存`); }
+      else { errors.push({ seq: e.seq, error: r.reason?.message || String(r.reason) }); }
+    });
+    completed += batch.length;
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    showStatus(`保存中... ${completed} / ${entries.length} 工程（${elapsed}秒）`, 'loading');
   }
+
+  const total = ((Date.now() - startTime) / 1000).toFixed(1);
   document.getElementById('saveBtn').disabled = false;
   if (errors.length===0) {
-    showStatus(`✓ ${results.length}工程 保存しました: ${results.map(r=>`順序${r.seq} ${r.procCode}(ID:${r.id})`).join('、')}`, 'success');
+    showStatus(`✓ ${results.length}工程 保存完了（${total}秒）: ${results.map(r=>`#${r.seq} ${r.procCode}`).join('、')}`, 'success');
   } else {
-    showStatus(`⚠ ${results.length}行成功、${errors.length}行エラー\n${errors.map(e=>`順序${e.seq}: ${e.error}`).join('\n')}`, 'error');
+    showStatus(`⚠ ${results.length}行成功、${errors.length}行エラー（${total}秒）\n${errors.map(e=>`順序${e.seq}: ${e.error}`).join('\n')}`, 'error');
   }
 }
 </script>
