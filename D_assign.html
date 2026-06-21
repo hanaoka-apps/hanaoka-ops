@@ -660,8 +660,18 @@ function renderGrid() {
   orderRoutes.forEach((r, idx) => {
     const seq = fld(r,'route','工程順序','順序') || (idx+1)*10;
     const procCode = fld(r,'route','工程コード') || '';
-    const procName = fld(r,'route','工程名') || '';
-    const ban = fld(r,'route','担当班','主担当班') || '';
+    // 工程名：T02から取得、空ならM03からフォールバック検索
+    let procName = fld(r,'route','工程名') || '';
+    if (!procName && procCode) {
+      const proc = processes.find(p => String(p.fields?.Title) === String(procCode));
+      if (proc) procName = fld(proc, 'process', '工程名') || '';
+    }
+    // 担当班：T02から取得、空ならM03からフォールバック検索
+    let ban = fld(r,'route','担当班','主担当班') || '';
+    if (!ban && procCode) {
+      const proc = processes.find(p => String(p.fields?.Title) === String(procCode));
+      if (proc) ban = fld(proc, 'process', '主担当班', '担当班') || '';
+    }
     html += `<tr data-proc-code="${escapeHtml(procCode)}" data-proc-name="${escapeHtml(procName)}" data-ban="${escapeHtml(ban)}">`;
     html += `<td class="col-fix1">${seq}</td>`;
     html += `<td class="col-fix2"><b>${escapeHtml(procName)}</b><br><span style="font-size:9.5px;color:#888;">${escapeHtml(procCode)}</span></td>`;
@@ -844,6 +854,24 @@ function reloadGrid() {
 }
 
 // ========== Save ==========
+// 409/500 エラー時に自動リトライ
+async function saveOneAssignWithRetry(cell, maxRetries = 3) {
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await saveOneAssign(cell);
+    } catch (e) {
+      const msg = String(e.message || '');
+      const isRetryable = msg.includes('409') || msg.includes('500');
+      if (isRetryable && i < maxRetries) {
+        // 指数バックオフ（100ms, 200ms, 400ms）
+        await new Promise(r => setTimeout(r, 100 * Math.pow(2, i)));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 async function saveOneAssign(cell) {
   const { recId, workerCode, workerName } = cell;
   const patchBody = {};
@@ -885,14 +913,14 @@ async function saveGrid() {
     };
   });
 
-  const CONCURRENCY = 5;
+  const CONCURRENCY = 3; // 並列度を下げて409エラー（eTagロック）を軽減
   const results = [], errors = [];
   let completed = 0;
   const startTime = Date.now();
 
   for (let i = 0; i < cells.length; i += CONCURRENCY) {
     const batch = cells.slice(i, i + CONCURRENCY);
-    const settled = await Promise.allSettled(batch.map(c => saveOneAssign(c)));
+    const settled = await Promise.allSettled(batch.map(c => saveOneAssignWithRetry(c)));
     settled.forEach((r, idx) => {
       const c = batch[idx];
       if (r.status === 'fulfilled') {
