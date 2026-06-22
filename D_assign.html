@@ -96,6 +96,13 @@
   td.assign-cell.no-plan { background: #fafafa; }
   td.assign-cell.no-plan .plan-display { color: #ccc; }
   td.assign-cell.has-actual { background: rgba(42,122,58,0.05); }
+  /* 連続コピー機能 */
+  .row-copy-btn { display: inline-block; margin-left: 4px; padding: 1px 5px; background: #6fa8dc; color: white; border-radius: 3px; font-size: 9.5px; font-weight: 700; cursor: pointer; user-select: none; vertical-align: middle; }
+  .row-copy-btn:hover { background: #3d85c6; }
+  .cell-copy-btn { display: none; position: absolute; top: 1px; right: 1px; padding: 0 4px; background: #ffe599; color: #7d5a00; border-radius: 2px; font-size: 9.5px; font-weight: 700; cursor: pointer; user-select: none; line-height: 1.4; border: 1px solid #d4a574; z-index: 3; }
+  td.assign-cell { position: relative; }
+  td.assign-cell:hover .cell-copy-btn { display: inline-block; }
+  .cell-copy-btn:hover { background: #d4a574; color: white; }
 
   /* アクション */
   .actions { background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 22px; display: flex; gap: 12px; justify-content: space-between; align-items: center; margin-top: 16px; }
@@ -739,7 +746,7 @@ function renderGrid() {
     }
     html += `<tr data-proc-code="${escapeHtml(procCode)}" data-proc-name="${escapeHtml(procName)}" data-ban="${escapeHtml(ban)}">`;
     html += `<td class="col-fix1">${seq}</td>`;
-    html += `<td class="col-fix2"><b>${escapeHtml(procName)}</b><br><span style="font-size:9.5px;color:#888;">${escapeHtml(procCode)}</span></td>`;
+    html += `<td class="col-fix2"><b>${escapeHtml(procName)}</b><span class="row-copy-btn" title="この行の最初のアサインを以降の計画日に全部コピー" onclick="copyRowAssign(this)">📋全日</span><br><span style="font-size:9.5px;color:#888;">${escapeHtml(procCode)}</span></td>`;
     html += `<td class="col-fix3">${escapeHtml(ban)}</td>`;
 
     days.forEach(d => {
@@ -769,6 +776,9 @@ function renderGrid() {
       const codesArr = String(workerCode||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
       const namesArr = String(workerName||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
       html += `<td class="${cls}" data-date="${d.date}" data-rec-id="${recId}" data-orig-workers="${escapeHtml(workerCode)}" data-row-ban="${escapeHtml(ban)}">`;
+      if (hasPlan && recId) {
+        html += `<span class="cell-copy-btn" title="前のセルと同じメンバーをコピー" onclick="copyFromPrevCell(this)">←前と同じ</span>`;
+      }
       html += `<div class="plan-display">計画: <span class="qty">${hasPlan ? planQty + '台' : '-'}</span>${actualQty ? `<br><span style="color:#2a7a3a;">実${actualQty}</span>` : ''}</div>`;
       if (hasPlan && recId) {
         // 既にアサインされている作業員をタグ表示
@@ -971,8 +981,74 @@ function reloadGrid() {
   renderGrid();
 }
 
+// ========== 連続コピー機能 ==========
+// 行頭の「📋全日」ボタン：その行で最初にアサインされたセルのメンバーを、それ以降の計画あり日に上書きコピー
+function copyRowAssign(btn) {
+  const tr = btn.closest('tr');
+  if (!tr) return;
+  const cells = [...tr.querySelectorAll('td.assign-cell')];
+  // 最初にメンバーがアサインされているセルを探す
+  const sourceCell = cells.find(td => td.querySelectorAll('.worker-tag').length > 0);
+  if (!sourceCell) { alert('この行にはまだ作業員がアサインされていません。先に1セル目を埋めてください。'); return; }
+  const tags = [...sourceCell.querySelectorAll('.worker-tag')];
+  const sourceData = tags.map(t => ({ code: t.dataset.code, name: t.dataset.name }));
+  // 以降の計画あり・recId ありのセルにコピー
+  const sourceIdx = cells.indexOf(sourceCell);
+  let copied = 0;
+  cells.forEach((td, idx) => {
+    if (idx <= sourceIdx) return;
+    if (!td.dataset.recId || td.classList.contains('no-plan')) return;
+    const tagsDiv = td.querySelector('.worker-tags');
+    if (!tagsDiv) return;
+    // 既存タグをクリア
+    tagsDiv.innerHTML = '';
+    // 新タグを追加
+    sourceData.forEach(d => {
+      if (!d.code) return;
+      const span = document.createElement('span');
+      span.className = 'worker-tag';
+      span.dataset.code = d.code;
+      span.dataset.name = d.name || d.code;
+      span.innerHTML = `${escapeHtml(d.name || d.code)}<span class="rm" onclick="removeWorker(this)">×</span>`;
+      tagsDiv.appendChild(span);
+    });
+    markDirty(td);
+    copied++;
+  });
+  updateWorkerCounts();
+  showStatus(`📋 ${sourceData.map(d=>d.name).join('・')} を ${copied}日分にコピーしました（未保存）`, 'info');
+}
+
+// セル内の「←前と同じ」ボタン：前のセル（左隣）のメンバーをコピー
+function copyFromPrevCell(btn) {
+  const td = btn.closest('td');
+  if (!td) return;
+  let prev = td.previousElementSibling;
+  // assign-cell でない、または計画なしを飛ばして前を探す
+  while (prev && (!prev.classList.contains('assign-cell') || !prev.dataset.recId)) {
+    prev = prev.previousElementSibling;
+  }
+  if (!prev) { alert('左隣に計画ありのセルがありません'); return; }
+  const tags = [...prev.querySelectorAll('.worker-tag')];
+  if (tags.length === 0) { alert('左隣のセルにはまだ作業員がアサインされていません'); return; }
+  const sourceData = tags.map(t => ({ code: t.dataset.code, name: t.dataset.name }));
+  const tagsDiv = td.querySelector('.worker-tags');
+  if (!tagsDiv) return;
+  tagsDiv.innerHTML = '';
+  sourceData.forEach(d => {
+    if (!d.code) return;
+    const span = document.createElement('span');
+    span.className = 'worker-tag';
+    span.dataset.code = d.code;
+    span.dataset.name = d.name || d.code;
+    span.innerHTML = `${escapeHtml(d.name || d.code)}<span class="rm" onclick="removeWorker(this)">×</span>`;
+    tagsDiv.appendChild(span);
+  });
+  markDirty(td);
+  updateWorkerCounts();
+}
+
 // ========== Save ==========
-// 409/500 エラー時に自動リトライ
 async function saveOneAssignWithRetry(cell, maxRetries = 3) {
   for (let i = 0; i <= maxRetries; i++) {
     try {
@@ -981,7 +1057,6 @@ async function saveOneAssignWithRetry(cell, maxRetries = 3) {
       const msg = String(e.message || '');
       const isRetryable = msg.includes('409') || msg.includes('500');
       if (isRetryable && i < maxRetries) {
-        // 指数バックオフ（100ms, 200ms, 400ms）
         await new Promise(r => setTimeout(r, 100 * Math.pow(2, i)));
         continue;
       }
@@ -1033,7 +1108,7 @@ async function saveGrid() {
   const dirty = [...document.querySelectorAll('td.assign-cell.dirty-cell')];
   if (dirty.length === 0) { showStatus('変更がありません', 'info'); return; }
 
-  document.getElementById('saveBtn').disabled  = true;
+  document.getElementById('saveBtn').disabled = true;
   const cells = dirty.map(td => {
     const codes = getCellWorkerCodes(td);
     const names = getCellWorkerNames(td);
@@ -1072,9 +1147,21 @@ async function saveGrid() {
 
   const total = ((Date.now() - startTime) / 1000).toFixed(1);
   document.getElementById('saveBtn').disabled = false;
+
+  // 保存後にメモリ再ロードして整合を保つ（リロード時に空欄になる問題対策）
+  if (errors.length === 0 && selectedOrder) {
+    try {
+      const info = getOrderInfo(selectedOrder);
+      await loadDailyForOrder(selectedOrder.id, info.kintone);
+      renderGrid();
+    } catch (e) {
+      log('保存後の再ロード失敗', { error: e.message });
+    }
+  }
+
   updateDirtyCount();
   if (errors.length === 0) {
-    showStatus(`✓ ${results.length}セル アサイン保存完了 — ${total}秒`, 'success');
+    showStatus(`✓ ${results.length}セル アサイン保存完了 — ${total}秒（再ロード済）`, 'success');
   } else {
     showStatus(`⚠ ${results.length}件成功、${errors.length}件エラー（${total}秒）\n${errors.slice(0,5).map(e=>e.error).join('\n')}`, 'error');
   }
