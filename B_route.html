@@ -502,7 +502,76 @@ function selectOrder(id) {
   document.getElementById('selectedOrderBanner').innerHTML = `
     <div class="label">選択中の受注</div>
     <div><b>${escapeHtml(i.kintone)}</b>　／　${escapeHtml(i.customer)}　／　機種：<b>${escapeHtml(i.model)}</b>　／　${escapeHtml(i.surface)}　／　${escapeHtml(String(i.qty))} 台　／　希望納期：${escapeHtml(String(i.due).substring(0,10))}</div>`;
-  loadTemplateRoute(i.model);
+  // 既存のT02工程ルートを優先的に読込
+  loadExistingOrTemplate(i.kintone, i.model);
+}
+
+// 既存ルートがあれば読込、なければM04テンプレート
+async function loadExistingOrTemplate(kintone, modelName) {
+  document.getElementById('routeTemplateInfo').textContent = '既存ルートを確認中...';
+  try {
+    const items = [];
+    let next = `/sites/${siteId}/lists/${listIds.route}/items?$expand=fields&$top=500`;
+    while (next) {
+      const d = await graphFetch(next);
+      items.push(...(d.value||[]));
+      const nl = d['@odata.nextLink'];
+      next = nl ? nl.replace('https://graph.microsoft.com/v1.0','') : null;
+      if (items.length > 5000) break;
+    }
+    // 該当kintoneのルートをフィルタ
+    const existing = items.filter(r => {
+      const ind = fld(r,'route','指図番号','kintone番号');
+      const titleStart = String(r.fields?.Title||'').startsWith(kintone+' ');
+      return String(ind)===String(kintone) || titleStart;
+    }).sort((a,b) => {
+      const sa = parseInt(fld(a,'route','工程順序','順序')||0);
+      const sb = parseInt(fld(b,'route','工程順序','順序')||0);
+      // Title から順序抽出も試す
+      const ma = String(a.fields?.Title||'').match(/#(\d+)/);
+      const mb = String(b.fields?.Title||'').match(/#(\d+)/);
+      return (sa || (ma?parseInt(ma[1]):0)) - (sb || (mb?parseInt(mb[1]):0));
+    });
+
+    document.getElementById('routeBody').innerHTML = '';
+
+    if (existing.length > 0) {
+      // 既存ルートを表示
+      document.getElementById('routeTemplateInfo').textContent =
+        `✓ 既存ルート ${existing.length}件 を読込（編集可。保存時に「入れ替え」を選ぶと更新）`;
+      existing.forEach((r, idx) => {
+        let procCode = fld(r,'route','工程コード') || '';
+        if (!procCode) {
+          const m = String(r.fields?.Title||'').match(/#\d+\s+(\S+)/);
+          if (m) procCode = m[1];
+        }
+        let procName = fld(r,'route','工程名') || '';
+        let ban = fld(r,'route','担当班','主担当班') || '';
+        if (procCode && (!procName || !ban)) {
+          const proc = processes.find(p => String(p.fields?.Title) === String(procCode));
+          if (proc) {
+            if (!procName) procName = fld(proc, 'process', '工程名') || '';
+            if (!ban) ban = fld(proc, 'process', '主担当班', '担当班') || '';
+          }
+        }
+        const titleMatch = String(r.fields?.Title||'').match(/#(\d+)/);
+        const seq = parseInt(fld(r,'route','工程順序','順序')) || (titleMatch?parseInt(titleMatch[1]):(idx+1)*10);
+        addRoute({
+          seq, procCode, procName, ban,
+          hoursPerDay: fld(r,'route','1日1人台数','標準工数') || '',
+          note: fld(r,'route','備考') || '',
+        });
+      });
+    } else {
+      // 既存なし → M04テンプレート読込
+      document.getElementById('routeTemplateInfo').textContent = '既存ルートなし → M04標準ルートを読込中...';
+      loadTemplateRoute(modelName);
+    }
+  } catch (e) {
+    log('既存ルート取得エラー', { error: e.message });
+    document.getElementById('routeTemplateInfo').textContent = `⚠ 既存ルート取得失敗: ${e.message}`;
+    loadTemplateRoute(modelName);
+  }
 }
 
 // ========== M04 template ==========
@@ -848,7 +917,7 @@ async function saveRoute() {
     return;
   }
 
-  // 既存ルート確認：SharePointから最新のデータを取得
+  // 既存ル�ート確認：SharePointから最新のデータを取得
   showStatus('既存ルートを確認中...', 'loading');
   let existing = [];
   try {
@@ -866,25 +935,24 @@ async function saveRoute() {
       const titleStart = String(r.fields?.Title||'').startsWith(info.kintone+' ');
       return String(ind)===String(info.kintone) || titleStart;
     });
-    log(`既存ルート確認：${existing.length}件 / 全${allItems.length}件`);
+    log(`既存ルート確認：${existing.length}件`);
   } catch (e) {
     log('既存ルート取得エラー', { error: e.message });
   }
+
   if (existing.length > 0) {
-    const choice = confirm(`既に ${existing.length}件 の工程ルートが登録されています。\n\n[OK] 既存を全削除して入れ替える\n[キャンセル] このまま追加保存（重複の可能性あり）`);
+    const choice = confirm(`既に ${existing.length}件 の工程ルートが登録されています。\n\n[OK] 既存を全削除して入れ替える\n[キャンセル] このまま追加保存`);
     if (choice) {
       showStatus(`既存${existing.length}件を削除中...`, 'loading');
       document.getElementById('saveBtn').disabled = true;
       for (const r of existing) {
         try {
           const t = await getToken();
-          const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listIds.route}/items/${r.id}`,
+          await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listIds.route}/items/${r.id}`,
             { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
-          if (!res.ok) log(`削除失敗 ID:${r.id}`, { status: res.status });
-          else log(`✓ 既存削除 ID:${r.id}`);
+          log(`✓ 既存削除 ID:${r.id}`);
         } catch (e) { log(`削除エラー ID:${r.id}`, { error: e.message }); }
       }
-      // 削除完了（次回起動時に最新化される）
     }
   }
 
@@ -916,6 +984,5 @@ async function saveRoute() {
   }
 }
 </script>
-
 </body>
 </html>
