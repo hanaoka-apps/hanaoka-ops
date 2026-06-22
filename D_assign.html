@@ -471,7 +471,18 @@ async function loadWorkers() {
   if (!listIds.worker) return;
   workers = await loadAllItems(listIds.worker);
   log(`作業員マスタ ${workers.length}名`);
-  if (workers.length>0) log('🔍 M01作業員 サンプル', workers[0].fields);
+  if (workers.length>0) {
+    log('🔍 M01作業員 サンプル', workers[0].fields);
+    // 班情報が拾えているかチェック
+    const banSamples = workers.slice(0, 8).map(w => ({
+      code: getWorkerCode(w), name: getWorkerName(w), ban: getWorkerBan(w)
+    }));
+    log('🔍 M01班検出サンプル（先頭8名）', banSamples);
+    const noBanCount = workers.filter(w => !getWorkerBan(w)).length;
+    if (noBanCount > 0) {
+      log(`⚠ ${noBanCount}/${workers.length}名の班が検出できませんでした。M01のフィールド名を確認してください`);
+    }
+  }
 }
 
 async function loadDailyForOrder(orderId, kintone) {
@@ -663,7 +674,27 @@ function getWorkerCode(w) {
   return w.fields?.Title || '';
 }
 function getWorkerBan(w) {
-  return fld(w, 'worker', '所属班', '担当班', '班') || '';
+  // 1. 既知のフィールド名候補を網羅
+  let v = fld(w, 'worker', '所属班', '担当班', '班', '組織', '部署', '部門', 'チーム', 'グループ', 'Section', 'Team', 'Group', 'Department');
+  if (v) {
+    if (typeof v === 'object') return v.LookupValue || v.lookupValue || v.Title || '';
+    return String(v);
+  }
+  // 2. フィールド名が不明な場合のフォールバック：値が「○○班」または「外注」になっているフィールドを総当たり検索
+  const f = w.fields || {};
+  for (const k of Object.keys(f)) {
+    if (k.startsWith('@') || k === 'ContentType' || k === 'Edit' || k.endsWith('LookupId') || k === 'Title' || k === 'id') continue;
+    const val = f[k];
+    if (typeof val === 'string') {
+      const t = val.trim();
+      if (/班$/.test(t) || t === '外注') return t;
+    } else if (val && typeof val === 'object') {
+      const s = val.LookupValue || val.lookupValue || val.Title || '';
+      const t = String(s).trim();
+      if (/班$/.test(t) || t === '外注') return t;
+    }
+  }
+  return '';
 }
 
 // ========== Grid rendering ==========
@@ -851,9 +882,11 @@ function setupWorkerSearch(input) {
           const ban = getWorkerBan(w);
           const dup = sameDay.get(code);
           const dupBadge = dup ? `<span class="dup-warn">同日「${escapeHtml(dup.procName)}」</span>` : '';
-          const banHi = (ban === currentBan) ? 'style="color:#1e6091;font-weight:700;"' : '';
+          const isSame = isSameBan(ban, currentBan);
+          const banHi = isSame ? 'style="color:#1e6091;font-weight:700;"' : '';
+          const banDisp = ban ? escapeHtml(ban) : '<span style="color:#c0392b;">(班未設定)</span>';
           return `<div class="ac-item ${dup?'duplicate':''}" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}">
-            <span><b>${escapeHtml(name)}</b> <span class="small" ${banHi}>${escapeHtml(code)} ${escapeHtml(ban)}</span></span>
+            <span><b>${escapeHtml(name)}</b> <span class="small" ${banHi}>${escapeHtml(code)} ${banDisp}</span></span>
             ${dupBadge}
           </div>`;
         }).join('');
@@ -1000,7 +1033,7 @@ async function saveGrid() {
   const dirty = [...document.querySelectorAll('td.assign-cell.dirty-cell')];
   if (dirty.length === 0) { showStatus('変更がありません', 'info'); return; }
 
-  document.getElementById('saveBtn').disabled = true;
+  document.getElementById('saveBtn').disabled  = true;
   const cells = dirty.map(td => {
     const codes = getCellWorkerCodes(td);
     const names = getCellWorkerNames(td);
