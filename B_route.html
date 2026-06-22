@@ -207,7 +207,7 @@ let msalInstance = null;
 let siteId = null;
 let listIds = {};
 let allColumns = {};
-let orders = [], routeTemplates = [], processes = [], partners = [];
+let orders = [], routes = [], routeTemplates = [], processes = [], partners = [];
 let selectedOrder = null;
 
 // ========== Helper ==========
@@ -848,12 +848,28 @@ async function saveRoute() {
     return;
   }
 
-  // 既存ルート確認
-  const existing = routes.filter(r => {
-    const ind = fld(r,'route','指図番号','kintone番号');
-    const titleStart = String(r.fields?.Title||'').startsWith(info.kintone+' ');
-    return String(ind)===String(info.kintone) || titleStart;
-  });
+  // 既存ルート確認：SharePointから最新のデータを取得
+  showStatus('既存ルートを確認中...', 'loading');
+  let existing = [];
+  try {
+    const allItems = [];
+    let next = `/sites/${siteId}/lists/${listIds.route}/items?$expand=fields&$top=500`;
+    while (next) {
+      const d = await graphFetch(next);
+      allItems.push(...(d.value||[]));
+      const nl = d['@odata.nextLink'];
+      next = nl ? nl.replace('https://graph.microsoft.com/v1.0','') : null;
+      if (allItems.length > 5000) break;
+    }
+    existing = allItems.filter(r => {
+      const ind = fld(r,'route','指図番号','kintone番号');
+      const titleStart = String(r.fields?.Title||'').startsWith(info.kintone+' ');
+      return String(ind)===String(info.kintone) || titleStart;
+    });
+    log(`既存ルート確認：${existing.length}件 / 全${allItems.length}件`);
+  } catch (e) {
+    log('既存ルート取得エラー', { error: e.message });
+  }
   if (existing.length > 0) {
     const choice = confirm(`既に ${existing.length}件 の工程ルートが登録されています。\n\n[OK] 既存を全削除して入れ替える\n[キャンセル] このまま追加保存（重複の可能性あり）`);
     if (choice) {
@@ -868,7 +884,7 @@ async function saveRoute() {
           else log(`✓ 既存削除 ID:${r.id}`);
         } catch (e) { log(`削除エラー ID:${r.id}`, { error: e.message }); }
       }
-      routes = routes.filter(r => !existing.some(ex => ex.id === r.id));
+      // 削除完了（次回起動時に最新化される）
     }
   }
 
