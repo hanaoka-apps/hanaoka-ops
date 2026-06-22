@@ -88,7 +88,11 @@
   td.assign-cell .worker-input { width: 100%; padding: 3px 5px; border: 1px solid #ccc; border-radius: 3px; font-size: 11px; }
   td.assign-cell .worker-input:focus { outline: none; border-color: #2c5b8a; background: #fffbe6; }
   td.assign-cell .worker-input.dirty { background: #fef9d6; border-color: #d4a574; font-weight: 600; }
-  td.assign-cell .worker-tag { background: #eaf2f8; padding: 2px 6px; border-radius: 3px; font-size: 11px; color: #2c5b8a; font-weight: 600; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.assign-cell .worker-tag { background: #eaf2f8; padding: 1px 4px 1px 6px; border-radius: 3px; font-size: 10.5px; color: #2c5b8a; font-weight: 600; display: inline-flex; align-items: center; gap: 3px; margin: 1px 2px 1px 0; max-width: 100%; }
+  td.assign-cell .worker-tag .rm { color: #c0392b; cursor: pointer; font-weight: 700; padding: 0 2px; }
+  td.assign-cell .worker-tag .rm:hover { background: #c0392b; color: white; border-radius: 2px; }
+  td.assign-cell .worker-tags { display: flex; flex-wrap: wrap; min-height: 18px; }
+  td.assign-cell.dirty-cell { background: #fef9d6 !important; }
   td.assign-cell.no-plan { background: #fafafa; }
   td.assign-cell.no-plan .plan-display { color: #ccc; }
   td.assign-cell.has-actual { background: rgba(42,122,58,0.05); }
@@ -626,6 +630,21 @@ function getDaysInMonth(ym) {
 }
 
 // ========== Worker helpers ==========
+// 班順：当該班→フレーム班→機工班→サブ組班→総組班→完組班→その他
+const BAN_ORDER = ['フレーム班', '機工班', 'サブ組班', '総組班', '完組班', '外注'];
+function getSortedWorkers(currentBan) {
+  return [...workers].sort((a, b) => {
+    const banA = getWorkerBan(a);
+    const banB = getWorkerBan(b);
+    // 当該班を最優先
+    if (banA === currentBan && banB !== currentBan) return -1;
+    if (banB === currentBan && banA !== currentBan) return 1;
+    // 残りはBAN_ORDER順
+    const ia = BAN_ORDER.indexOf(banA);
+    const ib = BAN_ORDER.indexOf(banB);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  });
+}
 function getWorkerName(w) {
   return fld(w, 'worker', '氏名', '名前') || w.fields?.field_1 || w.fields?.Title || '（名前なし）';
 }
@@ -704,12 +723,22 @@ function renderGrid() {
       if (!hasPlan) cls += ' no-plan';
       if (actualQty) cls += ' has-actual';
 
-      html += `<td class="${cls}" data-date="${d.date}" data-rec-id="${recId}" data-orig-worker="${escapeHtml(workerCode)}">`;
+      // 既存データはカンマ区切り対応（複数人アサイン）
+      const codesArr = String(workerCode||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
+      const namesArr = String(workerName||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
+      html += `<td class="${cls}" data-date="${d.date}" data-rec-id="${recId}" data-orig-workers="${escapeHtml(workerCode)}" data-row-ban="${escapeHtml(ban)}">`;
       html += `<div class="plan-display">計画: <span class="qty">${hasPlan ? planQty + '台' : '-'}</span>${actualQty ? `<br><span style="color:#2a7a3a;">実${actualQty}</span>` : ''}</div>`;
       if (hasPlan && recId) {
-        const display = workerName ? `${workerName}` : '';
-        html += `<input type="text" class="worker-input" placeholder="作業員名で検索"
-          value="${escapeHtml(display)}" data-worker-code="${escapeHtml(workerCode)}" data-worker-name="${escapeHtml(workerName)}" autocomplete="off">`;
+        // 既にアサインされている作業員をタグ表示
+        html += '<div class="worker-tags">';
+        const maxLen = Math.max(codesArr.length, namesArr.length);
+        for (let i = 0; i < maxLen; i++) {
+          const c = codesArr[i] || '';
+          const n = namesArr[i] || c;
+          html += `<span class="worker-tag" data-code="${escapeHtml(c)}" data-name="${escapeHtml(n)}">${escapeHtml(n)}<span class="rm" onclick="removeWorker(this)">×</span></span>`;
+        }
+        html += '</div>';
+        html += `<input type="text" class="worker-input" placeholder="+ 作業員を追加" autocomplete="off">`;
       }
       html += '</td>';
     });
@@ -730,17 +759,52 @@ function getSameDayAssignedCodes(currentInput) {
   const td = currentInput.closest('td');
   if (!td) return new Map();
   const date = td.dataset.date;
-  const map = new Map(); // code → {procName, cellEl}
-  document.querySelectorAll(`td.assign-cell[data-date="${date}"] .worker-input`).forEach(inp => {
-    if (inp === currentInput) return;
-    const code = inp.dataset.workerCode;
-    if (!code) return;
-    const cellTd = inp.closest('td');
+  const map = new Map(); // code → {procName, cellTd}
+  document.querySelectorAll(`td.assign-cell[data-date="${date}"]`).forEach(cellTd => {
+    if (cellTd === currentInput) return;
     const cellTr = cellTd.closest('tr');
     const procName = cellTr.querySelector('.col-fix2 b')?.textContent || '?';
-    map.set(code, { procName, inp });
+    cellTd.querySelectorAll('.worker-tag').forEach(tag => {
+      const code = tag.dataset.code || '';
+      if (!code) return;
+      map.set(code, { procName, cellTd, tag });
+    });
   });
   return map;
+}
+
+// セル内のタグからコード一覧を取得
+function getCellWorkerCodes(td) {
+  return [...td.querySelectorAll('.worker-tag')].map(t => t.dataset.code).filter(Boolean);
+}
+function getCellWorkerNames(td) {
+  return [...td.querySelectorAll('.worker-tag')].map(t => t.dataset.name || t.dataset.code).filter(Boolean);
+}
+
+// タグを追加（重複は除外）
+function addWorkerTag(td, code, name) {
+  if (!code) return;
+  const exist = getCellWorkerCodes(td);
+  if (exist.includes(code)) return; // 既に同セルに居る
+  const tagsDiv = td.querySelector('.worker-tags');
+  if (!tagsDiv) return;
+  const span = document.createElement('span');
+  span.className = 'worker-tag';
+  span.dataset.code = code;
+  span.dataset.name = name || code;
+  span.innerHTML = `${escapeHtml(name || code)}<span class="rm" onclick="removeWorker(this)">×</span>`;
+  tagsDiv.appendChild(span);
+  markDirty(td);
+}
+
+// 削除（×ボタンから呼ばれる）
+function removeWorker(rmSpan) {
+  const tag = rmSpan.closest('.worker-tag');
+  const td = rmSpan.closest('td');
+  if (!tag || !td) return;
+  tag.remove();
+  markDirty(td);
+  updateWorkerCounts();
 }
 
 function setupWorkerSearch(input) {
@@ -750,27 +814,35 @@ function setupWorkerSearch(input) {
   input._acResults = results;
 
   function showCandidates(query) {
-    const sameDay = getSameDayAssignedCodes(input);
+    const td = input.closest('td');
+    const currentBan = td?.dataset.rowBan || '';
+    const sortedWorkers = getSortedWorkers(currentBan);
+    const alreadyInCell = new Set(getCellWorkerCodes(td));
+    const sameDay = getSameDayAssignedCodes(td);
+
     let candidates;
     if (!query) {
-      // 空入力時：全作業員を表示（クリックだけで選択可能）
-      candidates = workers.slice(0, 100);
+      candidates = sortedWorkers.slice(0, 100);
     } else {
       const q = normalize(query);
-      candidates = workers.filter(w => normalize(getSearchableText(w)).includes(q)).slice(0, 50);
+      candidates = sortedWorkers.filter(w => normalize(getSearchableText(w)).includes(q)).slice(0, 80);
     }
+    // 既に同セルに居る人は表示しない
+    candidates = candidates.filter(w => !alreadyInCell.has(getWorkerCode(w)));
+
     if (candidates.length === 0) {
       results.innerHTML = '<div class="ac-item" style="color:#aaa;">該当なし</div>';
     } else {
-      results.innerHTML = '<div class="ac-divider">クリックで選択 / 赤バッジは同日他工程に割当中</div>' +
+      results.innerHTML = `<div class="ac-divider">${escapeHtml(currentBan)}メンバー優先 / 赤バッジは同日他工程に割当中</div>` +
         candidates.map(w => {
           const code = getWorkerCode(w);
           const name = getWorkerName(w);
           const ban = getWorkerBan(w);
           const dup = sameDay.get(code);
-          const dupBadge = dup ? `<span class="dup-warn">同日「${escapeHtml(dup.procName)}」割当中</span>` : '';
+          const dupBadge = dup ? `<span class="dup-warn">同日「${escapeHtml(dup.procName)}」</span>` : '';
+          const banHi = (ban === currentBan) ? 'style="color:#1e6091;font-weight:700;"' : '';
           return `<div class="ac-item ${dup?'duplicate':''}" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}">
-            <span><b>${escapeHtml(name)}</b> <span class="small">${escapeHtml(code)} ${escapeHtml(ban)}</span></span>
+            <span><b>${escapeHtml(name)}</b> <span class="small" ${banHi}>${escapeHtml(code)} ${escapeHtml(ban)}</span></span>
             ${dupBadge}
           </div>`;
         }).join('');
@@ -784,59 +856,50 @@ function setupWorkerSearch(input) {
       if (!code) { results.classList.remove('active'); return; }
       const dup = sameDay.get(code);
       if (dup) {
-        const ans = confirm(`${name}さんは同日に他工程「${dup.procName}」に既に割当中です。\n\n[OK]→既存を解除して当セルに移動\n[キャンセル]→このまま重複でアサイン`);
+        const ans = confirm(`${name}さんは同日に他工程「${dup.procName}」に既に割当中です。\n\n[OK]→既存を解除して当セルに移動\n[キャンセル]→そのまま追加（重複アサイン）`);
         if (ans) {
-          // 既存セルを解除
-          dup.inp.value = '';
-          dup.inp.dataset.workerCode = '';
-          dup.inp.dataset.workerName = '';
-          markDirty(dup.inp);
+          // 既存タグを削除
+          const otherTd = dup.cellTd;
+          dup.tag.remove();
+          markDirty(otherTd);
         }
-        // どちらの場合も新セルに代入を進める
       }
-      input.value = name;
-      input.dataset.workerCode = code;
-      input.dataset.workerName = name;
-      markDirty(input);
+      addWorkerTag(td, code, name);
+      input.value = '';
       results.classList.remove('active');
       updateWorkerCounts();
+      // フォーカスを維持して連続追加できるように
+      setTimeout(() => { input.focus(); }, 50);
     }));
   }
 
   input.addEventListener('focus', () => showCandidates(input.value));
-  input.addEventListener('input', () => {
-    if (!input.value.trim()) {
-      input.dataset.workerCode = '';
-      input.dataset.workerName = '';
-      markDirty(input);
-    }
-    showCandidates(input.value);
-  });
+  input.addEventListener('input', () => showCandidates(input.value));
   input.addEventListener('blur', () => setTimeout(() => results.classList.remove('active'), 200));
 }
 
-function markDirty(input) {
-  const td = input.closest('td');
-  const origCode = td.dataset.origWorker || '';
-  const newCode = input.dataset.workerCode || '';
-  if (String(origCode) !== String(newCode)) input.classList.add('dirty');
-  else input.classList.remove('dirty');
+function markDirty(td) {
+  const origCsv = td.dataset.origWorkers || '';
+  const origCodes = origCsv.split(/[,、]/).map(s=>s.trim()).filter(Boolean).sort().join(',');
+  const newCodes = getCellWorkerCodes(td).sort().join(',');
+  if (origCodes !== newCodes) td.classList.add('dirty-cell');
+  else td.classList.remove('dirty-cell');
   updateDirtyCount();
 }
 
 function updateDirtyCount() {
-  const count = document.querySelectorAll('.worker-input.dirty').length;
+  const count = document.querySelectorAll('td.assign-cell.dirty-cell').length;
   document.getElementById('dirtyCount').textContent = `変更: ${count}セル`;
   document.getElementById('saveBtn').disabled = count===0;
 }
 
 function updateWorkerCounts() {
-  // 各作業員の当月アサイン日数
+  // 各作業員の当月アサイン日数（タグ数で集計）
   const counts = {};
-  document.querySelectorAll('.worker-input').forEach(inp => {
-    const code = inp.dataset.workerCode;
+  document.querySelectorAll('td.assign-cell .worker-tag').forEach(tag => {
+    const code = tag.dataset.code;
     if (!code) return;
-    const name = inp.dataset.workerName || code;
+    const name = tag.dataset.name || code;
     const key = `${name}(${code})`;
     counts[key] = (counts[key] || 0) + 1;
   });
@@ -877,47 +940,61 @@ async function saveOneAssignWithRetry(cell, maxRetries = 3) {
 }
 
 async function saveOneAssign(cell) {
-  const { recId, workerCode, workerName } = cell;
+  const { recId, workerCodes, workerNames } = cell;
   const patchBody = {};
   const codeInternal = colName('daily', '作業員コード');
   const nameInternal = colName('daily', '氏名');
 
+  const codeCsv = (workerCodes || []).join(',');
+  const nameCsv = (workerNames || []).join(',');
+
   if (codeInternal) {
-    // 作業員コードはLookup列の可能性
-    // 一旦 Lookup として送信を試す。失敗したらテキストとして送る
-    if (workerCode) {
-      // workerCode is M01.Title (e.g., "W001"). For Lookup, we need M01 record's SharePoint ID
-      const w = workers.find(ww => getWorkerCode(ww) === workerCode);
-      if (w) patchBody[codeInternal + 'LookupId'] = parseInt(w.id);
-      else patchBody[codeInternal] = workerCode;
+    if (codeCsv) {
+      const first = workerCodes[0];
+      const w = workers.find(ww => getWorkerCode(ww) === first);
+      if (w) {
+        patchBody[codeInternal + 'LookupId'] = parseInt(w.id);
+      } else {
+        patchBody[codeInternal] = codeCsv;
+      }
     } else {
-      // 解除（Lookup列を null に）
       patchBody[codeInternal + 'LookupId'] = null;
     }
   }
-  if (nameInternal && workerName) patchBody[nameInternal] = workerName;
-  else if (nameInternal && !workerName) patchBody[nameInternal] = '';
+  if (nameInternal) patchBody[nameInternal] = nameCsv;
 
-  await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${recId}/fields`, patchBody);
+  try {
+    await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${recId}/fields`, patchBody);
+  } catch (e) {
+    const msg = String(e.message || '');
+    if (msg.includes('400') && codeInternal && patchBody[codeInternal + 'LookupId'] !== undefined) {
+      delete patchBody[codeInternal + 'LookupId'];
+      patchBody[codeInternal] = codeCsv;
+      await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${recId}/fields`, patchBody);
+    } else {
+      throw e;
+    }
+  }
   return { ...cell, action: 'update' };
 }
 
 async function saveGrid() {
-  const dirty = [...document.querySelectorAll('.worker-input.dirty')];
+  const dirty = [...document.querySelectorAll('td.assign-cell.dirty-cell')];
   if (dirty.length === 0) { showStatus('変更がありません', 'info'); return; }
 
   document.getElementById('saveBtn').disabled = true;
-  const cells = dirty.map(inp => {
-    const td = inp.closest('td');
+  const cells = dirty.map(td => {
+    const codes = getCellWorkerCodes(td);
+    const names = getCellWorkerNames(td);
     return {
-      inp, td,
+      td,
       recId: td.dataset.recId,
-      workerCode: inp.dataset.workerCode || '',
-      workerName: inp.dataset.workerName || '',
+      workerCodes: codes,
+      workerNames: names,
     };
   });
 
-  const CONCURRENCY = 3; // 並列度を下げて409エラー（eTagロック）を軽減
+  const CONCURRENCY = 3;
   const results = [], errors = [];
   let completed = 0;
   const startTime = Date.now();
@@ -929,8 +1006,8 @@ async function saveGrid() {
       const c = batch[idx];
       if (r.status === 'fulfilled') {
         results.push(r.value);
-        c.td.dataset.origWorker = c.workerCode;
-        c.inp.classList.remove('dirty');
+        c.td.dataset.origWorkers = (c.workerCodes || []).join(',');
+        c.td.classList.remove('dirty-cell');
       } else {
         const errMsg = r.reason?.message || String(r.reason);
         errors.push({ ...c, error: errMsg });
@@ -948,7 +1025,7 @@ async function saveGrid() {
   if (errors.length === 0) {
     showStatus(`✓ ${results.length}セル アサイン保存完了 — ${total}秒`, 'success');
   } else {
-    showStatus(`⚠ ${results.length}件成功、${errors.length}�件エラー（${total}秒）\n${errors.slice(0,5).map(e=>e.error).join('\n')}`, 'error');
+    showStatus(`⚠ ${results.length}件成功、${errors.length}件エラー（${total}秒）\n${errors.slice(0,5).map(e=>e.error).join('\n')}`, 'error');
   }
 }
 </script>
