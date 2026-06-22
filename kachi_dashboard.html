@@ -376,6 +376,65 @@ footer b{color:var(--goldDark)}
         </table>
       </div>
     </div>
+
+    <!-- ===== 型式コード検索（任意の品目を期間で集計） ===== -->
+    <div class="table-card" id="codeSearchCard">
+      <h3>🔍 型式コード検索 <span style="font-size:11px; color:var(--gray); font-weight:400">重点機種以外も検索可・期間内で集計</span></h3>
+      <p style="font-size:12px; color:var(--gray); margin:0 0 12px">
+        型式コード（例：UDGLS、PAL-360、ARU-1Y 等）を入力すると、上で指定した期間内の実績を集計表示します。<br>
+        入力すると候補が出ます（期間内に売上のある全品目から検索）。
+      </p>
+      <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px">
+        <div style="flex:1; min-width:280px">
+          <label style="font-size:11px; color:var(--gray); letter-spacing:.5px; font-weight:600; display:block; margin-bottom:4px">型式コード</label>
+          <input type="text" id="codeSearchInput" list="codeSearchSuggest"
+            placeholder="型式を入力（例: PAL-360）"
+            style="width:100%; padding:10px 14px; border:1px solid var(--line); border-radius:10px; font-family:'Inter',monospace; font-size:14px; background:var(--cream); text-transform:uppercase">
+          <datalist id="codeSearchSuggest"></datalist>
+        </div>
+        <button class="btn primary" id="codeSearchBtn" style="padding:10px 24px">検索</button>
+        <button class="btn ghost sm" id="codeSearchClearBtn">クリア</button>
+      </div>
+      <div id="codeSearchResult" style="display:none">
+        <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr); margin-top:0">
+          <div class="kcard a">
+            <div class="name">販売数量</div>
+            <div class="val" id="csQty">—<span class="unit">台</span></div>
+            <div class="sub" id="csQtySub">—</div>
+          </div>
+          <div class="kcard b">
+            <div class="name">売上金額</div>
+            <div class="val" id="csAmt">—<span class="unit">万円</span></div>
+            <div class="sub" id="csAmtSub">—</div>
+          </div>
+          <div class="kcard c">
+            <div class="name">平均単価（加重）</div>
+            <div class="val" id="csAvg">—<span class="unit">円</span></div>
+            <div class="sub" id="csAvgSub">—</div>
+          </div>
+          <div class="kcard d">
+            <div class="name">最安実販売単価</div>
+            <div class="val" id="csMin">—<span class="unit">円</span></div>
+            <div class="sub" id="csMinSub">—</div>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <table class="kachi-tbl" id="csMonthlyTbl">
+            <thead>
+              <tr>
+                <th class="left">月</th>
+                <th>販売数量(台)</th>
+                <th>売上金額(万円)</th>
+                <th>平均単価(円)</th>
+                <th>最安単価(円)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="csMeta" style="margin-top:10px; font-size:11px; color:var(--gray)"></div>
+      </div>
+    </div>
   </section>
 
   <!-- COST INPUT PAGE は廃止しました。原価/目標は SharePoint エディタで編集してください -->
@@ -1335,6 +1394,142 @@ function bindSummarySort(){
 function setText(id, v){ const el = document.getElementById(id); if (el) el.textContent = v; }
 
 // ============================================================
+// 型式コード検索（任意品目を期間で集計）
+// ============================================================
+function updateCodeSearchSuggest(){
+  // 期間内に売上のある全品目コードをサジェストに入れる
+  const [from, to] = getRange();
+  const codes = new Set();
+  for (const r of ROWS) {
+    if (r[IDX.ym] >= from && r[IDX.ym] <= to) codes.add(r[IDX.item_cd]);
+  }
+  const dl = document.getElementById('codeSearchSuggest');
+  if (!dl) return;
+  // sorted by alphabetical
+  const sorted = [...codes].filter(c => c).sort();
+  dl.innerHTML = sorted.map(c => `<option value="${c}">`).join('');
+}
+
+function runCodeSearch(){
+  const input = document.getElementById('codeSearchInput');
+  if (!input) return;
+  const code = (input.value || "").trim().toUpperCase();
+  const result = document.getElementById('codeSearchResult');
+  if (!code) {
+    result.style.display = "none";
+    return;
+  }
+  const [from, to] = getRange();
+  // 完全一致
+  const matched = ROWS.filter(r =>
+    String(r[IDX.item_cd]).toUpperCase() === code &&
+    r[IDX.ym] >= from && r[IDX.ym] <= to
+  );
+  if (matched.length === 0) {
+    result.style.display = "block";
+    setText('csQty', '0');
+    setText('csQtySub', `期間: ${ymToLabel(from)}〜${ymToLabel(to)}`);
+    setText('csAmt', '0');
+    setText('csAmtSub', '該当なし');
+    setText('csAvg', '—');
+    setText('csAvgSub', '');
+    setText('csMin', '—');
+    setText('csMinSub', '');
+    const tb = document.querySelector('#csMonthlyTbl tbody');
+    if (tb) tb.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--gray); padding:20px">期間内に「${code}」の売上はありません</td></tr>`;
+    document.getElementById('csMeta').innerHTML = `<b style="color:var(--red)">⚠</b> 型式「${escHtml(code)}」は期間内に取引なし。スペル違い・/T等の派生コード違いの可能性あり`;
+    return;
+  }
+  // 集計
+  let totQty = 0, totAmt = 0;
+  let minPrice = Infinity, minPriceYm = null;
+  const byYm = new Map();
+  let itemNm = "";
+  let daiBunrui = "";
+  let chuBunrui = "";
+  for (const r of matched) {
+    totQty += r[IDX.qty];
+    totAmt += r[IDX.amount];
+    const u = r[IDX.unit_price];
+    if (u > 0 && u < minPrice) { minPrice = u; minPriceYm = r[IDX.ym]; }
+    if (!itemNm && r[IDX.item_nm]) itemNm = r[IDX.item_nm];
+    if (!daiBunrui && r[IDX.dai_bunrui]) daiBunrui = r[IDX.dai_bunrui];
+    if (!chuBunrui && r[IDX.chu_bunrui]) chuBunrui = r[IDX.chu_bunrui];
+    const ym = r[IDX.ym];
+    if (!byYm.has(ym)) byYm.set(ym, { qty:0, amt:0, min:Infinity });
+    const o = byYm.get(ym);
+    o.qty += r[IDX.qty];
+    o.amt += r[IDX.amount];
+    if (u > 0 && u < o.min) o.min = u;
+  }
+  const avg = totQty > 0 ? totAmt / totQty : null;
+
+  // KPI更新
+  result.style.display = "block";
+  setText('csQty', fmtQty(totQty));
+  setText('csQtySub', `期間: ${ymToLabel(from)}〜${ymToLabel(to)}・${matched.length}件`);
+  setText('csAmt', fmtMan(totAmt));
+  setText('csAmtSub', `税抜・返品/内部移動除外`);
+  setText('csAvg', avg == null ? '—' : Math.round(avg).toLocaleString());
+  setText('csAvgSub', avg == null ? '' : '売上金額÷数量（加重平均）');
+  setText('csMin', minPrice < Infinity ? Math.round(minPrice).toLocaleString() : '—');
+  setText('csMinSub', minPrice < Infinity ? `${ymToLabel(minPriceYm)} の取引` : '');
+
+  // 月別テーブル
+  const yms = [...byYm.keys()].sort();
+  const tb = document.querySelector('#csMonthlyTbl tbody');
+  let html = "";
+  for (const ym of yms) {
+    const o = byYm.get(ym);
+    const a = o.qty > 0 ? o.amt / o.qty : null;
+    html += `<tr>
+      <td class="left">${ymToLabel(ym)}</td>
+      <td>${fmtQty(o.qty)}</td>
+      <td>${fmtMan(o.amt)}</td>
+      <td>${a == null ? '—' : fmtYen(a)}</td>
+      <td>${o.min < Infinity ? fmtYen(o.min) : '—'}</td>
+    </tr>`;
+  }
+  if (tb) tb.innerHTML = html;
+  // メタ情報
+  const metaParts = [];
+  if (itemNm) metaParts.push(`品名: <b style="color:var(--navy)">${escHtml(itemNm)}</b>`);
+  if (daiBunrui) metaParts.push(`大分類: ${escHtml(daiBunrui)}`);
+  if (chuBunrui) metaParts.push(`中分類: ${escHtml(chuBunrui)}`);
+  document.getElementById('csMeta').innerHTML = metaParts.join(' / ');
+}
+
+function escHtml(s){
+  return String(s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+function bindCodeSearch(){
+  const input = document.getElementById('codeSearchInput');
+  const btn = document.getElementById('codeSearchBtn');
+  const clearBtn = document.getElementById('codeSearchClearBtn');
+  if (!input || !btn) return;
+  // 入力時にサジェスト更新
+  input.addEventListener('focus', updateCodeSearchSuggest);
+  input.addEventListener('input', () => {
+    // サジェスト選択（datalist option click）で即実行
+    const v = input.value || "";
+    const dl = document.getElementById('codeSearchSuggest');
+    if (dl) {
+      const exact = [...dl.options].some(o => o.value === v);
+      if (exact) runCodeSearch();
+    }
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runCodeSearch(); }
+  });
+  btn.addEventListener('click', runCodeSearch);
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    input.value = "";
+    document.getElementById('codeSearchResult').style.display = "none";
+  });
+}
+
+// ============================================================
 // 原価管理
 // ============================================================
 function loadCostData(){
@@ -1743,9 +1938,7 @@ function stopAutoSync(){
 async function autoSyncTick(){
   if (!_spAccount || !_autoSyncEnabled) return;
   try {
-    // サイレントで再取得
     const before = _lastSyncSnapshot;
-    // 売上データも更新（OneDrive）
     const beforeYmMax = (META_CUR && META_CUR.ym_max) || 0;
     await spLoadFactsQuiet();
     await spLoadCostsQuiet();
@@ -1763,7 +1956,6 @@ async function autoSyncTick(){
   }
 }
 
-// 静かなOneDrive売上データ取得
 async function spLoadFactsQuiet(){
   if (!_spAccount) return false;
   try {
@@ -1790,7 +1982,6 @@ async function spLoadFactsQuiet(){
   }
 }
 
-// 静かなSharePoint読み込み（ステータス更新無し）
 async function spLoadCostsQuiet(){
   if (!_spAccount) return false;
   let url = `/sites/${SP_CONFIG.siteId}/lists/${SP_CONFIG.targetsListId}/items?$expand=fields&$top=2000`;
@@ -1807,7 +1998,6 @@ async function spLoadCostsQuiet(){
     return true;
   });
   if (!COST_DATA || typeof COST_DATA !== "object") COST_DATA = { useMonthly:false, items:{} };
-  // 一旦リセット（削除されたアイテムを反映）
   COST_DATA.items = {};
   TARGET_QTY = new Map();
   MIN_PRICE_DATA = new Map();
@@ -1870,25 +2060,28 @@ function bindEvents(){
   document.getElementById("fromYm").addEventListener("change", () => {
     document.getElementById("periodPreset").value = "custom";
     recompute();
+    updateCodeSearchSuggest();
   });
   document.getElementById("toYm").addEventListener("change", () => {
     document.getElementById("periodPreset").value = "custom";
     recompute();
+    updateCodeSearchSuggest();
   });
   document.getElementById("periodPreset").addEventListener("change", () => {
     applyPeriodPreset();
     recompute();
+    updateCodeSearchSuggest();
   });
   document.getElementById("displayMode").addEventListener("change", recompute);
 
   bindSummarySort();
+  bindCodeSearch();
 
   const spLoginBtn = document.getElementById("spLoginBtn");
   const spLogoutBtn = document.getElementById("spLogoutBtn");
   if (spLoginBtn) spLoginBtn.addEventListener("click", async () => {
     try {
       await spLogin();
-      // 売上データもOneDriveから取得（sales_dashboardと同じ場所）
       await spLoadFacts();
       const ok = await spLoadCosts();
       if (ok) {
