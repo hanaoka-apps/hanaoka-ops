@@ -632,16 +632,27 @@ function getDaysInMonth(ym) {
 // ========== Worker helpers ==========
 // 班順：当該班→フレーム班→機工班→サブ組班→総組班→完組班→その他
 const BAN_ORDER = ['フレーム班', '機工班', 'サブ組班', '総組班', '完組班', '外注'];
+// 「班」の有無・空白・全半角ゆれを吸収して比較
+function normalizeBan(s) {
+  return String(s||'').replace(/[\s　]/g,'').replace(/班$/,'').toLowerCase();
+}
+function isSameBan(a, b) {
+  const na = normalizeBan(a), nb = normalizeBan(b);
+  return na && nb && na === nb;
+}
 function getSortedWorkers(currentBan) {
+  const cur = normalizeBan(currentBan);
   return [...workers].sort((a, b) => {
-    const banA = getWorkerBan(a);
-    const banB = getWorkerBan(b);
+    const banA = normalizeBan(getWorkerBan(a));
+    const banB = normalizeBan(getWorkerBan(b));
     // 当該班を最優先
-    if (banA === currentBan && banB !== currentBan) return -1;
-    if (banB === currentBan && banA !== currentBan) return 1;
+    const aMatch = banA && banA === cur;
+    const bMatch = banB && banB === cur;
+    if (aMatch && !bMatch) return -1;
+    if (bMatch && !aMatch) return 1;
     // 残りはBAN_ORDER順
-    const ia = BAN_ORDER.indexOf(banA);
-    const ib = BAN_ORDER.indexOf(banB);
+    const ia = BAN_ORDER.findIndex(x => normalizeBan(x) === banA);
+    const ib = BAN_ORDER.findIndex(x => normalizeBan(x) === banB);
     return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
   });
 }
@@ -851,6 +862,7 @@ function setupWorkerSearch(input) {
     results.classList.add('active');
     results.querySelectorAll('.ac-item').forEach(it => it.addEventListener('mousedown', e => {
       e.preventDefault();
+      e.stopPropagation();
       const code = it.dataset.code || '';
       const name = it.dataset.name || '';
       if (!code) { results.classList.remove('active'); return; }
@@ -866,16 +878,22 @@ function setupWorkerSearch(input) {
       }
       addWorkerTag(td, code, name);
       input.value = '';
-      results.classList.remove('active');
       updateWorkerCounts();
-      // フォーカスを維持して連続追加できるように
-      setTimeout(() => { input.focus(); }, 50);
+      // 連続追加できるよう、ドロップダウンを再表示（focus()ではfocusイベントが再発火しないため明示的に呼ぶ）
+      showCandidates('');
+      input.focus();
     }));
   }
 
   input.addEventListener('focus', () => showCandidates(input.value));
   input.addEventListener('input', () => showCandidates(input.value));
-  input.addEventListener('blur', () => setTimeout(() => results.classList.remove('active'), 200));
+  input.addEventListener('blur', () => setTimeout(() => {
+    // フォーカスがまだinputに残っている、または候補内クリック中は閉じない
+    if (document.activeElement === input) return;
+    results.classList.remove('active');
+  }, 200));
+  // 候補内のクリックでblurさせない保険
+  results.addEventListener('mousedown', e => e.preventDefault());
 }
 
 function markDirty(td) {
