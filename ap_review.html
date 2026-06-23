@@ -107,6 +107,7 @@
       <button id="mode-review" class="on" onclick="setMode('review')">未確認</button>
       <button id="mode-due" onclick="setMode('due')">当月（締日別）</button>
       <button id="mode-all" onclick="setMode('all')">全件</button>
+      <button id="mode-arch" onclick="setMode('arch')">🗄 アーカイブ</button>
     </div>
     <span id="status-msg" style="font-size:12px;color:var(--muted)"></span>
     <div class="links"><a href="ap_dashboard.html">📊 ダッシュボード</a><a href="ap_entry.html">✏ 手入力</a></div>
@@ -173,7 +174,7 @@ async function showApp(){
 }
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=0;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}}
 function month(){return document.getElementById('month-select').value;}
-function setMode(m){mode=m;['review','due','all'].forEach(x=>document.getElementById('mode-'+x).classList.toggle('on',x===m));renderList();}
+function setMode(m){mode=m;['review','due','all','arch'].forEach(x=>document.getElementById('mode-'+x).classList.toggle('on',x===m));renderList();}
 
 async function loadData(){
   const msg=document.getElementById('status-msg');msg.textContent='読み込み中...';
@@ -200,13 +201,15 @@ function invMeta(inv){
   return {payee:hv(f,'支払先名'),paydate:hv(f,'支払日区分'),method:hv(f,'支払手段'),cat:hv(f,'支払区分'),
     status:hv(f,'支払ステータス')||'確認待',review:hv(f,'要確認フラグ')===true,reason:hv(f,'要確認理由'),
     offset:hv(f,'相殺対象フラグ')===true,acctchg:hv(f,'口座変更フラグ')===true,dup:hv(f,'二重請求フラグ')===true,
-    doc:hv(f,'DOCコード'),total,nlines:lines.length};
+    doc:hv(f,'DOCコード'),archived:hv(f,'アーカイブフラグ')===true,total,nlines:lines.length};
 }
 function badge(m){if(m.status==='確定済（ロック）')return '<span class="badge b-locked">確定</span>';if(m.review)return '<span class="badge b-review">要確認</span>';if(m.status==='差戻し')return '<span class="badge b-flag">差戻し</span>';return '<span class="badge b-wait">確認待</span>';}
 function cardHtml(inv){const m=invMeta(inv);const fl=[m.offset?'相殺':'',m.acctchg?'口座変更':'',m.dup?'二重':''].filter(Boolean).map(x=>`<span class="badge b-flag">${x}</span>`).join('');
   return `<div class="inv-card ${inv.id===selected?'active':''}" onclick="select('${inv.id}')"><div class="pname">${m.payee||'(不明)'} ${badge(m)}${fl}</div><div class="meta"><span>${m.paydate||'-'}・${m.cat||''}・${m.nlines}明細</span><span class="amt">${yen(m.total)}</span></div></div>`;}
 function renderList(){
   const pane=document.getElementById('list-pane');let arr=H.inv.slice();
+  if(mode==='arch'){arr=arr.filter(x=>invMeta(x).archived);pane.innerHTML=`<div class="list-filter">アーカイブ ${arr.length}件</div>`+(arr.length?arr.map(cardHtml).join(''):'<div class="empty" style="padding:30px">アーカイブなし</div>');return;}
+  arr=arr.filter(x=>!invMeta(x).archived);
   if(mode==='review'){
     arr=arr.filter(x=>{const m=invMeta(x);return m.status!=='確定済（ロック）'&&m.status!=='支払済'&&(m.review||m.status==='確認待'||m.status==='差戻し');});
     arr.sort((a,b)=>{const ma=invMeta(a),mb=invMeta(b);return (mb.review-ma.review)||(mb.total-ma.total);});
@@ -289,6 +292,7 @@ function renderDetail(inv){
           <button class="btn-approve" onclick="approve()" ${dis}>✓ 承認（確定）</button>
           <button class="btn-primary" onclick="saveAll()" ${dis}>💾 保存</button>
           ${locked?'<button class="btn-reject" onclick="unlock()">🔓 ロック解除</button>':'<button class="btn-reject" onclick="reject()">↩ 差戻し</button>'}
+          ${m.archived?'<button class="btn-ghost" onclick="unarchive()">📤 アーカイブ解除</button>':'<button class="btn-ghost" onclick="archive()">🗄 アーカイブ</button>'}
         </div>
       </div>
 
@@ -356,6 +360,10 @@ async function reject(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;
   try{await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'差戻し',[hi('差戻し理由')]:r});snack('↩ 差戻しました');await loadData();}catch(e){snack('差戻しエラー: '+e.message,true);}}
 async function unlock(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;if(!confirm('確定（ロック）を解除して確認待に戻します。よろしいですか？'))return;
   try{await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'確認待'});snack('🔓 ロック解除しました');await loadData();}catch(e){snack('解除エラー: '+e.message,true);}}
+async function archive(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;const r=prompt('アーカイブ理由（重複/今月対象外/誤依頼 等）');if(r===null)return;
+  try{await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('アーカイブフラグ')]:true,[hi('アーカイブ理由')]:r});snack('🗄 アーカイブしました');await loadData();}catch(e){snack('アーカイブエラー: '+e.message,true);}}
+async function unarchive(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;
+  try{await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('アーカイブフラグ')]:false});snack('📤 アーカイブ解除しました');await loadData();}catch(e){snack('解除エラー: '+e.message,true);}}
 function snack(m,e=false){const el=document.getElementById('snackbar');el.textContent=m;el.style.background=e?'#c0392b':'#323232';el.style.display='block';setTimeout(()=>el.style.display='none',4000);}
 
 boot().catch(e=>{console.error(e);snack('認証エラー: '+e.message,true);});
