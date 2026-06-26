@@ -30,7 +30,9 @@
   .summary .s.honsha b{color:#185fa5;}.summary .s.kojo b{color:#854f0b;}
   .main{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 52px - 42px - 39px);}
   @media(max-width:1000px){.main{grid-template-columns:1fr;height:auto;}}
-  .list-pane{border-right:1px solid var(--border);overflow-y:auto;background:#fbfcfe;}
+  .list-pane{border-right:1px solid var(--border);background:#fbfcfe;display:flex;flex-direction:column;overflow:hidden;}
+  .list-head{padding:7px 8px;border-bottom:1px solid var(--border);display:flex;align-items:center;background:#fbfcfe;}
+  .list-scroll{overflow-y:auto;flex:1;}
   table.vl{width:100%;border-collapse:collapse;font-size:12px;}
   table.vl th{position:sticky;top:0;background:#eef2f8;padding:6px 8px;text-align:left;color:var(--muted);font-weight:600;font-size:11px;z-index:1;}
   table.vl td{padding:6px 8px;border-bottom:1px solid #eef2f8;}
@@ -63,6 +65,10 @@
   table.det th{background:#f1f4f9;padding:6px 6px;text-align:left;color:var(--muted);font-weight:600;font-size:11px;white-space:nowrap;}
   table.det td{padding:5px 6px;border-bottom:1px solid #f0f3fa;}
   table.det td.num{text-align:right;white-space:nowrap;}
+  .pdf-pane{position:sticky;top:0;align-self:start;max-height:calc(100vh - 120px);overflow:auto;}
+  .pdf-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;}
+  .pdf-chip{font-size:11px;border:1px solid var(--border);background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .pdf-chip.on{background:var(--primary);color:#fff;border-color:var(--primary);}
   .pdf-pane h4{font-size:12px;color:var(--primary);margin-bottom:6px;}
   .pdf-drop{border:2px dashed var(--border);border-radius:8px;padding:10px;text-align:center;color:var(--muted);font-size:12px;cursor:pointer;display:block;}
   .pdf-drop input{display:none;}
@@ -91,8 +97,6 @@
 <div id="app-view">
   <div class="toolbar">
     <label>決済月</label><select id="month-select" onchange="onMonth()"></select>
-    <label>一覧拠点</label>
-    <div class="seg"><button id="vm-all" class="on" onclick="setListView('all')">全部</button><button id="vm-honsha" onclick="setListView('本社')">本社</button><button id="vm-kojo" onclick="setListView('工場')">工場</button></div>
     <input id="f-text" placeholder="仕入先で絞込" oninput="renderList()">
     <label><input type="checkbox" id="f-arch" onchange="renderList()"> アーカイブ表示</label>
     <button class="reload" onclick="loadAll()">🔄 再読込</button>
@@ -102,7 +106,10 @@
   <div class="summary" id="summary"></div>
   <div class="summary" id="progress" style="gap:20px;align-items:center"></div>
   <div class="main">
-    <div class="list-pane" id="list-pane"></div>
+    <div class="list-pane" id="list-pane">
+      <div class="list-head"><span style="font-size:11px;color:var(--muted);margin-right:6px">一覧拠点</span><div class="seg" style="font-size:12px"><button id="vm-all" class="on" onclick="setListView('all')">全部</button><button id="vm-honsha" onclick="setListView('本社')">本社</button><button id="vm-kojo" onclick="setListView('工場')">工場</button></div></div>
+      <div class="list-scroll" id="list-scroll"></div>
+    </div>
     <div class="detail-pane" id="detail-pane"><div class="empty">左の仕入先を選択してください</div></div>
   </div>
 </div>
@@ -115,7 +122,7 @@ const GRAPH='https://graph.microsoft.com/v1.0';
 const SITE_PATH='hanaokacorp.sharepoint.com:/sites/msteams_20513c', DRIVE_NAME='GenelalMasters', FILE_PATH='9521受入リスト.csv';
 const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const MLIST='AP_PurchaseMatch';
-let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfs={},selectedCode=null,listView='all',detailView='all';
+let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfSel={},pdfCache={},selectedCode=null,listView='all',detailView='all';
 let M={fmap:{},id:null};
 
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}}
@@ -126,7 +133,7 @@ async function gget(p){const t=await token();const r=await fetch(GRAPH+p,{header
 async function gpatch(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'PATCH',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
 async function gpost(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'POST',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
 async function gblob(url){const t=await token();const r=await fetch(url,{headers:{Authorization:'Bearer '+t}});if(!r.ok)throw new Error('['+r.status+'] file');return r.blob();}
-async function gputFile(path,file){const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/root:${path}:/content`,{method:'PUT',headers:{Authorization:'Bearer '+t,'Content-Type':file.type||'application/pdf'},body:file});if(!r.ok)throw new Error('PDFアップロード '+r.status+' '+await r.text());return r.json();}
+async function gputFile(path,file){const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/root:${encodeURI(path)}:/content`,{method:'PUT',headers:{Authorization:'Bearer '+t,'Content-Type':file.type||'application/pdf'},body:file});if(!r.ok)throw new Error('PDFアップロード '+r.status+' '+await r.text());return r.json();}
 
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;initMonth();await ensureMatchList();await loadAll();}
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<5;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}}
@@ -237,7 +244,7 @@ function renderList(){
   let list=vendors.filter(v=>showArch?archived[v.code]:!archived[v.code]);
   if(listView!=='all')list=list.filter(v=>(v.byLoc[listView]||0)>0);
   if(ft)list=list.filter(v=>v.name.includes(ft)||v.code.includes(ft));
-  const pane=document.getElementById('list-pane');
+  const pane=document.getElementById('list-scroll');
   pane.innerHTML=`<table class="vl"><thead><tr><th>仕入先(コード順)</th><th>拠点</th><th class="num">受入(税込)${listView!=='all'?'※'+listView:''}</th><th>突合</th></tr></thead><tbody>`+
     (list.length?list.map(v=>{const st=vstatus(v);const ms=matchState[v.code]||{};const locs=Object.entries(v.byLoc).filter(([k,x])=>x>0).map(([k])=>`<span class="loc-pill ${k==='工場'?'pill-kojo':'pill-honsha'}">${k}</span>`).join('');
       return `<tr class="vrow ${v.code===selectedCode?'active':''} ${archived[v.code]?'archived':''}" onclick="selectVendor('${v.code}')"><td>${v.code} ${v.name||''}${ms.received?' <span class="rcv">✓受領</span>':''}</td><td>${locs}</td><td class="num">${yen(vIncl(v,listView))}</td><td><span class="st ${st.cls}">${st.txt}</span></td></tr>`;}).join(''):'<tr><td colspan="4" class="empty">該当なし</td></tr>')
@@ -274,29 +281,40 @@ function renderDetail(code){
     <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="font-size:12px;color:var(--muted)">明細・拠点表示：</span><div class="seg" style="font-size:12px"><button id="dvm-all" onclick="setDetailView('all')">全部</button><button id="dvm-honsha" onclick="setDetailView('本社')">本社</button><button id="dvm-kojo" onclick="setDetailView('工場')">工場</button></div></div>
     <div class="det-split">
       <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
-      <div class="pdf-pane"><h4>手元請求書（突合用）</h4>
-        <label class="pdf-drop">📎 請求書PDFを選択（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
-        <div id="pdf-host"><div class="pdf-empty">PDFを選ぶと保存＆表示<br>（受入明細と見比べ）</div></div>
+      <div class="pdf-pane"><h4>手元請求書（複数枚可・本社/工場別もOK）</h4>
+        <label class="pdf-drop">📎 請求書PDFを追加（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
+        <div id="pdf-host"><div class="pdf-empty">読込中...</div></div>
       </div>
     </div>
     <div style="margin-top:12px">${arch?`<button class="btn-ghost" onclick="setArch('${code}',false)">↩ アーカイブ解除</button>`:`<button class="btn-arch" onclick="setArch('${code}',true)">🗄 アーカイブ（対象外にする）</button>`}</div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">決済月 ${month()}／表示明細${lines.length}件・全${v.lines.length}件。保存でSharePointに残ります。</div>`;
   segOn('dvm-',detailView);
-  // PDF表示（メモリ優先→保存リンクをGraphで取得）
-  const host=document.getElementById('pdf-host');
-  if(pdfs[code]){host.innerHTML=`<iframe class="pdf-frame" src="${pdfs[code]}"></iframe>`;}
-  else if(m.pdfLink){host.innerHTML='<div class="pdf-empty">PDF読込中...</div>';
-    gblob(`${GRAPH}/sites/${AP_SITE}/drive/root:${m.pdfLink}:/content`).then(b=>{pdfs[code]=URL.createObjectURL(b);if(selectedCode===code)document.getElementById('pdf-host').innerHTML=`<iframe class="pdf-frame" src="${pdfs[code]}"></iframe>`;}).catch(()=>{host.innerHTML='<div class="pdf-empty">PDF取得失敗（リンク切れ）</div>';});}
+  renderPdfList(code);
+}
+function pdfFolder(code){return `/BILLS/仕入請求書/${month().replace('/','-')}/${code}`;}
+async function renderPdfList(code){
+  const host=document.getElementById('pdf-host');if(!host)return;
+  let files=[];
+  try{const d=await gget(`/sites/${AP_SITE}/drive/root:${encodeURI(pdfFolder(code))}:/children?$select=id,name`);files=(d.value||[]).filter(f=>/\.pdf$/i.test(f.name||''));}catch(e){files=[];}
+  if(!files.length){host.innerHTML='<div class="pdf-empty">PDFなし。「📎追加」で取り込み<br>本社/工場で複数枚OK</div>';return;}
+  if(!pdfSel[code]||!files.some(f=>f.id===pdfSel[code]))pdfSel[code]=files[0].id;
+  const chips=files.map(f=>`<button class="pdf-chip" data-id="${f.id}" onclick="showPdf('${code}','${f.id}')" title="${esc(f.name)}">${f.name}</button>`).join('');
+  host.innerHTML=`<div class="pdf-chips">${chips}</div><div id="pdf-view"><div class="pdf-empty">読込中...</div></div>`;
+  showPdf(code,pdfSel[code]);
+}
+async function showPdf(code,id){pdfSel[code]=id;
+  document.querySelectorAll('.pdf-chip').forEach(b=>b.classList.toggle('on',b.dataset.id===id));
+  const view=document.getElementById('pdf-view');if(!view)return;
+  if(pdfCache[id]){view.innerHTML=`<iframe class="pdf-frame" src="${pdfCache[id]}"></iframe>`;return;}
+  view.innerHTML='<div class="pdf-empty">読込中...</div>';
+  try{const b=await gblob(`${GRAPH}/sites/${AP_SITE}/drive/items/${id}/content`);pdfCache[id]=URL.createObjectURL(b);if(pdfSel[code]===id)view.innerHTML=`<iframe class="pdf-frame" src="${pdfCache[id]}"></iframe>`;}catch(e){view.innerHTML='<div class="pdf-empty">取得失敗</div>';}
 }
 
 async function onPdf(code,inp){const f=inp.files[0];if(!f)return;if(f.type!=='application/pdf'){snack('PDFを選んでください',true);return;}
-  const v=vendors.find(x=>x.code===code);const ym=month().replace('/','-');
-  const safe=(v.name||code).replace(/[#%*<>?/\\{|}:]/g,'_');const path=`/BILLS/仕入請求書/${ym}/${code}_${safe}.pdf`;
+  const safe=f.name.replace(/[#%*<>?/\\{|}:]/g,'_');const path=`${pdfFolder(code)}/${safe}`;
   document.getElementById('pdf-host').innerHTML='<div class="pdf-empty">アップロード中...</div>';
-  try{await gputFile(path,f);matchState[code]=matchState[code]||{};matchState[code].pdfLink=path;
-    pdfs[code]=URL.createObjectURL(f);document.getElementById('pdf-host').innerHTML=`<iframe class="pdf-frame" src="${pdfs[code]}"></iframe>`;
-    snack('📎 PDFをアップしました（保存で確定）');
-  }catch(e){snack('PDFアップロード失敗: '+e.message,true);document.getElementById('pdf-host').innerHTML='<div class="pdf-empty">アップロード失敗</div>';}
+  try{await gputFile(path,f);matchState[code]=matchState[code]||{};matchState[code].pdfLink=pdfFolder(code);pdfSel[code]=null;await renderPdfList(code);snack('📎 追加しました（保存でリンク確定）');}
+  catch(e){snack('PDFアップロード失敗: '+e.message,true);await renderPdfList(code);}
 }
 function setInv(code,val){matchState[code]=matchState[code]||{};matchState[code].inv=val===''?null:parseFloat(val);renderDetail(code);renderList();renderSummary();}
 function setReason(code,val){matchState[code]=matchState[code]||{};matchState[code].reason=val;}
