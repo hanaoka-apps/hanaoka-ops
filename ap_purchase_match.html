@@ -91,8 +91,8 @@
 <div id="app-view">
   <div class="toolbar">
     <label>決済月</label><select id="month-select" onchange="onMonth()"></select>
-    <label>拠点</label>
-    <div class="seg"><button id="vm-all" class="on" onclick="setView('all')">全部</button><button id="vm-honsha" onclick="setView('本社')">本社</button><button id="vm-kojo" onclick="setView('工場')">工場</button></div>
+    <label>一覧拠点</label>
+    <div class="seg"><button id="vm-all" class="on" onclick="setListView('all')">全部</button><button id="vm-honsha" onclick="setListView('本社')">本社</button><button id="vm-kojo" onclick="setListView('工場')">工場</button></div>
     <input id="f-text" placeholder="仕入先で絞込" oninput="renderList()">
     <label><input type="checkbox" id="f-arch" onchange="renderList()"> アーカイブ表示</label>
     <button class="reload" onclick="loadAll()">🔄 再読込</button>
@@ -100,6 +100,7 @@
     <div class="links"><a href="ap_dashboard.html">📊 ダッシュボード</a></div>
   </div>
   <div class="summary" id="summary"></div>
+  <div class="summary" id="progress" style="gap:20px;align-items:center"></div>
   <div class="main">
     <div class="list-pane" id="list-pane"></div>
     <div class="detail-pane" id="detail-pane"><div class="empty">左の仕入先を選択してください</div></div>
@@ -114,7 +115,7 @@ const GRAPH='https://graph.microsoft.com/v1.0';
 const SITE_PATH='hanaokacorp.sharepoint.com:/sites/msteams_20513c', DRIVE_NAME='GenelalMasters', FILE_PATH='9521受入リスト.csv';
 const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const MLIST='AP_PurchaseMatch';
-let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfs={},selectedCode=null,viewMode='all';
+let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfs={},selectedCode=null,listView='all',detailView='all';
 let M={fmap:{},id:null};
 
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}}
@@ -200,12 +201,20 @@ async function loadMatchState(){
   }catch(e){snack('突合状態の読込エラー: '+e.message,true);}
 }
 
-function vIncl(v){return viewMode==='all'?(v.excl+v.tax):(v.byLoc[viewMode]||0);}
-function vExcl(v){return viewMode==='all'?v.excl:(v.byLocExcl[viewMode]||0);}
-function vLines(v){return viewMode==='all'?v.lines:v.lines.filter(l=>l.loc===viewMode);}
-function setView(m){viewMode=m;['all','honsha','kojo'].forEach(x=>document.getElementById('vm-'+x).classList.remove('on'));
-  document.getElementById('vm-'+(m==='all'?'all':m==='本社'?'honsha':'kojo')).classList.add('on');
-  renderSummary();renderList();if(selectedCode)renderDetail(selectedCode);}
+function vIncl(v,mode){return mode==='all'?(v.excl+v.tax):(v.byLoc[mode]||0);}
+function vExcl(v,mode){return mode==='all'?v.excl:(v.byLocExcl[mode]||0);}
+function vLines(v,mode){return mode==='all'?v.lines:v.lines.filter(l=>l.loc===mode);}
+function segOn(prefix,m){['all','honsha','kojo'].forEach(x=>{const el=document.getElementById(prefix+x);if(el)el.classList.remove('on');});const el=document.getElementById(prefix+(m==='all'?'all':m==='本社'?'honsha':'kojo'));if(el)el.classList.add('on');}
+function setListView(m){listView=m;segOn('vm-',m);renderSummary();renderList();}
+function setDetailView(m){detailView=m;if(selectedCode)renderDetail(selectedCode);}
+function doneOf(v){if(archived[v.code])return true;const m=matchState[v.code]||{};const st=vstatus(v);if(st.diff===0)return true;if(st.diff!=null&&st.diff!==0&&m.reason)return true;return false;}
+function donut(done,total,color,label){const pct=total?done/total:0;const r=26,c=2*Math.PI*r;const off=c*(1-pct);
+  return `<div style="text-align:center"><svg width="64" height="64" viewBox="0 0 66 66"><circle cx="33" cy="33" r="${r}" fill="none" stroke="#e6eaf2" stroke-width="8"/><circle cx="33" cy="33" r="${r}" fill="none" stroke="${color}" stroke-width="8" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 33 33)" stroke-linecap="round"/><text x="33" y="31" text-anchor="middle" font-size="13" font-weight="700">${done}/${total}</text><text x="33" y="45" text-anchor="middle" font-size="9" fill="#888">残${total-done}</text></svg><div style="font-size:11px;color:#666">${label}</div></div>`;}
+function renderProgress(){
+  const all=vendors,hon=vendors.filter(v=>(v.byLoc['本社']||0)>0),ko=vendors.filter(v=>(v.byLoc['工場']||0)>0);
+  const dn=arr=>arr.filter(doneOf).length;
+  const el=document.getElementById('progress');if(el)el.innerHTML=`<span style="font-size:12px;color:var(--muted);align-self:center">突合進捗</span>${donut(dn(all),all.length,'#1a5fa8','全体')}${donut(dn(hon),hon.length,'#4a90d9','本社')}${donut(dn(ko),ko.length,'#e67e22','工場')}`;
+}
 
 function renderSummary(){
   const act=vendors.filter(v=>!archived[v.code]);
@@ -216,6 +225,7 @@ function renderSummary(){
   const rcv=act.filter(v=>matchState[v.code]&&matchState[v.code].received).length;
   document.getElementById('summary').innerHTML=
     `<span class="s">受入合計(税込)<b>${yen(tot)}</b></span><span class="s honsha">本社<b>${yen(honsha)}</b></span><span class="s kojo">工場<b>${yen(kojo)}</b></span><span class="s">仕入先<b>${act.length}</b></span><span class="s">受領<b>${rcv}/${act.length}</b></span><span class="s">突合一致<b>${matched}/${act.length}</b></span>`;
+  renderProgress();
 }
 function vstatus(v){const m=matchState[v.code]||{};const incl=v.excl+v.tax;
   if(m.inv==null||m.inv==='')return {cls:'st-none',txt:'未入力',diff:null};
@@ -225,12 +235,12 @@ function vstatus(v){const m=matchState[v.code]||{};const incl=v.excl+v.tax;
 function renderList(){
   const ft=document.getElementById('f-text').value.trim();const showArch=document.getElementById('f-arch').checked;
   let list=vendors.filter(v=>showArch?archived[v.code]:!archived[v.code]);
-  if(viewMode!=='all')list=list.filter(v=>(v.byLoc[viewMode]||0)>0);
+  if(listView!=='all')list=list.filter(v=>(v.byLoc[listView]||0)>0);
   if(ft)list=list.filter(v=>v.name.includes(ft)||v.code.includes(ft));
   const pane=document.getElementById('list-pane');
-  pane.innerHTML=`<table class="vl"><thead><tr><th>仕入先(コード順)</th><th>拠点</th><th class="num">受入(税込)${viewMode!=='all'?'※'+viewMode:''}</th><th>突合</th></tr></thead><tbody>`+
+  pane.innerHTML=`<table class="vl"><thead><tr><th>仕入先(コード順)</th><th>拠点</th><th class="num">受入(税込)${listView!=='all'?'※'+listView:''}</th><th>突合</th></tr></thead><tbody>`+
     (list.length?list.map(v=>{const st=vstatus(v);const ms=matchState[v.code]||{};const locs=Object.entries(v.byLoc).filter(([k,x])=>x>0).map(([k])=>`<span class="loc-pill ${k==='工場'?'pill-kojo':'pill-honsha'}">${k}</span>`).join('');
-      return `<tr class="vrow ${v.code===selectedCode?'active':''} ${archived[v.code]?'archived':''}" onclick="selectVendor('${v.code}')"><td>${v.code} ${v.name||''}${ms.received?' <span class="rcv">✓受領</span>':''}</td><td>${locs}</td><td class="num">${yen(vIncl(v))}</td><td><span class="st ${st.cls}">${st.txt}</span></td></tr>`;}).join(''):'<tr><td colspan="4" class="empty">該当なし</td></tr>')
+      return `<tr class="vrow ${v.code===selectedCode?'active':''} ${archived[v.code]?'archived':''}" onclick="selectVendor('${v.code}')"><td>${v.code} ${v.name||''}${ms.received?' <span class="rcv">✓受領</span>':''}</td><td>${locs}</td><td class="num">${yen(vIncl(v,listView))}</td><td><span class="st ${st.cls}">${st.txt}</span></td></tr>`;}).join(''):'<tr><td colspan="4" class="empty">該当なし</td></tr>')
     +`</tbody></table>`;
 }
 function selectVendor(code){selectedCode=code;renderList();renderDetail(code);}
@@ -239,14 +249,14 @@ function renderDetail(code){
   const v=vendors.find(x=>x.code===code);const d=document.getElementById('detail-pane');
   if(!v){d.innerHTML='<div class="empty">左の仕入先を選択してください</div>';return;}
   const incl=v.excl+v.tax;const m=matchState[code]||{};const st=vstatus(v);const arch=!!archived[code];
-  const lines=vLines(v);const vi=vIncl(v),ve=vExcl(v);
+  const lines=vLines(v,detailView);const vi=vIncl(v,detailView),ve=vExcl(v,detailView);
   const byDept=Object.entries(v.byDept).sort((a,b)=>b[1]-a[1]).map(([k,x])=>`<span class="loc-pill ${/工場/.test(k)?'pill-kojo':'pill-honsha'}">${k} ${yen(x)}</span>`).join(' ');
   const rows=lines.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(l=>`<tr><td>${l.date||''}</td><td>${l.slip||''}</td><td><span class="loc-pill ${l.loc==='工場'?'pill-kojo':'pill-honsha'}">${l.loc}</span>${l.dept}</td><td>${l.item}</td><td>${l.model}</td><td class="num">${yen(l.excl)}</td><td class="num">${yen(l.tax)}</td><td class="num">${yen(l.incl)}</td><td>${l.dtype}</td></tr>`).join('');
   const reasonSel=`<select class="reason" id="r-reason" onchange="setReason('${code}',this.value)"><option value="">理由―</option>
     <option ${m.reason==='SMILE修正'?'selected':''}>SMILE修正</option><option ${m.reason==='先方出し直し'?'selected':''}>先方出し直し</option>
     <option ${m.reason==='締後イレギュラー'?'selected':''}>締後イレギュラー</option><option ${m.reason==='確認中'?'selected':''}>確認中</option></select>`;
   d.innerHTML=`
-    <div class="dh"><h2>${v.name||'(名称なし)'}</h2><span class="code">${v.code}</span>${viewMode!=='all'?`<span class="loc-pill ${viewMode==='工場'?'pill-kojo':'pill-honsha'}">${viewMode}のみ表示</span>`:''}${arch?'<span class="st st-none">アーカイブ</span>':''}${m.at?`<span style="font-size:11px;color:var(--muted)">保存:${(m.by||'')} ${String(m.at).slice(0,10)}</span>`:''}</div>
+    <div class="dh"><h2>${v.name||'(名称なし)'}</h2><span class="code">${v.code}</span>${detailView!=='all'?`<span class="loc-pill ${detailView==='工場'?'pill-kojo':'pill-honsha'}">${detailView}のみ表示</span>`:''}${arch?'<span class="st st-none">アーカイブ</span>':''}${m.at?`<span style="font-size:11px;color:var(--muted)">保存:${(m.by||'')} ${String(m.at).slice(0,10)}</span>`:''}</div>
     <div class="dmetrics">
       <div class="dm"><div class="l">受入(税抜)</div><div class="v">${yen(ve)}</div></div>
       <div class="dm"><div class="l">受入(税込)</div><div class="v">${yen(vi)}</div></div>
@@ -261,6 +271,7 @@ function renderDetail(code){
       <button class="btn-save" onclick="saveVendor('${code}')">💾 保存</button>
     </div></div>
     <div class="deptbox"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">拠点・部門別内訳（国内/ソリューション/工場）</div>${byDept}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="font-size:12px;color:var(--muted)">明細・拠点表示：</span><div class="seg" style="font-size:12px"><button id="dvm-all" onclick="setDetailView('all')">全部</button><button id="dvm-honsha" onclick="setDetailView('本社')">本社</button><button id="dvm-kojo" onclick="setDetailView('工場')">工場</button></div></div>
     <div class="det-split">
       <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
       <div class="pdf-pane"><h4>手元請求書（突合用）</h4>
@@ -270,6 +281,7 @@ function renderDetail(code){
     </div>
     <div style="margin-top:12px">${arch?`<button class="btn-ghost" onclick="setArch('${code}',false)">↩ アーカイブ解除</button>`:`<button class="btn-arch" onclick="setArch('${code}',true)">🗄 アーカイブ（対象外にする）</button>`}</div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">決済月 ${month()}／表示明細${lines.length}件・全${v.lines.length}件。保存でSharePointに残ります。</div>`;
+  segOn('dvm-',detailView);
   // PDF表示（メモリ優先→保存リンクをGraphで取得）
   const host=document.getElementById('pdf-host');
   if(pdfs[code]){host.innerHTML=`<iframe class="pdf-frame" src="${pdfs[code]}"></iframe>`;}
