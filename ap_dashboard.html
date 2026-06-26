@@ -229,6 +229,12 @@
   <!-- アラートバナー -->
   <div id="alert-banner"></div>
 
+  <!-- 仕分け（経費/仕入） -->
+  <div id="triage-section" style="display:none;background:var(--card-bg);border:1px solid var(--warning);border-radius:10px;padding:14px 18px;margin-bottom:20px;">
+    <div class="section-title" style="border:none;padding:0;margin-bottom:8px;">📥 仕分け（未仕分け <span id="triage-count">0</span>件） — AI推定を確認し経費/仕入を確定</div>
+    <table><thead><tr><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
+  </div>
+
   <!-- 支払日区分カード -->
   <div class="payment-cards">
     <div class="payment-card day-10" id="card-10"></div>
@@ -308,7 +314,7 @@ const AP_SITE_ID   = 'hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af6634
 // 支払日区分・支払区分・支払先・支払手段・金額税込・各ステータスはすべてヘッダに存在。明細(AP_PaymentSlip)は確認画面で展開。
 const LIST_NAME    = 'AP_Invoice';
 
-let msalInstance = null, currentAccount = null, allItems = [], fieldMap = {};
+let msalInstance = null, currentAccount = null, allItems = [], monthItems = [], fieldMap = {};
 
 // ============================================================
 // 認証（sales_dashboard.htmlと同じpopup方式）
@@ -414,6 +420,13 @@ async function graphGet(path) {
   return res.json();
 }
 
+async function graphPatch(path, body) {
+  const token = await getToken();
+  const res = await fetch(`${GRAPH_BASE}${path}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`[${res.status}] ${await res.text()}`);
+  return res.json();
+}
+
 async function buildFieldMap() {
   if (Object.keys(fieldMap).length) return; // キャッシュ済み
   const listsData = await graphGet(`/sites/${AP_SITE_ID}/lists`);
@@ -448,7 +461,9 @@ async function loadData() {
     }
 
     // 選択月でフィルタ
-    allItems = items.filter(item => fv(item.fields, '対象年月') === month);
+    monthItems = items.filter(item => fv(item.fields, '対象年月') === month);
+    // 支払サマリーは「経費 ＆ 仕分け済」のみ（仕入・未仕分けは除外）
+    allItems = monthItems.filter(it => { const c = fv(it.fields, '支払区分'); return fv(it.fields, '仕分け済') === true && (c === '本社経費' || c === '工場経費'); });
     renderAll();
   } catch (e) {
     showSnack('データ取得エラー: ' + e.message);
@@ -466,10 +481,36 @@ function setLoading(on) {
 // レンダリング
 // ============================================================
 function renderAll() {
+  renderTriage();
   renderCards();
   renderSummary();
   renderAlerts();
   renderTable();
+}
+
+// 仕分け（未仕分け＝経費/仕入をAI推定から人が確定）
+function renderTriage() {
+  const sec = document.getElementById('triage-section');
+  const rows = monthItems.filter(it => fv(it.fields, '仕分け済') !== true);
+  if (!rows.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  document.getElementById('triage-count').textContent = rows.length;
+  const opt = (sel) => ['本社経費','工場経費','本社仕入','工場仕入'].map(c => `<option ${c===sel?'selected':''}>${c}</option>`).join('');
+  document.getElementById('triage-tbody').innerHTML = rows.map(it => {
+    const f = it.fields; const cat = fv(f,'支払区分'); const conf = fv(f,'AI確信度'); const amt = parseFloat(fv(f,'金額_税込'))||0;
+    return `<tr>
+      <td>${fv(f,'支払先名')||'—'}</td>
+      <td class="amount-cell">¥${amt.toLocaleString()}</td>
+      <td><span class="status-badge s-確認待">${cat||'未推定'}</span> <span style="font-size:11px;color:var(--muted)">AI ${conf||'-'}</span></td>
+      <td><select id="tc-${it.id}" style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px">${opt(cat)}</select></td>
+      <td><button onclick="confirmTriage('${it.id}')" style="background:var(--primary);color:#fff;border:none;padding:5px 14px;border-radius:5px;font-size:12px;cursor:pointer">仕分け確定</button></td>
+    </tr>`;
+  }).join('');
+}
+async function confirmTriage(id) {
+  const cat = document.getElementById('tc-'+id).value;
+  try { await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, { [fieldMap['支払区分']]: cat, [fieldMap['仕分け済']]: true }); showSnack('仕分け確定: '+cat); await loadData(); }
+  catch (e) { showSnack('仕分けエラー: '+e.message); }
 }
 
 // 支払日区分カード
