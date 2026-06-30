@@ -229,10 +229,16 @@
   <!-- アラートバナー -->
   <div id="alert-banner"></div>
 
-  <!-- 仕分け（経費/仕入） -->
+  <!-- 仕分け（経費/仕入）＋マージ／アーカイブ -->
   <div id="triage-section" style="display:none;background:var(--card-bg);border:1px solid var(--warning);border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-    <div class="section-title" style="border:none;padding:0;margin-bottom:8px;">📥 仕分け（未仕分け <span id="triage-count">0</span>件） — AI推定を確認し経費/仕入を確定</div>
-    <table><thead><tr><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
+    <div class="section-title" style="border:none;padding:0;margin-bottom:8px;display:flex;align-items:center;gap:12px;">📥 仕分け（未仕分け <span id="triage-count">0</span>件） — AI推定を確認し経費/仕入を確定
+      <span style="margin-left:auto;display:flex;gap:8px;">
+        <button onclick="mergeTriage()" style="background:#fff;color:var(--primary);border:1px solid var(--primary);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🔗 選択をマージ</button>
+        <button onclick="archiveTriage()" style="background:#fff;color:var(--danger);border:1px solid var(--danger);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🗄 選択をアーカイブ</button>
+      </span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">※表紙＋明細など同一請求書は複数選択→マージ（金額は合算しない）。本当の重複はアーカイブ。⚠は同支払先＋同額の重複可能性。</div>
+    <table><thead><tr><th style="width:28px"></th><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
   </div>
 
   <!-- 支払日区分カード -->
@@ -462,8 +468,8 @@ async function loadData() {
 
     // 選択月でフィルタ
     monthItems = items.filter(item => fv(item.fields, '対象年月') === month);
-    // 支払サマリーは「経費 ＆ 仕分け済」のみ（仕入・未仕分けは除外）
-    allItems = monthItems.filter(it => { const c = fv(it.fields, '支払区分'); return fv(it.fields, '仕分け済') === true && (c === '本社経費' || c === '工場経費'); });
+    // 支払サマリーは「経費 ＆ 仕分け済 ＆ 非アーカイブ」のみ
+    allItems = monthItems.filter(it => { const c = fv(it.fields, '支払区分'); return fv(it.fields, '仕分け済') === true && fv(it.fields, 'アーカイブフラグ') !== true && (c === '本社経費' || c === '工場経費'); });
     renderAll();
   } catch (e) {
     showSnack('データ取得エラー: ' + e.message);
@@ -488,29 +494,54 @@ function renderAll() {
   renderTable();
 }
 
-// 仕分け（未仕分け＝経費/仕入をAI推定から人が確定）
+// 仕分け（未仕分け＝経費/仕入をAI推定から人が確定／マージ／アーカイブ）
 function renderTriage() {
   const sec = document.getElementById('triage-section');
-  const rows = monthItems.filter(it => fv(it.fields, '仕分け済') !== true);
+  const rows = monthItems.filter(it => fv(it.fields, '仕分け済') !== true && fv(it.fields, 'アーカイブフラグ') !== true);
   if (!rows.length) { sec.style.display = 'none'; return; }
   sec.style.display = 'block';
   document.getElementById('triage-count').textContent = rows.length;
+  const keyCount = {}; rows.forEach(it => { const k = (fv(it.fields,'支払先名')||'')+'|'+(parseFloat(fv(it.fields,'金額_税込'))||0); keyCount[k] = (keyCount[k]||0)+1; });
   const opt = (sel) => ['本社経費','工場経費','本社仕入','工場仕入'].map(c => `<option ${c===sel?'selected':''}>${c}</option>`).join('');
   document.getElementById('triage-tbody').innerHTML = rows.map(it => {
     const f = it.fields; const cat = fv(f,'支払区分'); const conf = fv(f,'AI確信度'); const amt = parseFloat(fv(f,'金額_税込'))||0;
+    const dupFlag = fv(f,'二重請求フラグ')===true; const dupCand = keyCount[(fv(f,'支払先名')||'')+'|'+amt]>1;
+    const warn = (dupFlag||dupCand) ? '<span style="color:var(--danger);font-size:11px;font-weight:700"> ⚠重複可能性</span>' : '';
     return `<tr>
-      <td>${fv(f,'支払先名')||'—'}</td>
+      <td><input type="checkbox" class="tri-chk" data-id="${it.id}"></td>
+      <td>${fv(f,'支払先名')||'—'}${warn}</td>
       <td class="amount-cell">¥${amt.toLocaleString()}</td>
       <td><span class="status-badge s-確認待">${cat||'未推定'}</span> <span style="font-size:11px;color:var(--muted)">AI ${conf||'-'}</span></td>
       <td><select id="tc-${it.id}" style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px">${opt(cat)}</select></td>
-      <td><button onclick="confirmTriage('${it.id}')" style="background:var(--primary);color:#fff;border:none;padding:5px 14px;border-radius:5px;font-size:12px;cursor:pointer">仕分け確定</button></td>
+      <td><button onclick="confirmTriage('${it.id}')" style="background:var(--primary);color:#fff;border:none;padding:5px 14px;border-radius:5px;font-size:12px;cursor:pointer">確定</button></td>
     </tr>`;
   }).join('');
 }
+function checkedTriage(){ return [...document.querySelectorAll('.tri-chk:checked')].map(c=>c.dataset.id); }
 async function confirmTriage(id) {
   const cat = document.getElementById('tc-'+id).value;
   try { await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, { [fieldMap['支払区分']]: cat, [fieldMap['仕分け済']]: true }); showSnack('仕分け確定: '+cat); await loadData(); }
   catch (e) { showSnack('仕分けエラー: '+e.message); }
+}
+// マージ：同一請求書の複数PDF（表紙＋明細等）を1案件に。金額は合算しない（主＝金額最大）。
+async function mergeTriage() {
+  const ids = checkedTriage(); if (ids.length < 2) { showSnack('2件以上選んでください'); return; }
+  const rows = ids.map(id => monthItems.find(it => it.id===id)).filter(Boolean);
+  rows.sort((a,b) => (parseFloat(fv(b.fields,'金額_税込'))||0) - (parseFloat(fv(a.fields,'金額_税込'))||0));
+  const primary = rows[0], others = rows.slice(1);
+  if (!confirm(`${rows.length}件を1案件にマージします。\n主＝「${fv(primary.fields,'支払先名')}」 ¥${(parseFloat(fv(primary.fields,'金額_税込'))||0).toLocaleString()}\n他のPDFを主に統合し、他行はアーカイブ（金額は合算しません）。`)) return;
+  try {
+    const docs=[]; rows.forEach(r=>{ const d=fv(r.fields,'DOCコード'); if(d) d.split(/[\r\n;]+/).forEach(x=>{ x=x.trim(); if(x&&!docs.includes(x)) docs.push(x); }); });
+    await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${primary.id}/fields`, { [fieldMap['DOCコード']]: docs.join('\n') });
+    for (const o of others) await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${o.id}/fields`, { [fieldMap['アーカイブフラグ']]: true, [fieldMap['アーカイブ理由']]: 'マージ統合（主ID:'+primary.id+'）' });
+    showSnack(`🔗 ${rows.length}件をマージ（PDF${docs.length}枚）`); await loadData();
+  } catch (e) { showSnack('マージエラー: '+e.message); }
+}
+async function archiveTriage() {
+  const ids = checkedTriage(); if (!ids.length) { showSnack('行を選んでください'); return; }
+  const r = prompt('アーカイブ理由（重複/今月対象外/誤依頼 等）'); if (r===null) return;
+  try { for (const id of ids) await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, { [fieldMap['アーカイブフラグ']]: true, [fieldMap['アーカイブ理由']]: r }); showSnack(`🗄 ${ids.length}件アーカイブ`); await loadData(); }
+  catch (e) { showSnack('アーカイブエラー: '+e.message); }
 }
 
 // 支払日区分カード
