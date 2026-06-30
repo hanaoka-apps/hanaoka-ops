@@ -124,7 +124,8 @@ const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8
 const MLIST='AP_PurchaseMatch';
 let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfSel={},pdfCache={},selectedCode=null,listView='all',detailView='all';
 let M={fmap:{},id:null};
-let INV={fmap:{},id:null}, invByVendor={};
+let INV={fmap:{},id:null}, invByVendor={}, invByName={};
+function normName(s){return String(s||'').replace(/株式会社|有限会社|（株）|\(株\)|㈱|（有）|\(有\)|㈲|\s|　/g,'');}
 
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}}
 async function signIn(){try{const r=await msalApp.loginPopup({scopes:SCOPES});acct=r.account;msalApp.setActiveAccount(acct);await showApp();}catch(e){if(e.errorCode!=='user_cancelled')snack('サインインエラー: '+e.message,true);}}
@@ -175,14 +176,16 @@ async function ensureInvoiceList(){if(INV.id)return;
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);const l=ls.value.find(x=>x.displayName==='AP_Invoice');if(!l)throw new Error('AP_Invoice なし');INV.id=l.id;
   const c=await gget(`/sites/${AP_SITE}/lists/${INV.id}/columns?$select=name,displayName`);c.value.forEach(x=>INV.fmap[x.displayName]=x.name);}
 async function loadInvoicePdfs(){
-  invByVendor={};
+  invByVendor={};invByName={};
   try{await ensureInvoiceList();const m=month();
     let items=[],n=`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500`;
     while(n){const d=await gget(n);items=items.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
     const F=INV.fmap;
     items.forEach(it=>{const f=it.fields;const cat=f[F['支払区分']]||'';if(cat!=='本社仕入'&&cat!=='工場仕入')return;if((f[F['対象年月']]||'')!==m)return;if(f[F['アーカイブフラグ']]===true)return;
-      const code=f[F['支払先コード']]||'';if(!code)return;const doc=f[F['DOCコード']]||'';
-      String(doc).split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean).forEach(p=>{(invByVendor[code]=invByVendor[code]||[]).push(p);});});
+      const code=f[F['支払先コード']]||'';const nm=normName(f[F['支払先名']]||'');const doc=f[F['DOCコード']]||'';
+      String(doc).split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean).forEach(p=>{
+        if(code){(invByVendor[code]=invByVendor[code]||[]).push(p);}
+        if(nm){(invByName[nm]=invByName[nm]||[]).push(p);}});});
   }catch(e){/* AP_Invoice読込失敗時は手動フォルダのみ */}
 }
 
@@ -312,8 +315,10 @@ function normPath(p){return String(p||'').replace(/^\/Shared Documents/i,'').rep
 async function renderPdfList(code){
   const host=document.getElementById('pdf-host');if(!host)return;
   const paths=[];
-  // ① AP_Invoiceの仕入行（intake自動登録）のPDF
+  // ① AP_Invoiceの仕入行（intake自動登録）のPDF：仕入先コード一致＋支払先名の名寄せフォールバック
   (invByVendor[code]||[]).forEach(p=>{if(!paths.includes(p))paths.push(p);});
+  const _v=vendors.find(x=>x.code===code);
+  if(_v){(invByName[normName(_v.name)]||[]).forEach(p=>{if(!paths.includes(p))paths.push(p);});}
   // ② 手動添付フォルダ（予備）
   try{const d=await gget(`/sites/${AP_SITE}/drive/root:${encodeURI(pdfFolder(code))}:/children?$select=id,name`);
     (d.value||[]).filter(f=>/\.pdf$/i.test(f.name||'')).forEach(f=>{const p=`${pdfFolder(code)}/${f.name}`;if(!paths.includes(p))paths.push(p);});}catch(e){}

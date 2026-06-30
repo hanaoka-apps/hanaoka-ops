@@ -238,8 +238,9 @@
         <button onclick="archiveTriage()" style="background:#fff;color:var(--danger);border:1px solid var(--danger);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🗄 選択をアーカイブ</button>
       </span>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">※表紙＋明細など同一請求書は複数選択→マージ（金額は合算しない）。本当の重複はアーカイブ。⚠は同支払先＋同額の重複可能性。</div>
-    <table><thead><tr><th style="width:28px"></th><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">※表紙＋明細など同一請求書は複数選択→マージ（金額は合算しない）。本当の重複はアーカイブ。⚠は同支払先＋同額の重複可能性。<b>仕入を選んだ行は仕入先（コード）必須</b>。</div>
+    <datalist id="sup-dl"></datalist>
+    <table><thead><tr><th style="width:28px"></th><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th>仕入先（仕入時・必須）</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
   </div>
 
   <!-- 支払日区分カード -->
@@ -322,6 +323,34 @@ const AP_SITE_ID   = 'hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af6634
 const LIST_NAME    = 'AP_Invoice';
 
 let msalInstance = null, currentAccount = null, allItems = [], monthItems = [], fieldMap = {};
+// 仕入先候補（受入リストから・仕入確定時の仕入先割当に使用）
+const SUP_SITE = 'hanaokacorp.sharepoint.com:/sites/msteams_20513c', SUP_DRIVE = 'GenelalMasters', SUP_FILE = '9521受入リスト.csv';
+let suppliers = [];
+function parseCSV(text){
+  if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);
+  const rows=[];let row=[],cur='',q=false;
+  for(let i=0;i<text.length;i++){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=c;}
+    else{if(c==='"')q=true;else if(c===','){row.push(cur);cur='';}else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur='';}else if(c==='\r'){}else cur+=c;}}
+  if(cur!==''||row.length){row.push(cur);rows.push(row);}
+  return rows;
+}
+async function loadSuppliers(){
+  try{
+    const site=await graphGet(`/sites/${SUP_SITE}`);
+    const dr=await graphGet(`/sites/${site.id}/drives?$select=id,name`);
+    const d=(dr.value||[]).find(x=>x.name===SUP_DRIVE); if(!d) return;
+    const token=await getToken();
+    const r=await fetch(`${GRAPH_BASE}/drives/${d.id}/root:/${encodeURIComponent(SUP_FILE)}:/content`,{headers:{Authorization:`Bearer ${token}`}});
+    if(!r.ok) return;
+    const text=new TextDecoder('utf-8').decode(await r.arrayBuffer());
+    const rows=parseCSV(text); const h=rows[0];
+    const ci=h.findIndex(x=>x.replace(/\s/g,'')==='仕入先ｺｰﾄﾞ'); const cn=h.findIndex(x=>x.replace(/\s/g,'')==='仕入先略称');
+    const seen={}; for(let i=1;i<rows.length;i++){const r2=rows[i]; if(!r2||!r2[ci])continue; const code=r2[ci].trim(); if(code&&!seen[code]) seen[code]=(r2[cn]||'').trim();}
+    suppliers=Object.entries(seen).map(([code,name])=>({code,name})).sort((a,b)=>a.code.localeCompare(b.code));
+    const dl=document.getElementById('sup-dl'); if(dl) dl.innerHTML=suppliers.map(s=>`<option value="${s.code} ${s.name}"></option>`).join('');
+  }catch(e){ /* 取得失敗時は手入力（コード必須は維持） */ }
+}
 
 // ============================================================
 // 認証（sales_dashboard.htmlと同じpopup方式）
@@ -371,6 +400,7 @@ async function showApp() {
   initMonthSelector();
   await loadData();
   loadOffsetVendors();   // 相殺先（マスタ）を別途読み込み
+  loadSuppliers();       // 仕入先候補（受入リスト）を読み込み→仕分けの仕入先選択に使用
 }
 
 // 相殺対象先（AP_OffsetVendor）を読み込んでパネル表示
@@ -508,20 +538,35 @@ function renderTriage() {
     const f = it.fields; const cat = fv(f,'支払区分'); const conf = fv(f,'AI確信度'); const amt = parseFloat(fv(f,'金額_税込'))||0;
     const dupFlag = fv(f,'二重請求フラグ')===true; const dupCand = keyCount[(fv(f,'支払先名')||'')+'|'+amt]>1;
     const warn = (dupFlag||dupCand) ? '<span style="color:var(--danger);font-size:11px;font-weight:700"> ⚠重複可能性</span>' : '';
+    const pc = fv(f,'支払先コード')||''; const pn = fv(f,'支払先名')||'';
+    const supVal = pc ? (pc+' '+(suppliers.find(s=>s.code===pc)?.name||pn)) : '';
+    const isShi = cat==='本社仕入'||cat==='工場仕入';
     return `<tr>
       <td><input type="checkbox" class="tri-chk" data-id="${it.id}"></td>
-      <td>${fv(f,'支払先名')||'—'}${warn}</td>
+      <td>${pn||'—'}${warn}</td>
       <td class="amount-cell">¥${amt.toLocaleString()}</td>
       <td><span class="status-badge s-確認待">${cat||'未推定'}</span> <span style="font-size:11px;color:var(--muted)">AI ${conf||'-'}</span></td>
-      <td><select id="tc-${it.id}" style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px">${opt(cat)}</select></td>
+      <td><select id="tc-${it.id}" onchange="toggleSup('${it.id}')" style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px">${opt(cat)}</select></td>
+      <td><input id="ts-${it.id}" list="sup-dl" value="${supVal.replace(/"/g,'&quot;')}" placeholder="コードor名称で検索" style="font-size:12px;width:180px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;${isShi?'':'background:#f4f4f4;'}"></td>
       <td><button onclick="confirmTriage('${it.id}')" style="background:var(--primary);color:#fff;border:none;padding:5px 14px;border-radius:5px;font-size:12px;cursor:pointer">確定</button></td>
     </tr>`;
   }).join('');
 }
 function checkedTriage(){ return [...document.querySelectorAll('.tri-chk:checked')].map(c=>c.dataset.id); }
+function toggleSup(id){ const cat=document.getElementById('tc-'+id).value; const inp=document.getElementById('ts-'+id); if(!inp)return; const isShi=cat==='本社仕入'||cat==='工場仕入'; inp.style.background=isShi?'#fff':'#f4f4f4'; }
 async function confirmTriage(id) {
   const cat = document.getElementById('tc-'+id).value;
-  try { await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, { [fieldMap['支払区分']]: cat, [fieldMap['仕分け済']]: true }); showSnack('仕分け確定: '+cat); await loadData(); }
+  const isShi = cat==='本社仕入'||cat==='工場仕入';
+  const patch = { [fieldMap['支払区分']]: cat, [fieldMap['仕分け済']]: true };
+  if (isShi) {
+    const raw = (document.getElementById('ts-'+id).value||'').trim();
+    const code = raw.split(/\s/)[0];
+    const sup = suppliers.find(s=>s.code===code);
+    if (!code) { showSnack('⚠ 仕入は仕入先（コード）が必須です'); return; }
+    if (suppliers.length && !sup) { showSnack('⚠ 受入リストに無い仕入先コードです: '+code); return; }
+    patch[fieldMap['支払先コード']] = code;  // 名称は請求書のまま（突合は コード一致＋名寄せ）
+  }
+  try { await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, patch); showSnack('仕分け確定: '+cat+(isShi?'（仕入先 '+patch[fieldMap['支払先コード']]+'）':'')); await loadData(); }
   catch (e) { showSnack('仕分けエラー: '+e.message); }
 }
 // マージ：同一請求書の複数PDF（表紙＋明細等）を1案件に。金額は合算しない（主＝金額最大）。
