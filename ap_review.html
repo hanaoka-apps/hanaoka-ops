@@ -79,6 +79,9 @@
   .ask b{color:var(--danger);}
   /* PDF */
   .pdf-pane h3{font-size:13px;color:var(--primary);margin-bottom:6px;}
+  .pdf-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;}
+  .pdf-chip{font-size:11px;border:1px solid var(--border);background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .pdf-chip.on{background:var(--primary);color:#fff;border-color:var(--primary);}
   .pdf-frame{width:100%;height:82vh;min-height:520px;border:1px solid var(--border);border-radius:8px;background:#fafbfd;}
   .pdf-link{display:inline-block;margin-bottom:6px;font-size:13px;color:var(--primary);}
   #snackbar{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 20px;border-radius:6px;font-size:13px;display:none;z-index:999;}
@@ -128,6 +131,7 @@ const LIST_H='AP_Invoice', LIST_L='AP_PaymentSlip';
 let msalApp=null,acct=null,mode='review',selected=null,editMode=false;
 let H={fmap:{},id:null,inv:[]};
 let L={fmap:{},id:null,byInv:{}};
+let revCache={};
 const DEPTS=[['001110','全社'],['002220','東京本社'],['002230','大阪'],['002240','名古屋'],['003110','工場全体'],['003210','第一工場'],['003220','第二工場'],['003230','第三工場'],['003310','技術部'],['003410','品質管理部'],['003510','工場総務'],['004110','本社総務部'],['005110','本社']];
 const PAYMETHODS=['でんさい','総合振込','口座振替','海外送金','現金'];
 const PAYCATS=['本社経費','本社仕入','工場経費','工場仕入'];
@@ -309,9 +313,24 @@ function renderDetail(inv){
     <div class="pdf-pane"><h3>請求書</h3><div id="pdf-host"><div class="empty">読込中...</div></div></div>
   </div>`;
   if(editMode){let s=0;document.querySelectorAll('#detail-lines .e-incl').forEach(i=>s+=parseFloat(i.value)||0);const a=document.getElementById('pay-amt-val');if(a)a.textContent=yen(s);}
-  const host=document.getElementById('pdf-host');
-  resolvePdf(m.doc).then(p=>{if(!p){host.innerHTML='<div class="empty">証憑リンクなし（DOCコード未設定）</div>';return;}
-    host.innerHTML=`<a class="pdf-link" href="${p.web}" target="_blank">📄 新しいタブで開く</a>`+(p.embed?`<iframe class="pdf-frame" src="${p.embed}"></iframe>`:'<div class="empty">プレビュー不可（リンクから開いてください）</div>');});
+  renderRevPdf(revPaths(m.doc));
+}
+function revPaths(doc){return String(doc||'').split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean);}
+function renderRevPdf(paths){const host=document.getElementById('pdf-host');if(!host)return;
+  if(!paths.length){host.innerHTML='<div class="empty">証憑リンクなし（DOCコード未設定）</div>';return;}
+  const chips=paths.map(p=>`<button class="pdf-chip" data-p="${esc(p)}" onclick="showRevPdf(this.dataset.p)" title="${esc(p.split('/').pop())}">${p.split('/').pop()}</button>`).join('');
+  host.innerHTML=`<div class="pdf-chips">${chips}</div><div id="rev-view"><div class="empty">読込中...</div></div>`;
+  showRevPdf(paths[0]);
+}
+async function showRevPdf(path){document.querySelectorAll('.pdf-chip').forEach(b=>b.classList.toggle('on',b.dataset.p===path));
+  const view=document.getElementById('rev-view');if(!view)return;
+  if(revCache[path]){view.innerHTML=`<iframe class="pdf-frame" src="${revCache[path]}"></iframe>`;return;}
+  view.innerHTML='<div class="empty">読込中...</div>';
+  const name=path.split('?')[0].split('/').pop();
+  try{const d=await gget(`/sites/${SITE}/drive/root:/BILLS/processed/${encodeURIComponent(name)}?$select=id`);
+    const t=await token();const r=await fetch(`${GRAPH}/sites/${SITE}/drive/items/${d.id}/content`,{headers:{Authorization:'Bearer '+t}});
+    const b=await r.blob();revCache[path]=URL.createObjectURL(b);const vv=document.getElementById('rev-view');if(vv)vv.innerHTML=`<iframe class="pdf-frame" src="${revCache[path]}"></iframe>`;
+  }catch(e){view.innerHTML='<div class="empty">PDF取得失敗（'+name+'）</div>';}
 }
 
 function addRow(){const tb=document.getElementById('detail-lines');if(!tb)return;
