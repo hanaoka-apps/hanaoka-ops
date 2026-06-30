@@ -124,8 +124,13 @@ const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8
 const MLIST='AP_PurchaseMatch';
 let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfSel={},pdfCache={},selectedCode=null,listView='all',detailView='all';
 let M={fmap:{},id:null};
-let INV={fmap:{},id:null}, invByVendor={}, invByName={};
+let INV={fmap:{},id:null}, invByVendor={}, invByName={}, invAmtByVendor={}, invAmtByName={};
 function normName(s){return String(s||'').replace(/株式会社|有限会社|（株）|\(株\)|㈱|（有）|\(有\)|㈲|\s|　/g,'');}
+// AI読取の請求書税込額（仕入行 金額_税込 の合計）。コード優先→名寄せ。
+function aiAmt(code){const v=vendors.find(x=>x.code===code);
+  let a; if(code&&Object.prototype.hasOwnProperty.call(invAmtByVendor,code))a=invAmtByVendor[code];
+  else if(v)a=invAmtByName[normName(v.name)];
+  return (a==null)?null:a;}
 
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}}
 async function signIn(){try{const r=await msalApp.loginPopup({scopes:SCOPES});acct=r.account;msalApp.setActiveAccount(acct);await showApp();}catch(e){if(e.errorCode!=='user_cancelled')snack('サインインエラー: '+e.message,true);}}
@@ -176,13 +181,14 @@ async function ensureInvoiceList(){if(INV.id)return;
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);const l=ls.value.find(x=>x.displayName==='AP_Invoice');if(!l)throw new Error('AP_Invoice なし');INV.id=l.id;
   const c=await gget(`/sites/${AP_SITE}/lists/${INV.id}/columns?$select=name,displayName`);c.value.forEach(x=>INV.fmap[x.displayName]=x.name);}
 async function loadInvoicePdfs(){
-  invByVendor={};invByName={};
+  invByVendor={};invByName={};invAmtByVendor={};invAmtByName={};
   try{await ensureInvoiceList();const m=month();
     let items=[],n=`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500`;
     while(n){const d=await gget(n);items=items.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
     const F=INV.fmap;
     items.forEach(it=>{const f=it.fields;const cat=f[F['支払区分']]||'';if(cat!=='本社仕入'&&cat!=='工場仕入')return;if((f[F['対象年月']]||'')!==m)return;if(f[F['アーカイブフラグ']]===true)return;
-      const code=f[F['支払先コード']]||'';const nm=normName(f[F['支払先名']]||'');const doc=f[F['DOCコード']]||'';
+      const code=f[F['支払先コード']]||'';const nm=normName(f[F['支払先名']]||'');const doc=f[F['DOCコード']]||'';const amt=Number(f[F['金額_税込']])||0;
+      if(amt){ if(code)invAmtByVendor[code]=(invAmtByVendor[code]||0)+amt; if(nm)invAmtByName[nm]=(invAmtByName[nm]||0)+amt; }
       String(doc).split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean).forEach(p=>{
         if(code){(invByVendor[code]=invByVendor[code]||[]).push(p);}
         if(nm){(invByName[nm]=invByName[nm]||[]).push(p);}});});
@@ -275,6 +281,12 @@ function renderDetail(code){
   const v=vendors.find(x=>x.code===code);const d=document.getElementById('detail-pane');
   if(!v){d.innerHTML='<div class="empty">左の仕入先を選択してください</div>';return;}
   const incl=v.excl+v.tax;const m=matchState[code]||{};const st=vstatus(v);const arch=!!archived[code];
+  const aiv=aiAmt(code);                       // AI読取の請求書税込（未保存の提案）
+  const isAi=(m.inv==null && aiv!=null);        // 人がまだ確定していない＝AI提案表示
+  const effInv=(m.inv!=null)?m.inv:aiv;         // 欄に出す値（保存値優先→AI提案）
+  const effDiff=(effInv==null)?null:Math.round(effInv)-Math.round(incl);
+  const effCls=effInv==null?'st-none':(effDiff===0?'st-ok':'st-diff');
+  const effTxt=effInv==null?'未入力':(isAi?'AI読取・要確認':(effDiff===0?'一致':(effDiff>0?'+':'')+effDiff.toLocaleString()));
   const lines=vLines(v,detailView);const vi=vIncl(v,detailView),ve=vExcl(v,detailView);
   const byDept=Object.entries(v.byDept).sort((a,b)=>b[1]-a[1]).map(([k,x])=>`<span class="loc-pill ${/工場/.test(k)?'pill-kojo':'pill-honsha'}">${k} ${yen(x)}</span>`).join(' ');
   const rows=lines.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(l=>`<tr><td>${l.date||''}</td><td>${l.slip||''}</td><td><span class="loc-pill ${l.loc==='工場'?'pill-kojo':'pill-honsha'}">${l.loc}</span>${l.dept}</td><td>${l.item}</td><td>${l.model}</td><td class="num">${yen(l.excl)}</td><td class="num">${yen(l.tax)}</td><td class="num">${yen(l.incl)}</td><td>${l.dtype}</td></tr>`).join('');
@@ -286,13 +298,14 @@ function renderDetail(code){
     <div class="dmetrics">
       <div class="dm"><div class="l">受入(税抜)</div><div class="v">${yen(ve)}</div></div>
       <div class="dm"><div class="l">受入(税込)</div><div class="v">${yen(vi)}</div></div>
-      <div class="dm"><div class="l">突合(全拠点)</div><div class="v"><span class="st ${st.cls}" style="font-size:14px">${st.txt}</span></div></div>
+      <div class="dm"><div class="l">突合(全拠点)</div><div class="v"><span class="st ${effCls}" style="font-size:14px">${effTxt}</span></div></div>
     </div>
     <div class="match-card"><div class="match-row">
       <label style="font-size:12px;color:var(--muted)">手元請求書(税込・全拠点)</label>
-      <input class="match-in" type="number" value="${m.inv!=null?m.inv:''}" placeholder="金額入力" oninput="setInvLive('${code}',this.value)" onchange="setInv('${code}',this.value)">
-      <span>差額：<b id="diff-val">${fmtDiff(st.diff)}</b></span>
-      ${st.diff!=null&&st.diff!==0?reasonSel:''}
+      <input class="match-in" type="number" value="${effInv!=null?effInv:''}" placeholder="金額入力" oninput="setInvLive('${code}',this.value)" onchange="setInv('${code}',this.value)">
+      ${isAi?'<span style="font-size:11px;background:#fff3cd;color:#8a6d00;border:1px solid #e0c200;border-radius:4px;padding:2px 6px;font-weight:700">AI読取・要確認</span>':''}
+      <span>差額：<b id="diff-val">${fmtDiff(effDiff)}</b></span>
+      ${effDiff!=null&&effDiff!==0?reasonSel:''}
       <label style="font-size:13px"><input type="checkbox" id="r-received" ${m.received?'checked':''} onchange="setRecv('${code}',this.checked)"> 請求書受領</label>
       <button class="btn-save" onclick="saveVendor('${code}')">💾 保存</button>
     </div></div>
@@ -356,8 +369,14 @@ function setReason(code,val){matchState[code]=matchState[code]||{};matchState[co
 function setRecv(code,val){matchState[code]=matchState[code]||{};matchState[code].received=val;renderList();renderSummary();}
 
 async function saveVendor(code){
-  const v=vendors.find(x=>x.code===code);if(!v)return;const m=matchState[code]||{};
-  const incl=v.excl+v.tax;const inv=(m.inv==null||m.inv==='')?null:parseFloat(m.inv);
+  const v=vendors.find(x=>x.code===code);if(!v)return;const m=matchState[code]=matchState[code]||{};
+  // 欄の値を採用（AI提案のまま未編集でも保存時に確定）。欄が無ければ保存済み値→AI読取の順。
+  const box=document.querySelector('.match-in');
+  let raw = box ? box.value : (m.inv!=null?m.inv:'');
+  if((raw===''||raw==null) && m.inv==null){ const av=aiAmt(code); if(av!=null) raw=av; }
+  const inv=(raw===''||raw==null)?null:parseFloat(raw);
+  m.inv=inv;  // 保存値として確定（一覧・進捗にも反映）
+  const incl=v.excl+v.tax;
   const diff=inv==null?null:Math.round(inv)-Math.round(incl);
   const status=archived[code]?'対象外':(inv==null?'未突合':(diff===0?'一致':'差異あり'));
   const fields={};
