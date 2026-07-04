@@ -122,15 +122,15 @@ const GRAPH='https://graph.microsoft.com/v1.0';
 const SITE_PATH='hanaokacorp.sharepoint.com:/sites/msteams_20513c', DRIVE_NAME='GenelalMasters', FILE_PATH='9521受入リスト.csv';
 const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const MLIST='AP_PurchaseMatch';
-let msalApp=null,acct=null,vendors=[],matchState={},archived={},pdfSel={},pdfCache={},selectedCode=null,listView='all',detailView='all';
+let msalApp=null,acct=null,vendors=[],matchState={},savedState={},archived={},pdfSel={},pdfCache={},selectedCode=null,listView='all',detailView='all';
 let M={fmap:{},id:null};
 let INV={fmap:{},id:null}, invByVendor={}, invByName={}, invAmtByVendor={}, invAmtByName={};
 function normName(s){return String(s||'').replace(/株式会社|有限会社|（株）|\(株\)|㈱|（有）|\(有\)|㈲|\s|　/g,'');}
-// AI読取の請求書税込額（仕入行 金額_税込 の合計）。コード優先→名寄せ。
-function aiAmt(code){const v=vendors.find(x=>x.code===code);
-  let a; if(code&&Object.prototype.hasOwnProperty.call(invAmtByVendor,code))a=invAmtByVendor[code];
-  else if(v)a=invAmtByName[normName(v.name)];
-  return (a==null)?null:a;}
+// AI読取の請求書税込額（仕入行 金額_税込 の合計）。
+// 金額は「仕入先コード一致」のみで集計する。名寄せは同名別会社の誤合算リスクがあるので金額には使わない（PDF表示候補にのみ使用）。
+function aiAmt(code){
+  if(code&&Object.prototype.hasOwnProperty.call(invAmtByVendor,code)){const a=invAmtByVendor[code];return (a==null)?null:a;}
+  return null;}
 
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}}
 async function signIn(){try{const r=await msalApp.loginPopup({scopes:SCOPES});acct=r.account;msalApp.setActiveAccount(acct);await showApp();}catch(e){if(e.errorCode!=='user_cancelled')snack('サインインエラー: '+e.message,true);}}
@@ -219,7 +219,7 @@ async function loadReceipts(){
 }
 
 async function loadMatchState(){
-  matchState={};archived={};
+  matchState={};savedState={};archived={};
   try{
     await ensureMatchList();const m=month();
     let items=[],n=`/sites/${AP_SITE}/lists/${M.id}/items?$expand=fields&$top=500`;
@@ -228,6 +228,8 @@ async function loadMatchState(){
       const code=f[mi('仕入先コード')];if(!code)return;
       matchState[code]={itemId:it.id,inv:f[mi('請求書税込')]??null,reason:f[mi('不一致理由')]||'',received:f[mi('請求書受領')]===true,
         status:f[mi('突合状態')]||'',pdfLink:f[mi('PDFリンク')]||'',by:f[mi('突合者')]||'',at:f[mi('突合日時')]||''};
+      // 進捗集計は「保存済み」だけを見る（入力中の値でカウントを進めない）
+      savedState[code]={inv:f[mi('請求書税込')]??null,received:f[mi('請求書受領')]===true,reason:f[mi('不一致理由')]||'',status:f[mi('突合状態')]||''};
       if(f[mi('突合状態')]==='対象外')archived[code]=true;
     });
   }catch(e){snack('突合状態の読込エラー: '+e.message,true);}
@@ -239,7 +241,12 @@ function vLines(v,mode){return mode==='all'?v.lines:v.lines.filter(l=>l.loc===mo
 function segOn(prefix,m){['all','honsha','kojo'].forEach(x=>{const el=document.getElementById(prefix+x);if(el)el.classList.remove('on');});const el=document.getElementById(prefix+(m==='all'?'all':m==='本社'?'honsha':'kojo'));if(el)el.classList.add('on');}
 function setListView(m){listView=m;segOn('vm-',m);renderSummary();renderList();}
 function setDetailView(m){detailView=m;if(selectedCode)renderDetail(selectedCode);}
-function doneOf(v){if(archived[v.code])return true;const m=matchState[v.code]||{};const st=vstatus(v);if(st.diff===0)return true;if(st.diff!=null&&st.diff!==0&&m.reason)return true;return false;}
+// 完了＝「保存済み」の状態のみで判定。入力中(matchState)ではカウントを進めない。確認中は未完了。
+function doneOf(v){if(archived[v.code])return true;const s=savedState[v.code];if(!s||s.inv==null||s.inv==='')return false;
+  const diff=Math.round(s.inv)-Math.round(v.excl+v.tax);
+  if(diff===0)return true;
+  if(s.reason&&s.reason!=='確認中')return true;   // 差異ありでも理由確定(確認中除く)なら完了
+  return false;}
 function donut(done,total,color,label){const pct=total?done/total:0;const r=26,c=2*Math.PI*r;const off=c*(1-pct);
   return `<div style="text-align:center"><svg width="64" height="64" viewBox="0 0 66 66"><circle cx="33" cy="33" r="${r}" fill="none" stroke="#e6eaf2" stroke-width="8"/><circle cx="33" cy="33" r="${r}" fill="none" stroke="${color}" stroke-width="8" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 33 33)" stroke-linecap="round"/><text x="33" y="31" text-anchor="middle" font-size="13" font-weight="700">${done}/${total}</text><text x="33" y="45" text-anchor="middle" font-size="9" fill="#888">残${total-done}</text></svg><div style="font-size:11px;color:#666">${label}</div></div>`;}
 function renderProgress(){
@@ -253,8 +260,8 @@ function renderSummary(){
   const tot=act.reduce((s,v)=>s+v.excl+v.tax,0);
   const honsha=act.reduce((s,v)=>s+(v.byLoc['本社']||0),0);
   const kojo=act.reduce((s,v)=>s+(v.byLoc['工場']||0),0);
-  const matched=act.filter(v=>{const m=matchState[v.code];return m&&m.inv!=null&&m.inv!==''&&Math.round(m.inv)===Math.round(v.excl+v.tax);}).length;
-  const rcv=act.filter(v=>matchState[v.code]&&matchState[v.code].received).length;
+  const matched=act.filter(v=>{const s=savedState[v.code];return s&&s.inv!=null&&s.inv!==''&&Math.round(s.inv)===Math.round(v.excl+v.tax);}).length;
+  const rcv=act.filter(v=>savedState[v.code]&&savedState[v.code].received).length;
   document.getElementById('summary').innerHTML=
     `<span class="s">受入合計(税込)<b>${yen(tot)}</b></span><span class="s honsha">本社<b>${yen(honsha)}</b></span><span class="s kojo">工場<b>${yen(kojo)}</b></span><span class="s">仕入先<b>${act.length}</b></span><span class="s">受領<b>${rcv}/${act.length}</b></span><span class="s">突合一致<b>${matched}/${act.length}</b></span>`;
   renderProgress();
@@ -368,13 +375,20 @@ function setInv(code,val){matchState[code]=matchState[code]||{};matchState[code]
 function setReason(code,val){matchState[code]=matchState[code]||{};matchState[code].reason=val;}
 function setRecv(code,val){matchState[code]=matchState[code]||{};matchState[code].received=val;renderList();renderSummary();}
 
-async function saveVendor(code){
+async function saveVendor(code,opt){
   const v=vendors.find(x=>x.code===code);if(!v)return;const m=matchState[code]=matchState[code]||{};
-  // 欄の値を採用（AI提案のまま未編集でも保存時に確定）。欄が無ければ保存済み値→AI読取の順。
-  const box=document.querySelector('.match-in');
-  let raw = box ? box.value : (m.inv!=null?m.inv:'');
-  if((raw===''||raw==null) && m.inv==null){ const av=aiAmt(code); if(av!=null) raw=av; }
-  const inv=(raw===''||raw==null)?null:parseFloat(raw);
+  opt=opt||{};
+  let inv;
+  if(opt.archiveOnly){
+    // アーカイブ切替：金額は触らない（保存済み値を維持、AI額は採用しない）
+    const s=savedState[code]||{}; inv=(s.inv==null||s.inv==='')?null:parseFloat(s.inv);
+  }else{
+    // 保存ボタン＝人の確認行為。欄の値（AI提案のまま未編集でも可）を採用。
+    const box=document.querySelector('.match-in');
+    let raw = box ? box.value : (m.inv!=null?m.inv:'');
+    if((raw===''||raw==null) && m.inv==null){ const av=aiAmt(code); if(av!=null) raw=av; }
+    inv=(raw===''||raw==null)?null:parseFloat(raw);
+  }
   m.inv=inv;  // 保存値として確定（一覧・進捗にも反映）
   const incl=v.excl+v.tax;
   const diff=inv==null?null:Math.round(inv)-Math.round(incl);
@@ -390,11 +404,13 @@ async function saveVendor(code){
     if(m.itemId){await gpatch(`/sites/${AP_SITE}/lists/${M.id}/items/${m.itemId}/fields`,fields);}
     else{const created=await gpost(`/sites/${AP_SITE}/lists/${M.id}/items`,{fields});matchState[code].itemId=created.id;}
     matchState[code].status=status;matchState[code].by=fields[mi('突合者')];matchState[code].at=fields[mi('突合日時')];
+    // 保存済みスナップショットを更新（進捗集計はこれを見る）
+    savedState[code]={inv:inv,received:!!m.received,reason:m.reason||'',status:status};
     snack('✅ 保存しました');renderList();renderSummary();renderDetail(code);
   }catch(e){snack('保存エラー: '+e.message,true);}
 }
 function setArch(code,on){archived[code]=on?true:false;if(!on)delete archived[code];
-  saveVendor(code); // 状態(対象外/解除)を保存
+  saveVendor(code,{archiveOnly:true}); // 状態(対象外/解除)のみ保存。金額・AI額は触らない
   if(on&&code===selectedCode){selectedCode=null;document.getElementById('detail-pane').innerHTML='<div class="empty">左の仕入先を選択してください</div>';}
   renderList();renderSummary();}
 function snack(m,e=false){const el=document.getElementById('snackbar');el.textContent=m;el.style.background=e?'#c0392b':'#323232';el.style.display='block';setTimeout(()=>el.style.display='none',4000);}
