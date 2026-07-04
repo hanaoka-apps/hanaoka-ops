@@ -82,16 +82,21 @@ def main():
     token = get_token()
     print("  [OK] 認証成功")
     ok = 0
+    skipped = 0   # ファイル未生成(そのビルドで作られていない)。異常ではない。
+    failed = 0    # 実際のアップロード失敗(例外)。これがある時だけ異常終了。
     for local_path, sp_name in TARGETS:
         try:
             if upload_file(token, local_path, sp_name):
                 ok += 1
+            else:
+                skipped += 1
         except Exception as e:
+            failed += 1
             print(f"  [ERROR] {sp_name}: {e}")
-    print(f"完了: {ok}/{len(TARGETS)} 件アップロード")
-    # 1件でも失敗したら異常終了(ワークフローを緑のままにせず、古いデータ配信に気付けるように)
-    if ok < len(TARGETS):
-        print(f"[ERROR] アップロード未完: {len(TARGETS) - ok} 件失敗")
+    print(f"完了: アップロード{ok} / 未生成スキップ{skipped} / 失敗{failed} (全{len(TARGETS)})")
+    # 実際のアップロード失敗(例外)があった時だけ異常終了。未生成ファイルは許容(ビルド差分のため)。
+    if failed > 0:
+        print(f"[ERROR] アップロード失敗 {failed} 件")
         sys.exit(1)
 
 
