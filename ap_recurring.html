@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>定期支払マスタ | 花岡車輌</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/msal/3.10.0/msal-browser.min.js"></script>
+<style>
+:root{--primary:#1a5fa8;--border:#d7dde6;--muted:#6b7683;--card-bg:#fff;--bg:#f4f6f9;--danger:#c0392b;--ok:#2e7d32;--warn:#e67e22}
+*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI","Meiryo",sans-serif;background:var(--bg);color:#222;font-size:14px}
+header{background:var(--primary);color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px}
+header h1{font-size:16px;margin:0;font-weight:600}
+header .sp{margin-left:auto;display:flex;gap:12px;align-items:center;font-size:13px}
+header a{color:#fff;text-decoration:underline;font-size:13px}
+button{cursor:pointer;font-family:inherit}
+.btn{background:var(--primary);color:#fff;border:none;padding:6px 14px;border-radius:5px;font-size:13px}
+.btn.g{background:#fff;color:var(--primary);border:1px solid var(--primary)}
+.btn.d{background:#fff;color:var(--danger);border:1px solid var(--danger)}
+.wrap{padding:16px 20px}
+.toolbar{display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+select,input{font-family:inherit;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:4px 7px}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden}
+th,td{padding:7px 9px;border-bottom:1px solid #eef1f5;text-align:left;font-size:13px}
+th{background:#f0f4f9;color:#445;font-weight:600;font-size:12px}
+td.num,th.num{text-align:right}
+.pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600}
+.p-fix{background:#e8f0fb;color:#1a5fa8}.p-plan{background:#fff3cd;color:#8a6d00}
+.p-off{background:#f0f0f0;color:#888}.p-on{background:#e6f4ea;color:#2e7d32}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:flex-start;justify-content:center;padding:24px;overflow:auto;z-index:50}
+.modal{background:#fff;border-radius:10px;max-width:960px;width:100%;padding:20px 24px}
+.modal h2{margin:0 0 12px;font-size:17px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px 14px}
+.f{display:flex;flex-direction:column;gap:3px}.f label{font-size:11px;color:var(--muted)}
+.f.wide{grid-column:span 2}.f.full{grid-column:span 4}
+.lines th,.lines td{padding:4px 5px;font-size:12px}
+.lines input{width:100%;padding:3px 5px}
+.lines input.n{text-align:right}
+.snack{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 20px;border-radius:6px;display:none;z-index:100}
+.empty{padding:30px;text-align:center;color:var(--muted)}
+.mono{font-family:Consolas,monospace}
+.gen-result{background:#f0f4f9;border:1px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:13px;white-space:pre-wrap;display:none}
+</style>
+</head>
+<body>
+<div id="login-view" style="display:none;padding:60px;text-align:center">
+  <h1>定期支払マスタ</h1><p>花岡車輌 支払管理</p>
+  <button class="btn" onclick="signIn()">サインイン</button>
+</div>
+<div id="app-view" style="display:none">
+  <header>
+    <h1>定期支払マスタ</h1>
+    <span style="font-size:12px">決済月</span>
+    <select id="month-select" onchange="renderList()"></select>
+    <button class="btn" onclick="openNew()">＋ 新規</button>
+    <button class="btn g" onclick="generate()">▶ 当月分を生成</button>
+    <span class="sp">
+      <a href="ap_dashboard.html">🏠 ダッシュボード</a>
+      <span id="user-name"></span><a href="#" onclick="signOut();return false">サインアウト</a>
+    </span>
+  </header>
+  <div class="wrap">
+    <div id="gen-result" class="gen-result"></div>
+    <div class="toolbar">
+      <input id="f-text" placeholder="名称・支払先で絞込" oninput="renderList()" style="width:220px">
+      <label style="font-size:13px"><input type="checkbox" id="f-inactive" onchange="renderList()"> 無効も表示</label>
+      <span id="count" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <table>
+      <thead><tr><th>名称</th><th>支払先</th><th>手段</th><th>締め回</th><th>頻度</th><th class="num">税込合計</th><th>種別</th><th>状態</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 編集モーダル -->
+<div id="overlay" class="overlay"><div class="modal">
+  <h2 id="m-title">定期支払の登録</h2>
+  <div class="grid">
+    <div class="f wide"><label>名称</label><input id="e-title" placeholder="例：顧問料 降旗 / 名古屋事務所 家賃"></div>
+    <div class="f"><label>生成種別</label><select id="e-gentype"><option>固定生成</option><option>予定のみ</option></select></div>
+    <div class="f"><label>有効</label><select id="e-active"><option value="true">有効</option><option value="false">無効</option></select></div>
+    <div class="f"><label>支払先名</label><input id="e-payee"></div>
+    <div class="f"><label>支払先コード</label><input id="e-payeecode" placeholder="振込先マスタのコード"></div>
+    <div class="f"><label>支払手段</label><select id="e-method"><option>振込</option><option>口座振替</option><option>でんさい</option></select></div>
+    <div class="f"><label>支払区分</label><select id="e-cat"><option>本社経費</option><option>工場経費</option></select></div>
+    <div class="f"><label>支払日区分(締め回)</label><select id="e-daytype"><option>10日</option><option>20日</option><option>月末</option></select></div>
+    <div class="f"><label>頻度</label><select id="e-freq" onchange="onFreq()"><option>毎月</option><option>隔月</option><option>年次</option></select></div>
+    <div class="f"><label>対象月(隔月・年次:例 6 / 1,7)</label><input id="e-months" placeholder="毎月は空"></div>
+    <div class="f"><label>開始年月</label><input id="e-start" placeholder="2024/01"></div>
+    <div class="f"><label>終了年月(空=無期限)</label><input id="e-end" placeholder="2029/12"></div>
+    <div class="f"><label>総回数(リース等・空=なし)</label><input id="e-total" class="n" type="number"></div>
+    <div class="f"><label>源泉額(顧問料等・0=なし)</label><input id="e-withhold" type="number" value="0"></div>
+    <div class="f full"><label>メモ</label><input id="e-note"></div>
+  </div>
+  <h3 style="margin:16px 0 6px;font-size:14px">明細テンプレ（SMILEコード）</h3>
+  <table class="lines"><thead><tr>
+    <th style="width:190px">勘定科目</th><th style="width:150px">内訳(任意)</th><th style="width:160px">部門</th>
+    <th style="width:90px">税コード</th><th class="num" style="width:90px">税抜</th><th class="num" style="width:80px">消費税</th><th class="num" style="width:90px">税込</th><th>摘要</th><th></th>
+  </tr></thead><tbody id="line-tbody"></tbody></table>
+  <button class="btn g" style="margin-top:8px" onclick="addLine()">＋ 明細行</button>
+  <div style="margin-top:10px;font-size:13px">
+    課税ベース税抜計 <b id="sum-excl">0</b> ／ 消費税計 <b id="sum-tax">0</b> ／ 源泉 <b id="sum-wh">0</b> ／ <b>支払額(税込) <span id="sum-net">0</span></b>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end">
+    <button class="btn g" onclick="closeModal()">キャンセル</button>
+    <button class="btn d" id="del-btn" onclick="delMaster()" style="display:none">削除</button>
+    <button class="btn" onclick="saveMaster()">保存</button>
+  </div>
+</div></div>
+
+<datalist id="dl-kamoku"></datalist>
+<datalist id="dl-bumon"></datalist>
+<datalist id="dl-zei"></datalist>
+<div id="snackbar" class="snack"></div>
+
+<script>
+const MSAL_CONFIG={auth:{clientId:'d338d61b-01dc-4c7c-ac6b-aecf7f30d716',authority:'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',redirectUri:window.location.origin+window.location.pathname},cache:{cacheLocation:'sessionStorage'}};
+const SCOPES=['User.Read','Sites.ReadWrite.All','Files.ReadWrite.All'];
+const GRAPH='https://graph.microsoft.com/v1.0';
+const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
+const MASTER_DIR='/masters';   // hanaoka-ap の Shared Documents/masters/ に SMILE CSV を置く
+let msalApp=null,acct=null;
+let R={fmap:{},id:null}, INV={fmap:{},id:null}, SLIP={fmap:{},id:null};
+let items=[], smKamoku=[], smBumon=[], smZei=[], smUchiwake=[];
+let curLines=[], editId=null;
+
+// ---- auth / graph ----
+async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}else document.getElementById('login-view').style.display='block';}
+async function signIn(){try{const r=await msalApp.loginPopup({scopes:SCOPES});acct=r.account;msalApp.setActiveAccount(acct);await showApp();}catch(e){if(e.errorCode!=='user_cancelled')snack('サインインエラー: '+e.message,true);}}
+function signOut(){msalApp.logoutPopup({account:acct});}
+async function token(){try{const r=await msalApp.acquireTokenSilent({scopes:SCOPES,account:acct});return r.accessToken;}catch{const r=await msalApp.acquireTokenPopup({scopes:SCOPES});acct=r.account;return r.accessToken;}}
+async function gget(p){const t=await token();const r=await fetch(GRAPH+p,{headers:{Authorization:'Bearer '+t}});if(!r.ok)throw new Error('['+r.status+'] '+p);return r.json();}
+async function gpatch(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'PATCH',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
+async function gpost(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'POST',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
+async function gdel(p){const t=await token();const r=await fetch(GRAPH+p,{method:'DELETE',headers:{Authorization:'Bearer '+t}});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());}
+async function gtext(path){const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/root:${encodeURI(path)}:/content`,{headers:{Authorization:'Bearer '+t}});if(!r.ok)throw new Error('['+r.status+'] '+path);return new TextDecoder('utf-8').decode(await r.arrayBuffer());}
+
+// ---- CSV ----
+function parseCSV(text){if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);const rows=[];let row=[],cur='',q=false;
+  for(let i=0;i<text.length;i++){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=c;}
+    else{if(c==='"')q=true;else if(c===','){row.push(cur);cur='';}else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur='';}else if(c==='\r'){}else cur+=c;}}
+  if(cur!==''||row.length){row.push(cur);rows.push(row);}return rows;}
+function toObjs(rows){const h=rows[0];return rows.slice(1).filter(r=>r.length>1).map(r=>{const o={};h.forEach((k,i)=>o[k]=r[i]);return o;});}
+
+// ---- setup ----
+async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;initMonth();
+  await ensureLists(); await loadMasters(); await loadItems(); renderList();}
+function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}}
+function month(){return document.getElementById('month-select').value;}
+async function ensureLists(){
+  const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);
+  const find=n=>ls.value.find(x=>x.displayName===n);
+  const r=find('AP_RecurringPayment');if(!r)throw new Error('AP_RecurringPayment が見つかりません（setup-recurring.js create を実行）');R.id=r.id;
+  const iv=find('AP_Invoice');INV.id=iv.id; const sp=find('AP_PaymentSlip');SLIP.id=sp.id;
+  for(const [L,o] of [[R,R],[INV,INV],[SLIP,SLIP]]){const c=await gget(`/sites/${AP_SITE}/lists/${L.id}/columns?$select=name,displayName`);c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
+}
+const rf=d=>R.fmap[d]||d, invf=d=>INV.fmap[d]||d, spf=d=>SLIP.fmap[d]||d;
+
+async function loadMasters(){
+  try{
+    smKamoku=toObjs(parseCSV(await gtext(`${MASTER_DIR}/smile_kamoku.csv`)));
+    smBumon=toObjs(parseCSV(await gtext(`${MASTER_DIR}/smile_bumon.csv`)));
+    smZei=toObjs(parseCSV(await gtext(`${MASTER_DIR}/smile_zeicode.csv`)));
+    smUchiwake=toObjs(parseCSV(await gtext(`${MASTER_DIR}/smile_uchiwake.csv`)));
+  }catch(e){snack('SMILEマスタ読込失敗（'+MASTER_DIR+'にCSVを配置してください）: '+e.message,true);}
+  document.getElementById('dl-kamoku').innerHTML=smKamoku.map(k=>`<option value="${k['科目コード']} ${k['科目名']}">`).join('');
+  document.getElementById('dl-bumon').innerHTML=smBumon.map(b=>`<option value="${b['部門コード']} ${b['部門名']}">`).join('');
+  document.getElementById('dl-zei').innerHTML=smZei.map(z=>`<option value="${z['税コード']} ${z['税名']}">`).join('');
+}
+function kamoku(code){return smKamoku.find(k=>k['科目コード']===code);}
+function zeiName(code){const z=smZei.find(x=>x['税コード']===code);return z?z['税名']:'';}
+function rateOf(zcode){const nm=zeiName(zcode);if(/軽減|8\.0%|8%/.test(nm))return 8;if(/10\.0%|10%/.test(nm))return 10;return 0;}
+
+async function loadItems(){
+  let all=[],n=`/sites/${AP_SITE}/lists/${R.id}/items?$expand=fields&$top=500`;
+  while(n){const d=await gget(n);all=all.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
+  items=all.map(it=>({id:it.id,f:it.fields}));
+}
+
+// ---- list ----
+function yen(n){return '¥'+(Number(n)||0).toLocaleString();}
+function renderList(){
+  const ft=document.getElementById('f-text').value.trim();const showInact=document.getElementById('f-inactive').checked;
+  let list=items.filter(it=>showInact||it.f[rf('有効')]===true);
+  if(ft)list=list.filter(it=>(it.f['Title']||'').includes(ft)||(it.f[rf('支払先名')]||'').includes(ft));
+  list.sort((a,b)=>(a.f['Title']||'').localeCompare(b.f['Title']||''));
+  document.getElementById('count').textContent=`${list.length}件`;
+  document.getElementById('tbody').innerHTML=list.map(it=>{const f=it.f;
+    const gt=f[rf('生成種別')]||'固定生成';const active=f[rf('有効')]===true;
+    return `<tr>
+      <td>${f['Title']||'—'}</td><td>${f[rf('支払先名')]||''}<span class="mono" style="color:#999;font-size:11px"> ${f[rf('支払先コード')]||''}</span></td>
+      <td>${f[rf('支払手段')]||''}</td><td>${f[rf('支払日区分')]||''}</td>
+      <td>${f[rf('頻度')]||''}${f[rf('対象月')]?'('+f[rf('対象月')]+')':''}</td>
+      <td class="num">${yen(f[rf('税込合計')])}</td>
+      <td><span class="pill ${gt==='固定生成'?'p-fix':'p-plan'}">${gt}</span></td>
+      <td><span class="pill ${active?'p-on':'p-off'}">${active?'有効':'無効'}</span></td>
+      <td><button class="btn g" onclick="openEdit('${it.id}')">編集</button></td>
+    </tr>`;}).join('')||`<tr><td colspan="9" class="empty">定期支払が未登録です。「＋新規」から登録してください。</td></tr>`;
+}
+
+// ---- editor ----
+function openNew(){editId=null;document.getElementById('m-title').textContent='定期支払の登録';document.getElementById('del-btn').style.display='none';
+  setForm({});curLines=[blankLine()];renderLines();openModal();}
+function openEdit(id){const it=items.find(x=>x.id===id);if(!it)return;editId=id;
+  document.getElementById('m-title').textContent='定期支払の編集';document.getElementById('del-btn').style.display='';
+  setForm(it.f);let lines=[];try{lines=JSON.parse(it.f[rf('明細テンプレJSON')]||'[]');}catch{lines=[];}
+  curLines=lines.length?lines:[blankLine()];renderLines();openModal();}
+function blankLine(){return{kcode:'',kname:'',ucode:'',uname:'',bcode:'',bname:'',zcode:'',excl:0,tax:0,incl:0,memo:''};}
+function setForm(f){
+  document.getElementById('e-title').value=f['Title']||'';
+  document.getElementById('e-gentype').value=f[rf('生成種別')]||'固定生成';
+  document.getElementById('e-active').value=(f[rf('有効')]===false)?'false':'true';
+  document.getElementById('e-payee').value=f[rf('支払先名')]||'';
+  document.getElementById('e-payeecode').value=f[rf('支払先コード')]||'';
+  document.getElementById('e-method').value=f[rf('支払手段')]||'振込';
+  document.getElementById('e-cat').value=f[rf('支払区分')]||'本社経費';
+  document.getElementById('e-daytype').value=f[rf('支払日区分')]||'月末';
+  document.getElementById('e-freq').value=f[rf('頻度')]||'毎月';
+  document.getElementById('e-months').value=f[rf('対象月')]||'';
+  document.getElementById('e-start').value=f[rf('開始年月')]||'';
+  document.getElementById('e-end').value=f[rf('終了年月')]||'';
+  document.getElementById('e-total').value=f[rf('総回数')]||'';
+  document.getElementById('e-withhold').value=f[rf('源泉額')]||0;
+  document.getElementById('e-note').value=f[rf('メモ')]||'';
+}
+function onFreq(){/* 見た目補助のみ */}
+function renderLines(){
+  document.getElementById('line-tbody').innerHTML=curLines.map((l,i)=>`<tr>
+    <td><input list="dl-kamoku" value="${escv(l.kcode?l.kcode+' '+l.kname:'')}" onchange="setKamoku(${i},this.value)"></td>
+    <td><input list="dl-uchiwake" value="${escv(l.ucode?l.ucode+' '+l.uname:'')}" onchange="setUchiwake(${i},this.value)"></td>
+    <td><input list="dl-bumon" value="${escv(l.bcode?l.bcode+' '+l.bname:'')}" onchange="setBumon(${i},this.value)"></td>
+    <td><input list="dl-zei" value="${escv(l.zcode?l.zcode+' '+zeiName(l.zcode):'')}" onchange="setZei(${i},this.value)" style="width:88px"></td>
+    <td><input class="n" type="number" value="${l.excl}" onchange="setExcl(${i},this.value)"></td>
+    <td><input class="n" type="number" value="${l.tax}" onchange="setTax(${i},this.value)"></td>
+    <td><input class="n" type="number" value="${l.incl}" readonly style="background:#f7f7f7"></td>
+    <td><input value="${escv(l.memo)}" onchange="curLines[${i}].memo=this.value"></td>
+    <td><button class="btn d" onclick="delLine(${i})" style="padding:2px 8px">×</button></td>
+  </tr>`).join('');
+  updSums();
+}
+function escv(s){return String(s==null?'':s).replace(/"/g,'&quot;');}
+function code1(v){return String(v||'').trim().split(/\s+/)[0];}
+function addLine(){curLines.push(blankLine());renderLines();}
+function delLine(i){curLines.splice(i,1);if(!curLines.length)curLines.push(blankLine());renderLines();}
+function setKamoku(i,v){const c=code1(v);const k=kamoku(c);curLines[i].kcode=c;curLines[i].kname=k?k['科目名']:'';
+  if(k&&!curLines[i].zcode){curLines[i].zcode=k['既定税コード'];recalc(i);} renderLines();}
+function setUchiwake(i,v){const c=code1(v);curLines[i].ucode=c;const u=smUchiwake.find(x=>x['科目コード']===curLines[i].kcode&&x['内訳コード']===c);curLines[i].uname=u?u['内訳名']:'';}
+function setBumon(i,v){const c=code1(v);const b=smBumon.find(x=>x['部門コード']===c);curLines[i].bcode=c;curLines[i].bname=b?b['部門名']:'';}
+function setZei(i,v){curLines[i].zcode=code1(v);recalc(i);renderLines();}
+function setExcl(i,v){curLines[i].excl=Math.round(Number(v)||0);recalc(i);renderLines();}
+function setTax(i,v){curLines[i].tax=Math.round(Number(v)||0);curLines[i].incl=curLines[i].excl+curLines[i].tax;updSums();}
+function recalc(i){const l=curLines[i];const rate=rateOf(l.zcode);l.tax=Math.floor((l.excl*rate)/100);l.incl=l.excl+l.tax;}
+// 科目に応じて内訳datalistを差し替え（フォーカス時）
+document.addEventListener('focusin',e=>{if(e.target&&e.target.getAttribute&&e.target.getAttribute('list')==='dl-uchiwake'){
+  const tr=e.target.closest('tr');const i=[...tr.parentNode.children].indexOf(tr);const kc=curLines[i]?curLines[i].kcode:'';
+  let dl=document.getElementById('dl-uchiwake');if(!dl){dl=document.createElement('datalist');dl.id='dl-uchiwake';document.body.appendChild(dl);}
+  dl.innerHTML=smUchiwake.filter(u=>u['科目コード']===kc).map(u=>`<option value="${u['内訳コード']} ${u['内訳名']}">`).join('');}});
+function updSums(){const excl=curLines.reduce((s,l)=>s+(Number(l.excl)||0),0);const tax=curLines.reduce((s,l)=>s+(Number(l.tax)||0),0);
+  const wh=Math.round(Number(document.getElementById('e-withhold').value)||0);const net=excl+tax-wh;
+  document.getElementById('sum-excl').textContent=excl.toLocaleString();document.getElementById('sum-tax').textContent=tax.toLocaleString();
+  document.getElementById('sum-wh').textContent=wh.toLocaleString();document.getElementById('sum-net').textContent=net.toLocaleString();}
+document.addEventListener('input',e=>{if(e.target&&e.target.id==='e-withhold')updSums();});
+function openModal(){document.getElementById('overlay').style.display='flex';}
+function closeModal(){document.getElementById('overlay').style.display='none';}
+
+function collectFields(){
+  const excl=curLines.reduce((s,l)=>s+(Number(l.excl)||0),0),tax=curLines.reduce((s,l)=>s+(Number(l.tax)||0),0);
+  const wh=Math.round(Number(document.getElementById('e-withhold').value)||0);const net=excl+tax-wh;
+  const F={};
+  F['Title']=document.getElementById('e-title').value.trim();
+  F[rf('生成種別')]=document.getElementById('e-gentype').value;
+  F[rf('有効')]=document.getElementById('e-active').value==='true';
+  F[rf('支払先名')]=document.getElementById('e-payee').value.trim();
+  F[rf('支払先コード')]=document.getElementById('e-payeecode').value.trim();
+  F[rf('支払手段')]=document.getElementById('e-method').value;
+  F[rf('支払区分')]=document.getElementById('e-cat').value;
+  F[rf('支払日区分')]=document.getElementById('e-daytype').value;
+  F[rf('頻度')]=document.getElementById('e-freq').value;
+  F[rf('対象月')]=document.getElementById('e-months').value.trim();
+  F[rf('開始年月')]=document.getElementById('e-start').value.trim();
+  F[rf('終了年月')]=document.getElementById('e-end').value.trim();
+  const tot=document.getElementById('e-total').value;F[rf('総回数')]=tot?Number(tot):null;
+  F[rf('源泉額')]=wh;
+  F[rf('明細テンプレJSON')]=JSON.stringify(curLines);
+  F[rf('税込合計')]=net;
+  F[rf('メモ')]=document.getElementById('e-note').value.trim();
+  return F;
+}
+async function saveMaster(){
+  const F=collectFields();
+  if(!F['Title']){snack('名称を入力してください',true);return;}
+  if(!F[rf('支払先コード')]){snack('支払先コードを入力してください（EB/振込に必要）',true);return;}
+  try{
+    if(editId){await gpatch(`/sites/${AP_SITE}/lists/${R.id}/items/${editId}/fields`,F);}
+    else{await gpost(`/sites/${AP_SITE}/lists/${R.id}/items`,{fields:F});}
+    snack('保存しました');closeModal();await loadItems();renderList();
+  }catch(e){snack('保存エラー: '+e.message,true);}
+}
+async function delMaster(){if(!editId)return;if(!confirm('この定期支払マスタを削除します。生成済みのAP_Invoiceは残ります。よろしいですか？'))return;
+  try{await gdel(`/sites/${AP_SITE}/lists/${R.id}/items/${editId}`);snack('削除しました');closeModal();await loadItems();renderList();}
+  catch(e){snack('削除エラー: '+e.message,true);}}
+
+// ---- 当月生成 ----
+function ymNum(s){const m=/(\d{4})\D(\d{1,2})/.exec(s||'');return m?Number(m[1])*12+Number(m[2]):null;}
+function dueThisMonth(f,ym){
+  if(f[rf('有効')]!==true)return false;
+  if((f[rf('生成種別')]||'固定生成')!=='固定生成')return false;   // 予定のみは生成しない
+  const cur=ymNum(ym);const st=ymNum(f[rf('開始年月')]);const en=ymNum(f[rf('終了年月')]);
+  if(st&&cur<st)return false; if(en&&cur>en)return false;
+  const total=Number(f[rf('総回数')])||0; if(total&&st){const occ=cur-st+1; if(occ<1||occ>total)return false;}
+  const freq=f[rf('頻度')]||'毎月';const months=(f[rf('対象月')]||'').split(/[,\s]+/).filter(Boolean).map(Number);
+  const mo=Number(ym.split('/')[1]);
+  if(freq==='毎月')return true;
+  if(months.length)return months.includes(mo);
+  if(freq==='隔月'&&st)return ((cur-st)%2)===0;
+  return false; // 年次で対象月未指定は生成しない
+}
+function occNo(f,ym){const cur=ymNum(ym),st=ymNum(f[rf('開始年月')]);return (st&&cur)?(cur-st+1):null;}
+function locOf(bcode){return /^003/.test(bcode||'')?'工場':'本社';}
+
+async function generate(){
+  const ym=month();
+  const due=items.filter(it=>dueThisMonth(it.f,ym));
+  if(!due.length){snack('当月('+ym+')の対象マスタがありません');return;}
+  // 既存（同マスタ×決済月）を取得して冪等
+  const existing=await gget(`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500&$filter=fields/${invf('対象年月')} eq '${ym}'`).catch(async()=>{
+    // フィルタ不可環境は全件取得でフォールバック
+    let all=[],n=`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500`;while(n){const d=await gget(n);all=all.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}return {value:all};
+  });
+  const existSet=new Set((existing.value||[]).filter(x=>x.fields[invf('対象年月')]===ym).map(x=>String(x.fields['RecurringSourceID']||'')));
+  let made=0,skip=0,err=0;const log=[];
+  for(const it of due){
+    const f=it.f;const rid=String(it.id);
+    if(existSet.has(rid)){skip++;log.push(`- ${f['Title']}：既存(スキップ)`);continue;}
+    try{
+      let lines=[];try{lines=JSON.parse(f[rf('明細テンプレJSON')]||'[]');}catch{lines=[];}
+      const wh=Number(f[rf('源泉額')])||0;const occ=occNo(f,ym);const total=Number(f[rf('総回数')])||0;
+      const suf=(total&&occ)?` (${occ}/${total}回)`:'';
+      // 源泉行を明細に追加
+      const genLines=lines.map(l=>({...l}));
+      if(wh>0){genLines.push({kcode:'000317',kname:'預り金',ucode:'',uname:'',bcode:(lines[0]&&lines[0].bcode)||'',bname:'',zcode:'000',excl:-wh,tax:0,incl:-wh,memo:'源泉徴収'});}
+      const excl=genLines.reduce((s,l)=>s+(Number(l.excl)||0),0),tax=genLines.reduce((s,l)=>s+(Number(l.tax)||0),0),incl=genLines.reduce((s,l)=>s+(Number(l.incl)||0),0);
+      // ヘッダ作成
+      const hf={};
+      hf['Title']=f['Title']||f[rf('支払先名')];
+      hf[invf('支払先名')]=f[rf('支払先名')];hf[invf('支払先コード')]=f[rf('支払先コード')];
+      hf[invf('支払手段')]=f[rf('支払手段')];hf[invf('支払区分')]=f[rf('支払区分')];hf[invf('支払日区分')]=f[rf('支払日区分')];
+      hf[invf('対象年月')]=ym;
+      hf[invf('金額_税抜')]=excl;hf[invf('消費税')]=tax;hf[invf('金額_税込')]=incl;
+      hf[invf('支払ステータス')]='確認待';hf[invf('仕分け済')]=true;
+      hf['RecurringSourceID']=rid;
+      const created=await gpost(`/sites/${AP_SITE}/lists/${INV.id}/items`,{fields:hf});
+      const invId=String(created.id);
+      // 明細作成
+      let ln=0;
+      for(const l of genLines){ln++;
+        const sf={};
+        sf[spf('請求書ID')]=invId;sf[spf('明細行番号')]=ln;sf[spf('拠点')]=locOf(l.bcode);
+        sf[spf('勘定科目名')]=l.kname;sf[spf('勘定科目コード')]=l.kcode;sf[spf('部門コード')]=l.bcode;
+        sf[spf('税区分')]=zeiName(l.zcode);sf[spf('税率区分')]=rateOf(l.zcode)+'%';
+        sf[spf('金額_税抜')]=l.excl;sf[spf('消費税')]=l.tax;sf[spf('金額_税込')]=l.incl;
+        sf[spf('摘要')]=((l.uname?l.uname+' ':'')+(l.memo||''))+suf;
+        await gpost(`/sites/${AP_SITE}/lists/${SLIP.id}/items`,{fields:sf});
+      }
+      made++;log.push(`✅ ${f['Title']}：${yen(incl)}（明細${genLines.length}）${suf}`);
+    }catch(e){err++;log.push(`❌ ${f['Title']}：${e.message}`);}
+  }
+  const el=document.getElementById('gen-result');el.style.display='block';
+  el.textContent=`【${ym} 生成結果】 作成${made} / スキップ${skip} / エラー${err}\n`+log.join('\n');
+  snack(`生成完了：作成${made} スキップ${skip} エラー${err}`);
+}
+
+boot().catch(e=>{console.error(e);snack('起動エラー: '+e.message,true);});
+function snack(m,e=false){const el=document.getElementById('snackbar');el.textContent=m;el.style.background=e?'#c0392b':'#323232';el.style.display='block';setTimeout(()=>el.style.display='none',4000);}
+</script>
+</body>
+</html>
