@@ -499,7 +499,20 @@ async function loadDailyForOrder(orderId, kintone) {
   const all = await loadAllItems(listIds.daily);
   allDailyRecords = all;  // 全受注の日次データを保持（同日他受注重複チェック用）
   log(`T03日次運用 全件 ${all.length}件 読込`);
-  if (all.length > 0) log('🔍 T03日次運用 サンプル（最初の1件）', all[0].fields);
+  if (all.length > 0) {
+    log('🔍 T03日次運用 サンプル（最初の1件）', all[0].fields);
+    // 作業員がアサインされているレコードのサンプルを探して表示
+    const withWorker = all.find(rec => {
+      const wd = extractWorkerData(rec);
+      return wd.codes.length > 0 || wd.names.length > 0;
+    });
+    if (withWorker) {
+      const wd = extractWorkerData(withWorker);
+      log('🔍 アサイン済レコードのサンプル', { title: withWorker.fields?.Title, fields: withWorker.fields, extracted: wd });
+    } else {
+      log('⚠ T03全件でアサイン済みのレコードが1件も見つかりません（=保存できていない可能性）');
+    }
+  }
 
   const lookupCol = colName('daily','指図番号');
   dailyRecords = all.filter(d => {
@@ -764,8 +777,9 @@ function renderGrid() {
       });
       const planQty = rec ? (fld(rec,'daily','計画台数')||'') : '';
       const actualQty = rec ? fld(rec,'daily','実績台数') : '';
-      const workerCode = rec ? (fld(rec,'daily','作業員コード')||'') : '';
-      const workerName = rec ? (fld(rec,'daily','氏名')||'') : '';
+      const wd = rec ? extractWorkerData(rec) : { codes: [], names: [] };
+      const workerCode = wd.codes.join(',');
+      const workerName = wd.names.join(',');
       const recId = rec ? rec.id : '';
       const hasPlan = planQty && parseFloat(planQty) > 0;
 
@@ -809,6 +823,50 @@ function renderGrid() {
   updateWorkerCounts();
 }
 
+// レコードから作業員コード＆氏名を多重フォールバックで抽出
+// 保存形式のばらつき（Lookup / テキストCSV / 補助列など）に対応
+function extractWorkerData(rec) {
+  const f = rec.fields || {};
+  const codes = [];
+  const names = [];
+  // 1. 「作業員コード」列: テキストCSVまたはLookupValue（単一）
+  const codeInternal = colName('daily', '作業員コード');
+  let codeRaw = '';
+  if (codeInternal) {
+    // LookupValue
+    if (f[codeInternal] != null && f[codeInternal] !== '') codeRaw = String(f[codeInternal]);
+    // LookupIdからM01を引く（LookupValueが空の場合）
+    if (!codeRaw && f[codeInternal + 'LookupId'] != null) {
+      const w = workers.find(ww => String(ww.id) === String(f[codeInternal + 'LookupId']));
+      if (w) codeRaw = getWorkerCode(w);
+    }
+  }
+  // 2. 補助テキスト列（アサインメンバー等）: 複数人CSV
+  const memberFields = ['アサインメンバー','メンバー','割当','担当者','作業者'];
+  let memberRaw = '';
+  for (const fn of memberFields) {
+    const v = fld(rec,'daily', fn);
+    if (v) { memberRaw = String(v); break; }
+  }
+  // 3. 「氏名」列: テキストCSV
+  const nameRaw = String(fld(rec,'daily','氏名')||'');
+
+  // コード配列決定：補助列＞作業員コード列
+  const codeSource = memberRaw || codeRaw;
+  codeSource.split(/[,、]/).map(s=>s.trim()).filter(Boolean).forEach(c => codes.push(c));
+  // 氏名配列決定：氏名列＞コードからM01名前引き
+  nameRaw.split(/[,、]/).map(s=>s.trim()).filter(Boolean).forEach(n => names.push(n));
+  // 氏名が足りなければM01から補完
+  if (names.length < codes.length) {
+    codes.forEach(c => {
+      const w = workers.find(ww => getWorkerCode(ww) === c);
+      const nm = w ? getWorkerName(w) : c;
+      if (!names.includes(nm)) names.push(nm);
+    });
+  }
+  return { codes, names };
+}
+
 // 同日に「他受注」（=現在表示中以外の受注）でアサイン済みの作業員コード→情報の Map を返す
 function getCrossOrderAssignedCodes(date) {
   const map = new Map(); // code → { kintone, procCode, procName }
@@ -825,22 +883,17 @@ function getCrossOrderAssignedCodes(date) {
     const titleK = String(rec.fields?.Title||'').split(/\s+/)[0];
     const recKintone = indicator || titleK;
     if (!recKintone || recKintone === currentKintone) return; // 自受注なのでスキップ
-    // この日次レコードでアサインされている作業員コードを抽出
-    const codeRaw = fld(rec,'daily','作業員コード')||'';
-    const nameRaw = fld(rec,'daily','氏名')||'';
-    const codes = String(codeRaw).split(/[,、]/).map(s=>s.trim()).filter(Boolean);
-    const names = String(nameRaw).split(/[,、]/).map(s=>s.trim()).filter(Boolean);
+    // extractWorkerDataで多重フォールバック抽出
+    const wd = extractWorkerData(rec);
     const procCode = fld(rec,'daily','工程コード') || parseTitleProcCode(rec.fields?.Title) || '';
     const proc = processes.find(p => String(p.fields?.Title) === String(procCode));
     const procName = proc ? (fld(proc,'process','工程名')||procCode) : procCode;
-    const maxLen = Math.max(codes.length, names.length);
-    for (let i = 0; i < maxLen; i++) {
-      const code = codes[i] || '';
-      if (!code) continue;
+    wd.codes.forEach(code => {
+      if (!code) return;
       if (!map.has(code)) {
         map.set(code, { kintone: recKintone, procCode, procName });
       }
-    }
+    });
   });
   return map;
 }
