@@ -96,6 +96,8 @@
   td.assign-cell.no-plan { background: #fafafa; }
   td.assign-cell.no-plan .plan-display { color: #ccc; }
   td.assign-cell.has-actual { background: rgba(42,122,58,0.05); }
+  /* 他受注重複警告 */
+  .cross-warn { background: #fef3e2; color: #b06b00; border: 1px solid #e0a850; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: 700; margin-left: 4px; display: inline-block; }
   /* 連続コピー機能 */
   .row-copy-btn { display: inline-block; margin-left: 4px; padding: 1px 5px; background: #6fa8dc; color: white; border-radius: 3px; font-size: 9.5px; font-weight: 700; cursor: pointer; user-select: none; vertical-align: middle; }
   .row-copy-btn:hover { background: #3d85c6; }
@@ -253,7 +255,7 @@ let msalInstance = null;
 let siteId = null;
 let listIds = {};
 let allColumns = {};
-let orders = [], routes = [], processes = [], workers = [], dailyRecords = [];
+let orders = [], routes = [], processes = [], workers = [], dailyRecords = [], allDailyRecords = [];
 let selectedOrder = null;
 let orderRoutes = [];
 let currentMonth = null;
@@ -493,8 +495,9 @@ async function loadWorkers() {
 }
 
 async function loadDailyForOrder(orderId, kintone) {
-  if (!listIds.daily) { dailyRecords = []; return; }
+  if (!listIds.daily) { dailyRecords = []; allDailyRecords = []; return; }
   const all = await loadAllItems(listIds.daily);
+  allDailyRecords = all;  // 全受注の日次データを保持（同日他受注重複チェック用）
   log(`T03日次運用 全件 ${all.length}件 読込`);
   if (all.length > 0) log('🔍 T03日次運用 サンプル（最初の1件）', all[0].fields);
 
@@ -806,6 +809,42 @@ function renderGrid() {
   updateWorkerCounts();
 }
 
+// 同日に「他受注」（=現在表示中以外の受注）でアサイン済みの作業員コード→情報の Map を返す
+function getCrossOrderAssignedCodes(date) {
+  const map = new Map(); // code → { kintone, procCode, procName }
+  if (!allDailyRecords || !selectedOrder) return map;
+  const currentKintone = getOrderInfo(selectedOrder).kintone;
+  allDailyRecords.forEach(rec => {
+    // 日付一致確認（フィールド or Titleから）
+    const dField = String(fld(rec,'daily','日付')||'').substring(0,10);
+    const titleDate = parseTitleDate(rec.fields?.Title);
+    const recDate = dField || titleDate;
+    if (recDate !== date) return;
+    // この受注のkintone番号取得
+    const indicator = String(fld(rec,'daily','指図番号','kintone番号')||'');
+    const titleK = String(rec.fields?.Title||'').split(/\s+/)[0];
+    const recKintone = indicator || titleK;
+    if (!recKintone || recKintone === currentKintone) return; // 自受注なのでスキップ
+    // この日次レコードでアサインされている作業員コードを抽出
+    const codeRaw = fld(rec,'daily','作業員コード')||'';
+    const nameRaw = fld(rec,'daily','氏名')||'';
+    const codes = String(codeRaw).split(/[,、]/).map(s=>s.trim()).filter(Boolean);
+    const names = String(nameRaw).split(/[,、]/).map(s=>s.trim()).filter(Boolean);
+    const procCode = fld(rec,'daily','工程コード') || parseTitleProcCode(rec.fields?.Title) || '';
+    const proc = processes.find(p => String(p.fields?.Title) === String(procCode));
+    const procName = proc ? (fld(proc,'process','工程名')||procCode) : procCode;
+    const maxLen = Math.max(codes.length, names.length);
+    for (let i = 0; i < maxLen; i++) {
+      const code = codes[i] || '';
+      if (!code) continue;
+      if (!map.has(code)) {
+        map.set(code, { kintone: recKintone, procCode, procName });
+      }
+    }
+  });
+  return map;
+}
+
 // 同日に他セルでアサイン済みの作業員コード一覧を取得（自セル除く）
 function getSameDayAssignedCodes(currentInput) {
   const td = currentInput.closest('td');
@@ -868,9 +907,11 @@ function setupWorkerSearch(input) {
   function showCandidates(query) {
     const td = input.closest('td');
     const currentBan = td?.dataset.rowBan || '';
+    const date = td?.dataset.date || '';
     const sortedWorkers = getSortedWorkers(currentBan);
     const alreadyInCell = new Set(getCellWorkerCodes(td));
     const sameDay = getSameDayAssignedCodes(td);
+    const crossOrder = getCrossOrderAssignedCodes(date);
 
     let candidates;
     if (!query) {
@@ -885,19 +926,22 @@ function setupWorkerSearch(input) {
     if (candidates.length === 0) {
       results.innerHTML = '<div class="ac-item" style="color:#aaa;">該当なし</div>';
     } else {
-      results.innerHTML = `<div class="ac-divider">${escapeHtml(currentBan)}メンバー優先 / 赤バッジは同日他工程に割当中</div>` +
+      results.innerHTML = `<div class="ac-divider">${escapeHtml(currentBan)}メンバー優先 / 🔴同日他工程・🟠他受注で割当中</div>` +
         candidates.map(w => {
           const code = getWorkerCode(w);
           const name = getWorkerName(w);
           const ban = getWorkerBan(w);
           const dup = sameDay.get(code);
-          const dupBadge = dup ? `<span class="dup-warn">同日「${escapeHtml(dup.procName)}」</span>` : '';
+          const cross = crossOrder.get(code);
+          const dupBadge = dup ? `<span class="dup-warn">🔴 同日「${escapeHtml(dup.procName)}」</span>` : '';
+          const crossBadge = cross ? `<span class="cross-warn">🟠 他受注「${escapeHtml(cross.kintone)}」${escapeHtml(cross.procName)}</span>` : '';
           const isSame = isSameBan(ban, currentBan);
           const banHi = isSame ? 'style="color:#1e6091;font-weight:700;"' : '';
           const banDisp = ban ? escapeHtml(ban) : '<span style="color:#c0392b;">(班未設定)</span>';
-          return `<div class="ac-item ${dup?'duplicate':''}" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}">
+          const itemCls = (dup || cross) ? 'duplicate' : '';
+          return `<div class="ac-item ${itemCls}" data-code="${escapeHtml(code)}" data-name="${escapeHtml(name)}" data-ban="${escapeHtml(ban)}" data-cross="${cross ? escapeHtml(cross.kintone + ' / ' + cross.procName) : ''}">
             <span><b>${escapeHtml(name)}</b> <span class="small" ${banHi}>${escapeHtml(code)} ${banDisp}</span></span>
-            ${dupBadge}
+            ${dupBadge}${crossBadge}
           </div>`;
         }).join('');
     }
@@ -918,6 +962,12 @@ function setupWorkerSearch(input) {
           dup.tag.remove();
           markDirty(otherTd);
         }
+      }
+      // 他受注での同日重複は警告のみ（解除はできない、別画面なので）
+      const crossInfo = it.dataset.cross || '';
+      if (crossInfo) {
+        const ans2 = confirm(`⚠ ${name}さんは同日に別受注「${crossInfo}」でアサインされています。\n\n[OK]→このまま追加（重複アサイン）\n[キャンセル]→追加中止`);
+        if (!ans2) { results.classList.remove('active'); return; }
       }
       addWorkerTag(td, code, name);
       input.value = '';
@@ -1070,6 +1120,8 @@ async function saveOneAssign(cell) {
   const patchBody = {};
   const codeInternal = colName('daily', '作業員コード');
   const nameInternal = colName('daily', '氏名');
+  // 補助列「アサインメンバー」「メンバー」「割当」など、複数人保存用のテキスト列があれば優先利用
+  const memberInternal = colName('daily', 'アサインメンバー') || colName('daily', 'メンバー') || colName('daily', '割当') || colName('daily', '担当者');
 
   const codeCsv = (workerCodes || []).join(',');
   const nameCsv = (workerNames || []).join(',');
@@ -1088,6 +1140,7 @@ async function saveOneAssign(cell) {
     }
   }
   if (nameInternal) patchBody[nameInternal] = nameCsv;
+  if (memberInternal) patchBody[memberInternal] = codeCsv;
 
   try {
     await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${recId}/fields`, patchBody);
@@ -1101,6 +1154,17 @@ async function saveOneAssign(cell) {
       throw e;
     }
   }
+  // 保存検証：1セルだけ実際に取得してログ出力（デバッグ用、初回のみ）
+  if (!window._verifiedOnce) {
+    try {
+      const verify = await graphFetch(`/sites/${siteId}/lists/${listIds.daily}/items/${recId}?$expand=fields`);
+      log('🔍 保存検証 — 送信した値', { recId, sent: patchBody });
+      log('🔍 保存検証 — 実際にSharePointに保存された値', verify.fields);
+      window._verifiedOnce = true;
+    } catch (e) {
+      log('保存検証GET失敗', { error: e.message });
+    }
+  }
   return { ...cell, action: 'update' };
 }
 
@@ -1109,6 +1173,7 @@ async function saveGrid() {
   if (dirty.length === 0) { showStatus('変更がありません', 'info'); return; }
 
   document.getElementById('saveBtn').disabled = true;
+  window._verifiedOnce = false; // 保存のたびに検証ログを出す
   const cells = dirty.map(td => {
     const codes = getCellWorkerCodes(td);
     const names = getCellWorkerNames(td);
