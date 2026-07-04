@@ -385,6 +385,29 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[seiban_gantt] 例外:", e); window._fujinSeibanGanttPromise = Promise.resolve(null); }
 
+    // ★ 2026-06 構成印刷(作業指示)も SharePoint から認証取得(公開Pagesに業務データを置かない)。
+    //   画面(work_instruction.html)は window.top._fujinWorkInstructions を読む。
+    try {
+      var _SP_DRIVE6 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      window._fujinWorkInstructionsPromise = window._fujinMsal
+        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE6 + "/root:/work_instructions.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken } });
+        })
+        .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+        .then(function(d){
+          window._fujinWorkInstructions = d;
+          var n = (d && d.orders) ? d.orders.length : 0;
+          console.log("[work_instructions] ✅ SharePointから認証取得 成功 (手配" + n + ")");
+          return d;
+        })
+        .catch(function(e){
+          console.warn("[work_instructions] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
+          return null;
+        });
+    } catch(e) { console.error("[work_instructions] 例外:", e); window._fujinWorkInstructionsPromise = Promise.resolve(null); }
+
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示

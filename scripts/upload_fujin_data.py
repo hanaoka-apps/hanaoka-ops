@@ -38,6 +38,7 @@ TARGETS = [
     (DATA / "results_production_data.json", "results_production_data.json"),  # 手配/在庫/受注/BOM (2026-06-13追加)
     (DATA / "seiban_progress.json", "seiban_progress.json"),  # 製番進捗(受注/部品/手配状態) (2026-06-13追加)
     (DATA / "seiban_gantt.json", "seiban_gantt.json"),  # 製番製造スケジュール(BOM×L/T逆算) (2026-06-17追加)
+    (DATA / "work_instructions.json", "work_instructions.json"),  # 構成印刷(作業指示) (2026-06セキュリティ移行)
 ]
 
 
@@ -88,6 +89,10 @@ def main():
         except Exception as e:
             print(f"  [ERROR] {sp_name}: {e}")
     print(f"完了: {ok}/{len(TARGETS)} 件アップロード")
+    # 1件でも失敗したら異常終了(ワークフローを緑のままにせず、古いデータ配信に気付けるように)
+    if ok < len(TARGETS):
+        print(f"[ERROR] アップロード未完: {len(TARGETS) - ok} 件失敗")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
