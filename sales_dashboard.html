@@ -742,8 +742,10 @@ function enableTableSort(tblId, opts){
   const ths = tbl.querySelectorAll("thead th");
   const tbody = tbl.querySelector("tbody");
   if (!tbody) return;
-  // 元の順序を保存
-  const originalRows = Array.from(tbody.querySelectorAll("tr"));
+  // 元の順序を保存（テーブル要素に持たせ、再レンダリング毎に更新する。
+  // detailTable 等は thead 固定のまま tbody だけ差し替わるため、
+  // クロージャに閉じた古い行参照だとソートリセットが効かなくなる）
+  tbl._origRows = Array.from(tbody.querySelectorAll("tr"));
   // ソート状態（テーブルに紐付け）: { col, dir }  dir: "desc" | "asc" | null
   if (!tbl._sortState) tbl._sortState = { col: -1, dir: null };
   ths.forEach((th, idx) => {
@@ -787,7 +789,7 @@ function enableTableSort(tblId, opts){
       let sorted;
       if (dir === null) {
         // リセット: 元の順序
-        sorted = body.slice().sort((a,b) => originalRows.indexOf(a) - originalRows.indexOf(b));
+        sorted = body.slice().sort((a,b) => (tbl._origRows||[]).indexOf(a) - (tbl._origRows||[]).indexOf(b));
       } else {
         sorted = body.slice().sort((a,b) => {
           const av = a.cells[idx] ? a.cells[idx].textContent : "";
@@ -945,7 +947,7 @@ function fmtYoy(cur, prev){
   return {text:pct, cls, raw:r};
 }
 function fmtQty(v){ return Math.round(v).toLocaleString(); }
-function esc(s){ return String(s).replace(/[<>&"]/g, c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c])); }
+function esc(s){ return String(s).replace(/[<>&"']/g, c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;","'":"&#39;"}[c])); }
 
 // ---------- Base filter helper (handles 国内営業部 as合算) ----------
 function matchBase(r, baseSel){
@@ -1062,7 +1064,12 @@ function basePlanYTD(baseSel, fy){
 // ---------- Year tracking (yearSel UI removed; period selector is the single source of truth) ----------
 let YEARS = Array.from(new Set(ROWS.map(r=>r[IDX.fy]))).filter(y=>y>=2022).sort();
 function recomputeYears(){ YEARS = Array.from(new Set(ROWS.map(r=>r[IDX.fy]))).filter(y=>y>=2022).sort(); }
-const MAX_FY = YEARS.length ? Math.max(...YEARS) : new Date().getFullYear();
+// フォールバックの年度は「暦年」ではなく「今日が属する年度」を使う
+// (1〜3月に暦年をそのまま使うと翌年度扱いになり、既定期間が未来の4月を指すバグがあった)
+const _nowForFY = new Date();
+const MAX_FY = YEARS.length
+  ? Math.max(...YEARS)
+  : ((_nowForFY.getMonth() + 1 >= 4) ? _nowForFY.getFullYear() : _nowForFY.getFullYear() - 1);
 // curFY は内部値のみ。期間セレクタの選択範囲から自動推定する。
 let curFY = MAX_FY;
 function syncCurFYFromPeriod(){
@@ -2866,7 +2873,7 @@ function renderDetail(){
   // 短すぎる検索語は弾く（1文字だとほぼ全件ヒットして重い）
   if (q && q.length < 2 && !base && !fyV) {
     document.querySelector("#detailTable tbody").innerHTML =
-      '<tr><td colspan="10" style="padding:28px; text-align:center; color:var(--gray); font-size:13px">'
+      '<tr><td colspan="11" style="padding:28px; text-align:center; color:var(--gray); font-size:13px">'
       + '検索ワードは2文字以上で入力してください。'
       + '</td></tr>';
     return;
@@ -3012,8 +3019,9 @@ if (window._loaded_ratiokiko && typeof MANUAL_KIKO_RATIO === "object") {
   // 累計計画パネルの期間表示を集計期間と連動させる
   try { if (typeof window._refreshPlanSummary === "function") window._refreshPlanSummary(); } catch(e){}
   // Phase 1: TOP KPI（ユーザーが最初に見る部分、即描画）
-  renderTopMonthlyKpi();
-  renderTopYtdKpi();
+  // 例外が出ても Phase 2〜4 のスケジューリングが止まらないよう保護
+  try{ renderTopMonthlyKpi(); }catch(e){ console.error("renderTopMonthlyKpi", e); }
+  try{ renderTopYtdKpi(); }catch(e){ console.error("renderTopYtdKpi", e); }
 
   // Phase 2: 商品分析・TOP20・重点商品 (少し遅延して描画、画面が動かせる状態に)
   setTimeout(()=>{
@@ -3165,6 +3173,10 @@ window.MANUAL_GENRE_TARGET_YOY = null;
 // INIT
 // ============================================================
 async function init() {
+  // サインインボタンは最初に配線する
+  // (従来はサイレントログイン+データ読込の完了後に配線していたため、
+  //  途中で例外が出るとボタンが無反応のままになる不具合があった)
+  document.getElementById('loginBtn').onclick = login;
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
@@ -3174,7 +3186,6 @@ async function init() {
     msalInstance.setActiveAccount(account);
     await onLoginSuccess();
   }
-  document.getElementById('loginBtn').onclick = login;
 }
 
 async function login() {
@@ -3312,7 +3323,6 @@ async function loadTargets() {
         ratiokiko[f.SubScope || '全社'] = f.Ratio || 0;
         break;
       case '部門累計月次':
-        if (!RAW.user_ytd_plan_monthly[f.ScopeKey]) RAW.user_ytd_plan_monthly[f.ScopeKey] = {};
         RAW.user_ytd_plan_monthly[f.ScopeKey][f.YearMonth] = f.Amount || 0;
         break;
     }
