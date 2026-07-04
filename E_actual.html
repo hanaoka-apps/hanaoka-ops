@@ -46,6 +46,15 @@
   .mode-tab.active { background: #2c3e50; color: white; border-color: #2c3e50; }
   .mode-tab:hover:not(.active) { background: #d4dfe6; }
 
+  /* フィルタバー */
+  .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; padding: 10px 14px; background: #fff8ec; border-radius: 6px; border: 1px solid #f0d5a8; }
+  .filter-bar label { font-weight: 700; color: #7d5a00; font-size: 13.5px; }
+  .filter-bar select, .filter-bar input { padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13.5px; background: white; }
+  .filter-bar input { width: 200px; }
+  .filter-bar button { padding: 7px 14px; background: white; border: 1px solid #999; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .filter-bar button:hover { background: #f0f0f0; }
+  .filter-count { color: #7d5a00; font-weight: 700; font-size: 13px; margin-left: auto; }
+
   /* 日付ナビ */
   .date-nav { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; padding: 10px 14px; background: #f5f7fa; border-radius: 6px; }
   .date-nav button { padding: 8px 14px; background: white; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-size: 14px; }
@@ -186,6 +195,15 @@
 
     <div class="date-nav" id="dateNav"></div>
 
+    <div class="filter-bar" id="filterBar">
+      <label>🔍 絞込:</label>
+      <select id="filterBanSelect"><option value="">担当班：すべて</option></select>
+      <select id="filterWorkerSelect"><option value="">作業員：すべて</option></select>
+      <input type="text" id="filterProcInput" placeholder="工程名で検索">
+      <button onclick="clearFilters()">クリア</button>
+      <span class="filter-count" id="filterCount"></span>
+    </div>
+
     <div id="gridInfo" class="helper"></div>
     <div class="grid-wrap" id="gridWrap"><div class="empty-state">工程ルートを読込中...</div></div>
   </div>
@@ -229,6 +247,9 @@ let selectedOrder = null;
 let orderRoutes = [];
 let currentMode = 'day';  // 'day' | 'week' | 'month'
 let currentDate = new Date();  // 表示中の基準日
+let filterBan = '';     // 担当班フィルタ
+let filterWorker = '';  // 作業員コードフィルタ
+let filterProcQ = '';   // 工程名検索
 
 const STATUS_OPTIONS = ['未着手', '進行中', '完了', '遅延'];
 
@@ -508,12 +529,101 @@ async function selectOrder(id) {
   try {
     loadOrderRoutes(i.kintone, id);
     await loadDailyForOrder(id, i.kintone);
+    initFilters();
     renderGrid();
     hideStatus();
   } catch (e) {
     log('読込エラー', { error: e.message });
     showStatus('読込エラー: ' + e.message, 'error');
   }
+}
+
+// ========== Filters ==========
+function initFilters() {
+  // 班一覧：orderRoutesの担当班から
+  const bans = new Set();
+  orderRoutes.forEach(r => {
+    let ban = fld(r,'route','担当班','主担当班') || '';
+    if (!ban) {
+      let procCode = fld(r,'route','工程コード') || '';
+      if (!procCode) { const m = String(r.fields?.Title||'').match(/#\d+\s+(\S+)/); if (m) procCode = m[1]; }
+      if (procCode) { const proc = processes.find(p => String(p.fields?.Title) === String(procCode)); if (proc) ban = fld(proc, 'process', '主担当班', '担当班') || ''; }
+    }
+    if (ban) bans.add(ban);
+  });
+  const banList = [...bans].sort();
+  document.getElementById('filterBanSelect').innerHTML = '<option value="">担当班：すべて</option>' + banList.map(b => `<option value="${escapeHtml(b)}" ${b===filterBan?'selected':''}>${escapeHtml(b)}</option>`).join('');
+
+  // 作業員一覧：M01全員（コード付き）
+  const workerList = [...workers].sort((a,b) => {
+    const ca = getWorkerCode(a), cb = getWorkerCode(b);
+    return ca.localeCompare(cb);
+  });
+  document.getElementById('filterWorkerSelect').innerHTML = '<option value="">作業員：すべて</option>' + workerList.map(w => {
+    const c = getWorkerCode(w), n = getWorkerName(w);
+    return `<option value="${escapeHtml(c)}" ${c===filterWorker?'selected':''}>${escapeHtml(n)} (${escapeHtml(c)})</option>`;
+  }).join('');
+
+  document.getElementById('filterProcInput').value = filterProcQ;
+
+  // イベントハンドラ（重複バインド防止のためcloneして張り替え）
+  const banSel = document.getElementById('filterBanSelect');
+  const wSel = document.getElementById('filterWorkerSelect');
+  const pInp = document.getElementById('filterProcInput');
+  banSel.onchange = () => { filterBan = banSel.value; renderGrid(); };
+  wSel.onchange = () => { filterWorker = wSel.value; renderGrid(); };
+  pInp.oninput = () => { filterProcQ = pInp.value; renderGrid(); };
+}
+
+function clearFilters() {
+  filterBan = '';
+  filterWorker = '';
+  filterProcQ = '';
+  document.getElementById('filterBanSelect').value = '';
+  document.getElementById('filterWorkerSelect').value = '';
+  document.getElementById('filterProcInput').value = '';
+  renderGrid();
+}
+
+// 工程行に対して現在のフィルタを適用（true=表示、false=非表示）
+function applyRouteFilter(r, days) {
+  // 工程コード・工程名・担当班を計算
+  let procCode = fld(r,'route','工程コード') || '';
+  if (!procCode) { const m = String(r.fields?.Title||'').match(/#\d+\s+(\S+)/); if (m) procCode = m[1]; }
+  let procName = fld(r,'route','工程名') || '';
+  if (!procName && procCode) { const proc = processes.find(p => String(p.fields?.Title) === String(procCode)); if (proc) procName = fld(proc, 'process', '工程名') || ''; }
+  let ban = fld(r,'route','担当班','主担当班') || '';
+  if (!ban && procCode) { const proc = processes.find(p => String(p.fields?.Title) === String(procCode)); if (proc) ban = fld(proc, 'process', '主担当班', '担当班') || ''; }
+
+  // 班フィルタ
+  if (filterBan && ban !== filterBan) return false;
+
+  // 工程名検索
+  if (filterProcQ) {
+    const q = normalize(filterProcQ);
+    if (!normalize(procName + ' ' + procCode).includes(q)) return false;
+  }
+
+  // 作業員フィルタ：表示範囲内の日で該当作業員がアサインされている行のみ
+  if (filterWorker) {
+    let found = false;
+    for (const d of days) {
+      const rec = dailyRecords.find(rec => {
+        const rDateField = String(fld(rec,'daily','日付')||'').substring(0,10);
+        const rProcField = String(fld(rec,'daily','工程コード')||'');
+        if (rDateField===d.date && rProcField===procCode) return true;
+        const titleDate = parseTitleDate(rec.fields?.Title);
+        const titleProc = parseTitleProcCode(rec.fields?.Title);
+        return titleDate===d.date && titleProc===procCode;
+      });
+      if (rec) {
+        const wd = extractWorkerData(rec);
+        if (wd.codes.includes(filterWorker)) { found = true; break; }
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
 }
 function loadOrderRoutes(kintone, orderId) {
   const lookupCol = colName('route','受注ID');
@@ -537,6 +647,8 @@ function loadOrderRoutes(kintone, orderId) {
 // ========== Mode & Date Nav ==========
 function setMode(mode) {
   currentMode = mode;
+  // モード切替時は今日にジャンプ（当日タブを押したらその日に飛ぶ、当週なら今週、当月なら今月）
+  currentDate = today();
   document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
   renderDateNav();
   renderGrid();
@@ -621,7 +733,22 @@ function renderGrid() {
     return;
   }
   const days = getDates();
-  document.getElementById('gridInfo').textContent = `工程数: ${orderRoutes.length}、表示日数: ${days.length}日、日次レコード: ${dailyRecords.length}件`;
+  // フィルタ適用
+  const visibleRoutes = orderRoutes.filter(r => applyRouteFilter(r, days));
+  const activeFilters = [];
+  if (filterBan) activeFilters.push(`班=${filterBan}`);
+  if (filterWorker) {
+    const w = workers.find(ww => getWorkerCode(ww) === filterWorker);
+    activeFilters.push(`作業員=${w ? getWorkerName(w) : filterWorker}`);
+  }
+  if (filterProcQ) activeFilters.push(`工程=${filterProcQ}`);
+  document.getElementById('filterCount').textContent = activeFilters.length ? `絞込[${activeFilters.join(' / ')}] → ${visibleRoutes.length}/${orderRoutes.length}工程` : `全${orderRoutes.length}工程`;
+  document.getElementById('gridInfo').textContent = `表示日数: ${days.length}日、日次レコード: ${dailyRecords.length}件`;
+
+  if (visibleRoutes.length === 0) {
+    document.getElementById('gridWrap').innerHTML = '<div class="empty-state">🔍 絞込条件に該当する工程がありません。「クリア」ボタンで解除してください。</div>';
+    return;
+  }
 
   let html = '<table class="grid"><thead><tr>';
   html += '<th class="col-fix1">順</th><th class="col-fix2">工程</th><th class="col-fix3">担当班</th>';
@@ -633,7 +760,7 @@ function renderGrid() {
   });
   html += '</tr></thead><tbody>';
 
-  orderRoutes.forEach((r, idx) => {
+  visibleRoutes.forEach((r, idx) => {
     const seq = fld(r,'route','工程順序','順序') || (idx+1)*10;
     let procCode = fld(r,'route','工程コード') || '';
     if (!procCode) { const m = String(r.fields?.Title||'').match(/#\d+\s+(\S+)/); if (m) procCode = m[1]; }
@@ -676,19 +803,20 @@ function renderGrid() {
         html += `<div class="plan-row"><span>計画: <span class="plan-qty">${planQty}台</span></span>`;
         if (status) html += `<span class="status-${status}">${status}</span>`;
         html += `</div>`;
-        // 作業員表示
         html += '<div class="worker-tags">';
         if (wd.names.length === 0) {
           html += '<span class="no-worker">未アサイン</span>';
         } else {
-          wd.names.forEach(n => { html += `<span class="worker-tag">${escapeHtml(n)}</span>`; });
+          wd.names.forEach(n => {
+            // フィルタで指定された作業員をハイライト
+            const wCode = wd.codes[wd.names.indexOf(n)] || '';
+            const highlight = filterWorker && wCode === filterWorker ? ' style="background:#ffe599;color:#7d5a00;"' : '';
+            html += `<span class="worker-tag"${highlight}>${escapeHtml(n)}</span>`;
+          });
         }
         html += '</div>';
-        // 実績台数入力
         html += `<div class="input-row"><label>実績:</label><input type="number" inputmode="numeric" class="actual-input" data-field="actual" value="${escapeHtml(actualQty)}" placeholder="0" onblur="saveCell(this)"></div>`;
-        // ステータス
         html += `<div class="input-row"><label>状態:</label><select class="status-select" data-field="status" onchange="saveCell(this)"><option value=""></option>${STATUS_OPTIONS.map(s => `<option value="${s}" ${s===status?'selected':''}>${s}</option>`).join('')}</select></div>`;
-        // 遅延理由（遅延時のみ目立たせる）
         html += `<input type="text" class="reason-input" data-field="reason" value="${escapeHtml(reason)}" placeholder="遅延理由（任意）" onblur="saveCell(this)">`;
       } else if (!hasPlan) {
         html += `<div class="plan-row" style="color:#ccc;">計画なし</div>`;
@@ -710,7 +838,6 @@ async function saveCell(inputEl) {
   const field = inputEl.dataset.field;
   const rawValue = inputEl.value;
 
-  // フィールドマッピング
   let internal, value;
   if (field === 'actual') {
     internal = colName('daily', '実績台数');
@@ -735,19 +862,15 @@ async function saveCell(inputEl) {
   td.classList.add('saving');
   try {
     await graphPatch(`/sites/${siteId}/lists/${listIds.daily}/items/${recId}/fields`, patchBody);
-    // メモリ更新
     const rec = dailyRecords.find(r => r.id === recId);
     if (rec) rec.fields[internal] = value;
-    // 視覚フィードバック
     td.classList.remove('saving');
     td.classList.add('saved-flash');
     setTimeout(() => td.classList.remove('saved-flash'), 1200);
-    // ステータスによる背景色更新
     if (field === 'status') {
       td.classList.remove('completed', 'delayed');
       if (value === '完了') td.classList.add('completed');
       if (value === '遅延') td.classList.add('delayed');
-      // plan-row内のステータス表示も更新
       const planRow = td.querySelector('.plan-row');
       if (planRow) {
         const existingSt = planRow.querySelector('[class^="status-"]');
