@@ -39,6 +39,7 @@ TARGETS = [
     (DATA / "seiban_progress.json", "seiban_progress.json"),  # 製番進捗(受注/部品/手配状態) (2026-06-13追加)
     (DATA / "seiban_gantt.json", "seiban_gantt.json"),  # 製番製造スケジュール(BOM×L/T逆算) (2026-06-17追加)
     (DATA / "work_instructions.json", "work_instructions.json"),  # 構成印刷(作業指示) (2026-06セキュリティ移行)
+    (DATA / "orphan_items.json", "orphan_items.json"),  # 構成なし/登録漏れ/使用禁止品目(在庫探偵チップ) (2026-07セキュリティ移行)
 ]
 
 

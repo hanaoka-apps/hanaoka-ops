@@ -23,6 +23,11 @@ import csv, json, glob
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+    _JST = ZoneInfo("Asia/Tokyo")
+except Exception:
+    _JST = None
 
 import os as _os
 ROOT = Path(__file__).resolve().parent
@@ -39,8 +44,13 @@ SHARED = next((Path(p) for p in _shared_cands if p and Path(p).exists()), DATA)
 print(f"[SharedMasters] {SHARED}")
 
 # 基準日(直近の動的取得)
+# CI(GitHub Actions)はUTCのため、mtime/nowともにJSTで解釈する(基準日が1日ズレる事故防止)。
 arr_csv = SHARED / "未確定_購買手配データ.csv"
-TODAY = datetime.fromtimestamp(arr_csv.stat().st_mtime) if arr_csv.exists() else datetime.now()
+TODAY = (datetime.fromtimestamp(arr_csv.stat().st_mtime, _JST) if arr_csv.exists()
+         else datetime.now(_JST)) if _JST else \
+        (datetime.fromtimestamp(arr_csv.stat().st_mtime) if arr_csv.exists() else datetime.now())
+if _JST:
+    TODAY = TODAY.replace(tzinfo=None)
 TODAY_YMD = TODAY.strftime("%Y%m%d")
 
 def _f(v):

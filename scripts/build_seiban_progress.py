@@ -45,6 +45,11 @@ import csv, json, os
 from pathlib import Path
 from datetime import datetime, date
 from collections import defaultdict
+try:
+    from zoneinfo import ZoneInfo
+    _JST = ZoneInfo("Asia/Tokyo")
+except Exception:
+    _JST = None
 
 # 2026-06-13 CI対応リファクタ: 固定セッションパスを廃し __file__基準。OneDrive直読を優先しつつ
 # 無ければ data/ にフォールバック(GitHub Actions では download_shared_masters.py が
@@ -76,8 +81,13 @@ def _master_file(name_base):
     return SHARED / (name_base + ".csv")
 
 # 基準日 (未確定_購買手配データのmtime)
+# CI(GitHub Actions)はUTCのため、mtime/nowともにJSTで解釈する(基準日が1日ズレる事故防止)。
 arr_csv = SHARED / "未確定_購買手配データ.csv"
-TODAY = datetime.fromtimestamp(arr_csv.stat().st_mtime) if arr_csv.exists() else datetime.now()
+TODAY = (datetime.fromtimestamp(arr_csv.stat().st_mtime, _JST) if arr_csv.exists()
+         else datetime.now(_JST)) if _JST else \
+        (datetime.fromtimestamp(arr_csv.stat().st_mtime) if arr_csv.exists() else datetime.now())
+if _JST:
+    TODAY = TODAY.replace(tzinfo=None)
 TODAY_DATE = TODAY.date()
 TODAY_YMD = TODAY.strftime("%Y%m%d")
 print(f"[seiban_progress] 基準日: {TODAY_DATE}")

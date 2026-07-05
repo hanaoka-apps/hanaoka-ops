@@ -24,6 +24,11 @@ import json
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    _JST = ZoneInfo("Asia/Tokyo")
+except Exception:
+    _JST = None
 
 # パスを動的に解決
 # scripts/ に置いた場合は .parent でリポジトリルートを指す
@@ -40,7 +45,8 @@ SHARED = next((p for p in _onedrive_candidates if p.exists()), DATA)
 AUTH_DIST = BASE / "auth_dist"
 
 # 過去2ヶ月分の窓 (実績の対象期間)
-TODAY = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+# CI(GitHub Actions)はUTCのため、JSTで「今日」を確定する(基準日/期間窓が1日ズレる事故防止)。
+TODAY = (datetime.now(_JST) if _JST else datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 LOOKBACK_DAYS = 75  # 2ヶ月ちょっと余裕
 CUTOFF_DATE = TODAY - timedelta(days=LOOKBACK_DAYS)
 

@@ -1149,6 +1149,69 @@ def get_arrange_info(pkt):
         at = "社内工程"
     return at, kc, kn, sc, sn
 
+# ── 2026-07-05 日次CSV駆動化 ─────────────────────────────────────────────
+# 手配確定タブは 未確定_購買手配データ.csv の各行を母体に生成する。
+# SMILEは所要量計算のたびに内部製番・手配予定日を振り直すため、凍結スナップ
+# ショット(case_packets)のキーで日次CSVを引くと 2% しか一致せず画面が空になる。
+# → CSV行の列から種別・工程・手配先を直接分類(突合不要=100%正確)し、
+#    AI/ルール判定は品目コードで後付け結合する。
+def classify_arrange_from_row(row):
+    """未確定_購買手配データ.csv の1行から
+       (arrange_type, koutei_code, koutei_name, supplier_code, supplier_name) を返す。
+       - 手配データ区分が"購買"を含む or "2"始まり → 購買
+       - それ以外で工程コード先頭"1" → 外注工程
+       - それ以外 → 社内工程
+    """
+    bunrui = (row.get("手配データ区分") or "").strip()
+    kc = (row.get("工程コード") or "").strip()
+    kn = (row.get("工程略称") or "").strip()
+    sc = (row.get("手配先コード") or "").strip()
+    sn = (row.get("手配先略称") or "").strip()
+    if "購買" in bunrui or bunrui.startswith("2"):
+        at = "購買"
+    elif kc.startswith("1"):
+        at = "外注工程"
+    else:
+        at = "社内工程"
+    return at, kc, kn, sc, sn
+
+def pkt_from_row(row):
+    """未確定_購買手配データ.csv の1行(dict)から parse_packet と同じキーを持つ
+       pkt dict を作る。全ての値は品目・製番・マスタ・CSV行由来で供給できる。"""
+    item = (row.get("品目コード") or "").strip()
+    seiban = (row.get("内部製番") or "").strip()
+    sched = (row.get("手配予定日（年月日）") or "").strip()
+    sk = ""
+    if seiban[:1] == "J":
+        sk = "J製番"
+    elif seiban[:1] == "M":
+        sk = "M製番"
+    elif seiban[:1] == "K":
+        sk = "K製番"
+    im = item_master.get(item, {})
+    safety = im.get("safety", "")
+    purchase_lt = im.get("purchase_lt", "")
+    return {
+        "item": item,
+        "item_name": (row.get("品目名") or "").strip(),
+        "seiban": seiban,
+        "seiban_kind": sk,
+        "schedule_date": sched,
+        "deliver_date": (row.get("手配納期(年月日）") or "").strip(),
+        "final_proc_date": (row.get("最終工程納期（年月日）") or "").strip(),
+        "qty": (row.get("手配数量") or "").strip(),
+        "qty_unit": (row.get("数量単位") or "").strip(),
+        "supplier": (row.get("手配先略称") or "").strip(),
+        "order_form": (row.get("受注形態") or "").strip(),
+        "effective_stock": (row.get("有効在庫数") or "").strip(),
+        "demand": (row.get("総所要量") or "").strip(),
+        "safety": safety,
+        "purchase_lt": purchase_lt,
+        "past_flag": bool(sched and sched < TODAY.strftime("%Y/%m/%d")),
+        "has_order": ((seiban, item) in confirmed_purchase_keys),
+        "prev_proc": False,
+    }
+
 def has_order_origin(pkt, ai):
     cause = ai.get("primary_cause","")
     if cause in ("受注","需要"): return "◯"
@@ -1202,6 +1265,7 @@ def build_readable_comment(ai, pkt):
         "要確認":  "現物在庫・既発注状況を実地確認してから確定判断。",
         "放置候補": "現時点では手配不要。放置してOK。",
         "参考":    "手配起因が不明瞭。参考情報として保留。",
+        "未判定":  "AI/ルール未判定。所要量計算による手配候補。実地確認して判断。",
     }
     rec = action_map.get(verdict, "判定を再確認。")
     if caution and caution != "なし":
@@ -1215,40 +1279,82 @@ with open(INFER / "rules_hints.jsonl", encoding="utf-8") as f:
         r = json.loads(line); rule_map[r["case_id"]] = r
 
 ids = sorted([p.stem for p in PKT.glob("case_*.txt")])
-print(f"target cases: {len(ids)}")
+print(f"target cases (case_packets): {len(ids)}")
 
-records = []
-missing_ai = 0
-for cid in ids:
-    try:
-        pkt = parse_packet(cid)
-    except Exception as e:
-        print(f"[skip] {cid}: parse error {e}")
-        continue
+# ── 2026-07-05 日次CSV駆動化 ─────────────────────────────────────────────
+# 手配確定タブの母体を case_packets(凍結スナップショット) から
+# 未確定_購買手配データ.csv(日次更新=SMILE所要量計算) に切替。
+# まず case_packets を回して「品目コード → AI/ルール判定(ai dict)」マップを構築し、
+# CSV行の品目コードで後付け結合する(AI由来を優先)。
+def _ai_from_case(cid):
     ai_path = RESULTS / f"{cid}.json"
     if ai_path.exists():
         ai = json.loads(ai_path.read_text(encoding="utf-8"))
         ai["_source"] = "AI"
-    else:
+        return ai
+    rr = rule_map.get(cid, {})
+    rj = rr.get("rule_judgment") or "要確認"
+    rc = rr.get("rule_confidence") or "low"
+    reason = rr.get("rule_reason") or ""
+    kf = rr.get("key_facts", {}) or {}
+    pat = kf.get("pattern","")
+    return {
+        "judgment": rj,
+        "confidence": rc,
+        "primary_cause": ("受注" if kf.get("product_kind") == "J" and (kf.get("requirement_qty") or 0) > 0 else
+                          ("需要" if (kf.get("requirement_qty") or 0) > 0 else
+                           ("在庫ノイズ" if pat == "A" else "その他"))),
+        "cause_detail": f"ルール({pat}): {reason}" if reason else f"ルールパターン{pat}",
+        "caution": "AI推論未実施。ルールでの仮判定です（AI委任ケースは要確認に仮置き）",
+        "rule_agreement": "—",
+        "_source": "ルール",
+    }
+
+item_to_ai = {}        # 品目コード → ai dict (AI由来を優先)
+_case_ai_count = 0
+for cid in ids:
+    try:
+        _pkt = parse_packet(cid)
+    except Exception as e:
+        print(f"[skip] {cid}: parse error {e}")
+        continue
+    _item = _pkt["item"]
+    if not _item:
+        continue
+    _ai = _ai_from_case(cid)
+    _case_ai_count += 1
+    _existing = item_to_ai.get(_item)
+    # AI源を優先: 既存が無い or 既存がルールで今回がAIなら上書き
+    if _existing is None or (_existing.get("_source") != "AI" and _ai.get("_source") == "AI"):
+        item_to_ai[_item] = _ai
+print(f"item_to_ai map: {len(item_to_ai)} 品目 (from {_case_ai_count} case packets)")
+
+_UNJUDGED_AI = {
+    "judgment": "未判定",
+    "confidence": "low",
+    "primary_cause": "",
+    "cause_detail": "AI/ルール未判定（所要量計算による手配候補）",
+    "caution": "",
+    "rule_agreement": "—",
+    "_source": "未判定",
+}
+
+# ── メインループ: 未確定_購買手配データ.csv の各行を母体に反復 ──────────────
+records = []
+missing_ai = 0
+_csv_path = _master_path("未確定_購買手配データ.csv")
+with open(_csv_path, encoding="utf-8-sig") as _cf:
+    _csv_rows = list(csv.DictReader(_cf))
+print(f"手配確定 母体: {len(_csv_rows)} 行 ({_csv_path.name})")
+
+for i, row in enumerate(_csv_rows):
+    cid = f"csv_{i}"
+    pkt = pkt_from_row(row)
+    ai = item_to_ai.get(pkt["item"])
+    if ai is None:
         missing_ai += 1
-        rr = rule_map.get(cid, {})
-        rj = rr.get("rule_judgment") or "要確認"
-        rc = rr.get("rule_confidence") or "low"
-        reason = rr.get("rule_reason") or ""
-        kf = rr.get("key_facts", {}) or {}
-        pat = kf.get("pattern","")
-        ai = {
-            "judgment": rj,
-            "confidence": rc,
-            "primary_cause": ("受注" if kf.get("product_kind") == "J" and (kf.get("requirement_qty") or 0) > 0 else
-                              ("需要" if (kf.get("requirement_qty") or 0) > 0 else
-                               ("在庫ノイズ" if pat == "A" else "その他"))),
-            "cause_detail": f"ルール({pat}): {reason}" if reason else f"ルールパターン{pat}",
-            "caution": "AI推論未実施。ルールでの仮判定です（AI委任ケースは要確認に仮置き）",
-            "rule_agreement": "—",
-            "_source": "ルール",
-        }
-    rule = rule_map.get(cid, {})
+        ai = dict(_UNJUDGED_AI)
+    rule = {}  # cid が csv_ のため rule_map ヒットなし → 未判定フォールバック
     im = item_master.get(pkt["item"], {})
     fp_status, fp_pairs = resolve_final_products(pkt["item"])
     final_str = format_final_products(fp_status, fp_pairs)
@@ -1266,7 +1372,7 @@ for cid in ids:
     direct_children = sorted(parent_to_children.get(pkt["item"], set()))
 
     # SMILEスタイルフィルター用情報
-    arrange_type, koutei_code, koutei_name, supplier_code, supplier_name = get_arrange_info(pkt)
+    arrange_type, koutei_code, koutei_name, supplier_code, supplier_name = classify_arrange_from_row(row)
 
     # 製番→製品完成予定日 ハイブリッド
     product_deadline, pd_source = get_product_deadline(pkt["seiban"])
@@ -1592,7 +1698,7 @@ out = INFER / f"results_production_{len(records)}.xlsx"
 wb.save(out)
 print(f"saved: {out}")
 print(f"records: {len(records)}")
-print(f"AI未推論(ルールのみ): {missing_ai}")
+print(f"AI/ルール未判定(品目マッチなし): {missing_ai}")
 
 # ---- 13. HTML ダッシュボード出力 --------------------------------------------
 # 必要な品目名を集めて itemNames 辞書にする
@@ -1741,9 +1847,15 @@ for _c, _info in item_master.items():
     if not _nm or _info.get('banned'): continue
     _active_codes_by_name.setdefault(_nm, []).append(_c)
 
+# 同名で複数アクティブコードがある品目名 → その在庫がどのコードのものか特定不能。
+# 在庫一覧は品目名キーで品目コードを持てない仕様のため、曖昧フラグ(sdup)を立てて画面で警告する。
+_ambig_codes = {c for cs in _active_codes_by_name.values() if len(cs) >= 2 for c in cs}
+node_stock_ambiguous = set()
 _matched_current = 0
 _skipped_banned = 0
-for code in relevant_codes:
+# 雅さん 2026-06-29: 現在庫は「手配/BOM関連(relevant_codes)」に限定せず、全品目に名前突合する。
+#   FCART02 等の単独完成品(手配・構成に出ない)でも現在庫が表示されるように。部品も同様に全件対象。
+for code in item_master:
     info = item_master.get(code, {})
     nm = info.get('name', '')
     # 使用禁止コードには在庫を割り当てない(同名アクティブコードがあれば正しい方に付く)
@@ -1755,6 +1867,8 @@ for code in relevant_codes:
     if s.get('current') is not None:
         node_current[code] = s['current']
         _matched_current += 1
+        if code in _ambig_codes:
+            node_stock_ambiguous.add(code)  # 同名複数 → 帰属未確定
     # 有効在庫のフォールバックは在庫一覧の effective を使う(古いがゼロよりマシ)
     if code not in node_eff and s.get('effective') is not None:
         node_eff[code] = s['effective']
@@ -1924,6 +2038,7 @@ for code in relevant_codes:
     info = {'n': im.get('name') or code}
     if code in node_eff: info['e'] = round(node_eff[code], 2)
     if code in node_current: info['cur'] = round(node_current[code], 2)
+    if code in node_stock_ambiguous: info['sdup'] = 1  # 同名複数 → 在庫の帰属未確定(画面で⚠)
     if code in node_demand: info['d'] = round(node_demand[code], 2)
     # 基準倉庫 推定在庫 (2026/04/01本棚卸リセット後の累積)
     # 品目マスタの基準倉庫コードで warehouse_stock を引く
@@ -2097,6 +2212,10 @@ for code, im in item_master.items():
     if code in item_route:
         info_min['rt'] = item_route[code]
         info_min['rtL'] = round(sum((p['lt'] + p['ilt']) for p in item_route[code]), 1)
+    # 現在庫/有効在庫(全品目対象。雅さん 2026-06-29)
+    if code in node_current: info_min['cur'] = round(node_current[code], 2)
+    if code in node_eff: info_min['e'] = round(node_eff[code], 2)
+    if code in node_stock_ambiguous: info_min['sdup'] = 1
     node_info[code] = info_min
     _n_added += 1
 print(f"[NODE_INFO 拡張] 全品目を最小情報でカバー: +{_n_added:,}件 (合計 {len(node_info):,}件)")
