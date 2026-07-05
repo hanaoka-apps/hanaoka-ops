@@ -1273,13 +1273,22 @@ def build_readable_comment(ai, pkt):
     return status_text, thought, rec
 
 # ---- 11. データ収集 ----
+# 2026-07-05: ビルド入力(rules_hints/case_packets/infer)が無くても落ちないようガード。
+# これらは判定(AI/ルール)の入力で、fujin_build_inputs.zip 経由で持ち込む。
+# CSV駆動化済みなので、入力欠如でも手配確定リスト自体は生成でき、判定は「未判定」になる。
 rule_map = {}
-with open(INFER / "rules_hints.jsonl", encoding="utf-8") as f:
-    for line in f:
-        r = json.loads(line); rule_map[r["case_id"]] = r
+_rules_hints_path = INFER / "rules_hints.jsonl"
+if _rules_hints_path.exists():
+    with open(_rules_hints_path, encoding="utf-8") as f:
+        for line in f:
+            r = json.loads(line); rule_map[r["case_id"]] = r
+else:
+    print("[WARN] infer/rules_hints.jsonl が無い(ビルド入力zip未取得)。AI/ルール判定なしで続行→判定は『未判定』になります。")
 
-ids = sorted([p.stem for p in PKT.glob("case_*.txt")])
+ids = sorted([p.stem for p in PKT.glob("case_*.txt")]) if PKT.exists() else []
 print(f"target cases (case_packets): {len(ids)}")
+if not ids:
+    print("[WARN] case_packets が無い(ビルド入力zip未取得)。品目→判定マップは空=全行『未判定』で続行します。")
 
 # ── 2026-07-05 日次CSV駆動化 ─────────────────────────────────────────────
 # 手配確定タブの母体を case_packets(凍結スナップショット) から
