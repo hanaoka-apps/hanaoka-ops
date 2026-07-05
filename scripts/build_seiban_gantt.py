@@ -9,11 +9,23 @@
   - 構成マスタ.csv          : BOMツリー (親品目→子品目, 取数)
   - 品目マスタ.csv/.txt     : 累積/購買リードタイム, 品目名
   - 工程マスタ.csv          : 工程→手配先名(作業区)・内外
-  - 製造指図出力.csv        : 品目→工程(作業区), 手配済, 報告済(=受入済)
-  - 未確定_購買手配データ.csv: 手配済(所要量計算)
-  - 発注明細出力.csv        : 手配済
-  - 確定済_工程手配一覧.csv : 手配済, 報告済
+  - 製造指図出力.csv        : 品目→工程(作業区), 実手配(arr), 報告済(=受入済)
+  - 未確定_購買手配データ.csv: 要発注(req)=所要量計算(MRP)の不足提案
+  - 発注明細出力.csv        : 実手配(arr)
+  - 確定済_工程手配一覧.csv : 実手配(arr), 報告済
   - 受入明細出力.csv        : 受入済(実績あり=来ている)
+
+手配状態の考え方 (雅さん 2026-07-06, 実データ検証済):
+  未確定_購買手配データ = SMILEの所要量計算(MRP)出力。MRPは在庫+発注残から将来の
+  所要量を時系列で差し引き、不足分だけ手配提案する(検証: 総所要量>有効在庫数が96%,
+  残りは手配方式「需要数」=在庫を見ず必ず手配する品目)。したがって
+    req  = 未確定に載る       = 将来所要を加味しても不足 = 要発注(赤)
+    arr  = 発注/指図/確定工程 = 実際に手配済(入荷待ち)   = 黄
+    recv = 受入/報告済        = 来ている                 = グレー
+    どれにも無い              = MRPが提案していない = 将来所要込みで足りる = 手配不要(グレー)
+  ※有効在庫一覧の有効在庫数>=0 は要発注の否定材料にならない(未確定に載る品目の
+    99%が有効在庫>=0だった。一覧の出庫予定は確定済の予定のみで未確定所要を含まない)。
+    cov は二次的な裏付け表示(在庫あり)としてのみ残す。
   - 受注明細出力.csv        : 受注J製番 (顧客・納期・残)
   - 生産計画出力.csv/生産計画.txt : 計画K製番
 
@@ -27,9 +39,15 @@ import os
 import collections
 from datetime import datetime
 from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo
+    _JST = ZoneInfo("Asia/Tokyo")
+except Exception:
+    _JST = None
 
 # 基準日(今日)。これより納期が過去の製番/計画は「終わったもの」として一覧から除外する。
-TODAY = datetime.now().strftime("%Y/%m/%d")
+# CI(GitHub Actions)はUTCのため、JSTで「今日」を確定する(日付が1日ズレて除外がずれる事故防止)。
+TODAY = (datetime.now(_JST) if _JST else datetime.now()).strftime("%Y/%m/%d")
 
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT.parent if ROOT.name == "scripts" else ROOT
@@ -148,6 +166,60 @@ if p_item:
             iname[code] = row[1].strip().strip('"')
 print(f"[品目マスタ] LT {len(lt):,}  src={p_item}")
 
+# ---- 在庫 (有効在庫一覧): cov = 有効在庫数>=0 (二次情報「在庫あり」表示用) ----
+# 注意: 有効在庫一覧の有効在庫数 = 現在庫+入庫予定-出庫予定 (実データで全行一致を確認)。
+# ただし出庫予定は確定済の予定のみで、未確定の将来所要(MRP計算対象)は含まれない。
+# → 要発注(req=未確定手配)の判定を cov で打ち消してはいけない。covは補助表示のみ。
+# 有効在庫一覧(UTF-16 TSV / UTF-8 CSV 両対応, 先頭3行ヘッダ, 列: 品目名/単位/現在庫数/(空)/入庫予定/出庫予定/有効在庫数/適正在庫)
+cov = set()  # 有効在庫数>=0 の品目コード
+def _read_stock(path):
+    if not path or not path.exists():
+        return None
+    content = None
+    try:
+        with open(path, encoding="utf-16") as f:
+            content = f.read()
+        if "品目名" not in content[:500]:
+            content = None
+    except Exception:
+        content = None
+    if content is None:
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            return None
+    if not content:
+        return None
+    sample = "\n".join(content.splitlines()[:6])
+    use_csv = ("\t" not in sample) and ("," in sample)
+    if use_csv:
+        import io as _io
+        rows = list(csv.reader(_io.StringIO(content)))
+    else:
+        rows = [ln.split("\t") for ln in content.splitlines()]
+    eff_by_name = {}
+    for cols in rows[3:]:  # 先頭3行はヘッダ
+        if len(cols) < 7:
+            continue
+        nm = (cols[0] or "").strip()
+        if not nm:
+            continue
+        s = (cols[6] or "").strip().strip('"').replace(",", "")  # 有効在庫数
+        try:
+            eff_by_name[nm] = float(s)
+        except Exception:
+            continue
+    return eff_by_name or None
+
+p_stk = mp("有効在庫一覧表.csv", "有効在庫一覧.csv", "有効在庫一覧表.txt", "有効在庫一覧.txt")
+_eff_by_name = _read_stock(p_stk) or {}
+for c in codes:
+    nm = iname.get(c, "")
+    if nm and _eff_by_name.get(nm, -1) >= 0:
+        cov.add(c)
+print(f"[在庫] 有効在庫>=0(補助表示「在庫あり」) {len(cov):,}  src={p_stk}")
+
 # ---- 工程→作業区 ----
 proc = {}
 p_proc = mp("工程マスタ.csv")
@@ -159,13 +231,15 @@ if p_proc:
         if c and w:
             proc[c] = {"wp": w, "io": io}
 
-# ---- item_wp / arr(手配済) / recv(受入済=来ている) ----
+# ---- item_wp / arr(実手配=発注・指図・確定工程) / req(要発注=MRP不足提案) / recv(受入済) ----
 item_wp = {}
-arr = set()
-recv = set()
+arr = set()   # 実手配あり(入荷待ち=黄)
+req = set()   # 未確定_購買手配データ=所要量計算(MRP)の不足提案(要発注=赤)
+recv = set()  # 受入/報告済(来ている=グレー)
 
 
-def scan(name, for_wp=False, count_arr=True):
+def scan(name, into=None, for_wp=False):
+    """into: 品目コードを追加する集合(arr/req)。Noneなら状態集合には入れない(recv/wpのみ)。"""
     p = mp(name)
     if not p:
         print(f"  [scan] {name} 見つからず")
@@ -182,8 +256,8 @@ def scan(name, for_wp=False, count_arr=True):
         it = (r.get(ci) or "").strip().strip('"') if ci else ""
         if not it or it not in codes:
             continue
-        if count_arr:
-            arr.add(it)
+        if into is not None:
+            into.add(it)
         if cr and sf(r.get(cr)) > 0:
             recv.add(it)
         if for_wp and it not in item_wp and cp:
@@ -195,12 +269,14 @@ def scan(name, for_wp=False, count_arr=True):
                 item_wp[it] = ["外注", "社外"]
 
 
-scan("製造指図出力.csv", for_wp=True)
-scan("未確定_購買手配データ.csv", for_wp=True)
-scan("発注明細出力.csv")
-scan("確定済_工程手配一覧.csv")
-scan("受入明細出力.csv", count_arr=False)  # 受入は recv のみ(手配ではない)
-print(f"[手配/受入] 手配済 arr {len(arr):,} / 受入済 recv {len(recv):,} / 作業区 wp {len(item_wp):,}")
+scan("製造指図出力.csv", into=arr, for_wp=True)          # 実手配(製造)
+scan("未確定_購買手配データ.csv", into=req, for_wp=True)  # MRP不足提案=要発注
+scan("発注明細出力.csv", into=arr)                        # 実手配(購買)
+scan("確定済_工程手配一覧.csv", into=arr)                 # 実手配(工程確定)
+scan("受入明細出力.csv")                                  # 受入は recv のみ(手配ではない)
+req -= (arr | recv)  # 既に実手配/受入済のものは要発注から外す(古い提案の残り等)
+print(f"[手配/受入] 実手配 arr {len(arr):,} / 要発注 req {len(req):,} / 受入済 recv {len(recv):,} "
+      f"/ 手配不要 {len(codes - arr - req - recv):,} / 作業区 wp {len(item_wp):,}")
 
 # ---- 製番リスト (受注J + 計画K, 完了は除外) ----
 SB = []
@@ -259,8 +335,8 @@ for c in bom:
         pnm[c] = iname.get(c, "")
 print(f"[製番] {len(SB):,} (受注J + 計画K, 完了除外)")
 
-out = {"bom": bom, "lt": lt, "arr": sorted(arr), "recv": sorted(recv),
-       "wp": item_wp, "sb": SB, "pnm": pnm}
+out = {"bom": bom, "lt": lt, "arr": sorted(arr), "req": sorted(req), "recv": sorted(recv),
+       "cov": sorted(cov), "wp": item_wp, "sb": SB, "pnm": pnm}
 DATA.mkdir(parents=True, exist_ok=True)
 (DATA / "seiban_gantt.json").write_text(
     json.dumps(out, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -269,4 +345,4 @@ DATA.mkdir(parents=True, exist_ok=True)
     encoding="utf-8")
 _sz = (DATA / "seiban_gantt.json").stat().st_size
 print(f"出力: data/seiban_gantt.json ({_sz/1024/1024:.2f} MB) "
-      f"製番{len(SB):,} / BOM親{len(bom):,} / 手配済{len(arr):,} / 受入済{len(recv):,}")
+      f"製番{len(SB):,} / BOM親{len(bom):,} / 実手配{len(arr):,} / 要発注{len(req):,} / 受入済{len(recv):,}")
