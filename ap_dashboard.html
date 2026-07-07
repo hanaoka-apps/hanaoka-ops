@@ -232,7 +232,7 @@
 
   <!-- 仕分け（経費/仕入）＋マージ／アーカイブ -->
   <div id="triage-section" style="display:none;background:var(--card-bg);border:1px solid var(--warning);border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-    <div class="section-title" style="border:none;padding:0;margin-bottom:8px;display:flex;align-items:center;gap:12px;">📥 仕分け（未仕分け <span id="triage-count">0</span>件） — AI推定を確認し経費/仕入を確定
+    <div class="section-title" style="border:none;padding:0;margin-bottom:8px;display:flex;align-items:center;gap:12px;">📥 仕分け（未仕分け <span id="triage-count">0</span>件・全期間） — AI推定を確認し経費/仕入を確定（決済月に関係なく表示）
       <span style="margin-left:auto;display:flex;gap:8px;">
         <button onclick="mergeTriage()" style="background:#fff;color:var(--primary);border:1px solid var(--primary);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🔗 選択をマージ</button>
         <button onclick="archiveTriage()" style="background:#fff;color:var(--danger);border:1px solid var(--danger);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🗄 選択をアーカイブ</button>
@@ -240,7 +240,7 @@
     </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">※表紙＋明細など同一請求書は複数選択→マージ（金額は合算しない）。本当の重複はアーカイブ。⚠は同支払先＋同額の重複可能性。<b>仕入を選んだ行は仕入先（コード）必須</b>。</div>
     <datalist id="sup-dl"></datalist>
-    <table><thead><tr><th style="width:28px"></th><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th>仕入先（仕入時・必須）</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
+    <table><thead><tr><th style="width:28px"></th><th>対象年月</th><th>支払先</th><th>金額（税込）</th><th>AI推定</th><th>支払区分を確定</th><th>仕入先（仕入時・必須）</th><th></th></tr></thead><tbody id="triage-tbody"></tbody></table>
   </div>
 
   <!-- 仕入先コード未割当の仕入（戻して仕入先を当て直す） -->
@@ -328,7 +328,7 @@ const AP_SITE_ID   = 'hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af6634
 // 支払日区分・支払区分・支払先・支払手段・金額税込・各ステータスはすべてヘッダに存在。明細(AP_PaymentSlip)は確認画面で展開。
 const LIST_NAME    = 'AP_Invoice';
 
-let msalInstance = null, currentAccount = null, allItems = [], monthItems = [], fieldMap = {};
+let msalInstance = null, currentAccount = null, allItems = [], monthItems = [], allInv = [], fieldMap = {};
 // 仕入先候補（受入リストから・仕入確定時の仕入先割当に使用）
 const SUP_SITE = 'hanaokacorp.sharepoint.com:/sites/msteams_20513c', SUP_DRIVE = 'GenelalMasters', SUP_FILE = '9521受入リスト.csv';
 let suppliers = [];
@@ -503,6 +503,8 @@ async function loadData() {
         : null;
     }
 
+    // 全件保持（仕分けセクションは月に依存せず全期間で未仕分けを出す）
+    allInv = items;
     // 選択月でフィルタ
     monthItems = items.filter(item => fv(item.fields, '対象年月') === month);
     // 支払サマリーは「経費 ＆ 仕分け済 ＆ 非アーカイブ」のみ
@@ -535,7 +537,8 @@ function renderAll() {
 // 仕分け（未仕分け＝経費/仕入をAI推定から人が確定／マージ／アーカイブ）
 function renderTriage() {
   const sec = document.getElementById('triage-section');
-  const rows = monthItems.filter(it => fv(it.fields, '仕分け済') !== true && fv(it.fields, 'アーカイブフラグ') !== true);
+  // 未仕分けは全期間で出す（対象年月がズレた請求書を取りこぼさない）
+  const rows = allInv.filter(it => fv(it.fields, '仕分け済') !== true && fv(it.fields, 'アーカイブフラグ') !== true);
   if (!rows.length) { sec.style.display = 'none'; return; }
   sec.style.display = 'block';
   document.getElementById('triage-count').textContent = rows.length;
@@ -550,6 +553,7 @@ function renderTriage() {
     const isShi = cat==='本社仕入'||cat==='工場仕入';
     return `<tr>
       <td><input type="checkbox" class="tri-chk" data-id="${it.id}"></td>
+      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${fv(f,'対象年月')||'—'}</td>
       <td>${pn||'—'}${warn}</td>
       <td class="amount-cell">¥${amt.toLocaleString()}</td>
       <td><span class="status-badge s-確認待">${cat||'未推定'}</span> <span style="font-size:11px;color:var(--muted)">AI ${conf||'-'}</span></td>
@@ -562,7 +566,7 @@ function renderTriage() {
 // 仕入確定済みだが仕入先コードが空＝突合不能。仕分けに戻して当て直す。
 function renderUnassigned() {
   const sec = document.getElementById('unassigned-section');
-  const rows = monthItems.filter(it => { const c = fv(it.fields,'支払区分'); const shi = c==='本社仕入'||c==='工場仕入';
+  const rows = allInv.filter(it => { const c = fv(it.fields,'支払区分'); const shi = c==='本社仕入'||c==='工場仕入';
     return shi && fv(it.fields,'仕分け済')===true && fv(it.fields,'アーカイブフラグ')!==true && !(fv(it.fields,'支払先コード')||'').trim(); });
   if (!rows.length) { sec.style.display='none'; return; }
   sec.style.display='block';
