@@ -1508,6 +1508,15 @@ def main():
     daily_int, wp_int = aggregate_daily(rec_internal_combined)
     daily_ext, wp_ext = aggregate_daily(rec_external)
 
+    # 2026-07-08 新項目の付与状況サマリ (検証用)
+    _all = rec_internal_combined + rec_external
+    print(f"[新項目] 摘要コード {sum(1 for r in _all if r.get('tekiyo_code')):,}件 / "
+          f"摘要1 {sum(1 for r in _all if r.get('tekiyo1')):,} / 摘要2 {sum(1 for r in _all if r.get('tekiyo2')):,} / "
+          f"備考1 {sum(1 for r in _all if r.get('biko1')):,} / 備考2 {sum(1 for r in _all if r.get('biko2')):,} / "
+          f"進捗(qty_total) {sum(1 for r in _all if r.get('qty_total') is not None):,} / "
+          f"受入No {sum(1 for r in _all if r.get('receipt_no')):,} / "
+          f"分納実績 {sum(1 for r in _all if r.get('source') == '確定済_購買発注(受入済)'):,}")
+
     out = {
         "as_of": TODAY.strftime("%Y/%m/%d"),
         "horizon": HORIZON.strftime("%Y/%m/%d"),
