@@ -1437,6 +1437,8 @@ def main():
     # 雅さん 2026-05-24: 全タブで「発注者」を出してフィルタしたい
     # 2026-07-08: 発注No基準の一意突合に変更 (po_map=発注No→担当 1:1 / fallback=担当一意の(製番,コード)のみ)
     po_map, orderer_fallback_map = load_order_assignee_map()
+    # 2026-07-08: 分納対応 — 受入明細出力.csv があれば 発注番号→受入№ を紐づけ (無ければ発注Noのみ)
+    receipt_map = load_receipt_no_map()
 
     # 社内工程の山
     print("\n--- 社内工程 ---")
@@ -1452,11 +1454,24 @@ def main():
 
     # 外注/購買の山
     print("\n--- 外注/購買 ---")
-    rec_external = load_records(proc_to_wp, scope="external", supplier_map=supplier_map)
+    rec_external = load_records(proc_to_wp, scope="external", supplier_map=supplier_map, receipt_map=receipt_map)
 
     # 雅さん 2026-05-25: 過去2ヶ月の実績を取り込む (受入明細+売上明細)
     print("\n--- 過去実績 ---")
     rec_actual_int, rec_actual_ext = load_actual_records(proc_to_wp, item_to_final_wp, supplier_map)
+    # 2026-07-08 分納の二重計上防止:
+    #   確定済_購買発注の「受入済分(実績)」は、受入明細出力.csv 由来の実績と同じ入荷を指し得る。
+    #   受入明細に (品目,製番) が存在する場合は受入明細側を正とし、購買発注(受入済) 側を落とす。
+    recv_keys = {(r.get("item_code", ""), r.get("seiban", ""))
+                 for r in rec_actual_ext if r.get("source") == "受入明細"}
+    if recv_keys:
+        n_before = len(rec_external)
+        rec_external = [r for r in rec_external
+                        if not (r.get("source") == "確定済_購買発注(受入済)"
+                                and (r.get("item_code", ""), r.get("seiban", "")) in recv_keys)]
+        n_drop = n_before - len(rec_external)
+        if n_drop:
+            print(f"[分納] 受入明細と重複する購買発注(受入済) {n_drop:,}件を除去 (受入明細側を正)")
     rec_internal_combined += rec_actual_int
     rec_external += rec_actual_ext
 
