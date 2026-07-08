@@ -23,6 +23,11 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
+try:
+    from zoneinfo import ZoneInfo
+    _JST = ZoneInfo("Asia/Tokyo")
+except Exception:
+    _JST = None
 
 # パスを動的に解決
 # scripts/ に置いた場合は .parent.parent でリポジトリルートを指す
@@ -38,7 +43,8 @@ _onedrive_candidates = [
 SHARED = next((p for p in _onedrive_candidates if p.exists()), _onedrive_candidates[0])
 AUTH_DIST = BASE / "auth_dist"
 
-TODAY = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+# CI(GitHub Actions)はUTCのため、JSTで「今日」を確定する(基準日/期間窓が1日ズレる事故防止)。
+TODAY = (datetime.now(_JST) if _JST else datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 HORIZON = TODAY + timedelta(days=90)  # 約3ヶ月先まで
 PAST_WINDOW = TODAY - timedelta(days=60)  # 雅さん 2026-05-25: 過去2ヶ月までの実績取込
 
@@ -410,11 +416,14 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 remaining = qty - reported
                 if remaining <= 0: continue
                 tehai_no = (row.get("手配番号") or "").strip().strip('"')
+                # 2026-07-08: レコード自身の発注番号列を purchase_no に採用 (外注PO。内部工程は"0")
+                #             (製番,コード)マップで別発注Noを撒く旧バグの是正
+                hatchu_no = (row.get("発注番号") or "").strip().strip('"')
                 seiban = (row.get("製番") or row.get("製　番") or "").strip().strip('"')
                 key = (scope, "確定済", seiban, proc_code, tehai_no)
                 if key in seen_keys: continue
                 seen_keys.add(key)
-                records.append({
+                rec = {
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
                     "workplace": _row_workplace(row) or wp_info["workplace"],
@@ -428,7 +437,10 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "status": "確定済",
                     "kind": kind_default,
                     "source": "確定済_工程手配",
-                })
+                }
+                if hatchu_no and hatchu_no != "0":
+                    rec["purchase_no"] = hatchu_no
+                records.append(rec)
 
     # 2. 製造指図出力.csv (残量あり=未完成) - 確定済工程一覧の補完 (両者に同じデータあり得る、tehai_noで排他)
     p2 = SHARED / "製造指図出力.csv"
@@ -456,11 +468,14 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 remaining = qty - reported
                 if remaining <= 0: continue
                 tehai_no = (row.get("手配№") or "").strip().strip('"')
+                # 2026-07-08: レコード自身の発注№列を purchase_no に採用。
+                #             ※手配№は偶然PO発注番号と衝突する例が実データにあるため突合に使わない
+                hatchu_no = (row.get("発注№") or row.get("発注番号") or "").strip().strip('"')
                 seiban = (row.get("製番") or "").strip().strip('"')
                 key = (scope, "確定済", seiban, proc_code, tehai_no)
                 if key in seen_keys: continue
                 seen_keys.add(key)
-                records.append({
+                rec = {
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
                     "workplace": _row_workplace(row) or wp_info["workplace"],
@@ -474,7 +489,10 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "status": "確定済",
                     "kind": kind_default,
                     "source": "製造指図明細",
-                })
+                }
+                if hatchu_no and hatchu_no != "0":
+                    rec["purchase_no"] = hatchu_no
+                records.append(rec)
 
     # 3. 未確定_購買手配データ.csv (社内工程の未確定)
     p3 = SHARED / "未確定_購買手配データ.csv"
@@ -564,6 +582,9 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                         "seiban": seiban,
                         "qty": round(qty, 1),
                         "tehai_no": hat_no,
+                        # 2026-07-08: 紐づくNoはこの行自身の発注番号を正とする
+                        # (旧: (製番,コード)マップの最初の1件で上書き→別発注Noが複数品目に重複するバグ)
+                        "purchase_no": hat_no,
                         "status": "確定済",
                         "kind": kind_default,
                         "source": "確定済_購買発注",
@@ -891,16 +912,26 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
 
 
 def load_order_assignee_map():
-    """確定済_購買発注一覧.csv から (seiban, item_code) → 発注者+発注No のマップ。
+    """確定済_購買発注一覧.csv から発注者マップを構築。
        雅さん 2026-05-24 要望: 全タブで発注者を表示してフィルタできるようにする
-                              + 発注No を検索に引っ掛けたい"""
+                              + 発注No を検索に引っ掛けたい
+
+       2026-07-08 バグ是正 (担当違い・発注No重複):
+       - 発注番号→担当者 は実データで 1:1 (1,247件中ズレ0) → 発注No基準の突合が唯一安全。
+       - (製番,商品コード) は製番"00"(在庫参照=製番なし)に購買が集まり多対多になる
+         (543組中68組で発注Noが複数、29組で担当が複数)。
+         → 従来の「最初の1件を全レコードに付与」は担当違い＆発注No重複を撒いていた。
+       - フォールバックは (製番,コード) 内で担当が一意な場合のみ (曖昧なら付けない=誤りを出さない)。
+         フォールバックでは purchase_no は絶対に配らない。
+       戻り値: (po_map: 発注番号→{staff,login}, fallback_map: (seiban,code)→{staff,login} 一意分のみ)"""
     p = SHARED / "確定済_購買発注一覧.csv"
-    m = {}
-    by_seiban_code_qty = {}  # より厳しいキー: (seiban, code, qty)
+    po_map = {}
+    fallback_map = {}
     if not p.exists():
         print(f"[発注者] 確定済_購買発注一覧.csv が見つかりません")
-        return m, by_seiban_code_qty
+        return po_map, fallback_map
     try:
+        by_sc = defaultdict(set)  # (seiban, code) → {(staff, login), ...}
         with open(p, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -909,40 +940,58 @@ def load_order_assignee_map():
                 staff = (row.get("担当者略称") or "").strip().strip('"')
                 login = (row.get("ログインＩＤ") or "") .strip().strip('"')
                 order_no = (row.get("発注番号") or "").strip().strip('"')
-                qty = _sf(row.get("発注数量"))
                 if not staff: continue
-                key = (seiban, code)
-                info = {"staff": staff, "login": login, "purchase_no": order_no}
-                if key not in m:
-                    m[key] = info
-                qty_key = (seiban, code, round(qty, 1))
-                if qty_key not in by_seiban_code_qty:
-                    by_seiban_code_qty[qty_key] = info
-        print(f"[発注者] 確定済_購買発注: {len(m):,} (seiban+code) / {len(by_seiban_code_qty):,} (+qty)")
+                if order_no and order_no != "0":
+                    po_map[order_no] = {"staff": staff, "login": login}
+                by_sc[(seiban, code)].add((staff, login))
+        ambiguous = 0
+        for key, staffs in by_sc.items():
+            if len(staffs) == 1:
+                staff, login = next(iter(staffs))
+                fallback_map[key] = {"staff": staff, "login": login}
+            else:
+                ambiguous += 1  # 担当が複数 → 付与しない (誤りを出さない方針)
+        print(f"[発注者] 確定済_購買発注: 発注No {len(po_map):,}件 / "
+              f"(seiban+code)一意 {len(fallback_map):,}組 (曖昧のため除外 {ambiguous:,}組)")
     except Exception as e:
         print(f"[発注者] 読込エラー: {e}")
-    return m, by_seiban_code_qty
+    return po_map, fallback_map
 
 
-def attach_orderer_to_records(records, order_map, order_map_qty):
-    """確定済の外注/購買レコードに発注者+発注Noを付与"""
-    if not order_map:
+def attach_orderer_to_records(records, po_map, fallback_map):
+    """確定済の外注/購買レコードに発注者を付与。
+
+       2026-07-08 バグ是正:
+       - 突合は「レコード自身が持つ発注No (purchase_no)」→ 発注番号→担当(1:1) を正とする。
+         purchase_no は load_records 側でレコード自身の発注番号列から設定済み。
+         ここでは purchase_no を上書きしない (order_mapで別の発注Noを撒いた旧バグの再発防止)。
+       - tehai_no での突合はしない (製造指図の手配№が偶然PO発注番号と衝突する例が実データに6件あり危険)。
+       - 発注Noを持たないレコードは (seiban,code) フォールバック (担当一意の場合のみ) で
+         発注者だけ付与。曖昧なら付けない。"""
+    if not po_map and not fallback_map:
         return
-    matched = 0
+    matched_po = 0
+    matched_fb = 0
     for r in records:
         if r.get("status") != "確定済":
             continue
+        pno = (r.get("purchase_no") or "").strip()
+        if pno:
+            info = po_map.get(pno)
+            if info:
+                r["orderer"] = info["staff"]
+                r["orderer_login"] = info["login"]
+                matched_po += 1
+            # 発注Noはあるが購買発注一覧に無い(完納済/抽出範囲外) → 発注者は付けない
+            continue
         seiban = (r.get("seiban") or "").strip()
         code = (r.get("item_code") or "").strip()
-        qty = round(r.get("qty") or 0, 1)
-        info = order_map_qty.get((seiban, code, qty)) or order_map.get((seiban, code))
+        info = fallback_map.get((seiban, code))
         if info:
             r["orderer"] = info["staff"]
             r["orderer_login"] = info["login"]
-            if info.get("purchase_no"):
-                r["purchase_no"] = info["purchase_no"]
-            matched += 1
-    print(f"[発注者付与] {matched:,}/{len(records):,} 件")
+            matched_fb += 1
+    print(f"[発注者付与] 発注No突合 {matched_po:,}件 / (seiban,code)一意フォールバック {matched_fb:,}件 / 全{len(records):,}件")
 
 
 def load_bom_parent_map():
@@ -1189,7 +1238,8 @@ def main():
     # 雅さん 2026-05-29: 品目マスタから在庫管理区分・累積LTを取得
     stock_map, lt_map = load_item_master_data()
     # 雅さん 2026-05-24: 全タブで「発注者」を出してフィルタしたい
-    order_map, order_map_qty = load_order_assignee_map()
+    # 2026-07-08: 発注No基準の一意突合に変更 (po_map=発注No→担当 1:1 / fallback=担当一意の(製番,コード)のみ)
+    po_map, orderer_fallback_map = load_order_assignee_map()
 
     # 社内工程の山
     print("\n--- 社内工程 ---")
@@ -1239,9 +1289,9 @@ def main():
     with_used = sum(1 for r in rec_external if r.get("used_in"))
     print(f"[使用先] {with_used:,}/{len(rec_external):,} レコードに使用先を付与")
     # 発注者付与 (確定済のみ)
-    attach_orderer_to_records(rec_external, order_map, order_map_qty)
+    attach_orderer_to_records(rec_external, po_map, orderer_fallback_map)
     # 社内レコードにも、購買発注に紐づけば付与しておく (将来全タブで利用)
-    attach_orderer_to_records(rec_internal_combined, order_map, order_map_qty)
+    attach_orderer_to_records(rec_internal_combined, po_map, orderer_fallback_map)
     # 実績を含めて再集計
     daily_int, wp_int = aggregate_daily(rec_internal_combined)
     daily_ext, wp_ext = aggregate_daily(rec_external)
