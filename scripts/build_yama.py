@@ -103,6 +103,125 @@ def _detect_delimiter(path):
     return "\t" if first.count("\t") > first.count(",") else ","
 
 
+# ===== 2026-07-08 摘要(=音声入力の「適用」)/備考/分納(受入)対応 =====
+_Z2H_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _norm_header(s):
+    """列名ゆらぎ吸収用の正規化: 空白(全半角)除去 / ｺｰﾄﾞ→コード / 全角数字→半角 / №→番号。
+       例: 「行摘要ｺｰﾄﾞ」「行摘要コード」、「備  考 １」「備考１」を同一視する。"""
+    if not s:
+        return ""
+    s = str(s).strip().strip('"')
+    s = s.replace(" ", "").replace("　", "")
+    s = s.replace("ｺｰﾄﾞ", "コード").replace("№", "番号").replace("Ｎｏ", "番号")
+    s = s.translate(_Z2H_DIGITS)
+    return s
+
+
+class _FlexCols:
+    """CSVヘッダの表記ゆらぎを吸収して値を引くヘルパ (ファイルごとに1回構築)。"""
+    def __init__(self, fieldnames):
+        self._m = {}
+        for k in (fieldnames or []):
+            nk = _norm_header(k)
+            if nk and nk not in self._m:
+                self._m[nk] = k
+
+    def col(self, *names):
+        for n in names:
+            k = self._m.get(_norm_header(n))
+            if k:
+                return k
+        return None
+
+    def get(self, row, *names):
+        k = self.col(*names)
+        if not k:
+            return ""
+        return (row.get(k) or "").strip().strip('"')
+
+    def find_contains(self, *keywords):
+        """正規化ヘッダ名にキーワードを含む最初の実列名 (受入№等のキーワード検出用)"""
+        for kw in keywords:
+            nkw = _norm_header(kw)
+            if not nkw:
+                continue
+            for nk, k in self._m.items():
+                if nkw in nk:
+                    return k
+        return None
+
+
+def _attach_tekiyo_biko(rec, row, fc):
+    """摘要(行摘要)・備考をレコードに付与。空値はキー自体を付けない(JSON軽量化)。
+       雅さん 2026-07-08: 音声入力の「適用」= 実データの「摘要」(行摘要コード/行摘要１/行摘要２)。
+       備考は 備考１/備考２ (確定済_購買発注一覧のみ「備考」「備考２」)。"""
+    v = fc.get(row, "行摘要コード")
+    if v:
+        rec["tekiyo_code"] = v
+    v = fc.get(row, "行摘要１")
+    if v:
+        rec["tekiyo1"] = v
+    v = fc.get(row, "行摘要２")
+    if v:
+        rec["tekiyo2"] = v
+    v = fc.get(row, "備考１", "備考")  # 確定済_購買発注一覧は「備考」(数字なし)
+    if v:
+        rec["biko1"] = v
+    v = fc.get(row, "備考２")
+    if v:
+        rec["biko2"] = v
+
+
+def load_receipt_no_map():
+    """受入明細出力.csv から 発注番号→受入№一覧 のマップを構築 (分納の「紐づくNo」用)。
+       ファイルがローカルに無い環境でも落ちない (空マップで発注Noのみ運用)。
+       列名は固定名でなくキーワード検出 (「受入番号」「入荷番号」「受入№」等) 。要確認: 実列名。"""
+    candidates = [SHARED / "受入明細出力.csv", DATA / "受入明細出力.csv"]
+    p = next((c for c in candidates if c.exists()), None)
+    if p is None:
+        print("[受入№] 受入明細出力.csv なし → 発注Noのみで運用 (受入Noは付与されません)")
+        return {}
+    m = {}
+    try:
+        delim = _detect_delimiter(p)
+        with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
+            reader = csv.DictReader(f, delimiter=delim)
+            fc = _FlexCols(reader.fieldnames)
+            rc_col = fc.find_contains("受入番号", "受入№", "入荷番号", "入荷№", "受入伝票番号", "受入伝票№")
+            po_col = fc.find_contains("発注番号", "発注№")
+            if not rc_col or not po_col:
+                print(f"[受入№] 受入明細出力.csv に受入番号/発注番号列を検出できず → 発注Noのみで運用 "
+                      f"(受入列={rc_col!r} / 発注列={po_col!r})")
+                return {}
+            for row in reader:
+                po = (row.get(po_col) or "").strip().strip('"')
+                rc = (row.get(rc_col) or "").strip().strip('"')
+                if not po or po == "0" or not rc or rc == "0":
+                    continue
+                lst = m.setdefault(po, [])
+                if rc not in lst:
+                    lst.append(rc)
+        print(f"[受入№] 発注番号→受入№マップ: {len(m):,}発注 (受入列={rc_col} / 発注列={po_col})")
+    except Exception as e:
+        print(f"[受入№] 読込エラー(継続): {e}")
+        return {}
+    return m
+
+
+def _receipt_no_str(receipt_map, po_no):
+    """発注番号に紐づく受入№を表示用文字列に (多い場合は先頭5件+件数)"""
+    if not receipt_map or not po_no:
+        return ""
+    lst = receipt_map.get(po_no) or []
+    if not lst:
+        return ""
+    if len(lst) > 5:
+        return ",".join(lst[:5]) + f" 他{len(lst)-5}件"
+    return ",".join(lst)
+
+
 # 2026-06-13: 工程マスタ未登録の工程コードを「黙ってスキップ」せず暫定表示する仕組み。
 # 例: 000201(第二工場フレーム)が工程マスタ未登録で山リストから丸ごと漏れていた事故対策。
 # 工程コード接頭(0001=第一/0002=第二/0003=第三, 1xxxxx=外注)から工場を推定し暫定作業区にする。
@@ -377,7 +496,7 @@ def load_supplier_map():
     return suppliers
 
 
-def load_records(proc_to_wp, scope="internal", supplier_map=None):
+def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=None):
     """手配レコードを各ソースから収集して統合。
        scope:
          "internal" = 社内工程 (作業区別の山リスト用) … workplace = 工程マスタの手配先名
@@ -395,6 +514,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
         delim = _detect_delimiter(p1)
         with open(p1, "r", encoding="utf-8-sig", errors="replace") as f:
             reader = csv.DictReader(f, delimiter=delim)
+            fc = _FlexCols(reader.fieldnames)
             for row in reader:
                 proc_code = (row.get("工程コード") or "").strip().strip('"')
                 if proc_code not in proc_to_wp:
@@ -437,9 +557,13 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "status": "確定済",
                     "kind": kind_default,
                     "source": "確定済_工程手配",
+                    # 2026-07-08: 進捗表記「報告済/手配数量」用 (qty は従来通り残量)
+                    "qty_total": round(qty, 1),
+                    "qty_done": round(reported, 1),
                 }
                 if hatchu_no and hatchu_no != "0":
                     rec["purchase_no"] = hatchu_no
+                _attach_tekiyo_biko(rec, row, fc)
                 records.append(rec)
 
     # 2. 製造指図出力.csv (残量あり=未完成) - 確定済工程一覧の補完 (両者に同じデータあり得る、tehai_noで排他)
@@ -448,6 +572,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
         delim = _detect_delimiter(p2)
         with open(p2, "r", encoding="utf-8-sig", errors="replace") as f:
             reader = csv.DictReader(f, delimiter=delim)
+            fc = _FlexCols(reader.fieldnames)  # 行摘要ｺｰﾄﾞ(半角カナ)等のゆらぎ吸収
             for row in reader:
                 proc_code = (row.get("工程ｺｰﾄﾞ") or "").strip().strip('"')
                 if proc_code not in proc_to_wp:
@@ -489,9 +614,13 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "status": "確定済",
                     "kind": kind_default,
                     "source": "製造指図明細",
+                    # 2026-07-08: 進捗表記「報告済/手配数量」用 (qty は従来通り残量)
+                    "qty_total": round(qty, 1),
+                    "qty_done": round(reported, 1),
                 }
                 if hatchu_no and hatchu_no != "0":
                     rec["purchase_no"] = hatchu_no
+                _attach_tekiyo_biko(rec, row, fc)
                 records.append(rec)
 
     # 3. 未確定_購買手配データ.csv (社内工程の未確定)
@@ -500,6 +629,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
         delim = _detect_delimiter(p3)
         with open(p3, "r", encoding="utf-8-sig", errors="replace") as f:
             reader = csv.DictReader(f, delimiter=delim)
+            fc = _FlexCols(reader.fieldnames)
             for row in reader:
                 proc_code = (row.get("工程コード") or "").strip().strip('"')
                 if proc_code not in proc_to_wp:
@@ -522,7 +652,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                 key = (scope, "未確定", seiban, proc_code, tehai_no)
                 if key in seen_keys: continue
                 seen_keys.add(key)
-                records.append({
+                rec = {
                     "date": _norm_date(end_raw),
                     "start_date": _norm_date(start_raw),
                     "workplace": _row_workplace(row) or wp_info["workplace"],
@@ -536,7 +666,9 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     "status": "所要量計算",
                     "kind": kind_default,
                     "source": "未確定_購買手配",
-                })
+                }
+                _attach_tekiyo_biko(rec, row, fc)
+                records.append(rec)
 
     # 4. 購買発注の山 (scope=external のみ): 確定済_購買発注一覧 + 未確定の購買データ
     if scope == "external" and supplier_map is not None:
@@ -544,8 +676,10 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
         p_po = SHARED / "確定済_購買発注一覧.csv"
         if p_po.exists():
             delim = _detect_delimiter(p_po)
+            n_split = 0
             with open(p_po, "r", encoding="utf-8-sig", errors="replace") as f:
                 reader = csv.DictReader(f, delimiter=delim)
+                fc = _FlexCols(reader.fieldnames)
                 for row in reader:
                     # 入庫=1かつ発注=1のみ採用 (出庫指示混入を排除)
                     nyuko = (row.get("入出庫区分") or "").strip().strip('"')
@@ -571,7 +705,18 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     key = (scope, "確定済", seiban, "PO", hat_no)
                     if key in seen_keys: continue
                     seen_keys.add(key)
-                    records.append({
+                    # 2026-07-08 分納(一部受入済)対応:
+                    #   発注数量(発注単位) と 受入数量(発注単位) で分割し、
+                    #   受入済=実績(グレー) / 未受入=確定済(青)。受入分+未受入分=発注数量 (二重計上なし)。
+                    #   qty(グラフ集計) は従来通り在庫単位(発注数量)ベース → 受入率で按分して単位混在を防ぐ。
+                    qty_ou = _sf(fc.get(row, "発注数量(発注単位)"))
+                    recv_ou = _sf(fc.get(row, "受入数量(発注単位)"))
+                    if recv_ou < 0: recv_ou = 0.0
+                    if qty_ou > 0 and recv_ou > qty_ou: recv_ou = qty_ou
+                    recv_stock = qty * (recv_ou / qty_ou) if qty_ou > 0 else 0.0
+                    remain_stock = qty - recv_stock
+                    receipt_no = _receipt_no_str(receipt_map, hat_no)
+                    base = {
                         "date": _norm_date(row.get("納期日", "")),
                         "start_date": _norm_date(row.get("発注日", "")),  # リードタイム期間バラ撒き
                         "workplace": supplier,
@@ -580,21 +725,49 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                         "item_code": (row.get("商品コード") or "").strip().strip('"'),
                         "item_name": (row.get("商品名１") or row.get("品目名１") or "").strip().strip('"'),
                         "seiban": seiban,
-                        "qty": round(qty, 1),
                         "tehai_no": hat_no,
                         # 2026-07-08: 紐づくNoはこの行自身の発注番号を正とする
                         # (旧: (製番,コード)マップの最初の1件で上書き→別発注Noが複数品目に重複するバグ)
                         "purchase_no": hat_no,
-                        "status": "確定済",
                         "kind": kind_default,
-                        "source": "確定済_購買発注",
-                    })
+                        # 分納表記「受入/発注」用 (発注単位の値。無ければ在庫単位)
+                        "qty_total": round(qty_ou if qty_ou > 0 else qty, 1),
+                        "qty_done": round(recv_ou, 1),
+                    }
+                    if receipt_no:
+                        base["receipt_no"] = receipt_no
+                    _attach_tekiyo_biko(base, row, fc)
+                    # 未受入分 = 確定済(青)。0なら作らない
+                    if remain_stock > 0.0001:
+                        rec = dict(base)
+                        rec["qty"] = round(remain_stock, 1)
+                        rec["status"] = "確定済"
+                        rec["source"] = "確定済_購買発注"
+                        records.append(rec)
+                    # 受入済分 = 実績(グレー)。0なら作らない
+                    # ※受入明細出力.csv 由来の実績と重複し得るため main() 側で (品目,製番) 一致分を除去
+                    if recv_stock > 0.0001:
+                        rec = dict(base)
+                        # 実績を未来日に置かない (受入は既に起きた事実)。個別の受入日は受入明細側が持つ。
+                        recv_date = base["date"]
+                        if d > TODAY:
+                            recv_date = TODAY.strftime("%Y/%m/%d")
+                        rec["date"] = recv_date
+                        rec["start_date"] = recv_date
+                        rec["qty"] = round(recv_stock, 1)
+                        rec["status"] = "実績"
+                        rec["source"] = "確定済_購買発注(受入済)"
+                        records.append(rec)
+                        n_split += 1
+            if n_split:
+                print(f"[分納] 確定済_購買発注: 一部/全部受入済 {n_split:,}件を実績(グレー)へ分割")
         # 4b. 未確定_購買手配 (購買データ=工程コードなしの分)
         p_un = SHARED / "未確定_購買手配データ.csv"
         if p_un.exists():
             delim = _detect_delimiter(p_un)
             with open(p_un, "r", encoding="utf-8-sig", errors="replace") as f:
                 reader = csv.DictReader(f, delimiter=delim)
+                fc = _FlexCols(reader.fieldnames)
                 for row in reader:
                     proc_code = (row.get("工程コード") or "").strip().strip('"')
                     # 工程コードなしor000000 = 購買データ (工程あり=既にscope3で処理済み)
@@ -617,7 +790,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                     key = (scope, "未確定", seiban, "PO", tehai_no)
                     if key in seen_keys: continue
                     seen_keys.add(key)
-                    records.append({
+                    rec = {
                         "date": _norm_date(end_raw),
                         "start_date": _norm_date(start_raw),
                         "workplace": supplier,
@@ -631,7 +804,9 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None):
                         "status": "所要量計算",
                         "kind": kind_default,
                         "source": "未確定_購買手配",
-                    })
+                    }
+                    _attach_tekiyo_biko(rec, row, fc)
+                    records.append(rec)
 
     records.sort(key=lambda r: (r["date"], r["workplace"]))
     n_conf = sum(1 for r in records if r["status"]=="確定済")
@@ -761,6 +936,9 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
         try:
             with open(p_recv, "r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
+                fc = _FlexCols(reader.fieldnames)
+                # 受入№列をキーワード検出 (無ければ付与しないだけで落ちない)
+                rc_col = fc.find_contains("受入番号", "受入№", "入荷番号", "入荷№", "受入伝票番号", "受入伝票№")
                 cnt_skip_old = cnt_int = cnt_ext = cnt_skip_proc = 0
                 for row in reader:
                     d_raw = (row.get("伝票日付") or "").strip().strip('"')
@@ -780,6 +958,8 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                     supplier = (row.get("仕入先名略称") or "").strip().strip('"')
                     dept = (row.get("部門名") or "").strip().strip('"')
                     dstr = _norm_date(d_raw)
+                    # 受入№ (列が検出できた場合のみ)
+                    receipt_no = (row.get(rc_col) or "").strip().strip('"') if rc_col else ""
                     # 工程コードから internal/external 判定
                     if proc_code and proc_code in proc_to_wp:
                         wp_info = proc_to_wp[proc_code]
@@ -791,6 +971,9 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                             "seiban": seiban, "qty": qty,
                             "status": "実績", "source": "受入明細",
                         }
+                        if receipt_no and receipt_no != "0":
+                            rec["receipt_no"] = receipt_no
+                        _attach_tekiyo_biko(rec, row, fc)
                         if wp_info["internal"]:
                             rec["kind"] = "manufacture"
                             rec_int.append(rec)
@@ -801,7 +984,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                             cnt_ext += 1
                     elif supplier:
                         # 工程なしで仕入先がある = 純粋な購買入荷
-                        rec_ext.append({
+                        rec = {
                             "date": dstr, "start_date": dstr,
                             "workplace": supplier,
                             "process_code": "", "process_name": "購買",
@@ -809,7 +992,11 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                             "seiban": seiban, "qty": qty,
                             "kind": "external", "status": "実績",
                             "source": "受入明細",
-                        })
+                        }
+                        if receipt_no and receipt_no != "0":
+                            rec["receipt_no"] = receipt_no
+                        _attach_tekiyo_biko(rec, row, fc)
+                        rec_ext.append(rec)
                         cnt_ext += 1
                     else:
                         cnt_skip_proc += 1
@@ -826,6 +1013,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
             delim = _detect_delimiter(p_proc)
             with open(p_proc, "r", encoding="utf-8-sig", errors="replace") as f:
                 reader = csv.DictReader(f, delimiter=delim)
+                fc = _FlexCols(reader.fieldnames)
                 cnt_int_act = 0
                 for row in reader:
                     proc_code = (row.get("工程コード") or "").strip().strip('"')
@@ -843,7 +1031,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                     name = (row.get("品目名") or row.get("品目名１") or "").strip().strip('"')
                     seiban = (row.get("製番") or row.get("製　番") or "").strip().strip('"').strip()
                     dstr = _norm_date(d_raw)
-                    rec_int.append({
+                    rec = {
                         "date": dstr, "start_date": dstr,
                         "workplace": wp_info["workplace"],
                         "process_code": proc_code,
@@ -852,7 +1040,11 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                         "seiban": seiban, "qty": reported,
                         "kind": "manufacture", "status": "実績",
                         "source": "工程手配報告済",
-                    })
+                        "qty_total": round(_sf(row.get("手配数量")), 1),
+                        "qty_done": round(reported, 1),
+                    }
+                    _attach_tekiyo_biko(rec, row, fc)
+                    rec_int.append(rec)
                     cnt_int_act += 1
                 print(f"[実績/社内製造] 工程手配の報告済 {cnt_int_act:,}件")
         except Exception as e:
@@ -866,6 +1058,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
             delim = _detect_delimiter(p_seiz)
             with open(p_seiz, "r", encoding="utf-8-sig", errors="replace") as f:
                 reader = csv.DictReader(f, delimiter=delim)
+                fc = _FlexCols(reader.fieldnames)
                 cnt_done = 0
                 for row in reader:
                     proc_code = (row.get("工程ｺｰﾄﾞ") or "").strip().strip('"')
@@ -886,7 +1079,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                     name = (row.get("品目名") or "").strip().strip('"')
                     seiban = (row.get("製番") or "").strip().strip('"').strip()
                     dstr = _norm_date(end_raw)
-                    rec_int.append({
+                    rec = {
                         "date": dstr, "start_date": dstr,
                         "workplace": wp_info["workplace"],
                         "process_code": proc_code,
@@ -895,7 +1088,11 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                         "seiban": seiban, "qty": reported,
                         "kind": "manufacture", "status": "実績",
                         "source": "製造指図完了",
-                    })
+                        "qty_total": round(qty, 1),
+                        "qty_done": round(reported, 1),
+                    }
+                    _attach_tekiyo_biko(rec, row, fc)
+                    rec_int.append(rec)
                     cnt_done += 1
             print(f"[実績/製造指図完了] {cnt_done:,}件")
         except Exception as e:
