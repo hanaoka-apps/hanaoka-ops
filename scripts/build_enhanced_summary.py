@@ -3711,7 +3711,7 @@ function inTextRangeOp(val, op, from, to){
 function inTextRange(val, from, to){ return inTextRangeOp(val, "range", from, to); }
 
 function filterRows(){
-  const q = document.getElementById("q").value.trim().toLowerCase();
+  const q = _normSearch(document.getElementById("q").value);
   const fv = document.getElementById("fVerdict").value;
   const fl = document.getElementById("fLead").value;
   const fp = document.getElementById("fPdSrc").value;
@@ -3755,7 +3755,7 @@ function filterRows(){
     if(!inTextRangeOp(r.code, iOp, iFrom, iTo)) return false;
 
     if(q){
-      const hay = `${r.code} ${r.name} ${r.sb||""} ${r.sup||""} ${r.sc||""} ${r.sn||""} ${r.kc||""} ${r.kn||""} ${(r.ons||[]).join(" ")}`.toLowerCase();
+      const hay = _normSearch(`${r.code} ${r.name} ${r.sb||""} ${r.sup||""} ${r.sc||""} ${r.sn||""} ${r.kc||""} ${r.kn||""} ${(r.ons||[]).join(" ")}`);
       if(!hay.includes(q)) return false;
     }
     if(fv && r.aj !== fv) return false;
@@ -4227,12 +4227,12 @@ function dvIsCommon(code){
 }
 function dvSearchHits(){
   // 現在の検索文字列にマッチするコード集合
-  const q = (dvFilters.search||"").toLowerCase();
+  const q = _normSearch(dvFilters.search||"");
   if(!q || !dvLayout) return new Set();
   const hits = new Set();
   for(const n of dvLayout.nodes){
     const ni = NODE_INFO[n.code]||{};
-    const hay = (n.code+" "+(ni.n||"")).toLowerCase();
+    const hay = _normSearch(n.code+" "+(ni.n||""));
     if(hay.includes(q)) hits.add(n.code);
   }
   return hits;
@@ -4309,9 +4309,9 @@ function dvMatchesFilters(code){
   if(dvFilters.common && !dvIsCommon(code)) return false;
   if(dvFilters.dispose && !dvIsDispose(code)) return false;
   if(dvFilters.search){
-    const q = dvFilters.search.toLowerCase();
+    const q = _normSearch(dvFilters.search);
     const ni = NODE_INFO[code] || {};
-    const hay = (code+" "+(ni.n||"")).toLowerCase();
+    const hay = _normSearch(code+" "+(ni.n||""));
     if(!hay.includes(q)) return false;
   }
   if(dvFilters.state){
@@ -5183,11 +5183,11 @@ function closeOrderModal(){document.getElementById("orderModal").classList.remov
 // ---- タイムラインタブ共通: 検索ノーマライズ、エントリ構築、テーブル描画 --------
 let _dvTreeFilter = "";
 function _normSearch(s){
-  if(!s) return "";
-  // 全角英数 → 半角、全角スペース→半角、ハイフン類を統一
+  if(s == null || s === "") return "";
+  // NFKC正規化: 半角カナ→全角カナ、全角英数→半角英数、全角スペース→半角 (2026-07-09)
+  // さらにハイフン/長音類を統一して小文字化
   return String(s)
-    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-    .replace(/[　]/g, " ")
+    .normalize('NFKC')
     .replace(/[ー－−–—]/g, "-")
     .toLowerCase()
     .trim();
@@ -6168,13 +6168,13 @@ function openCodeSearch(targetFieldId, listType){
 }
 
 function renderCsmTable(){
-  const q = document.getElementById("csmQuery").value.trim().toLowerCase();
+  const q = _normSearch(document.getElementById("csmQuery").value);
   const filtered = q
     ? csmCurrentList.filter(x =>
-        (x.code||"").toLowerCase().includes(q) ||
-        (x.name||"").toLowerCase().includes(q) ||
-        (x.kbn||"").toLowerCase().includes(q) ||
-        (x.ctL||"").toLowerCase().includes(q))
+        _normSearch(x.code||"").includes(q) ||
+        _normSearch(x.name||"").includes(q) ||
+        _normSearch(x.kbn||"").includes(q) ||
+        _normSearch(x.ctL||"").includes(q))
     : csmCurrentList;
   document.getElementById("csmCount").textContent =
     `${filtered.length.toLocaleString()} / ${csmCurrentList.length.toLocaleString()}件`;

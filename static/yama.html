@@ -704,26 +704,34 @@ function currentData(){
   return (window.YAMA_DATA && window.YAMA_DATA[state.scope]) || {workplaces:[],daily:[],records:[]};
 }
 
+// 検索用正規化: NFKCで半角カナ→全角カナ・全角英数→半角英数を統一し小文字化 (2026-07-09)
+function _normSearch(s){ return String(s==null?'':s).normalize('NFKC').toLowerCase(); }
+
 // 統合検索: レコードに紐づく全ID群を文字列化 (検索用)
+// 正規化(NFKC)は重いのでレコードにキャッシュ。ITEM_HISTORY到着後は再生成 (受注Noが増えるため)
 function _recIdBlob(r){
+  const ready = !!window.ITEM_HISTORY;
+  if(r._blobCache !== undefined && r._blobReady === ready) return r._blobCache;
   // 受注Nリスト (seiban_to_order から引く)
   let orderNos = "";
   if(window.ITEM_HISTORY && r.seiban){
     const list = (window.ITEM_HISTORY.seiban_to_order || {})[r.seiban] || [];
     orderNos = list.map(o => (typeof o === 'string' ? o : (o.order_no || ''))).join(' ');
   }
-  return [
+  const blob = _normSearch([
     r.seiban, r.item_name, r.tehai_no,
     r.purchase_no, orderNos, r.orderer,
     r.receipt_no, r.tekiyo_code, r.tekiyo1, r.tekiyo2,  // 受入No/摘要も横断検索対象 (2026-07-08)
-  ].filter(Boolean).join(' ').toLowerCase();
+  ].filter(Boolean).join(' '));
+  r._blobCache = blob; r._blobReady = ready;
+  return blob;
 }
 
 // フィルタ適用後のレコードを返す
 function filteredRecords(){
   const data = currentData();
   const range = getDateRange();
-  const term = (state.globalSearch || "").toLowerCase().trim();
+  const term = _normSearch(state.globalSearch || "").trim();
   const tekMode = (state.tekiyoMode === "only") ? "only" : "range";
   const tekF = (state.tekiyoFrom || "").trim();
   // 「のみ」モード時は to を使わない (残っていても無視)
@@ -752,9 +760,9 @@ function filteredRecords(){
       if(!_recIdBlob(r).includes(term)) return false;
     }
     // 品目コード専用検索 (雅さん 2026-05-29: itemCodeSearch行から入力 or QRスキャン)
-    const icTerm = (state.itemCodeSearch || "").toLowerCase().trim();
+    const icTerm = _normSearch(state.itemCodeSearch || "").trim();
     if(icTerm){
-      if(!(r.item_code || "").toLowerCase().includes(icTerm)) return false;
+      if(!_normSearch(r.item_code || "").includes(icTerm)) return false;
     }
     // 摘要コードフィルタ (雅さん 2026-07-08: SMILE手配確定画面の範囲フィルタと同要領)
     // 指定中は摘要コードを持たないレコードは対象外
@@ -1441,12 +1449,12 @@ function renderWpFilter(){
   }
   const data = currentData();
   const wps = data.workplaces || [];
-  const searchTerm = (document.getElementById("wpSearch")?.value || "").toLowerCase().trim();
+  const searchTerm = _normSearch(document.getElementById("wpSearch")?.value || "").trim();
   const wpCount = {};
   for(const r of data.records){ wpCount[r.workplace] = (wpCount[r.workplace]||0) + 1; }
   let visibleWps = wps.slice();
   if(searchTerm){
-    visibleWps = wps.filter(w => w.toLowerCase().includes(searchTerm) || state.selectedWps.has(w));
+    visibleWps = wps.filter(w => _normSearch(w).includes(searchTerm) || state.selectedWps.has(w));
   } else if(state.scope === "external" && wps.length > 12){
     // 外注: 件数多い順 TOP10 + 選択中
     const sorted = wps.slice().sort((a,b)=>(wpCount[b]||0)-(wpCount[a]||0));
@@ -1511,7 +1519,7 @@ function showOrdererDropdown(){
     if(r.orderer_login && !loginByName[o]) loginByName[o] = r.orderer_login;
   }
   const orderers = Object.entries(cnt).sort((a,b) => b[1] - a[1]);
-  const searchTerm = (document.getElementById("ordererSearch")?.value || "").toLowerCase().trim();
+  const searchTerm = _normSearch(document.getElementById("ordererSearch")?.value || "").trim();
   // 私 (H016)
   let myName = null;
   for(const [name] of orderers){
@@ -1519,7 +1527,7 @@ function showOrdererDropdown(){
   }
   let filtered = orderers;
   if(searchTerm){
-    filtered = orderers.filter(([n]) => n.toLowerCase().includes(searchTerm));
+    filtered = orderers.filter(([n]) => _normSearch(n).includes(searchTerm));
   }
   const top = filtered.slice(0, 60);
   let html = "";
@@ -1606,12 +1614,12 @@ function closeTekiyoSearch(){
   _tekiyoTarget = null;
 }
 function renderTekiyoTable(){
-  const q = (document.getElementById('tsmQuery')?.value || '').trim().toLowerCase();
+  const q = _normSearch(document.getElementById('tsmQuery')?.value || '').trim();
   const list = _tekiyoMaster();
   const filtered = q
-    ? list.filter(x => x.code.toLowerCase().includes(q) ||
-        (x.name1 || '').toLowerCase().includes(q) ||
-        (x.name2 || '').toLowerCase().includes(q))
+    ? list.filter(x => _normSearch(x.code).includes(q) ||
+        _normSearch(x.name1 || '').includes(q) ||
+        _normSearch(x.name2 || '').includes(q))
     : list;
   const cnt = document.getElementById('tsmCount');
   if(cnt) cnt.textContent = `${filtered.length} / ${list.length}件`;
