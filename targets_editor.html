@@ -601,6 +601,7 @@ input[type="number"] { -moz-appearance: textfield; }
       <button class="cat-tab" data-cat="genre">📈 重点ジャンル</button>
       <button class="cat-tab" data-cat="ratio4t">📐 4商社比率</button>
       <button class="cat-tab" data-cat="ratiokiko">📐 機工比率</button>
+      <button class="cat-tab" data-cat="kpi_visit">🎯 訪問KPI月次</button>
     </div>
 
     <div class="toolbar" id="toolbar">
@@ -810,8 +811,21 @@ const CATEGORIES = {
   cust: { label: '重点得意先 前年対比%', targetTypes: ['重点得意先_前年比'], matrixSupport: false, valueKind: 'ratio', defaultView: 'list', icon: '⭐' },
   genre: { label: '重点ジャンル 前年対比%', targetTypes: ['重点ジャンル_前年比'], matrixSupport: false, valueKind: 'ratio', defaultView: 'list', icon: '📈' },
   ratio4t: { label: '4商社売上比率上限', targetTypes: ['4商社比率上限'], matrixSupport: false, valueKind: 'ratio', defaultView: 'list', icon: '📐' },
-  ratiokiko: { label: '機工売上比率上限', targetTypes: ['機工比率上限'], matrixSupport: false, valueKind: 'ratio', defaultView: 'list', icon: '📐' }
+  ratiokiko: { label: '機工売上比率上限', targetTypes: ['機工比率上限'], matrixSupport: false, valueKind: 'ratio', defaultView: 'list', icon: '📐' },
+  kpi_visit: { label: '訪問KPI月次目標', targetTypes: ['訪問KPI月次'], matrixSupport: false, valueKind: 'count', defaultView: 'custom', icon: '🎯' }
 };
+
+// 訪問KPI 4種類 (ScopeKey として保存)
+const KPI_TYPES = [
+  '勉強会・プレゼン',
+  'ユーザー製品デモ',
+  'カタログ・EC掲載打ち合わせ・店舗販売',
+  '企画立案（キャンペーン・契約・在庫提案）'
+];
+
+// 訪問KPIカスタムUI用の状態
+const _kpiExtraReps = new Set();
+let _kpiChanges = {};  // { "kpi|rep|ym": newValue }
 
 const KNOWN_PARENTS = ['全社', '国内営業部', 'ソリューション営業部', '本社', '大阪支店', '名古屋営業所'];
 const KNOWN_LOCATIONS = ['全社', '本社', '大阪支店', '名古屋営業所'];
@@ -997,6 +1011,11 @@ function bindUI() {
 // レンダリング
 // ============================================================
 function renderCurrentCategory() {
+  // 訪問KPI月次目標: カスタムUI
+  if (currentCat === 'kpi_visit') {
+    renderKpiVisit();
+    return;
+  }
   const cat = CATEGORIES[currentCat];
 
   document.getElementById('viewToggle').style.display = cat.matrixSupport ? '' : 'none';
@@ -2508,6 +2527,298 @@ async function executeImport() {
 
 function openImportDialog() {
   document.getElementById('importDialog').showModal();
+}
+
+// ============================================================
+// 訪問KPI月次目標 - カスタムUI
+// ============================================================
+function _getKpiReps() {
+  const repSet = new Set(_kpiExtraReps);
+  // 既存の訪問KPI項目からrep取得
+  allItems.filter(i => i.fields?.TargetType === '訪問KPI月次' && i.fields?.IsLatest === true).forEach(i => {
+    if (i.fields.SubScope) repSet.add(i.fields.SubScope);
+  });
+  // 担当者月次目標に登録されている担当者も追加
+  allItems.filter(i => i.fields?.TargetType === '担当者月次' && i.fields?.IsLatest === true).forEach(i => {
+    const nm = i.fields.ScopeName || i.fields.ScopeKey;
+    if (nm) repSet.add(nm);
+  });
+  return Array.from(repSet).sort((a, b) => a.localeCompare(b, 'ja'));
+}
+
+function renderKpiVisit() {
+  // 現FY判定
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const defaultFy = m >= 4 ? y : y - 1;
+
+  const container = document.getElementById('contentArea');
+  container.innerHTML = `
+    <div class="panel">
+      <h2>🎯 訪問KPI月次目標</h2>
+      <div class="panel-desc">営業マン × 月次 の KPI目標件数を設定。KPI種別で切替可能。</div>
+
+      <div style="display:flex; gap:16px; align-items:center; margin-bottom:12px; padding:12px; background:#f0ede2; border-radius:6px; flex-wrap:wrap">
+        <label>年度:
+          <select id="kpi_fy" style="padding:4px 8px; margin-left:4px">
+            <option value="2024">FY2024</option>
+            <option value="2025">FY2025</option>
+            <option value="2026" ${defaultFy === 2026 ? 'selected' : ''}>FY2026</option>
+            <option value="2027" ${defaultFy === 2027 ? 'selected' : ''}>FY2027</option>
+          </select>
+        </label>
+        <label>KPI種別:
+          <select id="kpi_type" style="padding:4px 8px; margin-left:4px">
+            ${KPI_TYPES.map(k => `<option value="${escapeAttr(k)}">${escapeHtml(k)}</option>`).join('')}
+          </select>
+        </label>
+        <div style="margin-left:auto; display:flex; gap:6px; align-items:center">
+          <input type="text" id="kpi_new_rep" placeholder="＋営業マン追加" style="padding:4px 8px; width:140px; border:1px solid #d1d5db; border-radius:4px">
+          <button id="kpi_add_rep_btn" style="padding:4px 12px">追加</button>
+        </div>
+      </div>
+
+      <div id="kpi_matrix_wrap" style="overflow-x:auto; background:white; border:1px solid #e5e7eb; border-radius:6px; padding:10px"></div>
+
+      <div style="margin-top:12px; display:flex; gap:12px; align-items:center">
+        <button id="kpi_save_btn" class="btn-primary" style="padding:8px 20px; font-weight:600">💾 変更を保存</button>
+        <button id="kpi_cancel_btn" style="padding:8px 16px">↺ 変更を破棄</button>
+        <span id="kpi_save_status" style="color:#666; font-size:12px; margin-left:auto"></span>
+      </div>
+    </div>
+  `;
+
+  const rerender = () => {
+    const fy = parseInt(document.getElementById('kpi_fy').value);
+    renderKpiMatrix(_getKpiReps(), fy);
+  };
+  document.getElementById('kpi_fy').addEventListener('change', rerender);
+  document.getElementById('kpi_type').addEventListener('change', rerender);
+  document.getElementById('kpi_add_rep_btn').addEventListener('click', () => {
+    const val = document.getElementById('kpi_new_rep').value.trim();
+    if (val) {
+      _kpiExtraReps.add(val);
+      document.getElementById('kpi_new_rep').value = '';
+      rerender();
+    }
+  });
+  document.getElementById('kpi_new_rep').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('kpi_add_rep_btn').click(); }
+  });
+  document.getElementById('kpi_save_btn').addEventListener('click', saveKpiChanges);
+  document.getElementById('kpi_cancel_btn').addEventListener('click', () => {
+    if (Object.keys(_kpiChanges).length === 0) return;
+    if (!confirm('未保存の変更を破棄しますか？')) return;
+    _kpiChanges = {};
+    rerender();
+    document.getElementById('kpi_save_status').textContent = '';
+  });
+
+  rerender();
+}
+
+function renderKpiMatrix(reps, fy) {
+  const kpi = document.getElementById('kpi_type').value;
+  const wrap = document.getElementById('kpi_matrix_wrap');
+
+  // 4月〜翌年3月の12ヶ月
+  const months = [];
+  for (let i = 0; i < 12; i++) {
+    const y = fy + (i < 9 ? 0 : 1);
+    const m = ((i + 4 - 1) % 12) + 1;
+    months.push({ y, m, ym: String(y * 100 + m).padStart(6, '0') });
+  }
+
+  // 既存目標のルックアップ
+  const kpiItems = allItems.filter(i =>
+    i.fields?.TargetType === '訪問KPI月次' &&
+    i.fields?.IsLatest === true &&
+    i.fields?.ScopeKey === kpi
+  );
+  const existing = {};  // "rep|ym" -> { amount, itemId }
+  kpiItems.forEach(i => {
+    const rep = i.fields.SubScope;
+    const ym = String(i.fields.YearMonth || '').padStart(6, '0');
+    if (rep && ym) existing[`${rep}|${ym}`] = { amount: i.fields.Amount || 0, itemId: i.id };
+  });
+
+  let html = `<table style="min-width:100%; border-collapse:collapse; font-size:13px">
+    <thead><tr>
+      <th style="text-align:left; background:#0e1a36; color:#c9a04a; padding:8px 10px; position:sticky; left:0">営業担当者</th>
+      ${months.map(m => `<th style="background:#0e1a36; color:#c9a04a; min-width:60px; padding:8px 4px">${m.m}月</th>`).join('')}
+      <th style="background:#0e1a36; color:#c9a04a; padding:8px 10px; min-width:70px">合計</th>
+    </tr></thead>
+    <tbody>`;
+
+  if (reps.length === 0) {
+    html += `<tr><td colspan="14" style="padding:20px; text-align:center; color:#999">営業マンが未登録です。上の「＋営業マン追加」で担当者を追加してください。<br>もしくは、「👤 担当者目標」タブで担当者を登録済みの場合、この画面に自動反映されます。</td></tr>`;
+  }
+
+  reps.forEach((rep, ri) => {
+    const bgRow = ri % 2 === 0 ? '#fff' : '#faf8f2';
+    html += `<tr style="background:${bgRow}">`;
+    html += `<td style="text-align:left; font-weight:600; padding:6px 10px; position:sticky; left:0; background:${bgRow}; border-right:1px solid #e5e7eb">${escapeHtml(rep)}</td>`;
+    let repTotal = 0;
+    months.forEach(m => {
+      const key = `${rep}|${m.ym}`;
+      const orig = existing[key] ? existing[key].amount : 0;
+      const changeKey = `${kpi}|${rep}|${m.ym}`;
+      const changedVal = _kpiChanges[changeKey];
+      const displayVal = changedVal !== undefined ? changedVal : orig;
+      repTotal += displayVal;
+      const bg = changedVal !== undefined ? 'background:#fff3cd;' : '';
+      html += `<td style="padding:2px"><input type="number" min="0" step="1"
+        data-kpi="${escapeAttr(kpi)}" data-rep="${escapeAttr(rep)}" data-ym="${m.ym}" data-orig="${orig}"
+        value="${displayVal}"
+        style="width:56px; padding:4px; text-align:right; border:1px solid #d1d5db; border-radius:4px; ${bg}"
+        class="kpi-cell"></td>`;
+    });
+    html += `<td style="font-weight:600; padding:6px 10px; text-align:right; background:#f0ede2" class="kpi-row-total">${repTotal.toLocaleString()}</td>`;
+    html += `</tr>`;
+  });
+
+  // 月次合計行
+  if (reps.length > 0) {
+    html += `<tr style="background:#0e1a36; color:#c9a04a; font-weight:600">`;
+    html += `<td style="padding:8px 10px; position:sticky; left:0; background:#0e1a36">月次合計</td>`;
+    let grandTotal = 0;
+    months.forEach(m => {
+      let colTotal = 0;
+      reps.forEach(rep => {
+        const key = `${rep}|${m.ym}`;
+        const orig = existing[key] ? existing[key].amount : 0;
+        const changeKey = `${kpi}|${rep}|${m.ym}`;
+        const val = _kpiChanges[changeKey] !== undefined ? _kpiChanges[changeKey] : orig;
+        colTotal += val;
+      });
+      grandTotal += colTotal;
+      html += `<td class="kpi-col-total" data-ym="${m.ym}" style="padding:6px 4px; text-align:right">${colTotal.toLocaleString()}</td>`;
+    });
+    html += `<td style="padding:6px 10px; text-align:right" id="kpi_grand_total">${grandTotal.toLocaleString()}</td>`;
+    html += `</tr>`;
+  }
+
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+
+  // 変更追跡
+  wrap.querySelectorAll('.kpi-cell').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const kpi2 = inp.dataset.kpi;
+      const rep2 = inp.dataset.rep;
+      const ym2 = inp.dataset.ym;
+      const orig = parseInt(inp.dataset.orig) || 0;
+      const newVal = Math.max(0, parseInt(inp.value) || 0);
+      const changeKey = `${kpi2}|${rep2}|${ym2}`;
+      if (newVal === orig) {
+        delete _kpiChanges[changeKey];
+        inp.style.background = '';
+      } else {
+        _kpiChanges[changeKey] = newVal;
+        inp.style.background = '#fff3cd';
+      }
+      // 行合計更新
+      const row = inp.closest('tr');
+      const total = Array.from(row.querySelectorAll('.kpi-cell')).reduce((s, c) => s + (parseInt(c.value) || 0), 0);
+      row.querySelector('.kpi-row-total').textContent = total.toLocaleString();
+      // 列合計・全体合計を再計算
+      _kpiRecalcTotals();
+      // 保存ボタン状態
+      const cnt = Object.keys(_kpiChanges).length;
+      document.getElementById('kpi_save_status').textContent = cnt > 0 ? `未保存 ${cnt}件` : '';
+    });
+  });
+}
+
+function _kpiRecalcTotals() {
+  const wrap = document.getElementById('kpi_matrix_wrap');
+  if (!wrap) return;
+  const cells = Array.from(wrap.querySelectorAll('.kpi-cell'));
+  const byYm = {};
+  cells.forEach(c => {
+    const ym = c.dataset.ym;
+    byYm[ym] = (byYm[ym] || 0) + (parseInt(c.value) || 0);
+  });
+  wrap.querySelectorAll('.kpi-col-total').forEach(td => {
+    const ym = td.dataset.ym;
+    td.textContent = (byYm[ym] || 0).toLocaleString();
+  });
+  const grand = Object.values(byYm).reduce((s, v) => s + v, 0);
+  const gEl = document.getElementById('kpi_grand_total');
+  if (gEl) gEl.textContent = grand.toLocaleString();
+}
+
+async function saveKpiChanges() {
+  const changes = Object.entries(_kpiChanges);
+  if (changes.length === 0) {
+    document.getElementById('kpi_save_status').textContent = '変更なし';
+    return;
+  }
+  const status = document.getElementById('kpi_save_status');
+  const btn = document.getElementById('kpi_save_btn');
+  btn.disabled = true;
+  status.textContent = `保存中... (0/${changes.length})`;
+  let ok = 0, ng = 0;
+  const errors = [];
+
+  for (const [key, newVal] of changes) {
+    const [kpi, rep, ym] = key.split('|');
+    try {
+      // 既存項目を探す
+      const existing = allItems.find(i =>
+        i.fields?.TargetType === '訪問KPI月次' &&
+        i.fields?.IsLatest === true &&
+        i.fields?.ScopeKey === kpi &&
+        i.fields?.SubScope === rep &&
+        String(i.fields?.YearMonth || '').padStart(6, '0') === ym
+      );
+      const ymInt = parseInt(ym);
+      const fyForYm = (ymInt % 100) >= 4 ? Math.floor(ymInt / 100) : Math.floor(ymInt / 100) - 1;
+
+      if (existing) {
+        // 既存を直接更新
+        await patchItem(existing.id, { Amount: newVal });
+      } else {
+        // 新規作成
+        await postItem({
+          TargetType: '訪問KPI月次',
+          ScopeKey: kpi,
+          ScopeName: kpi,
+          SubScope: rep,
+          YearMonth: ym,
+          FY: fyForYm,
+          Amount: newVal,
+          IsLatest: true
+        });
+      }
+      ok++;
+    } catch (e) {
+      console.error('KPI save error', key, e);
+      errors.push(`${key}: ${e.message}`);
+      ng++;
+    }
+    status.textContent = `保存中... (${ok + ng}/${changes.length})`;
+  }
+
+  _kpiChanges = {};
+  btn.disabled = false;
+
+  if (ng === 0) {
+    status.innerHTML = `<b style="color:#28a745">✅ 保存完了 (${ok}件)</b>`;
+  } else {
+    status.innerHTML = `<b style="color:#dc3545">⚠ ${ok}件成功 / ${ng}件失敗</b>`;
+    console.error('KPI save errors:', errors);
+  }
+
+  // 再読込
+  try {
+    await loadAllItems();
+    renderKpiVisit();
+    document.getElementById('kpi_save_status').innerHTML = status.innerHTML;
+  } catch (e) {
+    console.warn('reload failed', e);
+  }
 }
 
 // ============================================================
