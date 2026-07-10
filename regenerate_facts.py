@@ -572,7 +572,7 @@ def transform_daily_reports(header, rows):
         'shozai':      find_first_idx(h, '主な商材'),
         'douseki':     find_first_idx(h, '社内同席者'),
         'content':     find_first_idx(h, '対応内容'),
-        'checklist':   find_first_idx(h, 'Check List', 'CheckList', 'チェックリスト'),
+        'checklist':   find_first_idx(h, 'Check List（次回確認事項）', 'Check List(次回確認事項)', 'Check List', 'CheckList', 'チェックリスト') if find_first_idx(h, 'Check List（次回確認事項）', 'Check List(次回確認事項)', 'Check List', 'CheckList', 'チェックリスト') is not None else find_partial_idx(h, 'Check List'),
         'template':    template_idx,
         'route_ei':    route_ei_idx,
         'route_koujou':route_koujou_idx,
@@ -823,9 +823,6 @@ def main():
         'order_rows': orders,
         'dept_monthly_targets': dept_targets,
         'rep_monthly_targets':  rep_targets,
-        'daily_reports': daily_reports,
-        'web_logs':      web_logs,
-        'web_readers':   web_readers,
         'build_meta': {
             'sales_count': len(rows),
             'orders_count': len(orders),
@@ -851,6 +848,16 @@ def main():
     print(f"  web_logs (HP閲覧):     {len(web_logs):,}件")
     print(f"  web_readers (HP閲覧者):{len(web_readers):,}件")
     print(f"  ym range:   {facts['build_meta']['ym_min']} 〜 {facts['build_meta']['ym_max']}")
+
+    # === 訪問実績を別ファイルにアップロード (ログイン高速化のため分離) ===
+    visits_facts = {
+        'daily_reports': daily_reports,
+        'web_logs':      web_logs,
+        'web_readers':   web_readers,
+        'build_meta': facts['build_meta'],
+    }
+    print(f"\n📤 dashboard_visits.json をアップロード...", flush=True)
+    upload_json(token, 'dashboard_visits.json', visits_facts)
 
     print(f"\n📤 dashboard_facts.json をアップロード...", flush=True)
     upload_json(token, OUTPUT_JSON, facts)

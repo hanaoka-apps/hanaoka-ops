@@ -3368,7 +3368,7 @@ const _KPI_COLORS = [
   'rgba(75, 192, 192, 0.85)'    // 企画立案: 青緑
 ];
 
-let _chartVisitsType = null;  // 営業マン別 KPIグラフ
+let _chartVisitsType = null;  // 営業別 KPIグラフ
 let _chartVisitsCust = null;  // 客先別 KPIグラフ
 let _visitsSelectedRep = null;  // クリックで選択された営業マン (客先グラフ絞込用)
 
@@ -3446,7 +3446,7 @@ function renderVisitsTypeChart() {
   const res = _getVisitsFilteredKpiRows();
   const { filtered, mode, kpiSelected } = res;
 
-  // ---- 営業マン別 KPI集計 ----
+  // ---- 営業別 KPI集計 ----
   const byRep = {};
   for (const r of filtered) {
     const rep = _visitsPrimaryTanto(r[8]);
@@ -3497,7 +3497,7 @@ function renderVisitsTypeChart() {
           },
           plugins: {
             legend: { position: 'top', labels: { font: { size: 11 } } },
-            title: { display: true, text: '営業マン別 KPI実施件数（棒クリックで客先絞込）', font: { size: 13 } }
+            title: { display: true, text: '営業別 KPI実施件数（棒クリックで客先絞込）', font: { size: 13 } }
           },
           onClick: (event, elements) => {
             if (elements && elements.length > 0) {
@@ -4088,7 +4088,22 @@ function renderVisitsHpPanels() {
     if (pg) pg.classList.remove("hidden");
     // 営業訪問実績タブに切り替えた時は初期化
     if (key === "visits") {
-      try { renderVisitsSummary(); } catch(err){ console.warn("[visits] renderVisitsSummary失敗", err); }
+      const summaryEl = document.getElementById("visits-summary");
+      if (!_visitsLoaded && !_visitsLoading) {
+        // 未ロード: ローディング表示 → loadVisits → renderVisitsSummary
+        if (summaryEl) summaryEl.innerHTML = '<span style="color:#666">⏳ 訪問実績データを読み込み中... (18MB程度)</span>';
+        loadVisits().then(() => {
+          try { renderVisitsSummary(); } catch(err){ console.warn("[visits] render失敗", err); }
+        });
+      } else if (_visitsLoading) {
+        // ロード中: 待機して再描画
+        if (summaryEl) summaryEl.innerHTML = '<span style="color:#666">⏳ 訪問実績データを読み込み中...</span>';
+        _visitsLoading.then(() => {
+          try { renderVisitsSummary(); } catch(err){ console.warn("[visits] render失敗", err); }
+        });
+      } else {
+        try { renderVisitsSummary(); } catch(err){ console.warn("[visits] renderVisitsSummary失敗", err); }
+      }
     }
     // Chartが非表示だった場合の再描画を促す（Chart.jsはresize観測で再フロー）
     try { window.dispatchEvent(new Event("resize")); } catch(_){}
@@ -4281,17 +4296,56 @@ async function loadFacts() {
   // CSV由来の目標値（regenerate_facts.py で日次更新される）
   RAW._csv_dept_targets = facts.dept_monthly_targets || {};
   RAW._csv_rep_targets  = facts.rep_monthly_targets  || {};
-  // 営業訪問実績データ (2026-07 新設)
-  RAW.daily_reports = facts.daily_reports || [];
-  RAW.web_logs      = facts.web_logs      || [];
-  RAW.web_readers   = facts.web_readers   || [];
+  // 訪問実績は初期化のみ (遅延ロード: 🚗タブを開いた時にloadVisitsで取得)
+  RAW.daily_reports = [];
+  RAW.web_logs      = [];
+  RAW.web_readers   = [];
+  // フォールバック: 古い facts.json に訪問実績が含まれている場合はそこから取得
+  if (facts.daily_reports || facts.web_logs || facts.web_readers) {
+    RAW.daily_reports = facts.daily_reports || [];
+    RAW.web_logs      = facts.web_logs      || [];
+    RAW.web_readers   = facts.web_readers   || [];
+    _visitsLoaded = true;
+    console.log("[sales_dashboard] 訪問実績(旧facts.json内): ", RAW.daily_reports.length, "件");
+  }
   console.log("[sales_dashboard] CSV由来目標:",
     Object.keys(RAW._csv_dept_targets).length, "部門 /",
     Object.keys(RAW._csv_rep_targets).length, "担当者");
-  console.log("[sales_dashboard] 訪問実績:",
-    RAW.daily_reports.length, "件訪問 /",
-    RAW.web_logs.length, "件HP閲覧 /",
-    RAW.web_readers.length, "件閲覧者");
+}
+
+// ============================================================
+// 訪問実績の遅延ロード (🚗タブを最初に開いた時に取得)
+// ============================================================
+let _visitsLoaded = false;
+let _visitsLoading = null;
+async function loadVisits() {
+  if (_visitsLoaded) return;
+  if (_visitsLoading) return _visitsLoading;
+  _visitsLoading = (async () => {
+    try {
+      const t = await getToken();
+      const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_visits.json:/content`;
+      const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+      if (!res.ok) {
+        console.warn('[visits] dashboard_visits.json が見つかりません (Actionsを未実行の可能性)');
+        return;
+      }
+      const data = await res.json();
+      RAW.daily_reports = data.daily_reports || [];
+      RAW.web_logs      = data.web_logs      || [];
+      RAW.web_readers   = data.web_readers   || [];
+      _visitsLoaded = true;
+      console.log("[visits] loaded:",
+        RAW.daily_reports.length, "件訪問 /",
+        RAW.web_logs.length, "件HP閲覧 /",
+        RAW.web_readers.length, "件閲覧者");
+    } catch(e) {
+      console.error('[visits] load失敗', e);
+    } finally {
+      _visitsLoading = null;
+    }
+  })();
+  return _visitsLoading;
 }
 
 // ============================================================
