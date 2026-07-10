@@ -3158,6 +3158,7 @@ function renderVisitsSummary(){
     `HP閲覧者 <b style="color:var(--navy)">${wr.toLocaleString()}</b> 件`;
   // 各サブブロックの初期化
   try { _initVisitsRepControls(); renderVisitsRepChart(); } catch(e){ console.warn("[visits-rep]", e); }
+  try { _initVisitsTypeControls(); renderVisitsTypeChart(); } catch(e){ console.warn("[visits-type]", e); }
 }
 
 // ============================================================
@@ -3305,6 +3306,251 @@ function renderVisitsRepChart() {
   if (note) {
     const total = entries.reduce((s, e) => s + e[1].total, 0);
     note.innerHTML = `対象期間: <b>${_visitsPeriodLabel(mode)}</b> / 対象人数 <b>${labels.length}</b> 名 / 合計 <b>${total.toLocaleString()}</b> 件`;
+    note.style.color = '#333';
+  }
+}
+
+// ============================================================
+// Phase 3-②: 訪問種別グラフ (KPI) + 客先別分析 (円グラフ)
+// ============================================================
+const _KPI_TYPES = [
+  '勉強会・プレゼン',
+  'ユーザー製品デモ',
+  'カタログ・EC掲載打ち合わせ・店舗販売',
+  '企画立案（キャンペーン・契約・在庫提案）'
+];
+const _KPI_COLORS = [
+  'rgba(220, 53, 69, 0.85)',    // 勉強会・プレゼン: 赤
+  'rgba(255, 159, 64, 0.85)',   // ユーザー製品デモ: オレンジ
+  'rgba(255, 205, 86, 0.85)',   // カタログ・EC: 黄
+  'rgba(75, 192, 192, 0.85)'    // 企画立案: 青緑
+];
+
+let _chartVisitsType = null;
+let _chartVisitsCust = null;
+
+function _initVisitsTypeControls() {
+  const el = document.getElementById('visits-type-controls');
+  if (!el || el.dataset.inited === '1') return;
+  el.dataset.inited = '1';
+
+  // 営業担当者リストを daily_reports から抽出
+  const repSet = new Set();
+  const daily = (RAW && RAW.daily_reports) || [];
+  for (const r of daily) {
+    const t = _visitsPrimaryTanto(r[8]);
+    if (t) repSet.add(t);
+  }
+  const reps = Array.from(repSet).sort((a, b) => a.localeCompare(b, 'ja'));
+  const repOptions = reps.map(r => `<option value="${r}">${r}</option>`).join('');
+
+  el.innerHTML = `
+    <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="single" checked> 単月</label>
+    <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="ytd"> 累計</label>
+    <span style="width:16px; display:inline-block"></span>
+    <label>対象:
+      <select id="visits-type-rep" style="padding:3px 6px; margin-left:4px">
+        <option value="">全体</option>
+        ${repOptions}
+      </select>
+    </label>
+    <span style="width:16px; display:inline-block"></span>
+    <label style="cursor:pointer"><input type="checkbox" id="visits-type-kpi-only"> KPI4項目のみ</label>
+    <span style="width:16px; display:inline-block"></span>
+    <input type="text" id="visits-cust-search" placeholder="🔍 会社名で絞込..." style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; width:220px">
+  `;
+  el.addEventListener('change', renderVisitsTypeChart);
+  el.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'visits-cust-search') renderVisitsTypeChart();
+  });
+}
+
+function _visitsFilterForTypeChart() {
+  const modeEl = document.querySelector('input[name="visits-type-mode"]:checked');
+  const mode = modeEl ? modeEl.value : 'single';
+  const repEl = document.getElementById('visits-type-rep');
+  const repFilter = repEl ? repEl.value : '';
+  const kpiEl = document.getElementById('visits-type-kpi-only');
+  const kpiOnly = kpiEl ? kpiEl.checked : false;
+  const custEl = document.getElementById('visits-cust-search');
+  const custSearch = custEl ? String(custEl.value || '').trim() : '';
+
+  const rp = reportingPeriod(curFY);
+  const targetYm = parseInt(rp.singleYm);
+  const fromYm = parseInt(rp.fromYm);
+  const toYm = parseInt(rp.toYm);
+
+  const daily = (RAW && RAW.daily_reports) || [];
+  const filtered = [];
+  for (const r of daily) {
+    const ym = _visitsDateToYm(r[5]);
+    if (ym === 0) continue;
+    if (mode === 'single') {
+      if (ym !== targetYm) continue;
+    } else {
+      if (ym < fromYm || ym > toYm) continue;
+    }
+    if (repFilter) {
+      const t = _visitsPrimaryTanto(r[8]);
+      if (t !== repFilter) continue;
+    }
+    if (custSearch) {
+      const c = String(r[1] || '');
+      if (c.indexOf(custSearch) < 0) continue;
+    }
+    const houmon = String(r[13] || '').trim();
+    if (kpiOnly && !_KPI_TYPES.includes(houmon)) continue;
+    filtered.push(r);
+  }
+  return { filtered, mode, repFilter, kpiOnly, custSearch };
+}
+
+function renderVisitsTypeChart() {
+  const res = _visitsFilterForTypeChart();
+  const { filtered, mode, repFilter, kpiOnly, custSearch } = res;
+
+  // ---- 訪問種別集計 ----
+  const byType = {};
+  for (const r of filtered) {
+    const t = String(r[13] || '').trim() || '(未分類)';
+    byType[t] = (byType[t] || 0) + 1;
+  }
+  // KPI 4項目を先に、その後件数多い順で残り
+  const kpiEntries = _KPI_TYPES.map(k => [k, byType[k] || 0]);
+  const otherEntries = Object.entries(byType)
+    .filter(([k]) => !_KPI_TYPES.includes(k))
+    .sort((a, b) => b[1] - a[1]);
+  let allEntries = [...kpiEntries, ...otherEntries];
+  if (kpiOnly) allEntries = kpiEntries;
+
+  const typeLabels = allEntries.map(e => e[0]);
+  const typeData = allEntries.map(e => e[1]);
+  const typeColors = allEntries.map((e) => {
+    const i = _KPI_TYPES.indexOf(e[0]);
+    if (i >= 0) return _KPI_COLORS[i];
+    return 'rgba(180, 180, 180, 0.7)';
+  });
+
+  const canvas1 = document.getElementById('chart-visits-type');
+  if (canvas1) {
+    if (_chartVisitsType) { _chartVisitsType.destroy(); _chartVisitsType = null; }
+    _chartVisitsType = new Chart(canvas1, {
+      type: 'bar',
+      data: {
+        labels: typeLabels,
+        datasets: [{
+          label: '訪問件数',
+          data: typeData,
+          backgroundColor: typeColors,
+          borderColor: typeColors.map(c => c.replace(/0\.\d+\)$/, '1)')),
+          borderWidth: 1
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { beginAtZero: true, ticks: { precision: 0 } }
+        },
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: `訪問種別 (${filtered.length}件)`, font: { size: 13 } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const pct = filtered.length > 0 ? ((ctx.parsed.x / filtered.length) * 100).toFixed(1) : '0.0';
+                return `${ctx.parsed.x}件 (${pct}%)`;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ---- 客先別集計 (円グラフ TOP10) ----
+  const byCust = {};
+  for (const r of filtered) {
+    const c = String(r[1] || '').trim() || '(不明)';
+    byCust[c] = (byCust[c] || 0) + 1;
+  }
+  const custEntries = Object.entries(byCust).sort((a, b) => b[1] - a[1]);
+  const TOP_N = 10;
+  const topCust = custEntries.slice(0, TOP_N);
+  const otherCust = custEntries.slice(TOP_N);
+  const otherSum = otherCust.reduce((s, e) => s + e[1], 0);
+
+  const custLabels = topCust.map(e => e[0]);
+  const custData = topCust.map(e => e[1]);
+  if (otherSum > 0) {
+    custLabels.push(`その他 (${otherCust.length}社)`);
+    custData.push(otherSum);
+  }
+
+  const custColors = [
+    'rgba(255, 99, 132, 0.85)', 'rgba(54, 162, 235, 0.85)', 'rgba(255, 205, 86, 0.85)',
+    'rgba(75, 192, 192, 0.85)', 'rgba(153, 102, 255, 0.85)', 'rgba(255, 159, 64, 0.85)',
+    'rgba(220, 53, 69, 0.85)', 'rgba(40, 167, 69, 0.85)', 'rgba(23, 162, 184, 0.85)',
+    'rgba(108, 117, 125, 0.85)', 'rgba(200, 200, 200, 0.85)'
+  ];
+
+  const canvas2 = document.getElementById('chart-visits-cust-pie');
+  if (canvas2) {
+    if (_chartVisitsCust) { _chartVisitsCust.destroy(); _chartVisitsCust = null; }
+    if (custData.length === 0) {
+      // 空データ時はグラフを消して案内表示
+      const ctx = canvas2.getContext('2d');
+      ctx.clearRect(0, 0, canvas2.width, canvas2.height);
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#999';
+      ctx.textAlign = 'center';
+      ctx.fillText('該当データなし', canvas2.width / 2, canvas2.height / 2);
+    } else {
+      _chartVisitsCust = new Chart(canvas2, {
+        type: 'doughnut',
+        data: {
+          labels: custLabels,
+          datasets: [{
+            data: custData,
+            backgroundColor: custColors.slice(0, custData.length),
+            borderColor: '#fff',
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'right', labels: { font: { size: 10 }, boxWidth: 12 } },
+            title: { display: true, text: `客先 TOP${TOP_N}`, font: { size: 13 } },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const pct = filtered.length > 0 ? ((ctx.parsed / filtered.length) * 100).toFixed(1) : '0.0';
+                  return `${ctx.label}: ${ctx.parsed}件 (${pct}%)`;
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // ノート更新
+  const note = document.getElementById('visits-type-note');
+  if (note) {
+    let msg = `対象期間: <b>${_visitsPeriodLabel(mode)}</b>`;
+    if (repFilter) msg += ` / 担当: <b>${repFilter}</b>`;
+    if (custSearch) msg += ` / 会社: "<b>${custSearch}</b>"`;
+    msg += ` / 対象 <b>${filtered.length.toLocaleString()}</b> 件`;
+    // KPI 4項目の内訳
+    const kpiTotal = _KPI_TYPES.reduce((s, k) => s + (byType[k] || 0), 0);
+    if (kpiTotal > 0) {
+      msg += ` (うちKPI4項目 <b>${kpiTotal}</b> 件)`;
+    }
+    note.innerHTML = msg;
     note.style.color = '#333';
   }
 }
