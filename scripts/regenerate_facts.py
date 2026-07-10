@@ -49,8 +49,15 @@ INPUT_CSVS = {
     'orders':       '受注明細出力.csv',
     'dept_targets': '目標_部門目標出力.csv',
     'rep_targets':  '目標_担当者目標出力.csv',
+    # --- 営業訪問実績 (新設 2026-07) ---
+    'daily_reports': 'daily_reports.csv',
+    'web_logs':      'web_tracking_logs.csv',
+    'web_readers':   'web_tracking_readers.csv',
 }
 OUTPUT_JSON = 'dashboard_facts.json'
+
+# 営業訪問実績で採用する 表示テンプレート
+VISIT_TEMPLATE = '【営業・業務】訪問・来社・WEBMTG報告'
 
 
 # ---------- 認証 ----------
@@ -221,6 +228,60 @@ def find_idx(header, name, fallback=None):
     if name in cleaned:
         return cleaned.index(name)
     return fallback
+
+
+def find_first_idx(header, *names):
+    """複数候補のヘッダ名を順に試し、最初にヒットしたindexを返す"""
+    for name in names:
+        i = find_idx(header, name)
+        if i is not None:
+            return i
+    return None
+
+
+def find_all_idx(header, name):
+    """完全一致する全ての列indexをリストで返す"""
+    cleaned = [h.replace('﻿', '').strip() for h in header]
+    return [i for i, h in enumerate(cleaned) if h == name]
+
+
+def find_partial_idx(header, keyword):
+    """部分一致で最初にヒットしたindexを返す"""
+    cleaned = [h.replace('﻿', '').strip() for h in header]
+    for i, h in enumerate(cleaned):
+        if keyword in h:
+            return i
+    return None
+
+
+def find_partial_all_idx(header, keyword):
+    """部分一致する全ての列indexをリストで返す"""
+    cleaned = [h.replace('﻿', '').strip() for h in header]
+    return [i for i, h in enumerate(cleaned) if keyword in h]
+
+
+def pick_japanese_name_col(rows, candidates, sample_size=50):
+    """候補列のうち、日本語文字を最も多く含む列indexを返す
+    ID列(ad0xxxxxx形式)ではなく名前列(日本語)を優先するため
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    scores = {i: 0 for i in candidates}
+    for row in rows[:sample_size]:
+        for i in candidates:
+            if i >= len(row):
+                continue
+            val = str(row[i] or '').strip()
+            for c in val:
+                # ひらがな・カタカナ・漢字
+                if '぀' <= c <= 'ヿ' or '一' <= c <= '鿿':
+                    scores[i] += 1
+    # 全部0なら最後の列を選択（表示名は右側にあることが多い）
+    if max(scores.values()) == 0:
+        return candidates[-1]
+    return max(scores, key=scores.get)
 
 
 def to_float(s):
@@ -454,6 +515,236 @@ def transform_rep_targets(header, rows):
     return out
 
 
+# ============================================================
+# 営業訪問実績: daily_reports.csv
+# ============================================================
+def transform_daily_reports(header, rows):
+    """daily_reports.csv を営業訪問実績用のコンパクトな配列に変換
+    出力: [id, 会社名, 会社ID, 相手先担当者, 相手先担当者ID,
+           対応日時開始, 対応日時終了, 主な商材, 営業担当者(表示名),
+           社内同席者, 対応内容, CheckList, ルート営業, 訪問種別, ルート工場]
+    フィルタ: 表示テンプレート == VISIT_TEMPLATE
+    """
+    h = header
+
+    # 表示テンプレート列（フィルタ用）
+    template_idx = find_first_idx(h, '表示テンプレート', '表示テンプレート名')
+
+    # 営業担当者列: 複数存在する可能性あり (所属/ID/表示名)
+    tanto_candidates = find_all_idx(h, '営業担当者')
+    if not tanto_candidates:
+        # 部分一致で拾う
+        tanto_candidates = find_partial_all_idx(h, '営業担当')
+
+    # 相手先担当者列
+    aite_candidates = find_all_idx(h, '相手先担当者')
+    if not aite_candidates:
+        aite_candidates = find_all_idx(h, '相手先担当者(リード)')
+    if not aite_candidates:
+        aite_candidates = find_partial_all_idx(h, '相手先担当')
+
+    # ルート(営業) / ルート(工場)
+    # 「ルート(営)」「ルート(営業)」など表記ゆれ対応
+    route_ei_idx = find_first_idx(h, 'ルート(営業)', 'ルート(営)', 'ルート（営業）', 'ルート（営）')
+    if route_ei_idx is None:
+        for i, hh in enumerate([c.replace('﻿', '').strip() for c in h]):
+            if 'ルート' in hh and ('営' in hh) and '工場' not in hh:
+                route_ei_idx = i
+                break
+
+    route_koujou_idx = find_first_idx(h, 'ルート(工場)', 'ルート（工場）')
+    if route_koujou_idx is None:
+        for i, hh in enumerate([c.replace('﻿', '').strip() for c in h]):
+            if 'ルート' in hh and '工場' in hh:
+                route_koujou_idx = i
+                break
+
+    # 訪問種別
+    houmon_idx = find_first_idx(h, '訪問種別')
+
+    idx = {
+        'id':          find_first_idx(h, 'id', 'ID', 'Id'),
+        'title':       find_first_idx(h, '題名', 'タイトル'),
+        'company_nm':  find_first_idx(h, '会社名'),
+        'company_id':  find_first_idx(h, '会社ID', '会社Id'),
+        'start':       find_first_idx(h, '対応日時 開始', '対応日時開始', '対応日時_開始'),
+        'end':         find_first_idx(h, '対応日時 終了', '対応日時終了', '対応日時_終了'),
+        'shozai':      find_first_idx(h, '主な商材'),
+        'douseki':     find_first_idx(h, '社内同席者'),
+        'content':     find_first_idx(h, '対応内容'),
+        'checklist':   find_first_idx(h, 'Check List', 'CheckList', 'チェックリスト'),
+        'template':    template_idx,
+        'route_ei':    route_ei_idx,
+        'route_koujou':route_koujou_idx,
+        'houmon':      houmon_idx,
+    }
+
+    # 開始日必須
+    if idx['start'] is None:
+        raise RuntimeError(f"daily_reports: 対応日時 開始 列が見つからない。ヘッダ先頭20列: {header[:20]}")
+    if template_idx is None:
+        print(f"     [警告] daily_reports: 表示テンプレート列が見つからないためフィルタなし", flush=True)
+
+    # 営業担当者: 日本語名が入っている列を選択
+    tanto_idx = pick_japanese_name_col(rows, tanto_candidates) if tanto_candidates else None
+    # 相手先担当者: 日本語名が入っている列を選択
+    aite_idx = pick_japanese_name_col(rows, aite_candidates) if aite_candidates else None
+
+    print(f"     daily_reports 列決定: 営業担当者={tanto_idx} 相手先担当者={aite_idx} "
+          f"訪問種別={houmon_idx} ルート営業={route_ei_idx} ルート工場={route_koujou_idx}", flush=True)
+
+    out = []
+    filtered_count = 0
+    kept_count = 0
+    for row in rows:
+        # 表示テンプレートフィルタ
+        if template_idx is not None:
+            tmpl = str(row[template_idx] or '').strip() if template_idx < len(row) else ''
+            if tmpl != VISIT_TEMPLATE:
+                filtered_count += 1
+                continue
+
+        def g(i):
+            if i is None or i >= len(row):
+                return ''
+            return str(row[i] or '').strip()
+
+        start = g(idx['start'])
+        if not start:
+            continue  # 開始日なしはスキップ
+
+        out.append([
+            g(idx['id']),               # 0: id
+            g(idx['company_nm']),       # 1: 会社名
+            g(idx['company_id']),       # 2: 会社ID
+            g(aite_idx),                # 3: 相手先担当者(表示名)
+            '',                         # 4: 相手先担当者ID (今回不使用、将来拡張用)
+            start,                      # 5: 対応日時開始
+            g(idx['end']),              # 6: 対応日時終了
+            g(idx['shozai']),           # 7: 主な商材
+            g(tanto_idx),               # 8: 営業担当者(表示名)
+            g(idx['douseki']),          # 9: 社内同席者
+            g(idx['content']),          # 10: 対応内容
+            g(idx['checklist']),        # 11: Check List
+            g(idx['route_ei']),         # 12: ルート(営業)
+            g(idx['houmon']),           # 13: 訪問種別
+            g(idx['route_koujou']),     # 14: ルート(工場)
+        ])
+        kept_count += 1
+    print(f"     daily_reports 抽出: {kept_count}件 (テンプレフィルタ除外 {filtered_count}件)", flush=True)
+    return out
+
+
+# ============================================================
+# 営業訪問実績: web_tracking_logs.csv
+# ============================================================
+def transform_web_logs(header, rows):
+    """HP閲覧ログを配列化
+    出力: [リードID, 日付, 氏名, 会社名, 部署, 役職, 都道府県,
+           重要顧客, エンドユーザ, 販売店, 営業担当者,
+           ページタイトル, URL, 滞在時間]
+    """
+    h = header
+    idx = {
+        'lead_id':   find_first_idx(h, 'リードID', 'リードId', 'Lead ID', 'LeadID'),
+        'date':      find_first_idx(h, '日付', 'Date'),
+        'name':      find_first_idx(h, '氏名'),
+        'company':   find_first_idx(h, '会社名'),
+        'busho':     find_first_idx(h, '部署'),
+        'yakushoku': find_first_idx(h, '役職'),
+        'todofuken': find_first_idx(h, '都道府県'),
+        'juuyou':    find_first_idx(h, '重要顧客'),
+        'endyu':     find_first_idx(h, 'エンドユーザー', 'エンドユーザ'),
+        'hanbai':    find_first_idx(h, '販売店'),
+        'tanto':     find_first_idx(h, '営業担当者'),
+        'page':      find_first_idx(h, 'ページタイトル', 'ページ'),
+        'url':       find_first_idx(h, 'URL', 'url'),
+        'taizai':    find_first_idx(h, '滞在時間'),
+    }
+    out = []
+    for row in rows:
+        def g(i):
+            if i is None or i >= len(row):
+                return ''
+            return str(row[i] or '').strip()
+        date = g(idx['date'])
+        if not date:
+            continue
+        out.append([
+            g(idx['lead_id']),
+            date,
+            g(idx['name']),
+            g(idx['company']),
+            g(idx['busho']),
+            g(idx['yakushoku']),
+            g(idx['todofuken']),
+            g(idx['juuyou']),
+            g(idx['endyu']),
+            g(idx['hanbai']),
+            g(idx['tanto']),
+            g(idx['page']),
+            g(idx['url']),
+            g(idx['taizai']),
+        ])
+    return out
+
+
+# ============================================================
+# 営業訪問実績: web_tracking_readers.csv
+# ============================================================
+def transform_web_readers(header, rows):
+    """HP閲覧者集計を配列化
+    出力: [リードID, 氏名, 会社名, 部署, 役職, 都道府県,
+           重要顧客, エンドユーザ, 販売店, 営業担当者,
+           アクション数, 最終閲覧日]
+    """
+    h = header
+    idx = {
+        'lead_id':   find_first_idx(h, 'リードID', 'リードId', 'Lead ID', 'LeadID'),
+        'name':      find_first_idx(h, '氏名'),
+        'company':   find_first_idx(h, '会社名'),
+        'busho':     find_first_idx(h, '部署'),
+        'yakushoku': find_first_idx(h, '役職'),
+        'todofuken': find_first_idx(h, '都道府県'),
+        'juuyou':    find_first_idx(h, '重要顧客'),
+        'endyu':     find_first_idx(h, 'エンドユーザー', 'エンドユーザ'),
+        'hanbai':    find_first_idx(h, '販売店'),
+        'tanto':     find_first_idx(h, '営業担当者'),
+        'action':    find_first_idx(h, 'アクション数', 'アクション'),
+        'last_view': find_first_idx(h, '最終閲覧日', '最終アクセス日'),
+    }
+    out = []
+    for row in rows:
+        def g(i):
+            if i is None or i >= len(row):
+                return ''
+            return str(row[i] or '').strip()
+        lead_id = g(idx['lead_id'])
+        if not lead_id:
+            continue
+        # アクション数は数値化
+        action_raw = g(idx['action'])
+        try:
+            action_num = int(float(action_raw)) if action_raw else 0
+        except (ValueError, TypeError):
+            action_num = 0
+        out.append([
+            lead_id,
+            g(idx['name']),
+            g(idx['company']),
+            g(idx['busho']),
+            g(idx['yakushoku']),
+            g(idx['todofuken']),
+            g(idx['juuyou']),
+            g(idx['endyu']),
+            g(idx['hanbai']),
+            g(idx['tanto']),
+            action_num,
+            g(idx['last_view']),
+        ])
+    return out
+
+
 # ---------- メイン ----------
 def main():
     started = time.time()
@@ -497,6 +788,33 @@ def main():
     print(f"  部門目標: {len(dept_targets)} 部門 / {dept_total_keys} レコード")
     print(f"  担当者目標: {len(rep_targets)} 担当者 / {rep_total_keys} レコード")
 
+    # --- 営業訪問実績用CSV (新設 2026-07) ---
+    daily_reports = []
+    web_logs = []
+    web_readers = []
+    print("\n📥 営業訪問実績CSV取り込み...", flush=True)
+    try:
+        h_dr, r_dr = download_csv(token, INPUT_CSVS['daily_reports'])
+        daily_reports = transform_daily_reports(h_dr, r_dr)
+        print(f"  訪問報告: {len(daily_reports):,}件")
+    except Exception as e:
+        print(f"  ⚠️ daily_reports.csv 処理エラー: {e}", flush=True)
+        print(f"  → 訪問報告は空として続行", flush=True)
+    try:
+        h_wl, r_wl = download_csv(token, INPUT_CSVS['web_logs'])
+        web_logs = transform_web_logs(h_wl, r_wl)
+        print(f"  HP閲覧ログ: {len(web_logs):,}件")
+    except Exception as e:
+        print(f"  ⚠️ web_tracking_logs.csv 処理エラー: {e}", flush=True)
+        print(f"  → HP閲覧ログは空として続行", flush=True)
+    try:
+        h_wr, r_wr = download_csv(token, INPUT_CSVS['web_readers'])
+        web_readers = transform_web_readers(h_wr, r_wr)
+        print(f"  HP閲覧者: {len(web_readers):,}件")
+    except Exception as e:
+        print(f"  ⚠️ web_tracking_readers.csv 処理エラー: {e}", flush=True)
+        print(f"  → HP閲覧者は空として続行", flush=True)
+
     # マージ
     rows = history_rows + sales_curr
     yms = [r[0] for r in rows if r[0]]
@@ -505,11 +823,17 @@ def main():
         'order_rows': orders,
         'dept_monthly_targets': dept_targets,
         'rep_monthly_targets':  rep_targets,
+        'daily_reports': daily_reports,
+        'web_logs':      web_logs,
+        'web_readers':   web_readers,
         'build_meta': {
             'sales_count': len(rows),
             'orders_count': len(orders),
             'dept_targets_count': dept_total_keys,
             'rep_targets_count':  rep_total_keys,
+            'daily_reports_count': len(daily_reports),
+            'web_logs_count':      len(web_logs),
+            'web_readers_count':   len(web_readers),
             'ym_min': min(yms) if yms else 0,
             'ym_max': max(yms) if yms else 0,
             'history_count': len(history_rows),
@@ -523,6 +847,9 @@ def main():
     print(f"  order_rows: {len(orders):,}")
     print(f"  dept_monthly_targets: {dept_total_keys:,} keys")
     print(f"  rep_monthly_targets:  {rep_total_keys:,} keys")
+    print(f"  daily_reports (訪問):  {len(daily_reports):,}件")
+    print(f"  web_logs (HP閲覧):     {len(web_logs):,}件")
+    print(f"  web_readers (HP閲覧者):{len(web_readers):,}件")
     print(f"  ym range:   {facts['build_meta']['ym_min']} 〜 {facts['build_meta']['ym_max']}")
 
     print(f"\n📤 dashboard_facts.json をアップロード...", flush=True)
