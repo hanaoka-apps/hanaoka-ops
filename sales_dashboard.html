@@ -3105,7 +3105,46 @@ if (window._loaded_ratiokiko && typeof MANUAL_KIKO_RATIO === "object") {
 // 期間セレクタを初期化してからrenderAll
 try { initPeriodSelector(); } catch (e) { console.error("initPeriodSelector", e); }
 
-// ===== 営業訪問実績: サマリ初期表示 (Phase 2: スケルトンのみ) =====
+// ===== 営業訪問実績: 共通ヘルパー =====
+
+// 日付文字列/Excel連番 → YYYYMM (int)
+function _visitsDateToYm(str) {
+  if (!str) return 0;
+  const s = String(str).trim();
+  if (!s) return 0;
+  // Excel シリアル値 (5桁の整数 or 小数)
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const days = parseFloat(s);
+    const d = new Date(Date.UTC(1899, 11, 30) + days * 86400000);
+    return d.getUTCFullYear() * 100 + (d.getUTCMonth() + 1);
+  }
+  // ISO / JP 日付: 2025-04-15, 2025/04/15, 2025年04月15日
+  const m = s.match(/(\d{4})[\-\/年](\d{1,2})/);
+  if (m) {
+    const y = parseInt(m[1]);
+    const mm = parseInt(m[2]);
+    if (mm >= 1 && mm <= 12) return y * 100 + mm;
+  }
+  return 0;
+}
+
+// 営業担当者名の主担当(最初のカンマまで) を返す
+function _visitsPrimaryTanto(v) {
+  if (!v) return '';
+  return String(v).split(/[,、,]/)[0].trim();
+}
+
+// 期間ラベル生成
+function _visitsPeriodLabel(mode) {
+  const rp = (typeof reportingPeriod === 'function') ? reportingPeriod(curFY) : null;
+  if (!rp) return '';
+  if (mode === 'single') {
+    return `${rp.singleYm.slice(0,4)}年${rp.singleYm.slice(4,6)}月`;
+  }
+  return `${rp.fromYm.slice(0,4)}年${rp.fromYm.slice(4,6)}月 〜 ${rp.toYm.slice(0,4)}年${rp.toYm.slice(4,6)}月`;
+}
+
+// ===== 営業訪問実績: サマリ =====
 function renderVisitsSummary(){
   const el = document.getElementById("visits-summary");
   if (!el) return;
@@ -3117,6 +3156,157 @@ function renderVisitsSummary(){
     `訪問報告 <b style="color:var(--navy)">${dr.toLocaleString()}</b> 件 / ` +
     `HP閲覧ログ <b style="color:var(--navy)">${wl.toLocaleString()}</b> 件 / ` +
     `HP閲覧者 <b style="color:var(--navy)">${wr.toLocaleString()}</b> 件`;
+  // 各サブブロックの初期化
+  try { _initVisitsRepControls(); renderVisitsRepChart(); } catch(e){ console.warn("[visits-rep]", e); }
+}
+
+// ============================================================
+// Phase 3-①: 営業マン別訪問件数チャート
+// ============================================================
+let _chartVisitsRep = null;
+
+// コントロールUI (単月/累計・新規/既存/すべて・並び順)
+function _initVisitsRepControls() {
+  const el = document.getElementById('visits-rep-controls');
+  if (!el || el.dataset.inited === '1') return;
+  el.dataset.inited = '1';
+  el.innerHTML = `
+    <label style="cursor:pointer"><input type="radio" name="visits-rep-mode" value="single" checked> 単月</label>
+    <label style="cursor:pointer"><input type="radio" name="visits-rep-mode" value="ytd"> 累計</label>
+    <span style="width:16px; display:inline-block"></span>
+    <label style="cursor:pointer"><input type="radio" name="visits-rep-route" value="all" checked> すべて</label>
+    <label style="cursor:pointer"><input type="radio" name="visits-rep-route" value="new"> 新規のみ</label>
+    <label style="cursor:pointer"><input type="radio" name="visits-rep-route" value="existing"> 既存のみ</label>
+    <span style="width:16px; display:inline-block"></span>
+    <label>並び順:
+      <select id="visits-rep-sort" style="padding:3px 6px; margin-left:4px">
+        <option value="total">合計(多い順)</option>
+        <option value="new">新規(多い順)</option>
+        <option value="existing">既存(多い順)</option>
+        <option value="name">名前(50音)</option>
+      </select>
+    </label>
+  `;
+  el.addEventListener('change', renderVisitsRepChart);
+}
+
+// 集計: 営業担当者 x (新規/既存)
+function _visitsAggregateByRep(mode, routeFilter) {
+  const rp = reportingPeriod(curFY);
+  const targetYm = parseInt(rp.singleYm);
+  const fromYm = parseInt(rp.fromYm);
+  const toYm = parseInt(rp.toYm);
+
+  const byRep = {};
+  const daily = (RAW && RAW.daily_reports) || [];
+
+  for (const r of daily) {
+    const ym = _visitsDateToYm(r[5]);
+    if (ym === 0) continue;
+    if (mode === 'single') {
+      if (ym !== targetYm) continue;
+    } else {
+      if (ym < fromYm || ym > toYm) continue;
+    }
+    const tanto = _visitsPrimaryTanto(r[8]);
+    if (!tanto) continue;
+
+    const route = String(r[12] || '');
+    const isNew = route.indexOf('新規') >= 0 || route.indexOf('掘り起') >= 0 || route.indexOf('掘起') >= 0;
+
+    if (routeFilter === 'new' && !isNew) continue;
+    if (routeFilter === 'existing' && isNew) continue;
+
+    if (!byRep[tanto]) byRep[tanto] = { new: 0, existing: 0, total: 0 };
+    if (isNew) byRep[tanto].new++;
+    else byRep[tanto].existing++;
+    byRep[tanto].total++;
+  }
+  return byRep;
+}
+
+function renderVisitsRepChart() {
+  const modeEl = document.querySelector('input[name="visits-rep-mode"]:checked');
+  const routeEl = document.querySelector('input[name="visits-rep-route"]:checked');
+  const sortEl = document.getElementById('visits-rep-sort');
+  const mode = modeEl ? modeEl.value : 'single';
+  const routeFilter = routeEl ? routeEl.value : 'all';
+  const sortBy = sortEl ? sortEl.value : 'total';
+
+  const byRep = _visitsAggregateByRep(mode, routeFilter);
+  let entries = Object.entries(byRep);
+
+  entries.sort((a, b) => {
+    if (sortBy === 'new')      return b[1].new - a[1].new;
+    if (sortBy === 'existing') return b[1].existing - a[1].existing;
+    if (sortBy === 'name')     return a[0].localeCompare(b[0], 'ja');
+    return b[1].total - a[1].total;
+  });
+
+  const labels = entries.map(e => e[0]);
+  const newData = entries.map(e => e[1].new);
+  const existingData = entries.map(e => e[1].existing);
+
+  const canvas = document.getElementById('chart-visits-rep');
+  if (!canvas) return;
+  // canvas の高さを行数に合わせる
+  const parent = canvas.parentElement;
+  if (parent) parent.style.height = Math.max(340, entries.length * 28 + 60) + 'px';
+
+  if (_chartVisitsRep) { _chartVisitsRep.destroy(); _chartVisitsRep = null; }
+
+  const datasets = [];
+  if (routeFilter !== 'existing') {
+    datasets.push({
+      label: '新規・掘り起こし',
+      data: newData,
+      backgroundColor: 'rgba(255,159,64,0.85)',
+      borderColor: 'rgba(255,159,64,1)',
+      borderWidth: 1,
+    });
+  }
+  if (routeFilter !== 'new') {
+    datasets.push({
+      label: '既存ルート',
+      data: existingData,
+      backgroundColor: 'rgba(54,162,235,0.85)',
+      borderColor: 'rgba(54,162,235,1)',
+      borderWidth: 1,
+    });
+  }
+
+  _chartVisitsRep = new Chart(canvas, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: '訪問件数' } },
+        y: { stacked: true }
+      },
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: {
+          callbacks: {
+            afterBody: (ctx) => {
+              const idx = ctx[0].dataIndex;
+              const total = (newData[idx] || 0) + (existingData[idx] || 0);
+              return `合計: ${total}件`;
+            }
+          }
+        }
+      }
+    }
+  });
+
+  const note = document.getElementById('visits-rep-note');
+  if (note) {
+    const total = entries.reduce((s, e) => s + e[1].total, 0);
+    note.innerHTML = `対象期間: <b>${_visitsPeriodLabel(mode)}</b> / 対象人数 <b>${labels.length}</b> 名 / 合計 <b>${total.toLocaleString()}</b> 件`;
+    note.style.color = '#333';
+  }
 }
 
 // ===== ページタブ切替 =====
