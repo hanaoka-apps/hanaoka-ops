@@ -2802,6 +2802,42 @@ function _kpiRecalcTotals() {
   if (gEl) gEl.textContent = grand.toLocaleString();
 }
 
+// Graph API バッチリクエスト (最大20件を1回のHTTPで送信)
+async function graphBatch(requests, onProgress) {
+  const t = await getToken();
+  const CHUNK = 20;
+  const allResponses = [];
+  let done = 0;
+  for (let i = 0; i < requests.length; i += CHUNK) {
+    const chunk = requests.slice(i, i + CHUNK);
+    const body = {
+      requests: chunk.map((r, ci) => ({
+        id: String(i + ci),
+        method: r.method,
+        url: r.url,
+        headers: r.headers || { 'Content-Type': 'application/json' },
+        body: r.body
+      }))
+    };
+    const res = await fetch('https://graph.microsoft.com/v1.0/$batch', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Batch failed: HTTP ${res.status} ${txt.substring(0, 200)}`);
+    }
+    const data = await res.json();
+    const responses = data.responses || [];
+    responses.sort((a, b) => parseInt(a.id) - parseInt(b.id));
+    allResponses.push(...responses);
+    done += chunk.length;
+    if (onProgress) onProgress(done, requests.length);
+  }
+  return allResponses;
+}
+
 async function saveKpiChanges() {
   const changes = Object.entries(_kpiChanges);
   if (changes.length === 0) {
@@ -2811,67 +2847,107 @@ async function saveKpiChanges() {
   const status = document.getElementById('kpi_save_status');
   const btn = document.getElementById('kpi_save_btn');
   btn.disabled = true;
-  status.textContent = `保存中... (0/${changes.length})`;
+
+  // 既存アイテムをO(1)ルックアップマップに変換 (find の O(n²) を回避)
+  const kpiLookup = {};
+  for (const i of allItems) {
+    if (i.fields?.TargetType === '訪問KPI月次' && i.fields?.IsLatest === true) {
+      const key = `${i.fields.ScopeKey}|${i.fields.SubScope}|${String(i.fields.YearMonth || '').padStart(6, '0')}`;
+      kpiLookup[key] = i;
+    }
+  }
+
+  // バッチリクエスト構築
+  const requests = [];
+  const meta = [];  // 各リクエストと変更内容の紐付け
+  for (const [changeKey, newVal] of changes) {
+    const [kpi, rep, ym] = changeKey.split('|');
+    const lookupKey = `${kpi}|${rep}|${ym}`;
+    const existing = kpiLookup[lookupKey];
+    const ymInt = parseInt(ym);
+    const fyForYm = (ymInt % 100) >= 4 ? Math.floor(ymInt / 100) : Math.floor(ymInt / 100) - 1;
+
+    if (existing) {
+      requests.push({
+        method: 'PATCH',
+        url: `/sites/${SP.siteId}/lists/${SP.targetsListId}/items/${existing.id}`,
+        headers: { 'Content-Type': 'application/json' },
+        body: { fields: { Amount: newVal } }
+      });
+      meta.push({ changeKey, newVal, existing, isUpdate: true });
+    } else {
+      requests.push({
+        method: 'POST',
+        url: `/sites/${SP.siteId}/lists/${SP.targetsListId}/items`,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          fields: {
+            TargetType: '訪問KPI月次',
+            ScopeKey: kpi, ScopeName: kpi, SubScope: rep,
+            YearMonth: ym, FY: fyForYm, Amount: newVal, IsLatest: true
+          }
+        }
+      });
+      meta.push({ changeKey, newVal, existing: null, isUpdate: false, kpi, rep, ym });
+    }
+  }
+
+  const startTime = Date.now();
+  status.textContent = `保存中... (0/${requests.length})`;
+  let responses;
+  try {
+    responses = await graphBatch(requests, (done, total) => {
+      status.textContent = `保存中... (${done}/${total})`;
+    });
+  } catch (e) {
+    console.error('KPI batch error', e);
+    status.innerHTML = `<b style="color:#dc3545">⚠ 保存失敗: ${e.message}</b>`;
+    btn.disabled = false;
+    return;
+  }
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+  // 結果集計 + in-memory 更新 (loadAllItems() を回避して高速化)
   let ok = 0, ng = 0;
   const errors = [];
-
-  for (const [key, newVal] of changes) {
-    const [kpi, rep, ym] = key.split('|');
-    try {
-      // 既存項目を探す
-      const existing = allItems.find(i =>
-        i.fields?.TargetType === '訪問KPI月次' &&
-        i.fields?.IsLatest === true &&
-        i.fields?.ScopeKey === kpi &&
-        i.fields?.SubScope === rep &&
-        String(i.fields?.YearMonth || '').padStart(6, '0') === ym
-      );
-      const ymInt = parseInt(ym);
-      const fyForYm = (ymInt % 100) >= 4 ? Math.floor(ymInt / 100) : Math.floor(ymInt / 100) - 1;
-
-      if (existing) {
-        // 既存を直接更新
-        await patchItem(existing.id, { Amount: newVal });
+  for (let i = 0; i < responses.length; i++) {
+    const res = responses[i];
+    const info = meta[i];
+    if (res.status >= 200 && res.status < 300) {
+      ok++;
+      if (info.isUpdate) {
+        info.existing.fields.Amount = info.newVal;
       } else {
-        // 新規作成
-        await postItem({
-          TargetType: '訪問KPI月次',
-          ScopeKey: kpi,
-          ScopeName: kpi,
-          SubScope: rep,
-          YearMonth: ym,
-          FY: fyForYm,
-          Amount: newVal,
-          IsLatest: true
+        // 新規作成: allItems に追加
+        const newId = res.body && res.body.id ? res.body.id : `temp_${Date.now()}_${i}`;
+        allItems.push({
+          id: newId,
+          fields: {
+            TargetType: '訪問KPI月次',
+            ScopeKey: info.kpi, ScopeName: info.kpi, SubScope: info.rep,
+            YearMonth: info.ym, Amount: info.newVal, IsLatest: true,
+            FY: (parseInt(info.ym) % 100) >= 4 ? Math.floor(parseInt(info.ym) / 100) : Math.floor(parseInt(info.ym) / 100) - 1
+          }
         });
       }
-      ok++;
-    } catch (e) {
-      console.error('KPI save error', key, e);
-      errors.push(`${key}: ${e.message}`);
+    } else {
       ng++;
+      errors.push(`${info.changeKey}: HTTP ${res.status} ${JSON.stringify(res.body || {}).substring(0, 100)}`);
     }
-    status.textContent = `保存中... (${ok + ng}/${changes.length})`;
   }
 
   _kpiChanges = {};
   btn.disabled = false;
 
   if (ng === 0) {
-    status.innerHTML = `<b style="color:#28a745">✅ 保存完了 (${ok}件)</b>`;
+    status.innerHTML = `<b style="color:#28a745">✅ 保存完了 (${ok}件, ${elapsed}秒)</b>`;
   } else {
-    status.innerHTML = `<b style="color:#dc3545">⚠ ${ok}件成功 / ${ng}件失敗</b>`;
+    status.innerHTML = `<b style="color:#dc3545">⚠ ${ok}件成功 / ${ng}件失敗 (${elapsed}秒)</b>`;
     console.error('KPI save errors:', errors);
   }
 
-  // 再読込
-  try {
-    await loadAllItems();
-    renderKpiVisit();
-    document.getElementById('kpi_save_status').innerHTML = status.innerHTML;
-  } catch (e) {
-    console.warn('reload failed', e);
-  }
+  // 再描画のみ (loadAllItems はスキップ - 高速化の要)
+  renderKpiVisit();
 }
 
 // ============================================================
