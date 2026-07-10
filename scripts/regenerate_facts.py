@@ -562,6 +562,33 @@ def transform_daily_reports(header, rows):
     # 訪問種別
     houmon_idx = find_first_idx(h, '訪問種別')
 
+    # Check List 列 (表記ゆれ・全半角括弧・別名対応)
+    checklist_idx = None
+    checklist_candidates_exact = [
+        'Check List（次回確認事項）', 'Check List(次回確認事項)',
+        'CheckList（次回確認事項）', 'CheckList(次回確認事項)',
+        'チェックリスト（次回確認事項）', 'チェックリスト(次回確認事項)',
+        'Check List', 'CheckList', 'チェックリスト',
+        '次回確認事項', '次回確認', 'ToDo', 'TODO', 'Todo', 'todo',
+    ]
+    for cand in checklist_candidates_exact:
+        i = find_idx(h, cand)
+        if i is not None:
+            checklist_idx = i
+            break
+    # 部分一致フォールバック
+    if checklist_idx is None:
+        for kw in ['Check List', 'CheckList', 'チェックリスト', '次回確認事項', 'ToDo', 'TODO']:
+            i = find_partial_idx(h, kw)
+            if i is not None:
+                checklist_idx = i
+                print(f"     [checklist] 部分一致で発見: '{kw}' → 列{i} ('{h[i]}')", flush=True)
+                break
+    if checklist_idx is not None:
+        print(f"     [checklist] 採用列{checklist_idx}: '{h[checklist_idx].strip()}'", flush=True)
+    else:
+        print(f"     [警告] Check List列が見つからない (先頭ヘッダ抜粋: {[str(x).strip() for x in h[:30]]})", flush=True)
+
     idx = {
         'id':          find_first_idx(h, 'id', 'ID', 'Id'),
         'title':       find_first_idx(h, '題名', 'タイトル'),
@@ -572,8 +599,8 @@ def transform_daily_reports(header, rows):
         'shozai':      find_first_idx(h, '主な商材'),
         'douseki':     find_first_idx(h, '社内同席者'),
         'content':     find_first_idx(h, '対応内容'),
-        'checklist':   find_first_idx(h, 'Check List', 'CheckList', 'チェックリスト'),
         'template':    template_idx,
+        'checklist':   checklist_idx,  # ← 上書き
         'route_ei':    route_ei_idx,
         'route_koujou':route_koujou_idx,
         'houmon':      houmon_idx,
@@ -823,9 +850,6 @@ def main():
         'order_rows': orders,
         'dept_monthly_targets': dept_targets,
         'rep_monthly_targets':  rep_targets,
-        'daily_reports': daily_reports,
-        'web_logs':      web_logs,
-        'web_readers':   web_readers,
         'build_meta': {
             'sales_count': len(rows),
             'orders_count': len(orders),
@@ -851,6 +875,16 @@ def main():
     print(f"  web_logs (HP閲覧):     {len(web_logs):,}件")
     print(f"  web_readers (HP閲覧者):{len(web_readers):,}件")
     print(f"  ym range:   {facts['build_meta']['ym_min']} 〜 {facts['build_meta']['ym_max']}")
+
+    # === 訪問実績を別ファイルにアップロード (ログイン高速化のため分離) ===
+    visits_facts = {
+        'daily_reports': daily_reports,
+        'web_logs':      web_logs,
+        'web_readers':   web_readers,
+        'build_meta': facts['build_meta'],
+    }
+    print(f"\n📤 dashboard_visits.json をアップロード...", flush=True)
+    upload_json(token, 'dashboard_visits.json', visits_facts)
 
     print(f"\n📤 dashboard_facts.json をアップロード...", flush=True)
     upload_json(token, OUTPUT_JSON, facts)
