@@ -444,12 +444,12 @@ footer b{color:var(--goldDark)}
   </div>
   <div id="periodYtdCtrl" style="display:flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid #d1d5db; border-radius:8px; background:#f7f5ef">
     <span style="font-size:12px; font-weight:700; color:#0e1a36">累計</span>
-    <span id="periodYtdFromLabel" style="font-size:12px; color:var(--gray)">年度4月</span>
+    <input type="month" id="periodFrom" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:13px">
     <span>〜</span>
     <input type="month" id="periodTo" style="padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:13px">
+    <button id="periodFromResetBtn" title="年度初め(4月)にリセット" style="padding:3px 8px; font-size:11px; background:#f0ede2; border:1px solid #d1d5db; border-radius:4px; cursor:pointer">↺ 年度初</button>
   </div>
   <span id="periodLabel" style="margin-left:auto; font-size:12px; color:var(--gray); font-weight:500"></span>
-  <input type="hidden" id="periodFrom">
 </section>
 
 <!-- ===== ページタブナビゲーション ===== -->
@@ -730,9 +730,9 @@ footer b{color:var(--goldDark)}
     <div id="visits-block-type" class="visits-block" style="margin-bottom:24px; padding:12px; border:1px solid #e5e7eb; border-radius:8px; background:#fafafa">
       <h3 style="margin:0 0 8px 0; color:var(--navy); font-size:16px">② 訪問種別グラフ（KPI）＋ 客先別分析</h3>
       <div id="visits-type-controls" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px"></div>
-      <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px">
-        <div style="position:relative; height:340px"><canvas id="chart-visits-type"></canvas></div>
-        <div style="position:relative; height:340px"><canvas id="chart-visits-cust-pie"></canvas></div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
+        <div style="position:relative; height:400px"><canvas id="chart-visits-type"></canvas></div>
+        <div style="position:relative; height:400px"><canvas id="chart-visits-cust-pie"></canvas></div>
       </div>
       <div id="visits-type-note" style="color:#999; font-size:12px; margin-top:6px">※ Phase 3-② で実装予定</div>
     </div>
@@ -1401,7 +1401,8 @@ function reportingPeriod(fy){
   const toY = parseInt(toYm.slice(0,4));
   const toM = parseInt(toYm.slice(4,6));
   const fyForRange = (toM >= 4) ? toY : (toY - 1);
-  const fromYm = String(fyForRange*100 + 4).padStart(6, "0");
+  const fromYmDefault = String(fyForRange*100 + 4).padStart(6, "0");
+  const fromYm = _periodFrom || fromYmDefault;
   return {
     singleYm,
     fromYm,
@@ -1429,18 +1430,32 @@ function _setPeriodMode(mode){
 function initPeriodSelector(){
   const toYm = s => s ? s.replace("-","") : null;
   const singleEl = document.getElementById("periodSingle");
+  const fromEl   = document.getElementById("periodFrom");
   const toEl     = document.getElementById("periodTo");
+  const resetBtn = document.getElementById("periodFromResetBtn");
   // デフォルト値で初期化
   const rp = reportingPeriod(curFY);
   if (singleEl && !singleEl.value) singleEl.value = rp.singleYm.slice(0,4) + "-" + rp.singleYm.slice(4,6);
-  if (toEl && !toEl.value) toEl.value = rp.toYm.slice(0,4) + "-" + rp.toYm.slice(4,6);
+  if (fromEl && !fromEl.value)     fromEl.value   = rp.fromYm.slice(0,4)   + "-" + rp.fromYm.slice(4,6);
+  if (toEl && !toEl.value)         toEl.value     = rp.toYm.slice(0,4)     + "-" + rp.toYm.slice(4,6);
   if (singleEl) singleEl.addEventListener("change", ()=>{
     _periodSingle = toYm(singleEl.value);
     syncCurFYFromPeriod(); updatePeriodLabel(); renderAll();
   });
+  if (fromEl) fromEl.addEventListener("change", ()=>{
+    _periodFrom = toYm(fromEl.value);
+    updatePeriodLabel(); renderAll();
+  });
   if (toEl) toEl.addEventListener("change", ()=>{
     _periodTo = toYm(toEl.value);
+    // toYm が変わったら fromYm を自動更新 (年度4月に戻す) - ただし _periodFrom が明示設定されていない場合のみ
     syncCurFYFromPeriod(); updatePeriodLabel(); renderAll();
+  });
+  if (resetBtn) resetBtn.addEventListener("click", ()=>{
+    _periodFrom = null;
+    const rp2 = reportingPeriod(curFY);
+    if (fromEl) fromEl.value = rp2.fromYm.slice(0,4) + "-" + rp2.fromYm.slice(4,6);
+    updatePeriodLabel(); renderAll();
   });
   updatePeriodLabel();
 }
@@ -3159,6 +3174,7 @@ function renderVisitsSummary(){
   // 各サブブロックの初期化
   try { _initVisitsRepControls(); renderVisitsRepChart(); } catch(e){ console.warn("[visits-rep]", e); }
   try { _initVisitsTypeControls(); renderVisitsTypeChart(); } catch(e){ console.warn("[visits-type]", e); }
+  try { _initVisitsSearchControls(); renderVisitsSearchResults(); } catch(e){ console.warn("[visits-search]", e); }
 }
 
 // ============================================================
@@ -3326,15 +3342,16 @@ const _KPI_COLORS = [
   'rgba(75, 192, 192, 0.85)'    // 企画立案: 青緑
 ];
 
-let _chartVisitsType = null;
-let _chartVisitsCust = null;
+let _chartVisitsType = null;  // 営業マン別 KPIグラフ
+let _chartVisitsCust = null;  // 客先別 KPIグラフ
+let _visitsSelectedRep = null;  // クリックで選択された営業マン (客先グラフ絞込用)
 
 function _initVisitsTypeControls() {
   const el = document.getElementById('visits-type-controls');
   if (!el || el.dataset.inited === '1') return;
   el.dataset.inited = '1';
 
-  // 営業担当者リストを daily_reports から抽出
+  // 営業リストを daily_reports から抽出
   const repSet = new Set();
   const daily = (RAW && RAW.daily_reports) || [];
   for (const r of daily) {
@@ -3344,36 +3361,55 @@ function _initVisitsTypeControls() {
   const reps = Array.from(repSet).sort((a, b) => a.localeCompare(b, 'ja'));
   const repOptions = reps.map(r => `<option value="${r}">${r}</option>`).join('');
 
+  // 4 KPI チェックボックス (色付きバッジ風)
+  const kpiCheckboxes = _KPI_TYPES.map((k, i) => {
+    const bg = _KPI_COLORS[i].replace('0.85', '0.15');
+    const border = _KPI_COLORS[i].replace('0.85', '0.6');
+    return `<label style="cursor:pointer; margin-right:6px; background:${bg}; padding:3px 8px; border-radius:4px; border:1px solid ${border}; font-size:12px; display:inline-block; margin-bottom:4px">
+      <input type="checkbox" class="visits-kpi-chk" data-kpi="${k}" checked> ${k}
+    </label>`;
+  }).join('');
+
   el.innerHTML = `
-    <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="single" checked> 単月</label>
-    <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="ytd"> 累計</label>
-    <span style="width:16px; display:inline-block"></span>
-    <label>対象:
-      <select id="visits-type-rep" style="padding:3px 6px; margin-left:4px">
-        <option value="">全体</option>
-        ${repOptions}
-      </select>
-    </label>
-    <span style="width:16px; display:inline-block"></span>
-    <label style="cursor:pointer"><input type="checkbox" id="visits-type-kpi-only"> KPI4項目のみ</label>
-    <span style="width:16px; display:inline-block"></span>
-    <input type="text" id="visits-cust-search" placeholder="🔍 会社名で絞込..." style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; width:220px">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; width:100%">
+      <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="single" checked> 単月</label>
+      <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="ytd"> 累計</label>
+      <span style="width:12px; display:inline-block"></span>
+      <label>営業絞込:
+        <select id="visits-type-rep" style="padding:3px 6px; margin-left:4px">
+          <option value="">全体</option>
+          ${repOptions}
+        </select>
+      </label>
+      <input type="text" id="visits-cust-search" placeholder="🔍 会社名で絞込" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; width:180px">
+      <button id="visits-clear-selection" style="padding:3px 8px; font-size:11px; background:#fff3cd; border:1px solid #ffc107; border-radius:4px; cursor:pointer; display:none">✕ 営業選択解除</button>
+    </div>
+    <div style="margin-top:6px; width:100%; display:flex; flex-wrap:wrap; align-items:center; gap:4px">
+      <span style="font-size:12px; color:#555; margin-right:4px">表示KPI:</span>
+      ${kpiCheckboxes}
+    </div>
   `;
   el.addEventListener('change', renderVisitsTypeChart);
   el.addEventListener('input', (e) => {
     if (e.target && e.target.id === 'visits-cust-search') renderVisitsTypeChart();
   });
+  const clearBtn = document.getElementById('visits-clear-selection');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    _visitsSelectedRep = null;
+    clearBtn.style.display = 'none';
+    renderVisitsTypeChart();
+  });
 }
 
-function _visitsFilterForTypeChart() {
+function _getVisitsFilteredKpiRows() {
   const modeEl = document.querySelector('input[name="visits-type-mode"]:checked');
   const mode = modeEl ? modeEl.value : 'single';
   const repEl = document.getElementById('visits-type-rep');
   const repFilter = repEl ? repEl.value : '';
-  const kpiEl = document.getElementById('visits-type-kpi-only');
-  const kpiOnly = kpiEl ? kpiEl.checked : false;
   const custEl = document.getElementById('visits-cust-search');
   const custSearch = custEl ? String(custEl.value || '').trim() : '';
+  const kpiSelected = new Set();
+  document.querySelectorAll('.visits-kpi-chk:checked').forEach(el => kpiSelected.add(el.dataset.kpi));
 
   const rp = reportingPeriod(curFY);
   const targetYm = parseInt(rp.singleYm);
@@ -3385,11 +3421,8 @@ function _visitsFilterForTypeChart() {
   for (const r of daily) {
     const ym = _visitsDateToYm(r[5]);
     if (ym === 0) continue;
-    if (mode === 'single') {
-      if (ym !== targetYm) continue;
-    } else {
-      if (ym < fromYm || ym > toYm) continue;
-    }
+    if (mode === 'single') { if (ym !== targetYm) continue; }
+    else { if (ym < fromYm || ym > toYm) continue; }
     if (repFilter) {
       const t = _visitsPrimaryTanto(r[8]);
       if (t !== repFilter) continue;
@@ -3398,140 +3431,145 @@ function _visitsFilterForTypeChart() {
       const c = String(r[1] || '');
       if (c.indexOf(custSearch) < 0) continue;
     }
+    // KPI 4項目のみ + チェック中のみ
     const houmon = String(r[13] || '').trim();
-    if (kpiOnly && !_KPI_TYPES.includes(houmon)) continue;
+    if (!_KPI_TYPES.includes(houmon)) continue;
+    if (!kpiSelected.has(houmon)) continue;
     filtered.push(r);
   }
-  return { filtered, mode, repFilter, kpiOnly, custSearch };
+  return { filtered, mode, repFilter, custSearch, kpiSelected };
 }
 
 function renderVisitsTypeChart() {
-  const res = _visitsFilterForTypeChart();
-  const { filtered, mode, repFilter, kpiOnly, custSearch } = res;
+  const res = _getVisitsFilteredKpiRows();
+  const { filtered, mode, repFilter, custSearch, kpiSelected } = res;
 
-  // ---- 訪問種別集計 ----
-  const byType = {};
+  // ---- 営業マン別 KPI集計 ----
+  const byRep = {};
   for (const r of filtered) {
-    const t = String(r[13] || '').trim() || '(未分類)';
-    byType[t] = (byType[t] || 0) + 1;
+    const rep = _visitsPrimaryTanto(r[8]);
+    if (!rep) continue;
+    const kpi = String(r[13] || '').trim();
+    if (!byRep[rep]) byRep[rep] = {};
+    byRep[rep][kpi] = (byRep[rep][kpi] || 0) + 1;
   }
-  // KPI 4項目を先に、その後件数多い順で残り
-  const kpiEntries = _KPI_TYPES.map(k => [k, byType[k] || 0]);
-  const otherEntries = Object.entries(byType)
-    .filter(([k]) => !_KPI_TYPES.includes(k))
-    .sort((a, b) => b[1] - a[1]);
-  let allEntries = [...kpiEntries, ...otherEntries];
-  if (kpiOnly) allEntries = kpiEntries;
+  const repEntries = Object.entries(byRep).map(([rep, kpis]) => {
+    const total = Object.values(kpis).reduce((s, v) => s + v, 0);
+    return { rep, kpis, total };
+  }).sort((a, b) => b.total - a.total);
 
-  const typeLabels = allEntries.map(e => e[0]);
-  const typeData = allEntries.map(e => e[1]);
-  const typeColors = allEntries.map((e) => {
-    const i = _KPI_TYPES.indexOf(e[0]);
-    if (i >= 0) return _KPI_COLORS[i];
-    return 'rgba(180, 180, 180, 0.7)';
+  const repLabels = repEntries.map(e => e.rep);
+  const kpiOrder = _KPI_TYPES.filter(k => kpiSelected.has(k));
+  const repDatasets = kpiOrder.map(k => {
+    const kIdx = _KPI_TYPES.indexOf(k);
+    return {
+      label: k,
+      data: repEntries.map(e => e.kpis[k] || 0),
+      backgroundColor: _KPI_COLORS[kIdx],
+      borderColor: _KPI_COLORS[kIdx].replace('0.85', '1'),
+      borderWidth: 1
+    };
   });
 
   const canvas1 = document.getElementById('chart-visits-type');
   if (canvas1) {
+    const parent = canvas1.parentElement;
+    if (parent) parent.style.height = Math.max(340, repEntries.length * 26 + 80) + 'px';
     if (_chartVisitsType) { _chartVisitsType.destroy(); _chartVisitsType = null; }
-    _chartVisitsType = new Chart(canvas1, {
-      type: 'bar',
-      data: {
-        labels: typeLabels,
-        datasets: [{
-          label: '訪問件数',
-          data: typeData,
-          backgroundColor: typeColors,
-          borderColor: typeColors.map(c => c.replace(/0\.\d+\)$/, '1)')),
-          borderWidth: 1
-        }]
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: { beginAtZero: true, ticks: { precision: 0 } }
-        },
-        plugins: {
-          legend: { display: false },
-          title: { display: true, text: `訪問種別 (${filtered.length}件)`, font: { size: 13 } },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                const pct = filtered.length > 0 ? ((ctx.parsed.x / filtered.length) * 100).toFixed(1) : '0.0';
-                return `${ctx.parsed.x}件 (${pct}%)`;
-              }
+    if (repEntries.length === 0) {
+      const ctx = canvas1.getContext('2d');
+      ctx.clearRect(0, 0, canvas1.width, canvas1.height);
+      ctx.font = '14px sans-serif'; ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+      ctx.fillText('該当データなし', canvas1.width / 2, canvas1.height / 2);
+    } else {
+      _chartVisitsType = new Chart(canvas1, {
+        type: 'bar',
+        data: { labels: repLabels, datasets: repDatasets },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+            y: { stacked: true, ticks: { font: { size: 12 } } }
+          },
+          plugins: {
+            legend: { position: 'top', labels: { font: { size: 11 } } },
+            title: { display: true, text: '営業マン別 KPI実施件数（棒クリックで客先絞込）', font: { size: 13 } }
+          },
+          onClick: (event, elements) => {
+            if (elements && elements.length > 0) {
+              const idx = elements[0].index;
+              const rep = repLabels[idx];
+              _visitsSelectedRep = (_visitsSelectedRep === rep) ? null : rep;
+              const clearBtn = document.getElementById('visits-clear-selection');
+              if (clearBtn) clearBtn.style.display = _visitsSelectedRep ? 'inline-block' : 'none';
+              renderVisitsTypeChart();
             }
           }
         }
-      }
-    });
+      });
+    }
   }
 
-  // ---- 客先別集計 (円グラフ TOP10) ----
+  // ---- 客先別 KPI集計 (選択された営業マンで絞込) ----
+  const filteredForCust = _visitsSelectedRep
+    ? filtered.filter(r => _visitsPrimaryTanto(r[8]) === _visitsSelectedRep)
+    : filtered;
+
   const byCust = {};
-  for (const r of filtered) {
-    const c = String(r[1] || '').trim() || '(不明)';
-    byCust[c] = (byCust[c] || 0) + 1;
+  for (const r of filteredForCust) {
+    const c = String(r[1] || '').trim();
+    if (!c) continue;
+    const kpi = String(r[13] || '').trim();
+    if (!byCust[c]) byCust[c] = {};
+    byCust[c][kpi] = (byCust[c][kpi] || 0) + 1;
   }
-  const custEntries = Object.entries(byCust).sort((a, b) => b[1] - a[1]);
-  const TOP_N = 10;
+  const custEntries = Object.entries(byCust).map(([cust, kpis]) => {
+    const total = Object.values(kpis).reduce((s, v) => s + v, 0);
+    return { cust, kpis, total };
+  }).sort((a, b) => b.total - a.total);
+
+  const TOP_N = 20;
   const topCust = custEntries.slice(0, TOP_N);
-  const otherCust = custEntries.slice(TOP_N);
-  const otherSum = otherCust.reduce((s, e) => s + e[1], 0);
-
-  const custLabels = topCust.map(e => e[0]);
-  const custData = topCust.map(e => e[1]);
-  if (otherSum > 0) {
-    custLabels.push(`その他 (${otherCust.length}社)`);
-    custData.push(otherSum);
-  }
-
-  const custColors = [
-    'rgba(255, 99, 132, 0.85)', 'rgba(54, 162, 235, 0.85)', 'rgba(255, 205, 86, 0.85)',
-    'rgba(75, 192, 192, 0.85)', 'rgba(153, 102, 255, 0.85)', 'rgba(255, 159, 64, 0.85)',
-    'rgba(220, 53, 69, 0.85)', 'rgba(40, 167, 69, 0.85)', 'rgba(23, 162, 184, 0.85)',
-    'rgba(108, 117, 125, 0.85)', 'rgba(200, 200, 200, 0.85)'
-  ];
+  const custLabels = topCust.map(e => e.cust);
+  const custDatasets = kpiOrder.map(k => {
+    const kIdx = _KPI_TYPES.indexOf(k);
+    return {
+      label: k,
+      data: topCust.map(e => e.kpis[k] || 0),
+      backgroundColor: _KPI_COLORS[kIdx],
+      borderColor: _KPI_COLORS[kIdx].replace('0.85', '1'),
+      borderWidth: 1
+    };
+  });
 
   const canvas2 = document.getElementById('chart-visits-cust-pie');
   if (canvas2) {
+    const parent = canvas2.parentElement;
+    if (parent) parent.style.height = Math.max(340, topCust.length * 22 + 80) + 'px';
     if (_chartVisitsCust) { _chartVisitsCust.destroy(); _chartVisitsCust = null; }
-    if (custData.length === 0) {
-      // 空データ時はグラフを消して案内表示
+    if (topCust.length === 0) {
       const ctx = canvas2.getContext('2d');
       ctx.clearRect(0, 0, canvas2.width, canvas2.height);
-      ctx.font = '14px sans-serif';
-      ctx.fillStyle = '#999';
-      ctx.textAlign = 'center';
+      ctx.font = '14px sans-serif'; ctx.fillStyle = '#999'; ctx.textAlign = 'center';
       ctx.fillText('該当データなし', canvas2.width / 2, canvas2.height / 2);
     } else {
+      const titleText = `客先別 KPI実施件数${_visitsSelectedRep ? ` (${_visitsSelectedRep} 分)` : ''} TOP${TOP_N}`;
       _chartVisitsCust = new Chart(canvas2, {
-        type: 'doughnut',
-        data: {
-          labels: custLabels,
-          datasets: [{
-            data: custData,
-            backgroundColor: custColors.slice(0, custData.length),
-            borderColor: '#fff',
-            borderWidth: 2
-          }]
-        },
+        type: 'bar',
+        data: { labels: custLabels, datasets: custDatasets },
         options: {
+          indexAxis: 'y',
           responsive: true,
           maintainAspectRatio: false,
+          scales: {
+            x: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+            y: { stacked: true, ticks: { font: { size: 10 } } }
+          },
           plugins: {
-            legend: { position: 'right', labels: { font: { size: 10 }, boxWidth: 12 } },
-            title: { display: true, text: `客先 TOP${TOP_N}`, font: { size: 13 } },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => {
-                  const pct = filtered.length > 0 ? ((ctx.parsed / filtered.length) * 100).toFixed(1) : '0.0';
-                  return `${ctx.label}: ${ctx.parsed}件 (${pct}%)`;
-                }
-              }
-            }
+            legend: { position: 'top', labels: { font: { size: 11 } } },
+            title: { display: true, text: titleText, font: { size: 13 } }
           }
         }
       });
@@ -3542,17 +3580,177 @@ function renderVisitsTypeChart() {
   const note = document.getElementById('visits-type-note');
   if (note) {
     let msg = `対象期間: <b>${_visitsPeriodLabel(mode)}</b>`;
-    if (repFilter) msg += ` / 担当: <b>${repFilter}</b>`;
-    if (custSearch) msg += ` / 会社: "<b>${custSearch}</b>"`;
-    msg += ` / 対象 <b>${filtered.length.toLocaleString()}</b> 件`;
-    // KPI 4項目の内訳
-    const kpiTotal = _KPI_TYPES.reduce((s, k) => s + (byType[k] || 0), 0);
-    if (kpiTotal > 0) {
-      msg += ` (うちKPI4項目 <b>${kpiTotal}</b> 件)`;
-    }
+    if (repFilter) msg += ` / 営業絞込: <b>${repFilter}</b>`;
+    if (_visitsSelectedRep) msg += ` / 客先詳細対象: <b>${_visitsSelectedRep}</b>`;
+    if (custSearch) msg += ` / 会社検索: "<b>${custSearch}</b>"`;
+    msg += ` / KPI選択 <b>${kpiSelected.size}</b>/4 / KPI実施合計 <b>${filtered.length.toLocaleString()}</b>件`;
     note.innerHTML = msg;
     note.style.color = '#333';
   }
+}
+
+// ============================================================
+// Phase 3-③: 訪問内容検索 (半角/全角対応 + スペース区切りAND検索)
+// ============================================================
+
+// 検索用テキスト正規化: NFKC で半角/全角統一 + 小文字化
+function _visitsNormText(s) {
+  if (!s) return '';
+  return String(s).normalize('NFKC').toLowerCase();
+}
+
+// クエリを空白区切りキーワード配列に (半角/全角スペース両対応)
+function _visitsSplitQuery(q) {
+  if (!q) return [];
+  return String(q).normalize('NFKC').split(/[\s　]+/).filter(k => k.length > 0);
+}
+
+// 検索結果のソート (対応日時 開始 の降順)
+function _visitsSortByDateDesc(a, b) {
+  const da = String(a[5] || '');
+  const db = String(b[5] || '');
+  if (da < db) return 1;
+  if (da > db) return -1;
+  return 0;
+}
+
+// HTML エスケープ
+function _visitsEscapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+// キーワードハイライト (元テキストに <mark> を挿入)
+function _visitsHighlight(text, keywords) {
+  if (!text) return '';
+  let escaped = _visitsEscapeHtml(text);
+  if (!keywords || keywords.length === 0) return escaped;
+  // 正規化された対象で位置を特定 → 元テキストに反映するのは複雑なので、
+  // シンプルに正規化前後を照合してハイライト
+  const norm = _visitsNormText(text);
+  const marks = [];  // [{start, end}]
+  for (const kw of keywords) {
+    const nkw = _visitsNormText(kw);
+    if (!nkw) continue;
+    let pos = 0;
+    while (true) {
+      const idx = norm.indexOf(nkw, pos);
+      if (idx < 0) break;
+      marks.push({ start: idx, end: idx + nkw.length });
+      pos = idx + nkw.length;
+    }
+  }
+  if (marks.length === 0) return escaped;
+  // 位置ずれ (NFKC 変換で文字数が変わる) を避けるため、
+  // 単純な approach: 各キーワードを replaceAll で <mark> 付き置換
+  let out = escaped;
+  for (const kw of keywords) {
+    if (!kw) continue;
+    const escKw = _visitsEscapeHtml(kw);
+    // 大文字小文字を無視して置換
+    const re = new RegExp(escKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    out = out.replace(re, m => `<mark style="background:#ffe28a; padding:0 2px; border-radius:2px">${m}</mark>`);
+  }
+  return out;
+}
+
+function _initVisitsSearchControls() {
+  const el = document.getElementById('visits-search-controls');
+  if (!el || el.dataset.inited === '1') return;
+  el.dataset.inited = '1';
+  // すでに visits-search-input が存在するのでイベントハンドラだけ追加
+  const input = document.getElementById('visits-search-input');
+  if (input) {
+    let timer = null;
+    input.addEventListener('input', () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(renderVisitsSearchResults, 200);
+    });
+  }
+  // ノート更新
+  const note = document.getElementById('visits-search-note');
+  if (note) {
+    note.innerHTML = '💡 半角/全角どちらでも検索可 (例：<code>ﾄﾖﾀ</code> = <code>トヨタ</code>) / 複数キーワードはスペース区切りでAND検索 (例：<code>花岡 リフト</code>)';
+    note.style.color = '#666';
+  }
+}
+
+function renderVisitsSearchResults() {
+  const input = document.getElementById('visits-search-input');
+  const results = document.getElementById('visits-search-results');
+  const count = document.getElementById('visits-search-count');
+  if (!results) return;
+  const q = input ? String(input.value || '').trim() : '';
+  const keywords = _visitsSplitQuery(q);
+  const daily = (RAW && RAW.daily_reports) || [];
+
+  // キーワード無しの時は最新100件を表示
+  let matched;
+  if (keywords.length === 0) {
+    matched = daily.slice().sort(_visitsSortByDateDesc).slice(0, 100);
+    if (count) count.innerHTML = `<span style="color:#666">全 ${daily.length.toLocaleString()} 件（キーワード未入力→最新100件表示）</span>`;
+  } else {
+    // 各行を検索対象テキストに正規化して照合 (全キーワードAND)
+    const nKeywords = keywords.map(_visitsNormText);
+    const hits = [];
+    for (const r of daily) {
+      // 全フィールドを結合
+      const blob = _visitsNormText([r[1], r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14]].join(' '));
+      if (nKeywords.every(kw => blob.indexOf(kw) >= 0)) {
+        hits.push(r);
+      }
+    }
+    hits.sort(_visitsSortByDateDesc);
+    matched = hits.slice(0, 100);
+    if (count) {
+      const hitTotal = hits.length;
+      const showMsg = hitTotal > 100 ? ` (先頭100件表示)` : '';
+      count.innerHTML = `<b style="color:var(--navy)">${hitTotal.toLocaleString()}</b> 件${showMsg}`;
+    }
+  }
+
+  if (matched.length === 0) {
+    results.innerHTML = '<div style="padding:20px; text-align:center; color:#999">該当なし</div>';
+    return;
+  }
+
+  // カード表示
+  const html = matched.map(r => {
+    const dateStart = String(r[5] || '');
+    const dateEnd = String(r[6] || '');
+    const company = String(r[1] || '');
+    const aite = String(r[3] || '');
+    const shozai = String(r[7] || '');
+    const tanto = String(r[8] || '');
+    const douseki = String(r[9] || '');
+    const content = String(r[10] || '');
+    const checklist = String(r[11] || '');
+    const routeEi = String(r[12] || '');
+    const houmon = String(r[13] || '');
+    const routeKoujou = String(r[14] || '');
+
+    const kpiIdx = _KPI_TYPES.indexOf(houmon);
+    const kpiBadgeStyle = kpiIdx >= 0
+      ? `background:${_KPI_COLORS[kpiIdx].replace('0.85', '0.2')}; border:1px solid ${_KPI_COLORS[kpiIdx].replace('0.85', '0.6')}`
+      : `background:#eee; border:1px solid #ccc`;
+
+    return `<div class="visit-card" style="border:1px solid #e5e7eb; border-radius:6px; padding:10px 12px; margin-bottom:8px; background:#fff">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap">
+        <span style="font-weight:600; color:var(--navy); font-size:14px">${_visitsHighlight(company, keywords)}</span>
+        ${houmon ? `<span style="font-size:11px; padding:2px 6px; border-radius:4px; ${kpiBadgeStyle}">${_visitsEscapeHtml(houmon)}</span>` : ''}
+        ${routeEi ? `<span style="font-size:11px; color:#666">${_visitsEscapeHtml(routeEi)}</span>` : ''}
+        <span style="font-size:11px; color:#888; margin-left:auto">${_visitsEscapeHtml(dateStart)}${dateEnd && dateEnd !== dateStart ? ' 〜 ' + _visitsEscapeHtml(dateEnd) : ''}</span>
+      </div>
+      <div style="display:grid; grid-template-columns:auto 1fr; gap:4px 10px; font-size:12px; color:#333">
+        ${tanto ? `<span style="color:#888">👤 営業</span><span>${_visitsHighlight(tanto, keywords)}${douseki ? ` <span style="color:#888">(同席: ${_visitsHighlight(douseki, keywords)})</span>` : ''}</span>` : ''}
+        ${aite ? `<span style="color:#888">🤝 相手</span><span>${_visitsHighlight(aite, keywords)}</span>` : ''}
+        ${shozai ? `<span style="color:#888">📦 商材</span><span>${_visitsHighlight(shozai, keywords)}</span>` : ''}
+        ${content ? `<span style="color:#888">📝 内容</span><span style="white-space:pre-wrap; word-break:break-word">${_visitsHighlight(content, keywords)}</span>` : ''}
+        ${checklist ? `<span style="color:#888">✅ 次回</span><span style="white-space:pre-wrap; word-break:break-word; color:#c53030">${_visitsHighlight(checklist, keywords)}</span>` : ''}
+        ${routeKoujou ? `<span style="color:#888">🏭 工場</span><span>${_visitsHighlight(routeKoujou, keywords)}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  results.innerHTML = html;
 }
 
 // ===== ページタブ切替 =====
