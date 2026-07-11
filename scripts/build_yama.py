@@ -45,8 +45,18 @@ AUTH_DIST = BASE / "auth_dist"
 
 # CI(GitHub Actions)はUTCのため、JSTで「今日」を確定する(基準日/期間窓が1日ズレる事故防止)。
 TODAY = (datetime.now(_JST) if _JST else datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-HORIZON = TODAY + timedelta(days=90)  # 約3ヶ月先まで
-PAST_WINDOW = TODAY - timedelta(days=60)  # 雅さん 2026-05-25: 過去2ヶ月までの実績取込
+HORIZON = TODAY + timedelta(days=90)  # 画面の既定表示範囲の目安 (メタ情報用。レコードの絞り込みには使わない)
+# 2026-07-12 期間フィルタ緩和 (雅さん指示):
+#   - 進行中 (未完の工程/製造/購買手配・未確定手配・未完納受注残・未完計画) は
+#     日付に関わらず必ず出力する (過去の塩漬けも個々に見られるように)。
+#   - 完了済の「実績」だけは緩い上限をかける (JSON肥大化防止):
+#       製造/受入などの実績 = PAST_LIMIT (直近1年)
+#       出荷実績(売上明細)   = SALES_PAST_LIMIT (直近180日)
+#     ※実測(2026-07-12): 売上実績は月1,200〜2,800件と支配的で、2年だと約2万件/JSON約7MB、
+#       1年でも約5.9MB。出荷実績のみ180日に抑えて約4MB弱。まだ重ければ更に短縮を検討 (要確認)。
+#   - 期間の絞り込みは画面側 (yama.html のプリセット/全期間トグル) が行う。
+PAST_LIMIT = TODAY - timedelta(days=365)
+SALES_PAST_LIMIT = TODAY - timedelta(days=180)
 
 
 def _norm_date(s):
@@ -417,7 +427,8 @@ def load_shipment_records(item_to_final_wp):
             reader = csv.DictReader(f, delimiter=delim)
             for row in reader:
                 d = _parse_date(row.get("伝票日付", ""))
-                if d is None or d < PAST_WINDOW or d > HORIZON: continue
+                # 売上=完了済の出荷実績 → 件数支配的なため直近180日 (2026-07-12)
+                if d is None or d < SALES_PAST_LIMIT or d > HORIZON: continue
                 code = (row.get("品目ｺｰﾄﾞ") or "").strip().strip('"')
                 if code not in item_to_final_wp: continue
                 qty = _sf(row.get("数量"))
@@ -454,7 +465,7 @@ def load_shipment_records(item_to_final_wp):
                 target = shukka or nouki
                 d = _parse_date(target)
                 if d is None: continue
-                if d < TODAY or d > HORIZON: continue
+                # 未完納の受注残=進行中 → 期限超過(過去日)も遠い未来も落とさない (2026-07-12 緩和)
                 code = (row.get("品目ｺｰﾄﾞ") or "").strip().strip('"')
                 if code not in item_to_final_wp: continue
                 records.append({
@@ -530,7 +541,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
                 start_raw = row.get("手配予定日（年月日）", "") or end_raw
                 d = _parse_date(end_raw)
                 if d is None: continue
-                if d < PAST_WINDOW or d > HORIZON: continue
+                # 残量>0=進行中の工程手配 → 納期が過去でも未来でも必ず含める (2026-07-12 緩和)
                 qty = _sf(row.get("手配数量"))
                 reported = _sf(row.get("報告済数量"))
                 remaining = qty - reported
@@ -587,7 +598,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
                 start_raw = row.get("手配予定日(年月日)", "") or end_raw
                 d = _parse_date(end_raw)
                 if d is None: continue
-                if d < PAST_WINDOW or d > HORIZON: continue
+                # 残量>0=進行中の製造指図 → 納期が過去でも未来でも必ず含める (2026-07-12 緩和)
                 qty = _sf(row.get("手配数量"))
                 reported = _sf(row.get("報告済数量"))
                 remaining = qty - reported
@@ -644,7 +655,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
                 start_raw = row.get("手配予定日（年月日）", "") or row.get("子部品出庫予定日（年月日）", "") or end_raw
                 d = _parse_date(end_raw)
                 if d is None: continue
-                if d < TODAY or d > HORIZON: continue
+                # 未確定手配=進行中(要判断の候補) → 納期が過去でも未来でも必ず含める (2026-07-12 緩和)
                 qty = _sf(row.get("手配数量"))
                 if qty <= 0: continue
                 tehai_no = (row.get("手配番号") or "").strip().strip('"')
@@ -693,7 +704,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
                         continue
                     d = _parse_date(row.get("納期日", ""))
                     if d is None: continue
-                    if d < TODAY - timedelta(days=30) or d > HORIZON: continue
+                    # 未完納のPO=進行中 → 納期が過去でも未来でも必ず含める (2026-07-12 緩和)
                     qty = _sf(row.get("発注数量"))
                     if qty <= 0: continue
                     supplier_code = (row.get("取引先コード") or "").strip().strip('"')
@@ -746,7 +757,8 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
                         records.append(rec)
                     # 受入済分 = 実績(グレー)。0なら作らない
                     # ※受入明細出力.csv 由来の実績と重複し得るため main() 側で (品目,製番) 一致分を除去
-                    if recv_stock > 0.0001:
+                    # ※実績は直近2年上限 (2026-07-12 緩和方針: 進行中は無制限/実績のみPAST_LIMIT)
+                    if recv_stock > 0.0001 and d >= PAST_LIMIT:
                         rec = dict(base)
                         # 実績を未来日に置かない (受入は既に起きた事実)。個別の受入日は受入明細側が持つ。
                         recv_date = base["date"]
@@ -778,7 +790,7 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
                     start_raw = row.get("手配予定日（年月日）", "") or row.get("子部品出庫予定日（年月日）", "") or end_raw
                     d = _parse_date(end_raw)
                     if d is None: continue
-                    if d < TODAY or d > HORIZON: continue
+                    # 未確定の購買手配=進行中 → 期間で落とさない (2026-07-12 緩和)
                     qty = _sf(row.get("手配数量"))
                     if qty <= 0: continue
                     supplier_code = (row.get("手配先コード") or "").strip().strip('"')
@@ -815,60 +827,35 @@ def load_records(proc_to_wp, scope="internal", supplier_map=None, receipt_map=No
     return records
 
 
-def aggregate_daily(records):
-    """日付×作業区×(業務種別+確定度) で台数集計。
-       業務種別 kind: manufacture / external / shipment
-       確定度 status: 確定済 / 所要量計算 / 計画
+def collect_workplaces(records):
+    """作業区/仕入先の一覧 (チップフィルタ用)。
+       2026-07-12: 旧 aggregate_daily の日次集計(daily)は yama.html が使っておらず
+       (画面側が filteredDaily でレコードから再集計する)、JSONの約1/3を占める二重出力
+       だったため廃止。作業区一覧の収集のみ残す。"""
+    return sorted({r["workplace"] for r in records})
 
-       雅さん 2026-05-24 修正指示:
-         「綿棒方式 (=日数で割って均す)」をやめる。
-         各レコードは start_date〜date の期間に渡って full qty で計上する。
-         = その日に「進行中の負荷」を表す。塊の存在が消えない。
-         「早く終わらせれば早く次にかかれる」判断ができるように。
-    """
-    daily = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
-    workplaces = set()
-    # 雅さん 2026-05-24: 土日は稼働しないので進行カウントしない
-    # ただしレコード単独 (sd == ed) で土日に着く場合はその日に加算 (マスタミスを潰すため可視化)
-    # 祝日除外は calendar.PDF をパース後の TODO
+
+# 2026-07-12 ペイロード削減: 画面(yama.html)が参照しないキー・既定値と同じキーを出力前に落とす。
+#   - process_code / source: 画面未使用 (source はビルド内の重複除去にのみ使用→出力前に除去)
+#   - start_date == date: 画面側は r.start_date || r.date で補完するため省略可
+#   - stock_managed == True: 既定値 (画面は === false 判定)。トップレベル has_stock_flag で明示
+#   - 空文字の tehai_no / seiban / item_name / process_name: 画面側に || フォールバックあり
+_DROP_KEYS = ("process_code", "source")
+_DROP_IF_EMPTY = ("tehai_no", "seiban", "item_name", "process_name")
+
+
+def slim_records(records):
     for r in records:
-        kind = r.get("kind") or "manufacture"
-        status = r.get("status") or "所要量計算"
-        wp = r["workplace"]
-        qty = r["qty"]
-        end_date = r["date"]
-        start_date = r.get("start_date") or end_date
-        try:
-            sd = datetime.strptime(start_date, "%Y/%m/%d")
-            ed = datetime.strptime(end_date, "%Y/%m/%d")
-            if sd > ed:
-                sd, ed = ed, sd
-        except Exception:
-            sd = ed = None
-        if sd is None or ed is None:
-            daily[end_date][wp][kind][status] += qty
-        elif sd == ed:
-            # 雅さん 2026-05-24: 単発でも土日は除外 (日曜に生産指示はあり得ない)
-            if sd.weekday() < 5:
-                daily[end_date][wp][kind][status] += qty
-        else:
-            # 期間内の平日のみ full qty を積み上げ (土日除外)
-            cur = sd
-            while cur <= ed:
-                if cur.weekday() < 5:  # 0=月 ... 4=金, 5=土, 6=日
-                    dstr = cur.strftime("%Y/%m/%d")
-                    daily[dstr][wp][kind][status] += qty
-                cur += timedelta(days=1)
-        workplaces.add(wp)
-    daily_list = []
-    for date in sorted(daily.keys()):
-        entry = {"date": date, "by_wp": {}}
-        for wp, k_map in daily[date].items():
-            entry["by_wp"][wp] = {}
-            for kind, s_map in k_map.items():
-                entry["by_wp"][wp][kind] = {st: round(qty, 1) for st, qty in s_map.items()}
-        daily_list.append(entry)
-    return daily_list, sorted(workplaces)
+        for k in _DROP_KEYS:
+            r.pop(k, None)
+        if r.get("start_date") == r.get("date"):
+            r.pop("start_date", None)
+        if r.get("stock_managed") is True:
+            r.pop("stock_managed", None)
+        for k in _DROP_IF_EMPTY:
+            if k in r and not r[k]:
+                r.pop(k)
+    return records
 
 
 def load_plan_records(item_to_final_wp):
@@ -888,8 +875,7 @@ def load_plan_records(item_to_final_wp):
                 d_raw = (row.get("生産計画日付") or "").strip().strip('"')
                 d = _parse_date(d_raw)
                 if d is None: continue
-                # 計画日付が過去すぎる or 未来すぎるものはスキップ
-                if d < PAST_WINDOW or d > HORIZON: continue
+                # 完成残>0の計画=未完(計画放置含む) → 期間で落とさない (2026-07-12 緩和)
                 qty = _sf(row.get("生産計画数量"))
                 done = _sf(row.get("完成済数"))
                 remaining = qty - done
@@ -944,8 +930,8 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                     d_raw = (row.get("伝票日付") or "").strip().strip('"')
                     d = _parse_date(d_raw)
                     if d is None: continue
-                    # 過去2ヶ月以内かつ未来(取り間違い)でない
-                    if d < PAST_WINDOW or d > TODAY:
+                    # 実績=直近2年以内かつ未来(取り間違い)でない (2026-07-12 緩和)
+                    if d < PAST_LIMIT or d > TODAY:
                         cnt_skip_old += 1
                         continue
                     qty = _sf(row.get("受入数量"))
@@ -1026,7 +1012,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                     d_raw = row.get("操作日付（年月日）", "") or row.get("操作日付", "") or row.get("報告日付（年月日）", "") or row.get("手配納期(年月日）", "") or row.get("手配納期（年月日）", "")
                     d = _parse_date(d_raw)
                     if d is None: continue
-                    if d < PAST_WINDOW or d > TODAY: continue
+                    if d < PAST_LIMIT or d > TODAY: continue  # 実績=直近2年 (2026-07-12 緩和)
                     code = (row.get("品目コード") or "").strip().strip('"')
                     name = (row.get("品目名") or row.get("品目名１") or "").strip().strip('"')
                     seiban = (row.get("製番") or row.get("製　番") or "").strip().strip('"').strip()
@@ -1074,7 +1060,7 @@ def load_actual_records(proc_to_wp, item_to_final_wp, supplier_map=None):
                     end_raw = row.get("手配納期(年月日)", "") or row.get("手配予定日(年月日)", "")
                     d = _parse_date(end_raw)
                     if d is None: continue
-                    if d < PAST_WINDOW or d > TODAY: continue
+                    if d < PAST_LIMIT or d > TODAY: continue  # 実績=直近2年 (2026-07-12 緩和)
                     code = (row.get("品目ｺｰﾄﾞ") or "").strip().strip('"')
                     name = (row.get("品目名") or "").strip().strip('"')
                     seiban = (row.get("製番") or "").strip().strip('"').strip()
@@ -1423,7 +1409,7 @@ def attach_used_in_to_records(records, parent_map, item_name_map):
 
 def main():
     print(f"[基準日] TODAY = {TODAY.strftime('%Y/%m/%d')}")
-    print(f"[期間] {PAST_WINDOW.strftime('%Y/%m/%d')} 〜 {HORIZON.strftime('%Y/%m/%d')}")
+    print(f"[期間] 進行中(未完)は全期間 / 完了済実績は {PAST_LIMIT.strftime('%Y/%m/%d')} 以降 (直近2年)")
     print()
     proc_to_wp = load_process_workplace_map()
     proc_to_wp = enrich_wp_map_from_arrangements(proc_to_wp)
@@ -1450,7 +1436,6 @@ def main():
 
     # 社内+出荷 を統合 (同じ作業区集計に積む)
     rec_internal_combined = rec_internal + rec_shipment
-    daily_int, wp_int = aggregate_daily(rec_internal_combined)
 
     # 外注/購買の山
     print("\n--- 外注/購買 ---")
@@ -1504,9 +1489,9 @@ def main():
     attach_orderer_to_records(rec_external, po_map, orderer_fallback_map)
     # 社内レコードにも、購買発注に紐づけば付与しておく (将来全タブで利用)
     attach_orderer_to_records(rec_internal_combined, po_map, orderer_fallback_map)
-    # 実績を含めて再集計
-    daily_int, wp_int = aggregate_daily(rec_internal_combined)
-    daily_ext, wp_ext = aggregate_daily(rec_external)
+    # 作業区/仕入先一覧 (チップフィルタ用)。日次集計(daily)は画面未使用のため出力廃止 (2026-07-12)
+    wp_int = collect_workplaces(rec_internal_combined)
+    wp_ext = collect_workplaces(rec_external)
 
     # 2026-07-08 新項目の付与状況サマリ (検証用)
     _all = rec_internal_combined + rec_external
@@ -1517,17 +1502,31 @@ def main():
           f"受入No {sum(1 for r in _all if r.get('receipt_no')):,} / "
           f"分納実績 {sum(1 for r in _all if r.get('source') == '確定済_購買発注(受入済)'):,}")
 
+    # 2026-07-12 検証用: 進行中(未完)が過去窓に関わらず含まれていることの確認出力
+    _today_str = TODAY.strftime("%Y/%m/%d")
+    for _name, _recs in (("社内", rec_internal_combined), ("外注", rec_external)):
+        _inprog = [r for r in _recs if r.get("status") in ("確定済", "所要量計算", "計画")]
+        _overdue = [r for r in _inprog if r.get("date", "") < _today_str]
+        if _recs:
+            _dates = [r["date"] for r in _recs]
+            print(f"[期間検証/{_name}] 全{len(_recs):,}件 (進行中{len(_inprog):,} / うち納期超過{len(_overdue):,}) "
+                  f"日付範囲 {min(_dates)}〜{max(_dates)}")
+
+    # 出力前にペイロード削減 (画面未使用キー・既定値キーの除去)
+    slim_records(rec_internal_combined)
+    slim_records(rec_external)
+
     out = {
         "as_of": TODAY.strftime("%Y/%m/%d"),
         "horizon": HORIZON.strftime("%Y/%m/%d"),
+        # slim化で stock_managed==True を省略している目印 (画面の「※再構築が必要」誤表示防止)
+        "has_stock_flag": True,
         "internal": {
             "workplaces": wp_int,
-            "daily": daily_int,
             "records": rec_internal_combined,
         },
         "external": {
             "workplaces": wp_ext,
-            "daily": daily_ext,
             "records": rec_external,
         },
     }
@@ -1535,9 +1534,9 @@ def main():
     payload = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
     (DATA / "yama_data.json").write_text(payload, encoding="utf-8")
     (DATA / "yama_data.js").write_text(f"window.YAMA_DATA = {payload};\n", encoding="utf-8")
-    print(f"\n[出力] data/yama_data.json ({len(payload):,} bytes)")
-    print(f"      [社内] 作業区{len(wp_int)} / 日{len(daily_int)} / レコード{len(rec_internal):,}")
-    print(f"      [外注] 仕入先{len(wp_ext)} / 日{len(daily_ext)} / レコード{len(rec_external):,}")
+    print(f"\n[出力] data/yama_data.json ({len(payload.encode('utf-8')):,} bytes)")
+    print(f"      [社内] 作業区{len(wp_int)} / レコード{len(rec_internal_combined):,}")
+    print(f"      [外注] 仕入先{len(wp_ext)} / レコード{len(rec_external):,}")
 
     # 2026-06-11 セキュリティ移行: yama_data(山積み台数)を公開Pages(fujin/)に置かない。
     # auth_dist へのコピーを廃止し、scripts/upload_fujin_data.py が SharePoint へアップロード、
