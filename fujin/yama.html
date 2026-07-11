@@ -348,6 +348,7 @@ header .meta{margin-left:auto;font-size:10.5px;opacity:.85}
     <button class="period-btn active" data-period="30">1ヶ月</button>
     <button class="period-btn" data-period="60">2ヶ月</button>
     <button class="period-btn" data-period="90">3ヶ月</button>
+    <button class="period-btn" data-period="all" title="取込済みの全レコードを対象 (グラフは週/月単位に自動集約されるので軽いまま)">全期間</button>
     <input type="date" id="periodFrom"> 〜 <input type="date" id="periodTo">
   </div>
   <div class="group" style="margin-left:auto;display:flex;align-items:center;gap:6px">
@@ -505,7 +506,7 @@ let state = {
   scope: "internal",           // internal / external
   status: "all",               // all / confirmed / unconfirmed
   stockFilter: "all",          // all / managed / unmanaged (在庫管理区分フィルター 雅さん 2026-05-29)
-  period: "30",                // 7/14/30/60/90/custom
+  period: "30",                // 7/14/30/60/90/all/custom ("all"=全期間 2026-07-12)
   from: null, to: null,
   selectedWps: new Set(),      // 選択された作業区/仕入先 (空=全部)
   selectedOrderers: new Set(), // 選択された発注者 (空=全員) 雅さん 2026-05-24
@@ -526,6 +527,7 @@ let _myLoginId = "";
 try { _myLoginId = (localStorage.getItem("_fujin_my_login") || "H016").toUpperCase(); } catch(_){ _myLoginId = "H016"; }
 let chart = null;
 let _detailRecs = [];  // 最後にrenderDetailで描画したレコード配列 (chipクリック・スクロール同期用)
+let _lastDetailCount = 0;  // 直近の詳細リスト該当件数 (全件表示の重さ警告用 2026-07-12)
 
 function escapeHtml(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 
@@ -543,6 +545,7 @@ function saveYamaState(){
       sortCol: state.sortCol, sortAsc: state.sortAsc,
       scrollTop: dw ? dw.scrollTop : 0,
       _dateFilter: state._dateFilter || null,
+      _dateFilterTo: state._dateFilterTo || null,
       wpSearch: document.getElementById('wpSearch')?.value || "",
       tekiyoFrom: state.tekiyoFrom || "", tekiyoTo: state.tekiyoTo || "",
       tekiyoMode: state.tekiyoMode || "range",
@@ -567,6 +570,7 @@ function restoreYamaState(){
     state.sortCol = s.sortCol || 'date';
     state.sortAsc = s.sortAsc !== false;
     state._dateFilter = s._dateFilter || null;
+    state._dateFilterTo = s._dateFilterTo || null;
     state.tekiyoFrom = s.tekiyoFrom || "";
     state.tekiyoTo = s.tekiyoTo || "";
     state.tekiyoMode = (s.tekiyoMode === "only") ? "only" : "range";
@@ -625,8 +629,76 @@ function _d2ymd(d){
   return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// ===== 適応粒度 (2026-07-12) =====
+// チャートの棒の本数を期間の長さに依らず一定範囲に抑えるため、
+// 表示期間に応じて 日/週/月/四半期/年 のバケット粒度を自動選択する。
+// ルール: バケット数が MAX_BARS(=92)本以内に収まる最小の粒度
+//   日 ≤92日 (既定プリセット1週間〜3ヶ月は従来通り日単位)
+//   週 ≤644日(約1.8年) / 月 ≤約7.6年 / 四半期 ≤約23年 / それ以上=年
+const MAX_BARS = 92;
+function pickGranularity(fromD, toD){
+  const days = Math.round((toD - fromD)/86400000) + 1;
+  if(days <= MAX_BARS) return 'day';
+  if(days / 7 <= MAX_BARS) return 'week';
+  if(days / 30.44 <= MAX_BARS) return 'month';
+  if(days / 91.3 <= MAX_BARS) return 'quarter';
+  return 'year';
+}
+// 日付(Date) → そのバケットの開始日(Date)。週=月曜始まり、他は暦区切り
+function bucketStartD(d, gran){
+  const y = d.getFullYear(), m = d.getMonth();
+  if(gran === 'day') return new Date(y, m, d.getDate());
+  if(gran === 'week'){
+    const t = new Date(y, m, d.getDate());
+    const dow = t.getDay();
+    t.setDate(t.getDate() - (dow === 0 ? 6 : dow - 1));
+    return t;
+  }
+  if(gran === 'month') return new Date(y, m, 1);
+  if(gran === 'quarter') return new Date(y, Math.floor(m/3)*3, 1);
+  return new Date(y, 0, 1);
+}
+function nextBucketD(d, gran){
+  const t = new Date(d);
+  if(gran === 'day') t.setDate(t.getDate()+1);
+  else if(gran === 'week') t.setDate(t.getDate()+7);
+  else if(gran === 'month') t.setMonth(t.getMonth()+1);
+  else if(gran === 'quarter') t.setMonth(t.getMonth()+3);
+  else t.setFullYear(t.getFullYear()+1);
+  return t;
+}
+// 日付文字列 → バケットキー(=バケット開始日の YYYY/MM/DD)
+function bucketKeyOfDateStr(s, gran){
+  if(!s) return s;
+  const d = new Date(String(s).replace(/-/g,'/').replace(/\//g,'-'));
+  if(isNaN(d)) return s;
+  return _d2ymd(bucketStartD(d, gran));
+}
+
+// 全期間トグル用: 現scopeの全レコードの日付範囲 (renderAll毎にキャッシュクリア)
+let _fullRangeCache = {};
+function _fullDataRange(){
+  const key = state.scope;
+  if(_fullRangeCache[key]) return _fullRangeCache[key];
+  const recs = currentData().records || [];
+  let min = null, max = null;
+  for(const r of recs){
+    const sd = r.start_date || r.date, ed = r.date;
+    if(sd && (!min || sd < min)) min = sd;
+    if(ed && (!max || ed > max)) max = ed;
+  }
+  const today = _d2ymd(new Date());
+  const range = {from: min || today, to: max || today};
+  if(recs.length) _fullRangeCache[key] = range;
+  return range;
+}
+
 // 期間範囲の決定
 function getDateRange(){
+  if(state.period === "all"){
+    // 全期間: データの最古〜最新 (チャートは pickGranularity が週/月に自動集約)
+    return _fullDataRange();
+  }
   if(state.period === "custom" && state.from && state.to){
     return {from: state.from, to: state.to};
   }
@@ -680,8 +752,8 @@ function updateWeekNav(){
   const nav = document.getElementById("weekNavGroup");
   if(!nav) return;
   const periodNum = parseInt(state.period) || 30;
-  // 短期 (1週間/2週間) と 1ヶ月 でのみ表示
-  if(state.period === "custom"){
+  // 短期 (1週間/2週間) と 1ヶ月 でのみ表示。全期間/カスタムでは非表示 (ずらす意味がない)
+  if(state.period === "custom" || state.period === "all"){
     nav.style.display = "none";
   } else {
     nav.style.display = "";
@@ -728,7 +800,12 @@ function _recIdBlob(r){
 }
 
 // フィルタ適用後のレコードを返す
+// 2026-07-12: 全期間対応でレコードが1万件超になり得るため、renderAll単位でメモ化
+// (チャートtooltipのホバー毎の再フィルタを避ける)。フィルタ条件の変更は必ず renderAll 経由。
+let _frCache = null;
+function invalidateFilterCache(){ _frCache = null; _fullRangeCache = {}; }
 function filteredRecords(){
+  if(_frCache) return _frCache;
   const data = currentData();
   const range = getDateRange();
   const term = _normSearch(state.globalSearch || "").trim();
@@ -800,17 +877,32 @@ function filteredRecords(){
       });
     }
   }
+  _frCache = out;
   return out;
 }
 
-// フィルタ適用後の日次集計
+// フィルタ適用後のバケット集計 (2026-07-12 適応粒度対応)
 // 雅さん 2026-05-24: 検索フィルタも反映されるよう filteredRecords ベースで再集計
-// データ形式: daily[].by_wp[wp][kind][status] = qty
+// データ形式: daily[].by_wp[wp][kind][status] = qty (dateはバケット開始日、endはバケット末日)
+// 集計方針:
+//   日粒度   = 従来通り。各レコードを start_date〜date の営業日(土日除く)に full qty で計上
+//   週/月/…  = レコード期間と重なる各バケットに full qty を1回計上 (「そのバケットに進行中の負荷」)
 function filteredDaily(){
   const range = getDateRange();
+  const fromD = new Date(range.from.replace(/\//g,'-'));
+  const toD = new Date(range.to.replace(/\//g,'-'));
+  const gran = pickGranularity(fromD, toD);
   const recs = filteredRecords();
-  // レコードを期間内の各日に展開 (土日除外、build_yama.py の aggregate_daily と同じロジック)
   const dailyMap = {};
+  const add = (dstr, wp, kind, status, qty) => {
+    if(!dailyMap[dstr]) dailyMap[dstr] = {date:dstr, by_wp:{}};
+    const wpMap = dailyMap[dstr].by_wp;
+    if(!wpMap[wp]) wpMap[wp] = {};
+    if(!wpMap[wp][kind]) wpMap[wp][kind] = {};
+    wpMap[wp][kind][status] = (wpMap[wp][kind][status] || 0) + qty;
+  };
+  const rangeStartB = bucketStartD(fromD, gran);
+  const rangeEndB = bucketStartD(toD, gran);
   for(const r of recs){
     const sd = r.start_date || r.date;
     const ed = r.date;
@@ -824,45 +916,57 @@ function filteredDaily(){
       edD = new Date(ed.replace(/\//g,'-'));
       if(sdD > edD){ const t = sdD; sdD = edD; edD = t; }
     } catch(_) { continue; }
-    if(sdD.getTime() === edD.getTime()){
-      // 単発: FUJINデータをそのまま反映（土日祝日はFUJIN側で判断済み）
-      const dstr = ed;
-      if(!dailyMap[dstr]) dailyMap[dstr] = {date:dstr, by_wp:{}};
-      const wpMap = dailyMap[dstr].by_wp;
-      if(!wpMap[wp]) wpMap[wp] = {};
-      if(!wpMap[wp][kind]) wpMap[wp][kind] = {};
-      wpMap[wp][kind][status] = (wpMap[wp][kind][status] || 0) + qty;
-    } else {
-      // 期間案件: start_date〜dateの営業日(土日除く)に加算
-      // Pythonの_business_days_subtractが土日をスキップして start_date を計算しているため、
-      // JS側も土日をスキップして整合させる (雅さん 2026-05-29: UDL25 10営業日スパン対応)
-      const cur = new Date(sdD);
-      while(cur <= edD){
-        const dow = cur.getDay();
-        if(dow !== 0 && dow !== 6){  // 土日はスキップ (0=日, 6=土)
-          const y = cur.getFullYear(), m = String(cur.getMonth()+1).padStart(2,'0'), day = String(cur.getDate()).padStart(2,'0');
-          const dstr = `${y}/${m}/${day}`;
-          if(!dailyMap[dstr]) dailyMap[dstr] = {date:dstr, by_wp:{}};
-          const wpMap = dailyMap[dstr].by_wp;
-          if(!wpMap[wp]) wpMap[wp] = {};
-          if(!wpMap[wp][kind]) wpMap[wp][kind] = {};
-          wpMap[wp][kind][status] = (wpMap[wp][kind][status] || 0) + qty;
+    if(gran === 'day'){
+      if(sdD.getTime() === edD.getTime()){
+        // 単発: FUJINデータをそのまま反映（土日祝日はFUJIN側で判断済み）
+        add(ed, wp, kind, status, qty);
+      } else {
+        // 期間案件: start_date〜dateの営業日(土日除く)に加算
+        // Pythonの_business_days_subtractが土日をスキップして start_date を計算しているため、
+        // JS側も土日をスキップして整合させる (雅さん 2026-05-29: UDL25 10営業日スパン対応)
+        // 表示範囲外は塩漬け案件で数百日に及び得るため範囲内にクランプ (2026-07-12 高速化)
+        const cur = sdD < fromD ? new Date(fromD) : new Date(sdD);
+        const stop = edD > toD ? toD : edD;
+        while(cur <= stop){
+          const dow = cur.getDay();
+          if(dow !== 0 && dow !== 6){  // 土日はスキップ (0=日, 6=土)
+            add(_d2ymd(cur), wp, kind, status, qty);
+          }
+          cur.setDate(cur.getDate() + 1);
         }
-        cur.setDate(cur.getDate() + 1);
+      }
+    } else {
+      // 週/月/四半期/年: 期間が重なる各バケットに1回計上 (バケットは暦区切りで整列済み)
+      let b = bucketStartD(sdD, gran);
+      const endB = bucketStartD(edD, gran);
+      if(endB < rangeStartB || b > rangeEndB) continue;  // 表示範囲と全く重ならない
+      if(b < rangeStartB) b = new Date(rangeStartB);
+      const stop = endB > rangeEndB ? rangeEndB : endB;
+      while(b <= stop){
+        add(_d2ymd(b), wp, kind, status, qty);
+        b = nextBucketD(b, gran);
       }
     }
   }
-  // 期間内の日付配列を作成
+  // 期間内のバケット配列を作成
   const result = [];
-  const fromD = new Date(range.from.replace(/\//g,'-'));
-  const toD = new Date(range.to.replace(/\//g,'-'));
-  for(let d = new Date(fromD); d <= toD; d.setDate(d.getDate()+1)){
-    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
-    const dateStr = `${y}/${m}/${day}`;
-    const entry = dailyMap[dateStr] || {date: dateStr, by_wp: {}};
-    entry.dow = d.getDay();
+  let b = new Date(rangeStartB);
+  while(b <= rangeEndB){
+    const key = _d2ymd(b);
+    const entry = dailyMap[key] || {date: key, by_wp: {}};
+    entry.date = key;
+    entry.dow = b.getDay();
+    const nb = nextBucketD(b, gran);
+    if(gran === 'day'){
+      entry.end = key;
+    } else {
+      const e = new Date(nb); e.setDate(e.getDate() - 1);
+      entry.end = _d2ymd(e);  // バケット末日 (tooltip重なり判定・今日判定用)
+    }
     result.push(entry);
+    b = nb;
   }
+  result.gran = gran;  // 選択粒度を配列に添付 (renderChart が参照)
   return result;
 }
 
@@ -924,8 +1028,9 @@ const planFlagPlugin = {
     const chartArea = chart.chartArea;
     const now = new Date(); now.setHours(0,0,0,0);
     ctx.save();
+    const _bof = window._yamaBucketOf || (s => s);  // 週/月粒度時は日付→バケットへ写像 (2026-07-12)
     for(const [date] of Object.entries(flagData)){
-      const idx = dateToIdx[date];
+      const idx = dateToIdx[_bof(date)];
       if(idx === undefined) continue;
       const x = xAxis.getPixelForValue(idx);
       const dueD = new Date(date.replace(/\//g,'-'));
@@ -955,7 +1060,8 @@ const planFlagPlugin = {
 const todayBandPlugin = {
   id: 'todayBand',
   beforeDatasetsDraw(c) {
-    const todayStr = _d2ymd(new Date());
+    // 週/月粒度では「今日を含むバケット」を強調 (2026-07-12 適応粒度対応)
+    const todayStr = (window._yamaBucketOf || (s => s))(_d2ymd(new Date()));
     const arr = window._yamaDaily || [];
     const todayIdx = arr.findIndex(d => d.date === todayStr);
     if(todayIdx < 0) return;  // 表示範囲外の場合はスキップ
@@ -981,15 +1087,31 @@ const todayBandPlugin = {
 // ===== グラフ描画 =====
 function renderChart(){
   const daily = filteredDaily();
+  const gran = daily.gran || 'day';  // 適応粒度 (2026-07-12): day/week/month/quarter/year
   window._yamaDaily = daily;  // todayBandPlugin から今日列を引くため
+  // 日付→バケットキー写像 (プラグイン/詳細連携が参照)
+  const _bucketOf = (s) => s ? bucketKeyOfDateStr(String(s).replace(/-/g,'/'), gran) : s;
+  window._yamaBucketOf = _bucketOf;
+  window._yamaGran = gran;
   // 今日の日付文字列 (YYYY/MM/DD) — 遅延判定用
   // ※ as_of はビルド日なのでズレる。必ず実際の今日を使う
   const CHART_TODAY = _d2ymd(new Date());
+  const TODAY_BUCKET = _bucketOf(CHART_TODAY);  // 今日を含むバケット
   const dowJp = ['日','月','火','水','木','金','土'];
-  // 雅さん 2026-05-25: コンパクトに「5/25月」(先頭0なし)
+  // 雅さん 2026-05-25: コンパクトに「5/25月」(先頭0なし)。週/月/四半期/年は粒度に応じたラベル
+  const GRAN_LABEL = {day:'日', week:'週', month:'月', quarter:'四半期', year:'年'};
   const labels = daily.map(d => {
-    const md = d.date.slice(5).replace(/^0/,'').replace(/\/0/,'/');
-    return `${md}${dowJp[d.dow]}`;
+    if(gran === 'day'){
+      const md = d.date.slice(5).replace(/^0/,'').replace(/\/0/,'/');
+      return `${md}${dowJp[d.dow]}`;
+    }
+    if(gran === 'week'){
+      const md = d.date.slice(5).replace(/^0/,'').replace(/\/0/,'/');
+      return `${md}週`;  // 週の開始日(月曜)
+    }
+    if(gran === 'month') return `${d.date.slice(0,4)}/${String(+d.date.slice(5,7))}`;
+    if(gran === 'quarter') return `${d.date.slice(0,4)}Q${Math.floor((+d.date.slice(5,7)-1)/3)+1}`;
+    return `${d.date.slice(0,4)}年`;
   });
   const dowList = daily.map(d => d.dow);
   // 業務種別×確定度別の系列を作る (出荷=下、製造=中、外注=上 の順で積み上げ)
@@ -1012,9 +1134,10 @@ function renderChart(){
       });
       if(dataArr.every(v => v === 0)) continue; // 全部0ならdataset追加しない
       // 確定済で過去日付のバーは赤(遅延アラート色)、それ以外は通常色
+      // 週/月粒度は「バケット末日が今日より前」= 完全に過去のバケットのみ赤 (2026-07-12)
       const normalColor = colorForKindStatus(kind, status);
       const bgColor = (status === "確定済")
-        ? daily.map(d => d.date < CHART_TODAY ? "rgba(239,68,68,0.82)" : normalColor)
+        ? daily.map(d => (d.end || d.date) < CHART_TODAY ? "rgba(239,68,68,0.82)" : normalColor)
         : normalColor;
       datasets.push({
         label: `${KIND_LABEL[kind]} (${status})`,
@@ -1052,46 +1175,13 @@ function renderChart(){
   renderPlanChipBar();  // チップバーを更新 (チャート描画より先に)
 
   // 表示範囲の最初と最後の日付 (バッチが表示外まで続く場合の判定用)
+  // _lastDate は最終バケットの「末日」(週/月粒度でバケット途中の日付を範囲外と誤判定しないため)
   const _firstDate = daily.length ? daily[0].date : null;
-  const _lastDate = daily.length ? daily[daily.length-1].date : null;
+  const _lastDate = daily.length ? (daily[daily.length-1].end || daily[daily.length-1].date) : null;
 
-  // 雅さん 2026-05-25: 各日 × (kind, status) セグメント内で「レコード単位」で累積位置を事前計算
-  // 同一品目内でも複数のレコード (製番違いなど) は別々の位置にスライスを表示するため
-  // _segItemCumulative[date][kind_status][recordKey] = {qtyBelow, qty}
-  function _recordKey(r){
-    return [r.item_code||'', r.seiban||'', r.tehai_no||'', String(r.qty||0)].join('|');
-  }
-  const _segItemCumulative = {};
-  {
-    // FUJINデータをそのまま反映（土日判断はFUJIN側で済み）
-    const allRecsForCum = filteredRecords();
-    for(const d of daily){
-      _segItemCumulative[d.date] = {};
-      const dayRecs = allRecsForCum.filter(r => {
-        const sd = r.start_date || r.date;
-        return sd <= d.date && d.date <= r.date;
-      });
-      const groups = {};
-      for(const r of dayRecs){
-        const segKey = `${r.kind||'manufacture'}_${r.status||'所要量計算'}`;
-        if(!groups[segKey]) groups[segKey] = [];
-        groups[segKey].push(r);
-      }
-      // 各セグメント内で「レコード単位」で台数の多い順に累積
-      for(const [segKey, recs] of Object.entries(groups)){
-        recs.sort((a,b) => (b.qty||0) - (a.qty||0));
-        let cum = 0;
-        const segMap = {};
-        for(const r of recs){
-          const key = _recordKey(r);
-          if(segMap[key]) continue;  // 重複キーはスキップ (理論上ないはずだが安全策)
-          segMap[key] = {qtyBelow: cum, qty: r.qty};
-          cum += r.qty;
-        }
-        _segItemCumulative[d.date][segKey] = segMap;
-      }
-    }
-  }
+  // 2026-07-12: 旧 _segItemCumulative (各日×セグメントのレコード累積位置) の事前計算を削除。
+  //   バー内スライス描画の廃止 (下記コメント参照) 以降どこからも参照されない dead code で、
+  //   全期間表示では O(バケット数×レコード数) の無駄な負荷になるため。
   // Chart.js プラグイン: 詳細リスト行ホバー時に
   //   ① 期間を薄い縦帯で背景に
   //   ② 各日の積み上げバー内に「このバッチのスライス」を浮き上がらせる
@@ -1125,8 +1215,9 @@ function renderChart(){
       // 期間内 index 範囲
       // 雅さん 2026-05-24: バッチの start/end が表示範囲外でも、点線/赤線は端まで伸ばし
       // 「ここより前/後も続く」を示す矢印キャップを追加
-      const i1 = dateToIdx[hb.start];
-      const i2 = dateToIdx[hb.end];
+      // 週/月粒度時は日付→バケット開始日に写像して列indexを引く (2026-07-12)
+      const i1 = dateToIdx[_bucketOf(hb.start)];
+      const i2 = dateToIdx[_bucketOf(hb.end)];
       let lo = -1, hi = -1;
       let startBeforeRange = false, endAfterRange = false;
       if(i1 !== undefined) lo = i1;
@@ -1244,7 +1335,7 @@ function renderChart(){
   // 雅さん 2026-05-24: 1週間/2週間プリセットでは常に表示 (作業区ON条件を外した)
   // 全社表示でも品目直書きを表示。多すぎる場合は上位5+他N機種で抑制済み
   const _periodNum = parseInt(state.period) || 30;
-  const _showInlineItems = _periodNum <= 14;
+  const _showInlineItems = gran === 'day' && _periodNum <= 14;  // 品目直書きは日粒度のみ
   // 各日のトップ品目を事前計算 (台数の多い順 / 雅さんQ3回答a)
   // 6機種以上ある日は最後の行に「他N機種 X台」を追加 (雅さんQ3指摘)
   const dailyTopItems = [];
@@ -1350,8 +1441,9 @@ function renderChart(){
             afterBody: items => {
               if(!items || !items.length) return [];
               const dayIdx = items[0].dataIndex;
-              const date = daily[dayIdx]?.date;
-              if(!date) return [];
+              const bucket = daily[dayIdx];
+              if(!bucket) return [];
+              const bs = bucket.date, be = bucket.end || bucket.date;  // バケット開始/末日
               // ホバー中のセグメント (kind+status) に絞って品目別を表示
               const hovKind = items[0].dataset._kind;
               const hovStatus = items[0].dataset._status;
@@ -1361,8 +1453,9 @@ function renderChart(){
                 // セグメント一致フィルタ
                 if(hovKind && r.kind !== hovKind) continue;
                 if(hovStatus && r.status !== hovStatus) continue;
+                // レコード期間がこのバケットと重なるか (日粒度なら従来と同じ判定)
                 const sd = r.start_date || r.date;
-                if(sd <= date && date <= r.date){
+                if(sd <= be && bs <= r.date){
                   const key = r.item_code || '(品目なし)';
                   if(!itemMap[key]) itemMap[key] = {qty:0, name: r.item_name || ''};
                   itemMap[key].qty += r.qty;
@@ -1381,7 +1474,7 @@ function renderChart(){
                 const rest = sorted.slice(8).reduce((s,[,info]) => s + info.qty, 0);
                 lines.push(`  +他${sorted.length - 8}機種 計${Math.round(rest)}台`);
               }
-              lines.push("", "💡 クリックでこの日に絞込");
+              lines.push("", gran === 'day' ? "💡 クリックでこの日に絞込" : `💡 クリックでこの${GRAN_LABEL[gran]||'期間'}に絞込`);
               return lines;
             },
             footer: items => {
@@ -1400,22 +1493,27 @@ function renderChart(){
         x:{
           stacked:true,
           ticks:{
-            font: (ctx)=> daily[ctx.index]?.date === CHART_TODAY
+            // 今日=「今日を含むバケット」を強調 / 週末色分けは日粒度のみ (2026-07-12)
+            font: (ctx)=> daily[ctx.index]?.date === TODAY_BUCKET
               ? {size:10, weight:'bold'} : {size:10},
             color: (ctx)=>{
-              if(daily[ctx.index]?.date === CHART_TODAY) return "#b45309"; // 今日=アンバー太字
-              const dow = dowList[ctx.index];
-              if(dow === 0) return "#dc2626";  // 日曜=赤
-              if(dow === 6) return "#2563eb";  // 土曜=青
+              if(daily[ctx.index]?.date === TODAY_BUCKET) return "#b45309"; // 今日=アンバー太字
+              if(gran === 'day'){
+                const dow = dowList[ctx.index];
+                if(dow === 0) return "#dc2626";  // 日曜=赤
+                if(dow === 6) return "#2563eb";  // 土曜=青
+              }
               return "#64748b";
             },
           },
           grid:{
             color: (ctx)=>{
-              if(daily[ctx.index]?.date === CHART_TODAY) return "rgba(251,191,36,0.5)"; // 今日=黄
-              const dow = dowList[ctx.index];
-              if(dow === 0) return "rgba(220,38,38,0.12)";  // 日曜
-              if(dow === 6) return "rgba(37,99,235,0.08)";  // 土曜
+              if(daily[ctx.index]?.date === TODAY_BUCKET) return "rgba(251,191,36,0.5)"; // 今日=黄
+              if(gran === 'day'){
+                const dow = dowList[ctx.index];
+                if(dow === 0) return "rgba(220,38,38,0.12)";  // 日曜
+                if(dow === 6) return "rgba(37,99,235,0.08)";  // 土曜
+              }
               return "rgba(0,0,0,0.05)";
             },
           },
@@ -1425,9 +1523,10 @@ function renderChart(){
       onClick: (e, items) => {
         if(items.length){
           const idx = items[0].index;
-          const date = daily[idx].date;
-          // 詳細リストをこの日付に絞る
-          state._dateFilter = date;
+          const b = daily[idx];
+          // 詳細リストをこのバケット(日/週/月…)の範囲に絞る (2026-07-12 適応粒度対応)
+          state._dateFilter = b.date;
+          state._dateFilterTo = b.end || b.date;
           state.detailLimit = 500;
           renderDetail();
         }
@@ -1688,14 +1787,17 @@ let _tekiyoInputTimer = null;
 document.getElementById('tekiyoMode')?.addEventListener('change', _applyTekiyoInputs);
 
 // ===== 詳細リスト =====
-function renderDetail(){
+// フィルタ+日付絞込+ソート済みの全レコード (表示上限をかける前)。
+// renderDetail と CSV全件ダウンロードで共用 (2026-07-12)
+function _detailRecords(){
   let recs = filteredRecords();
   if(state._dateFilter){
-    // 期間が _dateFilter にかかっているレコードを抽出 (start_date 〜 date 期間内)
+    // 期間が _dateFilter〜_dateFilterTo (バークリック時のバケット範囲) にかかっているレコードを抽出
     const f = state._dateFilter;
+    const t = state._dateFilterTo || f;
     recs = recs.filter(r => {
       const sd = r.start_date || r.date;
-      return sd <= f && f <= r.date;
+      return sd <= t && f <= r.date;
     });
   }
   // ソート: 日付を常にprimary (グラフのx軸と一致させる)
@@ -1735,11 +1837,23 @@ function renderDetail(){
     // 5: workplace (仕入先/作業区) をfinal tiebreaker
     return (a.workplace||"").localeCompare(b.workplace||"");
   });
+  return recs;
+}
+
+function renderDetail(){
+  const recs = _detailRecords();
+  _lastDetailCount = recs.length;
+  // 日付絞込の表示ラベル (バケット範囲なら「開始〜末日」)
+  const _dfLabel = state._dateFilter
+    ? (state._dateFilterTo && state._dateFilterTo !== state._dateFilter
+        ? `${state._dateFilter}〜${state._dateFilterTo}` : state._dateFilter)
+    : "";
   // ヘッダー
   document.getElementById("detailTitle").innerHTML =
     "詳細リスト" +
-    (state._dateFilter ? ` <span style="color:#1e40af">[${state._dateFilter} のみ]</span> <button onclick="clearDateFilter()" style="font-size:11px;padding:2px 8px;margin-left:6px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer">クリア</button>` : "") +
-    ` <span style="color:#64748b;font-weight:400;font-size:11px;margin-left:8px">${recs.length}件</span>`;
+    (state._dateFilter ? ` <span style="color:#1e40af">[${escapeHtml(_dfLabel)} のみ]</span> <button onclick="clearDateFilter()" style="font-size:11px;padding:2px 8px;margin-left:6px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer">クリア</button>` : "") +
+    ` <span style="color:#64748b;font-weight:400;font-size:11px;margin-left:8px">${recs.length}件</span>` +
+    (recs.length ? ` <button onclick="downloadDetailCsv()" title="現在の絞り込み条件の該当全件 (表示上限に関わらず) をCSV保存" style="font-size:11px;padding:2px 8px;margin-left:4px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer;color:#475569"><i class="ti ti-download" aria-hidden="true"></i> CSV全件</button>` : "");
   // ボディ
   const tbody = document.getElementById("detailBody");
   const cs = state.scope === "external" ? 12 : 10;
@@ -1903,13 +2017,18 @@ function renderDetail(){
   }).join("");
   const colspan = state.scope === "external" ? 12 : 10;
   const remaining = recs.length - state.detailLimit;
+  // 2026-07-12: 全件をDOM描画しない (描画は上位N件+追加読込。全件が欲しいときはCSV)
   const moreRow = remaining > 0
     ? `<tr><td colspan="${colspan}" style="text-align:center;padding:10px 0">
+        <span style="display:block;font-size:11px;color:#94a3b8;margin-bottom:6px">他 ${remaining} 件は省略しています (絞り込み or CSVで全件)</span>
         <button onclick="loadMoreDetail()" style="background:#1e293b;border:1px solid #334155;color:#94a3b8;padding:6px 20px;border-radius:6px;cursor:pointer;font-size:13px">
-          ▼ 他 ${remaining} 件を表示
+          ▼ さらに500件表示
         </button>
         <button onclick="loadAllDetail()" style="background:#1e293b;border:1px solid #334155;color:#64748b;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;margin-left:6px">
-          全件 (${recs.length})
+          全件表示 (${recs.length})
+        </button>
+        <button onclick="downloadDetailCsv()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;margin-left:6px">
+          <i class="ti ti-download" aria-hidden="true"></i> CSVで全件保存 (${recs.length})
         </button>
       </td></tr>`
     : "";
@@ -1921,23 +2040,60 @@ function renderDetail(){
   if(thOrderer) thOrderer.style.display = state.scope === "external" ? "" : "none";
 }
 
-function clearDateFilter(){ state._dateFilter = null; state.detailLimit = 500; renderDetail(); }
+function clearDateFilter(){ state._dateFilter = null; state._dateFilterTo = null; state.detailLimit = 500; renderDetail(); }
 
-// 詳細リスト「他N件を表示」— 500件ずつ追加表示
+// 詳細リスト「さらに500件表示」— 500件ずつ追加表示
 function loadMoreDetail(){
-  const tbody = document.getElementById("detailTbody");
-  const scrollY = tbody?.closest(".detail-table-wrap")?.scrollTop || 0;
+  // 旧コードは存在しないID(detailTbody)を見ておりスクロール維持が効いていなかった (2026-07-12修正)
+  const wrap = document.querySelector(".detail-wrap");
+  const scrollY = wrap ? wrap.scrollTop : 0;
   state.detailLimit = (state.detailLimit || 500) + 500;
   renderDetail();
   // スクロール位置を維持
-  const wrap = tbody?.closest(".detail-table-wrap");
   if(wrap) wrap.scrollTop = scrollY;
 }
 
-// 詳細リスト「全件表示」
+// 詳細リスト「全件表示」(件数が多いときは重さを警告。全件が欲しいだけならCSV推奨)
 function loadAllDetail(){
+  if(_lastDetailCount > 5000 &&
+     !confirm(`${_lastDetailCount.toLocaleString()}件を一括描画します。端末によっては動作が重くなります。\n(一覧が欲しいだけなら「CSVで全件保存」が軽くておすすめです)\n続行しますか?`)) return;
   state.detailLimit = Infinity;
   renderDetail();
+}
+
+// ===== CSV全件ダウンロード (2026-07-12) =====
+// 現在の絞り込み条件 (状態/区分/作業区/検索/摘要/日付絞込…) の該当全件を、表示上限に関わらずCSV保存
+function downloadDetailCsv(){
+  const recs = _detailRecords();
+  if(!recs.length){ alert("出力対象がありません"); return; }
+  const esc = v => {
+    const s = String(v == null ? "" : v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const head = ["着手予定","納期","作業区/仕入先","工程","品目コード","品目名","製番","台数(山計上)","済数","総数",
+                "状態","種別","発注者","発注No","手配No","受入No","摘要コード","摘要1","摘要2","備考1","備考2",
+                "最終製品","在庫管理","使用先(最終製品)"];
+  const lines = [head.join(",")];
+  for(const r of recs){
+    lines.push([
+      r.start_date || r.date, r.date, r.workplace || "", r.process_name || "",
+      r.item_code || "", r.item_name || "", r.seiban || "",
+      r.qty, r.qty_done != null ? r.qty_done : "", r.qty_total != null ? r.qty_total : "",
+      r.status || "", KIND_LABEL[r.kind || "manufacture"] || "",
+      r.orderer || "", r.purchase_no || "", r.tehai_no || "", r.receipt_no || "",
+      r.tekiyo_code || "", r.tekiyo1 || "", r.tekiyo2 || "", r.biko1 || "", r.biko2 || "",
+      r.is_final ? "○" : "", r.stock_managed === false ? "なし" : "あり",
+      (r.used_in || []).map(it => Array.isArray(it) ? it[0] : it).join(" ")
+    ].map(esc).join(","));
+  }
+  // BOM付きUTF-8 (Excelで文字化けさせない)
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], {type: "text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `yama_${state.scope}_${_d2ymd(new Date()).replace(/\//g, "")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
 // 詳細リスト行ホバー → グラフ上に「このバッチが日々のバーに含まれるスライス」を可視化
@@ -2396,8 +2552,10 @@ function updateCount(){
 
 // すべて再描画
 function renderAll(opts){
+  // フィルタ条件が変わった可能性があるのでメモ化キャッシュを破棄 (2026-07-12)
+  invalidateFilterCache();
   // 雅さん 2026-05-24: 戻ったときに _dateFilter が消えないよう、復元中は保持
-  if(!opts || !opts.preserveDateFilter) state._dateFilter = null;
+  if(!opts || !opts.preserveDateFilter){ state._dateFilter = null; state._dateFilterTo = null; }
   // フィルター変更時はリスト表示件数をリセット
   state.detailLimit = 500;
   renderWpFilter();
@@ -2606,6 +2764,7 @@ function renderPlanChipBar(){
     btn.addEventListener('click', () => {
       // 詳細リストをその日付に絞り込み
       state._dateFilter = date;
+      state._dateFilterTo = date;
       state.detailLimit = 500;
       renderDetail();
       // アクティブ枠
@@ -2649,7 +2808,10 @@ document.querySelectorAll(".stock-btn").forEach(b=>{
     const noteEl = document.getElementById("stockFilterNote");
     if(noteEl && b.dataset.stock !== "all"){
       const recs = currentData()?.records || [];
-      const hasField = recs.some(r => r.stock_managed !== undefined);
+      // 2026-07-12: 新ビルドは stock_managed==true(既定値) を省略するため、
+      // トップレベルの has_stock_flag があれば付与済みとみなす
+      const hasField = !!(window.YAMA_DATA && window.YAMA_DATA.has_stock_flag) ||
+                       recs.some(r => r.stock_managed !== undefined);
       noteEl.style.display = hasField ? "none" : "";
     } else if(noteEl){
       noteEl.style.display = "none";
