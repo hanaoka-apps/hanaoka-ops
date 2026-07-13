@@ -173,6 +173,18 @@ async function reject(id){const r=prompt('差戻しの理由を入力してく�
   try{await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${id}/fields`,{[F(PI,'承認状態')]:'差戻し',[F(PI,'差戻し理由')]:r,[F(PI,'承認履歴')]:log});snack('差戻しました');await reload();}catch(e){snack('エラー: '+e.message,true);}
 }
 
+// 急ぎで先に振込済み → 全銀出力から除外・報告には残す
+async function markPrepaid(id){
+  const today=new Date().toISOString().slice(0,10);
+  const d=prompt('急ぎで先行振込した「実支払日」を入力（YYYY-MM-DD）。全銀出力からは除外され、支払一覧・社長報告には「先行支払済」として残ります。',today);
+  if(d==null)return;
+  const p=PI.items.find(x=>x.id===id);const note=(p&&p.f[F(PI,'メモ')])||'';
+  try{await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${id}/fields`,{[F(PI,'支払状態')]:'先行支払済',[F(PI,'実支払日')]:d,[F(PI,'メモ')]:(note?note+' / ':'')+'急ぎ先行振込（'+(acct.name||acct.username)+'）'});snack('先行支払済にしました（全銀出力から除外）');await reload();}catch(e){snack('エラー: '+e.message,true);}
+}
+async function unmarkPrepaid(id){
+  if(!confirm('先行支払済を取り消して「未」に戻します。よろしいですか？'))return;
+  try{await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${id}/fields`,{[F(PI,'支払状態')]:'未'});snack('先行支払済を取り消しました');await reload();}catch(e){snack('エラー: '+e.message,true);}
+}
 function renderList(){
   const ym=month();
   const arr=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===dueFilter);
@@ -189,9 +201,13 @@ function renderList(){
   methods.forEach(mtd=>{const g=arr.filter(p=>(p.f[F(PI,'支払手段')]||'')===mtd);const sum=g.reduce((s,p)=>s+(Number(p.f[F(PI,'支払額')])||0),0);
     html+=`<tr><td class="grp" colspan="7">${mtd}　${g.length}件　${yen(sum)}</td></tr>`;
     g.sort((a,b)=>(a.f[F(PI,'支払先名')]||'').localeCompare(b.f[F(PI,'支払先名')]||''));
-    g.forEach(p=>{const f=p.f;const st=f[F(PI,'承認状態')]||'起票';const bank=f[F(PI,'銀行コード')]?`${f[F(PI,'銀行コード')]}-${f[F(PI,'支店コード')]} ${f[F(PI,'預金種目')]||''}${f[F(PI,'口座番号')]||''}`:'<span style="color:var(--danger)">口座未登録</span>';
+    g.forEach(p=>{const f=p.f;const st=f[F(PI,'承認状態')]||'起票';const ps=f[F(PI,'支払状態')]||'未';const paid=(ps==='先行支払済'||ps==='EB出力済'||ps==='支払済');
+      const bank=f[F(PI,'銀行コード')]?`${f[F(PI,'銀行コード')]}-${f[F(PI,'支店コード')]} ${f[F(PI,'預金種目')]||''}${f[F(PI,'口座番号')]||''}`:'<span style="color:var(--danger)">口座未登録</span>';
       const nx=st==='差戻し'?STAGES[1]:nextStage(st);
-      const act=(st===FINAL)?'<span class="st s-ok">承認完了</span>':`<button class="btn ok" style="padding:3px 10px;font-size:12px" onclick="approve('${p.id}')">${nx?nx+'にする':'承認'}</button> <button class="btn d" style="padding:3px 8px;font-size:12px" onclick="reject('${p.id}')">差戻し</button>`;
+      let act;
+      if(paid){ act=`<span class="st s-paid">${ps}</span>`+(ps==='先行支払済'?` <button class="btn g" style="padding:2px 8px;font-size:11px" onclick="unmarkPrepaid('${p.id}')">取消</button>`:''); }
+      else{ const ap=(st===FINAL)?'<span class="st s-ok">承認完了</span>':`<button class="btn ok" style="padding:3px 10px;font-size:12px" onclick="approve('${p.id}')">${nx?nx+'にする':'承認'}</button> <button class="btn d" style="padding:3px 8px;font-size:12px" onclick="reject('${p.id}')">差戻し</button>`;
+        act=ap+` <button class="btn g" style="padding:3px 8px;font-size:12px" onclick="markPrepaid('${p.id}')" title="急ぎで先に振込済み。全銀出力から除外し、報告には残す">先行支払済</button>`; }
       html+=`<tr><td>${f[F(PI,'支払先名')]||''}<span style="color:#999;font-size:11px"> ${f[F(PI,'支払先コード')]||''}</span></td><td>${f[F(PI,'拠点')]||''}</td><td class="num">${yen(f[F(PI,'支払額')])}</td><td>${f[F(PI,'実支払日')]||''}</td><td style="font-size:12px">${bank}</td><td><span class="st ${stClass(st)}">${st}</span>${f[F(PI,'差戻し理由')]?`<div style="font-size:11px;color:var(--danger)">${f[F(PI,'差戻し理由')]}</div>`:''}</td><td>${act}</td></tr>`;});
   });
   html+='</tbody></table>';
@@ -226,8 +242,8 @@ function downloadBytes(bytes,fname){const blob=new Blob([bytes],{type:'text/plai
 function ts(){const d=new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
 async function outputZengin(){
   const ym=month(),due=dueFilter,cfg=loadCfg();
-  const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due&&(p.f[F(PI,'支払手段')]||'')==='総合振込'&&(p.f[F(PI,'承認状態')]||'')===FINAL);
-  if(!list.length){snack('総合振込・'+FINAL+'の支払がありません（承認を通してください）');return;}
+  const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due&&(p.f[F(PI,'支払手段')]||'')==='総合振込'&&(p.f[F(PI,'承認状態')]||'')===FINAL&&!['先行支払済','支払済'].includes(p.f[F(PI,'支払状態')]||''));
+  if(!list.length){snack('総合振込・'+FINAL+'・未払いの支払がありません（承認済/先行支払済を除く）');return;}
   const valid=list.filter(p=>p.f[F(PI,'銀行コード')]),missing=list.length-valid.length;
   if(missing){if(!confirm(missing+'件が振込先口座未登録です。除外して出力しますか？'))return;}
   if(!valid.length){snack('出力対象なし（全件が口座未登録）');return;}
