@@ -147,7 +147,7 @@ async function gputFile(path,file){const t=await token();const r=await fetch(`${
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;initMonth();await ensureMatchList();await loadAll();}
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<5;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
-async function onMonth(){await loadMatchState();await loadInvoicePdfs();renderSummary();renderList();if(selectedCode)renderDetail(selectedCode);}
+async function onMonth(){await loadReceipts();await loadMatchState();await loadInvoicePdfs();renderSummary();renderList();if(selectedCode)renderDetail(selectedCode);}
 
 async function ensureMatchList(){
   if(M.id)return;
@@ -203,7 +203,10 @@ async function loadReceipts(){
   const msg=document.getElementById('status-msg');msg.textContent='受入読み込み中...';
   try{
     const driveId=await resolveDrive();
-    const text=await gblob(`${GRAPH}/drives/${driveId}/root:/${encodeURIComponent(FILE_PATH)}:/content`).then(b=>b.arrayBuffer()).then(a=>new TextDecoder('utf-8').decode(a));
+    // 月別スナップショット優先：受入リスト_YYYY-MM.csv → 無ければ従来の単一ファイルにフォールバック
+    const ym=month().replace('/','-');const monthly='受入リスト_'+ym+'.csv';let text=null,usedFile='';
+    for(const fname of [monthly,FILE_PATH]){try{text=await gblob(`${GRAPH}/drives/${driveId}/root:/${encodeURIComponent(fname)}:/content`).then(b=>b.arrayBuffer()).then(a=>new TextDecoder('utf-8').decode(a));usedFile=fname;break;}catch(e){}}
+    if(text==null)throw new Error('受入リストが見つかりません（'+monthly+' か '+FILE_PATH+' を配置してください）');
     const rows=parseCSV(text);
     const h=rows[0];const idx=n=>h.findIndex(x=>x.replace(/\s/g,'')===n);
     const ci={code:idx('仕入先ｺｰﾄﾞ'),name:idx('仕入先略称'),dept:idx('部門名称'),item:idx('品目名'),model:idx('型番'),
@@ -228,7 +231,7 @@ async function loadReceipts(){
       const deps=Object.entries(v.byDept); if(deps.length){ deps.sort((a,b)=>b[1]-a[1]); v.byDept[deps[0][0]]+=v._tax; } else { v.byDept['(消費税)']=v._tax; }
     });
     vendors=Object.values(map).sort((a,b)=>a.code.localeCompare(b.code));
-    msg.textContent=`${vendors.length}仕入先 / ${rows.length-1}明細`;
+    msg.textContent=`${vendors.length}仕入先 / ${rows.length-1}明細（${usedFile}）`;
   }catch(e){msg.textContent='エラー';document.getElementById('list-pane').innerHTML=`<div class="empty">受入読込エラー：${e.message}</div>`;snack('受入取得エラー: '+e.message,true);}
 }
 
@@ -344,16 +347,17 @@ function renderDetail(code){
         <button class="btn-save" onclick="saveVendor('${code}',{inv:${hasInv?sum:'null'}})">💾 確定（保存）</button>
       </div>
     </div>
-    <div class="deptbox"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">拠点・部門別内訳（国内/ソリューション/工場）</div>${byDept}</div>
-    <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="font-size:12px;color:var(--muted)">明細・拠点表示：</span><div class="seg" style="font-size:12px"><button id="dvm-all" onclick="setDetailView('all')">全部</button><button id="dvm-honsha" onclick="setDetailView('本社')">本社</button><button id="dvm-kojo" onclick="setDetailView('工場')">工場</button></div></div>
-    <div class="det-split">
-      <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
-      <div class="pdf-pane"><h4>手元請求書（複数枚可・本社/工場別もOK）</h4>
-        ${candHtml}
-        <label class="pdf-drop">📎 請求書PDFを追加（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
-        <div id="pdf-host"><div class="pdf-empty">読込中...</div></div>
-      </div>
+    <div class="pdf-pane" style="position:static;max-height:none;margin-top:8px"><h4>請求書PDF（複数枚可・本社/工場別もOK）</h4>
+      ${candHtml}
+      <label class="pdf-drop">📎 請求書PDFを追加（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
+      <div id="pdf-host"><div class="pdf-empty">読込中...</div></div>
     </div>
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;font-size:13px;color:var(--primary);padding:4px 0">▸ SMILEの明細・拠点内訳を見る（${lines.length}件）</summary>
+      <div class="deptbox"><div style="font-size:12px;color:var(--muted);margin:6px 0 4px">拠点・部門別内訳（国内/ソリューション/工場）</div>${byDept}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="font-size:12px;color:var(--muted)">明細・拠点表示：</span><div class="seg" style="font-size:12px"><button id="dvm-all" onclick="setDetailView('all')">全部</button><button id="dvm-honsha" onclick="setDetailView('本社')">本社</button><button id="dvm-kojo" onclick="setDetailView('工場')">工場</button></div></div>
+      <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
+    </details>
     <div style="margin-top:12px">${arch?`<button class="btn-ghost" onclick="setArch('${code}',false)">↩ アーカイブ解除</button>`:`<button class="btn-arch" onclick="setArch('${code}',true)">🗄 アーカイブ（対象外にする）</button>`}</div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">決済月 ${month()}／表示明細${lines.length}件・全${v.lines.length}件。保存でSharePointに残ります。</div>`;
   segOn('dvm-',detailView);
