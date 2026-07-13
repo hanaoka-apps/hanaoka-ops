@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>仕入突合（受入リスト） | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="nav.js" defer></script>
 <style>
   :root{--primary:#1a5fa8;--primary-dk:#134680;--success:#2e7d52;--warning:#c07a00;--danger:#c0392b;--bg:#f4f6f9;--card:#fff;--border:#dde2ec;--text:#1e2533;--muted:#6b7a99;}
   *{box-sizing:border-box;margin:0;padding:0;}
@@ -95,6 +96,7 @@
 </div>
 
 <div id="app-view">
+  <div id="app-nav-slot"></div>
   <div class="toolbar">
     <label>決済月</label><select id="month-select" onchange="onMonth()"></select>
     <input id="f-text" placeholder="仕入先で絞込" oninput="renderList()">
@@ -124,7 +126,7 @@ const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8
 const MLIST='AP_PurchaseMatch';
 let msalApp=null,acct=null,vendors=[],matchState={},savedState={},archived={},pdfSel={},pdfCache={},selectedCode=null,listView='all',detailView='all';
 let M={fmap:{},id:null};
-let INV={fmap:{},id:null}, invByVendor={}, invByName={}, invAmtByVendor={}, invAmtByName={};
+let INV={fmap:{},id:null}, invByVendor={}, invByName={}, invAmtByVendor={}, invAmtByName={}, unlinkedInv=[];
 function normName(s){return String(s||'').replace(/株式会社|有限会社|（株）|\(株\)|㈱|（有）|\(有\)|㈲|\s|　/g,'');}
 // AI読取の請求書税込額（仕入行 金額_税込 の合計）。
 // 金額は「仕入先コード一致」のみで集計する。名寄せは同名別会社の誤合算リスクがあるので金額には使わない（PDF表示候補にのみ使用）。
@@ -143,7 +145,7 @@ async function gblob(url){const t=await token();const r=await fetch(url,{headers
 async function gputFile(path,file){const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/root:${encodeURI(path)}:/content`,{method:'PUT',headers:{Authorization:'Bearer '+t,'Content-Type':file.type||'application/pdf'},body:file});if(!r.ok)throw new Error('PDFアップロード '+r.status+' '+await r.text());return r.json();}
 
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;initMonth();await ensureMatchList();await loadAll();}
-function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<5;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}}
+function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<5;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
 async function onMonth(){await loadMatchState();renderSummary();renderList();if(selectedCode)renderDetail(selectedCode);}
 
@@ -181,13 +183,14 @@ async function ensureInvoiceList(){if(INV.id)return;
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);const l=ls.value.find(x=>x.displayName==='AP_Invoice');if(!l)throw new Error('AP_Invoice なし');INV.id=l.id;
   const c=await gget(`/sites/${AP_SITE}/lists/${INV.id}/columns?$select=name,displayName`);c.value.forEach(x=>INV.fmap[x.displayName]=x.name);}
 async function loadInvoicePdfs(){
-  invByVendor={};invByName={};invAmtByVendor={};invAmtByName={};
+  invByVendor={};invByName={};invAmtByVendor={};invAmtByName={};unlinkedInv=[];
   try{await ensureInvoiceList();const m=month();
     let items=[],n=`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500`;
     while(n){const d=await gget(n);items=items.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
     const F=INV.fmap;
     items.forEach(it=>{const f=it.fields;const cat=f[F['支払区分']]||'';if(cat!=='本社仕入'&&cat!=='工場仕入')return;if((f[F['対象年月']]||'')!==m)return;if(f[F['アーカイブフラグ']]===true)return;
-      const code=f[F['支払先コード']]||'';const nm=normName(f[F['支払先名']]||'');const doc=f[F['DOCコード']]||'';const amt=Number(f[F['金額_税込']])||0;
+      const code=f[F['支払先コード']]||'';const rawName=f[F['支払先名']]||'';const nm=normName(rawName);const doc=f[F['DOCコード']]||'';const amt=Number(f[F['金額_税込']])||0;
+      if(!code){ unlinkedInv.push({id:it.id,name:rawName,nm:nm,incl:amt,doc:String(doc)}); }  // 仕入先コード未割当＝紐づけ候補
       if(amt){ if(code)invAmtByVendor[code]=(invAmtByVendor[code]||0)+amt; if(nm)invAmtByName[nm]=(invAmtByName[nm]||0)+amt; }
       String(doc).split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean).forEach(p=>{
         if(code){(invByVendor[code]=invByVendor[code]||[]).push(p);}
@@ -277,9 +280,13 @@ function renderList(){
   if(listView!=='all')list=list.filter(v=>(v.byLoc[listView]||0)>0);
   if(ft)list=list.filter(v=>v.name.includes(ft)||v.code.includes(ft));
   const pane=document.getElementById('list-scroll');
-  pane.innerHTML=`<table class="vl"><thead><tr><th>仕入先(コード順)</th><th>拠点</th><th class="num">受入(税込)${listView!=='all'?'※'+listView:''}</th><th>突合</th></tr></thead><tbody>`+
+  // まとめて確定バー：AI読取＝SMILE一致で未確定の社数
+  const bulkN=vendors.filter(v=>!archived[v.code]&&aiMatch(v)).length;
+  const bulkBar=bulkN?`<div style="background:#e6f4ea;border:1px solid #b7dfc4;border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">✓ AIが読んだ請求書額とSMILEが一致：<b>${bulkN}社</b><button onclick="bulkConfirm()" style="background:#2e7d32;color:#fff;border:none;padding:6px 14px;border-radius:5px;font-size:13px;cursor:pointer;margin-left:auto">${bulkN}社をまとめて確定</button></div>`:'';
+  pane.innerHTML=bulkBar+`<table class="vl"><thead><tr><th>仕入先(コード順)</th><th>拠点</th><th class="num">受入(税込)${listView!=='all'?'※'+listView:''}</th><th>突合</th></tr></thead><tbody>`+
     (list.length?list.map(v=>{const st=vstatus(v);const ms=matchState[v.code]||{};const locs=Object.entries(v.byLoc).filter(([k,x])=>x>0).map(([k])=>`<span class="loc-pill ${k==='工場'?'pill-kojo':'pill-honsha'}">${k}</span>`).join('');
-      return `<tr class="vrow ${v.code===selectedCode?'active':''} ${archived[v.code]?'archived':''}" onclick="selectVendor('${v.code}')"><td>${v.code} ${v.name||''}${ms.received?' <span class="rcv">✓受領</span>':''}</td><td>${locs}</td><td class="num">${yen(vIncl(v,listView))}</td><td><span class="st ${st.cls}">${st.txt}</span></td></tr>`;}).join(''):'<tr><td colspan="4" class="empty">該当なし</td></tr>')
+      const qbtn=aiMatch(v)?` <button onclick="event.stopPropagation();quickConfirm('${v.code}')" style="font-size:11px;padding:2px 8px;border:1px solid #2e7d32;background:#fff;color:#2e7d32;border-radius:4px;cursor:pointer">✓確定</button>`:'';
+      return `<tr class="vrow ${v.code===selectedCode?'active':''} ${archived[v.code]?'archived':''}" onclick="selectVendor('${v.code}')"><td>${v.code} ${v.name||''}${ms.received?' <span class="rcv">✓受領</span>':''}</td><td>${locs}</td><td class="num">${yen(vIncl(v,listView))}</td><td><span class="st ${st.cls}">${st.txt}</span>${qbtn}</td></tr>`;}).join(''):'<tr><td colspan="4" class="empty">該当なし</td></tr>')
     +`</tbody></table>`;
 }
 function selectVendor(code){selectedCode=code;renderList();renderDetail(code);}
@@ -300,6 +307,8 @@ function renderDetail(code){
   const reasonSel=`<select class="reason" id="r-reason" onchange="setReason('${code}',this.value)"><option value="">理由―</option>
     <option ${m.reason==='SMILE修正'?'selected':''}>SMILE修正</option><option ${m.reason==='先方出し直し'?'selected':''}>先方出し直し</option>
     <option ${m.reason==='締後イレギュラー'?'selected':''}>締後イレギュラー</option><option ${m.reason==='確認中'?'selected':''}>確認中</option></select>`;
+  const candHtml=(function(){const linked=invByVendor[code]&&invByVendor[code].length;if(linked)return '';const cs=candidatesFor(v);if(!cs.length)return '';
+    return `<div style="background:#fff8e1;border:1px solid #ffe08a;border-radius:6px;padding:8px 10px;margin:6px 0;font-size:12px">この仕入先の請求書が未紐づけかもしれません（コード未割当）：`+cs.map(u=>`<div style="margin-top:4px">「${u.name}」 ${yen(u.incl)} <button onclick="linkInvoice('${u.id}','${code}')" style="font-size:11px;padding:2px 8px;border:1px solid var(--primary);background:#fff;color:var(--primary);border-radius:4px;cursor:pointer">この請求書を紐づける</button></div>`).join('')+`</div>`;})();
   d.innerHTML=`
     <div class="dh"><h2>${v.name||'(名称なし)'}</h2><span class="code">${v.code}</span>${detailView!=='all'?`<span class="loc-pill ${detailView==='工場'?'pill-kojo':'pill-honsha'}">${detailView}のみ表示</span>`:''}${arch?'<span class="st st-none">アーカイブ</span>':''}${m.at?`<span style="font-size:11px;color:var(--muted)">保存:${(m.by||'')} ${String(m.at).slice(0,10)}</span>`:''}</div>
     <div class="dmetrics">
@@ -321,6 +330,7 @@ function renderDetail(code){
     <div class="det-split">
       <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
       <div class="pdf-pane"><h4>手元請求書（複数枚可・本社/工場別もOK）</h4>
+        ${candHtml}
         <label class="pdf-drop">📎 請求書PDFを追加（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
         <div id="pdf-host"><div class="pdf-empty">読込中...</div></div>
       </div>
@@ -382,6 +392,9 @@ async function saveVendor(code,opt){
   if(opt.archiveOnly){
     // アーカイブ切替：金額は触らない（保存済み値を維持、AI額は採用しない）
     const s=savedState[code]||{}; inv=(s.inv==null||s.inv==='')?null:parseFloat(s.inv);
+  }else if(opt.inv!==undefined){
+    // 一括/行内確定：明示された値（AI読取額）を採用
+    inv=(opt.inv==null||opt.inv==='')?null:parseFloat(opt.inv);
   }else{
     // 保存ボタン＝人の確認行為。欄の値（AI提案のまま未編集でも可）を採用。
     const box=document.querySelector('.match-in');
@@ -389,6 +402,7 @@ async function saveVendor(code,opt){
     if((raw===''||raw==null) && m.inv==null){ const av=aiAmt(code); if(av!=null) raw=av; }
     inv=(raw===''||raw==null)?null:parseFloat(raw);
   }
+  if(opt.received!==undefined) m.received=!!opt.received;
   m.inv=inv;  // 保存値として確定（一覧・進捗にも反映）
   const incl=v.excl+v.tax;
   const diff=inv==null?null:Math.round(inv)-Math.round(incl);
@@ -406,8 +420,27 @@ async function saveVendor(code,opt){
     matchState[code].status=status;matchState[code].by=fields[mi('突合者')];matchState[code].at=fields[mi('突合日時')];
     // 保存済みスナップショットを更新（進捗集計はこれを見る）
     savedState[code]={inv:inv,received:!!m.received,reason:m.reason||'',status:status};
-    snack('✅ 保存しました');renderList();renderSummary();renderDetail(code);
-  }catch(e){snack('保存エラー: '+e.message,true);}
+    if(!opt.silent){snack('✅ 保存しました');renderList();renderSummary();renderDetail(code);}
+  }catch(e){snack('保存エラー: '+e.message,true);throw e;}
+}
+// AI読取額＝SMILE受入額（完全一致）かつ未保存確定 → ワンクリック確定の候補
+function aiMatch(v){const a=aiAmt(v.code);if(a==null)return false;if(Math.round(a)!==Math.round(v.excl+v.tax))return false;const s=savedState[v.code];const already=s&&s.inv!=null&&Math.round(s.inv)===Math.round(v.excl+v.tax);return !already;}
+async function quickConfirm(code){const v=vendors.find(x=>x.code===code);if(!v)return;try{await saveVendor(code,{inv:aiAmt(code),received:true,silent:true});snack('✓ 確定：'+(v.name||code));}catch(e){}renderList();renderSummary();if(selectedCode===code)renderDetail(code);}
+async function bulkConfirm(){
+  const cands=vendors.filter(v=>!archived[v.code]&&aiMatch(v));
+  if(!cands.length){snack('まとめて確定できる（AI一致）仕入先はありません');return;}
+  const list=cands.slice(0,40).map(v=>' ・'+v.code+' '+(v.name||'')+'  '+yen(v.excl+v.tax)).join('\n');
+  if(!confirm('AI読取額とSMILE受入額が一致している '+cands.length+'社を「一致・受領」で確定します：\n\n'+list+(cands.length>40?'\n …ほか':'')+'\n\nあとで個別に開いて修正できます。確定しますか？'))return;
+  let ok=0,ng=0;
+  for(const v of cands){try{await saveVendor(v.code,{inv:aiAmt(v.code),received:true,silent:true});ok++;}catch(e){ng++;}}
+  snack('まとめて確定：'+ok+'社完了'+(ng?'／'+ng+'社エラー':''));renderList();renderSummary();if(selectedCode)renderDetail(selectedCode);
+}
+// PDF未着（コード未割当の仕入請求書）を、この仕入先に紐づける（AP_Invoiceの支払先コードを付与）
+function candidatesFor(v){const key=normName(v.name);if(!key)return [];return unlinkedInv.filter(u=>u.nm&&(u.nm===key||u.nm.indexOf(key)>=0||key.indexOf(u.nm)>=0));}
+async function linkInvoice(invId,code){
+  try{await gpatch(`/sites/${AP_SITE}/lists/${INV.id}/items/${invId}/fields`,{[INV.fmap['支払先コード']]:code});
+    snack('請求書を紐づけました');await loadInvoicePdfs();renderDetail(code);renderList();}
+  catch(e){snack('紐づけエラー: '+e.message,true);}
 }
 function setArch(code,on){archived[code]=on?true:false;if(!on)delete archived[code];
   saveVendor(code,{archiveOnly:true}); // 状態(対象外/解除)のみ保存。金額・AI額は触らない
