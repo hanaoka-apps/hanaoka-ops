@@ -126,13 +126,13 @@ async function generate(){
   // 既存（決済月×締め回×支払先×手段）
   const exist=new Set(PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due).map(p=>(p.f[F(PI,'支払先コード')]||p.f[F(PI,'支払先名')]||'')+'|'+(p.f[F(PI,'支払手段')]||'')));
   const drafts={}; // key → {name,code,method,amount,loc,ids[]}
-  const add=(code,name,method,amount,loc,invId)=>{const k=(code||name)+'|'+method;drafts[k]=drafts[k]||{code,name,method,amount:0,loc,ids:[]};drafts[k].amount+=amount;if(invId)drafts[k].ids.push(String(invId));};
-  // 経費：確定済（ロック）・経費系・当月・当締め回
+  const add=(code,name,method,amount,loc,invId,prepaid,ppdate)=>{const k=(code||name)+'|'+method+'|'+(prepaid?'P':'N');drafts[k]=drafts[k]||{code,name,method,amount:0,loc,ids:[],prepaid:!!prepaid,ppdate:ppdate||''};drafts[k].amount+=amount;if(invId)drafts[k].ids.push(String(invId));if(prepaid&&ppdate&&!drafts[k].ppdate)drafts[k].ppdate=ppdate;};
+  // 経費：確定済（ロック）or 先行支払済・経費系・当月・当締め回
   INV.items.forEach(x=>{const f=x.f;const cat=iv(f,'支払区分')||'';if(cat!=='本社経費'&&cat!=='工場経費')return;
     if(iv(f,'仕分け済')!==true||iv(f,'アーカイブフラグ')===true)return;
     if((iv(f,'対象年月')||'')!==ym||(iv(f,'支払日区分')||'')!==due)return;
-    if((iv(f,'支払ステータス')||'')!=='確定済（ロック）')return;
-    add(iv(f,'支払先コード')||'',iv(f,'支払先名')||'',iv(f,'支払手段')||'総合振込',Number(iv(f,'金額_税込'))||0,cat.indexOf('工場')>=0?'工場':'本社',x.id);});
+    const pst=iv(f,'支払ステータス')||'';if(pst!=='確定済（ロック）'&&pst!=='先行支払済')return;
+    add(iv(f,'支払先コード')||'',iv(f,'支払先名')||'',iv(f,'支払手段')||'総合振込',Number(iv(f,'金額_税込'))||0,cat.indexOf('工場')>=0?'工場':'本社',x.id,pst==='先行支払済',iv(f,'先行支払日'));});
   // 仕入：受領済・突合済（締め回=月末のみ。仕入先ごと）
   if(due==='月末'){
     PM.items.forEach(x=>{const f=x.f;if((f[F(PM,'対象年月')]||'')!==ym)return;const stt=f[F(PM,'突合状態')]||'';if(stt!=='一致'&&stt!=='差異あり')return;if(f[F(PM,'請求書受領')]!==true)return;
@@ -153,8 +153,10 @@ async function generate(){
     fields[F(PI,'支払額')]=dft.amount;fields[F(PI,'拠点')]=dft.loc||'本社';
     fields[F(PI,'元請求書ID')]=dft.ids.join(',');
     fields[F(PI,'銀行コード')]=snap.BankCode||'';fields[F(PI,'支店コード')]=snap.BranchCode||'';fields[F(PI,'預金種目')]=snap.AcctType||'';fields[F(PI,'口座番号')]=snap.AcctNo||'';fields[F(PI,'受取人カナ')]=snap.AcctHolder||'';
-    fields[F(PI,'承認状態')]='起票';fields[F(PI,'支払状態')]='未';
-    if(dft.method==='総合振込'&&!snap.BankCode)fields[F(PI,'メモ')]='⚠振込先口座未登録（AP_VendorBank）';
+    fields[F(PI,'承認状態')]='起票';fields[F(PI,'支払状態')]=dft.prepaid?'先行支払済':'未';
+    if(dft.prepaid&&dft.ppdate)fields[F(PI,'実支払日')]=dft.ppdate;
+    if(dft.prepaid)fields[F(PI,'メモ')]='経費側で先行支払済（急ぎ振込）';
+    if(dft.method==='総合振込'&&!snap.BankCode&&!dft.prepaid)fields[F(PI,'メモ')]='⚠振込先口座未登録（AP_VendorBank）';
     try{await gpost(`/sites/${AP_SITE}/lists/${PI.id}/items`,{fields});made++;log.push(`✅ ${dft.name}／${dft.method}／${yen(dft.amount)}`);}catch(e){log.push(`❌ ${dft.name}：${e.message}`);}
   }
   const el=document.getElementById('gen-result');el.style.display='block';el.textContent=`【${ym} ${due} 生成】作成${made} / 既存スキップ${skip}\n`+log.join('\n');
