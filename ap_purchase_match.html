@@ -212,11 +212,21 @@ async function loadReceipts(){
     for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r[ci.code])continue;
       const excl=parseFloat(r[ci.excl])||0;const tax=parseFloat(r[ci.tax])||0;
       const code=r[ci.code].trim();const loc=locOf(r[ci.dept],r[ci.wh]);
-      const v=map[code]||(map[code]={code,name:(r[ci.name]||'').trim(),excl:0,tax:0,byLoc:{本社:0,工場:0},byLocExcl:{本社:0,工場:0},byDept:{},lines:[]});
-      v.excl+=excl;v.tax+=tax;v.byLoc[loc]+=excl+tax;v.byLocExcl[loc]+=excl;
-      const dn=(r[ci.dept]||'(部門なし)').trim();v.byDept[dn]=(v.byDept[dn]||0)+excl+tax;
-      v.lines.push({date:r[ci.date],slip:r[ci.slip],dept:dn,loc,item:(r[ci.item]||'').trim(),model:(r[ci.model]||'').trim(),excl,tax,incl:excl+tax,dtype:(r[ci.dtype]||'').trim()});
+      const item=(r[ci.item]||'').trim();const isTax=/消費税/.test(item);  // 消費税等の伝票（税抜0・税のみ・独自部門）は拠点判定に使わない
+      const dn=(r[ci.dept]||'(部門なし)').trim();
+      const v=map[code]||(map[code]={code,name:(r[ci.name]||'').trim(),excl:0,tax:0,byLoc:{本社:0,工場:0},byLocExcl:{本社:0,工場:0},byDept:{},lines:[],_tax:0});
+      v.excl+=excl;v.tax+=tax;
+      if(isTax){ v._tax+=excl+tax; }  // 保留 → 後で商品のある拠点へ按分
+      else { v.byLoc[loc]+=excl+tax;v.byLocExcl[loc]+=excl;v.byDept[dn]=(v.byDept[dn]||0)+excl+tax; }
+      v.lines.push({date:r[ci.date],slip:r[ci.slip],dept:dn,loc,item,model:(r[ci.model]||'').trim(),excl,tax,incl:excl+tax,dtype:(r[ci.dtype]||'').trim(),isTax});
     }
+    // 消費税等（税のみ伝票）を商品のある拠点へ按分（拠点分類を税だけで汚さない）
+    Object.values(map).forEach(v=>{ if(!v._tax)return;
+      const g=v.byLoc.本社+v.byLoc.工場;
+      if(g>0){ const hTax=Math.round(v._tax*(v.byLoc.本社/g)); v.byLoc.本社+=hTax; v.byLoc.工場+=(v._tax-hTax); }
+      else { v.byLoc.本社+=v._tax; }
+      const deps=Object.entries(v.byDept); if(deps.length){ deps.sort((a,b)=>b[1]-a[1]); v.byDept[deps[0][0]]+=v._tax; } else { v.byDept['(消費税)']=v._tax; }
+    });
     vendors=Object.values(map).sort((a,b)=>a.code.localeCompare(b.code));
     msg.textContent=`${vendors.length}仕入先 / ${rows.length-1}明細`;
   }catch(e){msg.textContent='エラー';document.getElementById('list-pane').innerHTML=`<div class="empty">受入読込エラー：${e.message}</div>`;snack('受入取得エラー: '+e.message,true);}
