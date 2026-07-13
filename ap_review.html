@@ -106,17 +106,18 @@
 <div id="app-view">
   <div id="app-nav-slot"></div>
   <div class="topbar">
-    <label>対象年月</label>
-    <select id="month-select" onchange="loadData()"></select>
     <div class="seg">
-      <button id="mode-review" class="on" onclick="setMode('review')">未確認</button>
-      <button id="mode-due" onclick="setMode('due')">当月（締日別）</button>
-      <button id="mode-all" onclick="setMode('all')">全件</button>
-      <button id="mode-arch" onclick="setMode('arch')">🗄 アーカイブ</button>
+      <button id="mode-review" class="on" onclick="setMode('review')">未チェック</button>
+      <button id="mode-all" onclick="setMode('all')">全期間</button>
+      <button id="mode-month" onclick="setMode('month')">月ごと</button>
+      <button id="mode-arch" onclick="setMode('arch')">🗄 対象外</button>
     </div>
+    <label style="font-size:12px;color:var(--muted)">月ごとの月</label>
+    <select id="month-select" onchange="renderList()"></select>
     <span id="status-msg" style="font-size:12px;color:var(--muted)"></span>
     <div class="links"><a href="ap_dashboard.html">📊 ダッシュボード</a><a href="ap_purchase_match.html">🔗 仕入突合</a><a href="ap_entry.html">✏ 手入力</a></div>
   </div>
+  <div id="due-chips" style="display:flex;gap:8px;align-items:center;padding:8px 16px;flex-wrap:wrap;border-bottom:1px solid var(--border);background:#fafbfc"></div>
   <div class="main">
     <div class="list-pane" id="list-pane"></div>
     <div class="detail-pane" id="detail-pane"><div class="empty">左の請求書を選択してください</div></div>
@@ -130,7 +131,7 @@ const SCOPES=['User.Read','Sites.ReadWrite.All','Files.Read.All'];
 const GRAPH='https://graph.microsoft.com/v1.0';
 const SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const LIST_H='AP_Invoice', LIST_L='AP_PaymentSlip';
-let msalApp=null,acct=null,mode='review',selected=null,editMode=false;
+let msalApp=null,acct=null,mode='review',selected=null,editMode=false,dueFilter='all';
 let H={fmap:{},id:null,inv:[]};
 let L={fmap:{},id:null,byInv:{}};
 let revCache={};
@@ -180,7 +181,8 @@ async function showApp(){
 }
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=0;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
-function setMode(m){mode=m;['review','due','all','arch'].forEach(x=>document.getElementById('mode-'+x).classList.toggle('on',x===m));renderList();}
+function setMode(m){mode=m;['review','all','month','arch'].forEach(x=>document.getElementById('mode-'+x).classList.toggle('on',x===m));renderList();}
+function setDue(d){dueFilter=d;renderList();}
 
 async function loadData(){
   const msg=document.getElementById('status-msg');msg.textContent='読み込み中...';
@@ -188,8 +190,8 @@ async function loadData(){
     await ensureMaps();
     let hs=[],n=`/sites/${SITE}/lists/${H.id}/items?$expand=fields&$top=500`;
     while(n){const d=await gget(n);hs=hs.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
-    const m=month();
-    H.inv=hs.filter(it=>{const c=hv(it.fields,'支払区分');return hv(it.fields,'対象年月')===m && hv(it.fields,'仕分け済')===true && (c==='本社経費'||c==='工場経費');}).map(it=>({id:it.id,f:it.fields}));
+    // 全期間の経費（仕分け済）を保持。月フィルタは「月ごと」モードと締日チップ側で行う。
+    H.inv=hs.filter(it=>{const c=hv(it.fields,'支払区分');return hv(it.fields,'仕分け済')===true && (c==='本社経費'||c==='工場経費');}).map(it=>({id:it.id,f:it.fields}));
     let lsx=[],n2=`/sites/${SITE}/lists/${L.id}/items?$expand=fields&$top=2000`;
     while(n2){const d=await gget(n2);lsx=lsx.concat(d.value||[]);n2=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
     L.byInv={};
@@ -212,19 +214,41 @@ function invMeta(inv){
 function badge(m){if(m.status==='確定済（ロック）')return '<span class="badge b-locked">確定</span>';if(m.review)return '<span class="badge b-review">要確認</span>';if(m.status==='差戻し')return '<span class="badge b-flag">差戻し</span>';return '<span class="badge b-wait">確認待</span>';}
 function cardHtml(inv){const m=invMeta(inv);const fl=[m.offset?'相殺':'',m.acctchg?'口座変更':'',m.dup?'二重':''].filter(Boolean).map(x=>`<span class="badge b-flag">${x}</span>`).join('');
   return `<div class="inv-card ${inv.id===selected?'active':''}" onclick="select('${inv.id}')"><div class="pname">${m.payee||'(不明)'} ${badge(m)}${fl}</div><div class="meta"><span>${m.paydate||'-'}・${m.cat||''}・${m.nlines}明細</span><span class="amt">${yen(m.total)}</span></div></div>`;}
-function renderList(){
-  const pane=document.getElementById('list-pane');let arr=H.inv.slice();
-  if(mode==='arch'){arr=arr.filter(x=>invMeta(x).archived);pane.innerHTML=`<div class="list-filter">アーカイブ ${arr.length}件</div>`+(arr.length?arr.map(cardHtml).join(''):'<div class="empty" style="padding:30px">アーカイブなし</div>');return;}
+function baseArr(){ // モード別の基礎集合（締日フィルタ前）
+  let arr=H.inv.slice();
+  if(mode==='arch') return arr.filter(x=>invMeta(x).archived);
   arr=arr.filter(x=>!invMeta(x).archived);
-  if(mode==='review'){
-    arr=arr.filter(x=>{const m=invMeta(x);return m.status!=='確定済（ロック）'&&m.status!=='支払済'&&(m.review||m.status==='確認待'||m.status==='差戻し');});
-    arr.sort((a,b)=>{const ma=invMeta(a),mb=invMeta(b);return (mb.review-ma.review)||(mb.total-ma.total);});
-    pane.innerHTML=`<div class="list-filter">未確認 ${arr.length}件</div>`+(arr.length?arr.map(cardHtml).join(''):'<div class="empty" style="padding:30px">未確認なし 🎉</div>');
-  }else if(mode==='due'){
-    pane.innerHTML=`<div class="list-filter">${month()} 締日別</div>`;
-    PAYDATES.forEach(pd=>{const g=arr.filter(x=>invMeta(x).paydate===pd);if(!g.length)return;const sum=g.reduce((s,x)=>s+invMeta(x).total,0);pane.innerHTML+=`<div class="grp-h">${pd}　${g.length}件　${yen(sum)}</div>`+g.map(cardHtml).join('');});
-    const none=arr.filter(x=>!PAYDATES.includes(invMeta(x).paydate));if(none.length)pane.innerHTML+=`<div class="grp-h">未設定　${none.length}件</div>`+none.map(cardHtml).join('');
-  }else{pane.innerHTML=`<div class="list-filter">全件 ${arr.length}件</div>`+arr.map(cardHtml).join('');}
+  if(mode==='review') arr=arr.filter(x=>{const m=invMeta(x);return m.status!=='確定済（ロック）'&&m.status!=='支払済'&&(m.review||m.status==='確認待'||m.status==='差戻し');});
+  else if(mode==='month') arr=arr.filter(x=>hv(x.f,'対象年月')===month());
+  return arr;
+}
+function renderDueChips(arr){
+  const el=document.getElementById('due-chips');if(!el)return;
+  if(mode==='arch'){el.style.display='none';return;} el.style.display='flex';
+  const chip=(key,label)=>{const g=key==='all'?arr:arr.filter(x=>invMeta(x).paydate===key);const sum=g.reduce((s,x)=>s+invMeta(x).total,0);const on=dueFilter===key;
+    return `<button onclick="setDue('${key}')" style="border:1px solid ${on?'var(--primary)':'var(--border)'};background:${on?'var(--primary)':'#fff'};color:${on?'#fff':'#333'};border-radius:16px;padding:5px 12px;font-size:12px;cursor:pointer">${label} <b>${g.length}</b>件 ${yen(sum)}</button>`;};
+  el.innerHTML='<span style="font-size:12px;color:var(--muted)">締日で絞込:</span>'+[['all','すべて'],['10日','10日'],['20日','20日'],['月末','月末']].map(x=>chip(x[0],x[1])).join('');
+}
+function renderList(){
+  const pane=document.getElementById('list-pane');
+  let arr=baseArr();
+  renderDueChips(arr);
+  if(mode!=='arch'&&dueFilter!=='all') arr=arr.filter(x=>invMeta(x).paydate===dueFilter);
+  const label={review:'未チェック',all:'全期間',month:month()+' 月ごと',arch:'対象外'}[mode];
+  if(!arr.length){pane.innerHTML=`<div class="list-filter">${label} 0件</div><div class="empty" style="padding:30px">${mode==='review'?'未チェックなし 🎉':'該当なし'}</div>`;return;}
+  if(mode==='review'||mode==='all'){
+    arr.sort((a,b)=>{const ya=hv(a.f,'対象年月')||'',yb=hv(b.f,'対象年月')||'';if(ya!==yb)return yb.localeCompare(ya);const ma=invMeta(a),mb=invMeta(b);return (mb.review-ma.review)||(mb.total-ma.total);});
+    let html=`<div class="list-filter">${label} ${arr.length}件</div>`;const seen={};let cur=null;
+    arr.forEach(x=>{const ym=hv(x.f,'対象年月')||'(月なし)';if(ym!==cur){cur=ym;const g=arr.filter(y=>(hv(y.f,'対象年月')||'(月なし)')===ym);const sum=g.reduce((s,y)=>s+invMeta(y).total,0);html+=`<div class="grp-h">${ym}　${g.length}件　${yen(sum)}</div>`;}html+=cardHtml(x);});
+    pane.innerHTML=html;
+  }else if(mode==='month'){
+    let html=`<div class="list-filter">${label} ${arr.length}件</div>`;
+    PAYDATES.forEach(pd=>{const g=arr.filter(x=>invMeta(x).paydate===pd);if(!g.length)return;const sum=g.reduce((s,x)=>s+invMeta(x).total,0);html+=`<div class="grp-h">${pd}　${g.length}件　${yen(sum)}</div>`+g.map(cardHtml).join('');});
+    const none=arr.filter(x=>!PAYDATES.includes(invMeta(x).paydate));if(none.length)html+=`<div class="grp-h">未設定　${none.length}件</div>`+none.map(cardHtml).join('');
+    pane.innerHTML=html;
+  }else{
+    pane.innerHTML=`<div class="list-filter">対象外 ${arr.length}件</div>`+arr.map(cardHtml).join('');
+  }
 }
 function select(id){selected=id;editMode=false;renderList();renderDetail(H.inv.find(x=>x.id===id));}
 function toggleEdit(){editMode=!editMode;renderDetail(H.inv.find(x=>x.id===selected));}
@@ -268,6 +292,19 @@ function recalc(tr){const ex=parseFloat(tr.querySelector('.e-excl').value)||0;co
   let s=0;document.querySelectorAll('#detail-lines .e-incl').forEach(i=>s+=parseFloat(i.value)||0);
   const a=document.getElementById('pay-amt-val');if(a)a.textContent=yen(s);}
 
+function histHtml(inv){
+  const payee=hv(inv.f,'支払先名');const thisYm=hv(inv.f,'対象年月')||'';
+  if(!payee)return '';
+  const byYm={};H.inv.forEach(x=>{if(hv(x.f,'支払先名')!==payee)return;const ym=hv(x.f,'対象年月')||'';byYm[ym]=(byYm[ym]||0)+invMeta(x).total;});
+  const yms=Object.keys(byYm).sort((a,b)=>b.localeCompare(a));
+  if(yms.length<=1)return '';
+  let idx=yms.indexOf(thisYm);if(idx<0)idx=0;
+  const seq=yms.slice(idx,idx+3);const lbl=['今回','前月','前々月'];
+  let warn='';
+  if(seq.length>=2){const d=byYm[seq[0]]-byYm[seq[1]];const pct=byYm[seq[1]]?d/byYm[seq[1]]*100:0;if(Math.abs(pct)>=10)warn=`<div style="color:#c0392b;font-size:12px;margin-top:4px">⚠ 前月比 ${pct>0?'+':''}${pct.toFixed(0)}%（${d>0?'+':''}${yen(d)}）— 請求書をご確認ください</div>`;}
+  const rows=seq.map((ym,i)=>{let diff='';if(i===0&&seq[1]!=null){const d=byYm[ym]-byYm[seq[1]];diff=` <span style="color:${d>0?'#c0392b':'#2e7d32'};font-size:12px">(${d>0?'+':''}${yen(d)})</span>`;}return `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:13px"><span>${lbl[i]||''} ${ym}</span><span><b>${yen(byYm[ym])}</b>${diff}</span></div>`;}).join('');
+  return `<div style="background:#f4f6f9;border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-top:10px"><div style="font-size:12px;color:var(--muted);margin-bottom:2px">この支払先のこれまで（同名の経費を集計）</div>${rows}${warn}</div>`;
+}
 function renderDetail(inv){
   const d=document.getElementById('detail-pane');
   if(!inv){d.innerHTML='<div class="empty">左の請求書を選択してください</div>';return;}
@@ -279,7 +316,7 @@ function renderDetail(inv){
   d.innerHTML=`
   <div class="two-col">
     <div>
-      <div style="font-size:12px;color:var(--muted);margin:0 0 6px 2px;">主：支払確定</div>
+      <div style="font-size:12px;color:var(--muted);margin:0 0 6px 2px;">① 支払の確認（いつ・どこに・いくら払うか）</div>
       <div class="pay-card">
         <div class="pay-top"><input class="" id="h-payee" value="${esc(hv(f,'支払先名'))}" ${dis} style="font-size:16px;font-weight:700;border:1px solid var(--border);border-radius:4px;padding:4px 6px;flex:1;"> ${badge(m)}</div>
         <div class="pay-amt"><span class="lbl">支払額（税込）</span><span class="val" id="pay-amt-val">${yen(m.total)}</span></div>
@@ -303,6 +340,7 @@ function renderDetail(inv){
         </div>
       </div>
 
+      ${histHtml(inv)}
       <div class="jnl">
         <div class="jnl-h"><span class="t">従：会計仕訳プレビュー（AI作成）</span><span id="diff-ind"></span>
           ${locked?'':`<button class="btn-ghost" style="margin-left:auto" onclick="toggleEdit()">${editMode?'プレビューに戻る':'✎ 編集'}</button>`}</div>
