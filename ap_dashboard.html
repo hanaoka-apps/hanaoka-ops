@@ -550,6 +550,8 @@ function renderTriage() {
   sec.style.display = 'block';
   document.getElementById('triage-count').textContent = rows.length;
   const keyCount = {}; rows.forEach(it => { const k = (fv(it.fields,'支払先名')||'')+'|'+(parseFloat(fv(it.fields,'金額_税込'))||0); keyCount[k] = (keyCount[k]||0)+1; });
+  // 定期支払で自動生成済みの行（生成元定期ID付き・非アーカイブ）との重複検知：同じ支払先名＋対象年月
+  const recByKey = {}; allInv.forEach(it => { if (!fv(it.fields,'生成元定期ID')) return; if (fv(it.fields,'アーカイブフラグ')===true) return; recByKey[(fv(it.fields,'支払先名')||'')+'|'+(fv(it.fields,'対象年月')||'')] = it.id; });
   const opt = (sel) => ['本社経費','工場経費','本社仕入','工場仕入'].map(c => `<option ${c===sel?'selected':''}>${c}</option>`).join('');
   document.getElementById('triage-tbody').innerHTML = rows.map(it => {
     const f = it.fields; const cat = fv(f,'支払区分'); const conf = fv(f,'AI確信度'); const amt = parseFloat(fv(f,'金額_税込'))||0;
@@ -558,10 +560,12 @@ function renderTriage() {
     const pc = fv(f,'支払先コード')||''; const pn = fv(f,'支払先名')||'';
     const supVal = pc ? (pc+' '+(suppliers.find(s=>s.code===pc)?.name||pn)) : '';
     const isShi = cat==='本社仕入'||cat==='工場仕入';
+    const recDupId = (()=>{ const rid = recByKey[(pn)+'|'+(fv(f,'対象年月')||'')]; return (rid && rid!==it.id) ? rid : null; })();
+    const recDup = recDupId ? `<div style="margin-top:2px"><span style="color:#b8621b;font-size:11px;font-weight:700">⚠ 定期生成済みと重複</span> <button onclick="mergeToRecurring('${it.id}','${recDupId}')" style="font-size:11px;padding:1px 8px;border:1px solid #e67e22;background:#fff;color:#b8621b;border-radius:4px;cursor:pointer">定期分に統合</button></div>` : '';
     return `<tr>
       <td><input type="checkbox" class="tri-chk" data-id="${it.id}"></td>
       <td style="font-size:12px;color:var(--muted);white-space:nowrap">${fv(f,'対象年月')||'—'}</td>
-      <td>${pn||'—'}${warn}</td>
+      <td>${pn||'—'}${warn}${recDup}</td>
       <td class="amount-cell">¥${amt.toLocaleString()}</td>
       <td><span class="status-badge s-確認待">${cat||'未推定'}</span> <span style="font-size:11px;color:var(--muted)">AI ${conf||'-'}</span></td>
       <td><select id="tc-${it.id}" onchange="toggleSup('${it.id}')" style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px">${opt(cat)}</select></td>
@@ -569,6 +573,20 @@ function renderTriage() {
       <td><button onclick="confirmTriage('${it.id}')" style="background:var(--primary);color:#fff;border:none;padding:5px 14px;border-radius:5px;font-size:12px;cursor:pointer">確定</button></td>
     </tr>`;
   }).join('');
+}
+// 後着PDF（intake分）を、定期支払で生成済みの行に統合（PDFを付け替え→重複を対象外）
+async function mergeToRecurring(intakeId, recId) {
+  if (!confirm('この請求書PDFを「定期支払で生成済みの行」に付け替えて、重複（この行）を対象外にします。\n（定期側が正・金額/明細はそのまま、PDFだけ引き継ぎます）\nよろしいですか？')) return;
+  try {
+    const it = allInv.find(x=>x.id===intakeId), rec = allInv.find(x=>x.id===recId);
+    const iDoc = (it && fv(it.fields,'DOCコード'))||'', rDoc = (rec && fv(rec.fields,'DOCコード'))||'';
+    if (iDoc) {
+      const uniq = [...new Set((String(rDoc)+'\n'+String(iDoc)).split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean))];
+      await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${recId}/fields`, { [fieldMap['DOCコード']]: uniq.join('\n') });
+    }
+    await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${intakeId}/fields`, { [fieldMap['アーカイブフラグ']]: true, [fieldMap['アーカイブ理由']]: '定期生成分に統合（重複）' });
+    showSnack('定期分に統合しました'); await loadData();
+  } catch (e) { showSnack('統合エラー: '+e.message); }
 }
 // 仕入確定済みだが仕入先コードが空＝突合不能。仕分けに戻して当て直す。
 function renderUnassigned() {
