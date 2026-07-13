@@ -211,7 +211,7 @@ function invMeta(inv){
     offset:hv(f,'相殺対象フラグ')===true,acctchg:hv(f,'口座変更フラグ')===true,dup:hv(f,'二重請求フラグ')===true,
     doc:hv(f,'DOCコード'),archived:hv(f,'アーカイブフラグ')===true,total,nlines:lines.length};
 }
-function badge(m){if(m.status==='確定済（ロック）')return '<span class="badge b-locked">確定</span>';if(m.review)return '<span class="badge b-review">要確認</span>';if(m.status==='差戻し')return '<span class="badge b-flag">差戻し</span>';return '<span class="badge b-wait">確認待</span>';}
+function badge(m){if(m.status==='先行支払済')return '<span class="badge b-locked" style="background:#1a5fa8">先行支払済</span>';if(m.status==='支払済')return '<span class="badge b-locked" style="background:#1a5fa8">支払済</span>';if(m.status==='確定済（ロック）')return '<span class="badge b-locked">確定</span>';if(m.review)return '<span class="badge b-review">要確認</span>';if(m.status==='差戻し')return '<span class="badge b-flag">差戻し</span>';return '<span class="badge b-wait">確認待</span>';}
 function cardHtml(inv){const m=invMeta(inv);const fl=[m.offset?'相殺':'',m.acctchg?'口座変更':'',m.dup?'二重':''].filter(Boolean).map(x=>`<span class="badge b-flag">${x}</span>`).join('');
   return `<div class="inv-card ${inv.id===selected?'active':''}" onclick="select('${inv.id}')"><div class="pname">${m.payee||'(不明)'} ${badge(m)}${fl}</div><div class="meta"><span>${m.paydate||'-'}・${m.cat||''}・${m.nlines}明細</span><span class="amt">${yen(m.total)}</span></div></div>`;}
 function baseArr(){ // モード別の基礎集合（締日フィルタ前）
@@ -308,7 +308,7 @@ function histHtml(inv){
 function renderDetail(inv){
   const d=document.getElementById('detail-pane');
   if(!inv){d.innerHTML='<div class="empty">左の請求書を選択してください</div>';return;}
-  const f=inv.f,m=invMeta(inv),lines=L.byInv[String(inv.id)]||[],locked=m.status==='確定済（ロック）';
+  const f=inv.f,m=invMeta(inv),lines=L.byInv[String(inv.id)]||[],locked=(m.status==='確定済（ロック）'||m.status==='先行支払済'||m.status==='支払済');
   const dis=locked?'disabled':'';
   const opt=(arr,sel)=>'<option value=""></option>'+arr.map(x=>`<option ${x===sel?'selected':''}>${x}</option>`).join('');
   const lowLines=lines.filter(it=>{const c=parseFloat(lv(it.f,'AI信頼スコア'))||0;return c&&c<70;});
@@ -337,7 +337,9 @@ function renderDetail(inv){
           ${locked?'<button class="btn-reject" onclick="unlock()">🔓 ロック解除</button>':'<button class="btn-reject" onclick="reject()">↩ 差戻し</button>'}
           ${m.archived?'<button class="btn-ghost" onclick="unarchive()">📤 アーカイブ解除</button>':'<button class="btn-ghost" onclick="archive()">🗄 アーカイブ</button>'}
           <button class="btn-ghost" onclick="untriage()">↩ 仕分けに戻す</button>
+          ${(m.status==='先行支払済')?`<button class="btn-ghost" onclick="unmarkPrepaid()">先行支払済を取消</button>`:`<button class="btn-ghost" onclick="markPrepaid()" title="急ぎで先に振込済み。全銀出力から除外し、支払一覧・社長報告には残す">💴 先行支払済にする</button>`}
         </div>
+        ${m.status==='先行支払済'?`<div class="review-bar" style="background:#e8f0fb;color:#1a5fa8">💴 先行支払済（急ぎ振込）：実支払日 ${hv(f,'先行支払日')||'—'}。全銀出力からは除外され、支払一覧・報告には残ります。</div>`:''}
       </div>
 
       ${histHtml(inv)}
@@ -416,6 +418,13 @@ async function saveAll(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return
 async function approve(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;const m=invMeta(inv);
   if(!confirm(`「${m.payee}」を承認（確定・ロック）します。よろしいですか？`))return;
   try{await persist(inv);await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'確定済（ロック）',[hi('要確認フラグ')]:false,[hi('入力者')]:(acct.name||acct.username)});snack('✓ 承認しました（確定）');editMode=false;await loadData();}catch(e){snack('承認エラー: '+e.message,true);}}
+async function markPrepaid(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;const m=invMeta(inv);
+  const today=new Date().toISOString().slice(0,10);
+  const d=prompt(`「${m.payee}」を先行支払済にします（急ぎで先に振込済み）。実支払日を入力（YYYY-MM-DD）。\n全銀出力からは除外され、支払一覧・社長報告には「先行支払済」として残ります。`,today);
+  if(d===null)return;
+  try{await persist(inv);await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'先行支払済',[hi('先行支払日')]:d,[hi('要確認フラグ')]:false});snack('💴 先行支払済にしました');editMode=false;await loadData();}catch(e){snack('エラー: '+e.message,true);}}
+async function unmarkPrepaid(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;if(!confirm('先行支払済を取り消して確認待に戻します。よろしいですか？'))return;
+  try{await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'確認待',[hi('先行支払日')]:''});snack('取り消しました');await loadData();}catch(e){snack('エラー: '+e.message,true);}}
 async function reject(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;const r=prompt('差戻し理由を入力してください');if(r===null)return;
   try{await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'差戻し',[hi('差戻し理由')]:r});snack('↩ 差戻しました');await loadData();}catch(e){snack('差戻しエラー: '+e.message,true);}}
 async function unlock(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;if(!confirm('確定（ロック）を解除して確認待に戻します。よろしいですか？'))return;
