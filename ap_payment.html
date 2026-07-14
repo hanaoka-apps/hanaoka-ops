@@ -87,11 +87,45 @@ async function gget(p){const t=await token();const r=await fetch(GRAPH+p,{header
 async function gpatch(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'PATCH',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
 async function gpost(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'POST',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
 
+// SharedMasters（サイト:花岡車輌/msteams_7aab51）の 仕入先マスタ.csv を常に最新で読む
+const SM_DRIVE='b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
+const SM_FILE='仕入先マスタ.csv';
+let SH={byCode:{}};  // 仕入先マスタ（取決条件・サイト・でんさい利用者番号・口座・基準額）
+function parseCSV(text){if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);const rows=[];let row=[],cur='',q=false;for(let i=0;i<text.length;i++){const c=text[i];if(q){if(c==='"'){if(text[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=c;}else{if(c==='"')q=true;else if(c===','){row.push(cur);cur='';}else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur='';}else if(c==='\r'){}else cur+=c;}}if(cur!==''||row.length){row.push(cur);rows.push(row);}return rows;}
+const normCode=c=>String(c==null?'':c).trim().replace(/^0+/,'');
+async function loadShiharai(){
+  try{
+    const t=await token();
+    const r=await fetch(`${GRAPH}/drives/${SM_DRIVE}/root:/${encodeURIComponent(SM_FILE)}:/content`,{headers:{Authorization:'Bearer '+t}});
+    if(!r.ok)throw new Error('['+r.status+'] 仕入先マスタ.csv');
+    const rows=parseCSV(new TextDecoder('utf-8').decode(await r.arrayBuffer()));
+    const h=rows[0].map(x=>String(x==null?'':x).trim());const ix=n=>h.indexOf(n);
+    const ci={code:ix('仕入先ｺｰﾄﾞ'),term:ix('取決条件名'),site:ix('手形サイト(日)'),den:ix('でんさい利用者番号'),
+      base:ix('支払設定１　基準額設定　基準額'),bank:ix('振込口座　金融機関ｺｰﾄﾞ'),branch:ix('振込口座　金融機関支店ｺｰﾄﾞ'),
+      atype:ix('振込口座　口座区分'),ano:ix('振込口座　口座番号'),kana:ix('振込口座　口座名義')};
+    const v=(r2,i)=>(i>=0&&i<r2.length?(r2[i]||''):'');
+    SH.byCode={};
+    for(let i=1;i<rows.length;i++){const r2=rows[i];if(!r2||!v(r2,ci.code))continue;
+      SH.byCode[normCode(v(r2,ci.code))]={term:v(r2,ci.term),site:v(r2,ci.site),base:Number(v(r2,ci.base))||0,den:v(r2,ci.den),bank:v(r2,ci.bank),branch:v(r2,ci.branch),atype:v(r2,ci.atype),ano:v(r2,ci.ano),kana:v(r2,ci.kana)};}
+  }catch(e){/* 取得失敗なら でんさい/判定時に警告 */}
+}
+// 支払期日：EOMONTH(基準日,n)＝基準月+nヶ月の末日。ユーザー提供のSWITCHロジック。
+function eomonth(d,n){return new Date(d.getFullYear(),d.getMonth()+n+1,0);}
+function densaiDue(base,site){site=Number(site);let e;switch(site){
+  case 60:return eomonth(base,2);case 90:return eomonth(base,3);case 120:return eomonth(base,4);
+  case 125:e=eomonth(base,5);return new Date(e.getFullYear(),e.getMonth(),5);
+  case 135:e=eomonth(base,5);return new Date(e.getFullYear(),e.getMonth(),15);
+  case 150:return eomonth(base,5);
+  case 155:e=eomonth(base,6);return new Date(e.getFullYear(),e.getMonth(),5);
+  case 161:e=eomonth(base,6);return new Date(e.getFullYear(),e.getMonth(),11);
+  default:return null;}}
+function ymd8(d){return d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');}
+function monthEnd(ym){const [y,m]=ym.split('/').map(Number);return new Date(y,m,0);}
 function yen(n){return '¥'+(Number(n)||0).toLocaleString();}
 function snack(m,e){const el=document.getElementById('snackbar');el.textContent=m;el.style.background=e?'#c0392b':'#323232';el.style.display='block';setTimeout(()=>el.style.display='none',4000);}
 
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;
-  initMonth();loadCfg();await resolveLists();await reload();}
+  initMonth();loadCfg();await resolveLists();await loadShiharai();await reload();}
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
 function setDue(d){dueFilter=d;renderChips();renderList();}
@@ -137,9 +171,9 @@ async function generate(){
   if(due==='月末'){
     PM.items.forEach(x=>{const f=x.f;if((f[F(PM,'対象年月')]||'')!==ym)return;const stt=f[F(PM,'突合状態')]||'';if(stt!=='一致'&&stt!=='差異あり')return;if(f[F(PM,'請求書受領')]!==true)return;
       const code=(f[F(PM,'仕入先コード')]||'').trim();const name=f[F(PM,'仕入先名')]||'';const amt=Number(f[F(PM,'請求書税込')])||0;if(!amt)return;
-      // 手段：この仕入先の当月AP_Invoice仕入行の支払手段（無ければ総合振込）
-      const inR=INV.items.find(y=>{const g=y.f;return (iv(g,'支払先コード')||'')===code&&(iv(g,'対象年月')||'')===ym&&/仕入/.test(iv(g,'支払区分')||'');});
-      const method=inR?(iv(inR.f,'支払手段')||'総合振込'):'総合振込';
+      // 手段は仕入先マスタで判定（請求書の支払手段ではない）：取決条件=でんさい かつ 金額>基準額 → でんさい、それ以外 → 総合振込
+      const m=SH.byCode[normCode(code)];
+      const method=(m&&m.term==='でんさい'&&(m.base<=0||amt>m.base))?'でんさい':'総合振込';
       add(code,name,method,amt,'',null);});
   }
   const keys=Object.keys(drafts).filter(k=>!exist.has(k));
@@ -225,7 +259,7 @@ function sjisByte(ch){const c=ch.charCodeAt(0);if(c>=0x20&&c<=0x7E)return c;if(c
 function toBytes(s){const o=[];for(const ch of s)o.push(sjisByte(ch));return o;}
 function padR(s,n){s=String(s==null?'':s);if(s.length>n)s=s.slice(0,n);return s.padEnd(n,' ');}
 function padL0(s,n){s=String(s==null?'':s).replace(/[^0-9]/g,'');if(s.length>n)s=s.slice(-n);return s.padStart(n,'0');}
-function typeCode(t){return t==='普通'?'1':t==='当座'?'2':t==='貯蓄'?'4':(/^[0-9]$/.test(String(t))?String(t):'9');}
+function typeCode(t){t=String(t==null?'':t);if(/普通/.test(t))return '1';if(/当座/.test(t))return '2';if(/貯蓄/.test(t))return '4';if(/^[0-9]$/.test(t))return t;return '9';}
 function buildZengin(list,ym,due,cfg){
   const mmdd=payDate(ym,due).slice(5).replace('-','');  // 取組日=支払日 MMDD
   const header='1'+'21'+'0'+padL0(cfg.itaku,10)+padR(cfg.itakuName,40)+mmdd+padL0(cfg.bankNo,4)+padR(cfg.bankName,15)+padL0(cfg.branchNo,3)+padR(cfg.branchName,15)+typeCode(cfg.acctType)+padL0(cfg.acctNo,7)+padR('',17);
@@ -257,10 +291,37 @@ async function outputZengin(){
   }
   snack(`全銀出力：${count}件 ${yen(total)}`);
 }
-function outputDensai(){
-  const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===month()&&p.f[F(PI,'支払日区分')]===dueFilter&&(p.f[F(PI,'支払手段')]||'')==='でんさい'&&(p.f[F(PI,'承認状態')]||'')===FINAL);
-  if(!list.length){snack('でんさい・'+FINAL+'の支払がありません');return;}
-  snack('でんさいCSVは、御社でんさいネットの一括記録フォーマット（実ファイル1本）をいただければ全銀と同様に正確に組みます。対象'+list.length+'件は準備できています。');
+async function outputDensai(){
+  const ym=month(),due=dueFilter,cfg=loadCfg();
+  const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due&&(p.f[F(PI,'支払手段')]||'')==='でんさい'&&(p.f[F(PI,'承認状態')]||'')===FINAL&&!['先行支払済','支払済'].includes(p.f[F(PI,'支払状態')]||''));
+  if(!list.length){snack('でんさい・'+FINAL+'・未払いの支払がありません');return;}
+  if(!Object.keys(SH.byCode).length){snack('仕入先支払マスタ未配置（/BILLS/masters/shiharai_master.csv）',true);return;}
+  const base=monthEnd(ym);const hatsu=ymd8(base);
+  const rows=[];const warns=[];let total=0;
+  for(const p of list){const f=p.f;const code=normCode(f[F(PI,'支払先コード')]);const m=SH.byCode[code];
+    if(!m){warns.push(`${f[F(PI,'支払先名')]}：マスタ未登録(コード${f[F(PI,'支払先コード')]})`);continue;}
+    if(!m.den){warns.push(`${f[F(PI,'支払先名')]}：でんさい利用者番号なし`);continue;}
+    const due2=densaiDue(base,m.site);
+    if(!due2){warns.push(`${f[F(PI,'支払先名')]}：サイト「${m.site}」の期日ルール未定義（手動確認）`);continue;}
+    const amt=Number(f[F(PI,'支払額')])||0;total+=amt;
+    const y=due2.getFullYear(),mo=String(due2.getMonth()+1).padStart(2,'0'),da=String(due2.getDate()).padStart(2,'0');
+    const tekiyo=`${y}.${mo}.${da}(${m.site})C${code}`;
+    rows.push(['2','11',m.den,String(Number(m.bank)||m.bank),String(Number(m.branch)||m.branch),String(Number(m.atype)||m.atype),String(Number(m.ano)||m.ano),String(amt),ymd8(due2),hatsu,'','',tekiyo]);
+  }
+  if(!rows.length){snack('出力対象なし（'+warns.join(' / ')+'）',true);return;}
+  const header=['1',String(Number(cfg.bankNo)||cfg.bankNo),cfg.branchNo,typeCode(cfg.acctType),String(Number(cfg.acctNo)||cfg.acctNo),'','','','','','','',''];
+  const trailer=['8',String(rows.length),String(total),'','','','','','','','','',''];
+  const end=['9','','','','','','','','','','','',''];
+  const all=[header,...rows,trailer,end];
+  const csv=all.map(r=>r.join(',')).join('\r\n')+'\r\n';
+  downloadBytes(new Uint8Array(toBytes(csv)),`densai_${ym.replace('/','')}_${ts()}.csv`);
+  let msg=`でんさいCSV出力：${rows.length}件 ${yen(total)}`;if(warns.length)msg+=`\n⚠除外/要確認 ${warns.length}件：\n`+warns.join('\n');
+  const el=document.getElementById('gen-result');el.style.display='block';el.textContent=msg;
+  if(confirm(`でんさいCSVを出力（${rows.length}件・${yen(total)}）。${warns.length?'\n⚠'+warns.length+'件除外（マスタ/サイト未整備）。':''}\nこれらを「EB出力済」に更新しますか？（銀行取込後に）`)){
+    for(const p of list){const code=normCode(p.f[F(PI,'支払先コード')]);const m=SH.byCode[code];if(m&&m.den&&densaiDue(base,m.site)){try{await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${p.id}/fields`,{[F(PI,'支払状態')]:'EB出力済',[F(PI,'EB出力日時')]:new Date().toISOString()});}catch(e){}}}
+    await reload();
+  }
+  snack(msg.split('\n')[0]);
 }
 boot().catch(e=>{console.error(e);snack('起動エラー: '+e.message,true);});
 </script>
