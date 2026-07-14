@@ -315,7 +315,7 @@ function renderDetail(code){
   const effDiff=hasInv?Math.round(sum)-Math.round(incl):null;
   const effCls=!hasInv?'st-none':(effDiff===0?'st-ok':'st-diff');
   const effTxt=!hasInv?'請求書なし':(effDiff===0?'一致':(effDiff>0?'+':'')+effDiff.toLocaleString());
-  const invRowsHtml=hasInv?invRows.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #eef1f5;font-size:12px"><span>${r.name||''}${r.invno?` <span style="color:#999">No.${r.invno}</span>`:''}</span><b>${yen(r.incl)}</b></div>`).join(''):'';
+  const invRowsHtml=hasInv?invRows.map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #eef1f5;font-size:12px"><span style="flex:1">${r.name||''}${r.invno?` <span style="color:#999">No.${r.invno}</span>`:''}</span><input type="number" id="ir-${r.id}" value="${r.incl}" style="width:110px;text-align:right;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 5px"><button onclick="saveInvAmt('${r.id}','${code}')" style="font-size:11px;padding:2px 8px;border:1px solid var(--primary);background:#fff;color:var(--primary);border-radius:4px;cursor:pointer">修正</button><button onclick="excludeInv('${r.id}','${code}')" title="重複・誤登録の請求書を突合から除外（台帳はアーカイブ）" style="font-size:11px;padding:2px 6px;border:1px solid var(--danger);background:#fff;color:var(--danger);border-radius:4px;cursor:pointer">除外</button></div>`).join(''):'';
   const lines=vLines(v,detailView);const vi=vIncl(v,detailView),ve=vExcl(v,detailView);
   const byDept=Object.entries(v.byDept).sort((a,b)=>b[1]-a[1]).map(([k,x])=>`<span class="loc-pill ${/工場/.test(k)?'pill-kojo':'pill-honsha'}">${k} ${yen(x)}</span>`).join(' ');
   const rows=lines.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(l=>`<tr><td>${l.date||''}</td><td>${l.slip||''}</td><td><span class="loc-pill ${l.loc==='工場'?'pill-kojo':'pill-honsha'}">${l.loc}</span>${l.dept}</td><td>${l.item}</td><td>${l.model}</td><td class="num">${yen(l.excl)}</td><td class="num">${yen(l.tax)}</td><td class="num">${yen(l.incl)}</td><td>${l.dtype}</td></tr>`).join('');
@@ -460,6 +460,21 @@ async function bulkConfirm(){
 }
 // PDF未着（コード未割当の仕入請求書）を、この仕入先に紐づける（AP_Invoiceの支払先コードを付与）
 function candidatesFor(v){const key=normName(v.name);if(!key)return [];return unlinkedInv.filter(u=>u.nm&&(u.nm===key||u.nm.indexOf(key)>=0||key.indexOf(u.nm)>=0));}
+// 受領した請求書の金額を突合画面から修正（台帳AP_Invoiceの金額_税込を更新）
+async function saveInvAmt(invId,code){
+  const el=document.getElementById('ir-'+invId);if(!el)return;const val=Math.round(Number(el.value)||0);
+  if(!confirm('この請求書の金額を '+yen(val)+' に修正します（台帳を更新）。よろしいですか？'))return;
+  try{await gpatch(`/sites/${AP_SITE}/lists/${INV.id}/items/${invId}/fields`,{[INV.fmap['金額_税込']]:val});
+    snack('金額を修正しました');await loadInvoicePdfs();renderDetail(code);renderList();renderSummary();}
+  catch(e){snack('修正エラー: '+e.message,true);}
+}
+// 重複・誤登録の請求書を突合から除外（台帳はアーカイブ）
+async function excludeInv(invId,code){
+  if(!confirm('この請求書を突合から除外します（台帳ではアーカイブ＝支払対象外）。重複・誤登録の時に使ってください。よろしいですか？'))return;
+  try{await gpatch(`/sites/${AP_SITE}/lists/${INV.id}/items/${invId}/fields`,{[INV.fmap['アーカイブフラグ']]:true,[INV.fmap['アーカイブ理由']]:'突合で除外（重複/誤登録）'});
+    snack('除外しました');await loadInvoicePdfs();renderDetail(code);renderList();renderSummary();}
+  catch(e){snack('除外エラー: '+e.message,true);}
+}
 async function linkInvoice(invId,code){
   try{await gpatch(`/sites/${AP_SITE}/lists/${INV.id}/items/${invId}/fields`,{[INV.fmap['支払先コード']]:code});
     snack('請求書を紐づけました');await loadInvoicePdfs();renderDetail(code);renderList();}
