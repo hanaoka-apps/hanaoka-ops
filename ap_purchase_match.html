@@ -243,10 +243,10 @@ async function loadMatchState(){
     while(n){const d=await gget(n);items=items.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
     items.forEach(it=>{const f=it.fields;if((f[mi('対象年月')]||'')!==m)return;
       const code=f[mi('仕入先コード')];if(!code)return;
-      matchState[code]={itemId:it.id,inv:f[mi('請求書税込')]??null,reason:f[mi('不一致理由')]||'',received:f[mi('請求書受領')]===true,
+      matchState[code]={itemId:it.id,inv:f[mi('請求書税込')]??null,adjust:Number(f[mi('調整額')])||0,reason:f[mi('不一致理由')]||'',received:f[mi('請求書受領')]===true,
         status:f[mi('突合状態')]||'',pdfLink:f[mi('PDFリンク')]||'',by:f[mi('突合者')]||'',at:f[mi('突合日時')]||''};
       // 進捗集計は「保存済み」だけを見る（入力中の値でカウントを進めない）
-      savedState[code]={inv:f[mi('請求書税込')]??null,received:f[mi('請求書受領')]===true,reason:f[mi('不一致理由')]||'',status:f[mi('突合状態')]||''};
+      savedState[code]={inv:f[mi('請求書税込')]??null,adjust:Number(f[mi('調整額')])||0,received:f[mi('請求書受領')]===true,reason:f[mi('不一致理由')]||'',status:f[mi('突合状態')]||''};
       if(f[mi('突合状態')]==='対象外')archived[code]=true;
     });
   }catch(e){snack('突合状態の読込エラー: '+e.message,true);}
@@ -260,7 +260,7 @@ function setListView(m){listView=m;segOn('vm-',m);renderSummary();renderList();}
 function setDetailView(m){detailView=m;if(selectedCode)renderDetail(selectedCode);}
 // 完了＝「保存済み」の状態のみで判定。入力中(matchState)ではカウントを進めない。確認中は未完了。
 function doneOf(v){if(archived[v.code])return true;const s=savedState[v.code];if(!s||s.inv==null||s.inv==='')return false;
-  const diff=Math.round(s.inv)-Math.round(v.excl+v.tax);
+  const diff=Math.round(s.inv+(s.adjust||0))-Math.round(v.excl+v.tax);
   if(diff===0)return true;
   if(s.reason&&s.reason!=='確認中')return true;   // 差異ありでも理由確定(確認中除く)なら完了
   return false;}
@@ -277,7 +277,7 @@ function renderSummary(){
   const tot=act.reduce((s,v)=>s+v.excl+v.tax,0);
   const honsha=act.reduce((s,v)=>s+(v.byLoc['本社']||0),0);
   const kojo=act.reduce((s,v)=>s+(v.byLoc['工場']||0),0);
-  const matched=act.filter(v=>{const s=savedState[v.code];return s&&s.inv!=null&&s.inv!==''&&Math.round(s.inv)===Math.round(v.excl+v.tax);}).length;
+  const matched=act.filter(v=>{const s=savedState[v.code];return s&&s.inv!=null&&s.inv!==''&&Math.round(s.inv+(s.adjust||0))===Math.round(v.excl+v.tax);}).length;
   const rcv=act.filter(v=>savedState[v.code]&&savedState[v.code].received).length;
   document.getElementById('summary').innerHTML=
     `<span class="s">受入合計(税込)<b>${yen(tot)}</b></span><span class="s honsha">本社<b>${yen(honsha)}</b></span><span class="s kojo">工場<b>${yen(kojo)}</b></span><span class="s">仕入先<b>${act.length}</b></span><span class="s">受領<b>${rcv}/${act.length}</b></span><span class="s">突合一致<b>${matched}/${act.length}</b></span>`;
@@ -285,7 +285,7 @@ function renderSummary(){
 }
 function vstatus(v){const m=matchState[v.code]||{};const incl=v.excl+v.tax;
   if(m.inv==null||m.inv==='')return {cls:'st-none',txt:'未入力',diff:null};
-  const diff=Math.round(m.inv)-Math.round(incl);
+  const diff=Math.round(m.inv+(Number(m.adjust)||0))-Math.round(incl);
   return diff===0?{cls:'st-ok',txt:'一致',diff:0}:{cls:'st-diff',txt:(diff>0?'+':'')+diff.toLocaleString(),diff};
 }
 function renderList(){
@@ -311,11 +311,13 @@ function renderDetail(code){
   const incl=v.excl+v.tax;const m=matchState[code]||{};const st=vstatus(v);const arch=!!archived[code];
   const invRows=invRowsByVendor[code]||[];       // 受領した請求書（台帳の仕入行＝1枚1行）
   const sum=invRows.reduce((a,r)=>a+(Number(r.incl)||0),0);  // 受領請求書の合計
+  const adjust=Number((matchState[code]||{}).adjust)||0;     // 調整額（消費税端数差など）
   const hasInv=invRows.length>0;
-  const effDiff=hasInv?Math.round(sum)-Math.round(incl):null;
+  const effDiff=hasInv?Math.round(sum+adjust)-Math.round(incl):null;  // (請求書合計+調整) − 受入
   const effCls=!hasInv?'st-none':(effDiff===0?'st-ok':'st-diff');
   const effTxt=!hasInv?'請求書なし':(effDiff===0?'一致':(effDiff>0?'+':'')+effDiff.toLocaleString());
-  const invRowsHtml=hasInv?invRows.map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #eef1f5;font-size:12px"><span style="flex:1">${r.name||''}${r.invno?` <span style="color:#999">No.${r.invno}</span>`:''}</span><input type="number" id="ir-${r.id}" value="${r.incl}" style="width:110px;text-align:right;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 5px"><button onclick="saveInvAmt('${r.id}','${code}')" style="font-size:11px;padding:2px 8px;border:1px solid var(--primary);background:#fff;color:var(--primary);border-radius:4px;cursor:pointer">修正</button><button onclick="excludeInv('${r.id}','${code}')" title="重複・誤登録の請求書を突合から除外（台帳はアーカイブ）" style="font-size:11px;padding:2px 6px;border:1px solid var(--danger);background:#fff;color:var(--danger);border-radius:4px;cursor:pointer">除外</button></div>`).join(''):'';
+  const invRowsHtml=hasInv?invRows.map(r=>{const p0=String(r.doc||'').split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean)[0]||'';const pe=p0.replace(/'/g,"\\'");const cur=(pdfSel[code]&&pdfSel[code]===p0);
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #eef1f5;font-size:12px;${cur?'background:#eef5fc':''}"><span style="flex:1;${p0?'cursor:pointer;color:var(--primary);text-decoration:underline':''}" ${p0?`onclick="showPdf('${code}','${pe}')"`:''}>${p0?'📄 ':''}${r.name||''}${r.invno?` <span style="color:#999">No.${r.invno}</span>`:''}</span><input type="number" id="ir-${r.id}" value="${r.incl}" style="width:110px;text-align:right;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 5px"><button onclick="saveInvAmt('${r.id}','${code}')" style="font-size:11px;padding:2px 8px;border:1px solid var(--primary);background:#fff;color:var(--primary);border-radius:4px;cursor:pointer">修正</button><button onclick="excludeInv('${r.id}','${code}')" title="重複・誤登録の請求書を突合から除外（台帳はアーカイブ）" style="font-size:11px;padding:2px 6px;border:1px solid var(--danger);background:#fff;color:var(--danger);border-radius:4px;cursor:pointer">除外</button></div>`;}).join(''):'';
   const lines=vLines(v,detailView);const vi=vIncl(v,detailView),ve=vExcl(v,detailView);
   const byDept=Object.entries(v.byDept).sort((a,b)=>b[1]-a[1]).map(([k,x])=>`<span class="loc-pill ${/工場/.test(k)?'pill-kojo':'pill-honsha'}">${k} ${yen(x)}</span>`).join(' ');
   const rows=lines.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(l=>`<tr><td>${l.date||''}</td><td>${l.slip||''}</td><td><span class="loc-pill ${l.loc==='工場'?'pill-kojo':'pill-honsha'}">${l.loc}</span>${l.dept}</td><td>${l.item}</td><td>${l.model}</td><td class="num">${yen(l.excl)}</td><td class="num">${yen(l.tax)}</td><td class="num">${yen(l.incl)}</td><td>${l.dtype}</td></tr>`).join('');
@@ -334,8 +336,13 @@ function renderDetail(code){
     <div class="match-card">
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
         <span style="font-size:13px">SMILE受入(税込) <b>${yen(incl)}</b></span><span style="font-size:15px">⇔</span>
-        <span style="font-size:13px">受領した請求書 合計 <b>${yen(sum)}</b></span>
-        <span style="font-size:13px">差額 <b id="diff-val" style="color:${effDiff===0?'#2e7d32':(effDiff==null?'#888':'#c0392b')}">${fmtDiff(effDiff)}</b>${effDiff===0?' ✓一致':(effDiff!=null&&effDiff<0?' （請求書が不足＝未着の可能性）':'')}</span>
+        <span style="font-size:13px">請求書合計 <b>${yen(sum)}</b>${adjust?` ＋調整 <b>${yen(adjust)}</b>`:''}</span>
+        <span style="font-size:13px">差額 <b id="diff-val" style="color:${effDiff===0?'#2e7d32':(effDiff==null?'#888':'#c0392b')}">${fmtDiff(effDiff)}</b>${effDiff===0?' ✓一致':(effDiff!=null&&effDiff<0?' （不足＝未着の可能性）':'')}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:12px;color:var(--muted)">調整額（消費税端数差など）：
+        <input type="number" id="adj-in" value="${adjust}" onchange="setAdjust('${code}',this.value)" style="width:100px;text-align:right;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 5px">
+        <button onclick="fitAdjust('${code}')" style="font-size:11px;padding:2px 8px;border:1px solid var(--primary);background:#fff;color:var(--primary);border-radius:4px;cursor:pointer">端数を受入に合わせる</button>
+        <span style="font-size:11px">支払額＝請求書合計＋調整＝<b>${yen(sum+adjust)}</b></span>
       </div>
       <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:6px">
         <div style="font-size:11px;color:var(--muted);background:#f4f6f9;padding:4px 8px">受領した請求書（台帳・${invRows.length}枚）※金額を直すときは経費/手入力側で修正</div>
@@ -347,17 +354,18 @@ function renderDetail(code){
         <button class="btn-save" onclick="saveVendor('${code}',{inv:${hasInv?sum:'null'}})">💾 確定（保存）</button>
       </div>
     </div>
-    <div class="pdf-pane" style="position:static;max-height:none;margin-top:8px"><h4>請求書PDF（複数枚可・本社/工場別もOK）</h4>
-      ${candHtml}
-      <label class="pdf-drop">📎 請求書PDFを追加（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
-      <div id="pdf-host"><div class="pdf-empty">読込中...</div></div>
+    <div class="det-split" style="margin-top:8px">
+      <div>
+        <div class="deptbox"><div style="font-size:12px;color:var(--muted);margin:2px 0 4px">拠点・部門別内訳（国内/ソリューション/工場）</div>${byDept}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="font-size:12px;color:var(--muted)">明細・拠点表示：</span><div class="seg" style="font-size:12px"><button id="dvm-all" onclick="setDetailView('all')">全部</button><button id="dvm-honsha" onclick="setDetailView('本社')">本社</button><button id="dvm-kojo" onclick="setDetailView('工場')">工場</button></div></div>
+        <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
+      </div>
+      <div class="pdf-pane"><h4>請求書PDF（複数枚可・本社/工場別もOK）</h4>
+        ${candHtml}
+        <label class="pdf-drop">📎 請求書PDFを追加（${v.name}）<input type="file" accept="application/pdf" onchange="onPdf('${code}',this)"></label>
+        <div id="pdf-host"><div class="pdf-empty">読込中...</div></div>
+      </div>
     </div>
-    <details style="margin-top:12px">
-      <summary style="cursor:pointer;font-size:13px;color:var(--primary);padding:4px 0">▸ SMILEの明細・拠点内訳を見る（${lines.length}件）</summary>
-      <div class="deptbox"><div style="font-size:12px;color:var(--muted);margin:6px 0 4px">拠点・部門別内訳（国内/ソリューション/工場）</div>${byDept}</div>
-      <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="font-size:12px;color:var(--muted)">明細・拠点表示：</span><div class="seg" style="font-size:12px"><button id="dvm-all" onclick="setDetailView('all')">全部</button><button id="dvm-honsha" onclick="setDetailView('本社')">本社</button><button id="dvm-kojo" onclick="setDetailView('工場')">工場</button></div></div>
-      <div class="det-scroll"><table class="det"><thead><tr><th>伝票日</th><th>伝票№</th><th>拠点・部門</th><th>品目</th><th>型番</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">税込</th><th>区分</th></tr></thead><tbody>${rows||'<tr><td colspan="9" style="padding:12px;color:#888">該当明細なし</td></tr>'}</tbody></table></div>
-    </details>
     <div style="margin-top:12px">${arch?`<button class="btn-ghost" onclick="setArch('${code}',false)">↩ アーカイブ解除</button>`:`<button class="btn-arch" onclick="setArch('${code}',true)">🗄 アーカイブ（対象外にする）</button>`}</div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">決済月 ${month()}／表示明細${lines.length}件・全${v.lines.length}件。保存でSharePointに残ります。</div>`;
   segOn('dvm-',detailView);
@@ -406,6 +414,8 @@ function setInvLive(code,val){matchState[code]=matchState[code]||{};matchState[c
 // 確定（blur）：理由欄の出し入れ等のためフル再描画
 function setInv(code,val){matchState[code]=matchState[code]||{};matchState[code].inv=val===''?null:parseFloat(val);renderDetail(code);renderList();renderSummary();}
 function setReason(code,val){matchState[code]=matchState[code]||{};matchState[code].reason=val;}
+function setAdjust(code,val){matchState[code]=matchState[code]||{};matchState[code].adjust=Math.round(Number(val)||0);renderDetail(code);}
+function fitAdjust(code){const v=vendors.find(x=>x.code===code);if(!v)return;const rows=invRowsByVendor[code]||[];const sum=rows.reduce((a,r)=>a+(Number(r.incl)||0),0);matchState[code]=matchState[code]||{};matchState[code].adjust=Math.round((v.excl+v.tax)-sum);renderDetail(code);}
 function setRecv(code,val){matchState[code]=matchState[code]||{};matchState[code].received=val;renderList();renderSummary();}
 
 async function saveVendor(code,opt){
@@ -427,13 +437,14 @@ async function saveVendor(code,opt){
   }
   if(opt.received!==undefined) m.received=!!opt.received;
   m.inv=inv;  // 保存値として確定（一覧・進捗にも反映）
+  const adj=Math.round(Number(m.adjust)||0);  // 調整額（消費税端数差など）
   const incl=v.excl+v.tax;
-  const diff=inv==null?null:Math.round(inv)-Math.round(incl);
+  const diff=inv==null?null:Math.round(inv+adj)-Math.round(incl);  // (請求書合計+調整)−受入
   const status=archived[code]?'対象外':(inv==null?'未突合':(diff===0?'一致':'差異あり'));
   const fields={};
   fields[mi('仕入先コード')]=code;fields[mi('仕入先名')]=v.name||'';fields[mi('対象年月')]=month();
   fields[mi('受入税抜')]=v.excl;fields[mi('受入税込')]=incl;
-  if(inv!=null)fields[mi('請求書税込')]=inv;fields[mi('差額')]=diff||0;
+  if(inv!=null)fields[mi('請求書税込')]=inv;fields[mi('調整額')]=adj;fields[mi('差額')]=diff||0;
   fields[mi('突合状態')]=status;fields[mi('不一致理由')]=m.reason||'';fields[mi('請求書受領')]=!!m.received;
   if(m.pdfLink)fields[mi('PDFリンク')]=m.pdfLink;
   fields[mi('突合者')]=acct.name||acct.username;fields[mi('突合日時')]=new Date().toISOString();
@@ -442,7 +453,7 @@ async function saveVendor(code,opt){
     else{const created=await gpost(`/sites/${AP_SITE}/lists/${M.id}/items`,{fields});matchState[code].itemId=created.id;}
     matchState[code].status=status;matchState[code].by=fields[mi('突合者')];matchState[code].at=fields[mi('突合日時')];
     // 保存済みスナップショットを更新（進捗集計はこれを見る）
-    savedState[code]={inv:inv,received:!!m.received,reason:m.reason||'',status:status};
+    savedState[code]={inv:inv,adjust:adj,received:!!m.received,reason:m.reason||'',status:status};
     if(!opt.silent){snack('✅ 保存しました');renderList();renderSummary();renderDetail(code);}
   }catch(e){snack('保存エラー: '+e.message,true);throw e;}
 }
