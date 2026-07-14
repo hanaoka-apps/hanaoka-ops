@@ -6,20 +6,42 @@ FUJIN 在庫探偵: 構成なし品目（孤立品目）データ生成
 - 結果を orphan_items.js として出力（window.ORPHAN_ITEMS / window.ORPHAN_META）
 """
 from __future__ import annotations
-import csv, json
+import csv, json, os
 from pathlib import Path
 from datetime import datetime
 
 ROOT = Path(__file__).resolve().parent
+if ROOT.name == "scripts":
+    ROOT = ROOT.parent
+DATA_DIR = ROOT / "data"
 
-# ---- データソース解決: SharedMasters直読 ----
+# ---- データソース解決: 環境変数 → SharedMasters直読 → data/ フォールバック ----
+# 2026-07-14 修正: GitHub Actions には OneDrive マウントが無いため、従来はここで
+# SystemExit → data/orphan_items.json が生成されず → SharePoint に orphan_items.json が
+# 上がらず → 在庫探偵の3ボタン(構成なし/手順登録漏れ/使用禁止)が「未取得」のままだった。
+# CI では download_shared_masters.py が SharedMasters と同名のCSVを data/ に保存する
+# ため、SHARED=data/ とすれば全ての「SHARED / ファイル名」参照が最新版を指す
+# (scripts/build_enhanced_summary.py / build_work_instructions.py と同じ流儀)。
 SHARED_CANDIDATES = [
+    Path(os.environ["FUJIN_SHARED"]) if os.environ.get("FUJIN_SHARED") else None,
     Path("/sessions/focused-kind-goldberg/mnt/OneDrive-花岡車輌株式会社/花岡車輌 - SharedMasters"),
     Path.home() / "Library/CloudStorage/OneDrive-花岡車輌株式会社/花岡車輌 - SharedMasters",
 ]
-SHARED = next((p for p in SHARED_CANDIDATES if p.exists()), None)
+def _safe_exists(p: Path) -> bool:
+    """Path.exists() は EACCES 等で例外を投げる環境がある(サンドボックス/権限制限)ため安全化"""
+    try:
+        return p.exists()
+    except OSError:
+        return False
+SHARED = next((p for p in SHARED_CANDIDATES if p and _safe_exists(p)), None)
 if SHARED is None:
-    raise SystemExit("SharedMasters フォルダが見つかりません")
+    if (DATA_DIR / "構成マスタ.csv").exists():
+        SHARED = DATA_DIR
+        print(f"[データソース] SharedMasters直読不可 → data/ フォールバック (CI/スナップショット): {DATA_DIR}")
+    else:
+        raise SystemExit("SharedMasters フォルダも data/構成マスタ.csv も見つかりません")
+else:
+    print(f"[データソース] SharedMasters直読: {SHARED}")
 
 # 基準日: 未確定_購買手配データの mtime（FUJIN本体と合わせる）
 arr_csv = SHARED / "未確定_購買手配データ.csv"
@@ -79,7 +101,8 @@ print(f"[使用禁止品目を含む構成] {len(forbidden_children_by_parent):,
 # ---- 品目手順マスタの登録済み品目集合 ----
 items_with_route: set[str] = set()
 route_path = SHARED / "品目手順マスタ.csv"
-if route_path.exists():
+route_master_found = route_path.exists()
+if route_master_found:
     with open(route_path, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             code = (r.get("品目ｺｰﾄﾞ") or "").strip()
@@ -88,33 +111,46 @@ if route_path.exists():
             if expire and expire != "99999999" and len(expire) == 8 and expire.isdigit() and expire <= TODAY_YMD:
                 continue
             items_with_route.add(code)
-# 「親としてBOMに登場するが品目手順未登録」=製造工程が定義されていない品目
-items_missing_route = parents - items_with_route
-print(f"[品目手順未登録] BOM親{len(parents):,}件中 {len(items_missing_route):,}件が登録漏れ")
+    # 「親としてBOMに登場するが品目手順未登録」=製造工程が定義されていない品目
+    items_missing_route = parents - items_with_route
+    print(f"[品目手順未登録] BOM親{len(parents):,}件中 {len(items_missing_route):,}件が登録漏れ")
+else:
+    # マスタ未取得時に「全親が登録漏れ」という誤リストを出さない(安全側=空)
+    items_missing_route = set()
+    print(f"[品目手順未登録] ⚠ {route_path.name} 未検出 → 登録漏れ判定スキップ(0件扱い)")
 
 # ---- 2. 在庫情報の取得（未確定_購買手配データの「有効在庫数」を品目別に集約） ----
 stock_by_code: dict[str, float] = {}
-with open(arr_csv, encoding="utf-8-sig") as f:
-    rdr = csv.reader(f); header = next(rdr)
-    # 品目コード列・有効在庫数列のインデックス検出
-    try:
-        idx_code = header.index("品目ｺｰﾄﾞ")
-    except ValueError:
-        # 半角・全角混在対応
-        idx_code = next((i for i,h in enumerate(header) if "品目" in h and "ｺｰﾄﾞ" in h), 5)
-    try:
-        idx_eff = header.index("有効在庫数")
-    except ValueError:
-        idx_eff = next((i for i,h in enumerate(header) if "有効在庫" in h), -1)
-    for row in rdr:
-        if len(row) <= max(idx_code, idx_eff): continue
-        code = row[idx_code].strip()
-        if not code or idx_eff < 0: continue
+def _load_stock(path: Path) -> None:
+    if not path.exists():
+        print(f"[有効在庫] ⚠ {path.name} 未検出 → 在庫欄なしで続行")
+        return
+    with open(path, encoding="utf-8-sig") as f:
+        rdr = csv.reader(f); header = next(rdr)
+        # 品目コード列・有効在庫数列のインデックス検出
         try:
-            v = float((row[idx_eff] or "0").replace(",", ""))
-            # 有効在庫は品目内で同じ値が並ぶので、最後の値を採用（任意の1つで十分）
-            stock_by_code[code] = v
-        except: pass
+            idx_code = header.index("品目ｺｰﾄﾞ")
+        except ValueError:
+            # 半角・全角混在対応 (未確定_購買手配データは全角「品目コード」列 = index 11)
+            # 2026-07-14 修正: 従来は半角ｶﾅのみ判定→不一致でindex 5(部門コード)に落ち、
+            # 在庫が部門コードで集約される誤りがあった
+            idx_code = next((i for i, h in enumerate(header)
+                             if "品目" in h and ("ｺｰﾄﾞ" in h or "コード" in h)), 11)
+        try:
+            idx_eff = header.index("有効在庫数")
+        except ValueError:
+            idx_eff = next((i for i,h in enumerate(header) if "有効在庫" in h), -1)
+        for row in rdr:
+            if len(row) <= max(idx_code, idx_eff): continue
+            code = row[idx_code].strip()
+            if not code or idx_eff < 0: continue
+            try:
+                v = float((row[idx_eff] or "0").replace(",", ""))
+                # 有効在庫は品目内で同じ値が並ぶので、最後の値を採用（任意の1つで十分）
+                stock_by_code[code] = v
+            except: pass
+
+_load_stock(arr_csv)
 print(f"[有効在庫] {len(stock_by_code):,}品目分を取得")
 
 # ---- 3. 品目マスタを走査して 孤立品目 と 品目手順未登録品目 を抽出 ----
@@ -122,12 +158,24 @@ items: list[dict] = []
 items_no_route: list[dict] = []  # 品目手順未登録(BOM親なのに登録漏れ)
 total = 0
 # 品目マスタを map にしてから両方の集合を一括処理
+# CSV版(SharedMasters/CI data/)優先。無ければ TSV版 品目マスタ.txt にフォールバック
+# (.txt はヘッダ2行: 1行目=列名(CSVと同一), 2行目=<00001>形式の擬似ヘッダ)
 item_master_map: dict[str, dict] = {}
-with open(SHARED / "品目マスタ.csv", encoding="utf-8-sig") as f:
-    for r in csv.DictReader(f):
-        total += 1
+_item_candidates = [
+    (SHARED / "品目マスタ.csv", ","),
+    (SHARED / "品目マスタ.txt", "\t"),
+    (DATA_DIR / "品目マスタ.txt", "\t"),
+]
+_item_path, _item_delim = next(((p, d) for p, d in _item_candidates if p.exists()), (None, None))
+if _item_path is None:
+    raise SystemExit("品目マスタ (.csv/.txt) が見つかりません")
+print(f"[品目マスタ] 読込: {_item_path}")
+with open(_item_path, encoding="utf-8-sig") as f:
+    for r in csv.DictReader(f, delimiter=_item_delim):
         code = (r.get("品目ｺｰﾄﾞ") or "").strip()
         if not code: continue
+        if code.startswith("<"): continue  # .txt 2行目の擬似ヘッダ(<00001>...)を除外
+        total += 1
         item_master_map[code] = r
 
 # 品目手順未登録のリスト構築
@@ -236,6 +284,7 @@ meta = {
     "n_forbidden_total": len(items_forbidden),
     "n_forbidden_active": fb_active,
     "n_forbidden_prohibited": fb_proh,
+    "route_master_found": route_master_found,  # False=品目手順マスタ未取得(登録漏れ判定スキップ)
 }
 out = ROOT / "orphan_items.js"
 js = "window.ORPHAN_ITEMS = " + json.dumps(items, ensure_ascii=False, separators=(",", ":")) + ";\n"

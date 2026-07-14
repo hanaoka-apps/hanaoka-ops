@@ -1907,17 +1907,19 @@ for r in records:
             'k': r['order_kind'], 'l': r['order_label'], 'b': r['order_badge']
         }
 
-# BOM隣接リスト (関連コードに限定して圧縮)
-bom_p2c = {}
-for p, cs in parent_to_children.items():
-    if p not in relevant_codes: continue
-    keep = sorted([c for c in cs if c in relevant_codes])
-    if keep: bom_p2c[p] = keep
-bom_c2p = {}
-for c, ps in child_to_parents.items():
-    if c not in relevant_codes: continue
-    keep = sorted([p for p in ps if p in relevant_codes])
-    if keep: bom_c2p[c] = keep
+# BOM隣接リスト (ツリー描画用にJSへ出力)
+# 2026-07-14 修正 (BOM誤リンク調査):
+#  1. merged(通常+全製番混合) → 「通常(default)構成のみ」に変更。
+#     製番別構成の親子(例: J26060017400 の 21061401000→M00320 ピラミッドマット)が
+#     無関係な文脈のツリーに親品目として出る誤リンクを防ぐ。
+#     現在表示中の製番の親子は front 側が WI_BOM_BY_SEIBAN から補完する (dvGetParentsSeiban)。
+#  2. relevant_codes(手配品目から上下4階層) への限定を廃止。手配から遠い品目で
+#     「構成マスタに親子行があるのにツリーで繋がらない」欠落が起きていた。
+#     通常構成のユニーク親子は数千ペア程度でサイズ影響は小さい。
+#  ※判定ロジック(Python側)が使う merged の parent_to_children / child_to_parents は
+#    Phase 2 設計のまま変更しない(判定結果への影響は別途レビュー)。
+bom_p2c = {p: sorted(cs) for p, cs in bom_default_parent_to_children.items()}
+bom_c2p = {c: sorted(ps) for c, ps in bom_default_child_to_parents.items()}
 
 # 発注残: 確定済_購買発注一覧の (発注数量 - 受入数量) を品目別に合算
 order_residual_by_code = {}
@@ -3290,8 +3292,8 @@ const NAMES = _RP.NAMES || {};
 const TODAY = "__TODAY__";
 const LEDGER_DATE = "__LEDGER_DATE__";  // 有効在庫一覧 の作成日(現在庫の基準日)
 const LEDGER_DAYS_OLD = __LEDGER_DAYS_OLD__;  // 何日前のデータか(3以上で警告)
-const BOM_P2C = _RP.BOM_P2C || {};  // parent → [children]  (merged: 全製番＋通常 → 子方向ツリー描画では使用しない)
-const BOM_C2P = _RP.BOM_C2P || {};  // child → [parents]   (merged: 親方向の上り探索に使用)
+const BOM_P2C = _RP.BOM_P2C || {};  // parent → [children]  (2026-07-14〜 通常構成のみ・全件。製番別はWI_BOM_BY_SEIBANで補完)
+const BOM_C2P = _RP.BOM_C2P || {};  // child → [parents]   (2026-07-14〜 通常構成のみ・全件。親方向は dvGetParentsSeiban を使う)
 const NODE_INFO = _RP.NODE_INFO || {};  // code → {n, e, d, s, rid, ol}
 const KOUTEI_MASTER = _RP.KOUTEI_MASTER || [];  // 工程マスタ全件(工程検索用。手配に出ない工程も含む)
 const ITEM_MASTER = _RP.ITEM_MASTER || [];      // 品目マスタ全件(品目検索用)
@@ -3303,8 +3305,9 @@ const SUPPLIER_MASTER = _RP.SUPPLIER_MASTER || [];  // 手配先マスタ全件(
 //   - なければ WI_BOM_DEFAULT (通常品BOM、製番列が空の汎用構成) を使用
 //   - 取数は取らずにコード配列だけ返す (現状ツリー描画は1台あたりではないため)
 // 注意:
-//   - 親方向 (上り) は merged BOM_C2P をそのまま使用 (Phase 2 で seiban-aware に拡張予定)
-//   - 判定ロジック (受注ラベル分類、総需要算出) も merged BOM のまま (Phase 2)
+//   - 親方向 (上り) は「通常構成のBOM_C2P + 現在製番のWI_BOM_BY_SEIBAN逆引き」= dvGetParentsSeiban
+//     (2026-07-14 修正: merged使用をやめ、他製番の構成が親として混入する誤リンクを解消)
+//   - 判定ロジック (受注ラベル分類、総需要算出) は Python 側の merged BOM のまま (Phase 2)
 // ============================================================
 function _wiBomChildren(code, seiban) {
   // 製番別BOM: WI_BOM_BY_SEIBAN[seiban][code] = [{c, q}, ...]
@@ -3325,6 +3328,29 @@ function dvGetChildrenSeiban(code, seiban) {
 }
 function dvGetChildrenWithQty(code, seiban) {
   return _wiBomChildren(code, seiban).rows;
+}
+// 親方向 (上り) の seiban-aware 探索 (2026-07-14):
+//   通常構成の親 (BOM_C2P) + 現在製番の製番別構成の親 (WI_BOM_BY_SEIBAN[seiban] を逆引き)。
+//   他製番だけの構成 (例: J26060017400 の 21061401000→M00320) は現在製番でない限り出さない。
+const _sbC2PCache = {};
+function dvGetParentsSeiban(code, seiban) {
+  const base = BOM_C2P[code] || [];
+  if (!seiban || !window.WI_BOM_BY_SEIBAN || !window.WI_BOM_BY_SEIBAN[seiban]) return base;
+  let inv = _sbC2PCache[seiban];
+  if (!inv) {
+    inv = {};
+    const m = window.WI_BOM_BY_SEIBAN[seiban];
+    for (const p in m) {
+      for (const row of m[p]) {
+        (inv[row.c] = inv[row.c] || new Set()).add(p);
+      }
+    }
+    _sbC2PCache[seiban] = inv;
+  }
+  if (!inv[code]) return base;
+  const out = new Set(base);
+  inv[code].forEach(p => out.add(p));
+  return Array.from(out);
 }
 // 詳細パネルの現在の起点製番 (detailRecord.sb)
 function dvCurrentSeiban() {
@@ -3934,7 +3960,12 @@ function setDetailFocus(code){
     dvSidebarOpen = true;
     dvApplySidebar();
   }
+  // 2026-07-14 バグ修正: 従来は info タブしか再描画しておらず、
+  // 「関連品目の出入り」「選択品目の出入り」を表示中にノードをクリックしても
+  // 右パネルが前の品目のまま更新されなかった。3タブすべて新フォーカスで再描画する。
   dvRenderTabInfo();
+  dvRenderTabTehai();
+  dvRenderTabDispose();
   dvUpdateTabCounts();
 }
 
@@ -3967,7 +3998,10 @@ function dvRebuildTreeFrom(code){
   // 再構築後は小画面のみ自動Fit。デスクトップは前と同じ起点ズーム維持。
   if(window.innerWidth < 900) { dvAutoFit(); }
   dvUpdateTabCounts();
+  // 2026-07-14 バグ修正: ツリー再構築時も3タブすべて新起点で再描画 (setDetailFocusと同様)
   dvRenderTabInfo();
+  dvRenderTabTehai();
+  dvRenderTabDispose();
 }
 
 // 描画後に画面いっぱいに収まるようズーム自動調整
@@ -4072,13 +4106,13 @@ function dvBuildLayout(focusCode){
     codeByLv[lv] = next;
     frontier = next;
   }
-  // BFS 親方向 (level 0 → -N)
+  // BFS 親方向 (level 0 → -N)  ※2026-07-14: 通常構成+現在製番のみ (dvGetParentsSeiban)
   frontier = [focusCode];
   seen = new Set(Object.keys(nodeMeta));
   for(let lv=1; lv<=MAX_LV; lv++){
     const next = [];
     for(const c of frontier){
-      for(const p of (BOM_C2P[c]||[])){
+      for(const p of dvGetParentsSeiban(c, _layoutSeiban)){
         if(seen.has(p)) continue;
         seen.add(p); next.push(p);
         nodeMeta[p] = {lv:-lv};
@@ -4244,9 +4278,10 @@ function dvAncestorsInTree(code){
   const treeCodes = new Set(dvLayout.nodes.map(n=>n.code));
   const visited = new Set([code]);
   const stack = [code];
+  const _sbUp = dvCurrentSeiban();
   while(stack.length){
     const c = stack.pop();
-    for(const p of (BOM_C2P[c]||[])){
+    for(const p of dvGetParentsSeiban(c, _sbUp)){
       if(treeCodes.has(p) && !visited.has(p)){
         visited.add(p); stack.push(p);
       }
@@ -5020,7 +5055,7 @@ function dvRenderTabInfo(){
     });
     html += `</ul></div>`;
   }
-  const parents = (BOM_C2P[code] || []);
+  const parents = dvGetParentsSeiban(code, dvCurrentSeiban());
   if(parents.length){
     html += `<div class="dv-info-block">
       <h4>使われている親品目 (${parents.length}件)</h4>
@@ -5381,6 +5416,22 @@ function olTipText(label){
   return label;
 }
 
+// 日付短縮: "2026/07/13" → "26/07/13" (完全な日付は title/data-tip で保持)
+// 2026-07-14 雅さん指示: 出入りテーブルの日付列が切れる/右端の工程・仕入先列が見切れる対策
+function _shortYmd(d){
+  const s = String(d||"");
+  return /^\d{4}\/\d{2}\/\d{2}/.test(s) ? s.slice(2) : s;
+}
+
+// 出入りテーブル内の data-tip をネイティブtitleツールチップとしても出す (hoverで全文確認)
+// td は overflow:hidden のためCSS疑似要素ツールチップが切れる → title 属性が確実
+document.addEventListener("mouseover", (e)=>{
+  const t = e.target;
+  if(!t || !t.closest) return;
+  const el = t.closest(".dv-tl [data-tip]");
+  if(el && !el.getAttribute("title")) el.setAttribute("title", el.getAttribute("data-tip"));
+});
+
 // 今日基準で過去/未来を分けたHTMLを生成
 
 function renderTimelineTable(entries, opts){
@@ -5396,12 +5447,13 @@ function renderTimelineTable(entries, opts){
     html += `<div class="dv-empty">対象データなし</div></div>`;
     return html;
   }
-  // 列幅再設計: サイドパネル幅860px(レスポンシブ縮小可)
-  // 2026-05-23: 数量列に「残:N」(予測在庫)を併記するため拡張 66 → 110
+  // 列幅再設計: サイドパネル幅640px (2026-07-14: 日付をYY/MM/DD短縮して78→60px、
+  // 浮いた分は最終列「工程・仕入先」の残り幅に回す。table-layout:fixedのため
+  // width未指定の最終列が残り幅を全て受け取る)
   html += `<table class="dv-tl-table"><colgroup>
-    <col style="width:78px"><col style="width:52px">${opts.showCode?'<col style="width:76px">':''}<col style="width:88px"><col style="width:100px"><col style="width:52px"><col style="width:52px"><col style="width:54px"><col style="min-width:70px">
+    <col style="width:60px"><col style="width:52px">${opts.showCode?'<col style="width:76px">':''}<col style="width:88px"><col style="width:96px"><col style="width:52px"><col style="width:52px"><col style="width:54px"><col style="min-width:70px">
   </colgroup><thead><tr>
-    <th data-tip="出入りの日付。実績は伝票日付、予定は手配予定日">日付</th>
+    <th data-tip="出入りの日付(YY/MM/DD表示)。実績は伝票日付、予定は手配予定日。hoverで完全な日付">日付</th>
     <th data-tip="受入=検収済入庫実績／製造=製造指図(工程展開)／未確定=SMILE手配確定画面の未確定行">種別</th>
     ${opts.showCode?'<th data-tip="その出入りに紐付く品目コード">品目</th>':''}
     <th data-tip="その出入りに紐付くSMILE製番。コピー用に省略せず全文表示。99%は別採番(K/M製番)で親と機械的に紐付かない">製番</th>
@@ -5568,9 +5620,9 @@ function renderTimelineTable(entries, opts){
       const mfg = e.manufacture_date || "";
       const tip = `表示=出荷予定日基準 / 出荷予定日:${ship||"—"} / 受注納期:${nouki||"—"} / 製造納期:${mfg||"—"} ※構成内の1品でも発注確定すると製造納期は変えられない(SMILE仕様)ためズレることあり`;
       const warn = (mfg && ship && mfg < ship) ? ` <span data-tip="製造納期(${escapeHtml(mfg)})が出荷予定日(${escapeHtml(ship)})より過去。構成内の発注確定で製造納期が固定された可能性" style="color:#b45309;font-size:9.5px;cursor:help">⚠</span>` : "";
-      dateCellHtml = `<td class="td-date" data-tip="${escapeHtml(tip)}">${escapeHtml(e.date||"-")}${warn}</td>`;
+      dateCellHtml = `<td class="td-date" title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">${escapeHtml(_shortYmd(e.date)||"-")}${warn}</td>`;
     } else {
-      dateCellHtml = `<td class="td-date">${escapeHtml(e.date||"-")}</td>`;
+      dateCellHtml = `<td class="td-date" title="${escapeHtml(e.date||"-")}" data-tip="${escapeHtml(e.date||"-")}">${escapeHtml(_shortYmd(e.date)||"-")}</td>`;
     }
     return `<tr style="${rowStyle}">
       ${dateCellHtml}
@@ -5624,7 +5676,7 @@ function renderTimelineTable(entries, opts){
     }
   }
   html += `<tr class="dv-tl-today" id="dvTlToday"><td colspan="${ncolCol}">
-    <div class="dv-tl-today-bar">▼ 今日 ${today||"—"} ▼${stockChip}</div>
+    <div class="dv-tl-today-bar" title="今日 ${today||"—"}">▼ 今日 ${_shortYmd(today)||"—"} ▼${stockChip}</div>
     ${stockNote}
   </td></tr>`;
   future.forEach(e=>{ html += rowHtml(e); });

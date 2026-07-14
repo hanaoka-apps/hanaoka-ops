@@ -120,30 +120,78 @@ def K(ks, *nm):
 
 
 # ---- BOM (構成マスタ) ----
-bom = collections.defaultdict(list)
+# 2026-07-14 修正 (BOM誤リンク調査):
+#  1. 製番別構成(製番列あり)を通常構成に混ぜない。
+#     例: 製番 J26060017400 だけの構成 21061401000(DAﾌﾚｰﾑFullASSY)→M00320(ピラミッドマット) が
+#     全製番のツリーに出ていた。通常構成(bom)と製番別構成(bom_sb)を分離して出力する。
+#  2. ﾀﾞﾐｰ構成区分 / 展開ｽﾄｯﾌﾟ区分 / 使用禁止日 の無効行を除外
+#     (build_work_instructions.py / build_enhanced_summary.py と同じフィルタに統一)。
+#  3. 同一親子の重複行は1件のみ採用。SMILE構成マスタ出力は同一親子を最大100件超
+#     重複して含むため、そのまま追加すると explode() の取数が重複数倍に膨らんでいた
+#     (雅さん指示 2026-05-14: 重複は加算しない)。
+bom = collections.defaultdict(list)          # 通常構成: parent -> [child行]
+bom_sb = collections.defaultdict(dict)       # 製番別構成: seiban -> parent -> [child行]
+TODAY_YMD = TODAY.replace("/", "")           # 使用禁止日(YYYYMMDD)との比較用
+_seen_def = set()                            # (parent, child) 重複除去
+_seen_sb = set()                             # (seiban, parent, child) 重複除去
+_n_dup = _n_invalid = 0
 p_bom = mp("構成マスタ.csv")
 if p_bom:
     d = detect(p_bom)
     with open(p_bom, encoding="utf-8-sig", errors="replace") as f:
         for r in csv.DictReader(f, delimiter=d):
+            dummy = (r.get("ﾀﾞﾐｰ構成区分") or "0").strip().strip('"')
+            stop = (r.get("展開ｽﾄｯﾌﾟ区分") or "0").strip().strip('"')
+            if dummy not in ("", "0") or stop not in ("", "0"):
+                _n_invalid += 1
+                continue
+            prohibit = (r.get("使用禁止日") or "0").strip().strip('"')
+            if (prohibit and prohibit not in ("0", "00000000")
+                    and len(prohibit) == 8 and prohibit.isdigit()
+                    and prohibit <= TODAY_YMD):
+                _n_invalid += 1
+                continue
             par = (r.get("親品目ｺｰﾄﾞ") or r.get("親品目コード") or "").strip().strip('"')
             ch = (r.get("子品目ｺｰﾄﾞ") or r.get("子品目コード") or "").strip().strip('"')
             if not par or not ch:
                 continue
+            sb = (r.get("製番") or "").strip().strip('"')
+            is_sb = sb and sb not in ("0", "000000000000", "0000000000-00")
+            if is_sb:
+                if (sb, par, ch) in _seen_sb:
+                    _n_dup += 1
+                    continue
+                _seen_sb.add((sb, par, ch))
+            else:
+                if (par, ch) in _seen_def:
+                    _n_dup += 1
+                    continue
+                _seen_def.add((par, ch))
             qn = sf(r.get("取数(分子)") or r.get("取数（分子）") or 1) or 1.0
             qd = sf(r.get("取数(分母)") or r.get("取数（分母）") or 1) or 1.0
-            bom[par].append({
+            row = {
                 "child": ch,
                 "child_name": (r.get("子品目名") or "").strip().strip('"')[:40],
                 "qty_num": qn,
                 "qty_den": qd,
-            })
+            }
+            if is_sb:
+                bom_sb[sb].setdefault(par, []).append(row)
+            else:
+                bom[par].append(row)
 bom = dict(bom)
+bom_sb = dict(bom_sb)
 codes = set(bom)
 for v in bom.values():
     for c in v:
         codes.add(c["child"])
-print(f"[BOM] 親{len(bom):,} / 全コード{len(codes):,}  src={p_bom}")
+for _d in bom_sb.values():
+    for par, v in _d.items():
+        codes.add(par)
+        for c in v:
+            codes.add(c["child"])
+print(f"[BOM] 通常親{len(bom):,} / 製番別{len(bom_sb):,}製番 / 全コード{len(codes):,} "
+      f"(重複除去{_n_dup:,} / 無効行除外{_n_invalid:,})  src={p_bom}")
 
 # ---- リードタイム・品目名 (品目マスタ) ----
 lt = {}
@@ -293,7 +341,8 @@ if p_ord:
     for r in rows:
         sb = (r.get(osb) or "").strip().strip('"')
         code = (r.get(oc) or "").strip().strip('"')
-        if not sb.startswith("J") or code not in bom:
+        # 製番別構成しか無い製品(J製番の特注等)も一覧に出す
+        if not sb.startswith("J") or not (code in bom or code in bom_sb.get(sb, {})):
             continue
         q = sf(r.get(oq)); sold = sf(r.get(osold))
         due = nd(r.get(od)); comp = (r.get(ocomp) or "").strip().strip('"')
@@ -318,7 +367,7 @@ if p_plan:
     for r in rows:
         code = (r.get(pc) or "").strip().strip('"')
         sb = (r.get(psb) or "").strip().strip('"')
-        if code not in bom or not sb:
+        if not sb or not (code in bom or code in bom_sb.get(sb, {})):
             continue
         pq = sf(r.get(ppq)); dn = sf(r.get(pdn)); rem = pq - dn
         if rem <= 0:
@@ -335,8 +384,8 @@ for c in bom:
         pnm[c] = iname.get(c, "")
 print(f"[製番] {len(SB):,} (受注J + 計画K, 完了除外)")
 
-out = {"bom": bom, "lt": lt, "arr": sorted(arr), "req": sorted(req), "recv": sorted(recv),
-       "cov": sorted(cov), "wp": item_wp, "sb": SB, "pnm": pnm}
+out = {"bom": bom, "bom_sb": bom_sb, "lt": lt, "arr": sorted(arr), "req": sorted(req),
+       "recv": sorted(recv), "cov": sorted(cov), "wp": item_wp, "sb": SB, "pnm": pnm}
 DATA.mkdir(parents=True, exist_ok=True)
 (DATA / "seiban_gantt.json").write_text(
     json.dumps(out, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
