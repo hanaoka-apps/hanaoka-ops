@@ -137,7 +137,7 @@ body.collapsed .left{width:0;border:none;overflow:hidden}
 // MRPは在庫+発注残から将来所要を差し引いて不足分だけ提案するため、REQに無い品目は
 // 「在庫があり将来所要込みでも足りる=手配不要」。ARR=実手配(発注/製造指図/確定工程)。
 // COV=有効在庫>=0 の補助情報(要発注の打ち消しには使わない)。
-const X=window.RVX||{};const BOM=X.bom||{},LT=X.lt||{},ARR=new Set(X.arr||[]),REQ=new Set(X.req||[]),RECV=new Set(X.recv||[]),COV=new Set(X.cov||[]),WP=X.wp||{},SB=X.sb||[],PNM=X.pnm||{};
+const X=window.RVX||{};const BOM=X.bom||{},BOMSB=X.bom_sb||{},LT=X.lt||{},ARR=new Set(X.arr||[]),REQ=new Set(X.req||[]),RECV=new Set(X.recv||[]),COV=new Set(X.cov||[]),WP=X.wp||{},SB=X.sb||[],PNM=X.pnm||{};
 const TODAY=(function(){var d=new Date();d.setHours(0,0,0,0);return d;})();const LVCOL=["#7c3aed","#2563eb","#0891b2","#059669","#65a30d","#ca8a04","#dc2626","#9333ea"];
 const DW=24;
 function ymd(d){return d.getFullYear()+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+String(d.getDate()).padStart(2,"0");}
@@ -145,13 +145,16 @@ function pd(s){if(!s)return null;const p=(s||"").split("/");if(p.length!==3)retu
 function addD(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x;}
 function diffD(a,b){return Math.round((b-a)/86400000);}
 function getlt(c){return LT[c]||1;}
-function explode(root,maxn=250){const agg={};const dq=[[root,0,1]];const vis=new Set([root]);
+// 製番別構成対応 (2026-07-14): sb指定時はその製番の構成行を優先し、無い親はデフォルト構成へフォールバック。
+// 例: J26060017400 だけの構成 21061401000→M00320(ピラミッドマット) が全製番に出ていた誤リンクの修正。
+function bomOf(c,sb){const m=sb&&BOMSB[sb];if(m&&m[c])return m[c];return BOM[c]||[];}
+function explode(root,maxn=250,sb){const agg={};const dq=[[root,0,1]];const vis=new Set([root]);
   while(dq.length){const [c,dep,mult]=dq.shift();if(dep>7)continue;
-    for(const ch of (BOM[c]||[])){const code=ch.child,q=mult*(ch.qty_num/(ch.qty_den||1));
+    for(const ch of bomOf(c,sb)){const code=ch.child,q=mult*(ch.qty_num/(ch.qty_den||1));
       if(agg[code]){agg[code].q+=q;}else{agg[code]={lv:dep+1,name:ch.child_name,q:q,p:c,lt:getlt(code)};if(Object.keys(agg).length>=maxn)return agg;}
       if(!vis.has(code)){vis.add(code);dq.push([code,dep+1,q]);}}}
   return agg;}
-function partCount(it){return Object.keys(explode(it,260)).length;}
+function partCount(it,sb){return Object.keys(explode(it,260,sb)).length;}
 let mode="sb",cur=null,calcDue=null,calcQty=1;
 let _req={label:"",pname:"",due:"",list:[]}; // 選択中製番の要発注(REQ=MRP不足提案)部品
 function fq(n){return (Math.round(n*1000)/1000).toString();}
@@ -188,18 +191,18 @@ document.getElementById("mSb").onclick=()=>setMode("sb");document.getElementById
 document.getElementById("meta").textContent=`進行中${SB.length}製番(完了除外) / BOM製品${Object.keys(BOM).length}`;
 // 検索用正規化: NFKCで半角カナ→全角カナ・全角英数→半角英数を統一し小文字化 (2026-07-09)
 function _normSearch(s){return String(s==null?'':s).normalize('NFKC').toLowerCase();}
-const _pc={};function pcOf(it){if(_pc[it]===undefined)_pc[it]=partCount(it);return _pc[it];}
+const _pc={};function pcOf(it,sb){const k=(sb||"")+"|"+it;if(_pc[k]===undefined)_pc[k]=partCount(it,sb);return _pc[k];}
 // 製番リスト用: その製番のBOM部品に「要発注(req=未確定手配・未発注)」が何件あるか(キャッシュ)
-const _rq={};function reqOf(it){if(_rq[it]===undefined){let n=0;const ex=explode(it,260);for(const c in ex){if(REQ.has(c)&&!ARR.has(c)&&!RECV.has(c))n++;}_rq[it]=n;}return _rq[it];}
+const _rq={};function reqOf(it,sb){const k=(sb||"")+"|"+it;if(_rq[k]===undefined){let n=0;const ex=explode(it,260,sb);for(const c in ex){if(REQ.has(c)&&!ARR.has(c)&&!RECV.has(c))n++;}_rq[k]=n;}return _rq[k];}
 function renderList(){
   const box=document.getElementById("llist");
   if(mode==="sb"){
     const q=_normSearch(document.getElementById("q").value).trim(),kind=document.getElementById("kind").value,sort=document.getElementById("sort").value;
     let arr=SB.filter(s=>{if(kind!=="all"&&s.k!==kind)return false;
       if(q){const nm=_normSearch(PNM[s.it]||"");if(!(_normSearch(s.sb).includes(q)||_normSearch(s.it).includes(q)||nm.includes(q)||_normSearch(s.cu||"").includes(q)))return false;}return true;});
-    arr.sort((a,b)=>{if(sort==="parts")return pcOf(b.it)-pcOf(a.it)||((a.due||"9")<(b.due||"9")?-1:1);if(sort==="due")return (a.due||"9")<(b.due||"9")?-1:1;return a.sb<b.sb?-1:1;});
+    arr.sort((a,b)=>{if(sort==="parts")return pcOf(b.it,b.sb)-pcOf(a.it,a.sb)||((a.due||"9")<(b.due||"9")?-1:1);if(sort==="due")return (a.due||"9")<(b.due||"9")?-1:1;return a.sb<b.sb?-1:1;});
     if(!arr.length){box.innerHTML='<div class="empty">該当なし</div>';return;}
-    box.innerHTML=arr.slice(0,300).map(s=>{const rq=reqOf(s.it);return `<div class="li ${s.sb===cur?'sel':''}${rq>0?' li-req':''}" data-sb="${s.sb}"><div class="sb">${s.sb} <span class="kbadge k-${s.k}">${s.k==='J'?'受注':'計画'}</span>${rq>0?`<span class="li-reqbadge">🛒要発注${rq}</span>`:''}</div><div class="nm">${PNM[s.it]||s.it}</div><div class="sub"><span>${pcOf(s.it)}部品</span><span>納期 ${s.due||'—'}</span><span>残${s.rem}</span></div></div>`;}).join("");
+    box.innerHTML=arr.slice(0,300).map(s=>{const rq=reqOf(s.it,s.sb);return `<div class="li ${s.sb===cur?'sel':''}${rq>0?' li-req':''}" data-sb="${s.sb}"><div class="sb">${s.sb} <span class="kbadge k-${s.k}">${s.k==='J'?'受注':'計画'}</span>${rq>0?`<span class="li-reqbadge">🛒要発注${rq}</span>`:''}</div><div class="nm">${PNM[s.it]||s.it}</div><div class="sub"><span>${pcOf(s.it,s.sb)}部品</span><span>納期 ${s.due||'—'}</span><span>残${s.rem}</span></div></div>`;}).join("");
     box.querySelectorAll(".li").forEach(li=>li.onclick=()=>{cur=li.dataset.sb;renderList();const s=SB.find(x=>x.sb===cur);renderGantt(s.it,s.due,s.q,{sb:s.sb,kind:s.k,cust:s.cu,rem:s.rem});});
   }else{
     const q=_normSearch(document.getElementById("pq").value).trim();
@@ -212,7 +215,7 @@ function renderList(){
   }
 }
 function estTotalLT(it,ex){const byLv={};Object.values(ex).forEach(v=>{byLv[v.lv]=Math.max(byLv[v.lv]||0,v.lt);});let s=getlt(it);Object.values(byLv).forEach(x=>s+=x);return s;}
-function schedule(it,dueStr){const due=pd(dueStr)||addD(TODAY,30);const ex=explode(it);
+function schedule(it,dueStr,sb){const due=pd(dueStr)||addD(TODAY,30);const ex=explode(it,250,sb);
   const fin={},st={};fin[it]=due;st[it]=addD(due,-(getlt(it)||1));
   Object.entries(ex).sort((a,b)=>a[1].lv-b[1].lv).forEach(([c,v])=>{const ps=st[v.p]!==undefined?st[v.p]:due;fin[c]=ps;st[c]=addD(ps,-(v.lt||1));});
   return {due,ex,fin,st};}
@@ -221,7 +224,7 @@ function wpTag(c){const w=WP[c];if(!w)return '';const io=w[1]||"";const ext=io.i
 // REQに無い=MRPが将来所要込みで「足りる」と判定 → 在庫の有無に関わらず手配不要。
 function statusTag(c,overdue){return RECV.has(c)?'<span class="tagm st-recv">✓受入済</span>':ARR.has(c)?'<span class="tagm st-arr">手配済</span>':REQ.has(c)?(overdue?'<span class="tagm st-late">⚠至急・要発注</span>':'<span class="tagm st-req">要発注</span>'):COV.has(c)?'<span class="tagm st-cov">在庫あり</span>':'<span class="tagm st-cov">手配不要</span>';}
 function renderGantt(it,dueStr,qty,info){
-  info=info||{};const sc=schedule(it,dueStr);const {due,ex,fin,st}=sc;
+  info=info||{};const sc=schedule(it,dueStr,info.sb);const {due,ex,fin,st}=sc;
   let mins=st[it];Object.values(st).forEach(d=>{if(d<mins)mins=d;});
   let lo=addD(mins,-2),hi=addD(due,2);if(TODAY<lo)lo=addD(TODAY,-1);if(TODAY>hi)hi=addD(TODAY,1);
   let nd=diffD(lo,hi)+1;if(nd<10){hi=addD(lo,9);nd=10;}
