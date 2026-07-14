@@ -47,6 +47,7 @@ td.num,th.num{text-align:right}
       <button class="btn" onclick="generate()" style="margin-left:auto">▶ 支払指図を生成</button>
       <button class="btn ok" onclick="outputZengin()">📤 全銀ファイル出力</button>
       <button class="btn g" onclick="outputDensai()">📤 でんさいCSV</button>
+      <button class="btn g" onclick="outputSmileDenpyo()">📤 SMILE支払伝票</button>
       <button class="btn g" onclick="reload()">🔄 再読込</button>
     </div>
     <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:12px;color:var(--primary)">⚙ 振込元（全銀ヘッダー）設定</summary>
@@ -100,13 +101,14 @@ async function loadShiharai(){
     if(!r.ok)throw new Error('['+r.status+'] 仕入先マスタ.csv');
     const rows=parseCSV(new TextDecoder('utf-8').decode(await r.arrayBuffer()));
     const h=rows[0].map(x=>String(x==null?'':x).trim());const ix=n=>h.indexOf(n);
-    const ci={code:ix('仕入先ｺｰﾄﾞ'),term:ix('取決条件名'),site:ix('手形サイト(日)'),den:ix('でんさい利用者番号'),
+    const ci={code:ix('仕入先ｺｰﾄﾞ'),term:ix('取決条件名'),termc:ix('取決条件ｺｰﾄﾞ'),site:ix('手形サイト(日)'),den:ix('でんさい利用者番号'),
       base:ix('支払設定１　基準額設定　基準額'),bank:ix('振込口座　金融機関ｺｰﾄﾞ'),branch:ix('振込口座　金融機関支店ｺｰﾄﾞ'),
-      atype:ix('振込口座　口座区分'),ano:ix('振込口座　口座番号'),kana:ix('振込口座　口座名義')};
+      atype:ix('振込口座　口座区分'),ano:ix('振込口座　口座番号'),kana:ix('振込口座　口座名義'),
+      name1:ix('仕入先名１'),ryaku:ix('仕入先名略称'),janc:ix('仕入先ｼﾞｬﾝﾙｺｰﾄﾞ'),jann:ix('仕入先ｼﾞｬﾝﾙ名'),scomc:ix('仕入先社名ｺｰﾄﾞ'),scomn:ix('仕入先社名名'),mjc:ix('支払明細ｼﾞｬﾝｺｰﾄﾞ'),mjn:ix('支払明細ｼﾞｬﾝ名')};
     const v=(r2,i)=>(i>=0&&i<r2.length?(r2[i]||''):'');
     SH.byCode={};
     for(let i=1;i<rows.length;i++){const r2=rows[i];if(!r2||!v(r2,ci.code))continue;
-      SH.byCode[normCode(v(r2,ci.code))]={term:v(r2,ci.term),site:v(r2,ci.site),base:Number(v(r2,ci.base))||0,den:v(r2,ci.den),bank:v(r2,ci.bank),branch:v(r2,ci.branch),atype:v(r2,ci.atype),ano:v(r2,ci.ano),kana:v(r2,ci.kana)};}
+      SH.byCode[normCode(v(r2,ci.code))]={term:v(r2,ci.term),termc:v(r2,ci.termc),site:v(r2,ci.site),base:Number(v(r2,ci.base))||0,den:v(r2,ci.den),bank:v(r2,ci.bank),branch:v(r2,ci.branch),atype:v(r2,ci.atype),ano:v(r2,ci.ano),kana:v(r2,ci.kana),name1:v(r2,ci.name1),ryaku:v(r2,ci.ryaku),janc:v(r2,ci.janc),jann:v(r2,ci.jann),scomc:v(r2,ci.scomc),scomn:v(r2,ci.scomn),mjc:v(r2,ci.mjc),mjn:v(r2,ci.mjn),rawcode:v(r2,ci.code)};}
   }catch(e){/* 取得失敗なら でんさい/判定時に警告 */}
 }
 // 支払期日：EOMONTH(基準日,n)＝基準月+nヶ月の末日。ユーザー提供のSWITCHロジック。
@@ -321,6 +323,54 @@ async function outputDensai(){
     for(const p of list){const code=normCode(p.f[F(PI,'支払先コード')]);const m=SH.byCode[code];if(m&&m.den&&densaiDue(base,m.site)){try{await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${p.id}/fields`,{[F(PI,'支払状態')]:'EB出力済',[F(PI,'EB出力日時')]:new Date().toISOString()});}catch(e){}}}
     await reload();
   }
+  snack(msg.split('\n')[0]);
+}
+// ===== SMILE販売 支払伝票 取込（タブ区切り・64列）=====
+// 取引区分: 2振込 / 4手形(でんさい) / 3相殺 / 6調整(端数) / 15為替差損
+const SMILE_HEAD=['伝票日付','年月度','伝票№','処理連番','行','仕入先ｺｰﾄﾞ','仕入先名１','仕入先名２','仕入先名略称','取決条件ｺｰﾄﾞ','取決条件名','仕入先ｼﾞｬﾝﾙｺｰﾄﾞ','仕入先ｼﾞｬﾝﾙ名','仕入先社名ｺｰﾄﾞ','仕入先社名名','支払明細ｼﾞｬﾝｺｰﾄﾞ','支払明細ｼﾞｬﾝ名','仕入先分類４ｺｰﾄﾞ','仕入先分類４名','仕入先分類５ｺｰﾄﾞ','仕入先分類５名','仕入先分類６ｺｰﾄﾞ','仕入先分類６名','仕入先分類７ｺｰﾄﾞ','仕入先分類７名','@TOVAS利用ｺｰﾄﾞ','@TOVAS利用名','諸口有無ｺｰﾄﾞ','諸口有無名','部門ｺｰﾄﾞ','部門名','大部門ｺｰﾄﾞ','大部門名','中部門ｺｰﾄﾞ','中部門名','売上営業/ｿﾘｭｺｰﾄﾞ','売上営業/ｿﾘｭ名','売上部門別ｺｰﾄﾞ','売上部門別名','部門分類４ｺｰﾄﾞ','部門分類４名','部門分類５ｺｰﾄﾞ','部門分類５名','部門分類６ｺｰﾄﾞ','部門分類６名','部門分類７ｺｰﾄﾞ','部門分類７名','部門分類８ｺｰﾄﾞ','部門分類８名','部門分類９ｺｰﾄﾞ','部門分類９名','取引区分','取引区分名','取引区分属性','取引区分属性名','支払額','決済予定日','備考ｺｰﾄﾞ','備考','ﾛｸﾞｲﾝID','ﾛｸﾞｲﾝ名','操作日付','ﾃﾞｰﾀ発生区分','相手処理連番'];
+function kubunOf(method){ // [取引区分,名,属性,属性名]
+  if(method==='でんさい')return ['4','手　形','4','手形'];
+  if(method==='相殺')return ['3','相　殺','3','相殺'];
+  return ['2','振　込','2','振込']; // 総合振込
+}
+function smileRow(o){const r=new Array(SMILE_HEAD.length).fill('');
+  const set=(name,val)=>{const i=SMILE_HEAD.indexOf(name);if(i>=0)r[i]=(val==null?'':String(val));};
+  set('伝票日付',o.denpyoDate);set('年月度',o.ym6);set('伝票№','');set('処理連番','');set('行',o.line);
+  set('仕入先ｺｰﾄﾞ',o.code6);set('仕入先名１',o.name1);set('仕入先名略称',o.ryaku);
+  set('取決条件ｺｰﾄﾞ',o.termc);set('取決条件名',o.term);set('仕入先ｼﾞｬﾝﾙｺｰﾄﾞ',o.janc);set('仕入先ｼﾞｬﾝﾙ名',o.jann);set('仕入先社名ｺｰﾄﾞ',o.scomc);set('仕入先社名名',o.scomn);set('支払明細ｼﾞｬﾝｺｰﾄﾞ',o.mjc);set('支払明細ｼﾞｬﾝ名',o.mjn);
+  set('部門ｺｰﾄﾞ',o.deptc);set('部門名',o.deptn);
+  set('取引区分',o.k[0]);set('取引区分名',o.k[1]);set('取引区分属性',o.k[2]);set('取引区分属性名',o.k[3]);
+  set('支払額',o.amount);set('決済予定日',o.dueday||'0');set('備考',o.memo||'');
+  return r.join('\t');
+}
+async function outputSmileDenpyo(){
+  const ym=month();const cfg=loadCfg();
+  if(!Object.keys(SH.byCode).length){snack('仕入先マスタ未取得（SharedMasters）',true);return;}
+  // 対象＝この決済月の支払指図で「仕入先マスタに存在するコード」（＝仕入）。福田承認済に限定。
+  const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&(p.f[F(PI,'承認状態')]||'')===FINAL&&SH.byCode[normCode(p.f[F(PI,'支払先コード')])]);
+  if(!list.length){snack(FINAL+'済みの仕入支払指図がありません');return;}
+  const ym6=ym.replace('/','');const base=monthEnd(ym);
+  const rows=[];let line=0;let sum=0;const warns=[];
+  for(const p of list){const f=p.f;const code=normCode(f[F(PI,'支払先コード')]);const m=SH.byCode[code]||{};const method=f[F(PI,'支払手段')]||'総合振込';
+    const denpyoDate=(f[F(PI,'実支払日')]||'').replace(/-/g,'')||ym6+'30';
+    const loc=(f[F(PI,'拠点')]||'本社');const deptc=loc==='工場'?'003110':'001110';const deptn=loc==='工場'?'工場全体':'全社';
+    // 突合の調整額（仕入先×決済月）
+    const pm=PM.items.find(x=>x.f[F(PM,'対象年月')]===ym&&normCode(x.f[F(PM,'仕入先コード')])===code);
+    const adj=pm?Math.round(Number(pm.f[F(PM,'調整額')])||0):0;
+    const total=Math.round(Number(f[F(PI,'支払額')])||0);const mainAmt=total-adj;  // 本体（請求書合計）
+    // でんさい期日
+    let dueday='0';if(method==='でんさい'){const d=densaiDue(base,m.site);if(d)dueday=ymd8(d);else warns.push(`${f[F(PI,'支払先名')]}：でんさいサイト未定義`);}
+    const common={denpyoDate,ym6,code6:(m.rawcode||code),name1:m.name1||f[F(PI,'支払先名')],ryaku:m.ryaku||'',termc:m.termc||'',term:m.term||'',janc:m.janc||'',jann:m.jann||'',scomc:m.scomc||'',scomn:m.scomn||'',mjc:m.mjc||'',mjn:m.mjn||'',deptc,deptn};
+    // 本体行
+    rows.push(smileRow({...common,line:++line,k:kubunOf(method),amount:mainAmt,dueday,memo:''}));sum+=mainAmt;
+    // 調整行（端数）
+    if(adj!==0){rows.push(smileRow({...common,line:++line,k:['6','調整','6','調整'],amount:adj,dueday:'0',memo:'消費税端数調整'}));sum+=adj;}
+  }
+  const out=[SMILE_HEAD.join('\t'),...rows].join('\r\n')+'\r\n';
+  const body=new TextEncoder().encode(out);const bytes=new Uint8Array(3+body.length);bytes.set([0xEF,0xBB,0xBF]);bytes.set(body,3);  // UTF-8 BOM
+  downloadBytes(bytes,`smile_shiharai_${ym6}_${ts()}.txt`);
+  let msg=`SMILE支払伝票（タブ区切り）：${rows.length}行 / 合計${yen(sum)}`;if(warns.length)msg+=`\n⚠${warns.length}件要確認：`+warns.join(' / ');
+  const el=document.getElementById('gen-result');el.style.display='block';el.textContent=msg+'\n※番号は空（SMILE自動採番前提）。数行で取込テストしてください。';
   snack(msg.split('\n')[0]);
 }
 boot().catch(e=>{console.error(e);snack('起動エラー: '+e.message,true);});
