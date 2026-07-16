@@ -39,6 +39,20 @@ td.num,th.num{text-align:right}
 .empty{padding:30px;text-align:center;color:var(--muted)}
 .mono{font-family:Consolas,monospace}
 .gen-result{background:#f0f4f9;border:1px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:13px;white-space:pre-wrap;display:none}
+.intro{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+.groups{display:flex;flex-direction:column;gap:16px}
+.grp{background:#fff;border:1px solid var(--border);border-left:5px solid var(--c);border-radius:10px;overflow:hidden}
+.grp-head{display:flex;align-items:center;gap:14px;padding:11px 15px;background:var(--c-bg);flex-wrap:wrap}
+.grp-badge{font-weight:700;font-size:15px;color:var(--c);display:flex;align-items:center;gap:8px}
+.grp-dot{width:12px;height:12px;border-radius:50%;background:var(--c)}
+.grp-meta{color:#556;font-size:12.5px}
+.grp-head label{font-size:12.5px;color:#556;display:flex;align-items:center;gap:5px}
+.grp table{border-radius:0}
+.grp thead th{background:#f7f9fc}
+.row-off{opacity:.5}
+.chip-r{display:inline-block;padding:2px 8px;border-radius:9px;font-size:11px;font-weight:700;background:#eef1f5;color:#667}
+.chip-done{background:#e6f4ea;color:#2e7d32}
+.rcb{width:16px;height:16px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -50,9 +64,8 @@ td.num,th.num{text-align:right}
   <header>
     <h1>定期支払マスタ</h1>
     <span style="font-size:12px">決済月</span>
-    <select id="month-select" onchange="renderList()"></select>
+    <select id="month-select" onchange="onMonth()"></select>
     <button class="btn" onclick="openNew()">＋ 新規</button>
-    <button class="btn g" onclick="generate()">▶ 当月分を生成</button>
     <span class="sp">
       <a href="ap_dashboard.html">🏠 ダッシュボード</a>
       <span id="user-name"></span><a href="#" onclick="signOut();return false">サインアウト</a>
@@ -64,12 +77,10 @@ td.num,th.num{text-align:right}
     <div class="toolbar">
       <input id="f-text" placeholder="名称・支払先で絞込" oninput="renderList()" style="width:220px">
       <label style="font-size:13px"><input type="checkbox" id="f-inactive" onchange="renderList()"> 無効も表示</label>
-      <span id="count" style="color:var(--muted);font-size:12px"></span>
+      <span id="count" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
     </div>
-    <table>
-      <thead><tr><th>名称</th><th>支払先</th><th>手段</th><th>締め回</th><th>頻度</th><th class="num">税込合計</th><th>種別</th><th>状態</th><th></th></tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
+    <div class="intro">締め回ごとに<b>当月対象</b>を生成します。内容を確認し各グループの「▶ 生成」を押してください（生成済みは自動でスキップ）。</div>
+    <div id="groups" class="groups"></div>
   </div>
 </div>
 
@@ -146,7 +157,8 @@ function toObjs(rows){const h=rows[0];return rows.slice(1).filter(r=>r.length>1)
 
 // ---- setup ----
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;initMonth();
-  await ensureLists(); await loadMasters(); await loadItems(); renderList();}
+  await ensureLists(); await loadMasters(); await loadItems(); await loadGenerated(); renderList();}
+async function onMonth(){try{await loadGenerated();}catch(e){}renderList();}
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
 async function ensureLists(){
@@ -179,25 +191,64 @@ async function loadItems(){
   items=all.map(it=>({id:it.id,f:it.fields}));
 }
 
-// ---- list ----
+// ---- list（締め回グループ表示）----
 function yen(n){return '¥'+(Number(n)||0).toLocaleString();}
+const DAYTYPES=[['10日','#2f80ed','#eaf2fd'],['20日','#1e9e6a','#e7f6ee'],['月末','#e67e22','#fdf1e6']];
+let genSet=new Set();  // 当月生成済みマスタID
+async function loadGenerated(){
+  const ym=month();genSet=new Set();
+  const collect=arr=>arr.forEach(x=>{if(x.fields[invf('対象年月')]===ym&&x.fields['RecurringSourceID'])genSet.add(String(x.fields['RecurringSourceID']));});
+  try{const ex=await gget(`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500&$filter=fields/${invf('対象年月')} eq '${ym}'`);collect(ex.value||[]);}
+  catch(e){let all=[],n=`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500`;while(n){const d=await gget(n);all=all.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}collect(all);}
+}
+function netOf(it){let l=[];try{l=JSON.parse(it.f[rf('明細テンプレJSON')]||'[]');}catch{}return l.reduce((a,x)=>a+(Number(x.incl)||0),0)-(Number(it.f[rf('源泉額')])||0);}
+function rowStat(it,ym){const id=String(it.id);if(genSet.has(id))return 1;if(dueThisMonth(it.f,ym))return 0;return 2;}  // 0=対象 1=生成済 2=対象外
 function renderList(){
-  const ft=document.getElementById('f-text').value.trim();const showInact=document.getElementById('f-inactive').checked;
-  let list=items.filter(it=>showInact||it.f[rf('有効')]===true);
-  if(ft)list=list.filter(it=>(it.f['Title']||'').includes(ft)||(it.f[rf('支払先名')]||'').includes(ft));
-  list.sort((a,b)=>(a.f['Title']||'').localeCompare(b.f['Title']||''));
-  document.getElementById('count').textContent=`${list.length}件`;
-  document.getElementById('tbody').innerHTML=list.map(it=>{const f=it.f;
-    const gt=f[rf('生成種別')]||'固定生成';const active=f[rf('有効')]===true;
-    return `<tr>
-      <td>${f['Title']||'—'}</td><td>${f[rf('支払先名')]||''}<span class="mono" style="color:#999;font-size:11px"> ${f[rf('支払先コード')]||''}</span></td>
-      <td>${f[rf('支払手段')]||''}</td><td>${f[rf('支払日区分')]||''}</td>
-      <td>${f[rf('頻度')]||''}${f[rf('対象月')]?'('+f[rf('対象月')]+')':''}</td>
-      <td class="num">${yen(f[rf('税込合計')])}</td>
-      <td><span class="pill ${gt==='固定生成'?'p-fix':'p-plan'}">${gt}</span></td>
-      <td><span class="pill ${active?'p-on':'p-off'}">${active?'有効':'無効'}</span></td>
-      <td><button class="btn g" onclick="openEdit('${it.id}')">編集</button></td>
-    </tr>`;}).join('')||`<tr><td colspan="9" class="empty">定期支払が未登録です。「＋新規」から登録してください。</td></tr>`;
+  const ft=document.getElementById('f-text').value.trim();const showInact=document.getElementById('f-inactive').checked;const ym=month();
+  let base=items.filter(it=>showInact||it.f[rf('有効')]===true);
+  if(ft)base=base.filter(it=>(it.f['Title']||'').includes(ft)||(it.f[rf('支払先名')]||'').includes(ft));
+  const cont=document.getElementById('groups');cont.innerHTML='';let grandT=0;
+  DAYTYPES.forEach(([dt,c,cbg])=>{
+    let list=base.filter(it=>(it.f[rf('支払日区分')]||'月末')===dt);
+    list.sort((a,b)=>rowStat(a,ym)-rowStat(b,ym)||(a.f['Title']||'').localeCompare(b.f['Title']||''));
+    const targets=list.filter(it=>rowStat(it,ym)===0);const doneN=list.filter(it=>rowStat(it,ym)===1).length;
+    const sumT=targets.reduce((s,it)=>s+netOf(it),0);grandT+=sumT;
+    const rows=list.map(it=>{const f=it.f;const id=String(it.id);const gt=f[rf('生成種別')]||'固定生成';const active=f[rf('有効')]===true;const st=rowStat(it,ym);
+      let statusHtml,cb,cls='';
+      if(st===1){statusHtml='<span class="chip-r chip-done">✓ 生成済</span>';cb='';cls='row-off';}
+      else if(st===0){statusHtml='<span class="chip-r" style="background:'+cbg+';color:'+c+'">当月対象</span>';cb=`<input type="checkbox" class="rcb" data-dt="${dt}" data-id="${id}" checked>`;}
+      else{const r=!active?'無効':(gt!=='固定生成'?'予定のみ':'当月対象外');statusHtml=`<span class="chip-r">${r}</span>`;cb='';cls='row-off';}
+      return `<tr class="${cls}">
+        <td style="text-align:center">${cb}</td>
+        <td>${f['Title']||'—'}</td>
+        <td>${f[rf('支払先名')]||''}<span class="mono" style="color:#999;font-size:11px"> ${f[rf('支払先コード')]||''}</span></td>
+        <td>${f[rf('支払手段')]||''}</td>
+        <td>${f[rf('頻度')]||''}${f[rf('対象月')]?'('+f[rf('対象月')]+')':''}</td>
+        <td class="num">${yen(netOf(it))}</td>
+        <td><span class="pill ${gt==='固定生成'?'p-fix':'p-plan'}">${gt}</span></td>
+        <td>${statusHtml}</td>
+        <td><button class="btn g" onclick="openEdit('${id}')">編集</button></td>
+      </tr>`;}).join('')||`<tr><td colspan="9" class="empty" style="padding:16px">このグループに定期支払はありません</td></tr>`;
+    cont.insertAdjacentHTML('beforeend',`
+      <div class="grp" style="--c:${c};--c-bg:${cbg}">
+        <div class="grp-head">
+          <span class="grp-badge"><span class="grp-dot"></span>${dt}締め</span>
+          <span class="grp-meta">当月対象 <b>${targets.length}</b> 件 ／ 合計 <b>${yen(sumT)}</b>${doneN?` ・生成済 ${doneN}件`:''}</span>
+          <label style="margin-left:auto"><input type="checkbox" onchange="toggleGroup('${dt}',this.checked)" ${targets.length?'checked':'disabled'}> 全選択</label>
+          <button class="btn" onclick="generateGroup('${dt}')" ${targets.length?'':'disabled'}>▶ ${dt}締めを生成</button>
+        </div>
+        <table><thead><tr><th style="width:36px"></th><th>名称</th><th>支払先</th><th>手段</th><th>頻度</th><th class="num">税込</th><th style="width:80px">種別</th><th style="width:90px">状態</th><th style="width:60px"></th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>`);
+  });
+  document.getElementById('count').textContent=`当月対象 合計 ${yen(grandT)}`;
+}
+function toggleGroup(dt,on){document.querySelectorAll('.rcb[data-dt="'+dt+'"]').forEach(c=>c.checked=on);}
+async function generateGroup(dt){
+  const ids=[...document.querySelectorAll('.rcb[data-dt="'+dt+'"]:checked')].map(c=>c.dataset.id);
+  if(!ids.length){snack(dt+'締めで選択された支払がありません');return;}
+  const due=items.filter(it=>ids.includes(String(it.id))&&dueThisMonth(it.f,month()));
+  await doGenerate(due,dt+'締め');
 }
 
 // ---- editor ----
@@ -320,13 +371,12 @@ function dueThisMonth(f,ym){
 function occNo(f,ym){const cur=ymNum(ym),st=ymNum(f[rf('開始年月')]);return (st&&cur)?(cur-st+1):null;}
 function locOf(bcode){return /^003/.test(bcode||'')?'工場':'本社';}
 
-async function generate(){
+async function doGenerate(due,label){
   const ym=month();
-  const due=items.filter(it=>dueThisMonth(it.f,ym));
-  if(!due.length){snack('当月('+ym+')の対象マスタがありません');return;}
+  if(!due.length){snack('生成対象がありません');return;}
   // 生成前プレビュー確認（誤生成防止）
-  const preview=due.map(it=>{const net=(()=>{let l=[];try{l=JSON.parse(it.f[rf('明細テンプレJSON')]||'[]');}catch{}return l.reduce((a,x)=>a+(Number(x.incl)||0),0)-(Number(it.f[rf('源泉額')])||0);})();return ' ・'+(it.f['Title']||it.f[rf('支払先名')])+'  '+yen(net);});
-  if(!confirm(`${ym} 分として、次の ${due.length} 件の支払を作成します：\n\n`+preview.join('\n')+`\n\n（すでに作成済みの分は自動でスキップします）\n作成してよろしいですか？`))return;
+  const preview=due.map(it=>' ・'+(it.f['Title']||it.f[rf('支払先名')])+'  '+yen(netOf(it)));
+  if(!confirm(`${ym}（${label}）分として、次の ${due.length} 件の支払を作成します：\n\n`+preview.join('\n')+`\n\n（すでに作成済みの分は自動でスキップします）\n作成してよろしいですか？`))return;
   // 既存（同マスタ×決済月）を取得して冪等
   const existing=await gget(`/sites/${AP_SITE}/lists/${INV.id}/items?$expand=fields&$top=500&$filter=fields/${invf('対象年月')} eq '${ym}'`).catch(async()=>{
     // フィルタ不可環境は全件取得でフォールバック
@@ -371,8 +421,9 @@ async function generate(){
     }catch(e){err++;log.push(`❌ ${f['Title']}：${e.message}`);}
   }
   const el=document.getElementById('gen-result');el.style.display='block';
-  el.textContent=`【${ym} 生成結果】 作成${made} / スキップ${skip} / エラー${err}\n`+log.join('\n');
+  el.textContent=`【${ym}（${label}）生成結果】 作成${made} / スキップ${skip} / エラー${err}\n`+log.join('\n');
   snack(`生成完了：作成${made} スキップ${skip} エラー${err}`);
+  try{await loadGenerated();}catch(e){}renderList();
 }
 
 boot().catch(e=>{console.error(e);snack('起動エラー: '+e.message,true);});

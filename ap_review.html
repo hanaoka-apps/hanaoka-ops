@@ -36,6 +36,16 @@
   .inv-card .pname{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .inv-card .meta{font-size:11px;color:var(--muted);margin-top:3px;display:flex;justify-content:space-between;}
   .inv-card .amt{font-weight:700;color:var(--text);}
+  .filterbar{display:flex;align-items:center;gap:14px;padding:9px 16px;border-bottom:1px solid var(--border);background:#fafbfc;flex-wrap:wrap;}
+  .due-tabs{display:flex;gap:10px;flex-wrap:wrap;}
+  .due-tab{display:flex;flex-direction:column;align-items:flex-start;gap:1px;min-width:108px;background:#fff;border:1.5px solid var(--border);border-radius:9px;padding:6px 13px;cursor:pointer;color:#333;}
+  .due-tab:hover{border-color:#9aa5b3;}
+  .due-tab .dt-top{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;}
+  .due-tab .dt-sub{font-size:11px;color:var(--muted);}
+  .due-tab.on{border-color:var(--tc);background:color-mix(in srgb,var(--tc) 12%,#fff);box-shadow:inset 0 0 0 1px var(--tc);}
+  .due-tab.on .dt-sub{color:#334;}
+  .dt-dot{width:10px;height:10px;border-radius:50%;}
+  .due-chip{display:inline-block;padding:1px 7px;border-radius:8px;font-size:10.5px;font-weight:700;color:#fff;}
   .badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;margin-left:4px;}
   .b-review{background:#fdecea;color:var(--danger);}.b-locked{background:#cfe9dd;color:#14532d;}.b-wait{background:#fff3cd;color:#664d00;}.b-flag{background:#fde2cf;color:#9a4a00;}
   .detail-pane{overflow-y:auto;padding:14px 18px;}
@@ -107,17 +117,19 @@
   <div id="app-nav-slot"></div>
   <div class="topbar">
     <div class="seg">
-      <button id="mode-review" class="on" onclick="setMode('review')">未チェック</button>
-      <button id="mode-all" onclick="setMode('all')">全期間</button>
-      <button id="mode-month" onclick="setMode('month')">月ごと</button>
+      <button id="mode-review" class="on" onclick="setMode('review')">要チェック</button>
+      <button id="mode-all" onclick="setMode('all')">すべて</button>
       <button id="mode-arch" onclick="setMode('arch')">🗄 対象外</button>
     </div>
-    <label style="font-size:12px;color:var(--muted)">月ごとの月</label>
-    <select id="month-select" onchange="renderList()"></select>
+    <label style="font-size:12px;color:var(--muted)">対象月</label>
+    <select id="month-select" onchange="setMonthFilter(this.value)"></select>
     <span id="status-msg" style="font-size:12px;color:var(--muted)"></span>
     <div class="links"><a href="ap_dashboard.html">📊 ダッシュボード</a><a href="ap_purchase_match.html">🔗 仕入突合</a><a href="ap_entry.html">✏ 手入力</a></div>
   </div>
-  <div id="due-chips" style="display:flex;gap:8px;align-items:center;padding:8px 16px;flex-wrap:wrap;border-bottom:1px solid var(--border);background:#fafbfc"></div>
+  <div class="filterbar" id="filterbar">
+    <span style="font-size:12px;color:var(--muted);font-weight:600">締め回</span>
+    <div class="due-tabs" id="due-tabs"></div>
+  </div>
   <div class="main">
     <div class="list-pane" id="list-pane"></div>
     <div class="detail-pane" id="detail-pane"><div class="empty">左の請求書を選択してください</div></div>
@@ -131,7 +143,8 @@ const SCOPES=['User.Read','Sites.ReadWrite.All','Files.Read.All'];
 const GRAPH='https://graph.microsoft.com/v1.0';
 const SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const LIST_H='AP_Invoice', LIST_L='AP_PaymentSlip';
-let msalApp=null,acct=null,mode='review',selected=null,editMode=false,dueFilter='all';
+let msalApp=null,acct=null,mode='review',selected=null,editMode=false,dueFilter='all',monthFilter='all';
+const DUEC={'10日':'#2f80ed','20日':'#1e9e6a','月末':'#e67e22'};
 let H={fmap:{},id:null,inv:[]};
 let L={fmap:{},id:null,byInv:{}};
 let revCache={};
@@ -175,14 +188,19 @@ async function showApp(){
   document.getElementById('user-name').textContent=acct.name||acct.username;
   initMonth();
   const q=new URLSearchParams(location.search);const qm=q.get('month'),qi=q.get('inv');
-  if(qm){const sel=document.getElementById('month-select');if(![...sel.options].some(o=>o.value===qm)){const o=document.createElement('option');o.value=qm;o.textContent=qm;sel.insertBefore(o,sel.firstChild);}sel.value=qm;}
-  if(qi){selected=qi;mode='all';['review','due','all'].forEach(x=>document.getElementById('mode-'+x).classList.toggle('on',x==='all'));}
+  if(qm){const sel=document.getElementById('month-select');if(![...sel.options].some(o=>o.value===qm)){const o=document.createElement('option');o.value=qm;o.textContent=qm;sel.insertBefore(o,sel.firstChild);}sel.value=qm;monthFilter=qm;}
+  if(qi){selected=qi;mode='all';['review','all','arch'].forEach(x=>{const b=document.getElementById('mode-'+x);if(b)b.classList.toggle('on',x==='all');});}
   await ensureMaps();await loadData();
 }
-function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=0;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
+function initMonth(){const s=document.getElementById('month-select');
+  const all=document.createElement('option');all.value='all';all.textContent='すべての月';s.appendChild(all);
+  const n=new Date();for(let i=0;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;s.appendChild(o);}
+  s.value='all';monthFilter='all';
+  var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;monthFilter=qm;}}
 function month(){return document.getElementById('month-select').value;}
-function setMode(m){mode=m;['review','all','month','arch'].forEach(x=>document.getElementById('mode-'+x).classList.toggle('on',x===m));renderList();}
+function setMode(m){mode=m;['review','all','arch'].forEach(x=>{const b=document.getElementById('mode-'+x);if(b)b.classList.toggle('on',x===m);});renderList();}
 function setDue(d){dueFilter=d;renderList();}
+function setMonthFilter(v){monthFilter=v;renderList();}
 
 async function loadData(){
   const msg=document.getElementById('status-msg');msg.textContent='読み込み中...';
@@ -212,42 +230,52 @@ function invMeta(inv){
     doc:hv(f,'DOCコード'),archived:hv(f,'アーカイブフラグ')===true,total,nlines:lines.length};
 }
 function badge(m){if(m.status==='先行支払済')return '<span class="badge b-locked" style="background:#1a5fa8">先行支払済</span>';if(m.status==='支払済')return '<span class="badge b-locked" style="background:#1a5fa8">支払済</span>';if(m.status==='確定済（ロック）')return '<span class="badge b-locked">確定</span>';if(m.review)return '<span class="badge b-review">要確認</span>';if(m.status==='差戻し')return '<span class="badge b-flag">差戻し</span>';return '<span class="badge b-wait">確認待</span>';}
-function cardHtml(inv){const m=invMeta(inv);const fl=[m.offset?'相殺':'',m.acctchg?'口座変更':'',m.dup?'二重':''].filter(Boolean).map(x=>`<span class="badge b-flag">${x}</span>`).join('');
-  return `<div class="inv-card ${inv.id===selected?'active':''}" onclick="select('${inv.id}')"><div class="pname">${m.payee||'(不明)'} ${badge(m)}${fl}</div><div class="meta"><span>${m.paydate||'-'}・${m.cat||''}・${m.nlines}明細</span><span class="amt">${yen(m.total)}</span></div></div>`;}
-function baseArr(){ // モード別の基礎集合（締日フィルタ前）
+function cardHtml(inv){const m=invMeta(inv);const c=DUEC[m.paydate]||'#b8c0cc';
+  const fl=[m.offset?'相殺':'',m.acctchg?'口座変更':'',m.dup?'二重':''].filter(Boolean).map(x=>`<span class="badge b-flag">${x}</span>`).join('');
+  const dchip=`<span class="due-chip" style="background:${c}">${m.paydate||'—'}</span>`;
+  return `<div class="inv-card ${inv.id===selected?'active':''}" onclick="select('${inv.id}')" style="border-left:4px solid ${c}"><div class="pname">${m.payee||'(不明)'} ${badge(m)}${fl}</div><div class="meta"><span>${dchip} ${m.cat||''}・${m.nlines}明細</span><span class="amt">${yen(m.total)}</span></div></div>`;}
+function baseArr(){ // 表示切替＋対象月の基礎集合（締め回フィルタ前）
   let arr=H.inv.slice();
   if(mode==='arch') return arr.filter(x=>invMeta(x).archived);
   arr=arr.filter(x=>!invMeta(x).archived);
   if(mode==='review') arr=arr.filter(x=>{const m=invMeta(x);return m.status!=='確定済（ロック）'&&m.status!=='支払済'&&(m.review||m.status==='確認待'||m.status==='差戻し');});
-  else if(mode==='month') arr=arr.filter(x=>hv(x.f,'対象年月')===month());
+  if(monthFilter!=='all') arr=arr.filter(x=>hv(x.f,'対象年月')===monthFilter);
   return arr;
 }
-function renderDueChips(arr){
-  const el=document.getElementById('due-chips');if(!el)return;
-  if(mode==='arch'){el.style.display='none';return;} el.style.display='flex';
-  const chip=(key,label)=>{const g=key==='all'?arr:arr.filter(x=>invMeta(x).paydate===key);const sum=g.reduce((s,x)=>s+invMeta(x).total,0);const on=dueFilter===key;
-    return `<button onclick="setDue('${key}')" style="border:1px solid ${on?'var(--primary)':'var(--border)'};background:${on?'var(--primary)':'#fff'};color:${on?'#fff':'#333'};border-radius:16px;padding:5px 12px;font-size:12px;cursor:pointer">${label} <b>${g.length}</b>件 ${yen(sum)}</button>`;};
-  el.innerHTML='<span style="font-size:12px;color:var(--muted)">締日で絞込:</span>'+[['all','すべて'],['10日','10日'],['20日','20日'],['月末','月末']].map(x=>chip(x[0],x[1])).join('');
+function renderDueTabs(arr){
+  const bar=document.getElementById('filterbar'),el=document.getElementById('due-tabs');if(!el)return;
+  if(mode==='arch'){bar.style.display='none';return;} bar.style.display='flex';
+  const tab=(key,label,color)=>{const g=key==='all'?arr:arr.filter(x=>invMeta(x).paydate===key);const sum=g.reduce((s,x)=>s+invMeta(x).total,0);const on=dueFilter===key;
+    const tc=color||'#5b6cff';
+    return `<button class="due-tab ${on?'on':''}" onclick="setDue('${key}')" style="--tc:${tc}">
+      <span class="dt-top">${color?`<span class="dt-dot" style="background:${color}"></span>`:''}${label}</span>
+      <span class="dt-sub"><b>${g.length}</b>件・${yen(sum)}</span></button>`;};
+  el.innerHTML=tab('all','すべて',null)+tab('10日','10日',DUEC['10日'])+tab('20日','20日',DUEC['20日'])+tab('月末','月末',DUEC['月末']);
 }
 function renderList(){
   const pane=document.getElementById('list-pane');
   let arr=baseArr();
-  renderDueChips(arr);
+  renderDueTabs(arr);
   if(mode!=='arch'&&dueFilter!=='all') arr=arr.filter(x=>invMeta(x).paydate===dueFilter);
-  const label={review:'未チェック',all:'全期間',month:month()+' 月ごと',arch:'対象外'}[mode];
-  if(!arr.length){pane.innerHTML=`<div class="list-filter">${label} 0件</div><div class="empty" style="padding:30px">${mode==='review'?'未チェックなし 🎉':'該当なし'}</div>`;return;}
-  if(mode==='review'||mode==='all'){
-    arr.sort((a,b)=>{const ya=hv(a.f,'対象年月')||'',yb=hv(b.f,'対象年月')||'';if(ya!==yb)return yb.localeCompare(ya);const ma=invMeta(a),mb=invMeta(b);return (mb.review-ma.review)||(mb.total-ma.total);});
-    let html=`<div class="list-filter">${label} ${arr.length}件</div>`;const seen={};let cur=null;
-    arr.forEach(x=>{const ym=hv(x.f,'対象年月')||'(月なし)';if(ym!==cur){cur=ym;const g=arr.filter(y=>(hv(y.f,'対象年月')||'(月なし)')===ym);const sum=g.reduce((s,y)=>s+invMeta(y).total,0);html+=`<div class="grp-h">${ym}　${g.length}件　${yen(sum)}</div>`;}html+=cardHtml(x);});
-    pane.innerHTML=html;
-  }else if(mode==='month'){
-    let html=`<div class="list-filter">${label} ${arr.length}件</div>`;
-    PAYDATES.forEach(pd=>{const g=arr.filter(x=>invMeta(x).paydate===pd);if(!g.length)return;const sum=g.reduce((s,x)=>s+invMeta(x).total,0);html+=`<div class="grp-h">${pd}　${g.length}件　${yen(sum)}</div>`+g.map(cardHtml).join('');});
+  const viewLabel={review:'要チェック',all:'すべて',arch:'対象外'}[mode];
+  const scope=(monthFilter==='all'?'全期間':monthFilter)+(dueFilter==='all'?'':'・'+dueFilter);
+  const sumAll=arr.reduce((s,x)=>s+invMeta(x).total,0);
+  if(!arr.length){pane.innerHTML=`<div class="list-filter">${viewLabel}・${scope} 0件</div><div class="empty" style="padding:30px">${mode==='review'?'要チェックなし 🎉':'該当なし'}</div>`;return;}
+  const head=`<div class="list-filter">${viewLabel}・${scope}　<b>${arr.length}</b>件　${yen(sumAll)}</div>`;
+  if(mode==='arch'){pane.innerHTML=head+arr.map(cardHtml).join('');return;}
+  if(monthFilter!=='all'){
+    // 対象月を選択中：締め回でグルーピング（色分け見出し）
+    let html=head;
+    PAYDATES.forEach(pd=>{const g=arr.filter(x=>invMeta(x).paydate===pd);if(!g.length)return;g.sort((a,b)=>invMeta(b).review-invMeta(a).review||invMeta(b).total-invMeta(a).total);const sum=g.reduce((s,x)=>s+invMeta(x).total,0);
+      html+=`<div class="grp-h" style="border-left:4px solid ${DUEC[pd]}">${pd}　${g.length}件　${yen(sum)}</div>`+g.map(cardHtml).join('');});
     const none=arr.filter(x=>!PAYDATES.includes(invMeta(x).paydate));if(none.length)html+=`<div class="grp-h">未設定　${none.length}件</div>`+none.map(cardHtml).join('');
     pane.innerHTML=html;
   }else{
-    pane.innerHTML=`<div class="list-filter">対象外 ${arr.length}件</div>`+arr.map(cardHtml).join('');
+    // 全期間：月でグルーピング（各カードに締め回の色）
+    arr.sort((a,b)=>{const ya=hv(a.f,'対象年月')||'',yb=hv(b.f,'対象年月')||'';if(ya!==yb)return yb.localeCompare(ya);const ma=invMeta(a),mb=invMeta(b);return (mb.review-ma.review)||(mb.total-ma.total);});
+    let html=head;let cur=null;
+    arr.forEach(x=>{const ym=hv(x.f,'対象年月')||'(月なし)';if(ym!==cur){cur=ym;const g=arr.filter(y=>(hv(y.f,'対象年月')||'(月なし)')===ym);const sum=g.reduce((s,y)=>s+invMeta(y).total,0);html+=`<div class="grp-h">${ym}　${g.length}件　${yen(sum)}</div>`;}html+=cardHtml(x);});
+    pane.innerHTML=html;
   }
 }
 function select(id){selected=id;editMode=false;renderList();renderDetail(H.inv.find(x=>x.id===id));}
