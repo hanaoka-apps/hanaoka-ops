@@ -202,6 +202,14 @@
     #doc-drawer .dh{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--primary);color:#fff}
     #doc-drawer .dh b{font-size:14px;font-weight:700;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #doc-drawer .dh button{background:rgba(255,255,255,.22);color:#fff;border:none;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:13px}
+    .doc-edit{padding:10px 14px;border-bottom:1px solid var(--border);background:#f7f9fc}
+    .doc-edit .de-hint{font-size:11px;color:var(--muted);margin-bottom:7px}
+    .doc-edit .de-row{display:flex;gap:10px;align-items:flex-end;margin-bottom:7px}
+    .doc-edit .de-f{display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--muted);flex:1}
+    .doc-edit .de-f.de-wide{flex:2}
+    .doc-edit .de-f input,.doc-edit .de-f select{font-size:13px;border:1px solid var(--border);border-radius:5px;padding:5px 7px}
+    .doc-edit .de-save{background:var(--primary);color:#fff;border:none;border-radius:5px;padding:7px 16px;font-size:13px;cursor:pointer;white-space:nowrap}
+    .doc-edit .de-save:hover{filter:brightness(1.08)}
     #doc-host{flex:1;display:flex;flex-direction:column;min-height:0;padding:8px}
     .doc-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
     .doc-chip{font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:12px;background:#fff;cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -253,8 +261,8 @@
   <div id="triage-section" style="display:none;background:var(--card-bg);border:1px solid var(--warning);border-radius:10px;padding:14px 18px;margin-bottom:20px;">
     <div class="section-title" style="border:none;padding:0;margin-bottom:8px;display:flex;align-items:center;gap:12px;">📥 仕分け（未仕分け <span id="triage-count">0</span>件・全期間） — AI推定を確認し経費/仕入を確定（決済月に関係なく表示）
       <span style="margin-left:auto;display:flex;gap:8px;">
-        <button onclick="mergeTriage()" style="background:#fff;color:var(--primary);border:1px solid var(--primary);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🔗 選択をマージ</button>
-        <button onclick="archiveTriage()" style="background:#fff;color:var(--danger);border:1px solid var(--danger);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🗄 選択をアーカイブ</button>
+        <button onclick="mergeTriage()" title="1請求が複数PDFに分かれている場合。主＝金額最大に統合し、金額は合算しません" style="background:#fff;color:var(--primary);border:1px solid var(--primary);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🔗 選択をマージ（複数PDF→1請求）</button>
+        <button onclick="archiveTriage()" title="本当の二重請求。片方を対象外にします" style="background:#fff;color:var(--danger);border:1px solid var(--danger);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">🗄 選択をアーカイブ（二重）</button>
       </span>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">※表紙＋明細など同一請求書は複数選択→マージ（金額は合算しない）。本当の重複はアーカイブ。⚠は同支払先＋同額の重複可能性。<b>仕入を選んだ行は仕入先（コード）必須</b>。</div>
@@ -328,6 +336,18 @@
 <div class="doc-backdrop" onclick="closeDoc()"></div>
 <div id="doc-drawer">
   <div class="dh"><b id="doc-title">請求書PDF</b><button onclick="closeDoc()">閉じる ✕</button></div>
+  <div class="doc-edit" id="doc-edit">
+    <div class="de-hint">PDFを見ながら補完 → 保存（OCR失敗・不明の行はここで直せます）</div>
+    <div class="de-row">
+      <label class="de-f de-wide">支払先名<input id="de-payee"></label>
+      <label class="de-f">金額(税込)<input id="de-amt" type="number"></label>
+    </div>
+    <div class="de-row">
+      <label class="de-f">対象年月<input id="de-month" placeholder="2026/07"></label>
+      <label class="de-f">締め回<select id="de-paydate"><option value="">—</option><option>10日</option><option>20日</option><option>月末</option></select></label>
+      <button class="de-save" onclick="saveDoc()">💾 保存</button>
+    </div>
+  </div>
   <div id="doc-host"><div class="doc-empty">行の 📄 を押すと請求書PDFを表示します</div></div>
 </div>
 
@@ -572,14 +592,28 @@ function renderTriage() {
   if (!rows.length) { sec.style.display = 'none'; return; }
   sec.style.display = 'block';
   document.getElementById('triage-count').textContent = rows.length;
-  const keyCount = {}; rows.forEach(it => { const k = (fv(it.fields,'支払先名')||'')+'|'+(parseFloat(fv(it.fields,'金額_税込'))||0); keyCount[k] = (keyCount[k]||0)+1; });
+  // 同一支払先＋同額のクラスタ（＝1請求の複数PDF、または本当の二重）。請求Noで性質を推定して案内。
+  const cluster = {}; rows.forEach(it => { const k = (fv(it.fields,'支払先名')||'')+'|'+(parseFloat(fv(it.fields,'金額_税込'))||0); (cluster[k]=cluster[k]||[]).push(it.id); });
   // 定期支払で自動生成済みの行（生成元定期ID付き・非アーカイブ）との重複検知：同じ支払先名＋対象年月
   const recByKey = {}; allInv.forEach(it => { if (!fv(it.fields,'生成元定期ID')) return; if (fv(it.fields,'アーカイブフラグ')===true) return; recByKey[(fv(it.fields,'支払先名')||'')+'|'+(fv(it.fields,'対象年月')||'')] = it.id; });
   const opt = (sel) => ['本社経費','工場経費','本社仕入','工場仕入'].map(c => `<option ${c===sel?'selected':''}>${c}</option>`).join('');
   document.getElementById('triage-tbody').innerHTML = rows.map(it => {
     const f = it.fields; const cat = fv(f,'支払区分'); const conf = fv(f,'AI確信度'); const amt = parseFloat(fv(f,'金額_税込'))||0;
-    const dupFlag = fv(f,'二重請求フラグ')===true; const dupCand = keyCount[(fv(f,'支払先名')||'')+'|'+amt]>1;
-    const warn = (dupFlag||dupCand) ? '<span style="color:var(--danger);font-size:11px;font-weight:700"> ⚠重複可能性</span>' : '';
+    const dupFlag = fv(f,'二重請求フラグ')===true;
+    const ckey = (fv(f,'支払先名')||'')+'|'+amt; const grp = cluster[ckey]||[];
+    const invNoOf = r => String(fv(r.fields,'請求NO')||fv(r.fields,'請求番号')||'').trim();
+    let warn = '';
+    if (grp.length > 1) {
+      const nos = [...new Set(grp.map(id=>{ const r=allInv.find(x=>x.id===id); return r?invNoOf(r):''; }).filter(Boolean))];
+      const allSameNo = nos.length===1 && grp.every(id=>{ const r=allInv.find(x=>x.id===id); return r && invNoOf(r)===nos[0]; });
+      let label,color,hint;
+      if (allSameNo)      { label='🔗 同一請求No・複数PDF'; color='#1a5fa8'; hint='同じ請求書が複数PDFに分かれています → マージ推奨（金額は合算されません）'; }
+      else if (nos.length>=2){ label='⚠ 別請求No・同額';     color='#b8621b'; hint='請求Noが異なります → 別請求の可能性。PDFで確認を'; }
+      else                { label='🔗 同額 '+grp.length+'件'; color='#8a6d00'; hint='1請求の複数PDFならマージ、二重ならアーカイブ → PDFで確認を'; }
+      warn = ` <span title="${hint}" style="color:${color};font-size:11px;font-weight:700">${label}</span> <button title="${hint}" onclick="selectCluster('${grp.join(',')}')" style="font-size:10.5px;padding:1px 7px;border:1px solid ${color};background:#fff;color:${color};border-radius:9px;cursor:pointer">${grp.length}件を選択</button>`;
+    } else if (dupFlag) {
+      warn = ' <span style="color:var(--danger);font-size:11px;font-weight:700">⚠ 二重請求フラグ</span>';
+    }
     const pc = fv(f,'支払先コード')||''; const pn = fv(f,'支払先名')||'';
     const supVal = pc ? (pc+' '+(suppliers.find(s=>s.code===pc)?.name||pn)) : '';
     const isShi = cat==='本社仕入'||cat==='工場仕入';
@@ -599,12 +633,18 @@ function renderTriage() {
 }
 // ---- 仕分け用PDFドロワー ----
 const DOC_CACHE = {};
+let docEditId = null;
 function docOf(f){ return String(fv(f,'DOCコード')||'').trim(); }
 function docPaths(id){ const it=allInv.find(x=>x.id===id); if(!it) return []; return String(fv(it.fields,'DOCコード')||'').split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean); }
 function escd(s){ return String(s==null?'':s).replace(/"/g,'&quot;'); }
 function openDoc(id){
-  const it=allInv.find(x=>x.id===id); const pn=it?(fv(it.fields,'支払先名')||''):'';
+  const it=allInv.find(x=>x.id===id); const f=it?it.fields:{}; const pn=fv(f,'支払先名')||'';
+  docEditId=id;
   document.getElementById('doc-title').textContent = pn || '請求書PDF';
+  document.getElementById('de-payee').value = pn;
+  document.getElementById('de-amt').value = parseFloat(fv(f,'金額_税込'))||0;
+  document.getElementById('de-month').value = fv(f,'対象年月')||'';
+  document.getElementById('de-paydate').value = fv(f,'支払日区分')||'';
   document.body.classList.add('drawer-open');
   const host=document.getElementById('doc-host'); const paths=docPaths(id);
   if(!paths.length){ host.innerHTML='<div class="doc-empty">証憑リンクなし（DOCコード未設定）</div>'; return; }
@@ -626,8 +666,31 @@ async function showDoc(path){
     const vv=document.getElementById('doc-view'); if(vv) vv.innerHTML=`<iframe class="doc-frame" src="${DOC_CACHE[path]}"></iframe>`;
   }catch(e){ view.innerHTML='<div class="doc-empty">PDF取得失敗（'+name+'）<br>'+escd(e.message||'')+'</div>'; }
 }
-function closeDoc(){ document.body.classList.remove('drawer-open'); }
+function closeDoc(){ document.body.classList.remove('drawer-open'); docEditId=null; }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDoc(); });
+async function saveDoc(){
+  if(!docEditId){ return; }
+  const it=allInv.find(x=>x.id===docEditId); if(!it){ return; }
+  const payee=document.getElementById('de-payee').value.trim();
+  const amt=Math.round(Number(document.getElementById('de-amt').value)||0);
+  const ym=document.getElementById('de-month').value.trim();
+  const pd=document.getElementById('de-paydate').value;
+  if(!payee){ showSnack('支払先名を入力してください', true); return; }
+  const fields={};
+  fields[fieldMap['支払先名']]=payee;
+  if(fieldMap['金額_税込']) fields[fieldMap['金額_税込']]=amt;
+  if(fieldMap['対象年月']) fields[fieldMap['対象年月']]=ym;
+  if(pd && fieldMap['支払日区分']) fields[fieldMap['支払日区分']]=pd;
+  const btn=document.querySelector('.de-save'); if(btn){ btn.disabled=true; btn.textContent='保存中...'; }
+  try{
+    await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${docEditId}/fields`, fields);
+    Object.keys(fields).forEach(k=>{ it.fields[k]=fields[k]; });
+    document.getElementById('doc-title').textContent = payee;
+    showSnack('保存しました');
+    renderTriage();
+  }catch(e){ showSnack('保存エラー: '+e.message, true); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='💾 保存'; } }
+}
 
 // 後着PDF（intake分）を、定期支払で生成済みの行に統合（PDFを付け替え→重複を対象外）
 async function mergeToRecurring(intakeId, recId) {
@@ -662,6 +725,12 @@ async function untriageRow(id) {
   catch (e) { showSnack('エラー: '+e.message); }
 }
 function checkedTriage(){ return [...document.querySelectorAll('.tri-chk:checked')].map(c=>c.dataset.id); }
+function selectCluster(str){
+  const ids=String(str).split(',').filter(Boolean);
+  document.querySelectorAll('.tri-chk').forEach(c=>{ c.checked=ids.includes(c.dataset.id); });
+  showSnack(ids.length+'件を選択：同じ請求書ならマージ、二重ならアーカイブ');
+  const first=document.querySelector('.tri-chk:checked'); if(first) first.scrollIntoView({block:'center',behavior:'smooth'});
+}
 function toggleSup(id){ const cat=document.getElementById('tc-'+id).value; const inp=document.getElementById('ts-'+id); if(!inp)return; const isShi=cat==='本社仕入'||cat==='工場仕入'; inp.style.background=isShi?'#fff':'#f4f4f4'; }
 async function confirmTriage(id) {
   const cat = document.getElementById('tc-'+id).value;
