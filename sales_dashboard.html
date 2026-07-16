@@ -768,10 +768,19 @@ footer b{color:var(--goldDark)}
         <input id="visits-hp-search-rep" type="text" placeholder="👤 営業担当で絞込" style="padding:5px 10px; border:1px solid #d1d5db; border-radius:5px; font-size:12px; width:160px">
         <label style="font-size:12px">並び順:
           <select id="visits-hp-sort" style="padding:3px 6px; margin-left:4px">
-            <option value="actionDesc">アクション数(多い順)</option>
+            <option value="actionDesc">アクション数(多い順) → 最終閲覧日</option>
+            <option value="catalogFirst">カタログ閲覧優先 → 最終閲覧日</option>
             <option value="dateDesc">最終閲覧日(新しい順)</option>
-            <option value="catalogFirst">カタログ閲覧優先</option>
-            <option value="companyAsc">会社名(50音)</option>
+          </select>
+        </label>
+        <label style="font-size:12px; margin-left:8px">直近:
+          <select id="visits-hp-recency" style="padding:3px 6px; margin-left:4px">
+            <option value="0">全期間</option>
+            <option value="7">直近7日</option>
+            <option value="14">直近14日</option>
+            <option value="30">直近30日</option>
+            <option value="60">直近60日</option>
+            <option value="90">直近90日</option>
           </select>
         </label>
         <label style="font-size:12px; margin-left:8px">
@@ -3869,6 +3878,7 @@ function _getHpFilter() {
     name:    gv('visits-hp-search-name'),
     rep:     gv('visits-hp-search-rep'),
     sortBy:  (document.getElementById('visits-hp-sort') || {}).value || 'actionDesc',
+    recency: parseInt((document.getElementById('visits-hp-recency') || {}).value || '0'),
     catalogOnly: !!(document.getElementById('visits-hp-catalog-only') || {}).checked
   };
 }
@@ -3889,6 +3899,8 @@ function _initVisitsHpControls() {
   });
   const sortEl = document.getElementById('visits-hp-sort');
   if (sortEl) sortEl.addEventListener('change', renderVisitsHpPanels);
+  const recencyEl = document.getElementById('visits-hp-recency');
+  if (recencyEl) recencyEl.addEventListener('change', renderVisitsHpPanels);
   const catEl = document.getElementById('visits-hp-catalog-only');
   if (catEl) catEl.addEventListener('change', renderVisitsHpPanels);
   const clearBtn = document.getElementById('visits-hp-clear');
@@ -3898,6 +3910,7 @@ function _initVisitsHpControls() {
     });
     if (catEl) catEl.checked = false;
     if (sortEl) sortEl.value = 'actionDesc';
+    if (recencyEl) recencyEl.value = '0';
     renderVisitsHpPanels();
   });
 }
@@ -3923,15 +3936,25 @@ function renderVisitsHpPanels() {
     return true;
   });
 
-  // 並び替え
+  // 直近日数フィルタ (recency)
+  if (filter.recency > 0) {
+    readerRows = readerRows.filter(r => {
+      const d = _visitsParseDate(r[11]);
+      if (!d) return false;
+      return _visitsDaysAgo(d) <= filter.recency;
+    });
+  }
+
+  // 並び替え: 主軸 → 副軸(最終閲覧日 新しい順)
+  const dateTime = r => {
+    const d = _visitsParseDate(r[11]);
+    return d ? d.getTime() : 0;
+  };
   readerRows.sort((a, b) => {
     if (filter.sortBy === 'actionDesc') {
-      return (parseInt(b[10]) || 0) - (parseInt(a[10]) || 0);
-    }
-    if (filter.sortBy === 'dateDesc') {
-      const da = _visitsParseDate(a[11]);
-      const db = _visitsParseDate(b[11]);
-      return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+      const primary = (parseInt(b[10]) || 0) - (parseInt(a[10]) || 0);
+      if (primary !== 0) return primary;
+      return dateTime(b) - dateTime(a);  // 副軸: 最終閲覧日 新しい順
     }
     if (filter.sortBy === 'catalogFirst') {
       const ca = catalogMap[String(a[0] || '')];
@@ -3939,12 +3962,15 @@ function renderVisitsHpPanels() {
       const acnt = ca ? ca.catalogCount : 0;
       const bcnt = cb ? cb.catalogCount : 0;
       if (bcnt !== acnt) return bcnt - acnt;
-      const da = ca && ca.lastCatalog ? ca.lastCatalog.getTime() : 0;
-      const db = cb && cb.lastCatalog ? cb.lastCatalog.getTime() : 0;
-      return db - da;
+      // 同カタログ回数 → カタログ最終閲覧日 新しい順
+      const dca = ca && ca.lastCatalog ? ca.lastCatalog.getTime() : 0;
+      const dcb = cb && cb.lastCatalog ? cb.lastCatalog.getTime() : 0;
+      if (dcb !== dca) return dcb - dca;
+      // それも同じなら 全体最終閲覧日 新しい順
+      return dateTime(b) - dateTime(a);
     }
-    if (filter.sortBy === 'companyAsc') {
-      return String(a[2] || '').localeCompare(String(b[2] || ''), 'ja');
+    if (filter.sortBy === 'dateDesc') {
+      return dateTime(b) - dateTime(a);
     }
     return 0;
   });
@@ -4067,7 +4093,9 @@ function renderVisitsHpPanels() {
   if (note) {
     const catalogLeads = Object.values(catalogMap);
     const recentAlerts = catalogLeads.filter(c => c.lastCatalog && _visitsDaysAgo(c.lastCatalog) <= _CATALOG_ALERT_DAYS).length;
-    note.innerHTML = `⚠ カタログURL: <code>${_CATALOG_URL_MARK}</code> / 直近${_CATALOG_ALERT_DAYS}日以内のカタログ閲覧: <b style="color:#dc3545">${recentAlerts}</b> 社`;
+    const sortLabels = { actionDesc: 'アクション数→最終閲覧日', catalogFirst: 'カタログ閲覧→最終閲覧日', dateDesc: '最終閲覧日' };
+    const recencyLabel = filter.recency > 0 ? `直近${filter.recency}日以内` : '全期間';
+    note.innerHTML = `並び順: <b>${sortLabels[filter.sortBy] || filter.sortBy}</b> / 期間: <b>${recencyLabel}</b> / ⚠ カタログURL: <code>${_CATALOG_URL_MARK}</code> / 直近${_CATALOG_ALERT_DAYS}日以内のカタログ閲覧: <b style="color:#dc3545">${recentAlerts}</b> 社`;
   }
 }
 
