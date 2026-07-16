@@ -192,6 +192,23 @@
       background: #323232; color: #fff; padding: 10px 20px; border-radius: 6px;
       font-size: 13px; display: none; z-index: 999;
     }
+    /* 仕分け用PDFドロワー */
+    .doc-btn{background:#eef3fb;border:1px solid var(--border);border-radius:5px;cursor:pointer;font-size:12px;padding:1px 7px;margin-right:6px}
+    .doc-btn:hover{background:#dbe7f8}
+    .doc-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:199}
+    body.drawer-open .doc-backdrop{display:block}
+    #doc-drawer{position:fixed;top:0;right:0;height:100vh;width:0;background:#fff;box-shadow:-4px 0 18px rgba(0,0,0,.18);z-index:200;display:flex;flex-direction:column;transition:width .18s ease;overflow:hidden}
+    body.drawer-open #doc-drawer{width:min(680px,52vw)}
+    #doc-drawer .dh{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--primary);color:#fff}
+    #doc-drawer .dh b{font-size:14px;font-weight:700;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #doc-drawer .dh button{background:rgba(255,255,255,.22);color:#fff;border:none;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:13px}
+    #doc-host{flex:1;display:flex;flex-direction:column;min-height:0;padding:8px}
+    .doc-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+    .doc-chip{font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:12px;background:#fff;cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .doc-chip.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+    #doc-view{flex:1;min-height:0}
+    .doc-frame{width:100%;height:100%;border:none}
+    .doc-empty{padding:24px;text-align:center;color:var(--muted)}
   </style>
 </head>
 <body>
@@ -306,6 +323,12 @@
     </table>
   </div>
 
+</div>
+
+<div class="doc-backdrop" onclick="closeDoc()"></div>
+<div id="doc-drawer">
+  <div class="dh"><b id="doc-title">請求書PDF</b><button onclick="closeDoc()">閉じる ✕</button></div>
+  <div id="doc-host"><div class="doc-empty">行の 📄 を押すと請求書PDFを表示します</div></div>
 </div>
 
 <div id="snackbar"></div>
@@ -565,7 +588,7 @@ function renderTriage() {
     return `<tr>
       <td><input type="checkbox" class="tri-chk" data-id="${it.id}"></td>
       <td style="font-size:12px;color:var(--muted);white-space:nowrap">${fv(f,'対象年月')||'—'}</td>
-      <td>${pn||'—'}${warn}${recDup}</td>
+      <td>${docOf(f)?`<button class="doc-btn" title="請求書PDFを表示" onclick="openDoc('${it.id}')">📄</button>`:''}${pn||'—'}${warn}${recDup}</td>
       <td class="amount-cell">¥${amt.toLocaleString()}</td>
       <td><span class="status-badge s-確認待">${cat||'未推定'}</span> <span style="font-size:11px;color:var(--muted)">AI ${conf||'-'}</span></td>
       <td><select id="tc-${it.id}" onchange="toggleSup('${it.id}')" style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px">${opt(cat)}</select></td>
@@ -574,6 +597,38 @@ function renderTriage() {
     </tr>`;
   }).join('');
 }
+// ---- 仕分け用PDFドロワー ----
+const DOC_CACHE = {};
+function docOf(f){ return String(fv(f,'DOCコード')||'').trim(); }
+function docPaths(id){ const it=allInv.find(x=>x.id===id); if(!it) return []; return String(fv(it.fields,'DOCコード')||'').split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean); }
+function escd(s){ return String(s==null?'':s).replace(/"/g,'&quot;'); }
+function openDoc(id){
+  const it=allInv.find(x=>x.id===id); const pn=it?(fv(it.fields,'支払先名')||''):'';
+  document.getElementById('doc-title').textContent = pn || '請求書PDF';
+  document.body.classList.add('drawer-open');
+  const host=document.getElementById('doc-host'); const paths=docPaths(id);
+  if(!paths.length){ host.innerHTML='<div class="doc-empty">証憑リンクなし（DOCコード未設定）</div>'; return; }
+  const chips=paths.map(p=>`<button class="doc-chip" data-p="${escd(p)}" onclick="showDoc(this.dataset.p)" title="${escd(p.split('/').pop())}">${p.split('/').pop()}</button>`).join('');
+  host.innerHTML=`<div class="doc-chips">${chips}</div><div id="doc-view"><div class="doc-empty">読込中...</div></div>`;
+  showDoc(paths[0]);
+}
+async function showDoc(path){
+  document.querySelectorAll('.doc-chip').forEach(b=>b.classList.toggle('on', b.dataset.p===path));
+  const view=document.getElementById('doc-view'); if(!view) return;
+  if(DOC_CACHE[path]){ view.innerHTML=`<iframe class="doc-frame" src="${DOC_CACHE[path]}"></iframe>`; return; }
+  view.innerHTML='<div class="doc-empty">読込中...</div>';
+  const name=path.split('?')[0].split('/').pop();
+  try{
+    const d=await graphGet(`/sites/${AP_SITE_ID}/drive/root:/BILLS/processed/${encodeURIComponent(name)}?$select=id`);
+    const t=await getToken();
+    const r=await fetch(`${GRAPH_BASE}/sites/${AP_SITE_ID}/drive/items/${d.id}/content`,{headers:{Authorization:'Bearer '+t}});
+    const b=await r.blob(); DOC_CACHE[path]=URL.createObjectURL(b);
+    const vv=document.getElementById('doc-view'); if(vv) vv.innerHTML=`<iframe class="doc-frame" src="${DOC_CACHE[path]}"></iframe>`;
+  }catch(e){ view.innerHTML='<div class="doc-empty">PDF取得失敗（'+name+'）<br>'+escd(e.message||'')+'</div>'; }
+}
+function closeDoc(){ document.body.classList.remove('drawer-open'); }
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDoc(); });
+
 // 後着PDF（intake分）を、定期支払で生成済みの行に統合（PDFを付け替え→重複を対象外）
 async function mergeToRecurring(intakeId, recId) {
   if (!confirm('この請求書PDFを「定期支払で生成済みの行」に付け替えて、重複（この行）を対象外にします。\n（定期側が正・金額/明細はそのまま、PDFだけ引き継ぎます）\nよろしいですか？')) return;
