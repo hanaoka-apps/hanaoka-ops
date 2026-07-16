@@ -1478,15 +1478,17 @@ function initPeriodSelector(){
   if (singleEl) singleEl.addEventListener("change", ()=>{
     _periodSingle = toYm(singleEl.value);
     syncCurFYFromPeriod(); updatePeriodLabel(); renderAll();
+    _renderVisitsIfActive();
   });
   if (fromEl) fromEl.addEventListener("change", ()=>{
     _periodFrom = toYm(fromEl.value);
     updatePeriodLabel(); renderAll();
+    _renderVisitsIfActive();
   });
   if (toEl) toEl.addEventListener("change", ()=>{
     _periodTo = toYm(toEl.value);
-    // toYm が変わったら fromYm を自動更新 (年度4月に戻す) - ただし _periodFrom が明示設定されていない場合のみ
     syncCurFYFromPeriod(); updatePeriodLabel(); renderAll();
+    _renderVisitsIfActive();
   });
   if (resetBtn) resetBtn.addEventListener("click", ()=>{
     _periodFrom = null;
@@ -3196,6 +3198,16 @@ function _visitsPeriodLabel(mode) {
   return `${rp.fromYm.slice(0,4)}年${rp.fromYm.slice(4,6)}月 〜 ${rp.toYm.slice(0,4)}年${rp.toYm.slice(4,6)}月`;
 }
 
+// 訪問実績タブがアクティブなら再描画 (期間セレクタ変更時に呼ぶ)
+function _renderVisitsIfActive() {
+  if (!_visitsLoaded) return;
+  const pg = document.getElementById('pg-visits');
+  if (!pg || pg.classList.contains('hidden')) return;
+  // 期間依存の①②のみ再描画 (③検索・④HPは期間非依存)
+  try { renderVisitsRepChart(); } catch(e){ console.warn("[visits-rep re-render]", e); }
+  try { renderVisitsTypeChart(); } catch(e){ console.warn("[visits-type re-render]", e); }
+}
+
 // ===== 営業訪問実績: サマリ =====
 function renderVisitsSummary(){
   const el = document.getElementById("visits-summary");
@@ -3256,14 +3268,14 @@ function _visitsAggregateByRep(mode, routeFilter) {
   const daily = (RAW && RAW.daily_reports) || [];
 
   for (const r of daily) {
-    const ym = _visitsDateToYm(r[5]);
+    const ym = r._ym !== undefined ? r._ym : _visitsDateToYm(r[5]);
     if (ym === 0) continue;
     if (mode === 'single') {
       if (ym !== targetYm) continue;
     } else {
       if (ym < fromYm || ym > toYm) continue;
     }
-    const tanto = _visitsPrimaryTanto(r[8]);
+    const tanto = r._tanto !== undefined ? r._tanto : _visitsPrimaryTanto(r[8]);
     if (!tanto) continue;
 
     const route = String(r[12] || '').trim();
@@ -3443,7 +3455,7 @@ function _getVisitsFilteredKpiRows() {
   const daily = (RAW && RAW.daily_reports) || [];
   const filtered = [];
   for (const r of daily) {
-    const ym = _visitsDateToYm(r[5]);
+    const ym = r._ym !== undefined ? r._ym : _visitsDateToYm(r[5]);
     if (ym === 0) continue;
     if (mode === 'single') { if (ym !== targetYm) continue; }
     else { if (ym < fromYm || ym > toYm) continue; }
@@ -3465,7 +3477,7 @@ function renderVisitsTypeChart() {
   // ---- 営業別 KPI集計 ----
   const byRep = {};
   for (const r of filtered) {
-    const rep = _visitsPrimaryTanto(r[8]);
+    const rep = r._tanto !== undefined ? r._tanto : _visitsPrimaryTanto(r[8]);
     if (!rep) continue;
     const kpi = String(r[13] || '').trim();
     if (!byRep[rep]) byRep[rep] = {};
@@ -3532,7 +3544,7 @@ function renderVisitsTypeChart() {
 
   // ---- 客先別 KPI集計 (選択された営業マンで絞込) ----
   const filteredForCust = _visitsSelectedRep
-    ? filtered.filter(r => _visitsPrimaryTanto(r[8]) === _visitsSelectedRep)
+    ? filtered.filter(r => (r._tanto !== undefined ? r._tanto : _visitsPrimaryTanto(r[8])) === _visitsSelectedRep)
     : filtered;
 
   const byCust = {};
@@ -4350,6 +4362,11 @@ async function loadFacts() {
     RAW.daily_reports = facts.daily_reports || [];
     RAW.web_logs      = facts.web_logs      || [];
     RAW.web_readers   = facts.web_readers   || [];
+    // 事前計算キャッシュ
+    for (const r of RAW.daily_reports) {
+      r._ym = _visitsDateToYm(r[5]);
+      r._tanto = _visitsPrimaryTanto(r[8]);
+    }
     _visitsLoaded = true;
     console.log("[sales_dashboard] 訪問実績(旧facts.json内): ", RAW.daily_reports.length, "件");
   }
@@ -4379,11 +4396,19 @@ async function loadVisits() {
       RAW.daily_reports = data.daily_reports || [];
       RAW.web_logs      = data.web_logs      || [];
       RAW.web_readers   = data.web_readers   || [];
+      // 各レコードに ym と 主担当を事前計算してキャッシュ (毎回の regex/split を回避)
+      const t0 = performance.now();
+      for (const r of RAW.daily_reports) {
+        r._ym = _visitsDateToYm(r[5]);
+        r._tanto = _visitsPrimaryTanto(r[8]);
+      }
+      const t1 = performance.now();
       _visitsLoaded = true;
       console.log("[visits] loaded:",
         RAW.daily_reports.length, "件訪問 /",
         RAW.web_logs.length, "件HP閲覧 /",
-        RAW.web_readers.length, "件閲覧者");
+        RAW.web_readers.length, "件閲覧者",
+        `(前処理 ${(t1-t0).toFixed(0)}ms)`);
     } catch(e) {
       console.error('[visits] load失敗', e);
     } finally {
