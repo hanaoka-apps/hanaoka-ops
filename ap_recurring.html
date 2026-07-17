@@ -103,6 +103,14 @@ td.num,th.num{text-align:right}
     <div class="f"><label>総回数(リース等・空=なし)</label><input id="e-total" class="n" type="number"></div>
     <div class="f"><label>源泉額(顧問料等・0=なし)</label><input id="e-withhold" type="number" value="0"></div>
     <div class="f full"><label>メモ</label><input id="e-note"></div>
+    <div class="f full"><label>証憑（リース一覧表など・毎月の生成明細に自動で紐づく）</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span id="e-refdoc-name" style="font-size:12px;color:var(--muted)">未添付</span>
+        <label class="btn g" style="cursor:pointer;margin:0">📎 証憑を添付<input type="file" accept="application/pdf" style="display:none" onchange="onRefDoc(this)"></label>
+        <button type="button" class="btn g" id="e-refdoc-view" style="display:none" onclick="viewRefDoc()">表示</button>
+        <button type="button" class="btn d" id="e-refdoc-clear" style="display:none" onclick="clearRefDoc()">× 外す</button>
+      </div>
+    </div>
   </div>
   <h3 style="margin:16px 0 6px;font-size:14px">明細テンプレ（SMILEコード）</h3>
   <table class="lines"><thead><tr>
@@ -134,7 +142,7 @@ const MASTER_DIR='/BILLS/masters';   // hanaoka-ap ドキュメント/BILLS/mast
 let msalApp=null,acct=null;
 let R={fmap:{},id:null}, INV={fmap:{},id:null}, SLIP={fmap:{},id:null};
 let items=[], smKamoku=[], smBumon=[], smZei=[], smUchiwake=[];
-let curLines=[], editId=null;
+let curLines=[], editId=null, curRefDoc='';
 
 // ---- auth / graph ----
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}else document.getElementById('login-view').style.display='block';}
@@ -146,6 +154,7 @@ async function gpatch(p,b){const t=await token();const r=await fetch(GRAPH+p,{me
 async function gpost(p,b){const t=await token();const r=await fetch(GRAPH+p,{method:'POST',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());return r.json();}
 async function gdel(p){const t=await token();const r=await fetch(GRAPH+p,{method:'DELETE',headers:{Authorization:'Bearer '+t}});if(!r.ok)throw new Error('['+r.status+'] '+await r.text());}
 async function gtext(path){const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/root:${encodeURI(path)}:/content`,{headers:{Authorization:'Bearer '+t}});if(!r.ok)throw new Error('['+r.status+'] '+path);return new TextDecoder('utf-8').decode(await r.arrayBuffer());}
+async function gputFile(path,file){const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/root:${encodeURI(path)}:/content`,{method:'PUT',headers:{Authorization:'Bearer '+t,'Content-Type':file.type||'application/pdf'},body:file});if(!r.ok)throw new Error('アップロード '+r.status+' '+await r.text());return r.json();}
 
 // ---- CSV ----
 function parseCSV(text){if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);const rows=[];let row=[],cur='',q=false;
@@ -275,6 +284,7 @@ function setForm(f){
   document.getElementById('e-total').value=f[rf('総回数')]||'';
   document.getElementById('e-withhold').value=f[rf('源泉額')]||0;
   document.getElementById('e-note').value=f[rf('メモ')]||'';
+  curRefDoc=f[rf('証憑DOCコード')]||'';setRefDocUI();
 }
 function onFreq(){/* 見た目補助のみ */}
 function renderLines(){
@@ -316,6 +326,23 @@ document.addEventListener('input',e=>{if(e.target&&e.target.id==='e-withhold')up
 function openModal(){document.getElementById('overlay').style.display='flex';}
 function closeModal(){document.getElementById('overlay').style.display='none';}
 
+// ---- 証憑（毎月の生成明細に自動で紐づく） ----
+function setRefDocUI(){const n=document.getElementById('e-refdoc-name');const v=document.getElementById('e-refdoc-view');const c=document.getElementById('e-refdoc-clear');
+  if(curRefDoc){n.textContent='📄 '+curRefDoc.split('/').pop();v.style.display='';c.style.display='';}
+  else{n.textContent='未添付';v.style.display='none';c.style.display='none';}}
+async function onRefDoc(inp){const f=inp.files[0];if(!f)return;if(f.type!=='application/pdf'){snack('PDFを選んでください',true);return;}
+  const safe=('REF_'+Date.now()+'_'+f.name).replace(/[#%*<>?/\\{|}:]/g,'_');
+  document.getElementById('e-refdoc-name').textContent='アップロード中...';
+  try{await gputFile(`/BILLS/processed/${safe}`,f);curRefDoc='/Shared Documents/BILLS/processed/'+safe;setRefDocUI();snack('証憑を添付しました（保存で確定）');}
+  catch(e){snack('証憑アップロード失敗: '+e.message,true);setRefDocUI();}
+  inp.value='';}
+function clearRefDoc(){curRefDoc='';setRefDocUI();}
+async function viewRefDoc(){if(!curRefDoc)return;const name=curRefDoc.split('/').pop();
+  try{const meta=await gget(`/sites/${AP_SITE}/drive/root:/BILLS/processed/${encodeURIComponent(name)}?$select=id`);
+    const t=await token();const r=await fetch(`${GRAPH}/sites/${AP_SITE}/drive/items/${meta.id}/content`,{headers:{Authorization:'Bearer '+t}});
+    const b=await r.blob();window.open(URL.createObjectURL(b),'_blank');
+  }catch(e){snack('証憑表示失敗: '+e.message,true);}}
+
 function collectFields(){
   const excl=curLines.reduce((s,l)=>s+(Number(l.excl)||0),0),tax=curLines.reduce((s,l)=>s+(Number(l.tax)||0),0);
   const wh=Math.round(Number(document.getElementById('e-withhold').value)||0);const net=excl+tax-wh;
@@ -337,6 +364,7 @@ function collectFields(){
   F[rf('明細テンプレJSON')]=JSON.stringify(curLines);
   F[rf('税込合計')]=net;
   F[rf('メモ')]=document.getElementById('e-note').value.trim();
+  F[rf('証憑DOCコード')]=curRefDoc||'';
   return F;
 }
 async function saveMaster(){
@@ -404,6 +432,7 @@ async function doGenerate(due,label){
       hf[invf('金額_税抜')]=excl;hf[invf('消費税')]=tax;hf[invf('金額_税込')]=incl;
       hf[invf('支払ステータス')]='確認待';hf[invf('仕分け済')]=true;
       hf['RecurringSourceID']=rid;
+      if(f[rf('証憑DOCコード')])hf[invf('DOCコード')]=f[rf('証憑DOCコード')];  // 証憑を生成明細へ自動紐づけ
       const created=await gpost(`/sites/${AP_SITE}/lists/${INV.id}/items`,{fields:hf});
       const invId=String(created.id);
       // 明細作成

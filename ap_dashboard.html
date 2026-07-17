@@ -681,15 +681,17 @@ async function saveDoc(){
   if(fieldMap['金額_税込']) fields[fieldMap['金額_税込']]=amt;
   if(fieldMap['対象年月']) fields[fieldMap['対象年月']]=ym;
   if(pd && fieldMap['支払日区分']) fields[fieldMap['支払日区分']]=pd;
-  const btn=document.querySelector('.de-save'); if(btn){ btn.disabled=true; btn.textContent='保存中...'; }
+  const btn=document.querySelector('.de-save'); const orig=btn?btn.style.background:'';
+  if(btn){ btn.disabled=true; btn.textContent='保存中...'; }
   try{
     await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${docEditId}/fields`, fields);
     Object.keys(fields).forEach(k=>{ it.fields[k]=fields[k]; });
     document.getElementById('doc-title').textContent = payee;
-    showSnack('保存しました');
     renderTriage();
-  }catch(e){ showSnack('保存エラー: '+e.message, true); }
-  finally{ if(btn){ btn.disabled=false; btn.textContent='💾 保存'; } }
+    if(btn){ btn.style.background='#2e7d32'; btn.textContent='✓ 保存しました'; setTimeout(()=>{ btn.disabled=false; btn.style.background=orig||'var(--primary)'; btn.textContent='💾 保存'; }, 1800); }
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.style.background='#c0392b'; btn.textContent='保存失敗'; setTimeout(()=>{ btn.style.background=orig||'var(--primary)'; btn.textContent='💾 保存'; }, 2500); }
+  }
 }
 
 // 後着PDF（intake分）を、定期支払で生成済みの行に統合（PDFを付け替え→重複を対象外）
@@ -737,15 +739,18 @@ async function confirmTriage(id) {
   const isShi = cat==='本社仕入'||cat==='工場仕入';
   const patch = { [fieldMap['支払区分']]: cat, [fieldMap['仕分け済']]: true };
   if (isShi) {
+    // 仕入先コードは任意。空なら突合で「当月受入一致の候補→1クリック」で紐づける（AIに支店を当てさせない方針）。
     const raw = (document.getElementById('ts-'+id).value||'').trim();
     const code = raw.split(/\s/)[0];
-    const sup = suppliers.find(s=>s.code===code);
-    if (!code) { showSnack('⚠ 仕入は仕入先（コード）が必須です'); return; }
-    // 受入リストに無くても締後（前月受入・当月請求）等で正しい場合がある→ブロックせず警告確認のみ
-    if (suppliers.length && !sup) { if (!confirm('この仕入先コードは当月の受入リストにありません: '+code+'\n（締後・当月受入なし等の可能性）\nこのまま仕入で確定しますか？')) return; }
-    patch[fieldMap['支払先コード']] = code;  // 名称は請求書のまま（突合は コード一致＋名寄せ）
+    if (code) {
+      const sup = suppliers.find(s=>s.code===code);
+      if (suppliers.length && !sup) { if (!confirm('この仕入先コードは当月の受入リストにありません: '+code+'\n（締後・当月受入なし等の可能性）\nこのまま仕入で確定しますか？')) return; }
+      patch[fieldMap['支払先コード']] = code;  // 名称は請求書のまま（突合は コード一致＋名寄せ）
+    }
+    // code空でも仕入として確定 → 突合の未紐づけ候補に載る
   }
-  try { await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, patch); showSnack('仕分け確定: '+cat+(isShi?'（仕入先 '+patch[fieldMap['支払先コード']]+'）':'')); await loadData(); }
+  const codeMsg = isShi ? (patch[fieldMap['支払先コード']] ? '（仕入先 '+patch[fieldMap['支払先コード']]+'）' : '（コードは突合で紐づけ）') : '';
+  try { await graphPatch(`/sites/${AP_SITE_ID}/lists/${window._listId}/items/${id}/fields`, patch); showSnack('仕分け確定: '+cat+codeMsg); await loadData(); }
   catch (e) { showSnack('仕分けエラー: '+e.message); }
 }
 // マージ：同一請求書の複数PDF（表紙＋明細等）を1案件に。金額は合算しない（主＝金額最大）。
