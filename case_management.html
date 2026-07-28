@@ -2048,6 +2048,30 @@ async function graphPost(url, body, _retry) {
   }
   return res.json();
 }
+// ★この案件が既に統合/削除されている場合の共通処理。
+//   true を返したら呼び出し側は追加のエラー表示をしない。
+async function handleStaleCaseError(e) {
+  if (!e || !e.isNotFound) return false;
+  alert('この案件は既に別の案件に統合、または削除されています。\n'
+      + '（統合された場合、FAXやPDFは統合先の案件に移っています）\n\n'
+      + '最新の一覧を読み込み直します。');
+  try {
+    setStatus('loading', '一覧を更新中...');
+    currentCaseId = null;
+    await loadCases();
+    try { await loadEvents(); } catch(_) {}
+    renderCaseList();
+    const detail = document.getElementById('caseDetail');
+    const listMode = document.getElementById('caseListMode');
+    if (detail) detail.style.display = 'none';
+    if (listMode) listMode.style.display = 'flex';
+    setStatus('success', '一覧を更新しました');
+  } catch(err) {
+    console.warn('[handleStaleCaseError] 再読込に失敗:', err && err.message);
+    location.reload();
+  }
+  return true;
+}
 async function graphPatch(url, body, _retry) {
   invalidateEventListCache(); // 書き込み後は共有キャッシュ破棄
   _retry = _retry || 0;
@@ -2067,7 +2091,10 @@ async function graphPatch(url, body, _retry) {
     let detail = '';
     try { const errJson = await res.json(); detail = JSON.stringify(errJson?.error || errJson); } catch(e) {}
     console.error('❌ PATCH失敗', res.status, url, '\n送信内容:', JSON.stringify(body, null, 2), '\nエラー詳細:', detail);
-    throw new Error(`Graph API エラー: ${res.status} - ${detail}`);
+    const _err = new Error(`Graph API エラー: ${res.status} - ${detail}`);
+    _err.status = res.status;
+    _err.isNotFound = (res.status === 404) || /itemNotFound/.test(detail);   // ★統合/削除済み判定用
+    throw _err;
   }
   return res.json();
 }
@@ -3500,7 +3527,7 @@ async function submitOrderEntry() {
   try {
     if (assigneeMembersReady) { try { await assigneeMembersReady; } catch(_) {} }
     const sid = await getSiteId();
-    const caseId = await generateCaseId();
+    let caseId = await generateCaseId();
     const now = new Date().toISOString();
     const deliveryCompany = oeFieldVal('oeDeliveryCompany', 'oeDeliveryCompanyOrder');
     const recipient = oeFieldVal('oeRecipient', 'oeRecipientOrder');
@@ -3540,7 +3567,9 @@ async function submitOrderEntry() {
       LastEventDate: now,
     };
     if (assigneeLookupId) fields.AssignedToLookupId = assigneeLookupId;
-    await graphPost(`/sites/${sid}/lists/${SP.caseListId}/items`, { fields });
+    const _createdOe = await graphPost(`/sites/${sid}/lists/${SP.caseListId}/items`, { fields });
+    // ★同時登録によるCaseId重複を検査し、必要なら自分の番号を振り直す
+    caseId = await ensureUniqueCaseId(_createdOe && _createdOe.id, caseId);
     // 初期イベント（依頼内容）
     await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: {
       Title: 'EV-' + Date.now(),
@@ -3599,6 +3628,37 @@ async function generateCaseId() {
     return `EST-${new Date().getFullYear()}-T${Date.now().toString(36)}`;
   }
 }
+// ★案件作成直後の重複検査＆自己修復。
+//   複数人がほぼ同時に登録すると同じCaseIdが払い出されることがあるため、
+//   作成した本人が「自分が後発なら」自分のCaseIdを振り直す。
+//   戻り値：確定した（振り直した場合は新しい）CaseId
+async function ensureUniqueCaseId(createdItemId, caseId) {
+  try {
+    if (!createdItemId || !caseId) return caseId;
+    const sid = await getSiteId();
+    const data = await graphGetAll(
+      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=500`
+    );
+    const same = data.value.filter(v => (v.fields?.CaseId || '') === caseId);
+    if (same.length <= 1) return caseId;                            // 重複なし
+    const others = same.filter(v => +v.id !== +createdItemId);
+    if (!others.every(o => +o.id < +createdItemId)) return caseId;  // 自分が先発 → 相手が振り直す
+    const used = new Set(data.value.map(v => v.fields?.CaseId || '').filter(Boolean));
+    const year = new Date().getFullYear();
+    const nums = [...used]
+      .filter(id => id.startsWith('EST-' + year + '-'))
+      .map(id => parseInt(id.split('-')[2]) || 0);
+    let next = (nums.length ? Math.max(...nums) : 0) + 1;
+    let nid = `EST-${year}-${String(next).padStart(3, '0')}`;
+    while (used.has(nid)) { next++; nid = `EST-${year}-${String(next).padStart(3, '0')}`; }
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${createdItemId}/fields`, { CaseId: nid });
+    console.warn(`[ensureUniqueCaseId] CaseId重複を検出。${caseId} → ${nid} に振り直しました（spId${createdItemId}）`);
+    return nid;
+  } catch(e) {
+    console.warn('[ensureUniqueCaseId] 重複検査に失敗（処理は継続）:', e && e.message);
+    return caseId;
+  }
+}
 // バリデーション
 function validateRegForm() {
   let ok = true;
@@ -3636,7 +3696,7 @@ async function submitNewCase() {
   btn.textContent = '登録中...';
   try {
     const sid = await getSiteId();
-    const caseId = await generateCaseId();
+    let caseId = await generateCaseId();
     const now = new Date().toISOString();
     const ep = document.getElementById('regEntryPoint').value;
     // 新規登録は常に業務セから開始
@@ -3663,7 +3723,9 @@ async function submitNewCase() {
     if (document.getElementById('regOrderNumber').value.trim())
       fields.OrderNumber = document.getElementById('regOrderNumber').value.trim();
     if (dueDateVal) fields.DueDate = dueDateVal;
-    await graphPost(`/sites/${sid}/lists/${SP.caseListId}/items`, { fields });
+    const _created = await graphPost(`/sites/${sid}/lists/${SP.caseListId}/items`, { fields });
+    // ★同時登録によるCaseId重複を検査し、必要なら自分の番号を振り直す（イベント作成より前に実施）
+    caseId = await ensureUniqueCaseId(_created && _created.id, caseId);
     // 初期イベント自動登録
     await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
       fields: {
@@ -4728,6 +4790,7 @@ async function updateCaseStatus(newStatus, opts = {}) {
     setStatus('success', 'ステータスを「' + newStatus + '」に更新しました');
   } catch(e) {
     setStatus('error', '更新エラー: ' + e.message);
+    if (await handleStaleCaseError(e)) return;   // ★統合/削除済みなら案内して一覧更新
     alert('ステータス更新エラー: ' + e.message);
   }
 }
