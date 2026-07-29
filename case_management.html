@@ -3794,7 +3794,7 @@ let currentTriagePdfUrl = null;
 let eventListCache = null;
 let eventListCacheAt = 0;
 const EVENT_LIST_CACHE_TTL = 60 * 1000;
-function invalidateEventListCache() { eventListCache = null; eventListCacheAt = 0; }
+function invalidateEventListCache() { eventListCache = null; eventListCacheAt = 0; try { invalidateTriageCache(); } catch(_) {} }
 // ★受信トレイ／FAX履歴で実際に使う列のみ取得する。
 //   全列取得(expand=fields)だと AIOutput_JSON（OCR結果全文・数KB／件）まで転送され、
 //   イベントが1万件を超えた現在は初回表示が大幅に遅くなるため。
@@ -3819,6 +3819,33 @@ async function fetchEventItems(force) {
   eventListCacheAt = Date.now();
   return eventListCache;
 }
+// ★受信トレイ専用の軽量取得。
+//   全件取得(fetchEventItems)はイベントが1万件を超えた現在13往復・約16秒かかる。
+//   受信トレイは「未仕訳のFAX受信」しか使わないので、サーバー側で絞り込んで取得する（3往復・約1秒）。
+//   ※ この$filterには SharePoint側で 仕訳区分(SortKubun) と イベント種別(EventType) の
+//      インデックスが必要（リストの設定→インデックス付き列で設定済み）。
+//      万一エラーになった場合は全件取得に自動フォールバックする。
+let triageCache = null, triageCacheAt = 0;
+function invalidateTriageCache() { triageCache = null; triageCacheAt = 0; }
+async function fetchTriageEventItems(force) {
+  if (!force && triageCache && (Date.now() - triageCacheAt) < EVENT_LIST_CACHE_TTL) {
+    return triageCache;
+  }
+  const sid = await getSiteId();
+  const flt = `fields/SortKubun eq '未仕訳' and (fields/EventType eq 'FAX受信（得意先）' or fields/EventType eq 'FAX受信（仕入先）')`;
+  try {
+    const data = await graphGetAll(
+      `/sites/${sid}/lists/${SP.eventListId}/items?$expand=fields($select=${EVENT_FIELDS})`
+      + `&$filter=${encodeURIComponent(flt)}&$top=999`
+    );
+    triageCache = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    triageCacheAt = Date.now();
+    return triageCache;
+  } catch(e) {
+    console.warn('[fetchTriageEventItems] 絞り込み取得に失敗。全件取得にフォールバックします:', e && e.message);
+    return await fetchEventItems(force);
+  }
+}
 async function loadTriageList(force) {
   // 初回のみスピナー。再読込は一覧を残したまま裏で更新（ちらつき防止）
   if (!triageItems.length) {
@@ -3827,7 +3854,8 @@ async function loadTriageList(force) {
   // 編集モード用に得意先マスタを先読み（バックグラウンド）
   if (!companyMaster.length) loadCompanyMaster();
   try {
-    const items = await fetchEventItems(force);
+    // ★軽量取得を使う（下のJS側フィルタは従来と同じなので表示結果は変わらない）
+    const items = await fetchTriageEventItems(force);
     // 未仕訳のFAX受信イベントを抽出
     triageItems = items
       .filter(e => {
