@@ -92,7 +92,7 @@ td.num,th.num{text-align:right}
     <div class="f"><label>生成種別</label><select id="e-gentype"><option>固定生成</option><option>予定のみ</option></select></div>
     <div class="f"><label>有効</label><select id="e-active"><option value="true">有効</option><option value="false">無効</option></select></div>
     <div class="f"><label>支払先名</label><input id="e-payee"></div>
-    <div class="f"><label>支払先コード</label><input id="e-payeecode" placeholder="振込先マスタのコード"></div>
+    <div class="f"><label>支払先コード（名称orコードで検索・任意）</label><input id="e-payeecode" list="dl-shiharai" placeholder="🔍 名称orコードで検索" onchange="pickShiharai(this.value)"></div>
     <div class="f"><label>支払手段</label><select id="e-method"><option>総合振込</option><option>口座振替</option><option>でんさい</option><option>海外送金</option><option>現金</option></select></div>
     <div class="f"><label>支払区分</label><select id="e-cat"><option>本社経費</option><option>工場経費</option></select></div>
     <div class="f"><label>支払日区分(締め回)</label><select id="e-daytype"><option>10日</option><option>20日</option><option>月末</option></select></div>
@@ -131,6 +131,7 @@ td.num,th.num{text-align:right}
 <datalist id="dl-kamoku"></datalist>
 <datalist id="dl-bumon"></datalist>
 <datalist id="dl-zei"></datalist>
+<datalist id="dl-shiharai"></datalist>
 <div id="snackbar" class="snack"></div>
 
 <script>
@@ -139,6 +140,9 @@ const SCOPES=['User.Read','Sites.ReadWrite.All','Files.ReadWrite.All'];
 const GRAPH='https://graph.microsoft.com/v1.0';
 const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
 const MASTER_DIR='/BILLS/masters';   // hanaoka-ap ドキュメント/BILLS/masters/ に SMILE CSV（PDFパイプラインと同じBILLS配下）
+const SM_DRIVE='b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';  // SharedMasters
+const SM_FILE='仕入先マスタ.csv';
+let shiharaiList=[];  // [{code,name,ryaku}] 支払先コード検索補完
 let msalApp=null,acct=null;
 let R={fmap:{},id:null}, INV={fmap:{},id:null}, SLIP={fmap:{},id:null};
 let items=[], smKamoku=[], smBumon=[], smZei=[], smUchiwake=[];
@@ -166,7 +170,7 @@ function toObjs(rows){const h=rows[0];return rows.slice(1).filter(r=>r.length>1)
 
 // ---- setup ----
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;initMonth();
-  await ensureLists(); await loadMasters(); await loadItems(); await loadGenerated(); renderList();}
+  await ensureLists(); await loadMasters(); await loadShiharaiList(); await loadItems(); await loadGenerated(); renderList();}
 async function onMonth(){try{await loadGenerated();}catch(e){}renderList();}
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
@@ -189,6 +193,25 @@ async function loadMasters(){
   document.getElementById('dl-kamoku').innerHTML=smKamoku.map(k=>`<option value="${k['科目コード']} ${k['科目名']}">`).join('');
   document.getElementById('dl-bumon').innerHTML=smBumon.map(b=>`<option value="${b['部門コード']} ${b['部門名']}">`).join('');
   document.getElementById('dl-zei').innerHTML=smZei.map(z=>`<option value="${z['税コード']} ${z['税名']}">`).join('');
+}
+// 支払先マスタ（SharedMasters）を読み、支払先コードの検索補完に使う
+async function loadShiharaiList(){
+  try{const t=await token();
+    const r=await fetch(`${GRAPH}/drives/${SM_DRIVE}/root:/${encodeURIComponent(SM_FILE)}:/content`,{headers:{Authorization:'Bearer '+t}});
+    if(!r.ok)return;
+    const rows=parseCSV(new TextDecoder('utf-8').decode(await r.arrayBuffer()));
+    const h=rows[0].map(x=>String(x==null?'':x).trim());const ix=n=>h.indexOf(n);
+    const ic=ix('仕入先ｺｰﾄﾞ'),inm=ix('仕入先名１'),iry=ix('仕入先名略称');
+    shiharaiList=[];
+    for(let i=1;i<rows.length;i++){const r2=rows[i];if(!r2||ic<0||!String(r2[ic]||'').trim())continue;
+      shiharaiList.push({code:String(r2[ic]).trim(),name:inm>=0?(r2[inm]||''):'',ryaku:iry>=0?(r2[iry]||''):''});}
+    const dl=document.getElementById('dl-shiharai');
+    if(dl)dl.innerHTML=shiharaiList.map(s=>`<option value="${s.code} ${(s.name||'').replace(/"/g,'&quot;')}">${(s.ryaku||'').replace(/"/g,'&quot;')}</option>`).join('');
+  }catch(e){/* 取得失敗は補完なしで続行 */}
+}
+function pickShiharai(val){const code=String(val||'').trim().split(/\s+/)[0];
+  const hit=shiharaiList.find(s=>s.code===code);
+  if(hit){document.getElementById('e-payeecode').value=hit.code;const pn=document.getElementById('e-payee');if(!pn.value.trim())pn.value=hit.name||'';}
 }
 function kamoku(code){return smKamoku.find(k=>k['科目コード']===code);}
 function zeiName(code){const z=smZei.find(x=>x['税コード']===code);return z?z['税名']:'';}
@@ -370,7 +393,10 @@ function collectFields(){
 async function saveMaster(){
   const F=collectFields();
   if(!F['Title']){snack('名称を入力してください',true);return;}
-  if(!F[rf('支払先コード')]){snack('支払先コードを入力してください（EB/振込に必要）',true);return;}
+  const method=F[rf('支払手段')];const needCode=(method==='総合振込'||method==='でんさい');
+  if(needCode && !F[rf('支払先コード')]){
+    if(!confirm('支払手段が「'+method+'」ですが支払先コードが未設定です。\nこのままだとEB（振込）出力時に口座情報を引けません。\n（後で編集で設定できます）\nコード無しで登録しますか？'))return;
+  }
   try{
     if(editId){await gpatch(`/sites/${AP_SITE}/lists/${R.id}/items/${editId}/fields`,F);}
     else{await gpost(`/sites/${AP_SITE}/lists/${R.id}/items`,{fields:F});}
