@@ -3630,8 +3630,9 @@ async function submitOrderEntry() {
 async function generateCaseId() {
   try {
     const sid = await getSiteId();
+    // ★採番に必要なのは CaseId 列だけ。全列×$top=500（案件2500件で6往復）だと登録が遅いため絞る
     const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=500`
+      `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
     );
     const year = new Date().getFullYear();
     const used = new Set(data.value.map(v => v.fields?.CaseId || '').filter(Boolean));
@@ -3655,13 +3656,30 @@ async function ensureUniqueCaseId(createdItemId, caseId) {
   try {
     if (!createdItemId || !caseId) return caseId;
     const sid = await getSiteId();
-    const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=500`
-    );
-    const same = data.value.filter(v => (v.fields?.CaseId || '') === caseId);
-    if (same.length <= 1) return caseId;                            // 重複なし
+    // ★まず「同じCaseIdの件数」だけをサーバー側で絞って確認する（1往復）。
+    //   重複が無ければ（＝ほぼ毎回）ここで即終了。案件全件取得は重複時のみ行う。
+    const q = String(caseId).replace(/'/g, "''");
+    let same;
+    try {
+      const hit = await graphGetAll(
+        `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)`
+        + `&$filter=${encodeURIComponent(`fields/CaseId eq '${q}'`)}&$top=50`
+      );
+      same = hit.value;
+    } catch(e) {
+      console.warn('[ensureUniqueCaseId] 絞り込み確認に失敗。全件取得で確認します:', e && e.message);
+      const all = await graphGetAll(
+        `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
+      );
+      same = all.value.filter(v => (v.fields?.CaseId || '') === caseId);
+    }
+    if (same.length <= 1) return caseId;                            // 重複なし（通常はここで終了）
     const others = same.filter(v => +v.id !== +createdItemId);
     if (!others.every(o => +o.id < +createdItemId)) return caseId;  // 自分が先発 → 相手が振り直す
+    // ここから先は重複が起きた稀なケースのみ。未使用番号を探すため全件取得する
+    const data = await graphGetAll(
+      `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
+    );
     const used = new Set(data.value.map(v => v.fields?.CaseId || '').filter(Boolean));
     const year = new Date().getFullYear();
     const nums = [...used]
