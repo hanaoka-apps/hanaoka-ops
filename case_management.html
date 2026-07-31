@@ -3794,7 +3794,7 @@ let currentTriagePdfUrl = null;
 let eventListCache = null;
 let eventListCacheAt = 0;
 const EVENT_LIST_CACHE_TTL = 60 * 1000;
-function invalidateEventListCache() { eventListCache = null; eventListCacheAt = 0; try { invalidateTriageCache(); } catch(_) {} }
+function invalidateEventListCache() { eventListCache = null; eventListCacheAt = 0; try { invalidateTriageCache(); } catch(_) {} try { invalidateFaxViewCache(); } catch(_) {} }
 // ★受信トレイ／FAX履歴で実際に使う列のみ取得する。
 //   全列取得(expand=fields)だと AIOutput_JSON（OCR結果全文・数KB／件）まで転送され、
 //   イベントが1万件を超えた現在は初回表示が大幅に遅くなるため。
@@ -4462,12 +4462,39 @@ function filterByDept(items) {
   if (faxDeptFilter === 'mine') return items.filter(e => e.AssignedDept === myDept);
   return items.filter(e => e.AssignedDept === faxDeptFilter);
 }
+// ★FAX履歴専用の軽量取得。
+//   全件取得(fetchEventItems)は1万件超で13往復・約16秒かかるが、
+//   FAX履歴は「仕訳区分=FAX対応」しか使わないのでサーバー側で絞る（1往復・約0.5秒／188件）。
+//   部署・未完了/完了の切り替えは取得済みデータ内で行うため、機能は従来どおり。
+//   ※ 仕訳区分(SortKubun) のインデックスが必要（設定済み）。失敗時は全件取得にフォールバック。
+let faxViewCache = null, faxViewCacheAt = 0;
+function invalidateFaxViewCache() { faxViewCache = null; faxViewCacheAt = 0; }
+async function fetchFaxViewEventItems(force) {
+  if (!force && faxViewCache && (Date.now() - faxViewCacheAt) < EVENT_LIST_CACHE_TTL) {
+    return faxViewCache;
+  }
+  const sid = await getSiteId();
+  const flt = `fields/SortKubun eq 'FAX対応'`;
+  try {
+    const data = await graphGetAll(
+      `/sites/${sid}/lists/${SP.eventListId}/items?$expand=fields($select=${EVENT_FIELDS})`
+      + `&$filter=${encodeURIComponent(flt)}&$top=999`
+    );
+    faxViewCache = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    faxViewCacheAt = Date.now();
+    return faxViewCache;
+  } catch(e) {
+    console.warn('[fetchFaxViewEventItems] 絞り込み取得に失敗。全件取得にフォールバックします:', e && e.message);
+    return await fetchEventItems(force);
+  }
+}
 async function loadFaxViewList(force) {
   if (!faxViewItems.length) {
     document.getElementById('faxViewList').innerHTML = '<div class="loading-spinner">読み込み中...</div>';
   }
   try {
-    const items = await fetchEventItems(force);
+    // ★軽量取得を使う（下のJS側フィルタは従来と同じなので表示結果は変わらない）
+    const items = await fetchFaxViewEventItems(force);
     faxViewItems = items
       .filter(e => e.SortKubun === 'FAX対応')
       .sort((a, b) => new Date(b.EventDate || 0) - new Date(a.EventDate || 0));
