@@ -2059,7 +2059,6 @@ async function handleStaleCaseError(e) {
     setStatus('loading', '一覧を更新中...');
     currentCaseId = null;
     await loadCases();
-    try { await loadEvents(); } catch(_) {}
     renderCaseList();
     const detail = document.getElementById('caseDetail');
     const listMode = document.getElementById('caseListMode');
@@ -3627,14 +3626,45 @@ async function submitOrderEntry() {
   }
 }
 // 案件ID採番
+// ★採番に必要なのは「今年の最大番号」だけ。案件2500件の全件取得（3往復・約3秒）は重いので、
+//   更新日時の降順で先頭200件から最大値を求める（1往復）。
+//   万一その200件に最新案件が含まれなかった場合の保険として、
+//   決めた番号が未使用かを$filterで確認し、使われていたら進める（さらに1往復）。
+//   → 番号が飛ぶ可能性はあるが「重複しない」ことを優先する。
 async function generateCaseId() {
+  const year = new Date().getFullYear();
+  const sid = await getSiteId();
   try {
-    const sid = await getSiteId();
-    // ★採番に必要なのは CaseId 列だけ。全列×$top=500（案件2500件で6往復）だと登録が遅いため絞る
+    const recent = await graphGet(
+      `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)`
+      + `&$orderby=fields/Modified desc&$top=200`
+    );
+    const nums = (recent.value || [])
+      .map(v => v.fields?.CaseId || '')
+      .filter(id => id.startsWith('EST-' + year + '-'))
+      .map(id => parseInt(id.split('-')[2]) || 0);
+    if (nums.length) {
+      let next = Math.max(...nums) + 1;
+      for (let i = 0; i < 10; i++) {
+        const cand = `EST-${year}-${String(next).padStart(3, '0')}`;
+        const q = cand.replace(/'/g, "''");
+        const hit = await graphGet(
+          `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)`
+          + `&$filter=${encodeURIComponent(`fields/CaseId eq '${q}'`)}&$top=5`
+        );
+        if (!hit.value || hit.value.length === 0) return cand;   // 未使用 → 確定
+        console.warn(`[generateCaseId] ${cand} は使用済み。次の番号を試します`);
+        next++;
+      }
+    }
+  } catch(e) {
+    console.warn('[generateCaseId] 高速採番に失敗。全件取得にフォールバックします:', e && e.message);
+  }
+  // フォールバック：従来どおり全件から採番
+  try {
     const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
     );
-    const year = new Date().getFullYear();
     const used = new Set(data.value.map(v => v.fields?.CaseId || '').filter(Boolean));
     const nums = [...used]
       .filter(id => id.startsWith('EST-' + year + '-'))
@@ -3803,13 +3833,24 @@ async function submitNewCase() {
     }
     // モーダルを閉じて案件リスト更新
     closeRegModal();
-    setStatus('loading', '案件を登録しました。リストを更新中...');
-    await loadCases();
-    // 1次仕訳側のイベントも再読込（案件管理タブと整合させるため）
-    try { await loadEvents(); } catch(_) {}
-    // 新しく登録した案件を自動選択
-    const newCase = cases.find(c => c.CaseId === caseId);
-    if (newCase) selectCase(caseId);
+    // ★登録した案件の内容は手元にあるので、案件全件の再取得（3往復・約3秒）は行わない。
+    //   ローカル配列へ追加して描画し、画面を即座に更新する。
+    //   （旧コードの loadEvents() は引数なしで CaseId='undefined' を検索する無意味な呼び出しだったため削除）
+    try {
+      const newObj = { _spId: (_created && _created.id) || null, ...fields, CaseId: caseId };
+      const lid = newObj.AssignedToLookupId ? parseInt(newObj.AssignedToLookupId, 10) : null;
+      if (lid && lookupIdToDisplayName[lid]) {
+        newObj.AssignedTo = { LookupValue: lookupIdToDisplayName[lid], LookupId: lid };
+      }
+      if (!cases.some(c => c.CaseId === caseId)) cases.unshift(newObj);
+      renderCaseList();
+      updateSummary();
+    } catch(e) {
+      console.warn('[submitNewCase] ローカル反映に失敗。再読込します:', e && e.message);
+      await loadCases();
+    }
+    // 新しく登録した案件を自動選択（タイムラインは案件IDを指定して読み込まれる）
+    if (cases.some(c => c.CaseId === caseId)) selectCase(caseId);
     setStatus('success', `案件「${caseId}」を登録しました`);
   } catch(e) {
     const errEl = document.getElementById('regErrorMsg');
