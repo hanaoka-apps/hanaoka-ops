@@ -562,6 +562,31 @@ def transform_daily_reports(header, rows):
     # 訪問種別
     houmon_idx = find_first_idx(h, '訪問種別')
 
+    # 商材(複数チェック) 列 - AL列 相当
+    # 「主な商材」(I列) とは別の、複数選択チェックボックスの列
+    main_shozai_idx = find_first_idx(h, '主な商材')
+    shozai_multi_idx = None
+    # まず完全一致で '商材' 単独の列を探す
+    all_shozai = find_partial_all_idx(h, '商材')
+    for i in all_shozai:
+        if i == main_shozai_idx:
+            continue  # 主な商材は除外
+        hdr = str(h[i]).replace('﻿', '').strip()
+        # ヘッダが '商材' か、'商材(...)' 系ならOK
+        if hdr == '商材' or hdr.startswith('商材(') or hdr.startswith('商材（'):
+            shozai_multi_idx = i
+            break
+    # 上記で見つからなければ 商材 を含む最初の列 (主な商材以外)
+    if shozai_multi_idx is None:
+        for i in all_shozai:
+            if i != main_shozai_idx:
+                shozai_multi_idx = i
+                break
+    if shozai_multi_idx is not None:
+        print(f"     [商材(複数)] 採用列{shozai_multi_idx}: '{str(h[shozai_multi_idx]).strip()}'", flush=True)
+    else:
+        print(f"     [警告] 商材(複数選択)列が見つからない", flush=True)
+
     # Check List 列 (表記ゆれ・全半角括弧・別名対応)
     checklist_idx = None
     checklist_candidates_exact = [
@@ -604,6 +629,7 @@ def transform_daily_reports(header, rows):
         'route_ei':    route_ei_idx,
         'route_koujou':route_koujou_idx,
         'houmon':      houmon_idx,
+        'shozai_multi':shozai_multi_idx,
     }
 
     # 開始日必須
@@ -656,6 +682,7 @@ def transform_daily_reports(header, rows):
             g(idx['route_ei']),         # 12: ルート(営業)
             g(idx['houmon']),           # 13: 訪問種別
             g(idx['route_koujou']),     # 14: ルート(工場)
+            g(idx['shozai_multi']),     # 15: 商材(複数選択) - AL列
         ])
         kept_count += 1
     print(f"     daily_reports 抽出: {kept_count}件 (テンプレフィルタ除外 {filtered_count}件)", flush=True)
