@@ -2601,48 +2601,84 @@ async function executeMerge() {
   const btn = document.getElementById('mergeConfirmBtn');
   btn.disabled = true;
   btn.textContent = '処理中...';
+  // ★事故防止(1)：統合先CaseIdの妥当性を実行直前に検証する。
+  //   ここが空/undefinedのままPATCHすると、JSONで undefined キーが落ちて「中身が空のPATCH」になり、
+  //   SharePointは成功を返すのに何も変わらない。その状態で統合元だけ削除され、
+  //   イベントが削除済みCaseIdを指したまま画面から消える事故が実際に発生した。
+  const _tgt = (mergeTargetCaseId == null) ? '' : String(mergeTargetCaseId).trim();
+  if (!_tgt || _tgt === 'undefined' || _tgt === 'null') {
+    alert('統合先の案件が正しく選択されていません。\n統合先をもう一度選び直してください。');
+    btn.disabled = false; btn.textContent = '⚠ 統合する';
+    return;
+  }
   try {
     const sid = await getSiteId();
-    // 1. 統合元に紐づくイベントを全取得
-    // CaseId列は未インデックスのため $filter=fields/CaseId は Graph が 400 を返す。
-    // 全件取得してクライアント側で絞り込む（loadEvents と同じ方式）。
-    const eventsData = await graphGetAll(
-      `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
-    );
-    const events = (eventsData.value || []).filter(
-      ev => String((ev.fields && ev.fields.CaseId) || '') === String(currentCaseId)
-    );
+    // 1. 統合元に紐づくイベントを取得
+    //    ★事故防止(3)：以前は全件取得(1.5万件・30往復以上)していたため処理が数十秒かかり、
+    //    その間ずっと中断リスクにさらされていた。CaseIdはインデックス済みなので絞り込みで取得する。
+    let events;
+    try {
+      const q = String(currentCaseId).replace(/'/g, "''");
+      const fil = await graphGetAll(
+        `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields`
+        + `&$filter=${encodeURIComponent(`fields/CaseId eq '${q}'`)}&$top=500`
+      );
+      events = (fil.value || []);
+    } catch(filErr) {
+      console.warn('[executeMerge] $filter不可のため全件取得にフォールバック:', filErr && filErr.message);
+      const eventsData = await graphGetAll(
+        `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$top=500`
+      );
+      events = (eventsData.value || []).filter(
+        ev => String((ev.fields && ev.fields.CaseId) || '') === String(currentCaseId)
+      );
+    }
     // 2. 各イベントのCaseIdを統合先に書き換え
+    //    ★事故防止(2)：1件ごとに書き換え後の値を読み直して検証する。
+    //    1件でも反映されていなければ、統合元の削除には進まず中断する（データ迷子を防ぐ）。
+    const moved = [], failed = [];
     for (const ev of events) {
       await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${ev.id}/fields`, {
-        CaseId: mergeTargetCaseId
+        CaseId: _tgt
       });
+      const chk = await fetch(
+        `https://graph.microsoft.com/v1.0/sites/${sid}/lists/${SP.eventListId}/items/${ev.id}?$expand=fields`,
+        { headers: { Authorization: 'Bearer ' + (await getToken()) } }
+      ).then(r => r.ok ? r.json() : null).catch(() => null);
+      const now = chk && chk.fields ? (chk.fields.CaseId || '') : '';
+      if (now === _tgt) moved.push(ev.id); else failed.push(ev.id);
     }
-    // 3. 統合元の案件にタイムラインイベントを追加（履歴として）
+    if (failed.length) {
+      throw new Error(
+        `イベントの移動が確認できませんでした（成功${moved.length}件 / 失敗${failed.length}件：ev${failed.join(', ev')}）。\n`
+        + `データ保護のため統合元の案件は削除していません。もう一度お試しください。`
+      );
+    }
+    // 3. 統合先の案件にタイムラインイベントを追加（履歴として）
     await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
       fields: {
         Title: 'EV-' + Date.now(),
-        CaseId: mergeTargetCaseId,
+        CaseId: _tgt,
         EventType: '案件統合',
         EventDate: new Date().toISOString(),
         RelationType: '社内',
         Summary: `${sourceCase.CaseId}（${sourceCase.Title || sourceCase.CompanyName || ''}）から統合 — ${events.length}件のイベントを移動`,
       }
     });
-    // 4. 統合元の案件を削除
+    // 4. 統合元の案件を削除（ここまで来た時点でイベント移動は全件検証済み）
     const token = await getToken();
     const delRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/lists/${SP.caseListId}/items/${sourceCase._spId}`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer ' + token }
     });
-    if (!delRes.ok) throw new Error(`案件削除エラー: ${delRes.status}`);
+    if (!delRes.ok) throw new Error(`案件削除エラー: ${delRes.status}（イベントは統合先に移動済みです）`);
     // 5. ローカルデータを更新
     cases = cases.filter(c => c.CaseId !== currentCaseId);
     closeMergeModal();
     alert(`統合完了: ${events.length}件のイベントを ${targetCase.CaseId} に移動しました。`);
     // 統合先の案件を表示
-    currentCaseId = mergeTargetCaseId;
-    selectCase(mergeTargetCaseId);
+    currentCaseId = _tgt;
+    selectCase(_tgt);
     renderCaseList();
   } catch(e) {
     alert('統合エラー: ' + e.message);
