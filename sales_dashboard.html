@@ -3456,13 +3456,15 @@ const _KPI_TYPES = [
   '勉強会・プレゼン',
   'ユーザー製品デモ',
   'カタログ・EC掲載打ち合わせ・店舗販売',
-  '企画立案（キャンペーン・契約・在庫提案）'
+  '企画立案（キャンペーン・契約・在庫提案）',
+  '修理・点検・現調'
 ];
 const _KPI_COLORS = [
   'rgba(220, 53, 69, 0.85)',    // 勉強会・プレゼン: 赤
   'rgba(255, 159, 64, 0.85)',   // ユーザー製品デモ: オレンジ
   'rgba(255, 205, 86, 0.85)',   // カタログ・EC: 黄
-  'rgba(75, 192, 192, 0.85)'    // 企画立案: 青緑
+  'rgba(75, 192, 192, 0.85)',   // 企画立案: 青緑
+  'rgba(153, 102, 255, 0.85)'   // 修理・点検・現調: 紫
 ];
 
 let _chartVisitsType = null;  // 営業別 KPIグラフ
@@ -3500,6 +3502,8 @@ function _initVisitsTypeControls() {
       <span style="width:12px; display:inline-block"></span>
       <span style="font-size:12px; color:#555; margin-right:4px">表示KPI:</span>
       ${kpiCheckboxes}
+      <button id="visits-kpi-all" style="padding:3px 8px; font-size:11px; background:#e2f0ff; border:1px solid #6b8fb5; border-radius:4px; cursor:pointer">全選択</button>
+      <button id="visits-kpi-none" style="padding:3px 8px; font-size:11px; background:#f0f0f0; border:1px solid #999; border-radius:4px; cursor:pointer">全解除</button>
       <button id="visits-clear-selection" style="padding:3px 8px; font-size:11px; background:#fff3cd; border:1px solid #ffc107; border-radius:4px; cursor:pointer; display:none">✕ 営業選択解除</button>
     </div>
   `;
@@ -3508,6 +3512,17 @@ function _initVisitsTypeControls() {
   if (clearBtn) clearBtn.addEventListener('click', () => {
     _visitsSelectedRep = null;
     clearBtn.style.display = 'none';
+    renderVisitsTypeChart();
+  });
+  // 全選択/全解除
+  const allBtn = document.getElementById('visits-kpi-all');
+  if (allBtn) allBtn.addEventListener('click', () => {
+    document.querySelectorAll('.visits-kpi-chk').forEach(c => c.checked = true);
+    renderVisitsTypeChart();
+  });
+  const noneBtn = document.getElementById('visits-kpi-none');
+  if (noneBtn) noneBtn.addEventListener('click', () => {
+    document.querySelectorAll('.visits-kpi-chk').forEach(c => c.checked = false);
     renderVisitsTypeChart();
   });
 }
@@ -3682,9 +3697,123 @@ function renderVisitsTypeChart() {
   if (note) {
     let msg = `対象期間: <b>${_visitsPeriodLabel(mode)}</b>`;
     if (_visitsSelectedRep) msg += ` / 客先詳細対象: <b>${_visitsSelectedRep}</b>`;
-    msg += ` / モード: <b>${mode === 'single' ? '単月' : '累計'}</b> / KPI選択 <b>${kpiSelected.size}</b>/4 / KPI実施合計 <b>${filtered.length.toLocaleString()}</b>件 <span style="color:#888">（ルート営業空欄除外）</span>`;
+    msg += ` / モード: <b>${mode === 'single' ? '単月' : '累計'}</b> / KPI選択 <b>${kpiSelected.size}</b>/${_KPI_TYPES.length} / KPI実施合計 <b>${filtered.length.toLocaleString()}</b>件 <span style="color:#888">（ルート営業空欄除外）</span>`;
     note.innerHTML = msg;
     note.style.color = '#333';
+  }
+
+  // KPI達成状況の表を描画 (選択中KPIそれぞれについて営業マン別実績vs目標)
+  _renderKpiAchievement(byRep, kpiSelected, mode);
+}
+
+// 選択中のKPIそれぞれについて営業マン別実績vs目標の達成表を表示
+function _renderKpiAchievement(byRep, kpiSelected, mode) {
+  // 既存の達成表を削除
+  const existing = document.getElementById('visits-kpi-achievement');
+  if (existing) existing.remove();
+  // KPI選択が0なら非表示
+  if (!kpiSelected || kpiSelected.size === 0) return;
+
+  const targetsMap = window._loaded_kpi_visit_target || {};
+  // 期間内の目標を取得
+  const rp = reportingPeriod(curFY);
+  const targetYm = parseInt(rp.singleYm);
+  const fromYm = parseInt(rp.fromYm);
+  const toYm = parseInt(rp.toYm);
+
+  // 対象KPIごとに営業マンリストを構築 (目標があるか実績があるか)
+  const kpiOrder = _KPI_TYPES.filter(k => kpiSelected.has(k));
+
+  // 全レップの実績を kpiOrder ごとに再集計 (byRep はKPI mix なので使えない)
+  // 実は byRep は既に {rep: {kpi: count}} 構造なので使える
+
+  // 各KPIについて、目標を持つ or 実績がある営業マンを合わせて表示
+  let tableHtml = `<div id="visits-kpi-achievement" style="margin-top:12px; padding:12px; background:#fff; border:1px solid #e5e7eb; border-radius:6px">
+    <h4 style="margin:0 0 8px 0; color:var(--navy); font-size:14px">🎯 KPI達成状況 <span style="font-size:11px; color:#888; font-weight:normal">(実績 / 目標 = 達成率)</span></h4>`;
+
+  for (const kpi of kpiOrder) {
+    const kpiIdx = _KPI_TYPES.indexOf(kpi);
+    const kpiColor = _KPI_COLORS[kpiIdx] || 'rgba(180,180,180,0.85)';
+    // このKPIの全営業マンを集める
+    const repSet = new Set();
+    Object.keys(byRep).forEach(rep => { if ((byRep[rep][kpi] || 0) > 0) repSet.add(rep); });
+    const kpiTargets = targetsMap[kpi] || {};
+    Object.keys(kpiTargets).forEach(rep => repSet.add(rep));
+    const reps = Array.from(repSet);
+
+    // 各営業マンの実績と目標を計算 (期間内で合算)
+    const rows = reps.map(rep => {
+      const actual = (byRep[rep] && byRep[rep][kpi]) || 0;
+      // 目標: 期間内のymを合算
+      const repTargets = kpiTargets[rep] || {};
+      let target = 0;
+      for (const ym in repTargets) {
+        const ymInt = parseInt(ym);
+        if (mode === 'single') {
+          if (ymInt === targetYm) target += repTargets[ym];
+        } else {
+          if (ymInt >= fromYm && ymInt <= toYm) target += repTargets[ym];
+        }
+      }
+      const rate = target > 0 ? (actual / target * 100) : null;
+      return { rep, actual, target, rate };
+    });
+    // 実績多い順にソート、目標のみ (実績0) は末尾
+    rows.sort((a, b) => {
+      if (a.actual === 0 && b.actual === 0) return b.target - a.target;
+      if (a.actual === 0) return 1;
+      if (b.actual === 0) return -1;
+      return b.actual - a.actual;
+    });
+
+    // 全体サマリ
+    const totalActual = rows.reduce((s, r) => s + r.actual, 0);
+    const totalTarget = rows.reduce((s, r) => s + r.target, 0);
+    const totalRate = totalTarget > 0 ? (totalActual / totalTarget * 100).toFixed(1) : null;
+
+    tableHtml += `<div style="margin-bottom:12px">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px; padding:4px 8px; background:${kpiColor.replace('0.85', '0.15')}; border-left:4px solid ${kpiColor}; border-radius:3px">
+        <span style="font-weight:600; color:#0e1a36; font-size:13px">${_visitsEscapeHtml(kpi)}</span>
+        <span style="font-size:11px; color:#666; margin-left:auto">全体: ${totalActual} / ${totalTarget}件 ${totalRate !== null ? `<b style="color:${parseFloat(totalRate) >= 100 ? '#28a745' : '#dc3545'}">(${totalRate}%)</b>` : ''}</span>
+      </div>`;
+    if (rows.length === 0) {
+      tableHtml += `<div style="padding:8px 12px; color:#999; font-size:12px">実績・目標ともなし</div>`;
+    } else {
+      tableHtml += `<table style="width:100%; border-collapse:collapse; font-size:12px">
+        <thead><tr style="background:#f0ede2">
+          <th style="padding:4px 8px; text-align:left; width:200px">営業担当</th>
+          <th style="padding:4px 8px; text-align:right; width:80px">実績</th>
+          <th style="padding:4px 8px; text-align:right; width:80px">目標</th>
+          <th style="padding:4px 8px; text-align:right; width:100px">達成率</th>
+          <th style="padding:4px 8px; text-align:left">状況</th>
+        </tr></thead><tbody>`;
+      for (const r of rows) {
+        const rateNum = r.rate;
+        const rateStr = rateNum !== null ? `${rateNum.toFixed(0)}%` : '—';
+        const rateColor = rateNum === null ? '#999' : (rateNum >= 100 ? '#28a745' : (rateNum >= 80 ? '#f0ad4e' : '#dc3545'));
+        const barWidth = rateNum !== null ? Math.min(100, rateNum) : 0;
+        const barColor = rateNum === null ? '#ccc' : (rateNum >= 100 ? '#28a745' : (rateNum >= 80 ? '#f0ad4e' : '#dc3545'));
+        tableHtml += `<tr style="border-bottom:1px solid #f0f0f0">
+          <td style="padding:4px 8px">${_visitsEscapeHtml(r.rep)}</td>
+          <td style="padding:4px 8px; text-align:right; font-weight:600">${r.actual}</td>
+          <td style="padding:4px 8px; text-align:right; color:#666">${r.target || '—'}</td>
+          <td style="padding:4px 8px; text-align:right; color:${rateColor}; font-weight:600">${rateStr}</td>
+          <td style="padding:4px 8px">
+            <div style="background:#f0f0f0; height:12px; border-radius:6px; overflow:hidden; position:relative">
+              <div style="background:${barColor}; height:100%; width:${barWidth}%; transition:width 0.3s"></div>
+            </div>
+          </td>
+        </tr>`;
+      }
+      tableHtml += `</tbody></table>`;
+    }
+    tableHtml += `</div>`;
+  }
+  tableHtml += `</div>`;
+  // ノート要素の直前に挿入
+  const note = document.getElementById('visits-type-note');
+  if (note && note.parentElement) {
+    note.insertAdjacentHTML('beforebegin', tableHtml);
   }
 }
 
@@ -3698,7 +3827,13 @@ let _chartVisitsShozaiYtd = null;
 // 商材文字列を配列に分解 (カンマ/セミコロン/スラッシュ/改行 対応)
 function _visitsSplitShozai(str) {
   if (!str) return [];
-  return String(str).split(/[,、;；\/／\n\r]+/).map(x => x.trim()).filter(x => x.length > 0);
+  const parts = String(str).split(/[,、;；\/／\n\r]+/)
+    .map(x => x.trim())
+    // 前後の括弧・引用符・角括弧を除去 (「」『』()（）[]｢｣"' など)
+    .map(x => x.replace(/^[\[\]「」『』（）()｢｣"'\s]+/, '').replace(/[\[\]「」『』（）()｢｣"'\s]+$/, '').trim())
+    .filter(x => x.length > 0);
+  // 同一レコード内の重複を除去 (Setで一意化)
+  return Array.from(new Set(parts));
 }
 
 function _getVisitsShozaiRep() {
@@ -4735,6 +4870,7 @@ async function loadTargets() {
   const ratioKiko = {};     // 機工比率上限
   const deptMonthly = {};   // 部門累計月次 (Editorから)
   const repMonthly = {};    // 担当者月次 (Editorから)
+  const kpiVisitTarget = {}; // 訪問KPI月次目標 [KPI][rep][ym] = 件数
   for (const item of allItems) {
     const f = item.fields || {};
     const type = String(f.TargetType || '').trim();
@@ -4769,6 +4905,14 @@ async function loadTargets() {
         if (!repMonthly[scope]) repMonthly[scope] = {};
         repMonthly[scope][ym] = amt;
       }
+    } else if (type === '訪問KPI月次') {
+      // ScopeKey = KPI名, SubScope = 営業担当者名, YearMonth, Amount = 目標件数
+      const rep = String(f.SubScope || '').trim();
+      if (ym && rep && scope) {
+        if (!kpiVisitTarget[scope]) kpiVisitTarget[scope] = {};
+        if (!kpiVisitTarget[scope][rep]) kpiVisitTarget[scope][rep] = {};
+        kpiVisitTarget[scope][rep][ym] = amt;
+      }
     }
   }
   window._loaded_ytd_plan = ytd;
@@ -4776,6 +4920,7 @@ async function loadTargets() {
   window._loaded_genre_target_yoy = genreYoy;
   window._loaded_ratio4t = ratio4t;
   window._loaded_ratiokiko = ratioKiko;
+  window._loaded_kpi_visit_target = kpiVisitTarget;
   // 部門累計月次 → RAW.user_ytd_plan_monthly
   if (!RAW.user_ytd_plan_monthly) RAW.user_ytd_plan_monthly = {};
   for (const scope in deptMonthly) {
