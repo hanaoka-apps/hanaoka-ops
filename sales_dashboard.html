@@ -3486,24 +3486,20 @@ function _initVisitsTypeControls() {
   const reps = Array.from(repSet).sort((a, b) => a.localeCompare(b, 'ja'));
   const repOptions = reps.map(r => `<option value="${r}">${r}</option>`).join('');
 
-  // 4 KPI チェックボックス (色付きバッジ風)
-  const kpiCheckboxes = _KPI_TYPES.map((k, i) => {
-    const bg = _KPI_COLORS[i].replace('0.85', '0.15');
-    const border = _KPI_COLORS[i].replace('0.85', '0.6');
-    return `<label style="cursor:pointer; margin-right:6px; background:${bg}; padding:3px 8px; border-radius:4px; border:1px solid ${border}; font-size:12px; display:inline-block; margin-bottom:4px">
-      <input type="checkbox" class="visits-kpi-chk" data-kpi="${k}" checked> ${k}
-    </label>`;
-  }).join('');
+  // 訪問種別セレクタ (すべて/個別)
+  const kpiOptions = ['<option value="__all__">すべて (5項目まとめて)</option>']
+    .concat(_KPI_TYPES.map(k => `<option value="${_visitsEscapeHtml(k)}">${_visitsEscapeHtml(k)}</option>`));
 
   el.innerHTML = `
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; width:100%">
       <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="single" checked> 単月</label>
       <label style="cursor:pointer"><input type="radio" name="visits-type-mode" value="ytd"> 累計</label>
-      <span style="width:12px; display:inline-block"></span>
-      <span style="font-size:12px; color:#555; margin-right:4px">表示KPI:</span>
-      ${kpiCheckboxes}
-      <button id="visits-kpi-all" style="padding:3px 8px; font-size:11px; background:#e2f0ff; border:1px solid #6b8fb5; border-radius:4px; cursor:pointer">全選択</button>
-      <button id="visits-kpi-none" style="padding:3px 8px; font-size:11px; background:#f0f0f0; border:1px solid #999; border-radius:4px; cursor:pointer">全解除</button>
+      <span style="width:16px; display:inline-block"></span>
+      <label style="font-size:13px; font-weight:600; color:#0e1a36">表示KPI:
+        <select id="visits-kpi-select" style="padding:4px 10px; margin-left:4px; border:1px solid #d1d5db; border-radius:5px; font-size:13px; min-width:220px">
+          ${kpiOptions.join('')}
+        </select>
+      </label>
       <button id="visits-clear-selection" style="padding:3px 8px; font-size:11px; background:#fff3cd; border:1px solid #ffc107; border-radius:4px; cursor:pointer; display:none">✕ 営業選択解除</button>
     </div>
   `;
@@ -3514,24 +3510,20 @@ function _initVisitsTypeControls() {
     clearBtn.style.display = 'none';
     renderVisitsTypeChart();
   });
-  // 全選択/全解除
-  const allBtn = document.getElementById('visits-kpi-all');
-  if (allBtn) allBtn.addEventListener('click', () => {
-    document.querySelectorAll('.visits-kpi-chk').forEach(c => c.checked = true);
-    renderVisitsTypeChart();
-  });
-  const noneBtn = document.getElementById('visits-kpi-none');
-  if (noneBtn) noneBtn.addEventListener('click', () => {
-    document.querySelectorAll('.visits-kpi-chk').forEach(c => c.checked = false);
-    renderVisitsTypeChart();
-  });
 }
 
 function _getVisitsFilteredKpiRows() {
   const modeEl = document.querySelector('input[name="visits-type-mode"]:checked');
   const mode = modeEl ? modeEl.value : 'single';
+  // ドロップダウン方式: __all__ なら全KPI、個別選択なら1つだけ
+  const kpiSelectEl = document.getElementById('visits-kpi-select');
+  const kpiSelectVal = kpiSelectEl ? kpiSelectEl.value : '__all__';
   const kpiSelected = new Set();
-  document.querySelectorAll('.visits-kpi-chk:checked').forEach(el => kpiSelected.add(el.dataset.kpi));
+  if (kpiSelectVal === '__all__' || !kpiSelectVal) {
+    _KPI_TYPES.forEach(k => kpiSelected.add(k));
+  } else {
+    kpiSelected.add(kpiSelectVal);
+  }
 
   const rp = reportingPeriod(curFY);
   const targetYm = parseInt(rp.singleYm);
@@ -3576,16 +3568,81 @@ function renderVisitsTypeChart() {
 
   const repLabels = repEntries.map(e => e.rep);
   const kpiOrder = _KPI_TYPES.filter(k => kpiSelected.has(k));
-  const repDatasets = kpiOrder.map(k => {
-    const kIdx = _KPI_TYPES.indexOf(k);
-    return {
-      label: k,
-      data: repEntries.map(e => e.kpis[k] || 0),
-      backgroundColor: _KPI_COLORS[kIdx],
-      borderColor: _KPI_COLORS[kIdx].replace('0.85', '1'),
-      borderWidth: 1
-    };
+  const isSingleKpi = (kpiOrder.length === 1);
+
+  // 単一KPI選択時: 達成率で色分け / 全選択時: KPIカラーでスタック
+  const targetsMap = window._loaded_kpi_visit_target || {};
+  const rp = reportingPeriod(curFY);
+  const targetYmInt = parseInt(rp.singleYm);
+  const fromYmInt = parseInt(rp.fromYm);
+  const toYmInt = parseInt(rp.toYm);
+
+  // 各営業マンの目標を計算 (選択中の全KPI合計)
+  const targetsByRep = {};
+  for (const rep of repLabels) {
+    let sum = 0;
+    for (const kpi of kpiOrder) {
+      const kt = (targetsMap[kpi] || {})[rep] || {};
+      for (const ym in kt) {
+        const ymInt = parseInt(ym);
+        if (mode === 'single') {
+          if (ymInt === targetYmInt) sum += kt[ym];
+        } else {
+          if (ymInt >= fromYmInt && ymInt <= toYmInt) sum += kt[ym];
+        }
+      }
+    }
+    targetsByRep[rep] = sum;
+  }
+
+  // Y軸ラベルに 実績/目標 と達成率を付ける
+  const totalByRep = {};
+  repEntries.forEach(e => { totalByRep[e.rep] = e.total; });
+  const labelWithRate = repLabels.map(rep => {
+    const actual = totalByRep[rep] || 0;
+    const target = targetsByRep[rep] || 0;
+    if (target > 0) {
+      const rate = (actual / target * 100).toFixed(0);
+      const mark = actual >= target ? '✓' : (actual >= target * 0.8 ? '△' : '✗');
+      return `${rep}  ${actual}/${target} (${rate}%) ${mark}`;
+    }
+    return `${rep}  ${actual}件`;
   });
+
+  // 達成率に基づいた色関数
+  const achievementColor = (rep, alpha = 0.85) => {
+    const actual = totalByRep[rep] || 0;
+    const target = targetsByRep[rep] || 0;
+    if (target === 0) return `rgba(120, 120, 120, ${alpha})`;  // 目標未設定=グレー
+    const rate = actual / target;
+    if (rate >= 1) return `rgba(40, 167, 69, ${alpha})`;   // 100%以上=緑
+    if (rate >= 0.8) return `rgba(240, 173, 78, ${alpha})`; // 80%以上=オレンジ
+    return `rgba(220, 53, 69, ${alpha})`;                    // 未満=赤
+  };
+
+  let repDatasets;
+  if (isSingleKpi) {
+    // 個別KPI選択時: 達成率で単色バー
+    repDatasets = [{
+      label: kpiOrder[0],
+      data: repEntries.map(e => e.total),
+      backgroundColor: repLabels.map(r => achievementColor(r, 0.85)),
+      borderColor: repLabels.map(r => achievementColor(r, 1)),
+      borderWidth: 1
+    }];
+  } else {
+    // 全選択時: KPIごとにスタック + 境界を達成率で強調
+    repDatasets = kpiOrder.map(k => {
+      const kIdx = _KPI_TYPES.indexOf(k);
+      return {
+        label: k,
+        data: repEntries.map(e => e.kpis[k] || 0),
+        backgroundColor: _KPI_COLORS[kIdx],
+        borderColor: repLabels.map(r => achievementColor(r, 1)),
+        borderWidth: 2
+      };
+    });
+  }
 
   const canvas1 = document.getElementById('chart-visits-type');
   if (canvas1) {
@@ -3600,7 +3657,7 @@ function renderVisitsTypeChart() {
     } else {
       _chartVisitsType = new Chart(canvas1, {
         type: 'bar',
-        data: { labels: repLabels, datasets: repDatasets },
+        data: { labels: labelWithRate, datasets: repDatasets },
         options: {
           indexAxis: 'y',
           responsive: true,
@@ -3611,7 +3668,7 @@ function renderVisitsTypeChart() {
           },
           plugins: {
             legend: { position: 'top', labels: { font: { size: 11 } } },
-            title: { display: true, text: '営業別 KPI実施件数（棒クリックで客先絞込）', font: { size: 13 } }
+            title: { display: true, text: (isSingleKpi ? `【${kpiOrder[0]}】営業別 実施件数 (バー色=達成率: 緑✓/橙△/赤✗/灰=目標なし)` : '営業別 KPI実施件数 (バー枠色=達成率)') + ' 棒クリックで客先絞込', font: { size: 12 } }
           },
           onClick: (event, elements) => {
             if (elements && elements.length > 0) {
@@ -3702,8 +3759,10 @@ function renderVisitsTypeChart() {
     note.style.color = '#333';
   }
 
-  // KPI達成状況の表を描画 (選択中KPIそれぞれについて営業マン別実績vs目標)
-  _renderKpiAchievement(byRep, kpiSelected, mode);
+  // 達成状況はチャート内で色分けされるので別表は不要
+  // 既存の達成状況表を削除
+  const oldTable = document.getElementById('visits-kpi-achievement');
+  if (oldTable) oldTable.remove();
 }
 
 // 選択中のKPIそれぞれについて営業マン別実績vs目標の達成表を表示
