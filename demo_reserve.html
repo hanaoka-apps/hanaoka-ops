@@ -277,11 +277,37 @@ const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 /* デモ機の2リストは msteams_7aab51 サイト。内部名は英語なので直接指定（buildFieldMap 不要） */
 const SITE_ID     = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
 const LIST_MASTER = '66b0765e-f49a-4e93-ac57-e7a675b29dd9';
-const LIST_HIST   = 'de7c1832-a168-4778-bfe9-ba5e98277f38';   /* 新リスト作成後に差し替え */
+const HIST_NAME       = 'デモ機予約履歴';                          /* 新リスト。名前で解決するのでID差し替え不要 */
+const LIST_HIST_OLD   = 'de7c1832-a168-4778-bfe9-ba5e98277f38';   /* 旧リスト。新リストが無い間のフォールバック */
+let   LIST_HIST       = LIST_HIST_OLD;
+let   HIST_IS_NEW     = false;
 
 const WINDOW_DAYS = 90;                 /* 履歴取得の下限。範囲を必ず閉じる（5000件しきい値対策） */
 const LOCK_COL    = 'LockData';         /* CASの対象。未作成なら予約機能は無効 */
 const RESV_COL    = 'IsReservable';     /* 予約対象フラグ。未作成なら名前から推定 */
+
+/* 新しい履歴リストの列定義。name＝内部名、jp＝あとで付ける日本語表示名。
+   Graph で作れば内部名が確定するので「英語で作って日本語にリネーム」を手でやる必要がない。 */
+const TEXT  = (max=255) => ({ text:{ allowMultipleLines:false, maxLength:max, textType:'plain' } });
+const NUM   = ()        => ({ number:{ decimalPlaces:'none', displayAs:'number' } });
+const DATE  = ()        => ({ dateTime:{ displayAs:'standard', format:'dateTime' } });
+const HIST_COLUMNS = [
+  { name:'MachineItemId',     jp:'マスターID',     def:NUM()  },
+  { name:'SourceEquipmentId', jp:'元設備ID',       def:NUM(),  indexed:true },
+  { name:'DemoMachineName',   jp:'デモ機名',       def:TEXT() },
+  { name:'LockToken',         jp:'占有トークン',   def:TEXT(32) },
+  { name:'ReservationStart',  jp:'予約開始',       def:DATE(), indexed:true },
+  { name:'ReservationEnd',    jp:'予約終了',       def:DATE() },
+  { name:'LoanStatus',        jp:'貸出状態',       def:{ choice:{ allowTextEntry:false, choices:['予約','取消'], displayAs:'dropDownMenu' } },
+                                                   defaultValue:{ value:'予約' }, indexed:true },
+  { name:'RequesterEmail',    jp:'依頼者メール',   def:TEXT(), indexed:true },
+  { name:'RequesterName',     jp:'依頼者名',       def:TEXT() },
+  { name:'SalesEmail',        jp:'営業担当メール', def:TEXT() },
+  { name:'SalesName',         jp:'営業担当名',     def:TEXT() },
+  { name:'CustomerName',      jp:'顧客名',         def:TEXT() },
+  { name:'Destination',       jp:'行き先',         def:TEXT() },
+  { name:'Notes',             jp:'備考',           def:{ text:{ allowMultipleLines:true, linesForEditing:4, textType:'plain' } } }
+];
 
 /* 部品・オプションの推定（IsReservable が無い間の代替） */
 const PART_RE = /OP\/|ｱｼﾞｬｽﾀｰ|アジャスター|ジャバラ|ｼﾞｬﾊﾞﾗ|スプリング|バネ|固定車|固定1|固定１|バンパー|ハンドル|ブラケット|棚板|フック|ガードフェンス|Wi-Fi|テーブル|スツール|有孔ボード|ワークテーブル|用HS|ｷｯﾄ|ｷｬﾘﾝｸﾞ/;
@@ -408,8 +434,22 @@ async function showApp(){
   document.getElementById('login-view').style.display = 'none';
   document.getElementById('app-view').style.display   = 'block';
   document.getElementById('user-name').textContent = currentAccount.name || currentAccount.username;
+  await resolveHistList();
   await checkColumns();
   await loadAll();
+}
+
+/* 履歴リストを名前で解決。新リストがあればそれを使い、無ければ旧リストにフォールバック。
+   IDをコードに埋め込み直す手間と、差し替え忘れを両方なくす。 */
+async function resolveHistList(){
+  const cached = sessionStorage.getItem('histListId');
+  if (cached) { LIST_HIST = cached; HIST_IS_NEW = true; return; }
+  try {
+    const r = await gGet(`/sites/${SITE_ID}/lists?$select=id,displayName`);
+    const hit = (r.value||[]).find(l => l.displayName === HIST_NAME);
+    if (hit) { LIST_HIST = hit.id; HIST_IS_NEW = true; sessionStorage.setItem('histListId', hit.id); }
+    else     { LIST_HIST = LIST_HIST_OLD; HIST_IS_NEW = false; }
+  } catch { LIST_HIST = LIST_HIST_OLD; HIST_IS_NEW = false; }
 }
 
 /* マスターの列を1回だけ確認 → 予約機能の有効/無効を決める */
@@ -432,8 +472,10 @@ async function checkColumns(){
         (CAP.lock ? '' : ' — <b>予約登録は無効です。</b>マスターに複数行テキストで追加してください（バージョン管理OFF）') + `</div>` +
       `<div class="st-row"><code>${RESV_COL}</code>（予約対象フラグ）: ${CAP.resv?ok():ng()}` +
         (CAP.resv ? '' : ' — 当面はデモ機名から部品・オプションを推定します') + `</div>` +
-      `<div class="st-row" style="color:var(--muted)">履歴リスト: <code>${LIST_HIST.slice(0,8)}…</code>` +
-        (LIST_HIST === 'de7c1832-a168-4778-bfe9-ba5e98277f38' ? '（旧リスト。新規作成後に <code>LIST_HIST</code> を差し替え）' : '') + `</div>` +
+      `<div class="st-row">履歴リスト: ` + (HIST_IS_NEW
+          ? `<span class="ok">${HIST_NAME}</span> <code>${LIST_HIST.slice(0,8)}…</code>（本番用）`
+          : `<span class="ng">旧リスト</span> <code>${LIST_HIST.slice(0,8)}…</code>`
+            + ` — <button class="act" style="margin-left:4px" onclick="createHistList()">新しい履歴リストを作成する</button>`) + `</div>` +
       `<div class="st-row">履歴の <code>LockToken</code>: ${CAP.token?ok():ng()}` +
         (CAP.token ? '' : ' — <b>これが無いと予約を保存できません</b>（占有と履歴を対応づける列）') + `</div>` +
       `<div class="st-row" id="fetch-mode" style="color:var(--muted)"></div>` +
@@ -504,6 +546,76 @@ async function makeColumns(){
     showSnack('列の作成に失敗: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '不足している列を作成する'; }
   }
+}
+
+/* ---------- 新しい履歴リストの作成 ----------
+   Graph で作ると name（内部名）を確定できるので、UIでやる
+   「英語名で作成 → 表示名を日本語に変更」の手作業が不要になる。 */
+async function createHistList(){
+  if (!confirm(`新しい履歴リスト「${HIST_NAME}」を作成します（${HIST_COLUMNS.length + 1}列）。\n\n`
+    + `・内部名は英語で確定（Graphで作るため化けません）\n`
+    + `・表示名はあとから日本語に変更します\n`
+    + `・旧リストのデータは移行しません（テストデータのみのため）\n\n`
+    + `既に同名のリストがある場合は中止します。`)) return;
+  showSnack('リストを作成中...');
+  try {
+    const chk = await gGet(`/sites/${SITE_ID}/lists?$select=id,displayName`);
+    if ((chk.value||[]).some(l => l.displayName === HIST_NAME)) {
+      showSnack(`「${HIST_NAME}」は既に存在します。再読込します`);
+      sessionStorage.removeItem('histListId'); await showApp(); return;
+    }
+
+    /* 1. リストと列をまとめて作成。name と displayName を同じ英語にして曖昧さを消す */
+    const created = await gPost(`/sites/${SITE_ID}/lists`, {
+      displayName: HIST_NAME,
+      list: { template: 'genericList' },
+      columns: HIST_COLUMNS.map(c => ({
+        name: c.name, displayName: c.name,
+        ...(c.indexed ? { indexed:true } : {}),
+        ...(c.defaultValue ? { defaultValue:c.defaultValue } : {}),
+        ...c.def
+      }))
+    });
+    const newId = created.id;
+
+    /* 2. 表示名を日本語に。Title も 予約件名 にする */
+    const cols = await gGet(`/sites/${SITE_ID}/lists/${newId}/columns?$select=id,name`);
+    const byName = new Map((cols.value||[]).map(c => [c.name, c.id]));
+    const renames = [...HIST_COLUMNS.map(c => ({ id: byName.get(c.name), jp: c.jp })),
+                     { id: byName.get('Title'), jp: '予約件名' }].filter(x => x.id);
+    const res = await gBatch(renames.map(r => ({
+      method:'PATCH', url:`/sites/${SITE_ID}/lists/${newId}/columns/${r.id}`,
+      headers:{ 'Content-Type':'application/json' }, body:{ displayName: r.jp }
+    })));
+    const rn = res.filter(x => x.status >= 300).length;
+
+    /* 3. 出来上がりを読み返して報告（indexed が実際に効いたかもここで分かる） */
+    const after = await gGet(`/sites/${SITE_ID}/lists/${newId}/columns?$select=name,displayName,indexed`);
+    const rows = (after.value||[]).filter(c => c.name === 'Title' || HIST_COLUMNS.some(h => h.name === c.name));
+    const missing = HIST_COLUMNS.filter(h => !rows.some(r => r.name === h.name)).map(h => h.name);
+    const wantIdx = HIST_COLUMNS.filter(h => h.indexed).map(h => h.name);
+    const gotIdx  = rows.filter(r => r.indexed).map(r => r.name);
+    const noIdx   = wantIdx.filter(n => !gotIdx.includes(n));
+
+    sessionStorage.setItem('histListId', newId);
+    document.getElementById('dTitle').textContent = `「${HIST_NAME}」を作成しました`;
+    document.getElementById('dBody').innerHTML = [
+      ['リストID',   `<code>${newId}</code>`],
+      ['作成した列', `${rows.length}列` + (missing.length ? ` <span class="ng">／作成できなかった列: ${missing.join(', ')}</span>` : '')],
+      ['表示名の変更', rn ? `<span class="ng">${rn}件 失敗</span>` : '全件成功'],
+      ['インデックス', noIdx.length
+          ? `<span class="ng">${noIdx.join(', ')} に付きませんでした</span><br>`
+            + `<span style="font-size:11.5px;color:var(--muted)">リストの設定 → インデックス付き列 → 新しいインデックスの作成 で手動追加してください。`
+            + `無いと件数が増えたとき <code>$filter</code> が400になります</span>`
+          : `<span class="ok">${gotIdx.join(', ')} に付きました</span>`],
+      ['次にやること', `このまま使えます（アプリはリスト名で自動解決するのでコード修正は不要）。`
+          + `<br>旧リストは Teams通知フローの作り直しが済んでから削除してください`]
+    ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    document.getElementById('dMsg').textContent = '';
+    openM('mDetail');
+
+    await showApp();
+  } catch (e) { showSnack('リスト作成に失敗: ' + e.message); console.error(e); }
 }
 
 /* ---------- 予約対象の一括判定（部品・オプション → いいえ） ---------- */
