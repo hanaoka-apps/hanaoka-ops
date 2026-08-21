@@ -486,7 +486,8 @@ async function checkColumns(){
          </div>`) +
       `<div class="st-row" style="margin-top:7px;gap:6px;flex-wrap:wrap">
          <button class="act" onclick="previewParts()">予約対象を一括判定…</button>
-         <button class="act" onclick="rebuildLocks()">占有情報を再構築</button>
+         <button class="act" onclick="rebuildLocks()">占有情報を再構築</button>` +
+         (HIST_IS_NEW ? `<button class="act" onclick="fixDisplayNames()">表示名を日本語にする</button>` : '') + `
          <span style="color:var(--muted);font-size:11.5px">部品・オプションを いいえ に／履歴から <code>LockData</code> を作り直す</span>
        </div>`;
   paintFetchMode();
@@ -578,16 +579,8 @@ async function createHistList(){
     });
     const newId = created.id;
 
-    /* 2. 表示名を日本語に。Title も 予約件名 にする */
-    const cols = await gGet(`/sites/${SITE_ID}/lists/${newId}/columns?$select=id,name`);
-    const byName = new Map((cols.value||[]).map(c => [c.name, c.id]));
-    const renames = [...HIST_COLUMNS.map(c => ({ id: byName.get(c.name), jp: c.jp })),
-                     { id: byName.get('Title'), jp: '予約件名' }].filter(x => x.id);
-    const res = await gBatch(renames.map(r => ({
-      method:'PATCH', url:`/sites/${SITE_ID}/lists/${newId}/columns/${r.id}`,
-      headers:{ 'Content-Type':'application/json' }, body:{ displayName: r.jp }
-    })));
-    const rn = res.filter(x => x.status >= 300).length;
+    /* 2. 表示名を日本語に（逐次。スキーマ変更は並列だと競合する） */
+    const rnRes = await renameHistColumns(newId);
 
     /* 3. 出来上がりを読み返して報告（indexed が実際に効いたかもここで分かる） */
     const after = await gGet(`/sites/${SITE_ID}/lists/${newId}/columns?$select=name,displayName,indexed`);
@@ -602,7 +595,12 @@ async function createHistList(){
     document.getElementById('dBody').innerHTML = [
       ['リストID',   `<code>${newId}</code>`],
       ['作成した列', `${rows.length}列` + (missing.length ? ` <span class="ng">／作成できなかった列: ${missing.join(', ')}</span>` : '')],
-      ['表示名の変更', rn ? `<span class="ng">${rn}件 失敗</span>` : '全件成功'],
+      ['表示名の変更', rnRes.ng.length
+          ? `<span class="ng">${rnRes.ng.length}件 失敗</span> / 成功 ${rnRes.ok.length}件<br>`
+            + `<span style="font-size:11.5px">${esc(rnRes.ng[0].msg)}</span><br>`
+            + `<span style="font-size:11.5px;color:var(--muted)">列の動作には影響しません（アプリは内部名を使います）。`
+            + `パネルの「表示名を日本語にする」で再試行できます</span>`
+          : `<span class="ok">全${rnRes.ok.length}件成功</span>`],
       ['インデックス', noIdx.length
           ? `<span class="ng">${noIdx.join(', ')} に付きませんでした</span><br>`
             + `<span style="font-size:11.5px;color:var(--muted)">リストの設定 → インデックス付き列 → 新しいインデックスの作成 で手動追加してください。`
@@ -616,6 +614,49 @@ async function createHistList(){
 
     await showApp();
   } catch (e) { showSnack('リスト作成に失敗: ' + e.message); console.error(e); }
+}
+
+/* 表示名を日本語にする。冪等（既に日本語のものは飛ばす）。
+   スキーマ変更は同一リストで並列に投げると競合するので逐次で回す。 */
+async function renameHistColumns(listId){
+  const want = new Map([...HIST_COLUMNS.map(c => [c.name, c.jp]), ['Title', '予約件名']]);
+  const cols = await gGet(`/sites/${SITE_ID}/lists/${listId}/columns?$select=id,name,displayName`);
+  const todo = (cols.value||[]).filter(c => want.has(c.name) && c.displayName !== want.get(c.name));
+  const ok = [], ng = [];
+  const t = await getToken();
+  for (const c of todo) {
+    const r = await fetch(`${GRAPH_BASE}/sites/${SITE_ID}/lists/${listId}/columns/${c.id}`, {
+      method:'PATCH', headers:{ Authorization:'Bearer '+t, 'Content-Type':'application/json' },
+      body: JSON.stringify({ displayName: want.get(c.name) }) });
+    if (r.ok) ok.push(c.name);
+    else {
+      let b = null; try { b = await r.json(); } catch {}
+      ng.push({ name:c.name, status:r.status,
+                msg:`${c.name}: [${r.status}] ${b?.error?.code || ''} ${b?.error?.message || ''}`.trim() });
+    }
+    await sleep(120);   /* 連続スキーマ変更を少し離す */
+  }
+  return { ok, ng, skipped: (cols.value||[]).length - todo.length };
+}
+
+async function fixDisplayNames(){
+  showSnack('表示名を変更中...');
+  try {
+    const r = await renameHistColumns(LIST_HIST);
+    document.getElementById('dTitle').textContent = '表示名の変更結果';
+    document.getElementById('dBody').innerHTML = [
+      ['成功',   r.ok.length ? `${r.ok.length}件<br><span style="font-size:11.5px;color:var(--muted)">${r.ok.join(', ')}</span>` : '0件'],
+      ['対象外', `${r.skipped}件（すでに日本語、または対象外の列）`],
+      ['失敗',   r.ng.length
+          ? `<span class="ng">${r.ng.length}件</span><div class="note" style="margin-top:6px">`
+            + r.ng.map(x => esc(x.msg)).join('<br>') + `</div>`
+            + `<div class="note">Graph から表示名を変更できない場合は、SharePoint の画面で直してください。<br>`
+            + `リストの設定 → 列 → 各列をクリック → 列名を変更。<b>内部名は変わらないのでアプリには影響しません。</b></div>`
+          : '<span class="ok">なし</span>']
+    ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    document.getElementById('dMsg').textContent = '';
+    openM('mDetail');
+  } catch (e) { showSnack('エラー: ' + e.message); }
 }
 
 /* ---------- 予約対象の一括判定（部品・オプション → いいえ） ---------- */
