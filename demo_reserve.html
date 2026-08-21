@@ -207,6 +207,9 @@
     <span>│ バーの位置と幅は実時刻に比例（点線＝正午 JST）</span>
   </div>
 
+  <div id="dup-warn" style="display:none;background:#fdecea;border:1px solid var(--danger);color:#7d1d13;
+       border-radius:8px;padding:10px 13px;margin-bottom:11px;font-size:12.5px;line-height:1.7"></div>
+
   <div class="scroll"><div class="grid" id="grid"></div></div>
 </div>
 
@@ -441,8 +444,8 @@ async function checkColumns(){
          </div>`) +
       `<div class="st-row" style="margin-top:7px;gap:6px;flex-wrap:wrap">
          <button class="act" onclick="previewParts()">予約対象を一括判定…</button>
-         <button class="act" onclick="sweepLocks()">占有情報を掃除</button>
-         <span style="color:var(--muted);font-size:11.5px">部品・オプションを いいえ に／幽霊ロックを削除</span>
+         <button class="act" onclick="rebuildLocks()">占有情報を再構築</button>
+         <span style="color:var(--muted);font-size:11.5px">部品・オプションを いいえ に／履歴から <code>LockData</code> を作り直す</span>
        </div>`;
   paintFetchMode();
   } catch (e) {
@@ -544,49 +547,96 @@ async function runParts(){
   finally { btn.disabled = false; }
 }
 
-/* ---------- 幽霊ロックの掃除 ----------
-   占有情報のうち、対応する履歴行が無い／取消済み／終了が過去のものを削除する。
-   「ロックは残る側に倒す」設計の後片付け。放置しても二重予約にはならないが枠が塞がる。 */
-async function sweepLocks(){
-  if (!CAP.lock) { showSnack('LockData 列がありません'); return; }
-  showSnack('占有情報を確認中...');
+/* ---------- 占有情報の再構築 ----------
+   LockData は「原子的にCASできる対象」であることだけが仕事で、中身は履歴から100%導出できる。
+   だから掃除ではなく再構築にする。これ1回で次の3つが同時に片付く：
+     ① LockData 列を作る前に登録された予約（＝CASに見えない予約）を取り込む  ← 移行時に必ず必要
+     ② 履歴POSTが失敗して残った幽霊ロックを消す
+     ③ 取消済み・期限切れのエントリを落とす
+   ※ 誰かが予約操作中に実行すると、まだ履歴に書かれていないロックを消す可能性がある。
+      手動の保守操作なので、他の人が触っていないときに実行する。 */
+async function rebuildLocks(){
+  if (!CAP.lock)  { showSnack('LockData 列がありません'); return; }
+  if (!CAP.token) { showSnack('履歴に LockToken 列がありません。先に列を作成してください'); return; }
+  showSnack('履歴から占有情報を計算中...');
   try {
-    const withLock = MACHINES.filter(m => (m.lock || '').trim());
-    if (!withLock.length) { showSnack('占有情報が入っている機体はありません'); return; }
+    const now = Date.now(), cutoff = now - DAY;
 
-    /* 生きているトークンの集合。LockToken 列が無い場合はトークン照合を諦めて期限切れのみ掃除 */
-    let alive = null;
-    if (CAP.token) {
-      const rows = await gGetAll(`/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`);
-      alive = new Set(rows.filter(r => (r.fields||{}).LoanStatus !== '取消')
-                          .map(r => (r.fields||{}).LockToken).filter(Boolean));
-    }
-    const now = Date.now();
+    /* 1. 有効な予約を全部取る（取消でない・終了が未来） */
+    const rows = (await gGetAll(`/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`))
+      .filter(r => {
+        const f = r.fields || {};
+        return f.LoanStatus !== '取消' && f.ReservationStart && f.ReservationEnd && P(f.ReservationEnd) >= cutoff;
+      });
+
+    /* 2. トークンの無い行にトークンを発行（履歴に書き戻して対応づける） */
+    const orphans = rows.filter(r => !(r.fields||{}).LockToken);
+    const issued = new Map();
+    orphans.forEach(r => issued.set(r.id, newToken()));
+
+    /* 3. 元設備ID → 占有エントリ */
+    const byMachine = new Map();
+    rows.forEach(r => {
+      const f = r.fields;
+      const mid = Number(f.SourceEquipmentId) || 0; if (!mid) return;
+      if (!byMachine.has(mid)) byMachine.set(mid, []);
+      byMachine.get(mid).push({ token: f.LockToken || issued.get(r.id), s: P(f.ReservationStart), e: P(f.ReservationEnd) });
+    });
+
+    /* 4. 差分の計画を立てる */
     const plan = [];
-    for (const m of withLock) {
-      const cur = parseOcc(m.lock);
-      const keep = cur.filter(x => x.e >= now - DAY && (alive ? alive.has(x.token) : true));
-      if (keep.length !== cur.length) plan.push({ m, cur, keep });
+    for (const m of MACHINES) {
+      const want = (byMachine.get(m.id) || []).sort((a,b) => a.s - b.s);
+      const have = prune(parseOcc(m.lock || ''), now).sort((a,b) => a.s - b.s);
+      if (dumpOcc(want) !== dumpOcc(have)) plan.push({ m, want, have });
     }
-    if (!plan.length) { showSnack('掃除対象はありません'); return; }
 
-    const detail = plan.map(p => `${p.m.n} #${p.m.id}: ${p.cur.length} → ${p.keep.length}`).join('\n');
-    if (!confirm(`占有情報を掃除します（${plan.length}機体）。\n\n${detail}\n\n`
-      + (alive ? '対応する予約が無い／取消済み／期限切れのエントリを削除します。' : 'LockToken 列が無いため、期限切れのみ削除します。')))
-      { showSnack('中止しました'); return; }
+    if (!plan.length && !orphans.length) { showSnack('占有情報は履歴と一致しています。変更ありません'); return; }
 
+    const lines = plan.slice(0, 25).map(p => {
+      const add = p.want.length - p.have.length;
+      return `  ${p.m.n} #${p.m.id}: ${p.have.length} → ${p.want.length}` +
+             (add > 0 ? '（取り込み）' : add < 0 ? '（削除）' : '（内容差異）');
+    }).join('\n');
+    const more = plan.length > 25 ? `\n  …他 ${plan.length - 25}機体` : '';
+
+    if (!confirm(
+      `履歴から占有情報を作り直します。\n\n` +
+      `有効な予約 ${rows.length}件` + (orphans.length ? `（うち ${orphans.length}件はトークン未設定 → 発行します）` : '') + `\n` +
+      `更新する機体 ${plan.length}件\n\n${lines}${more}\n\n` +
+      `※ 他の方が予約操作中だと、まだ履歴に反映されていないロックを消す可能性があります。\n` +
+      `   誰も触っていないタイミングで実行してください。`)) { showSnack('中止しました'); return; }
+
+    /* 5. トークンを履歴に書き戻す（$batch） */
+    if (orphans.length) {
+      const res = await gBatch(orphans.map(r => ({
+        method: 'PATCH',
+        url: `/sites/${SITE_ID}/lists/${LIST_HIST}/items/${r.id}/fields`,
+        headers: { 'Content-Type': 'application/json' },
+        body: { LockToken: issued.get(r.id) }
+      })));
+      const ng = res.filter(x => x.status >= 300);
+      if (ng.length) { showSnack(`トークンの書き戻しに失敗 ${ng.length}件: ${ng[0].body?.error?.message || ng[0].status}`); return; }
+    }
+
+    /* 6. LockData を上書き（If-Match。412なら再取得してやり直し） */
     let okN = 0, ngN = 0;
     for (const p of plan) {
-      const it = await gGet(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${p.m.itemId}?$expand=fields`);
-      const live = parseOcc((it.fields||{})[LOCK_COL] || '')
-        .filter(x => x.e >= now - DAY && (alive ? alive.has(x.token) : true));
-      const r = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${p.m.itemId}/fields`,
-        { [LOCK_COL]: dumpOcc(live) }, it['@odata.etag']);
-      if (r.status === 200) okN++; else ngN++;
+      let done = false;
+      for (let n = 1; n <= 3 && !done; n++) {
+        const it = await gGet(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${p.m.itemId}?$expand=fields`);
+        const r = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${p.m.itemId}/fields`,
+          { [LOCK_COL]: dumpOcc(p.want) }, it['@odata.etag']);
+        if (r.status === 200) { okN++; done = true; }
+        else if (r.status === 412) { await sleep(80 * n); }
+        else { ngN++; done = true; }
+      }
+      if (!done) ngN++;
     }
-    showSnack(`掃除完了：${okN}機体を更新${ngN ? ` / ${ngN}件失敗` : ''}`);
+    showSnack(`再構築完了：${okN}機体を更新` + (ngN ? ` / ${ngN}件失敗` : '') +
+              (orphans.length ? ` / トークン${orphans.length}件を発行` : ''));
     await loadAll();
-  } catch (e) { showSnack('掃除エラー: ' + e.message); }
+  } catch (e) { showSnack('再構築エラー: ' + e.message); console.error(e); }
 }
 
 async function loadAll(){
@@ -752,6 +802,19 @@ function render(){
     h += `</div></div></div>`;
   });
   document.getElementById('grid').innerHTML = h;
+
+  /* 重複が残っていたら目立たせる。CASが正しく動いていればここは0件のはず */
+  const dups = inWeek.filter(r => r._dup && r.st !== '取消');
+  const warn = document.getElementById('dup-warn');
+  if (dups.length) {
+    const names = [...new Set(dups.map(r => {
+      const m = MACHINES.find(x => x.id === r.mid); return m ? `${m.n} #${m.id}` : `#${r.mid}`; }))];
+    warn.style.display = 'block';
+    warn.innerHTML = `<b>この週に重複予約が ${dups.length}件あります</b>（${names.join(' / ')}）<br>`
+      + `CASが有効になる前に登録された予約は占有情報に入っていません。`
+      + `<button class="act" style="margin-left:6px" onclick="rebuildLocks()">占有情報を再構築</button>`
+      + ` を実行すると、以降は同じ重複が作れなくなります。期間の調整は履歴リストで行ってください。`;
+  } else warn.style.display = 'none';
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
