@@ -326,16 +326,16 @@ async function getToken(){
 /* ============================================================
    Graph
    ============================================================ */
-async function gGet(path){
+async function gGet(path, extra){
   const t = await getToken();
-  const r = await fetch(GRAPH_BASE + path, { headers: { Authorization: 'Bearer ' + t } });
-  if (!r.ok) throw new Error(`[${r.status}] ${path}`);
+  const r = await fetch(GRAPH_BASE + path, { headers: { Authorization: 'Bearer ' + t, ...(extra||{}) } });
+  if (!r.ok) { const e = new Error(`[${r.status}] ${path}`); e.status = r.status; throw e; }
   return r.json();
 }
-async function gGetAll(path){
+async function gGetAll(path, extra){
   let out = [], next = path;
   while (next) {
-    const d = await gGet(next);
+    const d = await gGet(next, extra);
     out = out.concat(d.value || []);
     next = d['@odata.nextLink'] ? d['@odata.nextLink'].replace(GRAPH_BASE, '') : null;
   }
@@ -348,6 +348,18 @@ async function gPost(path, body){
   if (!r.ok) throw new Error(`[${r.status}] ${await r.text()}`);
   return r.json();
 }
+/* 列を作る。name を明示できるので内部名が日本語に化けない（UIで作るときの罠を回避） */
+async function gCreateColumn(def, displayJa){
+  const col = await gPost(`/sites/${SITE_ID}/lists/${LIST_MASTER}/columns`, def);
+  if (displayJa) {
+    const t = await getToken();
+    await fetch(`${GRAPH_BASE}/sites/${SITE_ID}/lists/${LIST_MASTER}/columns/${col.id}`, { method:'PATCH',
+      headers:{ Authorization:'Bearer '+t, 'Content-Type':'application/json' },
+      body: JSON.stringify({ displayName: displayJa }) });
+  }
+  return col;
+}
+
 /* If-Match 付き PATCH。412 を例外にせず status で返す（CASの心臓部） */
 async function gPatchIf(path, fields, etag){
   const t = await getToken();
@@ -389,10 +401,55 @@ async function checkColumns(){
       `<div class="st-row"><code>${RESV_COL}</code>（予約対象フラグ）: ${CAP.resv?ok():ng()}` +
         (CAP.resv ? '' : ' — 当面はデモ機名から部品・オプションを推定します') + `</div>` +
       `<div class="st-row" style="color:var(--muted)">履歴リスト: <code>${LIST_HIST.slice(0,8)}…</code>` +
-        (LIST_HIST === 'de7c1832-a168-4778-bfe9-ba5e98277f38' ? '（旧リスト。新規作成後に <code>LIST_HIST</code> を差し替え）' : '') + `</div>`;
+        (LIST_HIST === 'de7c1832-a168-4778-bfe9-ba5e98277f38' ? '（旧リスト。新規作成後に <code>LIST_HIST</code> を差し替え）' : '') + `</div>` +
+      `<div class="st-row" id="fetch-mode" style="color:var(--muted)"></div>` +
+      (CAP.lock && CAP.resv ? '' :
+        `<div class="st-row" style="margin-top:7px">
+           <button class="act pri" id="btn-mkcol" onclick="makeColumns()">不足している列を作成する</button>
+           <span style="color:var(--muted);font-size:11.5px">Graphで作成するので内部名が日本語に化けません。作成後に自動で再読込します。</span>
+         </div>`);
+  paintFetchMode();
   } catch (e) {
     p.className = 'warn';
     p.innerHTML = `<b>準備状況の取得に失敗</b><div class="st-row">${e.message}</div>`;
+  }
+}
+
+function paintFetchMode(){
+  const el = document.getElementById('fetch-mode'); if (!el || !FETCH_MODE) return;
+  el.innerHTML = FETCH_MODE === 'server'
+    ? `履歴の取得: <span class="ok">サーバー側フィルタ</span>（<code>ReservationStart</code> の範囲指定が効いています）`
+    : `履歴の取得: <span class="ng">クライアント側フィルタ</span> — <code>ReservationStart</code> にインデックスが無いため全件取得しています。`
+      + `<b>件数が5000を超えると動かなくなります。</b>リストの設定 → インデックス付き列 で追加してください`;
+}
+
+/* 不足している列を Graph で作成（Sites.ReadWrite.All があれば追加設定は不要） */
+async function makeColumns(){
+  const btn = document.getElementById('btn-mkcol');
+  if (btn) { btn.disabled = true; btn.textContent = '作成中...'; }
+  const done = [];
+  try {
+    if (!CAP.lock) {
+      await gCreateColumn({
+        name: LOCK_COL, displayName: LOCK_COL, description: '予約の占有区間（CASの対象）。アプリが管理するので手で編集しないでください',
+        enforceUniqueValues: false, indexed: false, hidden: false,
+        text: { allowMultipleLines: true, appendChangesToExistingText: false, linesForEditing: 4, maxLength: 8000, textType: 'plain' }
+      }, '占有');
+      done.push(LOCK_COL);
+    }
+    if (!CAP.resv) {
+      await gCreateColumn({
+        name: RESV_COL, displayName: RESV_COL, description: '週間表に並べる対象か。部品・オプションは いいえ',
+        defaultValue: { value: '1' }, indexed: false, hidden: false, boolean: {}
+      }, '予約対象');
+      done.push(RESV_COL);
+    }
+    showSnack(`列を作成しました: ${done.join(' / ')}`);
+    await checkColumns();
+    await loadAll();
+  } catch (e) {
+    showSnack('列の作成に失敗: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '不足している列を作成する'; }
   }
 }
 
@@ -430,13 +487,36 @@ async function loadAll(){
   } catch (e) { showSnack('読み込みエラー: ' + e.message); console.error(e); }
 }
 
-/* 履歴は範囲を必ず閉じて取る（上限なしにすると未来全部を引いてしまう） */
+/* 履歴は範囲を必ず閉じて取る（上限なしにすると未来全部を引いてしまう）
+   ReservationStart にインデックスが無いと $filter が400になるので3段構え：
+     1) Prefer ヘッダ付きでサーバー側フィルタ
+     2) 400 なら全件取得＋クライアント側フィルタにフォールバック
+     3) どちらを通ったか FETCH_MODE に記録して画面に出す（将来5000件超で壊れる前に気づけるように） */
+let FETCH_MODE = '';
 async function loadRes(){
-  const lo = new Date(curWeek - WINDOW_DAYS*DAY).toISOString().slice(0,19) + 'Z';
-  const hi = new Date(curWeek + WK).toISOString().slice(0,19) + 'Z';
-  const flt = encodeURIComponent(`fields/ReservationStart ge '${lo}' and fields/ReservationStart lt '${hi}'`);
-  const items = await gGetAll(
-    `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$filter=${flt}&$orderby=fields/ReservationStart asc&$top=500`);
+  const loMs = curWeek - WINDOW_DAYS*DAY, hiMs = curWeek + WK;
+  const lo = new Date(loMs).toISOString().slice(0,19) + 'Z';
+  const hi = new Date(hiMs).toISOString().slice(0,19) + 'Z';
+  const base = `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`;
+  const flt  = encodeURIComponent(`fields/ReservationStart ge '${lo}' and fields/ReservationStart lt '${hi}'`);
+
+  let items;
+  try {
+    items = await gGetAll(`${base}&$filter=${flt}`,
+      { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' });
+    FETCH_MODE = 'server';
+  } catch (e) {
+    if (e.status !== 400) throw e;
+    items = (await gGetAll(base)).filter(it => {
+      const v = (it.fields||{}).ReservationStart;
+      if (!v) return false;
+      const ms = P(v);
+      return ms >= loMs && ms < hiMs;
+    });
+    FETCH_MODE = 'client';
+  }
+  paintFetchMode();
+
   RES = items.map(it => {
     const f = it.fields || {};
     return {
