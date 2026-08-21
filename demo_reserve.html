@@ -235,6 +235,8 @@
         <div class="f"><span>顧客名</span><input type="text" id="nCust"></div>
         <div class="f"><span>行き先</span><input type="text" id="nDest"></div>
       </div>
+      <div class="f"><span>依頼者（サインイン中のアカウントを自動記録）</span>
+        <input type="text" id="nReq" readonly style="background:#f4f6f9"></div>
       <div class="f"><span>備考</span><input type="text" id="nNotes" placeholder="返却期限など"></div>
     </div>
     <div class="note" id="nNote"></div>
@@ -302,8 +304,6 @@ const HIST_COLUMNS = [
                                                    defaultValue:{ value:'予約' }, indexed:true },
   { name:'RequesterEmail',    jp:'依頼者メール',   def:TEXT(), indexed:true },
   { name:'RequesterName',     jp:'依頼者名',       def:TEXT() },
-  { name:'SalesEmail',        jp:'営業担当メール', def:TEXT() },
-  { name:'SalesName',         jp:'営業担当名',     def:TEXT() },
   { name:'CustomerName',      jp:'顧客名',         def:TEXT() },
   { name:'Destination',       jp:'行き先',         def:TEXT() },
   { name:'Notes',             jp:'備考',           def:{ text:{ allowMultipleLines:true, linesForEditing:4, textType:'plain' } } }
@@ -865,6 +865,7 @@ async function loadRes(){
       s    : f.ReservationStart ? P(f.ReservationStart) : NaN,
       e    : f.ReservationEnd   ? P(f.ReservationEnd)   : NaN,
       cust : f.CustomerName || '', dest: f.Destination || '',
+      req  : f.RequesterName || '', reqMail: f.RequesterEmail || '',
       notes: f.Notes || '',
       st   : f.LoanStatus || '予約',
       token: f.LockToken || ''
@@ -950,7 +951,7 @@ function render(){
       h += `<div class="bar-i ${cls}" style="left:${L}%;width:${Math.max(R-L,0)}%;top:calc(var(--lane)*${r._l} + 3px)"
         data-r="${r.rid}" title="${esc(r.t)}">
         ${isAllDay(r) ? '' : `<span class="tm">${jHM(r.s)}–${jHM(r.e)}</span>`}
-        <b>${esc(r.cust || r.t)}</b><span class="who">${esc(r.dest)}</span></div>`;
+        <b>${esc(r.cust || r.t)}</b><span class="who">${esc([r.dest, r.req].filter(Boolean).join(' / '))}</span></div>`;
     });
     h += `</div></div></div>`;
   });
@@ -999,6 +1000,7 @@ function openDetail(rid){
     ['状態',     `<b>${st}</b> <span style="color:var(--muted);font-size:11px">保存値 ${esc(r.st)} ＋ 日時から計算</span>`],
     ['顧客名',   esc(r.cust) || '—'],
     ['行き先',   esc(r.dest) || '—'],
+    ['依頼者',   r.req ? `${esc(r.req)}${r.reqMail ? `<span style="color:var(--muted);font-size:11px"> ${esc(r.reqMail)}</span>` : ''}` : '—'],
     ['備考',     esc(r.notes) || '—']
   ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   document.getElementById('dMsg').textContent = r._dup ? '⚠ 同じ機体で期間が重なっている予約があります' : '';
@@ -1014,6 +1016,7 @@ function openNew(mid, dayMs){
   document.getElementById('nStart').value = msToLocal(dayMs + 9*3600e3);   /* 既定 09:00 JST */
   document.getElementById('nEnd').value   = msToLocal(dayMs + 17*3600e3);  /* 既定 17:00 JST */
   ['nTitle','nCust','nDest','nNotes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('nReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   document.getElementById('nMsg').textContent = ''; document.getElementById('nMsg').className = 'msg';
   document.getElementById('nSave').disabled = !CAP.lock;
   document.getElementById('nNote').innerHTML = CAP.lock
@@ -1058,7 +1061,10 @@ async function reserve({ machine, s, e, details }){
         Title: details.title, SourceEquipmentId: machine.id, DemoMachineName: machine.n,
         LoanStatus: '予約',
         ReservationStart: new Date(s).toISOString(), ReservationEnd: new Date(e).toISOString(),
-        CustomerName: details.cust, Destination: details.dest, Notes: details.notes
+        CustomerName: details.cust, Destination: details.dest, Notes: details.notes,
+        /* 依頼者＝利用者。サインイン中のアカウントから自動記録。Teams通知と「自分の予約」で使う */
+        RequesterEmail: currentAccount?.username || '',
+        RequesterName:  currentAccount?.name || currentAccount?.username || ''
       };
       /* 列が無いリストに送ると 400 invalidRequest になるので、あるものだけ送る */
       if (CAP.token) fields.LockToken = token;
@@ -1102,7 +1108,7 @@ async function doReserve(){
   try {
     const r = await reserve({ machine:m, s, e, details:{
       title, cust: document.getElementById('nCust').value.trim(),
-      dest: document.getElementById('nDest').value.trim(),
+      dest:  document.getElementById('nDest').value.trim(),
       notes: document.getElementById('nNotes').value.trim() }});
 
     if (r.ok){
