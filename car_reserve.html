@@ -70,6 +70,26 @@
     #status-panel pre{background:#f6f8fa;border:1px solid var(--border);border-radius:4px;padding:8px;
       margin-top:6px;font-size:11px;overflow:auto;max-height:240px;line-height:1.6}
 
+    /* 空き検索の結果カード */
+    #seek-panel{display:none;background:var(--card-bg);border:1px solid var(--primary);border-radius:8px;
+      padding:11px 14px;margin-bottom:13px;font-size:12.5px;box-shadow:var(--shadow)}
+    #seek-panel h4{font-size:13px;color:var(--primary);margin-bottom:7px}
+    #seek-panel .grp-line{margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
+    #seek-panel .grp-line b{color:var(--muted);font-weight:600;min-width:56px;font-size:11.5px}
+    .chip{border:1px solid #a9d3ba;background:#eef6f0;color:#1d6b41;border-radius:11px;padding:1px 9px;
+      font-size:11.5px;cursor:pointer}
+    .chip:hover{background:#dcefe3}
+    .chip.busy{border-color:#e6a8a0;background:#fbdcd9;color:#7d1d13}
+    #seek-panel .none{color:var(--danger);font-weight:700}
+
+    /* 拠点の見出し行。横スクロールしてもラベルが左に残る */
+    .grp{display:flex;background:#eaeef5;border-bottom:1px solid var(--border);border-top:1px solid var(--border)}
+    .grp span{position:sticky;left:0;padding:4px 11px;font-size:11.5px;font-weight:700;color:#44506a}
+
+    /* 検索した区間の帯 */
+    .seekband{position:absolute;top:0;bottom:0;background:rgba(26,95,168,.10);
+      border-left:1px dashed var(--primary);border-right:1px dashed var(--primary);z-index:1;pointer-events:none}
+
     .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);align-items:center;margin-bottom:9px}
     .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px;border:1px solid}
 
@@ -213,9 +233,22 @@
     <button class="act" id="next">▶</button>
     <span class="range" id="range"></span>
     <span class="spacer"></span>
+    <span class="cnt" id="updated"></span>
     <button class="act" onclick="loadAll()">🔄 更新</button>
     <button class="act" onclick="window.print()">印刷</button>
   </div>
+
+  <div class="bar" style="margin-bottom:11px">
+    <label>空きを探す</label>
+    <input type="datetime-local" id="sFrom">
+    <span style="color:var(--muted)">〜</span>
+    <input type="datetime-local" id="sTo">
+    <button class="act pri" id="sGo">この区間で空いている車</button>
+    <button class="act" id="sClear">解除</button>
+    <span class="cnt">開始と終了を入れると、その間ずっと空いている車だけを出します</span>
+  </div>
+
+  <div id="seek-panel"></div>
 
   <div class="bar" style="margin-bottom:11px">
     <label class="chk"><input type="checkbox" id="onlyres"> 予約がある車だけ</label>
@@ -287,6 +320,9 @@ const pTZ   = x => {
   const s = x.dateTime;
   return Date.parse(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z');
 };
+const localToMs = v => v ? Date.parse(v + ':00Z') - JST : NaN;
+const msToLocal = ms => { const d = toJ(ms);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
 function dayTopMs(ms){ const d = toJ(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - JST; }
 function weekTopMs(ms){
   const d = toJ(ms);
@@ -378,6 +414,31 @@ let CARS = [], RES = [];
 let VIEW = 'week';                       /* 'week' | 'day' */
 let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
+let SEEK = null;                         /* 空き検索の区間 {s,e} */
+let lastLoad = 0, refreshTimer = null;
+
+/* ---- URLに状態を持たせる。Teamsに貼れるようにするため ---- */
+function readUrl(){
+  const u = new URLSearchParams(location.search);
+  const v = u.get('v');
+  if (v === 'day' || v === 'week') VIEW = v;
+  else if (window.innerWidth < 700) VIEW = 'day';      /* スマホは日表示から */
+  const d = u.get('d');
+  if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    const ms = Date.parse(d + 'T00:00:00Z') - JST;
+    if (!isNaN(ms)) { curDay = dayTopMs(ms); curWeek = weekTopMs(ms); }
+  }
+  return { loc: u.get('loc') || '', q: u.get('q') || '' };
+}
+function writeUrl(){
+  const u = new URLSearchParams();
+  u.set('v', VIEW);
+  u.set('d', jKey(VIEW === 'week' ? curWeek : curDay));
+  const loc = el('loc').value, q = el('q').value.trim();
+  if (loc) u.set('loc', loc);
+  if (q)   u.set('q', q);
+  history.replaceState(null, '', location.pathname + '?' + u.toString());
+}
 let SRC = { mode:'—', ok:0, ng:0, errs:[], masterCols:'', histId:null };
 let PANEL_DETAIL = '';
 
@@ -392,7 +453,14 @@ async function showApp(){
   el('app-view').style.display   = 'block';
   el('user-name').textContent    = currentAccount?.name || currentAccount?.username || '';
   setAdmin();
-  await loadAll();
+  const want = readUrl();
+  el('vWeek').classList.toggle('on', VIEW === 'week');
+  el('vDay').classList.toggle('on',  VIEW === 'day');
+  /* 空き検索の既定値：今日の 09:00〜17:00 */
+  el('sFrom').value = msToLocal(dayTopMs(Date.now()) +  9*3600e3);
+  el('sTo').value   = msToLocal(dayTopMs(Date.now()) + 17*3600e3);
+  await loadAll(want);
+  startAutoRefresh();
 }
 
 /* ============================================================
@@ -446,6 +514,9 @@ async function loadCars(){
       src : 'none'
     };
   });
+  const LOC_ORDER = ['本社', '工場', '名古屋', '大阪'];
+  const rank = v => { const i = LOC_ORDER.indexOf(v); return i < 0 ? 99 : i; };
+  CARS.sort((a, b) => rank(a.loc) - rank(b.loc));   /* 安定ソートなので拠点内の順は変わらない */
   return kMail;
 }
 
@@ -480,7 +551,9 @@ function viewRange(){
 
 async function loadRes(){
   const [v0, v1] = viewRange();
-  const f0 = v0 - DAY, f1 = v1 + DAY;          /* 前後1日ぶん広く取る（またぎのバーを描くため） */
+  let f0 = v0 - DAY, f1 = v1 + DAY;            /* 前後1日ぶん広く取る（またぎのバーを描くため） */
+  /* 空き検索の区間が表示範囲からはみ出しても判定できるように、取得範囲を広げる */
+  if (SEEK) { f0 = Math.min(f0, SEEK.s - DAY); f1 = Math.max(f1, SEEK.e + DAY); }
   const iso = ms => new Date(ms).toISOString();
   const withMail = CARS.filter(c => c.mail);
 
@@ -628,7 +701,8 @@ function paintPanel(){
 /* ============================================================
    読み込み
    ============================================================ */
-async function loadAll(){
+async function loadAll(want){
+  el('status-panel').style.display = '';
   el('status-panel').className = '';
   el('status-panel').textContent = '読み込み中...';
   try {
@@ -636,6 +710,10 @@ async function loadAll(){
       const kMail = await loadCars();
       if (!kMail || !CARS.some(c => c.mail)) await fillMailsFromHistory();
       paintLocSelect();
+      if (want) {
+        if (want.loc && [...el('loc').options].some(o => o.value === want.loc)) el('loc').value = want.loc;
+        if (want.q) el('q').value = want.q;
+      }
     }
     await loadRes();
   } catch (e) {
@@ -644,8 +722,29 @@ async function loadAll(){
       + `<div class="st-row" style="color:var(--muted)">Sites.Read.All / Calendars.Read.Shared の同意が済んでいるか確認してください。</div>`;
     return;
   }
+  lastLoad = Date.now();
   paintPanel();
   render();
+  paintSeek();
+  paintUpdated();
+}
+
+function paintUpdated(){
+  el('updated').textContent = lastLoad ? `最終更新 ${jHM(lastLoad)}` : '';
+}
+/* 参照専用の画面は開いたまま放置される。5分ごとに静かに取り直す。
+   モーダルを開いている間は触らない。タブに戻ってきたときも古ければ取り直す。 */
+function startAutoRefresh(){
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(async () => {
+    if (document.querySelector('.modal.on')) return;
+    if (document.hidden) return;
+    try { await loadRes(); lastLoad = Date.now(); paintPanel(); render(); paintSeek(); paintUpdated(); } catch {}
+  }, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden || Date.now() - lastLoad < 2 * 60 * 1000) return;
+    try { await loadRes(); lastLoad = Date.now(); paintPanel(); render(); paintSeek(); paintUpdated(); } catch {}
+  });
 }
 
 function paintLocSelect(){
@@ -722,7 +821,10 @@ function renderWeek(){
   h += `</div></div>`;
   if (!list.length) h += `<div class="empty">条件に合う車両がありません</div>`;
 
+  let lastLoc = null;
   list.forEach(c => {
+    if (c.loc !== lastLoc) { lastLoc = c.loc;
+      h += `<div class="grp"><span>${esc(c.loc || '拠点なし')}（${list.filter(x => x.loc === c.loc).length}）</span></div>`; }
     const rs = resOf(c, w0, w1), n = laneAssign(rs);
     h += `<div class="row"><div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(c.n)}</div><div class="meta">
@@ -739,6 +841,10 @@ function renderWeek(){
       const L = Math.max(0, (r.s - w0) / WK * 100), R = Math.min(100, (r.e - w0) / WK * 100);
       h += barHtml(r, L, R, now, r.s < w0, r.e > w1);
     });
+    if (SEEK && SEEK.e > w0 && SEEK.s < w1) {
+      const sl = Math.max(0, (SEEK.s - w0) / WK * 100), sr = Math.min(100, (SEEK.e - w0) / WK * 100);
+      h += `<div class="seekband" style="left:${sl}%;width:${Math.max(sr-sl,0.4)}%"></div>`;
+    }
     if (now >= w0 && now < w1) h += `<div class="nowline" style="left:${(now-w0)/WK*100}%"></div>`;
     h += `</div></div></div>`;
   });
@@ -770,7 +876,10 @@ function renderDay(){
   h += `</div></div>`;
   if (!list.length) h += `<div class="empty">条件に合う車両がありません</div>`;
 
+  let lastLoc = null;
   list.forEach(c => {
+    if (c.loc !== lastLoc) { lastLoc = c.loc;
+      h += `<div class="grp"><span>${esc(c.loc || '拠点なし')}（${list.filter(x => x.loc === c.loc).length}）</span></div>`; }
     const rs = resOf(c, d0, d0 + DAY), n = laneAssign(rs);
     h += `<div class="row"><div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(c.n)}</div><div class="meta">
@@ -787,39 +896,104 @@ function renderDay(){
       if (R <= 0 || L >= 100) return;                      /* 表示時間帯の外 */
       h += barHtml(r, L, R, now, r.s < t0, r.e > t1);
     });
+    if (SEEK && SEEK.e > t0 && SEEK.s < t1) {
+      const sl = Math.max(0, (SEEK.s - t0) / span * 100), sr = Math.min(100, (SEEK.e - t0) / span * 100);
+      h += `<div class="seekband" style="left:${sl}%;width:${Math.max(sr-sl,0.4)}%"></div>`;
+    }
     if (now >= t0 && now < t1) h += `<div class="nowline" style="left:${(now-t0)/span*100}%"></div>`;
     h += `</div></div></div>`;
   });
   gridEl.innerHTML = h;
 }
 
+
+/* ============================================================
+   空き検索
+   ------------------------------------------------------------
+   「この区間がまるごと空いている車」を出す。占有の一覧があれば
+   overlaps() だけで判定できるので、保存する値は増えない。
+   ============================================================ */
+function parseSeek(){
+  const s = localToMs(el('sFrom').value), e = localToMs(el('sTo').value);
+  if (isNaN(s) || isNaN(e) || e <= s) return null;
+  return { s, e };
+}
+async function runSeek(){
+  const r = parseSeek();
+  if (!r) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
+  SEEK = r;
+  /* 検索した区間が見えるところへ表示を移す */
+  if (VIEW === 'week') curWeek = weekTopMs(r.s); else curDay = dayTopMs(r.s);
+  await loadRes();
+  paintPanel(); render(); paintSeek(); writeUrl();
+}
+function clearSeek(){ SEEK = null; render(); paintSeek(); }
+
+function paintSeek(){
+  const p = el('seek-panel');
+  if (!SEEK) { p.style.display = 'none'; return; }
+  const busy = new Map();
+  RES.filter(r => !r.cancelled && overlaps(r, SEEK.s, SEEK.e))
+     .forEach(r => { if (!busy.has(r.car)) busy.set(r.car, []); busy.get(r.car).push(r); });
+
+  const loc = el('loc').value;
+  const target = CARS.filter(c => !loc || c.loc === loc);
+  const free   = target.filter(c => !busy.has(c.n));
+  const used   = target.filter(c =>  busy.has(c.n));
+
+  const locs = [...new Set(free.map(c => c.loc))];
+  let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}　空いている車 ${free.length}台 / 対象 ${target.length}台</h4>`;
+  if (!free.length) h += `<div class="none">この区間に空いている車はありません</div>`;
+  else locs.forEach(L => {
+    h += `<div class="grp-line"><b>${esc(L || '拠点なし')}</b>`
+      + free.filter(c => c.loc === L).map(c => `<span class="chip" data-car="${esc(c.n)}">${esc(c.n)}</span>`).join('')
+      + `</div>`;
+  });
+  if (used.length) {
+    h += `<div class="grp-line" style="margin-top:8px"><b>使用中</b>`
+      + used.map(c => {
+          const r = busy.get(c.n)[0];
+          const who = [r.who, r.dest].filter(Boolean).join(' / ');
+          return `<span class="chip busy" data-car="${esc(c.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jHM(r.s)}–${jHM(r.e)}">`
+               + `${esc(c.n)}</span>`;
+        }).join('')
+      + `<span class="cnt">車名にマウスを乗せると誰が使っているか出ます</span></div>`;
+  }
+  p.innerHTML = h;
+  p.style.display = 'block';
+}
+el('seek-panel').addEventListener('click', ev => {
+  const c = ev.target.closest('.chip'); if (!c) return;
+  el('q').value = c.dataset.car; render(); writeUrl();
+});
+el('sGo').onclick    = runSeek;
+el('sClear').onclick = clearSeek;
+
 /* ============================================================
    操作
    ============================================================ */
-function setView(v){
+async function setView(v){
   VIEW = v;
   el('vWeek').classList.toggle('on', v === 'week');
   el('vDay').classList.toggle('on',  v === 'day');
-  loadAll();
+  await loadRes(); lastLoad = Date.now(); paintPanel(); render(); paintSeek(); paintUpdated(); writeUrl();
 }
 el('vWeek').onclick = () => { if (VIEW !== 'week') { curWeek = weekTopMs(curDay); setView('week'); } };
 el('vDay').onclick  = () => { if (VIEW !== 'day')  { const t = Date.now();
   curDay = (t >= curWeek && t < curWeek + WK) ? dayTopMs(t) : curWeek; setView('day'); } };
 
-el('prev').onclick = async () => {
-  if (VIEW === 'week') curWeek -= WK; else curDay -= DAY;
-  await loadRes(); paintPanel(); render();
-};
-el('next').onclick = async () => {
-  if (VIEW === 'week') curWeek += WK; else curDay += DAY;
-  await loadRes(); paintPanel(); render();
-};
+async function step(dir){
+  if (VIEW === 'week') curWeek += dir * WK; else curDay += dir * DAY;
+  await loadRes(); lastLoad = Date.now(); paintPanel(); render(); paintSeek(); paintUpdated(); writeUrl();
+}
+el('prev').onclick = () => step(-1);
+el('next').onclick = () => step(+1);
 el('todayBtn').onclick = async () => {
   curWeek = weekTopMs(Date.now()); curDay = dayTopMs(Date.now());
-  await loadRes(); paintPanel(); render();
+  await loadRes(); lastLoad = Date.now(); paintPanel(); render(); paintSeek(); paintUpdated(); writeUrl();
 };
-['loc','onlyres','onlyfree'].forEach(id => el(id).onchange = render);
-el('q').oninput = render;
+['loc','onlyres','onlyfree'].forEach(id => el(id).onchange = () => { render(); paintSeek(); writeUrl(); });
+el('q').oninput = () => { render(); writeUrl(); };
 
 el('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i');

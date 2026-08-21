@@ -60,6 +60,25 @@
     #status-panel .ng{color:var(--danger);font-weight:700}
     #status-panel code{background:#eef0f3;padding:1px 4px;border-radius:3px;font-size:11.5px}
 
+    #seek-panel{display:none;background:var(--card-bg);border:1px solid var(--primary);border-radius:8px;
+      padding:11px 14px;margin-bottom:13px;font-size:12.5px;box-shadow:var(--shadow)}
+    #seek-panel h4{font-size:13px;color:var(--primary);margin-bottom:7px}
+    #seek-panel .grp-line{margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
+    #seek-panel .grp-line b{color:var(--muted);font-weight:600;min-width:78px;font-size:11.5px}
+    .chip{border:1px solid #a9d3ba;background:#eef6f0;color:#1d6b41;border-radius:11px;padding:1px 9px;
+      font-size:11.5px;cursor:pointer}
+    .chip:hover{background:#dcefe3}
+    .chip.busy{border-color:#e6a8a0;background:#fbdcd9;color:#7d1d13}
+    #seek-panel .none{color:var(--danger);font-weight:700}
+    .grp{display:flex;background:#eaeef5;border-bottom:1px solid var(--border);border-top:1px solid var(--border)}
+    .grp span{position:sticky;left:0;padding:4px 11px;font-size:11.5px;font-weight:700;color:#44506a}
+    .seekband{position:absolute;top:0;bottom:0;background:rgba(26,95,168,.10);
+      border-left:1px dashed var(--primary);border-right:1px dashed var(--primary);z-index:1;pointer-events:none}
+    #ex-list{max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:5px;margin-top:4px}
+    #ex-list div{padding:4px 8px;font-size:11.5px;border-bottom:1px solid #f0f3fa;display:flex;gap:8px}
+    #ex-list div:last-child{border-bottom:none}
+    #ex-list .hit{background:#fbdcd9;color:#7d1d13;font-weight:700}
+    #ex-list .tm{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
     .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);align-items:center;margin-bottom:9px}
     .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px;border:1px solid}
 
@@ -106,6 +125,7 @@
     .bg.sat:hover,.bg.sun:hover,.bg.today:hover{background:#eef4fb}
     .bg.blocked{background:repeating-linear-gradient(45deg,#f4f5f7,#f4f5f7 5px,#e9ebee 5px,#e9ebee 10px);cursor:not-allowed}
     .bg.blocked:hover{background:repeating-linear-gradient(45deg,#f4f5f7,#f4f5f7 5px,#e9ebee 5px,#e9ebee 10px)}
+    .nowline{position:absolute;top:0;bottom:0;width:0;border-left:2px solid var(--accent);z-index:11;pointer-events:none}
     .bars{position:absolute;inset:0;pointer-events:none}
     .bar-i{position:absolute;height:calc(var(--lane) - 6px);min-width:34px;border-radius:3px;
       border-style:solid;border-width:1px 1px 1px 3px;padding:0 5px;font-size:11px;
@@ -197,9 +217,22 @@
     <button class="act" id="next">次週 ▶</button>
     <span class="range" id="range"></span>
     <span class="spacer"></span>
+    <span class="cnt" id="updated"></span>
     <button class="act" onclick="loadAll()">🔄 更新</button>
     <button class="act" onclick="window.print()">印刷</button>
   </div>
+
+  <div class="bar" style="margin-bottom:11px">
+    <label>空きを探す</label>
+    <input type="datetime-local" id="sFrom">
+    <span style="color:var(--muted)">〜</span>
+    <input type="datetime-local" id="sTo">
+    <button class="act pri" id="sGo">この区間で押さえられる機体</button>
+    <button class="act" id="sClear">解除</button>
+    <span class="cnt">案件の期間を入れると、その間ずっと空いている機体だけを出します</span>
+  </div>
+
+  <div id="seek-panel"></div>
 
   <div class="bar" style="margin-bottom:11px">
     <label class="chk"><input type="checkbox" id="nopart" checked> 部品・オプションを隠す</label>
@@ -248,6 +281,10 @@
       <div class="f"><span>依頼者（サインイン中のアカウントを自動記録）</span>
         <input type="text" id="nReq" readonly style="background:#f4f6f9"></div>
       <div class="f"><span>備考</span><input type="text" id="nNotes" placeholder="返却期限など"></div>
+    </div>
+    <div class="f" style="margin-top:9px">
+      <span>この機体の予約（前後30日）</span>
+      <div id="ex-list"></div>
     </div>
     <div class="note" id="nNote"></div>
   </div>
@@ -448,6 +485,43 @@ async function gPatchIf(path, fields, etag){
    状態
    ============================================================ */
 let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
+let SEEK = null;                       /* 空き検索の区間 */
+let lastLoad = 0, refreshTimer = null;
+
+/* ---- URLに状態を持たせる（Teamsに貼れるように） ---- */
+function readUrl(){
+  const u = new URLSearchParams(location.search);
+  const d = u.get('d');
+  if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    const ms = Date.parse(d + 'T00:00:00Z') - JST;
+    if (!isNaN(ms)) curWeek = weekTopMs(ms);
+  }
+  return { cat: u.get('cat') || '', q: u.get('q') || '' };
+}
+function writeUrl(){
+  const u = new URLSearchParams();
+  u.set('d', jKey(curWeek));
+  const cat = document.getElementById('cat').value, q = document.getElementById('q').value.trim();
+  if (cat) u.set('cat', cat);
+  if (q)   u.set('q', q);
+  history.replaceState(null, '', location.pathname + '?' + u.toString());
+}
+function paintUpdated(){
+  const e = document.getElementById('updated');
+  if (e) e.textContent = lastLoad ? `最終更新 ${jHM(lastLoad)}` : '';
+}
+/* 5分ごとに静かに取り直す。モーダルを開いている間と非表示のときは触らない */
+function startAutoRefresh(){
+  if (refreshTimer) clearInterval(refreshTimer);
+  const tick = async () => {
+    if (document.querySelector('.modal.on') || document.hidden) return;
+    try { await loadRes(); lastLoad = Date.now(); render(); paintSeek(); paintUpdated(); } catch {}
+  };
+  refreshTimer = setInterval(tick, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && Date.now() - lastLoad > 2 * 60 * 1000) tick();
+  });
+}
 let CAP = { lock:false, resv:false, token:false, mid:false };   /* 列の有無（マスター / 履歴） */
 
 async function showApp(){
@@ -455,9 +529,14 @@ async function showApp(){
   document.getElementById('app-view').style.display   = 'block';
   document.getElementById('user-name').textContent = currentAccount.name || currentAccount.username;
   setAdmin();
+  const want = readUrl();
+  /* 空き検索の既定値：今日の 09:00〜17:00 */
+  document.getElementById('sFrom').value = msToLocal(weekTopMs(Date.now()) + 9*3600e3);
+  document.getElementById('sTo').value   = msToLocal(weekTopMs(Date.now()) + 17*3600e3);
   await resolveHistList();
   await checkColumns();
-  await loadAll();
+  await loadAll(want);
+  startAutoRefresh();
 }
 
 /* 履歴リストを名前で解決。新リストがあればそれを使い、無ければ旧リストにフォールバック。
@@ -830,7 +909,7 @@ async function rebuildLocks(){
   } catch (e) { showSnack('再構築エラー: ' + e.message); console.error(e); }
 }
 
-async function loadAll(){
+async function loadAll(want){
   showSnack('読み込み中...');
   try {
     const items = await gGetAll(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items?$expand=fields&$top=500`);
@@ -860,8 +939,14 @@ async function loadAll(){
     sel.value = keep && cats.includes(keep) ? keep
               : (cats.find(c => c.includes('工場')) || '');
 
+    if (want) {
+      const sel = document.getElementById('cat');
+      if (want.cat && [...sel.options].some(o => o.value === want.cat)) sel.value = want.cat;
+      if (want.q) document.getElementById('q').value = want.q;
+    }
     await loadRes();
-    render();
+    lastLoad = Date.now();
+    render(); paintSeek(); paintUpdated();
     showSnack(`マスター ${MACHINES.length}件 / 予約 ${RES.length}件 を読み込みました`);
   } catch (e) { showSnack('読み込みエラー: ' + e.message); console.error(e); }
 }
@@ -873,7 +958,9 @@ async function loadAll(){
      3) どちらを通ったか FETCH_MODE に記録して画面に出す（将来5000件超で壊れる前に気づけるように） */
 let FETCH_MODE = '';
 async function loadRes(){
-  const loMs = curWeek - WINDOW_DAYS*DAY, hiMs = curWeek + WK;
+  let loMs = curWeek - WINDOW_DAYS*DAY, hiMs = curWeek + WK;
+  /* 空き検索の区間が表示範囲の外にはみ出しても判定できるように広げる */
+  if (SEEK) { loMs = Math.min(loMs, SEEK.s - DAY); hiMs = Math.max(hiMs, SEEK.e + DAY); }
   const lo = new Date(loMs).toISOString().slice(0,19) + 'Z';
   const hi = new Date(hiMs).toISOString().slice(0,19) + 'Z';
   const base = `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`;
@@ -959,7 +1046,10 @@ function render(){
   h += `</div></div>`;
   if (!list.length) h += `<div class="empty">条件に合うデモ機がありません</div>`;
 
+  let lastCat = null;
   list.forEach(m => {
+    if (m.cat !== lastCat) { lastCat = m.cat;
+      h += `<div class="grp"><span>${esc(m.cat || '区分なし')}（${list.filter(x => x.cat === m.cat).length}）</span></div>`; }
     const rs = inWeek.filter(r => r.mid === m.id).sort((a,b) => a.s - b.s);
     /* 重なりを段に振り分け。同時に「重複あり」も検出（保存せず計算） */
     const lanes = [];
@@ -993,6 +1083,12 @@ function render(){
         ${isAllDay(r) ? '' : `<span class="tm">${jHM(r.s)}–${jHM(r.e)}</span>`}
         <b>${esc(r.cust || r.t)}</b><span class="who">${esc([r.dest, r.req].filter(Boolean).join(' / '))}</span></div>`;
     });
+    if (SEEK && SEEK.e > w0 && SEEK.s < wEnd) {
+      const sl = Math.max(0, (SEEK.s - w0) / WK * 100), sr = Math.min(100, (SEEK.e - w0) / WK * 100);
+      h += `<div class="seekband" style="left:${sl}%;width:${Math.max(sr-sl,0.4)}%"></div>`;
+    }
+    if (now >= w0 && now < wEnd)
+      h += `<div class="nowline" style="left:${(now-w0)/WK*100}%"></div>`;
     h += `</div></div></div>`;
   });
   document.getElementById('grid').innerHTML = h;
@@ -1026,14 +1122,85 @@ function render(){
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+
+/* ============================================================
+   空き検索
+   ============================================================ */
+function parseSeek(){
+  const s = localToMs(document.getElementById('sFrom').value);
+  const e = localToMs(document.getElementById('sTo').value);
+  if (isNaN(s) || isNaN(e) || e <= s) return null;
+  return { s, e };
+}
+async function runSeek(){
+  const r = parseSeek();
+  if (!r) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
+  SEEK = r;
+  curWeek = weekTopMs(r.s);
+  await loadRes(); lastLoad = Date.now();
+  render(); paintSeek(); paintUpdated(); writeUrl();
+}
+function clearSeek(){ SEEK = null; render(); paintSeek(); }
+
+function paintSeek(){
+  const p = document.getElementById('seek-panel');
+  if (!p) return;
+  if (!SEEK) { p.style.display = 'none'; return; }
+  const busy = new Map();
+  RES.filter(r => r.st !== '取消' && overlaps(r, SEEK.s, SEEK.e))
+     .forEach(r => { if (!busy.has(r.mid)) busy.set(r.mid, []); busy.get(r.mid).push(r); });
+
+  const cat = document.getElementById('cat').value;
+  /* 部品・オプションと予約対象外は候補に出さない（画面のチェックと同じ考え方） */
+  const target = MACHINES.filter(m => (!cat || m.cat === cat) && m.resv && !m.ng && !m.part);
+  const free = target.filter(m => !busy.has(m.id));
+  const used = target.filter(m =>  busy.has(m.id));
+
+  let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}　押さえられる機体 ${free.length}台 / 対象 ${target.length}台</h4>`;
+  if (!free.length) h += `<div class="none">この区間に空いている機体はありません</div>`;
+  else [...new Set(free.map(m => m.cat))].forEach(C => {
+    h += `<div class="grp-line"><b>${esc(C)}</b>`
+      + free.filter(m => m.cat === C)
+            .map(m => `<span class="chip" data-mid="${m.id}" data-name="${esc(m.n)}">${esc(m.n)}</span>`).join('')
+      + `</div>`;
+  });
+  if (used.length) {
+    h += `<div class="grp-line" style="margin-top:8px"><b>予約済み</b>`
+      + used.map(m => {
+          const r = busy.get(m.id)[0];
+          const who = [r.cust, r.req].filter(Boolean).join(' / ');
+          return `<span class="chip busy" data-name="${esc(m.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
+        }).join('')
+      + `<span class="cnt">機体名にマウスを乗せると誰が押さえているか出ます</span></div>`;
+  }
+  h += `<div class="cnt" style="margin-top:7px">緑の機体名をクリックすると、その機体をこの区間で予約する画面が開きます</div>`;
+  p.innerHTML = h;
+  p.style.display = 'block';
+}
+document.getElementById('seek-panel').addEventListener('click', ev => {
+  const c = ev.target.closest('.chip'); if (!c) return;
+  if (c.classList.contains('busy') || !c.dataset.mid) {
+    document.getElementById('q').value = c.dataset.name; render(); writeUrl(); return;
+  }
+  /* 検索した区間をそのまま初期値にして予約画面を開く */
+  openNew(Number(c.dataset.mid), SEEK.s, SEEK);
+});
+document.getElementById('sGo').onclick    = runSeek;
+document.getElementById('sClear').onclick = clearSeek;
+
 /* ============================================================
    操作
    ============================================================ */
-document.getElementById('prev').onclick  = async () => { curWeek -= WK; await loadRes(); render(); };
-document.getElementById('next').onclick  = async () => { curWeek += WK; await loadRes(); render(); };
-document.getElementById('today').onclick = async () => { curWeek = weekTopMs(Date.now()); await loadRes(); render(); };
-['cat','nopart','nong','onlyres'].forEach(id => document.getElementById(id).onchange = render);
-document.getElementById('q').oninput = render;
+async function goWeek(ms){
+  curWeek = ms; await loadRes(); lastLoad = Date.now();
+  render(); paintSeek(); paintUpdated(); writeUrl();
+}
+document.getElementById('prev').onclick  = () => goWeek(curWeek - WK);
+document.getElementById('next').onclick  = () => goWeek(curWeek + WK);
+document.getElementById('today').onclick = () => goWeek(weekTopMs(Date.now()));
+['cat','nopart','nong','onlyres'].forEach(id =>
+  document.getElementById(id).onchange = () => { render(); paintSeek(); writeUrl(); });
+document.getElementById('q').oninput = () => { render(); writeUrl(); };
 
 document.getElementById('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i');
@@ -1063,12 +1230,17 @@ function openDetail(rid){
 }
 
 let newMid = 0;
-function openNew(mid, dayMs){
+function openNew(mid, dayMs, range){
   const m = MACHINES.find(x => x.id === mid); if (!m) return;
   newMid = mid;
   document.getElementById('nMachine').value = `${m.n}  #${m.id}`;
-  document.getElementById('nStart').value = msToLocal(dayMs + 9*3600e3);   /* 既定 09:00 JST */
-  document.getElementById('nEnd').value   = msToLocal(dayMs + 17*3600e3);  /* 既定 17:00 JST */
+  if (range) {
+    document.getElementById('nStart').value = msToLocal(range.s);
+    document.getElementById('nEnd').value   = msToLocal(range.e);
+  } else {
+    document.getElementById('nStart').value = msToLocal(dayMs + 9*3600e3);   /* 既定 09:00 JST */
+    document.getElementById('nEnd').value   = msToLocal(dayMs + 17*3600e3);  /* 既定 17:00 JST */
+  }
   ['nTitle','nCust','nDest','nNotes'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('nReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   document.getElementById('nMsg').textContent = ''; document.getElementById('nMsg').className = 'msg';
@@ -1076,8 +1248,39 @@ function openNew(mid, dayMs){
   document.getElementById('nNote').innerHTML = CAP.lock
     ? `保存時に <code>${LOCK_COL}</code> を ETag 付きで書き換えて枠を確保します。同時に他の方が同じ枠を取っていた場合、後から押した側は保存されずここにエラーが出ます。`
     : `<b style="color:var(--danger)">マスターに <code>${LOCK_COL}</code> 列が無いため予約登録は無効です。</b>複数行テキスト（プレーン・バージョン管理OFF）で追加してください。`;
+  paintExisting();
   openM('mNew');
 }
+
+/* その機体の既存予約を出して、入力中の区間と重なるものを赤くする。
+   CASは最後の砦で、本来は保存する前に空いている時間が見えているべき。 */
+function paintExisting(){
+  const box = document.getElementById('ex-list'); if (!box) return;
+  const s = localToMs(document.getElementById('nStart').value);
+  const e = localToMs(document.getElementById('nEnd').value);
+  const base = isNaN(s) ? Date.now() : s;
+  const rs = RES.filter(r => r.mid === newMid && r.st !== '取消'
+                          && r.e > base - 30*DAY && r.s < base + 30*DAY)
+                .sort((a,b) => a.s - b.s);
+  if (!rs.length) { box.innerHTML = `<div style="color:var(--muted)">この期間に予約はありません</div>`; return; }
+  let hit = 0;
+  box.innerHTML = rs.map(r => {
+    const bad = !isNaN(s) && !isNaN(e) && e > s && overlaps(r, s, e);
+    if (bad) hit++;
+    return `<div class="${bad ? 'hit' : ''}"><span class="tm">${jFull(r.s)} 〜 ${jFull(r.e)}</span>`
+         + `<span>${esc(r.t)}${r.req ? '（' + esc(r.req) + '）' : ''}</span>`
+         + (bad ? `<span style="margin-left:auto">重なり</span>` : '') + `</div>`;
+  }).join('');
+  const msg = document.getElementById('nMsg'), save = document.getElementById('nSave');
+  if (hit) {
+    msg.textContent = `入力中の期間は既存の予約 ${hit}件と重なっています`; msg.className = 'msg ng';
+    save.disabled = true;
+  } else {
+    msg.textContent = ''; msg.className = 'msg';
+    save.disabled = !CAP.lock;
+  }
+}
+['nStart','nEnd'].forEach(id => document.getElementById(id).addEventListener('input', paintExisting));
 
 /* ---------- CAS 本体 ---------- */
 const parseOcc = s => (s||'').split('\n').map(l=>l.trim()).filter(Boolean)
