@@ -1,22 +1,41 @@
-/*
- * 支払管理アプリ 共通ナビ。
- * 各HTMLの <head> に <script src="nav.js" defer></script> を入れ、
- * ヘッダー直下に <div id="app-nav-slot"></div> を置くだけで、
- * 全アプリ共通のタブナビ（現在地表示・アプリ切替・決済月引き継ぎ）を描画する。
- * 「単体HTML」原則はアプリ本体の話。共有jsの読込は msal-browser(CDN) と同じ構図で問題なし。
- */
 (function () {
-  var APPS = [
-    { f: 'ap_dashboard.html',      l: 'ホーム' },
-    { f: 'ap_review.html',         l: '経費のチェック' },
-    { f: 'ap_purchase_match.html', l: '仕入のチェック' },
-    { f: 'ap_entry.html',          l: '手入力' },
-    { f: 'ap_recurring.html',      l: '毎月の支払' },
-    { f: 'ap_payment.html',        l: '支払一覧・承認' }
+  /* アプリのグループ。現在開いているファイルが属するグループのタブだけを出す。
+     支払管理のアプリを開いたときの挙動は従来と完全に同じ。 */
+  var GROUPS = [
+    {
+      key: 'ap',
+      apps: [
+        { f: 'ap_dashboard.html',      l: 'ホーム' },
+        { f: 'ap_review.html',         l: '経費のチェック' },
+        { f: 'ap_purchase_match.html', l: '仕入のチェック' },
+        { f: 'ap_entry.html',          l: '手入力' },
+        { f: 'ap_recurring.html',      l: '毎月の支払' },
+        { f: 'ap_payment.html',        l: '支払一覧・承認' }
+      ]
+    },
+    {
+      key: 'reserve',
+      apps: [
+        { f: 'demo_reserve.html', l: 'デモ機' },
+        { f: 'car_reserve.html',  l: '営業車' }
+      ]
+    }
   ];
+
   var cur = (location.pathname.split('/').pop() || 'ap_dashboard.html').toLowerCase();
 
-  // 決済月：URLの ?month= 優先、なければ画面内の月セレクタの現在値
+  function currentGroup() {
+    for (var i = 0; i < GROUPS.length; i++) {
+      for (var j = 0; j < GROUPS[i].apps.length; j++) {
+        if (GROUPS[i].apps[j].f === cur) return GROUPS[i];
+      }
+    }
+    /* どのグループにも載っていないページは、従来どおり支払管理タブを出す。
+       nav.js を使っている既存ページ（case_management など）の挙動を変えないため。
+       新しいグループに入れたいページは GROUPS に追記すればよい。 */
+    return GROUPS[0];
+  }
+
   function monthParam() {
     var u = new URLSearchParams(location.search);
     var m = u.get('month');
@@ -39,19 +58,19 @@
   function build() {
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
+    var g = currentGroup();
     injectStyle();
-    var html = '<div class="app-nav">' + APPS.map(function (a) {
+    var html = '<div class="app-nav">' + g.apps.map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
       return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + a.l + '</a>';
     }).join('') + '</div>';
     slot.innerHTML = html;
-    // クリック時に「その時点の決済月」を付けて遷移（月セレクタは後から埋まるため）
     slot.addEventListener('click', function (e) {
       var a = e.target.closest && e.target.closest('a[data-file]');
       if (!a) return;
       e.preventDefault();
       if (a.getAttribute('data-file') === cur) return;
-      var m = monthParam();
+      var m = (g.key === 'ap') ? monthParam() : '';
       location.href = a.getAttribute('data-file') + (m ? ('?month=' + encodeURIComponent(m)) : '');
     });
   }
