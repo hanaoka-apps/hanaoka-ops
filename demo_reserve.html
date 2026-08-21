@@ -72,6 +72,10 @@
     #seek-panel .none{color:var(--danger);font-weight:700}
     .grp{display:flex;background:#eaeef5;border-bottom:1px solid var(--border);border-top:1px solid var(--border)}
     .grp span{position:sticky;left:0;padding:4px 11px;font-size:11.5px;font-weight:700;color:#44506a}
+    .row.hi{background:#fff6d9}
+    .row.hi .name{background:#ffeaa8;box-shadow:inset 4px 0 0 var(--warning)}
+    .row.hi .mn{color:#7a5000}
+    .chip.on{outline:2px solid var(--warning);outline-offset:1px}
     .seekband{position:absolute;top:0;bottom:0;background:rgba(26,95,168,.10);
       border-left:1px dashed var(--primary);border-right:1px dashed var(--primary);z-index:1;pointer-events:none}
     #ex-list{max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:5px;margin-top:4px}
@@ -486,6 +490,7 @@ async function gPatchIf(path, fields, etag){
    ============================================================ */
 let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
 let SEEK = null;                       /* 空き検索の区間 */
+let HILITE = null;                     /* 結果から選んだ機体ID。行を目立たせるだけで絞り込まない */
 let lastLoad = 0, refreshTimer = null;
 
 /* ---- URLに状態を持たせる（Teamsに貼れるように） ---- */
@@ -1062,7 +1067,7 @@ function render(){
     const n = Math.max(1, lanes.length);
     const blocked = m.ng || !m.resv || !CAP.lock;
 
-    h += `<div class="row"><div class="name" style="min-height:calc(var(--lane)*${n})">
+    h += `<div class="row${m.id === HILITE ? ' hi' : ''}" data-mid="${m.id}"><div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(m.n)}</div><div class="meta">
         <span class="badge b-id">#${m.id}</span>
         ${m.ng   ? `<span class="badge b-ng">予約不可</span>` : ''}
@@ -1140,7 +1145,12 @@ async function runSeek(){
   await loadRes(); lastLoad = Date.now();
   render(); paintSeek(); paintUpdated(); writeUrl();
 }
-function clearSeek(){ SEEK = null; render(); paintSeek(); }
+function clearSeek(){
+  SEEK = null; HILITE = null;
+  document.getElementById('sFrom').value = msToLocal(weekTopMs(Date.now()) +  9*3600e3);
+  document.getElementById('sTo').value   = msToLocal(weekTopMs(Date.now()) + 17*3600e3);
+  render(); paintSeek();
+}
 
 function paintSeek(){
   const p = document.getElementById('seek-panel');
@@ -1169,7 +1179,7 @@ function paintSeek(){
       + used.map(m => {
           const r = busy.get(m.id)[0];
           const who = [r.cust, r.req].filter(Boolean).join(' / ');
-          return `<span class="chip busy" data-name="${esc(m.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
+          return `<span class="chip busy${m.id === HILITE ? ' on' : ''}" data-mid="${m.id}" data-name="${esc(m.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
         }).join('')
       + `<span class="cnt">機体名にマウスを乗せると誰が押さえているか出ます</span></div>`;
   }
@@ -1179,11 +1189,19 @@ function paintSeek(){
 }
 document.getElementById('seek-panel').addEventListener('click', ev => {
   const c = ev.target.closest('.chip'); if (!c) return;
-  if (c.classList.contains('busy') || !c.dataset.mid) {
-    document.getElementById('q').value = c.dataset.name; render(); writeUrl(); return;
+  /* 予約済みのチップ：絞り込まずに行を目立たせるだけ（検索欄を書き換えると解除しても残る） */
+  if (c.classList.contains('busy')) {
+    const id = Number(c.dataset.mid);
+    HILITE = (HILITE === id) ? null : id;
+    render(); paintSeek();
+    if (HILITE) {
+      const row = document.querySelector(`.row[data-mid="${HILITE}"]`);
+      if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+    return;
   }
-  /* 検索した区間をそのまま初期値にして予約画面を開く */
-  openNew(Number(c.dataset.mid), SEEK.s, SEEK);
+  /* 空きのチップ：検索した区間をそのまま初期値にして予約画面を開く */
+  if (c.dataset.mid) openNew(Number(c.dataset.mid), SEEK.s, SEEK);
 });
 document.getElementById('sGo').onclick    = runSeek;
 document.getElementById('sClear').onclick = clearSeek;

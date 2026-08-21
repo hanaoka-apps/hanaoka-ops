@@ -86,6 +86,12 @@
     .grp{display:flex;background:#eaeef5;border-bottom:1px solid var(--border);border-top:1px solid var(--border)}
     .grp span{position:sticky;left:0;padding:4px 11px;font-size:11.5px;font-weight:700;color:#44506a}
 
+    /* 空き検索の結果から選んだ行 */
+    .row.hi{background:#fff6d9}
+    .row.hi .name{background:#ffeaa8;box-shadow:inset 4px 0 0 var(--warning)}
+    .row.hi .mn{color:#7a5000}
+    .chip.on{outline:2px solid var(--warning);outline-offset:1px}
+
     /* 検索した区間の帯 */
     .seekband{position:absolute;top:0;bottom:0;background:rgba(26,95,168,.10);
       border-left:1px dashed var(--primary);border-right:1px dashed var(--primary);z-index:1;pointer-events:none}
@@ -415,6 +421,7 @@ let VIEW = 'week';                       /* 'week' | 'day' */
 let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
 let SEEK = null;                         /* 空き検索の区間 {s,e} */
+let HILITE = null;                       /* 結果から選んだ車両名。行を目立たせるだけで絞り込まない */
 let lastLoad = 0, refreshTimer = null;
 
 /* ---- URLに状態を持たせる。Teamsに貼れるようにするため ---- */
@@ -826,7 +833,7 @@ function renderWeek(){
     if (c.loc !== lastLoc) { lastLoc = c.loc;
       h += `<div class="grp"><span>${esc(c.loc || '拠点なし')}（${list.filter(x => x.loc === c.loc).length}）</span></div>`; }
     const rs = resOf(c, w0, w1), n = laneAssign(rs);
-    h += `<div class="row"><div class="name" style="min-height:calc(var(--lane)*${n})">
+    h += `<div class="row${c.n === HILITE ? ' hi' : ''}" data-car="${esc(c.n)}"><div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(c.n)}</div><div class="meta">
       ${c.loc ? `<span class="badge b-loc">${esc(c.loc)}</span>` : ''}${srcBadge(c)}
       ${rs.filter(r=>!r.cancelled).length ? '' : '<span class="badge b-free">空き</span>'}
@@ -881,7 +888,7 @@ function renderDay(){
     if (c.loc !== lastLoc) { lastLoc = c.loc;
       h += `<div class="grp"><span>${esc(c.loc || '拠点なし')}（${list.filter(x => x.loc === c.loc).length}）</span></div>`; }
     const rs = resOf(c, d0, d0 + DAY), n = laneAssign(rs);
-    h += `<div class="row"><div class="name" style="min-height:calc(var(--lane)*${n})">
+    h += `<div class="row${c.n === HILITE ? ' hi' : ''}" data-car="${esc(c.n)}"><div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(c.n)}</div><div class="meta">
       ${c.loc ? `<span class="badge b-loc">${esc(c.loc)}</span>` : ''}${srcBadge(c)}
       ${rs.filter(r=>!r.cancelled).length ? '' : '<span class="badge b-free">空き</span>'}
@@ -927,7 +934,12 @@ async function runSeek(){
   await loadRes();
   paintPanel(); render(); paintSeek(); writeUrl();
 }
-function clearSeek(){ SEEK = null; render(); paintSeek(); }
+function clearSeek(){
+  SEEK = null; HILITE = null;
+  el('sFrom').value = msToLocal(dayTopMs(Date.now()) +  9*3600e3);
+  el('sTo').value   = msToLocal(dayTopMs(Date.now()) + 17*3600e3);
+  render(); paintSeek();
+}
 
 function paintSeek(){
   const p = el('seek-panel');
@@ -946,7 +958,7 @@ function paintSeek(){
   if (!free.length) h += `<div class="none">この区間に空いている車はありません</div>`;
   else locs.forEach(L => {
     h += `<div class="grp-line"><b>${esc(L || '拠点なし')}</b>`
-      + free.filter(c => c.loc === L).map(c => `<span class="chip" data-car="${esc(c.n)}">${esc(c.n)}</span>`).join('')
+      + free.filter(c => c.loc === L).map(c => `<span class="chip${c.n === HILITE ? ' on' : ''}" data-car="${esc(c.n)}">${esc(c.n)}</span>`).join('')
       + `</div>`;
   });
   if (used.length) {
@@ -954,7 +966,7 @@ function paintSeek(){
       + used.map(c => {
           const r = busy.get(c.n)[0];
           const who = [r.who, r.dest].filter(Boolean).join(' / ');
-          return `<span class="chip busy" data-car="${esc(c.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jHM(r.s)}–${jHM(r.e)}">`
+          return `<span class="chip busy${c.n === HILITE ? ' on' : ''}" data-car="${esc(c.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jHM(r.s)}–${jHM(r.e)}">`
                + `${esc(c.n)}</span>`;
         }).join('')
       + `<span class="cnt">車名にマウスを乗せると誰が使っているか出ます</span></div>`;
@@ -964,7 +976,13 @@ function paintSeek(){
 }
 el('seek-panel').addEventListener('click', ev => {
   const c = ev.target.closest('.chip'); if (!c) return;
-  el('q').value = c.dataset.car; render(); writeUrl();
+  /* 検索欄を書き換えると解除しても絞り込みが残る。行を目立たせるだけにする。 */
+  HILITE = (HILITE === c.dataset.car) ? null : c.dataset.car;
+  render(); paintSeek();
+  if (HILITE) {
+    const row = document.querySelector(`.row[data-car="${CSS.escape(HILITE)}"]`);
+    if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
 });
 el('sGo').onclick    = runSeek;
 el('sClear').onclick = clearSeek;
