@@ -243,6 +243,17 @@
   </div>
 </div></div>
 
+<!-- 予約対象の一括判定 -->
+<div class="modal" id="mParts"><div class="card" style="max-width:620px">
+  <h3 id="pTitle"></h3>
+  <div class="bd" id="pBody"></div>
+  <div class="ft">
+    <span class="msg" id="pMsg"></span>
+    <button class="act" onclick="closeM('mParts')">閉じる</button>
+    <button class="act pri" id="pRun" onclick="runParts()">いいえ に更新する</button>
+  </div>
+</div></div>
+
 <div id="snackbar"></div>
 
 <script>
@@ -348,12 +359,26 @@ async function gPost(path, body){
   if (!r.ok) throw new Error(`[${r.status}] ${await r.text()}`);
   return r.json();
 }
+/* $batch。1回20件まで。71件なら4回で終わる */
+async function gBatch(requests){
+  const t = await getToken(); const out = [];
+  for (let i = 0; i < requests.length; i += 20) {
+    const chunk = requests.slice(i, i+20).map((r,k) => ({ id: String(i+k), ...r }));
+    const res = await fetch(`${GRAPH_BASE}/$batch`, { method:'POST',
+      headers:{ Authorization:'Bearer '+t, 'Content-Type':'application/json' },
+      body: JSON.stringify({ requests: chunk }) });
+    const b = await res.json();
+    out.push(...(b.responses || []));
+  }
+  return out;
+}
+
 /* 列を作る。name を明示できるので内部名が日本語に化けない（UIで作るときの罠を回避） */
-async function gCreateColumn(def, displayJa){
-  const col = await gPost(`/sites/${SITE_ID}/lists/${LIST_MASTER}/columns`, def);
+async function gCreateColumn(listId, def, displayJa){
+  const col = await gPost(`/sites/${SITE_ID}/lists/${listId}/columns`, def);
   if (displayJa) {
     const t = await getToken();
-    await fetch(`${GRAPH_BASE}/sites/${SITE_ID}/lists/${LIST_MASTER}/columns/${col.id}`, { method:'PATCH',
+    await fetch(`${GRAPH_BASE}/sites/${SITE_ID}/lists/${listId}/columns/${col.id}`, { method:'PATCH',
       headers:{ Authorization:'Bearer '+t, 'Content-Type':'application/json' },
       body: JSON.stringify({ displayName: displayJa }) });
   }
@@ -374,7 +399,7 @@ async function gPatchIf(path, fields, etag){
    状態
    ============================================================ */
 let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
-let CAP = { lock:false, resv:false };     /* 列の有無 */
+let CAP = { lock:false, resv:false, token:false, mid:false };   /* 列の有無（マスター / 履歴） */
 
 async function showApp(){
   document.getElementById('login-view').style.display = 'none';
@@ -392,6 +417,10 @@ async function checkColumns(){
     const names = new Set((cols.value||[]).map(c => c.name));
     CAP.lock = names.has(LOCK_COL);
     CAP.resv = names.has(RESV_COL);
+    const hc = await gGet(`/sites/${SITE_ID}/lists/${LIST_HIST}/columns?$select=name`);
+    const hn = new Set((hc.value||[]).map(c => c.name));
+    CAP.token = hn.has('LockToken');
+    CAP.mid   = hn.has('MachineItemId');
     const ok = s => `<span class="ok">あり</span>`, ng = s => `<span class="ng">未作成</span>`;
     p.className = CAP.lock ? '' : 'warn';
     p.innerHTML =
@@ -402,12 +431,19 @@ async function checkColumns(){
         (CAP.resv ? '' : ' — 当面はデモ機名から部品・オプションを推定します') + `</div>` +
       `<div class="st-row" style="color:var(--muted)">履歴リスト: <code>${LIST_HIST.slice(0,8)}…</code>` +
         (LIST_HIST === 'de7c1832-a168-4778-bfe9-ba5e98277f38' ? '（旧リスト。新規作成後に <code>LIST_HIST</code> を差し替え）' : '') + `</div>` +
+      `<div class="st-row">履歴の <code>LockToken</code>: ${CAP.token?ok():ng()}` +
+        (CAP.token ? '' : ' — <b>これが無いと予約を保存できません</b>（占有と履歴を対応づける列）') + `</div>` +
       `<div class="st-row" id="fetch-mode" style="color:var(--muted)"></div>` +
-      (CAP.lock && CAP.resv ? '' :
+      (CAP.lock && CAP.resv && CAP.token && CAP.mid ? '' :
         `<div class="st-row" style="margin-top:7px">
            <button class="act pri" id="btn-mkcol" onclick="makeColumns()">不足している列を作成する</button>
-           <span style="color:var(--muted);font-size:11.5px">Graphで作成するので内部名が日本語に化けません。作成後に自動で再読込します。</span>
-         </div>`);
+           <span style="color:var(--muted);font-size:11.5px">マスターと履歴の両方をまとめて作ります。内部名は英語で固定されます。</span>
+         </div>`) +
+      `<div class="st-row" style="margin-top:7px;gap:6px;flex-wrap:wrap">
+         <button class="act" onclick="previewParts()">予約対象を一括判定…</button>
+         <button class="act" onclick="sweepLocks()">占有情報を掃除</button>
+         <span style="color:var(--muted);font-size:11.5px">部品・オプションを いいえ に／幽霊ロックを削除</span>
+       </div>`;
   paintFetchMode();
   } catch (e) {
     p.className = 'warn';
@@ -430,7 +466,7 @@ async function makeColumns(){
   const done = [];
   try {
     if (!CAP.lock) {
-      await gCreateColumn({
+      await gCreateColumn(LIST_MASTER, {
         name: LOCK_COL, displayName: LOCK_COL, description: '予約の占有区間（CASの対象）。アプリが管理するので手で編集しないでください',
         enforceUniqueValues: false, indexed: false, hidden: false,
         text: { allowMultipleLines: true, appendChangesToExistingText: false, linesForEditing: 4, maxLength: 8000, textType: 'plain' }
@@ -438,11 +474,25 @@ async function makeColumns(){
       done.push(LOCK_COL);
     }
     if (!CAP.resv) {
-      await gCreateColumn({
+      await gCreateColumn(LIST_MASTER, {
         name: RESV_COL, displayName: RESV_COL, description: '週間表に並べる対象か。部品・オプションは いいえ',
         defaultValue: { value: '1' }, indexed: false, hidden: false, boolean: {}
       }, '予約対象');
       done.push(RESV_COL);
+    }
+    if (!CAP.token) {
+      await gCreateColumn(LIST_HIST, {
+        name: 'LockToken', displayName: 'LockToken', description: '占有情報との対応キー。アプリが設定します',
+        indexed: false, text: { allowMultipleLines: false, maxLength: 32, textType: 'plain' }
+      }, '占有トークン');
+      done.push('LockToken（履歴）');
+    }
+    if (!CAP.mid) {
+      await gCreateColumn(LIST_HIST, {
+        name: 'MachineItemId', displayName: 'MachineItemId', description: 'マスターのリストアイテムID（CASの対象特定用）',
+        indexed: false, number: { decimalPlaces: 'none', displayAs: 'number', maximum: 1e9, minimum: 0 }
+      }, 'マスターID');
+      done.push('MachineItemId（履歴）');
     }
     showSnack(`列を作成しました: ${done.join(' / ')}`);
     await checkColumns();
@@ -451,6 +501,92 @@ async function makeColumns(){
     showSnack('列の作成に失敗: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '不足している列を作成する'; }
   }
+}
+
+/* ---------- 予約対象の一括判定（部品・オプション → いいえ） ---------- */
+let PART_TARGETS = [];
+function previewParts(){
+  if (!CAP.resv) { showSnack('IsReservable 列がありません。先に列を作成してください'); return; }
+  const cand = MACHINES.filter(m => (m.part || m.ng) && m.resv !== false);
+  PART_TARGETS = cand;
+  const rows = cand.slice().sort((a,b) => a.cat.localeCompare(b.cat) || a.n.localeCompare(b.n))
+    .map(m => `<tr><td>${m.id}</td><td>${esc(m.n)}</td><td>${m.part ? '部品' : ''}${m.part&&m.ng?'+':''}${m.ng?'持出不可':''}</td></tr>`).join('');
+  document.getElementById('pTitle').textContent = `予約対象を いいえ にする候補：${cand.length}件`;
+  document.getElementById('pBody').innerHTML = cand.length
+    ? `<div style="max-height:52vh;overflow:auto"><table style="width:100%;font-size:12px;border-collapse:collapse">
+         <thead><tr><th style="text-align:left;color:var(--muted)">#ID</th><th style="text-align:left;color:var(--muted)">デモ機名</th>
+         <th style="text-align:left;color:var(--muted)">理由</th></tr></thead><tbody>${rows}</tbody></table></div>
+       <div class="note">判定はデモ機名のパターン（部品・オプション）と、区分がショールーム機／現在状態が持出不可・廃棄のものです。
+         誤判定があればここで気づけます。実行後もSharePointの画面で個別に直せます。</div>`
+    : `<div class="note">対象はありません。すでに全件処理済みです。</div>`;
+  document.getElementById('pRun').disabled = !cand.length;
+  document.getElementById('pMsg').textContent = '';
+  openM('mParts');
+}
+async function runParts(){
+  const btn = document.getElementById('pRun'), msg = document.getElementById('pMsg');
+  btn.disabled = true; msg.className = 'msg'; msg.textContent = `${PART_TARGETS.length}件を更新中...`;
+  try {
+    const reqs = PART_TARGETS.map(m => ({
+      method: 'PATCH',
+      url: `/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${m.itemId}/fields`,
+      headers: { 'Content-Type': 'application/json' },
+      body: { [RESV_COL]: false }
+    }));
+    const res = await gBatch(reqs);
+    const ng = res.filter(r => r.status >= 300);
+    msg.className = 'msg ' + (ng.length ? 'ng' : 'ok');
+    msg.textContent = ng.length
+      ? `成功 ${res.length - ng.length}件 / 失敗 ${ng.length}件（${ng[0].body?.error?.message || ng[0].status}）`
+      : `${res.length}件を「予約対象＝いいえ」にしました`;
+    await loadAll();
+  } catch (e) { msg.className = 'msg ng'; msg.textContent = 'エラー: ' + e.message; }
+  finally { btn.disabled = false; }
+}
+
+/* ---------- 幽霊ロックの掃除 ----------
+   占有情報のうち、対応する履歴行が無い／取消済み／終了が過去のものを削除する。
+   「ロックは残る側に倒す」設計の後片付け。放置しても二重予約にはならないが枠が塞がる。 */
+async function sweepLocks(){
+  if (!CAP.lock) { showSnack('LockData 列がありません'); return; }
+  showSnack('占有情報を確認中...');
+  try {
+    const withLock = MACHINES.filter(m => (m.lock || '').trim());
+    if (!withLock.length) { showSnack('占有情報が入っている機体はありません'); return; }
+
+    /* 生きているトークンの集合。LockToken 列が無い場合はトークン照合を諦めて期限切れのみ掃除 */
+    let alive = null;
+    if (CAP.token) {
+      const rows = await gGetAll(`/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`);
+      alive = new Set(rows.filter(r => (r.fields||{}).LoanStatus !== '取消')
+                          .map(r => (r.fields||{}).LockToken).filter(Boolean));
+    }
+    const now = Date.now();
+    const plan = [];
+    for (const m of withLock) {
+      const cur = parseOcc(m.lock);
+      const keep = cur.filter(x => x.e >= now - DAY && (alive ? alive.has(x.token) : true));
+      if (keep.length !== cur.length) plan.push({ m, cur, keep });
+    }
+    if (!plan.length) { showSnack('掃除対象はありません'); return; }
+
+    const detail = plan.map(p => `${p.m.n} #${p.m.id}: ${p.cur.length} → ${p.keep.length}`).join('\n');
+    if (!confirm(`占有情報を掃除します（${plan.length}機体）。\n\n${detail}\n\n`
+      + (alive ? '対応する予約が無い／取消済み／期限切れのエントリを削除します。' : 'LockToken 列が無いため、期限切れのみ削除します。')))
+      { showSnack('中止しました'); return; }
+
+    let okN = 0, ngN = 0;
+    for (const p of plan) {
+      const it = await gGet(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${p.m.itemId}?$expand=fields`);
+      const live = parseOcc((it.fields||{})[LOCK_COL] || '')
+        .filter(x => x.e >= now - DAY && (alive ? alive.has(x.token) : true));
+      const r = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${p.m.itemId}/fields`,
+        { [LOCK_COL]: dumpOcc(live) }, it['@odata.etag']);
+      if (r.status === 200) okN++; else ngN++;
+    }
+    showSnack(`掃除完了：${okN}機体を更新${ngN ? ` / ${ngN}件失敗` : ''}`);
+    await loadAll();
+  } catch (e) { showSnack('掃除エラー: ' + e.message); }
 }
 
 async function loadAll(){
@@ -702,12 +838,16 @@ async function reserve({ machine, s, e, details }){
 
     /* 4. ロック確保済み。履歴に記録 */
     try {
-      const row = await gPost(`/sites/${SITE_ID}/lists/${LIST_HIST}/items`, { fields: {
+      const fields = {
         Title: details.title, SourceEquipmentId: machine.id, DemoMachineName: machine.n,
-        LockToken: token, LoanStatus: '予約',
+        LoanStatus: '予約',
         ReservationStart: new Date(s).toISOString(), ReservationEnd: new Date(e).toISOString(),
         CustomerName: details.cust, Destination: details.dest, Notes: details.notes
-      }});
+      };
+      /* 列が無いリストに送ると 400 invalidRequest になるので、あるものだけ送る */
+      if (CAP.token) fields.LockToken = token;
+      if (CAP.mid)   fields.MachineItemId = Number(machine.itemId);
+      const row = await gPost(`/sites/${SITE_ID}/lists/${LIST_HIST}/items`, { fields });
       return { ok:true, id:row.id, token, attempts:n };
     } catch (err) {
       await release(machine, token, now).catch(()=>{});   /* 補償。失敗しても安全側（枠が塞がる） */
