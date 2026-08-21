@@ -17,7 +17,8 @@
       key: 'reserve',
       apps: [
         { f: 'demo_reserve.html', l: 'デモ機' },
-        { f: 'car_reserve.html',  l: '営業車' }
+        { f: 'car_reserve.html',  l: '営業車' },
+        { f: 'reserve_manual.html', l: '使い方' }
       ]
     }
   ];
