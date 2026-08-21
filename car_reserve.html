@@ -70,6 +70,14 @@
     #status-panel pre{background:#f6f8fa;border:1px solid var(--border);border-radius:4px;padding:8px;
       margin-top:6px;font-size:11px;overflow:auto;max-height:240px;line-height:1.6}
 
+    /* 閲覧専用の告知。利用者が一番間違えるところなので常に出す */
+    #readonly-note{background:#eaf2fd;border:1px solid var(--primary);border-left-width:5px;border-radius:6px;
+      padding:10px 14px;margin-bottom:13px;font-size:13px;line-height:1.7}
+    #readonly-note b{color:var(--primary-dk)}
+    #readonly-note .steps{margin-top:5px}
+    #readonly-note code{background:#fff;border:1px solid #c5d8ef;padding:1px 5px;border-radius:3px;font-size:12px}
+    #readonly-note a{color:var(--primary);font-weight:700}
+
     /* 空き検索の結果カード */
     #seek-panel{display:none;background:var(--card-bg);border:1px solid var(--primary);border-radius:8px;
       padding:11px 14px;margin-bottom:13px;font-size:12.5px;box-shadow:var(--shadow)}
@@ -195,7 +203,7 @@
       #app-view{padding:11px}
     }
     @media print{
-      header,.bar,.legend,#status-panel{display:none}
+      header,.bar,.legend,#status-panel,#readonly-note{display:none}
       .scroll{overflow:visible;max-height:none;border:none;box-shadow:none}
       .name,.hname,.hrow{position:static}
       body{background:#fff}
@@ -224,6 +232,16 @@
 
 <div id="app-view">
   <div id="app-nav-slot"></div>
+
+  <div id="readonly-note">
+    <b>この画面は見るだけです。予約・変更・取消は Outlook で行ってください。</b>
+    <div class="steps">Outlookで <b>新しいイベント</b> →
+      <b>宛先</b>に車両を追加（例 <code>営業車 大阪 エブリィバン</code>）→
+      <b>場所</b>に<b>行き先</b>を入力 → <b>送信</b>。承諾メールが返れば予約完了です。
+      <b>Teams会議のトグルはOFF</b>にしてください（ONだと場所が「Microsoft Teams 会議」に上書きされ、行き先がこの画面に出ません）。
+      <a href="reserve_manual.html#car">くわしい手順</a>
+    </div>
+  </div>
 
   <div id="status-panel">読み込み中...</div>
 
@@ -860,24 +878,36 @@ function renderWeek(){
 
 function renderDay(){
   const now = Date.now(), d0 = curDay;
-  const t0 = d0 + DAY_H0*3600e3, t1 = d0 + DAY_H1*3600e3, span = t1 - t0;
-  const hours = DAY_H1 - DAY_H0;
+  const inView = RES.filter(r => r.e > d0 && r.s < d0 + DAY);
+
+  /* 早朝・夜間の利用があるので、その日の予約に合わせて時間帯を自動で広げる。
+     既定は 6:00〜21:00。範囲外の予約があればそこまで伸ばす（最大 0:00〜24:00）。
+     「範囲外にN件」と件数だけ出して隠すより、見えるようにするほうが正しい。 */
+  let h0 = DAY_H0, h1 = DAY_H1;
+  inView.forEach(r => {
+    const a = Math.max(r.s, d0), b = Math.min(r.e, d0 + DAY);
+    h0 = Math.min(h0, Math.floor((a - d0) / 3600e3));
+    h1 = Math.max(h1, Math.ceil ((b - d0) / 3600e3));
+  });
+  h0 = Math.max(0, h0); h1 = Math.min(24, Math.max(h1, h0 + 1));
+
+  const t0 = d0 + h0*3600e3, t1 = d0 + h1*3600e3, span = t1 - t0;
+  const hours = h1 - h0;
   const dd = toJ(d0);
   el('range').textContent = `${jKey(d0).replace(/-/g,'/')}（${DOW[dd.getUTCDay()]}）`;
-  el('lg-note').textContent = `│ ${DAY_H0}:00〜${DAY_H1}:00 の時間割。赤い縦線＝現在時刻`;
+  const widened = (h0 !== DAY_H0 || h1 !== DAY_H1);
+  el('lg-note').textContent = `│ ${h0}:00〜${h1}:00 の時間割`
+    + (widened ? '（早朝・夜間の予約に合わせて自動で広げています）' : '')
+    + '。赤い縦線＝現在時刻';
   const gridEl = el('grid'); gridEl.className = 'grid dy';
   gridEl.style.setProperty('--hours', hours);
 
-  const inView = RES.filter(r => r.e > d0 && r.s < d0 + DAY);
   const list = visibleCars(inView);
-  /* 表示時間帯の外にある予約は描けないので、隠した件数を必ず出す */
-  const hidden = inView.filter(r => r.e <= t0 || r.s >= t1).length;
-  el('cnt').textContent = `表示 ${list.length}台 / 全 ${CARS.length}台　この日の予約 ${inView.filter(r=>!r.cancelled).length}件`
-    + (hidden ? `　⚠ ${DAY_H0}:00〜${DAY_H1}:00 の外に ${hidden}件（週表示で確認してください）` : '');
+  el('cnt').textContent = `表示 ${list.length}台 / 全 ${CARS.length}台　この日の予約 ${inView.filter(r=>!r.cancelled).length}件`;
 
   let h = `<div class="hrow"><div class="hname">車両（${list.length}）</div><div class="hdays">`;
   for (let i = 0; i < hours; i++){
-    const hh = DAY_H0 + i;
+    const hh = h0 + i;
     h += `<div class="hd ${hh===12?'noon':''}"><div class="dnum" style="font-size:12px">${pad(hh)}</div><div class="dow">:00</div></div>`;
   }
   h += `</div></div>`;
@@ -894,8 +924,8 @@ function renderDay(){
       ${rs.filter(r=>!r.cancelled).length ? '' : '<span class="badge b-free">空き</span>'}
       </div></div><div class="days" style="height:calc(var(--lane)*${n})"><div class="bgs">`;
     for (let i = 0; i < hours; i++){
-      const hh = DAY_H0 + i;
-      h += `<div class="bg ${(hh<8||hh>=18)?'off':''}"></div>`;
+      const hh = h0 + i;
+      h += `<div class="bg ${(hh<8||hh>=18)?'off':''}"></div>`;   /* 就業時間外は薄く網掛け */
     }
     h += `</div><div class="bars">`;
     rs.forEach(r => {
