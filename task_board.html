@@ -680,14 +680,27 @@ async function cfgList(){
   return ls.filter(function(l){
     return l.name===CONFIG.spCfgList||l.displayName===CONFIG.spCfgList})[0]||null;
 }
+/* Title はインデックスなしなので $filter が弾かれることがあります。
+   黙ってスキップすると「保存できるのに読み戻せない」が無言で起きるので、
+   失敗したら全件取得してクライアント側で探します（設定リストは数件）。 */
+async function findCfgItem(listId){
+  var base="/sites/"+S.siteId+"/lists/"+listId+"/items?expand=fields&$top=50";
+  try{
+    var r=await gAll(base+"&$filter=fields/Title eq 'workflows'",
+      {headers:{Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"}});
+    if(r.length) return r[0];
+    // 0件は「本当に無い」か「filterが黙って効かなかった」かの区別が付かないので全件も見る
+  }catch(e){ console.warn("設定の$filterが使えないので全件取得に切り替えます:",e.message) }
+  var all=await gAll(base);
+  return all.filter(function(x){return (x.fields&&x.fields.Title)==="workflows"})[0]||null;
+}
 async function loadWorkflows(){
   if(S.mode!=="live") return;
   try{
     var L=await cfgList(); if(!L) return;                     // 未作成ならコード既定のまま
-    var items=await gAll("/sites/"+S.siteId+"/lists/"+L.id+
-      "/items?expand=fields&$top=20&$filter=fields/Title eq 'workflows'",
-      {headers:{Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"}});
-    var it=items[0]; if(!it) return;
+    S.cfgListId=L.id;
+    var it=await findCfgItem(L.id);
+    if(!it) return;
     var parsed=JSON.parse((it.fields&&it.fields.Json)||"null");
     if(!validWorkflows(parsed)){ toast("保存された業務設定が壊れているのでコードの既定を使います",true); return }
     WORKFLOWS=parsed; S.cfgItemId=it.id; S.cfgListId=L.id;
@@ -700,12 +713,17 @@ async function saveWorkflows(arr){
   if(!L) throw new Error("リスト「"+CONFIG.spCfgList+"」がありません。設定→SharePointリストの「作成・修復」を先に実行してください");
   var fields={Title:"workflows",Json:JSON.stringify(arr,null,2),UpdatedBy:S.me.name+" / "+S.me.upn};
   var base="/sites/"+S.siteId+"/lists/"+L.id+"/items";
+  // 既存行を取り直す。$filter が効かない環境で毎回POSTして行が増えるのを防ぐ
+  if(!S.cfgItemId){
+    var ex=await findCfgItem(L.id);
+    if(ex) S.cfgItemId=ex.id;
+  }
   if(S.cfgItemId) await g(base+"/"+S.cfgItemId+"/fields",{method:"PATCH",body:fields});
   else{
     var created=await g(base,{method:"POST",body:{fields:fields}});
     S.cfgItemId=created&&created.id;
   }
-  WORKFLOWS=arr;
+  WORKFLOWS=arr; S.cfgBy=fields.UpdatedBy;
 }
 function wf(name){
   name=String(name||"");
@@ -1777,6 +1795,25 @@ function plog(s,reset){
   el.textContent=(reset?"":el.textContent+(el.textContent?"\n":""))+s;
   el.scrollTop=el.scrollHeight;
 }
+async function provisionCfgList(site,lists,create){
+  var cl=lists.filter(function(l){
+    return l.name===CONFIG.spCfgList||l.displayName===CONFIG.spCfgList})[0];
+  if(cl){ plog("\n設定リストは既にあります  "+cl.webUrl); return }
+  if(!create){ plog("\n設定リスト「"+CONFIG.spCfgList+"」はまだありません。"); return }
+  plog("\n設定リストを作成中… "+CONFIG.spCfgList);
+  cl=await g("/sites/"+site.id+"/lists",{method:"POST",body:{
+    displayName:CONFIG.spCfgList,
+    description:"タスクボードの業務設定（WORKFLOWS）。管理者が画面から編集します。",
+    list:{template:"genericList"}}});
+  var cols=[{name:"Json",displayName:"設定JSON",text:txt(true)},
+            {name:"UpdatedBy",displayName:"最終更新者",text:txt()}];
+  for(var ci=0;ci<cols.length;ci++){
+    try{ await g("/sites/"+site.id+"/lists/"+cl.id+"/columns",{method:"POST",body:cols[ci]});
+         plog("  + "+cols[ci].name) }
+    catch(e){ plog("  ! "+cols[ci].name+" 失敗: "+e.message) }
+  }
+  plog("  作成しました  "+cl.webUrl);
+}
 async function provision(create){
   if(S.mode!=="live"){ toast("本番モードに切り替えてから実行してください",true); return }
   $("btnCheckList").disabled=$("btnMakeList").disabled=true;
@@ -1818,6 +1855,9 @@ async function provision(create){
       }
     }
 
+    // ---- 設定リスト（点検より先に作る。ログの順序を素直にするため）----
+    await provisionCfgList(site,lists,create);
+
     // ---- 点検 ----
     plog("\n===== 点検 =====");
     var after=await gAll("/sites/"+site.id+"/lists/"+list.id+"/columns?$select=id,name,displayName,indexed");
@@ -1845,28 +1885,6 @@ async function provision(create){
       plog("    リストの設定 → インデックス付きの列 → 「インデックスの作成」で上記を追加。");
       plog("    これが無いと $filter が not indexed で落ちます。");
     }
-
-    // 業務設定リストも一緒に用意する
-    var cl=lists.filter(function(l){
-      return l.name===CONFIG.spCfgList||l.displayName===CONFIG.spCfgList})[0];
-    if(!cl){
-      if(!create) plog("\n設定リスト「"+CONFIG.spCfgList+"」はまだありません。");
-      else{
-        plog("\n設定リストを作成中… "+CONFIG.spCfgList);
-        cl=await g("/sites/"+site.id+"/lists",{method:"POST",body:{
-          displayName:CONFIG.spCfgList,
-          description:"タスクボードの業務設定（WORKFLOWS）。管理者が画面から編集します。",
-          list:{template:"genericList"}}});
-        for(var ci=0;ci<2;ci++){
-          var col=[{name:"Json",displayName:"設定JSON",text:txt(true)},
-                   {name:"UpdatedBy",displayName:"最終更新者",text:txt()}][ci];
-          try{ await g("/sites/"+site.id+"/lists/"+cl.id+"/columns",{method:"POST",body:col});
-               plog("  + "+col.name) }
-          catch(e){ plog("  ! "+col.name+" 失敗: "+e.message) }
-        }
-        plog("  作成しました  "+cl.webUrl);
-      }
-    }else plog("\n設定リストは既にあります  "+cl.webUrl);
 
     plog("\nspList に指定する値: \""+list.name+"\"");
     S.siteId=S.listId=null;            // 次回のアクセスで作り直したリストを掴み直す
