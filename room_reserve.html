@@ -241,14 +241,7 @@
       <button id="vDay">日</button>
     </div>
     <select id="flr"></select>
-    <select id="cap">
-      <option value="">収容人数の指定なし</option>
-      <option value="2">2人以上</option>
-      <option value="4">4人以上</option>
-      <option value="6">6人以上</option>
-      <option value="10">10人以上</option>
-      <option value="20">20人以上</option>
-    </select>
+    <select id="cap"><option value="">収容人数の指定なし</option></select>
     <input type="search" id="q" placeholder="会議室名で検索" style="width:150px">
     <button class="act" id="prev">◀</button>
     <button class="act pri" id="todayBtn">今日</button>
@@ -330,6 +323,11 @@ const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
 /* 予約者の突き合わせに使う名簿（全社員チーム。他タブと同じ） */
 const GROUP_ID = 'ed13b4d2-03b0-47ee-8892-e105e0cf9851';
+
+/* 建物（拠点）の表示順。ここに書いた順で上から並ぶ。
+   ★拠点が増えたらここに足す★ 書いていない拠点は、この後ろに室数の多い順で付く。
+   （近日 工場の会議室を登録予定。すでに書いてあるので登録すれば本社の下に入る） */
+const BLD_ORDER = ['本社', '工場', '名古屋', '大阪'];
 
 const DAY_H0 = 8, DAY_H1 = 20;      /* 日表示の既定の時間帯。予定に合わせて自動で広げる */
 const CHUNK  = 20;                  /* getSchedule は1回20件まで */
@@ -496,7 +494,8 @@ let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
 let SEEK = null, HILITE = null, NOWMIN = 60;
 let lastLoad = 0, refreshTimer = null;
-let SRC = { src:'', rooms:0, ok:0, ng:0, errs:[], items:0, capOk:0, owners:0, ownerState:'未実行' };
+let SRC = { src:'', rooms:0, ok:0, ng:0, errs:[], items:0, capOk:0,
+            owners:0, ownerState:'未実行', ownerHow:'' };
 
 const el = id => document.getElementById(id);
 function showSnack(m){ const s = el('snackbar'); s.textContent = m; s.style.display='block';
@@ -631,17 +630,27 @@ async function loadRooms(){
      ★建物を名前順にしてはいけない★
      ja の読み順だと「工場（こうじょう）」が「本社（ほんしゃ）」より先に来る。
      日本語としては正しいが、本社が下に埋まって使いにくい。
-     室数の多い建物を先にすると、本社が自然に先頭へ来る（拠点名を決め打ちしない）。 */
+
+     ★室数順にもしてはいけない★
+     一度は「室数の多い建物を先頭」にしたが、これは工場の会議室が本社より
+     多く登録された瞬間に工場が先頭へ来る。増設のたびに並びが変わるのは困る。
+     BLD_ORDER に書いた順を正とし、そこに無い建物だけ室数の多い順で後ろに付ける。
+     拠点が増えたらこの配列に足すだけ。 */
   const bcount = new Map();
   ROOMS.forEach(r => bcount.set(r.bld || '', (bcount.get(r.bld || '') || 0) + 1));
+  const bldRank = b => {
+    const i = BLD_ORDER.indexOf(b);
+    if (i >= 0) return i;                          /* 明示した順 */
+    if (!b) return 1e6;                            /* 建物が未設定のものは最後 */
+    return 1000 - (bcount.get(b) || 0);            /* 未知の拠点は室数の多い順 */
+  };
 
   ROOMS.sort((a,b) => a.n.localeCompare(b.n, 'ja', { numeric: true }));
   ROOMS.sort((a,b) => {
     const ka = a.bld || '', kb = b.bld || '';
     if (ka !== kb) {
-      const d = (bcount.get(kb) || 0) - (bcount.get(ka) || 0);
+      const d = bldRank(ka) - bldRank(kb);
       if (d) return d;
-      if (!ka !== !kb) return ka ? -1 : 1;        /* 建物が未設定のものは最後 */
       return ka.localeCompare(kb, 'ja');
     }
     const fa = a.flr || '', fb = b.flr || '';
@@ -650,6 +659,22 @@ async function loadRooms(){
   });
 }
 function grpOf(r){ return [r.bld, r.flr].filter(Boolean).join(' '); }
+
+/* 収容人数の選択肢は実際の部屋から作る。
+   固定で 2/4/6/10/20 と並べると、本社の実データ（4人と8人だけ）では
+   「10人以上」「20人以上」が常に0件になり、選ぶだけ無駄になる。
+   工場が増えて大きい部屋が入れば、その人数が自動で選べるようになる。 */
+function paintCapSelect(){
+  const caps = [...new Set(ROOMS.map(r => r.cap).filter(c => c > 0))].sort((a,b) => a-b);
+  const sel = el('cap');
+  const keep = sel.value;
+  /* 最大の部屋だけを選ぶ選択肢は作らない（1室しか出ないので絞り込みの意味が薄い）。
+     ただし部屋が2種類しかない場合は、その2つとも出す。 */
+  const opts = caps.filter((c,i) => i < caps.length - 1 || caps.length <= 2);
+  sel.innerHTML = `<option value="">収容人数の指定なし</option>`
+    + opts.map(c => `<option value="${c}">${c}人以上（${ROOMS.filter(r => r.cap >= c).length}室）</option>`).join('');
+  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
 
 function paintFlrSelect(){
   const gs = [...new Set(ROOMS.map(grpOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja',{numeric:true}));
@@ -695,7 +720,7 @@ async function loadRes(){
   const nowTop = dayTopMs(Date.now());
   f0 = Math.min(f0, nowTop); f1 = Math.max(f1, nowTop + DAY);
 
-  SRC = { ...SRC, ok:0, ng:0, items:0, ownerState:'未実行', owners:0 };
+  SRC = { ...SRC, ok:0, ng:0, items:0, ownerState:'未実行', owners:0, ownerHow:'' };
   RES = [];
   if (!ROOMS.length) return;
 
@@ -723,20 +748,70 @@ async function loadRes(){
         const status = it.status || 'unknown';
         if (status === 'free') return;
         SRC.items++;
-        RES.push({
+        const row = {
           rid : `${room.mail}|${s}|${e}`,
           room: room.n, mail: room.mail, cap: room.cap, flr: grpOf(room),
           s, e, status,
-          who : '', whoMail: '', whoDep: ''      /* 予約者はこのあと突き合わせる */
-        });
+          who : '', whoMail: '', whoDep: '', from: ''
+        };
+        /* ★件名から予約者を取る（社員名と完全一致したときだけ）★ 下の説明を参照 */
+        const p = personFromSubject(it.subject);
+        if (p) { row.who = p.n; row.whoMail = p.mail; row.whoDep = p.dep; row.from = 'subject'; }
+        RES.push(row);
       });
     });
   });
 }
 
 /* ============================================================
-   予約者の突き合わせ（後追いで実行。最初の描画を待たせない）
+   予約者の特定
+
+   ■ 本線：会議室の予定の「件名」から取る
+   花岡車輌の会議室は Exchange 側で
+     DeleteSubject = True / AddOrganizerToSubject = True
+   になっている（Check-RoomMailboxes.ps1 -Inspect で全6室を確認）。
+   この設定だと、会議室の予定表に入る件名は**予約した人の名前だけ**に
+   置き換わり、本当の件名は Exchange に残らない。
+   つまり会議室の getSchedule が返す subject ＝ 予約者名。
+   社員89人ぶんを読んで突き合わせる必要はない。
+
+   ■ ただし件名をそのまま表示してはいけない
+   誰かが DeleteSubject を False に戻したら、subject は本物の件名
+   （「採用面談 山田さん」）になる。それを画面に出したら事故である。
+   アプリはブラウザの中で動くので、Exchange の設定を知る方法がない。
+
+   そこで **社員名簿と完全一致したときだけ採用する**。
+     ・設定が入っている → subject は「福田 剛史」→ 名簿にある → 予約者として表示
+     ・設定が外れている → subject は「採用面談 山田さん」→ 名簿に無い → 捨てて「使用中」
+   仕組みとして安全側に倒れる。フラグを人が管理する必要もない。
+
+   ■ 予備：社員の予定の「場所」と突き合わせる
+   件名から1件も取れなかったときだけ走らせる（下の loadOwners）。
+   設定が変わっても、外部主催が多くても、名前が出る道を残しておく。
    ============================================================ */
+
+/* 氏名の比較用。全角スペース・半角スペースの揺れを吸収する */
+function normName(s){
+  return String(s ?? '').replace(/[\s　]+/g, '').toLowerCase();
+}
+let NAME_MAP = null;
+function buildNameMap(){
+  NAME_MAP = new Map();
+  PEOPLE.forEach(p => {
+    const k = normName(p.n);
+    if (!k) return;
+    /* 同姓同名がいたら、どちらか分からないので採用しない（誤って別人を出さない） */
+    if (NAME_MAP.has(k)) NAME_MAP.set(k, null);
+    else NAME_MAP.set(k, p);
+  });
+}
+function personFromSubject(subject){
+  if (!NAME_MAP) return null;
+  const k = normName(subject);
+  if (!k) return null;
+  return NAME_MAP.get(k) || null;
+}
+
 async function loadPeople(){
   if (PEOPLE.length) return;
   const base = `/groups/${GROUP_ID}/members/microsoft.graph.user`;
@@ -748,6 +823,7 @@ async function loadPeople(){
     mail: (u.mail || u.userPrincipalName || '').trim(),
     dep: (u.department || '').trim()
   })).filter(p => p.mail);
+  buildNameMap();
 }
 
 /* 会議室の枠と社員の予定を時刻で突き合わせる。
@@ -759,8 +835,23 @@ function attachOwner(slot, cand){
 }
 
 async function loadOwners(){
-  if (!RES.length) { SRC.ownerState = '対象なし'; paintPanel(); return; }
+  if (!RES.length) { SRC.ownerState = '対象なし'; SRC.ownerHow = ''; paintPanel(); return; }
+
+  /* 件名から取れているなら、社員89人ぶんを読む必要はない。ここで終わる。 */
+  const bySubject = RES.filter(r => r.from === 'subject').length;
+  if (bySubject) {
+    SRC.owners = bySubject;
+    SRC.ownerState = `${bySubject} / ${RES.length}件`;
+    SRC.ownerHow = '会議室の件名から（社員の予定は読んでいません）';
+    paintPanel();
+    return;
+  }
+
+  /* 1件も取れなかった＝Exchange の DeleteSubject が外れた、
+     getSchedule が件名を返さない、外部主催だけ、などの場合。
+     予備の方法（社員の予定の「場所」と突き合わせ）に切り替える。 */
   SRC.ownerState = '照合中';
+  SRC.ownerHow = '社員の予定の「場所」と突き合わせ中';
   paintPanel();
   try {
     await loadPeople();
@@ -793,12 +884,15 @@ async function loadOwners(){
       const room = ROOMS.find(x => x.mail === slot.mail);
       if (!room) return;
       const c = cands.find(c => locHitsRoom(c.loc, room.tok) && attachOwner(slot, c));
-      if (c) { slot.who = c.p.n; slot.whoMail = c.p.mail; slot.whoDep = c.p.dep; hit++; }
+      if (c) { slot.who = c.p.n; slot.whoMail = c.p.mail; slot.whoDep = c.p.dep;
+               slot.from = 'location'; hit++; }
     });
     SRC.owners = hit;
     SRC.ownerState = `${hit} / ${RES.length}件`;
+    SRC.ownerHow = '社員の予定の「場所」から（予備の方法）';
   } catch (e) {
     SRC.ownerState = '失敗';
+    SRC.ownerHow = '';
     SRC.errs.push(`予約者の突き合わせに失敗：[${e.status || ''}] ${e.message}`);
   }
   paintPanel(); render(); paintSeek(); paintNow();
@@ -836,22 +930,36 @@ function paintPanel(){
     + (SRC.capOk < SRC.rooms
         ? ` — ${SRC.rooms - SRC.capOk}室で未設定。<code>Set-Place -Capacity</code> で入れられます`
         : '') + `</div>`
-    + `<div class="st-row">予約者の照合：<span class="${SRC.owners?'ok':'ng'}">${esc(SRC.ownerState)}</span>`
+    + `<div class="st-row">予約者：<span class="${SRC.owners?'ok':'ng'}">${esc(SRC.ownerState)}</span>`
     + (SRC.ownerState !== '照合中' && SRC.items && !SRC.owners
-        ? ` — <b>1件も一致しません。</b>社員の予定の「場所」に会議室名が入っていないか、`
-          + `予定表の既定権限が <code>LimitedDetails</code> 未満です`
-        : `<span class="cnt">社員の予定の「場所」と突き合わせています</span>`) + `</div>`;
+        ? ` — <b>1件も取れていません。</b>会議室の <code>DeleteSubject</code> が外れて件名が本物に戻っているか、`
+          + `社員の予定の「場所」に会議室名が入っていません。`
+          + `<code>Check-RoomMailboxes.ps1 -Inspect</code> で確認してください`
+        : `<span class="cnt">${esc(SRC.ownerHow)}</span>`) + `</div>`;
 
   if (SRC.errs.length) {
     h += `<details><summary>気になること ${SRC.errs.length}件</summary><pre>`
        + esc(SRC.errs.join('\n')) + `</pre></details>`;
   }
-  h += `<details><summary>この画面が件名を出さない理由</summary><pre>`
-     + '会議室には「○○さん面談」のような予定が入るので、件名は表示しません。\n'
-     + 'ただし予約者を突き合わせるために社員の予定を読んでいるので、\n'
-     + '件名そのものはブラウザまで届いています（表示していないだけです）。\n'
-     + '本当に見せたくない予定は Outlook で「非公開」にしてください。\n'
-     + 'この画面だけ塞いでも、「全社員の予定」タブから同じ件名が見えます。'
+  h += `<details><summary>予約者をどう出しているか</summary><pre>`
+     + '会議室は Exchange 側で DeleteSubject=True / AddOrganizerToSubject=True に\n'
+     + 'なっているので、会議室の予定表の件名は「予約した人の名前」に置き換わり、\n'
+     + '本当の件名は Exchange に残っていません。それをそのまま予約者として使います。\n'
+     + '\n'
+     + '★件名をそのまま表示はしません★\n'
+     + '誰かが DeleteSubject を False に戻すと、件名は本物（「採用面談 山田さん」）に\n'
+     + '戻ります。アプリはブラウザの中で動くので Exchange の設定を知る手段がありません。\n'
+     + 'そこで「社員名簿の氏名と完全一致したときだけ」予約者として採用します。\n'
+     + '  設定が入っている → 「福田 剛史」→ 名簿にある → 表示する\n'
+     + '  設定が外れている → 「採用面談 山田さん」→ 名簿に無い → 捨てて「使用中」\n'
+     + '仕組みとして安全側に倒れます。人がフラグを管理する必要はありません。\n'
+     + '同姓同名がいる場合は、別人を出さないよう採用しません。\n'
+     + '\n'
+     + '1件も取れないときだけ、予備として社員の予定の「場所」と突き合わせます\n'
+     + '（このときは社員の予定を読むので、件名はブラウザまで届きます）。\n'
+     + '\n'
+     + 'なお、見せたくない予定は Outlook で「非公開」にしてください。\n'
+     + 'この画面を塞いでも、主催者本人の予定表は「全社員の予定」タブに出ます。'
      + `</pre></details>`;
   p.innerHTML = h;
 }
@@ -1230,7 +1338,21 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') document.que
    ============================================================ */
 async function loadAll(want){
   try {
-    if (!ROOMS.length) { await loadRooms(); paintFlrSelect(); }
+    if (!ROOMS.length) {
+      /* 会議室の一覧と社員名簿は互いに独立なので同時に取る。
+         ★名簿は loadRes より先に必要★ 件名（＝予約者名）を名簿と突き合わせるので、
+         名簿が無いうちに予約を読むと、予約者が1件も出ない。
+         名簿が取れなくても会議室の空きは出す（予約者名だけ出なくなる）。 */
+      const [, peopleErr] = await Promise.all([
+        loadRooms(),
+        loadPeople().then(() => null, e => e)
+      ]);
+      if (peopleErr) {
+        SRC.errs.push('社員名簿が読めません（予約者名が出ません）：'
+          + `[${peopleErr.status || ''}] ${peopleErr.message}`);
+      }
+      paintFlrSelect(); paintCapSelect();
+    }
     if (want) {
       if (want.flr) el('flr').value = want.flr;
       if (want.cap) el('cap').value = want.cap;
