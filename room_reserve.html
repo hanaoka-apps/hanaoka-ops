@@ -110,6 +110,13 @@
     .hd.sat{background:#eef4fb}.hd.sat .dow{color:var(--primary)}
     .hd.sun{background:#fdeff0}.hd.sun .dow{color:var(--danger)}
     .hd.today{background:#fff6d9}.hd.today .dnum,.hd.today .dow{color:#8a5a00}
+    /* 週表示の日付見出しはクリックできる。押すとその日だけの時間割に切り替わる。
+       押せることが分からないと誰も使わないので、下線と手のカーソルで見せる。 */
+    .hd.clk{cursor:pointer}
+    .hd.clk:hover{background:#dbe8f7;box-shadow:inset 0 -3px 0 var(--primary)}
+    .hd.clk:hover .dnum{color:var(--primary-dk)}
+    .hd.clk::after{content:"";display:block;height:2px;margin:2px 6px 0;border-radius:1px;background:transparent}
+    .hd.clk:hover::after{background:var(--primary)}
     .hd.noon{background:#f2f5fa}
 
     .grp{display:flex;background:#eaeef5;border-bottom:1px solid var(--border);border-top:1px solid var(--border)}
@@ -314,11 +321,19 @@ const MSAL_CONFIG = {
   },
   cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
 };
-/* Place.Read.All … 会議室の一覧（収容人数・階つき）を取る
-   GroupMember.Read.All … 予約者の突き合わせに使う名簿
-   Calendars.Read.Shared … 会議室と社員の空き情報 */
+/* GroupMember.Read.All … 予約者の名前を出すための名簿
+   Calendars.Read.Shared … 会議室の空き情報 */
 const SCOPES = ['User.Read', 'User.Read.All', 'GroupMember.Read.All',
-                'Calendars.Read', 'Calendars.Read.Shared', 'Place.Read.All'];
+                'Calendars.Read', 'Calendars.Read.Shared'];
+
+/* ★Place.Read.All は基本スコープに混ぜない★
+   混ぜると、未同意のテナントでは acquireTokenSilent が丸ごと失敗して、
+   会議室の一覧も空き情報も何も出なくなる（フォールバックが動く前に止まる）。
+   これは別建てで、しかも「静かに」取りに行く：
+     ・同意済み  → 収容人数と階が取れる
+     ・未同意    → null が返るだけ。/me/findRooms に落ちて画面は動く
+   ポップアップは出さない。89人が同意できない同意画面を出しても意味がないため。 */
+const PLACE_SCOPES = ['Place.Read.All'];
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
 /* 予約者の突き合わせに使う名簿（全社員チーム。他タブと同じ） */
@@ -453,20 +468,27 @@ async function getToken(){
   try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account: currentAccount })).accessToken; }
   catch { const r = await msalInstance.acquireTokenPopup({ scopes: SCOPES }); currentAccount = r.account; return r.accessToken; }
 }
+/* Place.Read.All のトークン。未同意なら null を返すだけ（ポップアップは出さない） */
+async function getPlaceToken(){
+  try {
+    const r = await msalInstance.acquireTokenSilent({ scopes: PLACE_SCOPES, account: currentAccount });
+    return r.accessToken;
+  } catch (e) { return null; }
+}
 
 /* ============================================================
    Graph
    ============================================================ */
-async function gGet(path, extra){
-  const t = await getToken();
+async function gGet(path, extra, token){
+  const t = token || await getToken();
   const r = await fetch(GRAPH_BASE + path, { headers: { Authorization: 'Bearer ' + t, ...(extra||{}) } });
   if (!r.ok) { const e = new Error(`[${r.status}] ${path}`); e.status = r.status; e.body = await r.text(); throw e; }
   return r.json();
 }
-async function gGetAll(path, extra){
+async function gGetAll(path, extra, token){
   let out = [], next = path;
   while (next) {
-    const d = await gGet(next, extra);
+    const d = await gGet(next, extra, token);
     out = out.concat(d.value || []);
     next = d['@odata.nextLink'] ? d['@odata.nextLink'].replace(GRAPH_BASE, '') : null;
   }
@@ -495,7 +517,7 @@ let curDay  = dayTopMs(Date.now());
 let SEEK = null, HILITE = null, NOWMIN = 60;
 let lastLoad = 0, refreshTimer = null;
 let SRC = { src:'', rooms:0, ok:0, ng:0, errs:[], items:0, capOk:0,
-            owners:0, ownerState:'未実行', ownerHow:'' };
+            owners:0, ownerState:'未実行', ownerHow:'', needPlace:false };
 
 const el = id => document.getElementById(id);
 function showSnack(m){ const s = el('snackbar'); s.textContent = m; s.style.display='block';
@@ -580,21 +602,31 @@ async function loadRooms(){
   SRC.errs = [];
   let list = null;
 
-  /* 1) places */
-  try {
-    const v = await gGetAll('/places/microsoft.graph.room?$top=999');
-    if (v.length) {
-      list = v.map(r => mkRoom({
-        n: r.displayName, mail: r.emailAddress, cap: r.capacity,
-        flr: r.floorLabel || (r.floorNumber != null ? `${r.floorNumber}F` : ''),
-        bld: r.building,
-        av: [r.videoDeviceName, r.audioDeviceName, r.displayDeviceName].filter(Boolean).join('・')
-      }));
-      SRC.src = '/places（収容人数・階つき）';
+  /* 1) places。Place.Read.All が同意済みのときだけ */
+  const pt = await getPlaceToken();
+  if (!pt) {
+    SRC.needPlace = true;
+    SRC.errs.push('Place.Read.All が未同意です（収容人数と階が取れません）。'
+      + 'Azure AD のアプリに Place.Read.All（委任）を追加して管理者同意してください');
+  } else {
+    try {
+      const v = await gGetAll('/places/microsoft.graph.room?$top=999', null, pt);
+      if (v.length) {
+        list = v.map(r => mkRoom({
+          n: r.displayName, mail: r.emailAddress, cap: r.capacity,
+          flr: r.floorLabel || (r.floorNumber != null ? `${r.floorNumber}F` : ''),
+          bld: r.building,
+          av: [r.videoDeviceName, r.audioDeviceName, r.displayDeviceName].filter(Boolean).join('・')
+        }));
+        SRC.src = '/places（収容人数・階つき）';
+      } else {
+        SRC.errs.push('/places は読めましたが会議室が0件でした');
+      }
+    } catch (e) {
+      SRC.needPlace = (e.status === 403);
+      SRC.errs.push(`/places が使えません：[${e.status || ''}] ${e.message}`
+        + (e.status === 403 ? '　→ Place.Read.All の管理者同意が必要です' : ''));
     }
-  } catch (e) {
-    SRC.errs.push(`/places が使えません：[${e.status || ''}] ${e.message}`
-      + (e.status === 403 ? '　→ Place.Read.All の追加と管理者同意が必要です' : ''));
   }
 
   /* 2) findRooms */
@@ -608,14 +640,31 @@ async function loadRooms(){
     } catch (e) { SRC.errs.push(`/me/findRooms も使えません：[${e.status || ''}] ${e.message}`); }
   }
 
-  /* 3) カレンダー一覧から room- を拾う */
+  /* 3) 利用者の一覧から room- で始まるメールを拾う
+        会議室のメールボックスは Entra ID にも並んでいる。
+        花岡車輌の会議室は room-1f-ld1@ のように命名が統一されているので、
+        接頭辞で拾える（実機6室で確認済み）。
+        User.Read.All は「全社員の予定」タブで既に使っているので追加は不要。
+        ★命名規則に依存する方法★ 規則から外れた部屋は拾えない。あくまで予備。 */
+  if (!list) {
+    try {
+      const v = await gGetAll('/users?$select=id,displayName,mail,userPrincipalName&$top=999');
+      const hit = v.filter(u => /^(room|conf|meeting|mr)[-_.]/i.test(String(u.mail || u.userPrincipalName || '')));
+      if (hit.length) {
+        list = hit.map(u => mkRoom({ n: u.displayName, mail: u.mail || u.userPrincipalName }));
+        SRC.src = '利用者一覧から room- を拾いました（収容人数は取れません）';
+      }
+    } catch (e) { SRC.errs.push(`利用者の一覧も読めません：[${e.status || ''}] ${e.message}`); }
+  }
+
+  /* 4) 自分の予定表の一覧から room- を拾う（最後の手段） */
   if (!list) {
     try {
       const v = await gGetAll('/me/calendars?$top=200');
       const hit = v.filter(c => /^(room|conf|meeting|mr)[-_.]/i.test(String(c.owner?.address || '')));
       if (hit.length) {
         list = hit.map(c => mkRoom({ n: c.name, mail: c.owner?.address }));
-        SRC.src = '予定表の一覧から room- を拾いました（暫定）';
+        SRC.src = '自分の予定表の一覧から拾いました（暫定・全室そろっていない可能性）';
       }
     } catch (e) { SRC.errs.push(`予定表の一覧も読めません：[${e.status || ''}] ${e.message}`); }
   }
@@ -911,7 +960,9 @@ function paintPanel(){
   if (!IS_ADMIN){
     if (!warn) { p.style.display = 'none'; return; }
     p.style.display = 'block'; p.className = bad ? 'bad' : 'warn';
-    p.innerHTML = SRC.ng
+    p.innerHTML = !SRC.rooms
+      ? `<div><b>会議室の一覧が取れていません。</b>総務部に連絡してください。</div>`
+      : SRC.ng
       ? `<div><b>${SRC.ng}室</b>の空き情報が読めていません。その部屋は空いていても「予約なし」に見えます。`
         + `Outlook で直接確認するか、総務部に連絡してください。</div>`
       : `<div>会議室の情報が一部読めていません。総務部に連絡してください。</div>`;
@@ -923,12 +974,25 @@ function paintPanel(){
   let h = `<div><b>取得状況</b></div>`
     + `<div class="st-row">会議室：<span class="${SRC.rooms?'ok':'ng'}">${SRC.rooms}室</span>`
     + `<span class="cnt">${esc(SRC.src || '取得できていません')}</span></div>`
+    /* ★1つの <span> にまとめる★ .st-row は flex なので、</b> の後ろの素の文字列は
+       別の flex アイテムになり、行頭に「。」が来るような折り返しをする。 */
+    + (SRC.needPlace
+        ? `<div class="st-row"><span><b>Place.Read.All が未同意です。</b>`
+          + `Azure AD → アプリの登録 → <code>d338d61b-01dc-4c7c-ac6b-aecf7f30d716</code> → `
+          + `APIのアクセス許可 → Microsoft Graph → 委任 → <code>Place.Read.All</code> を追加 → `
+          + `<b>管理者の同意を与えます</b>。同意したらこの画面を Ctrl+F5 で読み直してください。`
+          + `<span class="cnt">同意しなくても会議室は出ますが、収容人数と階が出ません</span>`
+          + `</span></div>`
+        : '')
     + `<div class="st-row">空き情報：読めた <span class="${SRC.ok?'ok':'ng'}">${SRC.ok}室</span>`
     + ` / 読めず <span class="${SRC.ng?'ng':'ok'}">${SRC.ng}室</span>`
     + `<span class="cnt">この期間の予約 ${SRC.items}件</span></div>`
     + `<div class="st-row">収容人数：<span class="${SRC.capOk?'ok':'ng'}">${SRC.capOk}室</span>`
     + (SRC.capOk < SRC.rooms
-        ? ` — ${SRC.rooms - SRC.capOk}室で未設定。<code>Set-Place -Capacity</code> で入れられます`
+        ? `<span>${SRC.rooms - SRC.capOk}室で未設定。`
+          + (SRC.needPlace
+              ? `Place.Read.All を同意すると出ます`
+              : `<code>Set-Place -Capacity</code> で入れられます`) + `</span>`
         : '') + `</div>`
     + `<div class="st-row">予約者：<span class="${SRC.owners?'ok':'ng'}">${esc(SRC.ownerState)}</span>`
     + (SRC.ownerState !== '照合中' && SRC.items && !SRC.owners
@@ -1132,13 +1196,24 @@ function nameCell(room, rs, n){
       </div></div>`;
 }
 
+/* 「1室も出ない」には2つの意味がある。取り違えると原因を探す場所を間違える。
+     ・そもそも会議室の一覧が取れていない（設定・権限の問題）
+     ・一覧は取れているが、絞り込みで消えている（操作の問題） */
+function emptyMsg(){
+  if (!ROOMS.length) {
+    return '会議室の一覧が取れていません。'
+      + (IS_ADMIN ? '上の「取得状況」に原因が出ています。' : '総務部に連絡してください。');
+  }
+  return `絞り込みに合う会議室がありません（全 ${ROOMS.length}室）。階・収容人数・検索欄を戻してください`;
+}
+
 function render(){ VIEW === 'day' ? renderDay() : renderWeek(); }
 
 function renderWeek(){
   const now = Date.now(), w0 = curWeek, w1 = w0 + WK;
   const days = Array.from({length:7}, (_,i) => w0 + i*DAY);
   el('range').textContent = `${jKey(w0).replace(/-/g,'/')} 〜 ${jKey(w0+6*DAY).replace(/-/g,'/')}`;
-  el('lg-note').textContent = '│ 帯の位置と幅は実時刻に比例（点線＝正午 JST）。件名は表示していません';
+  el('lg-note').textContent = '│ 帯の位置と幅は実時刻に比例（点線＝正午 JST）。上の日付をクリックするとその日だけ表示。件名は表示していません';
   const g = el('grid'); g.className = 'grid wk';
 
   const inView = RES.filter(r => r.e > w0 && r.s < w1);
@@ -1150,10 +1225,11 @@ function renderWeek(){
   days.forEach(ms => {
     const d = toJ(ms), dow = d.getUTCDay();
     const c = [dow===6?'sat':'', dow===0?'sun':'', jKey(ms)===todayKey?'today':''].join(' ');
-    h += `<div class="hd ${c}"><div class="dow">${DOW[dow]}</div><div class="dnum">${d.getUTCDate()}</div></div>`;
+    h += `<div class="hd clk ${c}" data-d="${jKey(ms)}" title="クリックするとこの日だけ表示します">`
+       + `<div class="dow">${DOW[dow]}</div><div class="dnum">${d.getUTCDate()}</div></div>`;
   });
   h += `</div></div>`;
-  if (!list.length) h += `<div class="empty">条件に合う会議室がありません</div>`;
+  if (!list.length) h += `<div class="empty">${emptyMsg()}</div>`;
 
   let lastG = null;
   list.forEach(room => {
@@ -1218,7 +1294,7 @@ function renderDay(){
     h += `<div class="hd ${hh===12?'noon':''}"><div class="dnum" style="font-size:12px">${pad(hh)}</div><div class="dow">:00</div></div>`;
   }
   h += `</div></div>`;
-  if (!list.length) h += `<div class="empty">条件に合う会議室がありません</div>`;
+  if (!list.length) h += `<div class="empty">${emptyMsg()}</div>`;
 
   let lastG = null;
   list.forEach(room => {
@@ -1293,7 +1369,18 @@ el('todayBtn').onclick = () => {
 ['flr','cap','onlybusy'].forEach(id => el(id).onchange = () => { render(); paintSeek(); paintNow(); writeUrl(); });
 el('q').oninput = () => { render(); paintSeek(); paintNow(); writeUrl(); };
 
+/* 週表示で日付の見出しを押したら、その日だけの時間割に切り替える。
+   週で全体を見て、気になった日に寄る——という見方が自然にできるようにする。
+   日表示の見出しは時刻なので data-d が無く、ここには入らない。 */
+function goDay(key){
+  const ms = Date.parse(key + 'T00:00:00Z') - JST;
+  if (isNaN(ms)) return;
+  curDay = dayTopMs(ms);
+  setView('day');          /* setView が再取得・再描画・URL更新までやる */
+}
 el('grid').addEventListener('click', ev => {
+  const hd = ev.target.closest('.hd[data-d]');
+  if (hd) { goDay(hd.dataset.d); return; }
   const bar = ev.target.closest('.bar-i');
   if (bar) openDetail(bar.dataset.r);
 });
