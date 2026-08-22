@@ -309,6 +309,38 @@ const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 /* 全社員が参加しているチーム（デモ機の重複通知で使っているのと同じ） */
 const GROUP_ID = 'ed13b4d2-03b0-47ee-8892-e105e0cf9851';
 
+/* ============================================================
+   人ではないアカウントを名簿から外す
+   ------------------------------------------------------------
+   RPA用・共有用のアカウントが個人メールボックス（UserMailbox）として
+   作られているので、何もしないと社員と並んで一覧に出てしまう。
+   予定表を持っていても「誰かの予定」ではないので出さない。
+
+   ★黙って消さない★
+   除外した件数と名前は管理者パネルに出す。ここに書き忘れたアカウントが
+   増えたときに気づけるようにするため。人だった場合も同じ理由。
+
+   増えたらここに足す。メールで指定するほうが確実（表示名は変わりうる）。
+   ============================================================ */
+const EXCLUDE_MAILS = [
+  'hanaoka-01@hanaoka-corp.co.jp',
+  'hanaoka-fac01@hanaoka-corp.co.jp',
+  'hanaoka-fac02@hanaokacorp.onmicrosoft.com',
+  'hanaoka-fac03@hanaokacorp.onmicrosoft.com',
+  'hanaoka-fac04@hanaokacorp.onmicrosoft.com',
+].map(x => x.toLowerCase());
+/* 表示名での保険。上のリストに無い共有アカウントが増えても拾える。
+
+   ★Set-StaffDepartment.ps1 の Looks-Shared と同じ考え方★
+   片方だけ直すとズレる（実際に一度ズレて、RPA用が PowerShell 側の
+   「部署が未設定」に混ざった）。条件を変えるときは両方直すこと。 */
+const EXCLUDE_RE = /共有|シェア|受付|代表|ロボ|rpa|bot|自動|ダミー|dummy|テスト|test/i;
+
+function isNotPerson(p){
+  if (EXCLUDE_MAILS.includes(p.mail.toLowerCase())) return true;
+  return EXCLUDE_RE.test(p.n);
+}
+
 const DAY_H0 = 8, DAY_H1 = 20;      /* 日表示の既定の時間帯。予約に合わせて自動で広げる */
 const CHUNK  = 20;                  /* getSchedule は1回20人まで */
 
@@ -420,7 +452,7 @@ let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
 let SEEK = null, HILITE = null;
 let lastLoad = 0, refreshTimer = null;
-let SRC = { ok:0, ng:0, errs:[], withSubject:0, items:0, depOk:false };
+let SRC = { ok:0, ng:0, errs:[], withSubject:0, items:0, depOk:false, excluded:[] };
 
 const el = id => document.getElementById(id);
 function showSnack(m){ const s = el('snackbar'); s.textContent = m; s.style.display='block';
@@ -491,7 +523,7 @@ async function loadPeople(){
     items = await gGetAll(`${base}?$select=id,displayName,mail,userPrincipalName&$top=999`);
     SRC.depOk = false;
   }
-  PEOPLE = items.map(u => ({
+  const all = items.map(u => ({
     id  : u.id,
     n   : u.displayName || u.userPrincipalName || '(名前なし)',
     mail: (u.mail || u.userPrincipalName || '').trim(),
@@ -499,6 +531,10 @@ async function loadPeople(){
     job : (u.jobTitle || '').trim(),
     src : 'none'
   })).filter(p => p.mail);
+
+  /* 人ではないアカウントを外す。外した中身は控えておいてパネルに出す */
+  SRC.excluded = all.filter(isNotPerson);
+  PEOPLE = all.filter(p => !isNotPerson(p));
 
   /* 部署順→氏名順。安定ソートなので部署内は氏名順に並ぶ。
      「部署なし」は必ず最後。'んんん' のような番兵は ja のかな＜漢字の並びで
@@ -610,6 +646,10 @@ function paintPanel(){
   let h = `<div><b>取得状況</b></div>`
     + `<div class="st-row">名簿：<span class="ok">${PEOPLE.length}人</span>`
     + `<span style="color:var(--muted)">全社員チームのメンバー</span>`
+    + (SRC.excluded.length
+        ? `　除外：<span class="ok">${SRC.excluded.length}件</span>`
+          + `<span style="color:var(--muted)">人ではないアカウント（RPA・共有）</span>`
+        : '')
     + `　部署：${SRC.depOk ? '<span class="ok">取得OK</span>' : '<span class="ng">取得できず</span>（<code>User.Read.All</code> 未付与）'}</div>`
     + `<div class="st-row">予定：読めた <span class="${SRC.ng?'ng':'ok'}">${SRC.ok}人</span> / 読めず ${SRC.ng}人`
     + `　この期間の予定 ${SRC.items}件</div>`
@@ -618,6 +658,13 @@ function paintPanel(){
         ? ` — <b>1件も取れていません。</b>予定表の既定権限が <code>LimitedDetails</code> 未満です。`
           + `<code>Set-StaffCalendarPermission.ps1 -GrantLimitedDetails</code> を実行してください`
         : `（非公開の予定は件名が出ません）`) + `</div>`;
+  if (SRC.excluded.length){
+    h += `<details><summary>名簿から外したアカウント ${SRC.excluded.length}件</summary><pre>`
+       + esc(SRC.excluded.map(x => `${x.n}  ${x.mail}`).join('\n'))
+       + '\n\nRPA・共有用のアカウントなので、人として一覧に出していません。\n'
+       + 'ここに人が混ざっていたら EXCLUDE_MAILS を直してください。'
+       + `</pre></details>`;
+  }
   if (SRC.errs.length){
     h += `<details><summary>取得できなかった理由（${SRC.errs.length}件）</summary><pre>${esc(SRC.errs.slice(0,40).join('\n'))}`
       + (SRC.errs.length>40 ? `\n… 他 ${SRC.errs.length-40} 件` : '') + `</pre></details>`;
