@@ -274,6 +274,16 @@ header.top{
 }
 .postbox textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
 .postbox textarea:disabled{background:#f4f6f8;color:var(--muted2)}
+.filerow{display:flex;align-items:center;gap:9px;margin-top:8px;flex-wrap:wrap}
+.filebtn{
+  display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border);
+  border-radius:7px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;
+  color:var(--accent-dk);background:#fff;white-space:nowrap
+}
+.filebtn:hover{border-color:var(--accent);background:var(--accent-bg)}
+.filebtn input{display:none}
+.filerow .note{font-size:11px;color:var(--muted2);min-width:0}
+.filerow .note b{color:var(--text);font-weight:600}
 .prev{
   margin-top:8px;background:#f7f9fa;border:1px solid var(--border);border-radius:7px;
   padding:8px 11px;font-size:11.5px;line-height:1.65;color:var(--text)
@@ -416,6 +426,13 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
           <span><b id="postWhere">チャネルに投稿してスレッドに残す</b>
           <span class="note" id="postNote"></span></span></label>
         <textarea id="fMsg" rows="2" placeholder="スレッドに書くコメント（任意）。空でもタスクの内容は投稿されます"></textarea>
+        <div class="filerow">
+          <label class="filebtn">
+            <input type="file" id="fFile" multiple accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx">
+            📎 請求書などを添付
+          </label>
+          <span class="note" id="fileNote"></span>
+        </div>
         <div class="prev" id="postPrev"></div>
       </div>
     </div>
@@ -594,7 +611,7 @@ var SCOPE_SETS = {
             "ChannelMessage.Read.All","ChannelMessage.Send"],
   sites  : ["Sites.ReadWrite.All"],
   chat   : ["Chat.ReadBasic","Chat.Read","ChatMessage.Send"],    // 任意
-  files  : ["Files.Read.All"]                                    // 任意（PDFプレビュー）
+  files  : ["Files.Read.All","Files.ReadWrite.All"]              // PDFプレビュー＋添付アップロード
 };
 /* サインイン時にまとめて取る「これが無いと成立しない」領域。
    chat と files は使うときに初めて取りに行きます（未同意でも起動はする） */
@@ -604,7 +621,7 @@ var SILENT_ONLY = { chat:true };
 
 function scopeFor(p){
   if(p.indexOf("/sites/")===0) return "sites";
-  if(p.indexOf("/shares/")===0) return "files";
+  if(p.indexOf("/shares/")===0||p.indexOf("/drives/")===0) return "files";
   if(p.indexOf("/chats/")===0 || p.indexOf("/me/chats")===0) return "chat";
   if(p.indexOf("/teams/")===0 || p.indexOf("/me/joinedTeams")===0) return "channel";
   return "core";
@@ -837,9 +854,11 @@ async function g(path,opt){
   opt=opt||{};
   var tk=await token(opt.scope||scopeFor(path));
   var h=Object.assign({Authorization:"Bearer "+tk},opt.headers||{});
-  if(opt.body && !h["Content-Type"]) h["Content-Type"]="application/json";
+  var payload;
+  if(opt.binary){ payload=opt.binary; if(!h["Content-Type"]) h["Content-Type"]="application/octet-stream" }
+  else if(opt.body){ payload=JSON.stringify(opt.body); if(!h["Content-Type"]) h["Content-Type"]="application/json" }
   var res=await fetch(path.indexOf("http")===0?path:"https://graph.microsoft.com/v1.0"+path,
-    {method:opt.method||"GET",headers:h,body:opt.body?JSON.stringify(opt.body):undefined});
+    {method:opt.method||"GET",headers:h,body:payload});
   if(!res.ok){
     var tx=await res.text(), msg=tx;
     try{ msg=JSON.parse(tx).error.message }catch(e){}
@@ -1190,6 +1209,48 @@ async function refreshOwnList(){
   renderPostPreview();
 }
 
+/* ------------------------------------------------------------
+   添付ファイルのアップロード
+
+   チャネル投稿にファイルを付けるには2段階が必要です。
+     ① そのチャネルのSharePointライブラリにアップロード
+     ② メッセージから reference 型の attachment として参照
+   ②の attachment.id は「driveItem の eTag に入っているGUID」を使いますが、
+   公式ドキュメントには id は Read-only とだけ書かれていて作成時の
+   指定方法が書かれていません（実装知識）。なので失敗したら
+   リンク付きの投稿に自動で落とします。①は先に済んでいるので
+   添付チップが付かなくても証憑そのものは残ります。
+   ------------------------------------------------------------ */
+var UPLOAD_LIMIT = 4*1024*1024;   // 単純アップロードの上限。超える分は分割送信が必要
+
+function etagGuid(item){
+  var m=String((item&&item.eTag)||"").match(/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/);
+  return m?m[1].toLowerCase():"";
+}
+/* チャネルのファイル置き場（= そのチャネルのSharePointフォルダ）へ上げる */
+async function uploadToChannel(room,file){
+  if(file.size>UPLOAD_LIMIT)
+    throw new Error(file.name+" は "+Math.round(file.size/1048576)+"MB あります。"+
+      "4MBを超えるファイルはTeamsから直接添付してください。");
+  // filesFolder は Files/Sites 系の権限が必要なので領域を明示する
+  var ff=await g("/teams/"+room.teamId+"/channels/"+room.id+"/filesFolder",{scope:"files"});
+  var driveId=(ff.parentReference&&ff.parentReference.driveId)||"";
+  if(!driveId||!ff.id) throw new Error("チャネルのファイル置き場を特定できませんでした");
+  var path="/drives/"+driveId+"/items/"+ff.id+":/"+encodeURIComponent(file.name)+
+           ":/content?@microsoft.graph.conflictBehavior=rename";
+  return g(path,{method:"PUT",binary:file,
+    headers:{"Content-Type":file.type||"application/octet-stream"}});
+}
+async function uploadAll(room,files){
+  var out=[];
+  for(var i=0;i<files.length;i++){
+    setSaveLabel("アップロード中 "+(i+1)+"/"+files.length+"…");
+    out.push(await uploadToChannel(room,files[i]));
+  }
+  return out;
+}
+function setSaveLabel(t){ $("tdSave").textContent=t||"保存" }
+
 /* 投稿する本文を組み立てる。担当者のAAD IDが取れていれば @メンションを付ける */
 function buildTaskMessage(t,comment,isNew){
   var W=wfEff(t), L=W.labels;
@@ -1226,13 +1287,32 @@ function renderPostPreview(){
 }
 
 /* タスクを保存したあとスレッドに投稿し、投稿のIDとリンクをタスクに書き戻す */
-async function postTaskRecord(t,comment,isNew,replyRootId){
+async function postTaskRecord(t,comment,isNew,replyRootId,uploaded){
   var m=buildTaskMessage(t,comment,isNew);
-  var body={body:{contentType:"html",content:m.content}};
-  if(m.mentions.length) body.mentions=m.mentions;
+  var content=m.content, atts=[];
+  (uploaded||[]).forEach(function(u){
+    var gid=etagGuid(u);
+    if(gid){
+      atts.push({id:gid,contentType:"reference",contentUrl:u.webUrl,name:u.name});
+      content+='<attachment id="'+gid+'"></attachment>';
+    }
+  });
+  function mk(withAtt){
+    var b={body:{contentType:"html",content:withAtt?content:m.content+linkList()}};
+    if(m.mentions.length) b.mentions=m.mentions;
+    if(withAtt && atts.length) b.attachments=atts;
+    return b;
+  }
+  function linkList(){
+    if(!(uploaded||[]).length) return "";
+    return "<p>添付: "+uploaded.map(function(u){
+      return '<a href="'+esc(u.webUrl)+'">'+esc(u.name)+'</a>'}).join("　")+"</p>";
+  }
+
   if(S.mode==="demo"){
     S.msgs=S.msgs.concat([{id:"d"+Date.now(),from:S.me.name,when:new Date().toISOString(),
-      html:m.content,reply:!!replyRootId,parent:replyRootId||null}]);
+      html:m.content,reply:!!replyRootId,parent:replyRootId||null,
+      file:(uploaded||[])[0]?{name:uploaded[0].name,size:"",url:uploaded[0].webUrl}:null}]);
     return {id:"d"+Date.now(),webUrl:""};
   }
   var url;
@@ -1242,7 +1322,15 @@ async function postTaskRecord(t,comment,isNew,replyRootId){
     url="/teams/"+S.cur.teamId+"/channels/"+S.cur.id+"/messages";
     if(replyRootId) url+="/"+replyRootId+"/replies";
   }
-  return g(url,{method:"POST",body:body});
+  if(!atts.length) return g(url,{method:"POST",body:mk(false)});
+  try{
+    return await g(url,{method:"POST",body:mk(true)});
+  }catch(e){
+    // attachment の指定方法は未ドキュメントなので、弾かれたらリンクだけの投稿に落とす
+    console.warn("添付付き投稿に失敗 → リンク付きで再投稿:",e.message);
+    toast("添付チップは付けられなかったのでリンクにしました",true);
+    return g(url,{method:"POST",body:mk(false)});
+  }
 }
 
 async function openFile(url,name){
@@ -1443,6 +1531,12 @@ function openTaskModal(pre,srcText,warnText){
   $("fPost").checked=!S.editing && !!S.cur;
   $("fPost").disabled=!S.cur;
   $("fMsg").value="";
+  // 添付はチャネルだけ。チャットの添付は送信者個人のOneDriveに入るので扱わない
+  $("fFile").value=""; $("fFile").disabled=(!S.cur||isChat);
+  $("fileNote").textContent=isChat
+    ? "チャットには添付できません（ファイルが個人のOneDriveに入るため）"
+    : "1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
+  $("fileNote").style.color=isChat?"var(--wait)":"";
   S._pre=v;
   refreshOwnList();
   $("ovTask").classList.add("on"); setTimeout(function(){$("fName").focus()},60);
@@ -1725,6 +1819,16 @@ $("fOwn").addEventListener("input",function(){
   clearTimeout(S._ownT); S._ownT=setTimeout(refreshOwnList,260);
 });
 $("fPost").addEventListener("change",renderPostPreview);
+$("fFile").addEventListener("change",function(){
+  var f=this.files||[];
+  if(!f.length){ $("fileNote").textContent="1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
+                 $("fileNote").style.color=""; return }
+  var big=[].slice.call(f).filter(function(x){return x.size>UPLOAD_LIMIT});
+  var names=[].slice.call(f).map(function(x){
+    return x.name+"（"+(x.size<1024?x.size+"B":x.size<1048576?Math.round(x.size/1024)+"KB":(x.size/1048576).toFixed(1)+"MB")+"）"});
+  $("fileNote").innerHTML=(big.length?"⚠ 4MB超あり: ":"<b>"+f.length+"件</b> ")+esc(names.join("、"));
+  $("fileNote").style.color=big.length?"var(--danger)":"";
+});
 ["fMsg","fName","fAmt","fDue","fSt"].forEach(function(id){
   $(id).addEventListener("input",renderPostPreview);
   $(id).addEventListener("change",renderPostPreview);
@@ -1769,14 +1873,27 @@ $("tdSave").onclick=async function(){
   // 金額は請求系の業務でだけ必須。仕入れ・採用など金額のないタスクも同じリストに入る
   if(S._requireAmt && !t.amount){ $("fAmt").classList.add("err"); toast("金額は必須です",true); return }
   var isNew=!S.editing, doPost=$("fPost").checked && !!S.cur, comment=$("fMsg").value.trim();
+  var files=[].slice.call($("fFile").files||[]);
   var p=findPerson(t.ownerName); if(p&&p.upn) t.ownerUpn=p.upn;
   $("tdSave").disabled=true;
   try{
+    // 先にアップロード。ここで落ちたらタスクも作らない（中途半端な状態を残さない）
+    var uploaded=[];
+    if(files.length && S.cur && S.cur.kind!=="chat"){
+      if(S.mode==="demo"){
+        uploaded=files.map(function(f){return {name:f.name,webUrl:"",eTag:""}});
+      }else{
+        uploaded=await uploadAll(S.cur,files);
+      }
+      if(uploaded.length && uploaded[0].webUrl) t.fileUrl=uploaded[0].webUrl;
+    }
+    setSaveLabel("保存中…");
     var saved=await saveTask(t);
     var newId=(saved&&saved.id)||t.id;
     if(doPost){
       try{
-        var posted=await postTaskRecord(t,comment,isNew,(isNew&&t.msgId&&S.cur.kind!=="chat")?t.msgId:null);
+        var posted=await postTaskRecord(t,comment,isNew,
+          (isNew&&t.msgId&&S.cur.kind!=="chat")?t.msgId:null,uploaded);
         // 投稿のIDとリンクをタスクに書き戻す。これで「元メッセージ」ボタンが機能する
         if(posted && newId && (posted.id!==t.msgId)){
           await saveTask(Object.assign({},t,{id:newId,
@@ -1793,7 +1910,7 @@ $("tdSave").onclick=async function(){
     if(!doPost) toast(isNew?"タスクを追加しました":"タスクを更新しました");
     else toast(isNew?"タスクを追加してスレッドに残しました":"タスクを更新しました");
   }catch(e){ toast(e.message,true) }
-  $("tdSave").disabled=false;
+  $("tdSave").disabled=false; setSaveLabel("保存");
 };
 $("tdDel").onclick=async function(){
   if(!S.editing)return;
