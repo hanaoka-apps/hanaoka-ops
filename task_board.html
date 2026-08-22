@@ -142,6 +142,19 @@ header.top{
   content:"";position:absolute;left:32px;top:0;bottom:0;width:2px;background:var(--border)
 }
 .msg.reply .av{flex:0 0 26px;height:26px;font-size:11px}
+.cardchip{
+  display:flex;align-items:center;gap:8px;margin-top:5px;padding:6px 10px;
+  border:1px solid var(--border);border-radius:8px;background:#fafbfc;
+  font-size:12px;max-width:560px
+}
+.cardchip .ic{
+  flex:0 0 auto;background:#eeecf8;color:#5b57a8;border-radius:4px;
+  padding:1px 6px;font-size:10px;font-weight:700
+}
+.cardchip .tx2{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cardchip .tx2.dim{color:var(--muted2)}
+.cardchip a{flex:0 0 auto;color:var(--accent-dk);font-size:11.5px;font-weight:600;text-decoration:none}
+.cardchip a:hover{text-decoration:underline}
 .taskcard{
   margin-top:6px;border:1px solid var(--border);border-radius:8px;padding:9px 11px;background:#fcfdfd;
   font-size:12.5px;max-width:520px
@@ -527,6 +540,9 @@ var CONFIG = {
 
   // rooms が空のときの絞り方。チャットを一切出したくないなら chats:false
   include  : { channels:true, chats:true },
+
+  // Workflows / Power Automate などのボット投稿を隠す。業務チャネルで通知が多いなら true
+  hideBots : false,
 
   // 1つだけに固定したい場合はこちら（指定すると rooms は無視されます）
   teamId   : "",
@@ -1130,11 +1146,38 @@ async function fetchMsgs(room){
 function isNoise(m){
   if(m.eventDetail) return true;                                   // システムイベント
   if(!(m.from && (m.from.user || m.from.application))) return true; // 発信者不明
+  if(CONFIG.hideBots && m.from.application) return true;            // ボット投稿を隠す設定
   var raw=(m.body&&m.body.content)||"";
   var body=stripTags(raw);
   var visual=/<(img|emoji|attachment)\b/i.test(raw);               // 絵文字・画像だけの投稿は残す
   if(!body && !visual && !(m.attachments||[]).length) return true; // 本文も添付もない
   return false;
+}
+/* Workflows / Power Automate などのボットは本文が空で、中身がアダプティブカードに
+   入っています。カードを描画しないと名前だけの空行になるので、要約を1行だけ抜きます。 */
+function cardSummary(m){
+  var cards=(m.attachments||[]).filter(function(a){
+    return a.contentType && a.contentType.indexOf("card")>=0});
+  if(!cards.length) return null;
+  var bits=[];
+  cards.forEach(function(c){
+    try{
+      var j=(typeof c.content==="string")?JSON.parse(c.content):c.content;
+      if(!j) return;
+      if(j.title) bits.push(j.title);
+      if(j.text)  bits.push(j.text);
+      (function walk(nodes){
+        (nodes||[]).forEach(function(b){
+          if(!b) return;
+          if(b.text) bits.push(String(b.text));
+          if(b.items)   walk(b.items);
+          if(b.columns) walk(b.columns);
+        });
+      })(j.body);
+    }catch(e){}
+  });
+  var t=bits.join(" / ").replace(/\s+/g," ").trim();
+  return {n:cards.length, text:t.length>160?t.slice(0,160)+"…":t};
 }
 function mapMsg(m){
   var att=(m.attachments||[]).filter(function(a){return a.contentType==="reference"})[0];
@@ -1146,6 +1189,8 @@ function mapMsg(m){
     fromId:(m.from&&m.from.user&&m.from.user.id)||"",
     when:m.createdDateTime, html:(m.body&&m.body.content)||"",
     mentions:m.mentions||[], webUrl:m.webUrl||"",
+    bot:!!(m.from&&m.from.application),
+    cards:cardSummary(m),
     file:att?{name:att.name,size:"",url:att.contentUrl}:null
   };
 }
@@ -1400,6 +1445,14 @@ function renderMsgs(){
     if(m.card) body+='<div class="taskcard"><div style="font-weight:600;margin-bottom:3px">'+
       esc(m.card.title)+'</div><div class="r">担当者：<b>'+esc(m.card.owner)+'</b></div>'+
       '<div class="r">期限：<b>'+esc(m.card.due)+'</b></div></div>';
+    if(m.cards && m.cards.n){
+      body+='<div class="cardchip">'+
+        '<span class="ic">カード</span>'+
+        (m.cards.text?'<span class="tx2">'+esc(m.cards.text)+'</span>'
+                     :'<span class="tx2 dim">'+m.cards.n+'件のカード投稿（Teamsで表示）</span>')+
+        (m.webUrl?'<a href="'+esc(m.webUrl)+'" target="_blank" rel="noopener">開く</a>':'')+
+        '</div>';
+    }
     if(m.file) body+='<a class="file" href="#" data-file="'+esc(m.file.url||"")+'" data-fn="'+esc(m.file.name)+'">'+
       '<span class="pdf">PDF</span><span class="fn"><span class="f1">'+esc(m.file.name)+'</span>'+
       '<span class="f2">'+esc(m.file.size||"添付ファイル")+'</span></span></a>';
