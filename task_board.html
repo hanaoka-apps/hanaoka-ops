@@ -614,7 +614,7 @@ function scopeFor(p){
    2. state / util
    ============================================================ */
 var S = {
-  mode:"demo", rooms:[], cur:null, msgs:[], tasks:[], tab:"open", scope:"channel",
+  mode:"demo", rooms:[], cur:null, msgs:[], tasks:[], tab:"open", scope:"channel", hidden:0,
   me:{name:"福田 剛史", upn:"t.fukuda@hanaoka-corp.co.jp"},
   msal:null, siteId:null, listId:null, timer:null, editing:null
 };
@@ -1081,32 +1081,49 @@ function chatName(ch){
                   :"（名称未設定のチャット）";
 }
 async function fetchMsgs(room){
+  S.hidden=0;
   if(S.mode==="demo") return demoMsgs(room);
+  function keep(m){
+    var ok = m.messageType==="message" && !m.deletedDateTime && !isNoise(m);
+    if(!ok && m.messageType==="message" && !m.deletedDateTime) S.hidden++;
+    return ok;
+  }
   if(room.kind==="chat"){
     var rc=await g("/chats/"+room.id+"/messages?$top=50");
-    return (rc.value||[])
-      .filter(function(m){return m.messageType==="message" && !m.deletedDateTime})
-      .map(mapMsg).reverse();   // フラット。返信ぶら下げはしない
+    return (rc.value||[]).filter(keep).map(mapMsg).reverse();   // フラット。返信ぶら下げはしない
   }
   // チャネルは親だけ取ると総務の返信が全部落ちるので replies も展開する
   var r=await g("/teams/"+room.teamId+"/channels/"+room.id+"/messages?$top=20&$expand=replies");
-  var roots=(r.value||[])
-    .filter(function(m){return m.messageType==="message" && !m.deletedDateTime})
-    .reverse();
+  var roots=(r.value||[]).filter(keep).reverse();
   var out=[];
   roots.forEach(function(m){
     out.push(mapMsg(m));
     (m.replies||[])
-      .filter(function(x){return x.messageType==="message" && !x.deletedDateTime})
+      .filter(keep)
       .sort(function(a,b){return new Date(a.createdDateTime)-new Date(b.createdDateTime)})
       .forEach(function(x){ var o=mapMsg(x); o.reply=true; o.parent=m.id; out.push(o) });
   });
   return out;
 }
+/* Teams はシステムイベントも messageType:"message" で返してきます
+   （会議を予定／メンバー追加／本文が空のもの）。これを弾かないと
+   タイムラインが「（不明）」の空行で埋まります。 */
+function isNoise(m){
+  if(m.eventDetail) return true;                                   // システムイベント
+  if(!(m.from && (m.from.user || m.from.application))) return true; // 発信者不明
+  var raw=(m.body&&m.body.content)||"";
+  var body=stripTags(raw);
+  var visual=/<(img|emoji|attachment)\b/i.test(raw);               // 絵文字・画像だけの投稿は残す
+  if(!body && !visual && !(m.attachments||[]).length) return true; // 本文も添付もない
+  return false;
+}
 function mapMsg(m){
   var att=(m.attachments||[]).filter(function(a){return a.contentType==="reference"})[0];
   return {
-    id:m.id, from:(m.from&&m.from.user&&m.from.user.displayName)||"（不明）",
+    id:m.id,
+    from:(m.from&&m.from.user&&m.from.user.displayName)
+      ||(m.from&&m.from.application&&m.from.application.displayName)
+      ||"（システム）",
     fromId:(m.from&&m.from.user&&m.from.user.id)||"",
     when:m.createdDateTime, html:(m.body&&m.body.content)||"",
     mentions:m.mentions||[], webUrl:m.webUrl||"",
@@ -1371,8 +1388,10 @@ function renderTasks(){
 function renderMe(){ $("meName").textContent=S.me.name; $("meAv").textContent=initials(S.me.name); }
 function setRoomHeader(r){
   $("chTitle").textContent=r?r.name:"—";
-  $("chSub").textContent=r?((r.kind==="chat"?"グループチャット":"Teams チャネル")+
-                            (S.mode==="demo"?"（デモ）":"")):"";
+  var t=r?((r.kind==="chat"?"グループチャット":"Teams チャネル")+
+           (S.mode==="demo"?"（デモ）":"")):"";
+  if(r && S.hidden>0) t+="・システムメッセージ "+S.hidden+"件を非表示";
+  $("chSub").textContent=t;
 }
 
 /* ============================================================
@@ -1603,6 +1622,7 @@ async function loadAll(){
     if(S.cur){
       setRoomHeader(S.cur);
       S.msgs=await fetchMsgs(S.cur);
+      setRoomHeader(S.cur);   // 非表示件数が確定してから引き直す
       renderMsgs();
     }
     S.tasks=await fetchTasks(); renderTasks();
@@ -1640,7 +1660,7 @@ document.addEventListener("click",async function(e){
     var r=S.rooms.filter(function(x){return x.id===el.dataset.room})[0];
     if(r){
       S.cur=r; r.n=0; clearReply(); renderRooms(); setRoomHeader(r);
-      S.msgs=await fetchMsgs(r); renderMsgs();
+      S.msgs=await fetchMsgs(r); setRoomHeader(r); renderMsgs();
       S.tasks=await fetchTasks(); renderTasks();   // ★チャネルを変えたらタスクも絞り直す
     }
     return;
