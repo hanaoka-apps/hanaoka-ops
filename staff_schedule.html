@@ -117,8 +117,13 @@
     .hd.clk:hover::after{background:var(--primary)}
     .hd.noon{background:#f2f5fa}
 
-    .grp{display:flex;background:#eaeef5;border-bottom:1px solid var(--border);border-top:1px solid var(--border)}
-    .grp span{position:sticky;left:0;padding:4px 11px;font-size:11.5px;font-weight:700;color:#44506a}
+    /* 見出しは2段。拠点（役員／本社／工場）が大、部署が小。
+       同じ濃さだとどちらが上位か分からないので、色と太さで差をつける。 */
+    .grp{display:flex;background:#d8e2f0;border-bottom:1px solid #b9c9de;border-top:2px solid var(--primary)}
+    .grp span{position:sticky;left:0;padding:5px 11px;font-size:12.5px;font-weight:700;color:var(--primary-dk)}
+    .grp2{display:flex;background:#eef2f8;border-bottom:1px solid var(--border)}
+    .grp2 span{position:sticky;left:0;padding:3px 11px 3px 24px;font-size:11.5px;font-weight:700;color:#5a6478}
+    .grp2 span::before{content:"└ ";opacity:.55;font-weight:400}
 
     .row{display:flex;border-bottom:1px solid #f0f3fa}
     .row:hover{background:#eaf2fd}
@@ -336,6 +341,19 @@ const EXCLUDE_MAILS = [
    「部署が未設定」に混ざった）。条件を変えるときは両方直すこと。 */
 const EXCLUDE_RE = /共有|シェア|受付|代表|ロボ|rpa|bot|自動|ダミー|dummy|テスト|test/i;
 
+/* 拠点の表示順。ここに書いた順で上から並ぶ。
+   ★拠点が増えたらここに足す★ 書いていない拠点はこの後ろに名前順で付き、
+   拠点が未設定の人はいちばん最後にまとまる。
+   Set-StaffDepartment.ps1 の $SITE_ORDER と同じ順にしておくこと
+   （-Report の並びと画面の並びが違うと突き合わせにくい）。 */
+const SITE_ORDER = ['役員', '本社', '工場'];
+function siteRank(s){
+  const i = SITE_ORDER.indexOf(s);
+  if (i >= 0) return i;
+  if (!s) return 900;          /* 拠点が未設定 */
+  return 500;                 /* 知らない拠点 */
+}
+
 function isNotPerson(p){
   if (EXCLUDE_MAILS.includes(p.mail.toLowerCase())) return true;
   return EXCLUDE_RE.test(p.n);
@@ -514,7 +532,7 @@ async function showApp(){
    ============================================================ */
 async function loadPeople(){
   const base = `/groups/${GROUP_ID}/members/microsoft.graph.user`;
-  const full = `${base}?$select=id,displayName,mail,userPrincipalName,department,jobTitle&$top=999`;
+  const full = `${base}?$select=id,displayName,mail,userPrincipalName,department,jobTitle,officeLocation&$top=999`;
   let items;
   try { items = await gGetAll(full); SRC.depOk = true; }
   catch (e) {
@@ -528,6 +546,7 @@ async function loadPeople(){
     n   : u.displayName || u.userPrincipalName || '(名前なし)',
     mail: (u.mail || u.userPrincipalName || '').trim(),
     dep : (u.department || '').trim(),
+    site: (u.officeLocation || '').trim(),   /* 拠点。役員／本社／工場 */
     job : (u.jobTitle || '').trim(),
     src : 'none'
   })).filter(p => p.mail);
@@ -536,14 +555,16 @@ async function loadPeople(){
   SRC.excluded = all.filter(isNotPerson);
   PEOPLE = all.filter(p => !isNotPerson(p));
 
-  /* 部署順→氏名順。安定ソートなので部署内は氏名順に並ぶ。
-     「部署なし」は必ず最後。'んんん' のような番兵は ja のかな＜漢字の並びで
-     先頭に来てしまうので、部署の有無で明示的に分ける。 */
+  /* 拠点 → 部署 → 氏名 の順。安定ソートなので3回かけて積む。
+     「部署なし」「拠点なし」は必ず最後。'んんん' のような番兵は ja の
+     かな＜漢字の並びで先頭に来てしまうので、有無で明示的に分ける。 */
   PEOPLE.sort((a,b) => a.n.localeCompare(b.n, 'ja'));
   PEOPLE.sort((a,b) => {
     if (!a.dep !== !b.dep) return a.dep ? -1 : 1;
     return (a.dep || '').localeCompare(b.dep || '', 'ja');
   });
+  PEOPLE.sort((a,b) => siteRank(a.site) - siteRank(b.site)
+                    || (a.site || '').localeCompare(b.site || '', 'ja'));
 }
 
 function paintDepSelect(){
@@ -852,10 +873,25 @@ function renderWeek(){
   h += `</div></div>`;
   if (!list.length) h += `<div class="empty">条件に合う人がいません</div>`;
 
-  let lastDep = null;
+  let lastSite = null, lastDep = null;
   list.forEach(p => {
-    if (p.dep !== lastDep) { lastDep = p.dep;
-      h += `<div class="grp"><span>${esc(p.dep || '部署なし')}（${list.filter(x => x.dep === p.dep).length}）</span></div>`; }
+    /* 拠点が変わったら大見出し。部署が変わったら小見出し。
+       ★拠点が変わったときは部署の記憶も捨てる★
+       捨てないと、拠点をまたいで同名の部署（例：総務部）が続いたときに
+       小見出しが出ず、別の拠点の人が前の見出しの下にぶら下がって見える。 */
+    if (p.site !== lastSite) {
+      lastSite = p.site; lastDep = null;
+      h += `<div class="grp"><span>${esc(p.site || '拠点が未設定')}`
+         + `（${list.filter(x => x.site === p.site).length}）</span></div>`;
+    }
+    if (p.dep !== lastDep) {
+      lastDep = p.dep;
+      /* 役員のように拠点＝部署のときは小見出しを出さない（同じ言葉が2行続く） */
+      if ((p.dep || '') !== (p.site || '')) {
+        h += `<div class="grp2"><span>${esc(p.dep || '部署なし')}`
+           + `（${list.filter(x => x.site === p.site && x.dep === p.dep).length}）</span></div>`;
+      }
+    }
     const rs = resOf(p, w0, w1), n = laneAssign(rs);
     h += `<div class="row${p.n === HILITE ? ' hi' : ''}" data-who="${esc(p.n)}">` + nameCell(p, rs, n)
        + `<div class="days" style="height:calc(var(--lane)*${n})"><div class="bgs">`;
@@ -919,10 +955,25 @@ function renderDay(){
   h += `</div></div>`;
   if (!list.length) h += `<div class="empty">条件に合う人がいません</div>`;
 
-  let lastDep = null;
+  let lastSite = null, lastDep = null;
   list.forEach(p => {
-    if (p.dep !== lastDep) { lastDep = p.dep;
-      h += `<div class="grp"><span>${esc(p.dep || '部署なし')}（${list.filter(x => x.dep === p.dep).length}）</span></div>`; }
+    /* 拠点が変わったら大見出し。部署が変わったら小見出し。
+       ★拠点が変わったときは部署の記憶も捨てる★
+       捨てないと、拠点をまたいで同名の部署（例：総務部）が続いたときに
+       小見出しが出ず、別の拠点の人が前の見出しの下にぶら下がって見える。 */
+    if (p.site !== lastSite) {
+      lastSite = p.site; lastDep = null;
+      h += `<div class="grp"><span>${esc(p.site || '拠点が未設定')}`
+         + `（${list.filter(x => x.site === p.site).length}）</span></div>`;
+    }
+    if (p.dep !== lastDep) {
+      lastDep = p.dep;
+      /* 役員のように拠点＝部署のときは小見出しを出さない（同じ言葉が2行続く） */
+      if ((p.dep || '') !== (p.site || '')) {
+        h += `<div class="grp2"><span>${esc(p.dep || '部署なし')}`
+           + `（${list.filter(x => x.site === p.site && x.dep === p.dep).length}）</span></div>`;
+      }
+    }
     const rs = resOf(p, d0, d0 + DAY), n = laneAssign(rs);
     h += `<div class="row${p.n === HILITE ? ' hi' : ''}" data-who="${esc(p.n)}">` + nameCell(p, rs, n)
        + `<div class="days" style="height:calc(var(--lane)*${n})"><div class="bgs">`;
