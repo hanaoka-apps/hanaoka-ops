@@ -354,9 +354,18 @@ function siteRank(s){
   return 500;                 /* 知らない拠点 */
 }
 
-function isNotPerson(p){
-  if (EXCLUDE_MAILS.includes(p.mail.toLowerCase())) return true;
-  return EXCLUDE_RE.test(p.n);
+/* 名簿から外す理由を返す。外さないなら null。
+   ★理由まで持つ★ 「なぜ消えたのか」が分からないと、人が消えたときに追えない。 */
+function whyNotPerson(p){
+  /* ★メールボックスが無いアカウント★
+     予定表を持てないので、予定表の一覧に出す意味がない。
+     mail が空でも userPrincipalName があるので p.mail には値が入る。
+     「アドレスが無ければ勝手に落ちる」は成り立たない（実際に取りこぼした）。
+     システム管理用・ライセンス未割当のアカウントはここで落ちる。 */
+  if (!p.hasMailbox) return 'メールボックスなし';
+  if (EXCLUDE_MAILS.includes(p.mail.toLowerCase())) return '共有・RPA用（メール指定）';
+  if (EXCLUDE_RE.test(p.n)) return '共有・RPA用（名前で判定）';
+  return null;
 }
 
 const DAY_H0 = 8, DAY_H1 = 20;      /* 日表示の既定の時間帯。予約に合わせて自動で広げる */
@@ -544,16 +553,19 @@ async function loadPeople(){
   const all = items.map(u => ({
     id  : u.id,
     n   : u.displayName || u.userPrincipalName || '(名前なし)',
+    /* mail が無ければ UPN で代用する（getSchedule には UPN でも通る）。
+       ただし「mail があるか」は別に覚えておく＝メールボックスの有無の判定に使う。 */
     mail: (u.mail || u.userPrincipalName || '').trim(),
+    hasMailbox: !!(u.mail && String(u.mail).trim()),
     dep : (u.department || '').trim(),
     site: (u.officeLocation || '').trim(),   /* 拠点。役員／本社／工場 */
     job : (u.jobTitle || '').trim(),
     src : 'none'
   })).filter(p => p.mail);
 
-  /* 人ではないアカウントを外す。外した中身は控えておいてパネルに出す */
-  SRC.excluded = all.filter(isNotPerson);
-  PEOPLE = all.filter(p => !isNotPerson(p));
+  /* 人ではないアカウントを外す。外した中身と理由を控えてパネルに出す */
+  SRC.excluded = all.map(p => ({ ...p, why: whyNotPerson(p) })).filter(p => p.why);
+  PEOPLE = all.filter(p => !whyNotPerson(p));
 
   /* 拠点 → 部署 → 氏名 の順。安定ソートなので3回かけて積む。
      「部署なし」「拠点なし」は必ず最後。'んんん' のような番兵は ja の
@@ -669,7 +681,7 @@ function paintPanel(){
     + `<span style="color:var(--muted)">全社員チームのメンバー</span>`
     + (SRC.excluded.length
         ? `　除外：<span class="ok">${SRC.excluded.length}件</span>`
-          + `<span style="color:var(--muted)">人ではないアカウント（RPA・共有）</span>`
+          + `<span style="color:var(--muted)">予定表を持たない／人ではないアカウント</span>`
         : '')
     + `　部署：${SRC.depOk ? '<span class="ok">取得OK</span>' : '<span class="ng">取得できず</span>（<code>User.Read.All</code> 未付与）'}</div>`
     + `<div class="st-row">予定：読めた <span class="${SRC.ng?'ng':'ok'}">${SRC.ok}人</span> / 読めず ${SRC.ng}人`
@@ -681,9 +693,10 @@ function paintPanel(){
         : `（非公開の予定は件名が出ません）`) + `</div>`;
   if (SRC.excluded.length){
     h += `<details><summary>名簿から外したアカウント ${SRC.excluded.length}件</summary><pre>`
-       + esc(SRC.excluded.map(x => `${x.n}  ${x.mail}`).join('\n'))
-       + '\n\nRPA・共有用のアカウントなので、人として一覧に出していません。\n'
-       + 'ここに人が混ざっていたら EXCLUDE_MAILS を直してください。'
+       + esc(SRC.excluded.map(x => `${x.n}\n    ${x.mail}\n    → ${x.why}`).join('\n'))
+       + '\n\n「メールボックスなし」＝予定表を持てないアカウント（システム管理用など）。\n'
+       + '「共有・RPA用」＝人ではないアカウント。\n'
+       + 'ここに人が混ざっていたら EXCLUDE_MAILS / EXCLUDE_RE を直してください。'
        + `</pre></details>`;
   }
   if (SRC.errs.length){
