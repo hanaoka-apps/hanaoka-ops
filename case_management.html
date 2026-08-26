@@ -2124,7 +2124,7 @@ async function getSiteId() {
 async function fetchAssigneeMembers() {
   try {
     const data = await graphGet(
-      `/groups/${ASSIGNEE_GROUP_ID}/members/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName&$top=100`
+      `/groups/${ASSIGNEE_GROUP_ID}/members/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName,department&$top=100`
     );
     // displayName順でソート
     assigneeMembers = (data.value || [])
@@ -2134,6 +2134,7 @@ async function fetchAssigneeMembers() {
         displayName: u.displayName,
         mail: u.mail || u.userPrincipalName,
         upn: u.userPrincipalName,
+        department: u.department || '',   // ★受注入力依頼で初期ステータスの判定に使う
         spLookupId: null,
       }))
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
@@ -2242,6 +2243,25 @@ function toggleSummaryBar() {
   }
 }
 // 担当者選択肢を初期化（value = UPN, text = displayName）
+// ★Entra ID の部署名 → 案件ステータス の対応表。
+//   受注入力依頼で担当者を選んだとき、その人の所属部署から初期ステータスを決める。
+//   ※キーは Entra ID の department の値と完全一致させること。
+//     部署名が変更・新設された場合はここに追記が必要（無い場合は既定値になる）。
+const DEPT_TO_STATUS = {
+  '全社業務センター':     '業務セ',
+  'ソリューション営業部': 'ソリューション',
+  '東京営業':             '国内営業',
+  '大阪':                 '国内営業',
+  '名古屋':               '国内営業',
+  '役員':                 '国内営業',
+};
+const DEPT_STATUS_FALLBACK = '業務セ';   // 部署未設定・対応表に無い部署のときの既定値
+function statusFromUpn(upn) {
+  if (!upn) return DEPT_STATUS_FALLBACK;
+  const m = assigneeMembers.find(x => (x.upn||'').toLowerCase() === String(upn).toLowerCase());
+  const dept = (m && m.department || '').trim();
+  return DEPT_TO_STATUS[dept] || DEPT_STATUS_FALLBACK;
+}
 function populateAssigneeSelects() {
   const selects = ['regAssignedTo', 'detailAssigneeSelect', 'oeSalesPerson'];
   const options = '<option value="">-</option>' +
@@ -3624,7 +3644,7 @@ async function submitOrderEntry() {
       CompanyName: (customer === '注文書記載' ? '' : customer),
       CompanyCode: document.getElementById('oeCustomerCode').value.trim(),
       EntryPoint: 'その他',
-      Status: '業務セ',
+      Status: statusFromUpn(salesPersonUpn),   // ★担当者の所属部署からステータスを決定
       CaseType: '受注入力',
       Priority: '中',
       LinkedDept: '営業部',
