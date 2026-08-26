@@ -221,6 +221,8 @@ async function ensureMaps(){
   const ch=await gget(`/sites/${SITE}/lists/${H.id}/columns?$select=name,displayName`);ch.value.forEach(x=>H.fmap[x.displayName]=x.name);
   const cl=await gget(`/sites/${SITE}/lists/${L.id}/columns?$select=name,displayName`);cl.value.forEach(x=>L.fmap[x.displayName]=x.name);
 }
+// v3で追加した列は「内部名」で直接読み書きする（表示名だと Author(作成者)=登録者 等と衝突して403になる）
+const V3={ai:'AIStatus',com:'AIComment',by:'RegisteredBy',at:'RegisteredAt',loc:'SiteLocation',cby:'CheckedBy',cat:'CheckedAt'};
 const hv=(f,d)=>{const k=H.fmap[d];return k?(f[k]??''):'';};
 const lv=(f,d)=>{const k=L.fmap[d];return k?(f[k]??''):'';};
 const hi=d=>H.fmap[d]||d, li=d=>L.fmap[d]||d;
@@ -233,11 +235,11 @@ async function auditReady(){if(AUDIT.id)return true;
     AUDIT.id=l.id;const c=await gget(`/sites/${SITE}/lists/${AUDIT.id}/columns?$select=name,displayName`);c.value.forEach(x=>AUDIT.fmap[x.displayName]=x.name);return true;}catch(e){return false;}}
 async function audit(action,o){  // o:{targetId,targetName,field,oldValue,newValue,note}
   try{ if(!await auditReady())return;
-    const f={};const set=(d,v)=>{const k=AUDIT.fmap[d];if(k)f[k]=(v==null?'':String(v));};
+    const f={};const set=(k,v)=>{f[k]=(v==null?'':String(v));};   // 内部名で直接指定（表示名衝突を避ける）
     f['Title']=`${action}：${o.targetName||''}`.slice(0,255);
-    set('日時',new Date().toISOString());set('ユーザー',myName());set('画面','経費チェック');set('操作',action);
-    set('対象リスト','AP_Invoice');set('対象ID',o.targetId);set('対象名',o.targetName);
-    set('変更項目',o.field);set('変更前',o.oldValue);set('変更後',o.newValue);set('備考',o.note);
+    set('LogAt',new Date().toISOString());set('LogUser',myName());set('LogScreen','経費チェック');set('LogAction',action);
+    set('TargetList','AP_Invoice');set('TargetId',o.targetId);set('TargetName',o.targetName);
+    set('FieldName',o.field);set('OldValue',o.oldValue);set('NewValue',o.newValue);set('LogNote',o.note);
     await gpost(`/sites/${SITE}/lists/${AUDIT.id}/items`,{fields:f});
   }catch(e){console.warn('audit失敗',e);}  // 監査失敗で業務を止めない
 }
@@ -256,24 +258,27 @@ async function registerExpense(files){
   const box=document.getElementById('recv-status');let ok=0,ng=0;
   for(const f of list){
     const code=apCode();
+    // ファイル名＝{APコード}_{元の名前}.pdf（APコードは連携キー、後半は人が読むため）
+    const base=f.name.replace(/\.pdf$/i,'').replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,60);
+    const fname=`${code}_${base||'請求書'}.pdf`;
     if(box)box.textContent=`受付中... ${f.name}`;
     try{
-      // ①PDFをincomingへ（APコード名）
-      await gputFile(`/BILLS/incoming/${code}.pdf`,f,'application/pdf');
+      // ①PDFをincomingへ
+      await gputFile(`/BILLS/incoming/${fname}`,f,'application/pdf');
       // ②AP_Invoice を受付レコードとして作成（金額等は空。Claudeが埋める）
       const hf={};hf['Title']=f.name.replace(/\.pdf$/i,'');
       hf[hi('支払区分')]=(loc==='工場'?'工場経費':'本社経費');
       hf[hi('仕分け済')]=true;                    // 経費として受付済（仕分け工程は廃止）
       hf[hi('支払ステータス')]='確認待';
-      hf[hi('AI状態')]='受付';
-      hf[hi('登録者')]=myName();hf[hi('登録日時')]=new Date().toISOString();
-      hf[hi('拠点')]=loc;
+      hf[V3.ai]='受付';
+      hf[V3.by]=myName();hf[V3.at]=new Date().toISOString();
+      hf[V3.loc]=loc;
       const created=await gpost(`/sites/${SITE}/lists/${H.id}/items`,{fields:hf});
       // ③sidecar（Claudeがどのレコードを埋めるか）
-      const task={ap_code:code,invoice_id:String(created.id),category:(loc==='工場'?'工場経費':'本社経費'),
+      const task={ap_code:code,pdf_file:fname,invoice_id:String(created.id),category:(loc==='工場'?'工場経費':'本社経費'),
         location:loc,vendor_code:'',registered_by:myName(),registered_at:new Date().toISOString(),source_name:f.name};
       await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
-      await audit('受付',{targetId:created.id,targetName:f.name,note:`経費受付 ${loc} / ${code}`});
+      await audit('受付',{targetId:created.id,targetName:f.name,note:`経費受付 ${loc} / ${fname}`});
       ok++;
     }catch(e){ng++;console.error(e);snack('受付エラー: '+e.message,true);}
   }
@@ -376,7 +381,7 @@ function invMeta(inv){
     status:hv(f,'支払ステータス')||'確認待',review:hv(f,'要確認フラグ')===true,reason:hv(f,'要確認理由'),
     offset:hv(f,'相殺対象フラグ')===true,acctchg:hv(f,'口座変更フラグ')===true,dup:hv(f,'二重請求フラグ')===true,
     doc:hv(f,'DOCコード'),archived:hv(f,'アーカイブフラグ')===true,total,nlines:lines.length,
-    ai:hv(f,'AI状態')||'',aicom:hv(f,'AIコメント')||'',regby:hv(f,'登録者')||'',regat:hv(f,'登録日時')||''};
+    ai:f[V3.ai]||'',aicom:f[V3.com]||'',regby:f[V3.by]||'',regat:f[V3.at]||''};
 }
 function badge(m){if(m.status==='先行支払済')return '<span class="badge b-locked" style="background:#1a5fa8">先行支払済</span>';if(m.status==='支払済')return '<span class="badge b-locked" style="background:#1a5fa8">支払済</span>';if(m.status==='確定済（ロック）')return '<span class="badge b-locked">確定</span>';if(m.review)return '<span class="badge b-review">要確認</span>';if(m.status==='差戻し')return '<span class="badge b-flag">差戻し</span>';return '<span class="badge b-wait">確認待</span>';}
 function aiChip(m){if(m.ai==='受付')return '<span class="ai-chip ai-wait">AI確認待ち</span>';
@@ -608,7 +613,7 @@ async function persist(inv){
 async function saveAll(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;try{await persist(inv);snack('✅ 保存しました');editMode=false;await loadData();}catch(e){snack('保存エラー: '+e.message,true);}}
 async function approve(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;const m=invMeta(inv);
   if(!confirm(`「${m.payee}」を承認（確定・ロック）します。よろしいですか？`))return;
-  try{await persist(inv);await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'確定済（ロック）',[hi('要確認フラグ')]:false,[hi('入力者')]:myName(),[hi('確認者')]:myName(),[hi('確認日時')]:new Date().toISOString()});
+  try{await persist(inv);await gpatch(`/sites/${SITE}/lists/${H.id}/items/${inv.id}/fields`,{[hi('支払ステータス')]:'確定済（ロック）',[hi('要確認フラグ')]:false,[hi('入力者')]:myName(),[V3.cby]:myName(),[V3.cat]:new Date().toISOString()});
     await audit('確定',{targetId:inv.id,targetName:m.payee,field:'支払ステータス',oldValue:m.status,newValue:'確定済（ロック）',note:yen(m.total)});
     snack('✓ 承認しました（確定）');editMode=false;await loadData();}catch(e){snack('承認エラー: '+e.message,true);}}
 async function markPrepaid(){const inv=H.inv.find(x=>x.id===selected);if(!inv)return;const m=invMeta(inv);
