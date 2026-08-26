@@ -397,17 +397,28 @@ function normLoc(s){
     .toLowerCase()
     .replace(/[\s　()（）\[\]【】<>「」・.,、。:：;；_/\\-]/g, '');
 }
+/* ★会議室のメールアドレスの接頭辞★
+   本社は room-1f-ld1@、工場は factory-mtg-1f@ と規則が揃っていない。
+   ここを1か所にまとめておく。会議室を増やすときに命名が増えたら、ここに足す。
+   予備の取得経路（3・4）もこの正規表現を使う。片方だけ直すと、
+   「本社は出るのに工場だけ黙って消える」という壊れ方をする。 */
+const ROOM_MAIL_RE = /^(room|conf|meeting|mtg|factory)[-_.]/i;
+
 /* メールアドレスから会議室コードを作る： room-1f-ld1@… → ['1fld1','ld1'] */
 function codesFromMail(mail){
   const local = String(mail || '').split('@')[0].toLowerCase();
-  const body  = local.replace(/^(room|conf|meeting|mr)[-_.]?/, '');
+  const body  = local.replace(/^(room|conf|meeting|mtg|mr|factory)[-_.]?/, '');
   const parts = body.split(/[-_.]+/).filter(Boolean);
   const out = new Set();
   if (parts.length) out.add(parts.join(''));
   /* 末尾の「識別に効く部分」も候補にする（1f-ld1 なら ld1） */
   if (parts.length > 1) out.add(parts.slice(1).join(''));
   if (parts.length) out.add(parts[parts.length - 1]);
-  return [...out].filter(x => x.length >= 2);
+  /* ★「1f」「3f」だけのかけらはトークンにしない★
+     factory-mtg-1f@ を素直に分解すると '1f' が残る。そうすると
+     場所に「本社1F」と書いただけの予定が、工場の会議室の予約として
+     拾われてしまう。階は部屋の識別子ではない。 */
+  return [...out].filter(x => x.length >= 2 && !/^\d{1,2}f$/.test(x));
 }
 /* 会議室1件ぶんの照合トークンを作る。長いものから見る＝誤爆しにくい */
 function roomTokens(room){
@@ -581,9 +592,18 @@ async function showApp(){
    3) /me/calendars               … room- で始まる予定表を拾う。最後の手段
    どれで取れたかは管理者パネルに出す。黙って劣化させない。
    ============================================================ */
+/* ★アドレスのどこに階が入っていてもよい★
+   room-1f-ld1@（2番目）と factory-mtg-1f@（3番目・末尾）の両方がある。
+   位置を決め打ちすると、あとから増えた命名でだけ階が空になる。
+   これは /places の Floor が入っていないときの予備にすぎないので、
+   Set-Place -Floor が入っていればそちらが優先される。 */
 function floorFromMail(mail){
-  const m = String(mail || '').match(/^[a-z]*[-_.]?(\d{1,2})f[-_.]/i);
-  return m ? `${m[1]}F` : '';
+  const local = String(mail || '').split('@')[0];
+  for (const p of local.split(/[-_.]+/)){
+    const m = p.match(/^(\d{1,2})f$/i);
+    if (m) return `${m[1]}F`;
+  }
+  return '';
 }
 function mkRoom(o){
   const mail = String(o.mail || '').trim().toLowerCase();
@@ -642,17 +662,16 @@ async function loadRooms(){
 
   /* 3) 利用者の一覧から room- で始まるメールを拾う
         会議室のメールボックスは Entra ID にも並んでいる。
-        花岡車輌の会議室は room-1f-ld1@ のように命名が統一されているので、
-        接頭辞で拾える（実機6室で確認済み）。
+        接頭辞は ROOM_MAIL_RE にまとめてある（room- / factory- など）。
         User.Read.All は「全社員の予定」タブで既に使っているので追加は不要。
         ★命名規則に依存する方法★ 規則から外れた部屋は拾えない。あくまで予備。 */
   if (!list) {
     try {
       const v = await gGetAll('/users?$select=id,displayName,mail,userPrincipalName&$top=999');
-      const hit = v.filter(u => /^(room|conf|meeting|mr)[-_.]/i.test(String(u.mail || u.userPrincipalName || '')));
+      const hit = v.filter(u => ROOM_MAIL_RE.test(String(u.mail || u.userPrincipalName || '')));
       if (hit.length) {
         list = hit.map(u => mkRoom({ n: u.displayName, mail: u.mail || u.userPrincipalName }));
-        SRC.src = '利用者一覧から room- を拾いました（収容人数は取れません）';
+        SRC.src = '利用者一覧から会議室のアドレスを拾いました（収容人数は取れません）';
       }
     } catch (e) { SRC.errs.push(`利用者の一覧も読めません：[${e.status || ''}] ${e.message}`); }
   }
@@ -661,7 +680,7 @@ async function loadRooms(){
   if (!list) {
     try {
       const v = await gGetAll('/me/calendars?$top=200');
-      const hit = v.filter(c => /^(room|conf|meeting|mr)[-_.]/i.test(String(c.owner?.address || '')));
+      const hit = v.filter(c => ROOM_MAIL_RE.test(String(c.owner?.address || '')));
       if (hit.length) {
         list = hit.map(c => mkRoom({ n: c.name, mail: c.owner?.address }));
         SRC.src = '自分の予定表の一覧から拾いました（暫定・全室そろっていない可能性）';
