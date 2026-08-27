@@ -800,7 +800,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
     <div class="dh"><h3>接続設定</h3><button class="x" data-close>×</button></div>
     <div class="db">
       <p style="margin:0 0 12px;font-size:12px;color:var(--muted)">
-        ここでの変更はこのタブ限りです。確定したら下のスニペットを <code>CONFIG</code> に貼って GitHub にコミットしてください。
+        アプリ版 <b id="cVer"></b>　　ここでの変更はこのタブ限りです。確定したら下のスニペットを <code>CONFIG</code> に貼って GitHub にコミットしてください。
       </p>
       <div class="grid2">
         <div class="fld"><label>Client ID</label><input id="cClient"></div>
@@ -1208,6 +1208,9 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
 /* ============================================================
    1. CONFIG  ← ここだけ書き換えて GitHub Pages に置けば動きます
    ============================================================ */
+/* どのビルドが動いているか。設定画面と点検ログに出します。
+   「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
+var APP_VER = "2026-08-27-2";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -2810,7 +2813,8 @@ async function provision(create){
   if(S.mode!=="live"){ toast("本番モードに切り替えてから実行してください",true); return }
   $("btnCheckList").disabled=$("btnMakeList").disabled=true;
   try{
-    plog("サイトを確認中… "+CONFIG.spHost+CONFIG.spSite,true);
+    plog("アプリ版 "+APP_VER,true);
+    plog("サイトを確認中… "+CONFIG.spHost+CONFIG.spSite);
     var site=await g("/sites/"+CONFIG.spHost+":"+CONFIG.spSite);
     plog("  OK  "+site.displayName+"  ("+site.webUrl+")");
 
@@ -2835,7 +2839,7 @@ async function provision(create){
     var have=cols.map(function(c){return c.name});
     var todo=LIST_COLUMNS.filter(function(c){return have.indexOf(c.name)<0});
 
-    if(!todo.length) plog("\n列18本はすべて揃っています");
+    if(!todo.length) plog("\n列"+LIST_COLUMNS.length+"本はすべて揃っています");
     else if(!create) plog("\n不足している列 "+todo.length+"本: "+todo.map(function(c){return c.name}).join(", "));
     else{
       plog("\n列を作成中… "+todo.length+"本");
@@ -2853,17 +2857,33 @@ async function provision(create){
       return LONG_COLS.indexOf(c.name)>=0 && c.text && c.text.allowMultipleLines!==true;
     });
     if(needUp.length){
-      if(!create) plog("\n1行テキストのままのURL列: "+needUp.map(function(c){return c.name}).join(", ")+
-        "（長いURLで保存が失敗します。「作成・修復」で直します）");
-      else{
+      var upNames=needUp.map(function(c){return c.name+"（"+c.displayName+"）"}).join(" / ");
+      if(!create){
+        plog("\n1行テキストのままのURL列: "+upNames);
+        plog("  長いファイル名のPDFを添付すると 400 で保存が落ちます。「作成・修復」を押してください。");
+      }else{
         plog("\nURL列を複数行テキストに変更中…");
+        var failed=[];
         for(var u=0;u<needUp.length;u++){
           try{
             await g("/sites/"+site.id+"/lists/"+list.id+"/columns/"+needUp[u].id,
               {method:"PATCH",body:{text:{allowMultipleLines:true,textType:"plain",appendChangesToExistingText:false}}});
             plog("  ✓ "+needUp[u].name);
-          }catch(e){ plog("  ! "+needUp[u].name+" 失敗: "+e.message+
-            "（SharePointのリスト設定から「複数行テキスト」に変更してください）") }
+          }catch(e){ failed.push(needUp[u]); plog("  ! "+needUp[u].name+" 自動変更できません（"+e.message+"）") }
+        }
+        if(failed.length){
+          plog("");
+          plog("  ★ Graph は既存の列の型変更を受け付けません（仕様）。SharePointの画面から2分で直せます:");
+          plog("    1) "+list.webUrl);
+          plog("    2) 右上の歯車 → リストの設定");
+          plog("       （出ない場合は "+site.webUrl+"/_layouts/15/listedit.aspx?List={"+list.id+"}）");
+          plog("    3) 「列」の一覧から次の列をクリック:");
+          failed.forEach(function(c){ plog("         ・"+c.displayName+"（"+c.name+"）") });
+          plog("    4) 種類を「複数行テキスト」に変更 → 行数はそのまま → OK");
+          plog("       ※「書式なしテキスト」を選んでください（リッチテキストにしない）");
+          plog("    データは消えません。1行→複数行への変換は SharePoint 側で許可されています。");
+          plog("");
+          plog("  直すまでの間も、長いリンクは保存せずタスク自体は保存されます（トーストでお知らせします）。");
         }
       }
     }
@@ -2884,7 +2904,7 @@ async function provision(create){
     var miss=LIST_COLUMNS.filter(function(c){return names.indexOf(c.name)<0});
     plog(miss.length
       ? "NG  未作成の列: "+miss.map(function(c){return c.name}).join(", ")
-      : "OK  列18本すべて存在します");
+      : "OK  列"+LIST_COLUMNS.length+"本すべて存在します");
 
     var stillShort=after.filter(function(c){
       return ["MessageUrl","InvoiceFileUrl"].indexOf(c.name)>=0 &&
@@ -2892,7 +2912,7 @@ async function provision(create){
     });
     plog(stillShort.length
       ? "NG  1行テキストのままのURL列: "+stillShort.map(function(c){return c.name}).join(", ")+
-        "（長いファイル名で保存が失敗します）"
+        "（255文字を超えるリンクが保存できません。上の手順で複数行テキストにしてください）"
       : "OK  URL列は複数行テキストです（長いリンクも保存できます）");
 
     var noIdx=NEED_INDEX.filter(function(n){
@@ -3289,11 +3309,12 @@ async function runAdv(){
   $("advOk").disabled=false; S._saveBtn=null; $("advOk").textContent="確定";
 }
 function openCfg(){
+  $("cVer").textContent=APP_VER;
   $("provLog").style.display="none"; $("provLog").textContent="";
   var live=(S.mode==="live");
   $("btnCheckList").disabled=$("btnMakeList").disabled=!live;
   $("provNote").textContent=live
-    ? "リスト＋列18本を作成／不足分だけ修復します（冪等）"
+    ? "リスト＋列"+LIST_COLUMNS.length+"本を作成／不足分だけ修復します（冪等）"
     : "本番モードに切り替えると使えます";
   $("cClient").value=CONFIG.clientId; $("cTenant").value=CONFIG.tenantId;
   $("cHost").value=CONFIG.spHost;     $("cSite").value=CONFIG.spSite;
