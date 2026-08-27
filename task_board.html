@@ -214,6 +214,27 @@ header.top{
   border-radius:7px;padding:4px 10px;font-size:11.5px;font-weight:700;box-shadow:var(--shadow)
 }
 .mkbtn:hover{background:var(--accent);color:#fff}
+/* ---------- コメント欄の @メンション ---------- */
+.atwrap{position:relative}
+.atmenu{
+  display:none;position:absolute;left:0;right:0;top:100%;z-index:10;margin-top:3px;
+  background:#fff;border:1px solid var(--border);border-radius:8px;
+  box-shadow:0 8px 24px rgba(12,20,30,.16);max-height:190px;overflow-y:auto;padding:4px
+}
+.atmenu.on{display:block}
+.atmenu .it{
+  display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;
+  font-size:12.5px;cursor:pointer
+}
+.atmenu .it.sel,.atmenu .it:hover{background:var(--accent-bg)}
+.atmenu .it .av2{
+  width:22px;height:22px;border-radius:50%;color:#fff;flex:0 0 auto;
+  display:grid;place-items:center;font-size:10.5px;font-weight:700
+}
+.atmenu .it .nm2{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.atmenu .it .hint2{font-size:10.5px;color:var(--muted2);flex:0 0 auto}
+.atmenu .none{padding:8px;font-size:11.5px;color:var(--muted2)}
+
 
 /* composer */
 .composer{flex:0 0 auto;border-top:1px solid var(--border);padding:10px 14px 12px}
@@ -744,7 +765,10 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <label class="chk"><input type="checkbox" id="fPost" checked>
           <span><b id="postWhere">チャネルに投稿してスレッドに残す</b>
           <span class="note" id="postNote"></span></span></label>
-        <textarea id="fMsg" rows="2" placeholder="スレッドに書くコメント（任意）。空でもタスクの内容は投稿されます"></textarea>
+        <div class="atwrap">
+          <textarea id="fMsg" rows="2" placeholder="スレッドに書くコメント（任意）。@ で相手を呼べます"></textarea>
+          <div class="atmenu" id="atMsg"></div>
+        </div>
         <div class="filerow">
           <label class="filebtn">
             <input type="file" id="fFile" multiple accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx">
@@ -820,7 +844,8 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <div class="fld" id="advDateW"><label><span id="advDateL">日付</span></label><input id="advDate" type="date"></div>
         <div class="fld"><label>状態</label><input id="advTo" disabled></div>
         <div class="fld full"><label>コメント <span class="note">スレッドと備考に残ります</span></label>
-          <input id="advNote" placeholder="例）334,312円 満額入金"></div>
+          <div class="atwrap"><input id="advNote" placeholder="例）334,312円 満額入金">
+          <div class="atmenu" id="atAdv"></div></div></div>
       </div>
       <div class="postbox" style="margin-top:12px">
         <label class="chk"><input type="checkbox" id="advPost" checked>
@@ -1003,6 +1028,9 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
             <li>タスクが SharePoint のリストに登録されます。</li>
             <li><span class="hpui">スレッドに投稿して記録を残す</span> にチェックが入っていれば、Teams のスレッドに
               タスクの内容が投稿され、<b>担当者に通知が飛びます</b>。基本は付けたままで。</li>
+            <li>コメント欄で <b>半角の @</b> を打つと名前の候補が出ます。選ぶと
+              <b>その人にも通知が飛びます</b>（担当者以外にも知らせたいときに）。
+              手で「@名前」と書いただけでは通知は飛びません。必ず候補から選んでください。</li>
             <li>添付したファイルはチャネルのファイル置き場に保存され、投稿にファイルとして付きます。</li>
           </ul>
           <div class="hpwarn"><b>ファイル添付はチャネルだけです。</b>
@@ -2073,6 +2101,80 @@ function mergePeople(a,b){
 function findPerson(name){
   return (S.people||[]).filter(function(p){return p.name===name})[0]||null;
 }
+
+/* ============================================================
+   6.55 コメント欄の @メンション
+
+   自由入力の「@利根川 進」を後から名前で拾おうとすると、日本語の姓名は
+   空白を含むので切り出しに失敗します。候補から選ばせて、選んだ人を
+   覚えておく方式にしています。投稿時、本文に残っている分だけを
+   <at> に変換します（あとから消された分は無視）。
+   ============================================================ */
+function atReset(){ S.msgAt=[]; S.advAt=[] }
+function atStore(which){ return which==="adv" ? (S.advAt=S.advAt||[]) : (S.msgAt=S.msgAt||[]) }
+/* caret の直前が「@なにか」なら、その部分と検索語を返す */
+function atQuery(el){
+  var pos=el.selectionStart==null?el.value.length:el.selectionStart;
+  var head=el.value.slice(0,pos);
+  var m=head.match(/@([^@\s]{0,20})$/);
+  return m ? {q:m[1], start:pos-m[0].length, end:pos} : null;
+}
+async function atOpen(which){
+  var el=$(which==="adv"?"advNote":"fMsg"), menu=$(which==="adv"?"atAdv":"atMsg");
+  var st=atQuery(el);
+  if(!st){ menu.className="atmenu"; return }
+  var list=mergePeople(peopleFromMsgs(), await searchPeople(st.q));
+  if(st.q) list=list.filter(function(p){return p.name.indexOf(st.q)>=0});
+  list=list.filter(function(p){return !!p.id}).slice(0,8);   // メンションできる人だけ
+  S.atCtx={which:which, el:el, menu:menu, st:st, list:list, sel:0};
+  menu.innerHTML = list.length
+    ? list.map(function(p,i){
+        return '<div class="it'+(i===0?" sel":"")+'" data-at="'+i+'">'+
+          '<span class="av2" style="'+avStyle(p.name)+'">'+esc(initials(p.name))+'</span>'+
+          '<span class="nm2">'+esc(p.name)+'</span>'+
+          '<span class="hint2">Enter</span></div>'}).join("")
+    : '<div class="none">'+(st.q?"「"+esc(st.q)+"」に一致する人がいません":"名前を入力してください")+'</div>';
+  menu.className="atmenu on";
+  // モーダルの本文は overflow:auto なので、下に出すと切れることがある。
+  // 下の余白が足りなければ上に開く
+  menu.style.top=""; menu.style.bottom="";
+  var box=el.closest(".db")||document.body;
+  var need=Math.min(190,list.length*36+10);
+  var room=box.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
+  if(room < need+8){ menu.style.top="auto"; menu.style.bottom="100%";
+    menu.style.marginTop="0"; menu.style.marginBottom="3px"; }
+  else { menu.style.marginTop="3px"; menu.style.marginBottom="0" }
+}
+function atClose(){ 
+  ["atMsg","atAdv"].forEach(function(id){ var e=$(id); if(e) e.className="atmenu" });
+  S.atCtx=null;
+}
+function atPick(i){
+  var c=S.atCtx; if(!c||!c.list.length) return;
+  var p=c.list[Math.max(0,Math.min(i,c.list.length-1))];
+  var el=c.el, v=el.value;
+  var ins="@"+p.name+" ";
+  el.value=v.slice(0,c.st.start)+ins+v.slice(c.st.end);
+  var pos=c.st.start+ins.length;
+  el.focus(); el.setSelectionRange(pos,pos);
+  atStore(c.which).push(p);
+  atClose();
+  if(c.which!=="adv") renderPostPreview(); else advPreview();
+}
+/* esc 済みテキストの中の「@名前」を <at> に変える。mentions は呼び出し側の配列 */
+function atToHtml(text,mentions,store){
+  var out=esc(String(text||""));
+  (store||[]).forEach(function(p){
+    if(!p||!p.id) return;
+    var tok=esc("@"+p.name), at=out.indexOf(tok);
+    if(at<0) return;                       // 本文から消されていたら飛ばす
+    var id=mentions.length;
+    out=out.slice(0,at)+'<at id="'+id+'">'+esc(p.name)+'</at>'+out.slice(at+tok.length);
+    mentions.push({id:id,mentionText:p.name,
+      mentioned:{user:{id:p.id,displayName:p.name,userIdentityType:"aadUser"}}});
+  });
+  return out.replace(/\n/g,"<br>");
+}
 async function refreshOwnList(){
   var q=$("fOwn").value.trim();
   S.people=mergePeople(peopleFromMsgs(), await searchPeople(q));
@@ -2126,7 +2228,7 @@ async function uploadAll(room,files){
 function setSaveLabel(t){ $("tdSave").textContent=t||"保存" }
 
 /* 投稿する本文を組み立てる。担当者のAAD IDが取れていれば @メンションを付ける */
-function buildTaskMessage(t,comment,isNew){
+function buildTaskMessage(t,comment,isNew,atMentions){
   var W=wfEff(t), L=W.labels;
   var p=findPerson(t.ownerName), mentions=[], who;
   if(p && p.id){
@@ -2140,7 +2242,7 @@ function buildTaskMessage(t,comment,isNew){
   var lines=[];
   // 状態を進めたときのコメントは備考にも追記されるので、二重に出さない
   if(comment && note.indexOf(comment)<0)
-    lines.push('<p>'+esc(comment).replace(/\n/g,"<br>")+'</p>');
+    lines.push('<p>'+atToHtml(comment,mentions,atMentions)+'</p>');
   lines.push('<p><b>'+(isNew?"タスクを追加しました":"タスクを更新しました")+'</b></p>');
   var body=[];
   body.push(esc(t.customerName||"（名称未設定）")+
@@ -2151,8 +2253,9 @@ function buildTaskMessage(t,comment,isNew){
   if(t.doneDate) body.push(dateLabel(W,"done")+"： "+mmdd(t.doneDate));
   body.push("状態： "+(L[t.status]||t.status));
   lines.push('<p>'+body.join("<br>")+'</p>');
-  // 備考は「依頼の中身」そのものになる業務がある（入力依頼など）。投稿にも載せる
-  if(note) lines.push('<p>'+esc(note).replace(/\n/g,"<br>")+'</p>');
+  // 備考は「依頼の中身」そのものになる業務がある（入力依頼など）。投稿にも載せる。
+  // 状態を進めたコメントは備考に追記されるので、そこに残った @名前 も拾う
+  if(note) lines.push('<p>'+atToHtml(note,mentions,atMentions)+'</p>');
   return {content:lines.join(""),mentions:mentions};
 }
 function renderPostPreview(){
@@ -2162,16 +2265,16 @@ function renderPostPreview(){
          status:$("fSt").value,ownerName:$("fOwn").value.trim(),
          note:$("fNote").value,
          channelName:(S._pre&&S._pre.channelName)||(S.cur&&S.cur.name)};
-  var m=buildTaskMessage(t,$("fMsg").value.trim(),!S.editing);
+  var m=buildTaskMessage(t,$("fMsg").value.trim(),!S.editing,S.msgAt);
   $("postPrev").className="prev"+(on?"":" off");
   $("postPrev").innerHTML='<div class="ph">投稿される内容</div>'+
-    m.content.replace(/<at id="0">([^<]*)<\/at>/g,'<span class="at">@$1</span>');
+    m.content.replace(/<at id="\d+">([^<]*)<\/at>/g,'<span class="at">@$1</span>');
   $("fMsg").disabled=!on;
 }
 
 /* タスクを保存したあとスレッドに投稿し、投稿のIDとリンクをタスクに書き戻す */
-async function postTaskRecord(t,comment,isNew,replyRootId,uploaded){
-  var m=buildTaskMessage(t,comment,isNew);
+async function postTaskRecord(t,comment,isNew,replyRootId,uploaded,atMentions){
+  var m=buildTaskMessage(t,comment,isNew,atMentions);
   var content=m.content, atts=[];
   (uploaded||[]).forEach(function(u){
     var gid=etagGuid(u);
@@ -2260,7 +2363,7 @@ function sanitize(html,mentions){
       if(/^on/i.test(a.name)||(a.name==="href"&&/^javascript:/i.test(a.value))) n.removeAttribute(a.name);
     });
   });
-  // Teams の <at id="0">名前</at> を装飾
+  // Teams の <at id="n">名前</at> を装飾
   d.querySelectorAll("at").forEach(function(n){
     var sp=document.createElement("span"); sp.className="at";
     sp.textContent="@"+(n.textContent||"");
@@ -2473,7 +2576,7 @@ function openTaskModal(pre,srcText,warnText){
     : "投稿先の部屋が選ばれていません";
   $("fPost").checked=!S.editing && !!S.cur;
   $("fPost").disabled=!S.cur;
-  $("fMsg").value="";
+  $("fMsg").value=""; S.msgAt=[]; atClose();
   // 添付はチャネルだけ。チャットの添付は送信者個人のOneDriveに入るので扱わない
   $("fFile").value=""; $("fFile").disabled=(!S.cur||isChat);
   $("fileNote").textContent=isChat
@@ -2899,10 +3002,10 @@ function openWf(){
 function advPreview(){
   var t=S.advTask, st=S.advStep; if(!t||!st) return;
   var patch=advPatch();
-  var m=buildTaskMessage(Object.assign({},t,patch),$("advNote").value.trim(),false);
+  var m=buildTaskMessage(Object.assign({},t,patch),$("advNote").value.trim(),false,S.advAt);
   $("advPrev").className="prev"+($("advPost").checked?"":" off");
   $("advPrev").innerHTML='<div class="ph">投稿される内容</div>'+
-    m.content.replace(/<at id="0">([^<]*)<\/at>/g,'<span class="at">@$1</span>');
+    m.content.replace(/<at id="\d+">([^<]*)<\/at>/g,'<span class="at">@$1</span>');
 }
 function advPatch(){
   var t=S.advTask, st=S.advStep, p={status:st.to};
@@ -2930,6 +3033,7 @@ function openAdv(t){
   // 満額入金の定型を初期値に。差額ならここを書き換えるだけ
   $("advNote").value=(st.stamp==="paidDate"&&W.money&&Number(t.amount)>0)
     ? yen(t.amount)+"円 満額入金" : "";
+  S.advAt=[]; atClose();
   var isChat=(S.cur&&S.cur.kind==="chat");
   $("advPostWhere").textContent=(isChat?"チャットに投稿":"スレッドに投稿")+"して記録を残す";
   $("advPost").checked=!!S.cur; $("advPost").disabled=!S.cur;
@@ -2948,7 +3052,7 @@ async function runAdv(){
     if(doPost){
       try{
         await postTaskRecord(merged,comment,false,
-          (t.msgId&&S.cur.kind!=="chat")?t.msgId:null,null);
+          (t.msgId&&S.cur.kind!=="chat")?t.msgId:null,null,S.advAt);
         if(S.mode==="live") S.msgs=await fetchMsgs(S.cur);
         renderMsgs();
       }catch(pe){ toast("状態は更新しましたが投稿に失敗しました： "+pe.message,true) }
@@ -3199,6 +3303,37 @@ $("fFile").addEventListener("change",function(){
   $("fileNote").innerHTML=(big.length?"⚠ 4MB超あり: ":"<b>"+f.length+"件</b> ")+esc(names.join("、"));
   $("fileNote").style.color=big.length?"var(--danger)":"";
 });
+/* ---- コメント欄の @ピッカー ---- */
+["fMsg","advNote"].forEach(function(id){
+  var which=(id==="advNote")?"adv":"msg";
+  var el=$(id);
+  el.addEventListener("input",function(){ atOpen(which) });
+  el.addEventListener("click",function(){ atOpen(which) });
+  el.addEventListener("keydown",function(e){
+    var c=S.atCtx;
+    if(!c || c.which!==which || !$(which==="adv"?"atAdv":"atMsg").classList.contains("on")) return;
+    if(e.key==="ArrowDown"||e.key==="ArrowUp"){
+      e.preventDefault();
+      if(!c.list.length) return;
+      c.sel=(c.sel+(e.key==="ArrowDown"?1:-1)+c.list.length)%c.list.length;
+      c.menu.querySelectorAll(".it").forEach(function(x,i){ x.className="it"+(i===c.sel?" sel":"") });
+      return;
+    }
+    if(e.key==="Enter"||e.key==="Tab"){
+      if(!c.list.length) return;
+      e.preventDefault(); atPick(c.sel); return;
+    }
+    if(e.key==="Escape"){ e.preventDefault(); atClose() }
+  });
+  el.addEventListener("blur",function(){ setTimeout(atClose,150) });
+});
+["atMsg","atAdv"].forEach(function(id){
+  $(id).addEventListener("mousedown",function(e){
+    var it=e.target.closest("[data-at]"); if(!it) return;
+    e.preventDefault(); atPick(+it.dataset.at);
+  });
+});
+
 ["fMsg","fName","fAmt","fDue","fSt","fPaid","fDone","fOwn","fNote"].forEach(function(id){
   $(id).addEventListener("input",renderPostPreview);
   $(id).addEventListener("change",renderPostPreview);
@@ -3281,7 +3416,7 @@ $("tdSave").onclick=async function(){
     if(doPost){
       try{
         var posted=await postTaskRecord(t,comment,isNew,
-          (isNew&&t.msgId&&S.cur.kind!=="chat")?t.msgId:null,uploaded);
+          (isNew&&t.msgId&&S.cur.kind!=="chat")?t.msgId:null,uploaded,S.msgAt);
         // 投稿のIDとリンクをタスクに書き戻す。これで「元メッセージ」ボタンが機能する。
         // ★ただし MessageId は「スレッドの親」で固定する。返信のIDで上書きすると
         //   次の状態遷移で /messages/{返信ID}/replies を叩いて必ず失敗する。
