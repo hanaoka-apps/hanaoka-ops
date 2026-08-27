@@ -400,6 +400,11 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
 .wfgrid label.ck{flex-direction:row;align-items:center;gap:6px;font-size:11px;padding-top:14px}
 .wfgrid input[type=text]{border:1px solid var(--border);border-radius:6px;padding:5px 8px;outline:0;font-size:12px}
 .wfgrid input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.wfnt{display:flex;flex-direction:column;gap:3px;margin-top:9px;font-size:10.5px;color:var(--muted)}
+.wfnt textarea{border:1px solid var(--border);border-radius:6px;padding:6px 8px;outline:0;font-size:12px;
+  font-family:inherit;resize:vertical;color:var(--text)}
+.wfnt textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.wfnt .fn{font-size:10px;color:var(--muted2);line-height:1.5}
 .dh .note{font-size:11px;color:var(--muted2)}
 .prov .gbtn,.prov .pbtn{padding:6px 14px;font-size:12px}
 .prov .note{font-size:10.5px;color:var(--muted2)}
@@ -727,7 +732,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <div class="fld" id="wAmt"><label>金額（円） <span class="auto" id="aAmt" style="display:none">自動</span></label><input id="fAmt" inputmode="numeric" placeholder="例）334312"></div>
         <div class="fld" id="wDue"><label>期限 <span class="auto" id="aDue" style="display:none">自動</span></label><input id="fDue" type="date"></div>
         <div class="fld" id="wPaid"><label><span id="lblPaid">入金確認日</span></label><input id="fPaid" type="date"></div>
-        <div class="fld" id="wDone"><label>完了日</label><input id="fDone" type="date"></div>
+        <div class="fld" id="wDone"><label><span id="lblDone">完了日</span></label><input id="fDone" type="date"></div>
         <div class="fld"><label>状態</label><select id="fSt"></select></div>
         <div class="fld" id="wOwn"><label>担当者 <span class="note" id="ownHit"></span></label>
           <input id="fOwn" list="ownList" autocomplete="off" placeholder="例）秋元 龍一">
@@ -989,6 +994,10 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
             </tbody>
           </table></div>
           <p>メッセージ本文に「今月末」「翌月末」「8/31」などと書いてあれば、期限として拾います。</p>
+          <div class="hptip"><b>備考は投稿にも載ります。</b>
+            チャネルによっては、備考欄に<b>書式（ひな形）</b>が最初から入っています。
+            【　】の後ろを埋めてください。空のまま残った項目もそのまま投稿されるので、
+            「まだ決まっていない」ことが相手にも分かります。</div>
           <h5>保存すると何が起きるか</h5>
           <ul>
             <li>タスクが SharePoint のリストに登録されます。</li>
@@ -1227,6 +1236,19 @@ var WORKFLOWS = [
     labels:{未対応:"入金確認依頼中", 対応中:"入金確認済", 完了:"完了（処理済み）", 保留:"保留"},
     steps :[{from:"未対応", to:"対応中", btn:"入金確認済にする", stamp:"paidDate"},
             {from:"対応中", to:"完了",   btn:"処理完了", stamp:"doneDate"}] },
+  /* 【ソリュ】SMILE入力依頼チャットルームの運用
+     ① 営業が依頼＝タスク作成。期限は当日、担当者はセンター長のみ
+     ② 受注入力した人が「入力しました」
+     ③ センター長が1日の終わりに「確認済にする」（＝入力漏れチェックの記録） */
+  { match:"SMILE入力依頼", fields:["note"],
+    defaultOwner:"利根川 進", dueToday:true,
+    dateLabels:{paid:"入力日", done:"確認日"},
+    noteTemplate:"【得意先】\n【納品先会社名】\n【納品先の住所】\n【納品先電話番号】\n【出荷日】\n"+
+      "【工場と打ち合わせの有無】\n【納品日指定の有無】\n【業務から客先への回答の有無】\n"+
+      "【移動入力の理由（クレームなど）】",
+    labels:{未対応:"入力依頼中", 対応中:"入力済", 完了:"確認済", 保留:"保留"},
+    steps :[{from:"未対応", to:"対応中", btn:"入力しました",   stamp:"paidDate"},
+            {from:"対応中", to:"完了",   btn:"確認済にする",   stamp:"doneDate"}] },
   { match:"", fields:["note"],   // 既定（上に当たらない全チャネル）
     labels:{未対応:"未対応", 対応中:"対応中", 完了:"完了", 保留:"保留"},
     steps :[{from:"未対応", to:"対応中", btn:"着手する"},
@@ -1267,6 +1289,12 @@ function normWf(w){
   return w;
 }
 function normWfs(a){ return Array.isArray(a)?a.map(normWf):a }
+/* 日付欄の呼び方。業務ごとに変えられる（既定は請求業務の言い回し） */
+function dateLabel(w,which){
+  var d=(w&&w.dateLabels)||{};
+  if(which==="paid") return d.paid || (w&&w.money?"入金完了日":"着手日");
+  return d.done || "完了日";
+}
 function hasField(w,k){ return !!(w&&w.fields&&w.fields.indexOf(k)>=0) }
 
 /* 管理者。room_reserve.html と同じ作法に揃えています。
@@ -2108,24 +2136,31 @@ function buildTaskMessage(t,comment,isNew){
   }else{
     who=esc(t.ownerName||"（未設定）");
   }
+  var note=String(t.note||"").trim();
   var lines=[];
-  if(comment) lines.push('<p>'+esc(comment).replace(/\n/g,"<br>")+'</p>');
+  // 状態を進めたときのコメントは備考にも追記されるので、二重に出さない
+  if(comment && note.indexOf(comment)<0)
+    lines.push('<p>'+esc(comment).replace(/\n/g,"<br>")+'</p>');
   lines.push('<p><b>'+(isNew?"タスクを追加しました":"タスクを更新しました")+'</b></p>');
   var body=[];
   body.push(esc(t.customerName||"（名称未設定）")+
             (Number(t.amount)>0?"　"+yen(t.amount)+"円":""));
   body.push("担当者： "+who);
   if(t.dueDate) body.push("期限： "+mmdd(t.dueDate));
-  if(t.paidDate) body.push("入金完了： "+mmdd(t.paidDate));
+  if(t.paidDate) body.push(dateLabel(W,"paid")+"： "+mmdd(t.paidDate));
+  if(t.doneDate) body.push(dateLabel(W,"done")+"： "+mmdd(t.doneDate));
   body.push("状態： "+(L[t.status]||t.status));
   lines.push('<p>'+body.join("<br>")+'</p>');
+  // 備考は「依頼の中身」そのものになる業務がある（入力依頼など）。投稿にも載せる
+  if(note) lines.push('<p>'+esc(note).replace(/\n/g,"<br>")+'</p>');
   return {content:lines.join(""),mentions:mentions};
 }
 function renderPostPreview(){
   var on=$("fPost").checked;
   var t={customerName:$("fName").value.trim(),amount:$("fAmt").value,
-         dueDate:$("fDue").value,paidDate:$("fPaid").value,
+         dueDate:$("fDue").value,paidDate:$("fPaid").value,doneDate:$("fDone").value,
          status:$("fSt").value,ownerName:$("fOwn").value.trim(),
+         note:$("fNote").value,
          channelName:(S._pre&&S._pre.channelName)||(S.cur&&S.cur.name)};
   var m=buildTaskMessage(t,$("fMsg").value.trim(),!S.editing);
   $("postPrev").className="prev"+(on?"":" off");
@@ -2409,7 +2444,8 @@ function openTaskModal(pre,srcText,warnText){
   var stamps=(W.steps||[]).map(function(x){return x.stamp}).filter(Boolean);
   $("wPaid").style.display=stamps.indexOf("paidDate")>=0?"":"none";
   $("wDone").style.display=stamps.indexOf("doneDate")>=0?"":"none";
-  $("lblPaid").textContent=W.money?"入金完了日":"着手日";
+  $("lblPaid").textContent=dateLabel(W,"paid");
+  $("lblDone").textContent=dateLabel(W,"done");
   $("fPaid").value=v.paidDate||"";
   $("fDone").value=v.doneDate||"";
   // 状態の選択肢はチャネルの業務に合わせてラベルだけ差し替える（値は共通4つ）
@@ -2417,7 +2453,13 @@ function openTaskModal(pre,srcText,warnText){
   $("fSt").innerHTML=STATUSES.map(function(s){
     return '<option value="'+esc(s)+'">'+esc(L[s]||s)+'</option>'}).join("");
   $("fSt").value=v.status||"未対応";
-  $("fOwn").value=v.ownerName||""; $("fNote").value=v.note||"";
+  // 業務ごとの既定。新規作成のときだけ効かせる（編集で勝手に書き換えない）
+  var isNewTask=!S.editing;
+  $("fOwn").value = v.ownerName || (isNewTask ? (W.defaultOwner||"") : "");
+  $("fNote").value= v.note      || (isNewTask ? (W.noteTemplate||"") : "");
+  // ひな形が長い業務では備考欄を広げる。2行のままだと中身が見えない
+  $("fNote").rows=Math.min(12,Math.max(2,$("fNote").value.split("\n").length));
+  if(isNewTask && !$("fDue").value && W.dueToday) $("fDue").value=isoDate(new Date());
   var a=(v.auto)||{};
   [["aInv","invoiceNo"],["aCode","customerCode"],["aName","customerName"],
    ["aAmt","amount"],["aDue","dueDate"]].forEach(function(p){
@@ -2767,7 +2809,20 @@ function wfRow(w,i){
       '<label class="ck"><input type="checkbox" class="wfs0"'+(s0.stamp?" checked":"")+'> 日付を記録（入金確認日）</label>'+
       '<label>2段目のボタン<input type="text" class="wfb1" value="'+esc(s1.btn||"完了にする")+'"></label>'+
       '<label class="ck"><input type="checkbox" class="wfs1"'+(s1.stamp?" checked":"")+'> 日付を記録（完了日）</label>'+
-    '</div></div>';
+      '<label>1段目の日付の呼び方<input type="text" class="wfd0" placeholder="例）入力日" value="'+
+        esc((w.dateLabels&&w.dateLabels.paid)||"")+'"></label>'+
+      '<label>2段目の日付の呼び方<input type="text" class="wfd1" placeholder="例）確認日" value="'+
+        esc((w.dateLabels&&w.dateLabels.done)||"")+'"></label>'+
+    '</div>'+
+    '<div class="wfgrid" style="margin-top:9px">'+
+      '<label>担当者の既定<input type="text" class="wfow" placeholder="例）利根川 進" value="'+esc(w.defaultOwner||"")+'"></label>'+
+      '<label class="ck"><input type="checkbox" class="wfdt"'+(w.dueToday?" checked":"")+'> 期限を当日で初期表示する</label>'+
+    '</div>'+
+    '<label class="wfnt">備考のひな形（新規作成のとき、備考欄に最初から入れておく文）'+
+      '<textarea class="wftpl" rows="4" placeholder="例）【得意先】&#10;【納品先会社名】">'+esc(w.noteTemplate||"")+'</textarea>'+
+      '<span class="fn">依頼のときに必ず書いてほしい項目を並べておくと、書き漏れが減ります。'+
+        '備考は<b>投稿されるメッセージにも載ります</b>。</span></label>'+
+    '</div>';
 }
 function renderWf(){
   $("wfList").innerHTML=S.wfEdit.map(wfRow).join("");
@@ -2786,12 +2841,20 @@ function collectWf(){
       {from:"対応中",to:"完了",btn:v("wfb1").trim()}, ck("wfs1")?{stamp:"doneDate"}:{}));
     var fields=[].slice.call(el.querySelectorAll(".wff"))
       .filter(function(x){return x.checked}).map(function(x){return x.value});
-    out.push({
+    var o={
       match:v("wfm").trim(), fields:fields, money:fields.indexOf("amount")>=0,
       labels:{未対応:v("wfl0").trim()||"未対応", 対応中:v("wfl1").trim()||"対応中",
               完了:v("wfl2").trim()||"完了",     保留:v("wfl3").trim()||"保留"},
       steps:steps
-    });
+    };
+    // 空のキーは書き出さない。JSONを読むときのノイズになる
+    var dl={}; if(v("wfd0").trim()) dl.paid=v("wfd0").trim();
+    if(v("wfd1").trim()) dl.done=v("wfd1").trim();
+    if(Object.keys(dl).length) o.dateLabels=dl;
+    if(v("wfow").trim()) o.defaultOwner=v("wfow").trim();
+    if(ck("wfdt")) o.dueToday=true;
+    if(v("wftpl").trim()) o.noteTemplate=v("wftpl").replace(/\r/g,"");
+    out.push(o);
   });
   return out;
 }
@@ -2845,8 +2908,11 @@ function advPatch(){
   var t=S.advTask, st=S.advStep, p={status:st.to};
   if(st.stamp && $("advDate").value) p[st.stamp]=$("advDate").value;
   var c=$("advNote").value.trim();
-  if(c && $("advToNote").checked)
-    p.note=(t.note?t.note+" / ":"")+c;
+  if(c && $("advToNote").checked){
+    // ひな形で複数行になっている備考に " / " で足すと読めなくなる。改行でつなぐ
+    var sep=/\n/.test(String(t.note||"")) ? "\n" : " / ";
+    p.note=(t.note?t.note+sep:"")+c;
+  }
   return p;
 }
 function openAdv(t){
@@ -2859,8 +2925,7 @@ function openAdv(t){
   $("advTo").value=(L[st.to]||st.to);
   // 日付欄は stamp のある遷移だけ。ラベルは業務の言葉に合わせる
   $("advDateW").style.display=st.stamp?"":"none";
-  $("advDateL").textContent=st.stamp==="paidDate"
-    ? (W.money?"入金完了日":"着手日") : "完了日";
+  $("advDateL").textContent=dateLabel(W,st.stamp==="paidDate"?"paid":"done");
   $("advDate").value=t[st.stamp]||isoDate(new Date());
   // 満額入金の定型を初期値に。差額ならここを書き換えるだけ
   $("advNote").value=(st.stamp==="paidDate"&&W.money&&Number(t.amount)>0)
@@ -2893,20 +2958,8 @@ async function runAdv(){
   }catch(e){ toast(e.message,true) }
   $("advOk").disabled=false; $("advOk").textContent="確定";
 }
-function roomsSnippet(){
-  if(!S.rooms.length) return "rooms: [ ]   // 部屋が読み込まれていません";
-  return "rooms: [\n"+S.rooms.map(function(r){
-    return r.kind==="chat"
-      ? '  { kind:"chat",    id:"'+r.id+'" },'+
-        '                       // '+r.name
-      : '  { kind:"channel", teamId:"'+r.teamId+'", channelId:"'+r.id+'" },'+
-        '   // '+r.name;
-  }).join("\n")+"\n]";
-}
 function openCfg(){
-  $("roomsOut").textContent=roomsSnippet();
   $("provLog").style.display="none"; $("provLog").textContent="";
-  $("cLink").value=""; $("linkOut").style.display="none"; $("linkOut").textContent="";
   var live=(S.mode==="live");
   $("btnCheckList").disabled=$("btnMakeList").disabled=!live;
   $("provNote").textContent=live
@@ -3146,7 +3199,7 @@ $("fFile").addEventListener("change",function(){
   $("fileNote").innerHTML=(big.length?"⚠ 4MB超あり: ":"<b>"+f.length+"件</b> ")+esc(names.join("、"));
   $("fileNote").style.color=big.length?"var(--danger)":"";
 });
-["fMsg","fName","fAmt","fDue","fSt","fPaid","fDone"].forEach(function(id){
+["fMsg","fName","fAmt","fDue","fSt","fPaid","fDone","fOwn","fNote"].forEach(function(id){
   $(id).addEventListener("input",renderPostPreview);
   $(id).addEventListener("change",renderPostPreview);
 });
