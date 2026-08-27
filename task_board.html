@@ -1210,7 +1210,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-08-27-2";
+var APP_VER = "2026-08-27-3";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -1808,6 +1808,18 @@ async function resolveList(){
   if(!hit) throw new Error("リスト「"+CONFIG.spList+"」が見つかりません（サイト: "+CONFIG.spSite+"）");
   S.listId=hit.id;
 }
+// SharePointの複数行テキストを「リッチテキスト」で作ってしまうと、
+// 保存したURLが <div class="ExternalClass..">https://..</div> のようにHTMLで返る。
+// 列を書式なしテキストに直すのが本筋だが、直すまでの間も壊れないよう読み出し側で剥がす。
+function plainUrl(v){
+  var s=String(v||"");
+  if(s.indexOf("<")<0) return s.trim();
+  s=s.replace(/<br\s*\/?>/gi,"\n").replace(/<[^>]+>/g,"");
+  s=s.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+     .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g," ");
+  var m=/https?:\/\/\S+/.exec(s);
+  return m ? m[0].trim() : s.trim();
+}
 function rowToTask(it){
   var f=it.fields||{};
   return {id:it.id,
@@ -1817,10 +1829,10 @@ function rowToTask(it){
     paidDate:(f[F.paidDate]||"").slice(0,10),
     doneDate:(f[F.doneDate]||"").slice(0,10),
     status:f[F.status]||"未対応", ownerName:f[F.ownerName]||"", ownerUpn:f[F.ownerUpn]||"",
-    msgId:f[F.msgId]||"", msgUrl:f[F.msgUrl]||"",
+    msgId:f[F.msgId]||"", msgUrl:plainUrl(f[F.msgUrl]),
     channelId:f[F.channelId]||"", channelName:f[F.channelName]||"",
     srcKind:f[F.srcKind]||"channel",
-    fileUrl:f[F.fileUrl]||"", note:f[F.note]||""};
+    fileUrl:plainUrl(f[F.fileUrl]), note:f[F.note]||""};
 }
 function taskToFields(t){
   var f={};
@@ -2914,6 +2926,24 @@ async function provision(create){
       ? "NG  1行テキストのままのURL列: "+stillShort.map(function(c){return c.name}).join(", ")+
         "（255文字を超えるリンクが保存できません。上の手順で複数行テキストにしてください）"
       : "OK  URL列は複数行テキストです（長いリンクも保存できます）");
+
+    // 複数行にしても「リッチテキスト」だとHTMLで保存され、Power Automate側で使えない
+    var rich=after.filter(function(c){
+      return ["MessageUrl","InvoiceFileUrl"].indexOf(c.name)>=0 &&
+             c.text && c.text.allowMultipleLines===true &&
+             c.text.textType && c.text.textType!=="plain";
+    });
+    if(rich.length){
+      plog("NG  リッチテキストになっているURL列: "+rich.map(function(c){return c.displayName+"（"+c.name+"）"}).join(", "));
+      plog("    リッチテキストはURLをHTMLで保存するため、Power Automate から使えません。");
+      plog("    列の編集画面で「使用可能なテキストの種類」を『書式なしテキスト』に変えてください。");
+      rich.forEach(function(c){
+        plog("      "+site.webUrl+"/_layouts/15/FldEdit.aspx?List={"+list.id+"}&Field="+c.name);
+      });
+      plog("    ※アプリ側はHTMLを剥がして読むので、当面リンクは開けます。困るのはフローだけです。");
+    }else{
+      plog("OK  URL列は書式なしテキストです");
+    }
 
     var noIdx=NEED_INDEX.filter(function(n){
       var c=after.filter(function(x){return x.name===n})[0];
