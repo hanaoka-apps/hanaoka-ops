@@ -911,7 +911,10 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
       <div id="wfList"></div>
       <button class="gbtn" id="wfAdd" style="margin-top:4px">＋ 業務を追加</button>
       <details style="margin-top:16px">
-        <summary style="cursor:pointer;font-size:12px;color:var(--muted)">JSONで直接編集（3段階以上の遷移が必要なとき）</summary>
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted)">JSONで直接編集 / 1件だけ貼り付けて追加</summary>
+        <p style="margin:8px 0 0;font-size:11px;color:var(--muted2);line-height:1.7">
+          <b>1件だけ</b>（<code>{ … }</code>）を貼って「反映」を押すと、いまの一覧に<b>追加</b>されます
+          （同じ match があれば差し替え）。全体を貼り替えたいときは <code>[ … ]</code> の配列で貼ってください。</p>
         <textarea id="wfJson" rows="10" style="width:100%;margin-top:8px;border:1px solid var(--border);border-radius:7px;padding:8px;font-family:ui-monospace,monospace;font-size:11px"></textarea>
         <button class="gbtn" id="wfApplyJson" style="margin-top:6px">JSONをフォームに反映</button>
       </details>
@@ -1341,17 +1344,30 @@ function isAdmin(){
    これを決めないと「画面で変えたのにpushしたら戻った」が起きます。 */
 WORKFLOWS = normWfs(WORKFLOWS);
 var WORKFLOWS_CODE = null;      // 起動時にコード既定を退避
-function validWorkflows(a){
-  if(!Array.isArray(a)||!a.length) return false;
-  return a.every(function(w){
-    if(!w||typeof w!=="object") return false;
-    if(typeof w.match!=="string") return false;
-    if(!w.labels||STATUSES.some(function(k){return typeof w.labels[k]!=="string"})) return false;
-    if(!Array.isArray(w.steps)) return false;
-    return w.steps.every(function(st){
-      return st && STATUSES.indexOf(st.from)>=0 && STATUSES.indexOf(st.to)>=0 && typeof st.btn==="string"});
-  });
+/* どこがダメなのかを日本語で返す。空文字なら妥当。
+   「形式が不正です」だけだと直しようがないので理由を出します */
+function wfReason(a){
+  if(!Array.isArray(a)) return "配列（[ … ]）になっていません";
+  if(!a.length) return "中身が空です";
+  for(var i=0;i<a.length;i++){
+    var w=a[i], n=(i+1)+"件目";
+    if(!w||typeof w!=="object") return n+"が { } の形ではありません";
+    if(typeof w.match!=="string") return n+"に match（チャネル名の一部）がありません";
+    if(!w.labels||typeof w.labels!=="object") return n+"に labels がありません";
+    var miss=STATUSES.filter(function(k){return typeof w.labels[k]!=="string"});
+    if(miss.length) return n+"の labels に "+miss.join("・")+" がありません";
+    if(!Array.isArray(w.steps)) return n+"に steps がありません";
+    for(var j=0;j<w.steps.length;j++){
+      var st=w.steps[j], sn=n+"の steps "+(j+1)+"本目";
+      if(!st||typeof st!=="object") return sn+"が { } の形ではありません";
+      if(STATUSES.indexOf(st.from)<0) return sn+"の from は 未対応/対応中/完了/保留 のどれかにしてください";
+      if(STATUSES.indexOf(st.to)<0)   return sn+"の to は 未対応/対応中/完了/保留 のどれかにしてください";
+      if(typeof st.btn!=="string")    return sn+"に btn（ボタンの文言）がありません";
+    }
+  }
+  return "";
 }
+function validWorkflows(a){ return wfReason(a)==="" }
 async function cfgList(){
   await resolveList();
   var ls=await gAll("/sites/"+S.siteId+"/lists?$select=id,name,displayName,webUrl");
@@ -3197,12 +3213,31 @@ $("wfAdd").onclick=function(){
   renderWf();
 };
 $("wfApplyJson").onclick=function(){
-  try{
-    var a=JSON.parse($("wfJson").value);
-    a=normWfs(a);
-    if(!validWorkflows(a)) throw new Error("形式が不正です（match / labels 4つ / steps が必要）");
-    S.wfEdit=a; renderWf(); toast("フォームに反映しました");
-  }catch(e){ toast("JSONを読めません: "+e.message,true) }
+  var raw;
+  try{ raw=JSON.parse($("wfJson").value) }
+  catch(e){ toast("JSONとして読めません: "+e.message,true); return }
+
+  // 1件だけ貼られたら、いまの一覧に足す（全体を置き換えない）。
+  // 配列にし忘れて全部消える事故が起きやすいので、こちらを正として扱う
+  if(raw && typeof raw==="object" && !Array.isArray(raw)){
+    var one=normWf(raw), r1=wfReason([one]);
+    if(r1){ toast("この1件が使えません: "+r1,true); return }
+    var cur=collectWf(), at=cur.length, replaced=false;
+    for(var i=0;i<cur.length;i++){
+      if(cur[i].match && cur[i].match===one.match){ cur[i]=one; replaced=true; break }
+    }
+    if(!replaced){
+      for(var k=0;k<cur.length;k++){ if(!cur[k].match){ at=k; break } }  // 「それ以外すべて」の手前へ
+      cur.splice(at,0,one);
+    }
+    S.wfEdit=cur; renderWf();
+    toast(replaced ? "「"+one.match+"」を差し替えました（保存で確定）"
+                   : "「"+one.match+"」を追加しました（保存で確定）");
+    return;
+  }
+  var a=normWfs(raw), r=wfReason(a);
+  if(r){ toast("この JSON は使えません: "+r,true); return }
+  S.wfEdit=a; renderWf(); toast("フォームに反映しました（全体を置き換えました）");
 };
 $("wfReset").onclick=function(){
   if(!WORKFLOWS_CODE) return;
@@ -3217,7 +3252,9 @@ $("wfSave").onclick=async function(){
     toast("match が空の行（それ以外すべて）は、ちょうど1つ必要です",true); return }
   if(arr[arr.length-1].match){
     toast("match が空の行は末尾に置いてください（上から順に評価するため）",true); return }
-  if(!validRooms(S.rmEdit||[])){ toast("対象の部屋の指定が壊れています",true); return }
+  var wr=wfReason(arr);
+  if(wr){ toast("業務ごとの設定が使えません: "+wr,true); setAdmTab("wf"); return }
+  if(!validRooms(S.rmEdit||[])){ toast("対象の部屋の指定が壊れています",true); setAdmTab("rooms"); return }
 
   if(S.mode!=="live"){
     // デモでも動きだけは確認できるようにする（保存はしない）
