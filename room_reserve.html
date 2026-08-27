@@ -343,6 +343,17 @@ const GROUP_ID = 'ed13b4d2-03b0-47ee-8892-e105e0cf9851';
    ★拠点が増えたらここに足す★ 書いていない拠点は、この後ろに室数の多い順で付く。
    （近日 工場の会議室を登録予定。すでに書いてあるので登録すれば本社の下に入る） */
 const BLD_ORDER = ['本社', '工場', '名古屋', '大阪'];
+/* ★sortRooms の中の const にしてはいけない★
+   絞り込みの選択肢（paintFlrSelect）でも同じ順を使う。
+   関数の中に閉じ込めていたせいで bldRank is not defined で画面が死んだ。 */
+function bldRank(b){
+  const i = BLD_ORDER.indexOf(b);
+  if (i >= 0) return i;                            /* 明示した順 */
+  if (!b) return 1e6;                              /* 建物が未設定のものは最後 */
+  let n = 0;
+  for (const r of ROOMS) if ((r.bld || '') === b) n++;
+  return 1000 - n;                                 /* 未知の拠点は室数の多い順 */
+}
 
 const DAY_H0 = 8, DAY_H1 = 20;      /* 日表示の既定の時間帯。予定に合わせて自動で広げる */
 const CHUNK  = 20;                  /* getSchedule は1回20件まで */
@@ -636,7 +647,13 @@ async function loadRooms(){
       if (v.length) {
         list = v.map(r => mkRoom({
           n: r.displayName, mail: r.emailAddress, cap: r.capacity,
-          flr: r.floorLabel || (r.floorNumber != null ? `${r.floorNumber}F` : ''),
+          /* ★floorLabel（自由文字）より floorNumber（数値）を優先する★
+             Exchange の FloorLabel は手入力なので「1F」「1階」「１F」が混ざる。
+             混ざると同じ階が2グループに割れて、絞り込みの選択肢も倍になる。
+             実機で工場3室だけ「工場 1階」「工場 3階」に割れた。
+             数値から作れば必ず 1F / 3F に揃う。B1 のように数値で表せない
+             階だけ floorLabel に頼る。 */
+          flr: (r.floorNumber != null ? `${r.floorNumber}F` : (r.floorLabel || '')),
           bld: r.building,
           av: [r.videoDeviceName, r.audioDeviceName, r.displayDeviceName].filter(Boolean).join('・')
         }));
@@ -706,15 +723,6 @@ async function loadRooms(){
      多く登録された瞬間に工場が先頭へ来る。増設のたびに並びが変わるのは困る。
      BLD_ORDER に書いた順を正とし、そこに無い建物だけ室数の多い順で後ろに付ける。
      拠点が増えたらこの配列に足すだけ。 */
-  const bcount = new Map();
-  ROOMS.forEach(r => bcount.set(r.bld || '', (bcount.get(r.bld || '') || 0) + 1));
-  const bldRank = b => {
-    const i = BLD_ORDER.indexOf(b);
-    if (i >= 0) return i;                          /* 明示した順 */
-    if (!b) return 1e6;                            /* 建物が未設定のものは最後 */
-    return 1000 - (bcount.get(b) || 0);            /* 未知の拠点は室数の多い順 */
-  };
-
   ROOMS.sort((a,b) => a.n.localeCompare(b.n, 'ja', { numeric: true }));
   ROOMS.sort((a,b) => {
     const ka = a.bld || '', kb = b.bld || '';
@@ -746,11 +754,28 @@ function paintCapSelect(){
   if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
 }
 
+/* ★絞り込みは建物まで。階では絞らない★
+   13室で階まで刻むと選択肢が8つ並び、しかも Exchange 側の階の表記が
+   「1F」と「1階」で混ざると同じ階が2つに割れる。
+   建物なら本社・工場の2つで足りる。
+   表の中のグループ見出しは建物＋階のまま残す（場所が分かるので）。 */
+/* 絞り込みの単位。建物が取れているなら建物、取れていないなら階。
+   ★建物は /places 経路でしか取れない★ findRooms や利用者一覧に落ちると
+   建物が空になる。そのとき「拠点が未設定（13室）」だけを出しても、
+   選んでも何も変わらないので選択肢の意味がない。階はアドレスから
+   推測できるので、そちらで絞れるようにする。 */
+function flrMode(){ return ROOMS.some(r => r.bld) ? 'bld' : 'flr'; }
+function flrKeyOf(r){ return flrMode() === 'bld' ? (r.bld || '') : (r.flr || ''); }
+
 function paintFlrSelect(){
-  const gs = [...new Set(ROOMS.map(grpOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja',{numeric:true}));
-  el('flr').innerHTML = `<option value="">すべての階（${ROOMS.length}室）</option>`
-    + gs.map(g => `<option value="${esc(g)}">${esc(g)}（${ROOMS.filter(r=>grpOf(r)===g).length}）</option>`).join('')
-    + (ROOMS.some(r => !grpOf(r)) ? `<option value="__none__">階が未設定（${ROOMS.filter(r=>!grpOf(r)).length}）</option>` : '');
+  const byBld = flrMode() === 'bld';
+  const ks = [...new Set(ROOMS.map(flrKeyOf).filter(Boolean))]
+    .sort((a,b) => byBld ? (bldRank(a) - bldRank(b)) : a.localeCompare(b, 'ja', { numeric: true }));
+  const all  = byBld ? 'すべての拠点' : 'すべての階';
+  const none = byBld ? '拠点が未設定' : '階が未設定';
+  el('flr').innerHTML = `<option value="">${all}（${ROOMS.length}室）</option>`
+    + ks.map(k => `<option value="${esc(k)}">${esc(k)}（${ROOMS.filter(r=>flrKeyOf(r)===k).length}）</option>`).join('')
+    + (ROOMS.some(r => !flrKeyOf(r)) ? `<option value="__none__">${none}（${ROOMS.filter(r=>!flrKeyOf(r)).length}）</option>` : '');
 }
 
 /* ============================================================
@@ -1160,7 +1185,8 @@ function paintSeek(){
 function filterRooms(){
   const g = el('flr').value, cap = Number(el('cap').value || 0), q = el('q').value.trim().toLowerCase();
   return ROOMS.filter(r =>
-    (!g || (g === '__none__' ? !grpOf(r) : grpOf(r) === g)) &&
+    /* g は建物名（建物が取れないときは階）。「本社 1F」のような旧いURLも通す */
+    (!g || (g === '__none__' ? !flrKeyOf(r) : (flrKeyOf(r) === g || grpOf(r) === g))) &&
     (!cap || (r.cap != null && r.cap >= cap)) &&
     (!q || r.n.toLowerCase().includes(q) || grpOf(r).toLowerCase().includes(q)));
 }
@@ -1462,7 +1488,18 @@ async function loadAll(want){
       paintFlrSelect(); paintCapSelect();
     }
     if (want) {
-      if (want.flr) el('flr').value = want.flr;
+      /* ★絞り込みを階から建物に変えたので、古いURLの値は選択肢に無い★
+         そのまま入れても無視されて「すべての拠点」に戻る。
+         「本社 1F」のような値は建物の部分（本社）に読み替える。
+         貼られたリンクは少し広く出るが、開けなくなるより良い。 */
+      if (want.flr) {
+        let v = want.flr;
+        if (![...el('flr').options].some(o => o.value === v)) {
+          const hit = ROOMS.map(flrKeyOf).find(k => k && (v === k || v.startsWith(k + ' ') || v.endsWith(' ' + k)));
+          v = hit || '';
+        }
+        el('flr').value = v;
+      }
       if (want.cap) el('cap').value = want.cap;
       if (want.q)   el('q').value   = want.q;
     }
