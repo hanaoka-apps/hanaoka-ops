@@ -852,6 +852,13 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
           <span><b id="advPostWhere">スレッドに投稿して記録を残す</b></span></label>
         <label class="chk" style="margin-top:6px"><input type="checkbox" id="advToNote" checked>
           <span>備考にも追記する</span></label>
+        <div class="filerow">
+          <label class="filebtn">
+            <input type="file" id="advFile" multiple accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx">
+            📎 振込明細・注文書などを添付
+          </label>
+          <span class="note" id="advFileNote"></span>
+        </div>
         <div class="prev" id="advPrev"></div>
       </div>
     </div>
@@ -1067,6 +1074,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
                   <li><b>入金完了日</b>に、実際に入金された日を入れる</li>
                   <li>コメントは <span class="hpui">334,312円 満額入金</span> が既定。一部入金なら
                     「300,000円 一部入金（残34,312円）」のように書き換える</li>
+                  <li>振込明細などを付けたいときは <span class="hpui">📎 添付</span> から（1ファイル4MBまで）</li>
                   <li><span class="hpui pri">確定</span> を押す</li>
                 </ul>
                 <div class="r">状態 → <span class="hpst p">入金確認済</span> 営業にボールが戻ります</div>
@@ -2241,7 +2249,12 @@ async function uploadAll(room,files){
   }
   return out;
 }
-function setSaveLabel(t){ $("tdSave").textContent=t||"保存" }
+/* アップロード中の進捗を、いま押されているボタンに出す。
+   タスク作成は「保存」、状態を進めるのは「確定」 */
+function setSaveLabel(t){
+  var id=S._saveBtn||"tdSave";
+  $(id).textContent=t||(id==="advOk"?"確定":"保存");
+}
 
 /* 投稿する本文を組み立てる。担当者のAAD IDが取れていれば @メンションを付ける */
 function buildTaskMessage(t,comment,isNew,atMentions){
@@ -3050,6 +3063,12 @@ function openAdv(t){
   $("advNote").value=(st.stamp==="paidDate"&&W.money&&Number(t.amount)>0)
     ? yen(t.amount)+"円 満額入金" : "";
   S.advAt=[]; atClose();
+  // 添付はチャネルだけ（チャットの添付は送信者個人のOneDriveに入る）
+  var chatRoom=(S.cur&&S.cur.kind==="chat");
+  $("advFile").value=""; $("advFile").disabled=(!S.cur||chatRoom);
+  $("advFileNote").textContent=chatRoom
+    ? "チャットには添付できません（ファイルが個人のOneDriveに入るため）" : FILE_HINT;
+  $("advFileNote").style.color=chatRoom?"var(--wait)":"";
   var isChat=(S.cur&&S.cur.kind==="chat");
   $("advPostWhere").textContent=(isChat?"チャットに投稿":"スレッドに投稿")+"して記録を残す";
   $("advPost").checked=!!S.cur; $("advPost").disabled=!S.cur;
@@ -3061,14 +3080,27 @@ function openAdv(t){
 async function runAdv(){
   var t=S.advTask, st=S.advStep; if(!t||!st) return;
   var patch=advPatch(), comment=$("advNote").value.trim(), doPost=$("advPost").checked&&!!S.cur;
-  $("advOk").disabled=true; $("advOk").textContent="保存中…";
+  var files=[].slice.call($("advFile").files||[]);
+  $("advOk").disabled=true; S._saveBtn="advOk"; setSaveLabel("保存中…");
   try{
+    // 先にアップロード。ここで落ちたら状態も進めない（中途半端に残さない）
+    var uploaded=[];
+    if(files.length && S.cur && S.cur.kind!=="chat"){
+      if(S.mode==="demo"){
+        uploaded=files.map(function(f){return {name:f.name,webUrl:"",eTag:""}});
+      }else{
+        uploaded=await uploadAll(S.cur,files);
+      }
+      // 請求書のリンクは上書きしない。空のときだけ入れる
+      if(!t.fileUrl && uploaded.length && uploaded[0].webUrl) patch.fileUrl=uploaded[0].webUrl;
+    }
+    setSaveLabel("保存中…");
     var merged=Object.assign({},t,patch);
     await saveTask(merged);
     if(doPost){
       try{
         await postTaskRecord(merged,comment,false,
-          (t.msgId&&S.cur.kind!=="chat")?t.msgId:null,null,S.advAt);
+          (t.msgId&&S.cur.kind!=="chat")?t.msgId:null,uploaded,S.advAt);
         if(S.mode==="live") S.msgs=await fetchMsgs(S.cur);
         renderMsgs();
       }catch(pe){ toast("状態は更新しましたが投稿に失敗しました： "+pe.message,true) }
@@ -3076,7 +3108,7 @@ async function runAdv(){
     closeAll(); S.tasks=await fetchTasks(); renderTasks();
     toast(st.btn+" にしました");
   }catch(e){ toast(e.message,true) }
-  $("advOk").disabled=false; $("advOk").textContent="確定";
+  $("advOk").disabled=false; S._saveBtn=null; $("advOk").textContent="確定";
 }
 function openCfg(){
   $("provLog").style.display="none"; $("provLog").textContent="";
@@ -3205,12 +3237,20 @@ $("advOk").onclick=runAdv;
   $(id).addEventListener("change",advPreview);
 });
 $("wfAdd").onclick=function(){
-  S.wfEdit=collectWf();
-  S.wfEdit.push({match:"",fields:FIELDS_PLAIN.slice(),money:false,
+  var a=collectWf();
+  var row={match:"",fields:FIELDS_PLAIN.slice(),money:false,
     labels:{未対応:"未対応",対応中:"対応中",完了:"完了",保留:"保留"},
     steps:[{from:"未対応",to:"対応中",btn:"着手する"},
-           {from:"対応中",to:"完了",btn:"完了にする",stamp:"doneDate"}]});
-  renderWf();
+           {from:"対応中",to:"完了",btn:"完了にする",stamp:"doneDate"}]};
+  // 末尾に足すと「それ以外すべて」より下になって効かない。既定行の手前に入れる
+  var at=a.length;
+  for(var i=0;i<a.length;i++){ if(!a[i].match){ at=i; break } }
+  a.splice(at,0,row);
+  S.wfEdit=a; renderWf();
+  var rows=document.querySelectorAll("#wfList .wfrow");
+  if(rows[at]){ rows[at].scrollIntoView({block:"center",behavior:"smooth"});
+    var m=rows[at].querySelector(".wfm"); if(m) m.focus() }
+  toast("業務を1つ追加しました。チャネル名の一部を入れてください");
 };
 $("wfApplyJson").onclick=function(){
   var raw;
@@ -3330,16 +3370,18 @@ $("fOwn").addEventListener("input",function(){
   clearTimeout(S._ownT); S._ownT=setTimeout(refreshOwnList,260);
 });
 $("fPost").addEventListener("change",renderPostPreview);
-$("fFile").addEventListener("change",function(){
-  var f=this.files||[];
-  if(!f.length){ $("fileNote").textContent="1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
-                 $("fileNote").style.color=""; return }
+var FILE_HINT="1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
+function renderFileNote(inputId,noteId){
+  var f=($(inputId).files||[]), el=$(noteId);
+  if(!f.length){ el.textContent=FILE_HINT; el.style.color=""; return }
   var big=[].slice.call(f).filter(function(x){return x.size>UPLOAD_LIMIT});
   var names=[].slice.call(f).map(function(x){
     return x.name+"（"+(x.size<1024?x.size+"B":x.size<1048576?Math.round(x.size/1024)+"KB":(x.size/1048576).toFixed(1)+"MB")+"）"});
-  $("fileNote").innerHTML=(big.length?"⚠ 4MB超あり: ":"<b>"+f.length+"件</b> ")+esc(names.join("、"));
-  $("fileNote").style.color=big.length?"var(--danger)":"";
-});
+  el.innerHTML=(big.length?"⚠ 4MB超あり: ":"<b>"+f.length+"件</b> ")+esc(names.join("、"));
+  el.style.color=big.length?"var(--danger)":"";
+}
+$("fFile").addEventListener("change",function(){ renderFileNote("fFile","fileNote") });
+$("advFile").addEventListener("change",function(){ renderFileNote("advFile","advFileNote") });
 /* ---- コメント欄の @ピッカー ---- */
 ["fMsg","advNote"].forEach(function(id){
   var which=(id==="advNote")?"adv":"msg";
@@ -3435,7 +3477,7 @@ $("tdSave").onclick=async function(){
   var isNew=!S.editing, doPost=$("fPost").checked && !!S.cur, comment=$("fMsg").value.trim();
   var files=[].slice.call($("fFile").files||[]);
   var p=findPerson(t.ownerName); if(p&&p.upn) t.ownerUpn=p.upn;
-  $("tdSave").disabled=true;
+  $("tdSave").disabled=true; S._saveBtn="tdSave";
   try{
     // 先にアップロード。ここで落ちたらタスクも作らない（中途半端な状態を残さない）
     var uploaded=[];
@@ -3473,7 +3515,7 @@ $("tdSave").onclick=async function(){
     if(!doPost) toast(isNew?"タスクを追加しました":"タスクを更新しました");
     else toast(isNew?"タスクを追加してスレッドに残しました":"タスクを更新しました");
   }catch(e){ toast(e.message,true) }
-  $("tdSave").disabled=false; setSaveLabel("保存");
+  $("tdSave").disabled=false; setSaveLabel("保存"); S._saveBtn=null;
 };
 $("tdDel").onclick=async function(){
   if(!S.editing)return;
