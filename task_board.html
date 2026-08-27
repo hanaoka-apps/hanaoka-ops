@@ -422,6 +422,9 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
 .wfgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px}
 .wfgrid label{display:flex;flex-direction:column;gap:3px;font-size:10.5px;color:var(--muted)}
 .wfgrid label.ck{flex-direction:row;align-items:center;gap:6px;font-size:11px;padding-top:14px}
+.wfgrid label.full{grid-column:1/-1}
+.wfgrid select{border:1px solid var(--border);border-radius:6px;padding:5px 8px;outline:0;font-size:12px;background:#fff}
+.wfgrid select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
 .wfgrid input[type=text]{border:1px solid var(--border);border-radius:6px;padding:5px 8px;outline:0;font-size:12px}
 .wfgrid input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
 .wfnt{display:flex;flex-direction:column;gap:3px;margin-top:9px;font-size:10.5px;color:var(--muted)}
@@ -854,7 +857,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <label class="chk"><input type="checkbox" id="advPost" checked>
           <span><b id="advPostWhere">スレッドに投稿して記録を残す</b></span></label>
         <label class="chk" style="margin-top:6px"><input type="checkbox" id="advToNote" checked>
-          <span>備考にも追記する</span></label>
+          <span>備考に記録として残す（日付と名前つき）</span></label>
         <div class="filerow">
           <label class="filebtn">
             <input type="file" id="advFile" multiple accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx">
@@ -1896,8 +1899,24 @@ async function saveTask(t){
   }
   await resolveList();
   var base="/sites/"+S.siteId+"/lists/"+S.listId+"/items";
-  if(t.id) return g(base+"/"+t.id+"/fields",{method:"PATCH",body:taskToFields(t)});
-  return g(base,{method:"POST",body:{fields:taskToFields(t)}});
+  var fields=taskToFields(t);
+  async function put(f){
+    return t.id ? g(base+"/"+t.id+"/fields",{method:"PATCH",body:f})
+                : g(base,{method:"POST",body:{fields:f}});
+  }
+  try{ return await put(fields) }
+  catch(e){
+    // 1行テキストの列は255文字まで。日本語ファイル名のURLは平気で超えます。
+    // リンクだけ落として保存し直す（状態変更そのものを失うほうが困る）
+    var longKeys=[F.fileUrl,F.msgUrl].filter(function(k){
+      return fields[k] && String(fields[k]).length>255 });
+    if(!longKeys.length) throw e;
+    var f2={}; Object.keys(fields).forEach(function(k){ if(longKeys.indexOf(k)<0) f2[k]=fields[k] });
+    var r=await put(f2);
+    toast("ファイルのリンクが長すぎたので、リンクだけ保存しませんでした"+
+          "（Teamsの投稿には添付されています）。設定→作成・修復で直せます",true);
+    return r;
+  }
 }
 async function delTask(id){
   if(S.mode==="demo"){ S.demoDb=(S.demoDb||[]).filter(function(x){return x.id!==id}); return }
@@ -2322,6 +2341,23 @@ function boardUrl(t){
   if(t&&t.id) q.push("t="+encodeURIComponent(t.id));
   return base+(q.length?"?"+q.join("&"):"");
 }
+/* 備考は2つの役割を持ってしまっています。
+     ① 依頼の中身（ひな形で書く。ずっと変わらない）
+     ② 状態を進めたときのコメントの記録（増えていく）
+   ②を「── 8/27 福田 剛史： …」の形にして、投稿では②を出さないことで
+   「今回の一言」が依頼文の末尾に埋もれるのを防ぎます。 */
+var NOTE_MARK="── ";
+var DIV_LINE="───────── 依頼の内容 ─────────";
+function splitNote(note){
+  var body=[], log=[];
+  String(note||"").split("\n").forEach(function(l){
+    (l.indexOf(NOTE_MARK)===0 ? log : body).push(l);
+  });
+  return {body:body.join("\n").trim(), log:log};
+}
+function noteLogLine(text){
+  return NOTE_MARK+mmdd(isoDate(new Date()))+" "+((S.me&&S.me.name)||"")+"： "+text;
+}
 function buildTaskMessage(t,comment,isNew,atMentions){
   var W=wfEff(t), L=W.labels;
   var p=findPerson(t.ownerName), mentions=[], who;
@@ -2332,11 +2368,10 @@ function buildTaskMessage(t,comment,isNew,atMentions){
   }else{
     who=esc(t.ownerName||"（未設定）");
   }
-  var note=String(t.note||"").trim();
+  var sp=splitNote(t.note);
   var lines=[];
-  // 状態を進めたときのコメントは備考にも追記されるので、二重に出さない
-  if(comment && note.indexOf(comment)<0)
-    lines.push('<p>'+atToHtml(comment,mentions,atMentions)+'</p>');
+  // 今回の一言は必ず先頭。作成でも更新でも同じ位置に出す
+  if(comment) lines.push('<p>'+atToHtml(comment,mentions,atMentions)+'</p>');
   lines.push('<p><b>'+(isNew?"タスクを追加しました":"タスクを更新しました")+'</b></p>');
   var body=[];
   body.push(esc(t.customerName||"（名称未設定）")+
@@ -2348,8 +2383,8 @@ function buildTaskMessage(t,comment,isNew,atMentions){
   body.push("状態： "+(L[t.status]||t.status));
   lines.push('<p>'+body.join("<br>")+'</p>');
   // 備考は「依頼の中身」そのものになる業務がある（入力依頼など）。投稿にも載せる。
-  // 状態を進めたコメントは備考に追記されるので、そこに残った @名前 も拾う
-  if(note) lines.push('<p>'+atToHtml(note,mentions,atMentions)+'</p>');
+  // ただし「やりとりの記録」の行は出さない。スレッドを見れば同じことが書いてあるので
+  if(sp.body) lines.push('<p>'+DIV_LINE+'</p><p>'+atToHtml(sp.body,mentions,atMentions)+'</p>');
   // Teams で投稿を見た人が、そのままタスクへ飛べるように
   lines.push('<p><a href="'+esc(boardUrl(t))+'">▶ タスクボードで開く</a></p>');
   if(isNew) lines.push('<p>確認や質問だけなら、このスレッドに返信でも大丈夫です。'+
@@ -2739,8 +2774,10 @@ var LIST_COLUMNS=[
   /* 催促フロー（Power Automate）が「同じタスクに毎朝返信する」のを防ぐための印。
      アプリは読み書きしません。フローが更新します。 */
   {name:"LastRemindedOn",displayName:"最終催促日",         dateTime:{format:"dateOnly",displayAs:"default"}},
-  {name:"MessageUrl",    displayName:"元メッセージリンク", text:txt()},
-  {name:"InvoiceFileUrl",displayName:"請求書ファイル",     text:txt()},
+  /* URL は1行テキストの上限255文字を平気で超えます（日本語ファイル名は
+     %XX で1文字3〜9文字に膨らむ）。超えると保存が 400 で落ちるので複数行にします */
+  {name:"MessageUrl",    displayName:"元メッセージリンク", text:txt(true)},
+  {name:"InvoiceFileUrl",displayName:"請求書ファイル",     text:txt(true)},
   {name:"Note",          displayName:"備考",              text:txt(true)}
 ];
 var NEED_INDEX=["SrcChannelId","InvoiceNo"];
@@ -2794,7 +2831,7 @@ async function provision(create){
       plog("\n既存のリストを使います  "+list.webUrl);
     }
 
-    var cols=await gAll("/sites/"+site.id+"/lists/"+list.id+"/columns?$select=id,name,displayName,indexed");
+    var cols=await gAll("/sites/"+site.id+"/lists/"+list.id+"/columns?$select=id,name,displayName,indexed,text");
     var have=cols.map(function(c){return c.name});
     var todo=LIST_COLUMNS.filter(function(c){return have.indexOf(c.name)<0});
 
@@ -2810,12 +2847,33 @@ async function provision(create){
       }
     }
 
+    // ---- 既に1行テキストで作ってしまったURL列を複数行に直す ----
+    var LONG_COLS=["MessageUrl","InvoiceFileUrl"];
+    var needUp=cols.filter(function(c){
+      return LONG_COLS.indexOf(c.name)>=0 && c.text && c.text.allowMultipleLines!==true;
+    });
+    if(needUp.length){
+      if(!create) plog("\n1行テキストのままのURL列: "+needUp.map(function(c){return c.name}).join(", ")+
+        "（長いURLで保存が失敗します。「作成・修復」で直します）");
+      else{
+        plog("\nURL列を複数行テキストに変更中…");
+        for(var u=0;u<needUp.length;u++){
+          try{
+            await g("/sites/"+site.id+"/lists/"+list.id+"/columns/"+needUp[u].id,
+              {method:"PATCH",body:{text:{allowMultipleLines:true,textType:"plain",appendChangesToExistingText:false}}});
+            plog("  ✓ "+needUp[u].name);
+          }catch(e){ plog("  ! "+needUp[u].name+" 失敗: "+e.message+
+            "（SharePointのリスト設定から「複数行テキスト」に変更してください）") }
+        }
+      }
+    }
+
     // ---- 設定リスト（点検より先に作る。ログの順序を素直にするため）----
     await provisionCfgList(site,lists,create);
 
     // ---- 点検 ----
     plog("\n===== 点検 =====");
-    var after=await gAll("/sites/"+site.id+"/lists/"+list.id+"/columns?$select=id,name,displayName,indexed");
+    var after=await gAll("/sites/"+site.id+"/lists/"+list.id+"/columns?$select=id,name,displayName,indexed,text");
     var names=after.map(function(c){return c.name});
 
     var hex=after.filter(function(c){return /_x[0-9a-f]{4}_/.test(c.name)});
@@ -2827,6 +2885,15 @@ async function provision(create){
     plog(miss.length
       ? "NG  未作成の列: "+miss.map(function(c){return c.name}).join(", ")
       : "OK  列18本すべて存在します");
+
+    var stillShort=after.filter(function(c){
+      return ["MessageUrl","InvoiceFileUrl"].indexOf(c.name)>=0 &&
+             c.text && c.text.allowMultipleLines!==true;
+    });
+    plog(stillShort.length
+      ? "NG  1行テキストのままのURL列: "+stillShort.map(function(c){return c.name}).join(", ")+
+        "（長いファイル名で保存が失敗します）"
+      : "OK  URL列は複数行テキストです（長いリンクも保存できます）");
 
     var noIdx=NEED_INDEX.filter(function(n){
       var c=after.filter(function(x){return x.name===n})[0];
@@ -2982,9 +3049,15 @@ function rmAdd(sp){
 /* ============================================================
    7.5 管理者設定の画面（管理者のみ）
    ============================================================ */
+/* 1段階（未対応 → いきなり完了）の業務かどうか */
+function isOneStep(w){
+  var st=(w&&w.steps)||[];
+  return st.length===1 && st[0] && st[0].from==="未対応" && st[0].to==="完了";
+}
 function wfRow(w,i){
   function L(k){return esc((w.labels&&w.labels[k])||k)}
   var st=w.steps||[], s0=st[0]||{}, s1=st[1]||{};
+  var oneStep=isOneStep(w);
   return '<div class="wfrow" data-i="'+i+'">'+
     '<div class="wfhead">'+
       '<input type="text" class="wfm" placeholder="チャネル名の一部（空＝それ以外すべて）" value="'+esc(w.match||"")+'">'+
@@ -3002,17 +3075,25 @@ function wfRow(w,i){
         '<b>入金予定日</b>は期限とは別項目です（相手がいつ払うかの予測 ／ 自分がいつまでに終わらせるか）</span>'+
     '</div>'+
     '<div class="wfgrid">'+
-      '<label>未対応 の呼び方<input type="text" class="wfl0" value="'+L("未対応")+'"></label>'+
-      '<label>対応中 の呼び方<input type="text" class="wfl1" value="'+L("対応中")+'"></label>'+
-      '<label>完了 の呼び方<input type="text" class="wfl2" value="'+L("完了")+'"></label>'+
-      '<label>保留 の呼び方<input type="text" class="wfl3" value="'+L("保留")+'"></label>'+
-      '<label>1段目のボタン<input type="text" class="wfb0" value="'+esc(s0.btn||"着手する")+'"></label>'+
-      '<label class="ck"><input type="checkbox" class="wfs0"'+(s0.stamp?" checked":"")+'> 日付を記録（入金確認日）</label>'+
-      '<label>2段目のボタン<input type="text" class="wfb1" value="'+esc(s1.btn||"完了にする")+'"></label>'+
-      '<label class="ck"><input type="checkbox" class="wfs1"'+(s1.stamp?" checked":"")+'> 日付を記録（完了日）</label>'+
-      '<label>1段目の日付の呼び方<input type="text" class="wfd0" placeholder="例）入力日" value="'+
-        esc((w.dateLabels&&w.dateLabels.paid)||"")+'"></label>'+
-      '<label>2段目の日付の呼び方<input type="text" class="wfd1" placeholder="例）確認日" value="'+
+      '<label class="full"><span class="t">進み方</span>'+
+        '<select class="wfstage">'+
+          '<option value="2"'+(oneStep?"":" selected")+'>2段階（着手する → 完了にする）</option>'+
+          '<option value="1"'+(oneStep?" selected":"")+'>1段階（いきなり完了）</option>'+
+        '</select></label>'+
+      '<label><span class="t">未対応 の呼び方</span><input type="text" class="wfl0" value="'+L("未対応")+'"></label>'+
+      '<label class="l-mid"><span class="t">対応中 の呼び方</span><input type="text" class="wfl1" value="'+L("対応中")+'"></label>'+
+      '<label><span class="t">完了 の呼び方</span><input type="text" class="wfl2" value="'+L("完了")+'"></label>'+
+      '<label><span class="t">保留 の呼び方</span><input type="text" class="wfl3" value="'+L("保留")+'"></label>'+
+      '<label class="l-b0"><span class="t">1段目のボタン</span><input type="text" class="wfb0" value="'+
+        esc(s0.btn||(oneStep?"完了にする":"着手する"))+'"></label>'+
+      '<label class="ck l-s0"><input type="checkbox" class="wfs0"'+(s0.stamp?" checked":"")+'> '+
+        '<span class="t">日付を記録（1段目）</span></label>'+
+      '<label class="l-b1"><span class="t">2段目のボタン</span><input type="text" class="wfb1" value="'+esc(s1.btn||"完了にする")+'"></label>'+
+      '<label class="ck l-s1"><input type="checkbox" class="wfs1"'+(s1.stamp?" checked":"")+'> '+
+        '<span class="t">日付を記録（完了日）</span></label>'+
+      '<label class="l-d0"><span class="t">1段目の日付の呼び方</span><input type="text" class="wfd0" placeholder="例）入力日" value="'+
+        esc((w.dateLabels&&(oneStep?w.dateLabels.done:w.dateLabels.paid))||"")+'"></label>'+
+      '<label class="l-d1"><span class="t">2段目の日付の呼び方</span><input type="text" class="wfd1" placeholder="例）確認日" value="'+
         esc((w.dateLabels&&w.dateLabels.done)||"")+'"></label>'+
     '</div>'+
     '<div class="wfgrid" style="margin-top:9px">'+
@@ -3027,19 +3108,43 @@ function wfRow(w,i){
 }
 function renderWf(){
   $("wfList").innerHTML=S.wfEdit.map(wfRow).join("");
+  document.querySelectorAll("#wfList .wfrow").forEach(wfStageUI);
   $("wfJson").value=JSON.stringify(S.wfEdit,null,2);
 }
+/* 1段階なら2段目の欄を隠して、1段目の見出しを「完了ボタン」に読み替える */
+function wfStageUI(row){
+  var one=(row.querySelector(".wfstage")||{}).value==="1";
+  [".l-b1",".l-s1",".l-d1",".l-mid"].forEach(function(sel){
+    var el=row.querySelector(sel); if(el) el.style.display=one?"none":"";
+  });
+  function setT(sel,txt){ var e=row.querySelector(sel+" .t"); if(e) e.textContent=txt }
+  setT(".l-b0", one?"完了にするボタン":"1段目のボタン");
+  setT(".l-s0", one?"日付を記録（完了日）":"日付を記録（1段目）");
+  setT(".l-d0", one?"日付の呼び方":"1段目の日付の呼び方");
+  var d0=row.querySelector(".wfd0"); if(d0) d0.placeholder=one?"例）完了日":"例）入力日";
+}
+document.getElementById("wfList").addEventListener("change",function(e){
+  if(e.target.classList.contains("wfstage")){
+    var row=e.target.closest(".wfrow"); if(row) wfStageUI(row);
+  }
+});
 /* フォームの入力値を WORKFLOWS の形に組み立て直す */
 function collectWf(){
   var out=[];
   document.querySelectorAll("#wfList .wfrow").forEach(function(el,i){
     function v(c){return (el.querySelector("."+c)||{}).value||""}
     function ck(c){return !!(el.querySelector("."+c)||{}).checked}
-    var steps=[];
-    if(v("wfb0").trim()) steps.push(Object.assign(
-      {from:"未対応",to:"対応中",btn:v("wfb0").trim()}, ck("wfs0")?{stamp:"paidDate"}:{}));
-    if(v("wfb1").trim()) steps.push(Object.assign(
-      {from:"対応中",to:"完了",btn:v("wfb1").trim()}, ck("wfs1")?{stamp:"doneDate"}:{}));
+    var steps=[], one=(v("wfstage")==="1");
+    if(one){
+      // 未対応 → いきなり完了。日付は完了日に入れる
+      steps.push(Object.assign({from:"未対応",to:"完了",btn:v("wfb0").trim()||"完了にする"},
+        ck("wfs0")?{stamp:"doneDate"}:{}));
+    }else{
+      if(v("wfb0").trim()) steps.push(Object.assign(
+        {from:"未対応",to:"対応中",btn:v("wfb0").trim()}, ck("wfs0")?{stamp:"paidDate"}:{}));
+      if(v("wfb1").trim()) steps.push(Object.assign(
+        {from:"対応中",to:"完了",btn:v("wfb1").trim()}, ck("wfs1")?{stamp:"doneDate"}:{}));
+    }
     var fields=[].slice.call(el.querySelectorAll(".wff"))
       .filter(function(x){return x.checked}).map(function(x){return x.value});
     var o={
@@ -3049,8 +3154,12 @@ function collectWf(){
       steps:steps
     };
     // 空のキーは書き出さない。JSONを読むときのノイズになる
-    var dl={}; if(v("wfd0").trim()) dl.paid=v("wfd0").trim();
-    if(v("wfd1").trim()) dl.done=v("wfd1").trim();
+    var dl={};
+    if(one){ if(v("wfd0").trim()) dl.done=v("wfd0").trim() }
+    else{
+      if(v("wfd0").trim()) dl.paid=v("wfd0").trim();
+      if(v("wfd1").trim()) dl.done=v("wfd1").trim();
+    }
     if(Object.keys(dl).length) o.dateLabels=dl;
     if(v("wfow").trim()) o.defaultOwner=v("wfow").trim();
     if(ck("wfdt")) o.dueToday=true;
@@ -3110,9 +3219,9 @@ function advPatch(){
   if(st.stamp && $("advDate").value) p[st.stamp]=$("advDate").value;
   var c=$("advNote").value.trim();
   if(c && $("advToNote").checked){
-    // ひな形で複数行になっている備考に " / " で足すと読めなくなる。改行でつなぐ
-    var sep=/\n/.test(String(t.note||"")) ? "\n" : " / ";
-    p.note=(t.note?t.note+sep:"")+c;
+    // 誰がいつ言ったかが残るように行頭に日付と名前を付ける。
+    // この形の行は投稿本文には出さない（先頭に同じ文が出るため）
+    p.note=(t.note?t.note+"\n":"")+noteLogLine(c);
   }
   return p;
 }
