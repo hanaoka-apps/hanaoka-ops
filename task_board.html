@@ -756,8 +756,8 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <div class="fld" id="wDone"><label><span id="lblDone">完了日</span></label><input id="fDone" type="date"></div>
         <div class="fld"><label>状態</label><select id="fSt"></select></div>
         <div class="fld" id="wOwn"><label>担当者 <span class="note" id="ownHit"></span></label>
-          <input id="fOwn" list="ownList" autocomplete="off" placeholder="例）秋元 龍一">
-          <datalist id="ownList"></datalist></div>
+          <div class="atwrap"><input id="fOwn" autocomplete="off" placeholder="名前を入力（例）秋元 龍一）">
+          <div class="atmenu" id="atOwn"></div></div></div>
         <div class="fld full" id="wNote"><label>備考（リストに残す）</label><textarea id="fNote" rows="2"></textarea></div>
       </div>
 
@@ -1021,7 +1021,9 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
             <thead><tr><th>項目</th><th>必須</th><th>内容</th></tr></thead>
             <tbody>
               <tr><td>得意先名 / 件名</td><td><b>必須</b></td><td>入金がからむ業務では得意先名。それ以外は何のタスクかが分かる件名。</td></tr>
-              <tr><td>担当者</td><td><b>必須</b></td><td>入力し始めると社内の名前が候補に出ます。この人が Teams で <b>@メンション</b> され、通知が飛びます。</td></tr>
+              <tr><td>担当者</td><td><b>必須</b></td><td>欄をクリックすると候補が出ます。名前を<b>1文字</b>入れると社内から探します。
+                <b>候補から選んでください</b>。選ぶとその人が Teams で <b>@メンション</b> され、通知が飛びます
+                （欄の右に「@メンションできます」と出ます）。手で書いただけでは通知は飛びません。</td></tr>
               <tr><td>期限</td><td><b>必須</b></td><td>入金後出荷では<b>入金予定日</b>を入れて構いません。過ぎると <span class="hpst d">期日超過</span> が付きます。</td></tr>
               <tr><td>請求書番号 / 得意先コード / 金額</td><td>業務により</td><td>入金がからむチャネルだけ表示されます。</td></tr>
               <tr><td>備考</td><td>任意</td><td>タスクに残したいメモ。あとから追記されていきます。</td></tr>
@@ -2105,7 +2107,9 @@ function peopleFromMsgs(){
 }
 /* 足りないときだけディレクトリを引く（User.ReadBasic.All） */
 async function searchPeople(q){
-  if(S.mode==="demo" || !q || q.length<2) return [];
+  // 1文字で引く。日本語の姓は「利」だけでも startswith で当たるので、
+  // 2文字待つと「候補が出ない」と思われてしまう
+  if(S.mode==="demo" || !q) return [];
   var key="q:"+q;
   if(S._pcache && S._pcache[key]) return S._pcache[key];
   try{
@@ -2170,7 +2174,7 @@ async function atOpen(which){
   else { menu.style.marginTop="3px"; menu.style.marginBottom="0" }
 }
 function atClose(){ 
-  ["atMsg","atAdv"].forEach(function(id){ var e=$(id); if(e) e.className="atmenu" });
+  ["atMsg","atAdv","atOwn"].forEach(function(id){ var e=$(id); if(e) e.className="atmenu" });
   S.atCtx=null;
 }
 function atPick(i){
@@ -2199,13 +2203,46 @@ function atToHtml(text,mentions,store){
   });
   return out.replace(/\n/g,"<br>");
 }
-async function refreshOwnList(){
+async function refreshOwnList(openMenu){
   var q=$("fOwn").value.trim();
+  $("ownHit").textContent = q ? "検索中…" : "名前を1文字入れると社内から探します";
   S.people=mergePeople(peopleFromMsgs(), await searchPeople(q));
-  $("ownList").innerHTML=S.people.map(function(p){
-    return '<option value="'+esc(p.name)+'"></option>'}).join("");
   var hit=findPerson(q);
-  $("ownHit").textContent=!q?"" : (hit&&hit.id?"@メンションできます":"メンションなしで投稿されます");
+  $("ownHit").textContent = !q ? "名前を1文字入れると社内から探します"
+    : (hit&&hit.id ? "@メンションできます"
+                   : "候補から選ぶと @メンションできます（このままでも保存できます）");
+  if(openMenu) ownMenu(q); else $("atOwn").className="atmenu";
+  renderPostPreview();
+}
+/* 担当者の候補ドロップダウン。datalist は「打たないと出てこない」うえに
+   検索中かどうかも分からないので、自前のリストにしています */
+function ownMenu(q){
+  var list=(S.people||[]).filter(function(p){ return !q || p.name.indexOf(q)>=0 });
+  list=list.slice().sort(function(a,b){ return (b.id?1:0)-(a.id?1:0) }).slice(0,8);
+  S.ownCand=list; S.ownSel=0;
+  var m=$("atOwn");
+  m.innerHTML = list.length
+    ? list.map(function(p,i){
+        return '<div class="it'+(i===0?" sel":"")+'" data-own="'+i+'">'+
+          '<span class="av2" style="'+avStyle(p.name)+'">'+esc(initials(p.name))+'</span>'+
+          '<span class="nm2">'+esc(p.name)+'</span>'+
+          '<span class="hint2">'+(p.id?"メンション可":"名前のみ")+'</span></div>'}).join("")
+    : '<div class="none">'+(q?"「"+esc(q)+"」で始まる人が見つかりません":"名前を入力してください")+'</div>';
+  m.className="atmenu on";
+  // 下に余白がなければ上に開く
+  var el=$("fOwn"), box=el.closest(".db")||document.body;
+  m.style.top=""; m.style.bottom="";
+  var need=Math.min(190,Math.max(1,list.length)*36+10);
+  if(box.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom < need+8){
+    m.style.top="auto"; m.style.bottom="100%"; m.style.marginTop="0"; m.style.marginBottom="3px";
+  }else{ m.style.marginTop="3px"; m.style.marginBottom="0" }
+}
+function ownPick(i){
+  var list=S.ownCand||[]; if(!list.length) return;
+  var p=list[Math.max(0,Math.min(i,list.length-1))];
+  $("fOwn").value=p.name;
+  $("atOwn").className="atmenu";
+  $("ownHit").textContent=p.id?"@メンションできます":"メンションなしで投稿されます";
   renderPostPreview();
 }
 
@@ -3367,7 +3404,28 @@ $("btnNew").onclick=function(){
   openTaskModal({status:"未対応",channelId:S.cur.id,channelName:S.cur.name,srcKind:S.cur.kind},"","");
 };
 $("fOwn").addEventListener("input",function(){
-  clearTimeout(S._ownT); S._ownT=setTimeout(refreshOwnList,260);
+  clearTimeout(S._ownT);
+  S._ownT=setTimeout(function(){ refreshOwnList(true) },260);
+});
+$("fOwn").addEventListener("focus",function(){ refreshOwnList(true) });
+$("fOwn").addEventListener("keydown",function(e){
+  var m=$("atOwn"), list=S.ownCand||[];
+  if(!m.classList.contains("on")) return;
+  if(e.key==="ArrowDown"||e.key==="ArrowUp"){
+    e.preventDefault(); if(!list.length) return;
+    S.ownSel=(S.ownSel+(e.key==="ArrowDown"?1:-1)+list.length)%list.length;
+    m.querySelectorAll(".it").forEach(function(x,i){ x.className="it"+(i===S.ownSel?" sel":"") });
+    return;
+  }
+  if(e.key==="Enter"){ if(!list.length) return; e.preventDefault(); ownPick(S.ownSel); return }
+  if(e.key==="Escape"){ e.preventDefault(); m.className="atmenu" }
+});
+$("fOwn").addEventListener("blur",function(){
+  setTimeout(function(){ $("atOwn").className="atmenu" },150);
+});
+$("atOwn").addEventListener("mousedown",function(e){
+  var it=e.target.closest("[data-own]"); if(!it) return;
+  e.preventDefault(); ownPick(+it.dataset.own);
 });
 $("fPost").addEventListener("change",renderPostPreview);
 var FILE_HINT="1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
