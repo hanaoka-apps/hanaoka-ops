@@ -289,6 +289,9 @@ header.top{
 .tlist{padding:8px}
 .task{border:1px solid var(--border);border-radius:9px;padding:10px 11px;margin-bottom:8px;background:#fff}
 .task:hover{border-color:#c9d2da;box-shadow:var(--shadow)}
+.task.hi{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg);animation:taskhi 2.6s ease-out}
+@keyframes taskhi{0%{background:var(--accent-bg)}70%{background:var(--accent-bg)}100%{background:#fff}}
+@media(prefers-reduced-motion:reduce){.task.hi{animation:none}}
 .task.done{opacity:.62}
 .task .t1{display:flex;align-items:flex-start;gap:8px}
 .task .cust{font-size:12.5px;font-weight:700;line-height:1.45;min-width:0;flex:1}
@@ -996,6 +999,12 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
           開いた直後は <b>タスク</b> です。タブに付く数字は、部屋が<b>未読の投稿数</b>、タスクが<b>進行中の件数</b>です。</p>
           <p>部屋を選ぶと自動で <b>会話</b> に進みます。いま見ているチャネル名は
           タスク画面の上（「タスク」の右）に出ています。</p>
+          <h5>Teams から飛んでくる</h5>
+          <p>Teams の投稿にある <b>▶ タスクボードで開く</b> を押すと、その<b>タスクが光った状態</b>で開きます。
+          新しいタブで開くので、そのタブでは<b>サインインが1回必要</b>です。</p>
+          <p><b>簡単な確認や質問は、Teams のスレッドに返信するだけで構いません。</b>
+          タスクボードを開くのは、状態を進めるとき・日付やコメントを記録として残すときです。</p>
+
           <div class="hptip"><b>スマホからできないこと。</b>
             画面が狭いと <span class="hpui">設定</span> と <span class="hpui">管理者設定</span> は出てきません。
             どちらもパソコンから操作するものなので、必要なときは PC で開いてください。</div>
@@ -1044,6 +1053,9 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
               <b>その人にも通知が飛びます</b>（担当者以外にも知らせたいときに）。
               手で「@名前」と書いただけでは通知は飛びません。必ず候補から選んでください。</li>
             <li>添付したファイルはチャネルのファイル置き場に保存され、投稿にファイルとして付きます。</li>
+            <li>投稿には <b>▶ タスクボードで開く</b> というリンクが必ず入ります。
+              Teams で投稿を見た人はここから<b>そのタスクへ直接</b>飛べます
+              （別のチャネルのタスクでも見つけて表示します）。</li>
           </ul>
           <div class="hpwarn"><b>ファイル添付はチャネルだけです。</b>
             グループチャットでは添付できません（個人の OneDrive に入ってしまい、他の人が開けなくなるため）。
@@ -1521,6 +1533,12 @@ function scopeFor(p){
    ============================================================ */
 /* 既定は本番。デモは ?demo=1 を付けたときだけ（練習用・自動テスト用） */
 var DEMO_PARAM = /(\?|&)demo=1(&|$)/.test(location.search);
+/* Teams の投稿から飛んできたときの行き先。?ch=部屋ID&t=タスクID */
+function qparam(k){
+  var m=new RegExp("[?&]"+k+"=([^&]*)").exec(location.search);
+  return m?decodeURIComponent(m[1].replace(/\+/g," ")):"";
+}
+var DEEP = { ch:qparam("ch"), t:qparam("t"), done:false };
 var S = {
   mode: DEMO_PARAM ? "demo" : "live",
   rooms:[], cur:null, msgs:[], tasks:[], tab:"open", scope:"channel", hidden:0,
@@ -2294,6 +2312,16 @@ function setSaveLabel(t){
 }
 
 /* 投稿する本文を組み立てる。担当者のAAD IDが取れていれば @メンションを付ける */
+/* 投稿から「そのタスク」へ直接戻れるリンク。
+   ?ch=部屋ID&t=タスクID で開くと、その部屋を選んでそのタスクを光らせます。
+   URLは今開いているページから作るので、リポジトリを移しても直す場所がありません。 */
+function boardUrl(t){
+  var base=String(location.href).split(/[?#]/)[0], q=[];
+  var ch=(t&&t.channelId)||(S.cur&&S.cur.id)||"";
+  if(ch) q.push("ch="+encodeURIComponent(ch));
+  if(t&&t.id) q.push("t="+encodeURIComponent(t.id));
+  return base+(q.length?"?"+q.join("&"):"");
+}
 function buildTaskMessage(t,comment,isNew,atMentions){
   var W=wfEff(t), L=W.labels;
   var p=findPerson(t.ownerName), mentions=[], who;
@@ -2322,6 +2350,10 @@ function buildTaskMessage(t,comment,isNew,atMentions){
   // 備考は「依頼の中身」そのものになる業務がある（入力依頼など）。投稿にも載せる。
   // 状態を進めたコメントは備考に追記されるので、そこに残った @名前 も拾う
   if(note) lines.push('<p>'+atToHtml(note,mentions,atMentions)+'</p>');
+  // Teams で投稿を見た人が、そのままタスクへ飛べるように
+  lines.push('<p><a href="'+esc(boardUrl(t))+'">▶ タスクボードで開く</a></p>');
+  if(isNew) lines.push('<p>確認や質問だけなら、このスレッドに返信でも大丈夫です。'+
+    '状態を進めるときだけタスクボードを開いてください。</p>');
   return {content:lines.join(""),mentions:mentions};
 }
 function renderPostPreview(){
@@ -3171,7 +3203,11 @@ async function loadAll(){
     await loadWorkflows();
     await loadRooms();
     S.rooms=await fetchRooms();
-    if(!S.cur||!S.rooms.filter(function(r){return r.id===S.cur.id}).length) S.cur=S.rooms[0]||null;
+    // Teams の投稿から来たときは、その部屋を開く
+    var deepRoom=(!DEEP.done && DEEP.ch)
+      ? S.rooms.filter(function(r){return r.id===DEEP.ch})[0] : null;
+    if(deepRoom) S.cur=deepRoom;
+    else if(!S.cur||!S.rooms.filter(function(r){return r.id===S.cur.id}).length) S.cur=S.rooms[0]||null;
     renderRooms();
     if(S.cur){
       setRoomHeader(S.cur);
@@ -3180,7 +3216,44 @@ async function loadAll(){
       renderMsgs();
     }
     S.tasks=await fetchTasks(); renderTasks();
+    if(!DEEP.done) focusDeepTask();
   }catch(e){ toast(e.message,true); console.error(e) }
+}
+/* 投稿のリンクから来たタスクを画面に出して光らせる。
+   完了タブにいる／別チャネルにいる場合はタブと絞り込みも合わせる */
+function focusDeepTask(){
+  DEEP.done=true;
+  if(DEEP.ch || DEEP.t){
+    // 戻る／再読み込みで毎回飛ばないよう、URLからパラメータを外す
+    try{ history.replaceState(null,"",String(location.href).split(/[?#]/)[0]) }catch(e){}
+  }
+  if(!DEEP.t) return;
+  var hit=S.tasks.filter(function(x){return String(x.id)===String(DEEP.t)})[0];
+  if(!hit){
+    // このチャネルに無い＝別チャネルのタスク。横断表示にして探す
+    S.scope="all"; $("sCh").className=""; $("sAll").className="on";
+    fetchTasks().then(function(all){
+      S.tasks=all; renderTasks();
+      var h2=all.filter(function(x){return String(x.id)===String(DEEP.t)})[0];
+      if(h2) showDeep(h2); else toast("リンク先のタスクが見つかりませんでした（削除済みかもしれません）",true);
+    });
+    return;
+  }
+  showDeep(hit);
+}
+function showDeep(t){
+  var wantDone=(t.status==="完了");
+  if(wantDone!==(S.tab==="done")){
+    S.tab=wantDone?"done":"open";
+    $("tOpen").className=wantDone?"":"on"; $("tDone").className=wantDone?"on":"";
+    renderTasks();
+  }
+  if(isMobile()) setPane("tasks");
+  var el=document.querySelector('[data-task="'+String(t.id).replace(/"/g,'')+'"]');
+  if(!el){ toast("リンク先のタスクが一覧にありません",true); return }
+  el.scrollIntoView({block:"center",behavior:"smooth"});
+  el.classList.add("hi");
+  setTimeout(function(){ el.classList.remove("hi") },2600);
 }
 async function refreshMsgsOnly(){
   if(!S.cur||S.mode==="demo")return;
@@ -3550,6 +3623,7 @@ $("tdSave").onclick=async function(){
     setSaveLabel("保存中…");
     var saved=await saveTask(t);
     var newId=(saved&&saved.id)||t.id;
+    t.id=newId;          // 投稿本文のリンクに載せるので、投稿より先にIDを確定させる
     if(doPost){
       try{
         var posted=await postTaskRecord(t,comment,isNew,
