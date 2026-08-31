@@ -414,6 +414,10 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
 .wfhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px}
 .wfhead input[type=text]{flex:1;min-width:150px;border:1px solid var(--border);border-radius:7px;padding:6px 9px;outline:0}
 .wfhead input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+/* 既定行（それ以外すべて）。入力欄ではないことが見て分かるようにする */
+.wfrow.wfdef{background:#f4f6f8;border-style:dashed}
+.wfdeftag{flex:1;font-size:12px;font-weight:700;color:var(--muted2);
+  padding:6px 9px;border:1px dashed var(--border);border-radius:7px;background:#fff}
 .wfck{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;white-space:nowrap;cursor:pointer}
 .wffields{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin-bottom:9px;
   padding:7px 9px;background:#f4f6f8;border-radius:7px}
@@ -1213,7 +1217,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-08-27-6";
+var APP_VER = "2026-08-27-7";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -3151,16 +3155,23 @@ function isOneStep(w){
   var st=(w&&w.steps)||[];
   return st.length===1 && st[0] && st[0].from==="未対応" && st[0].to==="完了";
 }
-function wfRow(w,i){
+/* 最後の1行は必ず「それ以外すべて」。ここを普通の入力欄にしておくと、
+   チャネル名を打ち込まれて既定行が消え、保存時に弾かれます（実際に起きました）。
+   入力欄ごと出さずに固定表示にして、構造として壊せないようにします。 */
+function wfRow(w,i,arr){
   function L(k){return esc((w.labels&&w.labels[k])||k)}
   var st=w.steps||[], s0=st[0]||{}, s1=st[1]||{};
   var oneStep=isOneStep(w);
-  return '<div class="wfrow" data-i="'+i+'">'+
+  var isLast=Array.isArray(arr) && i===arr.length-1;
+  return '<div class="wfrow'+(isLast?" wfdef":"")+'" data-i="'+i+'">'+
     '<div class="wfhead">'+
-      '<input type="text" class="wfm" placeholder="チャネル名の一部（空＝それ以外すべて）" value="'+esc(w.match||"")+'">'+
-      '<button class="sbtn gh wfup" title="上へ">↑</button>'+
-      '<button class="sbtn gh wfdn" title="下へ">↓</button>'+
-      '<button class="sbtn gh wfdel" style="color:var(--danger)">削除</button>'+
+      (isLast
+        ? '<span class="wfdeftag">それ以外すべて（既定）</span>'+
+          '<input type="hidden" class="wfm" value="">'
+        : '<input type="text" class="wfm" placeholder="チャネル名の一部（例）SMILE入力依頼）" value="'+esc(w.match||"")+'">'+
+          '<button class="sbtn gh wfup" title="上へ">↑</button>'+
+          '<button class="sbtn gh wfdn" title="下へ">↓</button>'+
+          '<button class="sbtn gh wfdel" style="color:var(--danger)">削除</button>')+
     '</div>'+
     '<div class="wffields">'+
       '<span class="fl">入力欄</span>'+
@@ -3203,7 +3214,21 @@ function wfRow(w,i){
         '備考は<b>投稿されるメッセージにも載ります</b>。</span></label>'+
     '</div>';
 }
+function blankWf(match){
+  return {match:match||"",fields:FIELDS_PLAIN.slice(),money:false,
+    labels:{未対応:"未対応",対応中:"対応中",完了:"完了",保留:"保留"},
+    steps:[{from:"未対応",to:"対応中",btn:"着手する"},
+           {from:"対応中",to:"完了",btn:"完了にする",stamp:"doneDate"}]};
+}
+/* 画面に出す前に「最後の1行は必ず既定行」を成立させる。
+   JSON貼り付けなど別経路で既定行のない配列が来ても、ここで整います */
+function ensureDefaultWf(a){
+  if(!Array.isArray(a)) return a;
+  if(!a.length || a[a.length-1].match) a.push(blankWf(""));
+  return a;
+}
 function renderWf(){
+  S.wfEdit=ensureDefaultWf(S.wfEdit||[]);
   $("wfList").innerHTML=S.wfEdit.map(wfRow).join("");
   document.querySelectorAll("#wfList .wfrow").forEach(wfStageUI);
   $("wfJson").value=JSON.stringify(S.wfEdit,null,2);
@@ -3263,6 +3288,9 @@ function collectWf(){
     if(v("wftpl").trim()) o.noteTemplate=v("wftpl").replace(/\r/g,"");
     out.push(o);
   });
+  // 最後の1行は必ず「それ以外すべて」。画面側でも入力させていないが、
+  // JSON貼り付けなど別経路で来た場合もここで揃える
+  if(out.length) out[out.length-1].match="";
   return out;
 }
 function setAdmTab(t){
@@ -3555,15 +3583,10 @@ $("advOk").onclick=runAdv;
   $(id).addEventListener("change",advPreview);
 });
 $("wfAdd").onclick=function(){
-  var a=collectWf();
-  var row={match:"",fields:FIELDS_PLAIN.slice(),money:false,
-    labels:{未対応:"未対応",対応中:"対応中",完了:"完了",保留:"保留"},
-    steps:[{from:"未対応",to:"対応中",btn:"着手する"},
-           {from:"対応中",to:"完了",btn:"完了にする",stamp:"doneDate"}]};
-  // 末尾に足すと「それ以外すべて」より下になって効かない。既定行の手前に入れる
-  var at=a.length;
-  for(var i=0;i<a.length;i++){ if(!a[i].match){ at=i; break } }
-  a.splice(at,0,row);
+  var a=ensureDefaultWf(collectWf());
+  // 末尾は「それ以外すべて」。新しい業務はその手前に入れないと永遠に当たらない
+  var at=a.length-1;
+  a.splice(at,0,blankWf(""));
   S.wfEdit=a; renderWf();
   var rows=document.querySelectorAll("#wfList .wfrow");
   if(rows[at]){ rows[at].scrollIntoView({block:"center",behavior:"smooth"});
@@ -3606,10 +3629,14 @@ $("wfReset").onclick=function(){
 $("wfSave").onclick=async function(){
   var arr=collectWf();
   if(!arr.length){ toast("業務が1つもありません",true); return }
-  if(arr.filter(function(w){return !w.match}).length!==1){
-    toast("match が空の行（それ以外すべて）は、ちょうど1つ必要です",true); return }
-  if(arr[arr.length-1].match){
-    toast("match が空の行は末尾に置いてください（上から順に評価するため）",true); return }
+  // 末尾＝「それ以外すべて」は collectWf が保証済み。
+  // 残りで空なのは「チャネル名を入れ忘れた行」なので、何行目かを言って直させる
+  var blanks=[];
+  arr.forEach(function(w,i){ if(i<arr.length-1 && !w.match) blanks.push(i+1) });
+  if(blanks.length){
+    toast("チャネル名が空の業務があります（上から "+blanks.join("・")+" 行目）。"+
+          "その行にチャネル名の一部を入れるか、削除してください",true);
+    setAdmTab("wf"); return; }
   var wr=wfReason(arr);
   if(wr){ toast("業務ごとの設定が使えません: "+wr,true); setAdmTab("wf"); return }
   if(!validRooms(S.rmEdit||[])){ toast("対象の部屋の指定が壊れています",true); setAdmTab("rooms"); return }
@@ -3673,7 +3700,8 @@ $("wfList").addEventListener("click",function(e){
     a.splice(i,1);
   }
   else if(e.target.closest(".wfup")){ if(i<=0) return; a.splice(i-1,0,a.splice(i,1)[0]) }
-  else if(e.target.closest(".wfdn")){ if(i>=a.length-1) return; a.splice(i+1,0,a.splice(i,1)[0]) }
+  // 既定行（最後）より下には出せない。出すと永遠に当たらない行になる
+  else if(e.target.closest(".wfdn")){ if(i>=a.length-2) return; a.splice(i+1,0,a.splice(i,1)[0]) }
   else return;
   S.wfEdit=a; renderWf();
 });
