@@ -1217,7 +1217,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-08-27-7";
+var APP_VER = "2026-08-27-8";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -3205,7 +3205,9 @@ function wfRow(w,i,arr){
         esc((w.dateLabels&&w.dateLabels.done)||"")+'"></label>'+
     '</div>'+
     '<div class="wfgrid" style="margin-top:9px">'+
-      '<label>担当者の既定<input type="text" class="wfow" placeholder="例）利根川 進" value="'+esc(w.defaultOwner||"")+'"></label>'+
+      '<label class="atwrap">担当者の既定<input type="text" class="wfow" autocomplete="off" '+
+        'placeholder="名前を1文字入れると社内から探します" value="'+esc(w.defaultOwner||"")+'">'+
+        '<div class="atmenu wfowm"></div></label>'+
       '<label class="ck"><input type="checkbox" class="wfdt"'+(w.dueToday?" checked":"")+'> 期限を当日で初期表示する</label>'+
     '</div>'+
     '<label class="wfnt">備考のひな形（新規作成のとき、備考欄に最初から入れておく文）'+
@@ -3293,6 +3295,75 @@ function collectWf(){
   if(out.length) out[out.length-1].match="";
   return out;
 }
+/* ---- 管理者設定「担当者の既定」の候補ドロップダウン ----
+   タスク作成画面の担当者と同じ作り。行が可変なので、菜単は各行の中に置いて
+   「今どの入力欄を触っているか」だけを覚えます。 */
+function wfOwnClose(){
+  document.querySelectorAll("#wfList .wfowm").forEach(function(m){ m.className="atmenu wfowm" });
+  S.wfOwnEl=null; S.wfOwnCand=null;
+}
+async function wfOwnOpen(el){
+  var menu=el.parentNode.querySelector(".wfowm"); if(!menu) return;
+  var q=el.value.trim();
+  var list=mergePeople(peopleFromMsgs(), await searchPeople(q));
+  if(q) list=list.filter(function(p){ return p.name.indexOf(q)>=0 });
+  // メンションできる人（idあり）を先に出す
+  list=list.slice().sort(function(a,b){ return (b.id?1:0)-(a.id?1:0) }).slice(0,8);
+  S.wfOwnEl=el; S.wfOwnCand=list; S.wfOwnSel=0;
+  menu.innerHTML = list.length
+    ? list.map(function(p,i){
+        return '<div class="it'+(i===0?" sel":"")+'" data-own="'+i+'">'+
+          '<span class="av2" style="'+avStyle(p.name)+'">'+esc(initials(p.name))+'</span>'+
+          '<span class="nm2">'+esc(p.name)+'</span>'+
+          '<span class="hint2">'+(p.id?"メンション可":"名前のみ")+'</span></div>'}).join("")
+    : '<div class="none">'+(q?"「"+esc(q)+"」で始まる人が見つかりません（このままでも保存できます）"
+                            :"名前を1文字入れてください")+'</div>';
+  menu.className="atmenu wfowm on";
+  // 設定画面は縦に長い。下に余白がなければ上に開く
+  var box=el.closest(".db")||document.body;
+  menu.style.top=""; menu.style.bottom="";
+  var need=Math.min(190,Math.max(1,list.length)*36+10);
+  if(box.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom < need+8){
+    menu.style.top="auto"; menu.style.bottom="100%";
+    menu.style.marginTop="0"; menu.style.marginBottom="3px";
+  }else{ menu.style.marginTop="3px"; menu.style.marginBottom="0" }
+}
+function wfOwnPick(i){
+  var el=S.wfOwnEl, list=S.wfOwnCand||[];
+  if(!el||!list.length) return;
+  el.value=list[Math.max(0,Math.min(i,list.length-1))].name;
+  wfOwnClose(); el.focus();
+}
+$("wfList").addEventListener("input",function(e){
+  if(!e.target.classList.contains("wfow")) return;
+  var el=e.target;
+  clearTimeout(S._wfOwnT);
+  S._wfOwnT=setTimeout(function(){ wfOwnOpen(el) },260);
+});
+$("wfList").addEventListener("focusin",function(e){
+  if(e.target.classList.contains("wfow")) wfOwnOpen(e.target);
+});
+$("wfList").addEventListener("focusout",function(e){
+  if(e.target.classList.contains("wfow")) setTimeout(wfOwnClose,150);
+});
+$("wfList").addEventListener("keydown",function(e){
+  var el=e.target; if(!el.classList||!el.classList.contains("wfow")) return;
+  var menu=el.parentNode.querySelector(".wfowm");
+  if(!menu||!menu.classList.contains("on")) return;
+  var list=S.wfOwnCand||[];
+  if(e.key==="ArrowDown"||e.key==="ArrowUp"){
+    e.preventDefault(); if(!list.length) return;
+    S.wfOwnSel=(S.wfOwnSel+(e.key==="ArrowDown"?1:-1)+list.length)%list.length;
+    menu.querySelectorAll(".it").forEach(function(x,i){ x.className="it"+(i===S.wfOwnSel?" sel":"") });
+    return;
+  }
+  if(e.key==="Enter"||e.key==="Tab"){ if(!list.length) return; e.preventDefault(); wfOwnPick(S.wfOwnSel); return }
+  if(e.key==="Escape"){ e.preventDefault(); wfOwnClose() }
+});
+$("wfList").addEventListener("mousedown",function(e){
+  var it=e.target.closest(".wfowm [data-own]"); if(!it) return;
+  e.preventDefault(); wfOwnPick(+it.dataset.own);
+});
 function setAdmTab(t){
   S.admTab=t;
   $("admRooms").style.display=(t==="rooms")?"":"none";
