@@ -243,7 +243,8 @@ header.top{
   background:var(--accent-bg);color:var(--accent-dk);border-radius:7px;padding:5px 6px 5px 11px
 }
 .replybar .x{margin-left:auto;border:0;background:transparent;color:var(--accent-dk);font-size:15px;line-height:1;padding:1px 6px;border-radius:5px}
-.cbox{border:1px solid var(--border);border-radius:9px;padding:8px 10px;background:#fff}
+/* @ピッカーをこの中に絶対配置するので position:relative が要る */
+.cbox{position:relative;border:1px solid var(--border);border-radius:9px;padding:8px 10px;background:#fff}
 .cbox:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
 .cbox textarea{width:100%;border:0;outline:0;resize:none;min-height:38px;max-height:150px;font-size:13.5px}
 .crow{display:flex;align-items:center;gap:8px;margin-top:4px}
@@ -701,7 +702,8 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
           <button class="x" id="replyX">×</button>
         </div>
         <div class="cbox">
-          <textarea id="ta" rows="1" placeholder="メッセージを入力（Ctrl+Enter で送信）"></textarea>
+          <textarea id="ta" rows="1" placeholder="メッセージを入力（@で相手を呼べます／Ctrl+Enter で送信）"></textarea>
+          <div class="atmenu" id="atTa"></div>
           <div class="crow">
             <span class="hint" id="cHint">投稿は Teams 上であなたの発言として記録されます</span>
             <button class="send" id="btnSend" disabled>送信</button>
@@ -983,7 +985,8 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
               上の <span class="hpui">絞り込み</span> で探せます。</p></div>
             <div class="hppane"><p class="t"><i>2</i>会話</p>
               <p>選んだチャネルの Teams の投稿がそのまま出ます。ここからの投稿は Teams 上で
-              <b>自分の発言として記録</b>されます。<span class="hpkey">Ctrl</span>＋<span class="hpkey">Enter</span> で送信。</p></div>
+              <b>自分の発言として記録</b>されます。<span class="hpkey">Ctrl</span>＋<span class="hpkey">Enter</span> で送信。<br>
+              入力欄で <b>@</b> を打つと候補が出ます。選んで送ると Teams 側でも相手に通知が飛びます。</p></div>
             <div class="hppane"><p class="t"><i>3</i>タスク</p>
               <p>そのチャネルのタスク一覧。上のタブで <span class="hpui">進行中</span> / <span class="hpui">完了</span>、
               <span class="hpui">このチャネル</span> / <span class="hpui">全チャネル</span> を切り替えます。</p></div>
@@ -1210,7 +1213,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-08-27-4";
+var APP_VER = "2026-08-27-6";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -1492,15 +1495,19 @@ function wf(name){
   return WORKFLOWS[WORKFLOWS.length-1];
 }
 function wfOf(t){ return wf((t&&t.channelName)||(S.cur&&S.cur.name)||"") }
-/* WORKFLOWS に未登録のチャネル／チャットは既定（金額なし）に落ちます。
-   ただし金額が実際に入っているなら請求系として扱わないと、
-   「未対応」というラベルの横に「未入金合計」が並ぶような表記のズレが起きます。 */
-function wfEff(t){
-  var W=wfOf(t);
-  if(!W.money && Number(t&&t.amount)>0)
-    return WORKFLOWS.filter(function(x){return x.money})[0]||W;
-  return W;
-}
+/* ★業務は「チャネル名」だけで決まります。データの中身では決まりません。
+
+   以前は「金額が入っているなら請求系として扱う」という救済を入れていました。
+   が、SMILE入力依頼のように金額を使わない業務が増えると、
+   誰かが金額に1円入れただけで業務が丸ごと請求業務に化けます
+   （状態ラベルも日付ラベルもボタンの文言も別物になる）。
+   救済より事故のほうが大きいので廃止しました。
+   チャネルが業務に当たらないときは既定の業務に落ちる、それだけです。 */
+function wfEff(t){ return wfOf(t) }
+/* 既定の業務（match:""）に落ちたか。落ちたときだけ、
+   実データを見て請求関連の欄を出す救済を許します。
+   業務が明示的に当たっているなら、その業務の fields が正です。 */
+function isFallbackWf(W){ return !!(W && !W.match) }
 
 /* ------------------------------------------------------------
    ★スコープは領域ごとに分ける★（room_reserve.html の教訓）
@@ -2130,10 +2137,15 @@ function mapMsg(m){
   };
 }
 async function postMsg(text){
-  var body={body:{contentType:"html",content:esc(text).replace(/\n/g,"<br>")}};
+  // 入力欄で選んだ @相手 を <at> に変換する。タスク投稿と同じ仕組み。
+  // 本文から消された分は atToHtml 側で無視されます
+  var mentions=[];
+  var html=atToHtml(text,mentions,S.taAt||[]).replace(/\n/g,"<br>");
+  var body={body:{contentType:"html",content:html}};
+  if(mentions.length) body.mentions=mentions;
   if(S.mode==="demo"){
     S.msgs=S.msgs.concat([{id:"d"+Date.now(),from:S.me.name,when:new Date().toISOString(),
-      html:"<p>"+esc(text).replace(/\n/g,"<br>")+"</p>",
+      html:"<p>"+html+"</p>", mentions:mentions,
       reply:!!S.replyTo, parent:S.replyTo?S.replyTo.rootId:null}]);
     return;
   }
@@ -2190,8 +2202,19 @@ function findPerson(name){
    覚えておく方式にしています。投稿時、本文に残っている分だけを
    <at> に変換します（あとから消された分は無視）。
    ============================================================ */
+/* @ピッカーを付ける入力欄。3か所とも作りは同じなので表にまとめる。
+   ta = チャットの入力欄（Teams と同じ感覚で使えるように） */
+var AT_UI = {
+  msg:{el:"fMsg",    menu:"atMsg"},   // タスク作成のコメント欄
+  adv:{el:"advNote", menu:"atAdv"},   // 状態変更のコメント欄
+  ta :{el:"ta",      menu:"atTa"}     // チャットの入力欄
+};
 function atReset(){ S.msgAt=[]; S.advAt=[] }
-function atStore(which){ return which==="adv" ? (S.advAt=S.advAt||[]) : (S.msgAt=S.msgAt||[]) }
+function atStore(which){
+  if(which==="adv") return (S.advAt=S.advAt||[]);
+  if(which==="ta")  return (S.taAt =S.taAt ||[]);
+  return (S.msgAt=S.msgAt||[]);
+}
 /* caret の直前が「@なにか」なら、その部分と検索語を返す */
 function atQuery(el){
   var pos=el.selectionStart==null?el.value.length:el.selectionStart;
@@ -2200,7 +2223,7 @@ function atQuery(el){
   return m ? {q:m[1], start:pos-m[0].length, end:pos} : null;
 }
 async function atOpen(which){
-  var el=$(which==="adv"?"advNote":"fMsg"), menu=$(which==="adv"?"atAdv":"atMsg");
+  var ui=AT_UI[which]||AT_UI.msg, el=$(ui.el), menu=$(ui.menu);
   var st=atQuery(el);
   if(!st){ menu.className="atmenu"; return }
   var list=mergePeople(peopleFromMsgs(), await searchPeople(st.q));
@@ -2218,15 +2241,18 @@ async function atOpen(which){
   // モーダルの本文は overflow:auto なので、下に出すと切れることがある。
   // 下の余白が足りなければ上に開く
   menu.style.top=""; menu.style.bottom="";
-  var box=el.closest(".db")||document.body;
+  var box=el.closest(".db");
   var need=Math.min(190,list.length*36+10);
-  var room=box.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
-  if(room < need+8){ menu.style.top="auto"; menu.style.bottom="100%";
+  // チャットの入力欄は画面の一番下なので、必ず上に開く
+  var up = (which==="ta") ||
+    (box ? (box.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom) < need+8 : false);
+  if(up){ menu.style.top="auto"; menu.style.bottom="100%";
     menu.style.marginTop="0"; menu.style.marginBottom="3px"; }
   else { menu.style.marginTop="3px"; menu.style.marginBottom="0" }
 }
-function atClose(){ 
-  ["atMsg","atAdv","atOwn"].forEach(function(id){ var e=$(id); if(e) e.className="atmenu" });
+function atClose(){
+  Object.keys(AT_UI).forEach(function(k){ var e=$(AT_UI[k].menu); if(e) e.className="atmenu" });
+  var o=$("atOwn"); if(o) o.className="atmenu";
   S.atCtx=null;
 }
 function atPick(i){
@@ -2239,7 +2265,15 @@ function atPick(i){
   el.focus(); el.setSelectionRange(pos,pos);
   atStore(c.which).push(p);
   atClose();
-  if(c.which!=="adv") renderPostPreview(); else advPreview();
+  if(c.which==="adv") advPreview();
+  else if(c.which==="ta"){ taSync() }
+  else renderPostPreview();
+}
+/* 入力欄の高さと送信ボタンの活性を合わせる。@を選んだ直後にも要る */
+function taSync(){
+  var el=$("ta");
+  $("btnSend").disabled=!el.value.trim();
+  el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,150)+"px";
 }
 /* esc 済みテキストの中の「@名前」を <at> に変える。mentions は呼び出し側の配列 */
 function atToHtml(text,mentions,store){
@@ -2389,8 +2423,8 @@ function buildTaskMessage(t,comment,isNew,atMentions){
   if(comment) lines.push('<p>'+atToHtml(comment,mentions,atMentions)+'</p>');
   lines.push('<p><b>'+(isNew?"タスクを追加しました":"タスクを更新しました")+'</b></p>');
   var body=[];
-  body.push(esc(t.customerName||"（名称未設定）")+
-            (Number(t.amount)>0?"　"+yen(t.amount)+"円":""));
+  var showAmt=(hasField(W,"amount")||isFallbackWf(W)) && Number(t.amount)>0;
+  body.push(esc(t.customerName||"（名称未設定）")+(showAmt?"　"+yen(t.amount)+"円":""));
   body.push("担当者： "+who);
   if(t.dueDate) body.push("期限： "+mmdd(t.dueDate));
   if(t.paidDate) body.push(dateLabel(W,"paid")+"： "+mmdd(t.paidDate));
@@ -2569,14 +2603,21 @@ function renderTasks(){
   var today=isoDate(new Date());
   var open=S.tasks.filter(function(t){return t.status!=="完了"});
   var done=S.tasks.filter(function(t){return t.status==="完了"});
-  // WORKFLOWS の定義が無いチャネル／チャットでも、金額が入っていれば請求系として集計する
-  var money=(S.scope==="channel" && wf(S.cur&&S.cur.name).money)
-            || S.tasks.some(function(t){return Number(t.amount)>0});
+  // 金額を扱う業務のタスクだけを「請求系」として集計する。
+  // ここも「金額が入っていれば請求系」にすると、SMILEに1円入った瞬間に
+  // KPIが「未入金 合計」に化けます（業務が正、データは正ではない）
+  function isMoneyTask(t){ return hasField(wfEff(t),"amount") && Number(t.amount)>0 }
+  var curW=(S.scope==="channel") ? wf(S.cur&&S.cur.name) : null;
+  var money = curW
+    ? (curW.money || (isFallbackWf(curW) && S.tasks.some(function(t){return Number(t.amount)>0})))
+    : S.tasks.some(isMoneyTask);
 
   // KPI は業務に合わせて切り替える。金額を持たないチャネルで「未入金合計 0円」は無意味
   if(money){
     // 横断表示では金額を持たないタスクも混ざるので、未入金の集計からは外す
-    var todo=open.filter(function(t){return t.status==="未対応" && Number(t.amount)>0});
+    var todo=open.filter(function(t){
+      return t.status==="未対応" && (curW&&isFallbackWf(curW) ? Number(t.amount)>0 : isMoneyTask(t));
+    });
     $("kCntL").textContent="未入金 件数";
     $("kSumL").textContent="未入金 合計";
     $("kCnt").innerHTML=todo.length+'<small>件</small>';
@@ -2597,11 +2638,14 @@ function renderTasks(){
     var overdue=t.status!=="完了"&&t.dueDate&&t.dueDate<today;
     // カードは狭いので「入金完了日」→「入金完了」のように末尾の「日」を落とす
     var lp=dateLabel(W,"paid").replace(/日$/,""), ld=dateLabel(W,"done").replace(/日$/,"");
+    // 業務が使わない欄はカードにも出さない（未登録チャネルだけは中身があれば出す）
+    var fb=isFallbackWf(W);
+    function shows(k){ return hasField(W,k)||fb }
 
     return '<div class="task'+(t.status==="完了"?" done":"")+'" data-task="'+esc(t.id)+'">'+
       (S.scope==="all"&&t.channelName?'<div class="chlabel">'+esc(t.channelName)+'</div>':'')+
       '<div class="t1"><span class="cust">'+esc(t.ownerName||"—")+'｜'+esc(t.customerName||"（名称未設定）")+'</span>'+
-      (Number(t.amount)>0?'<span class="amt">'+yen(t.amount)+
+      (shows("amount")&&Number(t.amount)>0?'<span class="amt">'+yen(t.amount)+
         '<span style="font-size:11px;font-weight:600">円</span></span>':'')+'</div>'+
       '<div class="meta">'+
         '<span class="chip '+statusClass(t.status)+'">'+esc(L[t.status]||t.status)+'</span>'+
@@ -2609,8 +2653,8 @@ function renderTasks(){
         (t.dueDate?'<span>期限 <b>'+mmdd(t.dueDate)+'</b></span>':'')+
         (t.paidDate?'<span>'+esc(lp)+' <b>'+mmdd(t.paidDate)+'</b></span>':'')+
         (t.doneDate?'<span>'+esc(ld)+' <b>'+mmdd(t.doneDate)+'</b></span>':'')+
-        (t.customerCode?'<span>コード <b>'+esc(t.customerCode)+'</b></span>':'')+
-        (t.invoiceNo?'<span>請求 <b>'+esc(t.invoiceNo)+'</b></span>':'')+
+        (shows("customerCode")&&t.customerCode?'<span>コード <b>'+esc(t.customerCode)+'</b></span>':'')+
+        (shows("invoiceNo")&&t.invoiceNo?'<span>請求 <b>'+esc(t.invoiceNo)+'</b></span>':'')+
       '</div>'+
       '<div class="btns">'+
         (step?'<button class="sbtn pri" data-adv="'+esc(t.id)+'">'+esc(step.btn)+'</button>':'')+
@@ -2676,12 +2720,12 @@ function openTaskModal(pre,srcText,warnText){
   $("fDue").value=v.dueDate||"";
   // 業務に応じて請求関連の項目を出し入れする。1枚のリストを共用するのでフォーム側で切り替える
   var W=wfEff(v);
-  // WORKFLOWS はチャネル名の部分一致なので、未定義のチャネル／チャットは既定（金額なし）に落ちる。
-  // ただし金額や請求書番号が実際に入っている（自動抽出できた）なら請求系として扱う
-  // 判定に請求書番号は使いません。ファイル名の8桁数字から拾っただけのこともあり、
-  // 金額なしの業務で誤って請求系の欄が開いてしまうため。金額と得意先コードだけを根拠にします
-  // 未登録のチャネルでも、金額や得意先コードが実際に入っていれば請求系として扱う
-  var forced=(Number(v.amount)>0 || !!v.customerCode);
+  // 未登録のチャネル（既定の業務に落ちた場合）に限り、金額や得意先コードが
+  // 実際に入っていれば請求関連の欄を開く。
+  // 業務が当たっているときは、その業務の fields だけが正。
+  // ここを業務にまで効かせると「SMILEなのに金額欄が出る」→「入れると業務が化ける」になります。
+  // 判定に請求書番号は使いません。ファイル名の8桁数字から拾っただけのこともあるためです。
+  var forced=isFallbackWf(W) && (Number(v.amount)>0 || !!v.customerCode);
   function show(k){ return hasField(W,k) || forced }
   $("wInv").style.display  = show("invoiceNo")   ?"":"none";
   $("wCode").style.display = show("customerCode")?"":"none";
@@ -3449,7 +3493,8 @@ document.addEventListener("click",async function(e){
   if((el=e.target.closest(".room"))){
     var r=S.rooms.filter(function(x){return x.id===el.dataset.room})[0];
     if(r){
-      S.cur=r; r.n=0; clearReply(); renderRooms(); setRoomHeader(r);
+      // 部屋を変えたら書きかけの @相手 は無効。別の部屋の人を呼びかねない
+      S.cur=r; r.n=0; clearReply(); S.taAt=[]; atClose(); renderRooms(); setRoomHeader(r);
       if(isMobile()) setPane("chat");   // スマホは部屋を選んだら会話へ進む
       S.msgs=await fetchMsgs(r); setRoomHeader(r); renderMsgs();
       S.tasks=await fetchTasks(); renderTasks();   // ★チャネルを変えたらタスクも絞り直す
@@ -3676,15 +3721,16 @@ function renderFileNote(inputId,noteId){
 }
 $("fFile").addEventListener("change",function(){ renderFileNote("fFile","fileNote") });
 $("advFile").addEventListener("change",function(){ renderFileNote("advFile","advFileNote") });
-/* ---- コメント欄の @ピッカー ---- */
-["fMsg","advNote"].forEach(function(id){
-  var which=(id==="advNote")?"adv":"msg";
-  var el=$(id);
+/* ---- コメント欄とチャット入力欄の @ピッカー ---- */
+Object.keys(AT_UI).forEach(function(which){
+  var el=$(AT_UI[which].el);
   el.addEventListener("input",function(){ atOpen(which) });
   el.addEventListener("click",function(){ atOpen(which) });
   el.addEventListener("keydown",function(e){
     var c=S.atCtx;
-    if(!c || c.which!==which || !$(which==="adv"?"atAdv":"atMsg").classList.contains("on")) return;
+    if(!c || c.which!==which || !$(AT_UI[which].menu).classList.contains("on")) return;
+    // Ctrl+Enter は「送信」。候補が開いていても送信を横取りしない
+    if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){ atClose(); return }
     if(e.key==="ArrowDown"||e.key==="ArrowUp"){
       e.preventDefault();
       if(!c.list.length) return;
@@ -3700,7 +3746,7 @@ $("advFile").addEventListener("change",function(){ renderFileNote("advFile","adv
   });
   el.addEventListener("blur",function(){ setTimeout(atClose,150) });
 });
-["atMsg","atAdv"].forEach(function(id){
+Object.keys(AT_UI).map(function(k){return AT_UI[k].menu}).forEach(function(id){
   $(id).addEventListener("mousedown",function(e){
     var it=e.target.closest("[data-at]"); if(!it) return;
     e.preventDefault(); atPick(+it.dataset.at);
@@ -3819,10 +3865,7 @@ $("tdDel").onclick=async function(){
 };
 
 var ta=$("ta");
-ta.addEventListener("input",function(){
-  $("btnSend").disabled=!ta.value.trim();
-  ta.style.height="auto"; ta.style.height=Math.min(ta.scrollHeight,150)+"px";
-});
+ta.addEventListener("input",taSync);
 ta.addEventListener("keydown",function(e){
   if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();$("btnSend").click()}
 });
@@ -3831,7 +3874,7 @@ $("btnSend").onclick=async function(){
   $("btnSend").disabled=true;
   try{
     await postMsg(v);
-    ta.value=""; ta.style.height="auto"; clearReply();
+    ta.value=""; ta.style.height="auto"; S.taAt=[]; clearReply();
     if(S.mode==="live") S.msgs=await fetchMsgs(S.cur);
     renderMsgs(); toast("投稿しました");
   }catch(e){ toast(e.message,true) }
