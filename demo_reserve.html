@@ -145,6 +145,8 @@
     .s-予約終了 {background:#eceef2;border-color:#a8b0bb;color:#5a636e}
     .s-重複     {background:#fbdcd9;border-color:var(--danger);color:#7d1d13}
     .s-取消     {background:#f4f5f7;border-color:#c3c8d0;color:#98a0aa;text-decoration:line-through}
+    .act.dngr   {border-color:var(--danger);color:var(--danger);background:#fff}
+    .act.dngr:hover{background:#fdecea}
     .cut-l{border-left-style:dashed!important;border-top-left-radius:0;border-bottom-left-radius:0}
     .cut-r{border-right-style:dashed;border-top-right-radius:0;border-bottom-right-radius:0}
     .empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
@@ -264,7 +266,9 @@
 <div class="modal" id="mDetail"><div class="card">
   <h3 id="dTitle"></h3>
   <div class="bd"><dl id="dBody"></dl></div>
-  <div class="ft"><span class="msg" id="dMsg"></span><button class="act" onclick="closeM('mDetail')">閉じる</button></div>
+  <div class="ft"><span class="msg" id="dMsg"></span>
+    <button class="act dngr" id="dCancel" style="display:none" onclick="doCancel()">この予約を取消す</button>
+    <button class="act" onclick="closeM('mDetail')">閉じる</button></div>
 </div></div>
 
 <!-- 予約登録 -->
@@ -274,9 +278,15 @@
     <div class="fm">
       <div class="f"><span>デモ機</span><input type="text" id="nMachine" readonly style="background:#f4f6f9"></div>
       <div class="f"><span>予約件名（必須）</span><input type="text" id="nTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
-      <div class="f2">
+      <label class="chk" style="margin:2px 0 6px">
+        <input type="checkbox" id="nAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
+      <div class="f2" id="nTimeRow">
         <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="nStart"></div>
         <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="nEnd"></div>
+      </div>
+      <div class="f2" id="nDateRow" style="display:none">
+        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="nStartD"></div>
+        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="nEndD"></div>
       </div>
       <div class="f2">
         <div class="f"><span>顧客名</span><input type="text" id="nCust"></div>
@@ -357,7 +367,13 @@ const HIST_COLUMNS = [
   { name:'RequesterName',     jp:'依頼者名',       def:TEXT() },
   { name:'CustomerName',      jp:'顧客名',         def:TEXT() },
   { name:'Destination',       jp:'行き先',         def:TEXT() },
-  { name:'Notes',             jp:'備考',           def:{ text:{ allowMultipleLines:true, linesForEditing:4, textType:'plain' } } }
+  { name:'Notes',             jp:'備考',           def:{ text:{ allowMultipleLines:true, linesForEditing:4, textType:'plain' } } },
+  /* ★誰でも取消できる運用にしたので、誰が取消したかを残す★
+     LoanStatus が『取消』に変わっただけでは、誰が消したか追えない。
+     Teams の取消通知フローが「◯◯さんが取消しました」を出すのにも使う。 */
+  { name:'CancelledByEmail',  jp:'取消した人メール', def:TEXT() },
+  { name:'CancelledByName',   jp:'取消した人',       def:TEXT() },
+  { name:'CancelledAt',       jp:'取消日時',         def:DATE() }
 ];
 
 /* 部品・オプションの推定（IsReservable が無い間の代替） */
@@ -379,6 +395,10 @@ const jFull = ms => `${jKey(ms).replace(/-/g,'/')} ${jHM(ms)}`;
 const localToMs = v => v ? Date.parse(v + ':00Z') - JST : NaN;
 const msToLocal = ms => { const d = toJ(ms);
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+/* 終日予約用。日付だけの <input type="date"> と JST 0:00 の相互変換 */
+const dateToMs = v => v ? Date.parse(v + 'T00:00:00Z') - JST : NaN;
+const msToDate = ms => { const d = toJ(ms);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`; };
 /* JSTの月曜0:00（UTC ms） */
 function weekTopMs(ms){
   const d = toJ(ms);
@@ -527,7 +547,7 @@ function startAutoRefresh(){
     if (!document.hidden && Date.now() - lastLoad > 2 * 60 * 1000) tick();
   });
 }
-let CAP = { lock:false, resv:false, token:false, mid:false };   /* 列の有無（マスター / 履歴） */
+let CAP = { lock:false, resv:false, token:false, mid:false, cancel:false };  /* 列の有無（マスター / 履歴） */
 
 async function showApp(){
   document.getElementById('login-view').style.display = 'none';
@@ -569,6 +589,7 @@ async function checkColumns(){
       const hc0 = await gGet(`/sites/${SITE_ID}/lists/${LIST_HIST}/columns?$select=name`);
       const hn0 = new Set((hc0.value||[]).map(c => c.name));
       CAP.token = hn0.has('LockToken'); CAP.mid = hn0.has('MachineItemId');
+      CAP.cancel = hn0.has('CancelledByEmail');
       if (CAP.lock && CAP.token) { p.style.display = 'none'; }
       else {
         p.style.display = ''; p.className = 'warn';
@@ -584,8 +605,9 @@ async function checkColumns(){
     CAP.resv = names.has(RESV_COL);
     const hc = await gGet(`/sites/${SITE_ID}/lists/${LIST_HIST}/columns?$select=name`);
     const hn = new Set((hc.value||[]).map(c => c.name));
-    CAP.token = hn.has('LockToken');
-    CAP.mid   = hn.has('MachineItemId');
+    CAP.token  = hn.has('LockToken');
+    CAP.mid    = hn.has('MachineItemId');
+    CAP.cancel = hn.has('CancelledByEmail');
     const ok = s => `<span class="ok">あり</span>`, ng = s => `<span class="ng">未作成</span>`;
     p.className = CAP.lock ? '' : 'warn';
     p.innerHTML =
@@ -600,8 +622,12 @@ async function checkColumns(){
             + ` — <button class="act" style="margin-left:4px" onclick="createHistList()">新しい履歴リストを作成する</button>`) + `</div>` +
       `<div class="st-row">履歴の <code>LockToken</code>: ${CAP.token?ok():ng()}` +
         (CAP.token ? '' : ' — <b>これが無いと予約を保存できません</b>（占有と履歴を対応づける列）') + `</div>` +
+      /* ★取消の3列は「無くても取消できる」ので、無いことに気づきにくい★
+         誰が取消したかが残らず、Teams の取消通知も差出人を書けない。 */
+      `<div class="st-row">履歴の取消記録（<code>CancelledByEmail</code> ほか3列）: ${CAP.cancel?ok():ng()}` +
+        (CAP.cancel ? '' : ' — 取消そのものは動きますが、<b>誰が取消したかが残りません</b>（Teams通知にも出せません）') + `</div>` +
       `<div class="st-row" id="fetch-mode" style="color:var(--muted)"></div>` +
-      (CAP.lock && CAP.resv && CAP.token && CAP.mid ? '' :
+      (CAP.lock && CAP.resv && CAP.token && CAP.mid && CAP.cancel ? '' :
         `<div class="st-row" style="margin-top:7px">
            <button class="act pri" id="btn-mkcol" onclick="makeColumns()">不足している列を作成する</button>
            <span style="color:var(--muted);font-size:11.5px">マスターと履歴の両方をまとめて作ります。内部名は英語で固定されます。</span>
@@ -661,6 +687,18 @@ async function makeColumns(){
         indexed: false, number: { decimalPlaces: 'none', displayAs: 'number', maximum: 1e9, minimum: 0 }
       }, 'マスターID');
       done.push('MachineItemId（履歴）');
+    }
+    /* ★取消の3列★ 既に運用中の履歴リストに後から足す。
+       createHistList（新規作成）にしか定義が無いと、既存リストには一生入らない。 */
+    if (!CAP.cancel) {
+      for (const c of HIST_COLUMNS.filter(h => h.name.startsWith('Cancelled'))) {
+        await gCreateColumn(LIST_HIST, {
+          name: c.name, displayName: c.name,
+          description: '取消の記録。アプリが設定します',
+          indexed: false, ...c.def
+        }, c.jp);
+        done.push(`${c.name}（履歴）`);
+      }
     }
     showSnack(`列を作成しました: ${done.join(' / ')}`);
     await checkColumns();
@@ -1244,7 +1282,137 @@ function openDetail(rid){
   ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   document.getElementById('dMsg').textContent = r._dup ? '⚠ 同じ機体で期間が重なっている予約があります' : '';
   document.getElementById('dMsg').className = 'msg' + (r._dup ? ' ng' : '');
+
+  /* ★取消ボタンを出す条件★
+     ・まだ取消されていない
+     ・終了が未来（＝これからの予約か、いま貸出中）
+       終わった予約を消せると、実際に貸し出した記録が消える。
+     ・登録が有効（占有列が無い状態では書き込ませない）
+     誰でも取消できる運用なので、他人の予約かどうかは条件にしない。
+     代わりに、押したときの確認文で依頼者名を必ず名指しする。 */
+  cancelTarget = (r.st !== '取消' && r.e > Date.now() && CAP.lock) ? rid : null;
+  const cb = document.getElementById('dCancel');
+  cb.style.display = cancelTarget ? '' : 'none';
+  cb.disabled = false;
+  cb.textContent = 'この予約を取消す';
   openM('mDetail');
+}
+
+/* ============================================================
+   取消
+   ★順番を変えてはいけない★
+     1. 履歴を『取消』にする
+     2. そのあと占有情報から外す
+   逆にすると、占有が空いた瞬間から履歴が取消になるまでの間に
+   別の人が同じ枠を取れてしまい、二重予約が成立する。
+   （reserve.mjs の cancel() と同じ順序。test.mjs のケース5で検証済み）
+   ============================================================ */
+let cancelTarget = null;
+
+async function doCancel(){
+  const rid = cancelTarget; if (!rid) return;
+  const r = RES.find(x => x.rid === rid); if (!r) return;
+  const m = MACHINES.find(x => x.id === r.mid);
+  const msg = document.getElementById('dMsg'), btn = document.getElementById('dCancel');
+  const me  = (currentAccount?.username || '').toLowerCase();
+  const mine = me && r.reqMail && r.reqMail.toLowerCase() === me;
+  const started = r.s <= Date.now();
+
+  /* 他人の予約を消すときは、誰の予約かを必ず名指しする。
+     「誰でも取消できる」設定なので、これが唯一の歯止めになる。 */
+  const who = r.req ? `${r.req} さん` : '（依頼者不明）';
+  let q = `この予約を取消します。\n\n`
+        + `　デモ機：${m ? m.n : '#'+r.mid}\n`
+        + `　件名　：${r.t}\n`
+        + `　期間　：${jFull(r.s)} 〜 ${jFull(r.e)}\n`
+        + `　依頼者：${who}\n\n`;
+  if (!mine)   q += `★これはあなたの予約ではありません。${who}に確認済みですか？★\n`;
+  if (started) q += `★すでに貸出が始まっている予約です。★\n`;
+  q += `\n取消すと枠が空き、他の人が予約できるようになります。`;
+  if (!confirm(q)) return;
+
+  btn.disabled = true; btn.textContent = '取消中...';
+  msg.textContent = '取消しています...'; msg.className = 'msg';
+  try {
+    /* 1. 履歴を先に取消 */
+    const fields = { LoanStatus: '取消' };
+    if (CAP.cancel) {
+      fields.CancelledByEmail = currentAccount?.username || '';
+      fields.CancelledByName  = currentAccount?.name || currentAccount?.username || '';
+      fields.CancelledAt      = new Date().toISOString();
+    }
+    const pr = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${rid}/fields`, fields, null);
+    if (pr.status !== 200) throw new Error(`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）`);
+
+    /* 2. そのあと占有情報から外す。
+          トークンが無い予約（古い行）は期間の一致で外す。
+          重なる予約は作れない仕組みなので、同じ機体で同じ期間は1件しかない。 */
+    let freed = true;
+    if (m) {
+      const now = Date.now();
+      freed = r.token
+        ? await release(m, r.token, now)
+        : await releaseBy(m, x => x.s === r.s && x.e === r.e, now);
+    }
+
+    closeM('mDetail');
+    await loadRes(); render(); paintSeek();
+    showSnack(freed
+      ? '予約を取消しました'
+      : '予約は取消しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
+  } catch (err) {
+    msg.textContent = '取消できませんでした：' + err.message;
+    msg.className = 'msg ng';
+    btn.disabled = false; btn.textContent = 'この予約を取消す';
+  }
+}
+
+/* ============================================================
+   終日予約
+   ★終わりは「終了日の翌日 0:00」にする★
+     この画面の重なり判定は半開区間 [開始, 終了) なので、
+     9/1 終日 = 9/1 00:00 〜 9/2 00:00 とすれば
+     9/2 終日（9/2 00:00 〜）と隣接して重ならない。
+     23:59 にすると1分の隙間が空き、半開区間の考え方と揃わなくなる。
+   isAllDay() は 0:00→0:00 を終日と判定するので、帯には「終日」と出る。
+   ============================================================ */
+function allDayOn(){ return document.getElementById('nAllDay').checked; }
+
+/* 入力欄から予約期間（ms）を取り出す。終日かどうかで読む欄が変わる */
+function newRangeMs(){
+  if (allDayOn()) {
+    const a = dateToMs(document.getElementById('nStartD').value);
+    const b = dateToMs(document.getElementById('nEndD').value);
+    return { s:a, e: isNaN(b) ? NaN : b + DAY };     /* 終了日も含める＝翌日0:00まで */
+  }
+  return { s: localToMs(document.getElementById('nStart').value),
+           e: localToMs(document.getElementById('nEnd').value) };
+}
+
+/* チェックの切り替え。値を捨てずに引き継ぐ */
+function paintAllDay(){
+  const on = allDayOn();
+  document.getElementById('nTimeRow').style.display = on ? 'none' : '';
+  document.getElementById('nDateRow').style.display = on ? '' : 'none';
+  if (on) {
+    /* 時刻つき → 日付だけ。終了は「その日を含む」なので、
+       ちょうど 0:00 で終わる予約は前日が最終日になる。1日ずれを防ぐ。 */
+    const s = localToMs(document.getElementById('nStart').value);
+    const e = localToMs(document.getElementById('nEnd').value);
+    if (!isNaN(s)) document.getElementById('nStartD').value = msToDate(s);
+    if (!isNaN(e)) {
+      const d = toJ(e);
+      const atMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
+      document.getElementById('nEndD').value = msToDate(atMidnight ? e - DAY : e);
+    }
+  } else {
+    /* 日付だけ → 時刻つき。既定の 9:00〜17:00 を入れる */
+    const a = dateToMs(document.getElementById('nStartD').value);
+    const b = dateToMs(document.getElementById('nEndD').value);
+    if (!isNaN(a)) document.getElementById('nStart').value = msToLocal(a + 9*3600e3);
+    if (!isNaN(b)) document.getElementById('nEnd').value   = msToLocal(b + 17*3600e3);
+  }
+  paintExisting();
 }
 
 let newMid = 0;
@@ -1259,6 +1427,13 @@ function openNew(mid, dayMs, range){
     document.getElementById('nStart').value = msToLocal(dayMs + 9*3600e3);   /* 既定 09:00 JST */
     document.getElementById('nEnd').value   = msToLocal(dayMs + 17*3600e3);  /* 既定 17:00 JST */
   }
+  /* ★モーダルは使い回すので、終日チェックは毎回外す★
+     前回終日で予約した人が、次に時間指定したいのにチェックが残っていると
+     気づかず1日まるごと押さえてしまう。 */
+  document.getElementById('nAllDay').checked = false;
+  document.getElementById('nStartD').value = msToDate(range ? range.s : dayMs);
+  document.getElementById('nEndD').value   = msToDate(range ? Math.max(range.s, range.e - DAY) : dayMs);
+  paintAllDay();
   ['nTitle','nCust','nDest','nNotes'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('nReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   document.getElementById('nMsg').textContent = ''; document.getElementById('nMsg').className = 'msg';
@@ -1274,8 +1449,9 @@ function openNew(mid, dayMs, range){
    CASは最後の砦で、本来は保存する前に空いている時間が見えているべき。 */
 function paintExisting(){
   const box = document.getElementById('ex-list'); if (!box) return;
-  const s = localToMs(document.getElementById('nStart').value);
-  const e = localToMs(document.getElementById('nEnd').value);
+  /* ★入力欄を直接読んではいけない★ 終日のときは日付欄が正で、
+     時刻欄には古い値が残っている。newRangeMs() に集約する。 */
+  const { s, e } = newRangeMs();
   const base = isNaN(s) ? Date.now() : s;
   const rs = RES.filter(r => r.mid === newMid && r.st !== '取消'
                           && r.e > base - 30*DAY && r.s < base + 30*DAY)
@@ -1298,7 +1474,9 @@ function paintExisting(){
     save.disabled = !CAP.lock;
   }
 }
-['nStart','nEnd'].forEach(id => document.getElementById(id).addEventListener('input', paintExisting));
+['nStart','nEnd','nStartD','nEndD'].forEach(id =>
+  document.getElementById(id).addEventListener('input', paintExisting));
+document.getElementById('nAllDay').addEventListener('change', paintAllDay);
 
 /* ---------- CAS 本体 ---------- */
 const parseOcc = s => (s||'').split('\n').map(l=>l.trim()).filter(Boolean)
@@ -1353,10 +1531,14 @@ async function reserve({ machine, s, e, details }){
   }
   return { ok:false, reason:'BUSY' };
 }
-async function release(machine, token, now){
+/* 占有情報から「条件に合うものだけ」を外す。CAS（ETag）で書き戻す。
+   ★失敗しても安全側★ 外せなければ枠が塞がったまま残る（二重予約より軽い） */
+async function releaseBy(machine, pred, now){
   for (let n = 1; n <= 4; n++){
     const it = await gGet(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${machine.itemId}?$expand=fields`);
-    const next = prune(parseOcc((it.fields||{})[LOCK_COL] || ''), now).filter(x => x.token !== token);
+    const cur  = prune(parseOcc((it.fields||{})[LOCK_COL] || ''), now);
+    const next = cur.filter(x => !pred(x));
+    if (next.length === cur.length) return true;      /* 既に無い＝解除済み */
     const r = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${machine.itemId}/fields`,
       { [LOCK_COL]: dumpOcc(next) }, it['@odata.etag']);
     if (r.status === 200) return true;
@@ -1365,19 +1547,25 @@ async function release(machine, token, now){
   }
   return false;
 }
+async function release(machine, token, now){
+  return releaseBy(machine, x => x.token === token, now);
+}
 
 async function doReserve(){
   const msg = document.getElementById('nMsg'), btn = document.getElementById('nSave');
   const m = MACHINES.find(x => x.id === newMid);
   const title = document.getElementById('nTitle').value.trim();
-  const s = localToMs(document.getElementById('nStart').value);
-  const e = localToMs(document.getElementById('nEnd').value);
+  const { s, e } = newRangeMs();
+  const allDay = allDayOn();
   const fail = t => { msg.textContent = t; msg.className = 'msg ng'; };
 
   if (!m) return fail('デモ機が特定できません');
   if (!title) return fail('予約件名を入力してください');
-  if (isNaN(s) || isNaN(e)) return fail('開始と終了を入力してください');
-  if (e <= s) return fail('終了が開始より後になるようにしてください');
+  if (isNaN(s) || isNaN(e))
+    return fail(allDay ? '開始日と終了日を入力してください' : '開始と終了を入力してください');
+  if (e <= s)
+    return fail(allDay ? '終了日は開始日と同じか、それより後にしてください'
+                       : '終了が開始より後になるようにしてください');
 
   btn.disabled = true; msg.textContent = '枠を確保中...'; msg.className = 'msg';
   try {
