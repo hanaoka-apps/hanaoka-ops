@@ -9,13 +9,16 @@ GitHub Actions から実行される。環境変数に以下が必要:
 Drive ID: SharedMasters ライブラリ
 """
 
+import os
 import sys
 from pathlib import Path
 
+import msal
 import requests
 
 # ---- 設定 ----------------------------------------------------------------
 
+DRIVE_ID = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8"
 
 # 必須ファイル（1つでもダウンロード失敗したら警告。404は許容してスキップ）
 REQUIRED_FILES = [
@@ -41,25 +44,34 @@ OPTIONAL_FILES = [
     "品目マスタ.txt",
     "製番マスタ.csv",
     "製番マスタ.txt",
-    "value_analysis.json",
-    "品目別積上原価一覧表26.6.csv",
-    "品目別積上原価一覧表26.7.csv",
 ]
 
 # --------------------------------------------------------------------------
 
 BASE = Path(__file__).resolve().parent.parent
-if str(BASE) not in sys.path:
-    sys.path.insert(0, str(BASE))
-
-from shared.m365_auth import acquire_application_token, graph_drive_item_url, load_settings
-
 DATA = BASE / "data"
 
 
-def get_file_last_modified(token: str, drive_id: str, filename: str) -> str:
+def get_token(tenant_id: str, client_id: str, client_secret: str) -> str:
+    app = msal.ConfidentialClientApplication(
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        client_credential=client_secret,
+    )
+    result = app.acquire_token_for_client(
+        scopes=["https://graph.microsoft.com/.default"]
+    )
+    if "access_token" not in result:
+        raise RuntimeError(
+            f"トークン取得失敗: {result.get('error')} / {result.get('error_description')}"
+        )
+    return result["access_token"]
+
+
+def get_file_last_modified(token: str, filename: str) -> str:
     """SharePoint上のファイルのlastModifiedDateTime(JST)を返す。取得失敗時は空文字。"""
-    url = graph_drive_item_url(drive_id, filename)
+    encoded = requests.utils.quote(filename, safe="")
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded}"
     res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
     if res.status_code == 200:
         from datetime import timezone, timedelta
@@ -72,9 +84,10 @@ def get_file_last_modified(token: str, drive_id: str, filename: str) -> str:
     return ""
 
 
-def download_file(token: str, drive_id: str, filename: str, dest_dir: Path, required: bool) -> bool:
+def download_file(token: str, filename: str, dest_dir: Path, required: bool) -> bool:
     """ファイルをダウンロードして dest_dir に保存。成功したら True を返す。"""
-    url = graph_drive_item_url(drive_id, filename, content=True)
+    encoded = requests.utils.quote(filename, safe="")
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded}:/content"
     res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
 
     if res.status_code == 200:
@@ -93,10 +106,12 @@ def download_file(token: str, drive_id: str, filename: str, dest_dir: Path, requ
 
 
 def main():
-    try:
-        settings = load_settings(base_dir=BASE)
-    except RuntimeError as error:
-        print(f"[ERROR] {error}")
+    tenant_id = os.environ.get("AZURE_TENANT_ID", "").strip()
+    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+
+    if not all([tenant_id, client_id, client_secret]):
+        print("[ERROR] 環境変数 AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET が未設定です")
         sys.exit(1)
 
     DATA.mkdir(parents=True, exist_ok=True)
@@ -104,7 +119,7 @@ def main():
     print()
 
     print("トークン取得中...")
-    token = acquire_application_token(settings)
+    token = get_token(tenant_id, client_id, client_secret)
     print("  [OK] 認証成功")
     print()
 
@@ -112,7 +127,7 @@ def main():
     missing_required = []
     for f in REQUIRED_FILES:
         try:
-            ok = download_file(token, settings.shared_masters_drive_id, f, DATA, required=True)
+            ok = download_file(token, f, DATA, required=True)
             if not ok:
                 missing_required.append(f)
         except RuntimeError as e:
@@ -123,7 +138,7 @@ def main():
     print("=== 任意ファイル ===")
     for f in OPTIONAL_FILES:
         try:
-            download_file(token, settings.shared_masters_drive_id, f, DATA, required=False)
+            download_file(token, f, DATA, required=False)
         except RuntimeError as e:
             print(f"  [WARN] {e}")
 
@@ -131,7 +146,7 @@ def main():
     # → build_shell.py が現在庫基準日として使用する
     print()
     print("=== 現在庫基準日メタデータ取得 ===")
-    stock_mtime = get_file_last_modified(token, settings.shared_masters_drive_id, "有効在庫一覧表.csv")
+    stock_mtime = get_file_last_modified(token, "有効在庫一覧表.csv")
     if stock_mtime:
         (DATA / "_stock_mtime.txt").write_text(stock_mtime, encoding="utf-8")
         print(f"  [OK] 有効在庫一覧表.csv の最終更新: {stock_mtime} (JST) → data/_stock_mtime.txt")
