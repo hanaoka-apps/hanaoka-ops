@@ -9,20 +9,23 @@ FUJIN HTML群にMSAL.js認証ゲートを挿入する後処理スクリプト
     python3 auth_wrapper.py
     → ./auth_dist/ に認証付きHTMLが生成される
 """
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 if ROOT.name == "scripts":
     ROOT = ROOT.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared.m365_auth import load_settings
+
 OUT = ROOT / "auth_dist"
 OUT.mkdir(exist_ok=True)
 
-# Azure AD 設定（雅さん提供 2026-04-27）
-TENANT_ID = "3933e8a0-c945-4e97-ae67-c82131087cad"
-CLIENT_ID = "d338d61b-01dc-4c7c-ac6b-aecf7f30d716"
-
 AUTH_GATE_SCRIPT = """
 <!-- ============ MSAL.js 認証ゲート (Microsoft Entra ID) ============ -->
+<script src="shared/m365-auth.js"></script>
 <!-- HTMLパース時点から本体を非表示 (認証完了まで一瞬たりとも見せない) -->
 <style id="_fujin_preauth_style">
   html.fujin-pre-auth body { visibility: hidden !important; }
@@ -273,7 +276,7 @@ function _fujinStartAuth() {
     //     シェルの init() はこの Promise 完了(または最大6秒)を待ってからタブを開くため、
     //     先に window._fujinItemHistoryPromise が存在している必要がある。
     try {
-      var _SP_DRIVE = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinItemHistoryPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -296,7 +299,7 @@ function _fujinStartAuth() {
     // ★ 2026-06-11 セキュリティ移行: yama_data(山積み台数) も SharePoint から認証取得
     //   item_history と同方式。山リスト画面は window.top._fujinYamaData を採用する。
     try {
-      var _SP_DRIVE2 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE2 = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinYamaDataPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -319,7 +322,7 @@ function _fujinStartAuth() {
     //   SharePoint から認証取得。構成ツリー/手配確定の results_production.html は
     //   window.top._fujinResultsData を読む(HTML自体は描画コードのみで機微データ非含有)。
     try {
-      var _SP_DRIVE3 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE3 = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinResultsDataPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -342,7 +345,7 @@ function _fujinStartAuth() {
     // ★ 2026-06-13 製番進捗(seiban_progress)も SharePoint から認証取得。
     //   画面(seiban_progress.html)は window.top._fujinSeibanData を読む。
     try {
-      var _SP_DRIVE4 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE4 = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinSeibanDataPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -365,7 +368,7 @@ function _fujinStartAuth() {
     // ★ 2026-06-17 製番製造スケジュール(BOM×L/T逆算ガント)も SharePoint から認証取得。
     //   画面(seiban_gantt.html)は window.top._fujinSeibanGantt を読む。
     try {
-      var _SP_DRIVE5 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE5 = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinSeibanGanttPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -388,7 +391,7 @@ function _fujinStartAuth() {
     // ★ 2026-06 構成印刷(作業指示)も SharePoint から認証取得(公開Pagesに業務データを置かない)。
     //   画面(work_instruction.html)は window.top._fujinWorkInstructions を読む。
     try {
-      var _SP_DRIVE6 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE6 = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinWorkInstructionsPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -411,7 +414,7 @@ function _fujinStartAuth() {
     // ★ 2026-07 構成なし/登録漏れ/使用禁止品目(在庫探偵チップ)も SharePoint から認証取得。
     //   画面(stock_detective.html)は window.top._fujinOrphan を読む(公開Pagesに業務データを置かない)。
     try {
-      var _SP_DRIVE7 = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SP_DRIVE7 = "__SHARED_MASTERS_DRIVE_ID__";
       window._fujinOrphanPromise = window._fujinMsal
         .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
         .then(function(r){
@@ -430,6 +433,27 @@ function _fujinStartAuth() {
           return null;
         });
     } catch(e) { console.error("[orphan_items] 例外:", e); window._fujinOrphanPromise = Promise.resolve(null); }
+
+    // ★ 2026-08 全社付加価値・在庫分析も SharePoint から認証取得。
+    //   画面(value_analysis.html)は window.top._fujinValueAnalysis を読む。
+    try {
+      window._fujinValueAnalysisPromise = window._fujinMsal
+        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE7 + "/root:/value_analysis.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
+        })
+        .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+        .then(function(d){
+          window._fujinValueAnalysis = d;
+          console.log("[value_analysis] ✅ SharePointから認証取得 成功");
+          return d;
+        })
+        .catch(function(e){
+          console.warn("[value_analysis] SharePoint取得 失敗:", (e && (e.errorCode || e.message)) || e);
+          return null;
+        });
+    } catch(e) { console.error("[value_analysis] 例外:", e); window._fujinValueAnalysisPromise = Promise.resolve(null); }
 
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
@@ -461,7 +485,7 @@ function _fujinStartAuth() {
   // MSAL インスタンス作成 (例外時はエラー表示)
   let msalInstance = null;
   try {
-    msalInstance = new msal.PublicClientApplication(FUJIN_AUTH_CONFIG);
+    msalInstance = window.HanaokaM365Auth.createClientSync(FUJIN_AUTH_CONFIG);
     window._fujinMsal = msalInstance;
   } catch(constructErr) {
     console.error("MSAL constructor failed:", constructErr);
@@ -561,9 +585,14 @@ function _fujinStartAuth() {
 <!-- ============ 認証ゲート ここまで ============ -->
 """
 
-def inject_auth(html, client_id, tenant_id):
+def inject_auth(html, client_id, tenant_id, shared_masters_drive_id):
     """既存HTMLの<head>に認証ゲートスクリプトを挿入"""
-    gate = AUTH_GATE_SCRIPT.replace("__CLIENT_ID__", client_id).replace("__TENANT_ID__", tenant_id)
+    gate = (
+        AUTH_GATE_SCRIPT
+        .replace("__CLIENT_ID__", client_id)
+        .replace("__TENANT_ID__", tenant_id)
+        .replace("__SHARED_MASTERS_DRIVE_ID__", shared_masters_drive_id)
+    )
     if "</head>" in html:
         return html.replace("</head>", gate + "\n</head>", 1)
     # <head>がない場合は冒頭に挿入
@@ -602,15 +631,25 @@ TARGETS_DIRS = [
     "stock_snapshots",  # 在庫日次スナップショット + _last_diff.json
 ]
 
+try:
+    SETTINGS = load_settings(base_dir=ROOT, require_secret=False, require_drive=True)
+except RuntimeError as error:
+    raise SystemExit(f"[ERROR] {error}") from error
+
 print(f"=== FUJIN 認証ゲート挿入処理 ===")
-print(f"Tenant ID: {TENANT_ID}")
-print(f"Client ID: {CLIENT_ID}")
+print("M365設定: 読み込み済み（実値はログへ出力しません）")
 print(f"出力先: {OUT}")
 print()
 
 import shutil
 count_auth = 0
 count_plain = 0
+
+# 共通認証モジュールを配布物へ含める。
+shared_src = ROOT / "shared" / "m365-auth.js"
+shared_out = OUT / "shared"
+shared_out.mkdir(parents=True, exist_ok=True)
+shutil.copy2(shared_src, shared_out / shared_src.name)
 
 # 認証ゲート挿入対象（FUJIN.html のみ）
 print("[認証ゲート挿入]")
@@ -620,7 +659,12 @@ for fname in TARGETS_AUTH:
         print(f"  ⚠ {fname}: 存在せずスキップ")
         continue
     html = src.read_text(encoding="utf-8")
-    new_html = inject_auth(html, CLIENT_ID, TENANT_ID)
+    new_html = inject_auth(
+        html,
+        SETTINGS.client_id,
+        SETTINGS.tenant_id,
+        SETTINGS.shared_masters_drive_id,
+    )
     out_path = OUT / fname
     out_path.write_text(new_html, encoding="utf-8")
     print(f"  🔐 {fname} ({len(html):,} → {len(new_html):,} chars)")
