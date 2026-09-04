@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>営業日報ダッシュボード</title>
+<style>
+  :root {
+    --bg: #f2f4f8;
+    --card-bg: #ffffff;
+    --border: #e6e8ee;
+    --text-main: #1b1e28;
+    --text-sub: #6b7080;
+    --accent-blue: #1d4ed8;
+    --accent-green: #16a34a;
+    --accent-red: #c0392b;
+    --radius: 14px;
+    --shadow: 0 1px 3px rgba(20, 22, 31, 0.06), 0 1px 2px rgba(20, 22, 31, 0.04);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text-main);
+    padding: 28px 36px 60px;
+  }
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  .page-sub { color: var(--text-sub); font-size: 13.5px; }
+  .top-actions { display: flex; align-items: center; gap: 14px; }
+  .signin-btn {
+    background: var(--accent-blue);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13.5px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .signin-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px 22px;
+    margin-bottom: 22px;
+  }
+  .card h2 {
+    font-size: 15px;
+    margin: 0 0 14px;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 10px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-sub); font-weight: 600; font-size: 12.5px; }
+  tr:last-child td { border-bottom: none; }
+  tr.total-row td { font-weight: 700; }
+
+  .rate-ok { color: var(--accent-green); font-weight: 700; }
+  .rate-bad { color: var(--accent-red); font-weight: 700; }
+  .rate-na { color: var(--text-sub); }
+
+  .empty-state {
+    padding: 26px 4px;
+    text-align: center;
+    color: var(--text-sub);
+    font-size: 13.5px;
+  }
+  .empty-state.error { color: var(--accent-red); }
+
+  @media (max-width: 640px) {
+    body { padding: 18px 14px 40px; }
+    table { font-size: 12.5px; }
+    th, td { padding: 8px 4px; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="page-head">
+    <div>
+      <h1>営業日報ダッシュボード</h1>
+      <div class="page-sub" id="dateLabel"></div>
+    </div>
+    <div class="top-actions">
+      <button id="signInBtn" class="signin-btn" hidden>Microsoftでサインイン</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>受注金額</h2>
+    <div id="orderTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+  </div>
+
+  <div class="card">
+    <h2>売上金額</h2>
+    <div id="salesTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script>
+// ============================================================
+// MSAL CONFIG (既存アプリ / HANAOKA HUB ポータルと同一パターン)
+// ============================================================
+const MSAL_CONFIG = {
+  auth: {
+    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
+    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
+    redirectUri: window.location.origin + window.location.pathname,
+  },
+  cache: { cacheLocation: 'localStorage' }
+};
+const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+
+const SP = {
+  siteId: 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23',
+  mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
+  targetsListId: '9cb1ee3e-8af9-4f6a-a910-78b12385437e',
+};
+
+// dashboard_facts.json の行スキーマ（sales_dashboard.html と同一）
+const IDX = {
+  ym:0, fy:1, cust_cd:2, cust_abbr:3, genre:4,
+  new_kind:5, sho_bunrui:6, voucher_date:7,
+  deliver_cd:8, deliver_nm:9, rep_cd:10, rep_nm:11,
+  bumon:12, chu_bumon:13, base:14, sales_div:15,
+  dai_bunrui:16, chu_bunrui:17, item_cd:18, item_nm:19,
+  qty:20, amount:21, unit_price:22, kind:23,
+};
+
+const DEPT_GROUPS = ['全社', '国内営業部', 'ソリューション営業部'];
+
+let msalInstance = null;
+let account = null;
+
+// ============================================================
+// AUTH（sales_dashboard.html と同じ流れ）
+// ============================================================
+async function initAuth() {
+  document.getElementById('signInBtn').onclick = login;
+  msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    account = accounts[0];
+    msalInstance.setActiveAccount(account);
+    await onSignedIn();
+  } else {
+    document.getElementById('signInBtn').hidden = false;
+  }
+}
+
+async function login() {
+  const btn = document.getElementById('signInBtn');
+  try {
+    btn.disabled = true;
+    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    account = result.account;
+    msalInstance.setActiveAccount(account);
+    await onSignedIn();
+  } catch (e) {
+    btn.disabled = false;
+    console.error('サインイン失敗', e);
+  }
+}
+
+async function getToken() {
+  try {
+    const r = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+    return r.accessToken;
+  } catch {
+    const r = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
+    return r.accessToken;
+  }
+}
+
+async function graphGet(path) {
+  const t = await getToken();
+  const url = path.startsWith('http') ? path : ('https://graph.microsoft.com/v1.0' + path);
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+  if (!res.ok) throw new Error(`Graph ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function onSignedIn() {
+  document.getElementById('signInBtn').hidden = true;
+  const now = new Date();
+  document.getElementById('dateLabel').textContent =
+    `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日 時点`;
+  try {
+    await loadReport();
+  } catch (e) {
+    console.error('データ取得失敗', e);
+    document.getElementById('orderTableWrap').innerHTML = '<div class="empty-state error">データを取得できませんでした</div>';
+    document.getElementById('salesTableWrap').innerHTML = '<div class="empty-state error">データを取得できませんでした</div>';
+  }
+}
+
+// ============================================================
+// 集計ロジック（sales_dashboard.html の matchGroup / isInternalTransfer と同一）
+// ============================================================
+function matchGroup(r, group) {
+  if (!group || group === '全社') return true;
+  if (group === '国内営業部') return r[IDX.sales_div] === '国内営業部';
+  if (group === 'ソリューション営業部') {
+    return r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+  }
+  return r[IDX.base] === group;
+}
+function isInternalTransfer(r) {
+  const up = Number(r[IDX.unit_price]) || 0;
+  const qp = Number(r[IDX.qty]) || 0;
+  const item = String(r[IDX.item_nm] || '');
+  if (item.indexOf('消費税') >= 0) return true;
+  if (up === 0 && qp === 0) return true;
+  return false;
+}
+function rowYm(r) {
+  const v = r[IDX.ym];
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.length >= 6) return parseInt(v.slice(0, 6), 10);
+  return 0;
+}
+// voucher_date の表記ゆれ（"26/09/03" "2026/09/03" "2026-09-03" "20260903" 等）を吸収
+function parseVoucherDay(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  let m = s.match(/^(\d{2,4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) {
+    let y = parseInt(m[1], 10);
+    if (y < 100) y += 2000;
+    return { y, mo: parseInt(m[2], 10), d: parseInt(m[3], 10) };
+  }
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return { y: parseInt(m[1], 10), mo: parseInt(m[2], 10), d: parseInt(m[3], 10) };
+  return null;
+}
+function isToday(r, t) {
+  const d = parseVoucherDay(r[IDX.voucher_date]);
+  return !!d && d.y === t.y && d.mo === t.mo && d.d === t.d;
+}
+
+// 部門×月 の { 当日, 累計 } を集計
+function aggregateByGroup(rows, curYm, today) {
+  const result = {};
+  for (const g of DEPT_GROUPS) result[g] = { todayAmt: 0, monthAmt: 0 };
+  for (const r of rows) {
+    if (rowYm(r) !== curYm) continue;
+    if (Number(r[IDX.kind]) === 2) continue; // 返品
+    if (isInternalTransfer(r)) continue;
+    const amt = Number(r[IDX.amount]) || 0;
+    const todayHit = isToday(r, today);
+    for (const g of DEPT_GROUPS) {
+      if (!matchGroup(r, g)) continue;
+      result[g].monthAmt += amt;
+      if (todayHit) result[g].todayAmt += amt;
+    }
+  }
+  return result;
+}
+
+async function loadPlans(curYm) {
+  const plans = {};
+  for (const g of DEPT_GROUPS) plans[g] = 0;
+  let items = [];
+  let listUrl = `/sites/${SP.siteId}/lists/${SP.targetsListId}/items?$expand=fields&$top=2000`;
+  while (listUrl) {
+    const r = await graphGet(listUrl);
+    items = items.concat(r.value || []);
+    listUrl = r['@odata.nextLink'] || null;
+  }
+  for (const item of items) {
+    const f = item.fields || {};
+    const type = String(f.TargetType || '').trim();
+    const scope = String(f.ScopeKey || '').trim();
+    const ym = parseInt(String(f.Year_x0020_Month || f.YearMonth || '').trim(), 10);
+    const isLatest = (f.IsLatest === true || f.IsLatest === 'true');
+    if (!isLatest || ym !== curYm) continue;
+    if (!(type === '部門累計月次' || type === 'dept_monthly')) continue;
+    if (DEPT_GROUPS.includes(scope)) plans[scope] = Number(f.Amount) || 0;
+  }
+  return plans;
+}
+
+function formatOku(yen) { return (yen / 100000000).toFixed(2); }
+
+function renderTable(containerId, metrics, plans) {
+  const rowsHtml = DEPT_GROUPS.map(g => {
+    const m = metrics[g];
+    const plan = plans[g] || 0;
+    const rate = plan > 0 ? (m.monthAmt / plan) * 100 : null;
+    const rateHtml = rate === null
+      ? '<span class="rate-na">―</span>'
+      : `<span class="${rate >= 100 ? 'rate-ok' : 'rate-bad'}">${rate.toFixed(1)}%</span>`;
+    const rowClass = g === '全社' ? ' class="total-row"' : '';
+    return `
+      <tr${rowClass}>
+        <td>${g}</td>
+        <td>${plan > 0 ? formatOku(plan) + '億円' : '―'}</td>
+        <td>${formatOku(m.todayAmt)}億円</td>
+        <td>${formatOku(m.monthAmt)}億円</td>
+        <td>${rateHtml}</td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById(containerId).innerHTML = `
+    <table>
+      <thead><tr><th>部門</th><th>計画（今月）</th><th>当日</th><th>累計</th><th>計画対比</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+}
+
+async function loadReport() {
+  const t = await getToken();
+  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+  if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
+  const facts = await res.json();
+  const rows = facts.rows || [];
+  const orderRows = facts.order_rows || [];
+
+  const now = new Date();
+  const curYm = now.getFullYear() * 100 + (now.getMonth() + 1);
+  const today = { y: now.getFullYear(), mo: now.getMonth() + 1, d: now.getDate() };
+
+  const plans = await loadPlans(curYm);
+
+  const orderMetrics = aggregateByGroup(orderRows, curYm, today);
+  const salesMetrics = aggregateByGroup(rows, curYm, today);
+
+  console.log('[営業日報] curYm=', curYm, 'plans=', plans, 'orderMetrics=', orderMetrics, 'salesMetrics=', salesMetrics);
+
+  renderTable('orderTableWrap', orderMetrics, plans);
+  renderTable('salesTableWrap', salesMetrics, plans);
+}
+
+// ============================================================
+// エントリポイント
+// ============================================================
+initAuth().catch(e => {
+  console.error('初期化失敗', e);
+  document.getElementById('signInBtn').hidden = false;
+});
+</script>
+</body>
+</html>
