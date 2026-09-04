@@ -252,13 +252,24 @@ function isToday(r, t) {
   const d = parseVoucherDay(r[IDX.voucher_date]);
   return !!d && d.y === t.y && d.mo === t.mo && d.d === t.d;
 }
+// voucher_date（伝票日付/受注日付）が対象の年月と一致するか
+function isSameMonthByVoucherDate(r, y, mo) {
+  const d = parseVoucherDay(r[IDX.voucher_date]);
+  return !!d && d.y === y && d.mo === mo;
+}
 
 // 部門×月 の { 当日, 累計 } を集計
-function aggregateByGroup(rows, curYm, today) {
+// useVoucherDateForMonth: true の場合、月の判定に「年月度」(ym列)ではなく
+// voucher_date（受注日付/伝票日付）を使う。受注明細は「年月度」が納期の属する
+// 会計期間を指すことがあり、受注日ベースの「当月受注」とはズレるため。
+function aggregateByGroup(rows, curYm, today, useVoucherDateForMonth) {
   const result = {};
   for (const g of DEPT_GROUPS) result[g] = { todayAmt: 0, monthAmt: 0 };
   for (const r of rows) {
-    if (rowYm(r) !== curYm) continue;
+    const inMonth = useVoucherDateForMonth
+      ? isSameMonthByVoucherDate(r, today.y, today.mo)
+      : rowYm(r) === curYm;
+    if (!inMonth) continue;
     if (Number(r[IDX.kind]) === 2) continue; // 返品
     if (isInternalTransfer(r)) continue;
     const amt = Number(r[IDX.amount]) || 0;
@@ -338,10 +349,15 @@ async function loadReport() {
 
   const plans = await loadPlans(curYm);
 
-  const orderMetrics = aggregateByGroup(orderRows, curYm, today);
-  const salesMetrics = aggregateByGroup(rows, curYm, today);
+  const orderMetrics = aggregateByGroup(orderRows, curYm, today, true);
+  const salesMetrics = aggregateByGroup(rows, curYm, today, false);
 
-  console.log('[営業日報] curYm=', curYm, 'plans=', plans, 'orderMetrics=', orderMetrics, 'salesMetrics=', salesMetrics);
+  // 参考: 「年月度」ベースで受注を集計した場合との比較(切り分け用ログ)
+  const orderMetricsByYm = aggregateByGroup(orderRows, curYm, today, false);
+  console.log('[営業日報] curYm=', curYm, 'plans=', plans);
+  console.log('[営業日報] orderMetrics(受注日付ベース)=', orderMetrics);
+  console.log('[営業日報] orderMetrics(年月度ベース・参考)=', orderMetricsByYm);
+  console.log('[営業日報] salesMetrics=', salesMetrics);
 
   renderTable('orderTableWrap', orderMetrics, plans);
   renderTable('salesTableWrap', salesMetrics, plans);
