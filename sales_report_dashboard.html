@@ -133,6 +133,12 @@
   </div>
 
   <div class="card">
+    <h2>売先ジャンル別受注金額</h2>
+    <div class="bar-wrap" style="height:260px"><canvas id="genreBarChart"></canvas></div>
+    <div id="genreTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+  </div>
+
+  <div class="card">
     <h2>売上金額</h2>
     <div class="gauge-row" id="salesGauges"></div>
     <div class="bar-wrap"><canvas id="salesBarChart"></canvas></div>
@@ -458,6 +464,84 @@ function renderTable(containerId, metrics, plans) {
     </table>`;
 }
 
+// ============================================================
+// 売先ジャンル別受注金額
+// ============================================================
+function aggregateByGenre(rows, today) {
+  const map = {};
+  for (const r of rows) {
+    if (!isSameMonthByVoucherDate(r, today.y, today.mo)) continue;
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    const genre = String(r[IDX.genre] || '').trim() || '(未設定)';
+    if (!map[genre]) map[genre] = { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 };
+    const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+    const amt = Number(r[IDX.amount]) || 0;
+    const todayHit = isToday(r, today);
+    if (isSol) {
+      map[genre].monthSol += amt;
+      if (todayHit) map[genre].todaySol += amt;
+    } else {
+      map[genre].monthDom += amt;
+      if (todayHit) map[genre].todayDom += amt;
+    }
+  }
+  return map;
+}
+
+function renderGenreSection(genreMap) {
+  const entries = Object.entries(genreMap)
+    .map(([genre, v]) => ({ genre, ...v, monthTotal: v.monthDom + v.monthSol }))
+    .filter(e => e.monthTotal !== 0)
+    .sort((a, b) => b.monthTotal - a.monthTotal);
+
+  if (!entries.length) {
+    document.getElementById('genreTableWrap').innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
+    destroyChart('genreBarChart');
+    return;
+  }
+
+  const top = entries.slice(0, 10);
+  destroyChart('genreBarChart');
+  const el = document.getElementById('genreBarChart');
+  const chart = new Chart(el, {
+    type: 'bar',
+    data: {
+      labels: top.map(e => e.genre),
+      datasets: [
+        { label: '国内営業部', data: top.map(e => Math.round(e.monthDom / 10000)), backgroundColor: '#2455e6' },
+        { label: 'ソリューション営業部', data: top.map(e => Math.round(e.monthSol / 10000)), backgroundColor: '#7c3aed' },
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { x: { stacked: true, title: { display: true, text: '万円' } }, y: { stacked: true } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+    }
+  });
+  CHARTS['genreBarChart'] = chart;
+
+  const rowsHtml = entries.map(e => `
+    <tr>
+      <td>${escapeHtml(e.genre)}</td>
+      <td>${formatYen(e.todayDom)}</td>
+      <td>${formatYen(e.todaySol)}</td>
+      <td>${formatYen(e.monthDom)}</td>
+      <td>${formatYen(e.monthSol)}</td>
+    </tr>`).join('');
+
+  document.getElementById('genreTableWrap').innerHTML = `
+    <table>
+      <thead><tr><th>ジャンル</th><th>当日 国内</th><th>当日 ソリューション</th><th>当月 国内</th><th>当月 ソリューション</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+}
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 async function loadReport() {
   const t = await getToken();
   const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
@@ -487,6 +571,9 @@ async function loadReport() {
   renderCharts('sales', salesMetrics, plans);
   renderTable('orderTableWrap', orderMetrics, plans);
   renderTable('salesTableWrap', salesMetrics, plans);
+
+  const genreMap = aggregateByGenre(orderRows, today);
+  renderGenreSection(genreMap);
 }
 
 // ============================================================
