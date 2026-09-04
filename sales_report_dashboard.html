@@ -80,10 +80,36 @@
   }
   .empty-state.error { color: var(--accent-red); }
 
+  .gauge-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+  .gauge-card {
+    flex: 1;
+    min-width: 130px;
+    text-align: center;
+  }
+  .gauge-canvas-wrap {
+    position: relative;
+    height: 120px;
+  }
+  .gauge-label { font-size: 13px; font-weight: 700; margin-top: 6px; }
+  .gauge-amt { font-size: 12px; color: var(--text-sub); margin-top: 2px; }
+
+  .bar-wrap {
+    position: relative;
+    height: 190px;
+    margin-bottom: 24px;
+  }
+
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
     table { font-size: 12.5px; }
     th, td { padding: 8px 4px; }
+    .gauge-card { min-width: 96px; }
+    .gauge-canvas-wrap { height: 90px; }
   }
 </style>
 </head>
@@ -101,14 +127,19 @@
 
   <div class="card">
     <h2>受注金額</h2>
+    <div class="gauge-row" id="orderGauges"></div>
+    <div class="bar-wrap"><canvas id="orderBarChart"></canvas></div>
     <div id="orderTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
   </div>
 
   <div class="card">
     <h2>売上金額</h2>
+    <div class="gauge-row" id="salesGauges"></div>
+    <div class="bar-wrap"><canvas id="salesBarChart"></canvas></div>
     <div id="salesTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
   </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script>
 // ============================================================
@@ -308,6 +339,96 @@ async function loadPlans(curYm) {
 
 function formatOku(yen) { return (yen / 100000000).toFixed(2); }
 
+// ============================================================
+// グラフ（Chart.js。sales_dashboard.html と同じライブラリ・バージョンを使用）
+// ============================================================
+const CHARTS = {};
+function destroyChart(id) {
+  if (CHARTS[id]) { CHARTS[id].destroy(); delete CHARTS[id]; }
+}
+
+const centerTextPlugin = {
+  id: 'centerText',
+  afterDraw(chart) {
+    const text = chart.config._centerText;
+    if (!text) return;
+    const { ctx, chartArea } = chart;
+    const cx = (chartArea.left + chartArea.right) / 2;
+    const cy = (chartArea.top + chartArea.bottom) / 2;
+    ctx.save();
+    ctx.font = '700 17px "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif';
+    ctx.fillStyle = '#1b1e28';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, cy);
+    ctx.restore();
+  }
+};
+Chart.register(centerTextPlugin);
+
+function renderGauge(canvasId, rate) {
+  destroyChart(canvasId);
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const pct = rate === null ? 0 : Math.min(Math.max(rate, 0), 100);
+  const color = rate === null ? '#c7cbd6' : (rate >= 100 ? '#16a34a' : '#1d4ed8');
+  const chart = new Chart(el, {
+    type: 'doughnut',
+    data: { datasets: [{ data: [pct, 100 - pct], backgroundColor: [color, '#eef0f5'], borderWidth: 0 }] },
+    options: {
+      cutout: '72%',
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      animation: { duration: 500 },
+    }
+  });
+  chart.config._centerText = rate === null ? '―' : rate.toFixed(0) + '%';
+  chart.update();
+  CHARTS[canvasId] = chart;
+}
+
+function renderBarChart(canvasId, groups, planByGroup, amtByGroup) {
+  destroyChart(canvasId);
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const chart = new Chart(el, {
+    type: 'bar',
+    data: {
+      labels: groups,
+      datasets: [
+        { label: '計画（今月）', data: groups.map(g => (planByGroup[g] || 0) / 100000000), backgroundColor: '#e2e6ef' },
+        { label: '累計', data: groups.map(g => (amtByGroup[g] || 0) / 100000000), backgroundColor: '#1d4ed8' },
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { x: { title: { display: true, text: '億円' } } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+    }
+  });
+  CHARTS[canvasId] = chart;
+}
+
+function renderCharts(prefix, metrics, plans) {
+  const gaugeRow = document.getElementById(prefix + 'Gauges');
+  gaugeRow.innerHTML = DEPT_GROUPS.map(g => `
+    <div class="gauge-card">
+      <div class="gauge-canvas-wrap"><canvas id="${prefix}-gauge-${g}"></canvas></div>
+      <div class="gauge-label">${g}</div>
+      <div class="gauge-amt">${formatOku(metrics[g].monthAmt)}億円${plans[g] > 0 ? ' / 計画' + formatOku(plans[g]) + '億円' : ''}</div>
+    </div>`).join('');
+
+  const planByGroup = {}, amtByGroup = {};
+  DEPT_GROUPS.forEach(g => {
+    planByGroup[g] = plans[g] || 0;
+    amtByGroup[g] = metrics[g].monthAmt;
+    const rate = planByGroup[g] > 0 ? (amtByGroup[g] / planByGroup[g]) * 100 : null;
+    renderGauge(`${prefix}-gauge-${g}`, rate);
+  });
+  renderBarChart(`${prefix}BarChart`, DEPT_GROUPS, planByGroup, amtByGroup);
+}
+
 function renderTable(containerId, metrics, plans) {
   const rowsHtml = DEPT_GROUPS.map(g => {
     const m = metrics[g];
@@ -359,6 +480,8 @@ async function loadReport() {
   console.log('[営業日報] orderMetrics(年月度ベース・参考)=', orderMetricsByYm);
   console.log('[営業日報] salesMetrics=', salesMetrics);
 
+  renderCharts('order', orderMetrics, plans);
+  renderCharts('sales', salesMetrics, plans);
   renderTable('orderTableWrap', orderMetrics, plans);
   renderTable('salesTableWrap', salesMetrics, plans);
 }
