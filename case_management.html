@@ -1965,6 +1965,67 @@ async function getToken() {
 // SharePoint REST API 用のトークン（audience が graph とは別）
 // ensureUser などは Graph API に相当する機能がないので直接 SP REST を叩く必要がある
 const SP_SCOPES = ['https://hanaokacorp.sharepoint.com/AllSites.Write'];
+// ============================================================
+// ディープリンク（Teams通知 → 該当レコードを開く）
+//   ?event=<SharePoint項目ID>  … 受信トレイの該当受信を開く（未仕訳の着信通知用）
+//   ?case=<案件ID>             … 案件管理の該当案件を開く（割り振り通知用）
+// ============================================================
+// ★MSALの redirectUri はクエリ文字列を含まないため、未サインインでリンクを開くと
+//   サインインの往復でパラメータが失われる。読み込み時点で退避しておく。
+const DEEPLINK_KEY = 'fax-deeplink';
+(function stashDeepLink() {
+  try {
+    const q = window.location.search;
+    if (q && (q.includes('event=') || q.includes('case='))) {
+      sessionStorage.setItem(DEEPLINK_KEY, q);
+    }
+  } catch (_) {}
+})();
+async function openDeepLink() {
+  let q = window.location.search;
+  try {
+    if (!q || !(q.includes('event=') || q.includes('case='))) {
+      q = sessionStorage.getItem(DEEPLINK_KEY) || '';
+    }
+    sessionStorage.removeItem(DEEPLINK_KEY);   // 一度使ったら破棄（再読込で再発動しない）
+  } catch (_) {}
+  if (!q) return;
+
+  const params = new URLSearchParams(q);
+  const eventId = params.get('event');
+  const caseId = params.get('case');
+  if (!eventId && !caseId) return;
+
+  // 対象データが揃うまで待つ（下で loadCases/loadTriageList を await 済みなので、
+  // ここは他の読み込みが並行中だった場合の保険。長く待たせないよう8秒で打ち切る）
+  const waitFor = async (getter, ms) => {
+    const deadline = Date.now() + (ms || 8000);
+    while (Date.now() < deadline) {
+      const v = getter();
+      if (v) return v;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return null;
+  };
+
+  try {
+    if (eventId) {
+      switchMainTab('triage');
+      if (!triageItems.length) { try { await loadTriageList(true); } catch (_) {} }
+      const hit = await waitFor(() => triageItems.find(x => String(x._spId) === String(eventId)));
+      if (hit) selectTriage(String(eventId));
+      else setStatus('error', `通知の受信（ID:${eventId}）が見つかりません。既に仕訳済みの可能性があります`);
+      return;
+    }
+    switchMainTab('case');
+    if (!cases.length) { try { await loadCases(); } catch (_) {} }
+    const hit = await waitFor(() => cases.find(x => x.CaseId === caseId));
+    if (hit) selectCase(caseId);
+    else setStatus('error', `案件 ${caseId} が見つかりません`);
+  } catch (e) {
+    console.warn('[openDeepLink] 失敗:', e && e.message);
+  }
+}
 async function getSharePointToken() {
   try {
     const res = await msalInstance.acquireTokenSilent({ scopes: SP_SCOPES, account });
@@ -1990,6 +2051,8 @@ function showApp() {
   const name = account.name || account.username;
   document.getElementById('userName').textContent = name.split(' ')[0];
   document.getElementById('userAvatar').textContent = name.charAt(0).toUpperCase();
+  // Teams通知などからのディープリンク（?event= / ?case=）を開く
+  openDeepLink();
   // 自動更新（3分ポーリング）開始
   startAutoRefresh();
   // 担当者メンバーをAPIから取得→LookupId解決→選択肢を初期化
