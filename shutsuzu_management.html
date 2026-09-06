@@ -110,8 +110,9 @@ const MSAL_CONFIG={auth:{clientId:"d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:false}};
 const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
-const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",LIST_SHUTSUZU="出図マスタ";
-let SITE_ID=null,LIST_ID=null,CACHE=[];
+const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",
+      LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細";
+let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,CACHE=[];
 const DEFAULT_PRODUCTS=["パレットトレーラー","コンテナトレーラー","カーゴカート","20ftトレーラー"],DEFAULT_MODELS=["EE1596S","EE1596N-A","EE1596N-B","EE3096","H･DLC-R","DLE-Ⅱ","SR","H･SEC","H･SET-RL","BCC","BCC-W","BCA"];let editingIndex=-1;const $=id=>document.getElementById(id),trim=s=>(s||"").toString().trim(),esc=s=>String(s||"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 function toM(mm){const n=Number(mm);return isFinite(n)&&n>0?(n/1000).toFixed(3):""}function pad5(v){const s=trim(v).replace(/\D/g,"").slice(0,5);return s? s.padStart(5,"0") : ""}function unitCount(v){const n=parseInt(v,10);return isFinite(n)&&n>0?n:1}/* ============================================================
    明細（行き先ごとのグループ）
@@ -250,18 +251,18 @@ async function onSignedIn(){
 /* ============================================================
    Graph
    ============================================================ */
-async function gFetch(method,path,body){
+async function gFetch(method,path,body,extraHeaders){
   const t=await getToken();
   const r=await fetch(GRAPH_BASE+path,{method,
-    headers:{Authorization:"Bearer "+t,...(body?{"Content-Type":"application/json"}:{})},
+    headers:{Authorization:"Bearer "+t,...(body?{"Content-Type":"application/json"}:{}),...(extraHeaders||{})},
     body:body?JSON.stringify(body):undefined});
   if(!r.ok){const e=new Error(`[${r.status}] ${method} ${path}`);e.status=r.status;e.body=await r.text();throw e}
   return r.status===204?null:r.json();
 }
-const gGet=p=>gFetch("GET",p);
-async function gGetAll(path){
+const gGet=(p,h)=>gFetch("GET",p,null,h);
+async function gGetAll(path,h){
   let out=[],next=path;
-  while(next){const d=await gGet(next);out=out.concat(d.value||[]);
+  while(next){const d=await gGet(next,h);out=out.concat(d.value||[]);
     next=d["@odata.nextLink"]?d["@odata.nextLink"].replace(GRAPH_BASE,""):null}
   return out;
 }
@@ -272,6 +273,119 @@ async function spInit(){
   const l=lists.find(x=>x.displayName===LIST_SHUTSUZU||x.name===LIST_SHUTSUZU);
   if(!l)throw new Error(`リスト「${LIST_SHUTSUZU}」が見つかりません`);
   LIST_ID=l.id;
+  const u=lists.find(x=>x.displayName===LIST_UNITS||x.name===LIST_UNITS);
+  if(!u)throw new Error(`リスト「${LIST_UNITS}」が見つかりません`);
+  LIST_UNITS_ID=u.id;
+}
+
+/* ============================================================
+   製造番号明細（1台=1レコード）への展開
+   ------------------------------------------------------------
+   出図を保存すると、明細の台数分だけ1台1行を作る。
+   いまExcelでコピペして作っている出荷管理台帳が、ここで
+   自動的にできあがる。資材が入れるのは出荷日と自重だけ。
+
+   ★出荷実績のある行は絶対に消さない★
+   台数を減らす編集をしたとき、対象の行に出荷日か自重が
+   入っていたら削除せずに残し、件数を警告として出す。
+   消えると復旧できない情報のため。
+   ============================================================ */
+function expandUnits(e){
+  const out=[];
+  (e.meisai||[]).forEach(r=>{
+    const q=parseInt(r.qty,10),from=parseInt(r.snFrom,10);
+    if(!isFinite(q)||q<1||!isFinite(from))return;
+    for(let k=0;k<q;k++){
+      out.push({
+        sn:pad5(String(from+k)), dest:trim(r.dest), spec:trim(r.spec)
+      });
+    }
+  });
+  return out;
+}
+function unitFields(e,u){
+  return {
+    Title:u.sn, ShutsuzuNo:e.ship_no,
+    DrawingNo:e.drawing_no, SpecNo:e.spec_no,
+    Model:e.model, ProductName:e.product_name, Customer:e.customer,
+    DeliveryTo:u.dest, Destination:u.dest,
+    Capacity:numOrNull(e.capacity),
+    UnitStatus:"未出荷",
+    Remarks:u.spec
+    /* 車体番号(CarNo)は入れていない。接頭辞が機種ごとに違い、
+       採番規則が未確認のため。確認できたらここで自動採番する。 */
+  };
+}
+async function fetchUnits(shipNo){
+  const q=`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items?expand=fields&$top=500`+
+          `&$filter=fields/ShutsuzuNo eq '${encodeURIComponent(shipNo)}'`;
+  return gGetAll(q,{Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"});
+}
+/* Graph の $batch は1回20件まで */
+async function gBatch(requests){
+  const out=[];
+  for(let i=0;i<requests.length;i+=20){
+    const chunk=requests.slice(i,i+20).map((r,k)=>({id:String(i+k),...r}));
+    const b=await gFetch("POST","/$batch",{requests:chunk});
+    out.push(...(b.responses||[]));
+  }
+  return out;
+}
+async function syncUnits(e,onProgress){
+  const want=expandUnits(e), wantBy={};
+  want.forEach(u=>wantBy[u.sn]=u);
+  const have=await fetchUnits(e.ship_no), haveBy={};
+  have.forEach(it=>haveBy[(it.fields||{}).Title]=it);
+
+  const toCreate=[],toUpdate=[],toDelete=[],locked=[];
+  want.forEach(u=>{
+    const it=haveBy[u.sn];
+    if(!it){toCreate.push(u);return}
+    const f=it.fields||{};
+    if(f.Destination!==u.dest||f.DrawingNo!==e.drawing_no||f.Remarks!==u.spec||f.Model!==e.model)
+      toUpdate.push({id:it.id,u});
+  });
+  have.forEach(it=>{
+    const f=it.fields||{};
+    if(wantBy[f.Title])return;
+    if(f.ShipDate||f.ActualWeight!=null){locked.push(f.Title)}  /* 出荷実績あり。消さない */
+    else toDelete.push(it.id);
+  });
+  const total=toCreate.length+toUpdate.length+toDelete.length;
+  if(!total)return {created:0,updated:0,deleted:0,locked:locked.length,skipped:true};
+
+  const label=[];
+  if(toCreate.length)label.push(`追加 ${toCreate.length}`);
+  if(toUpdate.length)label.push(`更新 ${toUpdate.length}`);
+  if(toDelete.length)label.push(`削除 ${toDelete.length}`);
+  if(!confirm(`製造番号明細（出荷管理台帳）を更新します。\n\n${label.join(" / ")} 件\n\n実行しますか？`))
+    return {cancelled:true};
+
+  const base=`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items`;
+  const reqs=[]
+    .concat(toCreate.map(u=>({method:"POST",url:base,body:{fields:unitFields(e,u)},
+             headers:{"Content-Type":"application/json"}})))
+    .concat(toUpdate.map(x=>({method:"PATCH",url:`${base}/${x.id}/fields`,body:unitFields(e,x.u),
+             headers:{"Content-Type":"application/json"}})))
+    .concat(toDelete.map(id=>({method:"DELETE",url:`${base}/${id}`})));
+
+  if(onProgress)onProgress(`製造番号明細を更新中… ${reqs.length}件`);
+  const res=await gBatch(reqs);
+  const failed=res.filter(r=>r.status>=400);
+  if(failed.length)console.error("明細の更新に失敗した分:",failed);
+  return {created:toCreate.length,updated:toUpdate.length,deleted:toDelete.length,
+          locked:locked.length,failed:failed.length,lockedList:locked};
+}
+async function deleteUnitsOf(shipNo){
+  const have=await fetchUnits(shipNo);
+  const del=[],locked=[];
+  have.forEach(it=>{const f=it.fields||{};
+    if(f.ShipDate||f.ActualWeight!=null)locked.push(f.Title); else del.push(it.id)});
+  if(del.length){
+    const base=`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items`;
+    await gBatch(del.map(id=>({method:"DELETE",url:`${base}/${id}`})));
+  }
+  return {deleted:del.length,locked:locked.length};
 }
 
 /* ============================================================
@@ -381,7 +495,25 @@ async function addOrUpdateEntry(){
       await spCreate(e);
       CACHE.push(e);
     }
-    renderList();clearForm();toast("保存しました");
+    renderList();
+    /* 出図の保存が通ってから明細を展開する。
+       ここで失敗しても出図そのものは残る（順序を逆にしない）。 */
+    let msg="保存しました";
+    try{
+      const r=await syncUnits(e,m=>toast(m));
+      if(r.cancelled)      msg="出図を保存しました（明細の更新は取り消しました）";
+      else if(r.skipped)   msg="保存しました（明細に変更なし）";
+      else{
+        msg=`保存しました　明細：追加${r.created} / 更新${r.updated} / 削除${r.deleted}`;
+        if(r.locked)msg+=`　※出荷実績のある${r.locked}件は残しました`;
+        if(r.failed)msg+=`　※${r.failed}件が失敗（コンソール参照）`;
+      }
+      toast(msg,!!(r.failed||r.locked));
+    }catch(err2){
+      toast("出図は保存しましたが、明細の更新に失敗しました: "+(err2.message||err2),true);
+      console.error(err2,err2.body);
+    }
+    clearForm();
   }catch(err){
     toast("保存に失敗しました: "+(err.message||err),true);console.error(err,err.body);
   }finally{btn.disabled=false}
@@ -392,8 +524,14 @@ async function deleteEntry(i){
   const d=CACHE[i];if(!d)return;
   if(!confirm(`出図管理番号 ${d.ship_no||""} の行を削除しますか？`))return;
   try{
+    let extra="";
+    try{
+      const r=await deleteUnitsOf(d.ship_no);
+      if(r.deleted)extra=`　明細${r.deleted}件も削除`;
+      if(r.locked)extra+=`　※出荷実績のある${r.locked}件は残しました`;
+    }catch(e2){extra="　※明細の削除に失敗（コンソール参照）";console.error(e2)}
     if(d._id)await spDelete(d._id);
-    CACHE.splice(i,1);renderList();clearForm();toast("削除しました");
+    CACHE.splice(i,1);renderList();clearForm();toast("削除しました"+extra);
   }catch(err){toast("削除に失敗しました: "+(err.message||err),true);console.error(err,err.body)}
 }
 /* 全削除はサーバー上の全レコードを消す操作になったので、
