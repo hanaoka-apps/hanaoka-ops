@@ -92,7 +92,7 @@ body.signed-in #btnAuth{background:#fff;border:1px solid var(--line);color:#666;
 </form>
 <div id="formWarn" class="warn"></div>
 <div class="actions"><button id="btnSave">追加 / 保存</button><button id="btnClear" class="ghost">フォームクリア</button><button id="btnDuplicate" class="ghost">選択データを複製</button><button id="btnExportPDF" class="ghost">最新1件をPDF出力</button><button id="btnExportFormPDF" class="ghost">フォームをPDF出力（A4）</button></div>
-<div class="toolbar"><input id="q" class="search" placeholder="検索：出図管理番号 図番 品名 型式 受注先 製造番号 など"><select id="sortBy" class="small-select"><option value="createdAt_desc">登録順 新しい順</option><option value="ship_no_asc">出図管理番号 昇順</option><option value="date_desc">出図日 新しい順</option><option value="customer_asc">受注先 昇順</option></select><button id="btnRefresh" class="ghost">再表示</button><button id="btnExportCSV" class="ghost">CSV出力</button><button id="btnImportCSV" class="ghost">CSV取込</button><button id="btnBackupJSON" class="ghost">JSONバックアップ</button><button id="btnRestoreJSON" class="ghost">JSON復元</button><button id="btnClearAll" class="danger">全データ削除</button></div>
+<div class="toolbar"><input id="q" class="search" placeholder="検索：出図管理番号 図番 品名 型式 受注先 製造番号 など"><select id="sortBy" class="small-select"><option value="createdAt_desc">登録順 新しい順</option><option value="ship_no_asc">出図管理番号 昇順</option><option value="date_desc">出図日 新しい順</option><option value="customer_asc">受注先 昇順</option></select><button id="btnRefresh" class="ghost">再表示</button><button id="btnOpenUnits" class="ghost" disabled>製造番号明細を開く</button><button id="btnExportCSV" class="ghost">CSV出力</button><button id="btnImportCSV" class="ghost">CSV取込</button><button id="btnBackupJSON" class="ghost">JSONバックアップ</button><button id="btnRestoreJSON" class="ghost">JSON復元</button><button id="btnClearAll" class="danger">全データ削除</button></div>
 <div id="listContainer" class="table-wrap"></div><input id="fileCsv" class="hidden-file" type="file" accept=".csv"><input id="fileJson" class="hidden-file" type="file" accept=".json">
 </div></div>
 <script>
@@ -112,7 +112,7 @@ const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",
       LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細";
-let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,CACHE=[];
+let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,LIST_UNITS_URL="",CACHE=[];
 const DEFAULT_PRODUCTS=["パレットトレーラー","コンテナトレーラー","カーゴカート","20ftトレーラー"],DEFAULT_MODELS=["EE1596S","EE1596N-A","EE1596N-B","EE3096","H･DLC-R","DLE-Ⅱ","SR","H･SEC","H･SET-RL","BCC","BCC-W","BCA"];let editingIndex=-1;const $=id=>document.getElementById(id),trim=s=>(s||"").toString().trim(),esc=s=>String(s||"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 function toM(mm){const n=Number(mm);return isFinite(n)&&n>0?(n/1000).toFixed(3):""}function pad5(v){const s=trim(v).replace(/\D/g,"").slice(0,5);return s? s.padStart(5,"0") : ""}function unitCount(v){const n=parseInt(v,10);return isFinite(n)&&n>0?n:1}/* ============================================================
    明細（行き先ごとのグループ）
@@ -269,13 +269,28 @@ async function gGetAll(path,h){
 async function spInit(){
   if(SITE_ID&&LIST_ID)return;
   SITE_ID=(await gGet(`/sites/${SP_HOST}:${SP_PATH}`)).id;
-  const lists=await gGetAll(`/sites/${SITE_ID}/lists?$select=id,name,displayName`);
+  const lists=await gGetAll(`/sites/${SITE_ID}/lists?$select=id,name,displayName,webUrl`);
   const l=lists.find(x=>x.displayName===LIST_SHUTSUZU||x.name===LIST_SHUTSUZU);
   if(!l)throw new Error(`リスト「${LIST_SHUTSUZU}」が見つかりません`);
   LIST_ID=l.id;
   const u=lists.find(x=>x.displayName===LIST_UNITS||x.name===LIST_UNITS);
   if(!u)throw new Error(`リスト「${LIST_UNITS}」が見つかりません`);
   LIST_UNITS_ID=u.id;
+  LIST_UNITS_URL=u.webUrl||"";
+  $("btnOpenUnits").disabled=!LIST_UNITS_URL;
+}
+/* 製造番号明細（SharePointのリスト）を開く。
+   出図管理番号を渡すと、その出図の分だけに絞って開く。 */
+function unitsUrl(shipNo){
+  if(!LIST_UNITS_URL)return "";
+  const base=/\.aspx$/i.test(LIST_UNITS_URL)?LIST_UNITS_URL:(LIST_UNITS_URL+"/AllItems.aspx");
+  return shipNo ? base+`?FilterField1=ShutsuzuNo&FilterValue1=${encodeURIComponent(shipNo)}&FilterType1=Text`
+                : base;
+}
+function openUnits(shipNo){
+  const u=unitsUrl(shipNo);
+  if(!u){toast("先にサインインしてください",true);return}
+  window.open(u,"_blank","noopener");
 }
 
 /* ============================================================
@@ -509,6 +524,9 @@ async function addOrUpdateEntry(){
         if(r.failed)msg+=`　※${r.failed}件が失敗（コンソール参照）`;
       }
       toast(msg,!!(r.failed||r.locked));
+      /* 展開した直後にその場で見せられるようにする */
+      if(r.created&&confirm(`製造番号明細に ${r.created}件できました。\n\nいま開いて確認しますか？`))
+        openUnits(e.ship_no);
     }catch(err2){
       toast("出図は保存しましたが、明細の更新に失敗しました: "+(err2.message||err2),true);
       console.error(err2,err2.body);
@@ -548,14 +566,14 @@ async function clearAll(){
 }
 function rows(){const q=($("q").value||"").toLowerCase();let r=loadData().map((d,i)=>({...d,_i:i})).filter(d=>(!q||Object.values(d).join(" ").toLowerCase().includes(q)));const s=$("sortBy").value;r.sort((a,b)=>s==="ship_no_asc"?(parseInt(a.ship_no)||0)-(parseInt(b.ship_no)||0):s==="date_desc"?String(b.date).localeCompare(a.date):s==="customer_asc"?String(a.customer).localeCompare(b.customer,"ja"):String(b.createdAt).localeCompare(a.createdAt));return r}
 function renderList(){
-  const headers = ["出図管理番号","出図日","受注先","品名","型式","図番","台数","車体番号","詳細","編集","削除"];
+  const headers = ["出図管理番号","出図日","受注先","品名","型式","図番","台数","車体番号","明細","詳細","編集","削除"];
   let html = `<table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>`;
   const r = rows();
-  if(!r.length) html += `<tr><td colspan="11" class="muted">表示できるデータがありません。</td></tr>`;
+  if(!r.length) html += `<tr><td colspan="12" class="muted">表示できるデータがありません。</td></tr>`;
   r.forEach(d=>{
     const i = d._i;
-    html += `<tr><td>${esc(d.ship_no)}</td><td>${esc(d.date)}</td><td>${esc(d.customer)}</td><td>${esc(d.product_name)}</td><td>${esc(d.model)}</td><td>${esc(d.drawing_no)}</td><td>${esc(d.units)}</td><td>${esc(d.car_no)}</td><td><button class="inline-btn" onclick="toggleDetails(${i})">詳細</button></td><td><button class="inline-btn" onclick="loadEntryToForm(${i})">編集</button></td><td><button class="inline-btn" onclick="deleteEntry(${i})">削除</button></td></tr>`;
-    html += `<tr id="detail_${i}" style="display:none"><td colspan="11"><div class="details">出図管理番号: ${esc(d.ship_no)}<br>出図日: ${esc(d.date)}<br>図面仕様番号: ${esc(d.spec_no)}<br>受注先: ${esc(d.customer)}<br>仕向地: ${esc(d.destination)}<br>品名: ${esc(d.product_name)}<br>型式: ${esc(d.model)}<br>図番: ${esc(d.drawing_no)}<br>寸法(mm): ${esc(d.length_mm)}×${esc(d.width_mm)}×${esc(d.height_mm)}<br>寸法(m): ${esc(d.dimensions_m)}<br>車両重量(kg): ${esc(d.vehicle_weight)}<br>最大積載量(kg): ${esc(d.capacity)}<br>台数: ${esc(d.units)}<br>車体番号: ${esc(d.car_no)}<br>製造番号: ${esc(d.serial_no)}<br>製造年月: ${esc(d.manufacture_month)}<br>表面処理: ${esc(d.surface)}<br>WT表示: ${esc(d.wt)}<br>申請（空港）: ${esc(d.application_airport)}<br>申請内容: ${esc(d.application_content)}<br>備考:<span class="detail-note">${esc(d.note)}</span></div></td></tr>`;
+    html += `<tr><td>${esc(d.ship_no)}</td><td>${esc(d.date)}</td><td>${esc(d.customer)}</td><td>${esc(d.product_name)}</td><td>${esc(d.model)}</td><td>${esc(d.drawing_no)}</td><td>${esc(d.units)}</td><td>${esc(d.car_no)}</td><td><button class="inline-btn" onclick="openUnits('${esc(d.ship_no)}')" title="この出図の製造番号明細をSharePointで開く">明細</button></td><td><button class="inline-btn" onclick="toggleDetails(${i})">詳細</button></td><td><button class="inline-btn" onclick="loadEntryToForm(${i})">編集</button></td><td><button class="inline-btn" onclick="deleteEntry(${i})">削除</button></td></tr>`;
+    html += `<tr id="detail_${i}" style="display:none"><td colspan="12"><div class="details">出図管理番号: ${esc(d.ship_no)}<br>出図日: ${esc(d.date)}<br>図面仕様番号: ${esc(d.spec_no)}<br>受注先: ${esc(d.customer)}<br>仕向地: ${esc(d.destination)}<br>品名: ${esc(d.product_name)}<br>型式: ${esc(d.model)}<br>図番: ${esc(d.drawing_no)}<br>寸法(mm): ${esc(d.length_mm)}×${esc(d.width_mm)}×${esc(d.height_mm)}<br>寸法(m): ${esc(d.dimensions_m)}<br>車両重量(kg): ${esc(d.vehicle_weight)}<br>最大積載量(kg): ${esc(d.capacity)}<br>台数: ${esc(d.units)}<br>車体番号: ${esc(d.car_no)}<br>製造番号: ${esc(d.serial_no)}<br>製造年月: ${esc(d.manufacture_month)}<br>表面処理: ${esc(d.surface)}<br>WT表示: ${esc(d.wt)}<br>申請（空港）: ${esc(d.application_airport)}<br>申請内容: ${esc(d.application_content)}<br>備考:<span class="detail-note">${esc(d.note)}</span></div></td></tr>`;
   });
   $("listContainer").innerHTML = html + "</tbody></table>";
   updateBadges();
@@ -641,7 +659,7 @@ document.addEventListener("DOMContentLoaded",()=>{initSelects();["units","capaci
     $("meisaiRows").insertAdjacentHTML("beforeend",meisaiRowHtml({}));
     $("meisaiRows").lastElementChild.querySelector(".m-dest").focus();
     recalcMeisai();
-  });[["btnSave",addOrUpdateEntry],["btnClear",clearForm],["btnDuplicate",duplicateSelected],["btnExportPDF",exportLatestPDF],["btnExportFormPDF",generateFormPDF],["btnRefresh",renderList],["btnExportCSV",exportCSV],["btnBackupJSON",backupJSON],["btnClearAll",clearAll]].forEach(([id,fn])=>$(id).onclick=fn);$("btnImportCSV").onclick=()=>$("fileCsv").click();$("fileCsv").onchange=e=>{if(e.target.files[0])importCSVFile(e.target.files[0]);e.target.value=""};$("btnRestoreJSON").onclick=()=>$("fileJson").click();$("fileJson").onchange=e=>{if(e.target.files[0])restoreJSONFile(e.target.files[0]);e.target.value=""};["q","sortBy"].forEach(id=>$(id).addEventListener("input",renderList));$("mainForm").addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.tagName!=="TEXTAREA"){e.preventDefault();addOrUpdateEntry()}else if(e.key==="Escape")clearForm()});$("btnAuth").onclick=()=>{currentAccount?signOut():signIn()};
+  });[["btnOpenUnits",()=>openUnits()],["btnSave",addOrUpdateEntry],["btnClear",clearForm],["btnDuplicate",duplicateSelected],["btnExportPDF",exportLatestPDF],["btnExportFormPDF",generateFormPDF],["btnRefresh",renderList],["btnExportCSV",exportCSV],["btnBackupJSON",backupJSON],["btnClearAll",clearAll]].forEach(([id,fn])=>$(id).onclick=fn);$("btnImportCSV").onclick=()=>$("fileCsv").click();$("fileCsv").onchange=e=>{if(e.target.files[0])importCSVFile(e.target.files[0]);e.target.value=""};$("btnRestoreJSON").onclick=()=>$("fileJson").click();$("fileJson").onchange=e=>{if(e.target.files[0])restoreJSONFile(e.target.files[0]);e.target.value=""};["q","sortBy"].forEach(id=>$(id).addEventListener("input",renderList));$("mainForm").addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.tagName!=="TEXTAREA"){e.preventDefault();addOrUpdateEntry()}else if(e.key==="Escape")clearForm()});$("btnAuth").onclick=()=>{currentAccount?signOut():signIn()};
   $("btnGateSignIn").onclick=()=>signIn();
   clearForm();renderList();
   initMsal().catch(err=>{toast("初期化に失敗: "+(err.message||err),true);console.error(err)});
