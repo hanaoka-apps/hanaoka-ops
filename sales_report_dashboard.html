@@ -425,12 +425,17 @@ let TODAY_LABEL = '当日';
 // データ中に存在する最新のvoucher_date（＝dashboard_facts.jsonが実際に捉えている
 // 最新営業日）を探す。GitHub Actionsが毎朝1回だけ更新するため、これは通常「今日」
 // ではなく前回更新時点の日付になる。
-function findLatestVoucherDate(rows) {
+// maxExclusiveKey を指定すると、それ以上の日付(実際の「今日」など)は無視する。
+// 日報は当日16時締めの翌営業日更新のため、実際の「今日」の日付が受注/売上に
+// 含まれているのは、締まっていない/暫定データが紛れ込んでいる証拠であり、
+// 正しい「当日」ではない。
+function findLatestVoucherDate(rows, maxExclusiveKey) {
   let best = null;
   for (const r of rows) {
     const d = parseVoucherDay(r[IDX.voucher_date]);
     if (!d) continue;
     const key = d.y * 10000 + d.mo * 100 + d.d;
+    if (maxExclusiveKey != null && key >= maxExclusiveKey) continue;
     if (best === null || key > best.key) best = { y: d.y, mo: d.mo, d: d.d, key };
   }
   return best;
@@ -933,12 +938,14 @@ async function loadReport() {
   const rows = facts.rows || [];
   const orderRows = facts.order_rows || [];
 
-  // 「当日」は実際の今日ではなく、データ内に存在する最新の営業日
-  // (dashboard_facts.jsonは毎朝1回だけ更新されるため)
+  // 「当日」は実際の今日ではなく、データ内に存在する最新の“締まった”営業日。
+  // 日報は当日16時締めの翌営業日更新なので、実際の今日の日付そのものは
+  // 締まっていない/暫定データとして必ず除外する。
   const now = new Date();
   const fallbackToday = { y: now.getFullYear(), mo: now.getMonth() + 1, d: now.getDate() };
-  const latestOrder = findLatestVoucherDate(orderRows);
-  const latestSales = findLatestVoucherDate(rows);
+  const realTodayKey = fallbackToday.y * 10000 + fallbackToday.mo * 100 + fallbackToday.d;
+  const latestOrder = findLatestVoucherDate(orderRows, realTodayKey);
+  const latestSales = findLatestVoucherDate(rows, realTodayKey);
   const today = [latestOrder, latestSales].filter(Boolean).sort((a, b) => b.key - a.key)[0] || fallbackToday;
   TODAY_LABEL = `${today.mo}/${today.d}`;
   document.getElementById('dateLabel').textContent =
