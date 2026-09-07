@@ -155,6 +155,12 @@
     <div id="dealerTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
   </div>
 
+  <div class="card">
+    <h2>機種別受注台数</h2>
+    <div class="bar-wrap" style="height:260px"><canvas id="modelBarChart"></canvas></div>
+    <div id="modelTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+  </div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script>
@@ -732,6 +738,99 @@ function renderDealerSection(dealerMap) {
     </table>`;
 }
 
+// ============================================================
+// 機種別受注台数（中分類名をそのままカテゴリとして使用）
+// ============================================================
+function formatQty(n) { return Math.round(n).toLocaleString('ja-JP') + '台'; }
+
+function aggregateByModelCategory(orderRows, today) {
+  const map = {};
+  for (const r of orderRows) {
+    if (!isSameMonthByVoucherDate(r, today.y, today.mo)) continue;
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    const cat = String(r[IDX.chu_bunrui] || '').trim() || '(未設定)';
+    if (!map[cat]) map[cat] = { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 };
+    const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+    const qty = Number(r[IDX.qty]) || 0;
+    const todayHit = isToday(r, today);
+    if (isSol) {
+      map[cat].monthSol += qty;
+      if (todayHit) map[cat].todaySol += qty;
+    } else {
+      map[cat].monthDom += qty;
+      if (todayHit) map[cat].todayDom += qty;
+    }
+  }
+  return map;
+}
+
+function renderModelSection(modelMap) {
+  const entries = Object.entries(modelMap)
+    .map(([cat, v]) => ({ cat, ...v, monthTotal: v.monthDom + v.monthSol }))
+    .filter(e => e.monthTotal !== 0)
+    .sort((a, b) => b.monthTotal - a.monthTotal);
+
+  if (!entries.length) {
+    document.getElementById('modelTableWrap').innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
+    destroyChart('modelBarChart');
+    return;
+  }
+
+  const top = entries.slice(0, 10);
+  destroyChart('modelBarChart');
+  const el = document.getElementById('modelBarChart');
+  const chart = new Chart(el, {
+    type: 'bar',
+    data: {
+      labels: top.map(e => e.cat),
+      datasets: [
+        { label: '国内営業部', data: top.map(e => e.monthDom), backgroundColor: '#2455e6' },
+        { label: 'ソリューション営業部', data: top.map(e => e.monthSol), backgroundColor: '#7c3aed' },
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { x: { stacked: true, title: { display: true, text: '台' } }, y: { stacked: true } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+    }
+  });
+  CHARTS['modelBarChart'] = chart;
+
+  const L = 'style="text-align:left"';
+  const rowsHtml = entries.map(e => `
+    <tr>
+      <td ${L}>${escapeHtml(e.cat)}</td>
+      <td>${formatQty(e.todayDom)}</td>
+      <td>${formatQty(e.todaySol)}</td>
+      <td>${formatQty(e.monthDom)}</td>
+      <td>${formatQty(e.monthSol)}</td>
+    </tr>`).join('');
+
+  const grand = entries.reduce((acc, e) => ({
+    todayDom: acc.todayDom + e.todayDom,
+    todaySol: acc.todaySol + e.todaySol,
+    monthDom: acc.monthDom + e.monthDom,
+    monthSol: acc.monthSol + e.monthSol,
+  }), { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 });
+  const totalRowHtml = `
+    <tr class="total-row">
+      <td ${L}>合計</td>
+      <td>${formatQty(grand.todayDom)}</td>
+      <td>${formatQty(grand.todaySol)}</td>
+      <td>${formatQty(grand.monthDom)}</td>
+      <td>${formatQty(grand.monthSol)}</td>
+    </tr>`;
+
+  document.getElementById('modelTableWrap').innerHTML = `
+    <table>
+      <thead><tr><th ${L}>機種(中分類)</th><th>${TODAY_LABEL} 国内</th><th>${TODAY_LABEL} ソリューション</th><th>当月 国内</th><th>当月 ソリューション</th></tr></thead>
+      <tbody>${rowsHtml}${totalRowHtml}</tbody>
+    </table>`;
+}
+
 async function loadReport() {
   const t = await getToken();
   const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
@@ -777,6 +876,8 @@ async function loadReport() {
   renderTopOrders(topOrders(orderRows, today, 10));
 
   renderDealerSection(aggregateByDealer(orderRows, today));
+
+  renderModelSection(aggregateByModelCategory(orderRows, today));
 }
 
 // ============================================================
