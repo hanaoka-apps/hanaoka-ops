@@ -351,6 +351,30 @@ const pTZ   = x => {
   const s = x.dateTime;
   return Date.parse(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z');
 };
+/* ★終日の予定は「瞬間」ではなく「日付」★
+   Graph は終日の境界を 00:00 / timeZone:"UTC" で返すが、これは
+   「その日の 0:00（現地）」という意味の日付表現で、UTC の瞬間ではない。
+   実機の例：8/8〜8/16 の終日休暇が
+     start 2026-08-08T00:00:00 (UTC) / end 2026-08-17T00:00:00 (UTC)
+   そのまま UTC としてパースすると JST では +9時間ずれ、
+   終日の予約が「9:00 〜 翌9:00」になる（実際にそう報告された）。
+   終日は日付だけを取り出して JST の 0:00 に置き直す。 */
+const dateOnlyToMs = x => {
+  const m = String(x && x.dateTime || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return NaN;
+  return Date.UTC(+m[1], +m[2]-1, +m[3]) - JST;      /* JST 0:00 */
+};
+/* 予定の期間。終日なら 開始日 0:00 〜 終了日の翌 0:00（＝Graph の end は排他）。
+   半開区間なので、隣り合う終日どうしは重ならない。 */
+function evRange(ev){
+  if (ev && ev.isAllDay) {
+    const s = dateOnlyToMs(ev.start), e = dateOnlyToMs(ev.end);
+    /* 念のため：終日で end <= start の壊れたデータなら1日ぶんにする */
+    /* DAY はこの下で定義しているので、ここでは数値のまま書く */
+    return { s, e: (isNaN(s) || isNaN(e) || e <= s) ? (isNaN(s) ? NaN : s + 86400e3) : e };
+  }
+  return { s: pTZ(ev && ev.start), e: pTZ(ev && ev.end) };
+}
 const localToMs = v => v ? Date.parse(v + ':00Z') - JST : NaN;
 const msToLocal = ms => { const d = toJ(ms);
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
@@ -616,7 +640,7 @@ async function loadRes(){
          起きたときに「予約が消えた」と見えるのが一番まずい。 */
       if (r.body['@odata.nextLink']) SRC.errs.push(`${car.n}：予約が200件を超えたため一部を表示できていません`);
       r.body.value.forEach(ev => {
-        const s = pTZ(ev.start), e = pTZ(ev.end);
+        const { s, e } = evRange(ev);
         if (isNaN(s) || isNaN(e)) return;
         RES.push({
           rid : `o:${car.mail}:${ev.id}`,
@@ -834,7 +858,7 @@ function barHtml(r, L, R, now, cutL, cutR){
            : cutR ? `${jHM(r.s)}–…`
            : `${jHM(r.s)}–${jHM(r.e)}`;
   return `<div class="bar-i ${cls}" style="left:${L}%;width:${Math.max(R-L,0.6)}%;top:calc(var(--lane)*${r._l} + 3px)"
-    data-r="${esc(r.rid)}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}">
+    data-r="${esc(r.rid)}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.allDay ? r.e - 60e3 : r.e)}${r.allDay ? '（終日）' : ''}">
     ${r.allDay ? '' : `<span class="tm">${tm}</span>`}
     <b>${esc(r.t)}</b><span class="who">${esc([r.who, r.dest].filter(Boolean).join(' / '))}</span></div>`;
 }
@@ -1088,7 +1112,12 @@ function openDetail(rid){
   el('dTitle').textContent = r.t;
   el('dBody').innerHTML = [
     ['車両',   `${esc(r.car)}${c && c.loc ? ` <span class="badge b-loc">${esc(c.loc)}</span>` : ''}`],
-    ['利用期間', `${jFull(r.s)} 〜 ${jFull(r.e)}${r.allDay ? '（終日）' : ''}`],
+    /* ★終日は内部では「翌 0:00」まで押さえている（半開区間）★
+       そのまま出すと「9/07 0:00 〜 9/08 0:00」と読めて1日多く見えるので、
+       表示だけ1分手前にして「9/07 0:00 〜 9/07 23:59（終日）」にする。 */
+    ['利用期間', r.allDay
+        ? `${jFull(r.s)} 〜 ${jFull(r.e - 60e3)}（終日）`
+        : `${jFull(r.s)} 〜 ${jFull(r.e)}`],
     ['状態',   `<b>${calcStatus(r, Date.now())}</b> <span style="color:var(--muted);font-size:11px">日時から計算</span>`],
     ['予約者', r.who ? `${esc(r.who)}${r.mailWho ? `<span style="color:var(--muted);font-size:11px"> ${esc(r.mailWho)}</span>` : ''}` : '—'],
     ['行き先', esc(r.dest) || '—'],
