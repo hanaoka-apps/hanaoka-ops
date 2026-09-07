@@ -53,8 +53,8 @@ body.signed-in #btnAuth{background:#fff;border:1px solid var(--line);color:#666;
 <div class="container"><div class="card">
 <div class="header"><div><h1>出図管理アプリ</h1><div class="note"></div></div><div><span id="authBadge" class="badge" style="background:#fff7df;border-color:#ffe3a3;color:#614900">未サインイン</span><button id="btnAuth" class="ghost" style="padding:5px 11px;margin-left:6px;font-size:13px">サインイン</button><span id="countBadge" class="badge">0件</span><span id="nextNoBadge" class="badge">次回: 00001</span></div></div>
 <div class="gate">
-  <h2>サインインしてください</h2>
-  <p>このアプリのデータは SharePoint に保存されています。<br>
+  <h2 id="gateTitle">サインインしてください</h2>
+  <p id="gateMsg">このアプリのデータは SharePoint に保存されています。<br>
      会社のアカウントでサインインすると、出図の一覧と登録画面が表示されます。</p>
   <button id="btnGateSignIn">サインイン</button>
 </div>
@@ -243,9 +243,28 @@ async function onSignedIn(){
   $("authBadge").title=currentAccount.username;   /* 同姓同名の確認用にメールはツールチップへ */
   $("authBadge").style.cssText="";
   $("btnAuth").textContent="サインアウト";
-  document.body.classList.add("signed-in");
-  try{await spInit();await refreshFromServer();renderList();clearForm();toast("読み込みました")}
-  catch(e){toast("読み込みに失敗: "+(e.message||e),true);console.error(e)}
+  /* ★接続できてから画面を開ける★
+     サインインできてもサイトの権限が無い人はここで止まる。
+     先に画面を出してしまうと、保存の段になって意味の分からない
+     エラー（/sites/null/…）になるため。 */
+  try{
+    await spInit(); await refreshFromServer();
+    document.body.classList.add("signed-in");
+    renderList(); clearForm(); toast("読み込みました");
+  }catch(e){
+    document.body.classList.remove("signed-in");
+    showGateError(e); console.error(e, e.body);
+  }
+}
+function showGateError(e){
+  const st=e&&e.status, denied=(st===401||st===403||st===404);
+  $("gateTitle").textContent = denied ? "データを開けませんでした" : "データを読み込めませんでした";
+  $("gateMsg").innerHTML = (denied
+    ? "「出図・出荷管理」サイトのアクセス権が無いか、リストが見つかりません。<br>"+
+      "総務までご連絡ください。権限を追加すればそのまま使えます。"
+    : "少し時間をおいて、もう一度サインインしてみてください。")+
+    '<br><span style="font-size:12px;color:#999">'+esc(e&&(e.message||e))+"</span>";
+  $("btnGateSignIn").textContent="再試行";
 }
 
 /* ============================================================
@@ -271,10 +290,10 @@ async function spInit(){
   SITE_ID=(await gGet(`/sites/${SP_HOST}:${SP_PATH}`)).id;
   const lists=await gGetAll(`/sites/${SITE_ID}/lists?$select=id,name,displayName,webUrl`);
   const l=lists.find(x=>x.displayName===LIST_SHUTSUZU||x.name===LIST_SHUTSUZU);
-  if(!l)throw new Error(`リスト「${LIST_SHUTSUZU}」が見つかりません`);
+  if(!l){const e=new Error(`リスト「${LIST_SHUTSUZU}」が見つかりません`);e.status=404;throw e}
   LIST_ID=l.id;
   const u=lists.find(x=>x.displayName===LIST_UNITS||x.name===LIST_UNITS);
-  if(!u)throw new Error(`リスト「${LIST_UNITS}」が見つかりません`);
+  if(!u){const e=new Error(`リスト「${LIST_UNITS}」が見つかりません`);e.status=404;throw e}
   LIST_UNITS_ID=u.id;
   LIST_UNITS_URL=u.webUrl||"";
   $("btnOpenUnits").disabled=!LIST_UNITS_URL;
@@ -485,6 +504,10 @@ function toast(msg,isError){
 }
 function requireSignIn(){
   if(!currentAccount){toast("先にサインインしてください",true);return false}
+  if(!SITE_ID||!LIST_ID||!LIST_UNITS_ID){
+    toast("SharePointに接続できていません。ページを再読み込みしてサインインし直してください",true);
+    return false;
+  }
   return true;
 }
 function initSelects(){fill("product_name_select",DEFAULT_PRODUCTS,"--候補を選ぶか自由入力--");fill("model_select",DEFAULT_MODELS,"--候補を選ぶか自由入力--");$("product_name_select").onchange=()=>{if($("product_name_select").value)$("product_name_free").value=""};$("model_select").onchange=()=>{if($("model_select").value)$("model_free").value=""}}function fill(id,items,ph){$(id).innerHTML=`<option value="">${ph}</option>`+items.map(v=>`<option>${esc(v)}</option>`).join("")}
