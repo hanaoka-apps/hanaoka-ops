@@ -146,6 +146,7 @@
     .meta{font-size:10px;color:var(--muted);display:flex;gap:5px;flex-wrap:wrap;align-items:center}
     .badge{font-size:9.5px;border-radius:3px;padding:0 4px;border:1px solid;line-height:14px;white-space:nowrap}
     .b-dep{background:#f4f6f9;color:var(--muted);border-color:var(--border)}
+    .b-also{background:#eef4fb;color:var(--primary);border-color:#bcd4ee}
     .b-free{background:#eef6f0;color:var(--success);border-color:#a9d3ba}
     .b-oof{background:#fdf3e3;color:var(--warning);border-color:#e8c96a}
     .b-err{background:#fbdcd9;color:var(--danger);border-color:#e6a8a0}
@@ -376,6 +377,23 @@ const EXCLUDE_MAILS = [
    「部署が未設定」に混ざった）。条件を変えるときは両方直すこと。 */
 const EXCLUDE_RE = /共有|シェア|受付|代表|ロボ|rpa|bot|自動|ダミー|dummy|テスト|test/i;
 
+/* ============================================================
+   兼務表
+   ------------------------------------------------------------
+   Entra ID の department は1人に1つしか持てないので、兼務は名簿に出ない。
+   ここに書いた人は、書いた部署で絞り込んでも出てくるようにする。
+   所属（部署の見出しと並び順）は元の部署のまま。増やすのは「出てくる先」だけ。
+
+   ★キーはメールでも氏名でも書ける★ 空白は無視し、姓名の順が逆でも拾う
+     （このテナントには「雅 花岡」のように逆順で入っている表示名がある）。
+   ★書いた人が名簿に見つからなければ準備状況に赤で出す★
+     黙って無視すると「直したのに出てこない」で原因が追えなくなる。
+     氏名が変わったときも、ここで気づける。
+   ============================================================ */
+const ALSO_DEPS = [
+  { who:'花岡 雅', deps:['販売企画室'], note:'販売企画室 室長を兼務' },
+];
+
 /* 拠点の表示順。ここに書いた順で上から並ぶ。
    ★拠点が増えたらここに足す★ 書いていない拠点はこの後ろに名前順で付き、
    拠点が未設定の人はいちばん最後にまとまる。
@@ -514,7 +532,7 @@ let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
 let SEEK = null, HILITE = null;
 let lastLoad = 0, refreshTimer = null;
-let SRC = { ok:0, ng:0, errs:[], withSubject:0, items:0, depOk:false, excluded:[] };
+let SRC = { ok:0, ng:0, errs:[], withSubject:0, items:0, depOk:false, excluded:[], alsoMiss:[] };
 
 const el = id => document.getElementById(id);
 function showSnack(m){ const s = el('snackbar'); s.textContent = m; s.style.display='block';
@@ -611,12 +629,57 @@ async function loadPeople(){
   });
   PEOPLE.sort((a,b) => siteRank(a.site) - siteRank(b.site)
                     || (a.site || '').localeCompare(b.site || '', 'ja'));
+
+  applyAlsoDeps();
+}
+
+/* 空白を落として比較する。姓名の順が逆でも同じ人として拾う */
+function nameKeys(v){
+  const t = String(v || '').trim().split(/[\s\u3000]+/).filter(Boolean);
+  const out = new Set([t.join('').toLowerCase()]);
+  if (t.length === 2) out.add((t[1] + t[0]).toLowerCase());
+  return out;
+}
+/* 兼務表を名簿にあてる。p.deps＝出てくる部署の全部、p.also＝兼務ぶんだけ */
+function applyAlsoDeps(){
+  const hit = new Map();
+  PEOPLE.forEach(p => {
+    p.deps = p.dep ? [p.dep] : [];
+    p.also = [];
+    const keys = new Set([...nameKeys(p.n), String(p.mail || '').trim().toLowerCase()]);
+    ALSO_DEPS.forEach(x => {
+      const want = new Set([...nameKeys(x.who), String(x.who || '').trim().toLowerCase()]);
+      if (![...want].some(k => k && keys.has(k))) return;
+      hit.set(x, (hit.get(x) || 0) + 1);
+      (x.deps || []).forEach(d => {
+        if (!d || p.deps.includes(d)) return;
+        p.deps.push(d); p.also.push(d);
+      });
+    });
+  });
+  SRC.alsoMiss = ALSO_DEPS.filter(x => !hit.has(x)).map(x => x.who);
+}
+/* その人をどの部署の見出しの下に出すか。
+   部署で絞っているときは、兼務で出てきた人もその部署の見出しに入れる。
+   元の部署の見出しに入れると、絞った結果に関係のない部署名が混ざって見える。 */
+function depOf(p){
+  const sel = el('dep').value;
+  if (sel && sel !== '__none__' && (p.deps || []).includes(sel)) return sel;
+  return p.dep;
+}
+function inDep(p, sel){
+  if (!sel) return true;
+  /* ★「部署なし」は元の部署で見る★ 兼務表で足した部署は所属ではないので、
+     ここで数えると、部署が取れていない人が「部署なし」から消えてしまう
+     （User.Read.All が無いテナントで、兼務表の人だけ行方不明になる）。 */
+  if (sel === '__none__') return !p.dep;
+  return (p.deps || []).includes(sel);
 }
 
 function paintDepSelect(){
-  const deps = [...new Set(PEOPLE.map(p => p.dep).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
+  const deps = [...new Set(PEOPLE.flatMap(p => p.deps || []).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
   el('dep').innerHTML = `<option value="">すべての部署（${PEOPLE.length}人）</option>`
-    + deps.map(d => `<option value="${esc(d)}">${esc(d)}（${PEOPLE.filter(p=>p.dep===d).length}）</option>`).join('')
+    + deps.map(d => `<option value="${esc(d)}">${esc(d)}（${PEOPLE.filter(p=>inDep(p,d)).length}）</option>`).join('')
     + (PEOPLE.some(p => !p.dep) ? `<option value="__none__">部署なし（${PEOPLE.filter(p=>!p.dep).length}）</option>` : '');
 }
 
@@ -701,7 +764,7 @@ async function loadRes(){
    ============================================================ */
 function paintPanel(){
   const p = el('status-panel');
-  const bad = SRC.ng > 0 || SRC.errs.length > 0;
+  const bad = SRC.ng > 0 || SRC.errs.length > 0 || (SRC.alsoMiss || []).length > 0;
   if (!IS_ADMIN){
     if (!bad) { p.style.display = 'none'; return; }
     p.style.display = ''; p.className = 'bad';
@@ -726,6 +789,14 @@ function paintPanel(){
         ? ` — <b>1件も取れていません。</b>予定表の既定権限が <code>LimitedDetails</code> 未満です。`
           + `<code>Set-StaffCalendarPermission.ps1 -GrantLimitedDetails</code> を実行してください`
         : `（非公開の予定は件名が出ません）`) + `</div>`;
+  if ((SRC.alsoMiss || []).length){
+    /* ★黙って無視しない★ 氏名が変わった・名簿に居ない、のどちらか。
+       出しておかないと「兼務表に書いたのに出てこない」で止まる。 */
+    h += `<div class="st-row"><span class="ng">兼務表に書いた人が名簿に見つかりません：`
+       + `${esc(SRC.alsoMiss.join('、'))}</span>`
+       + `<span style="color:var(--muted)">氏名が変わったか、全社員チームに居ません。`
+       + `<code>ALSO_DEPS</code> を直してください</span></div>`;
+  }
   if (SRC.excluded.length){
     h += `<details><summary>名簿から外したアカウント ${SRC.excluded.length}件</summary><pre>`
        + esc(SRC.excluded.map(x => `${x.n}\n    ${x.mail}\n    → ${x.why}`).join('\n'))
@@ -817,7 +888,7 @@ function paintSeek(){
   const busyWho = new Set(RES.filter(r => ['busy','tentative','oof'].includes(r.status)
                                        && overlaps(r, SEEK.s, SEEK.e)).map(r => r.mail));
   const dep = el('dep').value;
-  const target = PEOPLE.filter(x => !dep || (dep === '__none__' ? !x.dep : x.dep === dep));
+  const target = PEOPLE.filter(x => inDep(x, dep));
   const free = target.filter(x => !busyWho.has(x.mail));
   const busy = target.filter(x =>  busyWho.has(x.mail));
 
@@ -851,8 +922,8 @@ function paintSeek(){
 function visiblePeople(inView){
   const dep = el('dep').value, q = el('q').value.trim().toLowerCase();
   let list = PEOPLE.filter(p =>
-    (!dep || (dep === '__none__' ? !p.dep : p.dep === dep)) &&
-    (!q || p.n.toLowerCase().includes(q) || (p.dep||'').toLowerCase().includes(q)));
+    inDep(p, dep) &&
+    (!q || p.n.toLowerCase().includes(q) || (p.deps||[]).join(' ').toLowerCase().includes(q)));
   if (el('onlybusy').checked){
     const has = new Set(inView.map(r => r.mail));
     list = list.filter(p => has.has(p.mail));
@@ -891,7 +962,8 @@ function barHtml(r, L, R, cutL, cutR){
 function nameCell(p, rs, n){
   return `<div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(p.n)}</div><div class="meta">
-      ${p.dep ? `<span class="badge b-dep">${esc(p.dep)}</span>` : ''}${srcBadge(p)}
+      ${p.dep ? `<span class="badge b-dep">${esc(p.dep)}</span>` : ''}
+      ${(p.also||[]).map(d => `<span class="badge b-also" title="兼務">${esc(d)}（兼務）</span>`).join('')}${srcBadge(p)}
       ${rs.some(r => r.status === 'oof') ? '<span class="badge b-oof">不在</span>' : ''}
       ${rs.length ? '' : '<span class="badge b-free">予定なし</span>'}
       </div></div>`;
@@ -906,17 +978,18 @@ function render(){ VIEW === 'list' ? renderList() : VIEW === 'week' ? renderWeek
    前の見出しの下にぶら下がって見える。 */
 function grpHtml(p, list, st){
   let h = '';
+  const dv = depOf(p);
   if (p.site !== st.site) {
     st.site = p.site; st.dep = null;
     h += `<div class="grp"><span>${esc(p.site || '拠点が未設定')}`
        + `（${list.filter(x => x.site === p.site).length}）</span></div>`;
   }
-  if (p.dep !== st.dep) {
-    st.dep = p.dep;
+  if (dv !== st.dep) {
+    st.dep = dv;
     /* 役員のように拠点＝部署のときは小見出しを出さない（同じ言葉が2行続く） */
-    if ((p.dep || '') !== (p.site || '')) {
-      h += `<div class="grp2"><span>${esc(p.dep || '部署なし')}`
-         + `（${list.filter(x => x.site === p.site && x.dep === p.dep).length}）</span></div>`;
+    if ((dv || '') !== (p.site || '')) {
+      h += `<div class="grp2"><span>${esc(dv || '部署なし')}`
+         + `（${list.filter(x => x.site === p.site && depOf(x) === dv).length}）</span></div>`;
     }
   }
   return h;
