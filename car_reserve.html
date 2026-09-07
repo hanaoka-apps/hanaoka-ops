@@ -466,6 +466,13 @@ async function gBatch(requests){
    状態
    ============================================================ */
 let CARS = [], RES = [];
+/* ★読み込みの追い越し対策★
+   loadRes は await をまたいで RES に push する。2つ同時に走ると同じ予定が
+   2回入り、重複予約の帯として見えてしまう。
+   実機でこう出た： 「読めた 26台 / 全 13台」＝ 13台 × 2 と、同じ予約が2本。
+   日付の移動・表示の切替・5分ごとの自動更新・空き検索が重なると起きる。
+   呼び出しに番号を振って、追い越された古い結果は捨てる。 */
+let LOAD_SEQ = 0;
 let VIEW = 'week';                       /* 'week' | 'day' */
 let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
@@ -606,6 +613,7 @@ function viewRange(){
 }
 
 async function loadRes(){
+  const seq = ++LOAD_SEQ;
   const [v0, v1] = viewRange();
   let f0 = v0 - DAY, f1 = v1 + DAY;            /* 前後1日ぶん広く取る（またぎのバーを描くため） */
   /* 空き検索の区間が表示範囲からはみ出しても判定できるように、取得範囲を広げる */
@@ -628,6 +636,7 @@ async function loadRes(){
   }));
 
   const res = await gBatch(reqs);
+  if (seq !== LOAD_SEQ) return;          /* 追い越された。この結果は使わない */
   const failed = [];
 
   res.forEach((r, i) => {
@@ -667,11 +676,11 @@ async function loadRes(){
   SRC.mode = SRC.ng === 0
     ? (SRC.errs.length ? 'Outlook 直読み（一部が件数上限で切れています）' : 'Outlook 直読み')
     : `Outlook 直読み（${SRC.ng}台は読めず）`;
-  if (failed.length) await fallbackFromList(failed, f0, f1);
+  if (failed.length) await fallbackFromList(failed, f0, f1, seq);
 }
 
 /* 読めなかった車両だけ、同期済みのSharePointリストから補う */
-async function fallbackFromList(cars, f0, f1){
+async function fallbackFromList(cars, f0, f1, seq){
   try {
     const listId = SRC.histId || (SRC.histId = await resolveList(HIST_NAME, HIST_ID_FB));
     if (!listId) return;
@@ -682,6 +691,7 @@ async function fallbackFromList(cars, f0, f1){
       + `&$filter=fields/BookingStart ge ${lo} and fields/BookingStart le ${hi}`,
       { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' }
     ).catch(async () => gGetAll(`/sites/${SITE_ID}/lists/${listId}/items?$expand=fields&$top=2000`));
+    if (seq != null && seq !== LOAD_SEQ) return;   /* 追い越された */
 
     const names = new Set(cars.map(c => c.n));
     const mails = new Set(cars.map(c => c.mail));
