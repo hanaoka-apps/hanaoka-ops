@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<title>出図・出荷検索</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<style>
+:root{--brand:#ff6b81;--brand-dark:#e8556d;--bg:#fff7fb;--line:#e6e6e9;--soft:#f7fbff;
+  --muted:#666;--faint:#98989f;--danger:#d64545;--text:#222;
+  --ok:#1f7a4d;--ok-soft:#e6f5ec;--ok-line:#b6e0c7;
+  --warn:#8a5a00;--warn-soft:#fff7df;--warn-line:#ffe3a3}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Noto Sans JP","Segoe UI","Hiragino Kaku Gothic ProN",sans-serif;
+  background:var(--bg);color:var(--text);font-size:15px;line-height:1.75}
+.container{max-width:1100px;margin:18px auto;padding:0 14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;
+  box-shadow:0 8px 22px rgba(255,107,129,.08)}
+.header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+h1{margin:0;color:var(--brand);font-size:22px}
+.note,.muted{color:var(--muted);font-size:13px}
+.faint{color:var(--faint)}
+.badge{display:inline-block;padding:5px 10px;border:1px solid var(--line);border-radius:999px;
+  background:var(--soft);font-weight:700;margin-left:6px;font-size:12.5px}
+button{padding:9px 14px;border:0;background:var(--brand);color:#fff;border-radius:10px;cursor:pointer;font:inherit;font-weight:700}
+button:hover{background:var(--brand-dark)}
+button.ghost{background:#fff;border:1px solid var(--line);color:#333}
+button.ghost:hover{background:#f7f7f9}
+button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+
+/* サインイン前 */
+.gate{display:none;flex-direction:column;align-items:center;gap:14px;padding:52px 20px;text-align:center}
+.gate h2{margin:0;font-size:19px;font-weight:800}
+.gate p{margin:0;color:var(--muted);font-size:14px;line-height:1.8}
+.gate button{padding:13px 30px;font-size:15px}
+body:not(.ready) .gate{display:flex}
+body:not(.ready) .app{display:none}
+
+/* タブ */
+nav.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);flex-wrap:wrap;margin:14px 0 18px}
+nav.tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+  padding:11px 16px;margin-bottom:-1px;font-weight:500}
+nav.tabs button[aria-selected="true"]{color:var(--text);border-bottom-color:var(--brand);font-weight:800}
+nav.tabs button:hover{color:var(--text)}
+.panel{display:none}.panel.on{display:block}
+
+/* 検索 */
+.searchbox{display:flex;flex-direction:column;gap:9px;margin-bottom:18px}
+.searchbox label{font-size:13px;font-weight:700;color:#444}
+input[type=text]{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;
+  background:#fff;font:inherit;font-size:17px;font-variant-numeric:tabular-nums}
+input:focus{outline:2px solid var(--brand);outline-offset:-1px;border-color:var(--brand)}
+.hint{font-size:12.5px;color:var(--faint);display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.ex{background:#f0f0f3;border:0;color:#555;padding:3px 9px;border-radius:6px;cursor:pointer;
+  font-size:12.5px;font-weight:500;font-variant-numeric:tabular-nums}
+.ex:hover{color:var(--brand);background:#fff0f3}
+
+/* たどった経路 */
+.trail{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:12px;color:var(--faint);margin-bottom:14px}
+.trail span.node{background:#fff;border:1px solid var(--line);padding:3px 10px;border-radius:999px;color:#555}
+.trail span.node.hit{border-color:var(--brand);color:var(--brand-dark);font-weight:700}
+
+/* ブロック */
+.blk{background:#fff;border:1px solid var(--line);border-radius:12px;margin-bottom:14px;overflow:hidden}
+.blk>h3{margin:0;font-size:12.5px;font-weight:800;letter-spacing:.03em;color:var(--muted);
+  padding:11px 16px;background:#fbfbfd;border-bottom:1px solid var(--line)}
+.blk .body{padding:16px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:13px 20px}
+.kv div{display:flex;flex-direction:column;min-width:0}
+.kv .k{font-size:11.5px;color:var(--faint)}
+.kv .v{font-size:16px;font-weight:700;overflow-wrap:anywhere;line-height:1.5}
+.kv .v.big{font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kv .v.na{color:var(--faint);font-weight:400;font-size:14px}
+.pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:6px;font-weight:700}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+
+/* 図面 */
+.dgroup{font-size:11.5px;font-weight:800;letter-spacing:.05em;color:var(--faint);padding:11px 16px 3px}
+.drow{display:grid;grid-template-columns:1fr auto;gap:8px 14px;align-items:center;
+  padding:9px 16px;border-bottom:1px solid #f2f2f5}
+.drow:last-child{border-bottom:0}
+.drow .fn{font-size:13.5px;overflow-wrap:anywhere;font-weight:500}
+.drow .fn .meta{display:block;font-size:11.5px;color:var(--faint);font-weight:400;font-variant-numeric:tabular-nums}
+.drow .fn .tag{display:inline-block;margin-left:6px;font-size:11px;padding:1px 7px;border-radius:5px;
+  background:#fff0f3;color:var(--brand-dark);font-weight:700}
+.drow a.open{font-size:12.5px;font-weight:700;text-decoration:none;padding:6px 13px;border-radius:8px;
+  border:1px solid var(--brand);color:var(--brand-dark);background:#fff;white-space:nowrap}
+.drow a.open:hover{background:#fff0f3}
+.caution{display:flex;gap:9px;padding:11px 16px;background:var(--warn-soft);
+  border-bottom:1px solid var(--warn-line);font-size:12.5px;line-height:1.8;color:#5a4a20}
+.caution b{color:var(--warn);white-space:nowrap;font-size:11.5px}
+
+/* 表 */
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+th,td{padding:9px 14px;text-align:left;border-bottom:1px solid #f2f2f5;white-space:nowrap}
+thead th{background:#fbfbfd;font-size:11.5px;color:var(--muted);font-weight:800;
+  border-bottom:1px solid var(--line);position:sticky;top:0}
+tbody tr:last-child td{border-bottom:0}
+tbody tr.click{cursor:pointer}
+tbody tr.click:hover{background:#fffafc}
+td.m{font-variant-numeric:tabular-nums}
+.scroll-y{max-height:460px;overflow-y:auto}
+.empty{padding:36px 16px;text-align:center;color:var(--faint);font-size:14px;line-height:1.9}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line);
+  border-top-color:var(--brand);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+@media(max-width:640px){.drow{grid-template-columns:1fr}.drow a.open{justify-self:start}}
+</style>
+</head>
+<body>
+<div class="container"><div class="card">
+
+  <div class="header">
+    <div><h1>出図・出荷検索</h1>
+      <div class="note">製造番号・車体番号・図番から、出図情報と図面をたどれます</div></div>
+    <div>
+      <span id="authBadge" class="badge" style="background:#fff7df;border-color:#ffe3a3;color:#614900">未サインイン</span>
+      <button id="btnAuth" class="ghost" style="padding:5px 11px;margin-left:6px;font-size:13px">サインイン</button>
+    </div>
+  </div>
+
+  <div class="gate">
+    <h2 id="gateTitle">サインインしてください</h2>
+    <p id="gateMsg">会社のアカウントでサインインすると、出図と図面を検索できます。</p>
+    <button id="btnGateSignIn">サインイン</button>
+  </div>
+
+  <div class="app">
+    <nav class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-p="p1">1台を探す</button>
+      <button role="tab" aria-selected="false" data-p="p2">出図から探す</button>
+    </nav>
+
+    <div class="panel on" id="p1">
+      <div class="searchbox">
+        <label for="q">製造番号 または 車体番号</label>
+        <input type="text" id="q" placeholder="81167 / CD-25-424" autocomplete="off" inputmode="search">
+        <div class="hint"><span>銘板に打たれている番号がそのまま入口になります</span></div>
+      </div>
+      <div id="result"><div class="blk"><div class="empty">
+        製造番号か車体番号を入力してください。<br>
+        お客様から届く銘板の情報がそのまま入口になります。
+      </div></div></div>
+    </div>
+
+    <div class="panel" id="p2">
+      <div class="searchbox">
+        <label for="q2">出図の絞り込み</label>
+        <input type="text" id="q2" placeholder="受注先・型式・図番・出図番号など" autocomplete="off">
+      </div>
+      <div id="shutsuzuList"></div>
+    </div>
+  </div>
+
+  <div class="note faint" style="margin-top:22px;border-top:1px solid var(--line);padding-top:14px">
+    参照専用の画面です。ここからデータを書き換えることはできません。<br>
+    図面を開くには DocuWorks Viewer Light とブラウザ拡張機能が必要です。
+  </div>
+</div></div>
+
+<script>
+/* ============================================================
+   出図・出荷検索（参照専用）
+   ------------------------------------------------------------
+   登録は shutsuzu_management.html。こちらは読むだけ。
+   要求するスコープも Sites.Read.All だけにしてあるので、
+   この画面から誤ってデータを壊すことはできない。
+   ============================================================ */
+const MSAL_CONFIG={auth:{clientId:"d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
+  authority:"https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad",
+  redirectUri:new URL("auth.html",window.location.href).href},
+  cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:false}};
+const SCOPES=["User.Read","Sites.Read.All"];
+const GRAPH_BASE="https://graph.microsoft.com/v1.0";
+const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu";
+const LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細",LIB_DRAWINGS="図面";
+
+let SITE_ID=null,ID_SHUTSUZU=null,ID_UNITS=null,UNITS_URL="",DRIVE_ID=null;
+let SHUTSUZU=[],FILES=[];
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const trim=s=>(s||"").toString().trim();
+
+/* ---- 認証（既存アプリと同じ書き方） ---- */
+let msalInstance=null,currentAccount=null;
+async function initMsal(){
+  msalInstance=new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+  const a=msalInstance.getAllAccounts();
+  if(a.length){currentAccount=a[0];msalInstance.setActiveAccount(currentAccount);await onSignedIn()}
+}
+async function signIn(){
+  try{const r=await msalInstance.loginPopup({scopes:SCOPES});
+    currentAccount=r.account;msalInstance.setActiveAccount(currentAccount);await onSignedIn()}
+  catch(e){if(e.errorCode!=="user_cancelled")showGateError(e)}
+}
+function signOut(){msalInstance.logoutPopup({account:currentAccount})}
+async function getToken(){
+  try{return (await msalInstance.acquireTokenSilent({scopes:SCOPES,account:currentAccount})).accessToken}
+  catch{const r=await msalInstance.acquireTokenPopup({scopes:SCOPES});currentAccount=r.account;return r.accessToken}
+}
+async function onSignedIn(){
+  $("authBadge").textContent=currentAccount.name||currentAccount.username;
+  $("authBadge").title=currentAccount.username;
+  $("authBadge").style.cssText="";
+  $("btnAuth").textContent="サインアウト";
+  try{
+    await spInit(); await loadShutsuzu(); await loadFiles();
+    document.body.classList.add("ready");
+    renderShutsuzuList();
+  }catch(e){document.body.classList.remove("ready");showGateError(e);console.error(e,e.body)}
+}
+function showGateError(e){
+  const st=e&&e.status,denied=(st===401||st===403||st===404);
+  $("gateTitle").textContent=denied?"データを開けませんでした":"読み込めませんでした";
+  $("gateMsg").innerHTML=(denied
+    ? "「出図・出荷管理」サイトのアクセス権が無いか、リストが見つかりません。<br>総務までご連絡ください。"
+    : "少し時間をおいて、もう一度お試しください。")+
+    '<br><span style="font-size:12px;color:#999">'+esc(e&&(e.message||e))+"</span>";
+  $("btnGateSignIn").textContent="再試行";
+}
+
+/* ---- Graph ---- */
+async function gGet(path,extra){
+  const t=await getToken();
+  const r=await fetch(GRAPH_BASE+path,{headers:{Authorization:"Bearer "+t,...(extra||{})}});
+  if(!r.ok){const e=new Error(`[${r.status}] GET ${path}`);e.status=r.status;e.body=await r.text();throw e}
+  return r.json();
+}
+async function gGetAll(path,extra){
+  let out=[],next=path;
+  while(next){const d=await gGet(next,extra);out=out.concat(d.value||[]);
+    next=d["@odata.nextLink"]?d["@odata.nextLink"].replace(GRAPH_BASE,""):null}
+  return out;
+}
+async function spInit(){
+  SITE_ID=(await gGet(`/sites/${SP_HOST}:${SP_PATH}`)).id;
+  const lists=await gGetAll(`/sites/${SITE_ID}/lists?$select=id,name,displayName,webUrl`);
+  const pick=n=>lists.find(x=>x.displayName===n||x.name===n);
+  const a=pick(LIST_SHUTSUZU),b=pick(LIST_UNITS);
+  if(!a||!b){const e=new Error("出図マスタ／製造番号明細が見つかりません");e.status=404;throw e}
+  ID_SHUTSUZU=a.id; ID_UNITS=b.id; UNITS_URL=b.webUrl||"";
+  /* 図面ライブラリのドライブ。ファイル名から直接引くのでリストは使わない */
+  try{
+    const drives=await gGetAll(`/sites/${SITE_ID}/drives?$select=id,name`);
+    const d=drives.find(x=>x.name===LIB_DRAWINGS||x.name==="Drawings");
+    DRIVE_ID=d?d.id:null;
+  }catch(e){DRIVE_ID=null;console.warn("図面ライブラリを開けませんでした",e)}
+}
+
+/* ---- 読み込み ---- */
+async function loadShutsuzu(){
+  const items=await gGetAll(`/sites/${SITE_ID}/lists/${ID_SHUTSUZU}/items?expand=fields&$top=500`);
+  SHUTSUZU=items.map(it=>{const f=it.fields||{};return {
+    no:f.Title||"",date:(f.ShutsuzuDate||"").slice(0,10),tanto:f.Tanto||"",
+    customer:f.Customer||"",destination:f.Destination||"",
+    product:f.ProductName||"",model:f.Model||"",drawing:f.DrawingNo||"",spec:f.SpecNo||"",
+    units:f.UnitCount==null?"":String(f.UnitCount),serial:f.SerialRange||"",carNo:f.CarNoRange||"",
+    surface:f.Surface||"",wt:f.WTDisplay||"",note:f.Remarks||"",
+    dims:[f.LengthMM,f.WidthMM,f.HeightMM].filter(v=>v!=null).join(" × "),
+    capacity:f.Capacity==null?"":String(f.Capacity),
+    meisai:(()=>{try{return JSON.parse(f.MeisaiJson||"[]")}catch(e){return []}})()
+  }}).sort((a,b)=>String(b.no).localeCompare(String(a.no)));
+}
+/* 図面はフォルダを作らずフラットに置いてあるので、全件読んで名前で突き合わせる */
+async function loadFiles(){
+  if(!DRIVE_ID){FILES=[];return}
+  try{
+    FILES=(await gGetAll(`/drives/${DRIVE_ID}/root/children?$select=id,name,size,webUrl,lastModifiedDateTime&$top=999`))
+      .filter(x=>x.file).map(x=>({name:x.name,url:x.webUrl,size:x.size||0,
+        mtime:(x.lastModifiedDateTime||"").slice(0,10),
+        stem:x.name.replace(/\.[^.]+$/,"")}));
+  }catch(e){FILES=[];console.warn("図面の一覧を取得できませんでした",e)}
+}
+/* 製造番号明細は1万件を超えるので、全件は読まず1件ずつ引く */
+async function findUnit(key){
+  const H={Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"};
+  const base=`/sites/${SITE_ID}/lists/${ID_UNITS}/items?expand=fields&$top=50&$filter=`;
+  let v=await gGetAll(base+`fields/Title eq '${encodeURIComponent(key)}'`,H);
+  if(!v.length) v=await gGetAll(base+`fields/CarNo eq '${encodeURIComponent(key)}'`,H);
+  return v.map(it=>({id:it.id,...(it.fields||{})}));
+}
+
+/* ---- 図面の突き合わせ ---- */
+function modelCode(zu){const m=String(zu||"").match(/^H\d{6}/);return m?m[0]:""}
+function drawingsFor(zu){
+  const fam=modelCode(zu),product=[],parts=[];
+  if(!fam)return {product,parts,exact:false};
+  FILES.forEach(f=>{
+    if(f.stem.indexOf(fam)!==0)return;
+    if(/^H\d{6}[A-Z]/.test(f.stem))product.push(f); else parts.push(f);
+  });
+  const by=(a,b)=>a.name.localeCompare(b.name,"ja");
+  product.sort(by);parts.sort(by);
+  return {product,parts,exact:product.some(f=>f.stem===zu)};
+}
+function drawRows(list,zu){
+  if(!list.length)return "";
+  return list.map(f=>
+    '<div class="drow"><div class="fn">'+esc(f.name)+
+      (f.stem===zu?' <span class="tag">図番一致</span>':"")+
+      '<span class="meta">'+Math.round(f.size/1024).toLocaleString()+' KB ・ 更新 '+esc(f.mtime)+'</span></div>'+
+    '<a class="open" href="'+esc(f.url)+'" target="_blank" rel="noopener">図面を開く</a></div>').join("");
+}
+function drawingBlock(zu){
+  if(!DRIVE_ID)return '<div class="blk"><h3>図面</h3><div class="empty">'+
+    '図面ライブラリを開けませんでした。<br>総務までご連絡ください。</div></div>';
+  const d=drawingsFor(zu),total=d.product.length+d.parts.length;
+  if(!total)return '<div class="blk"><h3>図面</h3><div class="empty">'+
+    '図番 '+esc(zu)+' に対応する図面が、まだ登録されていません。</div></div>';
+  return '<div class="blk"><h3>図面　'+total+'点</h3>'+
+    (d.exact?"":'<div class="caution"><b>要確認</b><span>図番 '+esc(zu)+
+      ' と完全に一致するファイルがありません。機種コード '+esc(modelCode(zu))+
+      ' で紐づけた候補です。<b>この車両を製造した当時の版とは限りません。</b></span></div>')+
+    (d.product.length?'<div class="dgroup">製品図</div>'+drawRows(d.product,zu):"")+
+    (d.parts.length?'<div class="dgroup">部品図（バインダー）</div>'+drawRows(d.parts,zu):"")+
+    '</div>';
+}
+
+/* ---- 1台のカルテ ---- */
+const kv=(k,v,cls)=>'<div><span class="k">'+esc(k)+'</span><span class="v '+(trim(v)?(cls||""):"na")+'">'+
+  (trim(v)?esc(v):"—")+'</span></div>';
+function unitCard(u){
+  const reg=SHUTSUZU.find(s=>s.no===u.ShutsuzuNo);
+  const zu=u.DrawingNo||(reg&&reg.drawing)||"";
+  const d=drawingsFor(zu),total=d.product.length+d.parts.length;
+  const trail='<div class="trail">'+
+    '<span class="node hit">製造番号 '+esc(u.Title)+'</span><span>→</span>'+
+    '<span class="node hit">製造番号明細</span><span>→</span>'+
+    '<span class="node '+(zu?"hit":"")+'">図番 '+esc(zu||"未登録")+'</span><span>→</span>'+
+    (reg?'<span class="node hit">出図 No.'+esc(reg.no)+'</span>':'<span class="node">出図記録なし</span>')+
+    '<span>→</span>'+
+    (total?'<span class="node hit">図面 '+total+'点</span>':'<span class="node">図面未登録</span>')+
+    '</div>';
+  const shipped=!!u.ShipDate;
+  const ship='<div class="blk"><h3>この1台</h3><div class="body"><div class="kv">'+
+    kv("製造番号",u.Title,"big")+kv("車体番号",u.CarNo)+
+    '<div><span class="k">状態</span><span class="v">'+
+      (shipped?'<span class="pill ok">出荷済</span>':'<span class="pill warn">未出荷</span>')+'</span></div>'+
+    kv("出荷日",(u.ShipDate||"").slice(0,10))+
+    kv("受注先",u.Customer)+kv("納入先 / 行先",[u.DeliveryTo,u.Destination].filter(Boolean).join(" / "))+
+    kv("型式",u.Model)+kv("品名",u.ProductName)+
+    kv("図番",zu)+kv("図面仕様番号",u.SpecNo)+
+    kv("自重 (kg)",u.ActualWeight==null?"":String(u.ActualWeight))+
+    kv("最大積載 (kg)",u.Capacity==null?"":String(u.Capacity))+
+    kv("備考",u.Remarks)+
+    '</div></div></div>';
+  const regBlk=reg
+    ? '<div class="blk"><h3>出図情報　No.'+esc(reg.no)+'</h3><div class="body"><div class="kv">'+
+      kv("出図日",reg.date)+kv("担当",reg.tanto)+kv("台数（台口）",reg.units?reg.units+" 台":"")+
+      kv("仕向地",reg.destination)+kv("表面処理",reg.surface)+kv("WT表示",reg.wt)+
+      kv("寸法 (mm)",reg.dims)+kv("製造番号（全体）",reg.serial)+kv("備考",reg.note)+
+      '</div></div></div>'
+    : '<div class="blk"><h3>出図情報</h3><div class="empty">'+
+      'この製造番号に対応する出図の記録がありません。<br>過去分の出図表が取り込まれると、ここも埋まります。</div></div>';
+  return trail+ship+regBlk+drawingBlock(zu);
+}
+
+/* ---- 検索 ---- */
+let searchTimer=null,lastQuery="";
+function onSearchInput(){
+  clearTimeout(searchTimer);
+  const q=trim($("q").value);
+  if(!q){$("result").innerHTML='<div class="blk"><div class="empty">製造番号か車体番号を入力してください。</div></div>';return}
+  if(q.length<3){$("result").innerHTML='<div class="blk"><div class="empty">3文字以上入力してください。</div></div>';return}
+  $("result").innerHTML='<div class="blk"><div class="empty"><span class="spin"></span>　探しています…</div></div>';
+  searchTimer=setTimeout(()=>doSearch(q),350);
+}
+async function doSearch(q){
+  lastQuery=q;
+  try{
+    const hits=await findUnit(q);
+    if(lastQuery!==q)return;
+    if(!hits.length){
+      $("result").innerHTML='<div class="blk"><div class="empty">「'+esc(q)+'」は見つかりませんでした。<br>'+
+        '製造番号は5桁の数字、車体番号は CD-25-424 のような形です。</div></div>';
+      return;
+    }
+    if(hits.length===1){$("result").innerHTML=unitCard(hits[0]);return}
+    /* 車体番号は年度をまたいで重複することがあるので、候補を出して選ばせる */
+    $("result").innerHTML='<div class="blk"><h3>「'+esc(q)+'」は '+hits.length+'台に一致します</h3>'+
+      '<div class="body"><p class="note" style="margin:0">車体番号は年度をまたいで重複することがあります。製造番号を選んでください。</p></div>'+
+      '<div class="tw"><table><thead><tr><th>製造番号</th><th>車体番号</th><th>出荷日</th><th>受注先</th><th>行先</th><th>図番</th></tr></thead><tbody>'+
+      hits.map(h=>'<tr class="click" data-sn="'+esc(h.Title)+'"><td class="m">'+esc(h.Title)+'</td>'+
+        '<td class="m">'+esc(h.CarNo||"")+'</td><td class="m">'+esc((h.ShipDate||"").slice(0,10))+'</td>'+
+        '<td>'+esc(h.Customer||"")+'</td><td>'+esc(h.Destination||"")+'</td>'+
+        '<td class="m">'+esc(h.DrawingNo||"")+'</td></tr>').join("")+
+      '</tbody></table></div></div>';
+    $("result").querySelectorAll("tr.click").forEach(tr=>{
+      tr.addEventListener("click",()=>{$("q").value=tr.dataset.sn;doSearch(tr.dataset.sn)});
+    });
+  }catch(e){
+    $("result").innerHTML='<div class="blk"><div class="empty">検索に失敗しました。<br>'+
+      '<span style="font-size:12px;color:#999">'+esc(e.message||e)+'</span></div></div>';
+    console.error(e,e.body);
+  }
+}
+
+/* ---- 出図の一覧（こちらが既定の見え方） ---- */
+function renderShutsuzuList(){
+  const q=trim($("q2").value).toLowerCase();
+  const rows=SHUTSUZU.filter(s=>!q||[s.no,s.date,s.customer,s.product,s.model,s.drawing,s.spec,s.destination]
+    .join(" ").toLowerCase().includes(q));
+  if(!rows.length){
+    $("shutsuzuList").innerHTML='<div class="blk"><div class="empty">'+
+      (SHUTSUZU.length?'該当する出図がありません。':'出図がまだ登録されていません。')+'</div></div>';
+    return;
+  }
+  $("shutsuzuList").innerHTML='<div class="blk"><h3>出図　'+rows.length+'件'+
+    (q?'（全'+SHUTSUZU.length+'件中）':"")+'</h3>'+
+    '<div class="tw scroll-y"><table><thead><tr>'+
+    '<th>出図番号</th><th>出図日</th><th>受注先</th><th>品名</th><th>型式</th><th>図番</th><th>台数</th><th>行き先</th><th>図面</th>'+
+    '</tr></thead><tbody>'+
+    rows.map(s=>{
+      const d=drawingsFor(s.drawing),n=d.product.length+d.parts.length;
+      const dests=(s.meisai||[]).map(r=>r.dest).filter(Boolean);
+      return '<tr class="click" data-no="'+esc(s.no)+'">'+
+        '<td class="m">'+esc(s.no)+'</td><td class="m">'+esc(s.date)+'</td>'+
+        '<td>'+esc(s.customer)+'</td><td>'+esc(s.product)+'</td><td>'+esc(s.model)+'</td>'+
+        '<td class="m">'+esc(s.drawing)+'</td><td class="m">'+esc(s.units)+'</td>'+
+        '<td>'+esc(dests.length?dests.join("・"):s.destination)+'</td>'+
+        '<td class="m">'+(n?n+"点":'<span class="faint">—</span>')+'</td></tr>';
+    }).join("")+'</tbody></table></div></div><div id="shutsuzuDetail"></div>';
+  $("shutsuzuList").querySelectorAll("tr.click").forEach(tr=>{
+    tr.addEventListener("click",()=>showShutsuzu(tr.dataset.no));
+  });
+}
+function showShutsuzu(no){
+  const s=SHUTSUZU.find(x=>x.no===no); if(!s)return;
+  const meisai=(s.meisai||[]).filter(r=>r.dest||r.qty||r.snFrom);
+  const m=meisai.length
+    ? '<div class="tw"><table><thead><tr><th>行き先</th><th>台数</th><th>製造番号</th><th>仕様・備考</th></tr></thead><tbody>'+
+      meisai.map(r=>'<tr><td>'+esc(r.dest||"—")+'</td><td class="m">'+esc(r.qty||"")+'</td>'+
+        '<td class="m">'+esc(r.snFrom?(r.snTo&&r.snTo!==r.snFrom?r.snFrom+"～"+r.snTo:r.snFrom):"")+'</td>'+
+        '<td>'+esc(r.spec||"")+'</td></tr>').join("")+'</tbody></table></div>'
+    : '<div class="body"><p class="note" style="margin:0">行き先ごとの明細は登録されていません。製造番号：'+esc(s.serial||"—")+'</p></div>';
+  $("shutsuzuDetail").innerHTML=
+    '<div class="blk"><h3>出図 No.'+esc(s.no)+'　'+esc(s.date)+'　'+esc(s.customer)+'　'+esc(s.model)+'</h3>'+
+    '<div class="body"><div class="kv">'+
+      kv("台数（台口）",s.units?s.units+" 台":"")+kv("担当",s.tanto)+kv("図番",s.drawing)+
+      kv("図面仕様番号",s.spec)+kv("表面処理",s.surface)+kv("WT表示",s.wt)+
+      kv("寸法 (mm)",s.dims)+kv("最大積載 (kg)",s.capacity)+kv("備考",s.note)+
+    '</div></div>'+m+
+    (UNITS_URL?'<div class="body" style="border-top:1px solid var(--line)">'+
+      '<button class="ghost" onclick="openUnits(\''+esc(s.no)+'\')">この出図の製造番号明細を開く</button></div>':"")+
+    '</div>'+drawingBlock(s.drawing);
+  $("shutsuzuDetail").scrollIntoView({behavior:"smooth",block:"start"});
+}
+function openUnits(no){
+  if(!UNITS_URL)return;
+  const base=/\.aspx$/i.test(UNITS_URL)?UNITS_URL:(UNITS_URL+"/AllItems.aspx");
+  window.open(base+"?FilterField1=ShutsuzuNo&FilterValue1="+encodeURIComponent(no)+"&FilterType1=Text",
+    "_blank","noopener");
+}
+
+/* ---- 起動 ---- */
+document.addEventListener("DOMContentLoaded",()=>{
+  document.querySelectorAll("nav.tabs button").forEach(b=>{
+    b.addEventListener("click",()=>{
+      document.querySelectorAll("nav.tabs button").forEach(x=>x.setAttribute("aria-selected",x===b?"true":"false"));
+      document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("on",p.id===b.dataset.p));
+    });
+  });
+  $("btnAuth").onclick=()=>currentAccount?signOut():signIn();
+  $("btnGateSignIn").onclick=()=>signIn();
+  $("q").addEventListener("input",onSearchInput);
+  $("q2").addEventListener("input",renderShutsuzuList);
+  initMsal().catch(e=>{showGateError(e);console.error(e)});
+});
+</script>
+</body>
+</html>
