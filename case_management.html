@@ -2876,12 +2876,16 @@ async function loadEvents(caseId) {
     events.sort((a, b) => new Date(b.EventDate || 0) - new Date(a.EventDate || 0));
     renderTimeline();
     renderPdfTabs();
-    // 最新のPDFを自動で開く
+    // 最新のPDF、無ければ問い合わせ本文を自動で開く
     const firstPdfIdx = events.findIndex(ev => ev.AttachedPDFPath);
+    const firstInquiryIdx = events.findIndex(ev => isInquiryEvent(ev));
     if (firstPdfIdx >= 0) {
       selectTimelinePdf(firstPdfIdx);
+    } else if (firstInquiryIdx >= 0) {
+      // HP/ARU/AMR問い合わせから作られた案件はPDFを持たないので、本文を表示する
+      selectTimelinePdf(firstInquiryIdx);
     } else {
-      // PDFが1枚も無い案件：前に見ていた案件のPDFが残らないよう右ペインをクリア
+      // 表示できるものが無い案件：前に見ていた案件のPDFが残らないよう右ペインをクリア
       currentPdfUrl = null;
       const fn = document.getElementById('pdfFilename'); if (fn) fn.textContent = 'PDF';
       const area = document.getElementById('pdfArea');
@@ -5388,10 +5392,57 @@ function loadPdf(url, name) {
     document.getElementById('pdfArea').innerHTML = `<iframe class="pdf-frame" src="${url}"></iframe>`;
   }
 }
-// 案件管理タブ：タイムライン項目クリック → 右ペインにPDF表示
+// ============================================================
+// 案件管理タブ：問い合わせ本文（PDFを持たないHP/ARU/AMRイベント）
+// ============================================================
+// このイベントは問い合わせ経由か（EventTypeで判定。INBOX_ROUTESと同じ語彙を使う）
+function isInquiryEvent(ev) {
+  return ['hp', 'aru', 'autopilot'].indexOf(routeOf(ev && ev.EventType)) >= 0;
+}
+// ★InquiryBody は EVENT_FIELDS に含めていない（1件数KBあり、全件取得を重くするため）。
+//   案件管理で表示するときだけ、その1件を都度取得する。
+async function fetchInquiryBody(spId) {
+  const sid = await getSiteId();
+  const d = await graphGet(
+    `/sites/${sid}/lists/${SP.eventListId}/items/${spId}?$expand=fields($select=InquiryBody)`);
+  return (d && d.fields && d.fields.InquiryBody) || '';
+}
+// 右ペインに問い合わせ本文を表示する
+async function showCaseInquiryBody(ev) {
+  const area = document.getElementById('pdfArea');
+  if (!area) return;
+  currentPdfUrl = null;
+  const fn = document.getElementById('pdfFilename');
+  if (fn) fn.textContent = ev.EventType || '問い合わせ';
+  area.innerHTML = '<div class="loading-spinner">問い合わせ本文を読み込み中...</div>';
+  try {
+    const body = ev.InquiryBody || await fetchInquiryBody(ev._spId);
+    ev.InquiryBody = body;   // 同じ案件内での再クリック時は再取得しない
+    area.innerHTML = body
+      ? `<div class="inquiry-panel">${linkifyText(body)}</div>`
+      : '<div class="pdf-empty"><div class="pdf-empty-icon">📄</div>'
+        + '<div class="pdf-empty-text">このイベントに問い合わせ本文はありません</div></div>';
+  } catch (e) {
+    area.innerHTML = '<div class="pdf-empty"><div class="pdf-empty-icon">⚠️</div>'
+      + `<div class="pdf-empty-text">本文の取得に失敗しました<br><small>${escapeHtml(e.message)}</small></div></div>`;
+  }
+}
+// 案件管理タブ：タイムライン項目クリック → 右ペインにPDF or 問い合わせ本文を表示
 function selectTimelinePdf(idx) {
   const ev = events[idx];
-  if (!ev || !ev.AttachedPDFPath) return;
+  if (!ev) return;
+  // PDFが無く問い合わせイベントなら本文パネルを出す
+  if (!ev.AttachedPDFPath) {
+    if (!isInquiryEvent(ev)) return;
+    document.querySelectorAll('#timelineContent .tl-item').forEach(el => el.classList.remove('tl-active'));
+    const el2 = document.querySelector(`#timelineContent .tl-item[data-tl-idx="${idx}"]`);
+    if (el2) el2.classList.add('tl-active');
+    document.querySelectorAll('#pdfTabs .pdf-tab').forEach(t => t.classList.remove('active'));
+    const tab2 = document.querySelector(`#pdfTabs .pdf-tab[data-tab-idx="${idx}"]`);
+    if (tab2) { tab2.classList.add('active'); tab2.scrollIntoView({ inline: 'nearest', block: 'nearest' }); }
+    showCaseInquiryBody(ev);
+    return;
+  }
   // タイムライン側のアクティブ表示
   document.querySelectorAll('#timelineContent .tl-item').forEach(el => el.classList.remove('tl-active'));
   const el = document.querySelector(`#timelineContent .tl-item[data-tl-idx="${idx}"]`);
@@ -5408,25 +5459,26 @@ function selectTimelinePdf(idx) {
   const decoded = decodeURIComponent(fileName);
   loadPdf(ev.AttachedPDFPath, decoded);
 }
-// 案件管理タブ：PDFタブ行を描画（AttachedPDFPathを持つeventsを新しい順）
+// 案件管理タブ：右ペインのタブ行を描画
+//   PDFを持つイベント＋問い合わせイベント（HP/ARU/AMR）を新しい順に並べる。
+//   問い合わせはPDFが無いので、以前はタブに出ず本文を見る手段が無かった。
 function renderPdfTabs() {
   const tabs = document.getElementById('pdfTabs');
   if (!tabs) return;
-  const pdfEvents = events
+  const viewable = events
     .map((ev, i) => ({ ev, idx: i }))
-    .filter(x => x.ev.AttachedPDFPath);
-  if (!pdfEvents.length) {
-    tabs.innerHTML = '<div class="pdf-tabs-empty">この案件にはPDFが紐づいていません</div>';
+    .filter(x => x.ev.AttachedPDFPath || isInquiryEvent(x.ev));
+  if (!viewable.length) {
+    tabs.innerHTML = '<div class="pdf-tabs-empty">この案件には表示できる添付・本文がありません</div>';
     return;
   }
   // events自体が新しい順ソート済みなので、そのままの順序でOK
-  tabs.innerHTML = pdfEvents.map(({ ev, idx }) => {
-    const iconMap = {
-      '受信': '📥',
-      '送信': '📤',
-    };
+  tabs.innerHTML = viewable.map(({ ev, idx }) => {
     const et = ev.EventType || '';
-    const icon = et.includes('受信') ? '📥' : et.includes('送信') ? '📤' : '📄';
+    const route = routeOf(et);
+    const icon = !ev.AttachedPDFPath && isInquiryEvent(ev)
+      ? (route === 'aru' ? '🔷' : route === 'autopilot' ? '🤖' : '🌐')
+      : (et.includes('受信') ? '📥' : et.includes('送信') ? '📤' : '📄');
     const label = et.replace(/（.*?）/g, '') || 'FAX';
     const date = formatDate(ev.EventDate);
     return `
