@@ -162,9 +162,7 @@ const MSAL_CONFIG = {
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
 
 const SP = {
-  siteId: 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23',
   mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
-  targetsListId: '9cb1ee3e-8af9-4f6a-a910-78b12385437e',
 };
 
 // dashboard_facts.json の行スキーマ（sales_dashboard.html と同一）
@@ -320,25 +318,33 @@ function aggregateByGroup(rows, curYm, today, useVoucherDateForMonth) {
   return result;
 }
 
-async function loadPlans(curYm) {
+// SMILE「目標_部門目標出力.csv」の生の部門名 → ダッシュボードの部門名
+// sales_dashboard.html の _csvScopeMap と同一ロジック（同じ数値になるよう合わせる）
+function csvScopeMap(csvName) {
+  if (!csvName) return csvName;
+  const s = String(csvName).trim();
+  if (s === '全社') return '全社';
+  if (s.includes('ソリュ') || s.includes('ｿﾘｭ')) return 'ソリューション営業部';
+  if (s.includes('国内')) return '国内営業部';
+  if (s.includes('本社') || s === '東京') return '本社';
+  if (s.includes('大阪')) return '大阪支店';
+  if (s.includes('名古屋')) return '名古屋営業所';
+  return s;
+}
+
+// dashboard_facts.json に同梱の dept_monthly_targets（regenerate_facts.pyが
+// 目標_部門目標出力.csv から毎朝生成）を使う。sales_dashboard.html が実際に
+// 表示している計画値と同じ値になる（SharePointのSalesTargetsリストは使わない）。
+function loadPlansFromFacts(facts, curYm) {
   const plans = {};
   for (const g of DEPT_GROUPS) plans[g] = 0;
-  let items = [];
-  let listUrl = `/sites/${SP.siteId}/lists/${SP.targetsListId}/items?$expand=fields&$top=2000`;
-  while (listUrl) {
-    const r = await graphGet(listUrl);
-    items = items.concat(r.value || []);
-    listUrl = r['@odata.nextLink'] || null;
-  }
-  for (const item of items) {
-    const f = item.fields || {};
-    const type = String(f.TargetType || '').trim();
-    const scope = String(f.ScopeKey || '').trim();
-    const ym = parseInt(String(f.Year_x0020_Month || f.YearMonth || '').trim(), 10);
-    const isLatest = (f.IsLatest === true || f.IsLatest === 'true');
-    if (!isLatest || ym !== curYm) continue;
-    if (!(type === '部門累計月次' || type === 'dept_monthly')) continue;
-    if (DEPT_GROUPS.includes(scope)) plans[scope] = Number(f.Amount) || 0;
+  const deptTargets = facts.dept_monthly_targets || {};
+  const ymKey = String(curYm);
+  for (const rawScope in deptTargets) {
+    const scope = csvScopeMap(rawScope);
+    if (!DEPT_GROUPS.includes(scope)) continue;
+    const amt = deptTargets[rawScope][ymKey];
+    if (amt !== undefined) plans[scope] = Number(amt) || 0;
   }
   return plans;
 }
@@ -570,7 +576,7 @@ async function loadReport() {
   const curYm = now.getFullYear() * 100 + (now.getMonth() + 1);
   const today = { y: now.getFullYear(), mo: now.getMonth() + 1, d: now.getDate() };
 
-  const plans = await loadPlans(curYm);
+  const plans = loadPlansFromFacts(facts, curYm);
 
   const orderMetrics = aggregateByGroup(orderRows, curYm, today, true);
   const salesMetrics = aggregateByGroup(rows, curYm, today, false);
