@@ -150,6 +150,11 @@
     <div id="topOrdersWrap"><div class="empty-state">サインインすると表示されます</div></div>
   </div>
 
+  <div class="card">
+    <h2>機工商社別受注金額<span class="page-sub" style="margin-left:8px">計画値は元データに無いため実績のみ</span></h2>
+    <div id="dealerTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+  </div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script>
@@ -632,6 +637,101 @@ function renderTopOrders(orders) {
     </table>`;
 }
 
+// ============================================================
+// 機工商社別受注金額
+// sales_dashboard.html の PRIORITY_CUST_KEYS (重点得意先) を参考にした
+// 部分一致マッチング。得意先名の完全なマスタが無いため推測ベース。
+// ============================================================
+const MAJOR_DEALER_KEYS = ['山善', 'ユニソル', 'YUASA', 'NaITO', 'サカエ', 'トラスコ中山'];
+const DEALER_BASES = ['本社', '大阪', '名古屋'];
+
+// 半角カナ→全角カナ変換（得意先名の表記ゆれ対策。sales/order行のcust_abbrは
+// SMILE側でzenkaku正規化されていないため、こちらで吸収する）
+const HALF_TO_FULL_KANA = {
+  'ｦ':'ヲ','ｧ':'ァ','ｨ':'ィ','ｩ':'ゥ','ｪ':'ェ','ｫ':'ォ','ｬ':'ャ','ｭ':'ュ','ｮ':'ョ','ｯ':'ッ',
+  'ｰ':'ー','ｱ':'ア','ｲ':'イ','ｳ':'ウ','ｴ':'エ','ｵ':'オ','ｶ':'カ','ｷ':'キ','ｸ':'ク','ｹ':'ケ','ｺ':'コ',
+  'ｻ':'サ','ｼ':'シ','ｽ':'ス','ｾ':'セ','ｿ':'ソ','ﾀ':'タ','ﾁ':'チ','ﾂ':'ツ','ﾃ':'テ','ﾄ':'ト',
+  'ﾅ':'ナ','ﾆ':'ニ','ﾇ':'ヌ','ﾈ':'ネ','ﾉ':'ノ','ﾊ':'ハ','ﾋ':'ヒ','ﾌ':'フ','ﾍ':'ヘ','ﾎ':'ホ',
+  'ﾏ':'マ','ﾐ':'ミ','ﾑ':'ム','ﾒ':'メ','ﾓ':'モ','ﾔ':'ヤ','ﾕ':'ユ','ﾖ':'ヨ',
+  'ﾗ':'ラ','ﾘ':'リ','ﾙ':'ル','ﾚ':'レ','ﾛ':'ロ','ﾜ':'ワ','ﾝ':'ン',
+};
+const DAKUTEN_MAP = { 'カ':'ガ','キ':'ギ','ク':'グ','ケ':'ゲ','コ':'ゴ','サ':'ザ','シ':'ジ','ス':'ズ','セ':'ゼ','ソ':'ゾ',
+  'タ':'ダ','チ':'ヂ','ツ':'ヅ','テ':'デ','ト':'ド','ハ':'バ','ヒ':'ビ','フ':'ブ','ヘ':'ベ','ホ':'ボ','ウ':'ヴ' };
+const HANDAKUTEN_MAP = { 'ハ':'パ','ヒ':'ピ','フ':'プ','ヘ':'ペ','ホ':'ポ' };
+
+function toFullWidthKana(s) {
+  const chars = Array.from(String(s || ''));
+  let out = '';
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    const full = HALF_TO_FULL_KANA[c];
+    if (full === undefined) { out += c; continue; }
+    const next = chars[i + 1];
+    if (next === 'ﾞ' && DAKUTEN_MAP[full]) { out += DAKUTEN_MAP[full]; i++; }
+    else if (next === 'ﾟ' && HANDAKUTEN_MAP[full]) { out += HANDAKUTEN_MAP[full]; i++; }
+    else out += full;
+  }
+  return out;
+}
+
+function baseOf(r) {
+  const b = String(r[IDX.base] || '').trim();
+  if (b.includes('本社') || b === '東京') return '本社';
+  if (b.includes('大阪')) return '大阪';
+  if (b.includes('名古屋')) return '名古屋';
+  return null;
+}
+
+function aggregateByDealer(orderRows, today) {
+  const result = {};
+  for (const key of MAJOR_DEALER_KEYS) {
+    result[key] = {};
+    for (const b of DEALER_BASES) result[key][b] = { today: 0, month: 0 };
+  }
+  for (const r of orderRows) {
+    if (!isSameMonthByVoucherDate(r, today.y, today.mo)) continue;
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    const cust = toFullWidthKana(r[IDX.cust_abbr] || '');
+    const key = MAJOR_DEALER_KEYS.find(k => cust.includes(k));
+    if (!key) continue;
+    const base = baseOf(r);
+    if (!base) continue;
+    const amt = Number(r[IDX.amount]) || 0;
+    result[key][base].month += amt;
+    if (isToday(r, today)) result[key][base].today += amt;
+  }
+  return result;
+}
+
+function renderDealerSection(dealerMap) {
+  const el = document.getElementById('dealerTableWrap');
+  const L = 'style="text-align:left"';
+  let anyData = false;
+  const rowsHtml = MAJOR_DEALER_KEYS.map(key => {
+    const bases = dealerMap[key];
+    const total = { today: 0, month: 0 };
+    const baseRows = DEALER_BASES.map(b => {
+      total.today += bases[b].today;
+      total.month += bases[b].month;
+      return `<tr><td ${L}></td><td ${L}>${b}</td><td>${formatYen(bases[b].today)}</td><td>${formatYen(bases[b].month)}</td></tr>`;
+    }).join('');
+    if (total.month !== 0) anyData = true;
+    return `<tr class="total-row"><td ${L}>${escapeHtml(key)}</td><td ${L}>全社</td><td>${formatYen(total.today)}</td><td>${formatYen(total.month)}</td></tr>${baseRows}`;
+  }).join('');
+
+  if (!anyData) {
+    el.innerHTML = '<div class="empty-state">今月の該当データはまだありません</div>';
+    return;
+  }
+
+  el.innerHTML = `
+    <table>
+      <thead><tr><th ${L}>機工商社</th><th ${L}>拠点</th><th>${TODAY_LABEL}</th><th>当月</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+}
+
 async function loadReport() {
   const t = await getToken();
   const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
@@ -675,6 +775,8 @@ async function loadReport() {
   renderGenreSection(genreMap);
 
   renderTopOrders(topOrders(orderRows, today, 10));
+
+  renderDealerSection(aggregateByDealer(orderRows, today));
 }
 
 // ============================================================
