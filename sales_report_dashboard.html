@@ -220,6 +220,7 @@ const IDX = {
   bumon:12, chu_bumon:13, base:14, sales_div:15,
   dai_bunrui:16, chu_bunrui:17, item_cd:18, item_nm:19,
   qty:20, amount:21, unit_price:22, kind:23,
+  kikou:27, // 納期(受注行のみ・regenerate_facts.pyで追加した列)
 };
 
 const DEPT_GROUPS = ['全社', '国内営業部', 'ソリューション営業部'];
@@ -343,18 +344,27 @@ function isSameMonthByVoucherDate(r, y, mo) {
   const d = parseVoucherDay(r[IDX.voucher_date]);
   return !!d && d.y === y && d.mo === mo;
 }
+function isSameMonthByKikou(r, y, mo) {
+  const d = parseVoucherDay(r[IDX.kikou]);
+  return !!d && d.y === y && d.mo === mo;
+}
 
 // 部門×月 の { 当日, 累計 } を集計
-// useVoucherDateForMonth: true の場合、月の判定に「年月度」(ym列)ではなく
-// voucher_date（受注日付/伝票日付）を使う。受注明細は「年月度」が納期の属する
-// 会計期間を指すことがあり、受注日ベースの「当月受注」とはズレるため。
-function aggregateByGroup(rows, curYm, today, useVoucherDateForMonth) {
+// monthMode で「累計」の月判定方法を切り替える:
+//   'kikou'   - 納期(受注のみ)。実データで検証した結果、日報Excelの「累計」は
+//               これに一致する。年月度は受注時点で固定され納期変更を反映しない
+//               ため、受注の月次集計には使えない。
+//   'ym'      - 年月度（売上はこちらでOK。伝票日付と一致するため）
+//   'voucher' - 受注日付/伝票日付そのもの（参考用）
+// 「当日」は常に受注日付/伝票日付ベース(isToday)で、monthModeの影響を受けない。
+function aggregateByGroup(rows, targetYm, today, monthMode) {
+  const targetY = Math.floor(targetYm / 100), targetMo = targetYm % 100;
   const result = {};
   for (const g of DEPT_GROUPS) result[g] = { todayAmt: 0, monthAmt: 0 };
   for (const r of rows) {
-    const inMonth = useVoucherDateForMonth
-      ? isSameMonthByVoucherDate(r, today.y, today.mo)
-      : rowYm(r) === curYm;
+    const inMonth = monthMode === 'kikou' ? isSameMonthByKikou(r, targetY, targetMo)
+      : monthMode === 'voucher' ? isSameMonthByVoucherDate(r, targetY, targetMo)
+      : rowYm(r) === targetYm;
     if (!inMonth) continue;
     if (Number(r[IDX.kind]) === 2) continue; // 返品
     if (isInternalTransfer(r)) continue;
@@ -565,7 +575,7 @@ function renderTable(containerId, metrics, plans, groups, firstColLabel) {
 function aggregateByGenre(rows, today) {
   const map = {};
   for (const r of rows) {
-    if (rowYm(r) !== today.y * 100 + today.mo) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     const genre = String(r[IDX.genre] || '').trim() || '(未設定)';
@@ -658,7 +668,7 @@ function escapeHtml(s) {
 function topOrders(orderRows, today, n) {
   const list = [];
   for (const r of orderRows) {
-    if (rowYm(r) !== today.y * 100 + today.mo) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     const amt = Number(r[IDX.amount]) || 0;
@@ -753,7 +763,7 @@ function aggregateByBaseGroup(orderRows, today) {
   const result = {};
   for (const b of BASE_GROUPS) result[b] = { todayAmt: 0, monthAmt: 0 };
   for (const r of orderRows) {
-    if (rowYm(r) !== today.y * 100 + today.mo) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     const b = baseOf(r);
@@ -793,7 +803,7 @@ function aggregateByDealer(orderRows, today) {
     for (const b of DEALER_BASES) result[key][b] = { today: 0, month: 0 };
   }
   for (const r of orderRows) {
-    if (rowYm(r) !== today.y * 100 + today.mo) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     const cust = toFullWidthKana(r[IDX.cust_abbr] || '');
@@ -844,7 +854,7 @@ function formatQty(n) { return Math.round(n).toLocaleString('ja-JP') + '台'; }
 function aggregateByModelCategory(orderRows, today) {
   const map = {};
   for (const r of orderRows) {
-    if (rowYm(r) !== today.y * 100 + today.mo) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     const cat = String(r[IDX.chu_bunrui] || '').trim() || '(未設定)';
@@ -969,16 +979,17 @@ async function loadReport() {
   // 国内営業部+ソリューション営業部の合計を「全社」計画として使う。
   plans['全社'] = (plans['国内営業部'] || 0) + (plans['ソリューション営業部'] || 0);
 
-  // 「累計」は年月度(納期の属する会計期間)ベース。月初にまとめて計上される
-  // 受注があるため、受注日付ベースだと月初の累計が実態よりかなり小さくなることが
-  // 実データで確認できた(9/3時点で計画の79%に達する、等)。
-  const orderMetrics = aggregateByGroup(orderRows, curYm, today, false);
-  const salesMetrics = aggregateByGroup(rows, curYm, today, false);
+  // 受注の「累計」は納期ベース(年月度は受注時点で固定され、納期変更を反映しない
+  // ため実データで大きくズレることを確認済み)。売上は年月度=伝票日付なのでそのまま。
+  const orderMetrics = aggregateByGroup(orderRows, curYm, today, 'kikou');
+  const salesMetrics = aggregateByGroup(rows, curYm, today, 'ym');
 
-  // 参考: 受注日付ベースで集計した場合との比較(切り分け用ログ)
-  const orderMetricsByVoucherDate = aggregateByGroup(orderRows, curYm, today, true);
+  // 参考: 年月度ベース/受注日付ベースで集計した場合との比較(切り分け用ログ)
+  const orderMetricsByYm = aggregateByGroup(orderRows, curYm, today, 'ym');
+  const orderMetricsByVoucherDate = aggregateByGroup(orderRows, curYm, today, 'voucher');
   console.log('[営業日報] curYm=', curYm, 'plans=', plans);
-  console.log('[営業日報] orderMetrics(年月度ベース)=', orderMetrics);
+  console.log('[営業日報] orderMetrics(納期ベース)=', orderMetrics);
+  console.log('[営業日報] orderMetrics(年月度ベース・参考)=', orderMetricsByYm);
   console.log('[営業日報] orderMetrics(受注日付ベース・参考)=', orderMetricsByVoucherDate);
   console.log('[営業日報] salesMetrics=', salesMetrics);
 
@@ -996,9 +1007,9 @@ async function loadReport() {
 
   renderModelSection(aggregateByModelCategory(orderRows, today));
 
-  // 翌月受注金額: 年月度が「翌月」の受注（納期が翌月に属する受注）
+  // 翌月受注金額: 納期が「翌月」に属する受注
   const nextYm = shiftYm(curYm, 1);
-  const nextMonthMetrics = aggregateByGroup(orderRows, nextYm, today, false);
+  const nextMonthMetrics = aggregateByGroup(orderRows, nextYm, today, 'kikou');
   renderSimpleAmountTable('nextMonthTableWrap', nextMonthMetrics, DEPT_GROUPS, '部門');
 
   // 拠点別受注金額（本社/大阪/名古屋）
