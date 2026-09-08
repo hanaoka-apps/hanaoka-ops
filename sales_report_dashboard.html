@@ -185,6 +185,24 @@
   .dealer-base-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 2px 0; }
   .dealer-base-row .b { color: var(--text-sub); }
 
+  .model-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 14px;
+  }
+  .model-block {
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: #f8f9fc;
+    border-left: 4px solid #1d4ed8;
+  }
+  .model-block .model-name { font-weight: 700; font-size: 13.5px; margin-bottom: 4px; }
+  .model-block .model-total { font-size: 12.5px; color: var(--text-sub); }
+  .model-block .model-total b { color: var(--text-main); font-size: 15px; }
+  .model-bar-track { height: 5px; border-radius: 3px; background: #eef0f5; margin-top: 9px; overflow: hidden; }
+  .model-bar-fill { height: 100%; border-radius: 3px; }
+  .model-rest { margin-top: 10px; font-size: 12.5px; color: var(--text-sub); text-align: right; }
+
   td.rank-cell { text-align: center; font-weight: 700; }
   tr.rank-1 td { background: #fff9e8; }
   tr.rank-2 td { background: #f4f5f8; }
@@ -268,15 +286,13 @@
 
   <div class="section-grid">
     <div class="card">
-      <h2>機種別受注台数（国内営業）</h2>
-      <div class="bar-wrap" style="height:260px"><canvas id="modelDomBarChart"></canvas></div>
-      <div id="modelDomTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      <h2>機種別受注台数（国内営業）<span class="page-sub" style="margin-left:8px">上位8機種</span></h2>
+      <div id="modelDomWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
 
     <div class="card">
-      <h2>機種別受注台数（ソリューション営業部）</h2>
-      <div class="bar-wrap" style="height:260px"><canvas id="modelSolBarChart"></canvas></div>
-      <div id="modelSolTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      <h2>機種別受注台数（ソリューション営業部）<span class="page-sub" style="margin-left:8px">上位8機種</span></h2>
+      <div id="modelSolWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
   </div>
 
@@ -1257,6 +1273,43 @@ function aggregateByModelCategory(orderRows, today, divFilter) {
   return map;
 }
 
+// 機種別受注台数を機工商社ブロックと同じ雰囲気の色付きカードで表示。
+// カテゴリ数が多く全件テーブルだと縦に長くなりすぎるため、上位N件のみを
+// カード表示にして残りは合計だけ添える。
+const MODEL_BLOCK_TOP_N = 8;
+function renderModelBlocks(containerId, map, color) {
+  const el = document.getElementById(containerId);
+  const entries = Object.entries(map)
+    .map(([name, v]) => ({ name, ...v }))
+    .filter(e => e.month !== 0)
+    .sort((a, b) => b.month - a.month);
+
+  if (!entries.length) {
+    el.innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
+    return;
+  }
+
+  const top = entries.slice(0, MODEL_BLOCK_TOP_N);
+  const maxQty = top[0].month;
+  const rest = entries.slice(MODEL_BLOCK_TOP_N);
+
+  const blocksHtml = top.map(e => {
+    const pct = maxQty > 0 ? Math.round((e.month / maxQty) * 100) : 0;
+    return `
+      <div class="model-block" style="border-left-color:${color}">
+        <div class="model-name">${escapeHtml(e.name)}</div>
+        <div class="model-total">${TODAY_LABEL} ${formatQty(e.today)} ／ 当月 <b>${formatQty(e.month)}</b></div>
+        <div class="model-bar-track"><div class="model-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+      </div>`;
+  }).join('');
+
+  const restHtml = rest.length
+    ? `<div class="model-rest">ほか${rest.length}機種で計${formatQty(rest.reduce((s, e) => s + e.month, 0))}</div>`
+    : '';
+
+  el.innerHTML = `<div class="model-grid">${blocksHtml}</div>${restHtml}`;
+}
+
 let FACTS = null; // dashboard_facts.json をキャッシュ（日付を遡るたびに再取得しないため）
 
 // 「当日」の自動判定：実際の今日ではなく、データ内に存在する最新の“締まった”営業日。
@@ -1367,18 +1420,8 @@ function renderForDate(today) {
   renderDealerSection(aggregateByDealer(orderRows, today));
   renderDealerRatio(aggregateDealerVsOther(orderRows, today));
 
-  renderRankedSection({
-    chartId: 'modelDomBarChart', tableId: 'modelDomTableWrap',
-    map: aggregateByModelCategory(orderRows, today, 'dom'), color: '#2455e6',
-    axisLabel: '台', formatFn: formatQty, firstColLabel: '機種(中分類)',
-    emptyMsg: '今月の受注はまだありません',
-  });
-  renderRankedSection({
-    chartId: 'modelSolBarChart', tableId: 'modelSolTableWrap',
-    map: aggregateByModelCategory(orderRows, today, 'sol'), color: '#7c3aed',
-    axisLabel: '台', formatFn: formatQty, firstColLabel: '機種(中分類)',
-    emptyMsg: '今月の受注はまだありません',
-  });
+  renderModelBlocks('modelDomWrap', aggregateByModelCategory(orderRows, today, 'dom'), '#2455e6');
+  renderModelBlocks('modelSolWrap', aggregateByModelCategory(orderRows, today, 'sol'), '#7c3aed');
 
   // 翌月受注金額: 納期が「翌月」に属する受注
   const nextYm = shiftYm(curYm, 1);
