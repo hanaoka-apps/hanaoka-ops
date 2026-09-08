@@ -408,6 +408,7 @@ def transform_orders(header, rows):
         'qty':          find_idx(h, '数量'),
         'amount':       find_idx(h, '金額'),
         'unit_price':   find_idx(h, '単価'),
+        'kikou':        find_idx(h, '納期'),
     }
     missing = [k for k, v in idx.items() if v is None]
     if missing:
@@ -447,6 +448,9 @@ def transform_orders(header, rows):
             to_float(row[idx['unit_price']]),
             1,
             cust_abbr, genre, '',
+            row[idx['kikou']] or '',  # index 27: 納期(納品予定日)。年月度は受注時点で
+            # 固定されるが納期は後から何度も変更されるため、月次の累計集計は
+            # こちらを使う必要がある(ダッシュボードの受注集計ロジック側で使用)。
         ])
     return out
 
