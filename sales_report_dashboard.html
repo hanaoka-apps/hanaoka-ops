@@ -155,6 +155,36 @@
   .news-text b { font-weight: 700; }
   .news-sub { color: var(--text-sub); font-size: 12.5px; margin-left: 4px; }
 
+  .dealer-donuts {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+  }
+  .dealer-donut-block { text-align: center; }
+  .dealer-donut-wrap { position: relative; width: 190px; height: 190px; }
+  .dealer-donut-title { font-size: 12.5px; font-weight: 700; color: var(--text-sub); margin-bottom: 8px; }
+  .dealer-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center; margin-top: 10px; font-size: 12px; }
+  .dealer-legend-item { display: flex; align-items: center; gap: 5px; }
+  .dealer-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+  .dealer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 14px;
+  }
+  .dealer-block {
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: #f8f9fc;
+    border-left: 4px solid #1d4ed8;
+  }
+  .dealer-block .dealer-name { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+  .dealer-block .dealer-total { font-size: 12.5px; color: var(--text-sub); margin-bottom: 8px; }
+  .dealer-block .dealer-total b { color: var(--text-main); font-size: 14px; }
+  .dealer-base-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 2px 0; }
+  .dealer-base-row .b { color: var(--text-sub); }
+
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
     table { font-size: 12.5px; }
@@ -233,14 +263,31 @@
 
   <div class="section-grid">
     <div class="card">
-      <h2>主な当月受注内容<span class="page-sub" style="margin-left:8px">金額の大きい順・上位10件</span></h2>
-      <div id="topOrdersWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      <h2>主な当月受注内容（国内営業）<span class="page-sub" style="margin-left:8px">金額の大きい順・上位10件</span></h2>
+      <div id="topOrdersDomWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
 
     <div class="card">
-      <h2>機工商社別受注金額<span class="page-sub" style="margin-left:8px">計画値は元データに無いため実績のみ</span></h2>
-      <div id="dealerTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      <h2>主な当月受注内容（ソリューション営業部）<span class="page-sub" style="margin-left:8px">金額の大きい順・上位10件</span></h2>
+      <div id="topOrdersSolWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>機工商社別受注金額<span class="page-sub" style="margin-left:8px">計画値は元データに無いため実績のみ</span></h2>
+    <div class="dealer-donuts">
+      <div class="dealer-donut-block">
+        <div class="dealer-donut-title">機工商社別シェア（当月）</div>
+        <div class="dealer-donut-wrap"><canvas id="dealerShareChart"></canvas></div>
+        <div class="dealer-legend" id="dealerShareLegend"></div>
+      </div>
+      <div class="dealer-donut-block">
+        <div class="dealer-donut-title">機工商社経由 vs 直販（国内営業・当月受注）</div>
+        <div class="dealer-donut-wrap"><canvas id="dealerRatioChart"></canvas></div>
+        <div class="dealer-legend" id="dealerRatioLegend"></div>
+      </div>
+    </div>
+    <div id="dealerTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -901,7 +948,7 @@ function escapeHtml(s) {
 // ============================================================
 // 主な当月受注内容（上位受注一覧）
 // ============================================================
-function topOrders(orderRows, today, n) {
+function topOrders(orderRows, today, n, divFilter) {
   const list = [];
   for (const r of orderRows) {
     const vKey = voucherDateKey(r);
@@ -909,6 +956,9 @@ function topOrders(orderRows, today, n) {
     if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
+    const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+    if (divFilter === 'dom' && isSol) continue;
+    if (divFilter === 'sol' && !isSol) continue;
     const amt = Number(r[IDX.amount]) || 0;
     if (amt <= 0) continue;
     list.push({
@@ -925,8 +975,8 @@ function topOrders(orderRows, today, n) {
   return list.slice(0, n);
 }
 
-function renderTopOrders(orders) {
-  const el = document.getElementById('topOrdersWrap');
+function renderTopOrders(containerId, orders) {
+  const el = document.getElementById(containerId);
   if (!orders.length) {
     el.innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
     return;
@@ -956,6 +1006,10 @@ function renderTopOrders(orders) {
 // ============================================================
 const MAJOR_DEALER_KEYS = ['山善', 'ユニソル', 'YUASA', 'NaITO', 'サカエ', 'トラスコ中山'];
 const DEALER_BASES = ['本社', '大阪', '名古屋'];
+const DEALER_COLORS = {
+  '山善': '#2455e6', 'ユニソル': '#7c3aed', 'YUASA': '#16a34a',
+  'NaITO': '#f59e0b', 'サカエ': '#e11d48', 'トラスコ中山': '#0891b2',
+};
 
 // 半角カナ→全角カナ変換（得意先名の表記ゆれ対策。sales/order行のcust_abbrは
 // SMILE側でzenkaku正規化されていないため、こちらで吸収する）
@@ -1062,30 +1116,106 @@ function aggregateByDealer(orderRows, today) {
 
 function renderDealerSection(dealerMap) {
   const el = document.getElementById('dealerTableWrap');
-  const L = 'style="text-align:left"';
-  let anyData = false;
-  const rowsHtml = MAJOR_DEALER_KEYS.map(key => {
+
+  const totals = MAJOR_DEALER_KEYS.map(key => {
     const bases = dealerMap[key];
     const total = { today: 0, month: 0 };
-    const baseRows = DEALER_BASES.map(b => {
-      total.today += bases[b].today;
-      total.month += bases[b].month;
-      return `<tr><td ${L}></td><td ${L}>${b}</td><td>${formatYen(bases[b].today)}</td><td>${formatYen(bases[b].month)}</td></tr>`;
-    }).join('');
-    if (total.month !== 0) anyData = true;
-    return `<tr class="total-row"><td ${L}>${escapeHtml(key)}</td><td ${L}>全社</td><td>${formatYen(total.today)}</td><td>${formatYen(total.month)}</td></tr>${baseRows}`;
-  }).join('');
+    for (const b of DEALER_BASES) { total.today += bases[b].today; total.month += bases[b].month; }
+    return { key, bases, total };
+  });
+  const anyData = totals.some(t => t.total.month !== 0);
 
+  destroyChart('dealerShareChart');
+  const legendEl = document.getElementById('dealerShareLegend');
   if (!anyData) {
     el.innerHTML = '<div class="empty-state">今月の該当データはまだありません</div>';
+    legendEl.innerHTML = '';
     return;
   }
 
-  el.innerHTML = `
-    <div class="table-scroll"><table>
-      <thead><tr><th ${L}>機工商社</th><th ${L}>拠点</th><th>${TODAY_LABEL}</th><th>当月</th></tr></thead>
-      <tbody>${rowsHtml}</tbody>
-    </table></div>`;
+  // 機工商社別シェア（当月・円グラフ）
+  const shareData = totals.filter(t => t.total.month > 0);
+  const shareChart = new Chart(document.getElementById('dealerShareChart'), {
+    type: 'doughnut',
+    data: {
+      labels: shareData.map(t => t.key),
+      datasets: [{
+        data: shareData.map(t => t.total.month),
+        backgroundColor: shareData.map(t => DEALER_COLORS[t.key] || '#c7cbd6'),
+        borderWidth: 0,
+      }]
+    },
+    options: { cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => formatYen(c.raw) } } } },
+  });
+  CHARTS['dealerShareChart'] = shareChart;
+  legendEl.innerHTML = shareData.map(t => `
+    <span class="dealer-legend-item"><span class="dealer-legend-dot" style="background:${DEALER_COLORS[t.key] || '#c7cbd6'}"></span>${escapeHtml(t.key)}</span>
+  `).join('');
+
+  // 商社ごとのブロック表示（拠点内訳付き）
+  el.innerHTML = `<div class="dealer-grid">${totals.map(t => {
+    const color = DEALER_COLORS[t.key] || '#1d4ed8';
+    const baseRows = DEALER_BASES.map(b => `
+      <div class="dealer-base-row"><span class="b">${b}</span><span>${formatYen(t.bases[b].month)}</span></div>
+    `).join('');
+    return `
+      <div class="dealer-block" style="border-left-color:${color}">
+        <div class="dealer-name">${escapeHtml(t.key)}</div>
+        <div class="dealer-total">${TODAY_LABEL} ${formatYen(t.total.today)} ／ 当月 <b>${formatYen(t.total.month)}</b></div>
+        ${baseRows}
+      </div>`;
+  }).join('')}</div>`;
+}
+
+// ============================================================
+// 機工商社経由 vs 直販の比率（国内営業・当月受注、受注ベース）
+// ============================================================
+function aggregateDealerVsOther(orderRows, today) {
+  const todayKey = today.y * 10000 + today.mo * 100 + today.d;
+  let dealerAmt = 0, domTotal = 0;
+  for (const r of orderRows) {
+    const vKey = voucherDateKey(r);
+    if (vKey === null || vKey > todayKey) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+    if (isSol) continue; // 国内営業のみ
+    const amt = Number(r[IDX.amount]) || 0;
+    domTotal += amt;
+    const cust = toFullWidthKana(r[IDX.cust_abbr] || '');
+    if (MAJOR_DEALER_KEYS.some(k => cust.includes(k))) dealerAmt += amt;
+  }
+  return { dealerAmt, otherAmt: domTotal - dealerAmt, domTotal };
+}
+
+function renderDealerRatio({ dealerAmt, otherAmt, domTotal }) {
+  destroyChart('dealerRatioChart');
+  const legendEl = document.getElementById('dealerRatioLegend');
+  const el = document.getElementById('dealerRatioChart');
+  if (domTotal <= 0) {
+    legendEl.innerHTML = '<span class="dealer-legend-item">今月の国内営業受注はまだありません</span>';
+    return;
+  }
+  const pct = Math.round((dealerAmt / domTotal) * 100);
+  const chart = new Chart(el, {
+    type: 'doughnut',
+    data: {
+      labels: ['機工商社経由', '直販等'],
+      datasets: [{ data: [dealerAmt, otherAmt], backgroundColor: ['#1d4ed8', '#e2e6ef'], borderWidth: 0 }]
+    },
+    options: {
+      cutout: '68%',
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => formatYen(c.raw) } } },
+    }
+  });
+  chart.config._centerText = pct + '%';
+  chart.update();
+  CHARTS['dealerRatioChart'] = chart;
+  legendEl.innerHTML = `
+    <span class="dealer-legend-item"><span class="dealer-legend-dot" style="background:#1d4ed8"></span>機工商社経由 ${formatYen(dealerAmt)}</span>
+    <span class="dealer-legend-item"><span class="dealer-legend-dot" style="background:#c7cbd6"></span>直販等 ${formatYen(otherAmt)}</span>
+  `;
 }
 
 // ============================================================
@@ -1277,9 +1407,11 @@ function renderForDate(today) {
   const genreMap = aggregateByGenre(orderRows, today);
   renderGenreSection(genreMap);
 
-  renderTopOrders(topOrders(orderRows, today, 10));
+  renderTopOrders('topOrdersDomWrap', topOrders(orderRows, today, 10, 'dom'));
+  renderTopOrders('topOrdersSolWrap', topOrders(orderRows, today, 10, 'sol'));
 
   renderDealerSection(aggregateByDealer(orderRows, today));
+  renderDealerRatio(aggregateDealerVsOther(orderRows, today));
 
   renderModelSection(aggregateByModelCategory(orderRows, today));
 
