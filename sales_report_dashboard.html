@@ -185,6 +185,11 @@
   .dealer-base-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 2px 0; }
   .dealer-base-row .b { color: var(--text-sub); }
 
+  td.rank-cell { text-align: center; font-weight: 700; }
+  tr.rank-1 td { background: #fff9e8; }
+  tr.rank-2 td { background: #f4f5f8; }
+  tr.rank-3 td { background: #fdf3ea; }
+
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
     table { font-size: 12.5px; }
@@ -249,15 +254,29 @@
 
   <div class="section-grid">
     <div class="card">
-      <h2>売先ジャンル別受注金額</h2>
-      <div class="bar-wrap" style="height:260px"><canvas id="genreBarChart"></canvas></div>
-      <div id="genreTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      <h2>売先ジャンル別受注金額（国内営業）</h2>
+      <div class="bar-wrap" style="height:260px"><canvas id="genreDomBarChart"></canvas></div>
+      <div id="genreDomTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
 
     <div class="card">
-      <h2>機種別受注台数</h2>
-      <div class="bar-wrap" style="height:260px"><canvas id="modelBarChart"></canvas></div>
-      <div id="modelTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      <h2>売先ジャンル別受注金額（ソリューション営業部）</h2>
+      <div class="bar-wrap" style="height:260px"><canvas id="genreSolBarChart"></canvas></div>
+      <div id="genreSolTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+    </div>
+  </div>
+
+  <div class="section-grid">
+    <div class="card">
+      <h2>機種別受注台数（国内営業）</h2>
+      <div class="bar-wrap" style="height:260px"><canvas id="modelDomBarChart"></canvas></div>
+      <div id="modelDomTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+    </div>
+
+    <div class="card">
+      <h2>機種別受注台数（ソリューション営業部）</h2>
+      <div class="bar-wrap" style="height:260px"><canvas id="modelSolBarChart"></canvas></div>
+      <div id="modelSolTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
   </div>
 
@@ -851,9 +870,9 @@ function renderTable(containerId, metrics, plans, groups, firstColLabel) {
 }
 
 // ============================================================
-// 売先ジャンル別受注金額
+// 売先ジャンル別受注金額（国内営業/ソリューション営業部を別々に集計）
 // ============================================================
-function aggregateByGenre(rows, today) {
+function aggregateByGenre(rows, today, divFilter) {
   const map = {};
   for (const r of rows) {
     const vKey = voucherDateKey(r);
@@ -861,83 +880,70 @@ function aggregateByGenre(rows, today) {
     if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
-    const genre = String(r[IDX.genre] || '').trim() || '(未設定)';
-    if (!map[genre]) map[genre] = { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 };
     const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+    if (divFilter === 'dom' && isSol) continue;
+    if (divFilter === 'sol' && !isSol) continue;
+    const genre = String(r[IDX.genre] || '').trim() || '(未設定)';
+    if (!map[genre]) map[genre] = { today: 0, month: 0 };
     const amt = Number(r[IDX.amount]) || 0;
-    const todayHit = isToday(r, today);
-    if (isSol) {
-      map[genre].monthSol += amt;
-      if (todayHit) map[genre].todaySol += amt;
-    } else {
-      map[genre].monthDom += amt;
-      if (todayHit) map[genre].todayDom += amt;
-    }
+    map[genre].month += amt;
+    if (isToday(r, today)) map[genre].today += amt;
   }
   return map;
 }
 
-function renderGenreSection(genreMap) {
-  const entries = Object.entries(genreMap)
-    .map(([genre, v]) => ({ genre, ...v, monthTotal: v.monthDom + v.monthSol }))
-    .filter(e => e.monthTotal !== 0)
-    .sort((a, b) => b.monthTotal - a.monthTotal);
+// 売先ジャンル別受注金額・機種別受注台数で共通に使う
+// 「上位10件の横棒グラフ＋全件テーブル」レンダラー
+function renderRankedSection({ chartId, tableId, map, color, axisLabel, formatFn, firstColLabel, emptyMsg }) {
+  const entries = Object.entries(map)
+    .map(([name, v]) => ({ name, ...v }))
+    .filter(e => e.month !== 0)
+    .sort((a, b) => b.month - a.month);
 
   if (!entries.length) {
-    document.getElementById('genreTableWrap').innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
-    destroyChart('genreBarChart');
+    document.getElementById(tableId).innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
+    destroyChart(chartId);
     return;
   }
 
   const top = entries.slice(0, 10);
-  destroyChart('genreBarChart');
-  const el = document.getElementById('genreBarChart');
+  destroyChart(chartId);
+  const el = document.getElementById(chartId);
+  const scale = axisLabel === '万円' ? 10000 : 1;
   const chart = new Chart(el, {
     type: 'bar',
     data: {
-      labels: top.map(e => e.genre),
-      datasets: [
-        { label: '国内営業部', data: top.map(e => Math.round(e.monthDom / 10000)), backgroundColor: '#2455e6' },
-        { label: 'ソリューション営業部', data: top.map(e => Math.round(e.monthSol / 10000)), backgroundColor: '#7c3aed' },
-      ]
+      labels: top.map(e => e.name),
+      datasets: [{ data: top.map(e => Math.round(e.month / scale)), backgroundColor: color, borderRadius: 3 }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
-      scales: { x: { stacked: true, title: { display: true, text: '万円' } }, y: { stacked: true } },
-      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+      scales: { x: { title: { display: true, text: axisLabel } } },
+      plugins: { legend: { display: false } },
     }
   });
-  CHARTS['genreBarChart'] = chart;
+  CHARTS[chartId] = chart;
 
   const rowsHtml = entries.map(e => `
     <tr>
-      <td>${escapeHtml(e.genre)}</td>
-      <td>${formatYen(e.todayDom)}</td>
-      <td>${formatYen(e.todaySol)}</td>
-      <td>${formatYen(e.monthDom)}</td>
-      <td>${formatYen(e.monthSol)}</td>
+      <td>${escapeHtml(e.name)}</td>
+      <td>${formatFn(e.today)}</td>
+      <td>${formatFn(e.month)}</td>
     </tr>`).join('');
 
-  const grand = entries.reduce((acc, e) => ({
-    todayDom: acc.todayDom + e.todayDom,
-    todaySol: acc.todaySol + e.todaySol,
-    monthDom: acc.monthDom + e.monthDom,
-    monthSol: acc.monthSol + e.monthSol,
-  }), { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 });
+  const grand = entries.reduce((acc, e) => ({ today: acc.today + e.today, month: acc.month + e.month }), { today: 0, month: 0 });
   const totalRowHtml = `
     <tr class="total-row">
       <td>合計</td>
-      <td>${formatYen(grand.todayDom)}</td>
-      <td>${formatYen(grand.todaySol)}</td>
-      <td>${formatYen(grand.monthDom)}</td>
-      <td>${formatYen(grand.monthSol)}</td>
+      <td>${formatFn(grand.today)}</td>
+      <td>${formatFn(grand.month)}</td>
     </tr>`;
 
-  document.getElementById('genreTableWrap').innerHTML = `
+  document.getElementById(tableId).innerHTML = `
     <div class="table-scroll"><table>
-      <thead><tr><th>ジャンル</th><th>${TODAY_LABEL} 国内</th><th>${TODAY_LABEL} ソリューション</th><th>当月 国内</th><th>当月 ソリューション</th></tr></thead>
+      <thead><tr><th>${firstColLabel}</th><th>${TODAY_LABEL}</th><th>当月</th></tr></thead>
       <tbody>${rowsHtml}${totalRowHtml}</tbody>
     </table></div>`;
 }
@@ -975,6 +981,10 @@ function topOrders(orderRows, today, n, divFilter) {
   return list.slice(0, n);
 }
 
+function rankBadge(i) {
+  return i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : String(i + 1);
+}
+
 function renderTopOrders(containerId, orders) {
   const el = document.getElementById(containerId);
   if (!orders.length) {
@@ -982,8 +992,11 @@ function renderTopOrders(containerId, orders) {
     return;
   }
   const L = 'style="text-align:left"';
-  const rowsHtml = orders.map(o => `
-    <tr>
+  const rowsHtml = orders.map((o, i) => {
+    const rankClass = i < 3 ? ` class="rank-${i + 1}"` : '';
+    return `
+    <tr${rankClass}>
+      <td class="rank-cell">${rankBadge(i)}</td>
       <td ${L}>${escapeHtml(o.rep)}</td>
       <td ${L}>${escapeHtml(o.cust)}</td>
       <td ${L}>${escapeHtml(o.item)}</td>
@@ -991,10 +1004,11 @@ function renderTopOrders(containerId, orders) {
       <td>${formatYen(o.unitPrice)}</td>
       <td>${formatYen(o.amount)}</td>
       <td ${L}>${escapeHtml(o.deliverNm)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   el.innerHTML = `
     <div class="table-scroll"><table>
-      <thead><tr><th>担当</th><th ${L}>得意先</th><th ${L}>商品名</th><th>数量</th><th>単価</th><th>金額</th><th ${L}>納品先</th></tr></thead>
+      <thead><tr><th>順位</th><th>担当</th><th ${L}>得意先</th><th ${L}>商品名</th><th>数量</th><th>単価</th><th>金額</th><th ${L}>納品先</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table></div>`;
 }
@@ -1223,7 +1237,7 @@ function renderDealerRatio({ dealerAmt, otherAmt, domTotal }) {
 // ============================================================
 function formatQty(n) { return Math.round(n).toLocaleString('ja-JP') + '台'; }
 
-function aggregateByModelCategory(orderRows, today) {
+function aggregateByModelCategory(orderRows, today, divFilter) {
   const map = {};
   for (const r of orderRows) {
     const vKey = voucherDateKey(r);
@@ -1231,86 +1245,16 @@ function aggregateByModelCategory(orderRows, today) {
     if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
-    const cat = String(r[IDX.chu_bunrui] || '').trim() || '(未設定)';
-    if (!map[cat]) map[cat] = { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 };
     const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
+    if (divFilter === 'dom' && isSol) continue;
+    if (divFilter === 'sol' && !isSol) continue;
+    const cat = String(r[IDX.chu_bunrui] || '').trim() || '(未設定)';
+    if (!map[cat]) map[cat] = { today: 0, month: 0 };
     const qty = Number(r[IDX.qty]) || 0;
-    const todayHit = isToday(r, today);
-    if (isSol) {
-      map[cat].monthSol += qty;
-      if (todayHit) map[cat].todaySol += qty;
-    } else {
-      map[cat].monthDom += qty;
-      if (todayHit) map[cat].todayDom += qty;
-    }
+    map[cat].month += qty;
+    if (isToday(r, today)) map[cat].today += qty;
   }
   return map;
-}
-
-function renderModelSection(modelMap) {
-  const entries = Object.entries(modelMap)
-    .map(([cat, v]) => ({ cat, ...v, monthTotal: v.monthDom + v.monthSol }))
-    .filter(e => e.monthTotal !== 0)
-    .sort((a, b) => b.monthTotal - a.monthTotal);
-
-  if (!entries.length) {
-    document.getElementById('modelTableWrap').innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
-    destroyChart('modelBarChart');
-    return;
-  }
-
-  const top = entries.slice(0, 10);
-  destroyChart('modelBarChart');
-  const el = document.getElementById('modelBarChart');
-  const chart = new Chart(el, {
-    type: 'bar',
-    data: {
-      labels: top.map(e => e.cat),
-      datasets: [
-        { label: '国内営業部', data: top.map(e => e.monthDom), backgroundColor: '#2455e6' },
-        { label: 'ソリューション営業部', data: top.map(e => e.monthSol), backgroundColor: '#7c3aed' },
-      ]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: { x: { stacked: true, title: { display: true, text: '台' } }, y: { stacked: true } },
-      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
-    }
-  });
-  CHARTS['modelBarChart'] = chart;
-
-  const L = 'style="text-align:left"';
-  const rowsHtml = entries.map(e => `
-    <tr>
-      <td ${L}>${escapeHtml(e.cat)}</td>
-      <td>${formatQty(e.todayDom)}</td>
-      <td>${formatQty(e.todaySol)}</td>
-      <td>${formatQty(e.monthDom)}</td>
-      <td>${formatQty(e.monthSol)}</td>
-    </tr>`).join('');
-
-  const grand = entries.reduce((acc, e) => ({
-    todayDom: acc.todayDom + e.todayDom,
-    todaySol: acc.todaySol + e.todaySol,
-    monthDom: acc.monthDom + e.monthDom,
-    monthSol: acc.monthSol + e.monthSol,
-  }), { todayDom: 0, todaySol: 0, monthDom: 0, monthSol: 0 });
-  const totalRowHtml = `
-    <tr class="total-row">
-      <td ${L}>合計</td>
-      <td>${formatQty(grand.todayDom)}</td>
-      <td>${formatQty(grand.todaySol)}</td>
-      <td>${formatQty(grand.monthDom)}</td>
-      <td>${formatQty(grand.monthSol)}</td>
-    </tr>`;
-
-  document.getElementById('modelTableWrap').innerHTML = `
-    <div class="table-scroll"><table>
-      <thead><tr><th ${L}>機種(中分類)</th><th>${TODAY_LABEL} 国内</th><th>${TODAY_LABEL} ソリューション</th><th>当月 国内</th><th>当月 ソリューション</th></tr></thead>
-      <tbody>${rowsHtml}${totalRowHtml}</tbody>
-    </table></div>`;
 }
 
 let FACTS = null; // dashboard_facts.json をキャッシュ（日付を遡るたびに再取得しないため）
@@ -1404,8 +1348,18 @@ function renderForDate(today) {
 
   renderItemNews(orderRows, curYm, today);
 
-  const genreMap = aggregateByGenre(orderRows, today);
-  renderGenreSection(genreMap);
+  renderRankedSection({
+    chartId: 'genreDomBarChart', tableId: 'genreDomTableWrap',
+    map: aggregateByGenre(orderRows, today, 'dom'), color: '#2455e6',
+    axisLabel: '万円', formatFn: formatYen, firstColLabel: 'ジャンル',
+    emptyMsg: '今月の受注はまだありません',
+  });
+  renderRankedSection({
+    chartId: 'genreSolBarChart', tableId: 'genreSolTableWrap',
+    map: aggregateByGenre(orderRows, today, 'sol'), color: '#7c3aed',
+    axisLabel: '万円', formatFn: formatYen, firstColLabel: 'ジャンル',
+    emptyMsg: '今月の受注はまだありません',
+  });
 
   renderTopOrders('topOrdersDomWrap', topOrders(orderRows, today, 10, 'dom'));
   renderTopOrders('topOrdersSolWrap', topOrders(orderRows, today, 10, 'sol'));
@@ -1413,7 +1367,18 @@ function renderForDate(today) {
   renderDealerSection(aggregateByDealer(orderRows, today));
   renderDealerRatio(aggregateDealerVsOther(orderRows, today));
 
-  renderModelSection(aggregateByModelCategory(orderRows, today));
+  renderRankedSection({
+    chartId: 'modelDomBarChart', tableId: 'modelDomTableWrap',
+    map: aggregateByModelCategory(orderRows, today, 'dom'), color: '#2455e6',
+    axisLabel: '台', formatFn: formatQty, firstColLabel: '機種(中分類)',
+    emptyMsg: '今月の受注はまだありません',
+  });
+  renderRankedSection({
+    chartId: 'modelSolBarChart', tableId: 'modelSolTableWrap',
+    map: aggregateByModelCategory(orderRows, today, 'sol'), color: '#7c3aed',
+    axisLabel: '台', formatFn: formatQty, firstColLabel: '機種(中分類)',
+    emptyMsg: '今月の受注はまだありません',
+  });
 
   // 翌月受注金額: 納期が「翌月」に属する受注
   const nextYm = shiftYm(curYm, 1);
