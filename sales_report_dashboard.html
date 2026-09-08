@@ -109,12 +109,38 @@
     height: 120px;
   }
   .gauge-label { font-size: 13px; font-weight: 700; margin-top: 6px; }
+  .gauge-emoji { font-size: 14px; }
   .gauge-amt { font-size: 12px; color: var(--text-sub); margin-top: 2px; }
 
   .bar-wrap {
     position: relative;
     height: 190px;
     margin-bottom: 24px;
+  }
+
+  .trend-label {
+    font-size: 12px;
+    color: var(--text-sub);
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .asof-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-sub);
+  }
+  .asof-wrap input[type="date"] {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 13.5px;
+    font-family: inherit;
+    color: var(--text-main);
+    background: #fff;
   }
 
   @media (max-width: 640px) {
@@ -134,6 +160,10 @@
       <div class="page-sub" id="dateLabel"></div>
     </div>
     <div class="top-actions">
+      <label id="asOfWrap" class="asof-wrap" hidden>
+        表示日:
+        <input type="date" id="asOfInput">
+      </label>
       <button id="signInBtn" class="signin-btn" hidden>Microsoftでサインイン</button>
     </div>
   </div>
@@ -142,6 +172,8 @@
     <div class="card">
       <h2>受注金額</h2>
       <div class="gauge-row" id="orderGauges"></div>
+      <div class="trend-label">日次推移（全社・過去14日）</div>
+      <div class="bar-wrap" style="height:130px"><canvas id="orderTrendChart"></canvas></div>
       <div class="bar-wrap"><canvas id="orderBarChart"></canvas></div>
       <div id="orderTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
@@ -149,6 +181,8 @@
     <div class="card">
       <h2>売上金額</h2>
       <div class="gauge-row" id="salesGauges"></div>
+      <div class="trend-label">日次推移（全社・過去14日）</div>
+      <div class="bar-wrap" style="height:130px"><canvas id="salesTrendChart"></canvas></div>
       <div class="bar-wrap"><canvas id="salesBarChart"></canvas></div>
       <div id="salesTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
     </div>
@@ -533,21 +567,93 @@ function renderBarChart(canvasId, groups, planByGroup, amtByGroup) {
   CHARTS[canvasId] = chart;
 }
 
+// ============================================================
+// 日次推移（過去14日・全社）
+// ============================================================
+function shiftDate(d, deltaDays) {
+  const dt = new Date(d.y, d.mo - 1, d.d + deltaDays);
+  return { y: dt.getFullYear(), mo: dt.getMonth() + 1, d: dt.getDate() };
+}
+function dateKeyOf(d) { return d.y * 10000 + d.mo * 100 + d.d; }
+
+// 対象月(monthMode基準)に該当する行を、受注日付/伝票日付の日付キーごとに
+// 金額を合算したマップにする（全社=全行、返品・内部移動は除外）。1回のループで
+// 過去何日分でも参照できるようにするため、日ごとに毎回全件走査しない。
+function dailyAmountMap(rows, curYm, monthMode) {
+  const targetY = Math.floor(curYm / 100), targetMo = curYm % 100;
+  const map = {};
+  for (const r of rows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    const inMonth = monthMode === 'kikou' ? isSameMonthByKikou(r, targetY, targetMo)
+      : rowYm(r) === curYm;
+    if (!inMonth) continue;
+    const vKey = voucherDateKey(r);
+    if (vKey === null) continue;
+    map[vKey] = (map[vKey] || 0) + (Number(r[IDX.amount]) || 0);
+  }
+  return map;
+}
+
+function renderTrendChart(canvasId, rows, curYm, today, monthMode) {
+  destroyChart(canvasId);
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const map = dailyAmountMap(rows, curYm, monthMode);
+  const days = [];
+  for (let i = 13; i >= 0; i--) days.push(shiftDate(today, -i));
+  const labels = days.map(d => `${d.mo}/${d.d}`);
+  const values = days.map(d => Math.round((map[dateKeyOf(d)] || 0) / 10000));
+  const chart = new Chart(el, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: days.map((d, i) => i === days.length - 1 ? '#1d4ed8' : '#c7d4f5'),
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { maxRotation: 0, autoSkip: true, font: { size: 10 } } },
+        y: { title: { display: true, text: '万円', font: { size: 10 } } },
+      },
+      plugins: { legend: { display: false } },
+    }
+  });
+  CHARTS[canvasId] = chart;
+}
+
+// 達成率に応じたひとことリアクション（数字の羅列だけだと味気ないので）
+function achievementEmoji(rate) {
+  if (rate === null) return '';
+  if (rate >= 100) return '🎉';
+  if (rate >= 80) return '👍';
+  if (rate >= 50) return '💪';
+  return '🌱';
+}
+
 function renderCharts(prefix, metrics, plans) {
   const gaugeRow = document.getElementById(prefix + 'Gauges');
-  gaugeRow.innerHTML = DEPT_GROUPS.map(g => `
+  const rateOf = g => (plans[g] > 0 ? (metrics[g].monthAmt / plans[g]) * 100 : null);
+  gaugeRow.innerHTML = DEPT_GROUPS.map(g => {
+    const rate = rateOf(g);
+    return `
     <div class="gauge-card">
       <div class="gauge-canvas-wrap"><canvas id="${prefix}-gauge-${g}"></canvas></div>
-      <div class="gauge-label">${g}</div>
+      <div class="gauge-label">${g} <span class="gauge-emoji">${achievementEmoji(rate)}</span></div>
       <div class="gauge-amt">${formatMan(metrics[g].monthAmt)}万円${plans[g] > 0 ? ' / 計画' + formatMan(plans[g]) + '万円' : ''}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   const planByGroup = {}, amtByGroup = {};
   DEPT_GROUPS.forEach(g => {
     planByGroup[g] = plans[g] || 0;
     amtByGroup[g] = metrics[g].monthAmt;
-    const rate = planByGroup[g] > 0 ? (amtByGroup[g] / planByGroup[g]) * 100 : null;
-    renderGauge(`${prefix}-gauge-${g}`, rate);
+    renderGauge(`${prefix}-gauge-${g}`, rateOf(g));
   });
   renderBarChart(`${prefix}BarChart`, DEPT_GROUPS, planByGroup, amtByGroup);
 }
@@ -960,37 +1066,70 @@ function renderModelSection(modelMap) {
     </table></div>`;
 }
 
-async function loadReport() {
-  const t = await getToken();
-  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
-  if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
-  const facts = await res.json();
+let FACTS = null; // dashboard_facts.json をキャッシュ（日付を遡るたびに再取得しないため）
+
+// 「当日」の自動判定：実際の今日ではなく、データ内に存在する最新の“締まった”営業日。
+// 日報は当日16時締めの翌営業日更新なので、実際の今日の日付そのものは
+// 締まっていない/暫定データとして必ず除外する。
+function detectLatestClosedDate(facts) {
   const rows = facts.rows || [];
   const orderRows = facts.order_rows || [];
-
-  // 「当日」は実際の今日ではなく、データ内に存在する最新の“締まった”営業日。
-  // 日報は当日16時締めの翌営業日更新なので、実際の今日の日付そのものは
-  // 締まっていない/暫定データとして必ず除外する。
   const now = new Date();
   const fallbackToday = { y: now.getFullYear(), mo: now.getMonth() + 1, d: now.getDate() };
   const realTodayKey = fallbackToday.y * 10000 + fallbackToday.mo * 100 + fallbackToday.d;
   const latestOrder = findLatestVoucherDate(orderRows, realTodayKey);
   const latestSales = findLatestVoucherDate(rows, realTodayKey);
-  const today = [latestOrder, latestSales].filter(Boolean).sort((a, b) => b.key - a.key)[0] || fallbackToday;
+  return [latestOrder, latestSales].filter(Boolean).sort((a, b) => b.key - a.key)[0] || fallbackToday;
+}
+
+function dateToInputValue(d) {
+  return `${d.y}-${String(d.mo).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+}
+function inputValueToDate(v) {
+  const [y, mo, d] = v.split('-').map(Number);
+  return { y, mo, d };
+}
+
+async function loadReport() {
+  const t = await getToken();
+  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+  if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
+  FACTS = await res.json();
+
+  const latestClosed = detectLatestClosedDate(FACTS);
+
+  // 日付を遡って見るためのUI（最新の“締まった”日を上限にする）
+  const asOfInput = document.getElementById('asOfInput');
+  asOfInput.max = dateToInputValue(latestClosed);
+  asOfInput.value = dateToInputValue(latestClosed);
+  document.getElementById('asOfWrap').hidden = false;
+  asOfInput.onchange = () => {
+    if (!asOfInput.value) return;
+    renderForDate(inputValueToDate(asOfInput.value));
+  };
+
+  renderForDate(latestClosed);
+}
+
+// 指定した日を「当日」として、全セクションを再計算・再描画する。
+// 日付を遡って見るときも、初回表示のときも、この関数を呼ぶだけでよい。
+function renderForDate(today) {
+  const facts = FACTS;
+  const rows = facts.rows || [];
+  const orderRows = facts.order_rows || [];
+
   TODAY_LABEL = `${today.mo}/${today.d}`;
   document.getElementById('dateLabel').textContent =
-    `データ最新日: ${today.y}年${today.mo}月${today.d}日（dashboard_facts.jsonは毎朝6時更新のため、「${TODAY_LABEL}」列はこの日の分です）`;
+    `表示日: ${today.y}年${today.mo}月${today.d}日（dashboard_facts.jsonは毎朝6時更新のため、この日以降の入力は含みません）`;
 
-  // デバッグ: 最新日付として拾った日の件数と、前日の件数を比較できるようにする
-  // (ごく少数の異常値で最新日がズレていないか確認するため)
+  // デバッグ: 採用日の件数（異常値で日付がズレていないかの確認用）
   const countOnDay = (rows2, d) => rows2.filter(r => {
     const pd = parseVoucherDay(r[IDX.voucher_date]);
     return pd && pd.y === d.y && pd.mo === d.mo && pd.d === d.d;
   }).length;
-  console.log('[営業日報][日付判定] latestOrder=', latestOrder, 'latestSales=', latestSales, '採用=', today);
-  console.log('[営業日報][日付判定] order_rows件数(採用日)=', countOnDay(orderRows, today),
-              ' / rows件数(採用日)=', countOnDay(rows, today));
+  console.log('[営業日報][表示日]', today, 'order_rows件数=', countOnDay(orderRows, today),
+              ' / rows件数=', countOnDay(rows, today));
 
   const curYm = today.y * 100 + today.mo;
 
@@ -1004,20 +1143,17 @@ async function loadReport() {
   // ため実データで大きくズレることを確認済み)。売上は年月度=伝票日付なのでそのまま。
   const orderMetrics = aggregateByGroup(orderRows, curYm, today, 'kikou');
   const salesMetrics = aggregateByGroup(rows, curYm, today, 'ym');
-
-  // 参考: 年月度ベース/受注日付ベースで集計した場合との比較(切り分け用ログ)
-  const orderMetricsByYm = aggregateByGroup(orderRows, curYm, today, 'ym');
-  const orderMetricsByVoucherDate = aggregateByGroup(orderRows, curYm, today, 'voucher');
   console.log('[営業日報] curYm=', curYm, 'plans=', plans);
-  console.log('[営業日報] orderMetrics(納期ベース)=', orderMetrics);
-  console.log('[営業日報] orderMetrics(年月度ベース・参考)=', orderMetricsByYm);
-  console.log('[営業日報] orderMetrics(受注日付ベース・参考)=', orderMetricsByVoucherDate);
-  console.log('[営業日報] salesMetrics=', salesMetrics);
+  console.log('[営業日報] orderMetrics(納期ベース)=', orderMetrics, 'salesMetrics=', salesMetrics);
 
   renderCharts('order', orderMetrics, plans);
   renderCharts('sales', salesMetrics, plans);
   renderTable('orderTableWrap', orderMetrics, plans);
   renderTable('salesTableWrap', salesMetrics, plans);
+
+  // 日次推移（過去14日・全社）
+  renderTrendChart('orderTrendChart', orderRows, curYm, today, 'kikou');
+  renderTrendChart('salesTrendChart', rows, curYm, today, 'ym');
 
   const genreMap = aggregateByGenre(orderRows, today);
   renderGenreSection(genreMap);
