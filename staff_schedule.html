@@ -58,6 +58,29 @@
     .spacer{flex:1}
     .cnt{font-size:11.5px;color:var(--muted)}
 
+    /* ============================================================
+       部署のトグル
+       ------------------------------------------------------------
+       ★プルダウンから置き換えた★ 「自部署以外は基本出さない」を
+       人ごとに決めたいので、複数選べる形にした。
+       絞り込みの手段は1つにしてある（プルダウンは残していない）。
+       2つあると「どちらが効いているのか」で必ず迷う。
+       ============================================================ */
+    #depbar{align-items:flex-start}
+    #depToggles{display:flex;gap:7px;flex-wrap:wrap;flex:1}
+    .dgrp{display:flex;align-items:center;gap:5px;flex-wrap:wrap;
+      border:1px solid var(--border);border-radius:6px;padding:4px 7px;background:#fbfcfe}
+    .dgrp>.site{background:#eef2f8;border:1px solid #cdd7e5;color:#48546a;border-radius:4px;
+      padding:2px 9px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit}
+    .dgrp>.site:hover{background:#dde5f1}
+    .dtog{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);background:#fff;
+      border-radius:12px;padding:2px 10px 2px 7px;font-size:12px;cursor:pointer;user-select:none;
+      white-space:nowrap;color:var(--muted)}
+    .dtog input{margin:0;cursor:pointer}
+    .dtog:hover{background:#f2f5fa}
+    .dtog.on{background:#e8f1fc;border-color:var(--primary);color:var(--primary-dk);font-weight:600}
+    .dtog .num{font-size:10.5px;opacity:.75;font-variant-numeric:tabular-nums}
+
     #privacy-note{background:#f6f8fb;border:1px solid var(--border);border-left:5px solid var(--muted);
       border-radius:6px;padding:9px 14px;margin-bottom:13px;font-size:12.5px;line-height:1.7;color:#48505a}
     #privacy-note b{color:var(--text)}
@@ -287,7 +310,6 @@
       <button id="vWeek">週</button>
       <button id="vList">一覧</button>
     </div>
-    <select id="dep"></select>
     <input type="search" id="q" placeholder="氏名で検索" style="width:140px">
     <button class="act" id="prev">◀</button>
     <button class="act pri" id="todayBtn">今日</button>
@@ -297,6 +319,19 @@
     <span class="cnt" id="updated"></span>
     <button class="act" onclick="loadAll()">🔄 更新</button>
     <button class="act" onclick="window.print()">印刷</button>
+  </div>
+
+  <!-- 表示する部署。押した内容はこのブラウザに覚える（端末・ブラウザごと） -->
+  <div class="bar" id="depbar">
+    <label style="padding-top:5px">表示する部署</label>
+    <div id="depToggles"></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <button class="act" id="depMine" title="サインインしているご自身の部署だけにします">自部署だけ</button>
+      <button class="act" id="depAll">すべて</button>
+      <button class="act" id="depNone">なし</button>
+      <span class="cnt" id="depCnt"></span>
+      <span class="cnt">｜拠点名（役員・本社・工場）を押すとまとめて切替。<br>選んだ部署はこのブラウザに記憶します</span>
+    </div>
   </div>
 
   <div class="bar" style="margin-bottom:11px">
@@ -601,14 +636,20 @@ function readUrl(){
     const ms = Date.parse(d + 'T00:00:00Z') - JST;
     if (!isNaN(ms)) { curDay = dayTopMs(ms); curWeek = weekTopMs(ms); }
   }
-  return { dep: u.get('dep') || '', q: u.get('q') || '' };
+  /* deps＝表示する部署（カンマ区切り）。dep＝以前の単一指定。古いリンクも通す */
+  return {
+    deps: (u.get('deps') || u.get('dep') || '').split(',').map(s => s.trim()).filter(Boolean),
+    q   : u.get('q') || ''
+  };
 }
 function writeUrl(){
   const u = new URLSearchParams();
   u.set('v', VIEW);
   u.set('d', jKey(VIEW === 'day' ? curDay : curWeek));
-  const dep = el('dep').value, q = el('q').value.trim();
-  if (dep) u.set('dep', dep);
+  const q = el('q').value.trim();
+  /* ★全部出しているときは URL に書かない★ 既定の状態でリンクが長くなるだけ。
+     1つも選んでいないときも書かない（誰も出ないリンクを配る意味がない）。 */
+  if (DEPSEL.size && DEPSEL.size < DEP_KEYS.length) u.set('deps', [...DEPSEL].join(','));
   if (q)   u.set('q', q);
   history.replaceState(null, '', location.pathname + '?' + u.toString());
 }
@@ -712,28 +753,150 @@ function applyAlsoDeps(){
   });
   SRC.alsoMiss = ALSO_DEPS.filter(x => !hit.has(x)).map(x => x.who);
 }
-/* その人をどの部署の見出しの下に出すか。
-   部署で絞っているときは、兼務で出てきた人もその部署の見出しに入れる。
-   元の部署の見出しに入れると、絞った結果に関係のない部署名が混ざって見える。 */
-function depOf(p){
-  const sel = el('dep').value;
-  if (sel && sel !== '__none__' && (p.deps || []).includes(sel)) return sel;
-  return p.dep;
+/* ============================================================
+   部署のトグル
+   ------------------------------------------------------------
+   DEPSEL＝いま表示する部署の集合。キーは部署名。
+   部署が取れない人は '__none__' でまとめる（Entra の department が空）。
+
+   ★初回の既定は「自分の部署だけ」★
+     サインインした人を名簿から探して、その部署（兼務も含む）を入れる。
+     名簿に見つからなければ全部入れる。何も出ないより良い。
+   ★覚えるのはこのブラウザだけ★
+     localStorage は端末・ブラウザごと。別のPCでは既定に戻る。
+     読み書きは try/catch で囲む（サイトデータをブロックしている設定だと
+     参照そのものが例外になる。値が無いのと同じ扱いにして先へ進める）。
+   ★アドレスごとに分けて覚える★ 工場の共用PCで人が入れ替わる。
+   ★URL に部署が入っていればそれを使う★ 共有されたリンクを開いたときに
+     自分の既定で上書きしてしまうと、送った人と違う画面が出る。
+     ただし URL で来た内容は覚えない（人の設定を書き換えないため）。
+   ============================================================ */
+let DEPSEL     = new Set();
+let DEP_KEYS   = [];          /* 全部署のキー。画面に出る順 */
+let DEP_GROUPS = [];          /* [{ site, keys:[...] }] 拠点ごとのまとまり */
+const DEP_SITE = new Map();   /* 部署 → 主な拠点 */
+const DEP_LS   = 'hanaoka.staff.deps.v1';
+
+function lsAll(){
+  try { const v = JSON.parse(localStorage.getItem(DEP_LS) || '{}'); return (v && typeof v === 'object') ? v : {}; }
+  catch { return {}; }
 }
-function inDep(p, sel){
-  if (!sel) return true;
+function lsMe(){ return String(currentAccount?.username || '').toLowerCase() || '(anon)'; }
+function saveDepSel(){
+  try { const a = lsAll(); a[lsMe()] = [...DEPSEL]; localStorage.setItem(DEP_LS, JSON.stringify(a)); }
+  catch { /* 保存できなくても画面は動く。次に開いたとき既定に戻るだけ */ }
+}
+function loadDepSel(){
+  const v = lsAll()[lsMe()];
+  return Array.isArray(v) ? v : null;     /* null＝一度も保存していない */
+}
+
+function inDepKey(p, key){
   /* ★「部署なし」は元の部署で見る★ 兼務表で足した部署は所属ではないので、
      ここで数えると、部署が取れていない人が「部署なし」から消えてしまう
      （User.Read.All が無いテナントで、兼務表の人だけ行方不明になる）。 */
-  if (sel === '__none__') return !p.dep;
-  return (p.deps || []).includes(sel);
+  if (key === '__none__') return !p.dep;
+  return (p.deps || []).includes(key);
+}
+/* 表示するかどうか。1つも選んでいなければ誰も出さない（空の表を出す）。
+   ★勝手に全員に戻さない★ 「なし」にしたのに全員出てきたら、
+   押した意味が分からなくなる。空なのは画面の文言で分かるようにする。 */
+function inSel(p){
+  if (!DEP_KEYS.length) return true;      /* 部署の情報がまったく無いテナント */
+  return DEP_KEYS.some(k => DEPSEL.has(k) && inDepKey(p, k));
 }
 
-function paintDepSelect(){
-  const deps = [...new Set(PEOPLE.flatMap(p => p.deps || []).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
-  el('dep').innerHTML = `<option value="">すべての部署（${PEOPLE.length}人）</option>`
-    + deps.map(d => `<option value="${esc(d)}">${esc(d)}（${PEOPLE.filter(p=>inDep(p,d)).length}）</option>`).join('')
-    + (PEOPLE.some(p => !p.dep) ? `<option value="__none__">部署なし（${PEOPLE.filter(p=>!p.dep).length}）</option>` : '');
+function buildDepGroups(){
+  const deps = [...new Set(PEOPLE.flatMap(p => p.deps || []).filter(Boolean))]
+    .sort((a,b) => a.localeCompare(b,'ja'));
+  DEP_SITE.clear();
+  const bySite = new Map();
+  deps.forEach(d => {
+    /* ★その部署の人がいちばん多い拠点に置く★ 部署が拠点をまたいでいても
+       チップは1か所にだけ出す。同じキーを2か所に出すと、片方を押したときに
+       もう片方が付いてこないように見えて壊れて見える。 */
+    const c = new Map();
+    PEOPLE.forEach(p => { if (inDepKey(p, d)) c.set(p.site || '', (c.get(p.site || '') || 0) + 1); });
+    const s = [...c.entries()].sort((a,b) => b[1] - a[1] || siteRank(a[0]) - siteRank(b[0]))[0]?.[0] || '';
+    DEP_SITE.set(d, s);
+    if (!bySite.has(s)) bySite.set(s, []);
+    bySite.get(s).push(d);
+  });
+  DEP_GROUPS = [...bySite.keys()]
+    .sort((a,b) => siteRank(a) - siteRank(b) || (a || '').localeCompare(b || '', 'ja'))
+    .map(s => ({ site: s, keys: bySite.get(s) }));
+  /* 部署が取れない人。User.Read.All が無いと全員ここに入る */
+  if (PEOPLE.some(p => !p.dep)) {
+    const tail = DEP_GROUPS.find(g => !g.site);
+    if (tail) tail.keys.push('__none__'); else DEP_GROUPS.push({ site:'', keys:['__none__'] });
+  }
+  DEP_KEYS = DEP_GROUPS.flatMap(g => g.keys);
+}
+
+/* サインインしている人の部署。名簿に居なければ空 */
+function myDepKeys(){
+  const me = String(currentAccount?.username || '').toLowerCase();
+  const p = PEOPLE.find(x => (x.mail || '').toLowerCase() === me);
+  if (!p) return [];
+  const ks = (p.deps || []).filter(d => DEP_KEYS.includes(d));
+  if (ks.length) return ks;
+  return DEP_KEYS.includes('__none__') ? ['__none__'] : [];
+}
+
+/* ①URL ②このブラウザの記憶 ③自部署 ④全部 の順に決める */
+function initDepSel(want){
+  const ok = a => (a || []).filter(k => DEP_KEYS.includes(k));
+  if (want && want.deps && want.deps.length) {
+    const k = ok(want.deps);
+    if (k.length) { DEPSEL = new Set(k); return; }
+  }
+  const st = loadDepSel();
+  if (st) {
+    const k = ok(st);
+    /* 覚えていた部署が1つも今の名簿に無い＝部署名が変わった。既定に戻す。
+       （空で保存したとき＝「なし」を選んだときは、その空を尊重する） */
+    if (k.length || !st.length) { DEPSEL = new Set(k); return; }
+  }
+  const mine = myDepKeys();
+  DEPSEL = new Set(mine.length ? mine : DEP_KEYS);
+}
+
+function paintDepToggles(){
+  let h = '';
+  DEP_GROUPS.forEach((g, gi) => {
+    const all = g.keys.every(k => DEPSEL.has(k));
+    h += `<div class="dgrp"><button type="button" class="site" data-grp="${gi}"`
+       + ` title="${esc(g.site || 'その他')}をまとめて${all ? '外します' : '出します'}">`
+       + `${esc(g.site || 'その他')}</button>`;
+    g.keys.forEach(k => {
+      const on = DEPSEL.has(k);
+      h += `<label class="dtog${on ? ' on' : ''}">`
+         + `<input type="checkbox" data-dep="${esc(k)}"${on ? ' checked' : ''}>`
+         + `${esc(k === '__none__' ? '部署なし' : k)}`
+         + `<span class="num">${PEOPLE.filter(p => inDepKey(p, k)).length}</span></label>`;
+    });
+    h += `</div>`;
+  });
+  el('depToggles').innerHTML = h;
+  el('depCnt').innerHTML = DEPSEL.size
+    ? `${DEPSEL.size}/${DEP_KEYS.length}部署　${PEOPLE.filter(p => inSel(p)).length}人`
+    : `<span class="ng" style="color:var(--danger);font-weight:700">部署が1つも選ばれていません</span>`;
+}
+
+/* その人をどの見出しの下に出すか。
+   兼務の人は、選ばれている部署の見出しに入れる。元の部署の見出しに入れると、
+   出していない部署名が結果に混ざって見える。
+   ★元の部署が選ばれていればそちらを優先★ 所属はあくまで元の部署。 */
+function depOf(p){
+  if (p.dep && DEPSEL.has(p.dep)) return p.dep;
+  return (p.deps || []).find(d => DEPSEL.has(d)) || p.dep;
+}
+/* 兼務の部署で出しているときは、その部署の拠点の下に入れる。
+   元の拠点のままだと「役員 └ 販売企画室」のような見出しになる
+   （花岡 雅さんは所属が役員・兼務が本社の販売企画室）。 */
+function siteOf(p){
+  const d = depOf(p);
+  return (d && d !== p.dep) ? (DEP_SITE.get(d) || p.site) : p.site;
 }
 
 /* ============================================================
@@ -930,11 +1093,10 @@ async function loadAll(want){
   try {
     if (!PEOPLE.length) {
       await loadPeople();
-      paintDepSelect();
-      if (want) {
-        if (want.dep && [...el('dep').options].some(o => o.value === want.dep)) el('dep').value = want.dep;
-        if (want.q) el('q').value = want.q;
-      }
+      buildDepGroups();
+      initDepSel(want);
+      paintDepToggles();
+      if (want && want.q) el('q').value = want.q;
     }
     await loadRes();
   } catch (e) {
@@ -953,7 +1115,11 @@ async function loadAll(want){
 function paintOof(){
   const p = el('oof-panel');
   const [v0, v1] = viewRange();
-  const oof = RES.filter(r => r.status === 'oof' && r.e > v0 && r.s < v1);
+  /* ★不在の一覧も「表示している部署」に合わせる★
+     出していない部署の人が40人並ぶと、自分に関係のある不在が埋もれる。
+     部署のトグルと食い違う一覧を2つ置かない。 */
+  const sel = new Set(PEOPLE.filter(x => inSel(x)).map(x => x.mail));
+  const oof = RES.filter(r => r.status === 'oof' && r.e > v0 && r.s < v1 && sel.has(r.mail));
   if (!oof.length) { p.style.display = 'none'; return; }
   const byWho = new Map();
   oof.forEach(r => { if (!byWho.has(r.who)) byWho.set(r.who, r); });
@@ -995,13 +1161,16 @@ function paintSeek(){
   /* 仮の予定は「空き」に数えない。別の場所で勤務は打合せ可なので空き扱い */
   const busyWho = new Set(RES.filter(r => ['busy','tentative','oof'].includes(r.status)
                                        && overlaps(r, SEEK.s, SEEK.e)).map(r => r.mail));
-  const dep = el('dep').value;
-  const target = PEOPLE.filter(x => inDep(x, dep));
+  /* ★探す相手は「表示している部署」だけ★ 見ている範囲と探す範囲を合わせる。
+     全員から探すと、出していない部署の人が結果に出てきて驚く。 */
+  const target = PEOPLE.filter(x => inSel(x));
   const free = target.filter(x => !busyWho.has(x.mail));
   const busy = target.filter(x =>  busyWho.has(x.mail));
 
-  let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}　空いている人 ${free.length}人 / 対象 ${target.length}人</h4>`;
-  if (!free.length) h += `<div class="none">この区間に空いている人はいません</div>`;
+  let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}　空いている人 ${free.length}人 / 対象 ${target.length}人`
+        + `<span class="cnt">（表示している部署のみ）</span></h4>`;
+  if (!target.length) h += `<div class="none">表示する部署が選ばれていないので、探す相手がいません</div>`;
+  else if (!free.length) h += `<div class="none">この区間に空いている人はいません</div>`;
   else [...new Set(free.map(x => x.dep))].forEach(D => {
     h += `<div class="grp-line"><b>${esc(D || '部署なし')}</b>`
       + free.filter(x => x.dep === D)
@@ -1028,14 +1197,23 @@ function paintSeek(){
    描画
    ============================================================ */
 function visiblePeople(inView){
-  const dep = el('dep').value, q = el('q').value.trim().toLowerCase();
+  const q = el('q').value.trim().toLowerCase();
   let list = PEOPLE.filter(p =>
-    inDep(p, dep) &&
+    inSel(p) &&
     (!q || p.n.toLowerCase().includes(q) || (p.deps||[]).join(' ').toLowerCase().includes(q)));
   if (el('onlybusy').checked){
     const has = new Set(inView.map(r => r.mail));
     list = list.filter(p => has.has(p.mail));
   }
+  /* ★並びは「出している部署」で決める★ 兼務の人は選ばれている部署の下に
+     出すので、PEOPLE の並び（元の部署の順）のままだと、同じ見出しが
+     2回出たり、別の部署の人が前の見出しにぶら下がって見える。 */
+  list = list.slice().sort((a,b) =>
+       siteRank(siteOf(a)) - siteRank(siteOf(b))
+    || (siteOf(a) || '').localeCompare(siteOf(b) || '', 'ja')
+    || (!depOf(a) !== !depOf(b) ? (depOf(a) ? -1 : 1) : 0)   /* 部署なしは最後 */
+    || (depOf(a) || '').localeCompare(depOf(b) || '', 'ja')
+    || a.n.localeCompare(b.n, 'ja'));
   return list;
 }
 function resOf(person, v0, v1){
@@ -1123,18 +1301,23 @@ function render(){ VIEW === 'list' ? renderList() : VIEW === 'week' ? renderWeek
    前の見出しの下にぶら下がって見える。 */
 function grpHtml(p, list, st){
   let h = '';
-  const dv = depOf(p);
-  if (p.site !== st.site) {
-    st.site = p.site; st.dep = null;
-    h += `<div class="grp"><span>${esc(p.site || '拠点が未設定')}`
-       + `（${list.filter(x => x.site === p.site).length}）</span></div>`;
+  const sv = siteOf(p), dv = depOf(p);
+  if (sv !== st.site) {
+    st.site = sv; st.dep = null;
+    h += `<div class="grp"><span>${esc(sv || '拠点が未設定')}`
+       + `（${list.filter(x => siteOf(x) === sv).length}）</span></div>`;
   }
   if (dv !== st.dep) {
     st.dep = dv;
-    /* 役員のように拠点＝部署のときは小見出しを出さない（同じ言葉が2行続く） */
-    if ((dv || '') !== (p.site || '')) {
+    /* 役員のように拠点＝部署のときは小見出しを出さない（同じ言葉が2行続く）。
+       ★ただしその拠点に部署が2種類以上あるときは必ず出す★
+         出さないと、後ろに続く人が前の小見出しの下にぶら下がって見える。
+         部署が取れないテナント（User.Read.All 未付与）で、兼務表の人だけが
+         部署名を持つ——という形でこれに当たる。 */
+    const many = new Set(list.filter(x => siteOf(x) === sv).map(x => depOf(x) || '')).size > 1;
+    if (many || (dv || '') !== (sv || '')) {
       h += `<div class="grp2"><span>${esc(dv || '部署なし')}`
-         + `（${list.filter(x => x.site === p.site && depOf(x) === dv).length}）</span></div>`;
+         + `（${list.filter(x => siteOf(x) === sv && depOf(x) === dv).length}）</span></div>`;
     }
   }
   return h;
@@ -1327,25 +1510,11 @@ function renderDay(){
       Math.max(0, (r.s - t0)/span*100), Math.min(100, (r.e - t0)/span*100)]);
   }
 
-  let lastSite = null, lastDep = null;
+  /* ★見出しは週・一覧と同じ関数で作る★ 以前はここに同じ処理が写してあり、
+     兼務の扱いが週表示と食い違っていた（日表示だけ元の部署の下に出ていた）。 */
+  const gst = { site:null, dep:null };
   list.forEach(p => {
-    /* 拠点が変わったら大見出し。部署が変わったら小見出し。
-       ★拠点が変わったときは部署の記憶も捨てる★
-       捨てないと、拠点をまたいで同名の部署（例：総務部）が続いたときに
-       小見出しが出ず、別の拠点の人が前の見出しの下にぶら下がって見える。 */
-    if (p.site !== lastSite) {
-      lastSite = p.site; lastDep = null;
-      h += `<div class="grp"><span>${esc(p.site || '拠点が未設定')}`
-         + `（${list.filter(x => x.site === p.site).length}）</span></div>`;
-    }
-    if (p.dep !== lastDep) {
-      lastDep = p.dep;
-      /* 役員のように拠点＝部署のときは小見出しを出さない（同じ言葉が2行続く） */
-      if ((p.dep || '') !== (p.site || '')) {
-        h += `<div class="grp2"><span>${esc(p.dep || '部署なし')}`
-           + `（${list.filter(x => x.site === p.site && x.dep === p.dep).length}）</span></div>`;
-      }
-    }
+    h += grpHtml(p, list, gst);
     const rs = resOf(p, d0, d0 + DAY), n = laneAssign(rs);
     h += `<div class="row${p.n === HILITE ? ' hi' : ''}" data-who="${esc(p.n)}">` + nameCell(p, rs, n)
        + `<div class="days" style="height:calc(var(--lane)*${n})"><div class="bgs">`;
@@ -1419,8 +1588,34 @@ el('todayBtn').onclick = async () => {
   await loadRes(); lastLoad = Date.now();
   paintPanel(); render(); paintSeek(); paintOof(); paintUpdated(); writeUrl();
 };
-['dep','onlybusy'].forEach(id => el(id).onchange = () => { render(); paintSeek(); writeUrl(); });
+el('onlybusy').onchange = () => { render(); paintSeek(); writeUrl(); };
 el('q').oninput = () => { render(); writeUrl(); };
+
+/* ---------- 部署のトグル ---------- */
+function afterDepChange(){
+  saveDepSel();                 /* 押すたびに覚える。「保存」ボタンは作らない */
+  paintDepToggles(); render(); paintSeek(); paintOof(); writeUrl();
+}
+el('depToggles').addEventListener('change', ev => {
+  const c = ev.target.closest('input[data-dep]'); if (!c) return;
+  if (c.checked) DEPSEL.add(c.dataset.dep); else DEPSEL.delete(c.dataset.dep);
+  afterDepChange();
+});
+el('depToggles').addEventListener('click', ev => {
+  /* 拠点のボタン。全部入っていれば全部外す。そうでなければ全部入れる */
+  const b = ev.target.closest('button.site'); if (!b) return;
+  const g = DEP_GROUPS[+b.dataset.grp]; if (!g) return;
+  const all = g.keys.every(k => DEPSEL.has(k));
+  g.keys.forEach(k => all ? DEPSEL.delete(k) : DEPSEL.add(k));
+  afterDepChange();
+});
+el('depAll').onclick  = () => { DEPSEL = new Set(DEP_KEYS); afterDepChange(); };
+el('depNone').onclick = () => { DEPSEL = new Set(); afterDepChange(); };
+el('depMine').onclick = () => {
+  const k = myDepKeys();
+  if (!k.length) { showSnack('名簿の中にご自身が見つかりません（部署が取れていない可能性があります）'); return; }
+  DEPSEL = new Set(k); afterDepChange();
+};
 
 /* 週表示で日付の見出しを押したら、その日だけの時間割に切り替える。
    週で全体を見て、気になった日に寄る——という見方が自然にできるようにする。
