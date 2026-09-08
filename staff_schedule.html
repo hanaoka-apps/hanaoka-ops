@@ -150,6 +150,13 @@
     .b-free{background:#eef6f0;color:var(--success);border-color:#a9d3ba}
     .b-oof{background:#fdf3e3;color:var(--warning);border-color:#e8c96a}
     .b-err{background:#fbdcd9;color:var(--danger);border-color:#e6a8a0}
+    /* 会社共通予定表。人の行と見分けがつくように色を分ける */
+    .b-cmn{background:#efe6fb;color:#4a2f8f;border-color:#c9b8ea}
+    .row.cmn{background:#f8f5ff;border-bottom:2px solid #c9b8ea}
+    .row.cmn:hover{background:#efe6fb}
+    .row.cmn .name{background:#f8f5ff}
+    .row.cmn:hover .name{background:#e7dcfa;box-shadow:inset 4px 0 0 #7b5cc4}
+    .row.cmn:hover .mn{color:#4a2f8f}
 
     .days{flex:1;position:relative}
     .grid.wk .days{min-width:calc(var(--dayw)*7)}
@@ -208,6 +215,7 @@
     .s-oof   {background:#fdeccd;border-color:#d98c12;color:#6d4304}
     .s-else  {background:#eaf5ee;border-color:#5da37c;color:#1d5a3c}
     .s-unk   {background:#f4f5f7;border-color:#c3c8d0;color:#98a0aa}
+    .s-cmn   {background:#efe6fb;border-color:#7b5cc4;color:#3f2a73}
     .cut-l{border-left-style:dashed!important;border-top-left-radius:0;border-bottom-left-radius:0}
     .cut-r{border-right-style:dashed;border-top-right-radius:0;border-bottom-right-radius:0}
     .empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
@@ -311,6 +319,7 @@
     <span><i class="s-oof"></i>不在・休暇</span>
     <span><i class="s-else"></i>別の場所で勤務</span>
     <span><i class="s-unk"></i>不明</span>
+    <span><i class="s-cmn"></i>会社共通</span>
     <span id="lg-note"></span>
   </div>
 
@@ -456,7 +465,39 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 
 /* 予定の状態。free は占有ではないので描かない */
 const ST = { busy:['予定あり','s-busy'], tentative:['仮の予定','s-tent'], oof:['不在・休暇','s-oof'],
-             workingElsewhere:['別の場所','s-else'], unknown:['不明','s-unk'] };
+             workingElsewhere:['別の場所','s-else'], unknown:['不明','s-unk'],
+             common:['会社共通','s-cmn'] };
+
+/* ============================================================
+   会社共通予定表
+   ------------------------------------------------------------
+   全社で共有している予定（休業日・棚卸など）が入った共有メールボックス。
+   ★人ではないので名簿（PEOPLE）には入れない★
+     名簿に混ぜると人数に数えられ、「空いている人を探す」にも出てしまう。
+     別に持って、表のいちばん上に固定の1行として描く。
+   ★読み方は getSchedule ではなく calendarView★
+     件名・場所・終日かどうかがそのまま取れる。getSchedule は空き時間の
+     計算結果なので、件名が返るかが権限しだいで、終日の扱いも読めない。
+   ============================================================ */
+const COMMON_CAL = { mail:'company-calendar@hanaoka-corp.co.jp', name:'会社共通予定表' };
+
+/* ★終日の予定は「瞬間」ではなく「日付」★
+   Graph は終日の境界を 00:00 / timeZone:"UTC" で返すが、これは
+   「その日の 0:00（現地）」という意味の日付表現で、UTC の瞬間ではない。
+   そのまま UTC としてパースすると JST では +9時間ずれる。
+   （営業車の画面で実際に「9:00〜翌8:59」になった。同じ間違いをしない） */
+const dateOnlyToMs = x => {
+  const m = String(x && x.dateTime || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return NaN;
+  return Date.UTC(+m[1], +m[2]-1, +m[3]) - JST;
+};
+function evRange(ev){
+  if (ev && ev.isAllDay) {
+    const a = dateOnlyToMs(ev.start), b = dateOnlyToMs(ev.end);
+    return { s:a, e: (isNaN(a) || isNaN(b) || b <= a) ? (isNaN(a) ? NaN : a + 86400e3) : b };
+  }
+  return { s: pTZ(ev && ev.start), e: pTZ(ev && ev.end) };
+}
 
 /* ============================================================
    認証
@@ -526,7 +567,7 @@ async function gBatch(requests){
 /* ============================================================
    状態
    ============================================================ */
-let PEOPLE = [], RES = [];
+let PEOPLE = [], RES = [], COMMON = [];
 /* ★読み込みの追い越し対策★
    loadRes は await をまたいで RES に push する。2つ同時に走ると同じ予定が
    2回入る（営業車の画面で「読めた 26人ぶん / 全13台」のような形で実際に出た）。
@@ -538,7 +579,7 @@ let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
 let SEEK = null, HILITE = null;
 let lastLoad = 0, refreshTimer = null;
-let SRC = { ok:0, ng:0, errs:[], withSubject:0, items:0, depOk:false, excluded:[], alsoMiss:[] };
+let SRC = { ok:0, ng:0, errs:[], withSubject:0, items:0, depOk:false, excluded:[], alsoMiss:[], commonErr:'' };
 
 const el = id => document.getElementById(id);
 function showSnack(m){ const s = el('snackbar'); s.textContent = m; s.style.display='block';
@@ -721,6 +762,14 @@ async function loadRes(){
   const chunks = [];
   for (let i = 0; i < PEOPLE.length; i += CHUNK) chunks.push(PEOPLE.slice(i, i + CHUNK));
 
+  /* ★会社共通予定表を同じ $batch に載せる★ 往復を増やさない。
+     ID で対応づけるので、返る順番に依存しない（Graph は順番を保証しない）。 */
+  const COMMON_IX = chunks.length;
+  const cq = `startDateTime=${encodeURIComponent(toUtcLocal(f0) + 'Z')}`
+           + `&endDateTime=${encodeURIComponent(toUtcLocal(f1) + 'Z')}`
+           + `&$select=id,subject,start,end,location,isCancelled,isAllDay,showAs`
+           + `&$orderby=start/dateTime&$top=200`;
+
   const reqs = chunks.map(c => ({
     method: 'POST',
     url: '/me/calendar/getSchedule',
@@ -728,11 +777,23 @@ async function loadRes(){
     body: body(c.map(p => p.mail))
   }));
 
+  reqs.push({
+    method: 'GET',
+    url: `/users/${encodeURIComponent(COMMON_CAL.mail)}/calendarView?${cq}`,
+    headers: { Prefer: 'outlook.timezone="UTC"' }
+  });
+
   const res = await gBatch(reqs);
   if (seq !== LOAD_SEQ) return;          /* 追い越された。この結果は使わない */
 
-  res.forEach((r, ci) => {
+  res.forEach(r => {
+    /* ★添字ではなく id で対応づける★
+       $batch の応答は要求と同じ順で返る保証がない。順番に頼ると、
+       別の人の予定が誰かの行に入りうる。 */
+    const ci = Number(r.id);
+    if (ci === COMMON_IX) { takeCommon(r); return; }
     const group = chunks[ci];
+    if (!group) return;
     if (r.status !== 200 || !r.body || !Array.isArray(r.body.value)) {
       SRC.ng += group.length;
       group.forEach(p => p.src = 'error');
@@ -767,12 +828,40 @@ async function loadRes(){
   });
 }
 
+/* 会社共通予定表の取り込み。人の予定（RES）とは混ぜない。 */
+function takeCommon(r){
+  COMMON = [];
+  if (r.status !== 200 || !r.body || !Array.isArray(r.body.value)) {
+    SRC.commonErr = `[${r.status}] ${r.body?.error?.code || r.body?.error?.message || ''}`;
+    return;
+  }
+  SRC.commonErr = '';
+  r.body.value.forEach(ev => {
+    if (ev.isCancelled) return;
+    const { s, e } = evRange(ev);
+    if (isNaN(s) || isNaN(e)) return;
+    COMMON.push({
+      rid : `c:${ev.id}`,
+      who : COMMON_CAL.name, mail: COMMON_CAL.mail, dep: '',
+      s, e,
+      /* ★状態で色を分けない★ 会社の予定は「誰かの空き」ではないので、
+         予定あり／不在の区別に意味がない。1色にして人の行と見分けさせる。 */
+      status: 'common',
+      priv: false,
+      allDay: !!ev.isAllDay,
+      t   : ev.subject || '(件名なし)',
+      loc : (ev.location && ev.location.displayName) || ''
+    });
+  });
+  COMMON.sort((a, b) => a.s - b.s || a.e - b.e);
+}
+
 /* ============================================================
    準備状況パネル（管理者だけ。異常時は全員に1行）
    ============================================================ */
 function paintPanel(){
   const p = el('status-panel');
-  const bad = SRC.ng > 0 || SRC.errs.length > 0 || (SRC.alsoMiss || []).length > 0;
+  const bad = SRC.ng > 0 || SRC.errs.length > 0 || (SRC.alsoMiss || []).length > 0 || !!SRC.commonErr;
   if (!IS_ADMIN){
     if (!bad) { p.style.display = 'none'; return; }
     p.style.display = ''; p.className = 'bad';
@@ -797,6 +886,11 @@ function paintPanel(){
         ? ` — <b>1件も取れていません。</b>予定表の既定権限が <code>LimitedDetails</code> 未満です。`
           + `<code>Set-StaffCalendarPermission.ps1 -GrantLimitedDetails</code> を実行してください`
         : `（非公開の予定は件名が出ません）`) + `</div>`;
+  if (SRC.commonErr){
+    h += `<div class="st-row"><span class="ng">会社共通予定表が読めません</span>`
+       + `<code>${esc(COMMON_CAL.mail)}</code><span style="color:var(--muted)">`
+       + `${esc(SRC.commonErr)} — 予定表の既定のアクセス許可が Reviewer 以上か確認してください</span></div>`;
+  }
   if ((SRC.alsoMiss || []).length){
     /* ★黙って無視しない★ 氏名が変わった・名簿に居ない、のどちらか。
        出しておかないと「兼務表に書いたのに出てこない」で止まる。 */
@@ -959,7 +1053,10 @@ function barHtml(r, L, R, cutL, cutR){
   /* 表示範囲の外まで続く予定は、始まりや終わりが「その日の時刻」ではない。
      そのまま 22:00–02:00 と出すと4時間の夜間予定に見えてしまうので、
      切れている側は「…」にする。正確な日時は帯をクリックすれば出る。 */
-  const tm = (cutL && cutR) ? '終日'
+  /* ★終日は「00:00–00:00」ではなく「終日」と出す★
+     終日の予定は 0:00 から翌 0:00 までなので、そのまま時刻を出すと
+     0時に始まって0時に終わる1分の予定に見える。 */
+  const tm = (r.allDay || (cutL && cutR)) ? '終日'
            : cutL ? `…–${jHM(r.e)}`
            : cutR ? `${jHM(r.s)}–…`
            : `${jHM(r.s)}–${jHM(r.e)}`;
@@ -967,6 +1064,40 @@ function barHtml(r, L, R, cutL, cutR){
     data-r="${esc(r.rid)}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}">
     <span class="tm">${tm}</span><b>${esc(r.t)}</b></div>`;
 }
+/* ============================================================
+   会社共通予定表の行（表のいちばん上に固定）
+   ------------------------------------------------------------
+   人ではないので、部署の絞り込み・氏名検索・「予定がある人だけ」の
+   どれにも従わない。常に先頭に出す。
+   ★読めなかったときは黙って空にしない★ 「読めず」を出す。
+     空の行と区別がつかないと、休業日を見落として予約を入れてしまう。
+   ============================================================ */
+function commonNameCell(n){
+  return `<div class="name" style="min-height:calc(var(--lane)*${n})">
+      <div class="mn">${esc(COMMON_CAL.name)}</div><div class="meta">
+      <span class="badge b-cmn">全社</span>
+      ${SRC.commonErr ? '<span class="badge b-err">読めず</span>' : ''}
+      </div></div>`;
+}
+/* 週・日で共通。bgHtml は背景セル、posOf は帯の左右を % で返す */
+function commonRow(v0, v1, now, bgHtml, posOf){
+  const rs = COMMON.filter(r => r.e > v0 && r.s < v1).sort((a,b) => a.s - b.s);
+  const n  = laneAssign(rs);
+  let h = `<div class="row cmn" data-who="${esc(COMMON_CAL.name)}">` + commonNameCell(n)
+        + `<div class="days" style="height:calc(var(--lane)*${n})"><div class="bgs">`
+        + bgHtml + `</div><div class="bars">`;
+  rs.forEach(r => {
+    const [L, R] = posOf(r);
+    if (R <= 0 || L >= 100) return;
+    h += barHtml(r, L, R, r.s < v0, r.e > v1);
+  });
+  if (now >= v0 && now < v1) {
+    const [nl] = posOf({ s:now, e:now });
+    h += `<div class="nowline" style="left:${nl}%"></div>`;
+  }
+  return h + `</div></div></div>`;
+}
+
 function nameCell(p, rs, n){
   return `<div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(p.n)}</div><div class="meta">
@@ -1028,7 +1159,9 @@ function headHtml(days, label, todayKey){
 function coversDay(r, d0, d1){ return (r.s <= d0 && r.e >= d1) ? 0 : 1; }
 function liHtml(r, d0, d1){
   const cutL = r.s < d0, cutR = r.e > d1;
-  const tm = (cutL && cutR) ? '終日'
+  /* その日を丸ごと覆っていれば「終日」。0:00〜翌0:00 をそのまま出さない */
+  const tm = (r.s <= d0 && r.e >= d1) ? '終日'
+           : (cutL && cutR) ? '終日'
            : cutL ? `…–${jHM(r.e)}`
            : cutR ? `${jHM(r.s)}–…`
            : `${jHM(r.s)}–${jHM(r.e)}`;
@@ -1053,6 +1186,21 @@ function renderList(){
   const todayKey = jKey(now);
   let h = headHtml(days, `氏名（${list.length}）`, todayKey);
   if (!list.length) h += `<div class="empty">条件に合う人がいません</div>`;
+
+  /* 会社共通予定表は先頭に固定 */
+  {
+    const rs = COMMON.filter(r => r.e > w0 && r.s < w1);
+    let c = `<div class="row cmn" data-who="${esc(COMMON_CAL.name)}">`
+          + commonNameCell(0) + `<div class="days">`;
+    days.forEach(ms => {
+      const d0 = ms, d1 = ms + DAY, d = toJ(ms), dow = d.getUTCDay();
+      const cls = [dow===6?'sat':'', dow===0?'sun':'', jKey(ms)===todayKey?'today':''].join(' ');
+      const items = rs.filter(r => r.e > d0 && r.s < d1)
+        .sort((a,b) => (coversDay(a,d0,d1) - coversDay(b,d0,d1)) || (a.s - b.s) || (a.e - b.e));
+      c += `<div class="dcell ${cls}">` + items.map(r => liHtml(r, d0, d1)).join('') + `</div>`;
+    });
+    h += c + `</div></div>`;
+  }
 
   const gst = { site:null, dep:null };
   list.forEach(p => {
@@ -1086,6 +1234,18 @@ function renderWeek(){
   const todayKey = jKey(now);
   let h = headHtml(days, `氏名（${list.length}）`, todayKey);
   if (!list.length) h += `<div class="empty">条件に合う人がいません</div>`;
+
+  /* 会社共通予定表は拠点の見出しより上。いちばん最初に描く */
+  {
+    let bg = '';
+    days.forEach(ms => {
+      const d = toJ(ms), dow = d.getUTCDay();
+      const c = [dow===6?'sat':'', dow===0?'sun':'', jKey(ms)===todayKey?'today':''].join(' ');
+      bg += `<div class="bg ${c}"></div>`;
+    });
+    h += commonRow(w0, w1, now, bg, r => [
+      Math.max(0, (r.s - w0) / WK * 100), Math.min(100, (r.e - w0) / WK * 100)]);
+  }
 
   const gst = { site:null, dep:null };
   list.forEach(p => {
@@ -1152,6 +1312,14 @@ function renderDay(){
   }
   h += `</div></div>`;
   if (!list.length) h += `<div class="empty">条件に合う人がいません</div>`;
+
+  {
+    let bg = '';
+    for (let i = 0; i < hours; i++){ const hh = h0 + i;
+      bg += `<div class="bg ${(hh<9||hh>=18)?'off':''}"></div>`; }
+    h += commonRow(t0, t1, now, bg, r => [
+      Math.max(0, (r.s - t0)/span*100), Math.min(100, (r.e - t0)/span*100)]);
+  }
 
   let lastSite = null, lastDep = null;
   list.forEach(p => {
@@ -1264,7 +1432,7 @@ el('grid').addEventListener('click', ev => {
   if (bar) openDetail(bar.dataset.r);
 });
 function openDetail(rid){
-  const r = RES.find(x => x.rid === rid); if (!r) return;
+  const r = RES.find(x => x.rid === rid) || COMMON.find(x => x.rid === rid); if (!r) return;
   el('dTitle').textContent = r.t;
   el('dBody').innerHTML = [
     ['氏名',   `${esc(r.who)}${r.dep ? ` <span class="badge b-dep">${esc(r.dep)}</span>` : ''}`],
