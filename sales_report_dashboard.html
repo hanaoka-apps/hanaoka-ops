@@ -143,6 +143,18 @@
     background: #fff;
   }
 
+  .news-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 14px;
+  }
+  .news-item:not(:last-child) { border-bottom: 1px solid var(--border); }
+  .news-emoji { font-size: 18px; flex-shrink: 0; }
+  .news-text b { font-weight: 700; }
+  .news-sub { color: var(--text-sub); font-size: 12.5px; margin-left: 4px; }
+
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
     table { font-size: 12.5px; }
@@ -166,6 +178,11 @@
       </label>
       <button id="signInBtn" class="signin-btn" hidden>Microsoftでサインイン</button>
     </div>
+  </div>
+
+  <div class="card" id="newsCard" hidden>
+    <h2>📰 今日のトピック</h2>
+    <div id="newsContent"></div>
   </div>
 
   <div class="section-grid">
@@ -575,6 +592,106 @@ function shiftDate(d, deltaDays) {
   return { y: dt.getFullYear(), mo: dt.getMonth() + 1, d: dt.getDate() };
 }
 function dateKeyOf(d) { return d.y * 10000 + d.mo * 100 + d.d; }
+function dateKeyToDate(key) {
+  const y = Math.floor(key / 10000), mo = Math.floor((key % 10000) / 100), d = key % 100;
+  return new Date(y, mo - 1, d);
+}
+function daysBetweenKeys(k1, k2) {
+  return Math.round((dateKeyToDate(k2) - dateKeyToDate(k1)) / 86400000);
+}
+
+// ============================================================
+// 今日のトピック（会社全体の「これ売れてる」「久しぶりの受注」を一言で）
+// 個人にはフォーカスせず、品目ベースであくまで会社の動きとして見せる。
+// ============================================================
+const COMEBACK_MIN_DAYS = 60; // これ未満の間隔は「久しぶり」と呼ぶには短すぎるので出さない
+
+function computeItemNews(orderRows, curYm, today) {
+  const targetY = Math.floor(curYm / 100), targetMo = curYm % 100;
+  const todayKey = dateKeyOf(today);
+
+  // 1) 今月の人気商品（数量ベース、今月納期のもの）
+  const qtyByItem = {};
+  for (const r of orderRows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    if (!isSameMonthByKikou(r, targetY, targetMo)) continue;
+    const vKey = voucherDateKey(r);
+    if (vKey === null || vKey > todayKey) continue;
+    const nm = (r[IDX.item_nm] || '').trim();
+    if (!nm) continue;
+    qtyByItem[nm] = (qtyByItem[nm] || 0) + (Number(r[IDX.qty]) || 0);
+  }
+  let topItem = null, topQty = 0;
+  for (const nm in qtyByItem) {
+    if (qtyByItem[nm] > topQty) { topQty = qtyByItem[nm]; topItem = nm; }
+  }
+
+  // 2) 久しぶりの受注：品目ごとに「today より前で一番新しい受注日」を全期間から調べ、
+  //    today当日に受注が入った品目の中で一番間隔が空いているものを探す。
+  const lastOrderKeyByItem = {};
+  for (const r of orderRows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    const nm = (r[IDX.item_nm] || '').trim();
+    if (!nm) continue;
+    const vKey = voucherDateKey(r);
+    if (vKey === null || vKey >= todayKey) continue;
+    if (!(nm in lastOrderKeyByItem) || vKey > lastOrderKeyByItem[nm]) lastOrderKeyByItem[nm] = vKey;
+  }
+  const todayItems = new Set();
+  for (const r of orderRows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    const nm = (r[IDX.item_nm] || '').trim();
+    if (!nm) continue;
+    if (!isToday(r, today)) continue;
+    todayItems.add(nm);
+  }
+  // 「初めての受注」と「久しぶりの受注」は別々の話題なので、片方が
+  // もう片方を隠さないよう独立に探す。
+  let comeback = null, comebackDays = -1;
+  let firstEver = null;
+  for (const nm of todayItems) {
+    const isFirstEver = !(nm in lastOrderKeyByItem);
+    if (isFirstEver) {
+      if (!firstEver) firstEver = { name: nm };
+      continue;
+    }
+    const days = daysBetweenKeys(lastOrderKeyByItem[nm], todayKey);
+    if (days >= COMEBACK_MIN_DAYS && days > comebackDays) { comebackDays = days; comeback = { name: nm, days }; }
+  }
+
+  return { topItem, topQty, comeback, firstEver };
+}
+
+function renderItemNews(orderRows, curYm, today) {
+  const news = computeItemNews(orderRows, curYm, today);
+  const items = [];
+  if (news.topItem) {
+    items.push({
+      emoji: '🔥',
+      html: `今月の人気商品は <b>${escapeHtml(news.topItem)}</b><span class="news-sub">（${news.topQty.toLocaleString('ja-JP')}台受注）</span>`,
+    });
+  }
+  if (news.comeback) {
+    items.push({
+      emoji: '✨',
+      html: `<b>${escapeHtml(news.comeback.name)}</b> の受注が入りました<span class="news-sub">（前回受注から${news.comeback.days}日ぶり）</span>`,
+    });
+  }
+  if (news.firstEver) {
+    items.push({ emoji: '🆕', html: `<b>${escapeHtml(news.firstEver.name)}</b> の受注は今日が初めて` });
+  }
+  const card = document.getElementById('newsCard');
+  const content = document.getElementById('newsContent');
+  if (!items.length) {
+    card.hidden = true;
+    return;
+  }
+  content.innerHTML = items.map(it => `
+    <div class="news-item"><span class="news-emoji">${it.emoji}</span><span class="news-text">${it.html}</span></div>
+  `).join('');
+  card.hidden = false;
+}
 
 // 対象月(monthMode基準)に該当する行を、受注日付/伝票日付の日付キーごとに
 // 金額を合算したマップにする（全社=全行、返品・内部移動は除外）。1回のループで
@@ -1154,6 +1271,8 @@ function renderForDate(today) {
   // 日次推移（過去14日・全社）
   renderTrendChart('orderTrendChart', orderRows, curYm, today, 'kikou');
   renderTrendChart('salesTrendChart', rows, curYm, today, 'ym');
+
+  renderItemNews(orderRows, curYm, today);
 
   const genreMap = aggregateByGenre(orderRows, today);
   renderGenreSection(genreMap);
