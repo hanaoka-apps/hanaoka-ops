@@ -109,6 +109,35 @@ td.m{font-variant-numeric:tabular-nums}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}}
 @media(max-width:640px){.drow{grid-template-columns:1fr}.drow a.open{justify-self:start}}
+
+/* --- 図面の履歴パネル（右からスライド） --- */
+.side{position:fixed;top:0;right:0;bottom:0;width:min(440px,100%);background:#fff;
+  z-index:960;box-shadow:-14px 0 40px rgba(0,0,0,.18);transform:translateX(102%);
+  transition:transform .18s ease;overflow:auto;padding:22px 24px}
+.side.on{transform:none}
+.side h2{margin:0 0 2px;font-size:17px}
+.side .zu{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--faint)}
+.side .close{position:absolute;top:16px;right:18px;border:1px solid var(--line);background:#fff;
+  color:#888;border-radius:8px;width:30px;height:30px;line-height:1;padding:0;font-size:16px;cursor:pointer}
+.ver{border-top:1px solid #f0f0f2;padding:13px 0}
+.ver:first-of-type{border-top:none}
+.ver .vh{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.ver .vn{font-weight:800;font-size:15px}
+.ver .vd{color:var(--faint);font-size:12.5px}
+.ver .vlatest{background:#fff0f3;color:var(--brand-dark,#e8556d);border-radius:6px;
+  padding:1px 7px;font-size:10.5px;font-weight:700}
+.ver .vmemo{font-size:13.5px;margin:3px 0 6px;white-space:pre-wrap}
+.ver .vmemo.na{color:#aaa}
+.ver .vfile{font-size:11px;color:#aaa;word-break:break-all;margin-bottom:6px}
+.ver a.open{font-size:13px;font-weight:700;text-decoration:none;padding:6px 13px;border-radius:8px;
+  border:1px solid var(--line);color:var(--brand);display:inline-block}
+button.hist{border:1px solid var(--line);background:#fff;color:#555;border-radius:7px;
+  padding:5px 11px;font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer;
+  font-family:inherit}
+button.hist:hover{border-color:var(--brand);color:var(--brand)}
+.drow .rgt{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.drow .vtag{display:inline-block;background:var(--soft);border:1px solid var(--line);
+  border-radius:6px;padding:1px 7px;font-size:11px;color:#666;font-weight:700;margin-left:6px}
 </style>
 </head>
 <body>
@@ -268,15 +297,28 @@ async function loadShutsuzu(){
     meisai:(()=>{try{return JSON.parse(f.MeisaiJson||"[]")}catch(e){return []}})()
   }}).sort((a,b)=>String(b.no).localeCompare(String(a.no)));
 }
-/* 図面はフォルダを作らずフラットに置いてあるので、全件読んで名前で突き合わせる */
+/* 図面はフォルダを作らずフラットに置いてある。
+   ファイル名だけでなく、図番・名称・版番号などの列も読む。 */
 async function loadFiles(){
   if(!DRIVE_ID){FILES=[];return}
+  const sel="id,name,size,webUrl,lastModifiedDateTime,file,folder";
+  let items=[];
   try{
-    FILES=(await gGetAll(`/drives/${DRIVE_ID}/root/children?$select=id,name,size,webUrl,lastModifiedDateTime,file,folder&$top=999`))
-      .filter(x=>x.file&&!x.folder).map(x=>({name:x.name,url:x.webUrl,size:x.size||0,
-        mtime:(x.lastModifiedDateTime||"").slice(0,10),
-        stem:x.name.replace(/\.[^.]+$/,"")}));
-  }catch(e){FILES=[];console.warn("図面の一覧を取得できませんでした",e)}
+    items=await gGetAll(`/drives/${DRIVE_ID}/root/children?$select=${sel}&$expand=listItem($expand=fields)&$top=999`);
+  }catch(e){
+    console.warn("図面の列を一緒に取れませんでした。ファイル情報だけ読みます。",e);
+    try{items=await gGetAll(`/drives/${DRIVE_ID}/root/children?$select=${sel}&$top=999`)}
+    catch(e2){FILES=[];console.warn("図面の一覧を取得できませんでした",e2);return}
+  }
+  FILES=items.filter(x=>x.file&&!x.folder).map(x=>{
+    const f=(x.listItem&&x.listItem.fields)||{};
+    const stem=x.name.replace(/\.[^.]+$/,"");
+    return {name:x.name,url:x.webUrl,size:x.size||0,
+      mtime:(x.lastModifiedDateTime||"").slice(0,10),stem:stem,
+      zu:f.DrawingNo||"",rev:f.RevNo||"",title:f.Title||"",
+      cat:f.Category||"",memo:f.Memo||"",old:f.OldFileName||"",
+      revised:(f.RevisedOn||"").slice(0,10)};
+  });
 }
 /* 製造番号明細は1万件を超えるので、全件は読まず1件ずつ引く */
 async function findUnit(key){
@@ -289,24 +331,62 @@ async function findUnit(key){
 
 /* ---- 図面の突き合わせ ---- */
 function modelCode(zu){const m=String(zu||"").match(/^H\d{6}/);return m?m[0]:""}
-function drawingsFor(zu){
-  const fam=modelCode(zu),product=[],parts=[];
-  if(!fam)return {product,parts,exact:false};
+function verNo(f){return parseInt(f.rev,10)||1}
+function byRevDesc(a,b){return verNo(b)-verNo(a)}
+function jpDate(v){const t=String(v||"").slice(0,10);return t?t.replace(/-/g,"/"):""}
+
+/* 図番ごとにまとめる。列が空のファイルはファイル名から推測して寄せる。 */
+function fileZu(f){
+  if(f.zu)return f.zu;
+  const m=f.stem.match(/^(H\d{6}[A-Za-z]-\d{3,5})/)
+        ||f.stem.match(/^(H\d{6}-(?:\d{5}|\d{4}[A-Za-z]|\d{3,4}))/)
+        ||f.stem.match(/^(H\d{6}[A-Za-z]?)/);
+  return m?m[1]:"";
+}
+function fileName2(f){
+  if(f.title)return f.title;
+  const zu=fileZu(f);
+  const rest=zu?f.stem.slice(zu.length).replace(/^[_\s\-–—]+/,"").replace(/^\d{3,4}$/,""):f.stem;
+  return rest||zu||f.name;
+}
+function drawingGroups(){
+  const m=new Map();
   FILES.forEach(f=>{
-    if(f.stem.indexOf(fam)!==0)return;
-    if(/^H\d{6}[A-Z]/.test(f.stem))product.push(f); else parts.push(f);
+    const k=fileZu(f)||"（図番なし）";
+    if(!m.has(k))m.set(k,[]);
+    m.get(k).push(f);
   });
-  const by=(a,b)=>a.name.localeCompare(b.name,"ja");
-  product.sort(by);parts.sort(by);
-  return {product,parts,exact:product.some(f=>f.stem===zu)};
+  return [...m.entries()].map(([zu,vs])=>{
+    vs.sort(byRevDesc);
+    return {zu:zu,vers:vs,latest:vs[0],
+      title:fileName2(vs[0]),
+      cat:vs[0].cat||(/^H\d{6}[A-Za-z]-/.test(zu)?"製品図":"部品図")};
+  }).sort((a,b)=>a.zu.localeCompare(b.zu,"ja"));
+}
+/* 出図の図番は製品図のもの。部品図は別番号なので機種コードでも寄せる。 */
+function drawingsFor(zu){
+  const fam=modelCode(zu);
+  if(!fam)return {product:[],parts:[],exact:false};
+  const gs=drawingGroups().filter(g=>modelCode(g.zu)===fam);
+  const product=gs.filter(g=>g.cat==="製品図");
+  const parts=gs.filter(g=>g.cat!=="製品図");
+  return {product:product,parts:parts,exact:gs.some(g=>g.zu===zu)};
 }
 function drawRows(list,zu){
   if(!list.length)return "";
-  return list.map(f=>
-    '<div class="drow"><div class="fn">'+esc(f.name)+
-      (f.stem===zu?' <span class="tag">図番一致</span>':"")+
-      '<span class="meta">'+Math.round(f.size/1024).toLocaleString()+' KB ・ 更新 '+esc(f.mtime)+'</span></div>'+
-    '<a class="open" href="'+esc(f.url)+'" target="_blank" rel="noopener">図面を開く</a></div>').join("");
+  return list.map(g=>{
+    const f=g.latest;
+    return '<div class="drow"><div class="fn">'+esc(g.title||g.zu)+
+      (g.zu===zu?' <span class="tag">図番一致</span>':"")+
+      '<span class="vtag">Ver.'+verNo(f)+'</span>'+
+      '<span class="meta">'+esc(g.zu)+' ・ '+Math.round(f.size/1024).toLocaleString()+' KB'+
+      (g.vers.length>1?(' ・ 過去の版 '+(g.vers.length-1)+'件'):'')+
+      ' ・ 更新 '+esc(jpDate(f.revised||f.mtime))+'</span></div>'+
+      '<div class="rgt">'+
+      (g.vers.length>1?'<button type="button" class="hist" data-zu="'+esc(g.zu)+'">履歴</button>':'')+
+      '<a class="open" href="'+esc(f.url)+'" target="_blank" rel="noopener">図面を開く</a>'+
+      '</div></div>';
+  }).join("");
 }
 function drawingBlock(zu){
   if(!DRIVE_ID)return '<div class="blk"><h3>図面</h3><div class="empty">'+
@@ -317,14 +397,32 @@ function drawingBlock(zu){
   if(!total)return '<div class="blk"><h3>図面</h3><div class="empty">'+
     '図番 '+esc(zu)+' に対応する図面が、まだ登録されていません。'+
     '<span class="meta">（ライブラリには '+FILES.length+' 点あります）</span></div></div>';
-  return '<div class="blk"><h3>図面　'+total+'点</h3>'+
+  return '<div class="blk"><h3>図面　'+total+'点<span class="meta" style="font-weight:400;color:var(--faint)">　最新版を表示しています</span></h3>'+
     (d.exact?"":'<div class="caution"><b>要確認</b><span>図番 '+esc(zu)+
-      ' と完全に一致するファイルがありません。機種コード '+esc(modelCode(zu))+
+      ' と完全に一致する図面がありません。機種コード '+esc(modelCode(zu))+
       ' で紐づけた候補です。<b>この車両を製造した当時の版とは限りません。</b></span></div>')+
     (d.product.length?'<div class="dgroup">製品図</div>'+drawRows(d.product,zu):"")+
     (d.parts.length?'<div class="dgroup">部品図（バインダー）</div>'+drawRows(d.parts,zu):"")+
     '</div>';
 }
+
+/* ---- 過去の版（右からスライド） ---- */
+function showHistory(zu){
+  const g=drawingGroups().find(x=>x.zu===zu);
+  if(!g)return;
+  document.getElementById("sideTitle").textContent=g.title||"（名称なし）";
+  document.getElementById("sideZu").textContent=g.zu+"　"+(g.cat||"");
+  document.getElementById("sideBody").innerHTML=g.vers.map((f,i)=>
+    '<div class="ver"><div class="vh"><span class="vn">Ver.'+verNo(f)+'</span>'+
+      '<span class="vd">'+esc(jpDate(f.revised||f.mtime))+'</span>'+
+      (i===0?'<span class="vlatest">最新</span>':'')+'</div>'+
+    '<div class="vmemo'+(f.memo?"":" na")+'">'+esc(f.memo||"（メモなし）")+'</div>'+
+    (f.old?'<div class="vfile">旧ファイル名: '+esc(f.old)+'</div>':'')+
+    '<div class="vfile">'+esc(f.name)+'　'+Math.round(f.size/1024).toLocaleString()+' KB</div>'+
+    '<a class="open" href="'+esc(f.url)+'" target="_blank" rel="noopener">この版を開く</a></div>').join("");
+  document.getElementById("dwSide").classList.add("on");
+}
+function hideHistory(){document.getElementById("dwSide").classList.remove("on")}
 
 /* ---- 1台のカルテ ---- */
 const kv=(k,v,cls)=>'<div><span class="k">'+esc(k)+'</span><span class="v '+(trim(v)?(cls||""):"na")+'">'+
@@ -464,6 +562,13 @@ function openUnits(no){
 
 /* ---- 起動 ---- */
 document.addEventListener("DOMContentLoaded",()=>{
+  document.addEventListener("click",e=>{
+    const b=e.target.closest&&e.target.closest("button.hist");
+    if(b){showHistory(b.dataset.zu);return}
+    if(e.target.id==="btnSideClose")hideHistory();
+  });
+  document.addEventListener("keydown",e=>{if(e.key==="Escape")hideHistory()});
+
   document.querySelectorAll("nav.tabs button").forEach(b=>{
     b.addEventListener("click",()=>{
       document.querySelectorAll("nav.tabs button").forEach(x=>x.setAttribute("aria-selected",x===b?"true":"false"));
@@ -477,5 +582,11 @@ document.addEventListener("DOMContentLoaded",()=>{
   initMsal().catch(e=>{showGateError(e);console.error(e)});
 });
 </script>
+<div class="side" id="dwSide">
+  <button type="button" class="close" id="btnSideClose" aria-label="閉じる">×</button>
+  <h2 id="sideTitle">履歴</h2>
+  <div class="zu" id="sideZu"></div>
+  <div id="sideBody" style="margin-top:14px"></div>
+</div>
 </body>
 </html>
