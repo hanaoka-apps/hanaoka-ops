@@ -877,6 +877,19 @@ function renderNextMonthTrendChart(canvasId, cum) {
         legend: { position: 'bottom', labels: { boxWidth: 12 } },
         tooltip: {
           callbacks: {
+            // 合計(全社) = 国内営業部+ソリューション営業部 を、各部門の内訳より
+            // 先に1行目として出す(「合計、国内営業、ソリューション」の3点セット)。
+            beforeBody: items => {
+              if (!items.length) return [];
+              const idx = items[0].dataIndex;
+              let cumTotal = 0, incTotal = 0;
+              for (const g of ['国内営業部', 'ソリューション営業部']) {
+                cumTotal += cum.series[g][idx] || 0;
+                incTotal += cum.dailySeries[g][idx] || 0;
+              }
+              const sign = incTotal > 0 ? '+' : '';
+              return [`合計 累計 ${cumTotal.toLocaleString('ja-JP')}万円（その日 ${sign}${incTotal.toLocaleString('ja-JP')}万円）`];
+            },
             label: ctx => {
               const g = ctx.dataset.label;
               const inc = (cum.dailySeries[g] && cum.dailySeries[g][ctx.dataIndex]) || 0;
@@ -918,6 +931,10 @@ function renderBulletChart(canvasId, groups, plans, orderMetrics, salesMetrics) 
     const emoji = achievementEmoji(rate);
     return emoji ? `${g}  ${emoji}` : g;
   });
+  // データセットの並び順(datasetIndex): 0=受注累計, 1=売上累計, 2=計画。
+  // ホバー時は「目標→受注→売上」の3点セットで見せたいので、
+  // itemSort でツールチップ内の表示順だけ並べ替える。
+  const DATASET_ORDER = { 2: 0, 0: 1, 1: 2 }; // 計画→受注→売上
   const chart = new Chart(el, {
     type: 'bar',
     data: {
@@ -933,10 +950,24 @@ function renderBulletChart(canvasId, groups, plans, orderMetrics, salesMetrics) 
       responsive: true,
       maintainAspectRatio: false,
       datasets: { bar: { grouped: false } },
+      interaction: { mode: 'index', intersect: false },
       scales: { x: { title: { display: true, text: '万円' } } },
       plugins: {
         legend: { position: 'bottom', labels: { boxWidth: 12 } },
-        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.raw.toLocaleString('ja-JP')}万円` } },
+        tooltip: {
+          itemSort: (a, b) => DATASET_ORDER[a.datasetIndex] - DATASET_ORDER[b.datasetIndex],
+          callbacks: {
+            label: ctx => {
+              const g = groups[ctx.dataIndex];
+              const plan = plans[g] || 0;
+              // rate引数(m)は円の生値(monthAmt)。plan(円)との比率を計算する。
+              const rate = m => plan > 0 ? `（${((m / plan) * 100).toFixed(1)}%）` : '';
+              if (ctx.datasetIndex === 2) return `目標　${ctx.raw.toLocaleString('ja-JP')}万円`;
+              if (ctx.datasetIndex === 0) return `受注　${ctx.raw.toLocaleString('ja-JP')}万円${rate(orderMetrics[g].monthAmt)}`;
+              return `売上　${ctx.raw.toLocaleString('ja-JP')}万円${rate(salesMetrics[g].monthAmt)}`;
+            },
+          },
+        },
       },
     }
   });
