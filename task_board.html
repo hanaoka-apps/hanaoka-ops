@@ -1218,7 +1218,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-10-8";
+var APP_VER = "2026-09-10-9";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -2040,7 +2040,7 @@ async function fetchRooms(){
   }
   // 高速パス: 全部IDで書かれているなら該当分だけ取る（全Teamの走査をしない）
   if(specIsAllIds()){
-    var picked=[], perr=[];
+    var picked=[], perr=[], pdenied=[];
     for(var k=0;k<CONFIG.rooms.length;k++){
       var sp=CONFIG.rooms[k];
       try{
@@ -2051,9 +2051,24 @@ async function fetchRooms(){
           var cc=await g("/teams/"+sp.teamId+"/channels/"+sp.channelId);
           picked.push({id:cc.id,kind:"channel",teamId:sp.teamId,name:cc.displayName,last:"",n:0});
         }
-      }catch(e){ perr.push((sp.label||sp.name||sp.id||sp.channelId)+": "+e.message) }
+      }catch(e){
+        /* ★403（アクセス権がない）はエラーではありません★
+           プライベートチャネルの非メンバーには、その部屋は存在しないのと同じです。
+           全社に配ると60人のほとんどが「入っていない部屋」を持つので、
+           起動のたびに赤いトーストが出て「壊れている」と誤解されます。
+           静かに一覧から外し、知りたい人は「部屋を診断」で理由を見る形にします。
+           404 や通信エラーは設定ミス・障害なので、これまでどおり知らせます。 */
+        var msg=String(e.message||"");
+        var name=(sp.label||sp.name||sp.id||sp.channelId);
+        if(/Graph 403/.test(msg)){ pdenied.push(name); console.warn("参加していない部屋を外しました:",name) }
+        else perr.push(name+": "+msg);
+      }
     }
-    if(!picked.length && perr.length) throw new Error(perr.join(" / "));
+    if(!picked.length && (perr.length||pdenied.length)){
+      if(perr.length) throw new Error(perr.join(" / "));
+      throw new Error("参加している部屋がありません。管理者設定で指定された部屋のどれにも入っていないようです"+
+        "（設定 →「部屋を診断」で確認できます）");
+    }
     if(perr.length) toast("一部の部屋が開けません（"+perr.length+"件）。設定 →「部屋を診断」で原因が出ます",true);
     return picked;
   }
