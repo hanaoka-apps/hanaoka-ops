@@ -70,6 +70,21 @@ body.in .gate{display:none}
 .recent{font-size:14px;color:var(--muted)}
 .recent b{color:var(--text)}
 .recent div{padding:4px 0;border-top:1px solid #f0f2f5}
+.todo .grp{background:#fff;color:var(--text);border:1px solid var(--line);
+  text-align:left;padding:13px 14px;margin-bottom:8px;font-weight:500;min-height:0;
+  display:flex;align-items:center;gap:12px}
+.todo .grp .l{flex:1;min-width:0}
+.todo .grp .no{display:block;font-size:17px;font-weight:800}
+.todo .grp .sub2{display:block;font-size:13px;color:var(--muted)}
+.todo .grp .cnt{background:#fff4e0;color:#8a5a00;border-radius:999px;
+  padding:4px 12px;font-size:14px;font-weight:800;white-space:nowrap}
+.todo .sum{font-size:16px;font-weight:700;margin-bottom:10px}
+.todo .sum b{font-size:22px;color:var(--brand)}
+.todo .none{background:var(--ok-bg);border:1px solid #b9e3cb;color:var(--ok);
+  border-radius:12px;padding:16px;text-align:center;font-weight:700}
+.hrow{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.hrow label{margin:0;flex:1}
+.hrow button{width:auto;min-height:0;padding:7px 14px;font-size:13.5px}
 .foot{text-align:center;color:var(--muted);font-size:12.5px;margin-top:20px;line-height:1.9}
 </style>
 </head>
@@ -89,6 +104,15 @@ body.in .gate{display:none}
 
 <div class="app">
   <div class="msg err" id="err"></div>
+
+  <!-- 0. 未入力の一覧（最初に出る画面） -->
+  <div class="card todo" id="cardTodo">
+    <div class="hrow">
+      <label>未入力の車両</label>
+      <button class="plain" id="btnReload">更新</button>
+    </div>
+    <div id="todoBody"><div class="hint">読み込んでいます…</div></div>
+  </div>
 
   <!-- 1. さがす -->
   <div class="card" id="cardFind">
@@ -168,7 +192,7 @@ const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu";
 const LIST_UNITS="製造番号明細";
 let msalInstance=null,account=null,SITE_ID=null,UNITS_ID=null;
-let CURRENT=null,LIST_CTX=null,RECENT=[];
+let CURRENT=null,LIST_CTX=null,RECENT=[],TODO=[];
 
 const $=id=>document.getElementById(id);
 const trim=s=>(s||"").toString().trim();
@@ -189,8 +213,8 @@ function showErr(m){$("err").textContent=m;$("err").classList.add("on");
 function clearErr(){$("err").classList.remove("on")}
 function busy(on){$("spin").classList.toggle("on",!!on)}
 function show(id,on){$(id).style.display=on?"":"none"}
-function onlyFind(){show("cardFind",true);show("cardList",false);show("cardOne",false);
-  show("cardEdit",false);show("cardDone",false)}
+function onlyFind(){show("cardTodo",true);show("cardFind",true);show("cardList",false);
+  show("cardOne",false);show("cardEdit",false);show("cardDone",false)}
 
 /* ---- Graph ---- */
 async function token(){
@@ -237,13 +261,59 @@ async function signedIn(){
     UNITS_ID=u.id;
     document.body.classList.add("in");
     $("shipDate").value=today();
-    $("q").focus();
+    await loadTodo();
   }catch(e){
     console.error(e);
     document.body.classList.remove("in");
     showErr(e.status===403?"このデータを見る権限がありません。総務にご連絡ください。"
       :"データにつながりませんでした。総務にご連絡ください。");
   }
+}
+
+/* ============================================================
+   未入力の一覧
+   松川さんが最初に見る画面。出荷日が入っていない車両を
+   出図ごとにまとめて出す。台数が多いので、出図をたたいて
+   から中の車両を出す2段にしてある。
+   ============================================================ */
+async function loadTodo(){
+  $("todoBody").innerHTML='<div class="hint">読み込んでいます…</div>';
+  try{
+    const q="/sites/"+SITE_ID+"/lists/"+UNITS_ID+"/items?expand=fields&$top=500"+
+      "&$filter=fields/UnitStatus eq '未出荷'";
+    const units=(await gAll(q,PREF)).map(unitOf).filter(u=>!u.date);
+    const m=new Map();
+    units.forEach(u=>{const k=u.shipNo||"（出図番号なし）";
+      if(!m.has(k))m.set(k,[]);m.get(k).push(u)});
+    TODO=[...m.entries()].map(([shipNo,us])=>{
+      us.sort((a,b)=>String(a.sn).localeCompare(String(b.sn)));
+      return {shipNo:shipNo,units:us,customer:us[0].customer,
+        product:us[0].product,model:us[0].model};
+    }).sort((a,b)=>String(a.shipNo).localeCompare(String(b.shipNo)));
+    renderTodo();
+  }catch(e){
+    console.error(e);
+    $("todoBody").innerHTML='<div class="hint">一覧を読み込めませんでした。'+
+      '「更新」を押すか、下から製造番号で探してください。</div>';
+  }
+}
+function renderTodo(){
+  const total=TODO.reduce((n,g)=>n+g.units.length,0);
+  if(!total){
+    $("todoBody").innerHTML='<div class="none">未入力はありません</div>';return;
+  }
+  $("todoBody").innerHTML=
+    '<div class="sum">のこり <b>'+total+'</b> 台　（'+TODO.length+'件の出図）</div>'+
+    TODO.map((g,i)=>'<button type="button" class="grp" data-i="'+i+'">'+
+      '<span class="l"><span class="no">出図 '+esc(g.shipNo)+'</span>'+
+      '<span class="sub2">'+esc([g.customer,g.product,g.model].filter(Boolean).join("　"))+'</span></span>'+
+      '<span class="cnt">'+g.units.length+'台</span></button>').join("");
+}
+/* 登録したらその1台を未入力から外す */
+function dropFromTodo(id){
+  TODO.forEach(g=>{g.units=g.units.filter(u=>u.id!==id)});
+  TODO=TODO.filter(g=>g.units.length);
+  renderTodo();
 }
 
 /* ---- さがす ---- */
@@ -263,7 +333,7 @@ async function doFind(){
   const v=trim(toHalf($("q").value));
   if(v!==trim($("q").value))$("q").value=v;   /* 全角で入れても探せるように */
   if(!v){showErr("番号を入れてください。");return}
-  busy(true);show("cardList",false);show("cardOne",false);show("cardEdit",false);show("cardDone",false);
+  busy(true);show("cardTodo",false);show("cardList",false);show("cardOne",false);show("cardEdit",false);show("cardDone",false);
   try{
     let r=await findBy("Title",v);
     if(!r.length)r=await findBy("CarNo",v);
@@ -289,7 +359,7 @@ function openList(title,units){
     '<div class="sn">'+esc(u.sn)+'</div>'+
     '<div class="sub2">'+esc(u.dest||"—")+'　'+
       (u.date?("出荷 "+jp(u.date)+(u.weight?("　"+u.weight+"kg"):"")):"未入力")+'</div></button>').join("");
-  show("cardFind",false);show("cardList",true);show("cardOne",false);show("cardEdit",false);
+  show("cardTodo",false);show("cardFind",false);show("cardList",true);show("cardOne",false);show("cardEdit",false);
 }
 function openOne(u){
   CURRENT=u;
@@ -306,7 +376,7 @@ function openOne(u){
   $("editHint").textContent=u.date
     ? "すでに入っている内容を直すこともできます。"
     : "出荷日を入れて登録すると「出荷済」になります。";
-  show("cardFind",false);show("cardList",false);
+  show("cardTodo",false);show("cardFind",false);show("cardList",false);
   show("cardOne",true);show("cardEdit",true);show("cardDone",false);
   window.scrollTo({top:0,behavior:"smooth"});
 }
@@ -325,6 +395,7 @@ async function save(){
     await g("PATCH","/sites/"+SITE_ID+"/lists/"+UNITS_ID+"/items/"+CURRENT.id+"/fields",body);
     CURRENT.date=d;CURRENT.weight=w;if(d)CURRENT.status="出荷済";
     RECENT.unshift({sn:CURRENT.sn,date:d,weight:w});RECENT=RECENT.slice(0,8);
+    if(d)dropFromTodo(CURRENT.id);
     renderRecent();
     if(LIST_CTX){const t=LIST_CTX.units.find(x=>x.id===CURRENT.id);
       if(t){t.date=d;t.weight=w;t.status=CURRENT.status}}
@@ -360,6 +431,12 @@ function nextOne(){
 /* ---- 配線 ---- */
 document.addEventListener("DOMContentLoaded",()=>{
   $("btnIn").onclick=signIn;
+  $("btnReload").onclick=loadTodo;
+  $("todoBody").addEventListener("click",e=>{
+    const b=e.target.closest("button.grp");if(!b)return;
+    const g=TODO[+b.dataset.i];if(!g)return;
+    openList("出図 "+g.shipNo,g.units);
+  });
   $("btnFind").onclick=doFind;
   $("q").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();doFind()}});
   $("q").addEventListener("input",e=>{clearErr()});
