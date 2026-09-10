@@ -277,8 +277,12 @@
     <div class="bar-wrap" style="height:190px"><canvas id="baseBulletChart"></canvas></div>
     <div id="baseCombinedTableWrap"></div>
 
-    <div class="trend-label" style="margin-top:20px">翌月受注金額<span class="page-sub" style="margin-left:6px">参考値・計画対比なし</span></div>
-    <div id="nextMonthTableWrap"></div>
+    <div class="trend-label" style="margin-top:20px">翌月受注金額<span class="page-sub" style="margin-left:6px">参考値・計画対比なし・今月累計の積み上げ</span></div>
+    <div class="bar-wrap" style="height:190px"><canvas id="nextMonthTrendChart"></canvas></div>
+    <details class="rank-detail">
+      <summary>詳細な数字を見る</summary>
+      <div id="nextMonthTableWrap"></div>
+    </details>
   </div>
 
   <div class="section-grid">
@@ -655,25 +659,25 @@ function daysBetweenKeys(k1, k2) {
 // ============================================================
 const COMEBACK_MIN_DAYS = 60; // これ未満の間隔は「久しぶり」と呼ぶには短すぎるので出さない
 
-function computeItemNews(orderRows, curYm, today) {
-  const targetY = Math.floor(curYm / 100), targetMo = curYm % 100;
+function computeItemNews(orderRows, today) {
   const todayKey = dateKeyOf(today);
 
-  // 1) 今月の人気商品（数量ベース、今月納期のもの）
-  const qtyByItem = {};
+  // 1) 本日の人気商品（数量ベース、当日受注のみ）
+  // 月合計の数量で見ると、ボルト等の消耗部品が月初に一度首位を取ったきり
+  // ずっと動かなくなり「代り映えのないニュース」になってしまうため、
+  // 当日分の数量だけでランキングする(毎日変わる話題にするため)。
+  const qtyByItemToday = {};
   for (const r of orderRows) {
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
-    if (!isSameMonthByKikou(r, targetY, targetMo)) continue;
-    const vKey = voucherDateKey(r);
-    if (vKey === null || vKey > todayKey) continue;
+    if (!isToday(r, today)) continue;
     const nm = (r[IDX.item_nm] || '').trim();
     if (!nm) continue;
-    qtyByItem[nm] = (qtyByItem[nm] || 0) + (Number(r[IDX.qty]) || 0);
+    qtyByItemToday[nm] = (qtyByItemToday[nm] || 0) + (Number(r[IDX.qty]) || 0);
   }
   let topItem = null, topQty = 0;
-  for (const nm in qtyByItem) {
-    if (qtyByItem[nm] > topQty) { topQty = qtyByItem[nm]; topItem = nm; }
+  for (const nm in qtyByItemToday) {
+    if (qtyByItemToday[nm] > topQty) { topQty = qtyByItemToday[nm]; topItem = nm; }
   }
 
   // 2) 久しぶりの受注：品目ごとに「today より前で一番新しい受注日」を全期間から調べ、
@@ -712,13 +716,13 @@ function computeItemNews(orderRows, curYm, today) {
   return { topItem, topQty, comeback, firstEver };
 }
 
-function renderItemNews(orderRows, curYm, today) {
-  const news = computeItemNews(orderRows, curYm, today);
+function renderItemNews(orderRows, today) {
+  const news = computeItemNews(orderRows, today);
   const items = [];
   if (news.topItem) {
     items.push({
       emoji: '🔥',
-      html: `今月の人気商品は <b>${escapeHtml(news.topItem)}</b><span class="news-sub">（${news.topQty.toLocaleString('ja-JP')}台受注）</span>`,
+      html: `本日の人気商品は <b>${escapeHtml(news.topItem)}</b><span class="news-sub">（${news.topQty.toLocaleString('ja-JP')}台受注）</span>`,
     });
   }
   if (news.comeback) {
@@ -788,6 +792,77 @@ function renderTrendChart(canvasId, rows, curYm, today, monthMode) {
         y: { title: { display: true, text: '万円', font: { size: 10 } } },
       },
       plugins: { legend: { display: false } },
+    }
+  });
+  CHARTS[canvasId] = chart;
+}
+
+// ============================================================
+// 翌月受注金額の「水位」推移（今月1日〜表示日までの累計を国内営業部/
+// ソリューション営業部で積み上げ、翌月分の受注がどれだけ積み上がって
+// きているかを面グラフで見せる）。
+// 全社は国内営業部+ソリューション営業部の合計(=積み上げの一番上の線)に
+// なるため、二重計上を避けるためにこの2グループだけを積み上げる。
+// ============================================================
+function cumulativeByGroupDaily(orderRows, targetYm, today, groups) {
+  const targetY = Math.floor(targetYm / 100), targetMo = targetYm % 100;
+  const todayKey = dateKeyOf(today);
+
+  const dailyByGroup = {}; // dateKey -> group -> amt
+  for (const r of orderRows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    if (!isSameMonthByKikou(r, targetY, targetMo)) continue;
+    const vKey = voucherDateKey(r);
+    if (vKey === null || vKey > todayKey) continue;
+    if (!dailyByGroup[vKey]) dailyByGroup[vKey] = {};
+    const amt = Number(r[IDX.amount]) || 0;
+    for (const g of groups) {
+      if (!matchGroup(r, g)) continue;
+      dailyByGroup[vKey][g] = (dailyByGroup[vKey][g] || 0) + amt;
+    }
+  }
+
+  // 表示日が属する月の1日から表示日まで
+  const labels = [];
+  const series = {};
+  groups.forEach(g => series[g] = []);
+  const cum = {};
+  groups.forEach(g => cum[g] = 0);
+  for (let d = 1; ; d++) {
+    const day = { y: today.y, mo: today.mo, d };
+    const key = dateKeyOf(day);
+    if (key > todayKey) break;
+    labels.push(`${day.mo}/${day.d}`);
+    for (const g of groups) {
+      cum[g] += (dailyByGroup[key] && dailyByGroup[key][g]) || 0;
+      series[g].push(Math.round(cum[g] / 10000));
+    }
+  }
+  return { labels, series };
+}
+
+function renderNextMonthTrendChart(canvasId, cum) {
+  destroyChart(canvasId);
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const chart = new Chart(el, {
+    type: 'line',
+    data: {
+      labels: cum.labels,
+      datasets: [
+        { label: '国内営業部', data: cum.series['国内営業部'], borderColor: '#2455e6', backgroundColor: 'rgba(36,85,230,0.25)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2 },
+        { label: 'ソリューション営業部', data: cum.series['ソリューション営業部'], borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.25)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2 },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { maxRotation: 0, autoSkip: true, font: { size: 10 } } },
+        y: { stacked: true, title: { display: true, text: '万円' } },
+      },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
     }
   });
   CHARTS[canvasId] = chart;
@@ -1441,7 +1516,7 @@ function renderForDate(today) {
   renderTrendChart('orderTrendChart', orderRows, curYm, today, 'kikou');
   renderTrendChart('salesTrendChart', rows, curYm, today, 'ym');
 
-  renderItemNews(orderRows, curYm, today);
+  renderItemNews(orderRows, today);
 
   renderRankedSection({
     chartId: 'genreDomBarChart', tableId: 'genreDomTableWrap', totalId: 'genreDomTotal',
@@ -1468,6 +1543,8 @@ function renderForDate(today) {
   // 翌月受注金額: 納期が「翌月」に属する受注
   const nextYm = shiftYm(curYm, 1);
   const nextMonthMetrics = aggregateByGroup(orderRows, nextYm, today, 'kikou');
+  const nextMonthCum = cumulativeByGroupDaily(orderRows, nextYm, today, ['国内営業部', 'ソリューション営業部']);
+  renderNextMonthTrendChart('nextMonthTrendChart', nextMonthCum);
   renderPipelineCards('nextMonthTableWrap', nextMonthMetrics, DEPT_GROUPS);
 }
 
