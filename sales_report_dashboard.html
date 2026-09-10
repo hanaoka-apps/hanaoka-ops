@@ -279,7 +279,7 @@
 
     <div class="trend-label" style="margin-top:20px">翌月受注金額<span class="page-sub" style="margin-left:6px">参考値・計画対比なし・今月累計の積み上げ</span></div>
     <div class="bar-wrap" style="height:190px"><canvas id="nextMonthTrendChart"></canvas></div>
-    <details class="rank-detail">
+    <details class="rank-detail" open>
       <summary>詳細な数字を見る</summary>
       <div id="nextMonthTableWrap"></div>
     </details>
@@ -823,10 +823,14 @@ function cumulativeByGroupDaily(orderRows, targetYm, today, groups) {
     }
   }
 
-  // 表示日が属する月の1日から表示日まで
+  // 表示日が属する月の1日から表示日まで。累計(series)に加えて、その日
+  // 単体の増分(dailySeries)も持たせ、ホバー時に「今日いくら乗ったか」を
+  // 表示できるようにする(累計の線だけだと最終日の伸びが小さく見えて
+  // わかりにくいため)。
   const labels = [];
   const series = {};
-  groups.forEach(g => series[g] = []);
+  const dailySeries = {};
+  groups.forEach(g => { series[g] = []; dailySeries[g] = []; });
   const cum = {};
   groups.forEach(g => cum[g] = 0);
   for (let d = 1; ; d++) {
@@ -835,34 +839,53 @@ function cumulativeByGroupDaily(orderRows, targetYm, today, groups) {
     if (key > todayKey) break;
     labels.push(`${day.mo}/${day.d}`);
     for (const g of groups) {
-      cum[g] += (dailyByGroup[key] && dailyByGroup[key][g]) || 0;
+      const inc = (dailyByGroup[key] && dailyByGroup[key][g]) || 0;
+      cum[g] += inc;
       series[g].push(Math.round(cum[g] / 10000));
+      dailySeries[g].push(Math.round(inc / 10000));
     }
   }
-  return { labels, series };
+  return { labels, series, dailySeries };
 }
 
 function renderNextMonthTrendChart(canvasId, cum) {
   destroyChart(canvasId);
   const el = document.getElementById(canvasId);
   if (!el) return;
+  const lastIdx = cum.labels.length - 1;
+  // 最終日(表示日)の点だけ大きくして、当日分がどこかひと目でわかるように
+  const pointRadius = ctx => ctx.dataIndex === lastIdx ? 5 : 0;
+  const pointHitRadius = ctx => ctx.dataIndex === lastIdx ? 6 : 3;
   const chart = new Chart(el, {
     type: 'line',
     data: {
       labels: cum.labels,
       datasets: [
-        { label: '国内営業部', data: cum.series['国内営業部'], borderColor: '#2455e6', backgroundColor: 'rgba(36,85,230,0.25)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2 },
-        { label: 'ソリューション営業部', data: cum.series['ソリューション営業部'], borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.25)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2 },
+        { label: '国内営業部', data: cum.series['国内営業部'], borderColor: '#2455e6', backgroundColor: 'rgba(36,85,230,0.25)', pointBackgroundColor: '#2455e6', fill: true, tension: 0.25, pointRadius, pointHitRadius, pointHoverRadius: 6, borderWidth: 2 },
+        { label: 'ソリューション営業部', data: cum.series['ソリューション営業部'], borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.25)', pointBackgroundColor: '#7c3aed', fill: true, tension: 0.25, pointRadius, pointHitRadius, pointHoverRadius: 6, borderWidth: 2 },
       ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       scales: {
         x: { ticks: { maxRotation: 0, autoSkip: true, font: { size: 10 } } },
         y: { stacked: true, title: { display: true, text: '万円' } },
       },
-      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const g = ctx.dataset.label;
+              const inc = (cum.dailySeries[g] && cum.dailySeries[g][ctx.dataIndex]) || 0;
+              const sign = inc > 0 ? '+' : '';
+              return `${g} 累計 ${ctx.raw.toLocaleString('ja-JP')}万円（その日 ${sign}${inc.toLocaleString('ja-JP')}万円）`;
+            },
+          },
+        },
+      },
     }
   });
   CHARTS[canvasId] = chart;
@@ -947,7 +970,7 @@ function renderCombinedTable(containerId, groups, plans, orderMetrics, salesMetr
   }).join('');
 
   document.getElementById(containerId).innerHTML = `
-    <details class="rank-detail">
+    <details class="rank-detail" open>
       <summary>詳細な数字を見る</summary>
       <div class="table-scroll"><table>
         <thead><tr>
