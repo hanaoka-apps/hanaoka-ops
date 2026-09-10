@@ -67,9 +67,14 @@ table.dwst input,table.dwst select{padding:7px 9px;font-size:13px;border-radius:
 table.dwst input.dnum{text-align:right;width:64px}
 table.dwst td.src{font-size:11.5px;color:#777;max-width:190px;word-break:break-all}
 table.dwst td.src .meta,table.dwst td.newfn .meta{display:block;color:#aaa;font-size:10.5px}
-table.dwst td.newfn{font-weight:700;white-space:nowrap}
-table.dwst td.newfn.dupe{color:#8a5a00}
-table.dwst td.newfn.dupe .meta{color:#8a5a00;font-weight:400}
+table.dwst td.newfn{white-space:nowrap}
+table.dwst td.newfn .kind{display:inline-block;font-size:11px;font-weight:800;
+  border-radius:5px;padding:2px 8px;margin-bottom:3px}
+table.dwst td.newfn .kind.new{background:#e9f7ef;color:#1f7a4d}
+table.dwst td.newfn .kind.upd{background:#eef4ff;color:#31527a}
+table.dwst td.newfn .kind.ng{background:#fff7df;color:#8a5a00}
+table.dwst td.newfn .fn2{display:block;font-weight:700;font-size:12px}
+table.dwst td.newfn.dupe .fn2{color:#8a5a00}
 .dwstwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:#fff;padding:10px 12px}
 a.dlink{color:var(--brand);font-weight:700;text-decoration:none}
 .ovl .panel.wide{max-width:1080px}
@@ -150,7 +155,9 @@ table.meisai.sticker input.snum{text-align:right}
   #printArea .phead{font-size:.85em;color:#555;margin:0 0 5mm}
   #printArea table{width:100%;border-collapse:collapse;margin-bottom:6mm}
   #printArea th,#printArea td{border:1px solid #999;padding:1.6mm 2.4mm;
-    text-align:left;vertical-align:top;word-break:break-all}
+    text-align:left;vertical-align:top;word-break:break-all;
+    /* 一覧用の th,td{font-size:13px} に負けていたので、ここで継承させる */
+    font-size:inherit;line-height:1.6}
   #printArea th{background:#f0f0f0;font-weight:700;white-space:nowrap}
   #printArea .k{background:#f6f6f6;font-weight:700;width:26%;white-space:nowrap}
   #printArea h2{font-size:1.05em;margin:0 0 2mm;border-left:4px solid #666;padding-left:2mm}
@@ -308,24 +315,42 @@ let DRIVE_ID=null,DRAWINGS=[],STAGED=[];
 /* --- ファイル名から中身を推測する（登録前に手で直せる） --- */
 function parseDrawingName(fn){
   const stem=String(fn||"").replace(/\.[^.]+$/,"");
-  /* 図番の切り出し。実物15件から分かった形:
-       製品図  H910405A-0001 / H910405A-00010   … 機種コード+英字 のあとに数字
-       部品図  H910405-10000 / H910405-9700A    … 枝番は 5桁の数字 か 4桁+英字
-     「H910405-50000TTロック」で末尾のTを図番に食われていたのを直した。
-     ※この規則は実物からの推測。技術部に確認中。 */
-  const m=stem.match(/^(H\d{6}[A-Za-z]-\d+)/)
-        ||stem.match(/^(H\d{6}-(?:\d{5}|\d{4}[A-Za-z]))/)
+  /* 図番の切り出し。実物から分かっている形:
+       H910405A-0001  H910405A-00010  H240111F-0001  … 機種コード+英字 のあと 3〜5桁
+       H111111-000    H251017-000                    … 英字なし 枝番3桁
+       H910405-10000  H910405-9700A                  … 部品図 5桁 または 4桁+英字
+     順番が大事。5桁 → 4桁+英字 → 3〜4桁 の順に試す。
+     先に 3〜4桁 を試すと「H910405-50000TTロック」で枝番を 5000 と切って
+     しまい、残りが「0TTロック」になる。
+     ※この規則は実物からの推測。技術部に確認中（確認事項：枝番の桁数）。 */
+  const m=stem.match(/^(H\d{6}[A-Za-z]-\d{3,5})/)
+        ||stem.match(/^(H\d{6}-(?:\d{5}|\d{4}[A-Za-z]|\d{3,4}))/)
         ||stem.match(/^(H\d{6}[A-Za-z]?)/);
   const zu=m?m[1]:"";
-  let rest=m?stem.slice(m[1].length):stem, mark="";
+  let rest=m?stem.slice(m[1].length):stem, mark="", rev="";
+  /* アプリが付けた名前（図番_0001）を読み直したときは、版番号として扱う。
+     そうしないと名称が「0001」になる。 */
+  const rv=rest.match(/^_(\d{3,4})(?![0-9])/);
+  if(rv){rev=pad4(rv[1]);rest=rest.slice(rv[0].length)}
   /* 「△1」を第1版と決めつけない。初版込みで何版目かは名前から
      判断できないため、記号はメモに残して版番号は連番で振る。 */
   const r=rest.match(/[△▲]\s*(\d+)/);
   if(r){mark=r[0].replace(/\s+/g,"");rest=rest.replace(r[0],"")}
   rest=rest.replace(/^[\s_\-–—]+/,"").trim();
-  return {zu:zu, mark:mark, title:rest,
-    model:(zu.match(/^H\d{6}/)||[""])[0],
-    cat:/^H\d{6}[A-Za-z]/.test(stem)?"製品図":(zu?"部品図":"その他")};
+  /* 区分の見分け。実物から:
+       H910405A-0001 / H240111F-0001 / H910405A-00010  機種コードの直後に英字 → 製品図
+       H111111-000   / H251017-000                     英字なし・枝番3〜4桁 → 製品図
+       H910405-10000 / H910405-9700A                   英字なし・枝番5桁か4桁+英字 → 部品図
+     推測なので、登録画面でその場で直せるようにしてある。 */
+  let cat="その他";
+  if(zu){
+    if(/^H\d{6}[A-Za-z]-/.test(zu))cat="製品図";
+    else if(/^H\d{6}-(?:\d{5}|\d{4}[A-Za-z])$/.test(zu))cat="部品図";
+    else if(/^H\d{6}-\d{3,4}$/.test(zu))cat="製品図";
+    else cat="部品図";
+  }
+  return {zu:zu, mark:mark, rev:rev, title:rest,
+    model:(zu.match(/^H\d{6}/)||[""])[0], cat:cat};
 }
 function pad4(v){const n=parseInt(v,10);return isFinite(n)?String(n).padStart(4,"0"):""}
 function extOf(fn){const m=String(fn||"").match(/\.[^.]+$/);return m?m[0]:""}
@@ -466,9 +491,22 @@ function hideHistory(){$("dwSide").classList.remove("on")}
 
 /* --- 画面：登録前の確認表 --- */
 /* --- 画面：登録前の確認表 --- */
+/* この1件が「新しい図面」なのか「既にある図番の改訂版」なのかを言葉で出す。
+   図番を打ち替えれば新規に、既存の図番に合わせれば更新になる。 */
+function stageKind(s){
+  if(!trim(s.zu))return {cls:"ng",label:"図番が必要",note:""};
+  const vers=DRAWINGS.filter(d=>d.zu===s.zu);
+  if(!vers.length)return {cls:"new",label:"新規に追加",note:"この図番は初めてです"};
+  const dup=vers.some(d=>pad4(d.rev)===pad4(s.rev));
+  if(dup)return {cls:"ng",label:"同じ版を上書き",
+    note:"Ver."+(parseInt(s.rev,10)||1)+" は既にあります。中身が置き換わります"};
+  const max=Math.max.apply(null,vers.map(d=>parseInt(d.rev,10)||0));
+  return {cls:"upd",label:"この図面を更新",
+    note:"Ver."+max+" → Ver."+(parseInt(s.rev,10)||max+1)+"（前の版も残ります）"};
+}
 function stagedRowHtml(s,i){
   const fn=s.zu?drawingFileName(s.zu,s.rev||"0001",s.ext):"（図番が必要）";
-  const dup=s.zu&&DRAWINGS.some(d=>d.zu===s.zu&&pad4(d.rev)===pad4(s.rev));
+  const k=stageKind(s),dup=(k.cls==="ng"&&trim(s.zu));
   return '<tr data-i="'+i+'">'+
     '<td class="src">'+esc(s.orig)+'<span class="meta">'+Math.round(s.size/1024).toLocaleString()+' KB</span></td>'+
     '<td><input class="d-zu" value="'+esc(s.zu)+'" placeholder="H910405-25000"></td>'+
@@ -479,7 +517,10 @@ function stagedRowHtml(s,i){
       '<option'+(s.cat==="その他"?" selected":"")+'>その他</option></select></td>'+
     '<td><input class="d-date" type="date" value="'+esc(s.date||"")+'"></td>'+
     '<td><input class="d-memo" value="'+esc(s.memo)+'" placeholder="（任意）"></td>'+
-    '<td class="newfn'+(dup?" dupe":"")+'">'+esc(fn)+(dup?'<span class="meta">同じ版が既にあります。上書きになります。</span>':'')+'</td>'+
+    '<td class="newfn'+(dup?" dupe":"")+'">'+
+      '<span class="kind '+k.cls+'">'+esc(k.label)+'</span>'+
+      (k.note?'<span class="meta">'+esc(k.note)+'</span>':'')+
+      '<span class="fn2">'+esc(fn)+'</span></td>'+
     '<td><button type="button" class="mdel" title="この行を外す">×</button></td></tr>';
 }
 function renderStaged(){
@@ -504,6 +545,13 @@ function readStaged(){
   });
 }
 let DW_PRESET_ZU="";
+function catForZu(zu){
+  if(!zu)return "その他";
+  if(/^H\d{6}[A-Za-z]-/.test(zu))return "製品図";
+  if(/^H\d{6}-(?:\d{5}|\d{4}[A-Za-z])$/.test(zu))return "部品図";
+  if(/^H\d{6}-\d{3,4}$/.test(zu))return "製品図";
+  return "部品図";
+}
 function stageFiles(files){
   const today=new Date().toISOString().slice(0,10);
   [...files].forEach(f=>{
@@ -511,9 +559,9 @@ function stageFiles(files){
     /* ファイル名から図番が読めないときは、開いたときの図番を使う */
     const zu=p.zu||DW_PRESET_ZU;
     STAGED.push({file:f,orig:f.name,size:f.size,ext:extOf(f.name),
-      zu:zu,title:p.title,cat:p.cat==="その他"&&zu?"部品図":p.cat,
+      zu:zu,title:p.title,cat:p.zu?p.cat:catForZu(zu),
       memo:p.mark?("旧改訂記号 "+p.mark):"",
-      date:today, rev:nextRev(zu)});
+      date:today, rev:p.rev||nextRev(zu)});
   });
   renderStaged();
 }
@@ -1398,7 +1446,7 @@ document.addEventListener("DOMContentLoaded",()=>{initSelects();["units","capaci
     <div class="dwstwrap"><table class="dwst"><thead><tr>
       <th>元のファイル</th><th style="width:150px">図番</th><th style="width:150px">名称</th>
       <th style="width:70px">版</th><th style="width:110px">区分</th><th style="width:130px">改訂日</th><th style="width:150px">メモ</th>
-      <th>保存する名前</th><th style="width:34px"></th></tr></thead>
+      <th style="width:210px">どうなるか</th><th style="width:34px"></th></tr></thead>
       <tbody id="dwStageRows"></tbody></table></div>
     <div class="warn" id="dwWarn" style="display:none"></div>
     <div class="foot"><button type="button" id="btnDwRegister">この内容で登録</button>
