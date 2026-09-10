@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>給与データ 月次アップロード</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#f7f7f5; --panel:#fff; --border:#e3e2de; --text:#1f1e1c; --muted:#767468; --accent:#b8622f; --ok:#2f6b3a; --err:#b03636; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1b1a18; --panel:#242320; --border:#3a3833; --text:#ece9e2; --muted:#a6a296; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Hiragino Sans","Yu Gothic",sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:32px 24px; }
+  h1 { font-size:18px; }
+  p.note { color:var(--muted); font-size:13px; line-height:1.7; }
+  #drop { border:2px dashed var(--border); border-radius:10px; background:var(--panel); padding:48px 24px; text-align:center; margin:20px 0; }
+  #drop.hot { border-color:var(--accent); }
+  .btn { font:inherit; font-size:14px; padding:10px 22px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  #gate { text-align:center; padding:60px 0; }
+  #log { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 18px; font-size:12.5px; font-family:ui-monospace,monospace; white-space:pre-wrap; max-height:400px; overflow-y:auto; margin-top:16px; }
+  .hide { display:none !important; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+</style>
+</head>
+<body>
+<nav style="background:#1f1e1c;color:#fff;padding:8px 24px;font:13px -apple-system,'Hiragino Sans',sans-serif;display:flex;gap:18px;align-items:center;">
+  <strong style="opacity:.55;font-weight:600;">給与・労務アプリ</strong>
+  <a href="payroll_dashboard.html" style="color:#fff;text-decoration:none;opacity:.75;">給与前月対比</a>
+  <a href="payroll_detail.html" style="color:#fff;text-decoration:none;opacity:.75;">支給控除一覧表</a>
+  <a href="payroll_leave.html" style="color:#fff;text-decoration:none;opacity:.75;">年次有給休暇管理</a>
+  <a href="payroll_upload.html" style="color:#fff;text-decoration:none;font-weight:700;">月次アップロード</a>
+</nav>
+
+<div id="gate">
+  <p>役員・総務幹部限定です。Microsoftアカウントでサインインしてください。</p>
+  <button class="btn" id="signInBtn">サインイン</button>
+  <div id="gateError" style="color:#b03636;margin-top:14px;font-size:13px;"></div>
+</div>
+
+<main id="appRoot" class="hide">
+  <h1>給与データ 月次アップロード</h1>
+  <p class="note">
+    ローカルで <code>python scripts/export_cloud_data.py</code> を実行して作った <code>cloud_upload</code> フォルダを、
+    下にドラッグ＆ドロップ（またはフォルダ選択）してください。中身をそのままSharePointの「給与データ」フォルダへアップロードします。
+  </p>
+  <div id="drop">
+    <p>cloud_upload フォルダをここにドラッグ、または</p>
+    <button class="btn" id="pickBtn">フォルダを選ぶ</button>
+    <input type="file" id="fFolder" webkitdirectory directory multiple class="hide">
+  </div>
+  <div id="log" class="hide"></div>
+</main>
+
+<script src="payroll_graph.js"></script>
+<script>
+const dz = document.getElementById('drop');
+const logEl = document.getElementById('log');
+
+function log(line, cls) {
+  logEl.classList.remove('hide');
+  const span = document.createElement('div');
+  if (cls) span.className = cls;
+  span.textContent = line;
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** File一覧から、cloud_upload/ を起点とした相対パスへ変換してアップロードする */
+async function uploadFiles(fileList) {
+  const files = [...fileList].filter(f => f.name.endsWith('.json'));
+  if (!files.length) { log('JSONファイルが見つかりませんでした。', 'err'); return; }
+
+  let ok = 0, fail = 0;
+  for (const f of files) {
+    // webkitRelativePath 例: "cloud_upload/history/payroll_history.json"
+    const rel = f.webkitRelativePath || f.name;
+    const idx = rel.indexOf('cloud_upload/');
+    const relPath = idx >= 0 ? rel.slice(idx + 'cloud_upload/'.length) : rel;
+    try {
+      const text = await f.text();
+      const obj = JSON.parse(text);
+      await payrollPutFile(relPath, obj);
+      ok++;
+      log('OK   ' + relPath, 'ok');
+    } catch (e) {
+      fail++;
+      log('FAIL ' + relPath + ' : ' + e.message, 'err');
+    }
+  }
+  log(`完了: 成功${ok}件 / 失敗${fail}件`, fail ? 'err' : 'ok');
+}
+
+document.getElementById('pickBtn').addEventListener('click', () => document.getElementById('fFolder').click());
+document.getElementById('fFolder').addEventListener('change', e => uploadFiles(e.target.files));
+['dragenter','dragover'].forEach(t => dz.addEventListener(t, e => { e.preventDefault(); dz.classList.add('hot'); }));
+['dragleave','drop'].forEach(t => dz.addEventListener(t, e => { e.preventDefault(); dz.classList.remove('hot'); }));
+dz.addEventListener('drop', async e => {
+  const items = [...(e.dataTransfer.items || [])];
+  const files = [];
+  const walk = async (entry, prefix) => {
+    if (!entry) return;
+    if (entry.isFile) {
+      await new Promise(r => entry.file(f => {
+        Object.defineProperty(f, 'webkitRelativePath', { value: prefix + f.name });
+        files.push(f); r();
+      }));
+    } else if (entry.isDirectory) {
+      const rd = entry.createReader();
+      const ents = await new Promise(r => rd.readEntries(r));
+      for (const en of ents) await walk(en, prefix + entry.name + '/');
+    }
+  };
+  if (items.length && items[0].webkitGetAsEntry) {
+    for (const it of items) await walk(it.webkitGetAsEntry(), '');
+    uploadFiles(files);
+  } else uploadFiles(e.dataTransfer.files);
+});
+
+async function boot() {
+  const signedIn = await payrollInitAuth();
+  if (signedIn) {
+    document.getElementById('gate').classList.add('hide');
+    document.getElementById('appRoot').classList.remove('hide');
+  }
+}
+document.getElementById('signInBtn').addEventListener('click', async () => {
+  document.getElementById('gateError').textContent = '';
+  try {
+    await payrollSignIn();
+    document.getElementById('gate').classList.add('hide');
+    document.getElementById('appRoot').classList.remove('hide');
+  } catch (e) { document.getElementById('gateError').textContent = e.message || String(e); }
+});
+boot();
+</script>
+</body>
+</html>
