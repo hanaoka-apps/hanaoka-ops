@@ -770,7 +770,9 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <div class="fld" id="wOwn"><label>担当者 <span class="note" id="ownHit"></span></label>
           <div class="atwrap"><input id="fOwn" autocomplete="off" placeholder="名前を入力（例）秋元 龍一）">
           <div class="atmenu" id="atOwn"></div></div></div>
-        <div class="fld full" id="wNote"><label>備考（リストに残す）</label><textarea id="fNote" rows="2"></textarea></div>
+        <div class="fld full" id="wNote"><label>備考（リストに残す）</label>
+          <div class="atwrap"><textarea id="fNote" rows="2"></textarea>
+          <div class="atmenu" id="atNote"></div></div></div>
       </div>
 
       <div class="postbox" id="postBox">
@@ -1218,7 +1220,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-10-10";
+var APP_VER = "2026-09-10-12";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -1584,7 +1586,7 @@ var DEEP = { ch:qparam("ch"), t:qparam("t"), done:false };
 var S = {
   mode: DEMO_PARAM ? "demo" : "live",
   rooms:[], cur:null, msgs:[], tasks:[], tab:"open", scope:"channel", hidden:0,
-  me:{name:"福田 剛史", upn:"t.fukuda@hanaoka-corp.co.jp"},
+  me:{name:"福田 剛史", upn:"t.fukuda@hanaoka-corp.co.jp", id:"me-demo"},
   msal:null, siteId:null, listId:null, timer:null, editing:null
 };
 var $ = function(id){return document.getElementById(id)};
@@ -1785,7 +1787,9 @@ async function signIn(){
   var acc=S.msal.getAllAccounts()[0];
   if(!acc){ var r=await S.msal.loginPopup({scopes:LOGIN_SCOPES}); acc=r.account }
   S.msal.setActiveAccount && S.msal.setActiveAccount(acc);
-  S.me={name:acc.name||acc.username, upn:acc.username};
+  /* localAccountId は AAD のオブジェクトID。自分を @メンションするのに要ります。
+     これが無いと「担当者＝自分」のタスクで自分の名前が平文になります。 */
+  S.me={name:acc.name||acc.username, upn:acc.username, id:acc.localAccountId||""};
   return acc;
 }
 /* 領域ごとにトークンを取る。混ぜないのが肝（→ SCOPE_SETS のコメント） */
@@ -2266,6 +2270,12 @@ function findPerson(name){
 async function ensurePerson(name){
   name=String(name||"").trim();
   if(!name) return null;
+  // 自分はサインイン情報から分かる。ディレクトリを引く必要がない
+  if(S.me && S.me.name===name && (S.me.id||S.me.upn)){
+    var me={name:S.me.name, id:S.me.id||"", upn:S.me.upn||""};
+    S.people=mergePeople([me], S.people||peopleFromMsgs());
+    return findPerson(name);
+  }
   var hit=findPerson(name);
   if(hit && hit.id) return hit;
   S.people=mergePeople(S.people||peopleFromMsgs(), await searchPeople(name));
@@ -2300,14 +2310,18 @@ async function ensureUpn(name){
 /* @ピッカーを付ける入力欄。3か所とも作りは同じなので表にまとめる。
    ta = チャットの入力欄（Teams と同じ感覚で使えるように） */
 var AT_UI = {
-  msg:{el:"fMsg",    menu:"atMsg"},   // タスク作成のコメント欄
-  adv:{el:"advNote", menu:"atAdv"},   // 状態変更のコメント欄
-  ta :{el:"ta",      menu:"atTa"}     // チャットの入力欄
+  msg :{el:"fMsg",    menu:"atMsg"},   // タスク作成のコメント欄
+  note:{el:"fNote",   menu:"atNote"},  // タスク作成の備考欄（投稿の「依頼の内容」に載る）
+  adv :{el:"advNote", menu:"atAdv"},   // 状態変更のコメント欄
+  ta  :{el:"ta",      menu:"atTa"}     // チャットの入力欄
 };
 function atReset(){ S.msgAt=[]; S.advAt=[] }
 function atStore(which){
   if(which==="adv") return (S.advAt=S.advAt||[]);
   if(which==="ta")  return (S.taAt =S.taAt ||[]);
+  /* 備考欄とコメント欄は同じ投稿に載るので、覚える場所も同じにします。
+     buildTaskMessage はコメントと備考の両方をこの store で <at> に変換するので、
+     どちらで選んでも通ります。 */
   return (S.msgAt=S.msgAt||[]);
 }
 /* caret の直前が「@なにか」なら、その部分と検索語を返す */
@@ -2362,7 +2376,7 @@ function atPick(i){
   atClose();
   if(c.which==="adv") advPreview();
   else if(c.which==="ta"){ taSync() }
-  else renderPostPreview();
+  else renderPostPreview();          // msg / note はどちらもプレビューを描き直す
 }
 /* 入力欄の高さと送信ボタンの活性を合わせる。@を選んだ直後にも要る */
 function taSync(){
@@ -2868,7 +2882,10 @@ function openTaskModal(pre,srcText,warnText){
   $("fSt").value=v.status||"未対応";
   // 業務ごとの既定。新規作成のときだけ効かせる（編集で勝手に書き換えない）
   var isNewTask=!S.editing;
-  $("fOwn").value = v.ownerName || (isNewTask ? (W.defaultOwner||"") : "");
+  /* 担当者の既定。ownerSelf は「タスクを作った人」＝サインイン中の本人。
+     自分が対応する業務（入電メモなど）で毎回名前を打つのを省きます。 */
+  var defOwn = W.ownerSelf ? ((S.me&&S.me.name)||"") : (W.defaultOwner||"");
+  $("fOwn").value = v.ownerName || (isNewTask ? defOwn : "");
   $("fNote").value= v.note      || (isNewTask ? (W.noteTemplate||"") : "");
   // 件名の既定。PDFなどから自動抽出できたときは、そちらを優先して上書きしない
   if(isNewTask && !$("fName").value && W.defaultName) $("fName").value=W.defaultName;
@@ -3447,6 +3464,8 @@ function wfRow(w,i,arr){
       '<label><span class="t wfnml">件名の既定</span>'+
         '<input type="text" class="wfnm" placeholder="例）受注入力対応の依頼" value="'+
         esc(w.defaultName||"")+'"></label>'+
+      '<label class="ck full"><input type="checkbox" class="wfme"'+(w.ownerSelf?" checked":"")+'> '+
+        '担当者の既定を「タスクを作った人（自分）」にする</label>'+
       '<label class="atwrap">担当者の既定<input type="text" class="wfow" autocomplete="off" '+
         'placeholder="名前を1文字入れると社内から探します" value="'+esc(w.defaultOwner||"")+'">'+
         '<div class="atmenu wfowm"></div></label>'+
@@ -3488,9 +3507,16 @@ function wfStageUI(row){
   setT(".l-s0", one?"日付を記録（完了日）":"日付を記録（1段目）");
   setT(".l-d0", one?"日付の呼び方":"1段目の日付の呼び方");
   var d0=row.querySelector(".wfd0"); if(d0) d0.placeholder=one?"例）完了日":"例）入力日";
-  wfNameUI(row);
+  wfNameUI(row); wfOwnSelfUI(row);
 }
 /* 金額をONにすると件名は「得意先名」の呼び方になる。既定欄の見出しも合わせる */
+function wfOwnSelfUI(row){
+  var me=row.querySelector(".wfme"), ow=row.querySelector(".wfow");
+  if(!me||!ow) return;
+  ow.disabled=!!me.checked;
+  ow.style.opacity=me.checked?"0.45":"";
+  ow.placeholder=me.checked?"（作成した人が入ります）":"名前を1文字入れると社内から探します";
+}
 function wfNameUI(row){
   var amt=[].slice.call(row.querySelectorAll(".wff"))
     .filter(function(x){return x.value==="amount"})[0];
@@ -3503,6 +3529,7 @@ document.getElementById("wfList").addEventListener("change",function(e){
   var row=e.target.closest(".wfrow"); if(!row) return;
   if(e.target.classList.contains("wfstage")) wfStageUI(row);
   else if(e.target.classList.contains("wff")) wfNameUI(row);
+  else if(e.target.classList.contains("wfme")) wfOwnSelfUI(row);
 });
 /* フォームの入力値を WORKFLOWS の形に組み立て直す */
 function collectWf(){
@@ -3538,6 +3565,7 @@ function collectWf(){
     }
     if(Object.keys(dl).length) o.dateLabels=dl;
     if(v("wfnm").trim()) o.defaultName=v("wfnm").trim();
+    if(ck("wfme")) o.ownerSelf=true;
     if(v("wfow").trim()) o.defaultOwner=v("wfow").trim();
     if(ck("wfdt")) o.dueToday=true;
     if(v("wftpl").trim()) o.noteTemplate=v("wftpl").replace(/\r/g,"");
@@ -3839,7 +3867,7 @@ async function setMode(m){
   S.mode=m; S.siteId=S.listId=null; S.tasks=[]; S.cur=null; S.demoDb=null;
   $("mDemo").className=m==="demo"?"on":""; $("mLive").className=m==="live"?"on":"";
   $("banner").className=m==="demo"?"banner":"banner hide";
-  if(m==="demo") S.me={name:"福田 剛史",upn:"t.fukuda@hanaoka-corp.co.jp"};
+  if(m==="demo") S.me={name:"福田 剛史",upn:"t.fukuda@hanaoka-corp.co.jp",id:"me-demo"};
   renderMe(); setPoll(); await loadAll();
   toast(m==="demo"?"デモモードに切り替えました":"Teams / SharePoint に接続しました");
 }
@@ -4292,7 +4320,7 @@ $("gateGo").onclick=async function(){
     return;
   }
   $("banner").className="banner hide";
-  S.me={name:"",upn:""}; renderMe();
+  S.me={name:"",upn:"",id:""}; renderMe();
   $("gate").classList.add("on");
 })();
 </script>
