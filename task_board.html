@@ -1218,7 +1218,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-10-5";
+var APP_VER = "2026-09-10-8";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -1474,6 +1474,25 @@ async function loadRooms(){
 }
 async function saveRooms(arr){
   if(!validRooms(arr)) throw new Error("部屋の指定の形式が不正です");
+  /* ★label（チャネル名）を必ず埋めてから保存する。
+     入っていないと、その部屋にアクセスできない人の画面では
+     エラーが生のチャネルIDで出てしまい、現場では何も分かりません。
+     ピッカー経由なら rmWithLabels で入りますが、リンク貼り付けや
+     JSON編集の経路では抜けるので、保存の直前に Graph で引きます。 */
+  arr=await Promise.all(arr.map(async function(sp){
+    if(sp.label) return sp;
+    try{
+      if(sp.kind==="chat"){
+        var ch=await g("/chats/"+sp.id+"?$expand=members");
+        return Object.assign({},sp,{label:chatName(ch)});
+      }
+      if(sp.kind==="channel"){
+        var cc=await g("/teams/"+sp.teamId+"/channels/"+sp.channelId+"?$select=displayName");
+        if(cc&&cc.displayName) return Object.assign({},sp,{label:cc.displayName});
+      }
+    }catch(e){ console.warn("部屋名の取得をスキップ:",e.message) }
+    return sp;
+  }));
   S.roomsBy=await saveCfgJson("rooms",arr,"roomsItemId");
   CONFIG.rooms=arr;
 }
@@ -1837,14 +1856,32 @@ function plainUrl(v){
   var m=/https?:\/\/\S+/.exec(s);
   return m ? m[0].trim() : s.trim();
 }
+/* ★SharePoint の「日付のみ」列は 1日ずれる★
+
+   サイトの地域設定が東京(UTC+9)だと、"2026-09-08" を保存した列は
+   "2026-09-07T15:00:00Z"（＝東京の 9/8 00:00）として返ってきます。
+   先頭10文字で切ると 9/7 になり、期限が1日早まって
+   「期限が今日なのに期日超過」が起きていました（本番で確認）。
+
+   東京で日付を取り出せば、サイトがUTC設定でも東京設定でも同じ日になります。
+     ・00:00Z で返る（UTCサイト）  → 東京 09:00 → 同じ日
+     ・15:00Z で返る（東京サイト）→ 東京 00:00 → 翌日＝正しい日
+   書き込みは "YYYY-MM-DD" のままで、往復して同じ日に戻ります。 */
+function spDate(v){
+  var s=String(v||""); if(!s) return "";
+  if(s.indexOf("T")<0) return s.slice(0,10);      // 既に日付だけなら触らない
+  var d=new Date(s); if(isNaN(d)) return s.slice(0,10);
+  try{ return d.toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"}) }   // sv-SE は YYYY-MM-DD
+  catch(e){ return new Date(d.getTime()+9*3600*1000).toISOString().slice(0,10) }
+}
 function rowToTask(it){
   var f=it.fields||{};
   return {id:it.id,
     invoiceNo:f[F.invoiceNo]||"", customerCode:f[F.customerCode]||"",
     customerName:f[F.customerName]||"", amount:f[F.amount]||0,
-    dueDate:(f[F.dueDate]||"").slice(0,10),
-    paidDate:(f[F.paidDate]||"").slice(0,10),
-    doneDate:(f[F.doneDate]||"").slice(0,10),
+    dueDate:spDate(f[F.dueDate]),
+    paidDate:spDate(f[F.paidDate]),
+    doneDate:spDate(f[F.doneDate]),
     status:f[F.status]||"未対応", ownerName:f[F.ownerName]||"", ownerUpn:f[F.ownerUpn]||"",
     msgId:f[F.msgId]||"", msgUrl:plainUrl(f[F.msgUrl]),
     channelId:f[F.channelId]||"", channelName:f[F.channelName]||"",
@@ -2014,7 +2051,7 @@ async function fetchRooms(){
           var cc=await g("/teams/"+sp.teamId+"/channels/"+sp.channelId);
           picked.push({id:cc.id,kind:"channel",teamId:sp.teamId,name:cc.displayName,last:"",n:0});
         }
-      }catch(e){ perr.push((sp.name||sp.id||sp.channelId)+": "+e.message) }
+      }catch(e){ perr.push((sp.label||sp.name||sp.id||sp.channelId)+": "+e.message) }
     }
     if(!picked.length && perr.length) throw new Error(perr.join(" / "));
     if(perr.length) toast("一部の部屋が開けません（"+perr.length+"件）。設定 →「部屋を診断」で原因が出ます",true);
@@ -2218,6 +2255,23 @@ async function ensurePerson(name){
   if(hit && hit.id) return hit;
   S.people=mergePeople(S.people||peopleFromMsgs(), await searchPeople(name));
   return findPerson(name);
+}
+/* ★担当者のメール（OwnerUpn）を確実に埋める★
+
+   部屋の発言から拾った候補（peopleFromMsgs）は {name,id} だけで upn を持ちません。
+   その結果「メンションはできているのに OwnerUpn が空」という行ができていました。
+   Power Automate の督促フローは OwnerUpn を見るので、空だと通知が飛びません。
+   ID が分かっているならディレクトリからメールを引いて埋めます。 */
+async function ensureUpn(name){
+  var p=await ensurePerson(name);
+  if(!p) return "";
+  if(p.upn) return p.upn;
+  if(!p.id || S.mode!=="live") return "";
+  try{
+    var u=await g("/users/"+p.id+"?$select=mail,userPrincipalName");
+    p.upn=u.mail||u.userPrincipalName||"";
+    return p.upn;
+  }catch(e){ console.warn("担当者メールの取得に失敗:",e.message); return "" }
 }
 
 /* ============================================================
@@ -2919,7 +2973,9 @@ async function diagRooms(){
   if(spOk){
     try{
       var one=await g("/sites/"+S.siteId+"/lists/"+S.listId+"/items?$select=id&$top=1");
-      plog("OK  "+CONFIG.spList+" を読めます（"+((one.value||[]).length)+"件目まで確認）");
+      plog((one.value||[]).length
+        ? "OK  "+CONFIG.spList+" を読めます"
+        : "OK  "+CONFIG.spList+" を読めます（いまタスクは0件です）");
     }catch(e){ plog("NG  "+CONFIG.spList+" が読めません: "+e.message) }
     /* ★「読めなかったので既定値を使っている」を黙って隠すのが一番よくない挙動でした。
          福田さんの環境では4部屋、他の人は1部屋だけ、という食い違いがこれで見えます。 */
@@ -2944,7 +3000,9 @@ async function diagRooms(){
 
   var ng=[];
   for(var i=0;i<specs.length;i++){
-    var sp=specs[i], label=sp.name||sp.channelId||sp.id||"(名前なし)";
+    /* 管理者設定から保存した部屋は label にチャネル名が入ります（name ではない）。
+       403 でチャネル名が取れない部屋でも、ここを見れば日本語で出せます。 */
+    var sp=specs[i], label=sp.label||sp.name||sp.channelId||sp.id||"(名前なし)";
     plog("\n── "+label);
     if(sp.kind==="chat"){
       try{ var ch=await g("/chats/"+sp.id+"?$expand=members");
@@ -3629,6 +3687,11 @@ async function runAdv(){
   var t=S.advTask, st=S.advStep; if(!t||!st) return;
   var patch=advPatch(), comment=$("advNote").value.trim(), doPost=$("advPost").checked&&!!S.cur;
   var files=[].slice.call($("advFile").files||[]);
+  // 既存の行で担当者メールが空なら、進めるついでに直す（督促フローが使うので）
+  if(!t.ownerUpn){
+    var up2=await ensureUpn(t.ownerName);
+    if(up2) patch.ownerUpn=up2;
+  }
   $("advOk").disabled=true; S._saveBtn="advOk"; setSaveLabel("保存中…");
   try{
     // 先にアップロード。ここで落ちたら状態も進めない（中途半端に残さない）
@@ -4096,7 +4159,8 @@ $("tdSave").onclick=async function(){
   if(S._requireAmt && !t.amount){ $("fAmt").classList.add("err"); toast("金額は必須です",true); return }
   var isNew=!S.editing, doPost=$("fPost").checked && !!S.cur, comment=$("fMsg").value.trim();
   var files=[].slice.call($("fFile").files||[]);
-  var p=findPerson(t.ownerName); if(p&&p.upn) t.ownerUpn=p.upn;
+  // 担当者メールは督促フローの生命線。候補に upn が無ければディレクトリから引く
+  var up=await ensureUpn(t.ownerName); if(up) t.ownerUpn=up;
   $("tdSave").disabled=true; S._saveBtn="tdSave";
   try{
     // 先にアップロード。ここで落ちたらタスクも作らない（中途半端な状態を残さない）
