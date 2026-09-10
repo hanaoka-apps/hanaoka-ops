@@ -766,7 +766,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
         <div class="fld" id="wDue"><label>期限 <span class="auto" id="aDue" style="display:none">自動</span></label><input id="fDue" type="date"></div>
         <div class="fld" id="wPaid"><label><span id="lblPaid">入金確認日</span></label><input id="fPaid" type="date"></div>
         <div class="fld" id="wDone"><label><span id="lblDone">完了日</span></label><input id="fDone" type="date"></div>
-        <div class="fld"><label>状態</label><select id="fSt"></select></div>
+        <div class="fld" id="wSt"><label>状態</label><select id="fSt"></select></div>
         <div class="fld" id="wOwn"><label>担当者 <span class="note" id="ownHit"></span></label>
           <div class="atwrap"><input id="fOwn" autocomplete="off" placeholder="名前を入力（例）秋元 龍一）">
           <div class="atmenu" id="atOwn"></div></div></div>
@@ -1218,7 +1218,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-10-9";
+var APP_VER = "2026-09-10-10";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -2754,7 +2754,10 @@ function renderTasks(){
       '</div>'+
       '<div class="btns">'+
         (step?'<button class="sbtn pri" data-adv="'+esc(t.id)+'">'+esc(step.btn)+'</button>':'')+
-        '<button class="sbtn" data-edit="'+esc(t.id)+'">編集</button>'+
+        /* 完了したタスクは記録です。あとから中身を変えられると、
+           Teamsのスレッドと食い違ったまま残ります。管理者だけ直せるようにします。 */
+        ((t.status!=="完了"||isAdmin())
+          ? '<button class="sbtn" data-edit="'+esc(t.id)+'">編集</button>' : '')+
         (t.msgUrl?'<button class="sbtn gh" data-jump="'+esc(t.msgUrl)+'">元メッセージ</button>':
                   '<button class="sbtn gh" data-find="'+esc(t.msgId||"")+'">元メッセージ</button>')+
       '</div></div>';
@@ -2846,8 +2849,14 @@ function openTaskModal(pre,srcText,warnText){
   S._requireAmt=W.money && show("amount");   // 金額欄を出している業務だけ必須
   // 日付欄は WORKFLOWS の steps[].stamp を見て出す。設定と表示が二重管理にならない
   var stamps=(W.steps||[]).map(function(x){return x.stamp}).filter(Boolean);
-  $("wPaid").style.display=stamps.indexOf("paidDate")>=0?"":"none";
-  $("wDone").style.display=stamps.indexOf("doneDate")>=0?"":"none";
+  /* ★新規作成では「完了日」と「状態」を出しません★
+     新規は必ず最初の状態から始まり、完了日はボタンで進めたときに入ります。
+     作成時に選べると、いきなり「完了」で作られて記録が飛びます。
+     編集のときだけ出します（間違えて進めた分を直す口を残すため）。 */
+  var isNewNow=!S.editing;
+  $("wPaid").style.display=(!isNewNow && stamps.indexOf("paidDate")>=0)?"":"none";
+  $("wDone").style.display=(!isNewNow && stamps.indexOf("doneDate")>=0)?"":"none";
+  $("wSt").style.display=isNewNow?"none":"";
   $("lblPaid").textContent=dateLabel(W,"paid");
   $("lblDone").textContent=dateLabel(W,"done");
   $("fPaid").value=v.paidDate||"";
@@ -4239,9 +4248,21 @@ $("btnSend").onclick=async function(){
   }catch(e){ toast(e.message,true) }
   $("btnSend").disabled=!ta.value.trim();
 };
-document.addEventListener("keydown",function(e){ if(e.key==="Escape") closeAll() });
-document.querySelectorAll(".ov").forEach(function(o){
-  o.addEventListener("click",function(e){ if(e.target===o) closeAll() })});
+/* ★入力中の画面は、外側クリックと Escape では閉じません★
+
+   誤操作で書いた内容が消える事故が実際に起きました。原因は2つあります。
+     ・フォームの外側（暗い部分）をクリックすると閉じていた
+     ・Escape で閉じていた ← 日本語入力中に Escape は「変換の取り消し」なので、
+       日本語を打っている人はほぼ確実に押します。これで消えるのは事故です。
+   閉じるのは「キャンセル」「×」「保存」だけにしました。
+   使い方（ovHelp）は入力欄が無いので、従来どおり Escape でも閉じます。 */
+document.addEventListener("keydown",function(e){
+  if(e.key!=="Escape") return;
+  var help=$("ovHelp");
+  if(help && help.classList.contains("on")){ closeAll(); return }
+  // 入力中の画面では何もしない（＠メニューが開いていればそれだけ閉じる）
+  atClose();
+});
 
 /* ============================================================
    10. 起動
