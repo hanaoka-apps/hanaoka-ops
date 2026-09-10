@@ -835,6 +835,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
       <div class="prov">
         <button class="gbtn" id="btnCheckList">点検</button>
         <button class="pbtn" id="btnMakeList">作成・修復</button>
+        <button class="gbtn" id="btnDiagRooms">部屋を診断</button>
         <span class="note" id="provNote"></span>
       </div>
       <pre class="cfg" id="provLog" style="display:none"></pre>
@@ -1217,7 +1218,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-07-1";
+var APP_VER = "2026-09-10-2";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -2011,7 +2012,7 @@ async function fetchRooms(){
       }catch(e){ perr.push((sp.name||sp.id||sp.channelId)+": "+e.message) }
     }
     if(!picked.length && perr.length) throw new Error(perr.join(" / "));
-    if(perr.length) toast("一部の部屋を取得できませんでした → "+perr.join(" / "),true);
+    if(perr.length) toast("一部の部屋が開けません（"+perr.length+"件）。設定 →「部屋を診断」で原因が出ます",true);
     return picked;
   }
   return applyRoomSpec(await fetchRoomsAll());
@@ -2872,6 +2873,98 @@ function plog(s,reset){
   el.textContent=(reset?"":el.textContent+(el.textContent?"\n":""))+s;
   el.scrollTop=el.scrollHeight;
 }
+/* ============================================================
+   部屋の診断
+
+   「チームに入れたのに、この人には部屋が出ない」が現場で必ず起きます。
+   原因はほぼ3つ ①プライベートチャネルのメンバー漏れ ②共有チャネル
+   ③反映待ち／ライセンス。どれかを人が判断できるように、
+   チャネルの種類・自分がメンバーか・実際に読めるかを並べて出します。
+   （以前はコンソールで調べていました。それを画面に持ってきたものです）
+   ============================================================ */
+async function diagRooms(){
+  plog("部屋の診断  アプリ版 "+APP_VER,true);
+  if(S.mode!=="live"){ plog("本番モードに切り替えると使えます"); return }
+  var me=null;
+  try{ me=await g("/me?$select=displayName,userPrincipalName,mail") }catch(e){}
+  plog("サインイン中: "+((me&&me.displayName)||"?")+"  "+((me&&(me.userPrincipalName||me.mail))||""));
+
+  var specs=(CONFIG.rooms||[]);
+  if(!specs.length){ plog("\n対象の部屋が設定されていません（管理者設定 →「対象の部屋」）"); return }
+  plog("\n設定されている部屋: "+specs.length+"件");
+
+  /* メンバーかどうかの判定に /channels/{id}/members は使えません。
+     ChannelMember.Read.All が未同意だと 403 になるうえ、そもそも
+     非メンバーのプライベートチャネルは GET 自体が 403 で落ちます。
+       ・allChannels … チームの全チャネル（非メンバーの分も見える）
+       ・channels    … 自分が見えるチャネルだけ
+     この差分が「入っていないチャネル」です。Channel.ReadBasic.All だけで済みます。 */
+  var cache={};
+  async function teamChannels(teamId){
+    if(cache[teamId]) return cache[teamId];
+    var c={all:null,mine:null};
+    try{ c.all=await gAll("/teams/"+teamId+"/allChannels?$select=id,displayName,membershipType") }catch(e){}
+    try{ c.mine=await gAll("/teams/"+teamId+"/channels?$select=id,displayName,membershipType") }catch(e){}
+    cache[teamId]=c; return c;
+  }
+
+  var ng=[];
+  for(var i=0;i<specs.length;i++){
+    var sp=specs[i], label=sp.name||sp.channelId||sp.id||"(名前なし)";
+    plog("\n── "+label);
+    if(sp.kind==="chat"){
+      try{ var ch=await g("/chats/"+sp.id+"?$expand=members");
+        plog("   種類: グループチャット   名前: "+chatName(ch));
+        await g("/chats/"+sp.id+"/messages?$top=1");
+        plog("   メッセージ: OK");
+      }catch(e){ plog("   × "+e.message); ng.push(label) }
+      continue;
+    }
+    var tc=await teamChannels(sp.teamId);
+    function pick(arr){
+      return (arr||[]).filter(function(c){return c.id===sp.channelId})[0]||null;
+    }
+    var inAll=pick(tc.all), inMine=pick(tc.mine);
+    var kind=(inAll&&inAll.membershipType)||"";
+    var name=(inAll&&inAll.displayName)||(inMine&&inMine.displayName)||"";
+    if(!tc.all){
+      plog("   チームの全チャネル一覧が取れませんでした（Channel.ReadBasic.All 未同意の可能性）");
+    }else if(!inAll){
+      plog("   ★このチームに、このIDのチャネルがありません（IDが古い／削除された）");
+      plog("     → 管理者設定 →「対象の部屋」で選び直してください。");
+      ng.push(label); continue;
+    }else{
+      plog("   チャネル名: "+name+"   種類: "+
+        (kind==="private"?"プライベート":kind==="shared"?"共有":kind==="standard"?"標準":kind));
+    }
+    var iAmMember = tc.mine ? !!inMine : null;
+    if(tc.mine) plog("   自分に見えるチャネルか: "+(iAmMember?"はい":"★いいえ（メンバーではありません）"));
+    try{
+      await g("/teams/"+sp.teamId+"/channels/"+sp.channelId+"/messages?$top=1");
+      plog("   メッセージ: OK（この部屋は使えます）");
+    }catch(e){
+      ng.push(label);
+      plog("   メッセージ: × "+e.message);
+      if(kind==="private" && iAmMember===false)
+        plog("     → プライベートチャネルです。チームに入れるだけでは足りません。"+
+             "Teams で このチャネルの「…」→ チャネルを管理 → メンバー に追加してください。");
+      else if(kind==="shared")
+        plog("     → 共有チャネルです。Graph のメッセージ取得が共有チャネルに対応していないため、"+
+             "メンバーに入れても読めません。標準またはプライベートチャネルに作り替えてください。");
+      else if(iAmMember===true)
+        plog("     → メンバーには入っています。メンバー追加直後なら反映待ちの可能性があります"+
+             "（数時間）。時間を置いても直らなければ Teams のライセンス割り当てを確認してください。");
+      else if(iAmMember===false)
+        plog("     → このチャネルが自分に見えていません。プライベートチャネルなら"+
+             "「…」→ チャネルを管理 → メンバー への追加が必要です。");
+      else
+        plog("     → チームのメンバーかどうか、Teams のライセンスがあるかを確認してください。");
+    }
+  }
+  plog("\n===== まとめ =====");
+  plog(ng.length ? "使えない部屋 "+ng.length+"件: "+ng.join(" / ")
+                 : "OK  設定されている部屋はすべて読めています");
+}
 async function provisionCfgList(site,lists,create){
   var cl=lists.filter(function(l){
     return l.name===CONFIG.spCfgList||l.displayName===CONFIG.spCfgList})[0];
@@ -2893,7 +2986,7 @@ async function provisionCfgList(site,lists,create){
 }
 async function provision(create){
   if(S.mode!=="live"){ toast("本番モードに切り替えてから実行してください",true); return }
-  $("btnCheckList").disabled=$("btnMakeList").disabled=true;
+  $("btnCheckList").disabled=$("btnMakeList").disabled=$("btnDiagRooms").disabled=true;
   try{
     plog("アプリ版 "+APP_VER,true);
     plog("サイトを確認中… "+CONFIG.spHost+CONFIG.spSite);
@@ -3035,7 +3128,7 @@ async function provision(create){
     plog("\nエラー: "+e.message);
     toast(e.message,true);
   }
-  $("btnCheckList").disabled=$("btnMakeList").disabled=false;
+  $("btnCheckList").disabled=$("btnMakeList").disabled=$("btnDiagRooms").disabled=false;
 }
 
 /* Teams のチャネルリンクから rooms の1行を作る。
@@ -3524,7 +3617,7 @@ function openCfg(){
   $("cVer").textContent=APP_VER;
   $("provLog").style.display="none"; $("provLog").textContent="";
   var live=(S.mode==="live");
-  $("btnCheckList").disabled=$("btnMakeList").disabled=!live;
+  $("btnCheckList").disabled=$("btnMakeList").disabled=$("btnDiagRooms").disabled=!live;
   $("provNote").textContent=live
     ? "リスト＋列"+LIST_COLUMNS.length+"本を作成／不足分だけ修復します（冪等）"
     : "本番モードに切り替えると使えます";
@@ -3814,6 +3907,13 @@ $("wfList").addEventListener("click",function(e){
 });
 $("btnCheckList").onclick=function(){ provision(false) };
 $("btnMakeList").onclick=function(){ provision(true) };
+$("btnDiagRooms").onclick=async function(){
+  var b=$("btnDiagRooms"), t=b.textContent;
+  b.disabled=true; b.textContent="診断中…";
+  try{ await diagRooms() }
+  catch(e){ plog("\n診断が途中で止まりました: "+e.message) }
+  b.disabled=false; b.textContent=t;
+};
 
 $("btnNew").onclick=function(){
   if(!S.cur){ toast("先に投稿先のチャネルかチャットを選んでください",true); return }
