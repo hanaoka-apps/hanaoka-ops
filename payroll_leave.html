@@ -109,6 +109,11 @@ td.nm{font-weight:700}
 .dim{color:var(--ink3)}
 footer{margin-top:26px;font-size:11.5px;color:var(--ink3);line-height:1.9}
 .hide{display:none!important}
+.month-stepper{display:inline-flex;align-items:center;gap:2px;background:var(--paper);border:2px solid var(--ink);border-radius:8px;padding:3px}
+.month-stepper button{background:none;border:none;color:var(--ink);font-size:15px;font-weight:700;cursor:pointer;padding:6px 10px;border-radius:6px;line-height:1}
+.month-stepper button:hover:not(:disabled){background:var(--sel)}
+.month-stepper button:disabled{opacity:.3;cursor:default}
+.month-stepper select{border:none;background:none;font:inherit;font-size:14px;font-weight:700;color:var(--ink);padding:4px;cursor:pointer}
 #gate{padding:80px 24px;text-align:center}
 #gate .btn{display:inline-block;border-color:var(--ink);color:var(--ink);font-size:14px;padding:10px 22px}
 #gateError{color:var(--urgent);margin-top:14px;font-size:13px;white-space:pre-wrap}
@@ -167,14 +172,14 @@ footer{margin-top:26px;font-size:11.5px;color:var(--ink3);line-height:1.9}
       </span>
       <button class="btn" id="reload">別のCSVを読み込む</button>
       <button class="btn solid" id="saveHistory">今月分を履歴に保存（クラウド）</button>
-      <button class="btn" id="print">印刷・PDF保存</button>
+      <button class="btn" id="toggleHistView">履歴を見る</button>
     </div>
   </div></div>
   <div class="wrap" id="histNote" style="padding-top:6px;font-size:12px;color:#9fb0c2;"></div>
 </header>
 </div>
 
-<div class="wrap">
+<div class="wrap" id="liveView">
 
   <div id="drop">
     <h2>年次有給休暇管理簿のCSVを読み込みます</h2>
@@ -252,6 +257,29 @@ footer{margin-top:26px;font-size:11.5px;color:var(--ink3);line-height:1.9}
       この表は期限管理のための資料です。労働基準法施行規則24条の7が定める年次有給休暇管理簿（時季・日数・基準日の記載、3年間保存）は別に必要です。
     </footer>
   </div>
+</div>
+
+<div class="wrap hide" id="historyView">
+  <section>
+    <div class="shead">
+      <h2>履歴を見る</h2>
+      <span class="note" id="histViewNote"></span>
+      <span class="spacer"></span>
+      <div class="month-stepper noprint">
+        <button id="histPrevBtn" type="button" aria-label="前月">◀</button>
+        <select id="histMonthSel"></select>
+        <button id="histNextBtn" type="button" aria-label="次月">▶</button>
+      </div>
+    </div>
+    <div class="tbl"><table id="histTable">
+      <thead><tr>
+        <th>部署</th><th>氏名</th><th class="c">基準日</th>
+        <th class="r">付与日数</th><th class="r">取得</th><th class="r">不足</th>
+        <th class="r">期限まで</th><th class="c">状況</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
 </div>
 </div>
 
@@ -495,7 +523,64 @@ function historyNote(){
   $("#histNote").textContent = months.length
     ? `SharePoint上の履歴 ${months.length}ヶ月分を読み込み済み（${months[0]}〜${months[months.length-1]}）。件数: ${HISTORY.length}`
     : "SharePoint上に履歴はまだありません（初回は「今月分を履歴に保存」でこの月から履歴を開始できます）。";
+  populateHistMonthSel();
 }
+
+/* ---------- 履歴を見る（過去の月次スナップショットの閲覧） ---------- */
+function histMonths(){ return [...new Set(HISTORY.map(h=>h.年月))].sort(); }
+function populateHistMonthSel(){
+  const sel=$("#histMonthSel");
+  const keep=sel.value;
+  const months=histMonths();
+  sel.innerHTML=months.map(m=>`<option value="${m}">${m}</option>`).join("");
+  sel.value=months.includes(keep)?keep:(months[months.length-1]||"");
+}
+function updateHistStepperButtons(){
+  const months=histMonths();
+  const idx=months.indexOf($("#histMonthSel").value);
+  $("#histPrevBtn").disabled = idx<=0;
+  $("#histNextBtn").disabled = idx<0 || idx>=months.length-1;
+}
+function stepHistMonth(delta){
+  const months=histMonths();
+  const idx=months.indexOf($("#histMonthSel").value)+delta;
+  if(idx<0||idx>=months.length) return;
+  $("#histMonthSel").value=months[idx];
+  renderHistoryMonth();
+}
+function renderHistoryMonth(){
+  updateHistStepperButtons();
+  const mk=$("#histMonthSel").value;
+  const rows=HISTORY.filter(h=>h.年月===mk).sort((a,b)=>(a.部署||"").localeCompare(b.部署,"ja")||String(a.氏名).localeCompare(String(b.氏名),"ja"));
+  $("#histViewNote").textContent = rows.length ? `${mk} 基準日時点　義務対象者 ${rows.length}名` : `${mk} 分のデータがありません`;
+  const P={"至急":"p-u","要対応":"p-w","計画":"p-n","達成":"p-o"};
+  $("#histTable tbody").innerHTML = rows.length ? rows.map(h=>`<tr>
+    <td>${esc(h.部署)}</td><td class="nm">${esc(h.氏名)}</td>
+    <td class="c">${esc(h.基準日)}</td>
+    <td class="r num">${h.付与日数??""}</td>
+    <td class="r num">${h.取得??""}</td>
+    <td class="r num${h.不足>0?" neg":""}">${h.不足??""}</td>
+    <td class="r num">${h.期限まで日数??""}</td>
+    <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span></td>
+  </tr>`).join("") : '<tr><td colspan="8" class="dim">データなし</td></tr>';
+}
+$("#histPrevBtn").addEventListener("click",()=>stepHistMonth(-1));
+$("#histNextBtn").addEventListener("click",()=>stepHistMonth(1));
+$("#histMonthSel").addEventListener("change",renderHistoryMonth);
+$("#toggleHistView").addEventListener("click",()=>{
+  const showingHist = !$("#historyView").classList.contains("hide");
+  if(showingHist){
+    $("#historyView").classList.add("hide");
+    $("#liveView").classList.remove("hide");
+    $("#toggleHistView").textContent="履歴を見る";
+  }else{
+    populateHistMonthSel();
+    renderHistoryMonth();
+    $("#historyView").classList.remove("hide");
+    $("#liveView").classList.add("hide");
+    $("#toggleHistView").textContent="現在の状況に戻る";
+  }
+});
 async function saveHistorySnapshot(){
   if(!window.__all || !window.__all.length){ alert("先にCSVを読み込んでください。"); return; }
   const asof=asofDate();
@@ -553,7 +638,13 @@ function exportCSV(){
 }
 
 /* ---------- wire ---------- */
-const today=new Date();
+// 基準日の既定値は給与締日（毎月15日）に合わせる。
+// 16日以降は当月15日（締め後）、15日以前は前月15日（まだ当月は締まっていない）。
+function defaultAsof(now) {
+  const y = now.getFullYear(), m = now.getMonth();
+  return (now.getDate() >= 16) ? new Date(y, m, 15) : new Date(y, m - 1, 15);
+}
+const today=defaultAsof(new Date());
 $("#asof").value=today.getFullYear()+"-"+D(today.getMonth()+1)+"-"+D(today.getDate());
 $("#pickFolder").onclick=()=>$("#fFolder").click();
 $("#pickFiles").onclick=()=>$("#fFiles").click();
@@ -561,7 +652,6 @@ $("#fFolder").onchange=e=>load(e.target.files);
 $("#fFiles").onchange=e=>load(e.target.files);
 $("#reload").onclick=()=>{ $("#app").classList.add("hide"); $("#drop").classList.remove("hide"); };
 $("#saveHistory").onclick=saveHistorySnapshot;
-$("#print").onclick=()=>window.print();
 $("#csvOut").onclick=exportCSV;
 ["#asof","#fSite","#fDept","#fStat","#fRetire","#actAll"].forEach(s=>$(s).onchange=render);
 $("#fName").oninput=render;
