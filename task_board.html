@@ -1218,7 +1218,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-10-2";
+var APP_VER = "2026-09-10-3";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -2893,20 +2893,12 @@ async function diagRooms(){
   if(!specs.length){ plog("\n対象の部屋が設定されていません（管理者設定 →「対象の部屋」）"); return }
   plog("\n設定されている部屋: "+specs.length+"件");
 
-  /* メンバーかどうかの判定に /channels/{id}/members は使えません。
-     ChannelMember.Read.All が未同意だと 403 になるうえ、そもそも
-     非メンバーのプライベートチャネルは GET 自体が 403 で落ちます。
-       ・allChannels … チームの全チャネル（非メンバーの分も見える）
-       ・channels    … 自分が見えるチャネルだけ
-     この差分が「入っていないチャネル」です。Channel.ReadBasic.All だけで済みます。 */
-  var cache={};
-  async function teamChannels(teamId){
-    if(cache[teamId]) return cache[teamId];
-    var c={all:null,mine:null};
-    try{ c.all=await gAll("/teams/"+teamId+"/allChannels?$select=id,displayName,membershipType") }catch(e){}
-    try{ c.mine=await gAll("/teams/"+teamId+"/channels?$select=id,displayName,membershipType") }catch(e){}
-    cache[teamId]=c; return c;
-  }
+  /* ★メンバーかどうかは /channels/{id}/members では判定できません。
+     ChannelMember.Read.All が未同意だと 403 になり、そもそも非メンバーの
+     プライベートチャネルは GET 自体が 403 で落ちます。
+     allChannels も、委任では「その人がアクセスできるチャネル」しか返しません
+     （本番で確認済み）。なので「チャネル本体が取れるか」を権限の判定に使い、
+     最後に「その人に見えているチャネル一覧」を並べて裏取りします。 */
 
   var ng=[];
   for(var i=0;i<specs.length;i++){
@@ -2920,46 +2912,57 @@ async function diagRooms(){
       }catch(e){ plog("   × "+e.message); ng.push(label) }
       continue;
     }
-    var tc=await teamChannels(sp.teamId);
-    function pick(arr){
-      return (arr||[]).filter(function(c){return c.id===sp.channelId})[0]||null;
-    }
-    var inAll=pick(tc.all), inMine=pick(tc.mine);
-    var kind=(inAll&&inAll.membershipType)||"";
-    var name=(inAll&&inAll.displayName)||(inMine&&inMine.displayName)||"";
-    if(!tc.all){
-      plog("   チームの全チャネル一覧が取れませんでした（Channel.ReadBasic.All 未同意の可能性）");
-    }else if(!inAll){
-      plog("   ★このチームに、このIDのチャネルがありません（IDが古い／削除された）");
-      plog("     → 管理者設定 →「対象の部屋」で選び直してください。");
-      ng.push(label); continue;
-    }else{
+    /* まずチャネル本体を取る。ここが通れば「見えている」＝アクセス権あり。
+       403 なら非メンバー（プライベートチャネル）、404 ならIDが違うか削除済み。 */
+    var kind="", name="", st=0, gotCh=false;
+    try{
+      var cc=await g("/teams/"+sp.teamId+"/channels/"+sp.channelId+
+        "?$select=displayName,membershipType");
+      gotCh=true; kind=cc.membershipType||""; name=cc.displayName||"";
       plog("   チャネル名: "+name+"   種類: "+
         (kind==="private"?"プライベート":kind==="shared"?"共有":kind==="standard"?"標準":kind));
+    }catch(e){
+      var m=/Graph (\d+)/.exec(e.message||""); st=m?+m[1]:0;
+      plog("   × チャネル情報が取れません（"+(st||"?")+"）: "+e.message);
+      ng.push(label);
+      if(st===404){
+        plog("     → このIDのチャネルがありません。削除されたか、IDが古いです。");
+        plog("       管理者設定 →「対象の部屋」で選び直してください。");
+      }else if(st===403){
+        plog("     → このチャネルにアクセスする資格がありません。プライベートチャネルで、");
+        plog("       サインイン中の人がチャネルのメンバーになっていない場合がこれです。");
+        plog("       ★チームに入れるだけでは足りません。Teams でそのチャネルの");
+        plog("       「…」→ チャネルを管理 → メンバー に追加してください。");
+      }else{
+        plog("     → Teams のライセンス、またはチームのメンバーかを確認してください。");
+      }
+      continue;
     }
-    var iAmMember = tc.mine ? !!inMine : null;
-    if(tc.mine) plog("   自分に見えるチャネルか: "+(iAmMember?"はい":"★いいえ（メンバーではありません）"));
     try{
       await g("/teams/"+sp.teamId+"/channels/"+sp.channelId+"/messages?$top=1");
       plog("   メッセージ: OK（この部屋は使えます）");
     }catch(e){
       ng.push(label);
       plog("   メッセージ: × "+e.message);
-      if(kind==="private" && iAmMember===false)
-        plog("     → プライベートチャネルです。チームに入れるだけでは足りません。"+
-             "Teams で このチャネルの「…」→ チャネルを管理 → メンバー に追加してください。");
-      else if(kind==="shared")
+      if(kind==="shared")
         plog("     → 共有チャネルです。Graph のメッセージ取得が共有チャネルに対応していないため、"+
              "メンバーに入れても読めません。標準またはプライベートチャネルに作り替えてください。");
-      else if(iAmMember===true)
-        plog("     → メンバーには入っています。メンバー追加直後なら反映待ちの可能性があります"+
-             "（数時間）。時間を置いても直らなければ Teams のライセンス割り当てを確認してください。");
-      else if(iAmMember===false)
-        plog("     → このチャネルが自分に見えていません。プライベートチャネルなら"+
-             "「…」→ チャネルを管理 → メンバー への追加が必要です。");
       else
-        plog("     → チームのメンバーかどうか、Teams のライセンスがあるかを確認してください。");
+        plog("     → チャネル自体は見えているのにメッセージが読めません。"+
+             "メンバー追加直後なら反映待ち（数時間）。"+
+             "時間を置いても直らなければ Teams のライセンス割り当てを確認してください。");
     }
+  }
+  /* 「見えていない」ことの裏取り。この一覧に無いチャネルは、
+     サインイン中の人からはそもそも存在しないのと同じです。 */
+  var tid=(specs.filter(function(x){return x.kind!=="chat"})[0]||{}).teamId;
+  if(tid){
+    try{
+      var vis=await gAll("/teams/"+tid+"/channels?$select=displayName,membershipType");
+      plog("\nこの人に見えているチャネル "+vis.length+"件:");
+      vis.forEach(function(c){ plog("   ・"+c.displayName+"  ("+c.membershipType+")") });
+      plog("   ※ここに無いチャネルは、この人からは見えません（プライベートチャネルの非メンバー）。");
+    }catch(e){ plog("\nチャネル一覧が取れませんでした: "+e.message) }
   }
   plog("\n===== まとめ =====");
   plog(ng.length ? "使えない部屋 "+ng.length+"件: "+ng.join(" / ")
