@@ -114,6 +114,17 @@ footer{margin-top:26px;font-size:11.5px;color:var(--ink3);line-height:1.9}
 .month-stepper button:hover:not(:disabled){background:var(--sel)}
 .month-stepper button:disabled{opacity:.3;cursor:default}
 .month-stepper select{border:none;background:none;font:inherit;font-size:14px;font-weight:700;color:var(--ink);padding:4px;cursor:pointer}
+table.heatmap{border-collapse:separate;border-spacing:3px;font-size:12px}
+table.heatmap th{background:none;position:static;border:none;font-weight:700;color:var(--ink2);white-space:nowrap;cursor:default}
+table.heatmap th.rowlabel{text-align:left;padding:4px 10px 4px 2px}
+table.heatmap th.collabel{text-align:center;font-size:10.5px;writing-mode:vertical-rl;text-orientation:mixed;padding:2px;font-weight:600}
+table.heatmap td{border:none;padding:0}
+table.heatmap .cell{width:22px;height:22px;border-radius:4px;display:block}
+table.heatmap .cell.empty{border:1px dashed var(--rule);box-sizing:border-box}
+table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 2px 24px;font-size:12px;color:var(--ink2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend .sw{width:13px;height:13px;border-radius:3px;display:inline-block}
 #gate{padding:80px 24px;text-align:center}
 #gate .btn{display:inline-block;border-color:var(--ink);color:var(--ink);font-size:14px;padding:10px 22px}
 #gateError{color:var(--urgent);margin-top:14px;font-size:13px;white-space:pre-wrap}
@@ -262,7 +273,22 @@ footer{margin-top:26px;font-size:11.5px;color:var(--ink3);line-height:1.9}
 <div class="wrap hide" id="historyView">
   <section>
     <div class="shead">
-      <h2>履歴を見る</h2>
+      <h2>注意が必要な人の推移</h2>
+      <span class="note" id="heatmapNote"></span>
+    </div>
+    <div class="tbl" id="heatmapWrap"><table id="heatmapTable" class="heatmap"></table></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--urgent)"></i>至急</span>
+      <span><i class="sw" style="background:var(--warn)"></i>要対応</span>
+      <span><i class="sw" style="background:var(--ok)"></i>達成</span>
+      <span><i class="sw" style="background:var(--rule2)"></i>計画／義務対象外等</span>
+      <span><i class="sw" style="background:transparent;border:1px dashed var(--rule)"></i>その月は履歴なし</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>月別の一覧</h2>
       <span class="note" id="histViewNote"></span>
       <span class="spacer"></span>
       <div class="month-stepper noprint">
@@ -564,6 +590,51 @@ function renderHistoryMonth(){
     <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span></td>
   </tr>`).join("") : '<tr><td colspan="8" class="dim">データなし</td></tr>';
 }
+const STATUS_COLOR_VAR={"至急":"--urgent","要対応":"--warn","達成":"--ok"};
+const MAX_HEATMAP_ROWS=25;
+function renderAttentionHeatmap(){
+  const months=histMonths();
+  const people=new Map(); // key -> {氏名,部署,byMonth:{年月:状況}}
+  for(const h of HISTORY){
+    const key=(h.コード||h.氏名)+"|"+h.氏名;
+    if(!people.has(key)) people.set(key,{氏名:h.氏名,部署:h.部署,byMonth:{}});
+    people.get(key).byMonth[h.年月]=h.状況;
+  }
+  let list=[...people.values()].filter(p=>Object.values(p.byMonth).some(s=>s==="至急"||s==="要対応"));
+  const severity=s=>s==="至急"?2:s==="要対応"?1:0;
+  list.sort((a,b)=>{
+    const ca=Object.values(a.byMonth).filter(s=>s==="至急"||s==="要対応").length;
+    const cb=Object.values(b.byMonth).filter(s=>s==="至急"||s==="要対応").length;
+    if(cb!==ca) return cb-ca;
+    for(let i=months.length-1;i>=0;i--){
+      const d=severity(b.byMonth[months[i]])-severity(a.byMonth[months[i]]);
+      if(d!==0) return d;
+    }
+    return String(a.氏名).localeCompare(String(b.氏名),"ja");
+  });
+  const truncated=list.length>MAX_HEATMAP_ROWS;
+  list=list.slice(0,MAX_HEATMAP_ROWS);
+
+  $("#heatmapNote").textContent = list.length
+    ? `過去に「至急」または「要対応」になったことがある${list.length}名${truncated?`（該当回数が多い順に上位${MAX_HEATMAP_ROWS}名を表示）`:""}`
+    : "履歴の中で「至急」「要対応」になった方はいません。";
+
+  const t=$("#heatmapTable");
+  if(!list.length || !months.length){ t.innerHTML=""; return; }
+
+  let thead="<thead><tr><th class=\"rowlabel\"></th>"+months.map(m=>`<th class="collabel">${m}</th>`).join("")+"</tr></thead>";
+  let tbody="<tbody>"+list.map(p=>{
+    const cells=months.map(m=>{
+      const s=p.byMonth[m];
+      if(!s) return `<td><span class="cell empty" title="${m}：履歴なし"></span></td>`;
+      const varName=STATUS_COLOR_VAR[s];
+      const color=varName?`var(${varName})`:"var(--rule2)";
+      return `<td><span class="cell" style="background:${color}" title="${esc(p.氏名)} ${m}：${esc(s)}"></span></td>`;
+    }).join("");
+    return `<tr><th class="rowlabel">${esc(p.氏名)}<br><span class="dim" style="font-weight:400;font-size:10.5px">${esc(p.部署)}</span></th>${cells}</tr>`;
+  }).join("")+"</tbody>";
+  t.innerHTML=thead+tbody;
+}
 $("#histPrevBtn").addEventListener("click",()=>stepHistMonth(-1));
 $("#histNextBtn").addEventListener("click",()=>stepHistMonth(1));
 $("#histMonthSel").addEventListener("change",renderHistoryMonth);
@@ -576,6 +647,7 @@ $("#toggleHistView").addEventListener("click",()=>{
   }else{
     populateHistMonthSel();
     renderHistoryMonth();
+    renderAttentionHeatmap();
     $("#historyView").classList.remove("hide");
     $("#liveView").classList.add("hide");
     $("#toggleHistView").textContent="現在の状況に戻る";
