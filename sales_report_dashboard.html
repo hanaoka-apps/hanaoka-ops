@@ -130,6 +130,21 @@
     margin-bottom: 8px;
   }
 
+  /* 翌月受注金額は「当月」の内容とは別物なので、上に点線区切り+専用の
+     箱で視覚的にセパレートする(入れ子ではなく別セクションの位置づけ) */
+  .future-block {
+    margin-top: 26px;
+    padding-top: 20px;
+    border-top: 2px dashed var(--border);
+  }
+  .future-block-inner {
+    padding: 16px 18px;
+    background: #f8f9fc;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .future-block-title { font-size: 14.5px; font-weight: 700; margin: 0 0 4px; }
+
   /* 詳細な数字テーブルを、別物とわかるように枠で囲むボックス */
   .detail-box {
     border: 1px solid var(--border);
@@ -239,9 +254,14 @@
   }
   .pipeline-card.pipeline-total { background: #eef2ff; }
   .pipeline-label { font-size: 13px; font-weight: 700; color: var(--text-sub); margin-bottom: 8px; }
-  .pipeline-amt { font-size: 22px; font-weight: 800; color: var(--text-main); }
-  .pipeline-amt .pipeline-unit { font-size: 13px; font-weight: 600; color: var(--text-sub); margin-left: 2px; }
-  .pipeline-today { font-size: 12px; color: var(--text-sub); margin-top: 6px; }
+
+  /* 累計と当日分、どちらも同じくらいの重みで見えるように2つ並べる */
+  .pipeline-stats { display: flex; gap: 14px; justify-content: center; }
+  .pipeline-stat { flex: 1; min-width: 0; }
+  .pipeline-stat .stat-num { font-size: 19px; font-weight: 800; color: var(--text-main); white-space: nowrap; }
+  .pipeline-stat .stat-num .stat-unit { font-size: 12px; font-weight: 600; color: var(--text-sub); margin-left: 1px; }
+  .pipeline-stat .stat-caption { font-size: 11px; color: var(--text-sub); margin-top: 3px; }
+  .pipeline-stat.today .stat-num { color: var(--accent-blue); }
 
   .rank-detail { margin-top: 4px; }
   .rank-detail summary {
@@ -372,12 +392,21 @@
       </div>
     </div>
 
-    <div class="trend-label" style="margin-top:20px">翌月受注金額<span class="page-sub" style="margin-left:6px">参考値・計画対比なし・今月累計の積み上げ</span></div>
-    <div class="bar-wrap" style="height:190px"><canvas id="nextMonthTrendChart"></canvas></div>
-    <details class="rank-detail" open>
-      <summary>詳細な数字を見る</summary>
-      <div id="nextMonthTableWrap"></div>
-    </details>
+    <div class="future-block">
+      <div class="future-block-inner">
+        <h3 class="future-block-title">翌月受注金額<span class="page-sub" style="margin-left:6px">参考値・計画対比なし・今月累計の積み上げ</span></h3>
+
+        <div class="trend-label">部門別（国内営業部・ソリューション営業部）</div>
+        <div class="bar-wrap" style="height:190px"><canvas id="nextMonthTrendChart"></canvas></div>
+        <div id="nextMonthTableWrap"></div>
+
+        <div class="sub-block">
+          <div class="sub-block-label">└ 国内営業部の拠点別内訳（本社・大阪・名古屋）</div>
+          <div class="bar-wrap" style="height:190px"><canvas id="nextMonthBaseTrendChart"></canvas></div>
+          <div id="nextMonthBaseTableWrap"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="section-grid">
@@ -764,54 +793,60 @@ const COMEBACK_MIN_DAYS = 60; // これ未満の間隔は「久しぶり」と�
 function computeItemNews(orderRows, today) {
   const todayKey = dateKeyOf(today);
 
+  // 品目の同一性判定は品目マスタコード(item_cd)で行う(商品名の表記揺れで
+  // 別品目扱いになるのを防ぐため)。表示にはitem_nmを使う。
+
   // 1) 本日の人気商品（数量ベース、当日受注のみ）
   // 月合計の数量で見ると、ボルト等の消耗部品が月初に一度首位を取ったきり
   // ずっと動かなくなり「代り映えのないニュース」になってしまうため、
   // 当日分の数量だけでランキングする(毎日変わる話題にするため)。
-  const qtyByItemToday = {};
+  const qtyByCodeToday = {}; // item_cd -> { qty, name }
   for (const r of orderRows) {
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     if (!isToday(r, today)) continue;
-    const nm = (r[IDX.item_nm] || '').trim();
-    if (!nm) continue;
-    qtyByItemToday[nm] = (qtyByItemToday[nm] || 0) + (Number(r[IDX.qty]) || 0);
+    const cd = (r[IDX.item_cd] || '').trim();
+    if (!cd) continue;
+    if (!qtyByCodeToday[cd]) qtyByCodeToday[cd] = { qty: 0, name: (r[IDX.item_nm] || '').trim() };
+    qtyByCodeToday[cd].qty += (Number(r[IDX.qty]) || 0);
   }
   let topItem = null, topQty = 0;
-  for (const nm in qtyByItemToday) {
-    if (qtyByItemToday[nm] > topQty) { topQty = qtyByItemToday[nm]; topItem = nm; }
+  for (const cd in qtyByCodeToday) {
+    if (qtyByCodeToday[cd].qty > topQty) { topQty = qtyByCodeToday[cd].qty; topItem = qtyByCodeToday[cd].name; }
   }
 
   // 2) 久しぶりの受注：品目ごとに「today より前で一番新しい受注日」を全期間から調べ、
   //    today当日に受注が入った品目の中で一番間隔が空いているものを探す。
-  const lastOrderKeyByItem = {};
+  const lastOrderKeyByCode = {}; // item_cd -> { key, name }
   for (const r of orderRows) {
     if (Number(r[IDX.kind]) === 2) continue;
-    const nm = (r[IDX.item_nm] || '').trim();
-    if (!nm) continue;
+    const cd = (r[IDX.item_cd] || '').trim();
+    if (!cd) continue;
     const vKey = voucherDateKey(r);
     if (vKey === null || vKey >= todayKey) continue;
-    if (!(nm in lastOrderKeyByItem) || vKey > lastOrderKeyByItem[nm]) lastOrderKeyByItem[nm] = vKey;
+    if (!(cd in lastOrderKeyByCode) || vKey > lastOrderKeyByCode[cd].key) {
+      lastOrderKeyByCode[cd] = { key: vKey, name: (r[IDX.item_nm] || '').trim() };
+    }
   }
-  const todayItems = new Set();
+  const todayCodes = new Map(); // item_cd -> name
   for (const r of orderRows) {
     if (Number(r[IDX.kind]) === 2) continue;
-    const nm = (r[IDX.item_nm] || '').trim();
-    if (!nm) continue;
+    const cd = (r[IDX.item_cd] || '').trim();
+    if (!cd) continue;
     if (!isToday(r, today)) continue;
-    todayItems.add(nm);
+    todayCodes.set(cd, (r[IDX.item_nm] || '').trim());
   }
   // 「初めての受注」と「久しぶりの受注」は別々の話題なので、片方が
   // もう片方を隠さないよう独立に探す。
   let comeback = null, comebackDays = -1;
   let firstEver = null;
-  for (const nm of todayItems) {
-    const isFirstEver = !(nm in lastOrderKeyByItem);
+  for (const [cd, nm] of todayCodes) {
+    const isFirstEver = !(cd in lastOrderKeyByCode);
     if (isFirstEver) {
       if (!firstEver) firstEver = { name: nm };
       continue;
     }
-    const days = daysBetweenKeys(lastOrderKeyByItem[nm], todayKey);
+    const days = daysBetweenKeys(lastOrderKeyByCode[cd].key, todayKey);
     if (days >= COMEBACK_MIN_DAYS && days > comebackDays) { comebackDays = days; comeback = { name: nm, days }; }
   }
 
@@ -906,7 +941,8 @@ function renderTrendChart(canvasId, rows, curYm, today, monthMode) {
 // 全社は国内営業部+ソリューション営業部の合計(=積み上げの一番上の線)に
 // なるため、二重計上を避けるためにこの2グループだけを積み上げる。
 // ============================================================
-function cumulativeByGroupDaily(orderRows, targetYm, today, groups) {
+function cumulativeByGroupDaily(orderRows, targetYm, today, groups, matchFn) {
+  matchFn = matchFn || matchGroup;
   const targetY = Math.floor(targetYm / 100), targetMo = targetYm % 100;
   const todayKey = dateKeyOf(today);
 
@@ -920,7 +956,7 @@ function cumulativeByGroupDaily(orderRows, targetYm, today, groups) {
     if (!dailyByGroup[vKey]) dailyByGroup[vKey] = {};
     const amt = Number(r[IDX.amount]) || 0;
     for (const g of groups) {
-      if (!matchGroup(r, g)) continue;
+      if (!matchFn(r, g)) continue;
       dailyByGroup[vKey][g] = (dailyByGroup[vKey][g] || 0) + amt;
     }
   }
@@ -950,7 +986,9 @@ function cumulativeByGroupDaily(orderRows, targetYm, today, groups) {
   return { labels, series, dailySeries };
 }
 
-function renderNextMonthTrendChart(canvasId, cum) {
+// groups: 積み上げるグループ名の配列。colors: {group: '#rrggbb'} のマップ。
+// totalLabel: 合計行に付ける名前(例:'合計'/'国内営業部合計')。
+function renderCumulativeTrendChart(canvasId, cum, groups, colors, totalLabel) {
   destroyChart(canvasId);
   const el = document.getElementById(canvasId);
   if (!el) return;
@@ -958,14 +996,18 @@ function renderNextMonthTrendChart(canvasId, cum) {
   // 最終日(表示日)の点だけ大きくして、当日分がどこかひと目でわかるように
   const pointRadius = ctx => ctx.dataIndex === lastIdx ? 5 : 0;
   const pointHitRadius = ctx => ctx.dataIndex === lastIdx ? 6 : 3;
+  const hexToRgba = (hex, a) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  };
   const chart = new Chart(el, {
     type: 'line',
     data: {
       labels: cum.labels,
-      datasets: [
-        { label: '国内営業部', data: cum.series['国内営業部'], borderColor: '#2455e6', backgroundColor: 'rgba(36,85,230,0.25)', pointBackgroundColor: '#2455e6', fill: true, tension: 0.25, pointRadius, pointHitRadius, pointHoverRadius: 6, borderWidth: 2 },
-        { label: 'ソリューション営業部', data: cum.series['ソリューション営業部'], borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.25)', pointBackgroundColor: '#7c3aed', fill: true, tension: 0.25, pointRadius, pointHitRadius, pointHoverRadius: 6, borderWidth: 2 },
-      ]
+      datasets: groups.map(g => ({
+        label: g, data: cum.series[g], borderColor: colors[g], backgroundColor: hexToRgba(colors[g], 0.25),
+        pointBackgroundColor: colors[g], fill: true, tension: 0.25, pointRadius, pointHitRadius, pointHoverRadius: 6, borderWidth: 2,
+      })),
     },
     options: {
       responsive: true,
@@ -979,18 +1021,18 @@ function renderNextMonthTrendChart(canvasId, cum) {
         legend: { position: 'bottom', labels: { boxWidth: 12 } },
         tooltip: {
           callbacks: {
-            // 合計(全社) = 国内営業部+ソリューション営業部 を、各部門の内訳より
-            // 先に1行目として出す(「合計、国内営業、ソリューション」の3点セット)。
+            // 合計 = 各グループの合計を、内訳より先に1行目として出す
+            // (「合計、内訳1、内訳2...」の順で見せる)。
             beforeBody: items => {
               if (!items.length) return [];
               const idx = items[0].dataIndex;
               let cumTotal = 0, incTotal = 0;
-              for (const g of ['国内営業部', 'ソリューション営業部']) {
+              for (const g of groups) {
                 cumTotal += cum.series[g][idx] || 0;
                 incTotal += cum.dailySeries[g][idx] || 0;
               }
               const sign = incTotal > 0 ? '+' : '';
-              return [`合計 累計 ${cumTotal.toLocaleString('ja-JP')}万円（その日 ${sign}${incTotal.toLocaleString('ja-JP')}万円）`];
+              return [`${totalLabel} 累計 ${cumTotal.toLocaleString('ja-JP')}万円（その日 ${sign}${incTotal.toLocaleString('ja-JP')}万円）`];
             },
             label: ctx => {
               const g = ctx.dataset.label;
@@ -1377,15 +1419,16 @@ function baseOf(r) {
 // 拠点別受注金額（本社/大阪/名古屋）
 // ============================================================
 // monthMode: 'kikou'(受注) または 'ym'(売上)。aggregateByGroup と同じ考え方。
-function aggregateByBaseGroup(rows, today, monthMode) {
+function aggregateByBaseGroup(rows, targetYm, today, monthMode) {
+  const targetY = Math.floor(targetYm / 100), targetMo = targetYm % 100;
   const result = {};
   for (const b of BASE_GROUPS) result[b] = { todayAmt: 0, monthAmt: 0 };
   for (const r of rows) {
     const vKey = voucherDateKey(r);
     if (vKey === null || vKey > today.y * 10000 + today.mo * 100 + today.d) continue;
     const inMonth = monthMode === 'kikou'
-      ? isSameMonthByKikou(r, today.y, today.mo)
-      : rowYm(r) === (today.y * 100 + today.mo);
+      ? isSameMonthByKikou(r, targetY, targetMo)
+      : rowYm(r) === targetYm;
     if (!inMonth) continue;
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
@@ -1409,8 +1452,16 @@ function renderPipelineCards(containerId, metrics, groups) {
     return `
       <div class="pipeline-card${totalClass}">
         <div class="pipeline-label">${escapeHtml(g)}</div>
-        <div class="pipeline-amt">${formatMan(m.monthAmt)}<span class="pipeline-unit">万円</span></div>
-        <div class="pipeline-today">${TODAY_LABEL}分 ${formatYen(m.todayAmt)}</div>
+        <div class="pipeline-stats">
+          <div class="pipeline-stat">
+            <div class="stat-num">${formatMan(m.monthAmt)}<span class="stat-unit">万円</span></div>
+            <div class="stat-caption">累計</div>
+          </div>
+          <div class="pipeline-stat today">
+            <div class="stat-num">${formatYen(m.todayAmt)}</div>
+            <div class="stat-caption">${TODAY_LABEL}分</div>
+          </div>
+        </div>
       </div>`;
   }).join('');
   document.getElementById(containerId).innerHTML = `<div class="pipeline-row">${cardsHtml}</div>`;
@@ -1742,8 +1793,8 @@ function renderForDate(today) {
   // 拠点別（本社/大阪/名古屋）。受注は納期ベース、売上は年月度ベースで
   // 部門別と同じ集計方法に揃える。
   const basePlans = loadBasePlansFromFacts(facts, curYm);
-  const orderBaseMetrics = aggregateByBaseGroup(orderRows, today, 'kikou');
-  const salesBaseMetrics = aggregateByBaseGroup(rows, today, 'ym');
+  const orderBaseMetrics = aggregateByBaseGroup(orderRows, curYm, today, 'kikou');
+  const salesBaseMetrics = aggregateByBaseGroup(rows, curYm, today, 'ym');
   renderAchievementRow('baseAchieveRow', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics);
   renderBulletChart('baseBulletChart', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics);
   renderCombinedTable('baseCombinedTableWrap', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics, '拠点');
@@ -1779,8 +1830,17 @@ function renderForDate(today) {
   const nextYm = shiftYm(curYm, 1);
   const nextMonthMetrics = aggregateByGroup(orderRows, nextYm, today, 'kikou');
   const nextMonthCum = cumulativeByGroupDaily(orderRows, nextYm, today, ['国内営業部', 'ソリューション営業部']);
-  renderNextMonthTrendChart('nextMonthTrendChart', nextMonthCum);
+  renderCumulativeTrendChart('nextMonthTrendChart', nextMonthCum,
+    ['国内営業部', 'ソリューション営業部'], { '国内営業部': '#2455e6', 'ソリューション営業部': '#7c3aed' }, '合計');
   renderPipelineCards('nextMonthTableWrap', nextMonthMetrics, DEPT_GROUPS);
+
+  // 翌月受注金額の拠点別(本社/大阪/名古屋)。当月と同じく国内営業部の内訳として
+  // 入れ子で表示する。
+  const nextMonthBaseMetrics = aggregateByBaseGroup(orderRows, nextYm, today, 'kikou');
+  const nextMonthBaseCum = cumulativeByGroupDaily(orderRows, nextYm, today, BASE_GROUPS, (r, g) => baseOf(r) === g);
+  renderCumulativeTrendChart('nextMonthBaseTrendChart', nextMonthBaseCum,
+    BASE_GROUPS, { '本社': '#2455e6', '大阪': '#f59e0b', '名古屋': '#16a34a' }, '国内営業部合計');
+  renderPipelineCards('nextMonthBaseTableWrap', nextMonthBaseMetrics, BASE_GROUPS);
 }
 
 // ============================================================
