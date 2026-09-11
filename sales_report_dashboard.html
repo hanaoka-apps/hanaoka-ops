@@ -261,10 +261,31 @@
   tr.rank-2 td { background: #f4f5f8; }
   tr.rank-3 td { background: #fdf3ea; }
 
+  /* 部門別・拠点別の達成率ドーナツ(2重リング: 外=受注、内=売上) */
+  .achieve-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .achieve-card {
+    flex: 1;
+    min-width: 120px;
+    text-align: center;
+  }
+  .achieve-canvas-wrap {
+    position: relative;
+    height: 110px;
+  }
+  .achieve-label { font-size: 13px; font-weight: 700; margin-top: 6px; }
+  .achieve-sub { font-size: 11.5px; color: var(--text-sub); margin-top: 2px; }
+
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
     table { font-size: 12.5px; }
     th, td { padding: 8px 4px; }
+    .achieve-card { min-width: 90px; }
+    .achieve-canvas-wrap { height: 85px; }
   }
 </style>
 </head>
@@ -292,10 +313,12 @@
   <div class="card">
     <h2>受注・売上金額<span class="page-sub" style="margin-left:8px">薄いバー=計画、太いバー=受注累計、細いバー=売上累計</span></h2>
     <div class="trend-label">部門別（全社・国内営業部・ソリューション営業部）</div>
+    <div class="achieve-row" id="deptAchieveRow"></div>
     <div class="bar-wrap" style="height:220px"><canvas id="deptBulletChart"></canvas></div>
 
     <div class="sub-block">
       <div class="sub-block-label">└ 国内営業部の拠点別内訳（本社・大阪・名古屋）</div>
+      <div class="achieve-row" id="baseAchieveRow"></div>
       <div class="bar-wrap" style="height:220px"><canvas id="baseBulletChart"></canvas></div>
     </div>
 
@@ -958,6 +981,60 @@ function achievementEmoji(rate) {
 }
 
 // ============================================================
+// 達成率ドーナツ（2重リング: 外側=受注、内側=売上）
+// Chart.jsのdoughnutは複数datasetを渡すと自動的に同心円のリングになる
+// (先頭のdatasetが一番外側)。weightでリングの太さを相対指定できる。
+// バレットチャートと対になる「パッと見の%」表示として、部門別・拠点別
+// それぞれの上に小さいドーナツを並べる。
+// ============================================================
+function renderAchievementDonut(canvasId, orderRate, salesRate) {
+  destroyChart(canvasId);
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const clamp = r => r === null ? 0 : Math.min(Math.max(r, 0), 100);
+  const orderPct = clamp(orderRate), salesPct = clamp(salesRate);
+  const colorOf = r => r === null ? '#c7cbd6' : (r >= 100 ? '#16a34a' : '#1d4ed8');
+  const chart = new Chart(el, {
+    type: 'doughnut',
+    data: {
+      datasets: [
+        { data: [orderPct, 100 - orderPct], backgroundColor: [colorOf(orderRate), '#eef0f5'], borderWidth: 0, weight: 1.4 },
+        { data: [salesPct, 100 - salesPct], backgroundColor: ['#16a34a', '#eef0f5'], borderWidth: 0, weight: 1 },
+      ]
+    },
+    options: {
+      cutout: '48%',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      animation: { duration: 500 },
+    }
+  });
+  chart.config._centerText = orderRate === null ? '―' : orderRate.toFixed(0) + '%';
+  chart.update();
+  CHARTS[canvasId] = chart;
+}
+
+function renderAchievementRow(rowId, groups, plans, orderMetrics, salesMetrics) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  const rateOf = (metrics, g) => (plans[g] > 0 ? (metrics[g].monthAmt / plans[g]) * 100 : null);
+  const fmtRate = r => r === null ? '―' : r.toFixed(0) + '%';
+  row.innerHTML = groups.map(g => {
+    const orderRate = rateOf(orderMetrics, g);
+    return `
+    <div class="achieve-card">
+      <div class="achieve-canvas-wrap"><canvas id="${rowId}-${g}"></canvas></div>
+      <div class="achieve-label">${escapeHtml(g)} ${achievementEmoji(orderRate)}</div>
+      <div class="achieve-sub">受注 ${fmtRate(orderRate)} ／ 売上 ${fmtRate(rateOf(salesMetrics, g))}</div>
+    </div>`;
+  }).join('');
+  groups.forEach(g => {
+    renderAchievementDonut(`${rowId}-${g}`, rateOf(orderMetrics, g), rateOf(salesMetrics, g));
+  });
+}
+
+// ============================================================
 // 受注・売上バレットチャート（計画=背景バー、受注・売上=重ねた前景バー）
 // Chart.jsの datasets.bar.grouped:false を使うと、同じカテゴリのバーが
 // 横並びではなく重なって描画される。太さ(barThickness)を変えることで
@@ -1599,6 +1676,7 @@ function renderForDate(today) {
   console.log('[営業日報] curYm=', curYm, 'plans=', plans);
   console.log('[営業日報] orderMetrics(納期ベース)=', orderMetrics, 'salesMetrics=', salesMetrics);
 
+  renderAchievementRow('deptAchieveRow', DEPT_GROUPS, plans, orderMetrics, salesMetrics);
   renderBulletChart('deptBulletChart', DEPT_GROUPS, plans, orderMetrics, salesMetrics);
   renderCombinedTable('deptCombinedTableWrap', DEPT_GROUPS, plans, orderMetrics, salesMetrics, '部門');
 
@@ -1607,6 +1685,7 @@ function renderForDate(today) {
   const basePlans = loadBasePlansFromFacts(facts, curYm);
   const orderBaseMetrics = aggregateByBaseGroup(orderRows, today, 'kikou');
   const salesBaseMetrics = aggregateByBaseGroup(rows, today, 'ym');
+  renderAchievementRow('baseAchieveRow', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics);
   renderBulletChart('baseBulletChart', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics);
   renderCombinedTable('baseCombinedTableWrap', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics, '拠点');
 
