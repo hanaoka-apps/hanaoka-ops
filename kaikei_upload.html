@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>会計データ 月次取り込み</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#f7f7f5; --panel:#fff; --border:#e3e2de; --text:#1f1e1c; --muted:#767468; --accent:#1a5fa8; --ok:#2f6b3a; --err:#b03636; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1b1a18; --panel:#242320; --border:#3a3833; --text:#ece9e2; --muted:#a6a296; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Hiragino Sans","Yu Gothic",sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:32px 24px; }
+  h1 { font-size:18px; }
+  h2 { font-size:14px; margin-top:32px; color:var(--accent); }
+  p.note { color:var(--muted); font-size:13px; line-height:1.7; }
+  #drop, #dropSeed { border:2px dashed var(--border); border-radius:10px; background:var(--panel); padding:40px 24px; text-align:center; margin:16px 0; }
+  #drop.hot, #dropSeed.hot { border-color:var(--accent); }
+  .btn { font:inherit; font-size:14px; padding:10px 22px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  #gate { text-align:center; padding:60px 0; }
+  #log { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 18px; font-size:12.5px; font-family:ui-monospace,monospace; white-space:pre-wrap; max-height:400px; overflow-y:auto; margin-top:16px; }
+  .hide { display:none !important; }
+  .ok { color:var(--ok); } .err { color:var(--err); } .warn { color:#a06a00; }
+  nav { background:#1f1e1c;color:#fff;padding:8px 24px;font:13px -apple-system,"Hiragino Sans",sans-serif;display:flex;gap:18px;align-items:center; }
+  nav a { color:#fff;text-decoration:none;opacity:.75; }
+  nav a.on { opacity:1; font-weight:700; }
+</style>
+</head>
+<body>
+<nav>
+  <strong style="opacity:.55;font-weight:600;">会計ダッシュボード</strong>
+  <a href="kaikei_dashboard.html">会計サマリー</a>
+  <a href="kaikei_ledger.html">仕訳明細</a>
+  <a href="kaikei_budget.html">予算・前年実績</a>
+  <a href="kaikei_upload.html" class="on">データ取り込み</a>
+</nav>
+
+<div id="gate">
+  <p>役員限定です。Microsoftアカウントでサインインしてください。</p>
+  <button class="btn" id="signInBtn">サインイン</button>
+  <div id="gateError" style="color:#b03636;margin-top:14px;font-size:13px;"></div>
+</div>
+
+<main id="appRoot" class="hide">
+  <h1>会計データ 月次取り込み</h1>
+  <p class="note">
+    SMILEから出力した「元帳（仕訳明細）」CSVをドラッグ＆ドロップしてください。ファイル内に含まれる年月度ごとに
+    自動集計し、SharePointの「会計データ」フォルダへ保存します（サーバーは使わず、すべてこの画面の中で処理します）。
+    同じ月を再取り込みすると、その月のデータは上書きされます。
+  </p>
+  <div id="drop">
+    <p>元帳CSVをここにドラッグ、または</p>
+    <button class="btn" id="pickBtn">ファイルを選ぶ</button>
+    <input type="file" id="fCsv" accept=".csv" class="hide">
+  </div>
+
+  <h2>初回セットアップ（勘定科目マスタ・予算・前年実績）</h2>
+  <p class="note">
+    account_master.json / expense_lines.json / prior_actuals.json / budget.json をまとめてドラッグすると、
+    そのままSharePointにアップロードします（通常は最初の1回だけ）。
+  </p>
+  <div id="dropSeed">
+    <p>種火JSONファイル（複数可）をここにドラッグ、または</p>
+    <button class="btn" id="pickSeedBtn">ファイルを選ぶ</button>
+    <input type="file" id="fSeed" accept=".json" multiple class="hide">
+  </div>
+
+  <div id="log" class="hide"></div>
+</main>
+
+<script src="kaikei_graph.js"></script>
+<script>
+const logEl = document.getElementById('log');
+function log(line, cls) {
+  logEl.classList.remove('hide');
+  const div = document.createElement('div');
+  if (cls) div.className = cls;
+  div.textContent = line;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ============ 元帳CSV取り込み ============ */
+// 列番号（SMILE「元帳」形式のBI用仕訳明細CSVで確認済み。列順が変わった場合はここを直す）
+const COL = {
+  code: 0, name: 1, month: 4, denpyoDate: 5, kashikari: 10,
+  bumon: 15, tekiyo: 37, aiteKamoku: 43, aiteBumon: 49, login: 57, denpyoNo: 8, amountNoTax: 60,
+};
+
+async function readCsvAsUtf16(file) {
+  const buf = await file.arrayBuffer();
+  let text = new TextDecoder('utf-16le').decode(buf);
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  return text;
+}
+
+function aggregateLedger(rows) {
+  // month -> { byAccount: { code: {debit,credit,name} }, journal: [...] }
+  const months = {};
+  for (const row of rows) {
+    if (!row || row.length < 61) continue;
+    const codeRaw = row[COL.code];
+    if (!codeRaw) continue;
+    const code = String(parseInt(codeRaw, 10));
+    if (!code || code === 'NaN') continue;
+    const month = row[COL.month];
+    if (!month) continue;
+    const kashikari = row[COL.kashikari];
+    const amount = parseFloat(row[COL.amountNoTax]) || 0;
+    const name = row[COL.name] || '';
+
+    let m = months[month];
+    if (!m) m = months[month] = { byAccount: {}, journal: [] };
+    let acc = m.byAccount[code];
+    if (!acc) acc = m.byAccount[code] = { debit: 0, credit: 0, name };
+    if (kashikari === '0') acc.debit += amount; else acc.credit += amount;
+
+    m.journal.push([
+      code,
+      row[COL.denpyoDate] || '',
+      kashikari === '0' ? '借方' : '貸方',
+      amount,
+      row[COL.bumon] || '',
+      row[COL.aiteKamoku] || '',
+      row[COL.tekiyo] || '',
+      row[COL.login] || '',
+      row[COL.denpyoNo] || '',
+    ]);
+  }
+  return months;
+}
+
+async function importLedgerCsv(file) {
+  log('CSVを読み込み中: ' + file.name);
+  const text = await readCsvAsUtf16(file);
+  const parsed = Papa.parse(text, { skipEmptyLines: true });
+  if (parsed.errors && parsed.errors.length) {
+    log('パース警告: ' + parsed.errors.length + '件（先頭のみ表示） ' + JSON.stringify(parsed.errors[0]), 'warn');
+  }
+  const rows = parsed.data.slice(1); // ヘッダ行を除く
+  log('行数: ' + rows.length);
+
+  const months = aggregateLedger(rows);
+  const monthKeys = Object.keys(months).sort();
+  log('対象年月度: ' + monthKeys.join(', '));
+
+  const idx = await kaikeiGetFile('monthly/_index.json', { allow404: true }) || { months: [] };
+  for (const mk of monthKeys) {
+    await kaikeiPutFile('monthly/' + mk + '.json', months[mk]);
+    if (!idx.months.includes(mk)) idx.months.push(mk);
+    log('OK   monthly/' + mk + '.json （科目数 ' + Object.keys(months[mk].byAccount).length + ' / 明細 ' + months[mk].journal.length + '件）', 'ok');
+  }
+  idx.months.sort();
+  await kaikeiPutFile('monthly/_index.json', idx);
+  log('完了: ' + monthKeys.length + 'ヶ月分を保存しました。', 'ok');
+}
+
+/* ============ 種火JSONアップロード ============ */
+async function uploadSeedFiles(fileList) {
+  const files = [...fileList].filter(f => f.name.endsWith('.json'));
+  if (!files.length) { log('JSONファイルが見つかりませんでした。', 'err'); return; }
+  for (const f of files) {
+    try {
+      const obj = JSON.parse(await f.text());
+      await kaikeiPutFile(f.name, obj);
+      log('OK   ' + f.name, 'ok');
+    } catch (e) {
+      log('FAIL ' + f.name + ' : ' + e.message, 'err');
+    }
+  }
+}
+
+/* ============ UI配線 ============ */
+const dz = document.getElementById('drop');
+document.getElementById('pickBtn').addEventListener('click', () => document.getElementById('fCsv').click());
+document.getElementById('fCsv').addEventListener('change', e => { if (e.target.files[0]) importLedgerCsv(e.target.files[0]).catch(err => log('エラー: ' + err.message, 'err')); });
+['dragenter', 'dragover'].forEach(t => dz.addEventListener(t, e => { e.preventDefault(); dz.classList.add('hot'); }));
+['dragleave', 'drop'].forEach(t => dz.addEventListener(t, e => { e.preventDefault(); dz.classList.remove('hot'); }));
+dz.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) importLedgerCsv(f).catch(err => log('エラー: ' + err.message, 'err'));
+});
+
+const dzSeed = document.getElementById('dropSeed');
+document.getElementById('pickSeedBtn').addEventListener('click', () => document.getElementById('fSeed').click());
+document.getElementById('fSeed').addEventListener('change', e => uploadSeedFiles(e.target.files));
+['dragenter', 'dragover'].forEach(t => dzSeed.addEventListener(t, e => { e.preventDefault(); dzSeed.classList.add('hot'); }));
+['dragleave', 'drop'].forEach(t => dzSeed.addEventListener(t, e => { e.preventDefault(); dzSeed.classList.remove('hot'); }));
+dzSeed.addEventListener('drop', e => { e.preventDefault(); uploadSeedFiles(e.dataTransfer.files); });
+
+/* ============ 認証 ============ */
+async function boot() {
+  const signedIn = await kaikeiInitAuth();
+  if (signedIn) {
+    document.getElementById('gate').classList.add('hide');
+    document.getElementById('appRoot').classList.remove('hide');
+  }
+}
+document.getElementById('signInBtn').addEventListener('click', async () => {
+  document.getElementById('gateError').textContent = '';
+  try {
+    await kaikeiSignIn();
+    document.getElementById('gate').classList.add('hide');
+    document.getElementById('appRoot').classList.remove('hide');
+  } catch (e) { document.getElementById('gateError').textContent = e.message || String(e); }
+});
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>会計サマリー | 花岡車輌</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --primary:#1a5fa8; --primary-dk:#134680; --bg:#f4f6f9; --card-bg:#fff; --border:#dde2ec;
+    --text:#1e2533; --muted:#6b7a99; --shadow:0 1px 4px rgba(0,0,0,.08);
+    --good:#2e7d52; --bad:#c0392b; --flat:#8a94a8;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Meiryo','Hiragino Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+  nav { background:#1f1e1c;color:#fff;padding:8px 24px;font-size:13px;display:flex;gap:18px;align-items:center; }
+  nav a { color:#fff;text-decoration:none;opacity:.75; }
+  nav a.on { opacity:1; font-weight:700; }
+  #login-view { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; gap:16px; }
+  #login-view button { background:var(--primary); color:#fff; border:none; padding:12px 32px; border-radius:6px; font-size:15px; font-weight:700; cursor:pointer; }
+  #app-view { display:none; padding:24px; max-width:1200px; margin:0 auto; }
+  .month-bar { display:flex; align-items:center; gap:12px; margin-bottom:20px; background:var(--card-bg); padding:12px 16px; border-radius:8px; border:1px solid var(--border); box-shadow:var(--shadow); }
+  .month-bar select { border:1px solid var(--border); border-radius:4px; padding:6px 10px; font-size:14px; }
+  #loading-msg { font-size:13px; color:var(--muted); }
+  .kpi-row { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:20px; }
+  @media(max-width:1000px){ .kpi-row{ grid-template-columns:repeat(2,1fr);} }
+  .kpi-card { background:var(--card-bg); border:1px solid var(--border); border-radius:10px; padding:14px 16px; box-shadow:var(--shadow); }
+  .kpi-card .lbl { font-size:12px; color:var(--muted); font-weight:600; }
+  .kpi-card .val { font-size:20px; font-weight:800; margin-top:4px; }
+  .kpi-card .sub { font-size:11px; margin-top:6px; color:var(--muted); }
+  .kpi-card .sub b.good{ color:var(--good);} .kpi-card .sub b.bad{ color:var(--bad);}
+  .conclusion { background:#eaf1fb; border:1px solid #cfe0f5; border-radius:8px; padding:12px 16px; font-size:14px; font-weight:600; margin-bottom:16px; color:var(--primary-dk); }
+  .panel { background:var(--card-bg); border:1px solid var(--border); border-radius:10px; padding:18px; box-shadow:var(--shadow); margin-bottom:20px; }
+  .panel h3 { font-size:14px; color:var(--primary); margin-bottom:12px; }
+  .chart-wrap { position:relative; height:320px; }
+  .rank-row { display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border); cursor:pointer; }
+  .rank-row:hover { background:#f7f9fc; }
+  .rank-row .name { width:140px; font-size:13px; font-weight:600; flex-shrink:0; }
+  .rank-row .bar-track { flex:1; background:#eef1f6; border-radius:4px; height:16px; position:relative; overflow:hidden; }
+  .rank-row .bar-fill { height:100%; border-radius:4px; }
+  .rank-row .amt { width:190px; text-align:right; font-size:12px; color:var(--muted); flex-shrink:0; }
+  .err-msg { color:var(--bad); font-size:13px; padding:8px 0; }
+  .empty-msg { color:var(--muted); font-size:13px; padding:20px 0; text-align:center; }
+</style>
+</head>
+<body>
+<nav>
+  <strong style="opacity:.55;font-weight:600;">会計ダッシュボード</strong>
+  <a href="kaikei_dashboard.html" class="on">会計サマリー</a>
+  <a href="kaikei_ledger.html">仕訳明細</a>
+  <a href="kaikei_budget.html">予算・前年実績</a>
+  <a href="kaikei_upload.html">データ取り込み</a>
+</nav>
+
+<div id="login-view">
+  <h2>会計サマリー</h2>
+  <p style="color:var(--muted);font-size:13px;">役員限定です。Microsoftアカウントでサインインしてください。</p>
+  <button id="login-btn">サインイン</button>
+  <div id="login-err" class="err-msg"></div>
+</div>
+
+<div id="app-view">
+  <div class="month-bar">
+    <label>対象月度</label>
+    <select id="month-select"></select>
+    <span id="loading-msg"></span>
+  </div>
+
+  <div id="conclusion" class="conclusion" style="display:none;"></div>
+
+  <div class="kpi-row" id="kpi-row"></div>
+
+  <div class="panel">
+    <h3>営業利益の増減要因（前年同月比）</h3>
+    <div class="chart-wrap"><canvas id="waterfallChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <h3>主要経費の増減（前年同月比・上位7項目）</h3>
+    <div id="rankList"></div>
+  </div>
+</div>
+
+<script src="kaikei_graph.js"></script>
+<script>
+let accountMaster = {}, expenseLines = [], priorActualsSeed = {}, monthIndex = { months: [] };
+const monthlyCache = {};
+
+function fmtYen(n) { return (Math.round(n)).toLocaleString('ja-JP') + '円'; }
+function fmtYenSigned(n) { return (n >= 0 ? '+' : '') + fmtYen(n); }
+function pctDelta(cur, base) { if (!base) return null; return (cur - base) / Math.abs(base) * 100; }
+
+function priorMonthOf(month) { return String(parseInt(month, 10) - 100); }
+
+async function getMonthlyFacts(month) {
+  if (monthlyCache[month] !== undefined) return monthlyCache[month];
+  const data = await kaikeiGetFile('monthly/' + month + '.json', { allow404: true });
+  monthlyCache[month] = data;
+  return data;
+}
+
+/** 科目コードの当該月ネット金額（正常残高側で符号調整済み） */
+function netOf(monthFacts, code) {
+  if (!monthFacts) return 0;
+  const acc = monthFacts.byAccount[code];
+  if (!acc) return 0;
+  const meta = accountMaster[code];
+  if (!meta) return 0;
+  return meta.normalBalance === 'debit' ? acc.debit - acc.credit : acc.credit - acc.debit;
+}
+
+/** P/L区分ごとの合計（当該月） */
+function sectionTotal(monthFacts, section) {
+  if (!monthFacts) return 0;
+  let sum = 0;
+  for (const code of Object.keys(monthFacts.byAccount)) {
+    const meta = accountMaster[code];
+    if (meta && meta.section === section) sum += netOf(monthFacts, code);
+  }
+  return sum;
+}
+
+function plFigures(monthFacts) {
+  if (!monthFacts) return null;
+  const sales = sectionTotal(monthFacts, '売上高');
+  const cogs = sectionTotal(monthFacts, '売上原価');
+  const gp = sales - cogs;
+  const sga = sectionTotal(monthFacts, '販管費');
+  const opInc = gp - sga;
+  const nonOpInc = sectionTotal(monthFacts, '営業外収益');
+  const nonOpExp = sectionTotal(monthFacts, '営業外費用');
+  const ordinaryInc = opInc + nonOpInc - nonOpExp;
+  return { sales, cogs, gp, sga, opInc, nonOpInc, nonOpExp, ordinaryInc };
+}
+
+/** expense_lines 1行ぶんの当該月ネット金額（複数科目コードの合算） */
+function expenseLineValue(monthFacts, line) {
+  if (!monthFacts) return null;
+  let sum = 0, any = false;
+  for (const c of line.codes) {
+    const code = String(c);
+    if (monthFacts.byAccount[code]) any = true;
+    sum += netOf(monthFacts, code);
+  }
+  return any ? sum : 0;
+}
+
+/** 前年同月のexpense_line値: 元帳(監査済み)があればそちら優先、無ければExcel移行の種火データ */
+function priorExpenseLineValue(priorMonthFacts, priorMonth, line) {
+  if (priorMonthFacts) return expenseLineValue(priorMonthFacts, line);
+  const key = line.codes.join('/');
+  const seed = priorActualsSeed[key];
+  if (seed && seed[priorMonth] !== undefined) return seed[priorMonth];
+  return null;
+}
+
+function sectionColor(delta, goodWhenPositive) {
+  if (Math.abs(delta) < 1) return 'var(--flat)';
+  const isGood = goodWhenPositive ? delta > 0 : delta < 0;
+  return isGood ? 'var(--good)' : 'var(--bad)';
+}
+
+function renderKpis(cur, prior) {
+  const rows = [
+    ['売上高', 'sales'], ['売上総利益', 'gp'], ['営業利益', 'opInc'], ['経常利益', 'ordinaryInc'],
+  ];
+  const box = document.getElementById('kpi-row');
+  box.innerHTML = '';
+  for (const [label, key] of rows) {
+    const v = cur ? cur[key] : 0;
+    const p = prior ? prior[key] : null;
+    const delta = p !== null ? v - p : null;
+    const pct = p !== null ? pctDelta(v, p) : null;
+    const card = document.createElement('div');
+    card.className = 'kpi-card';
+    card.innerHTML = `
+      <div class="lbl">${label}</div>
+      <div class="val">${fmtYen(v)}</div>
+      <div class="sub">${delta === null ? '前年同月データなし' :
+        `前年同月比 <b class="${delta >= 0 ? 'good' : 'bad'}">${fmtYenSigned(delta)}${pct !== null ? ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)' : ''}</b>`}</div>
+    `;
+    box.appendChild(card);
+  }
+  // 粗利率カード
+  const gpRate = cur && cur.sales ? cur.gp / cur.sales * 100 : null;
+  const gpRatePrior = prior && prior.sales ? prior.gp / prior.sales * 100 : null;
+  const card = document.createElement('div');
+  card.className = 'kpi-card';
+  card.innerHTML = `
+    <div class="lbl">粗利率</div>
+    <div class="val">${gpRate !== null ? gpRate.toFixed(1) + '%' : '-'}</div>
+    <div class="sub">${gpRatePrior !== null ? `前年同月 ${gpRatePrior.toFixed(1)}%` : '前年同月データなし'}</div>
+  `;
+  box.appendChild(card);
+}
+
+/** 経費グループのうち「販管費」区分の科目だけを合算した増減（原価側の科目は除く。GP増減との二重計上を避けるため） */
+function sgaOnlyDelta(line, cur, prior) {
+  let delta = 0;
+  for (const c of line.codes) {
+    const code = String(c);
+    if (!accountMaster[code] || accountMaster[code].section !== '販管費') continue;
+    delta += netOf(cur, code) - netOf(prior, code);
+  }
+  return delta;
+}
+
+let waterfallChartInstance = null;
+/** cur/prior: 元帳の生データ(byAccount)。curPl/priorPl: plFigures()で計算済みのP/L集計値 */
+function renderWaterfall(cur, prior, curPl, priorPl) {
+  const canvas = document.getElementById('waterfallChart');
+  if (waterfallChartInstance) waterfallChartInstance.destroy();
+  if (!prior) {
+    canvas.parentElement.innerHTML = '<div class="empty-msg">前年同月のデータがまだありません（元帳データが2期分揃うと表示されます）。</div>';
+    return;
+  }
+  const deltaGp = curPl.gp - priorPl.gp;
+
+  // 主要経費TOP5（販管費区分の科目のみで増減をランキング。原価側はGP増減に含まれるためここでは扱わない）
+  const sgaRanked = expenseLines
+    .map(line => ({ line, delta: sgaOnlyDelta(line, cur, prior) }))
+    .filter(item => item.delta !== 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  const topN = sgaRanked.slice(0, 5);
+  const topCodesUsed = new Set();
+  topN.forEach(l => l.line.codes.forEach(c => topCodesUsed.add(String(c))));
+  // 「その他販管費」= 販管費区分の全科目のうちTOP5に含まれない分の増減
+  let otherSgaDelta = 0;
+  for (const code of Object.keys(accountMaster)) {
+    if (accountMaster[code].section !== '販管費') continue;
+    if (topCodesUsed.has(code)) continue;
+    otherSgaDelta += netOf(cur, code) - netOf(prior, code);
+  }
+
+  const labels = ['前年同月\n営業利益', '売上総利益\n増減'];
+  const deltas = [null, deltaGp];
+  const bases = [priorPl.opInc, 0];
+  const colors = ['#1a5fa8', sectionColor(deltaGp, true)];
+
+  for (const item of topN) {
+    labels.push(item.line.label + '\n増減');
+    deltas.push(-item.delta); // 経費増加は利益を押し下げるので符号反転
+    bases.push(0);
+    colors.push(sectionColor(-item.delta, true));
+  }
+  labels.push('その他\n販管費増減');
+  deltas.push(-otherSgaDelta);
+  bases.push(0);
+  colors.push(sectionColor(-otherSgaDelta, true));
+
+  labels.push('当月\n営業利益');
+  deltas.push(null);
+  bases.push(curPl.opInc);
+  colors.push('#1a5fa8');
+
+  // floating bar 用に累積ベースを計算
+  let running = priorPl.opInc;
+  const floatData = [];
+  for (let i = 0; i < labels.length; i++) {
+    if (deltas[i] === null) {
+      floatData.push([0, bases[i]]);
+      if (i === 0) running = bases[i];
+    } else {
+      const start = running;
+      running += deltas[i];
+      floatData.push([Math.min(start, running), Math.max(start, running)]);
+    }
+  }
+
+  waterfallChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: floatData,
+        backgroundColor: colors,
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label(ctx) {
+              const i = ctx.dataIndex;
+              if (deltas[i] === null) return '実績: ' + fmtYen(bases[i]);
+              return '増減: ' + fmtYenSigned(deltas[i]);
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 } } },
+        y: { ticks: { callback: v => (v / 10000).toLocaleString() + '万円' } },
+      },
+    },
+  });
+
+  const totalDelta = curPl.opInc - priorPl.opInc;
+  // 利益への影響額で統一（売上総利益の増加＝プラス、経費の増加＝マイナス）
+  const impacts = [
+    { label: '売上総利益', impact: deltaGp },
+    ...topN.map(item => ({ label: item.line.label, impact: -item.delta })),
+    { label: 'その他販管費', impact: -otherSgaDelta },
+  ];
+  const topDriver = impacts.sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact))[0];
+  const concEl = document.getElementById('conclusion');
+  concEl.style.display = 'block';
+  concEl.textContent = `営業利益は前年同月比 ${fmtYenSigned(totalDelta)}。主な要因は「${topDriver.label}」の変動（利益への影響 ${fmtYenSigned(topDriver.impact)}）。`;
+}
+
+function renderRanking(cur, prior, month, priorMonth) {
+  const box = document.getElementById('rankList');
+  box.innerHTML = '';
+  const items = [];
+  for (const line of expenseLines) {
+    const v = expenseLineValue(cur, line);
+    if (v === null) continue;
+    const pv = priorExpenseLineValue(prior, priorMonth, line);
+    const delta = pv !== null ? v - pv : null;
+    items.push({ line, value: v, prior: pv, delta });
+  }
+  items.sort((a, b) => Math.abs(b.delta || 0) - Math.abs(a.delta || 0));
+  const top = items.slice(0, 7);
+  const maxAbs = Math.max(1, ...top.map(i => Math.abs(i.delta || 0)));
+  for (const item of top) {
+    const row = document.createElement('div');
+    row.className = 'rank-row';
+    const w = Math.abs(item.delta || 0) / maxAbs * 100;
+    const color = item.delta === null ? 'var(--flat)' : (item.delta > 0 ? 'var(--bad)' : 'var(--good)');
+    row.innerHTML = `
+      <div class="name">${item.line.label}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${color};"></div></div>
+      <div class="amt">${fmtYen(item.value)}${item.delta !== null ? ' (' + fmtYenSigned(item.delta) + ')' : ''}</div>
+    `;
+    row.addEventListener('click', () => {
+      const codes = item.line.codes.join(',');
+      location.href = 'kaikei_ledger.html?month=' + encodeURIComponent(month) + '&codes=' + encodeURIComponent(codes);
+    });
+    box.appendChild(row);
+  }
+  if (!top.length) box.innerHTML = '<div class="empty-msg">データがありません。</div>';
+}
+
+async function loadMonth(month) {
+  document.getElementById('loading-msg').textContent = '読み込み中...';
+  const priorMonth = priorMonthOf(month);
+  const [cur, priorLedger] = await Promise.all([getMonthlyFacts(month), getMonthlyFacts(priorMonth)]);
+  document.getElementById('loading-msg').textContent = '';
+  if (!cur) {
+    document.getElementById('kpi-row').innerHTML = '<div class="empty-msg">この月のデータがありません。</div>';
+    return;
+  }
+  const curPl = plFigures(cur);
+  const priorPl = priorLedger ? plFigures(priorLedger) : null;
+  renderKpis(curPl, priorPl);
+
+  // 滝グラフは科目コード単位のnetOf計算が必要なため、元帳の生データ(byAccount)を渡す
+  renderWaterfall(cur, priorLedger, curPl, priorPl);
+  renderRanking(cur, priorLedger, month, priorMonth);
+}
+
+async function boot() {
+  const signedIn = await kaikeiInitAuth();
+  if (!signedIn) return;
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('app-view').style.display = 'block';
+
+  [accountMaster, expenseLines, priorActualsSeed, monthIndex] = await Promise.all([
+    kaikeiGetFile('account_master.json', { allow404: true }).then(d => d || {}),
+    kaikeiGetFile('expense_lines.json', { allow404: true }).then(d => d || []),
+    kaikeiGetFile('prior_actuals.json', { allow404: true }).then(d => d || {}),
+    kaikeiGetFile('monthly/_index.json', { allow404: true }).then(d => d || { months: [] }),
+  ]);
+
+  const sel = document.getElementById('month-select');
+  sel.innerHTML = monthIndex.months.map(m => `<option value="${m}">${m.slice(0, 4)}年${m.slice(4)}月</option>`).join('');
+  if (monthIndex.months.length) {
+    sel.value = monthIndex.months[monthIndex.months.length - 1];
+    await loadMonth(sel.value);
+  } else {
+    document.getElementById('kpi-row').innerHTML = '<div class="empty-msg">まだデータが取り込まれていません。「データ取り込み」から元帳CSVを取り込んでください。</div>';
+  }
+  sel.addEventListener('change', () => loadMonth(sel.value));
+}
+
+document.getElementById('login-btn').addEventListener('click', async () => {
+  document.getElementById('login-err').textContent = '';
+  try {
+    await kaikeiSignIn();
+    await boot();
+  } catch (e) { document.getElementById('login-err').textContent = e.message || String(e); }
+});
+boot();
+</script>
+</body>
+</html>

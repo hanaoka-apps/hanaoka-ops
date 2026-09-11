@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>予算・前年実績 編集 | 花岡車輌</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<style>
+  :root { --primary:#1a5fa8; --bg:#f4f6f9; --card-bg:#fff; --border:#dde2ec; --text:#1e2533; --muted:#6b7a99; --shadow:0 1px 4px rgba(0,0,0,.08); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Meiryo','Hiragino Sans',sans-serif; background:var(--bg); color:var(--text); }
+  nav { background:#1f1e1c;color:#fff;padding:8px 24px;font-size:13px;display:flex;gap:18px;align-items:center; }
+  nav a { color:#fff;text-decoration:none;opacity:.75; }
+  nav a.on { opacity:1; font-weight:700; }
+  #login-view { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; gap:16px; }
+  #login-view button { background:var(--primary); color:#fff; border:none; padding:12px 32px; border-radius:6px; font-size:15px; font-weight:700; cursor:pointer; }
+  #app-view { display:none; padding:20px 24px; max-width:1300px; margin:0 auto; }
+  .toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-bottom:16px; box-shadow:var(--shadow); }
+  .toolbar select, .toolbar input, .toolbar button { border:1px solid var(--border); border-radius:4px; padding:6px 12px; font-size:13px; }
+  .toolbar button.save { background:var(--primary); color:#fff; border:none; cursor:pointer; font-weight:700; }
+  .toolbar button.save:disabled { opacity:.5; }
+  p.note { font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.6; }
+  .tbl-wrap { overflow-x:auto; background:var(--card-bg); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); }
+  table { border-collapse:collapse; font-size:13px; min-width:100%; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--border); border-right:1px solid var(--border); white-space:nowrap; }
+  th { background:#eef2f8; color:var(--primary); position:sticky; top:0; }
+  td.label { position:sticky; left:0; background:var(--card-bg); font-weight:600; z-index:1; }
+  td input { width:110px; border:1px solid transparent; text-align:right; font-variant-numeric:tabular-nums; background:transparent; }
+  td input:focus { border-color:var(--primary); background:#fff; }
+  #status { font-size:12px; color:var(--muted); margin-left:auto; }
+</style>
+</head>
+<body>
+<nav>
+  <strong style="opacity:.55;font-weight:600;">会計ダッシュボード</strong>
+  <a href="kaikei_dashboard.html">会計サマリー</a>
+  <a href="kaikei_ledger.html">仕訳明細</a>
+  <a href="kaikei_budget.html" class="on">予算・前年実績</a>
+  <a href="kaikei_upload.html">データ取り込み</a>
+</nav>
+
+<div id="login-view">
+  <h2>予算・前年実績 編集</h2>
+  <p style="color:var(--muted);font-size:13px;">役員限定です。Microsoftアカウントでサインインしてください。</p>
+  <button id="login-btn">サインイン</button>
+  <div id="login-err" style="color:#b03636;font-size:13px;"></div>
+</div>
+
+<div id="app-view">
+  <p class="note">
+    科目グループ×月度で、予算または前年実績の金額を直接編集できます。セルを編集して「保存」を押すと、
+    SharePointの会計データフォルダに保存され、保存前の内容は履歴として残ります（budget_history / prior_actuals_history）。
+  </p>
+  <div class="toolbar">
+    <label>編集対象</label>
+    <select id="dataset-select">
+      <option value="budget">予算</option>
+      <option value="prior_actuals">前年実績</option>
+    </select>
+    <label>開始年月</label>
+    <input type="text" id="startMonth" placeholder="例: 202604" style="width:100px;">
+    <button id="addMonthBtn">+12ヶ月分の列を表示</button>
+    <span id="status"></span>
+    <button class="save" id="saveBtn">保存</button>
+  </div>
+  <div class="tbl-wrap">
+    <table id="tbl"></table>
+  </div>
+</div>
+
+<script src="kaikei_graph.js"></script>
+<script>
+let expenseLines = [];
+let currentData = {};
+let months = [];
+let dataset = 'budget';
+
+function monthLabel(m) { return m.slice(0, 4) + '/' + m.slice(4); }
+
+function genMonths(start, count) {
+  let y = parseInt(start.slice(0, 4), 10), m = parseInt(start.slice(4, 6), 10);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push(String(y) + String(m).padStart(2, '0'));
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+function renderTable() {
+  const tbl = document.getElementById('tbl');
+  let html = '<thead><tr><th class="label">科目グループ</th>' + months.map(m => `<th>${monthLabel(m)}</th>`).join('') + '</tr></thead><tbody>';
+  for (const line of expenseLines) {
+    const key = line.codes.join('/');
+    html += `<tr data-key="${key}"><td class="label">${line.label}</td>`;
+    for (const m of months) {
+      const v = (currentData[key] && currentData[key][m] !== undefined) ? currentData[key][m] : '';
+      html += `<td><input type="number" data-month="${m}" value="${v}"></td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody>';
+  tbl.innerHTML = html;
+  tbl.querySelectorAll('input').forEach(inp => inp.addEventListener('change', onEdit));
+}
+
+function onEdit(e) {
+  const tr = e.target.closest('tr');
+  const key = tr.dataset.key;
+  const month = e.target.dataset.month;
+  const val = parseFloat(e.target.value);
+  if (!currentData[key]) currentData[key] = {};
+  if (isNaN(val)) delete currentData[key][month];
+  else currentData[key][month] = val;
+  document.getElementById('status').textContent = '未保存の変更があります';
+}
+
+async function loadDataset() {
+  dataset = document.getElementById('dataset-select').value;
+  const fname = dataset + '.json';
+  currentData = await kaikeiGetFile(fname, { allow404: true }) || {};
+  if (!months.length) {
+    const idx = await kaikeiGetFile('monthly/_index.json', { allow404: true }) || { months: [] };
+    const start = idx.months[0] || '202604';
+    months = genMonths(start, 12);
+    document.getElementById('startMonth').value = start;
+  }
+  renderTable();
+  document.getElementById('status').textContent = '';
+}
+
+document.getElementById('addMonthBtn').addEventListener('click', () => {
+  const start = document.getElementById('startMonth').value.trim();
+  if (!/^\d{6}$/.test(start)) { alert('年月は YYYYMM 形式で入力してください（例: 202604）'); return; }
+  months = genMonths(start, 12);
+  renderTable();
+});
+
+document.getElementById('dataset-select').addEventListener('change', loadDataset);
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  document.getElementById('status').textContent = '保存中...';
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const historyFolder = dataset + '_history';
+    const existing = await kaikeiGetFile(dataset + '.json', { allow404: true });
+    if (existing) await kaikeiPutFile(historyFolder + '/' + stamp + '.json', existing);
+    await kaikeiPutFile(dataset + '.json', currentData);
+    document.getElementById('status').textContent = '保存しました（' + new Date().toLocaleString('ja-JP') + '）';
+  } catch (e) {
+    document.getElementById('status').textContent = 'エラー: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function boot() {
+  const signedIn = await kaikeiInitAuth();
+  if (!signedIn) return;
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('app-view').style.display = 'block';
+
+  expenseLines = await kaikeiGetFile('expense_lines.json', { allow404: true }) || [];
+  await loadDataset();
+}
+
+document.getElementById('login-btn').addEventListener('click', async () => {
+  document.getElementById('login-err').textContent = '';
+  try {
+    await kaikeiSignIn();
+    await boot();
+  } catch (e) { document.getElementById('login-err').textContent = e.message || String(e); }
+});
+boot();
+</script>
+</body>
+</html>
