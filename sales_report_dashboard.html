@@ -341,6 +341,63 @@
   .toggle-btn.active { background: var(--accent-blue); color: #fff; }
   .toggle-btn.active:hover { background: var(--accent-blue); }
 
+  /* 特記新製品の管理者向け設定パネル */
+  .settings-btn {
+    margin-left: 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-sub);
+    cursor: pointer;
+    font-family: inherit;
+    vertical-align: middle;
+  }
+  .settings-btn:hover { background: #f2f4f8; }
+  .admin-panel {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: #f8f9fc;
+  }
+  .admin-panel-title { font-size: 12.5px; font-weight: 700; color: var(--text-sub); margin-bottom: 10px; }
+  .admin-add-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .admin-add-row input {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .admin-add-row input#newProductAddCode { width: 130px; }
+  .admin-add-row input#newProductAddName { flex: 1; min-width: 160px; }
+  .admin-add-row button {
+    background: var(--accent-blue);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 7px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .admin-icon-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    margin-right: 4px;
+  }
+  .admin-icon-btn:disabled { opacity: 0.3; cursor: default; }
+  .admin-icon-btn:hover:not(:disabled) { background: #f2f4f8; }
+
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
     table { font-size: 12.5px; }
@@ -448,6 +505,28 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2>
+      特記新製品 受注台数
+      <button type="button" id="newProductSettingsBtn" class="settings-btn" onclick="toggleNewProductAdminPanel()" hidden>⚙ 設定</button>
+    </h2>
+    <div id="newProductWrap"><div class="empty-state">サインインすると表示されます</div></div>
+    <div id="newProductAdminPanel" class="admin-panel" hidden>
+      <div class="admin-panel-title">新製品リストの管理（管理者のみ表示）</div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th style="text-align:left">表示名</th><th style="text-align:left">品目コード</th><th>有効</th><th></th></tr></thead>
+          <tbody id="newProductAdminRows"></tbody>
+        </table>
+      </div>
+      <div class="admin-add-row">
+        <input type="text" id="newProductAddCode" placeholder="品目コード">
+        <input type="text" id="newProductAddName" placeholder="表示名（空なら品目コードを表示）">
+        <button type="button" onclick="addNewProductItem()">追加</button>
+      </div>
+    </div>
+  </div>
+
   <div class="topord-toggle-row">
     <span class="trend-label" style="margin:0">主な受注内容　金額の大きい順・上位5件</span>
     <div class="toggle-group" id="topOrdersToggle">
@@ -509,10 +588,13 @@ const MSAL_CONFIG = {
   },
   cache: { cacheLocation: 'localStorage' }
 };
-const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+const SCOPES = ['User.Read', 'Sites.Read.All', 'Sites.Manage.All', 'Files.Read.All', 'GroupMember.Read.All'];
 
 const SP = {
   mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
+  // SharedMastersが置かれている花岡車輌サイトのサイトID(regenerate_facts.pyのSITE_IDと同一)。
+  // SharePointリストの作成・読み書きにはドライブIDではなくサイトIDが要る。
+  siteId: 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23',
 };
 
 // dashboard_facts.json の行スキーマ（sales_dashboard.html と同一）
@@ -583,6 +665,23 @@ async function graphGet(path) {
   const url = path.startsWith('http') ? path : ('https://graph.microsoft.com/v1.0' + path);
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
   if (!res.ok) throw new Error(`Graph ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+// POST/PATCH/DELETE用（特記新製品リストの管理画面から使う）
+async function graphFetch(path, method, body) {
+  const t = await getToken();
+  const url = path.startsWith('http') ? path : ('https://graph.microsoft.com/v1.0' + path);
+  const res = await fetch(url, {
+    method,
+    headers: {
+      Authorization: 'Bearer ' + t,
+      'Content-Type': 'application/json',
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`Graph ${method} ${res.status}: ${await res.text()}`);
+  if (res.status === 204) return null;
   return res.json();
 }
 
@@ -1736,6 +1835,232 @@ function renderModelBlocks(containerId, map, color, totalId) {
   el.innerHTML = `<div class="model-grid">${blocksHtml}</div>${restHtml}`;
 }
 
+// ============================================================
+// 特記新製品 受注台数
+// 管理者(ADMIN_GROUP_IDのメンバー)だけが登録・削除・並び替えできる
+// 「新製品ウォッチリスト」をSharePointリストで管理し、そこに登録された
+// 品目コードだけに絞った受注台数/金額を表示する。
+// リストが無ければ初回アクセス時に自動作成する(手動プロビジョニング不要)。
+// ============================================================
+const NEW_PRODUCT_LIST_NAME = 'NewProductWatchlist';
+// TODO: 実際の管理者グループの「オブジェクト ID」に置き換えてください。
+// Entra管理センター(Azure AD) > グループ > 対象グループ > 概要 で確認できます。
+// このIDのグループに入っている人だけに「設定」ボタンが表示されます。
+const ADMIN_GROUP_ID = '00000000-0000-0000-0000-000000000000';
+
+let IS_ADMIN = false;
+let NEW_PRODUCT_ITEMS = []; // [{id, code, name, order, enabled}]
+
+// サインイン中のユーザーがADMIN_GROUP_IDのメンバーかどうか。
+// 失敗した場合は安全側(非管理者)に倒す。
+async function checkIsAdmin() {
+  try {
+    const data = await graphGet('/me/memberOf?$select=id');
+    const ids = (data.value || []).map(g => g.id);
+    return ids.includes(ADMIN_GROUP_ID);
+  } catch (e) {
+    console.error('[特記新製品] 管理者判定に失敗', e);
+    return false;
+  }
+}
+
+// リストが存在しなければ作成する(表示名でGETして404系なら作成)。
+async function ensureNewProductList() {
+  try {
+    await graphGet(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}`);
+    return;
+  } catch (e) {
+    // 存在しない場合のみ作成を試みる。それ以外のエラー(権限不足等)はそのまま投げる。
+    if (!/Graph 404/.test(e.message)) throw e;
+  }
+  await graphFetch(`/sites/${SP.siteId}/lists`, 'POST', {
+    displayName: NEW_PRODUCT_LIST_NAME,
+    columns: [
+      { name: '品目コード', text: {} },
+      { name: '表示名', text: {} },
+      { name: '表示順', number: {} },
+      { name: '有効', boolean: {} },
+    ],
+    list: { template: 'genericList' },
+  });
+}
+
+async function loadNewProductItems() {
+  const data = await graphGet(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/items?expand=fields&$top=200`);
+  NEW_PRODUCT_ITEMS = (data.value || [])
+    .map(it => ({
+      id: it.id,
+      code: String(it.fields['品目コード'] || '').trim(),
+      name: String(it.fields['表示名'] || '').trim(),
+      order: Number(it.fields['表示順']) || 0,
+      enabled: it.fields['有効'] !== false,
+    }))
+    .filter(it => it.code)
+    .sort((a, b) => a.order - b.order);
+}
+
+async function saveNewProductItem(item) {
+  const fields = { '品目コード': item.code, '表示名': item.name, '表示順': item.order, '有効': item.enabled };
+  if (item.id) {
+    await graphFetch(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/items/${item.id}/fields`, 'PATCH', fields);
+  } else {
+    await graphFetch(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/items`, 'POST', { fields });
+  }
+}
+
+async function deleteNewProductItem(id) {
+  await graphFetch(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/items/${id}`, 'DELETE');
+}
+
+// 登録済みの品目コードに絞って、当日/当月の台数・金額を集計する。
+function aggregateNewProducts(orderRows, today, items) {
+  const todayKey = today.y * 10000 + today.mo * 100 + today.d;
+  const byCode = {};
+  items.forEach(it => { byCode[it.code] = { qtyToday: 0, qtyMonth: 0, amtToday: 0, amtMonth: 0 }; });
+  for (const r of orderRows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
+    const vKey = voucherDateKey(r);
+    if (vKey === null || vKey > todayKey) continue;
+    const cd = String(r[IDX.item_cd] || '').trim();
+    if (!byCode[cd]) continue;
+    const qty = Number(r[IDX.qty]) || 0;
+    const amt = Number(r[IDX.amount]) || 0;
+    byCode[cd].qtyMonth += qty;
+    byCode[cd].amtMonth += amt;
+    if (isToday(r, today)) { byCode[cd].qtyToday += qty; byCode[cd].amtToday += amt; }
+  }
+  return byCode;
+}
+
+function renderNewProductSection(orderRows, today) {
+  const el = document.getElementById('newProductWrap');
+  if (!el) return;
+  const items = NEW_PRODUCT_ITEMS.filter(it => it.enabled);
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state">登録された新製品はまだありません</div>';
+    return;
+  }
+  const agg = aggregateNewProducts(orderRows, today, items);
+  const L = 'style="text-align:left"';
+  const rowsHtml = items.map(it => {
+    const a = agg[it.code];
+    return `
+      <tr>
+        <td ${L}>${escapeHtml(it.name || it.code)}</td>
+        <td>${formatQty(a.qtyToday)}</td>
+        <td>${formatQty(a.qtyMonth)}</td>
+        <td>${formatYen(a.amtToday)}</td>
+        <td>${formatYen(a.amtMonth)}</td>
+      </tr>`;
+  }).join('');
+  const total = items.reduce((acc, it) => {
+    const a = agg[it.code];
+    acc.qtyToday += a.qtyToday; acc.qtyMonth += a.qtyMonth;
+    acc.amtToday += a.amtToday; acc.amtMonth += a.amtMonth;
+    return acc;
+  }, { qtyToday: 0, qtyMonth: 0, amtToday: 0, amtMonth: 0 });
+  const totalHtml = `
+    <tr class="total-row">
+      <td ${L}>新製品関係合計</td>
+      <td>${formatQty(total.qtyToday)}</td>
+      <td>${formatQty(total.qtyMonth)}</td>
+      <td>${formatYen(total.amtToday)}</td>
+      <td>${formatYen(total.amtMonth)}</td>
+    </tr>`;
+  el.innerHTML = `
+    <div class="table-scroll"><table>
+      <thead><tr><th ${L}>特記機種</th><th>日計</th><th>月計</th><th>金額日計</th><th>金額月計</th></tr></thead>
+      <tbody>${rowsHtml}${totalHtml}</tbody>
+    </table></div>`;
+}
+
+// 管理者用の登録・削除・並び替えパネル。IS_ADMINがfalseの間は
+// 「設定」ボタン自体を非表示にしてあるので、この関数は管理者にしか届かない。
+function renderNewProductAdminPanel() {
+  const tbody = document.getElementById('newProductAdminRows');
+  if (!tbody) return;
+  tbody.innerHTML = NEW_PRODUCT_ITEMS.map((it, i) => `
+    <tr>
+      <td style="text-align:left">${escapeHtml(it.name)}</td>
+      <td style="text-align:left">${escapeHtml(it.code)}</td>
+      <td><input type="checkbox" ${it.enabled ? 'checked' : ''} onchange="toggleNewProductEnabled('${it.id}', this.checked)"></td>
+      <td style="text-align:left; white-space:nowrap">
+        <button type="button" class="admin-icon-btn" onclick="moveNewProductItem('${it.id}', -1)" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="admin-icon-btn" onclick="moveNewProductItem('${it.id}', 1)" ${i === NEW_PRODUCT_ITEMS.length - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="admin-icon-btn" onclick="removeNewProductItem('${it.id}')">削除</button>
+      </td>
+    </tr>`).join('');
+}
+
+function toggleNewProductAdminPanel() {
+  const panel = document.getElementById('newProductAdminPanel');
+  if (panel) panel.hidden = !panel.hidden;
+}
+
+async function addNewProductItem() {
+  const codeEl = document.getElementById('newProductAddCode');
+  const nameEl = document.getElementById('newProductAddName');
+  const code = codeEl.value.trim();
+  const name = nameEl.value.trim();
+  if (!code) { alert('品目コードを入力してください'); return; }
+  const maxOrder = NEW_PRODUCT_ITEMS.reduce((m, it) => Math.max(m, it.order), 0);
+  try {
+    await saveNewProductItem({ code, name: name || code, order: maxOrder + 10, enabled: true });
+    codeEl.value = ''; nameEl.value = '';
+    await loadNewProductItems();
+    renderNewProductAdminPanel();
+    if (CURRENT_TODAY) renderNewProductSection(FACTS.order_rows || [], CURRENT_TODAY);
+  } catch (e) {
+    console.error('[特記新製品] 追加に失敗', e);
+    alert('追加に失敗しました。時間をおいて再度お試しください。');
+  }
+}
+
+async function removeNewProductItem(id) {
+  if (!confirm('このアイテムを削除しますか？')) return;
+  try {
+    await deleteNewProductItem(id);
+    await loadNewProductItems();
+    renderNewProductAdminPanel();
+    if (CURRENT_TODAY) renderNewProductSection(FACTS.order_rows || [], CURRENT_TODAY);
+  } catch (e) {
+    console.error('[特記新製品] 削除に失敗', e);
+    alert('削除に失敗しました。時間をおいて再度お試しください。');
+  }
+}
+
+async function toggleNewProductEnabled(id, enabled) {
+  const item = NEW_PRODUCT_ITEMS.find(it => it.id === id);
+  if (!item) return;
+  item.enabled = enabled;
+  try {
+    await saveNewProductItem(item);
+    if (CURRENT_TODAY) renderNewProductSection(FACTS.order_rows || [], CURRENT_TODAY);
+  } catch (e) {
+    console.error('[特記新製品] 更新に失敗', e);
+    alert('更新に失敗しました。時間をおいて再度お試しください。');
+  }
+}
+
+async function moveNewProductItem(id, dir) {
+  const idx = NEW_PRODUCT_ITEMS.findIndex(it => it.id === id);
+  const swapIdx = idx + dir;
+  if (idx === -1 || swapIdx < 0 || swapIdx >= NEW_PRODUCT_ITEMS.length) return;
+  const a = NEW_PRODUCT_ITEMS[idx], b = NEW_PRODUCT_ITEMS[swapIdx];
+  const tmp = a.order; a.order = b.order; b.order = tmp;
+  try {
+    await saveNewProductItem(a);
+    await saveNewProductItem(b);
+    await loadNewProductItems();
+    renderNewProductAdminPanel();
+  } catch (e) {
+    console.error('[特記新製品] 並び替えに失敗', e);
+    alert('並び替えに失敗しました。時間をおいて再度お試しください。');
+  }
+}
+
 let FACTS = null; // dashboard_facts.json をキャッシュ（日付を遡るたびに再取得しないため）
 let CURRENT_TODAY = null; // renderForDateで設定される表示中の「当日」(トグル切替時の再描画用)
 let TOP_ORDERS_MODE = 'today'; // 主な受注内容の表示モード('today'=当日 / 'month'=当月累計)
@@ -1800,6 +2125,19 @@ async function loadReport() {
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
   if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
   FACTS = await res.json();
+
+  // 特記新製品(管理者用SharePointリスト)。失敗してもメインのダッシュボードは
+  // 表示できるように、ここだけtry/catchで隔離する。
+  try {
+    IS_ADMIN = await checkIsAdmin();
+    const settingsBtn = document.getElementById('newProductSettingsBtn');
+    if (settingsBtn) settingsBtn.hidden = !IS_ADMIN;
+    await ensureNewProductList();
+    await loadNewProductItems();
+    if (IS_ADMIN) renderNewProductAdminPanel();
+  } catch (e) {
+    console.error('[特記新製品] 初期化失敗', e);
+  }
 
   const latestClosed = detectLatestClosedDate(FACTS);
 
@@ -1892,6 +2230,8 @@ function renderForDate(today) {
 
   renderModelBlocks('modelDomWrap', aggregateByModelCategory(orderRows, today, 'dom'), '#2455e6', 'modelDomTotal');
   renderModelBlocks('modelSolWrap', aggregateByModelCategory(orderRows, today, 'sol'), '#7c3aed', 'modelSolTotal');
+
+  renderNewProductSection(orderRows, today);
 
   // 翌月受注金額: 納期が「翌月」に属する受注
   const nextYm = shiftYm(curYm, 1);
