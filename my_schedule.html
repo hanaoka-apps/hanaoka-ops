@@ -81,8 +81,16 @@
   .hd.today{background:#fff6d9}.hd.today .dnum,.hd.today .dow{color:#8a5a00}
 
   .row{display:flex;border-top:1px solid #f0f3fa}
+  .row.cmn{background:#f8f5ff}
+  .row.fac{background:#f4f7fb}
+  .row.demo{background:#f2fbf9}
   .name{flex:0 0 var(--namew);position:sticky;left:0;z-index:4;background:#fff;border-right:1px solid var(--border);
     padding:8px 10px;display:flex;flex-direction:column;gap:2px;justify-content:center;font-size:12px;font-weight:600}
+  .row.cmn .name{background:#f8f5ff}
+  .row.fac .name{background:#f4f7fb}
+  .row.demo .name{background:#f2fbf9}
+  .name .mn{font-weight:600}
+  .name .meta{font-size:10px;color:var(--muted);font-weight:400}
   .days{flex:1;display:grid;grid-template-columns:repeat(7,minmax(190px,1fr))}
   .dcell{border-left:1px solid #eef1f6;padding:4px;min-height:38px;display:flex;flex-direction:column;gap:3px}
   .dcell.sat{background:#f8fbfe}.dcell.sun{background:#fefafa}.dcell.today{background:#fffdf2}
@@ -195,25 +203,10 @@
   </div>
 
   <div class="card2">
-    <h4>会社共通予定表<span class="hspacer"></span></h4>
-    <div class="scroll" id="scrollCommon"><div class="grid ls" id="gridCommon"></div></div>
-  </div>
-
-  <div class="card2">
-    <h4>自分の予定<span class="hspacer"></span><span class="sub" id="cntMine"></span></h4>
-    <div class="scroll" id="scrollMine"><div class="grid ls" id="gridMine"></div></div>
-  </div>
-
-  <div class="card2">
-    <h4>自分が予約した施設（車・会議室）<span class="sub">閲覧のみ</span><span class="hspacer"></span><span class="sub" id="cntFac"></span></h4>
-    <div class="scroll" id="scrollFac"><div class="grid ls" id="gridFac"></div></div>
-  </div>
-
-  <div class="card2">
-    <h4>自分のデモ機予約<span class="hspacer"></span>
+    <h4>自分の予定・予約<span class="hspacer"></span>
       <button class="act pri" id="demoNewBtn" onclick="openDemoNew()">＋ デモ機を予約</button>
     </h4>
-    <div class="scroll" id="scrollDemo"><div class="grid ls" id="gridDemo"></div></div>
+    <div class="scroll"><div class="grid ls" id="grid"></div></div>
   </div>
 
 </div>
@@ -479,29 +472,11 @@ async function showApp(){
   el('app-view').style.display   = 'block';
   el('user-name').textContent    = currentAccount?.name || currentAccount?.username || '';
   paintTools();
-  linkScrollBars(['scrollCommon', 'scrollMine', 'scrollFac', 'scrollDemo']);
   el('prev').onclick = () => { curWeek -= WK; loadAll(); };
   el('next').onclick = () => { curWeek += WK; loadAll(); };
   el('todayBtn').onclick = () => { curWeek = weekTopMs(Date.now()); loadAll(); };
   await loadAll();
   startAutoRefresh();
-}
-/* ★4セクションの横スクロールを連動させる★
-   会社共通・自分・施設・デモ機はどれも同じ週の同じ7列なので、
-   バーを1本ずつ動かすのは手間。どれか1つを動かしたら残り3つも
-   同じ位置に合わせる（自分がスクロール中のものだけ発火させ、
-   追随側の scroll イベントで無限ループしないよう syncing で止める）。 */
-function linkScrollBars(ids){
-  const els = ids.map(id => el(id)).filter(Boolean);
-  let syncing = false;
-  els.forEach(src => {
-    src.addEventListener('scroll', () => {
-      if (syncing) return;
-      syncing = true;
-      els.forEach(other => { if (other !== src) other.scrollLeft = src.scrollLeft; });
-      syncing = false;
-    });
-  });
 }
 
 function startAutoRefresh(){
@@ -727,8 +702,8 @@ function liHtml(r, d0, d1){
   return `<div class="li ${r.cls}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}">`
     + `<span class="tm">${tm}</span><b>${esc(r.t)}</b>${cancelBtn}</div>`;
 }
-function rowHtml(days, todayKey, rows){
-  let h = `<div class="row"><div class="name"></div><div class="days">`;
+function rowHtml(days, todayKey, rowClass, nameHtml, rows){
+  let h = `<div class="row ${rowClass}"><div class="name">${nameHtml}</div><div class="days">`;
   days.forEach(ms => {
     const d0 = ms, d1 = ms + DAY, d = toJ(ms), dow = d.getUTCDay();
     const c = [dow===6?'sat':'', dow===0?'sun':'', jKey(ms)===todayKey?'today':''].join(' ');
@@ -738,22 +713,25 @@ function rowHtml(days, todayKey, rows){
   });
   return h + `</div></div>`;
 }
-function buildSection(gridId, label, rows){
-  const days = weekDays(), todayKey = jKey(Date.now());
-  const g = el(gridId);
-  g.className = 'grid ls';
-  const inView = rows.filter(r => r.e > curWeek && r.s < curWeek + WK);
-  g.innerHTML = dayHeadHtml(days, label, todayKey)
-    + (inView.length || rows.length ? rowHtml(days, todayKey, rows) : `<div class="empty">この週の予定はありません</div>`);
+function nameHtml(label, rows){
+  const n = rows.filter(r => r.e > curWeek && r.s < curWeek + WK).length;
+  return `<div class="mn">${esc(label)}</div><div class="meta">この週 ${n}件</div>`;
 }
+/* ★4セクションを1つのグリッドにまとめる★
+   日付の見出しは先頭に1回だけ。あとは「会社共通・自分・施設・デモ機」の
+   4行を縦に積むだけで、staff_schedule.html の一覧表示と同じ見た目にする。
+   区切りのブロック（カード）を分けると、横スクロールを4本ぶん別々に
+   動かす必要が出て使いにくい、という指摘を受けての変更。 */
 function renderAll(){
-  buildSection('gridCommon', '会社共通', COMMON);
-  buildSection('gridMine', '自分', MINE);
-  buildSection('gridFac', '施設', FAC);
+  const days = weekDays(), todayKey = jKey(Date.now());
+  const g = el('grid');
+  g.className = 'grid ls';
   const demoRows = DEMO.map(r => ({ ...r, cls:'s-demo', cancelable:true }));
-  buildSection('gridDemo', 'デモ機', demoRows);
-  el('cntMine').textContent = `この週 ${MINE.filter(r=>r.e>curWeek&&r.s<curWeek+WK).length}件`;
-  el('cntFac').textContent  = `この週 ${FAC.filter(r=>r.e>curWeek&&r.s<curWeek+WK).length}件`;
+  g.innerHTML = dayHeadHtml(days, '', todayKey)
+    + rowHtml(days, todayKey, 'cmn',  nameHtml('会社共通予定表', COMMON), COMMON)
+    + rowHtml(days, todayKey, 'mine', nameHtml('自分の予定', MINE), MINE)
+    + rowHtml(days, todayKey, 'fac',  nameHtml('自分が予約した施設（閲覧のみ）', FAC), FAC)
+    + rowHtml(days, todayKey, 'demo', nameHtml('自分のデモ機予約', demoRows), demoRows);
 }
 
 /* ============================================================
