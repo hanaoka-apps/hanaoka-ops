@@ -708,6 +708,10 @@ async function loadPeople(){
     /* mail が無ければ UPN で代用する（getSchedule には UPN でも通る）。
        ただし「mail があるか」は別に覚えておく＝メールボックスの有無の判定に使う。 */
     mail: (u.mail || u.userPrincipalName || '').trim(),
+    /* ★UPN も捨てずに持つ★ サインインのアドレスは UPN（…onmicrosoft.com）、
+       名簿のアドレスは mail（hanaoka-corp.co.jp）で、ドメインが違う。
+       mail だけで突き合わせると、誰も自分を見つけられない。 */
+    upn : (u.userPrincipalName || '').trim(),
     hasMailbox: !!(u.mail && String(u.mail).trim()),
     dep : (u.department || '').trim(),
     site: (u.officeLocation || '').trim(),   /* 拠点。役員／本社／工場 */
@@ -839,10 +843,36 @@ function buildDepGroups(){
   DEP_KEYS = DEP_GROUPS.flatMap(g => g.keys);
 }
 
+/* ============================================================
+   名簿の中から「サインインしている本人」を探す
+   ------------------------------------------------------------
+   ★アドレスが1つとは限らない★ 実機ではこうなっていた：
+     サインイン（MSAL）  t.fukuda@hanaokacorp.onmicrosoft.com   ← UPN
+     名簿（Graph の mail）t.fukuda@hanaoka-corp.co.jp           ← 本来のメール
+   mail だけで文字列比較していたので、誰一人として自分を見つけられず、
+   「自部署だけ」も「初回は自分の部署」も全社で効いていなかった。
+
+   ①UPN と完全一致 ②mail と完全一致 ③@ の前だけ一致（最後の保険）
+   の順に探す。③まで落ちるのは、社内でアドレスの付け方が変わったとき。
+   ============================================================ */
+function myPerson(){
+  const me = String(currentAccount?.username || '').trim().toLowerCase();
+  if (!me) return null;
+  const eq = (a) => String(a || '').trim().toLowerCase() === me;
+  const hit = PEOPLE.find(x => eq(x.upn) || eq(x.mail));
+  if (hit) return hit;
+  /* ★@ の前で拾う★ ドメインが違うだけの同じ人を取りこぼさない。
+     社内で同じ @ の前を別人に振ることは無いという前提。 */
+  const local = me.split('@')[0];
+  if (!local) return null;
+  return PEOPLE.find(x =>
+    String(x.upn  || '').toLowerCase().split('@')[0] === local ||
+    String(x.mail || '').toLowerCase().split('@')[0] === local) || null;
+}
+
 /* サインインしている人の部署。名簿に居なければ空 */
 function myDepKeys(){
-  const me = String(currentAccount?.username || '').toLowerCase();
-  const p = PEOPLE.find(x => (x.mail || '').toLowerCase() === me);
+  const p = myPerson();
   if (!p) return [];
   const ks = (p.deps || []).filter(d => DEP_KEYS.includes(d));
   if (ks.length) return ks;
@@ -1238,6 +1268,21 @@ function srcBadge(p){
   if (p.src === 'error') return `<span class="badge b-err">読めず</span>`;
   return '';
 }
+/* ============================================================
+   「まる1日以上を 0:00〜0:00 で押さえている」か
+   ------------------------------------------------------------
+   ★終日として登録されていなくても 0:00〜0:00 で入れる人がいる★
+     実機の GOOUT CAMP（10/02 0:00〜10/05 0:00）がこれ。時間指定なので
+     isAllDay は false だが、中身は3日間の終日と同じ。
+     そのまま時刻を出すと「00:00–00:00」＝0時に始まって0時に終わる、
+     長さのない予定に見える。日をまたいでいることが読み取れない。
+   ★長さが1日以上あることを条件にする★
+     0:00〜0:00 でも同じ瞬間（長さ0）なら終日ではない。
+   ============================================================ */
+const atMidnightJ = ms => (((ms + JST) % DAY) + DAY) % DAY === 0;
+function wholeDay(r){
+  return !!r.allDay || ((r.e - r.s) >= DAY && atMidnightJ(r.s) && atMidnightJ(r.e));
+}
 function barHtml(r, L, R, cutL, cutR){
   const cls = [ (ST[r.status] || ST.unknown)[1], cutL?'cut-l':'', cutR?'cut-r':'' ].join(' ');
   /* 表示範囲の外まで続く予定は、始まりや終わりが「その日の時刻」ではない。
@@ -1246,7 +1291,7 @@ function barHtml(r, L, R, cutL, cutR){
   /* ★終日は「00:00–00:00」ではなく「終日」と出す★
      終日の予定は 0:00 から翌 0:00 までなので、そのまま時刻を出すと
      0時に始まって0時に終わる1分の予定に見える。 */
-  const tm = (r.allDay || (cutL && cutR)) ? '終日'
+  const tm = (wholeDay(r) || (cutL && cutR)) ? '終日'
            : cutL ? `…–${jHM(r.e)}`
            : cutR ? `${jHM(r.s)}–…`
            : `${jHM(r.s)}–${jHM(r.e)}`;
@@ -1619,7 +1664,7 @@ el('depAll').onclick  = () => { DEPSEL = new Set(DEP_KEYS); afterDepChange(); };
 el('depNone').onclick = () => { DEPSEL = new Set(); afterDepChange(); };
 el('depMine').onclick = () => {
   const k = myDepKeys();
-  if (!k.length) { showSnack('名簿の中にご自身が見つかりません（部署が取れていない可能性があります）'); return; }
+  if (!k.length) { showSnack('名簿の中にご自身が見つかりません（全社員チームに入っていない可能性があります）'); return; }
   DEPSEL = new Set(k); afterDepChange();
 };
 
@@ -1643,7 +1688,10 @@ function openDetail(rid){
   el('dTitle').textContent = r.t;
   el('dBody').innerHTML = [
     ['氏名',   `${esc(r.who)}${r.dep ? ` <span class="badge b-dep">${esc(r.dep)}</span>` : ''}`],
-    ['時間',   `${jFull(r.s)} 〜 ${jFull(r.e)}`],
+    /* ★終日は終わりを1分手前で見せる★ 0:00〜翌0:00 をそのまま出すと
+       「10/05 まで」と読まれて1日多く押さえているように見える。 */
+    ['時間',   wholeDay(r) ? `${jFull(r.s)} 〜 ${jFull(r.e - 60e3)}（終日）`
+                           : `${jFull(r.s)} 〜 ${jFull(r.e)}`],
     ['状態',   esc((ST[r.status] || ST.unknown)[0])],
     ['場所',   esc(r.loc) || '—'],
   ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
