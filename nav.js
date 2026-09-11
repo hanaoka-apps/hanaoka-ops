@@ -16,6 +16,7 @@
     {
       key: 'reserve',
       apps: [
+        { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'demo_reserve.html', l: 'デモ機' },
         { f: 'car_reserve.html',  l: '営業車' },
         { f: 'room_reserve.html', l: '会議室' },
