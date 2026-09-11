@@ -365,14 +365,16 @@
   }
   .admin-panel-title { font-size: 12.5px; font-weight: 700; color: var(--text-sub); margin-bottom: 10px; }
   .admin-add-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  .admin-add-row input {
+  .admin-add-row input, .admin-add-row select {
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 7px 10px;
     font-size: 13px;
     font-family: inherit;
+    background: #fff;
   }
-  .admin-add-row input#newProductAddCode { width: 130px; }
+  .admin-add-row select#newProductAddKeyType { width: 110px; }
+  .admin-add-row input#newProductAddKey { width: 160px; }
   .admin-add-row input#newProductAddName { flex: 1; min-width: 160px; }
   .admin-add-row button {
     background: var(--accent-blue);
@@ -515,13 +517,18 @@
       <div class="admin-panel-title">新製品リストの管理（管理者のみ表示）</div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th style="text-align:left">表示名</th><th style="text-align:left">品目コード</th><th>有効</th><th></th></tr></thead>
+          <thead><tr><th style="text-align:left">表示名</th><th style="text-align:left">キー種別</th><th style="text-align:left">キー値</th><th>有効</th><th></th></tr></thead>
           <tbody id="newProductAdminRows"></tbody>
         </table>
       </div>
       <div class="admin-add-row">
-        <input type="text" id="newProductAddCode" placeholder="品目コード">
-        <input type="text" id="newProductAddName" placeholder="表示名（空なら品目コードを表示）">
+        <select id="newProductAddKeyType">
+          <option value="sho_bunrui">小分類名</option>
+          <option value="dai_bunrui">大分類名</option>
+          <option value="item_cd">品目コード</option>
+        </select>
+        <input type="text" id="newProductAddKey" placeholder="キー値（小分類名/大分類名/品目コードのいずれか）">
+        <input type="text" id="newProductAddName" placeholder="表示名（空ならキー値を表示）">
         <button type="button" onclick="addNewProductItem()">追加</button>
       </div>
     </div>
@@ -1764,8 +1771,26 @@ function renderDealerRatio({ dealerAmt, otherAmt, domTotal }) {
 // ============================================================
 function formatQty(n) { return Math.round(n).toLocaleString('ja-JP') + '台'; }
 
+// 添付の紙日報「機種別受注台数」に合わせた大分類名の絞り込みと表示順。
+// 紙の表記と実データの大分類名が食い違うものがあるため対応表でマッピング
+// する(スチール台車=ダンディ、フラットカートなど=輸入仕入、等。
+// 実データ・担当者への確認の両方で裏取り済み)。
+const MODEL_CATEGORY_MAP = [
+  { label: 'プラ台車', dai_bunrui: 'ﾌﾟﾗﾀﾞﾝﾃﾞｨ' },
+  { label: 'スチール台車', dai_bunrui: 'ダンディ' },
+  { label: 'ポーター', dai_bunrui: 'ﾀﾞﾝﾃﾞｨﾎﾟｰﾀｰ' },
+  { label: 'Dリフト', dai_bunrui: 'ダンディリフト' },
+  { label: 'オートリフト', dai_bunrui: 'オートリフト' },
+  { label: 'テーブルリフト', dai_bunrui: 'テーブルリフト' },
+  { label: 'レベラー', dai_bunrui: 'レベラー' },
+  { label: '電動車', dai_bunrui: '電動車' },
+  { label: '福祉', dai_bunrui: '福祉' },
+  { label: 'フラットカートなど', dai_bunrui: '輸入仕入' },
+];
+
 function aggregateByModelCategory(orderRows, today, divFilter) {
   const map = {};
+  MODEL_CATEGORY_MAP.forEach(c => { map[c.label] = { today: 0, month: 0 }; });
   for (const r of orderRows) {
     const vKey = voucherDateKey(r);
     if (vKey === null || vKey > today.y * 10000 + today.mo * 100 + today.d) continue;
@@ -1775,41 +1800,28 @@ function aggregateByModelCategory(orderRows, today, divFilter) {
     const isSol = r[IDX.sales_div] === 'ソリューション営業部' || r[IDX.base] === 'ソリューション営業部';
     if (divFilter === 'dom' && isSol) continue;
     if (divFilter === 'sol' && !isSol) continue;
-    const cat = String(r[IDX.chu_bunrui] || '').trim() || '(未設定)';
-    if (!map[cat]) map[cat] = { today: 0, month: 0 };
+    const dai = String(r[IDX.dai_bunrui] || '').trim();
+    const cat = MODEL_CATEGORY_MAP.find(c => c.dai_bunrui === dai);
+    if (!cat) continue;
     const qty = Number(r[IDX.qty]) || 0;
-    map[cat].month += qty;
-    if (isToday(r, today)) map[cat].today += qty;
+    map[cat.label].month += qty;
+    if (isToday(r, today)) map[cat.label].today += qty;
   }
   return map;
 }
 
 // 機種別受注台数を機工商社ブロックと同じ雰囲気の色付きカードで表示。
-// カテゴリ数が多く全件テーブルだと縦に長くなりすぎるため、上位N件のみを
-// カード表示にして残りは合計だけ添える。
-const MODEL_BLOCK_TOP_N = 8;
+// MODEL_CATEGORY_MAPの固定10機種を、紙の日報と同じ並び順でそのまま表示する
+// (件数が少ない固定リストになったので、以前のような上位N件+折りたたみは不要)。
 function renderModelBlocks(containerId, map, color, totalId) {
   const el = document.getElementById(containerId);
-  const entries = Object.entries(map)
-    .map(([name, v]) => ({ name, ...v }))
-    .filter(e => e.month !== 0)
-    .sort((a, b) => b.month - a.month);
-
-  if (!entries.length) {
-    el.innerHTML = '<div class="empty-state">今月の受注はまだありません</div>';
-    if (totalId) document.getElementById(totalId).textContent = '';
-    return;
-  }
-
+  const entries = MODEL_CATEGORY_MAP.map(c => ({ name: c.label, ...map[c.label] }));
   const grandTotal = entries.reduce((s, e) => s + e.month, 0);
-  if (totalId) document.getElementById(totalId).textContent = `上位${Math.min(MODEL_BLOCK_TOP_N, entries.length)}機種・合計 ${formatQty(grandTotal)}`;
+  if (totalId) document.getElementById(totalId).textContent = `合計 ${formatQty(grandTotal)}`;
 
-  const top = entries.slice(0, MODEL_BLOCK_TOP_N);
-  const maxQty = top[0].month;
-  const rest = entries.slice(MODEL_BLOCK_TOP_N);
-
-  const blocksHtml = top.map(e => {
-    const pct = maxQty > 0 ? Math.round((e.month / maxQty) * 100) : 0;
+  const maxQty = Math.max(1, ...entries.map(e => e.month));
+  const blocksHtml = entries.map(e => {
+    const pct = Math.round((e.month / maxQty) * 100);
     return `
       <div class="model-block" style="border-left-color:${color}">
         <div class="model-name">${escapeHtml(e.name)}</div>
@@ -1818,38 +1830,30 @@ function renderModelBlocks(containerId, map, color, totalId) {
       </div>`;
   }).join('');
 
-  let restHtml = '';
-  if (rest.length) {
-    const restRows = rest.map(e => `
-      <tr><td>${escapeHtml(e.name)}</td><td>${formatQty(e.today)}</td><td>${formatQty(e.month)}</td></tr>`).join('');
-    restHtml = `
-      <details class="rank-detail">
-        <summary>ほか${rest.length}機種の内訳を見る（計${formatQty(rest.reduce((s, e) => s + e.month, 0))}）</summary>
-        <div class="table-scroll"><table>
-          <thead><tr><th>機種(中分類)</th><th>${TODAY_LABEL}</th><th>当月</th></tr></thead>
-          <tbody>${restRows}</tbody>
-        </table></div>
-      </details>`;
-  }
-
-  el.innerHTML = `<div class="model-grid">${blocksHtml}</div>${restHtml}`;
+  el.innerHTML = `<div class="model-grid">${blocksHtml}</div>`;
 }
 
 // ============================================================
 // 特記新製品 受注台数
 // 管理者(ADMIN_GROUP_IDのメンバー)だけが登録・削除・並び替えできる
 // 「新製品ウォッチリスト」をSharePointリストで管理し、そこに登録された
-// 品目コードだけに絞った受注台数/金額を表示する。
+// 品目だけに絞った受注台数/金額を表示する。
+// 実際の紙の日報を確認したところ、品目の識別キーは統一されておらず
+// 小分類名(大半)・大分類名・品目コードが混在していたため、登録1件ごとに
+// 「キー種別」を選べるようにしている(keyType: 'sho_bunrui'|'dai_bunrui'|'item_cd')。
+// 表示名はキー値と別に持てる(例: キー値="PKA"、表示名="KAKU")。
 // リストが無ければ初回アクセス時に自動作成する(手動プロビジョニング不要)。
 // ============================================================
 const NEW_PRODUCT_LIST_NAME = 'NewProductWatchlist';
+// キー種別ごとに、どのIDX列と突き合わせるか
+const NEW_PRODUCT_KEY_IDX = { sho_bunrui: IDX.sho_bunrui, dai_bunrui: IDX.dai_bunrui, item_cd: IDX.item_cd };
 // TODO: 実際の管理者グループの「オブジェクト ID」に置き換えてください。
 // Entra管理センター(Azure AD) > グループ > 対象グループ > 概要 で確認できます。
 // このIDのグループに入っている人だけに「設定」ボタンが表示されます。
 const ADMIN_GROUP_ID = '00000000-0000-0000-0000-000000000000';
 
 let IS_ADMIN = false;
-let NEW_PRODUCT_ITEMS = []; // [{id, code, name, order, enabled}]
+let NEW_PRODUCT_ITEMS = []; // [{id, keyType, key, name, order, enabled}]
 
 // サインイン中のユーザーがADMIN_GROUP_IDのメンバーかどうか。
 // 失敗した場合は安全側(非管理者)に倒す。
@@ -1876,7 +1880,8 @@ async function ensureNewProductList() {
   await graphFetch(`/sites/${SP.siteId}/lists`, 'POST', {
     displayName: NEW_PRODUCT_LIST_NAME,
     columns: [
-      { name: '品目コード', text: {} },
+      { name: 'キー種別', text: {} },
+      { name: 'キー値', text: {} },
       { name: '表示名', text: {} },
       { name: '表示順', number: {} },
       { name: '有効', boolean: {} },
@@ -1890,17 +1895,18 @@ async function loadNewProductItems() {
   NEW_PRODUCT_ITEMS = (data.value || [])
     .map(it => ({
       id: it.id,
-      code: String(it.fields['品目コード'] || '').trim(),
+      keyType: String(it.fields['キー種別'] || 'sho_bunrui').trim(),
+      key: String(it.fields['キー値'] || '').trim(),
       name: String(it.fields['表示名'] || '').trim(),
       order: Number(it.fields['表示順']) || 0,
       enabled: it.fields['有効'] !== false,
     }))
-    .filter(it => it.code)
+    .filter(it => it.key && NEW_PRODUCT_KEY_IDX[it.keyType] !== undefined)
     .sort((a, b) => a.order - b.order);
 }
 
 async function saveNewProductItem(item) {
-  const fields = { '品目コード': item.code, '表示名': item.name, '表示順': item.order, '有効': item.enabled };
+  const fields = { 'キー種別': item.keyType, 'キー値': item.key, '表示名': item.name, '表示順': item.order, '有効': item.enabled };
   if (item.id) {
     await graphFetch(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/items/${item.id}/fields`, 'PATCH', fields);
   } else {
@@ -1915,23 +1921,26 @@ async function deleteNewProductItem(id) {
 // 登録済みの品目コードに絞って、当日/当月の台数・金額を集計する。
 function aggregateNewProducts(orderRows, today, items) {
   const todayKey = today.y * 10000 + today.mo * 100 + today.d;
-  const byCode = {};
-  items.forEach(it => { byCode[it.code] = { qtyToday: 0, qtyMonth: 0, amtToday: 0, amtMonth: 0 }; });
+  const byId = {};
+  items.forEach(it => { byId[it.id] = { qtyToday: 0, qtyMonth: 0, amtToday: 0, amtMonth: 0 }; });
   for (const r of orderRows) {
     if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
     const vKey = voucherDateKey(r);
     if (vKey === null || vKey > todayKey) continue;
-    const cd = String(r[IDX.item_cd] || '').trim();
-    if (!byCode[cd]) continue;
     const qty = Number(r[IDX.qty]) || 0;
     const amt = Number(r[IDX.amount]) || 0;
-    byCode[cd].qtyMonth += qty;
-    byCode[cd].amtMonth += amt;
-    if (isToday(r, today)) { byCode[cd].qtyToday += qty; byCode[cd].amtToday += amt; }
+    const todayHit = isToday(r, today);
+    for (const it of items) {
+      const col = NEW_PRODUCT_KEY_IDX[it.keyType];
+      if (String(r[col] || '').trim() !== it.key) continue;
+      byId[it.id].qtyMonth += qty;
+      byId[it.id].amtMonth += amt;
+      if (todayHit) { byId[it.id].qtyToday += qty; byId[it.id].amtToday += amt; }
+    }
   }
-  return byCode;
+  return byId;
 }
 
 function renderNewProductSection(orderRows, today) {
@@ -1945,10 +1954,10 @@ function renderNewProductSection(orderRows, today) {
   const agg = aggregateNewProducts(orderRows, today, items);
   const L = 'style="text-align:left"';
   const rowsHtml = items.map(it => {
-    const a = agg[it.code];
+    const a = agg[it.id];
     return `
       <tr>
-        <td ${L}>${escapeHtml(it.name || it.code)}</td>
+        <td ${L}>${escapeHtml(it.name || it.key)}</td>
         <td>${formatQty(a.qtyToday)}</td>
         <td>${formatQty(a.qtyMonth)}</td>
         <td>${formatYen(a.amtToday)}</td>
@@ -1956,7 +1965,7 @@ function renderNewProductSection(orderRows, today) {
       </tr>`;
   }).join('');
   const total = items.reduce((acc, it) => {
-    const a = agg[it.code];
+    const a = agg[it.id];
     acc.qtyToday += a.qtyToday; acc.qtyMonth += a.qtyMonth;
     acc.amtToday += a.amtToday; acc.amtMonth += a.amtMonth;
     return acc;
@@ -1978,13 +1987,16 @@ function renderNewProductSection(orderRows, today) {
 
 // 管理者用の登録・削除・並び替えパネル。IS_ADMINがfalseの間は
 // 「設定」ボタン自体を非表示にしてあるので、この関数は管理者にしか届かない。
+const NEW_PRODUCT_KEY_TYPE_LABEL = { sho_bunrui: '小分類名', dai_bunrui: '大分類名', item_cd: '品目コード' };
+
 function renderNewProductAdminPanel() {
   const tbody = document.getElementById('newProductAdminRows');
   if (!tbody) return;
   tbody.innerHTML = NEW_PRODUCT_ITEMS.map((it, i) => `
     <tr>
       <td style="text-align:left">${escapeHtml(it.name)}</td>
-      <td style="text-align:left">${escapeHtml(it.code)}</td>
+      <td style="text-align:left">${escapeHtml(NEW_PRODUCT_KEY_TYPE_LABEL[it.keyType] || it.keyType)}</td>
+      <td style="text-align:left">${escapeHtml(it.key)}</td>
       <td><input type="checkbox" ${it.enabled ? 'checked' : ''} onchange="toggleNewProductEnabled('${it.id}', this.checked)"></td>
       <td style="text-align:left; white-space:nowrap">
         <button type="button" class="admin-icon-btn" onclick="moveNewProductItem('${it.id}', -1)" ${i === 0 ? 'disabled' : ''}>↑</button>
@@ -2000,15 +2012,17 @@ function toggleNewProductAdminPanel() {
 }
 
 async function addNewProductItem() {
-  const codeEl = document.getElementById('newProductAddCode');
+  const keyTypeEl = document.getElementById('newProductAddKeyType');
+  const keyEl = document.getElementById('newProductAddKey');
   const nameEl = document.getElementById('newProductAddName');
-  const code = codeEl.value.trim();
+  const keyType = keyTypeEl.value;
+  const key = keyEl.value.trim();
   const name = nameEl.value.trim();
-  if (!code) { alert('品目コードを入力してください'); return; }
+  if (!key) { alert('キー値を入力してください'); return; }
   const maxOrder = NEW_PRODUCT_ITEMS.reduce((m, it) => Math.max(m, it.order), 0);
   try {
-    await saveNewProductItem({ code, name: name || code, order: maxOrder + 10, enabled: true });
-    codeEl.value = ''; nameEl.value = '';
+    await saveNewProductItem({ keyType, key, name: name || key, order: maxOrder + 10, enabled: true });
+    keyEl.value = ''; nameEl.value = '';
     await loadNewProductItems();
     renderNewProductAdminPanel();
     if (CURRENT_TODAY) renderNewProductSection(FACTS.order_rows || [], CURRENT_TODAY);
