@@ -1866,25 +1866,48 @@ function checkIsAdmin() {
 }
 
 // リストが存在しなければ作成する(表示名でGETして404系なら作成)。
+// SharePointは日本語の列名で列を作ると、表示名とは別に内部名(書き込みに
+// 実際に使う名前)を自動生成し、それが表示名と一致しない場合がある
+// (今回「キー種別」列がまさにこれで書き込みエラーになった)。それを避ける
+// ため、内部名(name)は英数字で固定し、日本語ラベルはdisplayNameとして
+// 別に持たせる。fields の読み書きは常にこの内部名を使う。
+const NEW_PRODUCT_COLUMNS = [
+  { name: 'KeyType', displayName: 'キー種別', text: {} },
+  { name: 'KeyValue', displayName: 'キー値', text: {} },
+  { name: 'DisplayName', displayName: '表示名', text: {} },
+  { name: 'SortOrder', displayName: '表示順', number: {} },
+  { name: 'Enabled', displayName: '有効', boolean: {} },
+];
+
 async function ensureNewProductList() {
+  let listExists = true;
   try {
     await graphGet(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}`);
-    return;
   } catch (e) {
-    // 存在しない場合のみ作成を試みる。それ以外のエラー(権限不足等)はそのまま投げる。
     if (!/Graph 404/.test(e.message)) throw e;
+    listExists = false;
   }
-  await graphFetch(`/sites/${SP.siteId}/lists`, 'POST', {
-    displayName: NEW_PRODUCT_LIST_NAME,
-    columns: [
-      { name: 'キー種別', text: {} },
-      { name: 'キー値', text: {} },
-      { name: '表示名', text: {} },
-      { name: '表示順', number: {} },
-      { name: '有効', boolean: {} },
-    ],
-    list: { template: 'genericList' },
-  });
+  if (!listExists) {
+    await graphFetch(`/sites/${SP.siteId}/lists`, 'POST', {
+      displayName: NEW_PRODUCT_LIST_NAME,
+      columns: NEW_PRODUCT_COLUMNS,
+      list: { template: 'genericList' },
+    });
+    return;
+  }
+  // 既にリストがある場合、スキーマを後から変更していると列が足りないことが
+  // あるので、無い列だけ追加する(開発中に一度違うスキーマで作られてしまった
+  // 場合の自己修復もこれで兼ねる)。
+  const existing = await graphGet(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/columns?$select=name`);
+  const existingNames = new Set((existing.value || []).map(c => c.name));
+  for (const col of NEW_PRODUCT_COLUMNS) {
+    if (existingNames.has(col.name)) continue;
+    try {
+      await graphFetch(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/columns`, 'POST', col);
+    } catch (e) {
+      console.error('[特記新製品] 列の追加に失敗', col.name, e);
+    }
+  }
 }
 
 async function loadNewProductItems() {
@@ -1892,18 +1915,18 @@ async function loadNewProductItems() {
   NEW_PRODUCT_ITEMS = (data.value || [])
     .map(it => ({
       id: it.id,
-      keyType: String(it.fields['キー種別'] || 'sho_bunrui').trim(),
-      key: String(it.fields['キー値'] || '').trim(),
-      name: String(it.fields['表示名'] || '').trim(),
-      order: Number(it.fields['表示順']) || 0,
-      enabled: it.fields['有効'] !== false,
+      keyType: String(it.fields.KeyType || 'sho_bunrui').trim(),
+      key: String(it.fields.KeyValue || '').trim(),
+      name: String(it.fields.DisplayName || '').trim(),
+      order: Number(it.fields.SortOrder) || 0,
+      enabled: it.fields.Enabled !== false,
     }))
     .filter(it => it.key && NEW_PRODUCT_KEY_IDX[it.keyType] !== undefined)
     .sort((a, b) => a.order - b.order);
 }
 
 async function saveNewProductItem(item) {
-  const fields = { 'キー種別': item.keyType, 'キー値': item.key, '表示名': item.name, '表示順': item.order, '有効': item.enabled };
+  const fields = { KeyType: item.keyType, KeyValue: item.key, DisplayName: item.name, SortOrder: item.order, Enabled: item.enabled };
   if (item.id) {
     await graphFetch(`/sites/${SP.siteId}/lists/${NEW_PRODUCT_LIST_NAME}/items/${item.id}/fields`, 'PATCH', fields);
   } else {
