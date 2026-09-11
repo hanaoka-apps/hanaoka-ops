@@ -208,6 +208,17 @@
   .dealer-legend-item { display: flex; align-items: center; gap: 5px; }
   .dealer-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
+  /* 部門・拠点の識別色ドット(グラフの色と統一するための小さな丸) */
+  .color-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    margin-right: 5px;
+    flex-shrink: 0;
+    vertical-align: middle;
+  }
+
   .dealer-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -251,6 +262,7 @@
     padding: 18px 14px;
     border-radius: 12px;
     background: #f8f9fc;
+    border-left: 4px solid transparent;
   }
   .pipeline-card.pipeline-total { background: #eef2ff; }
   .pipeline-label { font-size: 13px; font-weight: 700; color: var(--text-sub); margin-bottom: 8px; }
@@ -503,6 +515,11 @@ const IDX = {
 };
 
 const DEPT_GROUPS = ['全社', '国内営業部', 'ソリューション営業部'];
+// 部門・拠点それぞれの識別色。グラフ・パイプラインカード・達成率ドーナツ・
+// 詳細テーブルなど、グループ名や数字が単独で出る箇所すべてで統一して使う。
+// 全社は「合計」であって部門と対等な色を持たない(既存のtotal-row/
+// pipeline-total色調で区別)ため、ここには含めない。
+const DEPT_COLORS = { '国内営業部': '#2455e6', 'ソリューション営業部': '#7c3aed' };
 
 let msalInstance = null;
 let account = null;
@@ -706,6 +723,7 @@ function loadPlansFromFacts(facts, curYm) {
 
 // 拠点(本社/大阪/名古屋)の表示名 ⇔ dept_monthly_targets 内のスコープ名(csvScopeMap後)
 const BASE_GROUPS = ['本社', '大阪', '名古屋'];
+const BASE_COLORS = { '本社': '#2455e6', '大阪': '#f59e0b', '名古屋': '#16a34a' };
 const BASE_SCOPE_FULL = { '本社': '本社', '大阪': '大阪支店', '名古屋': '名古屋営業所' };
 function loadBasePlansFromFacts(facts, curYm) {
   const longPlans = loadScopedPlansFromFacts(facts, curYm, Object.values(BASE_SCOPE_FULL));
@@ -1092,17 +1110,20 @@ function renderAchievementDonut(canvasId, orderRate, salesRate) {
   CHARTS[canvasId] = chart;
 }
 
-function renderAchievementRow(rowId, groups, plans, orderMetrics, salesMetrics) {
+// colors: {group: '#rrggbb'} (省略可)。渡すと部門名の頭に識別色のドットを付ける。
+function renderAchievementRow(rowId, groups, plans, orderMetrics, salesMetrics, colors) {
+  colors = colors || {};
   const row = document.getElementById(rowId);
   if (!row) return;
   const rateOf = (metrics, g) => (plans[g] > 0 ? (metrics[g].monthAmt / plans[g]) * 100 : null);
   const fmtRate = r => r === null ? '―' : r.toFixed(0) + '%';
   row.innerHTML = groups.map(g => {
     const orderRate = rateOf(orderMetrics, g);
+    const dot = colors[g] ? `<span class="color-dot" style="background:${colors[g]}"></span>` : '';
     return `
     <div class="achieve-card">
       <div class="achieve-canvas-wrap"><canvas id="${rowId}-${g}"></canvas></div>
-      <div class="achieve-label">${escapeHtml(g)} ${achievementEmoji(orderRate)}</div>
+      <div class="achieve-label">${dot}${escapeHtml(g)} ${achievementEmoji(orderRate)}</div>
       <div class="achieve-sub">受注 ${fmtRate(orderRate)} ／ 売上 ${fmtRate(rateOf(salesMetrics, g))}</div>
     </div>`;
   }).join('');
@@ -1174,7 +1195,10 @@ function renderBulletChart(canvasId, groups, plans, orderMetrics, salesMetrics) 
 
 // バレットチャートに添える詳細数字（受注・売上を横に並べた1枚のテーブル）。
 // 普段はバレットチャートだけ見れば十分なので、<details>で折りたたんでおく。
-function renderCombinedTable(containerId, groups, plans, orderMetrics, salesMetrics, firstColLabel) {
+// colors: {group: '#rrggbb'} (省略可)。渡すと部門/拠点名の頭に識別色の
+// ドットを付け、グラフ・カードと同じ色で統一する。
+function renderCombinedTable(containerId, groups, plans, orderMetrics, salesMetrics, firstColLabel, colors) {
+  colors = colors || {};
   const rateHtml = rate => rate === null
     ? '<span class="rate-na">―</span>'
     : `<span class="${rate >= 100 ? 'rate-ok' : 'rate-bad'}">${rate.toFixed(1)}%</span>`;
@@ -1185,9 +1209,10 @@ function renderCombinedTable(containerId, groups, plans, orderMetrics, salesMetr
     const orderRate = plan > 0 ? (om.monthAmt / plan) * 100 : null;
     const salesRate = plan > 0 ? (sm.monthAmt / plan) * 100 : null;
     const rowClass = g === '全社' ? ' class="total-row"' : '';
+    const dot = colors[g] ? `<span class="color-dot" style="background:${colors[g]}"></span>` : '';
     return `
       <tr${rowClass}>
-        <td>${escapeHtml(g)}</td>
+        <td>${dot}${escapeHtml(g)}</td>
         <td>${plan > 0 ? formatYen(plan) : '―'}</td>
         <td>${formatYen(om.todayAmt)}</td>
         <td>${formatYen(om.monthAmt)}</td>
@@ -1445,20 +1470,26 @@ function aggregateByBaseGroup(rows, targetYm, today, monthMode) {
 // 翌月受注金額（計画対比の概念が無い先行指標なので、テーブルではなく
 // 大きい数字のカードでビジュアル重視に見せる）
 // ============================================================
-function renderPipelineCards(containerId, metrics, groups) {
+// colors: {group: '#rrggbb'} (省略可)。渡すと、グラフと同じ色をカード左の
+// アクセントバーと数字に付けて、部門/拠点の識別色を統一する。
+function renderPipelineCards(containerId, metrics, groups, colors) {
+  colors = colors || {};
   const cardsHtml = groups.map(g => {
     const m = metrics[g];
     const totalClass = g === '全社' ? ' pipeline-total' : '';
+    const color = colors[g];
+    const borderStyle = color ? ` style="border-left-color:${color}"` : '';
+    const numStyle = color ? ` style="color:${color}"` : '';
     return `
-      <div class="pipeline-card${totalClass}">
+      <div class="pipeline-card${totalClass}"${borderStyle}>
         <div class="pipeline-label">${escapeHtml(g)}</div>
         <div class="pipeline-stats">
           <div class="pipeline-stat">
-            <div class="stat-num">${formatMan(m.monthAmt)}<span class="stat-unit">万円</span></div>
+            <div class="stat-num"${numStyle}>${formatMan(m.monthAmt)}<span class="stat-unit">万円</span></div>
             <div class="stat-caption">累計</div>
           </div>
           <div class="pipeline-stat today">
-            <div class="stat-num">${formatYen(m.todayAmt)}</div>
+            <div class="stat-num"${numStyle}>${formatYen(m.todayAmt)}</div>
             <div class="stat-caption">${TODAY_LABEL}分</div>
           </div>
         </div>
@@ -1786,18 +1817,18 @@ function renderForDate(today) {
   console.log('[営業日報] curYm=', curYm, 'plans=', plans);
   console.log('[営業日報] orderMetrics(納期ベース)=', orderMetrics, 'salesMetrics=', salesMetrics);
 
-  renderAchievementRow('deptAchieveRow', DEPT_GROUPS, plans, orderMetrics, salesMetrics);
+  renderAchievementRow('deptAchieveRow', DEPT_GROUPS, plans, orderMetrics, salesMetrics, DEPT_COLORS);
   renderBulletChart('deptBulletChart', DEPT_GROUPS, plans, orderMetrics, salesMetrics);
-  renderCombinedTable('deptCombinedTableWrap', DEPT_GROUPS, plans, orderMetrics, salesMetrics, '部門');
+  renderCombinedTable('deptCombinedTableWrap', DEPT_GROUPS, plans, orderMetrics, salesMetrics, '部門', DEPT_COLORS);
 
   // 拠点別（本社/大阪/名古屋）。受注は納期ベース、売上は年月度ベースで
   // 部門別と同じ集計方法に揃える。
   const basePlans = loadBasePlansFromFacts(facts, curYm);
   const orderBaseMetrics = aggregateByBaseGroup(orderRows, curYm, today, 'kikou');
   const salesBaseMetrics = aggregateByBaseGroup(rows, curYm, today, 'ym');
-  renderAchievementRow('baseAchieveRow', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics);
+  renderAchievementRow('baseAchieveRow', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics, BASE_COLORS);
   renderBulletChart('baseBulletChart', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics);
-  renderCombinedTable('baseCombinedTableWrap', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics, '拠点');
+  renderCombinedTable('baseCombinedTableWrap', BASE_GROUPS, basePlans, orderBaseMetrics, salesBaseMetrics, '拠点', BASE_COLORS);
 
   // 日次推移（過去14日・全社）
   renderTrendChart('orderTrendChart', orderRows, curYm, today, 'kikou');
@@ -1830,17 +1861,15 @@ function renderForDate(today) {
   const nextYm = shiftYm(curYm, 1);
   const nextMonthMetrics = aggregateByGroup(orderRows, nextYm, today, 'kikou');
   const nextMonthCum = cumulativeByGroupDaily(orderRows, nextYm, today, ['国内営業部', 'ソリューション営業部']);
-  renderCumulativeTrendChart('nextMonthTrendChart', nextMonthCum,
-    ['国内営業部', 'ソリューション営業部'], { '国内営業部': '#2455e6', 'ソリューション営業部': '#7c3aed' }, '合計');
-  renderPipelineCards('nextMonthTableWrap', nextMonthMetrics, DEPT_GROUPS);
+  renderCumulativeTrendChart('nextMonthTrendChart', nextMonthCum, ['国内営業部', 'ソリューション営業部'], DEPT_COLORS, '合計');
+  renderPipelineCards('nextMonthTableWrap', nextMonthMetrics, DEPT_GROUPS, DEPT_COLORS);
 
   // 翌月受注金額の拠点別(本社/大阪/名古屋)。当月と同じく国内営業部の内訳として
   // 入れ子で表示する。
   const nextMonthBaseMetrics = aggregateByBaseGroup(orderRows, nextYm, today, 'kikou');
   const nextMonthBaseCum = cumulativeByGroupDaily(orderRows, nextYm, today, BASE_GROUPS, (r, g) => baseOf(r) === g);
-  renderCumulativeTrendChart('nextMonthBaseTrendChart', nextMonthBaseCum,
-    BASE_GROUPS, { '本社': '#2455e6', '大阪': '#f59e0b', '名古屋': '#16a34a' }, '国内営業部合計');
-  renderPipelineCards('nextMonthBaseTableWrap', nextMonthBaseMetrics, BASE_GROUPS);
+  renderCumulativeTrendChart('nextMonthBaseTrendChart', nextMonthBaseCum, BASE_GROUPS, BASE_COLORS, '国内営業部合計');
+  renderPipelineCards('nextMonthBaseTableWrap', nextMonthBaseMetrics, BASE_GROUPS, BASE_COLORS);
 }
 
 // ============================================================
