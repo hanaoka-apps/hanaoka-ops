@@ -223,6 +223,30 @@ button.hist:hover{border-color:var(--brand);color:var(--brand)}
   padding:1px 7px;font-size:11px;color:#666;font-weight:700}
 .zrow a.open{color:var(--brand);font-weight:700;text-decoration:none;font-size:12.5px}
 .zfoot{display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap}
+/* --- 出図したときの版 --- */
+.zsnap-note{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+  font-size:12px;color:var(--muted);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.zsnap-ok{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+  font-size:12px;color:var(--ok,#1f7a4d);font-weight:700;
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.zsnap-diff{margin-top:9px;border:1px solid #f0dcb0;background:#fff8ec;
+  border-radius:10px;padding:10px 12px}
+.zsnap-diff .h{font-size:12.5px;font-weight:800;color:#8a5a00;margin-bottom:6px}
+.zsnap-diff .r{display:flex;gap:10px;align-items:baseline;padding:2px 0;
+  font-size:12.5px;flex-wrap:wrap}
+.zsnap-diff .r .z{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-weight:700;min-width:120px}
+.zsnap-diff .r .t{flex:1;min-width:70px}
+.zsnap-diff .r .v{color:#8a5a00;white-space:nowrap}
+.zsnap-diff .r .v.now{font-weight:800}
+.zsnap-diff .f{margin-top:7px;padding-top:7px;border-top:1px solid #f0dcb0;
+  font-size:12px;color:#6b5a3a;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.zmore{margin-top:8px;border-top:1px solid var(--line);padding-top:7px}
+.zmore>summary{font-size:11.5px;color:var(--muted);font-weight:700;cursor:pointer;
+  list-style:none;padding:2px 0}
+.zmore>summary::-webkit-details-marker{display:none}
+.zmore>summary::before{content:"▸ ";color:var(--faint)}
+.zmore[open]>summary::before{content:"▾ "}
 
 /* --- 出図日のロック --- */
 /* --- 製造年月（1台ごと。ここは表示だけ） --- */
@@ -512,7 +536,7 @@ const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",
       LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細";
 let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,LIST_UNITS_URL="",CACHE=[];
 const DEFAULT_PRODUCTS=["パレットトレーラー","コンテナトレーラー","カーゴカート","20ftトレーラー"],DEFAULT_MODELS=["EE1596S","EE1596N-A","EE1596N-B","EE3096","H･DLC-R","DLE-Ⅱ","SR","H･SEC","H･SET-RL","BCC","BCC-W","BCA"];let editingIndex=-1;/* 画面に出すビルドの目印。古いファイルが配られていないかを目で確かめるため。 */
-const BUILD="2026-09-11 12:05";
+const BUILD="2026-09-12 11:40";
 const $=id=>document.getElementById(id),show=(id,on)=>{$(id).style.display=on?"":"none"},trim=s=>(s||"").toString().trim(),esc=s=>String(s||"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 function toM(mm){const n=Number(mm);return isFinite(n)&&n>0?(n/1000).toFixed(3):""}function pad5(v){const s=trim(v).replace(/\D/g,"").slice(0,5);return s? s.padStart(5,"0") : ""}function unitCount(v){const n=parseInt(v,10);return isFinite(n)&&n>0?n:1}/* ============================================================
    明細（行き先ごとのグループ）
@@ -733,9 +757,10 @@ function renderZumenBox(){
   if(r.exact.length)h+='<div class="zgrp">全体図</div>'+r.exact.map(g=>zrowHtml(g)).join("");
   if(r.kids.length)h+='<div class="zgrp">構成（'+r.kids.length+'件）</div>'+
     r.kids.map(g=>zrowHtml(g,g.sort||"")).join("");
-  if(r.same.length)h+='<div class="zgrp">同じ機種で所属未設定（'+esc(r.fam)+'・参考）</div>'+
-    r.same.map(g=>zrowHtml(g)).join("");
+  if(r.same.length)h+='<details class="zmore"><summary>同じ機種で所属がまだ決まっていない図面　'+
+    r.same.length+'件（参考）</summary>'+r.same.map(g=>zrowHtml(g)).join("")+'</details>';
   if(!h)h='<div class="zempty">図番 '+esc(zu)+' の図面は、まだ登録されていません。</div>';
+  h+=snapHtml();
   h+='<div class="zfoot"><button type="button" class="msmall" id="btnZAdd">この図番の図面を登録</button>'+
      '<span class="muted" style="font-size:12px">改訂版もここから追加できます。</span></div>';
   box.innerHTML=h;
@@ -802,6 +827,83 @@ function renderDrawingList(){
   $("dwList").innerHTML=head+body+'</tbody></table>';
   void keep;
   renderDwSel();
+}
+
+/* ============================================================
+   出図時点の図面構成（スナップショット）
+   ------------------------------------------------------------
+   図面を Ver.2 に改訂すると、過去の出図からも Ver.2 が見えてしまう。
+   でもその車両は Ver.1 で作られている。出荷記録は永久保存の資産なので、
+   出図を保存した瞬間の図番と版を控えておく。
+   入力の手間はゼロ。保存時に自動で記録する。
+   一度控えたら書き換えない（出図日と同じ扱い）。意図して取り直したい
+   ときだけ、詳細画面のボタンから更新する。
+   ============================================================ */
+function snapshotOf(zu){
+  const r=relatedGroups(zu);
+  const rows=r.exact.concat(r.kids).map(g=>({
+    zu:g.zu, t:g.title||"", r:pad4(g.latest.rev||"1"), s:g.sort||0, c:g.cat||""
+  }));
+  return rows.length?{at:new Date().toISOString(),rows:rows}:null;
+}
+function parseSnap(v){
+  if(!trim(v))return null;
+  try{const o=JSON.parse(v);return (o&&Array.isArray(o.rows)&&o.rows.length)?o:null}
+  catch(e){return null}
+}
+/* 当時の版と、いまの版を突き合わせる */
+function snapDiff(snap){
+  if(!snap)return [];
+  const by=new Map(drawingGroups().map(g=>[g.zu,g]));
+  return snap.rows.map(x=>{
+    const g=by.get(x.zu);
+    return {zu:x.zu,title:x.t,then:parseInt(x.r,10)||1,sort:x.s,
+      now:g?verNo(g.latest):null, url:g?g.latest.url:"", gone:!g};
+  });
+}
+/* いま画面に出ている出図レコード。1版と2版で持ち方が違うので吸収する。 */
+function curEntry(){
+  const i=(typeof VIEW_INDEX!=="undefined"&&VIEW_INDEX>=0)?VIEW_INDEX:editingIndex;
+  return (i>=0)?(loadData()[i]||null):null;
+}
+/* 図面欄の下に出す「当時の版」。差がないときは1行だけにして、
+   差があるときだけ開いて見せる。 */
+function snapHtml(){
+  const d=curEntry();
+  const snap=parseSnap(d&&d.drawing_snap);
+  if(!snap)return d&&d._id
+    ? '<div class="zsnap-note">出図したときの版がまだ控えられていません。'+
+      '<button type="button" class="ghost small" id="btnZSnap">いまの版で控える</button></div>'
+    : '<div class="zsnap-note">保存すると、このときの図面の版が記録されます。</div>';
+  const rows=snapDiff(snap), diff=rows.filter(x=>x.gone||x.now!==x.then);
+  if(!diff.length)return '<div class="zsnap-ok">出図したときの版と同じです（'+rows.length+'件）'+
+    '<button type="button" class="ghost small" id="btnZSnap">取り直す</button></div>';
+  return '<div class="zsnap-diff"><div class="h">出図したときと版が違う図面が '+diff.length+'件あります</div>'+
+    diff.map(x=>'<div class="r"><span class="z">'+esc(x.zu)+'</span>'+
+      '<span class="t">'+esc(x.title||"")+'</span>'+
+      '<span class="v">出図時 Ver.'+x.then+'</span>'+
+      '<span class="v now">'+(x.gone?"いまは登録なし":("いま Ver."+x.now))+'</span></div>').join("")+
+    '<div class="f">この車両は<b>出図したときの版</b>で作られています。'+
+    '<button type="button" class="ghost small" id="btnZSnap">いまの版で取り直す</button></div></div>';
+}
+async function retakeSnapshot(){
+  if(!requireSignIn())return;
+  const i=(typeof VIEW_INDEX!=="undefined"&&VIEW_INDEX>=0)?VIEW_INDEX:editingIndex;
+  const d=(i>=0)?loadData()[i]:null;
+  if(!d||!d._id){toast("保存済みの出図を開いてから押してください",true);return}
+  const snap=snapshotOf(d.drawing_no);
+  if(!snap){toast("この図番に紐づく図面がありません",true);return}
+  const old=parseSnap(d.drawing_snap);
+  if(old&&!confirm("この出図の「当時の版」を、いまの版で取り直します。\n\n"+
+    "出図 "+d.ship_no+"　図面 "+snap.rows.length+"件\n\n"+
+    "前の記録は上書きされます。よろしいですか？"))return;
+  try{
+    await gFetch("PATCH",`/sites/${SITE_ID}/lists/${LIST_ID}/items/${d._id}/fields`,
+      {DrawingSnapshot:JSON.stringify(snap)});
+    d.drawing_snap=JSON.stringify(snap);
+    renderZumenBox();renderList();
+    toast("図面構成を控えました（"+snap.rows.length+"件）");
+  }catch(e){toast("控えられませんでした: "+(e.message||e),true);console.error(e)}
 }
 
 /* ============================================================
@@ -1460,7 +1562,7 @@ function recalcMeisai(){
     : (sum>total ? `合計 ${sum}台 ・ 台数(${total})を ${sum-total}台 超過`
                  : `合計 ${sum}台 ・ 台数(${total})まであと ${total-sum}台`);
 }
-function norm(d){let oldSerial=trim(d.serial_no);let parts=oldSerial&&!d.serial_no_from1?oldSerial.split(/\s*\/\s*/):[];let old1=parts[0]?parts[0].split(/\s*[～~-]\s*/):[];let old2=parts[1]?parts[1].split(/\s*[～~-]\s*/):[];let old3=parts[2]?parts[2].split(/\s*[～~-]\s*/):[];const l=d.length_m||toM(d.length_mm),w=d.width_m||toM(d.width_mm),h=d.height_m||toM(d.height_mm),obj={_id:(d._id===undefined?null:d._id),meisai:[],ship_no:trim(d.ship_no),date:d.date||"",customer:trim(d.customer),destination:trim(d.destination),product_name:trim(d.product_name),model:trim(d.model),drawing_no:trim(d.drawing_no),length_mm:trim(d.length_mm),width_mm:trim(d.width_mm),height_mm:trim(d.height_mm),length_m:l,width_m:w,height_m:h,dimensions_m:d.dimensions_m||(l&&w&&h?`${l}×${w}×${h}`:""),vehicle_weight:trim(d.vehicle_weight),capacity:trim(d.capacity),units:trim(d.units||"1"),car_no:trim(d.car_no),serial_no_from1:pad5(d.serial_no_from1||old1[0]),serial_no_to1:pad5(d.serial_no_to1||old1[1]),serial_no_from2:pad5(d.serial_no_from2||old2[0]),serial_no_to2:pad5(d.serial_no_to2||old2[1]),serial_no_from3:pad5(d.serial_no_from3||old3[0]),serial_no_to3:pad5(d.serial_no_to3||old3[1]),manufacture_month:d.manufacture_month||"",surface:d.surface||"",wt:d.wt||"",application_airport:d.application_airport||"",application_content:trim(d.application_content),spec_no:trim(d.spec_no),note:trim(d.note),createdAt:d.createdAt||new Date().toISOString(),updatedAt:d.updatedAt||""};obj.meisai=(Array.isArray(d.meisai)&&d.meisai.length)?normMeisai(d.meisai):meisaiFromLegacy(d);
+function norm(d){let oldSerial=trim(d.serial_no);let parts=oldSerial&&!d.serial_no_from1?oldSerial.split(/\s*\/\s*/):[];let old1=parts[0]?parts[0].split(/\s*[～~-]\s*/):[];let old2=parts[1]?parts[1].split(/\s*[～~-]\s*/):[];let old3=parts[2]?parts[2].split(/\s*[～~-]\s*/):[];const l=d.length_m||toM(d.length_mm),w=d.width_m||toM(d.width_mm),h=d.height_m||toM(d.height_mm),obj={_id:(d._id===undefined?null:d._id),meisai:[],ship_no:trim(d.ship_no),date:d.date||"",customer:trim(d.customer),destination:trim(d.destination),product_name:trim(d.product_name),model:trim(d.model),drawing_no:trim(d.drawing_no),length_mm:trim(d.length_mm),width_mm:trim(d.width_mm),height_mm:trim(d.height_mm),length_m:l,width_m:w,height_m:h,dimensions_m:d.dimensions_m||(l&&w&&h?`${l}×${w}×${h}`:""),vehicle_weight:trim(d.vehicle_weight),capacity:trim(d.capacity),units:trim(d.units||"1"),car_no:trim(d.car_no),serial_no_from1:pad5(d.serial_no_from1||old1[0]),serial_no_to1:pad5(d.serial_no_to1||old1[1]),serial_no_from2:pad5(d.serial_no_from2||old2[0]),serial_no_to2:pad5(d.serial_no_to2||old2[1]),serial_no_from3:pad5(d.serial_no_from3||old3[0]),serial_no_to3:pad5(d.serial_no_to3||old3[1]),manufacture_month:d.manufacture_month||"",drawing_snap:d.drawing_snap||"",surface:d.surface||"",wt:d.wt||"",application_airport:d.application_airport||"",application_content:trim(d.application_content),spec_no:trim(d.spec_no),note:trim(d.note),createdAt:d.createdAt||new Date().toISOString(),updatedAt:d.updatedAt||""};obj.meisai=(Array.isArray(d.meisai)&&d.meisai.length)?normMeisai(d.meisai):meisaiFromLegacy(d);
   obj.sticker=normSticker(d.sticker);
   obj.serial_no=combinedSerial(obj);
   return obj}
@@ -1730,6 +1832,8 @@ function toFields(e){
     Destination:(e.meisai&&e.meisai.filter(r=>r.dest).length>1)?"各地":(e.destination||((e.meisai||[])[0]||{}).dest||""),
     /* ManufactureMonth はもう書かない。製造年月は製造番号明細の ManufactureYM。
        列と過去の値は残してある。 */
+    /* 出図時点の図面構成。一度控えたら書き換えない。 */
+    DrawingSnapshot:(trim(e.drawing_snap)||JSON.stringify(snapshotOf(e.drawing_no)||{rows:[]})),
     Surface:e.surface||null, WTDisplay:e.wt||null,
     ApplyAirport:e.application_airport||null, ApplyContent:e.application_content,
     Remarks:e.note, RecordStatus:"出図済"
@@ -1749,6 +1853,7 @@ function fromItem(it){
     vehicle_weight:f.VehicleWeight||"", capacity:f.Capacity==null?"":String(f.Capacity),
     car_no:f.CarNoRange||"", serial_no:f.SerialRange||"",
     manufacture_month:f.ManufactureMonth||"",
+    drawing_snap:f.DrawingSnapshot||"",
     surface:f.Surface||"", wt:f.WTDisplay||"",
     application_airport:f.ApplyAirport||"", application_content:f.ApplyContent||"",
     note:f.Remarks||"", createdAt:f.Created||it.createdDateTime||"", updatedAt:f.Modified||it.lastModifiedDateTime||""});
@@ -1797,8 +1902,15 @@ function requireSignIn(){
   return true;
 }
 function initSelects(){fill("product_name_select",DEFAULT_PRODUCTS,"--候補を選ぶか自由入力--");fill("model_select",DEFAULT_MODELS,"--候補を選ぶか自由入力--");$("product_name_select").onchange=()=>{if($("product_name_select").value)$("product_name_free").value=""};$("model_select").onchange=()=>{if($("model_select").value)$("model_free").value=""}}function fill(id,items,ph){$(id).innerHTML=`<option value="">${ph}</option>`+items.map(v=>`<option>${esc(v)}</option>`).join("")}
-function digitsOnly(v){return String(v||"").replace(/\D/g,"")}function decimalOnly(v){return String(v||"").replace(/[^0-9.]/g,"").replace(/(\..*)\./g,"$1")}function updateMFields(){const l=toM($("length_mm").value),w=toM($("width_mm").value),h=toM($("height_mm").value);$("length_m").value=l;$("width_m").value=w;$("height_m").value=h;$("dimensions_m").value=l&&w&&h?`${l}×${w}×${h}`:""}
-function getEntry(){const cur=editingIndex>=0?loadData()[editingIndex]:null,pn=trim($("product_name_free").value)||$("product_name_select").value,md=trim($("model_free").value)||$("model_select").value;return norm({ship_no:trim($("ship_no").value)||(cur&&cur.ship_no)||nextNo(),date:$("date").value,customer:$("customer").value,destination:$("destination").value,product_name:pn,model:md,drawing_no:$("drawing_no").value,length_mm:$("length_mm").value,width_mm:$("width_mm").value,height_mm:$("height_mm").value,length_m:$("length_m").value,width_m:$("width_m").value,height_m:$("height_m").value,dimensions_m:$("dimensions_m").value,vehicle_weight:$("vehicle_weight").value,capacity:$("capacity").value,units:$("units").value||"1",car_no:$("car_no").value,meisai:readMeisai(),sticker:readSticker(),manufacture_month:(cur?cur.manufacture_month:""),/* 1台ごとに持つので、ここからは書き換えない */surface:$("surface").value,wt:$("wt").value,application_airport:$("application_airport").value,application_content:$("application_content").value,spec_no:$("spec_no").value,note:$("note").value,createdAt:cur?.createdAt||new Date().toISOString(),updatedAt:cur?new Date().toISOString():""})}
+/* スマホの日本語入力だと全角数字（１２００）が入る。
+   そのまま /\D/ で削ると全部消えて空になるので、先に半角へ直す。
+   （出荷入力アプリと同じ対処） */
+function toHalfNum(v){return String(v==null?"":v)
+  .replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+  .replace(/[．｡。]/g,".").replace(/[，、]/g,"")}
+function digitsOnly(v){return toHalfNum(v).replace(/\D/g,"")}function decimalOnly(v){return toHalfNum(v).replace(/[^0-9.]/g,"").replace(/(\..*)\./g,"$1")}function updateMFields(){const l=toM($("length_mm").value),w=toM($("width_mm").value),h=toM($("height_mm").value);$("length_m").value=l;$("width_m").value=w;$("height_m").value=h;$("dimensions_m").value=l&&w&&h?`${l}×${w}×${h}`:""}
+function getEntry(){const cur=editingIndex>=0?loadData()[editingIndex]:null,pn=trim($("product_name_free").value)||$("product_name_select").value,md=trim($("model_free").value)||$("model_select").value;return norm({ship_no:trim($("ship_no").value)||(cur&&cur.ship_no)||nextNo(),date:$("date").value,customer:$("customer").value,destination:$("destination").value,product_name:pn,model:md,drawing_no:$("drawing_no").value,length_mm:$("length_mm").value,width_mm:$("width_mm").value,height_mm:$("height_mm").value,length_m:$("length_m").value,width_m:$("width_m").value,height_m:$("height_m").value,dimensions_m:$("dimensions_m").value,vehicle_weight:$("vehicle_weight").value,capacity:$("capacity").value,units:$("units").value||"1",car_no:$("car_no").value,meisai:readMeisai(),sticker:readSticker(),manufacture_month:(cur?cur.manufacture_month:""),/* 1台ごとに持つので、ここからは書き換えない */
+    drawing_snap:(cur?cur.drawing_snap:""),/* 当時の版。一度控えたら動かさない */surface:$("surface").value,wt:$("wt").value,application_airport:$("application_airport").value,application_content:$("application_content").value,spec_no:$("spec_no").value,note:$("note").value,createdAt:cur?.createdAt||new Date().toISOString(),updatedAt:cur?new Date().toISOString():""})}
 function validate(e){const ok=e.date&&e.product_name&&e.drawing_no;$("formWarn").style.display=ok?"none":"block";$("formWarn").textContent=ok?"":"必須項目（出図日・品名・図番）を入力してください。";["date","drawing_no","product_name_select","product_name_free"].forEach(id=>$(id).classList.toggle("invalid",!ok&&((id==="date"&&!e.date)||(id==="drawing_no"&&!e.drawing_no)||(id.startsWith("product")&&!e.product_name))));return ok}
 async function addOrUpdateEntry(){
   if(!requireSignIn())return;
@@ -2174,7 +2286,9 @@ document.addEventListener("DOMContentLoaded",()=>{
     "color:#bbb;background:rgba(255,255,255,.8);padding:1px 5px;border-radius:4px;"+
     "pointer-events:none;font-family:ui-monospace,monospace";
   document.body.appendChild(bt);
-  initSelects();["units","capacity"].forEach(id=>$(id).addEventListener("input",e=>{e.target.value=digitsOnly(e.target.value);if(id==="units"){recalcMeisai();recalcSticker()}}));["length_mm","width_mm","height_mm"].forEach(id=>{$(id).addEventListener("input",e=>{e.target.value=decimalOnly(e.target.value);updateMFields()})});
+  initSelects();["units","capacity"].forEach(id=>$(id).addEventListener("input",e=>{e.target.value=digitsOnly(e.target.value);if(id==="units"){recalcMeisai();recalcSticker()}}));
+  /* 車両重量は「別紙」も入る欄なので、数字だけにはしない。全角を半角に直すだけ。 */
+  $("vehicle_weight").addEventListener("input",e=>{const v=toHalfNum(e.target.value);if(v!==e.target.value)e.target.value=v});["length_mm","width_mm","height_mm"].forEach(id=>{$(id).addEventListener("input",e=>{e.target.value=decimalOnly(e.target.value);updateMFields()})});
   $("sticker_options").innerHTML=STICKER_OPTIONS.map(v=>`<option>${esc(v)}</option>`).join("");
   $("stickerRows").addEventListener("input",e=>{
     if(e.target.classList.contains("s-per"))e.target.value=digitsOnly(e.target.value);
@@ -2267,6 +2381,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("drawing_no").addEventListener("input",renderZumenBox);
   $("zumenBox").addEventListener("click",e=>{
     if(e.target.id==="btnZAdd"){dwOpen(trim($("drawing_no").value));return}
+    if(e.target.id==="btnZSnap"){retakeSnapshot();return}
     if(e.target.classList.contains("hist")){showHistory(e.target.dataset.zu)}
   });
   $("dwList").addEventListener("click",e=>{
@@ -2279,7 +2394,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("carOvl").addEventListener("click",e=>{if(e.target.id==="carOvl")carClose()});
   $("meisaiRows").addEventListener("input",e=>{
     if(e.target.classList.contains("m-qty"))e.target.value=digitsOnly(e.target.value);
-    if(e.target.classList.contains("m-from"))e.target.value=e.target.value.replace(/\D/g,"").slice(0,5);
+    if(e.target.classList.contains("m-from"))e.target.value=digitsOnly(e.target.value).slice(0,5);
     recalcMeisai();
   });
   $("meisaiRows").addEventListener("blur",e=>{
