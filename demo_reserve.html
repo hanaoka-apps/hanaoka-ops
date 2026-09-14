@@ -313,6 +313,32 @@
   </div>
 </div></div>
 
+<!-- まとめて予約：空き検索で選んだ複数の機体を、同じ件名・同じ期間で一括予約する -->
+<div class="modal" id="mBulk"><div class="card">
+  <h3>選んだ機体をまとめて予約する</h3>
+  <div class="bd">
+    <div class="fm">
+      <div class="f"><span>期間（空き検索で入れた区間）</span><div id="bRange" style="font-weight:700"></div></div>
+      <div class="f"><span id="bMachinesLabel">機体</span><div id="bMachines" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
+      <div class="f"><span>予約件名（必須・全機体に共通）</span><input type="text" id="bTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
+      <div class="f2">
+        <div class="f"><span>顧客名</span><input type="text" id="bCust"></div>
+        <div class="f"><span>行き先</span><input type="text" id="bDest"></div>
+      </div>
+      <div class="f"><span>依頼者（サインイン中のアカウントを自動記録）</span>
+        <input type="text" id="bReq" readonly style="background:#f4f6f9"></div>
+      <div class="f"><span>備考</span><input type="text" id="bNotes" placeholder="返却期限など"></div>
+    </div>
+    <div class="note" id="bNote"></div>
+    <div id="b-result" style="margin-top:8px;display:flex;flex-direction:column;gap:3px;font-size:12px"></div>
+  </div>
+  <div class="ft">
+    <span class="msg" id="bMsg"></span>
+    <button class="act" onclick="closeM('mBulk')">キャンセル</button>
+    <button class="act pri" id="bSave" onclick="doReserveBulk()">まとめて予約する</button>
+  </div>
+</div></div>
+
 <!-- 予約対象の一括判定 -->
 <div class="modal" id="mParts"><div class="card" style="max-width:620px">
   <h3 id="pTitle"></h3>
@@ -514,6 +540,7 @@ async function gPatchIf(path, fields, etag){
    ============================================================ */
 let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
 let SEEK = null;                       /* 空き検索の区間 */
+let SEEK_SEL = new Set();              /* 空き検索で選んだ機体（まとめて予約の対象）。id で持つ */
 let HILITE = null;                     /* 結果から選んだ機体ID。行を目立たせるだけで絞り込まない */
 let lastLoad = 0, refreshTimer = null;
 
@@ -1191,7 +1218,7 @@ async function runSeek(){
   render(); paintSeek(); paintUpdated(); writeUrl();
 }
 function clearSeek(){
-  SEEK = null; HILITE = null;
+  SEEK = null; HILITE = null; SEEK_SEL = new Set();
   document.getElementById('sFrom').value = msToLocal(weekTopMs(Date.now()) +  9*3600e3);
   document.getElementById('sTo').value   = msToLocal(weekTopMs(Date.now()) + 17*3600e3);
   render(); paintSeek();
@@ -1211,12 +1238,15 @@ function paintSeek(){
   const free = target.filter(m => !busy.has(m.id));
   const used = target.filter(m =>  busy.has(m.id));
 
+  /* 名簿から消えた機体を選んだままにしない */
+  SEEK_SEL.forEach(id => { if (!free.some(m => m.id === id)) SEEK_SEL.delete(id); });
+
   let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}　押さえられる機体 ${free.length}台 / 対象 ${target.length}台</h4>`;
   if (!free.length) h += `<div class="none">この区間に空いている機体はありません</div>`;
   else [...new Set(free.map(m => m.cat))].forEach(C => {
     h += `<div class="grp-line"><b>${esc(C)}</b>`
       + free.filter(m => m.cat === C)
-            .map(m => `<span class="chip" data-mid="${m.id}" data-name="${esc(m.n)}">${esc(m.n)}</span>`).join('')
+            .map(m => `<span class="chip${SEEK_SEL.has(m.id) ? ' on' : ''}" data-mid="${m.id}" data-name="${esc(m.n)}">${esc(m.n)}</span>`).join('')
       + `</div>`;
   });
   if (used.length) {
@@ -1228,11 +1258,18 @@ function paintSeek(){
         }).join('')
       + `<span class="cnt">機体名にマウスを乗せると誰が押さえているか出ます</span></div>`;
   }
-  h += `<div class="cnt" style="margin-top:7px">緑の機体名をクリックすると、その機体をこの区間で予約する画面が開きます</div>`;
+  if (free.length) {
+    h += `<div class="grp-line" style="margin-top:9px;align-items:center">`
+      + `<button class="act pri" id="seekBulkGo"${SEEK_SEL.size ? '' : ' disabled'}>選んだ機体をまとめて予約（${SEEK_SEL.size}台）</button>`
+      + `<button class="act" id="seekSelClear"${SEEK_SEL.size ? '' : ' disabled'}>選択解除</button>`
+      + `<span class="cnt">緑の機体名をクリックして選ぶと、複数まとめて1回で予約できます</span></div>`;
+  }
   p.innerHTML = h;
   p.style.display = 'block';
 }
 document.getElementById('seek-panel').addEventListener('click', ev => {
+  if (ev.target.closest('#seekBulkGo')) { openBulkNew(); return; }
+  if (ev.target.closest('#seekSelClear')) { SEEK_SEL = new Set(); paintSeek(); return; }
   const c = ev.target.closest('.chip'); if (!c) return;
   /* 予約済みのチップ：絞り込まずに行を目立たせるだけ（検索欄を書き換えると解除しても残る） */
   if (c.classList.contains('busy')) {
@@ -1245,8 +1282,15 @@ document.getElementById('seek-panel').addEventListener('click', ev => {
     }
     return;
   }
-  /* 空きのチップ：検索した区間をそのまま初期値にして予約画面を開く */
-  if (c.dataset.mid) openNew(Number(c.dataset.mid), SEEK.s, SEEK);
+  /* 空きのチップ：クリックのたびに選択のオン/オフを切り替える（即座に予約画面は開かない）。
+     ★1台だけ予約したいときも同じ操作★ 1台選んで「まとめて予約」を押せばよい。
+     操作をここと「まとめて予約」ボタンの2系統に分けると、選んだのに反映されない
+     ように見えるので、クリック＝即予約という近道は用意しない。 */
+  if (c.dataset.mid) {
+    const id = Number(c.dataset.mid);
+    if (SEEK_SEL.has(id)) SEEK_SEL.delete(id); else SEEK_SEL.add(id);
+    paintSeek();
+  }
 });
 document.getElementById('sGo').onclick    = runSeek;
 document.getElementById('sClear').onclick = clearSeek;
@@ -1594,6 +1638,78 @@ async function doReserve(){
     else fail(`保存できませんでした（${r.reason} ${r.status||''}）`);
   } catch (err) { fail('エラー: ' + err.message); }
   finally { btn.disabled = false; await loadRes(); render(); }
+}
+
+/* ============================================================
+   まとめて予約
+   ------------------------------------------------------------
+   空き検索で選んだ複数の機体を、同じ件名・同じ期間（検索した区間そのもの）
+   で一括登録する。1台ずつ CAS ロックを取るので、他の人と競合した機体だけが
+   個別に失敗しうる。★機体ごとに1件ずつ順番に予約する★
+   同時に投げると同じマスター行の ETag 競合（412）が増えて再試行が増える
+   だけなので、直列に回す方が実際には速くて確実。 */
+function openBulkNew(){
+  if (!SEEK || !SEEK_SEL.size) return;
+  const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  document.getElementById('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}`;
+  document.getElementById('bMachinesLabel').textContent = `機体（${list.length}台）`;
+  document.getElementById('bMachines').innerHTML = list.map(m => `<span class="chip">${esc(m.n)}</span>`).join('');
+  ['bTitle','bCust','bDest','bNotes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('bReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
+  document.getElementById('bMsg').textContent = ''; document.getElementById('bMsg').className = 'msg';
+  document.getElementById('b-result').innerHTML = '';
+  document.getElementById('bSave').disabled = !CAP.lock;
+  document.getElementById('bNote').innerHTML = CAP.lock
+    ? `1台ずつ空きを確認して予約します。同じ枠を他の方が同時に押さえていた場合、その機体だけ失敗します（失敗した機体はあとでこの画面からもう一度お試しください）。`
+    : `<b style="color:var(--danger)">マスターに ${LOCK_COL} 列が無いため予約登録は無効です。</b>`;
+  openM('mBulk');
+}
+async function doReserveBulk(){
+  const msg = document.getElementById('bMsg'), btn = document.getElementById('bSave');
+  const resultBox = document.getElementById('b-result');
+  const title = document.getElementById('bTitle').value.trim();
+  if (!SEEK || !SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
+  if (!title) { msg.textContent = '予約件名を入力してください'; msg.className = 'msg ng'; return; }
+
+  const details = {
+    title, cust: document.getElementById('bCust').value.trim(),
+    dest: document.getElementById('bDest').value.trim(),
+    notes: document.getElementById('bNotes').value.trim()
+  };
+  const targets = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  btn.disabled = true; msg.textContent = `予約中... (0/${targets.length})`; msg.className = 'msg';
+  resultBox.innerHTML = '';
+
+  let ok = 0;
+  for (let i = 0; i < targets.length; i++){
+    const m = targets[i];
+    msg.textContent = `予約中... (${i}/${targets.length}) ${m.n}`;
+    let line;
+    try {
+      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, details });
+      if (r.ok) {
+        ok++; SEEK_SEL.delete(m.id);
+        line = `<span style="color:var(--success)">✓ ${esc(m.n)}</span>`;
+      } else {
+        const why = r.reason === 'CONFLICT' ? 'この間に他の予約が入りました'
+                  : r.reason === 'BUSY' ? '他の方が操作中でした'
+                  : r.reason === 'SAVE_FAILED' ? '履歴の保存に失敗しました'
+                  : `保存できませんでした（${r.reason||''}）`;
+        line = `<span style="color:var(--danger)">✗ ${esc(m.n)} — ${esc(why)}</span>`;
+      }
+    } catch (err) {
+      line = `<span style="color:var(--danger)">✗ ${esc(m.n)} — エラー: ${esc(err.message)}</span>`;
+    }
+    resultBox.insertAdjacentHTML('beforeend', `<div>${line}</div>`);
+  }
+  btn.disabled = false;
+  msg.textContent = `${ok}/${targets.length}台を予約しました`;
+  msg.className = 'msg' + (ok === targets.length ? ' ok' : ok === 0 ? ' ng' : '');
+  await loadRes(); lastLoad = Date.now(); render(); paintSeek(); paintUpdated();
+  if (ok === targets.length) {
+    showSnack(`${ok}台を予約しました`);
+    setTimeout(() => closeM('mBulk'), 900);
+  }
 }
 
 /* ============================================================
