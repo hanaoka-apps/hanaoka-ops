@@ -224,13 +224,22 @@
 <!-- デモ機：空き検索（demo_reserve.html と同じ考え方。1台ずつではなく
      まとめて予約することの方が多いので、期間を入れて空いている機体を
      複数選び、まとめて1回で予約する） -->
-<div class="modal" id="mSeek"><div class="card">
+<div class="modal" id="mSeek"><div class="card" style="max-width:560px">
   <h3>デモ機の空きを探す</h3>
   <div class="bd">
     <div class="fm">
       <div class="f2">
+        <div class="f"><span>拠点・区分</span><select id="sCat"></select></div>
+        <div class="f"><span>機種名で検索</span><input type="search" id="sQ" placeholder="例：PAL"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="sAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
+      <div class="f2" id="sTimeRow">
         <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="sFrom"></div>
         <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="sTo"></div>
+      </div>
+      <div class="f2" id="sDateRow" style="display:none">
+        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="sFromD"></div>
+        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="sToD"></div>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:9px">
@@ -323,6 +332,9 @@ const jFull = ms => `${jKey(ms).replace(/-/g,'/')} ${jHM(ms)}`;
 const localToMs = v => v ? Date.parse(v + ':00Z') - JST : NaN;
 const msToLocal = ms => { const d = toJ(ms);
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+const dateToMs = v => v ? Date.parse(v + 'T00:00:00Z') - JST : NaN;
+const msToDate = ms => { const d = toJ(ms);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`; };
 function dayTopMs(ms){ const d = toJ(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - JST; }
 function weekTopMs(ms){
   const d = toJ(ms);
@@ -745,7 +757,10 @@ function renderAll(){
   const days = weekDays(), todayKey = jKey(Date.now());
   const g = el('grid');
   g.className = 'grid ls';
-  const demoRows = DEMO.map(r => ({ ...r, cls:'s-demo', cancelable:true }));
+  const demoRows = DEMO.map(r => {
+    const mName = MACHINES.find(m => m.id === r.mid)?.n || `#${r.mid}`;
+    return { ...r, t: `${mName} — ${r.t}`, cls:'s-demo', cancelable:true };
+  });
   g.innerHTML = dayHeadHtml(days, '', todayKey)
     + rowHtml(days, todayKey, 'cmn',  nameHtml('会社共通予定表', COMMON), COMMON)
     + rowHtml(days, todayKey, 'mine', nameHtml('自分の予定', MINE), MINE)
@@ -790,18 +805,42 @@ async function fetchDemoBusy(s, e){
   }).filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e) && r.st !== '取消' && overlaps(r, s, e));
 }
 
+function sAllDayOn(){ return el('sAllDay').checked; }
+function paintSAllDayMy(){
+  const on = sAllDayOn();
+  el('sTimeRow').style.display = on ? 'none' : '';
+  el('sDateRow').style.display = on ? '' : 'none';
+}
+el('sAllDay').addEventListener('change', paintSAllDayMy);
+
 function openSeekDemo(){
   const dayMs = curWeek;
+  /* 拠点・区分。demo_reserve.html の #cat と同じ考え方（区分名に拠点が
+     入っているので、これがそのまま「大阪の機材だけ」の絞り込みになる）。 */
+  const cats = [...new Set(MACHINES.filter(m => m.resv && !m.ng).map(m => m.cat))].sort();
+  el('sCat').innerHTML = `<option value="">全区分</option>` + cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  el('sQ').value = '';
   el('sFrom').value = msToLocal(dayMs + 9*3600e3);
   el('sTo').value   = msToLocal(dayMs + 17*3600e3);
+  el('sFromD').value = msToDate(dayMs);
+  el('sToD').value   = msToDate(dayMs);
+  el('sAllDay').checked = false;
+  paintSAllDayMy();
   SEEK = null; SEEK_SEL = new Set();
   el('seek-panel').innerHTML = '';
   openM('mSeek');
 }
 async function runSeekDemo(){
-  const s = localToMs(el('sFrom').value), e = localToMs(el('sTo').value);
-  if (isNaN(s) || isNaN(e) || e <= s) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
-  SEEK = { s, e };
+  let s, e;
+  if (sAllDayOn()) {
+    const a = dateToMs(el('sFromD').value), b = dateToMs(el('sToD').value);
+    if (isNaN(a) || isNaN(b)) { showSnack('開始日と終了日を入れてください'); return; }
+    s = a; e = b + DAY;
+  } else {
+    s = localToMs(el('sFrom').value); e = localToMs(el('sTo').value);
+    if (isNaN(s) || isNaN(e) || e <= s) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
+  }
+  SEEK = { s, e, allDay: sAllDayOn() };
   el('seek-panel').innerHTML = `<div style="color:var(--muted)">検索中...</div>`;
   try {
     const busyRows = await fetchDemoBusy(s, e);
@@ -812,10 +851,12 @@ async function runSeekDemo(){
     el('seek-panel').innerHTML = `<div class="none">検索に失敗しました：${esc(err.message)}</div>`;
   }
 }
+['sCat','sQ'].forEach(id => el(id).addEventListener('input', () => { if (SEEK) paintSeekDemo(); }));
 function paintSeekDemo(){
   const p = el('seek-panel');
   const busy = SEEK_BUSY;
-  const target = MACHINES.filter(m => m.resv && !m.ng);
+  const cat = el('sCat').value, q = el('sQ').value.trim().toLowerCase();
+  const target = MACHINES.filter(m => m.resv && !m.ng && (!cat || m.cat === cat) && (!q || m.n.toLowerCase().includes(q)));
   const free = target.filter(m => !busy.has(m.id));
   const used = target.filter(m => busy.has(m.id));
   SEEK_SEL.forEach(id => { if (!free.some(m => m.id === id)) SEEK_SEL.delete(id); });
@@ -857,7 +898,7 @@ el('seek-panel').addEventListener('click', ev => {
 function openBulkNewMy(){
   if (!SEEK || !SEEK_SEL.size) return;
   const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
-  el('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}`;
+  el('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}`;
   el('bMachinesLabel').textContent = `機体（${list.length}台）`;
   el('bMachines').innerHTML = list.map(m => `<span class="chip">${esc(m.n)}</span>`).join('');
   ['bTitle','bCust','bDest','bNotes'].forEach(id => el(id).value = '');

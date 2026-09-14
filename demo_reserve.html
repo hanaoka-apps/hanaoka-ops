@@ -230,12 +230,20 @@
 
   <div class="bar" style="margin-bottom:11px">
     <label>空きを探す</label>
-    <input type="datetime-local" id="sFrom">
-    <span style="color:var(--muted)">〜</span>
-    <input type="datetime-local" id="sTo">
+    <label class="chk"><input type="checkbox" id="sAllDay"> 終日</label>
+    <span id="sTimeRow">
+      <input type="datetime-local" id="sFrom">
+      <span style="color:var(--muted)">〜</span>
+      <input type="datetime-local" id="sTo">
+    </span>
+    <span id="sDateRow" style="display:none">
+      <input type="date" id="sFromD">
+      <span style="color:var(--muted)">〜</span>
+      <input type="date" id="sToD">
+    </span>
     <button class="act pri" id="sGo">この区間で押さえられる機体</button>
     <button class="act" id="sClear">解除</button>
-    <span class="cnt">案件の期間を入れると、その間ずっと空いている機体だけを出します</span>
+    <span class="cnt">案件の期間を入れると、その間ずっと空いている機体だけを出します。区分・検索欄で絞り込んだ機体だけが対象になります</span>
   </div>
 
   <div id="seek-panel"></div>
@@ -589,6 +597,8 @@ async function showApp(){
   /* 空き検索の既定値：今日の 09:00〜17:00 */
   document.getElementById('sFrom').value = msToLocal(weekTopMs(Date.now()) + 9*3600e3);
   document.getElementById('sTo').value   = msToLocal(weekTopMs(Date.now()) + 17*3600e3);
+  document.getElementById('sFromD').value = msToDate(weekTopMs(Date.now()));
+  document.getElementById('sToD').value   = msToDate(weekTopMs(Date.now()));
   await resolveHistList();
   await checkColumns();
   await loadAll(want);
@@ -1203,11 +1213,23 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 /* ============================================================
    空き検索
    ============================================================ */
+function sAllDayOn(){ return document.getElementById('sAllDay').checked; }
+function paintSAllDay(){
+  const on = sAllDayOn();
+  document.getElementById('sTimeRow').style.display = on ? 'none' : '';
+  document.getElementById('sDateRow').style.display = on ? '' : 'none';
+}
 function parseSeek(){
+  if (sAllDayOn()) {
+    const a = dateToMs(document.getElementById('sFromD').value);
+    const b = dateToMs(document.getElementById('sToD').value);
+    if (isNaN(a) || isNaN(b)) return null;
+    return { s:a, e: b + DAY, allDay:true };
+  }
   const s = localToMs(document.getElementById('sFrom').value);
   const e = localToMs(document.getElementById('sTo').value);
   if (isNaN(s) || isNaN(e) || e <= s) return null;
-  return { s, e };
+  return { s, e, allDay:false };
 }
 async function runSeek(){
   const r = parseSeek();
@@ -1221,8 +1243,11 @@ function clearSeek(){
   SEEK = null; HILITE = null; SEEK_SEL = new Set();
   document.getElementById('sFrom').value = msToLocal(weekTopMs(Date.now()) +  9*3600e3);
   document.getElementById('sTo').value   = msToLocal(weekTopMs(Date.now()) + 17*3600e3);
+  document.getElementById('sFromD').value = msToDate(weekTopMs(Date.now()));
+  document.getElementById('sToD').value   = msToDate(weekTopMs(Date.now()));
   render(); paintSeek();
 }
+document.getElementById('sAllDay').addEventListener('change', paintSAllDay);
 
 function paintSeek(){
   const p = document.getElementById('seek-panel');
@@ -1233,8 +1258,13 @@ function paintSeek(){
      .forEach(r => { if (!busy.has(r.mid)) busy.set(r.mid, []); busy.get(r.mid).push(r); });
 
   const cat = document.getElementById('cat').value;
-  /* 部品・オプションと予約対象外は候補に出さない（画面のチェックと同じ考え方） */
-  const target = MACHINES.filter(m => (!cat || m.cat === cat) && m.resv && !m.ng && !m.part);
+  const q   = document.getElementById('q').value.trim().toLowerCase();
+  /* 部品・オプションと予約対象外は候補に出さない（画面のチェックと同じ考え方）。
+     ★キーワード検索も対象にする★ 「PAL」→「DA」のように絞り込みながら
+     選ぶ使い方をするので、グリッドの検索欄と同じ言葉で空き検索も絞れないと
+     不便（以前はグリッドの絞り込みにしか効いていなかった）。 */
+  const target = MACHINES.filter(m => (!cat || m.cat === cat) && (!q || m.n.toLowerCase().includes(q))
+                                    && m.resv && !m.ng && !m.part);
   const free = target.filter(m => !busy.has(m.id));
   const used = target.filter(m =>  busy.has(m.id));
 
@@ -1307,7 +1337,7 @@ document.getElementById('next').onclick  = () => goWeek(curWeek + WK);
 document.getElementById('today').onclick = () => goWeek(weekTopMs(Date.now()));
 ['cat','nopart','nong','onlyres','showcxl'].forEach(id =>
   document.getElementById(id).onchange = () => { render(); paintSeek(); writeUrl(); });
-document.getElementById('q').oninput = () => { render(); writeUrl(); };
+document.getElementById('q').oninput = () => { render(); paintSeek(); writeUrl(); };
 
 document.getElementById('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i');
@@ -1651,7 +1681,7 @@ async function doReserve(){
 function openBulkNew(){
   if (!SEEK || !SEEK_SEL.size) return;
   const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
-  document.getElementById('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}`;
+  document.getElementById('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}`;
   document.getElementById('bMachinesLabel').textContent = `機体（${list.length}台）`;
   document.getElementById('bMachines').innerHTML = list.map(m => `<span class="chip">${esc(m.n)}</span>`).join('');
   ['bTitle','bCust','bDest','bNotes'].forEach(id => document.getElementById(id).value = '');
