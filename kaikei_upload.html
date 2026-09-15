@@ -18,6 +18,16 @@
   #drop.hot, #dropSeed.hot, #dropFactory.hot { border-color:var(--accent); }
   #factoryPaste { width:100%; height:130px; font-family:ui-monospace,monospace; font-size:12px; padding:10px;
                   border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); resize:vertical; }
+  .manual-box { border:1px solid var(--border); border-radius:8px; background:var(--panel); padding:14px 16px; }
+  .manual-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:13px; }
+  .manual-row + .manual-row { margin-top:10px; }
+  .manual-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0; }
+  @media(max-width:640px){ .manual-grid { grid-template-columns:repeat(2,1fr); } }
+  .manual-grid label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+  .manual-grid input, .manual-row input { border:1px solid var(--border); border-radius:4px; padding:6px 8px;
+                       font-size:13px; text-align:right; font-variant-numeric:tabular-nums;
+                       background:var(--bg); color:var(--text); }
+  .manual-row input { text-align:left; }
   .btn { font:inherit; font-size:14px; padding:10px 22px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
   .btn:disabled { opacity:.5; cursor:default; }
   #gate { text-align:center; padding:60px 0; }
@@ -72,6 +82,40 @@
   <textarea id="factoryPaste" placeholder="ここに貼り付け"></textarea>
   <div style="text-align:right;margin-top:6px;">
     <button class="btn" id="pasteFactoryBtn">貼り付けた内容を取り込む</button>
+  </div>
+
+  <h3 style="font-size:13px;margin-top:22px;color:var(--accent);">手入力（決算整理などで自動計算と合わない月）</h3>
+  <p class="note" style="margin-bottom:6px;">
+    確定した金額を直接入力して上書きします。決算月のように、表の出荷群と資料の区分が一致しない月に使います。
+  </p>
+  <div class="manual-box">
+    <div class="manual-row">
+      <label>年月度</label>
+      <input type="text" id="mYm" placeholder="202603" style="width:90px;">
+      <button class="btn" id="mLoadBtn" style="padding:6px 14px;font-size:13px;">現在の値を読み込む</button>
+      <span id="mStatus" class="note" style="margin:0;"></span>
+    </div>
+    <div class="manual-sub">売上金額</div>
+    <div class="manual-grid">
+      <label>第一工場<input type="number" id="m_f1" class="m-amt"></label>
+      <label>第二工場<input type="number" id="m_f2" class="m-amt"></label>
+      <label>第三工場<input type="number" id="m_f3" class="m-amt"></label>
+      <label>購買<input type="number" id="m_kb" class="m-amt"></label>
+      <label>運賃<input type="number" id="m_un" class="m-amt"></label>
+      <label>未分類<input type="number" id="m_mi" class="m-amt"></label>
+    </div>
+    <div class="manual-sub">仕入金額（分かる場合のみ。運賃には仕入なし）</div>
+    <div class="manual-grid">
+      <label>第一工場<input type="number" id="p_f1" class="p-amt"></label>
+      <label>第二工場<input type="number" id="p_f2" class="p-amt"></label>
+      <label>第三工場<input type="number" id="p_f3" class="p-amt"></label>
+      <label>購買<input type="number" id="p_kb" class="p-amt"></label>
+    </div>
+    <div class="manual-row">
+      <span>売上合計 <b id="mTotal">0</b> 円</span>
+      <span style="margin-left:18px;">仕入合計 <b id="pTotal">0</b> 円</span>
+      <button class="btn" id="mSaveBtn" style="margin-left:auto;">この内容で保存</button>
+    </div>
   </div>
 
   <h2>初回セットアップ（勘定科目マスタ・予算・前年実績）</h2>
@@ -333,7 +377,7 @@ async function saveFactorySales(text) {
   }
 
   const prev = await kaikeiGetFile('summary/' + month + '.json', { allow404: true }) || {};
-  prev.factorySales = { lines, total, importedAt: new Date().toISOString() };
+  prev.factorySales = { lines, total, source: 'import', importedAt: new Date().toISOString() };
   await kaikeiPutFile('summary/' + month + '.json', prev);
   log('OK   summary/' + month + '.json に工場別売上を保存しました。', 'ok');
 }
@@ -373,6 +417,70 @@ dzF.addEventListener('drop', e => {
   const f = e.dataTransfer.files[0];
   if (f) importFactorySales(f).catch(err => log('エラー: ' + err.message, 'err'));
 });
+/* ---- 工場別売上・仕入の手入力 ---- */
+const M_FIELDS = { m_f1: '第一工場', m_f2: '第二工場', m_f3: '第三工場', m_kb: '購買', m_un: '運賃', m_mi: '未分類' };
+const P_FIELDS = { p_f1: '第一工場', p_f2: '第二工場', p_f3: '第三工場', p_kb: '購買' };
+
+function readFields(fields) {
+  const out = {};
+  for (const [id, key] of Object.entries(fields)) {
+    const raw = document.getElementById(id).value;
+    if (raw !== '') out[key] = parseFloat(raw) || 0;
+  }
+  return out;
+}
+function updateManualTotal() {
+  const sum = o => Object.values(o).reduce((a, b) => a + b, 0);
+  document.getElementById('mTotal').textContent = Math.round(sum(readFields(M_FIELDS))).toLocaleString('ja-JP');
+  document.getElementById('pTotal').textContent = Math.round(sum(readFields(P_FIELDS))).toLocaleString('ja-JP');
+}
+[...Object.keys(M_FIELDS), ...Object.keys(P_FIELDS)]
+  .forEach(id => document.getElementById(id).addEventListener('input', updateManualTotal));
+
+document.getElementById('mLoadBtn').addEventListener('click', async () => {
+  const ym = document.getElementById('mYm').value.trim();
+  const st = document.getElementById('mStatus');
+  if (!/^\d{6}$/.test(ym)) { st.textContent = '年月度は YYYYMM 形式で入力してください'; return; }
+  st.textContent = '読み込み中...';
+  try {
+    const sum = await kaikeiGetFile('summary/' + ym + '.json', { allow404: true });
+    const fs = sum && sum.factorySales, fp = sum && sum.factoryPurchase;
+    for (const [id, key] of Object.entries(M_FIELDS)) {
+      document.getElementById(id).value = (fs && fs.lines && fs.lines[key] !== undefined) ? fs.lines[key] : '';
+    }
+    for (const [id, key] of Object.entries(P_FIELDS)) {
+      document.getElementById(id).value = (fp && fp.lines && fp.lines[key] !== undefined) ? fp.lines[key] : '';
+    }
+    updateManualTotal();
+    st.textContent = fs
+      ? `現在の値を読み込みました（売上: ${fs.source === 'manual' ? '手入力' : '取り込み'} / ${(fs.importedAt || '').slice(0, 10)}）`
+      : 'この月の工場別データはまだ登録されていません';
+  } catch (e) { st.textContent = 'エラー: ' + e.message; }
+});
+
+document.getElementById('mSaveBtn').addEventListener('click', async () => {
+  const ym = document.getElementById('mYm').value.trim();
+  if (!/^\d{6}$/.test(ym)) { log('年月度は YYYYMM 形式で入力してください（例: 202603）', 'err'); return; }
+  const salesLines = readFields(M_FIELDS);
+  const purchaseLines = readFields(P_FIELDS);
+  const sum = o => Object.values(o).reduce((a, b) => a + b, 0);
+  const salesTotal = sum(salesLines), purchaseTotal = sum(purchaseLines);
+  if (!salesTotal && !purchaseTotal) { log('金額がすべて未入力です。', 'err'); return; }
+  try {
+    const prev = await kaikeiGetFile('summary/' + ym + '.json', { allow404: true }) || {};
+    const now = new Date().toISOString();
+    if (salesTotal) {
+      prev.factorySales = { lines: salesLines, total: salesTotal, source: 'manual', importedAt: now };
+      log(`OK   ${ym} 工場別売上を手入力で保存（合計 ${salesTotal.toLocaleString()}円）`, 'ok');
+    }
+    if (purchaseTotal) {
+      prev.factoryPurchase = { lines: purchaseLines, total: purchaseTotal, source: 'manual', importedAt: now };
+      log(`OK   ${ym} 工場別仕入を手入力で保存（合計 ${purchaseTotal.toLocaleString()}円）`, 'ok');
+    }
+    await kaikeiPutFile('summary/' + ym + '.json', prev);
+  } catch (e) { log('エラー: ' + e.message, 'err'); }
+});
+
 document.getElementById('pasteFactoryBtn').addEventListener('click', async () => {
   const ta = document.getElementById('factoryPaste');
   if (!ta.value.trim()) { log('貼り付け欄が空です。', 'err'); return; }
