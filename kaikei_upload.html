@@ -16,6 +16,8 @@
   p.note { color:var(--muted); font-size:13px; line-height:1.7; }
   #drop, #dropSeed, #dropFactory { border:2px dashed var(--border); border-radius:10px; background:var(--panel); padding:40px 24px; text-align:center; margin:16px 0; }
   #drop.hot, #dropSeed.hot, #dropFactory.hot { border-color:var(--accent); }
+  #factoryPaste { width:100%; height:130px; font-family:ui-monospace,monospace; font-size:12px; padding:10px;
+                  border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); resize:vertical; }
   .btn { font:inherit; font-size:14px; padding:10px 22px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
   .btn:disabled { opacity:.5; cursor:default; }
   #gate { text-align:center; padding:60px 0; }
@@ -65,6 +67,11 @@
     <p>工場別売上実績表（CSV）をここにドラッグ、または</p>
     <button class="btn" id="pickFactoryBtn">ファイルを選ぶ</button>
     <input type="file" id="fFactory" accept=".csv,.txt,.tsv" class="hide">
+  </div>
+  <p class="note" style="margin-bottom:6px;">画面からコピーした内容を貼り付けても取り込めます（「集計期間:〇年〇月度のみ」の行から末尾まで貼ってください）。</p>
+  <textarea id="factoryPaste" placeholder="ここに貼り付け"></textarea>
+  <div style="text-align:right;margin-top:6px;">
+    <button class="btn" id="pasteFactoryBtn">貼り付けた内容を取り込む</button>
   </div>
 
   <h2>初回セットアップ（勘定科目マスタ・予算・前年実績）</h2>
@@ -236,18 +243,20 @@ function parseFactorySales(text) {
 
   let month = null;
   let headerIdx = -1;
+  // 見出しは「工場別出荷郡」、データ行は「出荷群」と表記ゆれがあるため、共通部分だけで探す
+  const GROUP_HEADER = '工場別出荷';
   for (let i = 0; i < rows.length && i < 30; i++) {
     const line = rows[i].join(' ');
     const m = line.match(/集計期間[:：].*?(\d{4})\s*年\s*(\d{1,2})\s*月/);
     if (m) month = m[1] + String(m[2]).padStart(2, '0');
-    if (rows[i].some(c => (c || '').includes('工場別出荷群'))) headerIdx = i;
+    if (rows[i].some(c => (c || '').includes(GROUP_HEADER))) headerIdx = i;
     if (month && headerIdx >= 0) break;
   }
   if (!month) throw new Error('「集計期間:YYYY年M月度」の行が見つかりませんでした。');
-  if (headerIdx < 0) throw new Error('「工場別出荷群」の見出し行が見つかりませんでした。');
+  if (headerIdx < 0) throw new Error('「工場別出荷郡(群)」の見出し行が見つかりませんでした。');
 
   const header = rows[headerIdx].map(c => (c || '').trim());
-  const iGroup = header.findIndex(h => h.includes('工場別出荷群'));
+  const iGroup = header.findIndex(h => h.includes(GROUP_HEADER));
   const iChu = header.findIndex(h => h.includes('中分類'));
   const iItem = header.findIndex(h => h.includes('品目名'));
   const iAmt = header.findIndex(h => h.includes('純売上額'));
@@ -287,24 +296,34 @@ async function importFactorySales(file) {
   let text = null;
   for (const enc of ['utf-16le', 'utf-8', 'shift_jis']) {
     const cand = new TextDecoder(enc, { fatal: false }).decode(buf);
-    if (cand.includes('工場別出荷群')) { text = cand; break; }
+    if (cand.includes('工場別出荷')) { text = cand; break; }
   }
   if (!text) throw new Error('文字コードを判別できませんでした（UTF-16/UTF-8/Shift_JIS を試しました）。');
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  await saveFactorySales(text);
+}
 
+async function saveFactorySales(text) {
   const { month, lines, groups, subtotals, grandTotal } = parseFactorySales(text);
   log('対象年月度: ' + month);
 
-  // 検算: 明細の合計と【小計】が一致するか
+  // 検算1: 出荷群ごとに、明細の合計と【小計】が一致するか
   for (const [g, sub] of Object.entries(subtotals)) {
     const got = groups[g] || 0;
-    if (Math.abs(got - sub) > 1) log(`検算注意 ${g}: 明細合計 ${got.toLocaleString()} ≠ 小計 ${sub.toLocaleString()}`, 'warn');
+    if (Math.abs(got - sub) > 1) {
+      throw new Error(`${g} の明細合計 ${got.toLocaleString()}円 が【小計】${sub.toLocaleString()}円 と一致しません。`
+        + 'データが途中で切れていないか確認してください（保存していません）。');
+    }
   }
+  // 検算2: 5区分の合計と【総合計】が一致するか。合わないものは保存しない
   const total = Object.values(lines).reduce((a, b) => a + b, 0);
-  if (grandTotal !== null && Math.abs(total - grandTotal) > 1) {
-    log(`検算注意: 合計 ${total.toLocaleString()} ≠ 総合計 ${grandTotal.toLocaleString()}`, 'warn');
+  if (grandTotal === null) {
+    log('【総合計】の行が見つかりませんでした。末尾まで貼り付けているか確認してください。', 'warn');
+  } else if (Math.abs(total - grandTotal) > 1) {
+    throw new Error(`合計 ${total.toLocaleString()}円 が【総合計】${grandTotal.toLocaleString()}円 と一致しません。`
+      + 'データが途中で切れていないか確認してください（保存していません）。');
   } else {
-    log('検算OK: 合計 ' + total.toLocaleString() + '円', 'ok');
+    log('検算OK: 合計 ' + total.toLocaleString() + '円 =【総合計】', 'ok');
   }
   for (const [k, v] of Object.entries(lines)) log('   ' + k + ': ' + v.toLocaleString() + '円');
 
@@ -348,6 +367,15 @@ document.getElementById('fFactory').addEventListener('change', e => { if (e.targ
 dzF.addEventListener('drop', e => {
   const f = e.dataTransfer.files[0];
   if (f) importFactorySales(f).catch(err => log('エラー: ' + err.message, 'err'));
+});
+document.getElementById('pasteFactoryBtn').addEventListener('click', async () => {
+  const ta = document.getElementById('factoryPaste');
+  if (!ta.value.trim()) { log('貼り付け欄が空です。', 'err'); return; }
+  log('貼り付けた内容を取り込み中...');
+  try {
+    await saveFactorySales(ta.value);
+    ta.value = '';
+  } catch (err) { log('エラー: ' + err.message, 'err'); }
 });
 
 const dzSeed = document.getElementById('dropSeed');
