@@ -263,26 +263,28 @@ function parseFactorySales(text) {
   if (iAmt < 0) throw new Error('「純売上額」の列が見つかりませんでした。');
 
   const num = s => parseFloat(String(s || '').replace(/[,\s￥]/g, '')) || 0;
+  const NO_GROUP = '(出荷群なし)';
   const groups = {};        // 出荷群 -> 明細合計
   const subtotals = {};     // 出荷群 -> 【小計】の値（検算用）
   let grandTotal = null;
-  const lines = { 第一工場: 0, 第二工場: 0, 第三工場: 0, 購買: 0, 運賃: 0 };
+  // 出荷群が空欄の行があるため、未分類の受け皿を用意する（捨てると合計が合わなくなる）
+  const lines = { 第一工場: 0, 第二工場: 0, 第三工場: 0, 購買: 0, 運賃: 0, 未分類: 0 };
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || row.length <= iAmt) continue;
-    const group = (row[iGroup] || '').trim();
     const item = (row[iItem] || '').trim();
     const amt = num(row[iAmt]);
 
     if (item.includes('総合計')) { grandTotal = amt; continue; }
+    const group = (row[iGroup] || '').trim() || NO_GROUP;
     if (item.includes('小計')) { subtotals[group] = amt; continue; }
-    if (!group) continue;
 
     groups[group] = (groups[group] || 0) + amt;
     if (group.includes('第一')) lines.第一工場 += amt;
     else if (group.includes('第二')) lines.第二工場 += amt;
     else if (group.includes('第三')) lines.第三工場 += amt;
+    else if (group === NO_GROUP) lines.未分類 += amt;
     else if (isFreightCategory((row[iChu] || '').trim())) lines.運賃 += amt;
     else lines.購買 += amt;
   }
@@ -326,6 +328,9 @@ async function saveFactorySales(text) {
     log('検算OK: 合計 ' + total.toLocaleString() + '円 =【総合計】', 'ok');
   }
   for (const [k, v] of Object.entries(lines)) log('   ' + k + ': ' + v.toLocaleString() + '円');
+  if (Math.abs(lines.未分類) > 0.5) {
+    log('※ 出荷群が空欄の行が ' + lines.未分類.toLocaleString() + '円 あります（未分類として保存）。', 'warn');
+  }
 
   const prev = await kaikeiGetFile('summary/' + month + '.json', { allow404: true }) || {};
   prev.factorySales = { lines, total, importedAt: new Date().toISOString() };
