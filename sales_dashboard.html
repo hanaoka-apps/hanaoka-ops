@@ -599,13 +599,10 @@ function _toggleNavSection(id) {
 <section class="prod-section" style="margin-top:16px">
   <h2 class="exp-title">🏭 工場別売上 <span class="hint">工場別付加価名で絞り込み（購買は全て合算して1つに集計）</span></h2>
   <div id="factorySalesMonthLabel" style="font-size:12px; color:var(--gray); margin:4px 0 10px 0"></div>
-  <div style="margin:10px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-    <label style="font-size:12px; color:#555">絞込:</label>
-    <div style="position:relative">
-      <input type="text" id="factory-search" placeholder="🔍 工場別付加価名 (例: 第一, 購買, 運賃 …)" autocomplete="off" style="padding:6px 10px; border:1px solid #d1d5db; border-radius:5px; font-size:13px; width:320px">
-      <div id="factory-search-suggest" class="orders-suggest" style="display:none; position:absolute; top:100%; left:0; right:0; margin-top:2px; background:white; border:1px solid #d1d5db; border-radius:5px; box-shadow:0 4px 12px rgba(0,0,0,0.1); max-height:220px; overflow-y:auto; z-index:100"></div>
-    </div>
-    <button id="factory-clear" style="padding:4px 10px; font-size:11px; background:#f0ede2; border:1px solid #d1d5db; border-radius:4px; cursor:pointer">✕ クリア</button>
+  <div id="factoryChkList" style="margin:10px 0; padding:10px; background:#faf7ef; border:1px solid #e6ddcb; border-radius:6px; display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center"></div>
+  <div style="margin:6px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+    <button id="factory-check-all" style="padding:4px 10px; font-size:11px; background:#e8f3ff; border:1px solid #b3d6ff; border-radius:4px; cursor:pointer">☑ 全選択</button>
+    <button id="factory-uncheck-all" style="padding:4px 10px; font-size:11px; background:#f5f5f5; border:1px solid #d1d5db; border-radius:4px; cursor:pointer">☐ 全解除</button>
     <span id="factorySalesCount" style="font-size:12px; color:#666; margin-left:auto"></span>
   </div>
   <div id="factorySalesTable" style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:6px; background:#fff"></div>
@@ -3490,6 +3487,24 @@ function _prevYm(ym){
   const y = Math.floor(ym/100), m = ym%100;
   return (y-1)*100 + m;
 }
+// 選択状態 (正規化後の名称 → true/false)
+var _factoryChecked = null;
+
+function _collectFactoryCategories(){
+  // rows から全工場別付加価名を収集 → 正規化 (購買集約) → ソート
+  const set = new Set();
+  let hasFactoryData = false;
+  for (const r of (RAW.rows || [])){
+    if (r.length <= IDX.factory_pv) continue;
+    const v = r[IDX.factory_pv];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) { hasFactoryData = true; set.add(_normalizeFactoryName(s)); }
+  }
+  if (!hasFactoryData) set.add('(未分類)');
+  return { list: Array.from(set).sort((a,b) => a.localeCompare(b, 'ja')), hasData: hasFactoryData };
+}
+
 function renderFactorySales(){
   const tbl = document.getElementById('factorySalesTable');
   const countEl = document.getElementById('factorySalesCount');
@@ -3499,126 +3514,126 @@ function renderFactorySales(){
   const singleYm = rp ? parseInt(rp.singleYm) : parseInt(_currentCalendarYm());
   const fromYm = rp ? parseInt(rp.fromYm) : singleYm;
   const toYm = rp ? parseInt(rp.toYm) : singleYm;
-  const prevSingle = _prevYm(singleYm);
-  const prevFrom = _prevYm(fromYm);
-  const prevTo = _prevYm(toYm);
   if (lblEl) lblEl.textContent = `対象単月: ${singleYm} / 対象累計: ${fromYm} 〜 ${toYm}`;
 
-  const q = ((document.getElementById('factory-search') || {}).value || '').trim();
+  // 選択状態
+  const checked = _factoryChecked || {};
 
-  // 集計
+  // 集計 (選択された分類のみ)
   const byFactory = {};
   const rows = RAW.rows || [];
   for (const r of rows){
-    if (Number(r[IDX.kind]) === 2) continue; // 返品除外
+    if (Number(r[IDX.kind]) === 2) continue;
     if (isInternalTransfer(r)) continue;
     const raw = r[IDX.factory_pv];
-    if (q && String(raw || '').indexOf(q) < 0) continue;
     const factory = _normalizeFactoryName(raw);
+    if (checked[factory] === false) continue; // チェック外し
     const amt = Number(r[IDX.amount]) || 0;
     const ym = Number(r[IDX.ym]) || 0;
-    if (!byFactory[factory]) byFactory[factory] = {single:0, cum:0, prevSingle:0, prevCum:0, cnt:0};
+    if (!byFactory[factory]) byFactory[factory] = {single:0, cum:0};
     if (ym === singleYm) byFactory[factory].single += amt;
-    if (ym >= fromYm && ym <= toYm) { byFactory[factory].cum += amt; byFactory[factory].cnt++; }
-    if (ym === prevSingle) byFactory[factory].prevSingle += amt;
-    if (ym >= prevFrom && ym <= prevTo) byFactory[factory].prevCum += amt;
+    if (ym >= fromYm && ym <= toYm) byFactory[factory].cum += amt;
   }
 
   const list = Object.entries(byFactory).sort((a,b) => b[1].cum - a[1].cum);
   if (countEl){
     const total = list.reduce((s, [_,v]) => s + v.cum, 0);
-    countEl.innerHTML = `該当: <b>${list.length}</b> 分類 / 累計合計 <b style="color:var(--navy)">${Math.round(total/10000).toLocaleString()}</b> 万`;
+    const totalSingle = list.reduce((s, [_,v]) => s + v.single, 0);
+    countEl.innerHTML = `<b>${list.length}</b> 分類選択中 / 単月 <b style="color:var(--navy)">${Math.round(totalSingle/10000).toLocaleString()}</b> 万 / 累計 <b style="color:var(--navy)">${Math.round(total/10000).toLocaleString()}</b> 万`;
   }
   if (list.length === 0){
-    tbl.innerHTML = '<div style="padding:20px; text-align:center; color:#999">該当データなし</div>';
+    tbl.innerHTML = '<div style="padding:20px; text-align:center; color:#999">選択された分類なし（上のチェックボックスから選択してください）</div>';
     return;
   }
 
-  let totS=0, totC=0, totPS=0, totPC=0;
-  const yoy = (a, b) => (b > 0 ? ((a/b*100).toFixed(1) + '%') : '—');
-  const yoyColor = (a, b) => {
-    if (b <= 0) return '#888';
-    const p = a/b*100;
-    if (p >= 100) return '#16a34a';
-    if (p >= 80) return '#e89c3f';
-    return '#d94a4a';
-  };
+  let totS = 0, totC = 0;
   const bodyHtml = list.map(([nm, v]) => {
-    totS += v.single; totC += v.cum; totPS += v.prevSingle; totPC += v.prevCum;
-    return `<tr style="border-bottom:1px solid #f0f0f0">
-      <td style="padding:6px 10px; font-weight:600">${_visitsEscapeHtml(nm)}</td>
-      <td style="padding:6px 10px; text-align:right">${Math.round(v.single/10000).toLocaleString()}</td>
-      <td style="padding:6px 10px; text-align:right; color:#666">${Math.round(v.prevSingle/10000).toLocaleString()}</td>
-      <td style="padding:6px 10px; text-align:right; font-weight:600; color:${yoyColor(v.single, v.prevSingle)}">${yoy(v.single, v.prevSingle)}</td>
-      <td style="padding:6px 10px; text-align:right; font-weight:700; color:var(--navy)">${Math.round(v.cum/10000).toLocaleString()}</td>
-      <td style="padding:6px 10px; text-align:right; color:#666">${Math.round(v.prevCum/10000).toLocaleString()}</td>
-      <td style="padding:6px 10px; text-align:right; font-weight:600; color:${yoyColor(v.cum, v.prevCum)}">${yoy(v.cum, v.prevCum)}</td>
+    totS += v.single; totC += v.cum;
+    const isEmpty = nm === '(未分類)';
+    return `<tr style="border-bottom:1px solid #f0f0f0; ${isEmpty ? 'color:#999' : ''}">
+      <td style="padding:8px 12px; font-weight:600">${_visitsEscapeHtml(nm)}</td>
+      <td style="padding:8px 12px; text-align:right; font-weight:600">${Math.round(v.single/10000).toLocaleString()}</td>
+      <td style="padding:8px 12px; text-align:right; font-weight:700; color:var(--navy)">${Math.round(v.cum/10000).toLocaleString()}</td>
     </tr>`;
   }).join('');
   const footHtml = `<tr style="background:#f7f3ea; border-top:2px solid #c9a66b; font-weight:800">
-    <td style="padding:8px 10px">合計</td>
-    <td style="padding:8px 10px; text-align:right">${Math.round(totS/10000).toLocaleString()}</td>
-    <td style="padding:8px 10px; text-align:right; color:#666">${Math.round(totPS/10000).toLocaleString()}</td>
-    <td style="padding:8px 10px; text-align:right; color:${yoyColor(totS, totPS)}">${yoy(totS, totPS)}</td>
-    <td style="padding:8px 10px; text-align:right; color:var(--navy)">${Math.round(totC/10000).toLocaleString()}</td>
-    <td style="padding:8px 10px; text-align:right; color:#666">${Math.round(totPC/10000).toLocaleString()}</td>
-    <td style="padding:8px 10px; text-align:right; color:${yoyColor(totC, totPC)}">${yoy(totC, totPC)}</td>
+    <td style="padding:10px 12px">合計</td>
+    <td style="padding:10px 12px; text-align:right">${Math.round(totS/10000).toLocaleString()}</td>
+    <td style="padding:10px 12px; text-align:right; color:var(--navy)">${Math.round(totC/10000).toLocaleString()}</td>
   </tr>`;
-  tbl.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:12px; min-width:800px">
+  tbl.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:13px; min-width:500px">
     <thead style="position:sticky; top:0; z-index:1; background:#0e1a36">
       <tr style="color:#c9a04a">
-        <th style="padding:8px 10px; text-align:left">工場別付加価名</th>
-        <th style="padding:8px 10px; text-align:right; min-width:90px">単月<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
-        <th style="padding:8px 10px; text-align:right; min-width:90px">前年同月<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
-        <th style="padding:8px 10px; text-align:right; min-width:70px">前年比</th>
-        <th style="padding:8px 10px; text-align:right; min-width:100px">累計<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
-        <th style="padding:8px 10px; text-align:right; min-width:100px">前年累計<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
-        <th style="padding:8px 10px; text-align:right; min-width:70px">前年比</th>
+        <th style="padding:10px 12px; text-align:left">工場別付加価名</th>
+        <th style="padding:10px 12px; text-align:right; min-width:120px">単月実績<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
+        <th style="padding:10px 12px; text-align:right; min-width:130px">累計実績<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
       </tr>
     </thead>
     <tbody>${bodyHtml}${footHtml}</tbody>
   </table>`;
 }
 
-// 初期化: 検索欄・クリアボタン・サジェスト
+// 初期化: チェックボックスリスト
 function initFactorySales(){
-  const input = document.getElementById('factory-search');
-  const sug = document.getElementById('factory-search-suggest');
-  const clr = document.getElementById('factory-clear');
-  if (!input) return;
+  const listEl = document.getElementById('factoryChkList');
+  const btnAll = document.getElementById('factory-check-all');
+  const btnNone = document.getElementById('factory-uncheck-all');
+  if (!listEl) return;
 
-  // 全工場別付加価名を収集 (生の値のまま、正規化前でサジェスト表示)
-  const set = new Set();
-  for (const r of (RAW.rows || [])){
-    const v = String(r[IDX.factory_pv] || '').trim();
-    if (v) set.add(v);
+  const { list: categories, hasData } = _collectFactoryCategories();
+
+  // 初回のみデフォルト全チェック
+  if (_factoryChecked === null){
+    _factoryChecked = {};
+    categories.forEach(c => { _factoryChecked[c] = true; });
+  } else {
+    // 新カテゴリはデフォルトON
+    categories.forEach(c => { if (!(c in _factoryChecked)) _factoryChecked[c] = true; });
   }
-  const candidates = Array.from(set).sort((a,b) => a.localeCompare(b, 'ja'));
 
-  if (input._factInit) { renderFactorySales(); return; }
-  input._factInit = true;
+  const warn = !hasData ? `<div style="padding:6px 8px; margin-bottom:6px; background:#fff3cd; border:1px solid #ffc107; border-radius:4px; color:#856404; font-size:12px; width:100%">⚠️ 工場別付加価名データがまだ取り込まれていません。GitHub Actionsで regenerate_facts.py を再実行してください。</div>` : '';
 
-  const showSug = (val) => {
-    const q = String(val || '').trim();
-    if (!q) { sug.style.display = 'none'; sug.innerHTML = ''; return; }
-    const matches = candidates.filter(c => c.indexOf(q) >= 0).slice(0, 30);
-    if (matches.length === 0) { sug.style.display = 'none'; sug.innerHTML = ''; return; }
-    sug.innerHTML = matches.map(m => `<div class="factory-suggest-item" data-val="${_visitsEscapeHtml(m)}" style="padding:6px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid #f0f0f0" onmouseover="this.style.background='#f5efe0'" onmouseout="this.style.background=''">${_visitsEscapeHtml(m)}</div>`).join('');
-    sug.style.display = 'block';
-  };
-  input.addEventListener('input', () => { showSug(input.value); renderFactorySales(); });
-  input.addEventListener('focus', () => { if (input.value) showSug(input.value); });
-  input.addEventListener('blur', () => { setTimeout(() => { sug.style.display = 'none'; }, 200); });
-  sug.addEventListener('mousedown', (e) => {
-    const it = e.target.closest('.factory-suggest-item');
-    if (it) { input.value = it.dataset.val || ''; sug.style.display = 'none'; renderFactorySales(); }
+  const chkHtml = categories.map(c => {
+    const on = _factoryChecked[c] !== false;
+    const isEmpty = c === '(未分類)';
+    return `<label class="factory-chk-item" style="display:inline-flex; align-items:center; gap:5px; padding:4px 10px; background:${on ? '#0e1a36' : '#fff'}; color:${on ? '#fff' : (isEmpty ? '#999' : '#333')}; border:1px solid ${on ? '#0e1a36' : '#d1d5db'}; border-radius:16px; cursor:pointer; font-size:12px; transition:all 0.15s; user-select:none">
+      <input type="checkbox" data-cat="${_visitsEscapeHtml(c)}" ${on ? 'checked' : ''} style="margin:0; cursor:pointer">
+      <span>${_visitsEscapeHtml(c)}</span>
+    </label>`;
+  }).join('');
+  listEl.innerHTML = warn + chkHtml;
+
+  // チェックイベント (委任)
+  listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const cat = cb.dataset.cat;
+      _factoryChecked[cat] = cb.checked;
+      // ラベルの色を即時更新
+      const lbl = cb.closest('label');
+      if (lbl){
+        lbl.style.background = cb.checked ? '#0e1a36' : '#fff';
+        lbl.style.color = cb.checked ? '#fff' : ((cat === '(未分類)') ? '#999' : '#333');
+        lbl.style.borderColor = cb.checked ? '#0e1a36' : '#d1d5db';
+      }
+      renderFactorySales();
+    });
   });
-  if (clr) clr.addEventListener('click', () => {
-    input.value = '';
-    sug.style.display = 'none';
-    sug.innerHTML = '';
-    renderFactorySales();
-  });
+
+  if (btnAll && !btnAll._factInit){
+    btnAll._factInit = true;
+    btnAll.addEventListener('click', () => {
+      categories.forEach(c => { _factoryChecked[c] = true; });
+      initFactorySales();
+    });
+  }
+  if (btnNone && !btnNone._factInit){
+    btnNone._factInit = true;
+    btnNone.addEventListener('click', () => {
+      categories.forEach(c => { _factoryChecked[c] = false; });
+      initFactorySales();
+    });
+  }
+
   renderFactorySales();
 }
 
