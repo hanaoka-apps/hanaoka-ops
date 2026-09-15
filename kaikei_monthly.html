@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>月次資料 | 花岡車輌</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<style>
+  :root { --primary:#1a5fa8; --bg:#f4f6f9; --card-bg:#fff; --border:#dde2ec; --text:#1e2533; --muted:#6b7a99;
+          --shadow:0 1px 4px rgba(0,0,0,.08); --head:#eef2f8; --sub:#f7f9fc; --bad:#c0392b; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Meiryo','Hiragino Sans',sans-serif; background:var(--bg); color:var(--text); }
+  nav { background:#1f1e1c;color:#fff;padding:8px 24px;font-size:13px;display:flex;gap:18px;align-items:center; }
+  nav a { color:#fff;text-decoration:none;opacity:.75; }
+  nav a.on { opacity:1; font-weight:700; }
+  #login-view { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; gap:16px; }
+  #login-view button { background:var(--primary); color:#fff; border:none; padding:12px 32px; border-radius:6px; font-size:15px; font-weight:700; cursor:pointer; }
+  #app-view { display:none; padding:16px 20px 60px; }
+  .bar { display:flex; align-items:center; gap:12px; background:var(--card-bg); border:1px solid var(--border);
+         border-radius:8px; padding:10px 14px; margin-bottom:14px; box-shadow:var(--shadow); flex-wrap:wrap; }
+  .bar select { border:1px solid var(--border); border-radius:4px; padding:5px 10px; font-size:13px; }
+  .bar .sp { margin-left:auto; font-size:12px; color:var(--muted); }
+  .note { font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .tbl-wrap { overflow-x:auto; background:var(--card-bg); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); }
+  table { border-collapse:collapse; font-size:12px; white-space:nowrap; }
+  th, td { padding:4px 8px; border-bottom:1px solid var(--border); }
+  thead th { background:var(--head); color:var(--primary); position:sticky; top:0; z-index:2; font-size:11px; }
+  td.lbl, th.lbl { position:sticky; left:0; background:var(--card-bg); text-align:left; min-width:220px; z-index:1; }
+  thead th.lbl { background:var(--head); z-index:3; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.section td { background:var(--sub); font-weight:700; }
+  tr.section td.lbl { background:var(--sub); }
+  tr.total td { font-weight:700; border-top:2px solid var(--primary); }
+  tr.total td.lbl { font-weight:700; }
+  td.cum { background:#f4f7fc; font-weight:700; }
+  .indent { padding-left:22px; color:var(--muted); }
+  .pending { color:var(--muted); font-style:italic; }
+  .warn { background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:8px 12px; font-size:12px; margin-bottom:10px; color:#664d00; }
+  .empty-msg { color:var(--muted); font-size:13px; padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+<nav>
+  <strong style="opacity:.55;font-weight:600;">会計ダッシュボード</strong>
+  <a href="kaikei_dashboard.html">会計サマリー</a>
+  <a href="kaikei_monthly.html" class="on">月次資料</a>
+  <a href="kaikei_ledger.html">仕訳明細</a>
+  <a href="kaikei_budget.html">予算・前年実績</a>
+  <a href="kaikei_upload.html">データ取り込み</a>
+</nav>
+
+<div id="login-view">
+  <h2>月次資料</h2>
+  <p style="color:var(--muted);font-size:13px;">役員限定です。Microsoftアカウントでサインインしてください。</p>
+  <button id="login-btn">サインイン</button>
+  <div id="login-err" style="color:#b03636;font-size:13px;"></div>
+</div>
+
+<div id="app-view">
+  <div class="bar">
+    <label>年度</label>
+    <select id="fy-select"></select>
+    <span class="sp" id="status"></span>
+  </div>
+  <div id="warnBox"></div>
+  <p class="note">元帳CSVから自動集計しています。工場別の仕入は取り込み待ちのため「—」で表示します。</p>
+  <div class="tbl-wrap"><table id="tbl"></table></div>
+</div>
+
+<script src="kaikei_graph.js"></script>
+<script>
+/* ============ 勘定科目のグループ定義（損益推移表の構造に対応） ============ */
+const SALES_CODES    = [600, 601, 602, 603, 604, 605];
+const PURCHASE_CODES = [501, 502, 503];                       // 仕入高・仕入値引・仕入返品
+const MERCH_CODES    = [613, 614, 615, 616, 617];             // 商品仕入
+const MATERIAL_CODES = [500, 501, 502, 503, 504, 507, 964, 965, 966];
+const LABOR_F_CODES  = [510, 511, 512, 513, 514, 515, 516, 967, 968, 969, 970]; // 製造原価・労務費
+const LABOR_S_CODES  = [641, 643, 644, 645, 646, 647, 981, 982, 983, 984];      // 販管費・人件費
+const WIP_CODES      = [551, 552, 980, 960, 961, 962, 963];   // 仕掛品・棚卸
+/* 工場側の部門（月次資料の注記「工場他対象部署：工場全体、品管、工場総務、CS、技術」に対応） */
+const FACTORY_DEPTS  = ['第一工場', '第二工場', '第三工場', '工場全体', '工場総務', '品質管理部', '技術部', 'CSｴﾝｼﾞﾆｱﾘﾝｸﾞ'];
+const FACTORY_MAIN   = ['第一工場', '第二工場', '第三工場'];
+/* 売上の拠点グループ */
+const SALES_OFFICES = {
+  '本社':   ['本社営業', '営業本部', '全社業務ｾﾝﾀｰ', '本社', '本社総務部', '販売企画室'],
+  '大阪':   ['大阪'],
+  '名古屋': ['名古屋'],
+};
+const SOLUTION_DEPTS = ['ｿﾘｭｰｼｮﾝ営業'];
+
+let accountMaster = {};
+const summaries = {};   // month -> summary json
+let months = [];
+
+const fmt = n => (n === null || n === undefined) ? '—' : Math.round(n).toLocaleString('ja-JP');
+const fmtPct = n => (n === null || n === undefined || !isFinite(n)) ? '—' : (n * 100).toFixed(1) + '%';
+
+/* ============ 集計ヘルパー ============ */
+function signOf(code) {
+  const meta = accountMaster[String(code)];
+  if (!meta) return 0;
+  return meta.normalBalance === 'credit' ? -1 : 1;
+}
+/** 指定科目の当月ネット金額。deptsを渡すとその部門だけ集計する */
+function net(sum, codes, depts) {
+  if (!sum) return 0;
+  let out = 0;
+  for (const c of codes) {
+    const code = String(c);
+    const s = signOf(code);
+    if (!s) continue;
+    if (depts) {
+      const dmap = (sum.byDept || {})[code];
+      if (!dmap) continue;
+      for (const d of depts) {
+        const v = dmap[d];
+        if (v) out += s * (v.debit - v.credit);
+      }
+    } else {
+      const a = (sum.byAccount || {})[code];
+      if (a) out += s * (a.debit - a.credit);
+    }
+  }
+  return out;
+}
+/** 区分(売上原価/販管費)に属する科目のうち、除外リストを引いた「経費」科目コード一覧 */
+function expenseCodes() {
+  const excl = new Set([...MATERIAL_CODES, ...LABOR_F_CODES, ...LABOR_S_CODES, ...WIP_CODES, ...MERCH_CODES].map(String));
+  return Object.keys(accountMaster).filter(c => {
+    const sec = accountMaster[c].section;
+    return (sec === '売上原価' || sec === '販管費') && !excl.has(c);
+  });
+}
+function sectionCodes(section) {
+  return Object.keys(accountMaster).filter(c => accountMaster[c].section === section);
+}
+/** 部門リストの補集合（全社側） */
+function otherDepts(sum, exclude) {
+  const set = new Set();
+  for (const code of Object.keys(sum.byDept || {})) {
+    for (const d of Object.keys(sum.byDept[code])) if (!exclude.includes(d)) set.add(d);
+  }
+  return [...set];
+}
+
+/* ============ 1ヶ月分の計算 ============ */
+function calcMonth(month) {
+  const sum = summaries[month];
+  if (!sum) return null;
+  const officeSales = {};
+  let mappedSales = 0;
+  for (const [name, depts] of Object.entries(SALES_OFFICES)) {
+    officeSales[name] = net(sum, SALES_CODES, depts);
+    mappedSales += officeSales[name];
+  }
+  const solution = net(sum, SALES_CODES, SOLUTION_DEPTS);
+  mappedSales += solution;
+  const sales = net(sum, SALES_CODES);
+  const unmapped = sales - mappedSales;
+
+  const purchase = net(sum, PURCHASE_CODES);
+  const merch = net(sum, MERCH_CODES);
+  const purchaseTotal = purchase + merch;
+  const valueAdded = sales - purchaseTotal;
+
+  const invChange = -net(sum, WIP_CODES);                 // 在庫増減（増えるとプラス）
+  const costOfSales = purchaseTotal - invChange;          // 原価(仕入-在庫差額)
+  const valueAddedInv = sales - costOfSales;              // 在庫あり付加価値額
+
+  const expCodes = expenseCodes();
+  const factoryOther = otherDepts(sum, FACTORY_DEPTS);
+  const laborAll = [...LABOR_F_CODES, ...LABOR_S_CODES];
+
+  const laborFactory = net(sum, laborAll, FACTORY_DEPTS);
+  const laborCompany = net(sum, laborAll, factoryOther);
+  const expFactory = net(sum, expCodes, FACTORY_DEPTS);
+  const expCompany = net(sum, expCodes, factoryOther);
+
+  const laborPer = {}, expPer = {};
+  for (const f of FACTORY_MAIN) {
+    laborPer[f] = net(sum, laborAll, [f]);
+    expPer[f] = net(sum, expCodes, [f]);
+  }
+
+  const labor = laborFactory + laborCompany;
+  const expense = expFactory + expCompany;
+  const opInc = valueAddedInv - labor - expense;
+
+  const nonOpInc = net(sum, sectionCodes('営業外収益'));
+  const nonOpExp = net(sum, sectionCodes('営業外費用'));
+  const ordInc = opInc + nonOpInc - nonOpExp;
+  const extraInc = net(sum, sectionCodes('特別利益'));
+  const extraExp = net(sum, sectionCodes('特別損失'));
+  const preTax = ordInc + extraInc - extraExp;
+  const tax = net(sum, sectionCodes('法人税等'));
+  const netInc = preTax - tax;
+
+  const fs = sum.factorySales ? sum.factorySales.lines : null;
+
+  return {
+    officeSales, solution, unmapped, sales,
+    domestic: Object.values(officeSales).reduce((a, b) => a + b, 0),
+    purchase, merch, purchaseTotal, valueAdded,
+    vaRate: sales ? valueAdded / sales : null,
+    invChange, costOfSales, valueAddedInv,
+    vaInvRate: sales ? valueAddedInv / sales : null,
+    labor, laborFactory, laborCompany, laborPer,
+    expense, expFactory, expCompany, expPer,
+    cost: labor + expense,
+    opInc, nonOpInc, nonOpExp, ordInc, extraInc, extraExp, preTax, tax, netInc,
+    factorySales: fs,
+  };
+}
+
+/* ============ 表の組み立て ============ */
+function fyMonths(fyStartYear) {
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const y = fyStartYear + Math.floor((3 + i) / 12);
+    const m = ((3 + i) % 12) + 1;
+    out.push(String(y) + String(m).padStart(2, '0'));
+  }
+  return out;
+}
+
+function buildRows(data) {
+  // data: month -> calcMonth結果 (無い月はnull)
+  const R = [];
+  const push = (label, get, opts = {}) => R.push({ label, get, ...opts });
+
+  push('■ 売上', null, { section: true });
+  push('本社', d => d.officeSales['本社'], { indent: true });
+  push('大阪', d => d.officeSales['大阪'], { indent: true });
+  push('名古屋', d => d.officeSales['名古屋'], { indent: true });
+  push('国内営業', d => d.domestic);
+  push('ソリューション営業', d => d.solution);
+  if (Object.values(data).some(d => d && Math.abs(d.unmapped) > 0.5)) {
+    push('未分類（拠点マッピング漏れ）', d => d.unmapped, { warn: true });
+  }
+  push('売上', d => d.sales, { total: true });
+
+  push('■ 仕入・付加価値', null, { section: true });
+  push('仕入金額', d => d.purchase, { indent: true });
+  push('商品仕入', d => d.merch, { indent: true });
+  push('仕入TOTAL', d => d.purchaseTotal);
+  push('付加価値額(売上総利益/限界利益)', d => d.valueAdded, { total: true });
+  push('付加価値率', d => d.vaRate, { pct: true });
+
+  push('■ 工場別（売上は工場別売上実績表・仕入は取込待ち）', null, { section: true });
+  for (const f of ['第一工場', '第二工場', '第三工場', '購買']) {
+    push(f + ' 売上金額', d => d.factorySales ? d.factorySales[f] : null, { indent: true });
+    push(f + ' 仕入金額', () => null, { indent: true, pending: true });
+  }
+  push('運賃 売上金額', d => d.factorySales ? d.factorySales['運賃'] : null, { indent: true });
+
+  push('■ 在庫', null, { section: true });
+  push('在庫増減', d => d.invChange, { indent: true });
+  push('原価(仕入-在庫差額)', d => d.costOfSales);
+  push('在庫あり付加価値額', d => d.valueAddedInv, { total: true });
+  push('在庫あり付加価値率', d => d.vaInvRate, { pct: true });
+
+  push('■ 経費', null, { section: true });
+  push('人件費', d => d.labor);
+  push('(全社・本社・大阪・名古屋)', d => d.laborCompany, { indent: true });
+  push('(工場)', d => d.laborFactory, { indent: true });
+  for (const f of FACTORY_MAIN) push('　' + f, d => d.laborPer[f], { indent: true });
+  push('一般管理費', d => d.expense);
+  push('(全社・本社・大阪・名古屋)', d => d.expCompany, { indent: true });
+  push('(工場)', d => d.expFactory, { indent: true });
+  for (const f of FACTORY_MAIN) push('　' + f, d => d.expPer[f], { indent: true });
+  push('経費合計', d => d.cost, { total: true });
+
+  push('■ 利益', null, { section: true });
+  push('営業利益', d => d.opInc, { total: true });
+  push('営業外収益', d => d.nonOpInc, { indent: true });
+  push('営業外費用', d => d.nonOpExp, { indent: true });
+  push('経常利益', d => d.ordInc, { total: true });
+  push('特別利益', d => d.extraInc, { indent: true });
+  push('特別損失', d => d.extraExp, { indent: true });
+  push('税引前当期純利益', d => d.preTax);
+  push('法人税等', d => d.tax, { indent: true });
+  push('当期純利益', d => d.netInc, { total: true });
+  return R;
+}
+
+function render(fyStart) {
+  const ms = fyMonths(fyStart);
+  const data = {};
+  for (const m of ms) data[m] = calcMonth(m);
+  const rows = buildRows(data);
+
+  let html = '<thead><tr><th class="lbl">項目</th>';
+  for (const m of ms) html += `<th>${parseInt(m.slice(4), 10)}月</th>`;
+  html += '<th>累計</th></tr></thead><tbody>';
+
+  for (const r of rows) {
+    const cls = [r.section ? 'section' : '', r.total ? 'total' : ''].filter(Boolean).join(' ');
+    html += `<tr class="${cls}"><td class="lbl${r.indent ? ' indent' : ''}">${r.label}</td>`;
+    if (r.section) {
+      html += `<td colspan="${ms.length + 1}"></td></tr>`;
+      continue;
+    }
+    let cum = 0, cumHas = false;
+    for (const m of ms) {
+      const d = data[m];
+      let v = d ? r.get(d) : null;
+      if (r.pending) { html += '<td class="num pending">—</td>'; continue; }
+      if (v !== null && v !== undefined && !r.pct) { cum += v; cumHas = true; }
+      html += `<td class="num${r.warn && v ? ' warn' : ''}">${r.pct ? fmtPct(v) : (v === null || v === undefined ? '—' : fmt(v))}</td>`;
+    }
+    // 累計列（率は累計値から再計算せず「—」）
+    html += `<td class="num cum">${r.pending || r.pct ? '—' : (cumHas ? fmt(cum) : '—')}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody>';
+  document.getElementById('tbl').innerHTML = html;
+
+  const loaded = ms.filter(m => summaries[m]).length;
+  document.getElementById('status').textContent = `${loaded} / 12 ヶ月分のデータを表示中`;
+
+  const warnBox = document.getElementById('warnBox');
+  const unmappedTotal = ms.reduce((s, m) => s + (data[m] ? Math.abs(data[m].unmapped) : 0), 0);
+  warnBox.innerHTML = unmappedTotal > 0.5
+    ? `<div class="warn">拠点に割り当てられていない売上が ${fmt(unmappedTotal)} 円あります。部門マッピング（本社/大阪/名古屋/ソリューション）の見直しが必要です。</div>`
+    : '';
+}
+
+async function loadFy(fyStart) {
+  document.getElementById('status').textContent = '読み込み中...';
+  const ms = fyMonths(fyStart);
+  await Promise.all(ms.map(async m => {
+    if (summaries[m] !== undefined) return;
+    summaries[m] = await kaikeiGetFile('summary/' + m + '.json', { allow404: true });
+  }));
+  render(fyStart);
+}
+
+async function boot() {
+  const signedIn = await kaikeiInitAuth();
+  if (!signedIn) return;
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('app-view').style.display = 'block';
+
+  accountMaster = await kaikeiGetFile('account_master.json', { allow404: true }) || {};
+  const idx = await kaikeiGetFile('monthly/_index.json', { allow404: true }) || { months: [] };
+  months = idx.months || [];
+  if (!months.length) {
+    document.getElementById('tbl').innerHTML = '<tbody><tr><td class="empty-msg">まだデータが取り込まれていません。</td></tr></tbody>';
+    return;
+  }
+  // 年度(4月始まり)の候補を作る
+  const fys = new Set();
+  for (const m of months) {
+    const y = parseInt(m.slice(0, 4), 10), mm = parseInt(m.slice(4), 10);
+    fys.add(mm >= 4 ? y : y - 1);
+  }
+  const sel = document.getElementById('fy-select');
+  sel.innerHTML = [...fys].sort().reverse().map(y => `<option value="${y}">${y}年度（${y}年4月〜${y + 1}年3月）</option>`).join('');
+  sel.addEventListener('change', () => loadFy(parseInt(sel.value, 10)));
+  await loadFy(parseInt(sel.value, 10));
+}
+
+document.getElementById('login-btn').addEventListener('click', async () => {
+  document.getElementById('login-err').textContent = '';
+  try {
+    await kaikeiSignIn();
+    await boot();
+  } catch (e) { document.getElementById('login-err').textContent = e.message || String(e); }
+});
+boot();
+</script>
+</body>
+</html>
