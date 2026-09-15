@@ -409,6 +409,17 @@ def transform_orders(header, rows):
         'amount':       find_idx(h, '金額'),
         'unit_price':   find_idx(h, '単価'),
     }
+    # 納期(kikou) は必須ではなく別ロジックで検出 (表記ゆれ対応)
+    kikou_idx = None
+    for cand in ['納期', '納期日', '納期(月)', '予定納期', '希望納期', '納入日', '希望回答日']:
+        i = find_idx(h, cand)
+        if i is not None:
+            kikou_idx = i
+            print(f"     [orders] 納期列採用: '{cand}' (列{i})", flush=True)
+            break
+    if kikou_idx is None:
+        print(f"     [警告] 納期列が見つからない (受注月次判定は 年月度 で継続)", flush=True)
+
     missing = [k for k, v in idx.items() if v is None]
     if missing:
         raise RuntimeError(
@@ -431,22 +442,27 @@ def transform_orders(header, rows):
         base = normalize_zenkaku((row[idx['base']] or '').strip())
         cust_abbr = row[idx['cust_abbr']]
         genre = row[idx['genre']]
+        # 納期 (列27 に配置): 生の文字列を保持
+        kikou_val = ''
+        if kikou_idx is not None and kikou_idx < len(row):
+            kikou_val = str(row[kikou_idx] or '').strip()
         out.append([
-            ym, fy,
-            row[idx['cust_cd']], cust_abbr, genre,
-            row[idx['new_kind']] or '',
-            row[idx['sho_bunrui']] or '',
-            row[idx['voucher_date']],
-            row[idx['deliver_cd']], row[idx['deliver_nm']],
-            row[idx['rep_cd']], row[idx['rep_nm']],
-            row[idx['bumon']], chu_bumon, base, sales_div,
-            row[idx['dai_bunrui']], row[idx['chu_bunrui']],
-            row[idx['item_cd']], row[idx['item_nm']],
-            to_float(row[idx['qty']]),
-            to_float(row[idx['amount']]),
-            to_float(row[idx['unit_price']]),
-            1,
-            cust_abbr, genre, '',
+            ym, fy,                                    # 0, 1
+            row[idx['cust_cd']], cust_abbr, genre,     # 2, 3, 4
+            row[idx['new_kind']] or '',                # 5
+            row[idx['sho_bunrui']] or '',              # 6
+            row[idx['voucher_date']],                  # 7
+            row[idx['deliver_cd']], row[idx['deliver_nm']],  # 8, 9
+            row[idx['rep_cd']], row[idx['rep_nm']],    # 10, 11
+            row[idx['bumon']], chu_bumon, base, sales_div,   # 12, 13, 14, 15
+            row[idx['dai_bunrui']], row[idx['chu_bunrui']],  # 16, 17
+            row[idx['item_cd']], row[idx['item_nm']],  # 18, 19
+            to_float(row[idx['qty']]),                 # 20
+            to_float(row[idx['amount']]),              # 21
+            to_float(row[idx['unit_price']]),          # 22
+            1,                                          # 23 kind
+            cust_abbr, genre, '',                       # 24, 25, 26
+            kikou_val,                                  # 27 納期 (受注のみ)
         ])
     return out
 
@@ -562,6 +578,31 @@ def transform_daily_reports(header, rows):
     # 訪問種別
     houmon_idx = find_first_idx(h, '訪問種別')
 
+    # 商材(複数チェック) 列 - AL列 相当
+    # 「主な商材」(I列) とは別の、複数選択チェックボックスの列
+    main_shozai_idx = find_first_idx(h, '主な商材')
+    shozai_multi_idx = None
+    # まず完全一致で '商材' 単独の列を探す
+    all_shozai = find_partial_all_idx(h, '商材')
+    for i in all_shozai:
+        if i == main_shozai_idx:
+            continue  # 主な商材は除外
+        hdr = str(h[i]).replace('﻿', '').strip()
+        # ヘッダが '商材' か、'商材(...)' 系ならOK
+        if hdr == '商材' or hdr.startswith('商材(') or hdr.startswith('商材（'):
+            shozai_multi_idx = i
+            break
+    # 上記で見つからなければ 商材 を含む最初の列 (主な商材以外)
+    if shozai_multi_idx is None:
+        for i in all_shozai:
+            if i != main_shozai_idx:
+                shozai_multi_idx = i
+                break
+    if shozai_multi_idx is not None:
+        print(f"     [商材(複数)] 採用列{shozai_multi_idx}: '{str(h[shozai_multi_idx]).strip()}'", flush=True)
+    else:
+        print(f"     [警告] 商材(複数選択)列が見つからない", flush=True)
+
     # Check List 列 (表記ゆれ・全半角括弧・別名対応)
     checklist_idx = None
     checklist_candidates_exact = [
@@ -604,6 +645,7 @@ def transform_daily_reports(header, rows):
         'route_ei':    route_ei_idx,
         'route_koujou':route_koujou_idx,
         'houmon':      houmon_idx,
+        'shozai_multi':shozai_multi_idx,
     }
 
     # 開始日必須
@@ -656,6 +698,7 @@ def transform_daily_reports(header, rows):
             g(idx['route_ei']),         # 12: ルート(営業)
             g(idx['houmon']),           # 13: 訪問種別
             g(idx['route_koujou']),     # 14: ルート(工場)
+            g(idx['shozai_multi']),     # 15: 商材(複数選択) - AL列
         ])
         kept_count += 1
     print(f"     daily_reports 抽出: {kept_count}件 (テンプレフィルタ除外 {filtered_count}件)", flush=True)
