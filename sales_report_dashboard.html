@@ -399,6 +399,27 @@
   }
   .admin-icon-btn:disabled { opacity: 0.3; cursor: default; }
   .admin-icon-btn:hover:not(:disabled) { background: #f2f4f8; }
+  .admin-drag-handle {
+    cursor: grab;
+    color: var(--text-sub);
+    letter-spacing: -2px;
+    user-select: none;
+    width: 1%;
+  }
+  #newProductAdminRows tr[draggable="true"] { cursor: grab; }
+  #newProductAdminRows tr.dragging { opacity: 0.4; background: #eef1f7; }
+  .admin-name-input {
+    width: 100%;
+    min-width: 140px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 5px 7px;
+    font-size: 13px;
+    font-family: inherit;
+    background: transparent;
+  }
+  .admin-name-input:hover { border-color: var(--border); background: #fff; }
+  .admin-name-input:focus { border-color: var(--accent-blue); background: #fff; outline: none; }
 
   @media (max-width: 640px) {
     body { padding: 18px 14px 40px; }
@@ -517,7 +538,7 @@
       <div class="admin-panel-title">新製品リストの管理（管理者のみ表示）</div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th style="text-align:left">表示名</th><th style="text-align:left">キー種別</th><th style="text-align:left">キー値</th><th>有効</th><th></th></tr></thead>
+          <thead><tr><th></th><th style="text-align:left">表示名</th><th style="text-align:left">キー種別</th><th style="text-align:left">キー値</th><th>有効</th><th></th></tr></thead>
           <tbody id="newProductAdminRows"></tbody>
         </table>
       </div>
@@ -2013,8 +2034,16 @@ function renderNewProductAdminPanel() {
   const tbody = document.getElementById('newProductAdminRows');
   if (!tbody) return;
   tbody.innerHTML = NEW_PRODUCT_ITEMS.map((it, i) => `
-    <tr>
-      <td style="text-align:left">${escapeHtml(it.name)}</td>
+    <tr draggable="true" data-id="${it.id}"
+        ondragstart="handleNewProductDragStart(event, '${it.id}')"
+        ondragover="handleNewProductDragOver(event)"
+        ondragend="handleNewProductDragEnd(event)"
+        ondrop="handleNewProductDrop(event, '${it.id}')">
+      <td class="admin-drag-handle" title="ドラッグで並び替え">⠿⠿</td>
+      <td style="text-align:left">
+        <input type="text" class="admin-name-input" value="${escapeHtml(it.name)}"
+          onchange="renameNewProductItem('${it.id}', this.value)">
+      </td>
       <td style="text-align:left">${escapeHtml(NEW_PRODUCT_KEY_TYPE_LABEL[it.keyType] || it.keyType)}</td>
       <td style="text-align:left">${escapeHtml(it.key)}</td>
       <td><input type="checkbox" ${it.enabled ? 'checked' : ''} onchange="toggleNewProductEnabled('${it.id}', this.checked)"></td>
@@ -2024,6 +2053,81 @@ function renderNewProductAdminPanel() {
         <button type="button" class="admin-icon-btn" onclick="removeNewProductItem('${it.id}')">削除</button>
       </td>
     </tr>`).join('');
+}
+
+// 表示順(order)を並び替えるたび 10,20,30... に振り直して保存する。
+// 生の順位番号を隣同士でスワップする方式だと、値が同じ(タイ)アイテムが
+// 混ざった場合にスワップしても数値が変わらず「上に上がらない」不具合になるため、
+// 常に一意な値へ全振り直しすることでそれを構造的に防ぐ。
+async function persistNewProductOrder() {
+  const changed = [];
+  NEW_PRODUCT_ITEMS.forEach((it, i) => {
+    const newOrder = (i + 1) * 10;
+    if (it.order !== newOrder) { it.order = newOrder; changed.push(it); }
+  });
+  for (const it of changed) {
+    await saveNewProductItem(it);
+  }
+}
+
+let NEW_PRODUCT_DRAG_ID = null;
+
+function handleNewProductDragStart(e, id) {
+  NEW_PRODUCT_DRAG_ID = id;
+  e.dataTransfer.effectAllowed = 'move';
+  if (e.target && e.target.closest) e.target.closest('tr').classList.add('dragging');
+}
+
+function handleNewProductDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+
+function handleNewProductDragEnd(e) {
+  if (e.target && e.target.closest) {
+    const tr = e.target.closest('tr');
+    if (tr) tr.classList.remove('dragging');
+  }
+  NEW_PRODUCT_DRAG_ID = null;
+}
+
+async function handleNewProductDrop(e, targetId) {
+  e.preventDefault();
+  const sourceId = NEW_PRODUCT_DRAG_ID;
+  NEW_PRODUCT_DRAG_ID = null;
+  if (!sourceId || sourceId === targetId) return;
+  const fromIdx = NEW_PRODUCT_ITEMS.findIndex(it => it.id === sourceId);
+  const toIdx = NEW_PRODUCT_ITEMS.findIndex(it => it.id === targetId);
+  if (fromIdx === -1 || toIdx === -1) return;
+  const [item] = NEW_PRODUCT_ITEMS.splice(fromIdx, 1);
+  NEW_PRODUCT_ITEMS.splice(toIdx, 0, item);
+  renderNewProductAdminPanel();
+  try {
+    await persistNewProductOrder();
+  } catch (e2) {
+    console.error('[特記新製品] 並び替えに失敗', e2);
+    alert('並び替えに失敗しました。時間をおいて再度お試しください。');
+    await loadNewProductItems();
+    renderNewProductAdminPanel();
+  }
+}
+
+async function renameNewProductItem(id, newName) {
+  const item = NEW_PRODUCT_ITEMS.find(it => it.id === id);
+  if (!item) return;
+  const name = newName.trim() || item.key;
+  if (name === item.name) return;
+  const prevName = item.name;
+  item.name = name;
+  try {
+    await saveNewProductItem(item);
+    if (CURRENT_TODAY) renderNewProductSection(FACTS.order_rows || [], CURRENT_TODAY);
+  } catch (e) {
+    item.name = prevName;
+    console.error('[特記新製品] 表示名の更新に失敗', e);
+    alert('表示名の更新に失敗しました。時間をおいて再度お試しください。');
+    renderNewProductAdminPanel();
+  }
 }
 
 function toggleNewProductAdminPanel() {
@@ -2082,16 +2186,16 @@ async function moveNewProductItem(id, dir) {
   const idx = NEW_PRODUCT_ITEMS.findIndex(it => it.id === id);
   const swapIdx = idx + dir;
   if (idx === -1 || swapIdx < 0 || swapIdx >= NEW_PRODUCT_ITEMS.length) return;
-  const a = NEW_PRODUCT_ITEMS[idx], b = NEW_PRODUCT_ITEMS[swapIdx];
-  const tmp = a.order; a.order = b.order; b.order = tmp;
+  const [item] = NEW_PRODUCT_ITEMS.splice(idx, 1);
+  NEW_PRODUCT_ITEMS.splice(swapIdx, 0, item);
+  renderNewProductAdminPanel();
   try {
-    await saveNewProductItem(a);
-    await saveNewProductItem(b);
-    await loadNewProductItems();
-    renderNewProductAdminPanel();
+    await persistNewProductOrder();
   } catch (e) {
     console.error('[特記新製品] 並び替えに失敗', e);
     alert('並び替えに失敗しました。時間をおいて再度お試しください。');
+    await loadNewProductItems();
+    renderNewProductAdminPanel();
   }
 }
 
