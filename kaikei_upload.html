@@ -14,8 +14,8 @@
   h1 { font-size:18px; }
   h2 { font-size:14px; margin-top:32px; color:var(--accent); }
   p.note { color:var(--muted); font-size:13px; line-height:1.7; }
-  #drop, #dropSeed, #dropFactory { border:2px dashed var(--border); border-radius:10px; background:var(--panel); padding:40px 24px; text-align:center; margin:16px 0; }
-  #drop.hot, #dropSeed.hot, #dropFactory.hot { border-color:var(--accent); }
+  #drop, #dropSeed, #dropFactory, #dropBulk { border:2px dashed var(--border); border-radius:10px; background:var(--panel); padding:40px 24px; text-align:center; margin:16px 0; }
+  #drop.hot, #dropSeed.hot, #dropFactory.hot, #dropBulk.hot { border-color:var(--accent); }
   #factoryPaste { width:100%; height:130px; font-family:ui-monospace,monospace; font-size:12px; padding:10px;
                   border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); resize:vertical; }
   .manual-box { border:1px solid var(--border); border-radius:8px; background:var(--panel); padding:14px 16px; }
@@ -23,6 +23,7 @@
   .manual-row + .manual-row { margin-top:10px; }
   .manual-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0; }
   @media(max-width:640px){ .manual-grid { grid-template-columns:repeat(2,1fr); } }
+  .manual-sub { font-size:12px; font-weight:700; color:var(--text); margin-top:12px; }
   .manual-grid label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; }
   .manual-grid input, .manual-row input { border:1px solid var(--border); border-radius:4px; padding:6px 8px;
                        font-size:13px; text-align:right; font-variant-numeric:tabular-nums;
@@ -82,6 +83,17 @@
   <textarea id="factoryPaste" placeholder="ここに貼り付け"></textarea>
   <div style="text-align:right;margin-top:6px;">
     <button class="btn" id="pasteFactoryBtn">貼り付けた内容を取り込む</button>
+  </div>
+
+  <h3 style="font-size:13px;margin-top:22px;color:var(--accent);">過去分の一括取り込み（JSON）</h3>
+  <p class="note" style="margin-bottom:6px;">
+    月次資料ブックから取り出した工場別データ（売上・仕入）をまとめて登録します。通常は最初の1回だけです。
+    取り込み時に、各月の合計が元帳の売上高と一致するか自動で確認します。
+  </p>
+  <div id="dropBulk">
+    <p>工場別データのJSONをここにドラッグ、または</p>
+    <button class="btn" id="pickBulkBtn">ファイルを選ぶ</button>
+    <input type="file" id="fBulk" accept=".json" class="hide">
   </div>
 
   <h3 style="font-size:13px;margin-top:22px;color:var(--accent);">手入力（決算整理などで自動計算と合わない月）</h3>
@@ -275,6 +287,60 @@ async function importLedgerCsv(file) {
   log('完了: ' + monthKeys.length + 'ヶ月分を保存しました。', 'ok');
 }
 
+/* ============ 元帳の売上高との突き合わせ ============ */
+let _accountMaster = null;
+async function getAccountMaster() {
+  if (!_accountMaster) _accountMaster = await kaikeiGetFile('account_master.json', { allow404: true }) || {};
+  return _accountMaster;
+}
+/** その月の元帳から計算した売上高。account_masterや元帳が未登録ならnull */
+async function ledgerSalesOf(summary) {
+  const am = await getAccountMaster();
+  if (!summary || !summary.byAccount || !Object.keys(am).length) return null;
+  let sales = 0, found = false;
+  for (const [code, a] of Object.entries(summary.byAccount)) {
+    const meta = am[code];
+    if (!meta || meta.section !== '売上高') continue;
+    found = true;
+    sales += meta.normalBalance === 'credit' ? a.credit - a.debit : a.debit - a.credit;
+  }
+  return found ? sales : null;
+}
+/** 工場別売上の合計が元帳の売上高と合っているかを確認してログに出す */
+async function checkAgainstLedger(ym, summary, salesTotal) {
+  const gl = await ledgerSalesOf(summary);
+  if (gl === null) return;
+  const diff = salesTotal - gl;
+  if (Math.abs(diff) > 1) {
+    log(`※ ${ym}: 工場別売上の合計 ${salesTotal.toLocaleString()}円 が元帳の売上高 ${gl.toLocaleString()}円 と `
+      + `${diff > 0 ? '+' : ''}${diff.toLocaleString()}円ずれています。元資料の区分をご確認ください。`, 'warn');
+  } else {
+    log(`   ${ym}: 元帳の売上高と一致 (${gl.toLocaleString()}円)`, 'ok');
+  }
+}
+
+/* ============ 工場別データの一括取り込み（JSON） ============ */
+async function importFactoryBulk(file) {
+  log('一括取り込み: ' + file.name);
+  const obj = JSON.parse(await file.text());
+  const months = Object.keys(obj).filter(k => /^\d{6}$/.test(k)).sort();
+  if (!months.length) throw new Error('YYYYMMをキーにしたJSONではないようです。');
+  const sum = o => Object.values(o || {}).reduce((a, b) => a + b, 0);
+
+  for (const ym of months) {
+    const d = obj[ym] || {};
+    const salesTotal = sum(d.sales), purchaseTotal = sum(d.purchase);
+    const prev = await kaikeiGetFile('summary/' + ym + '.json', { allow404: true }) || {};
+    const now = new Date().toISOString();
+    if (salesTotal) prev.factorySales = { lines: d.sales, total: salesTotal, source: 'bulk', importedAt: now };
+    if (purchaseTotal) prev.factoryPurchase = { lines: d.purchase, total: purchaseTotal, source: 'bulk', importedAt: now };
+    await kaikeiPutFile('summary/' + ym + '.json', prev);
+    log(`OK   ${ym} 売上 ${salesTotal.toLocaleString()}円 / 仕入 ${purchaseTotal.toLocaleString()}円`, 'ok');
+    if (salesTotal) await checkAgainstLedger(ym, prev, salesTotal);
+  }
+  log(`完了: ${months.length}ヶ月分を保存しました。`, 'ok');
+}
+
 /* ============ 付加価値用 工場別売上実績表の取り込み ============ */
 // その他グループのうち、中分類に「運賃」を含むもの＋「移動・他」を運賃とし、残りを購買とする
 function isFreightCategory(chubunrui) {
@@ -380,6 +446,7 @@ async function saveFactorySales(text) {
   prev.factorySales = { lines, total, source: 'import', importedAt: new Date().toISOString() };
   await kaikeiPutFile('summary/' + month + '.json', prev);
   log('OK   summary/' + month + '.json に工場別売上を保存しました。', 'ok');
+  await checkAgainstLedger(month, prev, total);
 }
 
 /* ============ 種火JSONアップロード ============ */
@@ -417,6 +484,16 @@ dzF.addEventListener('drop', e => {
   const f = e.dataTransfer.files[0];
   if (f) importFactorySales(f).catch(err => log('エラー: ' + err.message, 'err'));
 });
+const dzB = document.getElementById('dropBulk');
+document.getElementById('pickBulkBtn').addEventListener('click', () => document.getElementById('fBulk').click());
+document.getElementById('fBulk').addEventListener('change', e => { if (e.target.files[0]) importFactoryBulk(e.target.files[0]).catch(err => log('エラー: ' + err.message, 'err')); });
+['dragenter', 'dragover'].forEach(t => dzB.addEventListener(t, e => { e.preventDefault(); dzB.classList.add('hot'); }));
+['dragleave', 'drop'].forEach(t => dzB.addEventListener(t, e => { e.preventDefault(); dzB.classList.remove('hot'); }));
+dzB.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) importFactoryBulk(f).catch(err => log('エラー: ' + err.message, 'err'));
+});
+
 /* ---- 工場別売上・仕入の手入力 ---- */
 const M_FIELDS = { m_f1: '第一工場', m_f2: '第二工場', m_f3: '第三工場', m_kb: '購買', m_un: '運賃', m_mi: '未分類' };
 const P_FIELDS = { p_f1: '第一工場', p_f2: '第二工場', p_f3: '第三工場', p_kb: '購買' };
