@@ -930,7 +930,15 @@ function _toggleNavSection(id) {
           <div id="orders-daily-item-suggest" class="orders-suggest" style="display:none; position:absolute; top:100%; left:0; right:0; margin-top:2px; background:white; border:1px solid #d1d5db; border-radius:5px; box-shadow:0 4px 12px rgba(0,0,0,0.1); max-height:220px; overflow-y:auto; z-index:100"></div>
         </div>
       </div>
-      <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px">
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px; flex-wrap:wrap">
+        <div style="display:flex; align-items:center; gap:6px">
+          <label style="font-size:12px; color:#555">表示範囲:</label>
+          <select id="orders-daily-scope" style="padding:4px 8px; font-size:12px; border:1px solid #d1d5db; border-radius:4px; background:white; cursor:pointer">
+            <option value="today" selected>📅 当日のみ</option>
+            <option value="future">🔜 当日以降（先の受注含む）</option>
+            <option value="all">📋 全件</option>
+          </select>
+        </div>
         <button id="orders-daily-clear" style="padding:4px 10px; font-size:11px; background:#f0ede2; border:1px solid #d1d5db; border-radius:4px; cursor:pointer">✕ クリア</button>
         <span id="orders-daily-count" style="font-size:12px; color:#666; margin-left:auto"></span>
       </div>
@@ -4939,6 +4947,34 @@ function _kikouToYm(str) {
   return 0;
 }
 
+// 納期を YYYYMMDD 数値キーに変換（先の受注比較用）
+function _kikouToDateKey(str) {
+  if (str == null || str === '') return 0;
+  const s = String(str).trim();
+  if (!s) return 0;
+  // YYYYMMDD 8桁
+  if (/^\d{8}$/.test(s)) return parseInt(s);
+  // YYYY/MM/DD or YYYY-MM-DD
+  let m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) return parseInt(m[1]) * 10000 + parseInt(m[2]) * 100 + parseInt(m[3]);
+  // YY/MM/DD
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) {
+    let y = parseInt(m[1]);
+    if (y < 100) y += 2000;
+    return y * 10000 + parseInt(m[2]) * 100 + parseInt(m[3]);
+  }
+  // Excel シリアル値
+  const n = Number(s);
+  if (!isNaN(n) && n >= 20000 && n <= 80000) {
+    const d = new Date((n - 25569) * 86400 * 1000);
+    if (!isNaN(d.getTime())) {
+      return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
+    }
+  }
+  return 0;
+}
+
 // 受注データから当月分を取得 (常に現在のカレンダー月)
 // ⚠️ 納期(kikou)ベースで判定。kikou が空なら 年月度(ym) にフォールバック
 function _getCurrentMonthOrders() {
@@ -5089,7 +5125,7 @@ function renderOrdersAchievement() {
         <div style="font-size:12px; font-weight:700; color:var(--navy); margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${_visitsEscapeHtml(c.name)} ${emoji}</div>
         <div style="position:relative; width:110px; height:110px; margin:0 auto">
           <canvas id="${canvasId}"></canvas>
-          <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:16px; font-weight:800; color:${c.rate >= 100 ? '#16a34a' : '#1d4ed8'}">${c.rate.toFixed(0)}%</div>
+          <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:16px; font-weight:800; color:${c.rate >= 100 ? '#16a34a' : '#1d4ed8'}">${c.rate.toFixed(1)}%</div>
         </div>
         <div style="font-size:10px; color:#666; margin-top:4px">
           <b style="color:var(--navy)">${Math.round(c.actual/10000).toLocaleString()}</b>/${Math.round(c.target/10000).toLocaleString()}万
@@ -5405,6 +5441,21 @@ function _initDailyOrdersControls() {
     });
     renderDailyOrders();
   });
+
+  // 表示範囲セレクタ
+  const scopeSel = document.getElementById('orders-daily-scope');
+  if (scopeSel) scopeSel.addEventListener('change', () => {
+    // 全件/先の受注 モード時は納期でソートしたほうが便利
+    const v = scopeSel.value;
+    if (v === 'future') {
+      _dailyOrdersSort = { key: 'ym', dir: 'asc' }; // 納期昇順（近い先から）
+    } else if (v === 'all') {
+      _dailyOrdersSort = { key: 'date', dir: 'desc' }; // 受注日付降順
+    } else {
+      _dailyOrdersSort = { key: 'date', dir: 'desc' };
+    }
+    renderDailyOrders();
+  });
 }
 
 // 明細ソート状態
@@ -5419,6 +5470,7 @@ function renderDailyOrders() {
   const cust = (document.getElementById('orders-daily-cust') || {}).value.trim();
   const deliver = (document.getElementById('orders-daily-deliver') || {}).value.trim();
   const item = (document.getElementById('orders-daily-item') || {}).value.trim();
+  const scope = (document.getElementById('orders-daily-scope') || {}).value || 'today';
 
   // 全受注データ
   const orders = RAW.order_rows || [];
@@ -5440,18 +5492,30 @@ function renderDailyOrders() {
   const todayM = Math.floor((latestVKey / 100) % 100);
   const todayD = latestVKey % 100;
 
-  // フィルタ: 当日受注 + 部分一致
+  // フィルタ: scope + 部分一致
   const filtered = orders.filter(r => {
     if (Number(r[IDX.kind]) === 2) return false;
     if (isInternalTransfer(r)) return false;
-    // 当日一致
     const vd = String(r[IDX.voucher_date] || '');
     const m = vd.match(/(\d{2,4})[\/\-]?(\d{1,2})[\/\-]?(\d{1,2})/);
     if (!m) return false;
     let y = parseInt(m[1]);
     if (y < 100) y += 2000;
     const k = y * 10000 + parseInt(m[2]) * 100 + parseInt(m[3]);
-    if (k !== latestVKey) return false;
+    // scope 判定
+    if (scope === 'today') {
+      if (k !== latestVKey) return false;
+    } else if (scope === 'future') {
+      // 当日以降: voucher_date >= latestVKey は暫定を除外(未締)、代わりに納期が今日以降か
+      if (k > latestVKey) return false; // 未締切除外
+      // 納期基準で「今日以降」かチェック
+      const kikouRaw = r[IDX.kikou];
+      const kikouKey = _kikouToDateKey(kikouRaw);
+      if (!kikouKey || kikouKey < latestVKey) return false;
+    } else {
+      // 'all': voucher_date が締まっているものすべて
+      if (k > latestVKey) return false;
+    }
     // 各フィルタ (部分一致)
     if (rep && String(r[IDX.rep_nm]||'').indexOf(rep) < 0) return false;
     if (cust && String(r[IDX.cust_abbr]||'').indexOf(cust) < 0) return false;
@@ -5487,8 +5551,9 @@ function renderDailyOrders() {
         vb = Number(b[IDX.qty])||0;
         break;
       case 'ym':
-        va = Number(a[IDX.ym])||0;
-        vb = Number(b[IDX.ym])||0;
+        // 「納期」列のソート → kikou優先、なければ ym
+        va = _kikouToDateKey(a[IDX.kikou]) || (Number(a[IDX.ym])||0) * 100;
+        vb = _kikouToDateKey(b[IDX.kikou]) || (Number(b[IDX.ym])||0) * 100;
         break;
       default:
         va = 0; vb = 0;
@@ -5498,14 +5563,15 @@ function renderDailyOrders() {
   });
 
   // 大量件数対策: 上限を設ける
-  const LIMIT = 500;
+  const LIMIT = scope === 'today' ? 500 : 2000;
   const shown = filtered.slice(0, LIMIT);
   const overflow = filtered.length > LIMIT;
 
   if (countEl) {
     const totAmt = filtered.reduce((s,r)=>s+(Number(r[IDX.amount])||0),0);
     const dateStr = todayY ? `${todayY}/${String(todayM).padStart(2,'0')}/${String(todayD).padStart(2,'0')}` : '—';
-    countEl.innerHTML = `当日: <b>${dateStr}</b> / <b>${filtered.length.toLocaleString()}</b> 件 / 合計 <b style="color:var(--navy)">${Math.round(totAmt/10000).toLocaleString()}</b> 万${overflow ? ` (表示上限 ${LIMIT} 件)` : ''}`;
+    const scopeLabel = scope === 'today' ? `当日: <b>${dateStr}</b>` : (scope === 'future' ? `🔜 当日以降(納期${dateStr}〜)` : `📋 全件(〜${dateStr})`);
+    countEl.innerHTML = `${scopeLabel} / <b>${filtered.length.toLocaleString()}</b> 件 / 合計 <b style="color:var(--navy)">${Math.round(totAmt/10000).toLocaleString()}</b> 万${overflow ? ` (表示上限 ${LIMIT} 件)` : ''}`;
   }
 
   if (filtered.length === 0) {
