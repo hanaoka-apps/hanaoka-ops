@@ -4,7 +4,8 @@
   SMILE再出力 → dashboard_facts.json再生成 を自動実行する常駐スクリプト。
 
 .DESCRIPTION
-  SharedMasters (このPCにOneDrive同期されているフォルダ) に
+  SharedMasters\_control (このPCにOneDrive同期されているフォルダの中の
+  専用サブフォルダ。実データのCSV/JSONと混ざらないよう分けている) に
   _regenerate_request.json が現れたら、
     ① 既存のSMILE受注/売上明細出力処理を実行 (Invoke-SmileExport / 要設定)
     ② GitHubから最新の regenerate_facts.py を取得して実行
@@ -20,6 +21,9 @@
   実行前に必ず以下を確認・設定すること。
 
   1. $SharedMastersPath が実際の同期パスと合っているか確認する。
+     また、SharedMasters直下に _control というフォルダを一度だけ
+     手動で作成しておく(File ExplorerでもSharePointのブラウザ画面でも
+     どちらでもよい。OneDriveが同期すれば両方に反映される)。
 
   2. Invoke-SmileExport の中身を、今すでにタスクスケジューラーで
      16:00に動いている既存のSMILE出力処理の呼び出し方法に置き換える。
@@ -40,6 +44,8 @@ $ErrorActionPreference = 'Stop'
 
 # ===== 設定 (環境に合わせて書き換える) =====
 $SharedMastersPath = "$env:USERPROFILE\OneDrive - 花岡車輌 株式会社\花岡車輌 - SharedMasters"
+$ControlFolderName = '_control'
+$ControlPath       = Join-Path $SharedMastersPath $ControlFolderName
 $RequestFileName   = '_regenerate_request.json'
 $LogPath           = "$env:USERPROFILE\regenerate_watcher.log"
 $RepoRawBase       = 'https://raw.githubusercontent.com/hanaoka-apps/hanaoka-ops/main'
@@ -88,16 +94,21 @@ function Process-Request {
   }
 }
 
-$requestFilePath = Join-Path $SharedMastersPath $RequestFileName
+if (-not (Test-Path $ControlPath)) {
+  Write-Log "エラー: $ControlPath が見つかりません。SharedMasters直下に _control フォルダを作成し、OneDriveの同期を待ってから起動し直してください。"
+  exit 1
+}
+
+$requestFilePath = Join-Path $ControlPath $RequestFileName
 
 # 起動時にすでにリクエストが残っていれば先に処理する
 if (Test-Path $requestFilePath) {
   Process-Request -FilePath $requestFilePath
 }
 
-Write-Log "監視を開始します: $SharedMastersPath"
+Write-Log "監視を開始します: $ControlPath"
 $watcher = New-Object System.IO.FileSystemWatcher
-$watcher.Path = $SharedMastersPath
+$watcher.Path = $ControlPath
 $watcher.Filter = $RequestFileName
 $watcher.IncludeSubdirectories = $false
 
