@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Inter:wght@600;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/d-din" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root{
@@ -430,7 +431,7 @@ footer b{color:var(--goldDark)}
     </div>
     <div style="height:48px; width:1px; background:rgba(0,0,0,0.15); margin-left:6px"></div>
     <div style="min-width:0; flex:1">
-      <h1 style="font-size:24px; line-height:1.2; margin:0; letter-spacing:1.5px; color:#1a2942; font-weight:500; font-family:'Yu Mincho','Hiragino Mincho ProN','MS Mincho','Georgia',serif">HANAOKA Sales HUB</h1>
+      <h1 style="font-size:26px; line-height:1.2; margin:0; letter-spacing:3px; color:#1a2942; font-weight:700; font-family:'D-DIN','DIN Next','DIN','Helvetica Neue','Arial Narrow',sans-serif">HANAOKA Sales HUB</h1>
       <div style="font-size:12px; color:#8a94a8; margin-top:4px; letter-spacing:0.5px; font-weight:400; font-family:'Yu Mincho','Hiragino Mincho ProN','MS Mincho',serif">売上・受注・営業活動を一元管理</div>
     </div>
   </div>
@@ -593,6 +594,21 @@ function _toggleNavSection(id) {
   <h2 class="exp-title">担当者別 単月売上達成率 <span class="hint">対象月実績 ÷ 対象月計画（月は最上部の期間セレクタを使用）</span></h2>
   <div id="repAchiMonthLabel" style="font-size:12px; color:var(--gray); margin:4px 0 10px 0"></div>
   <div id="repAchiList"></div>
+</section>
+
+<section class="prod-section" style="margin-top:16px">
+  <h2 class="exp-title">🏭 工場別売上 <span class="hint">工場別付加価名で絞り込み（購買は全て合算して1つに集計）</span></h2>
+  <div id="factorySalesMonthLabel" style="font-size:12px; color:var(--gray); margin:4px 0 10px 0"></div>
+  <div style="margin:10px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+    <label style="font-size:12px; color:#555">絞込:</label>
+    <div style="position:relative">
+      <input type="text" id="factory-search" placeholder="🔍 工場別付加価名 (例: 第一, 購買, 運賃 …)" autocomplete="off" style="padding:6px 10px; border:1px solid #d1d5db; border-radius:5px; font-size:13px; width:320px">
+      <div id="factory-search-suggest" class="orders-suggest" style="display:none; position:absolute; top:100%; left:0; right:0; margin-top:2px; background:white; border:1px solid #d1d5db; border-radius:5px; box-shadow:0 4px 12px rgba(0,0,0,0.1); max-height:220px; overflow-y:auto; z-index:100"></div>
+    </div>
+    <button id="factory-clear" style="padding:4px 10px; font-size:11px; background:#f0ede2; border:1px solid #d1d5db; border-radius:4px; cursor:pointer">✕ クリア</button>
+    <span id="factorySalesCount" style="font-size:12px; color:#666; margin-left:auto"></span>
+  </div>
+  <div id="factorySalesTable" style="overflow-x:auto; border:1px solid #e5e7eb; border-radius:6px; background:#fff"></div>
 </section>
 
 </div>
@@ -1135,6 +1151,7 @@ const IDX = {
   qty:20, amount:21, unit_price:22, kind:23,
   major_cust:24, major_genre:25, major_item:26,
   kikou:27,  // 納期 (受注のみ, regenerate_facts.py が追加抽出)
+  factory_pv:28, // 工場別付加価名 (売上のみ、当期のみ)
 };
 // =====================================================================
 // 手入力: 部門別「累計計画」(2025年度 4月〜3月) ← ここを直接編集してください
@@ -3441,6 +3458,7 @@ if (window._loaded_ratiokiko && typeof MANUAL_KIKO_RATIO === "object") {
   setTimeout(()=>{
     try{ renderRepQtyRanking(); }catch(e){ console.error("renderRepQtyRanking", e); }
     try{ renderRepAchievement(); }catch(e){ console.error("renderRepAchievement", e); }
+    try{ initFactorySales(); }catch(e){ console.error("initFactorySales", e); }
   }, 120);
 
   // Phase 4: 下部の詳細エクスプローラ類 (スクロールしないと見えない)
@@ -3453,6 +3471,156 @@ if (window._loaded_ratiokiko && typeof MANUAL_KIKO_RATIO === "object") {
 }
 // 期間セレクタを初期化してからrenderAll
 try { initPeriodSelector(); } catch (e) { console.error("initPeriodSelector", e); }
+
+// ================================================================
+// 🏭 工場別売上 (販売実績タブ 最下部)
+//   - 工場別付加価名 (r[IDX.factory_pv] = 列28) で集計
+//   - 「購買」で始まる項目は 全て 購買 に合算
+//   - 単月 (singleYm) と 累計 (fromYm 〜 toYm) を並列表示
+//   - 前年同月/前年累計との対比あり
+// ================================================================
+function _normalizeFactoryName(nm){
+  if (nm == null) return '(未分類)';
+  const s = String(nm).trim();
+  if (!s) return '(未分類)';
+  if (s.startsWith('購買')) return '購買';
+  return s;
+}
+function _prevYm(ym){
+  const y = Math.floor(ym/100), m = ym%100;
+  return (y-1)*100 + m;
+}
+function renderFactorySales(){
+  const tbl = document.getElementById('factorySalesTable');
+  const countEl = document.getElementById('factorySalesCount');
+  const lblEl = document.getElementById('factorySalesMonthLabel');
+  if (!tbl) return;
+  const rp = (typeof resolveReportingPeriod === 'function') ? resolveReportingPeriod() : null;
+  const singleYm = rp ? parseInt(rp.singleYm) : parseInt(_currentCalendarYm());
+  const fromYm = rp ? parseInt(rp.fromYm) : singleYm;
+  const toYm = rp ? parseInt(rp.toYm) : singleYm;
+  const prevSingle = _prevYm(singleYm);
+  const prevFrom = _prevYm(fromYm);
+  const prevTo = _prevYm(toYm);
+  if (lblEl) lblEl.textContent = `対象単月: ${singleYm} / 対象累計: ${fromYm} 〜 ${toYm}`;
+
+  const q = ((document.getElementById('factory-search') || {}).value || '').trim();
+
+  // 集計
+  const byFactory = {};
+  const rows = RAW.rows || [];
+  for (const r of rows){
+    if (Number(r[IDX.kind]) === 2) continue; // 返品除外
+    if (isInternalTransfer(r)) continue;
+    const raw = r[IDX.factory_pv];
+    if (q && String(raw || '').indexOf(q) < 0) continue;
+    const factory = _normalizeFactoryName(raw);
+    const amt = Number(r[IDX.amount]) || 0;
+    const ym = Number(r[IDX.ym]) || 0;
+    if (!byFactory[factory]) byFactory[factory] = {single:0, cum:0, prevSingle:0, prevCum:0, cnt:0};
+    if (ym === singleYm) byFactory[factory].single += amt;
+    if (ym >= fromYm && ym <= toYm) { byFactory[factory].cum += amt; byFactory[factory].cnt++; }
+    if (ym === prevSingle) byFactory[factory].prevSingle += amt;
+    if (ym >= prevFrom && ym <= prevTo) byFactory[factory].prevCum += amt;
+  }
+
+  const list = Object.entries(byFactory).sort((a,b) => b[1].cum - a[1].cum);
+  if (countEl){
+    const total = list.reduce((s, [_,v]) => s + v.cum, 0);
+    countEl.innerHTML = `該当: <b>${list.length}</b> 分類 / 累計合計 <b style="color:var(--navy)">${Math.round(total/10000).toLocaleString()}</b> 万`;
+  }
+  if (list.length === 0){
+    tbl.innerHTML = '<div style="padding:20px; text-align:center; color:#999">該当データなし</div>';
+    return;
+  }
+
+  let totS=0, totC=0, totPS=0, totPC=0;
+  const yoy = (a, b) => (b > 0 ? ((a/b*100).toFixed(1) + '%') : '—');
+  const yoyColor = (a, b) => {
+    if (b <= 0) return '#888';
+    const p = a/b*100;
+    if (p >= 100) return '#16a34a';
+    if (p >= 80) return '#e89c3f';
+    return '#d94a4a';
+  };
+  const bodyHtml = list.map(([nm, v]) => {
+    totS += v.single; totC += v.cum; totPS += v.prevSingle; totPC += v.prevCum;
+    return `<tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:6px 10px; font-weight:600">${_visitsEscapeHtml(nm)}</td>
+      <td style="padding:6px 10px; text-align:right">${Math.round(v.single/10000).toLocaleString()}</td>
+      <td style="padding:6px 10px; text-align:right; color:#666">${Math.round(v.prevSingle/10000).toLocaleString()}</td>
+      <td style="padding:6px 10px; text-align:right; font-weight:600; color:${yoyColor(v.single, v.prevSingle)}">${yoy(v.single, v.prevSingle)}</td>
+      <td style="padding:6px 10px; text-align:right; font-weight:700; color:var(--navy)">${Math.round(v.cum/10000).toLocaleString()}</td>
+      <td style="padding:6px 10px; text-align:right; color:#666">${Math.round(v.prevCum/10000).toLocaleString()}</td>
+      <td style="padding:6px 10px; text-align:right; font-weight:600; color:${yoyColor(v.cum, v.prevCum)}">${yoy(v.cum, v.prevCum)}</td>
+    </tr>`;
+  }).join('');
+  const footHtml = `<tr style="background:#f7f3ea; border-top:2px solid #c9a66b; font-weight:800">
+    <td style="padding:8px 10px">合計</td>
+    <td style="padding:8px 10px; text-align:right">${Math.round(totS/10000).toLocaleString()}</td>
+    <td style="padding:8px 10px; text-align:right; color:#666">${Math.round(totPS/10000).toLocaleString()}</td>
+    <td style="padding:8px 10px; text-align:right; color:${yoyColor(totS, totPS)}">${yoy(totS, totPS)}</td>
+    <td style="padding:8px 10px; text-align:right; color:var(--navy)">${Math.round(totC/10000).toLocaleString()}</td>
+    <td style="padding:8px 10px; text-align:right; color:#666">${Math.round(totPC/10000).toLocaleString()}</td>
+    <td style="padding:8px 10px; text-align:right; color:${yoyColor(totC, totPC)}">${yoy(totC, totPC)}</td>
+  </tr>`;
+  tbl.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:12px; min-width:800px">
+    <thead style="position:sticky; top:0; z-index:1; background:#0e1a36">
+      <tr style="color:#c9a04a">
+        <th style="padding:8px 10px; text-align:left">工場別付加価名</th>
+        <th style="padding:8px 10px; text-align:right; min-width:90px">単月<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
+        <th style="padding:8px 10px; text-align:right; min-width:90px">前年同月<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
+        <th style="padding:8px 10px; text-align:right; min-width:70px">前年比</th>
+        <th style="padding:8px 10px; text-align:right; min-width:100px">累計<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
+        <th style="padding:8px 10px; text-align:right; min-width:100px">前年累計<br><span style="font-size:10px; font-weight:400; color:#c9a04a">(万円)</span></th>
+        <th style="padding:8px 10px; text-align:right; min-width:70px">前年比</th>
+      </tr>
+    </thead>
+    <tbody>${bodyHtml}${footHtml}</tbody>
+  </table>`;
+}
+
+// 初期化: 検索欄・クリアボタン・サジェスト
+function initFactorySales(){
+  const input = document.getElementById('factory-search');
+  const sug = document.getElementById('factory-search-suggest');
+  const clr = document.getElementById('factory-clear');
+  if (!input) return;
+
+  // 全工場別付加価名を収集 (生の値のまま、正規化前でサジェスト表示)
+  const set = new Set();
+  for (const r of (RAW.rows || [])){
+    const v = String(r[IDX.factory_pv] || '').trim();
+    if (v) set.add(v);
+  }
+  const candidates = Array.from(set).sort((a,b) => a.localeCompare(b, 'ja'));
+
+  if (input._factInit) { renderFactorySales(); return; }
+  input._factInit = true;
+
+  const showSug = (val) => {
+    const q = String(val || '').trim();
+    if (!q) { sug.style.display = 'none'; sug.innerHTML = ''; return; }
+    const matches = candidates.filter(c => c.indexOf(q) >= 0).slice(0, 30);
+    if (matches.length === 0) { sug.style.display = 'none'; sug.innerHTML = ''; return; }
+    sug.innerHTML = matches.map(m => `<div class="factory-suggest-item" data-val="${_visitsEscapeHtml(m)}" style="padding:6px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid #f0f0f0" onmouseover="this.style.background='#f5efe0'" onmouseout="this.style.background=''">${_visitsEscapeHtml(m)}</div>`).join('');
+    sug.style.display = 'block';
+  };
+  input.addEventListener('input', () => { showSug(input.value); renderFactorySales(); });
+  input.addEventListener('focus', () => { if (input.value) showSug(input.value); });
+  input.addEventListener('blur', () => { setTimeout(() => { sug.style.display = 'none'; }, 200); });
+  sug.addEventListener('mousedown', (e) => {
+    const it = e.target.closest('.factory-suggest-item');
+    if (it) { input.value = it.dataset.val || ''; sug.style.display = 'none'; renderFactorySales(); }
+  });
+  if (clr) clr.addEventListener('click', () => {
+    input.value = '';
+    sug.style.display = 'none';
+    sug.innerHTML = '';
+    renderFactorySales();
+  });
+  renderFactorySales();
+}
 
 // ===== 営業訪問実績: 共通ヘルパー =====
 

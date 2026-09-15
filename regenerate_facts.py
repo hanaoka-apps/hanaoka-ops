@@ -344,6 +344,18 @@ def transform_sales(header, rows):
     missing = [k for k, v in idx.items() if v is None]
     if missing:
         raise RuntimeError(f"列が見つからない: {missing}")
+
+    # 工場別付加価名 (追加列。存在しなければ空文字)
+    factory_pv_idx = None
+    for cand in ['工場別付加価名', '工場別付加価', '工場別付加価値名', '工場別付加価値']:
+        i = find_idx(h, cand)
+        if i is not None:
+            factory_pv_idx = i
+            print(f"     [sales] 工場別付加価名 列採用: '{cand}' (列{i})", flush=True)
+            break
+    if factory_pv_idx is None:
+        print(f"     [警告] 工場別付加価名 列が見つからない (工場別売上は空として続行)", flush=True)
+
     out = []
     for row in rows:
         if len(row) < max(idx.values()) + 1: continue
@@ -362,6 +374,9 @@ def transform_sales(header, rows):
         kind = 2 if meisai == 2 else 1
         cust_abbr = row[idx['cust_abbr']]
         genre = row[idx['genre']]
+        factory_pv = ''
+        if factory_pv_idx is not None and factory_pv_idx < len(row):
+            factory_pv = str(row[factory_pv_idx] or '').strip()
         out.append([
             ym, fy,
             row[idx['cust_cd']], cust_abbr, genre,
@@ -378,6 +393,8 @@ def transform_sales(header, rows):
             to_float(row[idx['unit_price']]),
             kind,
             cust_abbr, genre, '',
+            '',           # 27 kikou placeholder (売上はkikou無し。受注と列数を揃える)
+            factory_pv,   # 28 工場別付加価名
         ])
     return out
 
