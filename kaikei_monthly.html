@@ -7,7 +7,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <style>
   :root { --primary:#1a5fa8; --bg:#f4f6f9; --card-bg:#fff; --border:#dde2ec; --text:#1e2533; --muted:#6b7a99;
-          --shadow:0 1px 4px rgba(0,0,0,.08); --head:#eef2f8; --sub:#f7f9fc; --bad:#c0392b; }
+          --shadow:0 1px 4px rgba(0,0,0,.08); --head:#eef2f8; --sub:#f7f9fc; --bad:#c0392b;
+          --hl:rgba(26,95,168,.07); --hl-strong:rgba(26,95,168,.20); }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:'Meiryo','Hiragino Sans',sans-serif; background:var(--bg); color:var(--text); }
   nav { background:#1f1e1c;color:#fff;padding:8px 24px;font-size:13px;display:flex;gap:18px;align-items:center; }
@@ -35,6 +36,35 @@
   td.cum { background:#f4f7fc; font-weight:700; }
   .indent { padding-left:22px; color:var(--muted); }
   .pending { color:var(--muted); font-style:italic; }
+
+  /* ── マウス位置のクロスハイライト（列はJSで動的にCSSを差し替える） ── */
+  #tbl tbody tr:hover > td { background:var(--hl); }
+  #tbl tbody tr:hover > td.lbl { background:#e9eff8; }
+  #tbl td.clickable { cursor:pointer; }
+  #tbl td.clickable:hover { outline:2px solid var(--primary); outline-offset:-2px; }
+
+  /* ── 右からせり出す明細パネル ── */
+  #drawer { position:fixed; top:0; right:0; height:100vh; width:min(680px,92vw); background:var(--card-bg);
+            border-left:1px solid var(--border); box-shadow:-6px 0 24px rgba(0,0,0,.14); z-index:50;
+            transform:translateX(100%); transition:transform .22s ease; display:flex; flex-direction:column; }
+  #drawer.open { transform:translateX(0); }
+  #drawerOverlay { position:fixed; inset:0; background:rgba(0,0,0,.18); z-index:49; display:none; }
+  #drawerOverlay.open { display:block; }
+  #drawer .dh { padding:14px 18px; border-bottom:1px solid var(--border); background:var(--head); }
+  #drawer .dh .title { font-size:15px; font-weight:800; color:var(--primary); }
+  #drawer .dh .sub { font-size:12px; color:var(--muted); margin-top:3px; }
+  #drawer .dh .amt { font-size:20px; font-weight:800; margin-top:6px; font-variant-numeric:tabular-nums; }
+  #drawer .dh .close { position:absolute; top:12px; right:16px; border:none; background:transparent;
+                       font-size:22px; line-height:1; color:var(--muted); cursor:pointer; }
+  #drawer .dbody { flex:1; overflow:auto; padding:0 6px 18px; }
+  #drawer table { width:100%; border-collapse:collapse; font-size:12px; white-space:normal; }
+  #drawer th { position:sticky; top:0; background:var(--card-bg); border-bottom:1px solid var(--border);
+               padding:8px 8px; text-align:left; color:var(--muted); font-size:11px; z-index:1; }
+  #drawer td { padding:6px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
+  #drawer td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #drawer tr:hover td { background:var(--hl); }
+  #drawer .neg { color:var(--bad); }
+  #drawer .msg { padding:30px 18px; color:var(--muted); font-size:13px; text-align:center; }
   .warn { background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:8px 12px; font-size:12px; margin-bottom:10px; color:#664d00; }
   .empty-msg { color:var(--muted); font-size:13px; padding:40px 0; text-align:center; }
 </style>
@@ -67,6 +97,17 @@
   <div class="tbl-wrap"><table id="tbl"></table></div>
 </div>
 
+<div id="drawerOverlay"></div>
+<aside id="drawer" aria-hidden="true">
+  <div class="dh" style="position:relative;">
+    <button class="close" id="drawerClose" title="閉じる (Esc)">×</button>
+    <div class="title" id="dTitle">—</div>
+    <div class="sub" id="dSub"></div>
+    <div class="amt" id="dAmt"></div>
+  </div>
+  <div class="dbody" id="dBody"></div>
+</aside>
+
 <script src="kaikei_graph.js"></script>
 <script>
 /* ============ 勘定科目のグループ定義（損益推移表の構造に対応） ============ */
@@ -89,8 +130,11 @@ const SALES_OFFICES = {
 const SOLUTION_DEPTS = ['ｿﾘｭｰｼｮﾝ営業'];
 
 let accountMaster = {};
-const summaries = {};   // month -> summary json
+const summaries = {};   // month -> summary json（集計のみ・軽い）
+const journals = {};    // month -> 仕訳明細（明細パネルを開いたときだけ取りに行く）
 let months = [];
+let currentRows = [];   // 表示中の行定義（明細パネルから参照する）
+let data_ = {};         // 表示中の月ごとの計算結果（明細パネルの金額表示に使う）
 
 const fmt = n => (n === null || n === undefined) ? '—' : Math.round(n).toLocaleString('ja-JP');
 const fmtPct = n => (n === null || n === undefined || !isFinite(n)) ? '—' : (n * 100).toFixed(1) + '%';
@@ -228,22 +272,27 @@ function buildRows(data) {
   // data: month -> calcMonth結果 (無い月はnull)
   const R = [];
   const push = (label, get, opts = {}) => R.push({ label, get, ...opts });
+  const EXP = expenseCodes().map(Number);
+  const LABOR = [...LABOR_F_CODES, ...LABOR_S_CODES];
+  const allOfficeDepts = Object.values(SALES_OFFICES).flat();
 
   push('■ 売上', null, { section: true });
-  push('本社', d => d.officeSales['本社'], { indent: true });
-  push('大阪', d => d.officeSales['大阪'], { indent: true });
-  push('名古屋', d => d.officeSales['名古屋'], { indent: true });
-  push('国内営業', d => d.domestic);
-  push('ソリューション営業', d => d.solution);
+  push('本社', d => d.officeSales['本社'], { indent: true, detail: { codes: SALES_CODES, depts: SALES_OFFICES['本社'] } });
+  push('大阪', d => d.officeSales['大阪'], { indent: true, detail: { codes: SALES_CODES, depts: SALES_OFFICES['大阪'] } });
+  push('名古屋', d => d.officeSales['名古屋'], { indent: true, detail: { codes: SALES_CODES, depts: SALES_OFFICES['名古屋'] } });
+  push('国内営業', d => d.domestic, { detail: { codes: SALES_CODES, depts: allOfficeDepts } });
+  push('ソリューション営業', d => d.solution, { detail: { codes: SALES_CODES, depts: SOLUTION_DEPTS } });
   if (Object.values(data).some(d => d && Math.abs(d.unmapped) > 0.5)) {
-    push('未分類（拠点マッピング漏れ）', d => d.unmapped, { warn: true });
+    push('未分類（拠点マッピング漏れ）', d => d.unmapped, {
+      warn: true, detail: { codes: SALES_CODES, excludeDepts: [...allOfficeDepts, ...SOLUTION_DEPTS] },
+    });
   }
-  push('売上', d => d.sales, { total: true });
+  push('売上', d => d.sales, { total: true, detail: { codes: SALES_CODES } });
 
   push('■ 仕入・付加価値', null, { section: true });
-  push('仕入金額', d => d.purchase, { indent: true });
-  push('商品仕入', d => d.merch, { indent: true });
-  push('仕入TOTAL', d => d.purchaseTotal);
+  push('仕入金額', d => d.purchase, { indent: true, detail: { codes: PURCHASE_CODES } });
+  push('商品仕入', d => d.merch, { indent: true, detail: { codes: MERCH_CODES } });
+  push('仕入TOTAL', d => d.purchaseTotal, { detail: { codes: [...PURCHASE_CODES, ...MERCH_CODES] } });
   push('付加価値額(売上総利益/限界利益)', d => d.valueAdded, { total: true });
   push('付加価値率', d => d.vaRate, { pct: true });
 
@@ -263,31 +312,31 @@ function buildRows(data) {
   }
 
   push('■ 在庫', null, { section: true });
-  push('在庫増減', d => d.invChange, { indent: true });
+  push('在庫増減', d => d.invChange, { indent: true, detail: { codes: WIP_CODES } });
   push('原価(仕入-在庫差額)', d => d.costOfSales);
   push('在庫あり付加価値額', d => d.valueAddedInv, { total: true });
   push('在庫あり付加価値率', d => d.vaInvRate, { pct: true });
 
   push('■ 経費', null, { section: true });
-  push('人件費', d => d.labor);
-  push('(全社・本社・大阪・名古屋)', d => d.laborCompany, { indent: true });
-  push('(工場)', d => d.laborFactory, { indent: true });
-  for (const f of FACTORY_MAIN) push('　' + f, d => d.laborPer[f], { indent: true });
-  push('一般管理費', d => d.expense);
-  push('(全社・本社・大阪・名古屋)', d => d.expCompany, { indent: true });
-  push('(工場)', d => d.expFactory, { indent: true });
-  for (const f of FACTORY_MAIN) push('　' + f, d => d.expPer[f], { indent: true });
-  push('経費合計', d => d.cost, { total: true });
+  push('人件費', d => d.labor, { detail: { codes: LABOR } });
+  push('(全社・本社・大阪・名古屋)', d => d.laborCompany, { indent: true, detail: { codes: LABOR, excludeDepts: FACTORY_DEPTS } });
+  push('(工場)', d => d.laborFactory, { indent: true, detail: { codes: LABOR, depts: FACTORY_DEPTS } });
+  for (const f of FACTORY_MAIN) push('　' + f, d => d.laborPer[f], { indent: true, detail: { codes: LABOR, depts: [f] } });
+  push('一般管理費', d => d.expense, { detail: { codes: EXP } });
+  push('(全社・本社・大阪・名古屋)', d => d.expCompany, { indent: true, detail: { codes: EXP, excludeDepts: FACTORY_DEPTS } });
+  push('(工場)', d => d.expFactory, { indent: true, detail: { codes: EXP, depts: FACTORY_DEPTS } });
+  for (const f of FACTORY_MAIN) push('　' + f, d => d.expPer[f], { indent: true, detail: { codes: EXP, depts: [f] } });
+  push('経費合計', d => d.cost, { total: true, detail: { codes: [...LABOR, ...EXP] } });
 
   push('■ 利益', null, { section: true });
   push('営業利益', d => d.opInc, { total: true });
-  push('営業外収益', d => d.nonOpInc, { indent: true });
-  push('営業外費用', d => d.nonOpExp, { indent: true });
+  push('営業外収益', d => d.nonOpInc, { indent: true, detail: { codes: sectionCodes('営業外収益').map(Number) } });
+  push('営業外費用', d => d.nonOpExp, { indent: true, detail: { codes: sectionCodes('営業外費用').map(Number) } });
   push('経常利益', d => d.ordInc, { total: true });
-  push('特別利益', d => d.extraInc, { indent: true });
-  push('特別損失', d => d.extraExp, { indent: true });
+  push('特別利益', d => d.extraInc, { indent: true, detail: { codes: sectionCodes('特別利益').map(Number) } });
+  push('特別損失', d => d.extraExp, { indent: true, detail: { codes: sectionCodes('特別損失').map(Number) } });
   push('税引前当期純利益', d => d.preTax);
-  push('法人税等', d => d.tax, { indent: true });
+  push('法人税等', d => d.tax, { indent: true, detail: { codes: sectionCodes('法人税等').map(Number) } });
   push('当期純利益', d => d.netInc, { total: true });
   return R;
 }
@@ -296,13 +345,15 @@ function render(fyStart) {
   const ms = fyMonths(fyStart);
   const data = {};
   for (const m of ms) data[m] = calcMonth(m);
+  data_ = data;
   const rows = buildRows(data);
 
   let html = '<thead><tr><th class="lbl">項目</th>';
   for (const m of ms) html += `<th>${parseInt(m.slice(4), 10)}月</th>`;
   html += '<th>累計</th></tr></thead><tbody>';
 
-  for (const r of rows) {
+  for (let ri = 0; ri < rows.length; ri++) {
+    const r = rows[ri];
     const cls = [r.section ? 'section' : '', r.total ? 'total' : ''].filter(Boolean).join(' ');
     html += `<tr class="${cls}"><td class="lbl${r.indent ? ' indent' : ''}">${r.label}</td>`;
     if (r.section) {
@@ -315,7 +366,10 @@ function render(fyStart) {
       let v = d ? r.get(d) : null;
       if (r.pending) { html += '<td class="num pending">—</td>'; continue; }
       if (v !== null && v !== undefined && !r.pct) { cum += v; cumHas = true; }
-      html += `<td class="num${r.warn && v ? ' warn' : ''}">${r.pct ? fmtPct(v) : (v === null || v === undefined ? '—' : fmt(v))}</td>`;
+      // 明細を持つ行で、その月のデータがあるセルだけクリックできるようにする
+      const clickable = r.detail && !r.pct && d && v !== null && v !== undefined;
+      const attrs = clickable ? ` class="num clickable" data-ri="${ri}" data-m="${m}"` : ` class="num${r.warn && v ? ' warn' : ''}"`;
+      html += `<td${attrs}>${r.pct ? fmtPct(v) : (v === null || v === undefined ? '—' : fmt(v))}</td>`;
     }
     // 累計列（率は累計値から再計算せず「—」）
     html += `<td class="num cum">${r.pending || r.pct ? '—' : (cumHas ? fmt(cum) : '—')}</td>`;
@@ -323,6 +377,7 @@ function render(fyStart) {
   }
   html += '</tbody>';
   document.getElementById('tbl').innerHTML = html;
+  currentRows = rows;
 
   const loaded = ms.filter(m => summaries[m]).length;
   document.getElementById('status').textContent = `${loaded} / 12 ヶ月分のデータを表示中`;
@@ -333,6 +388,119 @@ function render(fyStart) {
     ? `<div class="warn">拠点に割り当てられていない売上が ${fmt(unmappedTotal)} 円あります。部門マッピング（本社/大阪/名古屋/ソリューション）の見直しが必要です。</div>`
     : '';
 }
+
+/* ============ マウス位置のクロスハイライト ============ */
+// 列のハイライトはCSSルールを1本差し替えて行う（セルを走査しないので大きな表でも軽い）
+const hoverStyle = document.createElement('style');
+document.head.appendChild(hoverStyle);
+document.getElementById('tbl').addEventListener('mouseover', e => {
+  const cell = e.target.closest('td,th');
+  if (!cell || !cell.parentElement) { return; }
+  const n = cell.cellIndex + 1;
+  hoverStyle.textContent =
+    `#tbl tbody td:nth-child(${n}), #tbl thead th:nth-child(${n}) { background:var(--hl); }` +
+    `#tbl tbody tr:hover > td:nth-child(${n}) { background:var(--hl-strong); }`;
+});
+document.querySelector('.tbl-wrap').addEventListener('mouseleave', () => { hoverStyle.textContent = ''; });
+
+/* ============ 明細パネル ============ */
+const drawer = document.getElementById('drawer');
+const overlay = document.getElementById('drawerOverlay');
+function closeDrawer() {
+  drawer.classList.remove('open');
+  overlay.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+}
+document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+overlay.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+
+/** その月の仕訳明細を取りに行く（明細を含む重いファイルなので、開いたときだけ・1回だけ） */
+async function getJournal(month) {
+  if (journals[month] !== undefined) return journals[month];
+  const data = await kaikeiGetFile('monthly/' + month + '.json', { allow404: true });
+  journals[month] = (data && data.journal) || [];
+  return journals[month];
+}
+
+/** 行の定義(codes/depts)に当てはまる仕訳を、利益への影響の符号付きで抜き出す */
+function pickJournalLines(journal, detail) {
+  const codeSet = new Set(detail.codes.map(String));
+  const depts = detail.depts ? new Set(detail.depts) : null;
+  const excl = detail.excludeDepts ? new Set(detail.excludeDepts) : null;
+  const out = [];
+  for (const r of journal) {
+    const code = r[0];
+    if (!codeSet.has(code)) continue;
+    const dept = r[4] || '';
+    if (depts && !depts.has(dept)) continue;
+    if (excl && excl.has(dept)) continue;
+    const meta = accountMaster[code];
+    if (!meta) continue;
+    const isDebitRow = r[2] === '借方';
+    const sign = (meta.normalBalance === 'debit') ? (isDebitRow ? 1 : -1) : (isDebitRow ? -1 : 1);
+    out.push({
+      code, name: meta.name, date: r[1], amount: sign * r[3],
+      dept, aite: r[5] || '', tekiyo: r[6] || '', who: r[7] || '', no: r[8] || '',
+    });
+  }
+  out.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+  return out;
+}
+
+function fmtDate(d) { return (d && d.length === 8) ? `${d.slice(4, 6)}/${d.slice(6, 8)}` : (d || ''); }
+
+async function openDetail(rowIndex, month) {
+  const row = currentRows[rowIndex];
+  if (!row || !row.detail) return;
+  const value = data_[month] ? row.get(data_[month]) : null;
+
+  document.getElementById('dTitle').textContent = row.label.trim();
+  document.getElementById('dSub').textContent = `${month.slice(0, 4)}年${parseInt(month.slice(4), 10)}月度`;
+  document.getElementById('dAmt').textContent = value === null || value === undefined ? '—' : fmt(value);
+  document.getElementById('dBody').innerHTML = '<div class="msg">読み込み中...</div>';
+  drawer.classList.add('open');
+  overlay.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+
+  let lines;
+  try {
+    lines = pickJournalLines(await getJournal(month), row.detail);
+  } catch (e) {
+    document.getElementById('dBody').innerHTML = `<div class="msg">明細を読み込めませんでした: ${e.message}</div>`;
+    return;
+  }
+  if (!lines.length) {
+    document.getElementById('dBody').innerHTML = '<div class="msg">該当する明細がありません。</div>';
+    return;
+  }
+  const sum = lines.reduce((s, l) => s + l.amount, 0);
+  const diff = (value === null || value === undefined) ? 0 : sum - value;
+  const head = `<table><thead><tr>
+      <th>日付</th><th>科目</th><th>部門</th><th>相手科目</th><th>摘要</th><th style="text-align:right;">金額</th>
+    </tr></thead><tbody>`;
+  const body = lines.map(l => `<tr>
+      <td>${fmtDate(l.date)}</td>
+      <td>${l.name}</td>
+      <td>${l.dept}</td>
+      <td>${l.aite}</td>
+      <td>${l.tekiyo}</td>
+      <td class="num${l.amount < 0 ? ' neg' : ''}">${fmt(l.amount)}</td>
+    </tr>`).join('');
+  const foot = `</tbody></table>
+    <div style="padding:10px 8px;font-size:12px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;">
+      <span>${lines.length.toLocaleString()}件</span>
+      <span>合計 ${fmt(sum)}円</span>
+      ${Math.abs(diff) > 1 ? `<span class="neg">表の金額との差 ${fmt(diff)}円</span>` : '<span>表の金額と一致</span>'}
+    </div>`;
+  document.getElementById('dBody').innerHTML = head + body + foot;
+}
+
+document.getElementById('tbl').addEventListener('click', e => {
+  const td = e.target.closest('td.clickable');
+  if (!td) return;
+  openDetail(parseInt(td.dataset.ri, 10), td.dataset.m);
+});
 
 async function loadFy(fyStart) {
   document.getElementById('status').textContent = '読み込み中...';
