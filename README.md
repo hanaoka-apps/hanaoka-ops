@@ -16,6 +16,7 @@
 | 会計 仕訳明細            | kaikei_ledger.html   | 役員限定             | 会計サマリーからのドリルダウン。科目・部門・摘要キーワードで仕訳明細を検索 |
 | 会計 予算・前年実績編集   | kaikei_budget.html   | 役員限定             | 科目グループ×月度で予算・前年実績を編集（保存の都度スナップショットを保持） |
 | 会計 データ取り込み      | kaikei_upload.html   | 役員限定             | SMILE元帳CSVをブラウザで解析し、SharePointの会計データへ保存（月次） |
+| 書類管理システム         | doc_management.html  | 役員限定＋総務       | スキャンされた書類をAIが読み取って仕分け・要約。期限があるものはタスク化。全文検索と書類間のつながり追跡 |
 
 ## 認証
 
@@ -36,6 +37,23 @@
   - `monthly/YYYYMM.json`：元帳CSVから取り込んだ月次の科目別集計(`byAccount`)と仕訳明細(`journal`)
   - `budget.json` / `prior_actuals.json`：予算・前年実績（科目グループ×月度）。`kaikei_budget.html` で編集
   - 取り込みは `kaikei_upload.html` でSMILE元帳CSVをブラウザにドラッグするだけ（サーバー・定期実行スクリプトなし）
+- **書類データ**：`executive-workspace` サイトの既定ドキュメントライブラリ配下 `書類管理/`
+  （会計データ・給与データと同じサイト。銀行残高・融資・住民税明細・財形など個人名と
+  金額を含む書類を扱うため、受付案件管理と同じサイトには置かない）
+  - `DocRegistry`（リスト）：書類台帳。1書類＝1行
+    - 列は**絞り込み・並べ替えに使うものだけ**（Category / Sender / DocDate / ReceivedDate /
+      DueDate / Amount / DocStatus / TaskStatus / ThreadId / FileName / FileUrl）。
+      読み取った項目・要約・全文・つながりは `Data` 列にJSONで入る。
+      **書類は種類が読めないので、新しい項目が出てきても列を足さなくて済む形にしている**
+  - `書類管理/原本/YYYY/`：原本PDF（スキャンフォルダからのコピー。元ファイルは動かさない）
+  - `書類管理/_取込待ち/`：取込エージェントが置く取込票(JSON)。画面を開くと台帳に登録され `_取込済/` へ移る
+  - 取込は `scripts/doc_ingest/取込手順.md` に従って、福田さんのPCで動くClaudeが実施。
+    **エージェントは書き込み権限を持たない**（同期フォルダに置くだけ。台帳に行を作るのは
+    常にサインインした人の権限）。新着検出は `scripts/doc_ingest/new_scans.sh`
+  - 誰が見られるかは **SharePointのサイト権限がそのまま効く**。画面側に権限判定を書かない
+    （判定を書くと、その判定のバグがそのまま漏洩になる）
+  - リダイレクトURIは共通の `auth.html`（ap_* 系と同じ）。Azure側の追加登録は不要。
+    ポップアップ認証のみ対応（iOS/Safariのリダイレクト方式は未対応。PC用の画面のため）
 
 ### dashboard_facts.json の `order_rows`（受注明細）について
 
