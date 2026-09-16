@@ -10,6 +10,7 @@ Drive ID: SharedMasters ライブラリ
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -44,7 +45,10 @@ OPTIONAL_FILES = [
     "品目マスタ.txt",
     "製番マスタ.csv",
     "製番マスタ.txt",
+    "value_analysis.json",
 ]
+
+STANDARD_COST_FILE = re.compile(r"^品目別積上原価一覧表.*\.(?:csv|xlsx)$", re.IGNORECASE)
 
 # --------------------------------------------------------------------------
 
@@ -105,6 +109,25 @@ def download_file(token: str, filename: str, dest_dir: Path, required: bool) -> 
         )
 
 
+def list_standard_cost_files(token: str) -> list[str]:
+    """SharedMasters直下の月次積上原価CSV/XLSXを自動検出する。"""
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root/children"
+    params = {"$select": "name,file", "$top": "999"}
+    names: list[str] = []
+    while url:
+        res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params, timeout=60)
+        if res.status_code != 200:
+            raise RuntimeError(f"SharedMasters一覧取得失敗: HTTP {res.status_code} / {res.text[:200]}")
+        payload = res.json()
+        for item in payload.get("value", []):
+            name = str(item.get("name") or "")
+            if item.get("file") and STANDARD_COST_FILE.fullmatch(name):
+                names.append(name)
+        url = payload.get("@odata.nextLink", "")
+        params = None
+    return sorted(set(names))
+
+
 def main():
     tenant_id = os.environ.get("AZURE_TENANT_ID", "").strip()
     client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
@@ -141,6 +164,17 @@ def main():
             download_file(token, f, DATA, required=False)
         except RuntimeError as e:
             print(f"  [WARN] {e}")
+
+    print()
+    print("=== 月次積上原価ファイル（自動検出） ===")
+    try:
+        cost_files = list_standard_cost_files(token)
+        if not cost_files:
+            print("  [WARN] 品目別積上原価一覧表のCSV/XLSXが見つかりません")
+        for f in cost_files:
+            download_file(token, f, DATA, required=False)
+    except RuntimeError as e:
+        print(f"  [WARN] {e}")
 
     # 有効在庫一覧表.csv の SharePoint 側 lastModifiedDateTime を保存
     # → build_shell.py が現在庫基準日として使用する
