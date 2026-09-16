@@ -971,10 +971,32 @@ async function initAuth() {
   }
 }
 
+// SafariはMSALのポップアップ処理と相性が悪い(window.open()が非同期処理を
+// 挟むとブロックされたり、ITPでwindow.opener経由の応答受け渡しが切れたり
+// しやすい)。iOS/Safariでは最初からポップアップを使わず、ページ全体で
+// Microsoftのログイン画面へ遷移するリダイレクト方式にする。
+function shouldUseRedirectFlow() {
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua);
+  const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(ua);
+  return isIOS || isSafari;
+}
+
 async function login() {
   const btn = document.getElementById('signInBtn');
   try {
     btn.disabled = true;
+    if (shouldUseRedirectFlow()) {
+      // auth.html(共通のポップアップ受け口)は戻り先を知らないポップアップ
+      // 専用の作りなので、リダイレクト方式のときだけこの1回限りredirectUri
+      // を自分自身のURLに上書きする。戻ってきた後はinitAuth()の
+      // handleRedirectPromise()がこのページ自身で処理を完了させる。
+      await msalInstance.loginRedirect({
+        scopes: SCOPES,
+        redirectUri: window.location.origin + window.location.pathname,
+      });
+      return; // ページがMicrosoftのログイン画面へ遷移するのでここで終了
+    }
     const result = await msalInstance.loginPopup({ scopes: SCOPES });
     account = result.account;
     msalInstance.setActiveAccount(account);
