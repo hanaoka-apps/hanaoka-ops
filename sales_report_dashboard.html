@@ -602,6 +602,20 @@
     <div id="dealerTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
   </div>
 
+  <div class="card">
+    <h2>📥 WEB問い合わせ受信状況<span class="page-sub" style="margin-left:8px">HP・ARU・AUTOPILOT の受信件数（FAXは含みません）</span></h2>
+    <div id="inqSummary" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span class="page-sub">表示期間</span>
+      <select id="inqRange" onchange="renderInquiryChart()"
+        style="padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card-bg);color:var(--text-main);font-size:13.5px">
+        <option value="recent12">直近12ヶ月</option>
+      </select>
+    </div>
+    <div style="position:relative;height:320px"><canvas id="inquiryTrendChart"></canvas></div>
+    <div id="inqTableWrap" style="margin-top:18px"><div class="empty-state">サインインすると表示されます</div></div>
+  </div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script>
@@ -722,6 +736,15 @@ async function onSignedIn() {
     console.error('データ取得失敗', e);
     document.getElementById('orderTableWrap').innerHTML = '<div class="empty-state error">データを取得できませんでした</div>';
     document.getElementById('salesTableWrap').innerHTML = '<div class="empty-state error">データを取得できませんでした</div>';
+  }
+  // ★WEB問い合わせ集計は別リスト（別サイト）から取るので、日報本体とは独立して実行する。
+  //   片方が落ちてももう片方は表示されるようにしておく。
+  try {
+    await loadInquiryStats();
+  } catch (e) {
+    console.error('WEB問い合わせ集計の取得に失敗', e);
+    const w = document.getElementById('inqTableWrap');
+    if (w) w.innerHTML = '<div class="empty-state error">受信状況を取得できませんでした</div>';
   }
 }
 
@@ -904,6 +927,159 @@ function findLatestVoucherDate(rows, maxExclusiveKey) {
 const CHARTS = {};
 function destroyChart(id) {
   if (CHARTS[id]) { CHARTS[id].destroy(); delete CHARTS[id]; }
+}
+// ============================================================
+// WEB問い合わせ受信状況（HP / ARU / AUTOPILOT）
+//   集計元は受付案件管理システムと同じ SharePoint リスト FAX_EventHistory。
+//   このリストは別サイト(msteams_7aab51)にあるが、同じ clientId の Sites.Read.All で読める。
+//   FAXは対象外（営業日報ではWEB経由の問い合わせのみ追う）。
+// ============================================================
+const INQ = {
+  site: 'hanaokacorp.sharepoint.com:/sites/msteams_7aab51:',
+  listId: 'a7cee65e-1815-4992-b2fc-79d7cd9e6d05',
+};
+const INQ_ROUTES = [
+  { key: 'hp',  label: 'HP問い合わせ', type: 'HP問い合わせ',        color: '#1d4ed8' },
+  { key: 'aru', label: 'ARU',          type: 'ARU問い合わせ',       color: '#0e9488' },
+  { key: 'amr', label: 'AUTOPILOT',    type: 'AUTOPILOT問い合わせ', color: '#7c3aed' },
+];
+let inqRows = [];   // [{ ym:'2026-09', y:'2026', route:'hp' }]
+const inqYm = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+
+async function loadInquiryStats() {
+  const site = await graphGet('/sites/' + INQ.site);
+  // EventTypeはインデックス済みなのでサーバー側で絞れる（FAX 2万件を引かずに済む）
+  const flt = INQ_ROUTES.map(r => `fields/EventType eq '${r.type}'`).join(' or ');
+  let url = `/sites/${site.id}/lists/${INQ.listId}/items`
+          + `?$expand=fields($select=EventType,EventDate)`
+          + `&$filter=${encodeURIComponent(flt)}&$top=999`;
+  const rows = [];
+  for (let guard = 0; url && guard < 50; guard++) {
+    const d = await graphGet(url);
+    (d.value || []).forEach(v => {
+      const f = v.fields || {};
+      const dt = new Date(f.EventDate);
+      const rt = INQ_ROUTES.find(x => x.type === f.EventType);
+      // EventDateはUTC。JSTのブラウザで見るのでローカル日付に寄せて月次集計する
+      if (!isNaN(dt) && rt) rows.push({ ym: inqYm(dt), y: String(dt.getFullYear()), route: rt.key });
+    });
+    let nl = d['@odata.nextLink'] || null;
+    const P = 'https://graph.microsoft.com/v1.0';
+    if (nl && nl.indexOf(P) === 0) nl = nl.slice(P.length);
+    url = nl;
+  }
+  inqRows = rows;
+  buildInqRangeOptions();
+  renderInquiryChart();
+}
+function buildInqRangeOptions() {
+  const sel = document.getElementById('inqRange');
+  if (!sel) return;
+  const keep = sel.value;
+  const years = Array.from(new Set(inqRows.map(r => r.y))).sort().reverse();
+  sel.innerHTML = ['<option value="recent12">直近12ヶ月</option>']
+    .concat(years.map(y => `<option value="${y}">${y}年（月別）</option>`))
+    .concat(years.length > 1 ? ['<option value="byYear">年別（全期間）</option>'] : [])
+    .join('');
+  if (Array.from(sel.options).some(o => o.value === keep)) sel.value = keep;
+}
+// 表示期間に応じた集計軸を決める
+function inqAxis() {
+  const sel = document.getElementById('inqRange');
+  const mode = (sel && sel.value) || 'recent12';
+  if (mode === 'byYear') {
+    const labels = Array.from(new Set(inqRows.map(r => r.y))).sort();
+    return { labels, ticks: labels.map(y => y + '年'), keyOf: r => r.y };
+  }
+  let labels;
+  if (mode === 'recent12') {
+    const now = new Date();
+    labels = [];
+    for (let i = 11; i >= 0; i--) labels.push(inqYm(new Date(now.getFullYear(), now.getMonth() - i, 1)));
+  } else {
+    labels = Array.from({ length: 12 }, (_, i) => mode + '-' + String(i + 1).padStart(2, '0'));
+  }
+  return { labels, ticks: labels.map(l => Number(l.slice(5)) + '月'), keyOf: r => r.ym };
+}
+function inqCount(routeKey, label, keyOf) {
+  return inqRows.reduce((n, r) => n + ((r.route === routeKey && keyOf(r) === label) ? 1 : 0), 0);
+}
+function renderInquiryChart() {
+  const { labels, ticks, keyOf } = inqAxis();
+  const datasets = INQ_ROUTES.map(rt => ({
+    label: rt.label,
+    backgroundColor: rt.color,
+    data: labels.map(l => inqCount(rt.key, l, keyOf)),
+  }));
+  destroyChart('inquiryTrendChart');
+  const ctx = document.getElementById('inquiryTrendChart');
+  if (ctx && window.Chart) {
+    CHARTS['inquiryTrendChart'] = new Chart(ctx, {
+      type: 'bar',
+      data: { labels: ticks, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: { callbacks: { footer: its => '合計 ' + its.reduce((n, i) => n + (i.parsed.y || 0), 0) + '件' } },
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+        },
+      },
+    });
+  }
+  renderInqSummary();
+  renderInqTable(labels, ticks, keyOf);
+}
+function renderInqSummary() {
+  const el = document.getElementById('inqSummary');
+  if (!el) return;
+  const now = new Date();
+  const thisYm = inqYm(now);
+  const prevYm = inqYm(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const thisY = String(now.getFullYear());
+  const cnt = f => inqRows.filter(f).length;
+  const brk = f => INQ_ROUTES.map(rt => `${rt.label} ${cnt(r => f(r) && r.route === rt.key)}`).join('　/　');
+  const box = (title, n, sub) =>
+    `<div style="flex:1;min-width:200px;border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:var(--bg)">`
+    + `<div class="page-sub" style="font-size:12.5px">${title}</div>`
+    + `<div style="font-size:30px;font-weight:700;line-height:1.25;color:var(--text-main)">${n}<span style="font-size:14px;font-weight:500;margin-left:2px">件</span></div>`
+    + `<div class="page-sub" style="font-size:12px;margin-top:3px">${sub}</div></div>`;
+  const tm = cnt(r => r.ym === thisYm), pm = cnt(r => r.ym === prevYm);
+  const diff = tm - pm;
+  const diffTxt = pm === 0 ? '前月の実績なし'
+    : `前月比 <span style="color:${diff >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}">${diff >= 0 ? '+' : ''}${diff}件</span>`;
+  el.innerHTML = box(`今月（${thisYm.replace('-', '/')}）`, tm, brk(r => r.ym === thisYm))
+               + box(`前月（${prevYm.replace('-', '/')}）`, pm, diffTxt)
+               + box(`${thisY}年 累計`, cnt(r => r.y === thisY), brk(r => r.y === thisY));
+}
+function renderInqTable(labels, ticks, keyOf) {
+  const wrap = document.getElementById('inqTableWrap');
+  if (!wrap) return;
+  if (!inqRows.length) {
+    wrap.innerHTML = '<div class="empty-state">対象期間のWEB問い合わせはまだ登録されていません</div>';
+    return;
+  }
+  const bd = 'border-bottom:1px solid var(--border)';
+  const td = (s, extra) => `<td style="padding:6px 10px;${bd};text-align:right;${extra || ''}">${s}</td>`;
+  let html = '<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+    + `<thead><tr><th style="padding:6px 10px;${bd};text-align:left">期間</th>`
+    + INQ_ROUTES.map(rt => `<th style="padding:6px 10px;${bd};text-align:right;white-space:nowrap">${rt.label}</th>`).join('')
+    + `<th style="padding:6px 10px;${bd};text-align:right">合計</th></tr></thead><tbody>`;
+  labels.forEach((l, i) => {
+    const vals = INQ_ROUTES.map(rt => inqCount(rt.key, l, keyOf));
+    const sum = vals.reduce((a, b) => a + b, 0);
+    html += `<tr><td style="padding:6px 10px;${bd}">${ticks[i]}</td>`
+          + vals.map(v => td(v || '')).join('')
+          + td(`<b>${sum || ''}</b>`) + '</tr>';
+  });
+  const totals = INQ_ROUTES.map(rt => labels.reduce((n, l) => n + inqCount(rt.key, l, keyOf), 0));
+  html += `<tr><td style="padding:8px 10px"><b>合計</b></td>`
+        + totals.map(v => `<td style="padding:8px 10px;text-align:right"><b>${v}</b></td>`).join('')
+        + `<td style="padding:8px 10px;text-align:right"><b>${totals.reduce((a, b) => a + b, 0)}</b></td></tr>`;
+  wrap.innerHTML = html + '</tbody></table></div>';
 }
 
 const centerTextPlugin = {
