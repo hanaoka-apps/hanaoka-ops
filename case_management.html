@@ -5580,22 +5580,55 @@ const STATS_ROUTES = [
   { key: 'aru',       label: 'ARU',       color: '#2E4E9E' },
   { key: 'autopilot', label: 'AMR',       color: '#6B3FA0' },
 ];
-let statsRows = [];   // [{ ym:'2026-09', y:'2026', route:'fax' }]
+let statsRows = [];   // [{ ym:'2026-09', y:'2026', route:'fax', isCase:true }]
 const statsYm = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+const STATS_CACHE_KEY = 'fax-stats-rows-v1';
+const STATS_CACHE_TTL = 10 * 60 * 1000;   // 10分
 
+// ★集計専用の軽量取得。
+//   fetchEventItems() は全イベント（2万件超）を25列で引くため受付状況だけのために使うと重い。
+//   ここでは「受信イベントのEventTypeに限定（インデックス済み列）」＋「必要な4列だけ」に絞る。
+//   コメントやステータス変更が最初から除外されるので、行数も列数も大きく減る。
+async function fetchStatsRows(force) {
+  if (!force) {
+    try {
+      const c = JSON.parse(sessionStorage.getItem(STATS_CACHE_KEY) || 'null');
+      if (c && (Date.now() - c.at) < STATS_CACHE_TTL && Array.isArray(c.rows)) return c.rows;
+    } catch (_) {}
+  }
+  const sid = await getSiteId();
+  const types = [];
+  INBOX_ROUTES.forEach(r => r.types.forEach(t => types.push(t)));
+  const flt = types.map(t => `fields/EventType eq '${t}'`).join(' or ');
+  let url = `/sites/${sid}/lists/${SP.eventListId}/items`
+          + `?$expand=fields($select=EventType,EventDate,SortKubun,CaseId)`
+          + `&$filter=${encodeURIComponent(flt)}&$top=999`;
+  const rows = [];
+  const box = document.getElementById('statsChart');
+  for (let guard = 0; url && guard < 60; guard++) {
+    const d = await graphGet(url);
+    (d.value || []).forEach(v => {
+      const f = v.fields || {};
+      const route = routeOf(f.EventType);
+      const dt = new Date(f.EventDate);
+      if (!route || isNaN(dt)) return;
+      rows.push({ ym: statsYm(dt), y: String(dt.getFullYear()), route,
+                  isCase: (f.SortKubun === '案件管理') && !!f.CaseId });
+    });
+    if (box) box.innerHTML = `<div class="loading-spinner">読み込み中... ${rows.length}件</div>`;
+    let nl = d['@odata.nextLink'] || null;
+    const P = 'https://graph.microsoft.com/v1.0';
+    if (nl && nl.indexOf(P) === 0) nl = nl.slice(P.length);
+    url = nl;
+  }
+  try { sessionStorage.setItem(STATS_CACHE_KEY, JSON.stringify({ at: Date.now(), rows })); } catch (_) {}
+  return rows;
+}
 async function loadStats(force) {
   const box = document.getElementById('statsChart');
   if (box && !statsRows.length) box.innerHTML = '<div class="loading-spinner">読み込み中...</div>';
   try {
-    const items = await fetchEventItems(force);
-    statsRows = [];
-    items.forEach(e => {
-      const route = routeOf(e.EventType);
-      if (!route) return;                       // 受信イベント以外は対象外
-      const dt = new Date(e.EventDate);
-      if (isNaN(dt)) return;
-      statsRows.push({ ym: statsYm(dt), y: String(dt.getFullYear()), route });
-    });
+    statsRows = await fetchStatsRows(force);
     buildStatsRangeOptions();
     renderStatsChart();
   } catch (err) {
@@ -5634,6 +5667,9 @@ function statsAxis() {
 function statsCount(routeKey, label, keyOf) {
   return statsRows.reduce((n, r) => n + ((r.route === routeKey && keyOf(r) === label) ? 1 : 0), 0);
 }
+function statsCaseCount(label, keyOf) {
+  return statsRows.reduce((n, r) => n + ((r.isCase && keyOf(r) === label) ? 1 : 0), 0);
+}
 // 月別の積み上げ棒グラフをSVGで描く
 function renderStatsChart() {
   const box = document.getElementById('statsChart');
@@ -5655,17 +5691,29 @@ function renderStatsChart() {
     grid += `<line x1="${padL}" y1="${y}" x2="${W - 10}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`
           + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-muted)">${v}</text>`;
   }
+  // 太い背景バー＝受信数（経路別に積み上げ）、細い前面バー＝案件になった数
+  const caseVals = labels.map(l => statsCaseCount(l, keyOf));
+  const cbw = Math.max(4, bw * 0.4);
   labels.forEach((l, i) => {
     const cx = padL + step * i + step / 2;
+    const detail = STATS_ROUTES.map((rt, k) => `${rt.label} ${series[i][k]}`).join(' / ');
+    const rate = totals[i] > 0 ? `　案件化 ${Math.round(caseVals[i] / totals[i] * 100)}%` : '';
+    const tip = `${ticks[i]}　受信 ${totals[i]}件（${detail}）　案件 ${caseVals[i]}件${rate}`;
     let acc = 0;
     series[i].forEach((v, k) => {
       if (!v) return;
       const h = (v / (tickStep * tickN)) * plotH;
       const y = padT + plotH - h - acc;
-      bars += `<rect x="${cx - bw / 2}" y="${y}" width="${bw}" height="${h}" fill="${STATS_ROUTES[k].color}">`
-            + `<title>${ticks[i]} ${STATS_ROUTES[k].label} ${v}件</title></rect>`;
+      bars += `<rect x="${cx - bw / 2}" y="${y}" width="${bw}" height="${h}" fill="${STATS_ROUTES[k].color}" opacity="0.45">`
+            + `<title>${escapeHtml(tip)}</title></rect>`;
       acc += h;
     });
+    // 前面の案件バー（濃色・細め）
+    if (caseVals[i]) {
+      const ch = (caseVals[i] / (tickStep * tickN)) * plotH;
+      bars += `<rect x="${cx - cbw / 2}" y="${padT + plotH - ch}" width="${cbw}" height="${ch}" fill="#111827" rx="1">`
+            + `<title>${escapeHtml(tip)}</title></rect>`;
+    }
     if (totals[i]) {
       bars += `<text x="${cx}" y="${padT + plotH - acc - 4}" text-anchor="middle" font-size="10"`
             + ` fill="var(--text)" font-weight="600">${totals[i]}</text>`;
@@ -5674,8 +5722,10 @@ function renderStatsChart() {
   });
   const legend = STATS_ROUTES.map(rt =>
     `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:11px;color:var(--text-muted)">`
-    + `<span style="width:10px;height:10px;border-radius:2px;background:${rt.color};display:inline-block"></span>${rt.label}</span>`
-  ).join('');
+    + `<span style="width:10px;height:10px;border-radius:2px;background:${rt.color};opacity:.45;display:inline-block"></span>${rt.label}</span>`
+  ).join('')
+  + `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:11px;color:var(--text)">`
+  + `<span style="width:6px;height:12px;border-radius:1px;background:#111827;display:inline-block"></span>案件になった</span>`;
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`
     + grid + bars + `</svg><div style="margin-top:8px">${legend}</div>`;
   renderStatsSummary();
@@ -5695,13 +5745,23 @@ function renderStatsSummary() {
     + `<div style="font-size:11px;color:var(--text-muted)">${title}</div>`
     + `<div style="font-size:26px;font-weight:700;line-height:1.25">${n}<span style="font-size:12px;font-weight:500;margin-left:2px">件</span></div>`
     + `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${sub}</div></div>`;
+  // 受信数を母数として見せつつ、案件になった数を強調する
+  const box2 = (title, f, extra) => {
+    const recv = cnt(f), cs = cnt(r => f(r) && r.isCase);
+    const rate = recv > 0 ? `（案件化 ${Math.round(cs / recv * 100)}%）` : '';
+    return `<div style="flex:1;min-width:190px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--surface)">`
+      + `<div style="font-size:11px;color:var(--text-muted)">${title}</div>`
+      + `<div style="font-size:26px;font-weight:700;line-height:1.25">${recv}<span style="font-size:12px;font-weight:500;margin-left:2px">件 受信</span></div>`
+      + `<div style="font-size:12px;margin-top:1px"><b>案件 ${cs}件</b><span style="color:var(--text-muted)">${rate}</span></div>`
+      + `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${extra || brk(f)}</div></div>`;
+  };
   const tm = cnt(r => r.ym === thisYm), pm = cnt(r => r.ym === prevYm);
   const diff = tm - pm;
   const diffTxt = pm === 0 ? '前月の実績なし'
     : `前月比 <span style="color:${diff >= 0 ? 'var(--accent2)' : 'var(--danger)'}">${diff >= 0 ? '+' : ''}${diff}件</span>`;
-  el.innerHTML = box(`今月（${thisYm.replace('-', '/')}）`, tm, brk(r => r.ym === thisYm))
-               + box(`前月（${prevYm.replace('-', '/')}）`, pm, diffTxt)
-               + box(`${thisY}年 累計`, cnt(r => r.y === thisY), brk(r => r.y === thisY));
+  el.innerHTML = box2(`今月（${thisYm.replace('-', '/')}）`, r => r.ym === thisYm)
+               + box2(`前月（${prevYm.replace('-', '/')}）`, r => r.ym === prevYm, diffTxt)
+               + box2(`${thisY}年 累計`, r => r.y === thisY);
 }
 function renderStatsTable(labels, ticks, keyOf) {
   const wrap = document.getElementById('statsTableWrap');
@@ -5711,17 +5771,25 @@ function renderStatsTable(labels, ticks, keyOf) {
   let html = `<table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px">`
     + `<thead><tr><th style="padding:6px 10px;${bd};text-align:left">期間</th>`
     + STATS_ROUTES.map(rt => `<th style="padding:6px 10px;${bd};text-align:right">${rt.label}</th>`).join('')
-    + `<th style="padding:6px 10px;${bd};text-align:right">合計</th></tr></thead><tbody>`;
+    + `<th style="padding:6px 10px;${bd};text-align:right">受信 計</th>`
+    + `<th style="padding:6px 10px;${bd};text-align:right">案件</th>`
+    + `<th style="padding:6px 10px;${bd};text-align:right">案件化率</th></tr></thead><tbody>`;
   labels.forEach((l, i) => {
     const vals = STATS_ROUTES.map(rt => statsCount(rt.key, l, keyOf));
     const sum = vals.reduce((a, b) => a + b, 0);
+    const cs = statsCaseCount(l, keyOf);
     html += `<tr><td style="padding:5px 10px;${bd}">${ticks[i]}</td>`
-          + vals.map(v => td(v || '')).join('') + td(`<b>${sum || ''}</b>`) + '</tr>';
+          + vals.map(v => td(v || '')).join('') + td(`<b>${sum || ''}</b>`)
+          + td(cs || '') + td(sum > 0 ? Math.round(cs / sum * 100) + '%' : '') + '</tr>';
   });
   const tot = STATS_ROUTES.map(rt => labels.reduce((n, l) => n + statsCount(rt.key, l, keyOf), 0));
+  const gRecv = tot.reduce((a, b) => a + b, 0);
+  const gCase = labels.reduce((n, l) => n + statsCaseCount(l, keyOf), 0);
   html += `<tr><td style="padding:7px 10px"><b>合計</b></td>`
         + tot.map(v => `<td style="padding:7px 10px;text-align:right"><b>${v}</b></td>`).join('')
-        + `<td style="padding:7px 10px;text-align:right"><b>${tot.reduce((a, b) => a + b, 0)}</b></td></tr>`;
+        + `<td style="padding:7px 10px;text-align:right"><b>${gRecv}</b></td>`
+        + `<td style="padding:7px 10px;text-align:right"><b>${gCase}</b></td>`
+        + `<td style="padding:7px 10px;text-align:right"><b>${gRecv > 0 ? Math.round(gCase / gRecv * 100) + '%' : ''}</b></td></tr>`;
   wrap.innerHTML = html + '</tbody></table>';
 }
 function switchMainTab(tab) {

@@ -953,7 +953,7 @@ async function loadInquiryStats() {
   // EventTypeはインデックス済みなのでサーバー側で絞れる（FAX 2万件を引かずに済む）
   const flt = INQ_ROUTES.map(r => `fields/EventType eq '${r.type}'`).join(' or ');
   let url = `/sites/${site.id}/lists/${INQ.listId}/items`
-          + `?$expand=fields($select=EventType,EventDate)`
+          + `?$expand=fields($select=EventType,EventDate,SortKubun,CaseId)`
           + `&$filter=${encodeURIComponent(flt)}&$top=999`;
   const rows = [];
   for (let guard = 0; url && guard < 50; guard++) {
@@ -962,9 +962,12 @@ async function loadInquiryStats() {
       const f = v.fields || {};
       const dt = new Date(f.EventDate);
       const rt = INQ_ROUTES.find(x => x.type === f.EventType);
-      // EventDateはUTC。JSTのブラウザで見るのでローカル日付に寄せて集計する
+      // EventDateはUTC。JSTのブラウザで見るのでローカル日付に寄せて集計する。
+      // isCase: 案件管理に仕訳されたもの＝実際に案件になった受信。
+      //   仕訳されていない／FAX対応に回ったもの（広告DM等）は案件に数えない。
       if (!isNaN(dt) && rt) rows.push({
         ym: inqYm(dt), y: String(dt.getFullYear()), d: dt.getDate(), route: rt.key,
+        isCase: (f.SortKubun === '案件管理') && !!f.CaseId,
       });
     });
     let nl = d['@odata.nextLink'] || null;
@@ -1008,13 +1011,24 @@ function inqAxis() {
 function inqCount(routeKey, label, keyOf) {
   return inqRows.reduce((n, r) => n + ((r.route === routeKey && keyOf(r) === label) ? 1 : 0), 0);
 }
+function inqCaseCount(label, keyOf) {
+  return inqRows.reduce((n, r) => n + ((r.isCase && keyOf(r) === label) ? 1 : 0), 0);
+}
 function renderInquiryChart() {
   const { labels, ticks, keyOf } = inqAxis();
-  const datasets = INQ_ROUTES.map(rt => ({
-    label: rt.label,
-    backgroundColor: rt.color,
+  // 太い背景バー＝受信数（経路別に積み上げ）／細い前面バー＝案件になった数。
+  // バレットチャートと同じく grouped:false で重ね描きし、太さの差で前後を表現する。
+  const recv = INQ_ROUTES.map(rt => ({
+    label: rt.label, backgroundColor: rt.color, stack: 'recv',
+    barThickness: 26, borderRadius: 2, order: 1,
     data: labels.map(l => inqCount(rt.key, l, keyOf)),
   }));
+  const caseData = labels.map(l => inqCaseCount(l, keyOf));
+  const recvTotal = labels.map(l => INQ_ROUTES.reduce((n, rt) => n + inqCount(rt.key, l, keyOf), 0));
+  const datasets = recv.concat([{
+    label: '案件になった', backgroundColor: '#111827', stack: 'case',
+    barThickness: 10, borderRadius: 2, order: 0, data: caseData,
+  }]);
   destroyChart('inquiryTrendChart');
   const ctx = document.getElementById('inquiryTrendChart');
   if (ctx && window.Chart) {
@@ -1023,9 +1037,20 @@ function renderInquiryChart() {
       data: { labels: ticks, datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
+        datasets: { bar: { grouped: false } },
+        interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { position: 'bottom' },
-          tooltip: { callbacks: { footer: its => '合計 ' + its.reduce((n, i) => n + (i.parsed.y || 0), 0) + '件' } },
+          legend: { position: 'bottom', labels: { boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              beforeBody: its => {
+                if (!its.length) return [];
+                const i = its[0].dataIndex;
+                const rate = recvTotal[i] > 0 ? ` / 案件化 ${Math.round(caseData[i] / recvTotal[i] * 100)}%` : '';
+                return [`受信 ${recvTotal[i]}件・案件 ${caseData[i]}件${rate}`];
+              },
+            },
+          },
         },
         scales: {
           x: { stacked: true, grid: { display: false } },
@@ -1058,38 +1083,94 @@ function renderInqSummary() {
     + `<div class="page-sub" style="font-size:12px;margin-top:3px">${sub}</div></div>`;
   const onDay  = r => r.ym === tYm && r.d === t.d;
   const inMon  = r => r.ym === tYm;
-  el.innerHTML = box(`表示日（${t.mo}/${t.d}）`, cnt(onDay), brk(onDay))
-               + box(`当月（${t.y}/${String(t.mo).padStart(2, '0')}）`, cnt(inMon), brk(inMon));
+  // 案件数を主役に据えつつ、母数として受信数も見せる
+  const caseLine = f => {
+    const recv = cnt(f), cs = cnt(r => f(r) && r.isCase);
+    const rate = recv > 0 ? `（案件化 ${Math.round(cs / recv * 100)}%）` : '';
+    return `<span style="color:var(--text-main);font-weight:600">案件 ${cs}件</span>${rate}`;
+  };
+  const box2 = (title, f) =>
+    `<div style="flex:1;min-width:230px;border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:var(--bg)">`
+    + `<div class="page-sub" style="font-size:12.5px">${title}</div>`
+    + `<div style="font-size:30px;font-weight:700;line-height:1.25;color:var(--text-main)">${cnt(f)}<span style="font-size:14px;font-weight:500;margin-left:2px">件 受信</span></div>`
+    + `<div style="font-size:12.5px;margin-top:2px">${caseLine(f)}</div>`
+    + `<div class="page-sub" style="font-size:11.5px;margin-top:3px">${brk(f)}</div></div>`;
+  el.innerHTML = box2(`表示日（${t.mo}/${t.d}）`, onDay)
+               + box2(`当月（${t.y}/${String(t.mo).padStart(2, '0')}）`, inMon);
 }
-// 表示日が属する月の、日別積み上げ棒グラフ
+// 表示日が属する月の「水位」推移。1日から表示日までの累計を積み上げエリアで描く
+// （翌月受注金額グラフと同じ形）。下層＝案件になった分、上層＝それ以外。
+// 積み上げた高さが受信数の累計、濃い下層が案件数の累計になる。
 function renderInquiryDaily() {
   const ctx = document.getElementById('inquiryDailyChart');
   if (!ctx || !window.Chart) return;
   const t = inqTargetDate();
   const tYm = `${t.y}-${String(t.mo).padStart(2, '0')}`;
-  const days = new Date(t.y, t.mo, 0).getDate();          // その月の日数
-  const labels = Array.from({ length: days }, (_, i) => i + 1);
+  const lastDay = Math.max(1, t.d);
+  const days = Array.from({ length: lastDay }, (_, i) => i + 1);
   const title = document.getElementById('inqDailyTitle');
-  if (title) title.textContent = `日別（${t.y}年${t.mo}月）`;
-  const datasets = INQ_ROUTES.map(rt => ({
-    label: rt.label,
-    backgroundColor: rt.color,
-    data: labels.map(d => inqRows.reduce((n, r) =>
-      n + ((r.route === rt.key && r.ym === tYm && r.d === d) ? 1 : 0), 0)),
-  }));
+  if (title) title.textContent = `日別の累計（${t.y}年${t.mo}月 1日〜${t.mo}/${t.d}）`;
+
+  const onDay = (d, f) => inqRows.filter(r => r.ym === tYm && r.d === d && f(r)).length;
+  // その日の増分
+  const incCase  = days.map(d => onDay(d, r => r.isCase));
+  const incOther = days.map(d => onDay(d, r => !r.isCase));
+  const incRoute = {};
+  INQ_ROUTES.forEach(rt => { incRoute[rt.key] = days.map(d => onDay(d, r => r.route === rt.key)); });
+  // 累計に変換
+  const toCum = arr => { let s = 0; return arr.map(v => (s += v)); };
+  const cumCase = toCum(incCase), cumOther = toCum(incOther);
+
+  const lastIdx = days.length - 1;
+  const pointRadius = c => c.dataIndex === lastIdx ? 5 : 0;
   destroyChart('inquiryDailyChart');
   CHARTS['inquiryDailyChart'] = new Chart(ctx, {
-    type: 'bar',
-    data: { labels: labels.map(d => d + '日'), datasets },
+    type: 'line',
+    data: {
+      labels: days.map(d => d + '日'),
+      datasets: [
+        { label: '案件になった', data: cumCase, borderColor: '#1d4ed8', backgroundColor: 'rgba(29,78,216,0.28)',
+          pointBackgroundColor: '#1d4ed8', fill: true, tension: 0.25, borderWidth: 2,
+          pointRadius, pointHitRadius: 6, pointHoverRadius: 6 },
+        { label: '案件以外（広告・未仕訳など）', data: cumOther, borderColor: '#9aa3b5', backgroundColor: 'rgba(154,163,181,0.22)',
+          pointBackgroundColor: '#9aa3b5', fill: true, tension: 0.25, borderWidth: 2,
+          pointRadius, pointHitRadius: 6, pointHoverRadius: 6 },
+      ],
+    },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'bottom' },
-        tooltip: { callbacks: { footer: its => '合計 ' + its.reduce((n, i) => n + (i.parsed.y || 0), 0) + '件' } },
-      },
+      interaction: { mode: 'index', intersect: false },
       scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { autoSkip: false, maxRotation: 0, font: { size: 9 } } },
-        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+        x: { ticks: { maxRotation: 0, autoSkip: true, font: { size: 10 } } },
+        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: '件' } },
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            // 1行目に「受信の累計（その日の増分）」と案件化率をまとめて出す
+            beforeBody: its => {
+              if (!its.length) return [];
+              const i = its[0].dataIndex;
+              const recv = cumCase[i] + cumOther[i];
+              const inc = incCase[i] + incOther[i];
+              const rate = recv > 0 ? ` / 案件化 ${Math.round(cumCase[i] / recv * 100)}%` : '';
+              return [`受信 累計 ${recv}件（その日 ${inc > 0 ? '+' : ''}${inc}件）${rate}`];
+            },
+            label: c => {
+              const i = c.dataIndex;
+              const inc = c.datasetIndex === 0 ? incCase[i] : incOther[i];
+              return `${c.dataset.label} 累計 ${c.raw}件（その日 ${inc > 0 ? '+' : ''}${inc}件）`;
+            },
+            // 経路の内訳はその日の増分で添える
+            footer: its => {
+              if (!its.length) return '';
+              const i = its[0].dataIndex;
+              const parts = INQ_ROUTES.map(rt => `${rt.label} ${incRoute[rt.key][i]}`).join(' / ');
+              return `その日の内訳: ${parts}`;
+            },
+          },
+        },
       },
     },
   });
@@ -1106,18 +1187,27 @@ function renderInqTable(labels, ticks, keyOf) {
   let html = '<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px">'
     + `<thead><tr><th style="padding:6px 10px;${bd};text-align:left">期間</th>`
     + INQ_ROUTES.map(rt => `<th style="padding:6px 10px;${bd};text-align:right;white-space:nowrap">${rt.label}</th>`).join('')
-    + `<th style="padding:6px 10px;${bd};text-align:right">合計</th></tr></thead><tbody>`;
+    + `<th style="padding:6px 10px;${bd};text-align:right">受信 計</th>`
+    + `<th style="padding:6px 10px;${bd};text-align:right">案件</th>`
+    + `<th style="padding:6px 10px;${bd};text-align:right">案件化率</th></tr></thead><tbody>`;
   labels.forEach((l, i) => {
     const vals = INQ_ROUTES.map(rt => inqCount(rt.key, l, keyOf));
     const sum = vals.reduce((a, b) => a + b, 0);
+    const cs = inqCaseCount(l, keyOf);
     html += `<tr><td style="padding:6px 10px;${bd}">${ticks[i]}</td>`
           + vals.map(v => td(v || '')).join('')
-          + td(`<b>${sum || ''}</b>`) + '</tr>';
+          + td(`<b>${sum || ''}</b>`)
+          + td(cs || '')
+          + td(sum > 0 ? Math.round(cs / sum * 100) + '%' : '') + '</tr>';
   });
   const totals = INQ_ROUTES.map(rt => labels.reduce((n, l) => n + inqCount(rt.key, l, keyOf), 0));
+  const gRecv = totals.reduce((a, b) => a + b, 0);
+  const gCase = labels.reduce((n, l) => n + inqCaseCount(l, keyOf), 0);
   html += `<tr><td style="padding:8px 10px"><b>合計</b></td>`
         + totals.map(v => `<td style="padding:8px 10px;text-align:right"><b>${v}</b></td>`).join('')
-        + `<td style="padding:8px 10px;text-align:right"><b>${totals.reduce((a, b) => a + b, 0)}</b></td></tr>`;
+        + `<td style="padding:8px 10px;text-align:right"><b>${gRecv}</b></td>`
+        + `<td style="padding:8px 10px;text-align:right"><b>${gCase}</b></td>`
+        + `<td style="padding:8px 10px;text-align:right"><b>${gRecv > 0 ? Math.round(gCase / gRecv * 100) + '%' : ''}</b></td></tr>`;
   wrap.innerHTML = html + '</tbody></table></div>';
 }
 
