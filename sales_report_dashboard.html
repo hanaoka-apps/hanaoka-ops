@@ -605,6 +605,8 @@
   <div class="card">
     <h2>📥 WEB問い合わせ受信状況<span class="page-sub" style="margin-left:8px">HP・ARU・AUTOPILOT の受信件数（FAXは含みません）</span></h2>
     <div id="inqSummary" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px"></div>
+    <div class="page-sub" id="inqDailyTitle" style="margin-bottom:6px">日別</div>
+    <div style="position:relative;height:240px;margin-bottom:22px"><canvas id="inquiryDailyChart"></canvas></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
       <span class="page-sub">表示期間</span>
       <select id="inqRange" onchange="renderInquiryChart()"
@@ -960,8 +962,10 @@ async function loadInquiryStats() {
       const f = v.fields || {};
       const dt = new Date(f.EventDate);
       const rt = INQ_ROUTES.find(x => x.type === f.EventType);
-      // EventDateはUTC。JSTのブラウザで見るのでローカル日付に寄せて月次集計する
-      if (!isNaN(dt) && rt) rows.push({ ym: inqYm(dt), y: String(dt.getFullYear()), route: rt.key });
+      // EventDateはUTC。JSTのブラウザで見るのでローカル日付に寄せて集計する
+      if (!isNaN(dt) && rt) rows.push({
+        ym: inqYm(dt), y: String(dt.getFullYear()), d: dt.getDate(), route: rt.key,
+      });
     });
     let nl = d['@odata.nextLink'] || null;
     const P = 'https://graph.microsoft.com/v1.0';
@@ -1031,29 +1035,64 @@ function renderInquiryChart() {
     });
   }
   renderInqSummary();
+  renderInquiryDaily();
   renderInqTable(labels, ticks, keyOf);
+}
+// 日報なので「表示日」と「その月」を見る。表示日は画面右上のセレクタ（既定＝直近の締め済み営業日）に追従する。
+function inqTargetDate() {
+  if (typeof CURRENT_TODAY !== 'undefined' && CURRENT_TODAY && CURRENT_TODAY.y) return CURRENT_TODAY;
+  const n = new Date();
+  return { y: n.getFullYear(), mo: n.getMonth() + 1, d: n.getDate() };
 }
 function renderInqSummary() {
   const el = document.getElementById('inqSummary');
   if (!el) return;
-  const now = new Date();
-  const thisYm = inqYm(now);
-  const prevYm = inqYm(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-  const thisY = String(now.getFullYear());
+  const t = inqTargetDate();
+  const tYm = `${t.y}-${String(t.mo).padStart(2, '0')}`;
   const cnt = f => inqRows.filter(f).length;
   const brk = f => INQ_ROUTES.map(rt => `${rt.label} ${cnt(r => f(r) && r.route === rt.key)}`).join('　/　');
   const box = (title, n, sub) =>
-    `<div style="flex:1;min-width:200px;border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:var(--bg)">`
+    `<div style="flex:1;min-width:210px;border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:var(--bg)">`
     + `<div class="page-sub" style="font-size:12.5px">${title}</div>`
     + `<div style="font-size:30px;font-weight:700;line-height:1.25;color:var(--text-main)">${n}<span style="font-size:14px;font-weight:500;margin-left:2px">件</span></div>`
     + `<div class="page-sub" style="font-size:12px;margin-top:3px">${sub}</div></div>`;
-  const tm = cnt(r => r.ym === thisYm), pm = cnt(r => r.ym === prevYm);
-  const diff = tm - pm;
-  const diffTxt = pm === 0 ? '前月の実績なし'
-    : `前月比 <span style="color:${diff >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}">${diff >= 0 ? '+' : ''}${diff}件</span>`;
-  el.innerHTML = box(`今月（${thisYm.replace('-', '/')}）`, tm, brk(r => r.ym === thisYm))
-               + box(`前月（${prevYm.replace('-', '/')}）`, pm, diffTxt)
-               + box(`${thisY}年 累計`, cnt(r => r.y === thisY), brk(r => r.y === thisY));
+  const onDay  = r => r.ym === tYm && r.d === t.d;
+  const inMon  = r => r.ym === tYm;
+  el.innerHTML = box(`表示日（${t.mo}/${t.d}）`, cnt(onDay), brk(onDay))
+               + box(`当月（${t.y}/${String(t.mo).padStart(2, '0')}）`, cnt(inMon), brk(inMon));
+}
+// 表示日が属する月の、日別積み上げ棒グラフ
+function renderInquiryDaily() {
+  const ctx = document.getElementById('inquiryDailyChart');
+  if (!ctx || !window.Chart) return;
+  const t = inqTargetDate();
+  const tYm = `${t.y}-${String(t.mo).padStart(2, '0')}`;
+  const days = new Date(t.y, t.mo, 0).getDate();          // その月の日数
+  const labels = Array.from({ length: days }, (_, i) => i + 1);
+  const title = document.getElementById('inqDailyTitle');
+  if (title) title.textContent = `日別（${t.y}年${t.mo}月）`;
+  const datasets = INQ_ROUTES.map(rt => ({
+    label: rt.label,
+    backgroundColor: rt.color,
+    data: labels.map(d => inqRows.reduce((n, r) =>
+      n + ((r.route === rt.key && r.ym === tYm && r.d === d) ? 1 : 0), 0)),
+  }));
+  destroyChart('inquiryDailyChart');
+  CHARTS['inquiryDailyChart'] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: labels.map(d => d + '日'), datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: { callbacks: { footer: its => '合計 ' + its.reduce((n, i) => n + (i.parsed.y || 0), 0) + '件' } },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { autoSkip: false, maxRotation: 0, font: { size: 9 } } },
+        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+      },
+    },
+  });
 }
 function renderInqTable(labels, ticks, keyOf) {
   const wrap = document.getElementById('inqTableWrap');
@@ -2475,6 +2514,8 @@ function renderForDate(today) {
   const rows = facts.rows || [];
   const orderRows = facts.order_rows || [];
   CURRENT_TODAY = today;
+  // WEB問い合わせ受信状況も「表示日」に追従させる（データ未取得の初回は空振りしてよい）
+  try { if (inqRows.length) { renderInqSummary(); renderInquiryDaily(); } } catch (_) {}
 
   TODAY_LABEL = `${today.mo}/${today.d}`;
   const updatedLabel = formatUpdatedAt(facts.build_meta && facts.build_meta.updated_at);
