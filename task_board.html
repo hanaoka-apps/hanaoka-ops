@@ -414,6 +414,17 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
 .wfhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px}
 .wfhead input[type=text]{flex:1;min-width:150px;border:1px solid var(--border);border-radius:7px;padding:6px 9px;outline:0}
 .wfhead input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+/* すでに付いている添付。1枚ずつ外せる */
+.havefiles{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.havefiles:empty{display:none}
+.havefiles .fchip{
+  display:inline-flex;align-items:center;gap:6px;max-width:100%;
+  border:1px solid var(--border);border-radius:999px;padding:3px 6px 3px 10px;
+  font-size:11.5px;background:#fff}
+.havefiles .fchip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.havefiles .fchip button{
+  border:0;background:transparent;cursor:pointer;color:var(--danger);
+  font-size:13px;line-height:1;padding:2px 4px}
 /* 既定行（それ以外すべて）。入力欄ではないことが見て分かるようにする */
 .wfrow.wfdef{background:#f4f6f8;border-style:dashed}
 .wfdeftag{flex:1;font-size:12px;font-weight:700;color:var(--muted2);
@@ -790,6 +801,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
           </label>
           <span class="note" id="fileNote"></span>
         </div>
+        <div class="havefiles" id="fileHave"></div>
         <div class="prev" id="postPrev"></div>
       </div>
     </div>
@@ -1220,7 +1232,7 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-10-13";
+var APP_VER = "2026-09-16-1";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -1851,6 +1863,30 @@ async function resolveList(){
 // SharePointの複数行テキストを「リッチテキスト」で作ってしまうと、
 // 保存したURLが <div class="ExternalClass..">https://..</div> のようにHTMLで返る。
 // 列を書式なしテキストに直すのが本筋だが、直すまでの間も壊れないよう読み出し側で剥がす。
+/* ★添付は複数枚ある★
+   請求書は2枚以上で来ることが実際にあります（分割請求・明細別紙など）。
+   列は複数行テキスト（書式なし）なので、1行1URLで並べて持てます。
+   古い1本だけのデータもそのまま読めます。 */
+function spFiles(v){
+  var s=String(v||"");
+  if(!s) return [];
+  if(s.indexOf("<")>=0) s=s.replace(/<br\s*\/?>/gi,"\n").replace(/<\/(div|p)>/gi,"\n").replace(/<[^>]+>/g,"");
+  s=s.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+     .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g," ");
+  var out=[], seen={};
+  s.split(/[\r\n]+/).forEach(function(line){
+    var m=/https?:\/\/\S+/.exec(line); if(!m) return;
+    var u=m[0].trim(); if(seen[u]) return; seen[u]=1; out.push(u);
+  });
+  return out;
+}
+/* URLの末尾からファイル名を作る。保存しているのはURLだけなので表示用に復元します */
+function fileNameOf(url){
+  try{
+    var last=String(url||"").split(/[?#]/)[0].split("/").pop();
+    return decodeURIComponent(last)||"添付ファイル";
+  }catch(e){ return "添付ファイル" }
+}
 function plainUrl(v){
   var s=String(v||"");
   if(s.indexOf("<")<0) return s.trim();
@@ -1890,7 +1926,9 @@ function rowToTask(it){
     msgId:f[F.msgId]||"", msgUrl:plainUrl(f[F.msgUrl]),
     channelId:f[F.channelId]||"", channelName:f[F.channelName]||"",
     srcKind:f[F.srcKind]||"channel",
-    fileUrl:plainUrl(f[F.fileUrl]), note:f[F.note]||""};
+    files:spFiles(f[F.fileUrl]),
+    fileUrl:(spFiles(f[F.fileUrl])[0]||""),   // 1本目だけ見る古いコードのために残す
+    note:f[F.note]||""};
 }
 function taskToFields(t){
   var f={};
@@ -1904,7 +1942,8 @@ function taskToFields(t){
   f[F.status]=t.status||"未対応"; f[F.ownerName]=t.ownerName||"";
   if(t.ownerUpn) f[F.ownerUpn]=t.ownerUpn;
   if(t.msgId) f[F.msgId]=t.msgId; if(t.msgUrl) f[F.msgUrl]=t.msgUrl;
-  if(t.fileUrl) f[F.fileUrl]=t.fileUrl;
+  var fl=(t.files&&t.files.length) ? t.files : (t.fileUrl?[t.fileUrl]:[]);
+  if(fl.length) f[F.fileUrl]=fl.join("\n");
   // 既存タスクの編集時は紐付けを書き換えない（別の場所から編集しても移動させない）
   var srcId=t.channelId||(S.cur&&S.cur.id), srcNm=t.channelName||(S.cur&&S.cur.name);
   var srcKd=t.srcKind||(S.cur&&S.cur.kind)||"channel";
@@ -2188,8 +2227,13 @@ function cardSummary(m){
   return {n:cards.length, text:t.length>160?t.slice(0,160)+"…":t};
 }
 function mapMsg(m){
-  var att=(m.attachments||[]).filter(function(a){return a.contentType==="reference"})[0];
+  /* ★添付は複数あり得る★ 以前は1枚目しか拾っていなかったので、
+     2枚添付された投稿をタスク化すると1枚しか引き継げませんでした。 */
+  var atts=(m.attachments||[]).filter(function(a){return a.contentType==="reference"})
+    .map(function(a){ return {name:a.name||fileNameOf(a.contentUrl),size:"",url:a.contentUrl||""} });
+  var att=atts[0];
   return {
+    files:atts,
     id:m.id,
     from:(m.from&&m.from.user&&m.from.user.displayName)
       ||(m.from&&m.from.application&&m.from.application.displayName)
@@ -2687,9 +2731,12 @@ function renderMsgs(){
         (m.webUrl?'<a href="'+esc(m.webUrl)+'" target="_blank" rel="noopener">開く</a>':'')+
         '</div>';
     }
-    if(m.file) body+='<a class="file" href="#" data-file="'+esc(m.file.url||"")+'" data-fn="'+esc(m.file.name)+'">'+
-      '<span class="pdf">PDF</span><span class="fn"><span class="f1">'+esc(m.file.name)+'</span>'+
-      '<span class="f2">'+esc(m.file.size||"添付ファイル")+'</span></span></a>';
+    var mf=(m.files&&m.files.length)?m.files:(m.file?[m.file]:[]);
+    mf.forEach(function(f){
+      body+='<a class="file" href="#" data-file="'+esc(f.url||"")+'" data-fn="'+esc(f.name)+'">'+
+        '<span class="pdf">PDF</span><span class="fn"><span class="f1">'+esc(f.name)+'</span>'+
+        '<span class="f2">'+esc(f.size||"添付ファイル")+'</span></span></a>';
+    });
     h+='<div class="msg'+(m.reply?" reply":"")+'" data-msg="'+esc(m.id)+'">'+
        '<span class="av" style="'+avStyle(m.from)+'">'+esc(initials(m.from))+'</span>'+
        '<span class="bd"><span class="hd"><span class="nm">'+esc(m.from)+'</span>'+
@@ -2775,10 +2822,14 @@ function renderTasks(){
         /* ★添付をタスクから開けるようにする★
            InvoiceFileUrl は保存していたのに、開く導線はTeamsのスレッドだけでした。
            「タスクを見て請求書を確認する」が実務の中心なので、カードから開きます。 */
-        (t.fileUrl
-          ? '<button class="sbtn gh" data-file="'+esc(t.fileUrl)+'" data-fn="'+
-            esc(hasField(W,"amount")?"請求書":"添付ファイル")+'">'+
-            (hasField(W,"amount")?"請求書":"添付")+'</button>' : '')+
+        (function(){
+          var fs=(t.files&&t.files.length)?t.files:(t.fileUrl?[t.fileUrl]:[]);
+          var base=hasField(W,"amount")?"請求書":"添付";
+          return fs.map(function(u,i){
+            return '<button class="sbtn gh" data-file="'+esc(u)+'" data-fn="'+esc(fileNameOf(u))+
+              '" title="'+esc(fileNameOf(u))+'">'+base+(fs.length>1?" "+(i+1):"")+'</button>';
+          }).join("");
+        })()+
         (t.msgUrl?'<button class="sbtn gh" data-jump="'+esc(t.msgUrl)+'">元メッセージ</button>':
                   '<button class="sbtn gh" data-find="'+esc(t.msgId||"")+'">元メッセージ</button>')+
       '</div></div>';
@@ -2920,6 +2971,8 @@ function openTaskModal(pre,srcText,warnText){
     : "1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
   $("fileNote").style.color=isChat?"var(--wait)":"";
   S._pre=v;
+  S._files=((v.files&&v.files.slice())||(v.fileUrl?[v.fileUrl]:[]));
+  renderHaveFiles();
   refreshOwnList();
   $("ovTask").classList.add("on"); setTimeout(function(){$("fName").focus()},60);
 }
@@ -3761,8 +3814,9 @@ async function runAdv(){
       }else{
         uploaded=await uploadAll(S.cur,files);
       }
-      // 請求書のリンクは上書きしない。空のときだけ入れる
-      if(!t.fileUrl && uploaded.length && uploaded[0].webUrl) patch.fileUrl=uploaded[0].webUrl;
+      // 既存の添付は残したまま、今回の分を足す（振込明細を後から付ける運用）
+      var add2=uploaded.map(function(u){return u.webUrl}).filter(Boolean);
+      if(add2.length) patch.files=((t.files&&t.files.slice())||[]).concat(add2);
     }
     setSaveLabel("保存中…");
     var merged=Object.assign({},t,patch);
@@ -3908,7 +3962,9 @@ document.addEventListener("click",async function(e){
     // MessageId は「スレッドの親」を入れる。返信のIDを入れると
     // /messages/{返信ID}/replies になってしまい、以降の投稿が全部落ちる
     pre.msgId=(m.reply?(m.parent||m.id):m.id); pre.msgUrl=m.webUrl||"";
-    pre.fileUrl=(m.file&&m.file.url)||"";
+    pre.files=((m.files||[]).map(function(x){return x.url}).filter(Boolean));
+    if(!pre.files.length && m.file && m.file.url) pre.files=[m.file.url];
+    pre.fileUrl=pre.files[0]||"";
     pre.status="未対応";
     if(S.cur){ pre.channelId=S.cur.id; pre.channelName=S.cur.name; pre.srcKind=S.cur.kind }
     // チャットの添付は「送信者個人のOneDrive」に入る。証憑として残すには注意が必要
@@ -4111,6 +4167,22 @@ $("atOwn").addEventListener("mousedown",function(e){
   e.preventDefault(); ownPick(+it.dataset.own);
 });
 $("fPost").addEventListener("change",renderPostPreview);
+/* すでに付いている添付の一覧。間違えて付けた1枚だけ外せるようにします。
+   外すのはタスクからの参照だけで、チャネルに上げたファイル自体は消しません
+   （Teamsの投稿には残るので、記録としての一貫性は保たれます）。 */
+function renderHaveFiles(){
+  var el=$("fileHave"); if(!el) return;
+  var a=S._files||[];
+  el.innerHTML=a.map(function(u,i){
+    return '<span class="fchip"><span title="'+esc(u)+'">📎 '+esc(fileNameOf(u))+'</span>'+
+      '<button type="button" data-rmfile="'+i+'" title="このタスクから外す">×</button></span>';
+  }).join("");
+}
+$("fileHave").addEventListener("click",function(e){
+  var b=e.target.closest("[data-rmfile]"); if(!b) return;
+  (S._files||[]).splice(+b.dataset.rmfile,1);
+  renderHaveFiles(); renderPostPreview();
+});
 var FILE_HINT="1ファイル4MBまで。チャネルのファイル置き場に保存して投稿に添付します";
 function renderFileNote(inputId,noteId){
   var f=($(inputId).files||[]), el=$(noteId);
@@ -4230,7 +4302,9 @@ $("tdSave").onclick=async function(){
       }else{
         uploaded=await uploadAll(S.cur,files);
       }
-      if(uploaded.length && uploaded[0].webUrl) t.fileUrl=uploaded[0].webUrl;
+      // 既に付いている分に足す。1枚目だけ残して捨てていたのを直しました
+      var add=uploaded.map(function(u){return u.webUrl}).filter(Boolean);
+      t.files=(S._files||[]).concat(add);
     }
     setSaveLabel("保存中…");
     var saved=await saveTask(t);
