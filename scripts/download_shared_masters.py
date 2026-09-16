@@ -41,6 +41,7 @@ REQUIRED_FILES = [
 
 # 任意ファイル（なくても続行）
 OPTIONAL_FILES = [
+    "dashboard_facts.json",
     "品目マスタ.csv",
     "品目マスタ.txt",
     "製番マスタ.csv",
