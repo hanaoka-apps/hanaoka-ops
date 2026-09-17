@@ -348,7 +348,14 @@ const LIST_COLUMNS = [
   { name: 'TaskStatus',   text: {} },                    // なし/未着手/対応中/完了/不要
   { name: 'ThreadId',     text: {} },                    // ゆるいグループ
   { name: 'FileName',     text: {} },
-  { name: 'FileUrl',      text: { maxLength: 255 } },
+  /* ★原本の場所は「URL」ではなく「ドライブのアイテムID」で持つ★
+     SharePointの1行テキストは255文字が上限。日本語ファイル名はURLエンコードで
+     1文字9文字に膨らむため、webUrl はすぐ255を超えて 400 Invalid request になる
+     （例: 「【再リース確認】JA三井リース_…アルメガ.pdf」で499文字）。
+     IDなら長さが一定で、原本をリネーム・移動しても追える。
+     表示用の webUrl は Data(JSON) 側に入れる（こちらは長さ制限がない）。 */
+  { name: 'FileId',       text: {} },
+  { name: 'FileUrl',      text: { maxLength: 255 } },   // 255に収まるときだけ入れる（人が見て分かる用）
   { name: 'Data',         text: { allowMultipleLines: true, textType: 'plain' } },
 ];
 
@@ -494,14 +501,17 @@ async function load(reset){
     // 先に台帳を読む。取込の重複判定は、この読み込んだ一覧と突き合わせる。
     docs = await fetchAll();
 
-    const added = await importQueue();
+    const { n: added, anyFailed } = await importQueue();
     if (added) docs = await fetchAll();
 
     buildFilterOptions();
     render();
-    setStatus(
-      (added ? `新しい書類を${added}件取り込みました。 ` : '') +
-      `${docs.length}件の書類を読み込みました（${new Date().toLocaleTimeString('ja-JP')}）`, 'success');
+    // 取込で失敗が出ていたら、その内容がステータスバーに出ているので上書きしない
+    if (!anyFailed){
+      setStatus(
+        (added ? `新しい書類を${added}件取り込みました。 ` : '') +
+        `${docs.length}件の書類を読み込みました（${new Date().toLocaleTimeString('ja-JP')}）`, 'success');
+    }
   }catch(e){
     console.error(e);
     setStatus('読み込みに失敗しました: ' + e.message, 'error');
@@ -526,7 +536,9 @@ function normalizeItem(it){
     taskStatus: f.TaskStatus || 'なし',
     threadId: f.ThreadId || '',
     fileName: f.FileName || '',
-    fileUrl: f.FileUrl || '',
+    fileId: f.FileId || '',
+    // 列は255に収まるときだけ入る。入らなかった分は Data 側にある。
+    fileUrl: f.FileUrl || data.fileWebUrl || '',
     d: data,           // 可変項目のかたまり
   };
 }
@@ -545,7 +557,8 @@ async function saveDoc(doc, patchFields){
     TaskStatus: doc.taskStatus,
     ThreadId: doc.threadId || '',
     FileName: doc.fileName || '',
-    FileUrl: doc.fileUrl || '',
+    FileId: doc.fileId || '',
+    FileUrl: (doc.fileUrl && doc.fileUrl.length <= 255) ? doc.fileUrl : '',
     Data: JSON.stringify(doc.d || {}),
     ...(patchFields || {})
   };
@@ -569,16 +582,16 @@ async function saveDoc(doc, patchFields){
      常にサインインした人の権限。
    ============================================================ */
 async function importQueue(){
-  let n = 0;
+  let n = 0, anyFailed = false;
   let queue;
   try{
     queue = await graphAll(`/sites/${siteId}/drive/root:/${encodeURI(SP.queueDir)}:/children?$select=id,name,file`);
   }catch(e){
-    if (e.status === 404) return 0;    // まだフォルダが無い＝取込待ちも無い
+    if (e.status === 404) return { n: 0, anyFailed: false };   // まだフォルダが無い＝取込待ちも無い
     throw e;
   }
   const jsons = queue.filter(f => f.file && /\.json$/i.test(f.name));
-  if (!jsons.length) return 0;
+  if (!jsons.length) return { n: 0, anyFailed: false };
 
   for (const f of jsons){
     try{
@@ -589,24 +602,42 @@ async function importQueue(){
       if (!r.ok) throw new Error('取込票を読めません: ' + r.status);
       const payload = JSON.parse(await r.text());
 
+      // ★1件ずつ捕まえる★
+      //   まとめて try に入れると、1件こけただけで残り全部が入らないうえ、
+      //   どれが原因かも画面に出ない。実際それで丸一日分が0件になった。
+      const failed = [];
       for (const it of (payload.items || [])){
         if (alreadyImported(it)) continue;
-        const created = await createDoc(it);
-        docs.push(created);     // 同じ取込票の中の重複もここで弾けるようにする
-        n++;
+        try{
+          const created = await createDoc(it);
+          docs.push(created);   // 同じ取込票の中の重複もここで弾けるようにする
+          n++;
+        }catch(e){
+          console.error('取込失敗', it.fileName, e);
+          failed.push({ name: it.fileName || it.title || '(名前不明)', msg: e.message });
+        }
       }
 
-      // 取り込んだ票は _取込済 へ退避（消さない。あとで何が来たか追える）
-      await graph(`/sites/${siteId}/drive/items/${f.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ parentReference: { path: `/drive/root:/${SP.doneDir}` }, name: f.name })
-      });
+      if (failed.length){
+        // 失敗が残っている票は動かさない。直して更新すれば、入った分は
+        // alreadyImported が弾くので、残りだけが入る。
+        const head = failed.slice(0, 3).map(x => `${x.name}（${x.msg}）`).join(' / ');
+        setStatus(`${f.name}: ${failed.length}件が取り込めませんでした → ${head}${failed.length > 3 ? ' ほか' : ''}`, 'error');
+        anyFailed = true;
+      } else {
+        // 全部入った票だけ _取込済 へ退避（消さない。あとで何が来たか追える）
+        await graph(`/sites/${siteId}/drive/items/${f.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ parentReference: { path: `/drive/root:/${SP.doneDir}` }, name: f.name })
+        });
+      }
     }catch(e){
-      console.error('取込失敗', f.name, e);
-      setStatus(`取込票 ${f.name} の処理に失敗しました: ${e.message}`, 'error');
+      console.error('取込票の処理に失敗', f.name, e);
+      setStatus(`取込票 ${f.name} を処理できませんでした: ${e.message}`, 'error');
+      anyFailed = true;
     }
   }
-  return n;
+  return { n, anyFailed };
 }
 
 /* 同じ書類を二重に登録しない。原本のファイル名で見る。
@@ -618,19 +649,21 @@ function alreadyImported(it){
 }
 
 async function createDoc(it){
-  // 原本PDFの webUrl を引く（同期で上がっているはず。無ければURL無しで登録）
-  let fileUrl = '', fileName = it.fileName || '';
+  // 原本PDFを引く（同期で上がっているはず。無ければ原本なしで登録して後から繋げる）
+  let fileId = '', fileUrl = '', fileName = it.fileName || '';
   if (it.filePath){
     try{
       const di = await graph(`/sites/${siteId}/drive/root:/${encodeURI(it.filePath)}`);
-      fileUrl = di.webUrl || ''; fileName = di.name || fileName;
+      fileId = di.id || ''; fileUrl = di.webUrl || ''; fileName = di.name || fileName;
     }catch(e){ console.warn('原本が見つかりません（同期待ちの可能性）:', it.filePath); }
   }
   const data = it.data || {};
   data.sourcePath = it.sourcePath || '';
   data.ingestedAt = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  if (fileUrl) data.fileWebUrl = fileUrl;   // 長さ制限のないこちらが正。列は255に収まるときだけ
 
   const fields = {
+    FileId: fileId,
     Title: it.title || fileName || '(無題)',
     Category: it.category || '',
     Sender: it.sender || '',
@@ -642,7 +675,7 @@ async function createDoc(it){
     TaskStatus: (data.task && data.task.title) ? (it.taskStatus || '未着手') : 'なし',
     ThreadId: it.threadId || '',
     FileName: fileName,
-    FileUrl: fileUrl,
+    FileUrl: fileUrl.length <= 255 ? fileUrl : '',
     Data: JSON.stringify(data),
   };
   const created = await graph(`/sites/${siteId}/lists/${listId}/items`, { method: 'POST', body: JSON.stringify({ fields }) });
@@ -1184,18 +1217,20 @@ function renderLinkPicker(){
 async function showPdf(d){
   const panel = document.getElementById('pdfPanel');
   const myToken = ++pdfRenderToken;
-  if (!d || !d.fileUrl){
+  if (!d || (!d.fileId && !d.fileUrl)){
     panel.innerHTML = '<div class="pdf-msg">この書類にはPDFが登録されていません</div>';
     return;
   }
   panel.innerHTML = `<div class="pdf-toolbar"><span>${esc(d.fileName || '')}</span>
-      <button onclick="window.open('${esc(d.fileUrl)}','_blank')" style="margin-left:auto">別タブで開く</button></div>
+      ${d.fileUrl ? `<button onclick="window.open('${esc(d.fileUrl)}','_blank')" style="margin-left:auto">別タブで開く</button>` : ''}</div>
     <div class="pdf-msg">原本を読み込み中…</div>`;
   try{
     const tk = await getToken();
-    // SharePointの共有URL → Graph の shares エンドポイント経由で中身を取る
-    const share = 'u!' + btoa(d.fileUrl).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
-    const r = await fetch(`https://graph.microsoft.com/v1.0/shares/${share}/driveItem/content`, { headers: { Authorization: 'Bearer ' + tk } });
+    // アイテムIDがあれば直接取る。無い古い行だけ、共有URL経由にフォールバックする。
+    const url = d.fileId
+      ? `https://graph.microsoft.com/v1.0/sites/${siteId}/drive/items/${d.fileId}/content`
+      : `https://graph.microsoft.com/v1.0/shares/${'u!' + btoa(unescape(encodeURIComponent(d.fileUrl))).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}/driveItem/content`;
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tk } });
     if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
     const buf = await r.arrayBuffer();
     if (myToken !== pdfRenderToken) return;   // 連打で別の書類に移っていたら捨てる
@@ -1219,7 +1254,7 @@ async function showPdf(d){
   }catch(e){
     if (myToken !== pdfRenderToken) return;
     panel.innerHTML = `<div class="pdf-msg">原本を表示できませんでした<br><span style="font-size:11.5px">${esc(e.message)}</span><br>
-      <button onclick="window.open('${esc(d.fileUrl)}','_blank')" style="margin-top:14px;padding:6px 14px;border-radius:5px;border:1px solid #777;background:#4d5154;color:#eee;cursor:pointer">SharePointで開く</button></div>`;
+      ${d.fileUrl ? `<button onclick="window.open('${esc(d.fileUrl)}','_blank')" style="margin-top:14px;padding:6px 14px;border-radius:5px;border:1px solid #777;background:#4d5154;color:#eee;cursor:pointer">SharePointで開く</button>` : ''}</div>`;
   }
 }
 
