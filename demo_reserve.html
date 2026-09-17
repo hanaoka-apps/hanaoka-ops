@@ -1525,12 +1525,18 @@ function renderSetView(){
   document.getElementById('dMsg').className = 'msg';
   document.getElementById('dCancel').style.display = 'none';
 
+  /* 単発の詳細画面(cancelTarget)と同じ条件：終了済みの予約は外せない
+     （終わった予約を消せると、実際に貸し出した記録が消えてしまうため）。 */
+  const removableCount = members.filter(r => r.e > Date.now() && CAP.lock).length;
   const memberRows = members.map(r => {
     const m = MACHINES.find(x => x.id === r.mid);
+    const canRemove = r.e > Date.now() && CAP.lock;
     return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
       <span style="flex:1">${esc(m ? m.n : '#'+r.mid)}</span>
       <span style="color:var(--muted);font-size:11px">${calcStatus(r, Date.now())}</span>
-      <button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="removeSetMember('${r.rid}')">✕ 外す</button>
+      ${canRemove
+        ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="removeSetMember('${r.rid}')">✕ 外す</button>`
+        : `<span style="color:var(--muted);font-size:11px">終了済み</span>`}
     </div>`;
   }).join('');
 
@@ -1550,7 +1556,12 @@ function renderSetView(){
       <dt>依頼者</dt><dd>${rep.req ? esc(rep.req) : '—'}</dd>
       <dt>備考</dt><dd>${esc(rep.notes) || '—'}</dd>
     </dl>
-    <div style="margin-top:10px"><b>機体（${members.length}台）</b></div>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+      <b>機体（${members.length}台）</b>
+      ${removableCount
+        ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="cancelWholeSet()">この予約を丸ごと取消す</button>`
+        : ''}
+    </div>
     <div>${memberRows}</div>
     <div id="setAddBar" style="position:sticky;top:0;background:#fff;z-index:2;margin-top:10px;
         padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
@@ -1582,6 +1593,7 @@ function renderSetView(){
 
 async function removeSetMember(rid){
   const r = RES.find(x => x.rid === rid); if (!r) return;
+  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は外せません'); return; }
   const m = MACHINES.find(x => x.id === r.mid);
   const who = r.req ? `${r.req} さん` : '（依頼者不明）';
   if (!confirm(`このセットから機体を外します。\n\n　デモ機：${m ? m.n : '#'+r.mid}\n　件名　：${r.t}\n　依頼者：${who}\n\n外すと枠が空き、他の人が予約できるようになります。`)) return;
@@ -1590,6 +1602,28 @@ async function removeSetMember(rid){
   await loadRes(); render(); paintSeek();
   renderSetView();
   showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
+}
+
+/* 「間違えて10台設定したがまとめてキャンセルしたい」向け。外せる機体を
+   1件ずつ removeSetMember と同じ処理(cancelReservationRow)にかけるだけで、
+   確認は最初の1回にまとめる。終了済みの機体は対象外（従来通り外せない）。 */
+async function cancelWholeSet(){
+  const setId = CURRENT_SET_ID;
+  const members = setMembers(setId).filter(r => r.e > Date.now() && CAP.lock);
+  if (!members.length) return;
+  const rep = members[0];
+  if (!confirm(`このセットの予約をすべて取消します。\n\n　件名　：${rep.t}\n　期間　：${jFull(rep.s)} 〜 ${jFull(rep.e)}\n　機体数：${members.length}台\n\n取消すと全ての枠が空き、他の人が予約できるようになります。`)) return;
+
+  showSnack(`取消中... (0/${members.length})`);
+  let ok = 0, ng = 0;
+  for (let i = 0; i < members.length; i++){
+    showSnack(`取消中... (${i}/${members.length})`);
+    const res = await cancelReservationRow(members[i].rid);
+    if (res.ok) ok++; else ng++;
+  }
+  await loadRes(); render(); paintSeek();
+  renderSetView();
+  showSnack(`${ok}台を取消しました` + (ng ? ` / 失敗 ${ng}件` : ''));
 }
 
 async function doAddToSet(){
