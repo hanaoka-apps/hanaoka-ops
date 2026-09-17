@@ -543,6 +543,35 @@ async function ensureColumns(force){
   return added;
 }
 
+/* ============================================================
+   日付の受け渡し
+
+   ★"2026-04-01" のようにタイムゾーン無しで書いてはいけない★
+     SharePointはそれをサイトのローカル時刻(JST)として受け取り、
+     2026-03-31T15:00:00Z で保存する。読むときに先頭10文字で切ると
+     1日前になる。実際、最初の14件が全部1日ずれた。
+
+   読むときは必ずJSTに直してから日付にする。これで
+     ・ずれて保存された古い行（15:00Z）      → +9h で正しい日付
+     ・正午UTCで保存した新しい行（12:00Z）   → +9h で同じ日
+     ・素の日付のまま入った行（00:00Z）      → +9h で同じ日
+   のどれも正しく出る。保存済みのデータを書き換えなくて済む。
+   ============================================================ */
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+function dateStr(v){
+  if (!v) return '';
+  const t = Date.parse(v);
+  if (isNaN(t)) return String(v).slice(0, 10);
+  return new Date(t + JST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/* 書くときは正午UTCで固定する。前後9時間ずれても日付をまたがない。 */
+function dateOut(s){
+  const d = String(s || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d + 'T12:00:00Z' : null;
+}
+
 /* SharePointの行 → 画面で使う形 */
 function normalizeItem(it){
   const f = it.fields || {};
@@ -553,9 +582,9 @@ function normalizeItem(it){
     title: f.Title || '(無題)',
     category: f.Category || '',
     sender: f.Sender || '',
-    docDate: f.DocDate ? f.DocDate.slice(0, 10) : '',
-    received: f.ReceivedDate ? f.ReceivedDate.slice(0, 10) : '',
-    due: f.DueDate ? f.DueDate.slice(0, 10) : '',
+    docDate: dateStr(f.DocDate),
+    received: dateStr(f.ReceivedDate),
+    due: dateStr(f.DueDate),
     amount: (f.Amount === null || f.Amount === undefined || f.Amount === '') ? null : Number(f.Amount),
     status: f.DocStatus || '未確認',
     taskStatus: f.TaskStatus || 'なし',
@@ -574,9 +603,9 @@ async function saveDoc(doc, patchFields){
     Title: doc.title,
     Category: doc.category,
     Sender: doc.sender,
-    DocDate: doc.docDate || null,
-    ReceivedDate: doc.received || null,
-    DueDate: doc.due || null,
+    DocDate: dateOut(doc.docDate),
+    ReceivedDate: dateOut(doc.received),
+    DueDate: dateOut(doc.due),
     Amount: (doc.amount === null || doc.amount === undefined || doc.amount === '') ? null : Number(doc.amount),
     DocStatus: doc.status,
     TaskStatus: doc.taskStatus,
@@ -692,9 +721,9 @@ async function createDoc(it){
     Title: it.title || fileName || '(無題)',
     Category: it.category || '',
     Sender: it.sender || '',
-    DocDate: it.docDate || null,
-    ReceivedDate: it.received || null,
-    DueDate: it.due || null,
+    DocDate: dateOut(it.docDate),
+    ReceivedDate: dateOut(it.received),
+    DueDate: dateOut(it.due),
     Amount: (it.amount === null || it.amount === undefined || it.amount === '') ? null : Number(it.amount),
     DocStatus: '未確認',
     TaskStatus: (data.task && data.task.title) ? (it.taskStatus || '未着手') : 'なし',
