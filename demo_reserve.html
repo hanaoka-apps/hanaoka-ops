@@ -286,7 +286,11 @@
   <div class="bd">
     <div class="fm">
       <div class="f"><span>期間（空き検索で入れた区間）</span><div id="bRange" style="font-weight:700"></div></div>
-      <div class="f"><span id="bMachinesLabel">機体</span><div id="bMachines" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
+      <div class="f">
+        <span id="bMachinesLabel">機体</span>
+        <div id="bMachinesFilter" style="margin:3px 0"></div>
+        <div id="bMachines" style="max-height:170px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:5px;padding:2px 0"></div>
+      </div>
       <div class="f"><span>予約件名（必須・全機体に共通）</span><input type="text" id="bTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
       <div class="f2">
         <div class="f"><span>顧客名</span><input type="text" id="bCust"></div>
@@ -1804,13 +1808,59 @@ async function release(machine, token, now){
    まとめて予約モーダルに引き継ぐ（機体構成と期間はそのつど選び直す）。
    一度使ったら消す（次に素の「まとめて予約」を開いたときに残らないように）。 */
 let DUPE_TEMPLATE = null;
+let BULK_CAT_FILTER = '';   /* このモーダル内で機体を絞り込む所有先(区分) */
+
+/* まとめて予約モーダルの機体一覧を描く。★このモーダルの中だけで
+   追加・削除できる★（以前は空き検索パネルで選んだ機体がそのまま固定
+   表示されるだけで、1台だけに絞られたグリッドクリック起点だと事実上
+   「まとめて」にならなかった。セット詳細の「機体を追加」と同じ考え方で、
+   ここでも同じ期間の空き機体をチップから足し引きできるようにする）。 */
+function renderBulkMachines(){
+  if (!SEEK) return;
+  const busy = new Map();
+  RES.filter(r => r.st !== '取消' && overlaps(r, SEEK.s, SEEK.e))
+     .forEach(r => { if (!busy.has(r.mid)) busy.set(r.mid, []); busy.get(r.mid).push(r); });
+
+  const target = MACHINES.filter(m => m.resv && !m.ng && !m.part);
+  const cats = [...new Set(target.map(m => m.cat))].sort();
+  if (BULK_CAT_FILTER && !cats.includes(BULK_CAT_FILTER)) BULK_CAT_FILTER = '';
+  const shown = (BULK_CAT_FILTER ? target.filter(m => m.cat === BULK_CAT_FILTER) : target)
+    .slice()
+    .sort((a,b) => (SEEK_SEL.has(b.id)?1:0) - (SEEK_SEL.has(a.id)?1:0)
+      || a.cat.localeCompare(b.cat) || a.n.localeCompare(b.n));   /* 選択済みを先頭に */
+
+  document.getElementById('bMachinesLabel').textContent = `機体（${SEEK_SEL.size}台）`;
+  document.getElementById('bMachinesFilter').innerHTML =
+    `<select id="bCatFilter" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px">
+       <option value="">所有先: すべて</option>
+       ${cats.map(c => `<option value="${esc(c)}"${c === BULK_CAT_FILTER ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+     </select>`;
+  document.getElementById('bCatFilter').onchange = e => { BULK_CAT_FILTER = e.target.value; renderBulkMachines(); };
+
+  const box = document.getElementById('bMachines');
+  box.innerHTML = shown.map(m => {
+    const sel = SEEK_SEL.has(m.id);
+    if (!sel && busy.has(m.id)) {
+      const r = busy.get(m.id)[0];
+      const who = [r.cust, r.req].filter(Boolean).join(' / ');
+      return `<span class="chip busy" title="${esc(r.t)}${who ? '（' + who + '）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
+    }
+    return `<span class="chip${sel ? ' on' : ''}" data-mid="${m.id}">${esc(m.n)}</span>`;
+  }).join('');
+  box.querySelectorAll('.chip:not(.busy)').forEach(c => {
+    c.onclick = () => {
+      const id = Number(c.dataset.mid);
+      if (SEEK_SEL.has(id)) SEEK_SEL.delete(id); else SEEK_SEL.add(id);
+      renderBulkMachines();
+    };
+  });
+}
 
 function openBulkNew(){
   if (!SEEK || !SEEK_SEL.size) return;
-  const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  BULK_CAT_FILTER = '';
   document.getElementById('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}`;
-  document.getElementById('bMachinesLabel').textContent = `機体（${list.length}台）`;
-  document.getElementById('bMachines').innerHTML = list.map(m => `<span class="chip">${esc(m.n)}</span>`).join('');
+  renderBulkMachines();
   if (DUPE_TEMPLATE) {
     document.getElementById('bTitle').value = DUPE_TEMPLATE.title;
     document.getElementById('bCust').value  = DUPE_TEMPLATE.cust;
