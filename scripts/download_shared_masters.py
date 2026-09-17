@@ -9,6 +9,8 @@ GitHub Actions から実行される。環境変数に以下が必要:
 Drive ID: SharedMasters ライブラリ
 """
 
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -49,7 +51,9 @@ OPTIONAL_FILES = [
     "value_analysis.json",
 ]
 
-STANDARD_COST_FILE = re.compile(r"^品目別積上原価一覧表.*\.(?:csv|xlsx)$", re.IGNORECASE)
+STANDARD_COST_FOLDER = "standard-cost"
+STANDARD_COST_FILE = re.compile(r"^standard_cost_\d{6}\.(?:csv|xlsx)$", re.IGNORECASE)
+LEGACY_STANDARD_COST_FILE = re.compile(r"^品目別積上原価一覧表.*\.(?:csv|xlsx)$", re.IGNORECASE)
 
 # --------------------------------------------------------------------------
 
@@ -89,9 +93,17 @@ def get_file_last_modified(token: str, filename: str) -> str:
     return ""
 
 
-def download_file(token: str, filename: str, dest_dir: Path, required: bool) -> bool:
+def download_file(
+    token: str,
+    filename: str,
+    dest_dir: Path,
+    required: bool,
+    *,
+    remote_path: str | None = None,
+) -> bool:
     """ファイルをダウンロードして dest_dir に保存。成功したら True を返す。"""
-    encoded = requests.utils.quote(filename, safe="")
+    source_path = remote_path or filename
+    encoded = requests.utils.quote(source_path, safe="/")
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded}:/content"
     res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
 
@@ -99,20 +111,24 @@ def download_file(token: str, filename: str, dest_dir: Path, required: bool) -> 
         dest = dest_dir / filename
         dest.write_bytes(res.content)
         size_kb = len(res.content) / 1024
-        print(f"  [OK] {filename} ({size_kb:.0f} KB)")
+        print(f"  [OK] {source_path} -> {filename} ({size_kb:.0f} KB)")
         return True
     elif res.status_code == 404:
-        print(f"  [WARN] {filename} が SharedMasters に見つかりません (スキップ)")
+        print(f"  [WARN] {source_path} が SharedMasters に見つかりません (スキップ)")
         return False
     else:
         raise RuntimeError(
-            f"ダウンロード失敗 {filename}: HTTP {res.status_code} / {res.text[:200]}"
+            f"ダウンロード失敗 {source_path}: HTTP {res.status_code} / {res.text[:200]}"
         )
 
 
-def list_standard_cost_files(token: str) -> list[str]:
-    """SharedMasters直下の月次積上原価CSV/XLSXを自動検出する。"""
-    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root/children"
+def list_folder_files(token: str, folder: str = "") -> list[str]:
+    """SharedMasters内の指定フォルダ直下にあるファイル名を返す。"""
+    if folder:
+        encoded_folder = requests.utils.quote(folder, safe="/")
+        url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded_folder}:/children"
+    else:
+        url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root/children"
     params = {"$select": "name,file", "$top": "999"}
     names: list[str] = []
     while url:
@@ -122,11 +138,34 @@ def list_standard_cost_files(token: str) -> list[str]:
         payload = res.json()
         for item in payload.get("value", []):
             name = str(item.get("name") or "")
-            if item.get("file") and STANDARD_COST_FILE.fullmatch(name):
+            if item.get("file"):
                 names.append(name)
         url = payload.get("@odata.nextLink", "")
         params = None
     return sorted(set(names))
+
+
+def list_standard_cost_files(token: str) -> list[tuple[str, str]]:
+    """月次標準原価を検出する。新フォルダを優先し、未整備時だけ旧配置へ戻る。"""
+    try:
+        canonical = [
+            name
+            for name in list_folder_files(token, STANDARD_COST_FOLDER)
+            if STANDARD_COST_FILE.fullmatch(name)
+        ]
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        canonical = []
+    if canonical:
+        return [(f"{STANDARD_COST_FOLDER}/{name}", name) for name in canonical]
+
+    legacy = [
+        name
+        for name in list_folder_files(token)
+        if LEGACY_STANDARD_COST_FILE.fullmatch(name)
+    ]
+    return [(name, name) for name in legacy]
 
 
 def main():
@@ -172,8 +211,14 @@ def main():
         cost_files = list_standard_cost_files(token)
         if not cost_files:
             print("  [WARN] 品目別積上原価一覧表のCSV/XLSXが見つかりません")
-        for f in cost_files:
-            download_file(token, f, DATA, required=False)
+        for remote_path, filename in cost_files:
+            download_file(
+                token,
+                filename,
+                DATA,
+                required=False,
+                remote_path=remote_path,
+            )
     except RuntimeError as e:
         print(f"  [WARN] {e}")
 
