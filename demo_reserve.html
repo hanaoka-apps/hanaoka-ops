@@ -511,6 +511,7 @@ async function gPatchIf(path, fields, etag){
 let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
 let SEEK = null;                       /* 空き検索の区間 */
 let SEEK_SEL = new Set();              /* 空き検索で選んだ機体（まとめて予約の対象）。id で持つ */
+let SEEK_FROM_GRID = false;            /* グリッドの空きセルを直接クリックして始まった一時的な選択か */
 let HILITE = null;                     /* 結果から選んだ機体ID。行を目立たせるだけで絞り込まない */
 let lastLoad = 0, refreshTimer = null;
 
@@ -1282,6 +1283,7 @@ async function runSeek(){
   const r = parseSeek();
   if (!r) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
   SEEK = r;
+  SEEK_FROM_GRID = false;   /* 明示的な検索なので、キャンセル時に自動で消さない */
   curWeek = weekTopMs(r.s);
   await loadRes(); lastLoad = Date.now();
   render(); paintSeek(); paintUpdated(); writeUrl();
@@ -1411,11 +1413,16 @@ document.getElementById('grid').addEventListener('click', ev => {
   if (!bg || bg.classList.contains('blocked')) return;
   /* クリックした日は、いま画面に描画されている＝既に読み込み済みの範囲内
      なので、ここで読み直す必要はない（runSeek()と違い任意の日付に飛ぶ
-     わけではないため）。SEEKを直接セットしてそのまま検索結果表示に進む。 */
+     わけではないため）。SEEKを直接セットしてそのままモーダルへ進む。
+     ★空き検索の結果パネル(paintSeek)は出さない★ クリック1回のつもりの人に
+     37台ぶんの一覧が急に表示されるのは唐突なので、ここでは呼ばない。
+     モーダルをキャンセルしたときは SEEK_FROM_GRID を見て自動的に消す
+     (下の MutationObserver 参照)。 */
   const mid = Number(bg.dataset.m), dayMs = Number(bg.dataset.d);
   SEEK = { s: dayMs + 9*3600e3, e: dayMs + 17*3600e3, allDay: false };   /* 既定 09:00〜17:00 JST */
   SEEK_SEL = new Set([mid]);
-  render(); paintSeek(); paintUpdated(); writeUrl();
+  SEEK_FROM_GRID = true;
+  render(); paintUpdated(); writeUrl();
   openBulkNew();
 });
 
@@ -1623,6 +1630,7 @@ function startDuplicateSet(){
   const rep = members[0]; if (!rep) return;
   DUPE_TEMPLATE = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
   SEEK_SEL = new Set(members.map(x => x.mid));
+  SEEK_FROM_GRID = false;   /* この先は明示的に空き検索フォームで期間を選んでもらう */
   closeM('mDetail');
   showSnack('複製先の期間を指定して「この区間で押さえられる機体」を押してください（機体は選択済みです）');
   const el = document.getElementById('sFrom');
@@ -1821,6 +1829,19 @@ function openBulkNew(){
     : `<b style="color:var(--danger)">マスターに ${LOCK_COL} 列が無いため予約登録は無効です。</b>`;
   openM('mBulk');
 }
+
+/* グリッドの空きセルクリックから開いたとき（SEEK_FROM_GRID）だけ、
+   このモーダルが閉じたタイミング(キャンセル・背景クリック・ESC・保存後の
+   自動クローズ、どれでも)でSEEKを消して、グリッド上のハイライトも消す。
+   明示的に空き検索を使った場合(SEEK_FROM_GRID=false)はそのまま残す。 */
+new MutationObserver(() => {
+  if (!document.getElementById('mBulk').classList.contains('on') && SEEK_FROM_GRID) {
+    SEEK_FROM_GRID = false;
+    SEEK = null; SEEK_SEL = new Set();
+    render(); paintSeek();
+  }
+}).observe(document.getElementById('mBulk'), { attributes: true, attributeFilter: ['class'] });
+
 async function doReserveBulk(){
   const msg = document.getElementById('bMsg'), btn = document.getElementById('bSave');
   const resultBox = document.getElementById('b-result');
