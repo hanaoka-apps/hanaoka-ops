@@ -489,6 +489,12 @@ async function load(reset){
       listId = l.id;
     }
 
+    // ★列の不足はアプリが自分で埋める★
+    //   画面を新しくしたときに列を1本足すことがある。そのとき「セットアップを
+    //   押してください」と人に頼む作りだと、押し忘れて 400 Field not recognized
+    //   になり、原因も分かりにくい（実際そうなった）。開いたら勝手に揃える。
+    await ensureColumns();
+
     // ★SharePointは索引の無い列への $filter / $orderby を 400 で弾く★
     //   （HonorNonIndexedQueriesWarningMayFailRandomly を付ければ通るが、
     //     名前のとおり件数が増えると落ちるようになる。頼らない）
@@ -516,6 +522,25 @@ async function load(reset){
     console.error(e);
     setStatus('読み込みに失敗しました: ' + e.message, 'error');
   }
+}
+
+/* 台帳に足りない列を足す。既にある列には触らない。
+   戻り値は追加した列名の配列（ログ用）。権限が無い等で足せなければ
+   その旨を投げるので、呼び出し側で握りつぶさないこと。 */
+let columnsEnsured = false;
+async function ensureColumns(force){
+  if (columnsEnsured && !force) return [];
+  const cols = await graphAll(`/sites/${siteId}/lists/${listId}/columns?$select=name`);
+  const have = new Set(cols.map(c => c.name));
+  const added = [];
+  for (const c of LIST_COLUMNS){
+    if (have.has(c.name)) continue;
+    await graph(`/sites/${siteId}/lists/${listId}/columns`, { method: 'POST', body: JSON.stringify(c) });
+    added.push(c.name);
+  }
+  columnsEnsured = true;
+  if (added.length) console.info('[書類管理] 列を追加しました:', added.join(', '));
+  return added;
 }
 
 /* SharePointの行 → 画面で使う形 */
@@ -1298,13 +1323,9 @@ async function runSetup(){
       setupLog(`${SP.listName} は既にあります`);
       listId = l.id;
       // 足りない列だけ追加（後から項目を増やせるように）
-      const cols = await graphAll(`/sites/${siteId}/lists/${listId}/columns?$select=name`);
-      const have = new Set(cols.map(c => c.name));
-      for (const c of LIST_COLUMNS){
-        if (have.has(c.name)) continue;
-        await graph(`/sites/${siteId}/lists/${listId}/columns`, { method: 'POST', body: JSON.stringify(c) });
-        setupLog('  列を追加: ' + c.name);
-      }
+      const added = await ensureColumns(true);
+      added.forEach(nm => setupLog('  列を追加: ' + nm));
+      if (!added.length) setupLog('  列はすべて揃っています');
     } else {
       setupLog(`${SP.listName} を作成中…`);
       const created = await graph(`/sites/${siteId}/lists`, {
