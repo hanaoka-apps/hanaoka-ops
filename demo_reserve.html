@@ -78,11 +78,6 @@
     .chip.on{outline:2px solid var(--warning);outline-offset:1px}
     .seekband{position:absolute;top:0;bottom:0;background:rgba(26,95,168,.10);
       border-left:1px dashed var(--primary);border-right:1px dashed var(--primary);z-index:1;pointer-events:none}
-    #ex-list{max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:5px;margin-top:4px}
-    #ex-list div{padding:4px 8px;font-size:11.5px;border-bottom:1px solid #f0f3fa;display:flex;gap:8px}
-    #ex-list div:last-child{border-bottom:none}
-    #ex-list .hit{background:#fbdcd9;color:#7d1d13;font-weight:700}
-    #ex-list .tm{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
     .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);align-items:center;margin-bottom:9px}
     .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px;border:1px solid}
 
@@ -283,45 +278,9 @@
     <button class="act" onclick="closeM('mDetail')">閉じる</button></div>
 </div></div>
 
-<!-- 予約登録 -->
-<div class="modal" id="mNew"><div class="card">
-  <h3>デモ機を予約する</h3>
-  <div class="bd">
-    <div class="fm">
-      <div class="f"><span>デモ機</span><input type="text" id="nMachine" readonly style="background:#f4f6f9"></div>
-      <div class="f"><span>予約件名（必須）</span><input type="text" id="nTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
-      <label class="chk" style="margin:2px 0 6px">
-        <input type="checkbox" id="nAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
-      <div class="f2" id="nTimeRow">
-        <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="nStart"></div>
-        <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="nEnd"></div>
-      </div>
-      <div class="f2" id="nDateRow" style="display:none">
-        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="nStartD"></div>
-        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="nEndD"></div>
-      </div>
-      <div class="f2">
-        <div class="f"><span>顧客名</span><input type="text" id="nCust"></div>
-        <div class="f"><span>行き先</span><input type="text" id="nDest"></div>
-      </div>
-      <div class="f"><span>依頼者（サインイン中のアカウントを自動記録）</span>
-        <input type="text" id="nReq" readonly style="background:#f4f6f9"></div>
-      <div class="f"><span>備考</span><input type="text" id="nNotes" placeholder="返却期限など"></div>
-    </div>
-    <div class="f" style="margin-top:9px">
-      <span>この機体の予約（前後30日）</span>
-      <div id="ex-list"></div>
-    </div>
-    <div class="note" id="nNote"></div>
-  </div>
-  <div class="ft">
-    <span class="msg" id="nMsg"></span>
-    <button class="act" onclick="closeM('mNew')">キャンセル</button>
-    <button class="act pri" id="nSave" onclick="doReserve()">予約する</button>
-  </div>
-</div></div>
-
-<!-- まとめて予約：空き検索で選んだ複数の機体を、同じ件名・同じ期間で一括予約する -->
+<!-- まとめて予約：空き検索で選んだ複数の機体を、同じ件名・同じ期間で一括予約する
+     ★予約フォームはこの1つに統一(以前は空きグリッドを直接クリックする単発フォーム
+     もあったが、1台の予約もここを通す形にして導線を1本化した)★ -->
 <div class="modal" id="mBulk"><div class="card">
   <h3>選んだ機体をまとめて予約する</h3>
   <div class="bd">
@@ -1442,11 +1401,22 @@ document.getElementById('today').onclick = () => goWeek(weekTopMs(Date.now()));
   document.getElementById(id).onchange = () => { render(); paintSeek(); writeUrl(); });
 document.getElementById('q').oninput = () => { render(); paintSeek(); writeUrl(); };
 
+/* 空きグリッドのクリックは、単発専用のフォームを別に持たず「まとめて予約」
+   (mBulk)を1台選択済みの状態で直接開く。導線は「空き検索→まとめて予約」の
+   1本に統一し、クリックした機体・日付をその場で選択済みにするだけにする。 */
 document.getElementById('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i');
   if (bar) { openDetail(bar.dataset.r); return; }
   const bg = ev.target.closest('.bg');
-  if (bg && !bg.classList.contains('blocked')) openNew(Number(bg.dataset.m), Number(bg.dataset.d));
+  if (!bg || bg.classList.contains('blocked')) return;
+  /* クリックした日は、いま画面に描画されている＝既に読み込み済みの範囲内
+     なので、ここで読み直す必要はない（runSeek()と違い任意の日付に飛ぶ
+     わけではないため）。SEEKを直接セットしてそのまま検索結果表示に進む。 */
+  const mid = Number(bg.dataset.m), dayMs = Number(bg.dataset.d);
+  SEEK = { s: dayMs + 9*3600e3, e: dayMs + 17*3600e3, allDay: false };   /* 既定 09:00〜17:00 JST */
+  SEEK_SEL = new Set([mid]);
+  render(); paintSeek(); paintUpdated(); writeUrl();
+  openBulkNew();
 });
 
 function openDetail(rid){
@@ -1738,116 +1708,6 @@ async function doCancel(){
 }
 
 /* ============================================================
-   終日予約
-   ★終わりは「終了日の翌日 0:00」にする★
-     この画面の重なり判定は半開区間 [開始, 終了) なので、
-     9/1 終日 = 9/1 00:00 〜 9/2 00:00 とすれば
-     9/2 終日（9/2 00:00 〜）と隣接して重ならない。
-     23:59 にすると1分の隙間が空き、半開区間の考え方と揃わなくなる。
-   isAllDay() は 0:00→0:00 を終日と判定するので、帯には「終日」と出る。
-   ============================================================ */
-function allDayOn(){ return document.getElementById('nAllDay').checked; }
-
-/* 入力欄から予約期間（ms）を取り出す。終日かどうかで読む欄が変わる */
-function newRangeMs(){
-  if (allDayOn()) {
-    const a = dateToMs(document.getElementById('nStartD').value);
-    const b = dateToMs(document.getElementById('nEndD').value);
-    return { s:a, e: isNaN(b) ? NaN : b + DAY };     /* 終了日も含める＝翌日0:00まで */
-  }
-  return { s: localToMs(document.getElementById('nStart').value),
-           e: localToMs(document.getElementById('nEnd').value) };
-}
-
-/* チェックの切り替え。値を捨てずに引き継ぐ */
-function paintAllDay(){
-  const on = allDayOn();
-  document.getElementById('nTimeRow').style.display = on ? 'none' : '';
-  document.getElementById('nDateRow').style.display = on ? '' : 'none';
-  if (on) {
-    /* 時刻つき → 日付だけ。終了は「その日を含む」なので、
-       ちょうど 0:00 で終わる予約は前日が最終日になる。1日ずれを防ぐ。 */
-    const s = localToMs(document.getElementById('nStart').value);
-    const e = localToMs(document.getElementById('nEnd').value);
-    if (!isNaN(s)) document.getElementById('nStartD').value = msToDate(s);
-    if (!isNaN(e)) {
-      const d = toJ(e);
-      const atMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
-      document.getElementById('nEndD').value = msToDate(atMidnight ? e - DAY : e);
-    }
-  } else {
-    /* 日付だけ → 時刻つき。既定の 9:00〜17:00 を入れる */
-    const a = dateToMs(document.getElementById('nStartD').value);
-    const b = dateToMs(document.getElementById('nEndD').value);
-    if (!isNaN(a)) document.getElementById('nStart').value = msToLocal(a + 9*3600e3);
-    if (!isNaN(b)) document.getElementById('nEnd').value   = msToLocal(b + 17*3600e3);
-  }
-  paintExisting();
-}
-
-let newMid = 0;
-function openNew(mid, dayMs, range){
-  const m = MACHINES.find(x => x.id === mid); if (!m) return;
-  newMid = mid;
-  document.getElementById('nMachine').value = `${m.n}  #${m.id}`;
-  if (range) {
-    document.getElementById('nStart').value = msToLocal(range.s);
-    document.getElementById('nEnd').value   = msToLocal(range.e);
-  } else {
-    document.getElementById('nStart').value = msToLocal(dayMs + 9*3600e3);   /* 既定 09:00 JST */
-    document.getElementById('nEnd').value   = msToLocal(dayMs + 17*3600e3);  /* 既定 17:00 JST */
-  }
-  /* ★モーダルは使い回すので、終日チェックは毎回外す★
-     前回終日で予約した人が、次に時間指定したいのにチェックが残っていると
-     気づかず1日まるごと押さえてしまう。 */
-  document.getElementById('nAllDay').checked = false;
-  document.getElementById('nStartD').value = msToDate(range ? range.s : dayMs);
-  document.getElementById('nEndD').value   = msToDate(range ? Math.max(range.s, range.e - DAY) : dayMs);
-  paintAllDay();
-  ['nTitle','nCust','nDest','nNotes'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('nReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
-  document.getElementById('nMsg').textContent = ''; document.getElementById('nMsg').className = 'msg';
-  document.getElementById('nSave').disabled = !CAP.lock;
-  document.getElementById('nNote').innerHTML = CAP.lock
-    ? `保存時に <code>${LOCK_COL}</code> を ETag 付きで書き換えて枠を確保します。同時に他の方が同じ枠を取っていた場合、後から押した側は保存されずここにエラーが出ます。`
-    : `<b style="color:var(--danger)">マスターに <code>${LOCK_COL}</code> 列が無いため予約登録は無効です。</b>複数行テキスト（プレーン・バージョン管理OFF）で追加してください。`;
-  paintExisting();
-  openM('mNew');
-}
-
-/* その機体の既存予約を出して、入力中の区間と重なるものを赤くする。
-   CASは最後の砦で、本来は保存する前に空いている時間が見えているべき。 */
-function paintExisting(){
-  const box = document.getElementById('ex-list'); if (!box) return;
-  /* ★入力欄を直接読んではいけない★ 終日のときは日付欄が正で、
-     時刻欄には古い値が残っている。newRangeMs() に集約する。 */
-  const { s, e } = newRangeMs();
-  const base = isNaN(s) ? Date.now() : s;
-  const rs = RES.filter(r => r.mid === newMid && r.st !== '取消'
-                          && r.e > base - 30*DAY && r.s < base + 30*DAY)
-                .sort((a,b) => a.s - b.s);
-  if (!rs.length) { box.innerHTML = `<div style="color:var(--muted)">この期間に予約はありません</div>`; return; }
-  let hit = 0;
-  box.innerHTML = rs.map(r => {
-    const bad = !isNaN(s) && !isNaN(e) && e > s && overlaps(r, s, e);
-    if (bad) hit++;
-    return `<div class="${bad ? 'hit' : ''}"><span class="tm">${jFull(r.s)} 〜 ${jFull(r.e)}</span>`
-         + `<span>${esc(r.t)}${r.req ? '（' + esc(r.req) + '）' : ''}</span>`
-         + (bad ? `<span style="margin-left:auto">重なり</span>` : '') + `</div>`;
-  }).join('');
-  const msg = document.getElementById('nMsg'), save = document.getElementById('nSave');
-  if (hit) {
-    msg.textContent = `入力中の期間は既存の予約 ${hit}件と重なっています`; msg.className = 'msg ng';
-    save.disabled = true;
-  } else {
-    msg.textContent = ''; msg.className = 'msg';
-    save.disabled = !CAP.lock;
-  }
-}
-['nStart','nEnd','nStartD','nEndD'].forEach(id =>
-  document.getElementById(id).addEventListener('input', paintExisting));
-document.getElementById('nAllDay').addEventListener('change', paintAllDay);
-
 /* ---------- CAS 本体 ---------- */
 const parseOcc = s => (s||'').split('\n').map(l=>l.trim()).filter(Boolean)
   .map(l => { const [token,a,b] = l.split('|'); return { token, s:P(a), e:P(b) }; });
@@ -1922,44 +1782,6 @@ async function releaseBy(machine, pred, now){
 }
 async function release(machine, token, now){
   return releaseBy(machine, x => x.token === token, now);
-}
-
-async function doReserve(){
-  const msg = document.getElementById('nMsg'), btn = document.getElementById('nSave');
-  const m = MACHINES.find(x => x.id === newMid);
-  const title = document.getElementById('nTitle').value.trim();
-  const { s, e } = newRangeMs();
-  const allDay = allDayOn();
-  const fail = t => { msg.textContent = t; msg.className = 'msg ng'; };
-
-  if (!m) return fail('デモ機が特定できません');
-  if (!title) return fail('予約件名を入力してください');
-  if (isNaN(s) || isNaN(e))
-    return fail(allDay ? '開始日と終了日を入力してください' : '開始と終了を入力してください');
-  if (e <= s)
-    return fail(allDay ? '終了日は開始日と同じか、それより後にしてください'
-                       : '終了が開始より後になるようにしてください');
-
-  btn.disabled = true; msg.textContent = '枠を確保中...'; msg.className = 'msg';
-  try {
-    const r = await reserve({ machine:m, s, e, setId: newSetId(), details:{
-      title, cust: document.getElementById('nCust').value.trim(),
-      dest:  document.getElementById('nDest').value.trim(),
-      notes: document.getElementById('nNotes').value.trim() }});
-
-    if (r.ok){
-      msg.textContent = '予約しました'; msg.className = 'msg ok';
-      closeM('mNew'); await loadRes(); render();
-      showSnack(`予約を登録しました（試行 ${r.attempts}回目）`);
-      return;
-    }
-    if (r.reason === 'CONFLICT')
-      fail(`この枠は既に予約されています（${jFull(r.conflict.s)} 〜 ${jFull(r.conflict.e)}）`);
-    else if (r.reason === 'BUSY')     fail('他の方が同じ機体を操作中です。少し待って再度お試しください');
-    else if (r.reason === 'SAVE_FAILED') fail('枠は確保しましたが履歴の保存に失敗しました: ' + (r.message||''));
-    else fail(`保存できませんでした（${r.reason} ${r.status||''}）`);
-  } catch (err) { fail('エラー: ' + err.message); }
-  finally { btn.disabled = false; await loadRes(); render(); }
 }
 
 /* ============================================================
