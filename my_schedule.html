@@ -490,7 +490,7 @@ let LOAD_SEQ = 0;
 let lastLoad = 0, refreshTimer = null;
 let CARS_BY_MAIL = new Map(), ROOMS_BY_MAIL = new Map();
 let MACHINES = [];
-let CAP = { lock:false, token:false, mid:false, cancel:false };
+let CAP = { lock:false, token:false, mid:false, cancel:false, setId:false };
 let COMMON = [], MINE = [], FAC = [], DEMO = [];
 let STATUS_ERRS = [];
 
@@ -581,6 +581,7 @@ async function checkCap(){
     CAP.token = names.has('LockToken');
     CAP.mid = names.has('MachineItemId');
     CAP.cancel = names.has('CancelledByEmail');
+    CAP.setId = names.has('BookingSetId');
   } catch { CAP.token = false; }
 }
 
@@ -704,7 +705,8 @@ async function loadDemo(){
       e: f.ReservationEnd ? P(f.ReservationEnd) : NaN,
       reqMail: (f.RequesterEmail || '').toLowerCase(),
       st: f.LoanStatus || '予約',
-      token: f.LockToken || ''
+      token: f.LockToken || '',
+      setId: f.BookingSetId || ''
     };
   }).filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e) && r.st !== '取消' && r.reqMail === me);
   DEMO.sort((a,b) => a.s - b.s);
@@ -729,7 +731,12 @@ function liHtml(r, d0, d1){
            : cutL ? `…–${jHM(r.e)}`
            : cutR ? `${jHM(r.s)}–…`
            : `${jHM(r.s)}–${jHM(r.e)}`;
-  const cancelBtn = r.cancelable ? `<button class="cancel" title="取消" onclick="event.stopPropagation();doCancelMy('${esc(r.rid)}')">✕</button>` : '';
+  const cancelBtn = r.cancelable ? `<button class="cancel" title="取消" onclick="event.stopPropagation();doCancelMy('${esc(r.rid)}')">✕</button>`
+    /* 複数機体のセット予約は、この行だけ取消すという操作が意味を持たないので、
+       ✕の代わりにデモ機管理アプリのセット詳細を開くリンクにする（追加・削除はそちらで）。 */
+    : r.isGroup ? `<a class="cancel" title="デモ機管理で追加・削除" target="_blank" rel="noopener"
+        href="demo_reserve.html?openSet=${encodeURIComponent(r.setId)}&d=${jKey(r.s)}"
+        onclick="event.stopPropagation()">↗</a>` : '';
   return `<div class="li ${r.cls}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}">`
     + `<span class="tm">${tm}</span><b>${esc(r.t)}</b>${cancelBtn}</div>`;
 }
@@ -757,9 +764,29 @@ function renderAll(){
   const days = weekDays(), todayKey = jKey(Date.now());
   const g = el('grid');
   g.className = 'grid ls';
-  const demoRows = DEMO.map(r => {
-    const mName = MACHINES.find(m => m.id === r.mid)?.n || `#${r.mid}`;
-    return { ...r, t: `${mName} — ${r.t}`, cls:'s-demo', cancelable:true };
+  /* まとめて予約した複数機体は、同じ枠に1台ずつ並べず「N台」の1行にまとめる。
+     追加・削除はここでは行わず、デモ機管理アプリのセット詳細を開くリンクを出す
+     （BookingSetIdが無い/1台だけの予約は、今まで通り1行＋✕で取消できるようにする）。 */
+  const demoGroups = new Map();
+  DEMO.forEach(r => {
+    const key = r.setId || `_${r.rid}`;
+    if (!demoGroups.has(key)) demoGroups.set(key, []);
+    demoGroups.get(key).push(r);
+  });
+  const demoRows = [...demoGroups.values()].map(rows => {
+    const first = rows[0];
+    if (rows.length === 1 && first.setId) {
+      const mName = MACHINES.find(m => m.id === first.mid)?.n || `#${first.mid}`;
+      return { ...first, t: `${mName} — ${first.t}`, cls:'s-demo', isGroup:true, setId:first.setId };
+    }
+    if (rows.length === 1) {
+      const mName = MACHINES.find(m => m.id === first.mid)?.n || `#${first.mid}`;
+      /* デモ機管理アプリと同じ条件：終了済みの予約は取消せない
+         （終わった予約を消せると、実際に貸し出した記録が消えてしまうため）。 */
+      return { ...first, t: `${mName} — ${first.t}`, cls:'s-demo', cancelable: first.e > Date.now() && CAP.lock };
+    }
+    const s = Math.min(...rows.map(r => r.s)), e = Math.max(...rows.map(r => r.e));
+    return { ...first, s, e, t: `${rows.length}台 — ${first.t}`, cls:'s-demo', isGroup:true, setId:first.setId };
   });
   g.innerHTML = dayHeadHtml(days, '', todayKey)
     + rowHtml(days, todayKey, 'cmn',  nameHtml('会社共通予定表', COMMON), COMMON)
@@ -953,11 +980,13 @@ const parseOcc = s => (s||'').split('\n').map(l=>l.trim()).filter(Boolean)
 const dumpOcc  = a => a.map(x => `${x.token}|${new Date(x.s).toISOString()}|${new Date(x.e).toISOString()}`).join('\n');
 const prune    = (a, now) => a.filter(x => x.e >= now - DAY);
 const newToken = () => Math.random().toString(36).slice(2,8) + Date.now().toString(36).slice(-4);
+/* 1件だけの予約も「1台のセット」として扱う（demo_reserve.html と同じ考え方） */
+const newSetId = () => (crypto?.randomUUID?.() || (Date.now().toString(36) + Math.random().toString(36).slice(2,10)));
 const sleep    = ms => new Promise(r => setTimeout(r, ms));
 
 /* CAS（Compare-And-Swap）で占有情報を書き換えつつ、履歴に1行追加する。
    demo_reserve.html の reserve() と同じロジック（詳細はそちらのコメント参照）。 */
-async function reserve({ machine, s, e, details }){
+async function reserve({ machine, s, e, setId, details }){
   const now = Date.now();
   for (let n = 1; n <= 4; n++){
     const it = await gGet(`/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${machine.itemId}?$expand=fields`);
@@ -986,6 +1015,7 @@ async function reserve({ machine, s, e, details }){
       };
       if (CAP.token) fields.LockToken = token;
       if (CAP.mid)   fields.MachineItemId = Number(machine.itemId);
+      if (CAP.setId && setId) fields.BookingSetId = setId;
       const row = await gPost(`/sites/${SITE_ID}/lists/${LIST_HIST}/items`, { fields });
       return { ok:true, id:row.id, token, attempts:n };
     } catch (err) {
@@ -1021,6 +1051,9 @@ async function doReserveBulkMy(){
   const details = {
     title, cust: el('bCust').value.trim(), dest: el('bDest').value.trim(), notes: el('bNotes').value.trim()
   };
+  /* まとめて予約した機体は同じセットIDを共有する（デモ機管理アプリの
+     セット詳細から、あとで追加・削除できるようにするための束ねキー） */
+  const setId = newSetId();
   const targets = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
   btn.disabled = true; msg.textContent = `予約中... (0/${targets.length})`; msg.className = 'msg';
   resultBox.innerHTML = '';
@@ -1031,7 +1064,7 @@ async function doReserveBulkMy(){
     msg.textContent = `予約中... (${i}/${targets.length}) ${m.n}`;
     let line;
     try {
-      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, details });
+      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, setId, details });
       if (r.ok) {
         ok++; SEEK_SEL.delete(m.id);
         line = `<span style="color:var(--success)">✓ ${esc(m.n)}</span>`;
@@ -1059,6 +1092,7 @@ async function doReserveBulkMy(){
 
 async function doCancelMy(rid){
   const r = DEMO.find(x => x.rid === rid); if (!r) return;
+  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は取消せません'); return; }
   const m = MACHINES.find(x => x.id === r.mid);
   if (!confirm(`この予約を取消します。\n\n件名：${r.t}\n期間：${jFull(r.s)} 〜 ${jFull(r.e)}\n\n取消すと枠が空き、他の人が予約できるようになります。`)) return;
   try {

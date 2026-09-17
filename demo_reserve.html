@@ -78,11 +78,6 @@
     .chip.on{outline:2px solid var(--warning);outline-offset:1px}
     .seekband{position:absolute;top:0;bottom:0;background:rgba(26,95,168,.10);
       border-left:1px dashed var(--primary);border-right:1px dashed var(--primary);z-index:1;pointer-events:none}
-    #ex-list{max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:5px;margin-top:4px}
-    #ex-list div{padding:4px 8px;font-size:11.5px;border-bottom:1px solid #f0f3fa;display:flex;gap:8px}
-    #ex-list div:last-child{border-bottom:none}
-    #ex-list .hit{background:#fbdcd9;color:#7d1d13;font-weight:700}
-    #ex-list .tm{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
     .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);align-items:center;margin-bottom:9px}
     .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px;border:1px solid}
 
@@ -277,51 +272,15 @@
 <!-- 詳細 -->
 <div class="modal" id="mDetail"><div class="card">
   <h3 id="dTitle"></h3>
-  <div class="bd"><dl id="dBody"></dl></div>
+  <div class="bd"><div id="dBody"></div></div>
   <div class="ft"><span class="msg" id="dMsg"></span>
     <button class="act dngr" id="dCancel" style="display:none" onclick="doCancel()">この予約を取消す</button>
     <button class="act" onclick="closeM('mDetail')">閉じる</button></div>
 </div></div>
 
-<!-- 予約登録 -->
-<div class="modal" id="mNew"><div class="card">
-  <h3>デモ機を予約する</h3>
-  <div class="bd">
-    <div class="fm">
-      <div class="f"><span>デモ機</span><input type="text" id="nMachine" readonly style="background:#f4f6f9"></div>
-      <div class="f"><span>予約件名（必須）</span><input type="text" id="nTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
-      <label class="chk" style="margin:2px 0 6px">
-        <input type="checkbox" id="nAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
-      <div class="f2" id="nTimeRow">
-        <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="nStart"></div>
-        <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="nEnd"></div>
-      </div>
-      <div class="f2" id="nDateRow" style="display:none">
-        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="nStartD"></div>
-        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="nEndD"></div>
-      </div>
-      <div class="f2">
-        <div class="f"><span>顧客名</span><input type="text" id="nCust"></div>
-        <div class="f"><span>行き先</span><input type="text" id="nDest"></div>
-      </div>
-      <div class="f"><span>依頼者（サインイン中のアカウントを自動記録）</span>
-        <input type="text" id="nReq" readonly style="background:#f4f6f9"></div>
-      <div class="f"><span>備考</span><input type="text" id="nNotes" placeholder="返却期限など"></div>
-    </div>
-    <div class="f" style="margin-top:9px">
-      <span>この機体の予約（前後30日）</span>
-      <div id="ex-list"></div>
-    </div>
-    <div class="note" id="nNote"></div>
-  </div>
-  <div class="ft">
-    <span class="msg" id="nMsg"></span>
-    <button class="act" onclick="closeM('mNew')">キャンセル</button>
-    <button class="act pri" id="nSave" onclick="doReserve()">予約する</button>
-  </div>
-</div></div>
-
-<!-- まとめて予約：空き検索で選んだ複数の機体を、同じ件名・同じ期間で一括予約する -->
+<!-- まとめて予約：空き検索で選んだ複数の機体を、同じ件名・同じ期間で一括予約する
+     ★予約フォームはこの1つに統一(以前は空きグリッドを直接クリックする単発フォーム
+     もあったが、1台の予約もここを通す形にして導線を1本化した)★ -->
 <div class="modal" id="mBulk"><div class="card">
   <h3>選んだ機体をまとめて予約する</h3>
   <div class="bd">
@@ -406,6 +365,9 @@ const HIST_COLUMNS = [
   { name:'CustomerName',      jp:'顧客名',         def:TEXT() },
   { name:'Destination',       jp:'行き先',         def:TEXT() },
   { name:'Notes',             jp:'備考',           def:{ text:{ allowMultipleLines:true, linesForEditing:4, textType:'plain' } } },
+  /* ★セットで予約した複数機体を後からまとめて見る/足す/外すための束ねID★
+     1件だけの予約も「1台のセット」として同じ仕組みで扱う（特別扱いをしない）。 */
+  { name:'BookingSetId',      jp:'予約セットID',   def:TEXT(64), indexed:true },
   /* ★誰でも取消できる運用にしたので、誰が取消したかを残す★
      LoanStatus が『取消』に変わっただけでは、誰が消したか追えない。
      Teams の取消通知フローが「◯◯さんが取消しました」を出すのにも使う。 */
@@ -549,6 +511,7 @@ async function gPatchIf(path, fields, etag){
 let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
 let SEEK = null;                       /* 空き検索の区間 */
 let SEEK_SEL = new Set();              /* 空き検索で選んだ機体（まとめて予約の対象）。id で持つ */
+let SEEK_FROM_GRID = false;            /* グリッドの空きセルを直接クリックして始まった一時的な選択か */
 let HILITE = null;                     /* 結果から選んだ機体ID。行を目立たせるだけで絞り込まない */
 let lastLoad = 0, refreshTimer = null;
 
@@ -560,7 +523,9 @@ function readUrl(){
     const ms = Date.parse(d + 'T00:00:00Z') - JST;
     if (!isNaN(ms)) curWeek = weekTopMs(ms);
   }
-  return { cat: u.get('cat') || '', q: u.get('q') || '' };
+  /* my_schedule.html の「デモ機管理で編集」リンクから来たとき、その場で
+     セット詳細を開く（?openSet=セットID&d=その予約の開始日 の形で渡ってくる） */
+  return { cat: u.get('cat') || '', q: u.get('q') || '', openSet: u.get('openSet') || '' };
 }
 function writeUrl(){
   const u = new URLSearchParams();
@@ -586,7 +551,7 @@ function startAutoRefresh(){
     if (!document.hidden && Date.now() - lastLoad > 2 * 60 * 1000) tick();
   });
 }
-let CAP = { lock:false, resv:false, token:false, mid:false, cancel:false };  /* 列の有無（マスター / 履歴） */
+let CAP = { lock:false, resv:false, token:false, mid:false, cancel:false, setId:false };  /* 列の有無（マスター / 履歴） */
 
 async function showApp(){
   document.getElementById('login-view').style.display = 'none';
@@ -602,6 +567,7 @@ async function showApp(){
   await resolveHistList();
   await checkColumns();
   await loadAll(want);
+  if (want.openSet && CAP.setId) openSetView(want.openSet);
   startAutoRefresh();
 }
 
@@ -631,6 +597,7 @@ async function checkColumns(){
       const hn0 = new Set((hc0.value||[]).map(c => c.name));
       CAP.token = hn0.has('LockToken'); CAP.mid = hn0.has('MachineItemId');
       CAP.cancel = hn0.has('CancelledByEmail');
+      CAP.setId = hn0.has('BookingSetId');
       if (CAP.lock && CAP.token) { p.style.display = 'none'; }
       else {
         p.style.display = ''; p.className = 'warn';
@@ -649,6 +616,7 @@ async function checkColumns(){
     CAP.token  = hn.has('LockToken');
     CAP.mid    = hn.has('MachineItemId');
     CAP.cancel = hn.has('CancelledByEmail');
+    CAP.setId  = hn.has('BookingSetId');
     const ok = s => `<span class="ok">あり</span>`, ng = s => `<span class="ng">未作成</span>`;
     p.className = CAP.lock ? '' : 'warn';
     p.innerHTML =
@@ -667,12 +635,18 @@ async function checkColumns(){
          誰が取消したかが残らず、Teams の取消通知も差出人を書けない。 */
       `<div class="st-row">履歴の取消記録（<code>CancelledByEmail</code> ほか3列）: ${CAP.cancel?ok():ng()}` +
         (CAP.cancel ? '' : ' — 取消そのものは動きますが、<b>誰が取消したかが残りません</b>（Teams通知にも出せません）') + `</div>` +
+      `<div class="st-row">履歴の <code>BookingSetId</code>（セット予約の後編集用）: ${CAP.setId?ok():ng()}` +
+        (CAP.setId ? '' : ' — 無いと「まとめて予約」した後の追加・削除がまとめて見られません（1台ずつの予約・取消は今まで通り動きます）') + `</div>` +
       `<div class="st-row" id="fetch-mode" style="color:var(--muted)"></div>` +
-      (CAP.lock && CAP.resv && CAP.token && CAP.mid && CAP.cancel ? '' :
+      (CAP.lock && CAP.resv && CAP.token && CAP.mid && CAP.cancel && CAP.setId ? '' :
         `<div class="st-row" style="margin-top:7px">
            <button class="act pri" id="btn-mkcol" onclick="makeColumns()">不足している列を作成する</button>
            <span style="color:var(--muted);font-size:11.5px">マスターと履歴の両方をまとめて作ります。内部名は英語で固定されます。</span>
          </div>`) +
+      (CAP.setId ? `<div class="st-row" style="margin-top:7px">
+           <button class="act" onclick="backfillBookingSetIds()">既存の履歴に予約セットIDを一括付与</button>
+           <span style="color:var(--muted);font-size:11.5px">件名・期間・顧客名が完全に一致する行を同じセットとしてまとめます。既にIDが付いている行はスキップするので、複数回実行しても安全です。</span>
+         </div>` : '') +
       `<div class="st-row" style="margin-top:7px;gap:6px;flex-wrap:wrap">
          <button class="act" onclick="previewParts()">予約対象を一括判定…</button>
          <button class="act" onclick="rebuildLocks()">占有情報を再構築</button>` +
@@ -740,6 +714,14 @@ async function makeColumns(){
         }, c.jp);
         done.push(`${c.name}（履歴）`);
       }
+    }
+    if (!CAP.setId) {
+      await gCreateColumn(LIST_HIST, {
+        name: 'BookingSetId', displayName: 'BookingSetId',
+        description: 'まとめて予約した機体を束ねるID。アプリが設定します',
+        indexed: true, text: { allowMultipleLines: false, maxLength: 64, textType: 'plain' }
+      }, '予約セットID');
+      done.push('BookingSetId（履歴）');
     }
     showSnack(`列を作成しました: ${done.join(' / ')}`);
     await checkColumns();
@@ -993,6 +975,54 @@ async function rebuildLocks(){
   } catch (e) { showSnack('再構築エラー: ' + e.message); console.error(e); }
 }
 
+/* ============================================================
+   予約セットIDの一括付与（移行ツール）
+   ------------------------------------------------------------
+   BookingSetId 列を新設したあと、それ以前に作られた履歴には値が無い。
+   件名・開始・終了・顧客名が完全に一致する行を「同じとき同じ内容で
+   まとめて予約したもの」とみなして同じセットIDを振る（取消済みも含める。
+   セットの一部だけ後から取消された、という履歴も追えるように）。
+   既にIDが入っている行はスキップするので、何度実行しても安全。
+   ============================================================ */
+async function backfillBookingSetIds(){
+  if (!CAP.setId) { showSnack('BookingSetId 列がありません。先に列を作成してください'); return; }
+  showSnack('履歴を読み込み中...');
+  try {
+    const items = await gGetAll(`/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`);
+    const targets = items.filter(it => !(it.fields || {}).BookingSetId);
+    if (!targets.length) { showSnack('すべての履歴に予約セットIDが付与済みです'); return; }
+
+    const groups = new Map();
+    for (const it of targets) {
+      const f = it.fields || {};
+      const key = [f.Title || '', f.ReservationStart || '', f.ReservationEnd || '', f.CustomerName || ''].join('');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    }
+
+    if (!confirm(`予約セットIDが未設定の履歴 ${targets.length}件を、${groups.size}件のセットにまとめます。\n\n`
+      + `件名・期間・顧客名が完全に一致する行を同じセットとして扱います\n（1件しかない行もそのまま1台のセットになります）。\n\n実行しますか？`)) {
+      showSnack('中止しました'); return;
+    }
+
+    const writes = [];
+    for (const rows of groups.values()) {
+      const setId = newSetId();
+      rows.forEach(it => writes.push({ id: it.id, setId }));
+    }
+    const res = await gBatch(writes.map(w => ({
+      method: 'PATCH',
+      url: `/sites/${SITE_ID}/lists/${LIST_HIST}/items/${w.id}/fields`,
+      headers: { 'Content-Type': 'application/json' },
+      body: { BookingSetId: w.setId }
+    })));
+    const ok = res.filter(r => r.status < 300).length;
+    const ng = res.length - ok;
+    showSnack(`予約セットIDを付与しました：${ok}件` + (ng ? ` / 失敗 ${ng}件` : ''));
+    await loadRes(); render();
+  } catch (e) { showSnack('付与エラー: ' + e.message); console.error(e); }
+}
+
 async function loadAll(want){
   showSnack('読み込み中...');
   try {
@@ -1079,7 +1109,8 @@ async function loadRes(){
       req  : f.RequesterName || '', reqMail: f.RequesterEmail || '',
       notes: f.Notes || '',
       st   : f.LoanStatus || '予約',
-      token: f.LockToken || ''
+      token: f.LockToken || '',
+      setId: f.BookingSetId || ''
     };
   }).filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e));
 }
@@ -1252,6 +1283,7 @@ async function runSeek(){
   const r = parseSeek();
   if (!r) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
   SEEK = r;
+  SEEK_FROM_GRID = false;   /* 明示的な検索なので、キャンセル時に自動で消さない */
   curWeek = weekTopMs(r.s);
   await loadRes(); lastLoad = Date.now();
   render(); paintSeek(); paintUpdated(); writeUrl();
@@ -1371,19 +1403,44 @@ document.getElementById('today').onclick = () => goWeek(weekTopMs(Date.now()));
   document.getElementById(id).onchange = () => { render(); paintSeek(); writeUrl(); });
 document.getElementById('q').oninput = () => { render(); paintSeek(); writeUrl(); };
 
+/* 空きグリッドのクリックは、単発専用のフォームを別に持たず「まとめて予約」
+   (mBulk)を1台選択済みの状態で直接開く。導線は「空き検索→まとめて予約」の
+   1本に統一し、クリックした機体・日付をその場で選択済みにするだけにする。 */
 document.getElementById('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i');
   if (bar) { openDetail(bar.dataset.r); return; }
   const bg = ev.target.closest('.bg');
-  if (bg && !bg.classList.contains('blocked')) openNew(Number(bg.dataset.m), Number(bg.dataset.d));
+  if (!bg || bg.classList.contains('blocked')) return;
+  /* クリックした日は、いま画面に描画されている＝既に読み込み済みの範囲内
+     なので、ここで読み直す必要はない（runSeek()と違い任意の日付に飛ぶ
+     わけではないため）。SEEKを直接セットしてそのままモーダルへ進む。
+     ★空き検索の結果パネル(paintSeek)は出さない★ クリック1回のつもりの人に
+     37台ぶんの一覧が急に表示されるのは唐突なので、ここでは呼ばない。
+     モーダルをキャンセルしたときは SEEK_FROM_GRID を見て自動的に消す
+     (下の MutationObserver 参照)。 */
+  const mid = Number(bg.dataset.m), dayMs = Number(bg.dataset.d);
+  SEEK = { s: dayMs + 9*3600e3, e: dayMs + 17*3600e3, allDay: false };   /* 既定 09:00〜17:00 JST */
+  SEEK_SEL = new Set([mid]);
+  SEEK_FROM_GRID = true;
+  render(); paintUpdated(); writeUrl();
+  openBulkNew();
 });
 
 function openDetail(rid){
   const r = RES.find(x => x.rid === rid); if (!r) return;
+  /* BookingSetIdが使える環境では常にセット表示にする（1台だけの予約も
+     要素数1のセットとして同じ画面で見せる。特別扱いしない）。
+     列がまだ無い/移行前で setId が空の行だけ、従来の単発詳細にフォールバックする。 */
+  if (CAP.setId && r.setId) { openSetView(r.setId); return; }
+  renderSingleDetail(rid);
+}
+
+function renderSingleDetail(rid){
+  const r = RES.find(x => x.rid === rid); if (!r) return;
   const m = MACHINES.find(x => x.id === r.mid);
   const st = calcStatus(r, Date.now());
   document.getElementById('dTitle').textContent = r.t;
-  document.getElementById('dBody').innerHTML = [
+  document.getElementById('dBody').innerHTML = '<dl>' + [
     ['デモ機',   `${esc(m ? m.n : '#'+r.mid)} <span class="badge b-id">#${r.mid}</span>`],
     ['区分',     esc(m ? m.cat : '—')],
     ['予約期間', `${jFull(r.s)} 〜 ${jFull(r.e)}${isAllDay(r) ? '（終日）' : ''}`],
@@ -1392,7 +1449,7 @@ function openDetail(rid){
     ['行き先',   esc(r.dest) || '—'],
     ['依頼者',   r.req ? `${esc(r.req)}${r.reqMail ? `<span style="color:var(--muted);font-size:11px"> ${esc(r.reqMail)}</span>` : ''}` : '—'],
     ['備考',     esc(r.notes) || '—']
-  ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>';
   document.getElementById('dMsg').textContent = r._dup ? '⚠ 同じ機体で期間が重なっている予約があります' : '';
   document.getElementById('dMsg').className = 'msg' + (r._dup ? ' ng' : '');
 
@@ -1412,14 +1469,212 @@ function openDetail(rid){
 }
 
 /* ============================================================
-   取消
+   セット予約の詳細（同じ BookingSetId の行を1つの予約としてまとめて見る）
+   ------------------------------------------------------------
+   「まとめて予約」で作った複数機体はもちろん、1台だけの予約も要素数1の
+   セットとして同じ画面で扱う。ここから機体の追加・削除・複製ができる。
+   ============================================================ */
+let CURRENT_SET_ID = null;
+let ADD_SEL = new Set();      /* このセットに追加する機体の一時選択 */
+let ADD_CAT_FILTER = '';      /* 追加候補を所有先（区分）で絞り込む */
+
+function setMembers(setId){
+  return RES.filter(x => x.setId === setId && x.st !== '取消').sort((a,b) => a.mid - b.mid);
+}
+
+function openSetView(setId){
+  CURRENT_SET_ID = setId;
+  ADD_SEL = new Set();
+  ADD_CAT_FILTER = '';
+  document.getElementById('dCancel').style.display = 'none';  /* 単発の取消ボタンはこの画面では使わない（機体ごとの✕で外す） */
+  renderSetView();
+  openM('mDetail');
+}
+
+function renderSetView(){
+  const setId = CURRENT_SET_ID;
+  const members = setMembers(setId);
+  if (!members.length) { closeM('mDetail'); return; }   /* 全機体を外し終えたら閉じる */
+  const rep = members[0];   /* 件名・期間・顧客名などの代表値（同じセット内では同じはずの項目） */
+
+  document.getElementById('dTitle').textContent = rep.t;
+  document.getElementById('dMsg').textContent = '';
+  document.getElementById('dMsg').className = 'msg';
+  document.getElementById('dCancel').style.display = 'none';
+
+  /* 単発の詳細画面(cancelTarget)と同じ条件：終了済みの予約は外せない
+     （終わった予約を消せると、実際に貸し出した記録が消えてしまうため）。 */
+  const removableCount = members.filter(r => r.e > Date.now() && CAP.lock).length;
+  const memberRows = members.map(r => {
+    const m = MACHINES.find(x => x.id === r.mid);
+    const canRemove = r.e > Date.now() && CAP.lock;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span style="flex:1">${esc(m ? m.n : '#'+r.mid)}</span>
+      <span style="color:var(--muted);font-size:11px">${calcStatus(r, Date.now())}</span>
+      ${canRemove
+        ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="removeSetMember('${r.rid}')">✕ 外す</button>`
+        : `<span style="color:var(--muted);font-size:11px">終了済み</span>`}
+    </div>`;
+  }).join('');
+
+  /* 追加候補：予約対象になっていて、まだこのセットに入っておらず、この期間に空いている機体 */
+  const allCandidates = MACHINES.filter(m => m.resv && !m.ng && !m.part
+    && !members.some(x => x.mid === m.id)
+    && !RES.some(x => x.st !== '取消' && x.mid === m.id && overlaps(x, rep.s, rep.e)));
+  const cats = [...new Set(allCandidates.map(m => m.cat))].sort();
+  if (ADD_CAT_FILTER && !cats.includes(ADD_CAT_FILTER)) ADD_CAT_FILTER = '';
+  const candidates = ADD_CAT_FILTER ? allCandidates.filter(m => m.cat === ADD_CAT_FILTER) : allCandidates;
+
+  document.getElementById('dBody').innerHTML = `
+    <dl>
+      <dt>予約期間</dt><dd>${jFull(rep.s)} 〜 ${jFull(rep.e)}${isAllDay(rep) ? '（終日）' : ''}</dd>
+      <dt>顧客名</dt><dd>${esc(rep.cust) || '—'}</dd>
+      <dt>行き先</dt><dd>${esc(rep.dest) || '—'}</dd>
+      <dt>依頼者</dt><dd>${rep.req ? esc(rep.req) : '—'}</dd>
+      <dt>備考</dt><dd>${esc(rep.notes) || '—'}</dd>
+    </dl>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+      <b>機体（${members.length}台）</b>
+      ${removableCount
+        ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="cancelWholeSet()">この予約を丸ごと取消す</button>`
+        : ''}
+    </div>
+    <div>${memberRows}</div>
+    <div id="setAddBar" style="position:sticky;top:0;background:#fff;z-index:2;margin-top:10px;
+        padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+        display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <b style="margin-right:2px">機体を追加</b>
+      <select id="setAddCat" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px">
+        <option value="">所有先: すべて</option>
+        ${cats.map(c => `<option value="${esc(c)}"${c === ADD_CAT_FILTER ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      </select>
+      <button class="act pri" id="setAddGo" ${ADD_SEL.size ? '' : 'disabled'} onclick="doAddToSet()">追加する（${ADD_SEL.size}）</button>
+      <button class="act" onclick="startDuplicateSet()">複製…</button>
+    </div>
+    <div id="setAddChips" style="max-height:170px;overflow-y:auto;display:flex;flex-wrap:wrap;
+        gap:5px;padding:6px 0 2px">
+      ${candidates.length
+        ? candidates.map(m => `<span class="chip${ADD_SEL.has(m.id) ? ' on' : ''}" data-mid="${m.id}">${esc(m.n)}</span>`).join('')
+        : `<span style="color:var(--muted);font-size:12px">この期間に空いている機体はありません</span>`}
+    </div>
+  `;
+  document.getElementById('setAddCat').onchange = (e) => { ADD_CAT_FILTER = e.target.value; renderSetView(); };
+  document.getElementById('dBody').querySelectorAll('#setAddChips .chip').forEach(c => {
+    c.onclick = () => {
+      const id = Number(c.dataset.mid);
+      if (ADD_SEL.has(id)) ADD_SEL.delete(id); else ADD_SEL.add(id);
+      renderSetView();
+    };
+  });
+}
+
+async function removeSetMember(rid){
+  const r = RES.find(x => x.rid === rid); if (!r) return;
+  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は外せません'); return; }
+  const m = MACHINES.find(x => x.id === r.mid);
+  const who = r.req ? `${r.req} さん` : '（依頼者不明）';
+  if (!confirm(`このセットから機体を外します。\n\n　デモ機：${m ? m.n : '#'+r.mid}\n　件名　：${r.t}\n　依頼者：${who}\n\n外すと枠が空き、他の人が予約できるようになります。`)) return;
+  const res = await cancelReservationRow(rid);
+  if (!res.ok) { showSnack('外せませんでした：' + res.message); return; }
+  await loadRes(); render(); paintSeek();
+  renderSetView();
+  showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
+}
+
+/* 「間違えて10台設定したがまとめてキャンセルしたい」向け。外せる機体を
+   1件ずつ removeSetMember と同じ処理(cancelReservationRow)にかけるだけで、
+   確認は最初の1回にまとめる。終了済みの機体は対象外（従来通り外せない）。 */
+async function cancelWholeSet(){
+  const setId = CURRENT_SET_ID;
+  const members = setMembers(setId).filter(r => r.e > Date.now() && CAP.lock);
+  if (!members.length) return;
+  const rep = members[0];
+  if (!confirm(`このセットの予約をすべて取消します。\n\n　件名　：${rep.t}\n　期間　：${jFull(rep.s)} 〜 ${jFull(rep.e)}\n　機体数：${members.length}台\n\n取消すと全ての枠が空き、他の人が予約できるようになります。`)) return;
+
+  showSnack(`取消中... (0/${members.length})`);
+  let ok = 0, ng = 0;
+  for (let i = 0; i < members.length; i++){
+    showSnack(`取消中... (${i}/${members.length})`);
+    const res = await cancelReservationRow(members[i].rid);
+    if (res.ok) ok++; else ng++;
+  }
+  await loadRes(); render(); paintSeek();
+  renderSetView();
+  showSnack(`${ok}台を取消しました` + (ng ? ` / 失敗 ${ng}件` : ''));
+}
+
+async function doAddToSet(){
+  const setId = CURRENT_SET_ID;
+  const members = setMembers(setId);
+  const rep = members[0]; if (!rep) return;
+  const targets = [...ADD_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  if (!targets.length) return;
+  const details = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
+  let ok = 0;
+  for (const m of targets) {
+    const r = await reserve({ machine:m, s:rep.s, e:rep.e, setId, details });
+    if (r.ok) ok++;
+    else showSnack(`${m.n} の追加に失敗しました（${r.reason||''}）`);
+  }
+  ADD_SEL = new Set();
+  await loadRes(); render(); paintSeek();
+  renderSetView();
+  if (ok) showSnack(`${ok}台を追加しました`);
+}
+
+/* このセットと同じ機体構成・同じ件名/顧客名/行き先/備考を引き継いで、
+   別の期間でもう一度まとめて予約する。日付は空き検索から選び直してもらう
+   （その期間に本当に空いているかを確認させたいので、日付は複製しない）。 */
+function startDuplicateSet(){
+  const members = setMembers(CURRENT_SET_ID);
+  const rep = members[0]; if (!rep) return;
+  DUPE_TEMPLATE = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
+  SEEK_SEL = new Set(members.map(x => x.mid));
+  SEEK_FROM_GRID = false;   /* この先は明示的に空き検索フォームで期間を選んでもらう */
+  closeM('mDetail');
+  showSnack('複製先の期間を指定して「この区間で押さえられる機体」を押してください（機体は選択済みです）');
+  const el = document.getElementById('sFrom');
+  if (el) el.scrollIntoView({ block:'center', behavior:'smooth' });
+}
+
+/* ============================================================
+   取消（1行）
    ★順番を変えてはいけない★
      1. 履歴を『取消』にする
      2. そのあと占有情報から外す
    逆にすると、占有が空いた瞬間から履歴が取消になるまでの間に
    別の人が同じ枠を取れてしまい、二重予約が成立する。
    （reserve.mjs の cancel() と同じ順序。test.mjs のケース5で検証済み）
-   ============================================================ */
+   単発の詳細画面（doCancel）とセット詳細の「✕ 外す」（removeSetMember）の
+   両方から使う共通処理。 */
+async function cancelReservationRow(rid){
+  const r = RES.find(x => x.rid === rid); if (!r) return { ok:false, message:'対象が見つかりません' };
+  const m = MACHINES.find(x => x.id === r.mid);
+  try {
+    const fields = { LoanStatus: '取消' };
+    if (CAP.cancel) {
+      fields.CancelledByEmail = currentAccount?.username || '';
+      fields.CancelledByName  = currentAccount?.name || currentAccount?.username || '';
+      fields.CancelledAt      = new Date().toISOString();
+    }
+    const pr = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${rid}/fields`, fields, null);
+    if (pr.status !== 200) return { ok:false, message:`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）` };
+
+    /* トークンが無い予約（古い行）は期間の一致で外す。
+       重なる予約は作れない仕組みなので、同じ機体で同じ期間は1件しかない。 */
+    let freed = true;
+    if (m) {
+      const now = Date.now();
+      freed = r.token
+        ? await release(m, r.token, now)
+        : await releaseBy(m, x => x.s === r.s && x.e === r.e, now);
+    }
+    return { ok:true, freed };
+  } catch (err) {
+    return { ok:false, message: err.message };
+  }
+}
+
 let cancelTarget = null;
 
 async function doCancel(){
@@ -1446,160 +1701,32 @@ async function doCancel(){
 
   btn.disabled = true; btn.textContent = '取消中...';
   msg.textContent = '取消しています...'; msg.className = 'msg';
-  try {
-    /* 1. 履歴を先に取消 */
-    const fields = { LoanStatus: '取消' };
-    if (CAP.cancel) {
-      fields.CancelledByEmail = currentAccount?.username || '';
-      fields.CancelledByName  = currentAccount?.name || currentAccount?.username || '';
-      fields.CancelledAt      = new Date().toISOString();
-    }
-    const pr = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${rid}/fields`, fields, null);
-    if (pr.status !== 200) throw new Error(`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）`);
-
-    /* 2. そのあと占有情報から外す。
-          トークンが無い予約（古い行）は期間の一致で外す。
-          重なる予約は作れない仕組みなので、同じ機体で同じ期間は1件しかない。 */
-    let freed = true;
-    if (m) {
-      const now = Date.now();
-      freed = r.token
-        ? await release(m, r.token, now)
-        : await releaseBy(m, x => x.s === r.s && x.e === r.e, now);
-    }
-
-    closeM('mDetail');
-    await loadRes(); render(); paintSeek();
-    showSnack(freed
-      ? '予約を取消しました'
-      : '予約は取消しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
-  } catch (err) {
-    msg.textContent = '取消できませんでした：' + err.message;
+  const res = await cancelReservationRow(rid);
+  if (!res.ok) {
+    msg.textContent = '取消できませんでした：' + res.message;
     msg.className = 'msg ng';
     btn.disabled = false; btn.textContent = 'この予約を取消す';
+    return;
   }
+  closeM('mDetail');
+  await loadRes(); render(); paintSeek();
+  showSnack(res.freed
+    ? '予約を取消しました'
+    : '予約は取消しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
 }
 
 /* ============================================================
-   終日予約
-   ★終わりは「終了日の翌日 0:00」にする★
-     この画面の重なり判定は半開区間 [開始, 終了) なので、
-     9/1 終日 = 9/1 00:00 〜 9/2 00:00 とすれば
-     9/2 終日（9/2 00:00 〜）と隣接して重ならない。
-     23:59 にすると1分の隙間が空き、半開区間の考え方と揃わなくなる。
-   isAllDay() は 0:00→0:00 を終日と判定するので、帯には「終日」と出る。
-   ============================================================ */
-function allDayOn(){ return document.getElementById('nAllDay').checked; }
-
-/* 入力欄から予約期間（ms）を取り出す。終日かどうかで読む欄が変わる */
-function newRangeMs(){
-  if (allDayOn()) {
-    const a = dateToMs(document.getElementById('nStartD').value);
-    const b = dateToMs(document.getElementById('nEndD').value);
-    return { s:a, e: isNaN(b) ? NaN : b + DAY };     /* 終了日も含める＝翌日0:00まで */
-  }
-  return { s: localToMs(document.getElementById('nStart').value),
-           e: localToMs(document.getElementById('nEnd').value) };
-}
-
-/* チェックの切り替え。値を捨てずに引き継ぐ */
-function paintAllDay(){
-  const on = allDayOn();
-  document.getElementById('nTimeRow').style.display = on ? 'none' : '';
-  document.getElementById('nDateRow').style.display = on ? '' : 'none';
-  if (on) {
-    /* 時刻つき → 日付だけ。終了は「その日を含む」なので、
-       ちょうど 0:00 で終わる予約は前日が最終日になる。1日ずれを防ぐ。 */
-    const s = localToMs(document.getElementById('nStart').value);
-    const e = localToMs(document.getElementById('nEnd').value);
-    if (!isNaN(s)) document.getElementById('nStartD').value = msToDate(s);
-    if (!isNaN(e)) {
-      const d = toJ(e);
-      const atMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
-      document.getElementById('nEndD').value = msToDate(atMidnight ? e - DAY : e);
-    }
-  } else {
-    /* 日付だけ → 時刻つき。既定の 9:00〜17:00 を入れる */
-    const a = dateToMs(document.getElementById('nStartD').value);
-    const b = dateToMs(document.getElementById('nEndD').value);
-    if (!isNaN(a)) document.getElementById('nStart').value = msToLocal(a + 9*3600e3);
-    if (!isNaN(b)) document.getElementById('nEnd').value   = msToLocal(b + 17*3600e3);
-  }
-  paintExisting();
-}
-
-let newMid = 0;
-function openNew(mid, dayMs, range){
-  const m = MACHINES.find(x => x.id === mid); if (!m) return;
-  newMid = mid;
-  document.getElementById('nMachine').value = `${m.n}  #${m.id}`;
-  if (range) {
-    document.getElementById('nStart').value = msToLocal(range.s);
-    document.getElementById('nEnd').value   = msToLocal(range.e);
-  } else {
-    document.getElementById('nStart').value = msToLocal(dayMs + 9*3600e3);   /* 既定 09:00 JST */
-    document.getElementById('nEnd').value   = msToLocal(dayMs + 17*3600e3);  /* 既定 17:00 JST */
-  }
-  /* ★モーダルは使い回すので、終日チェックは毎回外す★
-     前回終日で予約した人が、次に時間指定したいのにチェックが残っていると
-     気づかず1日まるごと押さえてしまう。 */
-  document.getElementById('nAllDay').checked = false;
-  document.getElementById('nStartD').value = msToDate(range ? range.s : dayMs);
-  document.getElementById('nEndD').value   = msToDate(range ? Math.max(range.s, range.e - DAY) : dayMs);
-  paintAllDay();
-  ['nTitle','nCust','nDest','nNotes'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('nReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
-  document.getElementById('nMsg').textContent = ''; document.getElementById('nMsg').className = 'msg';
-  document.getElementById('nSave').disabled = !CAP.lock;
-  document.getElementById('nNote').innerHTML = CAP.lock
-    ? `保存時に <code>${LOCK_COL}</code> を ETag 付きで書き換えて枠を確保します。同時に他の方が同じ枠を取っていた場合、後から押した側は保存されずここにエラーが出ます。`
-    : `<b style="color:var(--danger)">マスターに <code>${LOCK_COL}</code> 列が無いため予約登録は無効です。</b>複数行テキスト（プレーン・バージョン管理OFF）で追加してください。`;
-  paintExisting();
-  openM('mNew');
-}
-
-/* その機体の既存予約を出して、入力中の区間と重なるものを赤くする。
-   CASは最後の砦で、本来は保存する前に空いている時間が見えているべき。 */
-function paintExisting(){
-  const box = document.getElementById('ex-list'); if (!box) return;
-  /* ★入力欄を直接読んではいけない★ 終日のときは日付欄が正で、
-     時刻欄には古い値が残っている。newRangeMs() に集約する。 */
-  const { s, e } = newRangeMs();
-  const base = isNaN(s) ? Date.now() : s;
-  const rs = RES.filter(r => r.mid === newMid && r.st !== '取消'
-                          && r.e > base - 30*DAY && r.s < base + 30*DAY)
-                .sort((a,b) => a.s - b.s);
-  if (!rs.length) { box.innerHTML = `<div style="color:var(--muted)">この期間に予約はありません</div>`; return; }
-  let hit = 0;
-  box.innerHTML = rs.map(r => {
-    const bad = !isNaN(s) && !isNaN(e) && e > s && overlaps(r, s, e);
-    if (bad) hit++;
-    return `<div class="${bad ? 'hit' : ''}"><span class="tm">${jFull(r.s)} 〜 ${jFull(r.e)}</span>`
-         + `<span>${esc(r.t)}${r.req ? '（' + esc(r.req) + '）' : ''}</span>`
-         + (bad ? `<span style="margin-left:auto">重なり</span>` : '') + `</div>`;
-  }).join('');
-  const msg = document.getElementById('nMsg'), save = document.getElementById('nSave');
-  if (hit) {
-    msg.textContent = `入力中の期間は既存の予約 ${hit}件と重なっています`; msg.className = 'msg ng';
-    save.disabled = true;
-  } else {
-    msg.textContent = ''; msg.className = 'msg';
-    save.disabled = !CAP.lock;
-  }
-}
-['nStart','nEnd','nStartD','nEndD'].forEach(id =>
-  document.getElementById(id).addEventListener('input', paintExisting));
-document.getElementById('nAllDay').addEventListener('change', paintAllDay);
-
 /* ---------- CAS 本体 ---------- */
 const parseOcc = s => (s||'').split('\n').map(l=>l.trim()).filter(Boolean)
   .map(l => { const [token,a,b] = l.split('|'); return { token, s:P(a), e:P(b) }; });
 const dumpOcc  = a => a.map(x => `${x.token}|${new Date(x.s).toISOString()}|${new Date(x.e).toISOString()}`).join('\n');
 const prune    = (a, now) => a.filter(x => x.e >= now - DAY);
 const newToken = () => Math.random().toString(36).slice(2,8) + Date.now().toString(36).slice(-4);
+/* 1件だけの予約も「1台のセット」として扱うので、単発予約でも必ず発行する */
+const newSetId = () => (crypto?.randomUUID?.() || (Date.now().toString(36) + Math.random().toString(36).slice(2,10)));
 const sleep    = ms => new Promise(r => setTimeout(r, ms));
 
-async function reserve({ machine, s, e, details }){
+async function reserve({ machine, s, e, details, setId }){
   const now = Date.now();
   for (let n = 1; n <= 4; n++){
     /* 1. 占有情報とETagを同時に取得 */
@@ -1635,6 +1762,7 @@ async function reserve({ machine, s, e, details }){
       /* 列が無いリストに送ると 400 invalidRequest になるので、あるものだけ送る */
       if (CAP.token) fields.LockToken = token;
       if (CAP.mid)   fields.MachineItemId = Number(machine.itemId);
+      if (CAP.setId && setId) fields.BookingSetId = setId;
       const row = await gPost(`/sites/${SITE_ID}/lists/${LIST_HIST}/items`, { fields });
       return { ok:true, id:row.id, token, attempts:n };
     } catch (err) {
@@ -1664,44 +1792,6 @@ async function release(machine, token, now){
   return releaseBy(machine, x => x.token === token, now);
 }
 
-async function doReserve(){
-  const msg = document.getElementById('nMsg'), btn = document.getElementById('nSave');
-  const m = MACHINES.find(x => x.id === newMid);
-  const title = document.getElementById('nTitle').value.trim();
-  const { s, e } = newRangeMs();
-  const allDay = allDayOn();
-  const fail = t => { msg.textContent = t; msg.className = 'msg ng'; };
-
-  if (!m) return fail('デモ機が特定できません');
-  if (!title) return fail('予約件名を入力してください');
-  if (isNaN(s) || isNaN(e))
-    return fail(allDay ? '開始日と終了日を入力してください' : '開始と終了を入力してください');
-  if (e <= s)
-    return fail(allDay ? '終了日は開始日と同じか、それより後にしてください'
-                       : '終了が開始より後になるようにしてください');
-
-  btn.disabled = true; msg.textContent = '枠を確保中...'; msg.className = 'msg';
-  try {
-    const r = await reserve({ machine:m, s, e, details:{
-      title, cust: document.getElementById('nCust').value.trim(),
-      dest:  document.getElementById('nDest').value.trim(),
-      notes: document.getElementById('nNotes').value.trim() }});
-
-    if (r.ok){
-      msg.textContent = '予約しました'; msg.className = 'msg ok';
-      closeM('mNew'); await loadRes(); render();
-      showSnack(`予約を登録しました（試行 ${r.attempts}回目）`);
-      return;
-    }
-    if (r.reason === 'CONFLICT')
-      fail(`この枠は既に予約されています（${jFull(r.conflict.s)} 〜 ${jFull(r.conflict.e)}）`);
-    else if (r.reason === 'BUSY')     fail('他の方が同じ機体を操作中です。少し待って再度お試しください');
-    else if (r.reason === 'SAVE_FAILED') fail('枠は確保しましたが履歴の保存に失敗しました: ' + (r.message||''));
-    else fail(`保存できませんでした（${r.reason} ${r.status||''}）`);
-  } catch (err) { fail('エラー: ' + err.message); }
-  finally { btn.disabled = false; await loadRes(); render(); }
-}
-
 /* ============================================================
    まとめて予約
    ------------------------------------------------------------
@@ -1710,13 +1800,26 @@ async function doReserve(){
    個別に失敗しうる。★機体ごとに1件ずつ順番に予約する★
    同時に投げると同じマスター行の ETag 競合（412）が増えて再試行が増える
    だけなので、直列に回す方が実際には速くて確実。 */
+/* 「複製」から来たときだけ、件名・顧客名・行き先・備考のひな形を
+   まとめて予約モーダルに引き継ぐ（機体構成と期間はそのつど選び直す）。
+   一度使ったら消す（次に素の「まとめて予約」を開いたときに残らないように）。 */
+let DUPE_TEMPLATE = null;
+
 function openBulkNew(){
   if (!SEEK || !SEEK_SEL.size) return;
   const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
   document.getElementById('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}`;
   document.getElementById('bMachinesLabel').textContent = `機体（${list.length}台）`;
   document.getElementById('bMachines').innerHTML = list.map(m => `<span class="chip">${esc(m.n)}</span>`).join('');
-  ['bTitle','bCust','bDest','bNotes'].forEach(id => document.getElementById(id).value = '');
+  if (DUPE_TEMPLATE) {
+    document.getElementById('bTitle').value = DUPE_TEMPLATE.title;
+    document.getElementById('bCust').value  = DUPE_TEMPLATE.cust;
+    document.getElementById('bDest').value  = DUPE_TEMPLATE.dest;
+    document.getElementById('bNotes').value = DUPE_TEMPLATE.notes;
+    DUPE_TEMPLATE = null;
+  } else {
+    ['bTitle','bCust','bDest','bNotes'].forEach(id => document.getElementById(id).value = '');
+  }
   document.getElementById('bReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   document.getElementById('bMsg').textContent = ''; document.getElementById('bMsg').className = 'msg';
   document.getElementById('b-result').innerHTML = '';
@@ -1726,6 +1829,19 @@ function openBulkNew(){
     : `<b style="color:var(--danger)">マスターに ${LOCK_COL} 列が無いため予約登録は無効です。</b>`;
   openM('mBulk');
 }
+
+/* グリッドの空きセルクリックから開いたとき（SEEK_FROM_GRID）だけ、
+   このモーダルが閉じたタイミング(キャンセル・背景クリック・ESC・保存後の
+   自動クローズ、どれでも)でSEEKを消して、グリッド上のハイライトも消す。
+   明示的に空き検索を使った場合(SEEK_FROM_GRID=false)はそのまま残す。 */
+new MutationObserver(() => {
+  if (!document.getElementById('mBulk').classList.contains('on') && SEEK_FROM_GRID) {
+    SEEK_FROM_GRID = false;
+    SEEK = null; SEEK_SEL = new Set();
+    render(); paintSeek();
+  }
+}).observe(document.getElementById('mBulk'), { attributes: true, attributeFilter: ['class'] });
+
 async function doReserveBulk(){
   const msg = document.getElementById('bMsg'), btn = document.getElementById('bSave');
   const resultBox = document.getElementById('b-result');
@@ -1738,6 +1854,9 @@ async function doReserveBulk(){
     dest: document.getElementById('bDest').value.trim(),
     notes: document.getElementById('bNotes').value.trim()
   };
+  /* まとめて予約した機体は同じセットIDを共有する。あとで一覧から
+     追加・削除できるようにするための束ねキー（複製のときは新しいIDになる）。 */
+  const setId = newSetId();
   const targets = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
   btn.disabled = true; msg.textContent = `予約中... (0/${targets.length})`; msg.className = 'msg';
   resultBox.innerHTML = '';
@@ -1748,7 +1867,7 @@ async function doReserveBulk(){
     msg.textContent = `予約中... (${i}/${targets.length}) ${m.n}`;
     let line;
     try {
-      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, details });
+      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, setId, details });
       if (r.ok) {
         ok++; SEEK_SEL.delete(m.id);
         line = `<span style="color:var(--success)">✓ ${esc(m.n)}</span>`;
