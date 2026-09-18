@@ -6,7 +6,8 @@
 .DESCRIPTION
   SharedMasters (このPCにOneDrive同期されているフォルダ) に
   _regenerate_request.json が現れたら、
-    ① 既存のSMILE受注/売上明細出力処理を実行 (Invoke-SmileExport / 要設定)
+    ① 既存のSMILE受注/売上明細出力処理を実行 (Invoke-SmileExport /
+       環境変数 SMILE_EXPORT_COMMAND の実行コマンドをこのPCで設定しておくこと)
     ② GitHubから最新の regenerate_facts.py を取得して実行
     ③ 合図ファイルを削除
   の順に行う。5分おきの定期チェックではなく、OSのファイル変更通知
@@ -21,14 +22,17 @@
 
   1. $SharedMastersPath が実際の同期パスと合っているか確認する。
 
-  2. Invoke-SmileExport の中身を、今すでにタスクスケジューラーで
-     16:00に動いている既存のSMILE出力処理の呼び出し方法に置き換える。
-     (Power Automate Desktopのフロー名？ 既存のバッチファイル？
-      それが分かれば、ここを一緒に埋めます)
+  2. 環境変数 SMILE_EXPORT_COMMAND に、SMILE受注/売上明細出力を実行する
+     コマンドをこのPCのユーザー環境変数として設定しておく
+     (システムのプロパティ → 環境変数、または setx コマンド)。
+     例1: setx SMILE_EXPORT_COMMAND "C:\Program Files (x86)\Power Automate Desktop\PAD.Console.Host.exe -run \"フロー名\""
+     例2: setx SMILE_EXPORT_COMMAND "C:\path\to\smile_export.bat"
+     このスクリプト自体はGitHub Pagesで配信されるリポジトリの一部として
+     複数PC・複数環境で使われうるため、特定のPCでしか通用しないパスを
+     スクリプトに直接書き込まない。PCごとに違う値を環境変数側で持たせる。
 
   3. 環境変数 AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET を
-     このPCのユーザー環境変数として設定しておく
-     (システムのプロパティ → 環境変数、または setx コマンド)。
+     同じくこのPCのユーザー環境変数として設定しておく。
      GitHub Actionsのsecretsと同じ値でも動くが、このPC用に権限を
      絞った別のアプリ登録を発行するほうが安全。
 
@@ -54,13 +58,15 @@ function Write-Log {
 
 function Invoke-SmileExport {
   Write-Log 'SMILE出力を開始します'
-  # TODO: 既存のSMILE受注/売上明細出力処理をここで呼び出す。
-  # 例1: 既存のPower Automate Desktopフローをコンソールから起動する場合
-  #      & "C:\Program Files (x86)\Power Automate Desktop\PAD.Console.Host.exe" -run "フロー名"
-  # 例2: 既存のバッチ/スクリプトを直接呼ぶ場合
-  #      & "C:\path\to\smile_export.bat"
-  #      if ($LASTEXITCODE -ne 0) { throw "SMILE出力が失敗しました(終了コード $LASTEXITCODE)" }
-  throw 'Invoke-SmileExport が未実装です。既存のSMILE出力処理の呼び出し方法に置き換えてください。'
+  $cmd = $env:SMILE_EXPORT_COMMAND
+  if ([string]::IsNullOrWhiteSpace($cmd)) {
+    throw '環境変数 SMILE_EXPORT_COMMAND が設定されていません(このPCでのSMILE出力の実行コマンドを設定してください)'
+  }
+  # PAD起動・バッチファイルどちらでもそのままコマンドラインとして実行できるよう、
+  # cmd.exe 経由で呼び出す(引用符付きパス・引数もこの形なら書き換え不要)。
+  & cmd.exe /c $cmd
+  if ($LASTEXITCODE -ne 0) { throw "SMILE出力が終了コード $LASTEXITCODE で失敗しました" }
+  Write-Log 'SMILE出力が完了しました'
 }
 
 function Invoke-RegenerateFacts {
