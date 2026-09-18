@@ -442,6 +442,7 @@
         表示日:
         <input type="date" id="asOfInput">
       </label>
+      <button type="button" id="regenerateBtn" class="settings-btn" onclick="requestRegenerate()" hidden>🔄 再集計をリクエスト</button>
       <button id="signInBtn" class="signin-btn" hidden>Microsoftでサインイン</button>
     </div>
   </div>
@@ -632,7 +633,9 @@ const MSAL_CONFIG = {
   },
   cache: { cacheLocation: 'localStorage' }
 };
-const SCOPES = ['User.Read', 'Sites.Read.All', 'Sites.Manage.All', 'Files.Read.All'];
+// Files.ReadWrite.All: 再集計リクエストの合図ファイルをSharedMastersへ
+// アップロードするために書き込み権限が必要(以前はFiles.Read.Allのみだった)。
+const SCOPES = ['User.Read', 'Sites.Read.All', 'Sites.Manage.All', 'Files.ReadWrite.All'];
 
 const SP = {
   mastersDriveId: 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',
@@ -2191,6 +2194,35 @@ function checkIsAdmin() {
   return ADMIN_EMAILS.some(e => e.toLowerCase() === email);
 }
 
+// 「再集計をリクエスト」ボタン: SharedMastersに合図ファイルを1つアップロードする
+// だけで、実際の処理(SMILE再出力→regenerate_facts.py)はしない。SharedMasters
+// はPC側にOneDrive同期されているので、PC側で常駐させた監視スクリプトが
+// このファイルの出現を検知して一連の処理を実行する想定(締め担当者向け業務
+// フローのPC側実装は別途)。
+const REGENERATE_REQUEST_FILE = '_regenerate_request.json';
+
+async function requestRegenerate() {
+  const btn = document.getElementById('regenerateBtn');
+  if (!confirm('SMILEの最新データで日報を再集計します。よろしいですか？（反映まで数分かかります）')) return;
+  const originalLabel = btn.textContent;
+  try {
+    btn.disabled = true;
+    btn.textContent = '送信中…';
+    await graphFetch(
+      `/drives/${SP.mastersDriveId}/root:/${REGENERATE_REQUEST_FILE}:/content`,
+      'PUT',
+      { requestedBy: (account && account.username) || '', requestedAt: new Date().toISOString() }
+    );
+    alert('再集計をリクエストしました。数分後にこのページを再読み込みしてください。');
+  } catch (e) {
+    console.error('[再集計リクエスト] 失敗', e);
+    alert('リクエストに失敗しました。時間をおいて再度お試しください。');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
 // リストが存在しなければ作成する(表示名でGETして404系なら作成)。
 // SharePointは日本語の列名で列を作ると、表示名とは別に内部名(書き込みに
 // 実際に使う名前)を自動生成し、それが表示名と一致しない場合がある
@@ -2575,6 +2607,8 @@ async function loadReport() {
     IS_ADMIN = checkIsAdmin();
     const settingsBtn = document.getElementById('newProductSettingsBtn');
     if (settingsBtn) settingsBtn.hidden = !IS_ADMIN;
+    const regenerateBtn = document.getElementById('regenerateBtn');
+    if (regenerateBtn) regenerateBtn.hidden = !IS_ADMIN;
     await ensureNewProductList();
     await loadNewProductItems();
     if (IS_ADMIN) renderNewProductAdminPanel();
