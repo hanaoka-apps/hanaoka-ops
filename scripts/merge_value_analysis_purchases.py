@@ -190,7 +190,12 @@ def merge(source: Path, destination: Path) -> int:
         print(f"[WARN] {error}。既存の仕入値は変更しません")
         return 0
 
+    finalized_months = set(output.get("finalized_months", []))
+    skipped_finalized_months = 0
     for ym, purchase in totals.items():
+        if ym in finalized_months:
+            skipped_finalized_months += 1
+            continue
         month = output.setdefault("monthly", {}).setdefault(
             ym,
             {"zones": {zone: blank_summary() for zone in ZONES}, "total": blank_summary()},
@@ -208,12 +213,17 @@ def merge(source: Path, destination: Path) -> int:
     output.setdefault("meta", {}).update({
         "daily_purchase_source": source.name,
         "daily_purchase_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
-        "daily_purchase_import": {"status": "ok", **stats},
+        "daily_purchase_import": {
+            "status": "ok",
+            **stats,
+            "skipped_finalized_months": skipped_finalized_months,
+        },
     })
     destination.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(
         f"[OK] 仕入を反映: {len(totals)}か月 / 採用{stats['included_rows']}行 / "
-        f"仕入以外を除外{stats['excluded_non_purchase_rows']}行 / 工場未分類{stats['unclassified_zone_rows']}行"
+        f"仕入以外を除外{stats['excluded_non_purchase_rows']}行 / 工場未分類{stats['unclassified_zone_rows']}行 / "
+        f"確定月を保持{skipped_finalized_months}か月"
     )
     return len(totals)
 

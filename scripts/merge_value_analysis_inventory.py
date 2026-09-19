@@ -127,7 +127,12 @@ def merge(source: Path, destination: Path) -> int:
         return 0
     output = json.loads(destination.read_text(encoding="utf-8-sig"))
     months, stats = read_confirmed(source)
+    finalized_months = set(output.get("finalized_months", []))
+    skipped_finalized_months = 0
     for ym in sorted(months):
+        if ym in finalized_months:
+            skipped_finalized_months += 1
+            continue
         month = output.setdefault("monthly", {}).setdefault(
             ym,
             {"zones": {zone: blank_summary() for zone in ZONES}, "total": blank_summary()},
@@ -162,12 +167,17 @@ def merge(source: Path, destination: Path) -> int:
     output.setdefault("meta", {}).update({
         "inventory_input_source": source.name,
         "inventory_input_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
-        "inventory_input_import": {"status": "ok", **stats},
+        "inventory_input_import": {
+            "status": "ok",
+            **stats,
+            "skipped_finalized_months": skipped_finalized_months,
+        },
     })
     destination.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(
         f"[OK] 月末在庫を反映: {len(months)}か月 / 確定{stats['confirmed_rows']}行 / "
-        f"下書き除外{stats['draft_rows']}行 / IoT{stats['iot_rows']}行"
+        f"下書き除外{stats['draft_rows']}行 / IoT{stats['iot_rows']}行 / "
+        f"確定月を保持{skipped_finalized_months}か月"
     )
     return len(months)
 
