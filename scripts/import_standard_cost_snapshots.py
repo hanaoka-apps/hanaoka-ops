@@ -152,6 +152,23 @@ def main() -> int:
     if not args.destination.is_file():
         print(f"[WARN] {args.destination.name}が無いため標準原価取込をスキップ")
         return 0
+
+    # standard-cost フォルダの現存ファイルを正とする。過去に取り込まれた後で
+    # フォルダから無くなった月を残すと、原価未作成月にも付加価値が表示される。
+    available_months = {parse(source)[0] for source in args.sources}
+    output = json.loads(args.destination.read_text(encoding="utf-8"))
+    analysis = output.get("item_analysis")
+    if isinstance(analysis, dict):
+        history = analysis.setdefault("standard_cost_history", {})
+        removed = sorted(set(history) - available_months)
+        for ym in removed:
+            history.pop(ym, None)
+        if removed:
+            args.destination.write_text(
+                json.dumps(output, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            print(f"[OK] フォルダにない標準原価履歴を除外: {len(removed)}か月")
     for source in args.sources:
         ym, updated, missing = merge(source, args.destination)
         print(f"[OK] {source.name}: {ym} / 売上{updated}行を更新 / 原価未設定{missing}行")
