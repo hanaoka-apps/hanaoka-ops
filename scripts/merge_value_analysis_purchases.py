@@ -165,7 +165,7 @@ def blank_summary() -> dict:
     }
 
 
-def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tuple[dict[str, int], dict[str, dict[str, int]], dict]:
+def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tuple[dict[str, int], dict[str, dict[str, int]], dict[str, int], dict]:
     item_zones = item_zones or {}
     with source.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
         first = handle.readline()
@@ -192,6 +192,7 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
 
         totals: dict[str, float] = defaultdict(float)
         zones: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        unclassified: dict[str, float] = defaultdict(float)
         stats = {
             "source_rows": 0,
             "included_rows": 0,
@@ -223,6 +224,7 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
             zone = purchase_zone(row, zone_columns, item_column, item_zones)
             if zone is None:
                 stats["unclassified_zone_rows"] += 1
+                unclassified[ym] += amount
             else:
                 zones[ym][zone] += amount
                 if direct_zone is None:
@@ -233,7 +235,7 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
         ym: {zone: round(value) for zone, value in values.items()}
         for ym, values in zones.items()
     }
-    return rounded_totals, rounded_zones, stats
+    return rounded_totals, rounded_zones, {ym: round(value) for ym, value in unclassified.items()}, stats
 
 
 def merge(source: Path, destination: Path, item_master: Path | None = None) -> int:
@@ -243,7 +245,7 @@ def merge(source: Path, destination: Path, item_master: Path | None = None) -> i
     output = json.loads(destination.read_text(encoding="utf-8-sig"))
     try:
         item_master = item_master or next((candidate for candidate in (DATA / "品目マスタ.csv", DATA / "品目マスタ.txt") if candidate.is_file()), DATA / "品目マスタ.csv")
-        totals, zone_totals, stats = read_purchases(source, read_item_zones(item_master))
+        totals, zone_totals, unclassified_totals, stats = read_purchases(source, read_item_zones(item_master))
     except ValueError as error:
         output.setdefault("meta", {})["daily_purchase_import"] = {
             "status": "blocked",
@@ -272,6 +274,7 @@ def merge(source: Path, destination: Path, item_master: Path | None = None) -> i
         output.setdefault("month_status", {}).setdefault(ym, {})
 
     output["months"] = sorted(set(output.get("months", [])) | set(totals))
+    output["purchase_unclassified_by_month"] = unclassified_totals
     jst = timezone(timedelta(hours=9))
     output.setdefault("meta", {}).update({
         "daily_purchase_source": source.name,
