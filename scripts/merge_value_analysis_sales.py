@@ -24,6 +24,9 @@ ZONES = ["第一工場", "第二工場", "第三工場", "購買", "運賃"]
 
 IDX = {
     "ym": 0, "cust_abbr": 3, "voucher_date": 7, "bumon": 12,
+    # dashboard_facts の15列目は元帳票の「売上営業/ｿﾘｭ名」。
+    # 部門名（12列目）ではなくこちらを営業別売上の正とする。
+    "sales_division": 15,
     "dai_bunrui": 16, "chu_bunrui": 17, "item_cd": 18,
     "item_nm": 19, "qty": 20, "amount": 21, "unit_price": 22,
     "kind": 23,
@@ -159,8 +162,17 @@ def main() -> int:
         code = existing_keys.get(code_normalized, code_normalized)
         master_row = master.get(code_normalized, {})
         zone = zone_for(fact, master_row)
-        department = str(value(fact, "bumon", "") or "").strip()
-        department = {"国内営業部": "国内営業", "ソリューション営業部": "ソリューション営業"}.get(department, department or "未分類")
+        sales_division = str(value(fact, "sales_division", "") or "").strip()
+        # 既存のdashboard_facts（旧配列）にも対応するため、売上営業/ソリューション
+        # 列が空のときだけ部門名へフォールバックする。
+        department_source = sales_division or str(value(fact, "bumon", "") or "").strip()
+        department = {
+            "国内営業部": "国内営業",
+            "国内営業": "国内営業",
+            "ソリューション営業部": "ソリューション営業",
+            "ｿﾘｭｰｼｮﾝ営業部": "ソリューション営業",
+            "ソリューション営業": "ソリューション営業",
+        }.get(department_source, "未分類")
         zone_sales[ym][zone] += amount
         department_sales[ym][department] += amount
         current = grouped.setdefault((ym, code), {
