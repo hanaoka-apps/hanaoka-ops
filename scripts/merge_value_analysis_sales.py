@@ -214,11 +214,12 @@ def main() -> int:
             "cc": master_row.get("cc") or item.get("cc", ""),
             "sc": master_row.get("sc") or item.get("sc", ""),
         })
-        cost = history.get(ym, {}).get(normalized) or history.get(ym, {}).get(code) or {}
-        standard_cost = number(cost.get("total") or item.get("st"))
+        # 品目に残る最新原価を過去月へ流用しない。当月の原価履歴がある場合だけ算定する。
+        cost = history.get(ym, {}).get(normalized) or history.get(ym, {}).get(code)
+        standard_cost = number(cost.get("total")) if cost else None
         if standard_cost:
             item["st"] = standard_cost
-            item["mt"] = number(cost.get("material") or item.get("mt"))
+            item["mt"] = number(cost.get("material"))
             item["ot"] = max(0, standard_cost - item["mt"])
         sales = round(current["a"])
         quantity = current["q"]
