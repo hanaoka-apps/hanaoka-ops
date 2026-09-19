@@ -59,6 +59,23 @@ def first_column(headers: list[str], candidates: tuple[str, ...]) -> str | None:
     return next((normalized_headers[name] for name in candidates if name in normalized_headers), None)
 
 
+def columns_present(headers: list[str], candidates: tuple[str, ...]) -> list[str]:
+    """候補列をすべて返す。空の優先列だけで分類を止めないために使う。"""
+    normalized_headers = {normalized(header): header for header in headers}
+    return [normalized_headers[name] for name in candidates if name in normalized_headers]
+
+
+def item_code_column(headers: list[str]) -> str | None:
+    """受入明細の表記揺れ（受入品目コード等）を含めて品目コード列を見つける。"""
+    exact = first_column(headers, ITEM_CODE_COLUMNS)
+    if exact:
+        return exact
+    return next(
+        (header for header in headers if "品目" in normalized(header) and "コード" in normalized(header)),
+        None,
+    )
+
+
 def month_key(value: object) -> str | None:
     digits = "".join(character for character in normalized(value) if character.isdigit())
     return digits[:6] if len(digits) >= 6 else None
@@ -82,11 +99,11 @@ def zone_from_text(value: object) -> str | None:
     return None
 
 
-def purchase_zone(row: dict[str, str], zone_column: str | None, item_column: str | None, item_zones: dict[str, str]) -> str | None:
-    text = normalized(row.get(zone_column)) if zone_column else ""
-    direct = zone_from_text(text)
-    if direct:
-        return direct
+def purchase_zone(row: dict[str, str], zone_columns: list[str], item_column: str | None, item_zones: dict[str, str]) -> str | None:
+    for zone_column in zone_columns:
+        direct = zone_from_text(row.get(zone_column))
+        if direct:
+            return direct
     code = normalized(row.get(item_column)) if item_column else ""
     return item_zones.get(code)
 
@@ -101,7 +118,7 @@ def read_item_zones(source: Path) -> dict[str, str]:
         handle.seek(0)
         reader = csv.DictReader(handle, delimiter=delimiter)
         headers = list(reader.fieldnames or [])
-        item_column = first_column(headers, ITEM_CODE_COLUMNS)
+        item_column = item_code_column(headers)
         zone_column = first_column(headers, ("工場別付加価名",))
         if not item_column or not zone_column:
             return {}
@@ -159,8 +176,8 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
         date_column = first_column(headers, DATE_COLUMNS)
         amount_column = first_column(headers, AMOUNT_COLUMNS)
         category_column = first_column(headers, CATEGORY_COLUMNS)
-        zone_column = first_column(headers, ZONE_COLUMNS)
-        item_column = first_column(headers, ITEM_CODE_COLUMNS)
+        zone_columns = columns_present(headers, ZONE_COLUMNS)
+        item_column = item_code_column(headers)
         missing = [
             label
             for label, column in (
@@ -184,7 +201,7 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
             "category_column": category_column,
             "amount_column": amount_column,
             "date_column": date_column,
-            "zone_column": zone_column,
+            "zone_columns": zone_columns,
             "item_column": item_column,
             "master_zone_rows": 0,
         }
@@ -199,8 +216,11 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
                 stats["invalid_rows"] += 1
                 continue
             totals[ym] += amount
-            direct_zone = zone_from_text(row.get(zone_column)) if zone_column else None
-            zone = purchase_zone(row, zone_column, item_column, item_zones)
+            direct_zone = next(
+                (parsed for column in zone_columns if (parsed := zone_from_text(row.get(column)))),
+                None,
+            )
+            zone = purchase_zone(row, zone_columns, item_column, item_zones)
             if zone is None:
                 stats["unclassified_zone_rows"] += 1
             else:

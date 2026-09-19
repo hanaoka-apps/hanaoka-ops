@@ -107,6 +107,26 @@ class PurchaseMergeTest(unittest.TestCase):
             self.assertEqual(result["monthly"]["202609"]["zones"]["第二工場"]["purchase"], 12000)
             self.assertEqual(result["meta"]["daily_purchase_import"]["master_zone_rows"], 1)
 
+    def test_uses_department_when_primary_factory_column_is_blank(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "受入明細出力.csv"
+            destination = Path(directory) / "value_analysis.json"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["伝票日付", "受入金額", "取引区分属性名", "工場別付加価名", "部門名"],
+                )
+                writer.writeheader()
+                writer.writerow({"伝票日付": "20260901", "受入金額": "12,000", "取引区分属性名": "仕入", "工場別付加価名": "", "部門名": "第二工場"})
+            payload = base_payload()
+            payload["months"].append("202609")
+            payload["monthly"]["202609"] = {"zones": {zone: INVENTORY.blank_summary() for zone in INVENTORY.ZONES}, "total": INVENTORY.blank_summary()}
+            destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            PURCHASES.merge(source, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+            self.assertEqual(result["monthly"]["202609"]["zones"]["第二工場"]["purchase"], 12000)
+
 
 class SalesMergeTest(unittest.TestCase):
     def test_sales_breakdown_uses_sales_division_column(self):
