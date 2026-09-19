@@ -27,7 +27,8 @@ def initial_payload() -> dict:
             "source": "SharedMasters（日次取得）",
             "notice": (
                 "売上・受注・標準原価を日次データから反映します。"
-                "仕入・在庫・月次確定は接続後に表示します。"
+                "仕入は伝票区分が仕入の明細だけを反映します。"
+                "在庫は自由入力の確定行を反映します。"
             ),
         },
         "months": [],
@@ -51,6 +52,13 @@ def initial_payload() -> dict:
             "standard_cost_history_status": "月別の標準原価を日次処理で更新します。",
         },
         "inventory_breakdown_by_month": {},
+        "inventory_input_capabilities": {
+            "schema_version": 1,
+            "sources": {
+                "manual": {"enabled": True, "label": "自由入力"},
+                "iot": {"enabled": False, "label": "IoT（接続準備中）"},
+            },
+        },
     }
 
 

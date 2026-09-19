@@ -3,7 +3,7 @@
 SharePointから取得済みの data/dashboard_facts.json と
 data/value_analysis.json だけを読み、元データは変更しない。
 同じ年月の品目別行を毎回置換するため、日次実行で二重加算しない。
-月次確定済みのサマリー値は保護する。
+サマリーの売上もSharedMastersを正として毎回置換し、月次資料に依存しない。
 """
 
 from __future__ import annotations
@@ -228,18 +228,17 @@ def main() -> int:
 
     analysis["rows"] = [row for row in analysis.get("rows", []) if row.get("y") not in source_months] + generated
     analysis["months"] = sorted(set(analysis.get("months", [])) | set(source_months))
-    finalized = set(output.get("finalized_months", []))
     for ym in source_months:
         month = output.setdefault("monthly", {}).setdefault(
             ym, {"zones": {zone: blank_summary() for zone in ZONES}, "total": blank_summary()}
         )
-        if ym not in finalized:
-            for zone in ZONES:
-                zone_row = month.setdefault("zones", {}).setdefault(zone, blank_summary())
-                zone_row["sales"] = round(zone_sales[ym].get(zone, 0))
-                recalculate(zone_row)
-            month.setdefault("total", blank_summary())["sales"] = round(sum(zone_sales[ym].values()))
-            recalculate(month["total"])
+        for zone in ZONES:
+            zone_row = month.setdefault("zones", {}).setdefault(zone, blank_summary())
+            zone_row["sales"] = round(zone_sales[ym].get(zone, 0))
+            recalculate(zone_row)
+        month.setdefault("total", blank_summary())["sales"] = round(sum(zone_sales[ym].values()))
+        recalculate(month["total"])
+        if ym not in set(output.get("finalized_months", [])):
             output.setdefault("month_status", {}).setdefault(ym, {}).update({"state": "collecting", "is_finalized": False})
         output.setdefault("sales_departments_by_month", {})[ym] = {
             department: round(amount) for department, amount in department_sales[ym].items()
