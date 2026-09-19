@@ -22,6 +22,7 @@ def load_module(name: str, filename: str):
 PURCHASES = load_module("merge_value_analysis_purchases", "merge_value_analysis_purchases.py")
 INVENTORY = load_module("merge_value_analysis_inventory", "merge_value_analysis_inventory.py")
 CLOSE_STATUS = load_module("set_value_analysis_close_status", "set_value_analysis_close_status.py")
+CONFIRMED_HISTORY = load_module("merge_value_analysis_confirmed_history", "merge_value_analysis_confirmed_history.py")
 
 
 def base_payload() -> dict:
@@ -62,6 +63,25 @@ class PurchaseMergeTest(unittest.TestCase):
             self.assertEqual(result["monthly"]["202608"]["total"]["purchase"], 10000)
             self.assertEqual(result["monthly"]["202608"]["zones"]["第一工場"]["purchase"], 10000)
             self.assertEqual(result["meta"]["daily_purchase_import"]["excluded_non_purchase_rows"], 1)
+
+    def test_finalized_month_is_not_replaced_by_daily_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "受入明細出力.csv"
+            destination = Path(directory) / "value_analysis.json"
+            payload = base_payload()
+            payload["finalized_months"] = ["202608"]
+            payload["monthly"]["202608"]["total"]["purchase"] = 12345
+            destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["伝票日付", "受入金額", "取引区分属性名"])
+                writer.writeheader()
+                writer.writerow({"伝票日付": "20260801", "受入金額": "99,000", "取引区分属性名": "仕入"})
+
+            PURCHASES.merge(source, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+
+            self.assertEqual(result["monthly"]["202608"]["total"]["purchase"], 12345)
+            self.assertEqual(result["meta"]["daily_purchase_import"]["skipped_finalized_months"], 1)
 
 
 class InventoryMergeTest(unittest.TestCase):
@@ -110,6 +130,41 @@ class CloseStatusTest(unittest.TestCase):
             self.assertFalse(result["month_status"]["202609"]["is_finalized"])
             self.assertNotIn("202609", result["finalized_months"])
             self.assertEqual(result["meta"]["monthly_close_control"]["finalize_through"], "202608")
+
+
+class ConfirmedHistoryMergeTest(unittest.TestCase):
+    def test_protected_history_recalculates_and_marks_month_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "value_analysis.json"
+            payload = base_payload()
+            payload["monthly"]["202608"]["total"]["sales"] = 1000
+            payload["monthly"]["202608"]["zones"]["第一工場"]["sales"] = 600
+            destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            protected = {
+                "months": {
+                    "202608": {
+                        "purchase": 400,
+                        "previous_inventory": 200,
+                        "current_inventory": 250,
+                        "zones": {
+                            "第一工場": {
+                                "purchase": 240,
+                                "previous_inventory": 120,
+                                "current_inventory": 150,
+                            }
+                        },
+                    }
+                }
+            }
+
+            CONFIRMED_HISTORY.merge_history(protected, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+
+            self.assertEqual(result["monthly"]["202608"]["total"]["value_added"], 650)
+            self.assertEqual(result["monthly"]["202608"]["zones"]["第一工場"]["value_added"], 390)
+            self.assertTrue(result["month_status"]["202608"]["purchase_confirmed"])
+            self.assertTrue(result["month_status"]["202608"]["inventory_confirmed"])
+            self.assertIn("202608", result["finalized_months"])
 
 
 if __name__ == "__main__":
