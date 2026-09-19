@@ -21,6 +21,7 @@ def load_module(name: str, filename: str):
 
 PURCHASES = load_module("merge_value_analysis_purchases", "merge_value_analysis_purchases.py")
 INVENTORY = load_module("merge_value_analysis_inventory", "merge_value_analysis_inventory.py")
+CLOSE_STATUS = load_module("set_value_analysis_close_status", "set_value_analysis_close_status.py")
 
 
 def base_payload() -> dict:
@@ -86,6 +87,29 @@ class InventoryMergeTest(unittest.TestCase):
             self.assertEqual(result["monthly"]["202608"]["zones"]["第一工場"]["current_inventory"], 500)
             self.assertIsNone(result["monthly"]["202608"]["zones"]["第二工場"]["current_inventory"])
             self.assertEqual(result["meta"]["inventory_input_import"]["draft_rows"], 1)
+
+
+class CloseStatusTest(unittest.TestCase):
+    def test_finalize_through_comes_from_input_and_keeps_future_month_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "value_analysis.json"
+            payload = base_payload()
+            payload["months"].append("202609")
+            payload["monthly"]["202609"] = {
+                "zones": {zone: INVENTORY.blank_summary() for zone in INVENTORY.ZONES},
+                "total": INVENTORY.blank_summary(),
+            }
+            payload["month_status"]["202609"] = {"state": "collecting", "is_finalized": False}
+            destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            finalized = CLOSE_STATUS.apply_close_status(destination, "202608")
+            result = json.loads(destination.read_text(encoding="utf-8"))
+
+            self.assertEqual(finalized, ["202607", "202608"])
+            self.assertTrue(result["month_status"]["202608"]["is_finalized"])
+            self.assertFalse(result["month_status"]["202609"]["is_finalized"])
+            self.assertNotIn("202609", result["finalized_months"])
+            self.assertEqual(result["meta"]["monthly_close_control"]["finalize_through"], "202608")
 
 
 if __name__ == "__main__":
