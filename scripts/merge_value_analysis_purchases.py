@@ -33,6 +33,7 @@ CATEGORY_COLUMNS = (
     "区分",
 )
 ZONE_COLUMNS = ("工場別付加価名", "部門名", "倉庫名")
+ITEM_CODE_COLUMNS = ("品目ｺｰﾄﾞ", "品目コード")
 
 
 def normalized(value: object) -> str:
@@ -63,8 +64,8 @@ def month_key(value: object) -> str | None:
     return digits[:6] if len(digits) >= 6 else None
 
 
-def purchase_zone(row: dict[str, str], zone_column: str | None) -> str | None:
-    text = normalized(row.get(zone_column)) if zone_column else ""
+def zone_from_text(value: object) -> str | None:
+    text = normalized(value)
     for zone in ZONES:
         if zone in text:
             return zone
@@ -74,7 +75,41 @@ def purchase_zone(row: dict[str, str], zone_column: str | None) -> str | None:
         return "第二工場"
     if "第三" in text:
         return "第三工場"
+    if "購買" in text or "輸入仕入" in text:
+        return "購買"
+    if "運賃" in text:
+        return "運賃"
     return None
+
+
+def purchase_zone(row: dict[str, str], zone_column: str | None, item_column: str | None, item_zones: dict[str, str]) -> str | None:
+    text = normalized(row.get(zone_column)) if zone_column else ""
+    direct = zone_from_text(text)
+    if direct:
+        return direct
+    code = normalized(row.get(item_column)) if item_column else ""
+    return item_zones.get(code)
+
+
+def read_item_zones(source: Path) -> dict[str, str]:
+    """品目マスタの工場別付加価名を、受入明細の空分類の補完に使う。"""
+    if not source.is_file():
+        return {}
+    with source.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
+        first = handle.readline()
+        delimiter = "\t" if first.count("\t") > first.count(",") else ","
+        handle.seek(0)
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        headers = list(reader.fieldnames or [])
+        item_column = first_column(headers, ITEM_CODE_COLUMNS)
+        zone_column = first_column(headers, ("工場別付加価名",))
+        if not item_column or not zone_column:
+            return {}
+        return {
+            normalized(row.get(item_column)): zone
+            for row in reader
+            if (zone := zone_from_text(row.get(zone_column))) and normalized(row.get(item_column))
+        }
 
 
 def rate(numerator: float | None, denominator: float | None) -> float | None:
@@ -113,7 +148,8 @@ def blank_summary() -> dict:
     }
 
 
-def read_purchases(source: Path) -> tuple[dict[str, int], dict[str, dict[str, int]], dict]:
+def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tuple[dict[str, int], dict[str, dict[str, int]], dict]:
+    item_zones = item_zones or {}
     with source.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
         first = handle.readline()
         delimiter = "\t" if first.count("\t") > first.count(",") else ","
@@ -124,6 +160,7 @@ def read_purchases(source: Path) -> tuple[dict[str, int], dict[str, dict[str, in
         amount_column = first_column(headers, AMOUNT_COLUMNS)
         category_column = first_column(headers, CATEGORY_COLUMNS)
         zone_column = first_column(headers, ZONE_COLUMNS)
+        item_column = first_column(headers, ITEM_CODE_COLUMNS)
         missing = [
             label
             for label, column in (
@@ -148,6 +185,8 @@ def read_purchases(source: Path) -> tuple[dict[str, int], dict[str, dict[str, in
             "amount_column": amount_column,
             "date_column": date_column,
             "zone_column": zone_column,
+            "item_column": item_column,
+            "master_zone_rows": 0,
         }
         for row in reader:
             stats["source_rows"] += 1
@@ -160,11 +199,14 @@ def read_purchases(source: Path) -> tuple[dict[str, int], dict[str, dict[str, in
                 stats["invalid_rows"] += 1
                 continue
             totals[ym] += amount
-            zone = purchase_zone(row, zone_column)
+            direct_zone = zone_from_text(row.get(zone_column)) if zone_column else None
+            zone = purchase_zone(row, zone_column, item_column, item_zones)
             if zone is None:
                 stats["unclassified_zone_rows"] += 1
             else:
                 zones[ym][zone] += amount
+                if direct_zone is None:
+                    stats["master_zone_rows"] += 1
             stats["included_rows"] += 1
     rounded_totals = {ym: round(value) for ym, value in totals.items()}
     rounded_zones = {
@@ -174,13 +216,14 @@ def read_purchases(source: Path) -> tuple[dict[str, int], dict[str, dict[str, in
     return rounded_totals, rounded_zones, stats
 
 
-def merge(source: Path, destination: Path) -> int:
+def merge(source: Path, destination: Path, item_master: Path | None = None) -> int:
     if not source.is_file() or not destination.is_file():
         print(f"[WARN] {source.name} または {destination.name} が無いため仕入反映をスキップ")
         return 0
     output = json.loads(destination.read_text(encoding="utf-8-sig"))
     try:
-        totals, zone_totals, stats = read_purchases(source)
+        item_master = item_master or next((candidate for candidate in (DATA / "品目マスタ.csv", DATA / "品目マスタ.txt") if candidate.is_file()), DATA / "品目マスタ.csv")
+        totals, zone_totals, stats = read_purchases(source, read_item_zones(item_master))
     except ValueError as error:
         output.setdefault("meta", {})["daily_purchase_import"] = {
             "status": "blocked",
@@ -222,7 +265,7 @@ def merge(source: Path, destination: Path) -> int:
     destination.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(
         f"[OK] 仕入を反映: {len(totals)}か月 / 採用{stats['included_rows']}行 / "
-        f"仕入以外を除外{stats['excluded_non_purchase_rows']}行 / 工場未分類{stats['unclassified_zone_rows']}行 / "
+        f"仕入以外を除外{stats['excluded_non_purchase_rows']}行 / 品目マスタ補完{stats['master_zone_rows']}行 / 工場未分類{stats['unclassified_zone_rows']}行 / "
         f"確定月を保持{skipped_finalized_months}か月"
     )
     return len(totals)
@@ -232,8 +275,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--destination", type=Path, default=DEFAULT_DESTINATION)
+    parser.add_argument("--item-master", type=Path)
     args = parser.parse_args()
-    merge(args.source, args.destination)
+    merge(args.source, args.destination, args.item_master)
     return 0
 
 
