@@ -160,15 +160,26 @@ def main() -> int:
     analysis = output.get("item_analysis")
     if isinstance(analysis, dict):
         history = analysis.setdefault("standard_cost_history", {})
+        analysis["standard_cost_source_months"] = sorted(available_months)
         removed = sorted(set(history) - available_months)
         for ym in removed:
             history.pop(ym, None)
+        # 月別ファイルが無い月は、過去の生成処理で品目行へ埋め込まれた原価・
+        # 付加価値を残さない。画面側が古い行データを参照しても未設定になる。
+        cleared_rows = 0
+        for row in analysis.get("rows", []):
+            if row.get("y") in available_months:
+                continue
+            for key in ("st", "mt", "ot", "va", "vr", "previous_standard_cost"):
+                row[key] = None
+            cleared_rows += 1
+        args.destination.write_text(
+            json.dumps(output, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
         if removed:
-            args.destination.write_text(
-                json.dumps(output, ensure_ascii=False, separators=(",", ":")),
-                encoding="utf-8",
-            )
             print(f"[OK] フォルダにない標準原価履歴を除外: {len(removed)}か月")
+        print(f"[OK] 標準原価ファイルのない月の品目計算値を解除: {cleared_rows}行")
     for source in args.sources:
         ym, updated, missing = merge(source, args.destination)
         print(f"[OK] {source.name}: {ym} / 売上{updated}行を更新 / 原価未設定{missing}行")
