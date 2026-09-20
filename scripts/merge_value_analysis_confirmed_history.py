@@ -61,7 +61,7 @@ def merge_history(payload: dict, destination: Path) -> int:
         raise ValueError("確定履歴にmonthsがありません")
 
     output = json.loads(destination.read_text(encoding="utf-8-sig"))
-    zones = list(output.get("zones") or ["第一工場", "第二工場", "第三工場", "購買", "運賃"])
+    default_zones = ["第一工場", "第二工場", "第三工場", "購買", "運賃"]
     finalized = set(output.get("finalized_months", []))
     updated = 0
 
@@ -72,7 +72,10 @@ def merge_history(payload: dict, destination: Path) -> int:
             raise ValueError(f"{ym} の確定履歴がオブジェクトではありません")
         month = output.setdefault("monthly", {}).setdefault(ym, {"zones": {}, "total": {}})
         total = month.setdefault("total", {})
-        for field in ("purchase", "current_inventory", "previous_inventory"):
+        # 月次確定資料に売上がある場合は、日次データを現行マスタで
+        # 再配賦した値よりも確定値を優先する。確定値そのものは保護された
+        # ワークフロー入力からのみ受け取り、公開リポジトリには保存しない。
+        for field in ("sales", "purchase", "current_inventory", "previous_inventory"):
             if field in source:
                 total[field] = number(source[field], f"{ym}.{field}")
         recalculate(total)
@@ -80,6 +83,12 @@ def merge_history(payload: dict, destination: Path) -> int:
         source_zones = source.get("zones", {})
         if not isinstance(source_zones, dict):
             raise ValueError(f"{ym}.zones がオブジェクトではありません")
+        # 確定資料にだけ存在する調整区分も欠落させない。これにより、
+        # 日次明細と月次総額の差異を他の工場へ勝手に振り替えずに表示できる。
+        zones = list(dict.fromkeys(
+            list(output.get("zones") or default_zones) + list(source_zones)
+        ))
+        output["zones"] = zones
         inventory_rows = []
         for zone in zones:
             zone_source = source_zones.get(zone)
@@ -88,7 +97,7 @@ def merge_history(payload: dict, destination: Path) -> int:
             if not isinstance(zone_source, dict):
                 raise ValueError(f"{ym}.zones.{zone} がオブジェクトではありません")
             summary = month.setdefault("zones", {}).setdefault(zone, {})
-            for field in ("purchase", "current_inventory", "previous_inventory"):
+            for field in ("sales", "purchase", "current_inventory", "previous_inventory"):
                 if field in zone_source:
                     summary[field] = number(zone_source[field], f"{ym}.{zone}.{field}")
             recalculate(summary)

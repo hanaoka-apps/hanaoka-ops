@@ -32,7 +32,7 @@ CATEGORY_COLUMNS = (
     "区分名",
     "区分",
 )
-ZONE_COLUMNS = ("工場別付加価名", "部門名", "倉庫名")
+ZONE_COLUMNS = ("工場別付加価名", "工場別付加価値", "部門名", "倉庫名")
 ITEM_CODE_COLUMNS = ("品目ｺｰﾄﾞ", "品目コード")
 
 
@@ -119,7 +119,7 @@ def read_item_zones(source: Path) -> dict[str, str]:
         reader = csv.DictReader(handle, delimiter=delimiter)
         headers = list(reader.fieldnames or [])
         item_column = item_code_column(headers)
-        zone_column = first_column(headers, ("工場別付加価名",))
+        zone_column = first_column(headers, ("工場別付加価名", "工場別付加価値"))
         if not item_column or not zone_column:
             return {}
         return {

@@ -99,7 +99,9 @@ def read_item_master() -> dict[str, dict]:
                 "c": (row.get("中分類名") or "").strip(),
                 "sc": (row.get("小分類ｺｰﾄﾞ") or "").strip(),
                 "s": (row.get("小分類名") or "").strip(),
-                "factory": (row.get("工場別付加価名") or "").strip(),
+                # SharedMasters の出力形式差に対応する。画面上の
+                # 「分類 > 工場別付加価値」は、旧出力では工場別付加価名。
+                "factory": (row.get("工場別付加価名") or row.get("工場別付加価値") or "").strip(),
             }
     return result
 
