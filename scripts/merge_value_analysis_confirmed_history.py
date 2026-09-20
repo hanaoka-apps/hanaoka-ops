@@ -61,7 +61,7 @@ def merge_history(payload: dict, destination: Path) -> int:
         raise ValueError("確定履歴にmonthsがありません")
 
     output = json.loads(destination.read_text(encoding="utf-8-sig"))
-    zones = list(output.get("zones") or ["第一工場", "第二工場", "第三工場", "購買", "運賃"])
+    default_zones = ["第一工場", "第二工場", "第三工場", "購買", "運賃"]
     finalized = set(output.get("finalized_months", []))
     updated = 0
 
@@ -83,6 +83,12 @@ def merge_history(payload: dict, destination: Path) -> int:
         source_zones = source.get("zones", {})
         if not isinstance(source_zones, dict):
             raise ValueError(f"{ym}.zones がオブジェクトではありません")
+        # 確定資料にだけ存在する調整区分も欠落させない。これにより、
+        # 日次明細と月次総額の差異を他の工場へ勝手に振り替えずに表示できる。
+        zones = list(dict.fromkeys(
+            list(output.get("zones") or default_zones) + list(source_zones)
+        ))
+        output["zones"] = zones
         inventory_rows = []
         for zone in zones:
             zone_source = source_zones.get(zone)
