@@ -72,7 +72,10 @@ def merge_history(payload: dict, destination: Path) -> int:
             raise ValueError(f"{ym} の確定履歴がオブジェクトではありません")
         month = output.setdefault("monthly", {}).setdefault(ym, {"zones": {}, "total": {}})
         total = month.setdefault("total", {})
-        for field in ("purchase", "current_inventory", "previous_inventory"):
+        # 月次確定資料に売上がある場合は、日次データを現行マスタで
+        # 再配賦した値よりも確定値を優先する。確定値そのものは保護された
+        # ワークフロー入力からのみ受け取り、公開リポジトリには保存しない。
+        for field in ("sales", "purchase", "current_inventory", "previous_inventory"):
             if field in source:
                 total[field] = number(source[field], f"{ym}.{field}")
         recalculate(total)
@@ -88,7 +91,7 @@ def merge_history(payload: dict, destination: Path) -> int:
             if not isinstance(zone_source, dict):
                 raise ValueError(f"{ym}.zones.{zone} がオブジェクトではありません")
             summary = month.setdefault("zones", {}).setdefault(zone, {})
-            for field in ("purchase", "current_inventory", "previous_inventory"):
+            for field in ("sales", "purchase", "current_inventory", "previous_inventory"):
                 if field in zone_source:
                     summary[field] = number(zone_source[field], f"{ym}.{zone}.{field}")
             recalculate(summary)
