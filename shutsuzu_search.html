@@ -266,7 +266,7 @@ button.hist:hover{border-color:var(--brand);color:var(--brand)}
 /* データはこのファイルに持たせない。SharePoint から読む。
    置き場所：出図・出荷管理サイト → ドキュメント → アプリデータ → appdata.json
    サインインしていない人には、この3つのタブは空のまま。 */
-const BOM_PATH="/アプリデータ/appdata.json";
+const LIST_SPECS="仕様マスタ",LIST_DRAWS="図面マスタ",LIST_REVS="改訂履歴";
 let BOM={specs:[],drawings:[],revs:[]};
 let BOM_STATE="none";          /* none = まだ無い / ok / error */
 let BOM_MSG="", BOM_AT="";
@@ -285,8 +285,8 @@ function bomNote(){
   if(BOM_STATE==="ok") return "";
   return '<div class="bomnote">'+(BOM_STATE==="error"
     ? 'データを読み込めませんでした。<br><span class="sub">'+E2(BOM_MSG)+'</span>'
-    : '図面リストのデータがまだ置かれていません。<br><span class="sub">'+
-      '「出図・出荷管理」サイトの ドキュメント → アプリデータ → appdata.json を置くと、ここに出ます。</span>')+'</div>';
+    : '図面リストがまだありません。<br><span class="sub">'+
+      '「出図・出荷管理」サイトに 仕様マスタ／図面マスタ／改訂履歴 の3つのリストを作ると、ここに出ます。</span>')+'</div>';
 }
 let TREND="prod";
 
@@ -538,6 +538,7 @@ const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu";
 const LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細",LIB_DRAWINGS="図面";
 
 let SITE_ID=null,ID_SHUTSUZU=null,ID_UNITS=null,UNITS_URL="",DRIVE_ID=null;
+let ID_SPECS=null,ID_DRAWS=null,ID_REVS=null,URL_SPECS="",URL_DRAWS="",URL_REVS="";
 let SHUTSUZU=[],FILES=[];
 
 const $=id=>document.getElementById(id);
@@ -597,23 +598,43 @@ async function gGetAll(path,extra){
     next=d["@odata.nextLink"]?d["@odata.nextLink"].replace(GRAPH_BASE,""):null}
   return out;
 }
-/* ---- 図面リスト・改訂のデータ（SharePoint の appdata.json） ---- */
+/* ---- 図面リスト・改訂のデータ（SharePoint の3リスト） ----
+   仕様マスタ／図面マスタ／改訂履歴 から読む。
+   ここも読むだけ。登録は shutsuzu_management2.html 側。 */
+const SP2 = v => String(v==null?"":v).trim();
+const SPL = v => SP2(v).split(/[\s、,]+/).filter(Boolean);   /* 「EE200 SE000」→ 配列 */
+
 async function loadBom(){
   try{
-    const meta=await gGet(`/sites/${SITE_ID}/drive/root:${encodeURI(BOM_PATH)}`);
-    const url=meta["@microsoft.graph.downloadUrl"];
-    if(!url) throw new Error("ダウンロード先が取得できませんでした");
-    const r=await fetch(url);
-    if(!r.ok) throw new Error("["+r.status+"] appdata.json");
-    const j=await r.json();
-    BOM={specs:j.specs||[],drawings:j.drawings||[],revs:j.revs||[]};
-    BOM_AT=(meta.lastModifiedDateTime||"").slice(0,10);
+    if(!ID_SPECS||!ID_DRAWS||!ID_REVS){
+      const e=new Error("仕様マスタ／図面マスタ／改訂履歴 が見つかりません");e.status=404;throw e;
+    }
+    const q = id => `/sites/${SITE_ID}/lists/${id}/items?expand=fields&$top=500`;
+    const [sp,dw,rv] = await Promise.all([
+      gGetAll(q(ID_SPECS)), gGetAll(q(ID_DRAWS)), gGetAll(q(ID_REVS))
+    ]);
+    BOM={
+      specs: sp.map(it=>{const f=it.fields||{};return {
+        id:SP2(f.Title), fam:SP2(f.Family), cust:SP2(f.SpecGroup),
+        file:SP2(f.BomFile), n:(f.DrawingCount==null?0:+f.DrawingCount) };
+      }).filter(x=>x.id),
+      drawings: dw.map(it=>{const f=it.fields||{};return {
+        zu:SP2(f.Title), name:SP2(f.DrawingName), rev:SP2(f.Rev),
+        specs:SPL(f.UsedInSpecs), note:SP2(f.BomNote), prev:SP2(f.PrevDrawingNo) };
+      }).filter(x=>x.zu),
+      revs: rv.map(it=>{const f=it.fields||{};return {
+        zu:SP2(f.DrawingNo), name:SP2(f.DrawingName),
+        date:SP2(f.RevDate).slice(0,10), what:SP2(f.ChangeDesc),
+        mark:SP2(f.RevMark), no:SP2(f.NoticeNo), specs:SPL(f.TargetSpecs) };
+      }).filter(x=>x.date)
+    };
+    BOM.revs.sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
     BOM_STATE="ok";
   }catch(e){
     BOM={specs:[],drawings:[],revs:[]};
-    BOM_STATE=(e&&e.status===404)?"none":"error";
+    BOM_STATE=(e&&(e.status===404))?"none":"error";
     BOM_MSG=(e&&(e.message||e))+"";
-    console.warn("appdata.json を読めませんでした",e);
+    console.warn("図面リストを読めませんでした",e);
   }
   indexBom();
 }
@@ -625,6 +646,11 @@ async function spInit(){
   const a=pick(LIST_SHUTSUZU),b=pick(LIST_UNITS);
   if(!a||!b){const e=new Error("出図マスタ／製造番号明細が見つかりません");e.status=404;throw e}
   ID_SHUTSUZU=a.id; ID_UNITS=b.id; UNITS_URL=b.webUrl||"";
+  /* 図面リスト・改訂履歴・仕様マスタ。無ければ3タブが空になるだけで、
+     出図・出荷の検索は今までどおり使える */
+  const s1=pick(LIST_SPECS), s2=pick(LIST_DRAWS), s3=pick(LIST_REVS);
+  ID_SPECS=s1?s1.id:null; ID_DRAWS=s2?s2.id:null; ID_REVS=s3?s3.id:null;
+  URL_SPECS=s1?(s1.webUrl||""):""; URL_DRAWS=s2?(s2.webUrl||""):""; URL_REVS=s3?(s3.webUrl||""):"";
   /* 図面ライブラリのドライブ。ファイル名から直接引くのでリストは使わない */
   try{
     const drives=await gGetAll(`/sites/${SITE_ID}/drives?$select=id,name`);
