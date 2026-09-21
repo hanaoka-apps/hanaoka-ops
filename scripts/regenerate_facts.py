@@ -340,12 +340,20 @@ def transform_sales(header, rows):
         'qty':          find_idx(h, '数量'),
         'amount':       find_idx(h, '金額'),
         'unit_price':   find_idx(h, '単価'),
+        # 付加価値分析の「最低売価」は、集計値ではなく売上明細の同一行を
+        # 表示する。ヘッダーは最新の売上明細CSVで確認済みの正式表記を使う。
+        'sales_no':     find_idx(h, '売上№'),
+        'remark1':      find_idx(h, '行摘要１'),
+        'remark2':      find_idx(h, '行摘要２'),
+        'order_no':     find_idx(h, '受注№'),
+        'order_line':   find_idx(h, '受注行'),
+        'return_type':  find_idx(h, '返品区分'),
     }
     missing = [k for k, v in idx.items() if v is None]
     if missing:
         raise RuntimeError(f"列が見つからない: {missing}")
     out = []
-    for row in rows:
+    for source_index, row in enumerate(rows):
         if len(row) < max(idx.values()) + 1: continue
         ym = to_int(row[idx['ym']])
         if ym == 0: continue
@@ -378,6 +386,15 @@ def transform_sales(header, rows):
             to_float(row[idx['unit_price']]),
             kind,
             cust_abbr, genre, '',
+            # 既存の27列は他のダッシュボードとの互換のため変更しない。
+            # 末尾だけを追加し、付加価値分析が明細1行を復元できるようにする。
+            row[idx['sales_no']] or '',
+            row[idx['remark1']] or '',
+            row[idx['remark2']] or '',
+            row[idx['order_no']] or '',
+            row[idx['order_line']] or '',
+            row[idx['return_type']] or '',
+            source_index,
         ])
     return out
 
