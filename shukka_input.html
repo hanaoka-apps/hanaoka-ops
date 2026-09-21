@@ -44,7 +44,7 @@ header .who{margin-left:auto;font-size:13px;color:var(--muted)}
 .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 14px 18px;margin-bottom:14px}
 label{display:block;font-weight:700;font-size:15px;margin-bottom:6px}
 input,button,select{font-family:inherit;font-size:17px}
-input[type=text],input[type=date],input[type=month]{
+input[type=text],input[type=date],input[type=month],select{
   width:100%;padding:13px 13px;border:1px solid var(--line);border-radius:11px;
   background:#fff;color:var(--text)}
 input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(47,125,209,.14)}
@@ -242,8 +242,8 @@ body.in .gate{display:none}
 .dwopen{width:auto;min-height:0;padding:7px 14px;font-size:13px;text-decoration:none;
   display:inline-block;text-align:center}
 .dwna{font-size:12px;color:var(--muted)}
-@media print{ body>*:not(.np){display:none!important}
-  .np{position:static;background:#fff;padding:0;display:block!important}
+@media print{ body>*:not(.np.on){display:none!important}
+  .np.on{position:static;background:#fff;padding:0;display:block!important}
   .npbox{max-width:none;padding:0}
   .npnoprint{display:none!important} }
 </style>
@@ -316,6 +316,9 @@ body.in .gate{display:none}
     <div class="hint" id="listSub" style="margin:0 0 11px"></div>
 
     <div class="wtalert" id="wtAlert" style="display:none"></div>
+
+    <button type="button" class="plain" id="btnDestChange" style="margin-bottom:12px"
+      title="チェックした台の仕向地を変えて、変更前・変更後・理由を記録します。">仕向地を変更（選んだ台のみ）</button>
 
     <div class="tabsw" id="tabSw">
       <button type="button" data-tab="w" class="on">実重量</button>
@@ -440,6 +443,14 @@ body.in .gate{display:none}
     <button type="button" id="btnCdPrint">印刷する</button>
   </div>
 </div></div>
+
+<div class="np" id="destWrap"><div class="npbox">
+  <div id="destBody"></div>
+  <div style="display:flex;gap:9px;margin-top:14px">
+    <button type="button" class="plain" id="btnDestClose">閉じる</button>
+    <button type="button" id="btnDestSave">保存する</button>
+  </div>
+</div></div>
 <script>
 /* ============================================================
    つなぎ先
@@ -454,9 +465,11 @@ const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu";
 const LIST_UNITS="製造番号明細";
 const LIST_SHUTSUZU="出図マスタ";
+const LIST_BREAKDOWN="出図内訳";
+const LIST_DESTCHANGE="仕向地変更履歴";
 let msalInstance=null,account=null,SITE_ID=null,UNITS_ID=null;
 let LIST_CTX=null,RECENT=[],TODO=[],SEL=new Set(),PENDING=null;
-let SHUTSUZU_ID=null;
+let SHUTSUZU_ID=null,BREAKDOWN_ID=null,DESTCHANGE_ID=null;
 /* DRAFT … 打っただけでまだ保存していない値。id -> {w,car,date,ym}
    保存するまでここにしか無い。画面を閉じる前に引き止める。 */
 let DRAFT=new Map();
@@ -565,6 +578,11 @@ async function signedIn(){
     /* 銘板表示方法を知るために出図マスタも見る。無くても動く（丸めの案内が出ないだけ） */
     const sm=lists.find(x=>x.displayName===LIST_SHUTSUZU||x.name===LIST_SHUTSUZU);
     SHUTSUZU_ID=sm?sm.id:null;
+    /* 仕向地変更のとき、ステッカーが発注済みかを内訳から見るために要る。無くても動く */
+    const bd=lists.find(x=>x.displayName===LIST_BREAKDOWN||x.name===LIST_BREAKDOWN);
+    BREAKDOWN_ID=bd?bd.id:null;
+    const dc=lists.find(x=>x.displayName===LIST_DESTCHANGE||x.name===LIST_DESTCHANGE);
+    DESTCHANGE_ID=dc?dc.id:null;
     document.body.classList.add("in");
     await loadTodo();
     await openDeepLink();
@@ -602,7 +620,7 @@ function unitOf(it){const f=it.fields||{};return {
   ym:trim(f.ManufactureYM).slice(0,7),
   nm:f.NotMeasured?"1":"", nmn:f.NotMeasuredNote||"",
   torisetsu:f.TorisetsuDoneAt||"", application:f.ApplicationDoneAt||"",
-  npPrinted:f.NameplatePrintedAt||"",
+  npPrinted:f.NameplatePrintedAt||"", bk:f.BreakdownKey||"",
   status:f.UnitStatus||""}}
 
 async function loadTodo(){
@@ -1123,6 +1141,109 @@ function openCarData(){
 }
 
 /* ============================================================
+   仕向地変更
+   ------------------------------------------------------------
+   仕向地は1台ごとに持っている（Vol.3 第4節）ので、選んだ分だけ
+   あとから変えられる。変更は「仕向地変更履歴」に記録し、対象の
+   製造番号明細のDestination/DeliveryToも実際に書き換える。
+   対象の内訳でステッカーが発注済みなら、開いた瞬間に警告する。
+   ============================================================ */
+function destTargets(){
+  return (LIST_CTX?LIST_CTX.units:[]).filter(u=>SEL.has(u.id));
+}
+function snRangeSummary(units){
+  const vals=units.map(u=>u.sn).filter(v=>v&&!isPlaceholderSn(v));
+  if(!vals.length)return units.length+"台";
+  const nums=vals.map(v=>parseInt(v,10));
+  if(nums.every(n=>!isNaN(n))){
+    const sorted=[...nums].sort((a,b)=>a-b);
+    if(sorted[sorted.length-1]-sorted[0]+1===sorted.length&&sorted.length===vals.length){
+      return String(sorted[0]).padStart(5,"0")+"〜"+String(sorted[sorted.length-1]).padStart(5,"0");
+    }
+  }
+  return vals.slice(0,6).join("・")+(vals.length>6?" ほか":"");
+}
+async function stickerOrderedBks(units){
+  const bks=[...new Set(units.map(u=>u.bk).filter(Boolean))];
+  const shipNo=currentShipNo();
+  if(!bks.length||!BREAKDOWN_ID||!shipNo)return new Set();
+  try{
+    const items=await gAll("/sites/"+SITE_ID+"/lists/"+BREAKDOWN_ID+"/items?expand=fields&$top=999"+
+      "&$filter=fields/ShutsuzuNo eq '"+encodeURIComponent(shipNo)+"'",PREF);
+    const set=new Set();
+    items.forEach(it=>{const f=it.fields||{};if(f.StickerOrderedAt&&bks.includes(f.Title))set.add(f.Title)});
+    return set;
+  }catch(e){console.warn("内訳の確認に失敗しました",e);return new Set()}
+}
+async function openDestChange(){
+  clearErr();
+  const t=destTargets();
+  if(!t.length){showErr("先にチェックで対象の車両を選んでください。");return}
+  const fromList=[...new Set(t.map(u=>trim(u.dest)).filter(Boolean))];
+  const fromLabel=fromList.join("・")||"（不明）";
+  $("destBody").innerHTML='<h3>仕向地を変更</h3><p class="hint">読み込んでいます…</p>';
+  $("destWrap").classList.add("on");
+  const orderedBks=await stickerOrderedBks(t);
+  const warn=orderedBks.size
+    ? '<div class="npmiss"><b>⚠ ステッカーは発注済みです。</b>'+esc(fromLabel)+
+      '仕様のステッカーが手配されています。資材に確認してください。</div>'
+    : "";
+  $("destBody").innerHTML=
+    '<h3>仕向地を変更　選んだ'+t.length+'台</h3>'+
+    '<div class="hint" style="margin-bottom:10px">変更前：'+esc(fromLabel)+'</div>'+
+    warn+
+    '<div class="bulk"><div class="bd">'+
+      '<div class="f"><span>変更後の仕向地</span><input id="destTo" type="text" placeholder="例）沖縄"></div>'+
+      '<div class="f"><span>理由</span><select id="destReason">'+
+        ["客先都合","社内都合","その他"].map(o=>'<option>'+esc(o)+'</option>').join("")+'</select></div>'+
+      '<div class="f"><span>理由（くわしく・任意）</span><input id="destReasonNote" type="text"></div>'+
+      '<div class="f"><span>付属品の扱い</span><select id="destAcc">'+
+        ["該当なし","外した","外さずに出荷した"].map(o=>'<option>'+esc(o)+'</option>').join("")+'</select></div>'+
+      '<div class="f"><span>ステッカー</span><select id="destSticker">'+
+        ["発注前","発注済み"].map(o=>'<option'+(orderedBks.size&&o==="発注済み"?" selected":"")+'>'+esc(o)+'</option>').join("")+
+      '</select></div>'+
+      '<div class="f"><span>備考（任意）</span><input id="destRemarks" type="text"></div>'+
+    '</div></div>';
+}
+async function saveDestChange(){
+  const t=destTargets();
+  if(!t.length){$("destWrap").classList.remove("on");return}
+  const toEl=$("destTo");if(!toEl)return;
+  const to=trim(toEl.value);
+  if(!to){showErr("変更後の仕向地を入れてください。");return}
+  const fromList=[...new Set(t.map(u=>trim(u.dest)).filter(Boolean))];
+  const fromLabel=fromList.join("・")||"（不明）";
+  const reason=$("destReason").value, reasonNote=trim($("destReasonNote").value);
+  const acc=$("destAcc").value, sticker=$("destSticker").value, remarks=trim($("destRemarks").value);
+  const bks=[...new Set(t.map(u=>u.bk).filter(Boolean))];
+  const bk=bks.length===1?bks[0]:"";
+  const btn=$("btnDestSave");btn.disabled=true;btn.textContent="保存しています…";
+  try{
+    await patchMany(t.map(u=>({id:u.id,body:{Destination:to,DeliveryTo:to}})));
+    t.forEach(u=>{u.dest=to});
+    if(DESTCHANGE_ID){
+      await g("POST","/sites/"+SITE_ID+"/lists/"+DESTCHANGE_ID+"/items",{fields:{
+        Title:fromLabel+"→"+to,
+        ShutsuzuNo:currentShipNo(), BreakdownKey:bk||null,
+        TargetRange:snRangeSummary(t), TargetCount:t.length,
+        FromDest:fromLabel, ToDest:to,
+        ChangedAt:(new Date()).toISOString(),
+        Reason:reason, ReasonNote:reasonNote||null,
+        AccessoryAction:acc, StickerState:sticker,
+        Remarks:remarks||null
+      }});
+    }
+    $("destWrap").classList.remove("on");
+    SEL=new Set();
+    renderList();
+    showOk(t.length+"台の仕向地を「"+to+"」に変更しました。");
+  }catch(e){
+    console.error(e);
+    showErr("保存できませんでした。もう一度お試しください。");
+  }finally{btn.disabled=false;btn.textContent="保存する"}
+}
+
+/* ============================================================
    ステッカー・図面
    ------------------------------------------------------------
    どちらも出図（1件）単位。ステッカーは出図マスタのStickerJsonを
@@ -1620,6 +1741,9 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("btnCarData").onclick=openCarData;
   $("btnCdClose").onclick=()=>$("cdWrap").classList.remove("on");
   $("btnCdPrint").onclick=()=>window.print();
+  $("btnDestChange").onclick=openDestChange;
+  $("btnDestClose").onclick=()=>$("destWrap").classList.remove("on");
+  $("btnDestSave").onclick=saveDestChange;
   $("btnSelYet").onclick=()=>{selSet(u=>!valOf(u,"date"));noteApply()};
   $("btnSelAll").onclick=()=>{selSet(()=>true);noteApply()};
   $("btnSelNone").onclick=()=>{selSet(()=>false);noteApply()};
