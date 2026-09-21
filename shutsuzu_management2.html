@@ -210,7 +210,12 @@ button.pkrow .v{background:var(--soft);border:1px solid var(--line);border-radiu
 .ver .vd.ok{color:#1f7a4d;font-weight:700}
 .ver .vd.na{color:#b4232f;font-weight:700}
 .ver .vact{display:flex;gap:8px;flex-wrap:wrap}
-.ver a.msmall{text-decoration:none;display:inline-block}
+.ver .vact a,.ver .vact button{border-radius:999px;padding:5px 13px;font-size:12px;
+  font-weight:700;border:1px solid var(--line);background:#fff;color:#555;
+  text-decoration:none;display:inline-block;cursor:pointer}
+.ver .vact a.dwopenfile{border-color:#f3c5d3;color:var(--brand-dark)}
+.ver .vact a.dwopenfile:hover{background:#fff5f8}
+.ver .vact button:hover{border-color:var(--brand);color:var(--brand)}
 .ver .vcat{background:var(--soft);border:1px solid var(--line);border-radius:6px;
   padding:1px 8px;font-size:11px;font-weight:700;color:#555}
 .catchips{display:flex;gap:6px;flex-wrap:wrap}
@@ -2733,11 +2738,18 @@ function openUnits(shipNo){
 function expandUnits(e){
   const out=[];
   (e.meisai||[]).forEach(r=>{
-    const q=parseInt(r.qty,10),from=parseInt(r.snFrom,10);
-    if(!isFinite(q)||q<1||!isFinite(from))return;
+    const q=parseInt(r.qty,10);
+    /* 図番が決まっていない内訳はまだ台帳を作らない。製造番号は
+       「図番の決まった車両に割り当てるもの」というイメージなので、
+       図番が先。台数だけの状態では行を作らない。 */
+    if(!isFinite(q)||q<1||!trim(r.zu))return;
+    /* 製造番号はまだ無くてもいい（資材が出荷間際に取る）。
+       図番さえ決まっていれば、1台ごとの行は先に作る。 */
+    const from=parseInt(r.snFrom,10);
     for(let k=0;k<q;k++){
       out.push({
-        sn:pad5(String(from+k)), dest:trim(r.dest), spec:trim(r.spec),
+        seq:k+1, sn:isFinite(from)?pad5(String(from+k)):"",
+        dest:trim(r.dest), spec:trim(r.spec),
         zu:trim(r.zu), bk:trim(r.bk),
         /* 1台ごとには、その内訳の値が降りる。親のまとめた値ではない */
         model:trim(r.model), name:trim(r.name), specNo:trim(r.specNo), cap:trim(r.cap),
@@ -2747,11 +2759,17 @@ function expandUnits(e){
   });
   return out;
 }
+/* 製造番号がまだ無い台のTitleは「未定-内訳キー-内部通番」にする。
+   5桁の実番号と絶対に混同しない形で、内訳キー＋内部通番ごとに一意。
+   内部通番は現場の「号機」（生産順の通し番号）とは別物。あくまで
+   SharePointの行を同期させるためだけの、見せない管理用の値。 */
+function placeholderSn(bk,seq){return "未定-"+(bk||"?")+"-"+seq}
+function isPlaceholderSn(v){return /^未定-/.test(trim(v))}
 function unitFields(e,u){
   return {
-    Title:u.sn, ShutsuzuNo:e.ship_no,
+    ShutsuzuNo:e.ship_no,
     DrawingNo:trim(u.zu)||e.drawing_no, SpecNo:trim(u.specNo)||e.spec_no,
-    BreakdownKey:u.bk||null,
+    BreakdownKey:u.bk||null, UnitSeq:u.seq,
     Model:trim(u.model)||e.model, ProductName:trim(u.name)||e.product_name,
     Customer:e.customer,
     DeliveryTo:u.dest, Destination:u.dest,
@@ -2761,6 +2779,14 @@ function unitFields(e,u){
     /* 車体番号(CarNo)は入れていない。接頭辞が機種ごとに違い、
        採番規則が未確認のため。確認できたらここで自動採番する。 */
   };
+}
+/* 製造番号(Title)は資材の仕事。すでに本物（仮の「未定-…」ではない値）が
+   入っていれば、技術側の保存では絶対に触らない。まだ仮か空なら、
+   内訳に入っている範囲に合わせて仮の値を更新する。 */
+function decideTitle(existingTitle,u){
+  const cur=trim(existingTitle);
+  if(cur&&!isPlaceholderSn(cur))return cur;
+  return u.sn||placeholderSn(u.bk,u.seq);
 }
 async function fetchUnits(shipNo){
   const q=`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items?expand=fields&$top=500`+
@@ -2802,22 +2828,34 @@ async function gBatch(requests){
   return out;
 }
 async function syncUnits(e,onProgress){
-  const want=expandUnits(e), wantBy={};
-  want.forEach(u=>wantBy[u.sn]=u);
-  const have=await fetchUnits(e.ship_no), haveBy={};
-  have.forEach(it=>haveBy[(it.fields||{}).Title]=it);
-
-  const toCreate=[],toUpdate=[],toDelete=[],locked=[];
-  want.forEach(u=>{
-    const it=haveBy[u.sn];
-    if(!it){toCreate.push(u);return}
-    const f=it.fields||{};
-    if(f.Destination!==u.dest||f.DrawingNo!==e.drawing_no||f.Remarks!==u.spec||f.Model!==e.model)
-      toUpdate.push({id:it.id,u});
-  });
+  const want=expandUnits(e);
+  const have=await fetchUnits(e.ship_no);
+  /* 内訳キー＋内部通番で対応づける。BreakdownKeyが無い古い行（この仕組みより前に
+     作られたもの）だけは、製造番号(Title)で拾う互換経路を残す。 */
+  const haveByKey={},haveByTitle={};
   have.forEach(it=>{
     const f=it.fields||{};
-    if(wantBy[f.Title])return;
+    if(f.BreakdownKey&&f.UnitSeq!=null)haveByKey[f.BreakdownKey+"|"+f.UnitSeq]=it;
+    else if(f.Title)haveByTitle[f.Title]=it;
+  });
+
+  const matched=new Set();
+  const toCreate=[],toUpdate=[],toDelete=[],locked=[];
+  want.forEach(u=>{
+    let it=haveByKey[u.bk+"|"+u.seq];
+    if(!it&&u.sn)it=haveByTitle[u.sn];
+    if(!it){toCreate.push(u);return}
+    matched.add(it.id);
+    const f=it.fields||{};
+    const title=decideTitle(f.Title,u);
+    if(f.Destination!==u.dest||f.DrawingNo!==(trim(u.zu)||e.drawing_no)||f.Remarks!==u.spec||
+       f.Model!==(trim(u.model)||e.model)||f.BreakdownKey!==(u.bk||null)||f.UnitSeq!==u.seq||
+       trim(f.Title)!==title)
+      toUpdate.push({id:it.id,u:u,title:title});
+  });
+  have.forEach(it=>{
+    if(matched.has(it.id))return;
+    const f=it.fields||{};
     if(f.ShipDate||f.ActualWeight!=null){locked.push(f.Title)}  /* 出荷実績あり。消さない */
     else toDelete.push(it.id);
   });
@@ -2833,9 +2871,11 @@ async function syncUnits(e,onProgress){
 
   const base=`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items`;
   const reqs=[]
-    .concat(toCreate.map(u=>({method:"POST",url:base,body:{fields:unitFields(e,u)},
+    .concat(toCreate.map(u=>({method:"POST",url:base,
+             body:{fields:{...unitFields(e,u),Title:u.sn||placeholderSn(u.bk,u.seq)}},
              headers:{"Content-Type":"application/json"}})))
-    .concat(toUpdate.map(x=>({method:"PATCH",url:`${base}/${x.id}/fields`,body:unitFields(e,x.u),
+    .concat(toUpdate.map(x=>({method:"PATCH",url:`${base}/${x.id}/fields`,
+             body:{...unitFields(e,x.u),Title:x.title},
              headers:{"Content-Type":"application/json"}})))
     .concat(toDelete.map(id=>({method:"DELETE",url:`${base}/${id}`})));
 
