@@ -466,6 +466,10 @@ body:not(.signed-in) .gate{display:flex}
 .bomstat.ng{color:#b4232f}
 .bomhead{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0 14px;font-size:13.5px}
 .bomhead b{color:var(--muted);font-weight:700;margin-right:4px}
+#bomTable tr.bomrow-new td:first-child{color:#1f7a4d;font-weight:700}
+#bomTable tr.bomrow-upd td:first-child{color:#b4232f;font-weight:700}
+#bomTable tr.bomrow-same td:first-child{color:var(--muted)}
+#bomTable .oldn{color:#999;text-decoration:line-through}
 /* 「なし」＝その製品には無い。済とは別に見えるようにする */
 .ck.none{background:#f2f2f4;border-color:#d0d0d6;color:#5a5a63}
 .ck.none::before{content:"— "}
@@ -2380,50 +2384,97 @@ async function readBomExcel(file){
   return {ok:true,sheet:nm,spec:spec,model:model,partsNo:partsNo,zu:zu,units:units,
           parts:readBomParts(ws)};
 }
-/* 部品表詳細から拾った図番の一覧を、図面マスタ（ファイルを持たない
-   台帳リスト）に登録する。既にある図番なら、この仕様番号を
-   使われている仕様に足すだけ（名称などは触らない）。
-   図面ライブラリの実ファイルとの紐づけはここでは行わない（別の作業）。 */
-async function syncDrawingMaster(specNo,parts){
-  if(!ID_DRAWS||!specNo||!parts.length)return {created:0,updated:0,skipped:!ID_DRAWS};
-  const have=await gGetAll(`/sites/${SITE_ID}/lists/${ID_DRAWS}/items?expand=fields&$top=999`);
-  const haveBy={}; have.forEach(it=>haveBy[(it.fields||{}).Title]=it);
-  const toCreate=[],toUpdate=[];
-  parts.forEach(p=>{
-    const it=haveBy[p.zu];
-    if(!it){
-      toCreate.push({Title:p.zu,DrawingName:p.name||null,UsedInSpecs:specNo,SpecCount:1});
-      return;
-    }
-    const f=it.fields||{};
-    const specs=trim(f.UsedInSpecs).split(/[\s、,]+/).filter(Boolean);
-    if(specs.includes(specNo))return;                    /* 既に載っている */
-    specs.push(specNo);
-    toUpdate.push({id:it.id,fields:{UsedInSpecs:specs.join(" "),SpecCount:specs.length}});
-  });
-  const total=toCreate.length+toUpdate.length;
-  if(!total)return {created:0,updated:0,skipped:false};
-  const base=`/sites/${SITE_ID}/lists/${ID_DRAWS}/items`;
-  const reqs=[]
-    .concat(toCreate.map(f=>({method:"POST",url:base,body:{fields:f},
-             headers:{"Content-Type":"application/json"}})))
-    .concat(toUpdate.map(x=>({method:"PATCH",url:`${base}/${x.id}/fields`,body:x.fields,
-             headers:{"Content-Type":"application/json"}})));
-  const res=await gBatch(reqs);
-  const failed=res.filter(r=>r.status>=400);
-  if(failed.length)console.error("図面マスタの更新に失敗した分:",failed);
-  return {created:toCreate.length,updated:toUpdate.length,failed:failed.length};
-}
-async function handleBomFile(card,file){
-  if(!file)return;
+/* ============================================================
+   部品表の取り込みは「解析→全件一覧で目視確認→実行」の3段階。
+   書き込み前に必ず中身を見せる（図面マスタは他の案件とも共有する
+   台帳なので、見ずに書き込むのは怖い）。
+
+   図面マスタの図番と照らし合わせて、行ごとに次の4つに分ける。
+     新規     … まだ無い図番
+     名称変更 … 図番はあるが、名称が今の部品表と違う（改訂の疑い）
+     仕様追加 … 図番はあり名称も同じだが、この仕様がまだ載っていない
+     変化なし … 何もしなくていい
+   ============================================================ */
+let BOM_PENDING=null;
+async function openBomReview(card,file){
   const stat=card.querySelector(".bomstat");
   if(stat){stat.textContent="読み込んでいます…";stat.classList.remove("ng")}
-  readBomExcel(file).then(async r=>{
-    if(!r.ok){
-      if(stat){stat.textContent=r.reason+"。手入力してください";stat.classList.add("ng")}
-      return;
+  let r;
+  try{ r=await readBomExcel(file); }
+  catch(err){
+    console.error(err);
+    if(stat){stat.textContent="読み込みに失敗しました（ファイル形式を確認してください）";stat.classList.add("ng")}
+    return;
+  }
+  if(!r.ok){
+    if(stat){stat.textContent=r.reason+"。手入力してください";stat.classList.add("ng")}
+    return;
+  }
+  if(stat){stat.textContent="";stat.classList.remove("ng")}
+  const creates=[],updates=[],unchanged=[];
+  if(r.spec&&r.parts.length&&ID_DRAWS){
+    const have=await gGetAll(`/sites/${SITE_ID}/lists/${ID_DRAWS}/items?expand=fields&$top=999`);
+    const haveBy={}; have.forEach(it=>haveBy[(it.fields||{}).Title]=it);
+    r.parts.forEach(p=>{
+      const it=haveBy[p.zu];
+      if(!it){creates.push(p);return}
+      const f=it.fields||{};
+      const specs=trim(f.UsedInSpecs).split(/[\s、,]+/).filter(Boolean);
+      const specNew=!specs.includes(r.spec);
+      const oldName=trim(f.DrawingName);
+      const nameChanged=!!p.name&&oldName!==p.name;
+      if(!specNew&&!nameChanged){unchanged.push(p);return}
+      updates.push({p:p,id:it.id,oldName:oldName,nameChanged:nameChanged,
+        specs:specNew?specs.concat([r.spec]):specs});
+    });
+  }
+  BOM_PENDING={card:card,r:r,creates:creates,updates:updates,unchanged:unchanged};
+  renderBomReview();
+  $("bomOvl").classList.add("on");
+}
+function renderBomReview(){
+  const {r,creates,updates,unchanged}=BOM_PENDING;
+  $("bomSub").textContent='「'+r.sheet+'」から読み取りました。内容を確認してから取り込んでください。';
+  $("bomHead").innerHTML=[["仕様",r.spec],["図番",r.zu],["型式",r.model],["部品表番号",r.partsNo],["台数",r.units]]
+    .map(([k,v])=>'<div><b>'+esc(k)+'</b>'+esc(v||"（空）")+'</div>').join("");
+  const rows=[]
+    .concat(creates.map(p=>({label:"新規",zu:p.zu,name:esc(p.name)})))
+    .concat(updates.map(u=>({label:u.nameChanged?"名称変更":"仕様追加",zu:u.p.zu,
+      name:u.nameChanged?('<span class="oldn">'+esc(u.oldName||"（空）")+'</span> → '+esc(u.p.name)):esc(u.p.name)})))
+    .concat(unchanged.map(p=>({label:"変化なし",zu:p.zu,name:esc(p.name)})));
+  $("bomRows").innerHTML=rows.length
+    ? rows.map(x=>'<tr class="bomrow-'+(x.label==="新規"?"new":x.label==="名称変更"?"upd":"same")+'">'+
+        '<td>'+x.label+'</td><td class="mono">'+esc(x.zu)+'</td><td>'+x.name+'</td></tr>').join("")
+    : '<tr><td colspan="3" class="muted">部品表詳細から図番が見つかりませんでした</td></tr>';
+  $("bomProg").textContent=r.parts.length+"点　新規"+creates.length+"・名称変更"+
+    updates.filter(u=>u.nameChanged).length+"・仕様追加"+updates.filter(u=>!u.nameChanged).length+
+    "・変化なし"+unchanged.length;
+}
+function closeBomReview(){
+  $("bomOvl").classList.remove("on");
+  BOM_PENDING=null;
+}
+async function commitBomReview(){
+  if(!BOM_PENDING)return;
+  const {card,r,creates,updates}=BOM_PENDING;
+  const btn=$("btnBomCommit"); btn.disabled=true;
+  try{
+    if(ID_DRAWS&&(creates.length||updates.length)){
+      const base=`/sites/${SITE_ID}/lists/${ID_DRAWS}/items`;
+      const reqs=[]
+        .concat(creates.map(p=>({method:"POST",url:base,
+          body:{fields:{Title:p.zu,DrawingName:p.name||null,UsedInSpecs:r.spec,SpecCount:1}},
+          headers:{"Content-Type":"application/json"}})))
+        .concat(updates.map(u=>{
+          const fields={UsedInSpecs:u.specs.join(" "),SpecCount:u.specs.length};
+          if(u.nameChanged)fields.DrawingName=u.p.name;
+          return {method:"PATCH",url:`${base}/${u.id}/fields`,body:fields,
+            headers:{"Content-Type":"application/json"}};
+        }));
+      const res=await gBatch(reqs);
+      const failed=res.filter(x=>x.status>=400);
+      if(failed.length)console.error("図面マスタの更新に失敗した分:",failed);
     }
-    /* 既に入っている値は消さない（手で直したものを守るため） */
     const set=(cls,v)=>{
       if(!v)return false;
       const el=card.querySelector(cls);
@@ -2435,34 +2486,24 @@ async function handleBomFile(card,file){
     if(set(".m-zu",r.zu))got.push("図番");
     if(set(".m-model",r.model))got.push("型式");
     if(set(".m-parts",r.partsNo))got.push("部品表番号");
-    /* 台数は書き換えず、違っていたら教えるだけ */
     const qtyEl=card.querySelector(".m-qty");
-    const u=parseInt(r.units,10);
+    const u2=parseInt(r.units,10);
     let warn="";
-    if(qtyEl&&isFinite(u)&&trim(qtyEl.value)&&parseInt(qtyEl.value,10)!==u)
-      warn="　※内訳の台数("+qtyEl.value+")と部品表の台数("+u+")が違います";
-    let dmMsg="";
-    if(r.spec&&r.parts.length){
-      if(stat)stat.textContent="図面マスタに登録しています…";
-      try{
-        const dm=await syncDrawingMaster(r.spec,r.parts);
-        dmMsg="　図面マスタ："+r.parts.length+"点中 新規"+dm.created+"・仕様追加"+dm.updated;
-        if(dm.failed)dmMsg+="・失敗"+dm.failed;
-      }catch(errD){
-        console.error(errD,errD.body);
-        dmMsg="　図面マスタへの登録に失敗しました（コンソール参照）";
-      }
-    }
+    if(qtyEl&&isFinite(u2)&&trim(qtyEl.value)&&parseInt(qtyEl.value,10)!==u2)
+      warn="　※内訳の台数("+qtyEl.value+")と部品表の台数("+u2+")が違います";
+    const stat=card.querySelector(".bomstat");
     if(stat){
-      stat.textContent=(got.length?("取り込みました："+got.join("・")):"新しく入る項目はありませんでした（既に入力済み）")+warn+dmMsg;
+      stat.textContent=(got.length?("取り込みました："+got.join("・")):"新しく入る項目はありませんでした（既に入力済み）")+warn+
+        "　図面マスタ：新規"+creates.length+"・更新"+updates.length;
       stat.classList.toggle("ng",!!warn);
     }
     applySpec(card);
     recalcMeisai();
-  }).catch(err=>{
-    console.error(err);
-    if(stat){stat.textContent="読み込みに失敗しました（ファイル形式を確認してください）";stat.classList.add("ng")}
-  });
+    closeBomReview();
+  }catch(err){
+    console.error(err,err.body);
+    $("bomProg").textContent="取り込みに失敗しました（コンソール参照）";
+  }finally{btn.disabled=false}
 }
 /* 製造番号明細（SharePointのリスト）を開く。
    出図管理番号を渡すと、その出図の分だけに絞って開く。 */
@@ -3356,7 +3397,9 @@ document.addEventListener("DOMContentLoaded",()=>{
       const card=e.target.closest(".bd"); if(card)applySpec(card);
     }
     if(e.target.classList.contains("m-bomfile")){
-      const card=e.target.closest(".bd"); if(card)handleBomFile(card,e.target.files[0]);
+      const card=e.target.closest(".bd"),file=e.target.files[0];
+      e.target.value="";                       /* 同じファイルを選び直しても change が飛ぶように */
+      if(card&&file)openBomReview(card,file);
     }
   });
   $("meisaiRows").addEventListener("blur",e=>{
