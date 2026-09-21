@@ -449,6 +449,31 @@ body:not(.signed-in) .gate{display:flex}
 .det.view .ck{cursor:default;pointer-events:none}
 .det.view .bdbtn.bdcopy,.det.view .bdbtn.bddel,.det.view #btnAddMeisai,.det.view #btnPrevCopy{display:none}
 .det.view .bdwrap{background:#fff}
+.kinbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.kinmark{font-size:12px;font-weight:700;color:#1b7346;background:#eaf7ef;
+  border:1px solid #9fd8b6;border-radius:9px;padding:3px 9px}
+.kinmark:empty{display:none}
+.kw{position:fixed;inset:0;background:rgba(20,28,40,.45);z-index:70;display:none;
+  align-items:flex-start;justify-content:center;padding:20px 14px;overflow:auto}
+.kw.on{display:flex}
+.kbox{background:#fff;border-radius:14px;max-width:820px;width:100%;padding:18px 20px 20px}
+.kbox h3{margin:0 0 4px;font-size:18px}
+.kbox .sub2{font-size:12.5px;color:var(--muted);margin:0 0 12px;line-height:1.8}
+.kbox textarea{width:100%;height:150px;font-size:12.5px;line-height:1.7;
+  border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-family:inherit}
+.krow{display:grid;grid-template-columns:120px 1fr;gap:8px 12px;align-items:center;margin-bottom:7px}
+.krow label{font-size:12px;color:var(--muted);font-weight:700}
+.krow input{padding:7px 10px;font-size:13.5px;border-radius:8px}
+.ktbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+.ktbl th{text-align:left;font-size:11px;color:var(--muted);padding:4px 6px;
+  border-bottom:1.5px solid var(--line)}
+.ktbl td{padding:4px 6px;border-bottom:1px solid #eef1f5}
+.ktbl input{width:100%;padding:6px 8px;font-size:13px;border-radius:8px}
+.ktbl .qt{width:74px;text-align:right}
+.kng{background:var(--soft);border:1px dashed var(--line);border-radius:10px;
+  padding:12px 14px;font-size:13px;color:#777;line-height:1.8;margin-top:10px}
+.kfoot{display:flex;gap:9px;margin-top:14px;flex-wrap:wrap;align-items:center}
+.kfoot .muted{font-size:12px}
 </style>
 </head>
 <body>
@@ -521,6 +546,7 @@ body:not(.signed-in) .gate{display:flex}
   <div class="det-body">
     <div id="formWarn" class="warn"></div>
     <form id="mainForm" class="form-grid" onsubmit="event.preventDefault(); addOrUpdateEntry();">
+<label>kintone</label><div class="kinbar"><button type="button" class="msmall" id="btnKintone">生産依頼書を取り込む</button><span class="muted" style="font-size:12.5px">kintoneの印刷用画面をぜんぶコピーして貼るだけです。入る前に内容を確認できます。</span><span id="kinMark" class="kinmark"></span></div>
 <label for="ship_no">出図管理番号</label><input id="ship_no" type="text" readonly placeholder="自動採番（00001〜）">
 <label for="date">出図日 <span class="muted">*</span></label><div class="datewrap"><input id="date" type="date" required><button type="button" class="msmall" id="btnDateEdit" style="display:none">日付を直す</button><span class="datelock" id="dateLockNote" style="display:none">出図した日として確定しています</span></div>
 <label for="customer">受注先</label><input id="customer" type="text">
@@ -568,6 +594,24 @@ body:not(.signed-in) .gate{display:flex}
   </div>
 </aside>
 
+<div class="kw" id="kinWrap"><div class="kbox">
+  <h3>kintone の生産依頼書を取り込む</h3>
+  <p class="sub2">
+    kintone で依頼書を開く → <b>印刷用画面</b> を出す → <b>Ctrl+A</b> でぜんぶ選ぶ → <b>Ctrl+C</b> →
+    下の枠に <b>Ctrl+V</b> で貼る。<br>
+    読み取った内容は下に出ます。<b>直してから入れられます。</b>まちがって上書きすることはありません。
+  </p>
+  <textarea id="kinText" placeholder="ここに貼ってください"></textarea>
+  <div class="kfoot">
+    <button type="button" class="msmall" id="btnKinRead">読み取る</button>
+    <span class="muted" id="kinMsg"></span>
+  </div>
+  <div id="kinPreview"></div>
+  <div class="kfoot" style="border-top:1px solid var(--line);padding-top:12px;margin-top:14px">
+    <button type="button" id="btnKinApply" style="display:none">この内容を入れる</button>
+    <button type="button" class="msmall" id="btnKinClose">閉じる</button>
+  </div>
+</div></div>
 <script>
 /* ============================================================
    保存先
@@ -1717,6 +1761,164 @@ function prevCopy(){
   renderMeisai(src.meisai.map(r=>Object.assign({},r,{snFrom:"",snTo:""})));
   toast("出図 "+src.ship_no+"（"+(src.date||"")+"）から "+src.meisai.length+" 件コピーしました");
 }
+
+/* ============================================================
+   kintone の生産依頼書を取り込む
+   ------------------------------------------------------------
+   kintone には API 連携という手もあるが、ここでは
+   「印刷用画面をコピーして貼る」形にしている。
+     ・追加のライブラリが要らない
+     ・kintone の認証やCORSを触らない
+     ・うまく読めなくても、その場で人が直せる
+   読み取った内容はいったん画面に出して、確認してから入れる。
+   黙って上書きはしない。
+   ============================================================ */
+const KPLACES=["羽田","成田","関空","関西","千歳","伊丹","福岡","那覇","中部","北九州",
+  "鹿児島","沖縄","岡山","仙台","広島","神戸","関東","新千歳","国際空港","小松","宮崎","熊本"];
+/* PDFから貼るとこの手の異体字が混ざることがあるので直す */
+const KFIX={"⻄":"西","⾒":"見","⾦":"金","⼯":"工","⾞":"車","⻑":"長","⾼":"高","⽣":"生",
+  "⼊":"入","⼤":"大","⼩":"小","⽇":"日","⽉":"月","⾯":"面","⽤":"用","⼀":"一","⼆":"二","⼿":"手"};
+function kNorm(t){
+  t=String(t||"").normalize("NFKC").replace(/\r/g,"");
+  return t.replace(/[⺀-⿟]/g,c=>KFIX[c]||c);
+}
+function kSplitModelDest(h){
+  const p=h.split(/\s+/);
+  if(p.length>=2){
+    const last=p[p.length-1];
+    if(KPLACES.some(x=>last.indexOf(x)>=0)) return {model:p.slice(0,-1).join(" "),dest:last};
+  }
+  return {model:h,dest:""};
+}
+/* 見積り表の1行。台数は「整数のあとに金額が続く」ところで見つける。
+   機種の中に 96x125 のような数字が入っていても誤爆しない。 */
+function kQuoteRow(line){
+  const p=line.split(/\s+/);
+  for(let i=1;i<p.length;i++){
+    if(/^\d{1,4}$/.test(p[i]) && /^[\d,]{4,}$/.test(p[i+1]||"")){
+      const head=p.slice(0,i).join(" "), rest=p.slice(i+1);
+      const cand=rest[4]||"";
+      const due=/^\d{4}[\/\-年]/.test(cand)?cand:"";
+      const md=kSplitModelDest(head);
+      return {model:md.model,dest:md.dest,qty:p[i],due:due,
+              note:rest.slice(due?5:4).join(" ")};
+    }
+  }
+  return null;
+}
+function parseKintone(raw){
+  const t=kNorm(raw);
+  const L=t.split("\n").map(x=>x.replace(/　/g," ").trim());
+  const o={no:"",kind:"",made:"",customer:"",route:"",user:"",dest:"",models:"",rows:[],total:0};
+  const m=t.match(/(\d{8}-\d{4})/); if(m)o.no=m[1];
+  let i=L.findIndex(x=>/^GSE引き合い書\/生産依頼書/.test(x));
+  if(i>=0&&L[i+1]){const p=L[i+1].split(/\s+/);o.kind=p[0]||"";o.made=p[2]||""}
+  i=L.findIndex(x=>/^引き合い先\s+引き合いルート/.test(x));
+  if(i>=0&&L[i+1]){const p=L[i+1].split(/\s+/);o.customer=p[0]||"";o.route=p.slice(1).join(" ")}
+  i=L.findIndex(x=>/^ユーザー名\s+納品先/.test(x));
+  if(i>=0&&L[i+1]){
+    let p=L[i+1].split(/\s+/); o.user=p.shift()||"";
+    const k=p.findIndex(x=>/^[SABC]ランク$|^受注$|^失注$|^[（(]/.test(x));
+    if(k>=0)p=p.slice(0,k);
+    o.dest=p.join(" ");
+  }
+  i=L.findIndex(x=>/^引き合い機種/.test(x));
+  if(i>=0)o.models=(L[i+1]||"");
+  i=L.findIndex(x=>/^機種\s+台数\s+販売金額/.test(x));
+  if(i>=0){
+    for(let j=i+1;j<L.length;j++){
+      const line=L[j];
+      if(!line||/^合計金額|^↓|^https?:|^-{5,}|^機種\s+台数/.test(line))break;
+      const r=kQuoteRow(line);
+      if(r)o.rows.push(r);
+      else if(o.rows.length)o.rows[o.rows.length-1].note=(o.rows[o.rows.length-1].note+" "+line).trim();
+    }
+  }
+  o.total=o.rows.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0);
+  return o;
+}
+let KIN=null;
+function kinOpen(){ $("kinText").value=""; $("kinPreview").innerHTML="";
+  $("kinMsg").textContent=""; $("btnKinApply").style.display="none";
+  KIN=null; $("kinWrap").classList.add("on"); setTimeout(()=>$("kinText").focus(),50) }
+function kinClose(){ $("kinWrap").classList.remove("on") }
+function kinRead(){
+  const o=parseKintone($("kinText").value);
+  KIN=o;
+  const any=o.no||o.customer||o.rows.length;
+  if(!any){
+    $("kinPreview").innerHTML='<div class="kng">読み取れませんでした。'+
+      '<b>印刷用画面</b>をぜんぶ（Ctrl+A）コピーして貼ってください。'+
+      '一覧の画面ではなく、1件を開いた印刷用画面です。<br>'+
+      'それでも読めないときは、貼った中身をそのまま総務に送ってください。読めるように直します。</div>';
+    $("btnKinApply").style.display="none"; $("kinMsg").textContent=""; return;
+  }
+  const f=(l,id,v)=>'<div class="krow"><label>'+l+'</label><input id="'+id+'" type="text" value="'+esc(v||"")+'"></div>';
+  let h='<div style="margin-top:14px">'+
+    f("依頼ナンバー","kin_no",o.no)+f("区分","kin_kind",o.kind)+
+    f("受注先（引き合い先）","kin_cust",o.customer)+
+    f("エンドユーザー","kin_user",o.user)+
+    f("納品先","kin_dest",o.dest)+
+    '</div>';
+  h+='<div style="margin-top:12px"><label style="font-size:12px;color:var(--muted);font-weight:700">'+
+     '内訳の候補（見積り金額の表から）</label>'+
+     '<table class="ktbl"><thead><tr><th style="width:30%">機種→型式</th>'+
+     '<th style="width:22%">仕向地</th><th style="width:14%">台数</th><th>納期</th></tr></thead><tbody>'+
+     o.rows.map((r,i)=>'<tr>'+
+       '<td><input class="k-model" value="'+esc(r.model)+'"></td>'+
+       '<td><input class="k-dest" value="'+esc(r.dest)+'"></td>'+
+       '<td><input class="k-qty qt" value="'+esc(r.qty)+'"></td>'+
+       '<td><input class="k-due" value="'+esc(r.due)+'"></td></tr>').join("")+
+     '</tbody></table></div>';
+  if(!o.rows.length){
+    h+='<div class="kng">見積り金額の表が読めませんでした。上の項目だけ入れて、内訳は手で足してください。</div>';
+  }else{
+    h+='<div class="kng">合計 <b>'+o.total+'</b> 台。'+
+       '仕向地が空の行は、あとで内訳に入れてから直せます。<br>'+
+       '<b>いま入っている内容は消しません。</b>空いているところだけ埋めます。内訳は置き換えます。</div>';
+  }
+  $("kinPreview").innerHTML=h;
+  $("kinMsg").textContent="読み取りました。";
+  $("btnKinApply").style.display="";
+}
+function kinApply(){
+  if(!KIN)return;
+  const gv=id=>{const e=$(id);return e?trim(e.value):""};
+  const rows=[...$("kinPreview").querySelectorAll(".ktbl tbody tr")].map(tr=>({
+    model:trim(tr.querySelector(".k-model").value),
+    dest :trim(tr.querySelector(".k-dest").value),
+    qty  :trim(tr.querySelector(".k-qty").value),
+    due  :trim(tr.querySelector(".k-due").value)
+  })).filter(r=>r.model||r.dest||r.qty);
+  /* 空いているところだけ埋める。入っているものは触らない */
+  const fill=(id,v)=>{ if(v&&!trim($(id).value))$(id).value=v };
+  fill("customer",gv("kin_cust"));
+  const total=rows.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0);
+  if(total&&(!trim($("units").value)||$("units").value==="1"))$("units").value=String(total);
+  /* 型式は候補になければ自由入力へ */
+  const md=rows.length?rows[0].model:"";
+  if(md&&!trim($("model_free").value)&&!$("model_select").value) setSel("model_select","model_free",md);
+  /* 内訳は置き換える（まだ何も入っていないときだけ） */
+  const cur=readMeisai().filter(r=>r.dest||r.qty||r.snFrom||r.zu);
+  if(rows.length&&!cur.length){
+    renderMeisai(rows.map(r=>({dest:r.dest,qty:r.qty,spec:""})));
+  }
+  /* 依頼ナンバーとユーザー名は備考に残す（専用の列はまだ無いため） */
+  const memo=[
+    gv("kin_no")?("依頼ナンバー "+gv("kin_no")):"",
+    gv("kin_user")?("ユーザー "+gv("kin_user")):"",
+    gv("kin_dest")?("納品先 "+gv("kin_dest")):""
+  ].filter(Boolean).join("　／　");
+  if(memo){
+    const n=$("note");
+    if(n.value.indexOf(gv("kin_no"))<0) n.value=(trim(n.value)?(n.value+"\n"):"")+memo;
+  }
+  $("kinMark").textContent="kintone "+(gv("kin_no")||"取り込み済み");
+  recalcMeisai();
+  kinClose();
+  toast("kintoneから取り込みました。中身を確認してから保存してください。");
+}
+
 function recalcMeisai(){
   let next=null,sum=0,i=0;
   $("meisaiRows").querySelectorAll(".bd").forEach(tr=>{
@@ -1739,8 +1941,11 @@ function recalcMeisai(){
     const q=parseInt(tr.querySelector(".m-qty").value,10);
     let from=parseInt(fEl.value,10);
     if(!isFinite(from)&&next!==null&&isFinite(q)&&q>0){from=next;fEl.value=pad5(String(from))}
+    /* 台数の検算は製造番号と切り離す。kintoneから取り込んだ直後は
+       製造番号がまだ無いが、台数は合っているか見たいため。 */
+    if(isFinite(q)&&q>0) sum+=q;
     if(isFinite(from)&&isFinite(q)&&q>0){
-      tEl.value=pad5(String(from+q-1)); next=from+q; sum+=q;
+      tEl.value=pad5(String(from+q-1)); next=from+q;
     }else{ tEl.value=""; if(isFinite(from))next=from; }
   });
   const total=unitCount($("units").value),el=$("meisaiChk");
@@ -2165,7 +2370,7 @@ async function addOrUpdateEntry(){
   }catch(err){
     toast("保存に失敗しました: "+(err.message||err),true);console.error(err,err.body);
   }finally{btn.disabled=false}
-}function clearForm(){mainForm.reset();$("units").value="1";["product_name_select","product_name_free","model_select","model_free","length_m","width_m","height_m","dimensions_m"].forEach(id=>$(id).value="");renderMeisai([]);renderSticker([]);document.querySelectorAll(".invalid").forEach(el=>el.classList.remove("invalid"));$("formWarn").style.display="none";renderZumenBox();editingIndex=-1;setDateLock(false);$("ship_no").value=nextNo();updateBadges()}
+}function clearForm(){mainForm.reset();$("units").value="1";["product_name_select","product_name_free","model_select","model_free","length_m","width_m","height_m","dimensions_m"].forEach(id=>$(id).value="");renderMeisai([]);renderSticker([]);document.querySelectorAll(".invalid").forEach(el=>el.classList.remove("invalid"));$("formWarn").style.display="none";renderZumenBox();editingIndex=-1;setDateLock(false);$("ship_no").value=nextNo();$("date").value=today();updateBadges()}
 /* ============================================================
    出図日は「技術から資材へ出図した日」を表す。あとから内容を
    更新しても動いてはいけないので、編集で読み込んだときは
@@ -2658,6 +2863,11 @@ document.addEventListener("DOMContentLoaded",()=>{
     recalcMeisai();
   });
   $("btnPrevCopy").addEventListener("click",prevCopy);
+  $("btnKintone").addEventListener("click",kinOpen);
+  $("btnKinRead").addEventListener("click",kinRead);
+  $("btnKinApply").addEventListener("click",kinApply);
+  $("btnKinClose").addEventListener("click",kinClose);
+  $("kinText").addEventListener("paste",()=>setTimeout(kinRead,30));
   /* 固定値の欄は「固定値」を選んだときだけ出す */
   const wtSync=()=>{
     const m=$("wt_method").value;
