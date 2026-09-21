@@ -188,6 +188,7 @@ class SalesMergeTest(unittest.TestCase):
             item = result["item_analysis"]["items"]["A-01"]
             detail = result["item_analysis"]["rows"][0]
             lowest = result["item_analysis"]["lowest_sales"]["202609:A-01"]
+            self.assertIn("generated_at", result["meta"])
             self.assertEqual(item["n"], "正式品目A")
             self.assertEqual(item["master_name"], "正式品目A")
             self.assertEqual(detail["pv"], "伝票B")

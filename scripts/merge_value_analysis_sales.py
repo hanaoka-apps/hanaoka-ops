@@ -487,6 +487,9 @@ def main() -> int:
     output["months"] = sorted(set(output.get("months", [])) | set(source_months))
     jst = timezone(timedelta(hours=9))
     output.setdefault("meta", {}).update({
+        # これは付加価値分析JSONを最後に再生成した時刻。初期作成時の値を
+        # 残したままにすると、日次更新済みでも画面が古い日付に見えてしまう。
+        "generated_at": datetime.now(jst).isoformat(timespec="seconds"),
         "daily_sales_source": FACTS.name,
         "daily_sales_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
         "daily_sales_rows": len(rows),
