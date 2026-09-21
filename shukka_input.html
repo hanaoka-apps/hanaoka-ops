@@ -195,6 +195,13 @@ body.in .gate{display:none}
 .tbadge:empty{display:none}
 .tbadge.ng{background:var(--warn-bg);color:var(--warn)}
 .tbadge.ok{background:var(--ok-bg);color:var(--ok)}
+.gsrow{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:11px 4px;border-bottom:1px solid #eef1f5;font-size:15px;font-weight:700}
+.gsrow:last-child{border-bottom:none}
+.gsl{color:#333}
+.gsv{font-size:13px;font-weight:800;border-radius:999px;padding:4px 11px;white-space:nowrap}
+.gsrow.ok .gsv{background:var(--ok-bg);color:var(--ok)}
+.gsrow.ng .gsv{background:var(--warn-bg);color:var(--warn)}
 .nmf{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#555;flex:1 1 220px;margin-top:9px}
 .nmf input{flex:1;min-width:120px;padding:7px 9px;font-size:13.5px;border-radius:9px;
   border:1px solid var(--line)}
@@ -272,6 +279,16 @@ body.in .gate{display:none}
   </div>
 
   <div class="spin" id="spin">さがしています…</div>
+
+  <!-- 1.5 出図の概要（読むだけ。ここから「入力する」で一覧へ） -->
+  <div class="card" id="cardGroup" style="display:none">
+    <label id="groupTitle" style="margin-bottom:3px">出図</label>
+    <div class="hint" id="groupSub" style="margin:0 0 14px"></div>
+    <div id="groupStatus"></div>
+    <div style="height:14px"></div>
+    <button type="button" id="btnGroupEdit">入力する</button>
+    <button type="button" class="plain" id="btnGroupBack" style="margin-top:9px">別の番号をさがす</button>
+  </div>
 
   <!-- 2. 一覧（ここで直接打つ） -->
   <div class="card" id="cardList" style="display:none">
@@ -454,7 +471,7 @@ function showOk(m){$("ok").textContent=m;$("ok").classList.add("on");
 function clearOk(){$("ok").classList.remove("on")}
 function busy(on){$("spin").classList.toggle("on",!!on)}
 function show(id,on){$(id).style.display=on?"":"none"}
-const PANELS=["cardTodo","cardFind","cardList","cardConfirm","cardOne"];
+const PANELS=["cardTodo","cardFind","cardGroup","cardList","cardConfirm","cardOne"];
 function only(){const on=new Set([].slice.call(arguments));
   PANELS.forEach(id=>show(id,on.has(id)))}
 function onlyFind(){only("cardTodo","cardFind");renderBar()}
@@ -543,7 +560,7 @@ async function openDeepLink(){
   if(!sn)return;
   try{
     const r=await findBy("ShutsuzuNo",sn);
-    if(r.length)openList("出図 "+sn,r);
+    if(r.length)openGroup("出図 "+sn,r);
     else showErr("出図「"+sn+"」の車両がまだありません。技術部側で保存されているか確認してください。");
   }catch(e){console.warn("出図への自動移動に失敗",e)}
 }
@@ -629,7 +646,7 @@ async function doFind(){
     if(!r.length)r=await findBy("CarNo",v);
     if(r.length){openList(v+" の車両",r);return}
     const byShip=await findBy("ShutsuzuNo",v);
-    if(byShip.length){openList("出図 "+v,byShip);return}
+    if(byShip.length){openGroup("出図 "+v,byShip);return}
     showErr("「"+v+"」は見つかりませんでした。番号をご確認ください。");
     onlyFind();
   }catch(e){
@@ -643,8 +660,12 @@ async function doFind(){
 /* ============================================================
    一覧。ここが主役。
    手書き台帳と同じで、行に直接打って下へ下へ進む。
+   ------------------------------------------------------------
+   検索でピンポイントに見つけたとき（製造番号・車体番号）はここへ直接。
+   出図まるごと（TODOの案件、出図番号でさがした）のときは、まず
+   openGroup() で「何が未完か」の概要を見せてから、ここへ進む。
    ============================================================ */
-function openList(title,units){
+function setupListCtx(title,units){
   units.sort(bySn);
   const head=units[0]||{};
   LIST_CTX={title:title,units:units,
@@ -652,10 +673,53 @@ function openList(title,units){
   SEL=new Set();DRAFT=new Map();
   $("bDate").value="";$("bYm").value="";
   LIST_CTX.wt=null;LIST_CTX.stickerFilled=false;
+  return head;
+}
+function openList(title,units){
+  const head=setupListCtx(title,units);
   renderList();
   only("cardList");
   top0();
   loadShutsuzuInfo(head.shipNo);
+}
+/* 出図まるごとを開くときの「まず概要」画面。 */
+function openGroup(title,units){
+  const head=setupListCtx(title,units);
+  renderGroupSummary();
+  only("cardGroup");
+  top0();
+  loadShutsuzuInfo(head.shipNo);
+}
+function groupSummary(){
+  const us=(LIST_CTX&&LIST_CTX.units)||[];
+  const n=us.length;
+  const cnt=f=>us.filter(f).length;
+  const np=npReadiness();
+  return {
+    n:n,
+    snYet:cnt(u=>isPlaceholderSn(u.sn)),
+    wYet:cnt(u=>!trim(valOf(u,"w"))&&valOf(u,"nm")!=="1"),
+    dateYet:cnt(u=>!trim(valOf(u,"date"))),
+    ymYet:cnt(u=>!trim(valOf(u,"ym"))),
+    npMiss:np.miss,
+    stickerFilled:!!(LIST_CTX&&LIST_CTX.stickerFilled)
+  };
+}
+function renderGroupSummary(){
+  const box=$("groupStatus");if(!box||!LIST_CTX)return;
+  $("groupTitle").textContent=LIST_CTX.title;
+  $("groupSub").textContent=LIST_CTX.sub||"";
+  const s=groupSummary();
+  const row=(lab,yet)=>'<div class="gsrow'+(yet?" ng":" ok")+'"><span class="gsl">'+esc(lab)+'</span>'+
+    '<span class="gsv">'+(yet?(yet+"/"+s.n+"台"):"OK")+'</span></div>';
+  box.innerHTML=
+    row("製造番号",s.snYet)+
+    row("実重量",s.wYet)+
+    row("出荷日",s.dateYet)+
+    row("製造年月",s.ymYet)+
+    row("銘板見出し",s.npMiss)+
+    '<div class="gsrow'+(s.stickerFilled?" ok":" ng")+'"><span class="gsl">ステッカー</span>'+
+      '<span class="gsv">'+(s.stickerFilled?"入力済み":"未入力")+'</span></div>';
 }
 /* ============================================================
    出図マスタから、この画面で要る分だけまとめて読む。
@@ -671,7 +735,7 @@ function openList(title,units){
    ============================================================ */
 let SHUTSUZU_ITEM_CACHE=null;
 async function loadShutsuzuInfo(shipNo){
-  if(!SHUTSUZU_ID||!trim(shipNo)){renderWtAlert();renderToolBadges();return}
+  if(!SHUTSUZU_ID||!trim(shipNo)){renderWtAlert();renderToolBadges();renderGroupSummary();return}
   try{
     const q="/sites/"+SITE_ID+"/lists/"+SHUTSUZU_ID+"/items?expand=fields&$top=5"+
             "&$filter=fields/Title eq '"+encodeURIComponent(trim(shipNo))+"'";
@@ -687,7 +751,7 @@ async function loadShutsuzuInfo(shipNo){
       renderList();
     }
   }catch(e){ console.warn("出図の情報を読めませんでした",e); LIST_CTX.wt=null; SHUTSUZU_ITEM_CACHE=null }
-  renderWtAlert();renderToolBadges();
+  renderWtAlert();renderToolBadges();renderGroupSummary();
 }
 function wtRule(){ return (LIST_CTX&&LIST_CTX.wt)||{method:"",fixed:"",spray:""} }
 /* 実重量から自重を自動で作る。ボタンではなく、実重量を打った瞬間に動く。
@@ -766,7 +830,7 @@ function renderList(){
   $("listSub").innerHTML=esc(LIST_CTX.sub||"")+
     (LIST_CTX.sub?"<br>":"")+"未入力 "+yet+"台";
   $("listBody").innerHTML=us.map((u,i)=>rowHtml(u,i)).join("");
-  noteApply();renderBar();renderToolBadges();
+  noteApply();renderBar();renderToolBadges();renderGroupSummary();
 }
 function rowHtml(u,i){
   const car=valOf(u,"car"),w=valOf(u,"w"),dt=valOf(u,"date"),ym=valOf(u,"ym");
@@ -1424,11 +1488,17 @@ document.addEventListener("DOMContentLoaded",()=>{
     const b=e.target.closest("button.grp");if(!b)return;
     const gr=TODO[+b.dataset.i];if(!gr)return;
     clearOk();clearErr();
-    openList("出図 "+gr.shipNo,gr.units.slice());
+    openGroup("出図 "+gr.shipNo,gr.units.slice());
   });
   $("btnFind").onclick=doFind;
   $("q").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();doFind()}});
   $("q").addEventListener("input",()=>clearErr());
+
+  $("btnGroupEdit").onclick=()=>{renderList();only("cardList");top0()};
+  $("btnGroupBack").onclick=()=>{
+    LIST_CTX=null;SEL=new Set();DRAFT=new Map();$("q").value="";
+    onlyFind();$("q").focus();
+  };
 
   /* まとめて入れる */
   $("btnBulkToggle").onclick=()=>{
