@@ -2342,6 +2342,30 @@ function applySpec(card){
    このテンプレートに合わないファイルは中身を無理に探さず、
    エラーを出して手入力に戻す（間違った値を拾うほうが怖いため）。
    ============================================================ */
+/* 「部品表詳細」より下の行だけが本物の部品／図面。
+   それより上の「PL計算式」「材料計算式(1)」等は材料計算のための
+   ダミー行なので拾わない。品番は図番らしい形のものだけ受け付ける
+   （壊れた行を図面マスタに送り込まないため）。 */
+const BOM_ZU_RE=/^■?([A-Za-z]?\d{6}[A-Za-z0-9]{0,3}(?:-[A-Za-z0-9]+)+)(△\d+)?$/;
+function readBomParts(ws){
+  const g=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:null});
+  const at=(r,c)=>{const row=g[r]; const v=row&&row[c]; return v==null?"":trim(String(v))};
+  let start=-1;
+  for(let r=0;r<g.length;r++){ if(at(r,0)==="部品表詳細"){start=r+1;break} }
+  if(start<0)return [];
+  const out=[],seen=new Set();
+  for(let r=start;r<g.length;r++){
+    const raw=at(r,2);
+    if(!raw)continue;
+    const m=BOM_ZU_RE.exec(raw);
+    if(!m)continue;
+    const zu=m[1]+(m[2]||"");
+    if(seen.has(zu))continue;
+    seen.add(zu);
+    out.push({zu:zu,name:at(r,3)});
+  }
+  return out;
+}
 async function readBomExcel(file){
   const buf=await file.arrayBuffer();
   const wb=XLSX.read(buf,{type:"array"});
@@ -2351,13 +2375,48 @@ async function readBomExcel(file){
   const v=a=>{const c=ws[a]; return c?trim(String(c.w!=null?c.w:c.v)):""};
   const spec=v("G1"),model=v("D2"),partsNo=v("G2"),zu=v("D3"),units=v("G3");
   if(!spec&&!zu)return {ok:false,reason:'「'+nm+'」シートの見出し位置（D1〜G3）がテンプレートと違います'};
-  return {ok:true,sheet:nm,spec:spec,model:model,partsNo:partsNo,zu:zu,units:units};
+  return {ok:true,sheet:nm,spec:spec,model:model,partsNo:partsNo,zu:zu,units:units,
+          parts:readBomParts(ws)};
 }
-function handleBomFile(card,file){
+/* 部品表詳細から拾った図番の一覧を、図面マスタ（ファイルを持たない
+   台帳リスト）に登録する。既にある図番なら、この仕様番号を
+   使われている仕様に足すだけ（名称などは触らない）。
+   図面ライブラリの実ファイルとの紐づけはここでは行わない（別の作業）。 */
+async function syncDrawingMaster(specNo,parts){
+  if(!ID_DRAWS||!specNo||!parts.length)return {created:0,updated:0,skipped:!ID_DRAWS};
+  const have=await gGetAll(`/sites/${SITE_ID}/lists/${ID_DRAWS}/items?expand=fields&$top=999`);
+  const haveBy={}; have.forEach(it=>haveBy[(it.fields||{}).Title]=it);
+  const toCreate=[],toUpdate=[];
+  parts.forEach(p=>{
+    const it=haveBy[p.zu];
+    if(!it){
+      toCreate.push({Title:p.zu,DrawingName:p.name||null,UsedInSpecs:specNo,SpecCount:1});
+      return;
+    }
+    const f=it.fields||{};
+    const specs=trim(f.UsedInSpecs).split(/[\s、,]+/).filter(Boolean);
+    if(specs.includes(specNo))return;                    /* 既に載っている */
+    specs.push(specNo);
+    toUpdate.push({id:it.id,fields:{UsedInSpecs:specs.join(" "),SpecCount:specs.length}});
+  });
+  const total=toCreate.length+toUpdate.length;
+  if(!total)return {created:0,updated:0,skipped:false};
+  const base=`/sites/${SITE_ID}/lists/${ID_DRAWS}/items`;
+  const reqs=[]
+    .concat(toCreate.map(f=>({method:"POST",url:base,body:{fields:f},
+             headers:{"Content-Type":"application/json"}})))
+    .concat(toUpdate.map(x=>({method:"PATCH",url:`${base}/${x.id}/fields`,body:x.fields,
+             headers:{"Content-Type":"application/json"}})));
+  const res=await gBatch(reqs);
+  const failed=res.filter(r=>r.status>=400);
+  if(failed.length)console.error("図面マスタの更新に失敗した分:",failed);
+  return {created:toCreate.length,updated:toUpdate.length,failed:failed.length};
+}
+async function handleBomFile(card,file){
   if(!file)return;
   const stat=card.querySelector(".bomstat");
   if(stat){stat.textContent="読み込んでいます…";stat.classList.remove("ng")}
-  readBomExcel(file).then(r=>{
+  readBomExcel(file).then(async r=>{
     if(!r.ok){
       if(stat){stat.textContent=r.reason+"。手入力してください";stat.classList.add("ng")}
       return;
@@ -2380,8 +2439,20 @@ function handleBomFile(card,file){
     let warn="";
     if(qtyEl&&isFinite(u)&&trim(qtyEl.value)&&parseInt(qtyEl.value,10)!==u)
       warn="　※内訳の台数("+qtyEl.value+")と部品表の台数("+u+")が違います";
+    let dmMsg="";
+    if(r.spec&&r.parts.length){
+      if(stat)stat.textContent="図面マスタに登録しています…";
+      try{
+        const dm=await syncDrawingMaster(r.spec,r.parts);
+        dmMsg="　図面マスタ："+r.parts.length+"点中 新規"+dm.created+"・仕様追加"+dm.updated;
+        if(dm.failed)dmMsg+="・失敗"+dm.failed;
+      }catch(errD){
+        console.error(errD,errD.body);
+        dmMsg="　図面マスタへの登録に失敗しました（コンソール参照）";
+      }
+    }
     if(stat){
-      stat.textContent=(got.length?("取り込みました："+got.join("・")):"新しく入る項目はありませんでした（既に入力済み）")+warn;
+      stat.textContent=(got.length?("取り込みました："+got.join("・")):"新しく入る項目はありませんでした（既に入力済み）")+warn+dmMsg;
       stat.classList.toggle("ng",!!warn);
     }
     applySpec(card);
