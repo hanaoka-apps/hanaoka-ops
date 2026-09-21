@@ -460,6 +460,12 @@ body:not(.signed-in) .gate{display:flex}
 .ck.on{background:#eaf7ef;border-color:#9fd8b6;color:#1b7346}
 .ck.on::before{content:"☑ "}
 .ck .dt{font-weight:400;font-size:11px;opacity:.8;margin-left:4px}
+/* 仕様番号の下に出る注記。全体図の図番と図面点数。 */
+.spechint{display:block;font-size:11px;color:#6b6b73;margin-top:3px;line-height:1.4}
+.spechint.ng{color:#b4232f}
+/* 「なし」＝その製品には無い。済とは別に見えるようにする */
+.ck.none{background:#f2f2f4;border-color:#d0d0d6;color:#5a5a63}
+.ck.none::before{content:"— "}
 .ck.shizai{border-style:dashed}
 .bd3 .who{font-size:11px;color:var(--muted);margin-left:2px}
 .bddone{margin-left:auto;font-size:11.5px;font-weight:700;color:#1b7346}
@@ -586,6 +592,8 @@ body:not(.signed-in) .gate{display:flex}
 <label class="hid" for="car_no">車体番号</label><input class="hid" id="car_no" type="text" list="car_no_options" placeholder="確認中・別紙・なし・直接入力"><datalist id="car_no_options"><option value="確認中"></option><option value="別紙"></option><option value="なし"></option></datalist>
 <label>内訳</label><div class="bdwrap">
   <div id="meisaiRows"></div>
+  <!-- 仕様マスタから作る候補。読めなかったら空のまま（手入力はできる） -->
+  <datalist id="specList"></datalist>
   <div class="mfoot">
     <button type="button" class="msmall" id="btnAddMeisai">＋ 内訳を追加</button>
     <button type="button" class="msmall" id="btnPrevCopy">前回の出図からコピー</button>
@@ -652,10 +660,17 @@ const MSAL_CONFIG={auth:{clientId:"d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
 const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",
-      LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細";
+      LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細",
+      LIST_SPECS="仕様マスタ",LIST_DRAWS="図面マスタ";
 let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,LIST_UNITS_URL="",CACHE=[];
+/* 部品表から取り込んだ仕様と図面。内訳の仕様番号を選ぶときに使う。
+   読めなくてもアプリは動く（手で打てる）ので、失敗しても止めない。 */
+let ID_SPECS=null,ID_DRAWS=null,BOM_STATE="none";
+let SPEC_LIST=[];          /* [{id, fam, n}] 仕様番号の一覧 */
+let SPEC_TOP={};           /* 仕様番号 → 全体図の図番 */
+let SPEC_CNT={};           /* 仕様番号 → 図面点数 */
 const DEFAULT_PRODUCTS=["パレットトレーラー","コンテナトレーラー","カーゴカート","20ftトレーラー"],DEFAULT_MODELS=["EE1596S","EE1596N-A","EE1596N-B","EE3096","H･DLC-R","DLE-Ⅱ","SR","H･SEC","H･SET-RL","BCC","BCC-W","BCA"];let editingIndex=-1;/* 画面に出すビルドの目印。古いファイルが配られていないかを目で確かめるため。 */
-const BUILD="2026-09-14 10:20";
+const BUILD="2026-09-21 11:40";
 const $=id=>document.getElementById(id),show=(id,on)=>{$(id).style.display=on?"":"none"},trim=s=>(s||"").toString().trim(),esc=s=>String(s||"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 function toM(mm){const n=Number(mm);return isFinite(n)&&n>0?(n/1000).toFixed(3):""}function pad5(v){const s=trim(v).replace(/\D/g,"").slice(0,5);return s? s.padStart(5,"0") : ""}function unitCount(v){const n=parseInt(v,10);return isFinite(n)&&n>0?n:1}/* ============================================================
    明細（行き先ごとのグループ）
@@ -682,10 +697,13 @@ function normMeisai(list){
     len:trim(r.len), wid:trim(r.wid), hei:trim(r.hei),
     vw:trim(r.vw), cap:trim(r.cap),
     apAir:trim(r.apAir), apTxt:trim(r.apTxt),
-    /* チェック。日付が入っていれば「やった」。空なら未 */
-    ckPd:trim(r.ckPd), ckPt:trim(r.ckPt), ckGn:trim(r.ckGn),
+    /* 部品表番号。出図の時点で判明している。日付ではなく番号（2575 など） */
+    parts:trim(r.parts),
+    /* チェック。日付か「なし」が入っていれば決着。空なら未定。
+       ckPd（部品図）は使わなくなった。古いデータを読んでも落ちないよう捨てるだけ。 */
+    ckPt:trim(r.ckPt), ckGn:trim(r.ckGn),
     ckSt:trim(r.ckSt), ckSr:trim(r.ckSr)
-  })).filter(r=>r.dest||r.qty||r.snFrom||r.spec||r.zu||r.surface||r.acc||r.model||r.name);
+  })).filter(r=>r.dest||r.qty||r.snFrom||r.spec||r.zu||r.surface||r.acc||r.model||r.name||r.parts);
 }
 /* 0・5表記。下1桁を 0 か 5 に寄せる＝いちばん近い5に丸める。
    3,4,5,6,7→5 ／ 8,9,0,1,2→0  （寒河江さんの表と 0〜100,000 で一致を確認済み） */
@@ -1680,23 +1698,41 @@ function recalcSticker(){
 }
 
 /* --- 画面 --- */
-/* 出図が「終わった」かどうかは、この5つで決まる。
-   上3つは技術部、下2つは資材。日付が入っていれば「やった」。 */
+/* 出図が「終わった」かどうかは、出図日・塗装図・GN点検表 の3つで決まる。
+   現行Excelの日付列と同じ（shutsuzu / tosou / gn）。出図日は親にあるので、
+   内訳に持つのは塗装図とGN点検表の2つ。
+
+   部品図はチェックにしない。現行Excelに列が無く、管理する4点は
+   全体図・部品表・GN点検表・塗装図。部品表は日付ではなく番号（2575 など）。
+
+   塗装図とGN点検表には「なし」という状態が実在する（CTK・SP16）。
+   日付だけでは「まだ出ていない」と「その製品には無い」が区別できないので、
+   押すたびに 未定 → 済(今日) → なし → 未定 と回す。 */
 const CHECKS=[
-  {k:"ckPd", t:"部品図",   who:"技術"},
-  {k:"ckPt", t:"塗装図",   who:"技術"},
-  {k:"ckGn", t:"GN点検表", who:"技術"},
+  {k:"ckPt", t:"塗装図",   who:"技術", tri:true},
+  {k:"ckGn", t:"GN点検表", who:"技術", tri:true},
   {k:"ckSt", t:"ステッカー発注", who:"資材"},
   {k:"ckSr", t:"製造番号",  who:"資材"}
 ];
-const DONE3=["ckPd","ckPt","ckGn"];
+const DONE2=["ckPt","ckGn"];
+const NONE="なし";
+/* 日付でも「なし」でも、決着がついていれば済 */
+const ckDone=v=>!!trim(v);
+function ckNext(c,v){
+  v=trim(v);
+  if(!c||!c.tri) return v?"":today();          /* 2状態のものは今までどおり */
+  return v==="" ? today() : (v===NONE ? "" : NONE);
+}
 const today=()=>{const d=new Date(),p=n=>String(n).padStart(2,"0");
   return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())};
 function ckHtml(c,v){
-  return '<button type="button" class="ck'+(v?" on":"")+(c.who==="資材"?" shizai":"")+
-    '" data-ck="'+c.k+'" title="'+esc(c.who)+'">'+esc(c.t)+
-    (v?('<span class="dt">'+esc(String(v).slice(5).replace("-","/"))+'</span>'):"")+
-    '</button><input type="hidden" class="m-'+c.k+'" value="'+esc(v||"")+'">';
+  v=trim(v);
+  const none=(v===NONE);
+  const tip=esc(c.who)+(c.tri?"　押すたび 未定 → 済 → なし":"");
+  return '<button type="button" class="ck'+(v?" on":"")+(none?" none":"")+(c.who==="資材"?" shizai":"")+
+    '" data-ck="'+c.k+'" title="'+tip+'">'+esc(c.t)+
+    (v?('<span class="dt">'+esc(none?NONE:String(v).slice(5).replace("-","/"))+'</span>'):"")+
+    '</button><input type="hidden" class="m-'+c.k+'" value="'+esc(v)+'">';
 }
 const SURFACES=["塗装","半メッキ","メッキ","フルメッキ"];
 const WTMETHODS=["実測値","ゼロ五","記載なし","固定値"];
@@ -1729,7 +1765,11 @@ function meisaiRowHtml(r){
    '</div>'+
    '<div class="bd2" hidden>'+
     f("品名",            t("m-name",r.name,"パレットトレーラー"))+
-    f("図面仕様番号",    t("m-specNo",r.specNo,""))+
+    /* 仕様番号は仕様マスタから選ぶ。選ぶと全体図の図番が入る。
+       読み込めなかったときのために、手で打つこともできるようにしてある。 */
+    f("図面仕様番号",    t("m-specNo",r.specNo,"HSEC001 など",' list="specList"')+
+                         '<span class="spechint"></span>')+
+    f("部品表番号",      t("m-parts",r.parts,"2607 など"))+
     f("車体番号（範囲）",t("m-carno",r.carNo,"確認中・別紙・なし"))+
     f("表面処理",'<select class="m-surface">'+optsHtml(SURFACES,r.surface||"")+'</select>')+
     f("付属品",          t("m-acc",r.acc,"例：保護枠付き"))+
@@ -1754,6 +1794,8 @@ function meisaiRowHtml(r){
 function renderMeisai(list){
   const rows=(list&&list.length)?list:[{}];
   $("meisaiRows").innerHTML=rows.map(meisaiRowHtml).join("");
+  /* 既に仕様番号が入っている行にも、全体図と点数の注記を出す */
+  $("meisaiRows").querySelectorAll(".bd").forEach(applySpec);
   recalcMeisai();
 }
 const bdVal=(el,cls)=>{const x=el.querySelector(cls);return x?x.value:""};
@@ -1765,8 +1807,8 @@ function readMeisai(){
     surface:bdVal(el,".m-surface"), acc:bdVal(el,".m-acc"),
     carNo:bdVal(el,".m-carno"), wtm:bdVal(el,".m-wtm"),
     wtf:bdVal(el,".m-wtf"), spray:bdVal(el,".m-spray"),
-    ckPd:bdVal(el,".m-ckPd"), ckPt:bdVal(el,".m-ckPt"), ckGn:bdVal(el,".m-ckGn"),
-    ckSt:bdVal(el,".m-ckSt"), ckSr:bdVal(el,".m-ckSr"),
+    ckPt:bdVal(el,".m-ckPt"), ckGn:bdVal(el,".m-ckGn"),
+    ckSt:bdVal(el,".m-ckSt"), ckSr:bdVal(el,".m-ckSr"), parts:bdVal(el,".m-parts"),
     model:bdVal(el,".m-model"), name:bdVal(el,".m-name"), specNo:bdVal(el,".m-specNo"),
     len:bdVal(el,".m-len"), wid:bdVal(el,".m-wid"), hei:bdVal(el,".m-hei"),
     vw:bdVal(el,".m-vw"), cap:bdVal(el,".m-cap"),
@@ -1783,10 +1825,11 @@ function readMeisaiCard(el){
     carNo:bdVal(el,".m-carno"), wtm:bdVal(el,".m-wtm"),
     wtf:bdVal(el,".m-wtf"), spray:bdVal(el,".m-spray"),
     model:bdVal(el,".m-model"), name:bdVal(el,".m-name"), specNo:bdVal(el,".m-specNo"),
+    parts:bdVal(el,".m-parts"),
     len:bdVal(el,".m-len"), wid:bdVal(el,".m-wid"), hei:bdVal(el,".m-hei"),
     vw:bdVal(el,".m-vw"), cap:bdVal(el,".m-cap"),
     apAir:bdVal(el,".m-apAir"), apTxt:bdVal(el,".m-apTxt"),
-    ckPd:"",ckPt:"",ckGn:"",ckSt:"",ckSr:""};   /* 複製ではチェックは持ってこない */
+    ckPt:"",ckGn:"",ckSt:"",ckSr:""};   /* 複製ではチェックは持ってこない */
 }
 /* 台数（台口）から、いま内訳に入れた分を引いた残り */
 function remainUnits(){
@@ -2081,16 +2124,18 @@ function recalcMeisai(){
     /* 番号と「詳細に親と違うものが何個あるか」を出す */
     i++; const no=tr.querySelector(".bdno"); if(no)no.textContent=i;
     let diff=0;
-    [".m-name",".m-specNo",".m-carno",".m-surface",".m-acc",".m-len",".m-wid",".m-hei",
+    [".m-name",".m-specNo",".m-parts",".m-carno",".m-surface",".m-acc",".m-len",".m-wid",".m-hei",
      ".m-vw",".m-cap",".m-wtm",".m-wtf",".m-spray",".m-apAir",".m-apTxt",".m-spec"].forEach(c=>{
       const el=tr.querySelector(c); if(el&&trim(el.value))diff++;
     });
     const bg=tr.querySelector(".bdbadge"); if(bg)bg.textContent=diff?String(diff):"";
     tr.classList.toggle("diff",diff>0);
-    /* この内訳の出図が終わったか（技術の3つが揃ったか） */
+    /* この内訳の出図が終わったか。
+       塗装図とGN点検表の両方に決着（日付か「なし」）がついたら完了。
+       出図日は親にあるので、ここでは見ない。 */
     const dn=tr.querySelector(".bddone");
     if(dn){
-      const yet=DONE3.filter(k=>!trim(bdVal(tr,".m-"+k)));
+      const yet=DONE2.filter(k=>!ckDone(bdVal(tr,".m-"+k)));
       dn.textContent = yet.length ? ("出図 のこり "+yet.length) : "出図 完了";
       dn.style.color = yet.length ? "#b08300" : "#1b7346";
     }
@@ -2214,6 +2259,67 @@ async function spInit(){
     const dr=drives.find(x=>x.name===LIB_DRAWINGS||x.name==="Drawings");
     DRIVE_ID=dr?dr.id:null;
   }catch(e){DRIVE_ID=null;console.warn("図面ライブラリを開けませんでした",e)}
+  /* 部品表から取り込んだ仕様マスタ・図面マスタ。無くてもアプリは動く */
+  const fs=lists.find(x=>x.displayName===LIST_SPECS||x.name===LIST_SPECS);
+  const fd=lists.find(x=>x.displayName===LIST_DRAWS||x.name===LIST_DRAWS);
+  ID_SPECS=fs?fs.id:null; ID_DRAWS=fd?fd.id:null;
+  await loadBom();
+}
+/* 仕様マスタと図面マスタを読んで、
+   「仕様番号 → 全体図の図番」と「仕様番号 → 図面点数」を作る。
+   全体図が無い仕様もあるので、その場合は図番を出さない（推測しない）。 */
+async function loadBom(){
+  SPEC_LIST=[];SPEC_TOP={};SPEC_CNT={};
+  if(!ID_SPECS||!ID_DRAWS){BOM_STATE="none";fillSpecList();return}
+  try{
+    const q=id=>`/sites/${SITE_ID}/lists/${id}/items?expand=fields&$top=999`;
+    const [sp,dw]=await Promise.all([gGetAll(q(ID_SPECS)),gGetAll(q(ID_DRAWS))]);
+    SPEC_LIST=sp.map(x=>({
+      id:trim((x.fields||{}).Title),
+      fam:trim((x.fields||{}).Family),
+      n:(x.fields||{}).DrawingCount||0
+    })).filter(s=>s.id);
+    SPEC_LIST.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+    SPEC_LIST.forEach(s=>{SPEC_CNT[s.id]=s.n});
+    dw.forEach(x=>{
+      const f=x.fields||{}, nm=trim(f.DrawingName), zu=trim(f.Title);
+      if(nm!=="全体図"&&nm!=="三面図")return;              /* 親figureだけ拾う */
+      /* 「使われている仕様」は複数入ることがある（EE200 SE000 のように） */
+      trim(f.UsedInSpecs).split(/[\s、,]+/).filter(Boolean).forEach(sid=>{
+        if(!SPEC_TOP[sid])SPEC_TOP[sid]=zu;
+      });
+    });
+    BOM_STATE="ok";
+  }catch(e){
+    BOM_STATE="error";
+    console.warn("仕様マスタ／図面マスタを読めませんでした",e);
+  }
+  fillSpecList();
+}
+/* 内訳の仕様番号欄にぶら下げる候補。datalist なので手入力もできる */
+function fillSpecList(){
+  const dl=$("specList"); if(!dl)return;
+  dl.innerHTML=SPEC_LIST.map(s=>{
+    const lab=[s.fam,SPEC_TOP[s.id]?("全体図 "+SPEC_TOP[s.id]):"",s.n?(s.n+"点"):""]
+      .filter(Boolean).join("　");
+    return '<option value="'+esc(s.id)+'" label="'+esc(lab)+'">';
+  }).join("");
+}
+/* 仕様番号が決まったら、その仕様の全体図を図番に入れる。
+   既に図番が入っていれば触らない（手で直したものを消さないため）。 */
+function applySpec(card){
+  const sIn=card.querySelector(".m-specNo"),zIn=card.querySelector(".m-zu"),
+        hint=card.querySelector(".spechint");
+  if(!sIn)return;
+  const sid=trim(sIn.value);
+  const top=SPEC_TOP[sid], cnt=SPEC_CNT[sid];
+  if(hint){
+    if(!sid) hint.textContent = BOM_STATE==="ok" ? "" : "（仕様マスタを読めていません）";
+    else if(cnt===undefined) hint.textContent="この仕様番号は仕様マスタにありません";
+    else hint.textContent=(top?("全体図 "+top):"全体図が登録されていません")+"　図面"+(cnt||0)+"点";
+    hint.classList.toggle("ng", !!sid && cnt===undefined);
+  }
+  if(top&&zIn&&!trim(zIn.value)){zIn.value=top;recalcMeisai()}
 }
 /* 製造番号明細（SharePointのリスト）を開く。
    出図管理番号を渡すと、その出図の分だけに絞って開く。 */
@@ -2399,12 +2505,21 @@ function toFields(e){
        列と過去の値は残してある。 */
     /* 出図時点の図面構成。一度控えたら書き換えない。 */
     DrawingSnapshot:(trim(e.drawing_snap)||JSON.stringify(snapshotOf(e.drawing_no)||{rows:[]})),
-    /* 全部の内訳で 部品図・塗装図・GN点検表 が揃ったら、出図完了 */
+    /* 出図完了＝出図日・塗装図・GN点検表 の3つが揃ったとき。
+       全部の内訳で、塗装図とGN点検表の両方に決着（日付か「なし」）がついているのが条件。
+       完了日は、そのうちいちばん遅い日付。全部「なし」なら出図日そのもの。 */
     ShutsuzuDoneAt:(function(){
+      if(!trim(e.date))return null;                       /* 出図日が無ければ完了しない */
       const ms=(e.meisai||[]).filter(r=>r.dest||r.qty||r.zu);
       if(!ms.length)return null;
-      const ds=[];
-      for(const r of ms){ for(const k of ["ckPd","ckPt","ckGn"]){ if(!trim(r[k]))return null; ds.push(r[k]) } }
+      const ds=[e.date];
+      for(const r of ms){
+        for(const k of ["ckPt","ckGn"]){
+          const v=trim(r[k]);
+          if(!v)return null;                              /* 未定が1つでもあれば未完了 */
+          if(v!==NONE)ds.push(v);                         /* 「なし」は日付に数えない */
+        }
+      }
       return ds.sort().pop()+"T00:00:00Z";   /* いちばん遅い日 */
     })(),
     RequestNo:e.kin_req_no||null, EndUser:e.end_user||null,
@@ -2979,7 +3094,16 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("meisaiRows").addEventListener("input",e=>{
     if(e.target.classList.contains("m-qty"))e.target.value=digitsOnly(e.target.value);
     if(e.target.classList.contains("m-from"))e.target.value=digitsOnly(e.target.value).slice(0,5);
+    /* 一覧から選んだ瞬間にも input が飛ぶので、ここで拾う */
+    if(e.target.classList.contains("m-specNo")){
+      const card=e.target.closest(".bd"); if(card)applySpec(card);
+    }
     recalcMeisai();
+  });
+  $("meisaiRows").addEventListener("change",e=>{
+    if(e.target.classList.contains("m-specNo")){
+      const card=e.target.closest(".bd"); if(card)applySpec(card);
+    }
   });
   $("meisaiRows").addEventListener("blur",e=>{
     if(e.target.classList.contains("m-from")&&e.target.value){e.target.value=pad5(e.target.value);recalcMeisai()}
@@ -3002,13 +3126,14 @@ document.addEventListener("DOMContentLoaded",()=>{
       if(!zu){toast("先に図番を入れてください",true);return}
       dwOpen(zu); return;
     }
-    /* チェック。押すと今日の日付が入る。もう一度押すと外れる */
+    /* チェック。塗装図とGN点検表は 未定 → 済(今日) → なし → 未定 と回る。
+       ステッカー発注と製造番号は 押す／外す の2状態のまま。 */
     const ck=e.target.closest(".ck");
     if(ck){
       const hid=ck.nextElementSibling;
       if(hid&&hid.classList.contains("m-"+ck.dataset.ck)){
-        hid.value = hid.value ? "" : today();
         const c=CHECKS.find(x=>x.k===ck.dataset.ck)||{t:"",who:""};
+        hid.value = ckNext(c,hid.value);
         ck.outerHTML=ckHtml(c,hid.value).split("<input")[0];
         recalcMeisai();
       }
