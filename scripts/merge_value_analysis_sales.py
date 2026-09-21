@@ -60,6 +60,19 @@ def text(value: object) -> str:
     return str(value or "").strip()
 
 
+def master_value(row: dict, *headers: str) -> str:
+    """品目マスタの列名差（全半角・表記差）を吸収して値を取得する。"""
+    normalized = {
+        unicodedata.normalize("NFKC", text(key)).replace(" ", ""): value
+        for key, value in row.items() if key
+    }
+    for header in headers:
+        value = normalized.get(unicodedata.normalize("NFKC", header).replace(" ", ""))
+        if text(value):
+            return text(value)
+    return ""
+
+
 def date_digits(value: object) -> str:
     return "".join(character for character in text(value) if character.isdigit())[:8]
 
@@ -112,20 +125,20 @@ def read_item_master() -> dict[str, dict]:
         delimiter = "\t" if first.count("\t") > first.count(",") else ","
         handle.seek(0)
         for row in csv.DictReader(handle, delimiter=delimiter):
-            code = normalize_code(row.get("品目ｺｰﾄﾞ"))
+            code = normalize_code(master_value(row, "品目コード", "品目CD"))
             if not code or code.startswith("<"):
                 continue
             result[code] = {
-                "dc": (row.get("大分類ｺｰﾄﾞ") or "").strip(),
-                "d": (row.get("大分類名") or "").strip(),
-                "cc": (row.get("中分類ｺｰﾄﾞ") or "").strip(),
-                "c": (row.get("中分類名") or "").strip(),
-                "sc": (row.get("小分類ｺｰﾄﾞ") or "").strip(),
-                "s": (row.get("小分類名") or "").strip(),
-                "n": (row.get("品目名") or "").strip(),
+                "dc": master_value(row, "大分類コード"),
+                "d": master_value(row, "大分類名"),
+                "cc": master_value(row, "中分類コード"),
+                "c": master_value(row, "中分類名"),
+                "sc": master_value(row, "小分類コード"),
+                "s": master_value(row, "小分類名"),
+                "n": master_value(row, "品目名", "品名", "品目名称"),
                 # SharedMasters の出力形式差に対応する。画面上の
                 # 「分類 > 工場別付加価値」は、旧出力では工場別付加価名。
-                "factory": (row.get("工場別付加価名") or row.get("工場別付加価値") or "").strip(),
+                "factory": master_value(row, "工場別付加価名", "工場別付加価値"),
             }
     return result
 
@@ -410,7 +423,9 @@ def main() -> int:
         primary_voucher_name = main.get("name") or current["name"] or item.get("n") or code
         voucher_display_name = primary_voucher_name + ("＋他" if len(current["names"]) > 1 else "")
         item.update({
-            # 上段は品目マスタの正式名を優先し、売上明細名で上書きしない。
+            # 品目マスタ名と伝票名を別項目で保持する。画面の上段は必ずこちらを使う。
+            "master_name": master_row.get("n") or item.get("master_name") or "",
+            # 既存の画面・データ利用者との互換用。正式名がある場合は同じ値を入れる。
             "n": master_row.get("n") or item.get("n") or current["name"] or code,
             "d": master_row.get("d") or current["d"] or item.get("d", ""),
             "c": master_row.get("c") or current["c"] or item.get("c", ""),

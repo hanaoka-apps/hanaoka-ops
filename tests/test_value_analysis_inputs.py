@@ -173,8 +173,9 @@ class SalesMergeTest(unittest.TestCase):
             }
             destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             with master.open("w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["品目ｺｰﾄﾞ", "品目名", "工場別付加価名"])
-                writer.writeheader(); writer.writerow({"品目ｺｰﾄﾞ": "A-01", "品目名": "正式品目A", "工場別付加価名": "第一工場"})
+                # 実データで使われる全角「品目コード」表記でも、品目マスタ名を読む。
+                writer = csv.DictWriter(handle, fieldnames=["品目コード", "品目名", "工場別付加価名"])
+                writer.writeheader(); writer.writerow({"品目コード": "A-01", "品目名": "正式品目A", "工場別付加価名": "第一工場"})
 
             old_data, old_facts, old_destination = SALES.DATA, SALES.FACTS, SALES.DESTINATION
             try:
@@ -188,6 +189,7 @@ class SalesMergeTest(unittest.TestCase):
             detail = result["item_analysis"]["rows"][0]
             lowest = result["item_analysis"]["lowest_sales"]["202609:A-01"]
             self.assertEqual(item["n"], "正式品目A")
+            self.assertEqual(item["master_name"], "正式品目A")
             self.assertEqual(detail["pv"], "伝票B")
             self.assertEqual(detail["pn"], "伝票B＋他")
             self.assertEqual(lowest, {
