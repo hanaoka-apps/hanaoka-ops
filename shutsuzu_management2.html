@@ -661,8 +661,9 @@ const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",
       LIST_SHUTSUZU="出図マスタ",LIST_UNITS="製造番号明細",
+      LIST_BREAKDOWN="出図内訳",
       LIST_SPECS="仕様マスタ",LIST_DRAWS="図面マスタ";
-let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,LIST_UNITS_URL="",CACHE=[];
+let SITE_ID=null,LIST_ID=null,LIST_UNITS_ID=null,LIST_UNITS_URL="",ID_BREAKDOWN=null,CACHE=[];
 /* 部品表から取り込んだ仕様と図面。内訳の仕様番号を選ぶときに使う。
    読めなくてもアプリは動く（手で打てる）ので、失敗しても止めない。 */
 let ID_SPECS=null,ID_DRAWS=null,BOM_STATE="none";
@@ -687,6 +688,8 @@ function rangeQty(f,t){
 }
 function normMeisai(list){
   return (Array.isArray(list)?list:[]).map(r=>({
+    /* 内訳キー。出図内訳リストのTitleと同じ値。一度振ったら変えない（迷子防止） */
+    bk:trim(r.bk),
     dest:trim(r.dest),qty:trim(r.qty),
     snFrom:pad5(r.snFrom),snTo:pad5(r.snTo),spec:trim(r.spec),
     /* ここから内訳として足した分。空なら親の値を使う */
@@ -1747,7 +1750,7 @@ function meisaiRowHtml(r){
   r=r||{};
   const t=(c,v,ph,extra)=>'<input class="'+c+'" type="text" value="'+esc(v||"")+'" placeholder="'+esc(ph||"")+'"'+(extra||"")+'>';
   const f=(lab,html)=>'<div><label>'+esc(lab)+'</label>'+html+'</div>';
-  return '<div class="bd">'+
+  return '<div class="bd" data-bk="'+esc(r.bk||"")+'">'+
    '<div class="bd1">'+
     '<span class="bdno"></span>'+
     t("m-dest",r.dest,"仕向地")+
@@ -1801,6 +1804,7 @@ function renderMeisai(list){
 const bdVal=(el,cls)=>{const x=el.querySelector(cls);return x?x.value:""};
 function readMeisai(){
   return [...$("meisaiRows").querySelectorAll(".bd")].map(el=>({
+    bk:el.dataset.bk||"",
     dest:bdVal(el,".m-dest"), qty:bdVal(el,".m-qty"),
     snFrom:bdVal(el,".m-from"), snTo:bdVal(el,".m-to"),
     spec:bdVal(el,".m-spec"), zu:bdVal(el,".m-zu"),
@@ -1840,19 +1844,21 @@ function remainUnits(){
 }
 /* 同じ受注先・同じ型式の、いちばん新しい出図から内訳を持ってくる。
    リピート品は仕向地と図番の組み合わせが前と同じことが多いため。 */
-function prevCopy(){
+async function prevCopy(){
   const cust=trim($("customer").value);
   const model=trim($("model_free").value);
   if(!cust&&!model){toast("受注先か型式を入れてから押してください",true);return}
   const me=trim($("ship_no").value);
-  const cand=loadData().filter(d=>d.ship_no!==me&&(d.meisai||[]).length
+  const cand=loadData().filter(d=>d.ship_no!==me
       &&(!cust||d.customer===cust)&&(!model||d.model===model))
     .sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
   if(!cand.length){toast("同じ受注先・型式の出図が見つかりません",true);return}
   const src=cand[0];
-  /* 製造番号は毎回ちがうので持ってこない */
-  renderMeisai(src.meisai.map(r=>Object.assign({},r,{snFrom:"",snTo:""})));
-  toast("出図 "+src.ship_no+"（"+(src.date||"")+"）から "+src.meisai.length+" 件コピーしました");
+  const rows=await fetchBreakdown(src.ship_no);
+  if(!rows.length){toast("出図 "+src.ship_no+" には内訳がありません",true);return}
+  /* 製造番号・内訳キーは毎回ちがうので持ってこない */
+  renderMeisai(rows.map(r=>Object.assign({},r,{bk:"",snFrom:"",snTo:""})));
+  toast("出図 "+src.ship_no+"（"+(src.date||"")+"）から "+rows.length+" 件コピーしました");
 }
 
 /* ============================================================
@@ -2253,6 +2259,9 @@ async function spInit(){
   if(!u){const e=new Error(`リスト「${LIST_UNITS}」が見つかりません`);e.status=404;throw e}
   LIST_UNITS_ID=u.id;
   LIST_UNITS_URL=u.webUrl||"";
+  const bd=lists.find(x=>x.displayName===LIST_BREAKDOWN||x.name===LIST_BREAKDOWN);
+  if(!bd){const e=new Error(`リスト「${LIST_BREAKDOWN}」が見つかりません`);e.status=404;throw e}
+  ID_BREAKDOWN=bd.id;
   /* 図面ライブラリ。ファイル名で引くのでリストは経由しない */
   try{
     const drives=await gGetAll(`/sites/${SITE_ID}/drives?$select=id,name`);
@@ -2476,6 +2485,116 @@ async function deleteUnitsOf(shipNo){
 }
 
 /* ============================================================
+   出図内訳（1内訳＝1行）。旧方式は MeisaiJson という1つの
+   フィールドにJSONで丸ごと詰めていたが、正のデータは
+   出図内訳リストに一本化する。
+
+   内訳キー（Title）は「出図管理番号-枝番」。枝番はその出図で
+   過去に一度でも使った最大値+1で、行の並び順では振り直さない。
+   削除して作り直しても、10台を6台+4台に分けても、番号が
+   使い回されないので、製造番号明細のBreakdownKeyが迷子にならない。
+   ============================================================ */
+function branchNumOf(bk){const m=/-(\d+)$/.exec(String(bk||""));return m?parseInt(m[1],10):null}
+function serialRangeLabel(r){
+  if(!r.snFrom&&!r.snTo)return "";
+  return (r.snTo&&r.snTo!==r.snFrom)?(r.snFrom+"～"+r.snTo):r.snFrom;
+}
+/* 塗装図・GN点検表は「未定／済（日付）／なし」の3状態を
+   Choice列＋DateTime列の組に振り分ける */
+function ckToState(v){
+  v=trim(v);
+  if(!v)return {state:null,at:null};
+  if(v===NONE)return {state:NONE,at:null};
+  return {state:"済",at:v+"T00:00:00Z"};
+}
+function stateToCk(state,at){
+  state=trim(state);
+  if(state===NONE)return NONE;
+  if(state&&at)return String(at).slice(0,10);
+  return "";
+}
+function breakdownFields(e,r){
+  const pt=ckToState(r.ckPt),gn=ckToState(r.ckGn);
+  return {
+    Title:r.bk, ShutsuzuNo:e.ship_no, BranchNo:branchNumOf(r.bk),
+    Destination:trim(r.dest), DrawingNo:trim(r.zu),
+    Surface:r.surface||null, Accessory:trim(r.acc), SpecNo:trim(r.specNo),
+    UnitCount:numOrNull(r.qty), CarNoRange:trim(r.carNo), SerialRange:serialRangeLabel(r),
+    LengthMM:numOrNull(r.len), WidthMM:numOrNull(r.wid), HeightMM:numOrNull(r.hei),
+    Capacity:numOrNull(r.cap), WTMethod:r.wtm||null, WTFixed:numOrNull(r.wtf), SprayMark:r.spray||null,
+    PaintState:pt.state, PaintDrawingAt:pt.at,
+    GNState:gn.state, GNSheetAt:gn.at,
+    StickerOrderedAt:(r.ckSt&&r.ckSt!==NONE)?(r.ckSt+"T00:00:00Z"):null,
+    SerialTakenAt:(r.ckSr&&r.ckSr!==NONE)?(r.ckSr+"T00:00:00Z"):null,
+    Model:trim(r.model), ProductName:trim(r.name), PartsListNo:trim(r.parts),
+    Remarks:trim(r.spec)
+  };
+}
+function breakdownToRow(f){
+  const sr=String(f.SerialRange||"").split(/[～~]/);
+  return {
+    bk:f.Title||"",
+    dest:f.Destination||"", qty:f.UnitCount==null?"":String(f.UnitCount),
+    snFrom:sr[0]||"", snTo:sr[1]||sr[0]||"",
+    zu:f.DrawingNo||"", surface:f.Surface||"", acc:f.Accessory||"",
+    specNo:f.SpecNo||"", parts:f.PartsListNo||"", carNo:f.CarNoRange||"",
+    len:f.LengthMM==null?"":String(f.LengthMM), wid:f.WidthMM==null?"":String(f.WidthMM),
+    hei:f.HeightMM==null?"":String(f.HeightMM), cap:f.Capacity==null?"":String(f.Capacity),
+    wtm:f.WTMethod||"", wtf:f.WTFixed==null?"":String(f.WTFixed), spray:f.SprayMark||"",
+    model:f.Model||"", name:f.ProductName||"", spec:f.Remarks||"",
+    ckPt:stateToCk(f.PaintState,f.PaintDrawingAt), ckGn:stateToCk(f.GNState,f.GNSheetAt),
+    ckSt:(f.StickerOrderedAt||"").slice(0,10), ckSr:(f.SerialTakenAt||"").slice(0,10)
+  };
+}
+async function fetchBreakdownItems(shipNo){
+  if(!shipNo||!ID_BREAKDOWN)return [];
+  return gGetAll(`/sites/${SITE_ID}/lists/${ID_BREAKDOWN}/items?expand=fields&$top=999`+
+      `&$filter=fields/ShutsuzuNo eq '${encodeURIComponent(shipNo)}'`,
+      {Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"});
+}
+async function fetchBreakdown(shipNo){
+  const items=await fetchBreakdownItems(shipNo);
+  items.sort((a,b)=>(((a.fields||{}).BranchNo)||0)-(((b.fields||{}).BranchNo)||0));
+  return normMeisai(items.map(it=>breakdownToRow(it.fields||{})));
+}
+async function syncBreakdown(e){
+  const rows=(e.meisai||[]).filter(r=>r.dest||r.qty||r.zu||r.model||r.name);
+  const have=await fetchBreakdownItems(e.ship_no);
+  const haveBy={}; have.forEach(it=>haveBy[(it.fields||{}).Title]=it);
+
+  /* 内訳キーが無い行（新規・複製）にだけ、使ったことのない枝番を新しく振る */
+  const need=rows.filter(r=>!r.bk);
+  if(need.length){
+    let max=0;
+    have.forEach(it=>{const n=parseInt((it.fields||{}).BranchNo,10);if(isFinite(n)&&n>max)max=n});
+    need.forEach((r,i)=>{r.bk=e.ship_no+"-"+(max+i+1)});
+  }
+
+  const wantBy={}; rows.forEach(r=>wantBy[r.bk]=r);
+  const toCreate=[],toUpdate=[],toDelete=[];
+  rows.forEach(r=>{
+    const it=haveBy[r.bk],fields=breakdownFields(e,r);
+    if(!it)toCreate.push(fields); else toUpdate.push({id:it.id,fields});
+  });
+  have.forEach(it=>{ if(!wantBy[(it.fields||{}).Title]) toDelete.push(it.id) });
+
+  const total=toCreate.length+toUpdate.length+toDelete.length;
+  if(!total)return {created:0,updated:0,deleted:0,skipped:true};
+
+  const base=`/sites/${SITE_ID}/lists/${ID_BREAKDOWN}/items`;
+  const reqs=[]
+    .concat(toCreate.map(f=>({method:"POST",url:base,body:{fields:f},
+             headers:{"Content-Type":"application/json"}})))
+    .concat(toUpdate.map(x=>({method:"PATCH",url:`${base}/${x.id}/fields`,body:x.fields,
+             headers:{"Content-Type":"application/json"}})))
+    .concat(toDelete.map(id=>({method:"DELETE",url:`${base}/${id}`})));
+  const res=await gBatch(reqs);
+  const failed=res.filter(r=>r.status>=400);
+  if(failed.length)console.error("内訳の更新に失敗した分:",failed);
+  return {created:toCreate.length,updated:toUpdate.length,deleted:toDelete.length,failed:failed.length};
+}
+
+/* ============================================================
    項目のつなぎ替え
    ------------------------------------------------------------
    左＝このアプリの項目名、右＝SharePointの列名。
@@ -2493,8 +2612,8 @@ function toFields(e){
     LengthMM:numOrNull(e.length_mm), WidthMM:numOrNull(e.width_mm), HeightMM:numOrNull(e.height_mm),
     VehicleWeight:e.vehicle_weight, Capacity:numOrNull(e.capacity),
     CarNoRange:e.car_no, SerialRange:e.serial_no,
-    /* 行き先ごとの内訳。ここが Step2 で製造番号明細(1台1行)に展開される */
-    MeisaiJson:JSON.stringify(e.meisai||[]),
+    /* 内訳は出図内訳リストが正（syncBreakdownで同期）。
+       MeisaiJsonにはもう書かない（過去の値は残っている） */
     /* ステッカー。要約は SharePoint の一覧でそのまま読めるように持つ */
     StickerJson:JSON.stringify(e.sticker||[]),
     StickerSummary:stickerSummary(e.sticker),
@@ -2535,7 +2654,9 @@ function fromItem(it){
   return norm({_id:it.id,
     ship_no:f.Title||"", date:(f.ShutsuzuDate||"").slice(0,10),
     customer:f.Customer||"", destination:f.Destination||"",
-    meisai:(function(){try{return JSON.parse(f.MeisaiJson||"[]")}catch(e){return []}})(),
+    /* 内訳は出図内訳リストが正。一覧表示では使わないので、
+       ここでは空のままにしておき、詳細を開くときに fetchBreakdown で取る */
+    meisai:[],
     sticker:(function(){try{return JSON.parse(f.StickerJson||"[]")}catch(e){return []}})(),
     product_name:f.ProductName||"", model:f.Model||"",
     drawing_no:f.DrawingNo||"", spec_no:f.SpecNo||"",
@@ -2588,7 +2709,7 @@ function toast(msg,isError){
 }
 function requireSignIn(){
   if(!currentAccount){toast("先にサインインしてください",true);return false}
-  if(!SITE_ID||!LIST_ID||!LIST_UNITS_ID){
+  if(!SITE_ID||!LIST_ID||!LIST_UNITS_ID||!ID_BREAKDOWN){
     toast("SharePointに接続できていません。ページを再読み込みしてサインインし直してください",true);
     return false;
   }
@@ -2626,8 +2747,14 @@ async function addOrUpdateEntry(){
       CACHE.push(e);
     }
     renderList();
-    /* 出図の保存が通ってから明細を展開する。
+    /* 出図の保存が通ってから内訳→明細の順に展開する。
        ここで失敗しても出図そのものは残る（順序を逆にしない）。 */
+    try{
+      await syncBreakdown(e);
+    }catch(errB){
+      toast("出図は保存しましたが、内訳の更新に失敗しました: "+(errB.message||errB),true);
+      console.error(errB,errB.body);
+    }
     let msg="保存しました";
     try{
       const r=await syncUnits(e,m=>toast(m));
@@ -2666,9 +2793,9 @@ function unlockDate(){
   if(!confirm("出図日を変更しますか？\n\nこの日付は、技術から資材へ出図した日を表します。\n入力し直しや内容の更新では変えない項目です。"))return;
   setDateLock(false);$("date").focus();
 }
-function loadEntryToForm(i){const d=loadData()[i];if(!d)return;editingIndex=i;["ship_no","date","customer","destination","drawing_no","length_mm","width_mm","height_mm","vehicle_weight","capacity","units","car_no","manufacture_month","kin_req_no","end_user","surface","wt_method","wt_fixed","spray","application_airport","application_content","spec_no","note"].forEach(id=>$(id).value=d[id]||"");$("product_name_free").value=d.product_name||"";$("model_free").value=d.model||"";renderMeisai(d.meisai);renderSticker(d.sticker);updateMFields();setDateLock(!!d.date);renderZumenBox();refreshMfgYm(d.ship_no,d.manufacture_month);$("date").focus()}function duplicateSelected(){
+async function loadEntryToForm(i,opts){const d=loadData()[i];if(!d)return;editingIndex=i;["ship_no","date","customer","destination","drawing_no","length_mm","width_mm","height_mm","vehicle_weight","capacity","units","car_no","manufacture_month","kin_req_no","end_user","surface","wt_method","wt_fixed","spray","application_airport","application_content","spec_no","note"].forEach(id=>$(id).value=d[id]||"");$("product_name_free").value=d.product_name||"";$("model_free").value=d.model||"";renderMeisai([{}]);let meisai=d._id?await fetchBreakdown(d.ship_no):(d.meisai||[]);if(opts&&opts.stripBk)meisai=meisai.map(r=>({...r,bk:""}));if(editingIndex!==i)return;/* 取得中に別の行を開かれたら捨てる */renderMeisai(meisai);renderSticker(d.sticker);updateMFields();setDateLock(!!d.date);renderZumenBox();refreshMfgYm(d.ship_no,d.manufacture_month);$("date").focus()}async function duplicateSelected(){
   if(VIEW_INDEX<0){toast("複製する行を選んでください",true);return}
-  loadEntryToForm(VIEW_INDEX);
+  await loadEntryToForm(VIEW_INDEX,{stripBk:true});
   VIEW_INDEX=-1;editingIndex=-1;
   $("ship_no").value=nextNo();setDateLock(false);
   $("mfgYmView").textContent="—";
@@ -2785,7 +2912,7 @@ function toggleDetails(i){const r=$(`detail_${i}`);if(r)r.style.display=r.style.
 function download(content,name,type){const blob=new Blob([content],{type});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();URL.revokeObjectURL(a.href)}
 const CSV_COLUMNS=[["ship_no","出図管理番号"],["date","出図日"],["spec_no","図面仕様番号"],["customer","受注先"],["destination","仕向地"],["product_name","品名"],["model","型式"],["drawing_no","図番"],["length_mm","寸法(mm)_全長"],["width_mm","寸法(mm)_全幅"],["height_mm","寸法(mm)_全高"],["length_m","寸法(m)_全長"],["width_m","寸法(m)_全幅"],["height_m","寸法(m)_全高"],["dimensions_m","寸法(m)"],["vehicle_weight","車両重量(kg)"],["capacity","最大積載量(kg)"],["units","台数（台口）"],["car_no","車体番号"],["serial_no","製造番号"],["meisai_json","明細"],["manufacture_month","製造年月"],["surface","表面処理"],["wt","WT表示"],["application_airport","申請（空港）"],["application_content","申請内容"],["note","備考"],["createdAt","登録日時"],["updatedAt","更新日時"]];
 function csvEscape(value){return '"'+String(value||"").replace(/"/g,'""')+'"'}
-function exportCSV(){const data=loadData().map(d=>({...d,meisai_json:JSON.stringify(d.meisai||[])}));if(!data.length){alert("データなし");return}const keys=CSV_COLUMNS.map(c=>c[0]),headers=CSV_COLUMNS.map(c=>c[1]),lines=[headers.map(csvEscape).join(",")];data.forEach(d=>lines.push(keys.map(k=>csvEscape(d[k])).join(",")));download("\uFEFF"+lines.join("\n"),"shutsuzu_management.csv","text/csv;charset=utf-8")}
+async function exportCSV(){const base=loadData();if(!base.length){alert("データなし");return}toast("内訳を読み込んでいます…");const data=await Promise.all(base.map(async d=>({...d,meisai_json:JSON.stringify(await fetchBreakdown(d.ship_no))})));const keys=CSV_COLUMNS.map(c=>c[0]),headers=CSV_COLUMNS.map(c=>c[1]),lines=[headers.map(csvEscape).join(",")];data.forEach(d=>lines.push(keys.map(k=>csvEscape(d[k])).join(",")));download("\uFEFF"+lines.join("\n"),"shutsuzu_management.csv","text/csv;charset=utf-8")}
 function parseCSV(t){const rows=[];let row=[],cell="",q=false;for(let i=0;i<t.length;i++){const c=t[i],n=t[i+1];if(c==='"'&&q&&n==='"'){cell+='"';i++}else if(c==='"'){q=!q}else if(c===','&&!q){row.push(cell);cell=""}else if((c==='\n'||c==='\r')&&!q){if(c==='\r'&&n==='\n')i++;row.push(cell);rows.push(row);row=[];cell=""}else cell+=c}if(cell||row.length){row.push(cell);rows.push(row)}return rows.filter(r=>r.some(v=>trim(v)))}
 function csvHeaderToKey(header){const map={};CSV_COLUMNS.forEach(([key,label])=>{map[key]=key;map[label]=key});map["出荷番号"]="ship_no";return map[trim(header)]||trim(header)}
 function importCSVFile(file){
@@ -2812,6 +2939,7 @@ async function bulkUpload(list,label){
       const hit=e.ship_no?byNo[e.ship_no]:null;
       if(hit){e._id=hit._id;await spUpdate(e);updated++}
       else{if(!e.ship_no)e.ship_no=nextNo([...CACHE,...list.filter(x=>x.ship_no)]);await spCreate(e);created++}
+      await syncBreakdown(e);
     }catch(err){failed++;console.error(e.ship_no,err,err.body)}
   }
   await refreshFromServer();renderList();clearForm();
@@ -2897,6 +3025,9 @@ function printBodyFor(d,perUnit){
 function printRecord(){
   const d=(editingIndex>=0?loadData()[editingIndex]:null)||getEntry();
   if(!d||!d.ship_no){toast("印刷する内容がありません",true);return}
+  /* 内訳は出図内訳リストが正なので、キャッシュではなく
+     いま画面に出ているものをそのまま使う */
+  d.meisai=readMeisai();
   const area=$("printArea");
   area.className=$("printSize").value||"p-m";
   area.innerHTML=printBodyFor(d,$("printPerUnit").checked);
