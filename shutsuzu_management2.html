@@ -357,10 +357,27 @@ table.hist .zn.no{background:#f3f3f5;color:#999}
 .scrim{position:fixed;inset:0;background:rgba(20,20,25,.28);z-index:790;opacity:0;
   pointer-events:none;transition:opacity .16s}
 .scrim.on{opacity:1;pointer-events:auto}
-.det{position:fixed;top:0;right:0;bottom:0;width:min(780px,100%);background:#fff;z-index:800;
-  box-shadow:-16px 0 46px rgba(0,0,0,.16);transform:translateX(102%);
+/* 内訳・チェック・ステッカーで項目が増えたので、詳細は全画面にする。
+   横に広いと、内訳の1行が折り返さずに収まる。 */
+.det{position:fixed;inset:0;width:100%;background:#fff;z-index:800;
+  box-shadow:none;transform:translateY(100%);
   transition:transform .18s ease;overflow:auto;padding:0 0 60px}
 .det.on{transform:none}
+.det-head,.det-bar,.det-body,.det-foot{max-width:1500px;margin-left:auto;margin-right:auto}
+.det-head{border-radius:0}
+/* 広い画面では2列にする。幅を使いきる項目だけ、右端まで伸ばす */
+@media(min-width:1100px){
+  .det .form-grid{grid-template-columns:140px minmax(320px,1fr) 140px minmax(320px,1fr)}
+  .det .form-grid > .kinbar,
+  .det .form-grid > .zwrap,
+  .det .form-grid > .dim-stack,
+  .det .form-grid > .bdwrap,
+  .det .form-grid > .meisai-wrap,
+  .det .form-grid > .application-row,
+  .det .form-grid > .wt3,
+  .det .form-grid > .mfgbox,
+  .det .form-grid > textarea{grid-column:2 / -1}
+}
 .det-head{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);
   padding:16px 22px 13px;display:flex;align-items:flex-start;gap:14px;z-index:2}
 .det-no{font-size:21px;font-weight:800;letter-spacing:.02em}
@@ -453,7 +470,7 @@ body:not(.signed-in) .gate{display:flex}
 .kinmark{font-size:12px;font-weight:700;color:#1b7346;background:#eaf7ef;
   border:1px solid #9fd8b6;border-radius:9px;padding:3px 9px}
 .kinmark:empty{display:none}
-.kw{position:fixed;inset:0;background:rgba(20,28,40,.45);z-index:70;display:none;
+.kw{position:fixed;inset:0;background:rgba(20,28,40,.45);z-index:900;display:none;
   align-items:flex-start;justify-content:center;padding:20px 14px;overflow:auto}
 .kw.on{display:flex}
 .kbox{background:#fff;border-radius:14px;max-width:820px;width:100%;padding:18px 20px 20px}
@@ -1806,32 +1823,97 @@ function kQuoteRow(line){
   }
   return null;
 }
+/* 貼り方は2通りある。
+   (1) ブラウザから Ctrl+C したもの … 項目名が1行、その次の行に値。
+       表は見出しがタブ区切りで、中身は1セル1行。
+   (2) PDFから貼ったもの … 項目名が横に並び、次の行に値が横に並ぶ。
+   どちらでも読めるようにしている。 */
+function kAfterLabel(L,label){
+  for(let i=0;i<L.length;i++) if(L[i]===label) return trim(L[i+1]||"");
+  return null;
+}
+const kIsInt   = x=>/^\d{1,4}$/.test(x);
+const kIsMoney = x=>/^[\d,]{3,}(\.\d+)?$/.test(x);
+const kIsNum   = x=>/^[\d,]+(\.\d+)?$/.test(x);
+const kIsDate  = x=>/^\d{4}\s*[-\/年]/.test(x);
+const kStop    = x=>/^合計金額|^↓|^https?:|^-{5,}|^コメントする|^生産依頼の場合/.test(x);
+const kSkipRow = x=>/送料|運賃|^#ERROR/.test(x);
+
+/* 見積り表の1行。
+   「文字 → 小さい整数 → 金額」の並びが出たところが行の頭。 */
+function kQuoteTable(L,from){
+  const rows=[];
+  let i=from;
+  while(i<L.length){
+    const x=L[i];
+    if(!x){i++;continue}
+    if(kStop(x))break;
+    if(!kIsNum(x)&&kIsInt(L[i+1]||"")&&kIsMoney(L[i+2]||"")){
+      const model=x, qty=L[i+1];
+      let j=i+6;                       /* 販売金額・原価・金額・付加価値 の4つを飛ばす */
+      let due="",note="";
+      if(j<L.length&&!kStop(L[j])&&kIsDate(L[j])){ due=L[j]; j++; }
+      if(j<L.length&&!kStop(L[j])&&!kIsNum(L[j])&&
+         !(kIsInt(L[j+1]||"")&&kIsMoney(L[j+2]||""))){ note=L[j]; j++; }
+      if(!kSkipRow(model)){
+        const md=kSplitModelDest(trim(model));
+        rows.push({model:md.model,dest:md.dest,qty:qty,due:due,note:note});
+      }
+      i=j; continue;
+    }
+    i++;
+  }
+  return rows;
+}
 function parseKintone(raw){
   const t=kNorm(raw);
   const L=t.split("\n").map(x=>x.replace(/　/g," ").trim());
   const o={no:"",kind:"",made:"",customer:"",route:"",user:"",dest:"",models:"",rows:[],total:0};
   const m=t.match(/(\d{8}-\d{4})/); if(m)o.no=m[1];
-  let i=L.findIndex(x=>/^GSE引き合い書\/生産依頼書/.test(x));
-  if(i>=0&&L[i+1]){const p=L[i+1].split(/\s+/);o.kind=p[0]||"";o.made=p[2]||""}
-  i=L.findIndex(x=>/^引き合い先\s+引き合いルート/.test(x));
-  if(i>=0&&L[i+1]){const p=L[i+1].split(/\s+/);o.customer=p[0]||"";o.route=p.slice(1).join(" ")}
-  i=L.findIndex(x=>/^ユーザー名\s+納品先/.test(x));
-  if(i>=0&&L[i+1]){
-    let p=L[i+1].split(/\s+/); o.user=p.shift()||"";
-    const k=p.findIndex(x=>/^[SABC]ランク$|^受注$|^失注$|^[（(]/.test(x));
-    if(k>=0)p=p.slice(0,k);
-    o.dest=p.join(" ");
+
+  /* (1) 項目名が単独行のとき */
+  o.kind     = kAfterLabel(L,"GSE引き合い書/生産依頼書")||"";
+  o.made     = kAfterLabel(L,"作成日")||"";
+  o.customer = kAfterLabel(L,"引き合い先")||"";
+  o.route    = kAfterLabel(L,"引き合いルート")||"";
+  o.user     = kAfterLabel(L,"ユーザー名")||"";
+  o.dest     = kAfterLabel(L,"納品先")||"";
+  let i=L.findIndex(x=>/^引き合い機種/.test(x));
+  if(i>=0)o.models=L[i+1]||"";
+
+  /* (2) 項目名が横に並ぶとき（PDFから貼った場合）に補う */
+  if(!o.customer){
+    i=L.findIndex(x=>/^引き合い先\s+引き合いルート/.test(x));
+    if(i>=0&&L[i+1]){const p=L[i+1].split(/\s+/);o.customer=p[0]||"";o.route=p.slice(1).join(" ")}
   }
-  i=L.findIndex(x=>/^引き合い機種/.test(x));
-  if(i>=0)o.models=(L[i+1]||"");
-  i=L.findIndex(x=>/^機種\s+台数\s+販売金額/.test(x));
+  if(!o.user){
+    i=L.findIndex(x=>/^ユーザー名\s+納品先/.test(x));
+    if(i>=0&&L[i+1]){
+      let p=L[i+1].split(/\s+/); o.user=p.shift()||"";
+      const k=p.findIndex(x=>/^[SABC]ランク$|^受注$|^失注$|^[（(]/.test(x));
+      if(k>=0)p=p.slice(0,k);
+      o.dest=p.join(" ");
+    }
+  }
+  if(!o.kind){
+    i=L.findIndex(x=>/^GSE引き合い書\/生産依頼書/.test(x));
+    if(i>=0&&L[i+1]){const p=L[i+1].split(/\s+/);o.kind=p[0]||"";o.made=o.made||p[2]||""}
+  }
+  /* 確度が混ざっていたら落とす */
+  o.dest=trim(String(o.dest).replace(/[SABC]ランク.*$|受注\s*[（(].*$|失注.*$/,""));
+
+  /* 見積り表 */
+  i=L.findIndex(x=>/^機種[\s\t]+台数[\s\t]+販売金額/.test(x));
   if(i>=0){
-    for(let j=i+1;j<L.length;j++){
-      const line=L[j];
-      if(!line||/^合計金額|^↓|^https?:|^-{5,}|^機種\s+台数/.test(line))break;
-      const r=kQuoteRow(line);
-      if(r)o.rows.push(r);
-      else if(o.rows.length)o.rows[o.rows.length-1].note=(o.rows[o.rows.length-1].note+" "+line).trim();
+    o.rows=kQuoteTable(L,i+1);
+    /* 横並び（PDF）のときは1行に全部入っているので、そちらでも拾う */
+    if(!o.rows.length){
+      for(let j=i+1;j<L.length;j++){
+        if(!L[j]||kStop(L[j]))break;
+        const r=kQuoteRow(L[j]);
+        if(r&&!kSkipRow(r.model))o.rows.push(r);
+        else if(o.rows.length)o.rows[o.rows.length-1].note=(o.rows[o.rows.length-1].note+" "+L[j]).trim();
+      }
     }
   }
   o.total=o.rows.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0);
@@ -2867,6 +2949,10 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("btnKinRead").addEventListener("click",kinRead);
   $("btnKinApply").addEventListener("click",kinApply);
   $("btnKinClose").addEventListener("click",kinClose);
+  document.addEventListener("keydown",e=>{
+    if(e.key!=="Escape")return;
+    if($("kinWrap").classList.contains("on")){kinClose();return}
+  });
   $("kinText").addEventListener("paste",()=>setTimeout(kinRead,30));
   /* 固定値の欄は「固定値」を選んだときだけ出す */
   const wtSync=()=>{
