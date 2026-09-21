@@ -478,6 +478,7 @@ body:not(.signed-in) .gate{display:flex}
   margin:9px 0 2px;padding:9px 4px 2px;border-top:1px dashed var(--line)}
 .bd2[hidden]{display:none}
 .bd2 label{font-size:11.5px;color:var(--muted);font-weight:700;display:block;margin-bottom:3px}
+.carsum{display:block;padding:7px 0;font-size:13.5px;font-weight:700}
 .bd2 input,.bd2 select{width:100%;padding:7px 9px;font-size:13.5px;border-radius:8px}
 .zufield{display:flex;gap:6px;align-items:center}
 .zufield input{flex:1;min-width:0}
@@ -1942,7 +1943,8 @@ function meisaiRowHtml(r){
     /* 品名は部品表からは拾えない。手入力のままなので、部品表由来の
        項目（仕様番号・図番・部品表番号）とは分けて後ろに置く。 */
     f("品名",            t("m-name",r.name,"パレットトレーラー"))+
-    f("車体番号（範囲）",t("m-carno",r.carNo,"確認中・別紙・なし"))+
+    f("車体番号",'<span class="carsum">—</span>'+
+                 '<input type="hidden" class="m-carno" value="'+esc(r.carNo||"")+'">')+
     f("表面処理",'<select class="m-surface">'+optsHtml(SURFACES,r.surface||"")+'</select>')+
     f("付属品",          t("m-acc",r.acc,"例：保護枠付き"))+
     f("全長(mm)",        t("m-len",r.len,"",' inputmode="decimal"'))+
@@ -2758,12 +2760,10 @@ function expandUnits(e){
   const out=[];
   (e.meisai||[]).forEach(r=>{
     const q=parseInt(r.qty,10);
-    /* 図番が決まっていない内訳はまだ台帳を作らない。製造番号は
-       「図番の決まった車両に割り当てるもの」というイメージなので、
-       図番が先。台数だけの状態では行を作らない。 */
-    if(!isFinite(q)||q<1||!trim(r.zu))return;
-    /* 製造番号はまだ無くてもいい（資材が出荷間際に取る）。
-       図番さえ決まっていれば、1台ごとの行は先に作る。 */
+    /* 台数さえ決まっていれば行を作る。車体番号は受注時点（図番より前）に
+       客先から決まることが分かったため、図番を待たずに車体番号を
+       入れられるようにする。製造番号・図番はまだ無くてもいい（後から埋まる）。 */
+    if(!isFinite(q)||q<1)return;
     const from=parseInt(r.snFrom,10);
     for(let k=0;k<q;k++){
       out.push({
@@ -2859,6 +2859,50 @@ async function refreshMaterialsStatus(shipNo){
     const us=await fetchUnits(shipNo);
     box.innerHTML=matStatHtml(us);
   }catch(e){console.warn("資材の入力状況の集計に失敗",e);box.innerHTML="—"}
+}
+/* 内訳の「車体番号」は、以前は技術部が手で書く自由記入欄だったが、
+   実際に製造番号明細へ入っている値と二重管理になりがちだった。
+   本物の値（CarNo）から自動で要約を作って表示するだけにする。
+   保存時はこの要約文字列をそのままCarNoRangeへ書く（印刷などは
+   これまでどおりCarNoRangeを見にいくので、他は直さなくていい）。 */
+function carSummaryText(vals){
+  const uniq=[...new Set((vals||[]).map(v=>trim(v)).filter(Boolean))];
+  if(!uniq.length)return "";
+  if(uniq.length===1)return uniq[0];
+  const parsed=uniq.map(v=>{
+    const m=/^(.*?)(\d+)\s*$/.exec(v);
+    return m?{pre:m[1],num:parseInt(m[2],10),wid:m[2].length}:null;
+  });
+  if(parsed.every(Boolean)&&new Set(parsed.map(p=>p.pre)).size===1){
+    const nums=parsed.map(p=>p.num).sort((a,b)=>a-b);
+    const pre=parsed[0].pre,wid=parsed[0].wid;
+    return pre+String(nums[0]).padStart(wid,"0")+"〜"+pre+String(nums[nums.length-1]).padStart(wid,"0")+
+      "（"+uniq.length+"台）";
+  }
+  return uniq.length+"件（"+uniq.slice(0,3).join("・")+(uniq.length>3?" ほか":"")+"）";
+}
+async function refreshCarSummaries(shipNo){
+  const cards=[...$("meisaiRows").querySelectorAll(".bd")];
+  if(!cards.length)return;
+  if(!trim(shipNo)||!SITE_ID||!LIST_UNITS_ID){
+    cards.forEach(c=>{const s=c.querySelector(".carsum");if(s)s.textContent="—"});
+    return;
+  }
+  try{
+    const us=await fetchUnits(shipNo);
+    const byBk={};
+    us.forEach(it=>{
+      const f=it.fields||{},k=f.BreakdownKey||"";
+      (byBk[k]=byBk[k]||[]).push(f.CarNo||"");
+    });
+    cards.forEach(c=>{
+      const bk=c.dataset.bk||"";
+      const s=c.querySelector(".carsum"),hid=c.querySelector(".m-carno");
+      const text=carSummaryText(byBk[bk]||[]);
+      if(s)s.textContent=text||"未入力";
+      if(hid)hid.value=text;
+    });
+  }catch(e){console.warn("車体番号の集計に失敗",e)}
 }
 /* Graph の $batch は1回20件まで */
 async function gBatch(requests){
@@ -3243,13 +3287,14 @@ async function addOrUpdateEntry(){
     toast("保存に失敗しました: "+(err.message||err),true);console.error(err,err.body);
   }finally{btn.disabled=false}
 }function clearForm(){mainForm.reset();$("units").value="1";["product_name_free","model_free","length_m","width_m","height_m","dimensions_m"].forEach(id=>$(id).value="");renderMeisai([]);renderSticker([]);document.querySelectorAll(".invalid").forEach(el=>el.classList.remove("invalid"));$("formWarn").style.display="none";renderZumenBox();editingIndex=-1;$("ship_no").value=nextNo();$("date").value=today();updateBadges()}
-async function loadEntryToForm(i,opts){const d=loadData()[i];if(!d)return;editingIndex=i;["ship_no","date","customer","destination","drawing_no","length_mm","width_mm","height_mm","vehicle_weight","capacity","units","car_no","manufacture_month","kin_req_no","end_user","surface","wt_method","wt_fixed","spray","application_airport","application_content","spec_no","note"].forEach(id=>$(id).value=d[id]||"");$("product_name_free").value=d.product_name||"";$("model_free").value=d.model||"";renderMeisai([{}]);let meisai=d._id?await fetchBreakdown(d.ship_no):(d.meisai||[]);if(opts&&opts.stripBk)meisai=meisai.map(r=>({...r,bk:""}));if(editingIndex!==i)return;/* 取得中に別の行を開かれたら捨てる */renderMeisai(meisai);renderSticker(d.sticker);updateMFields();renderZumenBox();refreshMfgYm(d.ship_no,d.manufacture_month);refreshMaterialsStatus(d.ship_no)}async function duplicateSelected(){
+async function loadEntryToForm(i,opts){const d=loadData()[i];if(!d)return;editingIndex=i;["ship_no","date","customer","destination","drawing_no","length_mm","width_mm","height_mm","vehicle_weight","capacity","units","car_no","manufacture_month","kin_req_no","end_user","surface","wt_method","wt_fixed","spray","application_airport","application_content","spec_no","note"].forEach(id=>$(id).value=d[id]||"");$("product_name_free").value=d.product_name||"";$("model_free").value=d.model||"";renderMeisai([{}]);let meisai=d._id?await fetchBreakdown(d.ship_no):(d.meisai||[]);if(opts&&opts.stripBk)meisai=meisai.map(r=>({...r,bk:""}));if(editingIndex!==i)return;/* 取得中に別の行を開かれたら捨てる */renderMeisai(meisai);renderSticker(d.sticker);updateMFields();renderZumenBox();refreshMfgYm(d.ship_no,d.manufacture_month);refreshMaterialsStatus(d.ship_no);refreshCarSummaries(d.ship_no)}async function duplicateSelected(){
   if(VIEW_INDEX<0){toast("複製する行を選んでください",true);return}
   await loadEntryToForm(VIEW_INDEX,{stripBk:true});
   VIEW_INDEX=-1;editingIndex=-1;
   $("ship_no").value=nextNo();$("date").value=today();
   $("mfgYmView").textContent="—";
   $("matStatusView").textContent="—";
+  $("meisaiRows").querySelectorAll(".carsum").forEach(s=>{s.textContent="—"});
   $("detNo").textContent="新規登録（複製）";
   $("detSub").textContent="出図管理番号は保存時に自動で決まります";
   setEditable(true);$("date").focus();
@@ -3543,15 +3588,13 @@ async function carOpen(){
     CAR_UNITS=items.map(it=>({id:it.id,sn:(it.fields||{}).Title||"",car:(it.fields||{}).CarNo||""}))
       .sort((a,b)=>String(a.sn).localeCompare(String(b.sn)));
     if(!CAR_UNITS.length){
-      /* 製造番号明細は「図番が入っている内訳」からしか作られない。
-         0件のときは保存漏れより、図番未入力の方が多いので先にそこを案内する。 */
+      /* 製造番号明細は「台数が入っている内訳」から作られる（図番は不要）。
+         0件のときは、まだ台数を保存していないか、内訳自体が無い。 */
       const m=readMeisai();
-      const noZu=m.filter(r=>(parseInt(r.qty,10)||0)>0&&!trim(r.zu)).length;
-      if(noZu){
-        toast(noZu+"件の内訳に図番が入っていません。図番を入れて保存すると、この画面で車体番号を入れられるようになります。",true);
-      }else{
-        toast("この出図の製造番号明細がありません。先に保存してください。",true);
-      }
+      const noQty=!m.some(r=>(parseInt(r.qty,10)||0)>0);
+      toast(noQty
+        ? "内訳に台数を入れて保存してください。"
+        : "この出図の製造番号明細がありません。先に保存してください。",true);
       return;
     }
     $("carSnHead").textContent="製造番号（"+CAR_UNITS.length+"台）";
@@ -3581,6 +3624,7 @@ async function carSave(){
     const ng=res.filter(x=>x.status>=300);
     changes.forEach(c=>{c.u.car=c.v});
     carRenderList();
+    refreshCarSummaries(trim($("ship_no").value));
     if(ng.length){toast((changes.length-ng.length)+"件更新／"+ng.length+"件失敗（コンソール参照）",true);console.error(ng)}
     else{toast(changes.length+"台の車体番号を登録しました");carClose()}
   }catch(e){toast("保存に失敗しました: "+(e.message||e),true);console.error(e)}
