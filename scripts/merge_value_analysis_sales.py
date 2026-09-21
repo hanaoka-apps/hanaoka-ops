@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import statistics
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
@@ -30,6 +31,10 @@ IDX = {
     "dai_bunrui": 16, "chu_bunrui": 17, "item_cd": 18,
     "item_nm": 19, "qty": 20, "amount": 21, "unit_price": 22,
     "kind": 23,
+    # regenerate_facts.py が既存の配列末尾へ追加する売上明細の復元情報。
+    # 旧 dashboard_facts.json でも安全に空値になる（value() が範囲外を返す）。
+    "sales_no": 27, "remark1": 28, "remark2": 29, "order_no": 30,
+    "order_line": 31, "return_type": 32, "source_index": 33,
 }
 
 
@@ -49,6 +54,24 @@ def number(value: object) -> float:
 def value(row: list, name: str, default=None):
     index = IDX[name]
     return row[index] if len(row) > index else default
+
+
+def text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def date_digits(value: object) -> str:
+    return "".join(character for character in text(value) if character.isdigit())[:8]
+
+
+def stable_detail_key(unit_price: float, date: str, sales_no: str, source_index: int) -> tuple:
+    """最低単価が同額のときも、日付→売上№→元CSV行順で一意に決める。"""
+    return (unit_price, date or "99999999", sales_no, source_index)
+
+
+def stable_main_name_key(amount: float, date: str, sales_no: str, source_index: int) -> tuple:
+    """主要伝票名は最大売上額、同額時は日付→売上№→元CSV行順で決める。"""
+    return (-amount, date or "99999999", sales_no, source_index)
 
 
 def rate(numerator: float | None, denominator: float | None) -> float | None:
@@ -99,6 +122,7 @@ def read_item_master() -> dict[str, dict]:
                 "c": (row.get("中分類名") or "").strip(),
                 "sc": (row.get("小分類ｺｰﾄﾞ") or "").strip(),
                 "s": (row.get("小分類名") or "").strip(),
+                "n": (row.get("品目名") or "").strip(),
                 # SharedMasters の出力形式差に対応する。画面上の
                 # 「分類 > 工場別付加価値」は、旧出力では工場別付加価名。
                 "factory": (row.get("工場別付加価名") or row.get("工場別付加価値") or "").strip(),
@@ -121,6 +145,147 @@ def zone_for(row: list, master: dict) -> str:
     return "第三工場"
 
 
+def read_csv_records(path: Path, required: tuple[str, ...]) -> tuple[list[dict], list[str]]:
+    """CSV/TSVを読み、必要列が無いときは行を推測せず理由だけを返す。"""
+    if not path.is_file():
+        return [], [f"{path.name} が未取得"]
+    with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
+        first = handle.readline()
+        delimiter = "\t" if first.count("\t") > first.count(",") else ","
+        handle.seek(0)
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        headers = [text(header).lstrip("\ufeff") for header in (reader.fieldnames or [])]
+        missing = [column for column in required if column not in headers]
+        if missing:
+            return [], [f"{path.name} に必要列がありません: {'、'.join(missing)}"]
+        return list(reader), []
+
+
+def parse_calendar_date(value: object):
+    digits = date_digits(value)
+    if len(digits) != 8:
+        return None
+    try:
+        return datetime.strptime(digits, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def calculate_lead_time() -> dict:
+    """品目手順マスタと受注/売上明細から、厳密に一意な実績LTだけを集計する。
+
+    出荷実績日は売上明細の伝票日付を使う。受注行は売上側だけにあり、受注明細に
+    同じ明細番号列がないため、受注№+品目コードの組が双方で一意な場合だけ結合する。
+    """
+    sales_required = ("伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分")
+    order_required = ("受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名")
+    route_required = ("品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ")
+    sales, sales_errors = read_csv_records(DATA / "売上明細出力.csv", sales_required)
+    orders, order_errors = read_csv_records(DATA / "受注明細出力.csv", order_required)
+    routes, route_errors = read_csv_records(DATA / "品目手順マスタ.csv", route_required)
+    required_columns = {
+        "売上明細出力.csv": list(sales_required),
+        "受注明細出力.csv": list(order_required),
+        "品目手順マスタ.csv": list(route_required),
+    }
+    base = {
+        "status": "unavailable",
+        "formula": "標準LT＝品目手順マスタの全工程（工程リードタイム＋検査リードタイム）の合計。実績LT＝売上明細の伝票日付−受注明細の受注日付（暦日）。差＝実績LT−標準LT。",
+        "shipment_date_basis": "出荷実績日は売上明細の伝票日付を使用",
+        "join_rule": "受注№＋品目コードが、受注・売上の双方で各1行だけ存在する場合に限り結合（曖昧な推測結合はしない）。",
+        "required_columns": required_columns,
+        "excluded": defaultdict(int),
+        "months": {},
+    }
+    errors = sales_errors + order_errors + route_errors
+    if errors:
+        base["reason"] = "；".join(errors)
+        base["excluded"] = dict(base["excluded"])
+        return base
+
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    standard_by_code: dict[str, float] = defaultdict(float)
+    for route in routes:
+        code = normalize_code(route.get("品目ｺｰﾄﾞ"))
+        expiry = date_digits(route.get("失効日"))
+        if not code:
+            base["excluded"]["standard_missing_item_code"] += 1
+            continue
+        if expiry and expiry != "99999999" and expiry <= today:
+            base["excluded"]["standard_expired_route"] += 1
+            continue
+        standard_by_code[code] += number(route.get("工程ﾘｰﾄﾞﾀｲﾑ")) + number(route.get("検査ﾘｰﾄﾞﾀｲﾑ"))
+
+    order_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in orders:
+        order_no, code = text(row.get("受注№")), normalize_code(row.get("品目ｺｰﾄﾞ"))
+        if not order_no or not code:
+            base["excluded"]["order_missing_join_key"] += 1
+            continue
+        if any(word in text(row.get("完納区分名")) for word in ("取消", "キャンセル")):
+            base["excluded"]["order_cancelled"] += 1
+            continue
+        if parse_calendar_date(row.get("受注日付")) is None:
+            base["excluded"]["order_missing_date"] += 1
+            continue
+        order_groups[(order_no, code)].append(row)
+
+    sales_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in sales:
+        # 0=通常。消費税等の非売上明細はLT母数にしない。
+        if text(row.get("明細区分")) != "0":
+            base["excluded"]["sales_non_sales_detail"] += 1
+            continue
+        if text(row.get("返品区分")) not in ("", "0"):
+            base["excluded"]["sales_return"] += 1
+            continue
+        order_no, code = text(row.get("受注№")), normalize_code(row.get("品目ｺｰﾄﾞ"))
+        if not order_no or not code:
+            base["excluded"]["sales_missing_join_key"] += 1
+            continue
+        if parse_calendar_date(row.get("伝票日付")) is None:
+            base["excluded"]["sales_missing_date"] += 1
+            continue
+        sales_groups[(order_no, code)].append(row)
+
+    actual_by_month: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for key, sales_lines in sales_groups.items():
+        order_lines = order_groups.get(key, [])
+        if len(sales_lines) != 1 or len(order_lines) != 1:
+            base["excluded"]["join_not_unique_or_missing"] += len(sales_lines)
+            continue
+        standard = standard_by_code.get(key[1])
+        if standard is None:
+            base["excluded"]["standard_lt_missing"] += 1
+            continue
+        sale_date = parse_calendar_date(sales_lines[0].get("伝票日付"))
+        order_date = parse_calendar_date(order_lines[0].get("受注日付"))
+        actual = (sale_date - order_date).days
+        if actual < 0:
+            base["excluded"]["negative_actual_lt"] += 1
+            continue
+        actual_by_month[sale_date.strftime("%Y%m")].append((actual, standard))
+
+    for ym, values in actual_by_month.items():
+        actuals = [actual for actual, _ in values]
+        standards = [standard for _, standard in values]
+        differences = [actual - standard for actual, standard in values]
+        base["months"][ym] = {
+            "count": len(values),
+            "actual_average": round(statistics.mean(actuals), 1),
+            "actual_median": round(statistics.median(actuals), 1),
+            "actual_min": min(actuals),
+            "actual_max": max(actuals),
+            "standard_average": round(statistics.mean(standards), 1),
+            "difference_average": round(statistics.mean(differences), 1),
+        }
+    base["status"] = "available" if base["months"] else "unavailable"
+    if not base["months"]:
+        base["reason"] = "厳密な結合条件を満たす受注・売上明細がありません。結合キー、取消・返品、日付、品目手順マスタの取得状況を確認してください。"
+    base["excluded"] = dict(base["excluded"])
+    return base
+
+
 def main() -> int:
     if not FACTS.is_file() or not DESTINATION.is_file():
         print("[WARN] dashboard_facts.json または value_analysis.json が無いため売上反映をスキップ")
@@ -140,12 +305,12 @@ def main() -> int:
     department_sales: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     excluded = {"returns": 0, "tax": 0, "internal_zero": 0}
 
-    for fact in rows:
+    for row_ordinal, fact in enumerate(rows):
         if not isinstance(fact, list):
             continue
         ym = "".join(character for character in str(value(fact, "ym", "")) if character.isdigit())[:6]
         code_normalized = normalize_code(value(fact, "item_cd", ""))
-        name = str(value(fact, "item_nm", "") or "").strip()
+        name = text(value(fact, "item_nm", ""))
         quantity = number(value(fact, "qty"))
         amount = number(value(fact, "amount"))
         unit_price = number(value(fact, "unit_price"))
@@ -179,7 +344,8 @@ def main() -> int:
         department_sales[ym][department] += amount
         current = grouped.setdefault((ym, code), {
             "q": 0.0, "a": 0.0, "prices": [], "customers": defaultdict(float),
-            "dates": [], "count": 0, "name": name, "zone": zone,
+            "dates": [], "count": 0, "name": name, "zone": zone, "names": set(),
+            "main_name": None, "lowest": None,
             "d": str(value(fact, "dai_bunrui", "") or "").strip(),
             "c": str(value(fact, "chu_bunrui", "") or "").strip(),
         })
@@ -190,10 +356,40 @@ def main() -> int:
         customer = str(value(fact, "cust_abbr", "") or "").strip()
         if customer:
             current["customers"][customer] += amount
-        date = "".join(character for character in str(value(fact, "voucher_date", "")) if character.isdigit())[:8]
+        date = date_digits(value(fact, "voucher_date", ""))
         if date:
             current["dates"].append(date)
         current["count"] += 1
+        if name:
+            current["names"].add(name)
+            main_candidate = {
+                "name": name, "amount": amount, "date": date,
+                "sales_no": text(value(fact, "sales_no", "")),
+                "source_index": int(number(value(fact, "source_index", row_ordinal)) or row_ordinal),
+            }
+            if current["main_name"] is None or stable_main_name_key(
+                main_candidate["amount"], main_candidate["date"], main_candidate["sales_no"], main_candidate["source_index"]
+            ) < stable_main_name_key(
+                current["main_name"]["amount"], current["main_name"]["date"], current["main_name"]["sales_no"], current["main_name"]["source_index"]
+            ):
+                current["main_name"] = main_candidate
+        # 最低売価と伝票情報は、この明細1行の値をひとまとまりで保持する。
+        # 正値の単価だけを候補とし、同額は日付→売上№→CSV行順で安定決定する。
+        if unit_price > 0:
+            lowest_candidate = {
+                "unit_price": unit_price, "customer": customer, "date": date,
+                "sales_no": text(value(fact, "sales_no", "")), "quantity": quantity,
+                "amount": amount, "item_name": name,
+                "remark1": text(value(fact, "remark1", "")),
+                "remark2": text(value(fact, "remark2", "")),
+                "source_index": int(number(value(fact, "source_index", row_ordinal)) or row_ordinal),
+            }
+            if current["lowest"] is None or stable_detail_key(
+                lowest_candidate["unit_price"], lowest_candidate["date"], lowest_candidate["sales_no"], lowest_candidate["source_index"]
+            ) < stable_detail_key(
+                current["lowest"]["unit_price"], current["lowest"]["date"], current["lowest"]["sales_no"], current["lowest"]["source_index"]
+            ):
+                current["lowest"] = lowest_candidate
 
     source_months = sorted({ym for ym, _ in grouped})
     if not source_months:
@@ -202,12 +398,20 @@ def main() -> int:
 
     items = analysis.setdefault("items", {})
     generated = []
+    lowest_sales = {
+        key: row for key, row in (analysis.get("lowest_sales") or {}).items()
+        if key.split(":", 1)[0] not in source_months
+    }
     for (ym, code), current in grouped.items():
         normalized = normalize_code(code)
         item = items.setdefault(code, {})
         master_row = master.get(normalized, {})
+        main = current["main_name"] or {}
+        primary_voucher_name = main.get("name") or current["name"] or item.get("n") or code
+        voucher_display_name = primary_voucher_name + ("＋他" if len(current["names"]) > 1 else "")
         item.update({
-            "n": current["name"] or item.get("n") or code,
+            # 上段は品目マスタの正式名を優先し、売上明細名で上書きしない。
+            "n": master_row.get("n") or item.get("n") or current["name"] or code,
             "d": master_row.get("d") or current["d"] or item.get("d", ""),
             "c": master_row.get("c") or current["c"] or item.get("c", ""),
             "s": master_row.get("s") or item.get("s", ""),
@@ -236,13 +440,19 @@ def main() -> int:
             "mc": max(current["customers"], key=current["customers"].get) if current["customers"] else "",
             "md": min(current["dates"]) if current["dates"] else "",
             "ct": current["count"], "k": current["zone"],
+            # 下段は当月・同一品目の最大売上明細の伝票品目名。
+            "pv": primary_voucher_name, "pn": voucher_display_name,
         }
         if value_added is not None:
             detail.update({"va": value_added, "vr": rate(value_added, sales), "gr": rate(value_added, sales)})
         generated.append(detail)
+        if current["lowest"] is not None:
+            lowest_sales[f"{ym}:{code}"] = current["lowest"]
 
     analysis["rows"] = [row for row in analysis.get("rows", []) if row.get("y") not in source_months] + generated
     analysis["months"] = sorted(set(analysis.get("months", [])) | set(source_months))
+    analysis["lowest_sales"] = lowest_sales
+    analysis["lead_time"] = calculate_lead_time()
     for ym in source_months:
         month = output.setdefault("monthly", {}).setdefault(
             ym, {"zones": {zone: blank_summary() for zone in ZONES}, "total": blank_summary()}
