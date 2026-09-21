@@ -210,7 +210,7 @@ class SalesMergeTest(unittest.TestCase):
                 "remark1": "CSV摘要1", "remark2": "CSV摘要2", "source_index": 0,
             })
 
-    def test_finalized_month_keeps_saved_sales_and_detail(self):
+    def test_finalized_month_keeps_saved_sales_and_enriches_missing_detail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             facts_path = root / "dashboard_facts.json"
@@ -230,6 +230,17 @@ class SalesMergeTest(unittest.TestCase):
                 "standard_cost_history": {},
             }
             destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with (root / "売上明細出力.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "伝票日付", "明細区分", "返品区分", "品目ｺｰﾄﾞ", "品目名", "数量", "金額", "単価",
+                    "売上№", "行摘要１", "行摘要２", "得意先名略称",
+                ])
+                writer.writeheader()
+                writer.writerow({
+                    "伝票日付": "20260903", "明細区分": "0", "返品区分": "0", "品目ｺｰﾄﾞ": "A-01",
+                    "品目名": "CSV伝票名", "数量": "4", "金額": "160", "単価": "40", "売上№": "CSV-KEEP",
+                    "行摘要１": "CSV摘要1", "行摘要２": "CSV摘要2", "得意先名略称": "CSV得意先",
+                })
             old_data, old_facts, old_destination = SALES.DATA, SALES.FACTS, SALES.DESTINATION
             try:
                 SALES.DATA, SALES.FACTS, SALES.DESTINATION = root, facts_path, destination
@@ -238,7 +249,7 @@ class SalesMergeTest(unittest.TestCase):
                 SALES.DATA, SALES.FACTS, SALES.DESTINATION = old_data, old_facts, old_destination
             result = json.loads(destination.read_text(encoding="utf-8"))
             self.assertEqual(result["item_analysis"]["rows"], [{"y": "202609", "i": "A-01", "a": 999}])
-            self.assertEqual(result["item_analysis"]["lowest_sales"]["202609:A-01"]["sales_no"], "KEEP")
+            self.assertEqual(result["item_analysis"]["lowest_sales"]["202609:A-01"]["sales_no"], "CSV-KEEP")
 
     def test_lead_time_uses_only_one_to_one_order_item_matches(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -493,8 +493,14 @@ def main() -> int:
             "cc": master_row.get("cc") or item.get("cc", ""),
             "sc": master_row.get("sc") or item.get("sc", ""),
         })
-        # 確定済み月は、認証済みJSONに保持した履歴・明細を日次CSVで上書きしない。
+        key = f"{ym}:{code}"
+        # 確定済み月は集計値・既存の豊富な明細を固定する。
+        # ただし、過去のJSONに無かった伝票番号等はCSVから補完してよい。
         if ym in frozen_months:
+            preferred_lowest = csv_lowest.get((ym, normalized))
+            existing_lowest = (analysis.get("lowest_sales") or {}).get(key)
+            if preferred_lowest is not None and detail_completeness(existing_lowest) < detail_completeness(preferred_lowest):
+                lowest_sales[key] = preferred_lowest
             continue
         # 品目に残る最新原価を過去月へ流用しない。当月の原価履歴がある場合だけ算定する。
         cost = history.get(ym, {}).get(normalized) or history.get(ym, {}).get(code)
@@ -522,7 +528,6 @@ def main() -> int:
         if value_added is not None:
             detail.update({"va": value_added, "vr": rate(value_added, sales), "gr": rate(value_added, sales)})
         generated.append(detail)
-        key = f"{ym}:{code}"
         preferred_lowest = csv_lowest.get((ym, normalized)) or current["lowest"]
         existing_lowest = (analysis.get("lowest_sales") or {}).get(key)
         selected_lowest = (
