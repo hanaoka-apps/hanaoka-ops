@@ -1275,6 +1275,50 @@ function showHistory(zu){
   $("dwSide").classList.add("on");
 }
 function hideHistory(){$("dwSide").classList.remove("on")}
+/* --- この内訳に紐づく図面（図面マスタのUsedInSpecsで探す） ---
+   「部品表を取り込む」か、図面仕様番号を選ぶことで紐づく。
+   図面ボタンは、まずその結果（何が紐づいているか）を見せる。
+   実ファイルを見る／登録するときだけ、その図番でdwOpenへ進む。 */
+async function showLinkedDrawings(card){
+  const specNo=trim(bdVal(card,".m-specNo"));
+  const zu=trim(bdVal(card,".m-zu"));
+  if(!specNo&&!zu){toast("先に図面仕様番号か図番を入れてください",true);return}
+  if(!requireSignIn())return;
+  $("sideTitle").textContent="この内訳に紐づく図面";
+  $("sideZu").textContent=specNo?("仕様番号 "+specNo):("図番 "+zu);
+  $("sideBody").innerHTML='<p class="muted">読み込んでいます…</p>';
+  $("dwSide").classList.add("on");
+  let items=[];
+  try{
+    if(ID_DRAWS){
+      const all=await gGetAll(`/sites/${SITE_ID}/lists/${ID_DRAWS}/items?expand=fields&$top=999`);
+      items=all.map(it=>it.fields||{}).filter(f=>{
+        if(specNo){
+          const specs=trim(f.UsedInSpecs).split(/[\s、,]+/).filter(Boolean);
+          if(specs.includes(specNo))return true;
+        }
+        return zu&&trim(f.Title)===zu;
+      });
+    }
+  }catch(err){
+    console.error(err);
+    $("sideBody").innerHTML='<p class="muted">読み込みに失敗しました（コンソール参照）</p>';
+    return;
+  }
+  if(!items.length){
+    $("sideBody").innerHTML='<p class="muted">図面マスタにまだ紐づく図面がありません。'+
+      '「部品表を取り込む」か、図面仕様番号・図番を入れてください。</p>';
+    return;
+  }
+  items.sort((a,b)=>String(a.Title||"").localeCompare(String(b.Title||""),"ja"));
+  $("sideBody").innerHTML='<p class="muted" style="margin:0 0 10px">'+items.length+'件</p>'+
+    items.map(f=>
+      '<div class="ver"><div class="vh"><span class="vn mono2">'+esc(f.Title)+'</span>'+
+        (f.Rev?'<span class="vd">'+esc(f.Rev)+'</span>':'')+'</div>'+
+      '<div class="vmemo'+(f.DrawingName?"":" na")+'">'+esc(f.DrawingName||"（名称なし）")+'</div>'+
+      '<button type="button" class="msmall dwjump" data-zu="'+esc(f.Title)+'">実ファイルを見る・登録する</button></div>'
+    ).join("");
+}
 
 /* ============================================================
    図面の登録
@@ -3403,6 +3447,10 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(e.target.classList.contains("hist"))showHistory(e.target.dataset.zu);
   });
   $("btnSideClose").onclick=hideHistory;
+  $("sideBody").addEventListener("click",e=>{
+    const b=e.target.closest(".dwjump"); if(!b)return;
+    const zu=b.dataset.zu; hideHistory(); dwOpen(zu);
+  });
   document.addEventListener("keydown",e=>{if(e.key==="Escape")hideHistory()});
   $("dwOvl").addEventListener("click",e=>{if(e.target.id==="dwOvl")dwClose()});
   $("carOvl").addEventListener("click",e=>{if(e.target.id==="carOvl")carClose()});
@@ -3440,11 +3488,9 @@ document.addEventListener("DOMContentLoaded",()=>{
       const d=card.querySelector(".bd2"), b=card.querySelector(".bdmore");
       d.hidden=!d.hidden; b.classList.toggle("on",!d.hidden); return;
     }
-    /* 図面。この内訳の図番で開く */
+    /* 図面。この内訳（仕様番号）に紐づく図面が何かをまず見せる */
     if(e.target.closest(".bdzu")){
-      const zu=trim(bdVal(card,".m-zu"));
-      if(!zu){toast("先に図番を入れてください",true);return}
-      dwOpen(zu); return;
+      showLinkedDrawings(card); return;
     }
     /* チェック。塗装図とGN点検表は 未定 → 済(今日) → なし → 未定 と回る。
        ステッカー発注と製造番号は 押す／外す の2状態のまま。 */
