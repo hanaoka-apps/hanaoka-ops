@@ -193,6 +193,9 @@ button.pkrow .v{background:var(--soft);border:1px solid var(--line);border-radiu
 .side.on{transform:none}
 .side h2{margin:0 0 2px;font-size:17px}
 .side .zu{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--muted)}
+.dwviewnote{margin-top:10px;padding:9px 11px;background:var(--soft);border:1px solid var(--line);
+  border-radius:9px;font-size:11.5px;color:var(--muted);line-height:1.7}
+.dwviewnote a{color:var(--brand);font-weight:700}
 .side .close{position:absolute;top:16px;right:18px;border:1px solid var(--line);background:#fff;
   color:#888;border-radius:8px;width:30px;height:30px;line-height:1;padding:0;font-size:16px}
 .ver{border-top:1px solid #f0f0f2;padding:13px 0}
@@ -208,6 +211,13 @@ button.pkrow .v{background:var(--soft);border:1px solid var(--line);border-radiu
 .ver .vd.na{color:#b4232f;font-weight:700}
 .ver .vact{display:flex;gap:8px;flex-wrap:wrap}
 .ver a.msmall{text-decoration:none;display:inline-block}
+.ver .vcat{background:var(--soft);border:1px solid var(--line);border-radius:6px;
+  padding:1px 8px;font-size:11px;font-weight:700;color:#555}
+.catchips{display:flex;gap:6px;flex-wrap:wrap}
+.catchip{padding:5px 11px;font-size:12px;font-weight:700;border-radius:999px;
+  border:1px solid var(--line);background:#fff;color:#555}
+.catchip:hover{border-color:var(--brand);color:var(--brand)}
+.catchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
 .ver .vfile{font-size:11px;color:#aaa;word-break:break-all;margin-bottom:6px}
 .ver a.open{color:var(--brand);font-weight:700;text-decoration:none;font-size:13px}
 button.hist{border:1px solid var(--line);background:#fff;color:#555;border-radius:7px;
@@ -1290,6 +1300,7 @@ function hideHistory(){$("dwSide").classList.remove("on")}
    「部品表を取り込む」か、図面仕様番号を選ぶことで紐づく。
    図面ボタンは、まずその結果（何が紐づいているか）を見せる。
    実ファイルを見る／登録するときだけ、その図番でdwOpenへ進む。 */
+let LINKED_ROWS=null,LINKED_FILTER="すべて";
 async function showLinkedDrawings(card){
   const specNo=trim(bdVal(card,".m-specNo"));
   const zu=trim(bdVal(card,".m-zu"));
@@ -1318,27 +1329,50 @@ async function showLinkedDrawings(card){
     return;
   }
   if(!items.length){
+    LINKED_ROWS=null;
     $("sideBody").innerHTML='<p class="muted">図面マスタにまだ紐づく図面がありません。'+
       '「部品表を取り込む」か、図面仕様番号・図番を入れてください。</p>';
     return;
   }
   items.sort((a,b)=>String(a.Title||"").localeCompare(String(b.Title||""),"ja"));
   const byZu={}; drawingGroups().forEach(g=>{byZu[g.zu]=g});
-  const done=items.filter(f=>byZu[trim(f.Title)]).length;
-  $("sideBody").innerHTML='<p class="muted" style="margin:0 0 10px">'+items.length+'件　実ファイルあり'+done+'・未登録'+(items.length-done)+'</p>'+
-    items.map(f=>{
-      const g=byZu[trim(f.Title)];
+  /* 区分は、実ファイルがあればライブラリ側（登録時に人が決めた値）を優先。
+     まだ無ければ図面マスタ側の値、それも無ければ未分類。 */
+  LINKED_ROWS=items.map(f=>{
+    const g=byZu[trim(f.Title)];
+    const cat=(g&&g.cat)||trim(f.Category)||"未分類";
+    return {title:f.Title,name:f.DrawingName,cat:cat,g:g};
+  });
+  LINKED_FILTER="すべて";
+  renderLinkedDrawings();
+}
+function renderLinkedDrawings(){
+  if(!LINKED_ROWS)return;
+  const rows=LINKED_ROWS;
+  const counts={}; rows.forEach(r=>{counts[r.cat]=(counts[r.cat]||0)+1});
+  const cats=["すべて"].concat(CATS.concat(["未分類"]).filter(c=>counts[c]));
+  const chips=cats.map(c=>
+    '<button type="button" class="catchip'+(LINKED_FILTER===c?" on":"")+'" data-cat="'+esc(c)+'">'+
+    esc(c)+(c==="すべて"?(" "+rows.length):(" "+counts[c]))+'</button>').join("");
+  const filtered=LINKED_FILTER==="すべて"?rows:rows.filter(r=>r.cat===LINKED_FILTER);
+  const done=rows.filter(r=>r.g).length;
+  $("sideBody").innerHTML=
+    '<div class="catchips">'+chips+'</div>'+
+    '<p class="muted" style="margin:10px 0 0">'+rows.length+'件　実ファイルあり'+done+'・未登録'+(rows.length-done)+'</p>'+
+    (filtered.length ? filtered.map(r=>{
+      const g=r.g;
       const status=g
         ? '<span class="vd ok">Ver.'+verNo(g.latest)+(g.latest.revised||g.latest.mtime?'　'+esc(jpDate(g.latest.revised||g.latest.mtime)):'')+'</span>'
         : '<span class="vd na">未登録</span>';
       const action=g
         ? '<a class="msmall dwopenfile" href="'+esc(viewUrl(g.latest.url))+'" target="_blank" rel="noopener">ファイルを見る</a>'+
-          '<button type="button" class="msmall dwjump" data-zu="'+esc(f.Title)+'">改訂を登録</button>'
-        : '<button type="button" class="msmall dwjump" data-zu="'+esc(f.Title)+'">登録する</button>';
-      return '<div class="ver"><div class="vh"><span class="vn mono2">'+esc(f.Title)+'</span>'+status+'</div>'+
-      '<div class="vmemo'+(f.DrawingName?"":" na")+'">'+esc(f.DrawingName||"（名称なし）")+'</div>'+
-      '<div class="vact">'+action+'</div></div>';
-    }).join("");
+          '<button type="button" class="msmall dwjump" data-zu="'+esc(r.title)+'">改訂を登録</button>'
+        : '<button type="button" class="msmall dwjump" data-zu="'+esc(r.title)+'">登録する</button>';
+      return '<div class="ver"><div class="vh"><span class="vn mono2">'+esc(r.title)+'</span>'+
+        '<span class="vcat">'+esc(r.cat)+'</span>'+status+'</div>'+
+        '<div class="vmemo'+(r.name?"":" na")+'">'+esc(r.name||"（名称なし）")+'</div>'+
+        '<div class="vact">'+action+'</div></div>';
+    }).join("") : '<p class="muted">該当する図面がありません。</p>');
 }
 
 /* ============================================================
@@ -1377,7 +1411,7 @@ function zuPrefixes(fam){
           top:[...cnt.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0])[0]||""};
 }
 /* 区分の候補。全体図だけが営業に出せるもの。 */
-const CATS=["全体図","部品図","塗装図","その他"];
+const CATS=["全体図","部品図","塗装図","GN点検表","その他"];
 function splitZu(zu){
   const m=String(zu||"").match(/^(H\d{6}[A-Za-z0-9]{0,3}-)(.*)$/);
   return m?{pre:m[1],suf:m[2]}:{pre:"",suf:zu||""};
@@ -2589,7 +2623,9 @@ async function commitBomReview(){
       const base=`/sites/${SITE_ID}/lists/${ID_DRAWS}/items`;
       const reqs=[]
         .concat(creates.map(p=>({method:"POST",url:base,
-          body:{fields:{Title:p.zu,DrawingName:p.name||null,UsedInSpecs:r.spec,SpecCount:1}},
+          /* 部品表詳細から拾った図番は、性質上ほぼ部品図。違っていれば
+             図面ライブラリへ実ファイルを登録するときに直せばいい。 */
+          body:{fields:{Title:p.zu,DrawingName:p.name||null,UsedInSpecs:r.spec,SpecCount:1,Category:"部品図"}},
           headers:{"Content-Type":"application/json"}})))
         .concat(updates.map(u=>{
           const fields={UsedInSpecs:u.specs.join(" "),SpecCount:u.specs.length};
@@ -3520,6 +3556,8 @@ document.addEventListener("DOMContentLoaded",()=>{
   });
   $("btnSideClose").onclick=hideHistory;
   $("sideBody").addEventListener("click",e=>{
+    const chip=e.target.closest(".catchip");
+    if(chip){LINKED_FILTER=chip.dataset.cat;renderLinkedDrawings();return}
     const b=e.target.closest(".dwjump"); if(!b)return;
     const zu=b.dataset.zu; hideHistory(); dwOpen(zu);
   });
@@ -3683,6 +3721,9 @@ document.addEventListener("DOMContentLoaded",()=>{
   <button type="button" class="close" id="btnSideClose" aria-label="閉じる">×</button>
   <h2 id="sideTitle">履歴</h2>
   <div class="zu" id="sideZu"></div>
+  <div class="dwviewnote">図面ファイル（.xdw/.xbd）がタブで開かずダウンロードされてしまう場合は、
+    <a href="https://chromewebstore.google.com/detail/docuworks-viewer-light/lfdjpkeipdhkmkpbbkcmdoebkaddodem" target="_blank" rel="noopener">DocuWorks Viewer Light</a>
+    をChromeに入れてください。</div>
   <div id="sideBody" style="margin-top:14px"></div>
 </div>
 <div class="ovl" id="bomOvl"><div class="panel wide">
@@ -3810,8 +3851,7 @@ document.addEventListener("DOMContentLoaded",()=>{
       <span class="muted" id="dwBulkProg" style="font-size:12.5px"></span>
     </div>
   </div>
-  <div class="foot"><button type="button" class="ghost" id="btnDwClose">閉じる</button>
-    <span class="chk">図面を開くには DocuWorks Viewer Light とブラウザ拡張機能が必要です</span></div>
+  <div class="foot"><button type="button" class="ghost" id="btnDwClose">閉じる</button></div>
 </div></div>
 <div id="printArea" class="p-m"></div>
 </body>
