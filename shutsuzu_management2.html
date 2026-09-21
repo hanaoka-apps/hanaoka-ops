@@ -444,6 +444,9 @@ body:not(.signed-in) .gate{display:flex}
   margin:9px 0 2px;padding:9px 4px 2px;border-top:1px dashed var(--line)}
 .bd2 label{font-size:11.5px;color:var(--muted);font-weight:700;display:block;margin-bottom:3px}
 .bd2 input,.bd2 select{width:100%;padding:7px 9px;font-size:13.5px;border-radius:8px}
+.zufield{display:flex;gap:6px;align-items:center}
+.zufield input{flex:1;min-width:0}
+.zufield button{flex:none}
 .bd2 .inh input,.bd2 .inh select{background:#f7f8fb;color:#666}
 .wt3{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 .wt3 .wtf{display:flex;flex-direction:column;gap:3px}
@@ -1822,7 +1825,8 @@ function meisaiRowHtml(r){
                          '<span class="bomstat"></span>')+
     /* 登録時点では図面はまだ無くていい。技術部があとから埋める欄。
        仕様番号を選ぶと図番が自動で入るので、選ぶ方を図番より先に置く。 */
-    f("図面仕様番号",    t("m-specNo",r.specNo,"HSEC001 など",' list="specList"')+
+    f("図面仕様番号",    '<div class="zufield">'+t("m-specNo",r.specNo,"HSEC001 など",' list="specList"')+
+                         '<button type="button" class="bdbtn specpick" title="仕様番号を検索して選ぶ">検索</button></div>'+
                          '<span class="spechint"></span>')+
     f("図番",            t("m-zu",r.zu,"図番（仕様番号を選ぶと自動で入ります）"))+
     f("部品表番号",      t("m-parts",r.parts,"2607 など"))+
@@ -2373,6 +2377,34 @@ function fillSpecList(){
       .filter(Boolean).join("　");
     return '<option value="'+esc(s.id)+'" label="'+esc(lab)+'">';
   }).join("");
+}
+/* ネイティブのdatalistは、labelに製品系統・全体図・点数を入れても
+   その文字では絞り込めない（valueの仕様番号にしか一致しない）ため、
+   検索できる一覧を別に用意する。 */
+let SPEC_PICK_CARD=null;
+function openSpecPicker(card){
+  SPEC_PICK_CARD=card;
+  $("specPickQ").value="";
+  renderSpecPickList();
+  $("specOvl").classList.add("on");
+  $("specPickQ").focus();
+}
+function closeSpecPicker(){
+  $("specOvl").classList.remove("on");
+  SPEC_PICK_CARD=null;
+}
+function renderSpecPickList(){
+  const q=($("specPickQ").value||"").toLowerCase();
+  const list=SPEC_LIST.filter(s=>!q||
+    [s.id,s.fam,SPEC_TOP[s.id]||""].join(" ").toLowerCase().includes(q));
+  $("specPickCount").textContent=list.length+"件";
+  if(!list.length){$("specPickList").innerHTML='<p class="muted">該当する仕様がありません。</p>';return}
+  $("specPickList").innerHTML=list.map(s=>
+    '<button type="button" class="pkrow" data-id="'+esc(s.id)+'">'+
+    '<span class="l"><span class="n">'+esc(s.id)+'</span>'+
+    '<span class="s">'+esc(s.fam||"系統未設定")+
+      (SPEC_TOP[s.id]?('　全体図 '+esc(SPEC_TOP[s.id])):'')+'</span></span>'+
+    '<span class="v">'+(s.n?(s.n+'点'):'—')+'</span></button>').join("");
 }
 /* 仕様番号が決まったら、その仕様の全体図を図番に入れる。
    既に図番が入っていれば触らない（手で直したものを消さないため）。 */
@@ -3384,6 +3416,15 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("dwPickList").addEventListener("click",e=>{
     const b=e.target.closest("button.pkrow");if(b)pickTarget(b.dataset.zu);
   });
+  $("specPickQ").addEventListener("input",renderSpecPickList);
+  $("specPickList").addEventListener("click",e=>{
+    const b=e.target.closest("button.pkrow"); if(!b||!SPEC_PICK_CARD)return;
+    const el=SPEC_PICK_CARD.querySelector(".m-specNo");
+    if(el){el.value=b.dataset.id; applySpec(SPEC_PICK_CARD); recalcMeisai()}
+    closeSpecPicker();
+  });
+  $("btnSpecPickClose").onclick=closeSpecPicker;
+  $("specOvl").addEventListener("click",e=>{if(e.target.id==="specOvl")closeSpecPicker()});
   $("dwDrop2").onclick=()=>$("dwFile2").click();
   $("dwFile2").onchange=e=>{if(e.target.files[0])setUpdFile(e.target.files[0]);e.target.value=""};
   ["dragenter","dragover"].forEach(ev=>$("dwDrop2").addEventListener(ev,e=>{
@@ -3506,6 +3547,9 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(e.target.closest(".bdzu")){
       showLinkedDrawings(card); return;
     }
+    if(e.target.closest(".specpick")){
+      openSpecPicker(card); return;
+    }
     /* チェック。塗装図とGN点検表は 未定 → 済(今日) → なし → 未定 と回る。
        ステッカー発注と製造番号は 押す／外す の2状態のまま。 */
     const ck=e.target.closest(".ck");
@@ -3594,6 +3638,15 @@ document.addEventListener("DOMContentLoaded",()=>{
   initMsal().catch(err=>{toast("初期化に失敗: "+(err.message||err),true);console.error(err)});
 });
 </script>
+<div class="ovl" id="specOvl"><div class="panel">
+  <h2>図面仕様番号を検索して選ぶ</h2>
+  <div class="dwbar"><input id="specPickQ" class="search" placeholder="仕様番号・製品系統・全体図の図番でさがす（例 HSEC / BCC-W）">
+    <span class="cnt" id="specPickCount"></span></div>
+  <div id="specPickList" class="picklist"></div>
+  <div class="foot">
+    <button type="button" class="ghost" id="btnSpecPickClose">閉じる</button>
+  </div>
+</div></div>
 <div class="ovl" id="carOvl"><div class="panel">
   <h2>車体番号をまとめて入力</h2>
   <p class="sub">左の製造番号と<b>同じ順番</b>で、右に車体番号を1行ずつ貼り付けてください。<br>
