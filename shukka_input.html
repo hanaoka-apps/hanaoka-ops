@@ -190,6 +190,30 @@ body.in .gate{display:none}
   .r.mode-car .ic input.cell{width:100px}
   .bar .n b{font-size:19px}
 }
+.wtbox{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:2px 0 10px}
+.wtrule{font-size:12.5px;color:#555;background:var(--soft);border:1px solid var(--line);
+  border-radius:9px;padding:6px 10px}
+.wtrule.warn2{background:var(--warn-bg);border-color:#f0dcb0;color:var(--warn)}
+.nmf{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#555;flex:1 1 220px}
+.nmf input{flex:1;min-width:120px;padding:7px 9px;font-size:13.5px;border-radius:9px;
+  border:1px solid var(--line)}
+.r .l2 .nmk{color:#8d5a00;background:var(--warn-bg);border-radius:7px;padding:1px 7px;font-weight:700}
+.np{position:fixed;inset:0;background:rgba(20,28,40,.5);z-index:60;display:none;
+  align-items:flex-start;justify-content:center;padding:18px 12px;overflow:auto}
+.np.on{display:flex}
+.npbox{background:#fff;border-radius:14px;max-width:760px;width:100%;padding:18px 18px 22px}
+.npbox h3{margin:0 0 8px;font-size:17px}
+.npmiss{background:var(--warn-bg);border:1px solid #f0dcb0;color:var(--warn);
+  border-radius:11px;padding:11px 13px;font-size:13.5px;line-height:1.8;margin-bottom:12px}
+.npmiss b{display:block;margin-bottom:3px}
+.nptbl{width:100%;border-collapse:collapse;font-size:13px}
+.nptbl th{text-align:left;font-size:11px;color:#777;border-bottom:1.5px solid var(--line);padding:5px 6px}
+.nptbl td{padding:7px 6px;border-bottom:1px solid #eef1f5}
+.nptbl td.ng{color:#b03060;font-weight:700}
+@media print{ body>*:not(.np){display:none!important}
+  .np{position:static;background:#fff;padding:0;display:block!important}
+  .npbox{max-width:none;padding:0}
+  .npnoprint{display:none!important} }
 </style>
 </head>
 <body>
@@ -274,6 +298,14 @@ body.in .gate{display:none}
       <button type="button" class="plain" id="btnSelYet">未入力を選ぶ</button>
       <button type="button" class="plain" id="btnSelAll">ぜんぶ選ぶ</button>
       <button type="button" class="plain" id="btnSelNone">選択を外す</button>
+      <button type="button" class="plain" id="btnNotMeasured" title="実重量が空の行を「測れなかった」にします。空欄のままだと、まだ入力していないのか測れなかったのか区別が付きません。">測れなかった</button>
+      <button type="button" class="plain" id="btnNmClear" title="「測れなかった」を外します。">測れなかったを外す</button>
+      <button type="button" class="plain" id="btnNameplate" title="銘板見出しを出します。足りない項目があると、何が足りないかを先に出します。">銘板見出しを出す</button>
+    </div>
+    <div class="wtbox">
+      <span id="wtRule" class="wtrule">—</span>
+      <label class="nmf"><span>測れなかった理由（任意）</span>
+        <input id="nmNote" type="text" placeholder="例）出来上がってすぐ出荷"></label>
     </div>
 
     <div id="listBody"></div>
@@ -328,6 +360,13 @@ body.in .gate{display:none}
 
 <div class="stamp" id="stamp"></div>
 
+<div class="np" id="npWrap"><div class="npbox">
+  <div id="npBody"></div>
+  <div class="npnoprint" style="display:flex;gap:9px;margin-top:14px">
+    <button type="button" class="plain" id="btnNpClose">閉じる</button>
+    <button type="button" id="btnNpPrint">印刷する</button>
+  </div>
+</div></div>
 <script>
 /* ============================================================
    つなぎ先
@@ -341,8 +380,10 @@ const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu";
 const LIST_UNITS="製造番号明細";
+const LIST_SHUTSUZU="出図マスタ";
 let msalInstance=null,account=null,SITE_ID=null,UNITS_ID=null;
 let LIST_CTX=null,RECENT=[],TODO=[],SEL=new Set(),PENDING=null;
+let SHUTSUZU_ID=null;
 /* DRAFT … 打っただけでまだ保存していない値。id -> {w,car,date,ym}
    保存するまでここにしか無い。画面を閉じる前に引き止める。 */
 let DRAFT=new Map();
@@ -445,6 +486,9 @@ async function signedIn(){
     const u=lists.find(x=>x.displayName===LIST_UNITS||x.name===LIST_UNITS);
     if(!u)throw new Error("製造番号明細が見つかりません");
     UNITS_ID=u.id;
+    /* 銘板表示方法を知るために出図マスタも見る。無くても動く（丸めの案内が出ないだけ） */
+    const sm=lists.find(x=>x.displayName===LIST_SHUTSUZU||x.name===LIST_SHUTSUZU);
+    SHUTSUZU_ID=sm?sm.id:null;
     document.body.classList.add("in");
     await loadTodo();
   }catch(e){
@@ -467,6 +511,7 @@ function unitOf(it){const f=it.fields||{};return {
   weight:f.ActualWeight==null?"":String(f.ActualWeight),      /* 実重量 */
   nweight:f.NameplateWeight==null?"":String(f.NameplateWeight),/* 自重（吹付・銘板） */
   ym:trim(f.ManufactureYM).slice(0,7),
+  nm:f.NotMeasured?"1":"", nmn:f.NotMeasuredNote||"",
   status:f.UnitStatus||""}}
 
 async function loadTodo(){
@@ -556,13 +601,52 @@ function openList(title,units){
   SEL=new Set();DRAFT=new Map();
   COL="w";setCol("w",true);
   $("bDate").value="";$("bYm").value="";$("bWeight").value="";
+  LIST_CTX.wt=null;
   renderList();
   only("cardList");
   top0();
+  loadWtRule(head.shipNo);
+}
+/* ============================================================
+   銘板表示方法（出図マスタの WTMethod）
+   実測値 … 測った値をそのまま
+   ゼロ五 … 下1桁を 0 か 5 に
+   記載なし … 銘板に重さを書かない
+   固定値 … 測った値によらず決まった値
+   ここが分かると「自重を作る」ボタンの動きが決まる。
+   ============================================================ */
+async function loadWtRule(shipNo){
+  if(!SHUTSUZU_ID||!trim(shipNo)){noteWt();return}
+  try{
+    const q="/sites/"+SITE_ID+"/lists/"+SHUTSUZU_ID+"/items?expand=fields&$top=5"+
+            "&$filter=fields/Title eq '"+encodeURIComponent(trim(shipNo))+"'";
+    const r=await gAll(q,{Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"});
+    const f=(r[0]||{}).fields||{};
+    LIST_CTX.wt={method:f.WTMethod||"",fixed:f.WTFixed==null?"":String(f.WTFixed),spray:f.SprayMark||""};
+  }catch(e){ console.warn("銘板表示方法を読めませんでした",e); LIST_CTX.wt=null }
+  noteWt();
+}
+function wtRule(){ return (LIST_CTX&&LIST_CTX.wt)||{method:"",fixed:"",spray:""} }
+function noteWt(){
+  const r=wtRule(),b=$("btnWt"),n=$("wtRule");
+  if(!b)return;
+  const L={ "実測値":"実測値をそのまま自重に入れる",
+            "ゼロ五":"実重量から自重を作る（ゼロ五）",
+            "記載なし":"この出図は銘板に重さを書きません",
+            "固定値":"固定値 "+(r.fixed||"—")+"kg を自重に入れる" };
+  b.textContent = L[r.method] || "実重量から自重を作る";
+  b.disabled = (r.method==="記載なし");
+  if(n){
+    n.textContent = r.method
+      ? ("銘板表示方法：" + r.method + (r.method==="固定値"&&r.fixed?("（"+r.fixed+"kg）"):"")
+         + "　／　吹付：" + (r.spray||"未設定"))
+      : "銘板表示方法が出図に入っていません。押すと下1桁を 0 か 5 に丸めます。";
+    n.classList.toggle("warn2", !r.method);
+  }
 }
 /* 行に出す値。打った値があればそれ、無ければ保存済みの値。 */
 function draftOf(id){return DRAFT.get(id)||null}
-const FIELD={w:"weight",nw:"nweight",car:"car",date:"date",ym:"ym"};
+const FIELD={w:"weight",nw:"nweight",car:"car",date:"date",ym:"ym",nm:"nm",nmn:"nmn"};
 function valOf(u,key){
   const d=draftOf(u.id);
   if(d&&d[key]!==undefined)return d[key];
@@ -598,7 +682,10 @@ function rowHtml(u,i){
   const l2=[
     mark("date",dt?jp(dt):"", "出荷日 未"),
     mark("ym",ym?jpYm(ym):"", "製造年月 未"),
-    (COL==="nw"?"":mark("nw",valOf(u,"nw")?(valOf(u,"nw")+"kg 自重"):"", "自重 未"))
+    (COL==="nw"?"":mark("nw",valOf(u,"nw")?(valOf(u,"nw")+"kg 自重"):"", "自重 未")),
+    (valOf(u,"nm")==="1"
+      ? '<span class="nmk">測れなかった'+(trim(valOf(u,"nmn"))?("："+esc(trim(valOf(u,"nmn")))):"")+'</span>'
+      : "")
   ].filter(Boolean).join(" ・ ");
   /* 1行目の右肩には、いま打っていない項目のうち1つを出す */
   const nw=valOf(u,"nw");
@@ -704,20 +791,116 @@ const wt05=v=>{const n=parseInt(digits(v),10);
   return isNaN(n)?"":String(Math.round(n/5)*5)};
 function makeNameplate(){
   clearErr();
+  const r=wtRule(), m=r.method;
+  if(m==="記載なし"){showErr("この出図は銘板に重さを書きません。実重量だけ記録してください。");return}
   const t=applyTargets();
   let n=0,skip=0;
   t.forEach(u=>{
+    if(trim(valOf(u,"nw"))){skip++;return}   /* もう入っている行は触らない */
+    if(m==="固定値"){
+      if(!trim(r.fixed)){skip++;return}
+      setDraft(u,"nw",trim(r.fixed)); n++; return;
+    }
     const w=trim(valOf(u,"w"));
     if(!w){skip++;return}
-    if(trim(valOf(u,"nw"))){skip++;return}   /* もう入っている行は触らない */
-    setDraft(u,"nw",wt05(w)); n++;
+    /* 実測値ならそのまま。ゼロ五（または未設定）なら丸める */
+    setDraft(u,"nw", m==="実測値" ? String(parseInt(digits(w),10)||"") : wt05(w));
+    n++;
   });
   if(!n){showErr(skip?"入れられる行がありませんでした。実重量が空か、自重がもう入っています。"
                     :"対象の車両がありません。");return}
   renderList();
-  showOk(n+"台の自重を作りました（下1桁を 0 か 5 に）。"+
+  const how = m==="実測値" ? "実測値をそのまま入れました"
+            : m==="固定値" ? ("固定値 "+r.fixed+"kg を入れました")
+            : "下1桁を 0 か 5 にして入れました";
+  showOk(n+"台の自重を作りました（"+how+"）。"+
     (skip?("　"+skip+"台はとばしました。"):"")+
     "　ちがう行はその場で打ち直してください。");
+}
+
+/* ---- 測れなかった ----
+   実重量はぜんぶ測るのが基本だが、出来上がってすぐトラック、という場合に
+   測れないことがある。空欄のままだと「まだ入力していない」と区別が付かない
+   ので、測れなかったことを記録として残す。理由は任意。
+   チェックが付いた行は、実重量が空でもデータとしては完了とみなす。 */
+function markNotMeasured(){
+  clearErr();
+  const t=applyTargets().filter(u=>!trim(valOf(u,"w")));
+  if(!t.length){showErr("対象がありません。実重量が入っている行は「測れなかった」にできません。");return}
+  const why=trim($("nmNote").value);
+  t.forEach(u=>{ setDraft(u,"nm","1"); setDraft(u,"nmn",why) });
+  renderList();
+  showOk(t.length+"台を「測れなかった」にしました。"+(why?("理由："+why):"理由は空のままです。"));
+}
+function clearNotMeasured(){
+  clearErr();
+  const t=applyTargets().filter(u=>valOf(u,"nm")==="1");
+  if(!t.length){showErr("「測れなかった」になっている行がありません。");return}
+  t.forEach(u=>{ setDraft(u,"nm",""); setDraft(u,"nmn","") });
+  renderList();
+  showOk(t.length+"台の「測れなかった」を外しました。");
+}
+
+/* ============================================================
+   銘板見出し
+   ------------------------------------------------------------
+   銘板に打つ内容を、資材が見て分かる形で出す。
+   製造番号と製造年月が決まっていないと成立しないので、
+   足りないうちは出さず、何が足りないかを先に出す。
+   ★ここで見ているのは「打っていない値」ではなく「保存前の値も含む」。
+     打ってすぐ確認できるほうが手戻りが少ないため。
+   ============================================================ */
+function npRows(){
+  const t=applyTargets();
+  const needNw=(wtRule().method!=="記載なし");
+  return t.map(u=>{
+    const miss=[];
+    const ym=trim(valOf(u,"ym")), nw=trim(valOf(u,"nw"));
+    if(!ym)miss.push("製造年月");
+    if(needNw&&!nw)miss.push("自重");
+    return {u:u,ym:ym,nw:nw,car:trim(valOf(u,"car")),miss:miss};
+  });
+}
+function openNameplate(){
+  clearErr();
+  const rows=npRows();
+  if(!rows.length){showErr("対象の車両がありません。");return}
+  const r=wtRule(), needNw=(r.method!=="記載なし");
+  const ng=rows.filter(x=>x.miss.length);
+  const kinds={};
+  ng.forEach(x=>x.miss.forEach(m=>{kinds[m]=(kinds[m]||0)+1}));
+  let h='<h3>銘板見出し　'+esc(LIST_CTX.title)+'</h3>'+
+        '<div style="font-size:12.5px;color:#666;margin-bottom:10px">'+
+        esc(LIST_CTX.sub||"")+'<br>銘板表示方法：'+esc(r.method||"未設定")+
+        (r.method==="固定値"&&r.fixed?("（"+esc(r.fixed)+"kg）"):"")+
+        '　／　吹付：'+esc(r.spray||"未設定")+'</div>';
+  if(ng.length){
+    h+='<div class="npmiss npnoprint"><b>'+ng.length+'台 ぶん、まだ出せません。</b>'+
+       Object.keys(kinds).map(k=>k+" が空："+kinds[k]+"台").join("　／　")+
+       '<br>足りているぶんだけ下に出しています。埋めてからもう一度押してください。</div>';
+  }
+  h+='<table class="nptbl"><thead><tr><th>製造番号</th><th>車体番号</th>'+
+     '<th>品名・型式</th><th>図番</th><th>製造年月</th><th>自重</th>'+
+     '<th>仕向地</th></tr></thead><tbody>'+
+   rows.map(x=>{
+     const u=x.u, bad=x.miss.length>0;
+     return '<tr>'+
+       '<td>'+esc(u.sn)+'</td>'+
+       '<td>'+esc(x.car||"—")+'</td>'+
+       '<td>'+esc([u.product,u.model].filter(Boolean).join("　"))+'</td>'+
+       '<td>'+esc(u.zu)+'</td>'+
+       '<td'+(!x.ym?' class="ng"':'')+'>'+(x.ym?esc(jpYm(x.ym)):"未入力")+'</td>'+
+       '<td'+((needNw&&!x.nw)?' class="ng"':'')+'>'+
+         (needNw?(x.nw?esc(x.nw)+"kg":"未入力"):"記載なし")+'</td>'+
+       '<td>'+esc(u.dest)+'</td>'+
+     '</tr>';
+   }).join("")+'</tbody></table>';
+  if(DRAFT.size){
+    h+='<div class="npnoprint" style="font-size:12px;color:#8d5a00;margin-top:9px">'+
+       '※ まだ保存していない入力が含まれています。印刷する前に保存してください。</div>';
+  }
+  $("npBody").innerHTML=h;
+  $("npWrap").classList.add("on");
 }
 
 /* ---- 車体番号（＝指定番号＝管理番号）を下に連番で埋める ----
@@ -850,6 +1033,8 @@ async function commit(){
     if(d.car!==undefined)body.CarNo=d.car;
     if(d.date!==undefined){body.ShipDate=d.date+"T00:00:00Z";body.UnitStatus="出荷済"}
     if(d.ym!==undefined)body.ManufactureYM=d.ym;
+    if(d.nm!==undefined)body.NotMeasured=(d.nm==="1");
+    if(d.nmn!==undefined)body.NotMeasuredNote=d.nmn;
     return {id:u.id,u:u,body:body};
   });
   $("btnCommit").disabled=true;$("btnCommit").textContent="保存しています…";
@@ -953,6 +1138,11 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("btnApply").onclick=applyBulk;
 
   $("btnWt").onclick=makeNameplate;
+  $("btnNotMeasured").onclick=markNotMeasured;
+  $("btnNmClear").onclick=clearNotMeasured;
+  $("btnNameplate").onclick=openNameplate;
+  $("btnNpClose").onclick=()=>$("npWrap").classList.remove("on");
+  $("btnNpPrint").onclick=()=>window.print();
   $("btnFill").onclick=fillCarSeq;
   $("btnSelYet").onclick=()=>{selSet(u=>!valOf(u,"date"));noteApply()};
   $("btnSelAll").onclick=()=>{selSet(()=>true);noteApply()};
