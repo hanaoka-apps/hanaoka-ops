@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <style>
 :root{--brand:#ff6b81;--brand-dark:#e8556d;--bg:#fff7fb;--line:#e6e6e9;--soft:#f7fbff;--muted:#666;--danger:#d64545;--text:#222}
 *{box-sizing:border-box}body{margin:0;font-family:"Noto Sans JP","Segoe UI","Hiragino Kaku Gothic ProN",sans-serif;background:var(--bg);color:var(--text)}
@@ -460,6 +461,9 @@ body:not(.signed-in) .gate{display:flex}
 /* 仕様番号の下に出る注記。全体図の図番と図面点数。 */
 .spechint{display:block;font-size:11px;color:#6b6b73;margin-top:3px;line-height:1.4}
 .spechint.ng{color:#b4232f}
+.bombtn{display:inline-block;cursor:pointer}
+.bomstat{display:block;font-size:11px;color:#6b6b73;margin-top:3px;line-height:1.4}
+.bomstat.ng{color:#b4232f}
 /* 「なし」＝その製品には無い。済とは別に見えるようにする */
 .ck.none{background:#f2f2f4;border-color:#d0d0d6;color:#5a5a63}
 .ck.none::before{content:"— "}
@@ -1757,6 +1761,11 @@ function meisaiRowHtml(r){
     '<button type="button" class="bdbtn bddel" title="この内訳を削除">×</button>'+
    '</div>'+
    '<div class="bd2" hidden>'+
+    /* 部品表Excelを貼るだけで、図面仕様番号・図番・型式・部品表番号がまとめて埋まる。
+       手で1つずつ選ぶより先に、まずこれを案内する。 */
+    f("部品表",          '<label class="bdbtn bombtn">部品表を取り込む'+
+                         '<input type="file" class="hid m-bomfile" accept=".xlsx,.xlsm"></label>'+
+                         '<span class="bomstat"></span>')+
     /* 登録時点では図面はまだ無くていい。技術部があとから埋める欄。
        仕様番号を選ぶと図番が自動で入るので、選ぶ方を図番より先に置く。 */
     f("図面仕様番号",    t("m-specNo",r.specNo,"HSEC001 など",' list="specList"')+
@@ -2324,6 +2333,63 @@ function applySpec(card){
     hint.classList.toggle("ng", !!sid && cnt===undefined);
   }
   if(top&&zIn&&!trim(zIn.value)){zIn.value=top;recalcMeisai()}
+}
+/* ============================================================
+   部品表Excelを内訳に貼る。
+   「部品表【生産】」（無ければ「【見積】」）シートの、位置が
+   固定されたヘッダーだけを読む（部品表テンプレート.xlsxで確認済み）。
+     D1=客先 G1=仕様 D2=機種 G2=部番 D3=図番 G3=台数
+   このテンプレートに合わないファイルは中身を無理に探さず、
+   エラーを出して手入力に戻す（間違った値を拾うほうが怖いため）。
+   ============================================================ */
+async function readBomExcel(file){
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:"array"});
+  const nm=["部品表【生産】","部品表【見積】"].find(n=>wb.SheetNames.includes(n));
+  if(!nm)return {ok:false,reason:'「部品表【生産】」「部品表【見積】」という名前のシートが見つかりません'};
+  const ws=wb.Sheets[nm];
+  const v=a=>{const c=ws[a]; return c?trim(String(c.w!=null?c.w:c.v)):""};
+  const spec=v("G1"),model=v("D2"),partsNo=v("G2"),zu=v("D3"),units=v("G3");
+  if(!spec&&!zu)return {ok:false,reason:'「'+nm+'」シートの見出し位置（D1〜G3）がテンプレートと違います'};
+  return {ok:true,sheet:nm,spec:spec,model:model,partsNo:partsNo,zu:zu,units:units};
+}
+function handleBomFile(card,file){
+  if(!file)return;
+  const stat=card.querySelector(".bomstat");
+  if(stat){stat.textContent="読み込んでいます…";stat.classList.remove("ng")}
+  readBomExcel(file).then(r=>{
+    if(!r.ok){
+      if(stat){stat.textContent=r.reason+"。手入力してください";stat.classList.add("ng")}
+      return;
+    }
+    /* 既に入っている値は消さない（手で直したものを守るため） */
+    const set=(cls,v)=>{
+      if(!v)return false;
+      const el=card.querySelector(cls);
+      if(el&&!trim(el.value)){el.value=v;return true}
+      return false;
+    };
+    const got=[];
+    if(set(".m-specNo",r.spec))got.push("図面仕様番号");
+    if(set(".m-zu",r.zu))got.push("図番");
+    if(set(".m-model",r.model))got.push("型式");
+    if(set(".m-parts",r.partsNo))got.push("部品表番号");
+    /* 台数は書き換えず、違っていたら教えるだけ */
+    const qtyEl=card.querySelector(".m-qty");
+    const u=parseInt(r.units,10);
+    let warn="";
+    if(qtyEl&&isFinite(u)&&trim(qtyEl.value)&&parseInt(qtyEl.value,10)!==u)
+      warn="　※内訳の台数("+qtyEl.value+")と部品表の台数("+u+")が違います";
+    if(stat){
+      stat.textContent=(got.length?("取り込みました："+got.join("・")):"新しく入る項目はありませんでした（既に入力済み）")+warn;
+      stat.classList.toggle("ng",!!warn);
+    }
+    applySpec(card);
+    recalcMeisai();
+  }).catch(err=>{
+    console.error(err);
+    if(stat){stat.textContent="読み込みに失敗しました（ファイル形式を確認してください）";stat.classList.add("ng")}
+  });
 }
 /* 製造番号明細（SharePointのリスト）を開く。
    出図管理番号を渡すと、その出図の分だけに絞って開く。 */
@@ -3215,6 +3281,9 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("meisaiRows").addEventListener("change",e=>{
     if(e.target.classList.contains("m-specNo")){
       const card=e.target.closest(".bd"); if(card)applySpec(card);
+    }
+    if(e.target.classList.contains("m-bomfile")){
+      const card=e.target.closest(".bd"); if(card)handleBomFile(card,e.target.files[0]);
     }
   });
   $("meisaiRows").addEventListener("blur",e=>{
