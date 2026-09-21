@@ -478,7 +478,7 @@ body:not(.signed-in) .gate{display:flex}
   margin:9px 0 2px;padding:9px 4px 2px;border-top:1px dashed var(--line)}
 .bd2[hidden]{display:none}
 .bd2 label{font-size:11.5px;color:var(--muted);font-weight:700;display:block;margin-bottom:3px}
-.carsum{display:block;padding:7px 0;font-size:13.5px;font-weight:700}
+.carsum{display:inline-block;padding:7px 0;font-size:13.5px;font-weight:700}
 .bd2 input,.bd2 select{width:100%;padding:7px 9px;font-size:13.5px;border-radius:8px}
 .zufield{display:flex;gap:6px;align-items:center}
 .zufield input{flex:1;min-width:0}
@@ -1944,6 +1944,7 @@ function meisaiRowHtml(r){
        項目（仕様番号・図番・部品表番号）とは分けて後ろに置く。 */
     f("品名",            t("m-name",r.name,"パレットトレーラー"))+
     f("車体番号",'<span class="carsum">—</span>'+
+                 '<button type="button" class="msmall carpick" style="margin-left:8px">この内訳だけ入力</button>'+
                  '<input type="hidden" class="m-carno" value="'+esc(r.carNo||"")+'">')+
     f("表面処理",'<select class="m-surface">'+optsHtml(SURFACES,r.surface||"")+'</select>')+
     f("付属品",          t("m-acc",r.acc,"例：保護枠付き"))+
@@ -3578,17 +3579,27 @@ function carFillSeq(){
   carCheck();
   toast(filled+"件、連番で埋めました。ちがう行はその場で書き直してください。");
 }
-async function carOpen(){
+/* この内訳の見出し（仕向地・型式）を、車体番号入力の画面に出すため */
+function carScopeLabel(bk){
+  const r=readMeisai().find(x=>x.bk===bk);
+  if(!r)return "";
+  return [r.dest,r.model].filter(Boolean).join("・");
+}
+let CAR_SCOPE_BK="";
+/* bkを渡すと、その内訳の分だけに絞る。渡さなければ出図まるごと（従来どおり）。
+   内訳によって客先の車体番号の付け方が違うことがあるので、両方使えるようにする。 */
+async function carOpen(bk){
   if(!requireSignIn())return;
   const shipNo=trim($("ship_no").value);
   if(!shipNo){toast("先に一覧の「編集」を押してください",true);return}
+  CAR_SCOPE_BK=bk||"";
   toast("製造番号を読み込んでいます…");
   try{
     let items=await fetchUnits(shipNo);
     if(!items.length){
       /* 台数はあるのに明細が無いことがある（以前のバージョンで図番が
          無くて作られなかった、保存時の確認ダイアログを取り消した、等）。
-         作れる状態ならここで作ってしまう。 */
+         作れる状態ならここで作ってしまう。内訳を絞る前の、出図まるごとで直す。 */
       const e=getEntry();
       const hasQty=(e.meisai||[]).some(r=>(parseInt(r.qty,10)||0)>0);
       if(hasQty){
@@ -3596,9 +3607,14 @@ async function carOpen(){
         if(r&&!r.cancelled&&!r.skipped)items=await fetchUnits(shipNo);
       }
     }
+    if(CAR_SCOPE_BK)items=items.filter(it=>(it.fields||{}).BreakdownKey===CAR_SCOPE_BK);
     CAR_UNITS=items.map(it=>({id:it.id,sn:(it.fields||{}).Title||"",car:(it.fields||{}).CarNo||""}))
       .sort((a,b)=>String(a.sn).localeCompare(String(b.sn)));
     if(!CAR_UNITS.length){
+      if(CAR_SCOPE_BK){
+        toast("この内訳の製造番号明細がまだありません。台数を入れて保存してから、もう一度お試しください。",true);
+        return;
+      }
       const m=readMeisai();
       const noQty=!m.some(r=>(parseInt(r.qty,10)||0)>0);
       toast(noQty
@@ -3606,7 +3622,8 @@ async function carOpen(){
         : "この出図の製造番号明細を作れませんでした。もう一度お試しいただくか、総務にご連絡ください。",true);
       return;
     }
-    $("carSnHead").textContent="製造番号（"+CAR_UNITS.length+"台）";
+    const scope=CAR_SCOPE_BK?carScopeLabel(CAR_SCOPE_BK):"";
+    $("carSnHead").textContent="製造番号（"+(scope?scope+"　":"")+CAR_UNITS.length+"台）";
     carRenderList();
     $("carNoText").value=CAR_UNITS.map(u=>u.car||"").join("\n").replace(/\n+$/,"");
     carCheck();
@@ -3808,6 +3825,11 @@ document.addEventListener("DOMContentLoaded",()=>{
     }
     if(e.target.closest(".specpick")){
       openSpecPicker(card); return;
+    }
+    if(e.target.closest(".carpick")){
+      const bk=card.dataset.bk||"";
+      if(!bk){toast("先に出図を保存してください（この内訳がまだ確定していません）",true);return}
+      carOpen(bk); return;
     }
     /* チェック。塗装図とGN点検表は 未定 → 済(今日) → なし → 未定 と回る。
        ステッカー発注と製造番号は 押す／外す の2状態のまま。 */
