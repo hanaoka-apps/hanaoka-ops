@@ -678,6 +678,7 @@ let ID_SPECS=null,ID_DRAWS=null,BOM_STATE="none";
 let SPEC_LIST=[];          /* [{id, fam, n}] 仕様番号の一覧 */
 let SPEC_TOP={};           /* 仕様番号 → 全体図の図番 */
 let SPEC_CNT={};           /* 仕様番号 → 図面点数 */
+let SPEC_PARTS={};         /* 仕様番号 → 部品表番号 */
 let editingIndex=-1;/* 画面に出すビルドの目印。古いファイルが配られていないかを目で確かめるため。 */
 const BUILD="2026-09-21 11:40";
 const $=id=>document.getElementById(id),show=(id,on)=>{$(id).style.display=on?"":"none"},trim=s=>(s||"").toString().trim(),esc=s=>String(s||"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -2336,7 +2337,7 @@ async function spInit(){
    「仕様番号 → 全体図の図番」と「仕様番号 → 図面点数」を作る。
    全体図が無い仕様もあるので、その場合は図番を出さない（推測しない）。 */
 async function loadBom(){
-  SPEC_LIST=[];SPEC_TOP={};SPEC_CNT={};
+  SPEC_LIST=[];SPEC_TOP={};SPEC_CNT={};SPEC_PARTS={};
   if(!ID_SPECS||!ID_DRAWS){BOM_STATE="none";fillSpecList();return}
   try{
     const q=id=>`/sites/${SITE_ID}/lists/${id}/items?expand=fields&$top=999`;
@@ -2344,10 +2345,11 @@ async function loadBom(){
     SPEC_LIST=sp.map(x=>({
       id:trim((x.fields||{}).Title),
       fam:trim((x.fields||{}).Family),
-      n:(x.fields||{}).DrawingCount||0
+      n:(x.fields||{}).DrawingCount||0,
+      parts:trim((x.fields||{}).PartsNo)
     })).filter(s=>s.id);
     SPEC_LIST.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
-    SPEC_LIST.forEach(s=>{SPEC_CNT[s.id]=s.n});
+    SPEC_LIST.forEach(s=>{SPEC_CNT[s.id]=s.n; if(s.parts)SPEC_PARTS[s.id]=s.parts});
     dw.forEach(x=>{
       const f=x.fields||{}, nm=trim(f.DrawingName), zu=trim(f.Title);
       if(nm!=="全体図"&&nm!=="三面図")return;              /* 親figureだけ拾う */
@@ -2376,17 +2378,20 @@ function fillSpecList(){
    既に図番が入っていれば触らない（手で直したものを消さないため）。 */
 function applySpec(card){
   const sIn=card.querySelector(".m-specNo"),zIn=card.querySelector(".m-zu"),
-        hint=card.querySelector(".spechint");
+        pIn=card.querySelector(".m-parts"),hint=card.querySelector(".spechint");
   if(!sIn)return;
   const sid=trim(sIn.value);
-  const top=SPEC_TOP[sid], cnt=SPEC_CNT[sid];
+  const top=SPEC_TOP[sid], cnt=SPEC_CNT[sid], parts=SPEC_PARTS[sid];
   if(hint){
     if(!sid) hint.textContent = BOM_STATE==="ok" ? "" : "（仕様マスタを読めていません）";
     else if(cnt===undefined) hint.textContent="この仕様番号は仕様マスタにありません";
     else hint.textContent=(top?("全体図 "+top):"全体図が登録されていません")+"　図面"+(cnt||0)+"点";
     hint.classList.toggle("ng", !!sid && cnt===undefined);
   }
-  if(top&&zIn&&!trim(zIn.value)){zIn.value=top;recalcMeisai()}
+  let changed=false;
+  if(top&&zIn&&!trim(zIn.value)){zIn.value=top;changed=true}
+  if(parts&&pIn&&!trim(pIn.value)){pIn.value=parts;changed=true}
+  if(changed)recalcMeisai();
 }
 /* ============================================================
    部品表Excelを内訳に貼る。
@@ -2479,22 +2484,28 @@ async function openBomReview(card,file){
         specs:specNew?specs.concat([r.spec]):specs});
     });
   }
-  /* 仕様マスタにこの仕様番号がまだ無ければ、あわせて新規登録する候補にする */
-  let specIsNew=false;
+  /* 仕様マスタにこの仕様番号がまだ無ければ、あわせて新規登録する候補にする。
+     既にあるが部品表番号だけ空なら、そこだけ埋める候補にする。 */
+  let specIsNew=false,specFillId=null;
   if(r.spec&&ID_SPECS){
     const sp=await gGetAll(`/sites/${SITE_ID}/lists/${ID_SPECS}/items?expand=fields&$top=999`);
-    specIsNew=!sp.some(it=>trim((it.fields||{}).Title)===r.spec);
+    const hit=sp.find(it=>trim((it.fields||{}).Title)===r.spec);
+    if(!hit)specIsNew=true;
+    else if(r.partsNo&&!trim((hit.fields||{}).PartsNo))specFillId=hit.id;
   }
-  BOM_PENDING={card:card,r:r,file:file,creates:creates,updates:updates,unchanged:unchanged,specIsNew:specIsNew};
+  BOM_PENDING={card:card,r:r,file:file,creates:creates,updates:updates,unchanged:unchanged,
+    specIsNew:specIsNew,specFillId:specFillId};
   renderBomReview();
   $("bomOvl").classList.add("on");
 }
 function renderBomReview(){
-  const {r,creates,updates,unchanged,specIsNew}=BOM_PENDING;
+  const {r,creates,updates,unchanged,specIsNew,specFillId}=BOM_PENDING;
   $("bomSub").textContent='「'+r.sheet+'」から読み取りました。内容を確認してから取り込んでください。';
+  const specState=specIsNew?'<span class="oldn2">新規登録します</span>'
+    :specFillId?'<span class="oldn2">部品表番号を追加します</span>':'登録済み';
   $("bomHead").innerHTML=[["仕様",r.spec],["図番",r.zu],["型式",r.model],["部品表番号",r.partsNo],["台数",r.units]]
     .map(([k,v])=>'<div><b>'+esc(k)+'</b>'+esc(v||"（空）")+'</div>').join("")+
-    '<div><b>仕様マスタ</b>'+(r.spec?(specIsNew?'<span class="oldn2">新規登録します</span>':'登録済み'):"（空）")+'</div>';
+    '<div><b>仕様マスタ</b>'+(r.spec?specState:"（空）")+'</div>';
   const rows=[]
     .concat(creates.map(p=>({label:"新規",zu:p.zu,name:esc(p.name)})))
     .concat(updates.map(u=>({label:u.nameChanged?"名称変更":"仕様追加",zu:u.p.zu,
@@ -2514,13 +2525,16 @@ function closeBomReview(){
 }
 async function commitBomReview(){
   if(!BOM_PENDING)return;
-  const {card,r,file,creates,updates,specIsNew}=BOM_PENDING;
+  const {card,r,file,creates,updates,specIsNew,specFillId}=BOM_PENDING;
   const btn=$("btnBomCommit"); btn.disabled=true;
   try{
     if(ID_SPECS&&specIsNew&&r.spec){
       await gFetch("POST",`/sites/${SITE_ID}/lists/${ID_SPECS}/items`,
         {fields:{Title:r.spec,Family:r.model||null,DrawingCount:r.parts.length,
-                 BomFile:file?file.name:null}});
+                 PartsNo:r.partsNo||null,BomFile:file?file.name:null}});
+    }else if(ID_SPECS&&specFillId){
+      await gFetch("PATCH",`/sites/${SITE_ID}/lists/${ID_SPECS}/items/${specFillId}/fields`,
+        {PartsNo:r.partsNo});
     }
     if(ID_DRAWS&&(creates.length||updates.length)){
       const base=`/sites/${SITE_ID}/lists/${ID_DRAWS}/items`;
@@ -2557,13 +2571,13 @@ async function commitBomReview(){
     const stat=card.querySelector(".bomstat");
     if(stat){
       stat.textContent=(got.length?("取り込みました："+got.join("・")):"新しく入る項目はありませんでした（既に入力済み）")+warn+
-        (specIsNew?"　仕様マスタ：新規登録":"")+
+        (specIsNew?"　仕様マスタ：新規登録":specFillId?"　仕様マスタ：部品表番号を追加":"")+
         "　図面マスタ：新規"+creates.length+"・更新"+updates.length;
       stat.classList.toggle("ng",!!warn);
     }
-    /* 仕様マスタに新規登録した直後は、キャッシュ（SPEC_TOP/SPEC_CNT）が
-       古いままだと「仕様マスタにありません」の警告が消えないので更新する */
-    if(specIsNew)await loadBom();
+    /* 仕様マスタを新規登録・更新した直後は、キャッシュ（SPEC_TOP/SPEC_CNT/SPEC_PARTS）が
+       古いままだと反映されないので更新する */
+    if(specIsNew||specFillId)await loadBom();
     applySpec(card);
     recalcMeisai();
     closeBomReview();
