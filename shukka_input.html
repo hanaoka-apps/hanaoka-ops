@@ -132,6 +132,7 @@ body.in .gate{display:none}
 .r .l1{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
 .r .no{font-size:11px;color:#9aa1aa;font-variant-numeric:tabular-nums;min-width:1.6em}
 .r .sn{font-size:16.5px;font-weight:800;letter-spacing:.02em;font-variant-numeric:tabular-nums}
+.r .sn.snyet{font-size:13px;font-weight:700;color:var(--warn)}
 .r .car{font-size:13px;font-weight:700;color:#3f4650}
 .r .car.ghost{color:#b0b7bf;font-weight:500}
 .r .car.now{color:var(--edit)}
@@ -332,6 +333,7 @@ body.in .gate{display:none}
   <div class="card" id="cardOne" style="display:none">
     <div class="big" id="oneSn"></div>
     <div id="oneStatus" style="margin-top:6px"></div>
+    <div id="oneSnEdit" style="margin-top:10px"></div>
     <div class="kv" id="oneKv"></div>
     <div style="height:16px"></div>
     <button class="plain" id="btnOneBack">一覧にもどる</button>
@@ -405,8 +407,13 @@ const today=()=>new Date().toLocaleDateString("sv-SE");   /* YYYY-MM-DD（ロー
 const jp=v=>{const t=String(v||"").slice(0,10);return t?t.replace(/-/g,"/"):""};
 const jpYm=v=>{const m=/^(\d{4})-(\d{2})/.exec(String(v||""));
   return m?(m[1]+"年"+Number(m[2])+"月"):""};
-/* 製造番号は数字なので、文字列順ではなく数の順に並べる */
-const bySn=(a,b)=>{const x=parseInt(digits(a.sn),10),y=parseInt(digits(b.sn),10);
+/* 製造番号は数字なので、文字列順ではなく数の順に並べる。
+   まだ製造番号が無い（未定-…）ものは、決まっているものより後ろにする。 */
+const bySn=(a,b)=>{
+  const pa=isPlaceholderSn(a.sn),pb=isPlaceholderSn(b.sn);
+  if(pa!==pb)return pa?1:-1;
+  if(pa&&pb)return String(a.sn).localeCompare(String(b.sn));
+  const x=parseInt(digits(a.sn),10),y=parseInt(digits(b.sn),10);
   if(!isNaN(x)&&!isNaN(y)&&x!==y)return x-y;
   return String(a.sn).localeCompare(String(b.sn))};
 
@@ -702,7 +709,8 @@ function rowHtml(u,i){
     '<input type="checkbox" data-sel="'+i+'"'+(SEL.has(u.id)?" checked":"")+'>'+
     '<div class="b">'+
       '<div class="l1"><span class="no">'+(i+1)+'</span>'+
-        '<span class="sn">'+esc(u.sn)+'</span>'+
+        '<span class="sn'+(isPlaceholderSn(u.sn)?" snyet":"")+'">'+
+          (isPlaceholderSn(u.sn)?"製造番号 未登録":esc(u.sn))+'</span>'+
         (other.v?('<span class="car'+(other.on?" now":"")+'">'+esc(other.v)+'</span>')
                 :('<span class="car ghost">'+other.yet+'</span>'))+
       '</div>'+
@@ -1074,11 +1082,72 @@ async function commit(){
   }finally{$("btnCommit").disabled=false;$("btnCommit").textContent="保存する"}
 }
 
+/* ---- 製造番号。技術部はまだ空で登録するので、資材がここで入れる。
+   全社通しの5桁連番で、他の出図と被ってはいけない。アプリは採番しない
+   （入れた番号がすでに使われていないかを確かめるだけ）。 ---- */
+function isPlaceholderSn(v){return /^未定-/.test(trim(v))}
+function renderSnEdit(u){
+  if(!isPlaceholderSn(u.sn)){
+    $("oneSnEdit").innerHTML=
+      '<button type="button" class="plain" style="width:auto;padding:8px 14px;font-size:13px" id="btnSnFix">製造番号を直す</button>'+
+      '<div id="snMsg" style="margin-top:6px;font-size:13px"></div>';
+    $("btnSnFix").onclick=()=>renderSnInput(u,u.sn);
+    return;
+  }
+  renderSnInput(u,"");
+}
+function renderSnInput(u,val){
+  $("oneSnEdit").innerHTML=
+    '<div style="font-size:13px;font-weight:700;color:#555;margin-bottom:4px">製造番号（全社共通の5桁）</div>'+
+    '<div style="display:flex;gap:8px;align-items:center">'+
+      '<input id="snInput" type="text" inputmode="numeric" placeholder="00000" maxlength="5" '+
+        'style="width:120px;padding:10px;font-size:16px;border-radius:10px;border:1px solid var(--line);text-align:center" value="'+esc(val)+'">'+
+      '<button type="button" id="btnSnSave" style="width:auto;padding:10px 16px">登録する</button>'+
+    '</div><div id="snMsg" style="margin-top:6px;font-size:13px"></div>';
+  const inp=$("snInput");
+  inp.addEventListener("input",()=>{inp.value=digits(inp.value).slice(0,5)});
+  $("btnSnSave").onclick=()=>saveSn(u);
+}
+async function checkSnDuplicate(sn,excludeId){
+  const q="/sites/"+SITE_ID+"/lists/"+UNITS_ID+"/items?expand=fields&$top=5"+
+    "&$filter=fields/Title eq '"+encodeURIComponent(sn)+"'";
+  const hits=await gAll(q,PREF);
+  return hits.filter(it=>it.id!==excludeId).map(it=>it.fields||{});
+}
+async function saveSn(u){
+  const msg=$("snMsg"),btn=$("btnSnSave");
+  const sn=digits($("snInput").value);
+  if(sn.length!==5){msg.textContent="5桁の数字で入力してください。";msg.style.color="var(--warn)";return}
+  btn.disabled=true;btn.textContent="確認しています…";msg.textContent="";
+  try{
+    const dup=await checkSnDuplicate(sn,u.id);
+    if(dup.length){
+      const d=dup[0];
+      msg.innerHTML="この番号は既に使われています（出図 "+esc(d.ShutsuzuNo||"")+"　"+
+        esc([d.ProductName,d.Model].filter(Boolean).join(" "))+"）。別の番号にしてください。";
+      msg.style.color="var(--warn)";
+      btn.disabled=false;btn.textContent="登録する";
+      return;
+    }
+    btn.textContent="登録しています…";
+    await g("PATCH","/sites/"+SITE_ID+"/lists/"+UNITS_ID+"/items/"+u.id+"/fields",{Title:sn});
+    u.sn=sn;
+    openOne(u);
+    renderList();
+    showOk("製造番号 "+sn+" を登録しました。");
+  }catch(e){
+    console.error(e);
+    msg.textContent="保存できませんでした。電波の状態を確かめてもう一度お試しください。";
+    msg.style.color="var(--warn)";
+    btn.disabled=false;btn.textContent="登録する";
+  }
+}
 /* ---- 1台の中身（読むだけ） ---- */
 function openOne(u){
-  $("oneSn").textContent=u.sn;
+  $("oneSn").textContent=isPlaceholderSn(u.sn)?"製造番号 未登録":u.sn;
   $("oneStatus").innerHTML=valOf(u,"date")
     ? '<span class="pill done">出荷日あり</span>' : '<span class="pill yet">未入力</span>';
+  renderSnEdit(u);
   const rows=[["車体番号",valOf(u,"car")],
     ["実重量",valOf(u,"w")?valOf(u,"w")+" kg":""],
     ["自重",valOf(u,"nw")?valOf(u,"nw")+" kg":""],
