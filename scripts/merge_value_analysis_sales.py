@@ -174,6 +174,61 @@ def read_csv_records(path: Path, required: tuple[str, ...]) -> tuple[list[dict],
         return list(reader), []
 
 
+def lowest_sales_from_daily_csv() -> tuple[dict[tuple[str, str], dict], list[str]]:
+    """当期の売上明細CSVから、最低売価の同一伝票行を復元する。
+
+    dashboard_facts.json は集計用に過去互換の配列を維持しているため、売上No・
+    摘要などの明細列が旧世代では存在しない。日次更新される売上明細出力CSVを
+    最低売価の伝票情報だけの正とし、集計金額・履歴の正は従来どおり
+    dashboard_facts.json に置く。
+    """
+    required = (
+        "伝票日付", "明細区分", "返品区分", "品目ｺｰﾄﾞ", "品目名", "数量", "金額", "単価",
+        "売上№", "行摘要１", "行摘要２", "得意先名略称",
+    )
+    rows, errors = read_csv_records(DATA / "売上明細出力.csv", required)
+    if errors:
+        return {}, errors
+    result: dict[tuple[str, str], dict] = {}
+    for source_index, row in enumerate(rows):
+        if text(row.get("明細区分")) != "0" or text(row.get("返品区分")) not in ("", "0"):
+            continue
+        date = date_digits(row.get("伝票日付"))
+        code = normalize_code(row.get("品目ｺｰﾄﾞ"))
+        name = text(row.get("品目名"))
+        unit_price = number(row.get("単価"))
+        if len(date) != 8 or not code or unit_price <= 0 or "消費税" in name:
+            continue
+        candidate = {
+            "unit_price": unit_price,
+            "customer": text(row.get("得意先名略称")),
+            "date": date,
+            "sales_no": text(row.get("売上№")),
+            "quantity": number(row.get("数量")),
+            "amount": number(row.get("金額")),
+            "item_name": name,
+            "remark1": text(row.get("行摘要１")),
+            "remark2": text(row.get("行摘要２")),
+            "source_index": source_index,
+        }
+        key = (date[:6], code)
+        previous = result.get(key)
+        if previous is None or stable_detail_key(
+            candidate["unit_price"], candidate["date"], candidate["sales_no"], candidate["source_index"]
+        ) < stable_detail_key(
+            previous["unit_price"], previous["date"], previous["sales_no"], previous["source_index"]
+        ):
+            result[key] = candidate
+    return result, []
+
+
+def detail_completeness(row: dict | None) -> int:
+    """年度またぎでも、既に保存済みの豊富な伝票明細を粗い履歴で失わない。"""
+    if not isinstance(row, dict):
+        return 0
+    return sum(bool(text(row.get(name))) for name in ("item_name", "sales_no", "quantity", "amount", "remark1", "remark2"))
+
+
 def parse_calendar_date(value: object):
     digits = date_digits(value)
     if len(digits) != 8:
@@ -311,6 +366,7 @@ def main() -> int:
         raise ValueError("売上または付加価値分析JSONの形式が正しくありません")
 
     master = read_item_master()
+    csv_lowest, csv_lowest_errors = lowest_sales_from_daily_csv()
     existing_keys = {normalize_code(code): code for code in analysis.get("items", {})}
     history = analysis.get("standard_cost_history", {})
     grouped: dict[tuple[str, str], dict] = {}
@@ -410,10 +466,12 @@ def main() -> int:
         return 0
 
     items = analysis.setdefault("items", {})
+    frozen_months = set(output.get("finalized_months", []))
+    replace_months = set(source_months) - frozen_months
     generated = []
     lowest_sales = {
         key: row for key, row in (analysis.get("lowest_sales") or {}).items()
-        if key.split(":", 1)[0] not in source_months
+        if key.split(":", 1)[0] not in replace_months
     }
     for (ym, code), current in grouped.items():
         normalized = normalize_code(code)
@@ -435,6 +493,9 @@ def main() -> int:
             "cc": master_row.get("cc") or item.get("cc", ""),
             "sc": master_row.get("sc") or item.get("sc", ""),
         })
+        # 確定済み月は、認証済みJSONに保持した履歴・明細を日次CSVで上書きしない。
+        if ym in frozen_months:
+            continue
         # 品目に残る最新原価を過去月へ流用しない。当月の原価履歴がある場合だけ算定する。
         cost = history.get(ym, {}).get(normalized) or history.get(ym, {}).get(code)
         standard_cost = number(cost.get("total")) if cost else None
@@ -461,14 +522,24 @@ def main() -> int:
         if value_added is not None:
             detail.update({"va": value_added, "vr": rate(value_added, sales), "gr": rate(value_added, sales)})
         generated.append(detail)
-        if current["lowest"] is not None:
-            lowest_sales[f"{ym}:{code}"] = current["lowest"]
+        key = f"{ym}:{code}"
+        preferred_lowest = csv_lowest.get((ym, normalized)) or current["lowest"]
+        existing_lowest = (analysis.get("lowest_sales") or {}).get(key)
+        selected_lowest = (
+            existing_lowest
+            if detail_completeness(existing_lowest) > detail_completeness(preferred_lowest)
+            else preferred_lowest
+        )
+        if selected_lowest is not None:
+            lowest_sales[key] = selected_lowest
 
-    analysis["rows"] = [row for row in analysis.get("rows", []) if row.get("y") not in source_months] + generated
+    analysis["rows"] = [row for row in analysis.get("rows", []) if row.get("y") not in replace_months] + generated
     analysis["months"] = sorted(set(analysis.get("months", [])) | set(source_months))
     analysis["lowest_sales"] = lowest_sales
     analysis["lead_time"] = calculate_lead_time()
     for ym in source_months:
+        if ym in frozen_months:
+            continue
         month = output.setdefault("monthly", {}).setdefault(
             ym, {"zones": {zone: blank_summary() for zone in ZONES}, "total": blank_summary()}
         )
@@ -491,6 +562,10 @@ def main() -> int:
         # 残したままにすると、日次更新済みでも画面が古い日付に見えてしまう。
         "generated_at": datetime.now(jst).isoformat(timespec="seconds"),
         "daily_sales_source": FACTS.name,
+        "lowest_sales_detail_source": "売上明細出力.csv" if csv_lowest else "dashboard_facts.json（明細CSV未取得）",
+        "lowest_sales_detail_rows": len(csv_lowest),
+        "lowest_sales_detail_errors": csv_lowest_errors,
+        "frozen_months_preserved": len(frozen_months & set(source_months)),
         "daily_sales_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
         "daily_sales_rows": len(rows),
         "daily_sales_excluded": excluded,

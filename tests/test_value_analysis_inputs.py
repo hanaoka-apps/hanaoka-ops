@@ -176,6 +176,17 @@ class SalesMergeTest(unittest.TestCase):
                 # 実データで使われる全角「品目コード」表記でも、品目マスタ名を読む。
                 writer = csv.DictWriter(handle, fieldnames=["品目コード", "品目名", "工場別付加価名"])
                 writer.writeheader(); writer.writerow({"品目コード": "A-01", "品目名": "正式品目A", "工場別付加価名": "第一工場"})
+            with (root / "売上明細出力.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "伝票日付", "明細区分", "返品区分", "品目ｺｰﾄﾞ", "品目名", "数量", "金額", "単価",
+                    "売上№", "行摘要１", "行摘要２", "得意先名略称",
+                ])
+                writer.writeheader()
+                writer.writerow({
+                    "伝票日付": "20260903", "明細区分": "0", "返品区分": "0", "品目ｺｰﾄﾞ": "A-01",
+                    "品目名": "CSV伝票名", "数量": "4", "金額": "160", "単価": "40", "売上№": "CSV-001",
+                    "行摘要１": "CSV摘要1", "行摘要２": "CSV摘要2", "得意先名略称": "CSV得意先",
+                })
 
             old_data, old_facts, old_destination = SALES.DATA, SALES.FACTS, SALES.DESTINATION
             try:
@@ -194,10 +205,40 @@ class SalesMergeTest(unittest.TestCase):
             self.assertEqual(detail["pv"], "伝票B")
             self.assertEqual(detail["pn"], "伝票B＋他")
             self.assertEqual(lowest, {
-                "unit_price": 50.0, "customer": "得意先A", "date": "20260905", "sales_no": "U-002",
-                "quantity": 2.0, "amount": 100.0, "item_name": "伝票A",
-                "remark1": "摘要A1", "remark2": "摘要A2", "source_index": 2,
+                "unit_price": 40.0, "customer": "CSV得意先", "date": "20260903", "sales_no": "CSV-001",
+                "quantity": 4.0, "amount": 160.0, "item_name": "CSV伝票名",
+                "remark1": "CSV摘要1", "remark2": "CSV摘要2", "source_index": 0,
             })
+
+    def test_finalized_month_keeps_saved_sales_and_detail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            facts_path = root / "dashboard_facts.json"
+            destination = root / "value_analysis.json"
+            fact = [""] * 34
+            fact[0], fact[3], fact[7], fact[15] = "202609", "得意先A", "20260905", "国内営業部"
+            fact[18], fact[19], fact[20], fact[21], fact[22], fact[23] = "A-01", "伝票A", 2, 100, 50, 1
+            facts_path.write_text(json.dumps({"rows": [fact]}, ensure_ascii=False), encoding="utf-8")
+            payload = base_payload()
+            payload["months"].append("202609")
+            payload["monthly"]["202609"] = {"zones": {zone: INVENTORY.blank_summary() for zone in INVENTORY.ZONES}, "total": INVENTORY.blank_summary()}
+            payload["finalized_months"] = ["202609"]
+            payload["item_analysis"] = {
+                "items": {"A-01": {}}, "months": ["202609"],
+                "rows": [{"y": "202609", "i": "A-01", "a": 999}],
+                "lowest_sales": {"202609:A-01": {"unit_price": 1, "item_name": "保存済み", "sales_no": "KEEP"}},
+                "standard_cost_history": {},
+            }
+            destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            old_data, old_facts, old_destination = SALES.DATA, SALES.FACTS, SALES.DESTINATION
+            try:
+                SALES.DATA, SALES.FACTS, SALES.DESTINATION = root, facts_path, destination
+                self.assertEqual(SALES.main(), 0)
+            finally:
+                SALES.DATA, SALES.FACTS, SALES.DESTINATION = old_data, old_facts, old_destination
+            result = json.loads(destination.read_text(encoding="utf-8"))
+            self.assertEqual(result["item_analysis"]["rows"], [{"y": "202609", "i": "A-01", "a": 999}])
+            self.assertEqual(result["item_analysis"]["lowest_sales"]["202609:A-01"]["sales_no"], "KEEP")
 
     def test_lead_time_uses_only_one_to_one_order_item_matches(self):
         with tempfile.TemporaryDirectory() as directory:
