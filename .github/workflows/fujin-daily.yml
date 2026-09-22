@@ -199,6 +199,38 @@ jobs:
           fi
           echo "生成: data/orphan_items.json ($(du -h data/orphan_items.json 2>/dev/null | cut -f1 || echo '未生成'))"
 
+      - name: Validate protected value-analysis build (公開前の件数検証)
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          path = Path("data/value_analysis.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          meta = data.get("meta") or {}
+          analysis = data.get("item_analysis") or {}
+          generated_at = meta.get("generated_at")
+          if not generated_at:
+              raise SystemExit("value_analysis.json に meta.generated_at がありません")
+          generated = datetime.fromisoformat(generated_at)
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          if generated.date() != now.date():
+              raise SystemExit(f"value_analysis.json の生成日が当日ではありません: {generated_at}")
+          lead = analysis.get("lead_time")
+          required = ("status", "months", "excluded", "required_columns")
+          if not isinstance(lead, dict) or any(key not in lead for key in required):
+              raise SystemExit("item_analysis.lead_time の必須項目が不足しています")
+          month_counts = {month: stats.get("count", 0) for month, stats in (lead.get("months") or {}).items()}
+          low_counts = meta.get("low_value_item_counts")
+          if not isinstance(low_counts, dict):
+              raise SystemExit("低付加価値品目の月別件数がありません")
+          print(f"[OK] value-analysis 検証: generated_at={generated_at}")
+          print(f"[OK] lead_time: status={lead['status']} / 月別対象件数={month_counts} / 除外={lead['excluded']}")
+          print(f"[OK] low_value: 月別件数={low_counts}")
+          PY
+
       # ── FUJINの業務データを SharePoint へアップロード(公開Pagesに置かない) ──────
       # 2026-06-10〜13 セキュリティ移行: item_history(仕入先名・金額) / yama_data(山積み) /
       # results_production_data(手配/在庫/受注/BOM) を data/ に生成済みなので SharePoint へ。

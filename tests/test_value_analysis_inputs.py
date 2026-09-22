@@ -275,6 +275,95 @@ class SalesMergeTest(unittest.TestCase):
                 "difference_average": 0,
             })
 
+    def test_lead_time_sums_all_routes_and_reports_exclusions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sales_header = ["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分"]
+            order_header = ["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"]
+            route_header = ["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"]
+            sales_rows = [
+                ["20260904", "OK", "A", "0", "0"],
+                ["20260904", "DUP-S", "B", "0", "0"], ["20260905", "DUP-S", "B", "0", "0"],
+                ["20260904", "DUP-O", "C", "0", "0"], ["20260904", "RETURN", "D", "0", "1"],
+                ["20260904", "CANCEL", "E", "0", "0"], ["", "NO-SALE-DATE", "F", "0", "0"],
+                ["20260901", "NEGATIVE", "G", "0", "0"], ["20260904", "NO-ROUTE", "H", "0", "0"],
+                ["20260904", "NO-ORDER-DATE", "I", "0", "0"],
+            ]
+            order_rows = [
+                ["20260901", "OK", "A", ""], ["20260901", "DUP-S", "B", ""],
+                ["20260901", "DUP-O", "C", ""], ["20260901", "DUP-O", "C", ""],
+                ["20260901", "RETURN", "D", ""], ["20260901", "CANCEL", "E", "取消"],
+                ["", "NO-ORDER-DATE", "F", ""], ["20260902", "NEGATIVE", "G", ""],
+                ["20260901", "NO-ROUTE", "H", ""], ["", "NO-ORDER-DATE", "I", ""],
+            ]
+            sources = {
+                "売上明細出力.csv": (sales_header, sales_rows),
+                "受注明細出力.csv": (order_header, order_rows),
+                "品目手順マスタ.csv": (route_header, [["A", "2", "1"], ["A", "1", "1"], ["B", "1", "0"], ["C", "1", "0"], ["D", "1", "0"], ["E", "1", "0"], ["F", "1", "0"], ["G", "1", "0"]]),
+            }
+            for name, (header, rows) in sources.items():
+                with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.writer(handle); writer.writerow(header); writer.writerows(rows)
+            old_data = SALES.DATA
+            try:
+                SALES.DATA = root
+                result = SALES.calculate_lead_time()
+            finally:
+                SALES.DATA = old_data
+            self.assertEqual(result["status"], "available")
+            self.assertEqual(result["months"]["202609"]["standard_average"], 5)
+            self.assertEqual(result["months"]["202609"]["difference_average"], -2)
+            self.assertEqual(result["excluded"]["join_not_unique_or_missing"], 5)
+            self.assertEqual(result["excluded"]["sales_return"], 1)
+            self.assertEqual(result["excluded"]["order_cancelled"], 1)
+            self.assertEqual(result["excluded"]["sales_missing_date"], 1)
+            self.assertEqual(result["excluded"]["order_missing_date"], 2)
+            self.assertEqual(result["excluded"]["negative_actual_lt"], 1)
+            self.assertEqual(result["excluded"]["standard_lt_missing"], 1)
+            self.assertEqual(result["input_counts"], {"sales_rows": 10, "order_rows": 10, "route_rows": 8})
+
+    def test_lead_time_reports_required_csv_header_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, header in {
+                "売上明細出力.csv": ["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分"],
+                "受注明細出力.csv": ["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"],
+                "品目手順マスタ.csv": ["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"],
+            }.items():
+                with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
+                    csv.writer(handle).writerow(header)
+            old_data = SALES.DATA
+            try:
+                SALES.DATA = root
+                result = SALES.calculate_lead_time()
+            finally:
+                SALES.DATA = old_data
+            self.assertEqual(result["status"], "unavailable")
+            self.assertIn("返品区分", result["reason"])
+
+    def test_low_value_counts_excludes_unconfigured_items(self):
+        analysis = {
+            "standard_cost_history": {"202609": {"LOW": {"total": 80}, "HIGH": {"total": 20}, "NO-COST": {"total": 0}}},
+            "rows": [
+                {"y": "202609", "i": "LOW", "q": 1, "a": 100},
+                {"y": "202609", "i": "HIGH", "q": 1, "a": 100},
+                {"y": "202609", "i": "NO-COST", "q": 1, "a": 100},
+                {"y": "202609", "i": "NO-SALES", "q": 1, "a": None},
+            ],
+        }
+        self.assertEqual(SALES.low_value_counts(analysis), {"202609": 1})
+
+    def test_value_analysis_html_refreshes_protected_data_and_keeps_ui_behaviors_synced(self):
+        static = (ROOT / "static" / "value_analysis.html").read_text(encoding="utf-8")
+        published = (ROOT / "fujin" / "value_analysis.html").read_text(encoding="utf-8")
+        self.assertEqual(static, published)
+        self.assertIn("const data=await fetchWithExistingFujinAuth(topWindow)", static)
+        self.assertNotIn("let data=topWindow._fujinValueAnalysis", static)
+        self.assertIn("標準原価ファイルが未取得", static)
+        self.assertIn("売上明細が未取得", static)
+        self.assertIn("leadExclusionLabels", static)
+        self.assertIn("openLowValueItem(code)", static)
+
 
 class InventoryMergeTest(unittest.TestCase):
     def test_confirmed_rows_only_and_previous_month_link(self):

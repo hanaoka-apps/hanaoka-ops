@@ -262,6 +262,12 @@ def calculate_lead_time() -> dict:
         "shipment_date_basis": "出荷実績日は売上明細の伝票日付を使用",
         "join_rule": "受注№＋品目コードが、受注・売上の双方で各1行だけ存在する場合に限り結合（曖昧な推測結合はしない）。",
         "required_columns": required_columns,
+        # 件数だけを残す。品目・得意先・受注番号等は診断情報にも出さない。
+        "input_counts": {
+            "sales_rows": len(sales),
+            "order_rows": len(orders),
+            "route_rows": len(routes),
+        },
         "excluded": defaultdict(int),
         "months": {},
     }
@@ -352,6 +358,32 @@ def calculate_lead_time() -> dict:
         base["reason"] = "厳密な結合条件を満たす受注・売上明細がありません。結合キー、取消・返品、日付、品目手順マスタの取得状況を確認してください。"
     base["excluded"] = dict(base["excluded"])
     return base
+
+
+def low_value_counts(analysis: dict) -> dict[str, int]:
+    """月別の低付加価値品目数を、公開しない生成ログ用に集計する。"""
+    history = analysis.get("standard_cost_history", {})
+    rows = analysis.get("rows", [])
+    counts: dict[str, int] = {}
+    for ym in sorted({text(row.get("y")) for row in rows if text(row.get("y"))}):
+        costs = history.get(ym, {}) if isinstance(history, dict) else {}
+        total = 0
+        for row in rows:
+            if text(row.get("y")) != ym:
+                continue
+            cost = costs.get(text(row.get("i")), {}) if isinstance(costs, dict) else {}
+            standard_cost = number(cost.get("total")) if isinstance(cost, dict) else 0
+            quantity, sales = row.get("q"), row.get("a")
+            if standard_cost <= 0 or quantity is None or sales is None:
+                continue
+            sales_value = number(sales)
+            if sales_value <= 0:
+                continue
+            value_added_rate = (sales_value - standard_cost * number(quantity)) / sales_value * 100
+            if value_added_rate < 30:
+                total += 1
+        counts[ym] = total
+    return counts
 
 
 def main() -> int:
@@ -541,7 +573,8 @@ def main() -> int:
     analysis["rows"] = [row for row in analysis.get("rows", []) if row.get("y") not in replace_months] + generated
     analysis["months"] = sorted(set(analysis.get("months", [])) | set(source_months))
     analysis["lowest_sales"] = lowest_sales
-    analysis["lead_time"] = calculate_lead_time()
+    lead_time = calculate_lead_time()
+    analysis["lead_time"] = lead_time
     for ym in source_months:
         if ym in frozen_months:
             continue
@@ -574,9 +607,22 @@ def main() -> int:
         "daily_sales_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
         "daily_sales_rows": len(rows),
         "daily_sales_excluded": excluded,
+        # 一覧の件数のみ。個別品目・金額は保護JSON内でも診断用途に複製しない。
+        "low_value_item_counts": low_value_counts(analysis),
     })
     DESTINATION.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"[OK] 売上を反映: {len(source_months)}か月 / {len(generated)}品目月 / 除外{excluded}")
+    lead_month_counts = {ym: stats.get("count", 0) for ym, stats in lead_time.get("months", {}).items()}
+    print(
+        "[OK] リードタイム検証: "
+        f"status={lead_time.get('status')} / 対象月={sorted(lead_month_counts)} / "
+        f"月別対象件数={lead_month_counts} / 除外={lead_time.get('excluded', {})}"
+    )
+    print(
+        "[OK] 低付加価値品目検証: "
+        f"月別件数={output['meta']['low_value_item_counts']} / "
+        f"生成日時={output['meta']['generated_at']}"
+    )
     return 0
 
 
