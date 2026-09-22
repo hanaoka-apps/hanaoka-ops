@@ -341,6 +341,28 @@ class SalesMergeTest(unittest.TestCase):
             self.assertEqual(result["status"], "unavailable")
             self.assertIn("返品区分", result["reason"])
 
+    def test_lead_time_items_only_include_standard_cost_configured_codes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "売上明細出力.csv": (["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分"], [["20260904", "A", "HAS", "0", "0"], ["20260906", "B", "NO-COST", "0", "0"]]),
+                "受注明細出力.csv": (["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"], [["20260901", "A", "HAS", ""], ["20260901", "B", "NO-COST", ""]]),
+                "品目手順マスタ.csv": (["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"], [["HAS", "2", "1"], ["NO-COST", "2", "1"]]),
+            }
+            for name, (header, rows) in sources.items():
+                with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.writer(handle); writer.writerow(header); writer.writerows(rows)
+            old_data = SALES.DATA
+            try:
+                SALES.DATA = root
+                result = SALES.calculate_lead_time({"202609": {"HAS": {"total": 100}, "NO-COST": {"total": 0}}})
+            finally:
+                SALES.DATA = old_data
+            self.assertEqual(result["months"]["202609"]["count"], 1)
+            self.assertEqual(result["items"]["202609"]["HAS"]["actual_average"], 3)
+            self.assertNotIn("NO-COST", result["items"]["202609"])
+            self.assertEqual(result["excluded"]["standard_cost_missing"], 1)
+
     def test_low_value_counts_excludes_unconfigured_items(self):
         analysis = {
             "standard_cost_history": {"202609": {"LOW": {"total": 80}, "HIGH": {"total": 20}, "NO-COST": {"total": 0}}},
@@ -363,6 +385,9 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("売上明細が未取得", static)
         self.assertIn("leadExclusionLabels", static)
         self.assertIn("openLowValueItem(code)", static)
+        self.assertNotIn('id="leadTimeSummary"', static)
+        self.assertIn('data-sort="lt_actual"', static)
+        self.assertIn("renderLeadTimeCells", static)
 
 
 class InventoryMergeTest(unittest.TestCase):

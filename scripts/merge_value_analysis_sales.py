@@ -239,7 +239,7 @@ def parse_calendar_date(value: object):
         return None
 
 
-def calculate_lead_time() -> dict:
+def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
     """品目手順マスタと受注/売上明細から、厳密に一意な実績LTだけを集計する。
 
     出荷実績日は売上明細の伝票日付を使う。受注行は売上側だけにあり、受注明細に
@@ -256,6 +256,19 @@ def calculate_lead_time() -> dict:
         "受注明細出力.csv": list(order_required),
         "品目手順マスタ.csv": list(route_required),
     }
+    # LTは構成・原価を確認できる品目だけを画面へ出す。引数未指定は
+    # 単体検証用で、従来どおり全品目を対象にする。
+    eligible_by_month: dict[str, set[str]] | None = None
+    if isinstance(standard_cost_history, dict):
+        eligible_by_month = {
+            text(ym): {
+                normalize_code(code)
+                for code, cost in costs.items()
+                if isinstance(cost, dict) and number(cost.get("total")) > 0
+            }
+            for ym, costs in standard_cost_history.items()
+            if isinstance(costs, dict)
+        }
     base = {
         "status": "unavailable",
         "formula": "標準LT＝品目手順マスタの全工程（工程リードタイム＋検査リードタイム）の合計。実績LT＝売上明細の伝票日付−受注明細の受注日付（暦日）。差＝実績LT−標準LT。",
@@ -270,6 +283,7 @@ def calculate_lead_time() -> dict:
         },
         "excluded": defaultdict(int),
         "months": {},
+        "items": {},
     }
     errors = sales_errors + order_errors + route_errors
     if errors:
@@ -323,6 +337,7 @@ def calculate_lead_time() -> dict:
         sales_groups[(order_no, code)].append(row)
 
     actual_by_month: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    actual_by_month_item: dict[str, dict[str, list[tuple[float, float]]]] = defaultdict(lambda: defaultdict(list))
     for key, sales_lines in sales_groups.items():
         order_lines = order_groups.get(key, [])
         if len(sales_lines) != 1 or len(order_lines) != 1:
@@ -338,7 +353,12 @@ def calculate_lead_time() -> dict:
         if actual < 0:
             base["excluded"]["negative_actual_lt"] += 1
             continue
-        actual_by_month[sale_date.strftime("%Y%m")].append((actual, standard))
+        ym = sale_date.strftime("%Y%m")
+        if eligible_by_month is not None and key[1] not in eligible_by_month.get(ym, set()):
+            base["excluded"]["standard_cost_missing"] += 1
+            continue
+        actual_by_month[ym].append((actual, standard))
+        actual_by_month_item[ym][key[1]].append((actual, standard))
 
     for ym, values in actual_by_month.items():
         actuals = [actual for actual, _ in values]
@@ -352,6 +372,15 @@ def calculate_lead_time() -> dict:
             "actual_max": max(actuals),
             "standard_average": round(statistics.mean(standards), 1),
             "difference_average": round(statistics.mean(differences), 1),
+        }
+        base["items"][ym] = {
+            code: {
+                "count": len(item_values),
+                "actual_average": round(statistics.mean(actual for actual, _ in item_values), 1),
+                "standard_average": round(statistics.mean(standard for _, standard in item_values), 1),
+                "difference_average": round(statistics.mean(actual - standard for actual, standard in item_values), 1),
+            }
+            for code, item_values in actual_by_month_item[ym].items()
         }
     base["status"] = "available" if base["months"] else "unavailable"
     if not base["months"]:
@@ -573,7 +602,7 @@ def main() -> int:
     analysis["rows"] = [row for row in analysis.get("rows", []) if row.get("y") not in replace_months] + generated
     analysis["months"] = sorted(set(analysis.get("months", [])) | set(source_months))
     analysis["lowest_sales"] = lowest_sales
-    lead_time = calculate_lead_time()
+    lead_time = calculate_lead_time(analysis.get("standard_cost_history"))
     analysis["lead_time"] = lead_time
     for ym in source_months:
         if ym in frozen_months:
