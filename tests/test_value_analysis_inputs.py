@@ -388,6 +388,11 @@ class SalesMergeTest(unittest.TestCase):
         self.assertNotIn('id="leadTimeSummary"', static)
         self.assertIn('data-sort="lt_actual"', static)
         self.assertIn("renderLeadTimeCells", static)
+        self.assertIn("構成・変動要因", static)
+        self.assertIn("function componentInsight(part)", static)
+        self.assertIn("0円原価あり", static)
+        self.assertIn("親品目1台あたり", static)
+        self.assertIn("構成追加か初回原価取得かは、構成履歴がないため判定できません", static)
 
 
 class InventoryMergeTest(unittest.TestCase):
