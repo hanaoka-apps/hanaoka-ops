@@ -63,6 +63,7 @@ table.dwt td{padding:7px 8px;border-bottom:1px solid #f0f0f2;vertical-align:midd
 table.dwt td.oldfn{color:#999;font-size:11.5px;word-break:break-all}
 .tagold{background:#f0f0f2;color:#777;border-radius:5px;padding:1px 5px;font-size:10.5px;margin-left:3px}
 table.dwt a.open{color:var(--brand);font-weight:700;text-decoration:none;white-space:nowrap}
+table.dwt td.ng{color:#b03060;font-weight:700}
 /* --- ツリー（親＝全体図 → 構成） --- */
 table.dwt tr.droot>td{background:#fffafb}
 table.dwt tr.droot td.mono{font-weight:800}
@@ -1920,6 +1921,7 @@ function meisaiRowHtml(r){
     t("m-qty",r.qty,"台数",' inputmode="numeric"')+
     '<span class="sp"></span>'+
     '<button type="button" class="bdbtn bdzu" title="この図番の図面">図面</button>'+
+    '<button type="button" class="bdbtn bdunits" title="この内訳の製造番号一覧（資材の入力状況を含む）">製造番号</button>'+
     '<button type="button" class="bdbtn bdmore">出図情報<b class="bdbadge"></b></button>'+
     '<button type="button" class="bdbtn bdcopy" title="この内訳を複製">複製</button>'+
     '<button type="button" class="bdbtn bddel" title="この内訳を削除">×</button>'+
@@ -2915,6 +2917,46 @@ async function refreshCarSummaries(shipNo){
     });
   }catch(e){console.warn("車体番号の集計に失敗",e)}
 }
+/* この内訳に紐づく製造番号一覧（資材の入力状況を含む）を横から見せる。
+   資材が仕向地変更などで実際の値を変えていれば、ここでそのまま見える。 */
+function ymJp2(v){const m=/^(\d{4})-(\d{2})/.exec(String(v||""));return m?(m[1]+"年"+Number(m[2])+"月"):""}
+function unitsTableHtml(items){
+  if(!items.length)return '<p class="muted">この内訳の製造番号明細はまだありません。保存すると台数分の行ができます。</p>';
+  const rows=items.slice().sort((a,b)=>String((a.fields||{}).Title||"").localeCompare(String((b.fields||{}).Title||"")));
+  return '<table class="dwt"><thead><tr><th>製造番号</th><th>車体番号</th><th>品名・型式</th>'+
+    '<th>製造年月</th><th>自重</th><th>仕向地</th></tr></thead><tbody>'+
+    rows.map(it=>{
+      const f=it.fields||{};
+      const sn=isPlaceholderSn(f.Title)?"未登録":(f.Title||"");
+      const ym=ymJp2(f.ManufactureYM);
+      return '<tr>'+
+        '<td'+(isPlaceholderSn(f.Title)?' class="ng"':'')+'>'+esc(sn)+'</td>'+
+        '<td>'+esc(f.CarNo||"—")+'</td>'+
+        '<td>'+esc([f.ProductName,f.Model].filter(Boolean).join(" "))+'</td>'+
+        '<td'+(!ym?' class="ng"':'')+'>'+(ym?esc(ym):"未入力")+'</td>'+
+        '<td'+(f.NameplateWeight==null?' class="ng"':'')+'>'+(f.NameplateWeight==null?"未入力":esc(f.NameplateWeight)+"kg")+'</td>'+
+        '<td>'+esc(f.Destination||f.DeliveryTo||"")+'</td>'+
+      '</tr>';
+    }).join("")+'</tbody></table>';
+}
+async function showUnitsPanel(card){
+  const bk=card.dataset.bk||"";
+  const shipNo=trim($("ship_no").value);
+  if(!bk){toast("先に出図を保存してください（この内訳がまだ確定していません）",true);return}
+  $("unitsSideSub").textContent="読み込んでいます…";
+  $("unitsSideBody").innerHTML="";
+  $("unitsSide").classList.add("on");
+  try{
+    const all=await fetchUnits(shipNo);
+    const items=all.filter(it=>(it.fields||{}).BreakdownKey===bk);
+    $("unitsSideSub").textContent=items.length+"台";
+    $("unitsSideBody").innerHTML=unitsTableHtml(items);
+  }catch(e){
+    console.error(e);
+    $("unitsSideSub").textContent="";
+    $("unitsSideBody").innerHTML='<p class="muted">読み込みに失敗しました（コンソール参照）</p>';
+  }
+}
 /* Graph の $batch は1回20件まで */
 async function gBatch(requests){
   const out=[];
@@ -3799,6 +3841,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(e.target.classList.contains("hist"))showHistory(e.target.dataset.zu);
   });
   $("btnSideClose").onclick=hideHistory;
+  $("btnUnitsSideClose").onclick=()=>$("unitsSide").classList.remove("on");
   $("sideBody").addEventListener("click",e=>{
     const chip=e.target.closest(".catchip");
     if(chip){LINKED_FILTER=chip.dataset.cat;renderLinkedDrawings();return}
@@ -3849,6 +3892,9 @@ document.addEventListener("DOMContentLoaded",()=>{
     /* 図面。この内訳（仕様番号）に紐づく図面が何かをまず見せる */
     if(e.target.closest(".bdzu")){
       showLinkedDrawings(card); return;
+    }
+    if(e.target.closest(".bdunits")){
+      showUnitsPanel(card); return;
     }
     if(e.target.closest(".specpick")){
       openSpecPicker(card); return;
@@ -3938,6 +3984,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   document.addEventListener("keydown",e=>{
     if(e.key!=="Escape")return;
     if($("dwSide").classList.contains("on")){hideHistory();return}
+    if($("unitsSide").classList.contains("on")){$("unitsSide").classList.remove("on");return}
     if($("dwOvl").classList.contains("on")){dwClose();return}
     if($("det").classList.contains("on")&&$("det").classList.contains("view"))detClose();
   });
@@ -3982,6 +4029,12 @@ document.addEventListener("DOMContentLoaded",()=>{
     <a href="https://chromewebstore.google.com/detail/docuworks-viewer-light/lfdjpkeipdhkmkpbbkcmdoebkaddodem" target="_blank" rel="noopener">DocuWorks Viewer Light</a>
     をChromeに入れてください。</div>
   <div id="sideBody" style="margin-top:14px"></div>
+</div>
+<div class="side" id="unitsSide">
+  <button type="button" class="close" id="btnUnitsSideClose" aria-label="閉じる">×</button>
+  <h2 id="unitsSideTitle">この内訳の製造番号</h2>
+  <div class="zu" id="unitsSideSub"></div>
+  <div id="unitsSideBody" style="margin-top:14px"></div>
 </div>
 <div class="ovl" id="bomOvl"><div class="panel wide">
   <h2>部品表の取り込み</h2>
