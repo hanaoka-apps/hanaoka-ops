@@ -239,11 +239,57 @@ def parse_calendar_date(value: object):
         return None
 
 
+def read_lead_time_bom(path: Path) -> tuple[dict[str, list[str]], list[str], dict[str, int]]:
+    """LT計算用に通常構成の親子関係だけを読み取る。
+
+    構成原価画面と同じく、ダミー・展開停止・使用禁止・製番別構成を除外する。
+    数量はLTの長さには掛けず、複数の子枝は並行製作として最長経路を採用する。
+    """
+    required = ("親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ")
+    rows, errors = read_csv_records(path, required)
+    stats = {"source_rows": len(rows), "edges": 0, "duplicates": 0, "invalid": 0, "seiban": 0}
+    if errors:
+        return {}, errors, stats
+
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    children: dict[str, list[str]] = defaultdict(list)
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        dummy = text(row.get("ﾀﾞﾐｰ構成区分") or "0")
+        stop = text(row.get("展開ｽﾄｯﾌﾟ区分") or "0")
+        prohibited = date_digits(row.get("使用禁止日"))
+        if dummy not in ("", "0") or stop not in ("", "0"):
+            stats["invalid"] += 1
+            continue
+        if prohibited and prohibited not in ("0", "00000000") and prohibited <= today:
+            stats["invalid"] += 1
+            continue
+        seiban = normalize_code(row.get("製番"))
+        if seiban not in ("", "0", "000000000000", "0000000000-00"):
+            stats["seiban"] += 1
+            continue
+        parent = normalize_code(row.get("親品目ｺｰﾄﾞ"))
+        child = normalize_code(row.get("子品目ｺｰﾄﾞ"))
+        if not parent or not child:
+            stats["invalid"] += 1
+            continue
+        edge = (parent, child)
+        if edge in seen:
+            stats["duplicates"] += 1
+            continue
+        seen.add(edge)
+        children[parent].append(child)
+        stats["edges"] += 1
+    return dict(children), [], stats
+
+
 def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
-    """品目手順マスタと受注/売上明細から、厳密に一意な実績LTだけを集計する。
+    """品目手順・全構成階層と受注/売上明細から、厳密なLTだけを集計する。
 
     出荷実績日は売上明細の伝票日付を使う。受注行は売上側だけにあり、受注明細に
     同じ明細番号列がないため、受注№+品目コードの組が双方で一意な場合だけ結合する。
+    標準LTは既存の構成ツリーと同じクリティカルパス方式で、自身の手順LTに
+    子構成の最長経路を加える。並行する全枝の単純合算はしない。
     """
     sales_required = ("伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分")
     order_required = ("受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名")
@@ -251,10 +297,12 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
     sales, sales_errors = read_csv_records(DATA / "売上明細出力.csv", sales_required)
     orders, order_errors = read_csv_records(DATA / "受注明細出力.csv", order_required)
     routes, route_errors = read_csv_records(DATA / "品目手順マスタ.csv", route_required)
+    bom_children, bom_errors, bom_stats = read_lead_time_bom(DATA / "構成マスタ.csv")
     required_columns = {
         "売上明細出力.csv": list(sales_required),
         "受注明細出力.csv": list(order_required),
         "品目手順マスタ.csv": list(route_required),
+        "構成マスタ.csv": ["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"],
     }
     # LTは構成・原価を確認できる品目だけを画面へ出す。引数未指定は
     # 単体検証用で、従来どおり全品目を対象にする。
@@ -271,7 +319,8 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
         }
     base = {
         "status": "unavailable",
-        "formula": "標準LT＝品目手順マスタの全工程（工程リードタイム＋検査リードタイム）の合計。実績LT＝売上明細の伝票日付−受注明細の受注日付（暦日）。差＝実績LT−標準LT。",
+        "formula": "標準LT＝親品目自身の品目手順LT合計＋構成ツリーで最も長い子部品経路（各品目の工程リードタイム＋検査リードタイム、クリティカルパス）。実績LT＝売上明細の伝票日付−受注明細の受注日付（暦日）。差＝実績LT−標準LT。",
+        "standard_lt_basis": "構成の複数枝は並行製作として単純合算せず、最長経路を採用",
         "shipment_date_basis": "出荷実績日は売上明細の伝票日付を使用",
         "join_rule": "受注№＋品目コードが、受注・売上の双方で各1行だけ存在する場合に限り結合（曖昧な推測結合はしない）。",
         "required_columns": required_columns,
@@ -280,19 +329,22 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
             "sales_rows": len(sales),
             "order_rows": len(orders),
             "route_rows": len(routes),
+            "bom_rows": bom_stats["source_rows"],
+            "bom_edges": bom_stats["edges"],
         },
         "excluded": defaultdict(int),
         "months": {},
         "items": {},
     }
-    errors = sales_errors + order_errors + route_errors
+    errors = sales_errors + order_errors + route_errors + bom_errors
     if errors:
         base["reason"] = "；".join(errors)
         base["excluded"] = dict(base["excluded"])
         return base
 
     today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
-    standard_by_code: dict[str, float] = defaultdict(float)
+    own_standard_by_code: dict[str, float] = defaultdict(float)
+    route_codes: set[str] = set()
     for route in routes:
         code = normalize_code(route.get("品目ｺｰﾄﾞ"))
         expiry = date_digits(route.get("失効日"))
@@ -302,7 +354,34 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
         if expiry and expiry != "99999999" and expiry <= today:
             base["excluded"]["standard_expired_route"] += 1
             continue
-        standard_by_code[code] += number(route.get("工程ﾘｰﾄﾞﾀｲﾑ")) + number(route.get("検査ﾘｰﾄﾞﾀｲﾑ"))
+        route_codes.add(code)
+        own_standard_by_code[code] += number(route.get("工程ﾘｰﾄﾞﾀｲﾑ")) + number(route.get("検査ﾘｰﾄﾞﾀｲﾑ"))
+
+    cumulative_memo: dict[str, tuple[float, list[str], bool]] = {}
+    cycle_count = 0
+
+    def cumulative_standard(code: str, ancestors: frozenset[str] = frozenset()) -> tuple[float, list[str], bool]:
+        """自身LT + 最長の子経路を返す。boolは経路中に手順があるか。"""
+        nonlocal cycle_count
+        if code in cumulative_memo:
+            return cumulative_memo[code]
+        if code in ancestors:
+            cycle_count += 1
+            return 0.0, [], False
+        own = own_standard_by_code.get(code, 0.0)
+        has_route = code in route_codes
+        best_child_total = 0.0
+        best_child_path: list[str] = []
+        best_child_has_route = False
+        for child in sorted(bom_children.get(code, [])):
+            child_total, child_path, child_has_route = cumulative_standard(child, ancestors | {code})
+            if child_has_route and (not best_child_has_route or child_total > best_child_total):
+                best_child_total = child_total
+                best_child_path = child_path
+                best_child_has_route = True
+        result = (own + best_child_total, [code] + best_child_path, has_route or best_child_has_route)
+        cumulative_memo[code] = result
+        return result
 
     order_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in orders:
@@ -343,8 +422,8 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
         if len(sales_lines) != 1 or len(order_lines) != 1:
             base["excluded"]["join_not_unique_or_missing"] += len(sales_lines)
             continue
-        standard = standard_by_code.get(key[1])
-        if standard is None:
+        standard, _, has_standard_route = cumulative_standard(key[1])
+        if not has_standard_route:
             base["excluded"]["standard_lt_missing"] += 1
             continue
         sale_date = parse_calendar_date(sales_lines[0].get("伝票日付"))
@@ -379,9 +458,13 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
                 "actual_average": round(statistics.mean(actual for actual, _ in item_values), 1),
                 "standard_average": round(statistics.mean(standard for _, standard in item_values), 1),
                 "difference_average": round(statistics.mean(actual - standard for actual, standard in item_values), 1),
+                "standard_own": round(own_standard_by_code.get(code, 0.0), 1),
+                "standard_components": round(max(0.0, cumulative_standard(code)[0] - own_standard_by_code.get(code, 0.0)), 1),
+                "critical_path": cumulative_standard(code)[1],
             }
             for code, item_values in actual_by_month_item[ym].items()
         }
+    base["input_counts"]["bom_cycles_stopped"] = cycle_count
     base["status"] = "available" if base["months"] else "unavailable"
     if not base["months"]:
         base["reason"] = "厳密な結合条件を満たす受注・売上明細がありません。結合キー、取消・返品、日付、品目手順マスタの取得状況を確認してください。"

@@ -258,6 +258,7 @@ class SalesMergeTest(unittest.TestCase):
                 "売上明細出力.csv": (["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分"], [["20260904", "O-1", "A-01", "0", "0"]]),
                 "受注明細出力.csv": (["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"], [["20260901", "O-1", "A-01", ""]]),
                 "品目手順マスタ.csv": (["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"], [["A-01", "2", "1"]]),
+                "構成マスタ.csv": (["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"], []),
             }
             for name, (header, rows) in sources.items():
                 with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
@@ -300,6 +301,7 @@ class SalesMergeTest(unittest.TestCase):
                 "売上明細出力.csv": (sales_header, sales_rows),
                 "受注明細出力.csv": (order_header, order_rows),
                 "品目手順マスタ.csv": (route_header, [["A", "2", "1"], ["A", "1", "1"], ["B", "1", "0"], ["C", "1", "0"], ["D", "1", "0"], ["E", "1", "0"], ["F", "1", "0"], ["G", "1", "0"]]),
+                "構成マスタ.csv": (["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"], []),
             }
             for name, (header, rows) in sources.items():
                 with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
@@ -320,7 +322,51 @@ class SalesMergeTest(unittest.TestCase):
             self.assertEqual(result["excluded"]["order_missing_date"], 2)
             self.assertEqual(result["excluded"]["negative_actual_lt"], 1)
             self.assertEqual(result["excluded"]["standard_lt_missing"], 1)
-            self.assertEqual(result["input_counts"], {"sales_rows": 10, "order_rows": 10, "route_rows": 8})
+            self.assertEqual(result["input_counts"], {
+                "sales_rows": 10, "order_rows": 10, "route_rows": 8,
+                "bom_rows": 0, "bom_edges": 0, "bom_cycles_stopped": 0,
+            })
+
+    def test_lead_time_uses_bom_critical_path_with_each_items_routes(self):
+        """親自身と最長の構成枝だけを足し、並行する子枝は単純合算しない。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "売上明細出力.csv": (["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分"], [["20260911", "O-1", "ROOT", "0", "0"]]),
+                "受注明細出力.csv": (["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"], [["20260901", "O-1", "ROOT", ""]]),
+                "品目手順マスタ.csv": (
+                    ["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"],
+                    [
+                        ["ROOT", "1", "1"], ["ROOT", "1", "0"],
+                        ["CHILD-A", "2", "1"], ["GRAND-A", "3", "1"],
+                        ["CHILD-B", "5", "0"],
+                    ],
+                ),
+                "構成マスタ.csv": (
+                    ["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ", "ﾀﾞﾐｰ構成区分", "展開ｽﾄｯﾌﾟ区分", "使用禁止日", "製番"],
+                    [
+                        ["ROOT", "CHILD-A", "0", "0", "0", "0"],
+                        ["CHILD-A", "GRAND-A", "0", "0", "0", "0"],
+                        ["ROOT", "CHILD-B", "0", "0", "0", "0"],
+                    ],
+                ),
+            }
+            for name, (header, rows) in sources.items():
+                with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.writer(handle); writer.writerow(header); writer.writerows(rows)
+            old_data = SALES.DATA
+            try:
+                SALES.DATA = root
+                result = SALES.calculate_lead_time({"202609": {"ROOT": {"total": 100}}})
+            finally:
+                SALES.DATA = old_data
+            # ROOT自身3日 + max(CHILD-A 3日 + GRAND-A 4日, CHILD-B 5日) = 10日
+            item = result["items"]["202609"]["ROOT"]
+            self.assertEqual(item["standard_average"], 10)
+            self.assertEqual(item["standard_own"], 3)
+            self.assertEqual(item["standard_components"], 7)
+            self.assertEqual(item["critical_path"], ["ROOT", "CHILD-A", "GRAND-A"])
+            self.assertEqual(item["difference_average"], 0)
 
     def test_lead_time_reports_required_csv_header_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -329,6 +375,7 @@ class SalesMergeTest(unittest.TestCase):
                 "売上明細出力.csv": ["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分"],
                 "受注明細出力.csv": ["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"],
                 "品目手順マスタ.csv": ["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"],
+                "構成マスタ.csv": ["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"],
             }.items():
                 with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
                     csv.writer(handle).writerow(header)
@@ -348,6 +395,7 @@ class SalesMergeTest(unittest.TestCase):
                 "売上明細出力.csv": (["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分"], [["20260904", "A", "HAS", "0", "0"], ["20260906", "B", "NO-COST", "0", "0"]]),
                 "受注明細出力.csv": (["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"], [["20260901", "A", "HAS", ""], ["20260901", "B", "NO-COST", ""]]),
                 "品目手順マスタ.csv": (["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"], [["HAS", "2", "1"], ["NO-COST", "2", "1"]]),
+                "構成マスタ.csv": (["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"], []),
             }
             for name, (header, rows) in sources.items():
                 with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
@@ -388,6 +436,9 @@ class SalesMergeTest(unittest.TestCase):
         self.assertNotIn('id="leadTimeSummary"', static)
         self.assertIn('data-sort="lt_actual"', static)
         self.assertIn("renderLeadTimeCells", static)
+        self.assertIn("自身＋最長構成", static)
+        self.assertIn("クリティカルパス", static)
+        self.assertIn("standard_components", static)
         self.assertIn("構成・変動要因", static)
         self.assertIn("function componentInsight(part)", static)
         self.assertIn("0円原価あり", static)
