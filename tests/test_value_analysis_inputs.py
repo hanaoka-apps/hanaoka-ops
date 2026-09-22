@@ -392,6 +392,8 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("function componentInsight(part)", static)
         self.assertIn("0円原価あり", static)
         self.assertIn("親品目1台あたり", static)
+        self.assertIn("1円未満の端数差（上昇）", static)
+        self.assertIn("金額は1円単位に丸めて表示", static)
         self.assertIn("構成追加か初回原価取得かは、構成履歴がないため判定できません", static)
 
 
