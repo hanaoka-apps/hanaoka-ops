@@ -304,9 +304,12 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
         "品目手順マスタ.csv": list(route_required),
         "構成マスタ.csv": ["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"],
     }
-    # LTは構成・原価を確認できる品目だけを画面へ出す。引数未指定は
+    # LTは構成・原価を確認できる品目だけを画面へ出す。収集中の当月は
+    # 当月の積上原価表がまだ出力されないため、選択月以前で最新の原価表を
+    # 対象判定に使う（将来月の原価表は遡って使わない）。引数未指定は
     # 単体検証用で、従来どおり全品目を対象にする。
     eligible_by_month: dict[str, set[str]] | None = None
+    standard_cost_reference_by_month: dict[str, str] = {}
     if isinstance(standard_cost_history, dict):
         eligible_by_month = {
             text(ym): {
@@ -317,6 +320,10 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
             for ym, costs in standard_cost_history.items()
             if isinstance(costs, dict)
         }
+
+        def reference_standard_cost_month(ym: str) -> str | None:
+            candidates = [month for month, codes in eligible_by_month.items() if month <= ym and codes]
+            return max(candidates) if candidates else None
     base = {
         "status": "unavailable",
         "formula": "標準LT＝親品目自身の品目手順LT合計＋構成ツリーで最も長い子部品経路（各品目の工程リードタイム＋検査リードタイム、クリティカルパス）。実績LT＝売上明細の伝票日付−受注明細の受注日付（暦日）。差＝実績LT−標準LT。",
@@ -335,6 +342,7 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
         "excluded": defaultdict(int),
         "months": {},
         "items": {},
+        "standard_cost_reference_months": standard_cost_reference_by_month,
     }
     errors = sales_errors + order_errors + route_errors + bom_errors
     if errors:
@@ -433,9 +441,15 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
             base["excluded"]["negative_actual_lt"] += 1
             continue
         ym = sale_date.strftime("%Y%m")
-        if eligible_by_month is not None and key[1] not in eligible_by_month.get(ym, set()):
-            base["excluded"]["standard_cost_missing"] += 1
-            continue
+        if eligible_by_month is not None:
+            reference_month = standard_cost_reference_by_month.get(ym)
+            if reference_month is None:
+                reference_month = reference_standard_cost_month(ym)
+                # 空文字は「当月以前に原価表なし」をJSONへ明示する。
+                standard_cost_reference_by_month[ym] = reference_month or ""
+            if not reference_month or key[1] not in eligible_by_month.get(reference_month, set()):
+                base["excluded"]["standard_cost_missing"] += 1
+                continue
         actual_by_month[ym].append((actual, standard))
         actual_by_month_item[ym][key[1]].append((actual, standard))
 
@@ -461,6 +475,7 @@ def calculate_lead_time(standard_cost_history: dict | None = None) -> dict:
                 "standard_own": round(own_standard_by_code.get(code, 0.0), 1),
                 "standard_components": round(max(0.0, cumulative_standard(code)[0] - own_standard_by_code.get(code, 0.0)), 1),
                 "critical_path": cumulative_standard(code)[1],
+                "standard_cost_reference_month": standard_cost_reference_by_month.get(ym) or None,
             }
             for code, item_values in actual_by_month_item[ym].items()
         }

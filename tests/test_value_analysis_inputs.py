@@ -411,6 +411,30 @@ class SalesMergeTest(unittest.TestCase):
             self.assertNotIn("NO-COST", result["items"]["202609"])
             self.assertEqual(result["excluded"]["standard_cost_missing"], 1)
 
+    def test_lead_time_uses_latest_prior_standard_cost_for_collecting_month(self):
+        """当月原価表が未出力でも、直近の確定原価対象品ならLTを表示する。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "売上明細出力.csv": (["伝票日付", "受注№", "品目ｺｰﾄﾞ", "明細区分", "返品区分"], [["20260904", "A", "HAS", "0", "0"], ["20260906", "B", "NO-COST", "0", "0"]]),
+                "受注明細出力.csv": (["受注日付", "受注№", "品目ｺｰﾄﾞ", "完納区分名"], [["20260901", "A", "HAS", ""], ["20260901", "B", "NO-COST", ""]]),
+                "品目手順マスタ.csv": (["品目ｺｰﾄﾞ", "工程ﾘｰﾄﾞﾀｲﾑ", "検査ﾘｰﾄﾞﾀｲﾑ"], [["HAS", "2", "1"], ["NO-COST", "2", "1"]]),
+                "構成マスタ.csv": (["親品目ｺｰﾄﾞ", "子品目ｺｰﾄﾞ"], []),
+            }
+            for name, (header, rows) in sources.items():
+                with (root / name).open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.writer(handle); writer.writerow(header); writer.writerows(rows)
+            old_data = SALES.DATA
+            try:
+                SALES.DATA = root
+                result = SALES.calculate_lead_time({"202608": {"HAS": {"total": 100}, "NO-COST": {"total": 0}}})
+            finally:
+                SALES.DATA = old_data
+            self.assertEqual(result["months"]["202609"]["count"], 1)
+            self.assertEqual(result["standard_cost_reference_months"]["202609"], "202608")
+            self.assertEqual(result["items"]["202609"]["HAS"]["standard_cost_reference_month"], "202608")
+            self.assertNotIn("NO-COST", result["items"]["202609"])
+
     def test_low_value_counts_excludes_unconfigured_items(self):
         analysis = {
             "standard_cost_history": {"202609": {"LOW": {"total": 80}, "HIGH": {"total": 20}, "NO-COST": {"total": 0}}},
@@ -439,6 +463,7 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("自身＋最長構成", static)
         self.assertIn("クリティカルパス", static)
         self.assertIn("standard_components", static)
+        self.assertIn("standard_cost_reference_month", static)
         self.assertIn("構成・変動要因", static)
         self.assertIn("function componentInsight(part)", static)
         self.assertIn("0円原価あり", static)
