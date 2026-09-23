@@ -502,6 +502,8 @@ class FujinShellAppSwitchTest(unittest.TestCase):
             self.assertIn('id="page-info-btn"', html, path.name)
             self.assertIn("body.shared-terminal .app-switch", html, path.name)
             self.assertIn('<div class="nav-app-switch"', html, path.name)
+            self.assertIn('<link rel="apple-touch-icon" href="favicon-fujin.png">', html, path.name)
+            self.assertIn("body.has-account-menu #_fujinUserBar { display:none !important; }", html, path.name)
             self.assertIn("_SHARED_ACCOUNT_WORDS", html, path.name)
             self.assertIn("if (!_sharedCheckDone) { _sharedCheckPending", html, path.name)
             self.assertIn("function _updatePageInfo()", html, path.name)
