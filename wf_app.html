@@ -86,6 +86,7 @@ h2{font-size:18px;margin:0 0 6px}
 .editor .form{flex:1;overflow:auto;padding:18px 24px}
 .editor .side{width:340px;border-left:1px solid var(--line);background:#fff;overflow:auto;padding:16px}
 .fld{margin-bottom:14px}.fld label.l{display:block;font-weight:600;margin-bottom:4px}
+.fld .fwarn{color:var(--warn);background:var(--warn-l);border-radius:5px;padding:4px 8px;margin-top:4px;font-size:12.5px}
 .fld .req{color:var(--ng);margin-left:4px;font-size:12px}
 .fld .opts label{display:inline-flex;align-items:center;gap:4px;margin:2px 14px 2px 0;font-weight:normal}
 .fld .opts input{width:auto}
@@ -367,7 +368,7 @@ const DevApi = {
   async masters() {
     const D = window.DEV_DATA;
     return { org: D.org, roles: D.roles, workflows: D.workflows,
-      settings: [{ Title: 'app.title', Value: '社内ワークフロー（開発）' }, { Title: 'app.categories', Value: '["経費・支払","稟議","取引先","人事・勤怠"]' }],
+      settings: (D.settings || []).filter(s => s.Title !== 'app.title').concat([{ Title: 'app.title', Value: '社内ワークフロー（開発）' }]),
       forms: D.forms.map(f => ({ ...f, Active: true })) };
   },
   async tasks(upn)      { return MockFlow.S.tasks.filter(t => lc(t.AssigneeUPN) === upn).map(t => ({ ...t })); },
@@ -717,14 +718,15 @@ function downloadCsv(items) {
 /* ---------- 詳細：共通部品 ---------- */
 /* ctx: { req: 申請番号, app: 申請者UPN }（添付を開くときの場所探しに使う） */
 function dataCard(form, data, prev, ctx = {}) {
-  const fields = (form ? form.fields : Object.keys(data).map(k => ({ key: k, label: k, type: 'text' }))).filter(f => f.type !== 'note');
+  const fields = (form ? form.fields : Object.keys(data).map(k => ({ key: k, label: k, type: 'text' }))).filter(f => f.type !== 'note' && (!f.showIf || WFEngine.evalCond(f.showIf, { data })));
   const fileNames = v => (v || []).map(x => x.name).join('、') || '（なし）';
   const show = (f, v) => {
     if (v == null || v === '' || (f.type === 'file' && !v.length)) return '<span class="muted">（未入力）</span>';
     if (f.type === 'table') return tableView(f, v);
     if (f.type === 'file') return v.map(x => `<a class="flink" data-fkey="${esc(x.key)}">📎 ${esc(x.name)}</a> <span class="muted">${fsize(x.size)}</span>`).join('<br>');
     if (Array.isArray(v)) return esc(v.join('、'));
-    if (f.type === 'currency') return esc(yen(v));
+    if (f.type === 'currency' || (f.type === 'calc' && !f.unit)) return esc(yen(v));
+    if (f.type === 'calc') return esc(calcText(f, v));
     if (f.type === 'user') return esc(nameOf(v));
     return esc(v);
   };
@@ -1071,9 +1073,15 @@ function toast(msg, isErr) {
 /* ============================================================
    新規申請：フォーム一覧
    ============================================================ */
+/* 申請できる人が決まっているフォーム（SubmitRoles＝役割名。;区切り）。フロー側でも確かめる */
+function canSubmit(f) {
+  const roles = (f.SubmitRoles || '').split(';').map(x => x.trim()).filter(Boolean);
+  if (!roles.length) return true;
+  return st.M.roles.some(r => roles.includes(r.Title) && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn));
+}
 function renderCatalog(main) {
   const cats = pj(st.M.settings['app.categories'], []);
-  const forms = st.M.forms.filter(f => f.Active !== false || hasAllView());
+  const forms = st.M.forms.filter(f => (f.Active !== false || hasAllView()) && canSubmit(f));
   const groups = [...new Set([...cats, ...forms.map(f => f.Category)])].map(c => ({ c, fs: forms.filter(f => f.Category === c) })).filter(g => g.fs.length);
   main.innerHTML = `<div class="catalog">${groups.length ? groups.map(g => `<h3>${esc(g.c)}</h3><div class="forms">${g.fs.map(f =>
     `<div class="fcard" data-c="${esc(f.FormCode)}"><div class="n">${esc(f.Title)}${f.Active === false ? ' <span class="badge b-gray">準備中</span>' : ''}</div><div class="d">${esc((f.Description || '').split('\n')[0].slice(0, 60))}</div></div>`).join('')}</div>`).join('')
@@ -1103,7 +1111,8 @@ function renderEditor(main) {
   const box = $('flds');
   const fdOf = k => f.fields.find(x => x.key === k);
   f.fields.forEach(fd => fd.type === 'file' ? renderFiles(fd) : setFieldValue(fd, ed.data[fd.key]));
-  box.addEventListener('input', () => { readForm(); recalc(); preview(); });
+  box.addEventListener('input', () => { readForm(); recalc(); applyConditions(); preview(); });
+  box.addEventListener('change', () => { readForm(); recalc(); applyConditions(); preview(); });
   box.addEventListener('change', e => {
     const inp = e.target.closest('input[data-file]'); if (!inp) return;
     addFiles(fdOf(inp.dataset.file), [...inp.files]); inp.value = '';
@@ -1125,7 +1134,7 @@ function renderEditor(main) {
     box.querySelector(`[data-k="${fd.key}"]`).outerHTML = fieldHtml(fd); setFieldValue(fd, rows); recalc(); preview();
   });
   $('bSubmit').onclick = submit;
-  recalc(); preview();
+  recalc(); applyConditions(); preview();
 }
 function fieldHtml(fd) {
   const req = fd.required ? '<span class="req">必須</span>' : '';
@@ -1135,12 +1144,12 @@ function fieldHtml(fd) {
     case 'textarea': inp = `<textarea id="${id}" placeholder="${esc(fd.placeholder || '')}"></textarea>`; break;
     case 'number': case 'currency': inp = `<input id="${id}" type="number" style="max-width:220px" placeholder="${esc(fd.placeholder || '')}">${fd.type === 'currency' ? ' 円' : ''}`; break;
     case 'date': inp = `<input id="${id}" type="date" style="max-width:200px">`; break;
-    case 'select': inp = `<select id="${id}"><option value=""></option>${opts(fd).map(o => `<option>${esc(o)}</option>`).join('')}</select>`; break;
+    case 'select': { const o = opts(fd); inp = o.length || !fd.optionsBy ? `<select id="${id}"><option value=""></option>${o.map(x => `<option>${esc(x)}</option>`).join('')}</select>` : `<input id="${id}" type="text" placeholder="${esc(fd.placeholder || '')}">`; break; }
     case 'radio': inp = `<div class="opts">${opts(fd).map(o => `<label><input type="radio" name="${id}" value="${esc(o)}">${esc(o)}</label>`).join('')}</div>`; break;
     case 'checkbox': inp = `<div class="opts">${opts(fd).map(o => `<label><input type="checkbox" name="${id}" value="${esc(o)}">${esc(o)}</label>`).join('')}</div>`; break;
     case 'user': inp = `<select id="${id}"><option value=""></option>${st.M.org.map(p => `<option value="${esc(lc(p.UPN))}">${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>`; break;
     case 'calc': inp = `<div id="${id}" style="font-weight:600;font-size:15px">0</div>`; break;
-    case 'note': return `<div class="desc">${esc(fd.text || fd.label)}</div>`;
+    case 'note': return `<div class="fld" data-k="${esc(fd.key || '')}"><div class="desc">${esc(fd.text || fd.label)}</div></div>`;
     case 'file': {
       const lim = fileLimits();
       inp = `<div class="fdrop" data-drop="${esc(fd.key)}"><div id="${id}"></div>
@@ -1151,13 +1160,14 @@ function fieldHtml(fd) {
     case 'table': {
       const rows = (st.editor.data[fd.key] || []);
       inp = `<table class="tbl"><tr>${fd.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}<th></th></tr>` +
-        rows.map((r, i) => `<tr>${fd.columns.map(c => `<td>${c.type === 'calc' ? `<span data-cell="${fd.key}.${i}.${c.key}"></span>` : `<input data-cell="${fd.key}.${i}.${c.key}" type="${['number', 'currency'].includes(c.type) ? 'number' : c.type === 'date' ? 'date' : 'text'}">`}</td>`).join('')}<td><button data-act="del" data-k="${fd.key}" data-i="${i}">削除</button></td></tr>`).join('') +
+        rows.map((r, i) => `<tr>${fd.columns.map(c => `<td>${c.type === 'calc' ? `<span data-cell="${fd.key}.${i}.${c.key}"></span>` : c.type === 'select' ? `<select data-cell="${fd.key}.${i}.${c.key}"><option value=""></option>${opts(c).map(o => `<option>${esc(o)}</option>`).join('')}</select>` : `<input data-cell="${fd.key}.${i}.${c.key}" type="${['number', 'currency'].includes(c.type) ? 'number' : c.type === 'date' ? 'date' : 'text'}" placeholder="${esc(c.placeholder || '')}">`}</td>`).join('')}<td><button data-act="del" data-k="${fd.key}" data-i="${i}">削除</button></td></tr>`).join('') +
         `</table><button data-act="add" data-k="${fd.key}" style="margin-top:4px">＋ 行を追加</button>`;
       break;
     }
     default: inp = `<input id="${id}" type="text" placeholder="${esc(fd.placeholder || '')}">`;
   }
-  return `<div class="fld" data-k="${esc(fd.key)}"><label class="l">${esc(fd.label)}${req}</label>${inp}${fd.help ? `<div class="muted">${esc(fd.help)}</div>` : ''}</div>`;
+  const reqIf = !fd.required && fd.requiredIf ? '<span class="req" data-reqif style="display:none">必須</span>' : '';
+  return `<div class="fld" data-k="${esc(fd.key)}"><label class="l">${esc(fd.label)}${req}${reqIf}</label>${inp}${fd.help ? `<div class="muted">${esc(fd.help)}</div>` : ''}${fd.warn ? `<div class="fwarn" id="w_${esc(fd.key)}" style="display:none"></div>` : ''}</div>`;
 }
 /* ---------- 添付ファイル（入力画面）
    選んだらすぐ自分の受付フォルダへアップロードする。申請のときは「今回アップロードしたファイルのキー」を送り、
@@ -1209,16 +1219,34 @@ function discardUploads(ed) {
   ed.newKeys.forEach(k => api.deleteStaging(k).catch(() => {})); ed.newKeys.clear();
 }
 
-/* 選択肢: 配列、または "@setting:キー" で WF_Setting から読む */
-function opts(fd) {
-  if (typeof fd.options === 'string' && fd.options.startsWith('@setting:')) return pj(st.M.settings[fd.options.slice(9)], []);
-  return fd.options || [];
+/* 選択肢: 配列、または "@setting:キー" で WF_Setting から読む。
+   optionsBy を付けると、設定の中を申請者の属性・入力値でたどって選ぶ（例: ["@applicant.Site", "system"] → 拠点 → 制度）。
+   たどった先に無いときは "*" を使う。選択肢が無ければ自由入力になる */
+function opts(fd, data) {
+  let o = fd.options || [];
+  if (typeof o === 'string' && o.startsWith('@setting:')) o = pj(st.M.settings[o.slice(9)], []);
+  for (const k of fd.optionsBy || []) {
+    if (!o || Array.isArray(o)) break;
+    const key = k.startsWith('@applicant.') ? (st.me && st.me.org ? st.me.org[k.slice(11)] : '') : k.startsWith('=') ? k.slice(1)
+      : ((data || (st.editor ? st.editor.data : {}))[k] ?? '');
+    o = o[key] ?? o['*'];
+  }
+  return Array.isArray(o) ? o : (o && typeof o === 'object' ? Object.keys(o) : []);
+}
+/* 選択肢が入力内容で変わる項目（optionsBy）を作り直す（選んでいた値は、新しい候補にあれば残す） */
+function refreshOptions(fd) {
+  const el = document.querySelector(`.fld[data-k="${fd.key}"]`); if (!el) return;
+  const list = opts(fd), cur = st.editor.data[fd.key] ?? '';
+  const sig = JSON.stringify(list); if (el.dataset.opts === sig) return;
+  const tmp = document.createElement('div'); tmp.innerHTML = fieldHtml(fd); const nw = tmp.firstElementChild;
+  nw.dataset.opts = sig; el.replaceWith(nw);
+  if (list.length ? list.includes(cur) : true) setFieldValue(fd, cur); else st.editor.data[fd.key] = '';
 }
 function setFieldValue(fd, v) {
   const id = 'f_' + fd.key;
   if (v == null) return;
   if (fd.type === 'radio' || fd.type === 'checkbox') document.querySelectorAll(`[name="${id}"]`).forEach(x => x.checked = [].concat(v).includes(x.value));
-  else if (fd.type === 'table') (v || []).forEach((r, i) => fd.columns.forEach(c => { const el = document.querySelector(`input[data-cell="${fd.key}.${i}.${c.key}"]`); if (el && r[c.key] != null) el.value = r[c.key]; }));
+  else if (fd.type === 'table') (v || []).forEach((r, i) => fd.columns.forEach(c => { const el = cellEl(fd.key, i, c.key); if (el && r[c.key] != null) el.value = r[c.key]; }));
   else if ($(id) && $(id).tagName !== 'DIV') $(id).value = v;
 }
 function readForm() {
@@ -1229,14 +1257,39 @@ function readForm() {
     if (fd.type === 'checkbox') ed.data[fd.key] = [...document.querySelectorAll(`[name="${id}"]:checked`)].map(x => x.value);
     else if (fd.type === 'radio') ed.data[fd.key] = (document.querySelector(`[name="${id}"]:checked`) || {}).value || '';
     else if (fd.type === 'table') ed.data[fd.key] = (ed.data[fd.key] || []).map((r, i) => {
-      const o = {}; fd.columns.forEach(c => { const el = document.querySelector(`input[data-cell="${fd.key}.${i}.${c.key}"]`);
+      const o = {}; fd.columns.forEach(c => { const el = cellEl(fd.key, i, c.key);
         if (el) o[c.key] = ['number', 'currency'].includes(c.type) ? (el.value === '' ? '' : Number(el.value)) : el.value; }); return o; });
     else if ($(id)) ed.data[fd.key] = ['number', 'currency'].includes(fd.type) ? ($(id).value === '' ? '' : Number($(id).value)) : $(id).value;
   });
 }
 /* 計算項目。式に使えるのは 数字・項目キー・+-* / ( ) と sum(表キー.列キー) だけ */
+/* 計算項目の表示（unit があればその単位、無ければ円） */
+const calcText = (fd, v) => fd.unit ? `${v ?? 0}${fd.unit}` : yen(v);
+/* 規定の表から金額を引く（WF_Setting の表。慶弔見舞金規定など）
+   { 事項: { by: "years", table: [[下限年数, 金額], …] } | { by: "option", options: { 区分: 金額 } } | { by: "manual" }, halfIf: "項目キー"（真なら1/2） } */
+function lookupRule(settingKey, scope, itemKey, gradeKey, yearsKey) {
+  const r = pj(st.M.settings[settingKey], {})[scope[itemKey]];
+  if (!r) return 0;
+  let v = 0;
+  if (r.by === 'years') { const y = Number(scope[yearsKey]); (r.table || []).forEach(([min, amt]) => { if (!isNaN(y) && y >= min) v = amt; }); }
+  else if (r.by === 'option') v = (r.options || {})[scope[gradeKey]] || 0;
+  else if (r.by === 'manual') v = Number(scope[r.field || 'manualAmount']) || 0;
+  const half = r.halfIf && scope[r.halfIf]; if (half && (!Array.isArray(half) || half.length)) v = Math.floor(v / 2);
+  return v;
+}
+/* 満年数（入社日から基準日まで） */
+function fullYears(a, b) {
+  if (!a || !b) return 0;
+  const x = new Date(a), y = new Date(b); if (isNaN(x) || isNaN(y) || y < x) return 0;
+  let n = y.getFullYear() - x.getFullYear();
+  if (y.getMonth() < x.getMonth() || (y.getMonth() === x.getMonth() && y.getDate() < x.getDate())) n--;
+  return n;
+}
 function calcExpr(expr, scope) {
-  const src = expr.replace(/sum\(([A-Za-z_]\w*)\.([A-Za-z_]\w*)\)/g, (_, t, c) => String((scope[t] || []).reduce((a, r) => a + (Number(r[c]) || 0), 0)))
+  const src = expr
+    .replace(/lookup\(\s*([\w.]+)\s*,\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)/g, (_, k, i, g, y) => String(lookupRule(k, scope, i, g, y)))
+    .replace(/years\(\s*(\w+)\s*,\s*(\w+)\s*\)/g, (_, a, b) => String(fullYears(scope[a], scope[b])))
+    .replace(/sum\(([A-Za-z_]\w*)\.([A-Za-z_]\w*)\)/g, (_, t, c) => String((scope[t] || []).reduce((a, r) => a + (Number(r[c]) || 0), 0)))
     .replace(/[A-Za-z_]\w*/g, k => String(Number(scope[k]) || 0));
   if (!/^[\d+\-*/().\s]*$/.test(src)) return 0;
   try { return Math.round(Function('"use strict";return (' + (src || 0) + ')')() * 100) / 100; } catch { return 0; }
@@ -1247,7 +1300,7 @@ function recalc() {
     if (fd.type === 'table') (ed.data[fd.key] || []).forEach((r, i) => fd.columns.filter(c => c.type === 'calc').forEach(c => {
       r[c.key] = calcExpr(c.expr, r); const el = document.querySelector(`[data-cell="${fd.key}.${i}.${c.key}"]`); if (el) el.textContent = yen(r[c.key]); }));
   });
-  ed.form.fields.filter(fd => fd.type === 'calc').forEach(fd => { ed.data[fd.key] = calcExpr(fd.expr, ed.data); if ($('f_' + fd.key)) $('f_' + fd.key).textContent = yen(ed.data[fd.key]); });
+  ed.form.fields.filter(fd => fd.type === 'calc').forEach(fd => { ed.data[fd.key] = calcExpr(fd.expr, ed.data); if ($('f_' + fd.key)) $('f_' + fd.key).textContent = calcText(fd, ed.data[fd.key]); });
 }
 function routeFor(ed) {
   const wf = st.M.workflows.find(w => w.WorkflowCode === ed.form.WorkflowCode);
@@ -1269,12 +1322,37 @@ function preview() {
 function validate(ed) {
   const bad = [];
   document.querySelectorAll('.fld.err').forEach(x => x.classList.remove('err'));
-  ed.form.fields.filter(fd => fd.required).forEach(fd => {
+  const mark = (fd, msg) => { bad.push(msg); const el = document.querySelector(`.fld[data-k="${fd.key}"]`); if (el) el.classList.add('err'); };
+  ed.form.fields.filter(fd => isShown(fd, ed.data)).forEach(fd => {
     const v = ed.data[fd.key];
-    if (v == null || v === '' || (Array.isArray(v) && !v.length)) { bad.push(fd.label); const el = document.querySelector(`.fld[data-k="${fd.key}"]`); if (el) el.classList.add('err'); }
+    const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
+    if (empty && isRequired(fd, ed.data)) return mark(fd, fd.label);
+    // 形式（例：口座番号は7桁の数字、名義はカタカナ）
+    if (!empty && fd.pattern && typeof v === 'string' && !new RegExp(fd.pattern).test(v.trim())) mark(fd, `${fd.label}：${fd.patternMsg || '形式が正しくありません'}`);
+    // 表の必須の列
+    if (fd.type === 'table' && Array.isArray(v)) v.forEach((r, i) => fd.columns.filter(c => c.required).forEach(c => {
+      if (r[c.key] == null || r[c.key] === '') mark(fd, `${fd.label}の${i + 1}行目「${c.label}」`);
+    }));
   });
   return bad;
 }
+/* ---------- 条件で出す項目・条件付きの必須・注意（定義: showIf / requiredIf / warn。書き方は経路の条件と同じ） ---------- */
+const condCtx = data => ({ data, applicant: st.me ? st.me.org : null });
+function isShown(fd, data) { return !fd.showIf || WFEngine.evalCond(fd.showIf, condCtx(data)); }
+function isRequired(fd, data) { return !!fd.required || (!!fd.requiredIf && WFEngine.evalCond(fd.requiredIf, condCtx(data))); }
+function applyConditions() {
+  const ed = st.editor; if (!ed) return;
+  ed.form.fields.filter(fd => fd.optionsBy).forEach(refreshOptions);
+  ed.form.fields.forEach(fd => {
+    const el = fd.key && document.querySelector(`.fld[data-k="${fd.key}"]`); if (!el) return;
+    el.style.display = isShown(fd, ed.data) ? '' : 'none';
+    const r = el.querySelector('[data-reqif]'); if (r) r.style.display = isRequired(fd, ed.data) ? '' : 'none';
+    const w = fd.warn && $('w_' + fd.key);
+    if (w) { const on = WFEngine.evalCond({ field: fd.key, op: fd.warn.op, value: fd.warn.value }, condCtx(ed.data)); w.style.display = on ? '' : 'none'; w.textContent = on ? '⚠ ' + fd.warn.text : ''; }
+  });
+}
+/* 表のセル（入力欄・選択肢） */
+function cellEl(k, i, c) { return document.querySelector(`input[data-cell="${k}.${i}.${c}"],select[data-cell="${k}.${i}.${c}"]`); }
 async function submit() {
   const ed = st.editor, f = ed.form; readForm(); recalc();
   const ups = [...(ed.uploads || new Map()).values()];
@@ -1286,7 +1364,12 @@ async function submit() {
   if (res.errors.length) return alert('承認経路を決められません\n' + res.errors.join('\n'));
   const note = ed.resubmit ? $('resubmitNote').value.trim() : '';
   if (ed.resubmit && !note) return alert('修正コメントを入力してください');
-  const title = (f.TitleTemplate || '{subject}').replace(/\{(\w+)\}/g, (_, k) => Array.isArray(ed.data[k]) ? ed.data[k].join('・') : (ed.data[k] ?? '')).trim() || f.Title;
+  // 条件で隠れている項目の値は送らない（前に入れた値が残っていても）
+  ed.data = Object.fromEntries(Object.entries(ed.data).filter(([k]) => { const fd = f.fields.find(x => x.key === k); return !fd || isShown(fd, ed.data); }));
+  // 件名：{項目} を値に置き換える。{表.列} は表のその列を「・」でつなぐ
+  const title = (f.TitleTemplate || '{subject}').replace(/\{(\w+)(?:\.(\w+))?\}/g, (_, k, c) => { const v = ed.data[k];
+    if (c) return [...new Set((v || []).map(r => r[c]).filter(Boolean))].join('・');
+    return Array.isArray(v) ? v.join('・') : (v ?? ''); }).replace(/（\s*）/g, '').trim() || f.Title;
   // SummaryFields: "Amount=total;PartnerName=vendor" → 検索用の列へ
   const summary = Object.fromEntries((f.SummaryFields || '').split(';').filter(Boolean).map(x => x.split('=')).map(([c, k]) => [c, ed.data[k]]));
   const payload = { prefix: f.NumberPrefix, title, formVersion: f.Version, workflowVersion: res.wf.Version,
