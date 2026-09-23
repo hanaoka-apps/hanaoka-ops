@@ -458,6 +458,7 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("leadExclusionLabels", static)
         self.assertIn("openLowValueItem(code)", static)
         self.assertIn('id="leadTimeSummary"', static)
+        self.assertIn("html.in-fujin-shell .fujin-app-link{display:none}", static)
         self.assertIn(".modal-close{flex:0 0 42px;width:42px;height:42px;min-width:42px;padding:0;aspect-ratio:1/1", static)
         self.assertIn("renderLowValueSummary();renderLeadTimeSummary();", static)
         self.assertIn("実績LTの長い順 10件", static)
