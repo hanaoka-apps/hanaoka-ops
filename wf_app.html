@@ -553,7 +553,8 @@ function taskItem(t, involved) {
     html: `<div class="t">${esc(s.title || t.Title)}</div>
            <div class="m">${badge} ${esc(formName(t.FormCode))}・${esc(s.applicantName || '')}（${esc(s.applicantDept || '')}）</div>
            <div class="m">${esc(t.StepName)}　${fmtDT(t.Created)}${t.RequestNo ? '　' + esc(t.RequestNo) : ''}</div>
-           ${isInbox(t) && s.route ? miniLine(progressModel(s.route, snapHistory(s), { status: '申請中', stepNo: t.StepNo }), '申請中') : ''}` };
+           ${s.route && (isInbox(t) || involved) ? (isInbox(t) ? miniLine(progressModel(s.route, taskHistory(t, s), { status: '申請中', stepNo: t.StepNo }), '申請中')
+              : miniLine(progressModel(s.route, taskHistory(t, s), { status: t.RequestStatus }), t.RequestStatus)) : ''}` };
 }
 /* 一覧の行に出す小さい進み具合（点）と「いまどこか」 */
 function miniLine(m, status) {
@@ -727,7 +728,12 @@ function progressModel(route, hist, cur) {
     }
   }
   const fin = nodes.findIndex(n => n.fin), post = nodes.findIndex(n => n.key === 'post');
-  if (cur.status === '申請中' && cur.stepNo > 0) {
+  if (cur.status === '申請中' && !(cur.stepNo > 0)) {
+    // いまの段が分からない（承認者の画面）→ 経過から、済んだ段の次を「いまの段」とみなす
+    if (nodes[0].st === 'todo') nodes[0].st = 'done';
+    const k = nodes.findIndex((n, i) => i > 0 && n.ri != null && (n.st === 'todo' || n.st === 'ret'));
+    if (k > 0) Object.assign(nodes[k], { st: 'cur', at: null, by: null });
+  } else if (cur.status === '申請中' && cur.stepNo > 0) {
     // いまの段より前は済んでいる（直前の承認が経過にまだ書かれていないことがあるので補う）
     for (let k = 1; k < cur.stepNo; k++) if (nodes[k].st === 'todo' || nodes[k].st === 'ret') nodes[k].st = 'done';
     if (nodes[0].st === 'todo') nodes[0].st = 'done';
@@ -802,6 +808,11 @@ function snapHistory(s) {
   }
   return hist;
 }
+/* タスクから見た経過：フローDが配る最新の写し（ProgressJson）があればそれ、無ければ作られた時点の控え */
+function taskHistory(t, s) {
+  const live = pj(t.ProgressJson, null), snap = snapHistory(s);
+  return Array.isArray(live) && live.length >= snap.length ? live : snap;
+}
 /* 申請の行（WF_Request）から、進み具合の材料をそろえる */
 function reqProgress(r) {
   return progressModel(pj(r.RouteJson, { route: [] }).route || [], pj(r.HistoryJson, []),
@@ -820,15 +831,15 @@ function renderTaskDetail(t, s) {
       <div class="no">申請番号：<b>${esc(t.RequestNo || '')}</b>　${esc(formName(t.FormCode))}</div>
       <h2>${esc(s.title || t.Title)}</h2></div>
     <div class="r">申請者：${esc(s.applicantName)}（${esc(s.applicantDept)}）${fmtDT(s.submittedAt)}</div></div>`;
-  // 承認者は申請の行を見られないので、タスクの控え（作られた時点の経路・経過）で描く
-  const hist = snapHistory(s);
+  // 承認者は申請の行を見られないので、タスクの写しで描く。経過は、フローDが配る最新の写し（ProgressJson）を優先する
+  const hist = taskHistory(t, s);
   if (['承認', '決裁', '作業'].includes(t.StepType)) {
     const m = progressModel(route, hist, { status: canAct ? '申請中' : t.RequestStatus, stepNo: canAct ? t.StepNo : 0 });
     html += `<div class="card"><h3>進み具合${canAct ? '　<span class="badge b-run">あなたの番です</span>' : ''}</h3>${progressHtml(m)}</div>`;
   }
   if (canAct) html += returnBanner(s.lastReturn);
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
-  if (hist.length) html += `<div class="card"><h3>これまでの経過${canAct ? '' : '（このタスクが届いた時点）'}</h3>${timelineHtml(hist, {})}</div>`;
+  if (hist.length) html += `<div class="card"><h3>これまでの経過</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
 
   if (canAct) {
     const back = route.slice(0, t.StepNo - 1).map((x, i) => ({ x, i })).filter(o => !o.x.skipped);
