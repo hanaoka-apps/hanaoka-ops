@@ -114,12 +114,19 @@
     }
   }
 
-  /* 代理設定: 期間中なら代理人も処理できる */
+  /* 代理設定: 期間中なら代理人も処理できる（★表示用。実際に代理人へ回すかはフローが組織マスタを見て決める） */
+  // 日付だけの列は「日本の0時」が UTC で返る（前日15時）ので、この端末の日付に直してから比べる
+  function ymd(v) {
+    if (!v) return '';
+    const d = new Date(v); if (isNaN(d)) return String(v).slice(0, 10);
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
   function delegateOf(upn, ctx) {
     const p = ctx.orgByUpn[upn];
     if (!p || !p.DelegateUPN) return null;
-    const t = ctx.today || new Date().toISOString().slice(0, 10);
-    const from = (p.DelegateFrom || '').slice(0, 10), to = (p.DelegateTo || '').slice(0, 10);
+    const t = ctx.today || ymd(new Date());
+    const from = ymd(p.DelegateFrom), to = ymd(p.DelegateTo);
     if ((from && t < from) || (to && t > to)) return null;
     return p.DelegateUPN.toLowerCase();
   }

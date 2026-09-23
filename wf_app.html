@@ -118,6 +118,8 @@ table.tbl th{background:#f3f6fa;font-weight:600;font-size:12px}
 .pg-n.fin.done .pg-dot{background:var(--ok);box-shadow:0 0 0 1px var(--ok)}
 @keyframes pgpulse{50%{box-shadow:0 0 0 6px rgba(26,95,168,.15)}}
 .pg svg{display:block}
+#tip{position:fixed;z-index:200;display:none;background:#1e2533;color:#fff;font-size:12px;line-height:1.6;padding:7px 10px;border-radius:7px;max-width:260px;white-space:pre-wrap;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+[data-tip]{cursor:default}
 .pg svg text{font-size:10.5px;fill:var(--ng)}
 /* 一覧用の小さい版 */
 .pg.mini .pg-n .pg-l,.pg.mini .pg-n .pg-d,.pg.mini .pg-n .pg-w{display:none}
@@ -147,6 +149,12 @@ table.tbl th{background:#f3f6fa;font-weight:600;font-size:12px}
 .tl-i.k-ret .tl-c,.tl-i.k-ng .tl-c{background:var(--ng-l)}
 .tl-i.k-wait .tl-ic{border-style:dashed;color:var(--pri)}
 .tl-r{font-size:12px;color:var(--warn);font-weight:600;margin:2px 0 10px 44px;padding:2px 10px;background:var(--warn-l);border-radius:10px;display:inline-block}
+/* 不在設定 */
+#absBtn.on{border-color:var(--warn);color:var(--warn);background:var(--warn-l)}
+.modal-bg{position:fixed;inset:0;background:rgba(20,30,50,.35);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal{background:#fff;border-radius:10px;padding:20px 22px;width:440px;max-width:100%;box-shadow:0 8px 30px rgba(0,0,0,.2)}
+.modal h3{margin:0 0 6px;font-size:16px}.modal .row2{display:flex;gap:10px}.modal .row2>div{flex:1}
+.modal label.l{display:block;font-weight:600;margin:12px 0 4px;font-size:13px}
 .fdrop{border:1px dashed #c9d1de;border-radius:6px;padding:8px 10px;background:#fbfcfe}
 .fdrop.over{border-color:var(--pri);background:var(--pri-l)}
 .fpick{display:inline-block;padding:5px 12px;border:1px solid var(--pri);color:var(--pri);border-radius:6px;cursor:pointer;background:#fff;font-size:13px;font-weight:normal!important;margin:0!important}
@@ -174,6 +182,7 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
     <h1 id="appTitle">社内ワークフロー</h1>
     <span class="sp"></span>
     <span id="userName"></span>
+    <button id="absBtn" title="不在の間、代わりに承認してもらう人を設定します">不在設定</button>
     <button id="reloadBtn" title="最新の状態を読み込む">↻ 更新</button>
     <button id="logoutBtn">サインアウト</button>
   </header>
@@ -185,6 +194,7 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
   <main id="main"></main>
 </div>
 <div id="toasts"></div>
+<div id="tip"></div>
 
 <script>
 'use strict';
@@ -391,6 +401,7 @@ const api = DEV ? DevApi : GraphApi;
    ============================================================ */
 async function init() {
   $('reloadBtn').onclick = () => load();
+  $('absBtn').onclick = openAbsence;
   if (DEV) return startDev();
   if (typeof msal === 'undefined') { loginError('認証ライブラリを読み込めませんでした。ページを再読み込みしてください。'); return; }
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
@@ -466,8 +477,11 @@ async function load(quiet) {
     st.me = await api.me();
     st.me.org = st.M.orgByUpn[st.me.upn] || null;
     $('userName').textContent = st.me.name;
+    renderAbsenceBtn();
     const [tasks, myReqs] = await Promise.all([api.tasks(st.me.upn), api.myRequests(st.me.upn)]);
     st.tasks = tasks; st.myReqs = myReqs;
+    // 裏の処理がまだなら、押した直後の状態を保つ（再読み込みで表示が戻らないように）
+    st.tasks.forEach(t => { const o = optimistic.get(t.id); if (!o) return; if (t.Status === o || (o === '既読' && t.Status === '確認済')) optimistic.delete(t.id); else t.Status = o; });
     st.allReqs = hasAllView() ? await api.allRequests() : null;
     status(`更新 ${fmtDT(new Date())}` + (st.me.org ? '' : '　※組織マスタに登録がないため、申請はできません（総務にご連絡ください）'), st.me.org ? '' : 'err');
     openDeepLink();
@@ -489,6 +503,55 @@ function openDeepLink() {
   if (st.myReqs.some(r => r.RequestNo === no)) { st.view = 'mine'; st.sel = 'r' + no; return; }
   if (pick('involved', t => t.RequestNo === no)) return;
 }
+/* ============================================================
+   不在設定（代理人と期間）。保存はフロー経由（組織マスタは社員が直接書き換えられない）。
+   実際に代理人へ依頼を回すかは、フローが組織マスタを見て決める（ここでは表示だけ）
+   ============================================================ */
+/* 日付だけの列は「日本の0時」が UTC で返るので、この端末の日付に直す */
+function localYmd(v) {
+  if (!v) return '';
+  const d = new Date(v); if (isNaN(d)) return String(v).slice(0, 10);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function absenceOf(o) { return o && o.DelegateUPN ? { upn: lc(o.DelegateUPN), from: localYmd(o.DelegateFrom), to: localYmd(o.DelegateTo) } : null; }
+const md = ymd => ymd ? `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}` : '';
+function renderAbsenceBtn() {
+  const b = $('absBtn'); if (!b) return;
+  const a = absenceOf(st.me.org), today = localYmd(new Date());
+  b.style.display = st.me.org ? '' : 'none';
+  if (a && a.to >= today) {
+    const now = a.from <= today;
+    b.textContent = `${now ? '🏖 不在中' : '🗓 不在予定'}（${md(a.from)}〜${md(a.to)}・代理：${nameOf(a.upn)}）`;
+    b.classList.add('on');
+  } else { b.textContent = '不在設定'; b.classList.remove('on'); }
+}
+function openAbsence() {
+  if (!st.me.org) return;
+  const a = absenceOf(st.me.org) || { upn: '', from: '', to: '' };
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal"><h3>不在設定</h3>
+    <div class="muted">不在の間、あなたに届く承認・後処理の依頼が、代理人にも届きます（あなたも処理できます）。どちらかが処理すると、もう一方の依頼は取り消されます。</div>
+    <label class="l">代理人</label><select id="absWho"><option value=""></option>${st.M.org.filter(p => lc(p.UPN) !== st.me.upn)
+      .map(p => `<option value="${esc(lc(p.UPN))}" ${lc(p.UPN) === a.upn ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>
+    <div class="row2"><div><label class="l">開始日</label><input id="absFrom" type="date" value="${esc(a.from)}"></div>
+      <div><label class="l">終了日</label><input id="absTo" type="date" value="${esc(a.to)}"></div></div>
+    <div class="actions" style="margin-top:16px"><button class="pri" id="absSave">保存する</button>
+      ${a.upn ? '<button class="warn" id="absClear">不在設定を解除</button>' : ''}<span style="flex:1"></span><button id="absClose">閉じる</button></div></div>`;
+  document.body.appendChild(bg);
+  const close = () => bg.remove();
+  bg.onclick = e => { if (e.target === bg) close(); };
+  $('absClose').onclick = close;
+  const send = payload => { close(); act({ Title: '不在設定', ActionType: '不在設定', PayloadJson: JSON.stringify(payload) }); };
+  $('absSave').onclick = () => {
+    const who = $('absWho').value, from = $('absFrom').value, to = $('absTo').value;
+    if (!who) return alert('代理人を選んでください');
+    if (!from || !to || from > to) return alert('開始日と終了日を正しく入れてください');
+    send({ delegate: who, from, to });
+  };
+  if ($('absClear')) $('absClear').onclick = () => { if (confirm('不在設定を解除しますか？')) send({ delegate: '', from: '', to: '' }); };
+}
+
 /* 「すべての申請」タブを出すかどうか（表示の切り替えだけ。実際に見えるかは SharePoint が決める） */
 function hasAllView() {
   return st.M.roles.some(r => r.Kind === '閲覧権限' && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').includes(st.me.upn));
@@ -551,10 +614,10 @@ function taskItem(t, involved) {
          status: involved ? t.RequestStatus : t.Status, date: s.submittedAt || t.Created,
          text: [t.RequestNo, s.title, s.applicantName, s.applicantDept, formName(t.FormCode), t.StepName, flatText(s.data)].join(' ') },
     html: `<div class="t">${esc(s.title || t.Title)}</div>
-           <div class="m">${badge} ${esc(formName(t.FormCode))}・${esc(s.applicantName || '')}（${esc(s.applicantDept || '')}）</div>
+           <div class="m">${badge}${t.OnBehalfOfName ? `<span class="badge b-warn">代理：${esc(t.OnBehalfOfName)}さんの分</span>` : ''} ${esc(formName(t.FormCode))}・${esc(s.applicantName || '')}（${esc(s.applicantDept || '')}）</div>
            <div class="m">${esc(t.StepName)}　${fmtDT(t.Created)}${t.RequestNo ? '　' + esc(t.RequestNo) : ''}</div>
            ${s.route && (isInbox(t) || involved) ? (isInbox(t) ? miniLine(progressModel(s.route, taskHistory(t, s), { status: '申請中', stepNo: t.StepNo }), '申請中')
-              : miniLine(progressModel(s.route, taskHistory(t, s), { status: t.RequestStatus }), t.RequestStatus)) : ''}` };
+              : miniLine(progressModel(s.route, taskHistory(t, s), { status: t.RequestStatus, mine: ['承認', '決裁', '作業'].includes(t.StepType) && ['承認', '却下', '差し戻し'].includes(t.Status) ? { stepNo: t.StepNo, status: t.Status, at: t.ActedAt, by: t.ActedByUPN || t.AssigneeUPN, comment: t.Comment } : null }), t.RequestStatus)) : ''}` };
 }
 /* 一覧の行に出す小さい進み具合（点）と「いまどこか」 */
 function miniLine(m, status) {
@@ -683,6 +746,16 @@ document.addEventListener('click', async e => {
     w.close(); alert('ファイルを開けません。\n申請直後は登録の処理中のことがあります。しばらくしてからもう一度お試しください。');
   } catch (err) { w.close(); alert('ファイルを開けません: ' + err.message); }
 });
+/* 吹き出し（data-tip を持つ要素にマウスを乗せると出す。一覧の小さい点でも使える） */
+document.addEventListener('mouseover', e => {
+  const el = e.target.closest && e.target.closest('[data-tip]'), tip = $('tip'); if (!tip) return;
+  if (!el || !el.dataset.tip) { tip.style.display = 'none'; return; }
+  tip.textContent = el.dataset.tip; tip.style.display = 'block';
+  const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+  tip.style.top = (r.bottom + 6 + h > window.innerHeight ? r.top - h - 6 : r.bottom + 6) + 'px';
+});
+document.addEventListener('scroll', () => { const t = $('tip'); if (t) t.style.display = 'none'; }, true);
 function tableView(f, rows) {
   return `<table class="tbl"><tr>${f.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr>` +
     rows.map(r => `<tr>${f.columns.map(c => `<td>${esc(c.type === 'currency' || c.type === 'calc' ? yen(r[c.key]) : r[c.key])}</td>`).join('')}</tr>`).join('') + '</table>';
@@ -713,19 +786,23 @@ function progressModel(route, hist, cur) {
   for (const h of hist) {
     const k = nodeOfStep(h.step);
     switch (h.type) {
-      case '申請': case '再申請': Object.assign(nodes[0], { st: 'done', at: h.at, by: h.by }); break;
-      case '承認': case '決裁': if (k > 0) Object.assign(nodes[k], { st: 'done', at: h.at, by: h.by }); break;
+      case '申請': case '再申請': Object.assign(nodes[0], { st: 'done', at: h.at, by: h.by, comment: h.comment, act: h.type }); break;
+      case '承認': case '決裁': if (k > 0) Object.assign(nodes[k], { st: 'done', at: h.at, by: h.by, comment: h.comment, onBehalf: h.onBehalf, act: h.type }); break;
       case '差し戻し': {
         const to = h.toStep != null && h.toStep !== '' ? nodeOfStepNo(Number(h.toStep)) : 0;   // 戻し先の記録が無い古い経過は申請者へ
         reset(Math.max(to, 1));
         if (to === 0) nodes[0].st = 'todo';
-        if (k > 0) Object.assign(nodes[k], { st: 'ret', at: h.at, by: h.by });
+        if (k > 0) Object.assign(nodes[k], { st: 'ret', at: h.at, by: h.by, comment: h.comment, onBehalf: h.onBehalf, act: '差し戻し' + (h.to ? '（→ ' + h.to + '）' : '') });
         arcs.push({ from: k > 0 ? k : 0, to, at: h.at, by: h.by, comment: h.comment, round: h.round });
         break;
       }
       case '引き戻し': reset(1); nodes[0].st = 'todo'; break;
-      case '却下': if (k > 0) Object.assign(nodes[k], { st: 'ng', at: h.at, by: h.by }); break;
+      case '却下': if (k > 0) Object.assign(nodes[k], { st: 'ng', at: h.at, by: h.by, comment: h.comment, onBehalf: h.onBehalf, act: '却下' }); break;
     }
+  }
+  if (cur.mine && cur.mine.stepNo > 0 && nodes[cur.mine.stepNo] && nodes[cur.mine.stepNo].ri != null) {
+    const n = nodes[cur.mine.stepNo], m = cur.mine, st = { '承認': 'done', '却下': 'ng', '差し戻し': 'ret' }[m.status];
+    if (st && (!n.at || new Date(m.at) >= new Date(n.at))) Object.assign(n, { st, at: m.at, by: m.by, comment: m.comment, act: m.status });
   }
   const fin = nodes.findIndex(n => n.fin), post = nodes.findIndex(n => n.key === 'post');
   if (cur.status === '申請中' && !(cur.stepNo > 0)) {
@@ -753,7 +830,7 @@ function progressModel(route, hist, cur) {
 function progressHtml(m, mini) {
   const avail = ($('detail') ? $('detail').clientWidth : 800) - 90;
   const W = mini ? 20 : Math.max(78, Math.min(130, Math.floor(avail / m.nodes.length)));
-  const cells = m.nodes.map(n => `<div class="pg-n ${n.st} ${n.fin ? 'fin' : ''}" style="width:${W}px" title="${esc(n.label)}${n.at ? ' ' + fmtDT(n.at) : ''}${n.by ? ' ' + esc(nameOf(n.by)) : ''}">
+  const cells = m.nodes.map(n => `<div class="pg-n ${n.st} ${n.fin ? 'fin' : ''}" style="width:${W}px" data-tip="${esc(tipText(n))}">
       <div class="pg-l">${esc(n.label)}</div><div class="pg-dot"></div>
       <div class="pg-d">${n.at ? fmtD(n.at) : n.st === 'cur' ? '処理中' : ''}</div><div class="pg-w">${esc(n.by ? nameOf(n.by) : n.who || '')}</div></div>`).join('');
   let svg = '';
@@ -762,17 +839,23 @@ function progressHtml(m, mini) {
     const H = mini ? 6 + m.arcs.length * 4 : 18 + m.arcs.length * 16, x = k => k * W + W / 2;
     svg = `<svg width="${m.nodes.length * W}" height="${H}" style="margin-top:${mini ? -2 : 0}px">` + m.arcs.map((a, j) => {
       const d = mini ? 4 + j * 4 : 12 + j * 16, x1 = x(a.from), x2 = x(a.to);
-      return `<path d="M${x1} 0 V${d} H${x2} V2" fill="none" stroke="#c0392b" stroke-width="${mini ? 1.2 : 1.6}" stroke-dasharray="${mini ? '' : '4 3'}"/>` +
+      return `<g data-tip="${esc('差し戻し　' + (a.by ? nameOf(a.by) : '') + '　' + fmtDT(a.at) + (a.comment ? '\n💬 ' + a.comment : ''))}"><path d="M${x1} 0 V${d} H${x2} V2" fill="none" stroke="transparent" stroke-width="10"/><path d="M${x1} 0 V${d} H${x2} V2" fill="none" stroke="#c0392b" stroke-width="${mini ? 1.2 : 1.6}" stroke-dasharray="${mini ? '' : '4 3'}"/></g>` +
         `<path d="M${x2 - 4} 7 L${x2} 1 L${x2 + 4} 7" fill="none" stroke="#c0392b" stroke-width="1.6"/>` +
         (mini ? '' : `<text x="${x1 - 6}" y="${d - 3}" text-anchor="end">差し戻し ${fmtD(a.at)}</text>`);
     }).join('') + '</svg>';
   }
   return `<div class="pg ${mini ? 'mini' : ''}"><div class="pg-row">${cells}</div>${svg}</div>`;
 }
+/* 点にマウスを乗せたときの吹き出し：段・何をしたか・誰が・いつ・コメント */
+function tipText(n) {
+  const who = n.by ? nameOf(n.by) + (n.onBehalf ? `（${nameOf(n.onBehalf)} さんの代理）` : '') : (n.who || '');
+  const state = n.act || { done: '済み', cur: '処理中', todo: 'これから', skip: '飛ばし', ret: '差し戻し', ng: '却下' }[n.st] || '';
+  return [n.label + (state ? '　' + state : ''), [who, n.at ? fmtDT(n.at) : ''].filter(Boolean).join('　'), n.comment ? '💬 ' + n.comment : ''].filter(Boolean).join('\n');
+}
 /* いまどこか（一覧の点の横に出す短い文） */
 function nowText(m, status) {
   const c = m.nodes.find(n => n.st === 'cur');
-  if (status === '却下') return { t: '却下', c: 'ng' };
+  if (status === '却下') { const n = m.nodes.find(x => x.st === 'ng' && !x.fin); return { t: n ? `却下（${n.label}）` : '却下', c: 'ng' }; }
   if (c) return { t: c.key === 'post' ? '後処理中' : c.key === 'apply' ? '再申請待ち' : c.label + ' 処理中', c: '' };
   if (status === '決裁済') return { t: '完了', c: 'ok' };
   return { t: status || '', c: '' };
@@ -787,7 +870,7 @@ function timelineHtml(hist, cur) {
     round = h.round || round;
     const who = h.by === 'system' ? '' : nameOf(h.by);
     html += `<div class="tl-i k-${kind[h.type] || ''}"><div class="tl-ic">${icon[h.type] || '・'}</div><div class="tl-b">
-      <b>${esc(h.type)}</b>　${esc(who)}${h.step ? `（${esc(h.step)}）` : ''}${h.type === '差し戻し' && h.to ? ` → <b>${esc(h.to)}</b>へ` : ''}<span class="t">${fmtDT(h.at)}</span>
+      <b>${esc(h.type)}</b>　${esc(who)}${h.onBehalf ? `（${esc(nameOf(h.onBehalf))} さんの代理）` : ''}${h.step ? `（${esc(h.step)}）` : ''}${h.type === '差し戻し' && h.to ? ` → <b>${esc(h.to)}</b>へ` : ''}<span class="t">${fmtDT(h.at)}</span>
       ${h.comment ? `<div class="tl-c">${esc(h.comment)}</div>` : ''}</div></div>`;
   });
   if (cur.status === '決裁済') html += `<div class="tl-i k-fin"><div class="tl-ic">済</div><div class="tl-b"><b>決裁済</b><span class="t">${fmtDT(cur.approvedAt)}</span></div></div>`;
@@ -827,16 +910,22 @@ function renderTaskDetail(t, s) {
   const d = $('detail');
   const canAct = isInbox(t);
   let html = `<div class="dhead"><div class="l">
-      <div>${reqStatusBadge({ Status: t.RequestStatus })}<span class="badge b-gray">${esc(t.StepName)}</span></div>
+      <div>${reqStatusBadge({ Status: t.RequestStatus })}<span class="badge b-gray">${esc(t.StepName)}</span>${t.OnBehalfOfName ? `<span class="badge b-warn">代理：${esc(t.OnBehalfOfName)}さんの分</span>` : ''}</div>
       <div class="no">申請番号：<b>${esc(t.RequestNo || '')}</b>　${esc(formName(t.FormCode))}</div>
       <h2>${esc(s.title || t.Title)}</h2></div>
     <div class="r">申請者：${esc(s.applicantName)}（${esc(s.applicantDept)}）${fmtDT(s.submittedAt)}</div></div>`;
   // 承認者は申請の行を見られないので、タスクの写しで描く。経過は、フローDが配る最新の写し（ProgressJson）を優先する
   const hist = taskHistory(t, s);
-  if (['承認', '決裁', '作業'].includes(t.StepType)) {
-    const m = progressModel(route, hist, { status: canAct ? '申請中' : t.RequestStatus, stepNo: canAct ? t.StepNo : 0 });
+  // 進み具合は、承認だけでなく後処理・回覧の画面でも出す（どこを通って決裁されたか分かるように）
+  if (route.length) {
+    // 自分が処理した承認系のタスクは、その結果（承認・却下・差し戻し）を必ず点に出す
+    const mine = ['承認', '決裁', '作業'].includes(t.StepType) && ['承認', '却下', '差し戻し'].includes(t.Status)
+      ? { stepNo: t.StepNo, status: t.Status, at: t.ActedAt, by: t.ActedByUPN || t.AssigneeUPN, comment: t.Comment } : null;
+    const m = progressModel(route, hist, { status: canAct ? '申請中' : t.RequestStatus, stepNo: canAct ? t.StepNo : 0, mine,
+      postStatus: t.StepType === '後処理' ? (t.Status === '完了' ? '完了' : '処理待ち') : '' });
     html += `<div class="card"><h3>進み具合${canAct ? '　<span class="badge b-run">あなたの番です</span>' : ''}</h3>${progressHtml(m)}</div>`;
   }
+  if (canAct && t.OnBehalfOfName) html += `<div class="return-banner" style="border-color:var(--pri);border-left-color:var(--pri);background:var(--pri-l)"><b style="color:var(--pri)">${esc(t.OnBehalfOfName)} さんが不在のため、代理としての依頼です。</b><div class="muted" style="margin-top:4px">本人が先に処理した場合は、この依頼は自動で取り消されます。</div></div>`;
   if (canAct) html += returnBanner(s.lastReturn);
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
   if (hist.length) html += `<div class="card"><h3>これまでの経過</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
@@ -859,9 +948,12 @@ function renderTaskDetail(t, s) {
          <textarea id="cmt" placeholder="メモ（任意）"></textarea><div class="actions"><button class="pri" id="bDone">完了にする</button></div></div>`
       : `<div class="card"><h3>TODO：${esc(t.StepName)}</h3>${taskBadge(t)} ${fmtDT(t.ActedAt)} ${esc(t.Comment || '')}</div>`;
   } else if (t.StepType === '回覧') {
+    // 押したらその場で「確認済」にする（反映は裏で。フローは1件ずつ処理するので十数秒かかる）。送信中は押せないようにする
+    const sending = [...pending.values()].some(p => p.taskId === t.id && p.label === '確認');
     html += `<div class="card"><h3>回覧</h3>${taskBadge(t)}　決裁済みの申請の共有です。承認は不要です。
-      ${t.Status !== '確認済' ? '<div class="actions"><button id="bSeen">確認しました</button></div>' : ''}</div>`;
-    if (t.Status === '未読') act({ Title: '既読', ActionType: '既読', TaskId: t.id, RequestNo: t.RequestNo }, true);
+      ${t.Status === '確認済' ? (sending ? '<div class="muted" style="margin-top:6px">送信しました（反映まで少しお待ちください）</div>' : '')
+        : '<div class="actions"><button id="bSeen">確認しました</button></div>'}</div>`;
+    if (t.Status === '未読') { t.Status = '既読'; optimistic.set(t.id, '既読'); act({ Title: '既読', ActionType: '既読', TaskId: t.id, RequestNo: t.RequestNo }, true); }
   } else {
     html += `<div class="card"><h3>あなたの処理</h3>${taskBadge(t)} ${esc(t.StepName)}　${fmtDT(t.ActedAt)}${t.Comment ? '<div style="margin-top:6px">コメント：' + esc(t.Comment) + '</div>' : ''}
       <div class="muted" style="margin-top:6px">申請の現在の状態：${reqStatusBadge({ Status: t.RequestStatus })}</div></div>`;
@@ -882,7 +974,7 @@ function renderTaskDetail(t, s) {
     act({ Title: `却下 ${t.RequestNo}`, ActionType: '却下', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
   };
   if ($('bDone')) $('bDone').onclick = () => act({ Title: `後処理完了 ${t.RequestNo}`, ActionType: '後処理完了', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
-  if ($('bSeen')) $('bSeen').onclick = () => act({ Title: `確認 ${t.RequestNo}`, ActionType: '確認', TaskId: t.id, RequestNo: t.RequestNo });
+  if ($('bSeen')) $('bSeen').onclick = () => { t.Status = '確認済'; optimistic.set(t.id, '確認済'); act({ Title: `確認 ${t.RequestNo}`, ActionType: '確認', TaskId: t.id, RequestNo: t.RequestNo }); };
 }
 
 /* ---------- 詳細：申請（自分の申請・すべての申請） ---------- */
@@ -924,6 +1016,7 @@ function renderReqDetail(r) {
    処理中のタスクは一覧から隠す（二重に押さないように）。 */
 const pending = new Map();     // WF_Action の番号 → { label, taskId, t0 }
 const hiddenTasks = new Set(); // 処理中で一覧から隠しているタスク
+const optimistic = new Map();   // 押した直後に画面だけ先に変えた状態（タスク番号 → 状態）。SharePoint に反映されたら消す
 let trackTimer = null;
 async function act(fields, silent) {
   busy = true;
@@ -949,10 +1042,11 @@ async function trackPending() {
     let r; try { r = await api.actionResult(id); } catch { continue; }
     if (r.Result === '完了') {
       pending.delete(id); changed = true;
+      if (p.label === '不在設定') st.M = null;   // 組織マスタ（代理人・期間）を読み直す
       if (!p.silent) toast(`✔ ${p.label}しました${r.RequestNo ? '（' + r.RequestNo + '）' : ''}`);
     } else if (r.Result === 'エラー') {
       pending.delete(id); changed = true;
-      if (p.taskId) hiddenTasks.delete(p.taskId);
+      if (p.taskId) { hiddenTasks.delete(p.taskId); optimistic.delete(p.taskId); }
       toast(`✖ ${p.label}できませんでした：${r.ResultMessage || ''}`, true);
       alert(`${p.label}できませんでした\n${r.ResultMessage || ''}`);
     } else if (Date.now() - p.t0 > 180000 && !p.slow) {
@@ -1168,7 +1262,7 @@ function dataForRules(ed) {
 function preview() {
   const res = routeFor(st.editor);
   $('preview').innerHTML = (res.errors.length ? `<div class="errbox">${res.errors.map(esc).join('<br>')}</div>` : '') +
-    '<div class="proute">' + res.route.map(s => `<div class="${s.skipped ? 'skip' : ''} ${s.type === '決裁' ? 'kessai' : ''}"><b>${esc(s.name)}</b>（${esc(s.type)}）<br>${s.skipped ? esc(s.reason) : esc(s.upns.map(nameOf).join(' / ')) + (s.upns.length > 1 ? (s.mode === 'all' ? '（全員）' : '（いずれか）') : '')}</div>`).join('') + '</div>' +
+    '<div class="proute">' + res.route.map(s => `<div class="${s.skipped ? 'skip' : ''} ${s.type === '決裁' ? 'kessai' : ''}"><b>${esc(s.name)}</b>（${esc(s.type)}）<br>${s.skipped ? esc(s.reason) : esc(s.upns.map(nameOf).join(' / ')) + (s.upns.length > 1 ? (s.mode === 'all' ? '（全員）' : '（いずれか）') : '')}${!s.skipped && s.delegates && Object.keys(s.delegates).length ? `<br><span style="color:var(--warn)">🏖 ${esc(Object.entries(s.delegates).map(([u, d]) => nameOf(u) + ' は不在中 → 代理：' + nameOf(d)).join('、'))}</span>` : ''}</div>`).join('') + '</div>' +
     (res.post.length ? `<h3>決裁後の後処理</h3><div class="muted">${res.post.map(p => esc(p.name) + '：' + esc(p.upns.map(nameOf).join('・'))).join('<br>')}</div>` : '') +
     (res.circulate.length ? `<h3>回覧</h3><div class="muted">${esc(res.circulate.map(nameOf).join('、'))}</div>` : '');
 }
