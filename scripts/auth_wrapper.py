@@ -34,8 +34,7 @@ AUTH_GATE_SCRIPT = """
     #_fujinUserBar { top:6px !important; right:8px !important; padding:3px 8px !important; font-size:10px !important; gap:5px !important; max-width:42vw; }
     #_fujinUserBar .ub-name { max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #_fujinUserBar #_fujinLogoutBtn { font-size:10px !important; }
-    /* タブはヘッダー幅に収まらない分を横スクロール(タブ自体は隠れず指で送れる) */
-    header .tabbar { padding-right: 44vw; }
+    /* 2026-09-24: タブは左メニューへ移したため、ヘッダー内タブ用の右余白(44vw)は廃止 */
   }
 </style>
 <script>document.documentElement.classList.add("fujin-pre-auth");</script>

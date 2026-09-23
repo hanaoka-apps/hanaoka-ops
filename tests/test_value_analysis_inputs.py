@@ -493,6 +493,8 @@ class FujinShellAppSwitchTest(unittest.TestCase):
             self.assertIn(".content { margin-left:var(--nav-w)", html, path.name)
             self.assertIn("_fujin_nav_expanded", html, path.name)
             self.assertNotIn('id="app-drawer"', html, path.name)
+        for path in (ROOT / "scripts" / "auth_wrapper.py", ROOT / "fujin" / "FUJIN.html"):
+            self.assertNotIn("header .tabbar { padding-right: 44vw; }", path.read_text(encoding="utf-8"), path.name)
             self.assertIn("function _switchApp(app)", html, path.name)
             self.assertIn("body.app-value .tabbar .tab", html, path.name)
             self.assertNotIn('<a class="value-analysis-app-banner"', html, path.name)
