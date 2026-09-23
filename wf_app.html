@@ -469,7 +469,7 @@ async function load(quiet) {
       m.org = m.org.filter(p => p.Active !== false);
       m.orgByUpn = Object.fromEntries(m.org.map(p => [lc(p.UPN), p]));
       m.settings = Object.fromEntries(m.settings.map(s => [s.Title, s.Value]));
-      m.forms = m.forms.map(f => ({ ...f, fields: pj(f.FieldsJson, []) })).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
+      m.forms = m.forms.map(f => ({ ...f, fields: pj(f.FieldsJson, []), followups: pj(f.FollowupsJson, f.Followups || []) })).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
       st.M = m;
       $('appTitle').textContent = m.settings['app.title'] || '社内ワークフロー';
       document.title = ($('appTitle').textContent) + ' | 花岡車輌';
@@ -930,6 +930,7 @@ function renderTaskDetail(t, s) {
   if (canAct && t.OnBehalfOfName) html += `<div class="return-banner" style="border-color:var(--pri);border-left-color:var(--pri);background:var(--pri-l)"><b style="color:var(--pri)">${esc(t.OnBehalfOfName)} さんが不在のため、代理としての依頼です。</b><div class="muted" style="margin-top:4px">本人が先に処理した場合は、この依頼は自動で取り消されます。</div></div>`;
   if (canAct) html += returnBanner(s.lastReturn);
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
+  html += followupCard(form, s.data || {}, { status: t.RequestStatus, req: t.RequestNo, app: s.applicantUPN });
   if (hist.length) html += `<div class="card"><h3>これまでの経過</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
 
   if (canAct) {
@@ -999,6 +1000,7 @@ function renderReqDetail(r) {
     <div class="card"><h3>進み具合${waiting ? `　<span class="badge b-run">${esc(waiting)}</span>` : ''}</h3>${progressHtml(m)}</div>`;
   if (r.Status === '差し戻し中') html += returnBanner(pj(r.LastReturnJson, null));
   html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
+  html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN });
   html += `<div class="card"><h3>承認状況・経過</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
   if ((res.circulate || []).length) html += `<div class="card"><h3>回覧（決裁後に共有する人）</h3>${esc(res.circulate.map(nameOf).join('、'))}</div>`;
   if (mine) {
@@ -1073,6 +1075,43 @@ function toast(msg, isErr) {
 /* ============================================================
    新規申請：フォーム一覧
    ============================================================ */
+/* ---------- 続きの申請（決裁済みの申請から、次の申請を作る。定義: WF_Form.FollowupsJson）
+   [{ form: 作るフォーム, label: ボタンの文言, who: "applicant"（申請者だけ。省略時は、そのフォームを申請できる人）,
+      showIf: 条件, map: { 作る側の項目: 元の項目 | "=文字" | "@applicant" | "@requestNo" | "@dayAfter:元の日付の項目" } }]
+   同じフォームを指せば「更新（次の期間）の申請」になる（期限の案内＝WF_Form.ReminderJson の通知から、ここへ来る） */
+function followupCard(form, data, ctx) {
+  if (!form || ctx.status !== '決裁済') return '';
+  const list = (form.followups || []).filter(fu => {
+    const target = st.M.forms.find(f => f.FormCode === fu.form);
+    if (!target || (target.Active === false && !hasAllView()) || !canSubmit(target)) return false;
+    if (fu.who === 'applicant' && lc(ctx.app) !== st.me.upn) return false;
+    return !fu.showIf || WFEngine.evalCond(fu.showIf, { data });
+  });
+  if (!list.length) return '';
+  window._followups = { list, data, ctx };
+  return `<div class="card"><h3>続きの申請</h3><div class="muted" style="margin-bottom:8px">この申請の内容を引き継いで、次の申請を作れます。</div>
+    <div class="actions">${list.map((fu, i) => `<button class="pri" data-fu="${i}">＋ ${esc(fu.label)}</button>`).join('')}</div></div>`;
+}
+/* "2027-03-15" → "2027-03-16"（日付の欄の翌日。更新の申請で、前の期間の続きから始めるため） */
+function dayAfter(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd || ''); if (!m) return '';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function startFollowup(i) {
+  const { list, data, ctx } = window._followups || {}; const fu = list && list[i]; if (!fu) return;
+  const target = st.M.forms.find(f => f.FormCode === fu.form);
+  const d = {};
+  Object.entries(fu.map || {}).forEach(([to, from]) => {
+    const s = String(from);
+    d[to] = s === '@applicant' ? lc(ctx.app) : s === '@requestNo' ? ctx.req : s.startsWith('=') ? s.slice(1)
+      : s.startsWith('@dayAfter:') ? dayAfter(data[s.slice(10)]) : data[from];
+  });
+  st.view = 'new'; st.sel = null; st.editor = { form: target, data: d }; render();
+  toast(`「${ctx.req}」の内容を引き継ぎました。確認して申請してください`);
+}
+document.addEventListener('click', e => { const b = e.target.closest('button[data-fu]'); if (b) startFollowup(Number(b.dataset.fu)); });
+
 /* 申請できる人が決まっているフォーム（SubmitRoles＝役割名。;区切り）。フロー側でも確かめる */
 function canSubmit(f) {
   const roles = (f.SubmitRoles || '').split(';').map(x => x.trim()).filter(Boolean);
