@@ -37,6 +37,10 @@ nav#tabs .cnt{display:inline-block;min-width:18px;padding:0 5px;margin-left:5px;
 nav#tabs .cnt.zero{background:#c9d1de}
 #statusBar{padding:4px 16px;font-size:12px;color:var(--sub);min-height:22px}
 #statusBar.err{color:var(--ng)}#statusBar.busy{color:var(--pri)}
+#toasts{position:fixed;right:16px;bottom:16px;z-index:100;display:flex;flex-direction:column;gap:8px;max-width:420px}
+.toast{background:#1e2533;color:#fff;padding:10px 14px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.2);font-size:13px;animation:tin .2s ease-out}
+.toast.err{background:var(--ng)}
+@keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
 main{flex:1;overflow:hidden;display:flex}
 .list{width:380px;min-width:300px;border-right:1px solid var(--line);overflow:auto;background:#fff}
 .detail{flex:1;overflow:auto;padding:16px 22px}
@@ -123,6 +127,7 @@ table.tbl th{background:#f3f6fa;font-weight:600;font-size:12px}
   <div id="statusBar"></div>
   <main id="main"></main>
 </div>
+<div id="toasts"></div>
 
 <script>
 'use strict';
@@ -220,15 +225,11 @@ const GraphApi = {
     // URL は WF_Setting にある（公開HTMLには書かない）。呼び出しに失敗しても WF_滞留チェック が数分以内に拾う
     const kick = st.M.settings['flow.urlA'];
     if (kick) fetch(kick, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ id: Number(it.id) }) }).catch(() => {});
-    // Power Automate が処理し終わるまで待つ（最大3分）
-    const t0 = Date.now();
-    for (let i = 0; i < 90; i++) {
-      await new Promise(r => setTimeout(r, i < 20 ? 1500 : 3000));
-      status(`処理中…（${Math.round((Date.now() - t0) / 1000)}秒）Power Automate の反映を待っています`, 'busy');
-      const f = (await graph(`/sites/${siteId}/lists/WF_Action/items/${it.id}?expand=fields`)).fields;
-      if (f.Result && f.Result !== '受付') return { Result: f.Result, ResultMessage: f.ResultMessage, RequestNo: f.RequestNo };
-    }
-    return { Result: '受付', ResultMessage: '受け付けました。反映まで少し時間がかかっています。しばらくしてから「更新」を押してください。' };
+    return { id: Number(it.id) };   // 結果は actionResult() で後から確認する（画面は待たせない）
+  },
+  async actionResult(id) {
+    const f = (await graph(`/sites/${siteId}/lists/WF_Action/items/${id}?expand=fields`)).fields;
+    return { Result: f.Result, ResultMessage: f.ResultMessage, RequestNo: f.RequestNo };
   }
 };
 
@@ -244,13 +245,18 @@ const DevApi = {
   async tasks(upn)      { return MockFlow.S.tasks.filter(t => lc(t.AssigneeUPN) === upn).map(t => ({ ...t })); },
   async myRequests(upn) { return MockFlow.S.requests.filter(r => lc(r.ApplicantUPN) === upn).map(r => ({ ...r })); },
   async allRequests()   { return MockFlow.S.requests.map(r => ({ ...r })); },
+  results: {}, seq: 0,
   async postAction(fields) {
-    await new Promise(r => setTimeout(r, 300));
-    const res = MockFlow.processAction(fields, this.asUpn);
-    const n = MockFlow.S.notices.slice(-3).map(x => `→${nameOf(x.to)}：${x.text}`).join('　');
-    $('devNotice').textContent = n ? 'Teams通知（再現）' + n : '';
-    return res;
-  }
+    const id = ++this.seq, asUpn = this.asUpn;
+    // 本番と同じく、結果は少し遅れて確定する
+    setTimeout(() => {
+      this.results[id] = MockFlow.processAction(fields, asUpn);
+      const n = MockFlow.S.notices.slice(-3).map(x => `→${nameOf(x.to)}：${x.text}`).join('　');
+      $('devNotice').textContent = n ? 'Teams通知（再現）' + n : '';
+    }, 1500);
+    return { id };
+  },
+  async actionResult(id) { return this.results[id] || { Result: '受付' }; }
 };
 const api = DEV ? DevApi : GraphApi;
 
@@ -368,13 +374,13 @@ function hasAllView() {
 const TABS = [
   { key: 'new',      label: '新規申請' },
   { key: 'inbox',    label: '承認待ち', count: () => st.tasks.filter(isInbox).length },
-  { key: 'todo',     label: 'TODO',     count: () => st.tasks.filter(t => t.StepType === '後処理' && t.Status === '処理待ち').length },
+  { key: 'todo',     label: 'TODO',     count: () => st.tasks.filter(t => t.StepType === '後処理' && t.Status === '処理待ち' && !hiddenTasks.has(t.id)).length },
   { key: 'circ',     label: '回覧',     count: () => st.tasks.filter(t => t.StepType === '回覧' && t.Status === '未読').length },
   { key: 'mine',     label: '自分の申請' },
   { key: 'involved', label: '関わった申請' },
   { key: 'all',      label: 'すべての申請', show: () => st.allReqs != null },
 ];
-const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち';
+const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 
 function render() {
   $('tabs').innerHTML = TABS.filter(t => !t.show || t.show()).map(t => {
@@ -392,7 +398,7 @@ function itemsForView() {
   const byNewest = (a, b) => String(b._sort || '').localeCompare(String(a._sort || ''));
   switch (st.view) {
     case 'inbox': return st.tasks.filter(isInbox).map(t => taskItem(t)).sort(byNewest);
-    case 'todo':  return st.tasks.filter(t => t.StepType === '後処理').map(t => taskItem(t)).sort((a, b) => (a.t.Status === '処理待ち' ? 0 : 1) - (b.t.Status === '処理待ち' ? 0 : 1) || byNewest(a, b));
+    case 'todo':  return st.tasks.filter(t => t.StepType === '後処理' && !hiddenTasks.has(t.id)).map(t => taskItem(t)).sort((a, b) => (a.t.Status === '処理待ち' ? 0 : 1) - (b.t.Status === '処理待ち' ? 0 : 1) || byNewest(a, b));
     case 'circ':  return st.tasks.filter(t => t.StepType === '回覧').map(t => taskItem(t)).sort(byNewest);
     case 'mine':  return st.myReqs.map(r => reqItem(r)).sort(byNewest);
     case 'all':   return (st.allReqs || []).map(r => reqItem(r)).sort(byNewest);
@@ -634,19 +640,59 @@ function renderReqDetail(r) {
 }
 
 /* ---------- 操作の送信 ---------- */
+/* ---------- 操作の送信（画面は待たせない） ----------
+   送ったらすぐ次の操作に進める。処理結果は裏で確認し、完了したら右下に表示、エラーのときだけ知らせる。
+   処理中のタスクは一覧から隠す（二重に押さないように）。 */
+const pending = new Map();     // WF_Action の番号 → { label, taskId, t0 }
+const hiddenTasks = new Set(); // 処理中で一覧から隠しているタスク
+let trackTimer = null;
 async function act(fields, silent) {
   busy = true;
   try {
-    if (!silent) status('処理中…（反映まで数秒かかります）', 'busy');
-    document.querySelectorAll('.actions button').forEach(b => b.disabled = true);
-    const res = await api.postAction(fields);
-    if (res.Result === 'エラー') { status('処理できませんでした: ' + res.ResultMessage, 'err'); alert('処理できませんでした\n' + res.ResultMessage); }
-    if (!silent) { st.sel = null; await load(true); }
-    if (!silent && res.Result !== 'エラー') status((res.ResultMessage || '処理しました') + '　次の担当者への反映は30秒ほどで自動的に表示されます', '');
-    if (res.Result !== 'エラー') scheduleFollowUp();
-    return res;
-  } catch (e) { status('送信に失敗しました: ' + e.message, 'err'); document.querySelectorAll('.actions button').forEach(b => b.disabled = false); }
+    const { id } = await api.postAction(fields);
+    const label = fields.ActionType;
+    pending.set(id, { label, taskId: fields.TaskId, reqNo: fields.RequestNo, silent: !!silent, t0: Date.now() });
+    if (fields.TaskId && !silent) hiddenTasks.add(fields.TaskId);
+    if (!silent) { st.sel = null; render(); showPending(); }
+    if (!trackTimer) trackTimer = setInterval(trackPending, 2000);
+    return { id };
+  } catch (e) { status('送信に失敗しました: ' + e.message + '（もう一度お試しください）', 'err'); return null; }
   finally { busy = false; }
+}
+function showPending() {
+  const n = [...pending.values()].filter(p => !p.silent).length;
+  if (n) status(`処理中 ${n}件（そのまま次の操作に進めます。完了すると右下に表示されます）`, 'busy');
+}
+async function trackPending() {
+  if (!pending.size) { clearInterval(trackTimer); trackTimer = null; return; }
+  let changed = false;
+  for (const [id, p] of [...pending]) {
+    let r; try { r = await api.actionResult(id); } catch { continue; }
+    if (r.Result === '完了') {
+      pending.delete(id); changed = true;
+      if (!p.silent) toast(`✔ ${p.label}しました${r.RequestNo ? '（' + r.RequestNo + '）' : ''}`);
+    } else if (r.Result === 'エラー') {
+      pending.delete(id); changed = true;
+      if (p.taskId) hiddenTasks.delete(p.taskId);
+      toast(`✖ ${p.label}できませんでした：${r.ResultMessage || ''}`, true);
+      alert(`${p.label}できませんでした\n${r.ResultMessage || ''}`);
+    } else if (Date.now() - p.t0 > 180000 && !p.slow) {
+      p.slow = true;
+      toast(`${p.label}の反映に時間がかかっています。しばらくすると自動で反映されます`, true);
+    }
+  }
+  if (changed) {
+    await load(true);
+    // 処理が終わったタスクは一覧から消えているので、隠していた印を片付ける
+    [...hiddenTasks].forEach(id => { if (![...pending.values()].some(p => p.taskId === id)) hiddenTasks.delete(id); });
+    render(); scheduleFollowUp();
+    if ([...pending.values()].some(p => !p.silent)) showPending(); else status(`更新 ${fmtDT(new Date())}`, '');
+  }
+}
+function toast(msg, isErr) {
+  const box = $('toasts'), el = document.createElement('div');
+  el.className = 'toast' + (isErr ? ' err' : ''); el.textContent = msg;
+  box.appendChild(el); setTimeout(() => el.remove(), isErr ? 10000 : 5000);
 }
 
 /* ============================================================
@@ -801,10 +847,13 @@ async function submit() {
     amount: summary.Amount ?? null, summary, data: ed.data,
     route: { route: res.route, post: res.post, circulate: res.circulate }, resubmitNote: note };
   if (!confirm(`${ed.resubmit ? '再申請' : '申請'}します。よろしいですか？\n\n最初の承認者：${(res.route.find(s => !s.skipped) || { upns: [] }).upns.map(nameOf).join(' / ')}`)) return;
+  $('bSubmit').disabled = true;
   const r = await act(ed.resubmit
     ? { Title: `再申請 ${ed.resubmit.RequestNo}`, ActionType: '再申請', RequestNo: ed.resubmit.RequestNo, FormCode: f.FormCode, PayloadJson: JSON.stringify(payload) }
-    : { Title: `申請 ${title}`, ActionType: '申請', FormCode: f.FormCode, PayloadJson: JSON.stringify(payload) }, true);
-  if (r && r.Result !== 'エラー') { st.editor = null; st.view = 'mine'; st.sel = null; await load(); status((r.RequestNo ? r.RequestNo + ' で' : '') + (ed.resubmit ? '再申請しました' : '申請しました'), ''); }
+    : { Title: `申請 ${title}`, ActionType: '申請', FormCode: f.FormCode, PayloadJson: JSON.stringify(payload) });
+  if (!r) { $('bSubmit').disabled = false; return; }   // 送信できなかった（入力内容はそのまま残す）
+  // 送信できたら入力画面を閉じる。申請番号は処理が終わると右下に出て、「自分の申請」に並ぶ
+  st.editor = null; st.view = 'mine'; st.sel = null; render(); showPending();
 }
 
 init();
