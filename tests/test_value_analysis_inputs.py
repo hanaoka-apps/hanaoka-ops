@@ -462,6 +462,8 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("type:'fujin_value_view'", static)
         self.assertIn("html.in-fujin-shell body>header{display:none}", static)
         self.assertIn(".item-detail-grid>*{grid-column:auto!important}", static)
+        self.assertIn("function isTouchTap(node)", static)
+        self.assertIn("もう一度タップで、この月の詳細へ切り替えます", static)
         self.assertIn("event.data?.type!=='fujin_value_show'", static)
         self.assertIn("html.in-fujin-shell .fujin-app-link{display:none}", static)
         self.assertIn(".modal-close{flex:0 0 42px;width:42px;height:42px;min-width:42px;padding:0;aspect-ratio:1/1", static)
