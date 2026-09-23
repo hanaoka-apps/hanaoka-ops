@@ -481,6 +481,18 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("構成追加か初回原価取得かは、構成履歴がないため判定できません", static)
 
 
+class FujinShellAppSwitchTest(unittest.TestCase):
+    def test_template_and_published_shell_have_app_switch_and_drawer(self):
+        for path in (ROOT / "scripts" / "fujin_shell.template.html", ROOT / "fujin" / "FUJIN.html"):
+            html = path.read_text(encoding="utf-8")
+            self.assertIn('class="app-switch"', html, path.name)
+            self.assertIn('data-app="value"', html, path.name)
+            self.assertIn('id="app-drawer"', html, path.name)
+            self.assertIn("function _switchApp(app)", html, path.name)
+            self.assertIn("body.app-value .tabbar .tab", html, path.name)
+            self.assertNotIn('<a class="value-analysis-app-banner"', html, path.name)
+
+
 class InventoryMergeTest(unittest.TestCase):
     def test_confirmed_rows_only_and_previous_month_link(self):
         with tempfile.TemporaryDirectory() as directory:
