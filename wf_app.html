@@ -40,6 +40,14 @@ nav#tabs .cnt.zero{background:#c9d1de}
 main{flex:1;overflow:hidden;display:flex}
 .list{width:380px;min-width:300px;border-right:1px solid var(--line);overflow:auto;background:#fff}
 .detail{flex:1;overflow:auto;padding:16px 22px}
+.list{display:flex;flex-direction:column}
+.filters{position:sticky;top:0;z-index:5;background:#f7f9fc;border-bottom:1px solid var(--line);padding:8px 10px;display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.filters input,.filters select{font-size:12.5px;padding:4px 6px}
+.filters .q{grid-column:1 / -1}
+.filters .foot{grid-column:1 / -1;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+.filters .foot button{font-size:12px;padding:3px 10px}
+.filters .foot .sp{flex:1}
+.rows{flex:1}
 .row{padding:10px 14px;border-bottom:1px solid #eef1f6;cursor:pointer}
 .row:hover{background:#f7f9fc}.row.sel{background:var(--pri-l)}
 .row .t{font-weight:600;margin-bottom:3px}.row .m{font-size:12px;color:var(--sub)}
@@ -388,16 +396,24 @@ function itemsForView() {
   }
   return [];
 }
+/* 検索用の文字列（件名・番号・申請者・部署・フォーム名・段・申請内容） */
+const flatText = v => v == null ? '' : typeof v === 'object' ? Object.values(v).map(flatText).join(' ') : String(v);
 function taskItem(t, involved) {
   const s = pj(t.SnapshotJson, {});
   const badge = involved ? reqStatusBadge({ Status: t.RequestStatus }) : taskBadge(t);
   return { key: 't' + t.id, t, s, _sort: t.ActedAt || t.Created || s.submittedAt,
+    f: { no: t.RequestNo, title: s.title || t.Title, form: t.FormCode, applicant: s.applicantName, dept: s.applicantDept,
+         status: involved ? t.RequestStatus : t.Status, date: s.submittedAt || t.Created,
+         text: [t.RequestNo, s.title, s.applicantName, s.applicantDept, formName(t.FormCode), t.StepName, flatText(s.data)].join(' ') },
     html: `<div class="t">${esc(s.title || t.Title)}</div>
            <div class="m">${badge} ${esc(formName(t.FormCode))}・${esc(s.applicantName || '')}（${esc(s.applicantDept || '')}）</div>
            <div class="m">${esc(t.StepName)}　${fmtDT(t.Created)}${t.RequestNo ? '　' + esc(t.RequestNo) : ''}</div>` };
 }
 function reqItem(r) {
   return { key: 'r' + r.RequestNo, r, _sort: r.SubmittedAt,
+    f: { no: r.RequestNo, title: r.Title, form: r.FormCode, applicant: r.ApplicantName, dept: r.ApplicantDept,
+         status: r.Status + (r.PostStatus && r.PostStatus !== 'なし' ? '／後処理' + r.PostStatus : ''), date: r.SubmittedAt,
+         text: [r.RequestNo, r.Title, r.ApplicantName, r.ApplicantDept, formName(r.FormCode), flatText(pj(r.DataJson, {}))].join(' ') },
     html: `<div class="t">${esc(r.Title)}</div>
            <div class="m">${reqStatusBadge(r)}${postBadge(r)}</div>
            <div class="m">${esc(formName(r.FormCode))}・${esc(r.ApplicantName)}　${fmtDT(r.SubmittedAt)}　${esc(r.RequestNo)}</div>` };
@@ -416,14 +432,70 @@ function postBadge(r) {
   return r.PostStatus === '完了' ? `<span class="badge b-ok">後処理 完了</span>` : `<span class="badge b-gray">後処理：${esc(r.PostAssignees ? r.PostAssignees.split(';').map(nameOf).join('・') : '')} 対応待ち</span>`;
 }
 
+/* 絞り込み条件（タブを切り替えても残す） */
+const flt = { q: '', form: '', status: '', from: '', to: '' };
+function applyFilter(items) {
+  const words = flt.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+  return items.filter(i => {
+    const f = i.f, d = String(f.date || '').slice(0, 10);
+    if (words.length && !words.every(w => f.text.toLowerCase().includes(w))) return false;
+    if (flt.form && f.form !== flt.form) return false;
+    if (flt.status && f.status !== flt.status) return false;
+    if (flt.from && d < flt.from) return false;
+    if (flt.to && d > flt.to) return false;
+    return true;
+  });
+}
+function filtersHtml(all) {
+  const forms = [...new Set(all.map(i => i.f.form))].map(c => `<option value="${esc(c)}" ${flt.form === c ? 'selected' : ''}>${esc(formName(c))}</option>`).join('');
+  const sts = [...new Set(all.map(i => i.f.status).filter(Boolean))].map(s => `<option ${flt.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('');
+  return `<div class="filters">
+    <input class="q" id="fQ" type="search" placeholder="🔍 キーワード（件名・番号・申請者・部署・内容）" value="${esc(flt.q)}">
+    <select id="fForm"><option value="">すべてのフォーム</option>${forms}</select>
+    <select id="fStatus"><option value="">すべての状態</option>${sts}</select>
+    <input id="fFrom" type="date" title="申請日（から）" value="${esc(flt.from)}">
+    <input id="fTo" type="date" title="申請日（まで）" value="${esc(flt.to)}">
+    <div class="foot"><span id="fCount"></span><span class="sp"></span><button id="fClear">条件クリア</button><button id="fCsv">CSV出力</button></div>
+  </div>`;
+}
 function renderListView(main) {
-  const items = itemsForView();
+  const all = itemsForView();
   const empty = { inbox: '承認待ちはありません', todo: 'TODOはありません', circ: '回覧はありません', mine: 'まだ申請はありません', involved: '関わった申請はありません', all: '申請はありません' }[st.view];
-  main.innerHTML = `<div class="list">${items.length ? items.map(i => `<div class="row ${st.sel === i.key ? 'sel' : ''}" data-k="${esc(i.key)}">${i.html}</div>`).join('') : `<div class="empty">${empty}</div>`}</div>
+  main.innerHTML = `<div class="list">${filtersHtml(all)}<div class="rows" id="rows"></div></div>
                     <div class="detail" id="detail"><div class="empty">左の一覧から選んでください</div></div>`;
-  main.querySelector('.list').onclick = e => { const r = e.target.closest('.row'); if (!r) return; st.sel = r.dataset.k; renderListView(main); };
-  const cur = items.find(i => i.key === st.sel);
+  const drawRows = () => {
+    const items = applyFilter(all);
+    $('fCount').textContent = `${items.length} / ${all.length} 件`;
+    $('rows').innerHTML = items.length ? items.map(i => `<div class="row ${st.sel === i.key ? 'sel' : ''}" data-k="${esc(i.key)}">${i.html}</div>`).join('')
+      : `<div class="empty">${all.length ? '条件に合うものはありません' : empty}</div>`;
+    return items;
+  };
+  let shown = drawRows();
+  const onChange = () => { flt.q = $('fQ').value; flt.form = $('fForm').value; flt.status = $('fStatus').value; flt.from = $('fFrom').value; flt.to = $('fTo').value; shown = drawRows(); };
+  $('fQ').addEventListener('input', onChange);
+  ['fForm', 'fStatus', 'fFrom', 'fTo'].forEach(id => $(id).addEventListener('change', onChange));
+  $('fClear').onclick = () => { Object.keys(flt).forEach(k => flt[k] = ''); renderListView(main); };
+  $('fCsv').onclick = () => downloadCsv(shown);
+  $('rows').onclick = e => {
+    const r = e.target.closest('.row'); if (!r) return;
+    st.sel = r.dataset.k;
+    $('rows').querySelectorAll('.row').forEach(x => x.classList.toggle('sel', x === r));
+    const cur = all.find(i => i.key === st.sel);
+    if (cur) cur.t ? renderTaskDetail(cur.t, cur.s) : renderReqDetail(cur.r);
+  };
+  const cur = all.find(i => i.key === st.sel);
   if (cur) cur.t ? renderTaskDetail(cur.t, cur.s) : renderReqDetail(cur.r);
+}
+function downloadCsv(items) {
+  const head = ['申請番号', '件名', 'フォーム', '申請者', '部署', '状態', '申請日時'];
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = [head.map(q).join(',')].concat(items.map(i => [i.f.no, i.f.title, formName(i.f.form), i.f.applicant, i.f.dept, i.f.status,
+    i.f.date ? new Date(i.f.date).toLocaleString('ja-JP') : ''].map(q).join(',')));
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' });   // Excel で文字化けしないよう BOM 付き
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ワークフロー_${TABS.find(t => t.key === st.view).label}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click(); URL.revokeObjectURL(a.href);
 }
 
 /* ---------- 詳細：共通部品 ---------- */
