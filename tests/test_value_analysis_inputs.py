@@ -460,6 +460,7 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn('id="leadTimeSummary"', static)
         self.assertIn("html.in-fujin-shell nav[aria-label=\"分析メニュー\"]{display:none}", static)
         self.assertIn("type:'fujin_value_view'", static)
+        self.assertIn("html.in-fujin-shell body>header{display:none}", static)
         self.assertIn("event.data?.type!=='fujin_value_show'", static)
         self.assertIn("html.in-fujin-shell .fujin-app-link{display:none}", static)
         self.assertIn(".modal-close{flex:0 0 42px;width:42px;height:42px;min-width:42px;padding:0;aspect-ratio:1/1", static)
@@ -497,6 +498,9 @@ class FujinShellAppSwitchTest(unittest.TestCase):
             self.assertIn("_fujin_nav_expanded", html, path.name)
             self.assertNotIn('id="app-drawer"', html, path.name)
             self.assertIn('data-value-view="checks"', html, path.name)
+            self.assertIn('id="page-info-btn"', html, path.name)
+            self.assertIn("function _updatePageInfo()", html, path.name)
+            self.assertIn('class="brand-logo-img"', html, path.name)
             self.assertIn("e.data?.type !== 'fujin_value_view'", html, path.name)
         for path in (ROOT / "scripts" / "auth_wrapper.py", ROOT / "fujin" / "FUJIN.html"):
             self.assertNotIn("header .tabbar { padding-right: 44vw; }", path.read_text(encoding="utf-8"), path.name)
