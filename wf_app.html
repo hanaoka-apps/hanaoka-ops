@@ -277,11 +277,32 @@ async function start() {
   $('loginScreen').style.display = 'none';
   $('app').style.display = 'flex';
   await load();
+  startAutoRefresh();
 }
 
-async function load() {
+/* 自動更新
+   ・操作のあと、次の段の起票（Power Automate の2本目のフロー）は1分ほど遅れて動く。
+     そのため操作直後の読み込みでは TODO や次の承認者が出ない。約75秒後にもう一度読み込む
+   ・開いている間は1分ごとに読み込む（他の人の承認結果も反映される）
+   ・申請の入力中・処理の送信中・画面が裏にあるときは読み込まない */
+let busy = false, followUpTimer = null;
+function canAutoRefresh() {
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes((document.activeElement || {}).tagName)
+              || [...document.querySelectorAll('#detail textarea')].some(t => t.value.trim());   // 書きかけのコメントを消さない
+  return !busy && !st.editor && !typing && document.visibilityState === 'visible';
+}
+function startAutoRefresh() {
+  setInterval(() => { if (canAutoRefresh()) load(true); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (canAutoRefresh()) load(true); });
+}
+function scheduleFollowUp() {
+  clearTimeout(followUpTimer);
+  followUpTimer = setTimeout(() => { if (canAutoRefresh()) load(true); }, 75000);
+}
+
+async function load(quiet) {
   try {
-    status('読み込み中…', 'busy');
+    if (!quiet) status('読み込み中…', 'busy');
     if (!st.M) {
       const m = await api.masters();
       m.org = m.org.filter(p => p.Active !== false);
@@ -533,15 +554,18 @@ function renderReqDetail(r) {
 
 /* ---------- 操作の送信 ---------- */
 async function act(fields, silent) {
+  busy = true;
   try {
     if (!silent) status('処理中…（反映まで数秒かかります）', 'busy');
     document.querySelectorAll('.actions button').forEach(b => b.disabled = true);
     const res = await api.postAction(fields);
     if (res.Result === 'エラー') { status('処理できませんでした: ' + res.ResultMessage, 'err'); alert('処理できませんでした\n' + res.ResultMessage); }
-    else if (!silent) status(res.ResultMessage || '処理しました', '');
-    if (!silent) { st.sel = null; await load(); }
+    if (!silent) { st.sel = null; await load(true); }
+    if (!silent && res.Result !== 'エラー') status((res.ResultMessage || '処理しました') + '　次の担当者への反映は1分ほどで自動的に表示されます', '');
+    if (res.Result !== 'エラー') scheduleFollowUp();
     return res;
   } catch (e) { status('送信に失敗しました: ' + e.message, 'err'); document.querySelectorAll('.actions button').forEach(b => b.disabled = false); }
+  finally { busy = false; }
 }
 
 /* ============================================================
