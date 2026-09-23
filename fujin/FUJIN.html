@@ -231,6 +231,8 @@ header .tabbar .other-menu { position:fixed; top:auto; bottom:12px; left:calc(va
 .page-title { font-size:13px; font-weight:700; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
 .nav-backdrop { display:none; }
 header .brand-divider { display:none; }
+/* 現場の共通アカウント: 付加価値アプリを出さない (雅さん 2026-09-24 A案。権限ではなく表示の工夫) */
+body.shared-terminal .app-switch, body.shared-terminal header .tabbar .vtab { display:none !important; }
 /* ===== 上の帯 (雅さん 2026-09-24: ロゴを大きく・見て楽しく／ページ説明はⓘへ) ===== */
 header { background:linear-gradient(120deg, #172f73 0%, #1e40af 42%, #3b82f6 100%); transition:background .35s ease; overflow:visible; }
 header::before { content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(420px 90px at 18% -30%, rgba(255,255,255,.28), transparent 70%), radial-gradient(260px 70px at 62% 130%, rgba(147,197,253,.28), transparent 70%); }
@@ -983,6 +985,15 @@ function updateReturnBtn() {
 
 function openTab(id, src, extra) {
   if (!src) return;
+  // 共通アカウント判定が済むまで付加価値は開かない。共通アカウントなら生産へ回す。
+  if (id === 'value_analysis') {
+    if (!_sharedCheckDone) { _sharedCheckPending = [id, src, extra]; return; }
+    if (_isSharedTerminal) {
+      if (document.body.classList.contains('value-analysis-standalone')) history.replaceState(null, '', '#tab=stock_detective');
+      document.body.classList.remove('value-analysis-standalone');
+      id = _lastProductionTab.id; src = _lastProductionTab.src; extra = null;
+    }
+  }
   // 「戻るボタンの起点」と異なるタブに遷移する場合、戻る情報をクリア
   // (ただし stock_detective を経由したワンクリック内ではクリアしない)
   if (id !== 'stock_detective') {
@@ -1116,6 +1127,36 @@ _infoBtn?.addEventListener('mouseleave', () => { if (window.matchMedia('(hover:h
 document.addEventListener('click', e => { if (_infoBox && !_infoBox.hidden && !_infoBox.contains(e.target)) _setPageInfo(false); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') _setPageInfo(false); });
 _updatePageInfo();
+// ===== 現場の共通アカウントでは付加価値アプリを出さない 2026-09-24 =====
+// サインインした本人のプロフィール(部署・役職・表示名・勤務地)に「共通アカウント」等が含まれれば共通端末とみなす。
+// アカウント名はコードに書かない。取得に失敗したときは通常表示(付加価値あり)にする。
+const _SHARED_ACCOUNT_WORDS = ['共通アカウント', '共有アカウント', '共通ｱｶｳﾝﾄ', '共有ｱｶｳﾝﾄ', '現場端末'];
+var _sharedCheckDone = false, _isSharedTerminal = false, _sharedCheckPending = null;
+function _finishSharedCheck(shared) {
+  if (_sharedCheckDone) return;
+  _sharedCheckDone = true; _isSharedTerminal = !!shared;
+  document.body.classList.toggle('shared-terminal', _isSharedTerminal);
+  if (_isSharedTerminal && frame.dataset.currentTab === 'value_analysis') _switchApp('production');
+  const pending = _sharedCheckPending; _sharedCheckPending = null;
+  if (pending) openTab(pending[0], pending[1], pending[2]);
+}
+async function _checkSharedTerminal() {
+  try {
+    const msal = window._fujinMsal;
+    const account = msal && (msal.getActiveAccount?.() || msal.getAllAccounts?.()[0]);
+    if (!msal || !account) { _finishSharedCheck(false); return; }
+    const token = await msal.acquireTokenSilent({ scopes: ['User.Read'], account });
+    const res = await fetch('https://graph.microsoft.com/v1.0/me?$select=displayName,department,jobTitle,officeLocation', { headers: { Authorization: 'Bearer ' + token.accessToken }, cache: 'no-store' });
+    if (!res.ok) { _finishSharedCheck(false); return; }
+    const me = await res.json();
+    const text = [me.department, me.jobTitle, me.displayName, me.officeLocation].filter(Boolean).join(' ');
+    _finishSharedCheck(_SHARED_ACCOUNT_WORDS.some(w => text.includes(w)));
+  } catch (_) { _finishSharedCheck(false); }
+}
+if (window._fujinAuthReady && window._fujinMsal) _checkSharedTerminal();
+else if (location.protocol === 'file:') _finishSharedCheck(false);
+else window.addEventListener('_fujin_auth_ready', () => { if (window._fujinMsal) _checkSharedTerminal(); else _finishSharedCheck(false); }, { once:true });
+setTimeout(() => _finishSharedCheck(false), 8000);  // 取得が詰まった場合の保険
 _syncNavBtn();
 document.querySelectorAll('.app-switch-btn').forEach(b => b.addEventListener('click', () => { if (_isNarrow()) _setNavOpen(false); _switchApp(b.dataset.app); }));
 
