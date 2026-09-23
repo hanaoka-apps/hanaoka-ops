@@ -97,6 +97,13 @@ table.tbl th{background:#f3f6fa;font-weight:600;font-size:12px}
 .proute div{padding:6px 8px;border-left:3px solid var(--pri);margin-bottom:6px;background:#f7f9fc;font-size:13px}
 .proute div.skip{border-left-color:#ccc;color:#999}
 .proute div.kessai{border-left-color:var(--warn)}
+.fdrop{border:1px dashed #c9d1de;border-radius:6px;padding:8px 10px;background:#fbfcfe}
+.fdrop.over{border-color:var(--pri);background:var(--pri-l)}
+.fpick{display:inline-block;padding:5px 12px;border:1px solid var(--pri);color:var(--pri);border-radius:6px;cursor:pointer;background:#fff;font-size:13px;font-weight:normal!important;margin:0!important}
+.fitem{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px}
+.fitem button{font-size:12px;padding:1px 8px}
+.fitem .ng{color:var(--ng)}
+a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-decoration:underline}
 .errbox{background:var(--ng-l);color:var(--ng);padding:8px 10px;border-radius:6px;font-size:13px;margin-bottom:10px}
 @media (max-width:800px){main{flex-direction:column}.list{width:100%;max-height:40vh}.editor{flex-direction:column}.editor .side{width:100%}.kv{grid-template-columns:1fr}}
 </style>
@@ -161,6 +168,8 @@ const lc = s => String(s || '').toLowerCase();
 const pj = (v, d) => { if (v == null || v === '') return d; if (typeof v === 'object') return v; try { return JSON.parse(v); } catch { return d; } };
 const fmtDT = s => { if (!s) return ''; const d = new Date(s); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const yen = n => (n == null || n === '' || isNaN(n)) ? '' : Number(n).toLocaleString('ja-JP') + '円';
+const fsize = n => n == null ? '' : n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + 'KB' : (n / 1024 / 1024).toFixed(1) + 'MB';
+const encPath = (...segs) => segs.map(encodeURIComponent).join('/');
 function status(text, kind) { const b = $('statusBar'); b.className = kind || ''; b.textContent = text || ''; }
 
 /* ============================================================
@@ -230,6 +239,65 @@ const GraphApi = {
   async actionResult(id) {
     const f = (await graph(`/sites/${siteId}/lists/WF_Action/items/${id}?expand=fields`)).fields;
     return { Result: f.Result, ResultMessage: f.ResultMessage, RequestNo: f.RequestNo };
+  },
+
+  /* ---- 添付ファイル
+     申請前: 自分の受付フォルダ（WF_Upload/自分のUPN/、本人しか見えない）にアップロードする。
+     申請後: フローが保管フォルダ（WF_Attach/年/申請番号/）へ移し、関わる人だけが見られるよう権限を付ける。
+     場所の番号（ドライブID）は WF_Setting の files.drives にある */
+  drive(name) { return pj(st.M.settings['files.drives'], {})[name]; },
+  async upload(file, key, onProgress) {
+    const d = this.drive('WF_Upload');
+    if (!d) throw new Error('添付ファイルの置き場所が設定されていません（総務にご連絡ください）');
+    const start = () => graph(`/drives/${d}/root:/${encPath(st.me.upn, key)}:/createUploadSession`,
+      { method: 'POST', body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }) });
+    let s;
+    try { s = await start(); }
+    catch (e) {
+      // 受付フォルダがまだ無い（新しく入った人の初めての添付）→ フローに作ってもらってからやり直す
+      if (e.status !== 403 && e.status !== 404) throw e;
+      await this.ensureUploadFolder(); s = await start();
+    }
+    const CH = 327680 * 16;   // 約5MBずつ（320KiB の倍数である必要がある）
+    for (let i = 0; i < file.size; i += CH) {
+      const end = Math.min(i + CH, file.size);
+      const r = await fetch(s.uploadUrl, { method: 'PUT', headers: { 'Content-Range': `bytes ${i}-${end - 1}/${file.size}` }, body: file.slice(i, end) });
+      if (!r.ok) throw new Error(`アップロードに失敗しました（${r.status}）`);
+      if (onProgress) onProgress(Math.round(end / file.size * 100));
+    }
+  },
+  folderReady: null,
+  ensureUploadFolder() {
+    // 同時に複数ファイルを選んでも、頼むのは1回だけ
+    if (!this.folderReady) this.folderReady = (async () => {
+      const { id } = await this.postAction({ Title: 'フォルダ準備', ActionType: 'フォルダ準備' });
+      const t0 = Date.now();
+      while (Date.now() - t0 < 120000) {
+        await new Promise(ok => setTimeout(ok, 2500));
+        const r = await this.actionResult(id);
+        if (r.Result === '完了') return;
+        if (r.Result === 'エラー') throw new Error(r.ResultMessage || '受付フォルダを準備できませんでした');
+      }
+      throw new Error('受付フォルダの準備に時間がかかっています。しばらくしてからもう一度お試しください');
+    })().catch(e => { this.folderReady = null; throw e; });
+    return this.folderReady;
+  },
+  async deleteStaging(key) {
+    const d = this.drive('WF_Upload'); if (!d) return;
+    await graph(`/drives/${d}/root:/${encPath(st.me.upn, key)}`, { method: 'DELETE' });
+  },
+  /* 開くためのURL。保管フォルダ → （自分の申請なら）まだ移されていない受付フォルダ の順に探す。
+     見る権限が無いときは SharePoint が見つからない扱いにする（ここでは判定しない） */
+  async fileUrl(reqNo, key, applicantUpn) {
+    const tryGet = async (d, path) => {
+      if (!d) return null;
+      try { return (await graph(`/drives/${d}/root:/${path}?$select=webUrl`)).webUrl; }
+      catch (e) { if (e.status === 404 || e.status === 403) return null; throw e; }
+    };
+    const yr = reqNo ? reqNo.split('-').slice(-2)[0] : '';   // 申請番号「接頭辞-年-連番」の年（フローと同じ決まり）
+    return (reqNo && await tryGet(this.drive('WF_Attach'), encPath(yr, reqNo, key)))
+        || ((!applicantUpn || lc(applicantUpn) === st.me.upn) && await tryGet(this.drive('WF_Upload'), encPath(st.me.upn, key)))
+        || null;
   }
 };
 
@@ -256,7 +324,15 @@ const DevApi = {
     }, 1500);
     return { id };
   },
-  async actionResult(id) { return this.results[id] || { Result: '受付' }; }
+  async actionResult(id) { return this.results[id] || { Result: '受付' }; },
+  // 添付は画面の中だけで持つ（ブラウザを閉じると消える）
+  blobs: {},
+  async upload(file, key, onProgress) {
+    for (const p of [30, 70, 100]) { await new Promise(ok => setTimeout(ok, 300)); onProgress(p); }
+    this.blobs[key] = URL.createObjectURL(file);
+  },
+  async deleteStaging(key) { delete this.blobs[key]; },
+  async fileUrl(reqNo, key) { return this.blobs[key] || null; }
 };
 const api = DEV ? DevApi : GraphApi;
 
@@ -387,7 +463,11 @@ function render() {
     const c = t.count ? t.count() : null;
     return `<a data-k="${t.key}" class="${st.view === t.key ? 'active' : ''}">${t.label}${c != null ? `<span class="cnt ${c ? '' : 'zero'}">${c}</span>` : ''}</a>`;
   }).join('');
-  $('tabs').onclick = e => { const a = e.target.closest('a[data-k]'); if (!a) return; st.view = a.dataset.k; st.sel = null; st.editor = null; render(); };
+  $('tabs').onclick = e => {
+    const a = e.target.closest('a[data-k]'); if (!a) return;
+    if (st.editor && st.editor.newKeys && st.editor.newKeys.size && !confirm('入力中の申請を閉じます。添付したファイルも破棄されます。よろしいですか？')) return;
+    discardUploads(st.editor); st.view = a.dataset.k; st.sel = null; st.editor = null; render();
+  };
   const main = $('main');
   if (st.view === 'new') return st.editor ? renderEditor(main) : renderCatalog(main);
   renderListView(main);
@@ -514,22 +594,37 @@ function downloadCsv(items) {
 }
 
 /* ---------- 詳細：共通部品 ---------- */
-function dataCard(form, data, prev) {
+/* ctx: { req: 申請番号, app: 申請者UPN }（添付を開くときの場所探しに使う） */
+function dataCard(form, data, prev, ctx = {}) {
   const fields = (form ? form.fields : Object.keys(data).map(k => ({ key: k, label: k, type: 'text' }))).filter(f => f.type !== 'note');
+  const fileNames = v => (v || []).map(x => x.name).join('、') || '（なし）';
   const show = (f, v) => {
-    if (v == null || v === '') return '<span class="muted">（未入力）</span>';
+    if (v == null || v === '' || (f.type === 'file' && !v.length)) return '<span class="muted">（未入力）</span>';
     if (f.type === 'table') return tableView(f, v);
+    if (f.type === 'file') return v.map(x => `<a class="flink" data-fkey="${esc(x.key)}">📎 ${esc(x.name)}</a> <span class="muted">${fsize(x.size)}</span>`).join('<br>');
     if (Array.isArray(v)) return esc(v.join('、'));
     if (f.type === 'currency') return esc(yen(v));
     if (f.type === 'user') return esc(nameOf(v));
     return esc(v);
   };
-  return `<div class="card"><h3>申請内容${prev ? '　<span class="badge b-warn">黄色＝前回から変更された項目</span>' : ''}</h3><div class="kv">` +
+  return `<div class="card" data-req="${esc(ctx.req || '')}" data-app="${esc(ctx.app || '')}"><h3>申請内容${prev ? '　<span class="badge b-warn">黄色＝前回から変更された項目</span>' : ''}</h3><div class="kv">` +
     fields.map(f => {
       const v = data[f.key], changed = prev && JSON.stringify(prev[f.key] ?? null) !== JSON.stringify(v ?? null);
-      return `<div class="k">${esc(f.label)}</div><div class="v ${changed ? 'changed' : ''}">${show(f, v)}${changed ? `<span class="was">前回: ${prev[f.key] == null || prev[f.key] === '' ? '（未入力）' : (f.type === 'table' ? '（表）' : esc(Array.isArray(prev[f.key]) ? prev[f.key].join('、') : prev[f.key]))}</span>` : ''}</div>`;
+      return `<div class="k">${esc(f.label)}</div><div class="v ${changed ? 'changed' : ''}">${show(f, v)}${changed ? `<span class="was">前回: ${prev[f.key] == null || prev[f.key] === '' ? '（未入力）' : (f.type === 'table' ? '（表）' : f.type === 'file' ? esc(fileNames(prev[f.key])) : esc(Array.isArray(prev[f.key]) ? prev[f.key].join('、') : prev[f.key]))}</span>` : ''}</div>`;
     }).join('') + '</div></div>';
 }
+/* 添付を開く（詳細・入力画面のどちらからでも）。場所は一番近い data-req の申請番号から求める */
+document.addEventListener('click', async e => {
+  const a = e.target.closest('a.flink'); if (!a) return;
+  e.preventDefault();
+  const box = a.closest('[data-req]') || { dataset: {} };
+  const w = window.open('', '_blank');   // クリックの直後に開かないとポップアップとして止められる
+  try {
+    const url = await api.fileUrl(box.dataset.req || '', a.dataset.fkey, box.dataset.app || '');
+    if (url) { w.location = url; return; }
+    w.close(); alert('ファイルを開けません。\n申請直後は登録の処理中のことがあります。しばらくしてからもう一度お試しください。');
+  } catch (err) { w.close(); alert('ファイルを開けません: ' + err.message); }
+});
 function tableView(f, rows) {
   return `<table class="tbl"><tr>${f.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr>` +
     rows.map(r => `<tr>${f.columns.map(c => `<td>${esc(c.type === 'currency' || c.type === 'calc' ? yen(r[c.key]) : r[c.key])}</td>`).join('')}</tr>`).join('') + '</table>';
@@ -564,7 +659,7 @@ function renderTaskDetail(t, s) {
   let html = `<h2>${esc(s.title || t.Title)}</h2>
     <div class="muted" style="margin-bottom:12px">${esc(t.RequestNo || '')}　${esc(formName(t.FormCode))}　申請：${esc(s.applicantName)}（${esc(s.applicantDept)}）${fmtDT(s.submittedAt)}　${reqStatusBadge({ Status: t.RequestStatus })}</div>`;
   if (canAct) html += returnBanner(s.lastReturn);
-  html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null);
+  html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
   if (['承認', '決裁', '作業'].includes(t.StepType)) html += routeCard(route, t.StepNo - 1, false);
 
   if (canAct) {
@@ -625,7 +720,7 @@ function renderReqDetail(r) {
       ${r.PostStatus && r.PostStatus !== 'なし' ? `<div style="margin-top:6px;font-size:15px">${postBadge(r)}${r.PostStatus === '完了' ? ' ' + fmtDT(r.FinishedAt) : '<span class="muted">（決裁は済んでいます。担当部署の作業待ちです）</span>'}</div>` : ''}
     </div>`;
   if (r.Status === '差し戻し中') html += returnBanner(pj(r.LastReturnJson, null));
-  html += dataCard(form, pj(r.DataJson, {}), null);
+  html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
   html += routeCard(res.route, finished ? res.route.length : (r.CurrentStepNo || 1) - 1, finished);
   html += histCard(r);
   if (mine) {
@@ -721,15 +816,30 @@ function renderEditor(main) {
       <h2>${esc(f.Title)}${ed.resubmit ? '（再申請）' : ''}</h2>
       ${ed.resubmit ? returnBanner(pj(ed.resubmit.LastReturnJson, null)) : ''}
       ${f.Description ? `<div class="desc">${esc(f.Description)}</div>` : ''}
-      <div id="flds">${f.fields.map(fieldHtml).join('')}</div>
+      <div id="flds" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">${f.fields.map(fieldHtml).join('')}</div>
       ${ed.resubmit ? `<div class="fld" data-k="__resubmit"><label class="l">修正コメント<span class="req">必須</span></label><textarea id="resubmitNote" placeholder="何を直したかを書いてください（承認者の画面の一番上に表示されます）"></textarea></div>` : ''}
       <div class="actions"><button class="pri" id="bSubmit">${ed.resubmit ? '再申請する' : '申請する'}</button></div>
     </div><div class="side"><h3 style="margin-top:0">承認経路（自動）</h3><div id="preview"></div></div></div>`;
-  $('bBack').onclick = () => { st.editor = null; render(); };
+  $('bBack').onclick = () => { discardUploads(ed); st.editor = null; render(); };
+  ed.uploads = ed.uploads || new Map(); ed.newKeys = ed.newKeys || new Set();
   const box = $('flds');
-  f.fields.forEach(fd => setFieldValue(fd, ed.data[fd.key]));
+  const fdOf = k => f.fields.find(x => x.key === k);
+  f.fields.forEach(fd => fd.type === 'file' ? renderFiles(fd) : setFieldValue(fd, ed.data[fd.key]));
   box.addEventListener('input', () => { readForm(); recalc(); preview(); });
+  box.addEventListener('change', e => {
+    const inp = e.target.closest('input[data-file]'); if (!inp) return;
+    addFiles(fdOf(inp.dataset.file), [...inp.files]); inp.value = '';
+  });
+  box.addEventListener('dragover', e => { const z = e.target.closest('[data-drop]'); if (!z) return; e.preventDefault(); z.classList.add('over'); });
+  box.addEventListener('dragleave', e => { const z = e.target.closest('[data-drop]'); if (z) z.classList.remove('over'); });
+  box.addEventListener('drop', e => {
+    const z = e.target.closest('[data-drop]'); if (!z) return;
+    e.preventDefault(); z.classList.remove('over');
+    addFiles(fdOf(z.dataset.drop), [...e.dataTransfer.files]);
+  });
   box.addEventListener('click', e => {
+    const del = e.target.closest('button[data-fdel]');
+    if (del) { removeFile(fdOf(del.dataset.k), del.dataset.fdel); return; }
     const b = e.target.closest('button[data-act]'); if (!b) return;
     const fd = f.fields.find(x => x.key === b.dataset.k); readForm();
     const rows = ed.data[fd.key] = ed.data[fd.key] || [];
@@ -753,7 +863,13 @@ function fieldHtml(fd) {
     case 'user': inp = `<select id="${id}"><option value=""></option>${st.M.org.map(p => `<option value="${esc(lc(p.UPN))}">${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>`; break;
     case 'calc': inp = `<div id="${id}" style="font-weight:600;font-size:15px">0</div>`; break;
     case 'note': return `<div class="desc">${esc(fd.text || fd.label)}</div>`;
-    case 'file': inp = `<div class="muted">添付ファイルの受け付けは準備中です（Power Automate の実装と合わせて対応します）</div>`; break;
+    case 'file': {
+      const lim = fileLimits();
+      inp = `<div class="fdrop" data-drop="${esc(fd.key)}"><div id="${id}"></div>
+        <label class="fpick">＋ ファイルを選ぶ<input type="file" multiple data-file="${esc(fd.key)}" ${fd.accept ? `accept="${esc(fd.accept)}"` : ''} style="display:none"></label>
+        <span class="muted">　ここにドラッグ＆ドロップもできます（1ファイル ${lim.mb}MB・${lim.count}件まで）</span></div>`;
+      break;
+    }
     case 'table': {
       const rows = (st.editor.data[fd.key] || []);
       inp = `<table class="tbl"><tr>${fd.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}<th></th></tr>` +
@@ -765,6 +881,56 @@ function fieldHtml(fd) {
   }
   return `<div class="fld" data-k="${esc(fd.key)}"><label class="l">${esc(fd.label)}${req}</label>${inp}${fd.help ? `<div class="muted">${esc(fd.help)}</div>` : ''}</div>`;
 }
+/* ---------- 添付ファイル（入力画面）
+   選んだらすぐ自分の受付フォルダへアップロードする。申請のときは「今回アップロードしたファイルのキー」を送り、
+   フローが保管フォルダへ移す。値は [{ name: 元の名前, key: 保存名, size }] */
+function fileLimits() { return { mb: Number(st.M.settings['files.maxMB']) || 20, count: Number(st.M.settings['files.maxCount']) || 10 }; }
+function fileKey(name) {
+  // SharePoint で使えない文字と「..」を避け、同じ名前でもぶつからないよう日時と乱数を前に付ける
+  const safe = name.replace(/["*:<>?/\\|#%~&{}\u0000-\u001f]/g, '_').replace(/\.{2,}/g, '.').replace(/^[\s.]+|[\s.]+$/g, '').slice(-100) || 'file';
+  const t = new Date(), p = n => String(n).padStart(2, '0');
+  return `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}-${Math.random().toString(36).slice(2, 6)}_${safe}`;
+}
+function renderFiles(fd) {
+  const ed = st.editor, el = ed && $('f_' + fd.key); if (!el) return;
+  el.innerHTML = (ed.data[fd.key] || []).map(x => {
+    const u = ed.uploads.get(x.key);
+    const state = !u ? '' : u.st === 'up' ? `<span class="muted">アップロード中 ${u.pct || 0}%</span>` : u.st === 'ng' ? `<span class="ng">✖ ${esc(u.msg || '失敗')}</span>` : '<span class="muted">✔</span>';
+    return `<div class="fitem"><a class="flink" data-fkey="${esc(x.key)}">📎 ${esc(x.name)}</a><span class="muted">${fsize(x.size)}</span>${state}<button data-fdel="${esc(x.key)}" data-k="${esc(fd.key)}">削除</button></div>`;
+  }).join('');
+}
+function addFiles(fd, files) {
+  const ed = st.editor, lim = fileLimits();
+  const list = ed.data[fd.key] = ed.data[fd.key] || [];
+  const ng = [];
+  for (const file of files) {
+    if (list.length >= lim.count) { ng.push(`添付は${lim.count}件までです`); break; }
+    if (!file.size) { ng.push(`「${file.name}」は空のファイルです`); continue; }
+    if (file.size > lim.mb * 1024 * 1024) { ng.push(`「${file.name}」は ${lim.mb}MB を超えています（${fsize(file.size)}）`); continue; }
+    const it = { name: file.name, key: fileKey(file.name), size: file.size };
+    list.push(it); ed.newKeys.add(it.key); ed.uploads.set(it.key, { st: 'up', pct: 0 });
+    api.upload(file, it.key, pct => { const u = ed.uploads.get(it.key); if (u) { u.pct = pct; renderFiles(fd); } })
+      .then(() => { const u = ed.uploads.get(it.key); if (u) u.st = 'ok'; })
+      .catch(e => { const u = ed.uploads.get(it.key); if (u) { u.st = 'ng'; u.msg = e.message; } })
+      .finally(() => { if (st.editor === ed) renderFiles(fd); });
+  }
+  renderFiles(fd);
+  if (ng.length) alert(ng.join('\n'));
+}
+function removeFile(fd, key) {
+  const ed = st.editor;
+  ed.data[fd.key] = (ed.data[fd.key] || []).filter(x => x.key !== key);
+  ed.uploads.delete(key);
+  // 今回アップロードしたものは受付フォルダから消す（前回の申請で添付したものは、申請の記録として保管フォルダに残す）
+  if (ed.newKeys.delete(key)) api.deleteStaging(key).catch(() => {});
+  renderFiles(fd);
+}
+/* 申請せずに入力画面を離れるとき、今回アップロードしたものを片付ける */
+function discardUploads(ed) {
+  if (!ed || !ed.newKeys) return;
+  ed.newKeys.forEach(k => api.deleteStaging(k).catch(() => {})); ed.newKeys.clear();
+}
+
 /* 選択肢: 配列、または "@setting:キー" で WF_Setting から読む */
 function opts(fd) {
   if (typeof fd.options === 'string' && fd.options.startsWith('@setting:')) return pj(st.M.settings[fd.options.slice(9)], []);
@@ -833,6 +999,9 @@ function validate(ed) {
 }
 async function submit() {
   const ed = st.editor, f = ed.form; readForm(); recalc();
+  const ups = [...(ed.uploads || new Map()).values()];
+  if (ups.some(u => u.st === 'up')) return alert('添付ファイルをアップロード中です。終わってから申請してください。');
+  if (ups.some(u => u.st === 'ng')) return alert('アップロードに失敗した添付ファイルがあります。「削除」してから選び直してください。');
   const bad = validate(ed);
   if (bad.length) return alert('次の項目を入力してください\n・' + bad.join('\n・'));
   const res = routeFor(ed);
@@ -845,7 +1014,9 @@ async function submit() {
   const payload = { prefix: f.NumberPrefix, title, formVersion: f.Version, workflowVersion: res.wf.Version,
     applicantName: st.me.org.Title, applicantDept: st.me.org.Dept, notifyOnFinish: !!f.NotifyOnFinish, confidential: !!f.Confidential,
     amount: summary.Amount ?? null, summary, data: ed.data,
-    route: { route: res.route, post: res.post, circulate: res.circulate }, resubmitNote: note };
+    route: { route: res.route, post: res.post, circulate: res.circulate }, resubmitNote: note,
+    // 今回アップロードして、申請に含めるファイル（フローが受付フォルダから保管フォルダへ移す）
+    newFiles: f.fields.filter(fd => fd.type === 'file').flatMap(fd => (ed.data[fd.key] || []).map(x => x.key)).filter(k => ed.newKeys && ed.newKeys.has(k)) };
   if (!confirm(`${ed.resubmit ? '再申請' : '申請'}します。よろしいですか？\n\n最初の承認者：${(res.route.find(s => !s.skipped) || { upns: [] }).upns.map(nameOf).join(' / ')}`)) return;
   $('bSubmit').disabled = true;
   const r = await act(ed.resubmit
