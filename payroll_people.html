@@ -54,6 +54,7 @@
   .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; font-weight:600; }
   .p-on { background:color-mix(in srgb, var(--ok) 18%, var(--panel)); color:var(--ok); }
   .p-off { background:color-mix(in srgb, var(--muted) 18%, var(--panel)); color:var(--muted); }
+  .p-plan { background:color-mix(in srgb, var(--warn) 18%, var(--panel)); color:var(--warn); }
   th.row-hover, td.row-hover, th.col-hover, td.col-hover { background:color-mix(in srgb, var(--accent) 6%, var(--panel)) !important; }
   th.cell-hover, td.cell-hover { background:color-mix(in srgb, var(--accent) 16%, var(--panel)) !important; }
   #gate { padding:80px 24px; text-align:center; overflow:auto; flex:1; min-height:0; }
@@ -167,6 +168,20 @@ const monthSel = $('#monthSel');
 
 function monthsOf() { return [...new Set(EMPLOYEES.map(r => r.年月))].sort(); }
 
+// 入社日がその月（スナップショット月）の月末より後なら、元データ上は「在職」でも「入社予定」として扱う
+function statusOf(r) {
+  if (r.在職区分名称 === '在職') {
+    const m = (r.入社年月日 || '').match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+    if (m) {
+      const [y, mo] = r.年月.split('-').map(Number);
+      const hired = new Date(+m[1], +m[2] - 1, +m[3]);
+      const monthEnd = new Date(y, mo, 0);
+      if (hired > monthEnd) return '入社予定';
+    }
+  }
+  return r.在職区分名称;
+}
+
 function updateStepperButtons() {
   const idx = months.indexOf(monthSel.value);
   $('#prevMonthBtn').disabled = idx <= 0;
@@ -207,7 +222,7 @@ function render() {
   fillDeptSelect(rows);
 
   if (currentSite !== 'すべて') rows = rows.filter(r => r.拠点 === currentSite);
-  if (!$('#showRetired').checked) rows = rows.filter(r => r.在職区分名称 === '在職');
+  if (!$('#showRetired').checked) rows = rows.filter(r => statusOf(r) !== '退職');
   const dept = $('#deptSel').value;
   if (dept) rows = rows.filter(r => r.部門 === dept);
   const q = $('#nameSearch').value.trim();
@@ -215,7 +230,8 @@ function render() {
 
   rows.sort((a, b) => (a.部門 || '').localeCompare(b.部門 || '', 'ja') || a.従業員コード.localeCompare(b.従業員コード, undefined, {numeric:true}));
 
-  $('#rosterNote').textContent = `${ym} 時点　${rows.length}名を表示`;
+  const planned = rows.filter(r => statusOf(r) === '入社予定').length;
+  $('#rosterNote').textContent = `${ym} 時点　${rows.length}名を表示` + (planned ? `（うち入社予定 ${planned}名）` : '');
 
   let thead = '<thead><tr><th>従業員コード</th><th>氏名</th><th>拠点</th><th>部門</th><th>所属</th>'
     + '<th>在職区分</th><th>役職</th><th>給与種別</th><th>性別</th><th>年齢</th><th>生年月日</th><th>入社年月日</th><th>勤続年数</th><th>退職年月日</th></tr></thead>';
@@ -227,11 +243,12 @@ function render() {
       lastDept = r.部門;
       tbody += `<tr class="dept-sep"><td colspan="14">${esc(lastDept || '（部門不明）')}</td></tr>`;
     }
-    const retired = r.在職区分名称 !== '在職';
-    tbody += `<tr class="${retired ? 'retired' : ''}">`
+    const status = statusOf(r);
+    const pillCls = status === '在職' ? 'p-on' : status === '入社予定' ? 'p-plan' : 'p-off';
+    tbody += `<tr class="${status === '退職' ? 'retired' : ''}">`
       + `<td>${esc(r.従業員コード)}</td><td>${esc(r.従業員名)}</td><td>${esc(r.拠点)}</td>`
       + `<td>${esc(r.部門)}</td><td>${esc(r.所属)}</td>`
-      + `<td><span class="pill ${retired ? 'p-off' : 'p-on'}">${esc(r.在職区分名称)}</span></td>`
+      + `<td><span class="pill ${pillCls}">${esc(status)}</span></td>`
       + `<td>${esc(r.役職)}</td><td>${esc(r.給与種別名称)}</td><td>${esc(r.性別)}</td>`
       + `<td>${esc(r.年齢)}</td><td>${esc(r.生年月日)}</td><td>${esc(r.入社年月日)}</td>`
       + `<td>${esc(r.勤続年数)}</td><td>${esc(r.退職年月日)}</td>`
@@ -251,9 +268,9 @@ function renderMoves() {
     const prevMap = new Map();
     for (const r of EMPLOYEES) if (r.年月 === prevYm) prevMap.set(r.拠点 + '|' + r.従業員コード, r);
     for (const r of EMPLOYEES) {
-      if (r.年月 !== curYm || r.在職区分名称 !== '在職') continue;
+      if (r.年月 !== curYm || statusOf(r) !== '在職') continue;
       const prev = prevMap.get(r.拠点 + '|' + r.従業員コード);
-      if (!prev || prev.在職区分名称 !== '在職') continue;
+      if (!prev || statusOf(prev) !== '在職') continue;
       if (prev.部門 !== r.部門 || prev.所属 !== r.所属) {
         moves.push({
           氏名: r.従業員名, 拠点: r.拠点,
