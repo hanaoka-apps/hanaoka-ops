@@ -167,6 +167,7 @@ table.tbl th{background:#f3f6fa;font-weight:600;font-size:12px}
 .fitem .ng{color:var(--ng)}
 a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-decoration:underline}
 .errbox{background:var(--ng-l);color:var(--ng);padding:8px 10px;border-radius:6px;font-size:13px;margin-bottom:10px}
+@media print{header,#devBar,#notice,#tabs,#statusBar,.list,.noprint,.actions,#toasts{display:none!important}main{display:block}.detail{overflow:visible;max-height:none}}
 @media (max-width:800px){main{flex-direction:column}.list{width:100%;max-height:40vh}.editor{flex-direction:column}.editor .side{width:100%}.kv{grid-template-columns:1fr}}
 </style>
 </head>
@@ -472,7 +473,7 @@ async function load(quiet) {
       m.org = m.org.filter(p => p.Active !== false);
       m.orgByUpn = Object.fromEntries(m.org.map(p => [lc(p.UPN), p]));
       m.settings = Object.fromEntries(m.settings.map(s => [s.Title, s.Value]));
-      m.forms = m.forms.map(f => ({ ...f, fields: pj(f.FieldsJson, []), followups: pj(f.FollowupsJson, f.Followups || []) })).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
+      m.forms = m.forms.map(f => ({ ...f, ...pj(f.OptionsJson, {}), fields: pj(f.FieldsJson, []), followups: pj(f.FollowupsJson, f.Followups || []) })).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
       st.M = m;
       $('appTitle').textContent = m.settings['app.title'] || '社内ワークフロー';
       document.title = ($('appTitle').textContent) + ' | 花岡車輌';
@@ -572,6 +573,7 @@ const TABS = [
   { key: 'mine',     label: '自分の申請' },
   { key: 'involved', label: '関わった申請' },
   { key: 'all',      label: 'すべての申請', show: () => st.allReqs != null },
+  { key: 'payroll',  label: '給与精算の集計', show: () => st.allReqs != null && !!settleRule() },
 ];
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 
@@ -587,6 +589,7 @@ function render() {
   };
   const main = $('main');
   if (st.view === 'new') return st.editor ? renderEditor(main) : renderCatalog(main);
+  if (st.view === 'payroll') return renderPayroll(main);
   renderListView(main);
 }
 
@@ -635,7 +638,7 @@ function reqItem(r) {
          status: r.Status + (r.PostStatus && r.PostStatus !== 'なし' ? '／後処理' + r.PostStatus : ''), date: r.SubmittedAt,
          text: [r.RequestNo, r.Title, r.ApplicantName, r.ApplicantDept, formName(r.FormCode), flatText(pj(r.DataJson, {}))].join(' ') },
     html: `<div class="t">${esc(r.Title)}</div>
-           <div class="m">${reqStatusBadge(r)}${postBadge(r)}</div>
+           <div class="m">${reqStatusBadge(r)}${postBadge(r)}${settleBadge(r)}</div>
            <div class="m">${esc(formName(r.FormCode))}・${esc(r.ApplicantName)}　${fmtDT(r.SubmittedAt)}　${esc(r.RequestNo)}</div>${miniLine(m, r.Status)}` };
 }
 const formName = code => (st.M.forms.find(f => f.FormCode === code) || {}).Title || code;
@@ -716,6 +719,44 @@ function downloadCsv(items) {
   a.href = URL.createObjectURL(blob);
   a.download = `ワークフロー_${TABS.find(t => t.key === st.view).label}_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click(); URL.revokeObjectURL(a.href);
+}
+
+/* ---------- 給与での精算（経費精算など）
+   設定 payroll.settle: {"cutoffDay":15, "payDay":25, "forms":{"KEIHI":"payout"}}（フォーム → 精算額の項目）
+   決裁日が締め日までなら同じ月、過ぎていれば翌月の支給日の給与で精算する */
+function settleRule() { const r = pj(st.M.settings['payroll.settle'], null); return r && r.forms ? r : null; }
+function settleOf(r) {
+  const rule = settleRule(); if (!rule || !(r.FormCode in rule.forms) || r.Status !== '決裁済' || !r.ApprovedAt) return null;
+  const d = new Date(r.ApprovedAt); if (isNaN(d)) return null;
+  const pay = new Date(d.getFullYear(), d.getMonth() + (d.getDate() > (rule.cutoffDay || 15) ? 1 : 0), rule.payDay || 25);
+  const ym = `${pay.getFullYear()}-${String(pay.getMonth() + 1).padStart(2, '0')}`;
+  return { ym, label: `${pay.getMonth() + 1}月${pay.getDate()}日の給与で精算`, amount: Number(pj(r.DataJson, {})[rule.forms[r.FormCode]]) || 0 };
+}
+function settleBadge(r) { const x = settleOf(r); return x ? `<span class="badge b-ok" title="決裁日で決まります（締め日を過ぎた決裁は翌月）">💴 ${esc(x.label)}　${esc(yen(x.amount))}</span>` : ''; }
+function renderPayroll(main) {
+  const rows = (st.allReqs || []).map(r => ({ r, x: settleOf(r) })).filter(o => o.x);
+  const months = [...new Set(rows.map(o => o.x.ym))].sort().reverse();
+  st.payYm = months.includes(st.payYm) ? st.payYm : months[0] || '';
+  const rule = settleRule();
+  const cur = rows.filter(o => o.x.ym === st.payYm).sort((a, b) => String(a.r.ApplicantName).localeCompare(String(b.r.ApplicantName), 'ja') || String(a.r.ApprovedAt).localeCompare(String(b.r.ApprovedAt)));
+  const byPerson = {}; cur.forEach(o => { const k = lc(o.r.ApplicantUPN); (byPerson[k] = byPerson[k] || { name: o.r.ApplicantName, dept: o.r.ApplicantDept, list: [] }).list.push(o); });
+  const total = cur.reduce((a, o) => a + o.x.amount, 0);
+  main.innerHTML = `<div class="detail" style="flex:1"><div class="card"><h3>給与で精算する申請（${rule.cutoffDay || 15}日締め・${rule.payDay || 25}日支給）</h3>
+    <div class="actions" style="margin:0 0 10px">支給月：<select id="payYm">${months.map(m => `<option ${m === st.payYm ? 'selected' : ''}>${m}</option>`).join('') || '<option>（なし）</option>'}</select>
+      <button id="payCsv">CSV を保存</button><span class="muted">決裁済みの申請だけを集計します（${esc(Object.keys(rule.forms).map(formName).join('・'))}）</span></div>
+    ${cur.length ? `<table class="tbl"><tr><th>社員</th><th>部署</th><th>申請番号</th><th>フォーム</th><th>件名</th><th>決裁日</th><th style="text-align:right">精算額</th></tr>` +
+      Object.values(byPerson).map(p => p.list.map((o, i) => `<tr><td>${i ? '' : esc(p.name)}</td><td>${i ? '' : esc(p.dept || '')}</td><td>${esc(o.r.RequestNo)}</td><td>${esc(formName(o.r.FormCode))}</td><td>${esc(o.r.Title)}</td><td>${fmtDT(o.r.ApprovedAt)}</td><td style="text-align:right">${esc(yen(o.x.amount))}</td></tr>`).join('') +
+        `<tr><td colspan="6" style="text-align:right" class="muted">${esc(p.name)} の合計</td><td style="text-align:right;font-weight:600">${esc(yen(p.list.reduce((a, o) => a + o.x.amount, 0)))}</td></tr>`).join('') +
+      `<tr><td colspan="6" style="text-align:right;font-weight:600">総合計（${Object.keys(byPerson).length}人・${cur.length}件）</td><td style="text-align:right;font-weight:700">${esc(yen(total))}</td></tr></table>`
+      : '<div class="empty">この月に給与で精算する申請はありません</div>'}</div></div>`;
+  if ($('payYm')) $('payYm').onchange = () => { st.payYm = $('payYm').value; renderPayroll(main); };
+  $('payCsv').onclick = () => {
+    const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [['支給月', '社員', 'UPN', '部署', '申請番号', 'フォーム', '件名', '決裁日時', '精算額'].map(q).join(',')]
+      .concat(cur.map(o => [st.payYm, o.r.ApplicantName, lc(o.r.ApplicantUPN), o.r.ApplicantDept, o.r.RequestNo, formName(o.r.FormCode), o.r.Title, new Date(o.r.ApprovedAt).toLocaleString('ja-JP'), o.x.amount].map(q).join(',')));
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
+    a.download = `給与精算_${st.payYm}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  };
 }
 
 /* ---------- 詳細：共通部品 ---------- */
@@ -995,7 +1036,7 @@ function renderReqDetail(r) {
     : ['差し戻し中', '引き戻し'].includes(r.Status) ? `${nameOf(r.ApplicantUPN)} の再申請待ち`
     : r.Status === '決裁済' && r.PostStatus === '処理待ち' ? `後処理：${(r.PostAssignees || '').split(';').filter(Boolean).map(nameOf).join('・')} の対応待ち` : '';
   let html = `<div class="dhead"><div class="l">
-      <div>${reqStatusBadge(r)}${postBadge(r)}</div>
+      <div>${reqStatusBadge(r)}${postBadge(r)}${settleBadge(r)}</div>
       <div class="no">申請番号：<b>${esc(r.RequestNo)}</b>　${esc(formName(r.FormCode))}${r.Round > 1 ? '　第' + r.Round + '回' : ''}</div>
       <h2>${esc(r.Title)}</h2></div>
     <div class="r">申請者：${esc(r.ApplicantName)}（${esc(r.ApplicantDept)}）${fmtDT(r.SubmittedAt)}
@@ -1006,6 +1047,7 @@ function renderReqDetail(r) {
   html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN });
   html += `<div class="card"><h3>承認状況・経過</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
   if ((res.circulate || []).length) html += `<div class="card"><h3>回覧（決裁後に共有する人）</h3>${esc(res.circulate.map(nameOf).join('、'))}</div>`;
+  if (form && form.PrintForSubmit) html += `<div class="card noprint"><h3>原本の提出</h3><div class="actions"><button id="bPrint">🖨 この画面を印刷する</button><span class="muted">${esc(form.PrintForSubmit === true ? '印刷したものと一緒に、レシート・領収書の原本を本社総務へ提出してください' : form.PrintForSubmit)}</span></div></div>`;
   if (mine) {
     const btns = [];
     if (r.Status === '申請中') btns.push('<button id="bPull" class="warn">引き戻す</button><span class="muted">次の人がまだ処理していなければ、申請を取り戻せます</span>');
@@ -1013,6 +1055,7 @@ function renderReqDetail(r) {
     if (btns.length) html += `<div class="card"><h3>操作</h3><div class="actions">${btns.join('')}</div></div>`;
   }
   $('detail').innerHTML = html;
+  if ($('bPrint')) $('bPrint').onclick = () => window.print();
   if ($('bPull')) $('bPull').onclick = () => { if (confirm('申請を引き戻しますか？')) act({ Title: `引き戻し ${r.RequestNo}`, ActionType: '引き戻し', RequestNo: r.RequestNo }); };
   if ($('bRe')) $('bRe').onclick = () => { st.view = 'new'; st.editor = { form, data: pj(r.DataJson, {}), resubmit: r }; render(); };
 }
