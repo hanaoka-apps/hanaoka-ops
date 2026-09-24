@@ -290,7 +290,7 @@ const GraphApi = {
     return { org, roles, settings, forms, workflows };
   },
   tasks(upn)      { return this.items('WF_Task', `fields/AssigneeUPN eq '${upn}'`); },
-  myRequests(upn) { return this.items('WF_Request', `fields/ApplicantUPN eq '${upn}'`); },
+  myRequests(upn) { return this.items('WF_Request', `fields/ApplicantUPN eq '${upn}' or fields/ProxyUPN eq '${upn}'`); },   // 代理で出した分も
   allRequests()   { return this.items('WF_Request'); },   // SharePoint が見られる分だけ返す
   async postAction(fields) {
     if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
@@ -376,7 +376,7 @@ const DevApi = {
       forms: D.forms.map(f => ({ ...f, Active: true })) };
   },
   async tasks(upn)      { return MockFlow.S.tasks.filter(t => lc(t.AssigneeUPN) === upn).map(t => ({ ...t })); },
-  async myRequests(upn) { return MockFlow.S.requests.filter(r => lc(r.ApplicantUPN) === upn).map(r => ({ ...r })); },
+  async myRequests(upn) { return MockFlow.S.requests.filter(r => lc(r.ApplicantUPN) === upn || lc(r.ProxyUPN) === upn).map(r => ({ ...r })); },
   async allRequests()   { return MockFlow.S.requests.map(r => ({ ...r })); },
   results: {}, seq: 0,
   async postAction(fields) {
@@ -638,7 +638,7 @@ function reqItem(r) {
          status: r.Status + (r.PostStatus && r.PostStatus !== 'なし' ? '／後処理' + r.PostStatus : ''), date: r.SubmittedAt,
          text: [r.RequestNo, r.Title, r.ApplicantName, r.ApplicantDept, formName(r.FormCode), flatText(pj(r.DataJson, {}))].join(' ') },
     html: `<div class="t">${esc(r.Title)}</div>
-           <div class="m">${reqStatusBadge(r)}${postBadge(r)}${settleBadge(r)}</div>
+           <div class="m">${reqStatusBadge(r)}${postBadge(r)}${settleBadge(r)}${proxyBadge(r)}</div>
            <div class="m">${esc(formName(r.FormCode))}・${esc(r.ApplicantName)}　${fmtDT(r.SubmittedAt)}　${esc(r.RequestNo)}</div>${miniLine(m, r.Status)}` };
 }
 const formName = code => (st.M.forms.find(f => f.FormCode === code) || {}).Title || code;
@@ -1028,7 +1028,7 @@ function renderTaskDetail(t, s) {
 function renderReqDetail(r) {
   const form = st.M.forms.find(f => f.FormCode === r.FormCode);
   const res = pj(r.RouteJson, { route: [] });
-  const mine = lc(r.ApplicantUPN) === st.me.upn;
+  const mine = lc(r.ApplicantUPN) === st.me.upn || lc(r.ProxyUPN) === st.me.upn;   // 代理で出した人も、引き戻し・再申請ができる
   const hist = pj(r.HistoryJson, []);
   const m = reqProgress(r);
   const last = hist[hist.length - 1];
@@ -1036,7 +1036,7 @@ function renderReqDetail(r) {
     : ['差し戻し中', '引き戻し'].includes(r.Status) ? `${nameOf(r.ApplicantUPN)} の再申請待ち`
     : r.Status === '決裁済' && r.PostStatus === '処理待ち' ? `後処理：${(r.PostAssignees || '').split(';').filter(Boolean).map(nameOf).join('・')} の対応待ち` : '';
   let html = `<div class="dhead"><div class="l">
-      <div>${reqStatusBadge(r)}${postBadge(r)}${settleBadge(r)}</div>
+      <div>${reqStatusBadge(r)}${postBadge(r)}${settleBadge(r)}${proxyBadge(r)}</div>
       <div class="no">申請番号：<b>${esc(r.RequestNo)}</b>　${esc(formName(r.FormCode))}${r.Round > 1 ? '　第' + r.Round + '回' : ''}</div>
       <h2>${esc(r.Title)}</h2></div>
     <div class="r">申請者：${esc(r.ApplicantName)}（${esc(r.ApplicantDept)}）${fmtDT(r.SubmittedAt)}
@@ -1044,7 +1044,7 @@ function renderReqDetail(r) {
     <div class="card"><h3>進み具合${waiting ? `　<span class="badge b-run">${esc(waiting)}</span>` : ''}</h3>${progressHtml(m)}</div>`;
   if (r.Status === '差し戻し中') html += returnBanner(pj(r.LastReturnJson, null));
   html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
-  html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN });
+  html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN, proxy: r.ProxyUPN });
   html += `<div class="card"><h3>承認状況・経過</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
   if ((res.circulate || []).length) html += `<div class="card"><h3>回覧（決裁後に共有する人）</h3>${esc(res.circulate.map(nameOf).join('、'))}</div>`;
   if (form && form.PrintForSubmit) html += `<div class="card noprint"><h3>原本の提出</h3><div class="actions"><button id="bPrint">🖨 この画面を印刷する</button><span class="muted">${esc(form.PrintForSubmit === true ? '印刷したものと一緒に、レシート・領収書の原本を本社総務へ提出してください' : form.PrintForSubmit)}</span></div></div>`;
@@ -1057,7 +1057,7 @@ function renderReqDetail(r) {
   $('detail').innerHTML = html;
   if ($('bPrint')) $('bPrint').onclick = () => window.print();
   if ($('bPull')) $('bPull').onclick = () => { if (confirm('申請を引き戻しますか？')) act({ Title: `引き戻し ${r.RequestNo}`, ActionType: '引き戻し', RequestNo: r.RequestNo }); };
-  if ($('bRe')) $('bRe').onclick = () => { st.view = 'new'; st.editor = { form, data: pj(r.DataJson, {}), resubmit: r }; render(); };
+  if ($('bRe')) $('bRe').onclick = () => { st.view = 'new'; st.editor = { form, data: pj(r.DataJson, {}), resubmit: r, proxyFor: r.ProxyUPN ? lc(r.ApplicantUPN) : '' }; render(); };
 }
 
 /* ---------- 操作の送信 ---------- */
@@ -1130,7 +1130,7 @@ function followupCard(form, data, ctx) {
   const list = (form.followups || []).filter(fu => {
     const target = st.M.forms.find(f => f.FormCode === fu.form);
     if (!target || (target.Active === false && !hasAllView()) || !canSubmit(target)) return false;
-    if (fu.who === 'applicant' && lc(ctx.app) !== st.me.upn) return false;
+    if (fu.who === 'applicant' && lc(ctx.app) !== st.me.upn && lc(ctx.proxy) !== st.me.upn) return false;
     return !fu.showIf || WFEngine.evalCond(fu.showIf, { data });
   });
   if (!list.length) return '';
@@ -1187,6 +1187,7 @@ function renderEditor(main) {
       <h2>${esc(f.Title)}${ed.resubmit ? '（再申請）' : ''}</h2>
       ${ed.resubmit ? returnBanner(pj(ed.resubmit.LastReturnJson, null)) : ''}
       ${f.Description ? `<div class="desc">${esc(f.Description)}</div>` : ''}
+      ${proxyCardHtml(f)}
       ${pasteCardHtml(f)}
       <div id="flds" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">${f.fields.map(fieldHtml).join('')}</div>
       ${ed.resubmit ? `<div class="fld" data-k="__resubmit"><label class="l">修正コメント<span class="req">必須</span></label><textarea id="resubmitNote" placeholder="何を直したかを書いてください（承認者の画面の一番上に表示されます）"></textarea></div>` : ''}
@@ -1223,8 +1224,37 @@ function renderEditor(main) {
   });
   $('bSubmit').onclick = submit;
   bindPasteCard(f);
+  if ($('proxySel')) $('proxySel').onchange = () => { readForm(); ed.proxyFor = $('proxySel').value; applyConditions(); recalc(); preview(); };
   recalc(); applyConditions(); preview();
 }
+
+/* ---------- 代理申請（PC を使えない人の分を、代わりに出す）
+   出せるのは ①役割「代理申請」の人（範囲＝部署・拠点。空なら全員）②その人の上長（上長をたどって自分に着く人）。本番はフローAが確かめる
+   申請者＝対象の社員（経路・精算はその人）。一覧・操作・通知は代理で出した人。フォームごとに止めるときは "AllowProxy": false */
+function edApplicant() {
+  const ed = st.editor;
+  return (ed && ed.proxyFor && st.M.org.find(p => lc(p.UPN) === ed.proxyFor)) || (st.me ? st.me.org : null);
+}
+function proxyCandidates() {
+  if (!st.me || !st.me.org) return [];
+  const me = st.me.upn;
+  const rows = st.M.roles.filter(r => r.Title === '代理申請' && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(me));
+  const inRole = p => rows.some(r => { const sc = (r.Scope || '').split(';').map(x => x.trim()).filter(Boolean); return !sc.length || sc.includes(p.Dept) || sc.includes(p.Site); });
+  const underMe = p => { let cur = p; const seen = new Set(); for (let i = 0; i < 10 && cur; i++) {
+      const m = (cur.ManagerUPNs || '').toLowerCase().split(';').map(x => x.trim()).filter(Boolean);
+      if (m.includes(me)) return true; const next = m.find(u => !seen.has(u)); if (!next) return false; seen.add(next); cur = st.M.orgByUpn[next]; } return false; };
+  return st.M.org.filter(p => p.Active !== false && lc(p.UPN) !== me && (inRole(p) || underMe(p)))
+    .sort((a, b) => String(a.Dept).localeCompare(String(b.Dept), 'ja') || String(a.Title).localeCompare(String(b.Title), 'ja'));
+}
+function proxyCardHtml(f) {
+  const ed = st.editor;
+  if (ed.resubmit) return ed.proxyFor ? `<div class="card proxy"><span class="badge b-warn">代理申請：${esc(nameOf(ed.proxyFor))}さんの分</span></div>` : '';
+  if (f.AllowProxy === false) return '';
+  const c = proxyCandidates(); if (!c.length) return '';
+  return `<div class="card proxy" style="padding:10px 14px">代理で申請する：<select id="proxySel" style="max-width:320px"><option value="">（自分の申請）</option>${c.map(p => `<option value="${esc(lc(p.UPN))}" ${lc(p.UPN) === ed.proxyFor ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>
+    <span class="muted">PC を使えない人の分を代わりに出すとき。経路はその人の上長で決まり、通知はあなたに届きます</span></div>`;
+}
+function proxyBadge(r) { return r.ProxyUPN ? `<span class="badge b-warn" title="代理で申請した人：${esc(r.ProxyName || nameOf(r.ProxyUPN))}">代理申請：${esc(r.ApplicantName)}さんの分（${esc(r.ProxyName || nameOf(r.ProxyUPN))}）</span>` : ''; }
 
 /* ---------- Copilot で読み取って入力する
    ① フォームの定義から Copilot への指示文（答えの形＝JSON の見本つき）を作ってコピー
@@ -1406,7 +1436,7 @@ function opts(fd, data) {
   if (typeof o === 'string' && o.startsWith('@setting:')) o = pj(st.M.settings[o.slice(9)], []);
   for (const k of fd.optionsBy || []) {
     if (!o || Array.isArray(o)) break;
-    const key = k.startsWith('@applicant.') ? (st.me && st.me.org ? st.me.org[k.slice(11)] : '') : k.startsWith('=') ? k.slice(1)
+    const key = k.startsWith('@applicant.') ? (edApplicant() || {})[k.slice(11)] : k.startsWith('=') ? k.slice(1)
       : ((data || (st.editor ? st.editor.data : {}))[k] ?? '');
     o = o[key] ?? o['*'];
   }
@@ -1490,7 +1520,7 @@ function routeFor(ed) {
   const wf = st.M.workflows.find(w => w.WorkflowCode === ed.form.WorkflowCode);
   if (!wf) return { route: [], post: [], circulate: [], errors: ['ワークフロー「' + ed.form.WorkflowCode + '」が見つかりません'] };
   if (!st.me.org) return { route: [], post: [], circulate: [], errors: ['あなたは組織マスタに登録されていません（総務にご連絡ください）'] };
-  return { ...WFEngine.resolveRoute({ applicant: st.me.org, workflow: wf, data: dataForRules(ed), org: st.M.org, roles: st.M.roles }), wf };
+  return { ...WFEngine.resolveRoute({ applicant: edApplicant(), workflow: wf, data: dataForRules(ed), org: st.M.org, roles: st.M.roles }), wf };
 }
 /* 条件式では、項目キーでも表示名でも参照できるようにする（例: 金額 / total） */
 function dataForRules(ed) {
@@ -1525,7 +1555,7 @@ function validate(ed) {
   return bad;
 }
 /* ---------- 条件で出す項目・条件付きの必須・注意（定義: showIf / requiredIf / warn。書き方は経路の条件と同じ） ---------- */
-const condCtx = data => ({ data, applicant: st.me ? st.me.org : null });
+const condCtx = data => ({ data, applicant: edApplicant() });
 function isShown(fd, data) { return !fd.showIf || WFEngine.evalCond(fd.showIf, condCtx(data)); }
 function isRequired(fd, data) { return !!fd.required || (!!fd.requiredIf && WFEngine.evalCond(fd.requiredIf, condCtx(data))); }
 function applyConditions() {
@@ -1581,7 +1611,7 @@ async function submit() {
   // SummaryFields: "Amount=total;PartnerName=vendor" → 検索用の列へ
   const summary = Object.fromEntries((f.SummaryFields || '').split(';').filter(Boolean).map(x => x.split('=')).map(([c, k]) => [c, ed.data[k]]));
   const payload = { prefix: f.NumberPrefix, title, formVersion: f.Version, workflowVersion: res.wf.Version,
-    applicantName: st.me.org.Title, applicantDept: st.me.org.Dept, notifyOnFinish: !!f.NotifyOnFinish, confidential: !!f.Confidential,
+    applicantName: edApplicant().Title, applicantDept: edApplicant().Dept, proxyFor: ed.proxyFor || '', notifyOnFinish: !!f.NotifyOnFinish, confidential: !!f.Confidential,
     amount: summary.Amount ?? null, summary, data: ed.data,
     route: { route: res.route, post: res.post, circulate: res.circulate }, resubmitNote: note,
     // 今回アップロードして、申請に含めるファイル（フローが受付フォルダから保管フォルダへ移す）
