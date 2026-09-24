@@ -86,6 +86,8 @@ h2{font-size:18px;margin:0 0 6px}
 .editor .form{flex:1;overflow:auto;padding:18px 24px}
 .editor .side{width:340px;border-left:1px solid var(--line);background:#fff;overflow:auto;padding:16px}
 .fld{margin-bottom:14px}.fld label.l{display:block;font-weight:600;margin-bottom:4px}
+details.paste{margin:0 0 14px;padding:10px 14px}details.paste summary{cursor:pointer;font-weight:600;color:var(--pri)}
+.fld.pasted{background:var(--warn-l);border-radius:6px;box-shadow:0 0 0 6px var(--warn-l)}
 .fld .fwarn{color:var(--warn);background:var(--warn-l);border-radius:5px;padding:4px 8px;margin-top:4px;font-size:12.5px}
 .fld .req{color:var(--ng);margin-left:4px;font-size:12px}
 .fld .opts label{display:inline-flex;align-items:center;gap:4px;margin:2px 14px 2px 0;font-weight:normal}
@@ -1141,6 +1143,7 @@ function renderEditor(main) {
       <h2>${esc(f.Title)}${ed.resubmit ? '（再申請）' : ''}</h2>
       ${ed.resubmit ? returnBanner(pj(ed.resubmit.LastReturnJson, null)) : ''}
       ${f.Description ? `<div class="desc">${esc(f.Description)}</div>` : ''}
+      ${pasteCardHtml(f)}
       <div id="flds" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">${f.fields.map(fieldHtml).join('')}</div>
       ${ed.resubmit ? `<div class="fld" data-k="__resubmit"><label class="l">修正コメント<span class="req">必須</span></label><textarea id="resubmitNote" placeholder="何を直したかを書いてください（承認者の画面の一番上に表示されます）"></textarea></div>` : ''}
       <div class="actions"><button class="pri" id="bSubmit">${ed.resubmit ? '再申請する' : '申請する'}</button></div>
@@ -1173,7 +1176,97 @@ function renderEditor(main) {
     box.querySelector(`[data-k="${fd.key}"]`).outerHTML = fieldHtml(fd); setFieldValue(fd, rows); recalc(); preview();
   });
   $('bSubmit').onclick = submit;
+  bindPasteCard(f);
   recalc(); applyConditions(); preview();
+}
+
+/* ---------- Copilot で読み取って入力する
+   ① フォームの定義から Copilot への指示文（答えの形＝JSON の見本つき）を作ってコピー
+   ② 申請者が Copilot に請求書・領収書などを添付して指示を送る
+   ③ 返ってきた答えを貼り付けると、項目に反映する（選択肢にない値・日付や金額として読めない値は反映せず、知らせる）
+   フォームごとに止めるときは、フォーム定義に "CopilotPaste": false */
+const PASTE_SKIP = ['file', 'note', 'calc', 'user'];
+function pasteTargets(f) { return f.fields.filter(fd => fd.label && !PASTE_SKIP.includes(fd.type)); }
+function pasteCardHtml(f) {
+  if (f.CopilotPaste === false || !pasteTargets(f).length) return '';
+  const ed = st.editor, url = st.M.settings['app.copilotUrl'];
+  return `<details class="card paste" ${ed.pasteMsg ? 'open' : ''}><summary>🤖 Copilot で書類を読み取って入力する</summary>
+    <ol class="muted" style="margin:8px 0;padding-left:20px;line-height:1.8">
+      <li><button id="bPasteCopy">Copilot への指示をコピー</button>${url ? `　<a href="${esc(url)}" target="_blank" rel="noopener">Copilot を開く ↗</a>` : ''}</li>
+      <li>Copilot に請求書・領収書などの書類（PDF・写真）を添付し、コピーした指示を貼り付けて送る</li>
+      <li>Copilot の答えを全部コピーして、下に貼り付けて「反映する」<br>※書類はこの申請にも添付してください（Copilot に添付しただけでは申請に付きません）</li></ol>
+    <textarea id="pasteText" placeholder="ここに Copilot の答えを貼り付け" style="min-height:90px"></textarea>
+    <div class="actions" style="margin-top:6px"><button class="pri" id="bPasteApply">反映する</button></div>
+    ${ed.pasteMsg ? `<div id="pasteMsg" style="margin-top:6px">${ed.pasteMsg}</div>` : ''}</details>`;
+}
+function bindPasteCard(f) {
+  const ed = st.editor;
+  if ($('bPasteCopy')) $('bPasteCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(copilotPrompt(f)); toast('指示をコピーしました。Copilot に書類を添付して貼り付けてください'); }
+    catch { $('pasteText').value = copilotPrompt(f); toast('コピーできなかったので、下の欄に指示を出しました。選んでコピーしてください', true); }
+  };
+  if ($('bPasteApply')) $('bPasteApply').onclick = () => {
+    readForm();
+    const r = applyPaste(f, $('pasteText').value);
+    if (!r) { toast('答えを読み取れませんでした。Copilot の答えを全部貼り付けてください', true); return; }
+    ed.pasteMsg = (r.ok.length ? `<div>✔ 反映しました：${r.ok.map(esc).join('、')}</div>` : '') +
+      (r.ng.length ? `<div class="ng">⚠ 反映できませんでした（手で入力してください）：${r.ng.map(esc).join('、')}</div>` : '') +
+      '<div class="muted">反映した内容が書類と合っているか、必ず確かめてから申請してください。</div>';
+    ed.pasted = new Set(r.keys); render();
+  };
+  (ed.pasted || new Set()).forEach(k => { const el = document.querySelector(`#flds [data-k="${CSS.escape(k)}"]`); if (el) el.classList.add('pasted'); });
+}
+function pasteHint(fd) {
+  const o = ['select', 'radio', 'checkbox'].includes(fd.type) ? opts(fd) : [];
+  if (o.length) return (fd.type === 'checkbox' ? '次から当てはまるものを配列で：' : '次のどれか1つ：') + o.join('／');
+  return fd.type === 'date' ? 'YYYY-MM-DD' : ['number', 'currency'].includes(fd.type) ? 0 : '文字';
+}
+function copilotPrompt(f) {
+  const shape = {};
+  pasteTargets(f).forEach(fd => {
+    shape[fd.label] = fd.type === 'table'
+      ? [Object.fromEntries(fd.columns.filter(c => c.label && !PASTE_SKIP.includes(c.type)).map(c => [c.label, pasteHint(c)]))]
+      : pasteHint(fd);
+  });
+  return `添付した書類を読み取り、「${f.Title}」の入力内容を、下の JSON の形だけで答えてください（説明の文章は不要です）。
+・書類から分からない項目は書かないでください（推測で埋めない）
+・日付は YYYY-MM-DD、金額・数量は数字だけ（円・カンマは付けない）
+・「次のどれか」とある項目は、その中の言葉をそのまま使う。当てはまるものがなければ書かない
+・表（[ ] の項目）は、書類の明細1行ごとに1つずつ並べる
+${JSON.stringify(shape, null, 2)}`;
+}
+/* 貼り付けた答え → 項目。返り値 { ok: [反映した項目名], ng: [反映できなかった項目名（理由）], keys } */
+function applyPaste(f, text) {
+  const s = String(text || ''), a = s.indexOf('{'), b = s.lastIndexOf('}');
+  let obj = null;
+  if (a >= 0 && b > a) { try { obj = JSON.parse(s.slice(a, b + 1)); } catch { obj = null; } }
+  if (!obj) {   // JSON でなければ「項目名：値」の行として読む
+    obj = {};
+    s.split(/\r?\n/).forEach(line => { const m = /^\s*[-・*]?\s*([^:：]+?)\s*[:：]\s*(.+?)\s*$/.exec(line); if (m) obj[m[1]] = m[2]; });
+    if (!Object.keys(obj).length) return null;
+  }
+  const ed = st.editor, ok = [], ng = [], keys = [];
+  const nk = x => String(x).normalize('NFKC').replace(/\s/g, '');
+  const pick = (defs, o) => { const m = new Map(Object.entries(o || {}).map(([k, v]) => [nk(k), v])); return defs.map(d => [d, m.has(nk(d.label)) ? m.get(nk(d.label)) : m.get(nk(d.key))]).filter(([, v]) => v !== undefined && v !== null && v !== ''); };
+  const conv = (d, v) => {
+    if (['number', 'currency'].includes(d.type)) { const n = Number(String(v).normalize('NFKC').replace(/[¥,円\s]/g, '')); return isFinite(n) ? { v: n } : { e: '数字でない' }; }
+    if (d.type === 'date') { const m = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/.exec(String(v).normalize('NFKC')); return m ? { v: `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` } : { e: '日付でない' }; }
+    if (['select', 'radio'].includes(d.type)) { const o = opts(d); if (!o.length) return { v: String(v) }; const hit = o.find(x => nk(x) === nk(v)); return hit ? { v: hit } : { e: `選択肢にない「${v}」` }; }
+    if (d.type === 'checkbox') { const o = opts(d), arr = Array.isArray(v) ? v : String(v).split(/[、,，\/／]/); const hit = arr.map(x => o.find(y => nk(y) === nk(x))).filter(Boolean); return hit.length ? { v: hit } : { e: '選択肢にない' }; }
+    return { v: typeof v === 'object' ? JSON.stringify(v) : String(v) };
+  };
+  pick(pasteTargets(f), obj).forEach(([fd, v]) => {
+    if (fd.type === 'table') {
+      if (!Array.isArray(v)) { ng.push(`${fd.label}（表の形でない）`); return; }
+      const bad = new Set();
+      ed.data[fd.key] = v.map(row => { const r = {}; pick(fd.columns.filter(c => !PASTE_SKIP.includes(c.type)), row).forEach(([c, cv]) => { const x = conv(c, cv); if ('v' in x) r[c.key] = x.v; else bad.add(`${c.label}：${x.e}`); }); return r; });
+      ok.push(`${fd.label}（${v.length}行）`); keys.push(fd.key); bad.forEach(x => ng.push(`${fd.label}の${x}`));
+      return;
+    }
+    const x = conv(fd, v);
+    if ('v' in x) { ed.data[fd.key] = x.v; ok.push(fd.label); keys.push(fd.key); } else ng.push(`${fd.label}（${x.e}）`);
+  });
+  return { ok, ng, keys };
 }
 function fieldHtml(fd) {
   const req = fd.required ? '<span class="req">必須</span>' : '';
