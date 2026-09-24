@@ -682,17 +682,20 @@ async function loadDemo(){
   const lo = new Date(loMs).toISOString().slice(0,19) + 'Z';
   const hi = new Date(hiMs).toISOString().slice(0,19) + 'Z';
   const base = `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`;
-  const flt  = encodeURIComponent(`fields/ReservationStart ge '${lo}' and fields/ReservationStart lt '${hi}'`);
+  /* ★開始日だけで絞り込まない★ ReservationStart だけで絞ると、表示中の週より
+     前から始まって続いている複数日の予約（終日・長期）が、開始日が古いという
+     理由だけで漏れる（実際にあった：9/22〜10/1の予約が、10月第1週の表示では
+     出てこなかった）。fetchDemoBusy() と同じ「重なっているか」の判定に揃える。 */
+  const flt  = encodeURIComponent(`fields/ReservationStart lt '${hi}' and fields/ReservationEnd gt '${lo}'`);
   let items;
   try {
     items = await gGetAll(`${base}&$filter=${flt}`, { Prefer:'HonorNonIndexedQueriesWarningMayFailRandomly' });
   } catch (e) {
     if (e.status !== 400) { STATUS_ERRS.push('デモ機予約が読めませんでした：' + e.message); return; }
     items = (await gGetAll(base)).filter(it => {
-      const v = (it.fields||{}).ReservationStart;
-      if (!v) return false;
-      const ms = P(v);
-      return ms >= loMs && ms < hiMs;
+      const f = it.fields || {};
+      const rs = f.ReservationStart ? P(f.ReservationStart) : NaN, re = f.ReservationEnd ? P(f.ReservationEnd) : NaN;
+      return !isNaN(rs) && !isNaN(re) && rs < hiMs && re > loMs;
     });
   }
   DEMO = items.map(it => {

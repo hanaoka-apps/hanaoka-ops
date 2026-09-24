@@ -1087,7 +1087,11 @@ async function loadRes(){
   const lo = new Date(loMs).toISOString().slice(0,19) + 'Z';
   const hi = new Date(hiMs).toISOString().slice(0,19) + 'Z';
   const base = `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`;
-  const flt  = encodeURIComponent(`fields/ReservationStart ge '${lo}' and fields/ReservationStart lt '${hi}'`);
+  /* ★開始日だけで絞り込まない★ ReservationStart だけで絞ると、表示範囲より
+     前から始まって続いている複数日・終日の予約が、開始日が古いという理由
+     だけで漏れる（WINDOW_DAYS=90日より前に始まって今も続く予約で実際に
+     起きた：翌週の表示に出てこなかった）。「重なっているか」で判定する。 */
+  const flt  = encodeURIComponent(`fields/ReservationStart lt '${hi}' and fields/ReservationEnd gt '${lo}'`);
 
   let items;
   try {
@@ -1097,10 +1101,9 @@ async function loadRes(){
   } catch (e) {
     if (e.status !== 400) throw e;
     items = (await gGetAll(base)).filter(it => {
-      const v = (it.fields||{}).ReservationStart;
-      if (!v) return false;
-      const ms = P(v);
-      return ms >= loMs && ms < hiMs;
+      const f = it.fields || {};
+      const rs = f.ReservationStart ? P(f.ReservationStart) : NaN, re = f.ReservationEnd ? P(f.ReservationEnd) : NaN;
+      return !isNaN(rs) && !isNaN(re) && rs < hiMs && re > loMs;
     });
     FETCH_MODE = 'client';
   }
