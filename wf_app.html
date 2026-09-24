@@ -406,7 +406,7 @@ const api = DEV ? DevApi : GraphApi;
    ============================================================ */
 async function init() {
   $('reloadBtn').onclick = () => load();
-  $('absBtn').onclick = openAbsence;
+  $('absBtn').onclick = () => openAbsence();
   if (DEV) return startDev();
   if (typeof msal === 'undefined') { loginError('認証ライブラリを読み込めませんでした。ページを再読み込みしてください。'); return; }
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
@@ -531,13 +531,18 @@ function renderAbsenceBtn() {
     b.classList.add('on');
   } else { b.textContent = '不在設定'; b.classList.remove('on'); }
 }
-function openAbsence() {
+/* WF 管理者は、ほかの人の分（例：社長の出張）も設定できる（フローA が役割を確かめる） */
+const isWfAdmin = () => st.M.roles.some(r => r.Title === 'WF管理者' && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn));
+function openAbsence(forUpn) {
   if (!st.me.org) return;
-  const a = absenceOf(st.me.org) || { upn: '', from: '', to: '' };
+  const target = (forUpn && st.M.orgByUpn[forUpn]) || st.me.org, tu = lc(target.UPN), mine = tu === st.me.upn;
+  const a = absenceOf(target) || { upn: '', from: '', to: '' };
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal"><h3>不在設定</h3>
-    <div class="muted">不在の間、あなたに届く承認・後処理の依頼が、代理人にも届きます（あなたも処理できます）。どちらかが処理すると、もう一方の依頼は取り消されます。</div>
-    <label class="l">代理人</label><select id="absWho"><option value=""></option>${st.M.org.filter(p => lc(p.UPN) !== st.me.upn)
+    ${isWfAdmin() ? `<label class="l">だれの不在か</label><select id="absFor">${st.M.org.filter(p => p.Active !== false).map(p => `<option value="${esc(lc(p.UPN))}" ${lc(p.UPN) === tu ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept)}）${lc(p.UPN) === st.me.upn ? '（自分）' : ''}</option>`).join('')}</select>
+      <div class="muted" style="margin-bottom:6px">WF 管理者は、ほかの人の分（出張など）も設定できます</div>` : ''}
+    <div class="muted">不在の間、${mine ? 'あなた' : esc(target.Title) + 'さん'}に届く承認・後処理の依頼が、代理人にも届きます（本人も処理できます）。どちらかが処理すると、もう一方の依頼は取り消されます。代理人も不在のときは、その代理人の代理人へ届きます。</div>
+    <label class="l">代理人</label><select id="absWho"><option value=""></option>${st.M.org.filter(p => lc(p.UPN) !== tu)
       .map(p => `<option value="${esc(lc(p.UPN))}" ${lc(p.UPN) === a.upn ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>
     <div class="row2"><div><label class="l">開始日</label><input id="absFrom" type="date" value="${esc(a.from)}"></div>
       <div><label class="l">終了日</label><input id="absTo" type="date" value="${esc(a.to)}"></div></div>
@@ -547,7 +552,8 @@ function openAbsence() {
   const close = () => bg.remove();
   bg.onclick = e => { if (e.target === bg) close(); };
   $('absClose').onclick = close;
-  const send = payload => { close(); act({ Title: '不在設定', ActionType: '不在設定', PayloadJson: JSON.stringify(payload) }); };
+  if ($('absFor')) $('absFor').onchange = () => { close(); openAbsence($('absFor').value); };
+  const send = payload => { close(); act({ Title: '不在設定' + (mine ? '' : `（${target.Title}）`), ActionType: '不在設定', PayloadJson: JSON.stringify(mine ? payload : { ...payload, for: tu }) }); };
   $('absSave').onclick = () => {
     const who = $('absWho').value, from = $('absFrom').value, to = $('absTo').value;
     if (!who) return alert('代理人を選んでください');

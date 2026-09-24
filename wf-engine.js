@@ -141,13 +141,16 @@
     const p = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
-  function delegateOf(upn, ctx) {
+  function delegateOf(upn, ctx, hop) {
     const p = ctx.orgByUpn[upn];
     if (!p || !p.DelegateUPN) return null;
     const t = ctx.today || ymd(new Date());
     const from = ymd(p.DelegateFrom), to = ymd(p.DelegateTo);
     if ((from && t < from) || (to && t > to)) return null;
-    return p.DelegateUPN.toLowerCase();
+    const d = p.DelegateUPN.toLowerCase();
+    // 代理人も不在なら、その人の代理人へ1段だけたどる（例：社長→室長（出張中）→福田）。元の本人に戻るときはたどらない
+    if (!hop) { const d2 = delegateOf(d, ctx, 1); if (d2 && d2 !== upn) return d2; }
+    return d;
   }
 
   /* ---------- 経路の計算 ---------- */
