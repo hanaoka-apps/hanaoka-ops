@@ -14,7 +14,8 @@
  *   {"kind":"chain", "until":"部門長|役員", "max":3}   上長を順に辿る
  *   {"kind":"role",  "role":"総務部長", "by":"拠点|部署"}  役割マスタから
  *   {"kind":"user",  "upns":["…"]}                    固定（非推奨。役割を使う）
- *   {"kind":"field", "field":"技術部担当者"}            フォームの社員選択項目
+ *   {"kind":"field", "field":"技術部担当者"}            フォームの社員選択項目（"mode":"all" で選んだ全員の承認）
+ *   {"kind":"managersOf", "field":"同行者"}             選んだ人それぞれの直属の上長（既定は全員の承認）
  *   {"kind":"applicant"}                              申請者本人
  * ============================================================= */
 (function (root) {
@@ -99,15 +100,33 @@
     return { groups: [{ upns, mode, need, label: a.role }] };
   }
 
+  // 社員選択の項目の値（1人 or 複数）→ UPN の配列（表の中の列 "表.列" も可）
+  function fieldUpns(field, ctx) {
+    const parts = String(field).split('.');
+    const v = parts.length > 1 ? ((ctx.data || {})[parts[0]] || []).map(r => r && r[parts[1]]) : (ctx.data || {})[field];
+    const out = [];
+    (Array.isArray(v) ? v : splitUpns(v)).forEach(u => { const x = String(u || '').trim().toLowerCase(); if (x && out.indexOf(x) < 0) out.push(x); });
+    return out;
+  }
+
   function resolveAssignee(a, ctx) {
     switch (a.kind) {
       case 'chain':     return { groups: resolveChain(a, ctx) };
       case 'role':      return resolveRole(a, ctx);
       case 'user':      return { groups: [{ upns: (a.upns || []).map(u => u.toLowerCase()), mode: 'any', need: 1 }] };
       case 'field': {
-        const v = (ctx.data || {})[a.field];
-        const upns = (Array.isArray(v) ? v : splitUpns(v)).map(u => String(u).toLowerCase());
-        return { groups: [{ upns, mode: 'any', need: 1 }] };
+        const upns = fieldUpns(a.field, ctx);
+        if (!upns.length) return { groups: [] };
+        return { groups: [{ upns, mode: a.mode === 'all' ? 'all' : 'any', need: a.mode === 'all' ? upns.length : 1 }] };
+      }
+      case 'managersOf': {   // 社員選択の項目で選んだ人それぞれの直属の上長（例: 同行者の上長）
+        const upns = [];
+        fieldUpns(a.field, ctx).forEach(u => {
+          const m = splitUpns((ctx.orgByUpn[u] || {}).ManagerUPNs)[0];
+          if (m && ctx.orgByUpn[m] && ctx.orgByUpn[m].Active !== false && upns.indexOf(m) < 0) upns.push(m);
+        });
+        if (!upns.length) return { groups: [] };
+        return { groups: [{ upns, mode: a.mode === 'any' ? 'any' : 'all', need: a.mode === 'any' ? 1 : upns.length }] };
       }
       case 'applicant': return { groups: [{ upns: [ctx.applicant.UPN.toLowerCase()], mode: 'any', need: 1 }] };
       default: return { groups: [], error: '未対応の担当者指定: ' + a.kind };
@@ -168,7 +187,7 @@
       if (before && !st.upns.length) { st.skipped = true; st.reason = '申請者本人'; continue; }
       const later = new Set(route.slice(i + 1).filter(x => !x.skipped && x.type !== '作業').flatMap(x => x.upns));
       const kept = st.upns.filter(u => !later.has(u));
-      if (kept.length < st.upns.length && st.mode !== 'all') {
+      if (kept.length < st.upns.length) {   // 全員の承認の段でも、後ろで承認する人はここでは外す（同じ人が2回承認しない）
         if (!kept.length) { st.skipped = true; st.reason = '後の段で承認するため'; continue; }
         st.upns = kept;
       }

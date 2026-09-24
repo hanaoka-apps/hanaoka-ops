@@ -88,6 +88,7 @@ h2{font-size:18px;margin:0 0 6px}
 .fld{margin-bottom:14px}.fld label.l{display:block;font-weight:600;margin-bottom:4px}
 details.paste{margin:0 0 14px;padding:10px 14px}details.paste summary{cursor:pointer;font-weight:600;color:var(--pri)}
 .fld.pasted{background:var(--warn-l);border-radius:6px;box-shadow:0 0 0 6px var(--warn-l)}
+.ftabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:2px solid var(--line);padding-bottom:0}.ftabs button{border:1px solid var(--line);border-bottom:none;border-radius:6px 6px 0 0;background:var(--bg);margin-bottom:-2px}.ftabs button.on{background:#fff;border-color:var(--pri);border-bottom:2px solid #fff;color:var(--pri);font-weight:600}.ftabs .cnt{font-size:12px;color:var(--sub)}
 .fld .fwarn{color:var(--warn);background:var(--warn-l);border-radius:5px;padding:4px 8px;margin-top:4px;font-size:12.5px}
 .fld .req{color:var(--ng);margin-left:4px;font-size:12px}
 .fld .opts label{display:inline-flex;align-items:center;gap:4px;margin:2px 14px 2px 0;font-weight:normal}
@@ -720,7 +721,7 @@ function downloadCsv(items) {
 /* ---------- 詳細：共通部品 ---------- */
 /* ctx: { req: 申請番号, app: 申請者UPN }（添付を開くときの場所探しに使う） */
 function dataCard(form, data, prev, ctx = {}) {
-  const fields = (form ? form.fields : Object.keys(data).map(k => ({ key: k, label: k, type: 'text' }))).filter(f => f.type !== 'note' && (!f.showIf || WFEngine.evalCond(f.showIf, { data })));
+  const fields = (form ? form.fields : Object.keys(data).map(k => ({ key: k, label: k, type: 'text' }))).filter(f => f.type !== 'note' && f.type !== 'tabs' && (!f.showIf || WFEngine.evalCond(f.showIf, { data })));
   const fileNames = v => (v || []).map(x => x.name).join('、') || '（なし）';
   const show = (f, v) => {
     if (v == null || v === '' || (f.type === 'file' && !v.length)) return '<span class="muted">（未入力）</span>';
@@ -761,8 +762,8 @@ document.addEventListener('mouseover', e => {
 });
 document.addEventListener('scroll', () => { const t = $('tip'); if (t) t.style.display = 'none'; }, true);
 function tableView(f, rows) {
-  return `<table class="tbl"><tr>${f.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr>` +
-    rows.map(r => `<tr>${f.columns.map(c => `<td>${esc(c.type === 'currency' || c.type === 'calc' ? yen(r[c.key]) : r[c.key])}</td>`).join('')}</tr>`).join('') + '</table>';
+  return `<table class="tbl"><tr><th>No.</th>${f.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr>` +
+    rows.map((r, i) => `<tr><td class="muted">${i + 1}</td>${f.columns.map(c => `<td>${esc(c.type === 'currency' || c.type === 'calc' ? yen(r[c.key]) : c.type === 'user' ? nameOf(r[c.key]) : r[c.key])}</td>`).join('')}</tr>`).join('') + '</table>';
 }
 function returnBanner(lr) {
   if (!lr) return '';
@@ -1169,6 +1170,8 @@ function renderEditor(main) {
   box.addEventListener('click', e => {
     const del = e.target.closest('button[data-fdel]');
     if (del) { removeFile(fdOf(del.dataset.k), del.dataset.fdel); return; }
+    const tb = e.target.closest('button[data-tab]');
+    if (tb) { ed.tabs = ed.tabs || {}; ed.tabs[tb.dataset.tk] = Number(tb.dataset.tab); applyConditions(); return; }
     const b = e.target.closest('button[data-act]'); if (!b) return;
     const fd = f.fields.find(x => x.key === b.dataset.k); readForm();
     const rows = ed.data[fd.key] = ed.data[fd.key] || [];
@@ -1185,7 +1188,7 @@ function renderEditor(main) {
    ② 申請者が Copilot に請求書・領収書などを添付して指示を送る
    ③ 返ってきた答えを貼り付けると、項目に反映する（選択肢にない値・日付や金額として読めない値は反映せず、知らせる）
    フォームごとに止めるときは、フォーム定義に "CopilotPaste": false */
-const PASTE_SKIP = ['file', 'note', 'calc', 'user'];
+const PASTE_SKIP = ['file', 'note', 'calc', 'user', 'tabs'];
 function pasteTargets(f) { return f.fields.filter(fd => fd.label && !PASTE_SKIP.includes(fd.type)); }
 function pasteCardHtml(f) {
   if (f.CopilotPaste === false || !pasteTargets(f).length) return '';
@@ -1282,6 +1285,7 @@ function fieldHtml(fd) {
     case 'user': inp = `<select id="${id}"><option value=""></option>${st.M.org.map(p => `<option value="${esc(lc(p.UPN))}">${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>`; break;
     case 'calc': inp = `<div id="${id}" style="font-weight:600;font-size:15px">0</div>`; break;
     case 'note': return `<div class="fld" data-k="${esc(fd.key || '')}"><div class="desc">${esc(fd.text || fd.label)}</div></div>`;
+    case 'tabs': return `<div class="fld ftabs" data-k="${esc(fd.key)}">${fd.tabs.map((t, i) => `<button type="button" data-tab="${i}" data-tk="${esc(fd.key)}">${esc(t.label)}<span class="cnt"></span></button>`).join('')}</div>`;
     case 'file': {
       const lim = fileLimits();
       inp = `<div class="fdrop" data-drop="${esc(fd.key)}"><div id="${id}"></div>
@@ -1291,8 +1295,8 @@ function fieldHtml(fd) {
     }
     case 'table': {
       const rows = (st.editor.data[fd.key] || []);
-      inp = `<table class="tbl"><tr>${fd.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}<th></th></tr>` +
-        rows.map((r, i) => `<tr>${fd.columns.map(c => `<td>${c.type === 'calc' ? `<span data-cell="${fd.key}.${i}.${c.key}"></span>` : c.type === 'select' ? `<select data-cell="${fd.key}.${i}.${c.key}"><option value=""></option>${opts(c).map(o => `<option>${esc(o)}</option>`).join('')}</select>` : `<input data-cell="${fd.key}.${i}.${c.key}" type="${['number', 'currency'].includes(c.type) ? 'number' : c.type === 'date' ? 'date' : 'text'}" placeholder="${esc(c.placeholder || '')}">`}</td>`).join('')}<td><button data-act="del" data-k="${fd.key}" data-i="${i}">削除</button></td></tr>`).join('') +
+      inp = `<table class="tbl"><tr><th>No.</th>${fd.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}<th></th></tr>` +
+        rows.map((r, i) => `<tr><td class="muted">${i + 1}</td>${fd.columns.map(c => `<td>${c.type === 'calc' ? `<span data-cell="${fd.key}.${i}.${c.key}"></span>` : c.type === 'select' ? `<select data-cell="${fd.key}.${i}.${c.key}"><option value=""></option>${opts(c).map(o => `<option>${esc(o)}</option>`).join('')}</select>` : c.type === 'user' ? `<select data-cell="${fd.key}.${i}.${c.key}"><option value=""></option>${st.M.org.map(p => `<option value="${esc(lc(p.UPN))}">${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>` : `<input data-cell="${fd.key}.${i}.${c.key}" type="${['number', 'currency'].includes(c.type) ? 'number' : c.type === 'date' ? 'date' : 'text'}" placeholder="${esc(c.placeholder || '')}">`}</td>`).join('')}<td><button data-act="del" data-k="${fd.key}" data-i="${i}">削除</button></td></tr>`).join('') +
         `</table><button data-act="add" data-k="${fd.key}" style="margin-top:4px">＋ 行を追加</button>`;
       break;
     }
@@ -1385,7 +1389,7 @@ function readForm() {
   const ed = st.editor;
   ed.form.fields.forEach(fd => {
     const id = 'f_' + fd.key;
-    if (['note', 'file', 'calc'].includes(fd.type)) return;
+    if (['note', 'file', 'calc', 'tabs'].includes(fd.type)) return;
     if (fd.type === 'checkbox') ed.data[fd.key] = [...document.querySelectorAll(`[name="${id}"]:checked`)].map(x => x.value);
     else if (fd.type === 'radio') ed.data[fd.key] = (document.querySelector(`[name="${id}"]:checked`) || {}).value || '';
     else if (fd.type === 'table') ed.data[fd.key] = (ed.data[fd.key] || []).map((r, i) => {
@@ -1421,6 +1425,11 @@ function calcExpr(expr, scope) {
   const src = expr
     .replace(/lookup\(\s*([\w.]+)\s*,\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)/g, (_, k, i, g, y) => String(lookupRule(k, scope, i, g, y)))
     .replace(/years\(\s*(\w+)\s*,\s*(\w+)\s*\)/g, (_, a, b) => String(fullYears(scope[a], scope[b])))
+    // sumIf(表.列, 条件の列, "値")：条件の列がその値の行だけ合計（例: 会社カードで払った分）
+    .replace(/sumIf\(\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*,\s*(\w+)\s*,\s*["']([^"']*)["']\s*\)/g, (_, t, c, k, v) => String((scope[t] || []).filter(r => String(r[k] ?? '') === v).reduce((a, r) => a + (Number(r[c]) || 0), 0)))
+    .replace(/max\(([A-Za-z_]\w*)\.([A-Za-z_]\w*)\)/g, (_, t, c) => String((scope[t] || []).reduce((a, r) => Math.max(a, Number(r[c]) || 0), 0)))
+    // rate(設定キー, 項目)：設定の表 {"値": 金額} から、項目の値に当たる金額（例: 日当の種類 → 金額）
+    .replace(/rate\(\s*([\w.]+)\s*,\s*(\w+)\s*\)/g, (_, k, f) => String(Number(pj(st.M.settings[k], {})[scope[f]]) || 0))
     .replace(/sum\(([A-Za-z_]\w*)\.([A-Za-z_]\w*)\)/g, (_, t, c) => String((scope[t] || []).reduce((a, r) => a + (Number(r[c]) || 0), 0)))
     .replace(/[A-Za-z_]\w*/g, k => String(Number(scope[k]) || 0));
   if (!/^[\d+\-*/().\s]*$/.test(src)) return 0;
@@ -1454,7 +1463,11 @@ function preview() {
 function validate(ed) {
   const bad = [];
   document.querySelectorAll('.fld.err').forEach(x => x.classList.remove('err'));
-  const mark = (fd, msg) => { bad.push(msg); const el = document.querySelector(`.fld[data-k="${fd.key}"]`); if (el) el.classList.add('err'); };
+  const mark = (fd, msg) => {
+    bad.push(msg);
+    const tb = bad.length === 1 && tabOf(fd.key); if (tb) { ed.tabs = ed.tabs || {}; ed.tabs[tb.key] = tb.i; applyConditions(); }   // 最初の誤りがあるタブを開く
+    const el = document.querySelector(`.fld[data-k="${fd.key}"]`); if (el) el.classList.add('err');
+  };
   ed.form.fields.filter(fd => isShown(fd, ed.data)).forEach(fd => {
     const v = ed.data[fd.key];
     const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
@@ -1475,12 +1488,32 @@ function isRequired(fd, data) { return !!fd.required || (!!fd.requiredIf && WFEn
 function applyConditions() {
   const ed = st.editor; if (!ed) return;
   ed.form.fields.filter(fd => fd.optionsBy).forEach(refreshOptions);
+  renderTabs(ed);
   ed.form.fields.forEach(fd => {
     const el = fd.key && document.querySelector(`.fld[data-k="${fd.key}"]`); if (!el) return;
-    el.style.display = isShown(fd, ed.data) ? '' : 'none';
+    const tb = tabOf(fd.key);
+    el.style.display = isShown(fd, ed.data) && (!tb || ((ed.tabs || {})[tb.key] || 0) === tb.i) ? '' : 'none';
     const r = el.querySelector('[data-reqif]'); if (r) r.style.display = isRequired(fd, ed.data) ? '' : 'none';
     const w = fd.warn && $('w_' + fd.key);
     if (w) { const on = WFEngine.evalCond({ field: fd.key, op: fd.warn.op, value: fd.warn.value }, condCtx(ed.data)); w.style.display = on ? '' : 'none'; w.textContent = on ? '⚠ ' + fd.warn.text : ''; }
+  });
+}
+/* ---------- タブ（入力画面を切り替えて見せる。項目は全部まとめて1件の申請）
+   { "key": "_tabs", "type": "tabs", "tabs": [ { "label": "交通費", "fields": ["transport"] }, … ] }
+   タブに入れた項目は、そのタブを選んだときだけ表示する。タブには入力済みの件数を出す */
+function tabOf(k) {
+  for (const fd of (st.editor ? st.editor.form.fields : [])) if (fd.type === 'tabs') { const i = fd.tabs.findIndex(t => (t.fields || []).includes(k)); if (i >= 0) return { key: fd.key, i }; }
+  return null;
+}
+function renderTabs(ed) {
+  ed.form.fields.filter(fd => fd.type === 'tabs').forEach(fd => {
+    const cur = (ed.tabs || {})[fd.key] || 0;
+    document.querySelectorAll(`button[data-tk="${CSS.escape(fd.key)}"]`).forEach(b => {
+      const t = fd.tabs[Number(b.dataset.tab)];
+      const n = (t.fields || []).reduce((a, k) => { const v = ed.data[k]; return a + (Array.isArray(v) ? v.filter(r => r && Object.values(r).some(x => x !== '' && x != null && x !== 0)).length : 0); }, 0);
+      b.classList.toggle('on', Number(b.dataset.tab) === cur);
+      b.querySelector('.cnt').textContent = n ? `（${n}）` : '';
+    });
   });
 }
 /* 表のセル（入力欄・選択肢） */
