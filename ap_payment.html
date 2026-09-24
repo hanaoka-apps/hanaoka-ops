@@ -127,7 +127,7 @@ function yen(n){return '¥'+(Number(n)||0).toLocaleString();}
 function snack(m,e){const el=document.getElementById('snackbar');el.textContent=m;el.style.background=e?'#c0392b':'#323232';el.style.display='block';setTimeout(()=>el.style.display='none',4000);}
 
 async function showApp(){document.getElementById('login-view').style.display='none';document.getElementById('app-view').style.display='block';document.getElementById('user-name').textContent=acct.name||acct.username;
-  initMonth();loadCfg();await resolveLists();await loadShiharai();await reload();}
+  initMonth();await fetchCfg();loadCfg();await resolveLists();await loadShiharai();await reload();}
 function initMonth(){const s=document.getElementById('month-select');const n=new Date();for(let i=-1;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v;if(i===0)o.selected=true;s.appendChild(o);}var qm=new URLSearchParams(location.search).get('month');if(qm){if(!Array.prototype.some.call(s.options,function(o){return o.value===qm;})){var oo=document.createElement('option');oo.value=qm;oo.textContent=qm;s.insertBefore(oo,s.firstChild);}s.value=qm;}}
 function month(){return document.getElementById('month-select').value;}
 function setDue(d){dueFilter=d;renderChips();renderList();}
@@ -253,10 +253,18 @@ function renderList(){
 }
 
 // ===== Ph4：全銀協 総合振込 固定長120B（御社EB実ファイルの配置に一致）=====
-const ZCFG_DEF={itaku:'4828535100',itakuName:'ﾊﾅｵｶｼﾔﾘﾖｳ(ｶ',bankNo:'0009',bankName:'ﾐﾂｲｽﾐﾄﾓ',branchNo:'779',branchName:'ｳｴﾉ',acctType:'2',acctNo:'0274005'};
-function loadCfg(){let c;try{c=Object.assign({},ZCFG_DEF,JSON.parse(localStorage.getItem('zengin_cfg')||'{}'));}catch{c={...ZCFG_DEF};}
-  ['itaku','itakuName','bankNo','bankName','branchNo','branchName','acctType','acctNo'].forEach(k=>{const el=document.getElementById('z-'+k);if(el)el.value=c[k];});return c;}
-function saveCfg(){const c={};['itaku','itakuName','bankNo','bankName','branchNo','branchName','acctType','acctNo'].forEach(k=>c[k]=document.getElementById('z-'+k).value);localStorage.setItem('zengin_cfg',JSON.stringify(c));snack('振込元設定を保存しました');}
+// 振込元（委託者コード・口座など）は HTML に書かず、支払管理サイトの AP_Setting（総務だけが開けるサイト）に持つ。「保存」でそこを更新する
+const ZCFG_KEYS=['itaku','itakuName','bankNo','bankName','branchNo','branchName','acctType','acctNo'];
+let ZCFG={},ZCFG_ID=null;
+async function fetchCfg(){try{const d=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='zengin.from');
+  if(it){ZCFG_ID=it.id;ZCFG=JSON.parse(it.fields.Value||'{}');}else snack('振込元設定（AP_Setting の zengin.from）がありません。「振込元設定」で入力して保存してください',true);
+  try{localStorage.removeItem('zengin_cfg');}catch{} // 以前このブラウザに保存していた値は使わない
+}catch(e){snack('振込元設定を読めません: '+e.message,true);}}
+function loadCfg(){const c={};ZCFG_KEYS.forEach(k=>{c[k]=ZCFG[k]==null?'':String(ZCFG[k]);const el=document.getElementById('z-'+k);if(el)el.value=c[k];});return c;}
+async function saveCfg(){const c={};ZCFG_KEYS.forEach(k=>c[k]=document.getElementById('z-'+k).value);
+  try{if(ZCFG_ID)await gpatch(`/sites/${AP_SITE}/lists/AP_Setting/items/${ZCFG_ID}/fields`,{Value:JSON.stringify(c)});else{const r=await gpost(`/sites/${AP_SITE}/lists/AP_Setting/items`,{fields:{Title:'zengin.from',Value:JSON.stringify(c)}});ZCFG_ID=r.id;}
+    ZCFG=c;snack('振込元設定を保存しました（総務の全員に反映）');}catch(e){snack('保存できません: '+e.message,true);}}
+function cfgReady(c){if(!c.itaku||!c.bankNo||!c.branchNo||!c.acctNo){snack('振込元設定（委託者コード・銀行・支店・口座番号）が未設定です',true);return false;}return true;}
 function sjisByte(ch){const c=ch.charCodeAt(0);if(c>=0x20&&c<=0x7E)return c;if(c>=0xFF61&&c<=0xFF9F)return c-0xFF61+0xA1;if(ch==='　')return 0x20;return 0x3F;}
 function toBytes(s){const o=[];for(const ch of s)o.push(sjisByte(ch));return o;}
 function padR(s,n){s=String(s==null?'':s);if(s.length>n)s=s.slice(0,n);return s.padEnd(n,' ');}
@@ -279,7 +287,7 @@ function buildZengin(list,ym,due,cfg){
 function downloadBytes(bytes,fname){const blob=new Blob([bytes],{type:'text/plain'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function ts(){const d=new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
 async function outputZengin(){
-  const ym=month(),due=dueFilter,cfg=loadCfg();
+  const ym=month(),due=dueFilter,cfg=loadCfg();if(!cfgReady(cfg))return;
   const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due&&(p.f[F(PI,'支払手段')]||'')==='総合振込'&&(p.f[F(PI,'承認状態')]||'')===FINAL&&!['先行支払済','支払済'].includes(p.f[F(PI,'支払状態')]||''));
   if(!list.length){snack('総合振込・'+FINAL+'・未払いの支払がありません（承認済/先行支払済を除く）');return;}
   const valid=list.filter(p=>p.f[F(PI,'銀行コード')]),missing=list.length-valid.length;
@@ -294,7 +302,7 @@ async function outputZengin(){
   snack(`全銀出力：${count}件 ${yen(total)}`);
 }
 async function outputDensai(){
-  const ym=month(),due=dueFilter,cfg=loadCfg();
+  const ym=month(),due=dueFilter,cfg=loadCfg();if(!cfgReady(cfg))return;
   const list=PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due&&(p.f[F(PI,'支払手段')]||'')==='でんさい'&&(p.f[F(PI,'承認状態')]||'')===FINAL&&!['先行支払済','支払済'].includes(p.f[F(PI,'支払状態')]||''));
   if(!list.length){snack('でんさい・'+FINAL+'・未払いの支払がありません');return;}
   if(!Object.keys(SH.byCode).length){snack('仕入先支払マスタ未配置（/BILLS/masters/shiharai_master.csv）',true);return;}
