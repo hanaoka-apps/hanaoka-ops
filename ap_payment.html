@@ -4,6 +4,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>支払一覧・承認 | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="ap_smile.js"></script>
 <script src="nav.js" defer></script>
 <style>
 :root{--primary:#1a5fa8;--border:#d7dde6;--muted:#6b7683;--card-bg:#fff;--bg:#f4f6f9;--danger:#c0392b;--ok:#2e7d32;--warn:#e67e22}
@@ -79,6 +80,7 @@ const STAGES=['起票','安部確認済','碓井確認済','福田承認済']; /
 const FINAL='福田承認済'; // 現状の最終承認（Ph4出力の対象）
 let msalApp=null,acct=null,dueFilter='月末';
 let PI={fmap:{},id:null,items:[]}, INV={fmap:{},id:null,items:[]}, PM={fmap:{},id:null,items:[]}, VB={fmap:{},id:null,byCode:{}};
+let SP={fmap:{},id:null};  // AP_SmilePay（仕入の取り込み）。無ければ従来どおり仕入の突合から作る
 
 async function boot(){msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();const a=msalApp.getAllAccounts();if(a.length){acct=a[0];msalApp.setActiveAccount(acct);await showApp();}else document.getElementById('login-view').style.display='block';}
 async function signIn(){try{const r=await msalApp.loginPopup({scopes:SCOPES});acct=r.account;msalApp.setActiveAccount(acct);await showApp();}catch(e){if(e.errorCode!=='user_cancelled')snack('サインインエラー: '+e.message,true);}}
@@ -94,6 +96,7 @@ const SM_FILE='仕入先マスタ.csv';
 let SH={byCode:{}};  // 仕入先マスタ（取決条件・サイト・でんさい利用者番号・口座・基準額）
 function parseCSV(text){if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);const rows=[];let row=[],cur='',q=false;for(let i=0;i<text.length;i++){const c=text[i];if(q){if(c==='"'){if(text[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=c;}else{if(c==='"')q=true;else if(c===','){row.push(cur);cur='';}else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur='';}else if(c==='\r'){}else cur+=c;}}if(cur!==''||row.length){row.push(cur);rows.push(row);}return rows;}
 const normCode=c=>String(c==null?'':c).trim().replace(/^0+/,'');
+const padDen=s=>{s=String(s||'').replace(/\D/g,'');return s?s.padStart(9,'0'):'';};  // でんさい利用者番号は9桁（CSV では先頭の0が落ちる）
 async function loadShiharai(){
   try{
     const t=await token();
@@ -108,7 +111,7 @@ async function loadShiharai(){
     const v=(r2,i)=>(i>=0&&i<r2.length?(r2[i]||''):'');
     SH.byCode={};
     for(let i=1;i<rows.length;i++){const r2=rows[i];if(!r2||!v(r2,ci.code))continue;
-      SH.byCode[normCode(v(r2,ci.code))]={term:v(r2,ci.term),termc:v(r2,ci.termc),site:v(r2,ci.site),base:Number(v(r2,ci.base))||0,den:v(r2,ci.den),bank:v(r2,ci.bank),branch:v(r2,ci.branch),atype:v(r2,ci.atype),ano:v(r2,ci.ano),kana:v(r2,ci.kana),name1:v(r2,ci.name1),ryaku:v(r2,ci.ryaku),janc:v(r2,ci.janc),jann:v(r2,ci.jann),scomc:v(r2,ci.scomc),scomn:v(r2,ci.scomn),mjc:v(r2,ci.mjc),mjn:v(r2,ci.mjn),rawcode:v(r2,ci.code)};}
+      SH.byCode[normCode(v(r2,ci.code))]={term:v(r2,ci.term),termc:v(r2,ci.termc),site:v(r2,ci.site),base:Number(v(r2,ci.base))||0,den:padDen(v(r2,ci.den)),bank:v(r2,ci.bank),branch:v(r2,ci.branch),atype:v(r2,ci.atype),ano:v(r2,ci.ano),kana:v(r2,ci.kana),name1:v(r2,ci.name1),ryaku:v(r2,ci.ryaku),janc:v(r2,ci.janc),jann:v(r2,ci.jann),scomc:v(r2,ci.scomc),scomn:v(r2,ci.scomn),mjc:v(r2,ci.mjc),mjn:v(r2,ci.mjn),rawcode:v(r2,ci.code)};}
   }catch(e){/* 取得失敗なら でんさい/判定時に警告 */}
 }
 // 支払期日：EOMONTH(基準日,n)＝基準月+nヶ月の末日。ユーザー提供のSWITCHロジック。
@@ -137,7 +140,8 @@ async function resolveLists(){
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);
   const find=n=>ls.value.find(x=>x.displayName===n);
   PI.id=find('AP_PaymentInstruction').id; INV.id=find('AP_Invoice').id; PM.id=find('AP_PurchaseMatch').id; VB.id=find('AP_VendorBank').id;
-  for(const o of [PI,INV,PM,VB]){const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);o.fmap={};c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
+  const sp=find('AP_SmilePay');if(sp)SP.id=sp.id;
+  for(const o of [PI,INV,PM,VB].concat(SP.id?[SP]:[])){const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);o.fmap={};c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
 }
 const F=(o,d)=>o.fmap[d]||d;
 async function fetchAll(listId){let all=[],n=`/sites/${AP_SITE}/lists/${listId}/items?$expand=fields&$top=500`;while(n){const d=await gget(n);all=all.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}return all;}
@@ -169,8 +173,28 @@ async function generate(){
     if((iv(f,'対象年月')||'')!==ym||(iv(f,'支払日区分')||'')!==due)return;
     const pst=iv(f,'支払ステータス')||'';if(pst!=='確定済（ロック）'&&pst!=='先行支払済')return;
     add(iv(f,'支払先コード')||'',iv(f,'支払先名')||'',iv(f,'支払手段')||'総合振込',Number(iv(f,'金額_税込'))||0,cat.indexOf('工場')>=0?'工場':'本社',x.id,pst==='先行支払済',iv(f,'先行支払日'));});
-  // 仕入：受領済・突合済（締め回=月末のみ。仕入先ごと）
-  if(due==='月末'){
+  // 仕入：「仕入の取り込み」（AP_SmilePay）で確認済みの行から。分け方（振込・でんさい・手形・相殺・海外送金）ごとに1行
+  const note=[];
+  const smile=SP.id?(await fetchAll(SP.id)).map(it=>Object.assign({},it.fields,{_id:it.id})).filter(f=>f[F(SP,'決済月')]===ym):[];
+  if(smile.length){
+    // 決まり（手数料・サイトと期日）は AP_Setting の smile.rules（仕入の取り込みと同じ）
+    const rs=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);const ri=(rs.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
+    if(!ri){snack('AP_Setting に smile.rules がありません（Provision-SmileAP.ps1 -Apply）',true);return;}APSmile.setRules(JSON.parse(ri.fields.Value||'{}'));
+    const g=(f,d)=>f[F(SP,d)];const MM={振込:'総合振込',でんさい:'でんさい',手形:'手形',相殺:'相殺',海外送金:'海外送金'};
+    let unchecked=0;
+    smile.forEach(f=>{if((g(f,'支払日区分')||'月末')!==due||g(f,'取り込みの状態')==='なくなった'||!(Number(g(f,'支払額'))>0))return;
+      if(g(f,'確認済み')!==true){unchecked++;return;}
+      const code=g(f,'仕入先コード'),name=g(f,'仕入先名'),dept=g(f,'決裁の部門')||'',ov=(()=>{try{return JSON.parse(g(f,'分け方の上書き')||'null');}catch{return null;}})();
+      let lines;
+      if(ov&&ov.length)lines=ov.map(l=>{const d=(l.method==='でんさい'||l.method==='手形')?APSmile.dueDate(ym.replace('/','-'),l.site):'';return {method:l.method,amount:Number(l.amount)||0,due:d};});
+      else{lines=[];const tr=Number(g(f,'振込（計算）'))||0,dn=Number(g(f,'でんさい（計算）'))||0;
+        if(tr)lines.push({method:'振込',amount:tr,due:''});if(dn)lines.push({method:g(f,'でんさいか手形か')||'でんさい',amount:dn,due:g(f,'期日')||''});}
+      const trSum=lines.filter(l=>l.method==='振込').reduce((s,l)=>s+l.amount,0);
+      const fo=g(f,'手数料の上書き');let fee=(fo!==''&&fo!=null)?Number(fo)||0:(ov&&ov.length?APSmile.transferFeeOf(trSum,g(f,'手数料区分')):Number(g(f,'振込手数料（計算）'))||0);
+      lines.forEach(l=>{if(!l.amount)return;const k=code+'|'+MM[l.method]+'|N';const lf=l.method==='振込'?fee:0;fee-=lf;
+        drafts[k]={code,name,method:MM[l.method],amount:l.amount-lf,fee:lf,loc:dept==='工場'?'工場':'本社',ids:[],prepaid:false,ppdate:'',due:l.due,dept,smileId:String(f._id),source:'仕入（SMILE取込）'};});});
+    if(unchecked)note.push(`⚠ 仕入の取り込みで未確認の ${unchecked} 社は作っていません（確認してから、もう一度「支払指図を生成」）`);
+  }else if(due==='月末'){
     PM.items.forEach(x=>{const f=x.f;if((f[F(PM,'対象年月')]||'')!==ym)return;const stt=f[F(PM,'突合状態')]||'';if(stt!=='一致'&&stt!=='差異あり')return;if(f[F(PM,'請求書受領')]!==true)return;
       const code=(f[F(PM,'仕入先コード')]||'').trim();const name=f[F(PM,'仕入先名')]||'';const amt=(Number(f[F(PM,'請求書税込')])||0)+(Number(f[F(PM,'調整額')])||0);if(!amt)return;
       // 手段は仕入先マスタで判定（請求書の支払手段ではない）：取決条件=でんさい かつ 金額>基準額 → でんさい、それ以外 → 総合振込
@@ -178,7 +202,7 @@ async function generate(){
       const method=(m&&m.term==='でんさい'&&(m.base<=0||amt>m.base))?'でんさい':'総合振込';
       add(code,name,method,amt,'',null);});
   }
-  const keys=Object.keys(drafts).filter(k=>!exist.has(k));
+  const keys=Object.keys(drafts).filter(k=>!exist.has(k.replace(/\|[PN]$/,'')));  // 既存は「支払先|手段」で判定
   if(!Object.keys(drafts).length){snack(`${ym} ${due}：対象なし（経費は確定済ロック・仕入は受領済が対象）`);return;}
   const log=[];let made=0,skip=Object.keys(drafts).length-keys.length;
   for(const k of keys){const dft=drafts[k];const snap=vbSnap(dft.code);
@@ -193,9 +217,13 @@ async function generate(){
     if(dft.prepaid&&dft.ppdate)fields[F(PI,'実支払日')]=dft.ppdate;
     if(dft.prepaid)fields[F(PI,'メモ')]='経費側で先行支払済（急ぎ振込）';
     if(dft.method==='総合振込'&&!snap.BankCode&&!dft.prepaid)fields[F(PI,'メモ')]='⚠振込先口座未登録（AP_VendorBank）';
+    // 仕入の取り込みから作る行（列が無いサイトでは付けない）
+    const setIf=(d,v)=>{if(PI.fmap[d]&&v!=null&&v!=='')fields[PI.fmap[d]]=v;};
+    setIf('元',dft.source||(dft.ids.length?'経費':'仕入（突合）'));setIf('期日',dft.due);setIf('決裁の部門',dft.dept);setIf('AP_SmilePayの行ID',dft.smileId);
+    if(dft.fee){setIf('振込手数料',dft.fee);fields[F(PI,'メモ')]=(fields[F(PI,'メモ')]?fields[F(PI,'メモ')]+' ':'')+`振込手数料 ${dft.fee} 円を差し引き（先方負担）`;}
     try{await gpost(`/sites/${AP_SITE}/lists/${PI.id}/items`,{fields});made++;log.push(`✅ ${dft.name}／${dft.method}／${yen(dft.amount)}`);}catch(e){log.push(`❌ ${dft.name}：${e.message}`);}
   }
-  const el=document.getElementById('gen-result');el.style.display='block';el.textContent=`【${ym} ${due} 生成】作成${made} / 既存スキップ${skip}\n`+log.join('\n');
+  const el=document.getElementById('gen-result');el.style.display='block';el.textContent=`【${ym} ${due} 生成】作成${made} / 既存スキップ${skip}\n`+note.concat(log).join('\n');
   snack(`生成：作成${made} スキップ${skip}`);await reload();
 }
 
@@ -311,7 +339,7 @@ async function outputDensai(){
   for(const p of list){const f=p.f;const code=normCode(f[F(PI,'支払先コード')]);const m=SH.byCode[code];
     if(!m){warns.push(`${f[F(PI,'支払先名')]}：マスタ未登録(コード${f[F(PI,'支払先コード')]})`);continue;}
     if(!m.den){warns.push(`${f[F(PI,'支払先名')]}：でんさい利用者番号なし`);continue;}
-    const due2=densaiDue(base,m.site);
+    const dd=f[F(PI,'期日')];const due2=dd?new Date(dd+'T00:00:00'):densaiDue(base,m.site);  // 仕入の取り込みで決めた期日を優先
     if(!due2){warns.push(`${f[F(PI,'支払先名')]}：サイト「${m.site}」の期日ルール未定義（手動確認）`);continue;}
     const amt=Number(f[F(PI,'支払額')])||0;total+=amt;
     const y=due2.getFullYear(),mo=String(due2.getMonth()+1).padStart(2,'0'),da=String(due2.getDate()).padStart(2,'0');
@@ -340,7 +368,7 @@ const SMILE_HEAD=(()=>{const core=['伝票日付','伝票No','処理連番','行
   const tail=['振込区分','チェックマーク区分','PORTNeT伝票区分','PORTNeT連番1','PORTNeT連番2','PORTNeT行番号1','PORTNeT行番号2','通貨コード','レート種類','レート','支払額(外貨)','決算時評価替区分','仕入円貨金額','仕入レート','仕入レート種類','でんさいデータ作成済区分'];
   return core.concat(ext,tail);})();
 function kubunOf(method){ // 取引区分＝取引区分属性: 総合振込2 / でんさい(手形)4 / 相殺3
-  if(method==='でんさい')return '4';if(method==='相殺')return '3';return '2';
+  if(method==='でんさい'||method==='手形')return '4';if(method==='相殺')return '3';return '2';
 }
 function smileRow(o){const r=new Array(SMILE_HEAD.length).fill('');
   const set=(name,val)=>{const i=SMILE_HEAD.indexOf(name);if(i>=0)r[i]=(val==null?'':String(val));};
@@ -364,12 +392,16 @@ async function outputSmileDenpyo(){
     const denpyoDate=(f[F(PI,'実支払日')]||'').replace(/-/g,'')||ym6+'30';
     const loc=(f[F(PI,'拠点')]||'本社');const deptc=loc==='工場'?'003110':'001110';  // 粗く：工場全体/全社
     const pm=PM.items.find(x=>x.f[F(PM,'対象年月')]===ym&&normCode(x.f[F(PM,'仕入先コード')])===code);
-    const adj=pm?Math.round(Number(pm.f[F(PM,'調整額')])||0):0;
+    const fromSmile=f[F(PI,'元')]==='仕入（SMILE取込）';  // 取り込みの額は SMILE の残高そのものなので端数調整は足さない
+    const adj=(pm&&!fromSmile)?Math.round(Number(pm.f[F(PM,'調整額')])||0):0;
+    const feeD=Math.round(Number(f[F(PI,'振込手数料')])||0);  // 先方負担の振込手数料（支払額は差し引いた後）
     const total=Math.round(Number(f[F(PI,'支払額')])||0);const mainAmt=total-adj;  // 本体（請求書合計）
-    let dueday='0';if(method==='でんさい'){const d=densaiDue(base,m.site);if(d)dueday=ymd8(d);else warns.push(`${f[F(PI,'支払先名')]}：でんさいサイト未定義`);}
+    let dueday='0';if(method==='でんさい'||method==='手形'){const dd=f[F(PI,'期日')];const d=dd?new Date(dd+'T00:00:00'):densaiDue(base,m.site);if(d)dueday=ymd8(d);else warns.push(`${f[F(PI,'支払先名')]}：でんさいサイト未定義`);}
     const name1=m.name1||f[F(PI,'支払先名')];const rcode=(m.rawcode||code);let line=0;
     rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:kubunOf(method),amount:mainAmt,dueday}));sum+=mainAmt;
     if(adj!==0){rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:'6',amount:adj,dueday:'0',memo:'消費税端数調整'}));sum+=adj;}
+    // 先方負担の振込手数料は「値引」（取引区分5）で記録する（今の SMILE の付け方と同じ：振込は差し引いた後の額）
+    if(feeD){rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:'5',amount:feeD,dueday:'0',memo:'振込手数料（先方負担）'}));sum+=feeD;}
   }
   const out=[SMILE_HEAD.join('\t'),...rows].join('\r\n')+'\r\n';
   const body=new TextEncoder().encode(out);const bytes=new Uint8Array(3+body.length);bytes.set([0xEF,0xBB,0xBF]);bytes.set(body,3);  // UTF-8 BOM

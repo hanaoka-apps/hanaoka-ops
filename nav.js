@@ -7,6 +7,7 @@
       apps: [
         { f: 'ap_dashboard.html',      l: 'ホーム' },
         { f: 'ap_review.html',         l: '経費のチェック' },
+        { f: 'ap_smile_import.html',   l: '仕入の取り込み' },
         { f: 'ap_purchase_match.html', l: '仕入のチェック' },
         { f: 'ap_entry.html',          l: '手入力' },
         { f: 'ap_recurring.html',      l: '毎月の支払' },
