@@ -2348,10 +2348,12 @@ function renderRepAchievement(){
     })
     .filter(x=>x.plan > 0)
     .sort((a,b)=>{
-      // 拠点順が違えばそれで比較
-      if (a._bo !== b._bo) return a._bo - b._bo;
-      // 同じ拠点内は達成率降順
-      return (b.pct||0)-(a.pct||0);
+      // 全担当を達成率の高い順に並べる (拠点でグループ分けしない)
+      // 在庫分の枠は人ではないので最後にまとめる
+      const sa = (a._bo === 99) ? 1 : 0, sb = (b._bo === 99) ? 1 : 0;
+      if (sa !== sb) return sa - sb;
+      if ((b.pct||0) !== (a.pct||0)) return (b.pct||0) - (a.pct||0);
+      return b.amt - a.amt;  // 同率なら金額の大きい順
     })
     .slice(0, 30);
 
@@ -4063,7 +4065,8 @@ function _buildCustTopics(){
           const best = res.slice().sort((a,b) => (b.yoy - b.tgt) - (a.yoy - a.tgt))[0];
           title = `最も目標に近いのは <span class="t-highlight">${best.k}</span> 前年比 ${best.yoy.toFixed(1)}%`;
         }
-        cards.push(_topicCard({ emoji:'🏅', badge:'重点得意先 (累計)', accent: ok.length ? '#16a34a' : '#e89c3f', title, desc: chips }));
+        const rLbl = `${parseInt(rp.fromYm.slice(4,6))}〜${parseInt(rp.toYm.slice(4,6))}月累計`;
+        cards.push(_topicCard({ emoji:'🏅', badge:`重点得意先 ${rLbl} 前年比`, accent: ok.length ? '#16a34a' : '#e89c3f', title, desc: `${chips}<br><span style="font-size:10px; color:#8a93a3">前年同期(${rLbl})の累計売上と比較</span>` }));
       }
     }
   } catch(e){ console.warn('topics cust#1', e); }
@@ -4221,45 +4224,86 @@ function _buildActivityTopics(){
     }
   } catch(e){ console.warn('topics act#1', e); }
 
-  // ② 当月訪問件数トップ
+  // ② KPI達成 (担当者別): 下の「② 訪問種別グラフ（KPI）」と同じ集計
+  //    = 期間セレクタの単月 / ルート(営業)空欄は除外 / KPI対象の訪問種別のみ / 全KPI合計の実績÷目標
   try {
-    const byRep = {};
+    const targetsMap = window._loaded_kpi_visit_target || {};
+    const kpiTypes = (typeof _KPI_TYPES !== 'undefined') ? _KPI_TYPES : [];
+    const rp = reportingPeriod(curFY);
+    const kYm = parseInt(rp.singleYm);
+    const kLbl = `${kYm % 100}月`;
+    const act = {};            // rep → 件数
+    const actByKpi = {};       // kpi → 件数 (全社)
     for (const r of rows){
-      const k = toKey(r[5]);
-      if (k > realToday) continue; // 先日付の予定は除外
-      if (Math.floor(k/100) !== thisMonth) continue;
-      const nm = repOf(r);
-      if (!nm) continue;
-      byRep[nm] = (byRep[nm]||0) + 1;
+      const ym = (r._ym !== undefined) ? r._ym : _visitsDateToYm(r[5]);
+      if (ym !== kYm) continue;
+      if (!String(r[12] || '').trim()) continue;
+      const kpi = String(r[13] || '').trim();
+      if (!kpiTypes.includes(kpi)) continue;
+      const rep = repOf(r);
+      if (!rep) continue;
+      act[rep] = (act[rep] || 0) + 1;
+      actByKpi[kpi] = (actByKpi[kpi] || 0) + 1;
     }
-    const arr = Object.entries(byRep).sort((a,b) => b[1]-a[1]);
-    const top = arr[0];
-    if (top){
+    const tgt = {}, tgtByKpi = {};
+    for (const kpi of kpiTypes){
+      const km = targetsMap[kpi] || {};
+      for (const rep in km){
+        const v = Number((km[rep] || {})[String(kYm)]) || 0;
+        if (v <= 0) continue;
+        tgt[rep] = (tgt[rep] || 0) + v;
+        tgtByKpi[kpi] = (tgtByKpi[kpi] || 0) + v;
+      }
+    }
+    const list = Object.keys(tgt).map(rep => ({rep, a: act[rep] || 0, t: tgt[rep], rate: (act[rep] || 0) / tgt[rep] * 100}))
+      .sort((a,b) => b.rate - a.rate);
+    if (list.length){
+      const ok = list.filter(x => x.rate >= 100);
+      const kChips = kpiTypes.filter(k => tgtByKpi[k] > 0).map(k => {
+        const a = actByKpi[k] || 0, t = tgtByKpi[k];
+        return _chip(`${k} ${a}/${t}`, a >= t);
+      }).join('');
+      let title;
+      if (ok.length){
+        const names = ok.slice(0, 3).map(x => x.rep).join('・');
+        title = `<span class="t-highlight">${names}</span> さん${ok.length > 3 ? ` ほか${ok.length-3}名` : ''} がKPI達成!`;
+      } else {
+        const top = list[0];
+        title = `KPI達成率トップは <span class="t-highlight">${top.rep}</span> さん ${top.rate.toFixed(0)}%`;
+      }
       cards.push(_topicCard({
-        emoji:'🏆', badge:`${thisMonth%100}月 訪問トップ`, accent:'#1d4ed8',
-        title:`<span class="t-highlight">${top[0]}</span> さん`,
-        desc:`当月 ${top[1]}件`
+        emoji:'🎯', badge:`${kLbl} KPI達成`, accent: ok.length ? '#16a34a' : '#e89c3f',
+        title,
+        desc:`達成 ${ok.length}/${list.length}名・全社KPI別:<br>${kChips}`
       }));
+    } else {
+      cards.push(_topicCard({emoji:'🎯', badge:`${kLbl} KPI達成`, accent:'#94a3b8', title:'KPI目標が未設定', desc:'KPI目標を編集から設定できます', empty:true}));
     }
   } catch(e){ console.warn('topics act#2', e); }
 
-  // ③ 当月ユニーク訪問先数
+  // ③ 当月の訪問トップ + 訪問社数
   try {
+    const byRep = {};
     const custs = new Set();
     let totalMonth = 0;
     for (const r of rows){
       const k = toKey(r[5]);
-      if (k > realToday) continue;
+      if (k > realToday) continue; // 先日付の予定は除外
       if (Math.floor(k/100) !== thisMonth) continue;
+      totalMonth++;
       const c = String(r[1]||'').trim();
       if (c) custs.add(c);
-      totalMonth++;
+      const nm = repOf(r);
+      if (nm) byRep[nm] = (byRep[nm]||0) + 1;
     }
-    cards.push(_topicCard({
-      emoji:'🏢', badge:'当月カバレッジ', accent:'#7c3aed',
-      title:`<span class="t-highlight">${custs.size}</span> 社を訪問`,
-      desc:`計 ${totalMonth} 件 (${thisMonth%100}月)`
-    }));
+    const top = Object.entries(byRep).sort((a,b) => b[1]-a[1])[0];
+    if (top){
+      cards.push(_topicCard({
+        emoji:'🏆', badge:`${thisMonth%100}月 訪問トップ`, accent:'#1d4ed8',
+        title:`<span class="t-highlight">${top[0]}</span> さん ${top[1]}件 訪問`,
+        desc:`全社 ${totalMonth}件・${custs.size}社を訪問`
+      }));
+    }
   } catch(e){ console.warn('topics act#3', e); }
 
   while (cards.length < 3){
