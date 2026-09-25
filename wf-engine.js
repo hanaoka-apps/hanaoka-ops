@@ -148,9 +148,13 @@
     const from = ymd(p.DelegateFrom), to = ymd(p.DelegateTo);
     if ((from && t < from) || (to && t > to)) return null;
     const d = p.DelegateUPN.toLowerCase();
+    if (hop) return d;
     // 代理人も不在なら、その人の代理人へ1段だけたどる（例：社長→室長（出張中）→福田）。元の本人に戻るときはたどらない
-    if (!hop) { const d2 = delegateOf(d, ctx, 1); if (d2 && d2 !== upn) return d2; }
-    return d;
+    // ★代理人が申請者本人になるときは回さない（自分の申請を自分で承認しない）。2段目が本人なら1段目へ、1段目も本人なら代理なし（フローBと同じ）
+    const me = ctx.applicant && ctx.applicant.UPN ? ctx.applicant.UPN.toLowerCase() : '';
+    const d2 = delegateOf(d, ctx, 1);
+    if (d2 && d2 !== upn && d2 !== me) return d2;
+    return d === me ? null : d;
   }
 
   /* ---------- 経路の計算 ---------- */
