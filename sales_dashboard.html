@@ -3728,19 +3728,17 @@ function _buildOrdersTopics(){
 
   // ① 目標達成した担当者（当月）
   try {
-    const byRep = {}; // {rep_nm: {actual, target}}
-    for (const r of rows){
-      if (_kikouToYm(r[IDX.kikou]) !== targetYm) continue;
-      if (Number(r[IDX.kind]) === 2) continue;
-      if (isInternalTransfer(r)) continue;
+    // ①担当者別達成率カードと同じ抽出ロジック (納期基準・当月・返品/内部移動除外)
+    const byRep = {}; // {rep_nm: {actual, cd}}
+    for (const r of _getCurrentMonthOrders()){
       const nm = String(r[IDX.rep_nm]||'').trim();
       if (_isUnknownRepStr(nm)) continue;
-      const cd = String(r[IDX.rep_cd]||'').trim();
-      const key = nm;
-      if (!byRep[key]) byRep[key] = {actual:0, target:0, cd};
-      byRep[key].actual += Number(r[IDX.amount]) || 0;
+      const cd = _normalizeRepCd(r[IDX.rep_cd]);
+      if (!byRep[nm]) byRep[nm] = {actual:0, cd};
+      byRep[nm].actual += Number(r[IDX.amount]) || 0;
     }
-    const targets = RAW.rep_monthly_targets || {};
+    // 目標は facts.json の rep_monthly_targets → RAW._csv_rep_targets に格納されている
+    const targets = RAW._csv_rep_targets || {};
     const targetKey = String(targetYm);
     let bestAchiever = null; // {nm, rate, actual, target}
     for (const [nm, v] of Object.entries(byRep)){
@@ -3811,34 +3809,66 @@ function _buildOrdersTopics(){
     }
   } catch(e){ console.warn('topics orders#2', e); }
 
-  // ③ 重点商品の当月受注件数
+  // ③ 重点商品: 当日に受注した担当者 (なければ当月の重点商品トップ)
+  //    ダッシュボード既存の PRIORITY_ITEMS / PRI_MATCHERS をそのまま使用
   try {
-    // st.priorityItems があれば使用、なければ商品コードトップを表示
-    let priorityKeys = [];
-    try {
-      const raw = localStorage.getItem('priority_items');
-      if (raw) priorityKeys = JSON.parse(raw);
-    } catch(e){}
-    if (priorityKeys && priorityKeys.length){
-      const byItem = {};
+    if (typeof PRIORITY_ITEMS !== 'undefined' && PRIORITY_ITEMS.length){
+      const matchKey = (r) => {
+        const blob = (r[IDX.item_nm]||"") + " " + (r[IDX.chu_bunrui]||"") + " " + (r[IDX.sho_bunrui]||"") + " " + (r[IDX.major_item]||"") + " " + (r[IDX.item_cd]||"");
+        const n = normalizeJp(blob);
+        for (const key of PRIORITY_ITEMS){
+          const m = (typeof PRI_MATCHERS !== 'undefined' && PRI_MATCHERS[key]) || ((nm)=> nm.indexOf(normalizeJp(key)) >= 0);
+          if (m(n, r)) return key;
+        }
+        return null;
+      };
+      // (a) 当日 (データ最新の受注日付) の重点商品受注
+      const todayHit = {}; // rep||key → {rep, key, qty, amt}
       for (const r of rows){
-        if (_kikouToYm(r[IDX.kikou]) !== targetYm) continue;
         if (Number(r[IDX.kind]) === 2) continue;
-        const cd = String(r[IDX.item_cd]||'').trim();
-        if (!priorityKeys.includes(cd)) continue;
-        const nm = String(r[IDX.item_nm]||'').trim();
-        if (!byItem[cd]) byItem[cd] = {nm, cnt:0, amt:0};
-        byItem[cd].cnt++;
-        byItem[cd].amt += Number(r[IDX.amount])||0;
+        if (isInternalTransfer(r)) continue;
+        const vd = String(r[IDX.voucher_date] || '');
+        const mm = vd.match(/(\d{2,4})[\/\-]?(\d{1,2})[\/\-]?(\d{1,2})/);
+        if (!mm) continue;
+        let y = parseInt(mm[1]); if (y < 100) y += 2000;
+        if (y*10000 + parseInt(mm[2])*100 + parseInt(mm[3]) !== latestVK) continue;
+        const rep = String(r[IDX.rep_nm]||'').trim();
+        if (_isUnknownRepStr(rep)) continue;
+        const key = matchKey(r);
+        if (!key) continue;
+        const k2 = rep + '||' + key;
+        if (!todayHit[k2]) todayHit[k2] = {rep, key, qty:0, amt:0};
+        todayHit[k2].qty += Number(r[IDX.qty])||0;
+        todayHit[k2].amt += Number(r[IDX.amount])||0;
       }
-      const arr = Object.values(byItem).sort((a,b) => b.amt - a.amt);
-      const top = arr[0];
-      if (top){
+      const tArr = Object.values(todayHit).sort((a,b) => b.amt - a.amt);
+      if (tArr.length){
+        const t = tArr[0];
+        const others = tArr.length > 1 ? ` ほか${tArr.length-1}件` : '';
         cards.push(_topicCard({
-          emoji:'📦', badge:'重点商品', accent:'#7c3aed',
-          title:`<span class="t-highlight">${top.nm}</span> ${top.cnt}件 受注`,
-          desc:`合計 ${_fmtYen(top.amt)}`
+          emoji:'📦', badge:`重点商品 ${_fmtVKey(latestVK)}`, accent:'#7c3aed',
+          title:`<span class="t-highlight">${t.rep}</span> さんが ${t.key} を ${t.qty.toLocaleString()}台 受注`,
+          desc:`${_fmtYen(t.amt)}${others}`
         }));
+      } else {
+        // (b) 当月の重点商品 受注数量トップ
+        const mon = {};
+        for (const r of _getCurrentMonthOrders()){
+          const key = matchKey(r);
+          if (!key) continue;
+          if (!mon[key]) mon[key] = {qty:0, amt:0};
+          mon[key].qty += Number(r[IDX.qty])||0;
+          mon[key].amt += Number(r[IDX.amount])||0;
+        }
+        const mArr = Object.entries(mon).sort((a,b) => b[1].amt - a[1].amt);
+        if (mArr.length){
+          const [key, v] = mArr[0];
+          cards.push(_topicCard({
+            emoji:'📦', badge:'重点商品 当月トップ', accent:'#7c3aed',
+            title:`<span class="t-highlight">${key}</span> ${v.qty.toLocaleString()}台 受注`,
+            desc:`当月合計 ${_fmtYen(v.amt)}`
+          }));
+        }
       }
     }
     // 重点商品カードが無ければ「大分類トップ受注」
@@ -3873,12 +3903,12 @@ function _buildOrdersTopics(){
 
 // ---------- 売上実績トピック ----------
 function _buildSalesTopics(){
-  const rp = (typeof resolveReportingPeriod === 'function') ? resolveReportingPeriod() : null;
-  const singleYm = rp ? parseInt(rp.singleYm) : parseInt(_currentCalendarYm ? _currentCalendarYm() : 0);
-  const fromYm = rp ? parseInt(rp.fromYm) : singleYm;
-  const toYm = rp ? parseInt(rp.toYm) : singleYm;
+  // 売上ページ上部の期間セレクタ(単月)と連動
+  const rp = (typeof reportingPeriod === 'function') ? reportingPeriod(curFY) : null;
+  const singleYm = rp ? parseInt(rp.singleYm) : parseInt(_currentCalendarYm());
   const rows = RAW.rows || [];
   const cards = [];
+  const monLbl = `${singleYm % 100}月`;
 
   // ① 単月売上達成した担当者
   try {
@@ -3889,11 +3919,11 @@ function _buildSalesTopics(){
       if (isInternalTransfer(r)) continue;
       const nm = String(r[IDX.rep_nm]||'').trim();
       if (_isUnknownRepStr(nm)) continue;
-      const cd = String(r[IDX.rep_cd]||'').trim();
+      const cd = _normalizeRepCd(r[IDX.rep_cd]);
       if (!byRep[nm]) byRep[nm] = {actual:0, cd};
       byRep[nm].actual += Number(r[IDX.amount])||0;
     }
-    const targets = RAW.rep_monthly_targets || {};
+    const targets = RAW._csv_rep_targets || {};
     const key = String(singleYm);
     let best = null;
     for (const [nm, v] of Object.entries(byRep)){
@@ -3905,10 +3935,26 @@ function _buildSalesTopics(){
     }
     if (best){
       cards.push(_topicCard({
-        emoji:'🎯', badge:'目標達成', accent:'#16a34a',
+        emoji:'🎯', badge:`${monLbl} 目標達成`, accent:'#16a34a',
         title:`<span class="t-highlight">${best.nm}</span> さんが達成率 ${best.rate.toFixed(1)}%!`,
         desc:`${_fmtYen(best.actual)} / 目標 ${_fmtYen(best.target)}`
       }));
+    } else {
+      // 達成者がいなければ「あと一歩」トップ
+      let closest = null;
+      for (const [nm, v] of Object.entries(byRep)){
+        const tgt = (targets[v.cd] && targets[v.cd][key]) || 0;
+        if (tgt <= 0) continue;
+        const rate = v.actual/tgt*100;
+        if (!closest || rate > closest.rate) closest = {nm, rate, actual:v.actual, target:tgt};
+      }
+      if (closest){
+        cards.push(_topicCard({
+          emoji:'🏃', badge:`${monLbl} あと一歩`, accent:'#e89c3f',
+          title:`<span class="t-highlight">${closest.nm}</span> さんが達成率 ${closest.rate.toFixed(1)}%`,
+          desc:`残り ${_fmtYen(Math.max(0, closest.target - closest.actual))} で目標達成`
+        }));
+      }
     }
   } catch(e){ console.warn('topics sales#1', e); }
 
@@ -3927,7 +3973,7 @@ function _buildSalesTopics(){
     const top = arr[0];
     if (top && top[1] > 0){
       cards.push(_topicCard({
-        emoji:'💎', badge:'当月売上トップ', accent:'#1d4ed8',
+        emoji:'💎', badge:`${monLbl} 売上トップ`, accent:'#1d4ed8',
         title:`<span class="t-highlight">${top[0]}</span> さん`,
         desc:`単月売上 ${_fmtYen(top[1])}`
       }));
@@ -3958,9 +4004,9 @@ function _buildSalesTopics(){
     }
     if (best){
       cards.push(_topicCard({
-        emoji:'🚀', badge:'前年比 急伸', accent:'#e89c3f',
-        title:`<span class="t-highlight">${best.cust}</span> ${best.rate.toFixed(0)}%`,
-        desc:`当月 ${_fmtYen(best.curAmt)} (前年 ${_fmtYen(best.prevAmt)})`
+        emoji:'🚀', badge:`${monLbl} 前年比 急伸`, accent:'#e89c3f',
+        title:`<span class="t-highlight">${best.cust}</span> 前年比 ${best.rate.toFixed(0)}%`,
+        desc:`${monLbl} ${_fmtYen(best.curAmt)} (前年 ${_fmtYen(best.prevAmt)})`
       }));
     }
   } catch(e){ console.warn('topics sales#3', e); }
@@ -3973,36 +4019,49 @@ function _buildSalesTopics(){
 
 // ---------- 営業活動実績トピック ----------
 function _buildActivityTopics(){
-  const rows = (RAW.daily_reports || (window.VISITS && window.VISITS.daily_reports) || []);
+  const rows = RAW.daily_reports || [];
   const cards = [];
   if (!rows.length){
+    // 訪問データは🚗タブを開いたときに遅延ロードされる (約18MB)。ロード完了後に自動で再描画する
+    const loading = (typeof _visitsLoading !== 'undefined' && _visitsLoading);
+    const msg = loading ? '訪問データを読み込み中…' : '訪問データ読込待ち';
     return [
-      _topicCard({emoji:'📅', badge:'訪問データ', accent:'#94a3b8', title:'訪問報告が未取得', desc:'daily_reports.csv を確認', empty:true}),
-      _topicCard({emoji:'📅', badge:'—', accent:'#94a3b8', title:'—', desc:'—', empty:true}),
-      _topicCard({emoji:'📅', badge:'—', accent:'#94a3b8', title:'—', desc:'—', empty:true})
+      _topicCard({emoji:'⏳', badge:'読込中', accent:'#94a3b8', title:msg, desc:'読み込み完了後に自動表示されます', empty:true}),
+      _topicCard({emoji:'⏳', badge:'読込中', accent:'#94a3b8', title:'—', desc:'—', empty:true}),
+      _topicCard({emoji:'⏳', badge:'読込中', accent:'#94a3b8', title:'—', desc:'—', empty:true})
     ];
   }
-  // 最新日付を「今日」とする (rows[i][5] = 対応日時開始)
-  let latestKey = 0;
+  // 日付 → YYYYMMDD (文字列日付・Excelシリアル値の両方に対応)
   const toKey = s => {
-    if (!s) return 0;
-    const m = String(s).match(/(\d{4})[\/\-年]?(\d{1,2})[\/\-月]?(\d{1,2})/);
+    if (s == null || s === '') return 0;
+    const str = String(s).trim();
+    if (/^\d{5}(\.\d+)?$/.test(str)) {
+      const d = new Date(Date.UTC(1899, 11, 30) + parseFloat(str) * 86400000);
+      return d.getUTCFullYear()*10000 + (d.getUTCMonth()+1)*100 + d.getUTCDate();
+    }
+    const m = str.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
     if (!m) return 0;
     return parseInt(m[1])*10000 + parseInt(m[2])*100 + parseInt(m[3]);
   };
+  // 「今日」= 実日付以前で記録がある最新日 (先日付の訪問予定は除外)
+  const now = new Date();
+  const realToday = now.getFullYear()*10000 + (now.getMonth()+1)*100 + now.getDate();
+  let latestKey = 0;
   for (const r of rows){
     const k = toKey(r[5]);
-    if (k > latestKey) latestKey = k;
+    if (k > latestKey && k <= realToday) latestKey = k;
   }
   const today = latestKey;
   const thisMonth = Math.floor(today/100);
+  // 主担当名 (loadVisits で r._tanto を事前計算済み。無ければ先頭名)
+  const repOf = r => String(r._tanto || String(r[8]||'').split(/[,、;；\n]/)[0] || '').trim();
 
   // ① 当日の訪問件数トップ担当
   try {
     const byRep = {};
     for (const r of rows){
       if (toKey(r[5]) !== today) continue;
-      const nm = String(r[8]||'').trim();
+      const nm = repOf(r);
       if (!nm) continue;
       byRep[nm] = (byRep[nm]||0) + 1;
     }
@@ -4025,8 +4084,9 @@ function _buildActivityTopics(){
     const byRep = {};
     for (const r of rows){
       const k = toKey(r[5]);
+      if (k > realToday) continue; // 先日付の予定は除外
       if (Math.floor(k/100) !== thisMonth) continue;
-      const nm = String(r[8]||'').trim();
+      const nm = repOf(r);
       if (!nm) continue;
       byRep[nm] = (byRep[nm]||0) + 1;
     }
@@ -4034,7 +4094,7 @@ function _buildActivityTopics(){
     const top = arr[0];
     if (top){
       cards.push(_topicCard({
-        emoji:'🏆', badge:'当月訪問トップ', accent:'#1d4ed8',
+        emoji:'🏆', badge:`${thisMonth%100}月 訪問トップ`, accent:'#1d4ed8',
         title:`<span class="t-highlight">${top[0]}</span> さん`,
         desc:`当月 ${top[1]}件`
       }));
@@ -4047,6 +4107,7 @@ function _buildActivityTopics(){
     let totalMonth = 0;
     for (const r of rows){
       const k = toKey(r[5]);
+      if (k > realToday) continue;
       if (Math.floor(k/100) !== thisMonth) continue;
       const c = String(r[1]||'').trim();
       if (c) custs.add(c);
@@ -5841,16 +5902,18 @@ function renderPriorityItems() {
   const tbl = document.getElementById('orders-priority-table');
   if (!tbl) return;
 
-  const rp = reportingPeriod(curFY);
-  const singleYm = parseInt(rp.singleYm);
+  // 受注実績タブは「当月固定・納期基準」で統一 (①③と同じ基準)
+  //   旧: 期間セレクタの単月 × 年月度(ym) → ①③と月・基準がズレていた
+  const singleYm = _currentCalendarYm();
   const showFuture = (document.getElementById('orders-pri-future') || {}).checked;
 
-  // 対象受注: 当月納品 or (来月以降含む) 全て
+  // 対象受注: 当月納品 or (来月以降含む) 全て — 納期(kikou)優先、空なら年月度
   const allOrders = RAW.order_rows || [];
   const orders = allOrders.filter(r => {
     if (Number(r[IDX.kind]) === 2) return false;
     if (isInternalTransfer(r)) return false;
-    const ym = Number(r[IDX.ym]) || 0;
+    let ym = _kikouToYm(r[IDX.kikou]);
+    if (ym === 0) ym = Number(r[IDX.ym]) || 0;
     if (showFuture) {
       return ym >= singleYm;  // 当月以降
     } else {
@@ -5926,8 +5989,7 @@ function renderRepPriority() {
   const byRep = {};  // rep_nm → { itemKey: qty }
   for (const r of monthOrders) {
     const rep = String(r[IDX.rep_nm] || '').trim();
-    if (!rep) continue;
-    if (String(rep).indexOf('在庫') >= 0) continue;
+    if (_isUnknownRep(rep)) continue;  // 空・数字コード(900210等)・在庫分を除外 (①と統一)
     const blob = (r[IDX.item_nm]||"") + " " + (r[IDX.chu_bunrui]||"") + " " + (r[IDX.sho_bunrui]||"") + " " + (r[IDX.major_item]||"") + " " + (r[IDX.item_cd]||"");
     const n = normalizeJp(blob);
     for (const key of PRIORITY_ITEMS) {
@@ -6581,6 +6643,8 @@ async function loadVisits() {
       }
       const t1 = performance.now();
       _visitsLoaded = true;
+      // 訪問データ到着 → 営業活動トピックを再描画
+      try { if (typeof renderActivityTopics === 'function') renderActivityTopics(); } catch(e){}
       console.log("[visits] loaded:",
         RAW.daily_reports.length, "件訪問 /",
         RAW.web_logs.length, "件HP閲覧 /",
