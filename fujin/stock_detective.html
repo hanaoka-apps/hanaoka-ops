@@ -608,6 +608,7 @@ let _scanLastKey = 0, _scanBurst = false, _scanStart = 0, _scanTimer = null;
 function _scanRunSearch(){
   clearTimeout(_scanTimer); _scanBurst = false;
   q.value = (q.value || "").normalize('NFKC').trim();
+  _scanRefocus = Date.now();
   search();
   setTimeout(() => { try { q.focus(); q.select(); } catch(_){} }, 0);
 }
@@ -624,6 +625,50 @@ q.addEventListener('keydown', e => {
     q.value = q.value.slice(_scanStart);
   }
   if (_scanBurst) { clearTimeout(_scanTimer); _scanTimer = setTimeout(_scanRunSearch, 150); }
+});
+// ===== 2026-09-26 v2: カーソルが検索欄以外(下のツリー画面など)にあってもバーコードを受ける =====
+// ハンディの高速入力(キー間隔30ms未満)を画面全体で拾い、検索欄に入れて検索する。
+// 人の手入力(ゆっくり)には反応しない。構成なし品目などのモーダル表示中は反応しない。
+let _gBuf = "", _gLast = 0, _gBurst = false, _gTimer = null, _gFirst = null, _scanRefocus = 0;
+function _gIsText(el){ return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
+function _gFinish(){
+  clearTimeout(_gTimer);
+  const code = _gBuf; _gBuf = ""; _gBurst = false;
+  if (code.length >= 3) { q.value = code; _scanRefocus = Date.now(); _scanRunSearch(); }
+}
+function _globalScanKey(e){
+  if (e.target === q) return;                       // 検索欄は既存処理に任せる
+  if (document.getElementById('orphanModal').classList.contains('open')) return;
+  if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'Enter') {
+    if (_gBurst) { e.preventDefault(); e.stopPropagation(); _gFinish(); }
+    _gBuf = ""; return;
+  }
+  if (e.key.length !== 1) return;
+  const now = Date.now(), gap = now - _gLast;
+  _gLast = now;
+  if (gap > 300 || (!_gBurst && gap >= 30)) {       // 読み取り開始候補(1文字目)
+    _gBuf = e.key; _gFirst = e.target; _gBurst = false; return;
+  }
+  if (!_gBurst) {                                   // 2文字目が高速 → ハンディと判定
+    _gBurst = true;
+    const t = _gFirst;                              // 1文字目が別の入力欄に入っていたら取り消す
+    try { if (_gIsText(t) && typeof t.value === 'string' && t.value.endsWith(_gBuf)) t.value = t.value.slice(0, -_gBuf.length); } catch(_){}
+  }
+  _gBuf += e.key;
+  e.preventDefault(); e.stopPropagation();
+  clearTimeout(_gTimer); _gTimer = setTimeout(_gFinish, 150);
+}
+document.addEventListener('keydown', _globalScanKey, true);
+// 下のツリー画面(iframe)の中にカーソルがあっても拾う + 読み取り後はカーソルを検索欄へ戻す
+frame.addEventListener('load', () => {
+  try {
+    const d = frame.contentDocument;
+    if (d && !d._fujinScanHooked) { d.addEventListener('keydown', _globalScanKey, true); d._fujinScanHooked = true; }
+  } catch(_){}
+  if (Date.now() - _scanRefocus < 10000) {
+    [0, 300, 1000].forEach(ms => setTimeout(() => { try { q.focus(); q.select(); } catch(_){} }, ms));
+  }
 });
 go.addEventListener('click', search);
 clearBtn.addEventListener('click', () => {
