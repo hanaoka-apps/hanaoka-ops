@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全社スケジュール</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #f2f4f8;
+    --card-bg: #ffffff;
+    --border: #e6e8ee;
+    --text-main: #1b1e28;
+    --text-sub: #6b7080;
+    --accent-blue: #1d4ed8;
+    --accent-blue-soft: #e8edfc;
+    --weekend-bg: #fafbfd;
+    --today-ring: #1d4ed8;
+    --radius: 14px;
+    --shadow: 0 1px 3px rgba(20, 22, 31, 0.06), 0 1px 2px rgba(20, 22, 31, 0.04);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text-main);
+    padding: 28px 36px 60px;
+  }
+  .page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  .page-sub { font-size: 13px; color: var(--text-sub); margin-top: 4px; }
+  .top-actions { display: flex; align-items: center; gap: 10px; }
+  .signin-btn {
+    background: var(--accent-blue); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 16px; font-size: 13.5px; font-weight: 600; cursor: pointer;
+  }
+  .signin-btn:hover { opacity: 0.92; }
+
+  .month-nav {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+  }
+  .month-nav .month-label { font-size: 18px; font-weight: 700; min-width: 130px; text-align: center; }
+  .nav-btn {
+    width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--card-bg); color: var(--text-main); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .nav-btn:hover { background: var(--accent-blue-soft); }
+  .today-btn {
+    border: 1px solid var(--border); background: var(--card-bg); color: var(--text-main);
+    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  .today-btn:hover { background: var(--accent-blue-soft); }
+
+  .cal-grid {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .cal-weekdays, .cal-rows { display: grid; grid-template-columns: repeat(7, 1fr); }
+  .cal-weekdays div {
+    padding: 10px 8px; font-size: 12.5px; font-weight: 700; color: var(--text-sub);
+    text-align: center; border-bottom: 1px solid var(--border);
+  }
+  .cal-weekdays div:first-child { color: #c0392b; }
+  .cal-weekdays div:last-child { color: #1d4ed8; }
+
+  .cal-cell {
+    min-height: 108px;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .cal-cell:nth-child(7n) { border-right: none; }
+  .cal-cell.pad { background: #fbfbfc; }
+  .cal-cell.weekend { background: var(--weekend-bg); }
+  .day-num {
+    font-size: 13px; font-weight: 700; color: var(--text-main);
+    width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+  }
+  .cal-cell.pad .day-num { color: #c7cbd6; }
+  .cal-cell.today .day-num { background: var(--today-ring); color: #fff; }
+  .day-events { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .day-event {
+    font-size: 11.5px;
+    line-height: 1.4;
+    background: var(--accent-blue-soft);
+    color: var(--accent-blue);
+    border-radius: 5px;
+    padding: 2px 6px;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .day-event.holiday { background: #fdecec; color: #c0392b; }
+
+  .empty-state { padding: 60px 0; text-align: center; color: var(--text-sub); font-size: 14px; }
+
+  @media (max-width: 768px) {
+    body { padding: 18px 14px 40px; }
+    .cal-cell { min-height: 84px; padding: 4px 4px 6px; }
+    .day-event { font-size: 10.5px; padding: 1px 4px; }
+    .month-nav .month-label { min-width: 100px; font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="page-head">
+    <div>
+      <h1>全社スケジュール</h1>
+      <div class="page-sub">会社共通予定表（お知らせ欄と同じカレンダー）を月単位で表示</div>
+    </div>
+    <div class="top-actions">
+      <button id="signInBtn" class="signin-btn" hidden>Microsoftでサインイン</button>
+    </div>
+  </div>
+
+  <div class="month-nav">
+    <button type="button" class="nav-btn" id="prevBtn" title="前の月" aria-label="前の月">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <div class="month-label" id="monthLabel">–</div>
+    <button type="button" class="nav-btn" id="nextBtn" title="次の月" aria-label="次の月">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    <button type="button" class="today-btn" id="todayBtn">今月</button>
+  </div>
+
+  <div class="cal-grid">
+    <div class="cal-weekdays">
+      <div>日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div>土</div>
+    </div>
+    <div class="cal-rows" id="calRows">
+      <div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>
+    </div>
+  </div>
+
+<script>
+const MSAL_CONFIG = {
+  auth: {
+    clientId:    'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
+    authority:   'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
+    redirectUri: new URL('auth.html', window.location.href).href,
+  },
+  cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
+};
+const SCOPES = ['User.Read', 'Calendars.Read', 'Calendars.Read.Shared'];
+const COMPANY_CALENDAR_MAIL = 'company-calendar@hanaoka-corp.co.jp';
+
+let msalInstance = null;
+let account = null;
+let viewYear, viewMonth; // viewMonth: 0-11
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function initAuth() {
+  const now = new Date();
+  viewYear = now.getFullYear();
+  viewMonth = now.getMonth();
+
+  document.getElementById('signInBtn').onclick = login;
+  document.getElementById('prevBtn').onclick = () => changeMonth(-1);
+  document.getElementById('nextBtn').onclick = () => changeMonth(1);
+  document.getElementById('todayBtn').onclick = () => {
+    const n = new Date();
+    viewYear = n.getFullYear(); viewMonth = n.getMonth();
+    renderCalendar();
+  };
+
+  msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    account = accounts[0];
+    msalInstance.setActiveAccount(account);
+    try {
+      // キャッシュされたセッションが有効か先に確認する。ページ読み込み時の
+      // 自動呼び出しからポップアップへフォールバックすると、ユーザー操作を
+      // 伴わないためブラウザに必ずブロックされる。
+      await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+      onSignedIn();
+    } catch (e) {
+      console.warn('セッションが切れているため再サインインが必要です', e);
+      showSignedOutState();
+    }
+  } else {
+    showSignedOutState();
+  }
+}
+
+function showSignedOutState() {
+  document.getElementById('signInBtn').hidden = false;
+  document.getElementById('calRows').innerHTML =
+    '<div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>';
+  document.getElementById('monthLabel').textContent =
+    `${viewYear}年${viewMonth + 1}月`;
+}
+
+function onSignedIn() {
+  document.getElementById('signInBtn').hidden = true;
+  renderCalendar();
+}
+
+async function login() {
+  const btn = document.getElementById('signInBtn');
+  try {
+    btn.disabled = true;
+    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    account = result.account;
+    msalInstance.setActiveAccount(account);
+    onSignedIn();
+  } catch (e) {
+    console.error('サインイン失敗', e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function getToken() {
+  const r = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+  return r.accessToken;
+}
+
+async function graphGet(path) {
+  const t = await getToken();
+  const res = await fetch('https://graph.microsoft.com/v1.0' + path, {
+    headers: { Authorization: 'Bearer ' + t, Prefer: 'outlook.timezone="Tokyo Standard Time"' },
+  });
+  if (!res.ok) throw new Error(`Graph ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+function ymd(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+
+function changeMonth(delta) {
+  viewMonth += delta;
+  if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+  if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+  renderCalendar();
+}
+
+async function loadMonthEvents(year, month) {
+  // グリッドは前後月の余白セルも含むので、表示範囲全体をまとめて取得する
+  const gridStart = gridStartDate(year, month);
+  const gridEnd = new Date(gridStart);
+  gridEnd.setDate(gridEnd.getDate() + 42); // 6週間分
+  const start = encodeURIComponent(`${ymd(gridStart)}T00:00:00`);
+  const end = encodeURIComponent(`${ymd(gridEnd)}T00:00:00`);
+  const path = `/users/${encodeURIComponent(COMPANY_CALENDAR_MAIL)}/calendarView`
+    + `?startDateTime=${start}&endDateTime=${end}&$orderby=start/dateTime&$top=100`
+    + `&$select=subject,start,end,isAllDay,isCancelled`;
+  const data = await graphGet(path);
+  return (data.value || []).filter(ev => !ev.isCancelled);
+}
+
+function gridStartDate(year, month) {
+  const first = new Date(year, month, 1);
+  const start = new Date(first);
+  start.setDate(start.getDate() - first.getDay()); // その週の日曜まで戻る
+  return start;
+}
+
+async function renderCalendar() {
+  document.getElementById('monthLabel').textContent = `${viewYear}年${viewMonth + 1}月`;
+  const rowsEl = document.getElementById('calRows');
+  rowsEl.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">読み込み中…</div>';
+
+  let events;
+  try {
+    events = await loadMonthEvents(viewYear, viewMonth);
+  } catch (e) {
+    console.error('スケジュール取得失敗', e);
+    rowsEl.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">取得できませんでした</div>';
+    return;
+  }
+
+  // 日付(YYYY-MM-DD)ごとにイベントをまとめる。終日予定はstart日付のみ対応
+  // (会社共通予定表は基本1日単位の終日予定のため、複数日にまたがる予定は
+  // 簡略化して開始日のセルにのみ表示する)。
+  const byDate = {};
+  for (const ev of events) {
+    const d = (ev.start.dateTime || '').slice(0, 10);
+    if (!d) continue;
+    (byDate[d] = byDate[d] || []).push(ev.subject || '(無題)');
+  }
+
+  const todayStr = ymd(new Date());
+  const gridStart = gridStartDate(viewYear, viewMonth);
+  const cells = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setDate(d.getDate() + i);
+    const inMonth = d.getMonth() === viewMonth;
+    const dow = d.getDay();
+    const dStr = ymd(d);
+    const isToday = dStr === todayStr;
+    const dayEvents = byDate[dStr] || [];
+    const classes = ['cal-cell'];
+    if (!inMonth) classes.push('pad');
+    if (dow === 0 || dow === 6) classes.push('weekend');
+    if (isToday) classes.push('today');
+    const eventsHtml = dayEvents.map(subj => {
+      const isHoliday = /休日|祝/.test(subj);
+      return `<div class="day-event${isHoliday ? ' holiday' : ''}">${escapeHtml(subj)}</div>`;
+    }).join('');
+    cells.push(`
+      <div class="${classes.join(' ')}">
+        <div class="day-num">${d.getDate()}</div>
+        <div class="day-events">${eventsHtml}</div>
+      </div>`);
+    // 6週目が完全に翌月だけなら省略して表示を詰める
+    if (i === 34 && cells.length % 7 === 0) {
+      const next7InMonth = Array.from({length: 7}, (_, j) => {
+        const nd = new Date(gridStart); nd.setDate(nd.getDate() + 35 + j);
+        return nd.getMonth() === viewMonth;
+      }).some(Boolean);
+      if (!next7InMonth) break;
+    }
+  }
+  rowsEl.innerHTML = cells.join('');
+}
+
+initAuth().catch(e => {
+  console.error('初期化失敗', e);
+  showSignedOutState();
+});
+</script>
+</body>
+</html>
