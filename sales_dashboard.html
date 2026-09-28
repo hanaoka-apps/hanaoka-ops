@@ -496,7 +496,9 @@ footer b{color:var(--goldDark)}
 </script>
 
 <!-- 営業方針バナー (右寄せ) -->
-<div class="policy-bar" style="display:flex; justify-content:flex-end; margin-top:8px">
+<div class="policy-bar" style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px">
+  <!-- 📅 データ鮮度 (受注・売上のCSVがいつまでのデータか) -->
+  <div id="dataFreshBar" style="font-size:12px; color:#556074"></div>
   <div style="background:#fff8ee; border:1px solid #e8d9b3; border-radius:8px; padding:7px 14px; font-size:12px; color:#7a5f2e; box-shadow:0 1px 2px rgba(0,0,0,0.03)">
     <span style="font-weight:700; color:#8b6d3a">🎯 2026年度営業方針：</span>
     <span style="color:#5c4416; font-weight:700">挑戦 × 速攻 × 実行</span>
@@ -3499,6 +3501,7 @@ if (window._loaded_ratiokiko && typeof MANUAL_KIKO_RATIO === "object") {
     try{ renderDetail(); }catch(e){ console.error("renderDetail", e); }
     try{ renderVerify(); }catch(e){ console.error("renderVerify", e); }
     try{ if (typeof renderTopicsForCat === 'function') renderTopicsForCat(null); }catch(e){ console.error("renderTopics", e); }
+    try{ if (typeof renderDataFreshness === 'function') renderDataFreshness(); }catch(e){ console.error("renderDataFreshness", e); }
     try{ if (typeof window._placeSegIndicator === 'function') window._placeSegIndicator(); }catch(e){}
   }, 250);
 }
@@ -3694,6 +3697,80 @@ function _topicCard(opts){
     <div class="t-title">${opts.title||'—'}</div>
     <div class="t-desc">${desc}</div>
   </div>`;
+}
+
+// ================================================================
+// 📅 データ鮮度表示: 受注・売上CSVに「いつの受注日付/伝票日付まで」入っているか
+//   前営業日のデータが入っていなければ赤で警告 (CSVエクスポート停止に気づくため)
+//   ※ 休業日は下の2つのリストで判定。会社カレンダーが変わったら _COMPANY_HOLIDAYS を更新
+// ================================================================
+var _JP_HOLIDAYS = [
+  // 2026 国民の祝日・振替休日
+  '20260101','20260112','20260211','20260223','20260320','20260429','20260503','20260504','20260505','20260506',
+  '20260720','20260811','20260921','20260922','20260923','20261012','20261103','20261123',
+  // 2027
+  '20270101','20270111','20270211','20270223','20270322','20270429','20270503','20270504','20270505',
+  '20270719','20270811','20270920','20270923','20271011','20271103','20271123'
+];
+var _COMPANY_HOLIDAYS = [
+  // 年末年始など会社独自の休業日 (必要に応じて追加)
+  '20261229','20261230','20261231','20270102','20270103'
+];
+function _ymdKey(d){ return d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate(); }
+function _isBizDay(d){
+  const w = d.getDay();
+  if (w === 0 || w === 6) return false;
+  const k = String(_ymdKey(d));
+  return !_JP_HOLIDAYS.includes(k) && !_COMPANY_HOLIDAYS.includes(k);
+}
+// 基準日より前の直近営業日 (YYYYMMDD数値)
+function _prevBizDayKey(from){
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  for (let i = 0; i < 20; i++){ d.setDate(d.getDate() - 1); if (_isBizDay(d)) return _ymdKey(d); }
+  return 0;
+}
+// a(YYYYMMDD) の翌日〜b(YYYYMMDD) までの営業日リスト
+function _bizDaysBetween(aKey, bKey){
+  const out = [];
+  const toD = k => new Date(Math.floor(k/10000), Math.floor((k/100)%100)-1, k%100);
+  const d = toD(aKey), end = toD(bKey);
+  for (let i = 0; i < 60 && d < end; i++){ d.setDate(d.getDate() + 1); if (_isBizDay(d)) out.push(_ymdKey(d)); }
+  return out;
+}
+function _latestVoucherKey(rows){
+  const today = _realTodayKey();
+  let mx = 0;
+  for (const r of (rows || [])){ const k = _vkeyOf(r); if (k > mx && k <= today) mx = k; }
+  return mx;
+}
+function renderDataFreshness(){
+  const el = document.getElementById('dataFreshBar');
+  if (!el) return;
+  const expect = _prevBizDayKey(new Date());   // 少なくともここまでは入っているはず
+  const ordK = _latestVoucherKey(RAW.order_rows);
+  const salK = _latestVoucherKey(RAW.rows);
+  const fmt = k => k ? `${Math.floor((k/100)%100)}/${k%100}` : '—';
+  const piece = (label, k) => {
+    if (!k) return `<span>${label} <b>—</b></span>`;
+    const stale = k < expect;
+    const missing = stale ? _bizDaysBetween(k, expect) : [];
+    const style = stale ? 'color:#c0392b; font-weight:800' : 'color:#1d7a3a; font-weight:800';
+    const warn = stale ? ` <span style="color:#c0392b">（${missing.map(fmt).join('・')} 分が未反映）</span>` : '';
+    return `<span>${label} <b style="${style}">${fmt(k)}まで</b>${warn}</span>`;
+  };
+  const anyStale = (ordK && ordK < expect) || (salK && salK < expect);
+  let gen = '';
+  try {
+    const u = RAW.build_meta && RAW.build_meta.updated_at;
+    if (u){ const d = new Date(u); gen = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+  } catch(e){}
+  el.innerHTML = `<div style="display:inline-flex; align-items:center; gap:12px; flex-wrap:wrap; padding:6px 12px; border-radius:8px; background:${anyStale ? '#fdecea' : '#eef7f1'}; border:1px solid ${anyStale ? '#f5c2bd' : '#cfe8d8'}">
+      <span style="font-weight:700; color:#0e1a36">${anyStale ? '⚠️' : '📅'} データ</span>
+      ${piece('受注', ordK)}
+      ${piece('売上', salK)}
+      ${gen ? `<span style="color:#8a93a3">（更新 ${gen}）</span>` : ''}
+      ${anyStale ? `<span style="color:#c0392b; font-size:11px">SMILE→SharePoint のCSV出力が止まっている可能性があります</span>` : ''}
+    </div>`;
 }
 
 // ---------- トピック共通ヘルパ ----------
