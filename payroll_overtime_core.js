@@ -23,6 +23,7 @@
     除外部署: ['取締役'],
     管理監督者の役職: ['部長', '次長', '所長', '支店長', '課長'],  // 従業員マスタの「役職」がこれなら管理監督者として除外
     管理監督者: [],            // [{従業員コード, メモ}]（役職で判定できない人の個別指定）
+    シフト勤務の給与種別: ['時給者'],  // パート・アルバイト：所定労働日でもシフトがない日は打刻なしで正常。見込みは出勤率で按分
     所定: { 始業: '08:55', 終業: '17:40', 休憩: '00:50', 所定内: '07:55' },
     個別所定: {},              // {従業員コード: {始業: 'hh:mm'}}（パート等）
     確認日: [28, 5, 10],
@@ -36,6 +37,12 @@
     従業員代表: { 氏名: '', 所属: '', 連絡先: '' },
     その他休日を時間外に含める: true,  // 法定休日以外の休日（所定休日）の労働は法定時間外として限度時間に含める
     未申請しきい値分: 60,
+    // 幹部チャットに載せる「打刻と申請の差」の範囲。締日直前にまとめて申請する人がいるため、確認日の日付で段階的に広げる
+    差の掲載基準: [
+      { 名前: '初回（28日）', 開始日: 16, 終了日: 31, 差の下限時間: 3, 見込み80も: false },
+      { 名前: '中間（5日）', 開始日: 1, 終了日: 9, 差の下限時間: 3, 見込み80も: true },
+      { 名前: '最終（10日）', 開始日: 10, 終了日: 15, 差の下限時間: 1, 見込み80も: false },
+    ],
     異常_最大拘束時間: 16,
     超過回数手入力: {},        // {協定年度: {従業員コード: 回数}}（月次確定値からの自動集計を上書き）
   };
@@ -131,10 +138,12 @@
    * @param asOf      データ基準日 'yyyy/mm/dd'（この日までの打刻で集計し、翌日以降を見込みに使う）
    * @param history   {給与月YYYY-MM: {従業員コード: 時間外分}}（協定年度の過去月の確定値。特別条項の回数に使う）
    * @param titles    {従業員コード: 役職}（従業員マスタ。管理監督者の判定に使う）
+   * @param payTypes  {従業員コード: 給与種別名称}（従業員マスタ。シフト勤務＝時給者の判定に使う）
    */
-  function evaluate(rows, master, asOf, history, titles) {
-    master = master || DEFAULT_MASTER; history = history || {}; titles = titles || {};
+  function evaluate(rows, master, asOf, history, titles, payTypes) {
+    master = master || DEFAULT_MASTER; history = history || {}; titles = titles || {}; payTypes = payTypes || {};
     const managerTitles = new Set(master.管理監督者の役職 || []);
+    const shiftTypes = new Set(master.シフト勤務の給与種別 || []);
     const dates = rows.map(r => r.日付).sort();
     const period = { 開始: dates[0], 締日: dates[dates.length - 1] };
     period.給与月 = payMonthOf(period.締日);
@@ -166,7 +175,8 @@
       const start = toMin((master.個別所定[code] || {}).始業 || master.所定.始業);
       const scheduled = toMin(mode(days.map(d => d.所定内労働時間).filter(Boolean))) || toMin(master.所定.所定内);
 
-      let stamp = 0, applied = 0, night = 0, holidayWork = 0, workDays = 0, remaining = 0;
+      const shift = shiftTypes.has(payTypes[code]);
+      let stamp = 0, applied = 0, night = 0, holidayWork = 0, workDays = 0, remaining = 0, pastScheduled = 0;
       const daily = [];
       for (const d of days) {
         const isHoliday = !!d.休日設定;
@@ -177,6 +187,7 @@
           continue;
         }
         applied += ap; night += toMin(d.深夜残業) || 0;
+        if (!isHoliday) pastScheduled++;
         const note = [d.届出有無, d.MC].filter(Boolean).join(' / ');
         const base = { 従業員コード: code, 氏名: name, 所属: dept, 日付: d.日付, 休日設定: d.休日設定, 出社: d.出社時刻, 退社: d.退社時刻, 届出: note };
         if ((inT == null) !== (outT == null)) {
@@ -184,7 +195,8 @@
           continue;
         }
         if (inT == null) {
-          if (!isHoliday && !note) anomalies.push({ ...base, 種類: '所定労働日に打刻・届出なし' });
+          // シフト勤務（時給者）はシフトがない日なので異常にしない
+          if (!isHoliday && !note && !shift) anomalies.push({ ...base, 種類: '所定労働日に打刻・届出なし' });
           continue;
         }
         if (outT - inT > limitMax) {
@@ -204,7 +216,9 @@
         daily.push({ 日付: d.日付, 時間外: ot });
       }
 
-      const projected = workDays ? stamp + stamp / workDays * remaining : stamp;
+      // シフト勤務は残りの所定労働日のうち、これまでの出勤率の分だけ出勤すると見込む
+      const attendRate = shift && pastScheduled ? Math.min(1, workDays / pastScheduled) : 1;
+      const projected = workDays ? stamp + stamp / workDays * remaining * attendRate : stamp;
       const diff = Math.max(0, stamp - applied);
       const peak = Math.max(stamp, applied);
       const flags = [];
@@ -229,7 +243,7 @@
       people.push({
         従業員コード: code, 氏名: name, 所属: dept, 区分: kubun || '未設定', 業務: deptM ? deptM.業務 : '',
         限度: limit, 注意: caution, 出勤日数: workDays, 打刻推定: stamp, 申請済: applied, 深夜: night,
-        休日労働: holidayWork, 差: diff, 残日数: remaining, 見込み: projected, 判定, 未申請あり: unreported,
+        休日労働: holidayWork, 差: diff, 残日数: remaining, 見込み: projected, シフト勤務: shift, 出勤率: shift ? attendRate : null, 判定, 未申請あり: unreported,
         過去超過回数: pastCount, 過去超過月: manual != null ? ['手入力'] : pastMonths, 今回超過: thisMonth,
         超過回数: pastCount + (thisMonth ? 1 : 0), 所定内: scheduled, 日別: daily,
       });
@@ -240,13 +254,24 @@
     return { period, asOf, people, anomalies, excluded };
   }
 
+  /** 確認日（'yyyy/mm/dd'）に当てはまる差の掲載基準と、その基準で載せる人 */
+  function diffStage(master, checkDate, people) {
+    const day = Number(checkDate.split('/')[2]);
+    const list = master.差の掲載基準 || DEFAULT_MASTER.差の掲載基準;
+    const st = list.find(s => day >= s.開始日 && day <= s.終了日) || list[list.length - 1];
+    const minBig = st.差の下限時間 * 60, minAny = master.未申請しきい値分;
+    const picked = people.filter(x => x.差 >= minAny && (x.差 >= minBig || (st.見込み80も && x.注意 != null && x.見込み >= x.注意)));
+    const label = `差が${st.差の下限時間}時間以上の方` + (st.見込み80も ? `、および限度時間の80%に達する見込みで差が${minAny / 60}時間以上の方` : '');
+    return { stage: st, label, people: picked };
+  }
+
   /** 基準日の初期値：退社打刻がある最新日（当日出力時の出社のみの行を拾わないため） */
   function defaultAsOf(rows) {
     const withOut = rows.filter(r => r.退社時刻).map(r => r.日付).sort();
     return withOut.length ? withOut[withOut.length - 1] : rows.map(r => r.日付).sort()[0];
   }
 
-  const api = { DEFAULT_MASTER, toMin, fmt, fmtH, dateAdd, parseCSV, parseAttendance, evaluate, defaultAsOf, payMonthOf, agreementYear, priorMonthsInYear };
+  const api = { DEFAULT_MASTER, toMin, fmt, fmtH, dateAdd, parseCSV, parseAttendance, evaluate, diffStage, defaultAsOf, payMonthOf, agreementYear, priorMonthsInYear };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OT = api;
 })(this);
