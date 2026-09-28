@@ -60,6 +60,14 @@
   }
   .today-btn:hover { background: var(--accent-blue-soft); }
 
+  .view-toggle { display: flex; gap: 2px; margin-left: auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+  .view-toggle-btn {
+    border: none; background: none; color: var(--text-sub); cursor: pointer;
+    font-size: 12.5px; padding: 6px 12px; border-radius: 6px;
+  }
+  .view-toggle-btn.is-active { background: var(--accent-blue); color: #fff; }
+  .view-toggle-btn:not(.is-active):hover { background: var(--accent-blue-soft); }
+
   .cal-grid {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -108,13 +116,60 @@
   }
   .day-event.holiday { background: #fdecec; color: #c0392b; }
 
+  .list-view {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .list-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .list-row:last-child { border-bottom: none; }
+  .list-row.weekend { background: var(--weekend-bg); }
+  .list-row.today { background: var(--accent-blue-soft); }
+  .list-date {
+    flex-shrink: 0;
+    width: 92px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+    padding-top: 1px;
+  }
+  .list-row.sun .list-date, .list-row.sun .list-dow { color: #c0392b; }
+  .list-row.sat .list-date, .list-row.sat .list-dow { color: #1d4ed8; }
+  .list-dow { font-weight: 500; color: var(--text-sub); margin-left: 2px; }
+  .list-events { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .list-event {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--accent-blue);
+    background: var(--accent-blue-soft);
+    border-radius: 6px;
+    padding: 3px 10px;
+    width: fit-content;
+    max-width: 100%;
+    word-break: break-word;
+  }
+  .list-event.holiday { background: #fdecec; color: #c0392b; }
+
   .empty-state { padding: 60px 0; text-align: center; color: var(--text-sub); font-size: 14px; }
+  .cal-rows .empty-state { grid-column: 1 / -1; }
 
   @media (max-width: 768px) {
     body { padding: 18px 14px 40px; }
     .cal-cell { min-height: 84px; padding: 4px 4px 6px; }
     .day-event { font-size: 10.5px; padding: 1px 4px; }
     .month-nav .month-label { min-width: 100px; font-size: 16px; }
+    .month-nav { flex-wrap: wrap; }
+    .view-toggle { margin-left: 0; order: 1; flex-basis: 100%; }
+    .list-date { width: 64px; font-size: 12px; }
+    .list-row { gap: 8px; padding: 8px 12px; }
   }
 </style>
 </head>
@@ -139,15 +194,23 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
     </button>
     <button type="button" class="today-btn" id="todayBtn">今月</button>
+    <div class="view-toggle" id="viewToggle">
+      <button type="button" class="view-toggle-btn is-active" data-view="calendar">カレンダー</button>
+      <button type="button" class="view-toggle-btn" data-view="list">一覧</button>
+    </div>
   </div>
 
-  <div class="cal-grid">
+  <div class="cal-grid" id="calGrid">
     <div class="cal-weekdays">
       <div>日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div>土</div>
     </div>
     <div class="cal-rows" id="calRows">
       <div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>
     </div>
+  </div>
+
+  <div class="list-view" id="listView" hidden>
+    <div class="empty-state">サインインすると表示されます</div>
   </div>
 
 <script>
@@ -165,6 +228,8 @@ const COMPANY_CALENDAR_MAIL = 'company-calendar@hanaoka-corp.co.jp';
 let msalInstance = null;
 let account = null;
 let viewYear, viewMonth; // viewMonth: 0-11
+let viewMode = 'calendar'; // 'calendar' | 'list'
+let currentByDate = null; // 直近取得分。ビュー切替時に再取得しないためのキャッシュ
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -183,6 +248,15 @@ async function initAuth() {
     viewYear = n.getFullYear(); viewMonth = n.getMonth();
     renderCalendar();
   };
+  document.getElementById('viewToggle').addEventListener('click', e => {
+    const btn = e.target.closest('.view-toggle-btn');
+    if (!btn || btn.classList.contains('is-active')) return;
+    viewMode = btn.dataset.view;
+    document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.toggle('is-active', b === btn));
+    document.getElementById('calGrid').hidden = viewMode !== 'calendar';
+    document.getElementById('listView').hidden = viewMode !== 'list';
+    if (currentByDate) renderCurrentView();
+  });
 
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
@@ -210,6 +284,8 @@ function showSignedOutState() {
   document.getElementById('signInBtn').hidden = false;
   document.getElementById('calRows').innerHTML =
     '<div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>';
+  document.getElementById('listView').innerHTML =
+    '<div class="empty-state">サインインすると表示されます</div>';
   document.getElementById('monthLabel').textContent =
     `${viewYear}年${viewMonth + 1}月`;
 }
@@ -281,15 +357,18 @@ function gridStartDate(year, month) {
 
 async function renderCalendar() {
   document.getElementById('monthLabel').textContent = `${viewYear}年${viewMonth + 1}月`;
-  const rowsEl = document.getElementById('calRows');
-  rowsEl.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">読み込み中…</div>';
+  const loadingHtml = '<div class="empty-state">読み込み中…</div>';
+  document.getElementById('calRows').innerHTML = loadingHtml;
+  document.getElementById('listView').innerHTML = loadingHtml;
 
   let events;
   try {
     events = await loadMonthEvents(viewYear, viewMonth);
   } catch (e) {
     console.error('スケジュール取得失敗', e);
-    rowsEl.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">取得できませんでした</div>';
+    const failedHtml = '<div class="empty-state">取得できませんでした</div>';
+    document.getElementById('calRows').innerHTML = failedHtml;
+    document.getElementById('listView').innerHTML = failedHtml;
     return;
   }
 
@@ -302,7 +381,16 @@ async function renderCalendar() {
     if (!d) continue;
     (byDate[d] = byDate[d] || []).push(ev.subject || '(無題)');
   }
+  currentByDate = byDate;
+  renderCurrentView();
+}
 
+function renderCurrentView() {
+  if (viewMode === 'list') renderListView(currentByDate);
+  else renderGridView(currentByDate);
+}
+
+function renderGridView(byDate) {
   const todayStr = ymd(new Date());
   const gridStart = gridStartDate(viewYear, viewMonth);
   const cells = [];
@@ -336,7 +424,36 @@ async function renderCalendar() {
       if (!next7InMonth) break;
     }
   }
-  rowsEl.innerHTML = cells.join('');
+  document.getElementById('calRows').innerHTML = cells.join('');
+}
+
+// 縦型の一覧表示。予定の有無に関わらず、その月の全日を並べる
+// (総務が配布しているPDFの右側の日付一覧と同じ見せ方)。
+const WEEKDAY_JA = ['日','月','火','水','木','金','土'];
+function renderListView(byDate) {
+  const todayStr = ymd(new Date());
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const rows = [];
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = new Date(viewYear, viewMonth, day);
+    const dow = d.getDay();
+    const dStr = ymd(d);
+    const dayEvents = byDate[dStr] || [];
+    const classes = ['list-row'];
+    if (dow === 0) classes.push('sun'); else if (dow === 6) classes.push('sat');
+    if (dow === 0 || dow === 6) classes.push('weekend');
+    if (dStr === todayStr) classes.push('today');
+    const eventsHtml = dayEvents.map(subj => {
+      const isHoliday = /休日|祝/.test(subj);
+      return `<div class="list-event${isHoliday ? ' holiday' : ''}">${escapeHtml(subj)}</div>`;
+    }).join('');
+    rows.push(`
+      <div class="${classes.join(' ')}">
+        <div class="list-date">${viewMonth + 1}/${day}<span class="list-dow">(${WEEKDAY_JA[dow]})</span></div>
+        <div class="list-events">${eventsHtml}</div>
+      </div>`);
+  }
+  document.getElementById('listView').innerHTML = rows.join('');
 }
 
 initAuth().catch(e => {
