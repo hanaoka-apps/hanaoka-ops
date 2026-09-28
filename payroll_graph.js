@@ -96,3 +96,28 @@ async function payrollPutFile(relPath, obj) {
   const driveId = await payrollDriveId();
   return graphPutJSON('/drives/' + driveId + '/root:/給与データ/' + encodeURI(relPath) + ':/content', obj);
 }
+
+/** 「給与データ」配下にCSV等の元ファイルをそのまま書き込む（勤怠CSVのログ保存用）。 */
+async function payrollPutRaw(relPath, body, contentType) {
+  const driveId = await payrollDriveId();
+  const token = await payrollGetToken();
+  const path = '/drives/' + driveId + '/root:/給与データ/' + encodeURI(relPath) + ':/content';
+  const res = await fetch(GRAPH_BASE + path, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': contentType || 'application/octet-stream' },
+    body,
+  });
+  if (res.status === 403) throw new Error('このSharePointサイトへの書き込み権がありません。');
+  if (!res.ok) throw new Error('[' + res.status + '] PUT ' + relPath + ': ' + await res.text());
+  return res.json();
+}
+
+/** 「給与データ」配下のファイルをバイナリ（ArrayBuffer）で読む。 */
+async function payrollGetRaw(relPath) {
+  const driveId = await payrollDriveId();
+  const token = await payrollGetToken();
+  const res = await fetch(GRAPH_BASE + '/drives/' + driveId + '/root:/給与データ/' + encodeURI(relPath) + ':/content',
+    { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) throw new Error('[' + res.status + '] GET ' + relPath);
+  return res.arrayBuffer();
+}
