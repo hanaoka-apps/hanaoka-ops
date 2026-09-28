@@ -37,6 +37,7 @@
     従業員代表: { 氏名: '', 所属: '', 連絡先: '' },
     その他休日を時間外に含める: true,  // 法定休日以外の休日（所定休日）の労働は法定時間外として限度時間に含める
     未申請しきい値分: 60,
+    申請より長い日の下限分: 30,  // 申請のある日で、打刻がこれ以上長い日を「申請より遅くまで打刻がある日」として出す
     // 幹部チャットに載せる「打刻と申請の差」の範囲。締日直前にまとめて申請する人がいるため、確認日の日付で段階的に広げる
     差の掲載基準: [
       { 名前: '初回（28日）', 開始日: 16, 終了日: 31, 差の下限時間: 3, 見込み80も: false },
@@ -46,7 +47,9 @@
     異常_最大拘束時間: 16,
     超過回数手入力: {},        // {協定年度: {従業員コード: 回数}}（月次確定値からの自動集計を上書き）
     シフト勤務の役職: ['ﾊﾟｰﾄ', 'パート', 'アルバイト'],
-    シフト勤務の個別指定: [],  // [{従業員コード, メモ}]（従業員マスタで判定できないパート等）
+    シフト勤務の個別指定: [],
+    // 休日出勤の扱い：'振替'＝振替休日を取るルール（届出「振休(振出 日付)」で振替済みか確認）／'休日出勤手当'＝手当で精算
+    休日出勤の扱い: '振替',  // [{従業員コード, メモ}]（従業員マスタで判定できないパート等）
     // 従業員マスタの等級（「所属」欄：MGR3-1・専門R3-1など）の数字がこれ以上なら管理監督者として除外（null で使わない）
     管理監督者の等級: 3,
     // 協定の1日の延長上限と休日労働の上限（協定届：法定休日の内1ヶ月4回まで・1回に付き7時間55分以内）
@@ -72,6 +75,7 @@
       管理監督者の役職: ['部長', '次長', '課長', '専門課長', '工場長'],
       管理監督者: [],
       シフト勤務の給与種別: ['時給者', '日給者'],  // 工場は時給者・日給者がパート
+      休日出勤の扱い: '休日出勤手当',
       所定: { 始業: '08:20', 終業: '17:05', 休憩: '00:50', 所定内: '07:55' },
       個別所定: {},
       事由: {
@@ -251,6 +255,12 @@
       const legalDay = Math.max(480, scheduled);  // 1日の法定労働時間（8時間。所定がそれより長い日は所定）
       const legalHolidays = [];
       let stamp = 0, applied = 0, night = 0, holidayWork = 0, workDays = 0, remaining = 0, pastScheduled = 0, offDayOT = 0;
+      // 打刻と申請の差は所定労働日（と振替済みの休日出勤）だけで比べる。休日出勤は振替・休日出勤手当で扱うため
+      let stampWd = 0, appliedWd = 0;
+      // 振休の届出「振休(振出 yyyy/mm/dd)」から、休日出勤日 → 振休日
+      const furi = {};
+      days.forEach(d => { const mm = String(d.届出有無 || '').match(/振休\(振出\s*(\d{4}\/\d{2}\/\d{2})\)/); if (mm) furi[mm[1]] = d.日付; });
+      const holidayDays = [];
       const daily = [];
       const defaultBreak = toMin(master.所定.休憩) || 0;
       for (const d of days) {
@@ -267,6 +277,7 @@
           continue;
         }
         applied += ap; night += toMin(d.深夜残業) || 0;
+        if (!isHoliday) appliedWd += ap;
         if (!isHoliday) pastScheduled++;
         const note = [d.届出有無, d.MC].filter(Boolean).join(' / ');
         const base = { 従業員コード: code, 氏名: name, 所属: dept, 日付: d.日付, 休日設定: d.休日設定, 出社: d.出社時刻, 退社: d.退社時刻, 届出: note };
@@ -285,6 +296,18 @@
         }
         if (isHoliday) {
           const w = Math.max(0, outT - inT - brk);
+          const substituted = master.休日出勤の扱い === '振替' ? (furi[d.日付] || null) : null;
+          holidayDays.push({ 日付: d.日付, 休日設定: d.休日設定, 労働: w, 振休: substituted });
+          if (substituted) {
+            // 振替済み：出勤日と入れ替えたので、所定労働日と同じく所定を超えた分を時間外とし、1日の延長上限で見る
+            const ot = Math.max(0, w - scheduled);
+            stamp += ot; stampWd += ot; appliedWd += ap;
+            daily.push({ 日付: d.日付, 時間外: ot });
+            if (w - legalDay > LC.一日延長 * 60) {
+              over.push({ 日付: d.日付, 内容: w - legalDay > LC.一日延長_特別条項 * 60 ? `1日の延長${LC.一日延長_特別条項}時間超（特別条項の上限）` : `1日の延長${LC.一日延長}時間超`, 時間: w - legalDay });
+            }
+            continue;
+          }
           const countAsOT = d.休日設定 !== '法定休日' && master.その他休日を時間外に含める;
           if (countAsOT) { stamp += w; offDayOT += w; } else holidayWork += w;
           if (d.休日設定 === '法定休日') {
@@ -293,13 +316,13 @@
           } else if (w - 480 > LC.一日延長 * 60) {
             over.push({ 日付: d.日付, 内容: w - 480 > LC.一日延長_特別条項 * 60 ? `1日の延長${LC.一日延長_特別条項}時間超（特別条項の上限）` : `1日の延長${LC.一日延長}時間超`, 時間: w - 480 });
           }
-          daily.push({ 日付: d.日付, 時間外: countAsOT ? w : 0, 休日労働: countAsOT ? 0 : w });
+          daily.push({ 日付: d.日付, 時間外: countAsOT ? w : 0, 休日労働: countAsOT ? 0 : w, 申請: ap, 休日: true });
           continue;
         }
         const work = outT - Math.max(inT, start) - brk;
         const ot = Math.max(0, work - scheduled);
-        stamp += ot; workDays++;
-        daily.push({ 日付: d.日付, 時間外: ot });
+        stamp += ot; stampWd += ot; workDays++;
+        daily.push({ 日付: d.日付, 時間外: ot, 申請: ap, 退社: d.退社時刻, 届出: d.届出有無 });
         // 1日の延長（法定労働時間を超える時間）の上限
         const legalExcess = work - legalDay;
         if (legalExcess > LC.一日延長 * 60) {
@@ -318,7 +341,17 @@
       // 所定休日の出勤分は日割りで延ばさない（所定労働日の時間外だけを残り日数に延ばす）
       const weekdayOT = stamp - offDayOT;
       const projected = workDays ? stamp + weekdayOT / workDays * remaining * attendRate : stamp;
-      const diff = Math.max(0, stamp - applied);
+      const diff = Math.max(0, stampWd - appliedWd);
+      // 締め見込み（給与の確定値の予測）：申請がある日は申請、ない日は打刻で数え、所定労働日の平均で残り日数に延ばす。
+      // 36協定の判定は実際の労働時間に近い打刻ベース（見込み）のまま使う
+      const adopt = x => (x.申請 > 0 ? x.申請 : x.時間外);
+      const closeSoFar = daily.reduce((s, x) => s + adopt(x), 0);
+      const closeWd = daily.filter(x => !x.休日).reduce((s, x) => s + adopt(x), 0);
+      const closeProjected = workDays ? closeSoFar + closeWd / workDays * remaining * attendRate : closeSoFar;
+      // 申請より打刻がかなり長い日（申請の時刻より遅くまで残っている日）
+      const gapMin = master.申請より長い日の下限分 == null ? 30 : master.申請より長い日の下限分;
+      const lateDays = daily.filter(x => !x.休日 && x.申請 > 0 && x.時間外 - x.申請 >= gapMin)
+        .map(x => ({ 日付: x.日付, 申請: x.申請, 打刻: x.時間外, 退社: x.退社, 届出: x.届出 }));
       const peak = Math.max(stamp, applied);
       const flags = [];
       let 判定 = '';
@@ -342,7 +375,7 @@
       people.push({
         従業員コード: code, 氏名: name, 所属: dept, 区分: kubun || '未設定', 業務: ((master.部門別業務 || {})[units[code]]) || (deptM ? deptM.業務 : ''),
         限度: limit, 注意: caution, 出勤日数: workDays, 打刻推定: stamp, 申請済: applied, 深夜: night,
-        休日労働: holidayWork, 差: diff, 残日数: remaining, 見込み: projected, 所定休日分: offDayOT, 上限超え: over, シフト勤務: shift, 出勤率: shift ? attendRate : null, 判定, 未申請あり: unreported,
+        休日労働: holidayWork, 差: diff, 残日数: remaining, 見込み: projected, 締め見込み: closeProjected, 申請より長い日: lateDays, 所定休日分: offDayOT, 上限超え: over, 休日出勤: holidayDays, シフト勤務: shift, 出勤率: shift ? attendRate : null, 判定, 未申請あり: unreported,
         過去超過回数: pastCount, 過去超過月: manual != null ? ['手入力'] : pastMonths, 今回超過: thisMonth,
         超過回数: pastCount + (thisMonth ? 1 : 0), 所定内: scheduled, 日別: daily,
       });

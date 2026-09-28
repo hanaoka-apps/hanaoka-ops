@@ -269,8 +269,8 @@
 </main>
 </div>
 
-<script src="payroll_graph.js?v=2026092807"></script>
-<script src="payroll_overtime_core.js?v=2026092807"></script>
+<script src="payroll_graph.js?v=2026092809"></script>
+<script src="payroll_overtime_core.js?v=2026092809"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -510,10 +510,15 @@ function render() {
   $('postText').value = S.texts.post; renderNotices();
 }
 
+/** 「9/16（申請～19:15／退社22:41）」の形。届出に終了時刻がなければ申請時間で出す */
+function lateText(x) {
+  const mm = String(x.届出 || '').match(/残業\(～(\d{1,2}:\d{2})\)/);
+  return `${md(x.日付)}（${mm ? '申請～' + mm[1] : '申請' + fmt(x.申請)}／退社${x.退社}）`;
+}
 const COLS = [
   ['氏名', '氏名'], ['所属', '所属'], ['区分', '区分'], ['限度', '限度', 'num'], ['出勤日数', '出勤日数', 'num'],
   ['打刻推定', '打刻推定', 'num'], ['申請済', '申請済', 'num'], ['差', '差', 'num'], ['深夜', '深夜', 'num'], ['うち所定休日', '所定休日分', 'num'], ['法定休日', '休日労働', 'num'],
-  ['残日数', '残日数', 'num'], ['見込み', '見込み', 'num'], ['判定', '判定'], ['今年度の超過回数', '超過回数', 'num'],
+  ['残日数', '残日数', 'num'], ['見込み', '見込み', 'num'], ['締め見込み', '締め見込み', 'num'], ['判定', '判定'], ['今年度の超過回数', '超過回数', 'num'],
 ];
 function renderList(people) {
   if (S.sort) {
@@ -534,11 +539,13 @@ function renderList(people) {
       <td class="num">${p.出勤日数}</td><td class="num"><b>${fmt(p.打刻推定)}</b></td><td class="num">${fmt(p.申請済)}</td>
       <td class="num ${p.未申請あり ? 'j-info' : ''}">${fmt(p.差)}</td><td class="num">${p.深夜 ? fmt(p.深夜) : ''}</td><td class="num" title="打刻推定に含む（所定休日の出勤は法定時間外として限度時間に数える）">${p.所定休日分 ? fmt(p.所定休日分) : ''}</td><td class="num" title="法定休日の労働（限度時間には含めない）">${p.休日労働 ? fmt(p.休日労働) : ''}</td>
       <td class="num" ${p.シフト勤務 ? 'title="シフト勤務（時給者）のため、残日数×これまでの出勤率で見込みを計算"' : ''}>${p.残日数}${p.シフト勤務 ? `<br><span class="note">×出勤率${Math.round(p.出勤率 * 100)}%</span>` : ''}</td><td class="num">${fmtH(p.見込み)}${bar}</td>
+      <td class="num" title="給与の確定値の予測：申請がある日は申請、ない日は打刻で数えた見込み（判定には使わない）">${p.締め見込み != null ? fmtH(p.締め見込み) : ''}</td>
       <td>${pill(p.判定)}${p.未申請あり && p.判定 !== '未申請あり' ? ' ' + pill('未申請あり') : ''}</td>
       <td class="num" ${tip}>${p.超過回数}${p.今回超過 ? '（今回含む）' : ''}</td></tr>`;
     if (S.openCode === p.従業員コード) {
       row += `<tr class="detail"><td colspan="${COLS.length}">所定内 ${fmt(p.所定内)}（本人の最頻値）／日別の打刻推定：` +
-        (p.日別.map(d => `${md(d.日付)} ${d.休日労働 ? '休日' + fmt(d.休日労働) : fmt(d.時間外)}`).join('、') || 'なし') + '</td></tr>';
+        (p.日別.map(d => `${md(d.日付)} ${d.休日労働 ? '休日' + fmt(d.休日労働) : fmt(d.時間外)}${d.申請 > 0 ? `（申請${fmt(d.申請)}）` : ''}`).join('、') || 'なし') +
+        ((p.申請より長い日 || []).length ? `<br>申請より遅くまで打刻がある日：${p.申請より長い日.map(lateText).join('、')}` : '') + '</td></tr>';
     }
     return row;
   }).join('');
@@ -715,6 +722,18 @@ function buildPost() {
     L.push('　→ 1日の働き方の見直しをお願いします。');
   }
   L.push('');
+  if (m.休日出勤の扱い === '振替') {
+    // 休日出勤は振替休日を取るルール。振休の届出（振休(振出 日付)）がまだない休日出勤を載せる
+    const hol = people.map(x => ({ x, days: (x.休日出勤 || []).filter(d => !d.振休) })).filter(o => o.days.length);
+    L.push('■ 休日に出勤した方（振替休日の取得をお願いします）');
+    if (!hol.length) L.push('　　該当者なし');
+    hol.forEach(({ x, days }) => {
+      L.push(`　　${x.氏名}（${x.所属}）`);
+      days.forEach(d => L.push(`　　　${jpDate(d.日付)}（${d.休日設定}）　${Math.floor(d.労働 / 60)}時間${d.労働 % 60 ? (d.労働 % 60) + '分' : ''}　振替休日が未登録`));
+    });
+    if (hol.length) L.push('　→ 振替休日の取得日を決めて、届出をお願いします。');
+    L.push('');
+  }
   L.push('■ 打刻と申請に差がある方（上長の方へ）');
   L.push(`　（${stage.stage.名前}の確認：${stage.label}）`);
   if (!diff.length) L.push('　　該当者なし');
@@ -726,7 +745,14 @@ function buildPost() {
     const ordered = [...groups.entries()].sort((a, b) => sum(b[1]) - sum(a[1]));
     const width = Math.max(...ordered.map(([d]) => d.length));
     ordered.forEach(([d, list]) => L.push('　　' + d + '　'.repeat(width - d.length + 1) + list.map(x => x.氏名 + 'さん').join('、')));
+    // 申請はあるが、申請の時刻より遅くまで打刻がある日（申請内容の見直しが必要な日）
+    const late = ordered.flatMap(([, list]) => list).filter(x => (x.申請より長い日 || []).length);
+    if (late.length) {
+      L.push('　　［申請より遅くまで打刻がある日］');
+      late.forEach(x => L.push(`　　　${x.氏名}さん　${x.申請より長い日.map(lateText).join('、')}`));
+    }
     L.push('　→ 本人に確認のうえ、残業申請を促してください。');
+    if (late.length) L.push('　　 申請より遅くまで残っている日は、業務だったかをご確認ください');
   }
   return L.join('\n');
 }
@@ -822,9 +848,9 @@ $('saveBtn').onclick = async () => {
 };
 $('csvBtn').onclick = () => {
   const r = S.result; if (!r) return;
-  const h = ['確認日', 'データ基準日', '給与月', '従業員コード', '氏名', '所属', '区分', '限度(h)', '出勤日数', '打刻推定', '申請済', '差', '深夜', 'うち所定休日', '法定休日', '残日数', '見込み(h)', '判定', '未申請あり', '今年度の超過回数'];
+  const h = ['確認日', 'データ基準日', '給与月', '従業員コード', '氏名', '所属', '区分', '限度(h)', '出勤日数', '打刻推定', '申請済', '差', '深夜', 'うち所定休日', '法定休日', '残日数', '見込み(h)', '締め見込み(h)', '判定', '未申請あり', '今年度の超過回数'];
   const lines = [h].concat(r.people.map(p => [checkDateStr(), r.asOf, r.period.給与月, p.従業員コード, p.氏名, p.所属, p.区分, p.限度 ? p.限度 / 60 : '', p.出勤日数,
-    fmt(p.打刻推定), fmt(p.申請済), fmt(p.差), fmt(p.深夜), fmt(p.所定休日分 || 0), fmt(p.休日労働), p.残日数, (p.見込み / 60).toFixed(1), p.判定, p.未申請あり ? '○' : '', p.超過回数]));
+    fmt(p.打刻推定), fmt(p.申請済), fmt(p.差), fmt(p.深夜), fmt(p.所定休日分 || 0), fmt(p.休日労働), p.残日数, (p.見込み / 60).toFixed(1), p.締め見込み != null ? (p.締め見込み / 60).toFixed(1) : '', p.判定, p.未申請あり ? '○' : '', p.超過回数]));
   lines.push([]); lines.push(['打刻異常']); lines.push(['氏名', '所属', '日付', '休日設定', '出社', '退社', '種類', '届出・MC']);
   r.anomalies.forEach(a => lines.push([a.氏名, a.所属, a.日付, a.休日設定, a.出社, a.退社, a.種類, a.届出]));
   const csv = '﻿' + lines.map(l => l.map(v => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(',')).join('\r\n');
