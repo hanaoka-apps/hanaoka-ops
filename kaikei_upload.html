@@ -45,6 +45,7 @@
   <strong style="opacity:.55;font-weight:600;">会計ダッシュボード</strong>
   <a href="kaikei_dashboard.html">会計サマリー</a>
   <a href="kaikei_monthly.html">月次資料</a>
+  <a href="kaikei_cash.html">資金繰り</a>
   <a href="kaikei_ledger.html">仕訳明細</a>
   <a href="kaikei_budget.html">予算・前年実績</a>
   <a href="kaikei_upload.html" class="on">データ取り込み</a>
@@ -161,7 +162,7 @@ function log(line, cls) {
 // 列順が変わっても動く。ヘッダが見つからない場合のみこの値を使う。
 let COL = {
   code: 0, name: 1, month: 4, denpyoDate: 5, kashikari: 10,
-  bumon: 15, tekiyo: 37, aiteKamoku: 43, aiteBumon: 49, login: 57, denpyoNo: 8, amountNoTax: 60,
+  bumon: 15, tekiyo: 37, aiteCode: 42, aiteKamoku: 43, aiteBumon: 49, login: 57, denpyoNo: 8, amountNoTax: 60,
 };
 
 // ヘッダ名 → COLのキー（完全一致で探す。「貸借区分」と「貸借区分名」のような紛らわしい列があるため）
@@ -174,6 +175,7 @@ const LEDGER_COLUMNS = {
   bumon: ['部門名'],
   tekiyo: ['摘要'],
   aiteKamoku: ['相手科目名'],
+  aiteCode: ['相手科目ｺｰﾄﾞ', '相手科目コード'],
   login: ['ﾛｸﾞｲﾝ名', 'ログイン名'],
   denpyoNo: ['伝票№', '伝票No', '伝票NO'],
   amountNoTax: ['金額(税抜)', '金額（税抜）'],
@@ -208,8 +210,12 @@ async function readCsvAuto(file) {
   throw new Error('元帳CSVとして読めませんでした（UTF-16/UTF-8/Shift_JISを試しました）。ファイルが違う可能性があります。');
 }
 
+// 現金・預金の科目（合計残高試算表の流動資産の先頭。資金繰りの対象）
+const CASH_CODES = new Set(['100', '101', '104', '105', '106', '107', '108', '109']);
+
 function aggregateLedger(rows) {
-  // month -> { byAccount: { code: {debit,credit,name} }, byDept: { code: { dept: {debit,credit} } }, journal: [...] }
+  // month -> { byAccount: { code: {debit,credit,name} }, byDept: { code: { dept: {debit,credit} } },
+  //            cashByAite: { 相手科目コード: {net, name} }, journal: [...] }
   const months = {};
   const minCols = Math.max(...Object.values(COL)) + 1;
   for (const row of rows) {
@@ -226,10 +232,18 @@ function aggregateLedger(rows) {
     const dept = row[COL.bumon] || '(未設定)';
 
     let m = months[month];
-    if (!m) m = months[month] = { byAccount: {}, byDept: {}, journal: [] };
+    if (!m) m = months[month] = { byAccount: {}, byDept: {}, cashByAite: {}, journal: [] };
     let acc = m.byAccount[code];
     if (!acc) acc = m.byAccount[code] = { debit: 0, credit: 0, name };
     if (kashikari === '0') acc.debit += amount; else acc.credit += amount;
+
+    // 資金繰り用: 現預金の入出金を相手科目ごとに（入金=+、出金=−）
+    const aiteCode = String(parseInt(row[COL.aiteCode], 10));
+    if (CASH_CODES.has(code) && aiteCode !== 'NaN') {
+      let c = m.cashByAite[aiteCode];
+      if (!c) c = m.cashByAite[aiteCode] = { net: 0, name: row[COL.aiteKamoku] || '' };
+      c.net += kashikari === '0' ? amount : -amount;
+    }
 
     // 部門別（月次資料の拠点別売上・工場別人件費などに使う）
     let dmap = m.byDept[code];
@@ -248,6 +262,7 @@ function aggregateLedger(rows) {
       row[COL.tekiyo] || '',
       row[COL.login] || '',
       row[COL.denpyoNo] || '',
+      aiteCode === 'NaN' ? '' : aiteCode,   // [9] 相手科目コード（資金繰りの明細で使う）
     ]);
   }
   return months;
@@ -277,6 +292,7 @@ async function importLedgerCsv(file) {
     const prev = await kaikeiGetFile('summary/' + mk + '.json', { allow404: true }) || {};
     prev.byAccount = months[mk].byAccount;
     prev.byDept = months[mk].byDept;
+    prev.cashByAite = months[mk].cashByAite;
     await kaikeiPutFile('summary/' + mk + '.json', prev);
     if (!idx.months.includes(mk)) idx.months.push(mk);
     log('OK   ' + mk + ' （科目数 ' + Object.keys(months[mk].byAccount).length + ' / 明細 ' + months[mk].journal.length + '件）', 'ok');
