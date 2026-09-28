@@ -66,6 +66,7 @@
   #drawer .neg { color:var(--bad); }
   #drawer .msg { padding:30px 18px; color:var(--muted); font-size:13px; text-align:center; }
   .warn { background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:8px 12px; font-size:12px; margin-bottom:10px; color:#664d00; }
+  td.bad { color:var(--bad); }
   .empty-msg { color:var(--muted); font-size:13px; padding:40px 0; text-align:center; }
 </style>
 </head>
@@ -76,7 +77,7 @@
   <a href="kaikei_monthly.html" class="on">月次資料</a>
   <a href="kaikei_cash.html">資金繰り</a>
   <a href="kaikei_ledger.html">仕訳明細</a>
-  <a href="kaikei_budget.html">予算・前年実績</a>
+  <a href="kaikei_budget.html">予算</a>
   <a href="kaikei_upload.html">データ取り込み</a>
 </nav>
 
@@ -91,10 +92,19 @@
   <div class="bar">
     <label>年度</label>
     <select id="fy-select"></select>
+    <label>表示</label>
+    <select id="mode-select">
+      <option value="actual">実績</option>
+      <option value="budget">予算</option>
+      <option value="budgetDiff">予算差（実績−予算）</option>
+      <option value="prior">前年実績</option>
+      <option value="priorDiff">前年差（実績−前年）</option>
+    </select>
+    <span id="ver-wrap" style="display:none;"><label>予算の版</label> <select id="ver-select"></select></span>
     <span class="sp" id="status"></span>
   </div>
   <div id="warnBox"></div>
-  <p class="note">元帳CSVから自動集計しています。工場別の売上・仕入は「データ取り込み」で登録した月のみ表示されます。</p>
+  <p class="note" id="modeNote">元帳CSVから自動集計しています。工場別の売上・仕入は「データ取り込み」で登録した月のみ表示されます。</p>
   <div class="tbl-wrap"><table id="tbl"></table></div>
 </div>
 
@@ -110,6 +120,7 @@
 </aside>
 
 <script src="kaikei_graph.js"></script>
+<script src="kaikei_budget_core.js"></script>
 <script>
 /* ============ 勘定科目のグループ定義（損益推移表の構造に対応） ============ */
 const SALES_CODES    = [600, 601, 602, 603, 604, 605];
@@ -136,6 +147,12 @@ const journals = {};    // month -> 仕訳明細（明細パネルを開いた�
 let months = [];
 let currentRows = [];   // 表示中の行定義（明細パネルから参照する）
 let data_ = {};         // 表示中の月ごとの計算結果（明細パネルの金額表示に使う）
+let mode = 'actual';    // actual / budget / budgetDiff / prior / priorDiff
+let budgetIndex = { versions: [], active: {} };
+const budgetVers = {};  // id -> 予算の版
+let budgetId = null;    // 表示中の予算の版
+let compare_ = {};      // 表示中の比較相手（予算 or 前年）の月ごとの値
+let currentFy = null;
 
 const fmt = n => (n === null || n === undefined) ? '—' : Math.round(n).toLocaleString('ja-JP');
 const fmtPct = n => (n === null || n === undefined || !isFinite(n)) ? '—' : (n * 100).toFixed(1) + '%';
@@ -291,21 +308,22 @@ function buildRows(data) {
   push('売上', d => d.sales, { total: true, detail: { codes: SALES_CODES } });
 
   push('■ 仕入・付加価値', null, { section: true });
-  push('仕入金額', d => d.purchase, { indent: true, detail: { codes: PURCHASE_CODES } });
-  push('商品仕入', d => d.merch, { indent: true, detail: { codes: MERCH_CODES } });
-  push('仕入TOTAL', d => d.purchaseTotal, { detail: { codes: [...PURCHASE_CODES, ...MERCH_CODES] } });
+  push('仕入金額', d => d.purchase, { indent: true, cost: true, detail: { codes: PURCHASE_CODES } });
+  push('商品仕入', d => d.merch, { indent: true, cost: true, detail: { codes: MERCH_CODES } });
+  push('仕入TOTAL', d => d.purchaseTotal, { cost: true, detail: { codes: [...PURCHASE_CODES, ...MERCH_CODES] } });
   push('付加価値額(売上総利益/限界利益)', d => d.valueAdded, { total: true });
   push('付加価値率', d => d.vaRate, { pct: true });
 
   push('■ 工場別', null, { section: true });
   for (const f of ['第一工場', '第二工場', '第三工場', '購買']) {
     push(f + ' 付加価値率', d => {
+      if (d.factoryVaRate) return d.factoryVaRate[f];
       const s = d.factorySales ? d.factorySales[f] : null;
       const p = d.factoryPurchase ? d.factoryPurchase[f] : null;
       return (s && p !== null && p !== undefined) ? (s - p) / s : null;
     }, { pct: true });
     push(f + ' 売上金額', d => d.factorySales ? d.factorySales[f] : null, { indent: true });
-    push(f + ' 仕入金額', d => d.factoryPurchase ? d.factoryPurchase[f] : null, { indent: true });
+    push(f + ' 仕入金額', d => d.factoryPurchase ? d.factoryPurchase[f] : null, { indent: true, cost: true });
   }
   push('運賃 売上金額', d => d.factorySales ? d.factorySales['運賃'] : null, { indent: true });
   if (Object.values(data).some(d => d && d.factorySales && Math.abs(d.factorySales['未分類'] || 0) > 0.5)) {
@@ -314,44 +332,95 @@ function buildRows(data) {
 
   push('■ 在庫', null, { section: true });
   push('在庫増減', d => d.invChange, { indent: true, detail: { codes: WIP_CODES } });
-  push('原価(仕入-在庫差額)', d => d.costOfSales);
+  push('原価(仕入-在庫差額)', d => d.costOfSales, { cost: true });
   push('在庫あり付加価値額', d => d.valueAddedInv, { total: true });
   push('在庫あり付加価値率', d => d.vaInvRate, { pct: true });
 
   push('■ 経費', null, { section: true });
-  push('人件費', d => d.labor, { detail: { codes: LABOR } });
-  push('(全社・本社・大阪・名古屋)', d => d.laborCompany, { indent: true, detail: { codes: LABOR, excludeDepts: FACTORY_DEPTS } });
-  push('(工場)', d => d.laborFactory, { indent: true, detail: { codes: LABOR, depts: FACTORY_DEPTS } });
-  for (const f of FACTORY_MAIN) push('　' + f, d => d.laborPer[f], { indent: true, detail: { codes: LABOR, depts: [f] } });
-  push('一般管理費', d => d.expense, { detail: { codes: EXP } });
-  push('(全社・本社・大阪・名古屋)', d => d.expCompany, { indent: true, detail: { codes: EXP, excludeDepts: FACTORY_DEPTS } });
-  push('(工場)', d => d.expFactory, { indent: true, detail: { codes: EXP, depts: FACTORY_DEPTS } });
-  for (const f of FACTORY_MAIN) push('　' + f, d => d.expPer[f], { indent: true, detail: { codes: EXP, depts: [f] } });
-  push('経費合計', d => d.cost, { total: true, detail: { codes: [...LABOR, ...EXP] } });
+  push('人件費', d => d.labor, { cost: true, detail: { codes: LABOR } });
+  push('(全社・本社・大阪・名古屋)', d => d.laborCompany, { indent: true, cost: true, detail: { codes: LABOR, excludeDepts: FACTORY_DEPTS } });
+  push('(工場)', d => d.laborFactory, { indent: true, cost: true, detail: { codes: LABOR, depts: FACTORY_DEPTS } });
+  for (const f of FACTORY_MAIN) push('　' + f, d => d.laborPer[f], { indent: true, cost: true, detail: { codes: LABOR, depts: [f] } });
+  push('一般管理費', d => d.expense, { cost: true, detail: { codes: EXP } });
+  push('(全社・本社・大阪・名古屋)', d => d.expCompany, { indent: true, cost: true, detail: { codes: EXP, excludeDepts: FACTORY_DEPTS } });
+  push('(工場)', d => d.expFactory, { indent: true, cost: true, detail: { codes: EXP, depts: FACTORY_DEPTS } });
+  for (const f of FACTORY_MAIN) push('　' + f, d => d.expPer[f], { indent: true, cost: true, detail: { codes: EXP, depts: [f] } });
+  push('経費合計', d => d.cost, { total: true, cost: true, detail: { codes: [...LABOR, ...EXP] } });
 
   push('■ 利益', null, { section: true });
   push('営業利益', d => d.opInc, { total: true });
   push('営業外収益', d => d.nonOpInc, { indent: true, detail: { codes: sectionCodes('営業外収益').map(Number) } });
-  push('営業外費用', d => d.nonOpExp, { indent: true, detail: { codes: sectionCodes('営業外費用').map(Number) } });
+  push('営業外費用', d => d.nonOpExp, { indent: true, cost: true, detail: { codes: sectionCodes('営業外費用').map(Number) } });
   push('経常利益', d => d.ordInc, { total: true });
   push('特別利益', d => d.extraInc, { indent: true, detail: { codes: sectionCodes('特別利益').map(Number) } });
-  push('特別損失', d => d.extraExp, { indent: true, detail: { codes: sectionCodes('特別損失').map(Number) } });
+  push('特別損失', d => d.extraExp, { indent: true, cost: true, detail: { codes: sectionCodes('特別損失').map(Number) } });
   push('税引前当期純利益', d => d.preTax);
-  push('法人税等', d => d.tax, { indent: true, detail: { codes: sectionCodes('法人税等').map(Number) } });
+  push('法人税等', d => d.tax, { indent: true, cost: true, detail: { codes: sectionCodes('法人税等').map(Number) } });
   push('当期純利益', d => d.netInc, { total: true });
   return R;
 }
 
+function prevYearMonth(m) { return String(parseInt(m.slice(0, 4), 10) - 1) + m.slice(4); }
+const isDiffMode = () => mode === 'budgetDiff' || mode === 'priorDiff';
+
+/** 行の値を安全に取り出す（予算には無い項目などは null） */
+function safeGet(r, d) {
+  if (!d) return null;
+  let v;
+  try { v = r.get(d); } catch (e) { return null; }
+  return (v === undefined || v === null || (typeof v === 'number' && !isFinite(v))) ? null : v;
+}
+
+/** 表示モードに応じたセルの値 */
+function cellValue(r, m, act, cmp) {
+  const a = safeGet(r, act[m]);
+  if (mode === 'actual') return a;
+  const c = safeGet(r, cmp[m]);
+  if (mode === 'budget' || mode === 'prior') return c;
+  return (a === null || c === null) ? null : a - c;
+}
+
+function fmtCell(r, v) {
+  if (v === null) return '—';
+  if (!isDiffMode()) return r.pct ? fmtPct(v) : fmt(v);
+  if (r.pct) return (v > 0 ? '+' : '') + (v * 100).toFixed(1) + 'pt';
+  return (v > 0 ? '+' : '') + fmt(v);
+}
+/** 差異が利益にとって悪い方向か（経費は増えると悪い） */
+function isBad(r, v) {
+  if (!isDiffMode() || v === null || Math.abs(v) < (r.pct ? 0.0005 : 0.5)) return false;
+  return r.cost ? v > 0 : v < 0;
+}
+
+function modeNote() {
+  const ver = budgetId ? (budgetIndex.versions || []).find(v => v.id === budgetId) : null;
+  const vname = ver ? `「${ver.name}」（${ver.id}${budgetId === (budgetIndex.active || {})[String(currentFy)] ? '・採用中' : ''}）` : '';
+  switch (mode) {
+    case 'budget': return `予算の版 ${vname} の月別の金額です。予算は全社の売上・付加価値率・経費で立てているため、工場別の売上・仕入や在庫の増減は予算に含みません。`;
+    case 'budgetDiff': return `実績 − 予算${vname}。実績がある月だけ計算し、累計は実績のある月までの合計です。売上・利益はマイナス、経費はプラスが赤（予算より悪い）です。セルをクリックすると実績の明細を開きます。`;
+    case 'prior': return '前年の同じ月の実績です（元帳から集計）。';
+    case 'priorDiff': return '実績 − 前年同月。売上・利益はマイナス、経費はプラスが赤（前年より悪い）です。セルをクリックすると当月の明細を開きます。';
+    default: return '元帳CSVから自動集計しています。工場別の売上・仕入は「データ取り込み」で登録した月のみ表示されます。';
+  }
+}
+
 function render(fyStart) {
   const ms = fyMonths(fyStart);
-  const data = {};
+  const data = {}, cmp = {};
   for (const m of ms) data[m] = calcMonth(m);
+  const ver = budgetId ? budgetVers[budgetId] : null;
+  for (const m of ms) {
+    if (mode === 'budget' || mode === 'budgetDiff') cmp[m] = ver ? KaikeiBudget.budgetMonth(ver, m) : null;
+    else if (mode === 'prior' || mode === 'priorDiff') cmp[m] = calcMonth(prevYearMonth(m));
+  }
   data_ = data;
+  compare_ = cmp;
   const rows = buildRows(data);
+  const clickMode = mode === 'actual' || isDiffMode();
 
   let html = '<thead><tr><th class="lbl">項目</th>';
   for (const m of ms) html += `<th>${parseInt(m.slice(4), 10)}月</th>`;
-  html += '<th>累計</th></tr></thead><tbody>';
+  html += `<th>${mode === 'budget' || mode === 'prior' ? '年間' : '累計'}</th></tr></thead><tbody>`;
 
   for (let ri = 0; ri < rows.length; ri++) {
     const r = rows[ri];
@@ -364,24 +433,28 @@ function render(fyStart) {
     let cum = 0, cumHas = false;
     for (const m of ms) {
       const d = data[m];
-      let v = d ? r.get(d) : null;
+      const v = cellValue(r, m, data, cmp);
       if (r.pending) { html += '<td class="num pending">—</td>'; continue; }
-      if (v !== null && v !== undefined && !r.pct) { cum += v; cumHas = true; }
-      // 明細を持つ行で、その月のデータがあるセルだけクリックできるようにする
-      const clickable = r.detail && !r.pct && d && v !== null && v !== undefined;
-      const attrs = clickable ? ` class="num clickable" data-ri="${ri}" data-m="${m}"` : ` class="num${r.warn && v ? ' warn' : ''}"`;
-      html += `<td${attrs}>${r.pct ? fmtPct(v) : (v === null || v === undefined ? '—' : fmt(v))}</td>`;
+      if (v !== null && !r.pct) { cum += v; cumHas = true; }
+      // 明細を持つ行で、その月の実績があるセルだけクリックできるようにする
+      const clickable = clickMode && r.detail && !r.pct && d && v !== null;
+      const cl = ['num', clickable ? 'clickable' : '', isBad(r, v) ? 'bad' : '', r.warn && v ? 'warn' : ''].filter(Boolean).join(' ');
+      html += `<td class="${cl}"${clickable ? ` data-ri="${ri}" data-m="${m}"` : ''}>${fmtCell(r, v)}</td>`;
     }
     // 累計列（率は累計値から再計算せず「—」）
-    html += `<td class="num cum">${r.pending || r.pct ? '—' : (cumHas ? fmt(cum) : '—')}</td>`;
+    const cumV = (r.pending || r.pct || !cumHas) ? null : cum;
+    html += `<td class="num cum${isBad(r, cumV) ? ' bad' : ''}">${fmtCell(r, cumV)}</td>`;
     html += '</tr>';
   }
   html += '</tbody>';
   document.getElementById('tbl').innerHTML = html;
   currentRows = rows;
+  document.getElementById('modeNote').textContent = modeNote();
 
   const loaded = ms.filter(m => summaries[m]).length;
-  document.getElementById('status').textContent = `${loaded} / 12 ヶ月分のデータを表示中`;
+  let st = `${loaded} / 12 ヶ月分の実績`;
+  if ((mode === 'budget' || mode === 'budgetDiff') && !ver) st += '（この年度の予算の版がありません）';
+  document.getElementById('status').textContent = st;
 
   const warnBox = document.getElementById('warnBox');
   const unmappedTotal = ms.reduce((s, m) => s + (data[m] ? Math.abs(data[m].unmapped) : 0), 0);
@@ -457,7 +530,13 @@ async function openDetail(rowIndex, month) {
   const value = data_[month] ? row.get(data_[month]) : null;
 
   document.getElementById('dTitle').textContent = row.label.trim();
-  document.getElementById('dSub').textContent = `${month.slice(0, 4)}年${parseInt(month.slice(4), 10)}月度`;
+  let sub = `${month.slice(0, 4)}年${parseInt(month.slice(4), 10)}月度 実績`;
+  if (isDiffMode()) {
+    const c = safeGet(row, compare_[month]);
+    const label = mode === 'budgetDiff' ? '予算' : '前年';
+    if (c !== null && value !== null && value !== undefined) sub += ` ／ ${label} ${fmt(c)} ／ 差 ${(value - c > 0 ? '+' : '') + fmt(value - c)}`;
+  }
+  document.getElementById('dSub').textContent = sub;
   document.getElementById('dAmt').textContent = value === null || value === undefined ? '—' : fmt(value);
   document.getElementById('dBody').innerHTML = '<div class="msg">読み込み中...</div>';
   drawer.classList.add('open');
@@ -503,13 +582,34 @@ document.getElementById('tbl').addEventListener('click', e => {
   openDetail(parseInt(td.dataset.ri, 10), td.dataset.m);
 });
 
-async function loadFy(fyStart) {
-  document.getElementById('status').textContent = '読み込み中...';
-  const ms = fyMonths(fyStart);
+async function loadSummaries(ms) {
   await Promise.all(ms.map(async m => {
     if (summaries[m] !== undefined) return;
     summaries[m] = await kaikeiGetFile('summary/' + m + '.json', { allow404: true });
   }));
+}
+
+/** 年度の予算の版の選択肢を作り、選ばれている版を読み込む */
+async function prepareBudget(fyStart) {
+  const vs = (budgetIndex.versions || []).filter(v => v.fy === fyStart);
+  const sel = document.getElementById('ver-select');
+  const act = (budgetIndex.active || {})[String(fyStart)];
+  if (!vs.some(v => v.id === budgetId)) budgetId = act || (vs.length ? vs[vs.length - 1].id : null);
+  sel.innerHTML = vs.slice().reverse().map(v =>
+    `<option value="${v.id}"${v.id === budgetId ? ' selected' : ''}>${v.id} ${v.name}${v.id === act ? '（採用中）' : ''}</option>`).join('')
+    || '<option value="">（版がありません）</option>';
+  if (budgetId && !budgetVers[budgetId]) budgetVers[budgetId] = await KaikeiBudget.loadVersion(budgetId);
+}
+
+async function loadFy(fyStart) {
+  currentFy = fyStart;
+  document.getElementById('status').textContent = '読み込み中...';
+  const ms = fyMonths(fyStart);
+  const jobs = [loadSummaries(ms)];
+  if (mode === 'prior' || mode === 'priorDiff') jobs.push(loadSummaries(ms.map(prevYearMonth)));
+  if (mode === 'budget' || mode === 'budgetDiff') jobs.push(prepareBudget(fyStart));
+  await Promise.all(jobs);
+  document.getElementById('ver-wrap').style.display = (mode === 'budget' || mode === 'budgetDiff') ? '' : 'none';
   render(fyStart);
 }
 
@@ -519,7 +619,10 @@ async function boot() {
   document.getElementById('login-view').style.display = 'none';
   document.getElementById('app-view').style.display = 'block';
 
-  accountMaster = await kaikeiGetFile('account_master.json', { allow404: true }) || {};
+  [accountMaster, budgetIndex] = await Promise.all([
+    kaikeiGetFile('account_master.json', { allow404: true }).then(d => d || {}),
+    KaikeiBudget.loadIndex(),
+  ]);
   const idx = await kaikeiGetFile('monthly/_index.json', { allow404: true }) || { months: [] };
   months = idx.months || [];
   if (!months.length) {
@@ -535,6 +638,16 @@ async function boot() {
   const sel = document.getElementById('fy-select');
   sel.innerHTML = [...fys].sort().reverse().map(y => `<option value="${y}">${y}年度（${y}年4月〜${y + 1}年3月）</option>`).join('');
   sel.addEventListener('change', () => loadFy(parseInt(sel.value, 10)));
+  const modeSel = document.getElementById('mode-select');
+  // URLの ?mode=budgetDiff などで、最初から比較表示で開けるようにする
+  const qm = new URLSearchParams(location.search).get('mode');
+  if (qm && [...modeSel.options].some(o => o.value === qm)) modeSel.value = qm;
+  mode = modeSel.value;
+  modeSel.addEventListener('change', () => { mode = modeSel.value; loadFy(parseInt(sel.value, 10)); });
+  document.getElementById('ver-select').addEventListener('change', async e => {
+    budgetId = e.target.value || null;
+    await loadFy(parseInt(sel.value, 10));
+  });
   await loadFy(parseInt(sel.value, 10));
 }
 
