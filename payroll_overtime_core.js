@@ -1,6 +1,6 @@
 /* 時間外労働の定期確認（36協定 限度時間管理）計算ロジック
    画面（payroll_overtime.html）とテスト（Node）の両方から使う。個人データは含まない。
-   データは勤怠CSV（本社事業場、1行＝1人1日、賃金計算期間16日〜翌月15日）を想定。 */
+   データは勤怠CSV（本社事業場・鴻巣工場、1行＝1人1日、賃金計算期間16日〜翌月15日）を想定。 */
 (function (root) {
   'use strict';
 
@@ -45,7 +45,58 @@
     ],
     異常_最大拘束時間: 16,
     超過回数手入力: {},        // {協定年度: {従業員コード: 回数}}（月次確定値からの自動集計を上書き）
+    シフト勤務の役職: ['ﾊﾟｰﾄ', 'パート', 'アルバイト'],
+    シフト勤務の個別指定: [],  // [{従業員コード, メモ}]（従業員マスタで判定できないパート等）
+    // 従業員マスタの等級（「所属」欄：MGR3-1・専門R3-1など）の数字がこれ以上なら管理監督者として除外（null で使わない）
+    管理監督者の等級: 3,
+    // 協定の1日の延長上限と休日労働の上限（協定届：法定休日の内1ヶ月4回まで・1回に付き7時間55分以内）
+    上限チェック: { 一日延長: 5, 一日延長_特別条項: 6, 法定休日_1か月の回数: 4, 法定休日_1回の上限: '07:55' },
+
+    // 鴻巣工場（別の事業場）。ここにない項目は上の本社事業場の値を使う。
+    // 協定届（工場）：1年単位の変形労働時間制・月42時間・特別条項 月78時間／年6回・起算日3/16
+    工場: {
+      事業場: '鴻巣工場',
+      区分: { '1年単位変形': { 限度: 42, 注意: 34 } },
+      部署: { '工場': { 区分: '1年単位変形', 業務: '資材・技術・事務職' } },
+      // 協定の「業務の種類」は部門ごとに分かれるため、従業員マスタの部門から決める（ない部門は部署の業務）
+      部門別業務: {
+        '第一工場': '第一工場ダンディ完組',
+        '第二工場': '第二工場総組・フレーム・溶組・機工',
+        '第三工場': '第三工場リフト他完組',
+        '技術部': '資材・技術・事務職',
+        '品質管理部': '資材・技術・事務職',
+        '工場総務': '資材・技術・事務職',
+        'CSｴﾝｼﾞﾆｱﾘﾝｸﾞ室': '資材・技術・事務職',
+      },
+      除外部署: [],
+      管理監督者の役職: ['部長', '次長', '課長', '専門課長', '工場長'],
+      管理監督者: [],
+      シフト勤務の給与種別: ['時給者', '日給者'],  // 工場は時給者・日給者がパート
+      所定: { 始業: '08:20', 終業: '17:05', 休憩: '00:50', 所定内: '07:55' },
+      個別所定: {},
+      事由: {
+        '第一工場ダンディ完組': '突発的な増産によるプレス/組立作業',
+        '第三工場リフト他完組': '突発的の増産によるリフト完組作業',
+        '第二工場総組・フレーム・溶組・機工': '突発的増産による溶接・組立作業',
+        '資材・技術・事務職': '突発的な資材の搬入',
+      },
+      従業員代表: { 氏名: '', 所属: '', 連絡先: '' },
+      所属は従業員マスタの部門: true,  // 勤怠CSVの部署は「工場」だけなので、表示・絞り込みは従業員マスタの部門（第一工場など）を使う
+      超過回数手入力: {},
+    },
   };
+  const SITES = ['本社', '工場'];
+
+  /** 事業場ごとのマスタ（工場は本社の値に工場の設定を重ねる） */
+  function siteMaster(master, site) {
+    master = master || DEFAULT_MASTER;
+    const base = {};
+    Object.keys(master).forEach(k => { if (!SITES.includes(k)) base[k] = master[k]; });
+    if (site === '本社') return base;
+    return Object.assign(base, DEFAULT_MASTER[site] || {}, master[site] || {});
+  }
+  /** 勤怠CSVの行から事業場を判定（工場のCSVは部署「工場」） */
+  function detectSite(rows) { return rows.some(r => r.部署名 === '工場') ? '工場' : '本社'; }
 
   // ---------- 時刻・日付 ----------
   /** "hh:mm"（24超可）→分。空欄はnull */
@@ -90,22 +141,31 @@
     return rows.filter(r => r.some(v => v !== ''));
   }
 
-  const REQUIRED = ['部署名', '従業員コード', '氏名', '日付', '休日設定', '出社時刻', '退社時刻', '休憩時間', '所定内労働時間', '法定内残業', '残業合計', '深夜残業'];
+  const REQUIRED = ['従業員コード', '氏名', '日付', '休日設定', '出社時刻', '退社時刻', '休憩時間', '所定内労働時間', '法定内残業', '残業合計', '深夜残業'];
 
-  /** 勤怠CSV（本社形式）の文字列 → 行オブジェクトの配列 */
+  /** 勤怠CSVの文字列 → 行オブジェクトの配列。
+      本社形式：「部署名」列あり／工場形式：「部署：9 工場」の見出し行の下に従業員の行が並び、届出は「届出・備考」列 */
   function parseAttendance(text) {
     const rows = parseCSV(text.replace(/^﻿/, ''));
     const hi = rows.findIndex(r => r.includes('従業員コード') && r.includes('日付'));
     if (hi < 0) throw new Error('勤怠CSVの見出し行（従業員コード・日付）が見つかりません。');
     const head = rows[hi].map(h => h.trim());
     const missing = REQUIRED.filter(k => !head.includes(k));
-    if (missing.length) throw new Error('勤怠CSVに必要な列がありません：' + missing.join('、') + '（工場の勤怠CSVは形式が別のため、まだ対応していません）');
-    return rows.slice(hi + 1).map(r => {
+    if (missing.length) throw new Error('勤怠CSVに必要な列がありません：' + missing.join('、'));
+    const deptOfLine = r => { const m = String(r[0] || '').match(/^部署[：:]\s*(?:\d+\s+)?(.+?)\s*$/); return m ? m[1] : null; };
+    let dept = rows.slice(0, hi).map(deptOfLine).filter(Boolean).pop() || '';
+    const out = [];
+    for (const r of rows.slice(hi + 1)) {
+      const d = deptOfLine(r);
+      if (d) { dept = d; continue; }
+      if (r[0] === '従業員コード') continue;
       const o = {}; head.forEach((h, i) => { o[h] = (r[i] || '').trim(); });
-      o.日付 = ymd(o.日付);
+      o.日付 = ymd(o.日付 || '');
       o.届出有無 = o.届出有無 || o['届出・備考'] || '';
-      return o;
-    }).filter(o => o.従業員コード && /^\d{4}\/\d{2}\/\d{2}$/.test(o.日付));
+      if (!o.部署名) o.部署名 = dept;
+      if (o.従業員コード && /^\d{4}\/\d{2}\/\d{2}$/.test(o.日付)) out.push(o);
+    }
+    return out;
   }
 
   // ---------- 期間・協定年度 ----------
@@ -138,12 +198,21 @@
    * @param asOf      データ基準日 'yyyy/mm/dd'（この日までの打刻で集計し、翌日以降を見込みに使う）
    * @param history   {給与月YYYY-MM: {従業員コード: 時間外分}}（協定年度の過去月の確定値。特別条項の回数に使う）
    * @param titles    {従業員コード: 役職}（従業員マスタ。管理監督者の判定に使う）
-   * @param payTypes  {従業員コード: 給与種別名称}（従業員マスタ。シフト勤務＝時給者の判定に使う）
+   * @param payTypes  {従業員コード: 給与種別名称}（従業員マスタ。シフト勤務の判定に使う）
+   * @param units     {従業員コード: 部門}（従業員マスタ。工場の所属表示に使う）
+   * @param grades    {従業員コード: 等級}（従業員マスタの「所属」欄。管理監督者の判定に使う）
+   * master は事業場ごとのマスタ（siteMasterの結果）を渡す
    */
-  function evaluate(rows, master, asOf, history, titles, payTypes) {
-    master = master || DEFAULT_MASTER; history = history || {}; titles = titles || {}; payTypes = payTypes || {};
+  function evaluate(rows, master, asOf, history, titles, payTypes, units, grades) {
+    master = master || DEFAULT_MASTER; history = history || {}; titles = titles || {}; payTypes = payTypes || {}; units = units || {}; grades = grades || {};
+    const gradeMin = master.管理監督者の等級;
+    const gradeLevel = g => { const m = String(g || '').match(/(?:MGR|専門R|専任R)(\d+)/); return m ? Number(m[1]) : null; };
+    const shiftCodes = new Set((master.シフト勤務の個別指定 || []).map(x => x.従業員コード));
+    const LC = Object.assign({}, DEFAULT_MASTER.上限チェック, master.上限チェック || {});
+    const limits = [];
     const managerTitles = new Set(master.管理監督者の役職 || []);
     const shiftTypes = new Set(master.シフト勤務の給与種別 || []);
+    const shiftTitles = new Set(master.シフト勤務の役職 || []);
     const dates = rows.map(r => r.日付).sort();
     const period = { 開始: dates[0], 締日: dates[dates.length - 1] };
     period.給与月 = payMonthOf(period.締日);
@@ -161,27 +230,38 @@
     const people = [], anomalies = [], excluded = [];
     for (const [code, days] of byPerson) {
       days.sort((a, b) => a.日付 < b.日付 ? -1 : 1);
-      const dept = days[days.length - 1].部署名;
+      const csvDept = days[days.length - 1].部署名;
+      const dept = (master.所属は従業員マスタの部門 && units[code]) || csvDept;  // 表示・絞り込み用の所属
       const name = days[0].氏名.replace(/　/g, ' ');
-      if ((master.除外部署 || []).includes(dept)) { excluded.push({ 従業員コード: code, 氏名: name, 所属: dept, 理由: '役員' }); continue; }
+      if ((master.除外部署 || []).includes(csvDept)) { excluded.push({ 従業員コード: code, 氏名: name, 所属: dept, 理由: '役員' }); continue; }
       if (managerTitles.has(titles[code])) { excluded.push({ 従業員コード: code, 氏名: name, 所属: dept, 理由: '管理監督者（役職：' + titles[code] + '）' }); continue; }
+      if (gradeMin != null && gradeLevel(grades[code]) >= gradeMin) { excluded.push({ 従業員コード: code, 氏名: name, 所属: dept, 理由: '管理監督者（等級：' + grades[code] + '）' }); continue; }
       if (excludedCodes.has(code)) { excluded.push({ 従業員コード: code, 氏名: name, 所属: dept, 理由: '管理監督者（個別指定）' }); continue; }
       if (!days.some(d => d.出社時刻 || d.退社時刻 || d.所定内労働時間)) { excluded.push({ 従業員コード: code, 氏名: name, 所属: dept, 理由: '期間中の勤怠データなし' }); continue; }
 
-      const deptM = master.部署[dept] || null;
+      const deptM = master.部署[csvDept] || null;
       const kubun = deptM ? deptM.区分 : null;
       const kb = kubun ? master.区分[kubun] : null;
       const limit = kb ? kb.限度 * 60 : null, caution = kb ? kb.注意 * 60 : null;
       const start = toMin((master.個別所定[code] || {}).始業 || master.所定.始業);
       const scheduled = toMin(mode(days.map(d => d.所定内労働時間).filter(Boolean))) || toMin(master.所定.所定内);
 
-      const shift = shiftTypes.has(payTypes[code]);
-      let stamp = 0, applied = 0, night = 0, holidayWork = 0, workDays = 0, remaining = 0, pastScheduled = 0;
+      const shift = shiftTypes.has(payTypes[code]) || shiftTitles.has(titles[code]) || shiftCodes.has(code);
+      const over = [];  // 1日の延長上限・休日労働の上限を超えた日
+      const legalDay = Math.max(480, scheduled);  // 1日の法定労働時間（8時間。所定がそれより長い日は所定）
+      const legalHolidays = [];
+      let stamp = 0, applied = 0, night = 0, holidayWork = 0, workDays = 0, remaining = 0, pastScheduled = 0, offDayOT = 0;
       const daily = [];
+      const defaultBreak = toMin(master.所定.休憩) || 0;
       for (const d of days) {
         const isHoliday = !!d.休日設定;
-        const inT = toMin(d.出社時刻), outT = toMin(d.退社時刻), brk = toMin(d.休憩時間) || 0;
-        const ap = (toMin(d.残業合計) || 0) + (toMin(d.法定内残業) || 0);
+        const inT = toMin(d.出社時刻), outT = toMin(d.退社時刻);
+        // 休憩が空欄（休日出勤の打刻で多い）で6時間を超える日は、所定の休憩を差し引く
+        const brkRaw = toMin(d.休憩時間);
+        const brk = brkRaw != null ? brkRaw : (inT != null && outT != null && outT - inT > 360 ? defaultBreak : 0);
+        let ap = (toMin(d.残業合計) || 0) + (toMin(d.法定内残業) || 0);
+        // 所定休日の申請は「その他休日残業」に入ることがある（残業合計が空欄のときだけ加える）
+        if (isHoliday && d.休日設定 !== '法定休日' && !d.残業合計) ap += (toMin(d.その他休日残業) || 0) + (toMin(d.その他休日深夜残業) || 0);
         if (d.日付 > asOf) {
           if (!isHoliday) remaining++;
           continue;
@@ -206,7 +286,13 @@
         if (isHoliday) {
           const w = Math.max(0, outT - inT - brk);
           const countAsOT = d.休日設定 !== '法定休日' && master.その他休日を時間外に含める;
-          if (countAsOT) stamp += w; else holidayWork += w;
+          if (countAsOT) { stamp += w; offDayOT += w; } else holidayWork += w;
+          if (d.休日設定 === '法定休日') {
+            legalHolidays.push(d.日付);
+            if (w > toMin(LC.法定休日_1回の上限)) over.push({ 日付: d.日付, 内容: `法定休日の労働が1回${LC.法定休日_1回の上限.replace(/^0/, '').replace(':', '時間')}分超`, 時間: w });
+          } else if (w - 480 > LC.一日延長 * 60) {
+            over.push({ 日付: d.日付, 内容: w - 480 > LC.一日延長_特別条項 * 60 ? `1日の延長${LC.一日延長_特別条項}時間超（特別条項の上限）` : `1日の延長${LC.一日延長}時間超`, 時間: w - 480 });
+          }
           daily.push({ 日付: d.日付, 時間外: countAsOT ? w : 0, 休日労働: countAsOT ? 0 : w });
           continue;
         }
@@ -214,11 +300,24 @@
         const ot = Math.max(0, work - scheduled);
         stamp += ot; workDays++;
         daily.push({ 日付: d.日付, 時間外: ot });
+        // 1日の延長（法定労働時間を超える時間）の上限
+        const legalExcess = work - legalDay;
+        if (legalExcess > LC.一日延長 * 60) {
+          over.push({ 日付: d.日付, 内容: legalExcess > LC.一日延長_特別条項 * 60 ? `1日の延長${LC.一日延長_特別条項}時間超（特別条項の上限）` : `1日の延長${LC.一日延長}時間超`, 時間: legalExcess });
+        }
       }
+      // 法定休日の労働は1か月（賃金計算期間）に4回まで
+      legalHolidays.sort();
+      if (legalHolidays.length > LC.法定休日_1か月の回数) {
+        over.push({ 日付: legalHolidays[LC.法定休日_1か月の回数], 内容: `法定休日の労働が1か月${LC.法定休日_1か月の回数}回超（${legalHolidays.length}回目）`, 時間: null });
+      }
+      over.forEach(o => limits.push({ 従業員コード: code, 氏名: name, 所属: dept, ...o }));
 
       // シフト勤務は残りの所定労働日のうち、これまでの出勤率の分だけ出勤すると見込む
       const attendRate = shift && pastScheduled ? Math.min(1, workDays / pastScheduled) : 1;
-      const projected = workDays ? stamp + stamp / workDays * remaining * attendRate : stamp;
+      // 所定休日の出勤分は日割りで延ばさない（所定労働日の時間外だけを残り日数に延ばす）
+      const weekdayOT = stamp - offDayOT;
+      const projected = workDays ? stamp + weekdayOT / workDays * remaining * attendRate : stamp;
       const diff = Math.max(0, stamp - applied);
       const peak = Math.max(stamp, applied);
       const flags = [];
@@ -241,9 +340,9 @@
       const thisMonth = limit != null && (peak > limit || projected > limit);
 
       people.push({
-        従業員コード: code, 氏名: name, 所属: dept, 区分: kubun || '未設定', 業務: deptM ? deptM.業務 : '',
+        従業員コード: code, 氏名: name, 所属: dept, 区分: kubun || '未設定', 業務: ((master.部門別業務 || {})[units[code]]) || (deptM ? deptM.業務 : ''),
         限度: limit, 注意: caution, 出勤日数: workDays, 打刻推定: stamp, 申請済: applied, 深夜: night,
-        休日労働: holidayWork, 差: diff, 残日数: remaining, 見込み: projected, シフト勤務: shift, 出勤率: shift ? attendRate : null, 判定, 未申請あり: unreported,
+        休日労働: holidayWork, 差: diff, 残日数: remaining, 見込み: projected, 所定休日分: offDayOT, 上限超え: over, シフト勤務: shift, 出勤率: shift ? attendRate : null, 判定, 未申請あり: unreported,
         過去超過回数: pastCount, 過去超過月: manual != null ? ['手入力'] : pastMonths, 今回超過: thisMonth,
         超過回数: pastCount + (thisMonth ? 1 : 0), 所定内: scheduled, 日別: daily,
       });
@@ -251,7 +350,8 @@
     const order = { '特別条項上限超過': 0, '超過': 1, '80%到達': 2, '超過見込み': 3, '80%超見込み': 4, '未申請あり': 5, '区分未設定': 6, '': 7 };
     people.sort((a, b) => order[a.判定] - order[b.判定] || b.見込み - a.見込み);
     anomalies.sort((a, b) => a.所属.localeCompare(b.所属, 'ja') || a.氏名.localeCompare(b.氏名, 'ja') || (a.日付 < b.日付 ? -1 : 1));
-    return { period, asOf, people, anomalies, excluded };
+    limits.sort((a, b) => a.所属.localeCompare(b.所属, 'ja') || a.氏名.localeCompare(b.氏名, 'ja') || (a.日付 < b.日付 ? -1 : 1));
+    return { period, asOf, people, anomalies, excluded, limits };
   }
 
   /** 確認日（'yyyy/mm/dd'）に当てはまる差の掲載基準と、その基準で載せる人 */
@@ -271,7 +371,7 @@
     return withOut.length ? withOut[withOut.length - 1] : rows.map(r => r.日付).sort()[0];
   }
 
-  const api = { DEFAULT_MASTER, toMin, fmt, fmtH, dateAdd, parseCSV, parseAttendance, evaluate, diffStage, defaultAsOf, payMonthOf, agreementYear, priorMonthsInYear };
+  const api = { DEFAULT_MASTER, SITES, siteMaster, detectSite, toMin, fmt, fmtH, dateAdd, parseCSV, parseAttendance, evaluate, diffStage, defaultAsOf, payMonthOf, agreementYear, priorMonthsInYear };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OT = api;
 })(this);
