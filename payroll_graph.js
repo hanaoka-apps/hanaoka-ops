@@ -112,6 +112,51 @@ async function payrollPutRaw(relPath, body, contentType) {
   return res.json();
 }
 
+// ---------------- 時間外確認用：総務のサイト ----------------
+// 時間外確認（36協定）のデータは、給与データとは別の総務のサイトに置く。
+// 総務の担当者（給与データは見られない人）も作業できるようにするため。個人データはここには書かない。
+const OT_SITE_PATH = 'hanaokacorp.sharepoint.com:/sites/msteams_20513c';  // 総務のTeamsのサイト（既定のドキュメントライブラリ）
+const OT_ROOT = '時間外確認/';
+let _otDriveId;
+
+async function otDriveId() {
+  if (_otDriveId) return _otDriveId;
+  const cached = sessionStorage.getItem('otDriveId');
+  if (cached) { _otDriveId = cached; return cached; }
+  let drive;
+  try {
+    const site = await graphGet('/sites/' + OT_SITE_PATH);
+    drive = await graphGet('/sites/' + site.id + '/drive');
+  } catch (e) {
+    throw new Error('総務のサイト（時間外確認）へのアクセス権がありません。総務のサイトの「時間外確認」フォルダの共有を依頼してください。');
+  }
+  _otDriveId = drive.id;
+  sessionStorage.setItem('otDriveId', drive.id);
+  return drive.id;
+}
+const otPath = async rel => '/drives/' + (await otDriveId()) + '/root:/' + encodeURI(OT_ROOT + rel) + ':/content';
+async function otGetFile(rel, opts) { return graphGet(await otPath(rel), opts); }
+async function otPutFile(rel, obj) { return graphPutJSON(await otPath(rel), obj); }
+async function otPutRaw(rel, body, contentType) {
+  const token = await payrollGetToken();
+  const res = await fetch(GRAPH_BASE + await otPath(rel), {
+    method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': contentType || 'application/octet-stream' }, body,
+  });
+  if (res.status === 403) throw new Error('総務のサイトへの書き込み権がありません。');
+  if (!res.ok) throw new Error('[' + res.status + '] PUT ' + rel + ': ' + await res.text());
+  return res.json();
+}
+async function otGetRaw(rel) {
+  const token = await payrollGetToken();
+  const res = await fetch(GRAPH_BASE + await otPath(rel), { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) throw new Error('[' + res.status + '] GET ' + rel);
+  return res.arrayBuffer();
+}
+/** 給与データ（Executive Workspace）を見られる人か。見られない人には給与系のメニューを出さない */
+async function payrollHasAccess() {
+  try { await payrollDriveId(); return true; } catch (e) { return false; }
+}
+
 /** 「給与データ」配下のファイルをバイナリ（ArrayBuffer）で読む。 */
 async function payrollGetRaw(relPath) {
   const driveId = await payrollDriveId();

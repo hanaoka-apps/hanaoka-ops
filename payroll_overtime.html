@@ -100,15 +100,15 @@
 <body>
 <nav>
   <strong style="opacity:.55;font-weight:600;">給与・労務アプリ</strong>
-  <a href="payroll_dashboard.html">給与前月対比</a>
-  <a href="payroll_detail.html">支給控除一覧表</a>
-  <a href="payroll_leave.html">年次有給休暇管理</a>
-  <a href="payroll_people.html">人事情報</a>
+  <a href="payroll_dashboard.html" class="payroll-only hide">給与前月対比</a>
+  <a href="payroll_detail.html" class="payroll-only hide">支給控除一覧表</a>
+  <a href="payroll_leave.html" class="payroll-only hide">年次有給休暇管理</a>
+  <a href="payroll_people.html" class="payroll-only hide">人事情報</a>
   <a href="payroll_overtime.html" class="cur">時間外確認</a>
 </nav>
 
 <div id="gate">
-  <p>役員・総務幹部限定です。Microsoftアカウントでサインインしてください。</p>
+  <p>役員・総務の担当者限定です。Microsoftアカウントでサインインしてください。</p>
   <button class="btn" id="signInBtn">サインイン</button>
   <div id="gateError" style="margin-top:14px;font-size:13px;"></div>
 </div>
@@ -131,7 +131,7 @@
     <div id="masterWarn" class="banner warn hide"></div>
     <div id="drop" class="no-print">
       <p style="margin:0 0 8px;">勤怠CSV（本社事業場・鴻巣工場のどちらでも。事業場は自動で判定します）をここにドラッグ、または <button class="btn ghost" id="pickBtn">ファイルを選ぶ</button></p>
-      <p class="note" style="margin:0;">CSVの計算はこのブラウザの中だけで行います。「SharePointに保存」を押すと、元のCSVと確認結果をExecutive Workspaceの「給与データ/overtime」に保存します（外部には送信しません）。</p>
+      <p class="note" style="margin:0;">CSVの計算はこのブラウザの中だけで行います。「SharePointに保存」を押すと、元のCSVと確認結果を総務のサイトの「時間外確認」フォルダに保存します（外部には送信しません）。</p>
       <input type="file" id="fCsv" accept=".csv,text/csv" class="hide">
     </div>
 
@@ -217,7 +217,7 @@
 
   <!-- ================= マスタ ================= -->
   <section id="tab-master" class="hide">
-    <p class="note">マスタはSharePoint（給与データ/overtime/master.json）に保存します。個人名・従業員コードは公開されるページには埋め込みません。</p>
+    <p class="note">マスタは総務のサイト（時間外確認/master.json）に保存します。個人名・従業員コードは公開されるページには埋め込みません。</p>
     <div class="row" style="margin-bottom:10px;"><div class="tabs" id="mSiteTabs"><button class="tab-btn active" data-site="本社">本社事業場</button><button class="tab-btn" data-site="工場">鴻巣工場</button></div>
       <span class="note" id="mSiteNote"></span></div>
     <div class="mgrid">
@@ -265,12 +265,22 @@
       </div>
     </div>
     <div class="row"><button class="btn" id="mSave">マスタを保存</button><span id="mMsg" class="note"></span></div>
+    <div class="card payroll-only hide" style="margin-top:16px;">
+      <h2>給与データからの連携（給与データを見られる人だけに表示）</h2>
+      <p class="note">総務の担当者は給与データを見られないため、時間外確認に必要な最小限（従業員ごとの役職・等級・部門・給与種別と、過去の月の時間外）だけを総務のサイトに置きます。
+        金額・住所・生年月日は含めません。<b>毎月、給与データをアップロードしたあとに1回</b>「基礎データを更新」を押してください。</p>
+      <div class="row">
+        <button class="btn" id="basisBtn">基礎データを更新</button>
+        <button class="btn ghost" id="migrateBtn">以前の保存データを総務のサイトへ移す（1回だけ）</button>
+        <span id="basisMsg" class="note"></span>
+      </div>
+    </div>
   </section>
 </main>
 </div>
 
-<script src="payroll_graph.js?v=2026092811"></script>
-<script src="payroll_overtime_core.js?v=2026092811"></script>
+<script src="payroll_graph.js?v=2026092901"></script>
+<script src="payroll_overtime_core.js?v=2026092901"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -299,7 +309,7 @@ function mergeMaster(saved) {
   return m;
 }
 async function loadMaster() {
-  const saved = await payrollGetFile('overtime/master.json', { allow404: true });
+  const saved = await otGetFile('master.json', { allow404: true });
   S.master = mergeMaster(saved);
   S.masterSaved = !!saved;
   renderMasterForm();
@@ -390,42 +400,93 @@ $('mSave').onclick = async () => {
   readMasterForm();
   try {
     S.master.更新日時 = new Date().toISOString(); S.master.更新者 = whoName();
-    await payrollPutFile('overtime/master.json', S.master);
+    await otPutFile('master.json', S.master);
     S.masterSaved = true; renderMasterForm(); updateMasterWarn();
     $('mMsg').innerHTML = '<span class="ok">保存しました</span>';
     if (S.csv && !S.fromHistory) recompute();
   } catch (e) { $('mMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
 };
 
-// ---------------- 過去月の確定値（特別条項の回数） ----------------
+// ---------------- 基礎データ（総務のサイトの 時間外確認/基礎データ.json） ----------------
+// 総務の担当者は給与データ（Executive Workspace）を見られないため、時間外確認に必要な最小限だけを
+// 給与データを見られる人（役員・福田さん）が作って置く：従業員ごとの役職・等級・部門・給与種別と、過去月の時間外（分）。
+// 金額・住所・生年月日などは含めない。
+async function loadBasis() {
+  if (S.basis === undefined) S.basis = await otGetFile('基礎データ.json', { allow404: true });
+  return S.basis;
+}
 async function loadHistoryFor(payYm, site) {
-  const out = {};
+  const b = await loadBasis(), out = {};
+  if (!b) return out;
   for (const ym of OT.priorMonthsInYear(payYm)) {
-    const d = await payrollGetFile('history/payroll_detail/' + ym + '_' + site + '.json', { allow404: true });
-    if (!d) continue;
-    out[ym] = {};
-    d.forEach(e => {
-      const v = e.内訳 || {};
-      // 給与の確定値：普通残業＋深夜残業（時間）。法定休日労働は限度時間に含めない
-      out[ym][e.従業員コード] = Math.round(((v.勤怠_普通残業 || 0) + (v.勤怠_深夜残業 || 0)) * 60);
-    });
+    const m = ((b.月別時間外 || {})[ym] || {})[site];
+    if (m) out[ym] = m;
   }
   return out;
 }
-
-/** 従業員マスタ（SharePointの history/employee_master.json）から、その事業場の役職・給与種別・部門。
-    CSVの給与月以前で最新の月次スナップショットを使う（従業員コードは拠点ごとに振られているため拠点で絞る） */
+/** 基礎データから、その事業場の役職・給与種別・部門・等級。CSVの給与月以前で最新の月の値を使う */
 async function loadTitlesFor(payYm, site) {
-  const em = await payrollGetFile('history/employee_master.json', { allow404: true });
-  if (!em) return { titles: {}, payTypes: {}, units: {}, grades: {}, 年月: null };
+  const b = await loadBasis();
+  const em = (b && b.従業員) || [];
+  if (!em.length) return { titles: {}, payTypes: {}, units: {}, grades: {}, 年月: null };
   const months = [...new Set(em.map(r => r.年月))].sort();
   const ym = months.filter(m => m <= payYm).pop() || months[months.length - 1];
   const titles = {}, payTypes = {}, units = {}, grades = {};
   em.filter(r => r.年月 === ym && r.拠点 === site).forEach(r => {
     const code = String(r.従業員コード).padStart(6, '0');
-    titles[code] = r.役職 || ''; payTypes[code] = r.給与種別名称 || ''; units[code] = r.部門 || ''; grades[code] = r.所属 || '';
+    titles[code] = r.役職 || ''; payTypes[code] = r.給与種別名称 || ''; units[code] = r.部門 || ''; grades[code] = r.等級 || '';
   });
   return { titles, payTypes, units, grades, 年月: ym };
+}
+/** 給与データから基礎データを作り、総務のサイトに置く（給与データを見られる人だけが実行できる） */
+async function buildBasis() {
+  const em = (await payrollGetFile('history/employee_master.json', { allow404: true })) || [];
+  const 従業員 = em.map(r => ({ 年月: r.年月, 拠点: r.拠点, 従業員コード: String(r.従業員コード).padStart(6, '0'),
+    役職: r.役職 || '', 等級: r.所属 || '', 部門: r.部門 || '', 給与種別名称: r.給与種別名称 || '' }));
+  // 今の協定年度と前年度（最大24か月）の給与月の時間外：普通残業＋深夜残業（法定休日労働は限度時間に含めない）
+  const now = new Date(), cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const fy = OT.agreementYear(cur), months = [];
+  for (let y = fy - 1, m = 4; months.length < 24; m++) {
+    if (m > 12) { m = 1; y++; }
+    const ym = `${y}-${String(m).padStart(2, '0')}`;
+    if (ym > cur) break;
+    months.push(ym);
+  }
+  const 月別時間外 = {};
+  for (const ym of months) {
+    for (const site of OT.SITES) {
+      const d = await payrollGetFile('history/payroll_detail/' + ym + '_' + site + '.json', { allow404: true });
+      if (!d) continue;
+      (月別時間外[ym] = 月別時間外[ym] || {})[site] = {};
+      d.forEach(e => { const v = e.内訳 || {}; 月別時間外[ym][site][e.従業員コード] = Math.round(((v.勤怠_普通残業 || 0) + (v.勤怠_深夜残業 || 0)) * 60); });
+    }
+  }
+  const basis = { 作成日時: new Date().toISOString(), 作成者: whoName(), 従業員, 月別時間外 };
+  await otPutFile('基礎データ.json', basis);
+  S.basis = basis;
+  return { 従業員の月数: new Set(従業員.map(r => r.年月)).size, 時間外の月数: Object.keys(月別時間外).length };
+}
+/** Executive Workspace（給与データ/overtime）に保存済みのマスタ・確認結果・元CSVを総務のサイトへ移す（1回だけ） */
+async function migrateFromPayroll() {
+  const log = [];
+  const master = await payrollGetFile('overtime/master.json', { allow404: true });
+  if (master) { await otPutFile('master.json', master); log.push('マスタ'); }
+  const idx = (await payrollGetFile('overtime/index.json', { allow404: true })) || [];
+  const strip = p => String(p || '').replace(/^overtime\//, '');
+  for (const x of idx) {
+    const rec = await payrollGetFile(x.結果, { allow404: true });
+    if (rec) { rec.元CSV = strip(rec.元CSV); await otPutFile(strip(x.結果), rec); }
+    if (x.元CSV) { try { await otPutRaw(strip(x.元CSV), await payrollGetRaw(x.元CSV), 'text/csv'); } catch (e) { log.push('元CSVの移行に失敗：' + x.元CSV); } }
+    x.結果 = strip(x.結果); x.元CSV = strip(x.元CSV);
+  }
+  if (idx.length) {
+    const cur = (await otGetFile('index.json', { allow404: true })) || [];
+    const key = x => x.確認日 + '|' + x.給与月 + '|' + (x.事業場 || '本社');
+    const merged = [...new Map([...idx, ...cur].map(x => [key(x), x])).values()].sort((a, b) => a.確認日 < b.確認日 ? 1 : -1);
+    await otPutFile('index.json', merged);
+    log.push(`確認結果 ${idx.length}件`);
+  }
+  return log;
 }
 
 // ---------------- CSV読み込み・計算 ----------------
@@ -836,16 +897,16 @@ $('saveBtn').onclick = async () => {
   const r = S.result, cd = checkDateStr(), ym = r.period.給与月, key = cd.replace(/\//g, ''), site = S.site;
   $('saveBtn').disabled = true; $('saveMsg').textContent = '保存中…';
   try {
-    const csvPath = `overtime/csv/${ym}/${key}_${site}_${stamp()}_${S.csv.name}`;
-    await payrollPutRaw(csvPath, S.csv.buf, 'text/csv');
+    const csvPath = `csv/${ym}/${key}_${site}_${stamp()}_${S.csv.name}`;
+    await otPutRaw(csvPath, S.csv.buf, 'text/csv');
     const rec = {
       確認日: cd, 事業場: site, 基準日: r.asOf, 期間: r.period, 保存日時: new Date().toISOString(), 保存者: whoName(),
       元CSV: csvPath, 元CSV名: S.csv.name, マスタ: master(), 結果: r,
       投稿文: $('postText').value, 通告文: S.texts.notice, 投稿しない打刻異常: [...S.anomSkip],
     };
-    const resultPath = `overtime/results/${ym}/${key}_${site}.json`;
-    await payrollPutFile(resultPath, rec);
-    const index = (await payrollGetFile('overtime/index.json', { allow404: true })) || [];
+    const resultPath = `results/${ym}/${key}_${site}.json`;
+    await otPutFile(resultPath, rec);
+    const index = (await otGetFile('index.json', { allow404: true })) || [];
     const summary = {
       確認日: cd, 事業場: site, 給与月: ym, 基準日: r.asOf, 保存日時: rec.保存日時, 保存者: rec.保存者, 結果: resultPath, 元CSV: csvPath,
       対象者: r.people.length, 超過: r.people.filter(x => ['超過', '特別条項上限超過'].includes(x.判定)).length,
@@ -853,7 +914,7 @@ $('saveBtn').onclick = async () => {
       未申請あり: r.people.filter(x => x.未申請あり).length, 打刻異常: r.anomalies.length,
     };
     const next = index.filter(x => !(x.確認日 === cd && x.給与月 === ym && (x.事業場 || '本社') === site)).concat([summary]).sort((a, b) => a.確認日 < b.確認日 ? 1 : -1);
-    await payrollPutFile('overtime/index.json', next);
+    await otPutFile('index.json', next);
     $('saveMsg').innerHTML = `<span class="ok">保存しました：${esc(resultPath)}（元CSVも保存済み）</span>`;
   } catch (e) { $('saveMsg').innerHTML = '<span class="err">保存に失敗しました：' + esc(e.message) + '</span>'; }
   $('saveBtn').disabled = false;
@@ -877,7 +938,7 @@ $('printBtn').onclick = () => window.print();
 async function loadIndex() {
   $('histMsg').textContent = '読み込み中…';
   try {
-    const idx = (await payrollGetFile('overtime/index.json', { allow404: true })) || [];
+    const idx = (await otGetFile('index.json', { allow404: true })) || [];
     $('tblHist').innerHTML = '<thead><tr><th>確認日</th><th>事業場</th><th>給与月</th><th>データ基準日</th><th class="num">対象者</th><th class="num">超過</th><th class="num">80%到達</th><th class="num">超過見込み</th><th class="num">未申請あり</th><th class="num">打刻異常</th><th>保存</th><th></th></tr></thead><tbody>' +
       (idx.map((x, i) => `<tr><td>${esc(x.確認日)}</td><td>${esc(x.事業場 === '工場' ? '鴻巣工場' : '本社事業場')}</td><td>${esc(x.給与月)}</td><td>${esc(x.基準日)}</td><td class="num">${x.対象者}</td><td class="num">${x.超過}</td><td class="num">${x['80%到達']}</td><td class="num">${x.超過見込み}</td><td class="num">${x.未申請あり}</td><td class="num">${x.打刻異常}</td>
         <td>${esc(localTime(x.保存日時))} ${esc(x.保存者 || '')}</td>
@@ -886,7 +947,7 @@ async function loadIndex() {
     $('tblHist').onclick = async e => {
       const o = e.target.dataset.open, d = e.target.dataset.dl;
       if (o != null) {
-        const rec = await payrollGetFile(idx[o].結果);
+        const rec = await otGetFile(idx[o].結果);
         S.fromHistory = rec; S.result = rec.結果; S.csv = null; S.openCode = null; S.site = rec.事業場 || '本社'; S.dept = '';
         S.texts = { post: rec.投稿文, notice: Array.isArray(rec.通告文) ? rec.通告文 : (rec.通告文 ? [{ 従業員コード: '', 氏名: '（保存時の通告文）', text: rec.通告文 }] : []) };
         S.anomSkip = new Set(rec.投稿しない打刻異常 || []);
@@ -894,7 +955,7 @@ async function loadIndex() {
         switchTab('check'); render();
       }
       if (d != null) {
-        const buf = await payrollGetRaw(idx[d].元CSV);
+        const buf = await otGetRaw(idx[d].元CSV);
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([buf], { type: 'text/csv' }));
         a.download = idx[d].元CSV.split('/').pop(); a.click();
@@ -928,8 +989,35 @@ dz.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) loa
 async function enter() {
   $('gate').classList.add('hide'); $('appRoot').classList.remove('hide');
   $('who').textContent = whoName();
-  try { await loadMaster(); } catch (e) { $('masterWarn').classList.remove('hide'); $('masterWarn').textContent = 'マスタの読み込みに失敗しました：' + e.message; S.master = mergeMaster(null); renderMasterForm(); }
+  // 給与データを見られる人（役員・福田さん）だけ、給与系のメニューと基礎データの更新を出す
+  S.isPayroll = await payrollHasAccess();
+  document.querySelectorAll('.payroll-only').forEach(el => el.classList.toggle('hide', !S.isPayroll));
+  try { await loadMaster(); } catch (e) { $('masterWarn').classList.remove('hide'); $('masterWarn').textContent = 'マスタの読み込みに失敗しました（総務のサイトへのアクセス権を確認してください）：' + e.message; S.master = mergeMaster(null); renderMasterForm(); }
+  try {
+    const b = await loadBasis();
+    $('basisMsg').textContent = b ? `基礎データ：${localTime(b.作成日時)} 更新（${b.作成者 || ''}）` : '基礎データはまだ作られていません';
+    if (!b) { $('masterWarn').classList.remove('hide'); $('masterWarn').innerHTML += (($('masterWarn').innerHTML ? '<br>' : '') + '基礎データ（役職・等級・過去月の時間外）がまだありません。給与データを見られる人がマスタタブの「基礎データを更新」を押してください。'); }
+  } catch (e) { /* 基礎データの読み込み失敗は計算時に「従業員マスタ未取得」と表示する */ }
 }
+$('basisBtn').onclick = async () => {
+  $('basisBtn').disabled = true; $('basisMsg').textContent = '作成中…（給与データを読み込んでいます）';
+  try {
+    const r = await buildBasis();
+    $('basisMsg').innerHTML = `<span class="ok">基礎データを更新しました（従業員マスタ${r.従業員の月数}か月分・時間外${r.時間外の月数}か月分）</span>`;
+    if (S.csv && !S.fromHistory) { const payYm = OT.payMonthOf(S.csv.rows.map(x => x.日付).sort().pop()); S.history = await loadHistoryFor(payYm, S.site); S.titles = await loadTitlesFor(payYm, S.site); recompute(); }
+  } catch (e) { $('basisMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+  $('basisBtn').disabled = false;
+};
+$('migrateBtn').onclick = async () => {
+  if (!confirm('給与データ（Executive Workspace）の「overtime」に保存済みのマスタ・確認結果・元CSVを、総務のサイトの「時間外確認」にコピーします。よろしいですか？')) return;
+  $('migrateBtn').disabled = true; $('basisMsg').textContent = '移行中…';
+  try {
+    const log = await migrateFromPayroll();
+    $('basisMsg').innerHTML = `<span class="ok">移しました：${esc(log.join('、') || '移すデータはありませんでした')}</span>`;
+    await loadMaster();
+  } catch (e) { $('basisMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+  $('migrateBtn').disabled = false;
+};
 $('signInBtn').onclick = async () => {
   $('gateError').textContent = '';
   try { await payrollSignIn(); await enter(); } catch (e) { $('gateError').textContent = e.message || String(e); }
