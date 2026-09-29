@@ -36,6 +36,15 @@
   // Excel の ROUND（0.5 は 0 から遠い方へ）
   function round(x) { return x < 0 ? -Math.round(-x) : Math.round(x); }
 
+  /* でんさい利用者番号：9桁の英数字（例 00000PJE1）。数字だけのものは CSV で先頭の0が落ちているので9桁に補う（32506 → 000032506）。
+     「対応不可・申込予定・検討中・申請中」などは番号ではなく状況のメモ */
+  function densaiNoOf(s) {
+    s = String(s == null ? '' : s).trim();
+    if (/^\d{1,9}$/.test(s)) return /^0+$/.test(s) ? { no: '', memo: '' } : { no: s.padStart(9, '0'), memo: '' };
+    if (/^[0-9A-Za-z]{9}$/.test(s)) return { no: s.toUpperCase(), memo: '' };
+    return { no: '', memo: s };
+  }
+
   // ---- 仕入先マスタ ----
   function readVendorMaster(rows) {
     var ix = colIndex(rows[0]), out = {};
@@ -43,7 +52,7 @@
     for (var i = 1; i < rows.length; i++) {
       var r = rows[i], code = code6(g(r, '仕入先ｺｰﾄﾞ'));
       if (!code) continue;
-      var dn = g(r, 'でんさい利用者番号').replace(/\D/g, '');
+      var dn = densaiNoOf(g(r, 'でんさい利用者番号'));
       out[code] = {
         code: code, name: g(r, '仕入先名略称') || g(r, '仕入先名１'),
         setting: g(r, '支払設定方法名１'),                         // 設定しない／基準額で設定／支払率で設定
@@ -56,7 +65,7 @@
         site: num(g(r, '手形サイト(日)')),
         torikime: g(r, '取決(C/海/ｻｲﾄ)'),
         feeKbn: g(r, '振込口座　振込手数料区分名'),                 // 自社負担／相手負担／固定
-        densaiNo: dn ? dn.padStart(9, '0') : '',
+        densaiNo: dn.no, densaiMemo: dn.memo,
         closeDay: num(g(r, '締日１')), payDay: num(g(r, '支払日１')), cycle: g(r, '支払ｻｲｸﾙ名１'),
         payCond: g(r, '支払条件名１')
       };
@@ -131,7 +140,7 @@
   function rules() { if (!RULES) throw new Error('決まり（AP_Setting の smile.rules）を読んでいません'); return RULES; }
 
   // ---- 分け方 ----
-  // 仕入先マスタの支払設定で、金額を振込とでんさい（手形）に分ける
+  // 仕入先マスタの支払設定で、金額を振込とでんさいに分ける（手形は廃止。マスタの「手形」もでんさいとして扱う）
   function splitBySetting(amount, v) {
     var s = v ? v.setting : '', th = rules().rateThreshold;
     if (s === '支払率で設定') {
@@ -139,7 +148,7 @@
       return { transfer: amount, densai: 0, rule: '率|' + (th / 10000) + '万以下は振込' };
     }
     if (s === '基準額で設定') {
-      var lbl = '額|' + (v.base / 10000) + '万超' + v.baseJudge + (v.densaiNo ? 'でんさい' : '手形') + (v.torikime || '');
+      var lbl = '額|' + (v.base / 10000) + '万超' + v.baseJudge + 'でんさい' + (v.torikime || '');
       return amount > v.base ? { transfer: 0, densai: amount, rule: lbl } : { transfer: amount, densai: 0, rule: lbl };
     }
     return { transfer: amount, densai: 0, rule: '振込' };
@@ -151,7 +160,7 @@
     for (var i = 0; i < f.tiers.length; i++) { var t = f.tiers[i]; if (transfer > t.over && (t.under == null || transfer < t.under)) return t.fee; }
     return 0;
   }
-  // でんさい・手形の期日：支払日の月末から、サイトごとの決まり [何か月後, 日（0＝月末）]
+  // でんさいの期日：支払日の月末から、サイトごとの決まり [何か月後, 日（0＝月末）]
   function dueDate(payYm, site) {
     var r = rules().siteRules[String(site)]; if (!r || !payYm) return '';
     var y = +payYm.slice(0, 4), m = +payYm.slice(5, 7) - 1 + r[0];
@@ -192,7 +201,7 @@
       var transfer = (a.transfer != null && a.transfer !== '') ? +a.transfer : sp.transfer;
       var densai = (a.densai != null && a.densai !== '') ? +a.densai : sp.densai;
       var fee = transferFee(transfer, v);
-      var kind = densai > 0 ? (v && v.densaiNo && v.densaiNo !== '000000000' ? 'でんさい' : '手形') : '';
+      var kind = densai > 0 ? 'でんさい' : '';   // 手形は廃止（2026-09-26）
       var row = { code: code, name: L.name || (P && P.name) || (v && v.name) || '',
         deptCode: P ? P.deptCode : '', deptName: P ? P.deptName : '',
         prevBalance: L.prevBalance, paid: L.paid, carry: L.carry, listIncl: L.incl, listBalance: L.balance,
@@ -214,6 +223,7 @@
       if (L.payDate && !/末$/.test(L.payDate)) row.notes.push('支払予定日が ' + L.payDate + '（月末以外）');
       if (amount > 0 && transfer + densai !== amount) row.notes.push('振込＋でんさいが支払額と合わない（差 ' + (amount - transfer - densai).toLocaleString() + '）');
       if (v) {
+        if (densai > 0 && !v.densaiNo) row.notes.push('でんさい利用者番号が仕入先マスタにない' + (v.densaiMemo ? '（「' + v.densaiMemo + '」）' : '') + '：振込などに分け方を変えるか、マスタに番号を登録');
         if (densai > 0 && !row.due) row.notes.push('サイト ' + v.site + ' 日の期日の決まりがない');
         if (v.feeKbn === '固定') row.notes.push('手数料区分が「固定」');
         if (sp.transfer > 0 && v.setting === '基準額で設定' && v.baseMethod1 && v.baseMethod1 !== '振込') row.notes.push('基準額以下の支払方法が「' + v.baseMethod1 + '」');
@@ -224,12 +234,12 @@
       rows.push(row);
       row.notes.forEach(function (n) { checks.push({ code: code, name: row.name, note: n }); });
     });
-    var t = { count: 0, payable: 0, base: 0, offset: 0, other: 0, amount: 0, transfer: 0, fee: 0, transferNet: 0, densai: 0, tegata: 0 };
+    var t = { count: 0, payable: 0, base: 0, offset: 0, other: 0, amount: 0, transfer: 0, fee: 0, transferNet: 0, densai: 0 };
     rows.forEach(function (r) {
       if (r.amount > 0) { t.count++; t.payable += r.amount; }
       t.base += r.base; t.offset += r.offset; t.other += r.other; t.amount += r.amount;
       t.transfer += r.transfer; t.fee += r.fee; t.transferNet += r.transferNet;
-      if (r.densaiKind === '手形') t.tegata += r.densai; else t.densai += r.densai;
+      t.densai += r.densai;
     });
     if (opt.payList && opt.payList.total) {
       var sumBal = 0; for (k in pl) sumBal += pl[k].balance;
@@ -274,7 +284,7 @@
   function splitLines(row, override, payYm) {
     if (override && override.length) return override.map(function (o) {
       var site = +o.site || 0, m = o.method;
-      return { method: m, amount: +o.amount || 0, site: site, due: (m === 'でんさい' || m === '手形') ? dueDate(payYm, site) : '' };
+      return { method: m, amount: +o.amount || 0, site: site, due: m === 'でんさい' ? dueDate(payYm, site) : '' };
     });
     var out = [];
     if (row.transfer) out.push({ method: '振込', amount: row.transfer, site: 0, due: '' });

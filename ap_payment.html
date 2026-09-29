@@ -96,7 +96,8 @@ const SM_FILE='仕入先マスタ.csv';
 let SH={byCode:{}};  // 仕入先マスタ（取決条件・サイト・でんさい利用者番号・口座・基準額）
 function parseCSV(text){if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);const rows=[];let row=[],cur='',q=false;for(let i=0;i<text.length;i++){const c=text[i];if(q){if(c==='"'){if(text[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=c;}else{if(c==='"')q=true;else if(c===','){row.push(cur);cur='';}else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur='';}else if(c==='\r'){}else cur+=c;}}if(cur!==''||row.length){row.push(cur);rows.push(row);}return rows;}
 const normCode=c=>String(c==null?'':c).trim().replace(/^0+/,'');
-const padDen=s=>{s=String(s||'').replace(/\D/g,'');return s?s.padStart(9,'0'):'';};  // でんさい利用者番号は9桁（CSV では先頭の0が落ちる）
+// でんさい利用者番号は9桁の英数字（例 00000PJE1）。数字だけのものは CSV で先頭の0が落ちるので補う。「対応不可」などのメモは番号なし
+const padDen=s=>{s=String(s||'').trim();if(/^\d{1,9}$/.test(s))return /^0+$/.test(s)?'':s.padStart(9,'0');if(/^[0-9A-Za-z]{9}$/.test(s))return s.toUpperCase();return '';};
 async function loadShiharai(){
   try{
     const t=await token();
@@ -164,16 +165,16 @@ function vbSnap(code){const b=VB.byCode[code];if(!b)return {};return {BankCode:b
 async function generate(){
   const ym=month(),due=dueFilter;
   // 既存（決済月×締め回×支払先×手段）
-  const exist=new Set(PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due).map(p=>(p.f[F(PI,'支払先コード')]||p.f[F(PI,'支払先名')]||'')+'|'+(p.f[F(PI,'支払手段')]||'')));
+  const exist=new Set(PI.items.filter(p=>p.f[F(PI,'決済月')]===ym&&p.f[F(PI,'支払日区分')]===due).map(p=>(p.f[F(PI,'支払先コード')]||p.f[F(PI,'支払先名')]||'')+'|'+(p.f[F(PI,'支払手段')]||'')+'|'+(p.f[F(PI,'期日')]||'')));  // 支払先|手段|期日（同じ仕入先のでんさいを期日違いで分けられる）
   const drafts={}; // key → {name,code,method,amount,loc,ids[]}
-  const add=(code,name,method,amount,loc,invId,prepaid,ppdate)=>{const k=(code||name)+'|'+method+'|'+(prepaid?'P':'N');drafts[k]=drafts[k]||{code,name,method,amount:0,loc,ids:[],prepaid:!!prepaid,ppdate:ppdate||''};drafts[k].amount+=amount;if(invId)drafts[k].ids.push(String(invId));if(prepaid&&ppdate&&!drafts[k].ppdate)drafts[k].ppdate=ppdate;};
+  const add=(code,name,method,amount,loc,invId,prepaid,ppdate)=>{const k=(code||name)+'|'+method+'|'+(prepaid?'P':'N');drafts[k]=drafts[k]||{code,name,method,amount:0,loc,ids:[],prepaid:!!prepaid,ppdate:ppdate||'',key:(code||name)+'|'+method+'|'};drafts[k].amount+=amount;if(invId)drafts[k].ids.push(String(invId));if(prepaid&&ppdate&&!drafts[k].ppdate)drafts[k].ppdate=ppdate;};
   // 経費：確定済（ロック）or 先行支払済・経費系・当月・当締め回
   INV.items.forEach(x=>{const f=x.f;const cat=iv(f,'支払区分')||'';if(cat!=='本社経費'&&cat!=='工場経費')return;
     if(iv(f,'仕分け済')!==true||iv(f,'アーカイブフラグ')===true)return;
     if((iv(f,'対象年月')||'')!==ym||(iv(f,'支払日区分')||'')!==due)return;
     const pst=iv(f,'支払ステータス')||'';if(pst!=='確定済（ロック）'&&pst!=='先行支払済')return;
     add(iv(f,'支払先コード')||'',iv(f,'支払先名')||'',iv(f,'支払手段')||'総合振込',Number(iv(f,'金額_税込'))||0,cat.indexOf('工場')>=0?'工場':'本社',x.id,pst==='先行支払済',iv(f,'先行支払日'));});
-  // 仕入：「仕入の取り込み」（AP_SmilePay）で確認済みの行から。分け方（振込・でんさい・手形・相殺・海外送金）ごとに1行
+  // 仕入：「仕入の取り込み」（AP_SmilePay）で確認済みの行から。分け方（振込・でんさい・相殺・海外送金）ごとに1行（手形は廃止）
   const note=[];
   const smile=SP.id?(await fetchAll(SP.id)).map(it=>Object.assign({},it.fields,{_id:it.id})).filter(f=>f[F(SP,'決済月')]===ym):[];
   if(smile.length){
@@ -191,8 +192,9 @@ async function generate(){
         if(tr)lines.push({method:'振込',amount:tr,due:''});if(dn)lines.push({method:g(f,'でんさいか手形か')||'でんさい',amount:dn,due:g(f,'期日')||''});}
       const trSum=lines.filter(l=>l.method==='振込').reduce((s,l)=>s+l.amount,0);
       const fo=g(f,'手数料の上書き');let fee=(fo!==''&&fo!=null)?Number(fo)||0:(ov&&ov.length?APSmile.transferFeeOf(trSum,g(f,'手数料区分')):Number(g(f,'振込手数料（計算）'))||0);
-      lines.forEach(l=>{if(!l.amount)return;const k=code+'|'+MM[l.method]+'|N';const lf=l.method==='振込'?fee:0;fee-=lf;
-        drafts[k]={code,name,method:MM[l.method],amount:l.amount-lf,fee:lf,loc:dept==='工場'?'工場':'本社',ids:[],prepaid:false,ppdate:'',due:l.due,dept,smileId:String(f._id),source:'仕入（SMILE取込）'};});});
+      lines.forEach(l=>{if(!l.amount)return;const key=code+'|'+MM[l.method]+'|'+(l.due||''),k=key+'|N';const lf=l.method==='振込'?fee:0;fee-=lf;
+        if(drafts[k]){drafts[k].amount+=l.amount-lf;drafts[k].fee+=lf;return;}   // 同じ方法・同じ期日はまとめる
+        drafts[k]={code,name,method:MM[l.method],amount:l.amount-lf,fee:lf,loc:dept==='工場'?'工場':'本社',ids:[],prepaid:false,ppdate:'',due:l.due,dept,smileId:String(f._id),source:'仕入（SMILE取込）',key};});});
     if(unchecked)note.push(`⚠ 仕入の取り込みで未確認の ${unchecked} 社は作っていません（確認してから、もう一度「支払指図を生成」）`);
   }else if(due==='月末'){
     PM.items.forEach(x=>{const f=x.f;if((f[F(PM,'対象年月')]||'')!==ym)return;const stt=f[F(PM,'突合状態')]||'';if(stt!=='一致'&&stt!=='差異あり')return;if(f[F(PM,'請求書受領')]!==true)return;
@@ -202,7 +204,7 @@ async function generate(){
       const method=(m&&m.term==='でんさい'&&(m.base<=0||amt>m.base))?'でんさい':'総合振込';
       add(code,name,method,amt,'',null);});
   }
-  const keys=Object.keys(drafts).filter(k=>!exist.has(k.replace(/\|[PN]$/,'')));  // 既存は「支払先|手段」で判定
+  const keys=Object.keys(drafts).filter(k=>!exist.has(drafts[k].key));  // 既存は「支払先|手段|期日」で判定
   if(!Object.keys(drafts).length){snack(`${ym} ${due}：対象なし（経費は確定済ロック・仕入は受領済が対象）`);return;}
   const log=[];let made=0,skip=Object.keys(drafts).length-keys.length;
   for(const k of keys){const dft=drafts[k];const snap=vbSnap(dft.code);
