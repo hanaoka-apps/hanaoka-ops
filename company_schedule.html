@@ -121,30 +121,45 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-    overflow: hidden;
+    overflow-x: auto;
   }
-  .list-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-    padding: 9px 16px;
+  .list-table { min-width: 760px; }
+  .list-header-row, .list-row {
+    display: grid;
+    grid-template-columns: 88px repeat(3, 1fr);
+  }
+  .list-header-row {
+    position: sticky; top: 0;
+    background: #fafbfd;
     border-bottom: 1px solid var(--border);
   }
+  .list-header-row > div {
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-sub);
+  }
+  .list-row { border-bottom: 1px solid var(--border); }
   .list-row:last-child { border-bottom: none; }
   .list-row.weekend { background: var(--weekend-bg); }
   .list-row.today { background: var(--accent-blue-soft); }
   .list-date {
-    flex-shrink: 0;
-    width: 92px;
+    padding: 9px 12px;
     font-size: 13px;
     font-weight: 700;
     color: var(--text-main);
-    padding-top: 1px;
   }
   .list-row.sun .list-date, .list-row.sun .list-dow { color: #c0392b; }
   .list-row.sat .list-date, .list-row.sat .list-dow { color: #1d4ed8; }
   .list-dow { font-weight: 500; color: var(--text-sub); margin-left: 2px; }
-  .list-events { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .list-col {
+    padding: 9px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+    border-left: 1px solid var(--border);
+  }
   .list-event {
     font-size: 13px;
     line-height: 1.5;
@@ -156,6 +171,8 @@
     max-width: 100%;
     word-break: break-word;
   }
+  .list-col.irregular .list-event { color: var(--text-sub); background: #f0f1f4; }
+  .list-col.sub .list-event { color: #7c3aed; background: #f1ebfd; }
   .list-event.holiday { background: #fdecec; color: #c0392b; }
 
   .empty-state { padding: 60px 0; text-align: center; color: var(--text-sub); font-size: 14px; }
@@ -168,8 +185,6 @@
     .month-nav .month-label { min-width: 100px; font-size: 16px; }
     .month-nav { flex-wrap: wrap; }
     .view-toggle { margin-left: 0; order: 1; flex-basis: 100%; }
-    .list-date { width: 64px; font-size: 12px; }
-    .list-row { gap: 8px; padding: 8px 12px; }
   }
 </style>
 </head>
@@ -210,7 +225,14 @@
   </div>
 
   <div class="list-view" id="listView" hidden>
-    <div class="empty-state">サインインすると表示されます</div>
+    <div class="list-table">
+      <div class="list-header-row">
+        <div>日付</div><div>イレギュラースケジュール</div><div>総務スケジュール</div><div>総務スケジュール補足</div>
+      </div>
+      <div id="listRows">
+        <div class="empty-state">サインインすると表示されます</div>
+      </div>
+    </div>
   </div>
 
 <script>
@@ -224,6 +246,12 @@ const MSAL_CONFIG = {
 };
 const SCOPES = ['User.Read', 'Calendars.Read', 'Calendars.Read.Shared'];
 const COMPANY_CALENDAR_MAIL = 'company-calendar@hanaoka-corp.co.jp';
+
+// scripts/register_payment_schedule.py が付けるOutlookカテゴリと合わせる。
+// どちらのカテゴリも付いていない予定(担当者が手入力した入社案内や
+// ReHANAOKA展のような単発行事)は「イレギュラースケジュール」として扱う。
+const CATEGORY_MAIN = '総務スケジュール';
+const CATEGORY_SUB = '総務スケジュール補足';
 
 let msalInstance = null;
 let account = null;
@@ -284,7 +312,7 @@ function showSignedOutState() {
   document.getElementById('signInBtn').hidden = false;
   document.getElementById('calRows').innerHTML =
     '<div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>';
-  document.getElementById('listView').innerHTML =
+  document.getElementById('listRows').innerHTML =
     '<div class="empty-state">サインインすると表示されます</div>';
   document.getElementById('monthLabel').textContent =
     `${viewYear}年${viewMonth + 1}月`;
@@ -343,7 +371,7 @@ async function loadMonthEvents(year, month) {
   const end = encodeURIComponent(`${ymd(gridEnd)}T00:00:00`);
   const path = `/users/${encodeURIComponent(COMPANY_CALENDAR_MAIL)}/calendarView`
     + `?startDateTime=${start}&endDateTime=${end}&$orderby=start/dateTime&$top=100`
-    + `&$select=subject,start,end,isAllDay,isCancelled`;
+    + `&$select=subject,start,end,isAllDay,isCancelled,categories`;
   const data = await graphGet(path);
   return (data.value || []).filter(ev => !ev.isCancelled);
 }
@@ -359,7 +387,7 @@ async function renderCalendar() {
   document.getElementById('monthLabel').textContent = `${viewYear}年${viewMonth + 1}月`;
   const loadingHtml = '<div class="empty-state">読み込み中…</div>';
   document.getElementById('calRows').innerHTML = loadingHtml;
-  document.getElementById('listView').innerHTML = loadingHtml;
+  document.getElementById('listRows').innerHTML = loadingHtml;
 
   let events;
   try {
@@ -368,18 +396,19 @@ async function renderCalendar() {
     console.error('スケジュール取得失敗', e);
     const failedHtml = '<div class="empty-state">取得できませんでした</div>';
     document.getElementById('calRows').innerHTML = failedHtml;
-    document.getElementById('listView').innerHTML = failedHtml;
+    document.getElementById('listRows').innerHTML = failedHtml;
     return;
   }
 
   // 日付(YYYY-MM-DD)ごとにイベントをまとめる。終日予定はstart日付のみ対応
   // (会社共通予定表は基本1日単位の終日予定のため、複数日にまたがる予定は
-  // 簡略化して開始日のセルにのみ表示する)。
+  // 簡略化して開始日のセルにのみ表示する)。件名だけでなくカテゴリも
+  // 保持しておき、一覧ビューで列を分けるのに使う。
   const byDate = {};
   for (const ev of events) {
     const d = (ev.start.dateTime || '').slice(0, 10);
     if (!d) continue;
-    (byDate[d] = byDate[d] || []).push(ev.subject || '(無題)');
+    (byDate[d] = byDate[d] || []).push({ subject: ev.subject || '(無題)', categories: ev.categories || [] });
   }
   currentByDate = byDate;
   renderCurrentView();
@@ -406,9 +435,9 @@ function renderGridView(byDate) {
     if (!inMonth) classes.push('pad');
     if (dow === 0 || dow === 6) classes.push('weekend');
     if (isToday) classes.push('today');
-    const eventsHtml = dayEvents.map(subj => {
-      const isHoliday = /休日|祝/.test(subj);
-      return `<div class="day-event${isHoliday ? ' holiday' : ''}">${escapeHtml(subj)}</div>`;
+    const eventsHtml = dayEvents.map(ev => {
+      const isHoliday = /休日|祝/.test(ev.subject);
+      return `<div class="day-event${isHoliday ? ' holiday' : ''}">${escapeHtml(ev.subject)}</div>`;
     }).join('');
     cells.push(`
       <div class="${classes.join(' ')}">
@@ -428,8 +457,23 @@ function renderGridView(byDate) {
 }
 
 // 縦型の一覧表示。予定の有無に関わらず、その月の全日を並べる
-// (総務が配布しているPDFの右側の日付一覧と同じ見せ方)。
+// (総務が配布しているPDFの日付一覧と同じ見せ方)。件名だけでなく、
+// Outlookのカテゴリを見て3列(イレギュラー/総務/総務補足)に振り分ける。
 const WEEKDAY_JA = ['日','月','火','水','木','金','土'];
+
+function categorize(ev) {
+  if (ev.categories.includes(CATEGORY_MAIN)) return 'main';
+  if (ev.categories.includes(CATEGORY_SUB)) return 'sub';
+  return 'irregular'; // カテゴリなし = 担当者が手入力した単発行事など
+}
+
+function renderEventChips(evs) {
+  return evs.map(ev => {
+    const isHoliday = /休日|祝/.test(ev.subject);
+    return `<div class="list-event${isHoliday ? ' holiday' : ''}">${escapeHtml(ev.subject)}</div>`;
+  }).join('');
+}
+
 function renderListView(byDate) {
   const todayStr = ymd(new Date());
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
@@ -439,21 +483,23 @@ function renderListView(byDate) {
     const dow = d.getDay();
     const dStr = ymd(d);
     const dayEvents = byDate[dStr] || [];
+    const byCol = { irregular: [], main: [], sub: [] };
+    for (const ev of dayEvents) byCol[categorize(ev)].push(ev);
+
     const classes = ['list-row'];
     if (dow === 0) classes.push('sun'); else if (dow === 6) classes.push('sat');
     if (dow === 0 || dow === 6) classes.push('weekend');
     if (dStr === todayStr) classes.push('today');
-    const eventsHtml = dayEvents.map(subj => {
-      const isHoliday = /休日|祝/.test(subj);
-      return `<div class="list-event${isHoliday ? ' holiday' : ''}">${escapeHtml(subj)}</div>`;
-    }).join('');
+
     rows.push(`
       <div class="${classes.join(' ')}">
         <div class="list-date">${viewMonth + 1}/${day}<span class="list-dow">(${WEEKDAY_JA[dow]})</span></div>
-        <div class="list-events">${eventsHtml}</div>
+        <div class="list-col irregular">${renderEventChips(byCol.irregular)}</div>
+        <div class="list-col main">${renderEventChips(byCol.main)}</div>
+        <div class="list-col sub">${renderEventChips(byCol.sub)}</div>
       </div>`);
   }
-  document.getElementById('listView').innerHTML = rows.join('');
+  document.getElementById('listRows').innerHTML = rows.join('');
 }
 
 initAuth().catch(e => {
