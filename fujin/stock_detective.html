@@ -1018,5 +1018,413 @@ window.addEventListener('load', () => {
   orphanInit();
 });
 </script>
+<!-- =====================================================================
+     2026-09-30 棚卸モード（構成ツリー上で現品票をスキャン → SharePointリストへ登録）
+     ・書き込み先は SharePoint リスト「FUJIN_棚卸入力」「FUJIN_棚卸期間」だけ。SMILE・SharedMastersは読み取りのみ。
+     ・倉庫一覧は SharedMasters の 倉庫マスタ.csv を毎回読む（倉庫が増えても自動反映）。
+     ・送信できなかった分はこの端末に一時保管し、自動で再送する。
+     ・管理者画面：期間の設定／締め、倉庫×品目の集計、SMILE棚卸フォームへの突合・出力。
+     ===================================================================== -->
+<style>
+.searchbar button.tana-btn{padding:4px 12px;background:#0f766e;color:#fff;border:none;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0}
+.searchbar button.tana-btn.on{background:#fff;color:#0f766e;outline:2px solid #0f766e}
+#tanaPanel{position:absolute;top:0;right:0;bottom:0;width:380px;background:#fff;border-left:2px solid #0f766e;box-shadow:-6px 0 18px rgba(0,0,0,.08);z-index:50;display:none;flex-direction:column;font-size:13px}
+#tanaPanel.open{display:flex}
+#tanaPanel .th{padding:10px 14px;background:#ccfbf1;border-bottom:1px solid #99f6e4;display:flex;align-items:center;justify-content:space-between}
+#tanaPanel .th b{color:#115e59;font-size:14px}
+#tanaPanel .tb{padding:12px 14px;overflow:auto;flex:1}
+#tanaPanel .sec{margin-bottom:12px}
+#tanaPanel label{display:block;font-size:11px;color:#475569;font-weight:700;margin-bottom:3px}
+#tanaPanel select,#tanaPanel input[type=text],#tanaPanel input[type=number],#tanaPanel input[type=search]{width:100%;padding:7px 8px;border:1.5px solid #cbd5e1;border-radius:6px;font-size:14px;font-family:inherit;box-sizing:border-box}
+#tanaPanel input#tanaQty{font-size:24px;font-weight:700;text-align:right;border-color:#0f766e}
+#tanaPanel .item{padding:10px;border:2px dashed #cbd5e1;border-radius:8px;background:#f8fafc;min-height:44px}
+#tanaPanel .item.ok{border:2px solid #0f766e;background:#f0fdfa}
+#tanaPanel .item .c{font-family:"SF Mono",Menlo,monospace;font-weight:700;font-size:15px;color:#1e40af}
+#tanaPanel .item .n{color:#334155;margin-top:2px}
+#tanaPanel .item .s{color:#0f766e;margin-top:4px;font-size:12px}
+#tanaPanel .item .w{color:#b45309;margin-top:4px;font-size:12px;font-weight:700}
+#tanaPanel .btns{display:flex;gap:6px;margin-top:8px}
+#tanaPanel .btns button{flex:1;padding:9px 6px;border:none;border-radius:6px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit}
+#tanaPanel .b-send{background:#0f766e;color:#fff}
+#tanaPanel .b-zero{background:#fff;color:#991b1b;border:1.5px solid #dc2626 !important}
+#tanaPanel .b-sub{background:#f1f5f9;color:#334155}
+#tanaPanel .per{padding:6px 8px;border-radius:6px;font-size:12px;font-weight:700}
+#tanaPanel .per.open{background:#dcfce7;color:#166534}
+#tanaPanel .per.none{background:#fee2e2;color:#991b1b}
+#tanaPanel .q{font-size:11.5px;color:#b45309;margin-top:4px}
+#tanaPanel .hist{width:100%;border-collapse:collapse;font-size:12px}
+#tanaPanel .hist td{border-bottom:1px solid #f1f5f9;padding:4px 3px;vertical-align:top}
+#tanaPanel .hist .cx{text-decoration:line-through;color:#94a3b8}
+#tanaPanel .hist button{font-size:11px;padding:1px 6px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer}
+#tanaPanel .tf{padding:8px 14px;border-top:1px solid #e5e7eb;display:flex;gap:6px;align-items:center;font-size:11.5px;color:#64748b}
+#tanaToast{position:fixed;left:50%;top:60px;transform:translateX(-50%);background:#0f766e;color:#fff;padding:10px 18px;border-radius:8px;font-weight:700;z-index:3000;display:none;box-shadow:0 6px 20px rgba(0,0,0,.2)}
+#tanaToast.err{background:#b91c1c}
+#tanaAdmin{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2000;display:none;align-items:center;justify-content:center;padding:3vh 3vw}
+#tanaAdmin.open{display:flex}
+#tanaAdmin .card{background:#fff;border-radius:12px;width:100%;max-width:1200px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px}
+#tanaAdmin .hd{padding:12px 18px;background:#ccfbf1;display:flex;justify-content:space-between;align-items:center}
+#tanaAdmin .hd b{font-size:16px;color:#115e59}
+#tanaAdmin .tabs{display:flex;gap:4px;padding:8px 14px 0;background:#f8fafc;border-bottom:1px solid #e5e7eb}
+#tanaAdmin .tabs button{padding:7px 14px;border:1px solid transparent;border-bottom:none;background:none;border-radius:8px 8px 0 0;font-weight:700;color:#64748b;cursor:pointer;font-family:inherit}
+#tanaAdmin .tabs button.on{background:#fff;border-color:#e5e7eb;color:#0f766e}
+#tanaAdmin .bd{padding:14px 18px;overflow:auto;flex:1}
+#tanaAdmin table{width:100%;border-collapse:collapse;font-size:12px}
+#tanaAdmin th{position:sticky;top:0;background:#f8fafc;text-align:left;padding:6px;border-bottom:2px solid #e5e7eb;white-space:nowrap}
+#tanaAdmin td{padding:5px 6px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+#tanaAdmin .num{text-align:right;font-variant-numeric:tabular-nums}
+#tanaAdmin .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}
+#tanaAdmin .row label{font-size:11px;color:#475569;font-weight:700;display:block}
+#tanaAdmin .row input,#tanaAdmin .row select{padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit}
+#tanaAdmin button.p{padding:7px 14px;background:#0f766e;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-family:inherit}
+#tanaAdmin button.s{padding:6px 12px;background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-family:inherit}
+#tanaAdmin .note{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;color:#78350f;margin-bottom:10px;line-height:1.6}
+#tanaAdmin .kpi{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+#tanaAdmin .kpi div{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;min-width:120px}
+#tanaAdmin .kpi b{display:block;font-size:18px;color:#0f766e}
+</style>
+<div id="tanaToast"></div>
+<div id="tanaAdmin"><div class="card">
+  <div class="hd"><b>📦 棚卸 集計・締め（管理者）</b><button class="s" id="taClose">閉じる ✕</button></div>
+  <div class="tabs"><button data-t="sum" class="on">集計</button><button data-t="form">SMILEフォーム突合・出力</button><button data-t="per">棚卸期間</button></div>
+  <div class="bd" id="taBody"></div>
+</div></div>
+<script>
+(function(){
+"use strict";
+// ---- 接続先（業務データではなく接続先の識別子。FUJIN本体と同じ扱い） ----
+const TANA = {
+  site: "hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23",
+  inputList: "0857ec97-bb34-4d67-bd21-d8555cf99ff4",   // FUJIN_棚卸入力
+  periodList: "c8f1396a-35f7-479e-b219-54eaff73c902",  // FUJIN_棚卸期間
+  masterDrive: "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8", // SharedMasters（読み取りのみ）
+};
+const G = "https://graph.microsoft.com/v1.0";
+const LS_Q = "_fujin_tana_queue", LS_WH = "_fujin_tana_wh", LS_WHR = "_fujin_tana_wh_recent";
+const S_LIST = ["https://graph.microsoft.com/Lists.SelectedOperations.Selected"];
+const S_FILE = ["Files.Read.All"];
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $ = id => document.getElementById(id);
+function lsGet(k,d){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(_){ return d; } }
+function lsSet(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(_){} }
+function toast(msg, err){ const t=$('tanaToast'); t.textContent=msg; t.className=err?'err':''; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', err?4000:1600); }
+function uuid(){ try{ return crypto.randomUUID(); }catch(_){ return 'x'+Date.now().toString(36)+Math.random().toString(36).slice(2); } }
+function me(){ try{ const a=window.top._fujinUser; return a ? {name:a.name||a.username, mail:(a.username||'').toLowerCase()} : null; }catch(_){ return null; } }
+
+// ---- 認証（FUJIN本体のサインインを使う） ----
+async function token(scopes){
+  const m = window.top && window.top._fujinMsal;
+  if(!m) throw new Error('FUJINにサインインしていません（FUJIN本体から開いてください）');
+  const acc = m.getActiveAccount() || m.getAllAccounts()[0];
+  if(!acc) throw new Error('サインイン情報がありません');
+  try { return (await m.acquireTokenSilent({scopes, account:acc})).accessToken; }
+  catch(e){ return (await m.acquireTokenPopup({scopes, account:acc})).accessToken; }
+}
+async function gfetch(path, opt, scopes){
+  const tk = await token(scopes||S_LIST);
+  const r = await fetch(path.startsWith('http')?path:G+path, Object.assign({cache:'no-store'}, opt||{}, {headers:Object.assign({Authorization:'Bearer '+tk,'Content-Type':'application/json'}, (opt&&opt.headers)||{})}));
+  return r;
+}
+async function listAll(listId, filter){
+  let url = `/sites/${TANA.site}/lists/${listId}/items?$expand=fields&$top=999` + (filter?`&$filter=${encodeURIComponent(filter)}`:'');
+  const out=[];
+  while(url){ const r=await gfetch(url,{headers:{Prefer:'HonorNonIndexedQueriesWarningMayFailRandomly'}}); if(!r.ok) throw new Error('リスト取得 '+r.status+' '+(await r.text()).slice(0,200)); const j=await r.json(); out.push(...(j.value||[])); url=j['@odata.nextLink']||null; }
+  return out;
+}
+
+// ---- 倉庫マスタ（SharedMasters 読み取り） ----
+let WH = [];   // {code,name,kind:'社内'|'外注'}
+function parseCsv(text){
+  const rows=[]; let row=[], f='', q=false;
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){f+='"';i++;} else q=false; } else f+=c; }
+    else if(c==='"') q=true; else if(c===','){row.push(f);f='';} else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';} else if(c!=='\r') f+=c; }
+  if(f!==''||row.length){row.push(f);rows.push(row);} return rows;
+}
+async function loadWarehouses(){
+  const r = await gfetch(`/drives/${TANA.masterDrive}/root:/${encodeURIComponent('倉庫マスタ.csv')}:/content`, null, S_FILE);
+  if(!r.ok) throw new Error('倉庫マスタ取得 '+r.status);
+  const buf = await r.arrayBuffer();
+  let txt = new TextDecoder('utf-8').decode(buf);
+  if(txt.includes('�')) { try{ txt = new TextDecoder('shift_jis').decode(buf); }catch(_){} }
+  const rows = parseCsv(txt.replace(/^﻿/,''));
+  const h = rows[0]; const ic=h.indexOf('倉庫ｺｰﾄﾞ'), inm=h.indexOf('倉庫名'), ish=h.indexOf('ﾏｽﾀｰ検索表示区分名'), ik=h.indexOf('倉庫区分名');
+  WH = rows.slice(1).filter(x=>x[ic] && x[ish]!=='非表示').map(x=>({code:x[ic].trim(), name:(x[inm]||'').trim(), kind:(x[ik]||'').includes('社内')?'社内':'外注'}));
+}
+function whByCode(c){ return WH.find(w=>w.code===c); }
+function locFor(whCode){ const w=whByCode(whCode); return (w && w.kind==='外注') ? '0' : '1'; } // 基準：社内=1 / 外注=0（締め時はSMILEフォームの行を優先）
+
+// ---- 期間 ----
+let PERIOD = null; // {id, itemId, status}
+async function loadPeriod(){
+  const items = await listAll(TANA.periodList);
+  const open = items.map(i=>({itemId:i.id, id:i.fields.Title, status:i.fields.Status, start:i.fields.StartAt, end:i.fields.EndAt, note:i.fields.Note||''}))
+                    .sort((a,b)=>String(b.id).localeCompare(String(a.id)));
+  PERIODS = open;
+  PERIOD = open.find(p=>p.status==='受付中') || null;
+  return open;
+}
+let PERIODS = [];
+
+// ---- 未送信キュー ----
+function queue(){ return lsGet(LS_Q, []); }
+function setQueue(q){ lsSet(LS_Q, q); renderQueue(); }
+async function sendOne(rec){
+  const r = await gfetch(`/sites/${TANA.site}/lists/${TANA.inputList}/items`, {method:'POST', body:JSON.stringify({fields:rec})});
+  if(r.status===201) return true;
+  const t = await r.text();
+  if(r.status===409 || /unique|一意|重複/i.test(t)) return true; // 同じ送信IDが既に登録済み＝送信済み扱い
+  throw new Error(r.status+' '+t.slice(0,160));
+}
+let flushing=false;
+async function flush(){
+  if(flushing) return; flushing=true;
+  try{ let q=queue(); const rest=[];
+    for(const rec of q){ try{ await sendOne(rec); }catch(e){ rest.push(rec); console.warn('[tana] 再送待ち', e.message); } }
+    setQueue(rest); if(q.length && rest.length<q.length) refreshMine();
+  } finally { flushing=false; }
+}
+setInterval(()=>{ if(queue().length) flush(); }, 20000);
+
+// ---- 画面（右パネル） ----
+let CUR = null; // {code,name}
+let MINE = [];  // 期間内の全入力（キャッシュ）
+const btn = document.createElement('button'); btn.className='tana-btn'; btn.id='tanaBtn'; btn.textContent='📦 棚卸モード';
+document.getElementById('clear').after(btn);
+const panel = document.createElement('div'); panel.id='tanaPanel';
+panel.innerHTML = `
+ <div class="th"><b>📦 棚卸モード</b><span id="tanaUser" style="font-size:11px;color:#115e59"></span></div>
+ <div class="tb">
+  <div class="sec" id="tanaPer"><span class="per none">期間を読み込み中…</span></div>
+  <div class="sec"><label>① 倉庫</label>
+    <input type="search" id="tanaWhQ" placeholder="倉庫名・コードで絞り込み" autocomplete="off" style="margin-bottom:4px">
+    <select id="tanaWh"></select><div id="tanaWhRecent" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap"></div></div>
+  <div class="sec"><label>② 品目（現品票をピッ、または上の検索）</label><div class="item" id="tanaItem">品目がまだありません</div></div>
+  <div class="sec"><label>③ 数量 → Enterで登録</label><input type="number" id="tanaQty" inputmode="decimal" step="any" min="0" placeholder="0">
+    <div class="btns"><button class="b-send" id="tanaSend">登録（Enter）</button><button class="b-zero" id="tanaZero">無い（0で登録）</button></div>
+    <div class="q" id="tanaQ"></div></div>
+  <div class="sec"><label>この倉庫・品目の登録状況（全員分）</label><div id="tanaSum" style="font-size:12px;color:#334155">—</div></div>
+  <div class="sec"><label>自分の直近の登録 <button class="b-sub" id="tanaReload" style="font-size:11px;padding:1px 8px;border:1px solid #cbd5e1;border-radius:4px;cursor:pointer">更新</button></label><table class="hist" id="tanaHist"></table></div>
+ </div>
+ <div class="tf"><span id="tanaStat">—</span><span style="flex:1"></span><button class="b-sub" id="tanaAdminBtn" style="padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer">集計・締め（管理者）</button></div>`;
+document.querySelector('.frame-wrap').appendChild(panel);
+
+function isOpen(){ return panel.classList.contains('open'); }
+function setOpen(v){
+  panel.classList.toggle('open', v); btn.classList.toggle('on', v);
+  btn.textContent = v ? '📦 棚卸モード ON' : '📦 棚卸モード';
+  frame.style.width = v ? 'calc(100% - 380px)' : '100%';
+  if(v) initOnce();
+}
+btn.addEventListener('click', ()=>setOpen(!isOpen()));
+
+let inited=false;
+async function initOnce(){
+  const u=me(); $('tanaUser').textContent = u ? u.name : '';
+  if(inited) return; inited=true;
+  try{ await loadWarehouses(); renderWh(); }catch(e){ $('tanaWh').innerHTML='<option value="">倉庫マスタを読めません</option>'; toast('倉庫マスタを読めません：'+e.message, true); }
+  try{ await loadPeriod(); }catch(e){ toast('棚卸期間を読めません：'+e.message, true); }
+  renderPeriod(); renderQueue(); refreshMine(); flush();
+}
+function renderPeriod(){
+  $('tanaPer').innerHTML = PERIOD ? `<span class="per open">受付中：${esc(PERIOD.id)}</span>` : `<span class="per none">受付中の棚卸期間がありません（管理者が設定）</span>`;
+  $('tanaSend').disabled = $('tanaZero').disabled = !PERIOD;
+}
+function renderWh(){
+  const f = _normSearch($('tanaWhQ').value||'');
+  const cur = $('tanaWh').value || lsGet(LS_WH,'');
+  const opt = w => `<option value="${esc(w.code)}">${esc(w.code)} ${esc(w.name)}</option>`;
+  const hit = WH.filter(w=>!f || _normSearch(w.code+' '+w.name).includes(f));
+  $('tanaWh').innerHTML = '<option value="">— 倉庫を選ぶ —</option>' +
+    `<optgroup label="社内倉庫">${hit.filter(w=>w.kind==='社内').map(opt).join('')}</optgroup>` +
+    `<optgroup label="外注倉庫">${hit.filter(w=>w.kind==='外注').map(opt).join('')}</optgroup>`;
+  if(cur && hit.some(w=>w.code===cur)) $('tanaWh').value = cur;
+  const rec = lsGet(LS_WHR,[]).map(whByCode).filter(Boolean);
+  $('tanaWhRecent').innerHTML = rec.map(w=>`<button data-c="${esc(w.code)}" style="font-size:11px;padding:2px 8px;border:1px solid #0f766e;color:#0f766e;background:#fff;border-radius:999px;cursor:pointer">${esc(w.name)}</button>`).join('');
+  $('tanaWhRecent').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('tanaWhQ').value=''; renderWh(); $('tanaWh').value=b.dataset.c; onWhChange(); });
+}
+function onWhChange(){ const c=$('tanaWh').value; lsSet(LS_WH,c); if(c){ const r=[c,...lsGet(LS_WHR,[]).filter(x=>x!==c)].slice(0,5); lsSet(LS_WHR,r); } renderWh(); renderItem(); if(CUR) setTimeout(()=>$('tanaQty').focus(),0); }
+$('tanaWhQ').addEventListener('input', renderWh);
+$('tanaWh').addEventListener('change', onWhChange);
+
+function curSum(){
+  const wh=$('tanaWh').value; if(!CUR||!wh) return null;
+  const rows = MINE.filter(x=>!x.canceled && x.wh===wh && x.code===CUR.code);
+  return {total: rows.reduce((s,x)=>s+x.qty,0), rows};
+}
+function renderItem(){
+  const box=$('tanaItem');
+  if(!CUR){ box.className='item'; box.textContent='品目がまだありません'; $('tanaSum').textContent='—'; return; }
+  const inMaster = !!(window.ITEM_HISTORY && window.ITEM_HISTORY.item_names && window.ITEM_HISTORY.item_names[CUR.code]);
+  box.className='item ok';
+  box.innerHTML = `<div class="c">${esc(CUR.code)}</div><div class="n">${esc(CUR.name||'')}</div>` + (inMaster?'':`<div class="w">⚠ FUJINの品目マスタに無いコードです（Excel管理の部品なら、ここでは登録しない）</div>`);
+  const s=curSum();
+  $('tanaSum').innerHTML = !s ? '倉庫を選ぶと表示' : (s.rows.length ? `合計 <b style="font-size:15px">${s.total}</b>（${s.rows.length}件：` + s.rows.slice(0,6).map(x=>`${esc(x.by)} ${x.qty}`).join('、') + (s.rows.length>6?' …':'') + '）' : 'まだ誰も登録していません');
+}
+// 検索（スキャン）で品目が決まったら、棚卸パネルに反映
+const _origDoSearch = _doSearchWithCode;
+_doSearchWithCode = function(code){
+  _origDoSearch(code);
+  if(!isOpen()) return;
+  const nm = (window.ITEM_HISTORY && window.ITEM_HISTORY.item_names && window.ITEM_HISTORY.item_names[code]) || '';
+  const prevQty = $('tanaQty').value;
+  if(CUR && CUR.code!==code && prevQty!=='') toast('前の品目（'+CUR.code+'）は未登録のまま切り替えました', true);
+  CUR = {code, name:nm}; $('tanaQty').value='';
+  renderItem();
+  _scanRefocus = 0; // ツリー読込後に検索欄へ戻す処理を止め、数量欄へ
+  const target = $('tanaWh').value ? $('tanaQty') : $('tanaWh');
+  [40, 400, 1200].forEach(ms=>setTimeout(()=>{ try{ target.focus(); if(target.select) target.select(); }catch(_){} }, ms));
+};
+
+async function register(qty, type){
+  if(!PERIOD){ toast('受付中の棚卸期間がありません', true); return; }
+  const wh=$('tanaWh').value; if(!wh){ toast('倉庫を選んでください', true); $('tanaWh').focus(); return; }
+  if(!CUR){ toast('品目を読み取ってください', true); q.focus(); return; }
+  if(!(qty>=0) || !isFinite(qty)){ toast('数量を入れてください', true); $('tanaQty').focus(); return; }
+  if(qty>=100000 && !confirm(qty+' で登録します。桁は合っていますか？')) return;
+  const w=whByCode(wh)||{name:''};
+  const rec = {Title:CUR.code, WhCode:wh, WhName:w.name, Loc:locFor(wh), ItemName:CUR.name||'', Qty:qty, PeriodId:PERIOD.id, EntryType:type, Canceled:false, ClientId:uuid()};
+  const u=me();
+  MINE.unshift({id:null, code:rec.Title, name:rec.ItemName, wh, whName:w.name, qty, canceled:false, by:(u&&u.name)||'自分', mail:(u&&u.mail)||'', at:new Date().toISOString(), pending:true});
+  try{ await sendOne(rec); toast(`登録：${CUR.code} × ${qty}`); }
+  catch(e){ setQueue([...queue(), rec]); toast('送信できません。この端末に保管し、自動で再送します', true); }
+  $('tanaQty').value=''; renderItem(); renderHist();
+  setTimeout(()=>{ q.focus(); q.select(); }, 0); // 次の現品票をピッ
+  setTimeout(refreshMine, 1500);
+}
+$('tanaSend').onclick = ()=>register(parseFloat($('tanaQty').value), 'scan');
+$('tanaZero').onclick = ()=>{ if(CUR && confirm(CUR.code+' を「0（無い）」で登録します')) register(0, 'zero'); };
+$('tanaQty').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.isComposing){ e.preventDefault(); register(parseFloat($('tanaQty').value), 'scan'); } });
+$('tanaReload').onclick = ()=>refreshMine(true);
+
+function mapItem(i){ const f=i.fields||{}; return {id:i.id, code:f.Title, name:f.ItemName||'', wh:f.WhCode, whName:f.WhName||'', loc:f.Loc, qty:Number(f.Qty)||0, canceled:!!f.Canceled, note:f.CancelNote||'', type:f.EntryType||'', by:(i.createdBy&&i.createdBy.user&&i.createdBy.user.displayName)||'', mail:((i.createdBy&&i.createdBy.user&&i.createdBy.user.email)||'').toLowerCase(), at:i.createdDateTime}; }
+async function refreshMine(showToast){
+  if(!PERIOD) { MINE=[]; renderHist(); return; }
+  try{ MINE = (await listAll(TANA.inputList, `fields/PeriodId eq '${PERIOD.id.replace(/'/g,"''")}'`)).map(mapItem).sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+       renderItem(); renderHist(); if(showToast) toast('最新にしました'); }
+  catch(e){ console.warn(e); if(showToast) toast('読み込めません：'+e.message, true); }
+}
+function renderHist(){
+  const u=me(); const mine = MINE.filter(x=>!u || !x.mail || x.mail===u.mail).slice(0,40);
+  $('tanaHist').innerHTML = mine.length ? mine.map(x=>`<tr class="${x.canceled?'cx':''}"><td>${esc(new Date(x.at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}))}</td><td><b>${esc(x.code)}</b><br><span style="color:#64748b">${esc(x.whName)}</span></td><td class="num" style="text-align:right">${x.qty}</td><td>${x.canceled?'取消済':(x.id?`<button data-id="${x.id}">取消</button>`:'<span style="color:#b45309">送信中</span>')}</td></tr>`).join('') : '<tr><td style="color:#94a3b8">まだありません</td></tr>';
+  $('tanaHist').querySelectorAll('button[data-id]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.id));
+}
+async function cancelItem(id, note){
+  const x=MINE.find(m=>m.id===id); if(!x) return;
+  const reason = note || prompt(`${x.code} × ${x.qty}（${x.whName}）を取り消します。理由（任意）`, '入力ミス'); if(reason===null) return;
+  const r = await gfetch(`/sites/${TANA.site}/lists/${TANA.inputList}/items/${id}/fields`, {method:'PATCH', body:JSON.stringify({Canceled:true, CancelNote:reason})});
+  if(r.ok){ toast('取り消しました'); refreshMine(); if(typeof renderAdmin==='function' && $('tanaAdmin').classList.contains('open')) renderAdmin(); }
+  else toast('取り消せません（自分の登録だけ取り消せます）：'+r.status, true);
+}
+function renderQueue(){ const n=queue().length; $('tanaQ').textContent = n ? `未送信 ${n}件（自動で再送します。この端末のブラウザを閉じないでください）` : ''; $('tanaStat').textContent = n ? `未送信 ${n}件` : '送信済み'; }
+
+// ==================== 管理者画面 ====================
+let ATAB='sum', FORM=null, FORMDEC={}; // FORM: {header, marker, rows:[{cols}]}, FORMDEC: key->'zero'|'keep'
+$('tanaAdminBtn').onclick = async ()=>{ $('tanaAdmin').classList.add('open'); try{ await loadPeriod(); renderPeriod(); await refreshMine(); }catch(_){} renderAdmin(); };
+$('taClose').onclick = ()=>$('tanaAdmin').classList.remove('open');
+document.querySelectorAll('#tanaAdmin .tabs button').forEach(b=>b.onclick=()=>{ ATAB=b.dataset.t; document.querySelectorAll('#tanaAdmin .tabs button').forEach(x=>x.classList.toggle('on',x===b)); renderAdmin(); });
+function aggregate(){
+  const m=new Map();
+  for(const x of MINE){ if(x.canceled) continue; const k=x.wh+'|'+x.code; let a=m.get(k); if(!a){ a={wh:x.wh, whName:x.whName, code:x.code, name:x.name, total:0, rows:[]}; m.set(k,a); } a.total+=x.qty; a.rows.push(x); }
+  return [...m.values()].sort((a,b)=>(a.wh+a.code).localeCompare(b.wh+b.code));
+}
+function renderAdmin(){
+  const B=$('taBody');
+  if(ATAB==='per') return renderPer(B);
+  if(!PERIOD && ATAB!=='per'){ B.innerHTML='<div class="note">受付中の棚卸期間がありません。「棚卸期間」タブで作成してください。</div>'; return; }
+  if(ATAB==='sum') return renderSum(B);
+  if(ATAB==='form') return renderForm(B);
+}
+function renderPer(B){
+  const d=new Date(), ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  B.innerHTML = `<div class="note">現場は「受付中」の期間にだけ登録できます。締めると登録できなくなります（登録済みのデータは消えません）。</div>
+   <div class="row"><div><label>期間ID</label><input id="pId" value="${ym}"></div><div><label>メモ</label><input id="pNote" placeholder="例：9月末棚卸" style="width:260px"></div><button class="p" id="pNew">この期間を作成して受付開始</button></div>
+   <table><tr><th>期間ID</th><th>状態</th><th>開始</th><th>終了</th><th>メモ</th><th></th></tr>${PERIODS.map(p=>`<tr><td><b>${esc(p.id)}</b></td><td>${esc(p.status)}</td><td>${p.start?new Date(p.start).toLocaleString('ja-JP'):''}</td><td>${p.end?new Date(p.end).toLocaleString('ja-JP'):''}</td><td>${esc(p.note)}</td><td>${p.status==='受付中'?`<button class="s" data-close="${p.itemId}">締める</button>`:`<button class="s" data-open="${p.itemId}">受付を再開</button>`}</td></tr>`).join('')}</table>`;
+  $('pNew').onclick = async ()=>{
+    const id=$('pId').value.trim(); if(!/^[\w-]{4,20}$/.test(id)) return toast('期間IDは英数字とハイフン（例 2026-09）', true);
+    if(PERIODS.some(p=>p.id===id)) return toast('同じ期間IDがあります', true);
+    if(PERIOD && !confirm(`受付中の「${PERIOD.id}」を締めて、「${id}」を受付開始します`)) return;
+    if(PERIOD) await setPeriodStatus(PERIOD.itemId, '締め', true);
+    const r=await gfetch(`/sites/${TANA.site}/lists/${TANA.periodList}/items`,{method:'POST',body:JSON.stringify({fields:{Title:id, Status:'受付中', StartAt:new Date().toISOString(), Note:$('pNote').value}})});
+    if(r.status!==201) return toast('作成できません '+r.status, true);
+    toast('受付を開始しました：'+id); await loadPeriod(); renderPeriod(); await refreshMine(); renderAdmin();
+  };
+  B.querySelectorAll('[data-close]').forEach(b=>b.onclick=async()=>{ if(!confirm('締めます。現場からは登録できなくなります。')) return; await setPeriodStatus(b.dataset.close,'締め'); });
+  B.querySelectorAll('[data-open]').forEach(b=>b.onclick=async()=>{ if(PERIOD) return toast('ほかに受付中の期間があります。先に締めてください', true); await setPeriodStatus(b.dataset.open,'受付中'); });
+}
+async function setPeriodStatus(itemId, st, quiet){
+  const body = st==='締め' ? {Status:st, EndAt:new Date().toISOString()} : {Status:st};
+  const r=await gfetch(`/sites/${TANA.site}/lists/${TANA.periodList}/items/${itemId}/fields`,{method:'PATCH',body:JSON.stringify(body)});
+  if(!r.ok) return toast('変更できません '+r.status, true);
+  if(!quiet){ toast('状態：'+st); await loadPeriod(); renderPeriod(); renderAdmin(); }
+}
+function renderSum(B){
+  const ag=aggregate(); const whs=[...new Set(ag.map(a=>a.wh))];
+  const people=new Set(MINE.filter(x=>!x.canceled).map(x=>x.by));
+  const sel = B.querySelector && $('sWh') ? $('sWh').value : '';
+  B.innerHTML = `<div class="kpi"><div>期間<b>${esc(PERIOD.id)}</b></div><div>登録件数<b>${MINE.filter(x=>!x.canceled).length}</b></div><div>倉庫×品目<b>${ag.length}</b></div><div>入力した人<b>${people.size}</b></div><div>取消<b>${MINE.filter(x=>x.canceled).length}</b></div></div>
+   <div class="row"><div><label>倉庫</label><select id="sWh"><option value="">すべて</option>${whs.map(w=>`<option value="${esc(w)}">${esc(w)} ${esc((whByCode(w)||{}).name||'')}</option>`).join('')}</select></div><div><label>品目で絞り込み</label><input id="sQ" placeholder="コード・名前"></div><button class="s" id="sRe">最新にする</button><button class="s" id="sCsv">明細CSV（誰がいつ）</button></div>
+   <table><thead><tr><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">合計</th><th>件数</th><th>入力者・日時・数量</th></tr></thead><tbody id="sBody"></tbody></table>`;
+  const draw=()=>{ const w=$('sWh').value, f=_normSearch($('sQ').value||'');
+    $('sBody').innerHTML = ag.filter(a=>(!w||a.wh===w)&&(!f||_normSearch(a.code+' '+a.name).includes(f))).map(a=>`<tr><td>${esc(a.whName||a.wh)}</td><td><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td><td class="num"><b>${a.total}</b></td><td>${a.rows.length}</td><td>${a.rows.map(x=>`${esc(x.by)} ${esc(new Date(x.at).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}))} <b>${x.qty}</b>${x.type==='zero'?'(無い)':''} ${x.id?`<button class="s" style="padding:0 5px;font-size:10px" data-cx="${x.id}">取消</button>`:''}`).join('<br>')}</td></tr>`).join('') || '<tr><td colspan="6" style="color:#94a3b8">登録がありません</td></tr>';
+    $('sBody').querySelectorAll('[data-cx]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.cx)); };
+  if(sel) $('sWh').value=sel;
+  $('sWh').onchange=draw; $('sQ').oninput=draw; $('sRe').onclick=async()=>{ await refreshMine(true); renderAdmin(); };
+  $('sCsv').onclick=()=>{ const rows=[['期間','倉庫コード','倉庫名','品目コード','品目名','数量','入力元','取消','取消メモ','入力者','日時']].concat(MINE.map(x=>[PERIOD.id,x.wh,x.whName,x.code,x.name,x.qty,x.type,x.canceled?'取消':'',x.note,x.by,new Date(x.at).toLocaleString('ja-JP')]));
+    download(`棚卸明細_${PERIOD.id}.csv`, '﻿'+rows.map(r=>r.map(c=>{const s=String(c==null?'':c); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\r\n'), 'text/csv'); };
+  draw();
+}
+function download(name, text, type){ const b=new Blob([text],{type:type+';charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000); }
+// ---- SMILE 棚卸フォーム（TSV）: 取込キーは 倉庫ｺｰﾄﾞ/ﾛｹｰｼｮﾝ/品目ｺｰﾄﾞ/実地棚卸数量 ----
+function parseTsv(text){ return text.replace(/^﻿/,'').split(/\r?\n/).filter(l=>l.length).map(l=>l.split('\t').map(c=>c.replace(/^"(.*)"$/s,'$1').replace(/""/g,'"'))); }
+function renderForm(B){
+  B.innerHTML = `<div class="note">① SMILEから棚卸フォーム（今回いただいた形式のTSV）を出力して、ここに入れてください。<br>② 登録された数量をフォームの行に当てはめます。<b>帳簿に在庫があるのに誰も数えていない品目</b>は下に一覧で出ます。「0にする」か「出力しない（帳簿のまま）」を選んでください。<br>③ 「取込用ファイルを出力」で、<b>数えた行＋0にした行だけ</b>のファイルができます。SMILEへの取込は手作業で行います（アプリはSMILEに書き込みません）。</div>
+   <div class="row"><input type="file" id="fFile" accept=".txt,.tsv,.csv,text/*"><span id="fInfo" style="color:#64748b"></span></div><div id="fOut"></div>`;
+  $('fFile').onchange = async e=>{ const f=e.target.files[0]; if(!f) return; const buf=await f.arrayBuffer(); let t=new TextDecoder('utf-8').decode(buf); if(t.includes('�')){ try{ t=new TextDecoder('shift_jis').decode(buf);}catch(_){}} const rows=parseTsv(t);
+    if(!rows.length || rows[0].indexOf('品目ｺｰﾄﾞ')<0 || rows[0].indexOf('実地棚卸数量')<0) return toast('棚卸フォームの形式ではありません', true);
+    FORM={header:rows[0], marker:rows[1] && rows[1][0].startsWith('<') ? rows[1] : null}; FORM.rows = rows.slice(FORM.marker?2:1); FORMDEC={}; $('fInfo').textContent = f.name+'（'+FORM.rows.length+'行）'; drawForm(); };
+  if(FORM) { $('fInfo').textContent='読込済み（'+FORM.rows.length+'行）'; drawForm(); }
+}
+function drawForm(){
+  const H=FORM.header, ci=n=>H.indexOf(n);
+  const iW=ci('倉庫ｺｰﾄﾞ'), iWN=ci('倉庫名'), iL=ci('ﾛｹｰｼｮﾝ'), iC=ci('品目ｺｰﾄﾞ'), iN=ci('品目'), iB=ci('帳簿在庫数'), iA=ci('実地棚卸数量');
+  const ag=aggregate(); const agMap=new Map(ag.map(a=>[a.wh+'|'+a.code,a]));
+  const counted=[], uncounted=[], used=new Set();
+  const byKey=new Map();
+  FORM.rows.forEach((r,idx)=>{ const k=r[iW]+'|'+r[iC]; if(!byKey.has(k)) byKey.set(k,[]); byKey.get(k).push(idx); });
+  for(const [k,idxs] of byKey){ const a=agMap.get(k);
+    // 同じ倉庫×品目が複数ロケーションにある場合：基準（社内1/外注0、空欄は0扱い）に一致する行を優先
+    const pick = idxs.find(i=>{ const L=FORM.rows[i][iL]||'0'; return L===locFor(FORM.rows[i][iW]); }) ?? idxs[0];
+    if(a){ counted.push({idx:pick, a}); used.add(k); }
+    else { const r=FORM.rows[pick]; const book=parseFloat(r[iB])||0; if(book!==0) uncounted.push({idx:pick, key:k, wh:r[iW], whName:r[iWN], code:r[iC], name:r[iN], book}); }
+  }
+  const notInForm = ag.filter(a=>!used.has(a.wh+'|'+a.code));
+  const countedWh = new Set(ag.map(a=>a.wh));
+  const uncTarget = uncounted.filter(u=>countedWh.has(u.wh));
+  const uncOther = uncounted.length - uncTarget.length;
+  const nZero = uncTarget.filter(u=>FORMDEC[u.key]==='zero').length, nUndec = uncTarget.filter(u=>!FORMDEC[u.key]).length;
+  $('fOut').innerHTML = `<div class="kpi"><div>数えた（フォームにあり）<b>${counted.length}</b></div><div>数えた（フォームに無い）<b>${notInForm.length}</b></div><div>未カウント・帳簿あり（対象倉庫）<b style="color:#b91c1c">${uncTarget.length}</b></div><div>うち0にする<b>${nZero}</b></div><div>未判断<b style="color:#b45309">${nUndec}</b></div></div>
+   ${uncOther?`<div class="note">今回1件も登録が無い倉庫の未カウント行（${uncOther}行）は対象外にしています（その倉庫は棚卸していない前提）。</div>`:''}
+   <h4 style="margin:8px 0">帳簿に在庫があるのに数えていない品目（対象倉庫のみ）</h4>
+   <div class="row">${[...new Set(uncTarget.map(u=>u.wh))].map(w=>`<button class="s" data-allz="${esc(w)}">${esc((whByCode(w)||{}).name||w)}：未判断を全部0にする</button>`).join('')}</div>
+   <table><thead><tr><th>倉庫</th><th>品目コード</th><th>品目</th><th class="num">帳簿</th><th>判断</th></tr></thead><tbody>${uncTarget.map(u=>`<tr><td>${esc(u.whName)}</td><td><b>${esc(u.code)}</b></td><td>${esc(u.name)}</td><td class="num">${u.book}</td><td><label><input type="radio" name="d_${esc(u.key)}" data-k="${esc(u.key)}" value="zero" ${FORMDEC[u.key]==='zero'?'checked':''}> 0にする</label> <label><input type="radio" name="d_${esc(u.key)}" data-k="${esc(u.key)}" value="keep" ${FORMDEC[u.key]==='keep'?'checked':''}> 出力しない（帳簿のまま）</label></td></tr>`).join('')||'<tr><td colspan="5" style="color:#94a3b8">ありません</td></tr>'}</tbody></table>
+   ${notInForm.length?`<h4 style="margin:14px 0 6px">フォームに行が無い品目（SMILEで倉庫×品目の行が無い可能性。出力には含めます）</h4><table><tr><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">合計</th><th>ロケーション</th></tr>${notInForm.map(a=>`<tr><td>${esc(a.whName||a.wh)}</td><td><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td><td class="num">${a.total}</td><td>${locFor(a.wh)}</td></tr>`).join('')}</table>`:''}
+   <div class="row" style="margin-top:14px"><button class="p" id="fOutBtn">取込用ファイルを出力</button><span style="color:#64748b">未判断が残っていても出力できます（未判断の行は出力しません）</span></div>`;
+  $('fOut').querySelectorAll('input[type=radio]').forEach(r=>r.onchange=()=>{ FORMDEC[r.dataset.k]=r.value; drawForm(); });
+  $('fOut').querySelectorAll('[data-allz]').forEach(b=>b.onclick=()=>{ uncTarget.filter(u=>u.wh===b.dataset.allz && !FORMDEC[u.key]).forEach(u=>FORMDEC[u.key]='zero'); drawForm(); });
+  $('fOutBtn').onclick=()=>{
+    const q2=s=>'"'+String(s==null?'':s).replace(/"/g,'""')+'"';
+    const numCols=new Set([iB,iA]);
+    const line=r=>r.map((c,i)=>numCols.has(i)?c:q2(c)).join('\t');
+    const out=[FORM.header.map(q2).join('\t')]; if(FORM.marker) out.push(FORM.marker.map(q2).join('\t'));
+    for(const c of counted){ const r=[...FORM.rows[c.idx]]; r[iA]=c.a.total.toFixed(2); out.push(line(r)); }
+    for(const u of uncTarget){ if(FORMDEC[u.key]!=='zero') continue; const r=[...FORM.rows[u.idx]]; r[iA]=(0).toFixed(2); out.push(line(r)); }
+    for(const a of notInForm){ const r=FORM.header.map(()=> ''); r[iW]=a.wh; r[iWN]=a.whName||''; r[iL]=locFor(a.wh); r[iC]=a.code; r[iN]=a.name||''; r[iB]=(0).toFixed(2); r[iA]=a.total.toFixed(2); out.push(line(r)); }
+    download(`棚卸取込_${PERIOD.id}_${new Date().toISOString().slice(0,10)}.txt`, '﻿'+out.join('\r\n')+'\r\n', 'text/plain');
+    toast(`出力しました（${out.length-(FORM.marker?2:1)}行）`);
+  };
+}
+})();
+</script>
+
 </body>
 </html>
