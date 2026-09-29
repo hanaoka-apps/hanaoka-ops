@@ -55,6 +55,23 @@
   #gate .btn { font:inherit; font-size:14px; padding:10px 22px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
   #gateError { color:#b03636; margin-top:14px; font-size:13px; white-space:pre-wrap; }
   .hide { display:none !important; }
+  /* 納付書用ビュー：必要な項目だけを本社・工場・合計で並べる */
+  #taxView { overflow:auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:16px; }
+  .tax-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 18px; max-width:760px; }
+  .tax-card h2 { font-size:14px; margin:0 0 4px; }
+  .tax-card .sub { color:var(--muted); font-size:12px; margin:0 0 10px; }
+  .tax-card table { width:100%; font-size:13px; }
+  .tax-card th, .tax-card td { position:static !important; padding:7px 10px; }
+  .tax-card th:first-child, .tax-card td:first-child { text-align:left; }
+  .tax-card th:not(:first-child), .tax-card td:not(:first-child) { text-align:right !important; font-variant-numeric:tabular-nums; }
+  .tax-card td.sec { text-align:left !important; }
+  .tax-card thead th { position:static; }
+  .tax-card tr.total td { font-weight:700; border-top:2px solid var(--accent); background:color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+  .tax-card td.lbl { color:var(--muted); }
+  .tax-card td.sec { font-weight:600; color:var(--accent); padding-top:12px; }
+  .tax-note { color:var(--muted); font-size:12px; line-height:1.7; margin:10px 0 0; }
+  .tax-actions { display:flex; gap:8px; margin-top:10px; }
+  .tax-actions button { font:inherit; font-size:12.5px; padding:5px 12px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text); cursor:pointer; }
 </style>
 </head>
 <body>
@@ -89,11 +106,13 @@
   <div class="tabs">
     <button class="tab-btn active" data-dept="本社" id="tabHonsha">本社</button>
     <button class="tab-btn" data-dept="工場" id="tabKoujou">工場</button>
+    <button class="tab-btn" id="tabTax">納付書用（源泉・住民税）</button>
   </div>
   <button class="theme-btn" id="themeBtn">☀ ライト</button>
 </header>
 <main>
-  <div class="scrollx"><table id="detailTable"></table></div>
+  <div class="scrollx" id="detailWrap"><table id="detailTable"></table></div>
+  <div id="taxView" class="hide"></div>
 </main>
 </div>
 
@@ -175,6 +194,11 @@ async function fetchDetail(ym, dept) {
 
 async function render() {
   updateStepperButtons();
+  const tax = currentView === 'tax';
+  document.getElementById('detailWrap').classList.toggle('hide', tax);
+  document.getElementById('taxView').classList.toggle('hide', !tax);
+  document.querySelector('.sort-toggle').classList.toggle('hide', tax);
+  if (tax) return renderTax();
   const ym = monthSel.value;
   const t = document.getElementById('detailTable');
   t.innerHTML = '<tr><td style="padding:20px">読み込み中…</td></tr>';
@@ -216,10 +240,118 @@ async function render() {
 }
 
 function setDept(d) {
-  currentDept = d;
+  currentDept = d; currentView = 'detail';
   document.getElementById('tabHonsha').classList.toggle('active', d === '本社');
   document.getElementById('tabKoujou').classList.toggle('active', d === '工場');
+  document.getElementById('tabTax').classList.remove('active');
   render();
+}
+function setTaxView() {
+  currentView = 'tax';
+  ['tabHonsha', 'tabKoujou'].forEach(id => document.getElementById(id).classList.remove('active'));
+  document.getElementById('tabTax').classList.add('active');
+  render();
+}
+
+// ---------------- 納付書用（源泉所得税・住民税） ----------------
+// 源泉所得税：給与所得・退職所得等の所得税徴収高計算書（俸給・給料等）に書く 人員・支給額・税額・年末調整の過不足・本税。
+// 住民税：特別徴収の納付額の合計（市区町村ごとの内訳は給与データにないため、事業場別の合計のみ）。
+let currentView = 'detail';
+const pad2 = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
+/** 主な祝日（納期限の10日・支給日の25日の前後に関係するもの）。振替休日も考える */
+function isHoliday(d) {
+  const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate(), w = d.getDay();
+  const nthMonday = n => w === 1 && Math.ceil(day / 7) === n;
+  const fixed = [[1, 1], [2, 11], [2, 23], [4, 29], [5, 3], [5, 4], [5, 5], [8, 11], [11, 3], [11, 23]];
+  if (fixed.some(([fm, fd]) => fm === m && fd === day)) return true;
+  if ((m === 1 && nthMonday(2)) || (m === 7 && nthMonday(3)) || (m === 9 && nthMonday(3)) || (m === 10 && nthMonday(2))) return true;
+  // 振替休日：祝日が日曜なら翌月曜
+  if (w === 1) { const prev = new Date(y, m - 1, day - 1); return fixed.some(([fm, fd]) => fm === prev.getMonth() + 1 && fd === prev.getDate()); }
+  return false;
+}
+const isBusinessDay = d => d.getDay() !== 0 && d.getDay() !== 6 && !isHoliday(d);
+function payDateOf(ym) {  // 給与の支給日：毎月25日（休日なら前の営業日）
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1, 25);
+  while (!isBusinessDay(d)) d.setDate(d.getDate() - 1);
+  return d;
+}
+function dueDateOf(ym) {  // 納期限：支給月の翌月10日（休日なら翌営業日）
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m, 10);
+  while (!isBusinessDay(d)) d.setDate(d.getDate() + 1);
+  return d;
+}
+function taxFigures(emps) {
+  const v = e => e.内訳 || {};
+  const paid = emps.filter(e => (v(e).課税支給合計 || 0) > 0);
+  const f = {
+    人員: paid.length,
+    支給額: paid.reduce((s, e) => s + (v(e).課税支給合計 || 0), 0),
+    // 税額：所得税（2024年の定額減税の月は、減税額（マイナス）を差し引いた実際の徴収額）
+    税額: emps.reduce((s, e) => s + (v(e).所得税 || 0) + (v(e).定額減税 || 0), 0),
+    // 年末調整：年調精算額がプラス＝追加で徴収（不足税額）、マイナス＝還付（超過税額）
+    不足税額: emps.reduce((s, e) => s + Math.max(0, v(e).年調精算額 || 0), 0),
+    超過税額: emps.reduce((s, e) => s + Math.max(0, -(v(e).年調精算額 || 0)), 0),
+    住民税人員: emps.filter(e => (v(e).住民税 || 0) > 0).length,
+    住民税: emps.reduce((s, e) => s + (v(e).住民税 || 0), 0),
+  };
+  f.本税 = f.税額 + f.不足税額 - f.超過税額;
+  return f;
+}
+async function renderTax() {
+  const ym = monthSel.value;
+  const tv = document.getElementById('taxView');
+  tv.innerHTML = '<div class="tax-card">読み込み中…</div>';
+  const [h, k] = await Promise.all([fetchDetail(ym, '本社'), fetchDetail(ym, '工場')]);
+  const H = taxFigures(h), K = taxFigures(k), T = {};
+  Object.keys(H).forEach(key => { T[key] = H[key] + K[key]; });
+  const yen = n => (n < 0 ? '△' : '') + Math.abs(n).toLocaleString('ja-JP') + '円';
+  const ppl = n => n + '人';
+  const row = (label, key, f, cls) => `<tr class="${cls || ''}"><td class="lbl">${label}</td><td>${f(H[key])}</td><td>${f(K[key])}</td><td>${f(T[key])}</td></tr>`;
+  const [y, m] = ym.split('-').map(Number);
+  const pay = ymd(payDateOf(ym)), due = ymd(dueDateOf(ym));
+  const nendo = (T.不足税額 || T.超過税額);
+  tv.innerHTML = `
+    <div class="tax-card" id="taxCard1">
+      <h2>源泉所得税（給与所得・退職所得等の所得税徴収高計算書）</h2>
+      <p class="sub">${y}年${m}月支給分／支払年月日 ${pay}／納期限 ${due}</p>
+      <table>
+        <thead><tr><th>項目</th><th>本社</th><th>工場</th><th>合計</th></tr></thead>
+        <tbody>
+          <tr><td class="sec" colspan="4">俸給・給料等</td></tr>
+          ${row('人員', '人員', ppl)}
+          ${row('支給額', '支給額', yen)}
+          ${row('税額', '税額', yen)}
+          ${nendo ? `<tr><td class="sec" colspan="4">年末調整による過不足税額</td></tr>${row('不足税額', '不足税額', yen)}${row('超過税額', '超過税額', yen)}` : ''}
+          ${row('本税（納付額）', '本税', yen, 'total')}
+        </tbody>
+      </table>
+      <p class="tax-note">人員：課税支給がある人の数（役員を含む）。支給額：課税支給合計（非課税の通勤手当・立替経費などを除く）。税額：所得税の徴収額${T.税額 !== h.concat(k).reduce((s, e) => s + ((e.内訳 || {}).所得税 || 0), 0) ? '（定額減税を差し引いた額）' : ''}。<br>
+        賞与は給与と別に支給した場合に「賞与」欄へ別記します（このデータは月々の給与分です）。${nendo ? '年末調整は年調精算額がプラスを不足税額、マイナスを超過税額として集計しています。' : ''}</p>
+      <div class="tax-actions"><button data-taxcopy="1">表をコピー（Excel貼り付け用）</button></div>
+    </div>
+    <div class="tax-card" id="taxCard2">
+      <h2>住民税（特別徴収）</h2>
+      <p class="sub">${y}年${m}月支給分から徴収／納期限 ${due}</p>
+      <table>
+        <thead><tr><th>項目</th><th>本社</th><th>工場</th><th>合計</th></tr></thead>
+        <tbody>
+          ${row('人員', '住民税人員', ppl)}
+          ${row('納付額', '住民税', yen, 'total')}
+        </tbody>
+      </table>
+      <p class="tax-note">市区町村ごとの内訳は給与データにないため、事業場別の合計です。市区町村ごとの納付書の金額は、特別徴収税額の決定通知書の月額と照合してください（合計がこの納付額と一致するはずです）。</p>
+      <div class="tax-actions"><button data-taxcopy="2">表をコピー（Excel貼り付け用）</button></div>
+    </div>`;
+  tv.querySelectorAll('[data-taxcopy]').forEach(b => b.onclick = async () => {
+    const card = document.getElementById('taxCard' + b.dataset.taxcopy);
+    const lines = [card.querySelector('h2').textContent, card.querySelector('.sub').textContent,
+      ...[...card.querySelectorAll('tr')].map(tr => [...tr.children].map(c => c.textContent).join('\t'))];
+    await navigator.clipboard.writeText(lines.join('\n'));
+    const t = b.textContent; b.textContent = '✓ コピーしました'; setTimeout(() => { b.textContent = t; }, 1500);
+  });
 }
 function setSort(s) {
   currentSort = s;
@@ -256,6 +388,7 @@ async function loadDataAndShow() {
   monthSel.addEventListener('change', render);
   document.getElementById('tabHonsha').addEventListener('click', () => setDept('本社'));
   document.getElementById('tabKoujou').addEventListener('click', () => setDept('工場'));
+  document.getElementById('tabTax').addEventListener('click', setTaxView);
   document.getElementById('sortDept').addEventListener('click', () => setSort('dept'));
   document.getElementById('sortCode').addEventListener('click', () => setSort('code'));
   await render();
