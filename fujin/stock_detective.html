@@ -1057,6 +1057,15 @@ window.addEventListener('load', () => {
 #tanaPanel .hist .cx{text-decoration:line-through;color:#94a3b8}
 #tanaPanel .hist button{font-size:11px;padding:1px 6px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer}
 #tanaPanel .tf{padding:8px 14px;border-top:1px solid #e5e7eb;display:flex;gap:6px;align-items:center;font-size:11.5px;color:#64748b}
+#tanaPanel .tot{background:#0f766e;color:#fff;border-radius:8px;padding:10px 12px;display:flex;align-items:baseline;gap:8px}
+#tanaPanel .tot b{font-size:30px;line-height:1}
+#tanaPanel .ref{margin-top:6px;font-size:11.5px;color:#475569;background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:6px 8px;line-height:1.6}
+#tanaPanel .ih{margin-top:6px;font-size:12.5px}
+#tanaPanel .ih div{display:flex;gap:8px;align-items:center;padding:3px 0;border-bottom:1px dotted #e5e7eb}
+#tanaPanel .ih .q{font-weight:700;min-width:48px;text-align:right;color:#0f766e;margin:0}
+#tanaPanel .ih .q.m{color:#b91c1c}
+#tanaPanel .ih .cx{text-decoration:line-through;color:#94a3b8}
+#tanaPanel .ih button{font-size:11px;padding:1px 6px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer;margin-left:auto}
 #tanaToast{position:fixed;left:50%;top:60px;transform:translateX(-50%);background:#0f766e;color:#fff;padding:10px 18px;border-radius:8px;font-weight:700;z-index:3000;display:none;box-shadow:0 6px 20px rgba(0,0,0,.2)}
 #tanaToast.err{background:#b91c1c}
 #tanaAdmin{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2000;display:none;align-items:center;justify-content:center;padding:3vh 3vw}
@@ -1109,6 +1118,7 @@ function lsSet(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(_){
 function toast(msg, err){ const t=$('tanaToast'); t.textContent=msg; t.className=err?'err':''; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', err?4000:1600); }
 function uuid(){ try{ return crypto.randomUUID(); }catch(_){ return 'x'+Date.now().toString(36)+Math.random().toString(36).slice(2); } }
 function me(){ try{ const a=window.top._fujinUser; return a ? {name:a.name||a.username, mail:(a.username||'').toLowerCase()} : null; }catch(_){ return null; } }
+function isMine(x){ const u=me(); if(!u) return false; return (x.mail && x.mail===u.mail) || (x.by && x.by===u.name); }
 
 // ---- 認証（FUJIN本体のサインインを使う） ----
 async function token(scopes){
@@ -1151,7 +1161,9 @@ async function loadWarehouses(){
   WH = rows.slice(1).filter(x=>x[ic] && x[ish]!=='非表示').map(x=>({code:x[ic].trim(), name:(x[inm]||'').trim(), kind:(x[ik]||'').includes('社内')?'社内':'外注'}));
 }
 function whByCode(c){ return WH.find(w=>w.code===c); }
-function locFor(whCode){ const w=whByCode(whCode); return (w && w.kind==='外注') ? '0' : '1'; } // 基準：社内=1 / 外注=0（締め時はSMILEフォームの行を優先）
+function nodeInfo(code){ try{ const R=window.top._fujinResultsData; return (R&&R.NODE_INFO&&R.NODE_INFO[code])||null; }catch(_){ return null; } }
+function locItem(code, whCode){ const w=whByCode(whCode); if(w && w.kind==='外注') return ''; const ni=nodeInfo(code); const lo=ni&&ni.pm&&ni.pm.lo; return (lo!=null && lo!=='') ? String(lo) : '1'; }
+function locFor(whCode){ const w=whByCode(whCode); return (w && w.kind==='外注') ? '' : '1'; } // 基準：社内=1 / 外注=空白（締め時はSMILEフォームの行を優先）
 
 // ---- 期間 ----
 let PERIOD = null; // {id, itemId, status}
@@ -1184,6 +1196,7 @@ async function flush(){
   } finally { flushing=false; }
 }
 setInterval(()=>{ if(queue().length) flush(); }, 20000);
+setInterval(()=>{ if(document.getElementById('tanaPanel') && document.getElementById('tanaPanel').classList.contains('open') && !document.hidden) refreshMine(); }, 30000);
 
 // ---- 画面（右パネル） ----
 let CUR = null; // {code,name}
@@ -1198,12 +1211,12 @@ panel.innerHTML = `
   <div class="sec"><label>① 倉庫</label>
     <input type="search" id="tanaWhQ" placeholder="倉庫名・コードで絞り込み" autocomplete="off" style="margin-bottom:4px">
     <select id="tanaWh"></select><div id="tanaWhRecent" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap"></div></div>
-  <div class="sec"><label>② 品目（現品票をピッ、または上の検索）</label><div class="item" id="tanaItem">品目がまだありません</div></div>
-  <div class="sec"><label>③ 数量 → Enterで登録</label><input type="number" id="tanaQty" inputmode="decimal" step="any" min="0" placeholder="0">
+  <div class="sec"><label>② 品目（現品票をピッ／上の検索／左のツリーの箱をクリック）</label><div class="item" id="tanaItem">品目がまだありません</div></div>
+  <div class="sec"><label>③ 数量 → Enterで登録</label><input type="number" id="tanaQty" inputmode="decimal" step="any" placeholder="0">
     <div class="btns"><button class="b-send" id="tanaSend">登録（Enter）</button><button class="b-zero" id="tanaZero">無い（0で登録）</button></div>
-    <div class="q" id="tanaQ"></div></div>
-  <div class="sec"><label>この倉庫・品目の登録状況（全員分）</label><div id="tanaSum" style="font-size:12px;color:#334155">—</div></div>
-  <div class="sec"><label>自分の直近の登録 <button class="b-sub" id="tanaReload" style="font-size:11px;padding:1px 8px;border:1px solid #cbd5e1;border-radius:4px;cursor:pointer">更新</button></label><table class="hist" id="tanaHist"></table></div>
+    <div style="font-size:11px;color:#64748b;margin-top:4px">数え直して減らすときは、取消するか「-2」のようにマイナスで登録</div><div class="q" id="tanaQ"></div></div>
+  <div class="sec"><label>この倉庫・品目の登録合計（全員分）</label><div id="tanaSum">—</div></div>
+  <div class="sec"><label>直近の登録（全員・この期間） <button class="b-sub" id="tanaReload" style="font-size:11px;padding:1px 8px;border:1px solid #cbd5e1;border-radius:4px;cursor:pointer">更新</button></label><div class="ih" id="tanaHist"></div></div>
  </div>
  <div class="tf"><span id="tanaStat">—</span><span style="flex:1"></span><button class="b-sub" id="tanaAdminBtn" style="padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer">集計・締め（管理者）</button></div>`;
 document.querySelector('.frame-wrap').appendChild(panel);
@@ -1213,7 +1226,7 @@ function setOpen(v){
   panel.classList.toggle('open', v); btn.classList.toggle('on', v);
   btn.textContent = v ? '📦 棚卸モード ON' : '📦 棚卸モード';
   frame.style.width = v ? 'calc(100% - 380px)' : '100%';
-  if(v) initOnce();
+  if(v){ initOnce(); tanaTreeSetup(); setTimeout(tanaTreeSetup, 500); }
 }
 btn.addEventListener('click', ()=>setOpen(!isOpen()));
 
@@ -1251,38 +1264,74 @@ function curSum(){
   const rows = MINE.filter(x=>!x.canceled && x.wh===wh && x.code===CUR.code);
   return {total: rows.reduce((s,x)=>s+x.qty,0), rows};
 }
+const fmtAt = at => { const d=new Date(at); return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+const fmtQ = v => (v>0?'+':'')+v;
+function histRow(x, showItem){ return `<div><span class="q ${x.qty<0?'m':''} ${x.canceled?'cx':''}">${fmtQ(x.qty)}</span><span class="${x.canceled?'cx':''}">${esc(fmtAt(x.at))} ${esc(x.by)}${showItem?` <b>${esc(x.code)}</b> <span style="color:#64748b">${esc(x.whName)}</span>`:''}${x.type==='zero'?' <span style="color:#991b1b">(無い)</span>':''}${x.canceled?' 取消済':''}</span>${(!x.canceled && x.id && isMine(x))?`<button data-id="${x.id}">取消</button>`:(x.pending?'<span style="margin-left:auto;color:#b45309">送信中</span>':'')}</div>`; }
+function bindCancel(root){ root.querySelectorAll('button[data-id]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.id)); }
 function renderItem(){
   const box=$('tanaItem');
   if(!CUR){ box.className='item'; box.textContent='品目がまだありません'; $('tanaSum').textContent='—'; return; }
   const inMaster = !!(window.ITEM_HISTORY && window.ITEM_HISTORY.item_names && window.ITEM_HISTORY.item_names[CUR.code]);
   box.className='item ok';
   box.innerHTML = `<div class="c">${esc(CUR.code)}</div><div class="n">${esc(CUR.name||'')}</div>` + (inMaster?'':`<div class="w">⚠ FUJINの品目マスタに無いコードです（Excel管理の部品なら、ここでは登録しない）</div>`);
-  const s=curSum();
-  $('tanaSum').innerHTML = !s ? '倉庫を選ぶと表示' : (s.rows.length ? `合計 <b style="font-size:15px">${s.total}</b>（${s.rows.length}件：` + s.rows.slice(0,6).map(x=>`${esc(x.by)} ${x.qty}`).join('、') + (s.rows.length>6?' …':'') + '）' : 'まだ誰も登録していません');
+  const s=curSum(); const ni=nodeInfo(CUR.code); const un=(ni&&ni.pm&&ni.pm.un)||'';
+  const ref = ni ? `<div class="ref">参考（FUJIN）：現在庫（物理・全社合算）<b>${ni.cur!=null?ni.cur:'—'}</b> ${esc(un)}　基準倉庫 ${esc((ni.pm&&ni.pm.wh)||'—')}／基準ロケーション ${esc((ni.pm&&ni.pm.lo)||'—')}<br><span style="color:#94a3b8">※倉庫別の在庫はFUJINにありません。倉庫別の帳簿との差は、締めのときにSMILEフォームで確認します。</span></div>` : '';
+  if(!s){ $('tanaSum').innerHTML = '<div style="color:#64748b">倉庫を選ぶと表示</div>'+ref; return; }
+  const all = MINE.filter(x=>x.wh===$('tanaWh').value && x.code===CUR.code);
+  $('tanaSum').innerHTML = `<div class="tot"><b>${s.total}</b><span>${esc(un)}（${s.rows.length}件・${new Set(s.rows.map(x=>x.by)).size}人）</span></div>` + ref +
+    (all.length ? `<div class="ih">${all.map(x=>histRow(x,false)).join('')}</div>` : '<div style="color:#94a3b8;margin-top:6px">まだ誰も登録していません</div>');
+  bindCancel($('tanaSum'));
 }
 // 検索（スキャン）で品目が決まったら、棚卸パネルに反映
-const _origDoSearch = _doSearchWithCode;
-_doSearchWithCode = function(code){
-  _origDoSearch(code);
-  if(!isOpen()) return;
-  const nm = (window.ITEM_HISTORY && window.ITEM_HISTORY.item_names && window.ITEM_HISTORY.item_names[code]) || '';
+function tanaPick(code){
+  const nm = (window.ITEM_HISTORY && window.ITEM_HISTORY.item_names && window.ITEM_HISTORY.item_names[code]) || ((nodeInfo(code)||{}).n) || '';
   const prevQty = $('tanaQty').value;
-  if(CUR && CUR.code!==code && prevQty!=='') toast('前の品目（'+CUR.code+'）は未登録のまま切り替えました', true);
+  if(CUR && CUR.code===code){ renderItem(); return; }
+  if(CUR && prevQty!==''){
+    const ok = confirm(`「${CUR.code}」に数量 ${prevQty} を入力中で、まだ登録していません。\n\n登録せずに「${code}」に切り替えますか？\n（キャンセルで「${CUR.code}」の入力に戻ります）`);
+    if(!ok){ setTimeout(()=>{ try{ $('tanaQty').focus(); $('tanaQty').select(); }catch(_){} }, 50); return; }
+    toast('「'+CUR.code+'」は登録せずに切り替えました', true);
+  }
   CUR = {code, name:nm}; $('tanaQty').value='';
   renderItem();
+  const box=$('tanaItem'); box.style.transition='background .6s'; box.style.background='#fef9c3'; setTimeout(()=>{ box.style.background=''; }, 700); // 切り替わったことが分かるように一瞬光らせる
   _scanRefocus = 0; // ツリー読込後に検索欄へ戻す処理を止め、数量欄へ
   const target = $('tanaWh').value ? $('tanaQty') : $('tanaWh');
   [40, 400, 1200].forEach(ms=>setTimeout(()=>{ try{ target.focus(); if(target.select) target.select(); }catch(_){} }, ms));
-};
-
+}
+const _origDoSearch = _doSearchWithCode;
+_doSearchWithCode = function(code){ _origDoSearch(code); if(isOpen()) tanaPick(code); };
+// ---- ツリー画面（iframe）：棚卸モード中は右の詳細パネルを閉じ、Fit。品目の箱クリックで棚卸の品目にする ----
+function tanaTreeSetup(){
+  if(!isOpen()) return;
+  let rd, rw; try{ rd=frame.contentDocument; rw=frame.contentWindow; }catch(_){ return; }
+  if(!rd || !rd.getElementById('dvSvgHost')) return;
+  const side=rd.getElementById('dvSide'), tog=rd.getElementById('dvSideToggle');
+  if(side && tog && !side.classList.contains('collapsed')){ tog.click(); setTimeout(()=>{ try{ rw.dvAutoFit && rw.dvAutoFit(); }catch(_){} }, 350); }
+  if(!rd._tanaHooked){
+    rd._tanaHooked = true;
+    try{ const host=rd.getElementById('dvSvgHost'); new rw.MutationObserver(()=>{ if(!isOpen()||!rd._tanaFocus) return; host.querySelectorAll('.node').forEach(n=>{ const on=n.dataset.code===rd._tanaFocus; if(n.classList.contains('focus')!==on) n.classList.toggle('focus', on); }); }).observe(host,{childList:true,subtree:true}); }catch(_){}
+    rd.addEventListener('click', e=>{
+      if(!isOpen()) return;
+      const g = e.target && e.target.closest && e.target.closest('#dvSvgHost g.node');
+      if(!g || !g.dataset.code) return;
+      e.stopPropagation(); // 詳細パネルを開かせない
+      rd.querySelectorAll('#dvSvgHost .node').forEach(n=>n.classList.toggle('focus', n===g));
+      rd._tanaFocus = g.dataset.code; // ツリーが描き直されてもピンク枠を付け直す（下のMutationObserver）
+      tanaPick(g.dataset.code);
+    }, true);
+  }
+}
+frame.addEventListener('load', ()=>{ [300, 1200, 3000].forEach(ms=>setTimeout(tanaTreeSetup, ms)); });
 async function register(qty, type){
   if(!PERIOD){ toast('受付中の棚卸期間がありません', true); return; }
   const wh=$('tanaWh').value; if(!wh){ toast('倉庫を選んでください', true); $('tanaWh').focus(); return; }
   if(!CUR){ toast('品目を読み取ってください', true); q.focus(); return; }
-  if(!(qty>=0) || !isFinite(qty)){ toast('数量を入れてください', true); $('tanaQty').focus(); return; }
-  if(qty>=100000 && !confirm(qty+' で登録します。桁は合っていますか？')) return;
+  if(!isFinite(qty)){ toast('数量を入れてください', true); $('tanaQty').focus(); return; }
+  if(qty<0){ const cs=curSum(); const after=(cs?cs.total:0)+qty; if(!confirm(`${CUR.code} を ${qty}（減らす訂正）で登録します。登録後の合計は ${after} です。`)) return; if(after<0){ toast('合計がマイナスになるため登録できません', true); return; } type='adjust'; }
+  if(Math.abs(qty)>=100000 && !confirm(qty+' で登録します。桁は合っていますか？')) return;
   const w=whByCode(wh)||{name:''};
-  const rec = {Title:CUR.code, WhCode:wh, WhName:w.name, Loc:locFor(wh), ItemName:CUR.name||'', Qty:qty, PeriodId:PERIOD.id, EntryType:type, Canceled:false, ClientId:uuid()};
+  const rec = {Title:CUR.code, WhCode:wh, WhName:w.name, Loc:locItem(CUR.code, wh), ItemName:CUR.name||'', Qty:qty, PeriodId:PERIOD.id, EntryType:type, Canceled:false, ClientId:uuid()};
   const u=me();
   MINE.unshift({id:null, code:rec.Title, name:rec.ItemName, wh, whName:w.name, qty, canceled:false, by:(u&&u.name)||'自分', mail:(u&&u.mail)||'', at:new Date().toISOString(), pending:true});
   try{ await sendOne(rec); toast(`登録：${CUR.code} × ${qty}`); }
@@ -1304,15 +1353,15 @@ async function refreshMine(showToast){
   catch(e){ console.warn(e); if(showToast) toast('読み込めません：'+e.message, true); }
 }
 function renderHist(){
-  const u=me(); const mine = MINE.filter(x=>!u || !x.mail || x.mail===u.mail).slice(0,40);
-  $('tanaHist').innerHTML = mine.length ? mine.map(x=>`<tr class="${x.canceled?'cx':''}"><td>${esc(new Date(x.at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}))}</td><td><b>${esc(x.code)}</b><br><span style="color:#64748b">${esc(x.whName)}</span></td><td class="num" style="text-align:right">${x.qty}</td><td>${x.canceled?'取消済':(x.id?`<button data-id="${x.id}">取消</button>`:'<span style="color:#b45309">送信中</span>')}</td></tr>`).join('') : '<tr><td style="color:#94a3b8">まだありません</td></tr>';
-  $('tanaHist').querySelectorAll('button[data-id]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.id));
+  const rows = MINE.slice(0,40);
+  $('tanaHist').innerHTML = rows.length ? rows.map(x=>histRow(x,true)).join('') : '<div style="color:#94a3b8">まだありません</div>';
+  bindCancel($('tanaHist'));
 }
 async function cancelItem(id, note){
   const x=MINE.find(m=>m.id===id); if(!x) return;
   const reason = note || prompt(`${x.code} × ${x.qty}（${x.whName}）を取り消します。理由（任意）`, '入力ミス'); if(reason===null) return;
   const r = await gfetch(`/sites/${TANA.site}/lists/${TANA.inputList}/items/${id}/fields`, {method:'PATCH', body:JSON.stringify({Canceled:true, CancelNote:reason})});
-  if(r.ok){ toast('取り消しました'); refreshMine(); if(typeof renderAdmin==='function' && $('tanaAdmin').classList.contains('open')) renderAdmin(); }
+  if(r.ok){ toast('取り消しました'); await refreshMine(); setTimeout(()=>{ q.focus(); q.select(); },0); if(typeof renderAdmin==='function' && $('tanaAdmin').classList.contains('open')) renderAdmin(); }
   else toast('取り消せません（自分の登録だけ取り消せます）：'+r.status, true);
 }
 function renderQueue(){ const n=queue().length; $('tanaQ').textContent = n ? `未送信 ${n}件（自動で再送します。この端末のブラウザを閉じないでください）` : ''; $('tanaStat').textContent = n ? `未送信 ${n}件` : '送信済み'; }
@@ -1393,7 +1442,7 @@ function drawForm(){
   FORM.rows.forEach((r,idx)=>{ const k=r[iW]+'|'+r[iC]; if(!byKey.has(k)) byKey.set(k,[]); byKey.get(k).push(idx); });
   for(const [k,idxs] of byKey){ const a=agMap.get(k);
     // 同じ倉庫×品目が複数ロケーションにある場合：基準（社内1/外注0、空欄は0扱い）に一致する行を優先
-    const pick = idxs.find(i=>{ const L=FORM.rows[i][iL]||'0'; return L===locFor(FORM.rows[i][iW]); }) ?? idxs[0];
+    const pick = idxs.find(i=>{ const L=FORM.rows[i][iL]||''; return L===locItem(FORM.rows[i][iC], FORM.rows[i][iW]); }) ?? idxs[0];
     if(a){ counted.push({idx:pick, a}); used.add(k); }
     else { const r=FORM.rows[pick]; const book=parseFloat(r[iB])||0; if(book!==0) uncounted.push({idx:pick, key:k, wh:r[iW], whName:r[iWN], code:r[iC], name:r[iN], book}); }
   }
@@ -1407,7 +1456,7 @@ function drawForm(){
    <h4 style="margin:8px 0">帳簿に在庫があるのに数えていない品目（対象倉庫のみ）</h4>
    <div class="row">${[...new Set(uncTarget.map(u=>u.wh))].map(w=>`<button class="s" data-allz="${esc(w)}">${esc((whByCode(w)||{}).name||w)}：未判断を全部0にする</button>`).join('')}</div>
    <table><thead><tr><th>倉庫</th><th>品目コード</th><th>品目</th><th class="num">帳簿</th><th>判断</th></tr></thead><tbody>${uncTarget.map(u=>`<tr><td>${esc(u.whName)}</td><td><b>${esc(u.code)}</b></td><td>${esc(u.name)}</td><td class="num">${u.book}</td><td><label><input type="radio" name="d_${esc(u.key)}" data-k="${esc(u.key)}" value="zero" ${FORMDEC[u.key]==='zero'?'checked':''}> 0にする</label> <label><input type="radio" name="d_${esc(u.key)}" data-k="${esc(u.key)}" value="keep" ${FORMDEC[u.key]==='keep'?'checked':''}> 出力しない（帳簿のまま）</label></td></tr>`).join('')||'<tr><td colspan="5" style="color:#94a3b8">ありません</td></tr>'}</tbody></table>
-   ${notInForm.length?`<h4 style="margin:14px 0 6px">フォームに行が無い品目（SMILEで倉庫×品目の行が無い可能性。出力には含めます）</h4><table><tr><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">合計</th><th>ロケーション</th></tr>${notInForm.map(a=>`<tr><td>${esc(a.whName||a.wh)}</td><td><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td><td class="num">${a.total}</td><td>${locFor(a.wh)}</td></tr>`).join('')}</table>`:''}
+   ${notInForm.length?`<h4 style="margin:14px 0 6px">フォームに行が無い品目（SMILEで倉庫×品目の行が無い可能性。出力には含めます）</h4><table><tr><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">合計</th><th>ロケーション</th></tr>${notInForm.map(a=>`<tr><td>${esc(a.whName||a.wh)}</td><td><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td><td class="num">${a.total}</td><td>${esc(locItem(a.code,a.wh))||'（空白）'}</td></tr>`).join('')}</table>`:''}
    <div class="row" style="margin-top:14px"><button class="p" id="fOutBtn">取込用ファイルを出力</button><span style="color:#64748b">未判断が残っていても出力できます（未判断の行は出力しません）</span></div>`;
   $('fOut').querySelectorAll('input[type=radio]').forEach(r=>r.onchange=()=>{ FORMDEC[r.dataset.k]=r.value; drawForm(); });
   $('fOut').querySelectorAll('[data-allz]').forEach(b=>b.onclick=()=>{ uncTarget.filter(u=>u.wh===b.dataset.allz && !FORMDEC[u.key]).forEach(u=>FORMDEC[u.key]='zero'); drawForm(); });
@@ -1418,7 +1467,7 @@ function drawForm(){
     const out=[FORM.header.map(q2).join('\t')]; if(FORM.marker) out.push(FORM.marker.map(q2).join('\t'));
     for(const c of counted){ const r=[...FORM.rows[c.idx]]; r[iA]=c.a.total.toFixed(2); out.push(line(r)); }
     for(const u of uncTarget){ if(FORMDEC[u.key]!=='zero') continue; const r=[...FORM.rows[u.idx]]; r[iA]=(0).toFixed(2); out.push(line(r)); }
-    for(const a of notInForm){ const r=FORM.header.map(()=> ''); r[iW]=a.wh; r[iWN]=a.whName||''; r[iL]=locFor(a.wh); r[iC]=a.code; r[iN]=a.name||''; r[iB]=(0).toFixed(2); r[iA]=a.total.toFixed(2); out.push(line(r)); }
+    for(const a of notInForm){ const r=FORM.header.map(()=> ''); r[iW]=a.wh; r[iWN]=a.whName||''; r[iL]=locItem(a.code, a.wh); r[iC]=a.code; r[iN]=a.name||''; r[iB]=(0).toFixed(2); r[iA]=a.total.toFixed(2); out.push(line(r)); }
     download(`棚卸取込_${PERIOD.id}_${new Date().toISOString().slice(0,10)}.txt`, '﻿'+out.join('\r\n')+'\r\n', 'text/plain');
     toast(`出力しました（${out.length-(FORM.marker?2:1)}行）`);
   };
