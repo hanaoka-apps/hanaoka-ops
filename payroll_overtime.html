@@ -213,6 +213,12 @@
     <p class="note">保存した確認結果の一覧です（監督署対応の記録）。「開く」で当時の結果・投稿文・通告文をそのまま表示します。</p>
     <div class="scrollx"><table id="tblHist"></table></div>
     <div id="histMsg" class="note"></div>
+    <div class="card" style="margin-top:16px;">
+      <h2>締め後の結果のお知らせ（従業員代表あて）</h2>
+      <p class="note">その月にお知らせ・通告をした方について、給与の確定値（基礎データ）で結果を作ります。締め後に「基礎データを更新」してから使ってください。</p>
+      <div class="row" style="margin-bottom:8px;"><select id="resYm"></select><button class="btn" id="resBtn">作る</button><button class="btn ghost" data-copy="resText">コピー</button></div>
+      <textarea id="resText" class="txt" style="min-height:260px;max-width:720px;"></textarea>
+    </div>
   </section>
 
   <!-- ================= マスタ ================= -->
@@ -225,6 +231,7 @@
         <h2>従業員代表</h2>
         <div class="row"><label>氏名 <input id="mRepName"></label><label>所属 <input id="mRepDept"></label></div>
         <div class="row" style="margin-top:8px;"><label>連絡先 <input id="mRepContact" style="width:260px;"></label></div>
+        <div class="row" style="margin-top:8px;"><label>連絡文の差出人 <input id="mSender" style="width:260px;" placeholder="例：総務部　福田"></label></div>
       </div>
       <div class="card">
         <h2>管理監督者（集計から除外）</h2>
@@ -279,8 +286,8 @@
 </main>
 </div>
 
-<script src="payroll_graph.js?v=2026092901"></script>
-<script src="payroll_overtime_core.js?v=2026092901"></script>
+<script src="payroll_graph.js?v=2026092902"></script>
+<script src="payroll_overtime_core.js?v=2026092902"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -335,7 +342,7 @@ function renderMasterForm() {
   $('mSiteNote').textContent = S.editSite === '本社'
     ? '本社事業場（本社・大阪支店・名古屋営業所）の設定です。'
     : '鴻巣工場の設定です。ここにない項目（所定の詳細・確認日・特別条項など）は、詳細設定（JSON）の「工場」で変えられます。';
-  $('mRepName').value = m.従業員代表.氏名 || ''; $('mRepDept').value = m.従業員代表.所属 || ''; $('mRepContact').value = m.従業員代表.連絡先 || '';
+  $('mRepName').value = m.従業員代表.氏名 || ''; $('mRepDept').value = m.従業員代表.所属 || ''; $('mRepContact').value = m.従業員代表.連絡先 || ''; $('mSender').value = m.通告の差出人 || '';
   $('mManagerTitles').value = (m.管理監督者の役職 || []).join(',');
   $('mManagers').value = (m.管理監督者 || []).map(x => (x.従業員コード + ' ' + (x.メモ || '')).trim()).join('\n');
   $('mManagerGrade').value = m.管理監督者の等級 == null ? '' : m.管理監督者の等級;
@@ -359,6 +366,7 @@ function readMasterForm() {
   const cur = editM();
   const target = S.editSite === '本社' ? S.master : (S.master[S.editSite] = Object.assign({}, OT.DEFAULT_MASTER[S.editSite] || {}, S.master[S.editSite] || {}));
   target.従業員代表 = { 氏名: $('mRepName').value.trim(), 所属: $('mRepDept').value.trim(), 連絡先: $('mRepContact').value.trim() };
+  target.通告の差出人 = $('mSender').value.trim();
   target.管理監督者の役職 = $('mManagerTitles').value.split(/[,、，\s]+/).map(s => s.trim()).filter(Boolean);
   const codeLines = id => $(id).value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
     const [code, ...rest] = l.split(/\s+/); return { 従業員コード: code.padStart(6, '0'), メモ: rest.join(' ') };
@@ -508,6 +516,7 @@ async function loadCsv(file) {
     const payYm = OT.payMonthOf(rows.map(r => r.日付).sort().pop());
     S.history = await loadHistoryFor(payYm, S.site);
     S.titles = await loadTitlesFor(payYm, S.site);
+    try { S.prevNotices = await loadPrevNotices(payYm, S.site); } catch (e) { S.prevNotices = []; }
     recompute();
   } catch (e) { alert(e.message); }
 }
@@ -606,13 +615,15 @@ function renderList(people) {
     if (S.openCode === p.従業員コード) {
       row += `<tr class="detail"><td colspan="${COLS.length}">所定内 ${fmt(p.所定内)}（本人の最頻値）／日別の打刻推定：` +
         (p.日別.map(d => `${md(d.日付)} ${d.休日労働 ? '休日' + fmt(d.休日労働) : fmt(d.時間外)}${d.申請 > 0 ? `（申請${fmt(d.申請)}）` : ''}`).join('、') || 'なし') +
-        ((p.申請より長い日 || []).length ? `<br>申請より遅くまで打刻がある日：${p.申請より長い日.map(lateText).join('、')}` : '') + '</td></tr>';
+        ((p.申請より長い日 || []).length ? `<br>申請より遅くまで打刻がある日：${p.申請より長い日.map(lateText).join('、')}` : '') +
+        (S.fromHistory || p.限度 == null ? '' : `<br><button class="btn ghost no-print" data-mnotice="${esc(p.従業員コード)}" style="margin-top:6px;">この人の従業員代表への連絡文を作る</button>`) + '</td></tr>';
     }
     return row;
   }).join('');
   $('tblList').innerHTML = head + '<tbody>' + body + '</tbody>';
 }
 $('tblList').addEventListener('click', e => {
+  if (e.target.dataset.mnotice) { addManualNotice(e.target.dataset.mnotice); return; }
   const th = e.target.closest('th[data-sort]');
   if (th) { const k = th.dataset.sort; S.sort = S.sort && S.sort[0] === k ? (S.sort[1] > 0 ? [k, -1] : null) : [k, typeof S.result.people[0][k] === 'number' ? -1 : 1]; render(); return; }
   const tr = e.target.closest('tr.person');
@@ -830,45 +841,134 @@ function buildPost() {
   return L.join('\n');
 }
 
-/** 通告の対象者ごとに1通。[{従業員コード, 氏名, text}] */
-function buildNotices() {
+// ---------------- 従業員代表への連絡（お知らせ → 通告 → 結果） ----------------
+// 28日（初回）：超える可能性があれば「事前のお知らせ」。限度を超えた・確実なら「事前通告」。
+// 5日（中間）：打刻ベースの見込みと締め見込み（申請優先）の両方が限度超え＝確実→通告／片方だけ＝まだ分からない→経過のお知らせ／
+//              両方とも限度内＝収まりそう→経過のお知らせ（前回お知らせした人だけ）。
+// 10日（最終）：次の確認日がないため必ずどちらかに決める。どちらかが限度超え＝超える見込み→通告（迷う場合は安全側）／両方とも限度内＝収まる見込み。
+// 締め後：お知らせ・通告をした人に、給与の確定値で「結果のお知らせ」（履歴タブ）。
+const NOTICE_LABEL = { お知らせ: '事前のお知らせ', 通告: '事前通告', 経過_未定: '経過のお知らせ（まだ分からない）', 経過_収まり: '経過のお知らせ（収まる見込み）' };
+function noticeStage(m, cd) {
+  const list = m.差の掲載基準 || OT.DEFAULT_MASTER.差の掲載基準;
+  const day = Number(cd.split('/')[2]);
+  const i = list.findIndex(s => day >= s.開始日 && day <= s.終了日);
+  return ['初回', '中間', '最終'][i < 0 ? 2 : i] || '最終';
+}
+/** 次の定期確認日（マスタの確認日の日付） */
+function nextCheckDate(m, cd) {
+  for (let i = 1; i <= 40; i++) {
+    const d = OT.dateAdd(cd, i);
+    if ((m.確認日 || []).includes(Number(d.split('/')[2]))) return d;
+  }
+  return null;
+}
+/** 同じ給与月・事業場で、今回より前の確認日にお知らせ・通告をした人 {従業員コード: 最初の確認日} */
+function prevNotified() {
+  const cd = checkDateStr(), out = {};
+  (S.prevNotices || []).filter(x => x.確認日 < cd).sort((a, b) => a.確認日 < b.確認日 ? -1 : 1)
+    .forEach(x => x.codes.forEach(c => { if (!out[c]) out[c] = x.確認日; }));
+  return out;
+}
+async function loadPrevNotices(payYm, site) {
+  const idx = (await otGetFile('index.json', { allow404: true })) || [];
+  const out = [];
+  for (const x of idx.filter(x => x.給与月 === payYm && (x.事業場 || '本社') === site)) {
+    const rec = await otGetFile(x.結果, { allow404: true });
+    const codes = (rec && Array.isArray(rec.通告文) ? rec.通告文 : []).map(n => n.従業員コード).filter(Boolean);
+    if (codes.length) out.push({ 確認日: x.確認日, codes });
+  }
+  return out;
+}
+/** その人に今回送る連絡の種類（null＝送らない） */
+function noticeKind(x, stage, prevDate) {
+  const lim = x.限度; if (lim == null) return null;
+  const over = Math.max(x.打刻推定, x.申請済) > lim;
+  const a = x.見込み > lim, b = (x.締め見込み != null ? x.締め見込み : x.見込み) > lim;
+  if (over) return '通告';
+  if (stage === '初回') return a || b ? 'お知らせ' : null;
+  if (stage === '中間') {
+    if (a && b) return '通告';
+    if (a || b) return prevDate ? '経過_未定' : 'お知らせ';
+    return prevDate ? '経過_収まり' : null;
+  }
+  // 最終：必ずどちらかに決める（迷う場合は超える見込みとして通告）
+  if (a || b) return '通告';
+  return prevDate ? '経過_収まり' : null;
+}
+function buildNoticeText(x, kind, prevDate) {
   const r = S.result, m = master(), p = r.period, rep = m.従業員代表 || {};
+  const cd = checkDateStr(), next = nextCheckDate(m, cd);
   const repName = rep.氏名 ? rep.氏名.split(/[\s　]+/)[0] + 'さん' : '（従業員代表）さん';
-  return r.people.filter(x => x.今回超過).map(x => {
-    const over = Math.max(x.打刻推定, x.申請済) > x.限度;
-    const L = [];
-    L.push('【事前通告】時間外労働の限度時間について');
-    L.push('');
-    L.push(repName);
-    L.push('');
-    L.push(over ? '協定に基づき、限度時間を超えたため通告します。' : '協定に基づき、限度時間を超える見込みが生じたため事前に通告します。');
-    L.push('');
-    L.push(`　対象者　　　${zenName(x.氏名)}さん（${x.所属}・${kubunNo(m, x.区分)}）`);
-    L.push(`　限度時間　　1か月${x.限度 / 60}時間`);
-    L.push(`　対象期間　　${reiwa(p.開始)}〜${jpDate(p.締日)}（${Number(p.給与月.slice(5))}月分）`);
-    L.push(`　${jpDate(r.asOf)}時点　${aboutH(Math.max(x.打刻推定, x.申請済))}`);
-    L.push(`　超過見込み　締日までに${aboutH(x.見込み)}の見込み`);
-    L.push('');
-    L.push(`　事由　　　　${m.事由[x.業務] || '（事由を記入）'}`);
-    L.push('　　　　　　　（具体的な内容を記入）');
-    L.push('');
-    L.push(`　特別条項　　今年度${x.超過回数}回目（年${m.特別条項.年回数}回以内）・1か月${m.特別条項.月上限}時間以内` +
-      (x.超過回数 > m.特別条項.年回数 ? '　※年間の上限回数を超えます' : ''));
-    L.push('');
-    L.push('　会社の対応　所属長へ業務配分の調整を依頼しています。');
-    L.push('');
-    L.push('ご確認のうえ返信をお願いします。');
-    L.push('※承認をいただくものではなく、協定に定める手続として状況をお伝えするものです。');
-    return { 従業員コード: x.従業員コード, 氏名: x.氏名, text: L.join('\n') };
-  });
+  const now = Math.max(x.打刻推定, x.申請済), over = now > x.限度;
+  const count = x.過去超過回数 + 1;
+  const tokubetsu = `今年度${count}回目（年${m.特別条項.年回数}回以内）` + (count > m.特別条項.年回数 ? '　※年間の上限回数を超えます' : '');
+  const who = `　対象者　　　${zenName(x.氏名)}さん（${x.所属}・${kubunNo(m, x.区分)}）`;
+  const head = [`　限度時間　　1か月${x.限度 / 60}時間`, `　対象期間　　${reiwa(p.開始)}〜${jpDate(p.締日)}（${Number(p.給与月.slice(5))}月分）`,
+    `　現在の状況　${jpDate(r.asOf)}までで${aboutH(now)}`];
+  const reason = [`　事由　　　　${m.事由[x.業務] || '（事由を記入）'}`, '　　　　　　　（具体的な内容を記入）'];
+  const sender = m.通告の差出人 || '総務部';
+  const tail = ['', 'ご確認のうえ返信をお願いします。', '※承認をいただくものではなく、協定に定める手続として状況をお伝えするものです。', '', sender];
+  const L = [];
+  if (kind === 'お知らせ') {
+    L.push('【事前のお知らせ】時間外労働の限度時間について', '', repName, '',
+      '協定に定める手続として、限度時間を超える可能性がある方について', 'あらかじめお知らせします。', '', who, ...head,
+      '　今後の見通し　現在のペースが続くと、締日までに限度時間を', `　　　　　　　　超える可能性があります（${aboutH(x.見込み)}）`, '', ...reason, '',
+      `　特別条項　　超えた場合は${tokubetsu}`, `　　　　　　　1か月${m.特別条項.月上限}時間以内`, '',
+      '　会社の対応　所属長へ業務配分の調整を依頼しています。');
+    if (next) L.push(`　　　　　　　${jpDate(next)}の確認で改めて状況をお知らせします。`);
+  } else if (kind === '通告') {
+    L.push(`【事前通告】時間外労働の限度時間について（${jpDate(cd)}時点）`, '', repName, '');
+    if (prevDate) L.push(`${jpDate(prevDate)}にお知らせした${zenName(x.氏名)}さんについて、${jpDate(cd)}時点の`, '状況をお知らせします。');
+    else L.push('協定に定める手続として、限度時間を超える見込みとなった方について', '通告します。');
+    L.push('', who, ...head,
+      over ? `　見通し　　　すでに限度時間${x.限度 / 60}時間を超えています（締日までに${aboutH(x.見込み)}の見込み）`
+        : `　見通し　　　締日（${jpDate(p.締日)}）までに限度時間${x.限度 / 60}時間を超える見込みです（${aboutH(Math.max(x.見込み, x.締め見込み || 0))}）`,
+      '', ...reason, '', `　特別条項　　${tokubetsu}・1か月${m.特別条項.月上限}時間以内`, '', '　会社の対応　所属長へ業務配分の調整を依頼しています。');
+  } else if (kind === '経過_未定') {
+    L.push(`【経過のお知らせ】時間外労働の限度時間について（${jpDate(cd)}時点）`, '', repName, '',
+      `${jpDate(prevDate)}にお知らせした${zenName(x.氏名)}さんについて、${jpDate(cd)}時点の`, '状況をお知らせします。', '', who, ...head,
+      `　見通し　　　限度時間${x.限度 / 60}時間を超えるかどうかは、まだ見極めが必要です`,
+      `　　　　　　　（打刻のペースで${aboutH(x.見込み)}、申請ベースで${aboutH(x.締め見込み)}）`, '',
+      '　会社の対応　所属長へ業務配分の調整を依頼しています。' + (next ? '' : ''));
+    if (next) L.push(`　　　　　　　引き続き注視し、${jpDate(next)}に改めてお知らせします。`);
+  } else {
+    L.push(`【経過のお知らせ】時間外労働の限度時間について（${jpDate(cd)}時点）`, '', repName, '',
+      `${jpDate(prevDate)}にお知らせした${zenName(x.氏名)}さんについて、${jpDate(cd)}時点の`, '状況をお知らせします。', '', who, ...head,
+      `　見通し　　　業務配分の調整により、限度時間${x.限度 / 60}時間内に収まる見込みです（${aboutH(Math.max(x.見込み, x.締め見込み || 0))}）`);
+    if (noticeStage(m, cd) !== '最終' && next) L.push(`　　　　　　　${jpDate(next)}の確認で改めて状況をお知らせします。`);
+  }
+  L.push(...tail);
+  return L.join('\n');
+}
+/** 通告・お知らせの対象者ごとに1通。[{従業員コード, 氏名, 種類, text}] */
+function buildNotices() {
+  const r = S.result, m = master(), stage = noticeStage(m, checkDateStr()), prev = prevNotified();
+  return r.people.map(x => {
+    const kind = noticeKind(x, stage, prev[x.従業員コード]);
+    return kind ? { 従業員コード: x.従業員コード, 氏名: x.氏名, 種類: kind, text: buildNoticeText(x, kind, prev[x.従業員コード]) } : null;
+  }).filter(Boolean);
+}
+/** 一覧から手動で作る（確認日以外に所属長から連絡があった場合など）。判定で対象外でも「事前のお知らせ」として作る */
+function addManualNotice(code) {
+  const x = S.result.people.find(p => p.従業員コード === code); if (!x) return;
+  const prev = prevNotified(), stage = noticeStage(master(), checkDateStr());
+  const kind = noticeKind(x, stage, prev[code]) || (prev[code] ? '経過_未定' : 'お知らせ');
+  const n = { 従業員コード: code, 氏名: x.氏名, 種類: kind, text: buildNoticeText(x, kind, prev[code]) };
+  S.texts.notice = (S.texts.notice || []).filter(y => y.従業員コード !== code).concat([n]);
+  renderNotices();
+  document.querySelector('[data-sub="notice"]').click();
 }
 function renderNotices() {
   const list = S.texts.notice || [];
-  if (!list.length) { $('noticeList').innerHTML = '<div class="card">今回、限度時間を超える見込みの方はいません（通告なし）。</div>'; return; }
-  $('noticeList').innerHTML = list.map((n, i) => `<div class="card">
-      <div class="row no-print" style="margin-bottom:8px;"><h2 style="margin:0;">${esc(n.氏名)}さん</h2>
-        <button class="btn" data-ncopy="${i}">通告文コピー</button><button class="btn ghost" data-nregen="${i}">作り直す</button></div>
-      <textarea class="txt" data-ntext="${i}" style="min-height:430px;max-width:720px;">${esc(n.text)}</textarea></div>`).join('');
+  const stage = S.result ? noticeStage(master(), checkDateStr()) : '';
+  const head = `<p class="note">今回は<b>${esc(stage)}（${esc(checkDateStr())}）</b>の確認です。` +
+    (stage === '最終' ? '次の確認日がないため、超えるか収まるかをどちらかに決めて伝えます（迷う場合は超える見込みとして通告）。' : '') +
+    '同じ月に以前お知らせした人は、保存済みの確認結果から自動で分かります（「SharePointに保存」を忘れずに）。</p>';
+  if (!list.length) { $('noticeList').innerHTML = head + '<div class="card">今回、従業員代表への連絡が必要な方はいません。</div>'; return; }
+  $('noticeList').innerHTML = head + list.map((n, i) => `<div class="card">
+      <div class="row no-print" style="margin-bottom:8px;"><h2 style="margin:0;">${esc(n.氏名)}さん　<span class="pill ${n.種類 === '通告' ? 'j-crit' : n.種類 === '経過_収まり' ? 'j-info' : 'j-warn'}">${esc(NOTICE_LABEL[n.種類] || '')}</span></h2>
+        <button class="btn" data-ncopy="${i}">コピー</button><button class="btn ghost" data-nregen="${i}">作り直す</button></div>
+      <textarea class="txt" data-ntext="${i}" style="min-height:460px;max-width:720px;">${esc(n.text)}</textarea></div>`).join('');
 }
 $('noticeList').addEventListener('input', e => { const i = e.target.dataset.ntext; if (i != null) S.texts.notice[i].text = e.target.value; });
 $('noticeList').addEventListener('click', async e => {
@@ -878,11 +978,52 @@ $('noticeList').addEventListener('click', async e => {
     const t = e.target.textContent; e.target.textContent = '✓ コピーしました'; setTimeout(() => { e.target.textContent = t; }, 1500);
   }
   if (g != null) {
-    const fresh = buildNotices().find(n => n.従業員コード === S.texts.notice[g].従業員コード);
-    if (fresh) { S.texts.notice[g] = fresh; renderNotices(); }
+    const cur = S.texts.notice[g], x = S.result.people.find(p => p.従業員コード === cur.従業員コード);
+    if (x) { const prev = prevNotified(); S.texts.notice[g] = { ...cur, text: buildNoticeText(x, cur.種類 || 'お知らせ', prev[x.従業員コード]) }; renderNotices(); }
   }
 });
+
+// ---------------- 締め後の結果のお知らせ（履歴タブ） ----------------
+async function renderResultNotice() {
+  const idx = (await otGetFile('index.json', { allow404: true })) || [];
+  const keys = [...new Set(idx.map(x => x.給与月 + '|' + (x.事業場 || '本社')))].sort().reverse();
+  $('resYm').innerHTML = keys.map(k => { const [ym, site] = k.split('|'); return `<option value="${esc(k)}">${esc(ym.replace('-', '年'))}月分　${site === '工場' ? '鴻巣工場' : '本社事業場'}</option>`; }).join('');
+}
+async function buildResultNotice() {
+  const [ym, site] = $('resYm').value.split('|');
+  const idx = ((await otGetFile('index.json', { allow404: true })) || []).filter(x => x.給与月 === ym && (x.事業場 || '本社') === site);
+  const notified = {}, info = {};
+  let period = null, m = null;
+  for (const x of idx.sort((a, b) => a.確認日 < b.確認日 ? -1 : 1)) {
+    const rec = await otGetFile(x.結果, { allow404: true }); if (!rec) continue;
+    period = rec.期間 || period; m = rec.マスタ || m;
+    (Array.isArray(rec.通告文) ? rec.通告文 : []).forEach(n => { if (n.従業員コード && !notified[n.従業員コード]) notified[n.従業員コード] = x.確認日; });
+    ((rec.結果 || {}).people || []).forEach(p => { info[p.従業員コード] = p; });
+  }
+  const codes = Object.keys(notified);
+  if (!codes.length) { $('resText').value = 'この月は、従業員代表にお知らせ・通告をした方がいません。'; return; }
+  const b = await loadBasis();
+  const fixed = ((b && b.月別時間外) || {})[ym] ? b.月別時間外[ym][site] || {} : null;
+  if (!fixed) { $('resText').value = `${ym}分の給与の確定値がまだ基礎データにありません。給与データを見られる人に「基礎データを更新」を依頼してください。`; return; }
+  m = m || OT.siteMaster(S.master, site);
+  const rep = (m.従業員代表 || {}).氏名 ? m.従業員代表.氏名.split(/[\s　]+/)[0] + 'さん' : '（従業員代表）さん';
+  const hm = v => `${Math.floor(v / 60)}時間${v % 60 ? (v % 60) + '分' : ''}`;
+  const L = ['【結果のお知らせ】時間外労働の限度時間について', '', rep, ''];
+  L.push(period ? `${Number(ym.slice(5))}月分（${jpDate(period.開始)}〜${jpDate(period.締日)}）の結果をお知らせします。` : `${Number(ym.slice(5))}月分の結果をお知らせします。`, '');
+  codes.forEach(c => {
+    const p = info[c] || {}, v = fixed[c], lim = p.限度;
+    const name = zenName(p.氏名 || c);
+    if (v == null) { L.push(`　${name}さん　確定値がありません（給与データを確認してください）`); return; }
+    const over = lim != null && v > lim;
+    L.push(`　${name}さん　時間外労働 ${hm(v)}（限度時間${lim != null ? lim / 60 + '時間' : '—'}）`);
+    L.push(over ? `　　　　　限度時間を超えました（特別条項の適用：今年度${(p.過去超過回数 || 0) + 1}回目）` : '　　　　　限度時間内でした');
+  });
+  L.push('', `（お知らせ・通告をした日：${codes.map(c => jpDate(notified[c])).filter((v, i, a) => a.indexOf(v) === i).join('・')}）`,
+    '', '※協定に定める手続として状況をお伝えするものです。', '', (m.通告の差出人 || '総務部'));
+  $('resText').value = L.join('\n');
+}
 $('postText').addEventListener('input', e => { S.texts.post = e.target.value; });
+$('resBtn').onclick = () => buildResultNotice().catch(e => { $('resText').value = e.message; });
 $('postRegen').onclick = () => { S.texts.post = buildPost(); $('postText').value = S.texts.post; };
 document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
   await navigator.clipboard.writeText($(b.dataset.copy).value);
@@ -962,6 +1103,7 @@ async function loadIndex() {
       }
     };
     $('histMsg').textContent = '';
+    renderResultNotice();
   } catch (e) { $('histMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
 }
 
