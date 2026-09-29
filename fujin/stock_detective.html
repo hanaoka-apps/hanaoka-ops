@@ -1118,7 +1118,7 @@ window.addEventListener('load', () => {
 <div id="tanaToast"></div>
 <div id="tanaList"><div class="card">
   <div class="hd"><b style="font-size:16px;color:#115e59">📋 登録内容の確認</b><span><button class="s" id="tlModeWh">倉庫ごとのまとめ</button> <button class="s" id="tlModeList" style="background:#0f766e;color:#fff;border-color:#0f766e">登録一覧</button>　<button class="s" id="tlClose">閉じる ✕</button></span></div>
-  <div id="tlWhView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="font-size:11.5px;color:#64748b;margin-bottom:6px">全員分（取消済みは除く）。行を押すと、その倉庫の登録一覧を開きます。</div><table><thead><tr><th>倉庫</th><th class="num">品目数</th><th class="num">うち「無い(0)」</th><th class="num">登録件数</th><th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr></thead><tbody id="tlWhBody"></tbody></table></div>
+  <div id="tlWhView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:11.5px;color:#64748b;flex:1">全員分（取消済みは除く）。行を押すと、その倉庫の登録一覧を開きます。</span><label style="font-size:12px"><input type="checkbox" id="tlWithItems" checked> 品目の内訳も含める</label><button class="s" id="tlPrint">🖨 印刷</button><button class="s" id="tlXls">📥 Excel（CSV）</button></div><table><thead><tr><th>倉庫</th><th class="num">品目数</th><th class="num">うち「無い(0)」</th><th class="num">登録件数</th><th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr></thead><tbody id="tlWhBody"></tbody></table></div>
   <div class="tb" id="tlTb"><label><input type="radio" name="tlWho" value="me" checked> 自分の登録</label><label><input type="radio" name="tlWho" value="all"> 全員</label>
     <select id="tlWh"><option value="">すべての倉庫</option></select><input type="search" id="tlQ" placeholder="品目コード・名前"><label><input type="checkbox" id="tlCx"> 取消済みも表示</label><span id="tlInfo" style="margin-left:auto;color:#64748b"></span></div>
   <div class="bd" id="tlListView"><table><thead><tr><th>日時</th><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">数量</th><th>入力者</th><th>状態</th><th></th></tr></thead><tbody id="tlBody"></tbody></table></div>
@@ -1423,6 +1423,40 @@ function whSummary(){
   return [...m.values()].filter(r=>r.n>0).sort((a,b)=>a.wh.localeCompare(b.wh));
 }
 let TLMODE='list', TL_PENDING_WH=null;
+// ---- 倉庫ごとのまとめ：印刷・Excel出力（全員分・取消済みは除く） ----
+function whItems(){ // 倉庫 -> 品目別合計
+  const m=new Map();
+  for(const x of MINE){ if(x.canceled) continue; const k=x.wh+'|'+x.code; let a=m.get(k); if(!a){ a={wh:x.wh, whName:x.whName||x.wh, code:x.code, name:x.name, total:0, n:0, people:new Set(), last:null}; m.set(k,a); } a.total+=x.qty; a.n++; a.people.add(x.by); if(!a.last||x.at>a.last) a.last=x.at; }
+  return [...m.values()].sort((a,b)=>(a.wh+a.code).localeCompare(b.wh+b.code));
+}
+function unitOf(code){ const ni=nodeInfo(code); return (ni&&ni.pm&&ni.pm.un)||''; }
+function csvCell(c){ const s=String(c==null?'':c); return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+function exportWhCsv(){
+  const rows=whSummary(), items=$('tlWithItems').checked?whItems():[]; const f2=t=>t?fmtAt(t):'';
+  const out=[['棚卸期間',PERIOD?PERIOD.id:''],['出力日時',fmtAt(new Date().toISOString())],[],['【倉庫ごとのまとめ】'],['倉庫コード','倉庫名','品目数','うち無い(0)','登録件数','入力した人','最初の登録','最後の登録']];
+  for(const r of rows) out.push([r.wh,r.name,r.codes.size,[...r.codes.values()].filter(v=>v===0).length,r.n,[...r.people].join('、'),f2(r.first),f2(r.last)]);
+  if(items.length){ out.push([],['【品目の内訳】'],['倉庫コード','倉庫名','品目コード','品目名','数量合計','単位','登録件数','入力した人','最後の登録']);
+    for(const a of items) out.push([a.wh,a.whName,a.code,a.name,a.total,unitOf(a.code),a.n,[...a.people].join('、'),f2(a.last)]); }
+  download(`棚卸_倉庫ごとのまとめ_${PERIOD?PERIOD.id:''}.csv`, '\uFEFF'+out.map(r=>r.map(csvCell).join(',')).join('\r\n'), 'text/csv');
+}
+function printWh(){
+  const rows=whSummary(), items=$('tlWithItems').checked?whItems():[];
+  const e=esc, f2=t=>t?fmtAt(t):'—';
+  let h=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>棚卸 倉庫ごとのまとめ ${e(PERIOD?PERIOD.id:'')}</title><style>
+  body{font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;font-size:11px;color:#111;margin:14mm}
+  h1{font-size:16px;margin:0 0 4px} .meta{color:#555;margin-bottom:10px} h2{font-size:13px;margin:16px 0 4px;border-left:4px solid #0f766e;padding-left:6px}
+  table{width:100%;border-collapse:collapse;margin-bottom:6px} th,td{border:1px solid #999;padding:3px 5px;text-align:left} th{background:#eee} .n{text-align:right}
+  .wh{page-break-inside:avoid} @media print{.np{display:none}}</style></head><body>
+  <div class="np" style="margin-bottom:8px"><button onclick="print()">🖨 印刷する</button></div>
+  <h1>棚卸 倉庫ごとのまとめ（${e(PERIOD?PERIOD.id:'')}）</h1><div class="meta">出力：${e(fmtAt(new Date().toISOString()))}　全員分・取消済みは除く</div>
+  <table><tr><th>倉庫</th><th class="n">品目数</th><th class="n">うち無い(0)</th><th class="n">登録件数</th><th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr>
+  ${rows.map(r=>`<tr><td>${e(r.name)}（${e(r.wh)}）</td><td class="n">${r.codes.size}</td><td class="n">${[...r.codes.values()].filter(v=>v===0).length}</td><td class="n">${r.n}</td><td>${[...r.people].map(e).join('、')}</td><td>${e(f2(r.first))}</td><td>${e(f2(r.last))}</td></tr>`).join('')}</table>`;
+  if(items.length){ for(const r of rows){ const its=items.filter(a=>a.wh===r.wh);
+    h+=`<div class="wh"><h2>${e(r.name)}（${e(r.wh)}）　${its.length}品目</h2><table><tr><th>品目コード</th><th>品目名</th><th class="n">数量合計</th><th>単位</th><th class="n">件数</th><th>入力した人</th><th>確認</th></tr>${its.map(a=>`<tr><td>${e(a.code)}</td><td>${e(a.name)}</td><td class="n"><b>${a.total}</b></td><td>${e(unitOf(a.code))}</td><td class="n">${a.n}</td><td>${[...a.people].map(e).join('、')}</td><td style="width:40px"></td></tr>`).join('')}</table></div>`; } }
+  h+='</body></html>';
+  const wdw=window.open('', '_blank'); if(!wdw) return toast('ポップアップがブロックされました。許可してください', true);
+  wdw.document.open(); wdw.document.write(h); wdw.document.close(); setTimeout(()=>{ try{ wdw.focus(); wdw.print(); }catch(_){} }, 300);
+}
 function setTlMode(md){ TLMODE=md; $('tlWhView').style.display=md==='wh'?'block':'none'; $('tlListView').style.display=md==='list'?'block':'none'; $('tlTb').style.display=md==='list'?'flex':'none';
   $('tlModeWh').style.cssText = md==='wh'?'background:#0f766e;color:#fff;border-color:#0f766e':''; $('tlModeList').style.cssText = md==='list'?'background:#0f766e;color:#fff;border-color:#0f766e':''; renderList(); }
 function renderWhView(){
@@ -1442,7 +1476,7 @@ function renderList(){
   $('tlBody').querySelectorAll('button[data-id]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.id));
 }
 $('tanaListBtn').onclick = async ()=>{ $('tanaList').classList.add('open'); renderList(); await refreshMine(); renderList(); };
-$('tlModeWh').onclick=()=>setTlMode('wh'); $('tlModeList').onclick=()=>setTlMode('list');
+$('tlModeWh').onclick=()=>setTlMode('wh'); $('tlPrint').onclick=printWh; $('tlXls').onclick=exportWhCsv; $('tlModeList').onclick=()=>setTlMode('list');
 $('tlClose').onclick = ()=>{ $('tanaList').classList.remove('open'); setTimeout(()=>{ q.focus(); q.select(); },0); };
 document.querySelectorAll('input[name=tlWho]').forEach(r=>r.onchange=renderList); $('tlWh').onchange=renderList; $('tlQ').oninput=renderList; $('tlCx').onchange=renderList;
 async function cancelItem(id, note){
