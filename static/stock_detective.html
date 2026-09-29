@@ -1161,6 +1161,7 @@ async function loadWarehouses(){
   WH = rows.slice(1).filter(x=>x[ic] && x[ish]!=='非表示').map(x=>({code:x[ic].trim(), name:(x[inm]||'').trim(), kind:(x[ik]||'').includes('社内')?'社内':'外注'}));
 }
 function whByCode(c){ return WH.find(w=>w.code===c); }
+function ledgerDate(){ try{ return frame.contentWindow.eval('typeof LEDGER_DATE!=="undefined"?LEDGER_DATE:""'); }catch(_){ return ''; } }
 function nodeInfo(code){ try{ const R=window.top._fujinResultsData; return (R&&R.NODE_INFO&&R.NODE_INFO[code])||null; }catch(_){ return null; } }
 function locItem(code, whCode){ const w=whByCode(whCode); if(w && w.kind==='外注') return ''; const ni=nodeInfo(code); const lo=ni&&ni.pm&&ni.pm.lo; return (lo!=null && lo!=='') ? String(lo) : '1'; }
 function locFor(whCode){ const w=whByCode(whCode); return (w && w.kind==='外注') ? '' : '1'; } // 基準：社内=1 / 外注=空白（締め時はSMILEフォームの行を優先）
@@ -1169,13 +1170,26 @@ function locFor(whCode){ const w=whByCode(whCode); return (w && w.kind==='外注
 let PERIOD = null; // {id, itemId, status}
 async function loadPeriod(){
   const items = await listAll(TANA.periodList);
-  const open = items.map(i=>({itemId:i.id, id:i.fields.Title, status:i.fields.Status, start:i.fields.StartAt, end:i.fields.EndAt, note:i.fields.Note||''}))
+  BOOKITEMS = items.filter(i=>String(i.fields.Title||'').startsWith('BOOK|'));
+  const open = items.filter(i=>!String(i.fields.Title||'').startsWith('BOOK|')).map(i=>({itemId:i.id, id:i.fields.Title, status:i.fields.Status, start:i.fields.StartAt, end:i.fields.EndAt, note:i.fields.Note||''}))
                     .sort((a,b)=>String(b.id).localeCompare(String(a.id)));
   PERIODS = open;
   PERIOD = open.find(p=>p.status==='受付中') || null;
+  buildBook();
   return open;
 }
-let PERIODS = [];
+let PERIODS = [], BOOKITEMS = [], BOOK = new Map(), BOOKMETA = null; // BOOK: '倉庫|品目' -> 帳簿在庫数（SMILE棚卸フォーム由来）
+const USE_BOOK = false; // 2026-09-30 花岡判断：SMILE棚卸フォームの帳簿在庫数は古いので使わない
+function buildBook(){
+  BOOK = new Map(); BOOKMETA = null; if(!PERIOD || !USE_BOOK) return;
+  // Title = BOOK|期間|登録時刻|連番。同じ期間で一番新しい登録時刻のものを使う（古いものは消さずに残す）
+  const mine = BOOKITEMS.map(i=>{ const t=String(i.fields.Title).split('|'); return {per:t[1], ts:t[2], n:+t[3], data:i.fields.Data||'', note:i.fields.Note||''}; }).filter(x=>x.per===PERIOD.id);
+  if(!mine.length) return;
+  const ts = mine.map(x=>x.ts).sort().pop();
+  for(const ch of mine.filter(x=>x.ts===ts).sort((a,b)=>a.n-b.n)) for(const line of ch.data.split('\n')){ const [w,c,b]=line.split('\t'); if(w&&c) BOOK.set(w+'|'+c, parseFloat(b)||0); }
+  BOOKMETA = {ts, note:(mine.find(x=>x.ts===ts)||{}).note||''};
+}
+function bookOf(wh, code){ return BOOK.has(wh+'|'+code) ? BOOK.get(wh+'|'+code) : null; }
 
 // ---- 未送信キュー ----
 function queue(){ return lsGet(LS_Q, []); }
@@ -1210,12 +1224,12 @@ panel.innerHTML = `
   <div class="sec" id="tanaPer"><span class="per none">期間を読み込み中…</span></div>
   <div class="sec"><label>① 倉庫</label>
     <input type="search" id="tanaWhQ" placeholder="倉庫名・コードで絞り込み" autocomplete="off" style="margin-bottom:4px">
-    <select id="tanaWh"></select><div id="tanaWhRecent" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap"></div></div>
+    <select id="tanaWh"></select><div style="font-size:11px;color:#64748b;margin-top:3px">前回選んだ倉庫が入っています。違う場所なら選び直してください（1回の登録＝1つの倉庫）</div></div>
   <div class="sec"><label>② 品目（現品票をピッ／上の検索／左のツリーの箱をクリック）</label><div class="item" id="tanaItem">品目がまだありません</div></div>
   <div class="sec"><label>③ 数量 → Enterで登録</label><input type="number" id="tanaQty" inputmode="decimal" step="any" placeholder="0">
     <div class="btns"><button class="b-send" id="tanaSend">登録（Enter）</button><button class="b-zero" id="tanaZero">無い（0で登録）</button></div>
     <div style="font-size:11px;color:#64748b;margin-top:4px">数え直して減らすときは、取消するか「-2」のようにマイナスで登録</div><div class="q" id="tanaQ"></div></div>
-  <div class="sec"><label>この倉庫・品目の登録合計（全員分）</label><div id="tanaSum">—</div></div>
+  <div class="sec"><label>今回の棚卸で数えた数（この品目・倉庫別・全員分）</label><div id="tanaSum">—</div></div>
   <div class="sec"><label>直近の登録（全員・この期間） <button class="b-sub" id="tanaReload" style="font-size:11px;padding:1px 8px;border:1px solid #cbd5e1;border-radius:4px;cursor:pointer">更新</button></label><div class="ih" id="tanaHist"></div></div>
  </div>
  <div class="tf"><span id="tanaStat">—</span><span style="flex:1"></span><button class="b-sub" id="tanaAdminBtn" style="padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer">集計・締め（管理者）</button></div>`;
@@ -1251,11 +1265,10 @@ function renderWh(){
     `<optgroup label="社内倉庫">${hit.filter(w=>w.kind==='社内').map(opt).join('')}</optgroup>` +
     `<optgroup label="外注倉庫">${hit.filter(w=>w.kind==='外注').map(opt).join('')}</optgroup>`;
   if(cur && hit.some(w=>w.code===cur)) $('tanaWh').value = cur;
-  const rec = lsGet(LS_WHR,[]).map(whByCode).filter(Boolean);
-  $('tanaWhRecent').innerHTML = rec.map(w=>`<button data-c="${esc(w.code)}" style="font-size:11px;padding:2px 8px;border:1px solid #0f766e;color:#0f766e;background:#fff;border-radius:999px;cursor:pointer">${esc(w.name)}</button>`).join('');
-  $('tanaWhRecent').querySelectorAll('button').forEach(b=>b.onclick=()=>{ $('tanaWhQ').value=''; renderWh(); $('tanaWh').value=b.dataset.c; onWhChange(); });
+  whHint();
 }
-function onWhChange(){ const c=$('tanaWh').value; lsSet(LS_WH,c); if(c){ const r=[c,...lsGet(LS_WHR,[]).filter(x=>x!==c)].slice(0,5); lsSet(LS_WHR,r); } renderWh(); renderItem(); if(CUR) setTimeout(()=>$('tanaQty').focus(),0); }
+function whHint(){ const need = CUR && !$('tanaWh').value; $('tanaWh').style.borderColor = need ? '#f59e0b' : ''; $('tanaWh').style.background = need ? '#fffbeb' : ''; }
+function onWhChange(){ lsSet(LS_WH, $('tanaWh').value); renderItem(); whHint(); if(CUR && $('tanaWh').value) setTimeout(()=>{ $('tanaQty').focus(); $('tanaQty').select(); },0); }
 $('tanaWhQ').addEventListener('input', renderWh);
 $('tanaWh').addEventListener('change', onWhChange);
 
@@ -1266,7 +1279,7 @@ function curSum(){
 }
 const fmtAt = at => { const d=new Date(at); return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
 const fmtQ = v => (v>0?'+':'')+v;
-function histRow(x, showItem){ return `<div><span class="q ${x.qty<0?'m':''} ${x.canceled?'cx':''}">${fmtQ(x.qty)}</span><span class="${x.canceled?'cx':''}">${esc(fmtAt(x.at))} ${esc(x.by)}${showItem?` <b>${esc(x.code)}</b> <span style="color:#64748b">${esc(x.whName)}</span>`:''}${x.type==='zero'?' <span style="color:#991b1b">(無い)</span>':''}${x.canceled?' 取消済':''}</span>${(!x.canceled && x.id && isMine(x))?`<button data-id="${x.id}">取消</button>`:(x.pending?'<span style="margin-left:auto;color:#b45309">送信中</span>':'')}</div>`; }
+function histRow(x, showItem){ return `<div><span class="q ${x.qty<0?'m':''} ${x.canceled?'cx':''}">${fmtQ(x.qty)}</span><span class="${x.canceled?'cx':''}">${esc(fmtAt(x.at))} ${esc(x.by)}${showItem===true?` <b>${esc(x.code)}</b>`:''} <span style="color:#0f766e;font-weight:700">${esc(x.whName||x.wh)}</span>${x.type==='zero'?' <span style="color:#991b1b">(無い)</span>':''}${x.canceled?' 取消済':''}</span>${(!x.canceled && x.id && isMine(x))?`<button data-id="${x.id}">取消</button>`:(x.pending?'<span style="margin-left:auto;color:#b45309">送信中</span>':'')}</div>`; }
 function bindCancel(root){ root.querySelectorAll('button[data-id]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.id)); }
 function renderItem(){
   const box=$('tanaItem');
@@ -1274,12 +1287,22 @@ function renderItem(){
   const inMaster = !!(window.ITEM_HISTORY && window.ITEM_HISTORY.item_names && window.ITEM_HISTORY.item_names[CUR.code]);
   box.className='item ok';
   box.innerHTML = `<div class="c">${esc(CUR.code)}</div><div class="n">${esc(CUR.name||'')}</div>` + (inMaster?'':`<div class="w">⚠ FUJINの品目マスタに無いコードです（Excel管理の部品なら、ここでは登録しない）</div>`);
-  const s=curSum(); const ni=nodeInfo(CUR.code); const un=(ni&&ni.pm&&ni.pm.un)||'';
-  const ref = ni ? `<div class="ref">参考（FUJIN）：現在庫（物理・全社合算）<b>${ni.cur!=null?ni.cur:'—'}</b> ${esc(un)}　基準倉庫 ${esc((ni.pm&&ni.pm.wh)||'—')}／基準ロケーション ${esc((ni.pm&&ni.pm.lo)||'—')}<br><span style="color:#94a3b8">※倉庫別の在庫はFUJINにありません。倉庫別の帳簿との差は、締めのときにSMILEフォームで確認します。</span></div>` : '';
-  if(!s){ $('tanaSum').innerHTML = '<div style="color:#64748b">倉庫を選ぶと表示</div>'+ref; return; }
-  const all = MINE.filter(x=>x.wh===$('tanaWh').value && x.code===CUR.code);
-  $('tanaSum').innerHTML = `<div class="tot"><b>${s.total}</b><span>${esc(un)}（${s.rows.length}件・${new Set(s.rows.map(x=>x.by)).size}人）</span></div>` + ref +
-    (all.length ? `<div class="ih">${all.map(x=>histRow(x,false)).join('')}</div>` : '<div style="color:#94a3b8;margin-top:6px">まだ誰も登録していません</div>');
+  const ni=nodeInfo(CUR.code); const un=(ni&&ni.pm&&ni.pm.un)||''; const sel=$('tanaWh').value;
+  const ents = MINE.filter(x=>x.code===CUR.code);
+  const whs = new Map(); // 倉庫 -> {name, total, n, book}
+  for(const x of ents){ if(x.canceled) continue; const a=whs.get(x.wh)||{name:x.whName||x.wh,total:0,n:0}; a.total+=x.qty; a.n++; whs.set(x.wh,a); }
+  for(const [k,b] of BOOK){ const [w,c]=k.split('|'); if(c===CUR.code && b!==0 && !whs.has(w)) whs.set(w,{name:(whByCode(w)||{}).name||w,total:0,n:0}); }
+  if(sel && !whs.has(sel)) whs.set(sel,{name:(whByCode(sel)||{}).name||sel,total:0,n:0});
+  const hasBook = BOOK.size>0;
+  const selA = sel ? whs.get(sel) : null, selB = sel ? bookOf(sel, CUR.code) : null;
+  const grand=[...whs.values()].reduce((t,a)=>t+a.total,0);
+  const list=[...whs.entries()].filter(([w,a])=>a.n>0 || w===sel);
+  const top = `<div class="tot"><span>合計</span><b>${grand}</b><span>${esc(un)}（${list.filter(([w,a])=>a.n>0).length}か所）</span></div>` +
+    `<div style="margin-top:6px;border:1px solid #99f6e4;border-radius:8px;overflow:hidden">${list.length ? list.map(([w,a])=>`<div style="display:flex;align-items:center;padding:7px 10px;border-bottom:1px solid #e5e7eb;${w===sel?'background:#f0fdfa':''}"><span style="flex:1;font-weight:700">${esc(a.name)}${w===sel?' <span style="font-size:11px;color:#0f766e;font-weight:400">← 今の倉庫</span>':''}</span><span style="font-size:20px;font-weight:800;color:#0f766e">${a.total}</span><span style="margin-left:4px;color:#64748b">${esc(un)}</span></div>`).join('') : '<div style="padding:8px 10px;color:#94a3b8">まだどの倉庫でも数えていません</div>'}</div>`;
+  const tbl = '';
+  const ref = ni ? `<div class="ref"><b>参考：FUJINの在庫${ledgerDate()?'（'+esc(ledgerDate())+' 基準）':''}</b><br>・現在庫（物理・<b>全社合算</b>）：<b style="font-size:14px">${ni.cur!=null?ni.cur:'—'}</b> ${esc(un)}<br>・SMILE有効在庫（<b>基準倉庫＝${esc((ni.pm&&ni.pm.wh)||'—')}</b>）：<b style="font-size:14px">${ni.e!=null?ni.e:'—'}</b> ${esc(un)} <span style="color:#94a3b8">※引当・発注残込みの将来見込み。実物の数ではありません</span><br><span style="color:#b45309">※倉庫別の実在庫はFUJINにまだありません（SMILEの倉庫別在庫をSharedMastersに出す準備が必要）</span></div>` : '';
+  const hist = ents.length ? `<div class="ih">${ents.map(x=>histRow(x,'wh')).join('')}</div>` : '<div style="color:#94a3b8;margin-top:6px">まだ誰も登録していません</div>';
+  $('tanaSum').innerHTML = top + tbl + ref + hist;
   bindCancel($('tanaSum'));
 }
 // 検索（スキャン）で品目が決まったら、棚卸パネルに反映
@@ -1296,6 +1319,7 @@ function tanaPick(code){
   renderItem();
   const box=$('tanaItem'); box.style.transition='background .6s'; box.style.background='#fef9c3'; setTimeout(()=>{ box.style.background=''; }, 700); // 切り替わったことが分かるように一瞬光らせる
   _scanRefocus = 0; // ツリー読込後に検索欄へ戻す処理を止め、数量欄へ
+  whHint();
   const target = $('tanaWh').value ? $('tanaQty') : $('tanaWh');
   [40, 400, 1200].forEach(ms=>setTimeout(()=>{ try{ target.focus(); if(target.select) target.select(); }catch(_){} }, ms));
 }
@@ -1397,6 +1421,20 @@ function renderPer(B){
     if(r.status!==201) return toast('作成できません '+r.status, true);
     toast('受付を開始しました：'+id); await loadPeriod(); renderPeriod(); await refreshMine(); renderAdmin();
   };
+  if($('bSave')) $('bSave').onclick = async ()=>{
+    const f=$('bFile').files[0]; if(!f) return toast('SMILEの棚卸フォームを選んでください', true);
+    const buf=await f.arrayBuffer(); let t=new TextDecoder('utf-8').decode(buf); if(t.includes('\uFFFD')){ try{ t=new TextDecoder('shift_jis').decode(buf);}catch(_){}}
+    const rows=parseTsv(t); const H=rows[0]||[]; const iW=H.indexOf('倉庫ｺｰﾄﾞ'), iC=H.indexOf('品目ｺｰﾄﾞ'), iB=H.indexOf('帳簿在庫数');
+    if(iW<0||iC<0||iB<0) return toast('棚卸フォームの形式ではありません', true);
+    const body=rows.slice(rows[1]&&String(rows[1][0]).startsWith('<')?2:1); const m=new Map();
+    for(const r of body){ if(!r[iW]||!r[iC]) continue; const k=r[iW]+'\t'+r[iC]; m.set(k,(m.get(k)||0)+(parseFloat(r[iB])||0)); }
+    const lines=[...m].map(([k,v])=>k+'\t'+v); const chunks=[]; let cur='';
+    for(const l of lines){ if(cur.length+l.length+1>80000){ chunks.push(cur); cur=''; } cur+=(cur?'\n':'')+l; } if(cur) chunks.push(cur);
+    const ts=new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,14); const note=$('bNote').value.trim()||f.name;
+    $('bInfo').textContent='登録中…';
+    for(let i=0;i<chunks.length;i++){ const r=await gfetch(`/sites/${TANA.site}/lists/${TANA.periodList}/items`,{method:'POST',body:JSON.stringify({fields:{Title:`BOOK|${PERIOD.id}|${ts}|${i}`, Status:'準備中', Note:note.slice(0,250), Data:chunks[i]}})}); if(r.status!==201){ $('bInfo').textContent=''; return toast('帳簿を登録できません '+r.status, true); } }
+    toast(`帳簿を登録しました（${lines.length}行）`); await loadPeriod(); renderItem(); renderAdmin();
+  };
   B.querySelectorAll('[data-close]').forEach(b=>b.onclick=async()=>{ if(!confirm('締めます。現場からは登録できなくなります。')) return; await setPeriodStatus(b.dataset.close,'締め'); });
   B.querySelectorAll('[data-open]').forEach(b=>b.onclick=async()=>{ if(PERIOD) return toast('ほかに受付中の期間があります。先に締めてください', true); await setPeriodStatus(b.dataset.open,'受付中'); });
 }
@@ -1412,7 +1450,7 @@ function renderSum(B){
   const sel = B.querySelector && $('sWh') ? $('sWh').value : '';
   B.innerHTML = `<div class="kpi"><div>期間<b>${esc(PERIOD.id)}</b></div><div>登録件数<b>${MINE.filter(x=>!x.canceled).length}</b></div><div>倉庫×品目<b>${ag.length}</b></div><div>入力した人<b>${people.size}</b></div><div>取消<b>${MINE.filter(x=>x.canceled).length}</b></div></div>
    <div class="row"><div><label>倉庫</label><select id="sWh"><option value="">すべて</option>${whs.map(w=>`<option value="${esc(w)}">${esc(w)} ${esc((whByCode(w)||{}).name||'')}</option>`).join('')}</select></div><div><label>品目で絞り込み</label><input id="sQ" placeholder="コード・名前"></div><button class="s" id="sRe">最新にする</button><button class="s" id="sCsv">明細CSV（誰がいつ）</button></div>
-   <table><thead><tr><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">合計</th><th>件数</th><th>入力者・日時・数量</th></tr></thead><tbody id="sBody"></tbody></table>`;
+   <table><thead><tr><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">登録合計</th><th>件数</th><th>入力者・日時・数量</th></tr></thead><tbody id="sBody"></tbody></table>`;
   const draw=()=>{ const w=$('sWh').value, f=_normSearch($('sQ').value||'');
     $('sBody').innerHTML = ag.filter(a=>(!w||a.wh===w)&&(!f||_normSearch(a.code+' '+a.name).includes(f))).map(a=>`<tr><td>${esc(a.whName||a.wh)}</td><td><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td><td class="num"><b>${a.total}</b></td><td>${a.rows.length}</td><td>${a.rows.map(x=>`${esc(x.by)} ${esc(new Date(x.at).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}))} <b>${x.qty}</b>${x.type==='zero'?'(無い)':''} ${x.id?`<button class="s" style="padding:0 5px;font-size:10px" data-cx="${x.id}">取消</button>`:''}`).join('<br>')}</td></tr>`).join('') || '<tr><td colspan="6" style="color:#94a3b8">登録がありません</td></tr>';
     $('sBody').querySelectorAll('[data-cx]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.cx)); };
