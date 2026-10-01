@@ -568,6 +568,12 @@ class StockDetectiveMobileTest(unittest.TestCase):
         self.assertIn('#tanaList #tlBody td:nth-child(4)::before{content:"品目名"}', static)
         self.assertIn('details class="search-tools"', static)
         self.assertIn(".frame-wrap iframe{min-width:0}", static)
+        self.assertIn("inset:auto 0 0;width:100%;height:min(46vh,390px)", static)
+        self.assertIn("#tanaPanel.tree-focus .tb,#tanaPanel.tree-focus .tf{display:none}", static)
+        self.assertIn('id="tanaTreePickToggle" aria-expanded="true"', static)
+        self.assertIn("function setTreePickMode(v)", static)
+        self.assertIn("v && !matchMedia('(max-width: 700px)').matches ? 'calc(100% - 380px)' : '100%'", static)
+        self.assertIn("if(panel.classList.contains('tree-focus')) setTreePickMode(false)", static)
 
 
 class FujinShellAppSwitchTest(unittest.TestCase):
