@@ -64,6 +64,9 @@
         baseMethod2: g(r, '支払設定１　基準額設定　支払方法名２'),
         site: num(g(r, '手形サイト(日)')),
         torikime: g(r, '取決(C/海/ｻｲﾄ)'),
+        terms: g(r, '取決条件名'),                                   // 支払方法の正（設計書 v2.5 3-6）：振込／でんさい／手形書留／現金／海外送金／自動引落
+        // 消費税の端数の揃え（D-12）を見るための設定
+        tax: { calc: g(r, '消費税計算区分名'), unit: g(r, '消費税計算単位'), round: g(r, '消費税分解区分名'), amount: g(r, '金額処理区分名'), payUnit: g(r, '支払消費税算出単位名') },
         feeKbn: g(r, '振込口座　振込手数料区分名'),                 // 自社負担／相手負担／固定
         densaiNo: dn.no, densaiMemo: dn.memo,
         closeDay: num(g(r, '締日１')), payDay: num(g(r, '支払日１')), cycle: g(r, '支払ｻｲｸﾙ名１'),
@@ -140,18 +143,26 @@
   function rules() { if (!RULES) throw new Error('決まり（AP_Setting の smile.rules）を読んでいません'); return RULES; }
 
   // ---- 分け方 ----
-  // 仕入先マスタの支払設定で、金額を振込とでんさいに分ける（手形は廃止。マスタの「手形」もでんさいとして扱う）
+  /* 支払方法を決めて、金額を分ける（設計書 v2.5 3-6）
+     ① 取決条件名が正：振込／でんさい／現金／海外送金／自動引落（手形書留・手形集金は、手形を廃止したのででんさいに読み替え）
+     ② 取決がでんさいで「基準額で設定」なら、額が基準額を超えれば全額でんさい、以下なら全額振込
+     ③ 「支払率で設定」は率で振込とでんさいに分ける
+     相殺先（AP_OffsetVendor）もここでは計算どおりに出し、相殺の有無は人が確かめる（画面で OK の前に必須） */
+  var OTHER_TERMS = { '現金': '現金', '海外送金': '海外送金', '自動引落': '口座振替' };
   function splitBySetting(amount, v) {
-    var s = v ? v.setting : '', th = rules().rateThreshold;
+    var s = v ? v.setting : '', th = rules().rateThreshold, terms = v ? v.terms : '';
+    if (OTHER_TERMS[terms]) return { transfer: 0, densai: 0, other: amount, otherMethod: OTHER_TERMS[terms], rule: terms };
     if (s === '支払率で設定') {
       if (amount > th) { var t = round(amount * v.rate1 / 100); return { transfer: t, densai: amount - t, rule: '率|' + (th / 10000) + '万超 ' + v.rateKbn1 + v.rate1 + '%' + v.rateKbn2 + v.rate2 + '%' }; }
       return { transfer: amount, densai: 0, rule: '率|' + (th / 10000) + '万以下は振込' };
     }
-    if (s === '基準額で設定') {
-      var lbl = '額|' + (v.base / 10000) + '万超' + v.baseJudge + 'でんさい' + (v.torikime || '');
+    var densaiTerms = /でんさい|手形/.test(terms);
+    if (s === '基準額で設定' && (densaiTerms || !terms)) {
+      var lbl = (terms || '') + '｜' + (v.base / 10000) + '万超' + v.baseJudge + 'でんさい';
       return amount > v.base ? { transfer: 0, densai: amount, rule: lbl } : { transfer: amount, densai: 0, rule: lbl };
     }
-    return { transfer: amount, densai: 0, rule: '振込' };
+    if (densaiTerms) return { transfer: 0, densai: amount, rule: terms + (/手形/.test(terms) ? '→でんさい' : '') };
+    return { transfer: amount, densai: 0, rule: terms || '振込' };
   }
   // 振込手数料（決まりの区分〔相手負担〕のときだけ引く）。段は「over より大きく under より小さい」（いまの Excel と同じく、ちょうど境目は 0）
   function transferFee(transfer, v) {
@@ -178,6 +189,8 @@
      opt.payYm     支払月（'2026-08'）。省略時は締め月の翌月
      opt.basis     'balance'＝今回支払残高（既定）／'incl'＝税込仕入額（いまの Excel と同じ）
      opt.adjust    { code: { offset:売買相殺(−), other:その他調整, transfer:振込の上書き, densai:でんさいの上書き } }
+     opt.offsetVendors  相殺先の仕入先コード（AP_OffsetVendor の相殺フラグ）{ code: true }
+     繰越残高：端数（決まりの carrySmall 未満）は今回支払残高のまま払って毎月精算。端数以外は3月末の決算で整理するまで保留し、今月分だけ払う（2026-09-30 決定）
      戻り値 { rows, totals, checks } */
   function compute(opt) {
     var pl = opt.payList ? opt.payList.rows : {}, p55 = opt.p9055, ms = opt.master || {};
@@ -194,10 +207,14 @@
     }
     Object.keys(pl).sort().forEach(function (code) {
       var L = pl[code], P = p55 ? p55[code] : null, R = rc ? rc[code] : null, v = ms[code], a = adj[code] || {};
-      var base = basis === 'incl' ? L.incl : L.balance;
+      var small = rules().carrySmall || 100;
+      var held = (basis === 'balance' && L.carry && Math.abs(L.carry) >= small) ? L.carry : 0;   // 端数以外の繰越は保留
+      var base = basis === 'incl' ? L.incl : L.balance - held;
       var amount = base + (a.offset || 0) + (a.other || 0);
-      // マイナス（端数の繰越だけ残った等）は払わない。SMILE の残高として次回に繰り越る
-      var sp = amount > 0 ? splitBySetting(amount, v) : { transfer: 0, densai: 0, rule: '支払なし' };
+      // マイナス：端数なら「調整」で精算して SMILE の残高を0にする。端数でなければ払わずに次回へ
+      var sp = amount > 0 ? splitBySetting(amount, v)
+        : (amount < 0 && -amount < small) ? { transfer: 0, densai: 0, adjust: amount, rule: '端数の精算（調整）' }
+        : { transfer: 0, densai: 0, rule: '支払なし' };
       var transfer = (a.transfer != null && a.transfer !== '') ? +a.transfer : sp.transfer;
       var densai = (a.densai != null && a.densai !== '') ? +a.densai : sp.densai;
       var fee = transferFee(transfer, v);
@@ -209,6 +226,8 @@
         payDate: L.payDate, payRound: payRoundOf(L.payDate), feeKbn: v ? v.feeKbn : '',
         base: base, offset: a.offset || 0, other: a.other || 0, amount: amount,
         rule: sp.rule, transfer: transfer, densai: densai, fee: fee, transferNet: transfer - fee,
+        otherPay: sp.other || 0, otherMethod: sp.otherMethod || '', adjustAmt: sp.adjust || 0, carryHeld: held,
+        offsetVendor: !!(opt.offsetVendors && opt.offsetVendors[code]), terms: v ? v.terms : '',
         densaiKind: kind, site: v ? v.site : 0, due: densai > 0 && v ? dueDate(payYm, v.site) : '',
         overridden: (a.transfer != null && a.transfer !== '') || (a.densai != null && a.densai !== ''),
         notes: [] };
@@ -218,10 +237,12 @@
       if (p55 && !P) row.notes.push('9055 にない');
       if (P && P.balance !== L.prevBalance) row.notes.push('前回支払残高が 9055 と違う（一覧 ' + L.prevBalance.toLocaleString() + '／9055 ' + P.balance.toLocaleString() + '）');
       if (rc && Math.round((R ? R.incl : 0) - L.incl) !== 0) row.notes.push('税込仕入額が受入リストと違う（一覧 ' + L.incl.toLocaleString() + '／受入 ' + (R ? R.incl : 0).toLocaleString() + '）');
-      if (L.carry) row.notes.push('繰越残高 ' + L.carry.toLocaleString() + (Math.abs(L.carry) < (rules().carrySmall || 100) ? '（端数）' : ''));
+      if (L.carry) row.notes.push('繰越残高 ' + L.carry.toLocaleString() + (held ? '（保留：3月末の決算で整理。今月分だけ払う）' : '（端数：今回で精算）'));
+      if (row.offsetVendor) row.notes.push('相殺先：相殺の有無を確かめる（相殺があれば分け方に相殺の行を入れる）');
       if (row.overridden) row.notes.push('分け方を手で変えている');
       if (L.payDate && !/末$/.test(L.payDate)) row.notes.push('支払予定日が ' + L.payDate + '（月末以外）');
-      if (amount > 0 && transfer + densai !== amount) row.notes.push('振込＋でんさいが支払額と合わない（差 ' + (amount - transfer - densai).toLocaleString() + '）');
+      var lsum = transfer + densai + row.otherPay + row.adjustAmt;
+      if (amount > 0 && lsum !== amount) row.notes.push('分け方の合計が支払額と合わない（差 ' + (amount - lsum).toLocaleString() + '）');
       if (v) {
         if (densai > 0 && !v.densaiNo) row.notes.push('でんさい利用者番号が仕入先マスタにない' + (v.densaiMemo ? '（「' + v.densaiMemo + '」）' : '') + '：振込などに分け方を変えるか、マスタに番号を登録');
         if (densai > 0 && !row.due) row.notes.push('サイト ' + v.site + ' 日の期日の決まりがない');
@@ -230,16 +251,16 @@
         if (v.torikime === '海') row.notes.push('海外送金');
         if (v.payDay && v.payDay !== 30) row.notes.push('支払日が ' + v.payDay + ' 日');
       }
-      if (amount < 0) row.notes.push('残高がマイナス（' + amount.toLocaleString() + '）→ 払わずに次回へ');
+      if (amount < 0) row.notes.push(row.adjustAmt ? '残高がマイナス（' + amount.toLocaleString() + '）→ 調整で精算' : '残高がマイナス（' + amount.toLocaleString() + '）→ 払わずに次回へ');
       rows.push(row);
       row.notes.forEach(function (n) { checks.push({ code: code, name: row.name, note: n }); });
     });
-    var t = { count: 0, payable: 0, base: 0, offset: 0, other: 0, amount: 0, transfer: 0, fee: 0, transferNet: 0, densai: 0 };
+    var t = { count: 0, payable: 0, base: 0, offset: 0, other: 0, amount: 0, transfer: 0, fee: 0, transferNet: 0, densai: 0, otherPay: 0, adjust: 0, held: 0 };
     rows.forEach(function (r) {
       if (r.amount > 0) { t.count++; t.payable += r.amount; }
       t.base += r.base; t.offset += r.offset; t.other += r.other; t.amount += r.amount;
       t.transfer += r.transfer; t.fee += r.fee; t.transferNet += r.transferNet;
-      t.densai += r.densai;
+      t.densai += r.densai; t.otherPay += r.otherPay; t.adjust += r.adjustAmt; t.held += r.carryHeld;
     });
     if (opt.payList && opt.payList.total) {
       var sumBal = 0; for (k in pl) sumBal += pl[k].balance;
@@ -289,6 +310,8 @@
     var out = [];
     if (row.transfer) out.push({ method: '振込', amount: row.transfer, site: 0, due: '' });
     if (row.densai) out.push({ method: row.densaiKind || 'でんさい', amount: row.densai, site: row.site, due: row.due });
+    if (row.otherPay) out.push({ method: row.otherMethod, amount: row.otherPay, site: 0, due: '' });
+    if (row.adjustAmt) out.push({ method: '調整', amount: row.adjustAmt, site: 0, due: '' });
     return out;
   }
 

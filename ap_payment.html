@@ -181,15 +181,19 @@ async function generate(){
     // 決まり（手数料・サイトと期日）は AP_Setting の smile.rules（仕入の取り込みと同じ）
     const rs=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);const ri=(rs.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
     if(!ri){snack('AP_Setting に smile.rules がありません（Provision-SmileAP.ps1 -Apply）',true);return;}APSmile.setRules(JSON.parse(ri.fields.Value||'{}'));
-    const g=(f,d)=>f[F(SP,d)];const MM={振込:'総合振込',でんさい:'でんさい',手形:'手形',相殺:'相殺',海外送金:'海外送金'};
+    // 調整＝端数の精算（お金は動かない。SMILE 支払伝票の取引区分6だけ）。現金・海外送金・口座振替は記録のみ（全銀・でんさいには出ない）
+    const g=(f,d)=>f[F(SP,d)];const MM={振込:'総合振込',でんさい:'でんさい',手形:'でんさい',相殺:'相殺',調整:'調整',現金:'現金',海外送金:'海外送金',口座振替:'口座振替'};
+    const pj=s=>{try{return JSON.parse(s||'null');}catch{return null;}};
     let unchecked=0;
-    smile.forEach(f=>{if((g(f,'支払日区分')||'月末')!==due||g(f,'取り込みの状態')==='なくなった'||!(Number(g(f,'支払額'))>0))return;
-      if(g(f,'確認済み')!==true){unchecked++;return;}
-      const code=g(f,'仕入先コード'),name=g(f,'仕入先名'),dept=g(f,'決裁の部門')||'',ov=(()=>{try{return JSON.parse(g(f,'分け方の上書き')||'null');}catch{return null;}})();
+    smile.forEach(f=>{if((g(f,'支払日区分')||'月末')!==due||g(f,'取り込みの状態')==='なくなった')return;
+      const code=g(f,'仕入先コード'),name=g(f,'仕入先名'),dept=g(f,'決裁の部門')||'',ov=pj(g(f,'分け方の上書き'));
       let lines;
       if(ov&&ov.length)lines=ov.map(l=>{const d=(l.method==='でんさい'||l.method==='手形')?APSmile.dueDate(ym.replace('/','-'),l.site):'';return {method:l.method,amount:Number(l.amount)||0,due:d};});
+      else if(pj(g(f,'分け方（計算）')))lines=pj(g(f,'分け方（計算）')).map(l=>({method:l.method,amount:Number(l.amount)||0,due:l.due||''}));
       else{lines=[];const tr=Number(g(f,'振込（計算）'))||0,dn=Number(g(f,'でんさい（計算）'))||0;
-        if(tr)lines.push({method:'振込',amount:tr,due:''});if(dn)lines.push({method:g(f,'でんさいか手形か')||'でんさい',amount:dn,due:g(f,'期日')||''});}
+        if(tr)lines.push({method:'振込',amount:tr,due:''});if(dn)lines.push({method:'でんさい',amount:dn,due:g(f,'期日')||''});}
+      if(!lines.some(l=>l.amount))return;   // SMILE に戻すものが無い（支払なし）
+      if(g(f,'確認済み')!==true){unchecked++;return;}
       const trSum=lines.filter(l=>l.method==='振込').reduce((s,l)=>s+l.amount,0);
       const fo=g(f,'手数料の上書き');let fee=(fo!==''&&fo!=null)?Number(fo)||0:(ov&&ov.length?APSmile.transferFeeOf(trSum,g(f,'手数料区分')):Number(g(f,'振込手数料（計算）'))||0);
       lines.forEach(l=>{if(!l.amount)return;const key=code+'|'+MM[l.method]+'|'+(l.due||''),k=key+'|N';const lf=l.method==='振込'?fee:0;fee-=lf;
@@ -369,8 +373,8 @@ const SMILE_HEAD=(()=>{const core=['伝票日付','伝票No','処理連番','行
   const ext=[];for(let i=1;i<=20;i++)ext.push('伝票拡張項目'+i);ext.push('伝票付箋色');for(let i=1;i<=20;i++)ext.push('明細拡張項目'+i);ext.push('明細付箋色');
   const tail=['振込区分','チェックマーク区分','PORTNeT伝票区分','PORTNeT連番1','PORTNeT連番2','PORTNeT行番号1','PORTNeT行番号2','通貨コード','レート種類','レート','支払額(外貨)','決算時評価替区分','仕入円貨金額','仕入レート','仕入レート種類','でんさいデータ作成済区分'];
   return core.concat(ext,tail);})();
-function kubunOf(method){ // 取引区分＝取引区分属性: 総合振込2 / でんさい(手形)4 / 相殺3
-  if(method==='でんさい'||method==='手形')return '4';if(method==='相殺')return '3';return '2';
+function kubunOf(method){ // 取引区分＝取引区分属性: 現金1 / 総合振込2 / 相殺3 / でんさい(手形)4 / 調整6（端数の精算）
+  if(method==='でんさい'||method==='手形')return '4';if(method==='相殺')return '3';if(method==='調整')return '6';if(method==='現金')return '1';return '2';
 }
 function smileRow(o){const r=new Array(SMILE_HEAD.length).fill('');
   const set=(name,val)=>{const i=SMILE_HEAD.indexOf(name);if(i>=0)r[i]=(val==null?'':String(val));};
@@ -400,7 +404,7 @@ async function outputSmileDenpyo(){
     const total=Math.round(Number(f[F(PI,'支払額')])||0);const mainAmt=total-adj;  // 本体（請求書合計）
     let dueday='0';if(method==='でんさい'||method==='手形'){const dd=f[F(PI,'期日')];const d=dd?new Date(dd+'T00:00:00'):densaiDue(base,m.site);if(d)dueday=ymd8(d);else warns.push(`${f[F(PI,'支払先名')]}：でんさいサイト未定義`);}
     const name1=m.name1||f[F(PI,'支払先名')];const rcode=(m.rawcode||code);let line=0;
-    rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:kubunOf(method),amount:mainAmt,dueday}));sum+=mainAmt;
+    rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:kubunOf(method),amount:mainAmt,dueday,memo:method==='調整'?'消費税端数調整':''}));sum+=mainAmt;
     if(adj!==0){rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:'6',amount:adj,dueday:'0',memo:'消費税端数調整'}));sum+=adj;}
     // 先方負担の振込手数料は「値引」（取引区分5）で記録する（今の SMILE の付け方と同じ：振込は差し引いた後の額）
     if(feeD){rows.push(smileRow({denpyoDate,renban,line:++line,code:rcode,name1,deptc,k:'5',amount:feeD,dueday:'0',memo:'振込手数料（先方負担）'}));sum+=feeD;}
