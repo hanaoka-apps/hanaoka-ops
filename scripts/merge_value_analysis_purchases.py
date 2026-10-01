@@ -81,6 +81,17 @@ def month_key(value: object) -> str | None:
     return digits[:6] if len(digits) >= 6 else None
 
 
+def day_key(value: object) -> str | None:
+    """伝票日付から実在する日付だけを YYYY-MM-DD で返す。"""
+    digits = "".join(character for character in normalized(value) if character.isdigit())
+    if len(digits) < 8:
+        return None
+    try:
+        return datetime.strptime(digits[:8], "%Y%m%d").date().isoformat()
+    except ValueError:
+        return None
+
+
 def zone_from_text(value: object) -> str | None:
     text = normalized(value)
     for zone in ZONES:
@@ -165,7 +176,7 @@ def blank_summary() -> dict:
     }
 
 
-def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tuple[dict[str, int], dict[str, dict[str, int]], dict[str, int], dict]:
+def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tuple[dict[str, int], dict[str, dict[str, int]], dict[str, int], dict[str, dict], dict]:
     item_zones = item_zones or {}
     with source.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
         first = handle.readline()
@@ -193,11 +204,13 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
         totals: dict[str, float] = defaultdict(float)
         zones: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         unclassified: dict[str, float] = defaultdict(float)
+        daily: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(lambda: {"total": 0.0, "zones": defaultdict(float), "unclassified": 0.0}))
         stats = {
             "source_rows": 0,
             "included_rows": 0,
             "excluded_non_purchase_rows": 0,
             "invalid_rows": 0,
+            "daily_invalid_date_rows": 0,
             "unclassified_zone_rows": 0,
             "category_column": category_column,
             "amount_column": amount_column,
@@ -217,6 +230,7 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
                 stats["invalid_rows"] += 1
                 continue
             totals[ym] += amount
+            day = day_key(row.get(date_column))
             direct_zone = next(
                 (parsed for column in zone_columns if (parsed := zone_from_text(row.get(column)))),
                 None,
@@ -229,13 +243,33 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
                 zones[ym][zone] += amount
                 if direct_zone is None:
                     stats["master_zone_rows"] += 1
+            if day is None:
+                stats["daily_invalid_date_rows"] += 1
+            else:
+                day_row = daily[ym][day]
+                day_row["total"] += amount
+                if zone is None:
+                    day_row["unclassified"] += amount
+                else:
+                    day_row["zones"][zone] += amount
             stats["included_rows"] += 1
     rounded_totals = {ym: round(value) for ym, value in totals.items()}
     rounded_zones = {
         ym: {zone: round(value) for zone, value in values.items()}
         for ym, values in zones.items()
     }
-    return rounded_totals, rounded_zones, {ym: round(value) for ym, value in unclassified.items()}, stats
+    rounded_daily = {
+        ym: {
+            day: {
+                "total": round(values["total"]),
+                "zones": {zone: round(amount) for zone, amount in values["zones"].items()},
+                "unclassified": round(values["unclassified"]),
+            }
+            for day, values in sorted(days.items())
+        }
+        for ym, days in sorted(daily.items())
+    }
+    return rounded_totals, rounded_zones, {ym: round(value) for ym, value in unclassified.items()}, rounded_daily, stats
 
 
 def merge(source: Path, destination: Path, item_master: Path | None = None) -> int:
@@ -245,10 +279,13 @@ def merge(source: Path, destination: Path, item_master: Path | None = None) -> i
     output = json.loads(destination.read_text(encoding="utf-8-sig"))
     try:
         item_master = item_master or next((candidate for candidate in (DATA / "品目マスタ.csv", DATA / "品目マスタ.txt") if candidate.is_file()), DATA / "品目マスタ.csv")
-        totals, zone_totals, unclassified_totals, stats = read_purchases(source, read_item_zones(item_master))
+        totals, zone_totals, unclassified_totals, daily_totals, stats = read_purchases(source, read_item_zones(item_master))
     except ValueError as error:
+        # Do not let the UI present a stale daily chart as current when today's source schema is unusable.
+        output["purchase_daily_by_month"] = {}
         output.setdefault("meta", {})["daily_purchase_import"] = {
             "status": "blocked",
+            "daily_status": "blocked",
             "reason": str(error),
         }
         destination.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -275,12 +312,14 @@ def merge(source: Path, destination: Path, item_master: Path | None = None) -> i
 
     output["months"] = sorted(set(output.get("months", [])) | set(totals))
     output["purchase_unclassified_by_month"] = unclassified_totals
+    output["purchase_daily_by_month"] = daily_totals
     jst = timezone(timedelta(hours=9))
     output.setdefault("meta", {}).update({
         "daily_purchase_source": source.name,
         "daily_purchase_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
         "daily_purchase_import": {
             "status": "ok",
+            "daily_status": "partial" if (stats["daily_invalid_date_rows"] or stats["invalid_rows"]) else "ok",
             **stats,
             "skipped_finalized_months": skipped_finalized_months,
         },
