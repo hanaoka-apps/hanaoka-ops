@@ -120,6 +120,68 @@ class PurchaseMergeTest(unittest.TestCase):
             result = json.loads(destination.read_text(encoding="utf-8"))
             self.assertEqual(result["purchase_unclassified_by_month"]["202609"], 123)
 
+    def test_daily_purchase_totals_match_monthly_and_keep_factory_breakdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "受入明細出力.csv"
+            destination = Path(directory) / "value_analysis.json"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["伝票日付", "受入金額", "取引区分属性名", "工場別付加価名"])
+                writer.writeheader()
+                writer.writerows([
+                    {"伝票日付": "20260801", "受入金額": "100", "取引区分属性名": "仕入", "工場別付加価名": "第一工場"},
+                    {"伝票日付": "2026/08/01", "受入金額": "250", "取引区分属性名": "仕入", "工場別付加価名": "第二工場"},
+                    {"伝票日付": "20260802", "受入金額": "50", "取引区分属性名": "仕入", "工場別付加価名": "第一工場"},
+                    {"伝票日付": "20260802", "受入金額": "999", "取引区分属性名": "経費", "工場別付加価名": "第一工場"},
+                ])
+            destination.write_text(json.dumps(base_payload(), ensure_ascii=False), encoding="utf-8")
+
+            PURCHASES.merge(source, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+            daily = result["purchase_daily_by_month"]["202608"]
+
+            self.assertEqual(daily["2026-08-01"]["total"], 350)
+            self.assertEqual(daily["2026-08-01"]["zones"], {"第一工場": 100, "第二工場": 250})
+            self.assertEqual(daily["2026-08-02"]["total"], 50)
+            self.assertEqual(sum(row["total"] for row in daily.values()), result["monthly"]["202608"]["total"]["purchase"])
+
+    def test_daily_purchase_marks_invalid_dates_as_partial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "受入明細出力.csv"
+            destination = Path(directory) / "value_analysis.json"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["伝票日付", "受入金額", "取引区分属性名"])
+                writer.writeheader()
+                writer.writerows([
+                    {"伝票日付": "20260801", "受入金額": "100", "取引区分属性名": "仕入"},
+                    {"伝票日付": "20260899", "受入金額": "25", "取引区分属性名": "仕入"},
+                ])
+            destination.write_text(json.dumps(base_payload(), ensure_ascii=False), encoding="utf-8")
+
+            PURCHASES.merge(source, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+
+            self.assertEqual(result["meta"]["daily_purchase_import"]["daily_status"], "partial")
+            self.assertEqual(result["meta"]["daily_purchase_import"]["daily_invalid_date_rows"], 1)
+            self.assertEqual(result["purchase_daily_by_month"]["202608"]["2026-08-01"]["total"], 100)
+
+    def test_daily_purchase_is_cleared_when_source_columns_are_unusable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "受入明細出力.csv"
+            destination = Path(directory) / "value_analysis.json"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["日付", "金額"])
+                writer.writeheader()
+                writer.writerow({"日付": "20260801", "金額": "100"})
+            payload = base_payload()
+            payload["purchase_daily_by_month"] = {"202608": {"2026-08-01": {"total": 999}}}
+            destination.write_text(json.dumps(payload), encoding="utf-8")
+
+            PURCHASES.merge(source, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+
+            self.assertEqual(result["purchase_daily_by_month"], {})
+            self.assertEqual(result["meta"]["daily_purchase_import"]["status"], "blocked")
+
     def test_uses_department_when_primary_factory_column_is_blank(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "受入明細出力.csv"
@@ -480,6 +542,11 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("クリティカルパス", static)
         self.assertIn("standard_components", static)
         self.assertIn("standard_cost_reference_month", static)
+        self.assertIn('id="purchaseDaily"', static)
+        self.assertIn("purchase_daily_by_month", static)
+        self.assertIn("function renderPurchaseDaily()", static)
+        self.assertIn("日別合計と月次仕入の差", static)
+        self.assertIn("id==='purchaseDailyDay'", static)
         self.assertIn("構成・変動要因", static)
         self.assertIn("function componentInsight(part)", static)
         self.assertIn("0円原価あり", static)
@@ -487,6 +554,26 @@ class SalesMergeTest(unittest.TestCase):
         self.assertIn("1円未満の端数差（上昇）", static)
         self.assertIn("金額は1円単位に丸めて表示", static)
         self.assertIn("構成追加か初回原価取得かは、構成履歴がないため判定できません", static)
+
+
+class StockDetectiveMobileTest(unittest.TestCase):
+    def test_stocktaking_mobile_overlays_and_search_controls_stay_reachable(self):
+        static = (ROOT / "static" / "stock_detective.html").read_text(encoding="utf-8")
+        published = (ROOT / "fujin" / "stock_detective.html").read_text(encoding="utf-8")
+        self.assertEqual(static, published)
+        self.assertIn("@media(max-width:700px)", static)
+        self.assertIn('id="tlClose" aria-label="登録内容の確認を閉じる"', static)
+        self.assertIn("#tanaList .hd,#tanaAdmin .hd{position:sticky", static)
+        self.assertIn("#tanaAdmin .hd button.s", static)
+        self.assertIn('#tanaList #tlBody td:nth-child(4)::before{content:"品目名"}', static)
+        self.assertIn('details class="search-tools"', static)
+        self.assertIn(".frame-wrap iframe{min-width:0}", static)
+        self.assertIn("inset:auto 0 0;width:100%;height:min(46vh,390px)", static)
+        self.assertIn("#tanaPanel.tree-focus .tb,#tanaPanel.tree-focus .tf{display:none}", static)
+        self.assertIn('id="tanaTreePickToggle" aria-expanded="true"', static)
+        self.assertIn("function setTreePickMode(v)", static)
+        self.assertIn("v && !matchMedia('(max-width: 700px)').matches ? 'calc(100% - 380px)' : '100%'", static)
+        self.assertIn("if(panel.classList.contains('tree-focus')) setTreePickMode(false)", static)
 
 
 class FujinShellAppSwitchTest(unittest.TestCase):
