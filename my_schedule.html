@@ -257,7 +257,19 @@
   <h3>選んだ機体をまとめて予約する</h3>
   <div class="bd">
     <div class="fm">
-      <div class="f"><span>期間（空き検索で入れた区間）</span><div id="bRange" style="font-weight:700"></div></div>
+      <label class="chk"><input type="checkbox" id="bAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
+      <div class="f2" id="bTimeRow">
+        <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="bFrom"></div>
+        <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="bTo"></div>
+      </div>
+      <div class="f2" id="bDateRow" style="display:none">
+        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="bFromD"></div>
+        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="bToD"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin:2px 0 9px">
+        <button class="act" id="bCheckGo" onclick="bulkCheckAvailabilityMy()">空き状況を確認</button>
+        <span class="cnt" id="bCheckMsg" style="align-self:center"></span>
+      </div>
       <div class="f"><span id="bMachinesLabel">機体</span><div id="bMachines" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
       <div class="f"><span>予約件名（必須・全機体に共通）</span><input type="text" id="bTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
       <div class="f2">
@@ -993,12 +1005,74 @@ el('seek-panel').addEventListener('click', ev => {
   paintSeekDemo();
 });
 
+/* ============================================================
+   まとめて予約モーダル（mBulk）の期間欄
+   ------------------------------------------------------------
+   demo_reserve.html と全く同じ仕様：期間はモーダル自身が持ち、
+   「空き状況を確認」で選んだ機体の空き・埋まりを確認できる。
+   ============================================================ */
+function bAllDayOn(){ return el('bAllDay').checked; }
+function paintBAllDay(){
+  const on = bAllDayOn();
+  el('bTimeRow').style.display = on ? 'none' : '';
+  el('bDateRow').style.display = on ? '' : 'none';
+}
+el('bAllDay').addEventListener('change', paintBAllDay);
+linkDateTimePair('bFrom', 'bTo');
+linkDatePair('bFromD', 'bToD');
+function fillBulkRange(s, e, allDay){
+  el('bAllDay').checked = !!allDay;
+  el('bFrom').value = msToLocal(allDay ? s + 9*3600e3 : s);
+  el('bTo').value   = msToLocal(allDay ? s + 17*3600e3 : e);
+  el('bFromD').value = msToDate(s);
+  const d = toJ(e);
+  const atMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
+  el('bToD').value = msToDate(allDay && atMidnight ? e - DAY : e);
+  paintBAllDay();
+}
+function bulkRangeMs(){
+  if (bAllDayOn()) {
+    const a = dateToMs(el('bFromD').value), b = dateToMs(el('bToD').value);
+    return { s:a, e: isNaN(b) ? NaN : b + DAY };
+  }
+  return { s: localToMs(el('bFrom').value), e: localToMs(el('bTo').value) };
+}
+let BULK_BUSY = new Map();   /* 「空き状況を確認」の直近の結果。機体id→重なる予約 */
+function renderBulkMachinesMy(){
+  const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  el('bMachinesLabel').textContent = `機体（${list.length}台）`;
+  el('bMachines').innerHTML = list.map(m => {
+    const r = BULK_BUSY.get(m.id);
+    if (r) {
+      const who = [r.cust, r.req].filter(Boolean).join(' / ');
+      return `<span class="chip busy" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
+    }
+    return `<span class="chip">${esc(m.n)}</span>`;
+  }).join('');
+}
+async function bulkCheckAvailabilityMy(){
+  const msg = el('bCheckMsg');
+  const { s, e } = bulkRangeMs();
+  if (isNaN(s) || isNaN(e) || e <= s) { msg.textContent = '開始・終了を確認してください'; return; }
+  msg.textContent = '確認中...';
+  try {
+    const rows = await fetchDemoBusy(s, e);
+    BULK_BUSY = new Map();
+    rows.forEach(r => { if (SEEK_SEL.has(r.mid) && !BULK_BUSY.has(r.mid)) BULK_BUSY.set(r.mid, r); });
+    renderBulkMachinesMy();
+    const total = SEEK_SEL.size, busy = BULK_BUSY.size;
+    msg.textContent = busy ? `${total - busy}/${total}台が空いています（埋まっている機体は下の一覧で分かります）` : `${total}台とも空いています`;
+  } catch (err) {
+    msg.textContent = '確認に失敗しました：' + err.message;
+  }
+}
+
 function openBulkNewMy(){
   if (!SEEK || !SEEK_SEL.size) return;
-  const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
-  el('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}`;
-  el('bMachinesLabel').textContent = `機体（${list.length}台）`;
-  el('bMachines').innerHTML = list.map(m => `<span class="chip">${esc(m.n)}</span>`).join('');
+  fillBulkRange(SEEK.s, SEEK.e, SEEK.allDay);
+  BULK_BUSY = new Map();
+  el('bCheckMsg').textContent = '';
+  renderBulkMachinesMy();
   ['bTitle','bCust','bDest','bNotes'].forEach(id => el(id).value = '');
   el('bReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   el('bMsg').textContent = ''; el('bMsg').className = 'msg';
@@ -1080,8 +1154,11 @@ async function doReserveBulkMy(){
   const msg = el('bMsg'), btn = el('bSave');
   const resultBox = el('b-result');
   const title = el('bTitle').value.trim();
-  if (!SEEK || !SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
+  if (!SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
   if (!title) { msg.textContent = '予約件名を入力してください'; msg.className = 'msg ng'; return; }
+  const { s, e } = bulkRangeMs();
+  if (isNaN(s) || isNaN(e)) { msg.textContent = bAllDayOn() ? '開始日と終了日を入力してください' : '開始と終了を入力してください'; msg.className = 'msg ng'; return; }
+  if (e <= s) { msg.textContent = bAllDayOn() ? '終了日は開始日と同じか、それより後にしてください' : '終了が開始より後になるようにしてください'; msg.className = 'msg ng'; return; }
 
   const details = {
     title, cust: el('bCust').value.trim(), dest: el('bDest').value.trim(), notes: el('bNotes').value.trim()
@@ -1099,7 +1176,7 @@ async function doReserveBulkMy(){
     msg.textContent = `予約中... (${i}/${targets.length}) ${m.n}`;
     let line;
     try {
-      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, setId, details });
+      const r = await reserve({ machine:m, s, e, setId, details });
       if (r.ok) {
         ok++; SEEK_SEL.delete(m.id);
         line = `<span style="color:var(--success)">✓ ${esc(m.n)}</span>`;
