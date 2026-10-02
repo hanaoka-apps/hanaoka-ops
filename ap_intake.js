@@ -1,7 +1,9 @@
 /* AI の読み取り結果（/BILLS/ai_result/{APコード}.result.json）を取り込む（新フロー整理 v3・SKILL v3）
-   ・受付（アプリ・支払依頼のワークフロー）で作った AP_Invoice の行を、invoice_id で埋める（新しい行は作らない。税納付の住民税だけ足す）
+   ・受付（アプリ・支払依頼のワークフロー）で作った AP_Invoice の行を、invoice_id で埋める（税納付の住民税だけ足す）
+   ・複合機のスキャン（メールで incoming に届いた、受付の無い PDF）は new=true：経費の行をここで作る（登録者＝メール（複合機））
    ・経費は仕訳（AP_PaymentSlip）を作る。仕入は作らない
-   ・PDF は incoming → processed へ移し、DOCコードを直す。result.json と task.json は ai_result/_archive へ
+   ・PDF：読み取り側（定時の Claude）が processed へ移している（moved=true）。古い形は incoming → processed へ移す。DOCコードを直す
+   ・result.json と task.json は ai_result/_archive へ
    ・受付で入れた 対象年月・支払回・支払方法・支払先コード は残す（空のときだけ埋める）
    使い方：await APIntake.apply({call, site, onMsg})  … call は各画面の Graph 呼び出し（dev は模擬） */
 (function () {
@@ -39,14 +41,25 @@
       try {
         msg(`AI の読み取り結果を取り込んでいます（${applied + 1}/${names.length}）`);
         const r = JSON.parse(await text(call, site, path));
-        const id = String(r.invoice_id || ''), done = async () => {
+        let id = String(r.invoice_id || ''), f = null;
+        const done = async () => {
           await move(call, site, path, ARCH).catch(() => {});
           if (r.ap_code) await move(call, site, `${INC}/${r.ap_code}.task.json`, ARCH).catch(() => {}); };
-        let it = null; try { it = await call('GET', `/sites/${site}/lists/${IV.id}/items/${id}?$expand=fields`); } catch (e) {}
-        if (!it || !it.fields) { errors.push(`${name}：受付の行（ID ${id}）がありません`); await done(); continue; }
-        const f = it.fields;
-        if (f.AIStatus && f.AIStatus !== '受付') { await done(); continue; }   // 取り込み済み・人が先に入れたもの
         const H = r.header || {}, cmt = (r.comments || []).slice(), patch = {};
+        if (r.new && !id) {
+          // 複合機のスキャン（受付の無い経費）：ここで経費の行を作る。拠点は読み取りの判断（無ければ本社）
+          const loc0 = r.location === '工場' ? '工場' : '本社', nf = { Title: H.PayeeName || (r.pdf_files || [])[0] || 'スキャン' };
+          nf[fi('支払区分')] = loc0 + '経費'; nf[fi('仕分け済')] = true; nf[fi('支払ステータス')] = '確認待'; nf[fi('対象年月')] = H.TargetMonth || ctx.ym || '';
+          Object.assign(nf, { AIStatus: '受付', RegisteredBy: 'メール（複合機）', RegisteredAt: r.received_at || r.processed_at || new Date().toISOString(), SiteLocation: loc0, ExpenseStep: 0 });
+          const c = await call('POST', `/sites/${site}/lists/${IV.id}/items`, { fields: nf });
+          id = String(c.id); f = c.fields || nf;
+          cmt.unshift('複合機のスキャン（メール）で届いた請求書です。支払依頼の申請はありません');
+        } else {
+          let it = null; try { it = await call('GET', `/sites/${site}/lists/${IV.id}/items/${id}?$expand=fields`); } catch (e) {}
+          if (!it || !it.fields) { errors.push(`${name}：受付の行（ID ${id}）がありません`); await done(); continue; }
+          f = it.fields;
+          if (f.AIStatus && f.AIStatus !== '受付') { await done(); continue; }   // 取り込み済み・人が先に入れたもの
+        }
         const set = (d, v) => { if (v !== undefined && v !== null && v !== '') patch[fi(d)] = v; };
         const setIfEmpty = (d, v) => { const cur = f[fi(d)]; if (cur === undefined || cur === null || cur === '') set(d, v); };
         const oldAmt = +f[fi('金額_税込')] || 0;
@@ -59,9 +72,10 @@
         if (CONF.includes(H.AIConfidence)) set('AI確信度', H.AIConfidence);
         if (H.DebitDate) set('引落予定日', H.DebitDate);
         if (H.AmountInclTax != null) { patch[fi('金額_税込')] = +H.AmountInclTax || 0; patch[fi('金額_税抜')] = +H.AmountExclTax || 0; patch[fi('消費税')] = +H.Tax || 0; }
-        // PDF を processed へ（移せなかったものは incoming のまま DOCコードに残す）
+        // PDF：読み取り側が processed へ移していればそのまま。古い形は incoming → processed（移せなければ incoming のまま）
         const docs = [];
         for (const p of (r.pdf_files || []).filter(Boolean)) {
+          if (r.moved) { docs.push(`/Shared Documents${PROC}/${p}`); continue; }
           try { await move(call, site, `${INC}/${p}`, PROC); docs.push(`/Shared Documents${PROC}/${p}`); }
           catch (e) { docs.push(`/Shared Documents${INC}/${p}`); }
         }
