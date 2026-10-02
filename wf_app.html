@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>社内ワークフロー | 花岡車輌</title>
+<link rel="icon" type="image/png" href="favicon_wf.png">
+<link rel="apple-touch-icon" href="apple-touch-icon-wf.png">
+<link rel="manifest" href="wf_app.webmanifest">
+<meta name="apple-mobile-web-app-title" content="ワークフロー">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#23268f">
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="wf-engine.js"></script>
 <script src="settle_view.js"></script>
@@ -246,7 +253,8 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
   <!-- 左のサイドメニュー（HANAOKA HUB・営業日報と同じ作り。見た目は wf_theme.css） -->
   <aside class="sidebar noprint">
     <div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11M4 12h7M4 17h11"/><path d="m16 14 3 3 3-6"/></svg></div>
-      <div class="brand-name"><span id="appTitle">社内ワークフロー</span><small>HANAOKA CORP.</small></div></div>
+      <div class="brand-name"><span id="appTitle">社内ワークフロー</span><small>HANAOKA CORP.</small></div>
+      <button id="sideToggle" class="side-toggle" title="メニューをたたむ／ひろげる" aria-label="メニューをたたむ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button></div>
     <div class="nav-label">MENU</div>
     <nav id="tabs"></nav>
     <div class="side-foot">
@@ -499,6 +507,10 @@ const api = DEV ? DevApi : GraphApi;
 async function init() {
   $('reloadBtn').onclick = () => load();
   $('absBtn').onclick = () => openAbsence();
+  // 左のメニューをたたむ（詳細を広く使う）。この端末のブラウザに覚えておく
+  const setMini = on => { $('app').classList.toggle('side-mini', on); try { localStorage.setItem('wf.sideMini', on ? '1' : ''); } catch { } };
+  try { setMini(localStorage.getItem('wf.sideMini') === '1'); } catch { }
+  $('sideToggle').onclick = () => setMini(!$('app').classList.contains('side-mini'));
   if (DEV) return startDev();
   if (typeof msal === 'undefined') { loginError('認証ライブラリを読み込めませんでした。ページを再読み込みしてください。'); return; }
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
@@ -712,15 +724,16 @@ const NAV_ICONS = {
 function render() {
   $('tabs').innerHTML = TABS.filter(t => !t.show || t.show()).map(t => {
     const c = t.count ? t.count() : null;
-    return `<a data-k="${t.key}" class="${st.view === t.key ? 'active' : ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[t.key] || NAV_ICONS.all}</svg><span>${t.label}</span>${c != null ? `<span class="cnt ${c ? '' : 'zero'}">${c}</span>` : ''}</a>`;
+    return `<a data-k="${t.key}" title="${esc(t.label)}" class="${st.view === t.key ? 'active' : ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[t.key] || NAV_ICONS.all}</svg><span>${t.label}</span>${c != null ? `<span class="cnt ${c ? '' : 'zero'}">${c}</span>` : ''}</a>`;
   }).join('');
   const cur = TABS.find(t => t.key === st.view); $('pageTitle').textContent = cur ? cur.label : '';
+  if (matchMedia('(max-width: 800px)').matches) { const act = document.querySelector('nav#tabs a.active'); if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }   // スマホ：横並びのメニューで今の画面を見える位置に
   $('tabs').onclick = e => {
     const a = e.target.closest('a[data-k]'); if (!a) return;
     if (st.editor && st.editor.newKeys && st.editor.newKeys.size && !st.editor.keepStaged && !confirm('入力中の申請を閉じます。添付したファイルも破棄されます。よろしいですか？')) return;
     discardUploads(st.editor); st.view = a.dataset.k; st.sub = ''; st.sel = null; st.editor = null; render();
   };
-  const main = $('main');
+  const main = $('main'); main.classList.remove('m-detail');
   if (st.view === 'new') return st.editor ? renderEditor(main) : renderCatalog(main);
   if (st.view === 'payroll') return renderPayroll(main);
   renderListView(main);
@@ -852,15 +865,23 @@ function renderListView(main) {
   $('fClear').onclick = () => { Object.keys(flt).forEach(k => flt[k] = ''); renderListView(main); };
   main.querySelectorAll('button[data-sub]').forEach(b => b.onclick = () => { st.sub = b.dataset.sub; st.sel = null; renderListView(main); });
   $('fCsv').onclick = () => downloadCsv(shown);
+  // スマホ：一覧で選ぶと詳細だけを画面いっぱいに出し、上の「← 一覧に戻る」で戻る（PC は横に並べたまま）
+  const openDetail = cur => {
+    cur.t ? renderTaskDetail(cur.t, cur.s) : renderReqDetail(cur.r);
+    main.classList.add('m-detail');
+    const d = $('detail'); d.insertAdjacentHTML('afterbegin', '<button class="mback noprint">← 一覧に戻る</button>'); d.scrollTop = 0;
+    d.querySelector('.mback').onclick = () => { main.classList.remove('m-detail'); st.sel = null; $('rows').querySelectorAll('.row.sel').forEach(x => x.classList.remove('sel')); };
+  };
   $('rows').onclick = e => {
     const r = e.target.closest('.row'); if (!r) return;
     st.sel = r.dataset.k;
     $('rows').querySelectorAll('.row').forEach(x => x.classList.toggle('sel', x === r));
     const cur = all.find(i => i.key === st.sel);
-    if (cur) cur.t ? renderTaskDetail(cur.t, cur.s) : renderReqDetail(cur.r);
+    if (cur) openDetail(cur);
   };
+  main.classList.remove('m-detail');
   const cur = all.find(i => i.key === st.sel);
-  if (cur) cur.t ? renderTaskDetail(cur.t, cur.s) : renderReqDetail(cur.r);
+  if (cur) openDetail(cur);
 }
 function downloadCsv(items) {
   const head = ['申請番号', '件名', 'フォーム', '申請者', '部署', '状態', '申請日時'];
