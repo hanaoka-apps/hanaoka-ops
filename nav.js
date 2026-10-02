@@ -59,10 +59,74 @@
     document.head.appendChild(s);
   }
 
+  /* ============================================================
+     予約状況グループ：左のサイドバー
+     ------------------------------------------------------------
+     hanaoka_hub.html / sales_report_dashboard.html と同じデザイン。見た目は
+     reserve_theme.css（各ページが読み込む）、メニューの中身はここ1か所だけで管理する。
+     ============================================================ */
+  var ICONS = {
+    'my_schedule.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
+    'demo_reserve.html':   '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+    'car_reserve.html':    '<path d="M5 16h14l-1.5-6a2 2 0 0 0-1.9-1.5H8.4A2 2 0 0 0 6.5 10z"/><path d="M4 16v3M20 16v3"/><circle cx="8" cy="13" r=".6"/><circle cx="16" cy="13" r=".6"/>',
+    'room_reserve.html':   '<path d="M4 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16M14 9h5a1 1 0 0 1 1 1v11M2 21h20M8 8h2M8 12h2M8 16h2"/>',
+    'staff_schedule.html': '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.4 0 4 1.8 4 4.5"/>',
+    'reserve_manual.html': '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/>'
+  };
+  function svg(inner) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
+  }
+  var SB_KEY = 'hanaoka.reserve.sidebar.v1';
+  /* 開閉：手で切り替えたらその選択をこの端末に覚える。覚えていなければ画面幅で決める
+     （広いPCは開く、それより狭いPCはアイコンだけ。1024px以下は上の横帯になる）。 */
+  function sbState() {
+    try { var v = localStorage.getItem(SB_KEY); if (v === 'open' || v === 'closed') return v; } catch (e) {}
+    return window.innerWidth >= 1400 ? 'open' : 'closed';
+  }
+  function sbApply(v) {
+    var h = document.documentElement;
+    h.classList.toggle('hx-open', v === 'open');
+    h.classList.toggle('hx-closed', v === 'closed');
+  }
+  function buildSidebar(g) {
+    if (document.getElementById('hx-sidebar')) return;
+    var aside = document.createElement('aside');
+    aside.className = 'hx-sidebar'; aside.id = 'hx-sidebar';
+    aside.innerHTML =
+      '<a class="hx-brand" href="hanaoka_hub.html" title="HANAOKA HUB へ">' +
+        '<div class="hx-mark">' + svg('<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>') + '</div>' +
+        '<div class="hx-brand-name">予約状況<small>HANAOKA RESERVE</small></div>' +
+      '</a>' +
+      '<div class="hx-label">MENU</div>' +
+      g.apps.map(function (a) {
+        return '<a class="hx-item' + (a.f === cur ? ' active' : '') + '" href="' + a.f + '" title="' + a.l + '">' +
+          svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
+      }).join('') +
+      '<div class="hx-foot">' +
+        '<a class="hx-item" href="hanaoka_hub.html" title="HANAOKA HUB">' +
+          svg('<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-9"/>') + '<span>HANAOKA HUB</span></a>' +
+        '<button type="button" class="hx-item hx-toggle" id="hx-toggle" title="サイドバーを開閉">' +
+          '<svg class="hx-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span>たたむ</span></button>' +
+      '</div>';
+    document.body.insertBefore(aside, document.body.firstChild);
+    sbApply(sbState());
+    document.getElementById('hx-toggle').addEventListener('click', function () {
+      var next = document.documentElement.classList.contains('hx-closed') ? 'open' : 'closed';
+      try { localStorage.setItem(SB_KEY, next); } catch (e) {}
+      sbApply(next);
+    });
+    /* 手で切り替えていない端末は、ウィンドウ幅を変えたときも既定に追従する */
+    window.addEventListener('resize', function () {
+      var saved = null; try { saved = localStorage.getItem(SB_KEY); } catch (e) {}
+      if (!saved) sbApply(sbState());
+    });
+  }
+
   function build() {
+    var g = currentGroup();
+    if (g.key === 'reserve') { buildSidebar(g); return; }
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
-    var g = currentGroup();
     injectStyle();
     var html = '<div class="app-nav">' + g.apps.map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
