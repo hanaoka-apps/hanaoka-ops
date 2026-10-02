@@ -6,6 +6,7 @@
 <title>社内ワークフロー | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="wf-engine.js"></script>
+<script src="settle_view.js"></script>
 <style>
 :root{--pri:#1a5fa8;--pri-l:#e3edf9;--bg:#f4f6f9;--line:#dde2ec;--txt:#1e2533;--sub:#6b7a99;--ok:#1e8449;--ok-l:#e3f4e8;--warn:#a0520c;--warn-l:#fdf0e1;--ng:#c0392b;--ng-l:#fbe7e5}
 *{box-sizing:border-box}
@@ -415,6 +416,24 @@ const GraphApi = {
     return (reqNo && await tryGet(this.drive('WF_Attach'), encPath(yr, reqNo, key)))
         || ((!applicantUpn || lc(applicantUpn) === st.me.upn) && await tryGet(this.drive('WF_Upload'), encPath(st.me.upn, key)))
         || null;
+  },
+  /* 中身を取り出す（支払決済の明細 JSON・請求書 PDF を画面の中で見せる）。探す順は fileUrl と同じ */
+  async fileBlob(reqNo, key, applicantUpn) {
+    const get = async (d, path) => {
+      if (!d) return null;
+      const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${d}/root:/${path}:/content`, { headers: { Authorization: 'Bearer ' + await getToken() } });
+      return r.ok ? r.blob() : null;
+    };
+    const yr = reqNo ? reqNo.split('-').slice(-2)[0] : '';
+    return (reqNo && await get(this.drive('WF_Attach'), encPath(yr, reqNo, key)))
+        || ((!applicantUpn || lc(applicantUpn) === st.me.upn) && await get(this.drive('WF_Upload'), encPath(st.me.upn, key)))
+        || null;
+  },
+  /* 自分の受付フォルダのファイルを読む（支払アプリが置いた「中身入りで開く」ための下書き） */
+  async readUpload(key) {
+    const b = await this.fileBlob('', key, st.me.upn);
+    if (!b) throw new Error('受付フォルダに見つかりません：' + key);
+    return b.text();
   }
 };
 
@@ -449,7 +468,15 @@ const DevApi = {
     this.blobs[key] = URL.createObjectURL(file);
   },
   async deleteStaging(key) { delete this.blobs[key]; },
-  async fileUrl(reqNo, key) { return this.blobs[key] || null; }
+  async fileUrl(reqNo, key) { return this.blobs[key] || null; },
+  async fileBlob(reqNo, key) { const u = this.blobs[key]; return u ? (await fetch(u)).blob() : null; },
+  // 開発：支払アプリの代わりに dev/settle-dev/ の下書きを読む。下書きの添付（devUrl）は画面の中の添付として持つ
+  async readUpload(key) {
+    const t = await (await fetch('settle-dev/' + encodeURIComponent(key))).text();
+    const p = pj(t, {});
+    Object.values(p.data || {}).forEach(v => Array.isArray(v) && v.forEach(x => { if (x && x.key && x.devUrl) this.blobs[x.key] = x.devUrl; }));
+    return t;
+  }
 };
 const api = DEV ? DevApi : GraphApi;
 
@@ -547,11 +574,29 @@ async function load(quiet) {
     st.allReqs = hasAllView() ? await api.allRequests() : null;
     status(`更新 ${fmtDT(new Date())}` + (st.me.org ? '' : `　※このアカウント（${st.me.upn}）は組織マスタに登録がないため、申請・承認はできません。普段のアカウントでない場合は、右上の「サインアウト」から入り直してください（それでも出るときは総務へ）`), st.me.org ? '' : 'err');
     openDeepLink();
+    await openPrefill();
     render();
   } catch (e) {
     status('読み込みに失敗しました: ' + e.message, 'err');
     console.error(e);
   }
+}
+/* ほかのアプリから中身入りで開く（?new=フォーム&prefill=受付フォルダの下書き）。最初の1回だけ。
+   例：支払アプリの「決裁に回す」→ 明細と請求書を受付フォルダに置き、下書き {form, data} を置いて、ここを開く。
+   下書きに入っている添付は「今回の申請で受付フォルダから移すもの」として送る（入力画面を閉じても消さない＝もう一度開ける） */
+let prefillDone = false;
+async function openPrefill() {
+  if (prefillDone) return; prefillDone = true;
+  const q = new URLSearchParams(location.search), code = q.get('new'), key = q.get('prefill');
+  if (!code) return;
+  const form = st.M.forms.find(f => f.FormCode === code);
+  if (!form) { status(`フォーム「${code}」が見つかりません`, 'err'); return; }
+  if (!canSubmit(form)) { status(`「${form.Title}」を申請できる役割に入っていません（総務へ）`, 'err'); return; }
+  let data = {};
+  if (key) { try { data = pj(await api.readUpload(key), {}).data || {}; } catch (e) { status('中身を読めませんでした：' + e.message, 'err'); return; } }
+  const keys = form.fields.filter(fd => fd.type === 'file').flatMap(fd => (data[fd.key] || []).map(x => x.key));
+  st.view = 'new'; st.sel = null;
+  st.editor = { form, data, draftChecked: true, keepStaged: true, newKeys: new Set(keys), uploads: new Map(keys.map(k => [k, { st: 'ok' }])) };
 }
 /* Teams通知のリンク（?req=申請番号）から開いたとき、その申請を選んだ状態にする（最初の1回だけ） */
 let deepLinkDone = false;
@@ -647,7 +692,7 @@ function render() {
   }).join('');
   $('tabs').onclick = e => {
     const a = e.target.closest('a[data-k]'); if (!a) return;
-    if (st.editor && st.editor.newKeys && st.editor.newKeys.size && !confirm('入力中の申請を閉じます。添付したファイルも破棄されます。よろしいですか？')) return;
+    if (st.editor && st.editor.newKeys && st.editor.newKeys.size && !st.editor.keepStaged && !confirm('入力中の申請を閉じます。添付したファイルも破棄されます。よろしいですか？')) return;
     discardUploads(st.editor); st.view = a.dataset.k; st.sel = null; st.editor = null; render();
   };
   const main = $('main');
@@ -1053,6 +1098,28 @@ function reqProgress(r) {
       postAssignees: (r.PostAssignees || '').split(';').filter(Boolean).map(nameOf).join('/') });
 }
 
+/* ---------- 支払決済（フォームの View が settle）：申請に付けた明細 JSON を読み、サマリー＋確認モードを出す ----------
+   承認できる人は、明細をすべて「確認OK」（保留なし）にするまで「承認する／決裁する」を押せない */
+let curSettle = null;
+async function mountSettle(o) {
+  const el = $('settleView'); if (!el || !window.SettleView) return;
+  curSettle = null;
+  const sk = (o.data.snapshot || [])[0];
+  if (!sk) { el.textContent = '明細が添付されていません'; return; }
+  try {
+    const b = await api.fileBlob(o.no, sk.key, o.app);
+    if (!b) { el.textContent = '明細を読めませんでした（見る権限がないか、まだ保管フォルダに移っていません）'; return; }
+    const snap = JSON.parse(await b.text()), storeKey = `settle:${o.no || sk.key}:${st.me.upn}`;
+    if ($('settleView') !== el) return;   // 読み込み中に別の申請を開いた
+    curSettle = { no: o.no, storeKey, snap };
+    SettleView.mount(el, { snap, canAct: o.canAct, storeKey,
+      loadPdf: async k => { const x = await api.fileBlob(o.no, k, o.app); return x ? URL.createObjectURL(x.type === 'application/pdf' ? x : new Blob([x], { type: 'application/pdf' })) : null; },
+      onState: s => { const bt = $('bOk'); if (!bt || !o.canAct) return; const done = s.ok === s.total && !s.hold;
+        bt.disabled = !done; bt.title = done ? '' : `明細をすべて「確認OK」にすると押せます（あと ${s.total - s.ok} 件${s.hold ? `・保留 ${s.hold} 件` : ''}）`;
+        if ($('settleRest')) $('settleRest').textContent = bt.title; } });
+  } catch (e) { el.textContent = '明細を読めませんでした：' + e.message; }
+}
+
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
 function renderTaskDetail(t, s) {
   const form = st.M.forms.find(f => f.FormCode === t.FormCode);
@@ -1078,6 +1145,8 @@ function renderTaskDetail(t, s) {
   }
   if (canAct && t.OnBehalfOfName) html += `<div class="return-banner" style="border-color:var(--pri);border-left-color:var(--pri);background:var(--pri-l)"><b style="color:var(--pri)">${esc(t.OnBehalfOfName)} さんが不在のため、代理としての依頼です。</b><div class="muted" style="margin-top:4px">本人が先に処理した場合は、この依頼は自動で取り消されます。</div></div>`;
   if (canAct) html += returnBanner(s.lastReturn);
+  const settle = form && form.View === 'settle';   // 支払決済：サマリー＋確認モード（settle_view.js）
+  if (settle) html += `<div class="card"><h3>支払決済の明細${canAct ? '　<span class="muted" style="font-weight:400">すべて「確認OK」にすると承認できます</span>' : ''}</h3><div id="settleView">読み込み中...</div></div>`;
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
   html += followupCard(form, s.data || {}, { status: t.RequestStatus, req: t.RequestNo, app: s.applicantUPN });
   if (hist.length) html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
@@ -1087,7 +1156,8 @@ function renderTaskDetail(t, s) {
     html += `<div class="card"><h3>あなたの処理（${esc(t.StepName)}）</h3>
       <textarea id="cmt" placeholder="コメント（差し戻し・却下のときは必須）"></textarea>
       <div class="actions">
-        <button class="pri" id="bOk">${t.StepType === '決裁' ? '決裁する' : '承認する'}</button>
+        <button class="pri" id="bOk" ${settle ? 'disabled' : ''}>${t.StepType === '決裁' ? '決裁する' : '承認する'}</button>
+        ${settle ? '<span id="settleRest" class="muted"></span>' : ''}
         <span style="flex:1"></span>
         <select id="retTo" style="width:auto"><option value="0">申請者へ差し戻す</option>${back.map(o => `<option value="${o.i + 1}">「${esc(o.x.name)}」（${esc(o.x.upns.map(nameOf).join('/'))}）へ差し戻す</option>`).join('')}</select>
         <button class="warn" id="bRet">差し戻し</button>
@@ -1114,7 +1184,9 @@ function renderTaskDetail(t, s) {
 
   if ($('bPrint')) $('bPrint').onclick = () => window.print();
   if ($('bGo')) $('bGo').onclick = () => { $('cmt').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('cmt').focus({ preventScroll: true }); };
-  const cmt = () => ($('cmt') ? $('cmt').value.trim() : '');
+  // 支払決済は、明細の保留・コメントを承認・差し戻しのコメントに足す
+  const cmt = () => [($('cmt') ? $('cmt').value.trim() : ''), settle && curSettle && curSettle.no === t.RequestNo ? SettleView.comment(curSettle.storeKey, curSettle.snap) : ''].filter(Boolean).join('\n');
+  if (settle) mountSettle({ no: t.RequestNo, app: s.applicantUPN, data: s.data || {}, canAct });
   if ($('bOk')) $('bOk').onclick = () => act({ Title: `${t.StepType} ${t.RequestNo}`, ActionType: t.StepType === '決裁' ? '決裁' : '承認', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
   if ($('bRet')) $('bRet').onclick = () => {
     if (!cmt()) return alert('差し戻しの理由を入力してください');
@@ -1155,12 +1227,15 @@ function renderReqDetail(r) {
   if (r.Status === '差し戻し中') html += returnBanner(pj(r.LastReturnJson, null), canRe);
   if (r.Status === '引き戻し' && canRe) html += `<div class="return-banner gray"><b>引き戻し中です。</b>内容を直して、もう一度申請してください。<div class="actions"><button class="pri" data-re>✎ 修正して再申請する</button></div></div>`;
   html += `<div class="card"><h3>進み具合</h3>${progressHtml(m)}</div>`;
+  const settle = form && form.View === 'settle';
+  if (settle) html += '<div class="card"><h3>支払決済の明細</h3><div id="settleView">読み込み中...</div></div>';
   html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
   html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN, proxy: r.ProxyUPN });
   html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
   if ((res.circulate || []).length) html += `<div class="card"><h3>回覧（決裁後に共有する人）</h3>${esc(res.circulate.map(nameOf).join('、'))}</div>`;
   if (form && form.PrintForSubmit) html += `<div class="card noprint"><h3>原本の提出</h3><div class="muted">${esc(form.PrintForSubmit === true ? '上の「🖨 印刷・PDF」で印刷したものと一緒に、レシート・領収書の原本を本社総務へ提出してください' : form.PrintForSubmit)}</div></div>`;
   $('detail').innerHTML = html;
+  if (settle) mountSettle({ no: r.RequestNo, app: r.ApplicantUPN, data: pj(r.DataJson, {}), canAct: false });
   if ($('bPrint')) $('bPrint').onclick = () => window.print();
   if ($('bPull')) $('bPull').onclick = () => { if (confirm('申請を引き戻しますか？\n次の人がまだ処理していなければ、申請を取り戻せます。')) act({ Title: `引き戻し ${r.RequestNo}`, ActionType: '引き戻し', RequestNo: r.RequestNo }); };
   const re = () => { st.view = 'new'; st.editor = { form, data: pj(r.DataJson, {}), resubmit: r, proxyFor: r.ProxyUPN ? lc(r.ApplicantUPN) : '' }; render(); };
@@ -1327,7 +1402,7 @@ function renderEditor(main) {
         ${ed.resubmit || f.Confidential ? '' : '<button id="bDraft" title="このパソコンのブラウザに保存します。ほかの人や別のパソコンからは見えません（添付ファイルは保存しません）">下書き保存</button>'}
         <button class="pri" id="bSubmit">${ed.resubmit ? '再申請の内容を確認する →' : '申請内容を確認する →'}</button></div>
     </div><div class="side"><h3 style="margin-top:0">承認ルート <span class="muted">（入力内容から自動で決まります）</span></h3><div id="preview"></div></div></div>`;
-  $('bBack').onclick = () => { if (ed.newKeys && ed.newKeys.size && !confirm('入力中の申請を閉じます。添付したファイルも破棄されます。よろしいですか？')) return; discardUploads(ed); st.editor = null; render(); };
+  $('bBack').onclick = () => { if (ed.newKeys && ed.newKeys.size && !ed.keepStaged && !confirm('入力中の申請を閉じます。添付したファイルも破棄されます。よろしいですか？')) return; discardUploads(ed); st.editor = null; render(); };
   if ($('bDraft')) $('bDraft').onclick = () => { readForm(); saveDraft(f, ed) ? toast('下書きを保存しました（このパソコンのブラウザに保存。添付は保存しません）') : alert('下書きを保存できませんでした（ブラウザの設定で保存が止められています）'); };
   if ($('bDraftLoad')) $('bDraftLoad').onclick = () => { ed.data = draft.data || {}; if (draft.proxyFor) ed.proxyFor = draft.proxyFor; render(); toast('下書きを開きました'); };
   if ($('bDraftDel')) $('bDraftDel').onclick = () => { if (confirm('下書きを消しますか？')) { clearDraft(f); $('draftBar').remove(); } };
@@ -1543,7 +1618,8 @@ function fieldHtml(fd) {
     case 'note': return `<div class="fld" data-k="${esc(fd.key || '')}"><div class="desc">${esc(fd.text || fd.label)}</div></div>`;
     case 'tabs': return `<div class="fld ftabs" data-k="${esc(fd.key)}">${fd.tabs.map((t, i) => `<button type="button" data-tab="${i}" data-tk="${esc(fd.key)}">${esc(t.label)}<span class="cnt"></span></button>`).join('')}</div>`;
     case 'file': {
-      const lim = fileLimits();
+      const lim = fileLimits(fd);
+      if (fd.readonly) { inp = `<div id="${id}"></div>`; break; }   // 読み取り専用（支払アプリから入れた添付）：選ぶ・消すは出さない
       inp = `<div class="fdrop" data-drop="${esc(fd.key)}"><div id="${id}"></div>
         <label class="fpick">＋ ファイルを選ぶ<input type="file" multiple data-file="${esc(fd.key)}" ${fd.accept ? `accept="${esc(fd.accept)}"` : ''} style="display:none"></label>
         <span class="muted">　ここにドラッグ＆ドロップもできます（1ファイル ${lim.mb}MB・${lim.count}件まで）</span></div>`;
@@ -1558,13 +1634,16 @@ function fieldHtml(fd) {
     }
     default: inp = `<input id="${id}" type="text" placeholder="${esc(fd.placeholder || '')}">`;
   }
+  // 読み取り専用（支払アプリなどほかのアプリから入れた値）：入力欄を押せなくする（値は申請に送る）
+  if (fd.readonly && fd.type !== 'file') inp = inp.replace(/<(input|select|textarea)\b/g, '<$1 disabled');
   const reqIf = !fd.required && fd.requiredIf ? '<span class="req" data-reqif style="display:none">必須</span>' : '';
   return `<div class="fld${isHalf(fd) ? ' half' : ''}" data-k="${esc(fd.key)}"><label class="l">${esc(fd.label)}${req}${reqIf}</label>${inp}${fd.help ? `<div class="muted">${esc(fd.help)}</div>` : ''}${fd.warn ? `<div class="fwarn" id="w_${esc(fd.key)}" style="display:none"></div>` : ''}</div>`;
 }
 /* ---------- 添付ファイル（入力画面）
    選んだらすぐ自分の受付フォルダへアップロードする。申請のときは「今回アップロードしたファイルのキー」を送り、
    フローが保管フォルダへ移す。値は [{ name: 元の名前, key: 保存名, size }] */
-function fileLimits() { return { mb: Number(st.M.settings['files.maxMB']) || 20, count: Number(st.M.settings['files.maxCount']) || 10 }; }
+// 項目に maxMB・maxCount があればそれ（支払決済の請求書のように多いもの）、無ければ設定の値
+function fileLimits(fd) { return { mb: (fd && fd.maxMB) || Number(st.M.settings['files.maxMB']) || 20, count: (fd && fd.maxCount) || Number(st.M.settings['files.maxCount']) || 10 }; }
 function fileKey(name) {
   // SharePoint で使えない文字と「..」を避け、同じ名前でもぶつからないよう日時と乱数を前に付ける
   const safe = name.replace(/["*:<>?/\\|#%~&{}\u0000-\u001f]/g, '_').replace(/\.{2,}/g, '.').replace(/^[\s.]+|[\s.]+$/g, '').slice(-100) || 'file';
@@ -1576,11 +1655,11 @@ function renderFiles(fd) {
   el.innerHTML = (ed.data[fd.key] || []).map(x => {
     const u = ed.uploads.get(x.key);
     const state = !u ? '' : u.st === 'up' ? `<span class="muted">アップロード中 ${u.pct || 0}%</span>` : u.st === 'ng' ? `<span class="ng">✖ ${esc(u.msg || '失敗')}</span>` : '<span class="muted">✔</span>';
-    return `<div class="fitem"><a class="flink" data-fkey="${esc(x.key)}">📎 ${esc(x.name)}</a><span class="muted">${fsize(x.size)}</span>${state}<button data-fdel="${esc(x.key)}" data-k="${esc(fd.key)}">削除</button></div>`;
-  }).join('');
+    return `<div class="fitem"><a class="flink" data-fkey="${esc(x.key)}">📎 ${esc(x.name)}</a><span class="muted">${fsize(x.size)}</span>${state}${fd.readonly ? '' : `<button data-fdel="${esc(x.key)}" data-k="${esc(fd.key)}">削除</button>`}</div>`;
+  }).join('') + (fd.readonly && (ed.data[fd.key] || []).length > 3 ? `<div class="muted">${(ed.data[fd.key] || []).length} 件</div>` : '');
 }
 function addFiles(fd, files) {
-  const ed = st.editor, lim = fileLimits();
+  const ed = st.editor, lim = fileLimits(fd);
   const list = ed.data[fd.key] = ed.data[fd.key] || [];
   const ng = [];
   for (const file of files) {
@@ -1608,6 +1687,7 @@ function removeFile(fd, key) {
 /* 申請せずに入力画面を離れるとき、今回アップロードしたものを片付ける */
 function discardUploads(ed) {
   if (!ed || !ed.newKeys) return;
+  if (ed.keepStaged) { ed.newKeys.clear(); return; }   // ほかのアプリが置いた添付は消さない（もう一度開けるように）
   ed.newKeys.forEach(k => api.deleteStaging(k).catch(() => {})); ed.newKeys.clear();
 }
 

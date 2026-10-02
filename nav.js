@@ -10,7 +10,7 @@
         { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
         { f: 'ap_entry.html',          l: '手入力' },
         { f: 'ap_recurring.html',      l: '毎月の支払' },
-        { f: 'ap_payment.html',        l: '支払一覧・承認' }
+        { f: 'ap_payment.html',        l: '支払（決裁・出力）' }
       ]
     },
     {
