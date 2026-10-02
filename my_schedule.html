@@ -43,6 +43,10 @@
   button.act:disabled{opacity:.5;cursor:not-allowed}
   button.pri{background:var(--primary);border-color:var(--primary);color:#fff}
   button.pri:hover:not(:disabled){background:var(--primary-dk)}
+  /* 青＝「検索する」、緑＝「確定して進む」。検索ボタンと予約ボタンが同じ青で並ぶと
+     見分けがつかない、という指摘を受けて、最終操作のボタンだけ色を変えた。 */
+  button.go{background:var(--success);border-color:var(--success);color:#fff}
+  button.go:hover:not(:disabled){background:#236a41}
   .range{font-weight:700;font-size:14px;min-width:170px;text-align:center}
   .spacer{flex:1}
   .cnt{font-size:11.5px;color:var(--muted)}
@@ -231,9 +235,9 @@
   <div class="bd">
     <!-- ★予約ボタンは常にいちばん上に固定★ 機体が多くて一覧を下までスクロール
          しても、選んだ機体をまとめて予約するボタンを探しに戻らなくて済むように。 -->
-    <div id="seekBar" style="position:sticky;top:0;z-index:5;background:#fff;margin:-13px -16px 10px;
-         padding:9px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="act pri" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだ機体をまとめて予約（0台）</button>
+    <div id="seekBar" style="position:sticky;top:0;z-index:5;background:#f3f9f5;margin:-13px -16px 10px;
+         padding:9px 16px;border-bottom:1px solid #cfe5d7;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="act go" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだ機体をまとめて予約（0台）</button>
       <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); paintSeekDemo();">選択解除</button>
     </div>
     <div class="fm">
@@ -252,7 +256,7 @@
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:9px">
-      <button class="act pri" id="sGo" onclick="runSeekDemo()">この区間で押さえられる機体</button>
+      <button class="act pri" id="sGo" onclick="runSeekDemo()">🔍 この期間の空き機体を検索</button>
     </div>
     <div id="seek-panel"></div>
   </div>
@@ -302,8 +306,21 @@
 <!-- デモ機予約の詳細（セット予約も1台の予約も同じ画面） -->
 <div class="modal" id="mDemoDetail"><div class="card">
   <h3 id="ddTitle"></h3>
-  <div class="bd" id="ddBody"></div>
+  <div class="bd">
+    <div id="ddBody"></div>
+    <!-- 「編集」を押したときだけ出す、機体の追加欄（この予約と同じ期間で空いている機体） -->
+    <div id="ddAdd" style="display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <b>機体を追加</b><span class="cnt">　この予約と同じ期間で空いている機体から選べます</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+        <select id="ddAddCat" style="border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12px"></select>
+        <input type="search" id="ddAddQ" placeholder="機種名で検索" style="border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px">
+        <button class="act go" id="ddAddGo" disabled onclick="doAddToDemoSet()">追加する（0台）</button>
+      </div>
+      <div id="ddAddChips" style="max-height:170px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:5px"></div>
+    </div>
+  </div>
   <div class="ft">
+    <button class="act" id="ddEditBtn" onclick="toggleDemoEdit()">編集（機体を追加）</button>
     <button class="act" onclick="duplicateDemoGroup()">複製して予約…</button>
     <button class="act" onclick="closeM('mDemoDetail')">閉じる</button>
   </div>
@@ -929,7 +946,9 @@ linkDateTimePair('sFrom', 'sTo');
 linkDatePair('sFromD', 'sToD');
 
 function openSeekDemo(){
-  const dayMs = curWeek;
+  /* ★開始日の既定★ 表示中の週が今週（または過去）なら、週の頭（過去日付になりうる）
+     ではなく今日にする。来週以降を見ているときは、その週の頭のまま。 */
+  const dayMs = Math.max(curWeek, dayTopMs(Date.now()));
   /* 拠点・区分。demo_reserve.html の #cat と同じ考え方（区分名に拠点が
      入っているので、これがそのまま「大阪の機材だけ」の絞り込みになる）。 */
   const cats = [...new Set(MACHINES.filter(m => m.resv && !m.ng).map(m => m.cat))].sort();
@@ -939,7 +958,7 @@ function openSeekDemo(){
   el('sTo').value   = msToLocal(dayMs + 17*3600e3);
   el('sFromD').value = msToDate(dayMs);
   el('sToD').value   = msToDate(dayMs);
-  el('sAllDay').checked = false;
+  el('sAllDay').checked = true;   /* 既定は終日 */
   paintSAllDayMy();
   SEEK = null; SEEK_SEL = new Set();
   el('seek-panel').innerHTML = '';
@@ -1277,8 +1296,96 @@ const isAllDayRow = r => {
 };
 function openDemoDetail(key){
   DETAIL_KEY = key;
+  closeDemoEdit();
   renderDemoDetail();
   openM('mDemoDetail');
+}
+
+/* 編集（機体の追加）。追加できるのは「この予約と同じ期間で、本当に空いている」機体だけ。
+   表示中の週に限らず正しく判定するため、開くたびに fetchDemoBusy() で取り直す。 */
+let EDIT_MODE = false, ADD_SEL = new Set(), EDIT_BUSY = new Map();
+function closeDemoEdit(){
+  EDIT_MODE = false; ADD_SEL = new Set();
+  el('ddAdd').style.display = 'none';
+  el('ddEditBtn').textContent = '編集（機体を追加）';
+}
+async function loadEditBusy(){
+  const rep = (DEMO_GROUPS.get(DETAIL_KEY) || [])[0]; if (!rep) return;
+  el('ddAddChips').innerHTML = `<span class="cnt">空き状況を確認中...</span>`;
+  try {
+    const rows = await fetchDemoBusy(rep.s, rep.e);
+    EDIT_BUSY = new Map(); rows.forEach(r => { if (!EDIT_BUSY.has(r.mid)) EDIT_BUSY.set(r.mid, r); });
+    paintAddChips();
+  } catch (err) {
+    el('ddAddChips').innerHTML = `<span class="none" style="color:var(--danger)">空き状況を確認できませんでした：${esc(err.message)}</span>`;
+  }
+}
+async function toggleDemoEdit(){
+  if (EDIT_MODE) { closeDemoEdit(); return; }
+  const rows = DEMO_GROUPS.get(DETAIL_KEY) || [];
+  const rep = rows[0]; if (!rep) return;
+  if (!CAP.lock || !CAP.setId) { showSnack('デモ機予約の設定が未整備のため、この画面からは追加できません'); return; }
+  if (!(rep.e > Date.now())) { showSnack('終了済みの予約には機体を追加できません'); return; }
+  EDIT_MODE = true; ADD_SEL = new Set();
+  el('ddAdd').style.display = '';
+  el('ddEditBtn').textContent = '編集を閉じる';
+  const cats = [...new Set(MACHINES.filter(m => m.resv && !m.ng).map(m => m.cat))].sort();
+  el('ddAddCat').innerHTML = `<option value="">全区分</option>` + cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  el('ddAddQ').value = '';
+  await loadEditBusy();
+}
+function paintAddChips(){
+  const rows = DEMO_GROUPS.get(DETAIL_KEY) || [];
+  const inSet = new Set(rows.map(r => r.mid));
+  const cat = el('ddAddCat').value, q = el('ddAddQ').value.trim().toLowerCase();
+  /* 追加済み・埋まった機体は選択から外す（絞り込みで見えなくなっただけの選択は残す） */
+  ADD_SEL.forEach(id => { const m = MACHINES.find(x => x.id === id); if (!m || inSet.has(id) || EDIT_BUSY.has(id)) ADD_SEL.delete(id); });
+  const cand = MACHINES.filter(m => m.resv && !m.ng && !inSet.has(m.id) && !EDIT_BUSY.has(m.id)
+    && (!cat || m.cat === cat) && (!q || m.n.toLowerCase().includes(q)));
+  const hidden = [...ADD_SEL].filter(id => !cand.some(m => m.id === id)).map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  el('ddAddChips').innerHTML = [...hidden, ...cand].map(m =>
+    `<span class="chip${ADD_SEL.has(m.id) ? ' on' : ''}" data-mid="${m.id}">${esc(m.n)}</span>`).join('')
+    || `<span class="cnt">この期間に追加できる空き機体はありません</span>`;
+  el('ddAddGo').textContent = `追加する（${ADD_SEL.size}台）`;
+  el('ddAddGo').disabled = !ADD_SEL.size;
+}
+el('ddAddChips').addEventListener('click', ev => {
+  const c = ev.target.closest('.chip'); if (!c || !c.dataset.mid) return;
+  const id = Number(c.dataset.mid);
+  if (ADD_SEL.has(id)) ADD_SEL.delete(id); else ADD_SEL.add(id);
+  paintAddChips();
+});
+['ddAddCat','ddAddQ'].forEach(id => el(id).addEventListener('input', paintAddChips));
+async function doAddToDemoSet(){
+  const rows = DEMO_GROUPS.get(DETAIL_KEY) || [];
+  const rep = rows[0]; if (!rep || !ADD_SEL.size) return;
+  const btn = el('ddAddGo'); btn.disabled = true;
+  try {
+    /* BookingSetId を持たない昔の予約は、先にこの予約の全行へセットIDを付ける
+       （付けないと、追加した機体が「同じ予約」としてまとまらない） */
+    let setId = rep.setId;
+    if (!setId) {
+      setId = newSetId();
+      for (const r of rows) {
+        const pr = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${r.rid}/fields`, { BookingSetId: setId }, null);
+        if (pr.status !== 200) throw new Error(`予約セットの設定に失敗しました（${pr.status}）`);
+      }
+    }
+    const details = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
+    const targets = [...ADD_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+    let ok = 0; const ng = [];
+    for (let i = 0; i < targets.length; i++) {
+      showSnack(`追加中... (${i}/${targets.length}) ${targets[i].n}`);
+      const r = await reserve({ machine: targets[i], s: rep.s, e: rep.e, setId, details });
+      if (r.ok) { ok++; ADD_SEL.delete(targets[i].id); } else ng.push(targets[i].n);
+    }
+    showSnack(`${ok}台を追加しました` + (ng.length ? `　追加できなかった機体：${ng.join('、')}` : ''));
+    await loadDemo(); DETAIL_KEY = setId; renderAll(); renderDemoDetail();
+    await loadEditBusy();
+  } catch (err) {
+    showSnack('追加できませんでした：' + err.message);
+    paintAddChips();
+  }
 }
 function renderDemoDetail(){
   const rows = (DEMO_GROUPS.get(DETAIL_KEY) || []).slice().sort((a,b) => a.mid - b.mid);
@@ -1319,7 +1426,7 @@ async function removeDemoMember(rid){
   const res = await cancelRowMy(rid);
   if (!res.ok) { showSnack('外せませんでした：' + res.message); return; }
   showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部にご連絡ください');
-  await loadDemo(); renderAll(); renderDemoDetail();
+  await loadDemo(); renderAll(); renderDemoDetail(); if (EDIT_MODE) loadEditBusy();
 }
 async function cancelDemoGroup(){
   const rows = (DEMO_GROUPS.get(DETAIL_KEY) || []).filter(r => r.e > Date.now() && CAP.lock);
@@ -1333,7 +1440,7 @@ async function cancelDemoGroup(){
     if (res.ok) ok++; else ng++;
   }
   showSnack(`${ok}台を取消しました` + (ng ? ` / 失敗 ${ng}件` : ''));
-  await loadDemo(); renderAll(); renderDemoDetail();
+  await loadDemo(); renderAll(); renderDemoDetail(); if (EDIT_MODE) loadEditBusy();
 }
 /* 同じ機体・件名・顧客名・行き先・備考・期間で「まとめて予約」モーダルを開く。
    期間はモーダルの中で書き換えて「空き状況を確認」してから予約する。 */
