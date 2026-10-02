@@ -418,6 +418,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .tl-dot-inquiry { background: #C77B24; }
 .tl-dot-aru { background: #2E4E9E; }
 .tl-dot-autopilot { background: #6B3FA0; }
+.tl-dot-mail { background: #0F7B8A; }
 .tl-vline { width: 1px; background: var(--border); flex: 1; margin-top: 3px; }
 .tl-body { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
 .tl-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
@@ -430,7 +431,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .type-inquiry { background: #FDF0E4; color: #854F0B; }
 .type-aru { background: #E9F0FE; color: #2E4E9E; }
 .type-autopilot { background: #F3E9FB; color: #6B3FA0; }
-/* 受信トレイ：経路（FAX／HP／ARU／AUTOPILOT）の絞り込みチップ */
+.type-mail { background: #E3F4F6; color: #0F6470; }
+/* 受信トレイ：AIの仕訳判定（Mail用。AISortSuggest があるときだけ出す） */
+.ai-sort-tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; font-weight: 500; }
+.ai-sort-tag.to-archive { background: #F1EFE8; color: #5F5E5A; }
+.ai-sort-tag.to-case { background: #E6F1FB; color: #185FA5; }
+/* 受信トレイ：経路（FAX／HP／ARU／AUTOPILOT／Mail）の絞り込みチップ */
 .route-row { display: flex; gap: 4px; padding: 0 10px 8px; flex-wrap: wrap; flex-shrink: 0; }
 .route-chip {
   font-size: 11px; padding: 3px 8px; border-radius: 12px; cursor: pointer;
@@ -1104,6 +1110,11 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
                 <span class="edit-row-label" style="color:#B38600;">⚠ 要確認ポイント (AI)</span>
                 <div class="view-value view-value-review" id="triageReviewReason">-</div>
               </div>
+              <!-- AIの仕訳判定（AISortSuggest があるときだけ。主にMail） -->
+              <div id="triageAiSortBox" class="edit-row" style="display:none;">
+                <span class="edit-row-label">🤖 AIの仕訳判定</span>
+                <div class="view-value view-value-box" id="triageAiSort" style="white-space:pre-wrap;">-</div>
+              </div>
             </div><!-- /triageViewBody -->
             <!-- 編集モードボディ（JSで動的生成） -->
             <div id="triageEditBody" style="display:none;"></div>
@@ -1112,7 +1123,9 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
               <button class="btn btn-primary" onclick="triageAs('案件管理','新規')" style="font-size:11px;">📋 新規案件として登録</button>
               <button class="btn" onclick="triageAs('案件管理','既存')" style="background:var(--surface2);font-size:11px;">🔗 既存案件に紐づけ</button>
-              <button class="btn" onclick="openFaxViewAssign()" style="font-size:11px;">📠 FAX履歴へ</button>
+              <!-- Mailは部署に振らないので「FAX履歴へ」を出さない（selectTriage で出し分け） -->
+              <button class="btn" id="triageFaxViewBtn" onclick="openFaxViewAssign()" style="font-size:11px;">📠 FAX履歴へ</button>
+              <button class="btn" onclick="triageToArchive()" style="font-size:11px;" title="案件化も部署への割り当てもしない（ゴミ・不要なもの）。FAX履歴の「🗂 アーカイブ」から戻せます">🗂 アーカイブ</button>
               <!-- 保管のみボタン削除済み -->
             </div>
             <!-- 既存案件紐づけ入力 -->
@@ -1184,6 +1197,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
         <div class="filter-btn" data-dept="業務センター" onclick="setFaxDeptFilter('業務センター',this)">業セ</div>
         <div class="filter-btn" data-dept="総務部" onclick="setFaxDeptFilter('総務部',this)">総務</div>
         <div class="filter-btn" data-dept="営業部" onclick="setFaxDeptFilter('営業部',this)">営業</div>
+        <div class="filter-btn" data-dept="archived" onclick="setFaxDeptFilter('archived',this)" title="受信トレイでアーカイブしたもの（ゴミ・不要なもの）。開いて「↩ 未仕訳に戻す」で受信トレイに戻せます">🗂 アーカイブ</div>
       </div>
       <!-- ステータスフィルター -->
       <div class="filter-row" id="faxStatusFilterRow">
@@ -1233,8 +1247,11 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
             <div style="background:var(--surface2);border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px;line-height:1.6" id="faxViewSummary">-</div>
             <!-- 完了処理 -->
             <div id="faxViewActionArea">
+              <!-- アーカイブを開いたときは完了処理を出さない（selectFaxView で出し分け） -->
+              <div id="faxViewCompleteBox">
               <textarea class="form-textarea" id="faxViewComment" rows="3" placeholder="対応内容を入力（必須）" style="margin-bottom:7px"></textarea>
               <button class="btn btn-green" onclick="completeFaxView()" style="width:100%">✅ 完了にする</button>
+              </div>
               <div style="margin-top:10px;display:flex;gap:6px;">
                 <button class="btn" onclick="faxViewLinkToCase()" style="flex:1;font-size:11px;padding:5px 8px;">📋 案件に紐付け</button>
                 <button class="btn" onclick="faxViewBackToUntriaged()" style="flex:1;font-size:11px;padding:5px 8px;">↩ 未仕訳に戻す</button>
@@ -1700,8 +1717,10 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
           <table class="help-tbl"><thead><tr><th>ボタン</th><th>動作</th></tr></thead><tbody>
             <tr><td>📋 新規案件として登録</td><td>このFAXから新しい案件を作成します</td></tr>
             <tr><td>🔗 既存案件に紐づけ</td><td>すでにある案件にこのFAXを追加します</td></tr>
-            <tr><td>📠 FAX履歴へ</td><td>案件化せず、FAX履歴（部署別の対応一覧）へ送ります</td></tr>
+            <tr><td>📠 FAX履歴へ</td><td>案件化せず、FAX履歴（部署別の対応一覧）へ送ります（Mailには出ません）</td></tr>
+            <tr><td>🗂 アーカイブ</td><td>ゴミ・不要なものを、案件化も部署への割り当てもせずに退避します。FAX履歴の「🗂 アーカイブ」から開き「↩ 未仕訳に戻す」で戻せます</td></tr>
           </tbody></table>
+          <div class="help-callout info"><strong>📧 Mail</strong>には、AIの仕訳判定（案件にする／アーカイブ）が表示されます。判定と実際の仕訳は後日見比べ、判定基準の改善に使います。判定と違う仕訳をしても問題ありません。</div>
           <div class="help-callout tip">新規案件登録のフォームは、上部の見出しを<strong>ドラッグして移動</strong>できます。背景が透けて裏のFAX原本が見えるので、FAXを見ながら入力できます。</div>
           <div class="help-callout info">誤って仕訳してしまった場合は、案件管理のタイムラインで対象のFAX受信イベントにカーソルを合わせ、<strong>「↩ 受信トレイ」</strong>を押すと未仕訳に戻せます。</div>
         </div>
@@ -4089,7 +4108,8 @@ const EVENT_FIELDS = [
 ].join(',');
 // ★受信トレイ専用の追加列。InquiryBody（問い合わせ本文＋元メール原文）は1件あたり数KBあるため、
 //   全件取得(fetchEventItems)には足さず、未仕訳だけを引く受信トレイ側でのみ取得する。
-const TRIAGE_EVENT_FIELDS = EVENT_FIELDS + ',InquiryBody';
+//   AISortSuggest / AISortReason は Mail の一次判定（案件管理／アーカイブ）。受信トレイでしか使わない。
+const TRIAGE_EVENT_FIELDS = EVENT_FIELDS + ',InquiryBody,AISortSuggest,AISortReason';
 // ============================================================
 // 受信トレイの経路（EventType → 表示カテゴリ）
 //   HP問い合わせ系は「受信」の文字を含まないため、FAXと同じ扱いにするには
@@ -4103,11 +4123,13 @@ const INBOX_ROUTES = [
   { key: 'hp',        label: '🌐 HP',  types: ['HP問い合わせ'] },
   { key: 'aru',       label: '🔷 ARU', types: ['ARU問い合わせ'] },
   { key: 'autopilot', label: '🤖 AMR', types: ['AUTOPILOT問い合わせ'] },
+  { key: 'mail',      label: '📧 Mail', types: ['メール受信'] },
 ];
 // サーバー側$filterに使う対象EventType（受信トレイに載せるもの）
 const TRIAGE_EVENT_TYPES = [
   'FAX受信（得意先）', 'FAX受信（仕入先）',
   'HP問い合わせ', 'ARU問い合わせ', 'AUTOPILOT問い合わせ',
+  'メール受信',
 ];
 // ============================================================
 // 案件の経路（EntryPoint → 表示カテゴリ）
@@ -4120,7 +4142,8 @@ const CASE_ROUTES = [
   { key: 'hp',        label: '🌐 HP',    entry: ['HP問い合わせ'] },
   { key: 'aru',       label: '🔷 ARU',   entry: ['ARU問い合わせ'] },
   { key: 'autopilot', label: '🤖 AMR',   entry: ['AUTOPILOT問い合わせ'] },
-  { key: 'other',     label: '✏️ その他', entry: ['電話', 'メール', 'EDI', 'その他'] },
+  { key: 'mail',      label: '📧 Mail',  entry: ['メール'] },
+  { key: 'other',     label: '✏️ その他', entry: ['電話', 'EDI', 'その他'] },
 ];
 function routeOfCase(c) {
   const ep = (c && c.EntryPoint) || '';
@@ -4133,12 +4156,14 @@ function entryPointForEventType(eventType) {
   if (r === 'hp') return 'HP問い合わせ';
   if (r === 'aru') return 'ARU問い合わせ';
   if (r === 'autopilot') return 'AUTOPILOT問い合わせ';
+  if (r === 'mail') return 'メール';
   if (r === 'fax') return 'FAX';
   return 'その他';
 }
 // 現在選択中の案件経路（'' = すべて）
 let caseRoute = '';
 // EventType から経路キーを求める。該当なしで「受信」を含むものは従来どおりFAX扱い。
+//   ※「メール受信」も「受信」を含むが、INBOX_ROUTES に先に載せているので mail になる。
 function routeOf(eventType) {
   const t = eventType || '';
   const hit = INBOX_ROUTES.find(r => r.types.includes(t));
@@ -4273,7 +4298,7 @@ function renderTriageList() {
         <div class="urgency-dot ${dotClass}"></div>
         <div class="case-body">
           <div class="case-top">
-            <span class="case-id-label">${escapeHtml(e.EventType || 'FAX受信')}${reviewBadge}</span>
+            <span class="case-id-label">${escapeHtml(e.EventType || 'FAX受信')}${reviewBadge}${aiSortTag(e)}</span>
             <span class="case-deadline dl-ok">${formatDate(e.EventDate)}</span>
           </div>
           <div class="case-company">${escapeHtml(e.RelationName || '-')}</div>
@@ -4283,6 +4308,13 @@ function renderTriageList() {
         </div>
       </div>`;
   }).join('');
+}
+// AIの仕訳判定（AISortSuggest）の小さな印。値が無いもの（FAX等）は何も出さない
+function aiSortTag(e) {
+  const s = e && e.AISortSuggest;
+  if (s === 'アーカイブ') return '<span class="ai-sort-tag to-archive">AI: アーカイブ</span>';
+  if (s === '案件管理')   return '<span class="ai-sort-tag to-case">AI: 案件</span>';
+  return '';
 }
 function selectTriage(spId) {
   // 編集中に別FAXを選んだら破棄
@@ -4324,6 +4356,19 @@ function selectTriage(spId) {
   } else {
     reviewBox.style.display = 'none';
   }
+  // AIの仕訳判定（Mail）。判定が無ければ枠ごと隠す
+  const aiSortBox = document.getElementById('triageAiSortBox');
+  if (e.AISortSuggest) {
+    aiSortBox.style.display = 'block';
+    document.getElementById('triageAiSort').textContent =
+      (e.AISortSuggest === 'アーカイブ' ? '🗂 アーカイブ推奨' : '📋 案件にする推奨')
+      + (e.AISortReason ? `\n${e.AISortReason}` : '');
+  } else {
+    aiSortBox.style.display = 'none';
+  }
+  // Mailは部署に振らない（案件にするか、アーカイブ）
+  document.getElementById('triageFaxViewBtn').style.display =
+    routeOf(e.EventType) === 'mail' ? 'none' : '';
   // 右カラム：PDFがあればPDFビューア、無く InquiryBody があればテキストパネル
   const pdfPath = e.AttachedPDFPath || '';
   if (pdfPath) {
@@ -4359,6 +4404,7 @@ const EDITABLE_EVENT_TYPES = [
   'HP問い合わせ',
   'ARU問い合わせ',
   'AUTOPILOT問い合わせ',
+  'メール受信',
 ];
 const EDITABLE_RELATION_TYPES = ['得意先', '仕入先', 'その他'];
 const EDITABLE_CONFIDENCES = ['高', '中', '低'];
@@ -4688,6 +4734,11 @@ async function confirmFaxViewAssign() {
   if (!dept) { alert('担当部署を選択してください'); return; }
   await updateTriageKubun('FAX対応', dept);
 }
+// 案件化も部署への割り当てもせず退避する（ゴミメール等）。
+//   FAX履歴の「🗂 アーカイブ」から「↩ 未仕訳に戻す」で戻せるので確認ダイアログは出さない。
+async function triageToArchive() {
+  await updateTriageKubun('アーカイブ');
+}
 let triageLinkSelectedId = null;
 function onTriageLinkSearch(val) {
   const list = document.getElementById('triageLinkList');
@@ -4778,6 +4829,8 @@ async function updateTriageKubun(kubun, dept, caseId) {
       fields.CompletedNote = '';
     }
     await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${e._spId}/fields`, fields);
+    // FAX履歴（FAX対応／アーカイブ）にすぐ出るようにキャッシュを捨てる
+    invalidateFaxViewCache();
     // リストから除外して一覧モードへ戻す
     triageItems = triageItems.filter(x => x._spId !== currentTriageId);
     currentTriageId = null;
@@ -4786,7 +4839,9 @@ async function updateTriageKubun(kubun, dept, caseId) {
     // 右カラム（PDF／問い合わせ本文）をリセット
     resetTriageViewer();
     renderTriageList();
-    setStatus('success', `「${kubun}」に仕訳しました`);
+    setStatus('success', kubun === 'アーカイブ'
+      ? 'アーカイブしました（FAX履歴の「🗂 アーカイブ」から戻せます）'
+      : `「${kubun}」に仕訳しました`);
   } catch(err) {
     alert('仕訳エラー: ' + err.message);
   }
@@ -4869,13 +4924,20 @@ function setFaxDeptFilter(d, el) {
     alert('先に右上の「マイ部署」を設定してください。');
     return;
   }
+  const wasArchived = faxDeptFilter === 'archived';
   faxDeptFilter = d;
   updateFaxDeptFilterButtons();
-  renderFaxViewList();
+  // アーカイブとFAX対応は取得元（仕訳区分）が違うので、出入りするときは取り直す
+  if (wasArchived !== (d === 'archived')) {
+    faxViewItems = [];
+    loadFaxViewList();
+  } else {
+    renderFaxViewList();
+  }
 }
 // 部署フィルター適用
 function filterByDept(items) {
-  if (faxDeptFilter === 'all') return items;
+  if (faxDeptFilter === 'all' || faxDeptFilter === 'archived') return items;
   if (faxDeptFilter === 'mine') return items.filter(e => e.AssignedDept === myDept);
   return items.filter(e => e.AssignedDept === faxDeptFilter);
 }
@@ -4884,22 +4946,26 @@ function filterByDept(items) {
 //   FAX履歴は「仕訳区分=FAX対応」しか使わないのでサーバー側で絞る（1往復・約0.5秒／188件）。
 //   部署・未完了/完了の切り替えは取得済みデータ内で行うため、機能は従来どおり。
 //   ※ 仕訳区分(SortKubun) のインデックスが必要（設定済み）。失敗時は全件取得にフォールバック。
-let faxViewCache = null, faxViewCacheAt = 0;
-function invalidateFaxViewCache() { faxViewCache = null; faxViewCacheAt = 0; }
-async function fetchFaxViewEventItems(force) {
-  if (!force && faxViewCache && (Date.now() - faxViewCacheAt) < EVENT_LIST_CACHE_TTL) {
-    return faxViewCache;
+//   「🗂 アーカイブ」を選んだときだけ 仕訳区分=アーカイブ を引く（ゴミメールで増え続けるため、
+//   通常のFAX履歴には混ぜない）。キャッシュは仕訳区分ごとに持つ。
+let faxViewCache = {}, faxViewCacheAt = {};
+function invalidateFaxViewCache() { faxViewCache = {}; faxViewCacheAt = {}; }
+// 今のフィルターで表示する仕訳区分
+function faxViewKubun() { return faxDeptFilter === 'archived' ? 'アーカイブ' : 'FAX対応'; }
+async function fetchFaxViewEventItems(force, kubun) {
+  if (!force && faxViewCache[kubun] && (Date.now() - (faxViewCacheAt[kubun] || 0)) < EVENT_LIST_CACHE_TTL) {
+    return faxViewCache[kubun];
   }
   const sid = await getSiteId();
-  const flt = `fields/SortKubun eq 'FAX対応'`;
+  const flt = `fields/SortKubun eq '${kubun}'`;
   try {
     const data = await graphGetAll(
       `/sites/${sid}/lists/${SP.eventListId}/items?$expand=fields($select=${EVENT_FIELDS})`
       + `&$filter=${encodeURIComponent(flt)}&$top=999`
     );
-    faxViewCache = data.value.map(v => ({ _spId: v.id, ...v.fields }));
-    faxViewCacheAt = Date.now();
-    return faxViewCache;
+    faxViewCache[kubun] = data.value.map(v => ({ _spId: v.id, ...v.fields }));
+    faxViewCacheAt[kubun] = Date.now();
+    return faxViewCache[kubun];
   } catch(e) {
     console.warn('[fetchFaxViewEventItems] 絞り込み取得に失敗。全件取得にフォールバックします:', e && e.message);
     return await fetchEventItems(force);
@@ -4911,9 +4977,12 @@ async function loadFaxViewList(force) {
   }
   try {
     // ★軽量取得を使う（下のJS側フィルタは従来と同じなので表示結果は変わらない）
-    const items = await fetchFaxViewEventItems(force);
+    const kubun = faxViewKubun();
+    const items = await fetchFaxViewEventItems(force, kubun);
+    // 取得中にアーカイブ⇔通常を切り替えられていたら、古い結果は捨てる
+    if (kubun !== faxViewKubun()) return;
     faxViewItems = items
-      .filter(e => e.SortKubun === 'FAX対応')
+      .filter(e => e.SortKubun === kubun)
       .sort((a, b) => new Date(b.EventDate || 0) - new Date(a.EventDate || 0));
     renderFaxViewList();
   } catch(e) {
@@ -4953,11 +5022,15 @@ function setupThumbLazyLoad() {
 }
 function renderFaxViewList(keepLimit) {
   if (!keepLimit) faxRenderLimit = FAX_RENDER_STEP;
+  const archived = faxDeptFilter === 'archived';
+  // アーカイブには未対応／完了の区別が無いので、ステータスフィルターを隠して無視する
+  const statusRow = document.getElementById('faxStatusFilterRow');
+  if (statusRow) statusRow.style.display = archived ? 'none' : '';
   // まず部署フィルター
   let filtered = filterByDept(faxViewItems);
   // 次にステータスフィルター
-  if (faxViewFilter === 'undone') filtered = filtered.filter(e => e.CompletedFlag !== true);
-  if (faxViewFilter === 'done')   filtered = filtered.filter(e => e.CompletedFlag === true);
+  if (!archived && faxViewFilter === 'undone') filtered = filtered.filter(e => e.CompletedFlag !== true);
+  if (!archived && faxViewFilter === 'done')   filtered = filtered.filter(e => e.CompletedFlag === true);
   // テキスト検索
   const fq = normJa(document.getElementById('faxSearchInput')?.value || '');
   if (fq) {
@@ -4988,10 +5061,11 @@ function renderFaxViewList(keepLimit) {
     if (dept === 'all')  return src.length;
     return src.filter(e => e.AssignedDept === dept).length;
   };
+  //   アーカイブ表示中は faxViewItems がアーカイブ分なので、部署の件数は出さない
   document.querySelectorAll('#faxDeptFilterRow .filter-btn').forEach(btn => {
     const base = btn.dataset.deptLabel || btn.textContent.replace(/\s*\(\d+\)$/, '');
     btn.dataset.deptLabel = base;
-    const cnt = deptCount(btn.dataset.dept);
+    const cnt = (archived || btn.dataset.dept === 'archived') ? 0 : deptCount(btn.dataset.dept);
     btn.textContent = cnt > 0 ? `${base} (${cnt})` : base;
   });
   document.getElementById('faxViewCount').textContent = filtered.length + '件';
@@ -5005,8 +5079,8 @@ function renderFaxViewList(keepLimit) {
   }
   const shown = filtered.slice(0, faxRenderLimit);
   document.getElementById('faxViewList').innerHTML = shown.map(e => {
-    const done = e.CompletedFlag === true;
-    const dept = e.AssignedDept || '未割当';
+    const done = !archived && e.CompletedFlag === true;
+    const dept = archived ? '🗂 アーカイブ' : (e.AssignedDept || '未割当');
     const pdfUrl = e.AttachedPDFPath || e.PDFPath || '';
     // サムネイル用のデータ属性（後でロード）
     const thumbId = 'thumb_' + e._spId;
@@ -5084,7 +5158,14 @@ function selectFaxView(spId) {
   document.getElementById('faxViewDeptBadge').innerHTML =
     `<span class="badge badge-blue">${e.AssignedDept || '-'}</span>`;
   document.getElementById('faxViewSummary').textContent = e.Summary || '-';
-  const done = e.CompletedFlag === true;
+  // アーカイブは完了処理の対象外（戻すか案件に紐付けるだけ）
+  const archived = e.SortKubun === 'アーカイブ';
+  if (archived) {
+    document.getElementById('faxViewDept').textContent = '-';
+    document.getElementById('faxViewDeptBadge').innerHTML = '<span class="badge badge-gray">🗂 アーカイブ</span>';
+  }
+  document.getElementById('faxViewCompleteBox').style.display = archived ? 'none' : '';
+  const done = !archived && e.CompletedFlag === true;
   document.getElementById('faxViewActionArea').style.display = done ? 'none' : 'block';
   document.getElementById('faxViewDoneArea').style.display = done ? 'block' : 'none';
   if (done) {
@@ -5098,6 +5179,24 @@ function selectFaxView(spId) {
   if (pdfPath) {
     document.getElementById('faxViewPdfName').textContent = e.Title || 'FAX';
     loadPdfWithAuth(pdfPath, 'faxViewPdfArea');
+  } else if (isInquiryEvent(e)) {
+    // PDFの無い問い合わせ・Mailは本文を出す（InquiryBody は一覧では取っていないので1件だけ取得）
+    document.getElementById('faxViewPdfName').textContent = e.Title || e.EventType || '問い合わせ';
+    pdfArea.innerHTML = '<div class="loading-spinner">本文を読み込み中...</div>';
+    (async () => {
+      try {
+        const body = e.InquiryBody || await fetchInquiryBody(e._spId);
+        e.InquiryBody = body;
+        if (currentFaxViewId !== spId) return;   // 読み込み中に別の件を開いた
+        pdfArea.innerHTML = body
+          ? `<div class="inquiry-panel">${linkifyText(body)}</div>`
+          : '<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">本文がありません</div></div>';
+      } catch (err) {
+        if (currentFaxViewId !== spId) return;
+        pdfArea.innerHTML = '<div class="pdf-empty"><div class="pdf-empty-icon">⚠️</div>'
+          + `<div class="pdf-empty-text">本文の取得に失敗しました<br><small>${escapeHtml(err.message)}</small></div></div>`;
+      }
+    })();
   } else {
     document.getElementById('faxViewPdfName').textContent = e.Title || 'FAX';
     pdfArea.innerHTML = '<div class="pdf-empty" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">PDFパスが未設定です</div></div>';
@@ -5189,6 +5288,8 @@ async function faxViewBackToUntriaged() {
       CompletedAt: null,
       CompletedNote: '',
     });
+    invalidateFaxViewCache();
+    invalidateTriageCache();
     faxViewItems = faxViewItems.filter(x => x._spId !== currentFaxViewId);
     currentFaxViewId = null;
     backToFaxList();
@@ -5471,8 +5572,9 @@ function loadPdf(url, name) {
 // 案件管理タブ：問い合わせ本文（PDFを持たないHP/ARU/AMRイベント）
 // ============================================================
 // このイベントは問い合わせ経由か（EventTypeで判定。INBOX_ROUTESと同じ語彙を使う）
+//   Mail も本文（InquiryBody）を持つので同じ扱いにする
 function isInquiryEvent(ev) {
-  return ['hp', 'aru', 'autopilot'].indexOf(routeOf(ev && ev.EventType)) >= 0;
+  return ['hp', 'aru', 'autopilot', 'mail'].indexOf(routeOf(ev && ev.EventType)) >= 0;
 }
 // ★InquiryBody は EVENT_FIELDS に含めていない（1件数KBあり、全件取得を重くするため）。
 //   案件管理で表示するときだけ、その1件を都度取得する。
@@ -5552,7 +5654,7 @@ function renderPdfTabs() {
     const et = ev.EventType || '';
     const route = routeOf(et);
     const icon = !ev.AttachedPDFPath && isInquiryEvent(ev)
-      ? (route === 'aru' ? '🔷' : route === 'autopilot' ? '🤖' : '🌐')
+      ? (route === 'aru' ? '🔷' : route === 'autopilot' ? '🤖' : route === 'mail' ? '📧' : '🌐')
       : (et.includes('受信') ? '📥' : et.includes('送信') ? '📤' : '📄');
     const label = et.replace(/（.*?）/g, '') || 'FAX';
     const date = formatDate(ev.EventDate);
@@ -5581,6 +5683,7 @@ const STATS_ROUTES = [
   { key: 'hp',        label: 'HP問い合わせ', color: '#C77B24' },
   { key: 'aru',       label: 'ARU',       color: '#2E4E9E' },
   { key: 'autopilot', label: 'AMR',       color: '#6B3FA0' },
+  { key: 'mail',      label: 'Mail',      color: '#0F7B8A' },
 ];
 let statsRows = [];   // [{ ym:'2026-09', y:'2026', route:'fax', isCase:true }]
 const statsYm = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
@@ -6088,6 +6191,7 @@ function getEventDotClass(type) {
   if (type === 'ARU問い合わせ') return 'tl-dot-aru';
   if (type === 'AUTOPILOT問い合わせ') return 'tl-dot-autopilot';
   if (type === 'HP問い合わせ') return 'tl-dot-inquiry';
+  if (type === 'メール受信') return 'tl-dot-mail';
   if (type.includes('受信') && type.includes('得意先')) return 'tl-dot-fax-in';
   if (type.includes('送信') || type.includes('送付')) return 'tl-dot-fax-out';
   if (type.includes('仕入先')) return 'tl-dot-supplier';
@@ -6099,6 +6203,7 @@ function getEventTypeClass(type) {
   if (type === 'ARU問い合わせ') return 'type-aru';
   if (type === 'AUTOPILOT問い合わせ') return 'type-autopilot';
   if (type === 'HP問い合わせ') return 'type-inquiry';
+  if (type === 'メール受信') return 'type-mail';
   if (type.includes('受信') && type.includes('得意先')) return 'type-fax-in';
   if (type.includes('送信')) return 'type-fax-out';
   if (type.includes('仕入先')) return 'type-supplier';
