@@ -331,6 +331,17 @@ table.meisai.sticker input.snum{width:100%}
 .skchip:hover{background:#fff0f4}
 .skchip.none{border-color:var(--line);color:#777}
 .det.view .skchips{display:none}
+.speccopy{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
+.speccopy .muted{font-size:12.5px}
+.sclist{flex-basis:100%;display:flex;flex-direction:column;gap:6px;margin-top:2px}
+.scrow{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;text-align:left;width:100%;
+  background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;
+  font-size:13px;font-weight:400;color:var(--text);cursor:pointer}
+.scrow:hover{background:#fff5f8;border-color:#f0b5c0}
+.scrow b{font-weight:800}
+.scrow .scs{color:var(--muted);flex:1;min-width:200px}
+.scrow .sct{font-size:11px;font-weight:700;color:var(--brand-dark);background:#fff0f4;border-radius:999px;padding:2px 8px}
+.det.view .speccopy{display:none}
 table.meisai.sticker input.snum{text-align:right}
 /* --- 車体番号まとめ入力 --- */
 .ovl{position:fixed;inset:0;background:rgba(20,20,25,.45);z-index:900;display:none;
@@ -691,6 +702,7 @@ body:not(.signed-in) .gate{display:flex}
 </div>
 </section>
 <section class="fcard form-grid" id="cardSpec"><div class="fch"><b>仕様・手配</b><span class="fcs">この機種の塗装・銘板・申請・ステッカーと進み具合</span></div>
+<div class="speccopy"><button type="button" class="msmall" id="btnSpecCopy">前回の出図から仕様をコピー</button><span class="muted">表面処理・銘板表示方法・吹付表示・申請をまとめて持ってきます（同じ受注先・機種を優先して出します）。</span><div class="sclist" id="specCopyList" style="display:none"></div></div>
 <label for="surface">表面処理</label><select id="surface"><option value="">--選択--</option><option>塗装</option><option>半メッキ</option><option>メッキ</option><option>フルメッキ</option></select>
 <label for="wt_method">重さの表示</label><div class="wt3"><div class="wtf"><span>銘板表示方法</span><select id="wt_method"><option value="">--選択--</option><option>実測値</option><option>ゼロ五</option><option>記載なし</option><option>固定値</option></select></div><div class="wtf" id="wtFixedBox" style="display:none"><span>固定値(kg)</span><input id="wt_fixed" type="text" inputmode="numeric" placeholder="1000"></div><div class="wtf"><span>吹付表示</span><select id="spray"><option value="">--選択--</option><option>有</option><option>無</option></select></div><div class="wtnote" id="wtNote">実重量は1台ごとに出荷入力で入ります。ここで決めるのは「どう表示するか」です。</div></div>
 <label>申請</label><div class="application-row"><div class="application-field"><span>申請（空港）</span><select id="application_airport"><option value="">--選択--</option><option>申請あり</option><option>申請なし</option></select></div><div class="application-field"><span>申請内容</span><input id="application_content" type="text" list="application_content_options" placeholder="候補を選択または直接入力"><datalist id="application_content_options"><option value="全数4方向"></option><option value="全数4方向+前斜め"></option><option value="先頭車両のみ4方向"></option></datalist></div></div>
@@ -1892,6 +1904,7 @@ function pickSticker(kind){
 }
 function renderSticker(list){
   refreshStickerOptions();
+  $("specCopyList").style.display="none";/* 別の出図を開いたとき、前の候補を残さない */
   const src=(list&&list.length)?list.slice():[];
   while(src.length<STICKER_ROWS)src.push({});
   $("stickerRows").innerHTML=src.map(stickerRowHtml).join("");
@@ -2094,6 +2107,42 @@ async function prevCopy(){
   /* 製造番号・内訳キーは毎回ちがうので持ってこない */
   renderMeisai(rows.map(r=>Object.assign({},r,{bk:"",snFrom:"",snTo:""})));
   toast("出図 "+src.ship_no+"（"+(src.date||"")+"）から "+rows.length+" 件コピーしました");
+}
+
+/* 表面処理・銘板表示方法・吹付表示・申請を、過去の出図から持ってくる。
+   得意先の標準値ではなく「前回どうだったか」を見て、今回の分を決めるための補助。 */
+const SPEC_FIELDS=["surface","wt_method","wt_fixed","spray","application_airport","application_content"];
+function specSummary(d){
+  return [d.surface,
+    d.wt_method?("銘板："+d.wt_method+(d.wt_method==="固定値"&&d.wt_fixed?"（"+d.wt_fixed+"kg）":"")):"",
+    d.spray?("吹付："+d.spray):"",
+    d.application_airport,d.application_content].filter(Boolean).join("　/　");
+}
+function specCopyOpen(){
+  const box=$("specCopyList");
+  if(box.style.display!=="none"){box.style.display="none";return}
+  const cust=trim($("customer").value),model=trim($("model_free").value),me=trim($("ship_no").value);
+  const score=d=>(cust&&d.customer===cust?2:0)+(model&&d.model===model?1:0);
+  const cand=loadData().filter(d=>d.ship_no!==me&&SPEC_FIELDS.some(k=>trim(d[k])))
+    .map(d=>({d,s:score(d)}))
+    .sort((a,b)=>b.s-a.s||String(b.d.date||"").localeCompare(String(a.d.date||"")));
+  const pick=cand.filter(x=>x.s>0).length?cand.filter(x=>x.s>0):cand;
+  if(!pick.length){toast("コピーできる出図がありません",true);return}
+  box.innerHTML=pick.slice(0,8).map(({d,s})=>
+    '<button type="button" class="scrow" data-no="'+esc(d.ship_no)+'"><b>'+esc(d.ship_no)+'</b>'+
+    '<span>'+esc(d.customer||"")+'</span><span>'+esc(d.model||"")+'</span>'+
+    (s>=3?'<span class="sct">同じ受注先・機種</span>':s===2?'<span class="sct">同じ受注先</span>':s===1?'<span class="sct">同じ機種</span>':'')+
+    '<span class="scs">'+esc(specSummary(d))+'</span></button>').join("");
+  box.style.display="";
+}
+function specCopyApply(no){
+  const d=loadData().find(x=>x.ship_no===no);if(!d)return;
+  SPEC_FIELDS.forEach(k=>{
+    const el=$(k);el.value=d[k]||"";
+    el.dispatchEvent(new Event(el.tagName==="SELECT"?"change":"input",{bubbles:true}));
+  });
+  $("specCopyList").style.display="none";
+  toast("出図 "+no+" の仕様をコピーしました。内容を確認して、保存してください");
 }
 
 /* ============================================================
@@ -4037,6 +4086,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     recalcMeisai();
   });
   $("btnPrevCopy").addEventListener("click",prevCopy);
+  $("btnSpecCopy").addEventListener("click",specCopyOpen);
+  $("specCopyList").addEventListener("click",e=>{const b=e.target.closest(".scrow");if(b)specCopyApply(b.dataset.no)});
   $("btnKintone").addEventListener("click",kinOpen);
   $("btnKinRead").addEventListener("click",kinRead);
   $("btnKinApply").addEventListener("click",kinApply);
