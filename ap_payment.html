@@ -71,7 +71,8 @@ const ROUNDS=['10日','20日','月末'],DEPTS_END=['工場','国内営業','ソ�
 const MOCK=window.AP_MOCK||null;   // dev だけ
 const $=id=>document.getElementById(id);
 let msalApp=null,acct=null,ME='';
-const PI={fmap:{},id:null,items:[]},INV={fmap:{},id:null,items:[]},VB={fmap:{},id:null,byCode:{}},SP={fmap:{},id:null,items:[]},SB={fmap:{},id:null,items:[]},PM={fmap:{},id:null,items:[]};
+const PI={fmap:{},id:null,items:[]},INV={fmap:{},id:null,items:[]},VB={fmap:{},id:null,byCode:{}},SP={fmap:{},id:null,items:[]},SB={fmap:{},id:null,items:[]},PM={fmap:{},id:null,items:[]},SL={fmap:{},id:null,byInv:{}};
+let EXR={};   // 経費の決まり（AP_Setting の expense.rules）：会計仕訳の貸方・税コード
 let WF={siteId:null,settings:{},reqs:[]};
 const st={round:'月末',dept:null,verified:{}};
 
@@ -109,13 +110,14 @@ function initMonth(){const s=$('month');const n=new Date();for(let i=-1;i<6;i++)
 function month(){return $('month').value;}
 async function resolveLists(){
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);const find=n=>ls.value.find(x=>x.displayName===n);
-  const need={AP_PaymentInstruction:PI,AP_Invoice:INV,AP_VendorBank:VB,AP_SmilePay:SP,AP_SettleBatch:SB};
+  const need={AP_PaymentInstruction:PI,AP_Invoice:INV,AP_VendorBank:VB,AP_SmilePay:SP,AP_SettleBatch:SB,AP_PaymentSlip:SL};
   for(const [n,o] of Object.entries(need)){const l=find(n);if(!l)throw new Error(n+' がありません（Provision-SmileAP.ps1 -Apply で作ってください）');o.id=l.id;}
   const pm=find('AP_PurchaseMatch');if(pm)PM.id=pm.id;
-  for(const o of [PI,INV,VB,SP,SB].concat(PM.id?[PM]:[])){const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);o.fmap={};c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
+  for(const o of [PI,INV,VB,SP,SB,SL].concat(PM.id?[PM]:[])){const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);o.fmap={};c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
   // 決まり（手数料・サイトと期日）は AP_Setting の smile.rules（仕入の画面と同じ）
   const d=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
   if(it)APSmile.setRules(JSON.parse(it.fields.Value||'{}'));
+  const ex=(d.value||[]).find(x=>x.fields&&x.fields.Title==='expense.rules');EXR=ex?JSON.parse(ex.fields.Value||'{}'):{};
   // ワークフロー（申請の状態を読む・受付フォルダに置く）
   try{WF.siteId=(await gget(`/sites/${WF_SITE_PATH}`)).id;const wl=await gget(`/sites/${WF.siteId}/lists?$select=id,displayName`);WF.lists={};wl.value.forEach(x=>WF.lists[x.displayName]=x.id);
     const ss=await fetchAll(WF.siteId,WF.lists.WF_Setting);ss.forEach(x=>{WF.settings[x.fields.Title]=x.fields.Value;});}
@@ -127,6 +129,8 @@ async function reload(){
   SP.items=(await fetchAll(AP_SITE,SP.id,`fields/${F(SP,'決済月')} eq '${month()}'`)).map(it=>({id:it.id,f:it.fields}));
   SB.items=(await fetchAll(AP_SITE,SB.id,`fields/${F(SB,'決済月')} eq '${month()}'`)).map(it=>({id:it.id,f:it.fields}));
   PM.items=PM.id?(await fetchAll(AP_SITE,PM.id)).map(it=>({id:it.id,f:it.fields})):[];
+  SL.byInv={};(await fetchAll(AP_SITE,SL.id)).forEach(it=>{const k=String(it.fields[F(SL,'請求書ID')]||'');if(k)(SL.byInv[k]=SL.byInv[k]||[]).push(it.fields);});
+  Object.values(SL.byInv).forEach(a=>a.sort((x,y)=>(+x[F(SL,'明細行番号')]||0)-(+y[F(SL,'明細行番号')]||0)));
   VB.byCode={};(await fetchAll(AP_SITE,VB.id)).forEach(it=>{const c=(it.fields[F(VB,'仕入先コード')]||'').trim();if(c)VB.byCode[c]=it.fields;});
   await syncBatches();msg('');render();}
 
@@ -194,7 +198,7 @@ function render(){
   <div class="depts">${depts.map(d=>{const s=stateOf(st.round,d),rows=piOf(st.round,d),t=rows.reduce((x,p)=>x+(+pv(p,'支払額')||0),0),pd=pendingOf(st.round,d),b=s.b;
     return `<div class="dept ${d===st.dept?'sel':''}" data-dept="${d}"><div style="display:flex;justify-content:space-between;align-items:center"><h3>${esc(d)}</h3><span class="st ${s.cls}">${esc(s.label)}</span></div>
       <div class="amt">${yen(t)}<span class="s"> 円・${rows.length}件</span></div>
-      ${pd.sp||pd.ex?`<div class="s" style="color:var(--warn)">未確認：${pd.sp?`<a href="ap_smile_import.html?month=${encodeURIComponent(month())}">仕入 ${pd.sp}社</a>`:''}${pd.sp&&pd.ex?'・':''}${pd.ex?`<a href="ap_review.html">経費 ${pd.ex}件</a>`:''}</div>`:''}
+      ${pd.sp||pd.ex?`<div class="s" style="color:var(--warn)">未確認：${pd.sp?`<a href="ap_smile_import.html?month=${encodeURIComponent(month())}">仕入 ${pd.sp}社</a>`:''}${pd.sp&&pd.ex?'・':''}${pd.ex?`<a href="ap_expense.html?month=${encodeURIComponent(month())}">経費 ${pd.ex}件</a>`:''}</div>`:''}
       ${b?`<div class="s">${sbv(b,'申請番号')?`申請 <a href="${wfUrl(sbv(b,'申請番号'))}" target="_blank">${esc(sbv(b,'申請番号'))}</a>`:'申請はまだ出ていません'}・${esc(sbv(b,'回した人')||'')}</div>`:''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
         ${s.s==='決裁に回せる'||s.s==='差し戻し'?`<button class="pri" data-send="${d}">決裁に回す</button>`:''}
@@ -217,7 +221,7 @@ function outputCard(){
     <div style="font-size:13px">${states.map(x=>`${esc(x.d)} <span class="st ${x.s.cls}">${esc(x.s.label)}</span>`).join('　')||'支払指図がありません'}</div>
     ${v?`<ul class="checks" style="margin-top:6px">${v.map(c=>`<li><span class="${c.ok?'ok':'ng'}">${c.ok?'✔':'✖'}</span> ${esc(c.label)}${c.detail?` <span style="color:var(--sub)">— ${esc(c.detail)}</span>`:''}</li>`).join('')}</ul>`:''}
     <div class="out" style="margin-top:8px"><button id="bVerify" ${ready?'':'disabled title="すべての部門が決裁済みになると照合できます"'}>🔒 決裁した内容と照合する</button>
-      <button class="pri" id="bZen" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 全銀（総合振込）</button><button class="pri" id="bDen" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 でんさい</button><button class="pri" id="bSmile" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 SMILE 支払伝票</button>
+      <button class="pri" id="bZen" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 全銀（総合振込）</button><button class="pri" id="bDen" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 でんさい</button><button class="pri" id="bSmile" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 SMILE 支払伝票</button><button class="pri" id="bJnl" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 会計仕訳（経費）</button>
       <span style="font-size:12px;color:var(--sub)">出力の直前に、決裁した内容（支払先・金額・期日・振込先口座）と今の支払指図を照合します。違うときは出力できません。</span></div></div>`;}
 function detailCard(){
   const d=st.dept;if(!d)return '';const rows=piOf(st.round,d);
@@ -235,7 +239,7 @@ function detailCard(){
           <td>${ps==='先行支払済'?`<button data-unpre="${p.id}" style="padding:1px 8px;font-size:12px">先行支払を取り消す</button>`:ps==='未'&&m==='総合振込'?`<button data-pre="${p.id}" style="padding:1px 8px;font-size:12px" title="急ぎで先に振込済み。全銀の出力から外し、報告には残す">先行支払済</button>`:''}</td></tr>`;}).join('')).join('')}</table></div>`;}
 function wire(){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
-  on('bGen',generate);on('bVerify',()=>verifyRound(st.round));on('bZen',outputZengin);on('bDen',outputDensai);on('bSmile',outputSmileDenpyo);
+  on('bGen',generate);on('bVerify',()=>verifyRound(st.round));on('bZen',outputZengin);on('bDen',outputDensai);on('bSmile',outputSmileDenpyo);on('bJnl',outputJournal);
   document.querySelectorAll('[data-round]').forEach(b=>b.onclick=()=>{st.round=b.dataset.round;st.dept=null;render();});
   document.querySelectorAll('[data-dept]').forEach(b=>b.onclick=e=>{if(e.target.closest('button,a'))return;st.dept=b.dataset.dept;render();});
   document.querySelectorAll('[data-send]').forEach(b=>b.onclick=()=>sendToSettle(st.round,b.dataset.send));
@@ -351,10 +355,15 @@ async function sendToSettle(round,dept){
       const bankNow=[pv(p0,'銀行コード'),pv(p0,'支店コード'),pv(p0,'口座番号')].join('|'),bankPrev=lastBank[k];
       const notes=[];if(sp){String(g('気づき')||'').split('\n').filter(Boolean).forEach(s=>notes.push(s));if(g('変えた理由'))notes.push('分け方：'+g('変えた理由'));if(g('コメント'))notes.push('総務：'+g('コメント'));}
       ps.forEach(p=>{if(pv(p,'メモ'))notes.push(pv(p,'メモ'));});
+      let exLines;if(src==='経費'){exLines=[];for(const x of invOf(p0)){const sl=(x.f[F(INV,'請求NO')]?'No.'+x.f[F(INV,'請求NO')]+' ':'');
+          (SL.byInv[String(x.id)]||[]).forEach(l=>exLines.push({genre:l[F(SL,'勘定科目名')]||'',amount:+l[F(SL,'金額_税込')]||0,note:sl+(l[F(SL,'摘要')]||'')}));
+          const lg=(()=>{try{return JSON.parse(x.f.CheckLog||'[]');}catch{return [];}})().filter(e=>e.act==='OK'||e.act==='確定').map(e=>String(e.by||'').split(/[\s　]/)[0]);
+          if(lg.length)notes.push('確認：'+lg.join('→'));if(x.f.CheckNote)notes.push('総務：'+x.f.CheckNote);if(x.f.WfRequestNo)notes.push('ワークフロー '+x.f.WfRequestNo+'（社長決裁済み）');}
+        if(!exLines.length)exLines=undefined;}
       const amount=ps.reduce((s,p)=>s+(+pv(p,'支払額')||0),0),fee=ps.reduce((s,p)=>s+(+pv(p,'振込手数料')||0),0);
       pubRows.push({group:dept,no:pv(p0,'支払先コード')||'',payee:pv(p0,'支払先名')||'',kind:src==='経費'?'経費':'仕入',genre:src==='経費'?'経費':'仕入（SMILE）',
         method:[...new Set(ps.map(p=>pv(p,'支払手段')==='総合振込'?'振込':pv(p,'支払手段')))].join('・'),amount,fee,
-        lines:ps.length>1?ps.map(p=>({genre:pv(p,'支払手段')==='総合振込'?'振込':pv(p,'支払手段'),amount:+pv(p,'支払額')||0,note:pv(p,'期日')?'期日 '+pv(p,'期日'):''})):undefined,
+        lines:exLines||(ps.length>1?ps.map(p=>({genre:pv(p,'支払手段')==='総合振込'?'振込':pv(p,'支払手段'),amount:+pv(p,'支払額')||0,note:pv(p,'期日')?'期日 '+pv(p,'期日'):''})):undefined),
         due:ps.map(p=>pv(p,'期日')).filter(Boolean)[0]||'',payDate:pv(p0,'実支払日')||'',prev1:p1[k]||0,prev2:p2[k]||0,
         smile:sp?{incl:+g('税込仕入額')||0,balance:+g('今回支払残高')||0,carry:+g('繰越残高')||0,held:+g('保留した繰越')||0}:undefined,
         note:notes.join(' ／ '),flag:!!(sp&&g('コメント')),invoices:inv,
@@ -513,6 +522,30 @@ async function outputSmileDenpyo(){
   const out=[SMILE_HEAD.join('\t'),...rows].join('\r\n')+'\r\n';const body=new TextEncoder().encode(out);const bytes=new Uint8Array(3+body.length);bytes.set([0xEF,0xBB,0xBF]);bytes.set(body,3);
   downloadBytes(bytes,`smile_shiharai_${ym6}_${st.round}_${ts()}.txt`);
   logOut(`SMILE 支払伝票（取込専用・タブ区切り）：${rows.length}行 / 合計 ${yen(sum)} 円`+(warns.length?`\n⚠ ${warns.join(' / ')}`:'')+'\n※SMILE の取込は「テキストファイル取込専用レイアウト」・「1件目のデータはタイトル」にチェック・文字コード UTF-8。取り込んだら、翌月の仕入（SMILE）の照合で一致を確かめます。');}
+// ---------- 会計仕訳（経費）：SMILE 会計の仕訳明細取込（設計書 v2.5 6-7。仕入は SMILE 支払伝票から連動するので作らない） ----------
+// 1 伝票＝1 請求書、行＝経費の画面で確かめた仕訳（借方）。貸方は支払方法の口座、税コード・貸方は AP_Setting の expense.rules
+const JNL_HEAD=['伝票区切','処理連番','伝票日付','伝票No','決算区分','行番号','借方科目コード','借方内訳コード','借方税コード','借方部門コード','借方金額','借方消費税','借方税区分','借方摘要コード','借方摘要','借方C/F除外区分',
+  '貸方科目コード','貸方内訳コード','貸方税コード','貸方部門コード','貸方金額','貸方消費税','貸方税区分','貸方摘要コード','貸方摘要','貸方C/F除外区分','仕訳入力区分'];
+async function outputJournal(){
+  const ym=month(),J=EXR.journal||{};if(!J.credit){snack('AP_Setting に expense.rules（仕訳の貸方）がありません',true);return;}
+  if(!outList(null))return;
+  const list=piOf(st.round).filter(p=>pv(p,'承認状態')===FINAL&&pv(p,'元')==='経費');if(!list.length){snack('経費の支払指図がありません');return;}
+  const q=v=>{v=v==null?'':String(v);return /[,"\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  const cut=s=>{s=String(s||'');let n=0,o='';for(const c of s){n+=/[ -~｡-ﾟ]/.test(c)?1:2;if(n>80)break;o+=c;}return o;};   // 摘要は80バイト（全角40字）まで
+  const rows=[],warns=[];let seq=0,sum=0;
+  for(const p of list){const ids=String(pv(p,'元請求書ID')||'').split(',').filter(Boolean),date=(pv(p,'実支払日')||'').replace(/-/g,''),method=pv(p,'支払手段')||'総合振込',cr=J.credit[method]||J.credit['総合振込']||{};
+    for(const id of ids){const x=INV.items.find(i=>String(i.id)===id);const lines=SL.byInv[id]||[];const payee=x?iv(x.f,'支払先名')||'':pv(p,'支払先名');
+      if(!lines.length){warns.push(`${payee}：仕訳がありません（経費の画面で入れてください）`);continue;}
+      const tot=lines.reduce((s,l)=>s+(+l[F(SL,'金額_税込')]||0),0);if(x&&Math.round(tot)!==Math.round(+iv(x.f,'金額_税込')||0))warns.push(`${payee}：仕訳の合計 ${yen(tot)} が請求額 ${yen(iv(x.f,'金額_税込'))} と違います`);
+      seq++;lines.forEach((l,k)=>{const g=d=>l[F(SL,d)];const excl=Math.round(+g('金額_税抜')||0),tax=Math.round(+g('消費税')||0),incl=excl+tax,tm=g('税区分')==='税抜'?'0':'1';
+        if(!g('勘定科目コード'))warns.push(`${payee}：科目コードがない行があります`);
+        const memo=cut(`${payee} ${g('摘要')||''}`.trim()),crAmt=J.creditAmount==='incl'?incl:excl;
+        rows.push([k===0?1:0,seq,date,'',1,k+1,g('勘定科目コード')||'','000000',(J.taxCodes||{})[g('税率区分')]||'000',g('部門コード')||'',excl,tm==='1'?tax:'',tm,'000000',memo,0,
+          cr.code||'',cr.sub||'','','',crAmt,'',0,'000000',memo,0,J.inputKind||30].map(q).join(','));sum+=incl;});}}
+  if(!rows.length){snack('出力する仕訳がありません'+(warns.length?'：'+warns[0]:''),true);return;}
+  const body=new TextEncoder().encode([JNL_HEAD.join(','),...rows].join('\r\n')+'\r\n');const bytes=new Uint8Array(3+body.length);bytes.set([0xEF,0xBB,0xBF]);bytes.set(body,3);
+  downloadBytes(bytes,`smile_shiwake_${ym.replace('/','')}_${st.round}_${ts()}.csv`);
+  logOut(`会計仕訳（経費・SMILE 会計の仕訳明細取込）：${seq}伝票 ${rows.length}行 / 税込 ${yen(sum)} 円`+(warns.length?`\n⚠ ${warns.join('\n⚠ ')}`:'')+'\n※SMILE V 会計 → 随時業務 → 仕訳明細取込（UTF-8・タイトル行あり）。初めての取り込みは1伝票で試し、金額（税抜・税込の扱い）と税コードを確かめてください。');}
 boot().catch(e=>{console.error(e);snack('起動エラー: '+e.message,true);});
 </script>
 </body>

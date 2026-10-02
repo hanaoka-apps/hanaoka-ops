@@ -6,7 +6,7 @@
       key: 'ap',
       apps: [
         { f: 'ap_dashboard.html',      l: 'ホーム' },
-        { f: 'ap_review.html',         l: '経費のチェック' },
+        { f: 'ap_expense.html',        l: '経費' },
         { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
         { f: 'ap_entry.html',          l: '手入力' },
         { f: 'ap_recurring.html',      l: '毎月の支払' },
