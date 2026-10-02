@@ -52,8 +52,8 @@ CALENDAR_MAIL = 'company-calendar@hanaoka-corp.co.jp'
 TZ = 'Tokyo Standard Time'
 
 CATEGORY_BY_COLUMN = {
-    'main': '総務スケジュール',
-    'sub': '総務スケジュール補足',
+    'main': '定例・決済',
+    'sub': '準備・作業',
 }
 
 
