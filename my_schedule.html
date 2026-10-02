@@ -128,6 +128,8 @@
   .card h3{margin:0;padding:12px 16px;font-size:14.5px;border-bottom:1px solid var(--border);
     background:#f8f9fc;color:var(--primary)}
   .card .bd{padding:13px 16px;font-size:13px}
+  .card dl{margin:0;display:grid;grid-template-columns:80px 1fr;gap:7px 10px}
+  .card dt{color:var(--muted)}.card dd{margin:0;word-break:break-all}
   .card .ft{padding:11px 16px;border-top:1px solid var(--border);display:flex;gap:8px;
     justify-content:flex-end;background:#f8f9fc;align-items:center}
   .fm .f{display:flex;flex-direction:column;gap:3px;margin-bottom:9px}
@@ -227,6 +229,13 @@
 <div class="modal" id="mSeek"><div class="card" style="max-width:560px">
   <h3>デモ機の空きを探す</h3>
   <div class="bd">
+    <!-- ★予約ボタンは常にいちばん上に固定★ 機体が多くて一覧を下までスクロール
+         しても、選んだ機体をまとめて予約するボタンを探しに戻らなくて済むように。 -->
+    <div id="seekBar" style="position:sticky;top:0;z-index:5;background:#fff;margin:-13px -16px 10px;
+         padding:9px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="act pri" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだ機体をまとめて予約（0台）</button>
+      <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); paintSeekDemo();">選択解除</button>
+    </div>
     <div class="fm">
       <div class="f2">
         <div class="f"><span>拠点・区分</span><select id="sCat"></select></div>
@@ -287,6 +296,16 @@
     <span class="msg" id="bMsg"></span>
     <button class="act" onclick="closeM('mBulk')">キャンセル</button>
     <button class="act pri" id="bSave" onclick="doReserveBulkMy()">まとめて予約する</button>
+  </div>
+</div></div>
+
+<!-- デモ機予約の詳細（セット予約も1台の予約も同じ画面） -->
+<div class="modal" id="mDemoDetail"><div class="card">
+  <h3 id="ddTitle"></h3>
+  <div class="bd" id="ddBody"></div>
+  <div class="ft">
+    <button class="act" onclick="duplicateDemoGroup()">複製して予約…</button>
+    <button class="act" onclick="closeM('mDemoDetail')">閉じる</button>
   </div>
 </div></div>
 
@@ -503,6 +522,7 @@ let lastLoad = 0, refreshTimer = null;
 let CARS_BY_MAIL = new Map(), ROOMS_BY_MAIL = new Map();
 let MACHINES = [];
 let CAP = { lock:false, token:false, mid:false, cancel:false, setId:false };
+let DEMO_GROUPS = new Map();   /* 表示中のデモ機予約。セットID（なければ _行ID）→ その行の配列 */
 let COMMON = [], MINE = [], FAC = [], DEMO = [];
 let STATUS_ERRS = [];
 
@@ -732,7 +752,9 @@ async function loadDemo(){
       reqMail: (f.RequesterEmail || '').toLowerCase(),
       st: f.LoanStatus || '予約',
       token: f.LockToken || '',
-      setId: f.BookingSetId || ''
+      setId: f.BookingSetId || '',
+      cust: f.CustomerName || '', dest: f.Destination || '',
+      req: f.RequesterName || '', notes: f.Notes || ''
     };
   }).filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e) && r.st !== '取消' && r.reqMail === me);
   DEMO.sort((a,b) => a.s - b.s);
@@ -757,13 +779,11 @@ function liHtml(r, d0, d1){
            : cutL ? `…–${jHM(r.e)}`
            : cutR ? `${jHM(r.s)}–…`
            : `${jHM(r.s)}–${jHM(r.e)}`;
-  const cancelBtn = r.cancelable ? `<button class="cancel" title="取消" onclick="event.stopPropagation();doCancelMy('${esc(r.rid)}')">✕</button>`
-    /* 複数機体のセット予約は、この行だけ取消すという操作が意味を持たないので、
-       ✕の代わりにデモ機管理アプリのセット詳細を開くリンクにする（追加・削除はそちらで）。 */
-    : r.isGroup ? `<a class="cancel" title="デモ機管理で追加・削除" target="_blank" rel="noopener"
-        href="demo_reserve.html?openSet=${encodeURIComponent(r.setId)}&d=${jKey(r.s)}"
-        onclick="event.stopPropagation()">↗</a>` : '';
-  return `<div class="li ${r.cls}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}">`
+  /* 1台だけ・セットIDなしの予約は、従来どおり行の✕でそのまま取消せる。
+     セット予約の取消・機体の外しは、クリックで開く詳細画面の中で行う。 */
+  const cancelBtn = r.cancelable ? `<button class="cancel" title="取消" onclick="event.stopPropagation();doCancelMy('${esc(r.rid)}')">✕</button>` : '';
+  const click = r.gkey ? ` style="cursor:pointer" onclick="openDemoDetail('${esc(r.gkey)}')"` : '';
+  return `<div class="li ${r.cls}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}${r.gkey ? '（クリックで詳細）' : ''}"${click}>`
     + `<span class="tm">${tm}</span><b>${esc(r.t)}</b>${cancelBtn}</div>`;
 }
 function rowHtml(days, todayKey, rowClass, nameHtml, rows){
@@ -799,20 +819,23 @@ function renderAll(){
     if (!demoGroups.has(key)) demoGroups.set(key, []);
     demoGroups.get(key).push(r);
   });
-  const demoRows = [...demoGroups.values()].map(rows => {
+  DEMO_GROUPS = demoGroups;
+  const nameOf = r => MACHINES.find(m => m.id === r.mid)?.n || `#${r.mid}`;
+  const demoRows = [...demoGroups.entries()].map(([key, rows]) => {
     const first = rows[0];
-    if (rows.length === 1 && first.setId) {
-      const mName = MACHINES.find(m => m.id === first.mid)?.n || `#${first.mid}`;
-      return { ...first, t: `${mName} — ${first.t}`, cls:'s-demo', isGroup:true, setId:first.setId };
-    }
     if (rows.length === 1) {
-      const mName = MACHINES.find(m => m.id === first.mid)?.n || `#${first.mid}`;
       /* デモ機管理アプリと同じ条件：終了済みの予約は取消せない
          （終わった予約を消せると、実際に貸し出した記録が消えてしまうため）。 */
-      return { ...first, t: `${mName} — ${first.t}`, cls:'s-demo', cancelable: first.e > Date.now() && CAP.lock };
+      return { ...first, t: `${nameOf(first)} — ${first.t}`, cls:'s-demo', gkey:key,
+               cancelable: !first.setId && first.e > Date.now() && CAP.lock };
     }
+    /* 複数機体のセットは「N台」ではなく機体名を並べる（多いときは先頭の数台＋ほかN台。
+       全部の機体名はクリックで開く詳細に出る）。 */
+    const names = rows.slice().sort((a,b) => a.mid - b.mid).map(nameOf);
+    const SHOW = 5;
+    const label = names.slice(0, SHOW).join('、') + (names.length > SHOW ? ` ほか${names.length - SHOW}台` : '');
     const s = Math.min(...rows.map(r => r.s)), e = Math.max(...rows.map(r => r.e));
-    return { ...first, s, e, t: `${rows.length}台 — ${first.t}`, cls:'s-demo', isGroup:true, setId:first.setId };
+    return { ...first, s, e, t: `${label} — ${first.t}`, cls:'s-demo', gkey:key };
   });
   g.innerHTML = dayHeadHtml(days, '', todayKey)
     + rowHtml(days, todayKey, 'cmn',  nameHtml('会社共通予定表', COMMON), COMMON)
@@ -920,6 +943,7 @@ function openSeekDemo(){
   paintSAllDayMy();
   SEEK = null; SEEK_SEL = new Set();
   el('seek-panel').innerHTML = '';
+  paintSeekBar();
   openM('mSeek');
 }
 async function runSeekDemo(){
@@ -988,17 +1012,18 @@ function paintSeekDemo(){
         }).join('')
       + `<span class="cnt">機体名にマウスを乗せると誰が押さえているか出ます</span></div>`;
   }
-  if (free.length) {
-    h += `<div class="grp-line" style="margin-top:9px;align-items:center">`
-      + `<button class="act pri" id="seekBulkGo"${SEEK_SEL.size ? '' : ' disabled'}>選んだ機体をまとめて予約（${SEEK_SEL.size}台）</button>`
-      + `<button class="act" id="seekSelClear"${SEEK_SEL.size ? '' : ' disabled'}>選択解除</button>`
-      + `<span class="cnt">緑の機体名をクリックして選ぶと、複数まとめて1回で予約できます</span></div>`;
-  }
+  if (free.length) h += `<div class="cnt" style="margin-top:9px">緑の機体名をクリックして選ぶと、複数まとめて1回で予約できます（予約ボタンは上に固定してあります）</div>`;
   p.innerHTML = h;
+  paintSeekBar();
+}
+/* 上に固定した予約ボタン・選択解除の表示（台数と有効/無効）を合わせる */
+function paintSeekBar(){
+  const n = SEEK_SEL.size;
+  el('seekBulkGo').textContent = `選んだ機体をまとめて予約（${n}台）`;
+  el('seekBulkGo').disabled = !n;
+  el('seekSelClear').disabled = !n;
 }
 el('seek-panel').addEventListener('click', ev => {
-  if (ev.target.closest('#seekBulkGo')) { openBulkNewMy(); return; }
-  if (ev.target.closest('#seekSelClear')) { SEEK_SEL = new Set(); paintSeekDemo(); return; }
   const c = ev.target.closest('.chip'); if (!c || c.classList.contains('busy') || !c.dataset.mid) return;
   const id = Number(c.dataset.mid);
   if (SEEK_SEL.has(id)) SEEK_SEL.delete(id); else SEEK_SEL.add(id);
@@ -1195,18 +1220,19 @@ async function doReserveBulkMy(){
   btn.disabled = false;
   msg.textContent = `${ok}/${targets.length}台を予約しました`;
   msg.className = 'msg' + (ok === targets.length ? ' ok' : ok === 0 ? ' ng' : '');
-  await loadDemo(); renderAll();
+  await loadDemo(); renderAll(); paintSeekBar();
   if (ok === targets.length) {
     showSnack(`${ok}台を予約しました`);
     setTimeout(() => { closeM('mBulk'); closeM('mSeek'); }, 900);
   }
 }
 
-async function doCancelMy(rid){
-  const r = DEMO.find(x => x.rid === rid); if (!r) return;
-  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は取消せません'); return; }
+/* 取消（1行）の共通処理。確認ダイアログや画面の更新は呼び出し側で行う。
+   ★順番を変えてはいけない★ 履歴を『取消』にしてから占有情報を外す
+   （逆だと、占有が空いた瞬間に別の人が同じ枠を取れて二重予約になる）。 */
+async function cancelRowMy(rid){
+  const r = DEMO.find(x => x.rid === rid); if (!r) return { ok:false, message:'対象が見つかりません' };
   const m = MACHINES.find(x => x.id === r.mid);
-  if (!confirm(`この予約を取消します。\n\n件名：${r.t}\n期間：${jFull(r.s)} 〜 ${jFull(r.e)}\n\n取消すと枠が空き、他の人が予約できるようになります。`)) return;
   try {
     const fields = { LoanStatus: '取消' };
     if (CAP.cancel) {
@@ -1215,17 +1241,110 @@ async function doCancelMy(rid){
       fields.CancelledAt      = new Date().toISOString();
     }
     const pr = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${rid}/fields`, fields, null);
-    if (pr.status !== 200) throw new Error(`履歴の更新に失敗しました（${pr.status}）`);
+    if (pr.status !== 200) return { ok:false, message:`履歴の更新に失敗しました（${pr.status}）` };
     let freed = true;
     if (m) {
       const now = Date.now();
       freed = r.token ? await release(m, r.token, now) : await releaseBy(m, x => x.s === r.s && x.e === r.e, now);
     }
-    showSnack(freed ? '予約を取消しました' : '予約は取消しましたが、枠の解放に失敗しました。総務部にご連絡ください');
-    await loadDemo(); renderAll();
+    return { ok:true, freed };
   } catch (err) {
-    showSnack('取消できませんでした：' + err.message);
+    return { ok:false, message: err.message };
   }
+}
+
+async function doCancelMy(rid){
+  const r = DEMO.find(x => x.rid === rid); if (!r) return;
+  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は取消せません'); return; }
+  if (!confirm(`この予約を取消します。\n\n件名：${r.t}\n期間：${jFull(r.s)} 〜 ${jFull(r.e)}\n\n取消すと枠が空き、他の人が予約できるようになります。`)) return;
+  const res = await cancelRowMy(rid);
+  if (!res.ok) { showSnack('取消できませんでした：' + res.message); return; }
+  showSnack(res.freed ? '予約を取消しました' : '予約は取消しましたが、枠の解放に失敗しました。総務部にご連絡ください');
+  await loadDemo(); renderAll();
+}
+
+/* ============================================================
+   デモ機予約の詳細（この画面のまま見る。デモ機ページへは遷移しない）
+   ------------------------------------------------------------
+   まとめて予約したセット（BookingSetId）も、1台だけの予約も同じ画面で
+   扱う。機体ごとに外す・丸ごと取消す・複製して別の期間で予約し直す、
+   までここで完結する。機体の追加はデモ機ページ（demo_reserve.html）で。 */
+let DETAIL_KEY = null;
+const isAllDayRow = r => {
+  const a = toJ(r.s), b = toJ(r.e);
+  return a.getUTCHours() === 0 && a.getUTCMinutes() === 0 &&
+    ((b.getUTCHours() === 23 && b.getUTCMinutes() >= 59) || (b.getUTCHours() === 0 && b.getUTCMinutes() === 0));
+};
+function openDemoDetail(key){
+  DETAIL_KEY = key;
+  renderDemoDetail();
+  openM('mDemoDetail');
+}
+function renderDemoDetail(){
+  const rows = (DEMO_GROUPS.get(DETAIL_KEY) || []).slice().sort((a,b) => a.mid - b.mid);
+  if (!rows.length) { closeM('mDemoDetail'); return; }
+  const rep = rows[0], now = Date.now();
+  el('ddTitle').textContent = rep.t;
+  const removable = rows.filter(r => r.e > now && CAP.lock);
+  const memberRows = rows.map(r => {
+    const m = MACHINES.find(x => x.id === r.mid);
+    const st = now < r.s ? '予約' : now > r.e ? '予約終了' : '貸出中';
+    const canRemove = r.e > now && CAP.lock;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span style="flex:1">${esc(m ? m.n : '#' + r.mid)}</span>
+      <span style="color:var(--muted);font-size:11px">${st}</span>
+      ${canRemove ? `<button class="act" style="padding:2px 8px;font-size:12px;color:var(--danger)" onclick="removeDemoMember('${esc(r.rid)}')">✕ 外す</button>`
+                  : `<span style="color:var(--muted);font-size:11px">終了済み</span>`}
+    </div>`;
+  }).join('');
+  el('ddBody').innerHTML = `
+    <dl>
+      <dt>予約期間</dt><dd>${jFull(rep.s)} 〜 ${jFull(rep.e)}${isAllDayRow(rep) ? '（終日）' : ''}</dd>
+      <dt>顧客名</dt><dd>${esc(rep.cust) || '—'}</dd>
+      <dt>行き先</dt><dd>${esc(rep.dest) || '—'}</dd>
+      <dt>依頼者</dt><dd>${esc(rep.req) || '—'}</dd>
+      <dt>備考</dt><dd>${esc(rep.notes) || '—'}</dd>
+    </dl>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+      <b>機体（${rows.length}台）</b>
+      ${removable.length > 1 ? `<button class="act" style="padding:2px 8px;font-size:12px;color:var(--danger)" onclick="cancelDemoGroup()">この予約を丸ごと取消す</button>` : ''}
+    </div>
+    <div>${memberRows}</div>`;
+}
+async function removeDemoMember(rid){
+  const r = DEMO.find(x => x.rid === rid); if (!r) return;
+  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は外せません'); return; }
+  const m = MACHINES.find(x => x.id === r.mid);
+  if (!confirm(`この予約から機体を外します。\n\n　デモ機：${m ? m.n : '#' + r.mid}\n　件名　：${r.t}\n\n外すと枠が空き、他の人が予約できるようになります。`)) return;
+  const res = await cancelRowMy(rid);
+  if (!res.ok) { showSnack('外せませんでした：' + res.message); return; }
+  showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部にご連絡ください');
+  await loadDemo(); renderAll(); renderDemoDetail();
+}
+async function cancelDemoGroup(){
+  const rows = (DEMO_GROUPS.get(DETAIL_KEY) || []).filter(r => r.e > Date.now() && CAP.lock);
+  if (!rows.length) return;
+  const rep = rows[0];
+  if (!confirm(`この予約をすべて取消します。\n\n　件名　：${rep.t}\n　期間　：${jFull(rep.s)} 〜 ${jFull(rep.e)}\n　機体数：${rows.length}台\n\n取消すと全ての枠が空き、他の人が予約できるようになります。`)) return;
+  let ok = 0, ng = 0;
+  for (let i = 0; i < rows.length; i++) {
+    showSnack(`取消中... (${i}/${rows.length})`);
+    const res = await cancelRowMy(rows[i].rid);
+    if (res.ok) ok++; else ng++;
+  }
+  showSnack(`${ok}台を取消しました` + (ng ? ` / 失敗 ${ng}件` : ''));
+  await loadDemo(); renderAll(); renderDemoDetail();
+}
+/* 同じ機体・件名・顧客名・行き先・備考・期間で「まとめて予約」モーダルを開く。
+   期間はモーダルの中で書き換えて「空き状況を確認」してから予約する。 */
+function duplicateDemoGroup(){
+  const rows = DEMO_GROUPS.get(DETAIL_KEY) || [];
+  const rep = rows[0]; if (!rep) return;
+  SEEK = { s: rep.s, e: rep.e, allDay: isAllDayRow(rep) };
+  SEEK_SEL = new Set(rows.map(r => r.mid));
+  closeM('mDemoDetail');
+  openBulkNewMy();
+  el('bTitle').value = rep.t; el('bCust').value = rep.cust; el('bDest').value = rep.dest; el('bNotes').value = rep.notes;
 }
 
 initMsal().catch(e => { console.error('MSAL初期化エラー:', e); showSnack('認証エラー: ' + (e.errorCode || e.message)); });
