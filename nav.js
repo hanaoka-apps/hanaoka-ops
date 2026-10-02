@@ -93,18 +93,17 @@
     var aside = document.createElement('aside');
     aside.className = 'hx-sidebar'; aside.id = 'hx-sidebar';
     aside.innerHTML =
-      '<a class="hx-brand" href="hanaoka_hub.html" title="HANAOKA HUB へ">' +
+      /* HANAOKA HUB へのリンクは、HUB を社内に案内するまで外しておく（案内後に戻す） */
+      '<div class="hx-brand">' +
         '<div class="hx-mark">' + svg('<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>') + '</div>' +
         '<div class="hx-brand-name">予約状況<small>HANAOKA RESERVE</small></div>' +
-      '</a>' +
+      '</div>' +
       '<div class="hx-label">MENU</div>' +
       g.apps.map(function (a) {
         return '<a class="hx-item' + (a.f === cur ? ' active' : '') + '" href="' + a.f + '" title="' + a.l + '">' +
           svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
       }).join('') +
       '<div class="hx-foot">' +
-        '<a class="hx-item" href="hanaoka_hub.html" title="HANAOKA HUB">' +
-          svg('<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-9"/>') + '<span>HANAOKA HUB</span></a>' +
         '<button type="button" class="hx-item hx-toggle" id="hx-toggle" title="サイドバーを開閉">' +
           '<svg class="hx-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span>たたむ</span></button>' +
       '</div>';
