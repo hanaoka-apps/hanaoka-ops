@@ -792,18 +792,12 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
 <script>
 // ============================================================
-// MSAL CONFIG (既存アプリ / HANAOKA HUB ポータルと同一パターン)
+// MSAL CONFIG（全アプリ共通。HUBのサインインをそのまま使う → hanaoka_auth.js）
 // ============================================================
-const MSAL_CONFIG = {
-  auth: {
-    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
-    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    redirectUri: window.location.origin + window.location.pathname,
-  },
-  cache: { cacheLocation: 'localStorage' }
-};
+const MSAL_CONFIG = HanaokaAuth.msalConfig();
 // Files.ReadWrite.All: 再集計リクエストの合図ファイルをSharedMastersへ
 // アップロードするために書き込み権限が必要(以前はFiles.Read.Allのみだった)。
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Sites.Manage.All', 'Files.ReadWrite.All'];
@@ -844,33 +838,17 @@ async function initAuth() {
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    account = accounts[0];
-    msalInstance.setActiveAccount(account);
-    try {
-      // キャッシュされたアカウントのセッションがまだ有効か、ここで1回だけ
-      // 確認する。期限切れ等で失敗した場合、以降の各データ取得が個別に
-      // ポップアップを試みて軒並みブロックされる(=何も表示されない)前に
-      // ここでサインアウト状態に戻し、ボタンでの再サインインを促す。
-      await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
-      await onSignedIn();
-    } catch (e) {
-      console.warn('セッションが切れているため再サインインが必要です', e);
-      document.getElementById('signInBtn').hidden = false;
-    }
-  } else {
-    document.getElementById('signInBtn').hidden = false;
-  }
+  // セッションがまだ有効かはここで1回だけ確認する（→ HanaokaAuth.restore）
+  account = await HanaokaAuth.restore(msalInstance, SCOPES);
+  if (account) await onSignedIn();
+  else document.getElementById('signInBtn').hidden = false;
 }
 
 async function login() {
   const btn = document.getElementById('signInBtn');
   try {
     btn.disabled = true;
-    const result = await msalInstance.loginPopup({ scopes: SCOPES });
-    account = result.account;
-    msalInstance.setActiveAccount(account);
+    account = await HanaokaAuth.login(msalInstance, SCOPES);
     await onSignedIn();
   } catch (e) {
     btn.disabled = false;

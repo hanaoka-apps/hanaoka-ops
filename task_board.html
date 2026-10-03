@@ -1226,13 +1226,14 @@ pre.cfg{background:#12313c;color:#d6e6e2;padding:12px 14px;border-radius:9px;fon
 
 <div id="toast"></div>
 
+<script src="hanaoka_auth.js"></script>
 <script>
 /* ============================================================
    1. CONFIG  ← ここだけ書き換えて GitHub Pages に置けば動きます
    ============================================================ */
 /* どのビルドが動いているか。設定画面と点検ログに出します。
    「直したはずなのに直っていない」の大半は反映漏れなので、毎回ここを見れば分かります */
-var APP_VER = "2026-09-16-1";
+var APP_VER = "2026-10-03-1";
 var CONFIG = {
   clientId : "d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
   tenantId : "3933e8a0-c945-4e97-ae67-c82131087cad",
@@ -1781,24 +1782,24 @@ async function ensureMsal(){
   for(var i=0;i<cdns.length;i++){ try{ await loadScript(cdns[i]); if(window.msal) return true }catch(e){} }
   return false;
 }
-async function signIn(){
+/* silentOnly=true … 起動時。HUBでサインイン済みならそのまま入る。
+   だめなら null を返すだけ（ゲートのボタンを押してもらう） */
+async function signIn(silentOnly){
   if(!await ensureMsal()) throw new Error("MSAL ライブラリを読み込めませんでした（社内プロキシで CDN が塞がれている可能性）");
   if(!S.msal){
-    S.msal=new msal.PublicClientApplication({
-      auth:{clientId:CONFIG.clientId,
-            authority:"https://login.microsoftonline.com/"+CONFIG.tenantId,
-            // 他アプリと同じ auth.html を共有。だからページごとのリダイレクトURI登録が不要。
-            // ※これが効くのはリポジトリのルート直置きのときだけ（フォルダに入れると
-            //   folder/auth.html を探しに行って404になる）
-            redirectUri:new URL("auth.html",location.href).href},
-      cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:false}
-    });
+    // 他アプリと同じ設定（hanaoka_auth.js）。サインインは localStorage でHUBと共有、
+    // 戻り先は共通の auth.html。だからページごとのリダイレクトURI登録が不要。
+    // ※これが効くのはリポジトリのルート直置きのときだけ（フォルダに入れると
+    //   folder/auth.html を探しに行って404になる）
+    S.msal=new msal.PublicClientApplication(HanaokaAuth.msalConfig());
     if(typeof S.msal.initialize==="function") await S.msal.initialize();
     try{ await S.msal.handleRedirectPromise() }catch(e){ console.warn(e) }
   }
-  var acc=S.msal.getAllAccounts()[0];
-  if(!acc){ var r=await S.msal.loginPopup({scopes:LOGIN_SCOPES}); acc=r.account }
-  S.msal.setActiveAccount && S.msal.setActiveAccount(acc);
+  var acc=await HanaokaAuth.restore(S.msal,LOGIN_SCOPES);
+  if(!acc){
+    if(silentOnly) return null;
+    acc=await HanaokaAuth.login(S.msal,LOGIN_SCOPES);
+  }
   /* localAccountId は AAD のオブジェクトID。自分を @メンションするのに要ります。
      これが無いと「担当者＝自分」のタスクで自分の名前が平文になります。 */
   S.me={name:acc.name||acc.username, upn:acc.username, id:acc.localAccountId||""};
@@ -1808,7 +1809,7 @@ async function signIn(){
 async function token(set){
   set=set||"core";
   var scopes=SCOPE_SETS[set]||SCOPE_SETS.core;
-  var acc=S.msal.getAllAccounts()[0];
+  var acc=HanaokaAuth.pickAccount(S.msal);
   try{ return (await S.msal.acquireTokenSilent({scopes:scopes,account:acc})).accessToken }
   catch(e){
     if(SILENT_ONLY[set]){
@@ -4403,6 +4404,19 @@ $("gateGo").onclick=async function(){
   $("banner").className="banner hide";
   S.me={name:"",upn:"",id:""}; renderMe();
   $("gate").classList.add("on");
+  /* HUBでサインイン済みなら、ボタンを押さずにそのまま入る。
+     ポップアップは出さない（ボタン起点でないとブロックされる）。だめならゲートのまま */
+  var b=$("gateGo"), label=b.textContent;
+  b.disabled=true; b.textContent="サインインを確認しています…";
+  signIn(true).then(async function(acc){
+    b.disabled=false; b.textContent=label;
+    if(!acc) return;
+    $("gate").classList.remove("on");
+    renderMe(); setPoll(); await loadAll();
+  }).catch(function(err){
+    console.warn("[boot] 自動サインインできませんでした",err);
+    b.disabled=false; b.textContent=label;
+  });
 })();
 </script>
 </body>
