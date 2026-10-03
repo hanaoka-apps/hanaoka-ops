@@ -31,6 +31,12 @@ DRIVE_ID = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8"
 BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
 
+# Microsoft Graph's single-request upload is intended for small files. Use a
+# resumable upload session for larger protected data (value_analysis.json can
+# exceed 250 MB). Graph requires non-final fragments to be multiples of 320 KiB.
+UPLOAD_SESSION_THRESHOLD = 10 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024  # 32 * 320 KiB
+
 # アップロード対象: (ローカルパス, SharePoint上の名前)
 TARGETS = [
     (DATA / "item_history.json", "item_history.json"),  # 仕入先名・金額(最機微)
@@ -63,17 +69,58 @@ def upload_file(token: str, local_path: Path, sp_name: str) -> bool:
         return False
     enc = requests.utils.quote(sp_name, safe="")
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{enc}:/content"
-    body = local_path.read_bytes()
-    print(f"  📤 {sp_name} をアップロード中... ({len(body)/1024/1024:.2f} MB)", flush=True)
-    r = requests.put(
-        url,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        data=body,
-        timeout=600,
-    )
-    r.raise_for_status()
+    size = local_path.stat().st_size
+    print(f"  📤 {sp_name} をアップロード中... ({size/1024/1024:.2f} MB)", flush=True)
+    if size >= UPLOAD_SESSION_THRESHOLD:
+        upload_large_file(token, local_path, sp_name, enc, size)
+    else:
+        with local_path.open("rb") as body:
+            r = requests.put(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                data=body,
+                timeout=600,
+            )
+            r.raise_for_status()
     print(f"  [OK] {sp_name} アップロード完了")
     return True
+
+
+def upload_large_file(token: str, local_path: Path, sp_name: str, encoded_name: str, size: int) -> None:
+    """Upload a large file in sequential Graph upload-session fragments."""
+    session_url = (
+        f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/"
+        f"{encoded_name}:/createUploadSession"
+    )
+    session_response = requests.post(
+        session_url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"item": {"@microsoft.graph.conflictBehavior": "replace", "name": sp_name}},
+        timeout=30,
+    )
+    session_response.raise_for_status()
+    upload_url = session_response.json().get("uploadUrl")
+    if not upload_url:
+        raise RuntimeError("SharePointの大容量アップロードセッションURLを取得できません")
+
+    with local_path.open("rb") as source:
+        start = 0
+        while start < size:
+            chunk = source.read(min(UPLOAD_CHUNK_SIZE, size - start))
+            if not chunk:
+                raise RuntimeError("大容量アップロード中にファイル末尾へ到達しました")
+            end = start + len(chunk) - 1
+            response = requests.put(
+                upload_url,
+                headers={
+                    "Content-Length": str(len(chunk)),
+                    "Content-Range": f"bytes {start}-{end}/{size}",
+                },
+                data=chunk,
+                timeout=600,
+            )
+            response.raise_for_status()
+            start = end + 1
 
 
 def main():
