@@ -82,7 +82,7 @@ def get_token(tenant_id: str, client_id: str, client_secret: str) -> str:
 
 def get_file_last_modified(token: str, filename: str) -> str:
     """SharePoint上のファイルのlastModifiedDateTime(JST)を返す。取得失敗時は空文字。"""
-    encoded = requests.utils.quote(filename, safe="")
+    encoded = requests.utils.quote(filename, safe="/")
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded}"
     try:
         res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
@@ -194,9 +194,12 @@ def main():
 
     print("=== 必須ファイル ===")
     missing_required = []
+    downloaded = set()
     for f in REQUIRED_FILES:
         try:
             ok = download_file(token, f, DATA, required=True)
+            if ok:
+                downloaded.add(f)
             if not ok:
                 missing_required.append(f)
         except RuntimeError as e:
@@ -207,24 +210,27 @@ def main():
     print("=== 任意ファイル ===")
     for f in OPTIONAL_FILES:
         try:
-            download_file(token, f, DATA, required=False)
+            if download_file(token, f, DATA, required=False):
+                downloaded.add(f)
         except RuntimeError as e:
             print(f"  [WARN] {e}")
 
     print()
     print("=== 月次積上原価ファイル（自動検出） ===")
+    cost_files = []
     try:
         cost_files = list_standard_cost_files(token)
         if not cost_files:
             print("  [WARN] 品目別積上原価一覧表のCSV/XLSXが見つかりません")
         for remote_path, filename in cost_files:
-            download_file(
+            if download_file(
                 token,
                 filename,
                 DATA,
                 required=False,
                 remote_path=remote_path,
-            )
+            ):
+                downloaded.add(filename)
     except RuntimeError as e:
         print(f"  [WARN] {e}")
 
@@ -242,8 +248,24 @@ def main():
     # 工数の引き渡しメタデータとして、SharePoint上の正規マスタ更新日時を保存する。
     # CSV本体や値はログに出さず、工数統合後の保護JSONにだけ反映する。
     labor_source_metadata = {
+        "actuals_updated_at": get_file_last_modified(token, "製造実績明細出力.csv"),
         "routes_updated_at": get_file_last_modified(token, "品目手順マスタ.csv"),
         "bom_updated_at": get_file_last_modified(token, "構成マスタ.csv"),
+        "sales_updated_at": get_file_last_modified(token, "売上明細出力.csv"),
+        "sales_facts_updated_at": get_file_last_modified(token, "dashboard_facts.json"),
+        "purchases_updated_at": get_file_last_modified(token, "受入明細出力.csv"),
+        "standard_cost_updated_at": {
+            name[14:20]: get_file_last_modified(token, remote_path)
+            for remote_path, name in cost_files
+            if STANDARD_COST_FILE.fullmatch(name)
+        },
+        "required_sources_downloaded": {
+            name: name in downloaded
+            for name in ("売上明細出力.csv", "受入明細出力.csv", "製造実績明細出力.csv", "品目手順マスタ.csv", "構成マスタ.csv", "dashboard_facts.json")
+        },
+        "standard_cost_downloaded_months": sorted(
+            name[14:20] for name in downloaded if STANDARD_COST_FILE.fullmatch(name)
+        ),
     }
     (DATA / "_value_analysis_labor_sources.json").write_text(
         json.dumps(labor_source_metadata, ensure_ascii=False), encoding="utf-8"

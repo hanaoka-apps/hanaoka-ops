@@ -514,11 +514,18 @@ def low_value_counts(analysis: dict) -> dict[str, int]:
 
 
 def main() -> int:
-    if not FACTS.is_file() or not DESTINATION.is_file():
+    if not DESTINATION.is_file():
         print("[WARN] dashboard_facts.json または value_analysis.json が無いため売上反映をスキップ")
         return 0
-    facts = json.loads(FACTS.read_text(encoding="utf-8-sig"))
     output = json.loads(DESTINATION.read_text(encoding="utf-8-sig"))
+    if not FACTS.is_file():
+        output.setdefault("meta", {})["daily_sales_import"] = {
+            "status": "blocked", "reason": "売上集計元ファイル未取得",
+        }
+        DESTINATION.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        print("[WARN] dashboard_facts.json が無いため売上集計を停止しました")
+        return 0
+    facts = json.loads(FACTS.read_text(encoding="utf-8-sig"))
     rows = facts.get("rows", []) if isinstance(facts, dict) else []
     analysis = output.get("item_analysis")
     if not isinstance(analysis, dict) or not isinstance(rows, list):
@@ -620,7 +627,13 @@ def main() -> int:
                 current["lowest"] = lowest_candidate
 
     source_months = sorted({ym for ym, _ in grouped})
+    source_days = [day for value_row in grouped.values() for day in value_row.get("dates", []) if len(day) == 8]
     if not source_months:
+        output.setdefault("meta", {})["daily_sales_import"] = {
+            "status": "no_rows", "reason": "集計可能な売上明細なし",
+        }
+        output["meta"]["daily_sales_latest_date"] = None
+        DESTINATION.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         print("[WARN] 反映対象の売上行がありません")
         return 0
 
@@ -732,6 +745,13 @@ def main() -> int:
         "lowest_sales_detail_errors": csv_lowest_errors,
         "frozen_months_preserved": len(frozen_months & set(source_months)),
         "daily_sales_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
+        "daily_sales_latest_date": (
+            f"{max(source_days)[:4]}-{max(source_days)[4:6]}-{max(source_days)[6:8]}" if source_days else None
+        ),
+        "daily_sales_import": {
+            "status": "ok", "months": source_months, "rows": len(rows),
+            "latest_record_date": f"{max(source_days)[:4]}-{max(source_days)[4:6]}-{max(source_days)[6:8]}" if source_days else None,
+        },
         "daily_sales_rows": len(rows),
         "daily_sales_excluded": excluded,
         # 一覧の件数のみ。個別品目・金額は保護JSON内でも診断用途に複製しない。

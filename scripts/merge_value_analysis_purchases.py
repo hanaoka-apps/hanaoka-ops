@@ -317,6 +317,9 @@ def merge(source: Path, destination: Path, item_master: Path | None = None) -> i
     output.setdefault("meta", {}).update({
         "daily_purchase_source": source.name,
         "daily_purchase_updated_at": datetime.now(jst).strftime("%Y-%m-%d %H:%M JST"),
+        "daily_purchase_latest_date": max(
+            (day for days in daily_totals.values() for day in days), default=None
+        ),
         "daily_purchase_import": {
             "status": "ok",
             "daily_status": "partial" if (stats["daily_invalid_date_rows"] or stats["invalid_rows"]) else "ok",

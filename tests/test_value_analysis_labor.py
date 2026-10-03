@@ -3,6 +3,8 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import date
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -18,6 +20,56 @@ def write_csv(path, headers, rows):
 
 
 class LaborCalculationTests(unittest.TestCase):
+    def test_monthly_actuals_are_direct_item_totals_with_shared_p1_classification(self):
+        routes = [
+            {"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"},
+            {"品目ｺｰﾄﾞ": "ITEM", "手順№": "2", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"},
+        ]
+        common = {"報告数量": "1", "基準外人数/人": "1", "基準外工数/分": "3", "基準外項目": "段取り"}
+        rows = [
+            {**common, "伝票日付": "20260801", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "人数": "2", "作業時間": "10"},
+            {**common, "伝票日付": "20260802", "品目ｺｰﾄﾞ": "ITEM", "手順№": "2", "人数": "1", "作業時間": "0"},
+            {**common, "伝票日付": "20260803", "品目ｺｰﾄﾞ": "ITEM", "手順№": "9", "人数": "1", "作業時間": "5"},
+        ]
+        monthly, diagnostics = LABOR.aggregate_monthly_actuals(rows, routes, LABOR.DEFAULT_SETTINGS)
+        record = monthly["202608"]["items"]["ITEM"]
+        self.assertEqual(record["actual_minutes"], 20)
+        self.assertEqual(record["processing_minutes"], 17)
+        self.assertEqual(record["setup_minutes"], 3)
+        self.assertEqual(record["rows"], 2)
+        self.assertEqual(record["zero_rows"], 1)
+        self.assertEqual(record["input_rate"], 50.0)
+        self.assertEqual(record["rate_per_minute"], 124.64)
+        self.assertAlmostEqual(record["actual_amount_yen"], 2492.8)
+        self.assertEqual(record["status"], "partial_route_mismatch")
+        self.assertEqual(diagnostics["202608"]["unmatched_rows"], 1)
+        self.assertEqual(record["latest_date"], "2026-08-02")
+
+    def test_monthly_actuals_zero_only_and_unregistered_rate_are_not_missing_zero(self):
+        route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
+        row = {"伝票日付": "20260901", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "0", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
+        monthly, _ = LABOR.aggregate_monthly_actuals([row], route, LABOR.DEFAULT_SETTINGS)
+        item = monthly["202609"]["items"]["ITEM"]
+        self.assertEqual(item["actual_minutes"], 0)
+        self.assertEqual(item["status"], "zero_only")
+        self.assertIsNone(item["actual_amount_yen"])
+        self.assertIsNone(item["rate_per_minute"])
+
+    def test_monthly_actuals_use_jst_business_date_not_runner_utc_date(self):
+        route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
+        row = {"伝票日付": "20261003", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "4", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
+        with patch.object(LABOR, "today_jst", return_value=date(2026, 10, 3)):
+            monthly, _ = LABOR.aggregate_monthly_actuals([row], route, LABOR.DEFAULT_SETTINGS)
+        self.assertEqual(monthly["202610"]["items"]["ITEM"]["actual_minutes"], 4)
+
+    def test_component_without_any_internal_route_is_not_called_zero_work(self):
+        routes = {("ROOT", "1"): {"工程名": "工程"}}
+        actuals = [{"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ROOT", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "8", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}]
+        bom = {"ROOT": [{"code": "PURCHASE", "name": "component", "quantity": 2}]}
+        result, _ = LABOR.calculate_window("202608", 3, actuals, routes, bom, LABOR.DEFAULT_SETTINGS)
+        self.assertEqual(result["handoff"]["items"]["PURCHASE"]["standard_minutes"], 0)
+        self.assertEqual(result["handoff"]["items"]["PURCHASE"]["labor_status"], "社内工程なし（対象外）")
+
     def test_window_dates_route_selection_and_unregistered_rate(self):
         self.assertEqual(LABOR.period_start("202608", 3), "202606")
         self.assertEqual(LABOR.period_start("202608", 6), "202603")
@@ -64,7 +116,10 @@ class LaborCalculationTests(unittest.TestCase):
                 LABOR.DATA = prior_data_dir
             output = json.loads(destination.read_text(encoding="utf-8"))
             result = output["item_analysis"]["labor"]["months"]["202608"]["windows"]["3"]
+            monthly_child = output["item_analysis"]["labor"]["monthly_actuals"]["202608"]["items"]["CHILD"]
             root = result["handoff"]["items"]["ROOT"]
+            self.assertEqual(monthly_child["actual_minutes"], 5)
+            self.assertEqual(output["item_analysis"]["labor"]["monthly_actuals"]["202608"]["items"]["ROOT"]["actual_minutes"], 40)
             self.assertNotIn("items", result)
             self.assertAlmostEqual(root["processing_minutes"], 24.5)
             self.assertAlmostEqual(root["setup_minutes"], 0.5)
@@ -126,6 +181,20 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertIsNone(window["input_rate"])
         self.assertEqual(window["handoff"]["items"], {})
 
+    def test_handoff_distinguishes_measured_zero_from_missing_child_labor(self):
+        routes = {
+            ("ROOT", "1"): {"工程名": "工程"},
+            ("CHILD", "1"): {"工程名": "工程"},
+        }
+        actuals = [{"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ROOT", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "0", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}]
+        bom = {"ROOT": [{"code": "CHILD", "name": "child", "quantity": 1}]}
+        window, _ = LABOR.calculate_window("202608", 3, actuals, routes, bom, LABOR.DEFAULT_SETTINGS)
+        self.assertEqual(window["handoff"]["items"]["ROOT"]["labor_status"], "子部品工数未取得")
+        self.assertEqual(window["handoff"]["items"]["CHILD"]["labor_status"], "社内工程あり・期間内実績なし")
+
+        measured, _ = LABOR.calculate_window("202608", 3, actuals, {("ROOT", "1"): {"工程名": "工程"}}, {}, LABOR.DEFAULT_SETTINGS)
+        self.assertEqual(measured["handoff"]["items"]["ROOT"]["labor_status"], "実測0分")
+
     def test_value_analysis_ui_reads_handoff_items_as_primary_source(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
         self.assertIn("windowData?.handoff?.items?.[code]", html)
@@ -143,6 +212,19 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertIn("data-cum-std-per-unit=", html)
         self.assertIn("handoff.meta?.version_id", html)
         self.assertIn("工数版：${esc(versionId)}", html)
+
+    def test_monthly_labor_and_freshness_are_explicit_and_separate_from_standard_labor(self):
+        html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        for phrase in ("実績工数（当月・品目単体）", "工数入力率／件数", "適用社内レート", "実績工数金額", "工数取得状態／実績最終日", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "実績あり・作業時間0分のみ"):
+            self.assertIn(phrase, html)
+        self.assertIn("monthly_actuals", html)
+        self.assertIn("record.actual_minutes", html)
+        self.assertIn("record.processing_minutes", html)
+        self.assertIn("record.setup_minutes", html)
+        self.assertIn("record.excluded_exception_minutes", html)
+        self.assertIn("openItemModalWithCostFreshness", html)
+        self.assertIn("過去月の原価で代用していません", html)
+        self.assertIn("最終日：月次ファイル", html)
 
 
 if __name__ == "__main__":
