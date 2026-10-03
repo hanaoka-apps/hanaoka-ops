@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <style>
 :root{--brand:#ff6b81;--brand-dark:#e8556d;--bg:#fff7fb;--line:#e6e6e9;--soft:#f7fbff;--muted:#666;--danger:#d64545;--text:#222}
@@ -610,16 +611,16 @@ body:not(.signed-in) .gate{display:flex}
     <a class="tab" href="shutsuzu_search.html" target="_blank" rel="noopener">検索・図面 ↗</a>
   </nav>
   <div class="tb-acct">
-    <span id="authBadge" class="badge" style="background:#fff7df;border-color:#ffe3a3;color:#614900">未サインイン</span>
-    <button id="btnAuth" class="ghost small">サインイン</button>
+    <span id="authBadge" class="badge" data-ha-login style="background:#fff7df;border-color:#ffe3a3;color:#614900">未サインイン</span>
+    <button id="btnAuth" data-ha-login class="ghost small">サインイン</button>
   </div>
 </div>
 
 <div class="gate">
-  <h2 id="gateTitle">サインインしてください</h2>
-  <p id="gateMsg">このアプリのデータは SharePoint に保存されています。<br>
+  <h2 id="gateTitle" data-ha-login>サインインしてください</h2>
+  <p id="gateMsg" data-ha-login>このアプリのデータは SharePoint に保存されています。<br>
      会社のアカウントでサインインすると、出図の一覧が表示されます。</p>
-  <button id="btnGateSignIn">サインイン</button>
+  <button id="btnGateSignIn" data-ha-login>サインイン</button>
 </div>
 
 <main class="main">
@@ -758,10 +759,8 @@ body:not(.signed-in) .gate{display:flex}
    同期で配列を返すが、その中身は起動時にサーバーから読んだ
    キャッシュ（CACHE）。書き込みだけがサーバーへ飛ぶ。
    ============================================================ */
-const MSAL_CONFIG={auth:{clientId:"d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
-  authority:"https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad",
-  redirectUri:new URL("auth.html",window.location.href).href},
-  cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:false}};
+/* 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js） */
+const MSAL_CONFIG=HanaokaAuth.msalConfig();
 const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu",
@@ -2538,15 +2537,14 @@ async function initMsal(){
   msalInstance=new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
-  const a=msalInstance.getAllAccounts();
-  if(a.length){currentAccount=a[0];msalInstance.setActiveAccount(currentAccount);await onSignedIn()}
+  currentAccount=await HanaokaAuth.restore(msalInstance,SCOPES);
+  if(currentAccount)await onSignedIn()
 }
 async function signIn(){
-  try{const r=await msalInstance.loginPopup({scopes:SCOPES});
-    currentAccount=r.account;msalInstance.setActiveAccount(currentAccount);await onSignedIn()}
+  try{currentAccount=await HanaokaAuth.login(msalInstance,SCOPES);await onSignedIn()}
   catch(e){if(e.errorCode!=="user_cancelled")toast("サインインエラー: "+(e.errorCode||e.message),true)}
 }
-function signOut(){msalInstance.logoutPopup({account:currentAccount})}
+function signOut(){HanaokaAuth.done();msalInstance.logoutPopup({account:currentAccount})}
 async function getToken(){
   try{return (await msalInstance.acquireTokenSilent({scopes:SCOPES,account:currentAccount})).accessToken}
   catch{const r=await msalInstance.acquireTokenPopup({scopes:SCOPES});currentAccount=r.account;return r.accessToken}
@@ -2556,6 +2554,10 @@ async function onSignedIn(){
   $("authBadge").title=currentAccount.username;   /* 同姓同名の確認用にメールはツールチップへ */
   $("authBadge").style.cssText="";
   $("btnAuth").textContent="サインアウト";
+  /* サインイン済み。データを読み終えるまで、ゲートは「読み込み中」の表示にする
+     （「サインインしてください」とボタンを見せない → hanaoka_auth.js） */
+  $("gateTitle").textContent="読み込んでいます…";$("gateMsg").textContent="";
+  $("btnGateSignIn").style.display="none";HanaokaAuth.done();
   /* ★接続できてから画面を開ける★
      サインインできてもサイトの権限が無い人はここで止まる。
      先に画面を出してしまうと、保存の段になって意味の分からない
@@ -2578,6 +2580,7 @@ function showGateError(e){
     : "少し時間をおいて、もう一度サインインしてみてください。")+
     '<br><span style="font-size:12px;color:#999">'+esc(e&&(e.message||e))+"</span>";
   $("btnGateSignIn").textContent="再試行";
+  $("btnGateSignIn").style.display="";HanaokaAuth.done();
 }
 
 /* ============================================================

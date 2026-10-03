@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
 <style>
 /* ============================================================
    出荷入力（資材・松川さん向け）
@@ -257,9 +258,9 @@ body.in .gate{display:none}
 </header>
 
 <div class="gate card">
-  <h2>サインインしてください</h2>
-  <p>会社のアカウントでサインインすると、<br>出荷日・実重量・製造年月を入力できます。</p>
-  <button id="btnIn">サインイン</button>
+  <h2 id="gateTitle" data-ha-login>サインインしてください</h2>
+  <p id="gateMsg" data-ha-login>会社のアカウントでサインインすると、<br>出荷日・実重量・製造年月を入力できます。</p>
+  <button id="btnIn" data-ha-login>サインイン</button>
 </div>
 
 <div class="app">
@@ -469,11 +470,9 @@ body.in .gate{display:none}
 /* ============================================================
    つなぎ先
    ============================================================ */
-const BUILD="2026-09-14 16:40";
-const MSAL_CONFIG={auth:{clientId:"d338d61b-01dc-4c7c-ac6b-aecf7f30d716",
-  authority:"https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad",
-  redirectUri:new URL("auth.html",window.location.href).href},
-  cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:false}};
+const BUILD="2026-10-04 共通サインイン";
+/* 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js） */
+const MSAL_CONFIG=HanaokaAuth.msalConfig();
 const SCOPES=["User.Read","Sites.ReadWrite.All"];
 const GRAPH_BASE="https://graph.microsoft.com/v1.0";
 const SP_HOST="hanaokacorp.sharepoint.com",SP_PATH="/sites/shutsuzu";
@@ -573,16 +572,22 @@ async function init(){
   try{
     msalInstance=new msal.PublicClientApplication(MSAL_CONFIG);
     await msalInstance.initialize();
-    const a=msalInstance.getAllAccounts();
-    if(a.length){account=a[0];await signedIn()}
-  }catch(e){showErr("うまく始められませんでした。画面を読み込み直してください。");console.error(e)}
+    /* iPhone/iPad はページ移動でサインインするので、戻ってきたときの受け取りが要る */
+    await msalInstance.handleRedirectPromise();
+    account=await HanaokaAuth.restore(msalInstance,SCOPES);
+    if(account)await signedIn();
+  }catch(e){HanaokaAuth.done();showErr("うまく始められませんでした。画面を読み込み直してください。");console.error(e)}
 }
 async function signIn(){
-  try{const r=await msalInstance.loginPopup({scopes:SCOPES});account=r.account;await signedIn()}
+  try{account=await HanaokaAuth.login(msalInstance,SCOPES);await signedIn()}
   catch(e){showErr("サインインできませんでした。もう一度お試しください。");console.error(e)}
 }
 async function signedIn(){
   $("who").textContent=(account.name||account.username||"")+" さん";
+  /* サインイン済み。つながるまでゲートは「読み込み中」の表示にする
+     （「サインインしてください」とボタンを見せない → hanaoka_auth.js） */
+  $("gateTitle").textContent="読み込んでいます…";$("gateMsg").textContent="";
+  $("btnIn").style.display="none";HanaokaAuth.done();
   try{
     SITE_ID=(await g("GET","/sites/"+SP_HOST+":"+SP_PATH)).id;
     const lists=await gAll("/sites/"+SITE_ID+"/lists?$select=id,name,displayName");
@@ -603,8 +608,12 @@ async function signedIn(){
   }catch(e){
     console.error(e);
     document.body.classList.remove("in");
-    showErr(e.status===403?"このデータを見る権限がありません。総務にご連絡ください。"
-      :"データにつながりませんでした。総務にご連絡ください。");
+    const msg=e.status===403?"このデータを見る権限がありません。総務にご連絡ください。"
+      :"データにつながりませんでした。総務にご連絡ください。";
+    showErr(msg);
+    /* 「in」を外すとエラー欄（.app の中）も隠れるので、ゲート側にも出す */
+    $("gateTitle").textContent="データを開けませんでした";$("gateMsg").textContent=msg;
+    $("btnIn").textContent="再試行";$("btnIn").style.display="";
   }
 }
 
