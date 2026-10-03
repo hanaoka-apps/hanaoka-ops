@@ -15,7 +15,9 @@
     },
     {
       key: 'reserve',
+      /* スケジュール（HANAOKA SCHEDULE）。HUBの「全社スケジュール」カードからもここへ来る */
       apps: [
+        { f: 'company_schedule.html', l: '全社スケジュール' },
         { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'staff_schedule.html', l: '全社員の予定' },
         { f: 'demo_reserve.html', l: 'デモ機' },
@@ -96,6 +98,7 @@
      reserve_theme.css（各ページが読み込む）、メニューの中身はここ1か所だけで管理する。
      ============================================================ */
   var ICONS = {
+    'company_schedule.html': '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M7.5 13.5h.01M12 13.5h.01M16.5 13.5h.01M7.5 17h.01M12 17h.01"/>',
     'my_schedule.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
     'demo_reserve.html':   '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     'car_reserve.html':    '<path d="M5 16h14l-1.5-6a2 2 0 0 0-1.9-1.5H8.4A2 2 0 0 0 6.5 10z"/><path d="M4 16v3M20 16v3"/><circle cx="8" cy="13" r=".6"/><circle cx="16" cy="13" r=".6"/>',
@@ -125,7 +128,7 @@
   };
   // グループごとの名前とマーク（サイドバーの上）
   var BRAND = {
-    reserve: { name: '予約状況', sub: 'HANAOKA RESERVE', mark: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>', key: 'hanaoka.reserve.sidebar.v1' },
+    reserve: { name: 'スケジュール', sub: 'HANAOKA SCHEDULE', mark: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>', key: 'hanaoka.reserve.sidebar.v1' },
     ap:      { name: '支払管理', sub: 'HANAOKA AP', mark: '<path d="M5 3h10l4 4v14H5z"/><path d="M15 3v4h4"/><path d="M8.5 9h4M8.5 12h3"/><path d="M12.5 14l1.75 2.25L16 14M14.25 16.25V19M12.75 17h3"/>', key: 'hanaoka.ap.sidebar.v1' },
     kaikei:  { name: '会計', sub: 'HANAOKA ACCOUNTING', mark: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', key: 'hanaoka.kaikei.sidebar.v1' },
     payroll: { name: '給与・労務', sub: 'HANAOKA PAYROLL', mark: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M17 8v8M14.5 10.5h5M14.5 13.5h5"/>', key: 'hanaoka.payroll.sidebar.v1' }
@@ -151,11 +154,11 @@
     var aside = document.createElement('aside');
     aside.className = 'hx-sidebar'; aside.id = 'hx-sidebar';
     aside.innerHTML =
-      /* HANAOKA HUB へのリンクは、HUB を社内に案内するまで外しておく（案内後に戻す） */
-      '<div class="hx-brand">' +
+      /* ロゴと下部の「HANAOKA HUB」から HUB へ戻れる（HUB の HANAOKA APPS は同じタブで開くため） */
+      '<a class="hx-brand" href="hanaoka_hub.html" title="HANAOKA HUB へ">' +
         '<div class="hx-mark">' + svg(b.mark) + '</div>' +
         '<div class="hx-brand-name">' + b.name + '<small>' + b.sub + '</small></div>' +
-      '</div>' +
+      '</a>' +
       '<div class="hx-label">MENU</div>' +
       g.apps.map(function (a) {
         /* gate：権限を確かめてから出す項目（画面側がクラスの hide を外す） */
@@ -164,6 +167,8 @@
           svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
       }).join('') +
       '<div class="hx-foot">' +
+        '<a class="hx-item" href="hanaoka_hub.html" title="HANAOKA HUB">' +
+          svg('<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-9"/>') + '<span>HANAOKA HUB</span></a>' +
         '<button type="button" class="hx-item hx-toggle" id="hx-toggle" title="サイドバーを開閉">' +
           '<svg class="hx-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span>たたむ</span></button>' +
       '</div>';
