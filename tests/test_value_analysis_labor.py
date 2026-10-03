@@ -64,7 +64,8 @@ class LaborCalculationTests(unittest.TestCase):
                 LABOR.DATA = prior_data_dir
             output = json.loads(destination.read_text(encoding="utf-8"))
             result = output["item_analysis"]["labor"]["months"]["202608"]["windows"]["3"]
-            root = result["items"]["ROOT"]
+            root = result["handoff"]["items"]["ROOT"]
+            self.assertNotIn("items", result)
             self.assertAlmostEqual(root["processing_minutes"], 24.5)
             self.assertAlmostEqual(root["setup_minutes"], 0.5)
             self.assertAlmostEqual(root["standard_minutes"], 25.0)
@@ -72,7 +73,7 @@ class LaborCalculationTests(unittest.TestCase):
             self.assertEqual(root["reported_zero"], 1)
             self.assertEqual(result["input_rate"], 75.0)
             self.assertEqual(result["internal_route_count"], 3)
-            self.assertAlmostEqual(result["items"]["ROOT"]["standard_minutes"], 25.0)
+            self.assertAlmostEqual(result["handoff"]["items"]["ROOT"]["standard_minutes"], 25.0)
             self.assertEqual(json.loads(destination.read_text(encoding="utf-8"))["item_analysis"]["labor"]["bom_deduplication"]["duplicate_parent_child_rows_removed"], 1)
             settings = json.loads(destination.read_text(encoding="utf-8"))["item_analysis"]["labor"]["settings"]
             self.assertEqual(settings["period_months"], 6)
@@ -104,7 +105,7 @@ class LaborCalculationTests(unittest.TestCase):
         rows = [{"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "4", "基準外人数/人": "3", "基準外工数/分": "2", "基準外項目": "段取り"}]
         window, diagnostics = LABOR.calculate_window("202608", 3, rows, routes, {}, LABOR.DEFAULT_SETTINGS)
         self.assertEqual(window["needs_review"]["exception_exceeds_total"], 1)
-        self.assertEqual(window["items"]["ITEM"]["standard_minutes"], 4.0)
+        self.assertEqual(window["handoff"]["items"]["ITEM"]["standard_minutes"], 4.0)
         self.assertNotIn("ITEM", str(diagnostics))
 
     def test_future_dates_and_unmatched_routes_are_excluded(self):
@@ -123,9 +124,11 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertEqual(window["status"], "no_results")
         self.assertEqual(window["actual_record_count"], 0)
         self.assertIsNone(window["input_rate"])
+        self.assertEqual(window["handoff"]["items"], {})
 
-    def test_value_analysis_ui_reads_same_unrounded_handoff_value_and_shows_version(self):
+    def test_value_analysis_ui_reads_handoff_items_as_primary_source(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        self.assertIn("windowData?.handoff?.items?.[code]", html)
         self.assertIn("labor_standard_minutes:labor?.cum_std_per_unit??null", html)
         self.assertIn("minutes(labor?.cum_std_per_unit)", html)
         self.assertIn("Number(value).toLocaleString('ja-JP',{maximumFractionDigits:2})", html)
