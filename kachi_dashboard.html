@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Inter:wght@600;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
 <style>
 :root{
   --navy:#0e1a36; --navy2:#1a2649; --ink:#0b1530;
@@ -269,7 +270,7 @@ footer b{color:var(--goldDark)}
   <!-- ===== SharePoint連携バー（原価/目標エディタへの導線） ===== -->
   <div id="spBar" style="margin-top:12px; padding:10px 16px; background:var(--paper); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); display:flex; align-items:center; gap:10px; flex-wrap:wrap">
     <span style="font-size:12px; color:var(--gray); font-weight:600">SharePoint:</span>
-    <button class="btn primary" id="spLoginBtn" style="padding:6px 14px; font-size:12px">🔐 サインインして最新データを読込（売上＋原価＋目標）</button>
+    <button class="btn primary" id="spLoginBtn" data-ha-login style="padding:6px 14px; font-size:12px">🔐 サインインして最新データを読込（売上＋原価＋目標）</button>
     <button class="btn ghost sm" id="spLogoutBtn" style="display:none">サインアウト</button>
     <a href="kachi_editor.html" target="_blank" class="btn" style="text-decoration:none; padding:6px 14px; font-size:12px">✏ 原価/目標エディタを開く</a>
     <span id="spStatus" style="font-size:11px; color:var(--gray); margin-left:auto"></span>
@@ -760,8 +761,9 @@ async function bootData(){
     el.classList.remove("hidden");
     el.classList.remove("error");
     el.style.display = "block";
+    // data-ha-login：HUBでサインイン済みなら、確認中はこの案内を見せない（→ hanaoka_auth.js）
     el.innerHTML = `
-      <div style="text-align:center; padding:20px">
+      <div style="text-align:center; padding:20px" data-ha-login>
         <div style="font-size:56px; margin-bottom:12px">🔐</div>
         <div style="font-size:18px; font-weight:700; color:var(--navy); margin-bottom:8px">
           サインインしてデータを読み込んでください
@@ -1616,14 +1618,8 @@ function renderMonthlyCostTable(){
 // ============================================================
 // SharePoint連携 (原価データ読み込み)
 // ============================================================
-const SP_MSAL_CONFIG = {
-  auth: {
-    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
-    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    redirectUri: window.location.origin + window.location.pathname,
-  },
-  cache: { cacheLocation: 'sessionStorage' }
-};
+// 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js）
+const SP_MSAL_CONFIG = HanaokaAuth.msalConfig();
 // ダッシュボードは読み取り専用。編集はエディタで行う（ReadWrite不要）
 const SP_SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
 const SP_CONFIG = {
@@ -1645,12 +1641,9 @@ async function spInitMsal(){
     await _spMsal.initialize();
     await _spMsal.handleRedirectPromise();
   }
-  const accounts = _spMsal.getAllAccounts();
-  if (accounts.length > 0) {
-    _spAccount = accounts[0];
-    _spMsal.setActiveAccount(_spAccount);
-    return true;
-  }
+  // HUBなどでサインイン済みなら、それがまだ使えるかを確かめて使う
+  _spAccount = await HanaokaAuth.restore(_spMsal, SP_SCOPES);
+  if (_spAccount) return true;
   // 既存のM365セッションがあれば無操作サインインを試行（ポップアップ無し）
   try {
     const r = await _spMsal.ssoSilent({ scopes: SP_SCOPES });
@@ -1669,13 +1662,12 @@ async function spInitMsal(){
 async function spLogin(){
   await spInitMsal();
   if (_spAccount) return _spAccount;
-  const result = await _spMsal.loginPopup({ scopes: SP_SCOPES });
-  _spAccount = result.account;
-  _spMsal.setActiveAccount(_spAccount);
+  _spAccount = await HanaokaAuth.login(_spMsal, SP_SCOPES);
   return _spAccount;
 }
 
 function spLogout(){
+  HanaokaAuth.done();
   if (_spMsal && _spAccount) _spMsal.logoutPopup({ account: _spAccount });
   _spAccount = null;
   updateSpStatus("");
@@ -1838,15 +1830,30 @@ async function spAutoLoad(){
   try {
     const ok = await spInitMsal();
     if (ok) {
+      // サインイン済み。「サインインしてください」の案内とボタンは出さず、読み込み中の表示にする
+      // （売上データは大きく数秒かかる。その間にボタンが見えないように → hanaoka_auth.js）
+      document.getElementById('spLoginBtn').style.display = "none";
+      showLoader("売上データを読み込んでいます…");
+      HanaokaAuth.done();
       // 1) 売上データ（OneDrive）
-      await spLoadFacts();
+      const factsOk = await spLoadFacts();
+      if (!factsOk) {
+        // 読み込めなかったら、ボタンを戻して押してもらう（読み込み中のまま止まらないように）
+        document.getElementById('spLoginBtn').style.display = "";
+        showLoader("売上データを読み込めませんでした。上の「サインインして最新データを読込」を押してください。", true);
+        return;
+      }
       // 2) 原価・目標（SharePoint List）
       await spLoadCosts();
       if (typeof recompute === "function") recompute();
       // ログイン成功時、自動再取得タイマーを開始
       startAutoSync();
     }
-  } catch(e) { console.warn("spAutoLoad:", e.message); }
+  } catch(e) {
+    console.warn("spAutoLoad:", e.message);
+    HanaokaAuth.done();
+    const b = document.getElementById('spLoginBtn'); if (b) b.style.display = "";
+  }
 }
 
 // ============================================================

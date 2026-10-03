@@ -5,6 +5,7 @@
 <title>売掛AI消込 コックピット v2</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js"></script>
+<script src="hanaoka_auth.js"></script>
 <style>
 :root{--bg:#f7f8fa;--card:#fff;--line:#e9edf2;--ink:#2b3440;--sub:#8a94a3;
 --accent:#2563eb;--accent-weak:#eaf1fe;--ok:#16a34a;--warn:#d97706;--ex:#dc2626;--info:#0891b2;--mut:#b6bdc8;--tag:#f1f3f7;}
@@ -230,10 +231,22 @@ async function ensureMsal(){if(window.msal&&window.msal.PublicClientApplication)
   const urls=["https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js","https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/lib/msal-browser.min.js","https://unpkg.com/@azure/msal-browser@2/lib/msal-browser.min.js"];
   for(const u of urls){try{await loadScript(u);}catch(e){}if(window.msal&&window.msal.PublicClientApplication)return;}
   throw new Error("MSALライブラリを読み込めませんでした（社内ネットワーク/拡張機能でCDN遮断の可能性）。");}
-function initMsal(){if(!window.msal||!window.msal.PublicClientApplication)throw new Error("MSAL未読込");pca=new window.msal.PublicClientApplication({auth:{clientId:CONFIG.clientId,authority:"https://login.microsoftonline.com/"+CONFIG.tenantId,redirectUri:location.href.split("#")[0]}});}
-async function connect(){try{await ensureMsal();initMsal();const r=await pca.loginPopup({scopes:["https://graph.microsoft.com/"+CONFIG.scopes[0]]});account=r.account;
+/* 全アプリ共通の設定（hanaoka_auth.js）。サインインは localStorage でHUBと共有 */
+function initMsal(){if(!window.msal||!window.msal.PublicClientApplication)throw new Error("MSAL未読込");pca=new window.msal.PublicClientApplication(HanaokaAuth.msalConfig());}
+const G_SCOPES=()=>["https://graph.microsoft.com/"+CONFIG.scopes[0]];
+let _msalReady=null;
+function prepMsal(){if(!_msalReady)_msalReady=(async()=>{await ensureMsal();initMsal();
+  if(typeof pca.initialize==="function")await pca.initialize();
+  await pca.handleRedirectPromise();})();   /* iPhone/iPad はページ移動でサインインするので、戻ってきたときの受け取りが要る */
+  return _msalReady;}
+async function afterConnect(){
   document.getElementById("conn").textContent="SharePoint: 接続済";document.getElementById("conn").className="badge on";await resolveSite();try{const c=JSON.parse(localStorage.getItem("cockpit_master")||"null");if(!(c&&c.date===today()))await loadMasterFromSP();}catch(e){console.warn("マスタ自動取得スキップ:",e.message);}}
+async function connect(){try{await prepMsal();account=await HanaokaAuth.login(pca,G_SCOPES());await afterConnect();}
   catch(e){alert("接続エラー: "+e.message+"\n(Azure ADのSPA登録・リダイレクトURI・管理者同意を確認)");}}
+/* 起動時：HUBでサインイン済みなら、ボタンを押さずに接続する（ポップアップは出さない）。
+   だめなら今までどおり「接続」ボタンを押してもらう */
+async function autoConnect(){try{await prepMsal();account=await HanaokaAuth.restore(pca,G_SCOPES());if(account)await afterConnect();}
+  catch(e){console.warn("自動接続スキップ:",e.message);}}
 async function tok(){const r=await pca.acquireTokenSilent({scopes:["https://graph.microsoft.com/"+CONFIG.scopes[0]],account}).catch(()=>pca.acquireTokenPopup({scopes:["https://graph.microsoft.com/"+CONFIG.scopes[0]]}));return r.accessToken;}
 async function graph(m,p,b){const t=await tok();const res=await fetch("https://graph.microsoft.com/v1.0"+p,{method:m,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined});if(!res.ok)throw new Error(p+" -> "+res.status+" "+await res.text());return res.status===204?{}:res.json();}
 async function resolveSite(){if(CONFIG.siteId){siteId=CONFIG.siteId;document.getElementById("conn").textContent="SharePoint: 接続済（花岡車輌サイト）";return;}if(!CONFIG.sitePath){alert("CONFIG.sitePath/siteId が未設定");return;}const s=await graph("GET","/sites/"+CONFIG.host+":"+CONFIG.sitePath);siteId=s.id;}
@@ -272,6 +285,7 @@ async function loadMasterFromSP(){
   try{localStorage.setItem("cockpit_master",JSON.stringify({date:today(),m}));}catch(e){}
   return m;}
 document.getElementById("btnConnect").onclick=connect;
+autoConnect();
 document.getElementById("btnProvision").onclick=provision;
 /* 初期化 */
 document.getElementById("btnExport").onclick=()=>{let rows=[["正規化振込名","会社コード","会社名"]];for(const pf in LEARNED)rows.push([pf,LEARNED[pf].sha,LEARNED[pf].name||""]);
