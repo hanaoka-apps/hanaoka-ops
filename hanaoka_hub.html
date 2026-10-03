@@ -282,8 +282,14 @@
     background: radial-gradient(circle, rgba(31, 162, 230, 0.55) 0%, rgba(31, 162, 230, 0) 70%);
     pointer-events: none;
   }
-  .mvv-main { min-width: 0; position: relative; z-index: 1; }
-  .mvv-eyebrow-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .mvv-main { flex: 1; min-width: 0; position: relative; z-index: 1; }
+  .mvv-eyebrow-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-height: 20px; }
+  /* 文の長さでバナーの高さが変わると、下のお知らせ・ショートカットが9秒ごとに
+     上下にずれる(iOS Safariはスクロール位置の補正もしないのでタップがずれる)。
+     全スライドの文を透明で同じマスに重ねておき、高さを一番長い文に固定する。 */
+  .mvv-text { display: grid; }
+  .mvv-text > * { grid-area: 1 / 1; }
+  .mvv-ghost { visibility: hidden; }
   .mvv-eyebrow {
     font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
     color: rgba(255, 255, 255, 0.75);
@@ -586,7 +592,9 @@
           <span class="mvv-tag" id="mvvTag" hidden></span>
           <div class="mvv-eyebrow" id="mvvEyebrow">花岡車輌 MISSION</div>
         </div>
-        <div class="mvv-headline" id="mvvHeadline">『モノを動かす、人をつなぐ』新たな感動を届ける</div>
+        <div class="mvv-text" id="mvvText">
+          <div class="mvv-headline" id="mvvHeadline">『モノを動かす、人をつなぐ』新たな感動を届ける</div>
+        </div>
       </div>
       <div class="mvv-side">
         <button type="button" class="mvv-nav" id="mvvPrev" title="前へ" aria-label="前へ">
@@ -1598,34 +1606,87 @@ function setStatusMessage(msg, isError) {
   document.getElementById('statusAsOf').textContent = '';
 }
 
-async function loadKpis() {
-  const t = await getToken();
-  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
-  if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
-  const facts = await res.json();
+// dashboard_facts.json の明細から、HUBに出す数字だけを集計する
+function computeKpiFacts(facts) {
   const rows = facts.rows || [];
   const orderRows = facts.order_rows || [];
-
-  await loadJpHolidays(); // 営業日の目安計算に使う祝日を、描画より前に読み込んでおく
-
   const today = detectLatestClosedDate(facts);
   const curYm = today.y * 100 + today.mo;
   const prev = prevMonthSameDay(today);
   const prevYm = prev.y * 100 + prev.mo;
+  return {
+    today,
+    plans: loadPlansFromFacts(facts, curYm),
+    // 受注の「累計」は納期ベース、売上は年月度ベース（営業日報ダッシュボードと同じ）
+    orderMetrics: aggregateByGroup(orderRows, curYm, today, 'kikou'),
+    salesMetrics: aggregateByGroup(rows, curYm, today, 'ym'),
+    prevOrderMetrics: aggregateByGroup(orderRows, prevYm, prev, 'kikou'),
+    prevSalesMetrics: aggregateByGroup(rows, prevYm, prev, 'ym'),
+    updatedAt: facts.build_meta && facts.build_meta.updated_at,
+  };
+}
+
+async function fetchKpiFactsInline(url, token) {
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
+  return computeKpiFacts(await res.json());
+}
+
+// dashboard_facts.json は過去年度の明細まで入った数MBのファイルで、JSON解析と
+// 全行の集計を画面と同じスレッドで行うと、その間スマホではスクロールもタップも
+// 効かなくなる(=固まる)。取得から集計までを Web Worker に任せ、結果の数字だけ
+// 受け取る。集計関数は上の定義をそのまま持ち込むので、ロジックの二重管理はない。
+const KPI_WORKER_FNS = [
+  matchGroup, isInternalTransfer, rowYm, parseVoucherDay, voucherDateKey, isToday, isSameMonthByKikou,
+  aggregateByGroup, csvScopeMap, loadPlansFromFacts, findLatestVoucherDate, detectLatestClosedDate,
+  daysInMonth, prevMonthSameDay, computeKpiFacts, fetchKpiFactsInline,
+];
+function fetchKpiFacts(url, token) {
+  let worker, blobUrl;
+  try {
+    const src = [
+      `const IDX = ${JSON.stringify(IDX)};`,
+      `const DEPT_GROUPS = ${JSON.stringify(DEPT_GROUPS)};`,
+      ...KPI_WORKER_FNS.map(f => f.toString()),
+      `self.onmessage = (e) => fetchKpiFactsInline(e.data.url, e.data.token)
+        .then(result => self.postMessage({ result }))
+        .catch(err => self.postMessage({ error: String((err && err.message) || err) }));`,
+    ].join('\n');
+    blobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    worker = new Worker(blobUrl);
+  } catch (e) {
+    console.warn('[会社の現在地] Workerが使えないため画面側で集計します', e);
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    return fetchKpiFactsInline(url, token);
+  }
+  return new Promise((resolve, reject) => {
+    const done = () => { worker.terminate(); URL.revokeObjectURL(blobUrl); };
+    worker.onmessage = (e) => {
+      done();
+      if (e.data.error) reject(new Error(e.data.error)); else resolve(e.data.result);
+    };
+    // Worker自体が起動できなかった場合だけ、従来どおり画面側で集計する
+    worker.onerror = (e) => {
+      done();
+      console.warn('[会社の現在地] Workerでの集計に失敗したため画面側で集計します', e.message);
+      fetchKpiFactsInline(url, token).then(resolve, reject);
+    };
+    worker.postMessage({ url, token });
+  });
+}
+
+async function loadKpis() {
+  const t = await getToken();
+  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+  // 営業日の目安計算に使う祝日は、集計と並行して描画より前に読み込んでおく
+  const [k] = await Promise.all([fetchKpiFacts(url, t), loadJpHolidays()]);
+  const { today, plans, orderMetrics, salesMetrics, prevOrderMetrics, prevSalesMetrics } = k;
 
   TODAY_LABEL = `${today.mo}/${today.d}`;
   V2.biz = bizDayInfo(today);
-  const plans = loadPlansFromFacts(facts, curYm);
-
-  // 受注の「累計」は納期ベース、売上は年月度ベース（営業日報ダッシュボードと同じ）
-  const orderMetrics = aggregateByGroup(orderRows, curYm, today, 'kikou');
-  const salesMetrics = aggregateByGroup(rows, curYm, today, 'ym');
-  const prevOrderMetrics = aggregateByGroup(orderRows, prevYm, prev, 'kikou');
-  const prevSalesMetrics = aggregateByGroup(rows, prevYm, prev, 'ym');
   console.log('[会社の現在地] 表示日=', today, 'plans=', plans, 'orders(納期)=', orderMetrics, 'sales=', salesMetrics);
 
-  const updated = formatUpdatedAt(facts.build_meta && facts.build_meta.updated_at);
+  const updated = formatUpdatedAt(k.updatedAt);
   document.getElementById('statusAsOf').textContent =
     `表示日: ${today.y}年${today.mo}月${today.d}日` + (updated ? `（データ更新: ${updated} 時点の入力まで反映）` : '');
 
@@ -1801,6 +1862,10 @@ const MVV_SLIDES = MVV_GROUPS.flatMap((group, groupIndex) =>
   let ownGroupIndex = null;
   let current = 0;
   let timer = null;
+
+  // 高さ確保用の透明な文（CSSの .mvv-ghost 参照）
+  document.getElementById('mvvText').insertAdjacentHTML('afterbegin', MVV_SLIDES
+    .map(s => `<div class="mvv-headline mvv-ghost" aria-hidden="true">${escapeHtml(s.text)}</div>`).join(''));
 
   dotsEl.innerHTML = MVV_GROUPS.map((_, i) => `<span data-g="${i}"></span>`).join('');
   const dots = Array.from(dotsEl.children);
