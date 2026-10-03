@@ -126,7 +126,7 @@
   // グループごとの名前とマーク（サイドバーの上）
   var BRAND = {
     reserve: { name: '予約状況', sub: 'HANAOKA RESERVE', mark: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>', key: 'hanaoka.reserve.sidebar.v1' },
-    ap:      { name: '支払管理', sub: 'HANAOKA AP', mark: '<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>', key: 'hanaoka.ap.sidebar.v1' },
+    ap:      { name: '支払管理', sub: 'HANAOKA AP', mark: '<path d="M5 3h10l4 4v14H5z"/><path d="M15 3v4h4"/><path d="M8.5 9h4M8.5 12h3"/><path d="M12.5 14l1.75 2.25L16 14M14.25 16.25V19M12.75 17h3"/>', key: 'hanaoka.ap.sidebar.v1' },
     kaikei:  { name: '会計', sub: 'HANAOKA ACCOUNTING', mark: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', key: 'hanaoka.kaikei.sidebar.v1' },
     payroll: { name: '給与・労務', sub: 'HANAOKA PAYROLL', mark: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M17 8v8M14.5 10.5h5M14.5 13.5h5"/>', key: 'hanaoka.payroll.sidebar.v1' }
   };
