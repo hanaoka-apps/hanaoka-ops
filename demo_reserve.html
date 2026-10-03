@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>予約状況 デモ機 | 花岡車輌</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
-  <script src="nav.js" defer></script>
+  <script src="nav.js?v=20261004" defer></script>
   <style>
     :root{
       --primary:#1a5fa8; --primary-dk:#134680; --accent:#e8412e;
@@ -45,6 +45,9 @@
     button.act:hover:not(:disabled){background:#f0f2f5}
     button.pri{background:var(--primary);border-color:var(--primary);color:#fff}
     button.pri:hover:not(:disabled){background:var(--primary-dk)}
+    /* 青＝「検索する」、緑＝「確定して進む」（同じ青が並ぶと見分けがつかないため） */
+    button.go{background:var(--success);border-color:var(--success);color:#fff}
+    button.go:hover:not(:disabled){background:#236a41}
     button.act:disabled{opacity:.45;cursor:not-allowed}
     .range{font-weight:700;font-size:14px;min-width:184px;text-align:center}
     .chk{display:flex;align-items:center;gap:5px;color:var(--muted);cursor:pointer;user-select:none;
@@ -60,8 +63,7 @@
     #status-panel .ng{color:var(--danger);font-weight:700}
     #status-panel code{background:#eef0f3;padding:1px 4px;border-radius:3px;font-size:11.5px}
 
-    #seek-panel{display:none;background:var(--card-bg);border:1px solid var(--primary);border-radius:8px;
-      padding:11px 14px;margin-bottom:13px;font-size:12.5px;box-shadow:var(--shadow)}
+    #seek-panel{font-size:12.5px}
     #seek-panel h4{font-size:13px;color:var(--primary);margin-bottom:7px}
     #seek-panel .grp-line{margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
     #seek-panel .grp-line b{color:var(--muted);font-weight:600;min-width:78px;font-size:11.5px}
@@ -83,7 +85,7 @@
     .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);align-items:center;margin-bottom:9px}
     .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px;border:1px solid}
 
-    .scroll{overflow:auto;max-height:calc(100vh - 172px);background:var(--card-bg);border:1px solid var(--border);
+    .scroll{overflow:auto;max-height:calc(100vh - 182px);background:var(--card-bg);border:1px solid var(--border);
       border-radius:8px;box-shadow:var(--shadow)}
     .grid{min-width:calc(var(--namew) + var(--dayw)*7)}
     .hrow{display:flex;position:sticky;top:0;z-index:30;background:#f8f9fc;border-bottom:1px solid var(--border)}
@@ -187,6 +189,7 @@
       :root{--dayw:90px;--namew:168px;--lane:24px}
     }
   </style>
+<link rel="stylesheet" href="reserve_theme.css?v=20261002">
 </head>
 <body>
 
@@ -223,27 +226,8 @@
     <span class="cnt" id="updated"></span>
     <button class="act" onclick="loadAll()">🔄 更新</button>
     <button class="act" onclick="window.print()">印刷</button>
+    <button class="act pri" id="demoNewBtn" onclick="openSeekDemo()">＋ デモ機を予約</button>
   </div>
-
-  <div class="bar" style="margin-bottom:11px">
-    <label>空きを探す</label>
-    <label class="chk"><input type="checkbox" id="sAllDay"> 終日</label>
-    <span id="sTimeRow">
-      <input type="datetime-local" id="sFrom">
-      <span style="color:var(--muted)">〜</span>
-      <input type="datetime-local" id="sTo">
-    </span>
-    <span id="sDateRow" style="display:none">
-      <input type="date" id="sFromD">
-      <span style="color:var(--muted)">〜</span>
-      <input type="date" id="sToD">
-    </span>
-    <button class="act pri" id="sGo">この区間で押さえられる機体</button>
-    <button class="act" id="sClear">解除</button>
-    <span class="cnt">案件の期間を入れると、その間ずっと空いている機体だけを出します。区分・検索欄で絞り込んだ機体だけが対象になります</span>
-  </div>
-
-  <div id="seek-panel"></div>
 
   <div class="bar" style="margin-bottom:11px">
     <label class="chk"><input type="checkbox" id="nopart" checked> 部品・オプションを隠す</label>
@@ -283,17 +267,60 @@
 <!-- まとめて予約：空き検索で選んだ複数の機体を、同じ件名・同じ期間で一括予約する
      ★予約フォームはこの1つに統一(以前は空きグリッドを直接クリックする単発フォーム
      もあったが、1台の予約もここを通す形にして導線を1本化した)★ -->
+<!-- デモ機の空き検索（my_schedule.html と全く同じ画面。期間を入れて空いている機体を
+     複数選び、まとめて1回で予約する。予約ボタンは常に上に固定） -->
+<div class="modal" id="mSeek"><div class="card" style="max-width:560px">
+  <h3>デモ機の空きを探す</h3>
+  <div class="bd">
+    <div id="seekBar" style="position:sticky;top:0;z-index:5;background:#f3f9f5;margin:-13px -16px 10px;
+         padding:9px 16px;border-bottom:1px solid #cfe5d7;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="act go" id="seekBulkGo" disabled onclick="openBulkNew()">選んだ機体をまとめて予約（0台）</button>
+      <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); paintSeekDemo();">選択解除</button>
+    </div>
+    <div class="fm">
+      <div class="f2">
+        <div class="f"><span>拠点・区分</span><select id="sCat"></select></div>
+        <div class="f"><span>機種名で検索</span><input type="search" id="sQ" placeholder="例：PAL"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="sAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
+      <div class="f2" id="sTimeRow">
+        <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="sFrom"></div>
+        <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="sTo"></div>
+      </div>
+      <div class="f2" id="sDateRow" style="display:none">
+        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="sFromD"></div>
+        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="sToD"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin:9px 0">
+      <button class="act pri" id="sGo" onclick="runSeekDemo()">🔍 この期間の空き機体を検索</button>
+    </div>
+    <div id="seek-panel"></div>
+  </div>
+  <div class="ft">
+    <button class="act" onclick="closeM('mSeek')">閉じる</button>
+  </div>
+</div></div>
+
 <div class="modal" id="mBulk"><div class="card">
   <h3>選んだ機体をまとめて予約する</h3>
   <div class="bd">
     <div class="fm">
-      <div class="f"><span>期間（空き検索で入れた区間）</span><div id="bRange" style="font-weight:700"></div></div>
+      <label class="chk"><input type="checkbox" id="bAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
+      <div class="f2" id="bTimeRow">
+        <div class="f"><span>開始（必須・JST）</span><input type="datetime-local" id="bFrom"></div>
+        <div class="f"><span>終了（必須・JST）</span><input type="datetime-local" id="bTo"></div>
+      </div>
+      <div class="f2" id="bDateRow" style="display:none">
+        <div class="f"><span>開始日（必須・JST）</span><input type="date" id="bFromD"></div>
+        <div class="f"><span>終了日（この日も含む）</span><input type="date" id="bToD"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin:2px 0 9px">
+        <button class="act" id="bCheckGo" onclick="bulkCheckAvailability()">空き状況を確認</button>
+        <span class="cnt" id="bCheckMsg" style="align-self:center"></span>
+      </div>
       <div class="f">
         <span id="bMachinesLabel">機体</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:3px 0">
-          <div id="bMachinesFilter"></div>
-          <input type="text" id="bMachinesQ" placeholder="機種名で絞り込み" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px">
-        </div>
         <div id="bMachines" style="max-height:170px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:5px;padding:2px 0"></div>
       </div>
       <div class="f"><span>予約件名（必須・全機体に共通）</span><input type="text" id="bTitle" placeholder="例：轟産業 静岡支店 デモ立会"></div>
@@ -521,7 +548,6 @@ let MACHINES = [], RES = [], curWeek = weekTopMs(Date.now());
 let SEEK = null;                       /* 空き検索の区間 */
 let SEEK_SEL = new Set();              /* 空き検索で選んだ機体（まとめて予約の対象）。id で持つ */
 let SEEK_FROM_GRID = false;            /* グリッドの空きセルを直接クリックして始まった一時的な選択か */
-let HILITE = null;                     /* 結果から選んだ機体ID。行を目立たせるだけで絞り込まない */
 let lastLoad = 0, refreshTimer = null;
 
 /* ---- URLに状態を持たせる（Teamsに貼れるように） ---- */
@@ -553,7 +579,7 @@ function startAutoRefresh(){
   if (refreshTimer) clearInterval(refreshTimer);
   const tick = async () => {
     if (document.querySelector('.modal.on') || document.hidden) return;
-    try { await loadRes(); lastLoad = Date.now(); render(); paintSeek(); paintUpdated(); } catch {}
+    try { await loadRes(); lastLoad = Date.now(); render(); paintUpdated(); } catch {}
   };
   refreshTimer = setInterval(tick, 5 * 60 * 1000);
   document.addEventListener('visibilitychange', () => {
@@ -1069,7 +1095,7 @@ async function loadAll(want){
     }
     await loadRes();
     lastLoad = Date.now();
-    render(); paintSeek(); paintUpdated();
+    render(); paintUpdated();
     showSnack(`マスター ${MACHINES.length}件 / 予約 ${RES.length}件 を読み込みました`);
   } catch (e) { showSnack('読み込みエラー: ' + e.message); console.error(e); }
 }
@@ -1082,8 +1108,6 @@ async function loadAll(want){
 let FETCH_MODE = '';
 async function loadRes(){
   let loMs = curWeek - WINDOW_DAYS*DAY, hiMs = curWeek + WK;
-  /* 空き検索の区間が表示範囲の外にはみ出しても判定できるように広げる */
-  if (SEEK) { loMs = Math.min(loMs, SEEK.s - DAY); hiMs = Math.max(hiMs, SEEK.e + DAY); }
   const lo = new Date(loMs).toISOString().slice(0,19) + 'Z';
   const hi = new Date(hiMs).toISOString().slice(0,19) + 'Z';
   const base = `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500`;
@@ -1192,7 +1216,7 @@ function render(){
     const n = Math.max(1, lanes.length);
     const blocked = m.ng || !m.resv || !CAP.lock;
 
-    h += `<div class="row${m.id === HILITE ? ' hi' : ''}" data-mid="${m.id}"><div class="name" style="min-height:calc(var(--lane)*${n})">
+    h += `<div class="row" data-mid="${m.id}"><div class="name" style="min-height:calc(var(--lane)*${n})">
       <div class="mn">${esc(m.n)}</div><div class="meta">
         <span class="badge b-id">#${m.id}</span>
         ${m.ng   ? `<span class="badge b-ng">予約不可</span>` : ''}
@@ -1213,7 +1237,7 @@ function render(){
         ${isAllDay(r) ? '' : `<span class="tm">${jHM(r.s)}–${jHM(r.e)}</span>`}
         <b>${esc(r.cust || r.t)}</b><span class="who">${esc([r.dest, r.req].filter(Boolean).join(' / '))}</span></div>`;
     });
-    if (SEEK && SEEK.e > w0 && SEEK.s < wEnd) {
+    if (SEEK && SEEK_FROM_GRID && SEEK.e > w0 && SEEK.s < wEnd) {   /* グリッドの空きセルをクリックした日だけ帯を出す */
       const sl = Math.max(0, (SEEK.s - w0) / WK * 100), sr = Math.min(100, (SEEK.e - w0) / WK * 100);
       h += `<div class="seekband" style="left:${sl}%;width:${Math.max(sr-sl,0.4)}%"></div>`;
     }
@@ -1279,36 +1303,110 @@ function paintSAllDay(){
     if (!isNaN(b)) document.getElementById('sTo').value   = msToLocal(b + 17*3600e3);
   }
 }
-function parseSeek(){
-  if (sAllDayOn()) {
-    const a = dateToMs(document.getElementById('sFromD').value);
-    const b = dateToMs(document.getElementById('sToD').value);
-    if (isNaN(a) || isNaN(b)) return null;
-    return { s:a, e: b + DAY, allDay:true };
-  }
-  const s = localToMs(document.getElementById('sFrom').value);
-  const e = localToMs(document.getElementById('sTo').value);
-  if (isNaN(s) || isNaN(e) || e <= s) return null;
-  return { s, e, allDay:false };
-}
-async function runSeek(){
-  const r = parseSeek();
-  if (!r) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
-  SEEK = r;
-  SEEK_FROM_GRID = false;   /* 明示的な検索なので、キャンセル時に自動で消さない */
-  curWeek = weekTopMs(r.s);
-  await loadRes(); lastLoad = Date.now();
-  render(); paintSeek(); paintUpdated(); writeUrl();
-}
-function clearSeek(){
-  SEEK = null; HILITE = null; SEEK_SEL = new Set();
-  document.getElementById('sFrom').value = msToLocal(weekTopMs(Date.now()) +  9*3600e3);
-  document.getElementById('sTo').value   = msToLocal(weekTopMs(Date.now()) + 17*3600e3);
-  document.getElementById('sFromD').value = msToDate(weekTopMs(Date.now()));
-  document.getElementById('sToD').value   = msToDate(weekTopMs(Date.now()));
-  render(); paintSeek();
-}
 document.getElementById('sAllDay').addEventListener('change', paintSAllDay);
+
+/* ============================================================
+   「＋デモ機を予約」：空き検索 → 複数選択 → まとめて予約
+   ------------------------------------------------------------
+   my_schedule.html と全く同じ画面・同じ動き（利用者が迷わないように）。
+   以前はページ上部に検索バーと結果パネルを常設していたが、このボタンから
+   開くモーダルに一本化した。空き状況は fetchDemoBusy() で指定した期間だけを
+   問い合わせるので、表示している週の外の日付でも正しく判定できる。 */
+let SEEK_BUSY = new Map();    /* 直近の検索結果（機体id→重なる予約）。選択の再描画に使い回す */
+function openSeekDemo(){
+  /* ★開始日の既定★ 表示中の週が今週（または過去）なら、週の頭（過去日付になりうる）
+     ではなく今日にする。来週以降を見ているときは、その週の頭のまま。 */
+  const dayMs = Math.max(curWeek, Date.UTC(toJ(Date.now()).getUTCFullYear(), toJ(Date.now()).getUTCMonth(), toJ(Date.now()).getUTCDate()) - JST);
+  const cats = [...new Set(MACHINES.filter(m => m.resv && !m.ng && !m.part).map(m => m.cat))].sort();
+  document.getElementById('sCat').innerHTML = `<option value="">全区分</option>` + cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  document.getElementById('sQ').value = '';
+  document.getElementById('sFrom').value = msToLocal(dayMs + 9*3600e3);
+  document.getElementById('sTo').value   = msToLocal(dayMs + 17*3600e3);
+  document.getElementById('sFromD').value = msToDate(dayMs);
+  document.getElementById('sToD').value   = msToDate(dayMs);
+  document.getElementById('sAllDay').checked = true;   /* 既定は終日 */
+  paintSAllDay();
+  SEEK = null; SEEK_SEL = new Set(); SEEK_FROM_GRID = false;
+  document.getElementById('seek-panel').innerHTML = '';
+  paintSeekBar();
+  openM('mSeek');
+}
+async function runSeekDemo(){
+  let s, e;
+  if (sAllDayOn()) {
+    const a = dateToMs(document.getElementById('sFromD').value), b = dateToMs(document.getElementById('sToD').value);
+    if (isNaN(a) || isNaN(b)) { showSnack('開始日と終了日を入れてください'); return; }
+    s = a; e = b + DAY;
+  } else {
+    s = localToMs(document.getElementById('sFrom').value); e = localToMs(document.getElementById('sTo').value);
+    if (isNaN(s) || isNaN(e) || e <= s) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
+  }
+  SEEK = { s, e, allDay: sAllDayOn() };
+  const p = document.getElementById('seek-panel');
+  p.innerHTML = `<div style="color:var(--muted)">検索中...</div>`;
+  try {
+    const rows = await fetchDemoBusy(s, e);
+    SEEK_BUSY = new Map();
+    rows.forEach(r => { if (!SEEK_BUSY.has(r.mid)) SEEK_BUSY.set(r.mid, []); SEEK_BUSY.get(r.mid).push(r); });
+    paintSeekDemo();
+  } catch (err) {
+    p.innerHTML = `<div class="none">検索に失敗しました：${esc(err.message)}</div>`;
+  }
+}
+['sCat','sQ'].forEach(id => document.getElementById(id).addEventListener('input', () => { if (SEEK) paintSeekDemo(); }));
+function paintSeekDemo(){
+  const p = document.getElementById('seek-panel');
+  const busy = SEEK_BUSY;
+  const cat = document.getElementById('sCat').value, q = document.getElementById('sQ').value.trim().toLowerCase();
+  const target = MACHINES.filter(m => m.resv && !m.ng && !m.part && (!cat || m.cat === cat) && (!q || m.n.toLowerCase().includes(q)));
+  const free = target.filter(m => !busy.has(m.id));
+  const used = target.filter(m => busy.has(m.id));
+  /* ★選択を消すのは「この区間で本当に埋まった」ときだけ★
+     区分・キーワードは表示を絞るだけなので、「PAL」で選んで「DA」に絞り込み
+     直しても、PAL側の選択は消えない（区分・キーワードをまたいで複数選ぶため）。 */
+  SEEK_SEL.forEach(id => {
+    const m = MACHINES.find(x => x.id === id);
+    if (!m || !m.resv || m.ng || m.part || busy.has(id)) SEEK_SEL.delete(id);
+  });
+  let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}　押さえられる機体 ${free.length}台 / 対象 ${target.length}台</h4>`;
+  if (SEEK_SEL.size) {
+    h += `<div class="grp-line" style="margin-bottom:2px"><b>選択中</b>`
+      + [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean)
+          .map(m => `<span class="chip on" data-mid="${m.id}">${esc(m.n)}</span>`).join('') + `</div>`;
+  }
+  if (!free.length) h += `<div class="none">この区間に空いている機体はありません</div>`;
+  else [...new Set(free.map(m => m.cat))].forEach(C => {
+    h += `<div class="grp-line"><b>${esc(C)}</b>`
+      + free.filter(m => m.cat === C)
+            .map(m => `<span class="chip${SEEK_SEL.has(m.id) ? ' on' : ''}" data-mid="${m.id}">${esc(m.n)}</span>`).join('')
+      + `</div>`;
+  });
+  if (used.length) {
+    h += `<div class="grp-line" style="margin-top:8px"><b>予約済み</b>`
+      + used.map(m => {
+          const r = busy.get(m.id)[0];
+          const who = [r.cust, r.req].filter(Boolean).join(' / ');
+          return `<span class="chip busy" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
+        }).join('')
+      + `<span class="cnt">機体名にマウスを乗せると誰が押さえているか出ます</span></div>`;
+  }
+  if (free.length) h += `<div class="cnt" style="margin-top:9px">緑の機体名をクリックして選ぶと、複数まとめて1回で予約できます（予約ボタンは上に固定してあります）</div>`;
+  p.innerHTML = h;
+  paintSeekBar();
+}
+/* 上に固定した予約ボタン・選択解除の表示（台数と有効/無効）を合わせる */
+function paintSeekBar(){
+  const n = SEEK_SEL.size;
+  document.getElementById('seekBulkGo').textContent = `選んだ機体をまとめて予約（${n}台）`;
+  document.getElementById('seekBulkGo').disabled = !n;
+  document.getElementById('seekSelClear').disabled = !n;
+}
+document.getElementById('seek-panel').addEventListener('click', ev => {
+  const c = ev.target.closest('.chip'); if (!c || c.classList.contains('busy') || !c.dataset.mid) return;
+  const id = Number(c.dataset.mid);
+  if (SEEK_SEL.has(id)) SEEK_SEL.delete(id); else SEEK_SEL.add(id);
+  paintSeekDemo();
+});
 
 /* ★開始日を変えたら終了日を追いかけさせる★
    終了日が古い（開始日より前の）ままだと、押すたびに終了日を
@@ -1331,110 +1429,95 @@ function linkDateTimePair(startId, endId){
 linkDateTimePair('sFrom', 'sTo');
 linkDatePair('sFromD', 'sToD');
 
-function paintSeek(){
-  const p = document.getElementById('seek-panel');
-  if (!p) return;
-  if (!SEEK) { p.style.display = 'none'; return; }
-  const busy = new Map();
-  RES.filter(r => r.st !== '取消' && overlaps(r, SEEK.s, SEEK.e))
-     .forEach(r => { if (!busy.has(r.mid)) busy.set(r.mid, []); busy.get(r.mid).push(r); });
-
-  const cat = document.getElementById('cat').value;
-  const q   = document.getElementById('q').value.trim().toLowerCase();
-  /* 部品・オプションと予約対象外は候補に出さない（画面のチェックと同じ考え方）。
-     ★キーワード検索も対象にする★ 「PAL」→「DA」のように絞り込みながら
-     選ぶ使い方をするので、グリッドの検索欄と同じ言葉で空き検索も絞れないと
-     不便（以前はグリッドの絞り込みにしか効いていなかった）。 */
-  const target = MACHINES.filter(m => (!cat || m.cat === cat) && (!q || m.n.toLowerCase().includes(q))
-                                    && m.resv && !m.ng && !m.part);
-  const free = target.filter(m => !busy.has(m.id));
-  const used = target.filter(m =>  busy.has(m.id));
-
-  /* ★選択を消すのは「空きが無くなった」ときだけ★
-     区分・キーワードは表示を絞るだけなので、「PAL」で選んで「DA」に
-     絞り込み直しても、PAL側の選択は消えないようにする（区分・キーワードを
-     またいで複数選ぶ、という使い方をするため）。
-     消すのは、選んだ機体がこの区間で本当に埋まった・名簿から消えた場合だけ。 */
-  SEEK_SEL.forEach(id => {
-    const m = MACHINES.find(x => x.id === id);
-    if (!m || !m.resv || m.ng || m.part || busy.has(id)) SEEK_SEL.delete(id);
-  });
-
-  let h = `<h4>${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}　押さえられる機体 ${free.length}台 / 対象 ${target.length}台</h4>`;
-  if (SEEK_SEL.size) {
-    /* 区分・キーワードを絞り込んでも、選んだ機体は常にここに出す
-       （絞り込みで一覧から消えても選択自体は消えていないと分かるように）。 */
-    h += `<div class="grp-line" style="margin-bottom:2px"><b>選択中</b>`
-      + [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean)
-          .map(m => `<span class="chip on" data-mid="${m.id}" data-name="${esc(m.n)}">${esc(m.n)}</span>`).join('')
-      + `</div>`;
-  }
-  if (!free.length) h += `<div class="none">この区間に空いている機体はありません</div>`;
-  else [...new Set(free.map(m => m.cat))].forEach(C => {
-    h += `<div class="grp-line"><b>${esc(C)}</b>`
-      + free.filter(m => m.cat === C)
-            .map(m => `<span class="chip${SEEK_SEL.has(m.id) ? ' on' : ''}" data-mid="${m.id}" data-name="${esc(m.n)}">${esc(m.n)}</span>`).join('')
-      + `</div>`;
-  });
-  if (used.length) {
-    h += `<div class="grp-line" style="margin-top:8px"><b>予約済み</b>`
-      + used.map(m => {
-          const r = busy.get(m.id)[0];
-          const who = [r.cust, r.req].filter(Boolean).join(' / ');
-          return `<span class="chip busy${m.id === HILITE ? ' on' : ''}" data-mid="${m.id}" data-name="${esc(m.n)}" title="${esc(r.t)}${who ? '（'+who+'）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
-        }).join('')
-      + `<span class="cnt">機体名にマウスを乗せると誰が押さえているか出ます</span></div>`;
-  }
-  if (free.length) {
-    h += `<div class="grp-line" style="margin-top:9px;align-items:center">`
-      + `<button class="act pri" id="seekBulkGo"${SEEK_SEL.size ? '' : ' disabled'}>選んだ機体をまとめて予約（${SEEK_SEL.size}台）</button>`
-      + `<button class="act" id="seekSelClear"${SEEK_SEL.size ? '' : ' disabled'}>選択解除</button>`
-      + `<span class="cnt">緑の機体名をクリックして選ぶと、複数まとめて1回で予約できます</span></div>`;
-  }
-  p.innerHTML = h;
-  p.style.display = 'block';
+/* ============================================================
+   まとめて予約モーダル（mBulk）の期間欄
+   ------------------------------------------------------------
+   以前は空き検索で入れた期間（SEEK）をそのまま読み取り専用で表示する
+   だけだったが、「複製」から直接ここに入れるようにしたので、モーダル
+   自身が期間を持って編集できるようにした（my_schedule.html と同じ形）。 */
+function bAllDayOn(){ return document.getElementById('bAllDay').checked; }
+function paintBAllDay(){
+  const on = bAllDayOn();
+  document.getElementById('bTimeRow').style.display = on ? 'none' : '';
+  document.getElementById('bDateRow').style.display = on ? '' : 'none';
 }
-document.getElementById('seek-panel').addEventListener('click', ev => {
-  if (ev.target.closest('#seekBulkGo')) { openBulkNew(); return; }
-  if (ev.target.closest('#seekSelClear')) { SEEK_SEL = new Set(); paintSeek(); return; }
-  const c = ev.target.closest('.chip'); if (!c) return;
-  /* 予約済みのチップ：絞り込まずに行を目立たせるだけ（検索欄を書き換えると解除しても残る） */
-  if (c.classList.contains('busy')) {
-    const id = Number(c.dataset.mid);
-    HILITE = (HILITE === id) ? null : id;
-    render(); paintSeek();
-    if (HILITE) {
-      const row = document.querySelector(`.row[data-mid="${HILITE}"]`);
-      if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    }
-    return;
+document.getElementById('bAllDay').addEventListener('change', paintBAllDay);
+linkDateTimePair('bFrom', 'bTo');
+linkDatePair('bFromD', 'bToD');
+function fillBulkRange(s, e, allDay){
+  document.getElementById('bAllDay').checked = !!allDay;
+  document.getElementById('bFrom').value = msToLocal(allDay ? s + 9*3600e3 : s);
+  document.getElementById('bTo').value   = msToLocal(allDay ? s + 17*3600e3 : e);
+  document.getElementById('bFromD').value = msToDate(s);
+  const d = toJ(e);
+  const atMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
+  document.getElementById('bToD').value = msToDate(allDay && atMidnight ? e - DAY : e);
+  paintBAllDay();
+}
+function bulkRangeMs(){
+  if (bAllDayOn()) {
+    const a = dateToMs(document.getElementById('bFromD').value), b = dateToMs(document.getElementById('bToD').value);
+    return { s:a, e: isNaN(b) ? NaN : b + DAY };
   }
-  /* 空きのチップ：クリックのたびに選択のオン/オフを切り替える（即座に予約画面は開かない）。
-     ★1台だけ予約したいときも同じ操作★ 1台選んで「まとめて予約」を押せばよい。
-     操作をここと「まとめて予約」ボタンの2系統に分けると、選んだのに反映されない
-     ように見えるので、クリック＝即予約という近道は用意しない。 */
-  if (c.dataset.mid) {
-    const id = Number(c.dataset.mid);
-    if (SEEK_SEL.has(id)) SEEK_SEL.delete(id); else SEEK_SEL.add(id);
-    paintSeek();
+  return { s: localToMs(document.getElementById('bFrom').value), e: localToMs(document.getElementById('bTo').value) };
+}
+/* この期間に重なるデモ機予約を、誰の予約かは問わず全機体ぶん取得する。
+   RES は表示中の週±WINDOW_DAYS日しか持っていないので、複製で遠い月を
+   指定した場合など表示範囲の外を確認したいときはこれを使う
+   （my_schedule.html の fetchDemoBusy と同じ実装）。 */
+async function fetchDemoBusy(s, e){
+  const lo = new Date(s).toISOString().slice(0,19) + 'Z';
+  const hi = new Date(e).toISOString().slice(0,19) + 'Z';
+  const base = `/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=2000`;
+  const flt  = encodeURIComponent(`fields/ReservationStart lt '${hi}' and fields/ReservationEnd gt '${lo}'`);
+  let items;
+  try {
+    items = await gGetAll(`${base}&$filter=${flt}`, { Prefer:'HonorNonIndexedQueriesWarningMayFailRandomly' });
+  } catch (err) {
+    if (err.status !== 400) throw err;
+    items = (await gGetAll(base)).filter(it => {
+      const f = it.fields || {};
+      const rs = f.ReservationStart ? P(f.ReservationStart) : NaN, re = f.ReservationEnd ? P(f.ReservationEnd) : NaN;
+      return !isNaN(rs) && !isNaN(re) && rs < e && re > s;
+    });
   }
-});
-document.getElementById('sGo').onclick    = runSeek;
-document.getElementById('sClear').onclick = clearSeek;
+  return items.map(it => {
+    const f = it.fields || {};
+    return { mid: Number(f.SourceEquipmentId) || 0, s: P(f.ReservationStart), e: P(f.ReservationEnd),
+      st: f.LoanStatus || '予約', t: f.Title || '', cust: f.CustomerName || '', req: f.RequesterName || '' };
+  }).filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e) && r.st !== '取消' && overlaps(r, s, e));
+}
+let BULK_BUSY = new Map();   /* 「空き状況を確認」の直近の結果。機体id→重なる予約 */
+async function bulkCheckAvailability(){
+  const msg = document.getElementById('bCheckMsg');
+  const { s, e } = bulkRangeMs();
+  if (isNaN(s) || isNaN(e) || e <= s) { msg.textContent = '開始・終了を確認してください'; return; }
+  msg.textContent = '確認中...';
+  try {
+    const rows = await fetchDemoBusy(s, e);
+    BULK_BUSY = new Map();
+    rows.forEach(r => { if (SEEK_SEL.has(r.mid) && !BULK_BUSY.has(r.mid)) BULK_BUSY.set(r.mid, r); });
+    renderBulkMachines();
+    const total = SEEK_SEL.size, busy = BULK_BUSY.size;
+    msg.textContent = busy ? `${total - busy}/${total}台が空いています（埋まっている機体は下の一覧で分かります）` : `${total}台とも空いています`;
+  } catch (err) {
+    msg.textContent = '確認に失敗しました：' + err.message;
+  }
+}
 
 /* ============================================================
    操作
    ============================================================ */
 async function goWeek(ms){
   curWeek = ms; await loadRes(); lastLoad = Date.now();
-  render(); paintSeek(); paintUpdated(); writeUrl();
+  render(); paintUpdated(); writeUrl();
 }
 document.getElementById('prev').onclick  = () => goWeek(curWeek - WK);
 document.getElementById('next').onclick  = () => goWeek(curWeek + WK);
 document.getElementById('today').onclick = () => goWeek(weekTopMs(Date.now()));
 ['cat','nopart','nong','onlyres','showcxl'].forEach(id =>
-  document.getElementById(id).onchange = () => { render(); paintSeek(); writeUrl(); });
-document.getElementById('q').oninput = () => { render(); paintSeek(); writeUrl(); };
+  document.getElementById(id).onchange = () => { render(); writeUrl(); });
+document.getElementById('q').oninput = () => { render(); writeUrl(); };
 
 /* 空きグリッドのクリックは、単発専用のフォームを別に持たず「まとめて予約」
    (mBulk)を1台選択済みの状態で直接開く。導線は「空き検索→まとめて予約」の
@@ -1609,7 +1692,7 @@ async function removeSetMember(rid){
   if (!confirm(`このセットから機体を外します。\n\n　デモ機：${m ? m.n : '#'+r.mid}\n　件名　：${r.t}\n　依頼者：${who}\n\n外すと枠が空き、他の人が予約できるようになります。`)) return;
   const res = await cancelReservationRow(rid);
   if (!res.ok) { showSnack('外せませんでした：' + res.message); return; }
-  await loadRes(); render(); paintSeek();
+  await loadRes(); render(); 
   renderSetView();
   showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
 }
@@ -1631,7 +1714,7 @@ async function cancelWholeSet(){
     const res = await cancelReservationRow(members[i].rid);
     if (res.ok) ok++; else ng++;
   }
-  await loadRes(); render(); paintSeek();
+  await loadRes(); render(); 
   renderSetView();
   showSnack(`${ok}台を取消しました` + (ng ? ` / 失敗 ${ng}件` : ''));
 }
@@ -1650,24 +1733,27 @@ async function doAddToSet(){
     else showSnack(`${m.n} の追加に失敗しました（${r.reason||''}）`);
   }
   ADD_SEL = new Set();
-  await loadRes(); render(); paintSeek();
+  await loadRes(); render(); 
   renderSetView();
   if (ok) showSnack(`${ok}台を追加しました`);
 }
 
 /* このセットと同じ機体構成・同じ件名/顧客名/行き先/備考を引き継いで、
-   別の期間でもう一度まとめて予約する。日付は空き検索から選び直してもらう
-   （その期間に本当に空いているかを確認させたいので、日付は複製しない）。 */
+   別の期間でもう一度まとめて予約する。
+   ★検索バーへは戻らない★ 以前は「期間を入れ直して検索ボタンを押して
+   ください」と案内するだけで、ユーザーが自分で検索バーまで操作しに
+   行く必要がありわかりにくい、という指摘を受けた。元の期間を初期値に
+   入れた状態でそのまま「まとめて予約」モーダルを開き、モーダルの中で
+   期間を書き換えて「空き状況を確認」→保存、という1本の流れにする。 */
 function startDuplicateSet(){
   const members = setMembers(CURRENT_SET_ID);
   const rep = members[0]; if (!rep) return;
   DUPE_TEMPLATE = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
   SEEK_SEL = new Set(members.map(x => x.mid));
-  SEEK_FROM_GRID = false;   /* この先は明示的に空き検索フォームで期間を選んでもらう */
+  SEEK = { s: rep.s, e: rep.e, allDay: isAllDay(rep) };
+  SEEK_FROM_GRID = false;
   closeM('mDetail');
-  showSnack('複製先の期間を指定して「この区間で押さえられる機体」を押してください（機体は選択済みです）');
-  const el = document.getElementById('sFrom');
-  if (el) el.scrollIntoView({ block:'center', behavior:'smooth' });
+  openBulkNew();
 }
 
 /* ============================================================
@@ -1742,7 +1828,7 @@ async function doCancel(){
     return;
   }
   closeM('mDetail');
-  await loadRes(); render(); paintSeek();
+  await loadRes(); render(); 
   showSnack(res.freed
     ? '予約を取消しました'
     : '予約は取消しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください');
@@ -1834,72 +1920,32 @@ async function release(machine, token, now){
    同時に投げると同じマスター行の ETag 競合（412）が増えて再試行が増える
    だけなので、直列に回す方が実際には速くて確実。 */
 /* 「複製」から来たときだけ、件名・顧客名・行き先・備考のひな形を
-   まとめて予約モーダルに引き継ぐ（機体構成と期間はそのつど選び直す）。
+   まとめて予約モーダルに引き継ぐ（機体構成と期間の初期値は別途セットする）。
    一度使ったら消す（次に素の「まとめて予約」を開いたときに残らないように）。 */
 let DUPE_TEMPLATE = null;
-let BULK_CAT_FILTER = '';   /* このモーダル内で機体を絞り込む所有先(区分) */
 
-/* まとめて予約モーダルの機体一覧を描く。★このモーダルの中だけで
-   追加・削除できる★（以前は空き検索パネルで選んだ機体がそのまま固定
-   表示されるだけで、1台だけに絞られたグリッドクリック起点だと事実上
-   「まとめて」にならなかった。セット詳細の「機体を追加」と同じ考え方で、
-   ここでも同じ期間の空き機体をチップから足し引きできるようにする）。 */
+/* まとめて予約モーダルの機体一覧を描く。★モーダルの中では足し引きしない★
+   （my_schedule.html と同じ仕様に統一。選んだ機体を変えたいときはキャンセル
+   して空き検索からやり直す）。「空き状況を確認」で埋まっているとわかった
+   機体は、外しはしないが busy スタイルで分かるようにするだけ。 */
 function renderBulkMachines(){
-  if (!SEEK) return;
-  const busy = new Map();
-  RES.filter(r => r.st !== '取消' && overlaps(r, SEEK.s, SEEK.e))
-     .forEach(r => { if (!busy.has(r.mid)) busy.set(r.mid, []); busy.get(r.mid).push(r); });
-
-  const q = document.getElementById('bMachinesQ').value.trim().toLowerCase();
-  const all = MACHINES.filter(m => m.resv && !m.ng && !m.part);
-  const cats = [...new Set(all.map(m => m.cat))].sort();
-  if (BULK_CAT_FILTER && !cats.includes(BULK_CAT_FILTER)) BULK_CAT_FILTER = '';
-
-  /* 選択済みは絞り込みで一覧から外れても選択自体は消さない
-     （区分・キーワードをまたいで複数選ぶ、空き検索パネルと同じ考え方）。
-     機体が消えた・予約対象外になった等で無効になった選択だけ落とす。 */
-  SEEK_SEL.forEach(id => {
-    const m = MACHINES.find(x => x.id === id);
-    if (!m || !m.resv || m.ng || m.part || busy.has(id)) SEEK_SEL.delete(id);
-  });
-  const shown = all.filter(m => SEEK_SEL.has(m.id)
-      || ((!BULK_CAT_FILTER || m.cat === BULK_CAT_FILTER) && (!q || m.n.toLowerCase().includes(q))))
-    .sort((a,b) => (SEEK_SEL.has(b.id)?1:0) - (SEEK_SEL.has(a.id)?1:0)
-      || a.cat.localeCompare(b.cat) || a.n.localeCompare(b.n));   /* 選択済みを先頭に */
-
-  document.getElementById('bMachinesLabel').textContent = `機体（${SEEK_SEL.size}台）`;
-  document.getElementById('bMachinesFilter').innerHTML =
-    `<select id="bCatFilter" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px">
-       <option value="">所有先: すべて</option>
-       ${cats.map(c => `<option value="${esc(c)}"${c === BULK_CAT_FILTER ? ' selected' : ''}>${esc(c)}</option>`).join('')}
-     </select>`;
-  document.getElementById('bCatFilter').onchange = e => { BULK_CAT_FILTER = e.target.value; renderBulkMachines(); };
-  document.getElementById('bMachinesQ').oninput = () => renderBulkMachines();
-
-  const box = document.getElementById('bMachines');
-  box.innerHTML = shown.map(m => {
-    const sel = SEEK_SEL.has(m.id);
-    if (!sel && busy.has(m.id)) {
-      const r = busy.get(m.id)[0];
+  const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
+  document.getElementById('bMachinesLabel').textContent = `機体（${list.length}台）`;
+  document.getElementById('bMachines').innerHTML = list.map(m => {
+    const r = BULK_BUSY.get(m.id);
+    if (r) {
       const who = [r.cust, r.req].filter(Boolean).join(' / ');
       return `<span class="chip busy" title="${esc(r.t)}${who ? '（' + who + '）' : ''} ${jFull(r.s)}〜${jFull(r.e)}">${esc(m.n)}</span>`;
     }
-    return `<span class="chip${sel ? ' on' : ''}" data-mid="${m.id}">${esc(m.n)}</span>`;
+    return `<span class="chip">${esc(m.n)}</span>`;
   }).join('');
-  box.querySelectorAll('.chip:not(.busy)').forEach(c => {
-    c.onclick = () => {
-      const id = Number(c.dataset.mid);
-      if (SEEK_SEL.has(id)) SEEK_SEL.delete(id); else SEEK_SEL.add(id);
-      renderBulkMachines();
-    };
-  });
 }
 
 function openBulkNew(){
   if (!SEEK || !SEEK_SEL.size) return;
-  BULK_CAT_FILTER = '';
-  document.getElementById('bMachinesQ').value = '';
-  document.getElementById('bRange').textContent = `${jFull(SEEK.s)} 〜 ${jFull(SEEK.e)}${SEEK.allDay ? '（終日）' : ''}`;
+  fillBulkRange(SEEK.s, SEEK.e, SEEK.allDay);
+  BULK_BUSY = new Map();
+  document.getElementById('bCheckMsg').textContent = '';
   renderBulkMachines();
   if (DUPE_TEMPLATE) {
     document.getElementById('bTitle').value = DUPE_TEMPLATE.title;
@@ -1928,7 +1974,7 @@ new MutationObserver(() => {
   if (!document.getElementById('mBulk').classList.contains('on') && SEEK_FROM_GRID) {
     SEEK_FROM_GRID = false;
     SEEK = null; SEEK_SEL = new Set();
-    render(); paintSeek();
+    render(); 
   }
 }).observe(document.getElementById('mBulk'), { attributes: true, attributeFilter: ['class'] });
 
@@ -1936,8 +1982,11 @@ async function doReserveBulk(){
   const msg = document.getElementById('bMsg'), btn = document.getElementById('bSave');
   const resultBox = document.getElementById('b-result');
   const title = document.getElementById('bTitle').value.trim();
-  if (!SEEK || !SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
+  if (!SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
   if (!title) { msg.textContent = '予約件名を入力してください'; msg.className = 'msg ng'; return; }
+  const { s, e } = bulkRangeMs();
+  if (isNaN(s) || isNaN(e)) { msg.textContent = bAllDayOn() ? '開始日と終了日を入力してください' : '開始と終了を入力してください'; msg.className = 'msg ng'; return; }
+  if (e <= s) { msg.textContent = bAllDayOn() ? '終了日は開始日と同じか、それより後にしてください' : '終了が開始より後になるようにしてください'; msg.className = 'msg ng'; return; }
 
   const details = {
     title, cust: document.getElementById('bCust').value.trim(),
@@ -1957,7 +2006,7 @@ async function doReserveBulk(){
     msg.textContent = `予約中... (${i}/${targets.length}) ${m.n}`;
     let line;
     try {
-      const r = await reserve({ machine:m, s:SEEK.s, e:SEEK.e, setId, details });
+      const r = await reserve({ machine:m, s, e, setId, details });
       if (r.ok) {
         ok++; SEEK_SEL.delete(m.id);
         line = `<span style="color:var(--success)">✓ ${esc(m.n)}</span>`;
@@ -1976,10 +2025,10 @@ async function doReserveBulk(){
   btn.disabled = false;
   msg.textContent = `${ok}/${targets.length}台を予約しました`;
   msg.className = 'msg' + (ok === targets.length ? ' ok' : ok === 0 ? ' ng' : '');
-  await loadRes(); lastLoad = Date.now(); render(); paintSeek(); paintUpdated();
+  await loadRes(); lastLoad = Date.now(); render(); paintUpdated(); paintSeekBar();
   if (ok === targets.length) {
     showSnack(`${ok}台を予約しました`);
-    setTimeout(() => closeM('mBulk'), 900);
+    setTimeout(() => { closeM('mBulk'); closeM('mSeek'); }, 900);
   }
 }
 

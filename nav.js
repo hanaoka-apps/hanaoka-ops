@@ -6,21 +6,21 @@
       key: 'ap',
       apps: [
         { f: 'ap_dashboard.html',      l: 'ホーム' },
-        { f: 'ap_review.html',         l: '経費のチェック' },
+        { f: 'ap_expense.html',        l: '経費' },
         { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
         { f: 'ap_entry.html',          l: '手入力' },
         { f: 'ap_recurring.html',      l: '毎月の支払' },
-        { f: 'ap_payment.html',        l: '支払一覧・承認' }
+        { f: 'ap_payment.html',        l: '支払（決裁・出力）' }
       ]
     },
     {
       key: 'reserve',
       apps: [
         { f: 'my_schedule.html', l: '自分の予定' },
+        { f: 'staff_schedule.html', l: '全社員の予定' },
         { f: 'demo_reserve.html', l: 'デモ機' },
         { f: 'car_reserve.html',  l: '営業車' },
         { f: 'room_reserve.html', l: '会議室' },
-        { f: 'staff_schedule.html', l: '全社員の予定' },
         { f: 'reserve_manual.html', l: '使い方' }
       ]
     }
@@ -43,7 +43,7 @@
   function monthParam() {
     var u = new URLSearchParams(location.search);
     var m = u.get('month');
-    if (!m) { var sel = document.getElementById('month-select'); if (sel && sel.value) m = sel.value; }
+    if (!m) { var sel = document.getElementById('month-select') || document.getElementById('month'); if (sel && sel.value) m = sel.value; }
     return m || '';
   }
 
@@ -59,10 +59,94 @@
     document.head.appendChild(s);
   }
 
+  /* ============================================================
+     予約状況グループ：左のサイドバー
+     ------------------------------------------------------------
+     hanaoka_hub.html / sales_report_dashboard.html と同じデザイン。見た目は
+     reserve_theme.css（各ページが読み込む）、メニューの中身はここ1か所だけで管理する。
+     ============================================================ */
+  var ICONS = {
+    'my_schedule.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
+    'demo_reserve.html':   '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+    'car_reserve.html':    '<path d="M5 16h14l-1.5-6a2 2 0 0 0-1.9-1.5H8.4A2 2 0 0 0 6.5 10z"/><path d="M4 16v3M20 16v3"/><circle cx="8" cy="13" r=".6"/><circle cx="16" cy="13" r=".6"/>',
+    'room_reserve.html':   '<path d="M4 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16M14 9h5a1 1 0 0 1 1 1v11M2 21h20M8 8h2M8 12h2M8 16h2"/>',
+    'staff_schedule.html': '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.4 0 4 1.8 4 4.5"/>',
+    'reserve_manual.html': '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/>',
+    // 支払管理
+    'ap_dashboard.html':     '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+    'ap_expense.html':       '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h7"/>',
+    'ap_smile_import.html':  '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+    'ap_entry.html':         '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+    'ap_recurring.html':     '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
+    'ap_payment.html':       '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>'
+  };
+  // グループごとの名前とマーク（サイドバーの上）
+  var BRAND = {
+    reserve: { name: '予約状況', sub: 'HANAOKA RESERVE', mark: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>', key: 'hanaoka.reserve.sidebar.v1' },
+    ap:      { name: '支払管理', sub: 'HANAOKA AP', mark: '<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>', key: 'hanaoka.ap.sidebar.v1' }
+  };
+  function svg(inner) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
+  }
+  var SB_KEY = 'hanaoka.reserve.sidebar.v1';   // グループごとに buildSidebar で入れ替える
+  /* 開閉：手で切り替えたらその選択をこの端末に覚える。覚えていなければ画面幅で決める
+     （広いPCは開く、それより狭いPCはアイコンだけ。1024px以下は上の横帯になる）。 */
+  function sbState() {
+    try { var v = localStorage.getItem(SB_KEY); if (v === 'open' || v === 'closed') return v; } catch (e) {}
+    return window.innerWidth >= 1400 ? 'open' : 'closed';
+  }
+  function sbApply(v) {
+    var h = document.documentElement;
+    h.classList.toggle('hx-open', v === 'open');
+    h.classList.toggle('hx-closed', v === 'closed');
+  }
+  function buildSidebar(g) {
+    if (document.getElementById('hx-sidebar')) return;
+    var b = BRAND[g.key] || BRAND.reserve; SB_KEY = b.key;
+    var aside = document.createElement('aside');
+    aside.className = 'hx-sidebar'; aside.id = 'hx-sidebar';
+    aside.innerHTML =
+      /* HANAOKA HUB へのリンクは、HUB を社内に案内するまで外しておく（案内後に戻す） */
+      '<div class="hx-brand">' +
+        '<div class="hx-mark">' + svg(b.mark) + '</div>' +
+        '<div class="hx-brand-name">' + b.name + '<small>' + b.sub + '</small></div>' +
+      '</div>' +
+      '<div class="hx-label">MENU</div>' +
+      g.apps.map(function (a) {
+        return '<a class="hx-item' + (a.f === cur ? ' active' : '') + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
+          svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
+      }).join('') +
+      '<div class="hx-foot">' +
+        '<button type="button" class="hx-item hx-toggle" id="hx-toggle" title="サイドバーを開閉">' +
+          '<svg class="hx-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span>たたむ</span></button>' +
+      '</div>';
+    document.body.insertBefore(aside, document.body.firstChild);
+    sbApply(sbState());
+    // 支払管理は、開いている決済月を次の画面へ引き継ぐ
+    if (g.key === 'ap') aside.addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('a[data-file]'); if (!a) return;
+      e.preventDefault(); if (a.getAttribute('data-file') === cur) return;
+      var m = monthParam(); location.href = a.getAttribute('data-file') + (m ? ('?month=' + encodeURIComponent(m)) : '');
+    });
+    document.getElementById('hx-toggle').addEventListener('click', function () {
+      var next = document.documentElement.classList.contains('hx-closed') ? 'open' : 'closed';
+      try { localStorage.setItem(SB_KEY, next); } catch (e) {}
+      sbApply(next);
+    });
+    /* 手で切り替えていない端末は、ウィンドウ幅を変えたときも既定に追従する */
+    window.addEventListener('resize', function () {
+      var saved = null; try { saved = localStorage.getItem(SB_KEY); } catch (e) {}
+      if (!saved) sbApply(sbState());
+    });
+  }
+
   function build() {
+    var g = currentGroup();
+    if (g.key === 'reserve') { buildSidebar(g); return; }
+    // 支払管理は、新しい見た目（ap_theme.css）を読み込んだ画面だけサイドバーにする（読み込んでいない画面と case_management などは今までの上のタブ）
+    if (g.key === 'ap' && document.querySelector('link[href*="ap_theme.css"]') && g.apps.some(function (a) { return a.f === cur; })) { buildSidebar(g); return; }
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
-    var g = currentGroup();
     injectStyle();
     var html = '<div class="app-nav">' + g.apps.map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
