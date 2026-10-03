@@ -277,8 +277,12 @@ def calculate_window(
         all_codes.update(normalize_code(part.get("code")) for part in children)
     anchor_date = datetime.strptime(anchor, "%Y%m").date()
     rate = rate_for_month(settings, anchor)
+    report_count = sum(bucket["positive"] + bucket["zero"] for bucket in accum.values())
+    positive_count = sum(bucket["positive"] for bucket in accum.values())
     item_details = {}
-    display_codes = all_codes if root_codes is None else all_codes | {normalize_code(code) for code in root_codes}
+    # Months without production actuals have no defensible standard. Keeping a
+    # full empty-value BOM for every such month made the protected JSON huge.
+    display_codes = (all_codes if root_codes is None else all_codes | {normalize_code(code) for code in root_codes}) if report_count else set()
     for code in sorted(display_codes):
         result = rollup(code)
         if result["standard_minutes"] is None and code not in route_items and not bom_children.get(code):
@@ -314,8 +318,6 @@ def calculate_window(
             "zero_rows": int(result["zero"]),
             "flags": flags,
             "complete": result["complete"],
-            "routes": own.get(code, {}).get("steps", []),
-            "bom_contributions": result["contributions"],
             "steps": [{
                 "手順№": row["step"], "工程": row.get("process_name") or row.get("process_code") or "",
                 "工程コード": row.get("process_code") or "", "run": row["process_minutes"],
@@ -326,8 +328,6 @@ def calculate_window(
                 "cum_std_per_unit": row["cum_std_per_unit"],
             } for row in result["contributions"]],
         }
-    report_count = sum(bucket["positive"] + bucket["zero"] for bucket in accum.values())
-    positive_count = sum(bucket["positive"] for bucket in accum.values())
     window = {
         "status": "no_internal_routes" if not routes else ("no_results" if not report_count else "ok"),
         "period_months": months,
@@ -342,7 +342,6 @@ def calculate_window(
         "excluded": dict(sorted(excluded.items())),
         "needs_review": dict(sorted(needs_review.items())),
         "review_rows": review_rows,
-        "items": item_details,
     }
     source_metadata_path = DATA / "_value_analysis_labor_sources.json"
     source_metadata = {}
@@ -382,8 +381,15 @@ def calculate_window(
                 "own_setup_per_unit": item["own_setup_per_unit"],
                 "own_std_per_unit": item["own_std_per_unit"],
                 "cum_std_per_unit": item["cum_std_per_unit"],
+                "standard_minutes": item["standard_minutes"],
+                "processing_minutes": item["processing_minutes"],
+                "setup_minutes": item["setup_minutes"],
+                "labor_amount_yen": item["labor_amount_yen"],
+                "rate_status": item["rate_status"],
                 "input_rate": item["input_rate"], "rows": item["rows"], "zero_rows": item["zero_rows"],
-                "flags": item["flags"], "steps": item["steps"], "children": item["children"],
+                "reported_positive": item["reported_positive"], "reported_zero": item["reported_zero"],
+                "flags": item["flags"], "complete": item["complete"],
+                "steps": item["steps"], "children": item["children"],
             } for code, item in item_details.items()
         },
         "rates": rate_history,

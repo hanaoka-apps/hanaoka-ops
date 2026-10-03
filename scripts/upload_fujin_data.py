@@ -17,6 +17,7 @@
 """
 import os
 import sys
+import hashlib
 from pathlib import Path
 
 import requests
@@ -82,8 +83,37 @@ def upload_file(token: str, local_path: Path, sp_name: str) -> bool:
                 timeout=600,
             )
             r.raise_for_status()
+    if sp_name == "value_analysis.json":
+        verify_uploaded_file(token, local_path, url, size)
     print(f"  [OK] {sp_name} アップロード完了")
     return True
+
+
+def verify_uploaded_file(token: str, local_path: Path, content_url: str, expected_size: int) -> None:
+    """Read back protected data and compare bytes without logging its contents."""
+    local_hash = hashlib.sha256()
+    with local_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            local_hash.update(chunk)
+    response = requests.get(
+        content_url,
+        headers={"Authorization": f"Bearer {token}"},
+        stream=True,
+        timeout=(30, 600),
+    )
+    try:
+        response.raise_for_status()
+        remote_hash = hashlib.sha256()
+        remote_size = 0
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                remote_size += len(chunk)
+                remote_hash.update(chunk)
+        if remote_size != expected_size or remote_hash.digest() != local_hash.digest():
+            raise RuntimeError("SharePoint上の保護JSONが生成ファイルと一致しません")
+    finally:
+        response.close()
+    print("  [OK] 保護JSONの保存後照合に成功")
 
 
 def upload_large_file(token: str, local_path: Path, sp_name: str, encoded_name: str, size: int) -> None:
@@ -120,6 +150,14 @@ def upload_large_file(token: str, local_path: Path, sp_name: str, encoded_name: 
                 timeout=600,
             )
             response.raise_for_status()
+            if end + 1 < size and response.status_code != 202:
+                raise RuntimeError("SharePointの分割アップロード応答が不正です")
+            if end + 1 == size:
+                if response.status_code not in (200, 201):
+                    raise RuntimeError("SharePointの最終アップロードが確定していません")
+                committed_size = response.json().get("size")
+                if committed_size != size:
+                    raise RuntimeError("SharePointの確定ファイルサイズが一致しません")
             start = end + 1
 
 

@@ -13,6 +13,7 @@ requests_stub = types.ModuleType("requests")
 requests_stub.utils = types.SimpleNamespace(quote=quote)
 requests_stub.post = Mock()
 requests_stub.put = Mock()
+requests_stub.get = Mock()
 sys.modules.setdefault("requests", requests_stub)
 SPEC = importlib.util.spec_from_file_location("upload_fujin_data", ROOT / "scripts/upload_fujin_data.py")
 UPLOAD = importlib.util.module_from_spec(SPEC)
@@ -26,14 +27,17 @@ class LargeUploadTests(unittest.TestCase):
             path.write_bytes(b"x" * 700_000)
             first = Mock()
             first.status_code = 202
+            second = Mock()
+            second.status_code = 202
             last = Mock()
             last.status_code = 201
+            last.json.return_value = {"size": 700_000}
             session = Mock()
             session.json.return_value = {"uploadUrl": "https://example.invalid/preauthenticated"}
             with patch.object(UPLOAD, "UPLOAD_SESSION_THRESHOLD", 1), \
                  patch.object(UPLOAD, "UPLOAD_CHUNK_SIZE", 327_680), \
                  patch.object(UPLOAD.requests, "post", return_value=session) as post, \
-                 patch.object(UPLOAD.requests, "put", side_effect=[first, last, last]) as put:
+                 patch.object(UPLOAD.requests, "put", side_effect=[first, second, last]) as put:
                 UPLOAD.upload_file("fake-token", path, "fixture.json")
 
             self.assertEqual(post.call_count, 1)
@@ -45,6 +49,30 @@ class LargeUploadTests(unittest.TestCase):
                 "bytes 655360-699999/700000",
             ])
             self.assertTrue(all("Authorization" not in call.kwargs["headers"] for call in put.call_args_list))
+
+    def test_final_accepted_fragment_does_not_count_as_completed_upload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "fixture.json"
+            path.write_bytes(b"x" * 700_000)
+            session = Mock()
+            session.json.return_value = {"uploadUrl": "https://example.invalid/preauthenticated"}
+            pending = Mock(status_code=202)
+            with patch.object(UPLOAD, "UPLOAD_CHUNK_SIZE", 327_680), \
+                 patch.object(UPLOAD.requests, "post", return_value=session), \
+                 patch.object(UPLOAD.requests, "put", return_value=pending):
+                with self.assertRaisesRegex(RuntimeError, "確定していません"):
+                    UPLOAD.upload_large_file("fake-token", path, "fixture.json", "fixture.json", 700_000)
+
+    def test_readback_rejects_truncated_protected_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "value_analysis.json"
+            path.write_bytes(b'{"ok":true}')
+            response = Mock()
+            response.iter_content.return_value = iter([b'{"ok":'])
+            with patch.object(UPLOAD.requests, "get", return_value=response):
+                with self.assertRaisesRegex(RuntimeError, "一致しません"):
+                    UPLOAD.verify_uploaded_file("fake-token", path, "https://example.invalid/content", path.stat().st_size)
+            response.close.assert_called_once()
 
 
 if __name__ == "__main__":
