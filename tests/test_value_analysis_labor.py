@@ -241,6 +241,27 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertIn("手順 ${step['手順№']||'—'}：", html)
         self.assertIn("labor-component-card", html)
 
+    def test_special_suffixes_are_removed_from_rate_lists_and_category_details(self):
+        html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        self.assertIn("const rateEligibleRows=rows=>rows.filter(row=>!isSpecialItem(row.i));", html)
+        self.assertIn("categoryRankingWithoutSpecialSuffix", html)
+        self.assertIn("openCategoryModalWithoutSpecialSuffix", html)
+        self.assertIn("#itemRows .item-main-row", html)
+        self.assertIn("#itemMobileCards .item-mobile-card", html)
+        self.assertIn("一覧・分類内訳から除外しています。元の売上明細は変更していません。", html)
+
+    def test_value_analysis_uses_shared_theme_and_chart_geometry(self):
+        html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        self.assertIn('../hanaoka_theme.css?v=20261004', html)
+        self.assertIn('class="graph-grid-line"', html)
+        self.assertIn('class="graph-axis-label"', html)
+        self.assertIn('class="graph-data-line', html)
+        self.assertIn('graph-data-point', html)
+        self.assertIn("harmonizeTrendMarkup", html)
+        self.assertIn("detailTrendSvgWide=function", html)
+        self.assertIn("rateTrendSvgWide=function", html)
+        self.assertIn("for(let i=0;i<=4;i++)", html)
+
 
 if __name__ == "__main__":
     unittest.main()
