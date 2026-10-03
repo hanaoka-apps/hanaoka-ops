@@ -3,14 +3,8 @@
    redirectUriは全AP系アプリ共通の auth.html（リポジトリ直下、既に登録済み）を指す。
    auth.htmlは呼び出し元の場所に依存しない汎用ページなので、payroll/配下に置いても
    Azure側の追加登録は不要（ポップアップ認証：親ウィンドウが応答を回収する）。 */
-const PAYROLL_MSAL_CONFIG = {
-  auth: {
-    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
-    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    redirectUri: 'https://hanaoka-apps.github.io/hanaoka-ops/auth.html',
-  },
-  cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
-};
+/* 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js。各画面で先に読み込む） */
+const PAYROLL_MSAL_CONFIG = HanaokaAuth.msalConfig();
 const PAYROLL_SCOPES = ['User.Read', 'Sites.ReadWrite.All'];
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const PAYROLL_SITE_PATH = 'hanaokacorp.sharepoint.com:/sites/executive-workspace';
@@ -21,22 +15,22 @@ async function payrollInitAuth() {
   _msal = new msal.PublicClientApplication(PAYROLL_MSAL_CONFIG);
   await _msal.initialize();
   await _msal.handleRedirectPromise();
-  const accounts = _msal.getAllAccounts();
-  if (accounts.length > 0) {
-    _account = accounts[0];
-    _msal.setActiveAccount(_account);
+  _account = await HanaokaAuth.restore(_msal, PAYROLL_SCOPES);
+  if (_account) {
+    /* 給与の画面は、データを読み終えるまでゲート（「読み込み中」）を出したままにする。
+       その間にボタンが出ないように。エラー欄に何か出たらボタンを戻す */
+    HanaokaAuth.holdUntilError(['gateError', 'login-err']);
     return true;
   }
   return false;
 }
 
 async function payrollSignIn() {
-  const result = await _msal.loginPopup({ scopes: PAYROLL_SCOPES });
-  _account = result.account;
-  _msal.setActiveAccount(_account);
+  _account = await HanaokaAuth.login(_msal, PAYROLL_SCOPES);
 }
 
 function payrollSignOut() {
+  HanaokaAuth.done();
   sessionStorage.removeItem('payrollDriveId');
   _msal.logoutRedirect();
 }

@@ -66,17 +66,54 @@
     } catch (e) { /* 読めなければ隠さない */ }
     return false;
   }
-  function done() { document.documentElement.classList.remove('ha-restoring'); }
-  if (hasCachedAccount()) {
+  var safety = null, watcher = null;
+  function done() {
+    clearTimeout(safety);
+    if (watcher) { watcher.disconnect(); watcher = null; }
+    document.documentElement.classList.remove('ha-restoring');
+  }
+  function hide() {
     document.documentElement.classList.add('ha-restoring');
-    var st = document.createElement('style');
-    st.textContent = 'html.ha-restoring [data-ha-login]{display:none !important}';
-    (document.head || document.documentElement).appendChild(st);
+    if (!document.getElementById('ha-style')) {
+      var st = document.createElement('style');
+      st.id = 'ha-style';
+      st.textContent = 'html.ha-restoring [data-ha-login]{display:none !important}';
+      (document.head || document.documentElement).appendChild(st);
+    }
+  }
+  if (hasCachedAccount()) {
+    hide();
     /* 隠すのは最大3秒。サインインが有効なら確認は1秒もかからない。
        期限切れのときは MSAL が裏で約10秒粘ってから諦めるので、
        その間ずっとボタンが無い画面にしないよう、3秒で先にボタンを出す
        （確認が後から通れば、そのままアプリの画面に切り替わる） */
-    setTimeout(done, 3000);
+    safety = setTimeout(done, 3000);
+  }
+
+  /* ------------------------------------------------------------
+     サインインは確認できたが、データを読み終えるまでサインイン画面を
+     出したままにする作りの画面がある（給与：ゲートに「読み込み中」と出す）。
+     そのままだと3秒の保険でボタンが出てしまうので、保険を止めて、
+     エラー欄（ids）に何か表示されるまでボタンを隠したままにする。
+     読み込めれば画面が切り替わってゲートごと消えるので、ボタンは出ない。
+     念のため60秒たっても何も起きなければボタンを出す。
+     ------------------------------------------------------------ */
+  function holdUntilError(ids) {
+    clearTimeout(safety);
+    hide();
+    if (watcher) watcher.disconnect();
+    watcher = new MutationObserver(function () {
+      var shown = ids.some(function (id) {
+        var e = document.getElementById(id);
+        return e && e.textContent.trim();
+      });
+      if (shown) done();
+    });
+    ids.forEach(function (id) {
+      var e = document.getElementById(id);
+      if (e) watcher.observe(e, { childList: true, characterData: true, subtree: true });
+    });
+    safety = setTimeout(done, 60000);
   }
 
   function msalConfig() {
@@ -149,6 +186,7 @@
     restore: restore,
     login: login,
     /* サインイン画面をもう一度見せるとき（サインアウト・読み込み失敗）に呼ぶ */
-    done: done
+    done: done,
+    holdUntilError: holdUntilError
   };
 })();

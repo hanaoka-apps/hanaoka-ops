@@ -1,14 +1,8 @@
 /* 会計ダッシュボード 共通：MSAL認証 + Microsoft Graph API アクセス
    花岡車輌 業務アプリ（既存SPA登録）をそのまま使う。新規Azure AD登録・新規API権限は不要。
    給与アプリ(payroll_graph.js)と同じ executive-workspace サイトを使い、フォルダだけ「会計データ」に分ける。 */
-const KAIKEI_MSAL_CONFIG = {
-  auth: {
-    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
-    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    redirectUri: 'https://hanaoka-apps.github.io/hanaoka-ops/auth.html',
-  },
-  cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
-};
+/* 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js。各画面で先に読み込む） */
+const KAIKEI_MSAL_CONFIG = HanaokaAuth.msalConfig();
 const KAIKEI_SCOPES = ['User.Read', 'Sites.ReadWrite.All'];
 const KAIKEI_GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const KAIKEI_SITE_PATH = 'hanaokacorp.sharepoint.com:/sites/executive-workspace';
@@ -20,22 +14,21 @@ async function kaikeiInitAuth() {
   _kaikeiMsal = new msal.PublicClientApplication(KAIKEI_MSAL_CONFIG);
   await _kaikeiMsal.initialize();
   await _kaikeiMsal.handleRedirectPromise();
-  const accounts = _kaikeiMsal.getAllAccounts();
-  if (accounts.length > 0) {
-    _kaikeiAccount = accounts[0];
-    _kaikeiMsal.setActiveAccount(_kaikeiAccount);
+  _kaikeiAccount = await HanaokaAuth.restore(_kaikeiMsal, KAIKEI_SCOPES);
+  if (_kaikeiAccount) {
+    /* 読み込み中にゲートのボタンが出ないように。エラー欄に何か出たらボタンを戻す */
+    HanaokaAuth.holdUntilError(['login-err', 'gateError']);
     return true;
   }
   return false;
 }
 
 async function kaikeiSignIn() {
-  const result = await _kaikeiMsal.loginPopup({ scopes: KAIKEI_SCOPES });
-  _kaikeiAccount = result.account;
-  _kaikeiMsal.setActiveAccount(_kaikeiAccount);
+  _kaikeiAccount = await HanaokaAuth.login(_kaikeiMsal, KAIKEI_SCOPES);
 }
 
 function kaikeiSignOut() {
+  HanaokaAuth.done();
   sessionStorage.removeItem('kaikeiDriveId');
   _kaikeiMsal.logoutRedirect();
 }
