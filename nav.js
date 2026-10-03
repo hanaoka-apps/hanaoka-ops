@@ -23,15 +23,45 @@
         { f: 'room_reserve.html', l: '会議室' },
         { f: 'reserve_manual.html', l: '使い方' }
       ]
+    },
+    {
+      key: 'kaikei',
+      apps: [
+        { f: 'kaikei_dashboard.html', l: '会計サマリー' },
+        { f: 'kaikei_monthly.html',   l: '月次資料' },
+        { f: 'kaikei_cash.html',      l: '資金繰り' },
+        { f: 'kaikei_ledger.html',    l: '仕訳明細' },
+        { f: 'kaikei_budget.html',    l: '予算' },
+        { f: 'kaikei_upload.html',    l: 'データ取り込み' }
+      ]
+    },
+    {
+      key: 'payroll',
+      /* 給与ダッシュボード（モダン）と同じメニュー。モダンは自前のサイドバーを持っているので
+         nav.js は読まない。クラシック表示（payroll_dashboard.html）を開いているときも
+         「給与ダッシュボード」を光らせる（alt）。アップロードはメニューに載せない（also） */
+      apps: [
+        { f: 'payroll_dashboard_modern.html', l: '給与ダッシュボード', alt: ['payroll_dashboard.html'] },
+        { f: 'payroll_detail.html',   l: '支給控除一覧表' },
+        { f: 'payroll_leave.html',    l: '年次有給休暇管理' },
+        { f: 'payroll_people.html',   l: '人事情報' },
+        { f: 'payroll_overtime.html', l: '時間外確認' }
+      ],
+      also: ['payroll_upload.html'],
+      /* 時間外確認は、給与の権限が無い総務の担当者も使う。給与の項目は、画面側が権限を
+         確かめてから出す（.payroll-only の hide を外す）。サイドバーの項目もそれに乗せる */
+      gate: { page: 'payroll_overtime.html', cls: 'payroll-only' }
     }
   ];
 
   var cur = (location.pathname.split('/').pop() || 'ap_dashboard.html').toLowerCase();
 
+  function isCur(a) { return a.f === cur || (a.alt || []).indexOf(cur) >= 0; }
   function currentGroup() {
     for (var i = 0; i < GROUPS.length; i++) {
+      if ((GROUPS[i].also || []).indexOf(cur) >= 0) return GROUPS[i];
       for (var j = 0; j < GROUPS[i].apps.length; j++) {
-        if (GROUPS[i].apps[j].f === cur) return GROUPS[i];
+        if (isCur(GROUPS[i].apps[j])) return GROUPS[i];
       }
     }
     /* どのグループにも載っていないページは、従来どおり支払管理タブを出す。
@@ -78,12 +108,27 @@
     'ap_smile_import.html':  '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     'ap_entry.html':         '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
     'ap_recurring.html':     '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
-    'ap_payment.html':       '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>'
+    'ap_payment.html':       '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>',
+    // 会計
+    'kaikei_dashboard.html': '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    'kaikei_monthly.html':   '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 13h7M9 17h4"/>',
+    'kaikei_cash.html':      '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/>',
+    'kaikei_ledger.html':    '<path d="M4 5h16M4 10h16M4 15h10M4 20h7"/>',
+    'kaikei_budget.html':    '<circle cx="12" cy="12" r="9"/><path d="M12 3v9l6.4 6.4"/>',
+    'kaikei_upload.html':    '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
+    // 給与・労務
+    'payroll_dashboard_modern.html': '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    'payroll_detail.html':   '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
+    'payroll_leave.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
+    'payroll_people.html':   '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.4 0 4 1.8 4 4.5"/>',
+    'payroll_overtime.html': '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M10 2h4"/>'
   };
   // グループごとの名前とマーク（サイドバーの上）
   var BRAND = {
     reserve: { name: '予約状況', sub: 'HANAOKA RESERVE', mark: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/>', key: 'hanaoka.reserve.sidebar.v1' },
-    ap:      { name: '支払管理', sub: 'HANAOKA AP', mark: '<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>', key: 'hanaoka.ap.sidebar.v1' }
+    ap:      { name: '支払管理', sub: 'HANAOKA AP', mark: '<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>', key: 'hanaoka.ap.sidebar.v1' },
+    kaikei:  { name: '会計', sub: 'HANAOKA ACCOUNTING', mark: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', key: 'hanaoka.kaikei.sidebar.v1' },
+    payroll: { name: '給与・労務', sub: 'HANAOKA PAYROLL', mark: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M17 8v8M14.5 10.5h5M14.5 13.5h5"/>', key: 'hanaoka.payroll.sidebar.v1' }
   };
   function svg(inner) {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
@@ -113,7 +158,9 @@
       '</div>' +
       '<div class="hx-label">MENU</div>' +
       g.apps.map(function (a) {
-        return '<a class="hx-item' + (a.f === cur ? ' active' : '') + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
+        /* gate：権限を確かめてから出す項目（画面側がクラスの hide を外す） */
+        var gated = g.gate && g.gate.page === cur && a.f !== cur ? ' ' + g.gate.cls + ' hide' : '';
+        return '<a class="hx-item' + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
           svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
       }).join('') +
       '<div class="hx-foot">' +
@@ -146,7 +193,8 @@
     // 支払管理は、新しい見た目（ap_theme.css）を読み込んだ画面だけサイドバーにする（読み込んでいない画面と case_management などは今までの上のタブ）
     // メニューに載せていない画面（仕入突合・支払確認・承認。ホーム・手入力からリンクで開く）も
     // サイドバーにする。どの項目も光らない（ap_theme.css は上のタブを隠すので、そうしないとメニューが無くなる）
-    if (g.key === 'ap' && document.querySelector('link[href*="ap_theme.css"]')) { buildSidebar(g); return; }
+    // 会計・給与も同じ：kaikei_theme.css / payroll_theme.css を読み込んだ画面はサイドバーにする
+    if (document.querySelector('link[href*="' + g.key + '_theme.css"]')) { buildSidebar(g); return; }
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
     injectStyle();
