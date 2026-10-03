@@ -31,6 +31,7 @@ import sys
 import io
 import csv
 import json
+import re
 import time
 import requests
 from datetime import datetime, timezone, timedelta
@@ -55,6 +56,17 @@ INPUT_CSVS = {
     'web_readers':   'web_tracking_readers.csv',
 }
 OUTPUT_JSON = 'dashboard_facts.json'
+# HANAOKA HUB の「会社の現在地」専用の軽量版。dashboard_facts.json と同じ形式・
+# 同じ列位置のまま、直近の行とHUBが使う列だけに絞る(スマホで数MBを毎回
+# 読み込ませないため)。
+HUB_OUTPUT_JSON = 'hub_kpi_facts.json'
+# HUBが当月・前月の集計に使う列 (ym, voucher_date, base, sales_div, item_nm,
+# qty, amount, unit_price, kind, kikou)。それ以外は null にして列位置だけ残す。
+HUB_KEEP_COLS = (0, 7, 14, 15, 19, 20, 21, 22, 23, 27)
+HUB_ROW_LEN = 28
+# ビルド月の何か月前から残すか。HUBは当月と前月を見るので、月をまたいで
+# ビルドが遅れても前月分が欠けないよう1か月余分に持つ。
+HUB_WINDOW_MONTHS = 2
 
 # 営業訪問実績で採用する 表示テンプレート
 VISIT_TEMPLATE = '【営業・業務】訪問・来社・WEBMTG報告'
@@ -820,6 +832,55 @@ def transform_web_readers(header, rows):
     return out
 
 
+# ---------- HUB用 軽量ファクト ----------
+def date_ym(raw):
+    """伝票日付・納期の表記ゆれ（"26/09/03" "2026/09/03" "2026-09-03" "20260903"）
+    から年月(YYYYMM)を返す。HUB側の parseVoucherDay と同じ判定。読めなければ0。"""
+    s = str(raw or '').strip()
+    m = re.match(r'^(\d{2,4})[/\-](\d{1,2})[/\-](\d{1,2})', s)
+    if not m:
+        m = re.match(r'^(\d{4})(\d{2})(\d{2})$', s)
+    if not m:
+        return 0
+    y = int(m.group(1))
+    if y < 100:
+        y += 2000
+    return y * 100 + int(m.group(2))
+
+
+def build_hub_kpi_facts(rows, orders, dept_targets, build_date):
+    """dashboard_facts.json から HUB の「会社の現在地」に要る分だけを抜き出す。
+
+    年月度・伝票日付・納期のどれかが窓の開始月以降なら残す（受注は納期で
+    月を判定し、「当日」は最新の伝票日付で決めるため、3つとも見る）。"""
+    y, m = build_date.year, build_date.month - HUB_WINDOW_MONTHS
+    while m < 1:
+        y, m = y - 1, m + 12
+    start_ym = y * 100 + m
+
+    def slim(r):
+        out = [None] * HUB_ROW_LEN
+        for i in HUB_KEEP_COLS:
+            if i < len(r):
+                out[i] = r[i]
+        return out
+
+    def recent(r, kikou=False):
+        if to_int(r[0]) >= start_ym or date_ym(r[7]) >= start_ym:
+            return True
+        return kikou and len(r) > 27 and date_ym(r[27]) >= start_ym
+
+    return {
+        'rows': [slim(r) for r in rows if recent(r)],
+        'order_rows': [slim(r) for r in orders if recent(r, kikou=True)],
+        'dept_monthly_targets': dept_targets,
+        'build_meta': {
+            'window_start_ym': start_ym,
+            'updated_at': build_date.isoformat(),
+        },
+    }
+
+
 # ---------- メイン ----------
 def main():
     started = time.time()
@@ -936,6 +997,13 @@ def main():
 
     print(f"\n📤 dashboard_facts.json をアップロード...", flush=True)
     upload_json(token, OUTPUT_JSON, facts)
+
+    # 本体と中身がずれないよう、本体のアップロード成功後に出す
+    hub_facts = build_hub_kpi_facts(rows, orders, dept_targets, datetime.fromisoformat(facts['build_meta']['updated_at']))
+    print(f"\n📤 {HUB_OUTPUT_JSON} をアップロード... "
+          f"(売上 {len(hub_facts['rows']):,}件 / 受注 {len(hub_facts['order_rows']):,}件, "
+          f"{hub_facts['build_meta']['window_start_ym']} 以降)", flush=True)
+    upload_json(token, HUB_OUTPUT_JSON, hub_facts)
 
     elapsed = time.time() - started
     print(f"\n✅ 完了 ({elapsed:.1f}秒)", flush=True)

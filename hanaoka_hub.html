@@ -1626,10 +1626,15 @@ function computeKpiFacts(facts) {
   };
 }
 
-async function fetchKpiFactsInline(url, token) {
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
-  if (!res.ok) throw new Error('dashboard_facts.json が取得できません');
-  return computeKpiFacts(await res.json());
+// urls を順に試し、ファイルが無い(404)ときだけ次へ回す
+async function fetchKpiFactsInline(urls, token) {
+  for (const url of urls) {
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+    if (res.status === 404) continue;
+    if (!res.ok) break;
+    return computeKpiFacts(await res.json());
+  }
+  throw new Error('dashboard_facts.json が取得できません');
 }
 
 // dashboard_facts.json は過去年度の明細まで入った数MBのファイルで、JSON解析と
@@ -1641,14 +1646,14 @@ const KPI_WORKER_FNS = [
   aggregateByGroup, csvScopeMap, loadPlansFromFacts, findLatestVoucherDate, detectLatestClosedDate,
   daysInMonth, prevMonthSameDay, computeKpiFacts, fetchKpiFactsInline,
 ];
-function fetchKpiFacts(url, token) {
+function fetchKpiFacts(urls, token) {
   let worker, blobUrl;
   try {
     const src = [
       `const IDX = ${JSON.stringify(IDX)};`,
       `const DEPT_GROUPS = ${JSON.stringify(DEPT_GROUPS)};`,
       ...KPI_WORKER_FNS.map(f => f.toString()),
-      `self.onmessage = (e) => fetchKpiFactsInline(e.data.url, e.data.token)
+      `self.onmessage = (e) => fetchKpiFactsInline(e.data.urls, e.data.token)
         .then(result => self.postMessage({ result }))
         .catch(err => self.postMessage({ error: String((err && err.message) || err) }));`,
     ].join('\n');
@@ -1657,7 +1662,7 @@ function fetchKpiFacts(url, token) {
   } catch (e) {
     console.warn('[会社の現在地] Workerが使えないため画面側で集計します', e);
     if (blobUrl) URL.revokeObjectURL(blobUrl);
-    return fetchKpiFactsInline(url, token);
+    return fetchKpiFactsInline(urls, token);
   }
   return new Promise((resolve, reject) => {
     const done = () => { worker.terminate(); URL.revokeObjectURL(blobUrl); };
@@ -1669,17 +1674,20 @@ function fetchKpiFacts(url, token) {
     worker.onerror = (e) => {
       done();
       console.warn('[会社の現在地] Workerでの集計に失敗したため画面側で集計します', e.message);
-      fetchKpiFactsInline(url, token).then(resolve, reject);
+      fetchKpiFactsInline(urls, token).then(resolve, reject);
     };
-    worker.postMessage({ url, token });
+    worker.postMessage({ urls, token });
   });
 }
 
 async function loadKpis() {
   const t = await getToken();
-  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+  const fileUrl = name => `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/${name}:/content`;
+  // HUB用の軽量版(regenerate_facts.py が直近の行・HUBが使う列だけに絞って出力)を
+  // 優先し、まだ生成されていなければ全量の dashboard_facts.json で集計する
+  const urls = [fileUrl('hub_kpi_facts.json'), fileUrl('dashboard_facts.json')];
   // 営業日の目安計算に使う祝日は、集計と並行して描画より前に読み込んでおく
-  const [k] = await Promise.all([fetchKpiFacts(url, t), loadJpHolidays()]);
+  const [k] = await Promise.all([fetchKpiFacts(urls, t), loadJpHolidays()]);
   const { today, plans, orderMetrics, salesMetrics, prevOrderMetrics, prevSalesMetrics } = k;
 
   TODAY_LABEL = `${today.mo}/${today.d}`;

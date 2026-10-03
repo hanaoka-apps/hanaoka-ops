@@ -66,6 +66,15 @@
 `受注日付` は「当日」の判定にのみ使う（それ以外の目的で使うと締まっていない
 当日以降の入力データが紛れ込む）。詳しくは `sales_report_dashboard.html` の実装を参照。
 
+### hub_kpi_facts.json（HANAOKA HUB 用の軽量版）
+
+`regenerate_facts.py` が `dashboard_facts.json` のアップロード後に出力する。
+形式・列位置は `dashboard_facts.json` と同じで、**直近の行**（年月度・伝票日付・納期の
+いずれかがビルド月の2か月前以降）と **HUBの「会社の現在地」が使う列だけ** を残し、
+他の列は `null` にしてある。HUB（`hanaoka_hub.html`）はこれを優先して読み、
+ファイルが無いときだけ全量の `dashboard_facts.json` で集計する。
+HUBで新しい列を使う場合は `HUB_KEEP_COLS` に追加すること（テスト: `tests/test_hub_kpi_facts.py`）。
+
 ## 開発・運用
 
 - HTMLはGitHub Pagesで配信
