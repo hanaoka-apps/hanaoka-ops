@@ -9,6 +9,9 @@ on:
     branches: [main]
     paths:
       - 'scripts/merge_value_analysis_sales.py'
+      - 'scripts/merge_value_analysis_labor.py'
+      - 'scripts/merge_value_analysis_bom.py'
+      - 'scripts/download_shared_masters.py'
       - '.github/workflows/fujin-daily.yml'
   schedule:
     - cron: "30 18 * * *"
@@ -141,6 +144,9 @@ jobs:
       - name: Merge BOM hierarchy into value analysis (構成マスタ)
         run: python scripts/merge_value_analysis_bom.py
 
+      - name: Merge labor estimates into protected value analysis (工数)
+        run: python scripts/merge_value_analysis_labor.py
+
       - name: Build shell (FUJIN.html 統合シェル・現在庫基準日設定)
         run: python scripts/build_shell.py
 
@@ -204,6 +210,7 @@ jobs:
           python - <<'PY'
           import json
           from datetime import datetime
+          from datetime import timedelta
           from pathlib import Path
           from zoneinfo import ZoneInfo
 
@@ -216,18 +223,49 @@ jobs:
               raise SystemExit("value_analysis.json に meta.generated_at がありません")
           generated = datetime.fromisoformat(generated_at)
           now = datetime.now(ZoneInfo("Asia/Tokyo"))
-          if generated.date() != now.date():
-              raise SystemExit(f"value_analysis.json の生成日が当日ではありません: {generated_at}")
+          if generated.date() != now.date() or abs(now - generated.astimezone(ZoneInfo("Asia/Tokyo"))) > timedelta(minutes=60):
+              raise SystemExit("value_analysis.json の generated_at が今回の実行時刻と一致しません")
           lead = analysis.get("lead_time")
           required = ("status", "months", "excluded", "required_columns")
           if not isinstance(lead, dict) or any(key not in lead for key in required):
               raise SystemExit("item_analysis.lead_time の必須項目が不足しています")
+          labor = analysis.get("labor")
+          if not isinstance(labor, dict) or labor.get("status") != "ok":
+              raise SystemExit("item_analysis.labor が生成されていません")
+          if not isinstance(labor.get("months"), dict) or not isinstance(labor.get("required_columns"), dict):
+              raise SystemExit("item_analysis.labor の月別結果または必須列情報が不足しています")
+          for month, payload in labor["months"].items():
+              windows = payload.get("windows") if isinstance(payload, dict) else None
+              if not isinstance(windows, dict) or any(key not in windows for key in ("3", "6")):
+                  raise SystemExit("item_analysis.labor の3か月・6か月結果が不足しています")
+              for window in windows.values():
+                  if any(key not in window for key in ("status", "excluded", "needs_review", "review_rows", "items", "actual_record_count")):
+                      raise SystemExit("item_analysis.labor の必須集計項目が不足しています")
+                  handoff = window.get("handoff")
+                  handoff_meta = (handoff or {}).get("meta") or {}
+                  if not isinstance(handoff, dict) or not all(key in handoff_meta for key in ("version_id", "generated_at", "period_from", "period_to", "settings", "sources")):
+                      raise SystemExit("工数引き渡しの版・生成日時・期間・設定・入力元が不足しています")
+                  if handoff_meta.get("generated_at") != generated_at or not handoff_meta.get("version_id"):
+                      raise SystemExit("工数引き渡しの版IDまたは生成日時が今回の実行と一致しません")
+                  if not all(key in handoff_meta["settings"] for key in ("months", "allocate_items", "exclude_items")):
+                      raise SystemExit("工数引き渡しの計算設定が不足しています")
+                  if not all(key in handoff_meta["sources"] for key in ("製造実績の最終日付", "品目手順マスタ更新日時", "構成マスタ更新日時")):
+                      raise SystemExit("工数引き渡しの入力元日時が不足しています")
+                  if not isinstance(handoff.get("items"), dict) or not isinstance(handoff.get("rates"), list):
+                      raise SystemExit("工数引き渡しの品目またはレート履歴が不足しています")
+                  if any(not isinstance(rate, dict) or not all(key in rate for key in ("from_month", "yen_per_min")) for rate in handoff["rates"]):
+                      raise SystemExit("工数引き渡しのレート履歴列が不足しています")
+                  for handoff_item in handoff["items"].values():
+                      if any(key not in handoff_item for key in ("own_run_per_unit", "own_setup_per_unit", "own_std_per_unit", "cum_std_per_unit", "input_rate", "rows", "zero_rows", "flags", "steps", "children")):
+                          raise SystemExit("工数引き渡しの品目別項目が不足しています")
           month_counts = {month: stats.get("count", 0) for month, stats in (lead.get("months") or {}).items()}
           low_counts = meta.get("low_value_item_counts")
           if not isinstance(low_counts, dict):
               raise SystemExit("低付加価値品目の月別件数がありません")
           print(f"[OK] value-analysis 検証: generated_at={generated_at}")
           print(f"[OK] lead_time: status={lead['status']} / 月別対象件数={month_counts} / 除外={lead['excluded']}")
+          labor_counts = {month: values.get("3", {}).get("actual_record_count", 0) for month, values in (labor.get("diagnostics") or {}).items()}
+          print(f"[OK] labor: status={labor['status']} / 月別3か月対象件数={labor_counts}")
           print(f"[OK] low_value: 月別件数={low_counts}")
           PY
 
