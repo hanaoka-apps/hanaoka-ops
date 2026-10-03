@@ -226,6 +226,21 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertIn("過去月の原価で代用していません", html)
         self.assertIn("最終日：月次ファイル", html)
 
+    def test_special_suffix_rates_are_excluded_and_labor_children_are_readable(self):
+        html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        self.assertIn("/\\/[TC]$/i", html)
+        self.assertIn("filter==='high'&&!isSpecialItem(r.i)", html)
+        self.assertIn("filter==='low'&&!isSpecialItem(r.i)", html)
+        self.assertIn("filter==='negative'&&!isSpecialItem(r.i)", html)
+        self.assertIn("付加価値率の算定対象外です", html)
+        self.assertIn("renderItemsWithoutSpecialComparisonRate", html)
+        self.assertIn("original().filter(row=>!isSpecialItem(row.i))", html)
+        self.assertIn("master.master_name||master.item_master_name", html)
+        self.assertIn("Array.isArray(handoff.steps)", html)
+        self.assertIn("part.hasRoute", html)
+        self.assertIn("手順 ${step['手順№']||'—'}：", html)
+        self.assertIn("labor-component-card", html)
+
 
 if __name__ == "__main__":
     unittest.main()
