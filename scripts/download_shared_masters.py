@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import json
 from pathlib import Path
 
 import msal
@@ -35,6 +36,7 @@ REQUIRED_FILES = [
     "構成マスタ.csv",
     "工程マスタ.csv",
     "品目手順マスタ.csv",
+    "製造実績明細出力.csv",
     "仕入先マスタ.csv",
     "作業区マスタ.csv",
     "生産計画出力.csv",
@@ -82,7 +84,10 @@ def get_file_last_modified(token: str, filename: str) -> str:
     """SharePoint上のファイルのlastModifiedDateTime(JST)を返す。取得失敗時は空文字。"""
     encoded = requests.utils.quote(filename, safe="")
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{encoded}"
-    res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    try:
+        res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    except requests.RequestException:
+        return ""
     if res.status_code == 200:
         from datetime import timezone, timedelta
         dt_str = res.json().get("lastModifiedDateTime", "")
@@ -233,6 +238,16 @@ def main():
         print(f"  [OK] 有効在庫一覧表.csv の最終更新: {stock_mtime} (JST) → data/_stock_mtime.txt")
     else:
         print("  [WARN] 有効在庫一覧表.csv のメタデータ取得失敗")
+
+    # 工数の引き渡しメタデータとして、SharePoint上の正規マスタ更新日時を保存する。
+    # CSV本体や値はログに出さず、工数統合後の保護JSONにだけ反映する。
+    labor_source_metadata = {
+        "routes_updated_at": get_file_last_modified(token, "品目手順マスタ.csv"),
+        "bom_updated_at": get_file_last_modified(token, "構成マスタ.csv"),
+    }
+    (DATA / "_value_analysis_labor_sources.json").write_text(
+        json.dumps(labor_source_metadata, ensure_ascii=False), encoding="utf-8"
+    )
 
     print()
     if missing_required:
