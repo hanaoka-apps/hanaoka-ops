@@ -204,6 +204,23 @@ class PurchaseMergeTest(unittest.TestCase):
 
 
 class SalesMergeTest(unittest.TestCase):
+    def test_missing_sales_aggregate_source_is_marked_blocked_without_erasing_saved_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            facts_path, destination = root / "missing-dashboard-facts.json", root / "value_analysis.json"
+            payload = base_payload()
+            payload["item_analysis"] = {"items": {"SAMPLE": {}}, "rows": [{"y": "202608", "i": "SAMPLE", "a": 100}]}
+            destination.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            old_data, old_facts, old_destination = SALES.DATA, SALES.FACTS, SALES.DESTINATION
+            try:
+                SALES.DATA, SALES.FACTS, SALES.DESTINATION = root, facts_path, destination
+                self.assertEqual(SALES.main(), 0)
+            finally:
+                SALES.DATA, SALES.FACTS, SALES.DESTINATION = old_data, old_facts, old_destination
+            result = json.loads(destination.read_text(encoding="utf-8"))
+            self.assertEqual(result["meta"]["daily_sales_import"]["status"], "blocked")
+            self.assertEqual(result["item_analysis"]["rows"][0]["a"], 100)
+
     def test_sales_breakdown_uses_sales_division_column(self):
         fact = [""] * 24
         fact[0], fact[18], fact[19], fact[20], fact[21], fact[22], fact[23] = "202608", "A-01", "品目A", 1, 10000, 10000, 1

@@ -12,7 +12,7 @@ import csv
 import json
 import unicodedata
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from merge_value_analysis_bom import expand, normalize_code, read_bom
@@ -36,6 +36,12 @@ DEFAULT_SETTINGS = {
     "excluded_exception_keywords": ["手直し", "修正作業"],
     "labor_rate_history": [{"from": "202604", "through": "202608", "yen_per_minute": 124.64}],
 }
+JST = timezone(timedelta(hours=9))
+
+
+def today_jst() -> date:
+    """Return the current business date, independent of the Actions runner's UTC date."""
+    return datetime.now(JST).date()
 RATE_NOT_REGISTERED = "レート未確定"
 HANDOFF_VERSION_ID = "labor-p1-v1"
 
@@ -141,6 +147,88 @@ def setup_keyword(settings: dict, reason: str) -> bool:
     return bool(allocated) and any(keyword in text for keyword in allocated)
 
 
+def aggregate_monthly_actuals(
+    actual_rows: list[dict[str, str]], route_rows: list[dict[str, str]], settings: dict,
+    included_codes: set[str] | None = None,
+) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Aggregate item-level recorded work time by slip month, without BOM rollup."""
+    monthly: dict[str, dict[str, dict]] = defaultdict(
+        lambda: defaultdict(lambda: {
+            "actual_minutes": 0.0, "processing_minutes": 0.0, "setup_minutes": 0.0,
+            "excluded_exception_minutes": 0.0, "rows": 0, "positive_rows": 0,
+            "zero_rows": 0, "unmatched_rows": 0, "quantity": 0.0,
+            "latest_date": "",
+        })
+    )
+    diagnostics: dict[str, dict] = defaultdict(lambda: {"latest_date": "", "valid_rows": 0, "unmatched_rows": 0})
+    month_routes: dict[str, dict[tuple[str, str], dict]] = {}
+    for row in actual_rows:
+        day = parse_date(row.get("伝票日付"))
+        if not day or day > today_jst():
+            continue
+        ym = month_key(day)
+        if ym not in month_routes:
+            month_end = (datetime.strptime(ym, "%Y%m").date().replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            month_routes[ym], _ = choose_internal_routes(route_rows, month_end)
+        item, step = normalize_code(row.get("品目ｺｰﾄﾞ")), norm(row.get("手順№"))
+        route = month_routes[ym].get((item, step))
+        qty, work = parse_number(row.get("報告数量")), parse_number(row.get("作業時間"))
+        if not item or qty is None or qty <= 0 or work is None or work < 0:
+            continue
+        diag = diagnostics[ym]
+        diag["latest_date"] = max(diag["latest_date"], day.isoformat())
+        diag["valid_rows"] += 1
+        if included_codes is not None and item not in included_codes:
+            continue
+        entry = monthly[ym][item]
+        if not route:
+            entry["unmatched_rows"] += 1
+            diag["unmatched_rows"] += 1
+            continue
+        people = parse_number(row.get("人数"))
+        total = work * (people if people is not None and people > 0 else 1)
+        exception = min(total, max(0.0, (parse_number(row.get("基準外工数/分")) or 0.0) * (parse_number(row.get("基準外人数/人")) or 0.0)))
+        reason = norm(row.get("基準外項目"))
+        setup = exception if setup_keyword(settings, reason) else 0.0
+        excluded_exception = exception - setup
+        entry["actual_minutes"] += total
+        entry["processing_minutes"] += total - exception
+        entry["setup_minutes"] += setup
+        entry["excluded_exception_minutes"] += excluded_exception
+        entry["rows"] += 1
+        entry["positive_rows"] += int(total > 0)
+        entry["zero_rows"] += int(total == 0)
+        entry["quantity"] += qty
+        entry["latest_date"] = max(entry["latest_date"], day.isoformat())
+
+    output: dict[str, dict] = {}
+    for ym, items in monthly.items():
+        rate = rate_for_month(settings, ym)
+        rows = {}
+        for code, row in items.items():
+            matched = row["rows"]
+            input_rate = round(row["positive_rows"] / matched * 100, 1) if matched else None
+            amount = row["actual_minutes"] * rate if rate is not None else None
+            rows[code] = {
+                **row,
+                "actual_minutes": row["actual_minutes"] if matched else None,
+                "processing_minutes": row["processing_minutes"] if matched else None,
+                "setup_minutes": row["setup_minutes"] if matched else None,
+                "excluded_exception_minutes": row["excluded_exception_minutes"] if matched else None,
+                "input_rate": input_rate,
+                "rate_per_minute": rate if matched else None,
+                "actual_amount_yen": round(amount, 2) if amount is not None and matched else None,
+                "status": (
+                    "route_mismatch" if not matched and row["unmatched_rows"]
+                    else "partial_route_mismatch" if row["unmatched_rows"]
+                    else "zero_only" if matched and not row["positive_rows"]
+                    else "available"
+                ),
+            }
+        output[ym] = {"status": "available" if rows else "no_results", "latest_date": diagnostics[ym]["latest_date"], "items": rows}
+    return output, {month: dict(values) for month, values in diagnostics.items()}
+
+
 def calculate_window(
     anchor: str,
     months: int,
@@ -162,7 +250,7 @@ def calculate_window(
             excluded["sales_missing_date"] += 1
             review_rows.append({"date": "", "item_code": normalize_code(row.get("品目ｺｰﾄﾞ")), "step": norm(row.get("手順№")), "reason": "sales_missing_date"})
             continue
-        if day > date.today():
+        if day > today_jst():
             excluded["future_date"] += 1
             review_rows.append({"date": day.isoformat(), "item_code": normalize_code(row.get("品目ｺｰﾄﾞ")), "step": norm(row.get("手順№")), "reason": "future_date"})
             continue
@@ -235,17 +323,31 @@ def calculate_window(
     # BOM in this pipeline is already deduplicated by parent/child. Memoization
     # prevents repeated shared subtrees from causing exponential recursion.
     memo: dict[str, dict] = {}
+    subtree_has_route: dict[str, bool] = {}
+    def has_internal_route(code: str, seen: frozenset[str] = frozenset()) -> bool:
+        if code in subtree_has_route:
+            return subtree_has_route[code]
+        if code in seen:
+            return False
+        result = code in route_items or any(
+            has_internal_route(normalize_code(child.get("code")), seen | {code})
+            for child in bom_children.get(code, [])
+        )
+        subtree_has_route[code] = result
+        return result
+
     def rollup(code: str, stack: frozenset[str] = frozenset()) -> dict:
         if code in memo:
             return memo[code]
         if code in stack:
-            return {"standard_minutes": None, "process_minutes": None, "setup_minutes": None, "complete": False, "positive": 0.0, "zero": 0.0, "contributions": [], "cycle": True}
+            return {"standard_minutes": None, "process_minutes": None, "setup_minutes": None, "complete": False, "positive": 0.0, "zero": 0.0, "contributions": [], "cycle": True, "child_missing": True}
         direct = own.get(code)
         process = direct["process_minutes"] if direct else 0.0
         setup = direct["setup_minutes"] if direct else 0.0
         complete = direct["complete"] if direct else True
         positive = float(direct["positive"]) if direct else 0.0
         zero = float(direct["zero"]) if direct else 0.0
+        child_missing = False
         contributions = []
         for child in bom_children.get(code, []):
             child_code = normalize_code(child.get("code"))
@@ -254,6 +356,7 @@ def calculate_window(
             contributions.append({"code": child_code, "name": child.get("name") or child_code, "quantity": quantity, "cum_std_per_unit": part["standard_minutes"], "standard_minutes": None if part["standard_minutes"] is None else part["standard_minutes"] * quantity})
             if part["standard_minutes"] is None:
                 complete = False
+                child_missing = True
             else:
                 process += (part["process_minutes"] or 0) * quantity
                 setup += (part["setup_minutes"] or 0) * quantity
@@ -264,6 +367,7 @@ def calculate_window(
             "process_minutes": process if complete else None,
             "setup_minutes": setup if complete else None,
             "complete": complete,
+            "child_missing": child_missing,
             "positive": positive,
             "zero": zero,
             "input_rate": round(positive / (positive + zero) * 100, 1) if positive + zero else None,
@@ -301,6 +405,15 @@ def calculate_window(
             flags.append("件数少")
         if any(row.get("reason") in ("exception_exceeds_total", "future_date", "route_missing_or_not_internal") for row in review_rows if row.get("item_code") == code):
             flags.append("要確認")
+        own_missing = any(row.get("status") == "期間内実績なし" for row in own_steps)
+        if result["standard_minutes"] is None:
+            labor_status = "子部品工数未取得" if result.get("child_missing") else "社内工程あり・期間内実績なし" if own_missing else "工数未取得"
+        elif result["standard_minutes"] == 0:
+            labor_status = "社内工程なし（対象外）" if not has_internal_route(code) else (
+                "実測0分" if result["positive"] + result["zero"] else "有効実績なし"
+            )
+        else:
+            labor_status = "集計済み"
         item_details[code] = {
             "standard_minutes": result["standard_minutes"],
             "processing_minutes": result["process_minutes"],
@@ -318,6 +431,7 @@ def calculate_window(
             "zero_rows": int(result["zero"]),
             "flags": flags,
             "complete": result["complete"],
+            "labor_status": labor_status,
             "steps": [{
                 "手順№": row["step"], "工程": row.get("process_name") or row.get("process_code") or "",
                 "工程コード": row.get("process_code") or "", "run": row["process_minutes"],
@@ -351,7 +465,7 @@ def calculate_window(
         except (OSError, json.JSONDecodeError):
             source_metadata = {}
     actual_dates = [parse_date(row.get("伝票日付")) for row in actual_rows]
-    actual_dates = [day for day in actual_dates if day is not None and day <= date.today()]
+    actual_dates = [day for day in actual_dates if day is not None and day <= today_jst()]
     rate_history = [{
         "from_month": str(row.get("from", "")),
         "through_month": str(row.get("through", "")),
@@ -389,6 +503,7 @@ def calculate_window(
                 "input_rate": item["input_rate"], "rows": item["rows"], "zero_rows": item["zero_rows"],
                 "reported_positive": item["reported_positive"], "reported_zero": item["reported_zero"],
                 "flags": item["flags"], "complete": item["complete"],
+                "labor_status": item["labor_status"],
                 "steps": item["steps"], "children": item["children"],
             } for code, item in item_details.items()
         },
@@ -420,7 +535,30 @@ def merge(destination: Path, actuals_path: Path, routes_path: Path, bom_path: Pa
         raise ValueError("工数入力CSVの必須列が不足しています")
     bom_children, bom_stats = read_bom(bom_path)
     settings = {**DEFAULT_SETTINGS, **((analysis.get("labor") or {}).get("settings") or {})}
-    anchors = sorted(set(analysis.get("months", [])) | {month_key(d) for row in actuals if (d := parse_date(row.get("伝票日付"))) and d <= date.today()})
+    relevant_codes = {normalize_code(code) for code in analysis.get("items", {})}
+    relevant_codes.update(normalize_code(row.get("i")) for row in analysis.get("rows", []) if normalize_code(row.get("i")))
+    pending_codes = list(relevant_codes)
+    while pending_codes:
+        parent = pending_codes.pop()
+        for part in bom_children.get(parent, []):
+            child = normalize_code(part.get("code"))
+            if child and child not in relevant_codes:
+                relevant_codes.add(child)
+                pending_codes.append(child)
+    monthly_actuals, monthly_actual_diagnostics = aggregate_monthly_actuals(actuals, route_rows, settings, relevant_codes)
+    for ym, data in monthly_actuals.items():
+        month_end = (datetime.strptime(ym, "%Y%m").date().replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        selected_routes, _ = choose_internal_routes(route_rows, month_end)
+        data["internal_route_codes"] = sorted({item for item, _step in selected_routes if item in relevant_codes})
+    all_source_months = {month_key(day) for row in actuals if (day := parse_date(row.get("伝票日付"))) and day <= today_jst()}
+    for ym in sorted(set(analysis.get("months", [])) | all_source_months):
+        month_end = (datetime.strptime(ym, "%Y%m").date().replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        selected_routes, _ = choose_internal_routes(route_rows, month_end)
+        if ym not in monthly_actuals:
+            monthly_actuals[ym] = {"status": "no_results", "latest_date": None, "items": {}}
+        monthly_actuals[ym]["internal_route_codes"] = sorted({item for item, _step in selected_routes if item in relevant_codes})
+        monthly_actuals[ym]["latest_date"] = monthly_actual_diagnostics.get(ym, {}).get("latest_date") or monthly_actuals[ym].get("latest_date")
+    anchors = sorted(set(analysis.get("months", [])) | {month_key(d) for row in actuals if (d := parse_date(row.get("伝票日付"))) and d <= today_jst()})
     labor_months, diagnostics = {}, {}
     for anchor in anchors:
         end_date = datetime.strptime(anchor, "%Y%m").date()
@@ -445,9 +583,59 @@ def merge(destination: Path, actuals_path: Path, routes_path: Path, bom_path: Pa
         "default_period_months": int(settings.get("period_months", 3)),
         "period_options": [3, 6],
         "months": labor_months,
+        "monthly_actuals": monthly_actuals,
+        "monthly_actual_diagnostics": monthly_actual_diagnostics,
         "diagnostics": diagnostics,
         "bom_deduplication": {"duplicate_parent_child_rows_removed": bom_stats["duplicates"]},
     }
+    source_metadata_path = DATA / "_value_analysis_labor_sources.json"
+    source_metadata = {}
+    if source_metadata_path.is_file():
+        try:
+            source_metadata = json.loads(source_metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            source_metadata = {}
+    available_cost_months = sorted(analysis.get("standard_cost_source_months", []))
+    source_actual_dates = [day for row in actuals if (day := parse_date(row.get("伝票日付"))) and day <= today_jst()]
+    source_meta = output.setdefault("meta", {})
+    sales_import_status = source_meta.get("daily_sales_import", {}).get("status")
+    purchase_import_status = source_meta.get("daily_purchase_import", {}).get("status")
+    freshness = {
+        "sales": {
+            "status": "not_downloaded" if source_metadata.get("required_sources_downloaded", {}).get("dashboard_facts.json") is False else "blocked" if sales_import_status == "blocked" else "no_rows" if sales_import_status == "no_rows" else "available" if analysis.get("rows") else "no_results",
+            "latest_month": max((row.get("y", "") for row in analysis.get("rows", [])), default="") or None,
+            "latest_record_date": source_meta.get("daily_sales_latest_date"),
+            "source_modified_at": source_metadata.get("sales_facts_updated_at") or None,
+            "loaded_at": source_meta.get("daily_sales_updated_at"),
+            "downloaded": source_metadata.get("required_sources_downloaded", {}).get("dashboard_facts.json"),
+        },
+        "purchases": {
+            "status": "not_downloaded" if source_metadata.get("required_sources_downloaded", {}).get("受入明細出力.csv") is False else "blocked" if purchase_import_status == "blocked" else "partial" if (source_meta.get("daily_purchase_import") or {}).get("daily_status") == "partial" else "available" if output.get("purchase_daily_by_month") else "no_results",
+            "latest_month": max(output.get("purchase_daily_by_month", {}), default="") or None,
+            "latest_record_date": source_meta.get("daily_purchase_latest_date"),
+            "source_modified_at": source_metadata.get("purchases_updated_at") or None,
+            "loaded_at": source_meta.get("daily_purchase_updated_at"),
+            "downloaded": source_metadata.get("required_sources_downloaded", {}).get("受入明細出力.csv"),
+        },
+        "manufacturing": {
+            "status": "not_downloaded" if source_metadata.get("required_sources_downloaded", {}).get("製造実績明細出力.csv") is False else "available" if source_actual_dates else "no_results",
+            "latest_month": max((day.strftime("%Y%m") for day in source_actual_dates), default="") or None,
+            "latest_record_date": max((day.isoformat() for day in source_actual_dates), default="") or None,
+            "source_modified_at": source_metadata.get("actuals_updated_at") or None,
+            "loaded_at": source_meta.get("generated_at"),
+            "downloaded": source_metadata.get("required_sources_downloaded", {}).get("製造実績明細出力.csv"),
+        },
+        "standard_cost": {
+            "status": "available" if available_cost_months else "missing",
+            "available_months": available_cost_months,
+            "latest_month": max(available_cost_months, default="") or None,
+            "source_modified_at": source_metadata.get("standard_cost_updated_at", {}).get(max(available_cost_months, default="")) or None,
+            "source_modified_by_month": source_metadata.get("standard_cost_updated_at", {}),
+            "loaded_at": source_meta.get("standard_cost_imported_at"),
+            "downloaded_months": source_metadata.get("standard_cost_downloaded_months", []),
+        },
+    }
+    source_meta["data_freshness"] = freshness
     generated_at = (output.get("meta") or {}).get("generated_at")
     for month_data in labor_months.values():
         for window_data in month_data["windows"].values():

@@ -11,6 +11,7 @@ import csv
 import json
 import re
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -161,6 +162,9 @@ def main() -> int:
     if isinstance(analysis, dict):
         history = analysis.setdefault("standard_cost_history", {})
         analysis["standard_cost_source_months"] = sorted(available_months)
+        output.setdefault("meta", {})["standard_cost_imported_at"] = datetime.now(
+            timezone(timedelta(hours=9))
+        ).strftime("%Y-%m-%d %H:%M JST")
         removed = sorted(set(history) - available_months)
         for ym in removed:
             history.pop(ym, None)
