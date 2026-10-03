@@ -144,7 +144,9 @@
     var g = currentGroup();
     if (g.key === 'reserve') { buildSidebar(g); return; }
     // 支払管理は、新しい見た目（ap_theme.css）を読み込んだ画面だけサイドバーにする（読み込んでいない画面と case_management などは今までの上のタブ）
-    if (g.key === 'ap' && document.querySelector('link[href*="ap_theme.css"]') && g.apps.some(function (a) { return a.f === cur; })) { buildSidebar(g); return; }
+    // メニューに載せていない画面（仕入突合・支払確認・承認。ホーム・手入力からリンクで開く）も
+    // サイドバーにする。どの項目も光らない（ap_theme.css は上のタブを隠すので、そうしないとメニューが無くなる）
+    if (g.key === 'ap' && document.querySelector('link[href*="ap_theme.css"]')) { buildSidebar(g); return; }
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
     injectStyle();
