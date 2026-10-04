@@ -33,14 +33,15 @@ class LaborCalculationTests(unittest.TestCase):
         ]
         monthly, diagnostics = LABOR.aggregate_monthly_actuals(rows, routes, LABOR.DEFAULT_SETTINGS)
         record = monthly["202608"]["items"]["ITEM"]
-        self.assertEqual(record["actual_minutes"], 20)
-        self.assertEqual(record["processing_minutes"], 17)
-        self.assertEqual(record["setup_minutes"], 3)
+        self.assertEqual(record["baseline_minutes"], 20)
+        self.assertEqual(record["processing_minutes"], 20)
+        self.assertEqual(record["exception_minutes"], 6)
+        self.assertEqual(record["setup_minutes"], 6)
         self.assertEqual(record["rows"], 2)
         self.assertEqual(record["zero_rows"], 1)
         self.assertEqual(record["input_rate"], 50.0)
         self.assertEqual(record["rate_per_minute"], 124.64)
-        self.assertAlmostEqual(record["actual_amount_yen"], 2492.8)
+        self.assertAlmostEqual(record["baseline_amount_yen"], 2492.8)
         self.assertEqual(record["status"], "partial_route_mismatch")
         self.assertEqual(diagnostics["202608"]["unmatched_rows"], 1)
         self.assertEqual(record["latest_date"], "2026-08-02")
@@ -56,43 +57,63 @@ class LaborCalculationTests(unittest.TestCase):
         ]
         monthly, _ = LABOR.aggregate_monthly_actuals(rows, routes, LABOR.DEFAULT_SETTINGS)
         item = monthly["202608"]["items"]["ITEM"]
-        self.assertEqual(item["actual_minutes"], 25)
-        self.assertEqual(item["processing_minutes"], 20)
+        self.assertEqual(item["baseline_minutes"], 25)
+        self.assertEqual(item["processing_minutes"], 25)
+        self.assertEqual(item["exception_minutes"], 5)
         self.assertEqual(item["setup_minutes"], 3)
         self.assertEqual(item["excluded_exception_minutes"], 2)
-        self.assertEqual(item["processing_minutes"] + item["setup_minutes"] + item["excluded_exception_minutes"], item["actual_minutes"])
-        self.assertEqual(sum(step["actual_minutes"] for step in item["steps"]), item["actual_minutes"])
+        self.assertEqual(item["setup_minutes"] + item["excluded_exception_minutes"], item["exception_minutes"])
+        self.assertEqual(sum(step["baseline_minutes"] for step in item["steps"]), item["baseline_minutes"])
+        self.assertEqual(sum(step["exception_minutes"] for step in item["steps"]), item["exception_minutes"])
         self.assertEqual(sum(step["processing_minutes"] for step in item["steps"]), item["processing_minutes"])
         self.assertEqual([(step["step"], step["process_name"]) for step in item["steps"]], [("1", "切断"), ("2", "組立")])
-        self.assertEqual(item["steps"][0]["processing_minutes"], 17)
+        self.assertEqual(item["steps"][0]["processing_minutes"], 20)
+        self.assertEqual(item["steps"][0]["exception_minutes"], 3)
         self.assertEqual(item["steps"][0]["setup_minutes"], 3)
         self.assertEqual(item["steps"][0]["rows"], 1)
         self.assertEqual(item["steps"][0]["input_rate"], 100.0)
         self.assertEqual(item["exception_reasons"]["段取り"]["setup_minutes"], 3)
         self.assertEqual(item["exception_reasons"]["手直し"]["other_minutes"], 2)
-        self.assertAlmostEqual(item["processing_amount_yen"], 2492.8)
-        self.assertAlmostEqual(item["setup_amount_yen"], 373.92)
-        self.assertAlmostEqual(item["excluded_exception_amount_yen"], 249.28)
-        self.assertAlmostEqual(item["actual_amount_yen"], 3116.0)
-        self.assertAlmostEqual(item["processing_amount_yen"] + item["setup_amount_yen"] + item["excluded_exception_amount_yen"], item["actual_amount_yen"])
+        self.assertAlmostEqual(item["baseline_amount_yen"], 3116.0)
+        self.assertAlmostEqual(item["processing_amount_yen"], item["baseline_amount_yen"])
+        self.assertNotIn("exception_amount_yen", item)
+        self.assertNotIn("setup_amount_yen", item)
+        self.assertNotIn("excluded_exception_amount_yen", item)
+        self.assertNotIn("actual_amount_yen", item)
 
     def test_monthly_actuals_zero_only_and_unregistered_rate_are_not_missing_zero(self):
         route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
         row = {"伝票日付": "20260901", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "0", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
         monthly, _ = LABOR.aggregate_monthly_actuals([row], route, LABOR.DEFAULT_SETTINGS)
         item = monthly["202609"]["items"]["ITEM"]
-        self.assertEqual(item["actual_minutes"], 0)
+        self.assertEqual(item["baseline_minutes"], 0)
         self.assertEqual(item["status"], "zero_only")
-        self.assertIsNone(item["actual_amount_yen"])
+        self.assertIsNone(item["baseline_amount_yen"])
         self.assertIsNone(item["processing_amount_yen"])
         self.assertIsNone(item["rate_per_minute"])
+
+    def test_people_is_multiplied_literally_and_missing_people_is_not_assumed_one(self):
+        route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
+        rows = [
+            {"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "0", "作業時間": "10", "基準外人数/人": "1", "基準外工数/分": "3", "基準外項目": "段取り"},
+            {"伝票日付": "20260802", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "", "作業時間": "8", "基準外人数/人": "1", "基準外工数/分": "2", "基準外項目": "手直し"},
+        ]
+        monthly, _ = LABOR.aggregate_monthly_actuals(rows, route, LABOR.DEFAULT_SETTINGS)
+        item = monthly["202608"]["items"]["ITEM"]
+        self.assertEqual(item["baseline_minutes"], 0)
+        self.assertEqual(item["rows"], 1)
+        self.assertEqual(item["zero_rows"], 1)
+        self.assertEqual(item["missing_people_rows"], 1)
+        self.assertEqual(item["exception_minutes"], 5)
+        self.assertEqual(item["exception_reasons"]["段取り"]["minutes"], 3)
+        self.assertEqual(item["exception_reasons"]["手直し"]["minutes"], 2)
 
     def test_monthly_actuals_use_jst_business_date_not_runner_utc_date(self):
         route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
         row = {"伝票日付": "20261003", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "4", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
         with patch.object(LABOR, "today_jst", return_value=date(2026, 10, 3)):
             monthly, _ = LABOR.aggregate_monthly_actuals([row], route, LABOR.DEFAULT_SETTINGS)
-        self.assertEqual(monthly["202610"]["items"]["ITEM"]["actual_minutes"], 4)
+        self.assertEqual(monthly["202610"]["items"]["ITEM"]["baseline_minutes"], 4)
 
     def test_component_without_any_internal_route_is_not_called_zero_work(self):
         routes = {("ROOT", "1"): {"工程名": "工程"}}
@@ -149,14 +170,17 @@ class LaborCalculationTests(unittest.TestCase):
             output = json.loads(destination.read_text(encoding="utf-8"))
             result = output["item_analysis"]["labor"]["months"]["202608"]["windows"]["3"]
             monthly_child = output["item_analysis"]["labor"]["monthly_actuals"]["202608"]["items"]["CHILD"]
+            monthly_root = output["item_analysis"]["labor"]["monthly_actuals"]["202608"]["items"]["ROOT"]
             root = result["handoff"]["items"]["ROOT"]
-            self.assertEqual(monthly_child["actual_minutes"], 5)
-            self.assertEqual(output["item_analysis"]["labor"]["monthly_actuals"]["202608"]["items"]["ROOT"]["actual_minutes"], 40)
+            self.assertEqual(monthly_child["baseline_minutes"], 5)
+            self.assertEqual(monthly_root["baseline_minutes"], 40)
+            self.assertEqual(monthly_root["exception_minutes"], 2)
+            self.assertEqual(monthly_root["exception_reasons"]["段取り"]["minutes"], 2)
             self.assertNotIn("items", result)
-            self.assertAlmostEqual(root["processing_minutes"], 24.5)
-            self.assertAlmostEqual(root["setup_minutes"], 0.5)
+            self.assertAlmostEqual(root["processing_minutes"], 25.0)
+            self.assertAlmostEqual(root["setup_minutes"], 0.0)
             self.assertAlmostEqual(root["standard_minutes"], 25.0)
-            self.assertAlmostEqual(root["labor_amount_yen"], 3116.0)
+            self.assertAlmostEqual(root["labor_amount_yen"], 25.0 * 124.64)
             self.assertEqual(root["reported_zero"], 1)
             self.assertEqual(result["input_rate"], 75.0)
             self.assertEqual(result["internal_route_count"], 3)
@@ -164,7 +188,8 @@ class LaborCalculationTests(unittest.TestCase):
             self.assertEqual(json.loads(destination.read_text(encoding="utf-8"))["item_analysis"]["labor"]["bom_deduplication"]["duplicate_parent_child_rows_removed"], 1)
             settings = json.loads(destination.read_text(encoding="utf-8"))["item_analysis"]["labor"]["settings"]
             self.assertEqual(settings["period_months"], 6)
-            self.assertEqual(settings["allocated_exception_keywords"], ["段取り", "段取"])
+            self.assertEqual(settings["allocated_exception_keywords"], [])
+            self.assertIn("段取り", settings["excluded_exception_keywords"])
             handoff = result["handoff"]
             self.assertEqual(handoff["meta"]["version_id"], LABOR.HANDOFF_VERSION_ID)
             self.assertEqual(handoff["meta"]["generated_at"], "2026-08-31T12:00:00+09:00")
@@ -174,26 +199,44 @@ class LaborCalculationTests(unittest.TestCase):
             self.assertEqual(handoff["meta"]["sources"]["品目手順マスタ更新日時"], "2026-08-30 03:00")
             self.assertEqual(handoff["meta"]["sources"]["構成マスタ更新日時"], "2026-08-29 03:00")
             self.assertEqual(handoff["meta"]["settings"]["months"], 3)
-            self.assertEqual(handoff["meta"]["settings"]["allocate_items"], ["段取り", "段取"])
+            self.assertEqual(handoff["meta"]["settings"]["allocate_items"], [])
+            self.assertEqual(handoff["meta"]["settings"]["baseline_formula"], "作業時間×人数")
+            self.assertIn("基準外は含めない", handoff["meta"]["settings"]["standard_formula"])
+            self.assertIn("基準外人数/人", handoff["meta"]["settings"]["exception_formula"])
             for key in ("製造実績の最終日付", "品目手順マスタ更新日時", "構成マスタ更新日時"):
                 self.assertIn(key, handoff["meta"]["sources"])
             self.assertEqual(handoff["rates"], [{"from_month": "202604", "through_month": "202608", "yen_per_min": 124.64}])
             self.assertEqual(handoff["items"]["ROOT"]["cum_std_per_unit"], root["cum_std_per_unit"])
-            self.assertEqual(handoff["items"]["ROOT"]["cum_std_per_unit"], 25.0)
-            self.assertEqual(handoff["items"]["ROOT"]["own_run_per_unit"], 14.5)
-            self.assertEqual(handoff["items"]["ROOT"]["own_setup_per_unit"], 0.5)
+            self.assertAlmostEqual(handoff["items"]["ROOT"]["cum_std_per_unit"], 25.0)
+            self.assertAlmostEqual(handoff["items"]["ROOT"]["own_run_per_unit"], 15.0)
+            self.assertEqual(handoff["items"]["ROOT"]["own_setup_per_unit"], 0.0)
             self.assertEqual(handoff["items"]["ROOT"]["own_std_per_unit"], 15.0)
             self.assertEqual(handoff["items"]["ROOT"]["steps"][0]["工程"], "工程A")
             self.assertEqual(handoff["items"]["ROOT"]["children"][0]["品目コード"], "CHILD")
             self.assertEqual(handoff["items"]["ROOT"]["children"][0]["cum_std_per_unit"], 5.0)
 
-    def test_over_cap_is_capped_and_reported_without_item_names_in_summary(self):
+    def test_exception_minutes_are_separate_and_never_capped_to_baseline(self):
         routes = {("ITEM", "1"): {"工程名": "private"}}
         rows = [{"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "4", "基準外人数/人": "3", "基準外工数/分": "2", "基準外項目": "段取り"}]
         window, diagnostics = LABOR.calculate_window("202608", 3, rows, routes, {}, LABOR.DEFAULT_SETTINGS)
-        self.assertEqual(window["needs_review"]["exception_exceeds_total"], 1)
+        self.assertEqual(window["needs_review"], {})
         self.assertEqual(window["handoff"]["items"]["ITEM"]["standard_minutes"], 4.0)
+        self.assertEqual(window["handoff"]["items"]["ITEM"]["setup_minutes"], 0.0)
+        monthly, _ = LABOR.aggregate_monthly_actuals(rows, [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}], LABOR.DEFAULT_SETTINGS)
+        item = monthly["202608"]["items"]["ITEM"]
+        self.assertEqual(item["baseline_minutes"], 4)
+        self.assertEqual(item["exception_minutes"], 6)
+        self.assertEqual(item["exception_reasons"]["段取り"]["minutes"], 6)
         self.assertNotIn("ITEM", str(diagnostics))
+
+    def test_zero_people_produces_zero_baseline_and_exception_stays_separate(self):
+        routes = {("ITEM", "1"): {"工程名": "工程"}}
+        rows = [{"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "0", "作業時間": "10", "基準外人数/人": "2", "基準外工数/分": "3", "基準外項目": "段取り"}]
+        window, _ = LABOR.calculate_window("202608", 3, rows, routes, {}, LABOR.DEFAULT_SETTINGS)
+        item = window["handoff"]["items"]["ITEM"]
+        self.assertEqual(item["standard_minutes"], 0)
+        self.assertEqual(item["reported_zero"], 1)
+        self.assertEqual(window["exception_reasons"]["段取り"], 1)
 
     def test_future_dates_and_unmatched_routes_are_excluded(self):
         future = "29991231"
@@ -247,7 +290,7 @@ class LaborCalculationTests(unittest.TestCase):
 
     def test_monthly_labor_and_freshness_are_explicit_and_separate_from_standard_labor(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
-        for phrase in ("基準内加工（当月／前月差）", "現行標準原価（積上原価計）／個", "工数なし参考原価／個", "工数込み参考原価／個", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "工数込み参考原価＝現行の積上原価計＋P1累積標準工数金額", "労務費欄は未使用"):
+        for phrase in ("基準内工数（当月／前月差）", "現行標準原価（積上原価計）／個", "工数なし参考原価／個", "工数込み参考原価／個", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "選択月の基準外実績（分／月）", "基準外工数/分 × 基準外人数/人", "人数未入力", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "工数込み参考原価＝現行の積上原価計＋P1累積標準工数金額", "労務費欄は未使用"):
             self.assertIn(phrase, html)
         self.assertIn("monthly_actuals", html)
         self.assertIn("now?.processing_minutes", html)

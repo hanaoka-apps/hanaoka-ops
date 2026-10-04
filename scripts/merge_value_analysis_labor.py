@@ -32,8 +32,11 @@ ROUTE_REQUIRED = ("品目ｺｰﾄﾞ", "手順№", "内外区分", "有効日"
 DEFAULT_SETTINGS = {
     "period_months": 3,
     "period_options": [3, 6],
-    "allocated_exception_keywords": ["段取り"],
-    "excluded_exception_keywords": ["手直し", "修正作業"],
+    # Exception minutes are always kept outside baseline labor and standard cost.
+    # This keyword only groups setup as a named exception subcategory.
+    "allocated_exception_keywords": [],
+    "setup_exception_keywords": ["段取り"],
+    "excluded_exception_keywords": ["段取り", "手直し", "修正作業"],
     "labor_rate_history": [{"from": "202604", "through": "202608", "yen_per_minute": 124.64}],
 }
 JST = timezone(timedelta(hours=9))
@@ -43,7 +46,7 @@ def today_jst() -> date:
     """Return the current business date, independent of the Actions runner's UTC date."""
     return datetime.now(JST).date()
 RATE_NOT_REGISTERED = "レート未確定"
-HANDOFF_VERSION_ID = "labor-p1-v1"
+HANDOFF_VERSION_ID = "labor-p1-v2"
 
 
 def norm(value: object) -> str:
@@ -140,11 +143,12 @@ def choose_internal_routes(rows: list[dict[str, str]], anchor: date) -> tuple[di
 
 def setup_keyword(settings: dict, reason: str) -> bool:
     text = norm(reason)
-    excluded = [norm(v) for v in settings.get("excluded_exception_keywords", []) if norm(v)]
-    if any(keyword in text for keyword in excluded):
-        return False
-    allocated = [norm(v) for v in settings.get("allocated_exception_keywords", []) if norm(v)]
-    return bool(allocated) and any(keyword in text for keyword in allocated)
+    setup_keywords = [norm(v) for v in settings.get("setup_exception_keywords", ["段取り"]) if norm(v)]
+    # Read the former setting for older protected data, but never treat it as
+    # an instruction to include exception minutes in baseline standard labor.
+    if not setup_keywords:
+        setup_keywords = [norm(v) for v in settings.get("allocated_exception_keywords", []) if norm(v)]
+    return bool(setup_keywords) and any(keyword in text for keyword in setup_keywords)
 
 
 def aggregate_monthly_actuals(
@@ -154,9 +158,10 @@ def aggregate_monthly_actuals(
     """Aggregate item-level recorded work time by slip month, without BOM rollup."""
     monthly: dict[str, dict[str, dict]] = defaultdict(
         lambda: defaultdict(lambda: {
-            "actual_minutes": 0.0, "processing_minutes": 0.0, "setup_minutes": 0.0,
+            "baseline_minutes": 0.0, "processing_minutes": 0.0,
+            "exception_minutes": 0.0, "setup_minutes": 0.0,
             "excluded_exception_minutes": 0.0, "rows": 0, "positive_rows": 0,
-            "zero_rows": 0, "unmatched_rows": 0, "quantity": 0.0,
+            "zero_rows": 0, "missing_people_rows": 0, "exception_rows": 0, "unmatched_rows": 0, "quantity": 0.0,
             "latest_date": "", "steps": {}, "exception_reasons": {},
         })
     )
@@ -186,18 +191,22 @@ def aggregate_monthly_actuals(
             diag["unmatched_rows"] += 1
             continue
         people = parse_number(row.get("人数"))
-        total = work * (people if people is not None and people > 0 else 1)
-        exception = min(total, max(0.0, (parse_number(row.get("基準外工数/分")) or 0.0) * (parse_number(row.get("基準外人数/人")) or 0.0)))
+        baseline_valid = people is not None and people >= 0
+        baseline = work * people if baseline_valid else 0.0
+        exception = (parse_number(row.get("基準外工数/分")) or 0.0) * (parse_number(row.get("基準外人数/人")) or 0.0)
         reason = norm(row.get("基準外項目"))
         setup = exception if setup_keyword(settings, reason) else 0.0
         excluded_exception = exception - setup
-        entry["actual_minutes"] += total
-        entry["processing_minutes"] += total - exception
+        entry["baseline_minutes"] += baseline
+        entry["processing_minutes"] += baseline
+        entry["exception_minutes"] += exception
         entry["setup_minutes"] += setup
         entry["excluded_exception_minutes"] += excluded_exception
-        entry["rows"] += 1
-        entry["positive_rows"] += int(total > 0)
-        entry["zero_rows"] += int(total == 0)
+        entry["missing_people_rows"] += int(not baseline_valid)
+        entry["exception_rows"] += int(exception != 0)
+        entry["rows"] += int(baseline_valid)
+        entry["positive_rows"] += int(baseline_valid and baseline > 0)
+        entry["zero_rows"] += int(baseline_valid and baseline == 0)
         entry["quantity"] += qty
         entry["latest_date"] = max(entry["latest_date"], day.isoformat())
 
@@ -205,22 +214,25 @@ def aggregate_monthly_actuals(
             "step": step,
             "process_code": norm(route.get("工程ｺｰﾄﾞ")),
             "process_name": norm(route.get("工程名")),
-            "actual_minutes": 0.0, "processing_minutes": 0.0,
+            "baseline_minutes": 0.0, "processing_minutes": 0.0,
+            "exception_minutes": 0.0,
             "setup_minutes": 0.0, "excluded_exception_minutes": 0.0,
-            "rows": 0, "positive_rows": 0, "zero_rows": 0,
+            "rows": 0, "positive_rows": 0, "zero_rows": 0, "missing_people_rows": 0,
             "quantity": 0.0, "latest_date": "",
         })
-        for key, value in (("actual_minutes", total),
-                           ("processing_minutes", total - exception),
+        for key, value in (("baseline_minutes", baseline),
+                           ("processing_minutes", baseline),
+                           ("exception_minutes", exception),
                            ("setup_minutes", setup),
                            ("excluded_exception_minutes", excluded_exception)):
             step_entry[key] += value
-        step_entry["rows"] += 1
-        step_entry["positive_rows"] += int(total > 0)
-        step_entry["zero_rows"] += int(total == 0)
+        step_entry["missing_people_rows"] += int(not baseline_valid)
+        step_entry["rows"] += int(baseline_valid)
+        step_entry["positive_rows"] += int(baseline_valid and baseline > 0)
+        step_entry["zero_rows"] += int(baseline_valid and baseline == 0)
         step_entry["quantity"] += qty
         step_entry["latest_date"] = max(step_entry["latest_date"], day.isoformat())
-        if exception > 0:
+        if exception != 0:
             reason_label = reason or "基準外項目未設定"
             reason_entry = entry["exception_reasons"].setdefault(reason_label, {
                 "minutes": 0.0, "rows": 0, "setup_minutes": 0.0,
@@ -238,41 +250,36 @@ def aggregate_monthly_actuals(
         for code, row in items.items():
             matched = row["rows"]
             input_rate = round(row["positive_rows"] / matched * 100, 1) if matched else None
-            amount = row["actual_minutes"] * rate if rate is not None else None
+            amount = row["baseline_minutes"] * rate if rate is not None else None
             step_rows = []
             for step in sorted(row["steps"], key=lambda value: (parse_number(value) or 0, value)):
                 step_row = row["steps"][step]
                 step_rows.append({
                     **step_row,
                     "input_rate": round(step_row["positive_rows"] / step_row["rows"] * 100, 1) if step_row["rows"] else None,
-                    "processing_amount_yen": round(step_row["processing_minutes"] * rate, 2) if rate is not None else None,
-                    "setup_amount_yen": round(step_row["setup_minutes"] * rate, 2) if rate is not None else None,
-                    "excluded_exception_amount_yen": round(step_row["excluded_exception_minutes"] * rate, 2) if rate is not None else None,
                 })
             exception_reasons = {
-                reason: {
-                    **values,
-                    "amount_yen": round(values["minutes"] * rate, 2) if rate is not None else None,
-                }
+                reason: values
                 for reason, values in sorted(row["exception_reasons"].items())
             }
             rows[code] = {
                 **row,
                 "steps": step_rows,
                 "exception_reasons": exception_reasons,
-                "actual_minutes": row["actual_minutes"] if matched else None,
+                "baseline_minutes": row["baseline_minutes"] if matched else None,
                 "processing_minutes": row["processing_minutes"] if matched else None,
-                "setup_minutes": row["setup_minutes"] if matched else None,
-                "excluded_exception_minutes": row["excluded_exception_minutes"] if matched else None,
+                "exception_minutes": row["exception_minutes"] if matched or row["exception_rows"] else None,
+                "setup_minutes": row["setup_minutes"] if matched or row["exception_rows"] else None,
+                "excluded_exception_minutes": row["excluded_exception_minutes"] if matched or row["exception_rows"] else None,
                 "input_rate": input_rate,
                 "rate_per_minute": rate if matched else None,
-                "actual_amount_yen": round(amount, 2) if amount is not None and matched else None,
+                "baseline_amount_yen": round(amount, 2) if amount is not None and matched else None,
                 "processing_amount_yen": round(row["processing_minutes"] * rate, 2) if rate is not None and matched else None,
-                "setup_amount_yen": round(row["setup_minutes"] * rate, 2) if rate is not None and matched else None,
-                "excluded_exception_amount_yen": round(row["excluded_exception_minutes"] * rate, 2) if rate is not None and matched else None,
                 "status": (
                     "route_mismatch" if not matched and row["unmatched_rows"]
                     else "partial_route_mismatch" if row["unmatched_rows"]
+                    else "missing_people" if row["missing_people_rows"] and not matched
+                    else "partial_missing_people" if row["missing_people_rows"]
                     else "zero_only" if matched and not row["positive_rows"]
                     else "available"
                 ),
@@ -322,23 +329,24 @@ def calculate_window(
             review_rows.append({"date": day.isoformat(), "item_code": item, "step": step, "reason": "invalid_quantity_or_worktime"})
             continue
         people = parse_number(row.get("人数"))
-        total = work * (people if people is not None and people > 0 else 1)
+        if people is None or people < 0:
+            excluded["people_missing_or_invalid"] += 1
+            review_rows.append({"date": day.isoformat(), "item_code": item, "step": step, "reason": "people_missing_or_invalid"})
+            continue
+        baseline = work * people
         exception_unit = parse_number(row.get("基準外工数/分")) or 0.0
         exception_people = parse_number(row.get("基準外人数/人")) or 0.0
-        raw_exception = max(0.0, exception_unit * exception_people)
-        if raw_exception > total:
-            needs_review["exception_exceeds_total"] += 1
-            review_rows.append({"date": day.isoformat(), "item_code": item, "step": step, "reason": "exception_exceeds_total"})
-        exception = min(total, raw_exception)
+        raw_exception = exception_unit * exception_people
+        exception = raw_exception
         reason = norm(row.get("基準外項目"))
-        if reason:
-            reason_counts[reason] += 1
+        if exception != 0:
+            reason_label = reason or "基準外項目未設定"
+            reason_counts[reason_label] += 1
         setup = exception if setup_keyword(settings, reason) else 0.0
         bucket = accum[(item, step)]
         bucket["qty"] += qty
-        bucket["processing"] += total - exception
-        bucket["setup"] += setup
-        if total > 0:
+        bucket["processing"] += baseline
+        if baseline > 0:
             bucket["positive"] += 1
         else:
             bucket["zero"] += 1
@@ -365,10 +373,8 @@ def calculate_window(
     for item in own:
         own[item]["steps"].sort(key=lambda row: row["step"])
         own[item]["process_minutes"] = sum(row["process_minutes"] or 0 for row in own[item]["steps"])
-        own[item]["setup_minutes"] = sum(row["setup_minutes"] or 0 for row in own[item]["steps"])
-        own[item]["standard_minutes"] = (
-            own[item]["process_minutes"] + own[item]["setup_minutes"] if own[item]["complete"] else None
-        )
+        own[item]["setup_minutes"] = 0.0
+        own[item]["standard_minutes"] = own[item]["process_minutes"] if own[item]["complete"] else None
         total_rows = own[item]["positive"] + own[item]["zero"]
         own[item]["input_rate"] = round(own[item]["positive"] / total_rows * 100, 1) if total_rows else None
 
@@ -395,7 +401,7 @@ def calculate_window(
             return {"standard_minutes": None, "process_minutes": None, "setup_minutes": None, "complete": False, "positive": 0.0, "zero": 0.0, "contributions": [], "cycle": True, "child_missing": True}
         direct = own.get(code)
         process = direct["process_minutes"] if direct else 0.0
-        setup = direct["setup_minutes"] if direct else 0.0
+        setup = 0.0
         complete = direct["complete"] if direct else True
         positive = float(direct["positive"]) if direct else 0.0
         zero = float(direct["zero"]) if direct else 0.0
@@ -411,11 +417,10 @@ def calculate_window(
                 child_missing = True
             else:
                 process += (part["process_minutes"] or 0) * quantity
-                setup += (part["setup_minutes"] or 0) * quantity
             positive += part["positive"] * quantity
             zero += part["zero"] * quantity
         result = {
-            "standard_minutes": process + setup if complete else None,
+            "standard_minutes": process if complete else None,
             "process_minutes": process if complete else None,
             "setup_minutes": setup if complete else None,
             "complete": complete,
@@ -455,7 +460,7 @@ def calculate_window(
         low_sample_threshold = parse_number(settings.get("low_sample_rows_threshold"))
         if low_sample_threshold and 0 < int(result["positive"] + result["zero"]) < low_sample_threshold:
             flags.append("件数少")
-        if any(row.get("reason") in ("exception_exceeds_total", "future_date", "route_missing_or_not_internal") for row in review_rows if row.get("item_code") == code):
+        if any(row.get("reason") in ("future_date", "route_missing_or_not_internal") for row in review_rows if row.get("item_code") == code):
             flags.append("要確認")
         own_missing = any(row.get("status") == "期間内実績なし" for row in own_steps)
         if result["standard_minutes"] is None:
@@ -532,8 +537,15 @@ def calculate_window(
             "period_to": period_end_date.isoformat(),
             "settings": {
                 "months": months,
-                "allocate_items": list(settings.get("allocated_exception_keywords", [])),
-                "exclude_items": list(settings.get("excluded_exception_keywords", [])),
+                "allocate_items": [],
+                "exclude_items": ["基準外項目すべて（項目別内訳を保持）"],
+                "exception_category_keywords": list(settings.get("setup_exception_keywords", [])) + [
+                    norm(value) for value in settings.get("excluded_exception_keywords", [])
+                    if norm(value) not in settings.get("setup_exception_keywords", [])
+                ],
+                "baseline_formula": "作業時間×人数",
+                "standard_formula": "工程別Σ(作業時間×人数)÷工程別Σ報告数量を社内工程で積み上げ。基準外は含めない",
+                "exception_formula": "基準外工数/分×基準外人数/人（項目別に別集計）",
             },
             "sources": {
                 "製造実績の最終日付": max(actual_dates).isoformat() if actual_dates else None,
@@ -587,6 +599,14 @@ def merge(destination: Path, actuals_path: Path, routes_path: Path, bom_path: Pa
         raise ValueError("工数入力CSVの必須列が不足しています")
     bom_children, bom_stats = read_bom(bom_path)
     settings = {**DEFAULT_SETTINGS, **((analysis.get("labor") or {}).get("settings") or {})}
+    old_allocated = [norm(value) for value in settings.get("allocated_exception_keywords", []) if norm(value)]
+    setup_categories = [norm(value) for value in settings.get("setup_exception_keywords", []) if norm(value)] or old_allocated or list(DEFAULT_SETTINGS["setup_exception_keywords"])
+    settings["setup_exception_keywords"] = list(dict.fromkeys(setup_categories))
+    settings["allocated_exception_keywords"] = []
+    settings["excluded_exception_keywords"] = list(dict.fromkeys(
+        [norm(value) for value in settings.get("excluded_exception_keywords", []) if norm(value)]
+        + old_allocated + setup_categories
+    ))
     relevant_codes = {normalize_code(code) for code in analysis.get("items", {})}
     relevant_codes.update(normalize_code(row.get("i")) for row in analysis.get("rows", []) if normalize_code(row.get("i")))
     pending_codes = list(relevant_codes)
