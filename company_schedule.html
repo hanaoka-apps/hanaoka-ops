@@ -146,13 +146,57 @@
   .empty-state { padding: 60px 0; text-align: center; color: var(--text-sub); font-size: 13px; }
   .cal-rows .empty-state { grid-column: 1 / -1; }
 
+  /* ---------- スマホ用: 日付ごとのカード(予定のある日だけ)+カテゴリの絞り込み ----------
+     4列の表(幅760px)は横スクロールしないと読めず、7列のカレンダーは文字が小さすぎるため、
+     820px以下ではこちらに切り替える。PCでは出さない。 */
+  .cat-filter, .agenda { display: none; }
+  .cat-filter { gap: 6px; overflow-x: auto; margin-bottom: 14px; -webkit-overflow-scrolling: touch; }
+  .cat-chip {
+    flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border-strong); background: #fff; color: #5a6080;
+    border-radius: 999px; padding: 6px 12px; font-size: 12.5px; font-weight: 700; font-family: inherit; cursor: pointer;
+  }
+  .cat-chip.is-active { background: var(--navy); border-color: var(--navy); color: #fff; }
+  .cat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--cat-color); }
+  .cat-chip.is-active .cat-dot { box-shadow: 0 0 0 2px #fff; }
+  [data-cat="irregular"] { --cat-color: #8a90a8; }
+  [data-cat="main"] { --cat-color: var(--navy); }
+  [data-cat="sub"] { --cat-color: #1fa2e6; }
+  [data-cat="holiday"] { --cat-color: var(--accent-red); }
+
+  .agenda-day { background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 12px; }
+  .agenda-date {
+    position: sticky; top: 0; z-index: 1;
+    display: flex; align-items: baseline; gap: 6px;
+    padding: 10px 14px 8px; background: rgba(255, 255, 255, 0.94);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0;
+    font-size: 15px; font-weight: 800; font-feature-settings: "tnum";
+  }
+  .agenda-date .dow { font-size: 12.5px; font-weight: 600; color: var(--text-sub); }
+  .agenda-day.sun .agenda-date, .agenda-day.sun .dow { color: var(--accent-red); }
+  .agenda-day.sat .agenda-date, .agenda-day.sat .dow { color: var(--navy); }
+  .agenda-today { font-size: 11px; font-weight: 700; color: #fff; background: var(--navy); border-radius: 999px; padding: 1px 8px; }
+  .agenda-day.today { box-shadow: 0 0 0 2px var(--navy), var(--shadow); }
+  .agenda-ev { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
+  .agenda-ev:first-of-type { border-top: none; }
+  .agenda-ev .cat-dot { margin-top: 6px; }
+  .agenda-ev-body { min-width: 0; }
+  .agenda-ev-cat { font-size: 11px; font-weight: 700; color: var(--text-sub); }
+  .agenda-ev-title { font-size: 14px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+  .agenda-ev[data-cat="holiday"] .agenda-ev-title { color: var(--accent-red); }
+  .agenda-past {
+    display: block; width: 100%; margin-bottom: 12px; padding: 10px; border: 1px dashed var(--border-strong);
+    background: transparent; border-radius: var(--radius); color: var(--text-sub); font-size: 12.5px; font-weight: 700; font-family: inherit; cursor: pointer;
+  }
+
   @media (max-width: 820px) {
     .topbar { position: static; padding: 14px 20px; }
     .content { padding: 20px 16px 48px; }
-    .cal-cell { min-height: 84px; padding: 4px 4px 6px; }
-    .day-event { font-size: 10.5px; padding: 1px 4px; }
     .month-nav .month-label { min-width: 100px; font-size: 16px; }
-    .view-toggle { margin-left: 0; order: 1; flex-basis: 100%; justify-content: center; }
+    .view-toggle, .cal-grid, .list-view { display: none !important; }
+    .cat-filter { display: flex; }
+    .agenda { display: block; }
   }
 </style>
 </head>
@@ -191,6 +235,17 @@
         <div class="cal-rows" id="calRows">
           <div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>
         </div>
+      </div>
+
+      <!-- スマホ用（820px以下だけ表示。中身は renderAgenda が作る） -->
+      <div class="cat-filter" id="catFilter" role="group" aria-label="表示するカテゴリ">
+        <button type="button" class="cat-chip is-active" data-filter="all">すべて</button>
+        <button type="button" class="cat-chip" data-filter="irregular"><span class="cat-dot" data-cat="irregular"></span>お知らせ</button>
+        <button type="button" class="cat-chip" data-filter="main"><span class="cat-dot" data-cat="main"></span>定例・決済</button>
+        <button type="button" class="cat-chip" data-filter="sub"><span class="cat-dot" data-cat="sub"></span>準備・作業</button>
+      </div>
+      <div class="agenda" id="agendaView">
+        <div class="empty-state">サインインすると表示されます</div>
       </div>
 
       <div class="list-view" id="listView">
@@ -235,6 +290,11 @@ let account = null;
 let viewYear, viewMonth; // viewMonth: 0-11
 let viewMode = 'list'; // 'calendar' | 'list'(既定は縦型の一覧)
 let currentByDate = null; // 直近取得分。ビュー切替時に再取得しないためのキャッシュ
+// スマホ用カード表示の絞り込み('all' | 'irregular' | 'main' | 'sub')。この端末に覚えておく
+const AGENDA_FILTER_KEY = 'hanaoka.schedule.filter.v1';
+let agendaFilter = 'all';
+try { agendaFilter = localStorage.getItem(AGENDA_FILTER_KEY) || 'all'; } catch (_) {}
+let agendaShowPast = false; // 今月の今日より前の日を出すか(月を変えたら戻す)
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -250,7 +310,7 @@ async function initAuth() {
   document.getElementById('nextBtn').onclick = () => changeMonth(1);
   document.getElementById('todayBtn').onclick = () => {
     const n = new Date();
-    viewYear = n.getFullYear(); viewMonth = n.getMonth();
+    viewYear = n.getFullYear(); viewMonth = n.getMonth(); agendaShowPast = false;
     renderCalendar();
   };
   document.getElementById('viewToggle').addEventListener('click', e => {
@@ -261,6 +321,23 @@ async function initAuth() {
     document.getElementById('calGrid').hidden = viewMode !== 'calendar';
     document.getElementById('listView').hidden = viewMode !== 'list';
     if (currentByDate) renderCurrentView();
+  });
+  const catFilter = document.getElementById('catFilter');
+  const syncFilterChips = () => catFilter.querySelectorAll('.cat-chip')
+    .forEach(b => b.classList.toggle('is-active', b.dataset.filter === agendaFilter));
+  syncFilterChips();
+  catFilter.addEventListener('click', e => {
+    const btn = e.target.closest('.cat-chip');
+    if (!btn) return;
+    agendaFilter = btn.dataset.filter;
+    try { localStorage.setItem(AGENDA_FILTER_KEY, agendaFilter); } catch (_) {}
+    syncFilterChips();
+    if (currentByDate) renderAgenda(currentByDate);
+  });
+  document.getElementById('agendaView').addEventListener('click', e => {
+    if (!e.target.closest('.agenda-past')) return;
+    agendaShowPast = true;
+    if (currentByDate) renderAgenda(currentByDate);
   });
 
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
@@ -290,6 +367,8 @@ function showSignedOutState() {
   document.getElementById('calRows').innerHTML =
     '<div class="empty-state" style="grid-column: 1 / -1;">サインインすると表示されます</div>';
   document.getElementById('listRows').innerHTML =
+    '<div class="empty-state">サインインすると表示されます</div>';
+  document.getElementById('agendaView').innerHTML =
     '<div class="empty-state">サインインすると表示されます</div>';
   document.getElementById('monthLabel').textContent =
     `${viewYear}年${viewMonth + 1}月`;
@@ -351,6 +430,7 @@ function changeMonth(delta) {
   viewMonth += delta;
   if (viewMonth < 0) { viewMonth = 11; viewYear--; }
   if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+  agendaShowPast = false;
   renderCalendar();
 }
 
@@ -380,6 +460,7 @@ async function renderCalendar() {
   const loadingHtml = '<div class="empty-state">読み込み中…</div>';
   document.getElementById('calRows').innerHTML = loadingHtml;
   document.getElementById('listRows').innerHTML = loadingHtml;
+  document.getElementById('agendaView').innerHTML = loadingHtml;
 
   let events;
   try {
@@ -389,6 +470,7 @@ async function renderCalendar() {
     const failedHtml = '<div class="empty-state">取得できませんでした</div>';
     document.getElementById('calRows').innerHTML = failedHtml;
     document.getElementById('listRows').innerHTML = failedHtml;
+    document.getElementById('agendaView').innerHTML = failedHtml;
     return;
   }
 
@@ -409,6 +491,50 @@ async function renderCalendar() {
 function renderCurrentView() {
   if (viewMode === 'list') renderListView(currentByDate);
   else renderGridView(currentByDate);
+  renderAgenda(currentByDate); // スマホ用(PCではCSSで隠れている)
+}
+
+// スマホ用: 予定のある日だけを1日1枚のカードで縦に並べる。今月を見ているときは
+// 今日より前の日を畳んで今日から始める。カテゴリのボタンで絞り込める。
+const AGENDA_CAT_LABEL = { irregular: 'お知らせ', main: '定例・決済', sub: '準備・作業' };
+function renderAgenda(byDate) {
+  const el = document.getElementById('agendaView');
+  const todayStr = ymd(new Date());
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const days = [];
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = new Date(viewYear, viewMonth, day);
+    const dStr = ymd(d);
+    const evs = (byDate[dStr] || [])
+      .map(ev => ({ ev, cat: categorize(ev) }))
+      .filter(x => agendaFilter === 'all' || x.cat === agendaFilter);
+    if (evs.length) days.push({ d, dStr, evs });
+  }
+  const past = agendaShowPast ? [] : days.filter(x => x.dStr < todayStr);
+  const shown = days.filter(x => !past.includes(x));
+  const pastHtml = past.length
+    ? `<button type="button" class="agenda-past">${past[0].d.getMonth() + 1}/${past[0].d.getDate()}〜${past[past.length - 1].d.getMonth() + 1}/${past[past.length - 1].d.getDate()} の予定（${past.length}日）を表示</button>`
+    : '';
+  if (!shown.length) {
+    const msg = agendaFilter === 'all' ? 'この月の予定はありません' : `この月の「${AGENDA_CAT_LABEL[agendaFilter]}」はありません`;
+    el.innerHTML = pastHtml + `<div class="empty-state">${past.length ? '今日以降の予定はありません' : msg}</div>`;
+    return;
+  }
+  el.innerHTML = pastHtml + shown.map(({ d, dStr, evs }) => {
+    const dow = d.getDay();
+    const classes = ['agenda-day'];
+    if (dow === 0) classes.push('sun'); else if (dow === 6) classes.push('sat');
+    if (dStr === todayStr) classes.push('today');
+    const evHtml = evs.map(({ ev, cat }) => {
+      const dotCat = /休日|祝/.test(ev.subject) ? 'holiday' : cat;
+      return `<div class="agenda-ev" data-cat="${dotCat}"><span class="cat-dot" data-cat="${dotCat}"></span>`
+        + `<div class="agenda-ev-body"><div class="agenda-ev-cat">${AGENDA_CAT_LABEL[cat]}</div>`
+        + `<div class="agenda-ev-title">${escapeHtml(ev.subject)}</div></div></div>`;
+    }).join('');
+    return `<section class="${classes.join(' ')}">`
+      + `<div class="agenda-date">${d.getMonth() + 1}/${d.getDate()}<span class="dow">（${WEEKDAY_JA[dow]}）</span>`
+      + (dStr === todayStr ? '<span class="agenda-today">今日</span>' : '') + `</div>${evHtml}</section>`;
+  }).join('');
 }
 
 function renderGridView(byDate) {
