@@ -226,8 +226,6 @@
     .ag-free{padding:9px 14px;border-top:1px solid var(--border);font-size:12.5px;color:var(--success);line-height:1.6}
     .ag-free b{font-weight:700}
     .ag-none{padding:14px;color:var(--muted);font-size:13px}
-    .ag-past{display:block;width:100%;margin-bottom:12px;padding:10px;border:1px dashed var(--border);background:transparent;
-      border-radius:12px;color:var(--muted);font-size:12.5px;font-weight:700;font-family:inherit;cursor:pointer}
     @media(max-width:820px){
       .grid.ls .ls-table{display:none}
       .grid.ls .ls-agenda{display:block}
@@ -602,7 +600,12 @@ let LOAD_SEQ = 0;
    一覧は週と同じ範囲(1週間)を見る。 */
 let VIEW = 'list';
 const isWeekRange = () => VIEW !== 'day';      /* 週・一覧は1週間ぶんを扱う */
-let AG_SHOW_PAST = false;                      /* スマホの一覧で、今週の今日より前の日を出すか */
+/* ★スマホの一覧は「今日から7日間」★ 月曜始まりの週だと、日曜に開いたとき今週は
+   今日の1日しか残らない。スマホのカード表示だけは今日を起点に7日ずつ進める。
+   PCの表（会議室×曜日）は曜日の列がそろっていたほうが読みやすいので週のまま。 */
+const MOBILE_MQ = window.matchMedia('(max-width: 820px)');
+const isRolling = () => VIEW === 'list' && MOBILE_MQ.matches;
+let agStart = dayTopMs(Date.now());
 let curWeek = weekTopMs(Date.now());
 let curDay  = dayTopMs(Date.now());
 let SEEK = null, HILITE = null, NOWMIN = 60;
@@ -629,7 +632,7 @@ function readUrl(){
 function writeUrl(){
   const u = new URLSearchParams();
   u.set('v', VIEW);
-  u.set('d', jKey(isWeekRange() ? curWeek : curDay));
+  u.set('d', jKey(isRolling() ? agStart : isWeekRange() ? curWeek : curDay));
   const flr = el('flr').value, cap = el('cap').value, q = el('q').value.trim();
   if (flr) u.set('flr', flr);
   if (cap) u.set('cap', cap);
@@ -660,6 +663,8 @@ async function showApp(){
   el('user-name').textContent    = currentAccount?.name || currentAccount?.username || '';
   setAdmin();
   const want = readUrl();
+  /* スマホの一覧の起点。URL に日付があればその日、無ければ今日（readUrl が curDay に入れる） */
+  agStart = curDay;
   paintViewButtons();
   el('sFrom').value = msToLocal(dayTopMs(Date.now()) + 13*3600e3);
   el('sTo').value   = msToLocal(dayTopMs(Date.now()) + 14*3600e3);
@@ -877,6 +882,7 @@ function paintFlrSelect(){
      予定表の既定権限を上げる必要がないので、Exchange 側の設定変更ゼロで動く。
    ============================================================ */
 function viewRange(){
+  if (isRolling()) return [agStart, agStart + WK];
   if (isWeekRange()) return [curWeek, curWeek + WK];
   return [curDay, curDay + DAY];
 }
@@ -1230,7 +1236,8 @@ async function runSeek(){
   const r = parseSeek();
   if (!r) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
   SEEK = r;
-  if (isWeekRange()) curWeek = weekTopMs(r.s); else curDay = dayTopMs(r.s);
+  if (isRolling()) { agStart = dayTopMs(r.s); curWeek = weekTopMs(r.s); }
+  else if (isWeekRange()) curWeek = weekTopMs(r.s); else curDay = dayTopMs(r.s);
   await loadRes(); lastLoad = Date.now();
   paintPanel(); render(); paintSeek(); paintNow(); paintUpdated(); writeUrl(); loadOwners();
 }
@@ -1392,7 +1399,9 @@ function liHtml(r, d0, d1){
       title="${esc(label)}　${jFull(r.s)} 〜 ${jFull(r.e)}"><span class="tm">${tm}</span><b>${esc(label)}</b></div>`;
 }
 function renderList(){
-  const now = Date.now(), w0 = curWeek, w1 = w0 + WK;
+  const now = Date.now();
+  /* スマホは今日起点の7日間、PCは月曜始まりの週（isRolling の説明を参照） */
+  const w0 = isRolling() ? agStart : curWeek, w1 = w0 + WK;
   const days = Array.from({length:7}, (_,i) => w0 + i*DAY);
   el('range').textContent = `${jKey(w0).replace(/-/g,'/')} 〜 ${jKey(w0+6*DAY).replace(/-/g,'/')}`;
   el('lg-note').textContent = '│ 時刻順に並べた一覧です。予約を押すと詳細が出ます。'
@@ -1429,16 +1438,10 @@ function renderList(){
   });
   t += `</div>`;
 
-  /* ---- スマホ：日付ごとのカード。今週を見ているときは今日から ---- */
-  const todayTop = dayTopMs(now);
-  const past = (!AG_SHOW_PAST && now >= w0 && now < w1) ? days.filter(ms => ms < todayTop) : [];
+  /* ---- スマホ：日付ごとのカード（今日から7日間） ---- */
   let a = `<div class="ls-agenda">`;
-  if (past.length) {
-    const f = toJ(past[0]), l = toJ(past[past.length - 1]);
-    a += `<button type="button" class="ag-past">${f.getUTCMonth()+1}/${f.getUTCDate()}〜${l.getUTCMonth()+1}/${l.getUTCDate()} を表示</button>`;
-  }
   if (!list.length) a += `<div class="ag-day"><div class="ag-none">${emptyMsg()}</div></div>`;
-  else days.filter(ms => !past.includes(ms)).forEach(ms => {
+  else days.forEach(ms => {
     const d = toJ(ms), dow = d.getUTCDay(), isToday = jKey(ms) === todayKey;
     const busy = [], free = [];
     list.forEach(room => {
@@ -1614,15 +1617,32 @@ async function setView(v){
   await afterMove();
 }
 /* 日表示から週・一覧へ戻るときは、見ていた日の週にする */
-el('vList').onclick = () => { if (VIEW !== 'list') { if (VIEW === 'day') curWeek = weekTopMs(curDay); setView('list'); } };
+el('vList').onclick = () => { if (VIEW !== 'list') {
+  if (VIEW === 'day') { curWeek = weekTopMs(curDay); agStart = curDay; }
+  else agStart = Math.max(curWeek, Math.min(dayTopMs(Date.now()), curWeek + WK - DAY));
+  setView('list'); } };
 el('vWeek').onclick = () => { if (VIEW !== 'week') { if (VIEW === 'day') curWeek = weekTopMs(curDay); setView('week'); } };
 el('vDay').onclick  = () => { if (VIEW !== 'day')  { const t = Date.now();
   curDay = (t >= curWeek && t < curWeek + WK) ? dayTopMs(t) : curWeek; setView('day'); } };
 
-el('prev').onclick = () => { AG_SHOW_PAST = false; if (isWeekRange()) curWeek -= WK; else curDay -= DAY; afterMove(); };
-el('next').onclick = () => { AG_SHOW_PAST = false; if (isWeekRange()) curWeek += WK; else curDay += DAY; afterMove(); };
+/* スマホの一覧は7日ずつ。見ている範囲の週も合わせておく（PC幅や週表示に移ったときに飛ばない） */
+function moveRange(dir){
+  if (isRolling()) { agStart += dir * WK; curWeek = weekTopMs(agStart); }
+  else if (isWeekRange()) curWeek += dir * WK;
+  else curDay += dir * DAY;
+  afterMove();
+}
+el('prev').onclick = () => moveRange(-1);
+el('next').onclick = () => moveRange(1);
+/* 画面を回転するなどで PC幅⇔スマホ幅 をまたいだら、範囲が変わるので読み直す */
+MOBILE_MQ.addEventListener('change', () => {
+  if (VIEW !== 'list' || !lastLoad) return;
+  if (MOBILE_MQ.matches) agStart = Math.max(curWeek, Math.min(dayTopMs(Date.now()), curWeek + WK - DAY));
+  else curWeek = weekTopMs(agStart);
+  afterMove();
+});
 el('todayBtn').onclick = () => {
-  AG_SHOW_PAST = false;
+  agStart = dayTopMs(Date.now());
   curWeek = weekTopMs(Date.now()); curDay = dayTopMs(Date.now()); afterMove();
 };
 ['flr','cap','onlybusy'].forEach(id => el(id).onchange = () => { render(); paintSeek(); paintNow(); writeUrl(); });
@@ -1640,7 +1660,6 @@ function goDay(key){
 el('grid').addEventListener('click', ev => {
   const hd = ev.target.closest('.hd[data-d]');
   if (hd) { goDay(hd.dataset.d); return; }
-  if (ev.target.closest('.ag-past')) { AG_SHOW_PAST = true; render(); return; }
   const bar = ev.target.closest('.bar-i, .li');
   if (bar) openDetail(bar.dataset.r);
 });
