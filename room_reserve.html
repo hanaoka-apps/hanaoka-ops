@@ -295,8 +295,9 @@
 
   <div id="privacy-note">
     <b>この画面は見るだけです。</b>会議室の予約・変更は Outlook（または Teams の予定表）で行ってください。
-    <b>会議室の予定の件名はこの画面に表示しません。</b>面談などの予定が誰にでも読めてしまうためです。
-    代わりに<b>誰が押さえているか</b>を出しています。用途を知りたいときは、帯をクリックして<b>予約者に直接聞いてください</b>。
+    一覧には<b>誰が押さえているか</b>を出しています。予約を押すと、<b>予約者の予定表から題目</b>を表示します
+    （Outlook で他の人の予定を見たときと同じ範囲だけ。<b>非公開の予定は表示しません</b>）。
+    詳しく知りたいときは<b>予約者に直接聞いてください</b>。
   </div>
 
   <div id="status-panel">読み込み中...</div>
@@ -361,9 +362,11 @@
      この画面は見に行くだけ。SharePoint のマスターリストも Power Automate も使わない。
      会議室の追加・廃止は Exchange 側に追従する。
 
-   ★件名は出さない★
-     会議室には「○○さん面談」のような予定が入る。全社員が読める画面に件名を出さない。
-     代わりに「誰が押さえているか」を出す。用途は予約者に聞いてもらう。
+   ★一覧・帯には件名を出さない★
+     会議室には「○○さん面談」のような予定が入る。一覧・帯には「誰が押さえているか」だけ出す。
+     題目は、予約を押した詳細でだけ、予約者本人の予定表から読む（loadTitle）。
+     返る件名は Outlook で他の人の予定を見たときと同じ範囲（予定表の共有設定どおり）で、
+     非公開の予定は出さない。この画面が見せる範囲を広げることはない。
 
    ★予約者の出し方（ここが工夫）★
      getSchedule は organizer を返さない。会議室の予定表を Reviewer で開けば取れるが、
@@ -1663,9 +1666,61 @@ el('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i, .li');
   if (bar) openDetail(bar.dataset.r);
 });
+/* ============================================================
+   題目（予定の件名）は、詳細を開いたときだけ予約者の予定表から読む
+   ------------------------------------------------------------
+   ★会議室の予定表からは取れない★ Exchange の既定（DeleteSubject / AddOrganizerToSubject）で、
+     会議室側の件名は「予約者の名前」に置き換わっている（だから予約者が分かる）。
+   ★予約者本人の予定表を getSchedule で読む★ 返ってくる件名は、Outlook の
+     スケジュールアシスタントで他の人の予定を見たときと同じ範囲（予定表の共有設定どおり）。
+     この画面が新しく見せる範囲を広げることはない。非公開の予定は件名を出さない。
+   ★一覧には出さない★ 全予約ぶん読むと社員の予定表を毎回まとめて読むことになるので、
+     押した1件だけ読む。結果は r.title に覚えておく（再描画までの間）。
+   ============================================================ */
+function titleHtml(r){
+  const muted = t => `<span style="color:var(--muted)">${t}</span>`;
+  if (r.title === undefined) return muted('読み込み中…');
+  if (r.title === null) return muted('予約者の予定表から読めませんでした（予定表の共有設定によっては表示されません）');
+  if (r.title.priv) return muted('非公開の予定のため表示しません');
+  return r.title.subject ? `<b>${esc(r.title.subject)}</b>` : muted('件名がありません');
+}
+async function loadTitle(r){
+  try {
+    const [res] = await gBatch([{
+      method: 'POST', url: '/me/calendar/getSchedule',
+      headers: { 'Content-Type': 'application/json', Prefer: 'outlook.timezone="UTC"' },
+      body: {
+        schedules: [r.whoMail],
+        startTime: { dateTime: toUtcLocal(r.s), timeZone: 'UTC' },
+        endTime:   { dateTime: toUtcLocal(r.e), timeZone: 'UTC' },
+        availabilityViewInterval: 30
+      }
+    }]);
+    const sc = res && res.status === 200 && res.body && Array.isArray(res.body.value) ? res.body.value[0] : null;
+    const room = ROOMS.find(x => x.mail === r.mail);
+    /* 同じ時間帯に予定が複数あるときは、場所がこの会議室のもの → 時刻がぴったり合うもの → 重なりが長いもの */
+    const items = (sc && !sc.error ? sc.scheduleItems || [] : [])
+      .map(it => ({ it, s: pTZ(it.start), e: pTZ(it.end) }))
+      .filter(x => !isNaN(x.s) && !isNaN(x.e) && x.e > r.s && x.s < r.e)
+      .map(x => ({ ...x,
+        locHit: !!(room && x.it.location && locHitsRoom(normLoc(x.it.location), room.tok)),
+        exact: x.s === r.s && x.e === r.e,
+        ov: Math.min(x.e, r.e) - Math.max(x.s, r.s) }))
+      .sort((a, b) => (b.locHit - a.locHit) || (b.exact - a.exact) || (b.ov - a.ov));
+    const best = items[0];
+    r.title = best ? { subject: String(best.it.subject || '').trim(), priv: !!best.it.isPrivate } : null;
+  } catch (e) {
+    console.warn('題目の取得に失敗', e);
+    r.title = null;
+  }
+  const slot = document.getElementById('dSubject');
+  if (slot && el('mDetail').classList.contains('on') && el('dTitle').dataset.rid === r.rid) slot.innerHTML = titleHtml(r);
+}
+
 function openDetail(rid){
   const r = RES.find(x => x.rid === rid); if (!r) return;
   el('dTitle').textContent = `${r.room}　${jHM(r.s)}–${jHM(r.e)}`;
+  el('dTitle').dataset.rid = r.rid;   /* 題目の読み込みが終わったとき、同じ予約の詳細かを確かめる */
   el('dBody').innerHTML = [
     ['会議室', `${esc(r.room)}${r.cap ? ` <span class="badge b-cap">${r.cap}人</span>` : ''}`],
     ['場所',   esc(r.flr) || '—'],
@@ -1677,13 +1732,17 @@ function openDetail(rid){
     ['予約者', r.who
         ? `${esc(r.who)}${r.whoDep ? ` <span class="badge b-flr">${esc(r.whoDep)}</span>` : ''}`
         : '<span style="color:var(--muted)">突き合わせできませんでした</span>'],
+    ['題目', r.whoMail ? `<span id="dSubject">${titleHtml(r)}</span>`
+                       : '<span style="color:var(--muted)">予約者が分からないため表示できません</span>'],
   ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
 
   el('dNote').innerHTML = r.who
-    ? '<b>用途（件名）はこの画面に出していません。</b>会議室には面談などの予定が入るためです。'
-      + '空けてほしいときや用途を知りたいときは、下のボタンで予約者に直接聞いてください。'
+    ? '<b>題目は、予約者の予定表から、Outlook で他の人の予定を見たときと同じ範囲だけ表示します。</b>'
+      + '非公開にしている予定や、予定表を共有していない人の予定は表示されません。'
+      + '空けてほしいときや詳しく知りたいときは、下のボタンで予約者に直接聞いてください。'
     : '<b>予約者を特定できませんでした。</b>予約した人の予定に会議室名が入っていない場合や、'
       + '外部の人が主催している場合に起きます。Outlook で会議室の予定表を開くと分かることがあります。';
+  if (r.whoMail && r.title === undefined) loadTitle(r);
 
   const ft = el('dFoot');
   if (r.who && r.whoMail) {
