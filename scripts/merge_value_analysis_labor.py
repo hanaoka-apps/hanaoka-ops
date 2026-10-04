@@ -157,7 +157,7 @@ def aggregate_monthly_actuals(
             "actual_minutes": 0.0, "processing_minutes": 0.0, "setup_minutes": 0.0,
             "excluded_exception_minutes": 0.0, "rows": 0, "positive_rows": 0,
             "zero_rows": 0, "unmatched_rows": 0, "quantity": 0.0,
-            "latest_date": "",
+            "latest_date": "", "steps": {}, "exception_reasons": {},
         })
     )
     diagnostics: dict[str, dict] = defaultdict(lambda: {"latest_date": "", "valid_rows": 0, "unmatched_rows": 0})
@@ -201,6 +201,36 @@ def aggregate_monthly_actuals(
         entry["quantity"] += qty
         entry["latest_date"] = max(entry["latest_date"], day.isoformat())
 
+        step_entry = entry["steps"].setdefault(step, {
+            "step": step,
+            "process_code": norm(route.get("工程ｺｰﾄﾞ")),
+            "process_name": norm(route.get("工程名")),
+            "actual_minutes": 0.0, "processing_minutes": 0.0,
+            "setup_minutes": 0.0, "excluded_exception_minutes": 0.0,
+            "rows": 0, "positive_rows": 0, "zero_rows": 0,
+            "quantity": 0.0, "latest_date": "",
+        })
+        for key, value in (("actual_minutes", total),
+                           ("processing_minutes", total - exception),
+                           ("setup_minutes", setup),
+                           ("excluded_exception_minutes", excluded_exception)):
+            step_entry[key] += value
+        step_entry["rows"] += 1
+        step_entry["positive_rows"] += int(total > 0)
+        step_entry["zero_rows"] += int(total == 0)
+        step_entry["quantity"] += qty
+        step_entry["latest_date"] = max(step_entry["latest_date"], day.isoformat())
+        if exception > 0:
+            reason_label = reason or "基準外項目未設定"
+            reason_entry = entry["exception_reasons"].setdefault(reason_label, {
+                "minutes": 0.0, "rows": 0, "setup_minutes": 0.0,
+                "other_minutes": 0.0,
+            })
+            reason_entry["minutes"] += exception
+            reason_entry["rows"] += 1
+            reason_entry["setup_minutes"] += setup
+            reason_entry["other_minutes"] += excluded_exception
+
     output: dict[str, dict] = {}
     for ym, items in monthly.items():
         rate = rate_for_month(settings, ym)
@@ -209,8 +239,27 @@ def aggregate_monthly_actuals(
             matched = row["rows"]
             input_rate = round(row["positive_rows"] / matched * 100, 1) if matched else None
             amount = row["actual_minutes"] * rate if rate is not None else None
+            step_rows = []
+            for step in sorted(row["steps"], key=lambda value: (parse_number(value) or 0, value)):
+                step_row = row["steps"][step]
+                step_rows.append({
+                    **step_row,
+                    "input_rate": round(step_row["positive_rows"] / step_row["rows"] * 100, 1) if step_row["rows"] else None,
+                    "processing_amount_yen": round(step_row["processing_minutes"] * rate, 2) if rate is not None else None,
+                    "setup_amount_yen": round(step_row["setup_minutes"] * rate, 2) if rate is not None else None,
+                    "excluded_exception_amount_yen": round(step_row["excluded_exception_minutes"] * rate, 2) if rate is not None else None,
+                })
+            exception_reasons = {
+                reason: {
+                    **values,
+                    "amount_yen": round(values["minutes"] * rate, 2) if rate is not None else None,
+                }
+                for reason, values in sorted(row["exception_reasons"].items())
+            }
             rows[code] = {
                 **row,
+                "steps": step_rows,
+                "exception_reasons": exception_reasons,
                 "actual_minutes": row["actual_minutes"] if matched else None,
                 "processing_minutes": row["processing_minutes"] if matched else None,
                 "setup_minutes": row["setup_minutes"] if matched else None,
@@ -218,6 +267,9 @@ def aggregate_monthly_actuals(
                 "input_rate": input_rate,
                 "rate_per_minute": rate if matched else None,
                 "actual_amount_yen": round(amount, 2) if amount is not None and matched else None,
+                "processing_amount_yen": round(row["processing_minutes"] * rate, 2) if rate is not None and matched else None,
+                "setup_amount_yen": round(row["setup_minutes"] * rate, 2) if rate is not None and matched else None,
+                "excluded_exception_amount_yen": round(row["excluded_exception_minutes"] * rate, 2) if rate is not None and matched else None,
                 "status": (
                     "route_mismatch" if not matched and row["unmatched_rows"]
                     else "partial_route_mismatch" if row["unmatched_rows"]
