@@ -47,9 +47,9 @@ const state = {
   data: {
     purchase_daily_by_month: {
       202610: {
-        '2026-10-01': {total: 100, zones: {}},
-        '2026-10-02': {total: 200, zones: {}},
-        '2026-10-03': {total: 400, zones: {}},
+        '2026-10-01': {total: 100, zones: {'第一工場': 20}, unclassified: 5},
+        '2026-10-02': {total: 200, zones: {'第一工場': 30}},
+        '2026-10-03': {total: 400, zones: {'第二工場': 40}, unclassified: 7},
       },
     },
     monthly: {202610: {total: {purchase: 700}}},
@@ -79,6 +79,12 @@ assert.match(root.innerHTML, /日別集計・月計<\/span><strong>700 円<\/str
 assert.match(root.innerHTML, /purchase-chart-selection[^>]*>2026-10-03 の仕入 <strong>400 円<\/strong>/);
 assert.match(root.innerHTML, /左軸・右軸とも円。尺度は別です。/);
 assert.match(root.innerHTML, /purchase-day-hit/);
+assert.match(root.innerHTML, /2026年10月 月間 工場別仕入内訳/);
+assert.match(root.innerHTML, /第一工場<\/span><b>50 円/);
+assert.match(root.innerHTML, /第二工場<\/span><b>40 円/);
+assert.match(root.innerHTML, /工場未分類<\/span><b>12 円/);
+assert.match(staticHtml, /--graph-purchase:var\(--graph-sales\)/, '仕入棒は営業系グラフと共通の青色を使う');
+assert.match(staticHtml, /purchase-daily-chart svg rect\.purchase-bar\{fill:var\(--graph-purchase\)\}/);
 
 const firstBar = root.innerHTML.match(/class="purchase-bar" x="[^"]+" y="[^"]+" width="[^"]+" height="([^"]+)"/);
 assert.ok(firstBar);
