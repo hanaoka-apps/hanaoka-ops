@@ -20,10 +20,70 @@
 | 書類管理システム         | doc_management.html  | 役員限定＋総務       | スキャンされた書類をAIが読み取って仕分け・要約。期限があるものはタスク化。全文検索と書類間のつながり追跡 |
 | 社内ワークフロー（試験運用） | wf_app.html      | 全社員（フォームは順次公開） | 申請・承認・差し戻し・後処理・回覧。GRIDY/kintone の置き換え。経路計算は wf-engine.js。フォーム・経路・人はすべて SharePoint `WF_*` リストから読む（画面に業務データを書かない）。処理は Power Automate「WF_操作受付」「WF_段の起票」 |
 
-## 認証
+## 認証（サインイン）
 
 すべてのシステムは Azure AD「業務アプリ」によるシングルサインオン。
 花岡車輌のM365アカウントでログイン可能。
+
+**サインインは共通ファイル `hanaoka_auth.js` 1つにまとめてある（2026-10 から）。**
+HUB で1回サインインすれば、ほかのアプリはサインインし直さずに開ける。
+
+- サインイン情報は `localStorage` に置き、全アプリで共有する（以前の `sessionStorage` はタブごとに別だった）
+- PC はポップアップ、iPhone・iPad・Safari はページ移動でサインインする（端末を見て自動で切り替え）
+- 戻り先は共通の `auth.html`。元のページ（`?` や `#` も含む）へ戻すので、**アプリごとに Azure へリダイレクトURIを登録しなくてよい**
+- サインイン済みなら、確認中・読み込み中にサインインボタンを見せない（ボタンや案内文に `data-ha-login` を付ける）
+- **FUJIN だけは対象外**（現場の共用端末向けに、毎回アカウントを選ばせる作りのため）
+
+### 新しいアプリを作るとき
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>   <!-- <head> で読む（本文が描かれる前にボタンを隠すため） -->
+...
+<button id="loginBtn" data-ha-login>サインイン</button>
+```
+
+```js
+const pca = new msal.PublicClientApplication(HanaokaAuth.msalConfig());
+await pca.initialize();
+await pca.handleRedirectPromise();               // iPhone/iPad のページ移動から戻ったときの受け取り（必須）
+let account = await HanaokaAuth.restore(pca, SCOPES);   // 起動時。だめなら null（例外は投げない）
+if (account) showApp();
+loginBtn.onclick = async () => { account = await HanaokaAuth.login(pca, SCOPES); showApp(); };
+// サインアウトやエラーでサインイン画面をまた見せるとき
+HanaokaAuth.done();
+```
+
+- `msalConfig()` を使い、**clientId・authority・cacheLocation をページに直接書かない**
+- アプリは**リポジトリのルートに置く**（フォルダに入れると `folder/auth.html` を探して404になる）
+- 読み込みに時間がかかり、その間もサインイン画面（「読み込み中」）を出したままにする作りなら、
+  `HanaokaAuth.holdUntilError(['エラー欄のid'])` を呼ぶ（エラーが出るまでボタンを隠したまま。給与の画面が使用）
+- 細かい約束ごとは `hanaoka_auth.js` の先頭のコメントを参照
+
+## デザイン（見た目）
+
+**色・フォント・角丸・影・左メニューは共通ファイル `hanaoka_theme.css` 1か所で決める（2026-10 から）。**
+HUB・営業日報と同じ見た目（白い背景のカード＋紺 `#23268f`、Inter / Noto Sans JP）。
+
+| ファイル | 使っている画面 | 役割 |
+|---|---|---|
+| `hanaoka_theme.css` | 全アプリ（直接、または下のテーマ経由） | 基本の色・フォント・角丸・影。`nav.js` が作る左メニュー（`.hx-sidebar`） |
+| `ap_theme.css` | 支払管理（ap_*） | 古い画面の部品を塗り替える上書き |
+| `reserve_theme.css` | 予約状況・スケジュール | 〃 |
+| `kaikei_theme.css` / `payroll_theme.css` | 会計 / 給与 | 〃（給与はダーク表示をやめて明るい表示だけ） |
+| `kachi_theme.css` | 付加価値・原価エディタ・営業目標エディタ | 〃（もとの濃紺＋金を HUB の見た目に） |
+| `shutsuzu_theme.css` | 出図・出荷 | 〃（**アクセントのピンク・青は残す**） |
+| `wf_theme.css` | ワークフロー | 〃 |
+
+### 新しいアプリを作るとき
+
+- `<head>` で、ページの `<style>` より**前**に `<link rel="stylesheet" href="hanaoka_theme.css?v=…">` を読む
+- 色は**直接書かずに変数で**：`var(--navy)` `var(--bg)` `var(--txt)` `var(--sub)` `var(--line)` `var(--radius)` `var(--shadow)` `var(--font)` など
+  （一覧は `hanaoka_theme.css` の先頭。値を直すときもそこだけ）
+- ★`--accent` は共通ファイルでは**赤**（支払系の昔の名前）。主ボタンの色には `--navy`（または `--pri` / `--primary`）を使う
+- 左メニューを付けるなら `nav.js` の `GROUPS` にグループを足し、`<グループ>_theme.css` を読む画面にする
+- ロゴは「紺のグラデーションの角丸＋白い線のアイコン」。タブのアイコン（favicon）も同じ絵で作る（`favicon_*.svg` を参照）
+- CSS を直したら、読んでいる画面の `?v=` を上げる（ブラウザに古いファイルが残らないように）
 
 ## データソース
 
