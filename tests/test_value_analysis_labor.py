@@ -247,7 +247,7 @@ class LaborCalculationTests(unittest.TestCase):
 
     def test_monthly_labor_and_freshness_are_explicit_and_separate_from_standard_labor(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
-        for phrase in ("基準内加工（当月／前月差）", "現行標準原価（積上原価計）／個", "工数なし参考原価／個", "工数込み参考原価／個", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "工数なし／工数込みの参考原価・参考付加価値率は算定保留", "元帳票の全ヘッダーと労務費の置換ルール"):
+        for phrase in ("基準内加工（当月／前月差）", "現行標準原価（積上原価計）／個", "工数なし参考原価／個", "工数込み参考原価／個", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "工数込み参考原価＝現行の積上原価計＋P1累積標準工数金額", "労務費欄は未使用"):
             self.assertIn(phrase, html)
         self.assertIn("monthly_actuals", html)
         self.assertIn("now?.processing_minutes", html)
@@ -255,6 +255,12 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertIn("now?.excluded_exception_minutes", html)
         self.assertIn("enhanceBomMonthlyLabor(code)", html)
         self.assertIn("過去月の原価で代用していません", html)
+        self.assertIn("function referenceCosts(total,labor)", html)
+        self.assertIn("function referenceRate(price,cost)", html)
+        self.assertIn("status=now?(now.status==='route_mismatch'", html)
+        self.assertIn(":routeExists?'実績なし':'対象外'", html)
+        self.assertIn("現行標準原価（労務費欄は未使用）", html)
+        self.assertIn("現行標準原価＋P1累積工数金額", html)
         self.assertIn("最終日：月次ファイル", html)
 
     def test_bom_cost_restoration_and_reference_rates_are_separated(self):
