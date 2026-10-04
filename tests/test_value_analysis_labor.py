@@ -247,7 +247,7 @@ class LaborCalculationTests(unittest.TestCase):
 
     def test_monthly_labor_and_freshness_are_explicit_and_separate_from_standard_labor(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
-        for phrase in ("基準内加工（当月／前月差）", "工数なし原価／個（要確認）", "工数込み参考原価／個（要確認）", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "原価比較の金額表示は保留しています", "要確認（原票列と労務費の置換ルール）"):
+        for phrase in ("基準内加工（当月／前月差）", "現行標準原価（積上原価計）／個", "工数なし参考原価／個", "工数込み参考原価／個", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "工数なし／工数込みの参考原価・参考付加価値率は算定保留", "元帳票の全ヘッダーと労務費の置換ルール"):
             self.assertIn(phrase, html)
         self.assertIn("monthly_actuals", html)
         self.assertIn("now?.processing_minutes", html)
@@ -256,6 +256,26 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertIn("enhanceBomMonthlyLabor(code)", html)
         self.assertIn("過去月の原価で代用していません", html)
         self.assertIn("最終日：月次ファイル", html)
+
+    def test_bom_cost_restoration_and_reference_rates_are_separated(self):
+        html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        self.assertIn("costAvailable?yen(Number(cost.total))", html)
+        self.assertIn("当月品目原価未登録", html)
+        self.assertIn("対象月の標準原価未取得", html)
+        self.assertIn("現行の正式な付加価値率", html)
+        self.assertIn("工数なし参考付加価値率", html)
+        self.assertIn("工数込み参考付加価値率", html)
+        self.assertNotIn("noLabor=null,withLabor=null", html)
+        self.assertNotIn("hasStandardCostSnapshot(state.month)?'要確認'", html)
+
+    def test_bom_hierarchy_and_item_identity_have_sticky_visual_structure(self):
+        html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
+        self.assertIn("data-bom-level", html)
+        self.assertIn("bom-tree-cell", html)
+        self.assertIn("bom-labor-card[data-bom-level=\"2\"]", html)
+        self.assertIn("#itemTable th:nth-child(3)", html)
+        self.assertIn("left:270px", html)
+        self.assertIn("入力率100%は", html)
 
     def test_special_suffix_rates_are_excluded_and_labor_children_are_readable(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
@@ -284,6 +304,8 @@ class LaborCalculationTests(unittest.TestCase):
     def test_value_analysis_uses_shared_theme_and_chart_geometry(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
         self.assertIn('../hanaoka_theme.css?v=20261004', html)
+        self.assertNotIn('--line:#', html)
+        self.assertIn('--muted:var(--sub)', html)
         self.assertIn('class="graph-grid-line"', html)
         self.assertIn('class="graph-axis-label"', html)
         self.assertIn('class="graph-data-line', html)
