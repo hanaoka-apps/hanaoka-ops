@@ -79,7 +79,7 @@ assert.match(root.innerHTML, /日別集計・月計<\/span><strong>700 円<\/str
 assert.match(root.innerHTML, /purchase-chart-selection[^>]*>2026-10-03 の仕入 <strong>400 円<\/strong>/);
 assert.match(root.innerHTML, /左軸・右軸とも円。尺度は別です。/);
 assert.match(root.innerHTML, /purchase-day-hit/);
-assert.match(root.innerHTML, /2026年10月 月間 工場別仕入内訳/);
+assert.match(root.innerHTML, /2026年10月 工場別の月計内訳（日別集計）/);
 assert.match(root.innerHTML, /第一工場<\/span><b>50 円/);
 assert.match(root.innerHTML, /第二工場<\/span><b>40 円/);
 assert.match(root.innerHTML, /工場未分類<\/span><b>12 円/);
