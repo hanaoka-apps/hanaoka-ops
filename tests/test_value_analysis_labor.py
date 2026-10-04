@@ -45,6 +45,37 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertEqual(diagnostics["202608"]["unmatched_rows"], 1)
         self.assertEqual(record["latest_date"], "2026-08-02")
 
+    def test_monthly_actuals_expose_per_step_and_exception_breakdowns(self):
+        routes = [
+            {"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1", "工程ｺｰﾄﾞ": "CUT", "工程名": "切断"},
+            {"品目ｺｰﾄﾞ": "ITEM", "手順№": "2", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1", "工程ｺｰﾄﾞ": "PACK", "工程名": "組立"},
+        ]
+        rows = [
+            {"伝票日付": "20260801", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "2", "人数": "2", "作業時間": "10", "基準外人数/人": "1", "基準外工数/分": "3", "基準外項目": "段取り"},
+            {"伝票日付": "20260802", "品目ｺｰﾄﾞ": "ITEM", "手順№": "2", "報告数量": "1", "人数": "1", "作業時間": "5", "基準外人数/人": "1", "基準外工数/分": "2", "基準外項目": "手直し"},
+        ]
+        monthly, _ = LABOR.aggregate_monthly_actuals(rows, routes, LABOR.DEFAULT_SETTINGS)
+        item = monthly["202608"]["items"]["ITEM"]
+        self.assertEqual(item["actual_minutes"], 25)
+        self.assertEqual(item["processing_minutes"], 20)
+        self.assertEqual(item["setup_minutes"], 3)
+        self.assertEqual(item["excluded_exception_minutes"], 2)
+        self.assertEqual(item["processing_minutes"] + item["setup_minutes"] + item["excluded_exception_minutes"], item["actual_minutes"])
+        self.assertEqual(sum(step["actual_minutes"] for step in item["steps"]), item["actual_minutes"])
+        self.assertEqual(sum(step["processing_minutes"] for step in item["steps"]), item["processing_minutes"])
+        self.assertEqual([(step["step"], step["process_name"]) for step in item["steps"]], [("1", "切断"), ("2", "組立")])
+        self.assertEqual(item["steps"][0]["processing_minutes"], 17)
+        self.assertEqual(item["steps"][0]["setup_minutes"], 3)
+        self.assertEqual(item["steps"][0]["rows"], 1)
+        self.assertEqual(item["steps"][0]["input_rate"], 100.0)
+        self.assertEqual(item["exception_reasons"]["段取り"]["setup_minutes"], 3)
+        self.assertEqual(item["exception_reasons"]["手直し"]["other_minutes"], 2)
+        self.assertAlmostEqual(item["processing_amount_yen"], 2492.8)
+        self.assertAlmostEqual(item["setup_amount_yen"], 373.92)
+        self.assertAlmostEqual(item["excluded_exception_amount_yen"], 249.28)
+        self.assertAlmostEqual(item["actual_amount_yen"], 3116.0)
+        self.assertAlmostEqual(item["processing_amount_yen"] + item["setup_amount_yen"] + item["excluded_exception_amount_yen"], item["actual_amount_yen"])
+
     def test_monthly_actuals_zero_only_and_unregistered_rate_are_not_missing_zero(self):
         route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
         row = {"伝票日付": "20260901", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "0", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
@@ -53,6 +84,7 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertEqual(item["actual_minutes"], 0)
         self.assertEqual(item["status"], "zero_only")
         self.assertIsNone(item["actual_amount_yen"])
+        self.assertIsNone(item["processing_amount_yen"])
         self.assertIsNone(item["rate_per_minute"])
 
     def test_monthly_actuals_use_jst_business_date_not_runner_utc_date(self):
@@ -215,14 +247,13 @@ class LaborCalculationTests(unittest.TestCase):
 
     def test_monthly_labor_and_freshness_are_explicit_and_separate_from_standard_labor(self):
         html = (ROOT / "static/value_analysis.html").read_text(encoding="utf-8")
-        for phrase in ("実績工数（当月・品目単体）", "工数入力率／件数", "適用社内レート", "実績工数金額", "工数取得状態／実績最終日", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "実績あり・作業時間0分のみ"):
+        for phrase in ("基準内加工（当月／前月差）", "工数なし原価／個（要確認）", "工数込み参考原価／個（要確認）", "月別実績工数（品目単体）", "基準外段取り", "基準外その他", "data_freshness", "標準原価ファイル未取得", "子部品工数未取得", "社内工程なし（対象外）", "作業時間0分のみ", "原価比較の金額表示は保留しています", "要確認（原票列と労務費の置換ルール）"):
             self.assertIn(phrase, html)
         self.assertIn("monthly_actuals", html)
-        self.assertIn("record.actual_minutes", html)
-        self.assertIn("record.processing_minutes", html)
-        self.assertIn("record.setup_minutes", html)
-        self.assertIn("record.excluded_exception_minutes", html)
-        self.assertIn("openItemModalWithCostFreshness", html)
+        self.assertIn("now?.processing_minutes", html)
+        self.assertIn("now?.setup_minutes", html)
+        self.assertIn("now?.excluded_exception_minutes", html)
+        self.assertIn("enhanceBomMonthlyLabor(code)", html)
         self.assertIn("過去月の原価で代用していません", html)
         self.assertIn("最終日：月次ファイル", html)
 
