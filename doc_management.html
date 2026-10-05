@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>書類管理システム</title>
 <link rel="icon" type="image/svg+xml" href="favicon_doc.svg"><!-- 書類をしまう・仕分ける＝フォルダ -->
+<script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
@@ -190,7 +191,7 @@ textarea.f-input{resize:vertical;min-height:58px;line-height:1.6}
   <div class="login-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 10.5h18"/></svg></div>
   <div class="login-title">書類管理システム</div>
   <div class="login-subtitle">届いた書類をAIが読み取って仕分け・要約し、期限があるものはタスクにします。過去の書類もまとめて検索できます。</div>
-  <button class="login-btn" id="loginBtn">
+  <button class="login-btn" id="loginBtn" data-ha-login>
     <svg width="18" height="18" viewBox="0 0 23 23"><path fill="#f25022" d="M0 0h11v11H0z"/><path fill="#7fba00" d="M12 0h11v11H12z"/><path fill="#00a4ef" d="M0 12h11v11H0z"/><path fill="#ffb900" d="M12 12h11v11H12z"/></svg>
     Microsoft アカウントでサインイン
   </button>
@@ -318,17 +319,8 @@ textarea.f-input{resize:vertical;min-height:58px;line-height:1.6}
      その判定のバグがそのまま漏洩になる。権限が無ければ読み込みが
      403 で落ち、一覧にも出てこない。それでよい。
    ============================================================ */
-const MSAL_CONFIG = {
-  auth: {
-    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
-    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    /* 全アプリ共通のリダイレクト受け口 auth.html を指す。
-       Azure AD に登録済みのURIはこの1枚だけなので、この画面を足すのに
-       Azure側の作業は要らない（ap_* / *_reserve などと同じ書き方）。 */
-    redirectUri: new URL('auth.html', window.location.href).href,
-  },
-  cache: { cacheLocation: 'sessionStorage' }
-};
+// 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js）
+const MSAL_CONFIG = HanaokaAuth.msalConfig();
 const SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.ReadWrite.All'];
 
 /* 保存先。ライブラリは executive-workspace の既定「ドキュメント」をそのまま使う。
@@ -389,8 +381,8 @@ async function init(){
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
-  const accs = msalInstance.getAllAccounts();
-  if (accs.length){ account = accs[0]; await start(); }
+  account = await HanaokaAuth.restore(msalInstance, SCOPES);
+  if (account){ await start(); }
 
   document.getElementById('loginBtn').onclick = login;
   document.getElementById('logoutBtn').onclick = () => {
@@ -417,6 +409,7 @@ async function init(){
 }
 
 function loginError(msg){
+  HanaokaAuth.done();
   const el = document.getElementById('loginError');
   el.textContent = msg; el.style.display = 'block';
 }
@@ -424,8 +417,7 @@ function loginError(msg){
 async function login(){
   try{
     document.getElementById('loginError').style.display = 'none';
-    const r = await msalInstance.loginPopup({ scopes: SCOPES });
-    account = r.account;
+    account = await HanaokaAuth.login(msalInstance, SCOPES);
     await start();
   }catch(e){ loginError('サインインに失敗しました: ' + e.message); }
 }
