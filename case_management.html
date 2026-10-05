@@ -1164,6 +1164,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                 <option>業務センター</option>
                 <option>総務部</option>
                 <option>営業部</option>
+                <option>工場</option>
               </select>
               <button class="btn btn-primary" onclick="confirmFaxViewAssign()">割り当てる</button>
             </div>
@@ -1175,6 +1176,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
       <div style="flex:1;display:flex;flex-direction:column;background:var(--surface2);overflow:hidden;">
         <div class="pdf-toolbar">
           <span class="pdf-filename" id="triagePdfName">FAXを選択するとPDFが表示されます</span>
+          <!-- Mail で本文と添付PDFを切り替える（renderTriageMailToggle が中身を描く） -->
+          <span id="triageMailToggle" style="display:none;gap:4px;"></span>
           <button class="btn" id="triagePdfNewTabBtn" onclick="openTriagePdfNewTab()">別タブで開く</button>
         </div>
         <div style="flex:1;overflow:hidden;position:relative;" id="triagePdfArea">
@@ -1200,6 +1203,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <option value="業務センター">業務センター</option>
           <option value="総務部">総務部</option>
           <option value="営業部">営業部</option>
+          <option value="工場">工場</option>
         </select>
       </div>
       <!-- 部署フィルター -->
@@ -1209,6 +1213,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="filter-btn" data-dept="業務センター" onclick="setFaxDeptFilter('業務センター',this)">業セ</div>
         <div class="filter-btn" data-dept="総務部" onclick="setFaxDeptFilter('総務部',this)">総務</div>
         <div class="filter-btn" data-dept="営業部" onclick="setFaxDeptFilter('営業部',this)">営業</div>
+        <div class="filter-btn" data-dept="工場" onclick="setFaxDeptFilter('工場',this)" title="工場（資材）">工場</div>
         <div class="filter-btn" data-dept="archived" onclick="setFaxDeptFilter('archived',this)" title="受信トレイでアーカイブしたもの（ゴミ・不要なもの）。開いて「↩ 未仕訳に戻す」で受信トレイに戻せます">🗂 アーカイブ</div>
       </div>
       <!-- ステータスフィルター -->
@@ -1944,7 +1949,7 @@ let faxViewItems = [];
 let currentTriageId = null;
 let currentFaxViewId = null;
 let faxViewFilter = 'undone';       // 'undone' | 'done' | 'all'
-let faxDeptFilter = 'mine';         // 'mine' | 'all' | '業務センター' | '総務部' | '営業部'
+let faxDeptFilter = 'mine';         // 'mine' | 'all' | '業務センター' | '総務部' | '営業部' | '工場' | 'archived'
 let myDept = '';                    // localStorage永続
 let faxDriveId = null; // FAX_PDFStorageドライブIDキャッシュ
 let droppedFile = null; // ドラッグ&ドロップで選択されたファイル
@@ -4376,8 +4381,14 @@ function selectTriage(spId) {
     aiSortBox.style.display = 'none';
   }
   // 右カラム：PDFがあればPDFビューア、無く InquiryBody があればテキストパネル
+  //   Mail は本文が主役なので本文を先に出し、添付PDFがあれば切り替えボタンを出す
   const pdfPath = e.AttachedPDFPath || '';
-  if (pdfPath) {
+  renderTriageMailToggle(null);
+  if (routeOf(e.EventType) === 'mail' && e.InquiryBody) {
+    currentTriagePdfUrl = '';
+    renderInquiryBody(e);
+    if (pdfPath) renderTriageMailToggle(e, 'body');
+  } else if (pdfPath) {
     currentTriagePdfUrl = pdfPath;
     setTriagePdfNewTabVisible(true);
     document.getElementById('triagePdfName').textContent = e.Title || 'FAX';
@@ -4864,6 +4875,29 @@ function openTriagePdfNewTab() {
 // 受信トレイ右カラム：問い合わせ本文パネル（PDFを持たないHP/ARU/AUTOPILOT用）
 // ============================================================
 // 「別タブで開く」はPDFのときだけ意味があるので出し分ける
+// Mail の「📧 本文／📎 添付PDF」切り替え。e=null で隠す。mode は今表示しているほう
+function renderTriageMailToggle(e, mode) {
+  const box = document.getElementById('triageMailToggle');
+  if (!box) return;
+  if (!e) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  const btn = (m, label) =>
+    `<button class="btn${mode === m ? ' btn-primary' : ''}" style="font-size:11px;padding:3px 10px;" onclick="switchTriageMailView('${m}')">${label}</button>`;
+  box.innerHTML = btn('body', '📧 本文') + btn('pdf', '📎 添付PDF');
+  box.style.display = 'inline-flex';
+}
+function switchTriageMailView(mode) {
+  const e = triageItems.find(x => x._spId === currentTriageId);
+  if (!e || !e.AttachedPDFPath) return;
+  if (mode === 'pdf') {
+    currentTriagePdfUrl = e.AttachedPDFPath;
+    setTriagePdfNewTabVisible(true);
+    loadPdfWithAuth(e.AttachedPDFPath, 'triagePdfArea');
+  } else {
+    currentTriagePdfUrl = '';
+    renderInquiryBody(e);
+  }
+  renderTriageMailToggle(e, mode);
+}
 function setTriagePdfNewTabVisible(show) {
   const btn = document.getElementById('triagePdfNewTabBtn');
   if (btn) btn.style.display = show ? '' : 'none';
@@ -4890,6 +4924,7 @@ function renderInquiryBody(e) {
 // 右カラムを初期状態（未選択）に戻す
 function resetTriageViewer() {
   currentTriagePdfUrl = '';
+  renderTriageMailToggle(null);
   setTriagePdfNewTabVisible(true);
   const nameEl = document.getElementById('triagePdfName');
   if (nameEl) nameEl.textContent = '受信を選択すると内容が表示されます';
@@ -5187,11 +5222,13 @@ function selectFaxView(spId) {
   document.getElementById('faxViewComment').value = '';
   const pdfPath = e.AttachedPDFPath || e.添付PDFパス || e.PDFPath || '';
   const pdfArea = document.getElementById('faxViewPdfArea');
-  if (pdfPath) {
+  const isMail = routeOf(e.EventType) === 'mail';
+  if (pdfPath && !isMail) {
     document.getElementById('faxViewPdfName').textContent = e.Title || 'FAX';
     loadPdfWithAuth(pdfPath, 'faxViewPdfArea');
   } else if (isInquiryEvent(e)) {
     // PDFの無い問い合わせ・Mailは本文を出す（InquiryBody は一覧では取っていないので1件だけ取得）
+    //   Mail は添付PDFがあっても本文を出す（添付は本文中のリンクから開ける）
     document.getElementById('faxViewPdfName').textContent = e.Title || e.EventType || '問い合わせ';
     pdfArea.innerHTML = '<div class="loading-spinner">本文を読み込み中...</div>';
     (async () => {
@@ -5619,8 +5656,9 @@ async function showCaseInquiryBody(ev) {
 function selectTimelinePdf(idx) {
   const ev = events[idx];
   if (!ev) return;
-  // PDFが無く問い合わせイベントなら本文パネルを出す
-  if (!ev.AttachedPDFPath) {
+  // PDFが無く問い合わせイベントなら本文パネルを出す。
+  //   Mail は添付PDFがあっても本文を出す（添付は本文中のリンクから開ける）
+  if (!ev.AttachedPDFPath || routeOf(ev.EventType) === 'mail') {
     if (!isInquiryEvent(ev)) return;
     document.querySelectorAll('#timelineContent .tl-item').forEach(el => el.classList.remove('tl-active'));
     const el2 = document.querySelector(`#timelineContent .tl-item[data-tl-idx="${idx}"]`);
