@@ -369,7 +369,6 @@ footer b{color:var(--goldDark)}
 
 <!-- ===== SharePoint連携: MSAL.js v3 ===== -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
-<script src="hanaoka_auth.js"></script>
 
 <!-- ===== ログイン画面 CSS ===== -->
 <style>
@@ -1084,7 +1083,7 @@ section.card{padding:18px 22px 20px !important}
   <img class="login-mark" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23141852'/%3E%3Cstop offset='1' stop-color='%233340d6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Crect x='14' y='33' width='9' height='17' rx='3' fill='%23ffffff' fill-opacity='.5'/%3E%3Crect x='27.5' y='24' width='9' height='26' rx='3' fill='%23ffffff' fill-opacity='.85'/%3E%3Crect x='41' y='14' width='9' height='36' rx='3' fill='%233ec5ff'/%3E%3C/svg%3E" alt="HANAOKA Sales HUB">
   <div class="login-title hub-login-title">HANAOKA Sales HUB</div>
   <div class="login-subtitle">売上・受注・営業活動を一元管理</div>
-  <button class="login-btn" id="loginBtn" data-ha-login>サインイン</button>
+  <button class="login-btn" id="loginBtn">サインイン</button>
   <div class="login-error" id="loginError" style="display:none"></div>
   <div class="login-loading" id="loginLoading" style="display:none">読み込み中…</div>
 </div>
@@ -4733,33 +4732,59 @@ function _latestVoucherKey(rows){
   for (const r of (rows || [])){ const k = _vkeyOf(r); if (k > mx && k <= today) mx = k; }
   return mx;
 }
+// 訪問データの最新日: 営業活動を開いて読み込み済みなら実データから、未読込なら dashboard_facts.json の build_meta から
+function _latestVisitKey(){
+  const today = _realTodayKey();
+  const dr = (RAW && RAW.daily_reports) || [];
+  if (dr.length){
+    let mx = 0;
+    for (const r of dr){
+      const s = String(r[5] || '').trim();
+      let k = 0;
+      const m = s.match(/^(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+      if (m) k = (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]);
+      else if (/^\d{5}(\.\d+)?$/.test(s)) { const d = new Date(Date.UTC(1899, 11, 30) + parseFloat(s) * 86400000); k = d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate(); }
+      if (k && k <= today && k > mx) mx = k;
+    }
+    return mx;
+  }
+  const bm = (RAW && RAW.build_meta) || {};
+  return Number(bm.daily_reports_latest) || 0;
+}
 function renderDataFreshness(){
   const el = document.getElementById('dataFreshBar');
   if (!el) return;
   const expect = _prevBizDayKey(new Date());   // 少なくともここまでは入っているはず
   const ordK = _latestVoucherKey(RAW.order_rows);
   const salK = _latestVoucherKey(RAW.rows);
+  const visK = _latestVisitKey();
   const fmt = k => k ? `${Math.floor((k/100)%100)}/${k%100}` : '—';
-  const piece = (label, k) => {
-    if (!k) return `<span>${label} <b>—</b></span>`;
+  const piece = (label, k, unknownText) => {
+    if (!k) return `<span>${label} <b style="color:var(--text-sub)">${unknownText || '—'}</b></span>`;
     const stale = k < expect;
     const missing = stale ? _bizDaysBetween(k, expect) : [];
     const style = stale ? 'color:#e0475b; font-weight:800' : 'color:#12a76a; font-weight:800';
-    const warn = stale ? ` <span style="color:#e0475b">（${missing.map(fmt).join('・')} 分が未反映）</span>` : '';
+    const warn = stale ? ` <span style="color:#e0475b">（${missing.length > 3 ? missing.length + '営業日分' : missing.map(fmt).join('・') + ' 分'}が未反映）</span>` : '';
     return `<span>${label} <b style="${style}">${fmt(k)}まで</b>${warn}</span>`;
   };
-  const anyStale = (ordK && ordK < expect) || (salK && salK < expect);
+  const staleNames = [];
+  if (ordK && ordK < expect) staleNames.push('受注');
+  if (salK && salK < expect) staleNames.push('売上');
+  if (visK && visK < expect) staleNames.push('訪問');
+  const anyStale = staleNames.length > 0;
   let gen = '';
   try {
     const u = RAW.build_meta && RAW.build_meta.updated_at;
     if (u){ const d = new Date(u); gen = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
   } catch(e){}
+  const src = staleNames.map(n => n === '訪問' ? 'HotProfile→SharePoint（daily_reports.csv）' : 'SMILE→SharePoint').filter((v, i, a) => a.indexOf(v) === i).join('・');
   el.innerHTML = `<div style="display:inline-flex; align-items:center; gap:12px; flex-wrap:wrap; padding:6px 12px; border-radius:8px; background:${anyStale ? '#fdecea' : '#eef7f1'}; border:1px solid ${anyStale ? '#f5c2bd' : '#cfe8d8'}">
       <span style="font-weight:700; color:#161a3d">${anyStale ? '⚠️' : '📅'} データ</span>
       ${piece('受注', ordK)}
       ${piece('売上', salK)}
-      ${gen ? `<span style="color:#8a93a3">（更新 ${gen}）</span>` : ''}
-      ${anyStale ? `<span style="color:#e0475b; font-size:11px">SMILE→SharePoint のCSV出力が止まっている可能性があります</span>` : ''}
+      ${piece('訪問', visK, '営業活動を開くと確認')}
+      ${gen ? `<span style="color:#8a90a8">（更新 ${gen}）</span>` : ''}
+      ${anyStale ? `<span style="color:#e0475b; font-size:11px">${staleNames.join('・')}：${src} の出力が止まっている可能性があります</span>` : ''}
     </div>`;
 }
 
@@ -7769,9 +7794,16 @@ window._sales_renderAll = function() {
 
 <script>
 // ============================================================
-// MSAL CONFIG: 全アプリ共通。HUBのサインインをそのまま使う（→ hanaoka_auth.js）
+// MSAL CONFIG (case_management.html と同パターン)
 // ============================================================
-const MSAL_CONFIG = HanaokaAuth.msalConfig();
+const MSAL_CONFIG = {
+  auth: {
+    clientId: 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
+    authority: 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
+    redirectUri: window.location.origin + window.location.pathname,
+  },
+  cache: { cacheLocation: 'sessionStorage' }
+};
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
 const SP = {
   site: 'hanaokacorp.sharepoint.com:/sites/msteams_7aab51:',
@@ -7802,11 +7834,10 @@ async function init() {
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
-  account = await HanaokaAuth.restore(msalInstance, SCOPES);
-  if (account) {
-    // データ読込に時間がかかるので、3秒の保険でボタンが出ないよう、
-    // エラーが出るまで（最大60秒）サインインボタンを隠したままにする
-    HanaokaAuth.holdUntilError(['loginError']);
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    account = accounts[0];
+    msalInstance.setActiveAccount(account);
     await onLoginSuccess();
   }
 }
@@ -7815,7 +7846,9 @@ async function login() {
   try {
     document.getElementById('loginError').style.display = 'none';
     document.getElementById('loginBtn').disabled = true;
-    account = await HanaokaAuth.login(msalInstance, SCOPES);
+    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    account = result.account;
+    msalInstance.setActiveAccount(account);
     await onLoginSuccess();
   } catch(e) {
     showLoginError('サインインに失敗しました: ' + e.message);
@@ -7935,6 +7968,7 @@ async function loadVisits() {
       _visitsLoaded = true;
       // 訪問データ到着 → 営業活動トピックを再描画
       try { if (typeof renderActivityTopics === 'function') renderActivityTopics(); } catch(e){}
+      try { if (typeof renderDataFreshness === 'function') renderDataFreshness(); } catch(e){}
       console.log("[visits] loaded:",
         RAW.daily_reports.length, "件訪問 /",
         RAW.web_logs.length, "件HP閲覧 /",
@@ -8054,7 +8088,6 @@ function showApp() {
   document.getElementById('app').style.display = 'block';
 }
 function showLoginError(msg) {
-  HanaokaAuth.done();
   const el = document.getElementById('loginError');
   if (el) {
     el.textContent = msg;
