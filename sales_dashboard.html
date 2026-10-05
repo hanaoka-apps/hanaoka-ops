@@ -7935,14 +7935,47 @@ async function graphGet(path) {
 // ============================================================
 // データ取得: dashboard_facts.json (SharedMasters ライブラリ)
 // ============================================================
-async function loadFacts() {
+// SharedMasters の JSON を読む。
+// iPhone(Safari)は「/content」の転送(302)先への取得で失敗することがあるため、
+// まずファイル情報からダウンロード用URLを取り、そこから直接読む（認証ヘッダー不要のURL）。
+// それがダメなら従来の /content で読む。
+async function fetchMastersJson(name) {
   const t = await getToken();
-  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
-  if (!res.ok) {
-    throw new Error('dashboard_facts.json が SharedMasters にありません。手動アップロード必要');
+  const base = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/${name}`;
+  let why = '';
+  try {
+    const m = await fetch(base + '?select=id,size,@microsoft.graph.downloadUrl', { headers: { Authorization: 'Bearer ' + t } });
+    if (m.ok) {
+      const meta = await m.json();
+      const dl = meta['@microsoft.graph.downloadUrl'];
+      if (dl) {
+        const r = await fetch(dl, { cache: 'no-store' });
+        if (r.ok) return { ok: true, data: await r.json() };
+        why = 'download ' + r.status;
+      } else why = 'no downloadUrl';
+    } else {
+      why = 'meta ' + m.status;
+      if (m.status === 404) return { ok: false, status: 404, why };
+    }
+  } catch (e) { why = 'meta/download ' + (e && e.message); }
+  try {
+    const res = await fetch(base + ':/content', { headers: { Authorization: 'Bearer ' + t } });
+    if (res.ok) return { ok: true, data: await res.json() };
+    return { ok: false, status: res.status, why: why + ' / content ' + res.status };
+  } catch (e) {
+    return { ok: false, status: 0, why: why + ' / content ' + (e && e.message) };
   }
-  const facts = await res.json();
+}
+
+async function loadFacts() {
+  const got = await fetchMastersJson('dashboard_facts.json');
+  if (!got.ok) {
+    console.error('[facts] 取得失敗', got);
+    throw new Error(got.status === 404
+      ? 'dashboard_facts.json が SharedMasters にありません。手動アップロード必要'
+      : 'dashboard_facts.json を読み込めませんでした（' + got.why + '）。ページを再読み込みしてください');
+  }
+  const facts = got.data;
   RAW.rows = facts.rows || [];
   RAW.order_rows = facts.order_rows || [];
   RAW.build_meta = facts.build_meta || {};
@@ -7981,14 +8014,12 @@ async function loadVisits() {
   if (_visitsLoading) return _visitsLoading;
   _visitsLoading = (async () => {
     try {
-      const t = await getToken();
-      const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_visits.json:/content`;
-      const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
-      if (!res.ok) {
-        console.warn('[visits] dashboard_visits.json が見つかりません (Actionsを未実行の可能性)');
+      const got = await fetchMastersJson('dashboard_visits.json');
+      if (!got.ok) {
+        console.warn('[visits] dashboard_visits.json を読み込めません', got);
         return;
       }
-      const data = await res.json();
+      const data = got.data;
       RAW.daily_reports = data.daily_reports || [];
       RAW.web_logs      = data.web_logs      || [];
       RAW.web_readers   = data.web_readers   || [];
