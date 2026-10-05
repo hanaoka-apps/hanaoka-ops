@@ -77,6 +77,12 @@
   }
   .today-btn:hover { background: var(--indigo-soft); }
 
+  .prep-toggle {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+    font-size: 12.5px; font-weight: 700; color: #5a6080; background: #fff; box-shadow: var(--shadow); border-radius: 9px; padding: 7px 12px;
+  }
+  .prep-toggle input { accent-color: var(--navy); width: 15px; height: 15px; margin: 0; }
+  .prep-toggle + .view-toggle { margin-left: 0; }
   .view-toggle { display: inline-flex; gap: 2px; margin-left: auto; background: #fff; box-shadow: var(--shadow); border-radius: 9px; padding: 3px; }
   .view-toggle-btn {
     border: none; background: none; color: var(--text-sub); cursor: pointer;
@@ -123,6 +129,9 @@
   .list-view { overflow-x: auto; }
   .list-table { min-width: 760px; }
   .list-header-row, .list-row { display: grid; grid-template-columns: 88px repeat(3, 1fr); }
+  /* 既定では「準備・作業」列を出さない(トグルで表示) */
+  .list-view.no-prep .list-header-row, .list-view.no-prep .list-row { grid-template-columns: 88px repeat(2, 1fr); }
+  .list-view.no-prep .list-col.sub, .list-view.no-prep .list-header-row > div:nth-child(4) { display: none; }
   .list-header-row { position: sticky; top: 0; background: #f8f9fc; }
   .list-header-row > div { padding: 10px 12px; font-size: 11.5px; font-weight: 700; color: var(--text-sub); }
   .list-row { border-bottom: 1px solid var(--border); }
@@ -194,7 +203,7 @@
     .topbar { position: static; padding: 14px 20px; }
     .content { padding: 20px 16px 48px; }
     .month-nav .month-label { min-width: 100px; font-size: 16px; }
-    .view-toggle, .cal-grid, .list-view { display: none !important; }
+    .view-toggle, .prep-toggle, .cal-grid, .list-view { display: none !important; }
     .cat-filter { display: flex; }
     .agenda { display: block; }
   }
@@ -222,6 +231,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button type="button" class="today-btn" id="todayBtn">今月</button>
+        <label class="prep-toggle" title="総務の作業ステップ(資料完成・各部提出・送金確認など)も表示します"><input type="checkbox" id="prepToggle"> 準備・作業も表示</label>
         <div class="view-toggle" id="viewToggle">
           <button type="button" class="view-toggle-btn" data-view="calendar">カレンダー</button>
           <button type="button" class="view-toggle-btn is-active" data-view="list">一覧</button>
@@ -239,7 +249,8 @@
 
       <!-- スマホ用（820px以下だけ表示。中身は renderAgenda が作る） -->
       <div class="cat-filter" id="catFilter" role="group" aria-label="表示するカテゴリ">
-        <button type="button" class="cat-chip is-active" data-filter="all">すべて</button>
+        <button type="button" class="cat-chip is-active" data-filter="core">標準</button>
+        <button type="button" class="cat-chip" data-filter="all">すべて</button>
         <button type="button" class="cat-chip" data-filter="irregular"><span class="cat-dot" data-cat="irregular"></span>お知らせ</button>
         <button type="button" class="cat-chip" data-filter="main"><span class="cat-dot" data-cat="main"></span>定例・決済</button>
         <button type="button" class="cat-chip" data-filter="sub"><span class="cat-dot" data-cat="sub"></span>準備・作業</button>
@@ -248,7 +259,7 @@
         <div class="empty-state">サインインすると表示されます</div>
       </div>
 
-      <div class="list-view" id="listView">
+      <div class="list-view no-prep" id="listView">
         <div class="list-table">
           <div class="list-header-row">
             <div>日付</div><div>お知らせ</div><div>定例・決済</div><div>準備・作業</div>
@@ -291,9 +302,14 @@ let viewYear, viewMonth; // viewMonth: 0-11
 let viewMode = 'list'; // 'calendar' | 'list'(既定は縦型の一覧)
 let currentByDate = null; // 直近取得分。ビュー切替時に再取得しないためのキャッシュ
 // スマホ用カード表示の絞り込み('all' | 'irregular' | 'main' | 'sub')。この端末に覚えておく
-const AGENDA_FILTER_KEY = 'hanaoka.schedule.filter.v1';
-let agendaFilter = 'all';
-try { agendaFilter = localStorage.getItem(AGENDA_FILTER_KEY) || 'all'; } catch (_) {}
+// 'core' = お知らせ+定例・決済(既定。準備・作業は総務の作業ステップなので必要な人だけ見る)
+const AGENDA_FILTER_KEY = 'hanaoka.schedule.filter.v2';
+let agendaFilter = 'core';
+try { agendaFilter = localStorage.getItem(AGENDA_FILTER_KEY) || 'core'; } catch (_) {}
+// PC表示で「準備・作業」も出すか(既定はオフ)。この端末に覚えておく
+const SHOW_PREP_KEY = 'hanaoka.schedule.showPrep.v1';
+let showPrep = false;
+try { showPrep = localStorage.getItem(SHOW_PREP_KEY) === '1'; } catch (_) {}
 let agendaShowPast = false; // 今月の今日より前の日を出すか(月を変えたら戻す)
 
 function escapeHtml(s) {
@@ -320,6 +336,16 @@ async function initAuth() {
     document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.toggle('is-active', b === btn));
     document.getElementById('calGrid').hidden = viewMode !== 'calendar';
     document.getElementById('listView').hidden = viewMode !== 'list';
+    if (currentByDate) renderCurrentView();
+  });
+  const prepToggle = document.getElementById('prepToggle');
+  const applyPrep = () => document.getElementById('listView').classList.toggle('no-prep', !showPrep);
+  prepToggle.checked = showPrep;
+  applyPrep();
+  prepToggle.addEventListener('change', () => {
+    showPrep = prepToggle.checked;
+    try { localStorage.setItem(SHOW_PREP_KEY, showPrep ? '1' : '0'); } catch (_) {}
+    applyPrep();
     if (currentByDate) renderCurrentView();
   });
   const catFilter = document.getElementById('catFilter');
@@ -507,7 +533,7 @@ function renderAgenda(byDate) {
     const dStr = ymd(d);
     const evs = (byDate[dStr] || [])
       .map(ev => ({ ev, cat: categorize(ev) }))
-      .filter(x => agendaFilter === 'all' || x.cat === agendaFilter);
+      .filter(x => agendaFilter === 'all' || (agendaFilter === 'core' ? x.cat !== 'sub' : x.cat === agendaFilter));
     if (evs.length) days.push({ d, dStr, evs });
   }
   const past = agendaShowPast ? [] : days.filter(x => x.dStr < todayStr);
@@ -516,7 +542,7 @@ function renderAgenda(byDate) {
     ? `<button type="button" class="agenda-past">${past[0].d.getMonth() + 1}/${past[0].d.getDate()}〜${past[past.length - 1].d.getMonth() + 1}/${past[past.length - 1].d.getDate()} の予定（${past.length}日）を表示</button>`
     : '';
   if (!shown.length) {
-    const msg = agendaFilter === 'all' ? 'この月の予定はありません' : `この月の「${AGENDA_CAT_LABEL[agendaFilter]}」はありません`;
+    const msg = (agendaFilter === 'all' || agendaFilter === 'core') ? 'この月の予定はありません' : `この月の「${AGENDA_CAT_LABEL[agendaFilter]}」はありません`;
     el.innerHTML = pastHtml + `<div class="empty-state">${past.length ? '今日以降の予定はありません' : msg}</div>`;
     return;
   }
@@ -548,7 +574,7 @@ function renderGridView(byDate) {
     const dow = d.getDay();
     const dStr = ymd(d);
     const isToday = dStr === todayStr;
-    const dayEvents = byDate[dStr] || [];
+    const dayEvents = (byDate[dStr] || []).filter(ev => showPrep || categorize(ev) !== 'sub');
     const classes = ['cal-cell'];
     if (!inMonth) classes.push('pad');
     if (dow === 0 || dow === 6) classes.push('weekend');
