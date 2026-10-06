@@ -88,6 +88,12 @@ section{margin-bottom:30px}
 .act .due{text-align:right;font-size:12.5px;color:var(--ink2)}
 .act .due strong{display:block;font-size:14px;color:var(--ink)}
 .u .short{color:var(--urgent)} .u .runway i{background:var(--urgent)}
+.act.o .short{color:var(--ok)} .act.o .runway i{background:var(--ok)}
+.pill.p-plan{background:#e6f0fb;color:#1f5fa8}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.seg button{font:inherit;font-size:12.5px;padding:6px 12px;border:none;background:var(--paper);color:var(--ink2);cursor:pointer}
+.seg button.on{background:var(--ink);color:#fff}
+.seg button:disabled{opacity:.4;cursor:not-allowed}
 .w .short{color:var(--warn)}   .w .runway i{background:var(--warn)}
 .c .short{color:var(--ink2)}   .c .runway i{background:#9aa8b5}
 
@@ -314,6 +320,7 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
       <h2>月別の状況</h2>
       <span class="note" id="histViewNote"></span>
       <span class="spacer"></span>
+      <span class="seg noprint"><button type="button" id="histViewClose" class="on">締め時点</button><button type="button" id="histViewData">データ取得日時点</button></span>
       <label class="note noprint"><input type="checkbox" id="histAlertOnly" checked> 対応が必要な方（至急・要対応）だけ</label>
       <button class="btn dark noprint" id="copyHistBtn">📋 画像コピー</button>
       <div class="month-stepper noprint">
@@ -488,7 +495,7 @@ function afterText(x){
   if(x.afterTaken>0) parts.push(x.resolved
     ? `${dd?fmt(dd).slice(5):""}までに${x.afterTaken}日取得 → 解消`
     : `${dd?fmt(dd).slice(5):""}までに${x.afterTaken}日取得`);
-  if(x.afterPlan>0) parts.push(`予定 ${x.afterPlan}日${!x.resolved&&x.afterTaken+x.afterPlan>=x.short?"（取れば達成）":""}`);
+  if(x.afterPlan>0) parts.push(`申請済みの予定 ${x.afterPlan}日${!x.resolved&&x.afterTaken+x.afterPlan>=x.short?" → 解消予定":""}`);
   return `<small class="after" title="基準日より後の取得・予定（締め時点の判定には含めていません）">基準日後：${parts.join("／")}</small>`;
 }
 function dateMemo(asof){ const dd=dataDate(); return `基準日（締め）${fmt(asof)}時点`+(dd?`／データ取得日 ${fmt(dd)}`:""); }
@@ -525,7 +532,8 @@ function render(){
       const gone=Math.max(1.5,Math.min(100,((x.span-x.days)/x.span)*100));
       const streak=consecutiveMonths(x.code,asof);
       const streakTag=(streak>=2?` <span class="pill p-w" title="過去の履歴で連続してアラート対象">${streak}ヶ月連続</span>`:"")+
-        (x.resolved?` <span class="pill p-o" title="基準日後、データ取得日までに不足分を取得済み">解消済み</span>`:"");
+        (x.resolved?` <span class="pill p-o" title="基準日後、データ取得日までに不足分を取得済み">解消済み</span>`
+          :(x.afterTaken+x.afterPlan>=x.short&&x.afterPlan>0?` <span class="pill p-plan" title="申請済みの予定を含めると不足分を満たす">解消予定（申請済み）</span>`:""));
       return `<div class="act ${x.cls}">
         <div class="who">${esc(x.name)}${streakTag}<small>${esc(x.dept)}</small></div>
         <div class="short num">${x.short}<small>日 不足</small></div>
@@ -624,38 +632,67 @@ function stepHistMonth(delta){
   $("#histMonthSel").value=months[idx];
   renderHistoryMonth();
 }
+/** 締め後の動き：解消済み（取得して不足を満たした）／解消予定（申請済みの予定を含めると満たす）／未解消 */
+function followState(short, taken, plan){
+  if(!(short>0)) return null;
+  if(taken>=short) return {k:"解消済み", cls:"p-o"};
+  if(taken+plan>=short) return {k:"解消予定（申請済み）", cls:"p-plan"};
+  return {k:"未解消", cls:"p-u"};
+}
+let HIST_VIEW="close"; // close＝締め時点／data＝データ取得日時点
 function renderHistoryMonth(){
   updateHistStepperButtons();
   const mk=$("#histMonthSel").value;
   // 退職者は義務の管理対象外（古い保存データに含まれていることがあるため除く）
   const all=HISTORY.filter(h=>h.年月===mk&&h.部署!=="退職者");
+  const dd=(all.find(h=>h.データ取得日)||{}).データ取得日||"";
+  // データ取得日のない履歴（以前の版で保存）は締め時点だけ
+  const viewBtn=$("#histViewData");
+  viewBtn.disabled=!dd;
+  viewBtn.title=dd?`データ取得日 ${dd} 時点の取得を反映して表示`:"この月の履歴はデータ取得日なしで保存されています。CSVを読み込み直して「今月分を履歴に保存」すると見られます";
+  if(!dd) HIST_VIEW="close";
+  $("#histViewClose").classList.toggle("on",HIST_VIEW==="close");
+  viewBtn.classList.toggle("on",HIST_VIEW==="data");
+  const atData=HIST_VIEW==="data";
+  // データ取得日時点：締め後の取得を足し、残り日数はデータ取得日から数える
+  const ddDate=dd?new Date(dd.replace(/\//g,"-")+"T00:00:00"):null;
+  const view=h=>{
+    const ta=h.締め後取得||0, pl=h.予定||0, st=followState(h.不足,ta,pl);
+    if(!atData) return {...h, st, ta, pl};
+    const due=h.期限?new Date(h.期限.replace(/\//g,"-")+"T00:00:00"):null;
+    return {...h, st, ta, pl, 取得:Math.round(((h.取得||0)+ta)*10)/10, 不足:Math.max(0,Math.round(((h.不足||0)-ta)*10)/10),
+      期限まで日数:due&&ddDate?Math.round((due-ddDate)/DAY):h.期限まで日数};
+  };
   const alertOnly=$("#histAlertOnly").checked;
-  // 対応が必要な方だけ：今の状況の「対応が必要な方」と同じく履行期限が近い順。全員表示：部署・氏名順
-  const rows=(alertOnly?all.filter(h=>h.状況==="至急"||h.状況==="要対応"):all).sort(alertOnly
+  // 対応が必要な方だけ（締め時点で至急・要対応だった方）：履行期限が近い順。全員表示：部署・氏名順
+  const rows=(alertOnly?all.filter(h=>h.状況==="至急"||h.状況==="要対応"):all).map(view).sort(alertOnly
     ?(a,b)=>(a.期限まで日数??9999)-(b.期限まで日数??9999)
     :(a,b)=>(a.部署||"").localeCompare(b.部署,"ja")||String(a.氏名).localeCompare(String(b.氏名),"ja"));
+  const pillOf=st=>st?` <span class="pill ${st.cls}">${st.k}</span>`:"";
   // 対応が必要な方だけのときは、今の状況と同じ横棒のカードで出す（画像コピーもこのカード）
   $("#histActs").classList.toggle("hide",!alertOnly);
   $("#histTableWrap").classList.toggle("hide",alertOnly);
   if(alertOnly){
     const SPAN=365;
     $("#histActs").innerHTML = rows.length ? rows.map(h=>{
-      const days=h.期限まで日数??0, cls=h.状況==="至急"?"u":"w";
+      const days=h.期限まで日数??0;
+      const cls=atData&&h.st&&h.st.k==="解消済み"?"o":(h.状況==="至急"?"u":"w");
       const gone=Math.max(1.5,Math.min(100,((SPAN-days)/SPAN)*100));
-      const after=[h.締め後取得>0?`${h.データ取得日?h.データ取得日.slice(5):""}までに${h.締め後取得}日取得${h.解消?" → 解消":""}`:"", h.予定>0?`予定 ${h.予定}日`:""].filter(Boolean).join("／");
+      const after=[h.ta>0?`${dd?dd.slice(5):""}までに${h.ta}日取得`:"", h.pl>0?`申請済みの予定 ${h.pl}日`:""].filter(Boolean).join("／");
       return `<div class="act ${cls}">
-        <div class="who">${esc(h.氏名)}${h.解消?' <span class="pill p-o">解消済み</span>':""}<small>${esc(h.部署)}</small></div>
+        <div class="who">${esc(h.氏名)}${pillOf(h.st)}<small>${esc(h.部署)}</small></div>
         <div class="short num">${h.不足??""}<small>日 不足</small></div>
-        <div><div class="runway"><i style="width:${gone}%"></i></div>${after?`<small class="after">基準日後：${esc(after)}</small>`:""}</div>
+        <div><div class="runway"><i style="width:${gone}%"></i></div>${after?`<small class="after">${atData?"締め後":"基準日後"}：${esc(after)}</small>`:""}</div>
         <div class="due"><strong class="num">残り ${days} 日</strong>${esc(h.期限||"")} まで</div>
       </div>`;
     }).join("") : `<div class="act" style="grid-template-columns:1fr"><div class="dim">${all.length?"この月に対応が必要な方（至急・要対応）はいません。":"データなし"}</div></div>`;
   }
   const cnt=s=>all.filter(h=>h.状況===s).length;
-  const memo=all.length?`基準日（締め）${all[0].基準日}時点${all[0].データ取得日?`／データ取得日 ${all[0].データ取得日}`:""}`:"";
-  const resolvedN=all.filter(h=>h.解消).length;
+  const states=all.filter(h=>h.状況==="至急"||h.状況==="要対応").map(h=>followState(h.不足,h.締め後取得||0,h.予定||0)).filter(Boolean);
+  const nRes=states.filter(s=>s.k==="解消済み").length, nPlan=states.filter(s=>s.k.startsWith("解消予定")).length;
+  const memo=all.length?(atData?`データ取得日 ${dd}時点（基準日（締め）${all[0].基準日}の対象者）`:`基準日（締め）${all[0].基準日}時点${dd?`／データ取得日 ${dd}`:""}`):"";
   $("#histViewNote").textContent = all.length
-    ? `${mk}　${memo}　義務対象者 ${all.length}名（至急 ${cnt("至急")}名・要対応 ${cnt("要対応")}名・達成 ${cnt("達成")}名${resolvedN?`／うち解消済み ${resolvedN}名`:""}）`
+    ? `${mk}　${memo}　義務対象者 ${all.length}名（至急 ${cnt("至急")}名・要対応 ${cnt("要対応")}名・達成 ${cnt("達成")}名${dd&&(nRes||nPlan)?`／至急・要対応のうち締め後に解消済み ${nRes}名・解消予定 ${nPlan}名`:""}）`
     : `${mk} 分のデータがありません`;
   document.querySelectorAll("#heatmapTable th.collabel").forEach(th=>th.classList.toggle("sel",th.dataset.month===mk));
   const P={"至急":"p-u","要対応":"p-w","計画":"p-n","達成":"p-o"};
@@ -666,7 +703,7 @@ function renderHistoryMonth(){
     <td class="r num">${h.取得??""}</td>
     <td class="r num${h.不足>0?" neg":""}">${h.不足??""}</td>
     <td class="r num">${h.期限まで日数??""}</td>
-    <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span>${h.解消?' <span class="pill p-o" title="締め後、データ取得日までに取得して解消">解消済み</span>':""}</td>
+    <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span>${pillOf(h.st)}</td>
   </tr>`).join("") : `<tr><td colspan="8" class="dim">${all.length&&alertOnly?"この月に対応が必要な方（至急・要対応）はいません":"データなし"}</td></tr>`;
 }
 const STATUS_COLOR_VAR={"至急":"--urgent","要対応":"--warn","達成":"--ok"};
@@ -720,6 +757,8 @@ $("#histPrevBtn").addEventListener("click",()=>stepHistMonth(-1));
 $("#histNextBtn").addEventListener("click",()=>stepHistMonth(1));
 $("#histMonthSel").addEventListener("change",renderHistoryMonth);
 $("#histAlertOnly").addEventListener("change",renderHistoryMonth);
+$("#histViewClose").addEventListener("click",()=>{ HIST_VIEW="close"; renderHistoryMonth(); });
+$("#histViewData").addEventListener("click",()=>{ HIST_VIEW="data"; renderHistoryMonth(); });
 // 推移グラフの月の見出しをクリックすると、その月の状況を下の一覧に出す
 $("#heatmapTable").addEventListener("click",e=>{
   const th=e.target.closest("th.collabel"); if(!th) return;
