@@ -4043,19 +4043,27 @@ async function submitNewCase() {
     // ★同時登録によるCaseId重複を検査し、必要なら自分の番号を振り直す（イベント作成より前に実施）
     caseId = await ensureUniqueCaseId(_created && _created.id, caseId);
     // 初期イベント自動登録
-    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, {
-      fields: {
-        Title: 'EV-' + Date.now(),
-        CaseId: caseId,
-        EventType: 'コメント',
-        EventDate: now,
-        RelationType: '社内',
-        Summary: `【${ep}】で受付。手動登録。`,
-      }
-    });
+    //   手入力（受信トレイ・部署回覧を経由しない）ときだけ SortKubun='案件管理' を付ける。
+    //   Power Automate「案件割り振り通知」は「案件管理に仕訳されたイベント」で動くので、
+    //   これで手入力の新規案件も担当者に通知される。受信から登録したときは元の受信イベントで
+    //   通知されるので付けない（付けると通知が2回飛ぶ）。
+    const sourceId = regSourceTriageId;
+    const initFields = {
+      Title: 'EV-' + Date.now(),
+      CaseId: caseId,
+      EventType: 'コメント',
+      EventDate: now,
+      RelationType: '社内',
+      Summary: `【${ep}】で受付。手動登録。`,
+    };
+    if (!sourceId) {
+      initFields.SortKubun = '案件管理';
+      initFields.RelationName = fields.CompanyName;   // 通知の本文に出す
+      initFields.CaseName = fields.Title;
+    }
+    await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: initFields });
     // 1次仕訳から呼び出された場合、元FAXイベントを「案件管理」に確定させる
     // （モーダルを閉じただけのキャンセル時には触らない＝未仕訳一覧に残る）
-    const sourceId = regSourceTriageId;
     if (sourceId) {
       try {
         await graphPatch(
@@ -4064,6 +4072,12 @@ async function submitNewCase() {
         );
         // triage のメモリ側からも除外
         triageItems = triageItems.filter(x => x._spId !== sourceId);
+        // 部署回覧から登録した場合は、部署回覧の一覧からも外す
+        if (faxViewItems.some(x => x._spId === sourceId)) {
+          faxViewItems = faxViewItems.filter(x => x._spId !== sourceId);
+          invalidateFaxViewCache();
+          if (currentFaxViewId === sourceId) backToFaxList();
+        }
         if (currentTriageId === sourceId) {
           currentTriageId = null;
           const detail = document.getElementById('triageDetail');
@@ -5369,8 +5383,9 @@ async function faxViewLinkToCase() {
     }
   } else {
     // 新規案件登録モーダルを開く（triage側と同じ仕組みを使う）
-    pendingTriageEventId = e._spId;
-    openRegModal();
+    //   元のイベントIDを渡すと、登録成功後にそのイベントが「案件管理」＋CaseId に書き換わる
+    //   （以前は使われない変数に入れていたため、元のFAXが部署回覧に残ったままだった）
+    openRegModal(e._spId);
     // プリフィル
     if (e.RelationName) document.getElementById('regCompanyName').value = e.RelationName;
     if (e.CaseName) {
