@@ -325,6 +325,20 @@
   .dept-layout { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 20px; align-items: center; }
   .dept-layout .achieve-row { margin-bottom: 0; }
   .dept-layout .bar-wrap { margin-bottom: 0; }
+  /* 仕入(日別仕入金額)カード */
+  .purchase-layout { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 24px; align-items: start; }
+  .purchase-month { background: var(--cyan-soft); border-radius: 10px; padding: 14px 16px; }
+  .purchase-month-label { font-size: 12px; font-weight: 700; color: var(--text-sub); display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .purchase-total { font-size: 28px; font-weight: 800; line-height: 1.2; margin-top: 4px; font-feature-settings: "tnum"; overflow-wrap: anywhere; }
+  .purchase-total small { font-size: 13px; font-weight: 600; opacity: .7; margin-left: 3px; }
+  .zone-list { display: grid; gap: 8px; margin-top: 14px; }
+  .zone-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; background: #f8f9fc; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .zone-row b { font-feature-settings: "tnum"; font-weight: 800; }
+  .purchase-note { font-size: 11.5px; color: var(--text-sub); margin-top: 12px; line-height: 1.6; }
+  .purchase-chart { position: relative; height: 270px; min-width: 0; overflow: hidden; }
+  .purchase-chart canvas { max-width: 100%; }
+  @media (max-width: 1100px) { .purchase-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
+  @media (max-width: 640px) { .purchase-chart { height: 230px; } .purchase-total { font-size: 24px; } }
   @media (max-width: 1100px) { .dept-layout { grid-template-columns: minmax(0, 1fr); } .dept-layout .achieve-row { margin-bottom: 18px; } }
 
   /* 部門別 詳細数字 */
@@ -566,6 +580,24 @@
       <div class="card" style="margin-top:20px">
         <div class="detail-box-title">部門別 詳細数字</div>
         <div id="deptCombinedTableWrap"><div class="empty-state">サインインすると表示されます</div></div>
+      </div>
+
+      <div class="topic-head" style="margin-top:34px">
+        <div class="app-group-title">仕入<span>日別仕入金額</span></div>
+        <a class="card-link" href="fujin/FUJIN.html#tab=value_analysis">
+          FUJINで詳しく見る
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+        </a>
+      </div>
+      <div class="card" id="purchaseCard">
+        <div class="card-head">
+          <div>
+            <div class="card-kicker">受入明細・仕入区分のみ</div>
+            <h2>日別仕入金額</h2>
+          </div>
+          <span class="pill" id="purchasePill">棒=日別 / 破線=月内累計</span>
+        </div>
+        <div id="purchaseBody"><div class="empty-state">サインインすると表示されます</div></div>
       </div>
     </section>
 
@@ -845,6 +877,7 @@ function showSignedOutState() {
   document.getElementById('taskList').innerHTML = msg;
   document.getElementById('announceList').innerHTML = msg;
   setStatusMessage('サインインすると表示されます', false);
+  setPurchaseMessage('サインインすると表示されます', false);
 }
 
 async function onSignedIn() {
@@ -858,6 +891,10 @@ async function onSignedIn() {
   loadKpis().catch(e => {
     console.error('会社の現在地の取得失敗', e);
     setStatusMessage('数字を取得できませんでした', true);
+  });
+  loadPurchase().catch(e => {
+    console.error('仕入カードの取得失敗', e);
+    setPurchaseMessage('仕入の数字を取得できませんでした', true);
   });
 }
 
@@ -1552,6 +1589,130 @@ function fetchKpiFacts(urls, token) {
       fetchKpiFactsInline(urls, token).then(resolve, reject);
     };
     worker.postMessage({ urls, token });
+  });
+}
+
+// ============================================================
+// 仕入カード(日別仕入金額)
+//   FUJINの画面は経由せず、SharedMasters の hub_purchase_facts.json を直接読む。
+//   このファイルは FUJIN の日次ビルドが、value_analysis.json から日別仕入だけを抜き出して
+//   置く(scripts/build_hub_purchase_facts.py)。value_analysis.json は数百MBになることが
+//   あるため、HUBは読まない。
+// ============================================================
+function setPurchaseMessage(msg, isError) {
+  destroyChart('purchaseChart');
+  document.getElementById('purchaseBody').innerHTML =
+    `<div class="empty-state${isError ? ' error' : ''}">${escapeHtml(msg)}</div>`;
+}
+
+async function loadPurchase() {
+  const t = await getToken();
+  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/hub_purchase_facts.json:/content`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t }, cache: 'no-store' });
+  if (res.status === 404) {
+    setPurchaseMessage('仕入のデータは、FUJINの次回の自動更新(毎日 3:30・16:30)のあとに表示されます');
+    return;
+  }
+  if (!res.ok) throw new Error('hub_purchase_facts.json が取得できません: HTTP ' + res.status);
+  renderPurchase(await res.json());
+}
+
+const ymLabel = ym => `${String(ym).slice(0, 4)}年${Number(String(ym).slice(4))}月`;
+const fmtPurchaseMan = yen => (Math.round(yen / 100) / 100).toLocaleString('ja-JP', { maximumFractionDigits: 1 });
+
+function renderPurchase(f) {
+  const body = document.getElementById('purchaseBody');
+  const keys = Object.keys(f.months || {}).sort();
+  const ym = keys[keys.length - 1];
+  const days = ym ? ((f.months[ym] || {}).days || {}) : {};
+  const entries = Object.entries(days).sort(([a], [b]) => a.localeCompare(b));
+  const updated = f.updated_at || '基準日未取得';
+  if (!entries.length) {
+    setPurchaseMessage(f.status === 'blocked'
+      ? '仕入明細の列を確認できず、日別仕入を取得できません。'
+      : `日別仕入のデータはまだありません。（データ基準：${updated}）`);
+    return;
+  }
+
+  let total = 0;
+  const cumulative = entries.map(([, row]) => (total += Number(row.total) || 0));
+  const daily = entries.map(([, row]) => Number(row.total) || 0);
+  const lastDate = entries[entries.length - 1][0];
+  const lastDay = Number(lastDate.slice(8, 10));
+
+  // 前月の同じ日までの累計と比べる(仕入は増減どちらが良いとは言えないので、色は中立)
+  let prevHtml = '';
+  const prevKey = keys.length > 1 ? keys[keys.length - 2] : null;
+  if (prevKey) {
+    let prevSum = 0;
+    for (const [d, row] of Object.entries((f.months[prevKey] || {}).days || {})) {
+      if (Number(d.slice(8, 10)) <= lastDay) prevSum += Number(row.total) || 0;
+    }
+    if (prevSum > 0) {
+      const pct = (total - prevSum) / prevSum * 100;
+      prevHtml = `<span class="pill">前月同日比 ${pct >= 0 ? '▲' : '▼'}${Math.abs(pct).toFixed(1)}%</span>`;
+    }
+  }
+
+  // 工場別の月計
+  const zones = new Map();
+  let unclassified = 0;
+  for (const [, row] of entries) {
+    for (const [z, amt] of Object.entries(row.zones || {})) zones.set(z, (zones.get(z) || 0) + (Number(amt) || 0));
+    unclassified += Number(row.unclassified) || 0;
+  }
+  const zoneHtml = [...zones].sort(([a], [b]) => a.localeCompare(b, 'ja'))
+    .map(([z, amt]) => `<div class="zone-row"><span>${escapeHtml(z)}</span><b>${formatYen(amt)}</b></div>`).join('')
+    + (unclassified ? `<div class="zone-row"><span>工場未分類</span><b>${formatYen(unclassified)}</b></div>` : '');
+
+  const monthly = f.months[ym].monthly_purchase;
+  const partial = f.daily_status === 'partial';
+  const reconcile = monthly == null ? '月次仕入は未取得です。'
+    : total === Number(monthly) ? '日別合計と月次仕入は一致しています。'
+    : `日別合計と月次仕入に ${formatYen(total - Number(monthly))} の差があります(確定月は保存済みの月次値を優先します)。`;
+
+  body.innerHTML = `
+    <div class="purchase-layout">
+      <div>
+        <div class="purchase-month">
+          <div class="purchase-month-label"><span>${ymLabel(ym)} 月計${partial ? '（一部未取得）' : ''}</span>${prevHtml}</div>
+          <div class="purchase-total">${fmtPurchaseMan(total)}<small>万円</small></div>
+          <div class="purchase-note" style="margin-top:4px">${formatYen(total)}（${Number(lastDate.slice(5, 7))}/${lastDay} まで）</div>
+        </div>
+        <div class="zone-list">${zoneHtml || '<div class="zone-row"><span>工場別内訳</span><b>未取得</b></div>'}</div>
+        <div class="purchase-note">${escapeHtml(reconcile)}${partial ? '<br>一部日付を日別集計できていません。' : ''}<br>データ基準：${escapeHtml(updated)}</div>
+      </div>
+      <div class="purchase-chart"><canvas id="purchaseChart"></canvas></div>
+    </div>`;
+
+  destroyChart('purchaseChart');
+  const el = document.getElementById('purchaseChart');
+  if (!el || !setupChart()) return;
+  const labels = entries.map(([d]) => `${Number(d.slice(8, 10))}日`);
+  const manTick = v => (v / 10000).toLocaleString('ja-JP');
+  CHARTS.purchaseChart = new Chart(el, {
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar', label: '日別仕入', data: daily, backgroundColor: '#1fa2e6', borderRadius: 3, yAxisID: 'y', order: 2, maxBarThickness: 28 },
+        { type: 'line', label: '月内累計', data: cumulative, borderColor: '#23268f', backgroundColor: '#23268f', borderDash: [6, 4], pointRadius: 3, pointBackgroundColor: '#fff', pointBorderColor: '#23268f', pointBorderWidth: 2, tension: 0, yAxisID: 'y1', order: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y:  { position: 'left',  beginAtZero: true, title: { display: true, text: '日別(万円)' }, ticks: { callback: manTick } },
+        y1: { position: 'right', beginAtZero: true, title: { display: true, text: '累計(万円)' }, grid: { drawOnChartArea: false }, ticks: { callback: manTick } },
+      },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: { callbacks: {
+          title: items => entries[items[0].dataIndex][0],
+          label: c => `${c.dataset.label}　${formatYen(c.raw)}`,
+        } },
+      },
+    },
   });
 }
 

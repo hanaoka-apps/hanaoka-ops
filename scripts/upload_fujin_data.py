@@ -48,6 +48,7 @@ TARGETS = [
     (DATA / "work_instructions.json", "work_instructions.json"),  # 構成印刷(作業指示) (2026-06セキュリティ移行)
     (DATA / "orphan_items.json", "orphan_items.json"),  # 構成なし/登録漏れ/使用禁止品目(在庫探偵チップ) (2026-07セキュリティ移行)
     (DATA / "value_analysis.json", "value_analysis.json"),  # 付加価値分析（認証配信）
+    (DATA / "hub_purchase_facts.json", "hub_purchase_facts.json"),  # HUB「会社の現在地」仕入カード用の軽量版(日別仕入のみ)
 ]
 
 
