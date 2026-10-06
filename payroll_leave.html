@@ -54,6 +54,11 @@ h1{font-size:19px;font-weight:700;margin:0;letter-spacing:.02em}
 #drop .btn.solid{background:var(--ink);color:#fff;border-color:var(--ink)}
 #drop .btn.solid:hover{background:#243342}
 .hint{margin-top:18px;font-size:12.5px;color:var(--ink3);line-height:1.8}
+.rangememo{margin:18px auto 0;max-width:720px;text-align:left;font-size:13px;line-height:1.8;background:var(--sel);border:1px solid var(--rule);border-radius:8px;padding:10px 14px}
+.rangememo .rangeHint{font-weight:700;color:var(--ink)}
+table.heatmap th.collabel.clickable{cursor:pointer}
+table.heatmap th.collabel.clickable:hover{color:var(--ink)}
+table.heatmap th.collabel.sel{color:var(--ink);background:var(--sel);border-radius:4px}
 
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:1px;background:var(--rule);
   border:1px solid var(--rule);border-radius:5px;overflow:hidden;margin-bottom:26px}
@@ -207,6 +212,10 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
     </div>
     <input type="file" id="fFolder" webkitdirectory directory multiple class="hide">
     <input type="file" id="fFiles" accept=".csv" multiple class="hide">
+    <div class="rangememo">
+      <b>勤怠システムの出力範囲（備忘）</b>　<span class="rangeHint"></span><br>
+      <span class="dim">基準日の1年前の翌日〜基準日を指定します（各人の付与回が始まる日と、その後の取得日がすべて入るため）。短くすると「要確認」が出ます。前に広げるのは問題ありません。予定の有給も含めて見たい場合は、終わりの日を後ろに延ばします。</span>
+    </div>
     <div class="hint">
       勤怠システムから出力した「年次有給休暇管理簿」のCSVをそのまま使えます。文字コードは Shift-JIS / UTF-8 のどちらでも読み込めます。<br>
       CSVそのものはどこにも送信されません（このブラウザの中だけで処理）。「今月分を履歴に保存」を押した時だけ、集計結果（個人の状況・不足日数等）をSharePointに保存します。
@@ -272,7 +281,8 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
       取得日数は、履行期間（基準日から1年）内に取得した日を集計しています。どの付与回から消化されたかは年5日義務の判定に影響しません。<br>
       残日数はこの表では扱いません。年次有給休暇の有効期間は2年で3世代の付与が重なる期間があり、消化の充当先はCSVから判別できないためです。残日数は勤怠システムの画面でご確認ください。<br>
       「要確認」は、付与日数が10日以上でありながら、その付与回の取得実績がCSVに出力されていない方です。勤怠システムの画面で該当期間の取得日数をご確認ください。<br>
-      この表は期限管理のための資料です。労働基準法施行規則24条の7が定める年次有給休暇管理簿（時季・日数・基準日の記載、3年間保存）は別に必要です。
+      この表は期限管理のための資料です。労働基準法施行規則24条の7が定める年次有給休暇管理簿（時季・日数・基準日の記載、3年間保存）は別に必要です。<br>
+      勤怠システムの出力範囲（備忘）：<span class="rangeHint"></span>（基準日の1年前の翌日〜基準日。短いと「要確認」が出ます）
     </footer>
   </div>
 </div>
@@ -293,11 +303,13 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
     </div>
   </section>
 
-  <section>
+  <section id="histMonthSec">
     <div class="shead">
-      <h2>月別の一覧</h2>
+      <h2>月別の状況</h2>
       <span class="note" id="histViewNote"></span>
       <span class="spacer"></span>
+      <label class="note noprint"><input type="checkbox" id="histAlertOnly" checked> 対応が必要な方（至急・要対応）だけ</label>
+      <button class="btn dark noprint" id="copyHistBtn">📋 画像コピー</button>
       <div class="month-stepper noprint">
         <button id="histPrevBtn" type="button" aria-label="前月">◀</button>
         <select id="histMonthSel"></select>
@@ -584,8 +596,18 @@ function stepHistMonth(delta){
 function renderHistoryMonth(){
   updateHistStepperButtons();
   const mk=$("#histMonthSel").value;
-  const rows=HISTORY.filter(h=>h.年月===mk).sort((a,b)=>(a.部署||"").localeCompare(b.部署,"ja")||String(a.氏名).localeCompare(String(b.氏名),"ja"));
-  $("#histViewNote").textContent = rows.length ? `${mk} 基準日時点　義務対象者 ${rows.length}名` : `${mk} 分のデータがありません`;
+  const all=HISTORY.filter(h=>h.年月===mk);
+  const alertOnly=$("#histAlertOnly").checked;
+  const ORDER={"至急":0,"要対応":1,"計画":2,"達成":3};
+  // 対応が必要な方だけ：至急→要対応の順、期限が近い順。全員表示：部署・氏名順
+  const rows=(alertOnly?all.filter(h=>h.状況==="至急"||h.状況==="要対応"):all).sort(alertOnly
+    ?(a,b)=>(ORDER[a.状況]??9)-(ORDER[b.状況]??9)||(a.期限まで日数??9999)-(b.期限まで日数??9999)
+    :(a,b)=>(a.部署||"").localeCompare(b.部署,"ja")||String(a.氏名).localeCompare(String(b.氏名),"ja"));
+  const cnt=s=>all.filter(h=>h.状況===s).length;
+  $("#histViewNote").textContent = all.length
+    ? `${mk} 基準日時点　義務対象者 ${all.length}名（至急 ${cnt("至急")}名・要対応 ${cnt("要対応")}名・達成 ${cnt("達成")}名）`
+    : `${mk} 分のデータがありません`;
+  document.querySelectorAll("#heatmapTable th.collabel").forEach(th=>th.classList.toggle("sel",th.dataset.month===mk));
   const P={"至急":"p-u","要対応":"p-w","計画":"p-n","達成":"p-o"};
   $("#histTable tbody").innerHTML = rows.length ? rows.map(h=>`<tr>
     <td>${esc(h.部署)}</td><td class="nm">${esc(h.氏名)}</td>
@@ -595,7 +617,7 @@ function renderHistoryMonth(){
     <td class="r num${h.不足>0?" neg":""}">${h.不足??""}</td>
     <td class="r num">${h.期限まで日数??""}</td>
     <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span></td>
-  </tr>`).join("") : '<tr><td colspan="8" class="dim">データなし</td></tr>';
+  </tr>`).join("") : `<tr><td colspan="8" class="dim">${all.length&&alertOnly?"この月に対応が必要な方（至急・要対応）はいません":"データなし"}</td></tr>`;
 }
 const STATUS_COLOR_VAR={"至急":"--urgent","要対応":"--warn","達成":"--ok"};
 const MAX_HEATMAP_ROWS=25;
@@ -629,7 +651,7 @@ function renderAttentionHeatmap(){
   const t=$("#heatmapTable");
   if(!list.length || !months.length){ t.innerHTML=""; return; }
 
-  let thead="<thead><tr><th class=\"rowlabel\"></th>"+months.map(m=>`<th class="collabel">${m}</th>`).join("")+"</tr></thead>";
+  let thead="<thead><tr><th class=\"rowlabel\"></th>"+months.map(m=>`<th class="collabel clickable${m===$("#histMonthSel").value?" sel":""}" data-month="${m}" title="${m}の状況を下に表示">${m}</th>`).join("")+"</tr></thead>";
   let tbody="<tbody>"+list.map(p=>{
     const cells=months.map(m=>{
       const h=p.byMonth[m];
@@ -646,6 +668,14 @@ function renderAttentionHeatmap(){
 $("#histPrevBtn").addEventListener("click",()=>stepHistMonth(-1));
 $("#histNextBtn").addEventListener("click",()=>stepHistMonth(1));
 $("#histMonthSel").addEventListener("change",renderHistoryMonth);
+$("#histAlertOnly").addEventListener("change",renderHistoryMonth);
+// 推移グラフの月の見出しをクリックすると、その月の状況を下の一覧に出す
+$("#heatmapTable").addEventListener("click",e=>{
+  const th=e.target.closest("th.collabel"); if(!th) return;
+  $("#histMonthSel").value=th.dataset.month; renderHistoryMonth();
+  $("#histMonthSec").scrollIntoView({behavior:"smooth",block:"start"});
+});
+$("#copyHistBtn").addEventListener("click",()=>copyElementAsImage($("#histMonthSec"),$("#copyHistBtn")));
 $("#toggleHistView").addEventListener("click",()=>{
   const showingHist = !$("#historyView").classList.contains("hide");
   if(showingHist){
@@ -728,6 +758,13 @@ function defaultAsof(now) {
 }
 const today=defaultAsof(new Date());
 $("#asof").value=today.getFullYear()+"-"+D(today.getMonth()+1)+"-"+D(today.getDate());
+// 勤怠システムの出力範囲の備忘：基準日の1年前の翌日〜基準日
+function updateRangeHint(){
+  const a=asofDate(), from=new Date(a); from.setFullYear(from.getFullYear()-1); from.setDate(from.getDate()+1);
+  document.querySelectorAll(".rangeHint").forEach(el=>{ el.textContent=`${fmt(from)} 〜 ${fmt(a)}`; });
+}
+updateRangeHint();
+$("#asof").addEventListener("change",updateRangeHint);
 $("#pickFolder").onclick=()=>$("#fFolder").click();
 $("#pickFiles").onclick=()=>$("#fFiles").click();
 $("#fFolder").onchange=e=>load(e.target.files);
