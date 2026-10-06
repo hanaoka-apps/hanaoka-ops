@@ -54,9 +54,9 @@
     { t: 'group', id: 'apps', l: 'アプリ一覧', icon: P.apps, children: [
       { label: 'HANAOKA APPS' },
       { f: 'fujin/FUJIN.html',       l: 'FUJIN',            ic: logo('fujin/favicon-fujin.png', 38) },
+      { f: 'sales_dashboard.html',   l: 'Sales HUB',        ic: mark('favicon_sales.svg') },
       { f: 'case_management.html',   l: '案件管理',         ic: mark('favicon_case.svg') },
       { f: 'task_board.html',        l: 'タスク管理',       ic: mark('favicon_task.svg') },
-      { f: 'sales_dashboard.html',   l: 'Sales HUB', ic: mark('favicon_sales.svg') },
       { f: 'master_viewer.html',     l: 'マスタビューワー', ic: mark('favicon_master.svg') },
       { label: '外部アプリ' },
       { f: 'https://teams.microsoft.com', l: 'Teams', ext: true,
