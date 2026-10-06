@@ -1886,7 +1886,12 @@ function newProductSection(d, all) {
   const items = d.newProductItems, agg = d.newProducts;
   if (!items) return `<div class="read-sec">${title}<div class="read-note">特記新製品の登録を読み込めませんでした。</div></div>`;
   if (!items.length) return `<div class="read-sec">${title}<div class="read-note">登録された新製品はありません(登録は Sales HUB の設定から)。</div></div>`;
-  if (!agg) return `<div class="read-sec">${title}<div class="read-note">新製品の集計は、次回の自動更新(毎日 3:30・16:30)のあとに表示されます。</div></div>`;
+  if (!agg) {
+    const msg = d.npFull === 'loading' ? '新製品を集計しています…(全データから計算しているため、少し時間がかかります)'
+      : d.npFull === 'error' ? '新製品の集計を取得できませんでした。'
+      : '新製品の集計は、次回の自動更新(毎日 3:30・16:30)のあとに表示されます。';
+    return `<div class="read-sec">${title}<div class="read-note">${msg}</div></div>`;
+  }
   const tot = newProductTotal(items, agg);
   const cell = (label, val, cls) => `<div class="read-cell ${cls || ''}"><small>${label}</small><b>${val}</b></div>`;
   const row = (name, a, total) => `<div class="read-row${total ? ' total' : ''}"><div class="read-dept">${escapeHtml(name)}</div>`
@@ -1960,9 +1965,27 @@ function startSpeaking() {
   applySize();
   const setSize = n => { size = Math.min(2.6, Math.max(0.8, n)); applySize(); try { localStorage.setItem(SIZE_KEY, String(size)); } catch (_) {} };
   const close = () => { stopSpeaking(); modal.hidden = true; document.body.classList.remove('read-open'); };
-  document.getElementById('readModeBtn').addEventListener('click', () => {
+  document.getElementById('readModeBtn').addEventListener('click', async () => {
     if (!READ_DATA) return;
     renderReadMode(); modal.hidden = false; document.body.classList.add('read-open'); modal.scrollTop = 0;
+    // HUB用の軽量ファイルに小分類・大分類・品目コードの列がまだ無いあいだ(次の再集計まで)は、
+    // 読み上げモードを開いたときだけ、全量の dashboard_facts.json から新製品を集計する。
+    // 通常のHUB表示では重いので読まない
+    const d = READ_DATA;
+    if (d.newProducts === null && d.newProductItems && d.newProductItems.length && !d.npFull) {
+      d.npFull = 'loading'; renderReadMode();
+      try {
+        const t = await getToken();
+        const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/dashboard_facts.json:/content`;
+        const k = await fetchKpiFacts([url], t, d.newProductItems);
+        d.newProducts = k.newProducts;
+        d.npFull = 'done';
+      } catch (e) {
+        console.warn('[新製品] 全量データからの集計に失敗', e);
+        d.npFull = 'error';
+      }
+      renderReadMode();
+    }
   });
   document.getElementById('readClose').addEventListener('click', close);
   document.getElementById('readLarger').addEventListener('click', () => setSize(size + 0.15));
