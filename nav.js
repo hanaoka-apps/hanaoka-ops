@@ -192,9 +192,18 @@
     });
   }
 
+  function loadHubSidebar() {
+    if (document.getElementById('hubSidebar')) return;
+    var sc = document.createElement('script');
+    sc.src = 'hub_sidebar.js?v=20261006';
+    document.body.appendChild(sc);
+  }
+
   function build() {
     var g = currentGroup();
-    if (g.key === 'reserve') { buildSidebar(g); return; }
+    /* スケジュール系は HUB と同じ左メニュー（メニューの中身は hub_sidebar.js 1か所。
+       上の GROUPS.reserve は「どのページがこのグループか」の判定にだけ使う） */
+    if (g.key === 'reserve') { loadHubSidebar(); return; }
     // 支払管理は、新しい見た目（ap_theme.css）を読み込んだ画面だけサイドバーにする（読み込んでいない画面と case_management などは今までの上のタブ）
     // メニューに載せていない画面（仕入突合・支払確認・承認。ホーム・手入力からリンクで開く）も
     // サイドバーにする。どの項目も光らない（ap_theme.css は上のタブを隠すので、そうしないとメニューが無くなる）
