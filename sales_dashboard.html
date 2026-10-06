@@ -7844,8 +7844,14 @@ async function init() {
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
   const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    account = accounts[0];
+  // 会社のアカウントを優先（個人の Microsoft アカウント(hotmail等)は SharePoint を読めない）
+  const companyAccounts = accounts.filter(isCompanyAccount);
+  if (accounts.length > 0 && companyAccounts.length === 0) {
+    showLoginError('会社以外のアカウント（' + accounts[0].username + '）でサインインしています。「サインイン」を押して、会社のアカウントを選んでください');
+    return;
+  }
+  if (companyAccounts.length > 0) {
+    account = companyAccounts[0];
     msalInstance.setActiveAccount(account);
     try {
       await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
@@ -7855,6 +7861,14 @@ async function init() {
     }
     await onLoginSuccess();
   }
+}
+
+// 会社(花岡車輌のテナント)のアカウントか。ゲスト参加の個人アカウントは false
+const COMPANY_TENANT_ID = '3933e8a0-c945-4e97-ae67-c82131087cad';
+function isCompanyAccount(a) {
+  if (!a) return false;
+  if (a.homeAccountId) return a.homeAccountId.endsWith('.' + COMPANY_TENANT_ID);
+  return a.tenantId === COMPANY_TENANT_ID;
 }
 
 // iPhone/iPad・Safari はポップアップのサインインが失敗しやすいので、
@@ -7873,11 +7887,16 @@ async function login() {
     if (shouldUseRedirectFlow()) {
       document.getElementById('loginLoading').style.display = 'block';
       document.getElementById('loginLoading').textContent = '🔄 Microsoft のサインイン画面へ移動します…';
-      await msalInstance.loginRedirect({ scopes: SCOPES, redirectUri: window.location.origin + window.location.pathname });
+      await msalInstance.loginRedirect({ scopes: SCOPES, prompt: 'select_account', redirectUri: window.location.origin + window.location.pathname });
       return; // 戻ってきたら init() の handleRedirectPromise で続きを処理
     }
-    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    const result = await msalInstance.loginPopup({ scopes: SCOPES, prompt: 'select_account' });
     account = result.account;
+    if (!isCompanyAccount(account)) {
+      showLoginError('会社以外のアカウント（' + account.username + '）が選ばれました。会社のアカウントでサインインしてください');
+      document.getElementById('loginBtn').disabled = false;
+      return;
+    }
     msalInstance.setActiveAccount(account);
     await onLoginSuccess();
   } catch(e) {
