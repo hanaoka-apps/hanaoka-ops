@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>請求・入金・違算 — 花岡車輌</title>
+<link rel="icon" type="image/svg+xml" href="favicon_billing.svg"><!-- レシート（請求書） -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
+<script src="ar_billing_core.js?v=20261006b"></script>
+<link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
+<style>
+  /* 色・角丸・影・フォントは hanaoka_theme.css（全アプリ共通）のトークンだけを使う。ここに色の値は書かない */
+  :root{
+    --navy-hi:#3b3fd0;                                         /* 紺マークのグラデーション終点（テーマの .hx-mark と同じ） */
+    --glow:0 4px 12px rgba(35,38,143,.25);
+    --green-ink:color-mix(in srgb,var(--green) 70%,black);
+    --red-ink:color-mix(in srgb,var(--red) 75%,black);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--txt);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mono{font-family:"Consolas",monospace}
+  .muted{color:var(--sub)}
+  .nowrap{white-space:nowrap}
+
+  /* ---- ログイン画面 ---- */
+  #loginScreen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
+  .login-card{background:var(--surface);border-radius:16px;padding:40px 44px;width:380px;max-width:90vw;box-shadow:var(--shadow);text-align:center}
+  .login-card .logo{width:54px;height:54px;border-radius:12px;margin:0 auto 16px;color:#fff;
+    background:linear-gradient(135deg,var(--navy),var(--navy-hi));box-shadow:var(--glow);display:flex;align-items:center;justify-content:center}
+  .login-card .logo svg{width:28px;height:28px}
+  .login-card h1{font-size:19px;margin:0 0 4px;color:var(--navy);font-weight:800}
+  .login-card p{color:var(--sub);font-size:13px;margin:0 0 24px}
+  .login-card button{width:100%;padding:12px;border:none;border-radius:10px;cursor:pointer;background:var(--navy);color:#fff;font-size:15px;font-weight:700;font-family:inherit}
+  .login-card button:hover{background:var(--navy-deep)}
+  #loginError{display:none;margin-top:16px;color:var(--red-ink);font-size:13px;background:var(--red-soft);border-radius:8px;padding:10px}
+  .login-foot{margin-top:20px;font-size:11px;color:var(--sub);line-height:1.6}
+
+  /* ---- 枠 ---- */
+  #app{display:none;flex-direction:column;height:100vh}
+  header{background:var(--surface);border-bottom:1px solid var(--line);padding:0 16px;height:52px;display:flex;align-items:center;gap:14px;flex-shrink:0}
+  header h1{font-size:15px;margin:0;font-weight:800;white-space:nowrap;display:flex;align-items:center;gap:9px}
+  header h1 .dot{width:26px;height:26px;border-radius:7px;color:#fff;display:inline-flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,var(--navy),var(--navy-hi));box-shadow:0 3px 8px rgba(35,38,143,.25)}
+  header h1 .dot svg{width:15px;height:15px}
+  .hub-home{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--navy);font-size:12px;font-weight:700;text-decoration:none;white-space:nowrap;flex-shrink:0}
+  .hub-home:hover{background:var(--navy-soft)}
+  .hub-home svg{width:15px;height:15px}
+  .tabs{display:flex;gap:6px}
+  .tab{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:5px 18px;cursor:pointer;font-size:13px;font-weight:600;color:var(--sub);white-space:nowrap;font-family:inherit}
+  .tab:not(.active):hover{background:var(--bg);color:var(--txt)}
+  .tab.active{background:var(--navy);color:#fff;border-color:var(--navy);font-weight:700;box-shadow:var(--glow)}
+  .tab .cnt{display:inline-block;margin-left:6px;font-size:11px;padding:0 7px;border-radius:999px;background:var(--red);color:#fff}
+  .grow{flex:1}
+  .hdr-actions{display:flex;align-items:center;gap:10px}
+  .userchip{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+  .avatar{width:26px;height:26px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px}
+  .btn{border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:12px;font-weight:600;color:var(--txt);font-family:inherit;white-space:nowrap}
+  .btn:hover{background:var(--bg)}
+  .btn.pri{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .btn.pri:hover{background:var(--navy-deep)}
+  .menu-btn{display:none}
+
+  #statusBar{padding:6px 16px;font-size:12px;background:var(--surface);color:var(--sub);border-bottom:1px solid var(--line);flex-shrink:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  #statusBar.loading{background:var(--amber-soft);color:var(--amber)}
+  #statusBar.error{background:var(--red-soft);color:var(--red-ink)}
+  #statusBar .asof{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--sub)}
+  #statusBar input[type=date]{border:1px solid var(--line-strong);border-radius:6px;padding:2px 6px;font-family:inherit;font-size:12px;color:var(--txt);background:var(--surface)}
+  .spin{width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  main{flex:1;overflow:hidden;display:flex}
+  .view{flex:1;display:none;overflow:hidden}
+  .view.active{display:flex}
+
+  /* ---- 得意先別：左の一覧 ---- */
+  .list-pane{width:370px;min-width:280px;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--surface)}
+  .searchbar{padding:12px 12px 8px}
+  .searchbar input{width:100%;border:1px solid var(--line-strong);border-radius:10px;padding:9px 12px;font-size:14px;outline:none;font-family:inherit;color:var(--txt);background:var(--surface)}
+  input:focus,select:focus{border-color:var(--navy)!important;box-shadow:0 0 0 3px var(--navy-soft);outline:none}
+  .filters{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:2px 12px 10px}
+  .filters label{font-size:11px;font-weight:600;color:var(--sub);display:flex;flex-direction:column;gap:3px;min-width:0}
+  select{border:1px solid var(--line-strong);border-radius:8px;padding:6px;font-size:12.5px;background:var(--surface);color:var(--txt);font-family:inherit;min-width:0;width:100%}
+  .listmeta{padding:7px 14px;font-size:12px;color:var(--sub);border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg)}
+  .list{flex:1;overflow-y:auto}
+  .row{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:8px;align-items:center}
+  .row:hover{background:var(--bg)}
+  .row.sel{background:var(--navy-soft);box-shadow:inset 3px 0 0 var(--navy)}
+  .row .rmain{flex:1;min-width:0}
+  .row .code{font-family:"Consolas",monospace;color:var(--navy);font-weight:700;font-size:12px}
+  .row .name{font-weight:700;margin:1px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .sub{font-size:12px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill{flex-shrink:0;font-size:11.5px;font-weight:700;padding:2px 10px;border-radius:999px;white-space:nowrap;border:1px solid transparent}
+  .pill.under{background:var(--red-soft);color:var(--red-ink)}
+  .pill.over{background:var(--amber-soft);color:var(--amber)}
+  .pill.ok{background:var(--green-soft);color:var(--green-ink)}
+  .pill.wait{background:var(--navy-soft);color:var(--navy)}
+  .pill.na{background:var(--bg);border-color:var(--line-strong);color:var(--sub)}
+
+  /* ---- 得意先別：右の詳細 ---- */
+  .detail-pane{flex:1;overflow-y:auto;background:var(--bg)}
+  .placeholder{padding:60px 24px;text-align:center;color:var(--sub)}
+  .back-btn{display:none}
+  .dhead{background:var(--surface);border-bottom:1px solid var(--line);padding:18px 24px}
+  .dcode{font-family:"Consolas",monospace;color:var(--navy);font-weight:700;font-size:13px}
+  .dname{font-size:22px;font-weight:800;margin:2px 0 4px;line-height:1.3}
+  .dname2{font-size:13px;color:var(--sub);margin-bottom:8px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{display:inline-flex;gap:5px;align-items:baseline;background:var(--bg);border:1px solid var(--line-strong);border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600}
+  .chip i{font-style:normal;color:var(--sub);font-weight:500;font-size:11px}
+  .dbody{padding:16px 24px 40px;display:flex;flex-direction:column;gap:16px}
+  .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .card{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px;border-top:3px solid var(--line-strong)}
+  .card.under{border-top-color:var(--red)}
+  .card.over{border-top-color:var(--orange)}
+  .card.ok{border-top-color:var(--green)}
+  .card.next{border-top-color:var(--navy)}
+  .card .k{font-size:12px;color:var(--sub);font-weight:600}
+  .card .v{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;margin:2px 0}
+  .card .s{font-size:12px;color:var(--sub)}
+  .panel{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .panel h3{font-size:14px;margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .panel h3 small{font-weight:500;color:var(--sub);font-size:12px}
+  .panel .note{padding:10px 16px;font-size:12px;color:var(--sub);border-top:1px solid var(--line);line-height:1.7}
+  .tw{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{background:var(--bg);color:var(--sub);font-weight:600;font-size:11.5px;text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tr.click{cursor:pointer}
+  tr.click:hover td{background:var(--bg)}
+  tr.sub td{background:var(--bg);font-size:12px;padding:4px 10px 4px 28px;color:var(--sub)}
+  tr.dim td{color:var(--sub)}
+  .inv-link{color:var(--navy);font-weight:700;text-decoration:none;border-bottom:1px dashed var(--navy);cursor:pointer;white-space:nowrap}
+  .neg{color:var(--red-ink)}
+  .empty{padding:18px 16px;color:var(--sub);font-size:13px}
+
+  /* ---- 請求書（SMILE の「請求明細書」画面に近い並び） ---- */
+  #invModal{position:fixed;inset:0;background:rgba(22,26,61,.35);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:40px 16px;overflow-y:auto}
+  #invModal.show{display:flex}
+  .inv{background:var(--surface);border-radius:14px;box-shadow:var(--shadow);width:1100px;max-width:100%}
+  .inv-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+  .inv-head h2{margin:0;font-size:17px}
+  .inv-head .meta{font-size:12.5px;color:var(--sub);margin-top:4px;display:flex;gap:14px;flex-wrap:wrap}
+  .inv-tot{margin-left:auto;display:grid;grid-template-columns:auto auto;gap:2px 16px;font-size:13px}
+  .inv-tot b{text-align:right;font-variant-numeric:tabular-nums}
+  .inv table td{padding:6px 10px}
+  .inv .sum td{background:var(--amber-soft);font-weight:700}
+  .inv-foot{padding:10px 20px;display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--line)}
+
+  /* ---- 違算一覧 ---- */
+  .gview{flex-direction:column;overflow-y:auto}
+  .gbar{background:var(--surface);border-bottom:1px solid var(--line);padding:12px 20px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;position:sticky;top:0;z-index:2}
+  .gbar label{font-size:11px;font-weight:600;color:var(--sub);display:flex;flex-direction:column;gap:3px}
+  .gbar select,.gbar input{width:auto;min-width:130px}
+  .gbar input[type=search]{border:1px solid var(--line-strong);border-radius:8px;padding:6px 10px;font-size:13px;font-family:inherit;min-width:200px;background:var(--surface);color:var(--txt)}
+  .seg{display:flex;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden}
+  .seg button{border:none;background:var(--surface);padding:6px 12px;font-size:12.5px;font-weight:600;color:var(--sub);cursor:pointer;font-family:inherit}
+  .seg button+button{border-left:1px solid var(--line-strong)}
+  .seg button.on{background:var(--navy);color:#fff}
+  .gbody{padding:16px 20px 40px;display:flex;flex-direction:column;gap:16px}
+  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+  .basehead{display:flex;align-items:center;gap:10px}
+  .basehead .tot{margin-left:auto;font-size:12.5px;color:var(--sub);font-weight:500}
+  .basehead .tot b{color:var(--txt)}
+  .reason{font-size:12px;color:var(--sub);margin-top:2px}
+
+  @media (max-width:1000px){
+    .cards,.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  /* 幅が狭いとき：ヘッダーのボタンは「⋯」の中へ */
+  @media (max-width:1000px){
+    .menu-btn{display:inline-block}
+    .hdr-actions{display:none;position:absolute;top:52px;right:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:10px;flex-direction:column;align-items:stretch;z-index:20}
+    header.menu-open .hdr-actions{display:flex}
+  }
+  /* スマホ：一覧 → 詳細の2画面 */
+  @media (max-width:760px){
+    header{gap:8px;padding:0 10px}
+    header h1 .ttl{display:none}
+    .hub-home span{display:none}
+    .tab{padding:5px 12px}
+    .list-pane{width:100%;border-right:none}
+    .detail-pane{display:none}
+    #viewCust.show-detail .list-pane{display:none}
+    #viewCust.show-detail .detail-pane{display:block}
+    .back-btn{display:inline-block;margin-bottom:8px}
+    .dhead,.dbody{padding-left:14px;padding-right:14px}
+    .cards,.kpis{grid-template-columns:1fr 1fr}
+    .card .v{font-size:18px}
+    .gbar,.gbody{padding-left:12px;padding-right:12px}
+    #statusBar .asof{margin-left:0}
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== ログイン画面 ===== -->
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h16v18l-3-2-2 2-3-2-3 2-2-2-3 2z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h4"/></svg></div>
+    <h1>請求・入金・違算</h1>
+    <p>花岡車輌 業務アプリ ／ 得意先ごとの請求と入金</p>
+    <button id="loginBtn" data-ha-login>Microsoft アカウントでサインイン</button>
+    <div id="loginError"></div>
+    <div class="login-foot">SharePoint「SharedMasters」の SMILE データを<br>読み取り専用で表示します（書き換え不可）</div>
+  </div>
+</div>
+
+<!-- ===== アプリ本体 ===== -->
+<div id="app">
+  <header>
+    <a class="hub-home" href="hanaoka_hub.html" title="HANAOKA HUBへ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg><span>HUB</span></a>
+    <h1><span class="dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h16v18l-3-2-2 2-3-2-3 2-2-2-3 2z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h4"/></svg></span><span class="ttl">請求・入金・違算</span></h1>
+    <div class="tabs">
+      <button class="tab active" data-view="cust">得意先別</button>
+      <button class="tab" data-view="gap">違算一覧<span class="cnt" id="gapCnt" hidden></span></button>
+    </div>
+    <div class="grow"></div>
+    <div class="hdr-actions" id="hdrActions">
+      <div class="userchip"><span class="avatar" id="userAvatar"></span><span id="userName"></span></div>
+      <button class="btn" id="reloadBtn" title="SharePointから読み直す">↻ 更新</button>
+      <button class="btn" id="fileBtn" title="手元のCSVを選んで読む（SharePointに置く前の確認用）">ファイルを選ぶ</button>
+      <button class="btn" id="logoutBtn">サインアウト</button>
+    </div>
+    <button class="btn menu-btn" id="menuBtn" aria-label="メニュー" aria-expanded="false">⋯</button>
+  </header>
+  <div id="statusBar"><span id="statusText">準備中…</span>
+    <span class="asof">判定日 <input type="date" id="asofInput" title="この日までに回収予定日が来た請求を、違算かどうか判定します"></span>
+  </div>
+  <main>
+    <!-- 得意先別 -->
+    <section class="view active" id="viewCust">
+      <div class="list-pane">
+        <div class="searchbar"><input id="search" type="search" placeholder="得意先名・コード・担当者で検索" autocomplete="off"></div>
+        <div class="filters">
+          <label>拠点<select id="fBase"></select></label>
+          <label>担当者<select id="fStaff"></select></label>
+          <label>表示<select id="fShow">
+            <option value="billed">請求がある得意先</option>
+            <option value="gap">違算ありだけ</option>
+            <option value="all">すべて</option>
+          </select></label>
+        </div>
+        <div class="listmeta" id="listMeta"></div>
+        <div class="list" id="list"></div>
+      </div>
+      <div class="detail-pane" id="detail"><div class="placeholder">左の一覧から得意先を選んでください</div></div>
+    </section>
+
+    <!-- 違算一覧 -->
+    <section class="view gview" id="viewGap">
+      <div class="gbar">
+        <label>拠点<select id="gBase"></select></label>
+        <label>担当者<select id="gStaff"></select></label>
+        <label>種類<div class="seg" id="gKind"><button data-k="" class="on">すべて</button><button data-k="未入金">未入金</button><button data-k="過入金">過入金</button></div></label>
+        <label>検索<input id="gSearch" type="search" placeholder="得意先名・コード"></label>
+        <div class="grow"></div>
+        <button class="btn" id="csvBtn">CSVに出す（会議資料用）</button>
+      </div>
+      <div class="gbody" id="gapBody"></div>
+    </section>
+  </main>
+</div>
+
+<!-- 請求書の明細 -->
+<div id="invModal"><div class="inv" id="invBody"></div></div>
+<input type="file" id="fileInput" accept=".csv,.txt" multiple style="display:none">
+
+<script>
+"use strict";
+// ============================================================
+// 設定 — マスタビューワーと同じ SharedMasters を読む（読み取りだけ）
+// ============================================================
+const MSAL_CONFIG = HanaokaAuth.msalConfig();
+const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
+const FALLBACK_DRIVE_ID = 'b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
+// SMILE から出すファイル（名前を変えたらここも直す）
+const FILES = {
+  detail:    { name:'請求明細出力.txt', label:'請求明細' },   // 請求明細出力（条件パターン SharedMaster）
+  payments:  { name:'入金明細出力.csv', label:'入金明細' },   // 入金明細出力（総務が入金を登録したら出す）
+  customers: { name:'得意先マスタ.csv', label:'得意先マスタ' },
+  staff:     { name:'担当者マスタ.csv', label:'担当者マスタ' },
+};
+
+let msalInstance=null, account=null, driveId=null;
+let SRC={};          // 読み込んだ行（キーは FILES と同じ）
+let SRCINFO={};      // ファイルの更新日時
+let M=null;          // ARCore.build の結果
+let asofOverride=''; // 判定日を手で変えたとき
+let selCode='';
+let view='cust';
+let gKind='';
+
+// ============================================================
+// サインイン（hanaoka_auth.js）
+// ============================================================
+async function init(){
+  if(typeof msal==='undefined'){ showLoginError('MSALライブラリを読み込めませんでした。再読み込みしてください。'); return; }
+  msalInstance=new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+  // ボタンは確認（restore）より先に有効にする（確認中にサインインボタンが出ても押せるように）
+  document.getElementById('loginBtn').onclick=login;
+  document.getElementById('logoutBtn').onclick=logout;
+  document.getElementById('reloadBtn').onclick=loadAll;
+  account=await HanaokaAuth.restore(msalInstance,SCOPES);
+  if(account){ showApp(); await loadAll(); }
+}
+async function login(){
+  try{ hideLoginError(); account=await HanaokaAuth.login(msalInstance,SCOPES); showApp(); await loadAll(); }
+  catch(e){ showLoginError('サインインに失敗しました: '+e.message); }
+}
+function logout(){
+  HanaokaAuth.done();
+  msalInstance.logoutPopup({account});
+  document.getElementById('app').style.display='none';
+  document.getElementById('loginScreen').style.display='flex';
+}
+async function getToken(){
+  try{ const r=await msalInstance.acquireTokenSilent({scopes:SCOPES,account}); return r.accessToken; }
+  catch{ const r=await msalInstance.acquireTokenPopup({scopes:SCOPES}); return r.accessToken; }
+}
+function showApp(){
+  document.getElementById('loginScreen').style.display='none';
+  document.getElementById('app').style.display='flex';
+  const n=account.name||account.username;
+  document.getElementById('userName').textContent=n;
+  document.getElementById('userAvatar').textContent=(n||'?').charAt(0);
+}
+function showLoginError(m){ HanaokaAuth.done(); const e=document.getElementById('loginError'); e.textContent=m; e.style.display='block'; }
+function hideLoginError(){ document.getElementById('loginError').style.display='none'; }
+function setStatus(type,html,spin){
+  const b=document.getElementById('statusBar'); b.className=type||'';
+  document.getElementById('statusText').innerHTML=(spin?'<span class="spin"></span> ':'')+html;
+}
+
+// ============================================================
+// SharedMasters から読む
+// ============================================================
+async function graphGet(url){
+  const token=await getToken();
+  const r=await fetch('https://graph.microsoft.com/v1.0'+url,{headers:{Authorization:'Bearer '+token}});
+  if(!r.ok) throw new Error(`Graph ${r.status}: ${url}`);
+  return r.json();
+}
+async function resolveDriveId(){
+  if(driveId) return driveId;
+  try{
+    const data=await graphGet(`/sites/${SITE_ID}/drives?$select=id,name,webUrl&$top=100`);
+    const hit=(data.value||[]).find(d=>d.name==='SharedMasters')||(data.value||[]).find(d=>/SharedMasters/i.test((d.name||'')+(d.webUrl||'')));
+    if(hit){ driveId=hit.id; return driveId; }
+  }catch(e){ console.warn('drive解決失敗、フォールバックID使用',e); }
+  driveId=FALLBACK_DRIVE_ID; return driveId;
+}
+function decodeText(buf){
+  let t=new TextDecoder('utf-8').decode(buf);
+  if((t.match(/�/g)||[]).length>5){ try{ t=new TextDecoder('shift_jis').decode(buf); }catch(e){} }
+  return t.charCodeAt(0)===0xFEFF?t.slice(1):t;
+}
+async function fetchFile(fname){
+  const did=await resolveDriveId();
+  const meta=await graphGet(`/drives/${did}/root:/${encodeURIComponent(fname)}`);
+  const r=await fetch(meta['@microsoft.graph.downloadUrl']);
+  if(!r.ok) throw new Error(`${fname}: ${r.status}`);
+  return { text:decodeText(await r.arrayBuffer()), modified:meta.lastModifiedDateTime };
+}
+async function loadAll(){
+  setStatus('loading','SharePoint（SharedMasters）から読み込み中…',true);
+  const missing=[];
+  await Promise.all(Object.entries(FILES).map(async([k,f])=>{
+    try{ const r=await fetchFile(f.name); SRC[k]=ARCore.toObjects(r.text); SRCINFO[k]={modified:r.modified,from:'SharePoint'}; }
+    catch(e){ console.warn(f.name,e); if(!SRC[k]) missing.push(f.name); }
+  }));
+  if(!SRC.detail||!SRC.customers){
+    setStatus('error','読み込めませんでした: '+esc(missing.join('、'))+'　右上の「ファイルを選ぶ」で手元のファイルからも開けます。'); return;
+  }
+  rebuild();
+  if(missing.length) setStatus('error','読み込めなかったファイル: '+esc(missing.join('、'))+'（入金がないものとして表示しています）　／　'+summaryText());
+}
+// 手元のファイルを選んだとき（SharePoint に置く前の確認用）。ファイル名で振り分ける
+document.getElementById('fileBtn').onclick=()=>document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange=async e=>{
+  const files=[...e.target.files]; let n=0;
+  for(const f of files){
+    const key=Object.keys(FILES).find(k=>f.name.includes(FILES[k].name.replace(/\.(csv|txt)$/,'')));
+    if(!key) continue;
+    SRC[key]=ARCore.toObjects(decodeText(await f.arrayBuffer())); SRCINFO[key]={modified:new Date(f.lastModified).toISOString(),from:'手元のファイル'}; n++;
+  }
+  e.target.value='';
+  if(!n){ alert('ファイル名から種類がわかりませんでした。\n'+Object.values(FILES).map(f=>f.name).join('\n')+'\nのどれかの名前にしてください。'); return; }
+  if(SRC.detail&&SRC.customers) rebuild(); else setStatus('error','請求明細と得意先マスタは必ず要ります。');
+};
+
+function rebuild(){
+  M=ARCore.build(SRC,{asof:asofOverride||undefined});
+  document.getElementById('asofInput').value=M.asof;
+  fillFilters();
+  const n=M.list.filter(isGap).length;
+  const cnt=document.getElementById('gapCnt'); cnt.textContent=n; cnt.hidden=!n;
+  setStatus('success',summaryText());
+  readHash();
+  render();
+}
+function summaryText(){
+  const md=s=>s&&s!=='9999-99-99'?`${+s.slice(5,7)}/${+s.slice(8,10)}`:'—';
+  const mod=k=>SRCINFO[k]&&SRCINFO[k].modified?new Date(SRCINFO[k].modified).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+  return `請求明細 ${md(M.dataStart)}〜${md(M.dataEnd)}（${mod('detail')}更新）　入金明細 ${SRC.payments?md(M.payStart)+'〜'+md(M.payEnd)+'（'+mod('payments')+'更新）':'なし'}`;
+}
+document.getElementById('asofInput').onchange=e=>{ asofOverride=e.target.value; if(M) rebuild(); };
+
+// ============================================================
+// 共通
+// ============================================================
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function yen(n){ return (n<0?'−':'')+Math.abs(Math.round(n||0)).toLocaleString('ja-JP'); }
+function md(s){ return s?`${+s.slice(5,7)}/${+s.slice(8,10)}`:''; }
+function ymdJ(s){ return s?`${s.slice(0,4)}/${+s.slice(5,7)}/${+s.slice(8,10)}`:''; }
+// 半角カナ・全角カナ・ひらがなのどれで入力しても同じになるように
+function norm(s){ return (s||'').normalize('NFKC').toLowerCase().replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)).replace(/[\s　()（）㈱]/g,''); }
+function isGap(c){ return !c.excludeReason && c.diff!==0; }
+function pillOf(c){
+  if(c.excludeReason) return '<span class="pill na">対象外</span>';
+  if(c.diff>0) return `<span class="pill under">未入金 ${yen(c.diff)}</span>`;
+  if(c.diff<0) return `<span class="pill over">過入金 ${yen(-c.diff)}</span>`;
+  if(c.next) return `<span class="pill wait">${md(c.next.due)} 予定</span>`;
+  if(c.periods.some(p=>p.judged)) return '<span class="pill ok">入金済</span>';
+  return '';
+}
+function periodState(p,c){
+  if(c.excludeReason) return '<span class="pill na">対象外</span>';
+  if(p.partial) return '<span class="pill na" title="データの最初の日より前の売上を含むため、請求額がわかりません">判定なし</span>';
+  if(!p.usable) return '<span class="pill na" title="入金明細の期間より前のため判定しません">判定なし</span>';
+  if(!p.judged) return p.paid?`<span class="pill wait">一部入金</span>`:`<span class="pill wait">入金待ち</span>`;
+  if(p.diff>0) return '<span class="pill under">未入金</span>';
+  if(p.diff<0) return '<span class="pill over">過入金</span>';
+  return '<span class="pill ok">入金済</span>';
+}
+
+// ============================================================
+// 絞り込み
+// ============================================================
+function fillFilters(){
+  const bases=ARCore.BASES.filter(b=>M.list.some(c=>c.base===b));
+  const staffs=[...new Set(M.list.map(c=>c.staffName).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
+  const opt=(v,l)=>`<option value="${esc(v)}">${esc(l)}</option>`;
+  for(const id of ['fBase','gBase']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+bases.map(b=>opt(b,b)).join(''); el.value=cur; }
+  for(const id of ['fStaff','gStaff']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+staffs.map(s=>opt(s,s)).join(''); el.value=cur; }
+}
+['search','fBase','fStaff','fShow'].forEach(id=>document.getElementById(id).addEventListener('input',renderList));
+['gBase','gStaff','gSearch'].forEach(id=>document.getElementById(id).addEventListener('input',renderGap));
+document.querySelectorAll('#gKind button').forEach(b=>b.onclick=()=>{ gKind=b.dataset.k; document.querySelectorAll('#gKind button').forEach(x=>x.classList.toggle('on',x===b)); renderGap(); });
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ setView(t.dataset.view); writeHash(); });
+function setView(v){
+  view=v;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
+  document.getElementById('viewCust').classList.toggle('active',v==='cust');
+  document.getElementById('viewGap').classList.toggle('active',v==='gap');
+}
+function render(){ setView(view); renderList(); renderDetail(); renderGap(); }
+
+// URL の # で得意先を開く（例：ar_billing.html#c=110201）。営業にリンクで渡せるように
+function readHash(){
+  const h=new URLSearchParams(location.hash.slice(1));
+  if(h.get('c')&&M.customers[h.get('c')]){ selCode=h.get('c'); view='cust'; document.getElementById('viewCust').classList.add('show-detail'); }
+  else if(h.get('v')==='gap') view='gap';
+}
+window.addEventListener('hashchange',()=>{ if(!M) return; readHash(); render(); });
+function writeHash(){
+  const h=view==='gap'?'v=gap':(selCode?'c='+selCode:'');
+  history.replaceState(null,'',h?'#'+h:location.pathname+location.search);
+}
+
+// ============================================================
+// 得意先別：一覧
+// ============================================================
+function renderList(){
+  if(!M) return;
+  const q=norm(document.getElementById('search').value), base=document.getElementById('fBase').value,
+        st=document.getElementById('fStaff').value, show=document.getElementById('fShow').value;
+  let L=M.list.filter(c=>{
+    if(base&&c.base!==base) return false;
+    if(st&&c.staffName!==st) return false;
+    if(show==='gap'&&!isGap(c)) return false;
+    if(show==='billed'&&!c.invoiceList.length&&!c.unbilled.length) return false;
+    if(q&&!norm(c.code+' '+c.name+' '+c.name2+' '+c.short+' '+c.kana+' '+c.staffName+' '+Object.values(c.children).join(' ')).includes(q)) return false;
+    return true;
+  });
+  // 違算 → 金額の大きい順、それ以外はコード順
+  L.sort((a,b)=>(isGap(b)-isGap(a))||(isGap(a)?Math.abs(b.diff)-Math.abs(a.diff):a.code.localeCompare(b.code)));
+  document.getElementById('listMeta').textContent=`${L.length.toLocaleString()} 件`+(L.length>400?'（先頭400件を表示。検索で絞ってください）':'');
+  document.getElementById('list').innerHTML=L.slice(0,400).map(c=>`
+    <div class="row${c.code===selCode?' sel':''}" data-c="${esc(c.code)}">
+      <div class="rmain"><div class="code">${esc(c.code)}</div><div class="name">${esc(c.name)}</div>
+        <div class="sub">${esc([c.staffName,c.base,c.closeLabel&&c.closeLabel+(c.termsLabel?'・'+c.termsLabel:'')].filter(Boolean).join('　'))}</div></div>
+      ${pillOf(c)}
+    </div>`).join('')||'<div class="empty">該当する得意先がありません</div>';
+  document.querySelectorAll('#list .row').forEach(r=>r.onclick=()=>openCust(r.dataset.c));
+  const sel=document.querySelector('#list .row.sel'); if(sel) sel.scrollIntoView({block:'nearest'});
+}
+function openCust(code){
+  selCode=code; setView('cust');
+  document.getElementById('viewCust').classList.add('show-detail');
+  writeHash(); renderList(); renderDetail();
+  document.getElementById('detail').scrollTop=0;
+}
+
+// ============================================================
+// 得意先別：詳細
+// ============================================================
+function renderDetail(){
+  const el=document.getElementById('detail');
+  const c=M&&M.customers[selCode];
+  if(!c){ el.innerHTML='<div class="placeholder">左の一覧から得意先を選んでください</div>'; return; }
+  const chip=(k,v)=>v?`<span class="chip"><i>${k}</i>${esc(v)}</span>`:'';
+  const kids=Object.entries(c.children);
+
+  // カード：今の違算／次の入金予定／未締めの売上
+  let card1;
+  if(c.excludeReason) card1=`<div class="card"><div class="k">違算</div><div class="v" style="font-size:16px">対象外</div><div class="s">${esc(c.excludeReason)}</div></div>`;
+  else if(c.diff>0) card1=`<div class="card under"><div class="k">違算（未入金）</div><div class="v neg">${yen(c.diff)}</div><div class="s">${ymdJ(c.oldestDue)} 回収予定の分から ${c.daysOver}日</div></div>`;
+  else if(c.diff<0) card1=`<div class="card over"><div class="k">違算（過入金）</div><div class="v">${yen(-c.diff)}</div><div class="s">${ymdJ(c.oldestDue)} 回収予定の分から ${c.daysOver}日</div></div>`;
+  else card1=`<div class="card ok"><div class="k">違算</div><div class="v" style="color:var(--green-ink)">なし</div><div class="s">${M.asof?ymdJ(M.asof)+' 時点':''}</div></div>`;
+  const nx=c.next;
+  const card2=nx?`<div class="card next"><div class="k">次の入金予定</div><div class="v">${yen(nx.amount)}</div><div class="s">${ymdJ(nx.due)} 回収予定${nx.paid?`（${yen(nx.paid)} 入金済）`:''}</div></div>`
+               :`<div class="card"><div class="k">次の入金予定</div><div class="v" style="font-size:16px">—</div><div class="s">締め済みの請求で、回収予定日が先のものはありません</div></div>`;
+  const card3=`<div class="card"><div class="k">まだ締めていない売上</div><div class="v">${yen(c.unbilledAmount)}</div><div class="s">${c.unbilled.length} 行（次の請求書に載る予定・税抜）</div></div>`;
+
+  // 回収予定日ごと（新しい順）
+  const P=[...c.periods].reverse();
+  const prow=P.map((p,i)=>{
+    const invs=p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">No.${esc(v.no)}</a> <span class="muted">${md(v.close)}締</span>`).join('<br>');
+    const pays=p.payments.map(x=>`<tr class="sub"><td colspan="3">${ymdJ(x.date)}　${esc(x.kind)}${x.memo?'　'+esc(x.memo):''}${x.due?'　決済 '+ymdJ(x.due):''}</td><td class="num">${yen(x.amount)}</td><td colspan="3"></td></tr>`).join('');
+    return `<tr class="click${p.judged||p.partial?'':' '}" data-p="${i}">
+      <td>${ymdJ(p.due)}${p.bound!==p.due?`<div class="reason">休日のため ${md(p.bound)} まで</div>`:''}</td>
+      <td>${invs}</td>
+      <td class="num">${yen(p.amount)}</td>
+      <td class="num">${yen(p.paid)}${p.payments.length?` <span class="muted">(${p.payments.length})</span>`:''}</td>
+      <td class="num ${p.diff&&p.judged?'neg':''}">${p.judged?yen(p.diff):''}</td>
+      <td class="num">${p.cum==null?'':yen(p.cum)}</td>
+      <td>${periodState(p,c)}</td></tr>
+      <tr class="paydetail" data-for="${i}" hidden><td colspan="7" style="padding:0"><table>${pays||'<tr class="sub"><td>この期間の入金はありません</td></tr>'}</table></td></tr>`;
+  }).join('');
+
+  // 請求書の一覧（請求書番号ごと）
+  const irow=[...c.invoiceList].reverse().map(v=>`<tr class="click" data-no="${esc(v.no)}">
+      <td><a class="inv-link" data-no="${esc(v.no)}">No.${esc(v.no)}</a></td><td>${ymdJ(v.close)}</td><td>${ymdJ(v.due)||'—'}</td>
+      <td class="num">${v.lines.length}</td><td class="num">${yen(v.net)}</td><td class="num">${yen(v.tax)}</td><td class="num"><b>${yen(v.amount)}</b></td>
+      <td>${v.partial?'<span class="pill na" title="データの最初の日より前の売上は載っていません">一部のみ</span>':''}</td></tr>`).join('');
+
+  // まだ締めていない売上
+  const urow=c.unbilled.map(l=>`<tr><td>${ymdJ(l.date)}</td><td class="mono">${esc(l.slip)}</td>${kids.length?`<td>${esc(l.custName)}</td>`:''}<td>${esc(l.kind)}</td><td>${esc(l.itemName)}</td><td>${esc(l.po)}</td><td class="num">${l.qty}</td><td class="num">${yen(l.net)}</td></tr>`).join('');
+
+  el.innerHTML=`
+    <div class="dhead">
+      <button class="btn back-btn" id="backBtn">← 一覧へ</button>
+      <div class="dcode">${esc(c.code)}</div>
+      <div class="dname">${esc(c.name)}</div>
+      ${c.name2?`<div class="dname2">${esc(c.name2)}</div>`:''}
+      <div class="chips">
+        ${chip('担当',c.staffName)}${chip('拠点',c.base)}${chip('締め',c.closeLabel)}${chip('回収',c.termsLabel)}${chip('方法',c.payMethod)}
+        ${kids.length?chip('納品先の得意先',kids.length+'件'):''}${c.inMaster?'':chip('','得意先マスタにありません')}
+      </div>
+    </div>
+    <div class="dbody">
+      <div class="cards">${card1}${card2}${card3}</div>
+      <div class="panel">
+        <h3>請求と入金 <small>回収予定日ごと・行を押すと入金の内訳</small></h3>
+        <div class="tw"><table>
+          <thead><tr><th>回収予定日</th><th>請求書</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th class="num">累計</th><th>状態</th></tr></thead>
+          <tbody>${prow||'<tr><td colspan="7" class="empty">締め済みの請求がありません</td></tr>'}</tbody>
+        </table></div>
+        <div class="note">回収予定日（休日なら翌営業日）を過ぎても請求額と入金額が合わないものが違算です。前後の回収予定日との中間までに入った入金を、その回の請求に充てています（数日遅れの入金はその回で解消）。入金には振込・手形・相殺のほか、売上割引料・支払手数料・販売促進費を含みます。
+          それより遅い入金は次の回に入るため、その回は過入金に見えます。<b>累計が 0 に戻れば解消</b>です。</div>
+      </div>
+      <div class="panel">
+        <h3>発行した請求書 <small>番号を押すと明細</small></h3>
+        <div class="tw"><table>
+          <thead><tr><th>請求書</th><th>締日</th><th>回収予定日</th><th class="num">行数</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">請求額</th><th></th></tr></thead>
+          <tbody>${irow||'<tr><td colspan="8" class="empty">ありません</td></tr>'}</tbody>
+        </table></div>
+      </div>
+      <div class="panel">
+        <h3>まだ締めていない売上 <small>次の請求書に載る予定</small></h3>
+        ${urow?`<div class="tw"><table><thead><tr><th>伝票日付</th><th>伝票№</th>${kids.length?'<th>得意先</th>':''}<th>取引</th><th>品目</th><th>客先注番</th><th class="num">数量</th><th class="num">税抜金額</th></tr></thead><tbody>${urow}</tbody></table></div>`:'<div class="empty">ありません</div>'}
+      </div>
+    </div>`;
+  const bb=document.getElementById('backBtn');
+  if(bb) bb.onclick=()=>{ document.getElementById('viewCust').classList.remove('show-detail'); selCode=''; writeHash(); renderList(); };
+  el.querySelectorAll('tr[data-p]').forEach(tr=>tr.onclick=e=>{
+    if(e.target.closest('.inv-link')) return;
+    const d=el.querySelector(`tr.paydetail[data-for="${tr.dataset.p}"]`); d.hidden=!d.hidden;
+  });
+  el.querySelectorAll('.inv-link,tr[data-no]').forEach(a=>a.onclick=e=>{ e.stopPropagation(); openInvoice(c,a.dataset.no); });
+}
+
+// ============================================================
+// 請求書の明細（SMILE「請求明細書」と同じ並び：日付・伝票ごと）
+// ============================================================
+function openInvoice(c,no){
+  const v=c.invoices[no]; if(!v) return;
+  const lines=[...v.lines].filter(l=>!(l.taxKind==='消費税')).sort((a,b)=>(a.date+String(a.slip).padStart(8,'0')+String(a.row).padStart(3,'0')).localeCompare(b.date+String(b.slip).padStart(8,'0')+String(b.row).padStart(3,'0')));
+  const multi=new Set(lines.map(l=>l.cust)).size>1;
+  let prevD='',prevS='';
+  const rows=lines.map(l=>{
+    const d=l.date!==prevD?ymdJ(l.date):'', s=(l.date+l.slip)!==prevS?esc(l.slip):'';
+    prevD=l.date; prevS=l.date+l.slip;
+    return `<tr><td class="nowrap">${d}</td><td class="mono num">${s}</td>${multi?`<td>${esc(l.custName)}</td>`:''}<td>${esc(l.kind)}</td><td class="mono">${esc(l.item)}</td><td>${esc(l.itemName)}</td>
+      <td>${esc(l.model)}</td><td class="mono">${esc(l.drawing)}</td><td class="mono">${esc(l.po)}</td><td class="num">${l.qty.toLocaleString('ja-JP',{minimumFractionDigits:2})}</td><td>${esc(l.unit)}</td>
+      <td class="num">${l.price.toLocaleString('ja-JP',{minimumFractionDigits:2})}</td><td class="num">${yen(l.net)}</td></tr>`;
+  }).join('');
+  const span=multi?12:11;
+  document.getElementById('invBody').innerHTML=`
+    <div class="inv-head">
+      <div><h2>${esc(c.name)}　請求書 No.${esc(no)}</h2>
+        <div class="meta"><span>得意先 ${esc(c.code)}</span><span>${ymdJ(v.close)} 締</span><span>回収予定 ${ymdJ(v.due)||'—'}</span><span>担当 ${esc(c.staffName)}</span></div>
+        ${v.partial?'<div class="reason">※ データの最初の日（'+ymdJ(M.dataStart)+'）より前の売上は、この画面には載っていません</div>':''}</div>
+      <div class="inv-tot"><span>御買上額</span><b>${yen(v.net)}</b><span>消費税等</span><b>${yen(v.tax)}</b><span>請求額</span><b>${yen(v.amount)}</b></div>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>日付</th><th class="num">伝票№</th>${multi?'<th>得意先</th>':''}<th>取引区分</th><th>品目コード</th><th>品目</th><th>型番</th><th>図番</th><th>客先注番</th><th class="num">数量</th><th>単位</th><th class="num">単価</th><th class="num">金額</th></tr></thead>
+      <tbody>${rows}
+        <tr class="sum"><td colspan="${span}" class="num">【御買上額】</td><td class="num">${yen(v.net)}</td></tr>
+        <tr class="sum"><td colspan="${span}" class="num">【消費税等】</td><td class="num">${yen(v.tax)}</td></tr>
+      </tbody></table></div>
+    <div class="inv-foot"><button class="btn" id="invCsv">CSVに出す</button><button class="btn pri" id="invClose">閉じる</button></div>`;
+  const modal=document.getElementById('invModal'); modal.classList.add('show');
+  document.getElementById('invClose').onclick=()=>modal.classList.remove('show');
+  document.getElementById('invCsv').onclick=()=>downloadCsv(`請求明細_${c.code}_No${no}.csv`,
+    [['日付','伝票№','得意先','取引区分','品目コード','品目','型番','図番','客先注番','数量','単位','単価','金額']]
+      .concat(lines.map(l=>[l.date,l.slip,l.custName,l.kind,l.item,l.itemName,l.model,l.drawing,l.po,l.qty,l.unit,l.price,l.net]))
+      .concat([['','','','','','','','','','','','御買上額',v.net],['','','','','','','','','','','','消費税等',v.tax]]));
+}
+document.getElementById('invModal').onclick=e=>{ if(e.target.id==='invModal') e.currentTarget.classList.remove('show'); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.getElementById('invModal').classList.remove('show'); });
+
+// ============================================================
+// 違算一覧（拠点ごと。違算 Excel のシート分けと同じ）
+// ============================================================
+function gapRows(){
+  if(!M) return [];
+  const base=document.getElementById('gBase').value, st=document.getElementById('gStaff').value, q=norm(document.getElementById('gSearch').value);
+  return M.list.filter(c=>isGap(c)
+    &&(!base||c.base===base)&&(!st||c.staffName===st)&&(!gKind||c.status===gKind)
+    &&(!q||norm(c.code+c.name+c.short).includes(q)))
+    .sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff));
+}
+function renderGap(){
+  const el=document.getElementById('gapBody');
+  if(!M){ el.innerHTML=''; return; }
+  const L=gapRows();
+  const under=L.filter(c=>c.diff>0), over=L.filter(c=>c.diff<0);
+  const sum=a=>a.reduce((s,c)=>s+c.diff,0);
+  const kpi=(k,v,s,cls)=>`<div class="card ${cls||''}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  let html=`<div class="kpis">
+    ${kpi('違算の得意先',L.length+' 件',ymdJ(M.asof)+' 時点')}
+    ${kpi('未入金',under.length+' 件',yen(sum(under))+' 円','under')}
+    ${kpi('過入金',over.length+' 件',yen(-sum(over))+' 円','over')}
+    ${kpi('30日以上たっているもの',L.filter(c=>c.daysOver>=30).length+' 件','いちばん古い回収予定日から数えて')}
+  </div>`;
+  for(const b of ARCore.BASES){
+    const G=L.filter(c=>c.base===b); if(!G.length) continue;
+    html+=`<div class="panel"><h3 class="basehead">${esc(b)} <small>${G.length}件</small>
+      <span class="tot">未入金 <b>${yen(sum(G.filter(c=>c.diff>0)))}</b>　過入金 <b>${yen(-sum(G.filter(c=>c.diff<0)))}</b></span></h3>
+      <div class="tw"><table><thead><tr><th>得意先</th><th>担当</th><th>締め・回収</th><th>回収予定日</th><th class="num">経過</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">違算額</th><th>状態</th></tr></thead><tbody>
+      ${G.map(c=>{
+        const op=c.openPeriods;
+        const bill=op.reduce((s,p)=>s+p.amount,0), paid=op.reduce((s,p)=>s+p.paid,0);
+        return `<tr class="click" data-c="${esc(c.code)}">
+          <td><div class="mono muted" style="font-size:12px">${esc(c.code)}</div><b>${esc(c.name)}</b></td>
+          <td>${esc(c.staffName)}</td><td class="muted">${esc(c.closeLabel)}<br>${esc(c.termsLabel)}</td>
+          <td>${op.map(p=>ymdJ(p.due)).join('<br>')}</td>
+          <td class="num">${c.daysOver}日</td>
+          <td class="num">${op.map(p=>yen(p.amount)).join('<br>')}</td>
+          <td class="num">${op.map(p=>yen(p.paid)).join('<br>')}</td>
+          <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td>
+          <td>${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`;
+      }).join('')}</tbody></table></div></div>`;
+  }
+  if(!L.length) html+='<div class="panel"><div class="empty">この条件の違算はありません</div></div>';
+  html+=`<div class="panel"><div class="note">
+    <b>違算の判定</b>：回収予定日（得意先マスタの締日・入金サイクル・入金日から計算。休日なら翌営業日）を過ぎても、請求額と入金額が合わないもの。
+    遅れて入金があり、累計が 0 に戻ったものは一覧から消えます（得意先の画面の「累計」で確認できます）。<br>
+    <b>対象外</b>：回収管理を「行わない」得意先、EC・店頭販売、回収条件が登録されていない得意先（海外など）。
+    データの最初の日（請求明細 ${ymdJ(M.dataStart)}）より前の売上を含む請求書は、請求額がわからないため判定していません。</div></div>`;
+  el.innerHTML=html;
+  el.querySelectorAll('tr[data-c]').forEach(tr=>tr.onclick=()=>openCust(tr.dataset.c));
+}
+document.getElementById('csvBtn').onclick=()=>{
+  const rows=[['拠点','得意先コード','得意先','担当','締め','回収条件','回収予定日','経過日数','請求額','入金額','違算額','状態','原因・内容','過失責任（当方・先方）','入金予定日']];
+  gapRows().forEach(c=>c.openPeriods.forEach((p,i)=>rows.push([c.base,c.code,c.name,c.staffName,c.closeLabel,c.termsLabel,p.due,ARCore.daysBetween(p.due,M.asof),p.amount,p.paid,i===0?Math.abs(c.diff):'',i===0?c.status:'','','',''])));
+  downloadCsv(`違算一覧_${M.asof}.csv`,rows);
+};
+function downloadCsv(name,rows){
+  const csv='﻿'+rows.map(r=>r.map(x=>'"'+String(x==null?'':x).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+// スマホ：右上の「⋯」でボタンを開く
+(()=>{ const header=document.querySelector('header'), mb=document.getElementById('menuBtn');
+  mb.onclick=e=>{ e.stopPropagation(); mb.setAttribute('aria-expanded',header.classList.toggle('menu-open')); };
+  document.addEventListener('click',e=>{ if(!e.target.closest('#hdrActions')) header.classList.remove('menu-open'); });
+})();
+
+init();
+</script>
+</body>
+</html>
