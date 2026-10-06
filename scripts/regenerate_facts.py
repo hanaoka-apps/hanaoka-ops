@@ -62,7 +62,9 @@ OUTPUT_JSON = 'dashboard_facts.json'
 HUB_OUTPUT_JSON = 'hub_kpi_facts.json'
 # HUBが当月・前月の集計に使う列 (ym, voucher_date, base, sales_div, item_nm,
 # qty, amount, unit_price, kind, kikou)。それ以外は null にして列位置だけ残す。
-HUB_KEEP_COLS = (0, 7, 14, 15, 19, 20, 21, 22, 23, 27)
+# 6=小分類名 / 16=大分類名 / 18=品目コード は、朝礼 読み上げモードの「新製品関連」(特記新製品リストの
+# キーで照合)に使う
+HUB_KEEP_COLS = (0, 6, 7, 14, 15, 16, 18, 19, 20, 21, 22, 23, 27)
 HUB_ROW_LEN = 28
 # ビルド月の何か月前から残すか。HUBは当月と前月を見るので、月をまたいで
 # ビルドが遅れても前月分が欠けないよう1か月余分に持つ。
@@ -876,6 +878,7 @@ def build_hub_kpi_facts(rows, orders, dept_targets, build_date):
         'dept_monthly_targets': dept_targets,
         'build_meta': {
             'window_start_ym': start_ym,
+            'keep_cols': list(HUB_KEEP_COLS),
             'updated_at': build_date.isoformat(),
         },
     }
