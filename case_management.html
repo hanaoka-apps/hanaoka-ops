@@ -465,6 +465,17 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
   white-space: pre-wrap; word-break: break-word;
 }
 .inquiry-panel a { color: var(--accent); }
+/* Mail：本文と添付PDFを同時に表示（左右 or 本文の下）。renderMailWithPdf が組み立てる */
+.mail-view { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.mail-view-bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: var(--surface2); font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.mail-view-bar .btn { font-size: 11px; padding: 2px 9px; }
+.mail-split { flex: 1; min-height: 0; display: flex; }
+.mail-split.lr { flex-direction: row; }
+.mail-split.lr .mail-split-body { flex: 0 0 42%; height: 100%; border-right: 1px solid var(--border); }
+.mail-split.lr .mail-split-pdf { flex: 1; height: 100%; position: relative; }
+.mail-split.tb { flex-direction: column; overflow-y: auto; }
+.mail-split.tb .mail-split-body { height: auto; overflow: visible; flex: none; }
+.mail-split.tb .mail-split-pdf { flex: none; height: 85vh; border-top: 1px solid var(--border); position: relative; }
 .tl-date { font-size: 11px; color: var(--text-muted); }
 .tl-content { font-size: 12px; line-height: 1.5; }
 .tl-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
@@ -1176,8 +1187,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
       <div style="flex:1;display:flex;flex-direction:column;background:var(--surface2);overflow:hidden;">
         <div class="pdf-toolbar">
           <span class="pdf-filename" id="triagePdfName">FAXを選択するとPDFが表示されます</span>
-          <!-- Mail で本文と添付PDFを切り替える（renderTriageMailToggle が中身を描く） -->
-          <span id="triageMailToggle" style="display:none;gap:4px;"></span>
           <button class="btn" id="triagePdfNewTabBtn" onclick="openTriagePdfNewTab()">別タブで開く</button>
         </div>
         <div style="flex:1;overflow:hidden;position:relative;" id="triagePdfArea">
@@ -4383,13 +4392,17 @@ function selectTriage(spId) {
     aiSortBox.style.display = 'none';
   }
   // 右カラム：PDFがあればPDFビューア、無く InquiryBody があればテキストパネル
-  //   Mail は本文が主役なので本文を先に出し、添付PDFがあれば切り替えボタンを出す
+  //   Mail は本文が主役。添付PDFがあれば本文と並べて出す（左右／本文の下は切り替え可）
   const pdfPath = e.AttachedPDFPath || '';
-  renderTriageMailToggle(null);
   if (routeOf(e.EventType) === 'mail' && e.InquiryBody) {
-    currentTriagePdfUrl = '';
     renderInquiryBody(e);
-    if (pdfPath) renderTriageMailToggle(e, 'body');
+    if (pdfPath) {
+      currentTriagePdfUrl = pdfPath;
+      setTriagePdfNewTabVisible(true);
+      renderMailWithPdf(document.getElementById('triagePdfArea'), e.InquiryBody, pdfPath);
+    } else {
+      currentTriagePdfUrl = '';
+    }
   } else if (pdfPath) {
     currentTriagePdfUrl = pdfPath;
     setTriagePdfNewTabVisible(true);
@@ -4877,28 +4890,33 @@ function openTriagePdfNewTab() {
 // 受信トレイ右カラム：問い合わせ本文パネル（PDFを持たないHP/ARU/AUTOPILOT用）
 // ============================================================
 // 「別タブで開く」はPDFのときだけ意味があるので出し分ける
-// Mail の「📧 本文／📎 添付PDF」切り替え。e=null で隠す。mode は今表示しているほう
-function renderTriageMailToggle(e, mode) {
-  const box = document.getElementById('triageMailToggle');
-  if (!box) return;
-  if (!e) { box.style.display = 'none'; box.innerHTML = ''; return; }
-  const btn = (m, label) =>
-    `<button class="btn${mode === m ? ' btn-primary' : ''}" style="font-size:11px;padding:3px 10px;" onclick="switchTriageMailView('${m}')">${label}</button>`;
-  box.innerHTML = btn('body', '📧 本文') + btn('pdf', '📎 添付PDF');
-  box.style.display = 'inline-flex';
+// Mail：本文と添付PDFを同時に表示する（受信トレイ・部署回覧・案件管理で共用）。
+//   並べ方は「左右」か「本文の下」。選んだほうを覚えておく（PDFは読み直さずクラスだけ切り替える）
+const MAIL_LAYOUT_KEY = 'mail-pdf-layout';
+function getMailLayout() {
+  try { return localStorage.getItem(MAIL_LAYOUT_KEY) === 'tb' ? 'tb' : 'lr'; } catch(_) { return 'lr'; }
 }
-function switchTriageMailView(mode) {
-  const e = triageItems.find(x => x._spId === currentTriageId);
-  if (!e || !e.AttachedPDFPath) return;
-  if (mode === 'pdf') {
-    currentTriagePdfUrl = e.AttachedPDFPath;
-    setTriagePdfNewTabVisible(true);
-    loadPdfWithAuth(e.AttachedPDFPath, 'triagePdfArea');
-  } else {
-    currentTriagePdfUrl = '';
-    renderInquiryBody(e);
-  }
-  renderTriageMailToggle(e, mode);
+function renderMailWithPdf(area, bodyText, pdfUrl) {
+  if (!area) return;
+  const layout = getMailLayout();
+  const pdfId = area.id + '_mailpdf';
+  const btn = (m, label) =>
+    `<button class="btn${layout === m ? ' btn-primary' : ''}" data-layout="${m}" onclick="setMailLayout(this,'${m}')">${label}</button>`;
+  area.innerHTML = `<div class="mail-view">`
+    + `<div class="mail-view-bar"><span style="flex:1">📎 添付PDFつき</span>${btn('lr', '◫ 左右に並べる')}${btn('tb', '⬓ 本文の下に出す')}</div>`
+    + `<div class="mail-split ${layout}">`
+    + `<div class="inquiry-panel mail-split-body">${linkifyText(bodyText || '')}</div>`
+    + `<div class="mail-split-pdf" id="${pdfId}"></div></div></div>`;
+  loadPdfWithAuth(pdfUrl, pdfId);
+}
+function setMailLayout(btn, layout) {
+  try { localStorage.setItem(MAIL_LAYOUT_KEY, layout); } catch(_) {}
+  const view = btn.closest('.mail-view');
+  if (!view) return;
+  const split = view.querySelector('.mail-split');
+  split.classList.remove('lr', 'tb');
+  split.classList.add(layout);
+  view.querySelectorAll('.mail-view-bar .btn').forEach(b => b.classList.toggle('btn-primary', b.dataset.layout === layout));
 }
 function setTriagePdfNewTabVisible(show) {
   const btn = document.getElementById('triagePdfNewTabBtn');
@@ -4926,7 +4944,6 @@ function renderInquiryBody(e) {
 // 右カラムを初期状態（未選択）に戻す
 function resetTriageViewer() {
   currentTriagePdfUrl = '';
-  renderTriageMailToggle(null);
   setTriagePdfNewTabVisible(true);
   const nameEl = document.getElementById('triagePdfName');
   if (nameEl) nameEl.textContent = '受信を選択すると内容が表示されます';
@@ -5250,7 +5267,7 @@ function selectFaxView(spId) {
     loadPdfWithAuth(pdfPath, 'faxViewPdfArea');
   } else if (isInquiryEvent(e)) {
     // PDFの無い問い合わせ・Mailは本文を出す（InquiryBody は一覧では取っていないので1件だけ取得）
-    //   Mail は添付PDFがあっても本文を出す（添付は本文中のリンクから開ける）
+    //   Mail は添付PDFがあっても本文を主に出す（PDFは本文と並べて表示）
     document.getElementById('faxViewPdfName').textContent = e.Title || e.EventType || '問い合わせ';
     pdfArea.innerHTML = '<div class="loading-spinner">本文を読み込み中...</div>';
     (async () => {
@@ -5258,6 +5275,7 @@ function selectFaxView(spId) {
         const body = e.InquiryBody || await fetchInquiryBody(e._spId);
         e.InquiryBody = body;
         if (currentFaxViewId !== spId) return;   // 読み込み中に別の件を開いた
+        if (body && isMail && pdfPath) { renderMailWithPdf(pdfArea, body, pdfPath); return; }
         pdfArea.innerHTML = body
           ? `<div class="inquiry-panel">${linkifyText(body)}</div>`
           : '<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">本文がありません</div></div>';
@@ -5665,6 +5683,12 @@ async function showCaseInquiryBody(ev) {
   try {
     const body = ev.InquiryBody || await fetchInquiryBody(ev._spId);
     ev.InquiryBody = body;   // 同じ案件内での再クリック時は再取得しない
+    // Mail で添付PDFがあれば本文と並べて出す（「別タブで開く」はPDFを開く）
+    if (body && routeOf(ev.EventType) === 'mail' && ev.AttachedPDFPath) {
+      currentPdfUrl = ev.AttachedPDFPath;
+      renderMailWithPdf(area, body, ev.AttachedPDFPath);
+      return;
+    }
     area.innerHTML = body
       ? `<div class="inquiry-panel">${linkifyText(body)}</div>`
       : '<div class="pdf-empty"><div class="pdf-empty-icon">📄</div>'
@@ -5679,7 +5703,7 @@ function selectTimelinePdf(idx) {
   const ev = events[idx];
   if (!ev) return;
   // PDFが無く問い合わせイベントなら本文パネルを出す。
-  //   Mail は添付PDFがあっても本文を出す（添付は本文中のリンクから開ける）
+  //   Mail は添付PDFがあっても本文を主に出す（PDFは本文と並べて表示）
   if (!ev.AttachedPDFPath || routeOf(ev.EventType) === 'mail') {
     if (!isInquiryEvent(ev)) return;
     document.querySelectorAll('#timelineContent .tl-item').forEach(el => el.classList.remove('tl-active'));
