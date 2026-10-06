@@ -56,6 +56,8 @@ h1{font-size:19px;font-weight:700;margin:0;letter-spacing:.02em}
 .hint{margin-top:18px;font-size:12.5px;color:var(--ink3);line-height:1.8}
 .rangememo{margin:18px auto 0;max-width:720px;text-align:left;font-size:13px;line-height:1.8;background:var(--sel);border:1px solid var(--rule);border-radius:8px;padding:10px 14px}
 .rangememo .rangeHint{font-weight:700;color:var(--ink)}
+#histMonthSec .shead{flex-wrap:wrap}
+#histMonthSec .shead h2{white-space:nowrap}
 table.heatmap th.collabel.clickable{cursor:pointer}
 table.heatmap th.collabel.clickable:hover{color:var(--ink)}
 table.heatmap th.collabel.sel{color:var(--ink);background:var(--sel);border-radius:4px}
@@ -320,9 +322,10 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
         <button id="histNextBtn" type="button" aria-label="次月">▶</button>
       </div>
     </div>
-    <div class="tbl"><table id="histTable">
+    <div class="acts hide" id="histActs"></div>
+    <div class="tbl" id="histTableWrap"><table id="histTable">
       <thead><tr>
-        <th>部署</th><th>氏名</th><th class="c">基準日</th>
+        <th>部署</th><th>氏名</th><th class="c">保存時の基準日</th>
         <th class="r">付与日数</th><th class="r">取得</th><th class="r">不足</th>
         <th class="r">期限まで</th><th class="c">状況</th>
       </tr></thead>
@@ -624,13 +627,30 @@ function stepHistMonth(delta){
 function renderHistoryMonth(){
   updateHistStepperButtons();
   const mk=$("#histMonthSel").value;
-  const all=HISTORY.filter(h=>h.年月===mk);
+  // 退職者は義務の管理対象外（古い保存データに含まれていることがあるため除く）
+  const all=HISTORY.filter(h=>h.年月===mk&&h.部署!=="退職者");
   const alertOnly=$("#histAlertOnly").checked;
-  const ORDER={"至急":0,"要対応":1,"計画":2,"達成":3};
-  // 対応が必要な方だけ：至急→要対応の順、期限が近い順。全員表示：部署・氏名順
+  // 対応が必要な方だけ：今の状況の「対応が必要な方」と同じく履行期限が近い順。全員表示：部署・氏名順
   const rows=(alertOnly?all.filter(h=>h.状況==="至急"||h.状況==="要対応"):all).sort(alertOnly
-    ?(a,b)=>(ORDER[a.状況]??9)-(ORDER[b.状況]??9)||(a.期限まで日数??9999)-(b.期限まで日数??9999)
+    ?(a,b)=>(a.期限まで日数??9999)-(b.期限まで日数??9999)
     :(a,b)=>(a.部署||"").localeCompare(b.部署,"ja")||String(a.氏名).localeCompare(String(b.氏名),"ja"));
+  // 対応が必要な方だけのときは、今の状況と同じ横棒のカードで出す（画像コピーもこのカード）
+  $("#histActs").classList.toggle("hide",!alertOnly);
+  $("#histTableWrap").classList.toggle("hide",alertOnly);
+  if(alertOnly){
+    const SPAN=365;
+    $("#histActs").innerHTML = rows.length ? rows.map(h=>{
+      const days=h.期限まで日数??0, cls=h.状況==="至急"?"u":"w";
+      const gone=Math.max(1.5,Math.min(100,((SPAN-days)/SPAN)*100));
+      const after=[h.締め後取得>0?`${h.データ取得日?h.データ取得日.slice(5):""}までに${h.締め後取得}日取得${h.解消?" → 解消":""}`:"", h.予定>0?`予定 ${h.予定}日`:""].filter(Boolean).join("／");
+      return `<div class="act ${cls}">
+        <div class="who">${esc(h.氏名)}${h.解消?' <span class="pill p-o">解消済み</span>':""}<small>${esc(h.部署)}</small></div>
+        <div class="short num">${h.不足??""}<small>日 不足</small></div>
+        <div><div class="runway"><i style="width:${gone}%"></i></div>${after?`<small class="after">基準日後：${esc(after)}</small>`:""}</div>
+        <div class="due"><strong class="num">残り ${days} 日</strong>${esc(h.期限||"")} まで</div>
+      </div>`;
+    }).join("") : `<div class="act" style="grid-template-columns:1fr"><div class="dim">${all.length?"この月に対応が必要な方（至急・要対応）はいません。":"データなし"}</div></div>`;
+  }
   const cnt=s=>all.filter(h=>h.状況===s).length;
   const memo=all.length?`基準日（締め）${all[0].基準日}時点${all[0].データ取得日?`／データ取得日 ${all[0].データ取得日}`:""}`:"";
   const resolvedN=all.filter(h=>h.解消).length;
@@ -655,6 +675,7 @@ function renderAttentionHeatmap(){
   const months=histMonths();
   const people=new Map(); // key -> {氏名,部署,byMonth:{年月:履歴レコード}}
   for(const h of HISTORY){
+    if(h.部署==="退職者") continue;  // 退職者は管理対象外
     const key=(h.コード||h.氏名)+"|"+h.氏名;
     if(!people.has(key)) people.set(key,{氏名:h.氏名,部署:h.部署,byMonth:{}});
     people.get(key).byMonth[h.年月]=h;
