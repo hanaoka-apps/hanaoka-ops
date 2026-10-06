@@ -1594,7 +1594,34 @@ function setStatusMessage(msg, isError) {
 }
 
 // dashboard_facts.json の明細から、HUBに出す数字だけを集計する
-function computeKpiFacts(facts) {
+// 特記新製品(NewProductWatchlist の項目)ごとの 台数・金額(日計・月計)。
+// 受注の納期が今月で、伝票日付が表示日以前の行を、キー(小分類名/大分類名/品目コード)で照合する。
+// 日報(Sales HUB)の aggregateNewProducts と同じ条件。
+function aggregateNewProducts(orderRows, today, items) {
+  const keyIdx = { sho_bunrui: IDX.sho_bunrui, dai_bunrui: IDX.dai_bunrui, item_cd: IDX.item_cd };
+  const todayKey = today.y * 10000 + today.mo * 100 + today.d;
+  const byId = {};
+  items.forEach(it => { byId[it.id] = { qtyToday: 0, qtyMonth: 0, amtToday: 0, amtMonth: 0 }; });
+  for (const r of orderRows) {
+    if (Number(r[IDX.kind]) === 2) continue;
+    if (isInternalTransfer(r)) continue;
+    if (!isSameMonthByKikou(r, today.y, today.mo)) continue;
+    const vKey = voucherDateKey(r);
+    if (vKey === null || vKey > todayKey) continue;
+    const qty = Number(r[IDX.qty]) || 0;
+    const amt = Number(r[IDX.amount]) || 0;
+    const todayHit = isToday(r, today);
+    for (const it of items) {
+      if (String(r[keyIdx[it.keyType]] || '').trim() !== it.key) continue;
+      byId[it.id].qtyMonth += qty;
+      byId[it.id].amtMonth += amt;
+      if (todayHit) { byId[it.id].qtyToday += qty; byId[it.id].amtToday += amt; }
+    }
+  }
+  return byId;
+}
+
+function computeKpiFacts(facts, newProductItems) {
   const rows = facts.rows || [];
   const orderRows = facts.order_rows || [];
   const today = detectLatestClosedDate(facts);
@@ -1610,16 +1637,24 @@ function computeKpiFacts(facts) {
     prevOrderMetrics: aggregateByGroup(orderRows, prevYm, prev, 'kikou'),
     prevSalesMetrics: aggregateByGroup(rows, prevYm, prev, 'ym'),
     updatedAt: facts.build_meta && facts.build_meta.updated_at,
+    // 新製品の集計。HUB用の軽量ファイルが古い(小分類・大分類・品目コードの列が無い)ときは
+    // 0円と誤って出さないよう null にして、画面側で「次回の更新後に表示」と案内する
+    newProducts: (() => {
+      if (!newProductItems) return null;
+      const meta = facts.build_meta || {};
+      const hasCols = meta.keep_cols ? [6, 16, 18].every(c => meta.keep_cols.includes(c)) : !meta.window_start_ym;
+      return hasCols ? aggregateNewProducts(orderRows, today, newProductItems) : null;
+    })(),
   };
 }
 
 // urls を順に試し、ファイルが無い(404)ときだけ次へ回す
-async function fetchKpiFactsInline(urls, token) {
+async function fetchKpiFactsInline(urls, token, newProductItems) {
   for (const url of urls) {
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
     if (res.status === 404) continue;
     if (!res.ok) break;
-    return computeKpiFacts(await res.json());
+    return computeKpiFacts(await res.json(), newProductItems);
   }
   throw new Error('dashboard_facts.json が取得できません');
 }
@@ -1631,16 +1666,16 @@ async function fetchKpiFactsInline(urls, token) {
 const KPI_WORKER_FNS = [
   matchGroup, isInternalTransfer, rowYm, parseVoucherDay, voucherDateKey, isToday, isSameMonthByKikou,
   aggregateByGroup, csvScopeMap, loadPlansFromFacts, findLatestVoucherDate, detectLatestClosedDate,
-  daysInMonth, prevMonthSameDay, computeKpiFacts, fetchKpiFactsInline,
+  daysInMonth, prevMonthSameDay, aggregateNewProducts, computeKpiFacts, fetchKpiFactsInline,
 ];
-function fetchKpiFacts(urls, token) {
+function fetchKpiFacts(urls, token, newProductItems) {
   let worker, blobUrl;
   try {
     const src = [
       `const IDX = ${JSON.stringify(IDX)};`,
       `const DEPT_GROUPS = ${JSON.stringify(DEPT_GROUPS)};`,
       ...KPI_WORKER_FNS.map(f => f.toString()),
-      `self.onmessage = (e) => fetchKpiFactsInline(e.data.urls, e.data.token)
+      `self.onmessage = (e) => fetchKpiFactsInline(e.data.urls, e.data.token, e.data.items)
         .then(result => self.postMessage({ result }))
         .catch(err => self.postMessage({ error: String((err && err.message) || err) }));`,
     ].join('\n');
@@ -1649,7 +1684,7 @@ function fetchKpiFacts(urls, token) {
   } catch (e) {
     console.warn('[会社の現在地] Workerが使えないため画面側で集計します', e);
     if (blobUrl) URL.revokeObjectURL(blobUrl);
-    return fetchKpiFactsInline(urls, token);
+    return fetchKpiFactsInline(urls, token, newProductItems);
   }
   return new Promise((resolve, reject) => {
     const done = () => { worker.terminate(); URL.revokeObjectURL(blobUrl); };
@@ -1661,9 +1696,9 @@ function fetchKpiFacts(urls, token) {
     worker.onerror = (e) => {
       done();
       console.warn('[会社の現在地] Workerでの集計に失敗したため画面側で集計します', e.message);
-      fetchKpiFactsInline(urls, token).then(resolve, reject);
+      fetchKpiFactsInline(urls, token, newProductItems).then(resolve, reject);
     };
-    worker.postMessage({ urls, token });
+    worker.postMessage({ urls, token, items: newProductItems });
   });
 }
 
@@ -1841,7 +1876,33 @@ function renderReadMode() {
     `<div class="read-date">${today.y}年${today.mo}月${today.d}日 営業日報</div>`
     + `<div class="read-note">受注は納期ベースの累計、売上は年月度ベースの累計(営業カードと同じ数字)</div>`
     + section('受注金額', orderMetrics, false)
-    + section('売上金額', salesMetrics, true);
+    + section('売上金額', salesMetrics, true)
+    + newProductSection(d, all);
+}
+
+// 新製品関連: 既定は「金額月計」だけ(日報の黄色の部分)。「すべての数字を出す」で機種ごとの 台数・金額 も出す
+function newProductSection(d, all) {
+  const title = '<div class="read-sec-title">新製品関連</div>';
+  const items = d.newProductItems, agg = d.newProducts;
+  if (!items) return `<div class="read-sec">${title}<div class="read-note">特記新製品の登録を読み込めませんでした。</div></div>`;
+  if (!items.length) return `<div class="read-sec">${title}<div class="read-note">登録された新製品はありません(登録は Sales HUB の設定から)。</div></div>`;
+  if (!agg) return `<div class="read-sec">${title}<div class="read-note">新製品の集計は、次回の自動更新(毎日 3:30・16:30)のあとに表示されます。</div></div>`;
+  const tot = newProductTotal(items, agg);
+  const cell = (label, val, cls) => `<div class="read-cell ${cls || ''}"><small>${label}</small><b>${val}</b></div>`;
+  const row = (name, a, total) => `<div class="read-row${total ? ' total' : ''}"><div class="read-dept">${escapeHtml(name)}</div>`
+    + (all ? cell('台数 日計', a.qtyToday.toLocaleString('ja-JP') + '台') + cell('台数 月計', a.qtyMonth.toLocaleString('ja-JP') + '台')
+      + cell('金額日計', jpAmount(a.amtToday)) : '')
+    + cell('金額月計', jpAmount(a.amtMonth), 'rate') + '</div>';
+  return `<div class="read-sec${all ? '' : ' compact'}">${title}`
+    + (all ? items.map(it => row(it.name || it.key, agg[it.id])).join('') : '')
+    + row('新製品関係合計', tot, true) + '</div>';
+}
+function newProductTotal(items, agg) {
+  return items.reduce((t, it) => {
+    const a = agg[it.id] || {};
+    t.qtyToday += a.qtyToday || 0; t.qtyMonth += a.qtyMonth || 0; t.amtToday += a.amtToday || 0; t.amtMonth += a.amtMonth || 0;
+    return t;
+  }, { qtyToday: 0, qtyMonth: 0, amtToday: 0, amtMonth: 0 });
 }
 
 // 音声で読み上げ(ブラウザの読み上げ機能。端末によって声・読み方が違う)
@@ -1859,6 +1920,10 @@ function readScript() {
     lines.push(all
       ? `${g}。計画${jpAmount(plans[g] || 0)}。当日${jpAmount(salesMetrics[g].todayAmt)}。累計${jpAmount(salesMetrics[g].monthAmt)}。計画対比${pct(salesMetrics, g)}。`
       : `${g}。計画対比${pct(salesMetrics, g)}。`);
+  }
+  if (READ_DATA.newProductItems && READ_DATA.newProductItems.length && READ_DATA.newProducts) {
+    const t = newProductTotal(READ_DATA.newProductItems, READ_DATA.newProducts);
+    lines.push('新製品関連。', `新製品関係合計。金額月計${jpAmount(t.amtMonth)}。`);
   }
   return lines;
 }
@@ -1907,6 +1972,29 @@ function startSpeaking() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.hidden) close(); });
 })();
 
+// 特記新製品リスト。登録・並び替えは Sales HUB(sales_dashboard.html)の設定画面で行う。HUBは読むだけ。
+// リストが無い・読めないときは null(新製品の欄だけ「取得できません」にして、他は出す)
+async function loadNewProductItems() {
+  try {
+    const data = await graphGet(`/sites/${SP.siteId}/lists/NewProductWatchlist/items?expand=fields&$top=200`);
+    const keyTypes = ['sho_bunrui', 'dai_bunrui', 'item_cd'];
+    return (data.value || [])
+      .map(it => ({
+        id: it.id,
+        keyType: String(it.fields.KeyType || 'sho_bunrui').trim(),
+        key: String(it.fields.KeyValue || '').trim(),
+        name: String(it.fields.DisplayName || '').trim(),
+        order: Number(it.fields.SortOrder) || 0,
+        enabled: it.fields.Enabled !== false,
+      }))
+      .filter(it => it.enabled && it.key && keyTypes.includes(it.keyType))
+      .sort((a, b) => a.order - b.order);
+  } catch (e) {
+    console.warn('[新製品] 特記新製品リストを読めませんでした', e);
+    return null;
+  }
+}
+
 async function loadKpis() {
   const t = await getToken();
   const fileUrl = name => `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/${name}:/content`;
@@ -1914,7 +2002,8 @@ async function loadKpis() {
   // 優先し、まだ生成されていなければ全量の dashboard_facts.json で集計する
   const urls = [fileUrl('hub_kpi_facts.json'), fileUrl('dashboard_facts.json')];
   // 営業日の目安計算に使う祝日は、集計と並行して描画より前に読み込んでおく
-  const [k] = await Promise.all([fetchKpiFacts(urls, t), loadJpHolidays()]);
+  const newProductItems = await loadNewProductItems();
+  const [k] = await Promise.all([fetchKpiFacts(urls, t, newProductItems), loadJpHolidays()]);
   const { today, plans, orderMetrics, salesMetrics, prevOrderMetrics, prevSalesMetrics } = k;
 
   TODAY_LABEL = `${today.mo}/${today.d}`;
@@ -1930,7 +2019,7 @@ async function loadKpis() {
   renderBulletChart('deptBulletChart', DEPT_GROUPS, plans, orderMetrics, salesMetrics);
   renderCombinedTable('deptCombinedTableWrap', DEPT_GROUPS, plans, orderMetrics, salesMetrics, DEPT_COLORS);
 
-  READ_DATA = { today, plans, orderMetrics, salesMetrics };
+  READ_DATA = { today, plans, orderMetrics, salesMetrics, newProducts: k.newProducts, newProductItems };
   document.getElementById('readModeBtn').disabled = false;
 }
 
