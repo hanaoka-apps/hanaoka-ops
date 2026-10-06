@@ -121,6 +121,16 @@
   .form .full{grid-column:1/-1}
   .form .hint{font-size:11.5px;color:var(--sub);font-weight:500}
   .ferr{color:var(--red-ink);font-size:13px;padding:0 20px 10px}
+  .fu{font-size:12px;line-height:1.5;max-width:340px}
+  .fu .cause{color:var(--txt);white-space:pre-wrap}
+  .fu .meta{color:var(--sub)}
+  .fu .late{color:var(--red-ink);font-weight:700}
+  tr.crow td{background:var(--bg);border-bottom:none;padding-top:10px}
+  tr.prow td:first-child{padding-left:22px}
+  .hist{padding:4px 20px 12px;font-size:12px;color:var(--sub);max-height:160px;overflow:auto}
+  .hist div{padding:3px 0;border-bottom:1px dashed var(--line)}
+  .hist b{color:var(--txt);font-weight:600}
+  .form select{border:1px solid var(--line-strong);border-radius:8px;padding:7px 10px;font-size:14px;font-family:inherit;color:var(--txt);background:var(--surface)}
   .pill.sp{background:var(--purple-soft);color:var(--purple)}
   .tnote{margin-top:8px;font-size:12.5px;background:var(--amber-soft);color:var(--amber);border-radius:8px;padding:6px 10px;display:inline-block}
   .tnote b{font-weight:700}
@@ -281,6 +291,9 @@
         <label>拠点<select id="gBase"></select></label>
         <label>担当者<select id="gStaff"></select></label>
         <label>種類<div class="seg" id="gKind"><button data-k="" class="on">すべて</button><button data-k="未入金">未入金</button><button data-k="過入金">過入金</button></div></label>
+        <label>フォロー<select id="gFollow">
+          <option value="">すべて</option><option value="none">未記入</option><option value="late">入金予定日を過ぎた</option>
+          <option value="wait">総務の確認待ち</option><option value="done">総務確認済</option></select></label>
         <label>検索<input id="gSearch" type="search" placeholder="得意先名・コード"></label>
         <div class="grow"></div>
         <button class="btn" id="csvBtn">CSVに出す（会議資料用）</button>
@@ -312,15 +325,22 @@ const FILES = {
   staff:     { name:'担当者マスタ.csv', label:'担当者マスタ' },
 };
 
-// 特別請求（SMILE の締めとは別に作った請求書）の保存先。SharedMasters と同じサイトのリスト
-//   1 件 ＝ 1 行。絞り込みに使う値だけ列にして、選んだ伝票の中身などは Data 列に JSON で入れる
-const SPECIAL_LIST = 'AR_特別請求';
-const SPECIAL_COLS = [
-  {name:'CustCode',text:{}}, {name:'InvoiceNo',text:{}}, {name:'IssueDate',text:{}}, {name:'DueDate',text:{}},
-  {name:'NetAmount',number:{}}, {name:'TaxAmount',number:{}}, {name:'Status',text:{}},
-  {name:'Data',text:{allowMultipleLines:true,textType:'plain'}},
-];
-let specialListId=null, specialErr='';
+// 書き込む先（SharedMasters と同じサイトのリスト）。1 件 ＝ 1 行。
+//   絞り込みに使う値だけ列にして、中身は Data 列に JSON で入れる。
+//   誰が書けるかは SharePoint のリストの権限で決める（画面では判定しない）。権限を分けられるようにリストを分けている
+//     special … 特別請求（SMILE の締めとは別に作った請求書）。総務だけが書く
+//     follow  … 違算のフォロー（原因・責任・入金予定日）。営業と総務が書く
+const DATA_COL = {name:'Data',text:{allowMultipleLines:true,textType:'plain'}};
+const LISTS = {
+  special: { name:'AR_特別請求', label:'特別請求', cols:[
+    {name:'CustCode',text:{}}, {name:'InvoiceNo',text:{}}, {name:'IssueDate',text:{}}, {name:'DueDate',text:{}},
+    {name:'NetAmount',number:{}}, {name:'TaxAmount',number:{}}, {name:'Status',text:{}}, DATA_COL ] },
+  follow: { name:'AR_違算フォロー', label:'違算のフォロー', cols:[
+    {name:'CustCode',text:{}}, {name:'DueDate',text:{}}, {name:'Responsibility',text:{}}, {name:'ExpectedDate',text:{}},
+    {name:'Status',text:{}}, DATA_COL ] },
+};
+const listIds={}, listErr={};
+let specialErr='';
 let msalInstance=null, account=null, driveId=null;
 let SRC={};          // 読み込んだ行（キーは FILES と同じ）
 let SRCINFO={};      // ファイルの更新日時
@@ -388,32 +408,60 @@ async function graphSend(method,url,body){
   if(!r.ok){ const t=await r.text(); throw new Error(`Graph ${r.status}: ${t.slice(0,200)}`); }
   return r.status===204?{}:r.json();
 }
-async function findSpecialList(){
-  if(specialListId) return specialListId;
+// リストを名前で探す（なければ null）
+async function findList(key){
+  if(listIds[key]) return listIds[key];
   const d=await graphGet(`/sites/${SITE_ID}/lists?$select=id,displayName&$top=200`);
-  const hit=(d.value||[]).find(l=>l.displayName===SPECIAL_LIST);
-  specialListId=hit?hit.id:null; return specialListId;
+  const hit=(d.value||[]).find(l=>l.displayName===LISTS[key].name);
+  listIds[key]=hit?hit.id:null; return listIds[key];
+}
+async function createList(key){
+  const d=await graphSend('POST',`/sites/${SITE_ID}/lists`,{displayName:LISTS[key].name,columns:LISTS[key].cols,list:{template:'genericList'}});
+  listIds[key]=d.id; return d.id;
+}
+// すべての行を { spId, f:列の値, data:Data列のJSON } で返す。リストがまだなければ []
+async function readList(key){
+  const id=await findList(key); if(!id) return [];
+  const out=[]; let url=`/sites/${SITE_ID}/lists/${id}/items?expand=fields&$top=500`;
+  while(url){
+    const d=await graphGet(url);
+    (d.value||[]).forEach(v=>{ const f=v.fields||{}; let data={}; try{ data=JSON.parse(f.Data||'{}'); }catch(e){} out.push({spId:v.id,f,data}); });
+    url=d['@odata.nextLink']?d['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0',''):null;
+  }
+  return out;
+}
+// 1行を書く（spId があれば上書き）。リストがなければ、確認してから作る
+async function writeList(key,spId,fields){
+  let id=await findList(key);
+  if(!id){
+    if(!confirm(LISTS[key].label+'の保存先（SharePoint のリスト「'+LISTS[key].name+'」）がまだありません。作りますか？')) return false;
+    id=await createList(key);
+  }
+  if(spId) await graphSend('PATCH',`/sites/${SITE_ID}/lists/${id}/items/${spId}/fields`,fields);
+  else await graphSend('POST',`/sites/${SITE_ID}/lists/${id}/items`,{fields});
+  return true;
 }
 async function loadSpecials(){
   specialErr='';
   try{
-    const id=await findSpecialList();
-    if(!id){ SRC.specials=[]; return; }
-    const out=[]; let url=`/sites/${SITE_ID}/lists/${id}/items?expand=fields&$top=500`;
-    while(url){
-      const d=await graphGet(url);
-      (d.value||[]).forEach(v=>{ const f=v.fields||{}; let data={}; try{ data=JSON.parse(f.Data||'{}'); }catch(e){}
-        out.push({ spId:v.id, id:v.id, cust:f.CustCode||'', no:f.InvoiceNo||'', issue:f.IssueDate||'', due:f.DueDate||'',
-          net:Number(f.NetAmount)||0, tax:Number(f.TaxAmount)||0, status:f.Status||'登録', lines:data.lines||[], memo:data.memo||'',
-          custName:data.custName||'', createdBy:data.createdBy||'', createdAt:data.createdAt||'', updatedBy:data.updatedBy||'' }); });
-      url=d['@odata.nextLink']?d['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0',''):null;
-    }
-    SRC.specials=out;
+    SRC.specials=(await readList('special')).map(({spId,f,data})=>({ spId, id:spId, cust:f.CustCode||'', no:f.InvoiceNo||'', issue:f.IssueDate||'', due:f.DueDate||'',
+      net:Number(f.NetAmount)||0, tax:Number(f.TaxAmount)||0, status:f.Status||'登録', lines:data.lines||[], memo:data.memo||'',
+      custName:data.custName||'', createdBy:data.createdBy||'', createdAt:data.createdAt||'', updatedBy:data.updatedBy||'' }));
   }catch(e){ console.warn('特別請求',e); specialErr='特別請求を読めませんでした（'+e.message.slice(0,80)+'）'; SRC.specials=SRC.specials||[]; }
 }
-async function createSpecialList(){
-  const d=await graphSend('POST',`/sites/${SITE_ID}/lists`,{displayName:SPECIAL_LIST,columns:SPECIAL_COLS,list:{template:'genericList'}});
-  specialListId=d.id; return d.id;
+// 違算のフォロー：キーは「請求先ｺｰﾄﾞ|回収予定日」（違算 Excel の 1 件と同じ単位）
+let FOLLOW={}, followErr='';
+function followKey(code,due){ return code+'|'+due; }
+async function loadFollows(){
+  followErr='';
+  try{
+    const F={};
+    (await readList('follow')).forEach(({spId,f,data})=>{ const k=followKey(f.CustCode||'',f.DueDate||'');
+      F[k]={ spId, key:k, cust:f.CustCode||'', due:f.DueDate||'', resp:f.Responsibility||'', expected:f.ExpectedDate||'', status:f.Status||'',
+        cause:data.cause||'', measure:data.measure||'', amount:data.amount, custName:data.custName||'', history:data.history||[],
+        updatedBy:data.updatedBy||'', updatedAt:data.updatedAt||'' }; });
+    FOLLOW=F;
+  }catch(e){ console.warn('違算フォロー',e); followErr='違算のフォローを読めませんでした（'+e.message.slice(0,80)+'）'; }
 }
 async function resolveDriveId(){
   if(driveId) return driveId;
@@ -442,7 +490,7 @@ async function loadAll(){
   await Promise.all(Object.entries(FILES).map(async([k,f])=>{
     try{ const r=await fetchFile(f.name); SRC[k]=ARCore.toObjects(r.text); SRCINFO[k]={modified:r.modified,from:'SharePoint'}; }
     catch(e){ console.warn(f.name,e); if(!SRC[k]) missing.push(f.name); }
-  }).concat([loadSpecials()]));
+  }).concat([loadSpecials(),loadFollows()]));
   if(!SRC.detail||!SRC.customers){
     setStatus('error','読み込めませんでした: '+esc(missing.join('、'))+'　右上の「ファイルを選ぶ」で手元のファイルからも開けます。'); return;
   }
@@ -477,7 +525,8 @@ function summaryText(){
   const md=s=>s&&s!=='9999-99-99'?`${+s.slice(5,7)}/${+s.slice(8,10)}`:'—';
   const mod=k=>SRCINFO[k]&&SRCINFO[k].modified?new Date(SRCINFO[k].modified).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
   const sp=(SRC.specials||[]).filter(x=>x.status!=='取消').length;
-  return `請求明細 ${md(M.dataStart)}〜${md(M.dataEnd)}（${mod('detail')}更新）　入金明細 ${SRC.payments?md(M.payStart)+'〜'+md(M.payEnd)+'（'+mod('payments')+'更新）':'なし'}　特別請求 ${sp}件`+(specialErr?'　<b>'+esc(specialErr)+'</b>':'');
+  return `請求明細 ${md(M.dataStart)}〜${md(M.dataEnd)}（${mod('detail')}更新）　入金明細 ${SRC.payments?md(M.payStart)+'〜'+md(M.payEnd)+'（'+mod('payments')+'更新）':'なし'}　特別請求 ${sp}件`
+    +[specialErr,followErr].filter(Boolean).map(e=>'　<b>'+esc(e)+'</b>').join('');
 }
 document.getElementById('asofInput').onchange=e=>{ asofOverride=e.target.value; if(M) rebuild(); };
 
@@ -520,7 +569,7 @@ function fillFilters(){
   for(const id of ['fStaff','gStaff']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+staffs.map(s=>opt(s,s)).join(''); el.value=cur; }
 }
 ['search','fBase','fStaff','fShow'].forEach(id=>document.getElementById(id).addEventListener('input',renderList));
-['gBase','gStaff','gSearch'].forEach(id=>document.getElementById(id).addEventListener('input',renderGap));
+['gBase','gStaff','gSearch','gFollow'].forEach(id=>document.getElementById(id).addEventListener('input',renderGap));
 document.querySelectorAll('#gKind button').forEach(b=>b.onclick=()=>{ gKind=b.dataset.k; document.querySelectorAll('#gKind button').forEach(x=>x.classList.toggle('on',x===b)); renderGap(); });
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ setView(t.dataset.view); writeHash(); });
 function setView(v){
@@ -612,8 +661,9 @@ function renderDetail(){
       <td class="num">${yen(p.paid)}${p.payments.length?` <span class="muted">(${p.payments.length})</span>`:''}</td>
       <td class="num ${p.diff&&p.judged?'neg':''}">${p.judged?yen(p.diff):''}</td>
       <td class="num">${p.cum==null?'':yen(p.cum)}</td>
-      <td>${periodState(p,c)}</td></tr>
-      <tr class="paydetail" data-for="${i}" hidden><td colspan="7" style="padding:0"><table>${pays||'<tr class="sub"><td>この期間の入金はありません</td></tr>'}</table></td></tr>`;
+      <td>${periodState(p,c)}</td>
+      <td>${(p.judged&&p.diff!==0)||fuOf(c,p)?`${fuOf(c,p)?fuCell(fuOf(c,p)):''}<button class="btn" data-fu="${esc(c.code)}|${esc(p.due)}">${fuOf(c,p)?'直す':'フォローを書く'}</button>`:''}</td></tr>
+      <tr class="paydetail" data-for="${i}" hidden><td colspan="8" style="padding:0"><table>${pays||'<tr class="sub"><td>この期間の入金はありません</td></tr>'}</table></td></tr>`;
   }).join('');
 
   // 請求書の一覧（請求書番号ごと）
@@ -642,8 +692,8 @@ function renderDetail(){
       <div class="panel">
         <h3>請求と入金 <small>回収予定日ごと・行を押すと入金の内訳</small></h3>
         <div class="tw"><table>
-          <thead><tr><th>回収予定日</th><th>請求書</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th class="num">累計</th><th>状態</th></tr></thead>
-          <tbody>${prow||'<tr><td colspan="7" class="empty">締め済みの請求がありません</td></tr>'}</tbody>
+          <thead><tr><th>回収予定日</th><th>請求書</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th class="num">累計</th><th>状態</th><th>フォロー</th></tr></thead>
+          <tbody>${prow||'<tr><td colspan="8" class="empty">締め済みの請求がありません</td></tr>'}</tbody>
         </table></div>
         <div class="note">回収予定日（休日なら翌営業日）を過ぎても請求額と入金額が合わないものが違算です。前後の回収予定日との中間までに入った入金を、その回の請求に充てています（数日遅れの入金はその回で解消）。入金には振込・手形・相殺のほか、売上割引料・支払手数料・販売促進費を含みます。
           それより遅い入金は次の回に入るため、その回は過入金に見えます。<b>累計が 0 に戻れば解消</b>です。</div>
@@ -664,8 +714,9 @@ function renderDetail(){
     </div>`;
   const bb=document.getElementById('backBtn');
   if(bb) bb.onclick=()=>{ document.getElementById('viewCust').classList.remove('show-detail'); selCode=''; writeHash(); renderList(); };
+  el.querySelectorAll('[data-fu]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); const [code,due]=b.dataset.fu.split('|'); openFollowForm(code,due); });
   el.querySelectorAll('tr[data-p]').forEach(tr=>tr.onclick=e=>{
-    if(e.target.closest('.inv-link')) return;
+    if(e.target.closest('.inv-link,button')) return;
     const d=el.querySelector(`tr.paydetail[data-for="${tr.dataset.p}"]`); d.hidden=!d.hidden;
   });
   el.querySelectorAll('.inv-link,tr[data-no]').forEach(a=>a.onclick=e=>{ e.stopPropagation(); openInvoice(c,a.dataset.no); });
@@ -795,16 +846,9 @@ function openSpecialForm(c,lines,sp){
 async function saveSpecial(c,sp,fields){
   const btns=[...document.querySelectorAll('#invBody .inv-foot button')]; btns.forEach(b=>b.disabled=true);
   try{
-    let id=await findSpecialList();
-    if(!id){
-      if(!confirm('特別請求の保存先（SharePoint のリスト「'+SPECIAL_LIST+'」）がまだありません。作りますか？')){ btns.forEach(b=>b.disabled=false); return; }
-      id=await createSpecialList();
-    }
-    if(sp){
-      if(fields.Status==='取消') fields.Data=JSON.stringify({lines:sp.lines,memo:sp.memo,custName:sp.custName,createdBy:sp.createdBy,createdAt:sp.createdAt,
-        updatedBy:account&&account.name||'',updatedAt:new Date().toISOString()});
-      await graphSend('PATCH',`/sites/${SITE_ID}/lists/${id}/items/${sp.spId}/fields`,fields);
-    }else await graphSend('POST',`/sites/${SITE_ID}/lists/${id}/items`,{fields});
+    if(sp&&fields.Status==='取消') fields.Data=JSON.stringify({lines:sp.lines,memo:sp.memo,custName:sp.custName,createdBy:sp.createdBy,createdAt:sp.createdAt,
+      updatedBy:account&&account.name||'',updatedAt:new Date().toISOString()});
+    if(!await writeList('special',sp&&sp.spId,fields)){ btns.forEach(b=>b.disabled=false); return; }
     document.getElementById('invModal').classList.remove('show');
     setStatus('loading','保存しました。読み直しています…',true);
     await loadSpecials(); rebuild();
@@ -838,13 +882,33 @@ function renderSpList(){
 
 // ============================================================
 // 違算一覧（拠点ごと。違算 Excel のシート分けと同じ）
+//   1 行 ＝ 違算 1 件（得意先 × 回収予定日）。営業が原因・責任・入金予定日を書き、総務が確認する
 // ============================================================
+const RESP=['当方','先方','双方','調査中'];
+const FSTATUS=['対応中','解消見込み','総務確認済'];
+function fuOf(c,p){ return FOLLOW[followKey(c.code,p.due)]; }
+function fuState(f){
+  if(!f) return 'none';
+  if(f.status==='総務確認済') return 'done';
+  if(f.expected&&M&&f.expected<M.asof) return 'late';
+  return 'wait';
+}
+function fuCell(f){
+  if(!f) return '<span class="pill na">未記入</span>';
+  const late=f.expected&&f.expected<M.asof&&f.status!=='総務確認済';
+  const pill=f.status==='総務確認済'?'<span class="pill ok">総務確認済</span>':f.status==='解消見込み'?'<span class="pill wait">解消見込み</span>':'<span class="pill over">対応中</span>';
+  return `<div class="fu">${pill}${f.resp?' <b>'+esc(f.resp)+'</b>':''}${f.expected?` <span class="${late?'late':'meta'}">入金予定 ${md(f.expected)}${late?'（過ぎています）':''}</span>`:''}
+    ${f.cause?`<div class="cause">${esc(f.cause.length>80?f.cause.slice(0,80)+'…':f.cause)}</div>`:''}
+    <div class="meta">${esc(f.updatedBy)} ${f.updatedAt?md(f.updatedAt.slice(0,10)):''}</div></div>`;
+}
 function gapRows(){
   if(!M) return [];
-  const base=document.getElementById('gBase').value, st=document.getElementById('gStaff').value, q=norm(document.getElementById('gSearch').value);
+  const base=document.getElementById('gBase').value, st=document.getElementById('gStaff').value, q=norm(document.getElementById('gSearch').value),
+        fs=document.getElementById('gFollow').value;
   return M.list.filter(c=>isGap(c)
     &&(!base||c.base===base)&&(!st||c.staffName===st)&&(!gKind||c.status===gKind)
-    &&(!q||norm(c.code+c.name+c.short).includes(q)))
+    &&(!q||norm(c.code+c.name+c.short).includes(q))
+    &&(!fs||c.openPeriods.some(p=>fuState(fuOf(c,p))===fs)))
     .sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff));
 }
 function renderGap(){
@@ -853,45 +917,109 @@ function renderGap(){
   const L=gapRows();
   const under=L.filter(c=>c.diff>0), over=L.filter(c=>c.diff<0);
   const sum=a=>a.reduce((s,c)=>s+c.diff,0);
+  const items=L.flatMap(c=>c.openPeriods.map(p=>({c,p,f:fuOf(c,p)})));
   const kpi=(k,v,s,cls)=>`<div class="card ${cls||''}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
   let html=`<div class="kpis">
-    ${kpi('違算の得意先',L.length+' 件',ymdJ(M.asof)+' 時点')}
+    ${kpi('違算の得意先',L.length+' 件',ymdJ(M.asof)+' 時点・'+L.filter(c=>c.daysOver>=30).length+'件は30日以上')}
     ${kpi('未入金',under.length+' 件',yen(sum(under))+' 円','under')}
     ${kpi('過入金',over.length+' 件',yen(-sum(over))+' 円','over')}
-    ${kpi('30日以上たっているもの',L.filter(c=>c.daysOver>=30).length+' 件','いちばん古い回収予定日から数えて')}
+    ${kpi('フォロー未記入',items.filter(x=>!x.f).length+' 件',`入金予定日を過ぎた ${items.filter(x=>fuState(x.f)==='late').length} 件・総務確認済 ${items.filter(x=>fuState(x.f)==='done').length} 件`,items.some(x=>!x.f)?'under':'ok')}
   </div>`;
   for(const b of ARCore.BASES){
     const G=L.filter(c=>c.base===b); if(!G.length) continue;
     html+=`<div class="panel"><h3 class="basehead">${esc(b)} <small>${G.length}件</small>
       <span class="tot">未入金 <b>${yen(sum(G.filter(c=>c.diff>0)))}</b>　過入金 <b>${yen(-sum(G.filter(c=>c.diff<0)))}</b></span></h3>
-      <div class="tw"><table><thead><tr><th>得意先</th><th>担当</th><th>締め・回収</th><th>回収予定日</th><th class="num">経過</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">違算額</th><th>状態</th></tr></thead><tbody>
-      ${G.map(c=>{
-        const op=c.openPeriods;
-        const bill=op.reduce((s,p)=>s+p.amount,0), paid=op.reduce((s,p)=>s+p.paid,0);
-        return `<tr class="click" data-c="${esc(c.code)}">
-          <td><div class="mono muted" style="font-size:12px">${esc(c.code)}</div><b>${esc(c.name)}</b></td>
-          <td>${esc(c.staffName)}</td><td class="muted">${esc(c.closeLabel)}<br>${esc(c.termsLabel)}${c.termsNote?`<div class="reason" style="max-width:220px">${esc(c.termsNote)}</div>`:''}</td>
-          <td>${op.map(p=>ymdJ(p.due)).join('<br>')}</td>
-          <td class="num">${c.daysOver}日</td>
-          <td class="num">${op.map(p=>yen(p.amount)).join('<br>')}</td>
-          <td class="num">${op.map(p=>yen(p.paid)).join('<br>')}</td>
-          <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td>
-          <td>${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`;
-      }).join('')}</tbody></table></div></div>`;
+      <div class="tw"><table><thead><tr><th>回収予定日</th><th class="num">経過</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th>フォロー（原因・過失責任・入金予定日）</th><th></th></tr></thead><tbody>
+      ${G.map(c=>`<tr class="crow click" data-c="${esc(c.code)}"><td colspan="4"><span class="mono muted" style="font-size:12px">${esc(c.code)}</span> <b>${esc(c.name)}</b>
+          <span class="muted" style="font-size:12px">　${esc(c.staffName)}　${esc(c.closeLabel)}・${esc(c.termsLabel)}</span>
+          ${c.termsNote?`<div class="reason">${esc(c.termsNote)}</div>`:''}</td>
+          <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td><td colspan="2">${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`
+        +c.openPeriods.map(p=>`<tr class="prow"><td>${ymdJ(p.due)}<div class="reason">${p.invoices.map(v=>esc(v.label)).join('・')}</div></td>
+          <td class="num">${ARCore.daysBetween(p.due,M.asof)}日</td><td class="num">${yen(p.amount)}</td><td class="num">${yen(p.paid)}</td>
+          <td class="num ${p.diff>0?'neg':''}">${yen(p.diff)}</td><td>${fuCell(fuOf(c,p))}</td>
+          <td><button class="btn" data-fu="${esc(c.code)}|${esc(p.due)}">記入</button></td></tr>`).join('')).join('')}
+      </tbody></table></div></div>`;
   }
   if(!L.length) html+='<div class="panel"><div class="empty">この条件の違算はありません</div></div>';
+  html+=resolvedPanel();
   html+=`<div class="panel"><div class="note">
     <b>違算の判定</b>：回収予定日（得意先マスタの締日・入金サイクル・入金日から計算。休日なら翌営業日）を過ぎても、請求額と入金額が合わないもの。
     「支払条件追記」に「○万以上 N日後振込」とある得意先は、その金額以上の請求の回収予定日を N 日後にしています（でんさい・期日指定はいつもの期日に受け取るのでそのまま）。
-    遅れて入金があり、累計が 0 に戻ったものは一覧から消えます（得意先の画面の「累計」で確認できます）。<br>
+    遅れて入金があり、累計が 0 に戻ったものは一覧から消え、フォローを書いたものは下の「解消したもの」に移ります。<br>
+    <b>フォロー</b>：違算 1 件（得意先×回収予定日）ごとに、営業が原因・過失責任・対策・入金予定日を書き、総務が確認したら「総務確認済」にします。書いた人と日時は履歴に残ります。<br>
     <b>対象外</b>：回収管理を「行わない」得意先、EC・店頭販売、回収条件が登録されていない得意先（海外など）。
     データの最初の日（請求明細 ${ymdJ(M.dataStart)}）より前の売上を含む請求書は、請求額がわからないため判定していません。</div></div>`;
   el.innerHTML=html;
   el.querySelectorAll('tr[data-c]').forEach(tr=>tr.onclick=()=>openCust(tr.dataset.c));
+  el.querySelectorAll('[data-fu]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); const [code,due]=b.dataset.fu.split('|'); openFollowForm(code,due); });
+}
+// 解消したもの（フォローを書いたが、今は違算でなくなったもの）。Excel の「前月違算解消分」にあたる
+function resolvedPanel(){
+  const open=new Set(); M.list.forEach(c=>c.openPeriods.forEach(p=>open.add(followKey(c.code,p.due))));
+  const from=ARCore.addMonths(M.asof,-6,1);
+  const R=Object.values(FOLLOW).filter(f=>!open.has(f.key)&&f.due>=from).sort((a,b)=>b.due.localeCompare(a.due));
+  if(!R.length) return '';
+  return `<div class="panel"><h3>解消したもの <small>フォローを書いた違算で、今は請求額と入金額が合っているもの（回収予定日が直近6か月）</small></h3>
+    <div class="tw"><table><thead><tr><th>得意先</th><th>回収予定日</th><th class="num">記入したときの差額</th><th>フォロー</th><th></th></tr></thead><tbody>
+    ${R.map(f=>{ const c=M.customers[f.cust]; return `<tr class="click" data-c="${esc(f.cust)}"><td><span class="mono muted" style="font-size:12px">${esc(f.cust)}</span> <b>${esc(c?c.name:f.custName)}</b></td>
+      <td>${ymdJ(f.due)}</td><td class="num">${f.amount==null?'':yen(f.amount)}</td><td>${fuCell(f)}</td><td><button class="btn" data-fu="${esc(f.cust)}|${esc(f.due)}">見る</button></td></tr>`; }).join('')}
+    </tbody></table></div></div>`;
+}
+
+// フォローの記入
+function openFollowForm(code,due){
+  const c=M.customers[code]; if(!c) return;
+  const p=c.periods.find(x=>x.due===due);
+  const f=FOLLOW[followKey(code,due)]||null;
+  const opt=(arr,v,blank)=>(blank?`<option value="">${blank}</option>`:'')+arr.map(x=>`<option${x===v?' selected':''}>${esc(x)}</option>`).join('');
+  document.getElementById('invBody').innerHTML=`
+    <div class="inv-head"><div><h2>違算のフォロー　${esc(c.name)}</h2>
+      <div class="meta"><span>得意先 ${esc(c.code)}</span><span>担当 ${esc(c.staffName)}</span><span>回収予定日 ${ymdJ(due)}</span>
+        ${p?`<span>請求書 ${p.invoices.map(v=>esc(v.label)).join('・')}</span>`:''}</div></div>
+      ${p?`<div class="inv-tot"><span>請求額</span><b>${yen(p.amount)}</b><span>入金額</span><b>${yen(p.paid)}</b><span>差額</span><b class="${p.diff>0?'neg':''}">${yen(p.diff)}</b></div>`:''}</div>
+    <div class="form">
+      <label>過失責任<select id="uResp">${opt(RESP,f&&f.resp,'選んでください')}</select></label>
+      <label>入金予定日<input id="uExp" type="date" value="${esc(f?f.expected:'')}"><span class="hint">過入金で返金・相殺する場合はその予定日</span></label>
+      <label class="full">原因・内容<textarea id="uCause" rows="3" placeholder="例）先方の計上漏れ。8/31 計上とのこと">${esc(f?f.cause:'')}</textarea></label>
+      <label class="full">対策<textarea id="uMeasure" rows="2" placeholder="例）締め日前に先方へ再確認を依頼">${esc(f?f.measure:'')}</textarea></label>
+      <label>状態<select id="uStatus">${opt(FSTATUS,f?f.status:'対応中')}</select><span class="hint">「総務確認済」は総務が確認したときに</span></label>
+      <label>今回のひとこと（履歴に残ります）<input id="uNote" placeholder="例）先方経理に電話。来月10日に入金"></label>
+    </div>
+    ${f&&f.history.length?`<div class="hist">${[...f.history].reverse().map(h=>`<div><b>${esc(h.by)}</b> ${esc((h.at||'').slice(0,16).replace('T',' '))}　${esc(h.text||'')}${h.status?'　['+esc(h.status)+']':''}</div>`).join('')}</div>`:''}
+    <div class="ferr" id="fErr"></div>
+    <div class="inv-foot"><button class="btn" id="uOpen" style="margin-right:auto">得意先の画面を開く</button><button class="btn" id="fClose">やめる</button><button class="btn pri" id="uSave">保存</button></div>`;
+  const modal=document.getElementById('invModal'); modal.classList.add('show');
+  document.getElementById('fClose').onclick=()=>modal.classList.remove('show');
+  document.getElementById('uOpen').onclick=()=>{ modal.classList.remove('show'); openCust(code); };
+  document.getElementById('uSave').onclick=async()=>{
+    const v={ resp:document.getElementById('uResp').value, expected:document.getElementById('uExp').value, cause:document.getElementById('uCause').value.trim(),
+      measure:document.getElementById('uMeasure').value.trim(), status:document.getElementById('uStatus').value, note:document.getElementById('uNote').value.trim() };
+    if(!v.cause&&!v.note){ document.getElementById('fErr').textContent='原因・内容か、今回のひとことを書いてください'; return; }
+    const by=account&&account.name||'', at=new Date().toISOString();
+    // 履歴：何を変えたかが追えるように、ひとことと状態・責任・予定日を残す
+    const changed=[]; if(!f||f.status!==v.status) changed.push(v.status); if(!f||f.resp!==v.resp) v.resp&&changed.push('責任 '+v.resp);
+    if(!f||f.expected!==v.expected) v.expected&&changed.push('予定日 '+v.expected);
+    const history=(f?f.history:[]).concat([{by,at,text:v.note||(f?'内容を更新':'記入'),status:changed.join('・')}]);
+    const data={ cause:v.cause, measure:v.measure, amount:p?p.diff:(f?f.amount:null), custName:c.name, history, updatedBy:by, updatedAt:at };
+    const btns=[...document.querySelectorAll('#invBody .inv-foot button')]; btns.forEach(b=>b.disabled=true);
+    try{
+      const ok=await writeList('follow',f&&f.spId,{ Title:followKey(code,due), CustCode:code, DueDate:due, Responsibility:v.resp, ExpectedDate:v.expected, Status:v.status, Data:JSON.stringify(data) });
+      if(!ok){ btns.forEach(b=>b.disabled=false); return; }
+      modal.classList.remove('show');
+      await loadFollows(); render();
+    }catch(e){
+      console.error(e);
+      document.getElementById('fErr').textContent='保存できませんでした：'+e.message+'（書き込みの権限がない場合は総務に依頼してください）';
+      btns.forEach(b=>b.disabled=false);
+    }
+  };
 }
 document.getElementById('csvBtn').onclick=()=>{
-  const rows=[['拠点','得意先コード','得意先','担当','締め','回収条件','支払条件追記','回収予定日','経過日数','請求額','入金額','違算額','状態','原因・内容','過失責任（当方・先方）','入金予定日']];
-  gapRows().forEach(c=>c.openPeriods.forEach((p,i)=>rows.push([c.base,c.code,c.name,c.staffName,c.closeLabel,c.termsLabel,c.termsNote,p.due,ARCore.daysBetween(p.due,M.asof),p.amount,p.paid,i===0?Math.abs(c.diff):'',i===0?c.status:'','','',''])));
+  const rows=[['拠点','得意先コード','得意先','担当','締め','回収条件','支払条件追記','回収予定日','経過日数','請求書','請求額','入金額','差額','得意先の違算額','状態','過失責任','原因・内容','対策','入金予定日','フォローの状態','最終更新']];
+  gapRows().forEach(c=>c.openPeriods.forEach((p,i)=>{ const f=fuOf(c,p)||{};
+    rows.push([c.base,c.code,c.name,c.staffName,c.closeLabel,c.termsLabel,c.termsNote,p.due,ARCore.daysBetween(p.due,M.asof),p.invoices.map(v=>v.label).join('・'),
+      p.amount,p.paid,p.diff,i===0?Math.abs(c.diff):'',i===0?c.status:'',f.resp||'',f.cause||'',f.measure||'',f.expected||'',f.status||'未記入',
+      f.updatedBy?f.updatedBy+' '+(f.updatedAt||'').slice(0,10):'']); }));
   downloadCsv(`違算一覧_${M.asof}.csv`,rows);
 };
 function downloadCsv(name,rows){
