@@ -79,6 +79,7 @@ section{margin-bottom:30px}
 .act .who small{display:block;font-weight:400;font-size:11.5px;color:var(--ink3);margin-top:1px}
 .act .short{font-size:19px;font-weight:700}
 .act .short small{font-size:11.5px;font-weight:400;color:var(--ink3);margin-left:3px}
+.act small.after{display:block;margin:5px 0 0;font-size:12px;color:var(--ok);font-weight:600}
 .runway{position:relative;height:20px;background:var(--rule2);border-radius:2px;overflow:hidden}
 .runway i{position:absolute;left:0;top:0;bottom:0;display:block}
 .runway b{position:absolute;top:0;bottom:0;width:2px;background:var(--ink)}
@@ -193,6 +194,9 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
       <span class="asof">基準日
         <input type="date" id="asof">
       </span>
+      <span class="asof" title="CSVを勤怠システムから出力した日。基準日より後の取得を「取得済み」と「予定」に分けるのに使います（ファイル名の日付から自動で入ります）">データ取得日
+        <input type="date" id="dataDate">
+      </span>
       <button class="btn solid" id="saveHistory">今月分を履歴に保存（クラウド）</button>
       <button class="btn" id="toggleHistView">履歴を見る</button>
     </div>
@@ -265,7 +269,7 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
           <th data-k="dept">部署</th><th data-k="code">コード</th><th data-k="name">氏名</th>
           <th data-k="base" class="c">基準日</th>
           <th data-k="grant" class="r">付与日数</th>
-          <th data-k="taken" class="r">履行期間内<br>の取得</th>
+          <th data-k="taken" class="r">基準日までの<br>取得</th>
           <th data-k="due" class="c">履行期限</th>
           <th data-k="obl" class="c">義務</th><th data-k="short" class="r">不足</th>
           <th data-k="days" class="r">期限まで</th><th data-k="stat" class="c">状況</th>
@@ -278,7 +282,7 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
     <footer>
       状況の見方　達成＝付与年度内に5日以上取得済み／至急＝5日未達で履行期限まで60日以内／要対応＝5日未達で150日以内／計画＝5日未達だが期限まで余裕あり／義務対象外＝付与日数が10日未満<br>
       年5日の取得義務は、年10日以上の年次有給休暇が付与される労働者が対象です（労働基準法39条7項）。管理監督者も対象に含まれます。<br>
-      取得日数は、履行期間（基準日から1年）内に取得した日を集計しています。どの付与回から消化されたかは年5日義務の判定に影響しません。<br>
+      取得日数は、付与日から1年の履行期間のうち、画面の基準日までに取得した日を集計しています。基準日より後の取得・予定はCSVの出力日によって変わるため判定に含めず、「後 +○」として別に表示します。どの付与回から消化されたかは年5日義務の判定に影響しません。<br>
       残日数はこの表では扱いません。年次有給休暇の有効期間は2年で3世代の付与が重なる期間があり、消化の充当先はCSVから判別できないためです。残日数は勤怠システムの画面でご確認ください。<br>
       「要確認」は、付与日数が10日以上でありながら、その付与回の取得実績がCSVに出力されていない方です。勤怠システムの画面で該当期間の取得日数をご確認ください。<br>
       この表は期限管理のための資料です。労働基準法施行規則24条の7が定める年次有給休暇管理簿（時季・日数・基準日の記載、3年間保存）は別に必要です。<br>
@@ -437,7 +441,15 @@ function evaluate(p, asof){
   const cur=ps[idx], due=endOf(cur.base);
   const days=Math.round((due-asof)/DAY);
   const inRange=(a,b)=>evs.filter(e=>e.d>=a&&e.d<=b).reduce((s,e)=>s+e.v,0);
-  const taken=Math.round(inRange(cur.base,due)*10)/10;
+  // 取得は基準日（asof）までに取った日だけで判定する。CSVには出力日までの取得や先の予定も入るため、
+  // 基準日より後の取得・予定は「基準日後」として別に数え、判定には使わない（同じ基準日ならいつ出力しても同じ結果になる）
+  const upto=asof<due?asof:due;
+  const taken=Math.round(inRange(cur.base,upto)*10)/10;
+  const after=asof<due?Math.round(evs.filter(e=>e.d>asof&&e.d<=due).reduce((s,e)=>s+e.v,0)*10)/10:0;
+  // 基準日後のうち、データ取得日までは「取得済み」、それより後は「予定」
+  const dd=dataDate();
+  const afterTaken=dd?Math.round(evs.filter(e=>e.d>asof&&e.d<=due&&e.d<=dd).reduce((s,e)=>s+e.v,0)*10)/10:0;
+  const afterPlan=Math.round((after-afterTaken)*10)/10;
   const g=cur.grant;
   const obl=(g!=null&&g>=10);
 
@@ -456,13 +468,27 @@ function evaluate(p, asof){
   }
   const nxt=ps[idx+1]||null;
   return {...p,site:site0,base:cur.base,grant:g,
-    taken:dataMissing?null:taken,due,obl,short,days,stat,cls,
+    taken:dataMissing?null:taken,after:dataMissing?null:after,afterTaken,afterPlan,
+    resolved:short>0&&afterTaken>=short,due,obl,short,days,stat,cls,
     next:nxt?nxt.base:null,nextg:nxt?nxt.grant:null,
     span:Math.round((due-cur.base)/DAY)+1};
 }
 
 /* ---------- render ---------- */
 function asofDate(){ const v=$("#asof").value; return v?new Date(v+"T00:00:00"):new Date(); }
+function dataDate(){ const v=$("#dataDate").value; return v?new Date(v+"T00:00:00"):null; }
+/** 「基準日（締め）2026/09/15時点／データ取得日 2026/10/06」 */
+/** 基準日後の取得（データ取得日まで）と予定。判定には含めない */
+function afterText(x){
+  if(!(x.after>0)) return "";
+  const dd=dataDate(), parts=[];
+  if(x.afterTaken>0) parts.push(x.resolved
+    ? `${dd?fmt(dd).slice(5):""}までに${x.afterTaken}日取得 → 解消`
+    : `${dd?fmt(dd).slice(5):""}までに${x.afterTaken}日取得`);
+  if(x.afterPlan>0) parts.push(`予定 ${x.afterPlan}日${!x.resolved&&x.afterTaken+x.afterPlan>=x.short?"（取れば達成）":""}`);
+  return `<small class="after" title="基準日より後の取得・予定（締め時点の判定には含めていません）">基準日後：${parts.join("／")}</small>`;
+}
+function dateMemo(asof){ const dd=dataDate(); return `基準日（締め）${fmt(asof)}時点`+(dd?`／データ取得日 ${fmt(dd)}`:""); }
 
 function render(){
   const asof=asofDate();
@@ -490,15 +516,17 @@ function render(){
     box.innerHTML='<div class="act" style="grid-template-columns:1fr"><div class="dim">'+(rest>0?"履行期限まで150日以内で5日未達の方はいません。期限まで余裕のある方が"+rest+"名います。":"5日未達の方はいません。")+'</div></div>';
     $("#actNote").textContent="";
   }else{
-    $("#actNote").textContent=act.length+"名　／　履行期限が近い順"+(rest>0?"　（ほかに期限まで余裕のある方が"+rest+"名）":"");
+    const res=act.filter(x=>x.resolved).length;
+    $("#actNote").textContent=dateMemo(asof)+"　／　"+act.length+"名"+(res?`（うち${res}名はデータ取得日までに解消）`:"")+"　／　履行期限が近い順"+(rest>0?"　（ほかに期限まで余裕のある方が"+rest+"名）":"");
     box.innerHTML=act.map(x=>{
       const gone=Math.max(1.5,Math.min(100,((x.span-x.days)/x.span)*100));
       const streak=consecutiveMonths(x.code,asof);
-      const streakTag=streak>=2?` <span class="pill p-w" title="過去の履歴で連続してアラート対象">${streak}ヶ月連続</span>`:"";
+      const streakTag=(streak>=2?` <span class="pill p-w" title="過去の履歴で連続してアラート対象">${streak}ヶ月連続</span>`:"")+
+        (x.resolved?` <span class="pill p-o" title="基準日後、データ取得日までに不足分を取得済み">解消済み</span>`:"");
       return `<div class="act ${x.cls}">
         <div class="who">${esc(x.name)}${streakTag}<small>${esc(x.dept)}</small></div>
         <div class="short num">${x.short}<small>日 不足</small></div>
-        <div class="runway" title="履行期間${x.span}日のうち${x.span-x.days}日が経過"><i style="width:${gone}%"></i></div>
+        <div><div class="runway" title="履行期間${x.span}日のうち${x.span-x.days}日が経過"><i style="width:${gone}%"></i></div>${afterText(x)}</div>
         <div class="due"><strong class="num">残り ${x.days} 日</strong>${fmt(x.due)} まで</div>
       </div>`;
     }).join("");
@@ -521,19 +549,19 @@ function render(){
     if(typeof A==="number"&&typeof B==="number") return (A-B)*s;
     return String(A??"").localeCompare(String(B??""),"ja")*s;
   });
-  $("#listNote").textContent=rows.length+"名を表示　／　基準日 "+fmt(asof)+" 時点";
+  $("#listNote").textContent=rows.length+"名を表示　／　"+dateMemo(asof);
 
   const P={"至急":"p-u","要対応":"p-w","達成":"p-o","義務対象外":"p-n","計画":"p-n","未付与":"p-n","要確認":"p-q"};
   $("#tbl tbody").innerHTML=rows.map(x=>`<tr>
     <td>${esc(x.dept)}</td><td class="dim num">${esc(x.code)}</td><td class="nm">${esc(x.name)}</td>
     <td class="c num">${x.base?fmt(x.base):'<span class="dim">未付与</span>'}</td>
     <td class="r num">${f1(x.grant)}</td>
-    <td class="r num">${x.taken==null?'<span class="dim">—</span>':f1(x.taken)}</td>
+    <td class="r num">${x.taken==null?'<span class="dim">—</span>':f1(x.taken)}${x.after>0?`<br><span class="dim" style="font-size:11px" title="基準日より後（判定に含めない）：データ取得日までの取得／その後の予定">後 取得${f1(x.afterTaken)}・予定${f1(x.afterPlan)}</span>`:""}</td>
     <td class="c num">${fmt(x.due)}</td>
     <td class="c">${x.stat==="要確認"?'<span class="dim">—</span>':(x.obl?"対象":'<span class="dim">—</span>')}</td>
     <td class="r num${x.short>0?" neg":""}">${x.short==null?"":f1(x.short)}</td>
     <td class="r num">${x.days==null?"":x.days}</td>
-    <td class="c"><span class="pill ${P[x.stat]}">${x.stat}</span></td>
+    <td class="c"><span class="pill ${P[x.stat]}">${x.stat}</span>${x.resolved?' <span class="pill p-o">解消済み</span>':""}</td>
     <td class="c num dim">${fmt(x.next)}</td><td class="r num dim">${x.nextg==null?"":f1(x.nextg)}</td>
   </tr>`).join("");
   window.__rows=rows;
@@ -604,8 +632,10 @@ function renderHistoryMonth(){
     ?(a,b)=>(ORDER[a.状況]??9)-(ORDER[b.状況]??9)||(a.期限まで日数??9999)-(b.期限まで日数??9999)
     :(a,b)=>(a.部署||"").localeCompare(b.部署,"ja")||String(a.氏名).localeCompare(String(b.氏名),"ja"));
   const cnt=s=>all.filter(h=>h.状況===s).length;
+  const memo=all.length?`基準日（締め）${all[0].基準日}時点${all[0].データ取得日?`／データ取得日 ${all[0].データ取得日}`:""}`:"";
+  const resolvedN=all.filter(h=>h.解消).length;
   $("#histViewNote").textContent = all.length
-    ? `${mk} 基準日時点　義務対象者 ${all.length}名（至急 ${cnt("至急")}名・要対応 ${cnt("要対応")}名・達成 ${cnt("達成")}名）`
+    ? `${mk}　${memo}　義務対象者 ${all.length}名（至急 ${cnt("至急")}名・要対応 ${cnt("要対応")}名・達成 ${cnt("達成")}名${resolvedN?`／うち解消済み ${resolvedN}名`:""}）`
     : `${mk} 分のデータがありません`;
   document.querySelectorAll("#heatmapTable th.collabel").forEach(th=>th.classList.toggle("sel",th.dataset.month===mk));
   const P={"至急":"p-u","要対応":"p-w","計画":"p-n","達成":"p-o"};
@@ -616,7 +646,7 @@ function renderHistoryMonth(){
     <td class="r num">${h.取得??""}</td>
     <td class="r num${h.不足>0?" neg":""}">${h.不足??""}</td>
     <td class="r num">${h.期限まで日数??""}</td>
-    <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span></td>
+    <td class="c"><span class="pill ${P[h.状況]||'p-n'}">${esc(h.状況)}</span>${h.解消?' <span class="pill p-o" title="締め後、データ取得日までに取得して解消">解消済み</span>':""}</td>
   </tr>`).join("") : `<tr><td colspan="8" class="dim">${all.length&&alertOnly?"この月に対応が必要な方（至急・要対応）はいません":"データなし"}</td></tr>`;
 }
 const STATUS_COLOR_VAR={"至急":"--urgent","要対応":"--warn","達成":"--ok"};
@@ -705,6 +735,7 @@ async function saveHistorySnapshot(){
   const snapshot=window.__all.filter(x=>x.obl && x.dept!=="退職者").map(x=>({
     年月:mk, 基準日:fmt(asof), 事業所:x.site, 部署:x.dept, コード:x.code, 氏名:x.name,
     付与日数:x.grant, 取得:x.taken, 不足:x.short, 期限まで日数:x.days, 期限:fmt(x.due), 状況:x.stat,
+    データ取得日:dataDate()?fmt(dataDate()):"", 締め後取得:x.afterTaken??null, 予定:x.afterPlan??null, 解消:!!x.resolved,
   }));
   HISTORY=HISTORY.filter(h=>h.年月!==mk).concat(snapshot);
 
@@ -735,13 +766,17 @@ async function load(files){
   }
   PEOPLE=build(rows);
   if(!PEOPLE.length){ alert("読み込めるデータがありませんでした。管理簿のCSVか確認してください。"); return; }
+  // データ取得日：ファイル名の「20261006_」の日付（なければファイルの更新日）の最新
+  const ds=list.map(f=>{ const m=f.name.match(/(20\d{2})(\d{2})(\d{2})/); return m?new Date(+m[1],+m[2]-1,+m[3]):(f.lastModified?new Date(f.lastModified):null); }).filter(Boolean);
+  if(ds.length){ const d=new Date(Math.max(...ds)); $("#dataDate").value=d.getFullYear()+"-"+D(d.getMonth()+1)+"-"+D(d.getDate()); }
   $("#drop").classList.add("hide");
   $("#app").classList.remove("hide");
   render();
 }
 function exportCSV(){
-  const H=["部署","コード","氏名","基準日","付与日数","履行期間内の取得","履行期限","義務","不足","期限まで","状況","次回基準日","次回付与"];
-  const L=(window.__rows||[]).map(x=>[x.dept,x.code,x.name,fmt(x.base),x.grant??"",x.taken??"",fmt(x.due),x.obl?"対象":"対象外",x.short??"",x.days??"",x.stat,fmt(x.next),x.nextg??""]);
+  const H=["部署","コード","氏名","付与日（基準日）","付与日数","締め時点までの取得","締め後の取得（データ取得日まで）","予定","履行期限","義務","不足","期限まで","状況","解消","次回基準日","次回付与"];
+  const L=(window.__rows||[]).map(x=>[x.dept,x.code,x.name,fmt(x.base),x.grant??"",x.taken??"",x.afterTaken??"",x.afterPlan??"",fmt(x.due),x.obl?"対象":"対象外",x.short??"",x.days??"",x.stat,x.resolved?"解消済み":"",fmt(x.next),x.nextg??""]);
+  L.unshift([dateMemo(asofDate())]);
   const csv=[H,...L].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
   const a=document.createElement("a");
   a.href=URL.createObjectURL(new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"}));
@@ -765,6 +800,7 @@ function updateRangeHint(){
 }
 updateRangeHint();
 $("#asof").addEventListener("change",updateRangeHint);
+$("#dataDate").addEventListener("change",()=>{ if(PEOPLE.length) render(); });
 $("#pickFolder").onclick=()=>$("#fFolder").click();
 $("#pickFiles").onclick=()=>$("#fFiles").click();
 $("#fFolder").onchange=e=>load(e.target.files);
