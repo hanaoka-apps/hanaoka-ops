@@ -39,7 +39,7 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
     customers: [cust('100001')], staff,
     detail: [sale('100001', '20260701', 10000, 0), // 未請求（データの最初の日を 7/1 にするため）
       sale('100001', '20260720', 100000, 50), sale('100001', '20260805', 50000, 50), tax('100001', '20260815', 15000, 50)],
-    payments: [pay('100001', '20260701', 1)]
+    payments: [pay('100001', '20260401', 0)]
   }, { today: '2026-10-06' });
   const c = m.customers['100001'];
   const inv = c.invoices['50'];
@@ -57,7 +57,7 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   const m = A.build({
     customers: [cust('110201')], staff,
     detail: [sale('110201', '20260701', 1, 0), sale('110201', '20260801', 15579360, 193), tax('110201', '20260815', 1557936, 193)],
-    payments: [pay('110201', '20260910', 16745475), pay('110201', '20260910', 394571, '売上割引料', '調整'), pay('110201', '20260701', 0)]
+    payments: [pay('110201', '20260910', 16745475), pay('110201', '20260910', 394571, '売上割引料', '調整'), pay('110201', '20260401', 0)]
   }, { today: '2026-10-06' });
   const c = m.customers['110201'];
   assert.equal(c.invoices['193'].amount, 17137296);
@@ -73,7 +73,7 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
     sale('200001', '20260820', 200000, 2), tax('200001', '20260915', 20000, 2)];  // 10/13 回収予定（10/10 が土曜） 220,000
   const base = { customers: [cust('200001')], staff, detail };
   // 9/10 には 100,000 しか入らず、9/30 に残り 10,000（9/10 と 10/13 の中間 9/26 より後）
-  const late = A.build(Object.assign({}, base, { payments: [pay('200001', '20260701', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000)] }), { today: '2026-10-06' });
+  const late = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000)] }), { today: '2026-10-06' });
   const c = late.customers['200001'];
   assert.equal(c.periods[0].diff, 10000);
   assert.equal(c.periods[0].judged, true);
@@ -81,7 +81,7 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.equal(c.periods[1].judged, false, '10/13 はまだ来ていない');
   assert.equal(c.diff, 10000, '9/30 の入金は次の回に入るので、判定済みの累計は 10,000 のまま');
   // 10/13 を過ぎて 220,000 が入れば、累計 0 で解消
-  const after = A.build(Object.assign({}, base, { payments: [pay('200001', '20260701', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000), pay('200001', '20261013', 220000)] }), { today: '2026-10-20' });
+  const after = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000), pay('200001', '20261013', 220000)] }), { today: '2026-10-20' });
   const c2 = after.customers['200001'];
   assert.equal(c2.periods[1].diff, -10000);
   assert.equal(c2.diff, 0);
@@ -119,7 +119,7 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   const src = {
     customers: [cust('300001')], staff,
     detail: [sale('300001', '20260701', 1, 0), sale('300001', '20260801', 1000, 7), tax('300001', '20260815', 100, 7)],
-    payments: [pay('999999', '20260701', 5), pay('999999', '20260909', 5)]
+    payments: [pay('999999', '20260401', 5), pay('999999', '20260909', 5)]
   };
   const m = A.build(src, { today: '2026-10-06' });
   assert.equal(m.asof, '2026-09-09');
@@ -133,7 +133,7 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   const m = A.build({
     customers: [cust('400001')], staff,
     detail: [sale('400001', '20260701', 5000, 9), tax('400001', '20260715', 500, 9)],   // 6/16〜7/15 の請求なのに 7/1 からしかない
-    payments: [pay('400001', '20260701', 1)]
+    payments: [pay('400001', '20260401', 0)]
   }, { today: '2026-10-06' });
   const c = m.customers['400001'];
   assert.equal(c.invoices['9'].partial, true);
@@ -146,13 +146,54 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   const mk = o => A.build({
     customers: [cust('500001', o)], staff,
     detail: [sale('500001', '20260701', 1, 0), sale('500001', '20260801', 1000, 3), tax('500001', '20260815', 100, 3)],
-    payments: [pay('500001', '20260701', 1)]
+    payments: [pay('500001', '20260401', 0)]
   }, { asof: '2026-10-05' }).customers['500001'];
   assert.equal(mk({}).diff, 1100);
   assert.equal(mk({ '回収管理区分名': '行わない' }).excludeReason, '回収管理しない得意先');
   assert.equal(mk({ '回収管理区分名': '行わない' }).diff, 0);
   assert.match(mk({ '得意先社名ｺｰﾄﾞ': '005998' }).excludeReason, /EC/);
   assert.equal(mk({ '入金ｻｲｸﾙ名１': '', '入金日１': '0' }).excludeReason, '回収条件の登録なし');
+}
+
+// ---- 支払条件追記：基準額以上は N 日後振込（でんさいの条件は期限をずらさない） ----
+{
+  const r = A.parseTermsNote('11万以上150日後振込→26.03より11万位以上でんさい60日');
+  assert.deepEqual(r, [{ threshold: 110000, taxEx: false, days: 150, from: '', until: '2026-03' }]);
+  assert.deepEqual(A.parseTermsNote('31.5万以上期日指定払 120日'), [], '期日指定はいつもの期日に受け取る');
+  assert.deepEqual(A.parseTermsNote('10万以上　157日後期日指定現金振込'), []);
+  assert.equal(A.parseTermsNote('50万以上翌月15日起算90日後振込み')[0].days, 90);
+  assert.equal(A.parseTermsNote('税別30万以上の場合、支払日(末締　翌月末支払い)起算　120日後振込')[0].taxEx, true);
+  assert.deepEqual(A.parseTermsNote('30万以上120日手形'), [], 'でんさい（旧手形）は期限が変わらない');
+  assert.deepEqual(A.parseTermsNote('入金後出荷'), []);
+  const m = A.build({
+    customers: [cust('600001', { '締日１': '30', '入金日１': '30', '支払条件追記': '30万以上150日後振込' })], staff,
+    detail: [sale('600001', '20260401', 1, 0),
+      sale('600001', '20260415', 100000, 1), tax('600001', '20260430', 10000, 1),     // 5/31 期限（基準未満）
+      sale('600001', '20260515', 400000, 2), tax('600001', '20260531', 40000, 2)],    // 6/30 + 150日 = 11/27
+    payments: [pay('600001', '20260401', 0), pay('600001', '20260529', 110000)]
+  }, { asof: '2026-10-05' });
+  const c = m.customers['600001'];
+  assert.equal(c.invoices['2'].due, '2026-11-27');
+  assert.match(c.invoices['2'].rule, /30万円以上は回収予定日の150日後/);
+  assert.equal(c.diff, 0, '440,000 はまだ期限前');
+}
+
+// ---- 手形はでんさいと表示する ----
+{
+  const m = A.build({ customers: [cust('700001', { '入金条件名１': '手形' })], staff, detail: [sale('700001', '20260401', 1, 0)],
+    payments: [pay('700001', '20260410', 5, '手　形', '手形')] }, { asof: '2026-10-05' });
+  assert.equal(m.customers['700001'].payMethod, 'でんさい');
+  assert.equal(m.customers['700001'].payments[0].kind, 'でんさい');
+}
+
+// ---- 入金後出荷：請求より前の前払いも数える ----
+{
+  const m = A.build({
+    customers: [cust('800001', { '締日１': '30', '入金日１': '30', '支払条件追記': '入金後出荷' })], staff,
+    detail: [sale('800001', '20260401', 1, 0), sale('800001', '20260610', 50000, 3), tax('800001', '20260630', 5000, 3)],
+    payments: [pay('800001', '20260401', 0), pay('800001', '20260603', 55000)]
+  }, { asof: '2026-10-05' });
+  assert.equal(m.customers['800001'].diff, 0);
 }
 
 // ---- CSV：引用符の中のカンマ・改行、BOM ----

@@ -91,6 +91,32 @@
     if (name === "翌月") return 1;
     const m = name.match(/^(\d+)ヶ?か?月後$/); return m ? +m[1] : null;
   }
+  // 「支払条件追記」（得意先マスタの自由記述）から、回収予定日がずれる条件を読み取る。
+  //   例）30万以上150日後振込 ／ 税別30万以上…120日後振込 ／ 50万以上翌月15日起算90日後振込み
+  //       11万以上150日後振込→26.03より11万位以上でんさい60日（→ のあとは 2026-03 から別の条件）
+  //   基準額以上の請求は、いつもの回収予定日の N 日後に振り込まれる（轟産業で確認：6/30 分が 12/1 着）。
+  //   でんさい（旧手形）と「期日指定」は読まない：いつもの回収予定日に受け取り、その日付で入金登録される
+  //   （決済予定日が先になるだけ）ので期限はずれない（トヨタL&F福岡・三甲で確認）
+  function parseTermsNote(text) {
+    const segs = String(text || "").normalize("NFKC").replace(/\s+/g, "").split("→");
+    const froms = segs.map(seg => { const f = seg.match(/(?:20)?(\d{2})[.\/年](\d{1,2})月?(?:支払分)?より/); return f ? "20" + f[1] + "-" + f[2].padStart(2, "0") : ""; });
+    const rules = [];
+    segs.forEach((seg, i) => {
+      if (/期日指定/.test(seg)) return;
+      const r = seg.match(/(税別|税抜|税込)?([\d.]+)万円?位?以上.*?(\d+)日後(?:現金)?(?:振込|振り込み)/);
+      if (!r) return;
+      rules.push({ threshold: Math.round(parseFloat(r[2]) * 10000), taxEx: /税別|税抜/.test(r[1] || ""), days: +r[3],
+        from: froms[i], until: froms[i + 1] || "" });
+    });
+    return rules;
+  }
+  function ruleLabel(r) {
+    return (r.taxEx ? "税抜" : "") + (r.threshold / 10000).toLocaleString("ja-JP") + "万円以上は回収予定日の" + r.days + "日後"
+      + (r.from ? "（" + r.from.replace("-", "/") + "〜）" : "") + (r.until ? "（〜" + r.until.replace("-", "/") + "）" : "");
+  }
+  // SMILE の「手形」は廃止。でんさいに読み替えて表示する
+  function denLabel(s) { return String(s || "").replace(/手形/g, "でんさい"); }
+
   function dayLabel(d) { d = +d || 0; return d >= 30 ? "末" : (d ? d + "日" : ""); }
 
   // 担当者の部門 → 拠点（違算 Excel のシート名に合わせる）
@@ -149,7 +175,9 @@
         closeDay, closeLabel: closeDay >= 30 ? "末締" : (closeDay ? closeDay + "日締" : ""),
         cycle: cyc, payDay,
         termsLabel: cyc == null ? "" : (["当月", "翌月"][cyc] || cyc + "ヶ月後") + dayLabel(payDay),
-        payMethod: m["入金条件名１"] || "",
+        payMethod: denLabel(m["入金条件名１"] || ""),
+        termsNote: (m["支払条件追記"] || "").trim(),
+        termRules: parseTermsNote(m["支払条件追記"]),
         noCollect: (m["回収管理区分名"] || "") === "行わない",
         ec: EC_COMPANY.has(m["得意先社名ｺｰﾄﾞ"] || ""),
         inMaster: !!cust[code],
@@ -183,7 +211,7 @@
       const code = r["得意先ｺｰﾄﾞ"]; if (!code) return;
       const c = getC(code, r["得意先名１"]);
       c.payments.push({
-        date: fromSmile(r["伝票日付"]), slip: r["伝票№"], row: r["行"], kind: (r["取引区分名"] || "").replace(/\s|　/g, ""),
+        date: fromSmile(r["伝票日付"]), slip: r["伝票№"], row: r["行"], kind: denLabel((r["取引区分名"] || "").replace(/\s|　/g, "")),
         attr: r["取引区分属性名"] || "", amount: num(r["入金額"]), due: fromSmile(r["決済予定日"]), memo: r["備考"] || ""
       });
     });
@@ -196,7 +224,13 @@
       invs.forEach(inv => {
         inv.amount = inv.net + inv.tax;
         inv.close = inv.taxDate || inv.lastDate;
-        inv.due = c.cycle == null ? "" : addMonths(inv.close, c.cycle, c.payDay);
+        inv.baseDue = c.cycle == null ? "" : addMonths(inv.close, c.cycle, c.payDay);
+        inv.due = inv.baseDue;
+        // 追記の条件（基準額以上は N 日後振込）
+        const ym = inv.baseDue.slice(0, 7);
+        const rule = inv.baseDue && c.termRules.find(r => (!r.from || ym >= r.from) && (!r.until || ym < r.until)
+          && (r.taxEx ? inv.net : inv.net + inv.tax) >= r.threshold);
+        if (rule) { inv.due = addDays(inv.baseDue, rule.days); inv.rule = ruleLabel(rule); }
         inv.bound = inv.due ? nextBusinessDay(inv.due) : "";
         // 前の締め（1か月前の同じ日。月末なら月末）より後の売上だけで、データの最初の日以降に収まっているか
         const d = parts(inv.close)[2];
@@ -221,9 +255,11 @@
       // 入金を充てる範囲：前の回収予定日との中間の翌日 〜 次の回収予定日との中間まで。
       //   期限ちょうどで区切ると、連休明けなどで数日遅れただけの入金（山善の 5/10 分が 5/15 着など）が
       //   次の回に入り「未入金→翌月過入金」に見えるため。
-      //   最初の回は 15 日前から（それより前の入金は、データより前の請求の分）。
+      //   最初の回は期限の 60 日前から（入金後出荷の前払いを拾う）。その範囲が入金データの最初の 45 日に
+      //   かかるときは、データより前の請求の分の入金が混じるので、その回は判定しない。
       //   最後の回はそれ以降の入金すべて（次の請求がない得意先の遅れた入金が、どの回にも入らず消えないように）
       const bounds = Object.keys(groups).sort();
+      const ruleDays = c.termRules.length ? 45 + Math.max(...c.termRules.map(r => r.days)) : 0;
       const mid = (a, b) => addDays(a, Math.floor(daysBetween(a, b) / 2));
       let cum = 0, started = false;
       const periods = [];
@@ -231,12 +267,13 @@
         const g = groups[b];
         const amt = g.reduce((s, x) => s + x.amount, 0);
         const firstDue = g.map(x => x.due).sort()[0];
-        const lo = i ? mid(bounds[i - 1], b) : addDays(b, -15);
+        const lo = i ? mid(bounds[i - 1], b) : addDays(b, -60);
         const hi = i < bounds.length - 1 ? mid(b, bounds[i + 1]) : "9999-12-31";
         const ps = c.payments.filter(p => p.date > lo && p.date <= hi);
         const paid = ps.reduce((s, p) => s + p.amount, 0);
         const partial = g.some(x => x.partial);
-        const usable = !reason && !partial && lo >= addDays(judgeFrom, -1);
+        // 追記の条件（N 日後振込）がある得意先は、データより前の請求が N 日遅れで入ってくるので、その分あとから判定する
+        const usable = !reason && !partial && lo >= (i ? addDays(judgeFrom, -1) : addDays(judgeFrom, 45)) && b >= addDays(judgeFrom, ruleDays);
         const judged = usable && asof >= b;
         const p = { bound: b, due: firstDue, from: lo, to: hi, invoices: g, amount: amt, paid, diff: amt - paid, payments: ps, partial, judged, usable };
         if (judged) { cum += p.diff; started = true; }
@@ -267,7 +304,7 @@
     return { customers: C, list: Object.values(C), dataStart, dataEnd, payStart, payEnd, asof, today, judgeFrom };
   }
 
-  const API = { parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
+  const API = { parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.ARCore = API;
 })(typeof window !== "undefined" ? window : this);
