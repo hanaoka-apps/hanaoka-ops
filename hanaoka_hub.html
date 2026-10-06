@@ -81,7 +81,25 @@
     display: flex; align-items: center; justify-content: center;
     font-weight: 700; font-size: 14px;
     overflow: hidden;
+    border: none; padding: 0; cursor: pointer; font-family: inherit;
   }
+  .avatar:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .account { position: relative; display: flex; align-items: center; }
+  .account-menu {
+    position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; min-width: 240px; max-width: 80vw;
+    background: #fff; border-radius: 12px; box-shadow: 0 10px 30px rgba(22, 26, 92, .18), 0 1px 3px rgba(22, 26, 92, .1);
+    padding: 8px;
+  }
+  .account-menu[hidden] { display: none; }
+  .account-who { padding: 8px 10px 10px; border-bottom: 1px solid var(--border); margin-bottom: 6px; min-width: 0; }
+  .account-who b { display: block; font-size: 13.5px; font-weight: 800; overflow-wrap: anywhere; }
+  .account-who span { display: block; font-size: 11.5px; color: var(--text-sub); overflow-wrap: anywhere; }
+  .account-out {
+    display: flex; align-items: center; gap: 10px; width: 100%; border: none; background: transparent; cursor: pointer;
+    padding: 9px 10px; border-radius: 8px; font-size: 13px; font-weight: 700; color: var(--accent-red); font-family: inherit; text-align: left;
+  }
+  .account-out:hover { background: var(--red-soft, #fdecee); }
+  .account-out small { display: block; font-size: 11px; font-weight: 500; color: var(--text-sub); }
   .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .avatar[hidden] { display: none; }
 
@@ -460,7 +478,7 @@
        変わったりすると上部バーの高さが変わり、下の画面全体が上下に動いて
        スクロールしたように見える。折り返しをやめ、あいさつは3行分の高さを
        確保して(それ以上は…で省略)、上部バーの高さをいつも同じにする。 */
-    .topbar { position: static; padding: 14px 20px; flex-wrap: nowrap; }
+    .topbar { position: sticky; top: 0; padding: 14px 20px; flex-wrap: nowrap; }
     .top-actions { flex-wrap: nowrap; flex-shrink: 0; }
     .page-head {
       min-width: 0; min-height: calc(3 * 1.3 * 14px + 2px + 1.5 * 12.5px);
@@ -516,9 +534,18 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
           <span class="dot"></span>
         </a>
-        <div class="avatar" id="avatar" hidden>
-          <span id="avatarInitial"></span>
-          <img id="avatarImg" alt="" hidden>
+        <div class="account" id="accountWrap">
+          <button type="button" class="avatar" id="avatar" hidden aria-haspopup="menu" aria-expanded="false" aria-controls="accountMenu" title="アカウント">
+            <span id="avatarInitial"></span>
+            <img id="avatarImg" alt="" hidden>
+          </button>
+          <div class="account-menu" id="accountMenu" role="menu" hidden>
+            <div class="account-who"><b id="accountName"></b><span id="accountEmail"></span></div>
+            <button type="button" class="account-out" id="signOutBtn" role="menuitem">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+              <span>サインアウト<small>別のアカウントでサインインし直せます</small></span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -863,7 +890,8 @@ async function initAuth() {
   document.getElementById('signInBtn').onclick = login;
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
-  await msalInstance.handleRedirectPromise();
+  const redirected = await msalInstance.handleRedirectPromise();
+  if (redirected && redirected.account) { try { localStorage.removeItem(PICK_ACCOUNT_KEY); } catch (_) {} }
   const accounts = msalInstance.getAllAccounts();
   if (accounts.length > 0) {
     account = accounts[0];
@@ -895,6 +923,27 @@ function shouldUseRedirectFlow() {
   return isIOS || isSafari;
 }
 
+// サインアウトした直後のサインインでは、前に使っていたアカウントで自動的に入ってしまわないよう、
+// Microsoftのアカウント選択画面を出す(複数のアカウントを持つ人が、別のアカウントに切り替えるため)。
+// 普段の初回サインインでは出さない(アカウントが1つの人に余計な1回を増やさない)
+const PICK_ACCOUNT_KEY = 'hanaoka.hub.pickAccount.v1';
+function pickAccountOption() {
+  try { if (localStorage.getItem(PICK_ACCOUNT_KEY) === '1') return { prompt: 'select_account' }; } catch (_) {}
+  return {};
+}
+
+async function signOut() {
+  try { localStorage.setItem(PICK_ACCOUNT_KEY, '1'); } catch (_) {}
+  try {
+    // 全アプリ共通の保存先(localStorage)からこのアカウントを消すので、スケジュール等の画面もサインアウトになる。
+    // Microsoft側のサインアウト画面を経由して、このページに戻る
+    await msalInstance.logoutRedirect({ account, postLogoutRedirectUri: window.location.origin + window.location.pathname });
+  } catch (e) {
+    console.error('サインアウト失敗', e);
+    window.location.reload();
+  }
+}
+
 async function login() {
   const btn = document.getElementById('signInBtn');
   try {
@@ -907,12 +956,14 @@ async function login() {
       await msalInstance.loginRedirect({
         scopes: SCOPES,
         redirectUri: window.location.origin + window.location.pathname,
+        ...pickAccountOption(),
       });
       return; // ページがMicrosoftのログイン画面へ遷移するのでここで終了
     }
-    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    const result = await msalInstance.loginPopup({ scopes: SCOPES, ...pickAccountOption() });
     account = result.account;
     msalInstance.setActiveAccount(account);
+    try { localStorage.removeItem(PICK_ACCOUNT_KEY); } catch (_) {}
     await onSignedIn();
   } catch (e) {
     btn.disabled = false;
@@ -968,6 +1019,15 @@ async function onSignedIn() {
   });
 }
 
+(function initAccountMenu() {
+  const btn = document.getElementById('avatar'), menu = document.getElementById('accountMenu');
+  const setOpen = open => { menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false'); };
+  btn.addEventListener('click', e => { e.stopPropagation(); setOpen(menu.hidden); });
+  document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target)) setOpen(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setOpen(false); });
+  document.getElementById('signOutBtn').addEventListener('click', () => { setOpen(false); signOut(); });
+})();
+
 function showSectionError(containerId, msg) {
   document.getElementById(containerId).innerHTML = `<div class="empty-state error">${escapeHtml(msg)}</div>`;
 }
@@ -980,6 +1040,8 @@ async function loadProfile() {
   const name = me.givenName || me.displayName || '';
   setGreeting(name);
   document.getElementById('avatarInitial').textContent = name ? name.charAt(0) : '';
+  document.getElementById('accountName').textContent = me.displayName || name;
+  document.getElementById('accountEmail').textContent = (account && account.username) || '';
   // Entra IDのdepartment属性が入っていれば、上部バナーで自部署のVVを優先表示する
   if (window.applyMvvUserDepartment) window.applyMvvUserDepartment(me.department);
 
