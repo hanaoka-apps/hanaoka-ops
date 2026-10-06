@@ -7902,13 +7902,20 @@ async function init() {
   const accounts = msalInstance.getAllAccounts();
   // 会社のアカウントを優先（個人の Microsoft アカウント(hotmail等)は SharePoint を読めない）
   const companyAccounts = accounts.filter(isCompanyAccount);
-  if (accounts.length > 0 && companyAccounts.length === 0) {
-    showLoginError('会社以外のアカウント（' + accounts[0].username + '）でサインインしています。「サインイン」を押して、会社のアカウントを選んでください');
+  if (companyAccounts.length === 0) {
+    // 前回使った会社アカウントがあれば、画面を出さずにサインインを試す
+    const silent = await trySilentSignIn();
+    if (silent) { account = silent; msalInstance.setActiveAccount(account); await onLoginSuccess(); return; }
+    if (accounts.length > 0) {
+      _forceAccountPicker = true;
+      showLoginError('会社以外のアカウント（' + accounts[0].username + '）でサインインしています。「サインイン」を押して、会社のアカウントを選んでください');
+    }
     return;
   }
   if (companyAccounts.length > 0) {
     account = companyAccounts[0];
     msalInstance.setActiveAccount(account);
+    _rememberUser(account);
     try {
       await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
     } catch (e) {
@@ -7936,27 +7943,57 @@ function shouldUseRedirectFlow() {
   return isIOS || isSafari;
 }
 
+// アカウント選択画面は「会社アカウントで入れなかったとき」だけ出す
+let _forceAccountPicker = false;
+const LAST_USER_KEY = 'salesHub.lastCompanyUser';
+function _rememberUser(a) { try { if (a && isCompanyAccount(a)) localStorage.setItem(LAST_USER_KEY, a.username); } catch (_) {} }
+function _lastUser() { try { return localStorage.getItem(LAST_USER_KEY) || ''; } catch (_) { return ''; } }
+function _loginOpts() {
+  const o = { scopes: SCOPES };
+  if (_forceAccountPicker) o.prompt = 'select_account';
+  else if (_lastUser()) o.loginHint = _lastUser();   // 前回の会社アカウントを指定 → 選択画面を省略
+  return o;
+}
+// 画面を出さずにサインイン（Microsoft にサインイン済みなら成功）
+async function trySilentSignIn() {
+  const hint = _lastUser();
+  if (!hint) return null;
+  try {
+    const r = await msalInstance.ssoSilent({ scopes: SCOPES, loginHint: hint });
+    if (r && isCompanyAccount(r.account)) { _rememberUser(r.account); return r.account; }
+  } catch (e) { console.info('[サインイン] 画面なしサインインは不可 → ボタンで', e && e.errorCode); }
+  return null;
+}
+
 async function login() {
   try {
     document.getElementById('loginError').style.display = 'none';
     document.getElementById('loginBtn').disabled = true;
+    if (!_forceAccountPicker) {
+      const silent = await trySilentSignIn();
+      if (silent) { account = silent; msalInstance.setActiveAccount(account); await onLoginSuccess(); return; }
+    }
     if (shouldUseRedirectFlow()) {
       document.getElementById('loginLoading').style.display = 'block';
       document.getElementById('loginLoading').textContent = '🔄 Microsoft のサインイン画面へ移動します…';
-      await msalInstance.loginRedirect({ scopes: SCOPES, prompt: 'select_account', redirectUri: window.location.origin + window.location.pathname });
+      await msalInstance.loginRedirect(Object.assign(_loginOpts(), { redirectUri: window.location.origin + window.location.pathname }));
       return; // 戻ってきたら init() の handleRedirectPromise で続きを処理
     }
-    const result = await msalInstance.loginPopup({ scopes: SCOPES, prompt: 'select_account' });
+    const result = await msalInstance.loginPopup(_loginOpts());
     account = result.account;
     if (!isCompanyAccount(account)) {
-      showLoginError('会社以外のアカウント（' + account.username + '）が選ばれました。会社のアカウントでサインインしてください');
+      _forceAccountPicker = true;   // 次は選択画面を出す
+      showLoginError('会社以外のアカウント（' + account.username + '）が選ばれました。もう一度「サインイン」を押して会社のアカウントを選んでください');
       document.getElementById('loginBtn').disabled = false;
       return;
     }
+    _forceAccountPicker = false;
+    _rememberUser(account);
     msalInstance.setActiveAccount(account);
     await onLoginSuccess();
   } catch(e) {
-    showLoginError('サインインに失敗しました: ' + e.message);
+    _forceAccountPicker = true;   // 入れなかったときだけ、次はアカウント選択を出す
+    showLoginError('サインインに失敗しました: ' + e.message + '（もう一度押すとアカウントを選べます）');
     document.getElementById('loginBtn').disabled = false;
   }
 }
@@ -7976,6 +8013,7 @@ async function onLoginSuccess() {
     // 📰 営業日報（初期タブ）を描画
     try { if (window.RPT) await RPT.init(); } catch (e) { console.error('[営業日報] 初期化失敗', e); }
   } catch(e) {
+    if (/403|401|accessDenied/.test(String(e && e.message))) _forceAccountPicker = true;
     showLoginError('データ読込に失敗しました: ' + e.message);
     console.error(e);
     document.getElementById('loginBtn').disabled = false;
