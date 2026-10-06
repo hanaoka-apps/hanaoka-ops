@@ -181,10 +181,18 @@
         noCollect: (m["回収管理区分名"] || "") === "行わない",
         ec: EC_COMPANY.has(m["得意先社名ｺｰﾄﾞ"] || ""),
         inMaster: !!cust[code],
-        invoices: {}, unbilled: [], payments: [], periods: [], children: {}
+        invoices: {}, unbilled: [], payments: [], periods: [], children: {}, specials: []
       };
       return o;
     }
+
+    // ---- 特別請求（SMILE の締めとは別に作った請求書。総務が登録） ----
+    //   { id, cust:請求先ｺｰﾄﾞ, no:請求書番号（手書きの番号など）, issue:請求日, due:回収予定日, net, tax, memo, status, lines:[{key,…}] }
+    //   選んだ伝票は SMILE の請求書から外す。SMILE がその伝票ぶんの消費税も請求書の消費税の行に入れているので、
+    //   特別請求の消費税をその請求書から差し引く
+    const specials = (src.specials || []).filter(sp => sp && sp.status !== "取消" && sp.cust);
+    const taken = {};
+    specials.forEach(sp => { sp.found = []; sp.smileNos = {}; (sp.lines || []).forEach(l => { if (l && l.key) taken[l.key] = sp; }); });
 
     // ---- 請求明細 → 請求書 ----
     detail.forEach(r => {
@@ -196,8 +204,12 @@
         price: num(r["売上単価"]), net: num(r["税抜売上金額"]), tax: num(r["消費税等"]), taxKind: r["課税区分名"],
         drawing: r["図番"], model: r["型番"], po: r["客先注番"], seiban: r["製番"], memo1: r["摘要１"], memo2: r["摘要２"]
       };
+      line.key = lineKey(line);
       if (line.cust && line.cust !== code) c.children[line.cust] = line.custName;
       const no = String(r["請求書番号"] || "0").trim();
+      // 特別請求に選んだ伝票は、SMILE の請求書から外して特別請求のほうへ
+      const sp = taken[line.key];
+      if (sp) { sp.found.push(line); if (no !== "0" && no !== "") sp.smileNos[no] = (sp.smileNos[no] || 0) + line.net; return; }
       if (no === "0" || no === "") { c.unbilled.push(line); return; }
       const inv = c.invoices[no] || (c.invoices[no] = { no, lines: [], net: 0, tax: 0, taxDate: "", firstDate: "9999-99-99", lastDate: "" });
       inv.lines.push(line); inv.net += line.net; inv.tax += line.tax;
@@ -216,6 +228,24 @@
       });
     });
 
+    specials.forEach(sp => {
+      const c = getC(sp.cust, sp.custName);
+      const net = num(sp.net), tax = num(sp.tax);
+      // SMILE の請求書から、この特別請求の消費税を差し引く（伝票が複数の請求書にまたがるときは税抜の割合で分ける）
+      const nos = Object.keys(sp.smileNos), totalNet = nos.reduce((s, n) => s + sp.smileNos[n], 0);
+      let left = tax;
+      nos.forEach((n, i) => {
+        const t = i === nos.length - 1 ? left : Math.round(tax * (totalNet ? sp.smileNos[n] / totalNet : 0)); left -= t;
+        const inv = c.invoices[n]; if (!inv) return;
+        inv.tax -= t; inv.specialOut = (inv.specialOut || 0) + sp.smileNos[n] + t;
+      });
+      const lines = sp.found.length ? sp.found : (sp.lines || []);   // 明細の期間外なら保存しておいた中身を出す
+      const dates = lines.map(l => l.date).filter(Boolean).sort();
+      c.invoices["S" + sp.id] = { no: "S" + sp.id, label: "特別 " + (sp.no || sp.id), special: sp, lines, net, tax,
+        taxDate: sp.issue, firstDate: dates[0] || sp.issue, lastDate: dates[dates.length - 1] || sp.issue, missing: !sp.found.length && (sp.lines || []).length > 0 };
+      c.specials.push(sp);
+    });
+
     // ---- 請求先ごとに、回収予定日の回（period）を作って違算を判定 ----
     Object.values(C).forEach(c => {
       c.payments.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
@@ -224,6 +254,12 @@
       invs.forEach(inv => {
         inv.amount = inv.net + inv.tax;
         inv.close = inv.taxDate || inv.lastDate;
+        if (inv.special) {   // 特別請求：請求日と回収予定日は登録した値
+          inv.close = inv.special.issue; inv.baseDue = inv.due = inv.special.due || "";
+          inv.bound = inv.due ? nextBusinessDay(inv.due) : ""; inv.partial = false;
+          return;
+        }
+        inv.label = "No." + inv.no;
         inv.baseDue = c.cycle == null ? "" : addMonths(inv.close, c.cycle, c.payDay);
         inv.due = inv.baseDue;
         // 追記の条件（基準額以上は N 日後振込）
@@ -304,7 +340,10 @@
     return { customers: C, list: Object.values(C), dataStart, dataEnd, payStart, payEnd, asof, today, judgeFrom };
   }
 
-  const API = { parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
+  // 明細の行を見分けるキー（伝票№は年をまたぐと同じ番号が出るので日付も入れる）
+  function lineKey(l) { return l.date + "|" + l.slip + "|" + l.row; }
+
+  const API = { lineKey, parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.ARCore = API;
 })(typeof window !== "undefined" ? window : this);

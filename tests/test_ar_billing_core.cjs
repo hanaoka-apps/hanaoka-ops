@@ -196,6 +196,35 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.equal(m.customers['800001'].diff, 0);
 }
 
+// ---- 特別請求：選んだ伝票を SMILE の請求書から外し、登録した回収予定日で判定 ----
+{
+  const s1 = sale('900001', '20260310', 1000000, 141), s2 = sale('900001', '20260320', 50000, 141);
+  const detail = [sale('900001', '20260101', 1, 0), s1, s2, tax('900001', '20260331', 105000, 141), sale('900001', '20260405', 30000, 0)];
+  const key = r => A.lineKey({ date: A.fromSmile(r['伝票日付']), slip: r['伝票№'], row: r['行'] });
+  const sp = { id: 7, cust: '900001', no: '468212', issue: '2026-03-10', due: '2026-06-30', net: 1000000, tax: 100000, status: '登録',
+    lines: [{ key: key(s1) }] };
+  const m = A.build({
+    customers: [cust('900001', { '締日１': '30', '入金日１': '30' })], staff, detail, specials: [sp],
+    payments: [pay('900001', '20260101', 0), pay('900001', '20260430', 55000), pay('900001', '20260630', 1100000)]
+  }, { asof: '2026-10-05' });
+  const c = m.customers['900001'];
+  assert.equal(c.invoices['141'].amount, 55000, 'SMILE の請求書は特別請求の伝票と、その消費税を除いた額');
+  assert.equal(c.invoices['S7'].amount, 1100000);
+  assert.equal(c.invoices['S7'].due, '2026-06-30');
+  assert.equal(c.invoices['S7'].lines.length, 1);
+  assert.equal(c.diff, 0, '4/30 に 55,000、6/30 に 1,100,000 でどちらも入金済');
+  assert.equal(c.unbilled.length, 2, '1/1 の穴埋めと 4/5 の未請求');
+  // 取り消した特別請求は無視して、元の SMILE の請求書に戻る
+  const m2 = A.build({ customers: [cust('900001', { '締日１': '30', '入金日１': '30' })], staff, detail, specials: [Object.assign({}, sp, { status: '取消' })], payments: [] }, { asof: '2026-10-05' });
+  assert.equal(m2.customers['900001'].invoices['141'].amount, 1155000);
+  // 未請求の伝票を特別請求にしたら、まだ締めていない売上から消える
+  const u = detail[4];
+  const m3 = A.build({ customers: [cust('900001')], staff, detail, payments: [],
+    specials: [{ id: 8, cust: '900001', issue: '2026-04-06', due: '2026-05-31', net: 30000, tax: 3000, lines: [{ key: key(u) }] }] }, { asof: '2026-10-05' });
+  assert.equal(m3.customers['900001'].unbilled.length, 1, '4/5 の伝票は特別請求へ。残るのは 1/1 の穴埋めだけ');
+  assert.equal(m3.customers['900001'].invoices['S8'].amount, 33000);
+}
+
 // ---- CSV：引用符の中のカンマ・改行、BOM ----
 {
   const rows = A.toObjects('﻿"a","b"\r\n"1,2","x""y"\r\n"3","改\n行"\r\n');

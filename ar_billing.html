@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_billing.svg"><!-- レシート（請求書） -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="ar_billing_core.js?v=20261006c"></script>
+<script src="ar_billing_core.js?v=20261006d"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css（全アプリ共通）のトークンだけを使う。ここに色の値は書かない */
@@ -110,6 +110,18 @@
   .chips{display:flex;gap:6px;flex-wrap:wrap}
   .chip{display:inline-flex;gap:5px;align-items:baseline;background:var(--bg);border:1px solid var(--line-strong);border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600}
   .chip i{font-style:normal;color:var(--sub);font-weight:500;font-size:11px}
+  .chk{flex-direction:row!important;align-items:center;gap:6px!important;font-size:12.5px!important;color:var(--txt)!important;font-weight:500!important}
+  .selbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--line);background:var(--navy-soft);font-size:13px;flex-wrap:wrap}
+  .selbar b{font-variant-numeric:tabular-nums}
+  td.ck,th.ck{width:30px;padding-right:0}
+  .form{padding:16px 20px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}
+  .form label{font-size:12px;font-weight:600;color:var(--sub);display:flex;flex-direction:column;gap:4px}
+  .form input,.form textarea{border:1px solid var(--line-strong);border-radius:8px;padding:7px 10px;font-size:14px;font-family:inherit;color:var(--txt);background:var(--surface)}
+  .form input[readonly]{background:var(--bg)}
+  .form .full{grid-column:1/-1}
+  .form .hint{font-size:11.5px;color:var(--sub);font-weight:500}
+  .ferr{color:var(--red-ink);font-size:13px;padding:0 20px 10px}
+  .pill.sp{background:var(--purple-soft);color:var(--purple)}
   .tnote{margin-top:8px;font-size:12.5px;background:var(--amber-soft);color:var(--amber);border-radius:8px;padding:6px 10px;display:inline-block}
   .tnote b{font-weight:700}
   .dbody{padding:16px 24px 40px;display:flex;flex-direction:column;gap:16px}
@@ -219,6 +231,7 @@
     <div class="tabs">
       <button class="tab active" data-view="cust">得意先別</button>
       <button class="tab" data-view="gap">違算一覧<span class="cnt" id="gapCnt" hidden></span></button>
+      <button class="tab" data-view="sp">特別請求</button>
     </div>
     <div class="grow"></div>
     <div class="hdr-actions" id="hdrActions">
@@ -252,6 +265,16 @@
       <div class="detail-pane" id="detail"><div class="placeholder">左の一覧から得意先を選んでください</div></div>
     </section>
 
+    <!-- 特別請求の一覧 -->
+    <section class="view gview" id="viewSp">
+      <div class="gbar">
+        <label>検索<input id="spSearch" type="search" placeholder="得意先名・コード・番号"></label>
+        <label class="chk"><input type="checkbox" id="spShowCancel"> 取り消したものも出す</label>
+        <div class="grow"></div>
+      </div>
+      <div class="gbody" id="spBody"></div>
+    </section>
+
     <!-- 違算一覧 -->
     <section class="view gview" id="viewGap">
       <div class="gbar">
@@ -277,7 +300,8 @@
 // 設定 — マスタビューワーと同じ SharedMasters を読む（読み取りだけ）
 // ============================================================
 const MSAL_CONFIG = HanaokaAuth.msalConfig();
-const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+// 特別請求をリストに書くので ReadWrite（書けるかどうかは SharePoint の権限で決まる。画面では判定しない）
+const SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.Read.All'];
 const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
 const FALLBACK_DRIVE_ID = 'b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
 // SMILE から出すファイル（名前を変えたらここも直す）
@@ -288,6 +312,15 @@ const FILES = {
   staff:     { name:'担当者マスタ.csv', label:'担当者マスタ' },
 };
 
+// 特別請求（SMILE の締めとは別に作った請求書）の保存先。SharedMasters と同じサイトのリスト
+//   1 件 ＝ 1 行。絞り込みに使う値だけ列にして、選んだ伝票の中身などは Data 列に JSON で入れる
+const SPECIAL_LIST = 'AR_特別請求';
+const SPECIAL_COLS = [
+  {name:'CustCode',text:{}}, {name:'InvoiceNo',text:{}}, {name:'IssueDate',text:{}}, {name:'DueDate',text:{}},
+  {name:'NetAmount',number:{}}, {name:'TaxAmount',number:{}}, {name:'Status',text:{}},
+  {name:'Data',text:{allowMultipleLines:true,textType:'plain'}},
+];
+let specialListId=null, specialErr='';
 let msalInstance=null, account=null, driveId=null;
 let SRC={};          // 読み込んだ行（キーは FILES と同じ）
 let SRCINFO={};      // ファイルの更新日時
@@ -349,6 +382,39 @@ async function graphGet(url){
   if(!r.ok) throw new Error(`Graph ${r.status}: ${url}`);
   return r.json();
 }
+async function graphSend(method,url,body){
+  const token=await getToken();
+  const r=await fetch('https://graph.microsoft.com/v1.0'+url,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  if(!r.ok){ const t=await r.text(); throw new Error(`Graph ${r.status}: ${t.slice(0,200)}`); }
+  return r.status===204?{}:r.json();
+}
+async function findSpecialList(){
+  if(specialListId) return specialListId;
+  const d=await graphGet(`/sites/${SITE_ID}/lists?$select=id,displayName&$top=200`);
+  const hit=(d.value||[]).find(l=>l.displayName===SPECIAL_LIST);
+  specialListId=hit?hit.id:null; return specialListId;
+}
+async function loadSpecials(){
+  specialErr='';
+  try{
+    const id=await findSpecialList();
+    if(!id){ SRC.specials=[]; return; }
+    const out=[]; let url=`/sites/${SITE_ID}/lists/${id}/items?expand=fields&$top=500`;
+    while(url){
+      const d=await graphGet(url);
+      (d.value||[]).forEach(v=>{ const f=v.fields||{}; let data={}; try{ data=JSON.parse(f.Data||'{}'); }catch(e){}
+        out.push({ spId:v.id, id:v.id, cust:f.CustCode||'', no:f.InvoiceNo||'', issue:f.IssueDate||'', due:f.DueDate||'',
+          net:Number(f.NetAmount)||0, tax:Number(f.TaxAmount)||0, status:f.Status||'登録', lines:data.lines||[], memo:data.memo||'',
+          custName:data.custName||'', createdBy:data.createdBy||'', createdAt:data.createdAt||'', updatedBy:data.updatedBy||'' }); });
+      url=d['@odata.nextLink']?d['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0',''):null;
+    }
+    SRC.specials=out;
+  }catch(e){ console.warn('特別請求',e); specialErr='特別請求を読めませんでした（'+e.message.slice(0,80)+'）'; SRC.specials=SRC.specials||[]; }
+}
+async function createSpecialList(){
+  const d=await graphSend('POST',`/sites/${SITE_ID}/lists`,{displayName:SPECIAL_LIST,columns:SPECIAL_COLS,list:{template:'genericList'}});
+  specialListId=d.id; return d.id;
+}
 async function resolveDriveId(){
   if(driveId) return driveId;
   try{
@@ -376,7 +442,7 @@ async function loadAll(){
   await Promise.all(Object.entries(FILES).map(async([k,f])=>{
     try{ const r=await fetchFile(f.name); SRC[k]=ARCore.toObjects(r.text); SRCINFO[k]={modified:r.modified,from:'SharePoint'}; }
     catch(e){ console.warn(f.name,e); if(!SRC[k]) missing.push(f.name); }
-  }));
+  }).concat([loadSpecials()]));
   if(!SRC.detail||!SRC.customers){
     setStatus('error','読み込めませんでした: '+esc(missing.join('、'))+'　右上の「ファイルを選ぶ」で手元のファイルからも開けます。'); return;
   }
@@ -410,7 +476,8 @@ function rebuild(){
 function summaryText(){
   const md=s=>s&&s!=='9999-99-99'?`${+s.slice(5,7)}/${+s.slice(8,10)}`:'—';
   const mod=k=>SRCINFO[k]&&SRCINFO[k].modified?new Date(SRCINFO[k].modified).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
-  return `請求明細 ${md(M.dataStart)}〜${md(M.dataEnd)}（${mod('detail')}更新）　入金明細 ${SRC.payments?md(M.payStart)+'〜'+md(M.payEnd)+'（'+mod('payments')+'更新）':'なし'}`;
+  const sp=(SRC.specials||[]).filter(x=>x.status!=='取消').length;
+  return `請求明細 ${md(M.dataStart)}〜${md(M.dataEnd)}（${mod('detail')}更新）　入金明細 ${SRC.payments?md(M.payStart)+'〜'+md(M.payEnd)+'（'+mod('payments')+'更新）':'なし'}　特別請求 ${sp}件`+(specialErr?'　<b>'+esc(specialErr)+'</b>':'');
 }
 document.getElementById('asofInput').onchange=e=>{ asofOverride=e.target.value; if(M) rebuild(); };
 
@@ -461,18 +528,20 @@ function setView(v){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
   document.getElementById('viewCust').classList.toggle('active',v==='cust');
   document.getElementById('viewGap').classList.toggle('active',v==='gap');
+  document.getElementById('viewSp').classList.toggle('active',v==='sp');
 }
-function render(){ setView(view); renderList(); renderDetail(); renderGap(); }
+function render(){ setView(view); renderList(); renderDetail(); renderGap(); renderSpList(); }
+['spSearch','spShowCancel'].forEach(id=>document.getElementById(id).addEventListener('input',renderSpList));
 
 // URL の # で得意先を開く（例：ar_billing.html#c=110201）。営業にリンクで渡せるように
 function readHash(){
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.get('c')&&M.customers[h.get('c')]){ selCode=h.get('c'); view='cust'; document.getElementById('viewCust').classList.add('show-detail'); }
-  else if(h.get('v')==='gap') view='gap';
+  else if(h.get('v')==='gap'||h.get('v')==='sp') view=h.get('v');
 }
 window.addEventListener('hashchange',()=>{ if(!M) return; readHash(); render(); });
 function writeHash(){
-  const h=view==='gap'?'v=gap':(selCode?'c='+selCode:'');
+  const h=view!=='cust'?'v='+view:(selCode?'c='+selCode:'');
   history.replaceState(null,'',h?'#'+h:location.pathname+location.search);
 }
 
@@ -534,7 +603,7 @@ function renderDetail(){
   // 回収予定日ごと（新しい順）
   const P=[...c.periods].reverse();
   const prow=P.map((p,i)=>{
-    const invs=p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">No.${esc(v.no)}</a> <span class="muted">${md(v.close)}締</span>`).join('<br>');
+    const invs=p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a> <span class="muted">${v.special?md(v.close)+'請求':md(v.close)+'締'}</span>`).join('<br>');
     const pays=p.payments.map(x=>`<tr class="sub"><td colspan="3">${ymdJ(x.date)}　${esc(x.kind)}${x.memo?'　'+esc(x.memo):''}${x.due?'　決済 '+ymdJ(x.due):''}</td><td class="num">${yen(x.amount)}</td><td colspan="3"></td></tr>`).join('');
     return `<tr class="click${p.judged||p.partial?'':' '}" data-p="${i}">
       <td>${ymdJ(p.due)}${p.bound!==p.due?`<div class="reason">休日のため ${md(p.bound)} まで</div>`:''}${p.invoices.some(v=>v.rule)?`<div class="reason">追記の条件で ${md(p.invoices.find(v=>v.rule).baseDue)} から後ろへ</div>`:''}</td>
@@ -549,12 +618,12 @@ function renderDetail(){
 
   // 請求書の一覧（請求書番号ごと）
   const irow=[...c.invoiceList].reverse().map(v=>`<tr class="click" data-no="${esc(v.no)}">
-      <td><a class="inv-link" data-no="${esc(v.no)}">No.${esc(v.no)}</a></td><td>${ymdJ(v.close)}</td><td>${ymdJ(v.due)||'—'}${v.rule?`<div class="reason">${esc(v.rule)}</div>`:''}</td>
+      <td><a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a>${v.special?' <span class="pill sp">特別請求</span>':''}${v.specialOut?`<div class="reason">特別請求に回した分 ${yen(v.specialOut)} を除く</div>`:''}</td><td>${ymdJ(v.close)}</td><td>${ymdJ(v.due)||'—'}${v.rule?`<div class="reason">${esc(v.rule)}</div>`:''}</td>
       <td class="num">${v.lines.length}</td><td class="num">${yen(v.net)}</td><td class="num">${yen(v.tax)}</td><td class="num"><b>${yen(v.amount)}</b></td>
-      <td>${v.partial?'<span class="pill na" title="データの最初の日より前の売上は載っていません">一部のみ</span>':''}</td></tr>`).join('');
+      <td>${v.partial?'<span class="pill na" title="データの最初の日より前の売上は載っていません">一部のみ</span>':''}${v.missing?'<span class="pill na" title="伝票が明細の期間外です。登録したときの内容を出しています">期間外</span>':''}</td></tr>`).join('');
 
   // まだ締めていない売上
-  const urow=c.unbilled.map(l=>`<tr><td>${ymdJ(l.date)}</td><td class="mono">${esc(l.slip)}</td>${kids.length?`<td>${esc(l.custName)}</td>`:''}<td>${esc(l.kind)}</td><td>${esc(l.itemName)}</td><td>${esc(l.po)}</td><td class="num">${l.qty}</td><td class="num">${yen(l.net)}</td></tr>`).join('');
+  const urow=c.unbilled.map(l=>`<tr><td class="ck"><input type="checkbox" class="uck" data-k="${esc(l.key)}"></td><td>${ymdJ(l.date)}</td><td class="mono">${esc(l.slip)}</td>${kids.length?`<td>${esc(l.custName)}</td>`:''}<td>${esc(l.kind)}</td><td>${esc(l.itemName)}</td><td>${esc(l.po)}</td><td class="num">${l.qty}</td><td class="num">${yen(l.net)}</td></tr>`).join('');
 
   el.innerHTML=`
     <div class="dhead">
@@ -588,8 +657,10 @@ function renderDetail(){
       </div>
       <div class="panel">
         <h3>まだ締めていない売上 <small>次の請求書に載る予定</small></h3>
-        ${urow?`<div class="tw"><table><thead><tr><th>伝票日付</th><th>伝票№</th>${kids.length?'<th>得意先</th>':''}<th>取引</th><th>品目</th><th>客先注番</th><th class="num">数量</th><th class="num">税抜金額</th></tr></thead><tbody>${urow}</tbody></table></div>`:'<div class="empty">ありません</div>'}
+        ${urow?`<div class="tw"><table><thead><tr><th class="ck"></th><th>伝票日付</th><th>伝票№</th>${kids.length?'<th>得意先</th>':''}<th>取引</th><th>品目</th><th>客先注番</th><th class="num">数量</th><th class="num">税抜金額</th></tr></thead><tbody>${urow}</tbody></table></div>
+          <div class="selbar" id="uSel" hidden><span>選んだ伝票 <b id="uSelN">0</b> 行・税抜 <b id="uSelAmt">0</b> 円</span><button class="btn pri" id="uSelBtn">特別請求を作る</button></div>`:'<div class="empty">ありません</div>'}
       </div>
+      ${specialPanel(c)}
     </div>`;
   const bb=document.getElementById('backBtn');
   if(bb) bb.onclick=()=>{ document.getElementById('viewCust').classList.remove('show-detail'); selCode=''; writeHash(); renderList(); };
@@ -598,6 +669,25 @@ function renderDetail(){
     const d=el.querySelector(`tr.paydetail[data-for="${tr.dataset.p}"]`); d.hidden=!d.hidden;
   });
   el.querySelectorAll('.inv-link,tr[data-no]').forEach(a=>a.onclick=e=>{ e.stopPropagation(); openInvoice(c,a.dataset.no); });
+  // 未請求の伝票を選ぶ
+  const pick=()=>{ const ks=[...el.querySelectorAll('.uck:checked')].map(x=>x.dataset.k); const L=c.unbilled.filter(l=>ks.includes(l.key));
+    const bar=document.getElementById('uSel'); if(!bar) return L; bar.hidden=!L.length;
+    document.getElementById('uSelN').textContent=L.length; document.getElementById('uSelAmt').textContent=yen(L.reduce((s,l)=>s+l.net,0)); return L; };
+  el.querySelectorAll('.uck').forEach(x=>x.onchange=pick);
+  const ub=document.getElementById('uSelBtn'); if(ub) ub.onclick=()=>openSpecialForm(c,pick());
+  el.querySelectorAll('[data-spedit]').forEach(b=>b.onclick=()=>{ const sp=c.specials.find(x=>String(x.id)===b.dataset.spedit); openSpecialForm(c,null,sp); });
+  el.querySelectorAll('[data-spno]').forEach(b=>b.onclick=()=>openInvoice(c,b.dataset.spno));
+}
+
+// 得意先の画面の「特別請求」欄
+function specialPanel(c){
+  const L=[...c.specials].sort((a,b)=>(b.issue||'').localeCompare(a.issue||''));
+  const state=sp=>{ const p=c.periods.find(p=>p.invoices.some(v=>v.special===sp)); return p?periodState(p,c):''; };
+  return `<div class="panel"><h3>特別請求 <small>SMILE の締めとは別に作った請求書。上の「まだ締めていない売上」や、請求書の明細から伝票を選んで作ります</small></h3>
+    ${L.length?`<div class="tw"><table><thead><tr><th>番号</th><th>請求日</th><th>回収予定日</th><th class="num">伝票</th><th class="num">税抜</th><th class="num">消費税</th><th class="num">請求額</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>
+    ${L.map(sp=>`<tr><td><a class="inv-link" data-spno="S${esc(sp.id)}">${esc(sp.no||'（番号なし）')}</a></td><td>${ymdJ(sp.issue)}</td><td>${ymdJ(sp.due)}</td><td class="num">${(sp.lines||[]).length}</td>
+      <td class="num">${yen(sp.net)}</td><td class="num">${yen(sp.tax)}</td><td class="num"><b>${yen(sp.net+sp.tax)}</b></td><td>${state(sp)}</td><td class="muted" style="max-width:220px">${esc(sp.memo)}</td>
+      <td><button class="btn" data-spedit="${esc(sp.id)}">直す</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">ありません</div>'}</div>`;
 }
 
 // ============================================================
@@ -605,33 +695,42 @@ function renderDetail(){
 // ============================================================
 function openInvoice(c,no){
   const v=c.invoices[no]; if(!v) return;
+  const canPick=!v.special;
   const lines=[...v.lines].filter(l=>!(l.taxKind==='消費税')).sort((a,b)=>(a.date+String(a.slip).padStart(8,'0')+String(a.row).padStart(3,'0')).localeCompare(b.date+String(b.slip).padStart(8,'0')+String(b.row).padStart(3,'0')));
   const multi=new Set(lines.map(l=>l.cust)).size>1;
   let prevD='',prevS='';
   const rows=lines.map(l=>{
     const d=l.date!==prevD?ymdJ(l.date):'', s=(l.date+l.slip)!==prevS?esc(l.slip):'';
     prevD=l.date; prevS=l.date+l.slip;
-    return `<tr><td class="nowrap">${d}</td><td class="mono num">${s}</td>${multi?`<td>${esc(l.custName)}</td>`:''}<td>${esc(l.kind)}</td><td class="mono">${esc(l.item)}</td><td>${esc(l.itemName)}</td>
+    return `<tr>${canPick?`<td class="ck"><input type="checkbox" class="ick" data-k="${esc(l.key)}"></td>`:''}<td class="nowrap">${d}</td><td class="mono num">${s}</td>${multi?`<td>${esc(l.custName)}</td>`:''}<td>${esc(l.kind)}</td><td class="mono">${esc(l.item)}</td><td>${esc(l.itemName)}</td>
       <td>${esc(l.model)}</td><td class="mono">${esc(l.drawing)}</td><td class="mono">${esc(l.po)}</td><td class="num">${l.qty.toLocaleString('ja-JP',{minimumFractionDigits:2})}</td><td>${esc(l.unit)}</td>
       <td class="num">${l.price.toLocaleString('ja-JP',{minimumFractionDigits:2})}</td><td class="num">${yen(l.net)}</td></tr>`;
   }).join('');
-  const span=multi?12:11;
+  const span=(multi?12:11)+(canPick?1:0);
   document.getElementById('invBody').innerHTML=`
     <div class="inv-head">
-      <div><h2>${esc(c.name)}　請求書 No.${esc(no)}</h2>
-        <div class="meta"><span>得意先 ${esc(c.code)}</span><span>${ymdJ(v.close)} 締</span><span>回収予定 ${ymdJ(v.due)||'—'}</span><span>担当 ${esc(c.staffName)}</span></div>
+      <div><h2>${esc(c.name)}　${v.special?'特別請求 '+esc(v.special.no||''):'請求書 '+esc(v.label)}</h2>
+        <div class="meta"><span>得意先 ${esc(c.code)}</span><span>${ymdJ(v.close)} ${v.special?'請求':'締'}</span><span>回収予定 ${ymdJ(v.due)||'—'}</span><span>担当 ${esc(c.staffName)}</span></div>
         ${v.partial?'<div class="reason">※ データの最初の日（'+ymdJ(M.dataStart)+'）より前の売上は、この画面には載っていません</div>':''}</div>
       <div class="inv-tot"><span>御買上額</span><b>${yen(v.net)}</b><span>消費税等</span><b>${yen(v.tax)}</b><span>請求額</span><b>${yen(v.amount)}</b></div>
     </div>
     <div class="tw"><table>
-      <thead><tr><th>日付</th><th class="num">伝票№</th>${multi?'<th>得意先</th>':''}<th>取引区分</th><th>品目コード</th><th>品目</th><th>型番</th><th>図番</th><th>客先注番</th><th class="num">数量</th><th>単位</th><th class="num">単価</th><th class="num">金額</th></tr></thead>
+      <thead><tr>${canPick?'<th class="ck"></th>':''}<th>日付</th><th class="num">伝票№</th>${multi?'<th>得意先</th>':''}<th>取引区分</th><th>品目コード</th><th>品目</th><th>型番</th><th>図番</th><th>客先注番</th><th class="num">数量</th><th>単位</th><th class="num">単価</th><th class="num">金額</th></tr></thead>
       <tbody>${rows}
         <tr class="sum"><td colspan="${span}" class="num">【御買上額】</td><td class="num">${yen(v.net)}</td></tr>
         <tr class="sum"><td colspan="${span}" class="num">【消費税等】</td><td class="num">${yen(v.tax)}</td></tr>
       </tbody></table></div>
-    <div class="inv-foot"><button class="btn" id="invCsv">CSVに出す</button><button class="btn pri" id="invClose">閉じる</button></div>`;
+    <div class="inv-foot">${canPick?'<span class="muted" id="iSelTxt" style="margin-right:auto;font-size:12.5px">伝票を選ぶと、この請求書から外して特別請求にできます</span><button class="btn" id="iSelBtn" disabled>選んだ伝票で特別請求を作る</button>':''}<button class="btn" id="invCsv">CSVに出す</button><button class="btn pri" id="invClose">閉じる</button></div>`;
   const modal=document.getElementById('invModal'); modal.classList.add('show');
   document.getElementById('invClose').onclick=()=>modal.classList.remove('show');
+  if(canPick){
+    const pick=()=>{ const ks=[...document.querySelectorAll('.ick:checked')].map(x=>x.dataset.k); const L=lines.filter(l=>ks.includes(l.key));
+      document.getElementById('iSelBtn').disabled=!L.length;
+      document.getElementById('iSelTxt').textContent=L.length?`選んだ伝票 ${L.length} 行・税抜 ${yen(L.reduce((s,l)=>s+l.net,0))} 円`:'伝票を選ぶと、この請求書から外して特別請求にできます';
+      return L; };
+    document.querySelectorAll('.ick').forEach(x=>x.onchange=pick);
+    document.getElementById('iSelBtn').onclick=()=>openSpecialForm(c,pick());
+  }
   document.getElementById('invCsv').onclick=()=>downloadCsv(`請求明細_${c.code}_No${no}.csv`,
     [['日付','伝票№','得意先','取引区分','品目コード','品目','型番','図番','客先注番','数量','単位','単価','金額']]
       .concat(lines.map(l=>[l.date,l.slip,l.custName,l.kind,l.item,l.itemName,l.model,l.drawing,l.po,l.qty,l.unit,l.price,l.net]))
@@ -639,6 +738,103 @@ function openInvoice(c,no){
 }
 document.getElementById('invModal').onclick=e=>{ if(e.target.id==='invModal') e.currentTarget.classList.remove('show'); };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.getElementById('invModal').classList.remove('show'); });
+
+// ============================================================
+// 特別請求の登録・修正・取消（総務が入力。いずれは特別請求稟議のワークフローとつなぐ）
+// ============================================================
+function today(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function defaultDue(c,issue){ return c.cycle==null||!issue?'':ARCore.addMonths(issue,c.cycle,c.payDay); }
+// 保存する伝票の中身（明細の期間から外れても特別請求の中身を出せるように）
+function snap(l){ const o={}; ['key','date','slip','row','cust','custName','kind','item','itemName','qty','unit','price','net','po','drawing','model'].forEach(k=>o[k]=l[k]); return o; }
+function openSpecialForm(c,lines,sp){
+  const edit=!!sp;
+  lines=edit?(sp.lines||[]):lines.filter(l=>l.taxKind!=='消費税');
+  if(!lines.length){ alert('伝票を選んでください'); return; }
+  // ほかの特別請求に入っている伝票は選べない
+  const used={}; (SRC.specials||[]).filter(x=>x.status!=='取消'&&(!sp||x.id!==sp.id)).forEach(x=>(x.lines||[]).forEach(l=>used[l.key]=x));
+  const dup=lines.filter(l=>used[l.key]);
+  if(dup.length){ alert('次の伝票は、すでに特別請求「'+(used[dup[0].key].no||'')+'」に入っています。\n'+dup.map(l=>l.date+' 伝票'+l.slip).join('\n')); return; }
+  const net=lines.reduce((s,l)=>s+(Number(l.net)||0),0);
+  const issue=edit?sp.issue:today();
+  document.getElementById('invBody').innerHTML=`
+    <div class="inv-head"><div><h2>${edit?'特別請求を直す':'特別請求を作る'}　${esc(c.name)}</h2>
+      <div class="meta"><span>得意先 ${esc(c.code)}</span><span>伝票 ${lines.length} 行</span><span>回収条件 ${esc(c.closeLabel)} ${esc(c.termsLabel)}</span></div></div></div>
+    <div class="form">
+      <label>特別請求の番号<input id="fNo" value="${esc(edit?sp.no:'')}" placeholder="請求書に書いた番号・稟議番号など"></label>
+      <label>請求日<input id="fIssue" type="date" value="${esc(issue)}"></label>
+      <label>回収予定日<input id="fDue" type="date" value="${esc(edit?sp.due:defaultDue(c,issue))}"><span class="hint">得意先マスタの回収条件から入れています。違う場合は直してください</span></label>
+      <label>税抜<input id="fNet" readonly value="${yen(net)}"></label>
+      <label>消費税<input id="fTax" type="number" value="${edit?sp.tax:Math.floor(net*0.1)}"><span class="hint">税抜の10%（切り捨て）。違う場合は直してください</span></label>
+      <label>請求額<input id="fTot" readonly></label>
+      <label class="full">メモ<textarea id="fMemo" rows="2">${esc(edit?sp.memo:'')}</textarea></label>
+    </div>
+    <div class="tw" style="max-height:220px;overflow:auto;border-top:1px solid var(--line)"><table><thead><tr><th>伝票日付</th><th>伝票№</th><th>品目</th><th>客先注番</th><th class="num">税抜</th></tr></thead><tbody>
+      ${lines.map(l=>`<tr><td>${ymdJ(l.date)}</td><td class="mono">${esc(l.slip)}</td><td>${esc(l.itemName)}</td><td class="mono">${esc(l.po)}</td><td class="num">${yen(l.net)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="ferr" id="fErr"></div>
+    <div class="inv-foot">${edit&&sp.status!=='取消'?'<button class="btn" id="fCancelSp" style="margin-right:auto;color:var(--red-ink)">この特別請求を取り消す</button>':''}<button class="btn" id="fClose">やめる</button><button class="btn pri" id="fSave">${edit?'保存':'登録'}</button></div>`;
+  const modal=document.getElementById('invModal'); modal.classList.add('show');
+  const tot=()=>{ document.getElementById('fTot').value=yen(net+(Number(document.getElementById('fTax').value)||0)); };
+  tot(); document.getElementById('fTax').oninput=tot;
+  let dueTouched=edit; document.getElementById('fDue').oninput=()=>dueTouched=true;
+  document.getElementById('fIssue').oninput=e=>{ if(!dueTouched) document.getElementById('fDue').value=defaultDue(c,e.target.value); };
+  document.getElementById('fClose').onclick=()=>modal.classList.remove('show');
+  const cb=document.getElementById('fCancelSp');
+  if(cb) cb.onclick=async()=>{ if(!confirm('この特別請求を取り消しますか？\n伝票は元の SMILE の請求書（または未請求）に戻ります。')) return;
+    await saveSpecial(c,sp,{Status:'取消'}); };
+  document.getElementById('fSave').onclick=async()=>{
+    const v={ no:document.getElementById('fNo').value.trim(), issue:document.getElementById('fIssue').value, due:document.getElementById('fDue').value,
+      tax:Math.round(Number(document.getElementById('fTax').value)||0), memo:document.getElementById('fMemo').value.trim() };
+    if(!v.issue||!v.due){ document.getElementById('fErr').textContent='請求日と回収予定日を入れてください'; return; }
+    const data={ lines:lines.map(snap), memo:v.memo, custName:c.name,
+      createdBy:edit?sp.createdBy:(account&&account.name||''), createdAt:edit?sp.createdAt:new Date().toISOString(),
+      updatedBy:account&&account.name||'', updatedAt:new Date().toISOString() };
+    await saveSpecial(c,sp,{ Title:c.code+'-'+(v.no||v.issue), CustCode:c.code, InvoiceNo:v.no, IssueDate:v.issue, DueDate:v.due,
+      NetAmount:net, TaxAmount:v.tax, Status:edit?sp.status:'登録', Data:JSON.stringify(data) });
+  };
+}
+async function saveSpecial(c,sp,fields){
+  const btns=[...document.querySelectorAll('#invBody .inv-foot button')]; btns.forEach(b=>b.disabled=true);
+  try{
+    let id=await findSpecialList();
+    if(!id){
+      if(!confirm('特別請求の保存先（SharePoint のリスト「'+SPECIAL_LIST+'」）がまだありません。作りますか？')){ btns.forEach(b=>b.disabled=false); return; }
+      id=await createSpecialList();
+    }
+    if(sp){
+      if(fields.Status==='取消') fields.Data=JSON.stringify({lines:sp.lines,memo:sp.memo,custName:sp.custName,createdBy:sp.createdBy,createdAt:sp.createdAt,
+        updatedBy:account&&account.name||'',updatedAt:new Date().toISOString()});
+      await graphSend('PATCH',`/sites/${SITE_ID}/lists/${id}/items/${sp.spId}/fields`,fields);
+    }else await graphSend('POST',`/sites/${SITE_ID}/lists/${id}/items`,{fields});
+    document.getElementById('invModal').classList.remove('show');
+    setStatus('loading','保存しました。読み直しています…',true);
+    await loadSpecials(); rebuild();
+  }catch(e){
+    console.error(e);
+    document.getElementById('fErr').textContent='保存できませんでした：'+e.message+'（書き込みの権限がない場合は総務に依頼してください）';
+    btns.forEach(b=>b.disabled=false);
+  }
+}
+
+// 特別請求の一覧（全得意先）
+function renderSpList(){
+  const el=document.getElementById('spBody'); if(!M){ el.innerHTML=''; return; }
+  const q=norm(document.getElementById('spSearch').value), showCancel=document.getElementById('spShowCancel').checked;
+  const rows=(SRC.specials||[]).filter(sp=>showCancel||sp.status!=='取消').map(sp=>{
+    const c=M.customers[sp.cust]; const p=c&&c.periods.find(p=>p.invoices.some(v=>v.special&&v.special.id===sp.id));
+    return {sp,c,p};
+  }).filter(x=>!q||norm(x.sp.cust+' '+(x.c?x.c.name:x.sp.custName)+' '+x.sp.no+' '+x.sp.memo).includes(q))
+    .sort((a,b)=>(b.sp.issue||'').localeCompare(a.sp.issue||''));
+  el.innerHTML=`<div class="panel"><h3>特別請求 <small>${rows.length}件　登録は得意先の画面で、伝票を選んでから</small></h3>
+    ${rows.length?`<div class="tw"><table><thead><tr><th>得意先</th><th>番号</th><th>請求日</th><th>回収予定日</th><th class="num">請求額</th><th class="num">入金額</th><th>状態</th><th>メモ</th><th>登録</th></tr></thead><tbody>
+    ${rows.map(({sp,c,p})=>`<tr class="click${sp.status==='取消'?' dim':''}" data-c="${esc(sp.cust)}"><td><div class="mono muted" style="font-size:12px">${esc(sp.cust)}</div><b>${esc(c?c.name:sp.custName)}</b></td>
+      <td>${esc(sp.no)}</td><td>${ymdJ(sp.issue)}</td><td>${ymdJ(sp.due)}</td><td class="num">${yen(sp.net+sp.tax)}</td><td class="num">${p?yen(p.paid):''}</td>
+      <td>${sp.status==='取消'?'<span class="pill na">取消</span>':(p&&c?periodState(p,c):'')}</td><td class="muted" style="max-width:240px">${esc(sp.memo)}</td>
+      <td class="muted" style="font-size:12px">${esc(sp.createdBy)}${sp.createdAt?'<br>'+ymdJ(sp.createdAt.slice(0,10)):''}</td></tr>`).join('')}
+    </tbody></table></div>`:'<div class="empty">まだありません。得意先の画面の「まだ締めていない売上」か、請求書の明細で伝票を選んで作ります。</div>'}
+    <div class="note">特別請求に入れた伝票は、SMILE の締めの請求書から外し、登録した回収予定日で入金を確かめます（消費税も特別請求のぶんを SMILE の請求書から差し引きます）。
+    同じ回収予定日の入金は、SMILE の請求書と合わせて充てます。${specialErr?'<br><b>'+esc(specialErr)+'</b>':''}</div></div>`;
+  el.querySelectorAll('tr[data-c]').forEach(tr=>tr.onclick=()=>openCust(tr.dataset.c));
+}
 
 // ============================================================
 // 違算一覧（拠点ごと。違算 Excel のシート分けと同じ）
