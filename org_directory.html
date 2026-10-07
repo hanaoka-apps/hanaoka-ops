@@ -10,6 +10,9 @@
   中身はすべて Entra（Microsoft 365 のユーザー情報）を読むだけ。名前・番号・上司を
   このファイルに書かない。直すときは Entra 側を直す。
     部署 department / 役職 jobTitle / 上司 manager / 携帯 mobilePhone（会社貸与の番号だけ入れる約束）
+    勤務地 officeLocation（本社・工場。一覧の大きな区切り。部署が同じでも人ごとに違ってよい）
+    部署が「役員」の人は、勤務地にかかわらず先頭の「役員」にまとめる
+  勤務地の投入は scripts/set_office_location.ps1。
   出す人：メンバー・有効・ライセンスあり。ゲスト・無効・共有メールボックスは出さない。
   「従業員の種類」(employeeType) で次を見分ける。
     共有PC   … 共有PC用のアカウント。出さない
@@ -80,11 +83,16 @@
   .count { font-size: 12.5px; color: var(--text-sub); font-weight: 600; }
 
   /* ---------- 部署ごとの一覧 ---------- */
-  .dept { margin-bottom: 26px; }
-  .dept h2 {
-    display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 15px; font-weight: 800;
+  .site { margin-bottom: 34px; }
+  .site > h2 {
+    display: flex; align-items: baseline; gap: 8px; margin: 0 0 14px; padding-bottom: 8px;
+    font-size: 18px; font-weight: 800; color: var(--navy); border-bottom: 2px solid var(--navy-soft);
   }
-  .dept h2 small { font-size: 12px; color: var(--text-sub); font-weight: 600; }
+  .dept { margin-bottom: 22px; }
+  .dept h3 {
+    display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 14.5px; font-weight: 800;
+  }
+  .site > h2 small, .dept h3 small { font-size: 12px; color: var(--text-sub); font-weight: 600; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
   .person {
     background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
@@ -179,7 +187,7 @@
 
 <script>
 const SCOPES = ['User.Read', 'User.Read.All'];
-const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType';
+const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation';
 const VIEW_KEY = 'hanaoka.org.view.v1';
 let pca, account;
 let people = [], lines = [], byId = new Map(), kids = new Map(), depth = new Map();
@@ -191,6 +199,21 @@ const has = v => v != null && String(v).trim() !== '';
 const NO_DEPT = '部署なし';
 const deptOf = u => has(u.department) ? u.department.trim() : NO_DEPT;
 const jaCmp = (a, b) => a.localeCompare(b, 'ja');
+// 一覧の大きな区切り。中身（誰がどこか）は Entra の勤務地で決まり、ここは並べる順番だけ
+const SITE_ORDER = ['役員', '本社', '工場'];
+const NO_SITE = 'その他';
+const siteOf = u => deptOf(u) === '役員' ? '役員' : has(u.officeLocation) ? u.officeLocation.trim() : NO_SITE;
+const siteRank = k => k === NO_SITE ? 1e9 : (SITE_ORDER.indexOf(k) + 1 || 500);
+// 区切りの中の部署の並び順（部署名だけ。誰がどの部署かは Entra）。
+// ★部署が増えたらここに足す★ 書いていない部署は、この後ろに「上の人が組織図で上にいる順」で付く。
+// 総務部は本社と工場の両方にあり、どちらでも最後
+const DEPT_ORDER = [
+  '工場',   // 工場長（工場全体の長。部署＝工場）
+  '東京営業', '大阪', '名古屋', 'ソリューション営業部', '全社業務センター', '販売企画室',
+  '第一工場', '第二工場', '第三工場', '品質管理部', '技術部', 'CSエンジニアリング室',
+  '総務部'
+];
+const deptRank = k => { const i = DEPT_ORDER.indexOf(k); return i < 0 ? 500 : i; };
 
 const IC = {
   chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
@@ -240,7 +263,7 @@ function build(users) {
   };
   people.forEach(d);
   people.forEach(u => {
-    u._key = [u.displayName, u.department, u.jobTitle, u.mail, u.userPrincipalName, (u.mobilePhone || '').replace(/\D/g, '')]
+    u._key = [u.displayName, u.department, u.officeLocation, u.jobTitle, u.mail, u.userPrincipalName, (u.mobilePhone || '').replace(/\D/g, '')]
       .join(' ').replace(/\s+/g, '').toLowerCase();
   });
 }
@@ -293,26 +316,47 @@ function lineCard(l, q) {
   </div>`;
 }
 
-/* ---------------- 部署ごと ---------------- */
+/* ---------------- 部署ごと（役員・本社・工場 → 部署） ---------------- */
 function renderList(q) {
   const match = u => !q || u._key.includes(q);
   const lineMatch = l => !q || (deptOf(l) + '共用番号' + l.mobilePhone.replace(/\D/g, '')).toLowerCase().includes(q);
-  const groups = new Map();
-  people.forEach(u => { const k = deptOf(u); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(u); });
-  lines.forEach(l => { const k = deptOf(l); if (!groups.has(k)) groups.set(k, []); });
-  // 部署の並び：いちばん上の人の段数が浅い順（役員→部長のいる部署→…）、同じなら名前順。部署なしは最後
-  const rank = k => k === NO_DEPT ? 1e9 : Math.min(...(groups.get(k).map(u => depth.get(u.id))), 99);
-  const keys = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || jaCmp(a, b));
+  // 区切り → 部署 → 人。総務部のように、同じ部署が本社と工場の両方に出ることがある
+  const sites = new Map();
+  const slot = (site, dept) => {
+    if (!sites.has(site)) sites.set(site, new Map());
+    const m = sites.get(site);
+    if (!m.has(dept)) m.set(dept, { ps: [], ls: [] });
+    return m.get(dept);
+  };
+  people.forEach(u => slot(siteOf(u), deptOf(u)).ps.push(u));
+  // 共用携帯は勤務地があればそこ、なければ同じ部署の人がいる区切りに入れる
+  lines.forEach(l => {
+    let site = has(l.officeLocation) ? l.officeLocation.trim() : null;
+    if (!site) { const p = people.find(u => deptOf(u) === deptOf(l)); site = p ? siteOf(p) : NO_SITE; }
+    slot(site, deptOf(l)).ls.push(l);
+  });
+  // 部署の並び：DEPT_ORDER の順。書いていない部署は、いちばん上の人の段数が浅い順→名前順。部署なしは最後
+  const rank = g => g.ps.length ? Math.min(...g.ps.map(u => depth.get(u.id))) : 99;
   let h = '', n = 0;
-  for (const k of keys) {
-    const deptHit = q && k.replace(/\s/g, '').toLowerCase().includes(q);
-    const ps = groups.get(k).filter(u => deptHit || match(u))
-      .sort((a, b) => depth.get(a.id) - depth.get(b.id) || jaCmp(a.displayName, b.displayName));
-    const ls = lines.filter(l => deptOf(l) === k && (deptHit || lineMatch(l)));
-    if (!ps.length && !ls.length) continue;
-    n += ps.length;
-    h += `<section class="dept"><h2>${hl(k, q)}<small>${groups.get(k).length}人</small></h2><div class="grid">` +
-      ps.map(u => personCard(u, q, false)).join('') + ls.map(l => lineCard(l, q)).join('') + '</div></section>';
+  for (const site of [...sites.keys()].sort((a, b) => siteRank(a) - siteRank(b) || jaCmp(a, b))) {
+    const depts = sites.get(site);
+    const siteHit = q && site.toLowerCase().includes(q);
+    let body = '', total = 0;
+    for (const k of [...depts.keys()].sort((a, b) => (a === NO_DEPT) - (b === NO_DEPT) || deptRank(a) - deptRank(b) || rank(depts.get(a)) - rank(depts.get(b)) || jaCmp(a, b))) {
+      const g = depts.get(k);
+      total += g.ps.length;
+      const hit = siteHit || (q && k.replace(/\s/g, '').toLowerCase().includes(q));
+      const ps = g.ps.filter(u => hit || match(u))
+        .sort((a, b) => depth.get(a.id) - depth.get(b.id) || jaCmp(a.displayName, b.displayName));
+      const ls = g.ls.filter(l => hit || lineMatch(l));
+      if (!ps.length && !ls.length) continue;
+      n += ps.length;
+      // 区切りが「役員」で部署も「役員」のときは、部署の見出しを重ねない
+      const head = k === site ? '' : `<h3>${hl(k, q)}<small>${g.ps.length}人</small></h3>`;
+      body += `<section class="dept">${head}<div class="grid">` +
+        ps.map(u => personCard(u, q, false)).join('') + ls.map(l => lineCard(l, q)).join('') + '</div></section>';
+    }
+    if (body) h += `<section class="site"><h2>${hl(site, q)}<small>${total}人</small></h2>${body}</section>`;
   }
   return { html: h || '<div class="empty">見つかりませんでした</div>', n };
 }
