@@ -225,6 +225,24 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.equal(m3.customers['900001'].invoices['S8'].amount, 33000);
 }
 
+// ---- 特別請求だけで判定する得意先（分割請求）：SMILE の請求書は使わず、金額だけの特別請求で判定 ----
+{
+  const detail = [sale('950001', '20260101', 1, 0), sale('950001', '20260210', 30396000, 141), tax('950001', '20260228', 3039600, 141)];
+  const specials = [
+    { id: 1, cust: '950001', no: '26-0228', issue: '2026-02-28', due: '2026-03-31', net: 6258000, tax: 625800, lines: [] },   // 7台/34台
+    { id: 2, cust: '950001', no: '26-0331', issue: '2026-03-31', due: '2026-04-30', net: 24138000, tax: 2413800, lines: [] } ];
+  const payments = [pay('950001', '20251001', 0), pay('950001', '20260331', 6883800), pay('950001', '20260430', 26551800)];
+  const base = { customers: [cust('950001', { '締日１': '30', '入金日１': '30' })], staff, detail, specials, payments };
+  const without = A.build(base, { asof: '2026-10-05' }).customers['950001'];
+  assert.notEqual(without.diff, 0, '設定がないと SMILE の請求書も数えて合わない');
+  const m = A.build(Object.assign({}, base, { settings: [{ cust: '950001', mode: '特別請求のみ', from: '2025-04-01' }] }), { asof: '2026-10-05' });
+  const c = m.customers['950001'];
+  assert.equal(c.invoices['141'].excluded, '特別請求で請求している得意先');
+  assert.equal(c.invoices['141'].amount, 33435600, '金額だけの特別請求は SMILE の請求書を減らさない');
+  assert.equal(c.diff, 0);
+  assert.equal(c.periods.length, 2);
+}
+
 // ---- CSV：引用符の中のカンマ・改行、BOM ----
 {
   const rows = A.toObjects('﻿"a","b"\r\n"1,2","x""y"\r\n"3","改\n行"\r\n');
