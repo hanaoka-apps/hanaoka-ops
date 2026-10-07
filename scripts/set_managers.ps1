@@ -42,6 +42,7 @@ Connect-MgGraph -TenantId $TenantId -Scopes $scope -NoWelcome
 
 $users = @(Get-MgUser -All -Property 'id,displayName,userPrincipalName,department,jobTitle,accountEnabled,userType,assignedLicenses,employeeType' -ExpandProperty manager |
   Where-Object { $_.UserType -eq 'Member' -and $_.AccountEnabled -and $_.AssignedLicenses.Count -gt 0 -and $_.EmployeeType -ne '共有PC' })
+# 上司がいない人も Manager は空のオブジェクトで返る（Id が null）。必ず .Id で判定する
 $byId = @{}; $users | ForEach-Object { $byId[$_.Id] = $_ }
 
 function Resolve-Person([string]$s, [string]$where) {
@@ -57,7 +58,7 @@ function Resolve-Person([string]$s, [string]$where) {
   $c = if ($hit.Count) { ($hit | ForEach-Object { "$($_.DisplayName) <$($_.UserPrincipalName)>" }) -join ' / ' } else { '見つからない' }
   throw "$where の「$s」が1人に決まりません（$c）。UPN で書くか、名前を長くしてください。"
 }
-function Mgr-Name($u) { if ($u.Manager -and $byId[$u.Manager.Id]) { $byId[$u.Manager.Id].DisplayName } else { '' } }
+function Mgr-Name($u) { if ($u.Manager.Id -and $byId[$u.Manager.Id]) { $byId[$u.Manager.Id].DisplayName } else { '' } }
 function Dept($u) { if ("$($u.Department)".Trim()) { "$($u.Department)".Trim() } else { '（空欄）' } }
 
 if ($Prepare) {
@@ -102,7 +103,7 @@ if ($Prepare) {
 # ---- 確認 / 書き込み ----
 if (-not (Test-Path $MapFile)) { throw "対応表がありません: $MapFile （先に -Prepare を実行）" }
 $plan = @{}   # 社員Id → 上司Id（書き込み後の姿）
-$users | ForEach-Object { if ($_.Manager) { $plan[$_.Id] = $_.Manager.Id } }
+$users | ForEach-Object { if ($_.Manager.Id) { $plan[$_.Id] = $_.Manager.Id } }
 $changes = foreach ($r in (Import-Csv $MapFile -Encoding utf8)) {
   if (-not $r.新しい上司.Trim()) { continue }
   $u = Resolve-Person $r.UPN "対応表の UPN"
@@ -123,7 +124,7 @@ foreach ($id in @($plan.Keys)) {
 
 foreach ($c in $changes) {
   $u = $c.User; $m = $c.Mgr; $cur = Mgr-Name $u
-  if ($u.Manager -and $u.Manager.Id -eq $m.Id) { Write-Host "  そのまま  $($u.DisplayName) ← $($m.DisplayName)"; continue }
+  if ($u.Manager.Id -eq $m.Id) { Write-Host "  そのまま  $($u.DisplayName) ← $($m.DisplayName)"; continue }
   if ($Apply) {
     Set-MgUserManagerByRef -UserId $u.Id -BodyParameter @{ '@odata.id' = "https://graph.microsoft.com/v1.0/users/$($m.Id)" }
     Write-Host "  更新      $($u.DisplayName)  '$cur' → '$($m.DisplayName)'"
