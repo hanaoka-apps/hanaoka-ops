@@ -31,6 +31,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $TenantId = '3933e8a0-c945-4e97-ae67-c82131087cad'
+# Users を先に読み込む。Connect-MgGraph が先だと新しい版の Authentication が読み込まれ、
+# 版の違う Users が「同じ名前のアセンブリが読み込み済み」で読めなくなるため
+Import-Module Microsoft.Graph.Users
 
 # 携帯会社の一覧は先頭の0が落ちた10桁(7014240967)。070-1424-0967 の形にそろえる
 function Format-Phone([string]$s) {
