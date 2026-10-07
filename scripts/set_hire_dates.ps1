@@ -77,7 +77,9 @@ if ($Prepare) {
   if (-not $Source) { throw '-Source のファイルが見つかりません' }
   $pay = @{}   # 名前のキー → @{ 氏名; 入社日 }。同じキーが2人いれば $null（決めない）
   foreach ($f in $Source) {
-    $text = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::GetEncoding(932))
+    # Excel で開いたままでも読めるように、書き込み中の共有を許して開く（読むだけ）
+    $fs = [System.IO.File]::Open($f, 'Open', 'Read', 'ReadWrite')
+    try { $text = (New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::GetEncoding(932))).ReadToEnd() } finally { $fs.Dispose() }
     $rows = @($text | ConvertFrom-Csv)
     if (-not $rows.Count) { continue }
     $cols = $rows[0].PSObject.Properties.Name
