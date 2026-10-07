@@ -1027,7 +1027,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     </div>
     <div class="reg-modal-body">
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">
-        同じ取引先で、注番・型番が同じだったり案件名がよく似ていたりして、受取日が近い（30日以内）案件の組です。
+        同じ取引先で受取日が近い（14日以内）案件のうち、注番が同じか、型番・案件名が同じで催促・再送の言葉がある（または片方がアーカイブ済み）組です。
         中身を確認して「統合する」と、新しいほうの記録（FAX・コメント）が古いほうの案件にまとまります。違う案件なら「違う」で候補から外せます。
       </div>
       <div id="mergeSuggestList" style="max-height:62vh;overflow-y:auto"></div>
@@ -3557,14 +3557,27 @@ function checkEscalation(c) {
 // ============================================================
 // マージ候補（同じ案件と思われる組を探して提案する）
 //   催促・再送のFAXが日を変えて届き、別の案件になってしまうことがある。
-//   同じ取引先で、受取日が30日以内の案件同士を比べ、次のどれかに当てはまる組を候補にする：
+//   同じ取引先で、受取日が14日以内の案件同士を比べ、次のどちらかに当てはまる組を候補にする：
 //     ・注番（OrderNumber）が同じ … 一番確実
-//     ・案件名の型番が同じ
-//     ・案件名がよく似ている
-//   両方とも完了の組は出さない。「違う」と判断した組はブラウザに覚えて二度と出さない。
+//     ・型番が同じ ＋ 案件名（取引先名を除く）が8割以上同じ ＋
+//       （新しいほうに催促・再送などの言葉がある、または片方だけアーカイブ済み）
+//   どちらかがまだ進行中の組だけを出す（片付いた組は出さない）。
+//   ※初版（2026-10-07）は「型番が同じ」「案件名が似ている」だけでも候補にしていたが、本番で2,720組と
+//     多すぎた（同じ取引先は同じ型番を何度も注文し、案件名も取引先名から始まるため）。締めた条件で61組。
+//   「違う」と判断した組はブラウザに覚えて二度と出さない。
 // ============================================================
 const MERGE_DISMISS_KEY = 'merge-dismiss-v1';
-const MERGE_WINDOW_DAYS = 30, MERGE_LOOKBACK_DAYS = 90;
+const MERGE_WINDOW_DAYS = 14, MERGE_LOOKBACK_DAYS = 90;
+const MERGE_DUP_WORDS = /催促|再送|再FAX|再ＦＡＸ|再度|督促|重複|二重/;
+// 案件名の先頭の取引先名を外す（取引先名が同じだけで「似ている」と判定しないため）
+function titleWithoutCompany(title, company) {
+  const t = String(title || '').normalize('NFKC');
+  const k = String(company || '').normalize('NFKC');
+  for (const v of [k, k.replace(/\s+/g, ''), k.replace(/株式会社|\(株\)/g, '')]) {
+    if (v && t.startsWith(v)) return t.slice(v.length);
+  }
+  return t;
+}
 let mergeSuggestions = [];
 function mergeDismissed() {
   try { return new Set(JSON.parse(localStorage.getItem(MERGE_DISMISS_KEY) || '[]')); } catch(_) { return new Set(); }
@@ -3601,22 +3614,28 @@ function findMergeSuggestions() {
         const a = list[i], b = list[j];   // a が古い
         const gapDays = (new Date(b.Created) - new Date(a.Created)) / 864e5;
         if (gapDays > MERGE_WINDOW_DAYS) break;
-        if (DONE_STATUSES.includes(a.Status) && DONE_STATUSES.includes(b.Status)) continue;
+        const alive = c => c.Status !== 'アーカイブ' && !DONE_STATUSES.includes(c.Status);
+        if (!alive(a) && !alive(b)) continue;   // どちらも片付いている組は出さない
         if (dismissed.has(mergePairKey(a.CaseId, b.CaseId))) continue;
         const reasons = [];
         let score = 0;
         const on = (s) => String(s || '').replace(/\s+/g, '');
-        if (on(a.OrderNumber) && on(a.OrderNumber) === on(b.OrderNumber)) { score += 100; reasons.push('注番が同じ ' + a.OrderNumber); }
+        const sameNo = on(a.OrderNumber) && on(a.OrderNumber) === on(b.OrderNumber);
+        if (sameNo) { score += 100; reasons.push('注番が同じ ' + a.OrderNumber); }
         const ta = modelTokens(a.Title), tb = modelTokens(b.Title);
         const same = [...ta].filter(x => tb.has(x));
-        if (same.length) { score += 60; reasons.push('型番が同じ ' + same.slice(0, 3).join('・')); }
-        const sim = titleSim(a.Title, b.Title);
-        if (sim >= 0.6) { score += 40; reasons.push('案件名が似ている ' + Math.round(sim * 100) + '%'); }
-        if (score < 60) continue;
-        if (/催促|再送|再FAX|至急|再度/.test(String(b.Title || '') + String(b.Notes || ''))) reasons.push('新しいほうに催促・再送の言葉');
+        const sim = titleSim(titleWithoutCompany(a.Title, a.CompanyName), titleWithoutCompany(b.Title, b.CompanyName));
+        const dupWord = MERGE_DUP_WORDS.test(String(b.Title || '') + String(b.Notes || ''));
+        const archivedOne = (a.Status === 'アーカイブ') !== (b.Status === 'アーカイブ');
+        if (!sameNo) {
+          if (!(same.length && sim >= 0.8 && (dupWord || archivedOne))) continue;
+          score += 60;
+          reasons.push('型番が同じ ' + same.slice(0, 3).join('・'), '案件名が' + Math.round(sim * 100) + '%同じ');
+        }
+        if (dupWord) reasons.push('新しいほうに催促・再送の言葉');
+        if (archivedOne) reasons.push('片方はアーカイブ済み');
         reasons.push(`受取日の差 ${Math.round(gapDays)}日`);
         // 統合先：アーカイブ・完了でない方を優先し、どちらも同じなら古い方
-        const alive = c => c.Status !== 'アーカイブ' && !DONE_STATUSES.includes(c.Status);
         const [target, source] = (alive(a) || !alive(b)) ? [a, b] : [b, a];
         out.push({ target, source, score, reasons });
       }
@@ -4354,12 +4373,17 @@ async function generateCaseId() {
   const year = new Date().getFullYear();
   const sid = await getSiteId();
   try {
-    const recent = await graphGet(
-      `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)`
-      + `&$orderby=fields/Modified desc&$top=200`
-    );
-    const nums = (recent.value || [])
-      .map(v => v.fields?.CaseId || '')
+    // 最大番号の手がかり：手元に読み込み済みの案件一覧（保存＋差分で最新に近い）があればそれを使い、
+    // 通信を1回省く。無いときだけ最近更新された200件を読む。どちらでも、下で「空いているか」をサーバーに確かめる。
+    let ids = cases.map(c => c.CaseId || '');
+    if (!ids.length) {
+      const recent = await graphGet(
+        `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)`
+        + `&$orderby=fields/Modified desc&$top=200`
+      );
+      ids = (recent.value || []).map(v => v.fields?.CaseId || '');
+    }
+    const nums = ids
       .filter(id => id.startsWith('EST-' + year + '-'))
       .map(id => parseInt(id.split('-')[2]) || 0);
     if (nums.length) {
