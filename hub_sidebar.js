@@ -109,6 +109,73 @@
     }
   });
 
+  // ---- アカウント欄(バーの一番下): 名前・メール・サインアウト ----
+  // 表示は、MSALが保存している(全アプリ共通の)アカウント情報を読むだけ。サインアウトは、押したときに
+  // MSALを用意して、Microsoftのサインアウトを経由しHUBへ戻る。全アプリ共通の保存先(localStorage)から
+  // アカウントを消すので、HUB・スケジュール系のどこで押しても、ほかの画面もサインアウトになる。
+  var MSAL_CLIENT_ID = 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716';
+  var MSAL_AUTHORITY = 'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad';
+  var PICK_ACCOUNT_KEY = 'hanaoka.hub.pickAccount.v1';   // HUBの「サインアウト直後はアカウント選択を出す」と共通
+  var USER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c0-3.9 3.4-7 7.5-7s7.5 3.1 7.5 7"/></svg>';
+  var OUT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>';
+
+  function cachedAccount() {
+    try {
+      var keys = JSON.parse(localStorage.getItem('msal.account.keys') || '[]');
+      var found = null;
+      keys.forEach(function (k) {
+        if (found) return;
+        var a = JSON.parse(localStorage.getItem(k) || 'null');
+        if (a && a.username) found = a;
+      });
+      return found;
+    } catch (e) { return null; }
+  }
+  function renderAccount() {
+    var box = document.getElementById('sideAccount');
+    if (!box) return;
+    var a = cachedAccount();
+    if (!a) { box.hidden = true; return; }
+    box.querySelector('b').textContent = a.name || a.username;
+    box.querySelector('.side-account-text span').textContent = a.username;
+    box.hidden = false;
+  }
+  function loadMsal(cb) {
+    if (window.msal) { cb(); return; }
+    var sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js';
+    sc.crossOrigin = 'anonymous'; sc.onload = cb; document.head.appendChild(sc);
+  }
+  function signOutNow(btn) {
+    btn.disabled = true;
+    try { localStorage.setItem(PICK_ACCOUNT_KEY, '1'); } catch (e) {}
+    loadMsal(function () {
+      var pca = new msal.PublicClientApplication({
+        auth: { clientId: MSAL_CLIENT_ID, authority: MSAL_AUTHORITY, redirectUri: new URL('auth.html', location.href).href },
+        cache: { cacheLocation: 'localStorage' }
+      });
+      pca.initialize().then(function () {
+        var cached = cachedAccount();
+        var acc = (cached && pca.getAllAccounts().filter(function (x) { return x.username === cached.username; })[0]) || pca.getAllAccounts()[0];
+        // HUBへ戻る(HUBのURLはAzureにリダイレクトURIとして登録済み)
+        return pca.logoutRedirect({ account: acc, postLogoutRedirectUri: new URL('hanaoka_hub.html', location.href).href });
+      }).catch(function (e) { console.error('サインアウト失敗', e); btn.disabled = false; });
+    });
+  }
+  function mountAccount(aside) {
+    var box = document.createElement('div');
+    box.className = 'side-account'; box.id = 'sideAccount'; box.hidden = true;
+    box.innerHTML =
+      '<div class="side-account-who"><span class="side-account-ic">' + USER_ICON + '</span>' +
+        '<div class="side-account-text"><b></b><span></span></div></div>' +
+      '<button type="button" class="side-signout">' + OUT_ICON + 'サインアウト</button>';
+    aside.appendChild(box);
+    box.querySelector('.side-signout').addEventListener('click', function (e) { signOutNow(e.currentTarget); });
+    renderAccount();
+    // サインイン・サインアウトで変わるので、ときどき見直す(localStorageを読むだけで軽い)
+    setInterval(renderAccount, 2000);
+  }
+
   function mount() {
     var aside = document.createElement('aside');
     aside.className = 'sidebar'; aside.id = 'hubSidebar';
@@ -117,6 +184,7 @@
     backdrop.className = 'sidebar-backdrop'; backdrop.id = 'sidebarBackdrop';
     document.body.insertBefore(backdrop, document.body.firstChild);
     document.body.insertBefore(aside, document.body.firstChild);
+    mountAccount(aside);
 
     // 開閉(アコーディオン)
     aside.addEventListener('click', function (e) {
