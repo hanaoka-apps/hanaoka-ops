@@ -241,6 +241,30 @@
   .dt-acts .act { justify-content: center; padding: 9px 6px; font-size: 12.5px; }
   .dt-sec { border-top: 1px solid var(--line); padding: 12px 18px 4px; }
   .dt-sec h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 800; }
+  /* 今日の予定 */
+  .now { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+  .now::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: none; }
+  .now.free { background: var(--green-soft); color: #0b7a4c; }
+  .now.busy { background: var(--red-soft); color: #b3263a; }
+  .now.tentative { background: var(--amber-soft); color: var(--amber); }
+  .now.oof { background: var(--purple-soft); color: var(--purple); }
+  .now.workingElsewhere { background: var(--cyan-soft); color: #0b6f9e; }
+  .now small { font-weight: 600; opacity: .85; }
+  .nextup { font-size: 12px; color: var(--text-sub); font-weight: 600; margin: 0 2px 8px; }
+  .agenda { list-style: none; margin: 0; padding: 0; }
+  .agenda li { display: grid; grid-template-columns: 92px 1fr; gap: 8px; padding: 6px 8px 6px 10px; border-left: 3px solid var(--line-strong); margin-bottom: 4px; font-size: 12.5px; border-radius: 0 6px 6px 0; }
+  .agenda li .tm { font-variant-numeric: tabular-nums; color: var(--text-sub); font-weight: 600; }
+  .agenda li .sb { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+  .agenda li .sb small { display: block; font-weight: 500; color: var(--text-sub); }
+  .agenda li.busy { border-left-color: #e0475b; }
+  .agenda li.tentative { border-left-color: var(--orange); border-left-style: dashed; }
+  .agenda li.oof { border-left-color: var(--purple); }
+  .agenda li.workingElsewhere { border-left-color: var(--cyan); }
+  .agenda li.freeday { border-left-color: var(--line-strong); }
+  .agenda li.past { opacity: .45; }
+  .agenda li.cur { background: #fafaff; }
+  .agenda li.cur .tm { color: var(--navy); }
+  .muted { color: var(--text-sub); font-size: 12.5px; }
   .kv { display: grid; grid-template-columns: 76px 1fr; gap: 7px 10px; font-size: 13px; margin-bottom: 8px; }
   .kv dt { color: var(--text-sub); font-weight: 600; }
   .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
@@ -314,7 +338,8 @@
 </main>
 
 <script>
-const SCOPES = ['User.Read', 'User.Read.All'];
+// Calendars.Read / Calendars.Read.Shared … 詳細に「今日の予定」を出すため（全員の予定 staff_schedule.html と同じ）
+const SCOPES = ['User.Read', 'User.Read.All', 'Calendars.Read', 'Calendars.Read.Shared'];
 const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation,employeeHireDate';
 const VIEW_KEY = 'hanaoka.org.view.v2';
 let pca, account;
@@ -472,8 +497,8 @@ const telHref = p => 'tel:' + String(p).replace(/[^\d+]/g, '');
 const teamsLink = (kind, u) => `https://teams.microsoft.com/l/${kind}/0/0?users=${encodeURIComponent(u.userPrincipalName)}`;
 const mailOf = u => u.mail || u.userPrincipalName;
 function actions(u, withTel) {
-  let h = `<a class="act" href="${teamsLink('chat', u)}" target="_blank" rel="noopener">${IC.chat}チャット</a>`
-        + `<a class="act" href="${teamsLink('call', u)}" target="_blank" rel="noopener">${IC.call}通話</a>`;
+  let h = `<a class="act" href="${teamsLink('chat', u)}" target="_blank" rel="noopener">${IC.chat}Teams でチャット</a>`
+        + `<a class="act" href="${teamsLink('call', u)}" target="_blank" rel="noopener">${IC.call}Teams で通話</a>`;
   // メールのボタンは置かない（連絡は Teams で）。アドレスは詳細に文字で出す
   if (withTel && has(u.mobilePhone)) h += `<a class="act tel" href="${telHref(u.mobilePhone)}">${IC.mobile}${esc(u.mobilePhone)}</a>`;
   return h;
@@ -590,10 +615,82 @@ function renderDetail() {
       <dt>所属</dt><dd>${esc(place)}</dd>
       <dt>携帯</dt><dd>${has(u.mobilePhone) ? `<a class="act tel" href="${telHref(u.mobilePhone)}">${IC.mobile}${esc(u.mobilePhone)}</a>` : '<span style="color:var(--text-sub)">会社貸与の携帯なし</span>'}</dd>
       <dt>メール</dt><dd>${esc(mailOf(u))}<button type="button" class="copy" data-copy="${esc(mailOf(u))}" title="コピー" aria-label="メールアドレスをコピー">${IC.copy}</button></dd>
-    </dl></div>`;
+    </dl></div>
+    <div class="dt-sec"><h3>今日の予定</h3><div id="dtToday"><div class="muted">読み込み中…</div></div></div>`;
   box.hidden = false;
   box.scrollTop = 0;
   hydratePhotos(box);
+  loadToday(u);
+}
+
+/* ---------------- 今日の予定（getSchedule。全員の予定 staff_schedule.html と同じ読み方） ----------------
+   状態（予定あり・不在など）は必ず返る。件名が返るかは、その人の予定表の共有の設定しだい。
+   非公開の予定は「非公開」とだけ出す。空き時間の予定は出さない（終日の空き時間＝休暇の入れ方の癖、だけは出す）。
+   ★時刻は日本時間で頼んで、文字のまま読む★ ブラウザのタイムゾーンに左右されないように。 */
+const ST = { busy: '予定あり', tentative: '仮の予定', oof: '不在', workingElsewhere: '別の場所で勤務', freeday: '終日（空き時間）', unknown: '予定あり' };
+const todayCache = new Map();   // id → { at, items | err }
+function jstNow() { const d = new Date(Date.now() + 9 * 3600e3); return d.toISOString().slice(0, 16); }   // 'YYYY-MM-DDTHH:MM'（日本時間）
+async function loadToday(u) {
+  const box = () => selected === u.id ? document.getElementById('dtToday') : null;
+  let c = todayCache.get(u.id);
+  if (!c || Date.now() - c.at > 3 * 60e3) {
+    const day = jstNow().slice(0, 10);
+    const next = new Date(Date.parse(day + 'T00:00:00Z') + 86400e3).toISOString().slice(0, 10);
+    try {
+      const res = await fetch('https://graph.microsoft.com/v1.0/me/calendar/getSchedule', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + await token(), 'Content-Type': 'application/json', Prefer: 'outlook.timezone="Tokyo Standard Time"' },
+        body: JSON.stringify({
+          schedules: [mailOf(u)],
+          startTime: { dateTime: day + 'T00:00:00', timeZone: 'Tokyo Standard Time' },
+          endTime: { dateTime: next + 'T00:00:00', timeZone: 'Tokyo Standard Time' },
+          availabilityViewInterval: 30
+        })
+      });
+      if (!res.ok) throw new Error(`Graph ${res.status}`);
+      const sc = ((await res.json()).value || [])[0] || {};
+      if (sc.error) throw new Error(sc.error.message || sc.error.responseCode || 'error');
+      const items = (sc.scheduleItems || []).map(it => {
+        const s = String(it.start && it.start.dateTime || '').slice(0, 16), e = String(it.end && it.end.dateTime || '').slice(0, 16);
+        let st = it.status || 'unknown';
+        const allDay = s.slice(11) === '00:00' && (e.slice(11) === '00:00') && e > s;
+        if (st === 'free') { if (!allDay) return null; st = 'freeday'; }
+        return { s, e, st, allDay, priv: !!it.isPrivate, subj: it.isPrivate ? '' : (it.subject || ''), loc: it.isPrivate ? '' : (it.location || '') };
+      }).filter(Boolean).sort((a, b) => a.s.localeCompare(b.s) || a.e.localeCompare(b.e));
+      c = { at: Date.now(), items };
+    } catch (e) {
+      console.warn('今日の予定を読めませんでした', e);
+      c = { at: Date.now(), err: true };
+    }
+    todayCache.set(u.id, c);
+  }
+  const el = box();
+  if (el) el.innerHTML = renderToday(c);
+}
+function renderToday(c) {
+  if (c.err) return '<div class="muted">予定を読めませんでした（予定表を共有していない人は出ません）</div>';
+  const now = jstNow();
+  const hm = x => x.slice(11, 16);
+  const title = it => it.priv ? '非公開' : (it.subj || ST[it.st] || '予定あり');
+  // いま：時刻の予定を優先（終日の不在などは、時刻の予定が無いときに出す）
+  const curs = c.items.filter(it => it.s <= now && now < it.e);
+  const cur = curs.find(it => !it.allDay) || curs[0];
+  let head;
+  if (cur) {
+    const until = cur.allDay ? '終日' : `${hm(cur.e)}まで`;
+    head = `<div class="now ${cur.st === 'freeday' ? 'oof' : cur.st}">いま：${esc(ST[cur.st] || '予定あり')}<small>（${until}${cur.priv || !cur.subj ? '' : '・' + esc(cur.subj)}）</small></div>`;
+  } else {
+    head = '<div class="now free">いま：予定なし</div>';
+  }
+  const nx = c.items.find(it => !it.allDay && it.s > now);
+  if (nx) head += `<div class="nextup">次：${hm(nx.s)}〜 ${esc(title(nx))}</div>`;
+  if (!c.items.length) return head + '<div class="muted">今日の予定はありません</div>';
+  return head + '<ul class="agenda">' + c.items.map(it => {
+    const cls = [it.st, it.e <= now ? 'past' : '', it.s <= now && now < it.e ? 'cur' : ''].join(' ');
+    const day = now.slice(0, 10);
+    const tm = it.allDay ? '終日' : `${it.s.slice(0, 10) < day ? '前日から' : hm(it.s)}〜${it.e.slice(0, 10) > day ? '翌日' : hm(it.e)}`;
+    return `<li class="${cls}"><span class="tm">${tm}</span><span class="sb">${esc(title(it))}${it.loc ? `<small>${esc(it.loc)}</small>` : ''}</span></li>`;
+  }).join('') + '</ul>';
 }
 
 /* ---------------- 顔写真（Teams などで本人が設定したもの） ---------------- */
