@@ -180,6 +180,7 @@
         termsNote: (m["支払条件追記"] || "").trim(),
         termRules: parseTermsNote(m["支払条件追記"]),
         noCollect: (m["回収管理区分名"] || "") === "行わない",
+        specialOnly: null,
         ec: EC_COMPANY.has(m["得意先社名ｺｰﾄﾞ"] || ""),
         inMaster: !!cust[code],
         invoices: {}, unbilled: [], payments: [], periods: [], children: {}, specials: []
@@ -192,6 +193,10 @@
     //   選んだ伝票は SMILE の請求書から外す。SMILE がその伝票ぶんの消費税も請求書の消費税の行に入れているので、
     //   特別請求の消費税をその請求書から差し引く
     const specials = (src.specials || []).filter(sp => sp && sp.status !== "取消" && sp.cust);
+    // 特別請求だけで判定する得意先（分割請求・前金などで、SMILE の請求書と特別請求書が1対1にならない得意先）
+    //   { cust, from:"YYYY-MM-DD" }。from 以降に締めた SMILE の請求書は違算の判定に使わず、特別請求書の金額と回収予定日で判定する
+    const specialOnly = {};
+    (src.settings || []).forEach(x => { if (x && x.cust && x.mode === "特別請求のみ" && x.status !== "取消") specialOnly[x.cust] = x; });
     const taken = {};
     specials.forEach(sp => { sp.found = []; sp.smileNos = {}; (sp.lines || []).forEach(l => { if (l && l.key) taken[l.key] = sp; }); });
 
@@ -229,6 +234,7 @@
       });
     });
 
+    Object.keys(specialOnly).forEach(code => { getC(code).specialOnly = specialOnly[code]; });
     specials.forEach(sp => {
       const c = getC(sp.cust, sp.custName);
       const net = num(sp.net), tax = num(sp.tax);
@@ -261,6 +267,8 @@
           return;
         }
         inv.label = "No." + inv.no;
+        const so = specialOnly[c.code];
+        if (so && (!so.from || inv.close >= so.from)) inv.excluded = "特別請求で請求している得意先";
         inv.baseDue = c.cycle == null ? "" : addMonths(inv.close, c.cycle, c.payDay);
         inv.due = inv.baseDue;
         // 追記の条件（基準額以上は N 日後振込）
@@ -286,7 +294,7 @@
       // 回ごとにまとめる（回収予定日が同じ請求書は1つの回）
       const groups = {};
       invs.forEach(inv => {
-        if (!inv.bound || inv.amount === 0) return;
+        if (!inv.bound || inv.amount === 0 || inv.excluded) return;
         (groups[inv.bound] = groups[inv.bound] || []).push(inv);
       });
       // 入金を充てる範囲：前の回収予定日との中間の翌日 〜 次の回収予定日との中間まで。
