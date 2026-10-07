@@ -171,6 +171,7 @@
       const o = C[code] = {
         code, name: m["得意先名１"] || nameHint || code, name2: m["得意先名２"] || "", short: m["得意先略称"] || "",
         kana: m["得意先ﾌﾘｶﾞﾅ"] || m["得意先名ｶﾅ"] || "",
+        zip: m["郵便番号"] || "", addr1: m["住所１"] || "", addr2: m["住所２"] || "", addr3: m["住所３"] || "",
         staffCode: m["担当者ｺｰﾄﾞ"] || "", staffName: (m["担当者名"] || "").trim(), base: baseOf(st),
         closeDay, closeLabel: closeDay >= 30 ? "末締" : (closeDay ? closeDay + "日締" : ""),
         cycle: cyc, payDay,
