@@ -12,7 +12,8 @@
 
   手順
     1) 対応表を作る（Entra を読むだけ）。給与の CSV は複数まとめて渡せる（本社・工場）
-         pwsh -File scripts/set_hire_dates.ps1 -Prepare -Source "…\従業員基本情報_本社.csv","…\従業員基本情報_工場.csv"
+         pwsh -File scripts/set_hire_dates.ps1 -Prepare -Source "…\9月\従業員基本情報_*.csv"
+         （* で本社・工場をまとめて指定できる）
        → data/入社日_対応表.csv（data/ は .gitignore 済み）
          ・列は見出しで探す：氏名＝「氏名」を含む列（カナは除く）、入社日＝「入社」を含む列
            違うときは -NameColumn / -DateColumn で見出しを指定する
@@ -70,6 +71,10 @@ function Parse-Date([string]$s) {
 
 if ($Prepare) {
   if (-not $Source) { throw '-Source に給与の従業員基本情報の CSV を指定してください（複数可）' }
+  # pwsh -File で渡すと、カンマ区切りの複数指定が1つの文字列で届く。分けてから、* も使えるように展開する
+  $Source = @($Source | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().Trim('"').Trim() } | Where-Object { $_ } |
+    ForEach-Object { if ($_ -match '[\*\?]') { (Get-ChildItem -Path $_ -File).FullName } else { $_ } })
+  if (-not $Source) { throw '-Source のファイルが見つかりません' }
   $pay = @{}   # 名前のキー → @{ 氏名; 入社日 }。同じキーが2人いれば $null（決めない）
   foreach ($f in $Source) {
     $text = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::GetEncoding(932))
