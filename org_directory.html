@@ -13,7 +13,8 @@
   このファイルに書かない。直すときは Entra 側を直す。
     部署 department / 役職 jobTitle（今は出さない。SHOW_TITLE） / 上司 manager / 携帯 mobilePhone（会社貸与の番号だけ入れる約束）
     勤務地 officeLocation（本社・工場。大きな区切り。部署が同じでも人ごとに違ってよい）
-    社員番号 employeeId / 入社日 employeeHireDate（入っている人だけ出す）
+    入社日 employeeHireDate（部署の中の並び順に使う。画面には出さない。入っていない人は後ろに名前順）
+      読むには業務アプリに User-LifeCycleInfo.Read.All（委任・管理者の同意）が要る。無いと空で返り、名前順になるだけ
     顔写真は Teams などで本人が設定したもの（無い人は頭文字）
     部署が「役員」の人は、勤務地にかかわらず「役員」にまとめる
   このファイルに書いてあるのは、区切りと部署の「並び順」だけ（SITE_ORDER・DEPT_ORDER）。
@@ -164,7 +165,6 @@
   .dcard:hover { border-color: var(--navy); }
   .dcard .dn { font-size: 13.5px; font-weight: 800; }
   .dcard .dn small { font-size: 10.5px; font-weight: 800; color: var(--navy); background: var(--navy-soft); border-radius: 999px; padding: 1px 7px; margin-left: 6px; vertical-align: 1px; }
-  .dcard .dh { font-size: 11.5px; color: var(--text-sub); font-weight: 600; margin-top: 3px; padding-right: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dcard .chev { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--text-sub); transition: transform .15s; }
   .dcard[aria-expanded="true"] { border-color: var(--navy); }
   .dcard[aria-expanded="true"] .chev { transform: translateY(-50%) rotate(90deg); }
@@ -244,11 +244,8 @@
   .kv { display: grid; grid-template-columns: 76px 1fr; gap: 7px 10px; font-size: 13px; margin-bottom: 8px; }
   .kv dt { color: var(--text-sub); font-weight: 600; }
   .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-  .plink { border: 0; background: none; padding: 0; color: var(--navy); font-weight: 700; cursor: pointer; text-align: left; font-size: 13px; }
-  .plink:hover { text-decoration: underline; }
   .copy { border: 0; background: none; cursor: pointer; color: var(--text-sub); padding: 2px 4px; vertical-align: -2px; }
   .copy:hover { color: var(--navy); }
-  .reports { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 
   /* ---------- 画面の幅に合わせる ---------- */
   @media (max-width: 1280px) {
@@ -318,7 +315,7 @@
 
 <script>
 const SCOPES = ['User.Read', 'User.Read.All'];
-const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation,employeeId,employeeHireDate';
+const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation,employeeHireDate';
 const VIEW_KEY = 'hanaoka.org.view.v2';
 let pca, account;
 let people = [], lines = [], byId = new Map(), kids = new Map(), depth = new Map();
@@ -420,6 +417,9 @@ function build(users) {
   });
 }
 
+// 部署の中の並び：入社日が早い順。入社日が入っていない人は後ろに名前順
+const hireOf = u => has(u.employeeHireDate) ? String(u.employeeHireDate).slice(0, 10) : '9999';
+const byHire = (a, b) => hireOf(a).localeCompare(hireOf(b)) || jaCmp(a.displayName, b.displayName);
 // 区切り → 部署 → { ps: 人, ls: 共用番号 }。総務部のように同じ部署が2つの区切りに出ることがある
 function groups(filter) {
   const sites = new Map();
@@ -438,7 +438,7 @@ function groups(filter) {
       .sort((a, b) => (a === NO_DEPT) - (b === NO_DEPT) || deptRank(a) - deptRank(b) || rank(m.get(a)) - rank(m.get(b)) || jaCmp(a, b))
       .map(dept => {
         const g = m.get(dept);
-        g.ps.sort((a, b) => depth.get(a.id) - depth.get(b.id) || jaCmp(a.displayName, b.displayName));
+        g.ps.sort(byHire);
         return { dept, ps: g.ps, ls: g.ls };
       });
     return { site, depts, n: depts.reduce((s, g) => s + g.ps.length, 0) };
@@ -485,8 +485,6 @@ function prow(u) {
 function lineRow(l) {
   return `<div class="lineRow">${IC.mobile}共用番号<a class="act tel" href="${telHref(l.mobilePhone)}">${esc(l.mobilePhone)}</a></div>`;
 }
-function headOf(ps) { return ps[0]; }   // 部署の中は上の人から並んでいるので、先頭が部署長
-function nameTitle(u) { return u ? esc(u.displayName) + (titleOf(u) ? '　' + esc(titleOf(u)) : '') : ''; }
 
 /* ---------------- 左：組織ツリー ---------------- */
 let treeOpen = null;   // 開いている区切り（null＝最初は全部開く）
@@ -530,10 +528,8 @@ function renderChart() {
     for (const d of g.depts.filter(d => d.dept !== g.site)) {
       const key = g.site + '|' + d.dept;
       const open = openDepts.has(key);
-      const head = headOf(d.ps);
       c += `<button type="button" class="dcard" data-dept="${esc(key)}" aria-expanded="${open}">
-          <div class="dn">${esc(d.dept)}<small>${d.ps.length}名</small></div>
-          <div class="dh">${head ? nameTitle(head) : '共用番号のみ'}</div><span class="chev">${IC.caret}</span></button>
+          <div class="dn">${esc(d.dept)}<small>${d.ps.length}名</small></div><span class="chev">${IC.caret}</span></button>
         <div class="members"${open ? '' : ' hidden'}>${d.ps.map(prow).join('')}${d.ls.map(lineRow).join('')}</div>`;
     }
     return c + '</div>';
@@ -544,7 +540,7 @@ function renderChart() {
 
 /* ---------------- 真ん中：一覧・検索結果 ---------------- */
 function personCard(u, q) {
-  const sub = [u._mgr ? '上司：' + u._mgr.displayName : '', has(u.mobilePhone) ? '携帯 ' + u.mobilePhone : ''].filter(Boolean);
+  const sub = [has(u.mobilePhone) ? '携帯 ' + u.mobilePhone : ''].filter(Boolean);
   return `<button type="button" class="person${selected === u.id ? ' on' : ''}" data-pick="${esc(u.id)}">
     ${avatar(u)}
     <span class="who"><b>${hl(u.displayName, q)}</b>${titleOf(u) ? `<span class="title">${hl(titleOf(u), q)}</span>` : ''}</span>
@@ -585,28 +581,16 @@ function renderDetail() {
   const u = selected && byId.get(selected);
   document.getElementById('org').classList.toggle('has-detail', !!u);
   if (!u) { box.hidden = true; box.innerHTML = ''; return; }
-  const reports = (kids.get(u.id) || []).slice().sort((a, b) => jaCmp(a.displayName, b.displayName));
-  const hire = has(u.employeeHireDate) ? new Date(u.employeeHireDate).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
   const place = u._site === deptOf(u) ? deptOf(u) : `${u._site} › ${deptOf(u)}`;
   box.innerHTML = `
     <button type="button" class="dt-close" id="dtClose" aria-label="閉じる">${IC.close}</button>
-    <div class="dt-top">${avatar(u)}<div><div class="nm">${esc(u.displayName)}</div><div class="tt">${esc(titleOf(u) || '')}</div></div></div>
+    <div class="dt-top">${avatar(u)}<div><div class="nm">${esc(u.displayName)}</div><div class="tt">${esc(titleOf(u))}</div></div></div>
     <div class="dt-acts">${actions(u, false)}</div>
-    <div class="dt-sec"><h3>基本情報</h3><dl class="kv">
+    <div class="dt-sec"><dl class="kv">
       <dt>所属</dt><dd>${esc(place)}</dd>
-      ${titleOf(u) ? `<dt>役職</dt><dd>${esc(titleOf(u))}</dd>` : ''}
-      <dt>上司</dt><dd>${u._mgr ? `<button type="button" class="plink" data-pick="${esc(u._mgr.id)}">${nameTitle(u._mgr)}</button>` : '—'}</dd>
-      <dt>部下</dt><dd>${reports.length ? `${reports.length}名<div class="reports">${reports.map(r => `<button type="button" class="plink" data-pick="${esc(r.id)}">${esc(r.displayName)}</button>`).join('')}</div>` : '—'}</dd>
-      ${has(u.employeeId) ? `<dt>社員番号</dt><dd>${esc(u.employeeId)}</dd>` : ''}
-    </dl></div>
-    <div class="dt-sec"><h3>連絡先</h3><dl class="kv">
       <dt>携帯</dt><dd>${has(u.mobilePhone) ? `<a class="act tel" href="${telHref(u.mobilePhone)}">${IC.mobile}${esc(u.mobilePhone)}</a>` : '<span style="color:var(--text-sub)">会社貸与の携帯なし</span>'}</dd>
       <dt>メール</dt><dd>${esc(mailOf(u))}<button type="button" class="copy" data-copy="${esc(mailOf(u))}" title="コピー" aria-label="メールアドレスをコピー">${IC.copy}</button></dd>
-    </dl></div>
-    ${(has(u.officeLocation) || hire) ? `<div class="dt-sec"><h3>その他</h3><dl class="kv">
-      ${has(u.officeLocation) ? `<dt>勤務地</dt><dd>${esc(u.officeLocation)}</dd>` : ''}
-      ${hire ? `<dt>入社日</dt><dd>${esc(hire)}</dd>` : ''}
-    </dl></div>` : ''}`;
+    </dl></div>`;
   box.hidden = false;
   box.scrollTop = 0;
   hydratePhotos(box);
@@ -674,7 +658,7 @@ function render() {
 function pick(id) {
   selected = id;
   renderDetail();
-  document.querySelectorAll('[data-pick]').forEach(el => el.classList.toggle('on', el.dataset.pick === id && !el.classList.contains('plink')));
+  document.querySelectorAll('[data-pick]').forEach(el => el.classList.toggle('on', el.dataset.pick === id));
 }
 function focus(key) {
   focusDept = key || null;
