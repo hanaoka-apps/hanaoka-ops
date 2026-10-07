@@ -195,7 +195,7 @@
   function loadHubSidebar() {
     if (document.getElementById('hubSidebar')) return;
     var sc = document.createElement('script');
-    sc.src = 'hub_sidebar.js?v=20261009';
+    sc.src = 'hub_sidebar.js?v=20261010';
     document.body.appendChild(sc);
   }
 
