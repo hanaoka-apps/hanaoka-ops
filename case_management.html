@@ -2030,7 +2030,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <li>並び順は受信日の新しい順です</li>
             <li><strong>「👀 中身を見比べる」</strong>で、統合元と統合先の記録（FAX・メール・コメント）とPDF／本文を左右に並べて、その場で確認できます</li>
             <li>同じ案件なら<strong>「統合する」</strong>：新しいほうの記録が古いほう（進行中のほう）にまとまり、統合元は削除されます</li>
-            <li>違う案件なら<strong>「違う（候補から外す）」</strong>：その組は二度と出ません（押した人のパソコンにだけ記録されます）</li>
+            <li>違う案件なら<strong>「違う（候補から外す）」</strong>：その組は全員の候補から消え、二度と出ません（誰がいつ押したかは記録され、候補の条件の見直しに使います）</li>
           </ul>
         </div>
 
@@ -2155,6 +2155,8 @@ const SP = {
   site: 'hanaokacorp.sharepoint.com:/sites/msteams_7aab51:',
   caseListId: '674a2392-9a62-40f8-aab9-afebbb9f762a',
   eventListId: 'a7cee65e-1815-4992-b2fc-79d7cd9e6d05',
+  // マージ候補で「違う」と判断した組（全員で共有。Title＝組のキー「案件ID|案件ID」）
+  mergeDismissListId: '110d4166-479a-466e-8374-8c04fa5d606a',
   pdfLibrary: 'FAX_PDFStorage',
   masterLibrary: 'SharedMasters',
 };
@@ -3195,6 +3197,7 @@ async function loadCases(opts) {
       renderCaseList();
       updateSummary();
       renderMine();
+      await loadMergeDismissals();   // 「違う」の共有記録（小さいリスト。3分に1回まで）
       renderMergeSuggestBadge();
       writeCaseCache({ lastSync: caseSync.lastSync, lastFull: caseSync.lastFull, items: cases.map(caseForCache) });
       setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
@@ -3680,8 +3683,37 @@ function titleWithoutCompany(title, company) {
   return t;
 }
 let mergeSuggestions = [];
-function mergeDismissed() {
+// 「違う」と判断した組は SharePoint のリスト（SP.mergeDismissListId）に残して全員で共有する。
+//   以前はブラウザ（localStorage）にだけ残していたので、残っていれば初回にリストへ移して消す。
+//   リストが読めないときは、ブラウザの記録だけで動く（候補の表示は止めない）。
+let mergeDismissSet = new Set(), mergeDismissLoadedAt = 0;
+function localMergeDismissed() {
   try { return new Set(JSON.parse(localStorage.getItem(MERGE_DISMISS_KEY) || '[]')); } catch(_) { return new Set(); }
+}
+function mergeDismissed() {
+  const s = new Set(mergeDismissSet);
+  localMergeDismissed().forEach(k => s.add(k));
+  return s;
+}
+async function postMergeDismissal(key) {
+  const sid = await getSiteId();
+  const [a, b] = key.split('|');
+  await graphPost(`/sites/${sid}/lists/${SP.mergeDismissListId}/items`, { fields: { Title: key, CaseIdA: a || '', CaseIdB: b || '' } });
+}
+async function loadMergeDismissals(force) {
+  if (!force && (Date.now() - mergeDismissLoadedAt) < 3 * 60 * 1000) return;
+  try {
+    const sid = await getSiteId();
+    const d = await graphGetAll(`/sites/${sid}/lists/${SP.mergeDismissListId}/items?$select=id&$expand=fields($select=Title)&$top=999`);
+    mergeDismissSet = new Set((d.value || []).map(v => (v.fields && v.fields.Title) || '').filter(Boolean));
+    mergeDismissLoadedAt = Date.now();
+    // ブラウザにだけ残っている記録をリストへ移す
+    const local = [...localMergeDismissed()].filter(k => !mergeDismissSet.has(k));
+    for (const k of local) { await postMergeDismissal(k); mergeDismissSet.add(k); }
+    try { localStorage.removeItem(MERGE_DISMISS_KEY); } catch(_) {}
+  } catch(e) {
+    console.warn('[mergeDismiss] 共有リストを読めません。ブラウザの記録だけで表示します:', e && e.message);
+  }
 }
 const mergePairKey = (a, b) => [a, b].sort().join('|');
 function companyKey(s) {
@@ -3847,14 +3879,21 @@ async function showMergePreviewEvent(i, side, k) {
   }
   view.innerHTML = `<div class="inquiry-panel">${linkifyText(ev.Summary || '（表示できる内容がありません）')}</div>`;
 }
-function dismissMergeSuggestion(i) {
+async function dismissMergeSuggestion(i) {
   const s = mergeSuggestions[i];
   if (!s) return;
-  const set = mergeDismissed();
-  set.add(mergePairKey(s.source.CaseId, s.target.CaseId));
-  try { localStorage.setItem(MERGE_DISMISS_KEY, JSON.stringify([...set])); } catch(_) {}
+  const key = mergePairKey(s.source.CaseId, s.target.CaseId);
+  mergeDismissSet.add(key);   // 画面からはすぐ消す
   renderMergeSuggestBadge();
   renderMergeSuggestList();
+  try {
+    await postMergeDismissal(key);   // 全員で共有（誰が・いつは SharePoint が記録）
+  } catch(e) {
+    // 書けなかったらブラウザに残しておき、次にリストを読めたときに移す
+    const set = localMergeDismissed(); set.add(key);
+    try { localStorage.setItem(MERGE_DISMISS_KEY, JSON.stringify([...set])); } catch(_) {}
+    console.warn('[mergeDismiss] 共有リストに書けませんでした（ブラウザに保存）:', e && e.message);
+  }
 }
 // 既存の統合処理（executeMerge）をそのまま使う：統合元＝currentCaseId、統合先＝mergeTargetCaseId
 async function mergeFromSuggestion(i) {
