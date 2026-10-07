@@ -57,6 +57,12 @@ function NameKeys([string]$s) {
 
 # 日付：2010/04/01・2010-4-1・20100401・平成22年4月1日・H22.4.1 など
 function Parse-Date([string]$s) {
+  $d = Parse-DateRaw $s
+  # 0000/00/00 のような「空の日付」は日付として扱わない
+  if ($d -and [int]$d.Substring(0, 4) -ge 1900 -and $d.Substring(5, 2) -ne '00' -and $d.Substring(8, 2) -ne '00') { return $d }
+  return $null
+}
+function Parse-DateRaw([string]$s) {
   $t = "$s".Normalize([Text.NormalizationForm]::FormKC).Trim()
   if (-not $t) { return $null }
   if ($t -match '^(\d{4})[/\-\.年](\d{1,2})[/\-\.月](\d{1,2})') { return '{0:0000}-{1:00}-{2:00}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3] }
@@ -83,21 +89,25 @@ if ($Prepare) {
     $rows = @($text | ConvertFrom-Csv)
     if (-not $rows.Count) { continue }
     $cols = $rows[0].PSObject.Properties.Name
-    # 氏名の列：「氏名」ちょうどを優先。無ければ「氏名」を含む列（カナ・変更前・旧 は除く）
+    # 氏名の列：「氏名」「従業員名」「社員名」ちょうどを優先。無ければ「氏名」を含む列（カナ・変更前・旧 は除く）
     $nc = if ($NameColumn) { $NameColumn }
-          elseif ($cols -contains '氏名') { '氏名' }
-          else { $cols | Where-Object { $_ -match '氏名' -and $_ -notmatch 'カナ|ｶﾅ|かな|フリガナ|ﾌﾘｶﾞﾅ|変更前|旧' } | Select-Object -First 1 }
+          else { @('氏名', '従業員名', '社員名') | Where-Object { $cols -contains $_ } | Select-Object -First 1 }
+    if (-not $nc) { $nc = $cols | Where-Object { $_ -match '氏名' -and $_ -notmatch 'カナ|ｶﾅ|かな|フリガナ|ﾌﾘｶﾞﾅ|変更前|旧' } | Select-Object -First 1 }
     $dc = if ($DateColumn) { $DateColumn } else { $cols | Where-Object { $_ -match '入社' } | Select-Object -First 1 }
+    # 退職した人の行は使わない（同じ名前の元社員と取り違えないため）
+    $rc = $cols | Where-Object { $_ -match '退職年月日|退職日' } | Select-Object -First 1
     if (-not $nc -or -not $dc) { throw "$f ：氏名か入社日の列が見つかりません。-NameColumn / -DateColumn で見出しを指定してください（見出し：$($cols -join ', ')）" }
-    Write-Host "$(Split-Path $f -Leaf)：氏名＝「$nc」、入社日＝「$dc」、$($rows.Count) 行"
+    $skip = 0
     foreach ($r in $rows) {
       $name = "$($r.$nc)".Trim(); if (-not $name) { continue }
+      if ($rc -and (Parse-Date "$($r.$rc)")) { $skip++; continue }
       $d = Parse-Date "$($r.$dc)"
       foreach ($k in (NameKeys $name)) {
         if ($pay.ContainsKey($k) -and $pay[$k] -and $pay[$k].氏名 -ne $name) { $pay[$k] = $null }
         elseif (-not $pay.ContainsKey($k)) { $pay[$k] = @{ 氏名 = $name; 入社日 = $d } }
       }
     }
+    Write-Host "$(Split-Path $f -Leaf)：氏名＝「$nc」、入社日＝「$dc」、$($rows.Count) 行（退職者 $skip 行は使わない）"
   }
 
   $out = foreach ($u in ($users | Sort-Object Department, DisplayName)) {
