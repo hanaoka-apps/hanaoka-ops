@@ -2967,6 +2967,7 @@ async function executeMerge() {
     if (!delRes.ok) throw new Error(`案件削除エラー: ${delRes.status}（イベントは統合先に移動済みです）`);
     // 5. ローカルデータを更新
     cases = cases.filter(c => c.CaseId !== currentCaseId);
+    await markNewInbound(_tgt);   // 統合先に記録が移ってきた＝担当者の新着にする
     closeMergeModal();
     alert(`統合完了: ${events.length}件のイベントを ${targetCase.CaseId} に移動しました。`);
     // 統合先の案件を表示
@@ -2989,7 +2990,7 @@ async function executeMerge() {
 const CASE_FIELDS = [
   'Title','CaseId','CompanyName','CompanyCode','Status','CaseType','Priority',
   'AssignedToLookupId','DueDate','ExternalDueDate','ExternalDueDays',
-  'OrderNumber','Notes','EntryPoint','LinkedDept','NewArrival',
+  'OrderNumber','Notes','EntryPoint','LinkedDept','NewArrival','NewInboundAt','AssigneeSeenAt',
   'LastAction','LastEventDate','FactoryResponded','FactoryTargets',
   'HumanEdit_JSON','UrgentFlag','Created','Modified'
 ].join(',');
@@ -3000,7 +3001,8 @@ const CASE_FIELDS = [
 //     ・全件読み直し：「🔄 更新」ボタン／統合・削除の検知時／前回の全件から12時間以上たったとき
 //     ・全件でも $select=id で付帯情報（作成者・URL等）を外す（14.5MB → 8.6MB）
 //   差分では「削除された案件」は分からないので、全件読み直しのときに消える。
-const CASE_CACHE_DB = 'hanaoka-case-cache', CASE_CACHE_STORE = 'kv', CASE_CACHE_KEY = 'cases-v1';
+// cases-v2：新着の列（NewInboundAt・AssigneeSeenAt）を足したので、保存済みの一覧を一度だけ全件で取り直す
+const CASE_CACHE_DB = 'hanaoka-case-cache', CASE_CACHE_STORE = 'kv', CASE_CACHE_KEY = 'cases-v2';
 const CASE_FULL_RELOAD_MS = 12 * 60 * 60 * 1000;
 const CASE_DELTA_MARGIN_MS = 5 * 60 * 1000;   // 時計のずれ・書き込みの反映遅れに備えて少し前から読む
 let caseSync = { lastSync: 0, lastFull: 0 };
@@ -3261,8 +3263,8 @@ function getFilteredCases() {
       const aa = (a.AssignedTo?.LookupValue || a.AssignedTo || '').toString();
       const ba = (b.AssignedTo?.LookupValue || b.AssignedTo || '').toString();
       if (aa !== ba) return cmpText(aa, ba);
-      const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
-      const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
+      const na_a = isNewArrival(a) || a._escalated;
+      const na_b = isNewArrival(b) || b._escalated;
       return (statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b)) || byReceived(a, b);
     });
   } else if (sortMode === 'company') {
@@ -3283,8 +3285,8 @@ function getFilteredCases() {
       return 6;
     };
     filtered.sort((a, b) => {
-      const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
-      const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
+      const na_a = isNewArrival(a) || a._escalated;
+      const na_b = isNewArrival(b) || b._escalated;
       return jPriority(a.Status, na_a) - jPriority(b.Status, na_b);
     });
   } else if (sortMode === 'received') {
@@ -3292,8 +3294,8 @@ function getFilteredCases() {
     filtered.sort((a, b) => cmpText(a.Created || '', b.Created || ''));
   } else {
     filtered.sort((a, b) => {
-      const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
-      const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
+      const na_a = isNewArrival(a) || a._escalated;
+      const na_b = isNewArrival(b) || b._escalated;
       return dir * (statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b)) || byReceived(a, b);
     });
   }
@@ -3398,7 +3400,7 @@ function renderCaseList() {
     const shown = filtered.slice(0, caseRenderLimit);
     const rest = filtered.length - shown.length;
     const rows = shown.map(c => {
-      const na = c.NewArrival === true || c.NewArrival === 'Yes';
+      const na = isNewArrival(c);
       const dot = getStatusDotHtml(c.Status, na);
       const statusBadge = getStatusBadge(c.Status, na, c);
       const assignee = c.AssignedTo?.LookupValue || c.AssignedTo || '';
@@ -3545,7 +3547,7 @@ function renderTimeline() {
 }
 function updateSummary() {
   const active = cases.filter(c => !DONE_STATUSES.includes(c.Status));
-  const naCount = active.filter(c => c.NewArrival === true || c.NewArrival === 'Yes').length;
+  const naCount = active.filter(c => isNewArrival(c)).length;
   document.getElementById('cnt-pending').textContent =
     active.filter(c => c.Status === '業務セ').length;
   document.getElementById('cnt-sales').textContent =
@@ -3789,7 +3791,7 @@ const MINE_GROUPS = [
   { key: 'order',     icon: '🧾', label: '注文書',          note: '最優先で処理',               test: c => isOrderCase(c) },
   { key: 'overdue',   icon: '⏰', label: '期限切れ・今日',  note: '対応期限が今日まで',         test: c => ['dl-over', 'dl-near'].includes(getDeadlineClass(c.DueDate)) && !!c.DueDate },
   { key: 'escalated', icon: '🔔', label: '催促',            note: '外部の回答待ちが期限を過ぎた', test: c => !!c._escalated },
-  { key: 'new',       icon: '🆕', label: '新着',            note: '新しい受信・動きあり',        test: c => c.NewArrival === true || c.NewArrival === 'Yes' },
+  { key: 'new',       icon: '🆕', label: '新着',            note: '3日以内の新しい案件、または新しい受信が届いた案件（まだ開いていないもの）', test: c => isNewArrival(c) },
   { key: 'other',     icon: '📂', label: 'その他',          note: '進行中',                     test: () => true },
 ];
 let mineFocus = '';   // 札で絞り込み中のグループ（'' = すべて表示）
@@ -3866,7 +3868,7 @@ function renderMine() {
     return;
   }
   const row = c => {
-    const na = c.NewArrival === true || c.NewArrival === 'Yes';
+    const na = isNewArrival(c);
     const marks = MINE_GROUPS.slice(0, 4).filter(g => g.test(c)).map(g => g.icon).join('');
     return `<div class="mine-row" onclick="openCaseFromMine('${escJsAttr(c.CaseId)}')" title="${escapeHtml(c.CaseId)}">`
       + `<div class="muted">${formatCaseDate(c)}</div>`
@@ -3880,6 +3882,47 @@ function renderMine() {
     `<div class="mine-sec"><div class="mine-sec-h">${g.icon} ${g.label}（${g.items.length}）<small>${g.note}</small></div>`
     + g.items.map(row).join('') + `</div>`).join('')
     || '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">このグループの案件はありません</div></div>';
+}
+// ============================================================
+// 新着（2026-10-07 作り直し）
+//   以前は案件の NewArrival（新着あり）を使っていたが、作成時から付いていてコメントを付けるまで外れず、
+//   進行中の85%が「新着」になっていた。いまは次のどちらかを新着とする：
+//     ・受け付けて3日以内で、担当者がまだその案件を開いていない
+//     ・担当者が最後に見たあとに、新しい受信（FAX・メール等）が紐づいた（既存案件への紐づけ・統合）
+//   NewInboundAt＝新しい受信が紐づいた日時、AssigneeSeenAt＝担当者本人が案件を開いた日時（どちらもアプリが記録）。
+//   古い NewArrival は読まない（787件の書き換えは行わない）。
+// ============================================================
+const NEW_CASE_DAYS = 3;
+function isNewArrival(c) {
+  if (!c) return false;
+  const seen = c.AssigneeSeenAt ? new Date(c.AssigneeSeenAt).getTime() : 0;
+  if (c.NewInboundAt && new Date(c.NewInboundAt).getTime() > seen) return true;
+  return !seen && !!c.Created && (Date.now() - new Date(c.Created).getTime()) < NEW_CASE_DAYS * 864e5;
+}
+// 既存案件に新しい受信が紐づいたことを記録する（紐づけ・統合のあとに呼ぶ）
+async function markNewInbound(caseId) {
+  const c = cases.find(x => x.CaseId === caseId);
+  if (!c || !c._spId) return;
+  try {
+    const now = new Date().toISOString();
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${c._spId}/fields`, { NewInboundAt: now });
+    c.NewInboundAt = now;
+  } catch(e) { console.warn('[markNewInbound] 記録に失敗（処理は継続）:', e && e.message); }
+}
+// 担当者本人が新着の案件を開いたら「見た」と記録する（担当者以外が開いても新着のまま）
+async function markSeenIfAssignee(c) {
+  if (!c || !c._spId || !isNewArrival(c)) return;
+  const me = mineLookupId('me');
+  if (!me || parseInt(c.AssignedToLookupId, 10) !== me) return;
+  try {
+    const now = new Date().toISOString();
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${c._spId}/fields`, { AssigneeSeenAt: now });
+    c.AssigneeSeenAt = now;
+    updateSummary();
+    updateMineTabCount();
+  } catch(e) { console.warn('[markSeenIfAssignee] 記録に失敗（処理は継続）:', e && e.message); }
 }
 // 催促チェックを実行して新着ありに自動昇格
 function applyEscalation() {
@@ -3907,6 +3950,7 @@ function selectCase(caseId) {
   currentCaseId = caseId;
   const c = cases.find(x => x.CaseId === caseId);
   if (!c) return;
+  markSeenIfAssignee(c);   // 担当者本人が開いたら新着を外す（裏で記録）
   // 詳細モードに切り替え
   const main = document.getElementById('caseMain');
   main.classList.remove('list-mode');
@@ -5426,6 +5470,7 @@ async function confirmLink(mode) {
   await updateTriageKubun('案件管理', null, targetId);
   // updateTriageKubun は成功時に currentTriageId を null にする（失敗時は残る）
   const linked = currentTriageId === null;
+  if (linked) markNewInbound(targetId);   // 既存案件に新しい受信が届いた＝担当者の新着にする
   if (mode === 'reopen' && linked) {
     try {
       const c = cases.find(x => x.CaseId === targetId);
@@ -5956,6 +6001,7 @@ async function faxViewLinkToCase() {
       faxViewItems = faxViewItems.filter(x => x._spId !== currentFaxViewId);
       currentFaxViewId = null;
       backToFaxList();
+      markNewInbound(caseId.trim());   // 既存案件に新しい受信が届いた＝担当者の新着にする
       setStatus('success', `案件 ${caseId} に紐付けました`);
     } catch(err) {
       alert('紐付けエラー: ' + err.message);
@@ -6679,7 +6725,7 @@ function renderStatsToday() {
     .filter(([, n]) => n).map(([l, n]) => `${l} ${n}`).join(' / ') || 'まだありません';
   const active = cases.filter(sbActive);
   const over = active.filter(c => c.DueDate && getDeadlineClass(c.DueDate) === 'dl-over');
-  const na = active.filter(c => c.NewArrival === true || c.NewArrival === 'Yes');
+  const na = active.filter(c => isNewArrival(c));
   const kairan = statsRows.filter(r => r.f.SortKubun === 'FAX対応' && r.f.CompletedFlag !== true);
   const merge = (typeof findMergeSuggestions === 'function') ? findMergeSuggestions().length : 0;
   el.innerHTML =
@@ -7084,7 +7130,7 @@ function getUrgencyClass(status, newArrival) {
 }
 function getStatusBadge(status, newArrival, caseObj) {
   if (!status) return '';
-  const bell = newArrival ? ' <span title="新着あり" style="font-size:11px">🔔</span>' : '';
+  const bell = newArrival ? ' <span title="新着（3日以内の新しい案件、または新しい受信が届いた案件で、担当者がまだ開いていないもの）" style="font-size:11px">🔔</span>' : '';
   if (status === '業務セ') return `<span class="badge badge-red">🔴 業務セ${bell}</span>`;
   if (status === '受注入力担当') return `<span class="badge badge-purple">🟣 受注入力${bell}</span>`;
   if (status === '国内営業') return `<span class="badge badge-orange">🟠 国内営業${bell}</span>`;
