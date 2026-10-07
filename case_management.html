@@ -203,6 +203,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
   color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em;
   border-bottom: 2px solid var(--border); white-space: nowrap; user-select: none;
 }
+/* 見出しクリックで並べ替え（▲昇順 ▼降順） */
+.case-table th.th-sort { cursor: pointer; }
+.case-table th.th-sort:hover { color: var(--text); }
+.case-table th.th-sort.on { color: var(--accent); }
 .case-table td {
   padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle;
 }
@@ -1029,7 +1033,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="status-dot"></div>
         <span id="statusText">接続中...</span>
       </div>
-      <button class="btn" onclick="loadCases()" style="padding:3px 10px;font-size:11px">🔄 更新</button>
+      <button class="btn" onclick="loadCases({ full: true })" title="案件を全件読み直します（通常は変わった分だけ自動で反映しています）" style="padding:3px 10px;font-size:11px">🔄 更新</button>
       <div class="user-chip">
         <div class="user-avatar" id="userAvatar">?</div>
         <span id="userName">読み込み中</span>
@@ -1340,12 +1344,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <span style="color:var(--text-muted)">〜</span>
         <input type="date" id="dateTo" onchange="renderCaseList()" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text)">
         <span style="color:var(--text-muted);white-space:nowrap;margin-left:2px">並替</span>
-        <select id="caseSortSelect" onchange="renderCaseList()" style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text);outline:none">
+        <select id="caseSortSelect" onchange="onCaseSortSelect(this.value)" style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);color:var(--text);outline:none">
+          <option value="received" selected>受取日順</option>
           <option value="status">ステータス優先</option>
           <option value="assignee">担当者別</option>
           <option value="company">得意先名順</option>
+          <option value="title">案件名順</option>
           <option value="date">期限順</option>
-          <option value="received">受取日順</option>
         </select>
         <button onclick="clearCaseFilters()" title="検索・担当・期間をクリア"
           style="padding:3px 7px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:var(--surface);color:var(--text-muted)">✕</button>
@@ -2006,6 +2011,7 @@ async function login() {
   }
 }
 function logout() {
+  clearCaseCache();   // ブラウザに保存した案件一覧も消す
   msalInstance.logoutPopup({ account });
   document.getElementById('app').style.display = 'none';
   document.getElementById('loginScreen').style.display = 'flex';
@@ -2205,7 +2211,7 @@ async function handleStaleCaseError(e) {
   try {
     setStatus('loading', '一覧を更新中...');
     currentCaseId = null;
-    await loadCases();
+    await loadCases({ full: true });   // 統合・削除は差分では分からないので全件読み直す
     renderCaseList();
     const detail = document.getElementById('caseDetail');
     const listMode = document.getElementById('caseListMode');
@@ -2318,7 +2324,7 @@ async function ensureUserLookupId(upnOrMail) {
     // User Information List はシステムリストで、サイトに一度でもアクセスしたユーザーが格納される
     // EMail フィールドで検索
     const filter = `fields/EMail eq '${upnOrMail.replace(/'/g, "''")}'`;
-    const url = `/sites/${sid}/lists/user%20information%20list/items?$expand=fields($select=id,Title,EMail,UserName)&$filter=${encodeURIComponent(filter)}`;
+    const url = `/sites/${sid}/lists/user%20information%20list/items?$select=id&$expand=fields($select=id,Title,EMail,UserName)&$filter=${encodeURIComponent(filter)}`;
     const data = await graphGet(url);
     if (data.value && data.value.length > 0) {
       const id = parseInt(data.value[0].id, 10);
@@ -2867,48 +2873,126 @@ const CASE_FIELDS = [
   'LastAction','LastEventDate','FactoryResponded','FactoryTargets',
   'HumanEdit_JSON','UrgentFlag','Created','Modified'
 ].join(',');
-async function loadCases() {
-  setStatus('loading', '案件データを読み込み中...');
+// ★案件一覧の読み込み（2026-10-07 高速化）
+//   以前は開くたび・3分ごとに全件（6,500件・14.5MB・約8秒）を読み直していた。
+//   いまは「前回の一覧をブラウザ(IndexedDB)に保存 → 開いたら即表示 → 変わった分だけ読む」。
+//     ・変わった分：Modified（インデックス済み）で絞る。0.2秒程度
+//     ・全件読み直し：「🔄 更新」ボタン／統合・削除の検知時／前回の全件から12時間以上たったとき
+//     ・全件でも $select=id で付帯情報（作成者・URL等）を外す（14.5MB → 8.6MB）
+//   差分では「削除された案件」は分からないので、全件読み直しのときに消える。
+const CASE_CACHE_DB = 'hanaoka-case-cache', CASE_CACHE_STORE = 'kv', CASE_CACHE_KEY = 'cases-v1';
+const CASE_FULL_RELOAD_MS = 12 * 60 * 60 * 1000;
+const CASE_DELTA_MARGIN_MS = 5 * 60 * 1000;   // 時計のずれ・書き込みの反映遅れに備えて少し前から読む
+let caseSync = { lastSync: 0, lastFull: 0 };
+function caseCacheDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CASE_CACHE_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(CASE_CACHE_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function readCaseCache() {
   try {
-    // 担当者LookupId逆引きテーブルが準備されるまで待つ
-    if (assigneeMembersReady) await assigneeMembersReady;
-    const sid = await getSiteId();
-    // ★$select で列を絞り、$top=999 でページング回数を削減
-    let data;
-    try {
-      data = await graphGetAll(
-        `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=${CASE_FIELDS})&$top=999`
-      );
-    } catch(e) {
-      console.warn('[loadCases] 列指定取得に失敗。全列取得にフォールバックします:', e && e.message);
-      data = await graphGetAll(
-        `/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=999`
-      );
-    }
-    cases = data.value.map(v => {
-      const obj = { _spId: v.id, ...v.fields };
-      // 旧ステータス「受注入力担当」→ 所在=業務セ ＋ 作業区分=受注入力 へ移行
-      if (obj.Status === '受注入力担当') { obj.Status = '業務セ'; obj.CaseType = '受注入力'; obj._migrate = true; }
-      if (obj.Status === '営業' || obj.Status === '国内営業・ソリューション') { obj.Status = '国内営業'; }
-      // Graph API は Person 型フィールドから AssignedToLookupId (数値ID) しか返さない
-      // displayName は lookupIdToDisplayName テーブルから逆引きする
-      const lid = obj.AssignedToLookupId ? parseInt(obj.AssignedToLookupId, 10) : null;
-      if (lid && lookupIdToDisplayName[lid]) {
-        obj.AssignedTo = { LookupValue: lookupIdToDisplayName[lid], LookupId: lid };
-      } else if (lid) {
-        obj.AssignedTo = { LookupValue: `(ID:${lid})`, LookupId: lid };
-      }
-      return obj;
+    const db = await caseCacheDb();
+    return await new Promise(res => {
+      const r = db.transaction(CASE_CACHE_STORE).objectStore(CASE_CACHE_STORE).get(CASE_CACHE_KEY);
+      r.onsuccess = () => res(r.result || null); r.onerror = () => res(null);
     });
-    // 旧「受注入力担当」は毎回メモリ上で 業務セ＋作業区分=受注入力 に正規化して表示する。
-    // SharePoint側の一括書き換えは並列PATCHのバーストで429（スロットリング）を招くため行わない。
-    renderCaseList();
-    updateSummary();
-    setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
-  } catch(e) {
-    setStatus('error', 'エラー: ' + e.message);
-    console.error(e);
+  } catch(_) { return null; }
+}
+async function writeCaseCache(value) {
+  try {
+    const db = await caseCacheDb();
+    db.transaction(CASE_CACHE_STORE, 'readwrite').objectStore(CASE_CACHE_STORE).put(value, CASE_CACHE_KEY);
+  } catch(_) {}
+}
+async function clearCaseCache() {
+  try { const db = await caseCacheDb(); db.transaction(CASE_CACHE_STORE, 'readwrite').objectStore(CASE_CACHE_STORE).delete(CASE_CACHE_KEY); } catch(_) {}
+}
+// SharePoint の行 → 画面で使う案件オブジェクト（旧ステータスの読み替え・担当者名の逆引き）
+function mapCaseRow(v) {
+  const obj = { _spId: v.id, ...v.fields };
+  // 旧ステータス「受注入力担当」→ 所在=業務セ ＋ 作業区分=受注入力 へ移行
+  if (obj.Status === '受注入力担当') { obj.Status = '業務セ'; obj.CaseType = '受注入力'; obj._migrate = true; }
+  if (obj.Status === '営業' || obj.Status === '国内営業・ソリューション') { obj.Status = '国内営業'; }
+  // Graph API は Person 型フィールドから AssignedToLookupId (数値ID) しか返さない
+  // displayName は lookupIdToDisplayName テーブルから逆引きする
+  const lid = obj.AssignedToLookupId ? parseInt(obj.AssignedToLookupId, 10) : null;
+  if (lid && lookupIdToDisplayName[lid]) {
+    obj.AssignedTo = { LookupValue: lookupIdToDisplayName[lid], LookupId: lid };
+  } else if (lid) {
+    obj.AssignedTo = { LookupValue: `(ID:${lid})`, LookupId: lid };
   }
+  return obj;
+}
+// 保存用：画面側で足した値（AssignedTo・_escalated など）は落とし、SharePoint の列だけ残す
+function caseForCache(c) {
+  const o = {};
+  for (const k in c) if (k === '_spId' || (k[0] !== '_' && k !== 'AssignedTo')) o[k] = c[k];
+  return o;
+}
+let _loadCasesRunning = null;
+async function loadCases(opts) {
+  // 同時に何本も走らないようにする（タブ切替と自動更新が重なったとき等）
+  if (_loadCasesRunning) return _loadCasesRunning;
+  _loadCasesRunning = (async () => {
+    const full = !!(opts && opts.full);
+    try {
+      // 担当者LookupId逆引きテーブルが準備されるまで待つ
+      if (assigneeMembersReady) await assigneeMembersReady;
+      // 1) まだ何も表示していなければ、前回保存した一覧をすぐ出す
+      if (!cases.length && !full) {
+        const cached = await readCaseCache();
+        if (cached && Array.isArray(cached.items) && cached.items.length) {
+          cases = cached.items.map(o => mapCaseRow({ id: o._spId, fields: o }));
+          caseSync = { lastSync: cached.lastSync || 0, lastFull: cached.lastFull || 0 };
+          renderCaseList();
+          updateSummary();
+        }
+      }
+      const sid = await getSiteId();
+      const startedAt = Date.now();
+      const base = `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=${CASE_FIELDS})&$top=999`;
+      const needFull = full || !cases.length || !caseSync.lastSync || (startedAt - caseSync.lastFull) > CASE_FULL_RELOAD_MS;
+      if (needFull) {
+        setStatus('loading', '案件データを読み込み中...');
+        let data;
+        try {
+          data = await graphGetAll(base);
+        } catch(e) {
+          console.warn('[loadCases] 列指定取得に失敗。全列取得にフォールバックします:', e && e.message);
+          data = await graphGetAll(`/sites/${sid}/lists/${SP.caseListId}/items?expand=fields&$top=999`);
+        }
+        cases = data.value.map(mapCaseRow);
+        caseSync = { lastSync: startedAt, lastFull: startedAt };
+      } else {
+        // 2) 前回から変わった分だけ読んで差し替える（新しい案件は足す）
+        const since = new Date(caseSync.lastSync - CASE_DELTA_MARGIN_MS).toISOString();
+        const flt = encodeURIComponent(`fields/Modified ge '${since}'`);
+        const data = await graphGetAll(`${base}&$filter=${flt}`);
+        if (data.value.length) {
+          const idx = new Map(cases.map((c, i) => [String(c._spId), i]));
+          data.value.forEach(v => {
+            const obj = mapCaseRow(v);
+            const i = idx.get(String(v.id));
+            if (i === undefined) cases.push(obj); else cases[i] = obj;
+          });
+        }
+        caseSync.lastSync = startedAt;
+      }
+      // 旧「受注入力担当」は毎回メモリ上で 業務セ＋作業区分=受注入力 に正規化して表示する。
+      // SharePoint側の一括書き換えは並列PATCHのバーストで429（スロットリング）を招くため行わない。
+      renderCaseList();
+      updateSummary();
+      writeCaseCache({ lastSync: caseSync.lastSync, lastFull: caseSync.lastFull, items: cases.map(caseForCache) });
+      setStatus('success', `読み込み完了 — ${cases.length}件 (${new Date().toLocaleTimeString()})`);
+    } catch(e) {
+      setStatus('error', 'エラー: ' + e.message);
+      console.error(e);
+    }
+  })();
+  try { return await _loadCasesRunning; } finally { _loadCasesRunning = null; }
 }
 async function loadEvents(caseId) {
   try {
@@ -2919,7 +3003,7 @@ async function loadEvents(caseId) {
       // CaseId列がインデックス済みなら、この案件のイベントだけサーバー側で取得（軽量・推奨）
       const q = String(caseId).replace(/'/g, "''");
       const fil = await graphGetAll(
-        `/sites/${sid}/lists/${SP.eventListId}/items?expand=fields&$filter=fields/CaseId eq '${q}'&$top=500`
+        `/sites/${sid}/lists/${SP.eventListId}/items?$select=id,createdBy&expand=fields&$filter=fields/CaseId eq '${q}'&$top=500`
       );
       allEvents = fil.value.map(mapEv);
     } catch (filErr) {
@@ -3034,7 +3118,8 @@ function getFilteredCases() {
     if (currentFilter === 'everything') return true; // 完了含む全件
     return true;
   });
-  const sortMode = document.getElementById('caseSortSelect')?.value || 'status';
+  const sortMode = caseSort.key;
+  const dir = caseSort.dir === 'asc' ? 1 : -1;
   const statusPriority = (s, na) => {
     if (na) return 1;
     if (s === '業務セ') return 0;
@@ -3044,23 +3129,25 @@ function getFilteredCases() {
     if (EXT_STATUSES.includes(s)) return 3;
     return 4;
   };
+  // 並べ替え：caseSort.key で比較し、caseSort.dir（asc/desc）で向きを決める。
+  //   値が空のもの（期限なし・担当なし）は向きに関係なく末尾に置く。同順位は受取日の新しい順。
+  const byReceived = (a, b) => (b.Created || '').localeCompare(a.Created || '');
+  const cmpText = (x, y) => (!x && !y) ? 0 : !x ? 1 : !y ? -1 : dir * x.localeCompare(y, 'ja');
   if (sortMode === 'assignee') {
     filtered.sort((a, b) => {
-      const aa = (a.AssignedTo?.LookupValue || a.AssignedTo || 'zzz').toString();
-      const ba = (b.AssignedTo?.LookupValue || b.AssignedTo || 'zzz').toString();
-      if (aa !== ba) return aa.localeCompare(ba, 'ja');
+      const aa = (a.AssignedTo?.LookupValue || a.AssignedTo || '').toString();
+      const ba = (b.AssignedTo?.LookupValue || b.AssignedTo || '').toString();
+      if (aa !== ba) return cmpText(aa, ba);
       const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
       const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
-      return statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b);
+      return (statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b)) || byReceived(a, b);
     });
   } else if (sortMode === 'company') {
-    filtered.sort((a, b) => (a.CompanyName || '').localeCompare(b.CompanyName || '', 'ja'));
+    filtered.sort((a, b) => cmpText(a.CompanyName || '', b.CompanyName || '') || byReceived(a, b));
+  } else if (sortMode === 'title') {
+    filtered.sort((a, b) => cmpText(a.Title || '', b.Title || '') || byReceived(a, b));
   } else if (sortMode === 'date') {
-    filtered.sort((a, b) => {
-      const da = a.DueDate || '9999';
-      const db = b.DueDate || '9999';
-      return da < db ? -1 : da > db ? 1 : 0;
-    });
+    filtered.sort((a, b) => cmpText(a.DueDate || '', b.DueDate || '') || byReceived(a, b));
   } else if (sortMode === 'juchunyuryoku') {
     // 受注入力担当を最優先、次いでステータス優先
     const jPriority = (s, na) => {
@@ -3078,20 +3165,52 @@ function getFilteredCases() {
       return jPriority(a.Status, na_a) - jPriority(b.Status, na_b);
     });
   } else if (sortMode === 'received') {
-    // 受取日（FAX受信日）= Created 降順（新しい順）
-    filtered.sort((a, b) => {
-      const da = a.Created || '';
-      const db = b.Created || '';
-      return da > db ? -1 : da < db ? 1 : 0;
-    });
+    // 受取日（FAX受信日）= Created
+    filtered.sort((a, b) => cmpText(a.Created || '', b.Created || ''));
   } else {
     filtered.sort((a, b) => {
       const na_a = a.NewArrival === true || a.NewArrival === 'Yes' || a._escalated;
       const na_b = b.NewArrival === true || b.NewArrival === 'Yes' || b._escalated;
-      return statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b);
+      return dir * (statusPriority(a.Status, na_a) - statusPriority(b.Status, na_b)) || byReceived(a, b);
     });
   }
   return filtered;
+}
+// ---- 案件一覧の並べ替え（見出しクリック／並替セレクト共通）----
+//   key: received（受取日）/ company / title / status / assignee / date（期限）
+//   既定は受取日の新しい順。選んだ並べ方はブラウザに覚える。
+const CASE_SORT_KEY = 'case-sort-v1';
+const CASE_SORT_DEFAULT_DIR = { received: 'desc', company: 'asc', title: 'asc', status: 'asc', assignee: 'asc', date: 'asc' };
+let caseSort = (() => {
+  try {
+    const s = JSON.parse(localStorage.getItem(CASE_SORT_KEY) || 'null');
+    if (s && CASE_SORT_DEFAULT_DIR[s.key] && (s.dir === 'asc' || s.dir === 'desc')) return s;
+  } catch(_) {}
+  return { key: 'received', dir: 'desc' };
+})();
+function saveCaseSort() {
+  try { localStorage.setItem(CASE_SORT_KEY, JSON.stringify(caseSort)); } catch(_) {}
+  const sel = document.getElementById('caseSortSelect');
+  if (sel && sel.value !== caseSort.key) sel.value = caseSort.key;
+}
+// 見出しクリック：同じ列なら昇順⇔降順、別の列ならその列の既定の向き
+function sortCasesBy(key) {
+  caseSort = (caseSort.key === key)
+    ? { key, dir: caseSort.dir === 'asc' ? 'desc' : 'asc' }
+    : { key, dir: CASE_SORT_DEFAULT_DIR[key] || 'asc' };
+  saveCaseSort();
+  renderCaseList();
+}
+// 並替セレクトの変更：その列の既定の向きで並べる
+function onCaseSortSelect(key) {
+  caseSort = { key, dir: CASE_SORT_DEFAULT_DIR[key] || 'asc' };
+  saveCaseSort();
+  renderCaseList();
+}
+function caseSortTh(key, label) {
+  const on = caseSort.key === key;
+  const mark = on ? (caseSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  return `<th class="th-sort${on ? ' on' : ''}" onclick="sortCasesBy('${key}')" title="クリックで並べ替え（もう一度で逆順）">${label}${mark}</th>`;
 }
 // ステータスドットのHTMLを返す
 function getStatusDotHtml(status, na) {
@@ -3132,6 +3251,9 @@ function renderCaseRoutes() {
     + CASE_ROUTES.map(r => chip(r.key, r.label, counts[r.key] || 0)).join('');
 }
 function renderCaseList() {
+  // 並替セレクトを、覚えている並べ方に合わせる（初回表示用）
+  const _sortSel = document.getElementById('caseSortSelect');
+  if (_sortSel && _sortSel.value !== caseSort.key) _sortSel.value = caseSort.key;
   renderCaseFilters();
   renderCaseRoutes();
   const filtered = getFilteredCases();
@@ -3142,7 +3264,17 @@ function renderCaseList() {
   }
   {
     // テーブル型一覧
-    const rows = filtered.map(c => {
+    // ★表示は CASE_RENDER_STEP 件ずつ（数千行を一度に描くと重いため）。
+    //   絞り込み・並べ替え・検索が変わったら先頭から数え直す。開いている案件は必ず表示範囲に含める。
+    const listKey = [currentFilter, caseRoute, document.getElementById('searchInput')?.value,
+      document.getElementById('assigneeFilter')?.value, document.getElementById('dateFrom')?.value,
+      document.getElementById('dateTo')?.value, caseSort.key, caseSort.dir].join('|');
+    if (listKey !== caseListKey) { caseListKey = listKey; caseRenderLimit = CASE_RENDER_STEP; }
+    const activeIdx = currentCaseId ? filtered.findIndex(c => c.CaseId === currentCaseId) : -1;
+    if (activeIdx >= caseRenderLimit) caseRenderLimit = Math.ceil((activeIdx + 1) / CASE_RENDER_STEP) * CASE_RENDER_STEP;
+    const shown = filtered.slice(0, caseRenderLimit);
+    const rest = filtered.length - shown.length;
+    const rows = shown.map(c => {
       const na = c.NewArrival === true || c.NewArrival === 'Yes';
       const dot = getStatusDotHtml(c.Status, na);
       const statusBadge = getStatusBadge(c.Status, na, c);
@@ -3169,19 +3301,22 @@ function renderCaseList() {
         <thead>
           <tr>
             <th style="width:28px"></th>
-            <th>受取日</th>
-            <th>得意先名</th>
-            <th>案件名</th>
-            <th>ステータス</th>
+            ${caseSortTh('received', '受取日')}
+            ${caseSortTh('company', '得意先名')}
+            ${caseSortTh('title', '案件名')}
+            ${caseSortTh('status', 'ステータス')}
             <th>備考</th>
-            <th>担当</th>
-            <th>期限</th>
+            ${caseSortTh('assignee', '担当')}
+            ${caseSortTh('date', '期限')}
           </tr>
         </thead>
-        <tbody>${rows}</tbody>
+        <tbody>${rows}${rest > 0 ? `<tr class="case-more-row"><td colspan="8"><button class="btn" style="width:100%;padding:8px" onclick="event.stopPropagation();showMoreCases()">さらに表示（残り${rest}件）</button></td></tr>` : ''}</tbody>
       </table>`;
   }
 }
+const CASE_RENDER_STEP = 150;
+let caseRenderLimit = CASE_RENDER_STEP, caseListKey = '';
+function showMoreCases() { caseRenderLimit += CASE_RENDER_STEP; renderCaseList(); }
 let tlCompactMode = false;
 function toggleTlCompact() {
   tlCompactMode = !tlCompactMode;
@@ -3885,7 +4020,7 @@ async function generateCaseId() {
   const sid = await getSiteId();
   try {
     const recent = await graphGet(
-      `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)`
+      `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)`
       + `&$orderby=fields/Modified desc&$top=200`
     );
     const nums = (recent.value || [])
@@ -3898,7 +4033,7 @@ async function generateCaseId() {
         const cand = `EST-${year}-${String(next).padStart(3, '0')}`;
         const q = cand.replace(/'/g, "''");
         const hit = await graphGet(
-          `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)`
+          `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)`
           + `&$filter=${encodeURIComponent(`fields/CaseId eq '${q}'`)}&$top=5`
         );
         if (!hit.value || hit.value.length === 0) return cand;   // 未使用 → 確定
@@ -3912,7 +4047,7 @@ async function generateCaseId() {
   // フォールバック：従来どおり全件から採番
   try {
     const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
+      `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)&$top=999`
     );
     const used = new Set(data.value.map(v => v.fields?.CaseId || '').filter(Boolean));
     const nums = [...used]
@@ -3941,14 +4076,14 @@ async function ensureUniqueCaseId(createdItemId, caseId) {
     let same;
     try {
       const hit = await graphGetAll(
-        `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)`
+        `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)`
         + `&$filter=${encodeURIComponent(`fields/CaseId eq '${q}'`)}&$top=50`
       );
       same = hit.value;
     } catch(e) {
       console.warn('[ensureUniqueCaseId] 絞り込み確認に失敗。全件取得で確認します:', e && e.message);
       const all = await graphGetAll(
-        `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
+        `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)&$top=999`
       );
       same = all.value.filter(v => (v.fields?.CaseId || '') === caseId);
     }
@@ -3957,7 +4092,7 @@ async function ensureUniqueCaseId(createdItemId, caseId) {
     if (!others.every(o => +o.id < +createdItemId)) return caseId;  // 自分が先発 → 相手が振り直す
     // ここから先は重複が起きた稀なケースのみ。未使用番号を探すため全件取得する
     const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.caseListId}/items?$expand=fields($select=CaseId)&$top=999`
+      `/sites/${sid}/lists/${SP.caseListId}/items?$select=id&$expand=fields($select=CaseId)&$top=999`
     );
     const used = new Set(data.value.map(v => v.fields?.CaseId || '').filter(Boolean));
     const year = new Date().getFullYear();
@@ -4149,7 +4284,9 @@ const EVENT_FIELDS = [
 //   AISortSuggest / AISortDept / AISortReason は Mail の一次判定
 //   （案件管理／部署回覧＋部署名／アーカイブ）。受信トレイでしか使わない。
 //   ※ AISortSuggest の「部署回覧」は SortKubun では 'FAX対応' にあたる（見比べるときに読み替える）。
-const TRIAGE_EVENT_FIELDS = EVENT_FIELDS + ',InquiryBody,AISortSuggest,AISortDept,AISortReason';
+//   HumanEdit_JSON は編集の履歴。保存時に「既存の履歴に追記」するので読んでおく必要がある
+//   （読んでいないと2回目の編集で1回目の履歴が消える＝AI改善の材料が失われる）。
+const TRIAGE_EVENT_FIELDS = EVENT_FIELDS + ',InquiryBody,AISortSuggest,AISortDept,AISortReason,HumanEdit_JSON';
 // ============================================================
 // 受信トレイの経路（EventType → 表示カテゴリ）
 //   HP問い合わせ系は「受信」の文字を含まないため、FAXと同じ扱いにするには
@@ -4221,7 +4358,7 @@ async function fetchEventItems(force) {
   const sid = await getSiteId();
   // ★$select で列を絞り、$top を999にしてページング回数も削減
   const data = await graphGetAll(
-    `/sites/${sid}/lists/${SP.eventListId}/items?$expand=fields($select=${EVENT_FIELDS})&$top=999`
+    `/sites/${sid}/lists/${SP.eventListId}/items?$select=id&$expand=fields($select=${EVENT_FIELDS})&$top=999`
   );
   eventListCache = data.value.map(v => ({ _spId: v.id, ...v.fields }));
   eventListCacheAt = Date.now();
@@ -4244,7 +4381,7 @@ async function fetchTriageEventItems(force) {
     + TRIAGE_EVENT_TYPES.map(t => `fields/EventType eq '${t}'`).join(' or ') + `)`;
   try {
     const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.eventListId}/items?$expand=fields($select=${TRIAGE_EVENT_FIELDS})`
+      `/sites/${sid}/lists/${SP.eventListId}/items?$select=id&$expand=fields($select=${TRIAGE_EVENT_FIELDS})`
       + `&$filter=${encodeURIComponent(flt)}&$top=999`
     );
     triageCache = data.value.map(v => ({ _spId: v.id, ...v.fields }));
@@ -5057,7 +5194,7 @@ async function fetchFaxViewEventItems(force, kubun) {
   const flt = `fields/SortKubun eq '${kubun}'`;
   try {
     const data = await graphGetAll(
-      `/sites/${sid}/lists/${SP.eventListId}/items?$expand=fields($select=${EVENT_FIELDS})`
+      `/sites/${sid}/lists/${SP.eventListId}/items?$select=id&$expand=fields($select=${EVENT_FIELDS})`
       + `&$filter=${encodeURIComponent(flt)}&$top=999`
     );
     faxViewCache[kubun] = data.value.map(v => ({ _spId: v.id, ...v.fields }));
@@ -5834,7 +5971,7 @@ async function fetchStatsRows(force) {
   INBOX_ROUTES.forEach(r => r.types.forEach(t => types.push(t)));
   const flt = types.map(t => `fields/EventType eq '${t}'`).join(' or ');
   let url = `/sites/${sid}/lists/${SP.eventListId}/items`
-          + `?$expand=fields($select=EventType,EventDate,SortKubun,CaseId)`
+          + `?$select=id&$expand=fields($select=EventType,EventDate,SortKubun,CaseId)`
           + `&$filter=${encodeURIComponent(flt)}&$top=999`;
   const rows = [];
   const box = document.getElementById('statsChart');
