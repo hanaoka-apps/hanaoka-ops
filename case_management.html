@@ -239,6 +239,19 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .ms-title { margin: 3px 0; font-weight: 600; }
 .ms-case .muted, .ms-item .muted { color: var(--text-muted); font-size: 11px; }
 .ms-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.ms-open { float: right; font-size: 10px; color: var(--accent); text-decoration: none; }
+.ms-open:hover { text-decoration: underline; }
+.ms-preview { grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.ms-pv-col { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.ms-pv-h { padding: 6px 10px; font-size: 12px; font-weight: 700; background: var(--surface2); border-bottom: 1px solid var(--border); }
+.ms-pv-ev { max-height: 150px; overflow-y: auto; border-bottom: 1px solid var(--border); }
+.ms-pv-item { padding: 5px 10px; font-size: 11px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.ms-pv-item:hover { background: var(--surface2); }
+.ms-pv-item.on { background: #eef0fc; }
+.ms-pv-sum { color: var(--text); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-pv-view { height: 460px; position: relative; display: flex; flex-direction: column; }
+.ms-pv-view > .inquiry-panel, .ms-pv-view > .mail-view { flex: 1; min-height: 0; }
+@media (max-width: 760px) { .ms-preview { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .ms-pair { grid-template-columns: 1fr; } .ms-arrow { transform: rotate(90deg); } }
 /* マイ案件 */
 .mine-tab-n { margin-left: 4px; font-size: 10px; background: var(--accent); color: #fff; border-radius: 8px; padding: 0 6px; }
@@ -1020,7 +1033,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 </div>
 <!-- マージ候補モーダル（同じ案件と思われる組を並べ、その場で統合／候補から外す） -->
 <div class="reg-modal-overlay" id="mergeSuggestModal" onclick="closeMergeSuggest()">
-  <div class="reg-modal" onclick="event.stopPropagation()" style="width:760px;max-width:96vw">
+  <div class="reg-modal" onclick="event.stopPropagation()" style="width:1180px;max-width:96vw">
     <div class="reg-modal-header">
       <span class="reg-modal-title">🔗 マージ候補（同じ案件かもしれない組）</span>
       <button class="reg-modal-close" onclick="closeMergeSuggest()">✕</button>
@@ -3641,7 +3654,9 @@ function findMergeSuggestions() {
       }
     }
   });
-  out.sort((x, y) => y.score - x.score || (y.source.Created || '').localeCompare(x.source.Created || ''));
+  // 並び順：受信日（組のうち新しいほうの案件の受取日）の新しい順
+  const newest = s => [s.source.Created || '', s.target.Created || ''].sort().pop();
+  out.sort((x, y) => newest(y).localeCompare(newest(x)));
   return out;
 }
 function renderMergeSuggestBadge() {
@@ -3663,18 +3678,86 @@ function renderMergeSuggestList() {
     box.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-text">いまマージ候補はありません</div></div>';
     return;
   }
-  const card = (c, role) => `<div class="ms-case" onclick="closeMergeSuggest();switchMainTab('case');selectCase('${escJsAttr(c.CaseId)}')" title="開いて確認">`
-    + `<div class="ms-role">${role}</div>`
+  const card = (c, role) => `<div class="ms-case">`
+    + `<div class="ms-role">${role}<a class="ms-open" href="javascript:void(0)" onclick="closeMergeSuggest();switchMainTab('case');selectCase('${escJsAttr(c.CaseId)}')" title="案件管理でこの案件を開く">案件を開く ↗</a></div>`
     + `<div><b>${escapeHtml(c.CaseId)}</b> <span class="muted">${formatCaseDate(c)}受取</span> ${getStatusBadge(c.Status, false, c)}</div>`
     + `<div class="ms-title">${escapeHtml(c.Title || '-')}</div>`
     + `<div class="muted">${escapeHtml(c.CompanyName || '')}${c.AssignedTo ? '　担当 ' + escapeHtml(c.AssignedTo.LookupValue || '') : ''}</div></div>`;
-  box.innerHTML = mergeSuggestions.slice(0, 50).map((s, i) =>
+  box.innerHTML = mergeSuggestions.slice(0, 100).map((s, i) =>
     `<div class="ms-item">`
     + `<div class="ms-reasons">${s.reasons.map(r => `<span class="ms-reason">${escapeHtml(r)}</span>`).join('')}</div>`
     + `<div class="ms-pair">${card(s.source, '統合元（こちらの記録を移す）')}<div class="ms-arrow">→</div>${card(s.target, '統合先（こちらに残す）')}</div>`
-    + `<div class="ms-actions"><button class="btn" onclick="dismissMergeSuggestion(${i})">違う（候補から外す）</button>`
+    + `<div class="ms-preview" id="msPrev${i}" style="display:none"></div>`
+    + `<div class="ms-actions"><button class="btn" id="msPrevBtn${i}" onclick="toggleMergePreview(${i})" style="margin-right:auto">👀 中身を見比べる</button>`
+    + `<button class="btn" onclick="dismissMergeSuggestion(${i})">違う（候補から外す）</button>`
     + `<button class="btn btn-primary" onclick="mergeFromSuggestion(${i})">統合する</button></div></div>`).join('')
-    + (mergeSuggestions.length > 50 ? `<div class="muted" style="padding:8px">ほかに ${mergeSuggestions.length - 50} 組あります</div>` : '');
+    + (mergeSuggestions.length > 100 ? `<div class="muted" style="padding:8px">ほかに ${mergeSuggestions.length - 100} 組あります</div>` : '');
+}
+// ---- マージ候補：2つの案件の中身をその場で見比べる（案件画面に移らない）----
+//   左右に統合元・統合先を並べ、それぞれの記録（FAX・問い合わせ・メール・コメント）と、
+//   選んだ記録の PDF／本文を表示する。記録は CaseId（索引済み）で絞って読む。
+const mergePreviewEvents = {};
+async function fetchCaseEvents(caseId) {
+  const sid = await getSiteId();
+  const q = String(caseId).replace(/'/g, "''");
+  const d = await graphGetAll(`/sites/${sid}/lists/${SP.eventListId}/items?$select=id&expand=fields`
+    + `&$filter=${encodeURIComponent(`fields/CaseId eq '${q}'`)}&$top=500`);
+  return (d.value || []).map(v => ({ _spId: v.id, ...v.fields }))
+    .sort((a, b) => new Date(b.EventDate || 0) - new Date(a.EventDate || 0));
+}
+async function toggleMergePreview(i) {
+  const s = mergeSuggestions[i];
+  const box = document.getElementById('msPrev' + i);
+  const btn = document.getElementById('msPrevBtn' + i);
+  if (!s || !box) return;
+  if (box.style.display !== 'none') { box.style.display = 'none'; box.innerHTML = ''; btn.textContent = '👀 中身を見比べる'; return; }
+  btn.textContent = '▲ 閉じる';
+  box.style.display = 'grid';
+  const col = (side, c, label) => `<div class="ms-pv-col"><div class="ms-pv-h">${label}：${escapeHtml(c.CaseId)}</div>`
+    + `<div class="ms-pv-ev" id="msEv${i}${side}"><div class="loading-spinner">記録を読み込み中...</div></div>`
+    + `<div class="ms-pv-view" id="msView${i}${side}"></div></div>`;
+  box.innerHTML = col('s', s.source, '統合元') + col('t', s.target, '統合先');
+  for (const [side, c] of [['s', s.source], ['t', s.target]]) {
+    try {
+      const evs = await fetchCaseEvents(c.CaseId);
+      mergePreviewEvents[i + side] = evs;
+      const list = document.getElementById(`msEv${i}${side}`);
+      if (!list) return;
+      list.innerHTML = evs.length ? evs.map((ev, k) =>
+        `<div class="ms-pv-item" id="msEvi${i}${side}${k}" onclick="showMergePreviewEvent(${i},'${side}',${k})">`
+        + `<span class="tl-type ${getEventTypeClass(ev.EventType)}">${escapeHtml(ev.EventType || '-')}</span> `
+        + `<span class="muted">${formatDate(ev.EventDate)}</span>${ev.AttachedPDFPath ? ' 📄' : ''}`
+        + `<div class="ms-pv-sum">${escapeHtml(ev.Summary || '-')}</div></div>`).join('')
+        : '<div class="muted" style="padding:8px">記録がありません</div>';
+      // 最初に見せる記録：PDFか本文を持つ一番新しいもの
+      const k = evs.findIndex(ev => ev.AttachedPDFPath || isInquiryEvent(ev));
+      showMergePreviewEvent(i, side, k >= 0 ? k : 0);
+    } catch (e) {
+      const list = document.getElementById(`msEv${i}${side}`);
+      if (list) list.innerHTML = `<div class="muted" style="padding:8px">記録を読めませんでした（${escapeHtml(e.message)}）</div>`;
+    }
+  }
+}
+async function showMergePreviewEvent(i, side, k) {
+  const ev = (mergePreviewEvents[i + side] || [])[k];
+  const view = document.getElementById(`msView${i}${side}`);
+  if (!ev || !view) return;
+  document.querySelectorAll(`#msEv${i}${side} .ms-pv-item`).forEach(el => el.classList.remove('on'));
+  const item = document.getElementById(`msEvi${i}${side}${k}`);
+  if (item) item.classList.add('on');
+  const isMail = routeOf(ev.EventType) === 'mail';
+  if (ev.AttachedPDFPath && !isMail) { loadPdfWithAuth(ev.AttachedPDFPath, view.id); return; }
+  if (isInquiryEvent(ev)) {
+    view.innerHTML = '<div class="loading-spinner">本文を読み込み中...</div>';
+    try {
+      const body = ev.InquiryBody || await fetchInquiryBody(ev._spId);
+      ev.InquiryBody = body;
+      if (isMail && ev.AttachedPDFPath) renderMailWithPdf(view, body, ev.AttachedPDFPath);
+      else view.innerHTML = `<div class="inquiry-panel">${inquiryBodyHtml(ev, body || '')}</div>`;
+    } catch (e) { view.innerHTML = `<div class="muted" style="padding:8px">本文を読めませんでした</div>`; }
+    return;
+  }
+  view.innerHTML = `<div class="inquiry-panel">${linkifyText(ev.Summary || '（表示できる内容がありません）')}</div>`;
 }
 function dismissMergeSuggestion(i) {
   const s = mergeSuggestions[i];
