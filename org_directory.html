@@ -7,18 +7,26 @@
 <!--
   組織図・連絡先（HUB から開く。左メニューは HUB と共通の hub_sidebar.js）
   ------------------------------------------------------------
+  画面は3つに分かれる：左＝組織ツリー（区切り→部署）／真ん中＝組織図・一覧／右＝選んだ人の詳細。
+
   中身はすべて Entra（Microsoft 365 のユーザー情報）を読むだけ。名前・番号・上司を
   このファイルに書かない。直すときは Entra 側を直す。
-    部署 department / 役職 jobTitle / 上司 manager / 携帯 mobilePhone（会社貸与の番号だけ入れる約束）
-    勤務地 officeLocation（本社・工場。一覧の大きな区切り。部署が同じでも人ごとに違ってよい）
-    部署が「役員」の人は、勤務地にかかわらず先頭の「役員」にまとめる
-  勤務地の投入は scripts/set_office_location.ps1。
-  出す人：メンバー・有効・ライセンスあり。ゲスト・無効・共有メールボックスは出さない。
+    部署 department / 役職 jobTitle（今は出さない。SHOW_TITLE） / 上司 manager / 携帯 mobilePhone（会社貸与の番号だけ入れる約束）
+    勤務地 officeLocation（本社・工場。大きな区切り。部署が同じでも人ごとに違ってよい）
+    社員番号 employeeId / 入社日 employeeHireDate（入っている人だけ出す）
+    顔写真は Teams などで本人が設定したもの（無い人は頭文字）
+    部署が「役員」の人は、勤務地にかかわらず「役員」にまとめる
+  このファイルに書いてあるのは、区切りと部署の「並び順」だけ（SITE_ORDER・DEPT_ORDER）。
+  会社の電話（businessPhones）は出さない。連絡は Teams で、という方針のため。
+
+  出す人：Microsoft 365 のメンバー・有効・ライセンスあり。ゲスト・無効・共有メールボックスは出さない。
+  ＝アカウントの無い人は載らない（全社員ではない）。画面にもそう書いておく。
   「従業員の種類」(employeeType) で次を見分ける。
     共有PC   … 共有PC用のアカウント。出さない
     共用携帯 … 部署の共用携帯の置き場所（共有メールボックス）。人ではなく「共用番号」として部署の中に出す
   必要な権限：業務アプリの User.Read.All（委任・管理者の同意済み）
-  番号の投入は scripts/set_mobile_phones.ps1、上司は scripts/set_managers.ps1。
+  投入用スクリプト：番号 scripts/set_mobile_phones.ps1、上司 scripts/set_managers.ps1、
+                    勤務地 scripts/set_office_location.ps1
 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
@@ -35,124 +43,238 @@
     font-size: 14px; -webkit-font-smoothing: antialiased;
   }
   a { color: inherit; text-decoration: none; }
-  button { font-family: inherit; }
+  button { font-family: inherit; color: inherit; }
 
   /* 左メニューは固定表示なので、その分だけ本文を右へ（スケジュール系と同じ） */
   body { padding-left: var(--sidebar-w); }
   @media (max-width: 820px) { body { padding-left: 0; } }
 
-  .main { min-height: 100vh; min-width: 0; }
+  .main { min-height: 100vh; min-width: 0; display: flex; flex-direction: column; }
   .topbar {
     position: sticky; top: 0; z-index: 10;
-    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-    padding: 14px 32px;
-    background: rgba(255, 255, 255, 0.86);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 24px;
+    background: rgba(255, 255, 255, 0.9);
     backdrop-filter: saturate(160%) blur(10px); -webkit-backdrop-filter: saturate(160%) blur(10px);
     border-bottom: 1px solid var(--border);
   }
+  .topbar > div:first-child { flex: 1 1 auto; min-width: 0; }
   h1 { font-size: 17px; margin: 0; font-weight: 800; }
-  .page-sub { font-size: 12.5px; color: var(--text-sub); font-weight: 500; margin-top: 2px; }
-  .signin-btn {
-    background: var(--navy); color: #fff; border: none; border-radius: 8px;
-    padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 4px 12px rgba(35, 38, 143, 0.25);
-  }
-  .signin-btn:hover { background: var(--navy-deep); }
-  .signin-btn:disabled { opacity: .6; cursor: default; }
-  .signin-btn[hidden] { display: none; }
-
-  .content { padding: 22px 32px 64px; max-width: 1400px; }
-
-  /* ---------- 検索・切り替え ---------- */
-  .tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
-  .search {
-    flex: 1 1 320px; max-width: 520px; position: relative;
-  }
+  .page-sub { font-size: 12px; color: var(--text-sub); font-weight: 500; margin-top: 2px; }
+  .search { flex: 0 1 420px; min-width: 220px; position: relative; }
   .search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-sub); }
   .search input {
-    width: 100%; padding: 10px 12px 10px 36px; font: inherit; font-size: 14px;
+    width: 100%; padding: 9px 12px 9px 36px; font: inherit; font-size: 13.5px;
     border: 1px solid var(--border-strong); border-radius: 10px; background: #fff; color: var(--text-main);
   }
   .search input:focus { outline: 2px solid var(--navy-soft); border-color: var(--navy); }
-  .view-toggle { display: inline-flex; background: #fff; border: 1px solid var(--border-strong); border-radius: 10px; padding: 3px; }
-  .view-toggle button {
-    border: 0; background: transparent; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  .signin-btn {
+    background: var(--navy); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .signin-btn:disabled { opacity: .6; cursor: default; }
+  .signin-btn[hidden] { display: none; }
+
+  /* ---------- 3つの区画 ---------- */
+  .org {
+    flex: 1; display: grid; gap: 14px; padding: 14px 20px 20px; min-height: 0;
+    grid-template-columns: 236px minmax(0, 1fr);
+  }
+  .org.has-detail { grid-template-columns: 236px minmax(0, 1fr) 340px; }
+  .pane {
+    background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+    min-width: 0; align-self: start;
+    position: sticky; top: 76px; max-height: calc(100vh - 92px); overflow: auto;
+  }
+  .pane-h {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 14px 16px 8px; font-size: 14px; font-weight: 800;
+  }
+  .linkbtn { border: 0; background: none; color: var(--navy); font-size: 12px; font-weight: 700; cursor: pointer; padding: 2px 4px; }
+
+  /* 左：組織ツリー */
+  .tree { list-style: none; margin: 0; padding: 0 8px 14px; }
+  .tree ul { list-style: none; margin: 0 0 4px 14px; padding: 0 0 0 8px; border-left: 1px solid var(--line-strong); }
+  .tree ul[hidden] { display: none; }
+  .titem {
+    display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; cursor: pointer;
+    padding: 7px 8px; border-radius: 8px; font-size: 13px; font-weight: 600; text-align: left;
+  }
+  .titem:hover { background: #f4f5fb; }
+  .titem.on { background: var(--navy-soft); color: var(--navy); }
+  .titem .tw { width: 14px; flex: none; color: var(--text-sub); transition: transform .15s; }
+  .titem[aria-expanded="true"] .tw { transform: rotate(90deg); }
+  .titem .tl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .titem.site .tl { font-weight: 800; }
+  .cnt {
+    flex: none; min-width: 24px; text-align: center; font-size: 11px; font-weight: 800; color: var(--text-sub);
+    background: #f1f2f8; border-radius: 999px; padding: 1px 7px;
+  }
+  .titem.on .cnt { background: #fff; color: var(--navy); }
+
+  /* 真ん中 */
+  .center { position: static; max-height: none; overflow: visible; }
+  .center-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 18px 4px; }
+  .center-h h2 { margin: 0; font-size: 16px; font-weight: 800; }
+  .tabs { display: inline-flex; background: #f1f2f8; border-radius: 10px; padding: 3px; }
+  .tabs button {
+    border: 0; background: transparent; padding: 7px 18px; border-radius: 8px; cursor: pointer;
     font-size: 13px; font-weight: 700; color: var(--text-sub);
   }
-  .view-toggle button[aria-pressed="true"] { background: var(--navy); color: #fff; }
-  .count { font-size: 12.5px; color: var(--text-sub); font-weight: 600; }
+  .tabs button[aria-pressed="true"] { background: var(--navy); color: #fff; }
+  .count { font-size: 12px; color: var(--text-sub); font-weight: 600; }
+  .body { padding: 10px 18px 22px; }
 
-  /* ---------- 部署ごとの一覧 ---------- */
-  .site { margin-bottom: 34px; }
-  .site > h2 {
-    display: flex; align-items: baseline; gap: 8px; margin: 0 0 14px; padding-bottom: 8px;
-    font-size: 18px; font-weight: 800; color: var(--navy); border-bottom: 2px solid var(--navy-soft);
+  /* 組織図 */
+  .chart { display: flex; flex-direction: column; align-items: center; }
+  .roots { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .topnode {
+    border: 1px solid var(--line-strong); border-radius: 12px; padding: 12px 14px; background: #fff;
+    box-shadow: var(--shadow); min-width: 250px; cursor: pointer; text-align: left;
   }
-  .dept { margin-bottom: 22px; }
-  .dept h3 {
-    display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 14.5px; font-weight: 800;
+  .topnode:hover { border-color: var(--navy); }
+  .topnode .row1 { display: flex; align-items: center; gap: 10px; }
+  .topnode .nm { font-size: 15px; font-weight: 800; }
+  .topnode .tt { font-size: 12px; color: var(--text-sub); font-weight: 600; }
+  .topnode .acts { margin-top: 10px; }
+  .vline { width: 2px; height: 22px; background: var(--line-strong); }
+  .cols {
+    display: grid; gap: 14px; width: 100%; position: relative; padding-top: 22px;
+    grid-template-columns: repeat(var(--n), minmax(0, 1fr));
   }
-  .site > h2 small, .dept h3 small { font-size: 12px; color: var(--text-sub); font-weight: 600; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+  /* 横線：いちばん左の列の中央から、いちばん右の列の中央まで */
+  .cols::before {
+    content: ""; position: absolute; top: 0; height: 2px; background: var(--line-strong);
+    left: calc(100% / var(--n) / 2); right: calc(100% / var(--n) / 2);
+  }
+  /* 区切りは枠で囲まず、線でつなぐだけ */
+  .col { position: relative; min-width: 0; }
+  .col::before { content: ""; position: absolute; top: -22px; left: 50%; width: 2px; height: 22px; background: var(--line-strong); }
+  .col-h {
+    display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 auto 12px; width: fit-content;
+    padding: 8px 16px; background: #fff; border: 2px solid var(--navy); border-radius: 12px;
+  }
+  .col-h .ic { width: 30px; height: 30px; border-radius: 9px; background: var(--navy-soft); display: flex; align-items: center; justify-content: center; color: var(--navy); flex: none; }
+  .col-h b { display: block; font-size: 15px; font-weight: 800; color: var(--navy); }
+  .col-h span { font-size: 12px; color: var(--text-sub); font-weight: 600; }
+  .dcard {
+    display: block; width: 100%; text-align: left; border: 1px solid var(--line); background: #fff; border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px; cursor: pointer; position: relative;
+  }
+  .dcard:hover { border-color: var(--navy); }
+  .dcard .dn { font-size: 13.5px; font-weight: 800; }
+  .dcard .dn small { font-size: 10.5px; font-weight: 800; color: var(--navy); background: var(--navy-soft); border-radius: 999px; padding: 1px 7px; margin-left: 6px; vertical-align: 1px; }
+  .dcard .dh { font-size: 11.5px; color: var(--text-sub); font-weight: 600; margin-top: 3px; padding-right: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dcard .chev { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--text-sub); transition: transform .15s; }
+  .dcard[aria-expanded="true"] { border-color: var(--navy); }
+  .dcard[aria-expanded="true"] .chev { transform: translateY(-50%) rotate(90deg); }
+  .members { margin: -4px 0 10px; padding: 4px; background: #fff; border-radius: 10px; border: 1px solid var(--line); }
+  .members[hidden] { display: none; }
+  .prow {
+    display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; text-align: left;
+    padding: 6px; border-radius: 8px; cursor: pointer; min-width: 0;
+  }
+  .prow:hover { background: #f4f5fb; }
+  .prow.on { background: var(--navy-soft); }
+  .prow .pn { font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .prow .pt { font-size: 11.5px; color: var(--text-sub); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lead { margin-bottom: 8px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 2px; }
+  .lineRow { display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 12.5px; font-weight: 700; color: #0b7a4c; }
+  .lineRow > svg { width: 16px; height: 16px; flex: none; margin: 0 6px; }
+  .lineRow { white-space: nowrap; flex-wrap: wrap; }
+
+  /* 一覧・検索結果 */
+  .site { margin-bottom: 26px; }
+  .site > h3 {
+    display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; padding-bottom: 6px;
+    font-size: 16px; font-weight: 800; color: var(--navy); border-bottom: 2px solid var(--navy-soft);
+  }
+  .dept { margin-bottom: 18px; }
+  .dept h4 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: 13.5px; font-weight: 800; }
+  .site > h3 small, .dept h4 small { font-size: 11.5px; color: var(--text-sub); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
   .person {
-    background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
-    padding: 12px 14px; display: grid; grid-template-columns: 40px 1fr; gap: 4px 12px; min-width: 0;
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fff; cursor: pointer;
+    display: grid; grid-template-columns: 38px 1fr; gap: 2px 10px; min-width: 0; text-align: left; width: 100%;
   }
-  .avatar {
-    grid-row: span 2; width: 40px; height: 40px; border-radius: 50%;
-    background: var(--navy-soft); color: var(--navy); font-weight: 800; font-size: 15px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .who { min-width: 0; }
-  .who b { font-size: 14.5px; font-weight: 800; }
-  .who .title { font-size: 12px; color: var(--text-sub); font-weight: 600; margin-left: 6px; }
-  .who .sub { display: block; font-size: 11.5px; color: var(--text-sub); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .act {
-    display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 8px;
-    font-size: 12px; font-weight: 700; background: #f4f5fb; color: var(--text-main); white-space: nowrap;
-  }
-  .act:hover { background: var(--navy-soft); color: var(--navy); }
-  .act.teams { background: #eeeefb; color: #464eb8; }
-  .act.teams:hover { background: #dfe0f7; }
-  .act.tel { background: var(--green-soft); color: #0b7a4c; font-variant-numeric: tabular-nums; }
-  .act svg { width: 14px; height: 14px; flex: none; }
+  .person:hover { border-color: var(--navy); }
+  .person.on { border-color: var(--navy); background: #fafaff; }
+  .person .avatar { grid-row: span 2; }
+  .person .who { min-width: 0; }
+  .person b { font-size: 14px; font-weight: 800; }
+  .person .title { font-size: 11.5px; color: var(--text-sub); font-weight: 600; margin-left: 6px; }
+  .person .sub { display: block; font-size: 11.5px; color: var(--text-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .person.line { cursor: default; }
   .person.line .avatar { background: var(--green-soft); color: #0b7a4c; }
-  .person.line .avatar svg { width: 18px; height: 18px; }
 
-  /* ---------- 組織図（上司から部下へ） ---------- */
-  .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
-  .tree ul { margin-left: 22px; padding-left: 14px; border-left: 2px solid var(--line-strong); }
-  .tree li { margin: 6px 0; }
-  .tree details > summary { list-style: none; cursor: pointer; }
-  .tree details > summary::-webkit-details-marker { display: none; }
-  .node {
-    display: inline-flex; align-items: center; gap: 10px; background: var(--surface); box-shadow: var(--shadow);
-    border-radius: 10px; padding: 8px 12px; max-width: 100%;
+  /* 共通の部品 */
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%; flex: none;
+    background: var(--navy-soft) center / cover no-repeat; color: var(--navy); font-weight: 800; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
   }
-  .node .avatar { grid-row: auto; width: 32px; height: 32px; font-size: 13px; flex: none; }
-  .node b { font-size: 13.5px; }
-  .node .meta { font-size: 11.5px; color: var(--text-sub); font-weight: 600; }
-  .node .n {
-    font-size: 11px; font-weight: 800; color: var(--navy); background: var(--navy-soft);
-    border-radius: 999px; padding: 1px 8px; margin-left: 4px;
+  .avatar.has-photo { color: transparent; }
+  .avatar.sm { width: 28px; height: 28px; font-size: 12px; }
+  .avatar svg { width: 18px; height: 18px; }
+  .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .act {
+    display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; border-radius: 8px;
+    font-size: 12px; font-weight: 700; background: #f4f5fb; color: var(--text-main); white-space: nowrap; border: 1px solid var(--line);
   }
-  .node .caret { color: var(--text-sub); transition: transform .15s ease; flex: none; }
-  details[open] > summary .caret { transform: rotate(90deg); }
-  .node .acts { margin: 0 0 0 6px; }
-  .node .act { padding: 4px 8px; }
-  .node .act span { display: none; }
+  .act:hover { border-color: var(--navy); color: var(--navy); }
+  .act.tel { background: var(--green-soft); color: #0b7a4c; border-color: transparent; font-variant-numeric: tabular-nums; }
+  .act svg { width: 14px; height: 14px; flex: none; }
   mark { background: #fff3b0; color: inherit; border-radius: 3px; }
-
   .empty { color: var(--text-sub); padding: 40px 0; text-align: center; }
-  #err { color: var(--red); white-space: pre-wrap; margin: 12px 0; }
+  #err { color: var(--red); white-space: pre-wrap; padding: 0 18px; }
 
+  /* 右：詳細 */
+  .detail[hidden] { display: none; }
+  .detail { padding: 0 0 16px; }
+  .dt-close { position: absolute; right: 10px; top: 10px; border: 0; background: none; cursor: pointer; color: var(--text-sub); padding: 6px; border-radius: 8px; }
+  .dt-close:hover { background: #f4f5fb; }
+  .dt-top { display: flex; gap: 14px; align-items: center; padding: 22px 18px 14px; }
+  .dt-top .avatar { width: 72px; height: 72px; font-size: 26px; }
+  .dt-top .nm { font-size: 20px; font-weight: 800; }
+  .dt-top .tt { font-size: 13px; color: var(--text-sub); font-weight: 700; margin-top: 2px; }
+  .dt-acts { padding: 0 18px 14px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .dt-acts .act { justify-content: center; padding: 9px 6px; font-size: 12.5px; }
+  .dt-sec { border-top: 1px solid var(--line); padding: 12px 18px 4px; }
+  .dt-sec h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 800; }
+  .kv { display: grid; grid-template-columns: 76px 1fr; gap: 7px 10px; font-size: 13px; margin-bottom: 8px; }
+  .kv dt { color: var(--text-sub); font-weight: 600; }
+  .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .plink { border: 0; background: none; padding: 0; color: var(--navy); font-weight: 700; cursor: pointer; text-align: left; font-size: 13px; }
+  .plink:hover { text-decoration: underline; }
+  .copy { border: 0; background: none; cursor: pointer; color: var(--text-sub); padding: 2px 4px; vertical-align: -2px; }
+  .copy:hover { color: var(--navy); }
+  .reports { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+
+  /* ---------- 画面の幅に合わせる ---------- */
+  @media (max-width: 1280px) {
+    .org, .org.has-detail { grid-template-columns: 210px minmax(0, 1fr); }
+    /* 詳細は右から出る引き出しにする */
+    .detail {
+      position: fixed; top: 0; right: 0; bottom: 0; width: 360px; max-width: 100%; max-height: none;
+      height: 100vh; height: 100dvh; align-self: stretch;
+      border-radius: 0; z-index: 150; box-shadow: -8px 0 30px rgba(22, 26, 92, .15);
+    }
+  }
+  @media (max-width: 1000px) {
+    .org, .org.has-detail { grid-template-columns: minmax(0, 1fr); padding: 12px 12px 20px; }
+    .tree-pane { display: none; }
+    .cols { grid-template-columns: minmax(0, 1fr); }
+    .cols::before, .col::before { display: none; }
+    .cols { padding-top: 14px; }
+    .vline { display: none; }
+  }
   @media (max-width: 820px) {
-    .topbar { padding: 14px 16px; }
-    .content { padding: 16px 16px 48px; }
+    .topbar { padding: 12px 14px; }
+    .search { flex-basis: 100%; }
+    .detail { width: 100%; }
+    .body { padding: 10px 12px 20px; }
+    .center-h { padding: 12px 12px 4px; }
     .grid { grid-template-columns: 1fr; }
-    .tree ul { margin-left: 10px; padding-left: 10px; }
-    .node .acts { display: none; }
   }
 </style>
 </head>
@@ -163,43 +285,53 @@
   <header class="topbar">
     <div>
       <h1>組織図・連絡先</h1>
-      <div class="page-sub">Microsoft 365 の情報から作っています。部署・役職・上司・携帯番号の誤りは総務へ</div>
+      <div class="page-sub">Microsoft 365（Teams・メール）のアカウントがある人の一覧です。アカウントのない人は載っていません。部署・上司・携帯番号の誤りは総務へ</div>
     </div>
+    <label class="search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="名前・部署・番号で探す" autocomplete="off" aria-label="検索">
+    </label>
     <button id="signInBtn" class="signin-btn" data-ha-login hidden>Microsoftでサインイン</button>
   </header>
 
-  <div class="content">
-    <div class="tools">
-      <label class="search">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input id="q" type="search" placeholder="名前・部署・役職・番号で探す" autocomplete="off" aria-label="検索">
-      </label>
-      <div class="view-toggle" role="group" aria-label="表示の切り替え">
-        <button type="button" data-view="list" aria-pressed="true">部署ごと</button>
-        <button type="button" data-view="tree" aria-pressed="false">組織図</button>
+  <div class="org" id="org">
+    <nav class="pane tree-pane" aria-label="組織ツリー">
+      <div class="pane-h">組織ツリー<button type="button" class="linkbtn" id="expandAll">すべて展開</button></div>
+      <ul class="tree" id="tree"></ul>
+    </nav>
+
+    <section class="pane center">
+      <div class="center-h">
+        <div class="tabs" role="group" aria-label="表示の切り替え">
+          <button type="button" data-view="chart" aria-pressed="true">組織図</button>
+          <button type="button" data-view="list" aria-pressed="false">部署ごとの一覧</button>
+        </div>
+        <span class="count" id="count"></span>
       </div>
-      <span class="count" id="count"></span>
-    </div>
-    <div id="err"></div>
-    <div id="out"><div class="empty" data-ha-login>サインインすると表示されます</div></div>
+      <div id="err"></div>
+      <div class="body" id="out"><div class="empty" data-ha-login>サインインすると表示されます</div></div>
+    </section>
+
+    <aside class="pane detail" id="detail" hidden aria-label="選んだ人の詳細"></aside>
   </div>
 </main>
 
 <script>
 const SCOPES = ['User.Read', 'User.Read.All'];
-const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation';
-const VIEW_KEY = 'hanaoka.org.view.v1';
+const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation,employeeId,employeeHireDate';
+const VIEW_KEY = 'hanaoka.org.view.v2';
 let pca, account;
 let people = [], lines = [], byId = new Map(), kids = new Map(), depth = new Map();
-let view = 'list';
-try { if (localStorage.getItem(VIEW_KEY) === 'tree') view = 'tree'; } catch (_) {}
+let view = 'chart', selected = null, focusDept = null;   // focusDept = 'site|dept'
+const openDepts = new Set();
+try { if (localStorage.getItem(VIEW_KEY) === 'list') view = 'list'; } catch (_) {}
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const has = v => v != null && String(v).trim() !== '';
 const NO_DEPT = '部署なし';
 const deptOf = u => has(u.department) ? u.department.trim() : NO_DEPT;
 const jaCmp = (a, b) => a.localeCompare(b, 'ja');
-// 一覧の大きな区切り。中身（誰がどこか）は Entra の勤務地で決まり、ここは並べる順番だけ
+// 大きな区切り。中身（誰がどこか）は Entra の勤務地で決まり、ここは並べる順番だけ
 const SITE_ORDER = ['役員', '本社', '工場'];
 const NO_SITE = 'その他';
 const siteOf = u => deptOf(u) === '役員' ? '役員' : has(u.officeLocation) ? u.officeLocation.trim() : NO_SITE;
@@ -213,6 +345,10 @@ const DEPT_ORDER = [
   '第一工場', '第二工場', '第三工場', '品質管理部', '技術部', 'CSエンジニアリング室',
   '総務部'
 ];
+// 役職(jobTitle)は、Entra への入力がそろうまで出さない（2026-10 時点では空欄が多く、変わりやすいため）。
+// そろったら true にするだけで、カード・詳細・検索に出る
+const SHOW_TITLE = false;
+const titleOf = u => SHOW_TITLE && has(u.jobTitle) ? u.jobTitle.trim() : '';
 const deptRank = k => { const i = DEPT_ORDER.indexOf(k); return i < 0 ? 500 : i; };
 
 const IC = {
@@ -220,15 +356,25 @@ const IC = {
   call: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>',
   mobile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>',
   mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
-  caret: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>'
+  copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  caret: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  // 区切りの見出しのアイコン
+  役員: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8 4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>',
+  本社: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4h11v17M15 9h5v12M2 21h20M8 8h3M8 12h3M8 16h3"/></svg>',
+  工場: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V10l6 4V10l6 4V5h4v16zM2 21h20"/></svg>',
+  site: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10" r="3"/><path d="M12 21s-7-6.1-7-11a7 7 0 0 1 14 0c0 4.9-7 11-7 11z"/></svg>'
 };
 
 /* ---------------- 読み込み ---------------- */
+async function token() {
+  const r = await pca.acquireTokenSilent({ scopes: SCOPES, account });
+  return r.accessToken;
+}
 async function graphGetAll(url) {
   const out = [];
   while (url) {
-    const r = await pca.acquireTokenSilent({ scopes: SCOPES, account });
-    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + r.accessToken } });
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + await token() } });
     if (!res.ok) throw new Error(`Graph ${res.status}: ${await res.text()}`);
     const j = await res.json();
     out.push(...j.value);
@@ -253,7 +399,7 @@ function build(users) {
     u._mgr = m && byId.has(m) && m !== u.id ? byId.get(m) : null;
     if (u._mgr) { if (!kids.has(m)) kids.set(m, []); kids.get(m).push(u); }
   });
-  // 上からの段数（社長=0）。部署の並び順と、部署の中の並び順に使う
+  // 上からの段数（社長=0）。部署の中の並び順と、部署長の判定に使う
   depth = new Map();
   const d = u => {
     if (depth.has(u.id)) return depth.get(u.id);
@@ -263,13 +409,48 @@ function build(users) {
   };
   people.forEach(d);
   people.forEach(u => {
-    u._key = [u.displayName, u.department, u.officeLocation, u.jobTitle, u.mail, u.userPrincipalName, (u.mobilePhone || '').replace(/\D/g, '')]
+    u._site = siteOf(u);
+    u._key = [u.displayName, u.department, u.officeLocation, titleOf(u), u.mail, u.userPrincipalName, (u.mobilePhone || '').replace(/\D/g, '')]
       .join(' ').replace(/\s+/g, '').toLowerCase();
+  });
+  // 共用携帯：勤務地があればそこ、なければ同じ部署の人がいる区切り
+  lines.forEach(l => {
+    if (has(l.officeLocation)) l._site = l.officeLocation.trim();
+    else { const p = people.find(u => deptOf(u) === deptOf(l)); l._site = p ? p._site : NO_SITE; }
   });
 }
 
-/* ---------------- 表示の部品 ---------------- */
-function initial(name) { return esc((name || '?').trim().charAt(0)); }
+// 区切り → 部署 → { ps: 人, ls: 共用番号 }。総務部のように同じ部署が2つの区切りに出ることがある
+function groups(filter) {
+  const sites = new Map();
+  const slot = (site, dept) => {
+    if (!sites.has(site)) sites.set(site, new Map());
+    const m = sites.get(site);
+    if (!m.has(dept)) m.set(dept, { ps: [], ls: [] });
+    return m.get(dept);
+  };
+  people.filter(u => !filter || filter(u)).forEach(u => slot(u._site, deptOf(u)).ps.push(u));
+  lines.forEach(l => slot(l._site, deptOf(l)).ls.push(l));
+  const rank = g => g.ps.length ? Math.min(...g.ps.map(u => depth.get(u.id))) : 99;
+  return [...sites.keys()].sort((a, b) => siteRank(a) - siteRank(b) || jaCmp(a, b)).map(site => {
+    const m = sites.get(site);
+    const depts = [...m.keys()]
+      .sort((a, b) => (a === NO_DEPT) - (b === NO_DEPT) || deptRank(a) - deptRank(b) || rank(m.get(a)) - rank(m.get(b)) || jaCmp(a, b))
+      .map(dept => {
+        const g = m.get(dept);
+        g.ps.sort((a, b) => depth.get(a.id) - depth.get(b.id) || jaCmp(a.displayName, b.displayName));
+        return { dept, ps: g.ps, ls: g.ls };
+      });
+    return { site, depts, n: depts.reduce((s, g) => s + g.ps.length, 0) };
+  });
+}
+
+/* ---------------- 部品 ---------------- */
+function avatar(u, cls = '') {
+  const ph = photos.get(u.id);
+  const style = ph ? ` style="background-image:url('${ph}')"` : '';
+  return `<span class="avatar ${cls}${ph ? ' has-photo' : ''}" data-photo="${esc(u.id)}"${style} aria-hidden="true">${esc((u.displayName || '?').trim().charAt(0))}</span>`;
+}
 function hl(text, q) {
   const t = String(text ?? '');
   if (!q) return esc(t);
@@ -287,115 +468,228 @@ function hl(text, q) {
   if (s < 0 || e < 0) return esc(t);
   return esc(t.slice(0, s)) + '<mark>' + esc(t.slice(s, e)) + '</mark>' + esc(t.slice(e));
 }
-function telHref(p) { return 'tel:' + String(p).replace(/[^\d+]/g, ''); }
-function teamsLink(kind, u) {
-  return `https://teams.microsoft.com/l/${kind}/0/0?users=${encodeURIComponent(u.userPrincipalName)}`;
-}
-function actions(u, q) {
-  let h = '';
-  h += `<a class="act teams" href="${teamsLink('chat', u)}" target="_blank" rel="noopener" title="Teamsでチャット">${IC.chat}<span>チャット</span></a>`;
-  h += `<a class="act teams" href="${teamsLink('call', u)}" target="_blank" rel="noopener" title="Teamsで通話">${IC.call}<span>通話</span></a>`;
-  if (has(u.mobilePhone)) h += `<a class="act tel" href="${telHref(u.mobilePhone)}" title="携帯（会社貸与）に電話">${IC.mobile}<span>${hl(u.mobilePhone, q)}</span></a>`;
+const telHref = p => 'tel:' + String(p).replace(/[^\d+]/g, '');
+const teamsLink = (kind, u) => `https://teams.microsoft.com/l/${kind}/0/0?users=${encodeURIComponent(u.userPrincipalName)}`;
+const mailOf = u => u.mail || u.userPrincipalName;
+function actions(u, withTel) {
+  let h = `<a class="act" href="${teamsLink('chat', u)}" target="_blank" rel="noopener">${IC.chat}チャット</a>`
+        + `<a class="act" href="${teamsLink('call', u)}" target="_blank" rel="noopener">${IC.call}通話</a>`
+        + `<a class="act" href="mailto:${esc(mailOf(u))}">${IC.mail}メール</a>`;
+  if (withTel && has(u.mobilePhone)) h += `<a class="act tel" href="${telHref(u.mobilePhone)}">${IC.mobile}${esc(u.mobilePhone)}</a>`;
   return h;
 }
-function personCard(u, q, showDept) {
-  const sub = [showDept ? deptOf(u) : '', u._mgr ? '上司：' + u._mgr.displayName : '', u.mail || u.userPrincipalName].filter(Boolean);
-  return `<div class="person">
-    <div class="avatar" aria-hidden="true">${initial(u.displayName)}</div>
-    <div class="who"><b>${hl(u.displayName, q)}</b>${has(u.jobTitle) ? `<span class="title">${hl(u.jobTitle, q)}</span>` : ''}
-      <span class="sub">${sub.map(s => hl(s, q)).join('　')}</span></div>
-    <div class="acts">${actions(u, q)}</div>
-  </div>`;
+function prow(u) {
+  return `<button type="button" class="prow${selected === u.id ? ' on' : ''}" data-pick="${esc(u.id)}">${avatar(u, 'sm')}
+    <span class="pn">${esc(u.displayName)}</span><span class="pt">${esc(titleOf(u) || '')}</span></button>`;
 }
-function lineCard(l, q) {
-  return `<div class="person line">
-    <div class="avatar" aria-hidden="true">${IC.mobile}</div>
-    <div class="who"><b>共用番号</b><span class="title">${esc(deptOf(l))}</span>
-      <span class="sub">部署で共用している携帯です</span></div>
-    <div class="acts"><a class="act tel" href="${telHref(l.mobilePhone)}">${IC.mobile}<span>${hl(l.mobilePhone, q)}</span></a></div>
-  </div>`;
+function lineRow(l) {
+  return `<div class="lineRow">${IC.mobile}共用番号<a class="act tel" href="${telHref(l.mobilePhone)}">${esc(l.mobilePhone)}</a></div>`;
+}
+function headOf(ps) { return ps[0]; }   // 部署の中は上の人から並んでいるので、先頭が部署長
+function nameTitle(u) { return u ? esc(u.displayName) + (titleOf(u) ? '　' + esc(titleOf(u)) : '') : ''; }
+
+/* ---------------- 左：組織ツリー ---------------- */
+let treeOpen = null;   // 開いている区切り（null＝最初は全部開く）
+function renderTree() {
+  const gs = groups();
+  if (!treeOpen) treeOpen = new Set(gs.map(g => g.site));
+  let h = `<li><button type="button" class="titem site${!focusDept ? ' on' : ''}" data-focus=""><span class="tl">全体</span><span class="cnt">${people.length}</span></button></li>`;
+  for (const g of gs) {
+    const open = treeOpen.has(g.site);
+    h += `<li><button type="button" class="titem site" data-site-toggle="${esc(g.site)}" aria-expanded="${open}">
+      <span class="tw">${IC.caret}</span><span class="tl">${esc(g.site)}</span><span class="cnt">${g.n}</span></button>
+      <ul${open ? '' : ' hidden'}>` +
+      g.depts.filter(d => d.dept !== g.site).map(d => {
+        const key = g.site + '|' + d.dept;
+        return `<li><button type="button" class="titem${focusDept === key ? ' on' : ''}" data-focus="${esc(key)}">
+          <span class="tl">${esc(d.dept)}</span><span class="cnt">${d.ps.length}</span></button></li>`;
+      }).join('') + '</ul></li>';
+  }
+  document.getElementById('tree').innerHTML = h;
 }
 
-/* ---------------- 部署ごと（役員・本社・工場 → 部署） ---------------- */
+/* ---------------- 真ん中：組織図 ---------------- */
+function renderChart() {
+  const gs = groups();
+  const roots = people.filter(u => !u._mgr).sort((a, b) => jaCmp(a.displayName, b.displayName));
+  const rootIds = new Set(roots.map(u => u.id));
+  const total = u => (kids.get(u.id) || []).reduce((s, c) => s + 1 + total(c), 0);
+  let h = '<div class="chart"><div class="roots">' + roots.map(u => `
+    <div class="topnode" data-pick="${esc(u.id)}" role="button" tabindex="0">
+      <div class="row1">${avatar(u)}<div><div class="nm">${esc(u.displayName)}</div><div class="tt">${esc(titleOf(u) || deptOf(u))}</div></div>
+        <span class="cnt" title="配下の人数" style="margin-left:auto">${total(u)}</span></div>
+      <div class="acts">${actions(u, false)}</div>
+    </div>`).join('') + '</div><div class="vline"></div>';
+  const cols = gs.map(g => {
+    // 区切りと同じ名前の部署（役員・工場長）は、部署のカードにせず、列の上に人を並べる
+    const lead = g.depts.filter(d => d.dept === g.site);
+    const leadPs = lead.flatMap(d => d.ps).filter(u => !rootIds.has(u.id));
+    let c = `<div class="col" data-site="${esc(g.site)}">
+      <div class="col-h"><span class="ic">${IC[g.site] || IC.site}</span><div><b>${esc(g.site)}</b><span>${g.n}名</span></div></div>`;
+    if (leadPs.length) c += `<div class="lead">${leadPs.map(prow).join('')}</div>`;
+    for (const d of g.depts.filter(d => d.dept !== g.site)) {
+      const key = g.site + '|' + d.dept;
+      const open = openDepts.has(key);
+      const head = headOf(d.ps);
+      c += `<button type="button" class="dcard" data-dept="${esc(key)}" aria-expanded="${open}">
+          <div class="dn">${esc(d.dept)}<small>${d.ps.length}名</small></div>
+          <div class="dh">${head ? nameTitle(head) : '共用番号のみ'}</div><span class="chev">${IC.caret}</span></button>
+        <div class="members"${open ? '' : ' hidden'}>${d.ps.map(prow).join('')}${d.ls.map(lineRow).join('')}</div>`;
+    }
+    return c + '</div>';
+  });
+  h += `<div class="cols" style="--n:${Math.max(gs.length, 1)}">${cols.join('')}</div></div>`;
+  return h;
+}
+
+/* ---------------- 真ん中：一覧・検索結果 ---------------- */
+function personCard(u, q) {
+  const sub = [u._mgr ? '上司：' + u._mgr.displayName : '', has(u.mobilePhone) ? '携帯 ' + u.mobilePhone : ''].filter(Boolean);
+  return `<button type="button" class="person${selected === u.id ? ' on' : ''}" data-pick="${esc(u.id)}">
+    ${avatar(u)}
+    <span class="who"><b>${hl(u.displayName, q)}</b>${titleOf(u) ? `<span class="title">${hl(titleOf(u), q)}</span>` : ''}</span>
+    <span class="sub">${sub.map(s => hl(s, q)).join('　')}</span>
+  </button>`;
+}
+function lineCard(l, q) {
+  return `<div class="person line"><span class="avatar" aria-hidden="true">${IC.mobile}</span>
+    <span class="who"><b>共用番号</b><span class="title">${esc(deptOf(l))}</span></span>
+    <span class="sub"><a class="act tel" href="${telHref(l.mobilePhone)}">${hl(l.mobilePhone, q)}</a></span></div>`;
+}
 function renderList(q) {
   const match = u => !q || u._key.includes(q);
   const lineMatch = l => !q || (deptOf(l) + '共用番号' + l.mobilePhone.replace(/\D/g, '')).toLowerCase().includes(q);
-  // 区切り → 部署 → 人。総務部のように、同じ部署が本社と工場の両方に出ることがある
-  const sites = new Map();
-  const slot = (site, dept) => {
-    if (!sites.has(site)) sites.set(site, new Map());
-    const m = sites.get(site);
-    if (!m.has(dept)) m.set(dept, { ps: [], ls: [] });
-    return m.get(dept);
-  };
-  people.forEach(u => slot(siteOf(u), deptOf(u)).ps.push(u));
-  // 共用携帯は勤務地があればそこ、なければ同じ部署の人がいる区切りに入れる
-  lines.forEach(l => {
-    let site = has(l.officeLocation) ? l.officeLocation.trim() : null;
-    if (!site) { const p = people.find(u => deptOf(u) === deptOf(l)); site = p ? siteOf(p) : NO_SITE; }
-    slot(site, deptOf(l)).ls.push(l);
-  });
-  // 部署の並び：DEPT_ORDER の順。書いていない部署は、いちばん上の人の段数が浅い順→名前順。部署なしは最後
-  const rank = g => g.ps.length ? Math.min(...g.ps.map(u => depth.get(u.id))) : 99;
   let h = '', n = 0;
-  for (const site of [...sites.keys()].sort((a, b) => siteRank(a) - siteRank(b) || jaCmp(a, b))) {
-    const depts = sites.get(site);
-    const siteHit = q && site.toLowerCase().includes(q);
-    let body = '', total = 0;
-    for (const k of [...depts.keys()].sort((a, b) => (a === NO_DEPT) - (b === NO_DEPT) || deptRank(a) - deptRank(b) || rank(depts.get(a)) - rank(depts.get(b)) || jaCmp(a, b))) {
-      const g = depts.get(k);
-      total += g.ps.length;
-      const hit = siteHit || (q && k.replace(/\s/g, '').toLowerCase().includes(q));
-      const ps = g.ps.filter(u => hit || match(u))
-        .sort((a, b) => depth.get(a.id) - depth.get(b.id) || jaCmp(a.displayName, b.displayName));
-      const ls = g.ls.filter(l => hit || lineMatch(l));
+  for (const g of groups()) {
+    const siteHit = q && g.site.toLowerCase().includes(q);
+    let body = '';
+    for (const d of g.depts) {
+      const hit = siteHit || (q && d.dept.replace(/\s/g, '').toLowerCase().includes(q));
+      const ps = d.ps.filter(u => hit || match(u));
+      const ls = d.ls.filter(l => hit || lineMatch(l));
       if (!ps.length && !ls.length) continue;
       n += ps.length;
-      // 区切りが「役員」で部署も「役員」のときは、部署の見出しを重ねない
-      const head = k === site ? '' : `<h3>${hl(k, q)}<small>${g.ps.length}人</small></h3>`;
-      body += `<section class="dept">${head}<div class="grid">` +
-        ps.map(u => personCard(u, q, false)).join('') + ls.map(l => lineCard(l, q)).join('') + '</div></section>';
+      // 区切りと部署が同じ名前（役員・工場長）のときは、部署の見出しを重ねない
+      const head = d.dept === g.site ? '' : `<h4>${hl(d.dept, q)}<small>${d.ps.length}名</small></h4>`;
+      body += `<section class="dept" data-dept-sec="${esc(g.site + '|' + d.dept)}">${head}<div class="grid">` +
+        ps.map(u => personCard(u, q)).join('') + ls.map(l => lineCard(l, q)).join('') + '</div></section>';
     }
-    if (body) h += `<section class="site"><h2>${hl(site, q)}<small>${total}人</small></h2>${body}</section>`;
+    if (body) h += `<section class="site" data-site-sec="${esc(g.site)}"><h3>${hl(g.site, q)}<small>${g.n}名</small></h3>${body}</section>`;
   }
   return { html: h || '<div class="empty">見つかりませんでした</div>', n };
 }
 
-/* ---------------- 組織図 ---------------- */
-function renderTree(q) {
-  const sortKids = arr => arr.slice().sort((a, b) =>
-    ((kids.get(b.id) || []).length > 0) - ((kids.get(a.id) || []).length > 0) ||
-    jaCmp(deptOf(a), deptOf(b)) || jaCmp(a.displayName, b.displayName));
-  let n = 0;
-  // 検索中は、当たった人と、その上司たち（そこへたどる道）だけを出して全部開く
-  const visible = new Set();
-  if (q) people.forEach(u => { if (u._key.includes(q)) { n++; for (let x = u; x && !visible.has(x.id); x = x._mgr) visible.add(x.id); } });
-  else n = people.length;
-  const node = u => {
-    const ch = sortKids(kids.get(u.id) || []).filter(c => !q || visible.has(c.id));
-    const total = (function cnt(x) { return (kids.get(x.id) || []).reduce((s, c) => s + 1 + cnt(c), 0); })(u);
-    const box = `<div class="node">${ch.length ? `<span class="caret">${IC.caret}</span>` : ''}
-      <div class="avatar" aria-hidden="true">${initial(u.displayName)}</div>
-      <div><b>${hl(u.displayName, q)}</b>${total ? `<span class="n" title="配下の人数">${total}</span>` : ''}
-        <div class="meta">${hl([deptOf(u), u.jobTitle].filter(has).join('・'), q)}</div></div>
-      <div class="acts">${actions(u, q)}</div></div>`;
-    if (!ch.length) return `<li>${box}</li>`;
-    const open = q || depth.get(u.id) < 2 ? ' open' : '';
-    return `<li><details${open}><summary>${box}</summary><ul>${ch.map(node).join('')}</ul></details></li>`;
-  };
-  const roots = sortKids(people.filter(u => !u._mgr)).filter(u => !q || visible.has(u.id));
-  const h = roots.length ? `<ul class="tree">${roots.map(node).join('')}</ul>` : '<div class="empty">見つかりませんでした</div>';
-  return { html: h, n };
+/* ---------------- 右：詳細 ---------------- */
+function renderDetail() {
+  const box = document.getElementById('detail');
+  const u = selected && byId.get(selected);
+  document.getElementById('org').classList.toggle('has-detail', !!u);
+  if (!u) { box.hidden = true; box.innerHTML = ''; return; }
+  const reports = (kids.get(u.id) || []).slice().sort((a, b) => jaCmp(a.displayName, b.displayName));
+  const hire = has(u.employeeHireDate) ? new Date(u.employeeHireDate).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+  const place = u._site === deptOf(u) ? deptOf(u) : `${u._site} › ${deptOf(u)}`;
+  box.innerHTML = `
+    <button type="button" class="dt-close" id="dtClose" aria-label="閉じる">${IC.close}</button>
+    <div class="dt-top">${avatar(u)}<div><div class="nm">${esc(u.displayName)}</div><div class="tt">${esc(titleOf(u) || '')}</div></div></div>
+    <div class="dt-acts">${actions(u, false)}</div>
+    <div class="dt-sec"><h3>基本情報</h3><dl class="kv">
+      <dt>所属</dt><dd>${esc(place)}</dd>
+      ${titleOf(u) ? `<dt>役職</dt><dd>${esc(titleOf(u))}</dd>` : ''}
+      <dt>上司</dt><dd>${u._mgr ? `<button type="button" class="plink" data-pick="${esc(u._mgr.id)}">${nameTitle(u._mgr)}</button>` : '—'}</dd>
+      <dt>部下</dt><dd>${reports.length ? `${reports.length}名<div class="reports">${reports.map(r => `<button type="button" class="plink" data-pick="${esc(r.id)}">${esc(r.displayName)}</button>`).join('')}</div>` : '—'}</dd>
+      ${has(u.employeeId) ? `<dt>社員番号</dt><dd>${esc(u.employeeId)}</dd>` : ''}
+    </dl></div>
+    <div class="dt-sec"><h3>連絡先</h3><dl class="kv">
+      <dt>携帯</dt><dd>${has(u.mobilePhone) ? `<a class="act tel" href="${telHref(u.mobilePhone)}">${IC.mobile}${esc(u.mobilePhone)}</a>` : '<span style="color:var(--text-sub)">会社貸与の携帯なし</span>'}</dd>
+      <dt>メール</dt><dd><a class="plink" href="mailto:${esc(mailOf(u))}">${esc(mailOf(u))}</a><button type="button" class="copy" data-copy="${esc(mailOf(u))}" title="コピー" aria-label="メールアドレスをコピー">${IC.copy}</button></dd>
+    </dl></div>
+    ${(has(u.officeLocation) || hire) ? `<div class="dt-sec"><h3>その他</h3><dl class="kv">
+      ${has(u.officeLocation) ? `<dt>勤務地</dt><dd>${esc(u.officeLocation)}</dd>` : ''}
+      ${hire ? `<dt>入社日</dt><dd>${esc(hire)}</dd>` : ''}
+    </dl></div>` : ''}`;
+  box.hidden = false;
+  box.scrollTop = 0;
+  hydratePhotos(box);
 }
 
-function render() {
-  if (!people.length) return;
+/* ---------------- 顔写真（Teams などで本人が設定したもの） ---------------- */
+const photos = new Map();   // id → blob URL / null（写真なし）
+let photoQueue = [], photoBusy = 0;
+function hydratePhotos(root) {
+  root.querySelectorAll('[data-photo]').forEach(el => {
+    const id = el.dataset.photo;
+    if (photos.has(id)) return paint(id);
+    if (!photoQueue.includes(id)) photoQueue.push(id);
+  });
+  pump();
+}
+function paint(id) {
+  const url = photos.get(id);
+  if (!url) return;
+  document.querySelectorAll(`[data-photo="${CSS.escape(id)}"]`).forEach(el => {
+    el.style.backgroundImage = `url('${url}')`; el.classList.add('has-photo');
+  });
+}
+async function pump() {
+  while (photoBusy < 4 && photoQueue.length) {
+    const id = photoQueue.shift();
+    if (photos.has(id)) continue;
+    photos.set(id, null);   // 取り終わるまで二重に取りに行かない
+    photoBusy++;
+    (async () => {
+      try {
+        const res = await fetch(`https://graph.microsoft.com/v1.0/users/${id}/photos/96x96/$value`, { headers: { Authorization: 'Bearer ' + await token() } });
+        if (res.ok) { photos.set(id, URL.createObjectURL(await res.blob())); paint(id); }
+      } catch (_) { /* 写真が無い・取れないときは頭文字のまま */ }
+      finally { photoBusy--; pump(); }
+    })();
+  }
+}
+
+/* ---------------- 描画のまとめ ---------------- */
+function query() {
   let q = document.getElementById('q').value.replace(/\s+/g, '').toLowerCase();
   // 番号で探すときは「080-4375」のようにハイフン付きでも当たるように、数字だけにする
   if (/^[\d+\-－ー]+$/.test(q)) q = q.replace(/\D/g, '');
-  const r = view === 'tree' ? renderTree(q) : renderList(q);
-  document.getElementById('out').innerHTML = r.html;
-  document.getElementById('count').textContent = q ? `${r.n}人 見つかりました` : `${people.length}人`;
+  return q;
+}
+function render() {
+  if (!people.length) return;
+  const q = query();
+  const out = document.getElementById('out');
+  let label = `${people.length}名（Microsoft 365 利用者）`;
+  if (q) {
+    const r = renderList(q);
+    out.innerHTML = r.html;
+    label = `${r.n}名 見つかりました`;
+  } else if (view === 'chart') {
+    out.innerHTML = renderChart();
+  } else {
+    out.innerHTML = renderList('').html;
+  }
+  document.getElementById('count').textContent = label;
+  renderTree();
+  hydratePhotos(out);
+}
+function pick(id) {
+  selected = id;
+  renderDetail();
+  document.querySelectorAll('[data-pick]').forEach(el => el.classList.toggle('on', el.dataset.pick === id && !el.classList.contains('plink')));
+}
+function focus(key) {
+  focusDept = key || null;
+  document.getElementById('q').value = '';
+  if (key) openDepts.add(key);
+  render();
+  if (!key) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  const el = document.querySelector(view === 'chart' ? `[data-dept="${CSS.escape(key)}"]` : `[data-dept-sec="${CSS.escape(key)}"]`);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function setView(v) {
+  view = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch (_) {}
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
+  render();
 }
 
 /* ---------------- 起動 ---------------- */
@@ -407,6 +701,9 @@ async function load() {
     const users = await graphGetAll(`https://graph.microsoft.com/v1.0/users?$select=${SELECT}&$expand=manager($select=id)&$top=100`);
     build(users);
     render();
+    // 広い画面では、最初に自分を選んでおく（自分の情報の確認にもなる）
+    const me = people.find(u => (u.userPrincipalName || '').toLowerCase() === (account.username || '').toLowerCase());
+    if (me && window.innerWidth > 1280) pick(me.id);
   } catch (e) {
     console.error(e);
     document.getElementById('out').innerHTML = '';
@@ -414,18 +711,47 @@ async function load() {
   }
 }
 
-function setView(v) {
-  view = v;
-  try { localStorage.setItem(VIEW_KEY, v); } catch (_) {}
-  document.querySelectorAll('.view-toggle button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
-  render();
-}
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-pick],[data-dept],[data-focus],[data-site-toggle],[data-copy],#dtClose,#expandAll');
+  if (!t || t.closest('a')) return;
+  if (t.id === 'dtClose') { selected = null; renderDetail(); document.querySelectorAll('[data-pick].on').forEach(el => el.classList.remove('on')); return; }
+  if (t.id === 'expandAll') {
+    const all = groups();
+    const allOpen = all.every(g => treeOpen && treeOpen.has(g.site)) && all.every(g => g.depts.every(d => d.dept === g.site || openDepts.has(g.site + '|' + d.dept)));
+    all.forEach(g => { allOpen ? treeOpen.delete(g.site) : treeOpen.add(g.site); g.depts.forEach(d => allOpen ? openDepts.delete(g.site + '|' + d.dept) : openDepts.add(g.site + '|' + d.dept)); });
+    t.textContent = allOpen ? 'すべて展開' : 'すべて閉じる';
+    render(); return;
+  }
+  if (t.dataset.copy != null) {
+    navigator.clipboard && navigator.clipboard.writeText(t.dataset.copy).then(() => { t.title = 'コピーしました'; });
+    return;
+  }
+  if (t.dataset.siteToggle != null) {
+    const s = t.dataset.siteToggle;
+    treeOpen.has(s) ? treeOpen.delete(s) : treeOpen.add(s);
+    renderTree(); return;
+  }
+  if (t.dataset.focus != null) return focus(t.dataset.focus);
+  if (t.dataset.dept != null) {
+    const k = t.dataset.dept, open = !openDepts.has(k);
+    open ? openDepts.add(k) : openDepts.delete(k);
+    t.setAttribute('aria-expanded', String(open));
+    const m = t.nextElementSibling; if (m) m.hidden = !open;
+    hydratePhotos(m || t);
+    return;
+  }
+  if (t.dataset.pick != null) return pick(t.dataset.pick);
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && selected) { selected = null; renderDetail(); }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.topnode[data-pick]')) { e.preventDefault(); pick(e.target.dataset.pick); }
+});
 
 (async () => {
-  document.querySelectorAll('.view-toggle button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+  document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
   setView(view);
-  let t;
-  document.getElementById('q').addEventListener('input', () => { clearTimeout(t); t = setTimeout(render, 120); });
+  let timer;
+  document.getElementById('q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(render, 120); });
 
   pca = new msal.PublicClientApplication(HanaokaAuth.msalConfig());
   await pca.initialize();
