@@ -83,7 +83,10 @@ if ($Prepare) {
     $rows = @($text | ConvertFrom-Csv)
     if (-not $rows.Count) { continue }
     $cols = $rows[0].PSObject.Properties.Name
-    $nc = if ($NameColumn) { $NameColumn } else { $cols | Where-Object { $_ -match '氏名' -and $_ -notmatch 'カナ|ｶﾅ|かな|フリガナ|ﾌﾘｶﾞﾅ' } | Select-Object -First 1 }
+    # 氏名の列：「氏名」ちょうどを優先。無ければ「氏名」を含む列（カナ・変更前・旧 は除く）
+    $nc = if ($NameColumn) { $NameColumn }
+          elseif ($cols -contains '氏名') { '氏名' }
+          else { $cols | Where-Object { $_ -match '氏名' -and $_ -notmatch 'カナ|ｶﾅ|かな|フリガナ|ﾌﾘｶﾞﾅ|変更前|旧' } | Select-Object -First 1 }
     $dc = if ($DateColumn) { $DateColumn } else { $cols | Where-Object { $_ -match '入社' } | Select-Object -First 1 }
     if (-not $nc -or -not $dc) { throw "$f ：氏名か入社日の列が見つかりません。-NameColumn / -DateColumn で見出しを指定してください（見出し：$($cols -join ', ')）" }
     Write-Host "$(Split-Path $f -Leaf)：氏名＝「$nc」、入社日＝「$dc」、$($rows.Count) 行"
