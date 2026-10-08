@@ -63,6 +63,7 @@ tr.row{cursor:pointer}tr.row:hover{background:#f7f9fc}
 /* 仕訳：1件を2段（上＝科目・部門・税・金額、下＝摘要を全幅） */
 .ln-t tr.l1 td{border-bottom:0 !important;padding-bottom:1px}.ln-t tr.l2 td{padding-top:1px;padding-bottom:7px}
 .ln-t .memo{display:flex;align-items:center;gap:8px}.ln-t .memo span{flex:none;font-size:11.5px;color:var(--sub)}.ln-t .memo input{flex:1}
+.memo select.uchi{flex:none;width:auto;max-width:200px}.memo select.uchi.ng{border-color:var(--up);background:var(--up-l,#fdecec)}
 .lnw{overflow-x:auto}.ln-t{min-width:560px;font-size:13px}.ln-t td.n{white-space:nowrap}.ln-t td{padding:3px 4px;white-space:normal}.ln-t input,.ln-t select{padding:3px 5px;width:100%;font-size:13px}.ln-t .num{text-align:right}
 .drop{border:2px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--sub);cursor:pointer;display:block;font-size:13px}.drop.over{border-color:var(--pri);background:var(--pri-l)}.drop input{display:none}
 .pdf{min-height:520px;border:1px dashed var(--line);border-radius:8px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub);text-align:center;padding:0}
@@ -161,7 +162,7 @@ const BK={code:'PayeeBankCode',name:'PayeeBankName',bcode:'PayeeBranchCode',bnam
 const ACCT_TYPES=['普通','当座','貯蓄'];
 const ROUNDS=['10日','20日','月末'],METHODS=['総合振込','口座振替','現金','でんさい','海外送金'],RATES=['課税10%','軽減8%','非課税','対象外'],DONE=['確定済（ロック）','先行支払済','支払済'];
 const LOCKED=['決裁中','決裁済み','出力済み'];
-let RULES=null,KAMOKU=[],BUMON=[],JOURNAL=null;
+let RULES=null,KAMOKU=[],BUMON=[],UCHI={},JOURNAL=null;
 let listClosed=(()=>{try{return localStorage.getItem('ap.review.list')==='closed';}catch{return false;}})();   // 確認モードの一覧をたたむ（ページ送りが中心）
 let ALL=[],LINES={},VB={},SPM=[],PIS=[],SBS=[],items=[],draft=null,hdrDraft=null,cmDraft=null,pdfSel={},pdfCache={},acks={};
 const st={tab:'inbox',box:'wait',loc:'',round:'',step:'mine',q:'',sel:null,cmOpen:false,view:'list',editHdr:false,editBank:false,allIss:false,openLines:null,openLog:false};
@@ -201,6 +202,9 @@ async function loadMasters(){
   try{const r=await csv('smile_kamoku.csv');const h=r[0];const ix=n=>h.indexOf(n);
     KAMOKU=r.slice(1).filter(x=>x[ix('科目コード')]).map(x=>({code:x[ix('科目コード')],name:x[ix('科目名')]}));
     $('dl-kamoku').innerHTML=[...new Set(KAMOKU.map(k=>k.name))].map(n=>`<option value="${esc(n)}">`).join('');}catch(e){KAMOKU=[];}
+  // 内訳（補助）：科目ごと。000000（空）が無い科目（預り金など）は内訳が要る
+  try{const r=await csv('smile_uchiwake.csv');const h=r[0];const ix=n=>h.indexOf(n);UCHI={};
+    r.slice(1).filter(x=>x[ix('科目コード')]).forEach(x=>(UCHI[x[ix('科目コード')]]=UCHI[x[ix('科目コード')]]||[]).push({code:x[ix('内訳コード')],name:x[ix('略称')]||x[ix('内訳名')]||''}));}catch(e){UCHI={};}
   try{const r=await csv('smile_bumon.csv');BUMON=r.slice(1).filter(x=>x[0]&&x[1]).map(x=>({code:x[0],name:x[1]}));}catch(e){BUMON=[];}
   // 仕入先マスタ（SharedMasters。支払（決裁・出力）と同じ）：支払先の名前から SMILE の仕入先コードを当てる
   try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(SM_FILE)}:/content`,null,null,true);
@@ -211,6 +215,10 @@ async function loadMasters(){
 function kamokuOf(name,dept){const c=KAMOKU.filter(k=>k.name===name);if(c.length<2)return c[0]||null;
   const fac=String(dept||'').startsWith((RULES&&RULES.factoryDeptPrefix)||'003');
   return c.find(k=>fac===k.code.startsWith('0005'))||c[0];}
+// 内訳：その科目の選べる内訳（000000＝空は除く）と、内訳が要るか（空の内訳がマスタに無い）
+const uchiOf=ac=>(UCHI[ac]||[]).filter(u=>u.code&&u.code!=='000000');
+const uchiNeed=ac=>!!(UCHI[ac]&&UCHI[ac].length&&!UCHI[ac].some(u=>u.code==='000000'));
+const uchiName=(ac,c)=>(uchiOf(ac).find(u=>u.code===c)||{}).name||c||'';
 // ---------- 振込先（経費） ----------
 function hdrOf(r){return {payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc,bk:Object.assign({},r.bk)};}
 const bankFull=b=>!!(b&&b.code&&b.bcode&&b.type&&b.no&&b.holder);
@@ -483,7 +491,7 @@ function drawRows(){if(!$('tb'))return;
     ||`<tr><td colspan="6" style="color:var(--sub);padding:14px">${st.step==='mine'?'あなたの番の請求書はありません 🎉':'該当する請求書はありません'}</td></tr>`;}
 function openOne(id){st.sel=id;st.view='one';st.editHdr=false;st.editBank=false;st.allIss=false;draft=null;hdrDraft=null;cmDraft=null;drawReview();}
 const cur=()=>items.find(r=>r.id===st.sel)||null;
-const linesOf=r=>r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
+const linesOf=r=>r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',sub:fv(L.sl,l.f,'内訳コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
   excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||'',conf:+fv(L.sl,l.f,'AI信頼スコア')||0}));
 // 開いている1件は、下書き（直したけれど保存していないもの）で見る
 function viewOf(r){const me1=r.id===st.sel;const h=(me1&&hdrDraft)||hdrOf(r),ls=(me1&&draft)||linesOf(r);return {h,ls,lsum:ls.reduce((s,l)=>s+(+l.incl||0),0)};}
@@ -499,6 +507,7 @@ function issuesOf(r){
   if(!h.method)fix('支払方法がありません','総合振込・口座振替などから選んでください');
   if(!ls.length)fix('仕訳がありません','「仕訳を確認」で入れてください（過去の仕訳から案も作れます）');
   else{if(ls.some(l=>!l.acode))fix('科目が空の行があります','「仕訳を確認」で科目を選んでください');
+    {const u=ls.find(l=>l.acode&&uchiNeed(l.acode)&&!l.sub);if(u)fix('内訳が空の行があります',`${u.aname} は内訳が要ります。「仕訳を確認」で内訳を選んでください`);}
     if(lsum!==h.amount)fix('仕訳の合計が金額と違います',`仕訳 ${yen(lsum)} 円／金額 ${yen(h.amount)} 円`);}
   if(h.method==='総合振込'&&r.status!=='先行支払済'){const b=h.bk,m=masterBankOf(Object.assign({},r,{payee:h.payee,code:h.code,regNo:h.regNo})),full=bankFull(b);
     if(!full&&!m)fix('振込先が登録されていません','請求書の振込先を確認し、口座情報を入力してください');
@@ -566,9 +575,9 @@ function drawOne(){
         <td><select data-lk="${k}" data-lf="rate">${RATES.map(x=>`<option ${x===l.rate?'selected':''}>${x}</option>`).join('')}</select></td>
         <td><input class="num" type="number" data-lk="${k}" data-lf="excl" value="${l.excl}"></td><td><input class="num" type="number" data-lk="${k}" data-lf="tax" value="${l.tax}"></td>
         <td class="n">${yen(l.incl)}</td><td><button data-ldel="${k}" style="padding:1px 7px" title="この行を消す">×</button></td></tr>
-      <tr class="l2"><td colspan="8"><div class="memo"><span>摘要</span><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}" placeholder="支払先・内容・期間など（会計仕訳の摘要。全角40字まで）"></div></td></tr>`
+      <tr class="l2"><td colspan="8"><div class="memo">${uchiOf(l.acode).length?`<span>内訳</span><select class="uchi ${uchiNeed(l.acode)&&!l.sub?'ng':''}" data-lk="${k}" data-lf="sub"><option value="">${uchiNeed(l.acode)?'（選んでください）':''}</option>${uchiOf(l.acode).map(u=>`<option value="${esc(u.code)}" ${u.code===l.sub?'selected':''}>${esc(u.code)} ${esc(u.name)}</option>`).join('')}${l.sub&&!uchiOf(l.acode).some(u=>u.code===l.sub)?`<option selected value="${esc(l.sub)}">${esc(l.sub)}</option>`:''}</select>`:''}<span>摘要</span><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}" placeholder="支払先・内容・期間など（会計仕訳の摘要。全角40字まで）"></div></td></tr>`
       :`<tr class="l1"><td title="${esc(l.acode?'科目コード '+l.acode:'')}">${esc(l.aname)}</td><td>${esc(bname(l.dept))}</td><td>${esc(l.tm)}</td><td>${esc(l.rate)}</td><td class="n">${yen(l.excl)}</td><td class="n">${yen(l.tax)}</td><td class="n">${yen(l.incl)}</td><td></td></tr>
-      <tr class="l2"><td colspan="8"><div class="memo"><span>摘要</span><b style="font-weight:500">${esc(l.note)||'—'}</b></div></td></tr>`).join('')}
+      <tr class="l2"><td colspan="8"><div class="memo">${l.sub?`<span>内訳</span><b style="font-weight:500;white-space:nowrap">${esc(l.sub)} ${esc(uchiName(l.acode,l.sub))}</b>`:uchiNeed(l.acode)?'<span>内訳</span><b style="color:var(--up)">未選択</b>':''}<span>摘要</span><b style="font-weight:500">${esc(l.note)||'—'}</b></div></td></tr>`).join('')}
     <tr><td colspan="6"><b>合計</b> <span style="font-size:12px;color:var(--sub)">${lsum===h.amount?'金額と一致':`金額 ${yen(h.amount)} と ${yen(lsum-h.amount)} 違う`}</span>　<span style="font-size:12px;color:var(--sub)">貸方：${esc(creditOf(h.method).code||'—')}</span></td><td class="n"><b style="color:${lsum===h.amount?'var(--down)':'var(--up)'}">${yen(lsum)}</b></td><td></td></tr></table></div>
     ${ed?`<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="lAdd">＋ 行を足す</button><button id="lSug">🔍 過去の仕訳から案を作る</button>${draft?'<button id="lX">仕訳の直しを取り消す</button>':''}</div>`:''}<div id="sugBox"></div></details>`;
   // 確認履歴
@@ -613,6 +622,7 @@ function wireOne(r){
     if(f==='acct'){const v=e.value.trim(),m=v.match(/^(\d{6})\s*(.*)$/);const k=m?KAMOKU.find(x=>x.code===m[1]):kamokuOf(v,l.dept);l.acode=k?k.code:(m?m[1]:'');l.aname=k?k.name:(m?m[2]:v);}
     else if(f==='excl'||f==='tax'){l[f]=+e.value||0;}else l[f]=e.value;
     if(f==='dept'&&l.aname){const k=kamokuOf(l.aname,l.dept);if(k)l.acode=k.code;}   // 部門を替えたら、同じ名前の本社用／工場用の科目に付け直す
+    if(l.sub&&!uchiOf(l.acode).some(u=>u.code===l.sub))l.sub='';   // 科目が替わったら、その科目に無い内訳は外す
     if(f==='rate'&&(l.rate==='非課税'||l.rate==='対象外'))l.tax=0;
     l.incl=(+l.excl||0)+(+l.tax||0);st.openLines=true;drawOne();});
   document.querySelectorAll('[data-ldel]').forEach(e=>e.onclick=()=>{dLines(r).splice(+e.dataset.ldel,1);st.openLines=true;drawOne();});
@@ -623,7 +633,7 @@ function wireOne(r){
   const ps=pdfPaths(r);if(ps.length)showPdf(r,pdfSel[r.id]&&ps.includes(pdfSel[r.id])?pdfSel[r.id]:ps[0]);}
 function creditOf(m){const c=(RULES.journal&&RULES.journal.credit)||{};return c[m]||c['総合振込']||{};}
 const pdfPaths=r=>r.doc.split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean);
-const dLines=r=>draft||(draft=r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
+const dLines=r=>draft||(draft=r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',sub:fv(L.sl,l.f,'内訳コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
   excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||''})));
 function go(dlt){const a=listRows(),i=a.findIndex(x=>x.id===st.sel);const n=a[Math.min(a.length-1,Math.max(0,i+dlt))];if(!n||n.id===st.sel)return;
   const r=cur();if(r&&isDirty(r)&&!confirm('保存していない直しがあります。捨てて移りますか？'))return;openOne(n.id);}
@@ -641,7 +651,7 @@ async function showPdf(r,path){
 async function loadJournal(){if(JOURNAL)return JOURNAL;
   const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/仕訳インデックス.csv')}:/content`,null,null,true);
   const rows=parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer()));const h=rows[0],ix=n=>h.indexOf(n);
-  JOURNAL=rows.slice(1).filter(r=>r.length>1).map(r=>({ym:r[ix('年月')]||'',kc:r[ix('科目コード')]||'',kn:r[ix('科目名')]||'',dc:r[ix('部門コード')]||'',zn:r[ix('税区分')]||'',amt:+r[ix('金額')]||0,memo:r[ix('摘要')]||'',n:jnorm(r[ix('摘要')])}));
+  JOURNAL=rows.slice(1).filter(r=>r.length>1).map(r=>({ym:r[ix('年月')]||'',kc:r[ix('科目コード')]||'',kn:r[ix('科目名')]||'',dc:r[ix('部門コード')]||'',zn:r[ix('税区分')]||'',amt:+r[ix('金額')]||0,un:r[ix('内訳')]||'',memo:r[ix('摘要')]||'',n:jnorm(r[ix('摘要')])}));
   return JOURNAL;}
 const rateOfZ=z=>/軽減/.test(z)?'軽減8%':/非課/.test(z)?'非課税':/対象外/.test(z)||!z?'対象外':'課税10%';
 async function suggest(r){
@@ -650,13 +660,13 @@ async function suggest(r){
   const q=jnorm(hdrDraft?hdrDraft.payee:r.payee);if(!q){box.innerHTML='<div style="font-size:12px;color:var(--sub);margin-top:6px">支払先名を先に入れてください</div>';return;}
   const hits=j.filter(x=>x.n.includes(q)).sort((a,b)=>b.ym.localeCompare(a.ym));
   if(!hits.length){box.innerHTML=`<div style="font-size:12px;color:var(--sub);margin-top:6px">「${esc(q)}」の過去の仕訳は見つかりませんでした</div>`;return;}
-  const agg={};hits.forEach(x=>{const k=x.kc+'|'+x.dc+'|'+rateOfZ(x.zn);(agg[k]=agg[k]||{kc:x.kc,kn:x.kn,dc:x.dc,rate:rateOfZ(x.zn),n:0,last:x}).n++;});
+  const agg={};hits.forEach(x=>{const k=x.kc+'|'+x.un+'|'+x.dc+'|'+rateOfZ(x.zn);(agg[k]=agg[k]||{kc:x.kc,kn:x.kn,un:x.un,dc:x.dc,rate:rateOfZ(x.zn),n:0,last:x}).n++;});
   const top=Object.values(agg).sort((a,b)=>b.n-a.n).slice(0,5);
-  box.innerHTML=`<div class="box info" style="margin-top:6px;font-size:12.5px">過去の仕訳（${hits.length}件・新しい順）から：${top.map((t,k)=>`<button data-sug="${k}" style="margin:2px">${esc(t.kc)} ${esc(t.kn)}・${esc((BUMON.find(b=>b.code===t.dc)||{}).name||t.dc)}・${esc(t.rate)}（${t.n}回）</button>`).join('')}
+  box.innerHTML=`<div class="box info" style="margin-top:6px;font-size:12.5px">過去の仕訳（${hits.length}件・新しい順）から：${top.map((t,k)=>`<button data-sug="${k}" style="margin:2px">${esc(t.kc)} ${esc(t.kn)}${t.un?'（'+esc(t.un)+'）':''}・${esc((BUMON.find(b=>b.code===t.dc)||{}).name||t.dc)}・${esc(t.rate)}（${t.n}回）</button>`).join('')}
     <div style="color:var(--sub);margin-top:4px">押すと、金額 ${yen(hdrDraft?hdrDraft.amount:r.amount)} 円を1行の仕訳にします（摘要は最後の仕訳から）</div></div>`;
   box.querySelectorAll('[data-sug]').forEach(b=>b.onclick=()=>{const t=top[+b.dataset.sug],amt=hdrDraft?hdrDraft.amount:r.amount;
     const tax=t.rate==='課税10%'?Math.round(amt*10/110):t.rate==='軽減8%'?Math.round(amt*8/108):0;
-    draft=[{id:'',acode:t.kc,aname:t.kn,dept:t.dc,tm:'税込',rate:t.rate,excl:amt-tax,tax,incl:amt,note:t.last.memo}];drawDetail();});}
+    draft=[{id:'',acode:t.kc,aname:t.kn,sub:(uchiOf(t.kc).find(u=>u.name===t.un)||{}).code||'',dept:t.dc,tm:'税込',rate:t.rate,excl:amt-tax,tax,incl:amt,note:t.last.memo}];drawDetail();});}
 
 // ---------- 保存 ----------
 const logEntry=(o)=>Object.assign({by:me(),at:new Date().toISOString()},o);
@@ -684,6 +694,7 @@ async function saveLines(r){const d=draft;if(!d)return;
   {const keep=new Set();let n=0;
     for(const l of d){n++;const f=toFields(L.sl,{'請求書ID':r.id,'明細行番号':n,'拠点':r.loc,'勘定科目名':l.aname,'勘定科目コード':l.acode,'部門コード':l.dept,'税区分':l.tm,'税率区分':l.rate,
         '金額_税抜':+l.excl||0,'消費税':+l.tax||0,'金額_税込':+l.incl||0,'摘要':l.note});
+      if(L.sl.fmap['内訳コード'])f[L.sl.fmap['内訳コード']]=l.sub||'';else if(l.sub)throw new Error('AP_PaymentSlip に「内訳コード」の列がありません（Provision-SmileAP.ps1 -Apply）');
       if(l.id){await gpatch(`/sites/${AP_SITE}/lists/${L.sl.id}/items/${l.id}/fields`,f);keep.add(l.id);}
       else{f.Title=`${r.payee||r.title} ${n}`;const c=await gpost(`/sites/${AP_SITE}/lists/${L.sl.id}/items`,{fields:f});keep.add(String(c.id));}}
     for(const l of r.lines)if(!keep.has(l.id))await call('DELETE',`/sites/${AP_SITE}/lists/${L.sl.id}/items/${l.id}`);

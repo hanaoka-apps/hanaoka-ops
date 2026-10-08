@@ -101,6 +101,7 @@
             const g = { Title: `${H.PayeeName || ''} ${l.LineNo}` };
             const s = (d, v) => { g[fs(d)] = v; };
             s('請求書ID', String(invId)); s('明細行番号', l.LineNo); s('拠点', l.Location || loc); s('勘定科目名', l.AccountName || ''); s('勘定科目コード', l.AccountCode || '');
+            if (l.SubCode && SL.fmap['内訳コード']) s('内訳コード', l.SubCode);   // 内訳（預り金の 000005 など）。列が無ければ入れない
             s('部門コード', l.DeptCode || ''); s('税区分', l.TaxMethod || '税込'); s('税率区分', l.TaxRate || '課税10%');
             s('金額_税抜', +l.AmountExclTax || 0); s('消費税', +l.Tax || 0); s('金額_税込', +l.AmountInclTax || 0); s('摘要', l.Description || ''); s('AI信頼スコア', +l.LineConfidence || 0);
             await call('POST', `/sites/${site}/lists/${SL.id}/items`, { fields: g });
