@@ -165,6 +165,9 @@ function monthEnd(ym){const [y,m]=ym.split('/').map(Number);return new Date(y,m,
 // 実支払日：支払回→日付（土日は前営業日へ。祝日は未対応＝要目視）
 function payDate(ym,due){const [y,mo]=ym.split('/').map(Number);let day=due==='10日'?10:due==='20日'?20:new Date(y,mo,0).getDate();let d=new Date(y,mo-1,day);while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 const iv=(f,d)=>f[F(INV,d)];
+const DEBIT_METHODS=['口座振替','納税'];   // 口座から落ちる（振込・でんさいの出力は無い）。納税＝e-Tax で申告・納付
+// 日付の列（日付のみ）→ 日本の日付 YYYY-MM-DD（00:00Z でも 前日15:00Z でも同じ日になる）
+const jstDay=v=>{if(!v)return '';const d=new Date(v);if(isNaN(d))return '';return new Date(d.getTime()+9*3600e3).toISOString().slice(0,10);};
 // 経費の請求書に入っている振込先（ap_expense.html で人が確かめたもの）
 function invBank(f){return f&&f.PayeeBankCode?{BankCode:f.PayeeBankCode||'',BranchCode:f.PayeeBranchCode||'',AcctType:f.PayeeAcctType||'',AcctNo:f.PayeeAcctNo||'',AcctHolder:hanKana(f.PayeeAcctHolder||'')}:null;}
 // 全銀の受取人名は半角カナ（経費の画面で保存すれば半角になるが、AI の読み取りのまま確定したときのため）
@@ -273,7 +276,9 @@ async function generate(){
     if(iv(f,'仕分け済')!==true||iv(f,'アーカイブフラグ')===true||(iv(f,'対象年月')||'')!==ym||(iv(f,'支払日区分')||'')!==due)return;
     const pst=iv(f,'支払ステータス')||'';if(pst!=='確定済（ロック）'&&pst!=='先行支払済')return;
     const code=iv(f,'支払先コード')||'',name=iv(f,'支払先名')||'',method=iv(f,'支払手段')||'総合振込',loc=cat==='工場経費'?'工場':'本社';
-    add({code,name,method,amount:+iv(f,'金額_税込')||0,loc,dept:loc==='工場'?'工場':'総務',ids:[String(x.id)],prepaid:pst==='先行支払済',ppdate:iv(f,'先行支払日')||'',due:'',source:'経費',key:(code||name)+'|'+method+'|',bank:invBank(f)});});
+    // 口座振替・納税（e-Tax）は、請求書の引落日（納付日）があればその日が支払日（会計仕訳の伝票日付）
+    const pdate=DEBIT_METHODS.includes(method)?jstDay(iv(f,'引落予定日')):'';
+    add({code,name,method,amount:+iv(f,'金額_税込')||0,loc,dept:loc==='工場'?'工場':'総務',ids:[String(x.id)],prepaid:pst==='先行支払済',ppdate:iv(f,'先行支払日')||'',pdate,due:'',source:'経費',key:(code||name)+'|'+method+'|',bank:invBank(f)});});
   // 仕入：「仕入（SMILE）」で確認OKの仕入先。分け方（振込・でんさい・相殺・調整・現金・海外送金・口座振替）ごとに1行
   const MM={振込:'総合振込',でんさい:'でんさい',手形:'でんさい',相殺:'相殺',調整:'調整',現金:'現金',海外送金:'海外送金',口座振替:'口座振替'};
   const pj=s=>{try{return JSON.parse(s||'null');}catch{return null;}};let unchecked=0;
@@ -297,10 +302,11 @@ async function generate(){
     set('支払額',dft.amount);set('振込手数料',dft.fee||0);set('決裁の部門',dft.dept);set('期日',dft.due||'');set('元',dft.source);set('AP_SmilePayの行ID',dft.smileId||'');set('元請求書ID',dft.ids.join(','));
     // 振込先：SMILE のコードがあれば振込先マスタ、無ければ（経費）請求書の振込先
     const snap=(dft.code&&VB.byCode[dft.code])?vbSnap(dft.code):(dft.bank&&dft.bank.BankCode?dft.bank:vbSnap(dft.code));set('銀行コード',snap.BankCode||'');set('支店コード',snap.BranchCode||'');set('預金種目',snap.AcctType||'');set('口座番号',snap.AcctNo||'');set('受取人カナ',snap.AcctHolder||'');
+    if(ex&&dft.pdate&&pv(ex,'支払状態')==='未')set('実支払日',dft.pdate);
     if(ex){const same=Object.entries(fields).every(([c,v])=>String(ex.f[c]??'')===String(v??''));if(same)continue;
       fields[F(PI,'承認状態')]='起票';fields[F(PI,'決裁バッチ')]='';
       try{await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${ex.id}/fields`,fields);upd++;log.push(`✏ ${dft.name}／${dft.method}／${yen(dft.amount)}`);}catch(e){log.push(`❌ ${dft.name}：${e.message}`);}continue;}
-    fields.Title=`${ym} ${due} ${dft.name}`;set('決済月',ym);set('支払日区分',due);set('実支払日',dft.prepaid&&dft.ppdate?dft.ppdate:payDate(ym,due));set('支払先名',dft.name);set('支払先コード',dft.code);set('支払手段',dft.method);set('拠点',dft.loc);
+    fields.Title=`${ym} ${due} ${dft.name}`;set('決済月',ym);set('支払日区分',due);set('実支払日',dft.prepaid&&dft.ppdate?dft.ppdate:dft.pdate||payDate(ym,due));set('支払先名',dft.name);set('支払先コード',dft.code);set('支払手段',dft.method);set('拠点',dft.loc);
     set('承認状態','起票');set('支払状態',dft.prepaid?'先行支払済':'未');
     const memo=[];if(dft.prepaid)memo.push('経費側で先行支払済（急ぎ振込）');if(dft.method==='総合振込'&&!snap.BankCode&&!dft.prepaid)memo.push('⚠振込先口座未登録（AP_VendorBank）');if(dft.fee)memo.push(`振込手数料 ${dft.fee} 円を差し引き（先方負担）`);
     if(memo.length)set('メモ',memo.join(' '));
