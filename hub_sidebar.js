@@ -56,7 +56,7 @@
     { t: 'group', id: 'apps', l: 'アプリ一覧', icon: P.apps, children: [
       { label: 'HANAOKA APPS' },
       { f: 'fujin/FUJIN.html',       l: 'FUJIN', ext: true, ic: logo('fujin/favicon-fujin.png', 38) },   // FUJINだけ別タブで開く
-      { f: 'sales_dashboard.html',   l: 'Sales HUB',        ic: mark('favicon_sales.svg') },
+      { f: 'sales_dashboard.html',   l: 'Sales HUB', ext: true, ic: mark('favicon_sales.svg') },   // FUJIN・Sales HUB は別タブで開く
       { f: 'case_management.html',   l: '案件管理',         ic: mark('favicon_case.svg') },
       { f: 'task_board.html',        l: 'タスク管理',       ic: mark('favicon_task.svg') },
       { f: 'master_viewer.html',     l: 'マスタビューワー', ic: mark('favicon_master.svg') },
