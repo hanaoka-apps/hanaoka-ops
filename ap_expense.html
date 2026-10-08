@@ -60,7 +60,10 @@ tr.row{cursor:pointer}tr.row:hover{background:#f7f9fc}
 .sec{margin-top:12px}.sec>h4{font-size:12.5px;color:var(--sub);margin:0 0 6px;font-weight:600}
 .box{border:1px solid var(--line);border-radius:8px;padding:8px 10px}.box.warn{background:var(--warn-l);border-color:#efd3ad}.box.alert{background:var(--up-l);border-color:#f0b7b0}.box.info{background:var(--pri-l);border-color:#b9d0ee}
 .fg{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 10px}.fg label{font-size:11.5px;color:var(--sub);display:block}.fg input,.fg select{width:100%}
-.lnw{overflow-x:auto}.ln-t{min-width:720px;font-size:13px}.ln-t td{padding:3px 4px;white-space:normal}.ln-t input,.ln-t select{padding:3px 5px;width:100%;font-size:13px}.ln-t .num{text-align:right}
+/* 仕訳：1件を2段（上＝科目・部門・税・金額、下＝摘要を全幅） */
+.ln-t tr.l1 td{border-bottom:0 !important;padding-bottom:1px}.ln-t tr.l2 td{padding-top:1px;padding-bottom:7px}
+.ln-t .memo{display:flex;align-items:center;gap:8px}.ln-t .memo span{flex:none;font-size:11.5px;color:var(--sub)}.ln-t .memo input{flex:1}
+.lnw{overflow-x:auto}.ln-t{min-width:470px;font-size:13px}.ln-t td{padding:3px 4px;white-space:normal}.ln-t input,.ln-t select{padding:3px 5px;width:100%;font-size:13px}.ln-t .num{text-align:right}
 .drop{border:2px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--sub);cursor:pointer;display:block;font-size:13px}.drop.over{border-color:var(--pri);background:var(--pri-l)}.drop input{display:none}
 .pdf{min-height:520px;border:1px dashed var(--line);border-radius:8px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub);text-align:center;padding:0}
 .pdf iframe{width:100%;height:calc(100vh - 340px);min-height:480px;border:0}
@@ -156,13 +159,17 @@ async function loadMasters(){
   const csv=async n=>{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/'+n)}:/content`,null,null,true);return parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer()));};
   try{const r=await csv('smile_kamoku.csv');const h=r[0];const ix=n=>h.indexOf(n);
     KAMOKU=r.slice(1).filter(x=>x[ix('科目コード')]).map(x=>({code:x[ix('科目コード')],name:x[ix('科目名')]}));
-    $('dl-kamoku').innerHTML=KAMOKU.map(k=>`<option value="${esc(k.code+' '+k.name)}">`).join('');}catch(e){KAMOKU=[];}
+    $('dl-kamoku').innerHTML=[...new Set(KAMOKU.map(k=>k.name))].map(n=>`<option value="${esc(n)}">`).join('');}catch(e){KAMOKU=[];}
   try{const r=await csv('smile_bumon.csv');BUMON=r.slice(1).filter(x=>x[0]&&x[1]).map(x=>({code:x[0],name:x[1]}));}catch(e){BUMON=[];}
   // 仕入先マスタ（SharedMasters。支払（決裁・出力）と同じ）：支払先の名前から SMILE の仕入先コードを当てる
   try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(SM_FILE)}:/content`,null,null,true);
     const r=parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer())),h=r[0].map(x=>String(x||'').trim()),ix=n=>h.indexOf(n);
     VM=r.slice(1).filter(x=>x[ix('仕入先ｺｰﾄﾞ')]).map(x=>{const name=x[ix('仕入先名１')]||'',short=x[ix('仕入先名略称')]||'';
       return {code:String(x[ix('仕入先ｺｰﾄﾞ')]).trim().padStart(6,'0'),name,n:jnorm(name),s:jnorm(short)};});}catch(e){VM=[];}}
+// 科目の名前 → 科目。同じ名前が本社用と工場用（製造原価 0005xx）にあるときは部門で選ぶ
+function kamokuOf(name,dept){const c=KAMOKU.filter(k=>k.name===name);if(c.length<2)return c[0]||null;
+  const fac=String(dept||'').startsWith((RULES&&RULES.factoryDeptPrefix)||'003');
+  return c.find(k=>fac===k.code.startsWith('0005'))||c[0];}
 const SM_DRIVE='b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',SM_FILE='仕入先マスタ.csv';
 let VM=[];
 // 名前の合う仕入先（同じ名前を先に。4文字以上なら含む／含まれるも）
@@ -414,14 +421,16 @@ function drawDetail(){
         ${ed?`<div style="margin-top:6px;display:flex;gap:6px;align-items:center"><button class="pri" id="bHdr" ${hdrDraft?'':'disabled'}>内容を保存</button>${hdrDraft?'<button id="bHdrX">元に戻す</button>':''}
           <span style="font-size:12px;color:var(--sub)">${r.method==='総合振込'&&h.code?(VB[h.code]?'振込先：登録あり（AP_VendorBank）':'<span class="ck-ng" style="color:var(--up)">振込先口座の登録なし</span>'):''}</span></div>`:''}</div>
       <div class="sec"><h4>仕訳（借方）<span style="font-weight:400">— 貸方は支払方法の口座（${esc(creditOf(r.method).code||'—')}）</span></h4>
-        <div class="lnw"><table class="ln-t"><tr><th style="min-width:170px">科目</th><th style="min-width:110px">部門</th><th style="min-width:64px">税</th><th style="min-width:86px">税率</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th><th style="min-width:120px">摘要</th><th></th></tr>
-        ${lines.map((l,k)=>ed?`<tr><td><input list="dl-kamoku" data-lk="${k}" data-lf="acct" value="${esc((l.acode?l.acode+' ':'')+l.aname)}" ${l.conf&&l.conf<70?'style="background:var(--warn-l)" title="AI の自信が低い"':''}></td>
+        <div class="lnw"><table class="ln-t"><tr><th style="min-width:104px">科目</th><th style="min-width:86px">部門</th><th style="min-width:56px">税</th><th style="min-width:74px">税率</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th><th></th></tr>
+        ${lines.map((l,k)=>ed?`<tr class="l1"><td><input list="dl-kamoku" data-lk="${k}" data-lf="acct" value="${esc(l.aname)}" title="${esc(l.acode?'科目コード '+l.acode:'科目コードなし')}${l.conf&&l.conf<70?'（AI の自信が低い）':''}" ${l.conf&&l.conf<70?'style="background:var(--warn-l)"':''}></td>
             <td><select data-lk="${k}" data-lf="dept">${bopt(l.dept)}</select></td><td><select data-lk="${k}" data-lf="tm">${['税込','税抜'].map(x=>`<option ${x===l.tm?'selected':''}>${x}</option>`).join('')}</select></td>
             <td><select data-lk="${k}" data-lf="rate">${RATES.map(x=>`<option ${x===l.rate?'selected':''}>${x}</option>`).join('')}</select></td>
-            <td><input class="num" type="number" data-lk="${k}" data-lf="excl" value="${l.excl}" style="width:96px"></td><td><input class="num" type="number" data-lk="${k}" data-lf="tax" value="${l.tax}" style="width:80px"></td>
-            <td class="n">${yen(l.incl)}</td><td><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}"></td><td><button data-ldel="${k}" style="padding:1px 7px">×</button></td></tr>`
-          :`<tr><td>${esc(l.acode)} ${esc(l.aname)}</td><td>${esc(bname(l.dept))}</td><td>${esc(l.tm)}</td><td>${esc(l.rate)}</td><td class="n">${yen(l.excl)}</td><td class="n">${yen(l.tax)}</td><td class="n">${yen(l.incl)}</td><td style="white-space:normal">${esc(l.note)}</td><td></td></tr>`).join('')}
-        <tr><td colspan="6"><b>合計</b> <span style="font-size:12px;color:var(--sub)">${lsum===r.amount?'金額と一致':`金額 ${yen(r.amount)} と ${yen(lsum-r.amount)} 違う`}</span></td><td class="n"><b style="color:${lsum===r.amount?'var(--down)':'var(--up)'}">${yen(lsum)}</b></td><td colspan="2"></td></tr></table></div>
+            <td><input class="num" type="number" data-lk="${k}" data-lf="excl" value="${l.excl}" style="width:84px"></td><td><input class="num" type="number" data-lk="${k}" data-lf="tax" value="${l.tax}" style="width:66px"></td>
+            <td class="n">${yen(l.incl)}</td><td><button data-ldel="${k}" style="padding:1px 7px" title="この行を消す">×</button></td></tr>
+          <tr class="l2"><td colspan="8"><div class="memo"><span>摘要</span><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}" placeholder="支払先・内容・期間など（会計仕訳の摘要。全角40字まで）"></div></td></tr>`
+          :`<tr class="l1"><td title="${esc(l.acode?'科目コード '+l.acode:'')}">${esc(l.aname)}</td><td>${esc(bname(l.dept))}</td><td>${esc(l.tm)}</td><td>${esc(l.rate)}</td><td class="n">${yen(l.excl)}</td><td class="n">${yen(l.tax)}</td><td class="n">${yen(l.incl)}</td><td></td></tr>
+          <tr class="l2"><td colspan="8"><div class="memo"><span>摘要</span><b style="font-weight:500">${esc(l.note)||'—'}</b></div></td></tr>`).join('')}
+        <tr><td colspan="6"><b>合計</b> <span style="font-size:12px;color:var(--sub)">${lsum===r.amount?'金額と一致':`金額 ${yen(r.amount)} と ${yen(lsum-r.amount)} 違う`}</span></td><td class="n"><b style="color:${lsum===r.amount?'var(--down)':'var(--up)'}">${yen(lsum)}</b></td><td></td></tr></table></div>
         ${ed?`<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="lAdd">＋ 行を足す</button><button id="lSug">🔍 過去の仕訳から案を作る</button><span class="sp" style="flex:1"></span>${draft?'<button id="lX">元に戻す</button>':''}<button class="pri" id="lSave" ${draft?'':'disabled'}>仕訳を保存</button></div>`:''}
         <div id="sugBox"></div></div>
       <details class="sec"><summary>確認の記録${r.log.length?`（${r.log.length}）`:''}・受け付け</summary><div class="log" style="margin-top:6px">
@@ -454,8 +463,9 @@ function wireDetail(r){
     hdrDraft.code=e.dataset.vc;drawDetail();});
   on('bHdr',()=>saveHeader(r));on('bHdrX',()=>{hdrDraft=null;drawDetail();});
   document.querySelectorAll('[data-lk]').forEach(e=>e.onchange=()=>{const dd=dLines(r),l=dd[+e.dataset.lk],f=e.dataset.lf;
-    if(f==='acct'){const v=e.value.trim(),m=v.match(/^(\d{6})\s*(.*)$/);const k=m?KAMOKU.find(x=>x.code===m[1]):KAMOKU.find(x=>x.name===v);l.acode=k?k.code:(m?m[1]:'');l.aname=k?k.name:(m?m[2]:v);}
+    if(f==='acct'){const v=e.value.trim(),m=v.match(/^(\d{6})\s*(.*)$/);const k=m?KAMOKU.find(x=>x.code===m[1]):kamokuOf(v,l.dept);l.acode=k?k.code:(m?m[1]:'');l.aname=k?k.name:(m?m[2]:v);}
     else if(f==='excl'||f==='tax'){l[f]=+e.value||0;}else l[f]=e.value;
+    if(f==='dept'&&l.aname){const k=kamokuOf(l.aname,l.dept);if(k)l.acode=k.code;}   // 部門を替えたら、同じ名前の本社用／工場用の科目に付け直す
     if(f==='rate'&&(l.rate==='非課税'||l.rate==='対象外'))l.tax=0;
     l.incl=(+l.excl||0)+(+l.tax||0);drawDetail();});
   document.querySelectorAll('[data-ldel]').forEach(e=>e.onclick=()=>{dLines(r).splice(+e.dataset.ldel,1);drawDetail();});
