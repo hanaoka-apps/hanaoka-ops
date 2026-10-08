@@ -1086,6 +1086,12 @@ section.card{padding:18px 22px 20px !important}
 <style>
 @media (max-width:700px){ .srch-grid{grid-template-columns:1fr 1fr !important} }
 </style>
+<style>
+.hub-acct{font-size:11px; color:var(--text-sub,#6b7688); padding:6px 10px 4px; line-height:1.5; word-break:break-all}
+.hub-acct b{color:var(--navy,#23268f); font-weight:700}
+.login-hub-link{display:inline-block; margin-top:18px; font-size:13px; color:#23268f; text-decoration:none; padding:6px 12px; border-radius:8px}
+.login-hub-link:hover{background:rgba(35,38,143,0.08)}
+</style>
 </head>
 <body>
 
@@ -1098,6 +1104,7 @@ section.card{padding:18px 22px 20px !important}
   <button class="login-btn" id="loginBtn">サインイン</button>
   <div class="login-error" id="loginError" style="display:none"></div>
   <div class="login-loading" id="loginLoading" style="display:none">読み込み中…</div>
+  <a href="https://hanaoka-apps.github.io/hanaoka-ops/hanaoka_hub.html" class="login-hub-link">🏠 HANAOKA HUBに戻る</a>
 </div>
 
 <!-- ===== App本体（ログイン後に表示）===== -->
@@ -1148,6 +1155,15 @@ section.card{padding:18px 22px 20px !important}
       <div class="hub-items">
         <a href="#" class="hub-item" data-cat="activity_group" data-page="visits"><span class="hub-item-ico">📈</span>活動実績・KPI</a>
         <a href="#" class="hub-item" data-cat="activity_group" data-page="searchhp"><span class="hub-item-ico">🔍</span>訪問検索・HPトラッキング</a>
+      </div>
+    </div>
+    <div class="hub-sec" data-cat="account_group">
+      <button type="button" class="hub-group"><span class="hub-group-ico">⚙️</span><span class="hub-group-name">アカウント・リンク</span><span class="hub-chev">›</span></button>
+      <div class="hub-items">
+        <div class="hub-acct" id="hubAcct">サインイン中: <b id="hubAcctName">—</b></div>
+        <a href="https://hanaoka-apps.github.io/hanaoka-ops/hanaoka_hub.html" class="hub-item hub-link"><span class="hub-item-ico">🏠</span>HANAOKA HUBに戻る</a>
+        <a href="#" class="hub-item hub-link" id="hubSwitchAcct"><span class="hub-item-ico">🔄</span>別のアカウントで入り直す</a>
+        <a href="#" class="hub-item hub-link" id="hubLogout"><span class="hub-item-ico">🚪</span>サインアウト</a>
       </div>
     </div>
   </nav>
@@ -7899,6 +7915,14 @@ async function init() {
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
+  let _pick = false;
+  try { _pick = sessionStorage.getItem(PICK_FLAG_KEY) === '1'; sessionStorage.removeItem(PICK_FLAG_KEY); } catch (_) {}
+  if (_pick) {
+    _forceAccountPicker = true;
+    const ld = document.getElementById('loginLoading');
+    if (ld) { ld.style.display = 'block'; ld.textContent = '「サインイン」を押して、使うアカウントを選んでください'; }
+    return;
+  }
   const accounts = msalInstance.getAllAccounts();
   // 会社のアカウントを優先（個人の Microsoft アカウント(hotmail等)は SharePoint を読めない）
   const companyAccounts = accounts.filter(isCompanyAccount);
@@ -7965,6 +7989,37 @@ async function trySilentSignIn() {
   return null;
 }
 
+// ===== サインアウト / 別のアカウントで入り直す =====
+const PICK_FLAG_KEY = 'salesHub.pickAccount';
+// このブラウザに保存したサインイン情報だけ消す（Microsoft 側のサインインは残す）
+async function _clearLocalSignIn() {
+  try { localStorage.removeItem(LAST_USER_KEY); } catch (_) {}
+  try {
+    await msalInstance.logoutRedirect({ account: account || undefined, onRedirectNavigate: () => false });
+  } catch (e) { console.warn('[サインアウト] ローカル消去', e); }
+}
+async function switchAccount() {
+  await _clearLocalSignIn();
+  try { sessionStorage.setItem(PICK_FLAG_KEY, '1'); } catch (_) {}
+  location.reload();   // サインイン画面に戻り、次は「アカウントを選択」が出る
+}
+async function signOut() {
+  if (!confirm('サインアウトしますか？\n（このブラウザの Microsoft サインインも終了します。HANAOKA HUB など他のアプリも再サインインが必要になります）')) return;
+  const acc = account;
+  try { localStorage.removeItem(LAST_USER_KEY); } catch (_) {}
+  await msalInstance.logoutRedirect({ account: acc || undefined, postLogoutRedirectUri: window.location.origin + window.location.pathname });
+}
+function _bindAccountMenu() {
+  const nm = document.getElementById('hubAcctName');
+  if (nm) nm.textContent = (account && (account.name || account.username)) || '—';
+  const acct = document.getElementById('hubAcct');
+  if (acct && account) acct.title = account.username || '';
+  const sw = document.getElementById('hubSwitchAcct');
+  if (sw && !sw.dataset.bound) { sw.dataset.bound = '1'; sw.addEventListener('click', e => { e.preventDefault(); switchAccount(); }); }
+  const lo = document.getElementById('hubLogout');
+  if (lo && !lo.dataset.bound) { lo.dataset.bound = '1'; lo.addEventListener('click', e => { e.preventDefault(); signOut(); }); }
+}
+
 async function login() {
   try {
     document.getElementById('loginError').style.display = 'none';
@@ -8007,6 +8062,7 @@ async function onLoginSuccess() {
     await loadTargets();
     document.getElementById('loginLoading').textContent = '✅ ダッシュボードを描画中…';
     showApp();
+    try { _bindAccountMenu(); } catch (_) {}
     if (typeof window._sales_renderAll === 'function') {
       window._sales_renderAll();
     }
@@ -10533,7 +10589,7 @@ window.RPT = {
 (function () {
   const app = document.getElementById('app');
   const secs = Array.from(document.querySelectorAll('.hub-sec'));
-  const items = Array.from(document.querySelectorAll('.hub-item'));
+  const items = Array.from(document.querySelectorAll('.hub-item[data-page]'));
   const label = document.getElementById('hubMobilePage');
   const DEF = { orders_group: 'report', sales_group: 'sales', activity_group: 'visits' };
   function setActive(page) {
@@ -10553,6 +10609,7 @@ window.RPT = {
   secs.forEach(sec => sec.querySelector('.hub-group').addEventListener('click', () => {
     // 今開いている見出しを押したら閉じるだけ。別の見出しなら開いてその最初の画面へ
     if (sec.classList.contains('open')) { sec.classList.remove('open'); return; }
+    if (!DEF[sec.dataset.cat]) { sec.classList.add('open'); return; }   // アカウント・リンクは開くだけ
     go(sec.dataset.cat, DEF[sec.dataset.cat], true);
   }));
   items.forEach(a => a.addEventListener('click', e => { e.preventDefault(); go(a.dataset.cat, a.dataset.page); }));
