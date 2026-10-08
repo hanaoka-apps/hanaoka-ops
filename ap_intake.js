@@ -11,6 +11,11 @@
   const DIR = '/BILLS/ai_result', ARCH = '/BILLS/ai_result/_archive', INC = '/BILLS/incoming', PROC = '/BILLS/processed';
   const ROUNDS = ['10日', '20日', '月末'], METHODS = ['でんさい', '総合振込', '口座振替', '海外送金', '現金'], CONF = ['高', '中', '低'];
   const EXPENSE = ['本社経費', '工場経費'];
+  // 全角カナ → 半角（全銀の受取人名は半角カナ。小さい字は大きく）
+  const HK = {'ガ':'ｶﾞ','ギ':'ｷﾞ','グ':'ｸﾞ','ゲ':'ｹﾞ','ゴ':'ｺﾞ','ザ':'ｻﾞ','ジ':'ｼﾞ','ズ':'ｽﾞ','ゼ':'ｾﾞ','ゾ':'ｿﾞ','ダ':'ﾀﾞ','ヂ':'ﾁﾞ','ヅ':'ﾂﾞ','デ':'ﾃﾞ','ド':'ﾄﾞ','バ':'ﾊﾞ','ビ':'ﾋﾞ','ブ':'ﾌﾞ','ベ':'ﾍﾞ','ボ':'ﾎﾞ','パ':'ﾊﾟ','ピ':'ﾋﾟ','プ':'ﾌﾟ','ペ':'ﾍﾟ','ポ':'ﾎﾟ','ヴ':'ｳﾞ',
+    'ア':'ｱ','イ':'ｲ','ウ':'ｳ','エ':'ｴ','オ':'ｵ','カ':'ｶ','キ':'ｷ','ク':'ｸ','ケ':'ｹ','コ':'ｺ','サ':'ｻ','シ':'ｼ','ス':'ｽ','セ':'ｾ','ソ':'ｿ','タ':'ﾀ','チ':'ﾁ','ツ':'ﾂ','テ':'ﾃ','ト':'ﾄ','ナ':'ﾅ','ニ':'ﾆ','ヌ':'ﾇ','ネ':'ﾈ','ノ':'ﾉ','ハ':'ﾊ','ヒ':'ﾋ','フ':'ﾌ','ヘ':'ﾍ','ホ':'ﾎ',
+    'マ':'ﾏ','ミ':'ﾐ','ム':'ﾑ','メ':'ﾒ','モ':'ﾓ','ヤ':'ﾔ','ユ':'ﾕ','ヨ':'ﾖ','ラ':'ﾗ','リ':'ﾘ','ル':'ﾙ','レ':'ﾚ','ロ':'ﾛ','ワ':'ﾜ','ヲ':'ｦ','ン':'ﾝ','ァ':'ｱ','ィ':'ｲ','ゥ':'ｳ','ェ':'ｴ','ォ':'ｵ','ッ':'ﾂ','ャ':'ﾔ','ュ':'ﾕ','ョ':'ﾖ','ー':'-','（':'(','）':')','　':' ','．':'.','・':'.','，':',','－':'-'};
+  const toHanKana = s => String(s || '').normalize('NFKC').replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60)).split('').map(c => HK[c] || c).join('').toUpperCase();
 
   async function lists(call, site) {
     const ls = await call('GET', `/sites/${site}/lists?$select=id,displayName`);
@@ -73,7 +78,7 @@
         if (H.DebitDate) set('引落予定日', H.DebitDate);
         // 振込先（請求書から読んだもの。経費の支払先は振込先マスタに無いことが多い）。読めたものだけ入れる
         const BKF = { BankCode: 'PayeeBankCode', BankName: 'PayeeBankName', BranchCode: 'PayeeBranchCode', BranchName: 'PayeeBranchName', AcctType: 'PayeeAcctType', AcctNo: 'PayeeAcctNo', AcctHolder: 'PayeeAcctHolder', BankSource: 'PayeeBankSource' };
-        Object.entries(BKF).forEach(([k, n]) => { if (H[k] != null && H[k] !== '' && !f[n]) patch[n] = String(H[k]); });
+        Object.entries(BKF).forEach(([k, n]) => { if (H[k] != null && H[k] !== '' && !f[n]) patch[n] = k === 'AcctHolder' ? toHanKana(H[k]) : String(H[k]); });
         if (H.AmountInclTax != null) { patch[fi('金額_税込')] = +H.AmountInclTax || 0; patch[fi('金額_税抜')] = +H.AmountExclTax || 0; patch[fi('消費税')] = +H.Tax || 0; }
         // PDF：読み取り側が processed へ移していればそのまま。古い形は incoming → processed（移せなければ incoming のまま）
         const docs = [];
