@@ -118,6 +118,9 @@ const L={inv:{name:'AP_Invoice'},sl:{name:'AP_PaymentSlip'},vb:{name:'AP_VendorB
 Object.values(L).forEach(o=>{o.id=null;o.fmap={};});
 // AP_Invoice の v3 以降の列は内部名で読み書きする（表示名だと 作成者＝登録者 などとぶつかる）
 const V={ai:'AIStatus',com:'AIComment',by:'RegisteredBy',at:'RegisteredAt',loc:'SiteLocation',cby:'CheckedBy',cat:'CheckedAt',wf:'WfRequestNo',step:'ExpenseStep',log:'CheckLog',hold:'CheckHold',note:'CheckNote'};
+// 経費の振込先（SMILE の外の支払先。請求書から読み、人が確かめる。確定で振込先マスタ AP_VendorBank に登録）
+const BK={code:'PayeeBankCode',name:'PayeeBankName',bcode:'PayeeBranchCode',bname:'PayeeBranchName',type:'PayeeAcctType',no:'PayeeAcctNo',holder:'PayeeAcctHolder',src:'PayeeBankSource'};
+const ACCT_TYPES=['普通','当座','貯蓄'];
 const ROUNDS=['10日','20日','月末'],METHODS=['総合振込','口座振替','現金','でんさい','海外送金'],RATES=['課税10%','軽減8%','非課税','対象外'],DONE=['確定済（ロック）','先行支払済','支払済'];
 const LOCKED=['決裁中','決裁済み','出力済み'];
 let RULES=null,KAMOKU=[],BUMON=[],JOURNAL=null;
@@ -170,8 +173,52 @@ async function loadMasters(){
 function kamokuOf(name,dept){const c=KAMOKU.filter(k=>k.name===name);if(c.length<2)return c[0]||null;
   const fac=String(dept||'').startsWith((RULES&&RULES.factoryDeptPrefix)||'003');
   return c.find(k=>fac===k.code.startsWith('0005'))||c[0];}
+// ---------- 振込先（経費） ----------
+function hdrOf(r){return {payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc,bk:Object.assign({},r.bk)};}
+const bankFull=b=>!!(b&&b.code&&b.bcode&&b.type&&b.no&&b.holder);
+const digits=s=>String(s||'').replace(/\D/g,'');
+const sameBank=(a,b)=>digits(a.code).padStart(4,'0')===digits(b.code).padStart(4,'0')&&digits(a.bcode).padStart(3,'0')===digits(b.bcode).padStart(3,'0')&&digits(a.no).padStart(7,'0')===digits(b.no).padStart(7,'0');
+const bankText=b=>`${b.name||''}（${b.code||'—'}）${b.bname||''}（${b.bcode||'—'}）${b.type||''} ${b.no||''}`;
+// 振込先マスタ：SMILE のコードがあればそれ、無ければ 登録番号 → 支払先名 で引く（経費の支払先）
+function masterBankOf(r){let f=null;
+  if(r.code&&VB[r.code])f=VB[r.code];
+  else{const n=jnorm(r.payee),e=VBL.find(x=>!x.code&&((r.regNo&&x.reg===r.regNo)||(n&&x.n===n)));if(e)f=e.f;}
+  if(!f)return null;const g=d=>String(fv(L.vb,f,d)??'');
+  return {code:g('銀行コード'),name:g('銀行名'),bcode:g('支店コード'),bname:g('支店名'),type:g('口座区分'),no:g('口座番号'),holder:g('口座名義カナ'),master:true};}
+const bankUse=r=>bankFull(r.bk)?r.bk:(masterBankOf(r)||r.bk);   // 支払指図に使う振込先
+// 全角カナ → 半角（全銀の受取人名は半角カナ）
+const HK={'ガ':'ｶﾞ','ギ':'ｷﾞ','グ':'ｸﾞ','ゲ':'ｹﾞ','ゴ':'ｺﾞ','ザ':'ｻﾞ','ジ':'ｼﾞ','ズ':'ｽﾞ','ゼ':'ｾﾞ','ゾ':'ｿﾞ','ダ':'ﾀﾞ','ヂ':'ﾁﾞ','ヅ':'ﾂﾞ','デ':'ﾃﾞ','ド':'ﾄﾞ','バ':'ﾊﾞ','ビ':'ﾋﾞ','ブ':'ﾌﾞ','ベ':'ﾍﾞ','ボ':'ﾎﾞ','パ':'ﾊﾟ','ピ':'ﾋﾟ','プ':'ﾌﾟ','ペ':'ﾍﾟ','ポ':'ﾎﾟ','ヴ':'ｳﾞ',
+  'ア':'ｱ','イ':'ｲ','ウ':'ｳ','エ':'ｴ','オ':'ｵ','カ':'ｶ','キ':'ｷ','ク':'ｸ','ケ':'ｹ','コ':'ｺ','サ':'ｻ','シ':'ｼ','ス':'ｽ','セ':'ｾ','ソ':'ｿ','タ':'ﾀ','チ':'ﾁ','ツ':'ﾂ','テ':'ﾃ','ト':'ﾄ','ナ':'ﾅ','ニ':'ﾆ','ヌ':'ﾇ','ネ':'ﾈ','ノ':'ﾉ','ハ':'ﾊ','ヒ':'ﾋ','フ':'ﾌ','ヘ':'ﾍ','ホ':'ﾎ',
+  'マ':'ﾏ','ミ':'ﾐ','ム':'ﾑ','メ':'ﾒ','モ':'ﾓ','ヤ':'ﾔ','ユ':'ﾕ','ヨ':'ﾖ','ラ':'ﾗ','リ':'ﾘ','ル':'ﾙ','レ':'ﾚ','ロ':'ﾛ','ワ':'ﾜ','ヲ':'ｦ','ン':'ﾝ','ァ':'ｱ','ィ':'ｲ','ゥ':'ｳ','ェ':'ｴ','ォ':'ｵ','ッ':'ﾂ','ャ':'ﾔ','ュ':'ﾕ','ョ':'ﾖ','ー':'-','（':'(','）':')','　':' ','．':'.','・':'.','，':',','－':'-'};
+const toHanKana=s=>String(s||'').normalize('NFKC').replace(/[\u3041-\u3096]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)).split('').map(c=>HK[c]||c).join('').toUpperCase();
+// 全銀コードの公開データ（zengin-code。全国銀行協会の金融機関コードを元にした公開データ）で銀行・支店コードを確かめる
+const ZG_URL='https://zengin-code.github.io/api',ZG={banks:null,br:{}};
+async function zgBanks(){if(!ZG.banks)ZG.banks=await fetch(`${ZG_URL}/banks.json`).then(x=>x.json());return ZG.banks;}
+async function zgBranches(c){c=digits(c).padStart(4,'0');if(!ZG.br[c])ZG.br[c]=await fetch(`${ZG_URL}/branches/${c}.json`).then(x=>x.ok?x.json():{}).catch(()=>({}));return ZG.br[c];}
+const bnorm=s=>String(s||'').normalize('NFKC').replace(/株式会社|銀行|信用金庫|信用組合|支店|出張所|営業部|[\s　]/g,'');
+async function zgCheck(b){
+  if(!b.code)return {cls:'t-new',t:'銀行コードが空です'};
+  try{const bk=(await zgBanks())[digits(b.code).padStart(4,'0')];if(!bk)return {cls:'t-up',t:`全銀データに銀行コード ${b.code} がありません`};
+    let t=`銀行 ${bk.name}（${bk.code}）`,ok=!b.name||bnorm(b.name).includes(bnorm(bk.name))||bnorm(bk.name).includes(bnorm(b.name));
+    if(!ok)return {cls:'t-up',t:`銀行コード ${b.code} は全銀データでは「${bk.name}」です（入力：${b.name}）`};
+    if(!b.bcode)return {cls:'t-new',t:t+'・支店コードが空です'};
+    const br=(await zgBranches(b.code))[digits(b.bcode).padStart(3,'0')];
+    if(!br)return {cls:'t-new',t:t+`・支店 ${b.bcode} は全銀データにありません（特別な支店の可能性。請求書の番号を使い、銀行に確かめてください）`};
+    const ok2=!b.bname||bnorm(b.bname).includes(bnorm(br.name))||bnorm(br.name).includes(bnorm(b.bname));
+    return ok2?{cls:'t-ok',t:`✔ 全銀データと一致：${bk.name}（${bk.code}）${br.name}（${br.code}）`}:{cls:'t-up',t:`支店コード ${b.bcode} は全銀データでは「${br.name}」です（入力：${b.bname}）`};
+  }catch(e){return {cls:'t-new',t:'全銀データを読めませんでした（'+e.message+'）'};}}
+// 名前からコードを、コードから名前を埋める
+async function zgFill(b){const banks=await zgBanks();
+  if(!b.code&&b.name){const n=bnorm(b.name),hit=Object.values(banks).filter(x=>bnorm(x.name)===n);if(hit.length===1)b.code=hit[0].code;}
+  if(b.code){const bk=banks[digits(b.code).padStart(4,'0')];if(bk){b.code=bk.code;if(!b.name)b.name=bk.name+(/銀行|金庫|組合/.test(bk.name)?'':'銀行');}
+    const brs=await zgBranches(b.code);
+    if(!b.bcode&&b.bname){const n=bnorm(b.bname),hit=Object.values(brs).filter(x=>bnorm(x.name)===n);if(hit.length===1)b.bcode=hit[0].code;}
+    if(b.bcode){const br=brs[digits(b.bcode).padStart(3,'0')];if(br){b.bcode=br.code;if(!b.bname)b.bname=br.name;}}
+    if(!b.src)b.src=`${ZG_URL}/branches/${digits(b.code).padStart(4,'0')}.json`;}
+  return b;}
+const bankSearchUrl=b=>'https://www.google.com/search?q='+encodeURIComponent(`${b.name||''} ${b.bname||''} 支店コード`.trim());
 const SM_DRIVE='b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8',SM_FILE='仕入先マスタ.csv';
-let VM=[];
+let VM=[],VBL=[];
 // 名前の合う仕入先（同じ名前を先に。4文字以上なら含む／含まれるも）
 function vendorCands(name){const n=jnorm(name);if(!n)return [];
   const eq=VM.filter(v=>v.n===n||v.s===n),part=n.length>=4?VM.filter(v=>!eq.includes(v)&&v.n.length>=4&&(v.n.includes(n)||n.includes(v.n))):[];
@@ -220,7 +267,8 @@ async function loadAll(){
   ALL=(await fetchAll(L.inv)).filter(it=>{const c=fv(L.inv,it.fields,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,it.fields,'アーカイブフラグ')!==true;}).map(it=>({id:String(it.id),f:it.fields}));
   LINES={};(await fetchAll(L.sl)).forEach(it=>{const k=String(fv(L.sl,it.fields,'請求書ID')||'');if(k)(LINES[k]=LINES[k]||[]).push({id:String(it.id),f:it.fields});});
   Object.values(LINES).forEach(a=>a.sort((x,y)=>(+fv(L.sl,x.f,'明細行番号')||0)-(+fv(L.sl,y.f,'明細行番号')||0)));
-  VB={};(await fetchAll(L.vb)).forEach(it=>{const c=String(fv(L.vb,it.fields,'仕入先コード')||'').trim();if(c)VB[c]=it.fields;});
+  VB={};VBL=[];(await fetchAll(L.vb)).forEach(it=>{const f=it.fields,c=String(fv(L.vb,f,'仕入先コード')||'').trim();if(c)VB[c]=f;
+    if(fv(L.vb,f,'有効フラグ')!==false)VBL.push({id:String(it.id),code:c,name:fv(L.vb,f,'仕入先名')||'',n:jnorm(fv(L.vb,f,'仕入先名')),reg:String(fv(L.vb,f,'登録番号')||'').trim(),f});});
   SPM=(await fetchAll(L.sp,`fields/${F(L.sp,'決済月')} eq '${ym}'`)).map(it=>({code:fv(L.sp,it.fields,'仕入先コード'),name:fv(L.sp,it.fields,'仕入先名')||'',incl:+fv(L.sp,it.fields,'税込仕入額')||0,n:jnorm(fv(L.sp,it.fields,'仕入先名'))}));
   PIS=(await fetchAll(L.pi,`fields/${F(L.pi,'決済月')} eq '${ym}'`)).map(it=>it.fields);
   SBS=(await fetchAll(L.sb,`fields/${F(L.sb,'決済月')} eq '${ym}'`)).map(it=>({id:String(it.id),f:it.fields}));
@@ -239,6 +287,7 @@ function mk(x){
   const r={id:x.id,x,f,loc,cat,steps,status,done,lines,
     payee:g(x,'支払先名')||'',code:String(g(x,'支払先コード')||'').trim(),amount:+g(x,'金額_税込')||0,ym:g(x,'対象年月')||'',round:g(x,'支払日区分')||'',method:g(x,'支払手段')||'',
     invNo:g(x,'請求NO')||'',regNo:g(x,'登録番号')||'',title:f.Title||'',doc:String(g(x,'DOCコード')||''),
+    bk:Object.fromEntries(Object.entries(BK).map(([k,n])=>[k,String(f[n]??'')])),
     ai:f[V.ai]||'',aicom:String(f[V.com]||''),by:f[V.by]||'',at:f[V.at]||'',wf:f[V.wf]||'',
     log:parseJ(f[V.log],[]),hold:!!f[V.hold],note:f[V.note]||'',reject:g(x,'差戻し理由')||'',prepaid:g(x,'先行支払日')||''};
   r.step=done?steps.length:Math.min(steps.length-1,Math.max(0,+f[V.step]||0));
@@ -267,7 +316,10 @@ function alertsOf(r){
   const al=RULES.alerts||{},pm=prevAmount(r);
   if(r.amount&&pm==null&&r.amount>=(al.newMin||100000))a.push({k:'初めて',t:`前月にない支払先です（${yen(r.amount)} 円）`,ack:false});
   if(pm&&r.amount-pm>=(al.upMin||50000)&&r.amount>=pm*(1+(al.upRate||0.3)))a.push({k:'前月より増',t:`前月 ${yen(pm)} 円 → ${yen(r.amount)} 円`,ack:false});
-  if(r.method==='総合振込'&&!(r.code&&VB[r.code]))a.push({k:'口座',t:r.code?`振込先口座が登録（AP_VendorBank）にありません（${r.code}）`:'支払先コードがないため、振込先口座を確かめられません（このままだと全銀の出力から外れます）',ack:true,block:true});
+  if(r.method==='総合振込'&&r.status!=='先行支払済'){const m=masterBankOf(r),b=r.bk,has=bankFull(b);
+    if(!has&&!m)a.push({k:'口座',t:'振込先が入っていません。請求書の振込先を「振込先」の欄に入れてください（全銀の出力に要ります）',ack:true,block:true});
+    else if(has&&m&&!sameBank(b,m))a.push({k:'口座',t:`振込先が振込先マスタと違います（マスタ：${bankText(m)}／請求書：${bankText(b)}）。電話などで確かめてください`,ack:true,block:true});
+    else if(has&&!m)a.push({k:'初めての振込先',t:'振込先マスタに無い支払先です。銀行コード・支店コードを参照元で確かめてください（確定すると振込先マスタに登録します）',ack:true});}
   const pre=RULES.factoryDeptPrefix||'003',fd=r.lines.some(l=>String(fv(L.sl,l.f,'部門コード')||'').startsWith(pre)),hd=r.lines.some(l=>{const c=String(fv(L.sl,l.f,'部門コード')||'');return c&&!c.startsWith(pre);});
   if(r.loc==='本社'&&fd&&!hd)a.push({k:'拠点',t:'仕訳の部門が工場ですが、本社の経費として受け付けています',ack:true});
   if(r.loc==='工場'&&hd&&!fd)a.push({k:'拠点',t:'仕訳の部門が本社ですが、工場の経費として受け付けています',ack:true});
@@ -384,13 +436,14 @@ function whyNot(r,al){
   if(!r.lines.length)return '仕訳を入れてください（「過去の仕訳から案を作る」も使えます）';
   if(r.lines.some(l=>!fv(L.sl,l.f,'勘定科目コード')))return '仕訳の科目が空の行があります';
   if(r.lsum!==r.amount)return `仕訳の合計 ${yen(r.lsum)} が金額 ${yen(r.amount)} と違います`;
+  if(r.method==='総合振込'&&r.status!=='先行支払済'&&!bankFull(bankUse(r)))return '振込先（銀行コード・支店コード・預金種目・口座番号・名義カナ）を入れてください';
   if(r.step===0&&al.some(a=>a.ack)&&!acks[r.id])return '気づきを確かめて、チェックを入れてください';
   return '';}
 function drawDetail(){
   const el=$('detail');if(!el)return;const r=cur();
   if(!r){el.innerHTML='<div style="color:var(--sub);padding:20px">左の一覧から選んでください</div>';return;}
   const a=listRows(),i=a.findIndex(x=>x.id===r.id),ed=canAct(r),al=alertsOf(r),why=whyNot(r,al),lock=r.done?lockOf(r):'';
-  const h=hdrDraft||{payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc};
+  const h=hdrDraft||hdrOf(r);
   const lines=draft||r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
     excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||'',conf:+fv(L.sl,l.f,'AI信頼スコア')||0}));
   const lsum=lines.reduce((s,l)=>s+(+l.incl||0),0),pm=prevAmount(r);
@@ -419,7 +472,8 @@ function drawDetail(){
         <div><label>登録番号（インボイス）</label><input type="text" data-h="regNo" value="${esc(h.regNo)}" ${ed?'':'disabled'}></div></div>
         ${ed&&!h.code&&vendorCands(h.payee).length?`<div class="box info" style="margin-top:6px;font-size:12.5px">仕入先マスタに名前の合う先があります：${vendorCands(h.payee).map(v=>`<button data-vc="${esc(v.code)}" style="margin:2px">${esc(v.name)}（${esc(v.code)}）にする</button>`).join('')}</div>`:''}
         ${ed?`<div style="margin-top:6px;display:flex;gap:6px;align-items:center"><button class="pri" id="bHdr" ${hdrDraft?'':'disabled'}>内容を保存</button>${hdrDraft?'<button id="bHdrX">元に戻す</button>':''}
-          <span style="font-size:12px;color:var(--sub)">${r.method==='総合振込'&&h.code?(VB[h.code]?'振込先：登録あり（AP_VendorBank）':'<span class="ck-ng" style="color:var(--up)">振込先口座の登録なし</span>'):''}</span></div>`:''}</div>
+          </div>`:''}</div>
+      ${h.method==='総合振込'?bankSec(r,h,ed):''}
       <div class="sec"><h4>仕訳（借方）<span style="font-weight:400">— 貸方は支払方法の口座（${esc(creditOf(r.method).code||'—')}）</span></h4>
         <div class="lnw"><table class="ln-t"><tr><th style="min-width:104px">科目</th><th style="min-width:86px">部門</th><th style="min-width:56px">税</th><th style="min-width:74px">税率</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th><th></th></tr>
         ${lines.map((l,k)=>ed?`<tr class="l1"><td><input list="dl-kamoku" data-lk="${k}" data-lf="acct" value="${esc(l.aname)}" title="${esc(l.acode?'科目コード '+l.acode:'科目コードなし')}${l.conf&&l.conf<70?'（AI の自信が低い）':''}" ${l.conf&&l.conf<70?'style="background:var(--warn-l)"':''}></td>
@@ -447,6 +501,19 @@ function drawDetail(){
       <span class="keys">${lock?`<span style="color:var(--warn)">${esc(lock)}の支払に入っています（直すときは差分の決裁）</span>`:why?`<span style="color:var(--warn)">${esc(why)}</span>`:r.done?'':'Enter：OK・次へ　←→：前・次　H：保留'}</span>
       ${r.done?'':`<button class="pri big-btn" id="dOk" ${why?'disabled':''}>${(()=>{const to=!myStepAt(r)&&myIdx(r)>r.step?myIdx(r):r.step,sk=to>r.step?`（${to-r.step}段飛ばす）`:'';return (to>=r.steps.length-1?'✔ 確定・次へ':'✔ OK・次へ')+sk;})()}</button>`}</div>`;
   wireDetail(r);}
+// 振込先の欄（総合振込のとき）：請求書の口座・振込先マスタとの比べ・全銀データでの確かめ・参照元
+function bankSec(r,h,ed){const b=h.bk,m=masterBankOf(Object.assign({},r,{payee:h.payee,code:h.code,regNo:h.regNo}));
+  const inp=(k,lab,w,ph)=>`<div ${w?`style="grid-column:span ${w}"`:''}><label>${lab}</label><input type="text" data-h="bk.${k}" value="${esc(b[k])}" placeholder="${esc(ph||'')}" ${ed?'':'disabled'}></div>`;
+  const ms=m?(bankFull(b)?(sameBank(b,m)?'<span class="tag t-ok">✔ 振込先マスタと同じ</span>':'<span class="tag t-up">振込先マスタと違う</span>'):`<span class="tag t-pri">振込先マスタ：${esc(bankText(m))}</span>`):'<span class="tag t-new">振込先マスタに無い（確定すると登録）</span>';
+  const src=b.src?(/^https?:/.test(b.src)?`<a href="${esc(b.src)}" target="_blank" rel="noopener">${esc(b.src.length>64?b.src.slice(0,64)+'…':b.src)}</a>`:esc(b.src)):'—';
+  return `<div class="sec"><h4>振込先（全銀の出力に使う）</h4>
+    <div class="fg">${inp('name','銀行名')}${inp('code','銀行コード（4桁）')}${inp('bname','支店名')}${inp('bcode','支店コード（3桁）')}
+      <div><label>預金種目</label><select data-h="bk.type" ${ed?'':'disabled'}><option value=""></option>${ACCT_TYPES.map(x=>`<option ${x===b.type?'selected':''}>${x}</option>`).join('')}</select></div>
+      ${inp('no','口座番号（7桁）')}${inp('holder','口座名義（カナ）',2,'例：カ）フカガワジヨウリユウシヨ（保存で半角に）')}</div>
+    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">${ms}<span class="tag t-new" id="zgst">全銀データで確かめています…</span></div>
+    <div style="margin-top:6px;font-size:12px;color:var(--sub);display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      ${ed?'<button id="bZg" style="padding:2px 10px">🔎 全銀データで埋める・確かめる</button>':''}${ed&&m&&!bankFull(b)?'<button id="bUseM" style="padding:2px 10px">振込先マスタの口座を使う</button>':''}
+      <span>参照元：${src}</span><a href="${esc(bankSearchUrl(b))}" target="_blank" rel="noopener">Web で支店コードを調べる ↗</a></div></div>`;}
 function creditOf(m){const c=(RULES.journal&&RULES.journal.credit)||{};return c[m]||c['総合振込']||{};}
 const pdfPaths=r=>r.doc.split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean);
 function wireDetail(r){
@@ -457,10 +524,13 @@ function wireDetail(r){
   const cm=$('dCm');if(cm)cm.onchange=()=>act(r,{[V.note]:cm.value},'コメントを保存しました');
   const ck=$('cAck');if(ck)ck.onchange=()=>{acks[r.id]=ck.checked;drawDetail();};
   const mo=$('dMore');if(mo)mo.onchange=()=>{const v=mo.value;mo.value='';more(r,v);};
-  document.querySelectorAll('[data-h]').forEach(e=>e.onchange=()=>{hdrDraft=hdrDraft||{payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc};
-    hdrDraft[e.dataset.h]=e.dataset.h==='amount'?(+e.value||0):e.value.trim();drawDetail();});
-  document.querySelectorAll('[data-vc]').forEach(e=>e.onclick=()=>{hdrDraft=hdrDraft||{payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc};
+  document.querySelectorAll('[data-h]').forEach(e=>e.onchange=()=>{hdrDraft=hdrDraft||hdrOf(r);
+    const k=e.dataset.h;if(k.startsWith('bk.'))hdrDraft.bk[k.slice(3)]=e.value.trim();else hdrDraft[k]=k==='amount'?(+e.value||0):e.value.trim();drawDetail();});
+  document.querySelectorAll('[data-vc]').forEach(e=>e.onclick=()=>{hdrDraft=hdrDraft||hdrOf(r);
     hdrDraft.code=e.dataset.vc;drawDetail();});
+  const zs=$('zgst');if(zs){const b=(hdrDraft||hdrOf(r)).bk;zgCheck(b).then(x=>{const e=$('zgst');if(e&&st.sel===r.id){e.className='tag '+x.cls;e.textContent=x.t;}});}
+  on('bZg',async()=>{hdrDraft=hdrDraft||hdrOf(r);await zgFill(hdrDraft.bk);drawDetail();});
+  on('bUseM',()=>{hdrDraft=hdrDraft||hdrOf(r);const m=masterBankOf(r);if(m){Object.assign(hdrDraft.bk,{code:m.code,name:m.name,bcode:m.bcode,bname:m.bname,type:m.type,no:m.no,holder:m.holder,src:'振込先マスタ（AP_VendorBank）'});}drawDetail();});
   on('bHdr',()=>saveHeader(r));on('bHdrX',()=>{hdrDraft=null;drawDetail();});
   document.querySelectorAll('[data-lk]').forEach(e=>e.onchange=()=>{const dd=dLines(r),l=dd[+e.dataset.lk],f=e.dataset.lf;
     if(f==='acct'){const v=e.value.trim(),m=v.match(/^(\d{6})\s*(.*)$/);const k=m?KAMOKU.find(x=>x.code===m[1]):kamokuOf(v,l.dept);l.acode=k?k.code:(m?m[1]:'');l.aname=k?k.name:(m?m[2]:v);}
@@ -519,7 +589,8 @@ async function saveHeader(r){const h=hdrDraft;if(!h)return;
   const src={'支払先名':h.payee,'支払先コード':h.code,'金額_税込':h.amount,'対象年月':h.ym,'請求NO':h.invNo,'登録番号':h.regNo,'支払区分':h.loc==='工場'?'工場経費':'本社経費'};
   if(h.round)src['支払日区分']=h.round;if(h.method)src['支払手段']=h.method;   // 選択肢の列は空にしない
   const o=toFields(L.inv,src);o[V.loc]=h.loc;
-  const ch=[];if(h.payee!==r.payee)ch.push('支払先');if(h.amount!==r.amount)ch.push(`金額 ${yen(r.amount)}→${yen(h.amount)}`);if(h.method!==r.method)ch.push('支払方法');if(h.round!==r.round)ch.push('支払回');if(h.code!==r.code)ch.push('支払先コード');if(h.loc!==r.loc)ch.push('拠点');
+  Object.entries(BK).forEach(([k,n])=>{let v=String(h.bk[k]||'').trim();if(v){if(k==='holder')v=toHanKana(v);if(k==='code')v=digits(v).padStart(4,'0');if(k==='bcode')v=digits(v).padStart(3,'0');if(k==='no')v=digits(v).padStart(7,'0');}o[n]=v;});
+  const ch=[];if(Object.keys(BK).some(k=>String(h.bk[k]||'')!==String(r.bk[k]||'')))ch.push('振込先');if(h.payee!==r.payee)ch.push('支払先');if(h.amount!==r.amount)ch.push(`金額 ${yen(r.amount)}→${yen(h.amount)}`);if(h.method!==r.method)ch.push('支払方法');if(h.round!==r.round)ch.push('支払回');if(h.code!==r.code)ch.push('支払先コード');if(h.loc!==r.loc)ch.push('拠点');
   if(r.failed)o[V.ai]='対象外';   // 読み取り失敗を人が入れた → 確認待ちへ
   hdrDraft=null;await act(r,o,'内容を保存しました',{act:'内容を直した',memo:ch.join('・')||(r.failed?'手で入力':''),step:r.step});}
 async function saveLines(r){const d=draft;if(!d)return;
@@ -547,8 +618,18 @@ async function okRow(){const r=cur();if(!r)return;const btn=$('dOk');if(!btn||bt
   if(last)Object.assign(o,toFields(L.inv,{'支払ステータス':'確定済（ロック）','入力者':me()}));else if(r.status==='差戻し')Object.assign(o,toFields(L.inv,{'支払ステータス':'確認待'}));
   const memo=[skipped.length?skipped.join('・')+' を飛ばした':'',al.filter(x=>x.ack).length&&acks[r.id]?'気づきを確かめた':''].filter(Boolean).join('／');
   try{await patchInv(r,o,{act:last?'確定':'OK',step:skipTo,sub,skip:skipped.length?r.step:undefined,memo});
+    if(last)await registerBank(r);
     buildItems();const nx=a.slice(i+1).concat(a.slice(0,i)).map(x=>items.find(y=>y.id===x.id)).find(y=>y&&canAct(y)&&!y.hold);
     if(nx)st.sel=nx.id;draft=null;hdrDraft=null;snack(last?`✔ 確定しました（${r.payee}）`:`✔ OK（${r.payee}）→ ${stepName(r,next)}`);render();}catch(e){snack('保存エラー: '+e.message,true);}}
+// 確定した経費の振込先を、振込先マスタ（AP_VendorBank）に入れる。同じ支払先がもうあれば何もしない（口座は自動で変えない）
+async function registerBank(r){
+  if(r.method!=='総合振込'||masterBankOf(r)||!bankFull(r.bk))return;
+  const b=r.bk,o={Title:r.payee,'仕入先コード':r.code||'','仕入先名':r.payee,'銀行コード':b.code,'銀行名':b.name,'支店コード':b.bcode,'支店名':b.bname,'口座区分':b.type,'口座番号':b.no,'口座名義カナ':b.holder,
+    '口座用途':'振込','有効フラグ':true,'備考':`経費の確定で登録（${me()}・請求書 ${r.invNo||'—'}・確認元 ${b.src||'—'}）`};
+  if(L.vb.fmap['登録番号']&&r.regNo)o['登録番号']=r.regNo;
+  try{const c=await gpost(`/sites/${AP_SITE}/lists/${L.vb.id}/items`,{fields:toFields(L.vb,o)});VBL.push({id:String(c.id),code:r.code||'',name:r.payee,n:jnorm(r.payee),reg:r.regNo||'',f:c.fields||toFields(L.vb,o)});
+    await patchInv(r,{},{act:'振込先マスタに登録',memo:bankText(b)});snack(`振込先マスタに登録しました（${r.payee}）`);}
+  catch(e){snack('振込先マスタに登録できませんでした：'+e.message,true);}}
 async function backRow(r){const why=prompt(`${stepName(r,r.step-1)} に戻します。理由を書いてください`);if(why===null)return;if(!why.trim()){snack('理由を書いてください',true);return;}
   await act(r,Object.assign({[V.step]:r.step-1},toFields(L.inv,{'差戻し理由':why.trim()})),'前の段へ戻しました',{act:'戻した',memo:why.trim(),step:r.step});}
 async function more(r,v){

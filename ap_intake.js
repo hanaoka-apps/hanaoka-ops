@@ -71,6 +71,9 @@
         if (METHODS.includes(H.PayMethod)) setIfEmpty('支払手段', H.PayMethod);
         if (CONF.includes(H.AIConfidence)) set('AI確信度', H.AIConfidence);
         if (H.DebitDate) set('引落予定日', H.DebitDate);
+        // 振込先（請求書から読んだもの。経費の支払先は振込先マスタに無いことが多い）。読めたものだけ入れる
+        const BKF = { BankCode: 'PayeeBankCode', BankName: 'PayeeBankName', BranchCode: 'PayeeBranchCode', BranchName: 'PayeeBranchName', AcctType: 'PayeeAcctType', AcctNo: 'PayeeAcctNo', AcctHolder: 'PayeeAcctHolder', BankSource: 'PayeeBankSource' };
+        Object.entries(BKF).forEach(([k, n]) => { if (H[k] != null && H[k] !== '' && !f[n]) patch[n] = String(H[k]); });
         if (H.AmountInclTax != null) { patch[fi('金額_税込')] = +H.AmountInclTax || 0; patch[fi('金額_税抜')] = +H.AmountExclTax || 0; patch[fi('消費税')] = +H.Tax || 0; }
         // PDF：読み取り側が processed へ移していればそのまま。古い形は incoming → processed（移せなければ incoming のまま）
         const docs = [];
