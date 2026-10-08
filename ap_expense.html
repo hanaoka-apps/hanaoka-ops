@@ -408,7 +408,7 @@ function myLoc(){const f=(RULES.steps&&RULES.steps['工場'])||[];return f.some(
 function drawInbox(){
   const b=inboxOf(),list=b[st.box]||[],who=stepLabelAll(0).replace(/^.*?（|）$/g,'');
   $('pane').innerHTML=`<div class="card"><h2>請求書を受け付ける（稟議なしの経費。支払依頼のワークフローで決裁されたものは自動で届きます）</h2>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label class="drop" id="drop" style="flex:1;min-width:280px">📥 経費の請求書 PDF をここにドラッグ（またはクリックして選ぶ・複数可）<input type="file" id="file-in" accept="application/pdf" multiple></label>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label class="drop" id="drop" style="flex:1;min-width:280px">📥 経費の請求書（PDF・写真）をここにドラッグ（またはクリックして選ぶ・複数可。スマホは撮影もできます）<input type="file" id="file-in" accept="${APDoc.ACCEPT}" multiple></label>
         <label style="font-size:13px;color:var(--sub)">拠点 <select id="rc-loc" ${UPL.busy?'disabled':''}><option ${myLoc()==='本社'?'selected':''}>本社</option><option ${myLoc()==='工場'?'selected':''}>工場</option></select></label>
         <span style="font-size:12px;color:var(--sub)">${month().replace('/','年')}月払いとして受け付けます</span></div></div>
     <div class="card"><div class="subtabs">
@@ -639,12 +639,12 @@ function go(dlt){const a=listRows(),i=a.findIndex(x=>x.id===st.sel);const n=a[Ma
   const r=cur();if(r&&isDirty(r)&&!confirm('保存していない直しがあります。捨てて移りますか？'))return;openOne(n.id);}
 async function showPdf(r,path){
   pdfSel[r.id]=path;document.querySelectorAll('[data-pdf]').forEach(b=>b.classList.toggle('on',b.dataset.pdf===path));
-  const v=$('pdfv');if(!v)return;if(pdfCache[path]){v.innerHTML=`<iframe src="${pdfCache[path]}"></iframe>`;return;}
+  const v=$('pdfv');if(!v)return;if(pdfCache[path]){v.innerHTML=APDoc.view(pdfCache[path],path);return;}
   const p0=path.split('?')[0].replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');
   // 受付直後は incoming、PA の処理後は processed。片方で見つからなければもう一方も試す
   const alt=/\/incoming\//i.test(p0)?p0.replace(/\/incoming\//i,'/processed/'):p0.replace(/\/processed\//i,'/incoming/');
   for(const p of [p0,alt]){try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true);pdfCache[path]=URL.createObjectURL(b);
-      if(st.sel===r.id&&pdfSel[r.id]===path&&$('pdfv'))$('pdfv').innerHTML=`<iframe src="${pdfCache[path]}"></iframe>`;return;}catch(e){}}
+      if(st.sel===r.id&&pdfSel[r.id]===path&&$('pdfv'))$('pdfv').innerHTML=APDoc.view(pdfCache[path],path);return;}catch(e){}}
   if($('pdfv')&&st.sel===r.id&&pdfSel[r.id]===path)$('pdfv').textContent='PDF を開けませんでした（'+path.split('/').pop()+'）';}
 
 // ---------- 過去の仕訳（/BILLS/masters/仕訳インデックス.csv）から案 ----------
@@ -750,15 +750,16 @@ async function more(r,v){
 // ---------- 受け付け（PDF を置く。新フロー整理 v3） ----------
 function apCode(){const d=new Date(),p=n=>String(n).padStart(2,'0'),s='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';let x='';for(let i=0;i<8;i++)x+=s[Math.floor(Math.random()*s.length)];return `AP${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${x}`;}
 async function registerExpense(files){
-  const list=[...files].filter(f=>f.type==='application/pdf'||/\.pdf$/i.test(f.name));if(!list.length){snack('PDF を選んでください',true);return;}
+  const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
   if(UPL.busy){snack('いま受け付けています。終わってから置いてください',true);return;}
   const loc=$('rc-loc')?$('rc-loc').value:myLoc(),cat=loc==='工場'?'工場経費':'本社経費';let ok=0;
   Object.assign(UPL,{busy:true,total:list.length,done:0,cur:'',ok:0,errs:[],result:''});drawUpl();
   for(const f of list){const code=apCode();UPL.cur=f.name;drawUpl();
-    const base=f.name.replace(/\.pdf$/i,'').replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,60),fname=`${code}_${base||'請求書'}.pdf`;
     try{msg('受付中... '+f.name);
-      await gputFile(`/BILLS/incoming/${fname}`,f,'application/pdf');
-      const hf=toFields(L.inv,{Title:f.name.replace(/\.pdf$/i,''),'支払区分':cat,'対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':`/Shared Documents/BILLS/incoming/${fname}`});
+      const d=await APDoc.prep(f);   // 画像は大きければ縮めて JPEG に
+      const base=d.base.replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,60),fname=`${code}_${base||'請求書'}.${d.ext}`;
+      await gputFile(`/BILLS/incoming/${fname}`,d.blob,d.type);
+      const hf=toFields(L.inv,{Title:d.base,'支払区分':cat,'対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':`/Shared Documents/BILLS/incoming/${fname}`});
       hf[V.ai]='受付';hf[V.by]=me();hf[V.at]=new Date().toISOString();hf[V.loc]=loc;hf[V.step]=0;
       const created=await gpost(`/sites/${AP_SITE}/lists/${L.inv.id}/items`,{fields:hf});
       // sidecar：AI（Claude）がどの請求書を埋めるか。経費なので科目・部門・仕訳の案も作る

@@ -122,14 +122,16 @@
       dt.querySelectorAll('[data-pdf]').forEach(function (b) { b.onclick = function () { showPdf(x, b.dataset.pdf); }; });
       if ((x.invoices || []).length) showPdf(x, ui.pdf[x._k] || x.invoices[0]);
     }
+    // 請求書は PDF か画像（スマホの写真など）。画像は幅に合わせる
+    function docHtml(u, key) { return /\.(jpe?g|png|webp|heic|heif)$/i.test(String(key || '').split('?')[0]) ? '<div style="width:100%;max-height:520px;overflow:auto;text-align:center"><img src="' + u + '" alt="請求書の画像" style="max-width:100%;height:auto"></div>' : '<iframe src="' + u + '"></iframe>'; }
     function showPdf(x, key) {
       ui.pdf[x._k] = key; el.querySelectorAll('[data-pdf]').forEach(function (b) { b.classList.toggle('on', b.dataset.pdf === key); });
       var box = el.querySelector('.pdf'); if (!box) return;
-      if (ui.cache[key]) { box.innerHTML = '<iframe src="' + ui.cache[key] + '"></iframe>'; return; }
+      if (ui.cache[key]) { box.innerHTML = docHtml(ui.cache[key], key); return; }
       box.textContent = '読み込み中...';
       Promise.resolve(o.loadPdf ? o.loadPdf(key) : null).then(function (u) {
         if (u) ui.cache[key] = u; var b2 = el.querySelector('.pdf'); if (!b2 || ui.pdf[x._k] !== key || ui.sel !== x._k) return;
-        b2.innerHTML = u ? '<iframe src="' + u + '"></iframe>' : '請求書を開けませんでした'; });
+        b2.innerHTML = u ? docHtml(u, key) : '請求書を開けませんでした'; });
     }
     function go(d) { var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }), n = a[Math.min(a.length - 1, Math.max(0, i + d))]; if (n) { ui.sel = n._k; rowsHtml(); detail(); } }
     function mark(v) { if (!o.canAct) return; var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }); if (i < 0) return;

@@ -451,7 +451,7 @@ function drawDetail(){
       <div class="dpdf">
         <div class="chips">${r.invoices.map(x=>`<button class="chip ${pdfSel[r.code]===x.id?'on':''}" data-pdf="${x.id}">📄 ${esc(x.no?'No.'+x.no:x.name||'請求書')}${x.by?' ・'+esc(x.by):''}</button>`).join('')}</div>
         <div class="pdf" id="pdfv">${r.invoices.length?'請求書を選ぶとここに表示します':'まだ請求書がありません'}</div>
-        ${ed?`<label class="drop" id="idrop" style="margin-top:8px">📎 この仕入先（${esc(r.name)}）の請求書 PDF を置く（AI が読み取って金額などを埋めます）<input type="file" id="ifile" accept="application/pdf" multiple></label>`:''}</div>
+        ${ed?`<label class="drop" id="idrop" style="margin-top:8px">📎 この仕入先（${esc(r.name)}）の請求書（PDF・写真）を置く（AI が読み取って金額などを埋めます）<input type="file" id="ifile" accept="${APDoc.ACCEPT}" multiple></label>`:''}</div>
       <div class="dinfo">
       <div class="dhead"><div><div style="font-size:12px;color:var(--sub)">${esc(r.code)}・${esc(r.mainDept||'')}・${esc(r.payRound)}払い（予定日 ${esc(r.payDate||'')}）</div><h3>${esc(r.name)}</h3>
           <div>${tagsOf(r).map(t=>`<span class="tag ${t[1]}" style="margin:0 4px 0 0">${esc(t[0])}</span>`).join('')}</div></div>
@@ -522,14 +522,14 @@ function go(dlt){const a=listRows(),i=a.findIndex(x=>x.code===st.sel);const n=a[
 async function showPdf(r,id){
   pdfSel[r.code]=id;document.querySelectorAll('[data-pdf]').forEach(b=>b.classList.toggle('on',b.dataset.pdf===id));
   const v=$('pdfv'),x=r.invoices.find(y=>y.id===id);if(!v||!x)return;
-  if(pdfCache[id]){v.innerHTML=`<iframe src="${pdfCache[id]}"></iframe>`;return;}
+  if(pdfCache[id]){v.innerHTML=APDoc.view(pdfCache[id],x.doc);return;}
   const path=String(x.doc||'').split(/[\r\n;]+/)[0].trim().replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');
   if(!path){v.textContent='PDF の場所がありません';return;}
   v.textContent='読み込み中...';
   // 受付直後は incoming、PA の処理後は processed。片方で見つからなければもう一方も試す
   const alt=/\/incoming\//i.test(path)?path.replace(/\/incoming\//i,'/processed/'):path.replace(/\/processed\//i,'/incoming/');
   for(const p of [path,alt]){try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true);pdfCache[id]=URL.createObjectURL(b);
-      if(st.sel===r.code&&pdfSel[r.code]===id&&$('pdfv'))$('pdfv').innerHTML=`<iframe src="${pdfCache[id]}"></iframe>`;return;}catch(e){}}
+      if(st.sel===r.code&&pdfSel[r.code]===id&&$('pdfv'))$('pdfv').innerHTML=APDoc.view(pdfCache[id],x.doc);return;}catch(e){}}
   if($('pdfv')&&st.sel===r.code&&pdfSel[r.code]===id)$('pdfv').textContent='PDF を開けませんでした';}
 
 // ---------- 作業の保存 ----------
@@ -560,13 +560,14 @@ async function addAdjust(r){const a=Math.round(+$('adjA').value||0),why=$('adjR'
 // ---------- 請求書を置く（仕入先が決まった状態で受け付ける。新フロー整理 v3） ----------
 function apCode(){const d=new Date(),p=n=>String(n).padStart(2,'0'),s='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';let x='';for(let i=0;i<8;i++)x+=s[Math.floor(Math.random()*s.length)];return `AP${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${x}`;}
 async function registerInvoices(r,files){
-  const list=[...files].filter(f=>f.type==='application/pdf'||/\.pdf$/i.test(f.name));if(!list.length){snack('PDF を選んでください',true);return;}
+  const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
   const cat=r.mainDept==='工場'?'工場仕入':'本社仕入',loc=r.mainDept==='工場'?'工場':'本社';let ok=0;
   for(const f of list){const code=apCode();
-    const base=f.name.replace(/\.pdf$/i,'').replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,60),fname=`${code}_${base||'請求書'}.pdf`;
     try{msg('受付中... '+f.name);
-      await gputFile(`/BILLS/incoming/${fname}`,f,'application/pdf');
-      const hf=toFields(L.inv,{Title:f.name.replace(/\.pdf$/i,''),'支払区分':cat,'支払先コード':r.code,'支払先名':r.name,'対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':`/Shared Documents/BILLS/incoming/${fname}`});
+      const d=await APDoc.prep(f);   // 画像は大きければ縮めて JPEG に
+      const base=d.base.replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,60),fname=`${code}_${base||'請求書'}.${d.ext}`;
+      await gputFile(`/BILLS/incoming/${fname}`,d.blob,d.type);
+      const hf=toFields(L.inv,{Title:d.base,'支払区分':cat,'支払先コード':r.code,'支払先名':r.name,'対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':`/Shared Documents/BILLS/incoming/${fname}`});
       hf[V3.ai]='受付';hf[V3.by]=me();hf[V3.at]=new Date().toISOString();hf[V3.loc]=loc;
       const created=await gpost(`/sites/${AP_SITE}/lists/${L.inv.id}/items`,{fields:hf});
       // sidecar：AI（Claude）がどの請求書を埋めるか。仕入なので SMILE の額と口座マスタも見る

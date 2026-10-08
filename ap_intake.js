@@ -127,4 +127,30 @@
     return { applied, errors };
   }
   window.APIntake = { apply };
+
+  // ---------- 請求書のファイル：PDF か画像（スマホの写真など） ----------
+  // 画像は大きければ縮めて JPEG にする（長い辺 2400px。AI が読めて、画面ですぐ開ける大きさ）
+  const IMG_EXT = /\.(jpe?g|png|webp|heic|heif)$/i, DOC_EXT = /\.(pdf|jpe?g|png|webp|heic|heif)$/i, MAX_EDGE = 2400, MAX_KEEP = 1.5e6;
+  const kind = f => (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) ? 'pdf' : (/^image\//.test(f.type) || IMG_EXT.test(f.name)) ? 'img' : '';
+  async function prep(f) {
+    const base = f.name.replace(DOC_EXT, '');
+    if (kind(f) === 'pdf') return { blob: f, ext: 'pdf', type: 'application/pdf', base };
+    let bmp;
+    try { bmp = await createImageBitmap(f, { imageOrientation: 'from-image' }); }
+    catch (e) { throw new Error(/heic|heif/i.test(f.type + f.name) ? 'HEIC の写真はこのブラウザで開けません（iPhone は 設定→カメラ→フォーマット→「互換性優先」、またはスマホから直接置いてください）' : '画像を開けません'); }
+    const edge = Math.max(bmp.width, bmp.height), isJpgPng = /^image\/(jpeg|png)$/.test(f.type);
+    if (isJpgPng && edge <= MAX_EDGE && f.size <= MAX_KEEP) { bmp.close && bmp.close(); return { blob: f, ext: f.type === 'image/png' ? 'png' : 'jpg', type: f.type, base }; }
+    const k = Math.min(1, MAX_EDGE / edge), c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height); bmp.close && bmp.close();
+    const blob = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('画像を変換できません');
+    return { blob, ext: 'jpg', type: 'image/jpeg', base };
+  }
+  const isImg = p => IMG_EXT.test(String(p || '').split('?')[0]);
+  // 画面に出す：PDF は iframe、画像は幅に合わせる（クリックで原寸）
+  const view = (url, path) => isImg(path)
+    ? `<div class="imgv" style="width:100%;height:100%;overflow:auto;background:#525659;text-align:center"><img src="${url}" alt="請求書の画像" style="max-width:100%;height:auto;cursor:zoom-in;background:#fff" onclick="this.style.maxWidth=this.style.maxWidth==='none'?'100%':'none';this.style.cursor=this.style.maxWidth==='none'?'zoom-out':'zoom-in'"></div>`
+    : `<iframe src="${url}"></iframe>`;
+  window.APDoc = { ACCEPT: 'application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif', kind, prep, isImg, view, DOC_EXT };
 })();
