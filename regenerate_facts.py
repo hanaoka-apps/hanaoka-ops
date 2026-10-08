@@ -259,6 +259,25 @@ def find_no_idx(header, kind):
     return None, None
 
 
+ORDER_STATUS = {}   # 受注の売上状況に使った列 (build_meta.order_status)
+HEADERS = {}        # CSVの列名一覧 (build_meta.csv_headers: 列名合わせの確認用)
+
+
+def find_order_status_idx(header):
+    """受注CSVで「売上前/売上済」を判定できる列を探す。
+    1) 受注残数・残数量 など（数値, 0以下=売上済）  2) 完了/完納/売上済/出荷済 などの区分
+    見つからなければ (None, None)"""
+    import unicodedata
+    cleaned = [unicodedata.normalize('NFKC', str(h).replace('\ufeff', '')).strip() for h in header]
+    for i, h in enumerate(cleaned):
+        if '残' in h and ('数' in h or '量' in h) and '金額' not in h:
+            return i, 'remain'
+    for i, h in enumerate(cleaned):
+        if any(k in h for k in ['完了区分', '完納区分', '完納', '売上済', '売上区分', '出荷済', '出荷区分', '納品済', '受注状況', '状態', 'ステータス']):
+            return i, 'flag'
+    return None, None
+
+
 def find_first_idx(header, *names):
     """複数候補のヘッダ名を順に試し、最初にヒットしたindexを返す"""
     for name in names:
@@ -373,6 +392,11 @@ def transform_sales(header, rows):
     missing = [k for k, v in idx.items() if v is None]
     if missing:
         raise RuntimeError(f"列が見つからない: {missing}")
+    HEADERS['sales'] = [str(x).replace('\ufeff', '').strip() for x in h]
+    sales_ord_idx, _ = find_no_idx(h, 'juchu')   # 売上明細に「受注№」列があれば
+    NO_COLS['juchu_in_sales'] = NO_COLS.pop('juchu', None)
+    if sales_ord_idx is not None:
+        print(f"     [sales] 受注No列あり: 列{sales_ord_idx} (受注の売上済判定に使用)", flush=True)
     no_idx, no_name = find_no_idx(h, 'uriage')
     if no_idx is None:
         print(f"     [警告] 売上No列が見つからない (売上No は空欄で出力)。ヘッダ: {h}", flush=True)
@@ -414,6 +438,7 @@ def transform_sales(header, rows):
             cust_abbr, genre, '',
             '',                                         # 27 納期 (売上は空)
             str(row[no_idx] or '').strip() if (no_idx is not None and no_idx < len(row)) else '',  # 28 売上No
+            str(row[sales_ord_idx] or '').strip() if (sales_ord_idx is not None and sales_ord_idx < len(row)) else '',  # 29 受注No
         ])
     return out
 
@@ -455,6 +480,13 @@ def transform_orders(header, rows):
             break
     if kikou_idx is None:
         print(f"     [警告] 納期列が見つからない (受注月次判定は 年月度 で継続)", flush=True)
+    HEADERS['orders'] = [str(x).replace('\ufeff', '').strip() for x in h]
+    st_idx, st_kind = find_order_status_idx(h)
+    if st_idx is not None:
+        ORDER_STATUS.update({'kind': st_kind, 'col': str(h[st_idx]).strip()})
+        print(f"     [orders] 売上状況の列: '{str(h[st_idx]).strip()}' ({st_kind})", flush=True)
+    else:
+        print(f"     [情報] 受注CSVに売上状況(受注残・完了区分など)の列なし", flush=True)
     no_idx, no_name = find_no_idx(h, 'juchu')
     if no_idx is None:
         print(f"     [警告] 受注No列が見つからない (受注No は空欄で出力)。ヘッダ: {h}", flush=True)
@@ -505,6 +537,7 @@ def transform_orders(header, rows):
             cust_abbr, genre, '',                       # 24, 25, 26
             kikou_val,                                  # 27 納期 (受注のみ)
             str(row[no_idx] or '').strip() if (no_idx is not None and no_idx < len(row)) else '',  # 28 受注No
+            (str(row[st_idx] or '').strip() if (st_idx is not None and st_idx < len(row)) else ''),  # 29 売上状況(受注残数/区分)
         ])
     return out
 
@@ -914,6 +947,10 @@ def main():
     print(f"  当期売上: {len(sales_curr):,}件")
     try:
         orders = transform_orders(h_ord, r_ord)
+        # 受注CSVに売上状況の列が無く、売上明細に受注Noがあれば「受注Noで照合」で判定
+        if not ORDER_STATUS.get('kind') and NO_COLS.get('juchu_in_sales'):
+            ORDER_STATUS.update({'kind': 'link', 'col': '売上明細の ' + str(NO_COLS['juchu_in_sales'])})
+            print(f"     [orders] 売上状況は 売上明細の受注No と照合して判定", flush=True)
         print(f"  当期受注: {len(orders):,}件")
     except Exception as e:
         print(f"  ⚠️ 受注明細処理エラー: {e}", flush=True)
@@ -978,6 +1015,8 @@ def main():
             'updated_at': datetime.now(jst).isoformat(),
             # 訪問データ(daily_reports.csv)の最新の対応日 YYYYMMDD（0=取得できず）
             'no_columns': dict(NO_COLS),
+            'order_status': dict(ORDER_STATUS) or None,
+            'csv_headers': dict(HEADERS),
             'daily_reports_latest': latest_visit_date(daily_reports, int(datetime.now(jst).strftime('%Y%m%d'))),
         }
     }
