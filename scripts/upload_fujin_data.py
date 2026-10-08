@@ -49,6 +49,7 @@ TARGETS = [
     (DATA / "orphan_items.json", "orphan_items.json"),  # 構成なし/登録漏れ/使用禁止品目(在庫探偵チップ) (2026-07セキュリティ移行)
     (DATA / "value_analysis.json", "value_analysis.json"),  # 付加価値分析（認証配信）
     (DATA / "hub_purchase_facts.json", "hub_purchase_facts.json"),  # HUB「会社の現在地」仕入カード用の軽量版(日別仕入のみ)
+    (DATA / "value_analysis_production_results.json", "value_analysis_production_results.json"),  # 品目別完成報告（認証配信）
 ]
 
 
@@ -84,7 +85,7 @@ def upload_file(token: str, local_path: Path, sp_name: str) -> bool:
                 timeout=600,
             )
             r.raise_for_status()
-    if sp_name == "value_analysis.json":
+    if sp_name in ("value_analysis.json", "value_analysis_production_results.json"):
         verify_uploaded_file(token, local_path, url, size)
     print(f"  [OK] {sp_name} アップロード完了")
     return True
