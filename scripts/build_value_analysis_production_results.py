@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Aggregate final in-house production reports into a protected, separate JSON.
+
+The source CSVs are read-only. The output belongs under data/ (git-ignored) and
+must be uploaded only to authenticated SharePoint storage, never to fujin/.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+from merge_value_analysis_bom import normalize_code
+from merge_value_analysis_labor import (
+    JST,
+    choose_internal_routes,
+    csv_rows,
+    month_key,
+    norm,
+    parse_date,
+    today_jst,
+)
+
+BASE = Path(__file__).resolve().parent.parent
+DATA = BASE / "data"
+DEFAULT_ACTUALS = DATA / "製造実績明細出力.csv"
+DEFAULT_ROUTES = DATA / "品目手順マスタ.csv"
+DEFAULT_ITEMS = DATA / "品目マスタ.csv"
+DEFAULT_OUTPUT = DATA / "value_analysis_production_results.json"
+
+ACTUAL_REQUIRED = ("伝票日付", "品目ｺｰﾄﾞ", "手順№", "報告数量", "手配先名")
+ROUTE_REQUIRED = ("品目ｺｰﾄﾞ", "手順№", "内外区分", "有効日", "失効日", "優先№")
+ITEM_REQUIRED = (
+    "品目ｺｰﾄﾞ", "品目名", "単位", "大分類ｺｰﾄﾞ", "大分類名",
+    "中分類ｺｰﾄﾞ", "中分類名", "小分類ｺｰﾄﾞ", "小分類名",
+)
+FACTORIES = ("第一工場", "第二工場", "第三工場")
+
+
+def require_columns(headers: list[str], required: tuple[str, ...], source: str) -> None:
+    missing = sorted(set(required) - set(headers))
+    if missing:
+        raise ValueError(f"{source} の必須列が不足: {', '.join(missing)}")
+
+
+def fiscal_months(today: date) -> list[str]:
+    current_start = today.year if today.month >= 4 else today.year - 1
+    first_year = current_start - 1
+    return [f"{first_year + (3 + offset) // 12:04d}-{(3 + offset) % 12 + 1:02d}" for offset in range(24)]
+
+
+def month_end(year_month: str) -> date:
+    first = date(int(year_month[:4]), int(year_month[4:6]), 1)
+    next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return next_month - timedelta(days=1)
+
+
+def numeric_step(value: object) -> Decimal | None:
+    try:
+        return Decimal(norm(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def quantity(value: object) -> Decimal | None:
+    try:
+        result = Decimal(norm(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    return result if result.is_finite() and result > 0 else None
+
+
+def json_number(value: Decimal) -> int | float:
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
+def factory_from_work_area(work_area: str) -> str | None:
+    for factory in FACTORIES:
+        if work_area == factory or work_area.startswith(factory + " "):
+            return factory
+    return None
+
+
+def build(
+    actual_rows: list[dict[str, str]],
+    route_rows: list[dict[str, str]],
+    item_rows: list[dict[str, str]],
+    *,
+    today: date,
+) -> dict:
+    """Count only each item's last active internal route, by slip month.
+
+    Route choice (effective date, latest version, priority, ambiguity) reuses
+    the labor calculation's selector. The actual report's work area is the
+    completion location; missing/unknown areas are excluded, never guessed.
+    """
+    months = fiscal_months(today)
+    allowed = set(months)
+    master = {}
+    for row in item_rows:
+        code = normalize_code(row.get("品目ｺｰﾄﾞ"))
+        if code:
+            if code in master:
+                raise ValueError("品目マスタに品目コードの重複があります")
+            master[code] = {
+                "name": norm(row.get("品目名")), "unit": norm(row.get("単位")),
+                "dc": norm(row.get("大分類ｺｰﾄﾞ")), "dn": norm(row.get("大分類名")),
+                "mc": norm(row.get("中分類ｺｰﾄﾞ")), "mn": norm(row.get("中分類名")),
+                "sc": norm(row.get("小分類ｺｰﾄﾞ")), "sn": norm(row.get("小分類名")),
+            }
+
+    selected_by_month: dict[str, dict] = {}
+    final_by_month: dict[str, dict] = {}
+    totals: dict[tuple[str, str, str, str], Decimal] = defaultdict(Decimal)
+    used_items: set[str] = set()
+    observed_months: set[str] = set()
+    diagnostics: dict[str, int] = defaultdict(int)
+    source_latest_date = ""
+    for row in actual_rows:
+        day = parse_date(row.get("伝票日付"))
+        if day is None or day > today:
+            diagnostics["invalid_or_future_date"] += 1
+            continue
+        ym = month_key(day)
+        month = f"{ym[:4]}-{ym[4:]}"
+        if month not in allowed:
+            continue
+        observed_months.add(month)
+        source_latest_date = max(source_latest_date, day.isoformat())
+        if ym not in selected_by_month:
+            selected, ambiguous = choose_internal_routes(route_rows, month_end(ym))
+            selected_by_month[ym] = selected
+            diagnostics["ambiguous_route_keys"] += ambiguous
+            final: dict[str, Decimal] = {}
+            for item, step in selected:
+                number = numeric_step(step)
+                if number is not None and (item not in final or number > final[item]):
+                    final[item] = number
+            final_by_month[ym] = final
+
+        item = normalize_code(row.get("品目ｺｰﾄﾞ"))
+        step = norm(row.get("手順№"))
+        route = selected_by_month[ym].get((item, step))
+        if route is None:
+            diagnostics["not_internal_or_unmatched_route"] += 1
+            continue
+        if numeric_step(step) != final_by_month[ym].get(item):
+            diagnostics["earlier_internal_step"] += 1
+            continue
+        qty = quantity(row.get("報告数量"))
+        if qty is None:
+            diagnostics["invalid_quantity"] += 1
+            continue
+        work_area = norm(row.get("手配先名"))
+        factory = factory_from_work_area(work_area)
+        if factory is None:
+            diagnostics["unknown_work_area"] += 1
+            continue
+        if item not in master:
+            diagnostics["item_master_missing"] += 1
+            continue
+        if norm(route.get("手配先名")) != work_area:
+            diagnostics["route_work_area_differs"] += 1
+        totals[(month, item, factory, work_area)] += qty
+        used_items.add(item)
+        diagnostics["counted_reports"] += 1
+
+    return {
+        "generated_at": datetime.now(JST).isoformat(timespec="seconds"),
+        "source": "製造実績明細出力.csv",
+        "method": "last_active_internal_route_report_quantity",
+        "months": months,
+        "observed_months": sorted(observed_months),
+        "source_latest_date": source_latest_date,
+        "items": {code: master[code] for code in sorted(used_items)},
+        "rows": [
+            {"m": month, "item": item, "factory": factory, "ws": work_area, "qty": json_number(qty)}
+            for (month, item, factory, work_area), qty in sorted(totals.items())
+        ],
+        "diagnostics": dict(sorted(diagnostics.items())),
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--actuals", type=Path, default=DEFAULT_ACTUALS)
+    parser.add_argument("--routes", type=Path, default=DEFAULT_ROUTES)
+    parser.add_argument("--items", type=Path, default=DEFAULT_ITEMS)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    args = parser.parse_args()
+    headers, actuals = csv_rows(args.actuals)
+    require_columns(headers, ACTUAL_REQUIRED, args.actuals.name)
+    headers, routes = csv_rows(args.routes)
+    require_columns(headers, ROUTE_REQUIRED, args.routes.name)
+    headers, items = csv_rows(args.items)
+    require_columns(headers, ITEM_REQUIRED, args.items.name)
+    payload = build(actuals, routes, items, today=today_jst())
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    print(
+        "[OK] 保護された完成実績JSONを生成: "
+        f"月{len(payload['observed_months'])} / 品目{len(payload['items'])} / "
+        f"集計行{len(payload['rows'])} / 除外等{payload['diagnostics']}"
+    )
+
+
+if __name__ == "__main__":
+    main()
