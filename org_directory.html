@@ -27,6 +27,9 @@
   「従業員の種類」(employeeType) で次を見分ける。
     共有PC   … 共有PC用のアカウント。出さない
     共用携帯 … 部署の共用携帯の置き場所（共有メールボックス）。人ではなく「共用番号」として部署の中に出す
+    社外役員 … 社外取締役など。ゲスト（外部ユーザー）でも出す。部署は「役員」にしておく
+  並び順：拡張属性1（onPremisesExtensionAttributes.extensionAttribute1）に数字があればその順（役員の並び）。
+          無い人は入社日が早い順、入社日も無ければ名前順。名前はこのファイルに書かない
   必要な権限：業務アプリの User.Read.All（委任・管理者の同意済み）
   投入用スクリプト：番号 scripts/set_mobile_phones.ps1、上司 scripts/set_managers.ps1、
                     勤務地 scripts/set_office_location.ps1
@@ -342,7 +345,7 @@
 <script>
 // Calendars.Read / Calendars.Read.Shared … 詳細に「今日の予定」を出すため（全員の予定 staff_schedule.html と同じ）
 const SCOPES = ['User.Read', 'User.Read.All', 'Calendars.Read', 'Calendars.Read.Shared'];
-const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation,employeeHireDate';
+const SELECT = 'id,displayName,mail,userPrincipalName,userType,accountEnabled,assignedLicenses,department,jobTitle,mobilePhone,employeeType,officeLocation,employeeHireDate,onPremisesExtensionAttributes';
 // 最初は「一覧で見る」。キーを変えたので、前に「図」を選んでいた人も一度一覧に戻る
 const VIEW_KEY = 'hanaoka.org.view.v3';
 let pca, account;
@@ -409,6 +412,8 @@ async function graphGetAll(url) {
 }
 
 function isPerson(u) {
+  // 社外役員（社外取締役など）は、ゲストでライセンスが無くても出す
+  if (u.employeeType === '社外役員') return u.accountEnabled !== false;
   if (u.userType === 'Guest' || /#EXT#/i.test(u.userPrincipalName || '')) return false;
   if (u.employeeType === '共有PC' || u.employeeType === '共用携帯') return false;
   return u.accountEnabled !== false && (u.assignedLicenses || []).length > 0;
@@ -447,7 +452,9 @@ function build(users) {
 
 // 部署の中の並び：入社日が早い順。入社日が入っていない人は後ろに名前順
 const hireOf = u => has(u.employeeHireDate) ? String(u.employeeHireDate).slice(0, 10) : '9999';
-const byHire = (a, b) => hireOf(a).localeCompare(hireOf(b)) || jaCmp(a.displayName, b.displayName);
+// 表示順（拡張属性1の数字）。役員の並び（代表→…→社外役員）のように、入社日では決まらない順を Entra 側で決める
+const orderOf = u => { const v = parseFloat(u.onPremisesExtensionAttributes && u.onPremisesExtensionAttributes.extensionAttribute1); return isNaN(v) ? Infinity : v; };
+const byHire = (a, b) => (orderOf(a) - orderOf(b) || 0) || hireOf(a).localeCompare(hireOf(b)) || jaCmp(a.displayName, b.displayName);
 // 区切り → 部署 → { ps: 人, ls: 共用番号 }。総務部のように同じ部署が2つの区切りに出ることがある
 function groups(filter) {
   const sites = new Map();
@@ -497,7 +504,9 @@ function hl(text, q) {
   return esc(t.slice(0, s)) + '<mark>' + esc(t.slice(s, e)) + '</mark>' + esc(t.slice(e));
 }
 const telHref = p => 'tel:' + String(p).replace(/[^\d+]/g, '');
-const teamsLink = (kind, u) => `https://teams.microsoft.com/l/${kind}/0/0?users=${encodeURIComponent(u.userPrincipalName)}`;
+// ゲスト（社外役員）は UPN が #EXT# の形なので、社外のメールアドレスで Teams につなぐ
+const isGuest = u => u.userType === 'Guest' || /#EXT#/i.test(u.userPrincipalName || '');
+const teamsLink = (kind, u) => `https://teams.microsoft.com/l/${kind}/0/0?users=${encodeURIComponent(isGuest(u) && u.mail ? u.mail : u.userPrincipalName)}`;
 const mailOf = u => u.mail || u.userPrincipalName;
 function actions(u, withTel) {
   let h = `<a class="act" href="${teamsLink('chat', u)}" target="_blank" rel="noopener">${IC.chat}Teams でチャット</a>`
@@ -623,7 +632,8 @@ function renderDetail() {
   box.hidden = false;
   box.scrollTop = 0;
   hydratePhotos(box);
-  loadToday(u);
+  if (isGuest(u)) document.getElementById('dtToday').innerHTML = '<div class="muted">社外の方の予定は表示されません</div>';
+  else loadToday(u);
 }
 
 /* ---------------- 今日の予定（getSchedule。全員の予定 staff_schedule.html と同じ読み方） ----------------
