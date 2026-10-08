@@ -371,7 +371,11 @@ function tagsOf(r){const t=[];
   if(!r.reading&&r.lines.length&&r.lsum!==r.amount)t.push(['仕訳と金額が違う','t-up']);if(!r.reading&&!r.lines.length)t.push(['仕訳なし','t-new']);
   if(r.reject&&!r.done)t.push(['差し戻し','t-up']);if(r.status==='先行支払済')t.push(['先行支払済','t-pri']);
   return t;}
-function buildItems(){items=ALL.map(mk);}
+// 対象外にした・仕入へ移したものは、読み直さなくてもすぐ外す
+function buildItems(){items=ALL.filter(x=>{const c=fv(L.inv,x.f,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,x.f,'アーカイブフラグ')!==true;}).map(mk);}
+// 今の1件が一覧から外れるとき：次の件を開く（無ければ一覧へ）
+function leaveCur(r){const a=listRows(),i=a.findIndex(x=>x.id===r.id),nx=a.slice(i+1).concat(a.slice(0,Math.max(i,0))).find(x=>x.id!==r.id);
+  draft=null;hdrDraft=null;cmDraft=null;if(nx&&st.view==='one'){st.sel=nx.id;}else{st.view='list';st.sel=null;}}
 const inScope=r=>(!st.loc||r.loc===st.loc)&&(!st.round||r.round===st.round);
 const inMonth=r=>r.ym===month()||(!r.ym&&!r.done);
 
@@ -508,7 +512,7 @@ function drawOne(){
     r.status==='先行支払済'?'<span class="bd">先行支払済</span>':'',r.hold?'<span class="bd warn">⏸ 保留中</span>':'',dirty?'<span class="bd warn">未保存の直しあり</span>':''].join('');
   // 気づき
   const shown=st.allIss?iss:iss.slice(0,3),LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']};
-  const issCard=`<div class="oc"><div class="oh"><b>AIの気づき</b><span class="ocnt">${iss.length}件</span><span class="sp"></span>${iss.length>3?`<button class="lk" id="oAll">${st.allIss?'たたむ':'すべての気づきを見る ›'}</button>`:''}</div>
+  const issCard=`<div class="oc"><div class="oh"><b>AIの気づき</b><span class="ocnt">${iss.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span>${iss.length>3?`<button class="lk" id="oAll">${st.allIss?'たたむ':'すべての気づきを見る ›'}</button>`:''}</div>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
     ${shown.map(x=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div></div>`).join('')||'<div class="none">気づきはありません</div>'}</div>`;
   // 支払内容（ふだんは読むだけ。「編集」で直す）
@@ -705,12 +709,12 @@ async function registerBank(r){
 async function backRow(r){const why=prompt(`${stepName(r,r.step-1)} に戻します。理由を書いてください`);if(why===null)return;if(!why.trim()){snack('理由を書いてください',true);return;}
   await act(r,Object.assign({[V.step]:r.step-1},toFields(L.inv,{'差戻し理由':why.trim()})),'前の段へ戻しました',{act:'戻した',memo:why.trim(),step:r.step});}
 async function more(r,v){
-  if(v==='arch'){const why=prompt('対象外にする理由（重複・誤り・今月払わない など）');if(!why)return;
+  if(v==='arch'){const why=prompt('対象外にする理由（重複・誤り・今月払わない など）');if(!why)return;leaveCur(r);
     await act(r,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':why}),'対象外にしました',{act:'対象外にした',memo:why,step:r.step});}
   else if(v==='move'){const code=prompt('仕入の請求書として「仕入（SMILE）」へ移します。SMILE の仕入先コード（6桁）を入れてください');if(!code)return;
     const c=code.trim().padStart(6,'0');if(!/^\d{6}$/.test(c)){snack('仕入先コードは数字で入れてください',true);return;}
     const sp=SPM.find(s=>s.code===c);if(!sp&&!confirm(`${c} は今月の仕入（SMILE）にありません。移しますか？`))return;
-    await act(r,toFields(L.inv,{'支払区分':r.loc==='工場'?'工場仕入':'本社仕入','支払先コード':c,'支払先名':sp?sp.name:r.payee}),'仕入の請求書として移しました（仕入（SMILE）で確認します）',{act:'仕入へ移した',memo:c,step:r.step});}
+    leaveCur(r);await act(r,toFields(L.inv,{'支払区分':r.loc==='工場'?'工場仕入':'本社仕入','支払先コード':c,'支払先名':sp?sp.name:r.payee}),'仕入の請求書として移しました（仕入（SMILE）で確認します）',{act:'仕入へ移した',memo:c,step:r.step});}
   else if(v==='unlock'){if(lockOf(r)){snack('決裁に回した支払に入っています',true);return;}
     const last=r.steps.length-1,s=r.steps[last];if(!((s.members||[]).some(n=>sameName(me(),n))||isSub())){snack(`確定を戻せるのは ${stepName(r,last)} の担当です`,true);return;}
     if(!confirm('確定を戻して、最後の段の確認待ちにします。支払指図は「支払（決裁・出力）」で作り直してください。'))return;
