@@ -47,13 +47,11 @@
 
 ### 2. 環境変数（ユーザー環境変数。設定後は再ログオン）
 ```powershell
-setx AZURE_TENANT_ID "..."
-setx AZURE_CLIENT_ID "..."
-setx AZURE_CLIENT_SECRET "..."
 setx SMILE_EXPORT_COMMAND "...（手順3で決まったコマンド）"
 ```
-- 値は福田さんから受け取る。**チャットやリポジトリに値を貼らない・コミットしない**
-- 可能ならこのPC専用に権限を絞ったアプリ登録を別に発行する
+- `AZURE_*` は不要。監視スクリプトは `regenerate_facts.py` を `SHARED_MASTERS_DIR` 付きで実行し、
+  Graph APIを使わずに同期フォルダのCSVを直接読み、JSONも同じフォルダに書き出す（アップロードはOneDrive同期に任せる）
+- 手動で `regenerate_facts.py` を動かすときも `$env:SHARED_MASTERS_DIR = "<SharedMastersの同期パス>"` を設定して実行する
 
 ### 3. SMILE出力のRPAフロー作成
 - 福田さんが実際にSMILEで5帳票を出す手順を見せてくれるので、それをPADフローにする
