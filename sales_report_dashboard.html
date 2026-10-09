@@ -784,6 +784,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="rpa_queue.js"></script>
 <script>
 // ============================================================
 // MSAL CONFIG（全アプリ共通。HUBのサインインをそのまま使う → hanaoka_auth.js）
@@ -2011,27 +2012,36 @@ function checkIsAdmin() {
   return ADMIN_EMAILS.some(e => e.toLowerCase() === email);
 }
 
-// 「再集計をリクエスト」ボタン: SharedMastersに合図ファイルを1つアップロードする
-// だけで、実際の処理(SMILE再出力→regenerate_facts.py)はしない。SharedMasters
-// はPC側にOneDrive同期されているので、PC側で常駐させた監視スクリプトが
-// このファイルの出現を検知して一連の処理を実行する想定(締め担当者向け業務
-// フローのPC側実装は別途)。
-const REGENERATE_REQUEST_FILE = '_regenerate_request.json';
-
+// 「再集計をリクエスト」ボタン: RPA専用機に sales_master ジョブ（SMILE日報用マスタ出力 →
+// regenerate_facts.py）を依頼する（rpa_queue.js / scripts/rpa_jobs.json）。
+// 順番待ち・実行中・完了・失敗を画面に出し、完了したら最新データを読み直す。
+const REGENERATE_JOB = 'sales_master';
 const REGENERATE_BTN_LABEL = '🔄 再集計をリクエスト';
+// ページを再読み込みしても待機を続けられるよう、依頼をlocalStorageに残す
+const REGENERATE_PENDING_KEY = 'regeneratePending';
+const REGENERATE_TIMEOUT_MS = 60 * 60 * 1000;
+// ジョブ完了の記録(小さい)は先に同期されるが、40MB超のJSONのアップロード
+// (OneDrive同期)はそれより遅れることがあるため、JSONの更新をこの時間まで待つ
+const REGENERATE_SYNC_GRACE_MS = 5 * 60 * 1000;
+let stopRegenerateWatch = null;
+
+function initRpaQueue() {
+  RpaQueue.init({ getToken, driveId: SP.mastersDriveId });
+}
 
 async function requestRegenerate() {
   const btn = document.getElementById('regenerateBtn');
   if (!confirm('SMILEの最新データで日報を再集計します。よろしいですか？（反映まで数分かかります）')) return;
   const requestedAt = new Date().toISOString();
+  let req;
   try {
     btn.disabled = true;
     btn.textContent = '送信中…';
-    await graphFetch(
-      `/drives/${SP.mastersDriveId}/root:/${REGENERATE_REQUEST_FILE}:/content`,
-      'PUT',
-      { requestedBy: (account && account.username) || '', requestedAt }
-    );
+    initRpaQueue();
+    req = await RpaQueue.request(REGENERATE_JOB, {
+      app: '営業日報ダッシュボード',
+      requestedBy: (account && account.username) || '',
+    });
   } catch (e) {
     console.error('[再集計リクエスト] 失敗', e);
     alert('リクエストに失敗しました。時間をおいて再度お試しください。');
@@ -2039,22 +2049,8 @@ async function requestRegenerate() {
     btn.textContent = REGENERATE_BTN_LABEL;
     return;
   }
-  startRegenerateWatch(requestedAt);
+  startRegenerateWatch({ name: req.name, requestedAt });
 }
-
-// ---- 再集計の完了検知 ----
-// リクエスト後、SharedMastersを定期的に確認して完了を画面に知らせる。
-//   成功: dashboard_facts.json がリクエスト時刻より後に更新された → データを読み直す
-//   失敗: 監視PCが合図ファイルを消した(=処理を終えた)のに、猶予時間を過ぎても
-//         dashboard_facts.json が更新されない(監視PCは失敗時も合図ファイルを消す)
-// ページを再読み込みしても待機を続けられるよう、リクエスト時刻をlocalStorageに残す。
-const REGENERATE_PENDING_KEY = 'regeneratePendingSince';
-const REGENERATE_POLL_MS = 30 * 1000;
-// 合図ファイルの削除は小さいので先に同期されるが、40MB超のJSONのアップロード
-// (OneDrive同期)はそれより遅れることがあるため、その分を待つ
-const REGENERATE_SYNC_GRACE_MS = 5 * 60 * 1000;
-const REGENERATE_TIMEOUT_MS = 30 * 60 * 1000;
-let regenerateTimer = null;
 
 // SharedMasters直下のファイルの更新日時を取得する(存在しなければnull)
 async function getMastersItemModified(name) {
@@ -2074,38 +2070,52 @@ function setRegenerateStatus(text, state) {
   el.hidden = !text;
 }
 
-function startRegenerateWatch(requestedAt) {
-  if (regenerateTimer) clearTimeout(regenerateTimer);
-  try { localStorage.setItem(REGENERATE_PENDING_KEY, requestedAt); } catch (_) {}
+function startRegenerateWatch(pending) {
+  if (stopRegenerateWatch) stopRegenerateWatch();
+  try { localStorage.setItem(REGENERATE_PENDING_KEY, JSON.stringify(pending)); } catch (_) {}
   const btn = document.getElementById('regenerateBtn');
   btn.disabled = true;
   btn.textContent = '⏳ 再集計中…';
-  const sinceMs = Date.parse(requestedAt);
-  let goneAt = null;
+  const sinceMs = Date.parse(pending.requestedAt);
+  const minutes = () => Math.floor((Date.now() - sinceMs) / 60000);
 
-  const tick = async () => {
-    const elapsed = Date.now() - sinceMs;
-    setRegenerateStatus(`SMILE出力・集計中（${Math.floor(elapsed / 60000)}分経過／通常7分前後）`, 'pending');
-    try {
-      const factsModified = await getMastersItemModified('dashboard_facts.json');
-      if (factsModified && factsModified > sinceMs) { finishRegenerateWatch('done'); return; }
-      const requestModified = await getMastersItemModified(REGENERATE_REQUEST_FILE);
-      if (requestModified === null) {
-        goneAt = goneAt || Date.now();
-        if (Date.now() - goneAt > REGENERATE_SYNC_GRACE_MS) { finishRegenerateWatch('failed'); return; }
-      }
-    } catch (e) {
-      // 一時的な通信エラーは次の確認で取り返せるので、待機は続ける
-      console.warn('[再集計] 状況の確認に失敗', e);
+  initRpaQueue();
+  stopRegenerateWatch = RpaQueue.watch(pending.name, s => {
+    if (s.state === 'pending') {
+      setRegenerateStatus(s.ahead
+        ? `順番待ち（前に${s.ahead}件／${minutes()}分経過）`
+        : `RPA専用機の受付待ち（${minutes()}分経過）`, 'pending');
+    } else if (s.state === 'running' || s.state === 'unknown') {
+      setRegenerateStatus(`SMILE出力・集計中（${minutes()}分経過／通常7分前後）`, 'pending');
+    } else if (s.state === 'done') {
+      waitFactsThenFinish(sinceMs);
+    } else if (s.state === 'failed') {
+      finishRegenerateWatch('failed', s.error);
+    } else {
+      finishRegenerateWatch('timeout');
     }
-    if (elapsed > REGENERATE_TIMEOUT_MS) { finishRegenerateWatch('timeout'); return; }
-    regenerateTimer = setTimeout(tick, REGENERATE_POLL_MS);
-  };
-  tick();
+  }, { timeoutMs: Math.max(0, REGENERATE_TIMEOUT_MS - (Date.now() - sinceMs)) });
 }
 
-async function finishRegenerateWatch(result) {
-  regenerateTimer = null;
+// ジョブは完了した。dashboard_facts.json の同期(アップロード)が追いつくのを待ってから読み直す
+async function waitFactsThenFinish(sinceMs) {
+  setRegenerateStatus('✅ 再集計が完了しました。データの同期を待っています…', 'done');
+  const deadline = Date.now() + REGENERATE_SYNC_GRACE_MS;
+  while (Date.now() < deadline) {
+    try {
+      const modified = await getMastersItemModified('dashboard_facts.json');
+      if (modified && modified > sinceMs) { finishRegenerateWatch('done'); return; }
+    } catch (e) {
+      console.warn('[再集計] JSONの更新確認に失敗', e);
+    }
+    await new Promise(r => setTimeout(r, 15 * 1000));
+  }
+  finishRegenerateWatch('synclag');
+}
+
+async function finishRegenerateWatch(result, error) {
+  if (stopRegenerateWatch) stopRegenerateWatch();
+  stopRegenerateWatch = null;
   try { localStorage.removeItem(REGENERATE_PENDING_KEY); } catch (_) {}
   const btn = document.getElementById('regenerateBtn');
   btn.disabled = false;
@@ -2123,28 +2133,32 @@ async function finishRegenerateWatch(result) {
     }
     // 別のタブを見ていても気づけるよう、タブのタイトルにも出す
     if (!document.hasFocus()) {
-      const baseTitle = document.title;
+      const baseTitle = document.title.replace(/^✅ 再集計完了 - /, '');
       document.title = '✅ 再集計完了 - ' + baseTitle;
       window.addEventListener('focus', () => { document.title = baseTitle; }, { once: true });
     }
+  } else if (result === 'synclag') {
+    setRegenerateStatus('✅ 再集計は完了しましたが、データの同期に時間がかかっています。しばらくしてからページを再読み込みしてください', 'done');
   } else if (result === 'failed') {
-    setRegenerateStatus('⚠️ 再集計が完了しませんでした。RPA用PCのログ（regenerate_watcher.log）を確認してください', 'failed');
+    setRegenerateStatus(`⚠️ 再集計に失敗しました：${error || '原因不明'}（RPA専用機のログ regenerate_watcher.log も確認してください）`, 'failed');
   } else {
-    setRegenerateStatus('⚠️ 30分たっても反映されません。RPA用PCが動いているか確認してください', 'failed');
+    setRegenerateStatus('⚠️ 1時間たっても完了しません。RPA専用機が動いているか確認してください', 'failed');
   }
 }
 
-// ページを開き直したときに、待機中のリクエストがあれば確認を再開する
+// ページを開き直したときに、待機中の依頼があれば確認を再開する
 function resumeRegenerateWatch() {
-  if (regenerateTimer) return;
-  let since = null;
-  try { since = localStorage.getItem(REGENERATE_PENDING_KEY); } catch (_) {}
-  if (!since) return;
-  if (!(Date.now() - Date.parse(since) < REGENERATE_TIMEOUT_MS)) {
+  if (stopRegenerateWatch) return;
+  // 旧方式(合図ファイル)のときの記録は使わない
+  try { localStorage.removeItem('regeneratePendingSince'); } catch (_) {}
+  let pending = null;
+  try { pending = JSON.parse(localStorage.getItem(REGENERATE_PENDING_KEY) || 'null'); } catch (_) {}
+  if (!pending || !pending.name || !pending.requestedAt) return;
+  if (!(Date.now() - Date.parse(pending.requestedAt) < REGENERATE_TIMEOUT_MS)) {
     try { localStorage.removeItem(REGENERATE_PENDING_KEY); } catch (_) {}
     return;
   }
-  startRegenerateWatch(since);
+  startRegenerateWatch(pending);
 }
 
 // リストが存在しなければ作成する(表示名でGETして404系なら作成)。
