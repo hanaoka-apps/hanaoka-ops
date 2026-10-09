@@ -229,4 +229,22 @@
   }
   if (document.body) start();
   else document.addEventListener('DOMContentLoaded', start);
+
+  // ---- 開きっぱなしの画面の自動更新 ----
+  // スマホのホーム画面のアプリ・ブラウザのタブは、閉じずに残ることが多く、戻ってきても
+  // 前に読み込んだ内容(昨日の予定など)のまま変わらない。読み取り専用の画面だけ、次のとき
+  // 読み込み直す: ①日付をまたいでいた ②しばらく(15分以上)見ていなかった ③戻る操作などで
+  // 保存されていた古い画面が復元された。入力のある予約系の画面は、書きかけを消さないよう対象にしない。
+  var AUTO_REFRESH_PAGES = ['hanaoka_hub.html', 'company_schedule.html'];
+  if (AUTO_REFRESH_PAGES.indexOf(cur) >= 0) {
+    var dayKey = function () { var d = new Date(); return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); };
+    var loadedDay = dayKey(), hiddenAt = 0;
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      var away = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = 0;
+      if (dayKey() !== loadedDay || away > 15 * 60 * 1000) location.reload();
+    });
+    window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
+  }
 })();
