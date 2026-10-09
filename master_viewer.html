@@ -171,6 +171,19 @@
     .cards,.cards.two{grid-template-columns:1fr}
     .twocol{grid-template-columns:1fr}
   }
+  /* 「すべて」：種類ごとの見出し（スクロールしても上に残る）・もっと見る・相手側へのリンク。「すべて」は絞り込みなし */
+  .grp{position:sticky;top:0;z-index:2;display:flex;align-items:baseline;gap:8px;padding:7px 14px;background:var(--bg);border-bottom:1px solid var(--line);border-top:1px solid var(--line);font-size:12px;font-weight:700;color:var(--sub)}
+  .grp .gname{font-size:12.5px;color:var(--txt)}
+  .grp.customer .gname::before,.grp.supplier .gname::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+  .grp.customer .gname::before{background:var(--cyan)}
+  .grp.supplier .gname::before{background:var(--purple)}
+  .more-btn{display:block;width:100%;border:none;border-bottom:1px solid var(--line);background:var(--surface);color:var(--navy);font-weight:700;font-size:13px;padding:12px;cursor:pointer;font-family:inherit}
+  .more-btn:hover{background:var(--navy-soft)}
+  .list-pane.no-filters .filters,.list-pane.no-filters .filter-btn{display:none !important}
+  .xlinks{margin-top:8px;font-size:13px;color:var(--sub)}
+  .xlink{color:var(--navy);font-weight:700;text-decoration:none}
+  .xlink:hover{text-decoration:underline}
+
   /* PC では、スマホ用の部品（メニューボタン・絞り込みボタン・戻るバー）は出さない */
   .hdr-actions{display:contents}
   .menu-btn,.filter-btn,.mbar{display:none}
@@ -326,7 +339,8 @@ const DATASETS = {
   }
 };
 const ORDER = ["customer", "supplier", "tovas"];      // 読み込み順
-const TABS  = ["customer", "supplier"];               // 画面に出すタブ
+const TABS  = ["all", "customer", "supplier"];        // 画面に出すタブ（all＝得意先と仕入先をまとめて検索）
+const TAB_LABEL = { all:"すべて", customer:"得意先", supplier:"仕入先" };
 const SRC = { customer:"得意先マスタ", supplier:"仕入先マスタ", tovas:"TOVAS請求設定" };
 
 // ============================================================
@@ -382,7 +396,8 @@ const FOLDS = {
 };
 
 const store = {};
-let current = null, selectedKey = null;
+let current = null;                    // 一覧の表示：'all' | 'customer' | 'supplier'
+let selectedKey = null, selType = null; // 詳細に開いている会社（selType は 'customer' | 'supplier'。「すべて」では両方が混ざるので種類も持つ）
 let msalInstance = null, account = null;
 let viewMode = 'overview';   // 'overview' | 'raw'
 let showEmpty = false, fieldFilter = "";
@@ -484,7 +499,7 @@ function decodeCsv(buf){
 }
 function afterLoad(){
   prepareAll();
-  if(!current||!TABS.includes(current)) current=TABS.find(k=>store[k]);
+  if(!current||!TABS.includes(current)) current="all";
   renderTabs(); renderFilters(); renderList(); renderDetail();
 }
 function loadedSummary(){
@@ -676,13 +691,34 @@ function prepareAll(){
       r.__d=d;
     });
   });
+  buildNameIndex();
+}
+
+// ============================================================
+// 得意先⇔仕入先の突き合わせ（社名の一致だけで判定）
+//   会社形態（㈱・(有)・株式会社など）・空白・半角全角・ひらがなカタカナの違いは無視する。
+//   社名が少し違う会社は結びつかない（誤って別の会社に結びつけることはない）。
+// ============================================================
+function coName(s){ return normalize(s).replace(/\(株\)|\(有\)|\(合\)|\(同\)|株式会社|有限会社|合同会社|[\s　]/g,""); }
+const coIndex={ customer:new Map(), supplier:new Map() };
+function buildNameIndex(){
+  ["customer","supplier"].forEach(t=>{
+    const ds=store[t], m=new Map(); coIndex[t]=m; if(!ds) return;
+    ds.rows.forEach(r=>{ const n=coName(r.__d.name); if(!n) return; if(!m.has(n)) m.set(n,[]); m.get(n).push(r); });
+  });
+}
+function counterparts(type,row){
+  const other=type==="customer"?"supplier":"customer", ds=store[other], me=store[type];
+  if(!ds||!me) return [];
+  const rows=coIndex[other].get(coName(row.__d.name))||[];
+  return rows.map(r=>({type:other,key:r[ds.keyIdx],name:r.__d.name}));
 }
 
 // ============================================================
 // タブ・絞り込み・一覧
 // ============================================================
 function switchTab(key){
-  current=key; selectedKey=null; filters={m:"",c:"",t:""}; viewMode='overview'; fieldFilter="";
+  current=key; selectedKey=null; selType=null; filters={m:"",c:"",t:""}; viewMode='overview'; fieldFilter=""; allCap={customer:GROUP_CAP,supplier:GROUP_CAP};
   document.getElementById("search").value="";
   setView('list');
   renderTabs(); renderFilters(); renderList(); renderDetail();
@@ -702,8 +738,15 @@ function setView(v){
   app.dataset.view=v;
   if(v==='list') list.scrollTop=listScroll; else det.scrollTop=0;
 }
-function openDetail(key,rowEl){
-  selectedKey=key;
+// 詳細に別の会社（得意先⇔仕入先の相手）へ移る。履歴は増やさず置き換える（戻る操作は一覧へ）
+function jumpTo(type,key){
+  selType=type; selectedKey=key; viewMode='overview'; fieldFilter="";
+  document.querySelectorAll('#list .row.sel').forEach(e=>e.classList.remove('sel'));
+  renderDetail(); document.getElementById('detail').scrollTop=0;
+  if(isMobile()&&history.state&&history.state.mv==='detail') history.replaceState({mv:'detail'},'');
+}
+function openDetail(type,key,rowEl){
+  selType=type; selectedKey=key;
   // 一覧は作り直さず、選択の印だけ付け替える（スクロール位置を保つ）
   document.querySelectorAll('#list .row.sel').forEach(e=>e.classList.remove('sel'));
   if(rowEl) rowEl.classList.add('sel');
@@ -716,17 +759,17 @@ window.addEventListener('popstate',()=>{ if(isMobile()) setView((history.state&&
 function renderTabs(){
   const el=document.getElementById("tabs"); el.innerHTML="";
   TABS.forEach(key=>{
-    if(!store[key]) return;
+    if(key==="all"?!(store.customer||store.supplier):!store[key]) return;
     const b=document.createElement("div");
     b.className="tab"+(key===current?" active":"");
-    b.textContent=DATASETS[key].label;
+    b.textContent=TAB_LABEL[key];
     b.onclick=()=>switchTab(key);
     el.appendChild(b);
   });
 }
 function renderFilters(){
   const ds=store[current], box=document.getElementById("filters"); box.innerHTML="";
-  if(!ds) return;
+  if(!ds) return;   // 「すべて」は項目が種類ごとに違うので絞り込みなし（検索だけ）
   const mLabel=current==="customer"?"請求方法":"支払方法";
   const opts=(pick)=>{
     const set=new Map(); ds.rows.forEach(r=>{ const v=pick(r.__d); set.set(v||"", (set.get(v||"")||0)+1); });
@@ -747,7 +790,7 @@ function highlight(text,q){
   try{ const re=new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),"ig"); return esc(text).replace(re,m=>"<mark>"+esc(m)+"</mark>"); }
   catch(e){ return esc(text); }
 }
-function renderList(){
+function renderListSingle(){
   const ds=store[current]; const listEl=document.getElementById("list");
   if(!ds){listEl.innerHTML="";return;}
   const q=document.getElementById("search").value.trim(); const nq=normalize(q);
@@ -760,17 +803,52 @@ function renderList(){
   const total=matched.length, CAP=800, shown=matched.slice(0,CAP);
   document.getElementById("listMeta").textContent=`検索結果　${total.toLocaleString()} 件`+(total>CAP?`（先頭${CAP}件を表示）`:"");
   const frag=document.createElement("div");
-  shown.forEach(r=>{
-    const d=r.__d, div=document.createElement("div");
-    div.className="row"+(r[ki]===selectedKey?" sel":"");
-    const tag=d.tag?`<span class="ptag ${current==="customer"?tagClass(d.tag,d.known):""}">${esc(d.tag)}</span>`:"";
-    div.innerHTML=`<div class="rmain"><div class="code">${highlight(r[ki]||"",q)}</div>
-      <div class="name">${highlight(d.name,q)}</div>
-      <div class="sub">${highlight(d.pc,q)}</div></div>${tag}`;
-    div.onclick=()=>openDetail(r[ki],div);
-    frag.appendChild(div);
-  });
+  shown.forEach(r=>frag.appendChild(rowEl(current,r,q)));
   listEl.innerHTML=""; listEl.appendChild(frag);
+}
+
+// 一覧の1行（得意先・仕入先で共通）
+function rowEl(type,r,q){
+  const ds=store[type], ki=ds.keyIdx, d=r.__d, div=document.createElement("div");
+  div.className="row"+(type===selType&&r[ki]===selectedKey?" sel":"");
+  const tag=d.tag?`<span class="ptag ${type==="customer"?tagClass(d.tag,d.known):""}">${esc(d.tag)}</span>`:"";
+  div.innerHTML=`<div class="rmain"><div class="code">${highlight(r[ki]||"",q)}</div>
+    <div class="name">${highlight(d.name,q)}</div>
+    <div class="sub">${highlight(d.pc,q)}</div></div>${tag}`;
+  div.onclick=()=>openDetail(type,r[ki],div);
+  return div;
+}
+
+// 「すべて」：得意先と仕入先を、検索語に合うものだけ種類ごとにまとめて出す（各50件、「もっと見る」で続き）
+const GROUP_CAP=50;
+let allCap={customer:GROUP_CAP,supplier:GROUP_CAP};
+function renderListAll(){
+  const listEl=document.getElementById("list");
+  const q=document.getElementById("search").value.trim(), nq=normalize(q);
+  const badge=document.getElementById("filterBadge"); badge.hidden=true;
+  const groups=["customer","supplier"].filter(t=>store[t]).map(t=>({t,rows:store[t].rows.filter(r=>!nq||r.__blob.includes(nq))}));
+  document.getElementById("listMeta").textContent=groups.map(g=>`${TAB_LABEL[g.t]} ${g.rows.length.toLocaleString()} 件`).join("　／　");
+  const frag=document.createElement("div");
+  groups.forEach(g=>{
+    if(!g.rows.length) return;
+    const head=document.createElement("div"); head.className="grp "+g.t;
+    head.innerHTML=`<span class="gname">${TAB_LABEL[g.t]}</span><span class="gcount">${g.rows.length.toLocaleString()} 件</span>`;
+    frag.appendChild(head);
+    g.rows.slice(0,allCap[g.t]).forEach(r=>frag.appendChild(rowEl(g.t,r,q)));
+    const rest=g.rows.length-allCap[g.t];
+    if(rest>0){
+      const more=document.createElement("button"); more.type="button"; more.className="more-btn";
+      more.textContent=`${TAB_LABEL[g.t]}をもっと見る（残り ${rest.toLocaleString()} 件）`;
+      more.onclick=()=>{ allCap[g.t]+=GROUP_CAP; const sc=listEl.scrollTop; renderListAll(); listEl.scrollTop=sc; };
+      frag.appendChild(more);
+    }
+  });
+  if(!frag.children.length){ const p=document.createElement("div"); p.className="placeholder"; p.style.marginTop="40px"; p.textContent="該当する会社がありません"; frag.appendChild(p); }
+  listEl.innerHTML=""; listEl.appendChild(frag);
+}
+function renderList(){
+  document.querySelector(".list-pane").classList.toggle("no-filters",current==="all");
+  if(current==="all") renderListAll(); else renderListSingle();
 }
 
 // ============================================================
@@ -968,10 +1046,10 @@ function rawCard(ds,row,title,cls){
 }
 function buildRaw(){
   const body=document.createElement("div"); body.className="detail-body";
-  const ds=store[current], row=ds.byKey[selectedKey];
-  const c1=rawCard(ds,row,`${SRC[current]}（CSVそのまま）`);
+  const ds=store[selType], row=ds.byKey[selectedKey];
+  const c1=rawCard(ds,row,`${SRC[selType]}（CSVそのまま）`);
   if(c1) body.appendChild(c1);
-  if(current==="customer"&&store.tovas){
+  if(selType==="customer"&&store.tovas){
     const tr=tovasRow(row);
     if(tr){ const c2=rawCard(store.tovas,tr,"TOVAS請求設定（CSVそのまま）","tv"); if(c2) body.appendChild(c2); }
     else { const p=document.createElement("div"); p.className="placeholder"; p.style.margin="0 0 14px"; p.textContent="この得意先のTOVAS請求設定はありません"; body.appendChild(p); }
@@ -985,15 +1063,18 @@ function buildRaw(){
 // ============================================================
 function renderDetail(){
   const det=document.getElementById("detail");
-  const ds=store[current];
+  const ds=store[selType];
   if(!ds||!selectedKey){ det.innerHTML=`<div class="placeholder">左の一覧から選択してください</div>`; return; }
   const row=ds.byKey[selectedKey];
   if(!row){ det.innerHTML=`<div class="placeholder">データが見つかりません</div>`; return; }
-  const ov=current==="customer"?customerOverview(row):supplierOverview(row);
+  const ov=selType==="customer"?customerOverview(row):supplierOverview(row);
   const h=ov.head;
   det.innerHTML="";
   const head=document.createElement("div"); head.className="detail-head";
   const meta=h.meta.map(([k,v])=>`<span class="mk">${esc(k)}</span><span class="mv">${v?esc(v):"—"}</span>`).join("");
+  // 同じ社名が、もう一方（得意先なら仕入先、仕入先なら得意先）にも登録されているときは、行き来できるリンクを出す
+  const cps=counterparts(selType,row);
+  const xlinks=cps.length?`<div class="xlinks">${selType==="customer"?"仕入先":"得意先"}にも登録あり：${cps.slice(0,3).map(c=>`<a href="#" class="xlink" data-type="${c.type}" data-key="${esc(c.key)}">${esc(c.name)}（${esc(c.key)}）</a>`).join("　")}${cps.length>3?`　ほか${cps.length-3}件`:""}</div>`:"";
   head.innerHTML=`<div class="dtop">
       <div class="dleft">
         <div class="dcode">${esc(h.code)}</div>
@@ -1004,6 +1085,7 @@ function renderDetail(){
           ${h.fax?`<div class="cl"><span class="ci">FAX</span><span>${esc(h.fax)}</span></div>`:""}
           ${h.mail?`<div class="cl"><span class="ci">メール</span><a class="maillink" href="mailto:${esc(h.mail)}">${esc(h.mail)}</a></div>`:""}
         </div>
+        ${xlinks}
       </div>
       <div class="dright">
         <div class="srcline"><span class="chip">${esc(h.chip)}</span>${h.upd[0]||h.upd[1]?`<span>最終更新日 ${esc(h.upd[0]||"—")}　更新者 ${esc(h.upd[1]||"—")}</span>`:""}</div>
@@ -1014,7 +1096,7 @@ function renderDetail(){
       <button class="dtab${viewMode==='overview'?' active':''}" data-mode="overview">概要</button>
       <button class="dtab mute${viewMode==='raw'?' active':''}" data-mode="raw">元データを表示</button>
       <span class="grow"></span>
-      <button class="btn" id="copyBtn" title="コード・名称・住所・電話・請求（支払）情報をコピー">この${current==="customer"?"会社":"仕入先"}をコピー</button>
+      <button class="btn" id="copyBtn" title="コード・名称・住所・電話・請求（支払）情報をコピー">この${selType==="customer"?"会社":"仕入先"}をコピー</button>
     </div>`;
   // スマホ用の上部バー（上に固定）：「← 一覧」・名称・コピー。PCでは非表示
   const mbar=document.createElement("div"); mbar.className="mbar";
@@ -1043,6 +1125,7 @@ function renderDetail(){
     const btn=e.currentTarget, done=()=>{ const o=btn.textContent; btn.textContent="コピーしました"; setTimeout(()=>btn.textContent=o,1200); };
     (navigator.clipboard?navigator.clipboard.writeText(lines.join("\n")):Promise.reject()).then(done).catch(()=>{ prompt("コピーしてください",lines.join("\n")); });
   };
+  head.querySelectorAll(".xlink").forEach(a=>a.onclick=e=>{ e.preventDefault(); jumpTo(a.dataset.type,a.dataset.key); });
   head.querySelector("#copyBtn").onclick=copyHandler;
   mbar.querySelector("#copyBtn2").onclick=copyHandler;
 }
@@ -1070,7 +1153,7 @@ document.addEventListener("click",e=>{
 
 // ---- 検索入力 ----
 let searchTimer=null;
-document.getElementById("search").addEventListener("input",()=>{ clearTimeout(searchTimer); searchTimer=setTimeout(renderList,120); });
+document.getElementById("search").addEventListener("input",()=>{ clearTimeout(searchTimer); searchTimer=setTimeout(()=>{ allCap={customer:GROUP_CAP,supplier:GROUP_CAP}; renderList(); },120); });
 
 // ============================================================
 // 手動CSV読込（localhost開発・Graph失敗時のフォールバック）
