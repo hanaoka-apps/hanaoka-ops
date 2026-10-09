@@ -104,7 +104,9 @@
 
 ### 3. 常駐スクリプトの登録
 - タスクスケジューラーに登録：トリガー＝「ログオン時」に**1回だけ**起動、実行時間の上限なし、多重起動しない
-- 操作：`powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "<クローン先>\scripts\watch_regenerate_request.ps1"`
+- 操作：プログラム `conhost.exe`、引数 `--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<クローン先>\scripts\watch_regenerate_request.ps1"`
+  - `powershell.exe -WindowStyle Hidden` を直接起動にしない。Windows 11 で既定のターミナルが「Windows ターミナル」だと
+    画面が見えてしまい、それを閉じると常駐スクリプトも終了する（タスクの結果 `0xC000013A`。実際に発生した）
 - PADが画面を操作するので、ログオン中のユーザーとして（対話型で）実行する
 - 環境変数の設定は不要（以前の `SMILE_EXPORT_COMMAND` / `AZURE_*` は使わない）
 
