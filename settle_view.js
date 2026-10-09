@@ -21,6 +21,7 @@
     '.sv .itabs{display:flex;gap:4px;margin:8px 0 6px;border-bottom:1px solid var(--line)}.sv .itabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:4px 10px;color:var(--sub);font-weight:600}.sv .itabs button.on{color:var(--pri);border-bottom-color:var(--pri)}' +
     '.sv .tsum{margin-top:8px}.sv .tsum .tt{display:flex;align-items:center;margin-bottom:4px;font-size:13px}.sv .tsum .more{font-size:12px;padding:2px 8px}' +
     '.sv .dt.wide .di{display:flex;flex-direction:column;overflow:hidden!important}.sv .dt.wide .di>*{flex:none}.sv .dt.wide .ib{flex:1 1 auto;overflow:auto;min-height:0}' +
+    '.sv .di{overflow-x:hidden}.sv .di td,.sv .di th{white-space:normal;overflow-wrap:anywhere}.sv .di td:first-child{white-space:nowrap}.sv .di td.n,.sv .di th.n{white-space:nowrap;word-break:normal}.sv .di .cmp td{white-space:nowrap}' +
     '.sv .lt{margin-left:auto}.sv table.ln tr:not(.lm) td{border-bottom:none}.sv table.ln tr.lm td{white-space:normal;font-size:12px;color:var(--sub);padding-top:0}' +
     '.sv .dl{display:flex;flex-direction:column;min-height:0;flex:1 1 auto!important}.sv .dl .chips:empty{display:none}.sv .dl .chips{margin-top:8px}.sv .di{min-width:0}' +
     '.sv .dt.wide .db{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,1fr);gap:12px;overflow:hidden;padding:8px}.sv .dt.wide .dl{order:0;min-height:0}.sv .dt.wide .di{order:1;overflow:auto;min-height:0;padding-right:4px}' +
@@ -204,7 +205,7 @@
       var tx = ls.some(function (l) { return l.rate; });
       if (!tx) return '<table><tr><th>内訳</th><th class="n">金額</th><th>備考</th></tr>' + ls.map(function (l) { return '<tr><td>' + esc(l.genre || '') + '</td><td class="n">' + yen(l.amount) + '</td><td>' + esc(l.note || '') + '</td></tr>'; }).join('') + '</table>';
       var zk = function (l) { return esc(l.rate || '') + (l.kind ? '<span class="tag ' + (l.kind === '課' ? 't-new' : 't-ok') + '" title="' + (l.kind === '課' ? '課税売上のための仕入（個別対応）' : '共通の仕入（個別対応）') + '">' + esc(l.kind) + '</span>' : '') + (l.tm ? '<div class="s" style="font-size:11px;color:var(--sub)">' + esc(l.tm) + '</div>' : ''); };
-      return '<div style="overflow-x:auto"><table class="ln"><tr><th>科目</th><th>税区分</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th></tr>' + ls.map(function (l) {
+      return '<div><table class="ln"><tr><th>科目</th><th>税区分</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th></tr>' + ls.map(function (l) {
         return '<tr><td>' + esc(l.genre || '') + '</td><td>' + zk(l) + '</td><td class="n">' + yen(l.excl) + '</td><td class="n">' + yen(l.tax) + '</td><td class="n"><b>' + yen(l.amount) + '</b></td></tr>' + (l.note ? '<tr class="lm"><td colspan="5">' + esc(l.note) + '</td></tr>' : ''); }).join('') + '</table></div>';
     }
     // 請求書は PDF か画像（スマホの写真など）。画像は幅に合わせる
