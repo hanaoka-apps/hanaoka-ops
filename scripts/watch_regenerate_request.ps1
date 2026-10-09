@@ -31,6 +31,12 @@
      複数PC・複数環境で使われうるため、特定のPCでしか通用しないパスを
      スクリプトに直接書き込まない。PCごとに違う値を環境変数側で持たせる。
 
+  2b. TOVAS登録チェッカーの「マスタ再取得をリクエスト」(_refresh_masters_request.json)に応える
+     ため、環境変数 MASTERS_EXPORT_COMMAND に「得意先マスタ.csv と
+     TOVAS得意先別請求明細書情報.csv をSMILEから出力し SharedMasters 直下へ上書き保存する」
+     コマンドを設定する(SMILE_EXPORT_COMMAND と同じ形式。完了まで待って終了すること)。
+     JSONの再生成は不要(チェッカーがCSVを直接読む)。
+
   3. regenerate_facts.py は SHARED_MASTERS_DIR=$SharedMastersPath で実行し、
      同期フォルダのCSVを直接読んでJSONも同じフォルダに書き出す
      (アップロードはOneDrive同期に任せる)。そのため AZURE_* の環境変数は不要。
@@ -44,6 +50,7 @@ $ErrorActionPreference = 'Stop'
 # ===== 設定 (環境に合わせて書き換える) =====
 $SharedMastersPath = "$env:USERPROFILE\OneDrive - 花岡車輌 株式会社\花岡車輌 - SharedMasters"
 $RequestFileName   = '_regenerate_request.json'
+$MastersRequestFileName = '_refresh_masters_request.json'   # TOVAS登録チェッカーからの合図
 $LogPath           = "$env:USERPROFILE\regenerate_watcher.log"
 $RepoRawBase       = 'https://raw.githubusercontent.com/hanaoka-apps/hanaoka-ops/main'
 $WorkDir           = "$env:TEMP\hanaoka-regenerate-watcher"
@@ -81,6 +88,31 @@ function Invoke-RegenerateFacts {
   if ($LASTEXITCODE -ne 0) { throw "regenerate_facts.py が終了コード $LASTEXITCODE で失敗しました" }
 }
 
+function Invoke-MastersExport {
+  Write-Log 'マスタ(得意先・TOVAS請求設定)のSMILE出力を開始します'
+  $cmd = $env:MASTERS_EXPORT_COMMAND
+  if ([string]::IsNullOrWhiteSpace($cmd)) {
+    throw '環境変数 MASTERS_EXPORT_COMMAND が設定されていません(マスタ出力の実行コマンドを設定してください)'
+  }
+  & cmd.exe /c $cmd
+  if ($LASTEXITCODE -ne 0) { throw "マスタ出力が終了コード $LASTEXITCODE で失敗しました" }
+  Write-Log 'マスタ出力が完了しました'
+}
+
+function Process-MastersRequest {
+  param([string]$FilePath)
+  try {
+    $content = Get-Content -Path $FilePath -Raw | ConvertFrom-Json
+    Write-Log "マスタ再取得リクエストを検知: source=$($content.source) requestedBy=$($content.requestedBy) requestedAt=$($content.requestedAt)"
+    Invoke-MastersExport
+    Write-Log 'マスタ再取得が完了しました'
+  } catch {
+    Write-Log "エラー: $($_.Exception.Message)"
+  } finally {
+    Remove-Item -Path $FilePath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Process-Request {
   param([string]$FilePath)
   try {
@@ -97,16 +129,20 @@ function Process-Request {
 }
 
 $requestFilePath = Join-Path $SharedMastersPath $RequestFileName
+$mastersRequestFilePath = Join-Path $SharedMastersPath $MastersRequestFileName
 
 # 起動時にすでにリクエストが残っていれば先に処理する
 if (Test-Path $requestFilePath) {
   Process-Request -FilePath $requestFilePath
 }
+if (Test-Path $mastersRequestFilePath) {
+  Process-MastersRequest -FilePath $mastersRequestFilePath
+}
 
 Write-Log "監視を開始します: $SharedMastersPath"
 $watcher = New-Object System.IO.FileSystemWatcher
 $watcher.Path = $SharedMastersPath
-$watcher.Filter = $RequestFileName
+$watcher.Filter = '_*_request.json'   # 営業日報(_regenerate_...)とTOVASチェッカー(_refresh_masters_...)の両方
 $watcher.IncludeSubdirectories = $false
 
 $isProcessing = $false
@@ -122,11 +158,14 @@ while ($true) {
 
   # OneDriveの同期がファイル書き込み完了直後だと不安定なことがあるため少し待つ
   if (-not $result.TimedOut) { Start-Sleep -Seconds 2 }
-  if (-not (Test-Path $requestFilePath)) { continue }
+  $hasRegen   = Test-Path $requestFilePath
+  $hasMasters = Test-Path $mastersRequestFilePath
+  if (-not $hasRegen -and -not $hasMasters) { continue }
 
   $isProcessing = $true
   try {
-    Process-Request -FilePath $requestFilePath
+    if ($hasMasters) { Process-MastersRequest -FilePath $mastersRequestFilePath }
+    if ($hasRegen)   { Process-Request -FilePath $requestFilePath }
   } finally {
     $isProcessing = $false
   }

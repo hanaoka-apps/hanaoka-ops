@@ -406,6 +406,7 @@
   <h1><span class="dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9"/></svg></span>TOVAS登録チェッカー</h1>
   <div class="grow"></div>
   <div class="userchip"><span class="avatar" id="sp-avatar"></span><span id="sp-user"></span></div>
+  <button class="hbtn" id="btn-request" title="SMILEから最新のマスタを出力し直してもらう（反映まで数分）">🔄 マスタ再取得をリクエスト</button>
   <button class="hbtn" id="btn-reload" title="SharePointから再取得">↻ 更新</button>
 </header>
 <div id="statusBar"><span id="sp-status">未サインイン</span></div>
@@ -774,6 +775,7 @@ function ingestCsv(key, rawRows, label) {
 //   認証・取得の方式は master_viewer.html と同じ
 // ============================================================
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+const WRITE_SCOPES = ['Files.ReadWrite.All'];   // 合図ファイルを置くときだけ使う（営業日報と同じ）
 const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
 const FALLBACK_DRIVE_ID = 'b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
 const SP_FILES = {
@@ -850,6 +852,106 @@ async function loadFromSharePoint() {
   if (failed.length) setSpStatus('err', '読み込めませんでした: ' + failed.join('、') + '（下のボックスから手動で選択もできます）');
   else setSpStatus('ok', '読み込み完了 — ' + new Date().toLocaleString('ja-JP') + ' 時点');
 }
+// ============================================================
+// 「マスタ再取得をリクエスト」（営業日報の「再集計をリクエスト」と同じ方式）
+//   SharedMasters に合図ファイルを1つ置くだけ。実際のSMILE出力はRPA用PCの常駐スクリプト
+//   （scripts/watch_regenerate_request.ps1）が検知して実行する。
+//   営業日報の合図（_regenerate_request.json）とは別名にして、TOVASチェッカーからの
+//   依頼だと分かるよう source も書く。
+// ============================================================
+const MASTERS_REQUEST_FILE = '_refresh_masters_request.json';
+const REQ_PENDING_KEY = 'mastersRequestPendingSince';
+const REQ_POLL_MS = 30 * 1000;
+const REQ_SYNC_GRACE_MS = 3 * 60 * 1000;   // 合図ファイルが消えてから、CSVの同期を待つ猶予
+const REQ_TIMEOUT_MS = 30 * 60 * 1000;
+let reqTimer = null;
+
+async function getWriteToken() {
+  try { return (await msalInstance.acquireTokenSilent({ scopes: WRITE_SCOPES, account })).accessToken; }
+  catch { return (await msalInstance.acquireTokenPopup({ scopes: WRITE_SCOPES })).accessToken; }
+}
+// SharedMasters直下のファイルの更新日時（なければ null）
+async function getMastersItemModified(name) {
+  const did = await resolveDriveId();
+  const token = await getToken();
+  const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + did + '/root:/' + encodeURIComponent(name) + '?$select=lastModifiedDateTime',
+    { headers: { Authorization: 'Bearer ' + token } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('Graph ' + r.status + ': ' + name);
+  return Date.parse((await r.json()).lastModifiedDateTime);
+}
+async function requestMastersRefresh() {
+  if (!confirm('SMILEから最新のマスタ（得意先マスタ・TOVAS請求設定）を出力し直します。よろしいですか？（反映まで数分かかります）')) return;
+  const requestedAt = new Date().toISOString();
+  const btn = document.getElementById('btn-request');
+  btn.disabled = true;
+  try {
+    const did = await resolveDriveId();
+    const token = await getWriteToken();
+    const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + did + '/root:/' + MASTERS_REQUEST_FILE + ':/content', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'tovas_checker',
+        files: Object.values(SP_FILES),
+        requestedBy: (account && account.username) || '',
+        requestedAt
+      })
+    });
+    if (!r.ok) throw new Error('Graph PUT ' + r.status + ': ' + await r.text());
+  } catch (e) {
+    console.error('[マスタ再取得リクエスト] 失敗', e);
+    alert('リクエストに失敗しました（SharedMastersへの書き込み権限が必要です）。時間をおいて再度お試しください。');
+    btn.disabled = false;
+    return;
+  }
+  startMastersWatch(requestedAt);
+}
+function startMastersWatch(requestedAt) {
+  if (reqTimer) clearTimeout(reqTimer);
+  try { localStorage.setItem(REQ_PENDING_KEY, requestedAt); } catch (_) {}
+  const btn = document.getElementById('btn-request');
+  btn.disabled = true;
+  btn.textContent = '⏳ 再取得中…';
+  const sinceMs = Date.parse(requestedAt);
+  let goneAt = null;
+  const tick = async () => {
+    const elapsed = Date.now() - sinceMs;
+    setSpStatus('loading', 'SMILEからマスタを出力中…（' + Math.floor(elapsed / 60000) + '分経過）');
+    try {
+      const mods = await Promise.all(Object.values(SP_FILES).map(getMastersItemModified));
+      if (mods.every(m => m && m > sinceMs)) { finishMastersWatch('done'); return; }
+      if (await getMastersItemModified(MASTERS_REQUEST_FILE) === null) {
+        // 合図ファイルが消えた＝PC側の処理が終わった（失敗時も消える）。CSVの同期を少し待つ
+        goneAt = goneAt || Date.now();
+        if (Date.now() - goneAt > REQ_SYNC_GRACE_MS) { finishMastersWatch('failed'); return; }
+      }
+    } catch (e) { console.warn('[マスタ再取得] 状況の確認に失敗', e); }
+    if (elapsed > REQ_TIMEOUT_MS) { finishMastersWatch('timeout'); return; }
+    reqTimer = setTimeout(tick, REQ_POLL_MS);
+  };
+  tick();
+}
+async function finishMastersWatch(result) {
+  reqTimer = null;
+  try { localStorage.removeItem(REQ_PENDING_KEY); } catch (_) {}
+  const btn = document.getElementById('btn-request');
+  btn.disabled = false;
+  btn.textContent = '🔄 マスタ再取得をリクエスト';
+  if (result === 'done') {
+    await loadFromSharePoint();   // 最新のCSVを読み込み直す
+    if (!document.hasFocus()) {
+      const t = document.title;
+      document.title = '✅ マスタ更新完了 - ' + t;
+      window.addEventListener('focus', () => { document.title = t; }, { once: true });
+    }
+  } else if (result === 'failed') {
+    setSpStatus('err', '⚠️ マスタが更新されませんでした。RPA用PCのログ（regenerate_watcher.log）を確認してください');
+  } else {
+    setSpStatus('err', '⚠️ 30分たっても反映されません。RPA用PCが動いているか確認してください');
+  }
+}
+
 async function soumuHasAccess() {
   if (sessionStorage.getItem('soumuAccess') === '1') return true;
   try {
@@ -875,6 +977,8 @@ async function initAuth() {
     document.getElementById('sp-user').textContent = n;
     document.getElementById('sp-avatar').textContent = (n || '?').charAt(0);
     await loadFromSharePoint();
+    // 再取得の待機中にページを開き直した場合は、待機を再開する
+    try { const pending = localStorage.getItem(REQ_PENDING_KEY); if (pending && Date.now() - Date.parse(pending) < REQ_TIMEOUT_MS) startMastersWatch(pending); } catch (_) {}
   };
   document.getElementById('loginBtn').onclick = async () => {
     try {
@@ -884,6 +988,7 @@ async function initAuth() {
     } catch (e) { showLoginError('サインインに失敗しました: ' + e.message); }
   };
   document.getElementById('btn-reload').onclick = loadFromSharePoint;
+  document.getElementById('btn-request').onclick = requestMastersRefresh;
   account = await HanaokaAuth.restore(msalInstance, SCOPES);
   if (account) await enter();
 }
