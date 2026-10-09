@@ -15,6 +15,7 @@
 
   ジョブの中身は scripts/rpa_jobs.json (毎回GitHubのmainから取得) で決める:
     PADフローをURIで起動 → outputs のファイルがすべて更新されるまで待つ → after の処理
+    (steps があれば、各手順のPADフロー起動と出力待ちを順に行ってから after の処理)
     (URIで起動したPADフローは完了を待たずに戻るため、出力ファイルで完了を判断する)
 
   PADは同時に1つのフローしか動かせないので、1件ずつ順番に処理する。
@@ -169,6 +170,20 @@ function Invoke-PadFlow($Def) {
   throw ("PADフローの出力が{0}分以内に完了しませんでした(未更新/書き込み中: {1})" -f $timeoutMinutes, (($pending + $locked) -join ', '))
 }
 
+# ジョブの手順(PADフローと出力ファイルの組)を返す。
+# steps があればその順に、なければ flow / outputs の1手順。timeoutMinutes は手順になければジョブの値を使う。
+function Get-JobSteps($Def) {
+  if (-not $Def.steps) { return , $Def }
+  $steps = @($Def.steps)
+  if ($steps.Count -eq 0) { throw 'ジョブ定義の steps が空です' }
+  foreach ($s in $steps) {
+    if (-not $s.timeoutMinutes -and $Def.timeoutMinutes) {
+      $s | Add-Member -NotePropertyName timeoutMinutes -NotePropertyValue $Def.timeoutMinutes -Force
+    }
+  }
+  return $steps
+}
+
 function Invoke-RegenerateFacts {
   Write-Log 'regenerate_facts.py を取得して実行します'
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
@@ -268,7 +283,16 @@ function Invoke-NextJob {
     $def = (Get-JobDefinitions).jobs.$jobName
     if (-not $def) { throw "未定義のジョブです: $jobName" }
     if ($def.after -and $def.after -ne 'regenerate_facts') { throw "未対応の後処理です: $($def.after)" }
-    Invoke-PadFlow $def
+    $steps = @(Get-JobSteps $def)
+    for ($i = 0; $i -lt $steps.Count; $i++) {
+      try {
+        Invoke-PadFlow $steps[$i]
+      } catch {
+        # 複数手順のジョブは、どの手順で止まったかを残す
+        if ($steps.Count -gt 1) { throw ("手順{0}/{1}（{2}）: {3}" -f ($i + 1), $steps.Count, $steps[$i].flow, $_.Exception.Message) }
+        throw
+      }
+    }
     if ($def.after -eq 'regenerate_facts') { Invoke-RegenerateFacts }
   } catch {
     $errorMessage = $_.Exception.Message
