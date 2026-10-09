@@ -265,7 +265,9 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.equal(r.tot.diff, 8100 - 7136);
   assert.equal(r.explained, r.tot.diff, '残高に効く差の合計が、全体の差と一致する');
   const by = Object.fromEntries(r.items.map(i => [i.code, i]));
-  assert.ok(by['0'].kinds.includes('会計の内訳なし（コード0）'));
+  assert.ok(by['0'].excluded, 'コード0（税理士の調整）は判定から除く');
+  assert.equal(r.tot.excluded, 1000);
+  assert.equal(r.tot.diffNet, r.tot.diff - 1000);
   assert.ok(by['1101'].kinds.includes('両建て（残高に影響なし）'));
   assert.equal(by['1101'].affects, false);
   assert.ok(by['3030'].kinds.includes('付け違いの可能性') && by['3784'].pair === '3030');

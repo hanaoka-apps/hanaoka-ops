@@ -407,8 +407,9 @@
       items.push({ code, name: k.name || (h.custs[0] && h.custs[0].name) || "", k, h, d, kMissing: !!k.missing, hMissing: !!h.missing, kinds: [], hints: [] });
     });
     // 種類分け
+    //   コード0（内訳なし）は、税理士が入れる消費税などの調整で、販売には対応する取引がない。照合の判定からは外して別に出す
     items.forEach(it => {
-      if (it.code === "0") it.kinds.push("会計の内訳なし（コード0）");
+      if (it.code === "0") { it.kinds.push("会計だけの調整（内訳なし・判定から除く）"); it.excluded = true; }
       if (it.d.pre) it.kinds.push("期首残高のずれ");
       const flow = it.d.sales - it.d.pay;   // 期間中の動きで残高に効く分
       if (flow) it.kinds.push(it.kMissing ? "会計に補助科目がない" : it.hMissing ? "販売に得意先がない" : "期間中の売上・入金の差");
@@ -443,9 +444,11 @@
     items.forEach(it => {
       odd.filter(o => o.to === it.code || String(parseInt(o.cust.slice(0, 4), 10)) === it.code).forEach(o =>
         it.hints.push(`得意先マスタ：${o.cust} ${o.name} の社名コードが ${o.company}（${o.companyName}）。会計ではそちらの補助に入っている可能性`));
-      if (it.code === "0") it.hints.push("会計で、内訳コードを付けずに計上された売掛金。期首残高（繰越）か仕訳の内訳コードを確認");
+      if (it.code === "0") it.hints.push("会計で内訳コードを付けずに計上された売掛金（税理士の消費税などの調整）。販売には対応する取引がないので判定から除いています");
     });
     const explained = items.filter(i => i.affects).reduce((s, i) => s + i.d.bal, 0);
+    tot.excluded = items.filter(i => i.excluded).reduce((s, i) => s + i.d.bal, 0);
+    tot.diffNet = tot.diff - tot.excluded;   // コード0を除いた差。0 なら一致
     return { period: { from, to: K.period.to || H.period.to }, kPeriod: K.period, hPeriod: H.period, tot, items, odd, explained };
   }
 
