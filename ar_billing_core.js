@@ -349,10 +349,110 @@
     return { customers: C, list: Object.values(C), dataStart, dataEnd, payStart, payEnd, asof, today, judgeFrom };
   }
 
+  // ============================================================
+  // 会計と販売の売掛残高の照合（月次決算の確認）
+  //   会計：SMILE 会計の「内訳残高一覧表」（科目 124 売掛金。内訳コード＝販売の得意先コードの上4桁）
+  //   販売：SMILE 販売の「売掛残高一覧表」（得意先ごと。上4桁でまとめて会計と比べる）
+  //   どちらも Excel を行の配列（[[セル,…],…]）にして渡す
+  // ============================================================
+  function yen0(v) { if (v == null || v === "") return 0; const n = Number(String(v).replace(/[*,\s]/g, "")); return isFinite(n) ? Math.round(n) : 0; }
+  function periodOf(rows) {
+    // 「令和 8年 4月 1日 ～ 令和 8年 9月30日」「2026年 4月 1日～2026年 9月30日」
+    for (const r of rows.slice(0, 6)) {
+      const t = String((r || []).join(" ")).normalize("NFKC");
+      let m = t.match(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s*[～~]\s*(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/);
+      if (m) return { from: ymd(+m[1], +m[2], +m[3]), to: ymd(+m[4], +m[5], +m[6]) };
+      m = t.match(/令和\s*(\d+)年\s*(\d{1,2})月\s*(\d{1,2})日\s*[～~]\s*令和\s*(\d+)年\s*(\d{1,2})月\s*(\d{1,2})日/);
+      if (m) return { from: ymd(2018 + +m[1], +m[2], +m[3]), to: ymd(2018 + +m[4], +m[5], +m[6]) };
+    }
+    return { from: "", to: "" };
+  }
+  function parseKaikei(rows) {
+    const out = {};
+    rows.forEach(r => {
+      if (!r || String(r[0]).trim() !== "124" || r[2] == null || r[2] === "") return;   // 科目計の行（内訳コードなし）は除く
+      const code = String(parseInt(r[2], 10));
+      out[code] = { code, name: r[3] || "", pre: yen0(r[4]), dr: yen0(r[5]), cr: yen0(r[6]), bal: yen0(r[7]) };
+    });
+    return { period: periodOf(rows), byCode: out };
+  }
+  function parseHanbai(rows) {
+    const out = {};
+    rows.forEach(r => {
+      if (!r) return;
+      const c = String(r[0] == null ? "" : r[0]).replace(/\D/g, "");
+      if (c.length !== 6) return;
+      const k = String(parseInt(c.slice(0, 4), 10));
+      const g = out[k] || (out[k] = { code: k, pre: 0, pay: 0, sales: 0, bal: 0, custs: [] });
+      const row = { cust: c, name: r[1] || "", pre: yen0(r[2]), pay: yen0(r[3]), sales: yen0(r[7]), bal: yen0(r[8]) };
+      g.pre += row.pre; g.pay += row.pay; g.sales += row.sales; g.bal += row.bal; g.custs.push(row);
+    });
+    return { period: periodOf(rows), byCode: out };
+  }
+  // ctx: { payments:[入金明細の行], customers:[得意先マスタの行] } … 手がかりを探すのに使う（なくてもよい）
+  function reconcile(kaikeiRows, hanbaiRows, ctx) {
+    ctx = ctx || {};
+    const K = parseKaikei(kaikeiRows), H = parseHanbai(hanbaiRows);
+    const from = K.period.from || H.period.from;
+    const sum = (o, f) => Object.values(o).reduce((s, x) => s + x[f], 0);
+    const tot = { kPre: sum(K.byCode, "pre"), kBal: sum(K.byCode, "bal"), hPre: sum(H.byCode, "pre"), hBal: sum(H.byCode, "bal") };
+    tot.diff = tot.kBal - tot.hBal; tot.preDiff = tot.kPre - tot.hPre;
+    const codes = [...new Set(Object.keys(K.byCode).concat(Object.keys(H.byCode)))].sort((a, b) => a - b);
+    const items = [];
+    codes.forEach(code => {
+      const k = K.byCode[code] || { code, name: "", pre: 0, dr: 0, cr: 0, bal: 0, missing: true };
+      const h = H.byCode[code] || { code, pre: 0, pay: 0, sales: 0, bal: 0, custs: [], missing: true };
+      const d = { pre: k.pre - h.pre, sales: k.dr - h.sales, pay: k.cr - h.pay, bal: k.bal - h.bal };
+      if (!d.pre && !d.sales && !d.pay && !d.bal) return;
+      items.push({ code, name: k.name || (h.custs[0] && h.custs[0].name) || "", k, h, d, kMissing: !!k.missing, hMissing: !!h.missing, kinds: [], hints: [] });
+    });
+    // 種類分け
+    items.forEach(it => {
+      if (it.code === "0") it.kinds.push("会計の内訳なし（コード0）");
+      if (it.d.pre) it.kinds.push("期首残高のずれ");
+      const flow = it.d.sales - it.d.pay;   // 期間中の動きで残高に効く分
+      if (flow) it.kinds.push(it.kMissing ? "会計に補助科目がない" : it.hMissing ? "販売に得意先がない" : "期間中の売上・入金の差");
+      if (!it.d.bal && it.d.sales && it.d.sales === it.d.pay) it.kinds.push("両建て（残高に影響なし）");
+      it.affects = !!it.d.bal;
+    });
+    // 付け違いの組：残高の差がちょうど反対の2つ
+    const aff = items.filter(i => i.d.bal && i.code !== "0");
+    aff.forEach(a => {
+      const b = aff.find(x => x !== a && x.d.bal === -a.d.bal && !x.pair);
+      if (b && !a.pair) { a.pair = b.code; b.pair = a.code; a.kinds.push("付け違いの可能性"); b.kinds.push("付け違いの可能性"); }
+    });
+    // 手がかり1：前の期の日付で、期の初日以降に入力された入金伝票（期首残高が動く）
+    if (from && ctx.payments) {
+      const late = {};
+      ctx.payments.forEach(p => {
+        const dd = fromSmile(p["伝票日付"]), op = fromSmile(p["操作日付"]);
+        if (dd && op && dd < from && op >= from) {
+          const k = String(parseInt(String(p["得意先ｺｰﾄﾞ"] || "").slice(0, 4), 10));
+          (late[k] = late[k] || []).push(`${p["得意先ｺｰﾄﾞ"]} 伝票日付 ${dd}・入力 ${op}・${(p["取引区分名"] || "").replace(/\s|　/g, "")} ${num(p["入金額"]).toLocaleString("ja-JP")}円 伝票№${p["伝票№"]}${p["備考"] ? "（" + p["備考"] + "）" : ""}`);
+        }
+      });
+      items.forEach(it => { if (it.d.pre && late[it.code]) it.hints.push("前の期の日付で、期が始まってから入力された入金伝票：" + late[it.code].join("／")); });
+    }
+    // 手がかり2：得意先マスタの社名コードが、得意先コードの上4桁と違う（会計の補助がその社名コードに入る）
+    const odd = [];
+    (ctx.customers || []).forEach(m => {
+      const c = m["得意先ｺｰﾄﾞ"] || "", s = m["得意先社名ｺｰﾄﾞ"] || "";
+      if (c.length === 6 && s && !/^0+$/.test(s) && String(parseInt(s.slice(-4), 10)) !== String(parseInt(c.slice(0, 4), 10)))
+        odd.push({ cust: c, name: m["得意先名１"] || "", company: s, companyName: m["得意先社名名"] || "", to: String(parseInt(s.slice(-4), 10)) });
+    });
+    items.forEach(it => {
+      odd.filter(o => o.to === it.code || String(parseInt(o.cust.slice(0, 4), 10)) === it.code).forEach(o =>
+        it.hints.push(`得意先マスタ：${o.cust} ${o.name} の社名コードが ${o.company}（${o.companyName}）。会計ではそちらの補助に入っている可能性`));
+      if (it.code === "0") it.hints.push("会計で、内訳コードを付けずに計上された売掛金。期首残高（繰越）か仕訳の内訳コードを確認");
+    });
+    const explained = items.filter(i => i.affects).reduce((s, i) => s + i.d.bal, 0);
+    return { period: { from, to: K.period.to || H.period.to }, kPeriod: K.period, hPeriod: H.period, tot, items, odd, explained };
+  }
+
   // 明細の行を見分けるキー（伝票№は年をまたぐと同じ番号が出るので日付も入れる）
   function lineKey(l) { return l.date + "|" + l.slip + "|" + l.row; }
 
-  const API = { lineKey, parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
+  const API = { reconcile, parseKaikei, parseHanbai, lineKey, parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.ARCore = API;
 })(typeof window !== "undefined" ? window : this);

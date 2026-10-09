@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_billing.svg"><!-- レシート（請求書） -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="ar_billing_core.js?v=20261007"></script>
+<script src="ar_billing_core.js?v=20261009"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css（全アプリ共通）のトークンだけを使う。ここに色の値は書かない */
@@ -304,6 +304,7 @@
       <button class="tab active" data-view="cust">得意先別</button>
       <button class="tab" data-view="gap">違算一覧<span class="cnt" id="gapCnt" hidden></span></button>
       <button class="tab" data-view="sp">特別請求</button>
+      <button class="tab" data-view="recon">会計照合</button>
     </div>
     <div class="grow"></div>
     <div class="hdr-actions" id="hdrActions">
@@ -347,6 +348,17 @@
         <input type="file" id="spBulkFile" accept=".csv" hidden>
       </div>
       <div class="gbody" id="spBody"></div>
+    </section>
+
+    <!-- 会計照合（月次決算：会計と販売の売掛残高） -->
+    <section class="view gview" id="viewRecon">
+      <div class="gbar">
+        <label>会計：内訳残高一覧表（Excel）<input type="file" id="rcK" accept=".xlsx,.xls"></label>
+        <label>販売：売掛残高一覧表（Excel）<input type="file" id="rcH" accept=".xlsx,.xls"></label>
+        <div class="grow"></div>
+        <button class="btn" id="rcCsv" disabled>CSVに出す</button>
+      </div>
+      <div class="gbody" id="reconBody"></div>
     </section>
 
     <!-- 違算一覧 -->
@@ -684,6 +696,8 @@ function setView(v){
   document.getElementById('viewCust').classList.toggle('active',v==='cust');
   document.getElementById('viewGap').classList.toggle('active',v==='gap');
   document.getElementById('viewSp').classList.toggle('active',v==='sp');
+  document.getElementById('viewRecon').classList.toggle('active',v==='recon');
+  if(v==='recon') renderRecon();
 }
 function render(){ setView(view); renderList(); renderDetail(); renderGap(); renderSpList(); }
 ['spSearch','spShowCancel'].forEach(id=>document.getElementById(id).addEventListener('input',renderSpList));
@@ -692,7 +706,7 @@ function render(){ setView(view); renderList(); renderDetail(); renderGap(); ren
 function readHash(){
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.get('c')&&M.customers[h.get('c')]){ selCode=h.get('c'); view='cust'; document.getElementById('viewCust').classList.add('show-detail'); }
-  else if(h.get('v')==='gap'||h.get('v')==='sp') view=h.get('v');
+  else if(['gap','sp','recon'].includes(h.get('v'))) view=h.get('v');
 }
 window.addEventListener('hashchange',()=>{ if(!M) return; readHash(); render(); });
 function writeHash(){
@@ -1157,6 +1171,78 @@ function openBulk(plan){
     }
   };
 }
+
+// ============================================================
+// 会計照合：会計の「内訳残高一覧表」と販売の「売掛残高一覧表」の売掛残高を、得意先コードの上4桁で比べる（月次決算）
+//   Excel はブラウザの中で読むだけで、どこにも保存しない（会計のデータのため）
+// ============================================================
+let RC=null, rcFiles={};
+function loadXlsx(){
+  if(window.XLSX) return Promise.resolve();
+  return new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    sc.onload=res; sc.onerror=()=>rej(new Error('Excel を読む部品を読み込めませんでした')); document.head.appendChild(sc); });
+}
+async function readSheetRows(file){
+  await loadXlsx();
+  const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:null});
+}
+['rcK','rcH'].forEach(id=>document.getElementById(id).onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  try{ rcFiles[id]={name:f.name,rows:await readSheetRows(f)}; }catch(err){ alert(err.message); return; }
+  if(rcFiles.rcK&&rcFiles.rcH){
+    RC=ARCore.reconcile(rcFiles.rcK.rows,rcFiles.rcH.rows,{payments:SRC.payments||[],customers:SRC.customers||[]});
+    document.getElementById('rcCsv').disabled=false;
+  }
+  renderRecon();
+});
+function renderRecon(){
+  const el=document.getElementById('reconBody');
+  if(!RC){
+    el.innerHTML=`<div class="panel"><div class="note" style="border-top:none">
+      <b>使い方</b>：上で2つの Excel を選ぶと、会計と販売の売掛残高を比べます。<br>
+      ・会計：SMILE 会計の「内訳残高一覧表」（科目 124 売掛金）。内訳コードは販売の得意先コードの上4桁<br>
+      ・販売：SMILE 販売の「売掛残高一覧表」（同じ期間）。得意先コードの上4桁でまとめて会計と比べます<br>
+      ファイルはこの画面の中で読むだけで、どこにも保存しません。
+      ${rcFiles.rcK?'<br>✓ 会計：'+esc(rcFiles.rcK.name):''}${rcFiles.rcH?'<br>✓ 販売：'+esc(rcFiles.rcH.name):''}</div></div>`;
+    return;
+  }
+  const t=RC.tot, A=RC.items.filter(i=>i.affects), B=RC.items.filter(i=>!i.affects);
+  const kpi=(k,v,s,cls)=>`<div class="card ${cls||''}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  const per=RC.kPeriod.from&&RC.hPeriod.from&&(RC.kPeriod.from!==RC.hPeriod.from||RC.kPeriod.to!==RC.hPeriod.to)
+    ?`<div class="panel"><div class="note" style="border-top:none;color:var(--red-ink)"><b>期間が違います</b>：会計 ${ymdJ(RC.kPeriod.from)}〜${ymdJ(RC.kPeriod.to)}、販売 ${ymdJ(RC.hPeriod.from)}〜${ymdJ(RC.hPeriod.to)}</div></div>`:'';
+  const dcell=v=>`<td class="num ${v?'neg':''}">${v?yen(v):''}</td>`;
+  const row=i=>`<tr><td class="mono">${esc(i.code)}</td><td><b>${esc(i.name)}</b>${i.h.custs.length?`<div class="reason">${i.h.custs.slice(0,4).map(c=>esc(c.cust+' '+c.name)).join('・')}${i.h.custs.length>4?' ほか':''}</div>`:''}</td>
+      ${dcell(i.d.pre)}${dcell(i.d.sales)}${dcell(i.d.pay)}<td class="num"><b class="${i.d.bal?'neg':''}">${i.d.bal?yen(i.d.bal):'0'}</b></td>
+      <td>${i.kinds.map(k=>`<span class="pill ${/両建て/.test(k)?'na':/付け違い/.test(k)?'sp':'under'}">${esc(k)}</span>`).join(' ')}
+        ${i.hints.length?`<div class="reason" style="margin-top:4px">${i.hints.map(esc).join('<br>')}</div>`:''}</td></tr>`;
+  const head=`<thead><tr><th>会計<br>コード</th><th>得意先（会計の内訳名・販売の得意先）</th><th class="num">期首残高の差</th><th class="num">売上の差<br><small>会計借方−販売</small></th><th class="num">入金の差<br><small>会計貸方−販売</small></th><th class="num">残高の差</th><th>種類・手がかり</th></tr></thead>`;
+  el.innerHTML=`${per}<div class="kpis">
+      ${kpi('会計の売掛残高',yen(t.kBal),ymdJ(RC.period.to)+' 時点（科目124 内訳の合計）')}
+      ${kpi('販売の売掛残高',yen(t.hBal),'得意先の合計')}
+      ${kpi('差（会計−販売）',yen(t.diff),'期首の時点で '+yen(t.preDiff),t.diff?'under':'ok')}
+      ${kpi('下の表で説明できた額',yen(RC.explained),RC.explained===t.diff?'差と一致しています':'差と合いません（読み込みを確認）',RC.explained===t.diff?'ok':'under')}
+    </div>
+    <div class="panel"><h3>残高に影響するずれ <small>${A.length}件</small></h3>
+      ${A.length?`<div class="tw"><table>${head}<tbody>${A.map(row).join('')}</tbody></table></div>`:'<div class="empty">ありません。会計と販売の売掛残高は一致しています</div>'}</div>
+    ${RC.odd.length?`<div class="panel"><h3>得意先マスタの確認 <small>社名コードが得意先コードの上4桁と違う得意先（会計ではその社名コードの補助に入るため、付け違いの元になります）</small></h3>
+      <div class="tw"><table><thead><tr><th>得意先</th><th>社名コード</th><th>会計で入る補助</th><th>本来（上4桁）</th></tr></thead><tbody>
+      ${RC.odd.map(o=>`<tr><td><span class="mono">${esc(o.cust)}</span> ${esc(o.name)}</td><td class="mono">${esc(o.company)} ${esc(o.companyName)}</td><td class="mono">${esc(o.to)}</td><td class="mono">${esc(String(parseInt(o.cust.slice(0,4),10)))}</td></tr>`).join('')}
+      </tbody></table></div></div>`:''}
+    <details class="panel"><summary style="padding:12px 16px;cursor:pointer;font-weight:700">残高に影響しないもの（${B.length}件）<small class="muted">　会計は値引・調整を売上と入金の両方に立てるため、販売と見かけの金額が違うもの</small></summary>
+      ${B.length?`<div class="tw"><table>${head}<tbody>${B.map(row).join('')}</tbody></table></div>`:''}</details>
+    <div class="panel"><div class="note">
+      <b>見方</b>：「期首残高の差」は期が始まった時点で既にずれている分（前の期の日付で後から入力した伝票、会計の繰越など）。
+      「売上の差」と「入金の差」が同じ額なら、会計の両建てで残高には影響しません。残高の差がちょうど反対の2つは、得意先（補助科目）の付け違いの可能性があります。<br>
+      手がかりの入金伝票は、SharedMasters の入金明細から探しています（伝票日付が期の初日より前で、入力日が期の初日以降のもの）。</div></div>`;
+}
+document.getElementById('rcCsv').onclick=()=>{
+  if(!RC) return;
+  const rows=[['会計コード','得意先','期首残高の差','売上の差','入金の差','残高の差','残高に影響','種類','手がかり','会計 前残','会計 借方','会計 貸方','会計 残高','販売 期首','販売 入金','販売 売上','販売 残高']];
+  RC.items.forEach(i=>rows.push([i.code,i.name,i.d.pre,i.d.sales,i.d.pay,i.d.bal,i.affects?'影響あり':'',i.kinds.join('・'),i.hints.join(' ／ '),
+    i.k.pre,i.k.dr,i.k.cr,i.k.bal,i.h.pre,i.h.pay,i.h.sales,i.h.bal]));
+  downloadCsv(`売掛残高照合_${RC.period.to||'期間不明'}.csv`,rows);
+};
 
 // ============================================================
 // 違算一覧（拠点ごと。違算 Excel のシート分けと同じ）
