@@ -10,8 +10,9 @@
        環境変数 SMILE_EXPORT_COMMAND の実行コマンドをこのPCで設定しておくこと)
     ② GitHubから最新の regenerate_facts.py を取得して実行
     ③ 合図ファイルを削除
-  の順に行う。5分おきの定期チェックではなく、OSのファイル変更通知
-  (FileSystemWatcher)を使うので、待機中はほぼ無負荷で反応も速い。
+  の順に行う。OSのファイル変更通知(FileSystemWatcher)に加えて、30秒ごとに
+  合図ファイルの有無も確認する(OneDrive同期で届いたファイルは通知が来ない
+  ことがあるため)。待機中の負荷はほぼない。
 
   タスクスケジューラーには「ログオン時」または「スタートアップ時」に
   このスクリプトを1回起動するトリガーで登録する(このプロセスは
@@ -119,10 +120,12 @@ $isProcessing = $false
 while ($true) {
   # OSのファイル変更通知を待つ。OneDriveは同期したファイルを一時ファイルからの
   # リネームで置くことがあるため Renamed も待つ。
-  # タイムアウト(5分)時も合図ファイルの有無を確認し、通知を取りこぼしても拾う。
+  # ただしRPA用PCの実機では、OneDrive同期で届いた合図ファイルの通知は一度も
+  # 届かなかった。そのためタイムアウトを30秒にして、タイムアウト時にも合図
+  # ファイルの有無を確認する(存在確認だけなので負荷はほぼない)。
   $result = $watcher.WaitForChanged(
     [System.IO.WatcherChangeTypes]::Created -bor [System.IO.WatcherChangeTypes]::Changed -bor [System.IO.WatcherChangeTypes]::Renamed,
-    300000
+    30000
   )
   if ($isProcessing) { continue }
 
