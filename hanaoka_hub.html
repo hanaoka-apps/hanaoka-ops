@@ -407,6 +407,15 @@
     .read-dept { grid-column: 1 / -1; }
     .read-sec.compact .read-row { grid-template-columns: minmax(0, 1fr); }
   }
+  /* 再集計をリクエスト(管理者のみ。Sales HUBの日報と同じ動き) */
+  .regen-btn { border: 1px solid var(--border-strong); background: #fff; color: #5a6080; border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; box-shadow: var(--shadow); }
+  .regen-btn:hover:not(:disabled) { background: var(--bg); color: var(--text-main); }
+  .regen-btn:disabled { opacity: .7; cursor: default; }
+  .regen-btn[hidden] { display: none; }
+  .regen-status { font-size: 12px; font-weight: 700; color: var(--text-sub); line-height: 1.5; margin: -2px 2px 10px; }
+  .regen-status[hidden] { display: none; }
+  .regen-status.done { color: #1a7f37; }
+  .regen-status.failed { color: #c0392b; }
   /* 仕入(日別仕入金額)カード */
   .purchase-layout { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 24px; align-items: start; }
   .purchase-month { background: var(--cyan-soft); border-radius: 10px; padding: 14px 16px; }
@@ -644,6 +653,7 @@
       <div class="topic-head">
         <div class="app-group-title">営業<span>受注・売上</span></div>
         <div class="topic-actions">
+          <button type="button" class="regen-btn" id="regenerateBtn" hidden title="SMILEの最新データで日報を再集計します(管理者のみ)">🔄 再集計をリクエスト</button>
           <button type="button" class="read-btn" id="readModeBtn" disabled title="朝礼で営業日報を読み上げるための画面">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6l-5 4H4a1 1 0 0 0-1 1z"/><path d="M16 8a5 5 0 0 1 0 8"/></svg>
             朝礼 読み上げモード
@@ -654,6 +664,7 @@
           </a>
         </div>
       </div>
+      <div class="regen-status" id="regenerateStatus" hidden></div>
       <div class="kpi-grid" id="kpiCards"><div class="empty-state" style="grid-column:1/-1">読み込み中…</div></div>
 
       <div class="card" id="deptCard">
@@ -805,6 +816,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="rpa_queue.js"></script>
 <script>
 // ============================================================
 // MSAL CONFIG (既存アプリ: sales_dashboard.html 等と同一パターン)
@@ -1016,6 +1028,7 @@ function showSignedOutState() {
   setStatusMessage('サインインすると表示されます', false);
   setPurchaseMessage('サインインすると表示されます', false);
   document.getElementById('readModeBtn').disabled = true;
+  document.getElementById('regenerateBtn').hidden = true;
 }
 
 async function onSignedIn() {
@@ -1032,6 +1045,7 @@ async function onSignedIn() {
     console.error('会社の現在地の取得失敗', e);
     setStatusMessage('数字を取得できませんでした', true);
   });
+  initRegenerateButton();
   loadPurchase().catch(e => {
     console.error('仕入カードの取得失敗', e);
     setPurchaseMessage('仕入の数字を取得できませんでした', true);
@@ -2111,6 +2125,180 @@ async function loadNewProductItems() {
     console.warn('[新製品] 特記新製品リストを読めませんでした', e);
     return null;
   }
+}
+
+// ============================================================
+// 再集計をリクエスト(管理者のみ。Sales HUB / 営業日報ダッシュボードと同じ動き)
+//   RPA専用機に sales_master ジョブ(SMILEの日報用マスタ出力 → regenerate_facts.py)を依頼し、
+//   順番待ち・実行中・完了・失敗を画面に出す。完了したら、HUBの数字を最新に読み直す。
+//   (依頼の仕組みは rpa_queue.js / scripts/rpa_jobs.json。依頼中の記録は localStorage に残すので、
+//    ページを開き直しても、Sales HUBで依頼した分も続きを確認できる)
+// ============================================================
+const ADMIN_EMAILS = [
+  'takashi.hanaoka@hanaokacorp.onmicrosoft.com',
+  'm.hanaoka@hanaokacorp.onmicrosoft.com',
+  't.fukuda@hanaokacorp.onmicrosoft.com',
+];
+const WRITE_SCOPES = ['Files.ReadWrite.All'];   // 依頼ファイルの書き込みにだけ必要(閲覧は通常の権限)
+const REGENERATE_JOB = 'sales_master';
+const REGENERATE_BTN_LABEL = '🔄 再集計をリクエスト';
+const REGENERATE_PENDING_KEY = 'regeneratePending';    // Sales HUB と共通
+const REGENERATE_TIMEOUT_MS = 60 * 60 * 1000;
+const REGENERATE_SYNC_GRACE_MS = 5 * 60 * 1000;        // ジョブ完了後、データの同期(OneDrive)を待つ上限
+let stopRegenerateWatch = null;
+
+function isAdminAccount() {
+  const email = String((account && account.username) || '').toLowerCase();
+  return ADMIN_EMAILS.some(e => e.toLowerCase() === email);
+}
+
+// 書き込み用トークン。初めての人は同意が要ることがあるので、押した操作の中でだけポップアップを出す
+async function getWriteToken() {
+  try {
+    const r = await msalInstance.acquireTokenSilent({ scopes: WRITE_SCOPES, account });
+    return r.accessToken;
+  } catch (e) {
+    if (shouldUseRedirectFlow()) {
+      await msalInstance.acquireTokenRedirect({ scopes: WRITE_SCOPES, account, redirectUri: window.location.origin + window.location.pathname });
+      throw new Error('サインインし直しています');
+    }
+    const r = await msalInstance.acquireTokenPopup({ scopes: WRITE_SCOPES });
+    return r.accessToken;
+  }
+}
+
+function setRegenerateStatus(text, state) {
+  const el = document.getElementById('regenerateStatus');
+  el.textContent = text;
+  el.className = 'regen-status' + (state ? ' ' + state : '');
+  el.hidden = !text;
+}
+
+function initRegenerateButton() {
+  const btn = document.getElementById('regenerateBtn');
+  btn.hidden = !isAdminAccount();          // 表示ルール: 管理者だけ(Sales HUBと同じ)
+  if (btn.hidden) return;
+  if (!btn.dataset.bound) { btn.dataset.bound = '1'; btn.addEventListener('click', requestRegenerate); }
+  resumeRegenerateWatch();
+}
+
+async function requestRegenerate() {
+  const btn = document.getElementById('regenerateBtn');
+  if (!confirm('SMILEの最新データで日報を再集計します。よろしいですか？（反映まで数分かかります）')) return;
+  const requestedAt = new Date().toISOString();
+  let req;
+  try {
+    btn.disabled = true;
+    btn.textContent = '送信中…';
+    RpaQueue.init({ getToken: getWriteToken, driveId: SP.mastersDriveId });
+    req = await RpaQueue.request(REGENERATE_JOB, { app: 'HANAOKA HUB', requestedBy: (account && account.username) || '' });
+  } catch (e) {
+    console.error('[再集計リクエスト] 失敗', e);
+    alert('リクエストに失敗しました。時間をおいて再度お試しください。');
+    btn.disabled = false;
+    btn.textContent = REGENERATE_BTN_LABEL;
+    return;
+  }
+  startRegenerateWatch({ name: req.name, requestedAt });
+}
+
+// SharedMasters直下のファイルの更新日時(存在しなければnull)
+async function getMastersItemModified(name) {
+  const t = await getToken();
+  const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/${encodeURIComponent(name)}?$select=lastModifiedDateTime`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Graph ${res.status}: ${await res.text()}`);
+  return Date.parse((await res.json()).lastModifiedDateTime);
+}
+
+function startRegenerateWatch(pending) {
+  if (stopRegenerateWatch) stopRegenerateWatch();
+  try { localStorage.setItem(REGENERATE_PENDING_KEY, JSON.stringify(pending)); } catch (_) {}
+  const btn = document.getElementById('regenerateBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 再集計中…';
+  const sinceMs = Date.parse(pending.requestedAt);
+  const minutes = () => Math.floor((Date.now() - sinceMs) / 60000);
+
+  RpaQueue.init({ getToken: getWriteToken, driveId: SP.mastersDriveId });
+  stopRegenerateWatch = RpaQueue.watch(pending.name, s => {
+    if (s.state === 'pending') {
+      setRegenerateStatus(s.ahead
+        ? `順番待ち（前に${s.ahead}件／${minutes()}分経過）`
+        : `RPA専用機の受付待ち（${minutes()}分経過）`, 'pending');
+    } else if (s.state === 'running' || s.state === 'unknown') {
+      setRegenerateStatus(`SMILE出力・集計中（${minutes()}分経過／通常7分前後）`, 'pending');
+    } else if (s.state === 'done') {
+      waitFactsThenFinish(sinceMs);
+    } else if (s.state === 'failed') {
+      finishRegenerateWatch('failed', s.error);
+    } else {
+      finishRegenerateWatch('timeout');
+    }
+  }, { timeoutMs: Math.max(0, REGENERATE_TIMEOUT_MS - (Date.now() - sinceMs)) });
+}
+
+// ジョブは完了した。HUBが読むファイルの同期(アップロード)が追いつくのを待ってから読み直す
+async function waitFactsThenFinish(sinceMs) {
+  setRegenerateStatus('✅ 再集計が完了しました。データの同期を待っています…', 'done');
+  const deadline = Date.now() + REGENERATE_SYNC_GRACE_MS;
+  while (Date.now() < deadline) {
+    try {
+      // HUB用の軽量ファイルを優先。まだ無ければ全量のファイルの更新を見る
+      const modified = (await getMastersItemModified('hub_kpi_facts.json')) || (await getMastersItemModified('dashboard_facts.json'));
+      if (modified && modified > sinceMs) { finishRegenerateWatch('done'); return; }
+    } catch (e) {
+      console.warn('[再集計] 更新の確認に失敗', e);
+    }
+    await new Promise(r => setTimeout(r, 15 * 1000));
+  }
+  finishRegenerateWatch('synclag');
+}
+
+async function finishRegenerateWatch(result, error) {
+  if (stopRegenerateWatch) stopRegenerateWatch();
+  stopRegenerateWatch = null;
+  try { localStorage.removeItem(REGENERATE_PENDING_KEY); } catch (_) {}
+  const btn = document.getElementById('regenerateBtn');
+  btn.disabled = false;
+  btn.textContent = REGENERATE_BTN_LABEL;
+
+  if (result === 'done') {
+    setRegenerateStatus('✅ 再集計が完了しました。最新データを読み込んでいます…', 'done');
+    try {
+      await loadKpis();
+      setRegenerateStatus(`✅ 再集計が完了し、最新データを表示しています（${document.getElementById('statusAsOf').textContent}）`, 'done');
+    } catch (e) {
+      console.error('[再集計] 再読み込み失敗', e);
+      setRegenerateStatus('✅ 再集計が完了しました。ページを再読み込みしてください', 'done');
+    }
+    // 別のタブを見ていても気づけるよう、タブのタイトルにも出す
+    if (!document.hasFocus()) {
+      const baseTitle = document.title.replace(/^✅ 再集計完了 - /, '');
+      document.title = '✅ 再集計完了 - ' + baseTitle;
+      window.addEventListener('focus', () => { document.title = baseTitle; }, { once: true });
+    }
+  } else if (result === 'synclag') {
+    setRegenerateStatus('✅ 再集計は完了しましたが、データの同期に時間がかかっています。しばらくしてからページを再読み込みしてください', 'done');
+  } else if (result === 'failed') {
+    setRegenerateStatus(`⚠️ 再集計に失敗しました：${error || '原因不明'}（RPA専用機のログ regenerate_watcher.log も確認してください）`, 'failed');
+  } else {
+    setRegenerateStatus('⚠️ 1時間たっても完了しません。RPA専用機が動いているか確認してください', 'failed');
+  }
+}
+
+// ページを開き直したときに、待機中の依頼があれば確認を再開する
+function resumeRegenerateWatch() {
+  if (stopRegenerateWatch) return;
+  let pending = null;
+  try { pending = JSON.parse(localStorage.getItem(REGENERATE_PENDING_KEY) || 'null'); } catch (_) {}
+  if (!pending || !pending.name || !pending.requestedAt) return;
+  if (!(Date.now() - Date.parse(pending.requestedAt) < REGENERATE_TIMEOUT_MS)) {
+    try { localStorage.removeItem(REGENERATE_PENDING_KEY); } catch (_) {}
+    return;
+  }
+  startRegenerateWatch(pending);
 }
 
 async function loadKpis() {
