@@ -53,6 +53,18 @@
    }
    ```
    - `outputs` は**すべて**が起動後に更新され、30秒サイズが変わらず、書き込み中でなくなったら完了とみなす
+   - 複数のPADフローを順に動かすジョブは、`flow` / `outputs` の代わりに `steps` を書く（各手順の出力完了を待ってから次へ進む。失敗時は「手順2/2（フロー名）: …」と止まった手順が出る）
+     ```json
+     "customer_master": {
+       "label": "SMILE 得意先マスタ・TOVAS請求設定出力",
+       "timeoutMinutes": 20,
+       "steps": [
+         { "flow": "Smile_得意先マスタ出力", "outputs": ["得意先マスタ.csv"] },
+         { "flow": "Smile_TOVASマスタ出力", "outputs": ["TOVAS得意先別請求明細書情報.csv"] }
+       ]
+     }
+     ```
+     手順ごとに `timeoutMinutes` を書けば、その手順だけ待ち時間の上限を変えられる
    - 後処理が要るときは `"after": "regenerate_facts"`（今はこれだけ対応。増やすときは `rpa_queue_worker.ps1` の `Invoke-NextJob` に足す）
    - ジョブ名は英数字と `_` にする（ファイル名に入るため）
 3. アプリから依頼する
@@ -79,6 +91,10 @@
   - `売上明細出力.csv`（当期の売上）
   - `目標_部門目標出力.csv` / `目標_担当者目標出力.csv`（`regenerate_facts.py` が月次目標として使う）
   - `目標_得意先目標出力.csv`（`regenerate_facts.py` では未使用だが同じフローで出力する）
+- `customer_master` は2つのフローを順に動かす
+  - `Smile_得意先マスタ出力`: SMILEの「生産得意先マスター出力」で条件パターン `SharedMasters更新` を選んで実行 → `得意先マスタ.csv`（UTF-8・カンマ・タイトル有り）
+  - `Smile_TOVASマスタ出力`: → `TOVAS得意先別請求明細書情報.csv`
+  - `得意先マスタ.csv` はSMILE標準の定時処理「マスタ出力(毎日1時)」でも毎日1:05に出力されている（同じファイルを上書き）
 - CSVの列構成は `scripts/regenerate_facts.py` が前提にしているので、**列名・順序を変えない**
 - ほかのCSV（`daily_reports.csv`、`web_tracking_*` など）はSMILE出力ではないので触らない
 
