@@ -3876,10 +3876,10 @@ let dvSidebarOpen = false; // 右ペイン開閉
 let dvDragDist = 0;         // SVGパン中の累積移動量（クリック誤発火防止）
 let dvOrientation = "vertical"; // "vertical" (縦, root上) or "horizontal" (横, root左)
 
-const DV_NODE_W = 168;
-const DV_NODE_H = 88;
-const DV_GAP_X  = 16;
-const DV_GAP_Y  = 50;  // 工程ドット表示用に少し広め
+const DV_NODE_W = 160;
+const DV_NODE_H = 72;
+const DV_GAP_X  = 14;
+const DV_GAP_Y  = 42;  // 工程ドット表示用に少し広め
 
 function openDetail(id){
   const r = DATA.find(x=>x.id===id);
@@ -3951,8 +3951,12 @@ function closeDetail(){
   document.querySelectorAll("#mainTable tbody tr").forEach(tr=>tr.classList.remove("selected"));
   document.body.style.overflow = "";
 }
-function setDetailFocus(code){
+function setTreeFocus(code){
   detailFocus = code;
+  dvRenderSvg();
+}
+function setDetailFocus(code){
+  setTreeFocus(code);
   document.querySelectorAll("#dvSvgHost .node").forEach(g=>{
     g.classList.toggle("focus", g.dataset.code===code);
   });
@@ -4213,7 +4217,7 @@ function dvBuildLayout(focusCode){
   for(const code in codeToPos){
     const children = dvGetChildrenSeiban(code, _layoutSeiban);
     for(const ch of children){
-      if(codeToPos[ch] && codeToPos[ch].lv === codeToPos[code].lv + 1){
+      if(codeToPos[ch]){
         const p = codeToPos[code], c = codeToPos[ch];
         if(!isHoriz){
           edges.push({
@@ -4363,14 +4367,19 @@ function dvRenderSvg(){
   const w = dvLayout.width * dvZoom, h = dvLayout.height * dvZoom;
   let svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${dvLayout.width} ${dvLayout.height}" xmlns="http://www.w3.org/2000/svg">`;
 
+  // 選択品目から親方向・子方向へつながる全経路を強調する
+  const related = detailFocus && dvLayout.nodes.some(n=>n.code===detailFocus)
+    ? new Set([...dvAncestorsInTree(detailFocus), ...dvDescendantsInTree(detailFocus)]) : new Set();
   // edges (横向きはX軸ベジェ、縦向きはY軸ベジェ)
   for(const e of dvLayout.edges){
+    const edgeStyle = related.has(e.from) && related.has(e.to)
+      ? 'stroke:#dc2626;stroke-width:2.8' : '';
     if(e.horiz){
       const midX = (e.x1 + e.x2) / 2;
-      svg += `<path class="edge" d="M ${e.x1} ${e.y1} C ${midX} ${e.y1} ${midX} ${e.y2} ${e.x2} ${e.y2}"/>`;
+      svg += `<path class="edge" style="${edgeStyle}" d="M ${e.x1} ${e.y1} C ${midX} ${e.y1} ${midX} ${e.y2} ${e.x2} ${e.y2}"/>`;
     } else {
       const midY = (e.y1 + e.y2) / 2;
-      svg += `<path class="edge" d="M ${e.x1} ${e.y1} C ${e.x1} ${midY} ${e.x2} ${midY} ${e.x2} ${e.y2}"/>`;
+      svg += `<path class="edge" style="${edgeStyle}" d="M ${e.x1} ${e.y1} C ${e.x1} ${midY} ${e.x2} ${midY} ${e.x2} ${e.y2}"/>`;
     }
   }
   // ---- 工程ドット: ノード直下中央に大きめで固定表示 ----
@@ -4425,90 +4434,28 @@ function dvRenderSvg(){
   for(const n of dvLayout.nodes){
     const ni = NODE_INFO[n.code] || {};
     const state = dvNodeState(n.code);
-    const isFocus = n.code === detailRecord?.code;
+    const isFocus = n.code === detailFocus;
     const c = dvNodeColors(state, isFocus);
     // hidden は検索モード(only/to/from)で範囲外、dim は filters条件外
     const hidden = dvVisibleSet && !dvVisibleSet.has(n.code);
     const dim = !hidden && !dvMatchesFilters(n.code);
-    const eff = (ni.e!==undefined)?ni.e:"-";
-    const dem = (ni.d!==undefined)?ni.d:0;
-    // 代表record情報
-    let rec0 = null, recSchedDays = "", recTehaiNo = "";
-    if(ni.rid && ni.rid.length){
-      rec0 = DATA.find(d=>d.id===ni.rid[0]);
-      if(rec0){
-        recSchedDays = rec0.sd||"";
-        // 工程・購買手配数の集計（簡易: rec count）
-      }
-    }
-    const koutei_n = (ni.rid||[]).filter(id=>{const r=DATA.find(d=>d.id===id);return r && r.at==="社内工程";}).length;
-    const kobai_n  = (ni.rid||[]).filter(id=>{const r=DATA.find(d=>d.id===id);return r && r.at==="購買";}).length;
-    const mihaitei_n = (ni.rid||[]).length;
-    const isOver = dvIsOver(n.code);
     const isCommon = dvIsCommon(n.code);
-    const isDispose = dvIsDispose(n.code);
-    // Lv.0は「起点(=検索したフォーカス品目)」と明示。階層レベルではなくツリー起点であることを示す
     const lvLabel = n.lv === 0 ? `📍起点` : (n.lv > 0 ? `Lv.${n.lv}` : `↑${-n.lv}`);
-    const safeName = (ni.n||n.code).slice(0,14);
+    const safeName = (ni.n||n.code).slice(0,16);
+    const safeCode = String(n.code||'');
+    const cur = (ni.cur!==undefined && ni.cur!==null)?ni.cur:"-";
+    const commonCount = ni.c||0;
 
     svg += `<g class="node ${isFocus?'focus':''} ${dim?'dim':''} ${hidden?'hidden':''}" data-code="${escapeHtml(n.code)}" onclick="setDetailFocus(this.dataset.code)">`;
-    // 本体rect
+    svg += `<title>${escapeHtml(safeCode)} ${escapeHtml(ni.n||'')}</title>`;
     svg += `<rect x="${n.x}" y="${n.y}" width="${DV_NODE_W}" height="${DV_NODE_H}" rx="6" fill="${c.bg}" stroke="${c.border}"/>`;
-    // Lv ラベル
-    // 起点ノードは少し広め+色違い
-    const isLv0 = (n.lv === 0);
-    const lvW = isLv0 ? 42 : 28;
-    const lvFill = isLv0 ? '#be185d' : '#475569';
-    svg += `<rect x="${n.x+4}" y="${n.y+4}" width="${lvW}" height="13" rx="3" fill="${lvFill}"/>`;
+    const isLv0 = (n.lv === 0), lvW = isLv0 ? 42 : 28;
+    svg += `<rect x="${n.x+4}" y="${n.y+4}" width="${lvW}" height="13" rx="3" fill="${isLv0?'#be185d':'#475569'}"/>`;
     svg += `<text class="lv" x="${n.x + 4 + lvW/2}" y="${n.y+13.5}" text-anchor="middle">${lvLabel}</text>`;
-    // バッジ
-    let bx = n.x + DV_NODE_W - 6;
-    if(isOver){svg += `<text class="bd" x="${bx}" y="${n.y+13}" text-anchor="end" fill="#92400e">⚠</text>`; bx -= 14;}
-    if(isCommon){svg += `<text class="bd" x="${bx}" y="${n.y+13}" text-anchor="end" fill="#78350f">★</text>`; bx -= 14;}
-    if(isDispose){svg += `<text class="bd" x="${bx}" y="${n.y+13}" text-anchor="end" fill="#7f1d1d">🗑</text>`; bx -= 14;}
-    // 使用禁止子品目を含む親 (構成に🚫品目あり)
-    if(ni.fb && ni.fb.length){
-      const tip = '__FB_PARENT__|' + n.code + '|' + (ni.fbn||ni.fb.length) + '|' + ni.fb.slice(0,10).join(',');
-      svg += `<text class="bd fb-mark" data-rttip="${escapeHtml(tip)}" x="${bx}" y="${n.y+13}" text-anchor="end" fill="#6b21a8">🚫</text>`;
-      bx -= 14;
-    }
-    // マイナス在庫4類型 タグ(コンパクトに○数字で並べる)
-    if(ni.mn && ni.mn.length){
-      const mnIcons = {process_undone:'①',shikyu_forgotten:'②',early_sale:'③',wh_diff:'④'};
-      const mnColors = {process_undone:'#1e40af',shikyu_forgotten:'#92400e',early_sale:'#7c2d12',wh_diff:'#166534'};
-      const tip = '__MN_TAG__|' + n.code + '|' + ni.mn.join(',');
-      ni.mn.forEach(t => {
-        svg += `<text class="bd mn-tag" data-rttip="${escapeHtml(tip)}" x="${bx}" y="${n.y+13}" text-anchor="end" font-size="11" font-weight="700" fill="${mnColors[t]||'#000'}">${mnIcons[t]||'?'}</text>`;
-        bx -= 11;
-      });
-    }
-    // 品目手順登録漏れバッジ(親としてBOMに登場するのに、品目手順マスタに未登録 → 組立工程が定義されていない)
-    // ノード枠の左上隅から少しはみ出る位置に赤丸+⚠
-    if(ni.nr){
-      const tipNr = '__NOROUTE__|' + n.code + '|' + (ni.n||'');
-      svg += `<g class="nr-warn" data-rttip="${escapeHtml(tipNr)}">`
-        + `<circle cx="${n.x - 2}" cy="${n.y - 2}" r="9" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>`
-        + `<text x="${n.x - 2}" y="${n.y + 1.5}" text-anchor="middle" font-size="12" font-weight="700" fill="#991b1b">⚠</text>`
-        + `</g>`;
-    }
-    // コード（中央）
-    svg += `<text class="code" x="${n.x + DV_NODE_W/2}" y="${n.y+30}" text-anchor="middle">${escapeHtml(n.code)}</text>`;
-    // 品目名
+    svg += `<text class="code" x="${n.x + DV_NODE_W/2}" y="${n.y+31}" text-anchor="middle">${escapeHtml(safeCode)}</text>`;
     svg += `<text class="name" x="${n.x + DV_NODE_W/2}" y="${n.y+45}" text-anchor="middle">${escapeHtml(safeName)}</text>`;
-    // メトリクス1: 現在庫(物理・全社合算=ni.cur) / 所要  (雅さん 2026-07-08: 有効在庫→現在庫に変更・ラベルも現在庫)
-    const cur = (ni.cur!==undefined && ni.cur!==null)?ni.cur:"-";
-    svg += `<text class="metric" x="${n.x+8}" y="${n.y+60}">現在庫 ${cur}</text>`;
-    svg += `<text class="metric" x="${n.x+DV_NODE_W-8}" y="${n.y+60}" text-anchor="end">所要 ${dem}</text>`;
-    // メトリクス2: 工程/購買/未
-    svg += `<text class="metric" x="${n.x+8}" y="${n.y+72}">工${koutei_n} 購${kobai_n} 未${mihaitei_n}</text>`;
-    // 納期
-    if(recSchedDays){
-      svg += `<text class="metric" x="${n.x+DV_NODE_W-8}" y="${n.y+72}" text-anchor="end">${escapeHtml(recSchedDays)}</text>`;
-    }
-    // 共通度
-    if(ni.c){
-      svg += `<text class="metric" x="${n.x+8}" y="${n.y+84}" fill="#78350f">共通 ${ni.c}</text>`;
-    }
+    svg += `<text class="metric" x="${n.x+7}" y="${n.y+63}">現在庫 ${cur}</text>`;
+    svg += `<text class="metric" x="${n.x+DV_NODE_W-7}" y="${n.y+63}" text-anchor="end" fill="#78350f">共通 ${commonCount}</text>`;
     svg += `</g>`;
   }
   svg += `</svg>`;
