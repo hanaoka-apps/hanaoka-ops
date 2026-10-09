@@ -15,7 +15,9 @@
 
   ジョブの中身は scripts/rpa_jobs.json (毎回GitHubのmainから取得) で決める:
     PADフローをURIで起動 → outputs のファイルがすべて更新されるまで待つ → after の処理
-    (steps があれば、各手順のPADフロー起動と出力待ちを順に行ってから after の処理)
+    (steps があれば、各手順のPADフロー起動と出力待ちを順に行ってから after の処理。
+     flow も steps も無いジョブは after の処理だけ)
+  schedules に書いたジョブは、毎日その時刻に自分で依頼する(例: 1:00 に facts_only)。
     (URIで起動したPADフローは完了を待たずに戻るため、出力ファイルで完了を判断する)
 
   PADは同時に1つのフローしか動かせないので、1件ずつ順番に処理する。
@@ -58,8 +60,13 @@ $PollSeconds       = 30
 $KeepDays          = 30
 # 依頼ファイルが読めない(同期途中など)状態が続いたら失敗扱いにするまでの回数
 $MaxBadReads       = 3
+# 定時のジョブを今日依頼したかの記録(同期フォルダやTEMPには置かない)
+$ScheduleStatePath = "$env:LOCALAPPDATA\hanaoka-rpa\schedule_state.json"
 
 $script:BadReads = @{}
+$script:JobDefsCache = $null
+$script:JobDefsCachedAt = [datetime]::MinValue
+$script:BadScheduleLogged = @{}
 
 function Write-Log {
   param([string]$Message)
@@ -173,6 +180,11 @@ function Invoke-PadFlow($Def) {
 # ジョブの手順(PADフローと出力ファイルの組)を返す。
 # steps があればその順に、なければ flow / outputs の1手順。timeoutMinutes は手順になければジョブの値を使う。
 function Get-JobSteps($Def) {
+  # flow も steps も無いジョブは、PADを動かさず after の処理だけを行う(例: facts_only)
+  if (-not $Def.steps -and -not $Def.flow) {
+    if (-not $Def.after) { throw 'ジョブ定義に flow / steps / after のどれもありません' }
+    return
+  }
   if (-not $Def.steps) { return , $Def }
   $steps = @($Def.steps)
   if ($steps.Count -eq 0) { throw 'ジョブ定義の steps が空です' }
@@ -312,6 +324,55 @@ function Invoke-NextJob {
   return $true
 }
 
+# 定時のジョブ(rpa_jobs.json の schedules)を確認するときのジョブ定義。
+# 30秒ごとにGitHubへ取りに行かないよう、10分間は前回の内容を使う。
+function Get-JobDefinitionsCached {
+  if (-not $script:JobDefsCache -or ((Get-Date) - $script:JobDefsCachedAt).TotalMinutes -ge 10) {
+    $script:JobDefsCache = Get-JobDefinitions
+    $script:JobDefsCachedAt = Get-Date
+  }
+  return $script:JobDefsCache
+}
+
+# schedules の時刻を過ぎていて、今日まだ依頼していなければ、そのジョブを自分で依頼する。
+# PCが止まっていて時刻を過ぎた場合も、その日のうちに起動すれば依頼する(取りこぼし防止)。
+function Invoke-Schedules {
+  $schedules = @((Get-JobDefinitionsCached).schedules | Where-Object { $_ })
+  if ($schedules.Count -eq 0) { return }
+  $state = [pscustomobject]@{}
+  if (Test-Path -LiteralPath $ScheduleStatePath) {
+    try { $state = Read-JsonFile $ScheduleStatePath } catch { $state = [pscustomobject]@{} }
+  }
+  $now = Get-Date
+  $today = $now.ToString('yyyy-MM-dd')
+  foreach ($s in $schedules) {
+    try { $at = [datetime]::ParseExact([string]$s.time, 'HH:mm', $null) } catch {
+      # 30秒ごとに同じ警告を出し続けないよう、1つの書き間違いにつき1回だけログに残す
+      $badKey = "$($s.job)@$($s.time)"
+      if (-not $script:BadScheduleLogged.ContainsKey($badKey)) {
+        $script:BadScheduleLogged[$badKey] = $true
+        Write-Log "定時の時刻が読めません(HH:mm で書く): job=$($s.job) time=$($s.time)"
+      }
+      continue
+    }
+    if ($now -lt $at) { continue }
+    $key = "$($s.job)@$($s.time)"
+    if ($state.$key -eq $today) { continue }
+    # 末尾は定時の時刻(同じ瞬間に複数の定時を依頼しても名前が重ならないように)
+    $name = '{0}_{1}_s{2}.json' -f $now.ToUniversalTime().ToString('yyyyMMdd\THHmmssfff\Z'), $s.job, $at.ToString('HHmm')
+    Write-JsonFile (Join-Path $PendingDir $name) ([pscustomobject]@{
+      job = [string]$s.job
+      app = 'RPA専用機の定時実行'
+      requestedBy = "定時 $($s.time)"
+      requestedAt = $now.ToUniversalTime().ToString('o')
+    })
+    Set-Props $state @{ $key = $today }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ScheduleStatePath) | Out-Null
+    Write-JsonFile $ScheduleStatePath $state
+    Write-Log "定時のジョブを依頼しました: $($s.job) ($($s.time))"
+  }
+}
+
 # 前回、実行中のまま止まった依頼は失敗扱いにする(どこまで進んだか分からないため)
 function Resolve-InterruptedJobs {
   foreach ($item in @(Get-ChildItem -LiteralPath $RunningDir -Filter '*.json' -File)) {
@@ -339,6 +400,7 @@ while ($true) {
   $worked = $false
   try {
     Convert-LegacyRequest
+    Invoke-Schedules
     $worked = Invoke-NextJob
   } catch {
     Write-Log "エラー: $($_.Exception.Message)"
