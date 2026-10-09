@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="rpa_queue.js"></script>
 <style>
   /* ---- サインイン画面（master_viewer.html と同じ見た目） ---- */
   #loginScreen { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -406,6 +407,7 @@
   <h1><span class="dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9"/></svg></span>TOVAS登録チェッカー</h1>
   <div class="grow"></div>
   <div class="userchip"><span class="avatar" id="sp-avatar"></span><span id="sp-user"></span></div>
+  <button class="hbtn" id="btn-request" title="SMILEから最新のマスタを出力し直してもらう（反映まで数分）">🔄 マスタ再取得をリクエスト</button>
   <button class="hbtn" id="btn-reload" title="SharePointから再取得">↻ 更新</button>
 </header>
 <div id="statusBar"><span id="sp-status">未サインイン</span></div>
@@ -774,6 +776,7 @@ function ingestCsv(key, rawRows, label) {
 //   認証・取得の方式は master_viewer.html と同じ
 // ============================================================
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+const WRITE_SCOPES = ['Files.ReadWrite.All'];   // 依頼ファイルを置くときだけ使う（営業日報と同じ）
 const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
 const FALLBACK_DRIVE_ID = 'b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';
 const SP_FILES = {
@@ -850,6 +853,111 @@ async function loadFromSharePoint() {
   if (failed.length) setSpStatus('err', '読み込めませんでした: ' + failed.join('、') + '（下のボックスから手動で選択もできます）');
   else setSpStatus('ok', '読み込み完了 — ' + new Date().toLocaleString('ja-JP') + ' 時点');
 }
+// ============================================================
+// 「マスタ再取得をリクエスト」（営業日報の「再集計をリクエスト」と同じ RPAキュー方式）
+//   SharedMasters/_rpa_queue/pending/ に依頼を1件置くだけ。実際のSMILE出力はRPA専用機が
+//   順番に実行する（ジョブ customer_master は scripts/rpa_jobs.json で定義）。
+//   依頼には app / requestedBy が入るので、TOVASチェッカーからの依頼だと分かる。
+// ============================================================
+const MASTERS_JOB = 'customer_master';
+const REQ_PENDING_KEY = 'mastersRequestPending';
+const REQ_TIMEOUT_MS = 60 * 60 * 1000;
+const REQ_SYNC_GRACE_MS = 5 * 60 * 1000;   // ジョブ完了後、CSVの同期（アップロード）を待つ上限
+const REQ_LABEL = '🔄 マスタ再取得をリクエスト';
+let stopMastersWatch = null;
+
+async function getWriteToken() {
+  try { return (await msalInstance.acquireTokenSilent({ scopes: WRITE_SCOPES, account })).accessToken; }
+  catch { return (await msalInstance.acquireTokenPopup({ scopes: WRITE_SCOPES })).accessToken; }
+}
+// SharedMasters直下のファイルの更新日時（なければ null）
+async function getMastersItemModified(name) {
+  const did = await resolveDriveId();
+  const token = await getToken();
+  const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + did + '/root:/' + encodeURIComponent(name) + '?$select=lastModifiedDateTime',
+    { headers: { Authorization: 'Bearer ' + token } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('Graph ' + r.status + ': ' + name);
+  return Date.parse((await r.json()).lastModifiedDateTime);
+}
+async function requestMastersRefresh() {
+  if (!confirm('SMILEから最新のマスタ（得意先マスタ・TOVAS請求設定）を出力し直します。よろしいですか？（反映まで数分かかります）')) return;
+  const requestedAt = new Date().toISOString();
+  const btn = document.getElementById('btn-request');
+  let req;
+  try {
+    btn.disabled = true;
+    btn.textContent = '送信中…';
+    RpaQueue.init({ getToken: getWriteToken, driveId: await resolveDriveId() });
+    req = await RpaQueue.request(MASTERS_JOB, { app: 'TOVAS登録チェッカー', requestedBy: (account && account.username) || '' });
+  } catch (e) {
+    console.error('[マスタ再取得リクエスト] 失敗', e);
+    alert('リクエストに失敗しました（SharedMastersへの書き込み権限が必要です）。時間をおいて再度お試しください。');
+    btn.disabled = false;
+    btn.textContent = REQ_LABEL;
+    return;
+  }
+  startMastersWatch({ name: req.name, requestedAt });
+}
+async function startMastersWatch(pending) {
+  if (stopMastersWatch) stopMastersWatch();
+  try { localStorage.setItem(REQ_PENDING_KEY, JSON.stringify(pending)); } catch (_) {}
+  const btn = document.getElementById('btn-request');
+  btn.disabled = true;
+  btn.textContent = '⏳ 再取得中…';
+  const sinceMs = Date.parse(pending.requestedAt);
+  const minutes = () => Math.floor((Date.now() - sinceMs) / 60000);
+  RpaQueue.init({ getToken: getWriteToken, driveId: await resolveDriveId() });
+  stopMastersWatch = RpaQueue.watch(pending.name, s => {
+    if (s.state === 'pending') {
+      setSpStatus('loading', s.ahead ? '順番待ち（前に' + s.ahead + '件／' + minutes() + '分経過）' : 'RPA専用機の受付待ち（' + minutes() + '分経過）');
+    } else if (s.state === 'running' || s.state === 'unknown') {
+      setSpStatus('loading', 'SMILEからマスタを出力中…（' + minutes() + '分経過）');
+    } else if (s.state === 'done') {
+      waitMastersThenFinish(sinceMs);
+    } else if (s.state === 'failed') {
+      finishMastersWatch('failed', s.error);
+    } else {
+      finishMastersWatch('timeout');
+    }
+  }, { timeoutMs: Math.max(0, REQ_TIMEOUT_MS - (Date.now() - sinceMs)) });
+}
+// ジョブは完了した。CSVの同期（アップロード）が追いつくのを待ってから読み直す
+async function waitMastersThenFinish(sinceMs) {
+  setSpStatus('loading', '✅ 出力が完了しました。データの同期を待っています…');
+  const deadline = Date.now() + REQ_SYNC_GRACE_MS;
+  while (Date.now() < deadline) {
+    try {
+      const mods = await Promise.all(Object.values(SP_FILES).map(getMastersItemModified));
+      if (mods.every(m => m && m > sinceMs)) { finishMastersWatch('done'); return; }
+    } catch (e) { console.warn('[マスタ再取得] CSVの更新確認に失敗', e); }
+    await new Promise(r => setTimeout(r, 15 * 1000));
+  }
+  finishMastersWatch('synclag');
+}
+async function finishMastersWatch(result, error) {
+  if (stopMastersWatch) stopMastersWatch();
+  stopMastersWatch = null;
+  try { localStorage.removeItem(REQ_PENDING_KEY); } catch (_) {}
+  const btn = document.getElementById('btn-request');
+  btn.disabled = false;
+  btn.textContent = REQ_LABEL;
+  if (result === 'done') {
+    await loadFromSharePoint();   // 最新のCSVを読み込み直す
+    if (!document.hasFocus()) {
+      const t = document.title;
+      document.title = '✅ マスタ更新完了 - ' + t;
+      window.addEventListener('focus', () => { document.title = t; }, { once: true });
+    }
+  } else if (result === 'failed') {
+    setSpStatus('err', '⚠️ マスタの出力に失敗しました' + (error ? '：' + error : '') + '。RPA専用機のログを確認してください');
+  } else if (result === 'synclag') {
+    setSpStatus('err', '⚠️ 出力は完了しましたが、CSVの同期が遅れています。しばらくして「↻ 更新」を押してください');
+  } else {
+    setSpStatus('err', '⚠️ 1時間たっても反映されません。RPA専用機が動いているか確認してください');
+  }
+}
+
 async function soumuHasAccess() {
   if (sessionStorage.getItem('soumuAccess') === '1') return true;
   try {
@@ -875,6 +983,11 @@ async function initAuth() {
     document.getElementById('sp-user').textContent = n;
     document.getElementById('sp-avatar').textContent = (n || '?').charAt(0);
     await loadFromSharePoint();
+    // 再取得の待機中にページを開き直した場合は、待機を再開する
+    try {
+      const pending = JSON.parse(localStorage.getItem(REQ_PENDING_KEY) || 'null');
+      if (pending && Date.now() - Date.parse(pending.requestedAt) < REQ_TIMEOUT_MS) startMastersWatch(pending);
+    } catch (_) {}
   };
   document.getElementById('loginBtn').onclick = async () => {
     try {
@@ -884,6 +997,7 @@ async function initAuth() {
     } catch (e) { showLoginError('サインインに失敗しました: ' + e.message); }
   };
   document.getElementById('btn-reload').onclick = loadFromSharePoint;
+  document.getElementById('btn-request').onclick = requestMastersRefresh;
   account = await HanaokaAuth.restore(msalInstance, SCOPES);
   if (account) await enter();
 }
