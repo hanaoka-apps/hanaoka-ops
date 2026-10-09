@@ -111,16 +111,17 @@ $watcher.IncludeSubdirectories = $false
 
 $isProcessing = $false
 while ($true) {
-  # OSのファイル変更通知を待つ(タイムアウトはただの生存確認用ハートビート)
+  # OSのファイル変更通知を待つ。OneDriveは同期したファイルを一時ファイルからの
+  # リネームで置くことがあるため Renamed も待つ。
+  # タイムアウト(5分)時も合図ファイルの有無を確認し、通知を取りこぼしても拾う。
   $result = $watcher.WaitForChanged(
-    [System.IO.WatcherChangeTypes]::Created -bor [System.IO.WatcherChangeTypes]::Changed,
+    [System.IO.WatcherChangeTypes]::Created -bor [System.IO.WatcherChangeTypes]::Changed -bor [System.IO.WatcherChangeTypes]::Renamed,
     300000
   )
-  if ($result.TimedOut) { continue }
   if ($isProcessing) { continue }
 
   # OneDriveの同期がファイル書き込み完了直後だと不安定なことがあるため少し待つ
-  Start-Sleep -Seconds 2
+  if (-not $result.TimedOut) { Start-Sleep -Seconds 2 }
   if (-not (Test-Path $requestFilePath)) { continue }
 
   $isProcessing = $true
