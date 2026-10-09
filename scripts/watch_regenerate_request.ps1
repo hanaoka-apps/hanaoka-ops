@@ -71,14 +71,20 @@ function Invoke-SmileExport {
 function Invoke-RegenerateFacts {
   Write-Log 'regenerate_facts.py を取得して実行します'
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
-  $scriptPath = Join-Path $WorkDir 'regenerate_facts.py'
-  # 常に最新版を取得してから実行する(手元に古いコピーを置いて動かさない)
-  Invoke-WebRequest -Uri "$RepoRawBase/scripts/regenerate_facts.py" -OutFile $scriptPath -UseBasicParsing
-  # Graph APIではなく、このPCに同期済みの SharedMasters を直接読み書きする
-  # (CSVのクラウド同期待ちが不要になり、AZURE_* の設定もいらない)
-  $env:SHARED_MASTERS_DIR = $SharedMastersPath
-  python $scriptPath
-  if ($LASTEXITCODE -ne 0) { throw "regenerate_facts.py が終了コード $LASTEXITCODE で失敗しました" }
+  # 毎回別名で取得する。同じ名前に上書きすると、前回のファイルをウイルス対策の
+  # スキャンなどが開いていた場合に「別のプロセスで使用されている」で失敗する。
+  $scriptPath = Join-Path $WorkDir ('regenerate_facts_{0:yyyyMMdd_HHmmss}.py' -f (Get-Date))
+  try {
+    # 常に最新版を取得してから実行する(手元に古いコピーを置いて動かさない)
+    Invoke-WebRequest -Uri "$RepoRawBase/scripts/regenerate_facts.py" -OutFile $scriptPath -UseBasicParsing
+    # Graph APIではなく、このPCに同期済みの SharedMasters を直接読み書きする
+    # (CSVのクラウド同期待ちが不要になり、AZURE_* の設定もいらない)
+    $env:SHARED_MASTERS_DIR = $SharedMastersPath
+    python $scriptPath
+    if ($LASTEXITCODE -ne 0) { throw "regenerate_facts.py が終了コード $LASTEXITCODE で失敗しました" }
+  } finally {
+    Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Process-Request {
