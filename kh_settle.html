@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1a5fa8">
+<link rel="icon" type="image/png" href="favicon_ap.png">
+<title>ハナオカ支払決済</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="hanaoka_auth.js"></script>
+<!--
+  株式会社ハナオカ 支払決済（月1回・月末）。花岡車輌のワークフロー・支払アプリとは別。
+  データ：SharePoint サイト hanaoka-kh の KH_ リスト（admin\Provision-KH.ps1 で作る）。決まり（人・振込元・突合の決まり）は KH_Setting の kh.rules。
+  流れ：福田が登録（毎月定額の展開・都度・給与の取り込み）→ 確認に回す → 室長 → 社長（不在：室長を省く／室長が社長の代理）→ 全銀データ → 入出金明細で突合
+  この HTML に会社のデータ・口座・人を書かない（公開リポジトリ）。
+-->
+<style>
+:root{--pri:#1a5fa8;--pri-l:#e3edf9;--bg:#f4f6f9;--card:#fff;--line:#dde2ec;--txt:#1e2533;--sub:#6b7a99;--up:#c0392b;--up-l:#fbe7e5;--down:#1e8449;--down-l:#e3f4e8;--warn:#a0520c;--warn-l:#fdf0e1;--flag:#7a3db8;--flag-l:#f1e8fb}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 "Yu Gothic UI","Meiryo",system-ui,sans-serif}
+header{background:#fff;border-bottom:1px solid var(--line);padding:10px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+header h1{font-size:18px;margin:0;color:var(--pri)}header .sp{flex:1}
+select,input,button,textarea{font:inherit}select,input{border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:#fff}
+button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:5px 12px;cursor:pointer}button.pri{background:var(--pri);border-color:var(--pri);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}
+button.ok{background:var(--down);border-color:var(--down);color:#fff}label.btn{display:inline-block;border:1px solid var(--line);border-radius:6px;padding:5px 12px;cursor:pointer;background:#fff}
+main{padding:14px 20px 90px;display:grid;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0;overflow-x:auto}
+.card h2{font-size:14px;margin:0 0 10px;color:var(--sub);font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.card h2 .sp{flex:1}
+.tabs{display:flex;gap:4px;border-bottom:2px solid var(--line);padding:0 20px;background:#fff;overflow-x:auto}.tabs button{border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 0 0;background:var(--bg);padding:7px 14px;margin-bottom:-2px;font-weight:600;color:var(--sub);white-space:nowrap}.tabs button.on{background:#fff;color:var(--pri);border-color:var(--pri);border-bottom:2px solid #fff}
+.tabs .badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--up);color:#fff;font-size:11px;margin-left:4px}
+table{border-collapse:collapse;width:100%}th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{font-size:12px;color:var(--sub);font-weight:600;background:#fafbfd}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}td.w{white-space:normal}
+tr.row{cursor:pointer}tr.row:hover{background:#f7f9fc}tr.sec td{background:#f0f3f8;font-weight:700;color:var(--sub);font-size:12px}tr.tot td{font-weight:700;border-top:2px solid var(--line)}
+.top{display:grid;gap:14px;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1.5fr)}@media(max-width:1000px){.top{grid-template-columns:1fr}}
+.big{font-size:30px;font-weight:700}.big small{font-size:14px;font-weight:500;color:var(--sub)}
+.d-up{color:var(--up);font-weight:600}.d-down{color:var(--down);font-weight:600}.muted{color:var(--sub)}.small{font-size:12px}
+.tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:8px;margin-left:4px;font-weight:600;white-space:nowrap}
+.t-rec{background:var(--pri-l);color:var(--pri)}.t-new{background:var(--warn-l);color:var(--warn)}.t-up{background:var(--up-l);color:var(--up)}.t-ok{background:var(--down-l);color:var(--down)}.t-gray{background:#eef0f4;color:var(--sub)}
+.flags{display:flex;flex-direction:column;gap:6px}.flag{display:flex;gap:8px;align-items:baseline;padding:5px 8px;border-radius:6px;background:var(--flag-l);cursor:pointer}.flag .why{font-size:11px;font-weight:700;color:var(--flag);white-space:nowrap}.flag .who{flex:1}.flag .amt{font-weight:600;font-variant-numeric:tabular-nums}.flag.warn{background:var(--warn-l)}.flag.warn .why{color:var(--warn)}
+.status{display:flex;gap:6px;align-items:center;font-size:13px;flex-wrap:wrap}.status .st{padding:3px 10px;border-radius:12px;background:#eef0f4;color:var(--sub)}.status .st.on{background:var(--pri);color:#fff}.status .st.done{background:var(--down-l);color:var(--down)}
+.review{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.6fr);gap:14px;height:calc(100vh - 190px);min-height:480px}
+@media(max-width:800px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}}
+.rlist{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff}.rlist td{white-space:normal;vertical-align:top;padding:7px 8px}.rlist td.st{width:26px;text-align:center}
+.rlist tr.row.ok{background:#f6fbf7}.rlist tr.row.hold{background:#fffaf2}.rlist tr.row.sel{background:var(--pri-l);box-shadow:inset 3px 0 0 var(--pri)}
+.detail{background:#fff;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.dnav,.dact{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#fafbfd;flex-wrap:wrap}.dnav{border-bottom:1px solid var(--line)}.dact{border-top:1px solid var(--line)}.dnav .sp,.dact .sp{flex:1}
+.dbody{flex:1;overflow:auto;padding:12px 16px}.dbody h3{margin:0 0 4px;font-size:17px}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:4px 10px;font-size:13px;margin:10px 0}.kv .k{color:var(--sub)}
+.spark{display:flex;align-items:flex-end;gap:6px;height:80px;margin:10px 0 22px}.spark div{flex:1;background:var(--pri-l);border-radius:4px 4px 0 0;position:relative;min-height:2px}.spark div.cur{background:var(--pri)}.spark span{position:absolute;bottom:-18px;left:-4px;right:-4px;text-align:center;font-size:10.5px;color:var(--sub)}
+.cmt{background:#f7f9fc;border-radius:6px;padding:6px 8px;margin:4px 0;font-size:13px}
+.bar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:10px 20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;z-index:6}.bar .sp{flex:1}
+dialog{border:1px solid var(--line);border-radius:12px;padding:0;width:min(580px,94vw)}dialog::backdrop{background:rgba(20,30,50,.35)}
+.dlg h3{margin:0;padding:12px 16px;border-bottom:1px solid var(--line);font-size:15px}.dlg .body{padding:12px 16px;display:grid;grid-template-columns:120px 1fr;gap:8px 10px;align-items:center;max-height:70vh;overflow:auto}.dlg .body input,.dlg .body select{width:100%}.dlg .foot{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+.snack{position:fixed;right:20px;bottom:80px;background:#1e2533;color:#fff;border-radius:8px;padding:10px 14px;max-width:420px;z-index:20;font-size:13px}.snack.err{background:var(--up)}
+.mt{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}.m-ok{background:var(--down)}.m-ng{background:var(--up)}.m-info{background:#b8c0d0}
+#login-view{padding:60px;text-align:center}#busy{padding:40px;text-align:center;color:var(--sub)}
+</style>
+</head>
+<body>
+<div id="login-view" style="display:none"><h1>株式会社ハナオカ 支払決済</h1><p data-ha-login>サインインしてください</p><button data-ha-login class="pri" onclick="signIn()">サインイン</button></div>
+<div id="app-view" style="display:none">
+<header>
+  <h1>株式会社ハナオカ 支払決済</h1>
+  <select id="ym"></select>
+  <div class="status" id="status"></div>
+  <span class="sp"></span>
+  <span class="small muted" id="me"></span>
+</header>
+<nav class="tabs" id="tabs"></nav>
+<main id="main"><div id="busy">読み込み中…</div></main>
+<div class="bar" id="bar"></div>
+</div>
+<dialog id="dlg"></dialog>
+<script>
+'use strict';
+const SCOPES = ['User.Read', 'Sites.ReadWrite.All', 'Files.ReadWrite.All'];
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const SITE_PATH = 'hanaokacorp.sharepoint.com:/sites/hanaoka-kh';
+const STEPS = [['draft', '登録中'], ['shitsucho', '室長の確認'], ['shacho', '社長の確認'], ['done', '承認済']];
+const LISTS = ['KH_Setting', 'KH_Payee', 'KH_Recurring', 'KH_Loan', 'KH_Payment', 'KH_Payroll', 'KH_Settle', 'KH_BankTxn', 'KH_Notify'];
+const yen = n => (n < 0 ? '−' : '') + Math.abs(Math.round(n || 0)).toLocaleString('ja-JP');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ymLabel = ym => `${+ym.slice(0, 4)}年${+ym.slice(5)}月`;
+const addMonth = (ym, d) => { const [y, m] = ym.split('-').map(Number); const t = new Date(y, m - 1 + d, 1); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`; };
+const daysIn = ym => { const [y, m] = ym.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+const monthsBetween = (a, b) => { const [y1, m1] = a.split('-').map(Number), [y2, m2] = b.split('-').map(Number); return (y2 - y1) * 12 + (m2 - m1); };
+const sum = a => a.reduce((x, y) => x + (+y || 0), 0);
+const $ = s => document.querySelector(s);
+const now = () => new Date().toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+function snack(t, err) { const d = document.createElement('div'); d.className = 'snack' + (err ? ' err' : ''); d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), err ? 8000 : 4000); }
+const J = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
+
+// ---------- サインイン・Graph ----------
+let msalApp, acct, SITE, LID = {};
+async function boot() {
+  msalApp = new msal.PublicClientApplication(HanaokaAuth.msalConfig()); await msalApp.initialize(); await msalApp.handleRedirectPromise();
+  acct = await HanaokaAuth.restore(msalApp, SCOPES);
+  if (acct) return start();
+  HanaokaAuth.done(); $('#login-view').style.display = '';
+}
+async function signIn() { try { acct = await HanaokaAuth.login(msalApp, SCOPES); start(); } catch (e) { if (e.errorCode !== 'user_cancelled') snack('サインインできません：' + e.message, 1); } }
+async function token() { try { return (await msalApp.acquireTokenSilent({ scopes: SCOPES, account: acct })).accessToken; } catch { const r = await msalApp.acquireTokenPopup({ scopes: SCOPES }); acct = r.account; return r.accessToken; } }
+async function g(method, p, body, type) {
+  const t = await token(), h = { Authorization: 'Bearer ' + t };
+  if (body !== undefined && !type) h['Content-Type'] = 'application/json';
+  if (type) h['Content-Type'] = type;
+  const r = await fetch(p.startsWith('http') ? p : GRAPH + p, { method, headers: h, body: body === undefined ? undefined : type ? body : JSON.stringify(body) });
+  if (!r.ok) throw new Error(`[${r.status}] ${method} ${p.split('?')[0]} ${await r.text().catch(() => '')}`.slice(0, 400));
+  return r.status === 204 ? null : r.json();
+}
+async function gall(p) { let out = [], n = p; while (n) { const d = await g('GET', n); out = out.concat(d.value || []); n = d['@odata.nextLink'] || null; } return out; }
+const items = name => gall(`/sites/${SITE}/lists/${LID[name]}/items?$expand=fields&$top=500`);
+const addItem = (name, fields) => g('POST', `/sites/${SITE}/lists/${LID[name]}/items`, { fields });
+const setItem = (name, id, fields) => g('PATCH', `/sites/${SITE}/lists/${LID[name]}/items/${id}/fields`, fields);
+const delItem = (name, id) => g('DELETE', `/sites/${SITE}/lists/${LID[name]}/items/${id}`);
+const putFile = (path, blob) => g('PUT', `/sites/${SITE}/drive/root:${encodeURI(path)}:/content`, blob, blob.type || 'application/octet-stream');
+
+// ---------- データ ----------
+let R, ME, ROLE, DB = {};
+const S = { ym: null, tab: null };
+const MNAME = () => R.methods;
+async function start() {
+  $('#login-view').style.display = 'none'; $('#app-view').style.display = '';
+  try {
+    SITE = (await g('GET', `/sites/${SITE_PATH}?$select=id`)).id;
+    const ls = await gall(`/sites/${SITE}/lists?$select=id,displayName`); ls.forEach(l => LID[l.displayName] = l.id);
+    const miss = LISTS.filter(n => !LID[n]); if (miss.length) throw new Error('リストがありません：' + miss.join('・') + '（admin\\Provision-KH.ps1 -Apply）');
+    await reload();
+    // サインインの名前は UPN（@…onmicrosoft.com）かメール（@…co.jp）のどちらか。@ の前で同じ人とみなす
+    const P = R.people, lc = s => String(s || '').toLowerCase().split('@')[0];
+    ME = lc(acct.username);
+    ROLE = P.register.map(lc).includes(ME) ? 'fukuda' : lc(P.shitsucho) === ME ? 'shitsucho' : lc(P.shacho) === ME ? 'shacho' : 'viewer';
+    $('#me').textContent = `${acct.name || ME}（${{ fukuda: '登録', shitsucho: '室長', shacho: '社長', viewer: '閲覧' }[ROLE]}）`;
+    const q = new URLSearchParams(location.search).get('ym');
+    const yms = allYms(); S.ym = q && yms.includes(q) ? q : yms.at(-1) || thisYm();
+    S.tab = ROLE === 'fukuda' ? 'list' : (['shitsucho', 'shacho'].includes(ROLE) && settle(S.ym).Status === ROLE) ? 'review' : 'summary';
+    render();
+  } catch (e) { $('#main').innerHTML = `<div class="card"><b>読み込めませんでした</b><p class="small">${esc(e.message)}</p></div>`; }
+}
+const thisYm = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+async function reload() {
+  const [st, pe, rc, lo, pa, pr, se, bk] = await Promise.all(['KH_Setting', 'KH_Payee', 'KH_Recurring', 'KH_Loan', 'KH_Payment', 'KH_Payroll', 'KH_Settle', 'KH_BankTxn'].map(items));
+  R = J(st.find(x => x.fields.Title === 'kh.rules')?.fields.Value, null); if (!R) throw new Error('KH_Setting に kh.rules がありません（Provision-KH.ps1 -Apply）');
+  const f = x => ({ id: x.id, ...x.fields });
+  DB.payees = pe.map(f); DB.recurring = rc.map(f); DB.loans = lo.map(f);
+  DB.payments = pa.map(x => { const v = x.fields; return { id: x.id, ym: v.YM, order: v.SortNo || 0, sec: v.Section || 'other', kamoku: v.Kamoku || '', payee: v.Payee || '', memo: v.Memo || '', seikyu: v.Seikyu || 0, kakutei: v.Kakutei || 0, tax: v.Tax || 0, gensen: v.Gensen || 0, fee: v.Fee || 0, pay: v.Pay || 0, method: v.Method || 'furikomi', due: v.DueDate || '', note: v.Note || '', source: v.Source || '', recurringId: v.RecurringId || '', bankKey: v.BankKey || '', varies: !!v.Varies, pdf: v.PdfPath || '' }; });
+  DB.payroll = Object.fromEntries(pr.map(x => [x.fields.Title, { id: x.id, payDate: x.fields.PayDate, file: x.fields.FileName, ...J(x.fields.Data, { people: [], total: {} }) }]));
+  DB.settle = Object.fromEntries(se.map(x => { const v = x.fields; return [v.Title, { id: x.id, Status: v.Status || 'draft', SkipShitsucho: !!v.SkipShitsucho, ShachoAbsent: !!v.ShachoAbsent, Checks: J(v.Checks, { shitsucho: {}, shacho: {} }), Comments: J(v.Comments, {}), Log: J(v.Log, []), Hash: v.Hash || '', Total: v.Total || 0, ZenginAt: v.ZenginAt || '', ZenginBy: v.ZenginBy || '' }]; }));
+  DB.bank = bk.map(x => { const v = x.fields; return { sid: x.id, id: v.Title, ym: v.YM, date: v.TxnDate, io: v.IO, kind: v.Kind, amount: v.Amount || 0, who: v.Who || '', bankName: v.BankName || '', desc: v.Descr || '', mt: v.MatchType || '', ml: v.MatchLabel || '', mp: v.MatchPay || '' }; });
+}
+function settle(ym) { return DB.settle[ym] ||= { id: null, Status: 'draft', SkipShitsucho: false, ShachoAbsent: false, Checks: { shitsucho: {}, shacho: {} }, Comments: {}, Log: [], Hash: '', Total: 0 }; }
+async function saveSettle(ym) {
+  const s = settle(ym), f = { Title: ym, Status: s.Status, SkipShitsucho: s.SkipShitsucho, ShachoAbsent: s.ShachoAbsent, Checks: JSON.stringify(s.Checks), Comments: JSON.stringify(s.Comments), Log: JSON.stringify(s.Log), Hash: s.Hash, Total: s.Total, ZenginAt: s.ZenginAt || '', ZenginBy: s.ZenginBy || '' };
+  if (s.id) await setItem('KH_Settle', s.id, f); else s.id = (await addItem('KH_Settle', f)).id;
+}
+function allYms() { return [...new Set([...DB.payments.map(p => p.ym), ...Object.keys(DB.payroll), ...Object.keys(DB.settle)])].filter(Boolean).sort(); }
+const payments = ym => DB.payments.filter(p => p.ym === ym).sort((a, b) => (a.sec === b.sec ? 0 : a.sec === 'other' ? -1 : 1) || a.order - b.order);
+const payroll = ym => DB.payroll[ym] || null;
+function itemsOf(ym) { const ps = payments(ym).map(p => ({ kind: 'pay', id: 'p' + p.id, p })); const pr = payroll(ym); if (pr) ps.push({ kind: 'salary', id: ym + '-salary', pr }); return ps; }
+const itemAmt = it => it.kind === 'salary' ? it.pr.total.bank : it.p.pay;
+const itemName = it => it.kind === 'salary' ? `給与（${it.pr.people.length}名）` : it.p.payee;
+const itemMethod = it => it.kind === 'salary' ? 'salary' : it.p.method;
+const needsOk = it => it.kind !== 'salary';
+const norm = s => String(s || '').replace(/[\s　()（）㈱]|株式会社/g, '');
+const matchKey = p => norm(p.payee) + '|' + p.kamoku;
+function prevAmt(ym, it, back = 1) {
+  const pym = addMonth(ym, -back);
+  if (it.kind === 'salary') return payroll(pym)?.total.bank ?? null;
+  const k = matchKey(it.p), hit = payments(pym).filter(q => matchKey(q) === k);
+  return hit.length ? sum(hit.map(q => q.pay)) : null;
+}
+function totals(ym) { const t = { all: 0, by: {} }; for (const it of itemsOf(ym)) { const m = itemMethod(it), a = itemAmt(it); t.by[m] = (t.by[m] || 0) + a; if (m !== 'tatekae') t.all += a; } return t; }
+const payeeOf = name => DB.payees.find(p => p.Active !== false && norm(p.Title) && (norm(name).includes(norm(p.Title)) || norm(p.Title).includes(norm(name))));
+
+// ---------- 気づき ----------
+function flags(ym) {
+  const out = [], F = R.flags;
+  for (const it of itemsOf(ym)) {
+    if (it.kind !== 'pay') continue; const p = it.p, hist = [1, 2, 3].map(b => prevAmt(ym, it, b));
+    if (hist.every(v => v == null) && p.pay >= F.minNew) out.push({ id: it.id, why: '初めて', who: p.payee, amt: p.pay, note: '前の3か月に無い支払' });
+    else if (hist[0] != null && hist[0] > 0) { const d = p.pay - hist[0]; if (Math.abs(d) >= F.diffYen && Math.abs(d) / hist[0] >= F.diffRate) out.push({ id: it.id, why: d > 0 ? '増えた' : '減った', who: p.payee, amt: p.pay, note: `前月 ${yen(hist[0])}（${d > 0 ? '+' : ''}${yen(d)}）` }); }
+    if (p.varies) out.push({ id: it.id, why: '額', who: p.payee, amt: p.pay, note: '毎月額が変わる支払（請求書の額を入れたか）', warn: 1 });
+    if (p.method === 'tatekae') out.push({ id: it.id, why: '立替', who: p.payee, amt: p.pay, note: '役員の立替。給与で精算（口座からは出ない）' });
+    if (p.method === 'furikomi' && !payeeOf(p.payee)?.AcctNo) out.push({ id: it.id, why: '口座', who: p.payee, amt: p.pay, note: '振込先の口座が未登録', warn: 1 });
+  }
+  const pr = payroll(ym), pp = payroll(addMonth(ym, -1));
+  if (pr && pp && pr.total.bank !== pp.total.bank) out.push({ id: ym + '-salary', why: '給与', who: '給与の振込額が前月と違う', amt: pr.total.bank, note: `前月 ${yen(pp.total.bank)}` });
+  if (!pr && ROLE === 'fukuda') out.push({ why: '給与', who: '給与の資料がまだ', amt: 0, note: '給与支給控除一覧表を取り込む', tab: 'list', warn: 1 });
+  const r = reconcile(ym), ng = r.rows.filter(x => x.io === 'out' && !x.m);
+  if (ng.length) out.push({ why: '突合', who: `通帳に支払に無い出金 ${ng.length}件`, amt: sum(ng.map(x => x.amount)), note: '入出金・突合で確かめる', tab: 'bank', warn: 1 });
+  return out;
+}
+
+// ---------- 突合 ----------
+function reconcile(ym) {
+  const M = R.match, rows = DB.bank.filter(b => b.ym === ym).map(b => ({ ...b, m: null })).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  const used = new Set(), ps = payments(ym), pr = payroll(ym), payHit = {};
+  const take = (row, m) => { row.m = m; used.add(row.id); };
+  for (const row of rows) if (row.mt) { take(row, { type: row.mt, label: row.ml, pay: row.mp, manual: 1 }); if (row.mp) payHit[row.mp] = row.id; }
+  const free = r => !used.has(r.id);
+  const fk = ps.filter(p => p.method === 'furikomi'), fkSum = sum(fk.map(p => p.pay));
+  if (fk.length) { const r = rows.find(r => free(r) && r.io === 'out' && r.desc === M.lumpDesc && r.amount === fkSum); if (r) { take(r, { type: 'furikomi', label: `月末の総合振込（${transfers(ym).length}件）` }); fk.forEach(p => payHit['p' + p.id] = r.id); } }
+  if (pr) { const r = rows.find(r => free(r) && r.io === 'out' && r.desc === M.lumpDesc && r.amount === pr.total.bank); if (r) { take(r, { type: 'salary', label: `給与振込（${pr.people.length}名）` }); payHit[ym + '-salary'] = r.id; } }
+  for (const p of ps.filter(p => ['jidou', 'nouzei', 'genkin'].includes(p.method) && !payHit['p' + p.id])) {
+    let re = null; try { const k = p.bankKey || payeeOf(p.payee)?.BankKey; re = k ? new RegExp(k) : null; } catch { }
+    const cand = rows.filter(r => free(r) && r.io === 'out' && r.amount === p.pay && (!re || re.test(r.desc + ' ' + r.who)));
+    if (cand.length) { take(cand[0], { type: 'pay', pay: 'p' + p.id, label: p.payee }); payHit['p' + p.id] = cand[0].id; }
+  }
+  for (const r of rows) {
+    if (!free(r)) continue;
+    const s = r.desc + ' ' + r.who;
+    if (r.io === 'out') { const h = M.fee.find(x => new RegExp(x.re).test(s)); if (h) take(r, { type: 'fee', label: h.label }); }
+    else { const h = M.income.find(x => new RegExp(x.re).test(s)); if (h) take(r, { type: 'income', label: h.label }); }
+  }
+  const missing = ps.filter(p => ['furikomi', 'jidou', 'nouzei', 'genkin'].includes(p.method) && !payHit['p' + p.id]);
+  if (pr && !payHit[ym + '-salary']) missing.push({ payee: '給与', pay: pr.total.bank, method: 'salary' });
+  return { rows, missing, payHit };
+}
+
+// ---------- 全銀（総合振込・種別21） ----------
+function transfers(ym) {
+  const gp = new Map();
+  for (const p of payments(ym).filter(p => p.method === 'furikomi')) { const pe = payeeOf(p.payee), k = pe ? 'P' + pe.id : norm(p.payee); const x = gp.get(k) || { payee: pe?.Title || p.payee, bank: pe?.AcctNo ? pe : null, pay: 0, items: [] }; x.pay += p.pay; x.items.push(p); gp.set(k, x); }
+  const f = R.from, F = R.fees;
+  for (const x of gp.values()) { const b = x.bank; x.fee = !b ? null : b.FeeBy === '先方' ? 0 : b.BankCode !== f.bankCode ? F.otherBank : b.BranchCode === f.branchCode ? F.sameBranch : x.pay < 30000 ? F.otherBranchUnder30k : F.otherBranch; }
+  return [...gp.values()];
+}
+const sjis = s => { const o = []; for (const ch of String(s)) { const c = ch.codePointAt(0); if (c < 0x80) o.push(c); else if (c >= 0xFF61 && c <= 0xFF9F) o.push(c - 0xFF61 + 0xA1); else o.push(0x3F); } return o; };
+const fx = (s, n) => { const b = sjis(s).slice(0, n); while (b.length < n) b.push(0x20); return b; };
+const fn = (v, n) => fx(String(v).padStart(n, '0').slice(-n), n);
+function zenginFile(ym, payDate) {
+  const f = R.from, tr = transfers(ym), md = payDate.slice(5, 7) + payDate.slice(8, 10), recs = [];
+  recs.push([...fx('1', 1), ...fx('21', 2), ...fx('0', 1), ...fn(f.code, 10), ...fx(f.name, 40), ...fx(md, 4), ...fn(f.bankCode, 4), ...fx(f.bankKana, 15), ...fn(f.branchCode, 3), ...fx(f.branchKana, 15), ...fx(f.type, 1), ...fn(f.account, 7), ...fx('', 17)]);
+  for (const x of tr) { const b = x.bank; recs.push([...fx('2', 1), ...fn(b.BankCode, 4), ...fx(b.BankKana, 15), ...fn(b.BranchCode, 3), ...fx(b.BranchKana, 15), ...fx('', 4), ...fx(b.AcctType, 1), ...fn(b.AcctNo, 7), ...fx(b.NameKana, 30), ...fn(x.pay, 10), ...fx('0', 1), ...fx('', 10), ...fx('', 10), ...fx('7', 1), ...fx(' ', 1), ...fx('', 7)]); }
+  recs.push([...fx('8', 1), ...fn(tr.length, 6), ...fn(sum(tr.map(x => x.pay)), 12), ...fx('', 101)]);
+  recs.push([...fx('9', 1), ...fx('', 119)]);
+  const bytes = []; recs.forEach(r => { if (r.length !== 120) throw new Error('全銀の行の長さ ' + r.length); bytes.push(...r, 13, 10); });
+  return { bytes: new Uint8Array(bytes), recs };
+}
+// 照合の鍵：支払先・方法・金額・振込先口座（回した時点と全銀を作る時点で比べる）
+async function hashOf(ym) {
+  const s = JSON.stringify({ p: payments(ym).map(p => [p.payee, p.method, p.pay]), t: transfers(ym).map(x => [x.payee, x.pay, x.bank?.BankCode, x.bank?.BranchCode, x.bank?.AcctNo]) });
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ---------- 画面 ----------
+const editable = ym => ROLE === 'fukuda' && settle(ym).Status === 'draft';
+function render() {
+  const ym = S.ym, st = settle(ym), yms = allYms();
+  $('#ym').innerHTML = (yms.includes(ym) ? yms : [...yms, ym].sort()).map(k => `<option value="${k}" ${k === ym ? 'selected' : ''}>${ymLabel(k)}末 支払</option>`).join('') + (ROLE === 'fukuda' ? `<option value="__new">＋ ${ymLabel(addMonth(yms.at(-1) || thisYm(), yms.length ? 1 : 0))}を作る</option>` : '');
+  const si = STEPS.findIndex(s => s[0] === st.Status);
+  $('#status').innerHTML = STEPS.map(([k, v], i) => `<span class="st ${i === si ? (k === 'done' ? 'done' : 'on') : ''}">${v}${k === 'shitsucho' && st.SkipShitsucho ? '（不在で省く）' : ''}${k === 'shacho' && st.ShachoAbsent ? '（不在→室長が代理）' : ''}</span>`).join('<span class="muted">›</span>');
+  const ng = reconcile(ym).rows.filter(x => !x.m).length;
+  const tabs = [['list', '📋 今月の支払'], ['summary', '📊 サマリー'], ['review', '✅ 確認'], ['bank', '🏦 入出金・突合' + (ng ? `<span class="badge">${ng}</span>` : '')]];
+  if (ROLE === 'fukuda') tabs.push(['zengin', '📤 全銀'], ['master', '⚙ 支払先・定額・借入']);
+  $('#tabs').innerHTML = tabs.map(([k, v]) => `<button class="${S.tab === k ? 'on' : ''}" data-tab="${k}">${v}</button>`).join('');
+  ({ list: renderList, summary: renderSummary, review: renderReview, bank: renderBank, zengin: renderZengin, master: renderMaster })[S.tab](ym);
+  renderBar(ym);
+}
+function matchMark(r, id, method) {
+  if (method === 'tatekae') return '<span class="tag t-gray">対象外</span>';
+  if (method === 'zumi') return '<span class="tag t-gray">済</span>';
+  if (r.payHit[id]) { const b = DB.bank.find(x => x.id === r.payHit[id]); return `<span class="tag t-ok">✔ ${b ? b.date.slice(5).replace('-', '/') : ''}</span>`; }
+  return r.rows.length ? '<span class="tag t-up">通帳に無い</span>' : '<span class="tag t-gray">明細待ち</span>';
+}
+function renderList(ym) {
+  const its = itemsOf(ym), ed = editable(ym), r = reconcile(ym);
+  let h = `<div class="card"><h2>${ymLabel(ym)}末の支払（${its.length}件）<span class="sp"></span>${ed ? `<button class="pri" data-act="add">＋ 都度の支払を登録</button><label class="btn">👥 給与の資料を取り込む<input type="file" accept=".xlsx,.xls" hidden data-file="payroll"></label>` : ''}</h2><table><thead><tr><th>区分（科目）</th><th>支払先</th><th>摘要</th><th class="n">確定高</th><th class="n">消費税</th><th class="n">源泉・手数料</th><th class="n">支払高</th><th>方法</th><th class="n">前月</th><th>突合</th></tr></thead><tbody>`;
+  for (const [sec, lab] of Object.entries(R.sections)) {
+    const ps = its.filter(it => it.kind === 'pay' && it.p.sec === sec); if (!ps.length) continue;
+    h += `<tr class="sec"><td colspan="10">${esc(lab)}</td></tr>`;
+    for (const it of ps) { const p = it.p, pv = prevAmt(ym, it);
+      h += `<tr class="row" data-open="${it.id}"><td>${esc(p.kamoku)}</td><td class="w">${esc(p.payee)}${p.recurringId ? '<span class="tag t-rec">毎月</span>' : ''}${p.source === '都度' || p.source === '通帳' ? '<span class="tag t-new">都度</span>' : ''}${p.varies ? '<span class="tag t-up">金額を入れる</span>' : ''}${p.pdf ? ' 📎' : ''}</td><td class="w small">${esc(p.memo)}</td><td class="n">${yen(p.kakutei)}</td><td class="n">${p.tax ? yen(p.tax) : ''}</td><td class="n">${p.gensen || p.fee ? yen(-(p.gensen + p.fee)) : ''}</td><td class="n"><b>${yen(p.pay)}</b></td><td>${esc(R.methods[p.method] || p.method)}</td><td class="n muted">${pv == null ? '—' : yen(pv)}</td><td>${matchMark(r, it.id, p.method)}</td></tr>`; }
+    h += `<tr class="tot"><td colspan="6">${esc(lab)} 計</td><td class="n">${yen(sum(ps.map(it => it.p.pay)))}</td><td colspan="3"></td></tr>`;
+  }
+  const pr = payroll(ym);
+  h += `<tr class="sec"><td colspan="10">給与（決裁済み・参考）</td></tr>` + (pr ? `<tr class="row" data-open="${ym}-salary"><td>給与</td><td>${pr.people.length}名 <span class="tag t-ok">決裁済</span></td><td class="small">支給日 ${esc(pr.payDate)}　総支給 ${yen(pr.total.gross)}・控除 ${yen(pr.total.deduct)}</td><td class="n">${yen(pr.total.gross)}</td><td></td><td></td><td class="n"><b>${yen(pr.total.bank)}</b></td><td>給与振込</td><td class="n muted">${payroll(addMonth(ym, -1)) ? yen(payroll(addMonth(ym, -1)).total.bank) : '—'}</td><td>${matchMark(r, ym + '-salary', 'salary')}</td></tr>` : `<tr><td colspan="10" class="muted">給与の資料（給与支給控除一覧表）がまだありません</td></tr>`);
+  h += `<tr class="tot"><td colspan="6">今月の支払 合計（立替は給与に含むので除く）</td><td class="n">${yen(totals(ym).all)}</td><td colspan="3"></td></tr></tbody></table>${its.length ? '' : `<p class="muted">この月の支払はまだありません。${ROLE === 'fukuda' ? '上の「○月を作る」で毎月定額を並べます。' : ''}</p>`}</div>`;
+  $('#main').innerHTML = h;
+}
+function renderSummary(ym) {
+  const t = totals(ym), p1 = totals(addMonth(ym, -1)), p2 = totals(addMonth(ym, -2)), fl = flags(ym);
+  const diff = (a, b) => b ? `<span class="${a > b ? 'd-up' : 'd-down'}">${a > b ? '+' : ''}${yen(a - b)}</span>` : '<span class="muted">—</span>';
+  const meths = Object.keys(R.methods).filter(m => t.by[m] || p1.by[m]);
+  let h = `<div class="top"><div class="card"><h2>支払総額</h2><div class="big">${yen(t.all)}<small> 円</small></div><div class="small muted" style="margin-top:6px">前月 ${yen(p1.all)}（${diff(t.all, p1.all)}）<br>前々月 ${yen(p2.all)}（${diff(t.all, p2.all)}）</div><div class="small muted" style="margin-top:6px">支払 ${payments(ym).length}件＋給与 ${payroll(ym) ? payroll(ym).people.length + '名' : 'なし'}</div></div>
+  <div class="card"><h2>方法別</h2><table><thead><tr><th>方法</th><th class="n">今月</th><th class="n">前月</th><th class="n">差</th></tr></thead><tbody>${meths.map(m => `<tr><td>${esc(R.methods[m])}${m === 'tatekae' ? '<span class="small muted">（給与に含む）</span>' : ''}</td><td class="n">${yen(t.by[m] || 0)}</td><td class="n muted">${yen(p1.by[m] || 0)}</td><td class="n">${diff(t.by[m] || 0, p1.by[m] || 0)}</td></tr>`).join('')}</tbody></table></div>
+  <div class="card"><h2>気づき（${fl.length}）</h2><div class="flags">${fl.map(f => `<div class="flag ${f.warn ? 'warn' : ''}" data-flag="${esc(f.id || '')}" data-ftab="${f.tab || ''}"><span class="why">${f.why}</span><span class="who">${esc(f.who)}<br><span class="small muted">${esc(f.note)}</span></span><span class="amt">${f.amt ? yen(f.amt) : ''}</span></div>`).join('') || '<span class="muted">なし</span>'}</div></div></div>`;
+  const by = {}; for (const k of [0, 1, 2]) for (const it of itemsOf(addMonth(ym, -k))) { const kk = it.kind === 'salary' ? '給与' : it.p.kamoku; (by[kk] ||= [0, 0, 0])[k] += itemAmt(it); }
+  h += `<div class="card"><h2>区分（科目）別</h2><table><thead><tr><th>区分</th><th class="n">今月</th><th class="n">前月</th><th class="n">前々月</th><th class="n">前月との差</th></tr></thead><tbody>${Object.entries(by).sort((a, b) => b[1][0] - a[1][0]).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${v[0] ? yen(v[0]) : ''}</td><td class="n muted">${v[1] ? yen(v[1]) : ''}</td><td class="n muted">${v[2] ? yen(v[2]) : ''}</td><td class="n">${diff(v[0], v[1])}</td></tr>`).join('')}</tbody></table></div>`;
+  const yms = allYms().filter(k => k <= ym).slice(-12), mx = Math.max(1, ...yms.map(k => totals(k).all));
+  h += `<div class="card"><h2>月ごとの支払総額</h2><div class="spark">${yms.map(k => `<div class="${k === ym ? 'cur' : ''}" style="height:${totals(k).all / mx * 100}%" title="${yen(totals(k).all)}"><span>${+k.slice(5)}月</span></div>`).join('')}</div></div>`;
+  $('#main').innerHTML = h;
+}
+let cur = null;
+const actingRole = ym => { const st = settle(ym); if (ROLE === 'shitsucho' && st.Status === 'shacho' && st.ShachoAbsent) return 'shacho'; return ROLE === st.Status ? ROLE : null; };
+function renderReview(ym) {
+  const its = itemsOf(ym), st = settle(ym), act = actingRole(ym), view = act || (ROLE === 'shacho' ? 'shacho' : 'shitsucho'), ck = st.Checks[view] || {};
+  if (!cur || !its.find(i => i.id === cur)) cur = its[0]?.id;
+  const it = its.find(i => i.id === cur), idx = its.indexOf(it);
+  let h = `<div class="review"><div class="rlist"><table><tbody>${its.map(i => { const c = needsOk(i) ? ck[i.id] : 'ref'; return `<tr class="row ${c === 'ok' ? 'ok' : c === 'hold' ? 'hold' : ''} ${i.id === cur ? 'sel' : ''}" data-cur="${i.id}"><td class="st">${c === 'ok' ? '✔' : c === 'hold' ? '⏸' : c === 'ref' ? '📎' : '○'}</td><td><b>${esc(itemName(i))}</b><br><span class="small muted">${esc(i.kind === 'salary' ? '決裁済み（参考）' : i.p.kamoku + '・' + (R.methods[i.p.method] || ''))}</span>${(st.Comments[i.id] || []).length ? ' 💬' : ''}</td><td class="n">${yen(itemAmt(i))}</td></tr>`; }).join('')}</tbody></table></div><div class="detail">`;
+  if (it) {
+    h += `<div class="dnav"><button data-step="-1" ${idx <= 0 ? 'disabled' : ''}>◀ 前へ</button><span class="muted">${idx + 1}／${its.length}</span><button data-step="1" ${idx >= its.length - 1 ? 'disabled' : ''}>次へ ▶</button><span class="sp"></span><span class="small muted">${act ? (act === 'shacho' && ROLE === 'shitsucho' ? '社長の代理として確認中' : '確認中') : view === 'shacho' ? '社長の確認' : '室長の確認'}</span></div><div class="dbody">${detailHtml(ym, it)}</div>`;
+    const can = act && needsOk(it);
+    h += `<div class="dact"><button data-cmt="1">💬 コメント</button><span class="sp"></span>${can ? `<button data-mark="hold">⏸ 保留</button><button class="ok" data-mark="ok">✔ OK・次へ</button>` : `<span class="small muted">${!needsOk(it) ? '給与は決裁済み（参考）' : ''}</span>`}</div>`;
+  }
+  $('#main').innerHTML = h + '</div></div>';
+}
+function detailHtml(ym, it) {
+  const st = settle(ym), hist = [5, 4, 3, 2, 1, 0].map(b => ({ ym: addMonth(ym, -b), v: b ? prevAmt(ym, it, b) : itemAmt(it) })), mx = Math.max(1, ...hist.map(x => x.v || 0));
+  let h = '';
+  if (it.kind === 'salary') {
+    const pr = it.pr;
+    h += `<h3>給与（${pr.people.length}名）<span class="tag t-ok">決裁済</span></h3><div class="muted small">支給日 ${esc(pr.payDate)}　資料：${esc(pr.file)}</div><table style="margin-top:10px"><thead><tr><th>社員</th><th class="n">課税支給</th><th class="n">立替経費</th><th class="n">社保</th><th class="n">所得税</th><th class="n">住民税</th><th class="n">振込額</th></tr></thead><tbody>${pr.people.map(p => `<tr><td>${esc(p.name)}</td><td class="n">${yen(p.taxable)}</td><td class="n">${p.tatekae ? yen(p.tatekae) : ''}</td><td class="n">${yen(p.shaho)}</td><td class="n">${yen(p.shotoku)}</td><td class="n">${p.jumin ? yen(p.jumin) : ''}</td><td class="n"><b>${yen(p.bank)}</b></td></tr>`).join('')}<tr class="tot"><td>計</td><td class="n">${yen(pr.total.taxable)}</td><td class="n">${yen(pr.total.tatekae)}</td><td class="n">${yen(pr.total.shaho)}</td><td class="n">${yen(pr.total.shotoku)}</td><td class="n">${yen(pr.total.jumin)}</td><td class="n">${yen(pr.total.bank)}</td></tr></tbody></table><p class="small muted">立替経費は明細の「立替（給与で精算）」と同じもの。</p>`;
+  } else {
+    const p = it.p, pe = payeeOf(p.payee);
+    h += `<h3>${esc(p.payee)}${p.recurringId ? '<span class="tag t-rec">毎月</span>' : ''}</h3><div class="muted">${esc(p.memo)}</div><div class="kv"><span class="k">区分（科目）</span><span>${esc(p.kamoku)}</span><span class="k">確定高</span><span>${yen(p.kakutei)}</span><span class="k">消費税</span><span>${yen(p.tax)}</span>${p.gensen ? `<span class="k">源泉税</span><span>${yen(-p.gensen)}</span>` : ''}${p.fee ? `<span class="k">手数料（先方負担）</span><span>${yen(-p.fee)}</span>` : ''}<span class="k">支払高</span><span><b style="font-size:17px">${yen(p.pay)}</b> 円</span><span class="k">方法</span><span>${esc(R.methods[p.method] || p.method)}${p.due ? '　' + esc(p.due) : ''}</span>${p.method === 'furikomi' ? `<span class="k">振込先</span><span>${pe?.AcctNo ? `${esc(pe.BankKana)} ${esc(pe.BranchKana)} ****${esc(String(pe.AcctNo).slice(-3))}` : '<span class="tag t-up">口座未登録</span>'}</span>` : ''}${p.note ? `<span class="k">備考</span><span>${esc(p.note)}</span>` : ''}<span class="k">請求書</span><span>${p.pdf ? `<a href="#" data-pdf="${esc(p.pdf)}">📎 開く</a>` : '<span class="muted">なし</span>'}</span></div>`;
+    if (p.recurringId && R.interest && p.kamoku === R.interest.kamoku) h += `<p class="small">利息＝借入 ${DB.loans.filter(l => l.Active !== false).length}本 × 利率 × ${daysIn(ym)}日 ÷ ${R.interest.basis}（1本ずつ切り捨て）</p>`;
+  }
+  h += `<div class="small muted">6か月の推移</div><div class="spark">${hist.map(x => `<div class="${x.ym === ym ? 'cur' : ''}" style="height:${(x.v || 0) / mx * 100}%" title="${x.v == null ? 'なし' : yen(x.v)}"><span>${+x.ym.slice(5)}月 ${x.v == null ? '—' : Math.round(x.v / 1000).toLocaleString() + '千'}</span></div>`).join('')}</div>`;
+  const cs = st.Comments[it.id] || []; if (cs.length) h += `<div class="small muted">コメント</div>` + cs.map(c => `<div class="cmt"><b>${esc(c.who)}</b> <span class="small muted">${esc(c.at)}</span><br>${esc(c.text)}</div>`).join('');
+  return h;
+}
+function renderBank(ym) {
+  const r = reconcile(ym), out = r.rows.filter(x => x.io === 'out'), inn = r.rows.filter(x => x.io === 'in'), ngOut = out.filter(x => !x.m);
+  let h = ROLE === 'fukuda' ? `<div class="card"><h2>入出金明細を取り込む<span class="sp"></span><label class="btn pri">🏦 CSV を選ぶ（三井住友 入出金明細）<input type="file" accept=".csv" multiple hidden data-file="bank"></label></h2><p class="small muted">全銀協の「入出金取引明細」の CSV（何か月分でも可）。取り込み済みの明細は自動で除きます。原本はサイトの /KH/入出金明細/ に保存します。</p></div>` : '';
+  if (!r.rows.length) { $('#main').innerHTML = h + `<div class="card"><p class="muted">${ymLabel(ym)}の入出金明細はまだありません。</p></div>`; return; }
+  h += `<div class="top"><div class="card"><h2>突合</h2><div class="big">${r.rows.filter(x => x.m).length}<small> ／ ${r.rows.length} 件</small></div><div class="small muted">出金 ${out.length}件 ${yen(sum(out.map(x => x.amount)))}・入金 ${inn.length}件 ${yen(sum(inn.map(x => x.amount)))}</div></div>
+  <div class="card"><h2>通帳に支払に無い出金（${ngOut.length}）</h2>${ngOut.length ? `<table><tbody>${ngOut.map(x => `<tr><td>${x.date.slice(5).replace('-', '/')}</td><td class="w">${esc(x.desc)} ${esc(x.who)}</td><td class="n"><b>${yen(x.amount)}</b></td><td>${ROLE === 'fukuda' ? `${editable(ym) ? `<button data-addbank="${esc(x.id)}">支払に足す</button> ` : ''}<button data-ignore="${esc(x.id)}">対象外</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<span class="muted">なし</span>'}</div>
+  <div class="card"><h2>通帳に無い支払（${r.missing.length}）</h2>${r.missing.length ? `<table><tbody>${r.missing.map(p => `<tr><td>${esc(p.payee)}</td><td>${esc(R.methods[p.method] || '')}</td><td class="n">${yen(p.pay)}</td></tr>`).join('')}</tbody></table>` : '<span class="muted">なし（支払はすべて通帳で確かめられた）</span>'}</div></div>`;
+  h += `<div class="card"><h2>${ymLabel(ym)}の入出金明細</h2><table><thead><tr><th>日付</th><th>摘要</th><th>相手</th><th class="n">出金</th><th class="n">入金</th><th>突合</th></tr></thead><tbody>${r.rows.map(x => `<tr><td>${x.date.slice(5).replace('-', '/')}</td><td>${esc(x.desc)}</td><td class="small">${esc(x.who)} ${esc(x.bankName)}</td><td class="n">${x.io === 'out' ? yen(x.amount) : ''}</td><td class="n">${x.io === 'in' ? yen(x.amount) : ''}</td><td>${x.m ? `<span class="mt ${['fee', 'income', 'ignore'].includes(x.m.type) ? 'm-info' : 'm-ok'}"></span>${esc(x.m.label)}${x.m.manual && ROLE === 'fukuda' ? ` <a href="#" data-unmatch="${esc(x.id)}" class="small">外す</a>` : ''}` : '<span class="mt m-ng"></span>未確認'}</td></tr>`).join('')}</tbody></table></div>`;
+  $('#main').innerHTML = h;
+}
+function renderZengin(ym) {
+  const tr = transfers(ym), t = sum(tr.map(x => x.pay)), r = reconcile(ym), hit = r.rows.find(x => x.m?.type === 'furikomi'), st = settle(ym);
+  const lastDay = `${ym}-${String(daysIn(ym)).padStart(2, '0')}`, noBank = tr.filter(x => !x.bank);
+  let h = `<div class="card"><h2>総合振込（全銀データ）　${tr.length}件　${yen(t)} 円<span class="sp"></span><span class="small">振込日 <input type="date" id="zdate" value="${lastDay}"></span></h2><table><thead><tr><th>振込先</th><th>口座</th><th>内訳</th><th class="n">振込金額</th><th class="n">手数料（見込み）</th></tr></thead><tbody>${tr.map(x => `<tr><td>${esc(x.payee)}</td><td>${x.bank ? `${esc(x.bank.BankKana)} ${esc(x.bank.BranchKana)}（${esc(x.bank.BranchCode)}） ${x.bank.AcctType === '2' ? '当座' : '普通'} ${esc(x.bank.AcctNo)}<br><span class="small muted">${esc(x.bank.NameKana)}</span>` : '<span class="tag t-up">口座未登録</span>'}</td><td class="small w">${x.items.map(p => esc(p.kamoku) + ' ' + yen(p.pay)).join('<br>')}</td><td class="n"><b>${yen(x.pay)}</b></td><td class="n">${x.fee == null ? '—' : yen(x.fee)}</td></tr>`).join('')}<tr class="tot"><td colspan="3">合計</td><td class="n">${yen(t)}</td><td class="n">${yen(sum(tr.map(x => x.fee || 0)))}</td></tr></tbody></table>`;
+  const ready = st.Status === 'done' && !noBank.length;
+  h += `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="pri" data-zengin="1" ${ready ? '' : 'disabled'}>📤 全銀データを作る（Web21「外部ファイル送信」へ）</button><span class="small muted">${st.Status !== 'done' ? '社長の承認が済むと作れます' : noBank.length ? `口座が未登録：${noBank.map(x => esc(x.payee)).join('・')}` : '承認した内容と今のデータを照合してから作ります'}</span></div>`;
+  if (st.ZenginAt) h += `<p class="small">作った：${esc(st.ZenginAt)}（${esc(st.ZenginBy)}）</p>`;
+  h += `<p class="small">${hit ? `✔ 通帳 ${hit.date} の総合振込 ${yen(hit.amount)} と一致 → 承認した内容のとおりに送金済み` : '送金のあと、入出金明細を取り込むと総合振込の1行と照合します'}</p><div id="zprev"></div></div>`;
+  $('#main').innerHTML = h;
+}
+function renderMaster() {
+  const acct = p => p.AcctNo ? `${esc(p.BankKana)} ${esc(p.BranchKana)} ${p.AcctType === '2' ? '当座' : '普通'} ${esc(p.AcctNo)}` : '<span class="muted">—</span>';
+  let h = `<div class="card"><h2>支払先（${DB.payees.length}）<span class="sp"></span><button data-payee="">＋ 支払先</button></h2><table><thead><tr><th>支払先</th><th>受取人名カナ</th><th>口座</th><th>手数料</th><th>通帳の名前</th></tr></thead><tbody>${DB.payees.sort((a, b) => String(a.Title).localeCompare(b.Title, 'ja')).map(p => `<tr class="row" data-payee="${p.id}"><td>${esc(p.Title)}${p.Active === false ? ' <span class="tag t-gray">使わない</span>' : ''}</td><td>${esc(p.NameKana)}</td><td>${acct(p)}</td><td>${esc(p.FeeBy || '')}</td><td class="small">${esc(p.BankKey || '')}</td></tr>`).join('')}</tbody></table></div>`;
+  h += `<div class="card"><h2>毎月定額（${DB.recurring.length}）<span class="sp"></span><button data-rec="">＋ 毎月定額</button></h2><table><thead><tr><th>支払先</th><th>区分</th><th>摘要のひな形</th><th class="n">支払高</th><th>方法</th><th>期間</th><th></th></tr></thead><tbody>${DB.recurring.sort((a, b) => (a.SortNo || 0) - (b.SortNo || 0)).map(x => `<tr class="row" data-rec="${x.id}"><td>${esc(x.Payee)}${x.Active === false ? ' <span class="tag t-gray">使わない</span>' : ''}</td><td>${esc(x.Kamoku)}</td><td class="small w">${esc(x.MemoTpl)}</td><td class="n">${x.Calc === 'interest' ? '利息を計算' : yen((x.Kakutei || 0) + (x.Tax || 0) - (x.Gensen || 0) - (x.Fee || 0))}</td><td>${esc(R.methods[x.Method] || '')}</td><td class="small">${esc(x.StartYM || '')}〜${esc(x.EndYM || '')}${x.TotalNo ? `（${x.TotalNo}回）` : ''}</td><td>${x.Varies ? '<span class="tag t-up">毎月額が変わる</span>' : ''}</td></tr>`).join('')}</tbody></table><p class="small muted">摘要のひな形：{前月}・{当月}＝月の数字、{回}／{総回数}＝ローンなどの回数。</p></div>`;
+  const ls = DB.loans.filter(l => l.Active !== false), d = daysIn(S.ym), calc = l => Math.floor(l.Principal * l.Rate * d / R.interest.basis);
+  h += `<div class="card"><h2>借入（${ls.length}本・元本 ${yen(sum(ls.map(l => l.Principal)))}）　${ymLabel(S.ym)}の利息 ${yen(sum(ls.map(calc)))}（${d}日）</h2><table><thead><tr><th>No.</th><th>用途</th><th class="n">元本</th><th class="n">利率</th><th class="n">利息</th><th>摘要</th></tr></thead><tbody>${ls.sort((a, b) => (+a.Title || 0) - (+b.Title || 0)).map(l => `<tr><td>${esc(l.Title)}${l.Star ? ' ★' : ''}</td><td>${esc(l.Usage)}</td><td class="n">${yen(l.Principal)}</td><td class="n">${(l.Rate * 100).toFixed(3)}%</td><td class="n">${yen(calc(l))}</td><td class="small">${esc(l.Memo)}</td></tr>`).join('')}</tbody></table><p class="small muted">借入の増減は SharePoint の KH_Loan で直す（返済したら「使う」を外し、返済した年月を入れる）。</p></div>`;
+  $('#main').innerHTML = h;
+}
+function renderBar(ym) {
+  const st = settle(ym), its = itemsOf(ym).filter(needsOk);
+  let h = `<span><b>${ymLabel(ym)}末</b>　合計 <b>${yen(totals(ym).all)}</b> 円</span><span class="sp"></span>`;
+  if (ROLE === 'fukuda') {
+    if (st.Status === 'draft') h += `<label class="small"><input type="checkbox" id="skipS" ${st.SkipShitsucho ? 'checked' : ''}> 室長不在のため室長の確認を省く</label><label class="small"><input type="checkbox" id="absC" ${st.ShachoAbsent ? 'checked' : ''}> 社長不在（室長が代理で承認）</label><button class="pri" data-flow="send" ${its.length ? '' : 'disabled'}>確認に回す</button>`;
+    else if (st.Status !== 'done') h += `<span class="small muted">${STEPS.find(s => s[0] === st.Status)[1]}中</span><button data-flow="pull">引き戻す</button>`;
+    else h += `<span class="tag t-ok">承認済</span><button data-tab="zengin">全銀データへ</button>`;
+  } else {
+    const act = actingRole(ym);
+    if (act) {
+      const ck = st.Checks[act] || {}, ok = its.filter(i => ck[i.id] === 'ok').length, hold = its.filter(i => ck[i.id] === 'hold').length, rest = its.length - ok;
+      h += `<span class="small">確認 ${ok}／${its.length}${hold ? `（保留 ${hold}）` : ''}</span><button data-flow="okall">残りをすべて OK</button><button data-flow="back">差し戻す</button><button class="pri" data-flow="approve" ${rest ? 'disabled' : ''}>${act === 'shacho' && ROLE === 'shitsucho' ? '社長の代理で承認する' : '承認する'}</button>${rest ? `<span class="small" style="color:var(--warn)">あと ${rest}件</span>` : ''}`;
+    } else h += `<span class="small muted">${st.Status === 'done' ? '承認済み' : st.Status === 'draft' ? '登録中' : STEPS.find(s => s[0] === st.Status)[1] + '待ち'}</span>`;
+  }
+  if (st.Log.length) h += `<span class="small muted" title="${esc(st.Log.map(l => `${l.at} ${l.who} ${l.text}`).join('\n'))}">履歴 ${st.Log.length}</span>`;
+  $('#bar').innerHTML = h;
+}
+
+// ---------- 操作 ----------
+const myName = () => Object.entries(R.people.names).find(([k]) => k.toLowerCase().split('@')[0] === ME)?.[1] || acct?.name || ME;
+async function notify(to, text, ym) { if (!to) return; await addItem('KH_Notify', { Title: text.slice(0, 250), ToUpn: to, Link: `${R.appUrl}?ym=${ym}`, YM: ym }); }
+async function flow(act) {
+  const ym = S.ym, st = settle(ym), lab = `${R.company} ${ymLabel(ym)}末の支払`, amt = yen(totals(ym).all) + '円', P = R.people;
+  const log = text => st.Log.push({ at: now(), who: myName(), text });
+  if (act === 'send') {
+    st.SkipShitsucho = $('#skipS').checked; st.ShachoAbsent = $('#absC').checked;
+    if (st.SkipShitsucho && st.ShachoAbsent) return snack('室長と社長が両方不在のときは回せません', 1);
+    const v = payments(ym).filter(p => p.varies); if (v.length && !confirm(`「金額を入れる」が ${v.length}件残っています（${v.map(p => p.payee).join('・')}）。このまま回しますか`)) return;
+    st.Checks = { shitsucho: {}, shacho: {} }; st.Status = st.SkipShitsucho ? 'shacho' : 'shitsucho'; st.Hash = await hashOf(ym); st.Total = totals(ym).all;
+    log('確認に回す' + (st.SkipShitsucho ? '（室長不在のため省く）' : '') + (st.ShachoAbsent ? '（社長不在：室長が代理）' : ''));
+    await saveSettle(ym);
+    if (st.SkipShitsucho) await notify(P.shacho, `【確認のお願い】${lab}（${amt}）の確認をお願いします。（室長不在のため室長の確認を省いています）`, ym);
+    else await notify(P.shitsucho, `【確認のお願い】${lab}（${amt}）の確認をお願いします。${st.ShachoAbsent ? '（社長不在のため、続けて社長の代理で承認をお願いします）' : ''}`, ym);
+    snack('確認に回しました（Teams で案内）');
+  } else if (act === 'pull') { if (!confirm('引き戻して登録中に戻しますか（確認の OK は消えます）')) return; st.Status = 'draft'; st.Checks = { shitsucho: {}, shacho: {} }; log('引き戻す'); await saveSettle(ym); }
+  else if (act === 'okall') { const a = actingRole(ym), ck = st.Checks[a] ||= {}; itemsOf(ym).filter(needsOk).forEach(i => { if (!ck[i.id]) ck[i.id] = 'ok'; }); await saveSettle(ym); }
+  else if (act === 'back') { const why = prompt('差し戻す理由'); if (!why) return; st.Status = 'draft'; log('差し戻し：' + why); await saveSettle(ym); for (const u of P.register) await notify(u, `【差し戻し】${lab}：${why}`, ym); }
+  else if (act === 'approve') {
+    const a = actingRole(ym);
+    if (a === 'shitsucho') {
+      log('室長 承認'); st.Status = 'shacho';
+      if (st.ShachoAbsent) { st.Checks.shacho = { ...st.Checks.shitsucho }; await saveSettle(ym); snack('続けて社長の代理で承認してください'); }
+      else { await saveSettle(ym); await notify(P.shacho, `【確認のお願い】${lab}（${amt}）。室長の確認が済みました。確認をお願いします。`, ym); snack('承認しました（社長へ Teams で案内）'); }
+    } else {
+      st.Status = 'done'; log(ROLE === 'shacho' ? '社長 承認' : '室長が社長の代理で承認'); await saveSettle(ym);
+      for (const u of P.register) await notify(u, `【承認済】${lab}（${amt}）が承認されました。全銀データを作れます。`, ym);
+      snack('承認しました');
+    }
+  }
+  render();
+}
+async function mark(v) { const ym = S.ym, a = actingRole(ym), its = itemsOf(ym), st = settle(ym); (st.Checks[a] ||= {})[cur] = v; if (v === 'ok') { const nx = its.slice(its.findIndex(i => i.id === cur) + 1).concat(its).find(i => needsOk(i) && st.Checks[a][i.id] !== 'ok'); if (nx) cur = nx.id; } render(); await saveSettle(ym); }
+
+function payFields(q) { return { YM: q.ym, SortNo: q.order || 0, Section: q.sec, Kamoku: q.kamoku, Payee: q.payee, Memo: q.memo, Seikyu: q.seikyu || (q.kakutei + q.tax), Kakutei: q.kakutei, Tax: q.tax, Gensen: q.gensen, Fee: q.fee, Pay: q.pay, Method: q.method, DueDate: q.due || '', Note: q.note || '', Source: q.source || '都度', RecurringId: q.recurringId || '', BankKey: q.bankKey || '', Varies: !!q.varies, PdfPath: q.pdf || '' }; }
+function editDialog(p, from) {
+  const ym = S.ym, isNew = !p?.id; p = { sec: 'other', kamoku: '', payee: '', memo: '', kakutei: 0, tax: 0, gensen: 0, fee: 0, method: 'furikomi', due: '', bankKey: '', note: '', ...(p || {}) };
+  const kms = [...new Set(DB.payments.map(q => q.kamoku).filter(Boolean))].sort(), pns = [...new Set([...DB.payees.map(x => x.Title), ...DB.payments.map(q => q.payee)])].sort();
+  const d = $('#dlg');
+  d.innerHTML = `<form class="dlg" method="dialog"><h3>${isNew ? '都度の支払を登録' : '支払を直す'}</h3><div class="body">
+  <label>支払先</label><input name="payee" value="${esc(p.payee)}" list="pns" required><datalist id="pns">${pns.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+  <label>区分（科目）</label><input name="kamoku" value="${esc(p.kamoku)}" list="kms" required><datalist id="kms">${kms.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+  <label>摘要</label><input name="memo" value="${esc(p.memo)}">
+  <label>確定高（税抜）</label><input name="kakutei" type="number" value="${p.kakutei}">
+  <label>消費税</label><input name="tax" type="number" value="${p.tax}">
+  <label>源泉税</label><input name="gensen" type="number" value="${p.gensen}">
+  <label>手数料（先方負担）</label><input name="fee" type="number" value="${p.fee}">
+  <label>支払高</label><b id="payv"></b>
+  <label>方法</label><select name="method">${Object.entries(R.methods).filter(([k]) => k !== 'salary').map(([k, v]) => `<option value="${k}" ${k === p.method ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+  <label>期日・引落日</label><input name="due" type="date" value="${esc(p.due)}">
+  <label>通帳の名前</label><input name="bankKey" value="${esc(p.bankKey)}" placeholder="口座振替・納付の突合（例 ｿﾆ-ｾｲﾒｲ）">
+  <label>段</label><select name="sec">${Object.entries(R.sections).map(([k, v]) => `<option value="${k}" ${k === p.sec ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+  <label>備考</label><input name="note" value="${esc(p.note)}">
+  <label>請求書</label><span>${p.pdf ? `<a href="#" data-pdf="${esc(p.pdf)}">📎 開く</a> ` : ''}<input type="file" name="pdf" accept="application/pdf,image/*"></span>
+  ${isNew ? '<label>毎月定額</label><label><input type="checkbox" name="rec"> 来月から毎月定額にも入れる</label>' : ''}
+  </div><div class="foot">${!isNew ? '<button value="del" formnovalidate>この月から外す</button>' : ''}<span style="flex:1"></span><button value="cancel" formnovalidate>やめる</button><button class="pri" value="save">保存</button></div></form>`;
+  const f = d.querySelector('form'), calc = () => { const v = n => +f[n].value || 0; d.querySelector('#payv').textContent = yen(v('kakutei') + v('tax') - v('gensen') - v('fee')) + ' 円'; };
+  f.addEventListener('input', calc); calc();
+  d.onclose = async () => {
+    const v = d.returnValue;
+    try {
+      if (v === 'del') { if (!confirm(`${p.payee} をこの月から外しますか`)) return; await delItem('KH_Payment', p.id); DB.payments = DB.payments.filter(x => x.id !== p.id); render(); return; }
+      if (v !== 'save') return;
+      const gv = n => f[n].value, q = { ...p, ym, payee: gv('payee').trim(), kamoku: gv('kamoku').trim(), memo: gv('memo'), kakutei: +gv('kakutei') || 0, tax: +gv('tax') || 0, gensen: +gv('gensen') || 0, fee: +gv('fee') || 0, method: gv('method'), due: gv('due'), bankKey: gv('bankKey'), sec: gv('sec'), note: gv('note'), varies: false };
+      q.pay = q.kakutei + q.tax - q.gensen - q.fee;
+      const file = f.pdf.files[0]; if (file) { const path = `/KH/${ym}/${Date.now()}_${file.name.replace(/[\\/:*?"<>|#%]/g, '_')}`; await putFile(path, file); q.pdf = path; }
+      if (isNew) { q.source = from || '都度'; q.order = 900 + payments(ym).length; const it = await addItem('KH_Payment', payFields(q)); DB.payments.push({ ...q, id: it.id }); }
+      else { await setItem('KH_Payment', p.id, payFields(q)); Object.assign(DB.payments.find(x => x.id === p.id), q); }
+      if (isNew && f.rec?.checked) { await addItem('KH_Recurring', { Title: q.payee, Payee: q.payee, Kamoku: q.kamoku, Section: q.sec, MemoTpl: q.memo, Kakutei: q.kakutei, Tax: q.tax, Gensen: q.gensen, Fee: q.fee, Method: q.method, StartYM: addMonth(ym, 1), Active: true, SortNo: 900 }); DB.recurring = (await items('KH_Recurring')).map(x => ({ id: x.id, ...x.fields })); }
+      snack('保存しました'); render();
+    } catch (e) { snack(e.message, 1); }
+  };
+  d.showModal();
+}
+async function newMonth() {
+  const yms = allYms(), ym = yms.length ? addMonth(yms.at(-1), 1) : thisYm(), days = daysIn(ym);
+  const recs = DB.recurring.filter(x => x.Active !== false && (!x.StartYM || x.StartYM <= ym) && (!x.EndYM || x.EndYM >= ym)).sort((a, b) => (a.SortNo || 0) - (b.SortNo || 0));
+  if (!confirm(`${ymLabel(ym)}を作ります。毎月定額 ${recs.length}件を並べます（利息は ${days}日で計算）。`)) { render(); return; }
+  const pm = String(+addMonth(ym, -1).slice(5)), cm = String(+ym.slice(5));
+  try {
+    let i = 0;
+    for (const x of recs) {
+      const no = x.StartNo ? x.StartNo + monthsBetween(x.StartYM, ym) : '';
+      const memo = String(x.MemoTpl || '').replace(/\{前月\}/g, pm).replace(/\{当月\}/g, cm).replace(/\{回\}/g, no).replace(/\{総回数\}/g, x.TotalNo || '');
+      let kakutei = x.Kakutei || 0, tax = x.Tax || 0;
+      if (x.Calc === 'interest') { kakutei = sum(DB.loans.filter(l => l.Active !== false && (!l.EndYM || l.EndYM >= ym)).map(l => Math.floor(l.Principal * l.Rate * days / R.interest.basis))); tax = 0; }
+      const q = { ym, order: ++i, sec: x.Section || 'other', kamoku: x.Kamoku, payee: x.Payee, memo, kakutei, tax, gensen: x.Gensen || 0, fee: x.Fee || 0, method: x.Method, due: x.DueDay ? `${ym}-${String(Math.min(x.DueDay, days)).padStart(2, '0')}` : '', note: x.Note || '', source: x.Calc === 'interest' ? '利息' : '定額', recurringId: String(x.id), bankKey: payeeOf(x.Payee)?.BankKey || '', varies: !!x.Varies };
+      q.pay = q.kakutei + q.tax - q.gensen - q.fee;
+      const it = await addItem('KH_Payment', payFields(q)); DB.payments.push({ ...q, id: it.id });
+    }
+    const st = settle(ym); st.Log.push({ at: now(), who: myName(), text: `${ymLabel(ym)}を作る（毎月定額 ${recs.length}件・利息 ${days}日）` }); await saveSettle(ym);
+    S.ym = ym; S.tab = 'list'; snack(`${ymLabel(ym)}を作りました`); render();
+  } catch (e) { snack(e.message, 1); render(); }
+}
+
+// 入出金明細（全銀協 入出金取引明細・種別03、Shift-JIS）
+function parseBankCsv(text) {
+  const out = [], wareki = s => /^(\d{2})(\d{2})(\d{2})$/.test(s) ? `${2018 + +RegExp.$1}-${RegExp.$2}-${RegExp.$3}` : '';
+  for (const line of text.split(/\r?\n/)) {
+    const c = [...line.matchAll(/("([^"]*)"|[^,]*)(,|$)/g)].map(m => m[2] ?? m[1]); if (c[0] !== '2') continue;
+    const date = wareki(c[2]); if (!date) continue;
+    out.push({ id: `${c[2]}-${c[1]}`, date, ym: date.slice(0, 7), io: c[4] === '1' ? 'in' : 'out', kind: c[5], amount: +c[6] || 0, who: (c[14] || '').trim(), bankName: c[15] || '', desc: (c[17] || '').trim() });
+  }
+  return out;
+}
+async function importBank(files) {
+  let add = 0, skip = 0;
+  try {
+    for (const file of files) {
+      const buf = await file.arrayBuffer(), rows = parseBankCsv(new TextDecoder('shift_jis').decode(buf));
+      if (!rows.length) { snack(`${file.name}：入出金明細の形ではありません`, 1); continue; }
+      await putFile(`/KH/入出金明細/${rows[0].date}_${rows.at(-1).date}_${file.name}`, new Blob([buf], { type: 'text/csv' }));
+      const have = new Set(DB.bank.map(b => b.id));
+      for (const r of rows) { if (have.has(r.id)) { skip++; continue; } const it = await addItem('KH_BankTxn', { Title: r.id, YM: r.ym, TxnDate: r.date, IO: r.io, Kind: r.kind, Amount: r.amount, Who: r.who, BankName: r.bankName, Descr: r.desc, SrcFile: file.name }); DB.bank.push({ ...r, sid: it.id, mt: '', ml: '', mp: '' }); have.add(r.id); add++; }
+    }
+    snack(`入出金明細：${add}件を取り込み（${skip}件は取り込み済み）`); render();
+  } catch (e) { snack(e.message, 1); }
+}
+async function setMatch(id, m) { const b = DB.bank.find(x => x.id === id); await setItem('KH_BankTxn', b.sid, { MatchType: m?.type || null, MatchLabel: m?.label || '', MatchPay: m?.pay || '' }); Object.assign(b, { mt: m?.type || '', ml: m?.label || '', mp: m?.pay || '' }); render(); }
+
+// 給与支給控除一覧表（給与ソフトの Excel。行は項目名で引く）
+const PL = { '課税支給合計': 'taxable', '立替経費': 'tatekae', '支給合計': 'gross', '社保控除合計': 'shaho', '所得税': 'shotoku', '住民税': 'jumin', '控除合計': 'deduct', '差引支給額': 'net', '振込支給額': 'bank' };
+async function importPayroll(file) {
+  try {
+    const wb = XLSX.read(await file.arrayBuffer()), a = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+    const ymM = String(a[0]?.[0] || '').match(/(\d{4})年(\d{1,2})月分/); if (!ymM) throw new Error('「YYYY年MM月分」が見つかりません（給与支給控除一覧表？）');
+    const ym = `${ymM[1]}-${ymM[2].padStart(2, '0')}`, pd = a.flat().map(String).join(' ').match(/支給日：(\d{1,2})\/(\d{1,2})/);
+    const ri = a.findIndex(r => /社\s*員/.test(String(r[0]))); if (ri < 0) throw new Error('社員の行が見つかりません');
+    const cols = a[ri].map((v, i) => /^\d{6}$/.test(String(v)) ? i : -1).filter(i => i > 0);
+    const people = cols.map(i => ({ code: String(a[ri][i]), name: String(a[ri + 1][i]).replace(/　/g, ' ') })), total = {};
+    for (const r of a) { const k = PL[String(r[0]).trim()]; if (!k) continue; cols.forEach((i, j) => people[j][k] = Math.floor(+r[i] || 0)); total[k] = sum(people.map(p => p[k])); }
+    if (!total.bank) throw new Error('振込支給額が読めません');
+    const payDate = pd ? `${ymM[1]}-${pd[1].padStart(2, '0')}-${pd[2].padStart(2, '0')}` : '';
+    if (DB.payroll[ym] && !confirm(`${ymLabel(ym)}の給与はもうあります。取り込み直しますか`)) return;
+    await putFile(`/KH/${ym}/給与_${file.name}`, file);
+    const f = { Title: ym, PayDate: payDate, FileName: file.name, BankTotal: total.bank, Tatekae: total.tatekae || 0, Data: JSON.stringify({ people, total }) };
+    if (DB.payroll[ym]) await setItem('KH_Payroll', DB.payroll[ym].id, f); else f.id = (await addItem('KH_Payroll', f)).id;
+    DB.payroll[ym] = { id: DB.payroll[ym]?.id || f.id, payDate, file: file.name, people, total };
+    snack(`${ymLabel(ym)}の給与：${people.length}名・振込 ${yen(total.bank)} 円`); S.ym = ym; render();
+  } catch (e) { snack('給与の取り込み：' + e.message, 1); }
+}
+async function makeZengin() {
+  const ym = S.ym, st = settle(ym), date = $('#zdate').value;
+  if (st.Status !== 'done') return;
+  if (st.Hash && st.Hash !== await hashOf(ym)) return snack('承認した後に支払先・金額・口座が変わっています。引き戻して回し直してください', 1);
+  const z = zenginFile(ym, date), a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([z.bytes], { type: 'application/octet-stream' })); a.download = `hanaoka_sogo_${date.replace(/-/g, '')}.txt`; a.click();
+  st.ZenginAt = now(); st.ZenginBy = myName(); st.Log.push({ at: st.ZenginAt, who: myName(), text: `全銀データを作る（${date}・${transfers(ym).length}件）` }); await saveSettle(ym);
+  render(); snack('全銀データを作りました。Web21 の「外部ファイル送信」で送ってください');
+}
+async function openPdf(path) { try { const m = await g('GET', `/sites/${SITE}/drive/root:${encodeURI(path)}?$select=webUrl`); window.open(m.webUrl, '_blank'); } catch (e) { snack(e.message, 1); } }
+function payeeDialog(p) {
+  const isNew = !p; p ||= { Title: '', NameKana: '', BankCode: '', BankKana: '', BranchCode: '', BranchKana: '', AcctType: '1', AcctNo: '', FeeBy: '当方', BankKey: '', Active: true };
+  const d = $('#dlg'); const fl = [['Title', '支払先'], ['NameKana', '受取人名カナ（半角）'], ['BankCode', '銀行コード'], ['BankKana', '銀行名カナ'], ['BranchCode', '支店コード'], ['BranchKana', '支店名カナ'], ['AcctNo', '口座番号（7桁）'], ['BankKey', '通帳の名前（突合）']];
+  d.innerHTML = `<form class="dlg" method="dialog"><h3>${isNew ? '支払先を足す' : '支払先を直す'}</h3><div class="body">${fl.map(([k, l]) => `<label>${l}</label><input name="${k}" value="${esc(p[k] || '')}">`).join('')}<label>預金種目</label><select name="AcctType">${[['1', '普通'], ['2', '当座'], ['4', '貯蓄']].map(([k, v]) => `<option value="${k}" ${String(p.AcctType) === k ? 'selected' : ''}>${v}</option>`).join('')}</select><label>手数料</label><select name="FeeBy">${['当方', '先方'].map(v => `<option ${p.FeeBy === v ? 'selected' : ''}>${v}</option>`).join('')}</select><label>使う</label><label><input type="checkbox" name="Active" ${p.Active !== false ? 'checked' : ''}> 使う</label></div><div class="foot"><span style="flex:1"></span><button value="cancel" formnovalidate>やめる</button><button class="pri" value="save">保存</button></div></form>`;
+  d.onclose = async () => { if (d.returnValue !== 'save') return; const f = d.querySelector('form'), v = {}; fl.forEach(([k]) => v[k] = f[k].value.trim()); v.AcctType = f.AcctType.value; v.FeeBy = f.FeeBy.value; v.Active = f.Active.checked;
+    if (v.AcctNo && !/^\d{7}$/.test(v.AcctNo)) return snack('口座番号は7桁の数字', 1);
+    if (/[^\x20-\x7E｡-ﾟ]/.test(v.NameKana + v.BankKana + v.BranchKana)) return snack('カナは半角カナで入れてください（全銀データのため）', 1);
+    try { if (isNew) await addItem('KH_Payee', v); else await setItem('KH_Payee', p.id, v); DB.payees = (await items('KH_Payee')).map(x => ({ id: x.id, ...x.fields })); render(); } catch (e) { snack(e.message, 1); } };
+  d.showModal();
+}
+function recDialog(x) {
+  const isNew = !x; x ||= { Payee: '', Kamoku: '', Section: 'other', MemoTpl: '', Kakutei: 0, Tax: 0, Gensen: 0, Fee: 0, Method: 'furikomi', DueDay: '', Varies: false, StartYM: addMonth(S.ym, 1), EndYM: '', StartNo: '', TotalNo: '', SortNo: 900, Active: true, Note: '' };
+  const d = $('#dlg'), T = [['Payee', '支払先'], ['Kamoku', '区分（科目）'], ['MemoTpl', '摘要のひな形'], ['StartYM', '開始年月（YYYY-MM）'], ['EndYM', '終了年月'], ['Note', '備考']], N = [['Kakutei', '確定高'], ['Tax', '消費税'], ['Gensen', '源泉税'], ['Fee', '手数料（先方負担）'], ['DueDay', '引落日'], ['StartNo', '開始の回'], ['TotalNo', '総回数'], ['SortNo', '並び順']];
+  d.innerHTML = `<form class="dlg" method="dialog"><h3>${isNew ? '毎月定額を足す' : '毎月定額を直す'}${x.Calc === 'interest' ? '（利息は借入から計算）' : ''}</h3><div class="body">${T.map(([k, l]) => `<label>${l}</label><input name="${k}" value="${esc(x[k] ?? '')}">`).join('')}${N.map(([k, l]) => `<label>${l}</label><input name="${k}" type="number" value="${esc(x[k] ?? '')}">`).join('')}<label>方法</label><select name="Method">${Object.entries(R.methods).filter(([k]) => k !== 'salary').map(([k, v]) => `<option value="${k}" ${k === x.Method ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select><label>段</label><select name="Section">${Object.entries(R.sections).map(([k, v]) => `<option value="${k}" ${k === x.Section ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select><label>毎月額が変わる</label><label><input type="checkbox" name="Varies" ${x.Varies ? 'checked' : ''}> 毎月額を入れる</label><label>使う</label><label><input type="checkbox" name="Active" ${x.Active !== false ? 'checked' : ''}> 使う</label></div><div class="foot"><span style="flex:1"></span><button value="cancel" formnovalidate>やめる</button><button class="pri" value="save">保存</button></div></form>`;
+  d.onclose = async () => { if (d.returnValue !== 'save') return; const f = d.querySelector('form'), v = {}; T.forEach(([k]) => v[k] = f[k].value.trim()); N.forEach(([k]) => v[k] = f[k].value === '' ? null : +f[k].value); v.Method = f.Method.value; v.Section = f.Section.value; v.Varies = f.Varies.checked; v.Active = f.Active.checked; v.Title = v.Payee;
+    try { if (isNew) await addItem('KH_Recurring', v); else await setItem('KH_Recurring', x.id, v); DB.recurring = (await items('KH_Recurring')).map(y => ({ id: y.id, ...y.fields })); render(); } catch (e) { snack(e.message, 1); } };
+  d.showModal();
+}
+
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-tab],[data-open],[data-act],[data-cur],[data-step],[data-mark],[data-cmt],[data-flow],[data-addbank],[data-ignore],[data-unmatch],[data-zengin],[data-flag],[data-pdf],[data-payee],[data-rec]');
+  if (!t) return; const ym = S.ym;
+  try {
+    if (t.dataset.tab) S.tab = t.dataset.tab;
+    else if (t.dataset.open) { const it = itemsOf(ym).find(i => i.id === t.dataset.open); if (editable(ym) && it?.kind === 'pay') return editDialog(it.p); cur = t.dataset.open; S.tab = 'review'; }
+    else if (t.dataset.act === 'add') return editDialog(null);
+    else if (t.dataset.cur) cur = t.dataset.cur;
+    else if (t.dataset.step) { const its = itemsOf(ym); cur = its[its.findIndex(i => i.id === cur) + +t.dataset.step]?.id || cur; }
+    else if (t.dataset.mark) return mark(t.dataset.mark);
+    else if (t.dataset.cmt) { const s = prompt('コメント'); if (!s) return; const st = settle(ym); (st.Comments[cur] ||= []).push({ who: myName(), at: now(), text: s }); await saveSettle(ym); }
+    else if (t.dataset.flow) return flow(t.dataset.flow);
+    else if (t.dataset.zengin) return makeZengin();
+    else if (t.dataset.addbank) { const b = DB.bank.find(x => x.id === t.dataset.addbank); return editDialog({ payee: b.who || b.desc, memo: `${b.date} 引落`, kakutei: b.amount, method: /^PE /.test(b.who) ? 'nouzei' : 'jidou', due: b.date, bankKey: (b.desc.replace(/^ｺｳｻﾞﾌﾘｶｴ\s*/, '') || b.who).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }, '通帳'); }
+    else if (t.dataset.ignore) { const why = prompt('対象外にする理由（例：資金移動）', ''); if (why == null) return; return setMatch(t.dataset.ignore, { type: 'ignore', label: '対象外：' + why }); }
+    else if (t.dataset.unmatch) { e.preventDefault(); return setMatch(t.dataset.unmatch, null); }
+    else if (t.dataset.pdf) { e.preventDefault(); return openPdf(t.dataset.pdf); }
+    else if ('payee' in t.dataset) return payeeDialog(DB.payees.find(p => String(p.id) === t.dataset.payee));
+    else if ('rec' in t.dataset) return recDialog(DB.recurring.find(x => String(x.id) === t.dataset.rec));
+    else if ('flag' in t.dataset) { if (t.dataset.ftab) S.tab = t.dataset.ftab; else if (t.dataset.flag) { cur = t.dataset.flag; S.tab = 'review'; } }
+    render();
+  } catch (err) { snack(err.message, 1); }
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'ym') { if (e.target.value === '__new') return newMonth(); S.ym = e.target.value; render(); }
+  else if (e.target.dataset.file === 'bank') importBank([...e.target.files]);
+  else if (e.target.dataset.file === 'payroll' && e.target.files[0]) importPayroll(e.target.files[0]);
+});
+document.addEventListener('keydown', e => {
+  if (S.tab !== 'review' || e.target.closest('input,textarea,select,dialog')) return;
+  if (e.key === 'Enter' && document.querySelector('[data-mark=ok]')) { e.preventDefault(); mark('ok'); }
+  else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const its = itemsOf(S.ym); cur = its[its.findIndex(i => i.id === cur) + (e.key === 'ArrowRight' ? 1 : -1)]?.id || cur; render(); }
+  else if (e.key.toLowerCase() === 'h' && document.querySelector('[data-mark=hold]')) mark('hold');
+});
+boot();
+</script>
+</body>
+</html>
