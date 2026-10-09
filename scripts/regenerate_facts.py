@@ -25,6 +25,10 @@ GitHub Actions から毎日実行される想定。
   AZURE_TENANT_ID    - テナントID
   AZURE_CLIENT_ID    - アプリクライアントID
   AZURE_CLIENT_SECRET - クライアントシークレット
+  SHARED_MASTERS_DIR - (任意) OneDrive同期済みの SharedMasters フォルダのパス。
+                       設定するとGraph APIを使わず、このフォルダのCSVを直接読み、
+                       JSONも同じフォルダに書き出す(アップロードはOneDrive同期に任せる)。
+                       この場合 AZURE_* は不要。RPA用PCの監視スクリプトから使う。
 """
 import os
 import sys
@@ -37,9 +41,13 @@ import requests
 from datetime import datetime, timezone, timedelta
 
 # ---------- 設定 ----------
-TENANT_ID = os.environ['AZURE_TENANT_ID']
-CLIENT_ID = os.environ['AZURE_CLIENT_ID']
-CLIENT_SECRET = os.environ['AZURE_CLIENT_SECRET']
+LOCAL_DIR = os.environ.get('SHARED_MASTERS_DIR') or None
+if LOCAL_DIR:
+    TENANT_ID = CLIENT_ID = CLIENT_SECRET = None
+else:
+    TENANT_ID = os.environ['AZURE_TENANT_ID']
+    CLIENT_ID = os.environ['AZURE_CLIENT_ID']
+    CLIENT_SECRET = os.environ['AZURE_CLIENT_SECRET']
 
 SITE_ID = "hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23"
 DRIVE_ID = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8"
@@ -102,20 +110,23 @@ def graph_get(token, path, retries=3):
     last.raise_for_status()
 
 
-def download_json(token, filename):
-    print(f"  📥 {filename} を取得中...", flush=True)
+def fetch_bytes(token, filename):
+    if LOCAL_DIR:
+        with open(os.path.join(LOCAL_DIR, filename), 'rb') as f:
+            return f.read()
     enc_name = requests.utils.quote(filename, safe='')
     url = f"/drives/{DRIVE_ID}/root:/{enc_name}:/content"
-    r = graph_get(token, url)
-    return r.json()
+    return graph_get(token, url).content
+
+
+def download_json(token, filename):
+    print(f"  📥 {filename} を取得中...", flush=True)
+    return json.loads(fetch_bytes(token, filename))
 
 
 def download_csv(token, filename):
     print(f"  📥 {filename} を取得中...", flush=True)
-    enc_name = requests.utils.quote(filename, safe='')
-    url = f"/drives/{DRIVE_ID}/root:/{enc_name}:/content"
-    r = graph_get(token, url)
-    raw = r.content
+    raw = fetch_bytes(token, filename)
     text = None
     tried = []
     # Phase 1: 厳密デコード ＋ 文字化け率0.5%以下なら採用
@@ -171,9 +182,18 @@ def download_csv(token, filename):
 
 
 def upload_json(token, filename, data):
+    body = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if LOCAL_DIR:
+        print(f"  💾 {filename} を書き出し中... ({len(body) / 1024 / 1024:.2f} MB)", flush=True)
+        # 書きかけのファイルをOneDriveが同期しないよう、一時ファイルに書いてから置き換える
+        path = os.path.join(LOCAL_DIR, filename)
+        tmp = path + '.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(body)
+        os.replace(tmp, path)
+        return None
     enc_name = requests.utils.quote(filename, safe='')
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{enc_name}:/content"
-    body = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     print(f"  📤 {filename} をアップロード中... ({len(body) / 1024 / 1024:.2f} MB)", flush=True)
     r = requests.put(url, headers={
         'Authorization': f'Bearer {token}',
@@ -890,8 +910,12 @@ def main():
     jst = timezone(timedelta(hours=9))
     print(f"🚀 開始 [{datetime.now(jst).strftime('%Y-%m-%d %H:%M:%S JST')}]", flush=True)
 
-    print("\n🔑 アクセストークン取得中...", flush=True)
-    token = get_token()
+    if LOCAL_DIR:
+        print(f"\n📁 ローカルの SharedMasters を使用: {LOCAL_DIR}", flush=True)
+        token = None
+    else:
+        print("\n🔑 アクセストークン取得中...", flush=True)
+        token = get_token()
 
     print("\n📥 履歴データ取得...", flush=True)
     history = download_json(token, HISTORY_JSON)

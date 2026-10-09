@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   営業日報ダッシュボードの「🔄 再集計をリクエスト」ボタンを監視し、
   SMILE再出力 → dashboard_facts.json再生成 を自動実行する常駐スクリプト。
@@ -31,10 +31,9 @@
      複数PC・複数環境で使われうるため、特定のPCでしか通用しないパスを
      スクリプトに直接書き込まない。PCごとに違う値を環境変数側で持たせる。
 
-  3. 環境変数 AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET を
-     同じくこのPCのユーザー環境変数として設定しておく。
-     GitHub Actionsのsecretsと同じ値でも動くが、このPC用に権限を
-     絞った別のアプリ登録を発行するほうが安全。
+  3. regenerate_facts.py は SHARED_MASTERS_DIR=$SharedMastersPath で実行し、
+     同期フォルダのCSVを直接読んでJSONも同じフォルダに書き出す
+     (アップロードはOneDrive同期に任せる)。そのため AZURE_* の環境変数は不要。
 
   4. python (3.11目安) と pip install requests が
      このPCで実行できる状態になっていること。
@@ -75,6 +74,9 @@ function Invoke-RegenerateFacts {
   $scriptPath = Join-Path $WorkDir 'regenerate_facts.py'
   # 常に最新版を取得してから実行する(手元に古いコピーを置いて動かさない)
   Invoke-WebRequest -Uri "$RepoRawBase/scripts/regenerate_facts.py" -OutFile $scriptPath -UseBasicParsing
+  # Graph APIではなく、このPCに同期済みの SharedMasters を直接読み書きする
+  # (CSVのクラウド同期待ちが不要になり、AZURE_* の設定もいらない)
+  $env:SHARED_MASTERS_DIR = $SharedMastersPath
   python $scriptPath
   if ($LASTEXITCODE -ne 0) { throw "regenerate_facts.py が終了コード $LASTEXITCODE で失敗しました" }
 }

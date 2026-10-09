@@ -26,10 +26,14 @@
 
 ## まだ無いもの（このPCで作る）
 
-1. **SMILEから2帳票を出力するRPAフロー**（Power Automate Desktop）
-   - 必要な帳票は2つだけ：`受注明細出力.csv`（当期の受注）と `売上明細出力.csv`（当期の売上）
+1. **SMILEから5帳票を出力するRPAフロー**（Power Automate Desktop）
+   - 出力する帳票は次の5つ
+     - `受注明細出力.csv`（当期の受注）
+     - `売上明細出力.csv`（当期の売上）
+     - `目標_部門目標出力.csv` / `目標_担当者目標出力.csv`（`regenerate_facts.py` が月次目標として使う）
+     - `目標_得意先目標出力.csv`（`regenerate_facts.py` では未使用だが同じフローで出力する）
    - 保存先は SharedMasters 直下（OneDrive同期フォルダ）。ファイル名は上記のまま固定
-   - ほかのCSV（`目標_*`、`daily_reports.csv`、`web_tracking_*`）はSMILE出力ではないので触らない
+   - ほかのCSV（`daily_reports.csv`、`web_tracking_*` など）はSMILE出力ではないので触らない
 2. このPCへの監視スクリプトの常駐設定
 3. 実機での通し確認
 
@@ -43,21 +47,23 @@
 
 ### 2. 環境変数（ユーザー環境変数。設定後は再ログオン）
 ```powershell
-setx AZURE_TENANT_ID "..."
-setx AZURE_CLIENT_ID "..."
-setx AZURE_CLIENT_SECRET "..."
 setx SMILE_EXPORT_COMMAND "...（手順3で決まったコマンド）"
 ```
-- 値は福田さんから受け取る。**チャットやリポジトリに値を貼らない・コミットしない**
-- 可能ならこのPC専用に権限を絞ったアプリ登録を別に発行する
+- `AZURE_*` は不要。監視スクリプトは `regenerate_facts.py` を `SHARED_MASTERS_DIR` 付きで実行し、
+  Graph APIを使わずに同期フォルダのCSVを直接読み、JSONも同じフォルダに書き出す（アップロードはOneDrive同期に任せる）
+- 手動で `regenerate_facts.py` を動かすときも `$env:SHARED_MASTERS_DIR = "<SharedMastersの同期パス>"` を設定して実行する
 
 ### 3. SMILE出力のRPAフロー作成
-- 福田さんが実際にSMILEで2帳票を出す手順を見せてくれるので、それをPADフローにする
+- 福田さんが実際にSMILEで5帳票を出す手順を見せてくれるので、それをPADフローにする
   （画面・メニュー・抽出条件（期間＝当期）・出力先・文字コードを確認しながら）
-- フロー内で、出力した2つのCSVを SharedMasters 直下へ**上書き保存**まで行う
+- フロー内で、出力した5つのCSVを SharedMasters 直下へ**上書き保存**まで行う
 - 完成したら、コンソールから起動できることを確認して `SMILE_EXPORT_COMMAND` に設定
   例: `"C:\Program Files (x86)\Power Automate Desktop\PAD.Console.Host.exe" -run "フロー名"`
   （正確な起動コマンドはこのPCのPADのバージョンで確認する）
+- **注意**: `ms-powerautomate:/console/flow/run?workflowName=...` のURIで起動する方法（`start` や `Start-Process`）は、
+  フローの完了を待たずにすぐ戻る。そのまま `SMILE_EXPORT_COMMAND` にすると、出力が終わる前に
+  `regenerate_facts.py` が古いCSVで集計してしまう。この場合は、フロー起動後に5つのCSVの更新・書き込み完了を
+  待ってから終了する起動用スクリプトをPC側に用意し、それを `SMILE_EXPORT_COMMAND` に設定する
 - CSVの列構成は `scripts/regenerate_facts.py` が前提にしているので、**列名・順序を変えない**
   （過去に出していた手動出力と同じ形式になっているか、既存CSVと見比べる）
 
@@ -68,7 +74,7 @@ setx SMILE_EXPORT_COMMAND "...（手順3で決まったコマンド）"
 
 ### 5. 通し確認
 - [ ] ダッシュボードで「🔄 再集計をリクエスト」→ ログに検知ログが出る
-- [ ] SMILE出力（RPA）が走り、SharedMasters の2CSVの更新日時が変わる
+- [ ] SMILE出力（RPA）が走り、SharedMasters の5CSVの更新日時が変わる
 - [ ] `regenerate_facts.py` が成功し、`dashboard_facts.json` が更新される
 - [ ] ダッシュボードを再読み込みして数字が最新になっている（`build_meta.updated_at`）
 - [ ] 失敗時（SMILE_EXPORT_COMMAND未設定・RPA失敗）にログへエラーが残り、合図ファイルが消えること
