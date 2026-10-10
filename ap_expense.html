@@ -120,7 +120,7 @@ button.lk{border:0;background:none;color:var(--pri);font-weight:700;padding:4px 
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261010"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261011"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">経費</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -485,7 +485,7 @@ function listRows(){
   if(st.q)a=a.filter(r=>(r.payee+r.title+r.code+r.invNo).includes(st.q));
   return a.sort((x,y)=>(x.round||'').localeCompare(y.round||'')||String(x.payee).localeCompare(String(y.payee),'ja'));}
 // ---- 📄 確認：一覧（自分の番・段ごと）→「1件ずつ」（左に請求書を大きく、右に 気づき・支払内容・振込先・仕訳・履歴） ----
-function drawReview(){if(st.view==='one'&&cur())drawOne();else{st.view='list';drawList();}}
+function drawReview(){if(st.view==='one'&&cur())drawOne();else{st.view='list';drawList();document.body.classList.remove('ap-lock');}}
 function drawDetail(){if(st.tab==='rev'&&st.view==='one'&&cur())drawOne();}
 function drawList(){
   const base=items.filter(r=>inMonth(r)&&inScope(r)),maxSteps=Math.max(1,...base.map(r=>r.steps.length),...['本社','工場'].map(l=>stepsOf(l).length));
@@ -539,6 +539,30 @@ function issuesOf(r){
 function whyNot(r){if(r.done)return '';if(r.reading)return 'AI が読み取り中です';if(!canAct(r))return `${stepName(r,r.step)} の番です`;
   const f=issuesOf(r).find(x=>x.sev==='fix');return f?'要修正：'+f.t:'';}
 const payDayText=h=>{if(!h.ym)return '—';const [y,m]=h.ym.split('/');return h.round==='月末'?`${y}年${+m}月末`:h.round?`${y}年${+m}月${h.round}`:`${y}年${+m}月`;};
+// ---------- 全画面（支払決済アプリと同じ。Esc で戻る）と「請求書の明細」タブ ----------
+// 請求書の明細＝AI が請求書から写した行（AP_Invoice の 請求書の明細）。税率ごとの合計を仕訳と比べる（税区分・金額の見落としに気づく）
+let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
+function setFull(v){FULLR=v;try{localStorage.setItem('ap.review.full',v?'1':'');}catch{}const c=document.querySelector('.one');if(c)c.classList.toggle('ap-full',v);document.body.classList.toggle('ap-lock',v);const b=$('oFull');if(b)b.textContent=v?'✕ 全画面をやめる':'⛶ 全画面';}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&FULLR&&document.querySelector('.one'))setFull(false);});
+function invItemsOf(r){const raw=ALL.find(a=>a.id===r.id);const j=raw?parseJ(fv(L.inv,raw.f,'請求書の明細'),null):null;return j&&Array.isArray(j.items)?j:null;}
+function itemsTabHtml(r){
+  const j=invItemsOf(r),{h,ls}=viewOf(r);
+  if(!j)return `<div class="oc"><div style="color:var(--sub)">請求書の明細はまだ読んでいません（この仕組みの前に読んだ請求書です）。</div>${canAct(r)?`<button data-reread="${r.id}" style="margin-top:8px">🤖 AI でもう一度読む（明細も読みます）</button>`:''}</div>`;
+  const inc=j.amount==='税込',it=j.items,tot=it.reduce((s,x)=>s+(+x.Amount||0),0);
+  // 税率ごと：請求書の明細（印字の額）と仕訳（明細と同じ 税抜／税込 で）
+  const rates=[...new Set(it.map(x=>x.TaxRate||'（不明）').concat(ls.map(l=>l.rate)))];
+  const byR=rates.map(k=>{const a=it.filter(x=>(x.TaxRate||'（不明）')===k).reduce((s,x)=>s+(+x.Amount||0),0),b=ls.filter(l=>l.rate===k).reduce((s,l)=>s+(inc?l.incl:l.excl),0);return {k,a:Math.round(a),b:Math.round(b)};});
+  const lsT=Math.round(ls.reduce((s,l)=>s+(inc?l.incl:l.excl),0));
+  return `<div class="oc"><div class="msum"><div><div class="l">請求書の明細（${inc?'税込':'税抜'}）</div><div class="v">${yen(tot)}</div><div class="s">${it.length}行</div></div>
+      <div><div class="l">仕訳（${inc?'税込':'税抜'}）</div><div class="v">${yen(lsT)}</div><div class="s">${ls.length}行</div></div>
+      <div class="${Math.abs(tot-lsT)<=1?'good':'bad'}"><div class="l">差（明細 − 仕訳）</div><div class="v">${(tot-lsT>0?'+':'')+yen(tot-lsT)}</div><div class="s">${inc?'':`請求書の税込 ${yen(h.amount)}`}</div></div></div>
+    <table class="mt" style="margin-bottom:10px"><tr><th>税率</th><th class="n">請求書の明細</th><th class="n">仕訳</th><th class="n">差</th></tr>
+      ${byR.map(x=>`<tr class="${Math.abs(x.a-x.b)>1?'mg ng':''}"><td>${esc(x.k)}</td><td class="n">${yen(x.a)}</td><td class="n">${yen(x.b)}</td><td class="n">${x.a-x.b?(x.a-x.b>0?'+':'')+yen(x.a-x.b):'✔'}</td></tr>`).join('')}</table>
+    <table class="mt"><tr><th>日付</th><th>伝票No</th><th>品名</th><th class="n">数量</th><th class="n">単価</th><th class="n">金額</th><th>税率</th></tr>
+      ${it.map(x=>`<tr class="ml"><td style="white-space:nowrap">${esc(x.Date||'')}</td><td>${esc(x.SlipNo||'')}</td><td>${esc(x.ItemName||'')}${x.Spec?` <span class="s">${esc(x.Spec)}</span>`:''}${x.Note?`<div class="s">${esc(x.Note)}</div>`:''}</td>
+        <td class="n">${x.Qty!=null?esc(String(x.Qty))+esc(x.Unit||''):''}</td><td class="n">${x.UnitPrice!=null?yen(x.UnitPrice):''}</td><td class="n">${yen(x.Amount)}</td><td style="font-size:11.5px">${esc(x.TaxRate||'')}</td></tr>`).join('')}
+      <tr class="mg"><td colspan="5">合計</td><td class="n">${yen(tot)}</td><td></td></tr></table></div>`;}
+
 function drawOne(){
   const r=cur(),a=listRows(),i=a.findIndex(x=>x.id===r.id),ed=canAct(r),lock=r.done?lockOf(r):'';
   const {h,ls,lsum}=viewOf(r),iss=issuesOf(r),nFix=iss.filter(x=>x.sev==='fix').length,docs=pdfPaths(r),pm=prevAmount(r),dirty=isDirty(r),why=whyNot(r);
@@ -603,16 +627,19 @@ function drawOne(){
   const toIdx=!myStepAt(r)&&myIdx(r)>r.step?myIdx(r):r.step,skipN=toIdx-r.step,lastStep=toIdx>=r.steps.length-1;
   const okLabel=(lastStep?'確認完了（確定）・次へ':'確認完了・次へ')+(skipN?`（${skipN}段飛ばす）`:'');
   const more=`<select id="dMore" title="その他の操作"><option value="">その他…</option>${ed?`<option value="hold">${r.hold?'保留を外す':'保留にする'}（H）</option>`:''}${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed?'<option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
-  $('pane').innerHTML=`<div class="one">
-    <div class="onebar"><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
+  const nIt=(invItemsOf(r)||{items:[]}).items.length;
+  $('pane').innerHTML=`<div class="one ${FULLR?'ap-full':''}">
+    <div class="onebar"><button id="oFull" title="全画面で確かめる（Esc で戻る）">${FULLR?'✕ 全画面をやめる':'⛶ 全画面'}</button><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
       <span class="stp ${r.done?'done':''}">${r.done?'✔ 確定':esc(stepName(r,r.step))}</span><span class="sp"></span>
       <div class="docs"><button id="oDocs">📎 関連書類（${docs.length}）</button><div class="docs-m" id="oDocsM" hidden>${docs.map(p=>`<button data-pdf="${esc(p)}">📄 ${esc(p.split('/').pop())}</button>`).join('')||'<div style="padding:6px 10px;color:var(--sub)">ありません</div>'}</div></div>${more}</div>
     <div class="onegrid"><div class="opdf"><div class="pdf" id="pdfv">${docs.length?'読み込み中...':'請求書の PDF がありません'}</div></div>
       <div class="oside">
+        <div class="dtabs"><button class="${st.dtab!=='items'?'on':''}" data-dt="info">内容</button><button class="${st.dtab==='items'?'on':''}" data-dt="items">請求書の明細${nIt?`（${nIt}行）`:''}</button></div>
+        ${st.dtab==='items'?itemsTabHtml(r)+'<div style="display:none">':''}
         <div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
           <div class="meta"><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span></div></div>
-        ${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
+        ${issCard}${hdrCard}${bankCard}${lnCard}${logCard}${st.dtab==='items'?'</div>':''}
       </div></div>
     <div class="onefoot"><input type="text" id="oCm" placeholder="コメントを入力（メモとして保存されます。全員に見えます）" value="${esc(cmDraft??r.note)}" ${ed||r.done?'':'disabled'}>
       <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):r.done?'':'Enter：確認完了・次へ　←→：前・次'}</span>
@@ -620,8 +647,10 @@ function drawOne(){
   wireOne(r);}
 function wireOne(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
-  on('oBack',()=>{if(isDirty(r)&&!confirm('保存していない直しがあります。捨てて一覧に戻りますか？'))return;draft=null;hdrDraft=null;cmDraft=null;st.view='list';drawReview();});
+  on('oBack',()=>{if(isDirty(r)&&!confirm('保存していない直しがあります。捨てて一覧に戻りますか？'))return;draft=null;hdrDraft=null;cmDraft=null;st.view='list';document.body.classList.remove('ap-lock');drawReview();});
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',okRow);on('oSave',async()=>{if(await saveAll(r))render();});
+  on('oFull',()=>setFull(!FULLR));document.body.classList.toggle('ap-lock',FULLR);
+  document.querySelectorAll('[data-dt]').forEach(b=>b.onclick=()=>{st.dtab=b.dataset.dt;drawOne();});
   on('oAll',()=>{st.allIss=!st.allIss;drawOne();});on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
   on('oDocs',()=>{const m=$('oDocsM');m.hidden=!m.hidden;});
   const cm=$('oCm');if(cm)cm.oninput=()=>{cmDraft=cm.value;const s=$('oSave');if(s)s.disabled=!isDirty(r);};

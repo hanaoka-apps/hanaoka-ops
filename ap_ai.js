@@ -156,6 +156,7 @@
     const doc = { v: 3, ap_code: job.apCode, invoice_id: String(job.invoiceId || ''), category: job.category || '', status: d ? (d.status === '読取失敗' ? '読取失敗' : 'AI確認済') : '読取失敗',
       pdf_files: [job.pdfName], moved: !!job.moved, new: false, location: loc, received_at: '',
       header: rec.header, lines: rec.lines, comments: rec.comments, validation: rec.validation,
+      items: d && Array.isArray(d.items) ? d.items : [], items_amount: d && d.itemsAmount || '',   // 請求書に印字された明細（受入明細・仕訳と比べる）
       extra: d ? (d.extra || []).map(x => record(x.header, x.lines, x.total, x.comments, loc)) : [],
       processed_at: new Date().toISOString(), ai: { model: r.model || '', usage: r.usage || null, via: 'claude-api' } };
     await ctx.call('PUT', `/sites/${ctx.site}/drive/root:${encodeURI(`${RES}/${job.apCode}.result.json`)}:/content`, new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' }), 'application/json');

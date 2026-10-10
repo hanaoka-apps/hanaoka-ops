@@ -88,6 +88,8 @@
           catch (e) { docs.push(`/Shared Documents${INC}/${p}`); }
         }
         if (docs.length) patch[fi('DOCコード')] = docs.join('\n');
+        // 請求書の明細（確認の全画面で受入明細・仕訳と比べる）。列が無ければ入れない
+        if (IV.fmap['請求書の明細'] && (r.items || []).length) patch[fi('請求書の明細')] = JSON.stringify({ amount: r.items_amount || '', items: r.items });
         patch.AIStatus = r.status === '読取失敗' ? '読取失敗' : 'AI確認済';
         patch.AIComment = [String(f.AIComment || '').trim()].concat(cmt).filter(Boolean).join('\n');
         await call('PATCH', `/sites/${site}/lists/${IV.id}/items/${id}/fields`, patch);

@@ -87,7 +87,7 @@ details>summary{cursor:pointer;color:var(--sub);font-size:12.5px;font-weight:600
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.vs{grid-template-columns:1fr}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261010"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261011"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">仕入（SMILE）</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -219,7 +219,7 @@ async function loadInvoices(){
     if((iv(f,'対象年月')||'')!==ym||iv(f,'アーカイブフラグ')===true)return;const code=code0;
     if(!code){INBX.push({id:String(it.id),f,payee:iv(f,'支払先名')||'',title:f.Title||'',amount:+iv(f,'金額_税込')||0,regNo:rn,doc:String(iv(f,'DOCコード')||''),ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',
       bank:{code:String(f.PayeeBankCode||''),bcode:String(f.PayeeBranchCode||''),no:String(f.PayeeAcctNo||''),name:String(f.PayeeBankName||''),holder:String(f.PayeeAcctHolder||'')}});return;}
-    (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,doc:String(iv(f,'DOCコード')||''),
+    (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,doc:String(iv(f,'DOCコード')||''),items:parseJ(iv(f,'請求書の明細'),null),
       ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||''});});
   if(INBX.length)setTimeout(()=>matchInbox(),0);}   // 受信トレイ：今月の支払先リストがあれば仕入先を当てる（リストを取り込んだ後も、ここで当たる）
 
@@ -373,6 +373,7 @@ function render(){
   $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='imp'?'on':''}" data-tab="imp">📥 取り込み${calc?'（未保存）':''}</button><button class="${st.tab==='inb'?'on':''}" data-tab="inb">📨 請求書を渡す${INBX.length?'（'+INBX.length+'）':''}</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（${ok}／${n.length}）</button></div>`
     +`<div id="pane"></div>`;
   if(st.tab==='imp')drawImport();else if(st.tab==='inb')drawInbox();else if(st.tab==='sum')drawSummary();else drawReview();
+  if(!document.querySelector('.ap-full'))document.body.classList.remove('ap-lock');
   drawApprove();}
 
 // ---- 📥 取り込み ----
@@ -493,6 +494,72 @@ function invCard(a){const p=invProgress(a),by={};p.miss.forEach(r=>(by[r.mainDep
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px">${Object.entries(by).map(([g,rs])=>`<div><div style="font-size:12px;color:var(--sub);font-weight:600">${esc(g)}（${rs.length}）</div>${rs.sort((x,y)=>(y.prevHadInv-x.prevHadInv)||(y.amount-x.amount)).slice(0,6).map(r=>`<div class="flag" data-sel="${r.code}"><span class="who">${esc(r.name)}${r.prevHadInv?' <span class="tag t-up">前月はあった</span>':''}</span><span class="amt">${yen(r.amount)}</span></div>`).join('')}${rs.length>6?`<div style="font-size:12px;color:var(--sub);padding:2px 6px">ほか ${rs.length-6}社（「確認で見る」・催促の文にはすべて入ります）</div>`:''}</div>`).join('')}</div>`
     :'<div style="color:var(--down)">✔ 払う仕入先の請求書はすべて揃っています（または請求書なしの理由があります）</div>'}</div>`;}
 
+// ---------- 明細の照合（受入明細 9521 ⇔ 請求書の明細）----------
+// 受入明細は取り込みのときに BILLS/SMILE取込/YYYY-MM/受入明細.json に残す。請求書の明細は AI が読んだもの（AP_Invoice の 請求書の明細）
+// 伝票ごとに突き合わせる：①伝票№が同じ ②金額（と日付）が同じ ③日付が同じ。残ったものは「受入だけ」「請求書だけ」
+let RCV={ym:null,rows:{}};
+async function loadRcv(){const ym=month();if(RCV.ym===ym)return RCV;RCV={ym,rows:{},loading:true};
+  try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(`/BILLS/SMILE取込/${dash(ym)}/受入明細.json`)}:/content`,null,null,true);Object.assign(RCV,JSON.parse(await b.text()));}
+  catch(e){RCV.err='この月の受入明細がまだありません（SMILE から取り込み直すと残ります）';}
+  RCV.loading=false;return RCV;}
+const rcvSrc=()=>calc&&FILES.receipts?FILES.receipts.data:RCV;
+const slipN=s=>String(s||'').normalize('NFKC').replace(/\D/g,'').replace(/^0+/,'');
+// 日付を YYYY-MM-DD に（SMILE は 20260914、請求書は 2026/9/14・26.09.14 など）
+const dN=s=>{const t=String(s||'').normalize('NFKC').trim(),m=t.match(/^(\d{4})(\d{2})(\d{2})$/)||t.match(/(\d{2,4})\D+(\d{1,2})\D+(\d{1,2})/);if(!m)return '';return `${m[1].length===2?'20'+m[1]:m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;};
+const itemsOf=x=>x&&x.items&&Array.isArray(x.items.items)?x.items.items:[];
+function matchItems(rcv,invs){
+  const gR={},gI={};let tin=null;invs.forEach(v=>{if(tin===null&&itemsOf(v).length)tin=(v.items&&v.items.amount)==='税込';});
+  // 9521 の「消費税等」の行（税抜 0）は、税抜で比べるときは除く
+  (rcv||[]).filter(x=>tin||!(+x.excl===0&&/消費税/.test(x.item||''))).forEach(x=>{const k=slipN(x.slip)||('d'+dN(x.date));const g=gR[k]=gR[k]||{slip:x.slip||'',date:dN(x.date),dept:x.dept||'',lines:[]};g.lines.push(x);});
+  invs.forEach(v=>{itemsOf(v).forEach(x=>{const k=slipN(x.SlipNo)||('d'+dN(x.Date));const g=gI[k]=gI[k]||{slip:x.SlipNo||'',date:dN(x.Date),lines:[],amt:0};g.lines.push(x);g.amt+=+x.Amount||0;});});
+  const rA=g=>Math.round(g.lines.reduce((s,x)=>s+(+x.excl||0)+(tin?(+x.tax||0):0),0));
+  const rs=Object.values(gR),used=new Set(),out=[];
+  const take=(ig,pred)=>{const r=rs.find(g=>!used.has(g)&&pred(g));if(!r)return false;used.add(r);out.push({r,i:ig});return true;};
+  const sameSlip=(a,b)=>{const s=slipN(a),t=slipN(b);return !!s&&!!t&&(s===t||(s.length>=4&&t.length>=4&&(s.endsWith(t)||t.endsWith(s))));};
+  let left=Object.values(gI).filter(ig=>!take(ig,g=>sameSlip(g.slip,ig.slip)));
+  left=left.filter(ig=>!take(ig,g=>rA(g)===Math.round(ig.amt)&&(!ig.date||!g.date||ig.date===g.date)));
+  left.forEach(ig=>{if(!(ig.date&&take(ig,g=>g.date===ig.date)))out.push({r:null,i:ig});});
+  rs.filter(g=>!used.has(g)).forEach(r=>out.push({r,i:null}));
+  out.forEach(o=>{o.ra=o.r?rA(o.r):null;o.ia=o.i?Math.round(o.i.amt):null;o.diff=o.r&&o.i?o.ia-o.ra:null;
+    o.st=!o.r?'請求書だけ':!o.i?'受入だけ':Math.abs(o.diff)<=1?'一致':'金額が違う';o.date=(o.r&&o.r.date)||(o.i&&o.i.date)||'';});
+  out.sort((a,b)=>a.date.localeCompare(b.date)||String((a.r||a.i).slip).localeCompare(String((b.r||b.i).slip)));
+  return {groups:out,tin:!!tin};}
+const MST={'一致':'ok','金額が違う':'ng','受入だけ':'warn','請求書だけ':'warn'};
+function matchHtml(r){
+  const src=rcvSrc();
+  if(src===RCV&&(RCV.ym!==month()||RCV.loading)){loadRcv().then(()=>{if(st.sel===r.code&&st.dtab==='match')drawDetail();});return '<div style="padding:20px;color:var(--sub)">受入明細を読み込んでいます…</div>';}
+  const rv=src.rows&&src.rows[r.code]||null,invs=r.invoices.filter(x=>itemsOf(x).length),noItems=r.invoices.filter(x=>!itemsOf(x).length&&x.ai!=='受付');
+  const m=matchItems(rv&&rv.items||[],invs),g=m.groups,cnt=k=>g.filter(o=>o.st===k).length;
+  const rT=g.reduce((s,o)=>s+(o.ra||0),0),iT=g.reduce((s,o)=>s+(o.ia||0),0),only=!!st.mOnly;
+  const body=g.filter(o=>!only||o.st!=='一致').map(o=>{const c=MST[o.st],n=Math.max(o.r?o.r.lines.length:0,o.i?o.i.lines.length:0);
+    let h=`<tr class="mg ${c}"><td>${esc(o.date)}</td><td>${esc(o.r?o.r.slip:o.i.slip)}${o.r&&o.i&&o.i.slip&&slipN(o.i.slip)!==slipN(o.r.slip)?`<div class="s">請求書 ${esc(o.i.slip)}</div>`:''}</td><td>${o.r?esc(o.r.dept):''}</td>
+      <td class="n">${o.ra==null?'—':yen(o.ra)}</td><td class="n">${o.ia==null?'—':yen(o.ia)}</td><td class="n">${o.diff?(o.diff>0?'+':'')+yen(o.diff):''}</td><td><span class="mst ${c}">${o.st}</span></td></tr>`;
+    for(let k=0;k<n;k++){const a=o.r&&o.r.lines[k],b=o.i&&o.i.lines[k],pd=a&&b&&a.price!=null&&b.UnitPrice!=null&&Math.abs(a.price-b.UnitPrice)>0.5;
+      h+=`<tr class="ml"><td></td><td colspan="2">${a?`${esc(a.item||'')}${a.spec?` <span class="s">${esc(a.spec)}</span>`:''}${a.qty!=null?` <span class="s">${a.qty}${esc(a.unit||'')}×${yen(a.price)}</span>`:''}`:''}</td>
+        <td class="n">${a?yen((+a.excl||0)+(m.tin?(+a.tax||0):0)):''}</td><td class="n">${b?yen(b.Amount):''}</td>
+        <td colspan="2">${b?`${esc(b.ItemName||'')}${b.Qty!=null?` <span class="s ${pd?'pd':''}">${b.Qty}${esc(b.Unit||'')}×${yen(b.UnitPrice)}</span>`:''}${pd?' <span class="mst ng">単価が違う</span>':''}`:''}</td></tr>`;}
+    return h;}).join('');
+  return `<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px"><b style="font-size:15px">${esc(r.name)}</b><span class="s" style="color:var(--sub);font-size:12px">${esc(r.code)}・${esc(r.mainDept||'')}</span><span style="flex:1"></span><span>支払額 <b>${yen(r.amount)}</b> 円</span></div>
+    <div class="msum"><div><div class="l">受入明細（SMILE 9521・${m.tin?'税込':'税抜'}）</div><div class="v">${rv?yen(rT):'—'}</div><div class="s">${rv?rv.items.length+'行':(src.err||'この仕入先の受入はありません')}</div></div>
+      <div><div class="l">請求書の明細</div><div class="v">${invs.length?yen(iT):'—'}</div><div class="s">${invs.reduce((s,x)=>s+itemsOf(x).length,0)}行${r.invoices.length?'':'（請求書がまだありません）'}</div></div>
+      <div class="${!rv||!invs.length?'':Math.abs(iT-rT)<=1?'good':'bad'}"><div class="l">差（請求書 − 受入）</div><div class="v">${rv&&invs.length?(iT-rT>0?'+':'')+yen(iT-rT):'—'}</div></div></div>
+    <div class="mchips">${Object.keys(MST).map(k=>`<span class="mst ${MST[k]}">${k} ${cnt(k)}</span>`).join('')}<span class="sp"></span><label><input type="checkbox" id="mOnly" ${only?'checked':''}> 違うものだけ</label></div>
+    ${noItems.length?`<div class="s" style="color:var(--warn);margin-bottom:6px">明細を読んでいない請求書：${noItems.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} <button data-rdi="${x.id}" style="padding:0 7px;font-size:12px">🤖 明細を読む</button>`).join('　')}</div>`:''}
+    <table class="mt"><tr><th>日付</th><th>伝票№</th><th>部門</th><th class="n">受入</th><th class="n">請求書</th><th class="n">差</th><th></th></tr>${body||'<tr><td colspan="7" class="s" style="padding:12px">ありません</td></tr>'}</table>
+    <div class="s" style="margin-top:6px">受入の数量・単価は、SMILE の 9521 に列（数量・単価・品目ｺｰﾄﾞ）を足すと出ます。単価が違う行に印を付けます</div>`;}
+// 明細を読む：前に読んだ請求書（明細を読む前の仕組み）を、AI にもう一度読ませる
+async function rereadItems(r,x){const path=x.doc.split(/[\r\n;]+/)[0].trim().replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');let blob=null,at='';
+  for(const p of [path,path.replace(/\/incoming\//i,'/processed/'),path.replace(/\/processed\//i,'/incoming/')]){try{blob=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true);at=p;break;}catch(e){}}
+  if(!blob){snack('請求書のファイルを開けません',true);return;}
+  const name=at.split('/').pop(),code=(name.match(/^(AP\d{8}[A-Z0-9]{8})_/)||[])[1]||apCode(),type=/\.pdf$/i.test(name)?'application/pdf':/\.png$/i.test(name)?'image/png':'image/jpeg';
+  await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,{[V3.ai]:'受付'});x.ai='受付';snack('AI が明細を読んでいます（20〜30秒）');drawDetail();
+  readByAI([{apCode:code,invoiceId:String(x.id),category:r.mainDept==='工場'?'工場仕入':'本社仕入',location:r.mainDept==='工場'?'工場':'本社',targetYm:month(),vendorCode:r.code,vendorName:r.name,smileAmount:r.amount,
+    file:new Blob([blob],{type}),pdfName:name,moved:/\/processed\//i.test(at)}]);}
+// 全画面（支払決済アプリと同じ。Esc で戻る）
+let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
+function setFull(v){FULLR=v;try{localStorage.setItem('ap.review.full',v?'1':'');}catch{}const c=$('rvCard');if(c)c.classList.toggle('ap-full',v);document.body.classList.toggle('ap-lock',v);const b=$('bFull');if(b)b.textContent=v?'✕ 全画面をやめる':'⛶ 全画面';}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&FULLR&&$('rvCard'))setFull(false);});
+
 // ---- 📄 確認 ----
 function listRows(){
   let a=rowsG().filter(r=>needsCheck(r)||r.status==='なくなった'||st.only==='all');
@@ -504,7 +571,8 @@ function listRows(){
   return a;}
 function drawReview(){
   if(!rows.length){$('pane').innerHTML=`<div class="card">まだ取り込んでいません。</div>`;return;}
-  $('pane').innerHTML=`<div class="card"><div class="tools">
+  $('pane').innerHTML=`<div class="card ${FULLR?'ap-full':''}" id="rvCard"><div class="tools">
+      <button id="bFull" title="全画面で確かめる（Esc で戻る）">${FULLR?'✕ 全画面をやめる':'⛶ 全画面'}</button>
       <button id="lsT" title="一覧をたたむ／出す">${listClosed?'☰ 一覧を出す':'◀ 一覧をたたむ'}</button>
       <input type="search" id="q" placeholder="仕入先・コードで検索" value="${esc(st.q)}">
       <select id="fo">${[['','確認が要るもの'],['unck','未確認だけ'],['hold','保留だけ'],['flag','気づきだけ'],['diff','請求書と差があるもの'],['miss','請求書なし（理由もなし）'],['noinv','請求書なし（すべて）'],['offset','相殺先'],['all','支払なしも含めすべて']].map(([v,l])=>`<option value="${v}" ${st.only===v?'selected':''}>${l}</option>`).join('')}</select>
@@ -512,6 +580,7 @@ function drawReview(){
       <span class="cnt" id="cnt"></span>${(p=>p.miss.length?`<button id="bMiss" class="tag t-up" style="cursor:pointer;border:0" title="請求書も理由も無い仕入先だけを出す">📄 請求書なし ${p.miss.length}社</button>`:`<span class="tag t-ok">📄 請求書 揃い</span>`)(invProgress(rowsG()))}</div>
     <div class="review ${listClosed?'lc':''}"><div class="rlist"><table><tbody id="tb"></tbody></table></div><div class="detail" id="detail"></div></div></div>`;
   if($('bMiss'))$('bMiss').onclick=()=>{st.only='miss';drawReview();};
+  $('bFull').onclick=()=>setFull(!FULLR);document.body.classList.toggle('ap-lock',FULLR);
   $('lsT').onclick=()=>{listClosed=!listClosed;try{localStorage.setItem('ap.review.list',listClosed?'closed':'open');}catch{}drawReview();};
   drawRows();drawDetail();}
 // 請求書が無い仕入先：受信トレイ（仕入先が決まっていない請求書）から付ける／請求書なしで払う理由（翌月も引き継ぐ）
@@ -545,12 +614,14 @@ function drawDetail(){
     :(r.offsetVendor&&!r.offsetChecked)?'相殺先です。相殺の有無を確認してください':(!r.invoices.length&&!r.comment&&!r.noInvReason)?'請求書がありません。請求書を置くか、「請求書なしで払う理由」を書いてください':'';
   el.innerHTML=`<div class="dnav"><button id="dPrev">◀ 前へ</button><span class="pos">${i+1} ／ ${a.length}</span><button id="dNext">次へ ▶</button><span class="sp"></span>
       ${r.checked?`<span class="tag t-ok">✔ 確認OK ${esc(r.checkedBy)}</span>`:r.hold?'<span class="tag t-new">⏸ 保留</span>':''}</div>
-    <div class="dbody"><div class="dsplit">
+    <div class="dbody"><div class="dsplit ${st.dtab==='match'?'wide':''}">
       <div class="dpdf">
         <div class="chips">${r.invoices.map(x=>`<button class="chip ${pdfSel[r.code]===x.id?'on':''}" data-pdf="${x.id}">📄 ${esc(x.no?'No.'+x.no:x.name||'請求書')}${x.by?' ・'+esc(x.by):''}</button>`).join('')}</div>
         <div class="pdf" id="pdfv">${r.invoices.length?'請求書を選ぶとここに表示します':'まだ請求書がありません'}</div>
         ${ed?`<label class="drop" id="idrop" style="margin-top:8px">📎 この仕入先（${esc(r.name)}）の請求書（PDF・写真）を置く（AI が読み取って金額などを埋めます）<input type="file" id="ifile" accept="${APDoc.ACCEPT}" multiple></label>`:''}</div>
       <div class="dinfo">
+      <div class="dtabs"><button class="${st.dtab!=='match'?'on':''}" data-dt="info">内容</button><button class="${st.dtab==='match'?'on':''}" data-dt="match">明細の照合（受入明細 ⇔ 請求書）</button></div>
+      ${st.dtab==='match'?matchHtml(r)+'<div style="display:none">':''}
       <div class="dhead"><div><div style="font-size:12px;color:var(--sub)">${esc(r.code)}・${esc(r.mainDept||'')}・${esc(r.payRound)}払い（予定日 ${esc(r.payDate||'')}）</div><h3>${esc(r.name)}</h3>
           <div>${tagsOf(r).map(t=>`<span class="tag ${t[1]}" style="margin:0 4px 0 0">${esc(t[0])}</span>`).join('')}</div></div>
         <div style="text-align:right"><div class="big" style="font-size:26px">${yen(r.amount)}<small> 円</small></div><div style="font-size:13px;color:var(--sub)">前月 ${r.lastMonth?yen(r.lastMonth):'—'}　${r.lastMonth?diffHtml(r.amount,r.lastMonth):''}</div></div></div>
@@ -585,7 +656,7 @@ function drawDetail(){
         ${myAdj.map(x=>`<div>${esc(af(x,'発生した決済月'))}　${yen(af(x,'金額'))}　${esc(af(x,'理由')||'')}　${esc(af(x,'状態'))}${af(x,'精算した決済月')?'（'+esc(af(x,'精算した決済月'))+'）':''}</div>`).join('')}
         ${ed?`<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">今月の支払を <input type="number" id="adjA" placeholder="±金額" style="width:100px"> 円直す <input type="text" id="adjR" placeholder="理由（必須）" style="flex:1"><button id="bAdj">記録</button></div>
           <div style="font-size:12px;color:var(--sub)">直すのは SMILE が基本です。締めた後で SMILE を直せないときだけ使います。翌月の取り込みで逆の額を相殺します。</div>`:''}</div></details>
-      <textarea id="dCm" placeholder="コメント（請求書なしで払う理由、総務への確認など）" style="${r.comment||st.cmOpen?'':'display:none;'}width:100%;height:56px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:10px">${esc(r.comment)}</textarea>
+      <textarea id="dCm" placeholder="コメント（請求書なしで払う理由、総務への確認など）" style="${r.comment||st.cmOpen?'':'display:none;'}width:100%;height:56px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:10px">${esc(r.comment)}</textarea>${st.dtab==='match'?'</div>':''}
     </div></div></div>
     <div class="dact"><button id="dHold" ${ed&&needsCheck(r)?'':'disabled'}>${r.hold?'⏸ 保留を外す':'⏸ 保留'}</button><button id="dCmB" ${ed?'':'disabled'}>💬 コメント</button><span class="sp"></span>
       <span class="keys">${why?`<span style="color:var(--warn)">${esc(why)}</span>`:'Enter：OK・次へ　←→：前・次'}</span>
@@ -601,6 +672,9 @@ function wireDetail(r){
   on('bClr',async()=>{if(!confirm('分け方を計算（マスタどおり）に戻しますか？'))return;draft=null;await act(r,{'分け方の上書き':'','変えた理由':'','確認済み':false,'見直しが要る':false});});
   on('bSplit',()=>saveSplit(r));on('bFee',()=>act(r,{'手数料の上書き':$('fee').value.trim(),'確認済み':false},'手数料を保存しました'));
   on('bAdj',()=>addAdjust(r));
+  document.querySelectorAll('[data-dt]').forEach(b=>b.onclick=()=>{st.dtab=b.dataset.dt;drawDetail();});
+  const mo=$('mOnly');if(mo)mo.onchange=()=>{st.mOnly=mo.checked;drawDetail();};
+  document.querySelectorAll('[data-rdi]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.rdi);if(x)rereadItems(r,x).catch(e=>snack('読めませんでした：'+e.message,true));});
   on('bNir',()=>!L.pay.fmap['請求書なしの理由']?snack('AP_SmilePay に「請求書なしの理由」の列がありません（Provision-SmileAP.ps1 -Apply）',true):act(r,{'請求書なしの理由':$('nir').value.trim()},$('nir').value.trim()?'請求書なしで払う理由を保存しました（翌月も引き継ぎます）':'理由を外しました'));
   document.querySelectorAll('[data-ibhere]').forEach(b=>b.onclick=async()=>{const x=INBX.find(i=>i.id===b.dataset.ibhere);if(!x)return;
     try{await assignVendor(x,r.code,'確認画面で人が選んだ');snack('請求書を付けました');await loadInvoices();render();}catch(e){snack('付けられませんでした：'+e.message,true);}});
@@ -818,6 +892,9 @@ async function saveImport(){
     for(const k of Object.keys(FILES)){const x=FILES[k];const name=ts+'_'+x.file.name.replace(/[#%*<>?/\\{|}:"]/g,'_');
       try{await gputFile(`${folder}/${name}`,x.file);files.push({kind:KIND_LABEL[k],name:x.file.name,path:`${folder}/${name}`,rows:x.rows});}
       catch(e){if(!confirm(`原本（${x.file.name}）を保存できませんでした：${e.message}\n続けますか？`))throw e;files.push({kind:KIND_LABEL[k],name:x.file.name,path:'',rows:x.rows});}}
+    // 受入明細（9521 の行）を仕入先ごとに残す。確認の全画面で請求書の明細と1行ずつ比べる（取り込み直すたびに上書き）
+    const rc=FILES.receipts.data;try{await gputFile(`${folder}/受入明細.json`,new Blob([JSON.stringify({ym,from:rc.from,to:rc.to,at:new Date().toISOString(),rows:rc.rows})],{type:'application/json'}),'application/json');RCV={ym:null};}
+    catch(e){console.warn('受入明細を保存できませんでした',e);}
     const t=totalsOf(rows,'全社'),pl=FILES.payList.data;
     const changes=rows.filter(r=>r.status!=='変化なし').map(r=>({code:r.code,name:r.name,status:r.status,prev:r.prevPay,now:r.amount}));
     const imp=await gpost(`/sites/${AP_SITE}/lists/${L.imp.id}/items`,{fields:toFields(L.imp,{Title:`${ym} 仕入の取り込み ${ts}`,'決済月':ym,'締め日':pl.title||'',
