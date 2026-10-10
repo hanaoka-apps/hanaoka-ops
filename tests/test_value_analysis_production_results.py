@@ -133,6 +133,22 @@ class ProductionResultsTests(unittest.TestCase):
             {"d": "2026-09-10", "item": "SAMPLE-A", "factory": "第一工場", "ws": "第一工場 組立", "in": 24, "ex": 5, "z": 1},
         ])
 
+    def test_daily_steps_list_every_internal_step_and_mark_completion(self):
+        routes = [route(1), route(2)]
+        actuals = [
+            actual(1, 3, **{"作業時間": "10", "人数": "2"}),
+            actual(2, 3, **{"作業時間": "4", "人数": "1", "基準外工数/分": "6", "基準外人数/人": "1"}),
+            actual(1, 5, code="SAMPLE-B", **{"作業時間": "2", "人数": "1"}),
+            actual(1, 1, work_area="外注先", **{"作業時間": "9", "人数": "1"}),
+        ]
+        result = production.build(actuals, routes, [item(), item("SAMPLE-B")], today=date(2026, 10, 8))
+        self.assertEqual(result["daily_steps"], [
+            {"d": "2026-09-10", "item": "SAMPLE-A", "s": "1", "p": "架空工程1", "factory": "第一工場", "ws": "第一工場 組立", "q": 3, "in": 20, "ex": 0},
+            {"d": "2026-09-10", "item": "SAMPLE-A", "s": "2", "p": "架空工程2", "factory": "第一工場", "ws": "第一工場 組立", "q": 3, "in": 4, "ex": 6, "fin": 1},
+            {"d": "2026-09-10", "item": "SAMPLE-B", "s": "1", "p": "", "factory": "第一工場", "ws": "第一工場 組立", "q": 5, "in": 2, "ex": 0},
+        ])
+        self.assertIn("SAMPLE-B", result["items"])
+
     def test_required_columns_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "報告数量"):
             production.require_columns(["伝票日付"], production.ACTUAL_REQUIRED, "actuals")
