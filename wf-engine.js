@@ -179,7 +179,7 @@
       r.groups.forEach((g, i) => route.push({
         stepNo: s.no, sub: r.groups.length > 1 ? i + 1 : undefined,
         name: r.groups.length > 1 || s.assignee.kind === 'chain' ? `${s.name}${r.groups.length > 1 ? '（' + (i + 1) + '段目）' : ''}` : s.name,
-        type: s.type, upns: g.upns.slice(), mode: g.mode, need: g.need, editable: s.editable || [], skipped: false,
+        type: s.type, upns: g.upns.slice(), mode: g.mode, need: g.need, editable: s.editable || [], skipped: false, selfOk: !!s.selfOk || undefined,
         role: s.assignee.kind === 'role' ? s.assignee.role : undefined     // フロー側の改ざんチェックに使う
       }));
     }
@@ -190,7 +190,8 @@
       if (st.skipped) continue;
       if (st.type === '作業') continue;                           // 作業は本人でも行う
       const before = st.upns.length;
-      st.upns = st.upns.filter(u => u !== me);
+      // 定義で "selfOk": true の段は、申請者本人でも承認する（例：支払決済で、パッケージを作った総務の責任者が、部下の確認のあと最終確認する）
+      if (!st.selfOk) st.upns = st.upns.filter(u => u !== me);
       if (before && !st.upns.length) { st.skipped = true; st.reason = '申請者本人'; continue; }
       const later = new Set(route.slice(i + 1).filter(x => !x.skipped && x.type !== '作業').flatMap(x => x.upns));
       const kept = st.upns.filter(u => !later.has(u));
