@@ -123,6 +123,27 @@ class LaborCalculationTests(unittest.TestCase):
         self.assertEqual(result["handoff"]["items"]["PURCHASE"]["standard_minutes"], 0)
         self.assertEqual(result["handoff"]["items"]["PURCHASE"]["labor_status"], "社内工程なし（対象外）")
 
+    def test_step_without_actuals_in_window_uses_latest_period_with_actuals(self):
+        routes = {("ROOT", "1"): {"工程名": "完組"}, ("PART", "1"): {"工程名": "溶接"}}
+        row = lambda day, code, qty, minutes: {"伝票日付": day, "品目ｺｰﾄﾞ": code, "手順№": "1", "報告数量": str(qty), "人数": "1", "作業時間": str(minutes), "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
+        actuals = [
+            row("20251001", "ROOT", 4, 400),  # 期間外：最後の実績(2026/3)から3か月(1〜3月)より前なので使わない
+            row("20260227", "ROOT", 2, 180),
+            row("20260318", "ROOT", 1, 0),
+            row("20260801", "PART", 5, 50),
+        ]
+        bom = {"ROOT": [{"code": "PART", "name": "part", "quantity": 1}]}
+        result, _ = LABOR.calculate_window("202608", 3, actuals, routes, bom, LABOR.DEFAULT_SETTINGS)
+        root = result["handoff"]["items"]["ROOT"]
+        self.assertAlmostEqual(root["own_run_per_unit"], 60)  # 180分 ÷ 3個（2月・3月）
+        self.assertAlmostEqual(root["cum_std_per_unit"], 70)  # ＋部品 10分
+        self.assertIn("期間外実績", root["flags"])
+        self.assertEqual(root["steps"][0]["fallback_period"], {"from": "202601", "to": "202603"})
+        self.assertIn("期間外の実績を使用", root["steps"][0]["status"])
+        self.assertEqual(result["fallback_steps"], 1)
+        part = result["handoff"]["items"]["PART"]
+        self.assertNotIn("期間外実績", part["flags"])
+
     def test_window_dates_route_selection_and_unregistered_rate(self):
         self.assertEqual(LABOR.period_start("202608", 3), "202606")
         self.assertEqual(LABOR.period_start("202608", 6), "202603")

@@ -303,6 +303,11 @@ def calculate_window(
     needs_review: dict[str, int] = defaultdict(int)
     reason_counts: dict[str, int] = defaultdict(int)
     review_rows: list[dict[str, str]] = []
+    # 期間内に実績が無い工程の代わりに使う、期間より前の実績（工程×月）。2026-10-10 花岡判断：
+    # 「直近の期間に実績があればそれ、無ければ実績がある期間で算出する」。
+    history: dict[tuple[str, str], dict[str, dict]] = defaultdict(
+        lambda: defaultdict(lambda: {"qty": 0.0, "processing": 0.0, "positive": 0, "zero": 0})
+    )
     for row in actual_rows:
         day = parse_date(row.get("伝票日付"))
         if not day:
@@ -314,7 +319,16 @@ def calculate_window(
             review_rows.append({"date": day.isoformat(), "item_code": normalize_code(row.get("品目ｺｰﾄﾞ")), "step": norm(row.get("手順№")), "reason": "future_date"})
             continue
         ym = month_key(day)
-        if not start <= ym <= anchor:
+        if ym < start:
+            item, step = normalize_code(row.get("品目ｺｰﾄﾞ")), norm(row.get("手順№"))
+            qty, work, people = parse_number(row.get("報告数量")), parse_number(row.get("作業時間")), parse_number(row.get("人数"))
+            if (item, step) in routes and qty is not None and qty > 0 and work is not None and work >= 0 and people is not None and people >= 0:
+                past = history[(item, step)][ym]
+                past["qty"] += qty
+                past["processing"] += work * people
+                past["positive" if work * people > 0 else "zero"] += 1
+            continue
+        if ym > anchor:
             continue
         item, step = normalize_code(row.get("品目ｺｰﾄﾞ")), norm(row.get("手順№"))
         route = routes.get((item, step))
@@ -353,8 +367,26 @@ def calculate_window(
 
     own: dict[str, dict] = defaultdict(lambda: {"steps": [], "positive": 0, "zero": 0, "complete": True})
     route_items = {item for item, _step in routes}
+    fallback_steps = 0
     for (item, step), route in routes.items():
         data = accum.get((item, step))
+        fallback = None
+        if (not data or not data["qty"]) and history.get((item, step)):
+            # 期間内に実績が無い → 実績がある最後の月から、同じ月数の期間で算出する
+            months_with_qty = sorted(ym for ym, value in history[(item, step)].items() if value["qty"] > 0)
+            if months_with_qty:
+                last = months_with_qty[-1]
+                first = period_start(last, months)
+                picked = [value for ym, value in history[(item, step)].items() if first <= ym <= last]
+                data = {
+                    "qty": sum(value["qty"] for value in picked),
+                    "processing": sum(value["processing"] for value in picked),
+                    "setup": 0.0,
+                    "positive": sum(value["positive"] for value in picked),
+                    "zero": sum(value["zero"] for value in picked),
+                }
+                fallback = {"from": first, "to": last}
+                fallback_steps += 1
         if not data or not data["qty"]:
             own[item]["complete"] = False
             own[item]["steps"].append({"step": step, "process_code": norm(route.get("工程ｺｰﾄﾞ")), "process_name": norm(route.get("工程名")), "process_minutes": None, "setup_minutes": None, "rows": 0, "status": "期間内実績なし"})
@@ -366,7 +398,8 @@ def calculate_window(
             "process_minutes": data["processing"] / data["qty"],
             "setup_minutes": data["setup"] / data["qty"],
             "rows": data["positive"] + data["zero"],
-            "status": "集計済み",
+            "status": "集計済み" if not fallback else f"期間外の実績を使用（{fallback['from'][:4]}年{int(fallback['from'][4:])}月〜{fallback['to'][:4]}年{int(fallback['to'][4:])}月）",
+            "fallback_period": fallback,
         })
         own[item]["positive"] += data["positive"]
         own[item]["zero"] += data["zero"]
@@ -458,6 +491,8 @@ def calculate_window(
         if result.get("input_rate") is not None and result["input_rate"] < 100:
             flags.append("入力率低")
         low_sample_threshold = parse_number(settings.get("low_sample_rows_threshold"))
+        if any(row.get("fallback_period") for row in own.get(code, {}).get("steps", [])):
+            flags.append("期間外実績")
         if low_sample_threshold and 0 < int(result["positive"] + result["zero"]) < low_sample_threshold:
             flags.append("件数少")
         if any(row.get("reason") in ("future_date", "route_missing_or_not_internal") for row in review_rows if row.get("item_code") == code):
@@ -493,6 +528,7 @@ def calculate_window(
                 "手順№": row["step"], "工程": row.get("process_name") or row.get("process_code") or "",
                 "工程コード": row.get("process_code") or "", "run": row["process_minutes"],
                 "setup": row["setup_minutes"], "rows": row["rows"], "status": row["status"],
+                **({"fallback_period": row["fallback_period"]} if row.get("fallback_period") else {}),
             } for row in own_steps],
             "children": [{
                 "品目コード": row["code"], "必要数": row["quantity"],
@@ -509,6 +545,8 @@ def calculate_window(
         "input_positive_count": positive_count,
         "input_zero_count": report_count - positive_count,
         "input_rate": round(positive_count / report_count * 100, 1) if report_count else None,
+        "fallback_steps": fallback_steps,
+        "fallback_rule": "期間内に実績が無い社内工程は、実績がある最後の月から同じ月数の期間で算出",
         "exception_reasons": dict(sorted(reason_counts.items())),
         "excluded": dict(sorted(excluded.items())),
         "needs_review": dict(sorted(needs_review.items())),
