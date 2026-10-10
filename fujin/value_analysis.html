@@ -817,14 +817,22 @@
     }
     // 選んだ日の作業時間の内訳（主要製品グループ・その他の上位）
     function fpLaborBreakdown(factory,month,rows,day){
-      if(!day||!FP.results?.daily_labor)return '';const stack=rows.filter(r=>r.inTotal),sp=fpLaborSplit(fpLaborDays(factory,month).get(day),stack),items=fpItems();
+      if(!day||!FP.results?.daily_labor)return '';const stack=rows.filter(r=>r.inTotal),items=fpItems(),byDay=fpLaborDays(factory,month);
+      const cumList=[...byDay.entries()].filter(([d])=>d<=day).flatMap(([,list])=>list),spd=fpLaborSplit(byDay.get(day),stack),spc=fpLaborSplit(cumList,stack);
+      FP.laborMode=FP.laborMode||{};const mode=FP.laborMode[factory]||'day',sp=mode==='cum'?spc:spd;
+      const first=`${month}-01`,rng=`${fpDayLabel(first)}〜${fpDayLabel(day)}`;
+      const ratio=a=>a.inAll+a.exAll>0?`${(a.exAll/(a.inAll+a.exAll)*100).toFixed(1)}%`:'—';
+      const kpi=(label,a)=>`<div class="fp-lkpi"><span class="fp-lkpi-h">${label}</span><span><small>基準内</small><b>${fpH(a.inAll)}</b></span><span><small>基準外</small><b class="fp-ex">${fpH(a.exAll)}</b></span><span><small>計</small><b>${fpH(a.inAll+a.exAll)}</b></span><span><small>基準外の割合</small><b class="fp-ex">${ratio(a)}</b></span></div>`;
       const line=(label,i,e,cls)=>`<tr class="${cls||''}"><td>${label}</td><td class="num">${fpH(i)}</td><td class="num">${fpH(e)}</td><td class="num"><b>${fpH(i+e)}</b></td></tr>`;
       let h=stack.map(r=>{const a=sp.g.get(r.name);return line(`<i class="fp-dot" style="background:${r.color}"></i>${esc(r.name)}`,a.in,a.ex)}).join('');
       h+=line('<i class="fp-dot" style="background:#b7bdcc"></i>その他の作業',sp.oin,sp.oex,'fp-lv-cond');
       h+=sp.other.slice(0,8).map(o=>line(`<span class="fp-cell-main" title="${esc(o.item+' '+(items[o.item]?.name||''))}">${esc(o.item)}　<span class="fp-muted">${esc(items[o.item]?.name||'')}</span></span><small class="fp-ws">${esc(o.ws)}</small>`,o.in,o.ex,'fp-lv-item')).join('');
       if(sp.other.length>8)h+=`<tr class="fp-lv-item"><td class="fp-muted">ほか ${sp.other.length-8}件</td><td></td><td></td><td></td></tr>`;
       h+=line('合計',sp.inAll,sp.exAll,'fp-lv-total');
-      return `<details class="fp-labor-detail" ${FP.laborOpen?.has(factory)?'open':''} data-fp-labor="${esc(factory)}"><summary>${fpDayLabel(day)}${fpWeekend(day)?'（土日）':''}の作業時間の内訳（人時）</summary><div class="fp-tscroll"><table class="fp-mini fp-tree fp-sum-tree fp-labor-table"><thead><tr><th>区分</th><th>基準内</th><th>基準外</th><th>計</th></tr></thead><tbody>${h}</tbody></table></div><p class="fp-muted">基準内＝作業時間×人数、基準外＝基準外工数×基準外人数（付加価値アプリの工数と同じ式）。主要製品の部品・中間品の作業は「その他」に入ります。${sp.z?`作業時間が入っていない完成報告 ${sp.z}件（この日）は時間に含まれません。`:''}</p></details>`}
+      return `<div class="fp-lkpis">${kpi(`当日 ${fpDayLabel(day)}${fpWeekend(day)?'（土日）':''}`,spd)}${kpi(`月累計 ${rng}`,spc)}</div>
+        <details class="fp-labor-detail" ${FP.laborOpen?.has(factory)?'open':''} data-fp-labor="${esc(factory)}"><summary>作業時間の内訳（人時）</summary>
+        <div class="fp-lmode" role="tablist"><button type="button" data-fp-lmode="${esc(factory)}|day" class="${mode==='day'?'on':''}">当日 ${fpDayLabel(day)}</button><button type="button" data-fp-lmode="${esc(factory)}|cum" class="${mode==='cum'?'on':''}">月累計 ${rng}</button></div>
+        <div class="fp-tscroll"><table class="fp-mini fp-tree fp-sum-tree fp-labor-table"><thead><tr><th>区分</th><th>基準内</th><th>基準外</th><th>計</th></tr></thead><tbody>${h}</tbody></table></div><p class="fp-muted">基準内＝作業時間×人数、基準外＝基準外工数×基準外人数（付加価値アプリの工数と同じ式）。主要製品の部品・中間品の作業は「その他」に入ります。${sp.z?`作業時間が入っていない完成報告 ${sp.z}件（${mode==='cum'?'月累計':'この日'}）は時間に含まれません。`:''}</p></details>`}
     // ---- サマリー：日別グラフ（グループ積み上げ棒＋月内累計の線）----
     function fpDailyChart(root,factory,month,rows,day){
       if(!root)return;const days=fpMonthDays(month),stack=rows.filter(r=>r.inTotal),latest=fpLatestDay(factory,month);
@@ -888,7 +896,7 @@
       factories.forEach((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'';try{fpLaborChart(el('fpLabor'+fi),f,month,fpRows(f,month,day),day)}catch(e){console.warn('[重点品目作業時間]',e)}});
       box.querySelectorAll('details[data-fp-labor]').forEach(d=>d.addEventListener('toggle',()=>{FP.laborOpen=FP.laborOpen||new Set();d.open?FP.laborOpen.add(d.dataset.fpLabor):FP.laborOpen.delete(d.dataset.fpLabor)}));
       factories.forEach((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'';try{fpDailyChart(el('fpDaily'+fi),f,month,fpRows(f,month,day),day)}catch(e){console.warn('[重点品目グラフ]',e)}});
-      if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',e=>{const b=e.target.closest('[data-fp-sum-toggle]');if(!b)return;const k=b.dataset.fpSumToggle;FP.sumOpen.has(k)?FP.sumOpen.delete(k):FP.sumOpen.add(k);renderFocusProduction()})}
+      if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',e=>{const lm=e.target.closest('[data-fp-lmode]');if(lm){const [f,m]=lm.dataset.fpLmode.split('|');FP.laborMode=FP.laborMode||{};FP.laborMode[f]=m;FP.laborOpen=FP.laborOpen||new Set();FP.laborOpen.add(f);renderFocusProduction();return}const b=e.target.closest('[data-fp-sum-toggle]');if(!b)return;const k=b.dataset.fpSumToggle;FP.sumOpen.has(k)?FP.sumOpen.delete(k):FP.sumOpen.add(k);renderFocusProduction()})}
     }
     // ---- 設定（管理者のみ表示。保存はリスト権限で最終判定）----
     function fpOpenSettings(){if(!canEditInventory())return;FP.planMonth=FP.planMonth||fpYm(state.month);fpStartEdit(FP.factory);el('focusModal').hidden=false;fpSetTab('groups');if(!FP.master)fpLoadMaster().then(()=>{if(!el('focusModal').hidden)el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}).catch(()=>{if(!el('focusModal').hidden&&!el('fpGroupsPane').hidden)fpRenderGroups()})}
@@ -1388,6 +1396,15 @@
     .fp-sum-tree th:nth-child(n+2),.fp-sum-tree td:nth-child(n+2){width:72px;white-space:nowrap}
     .fp-cell-main{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .fp-labor-table .fp-ws{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .fp-lkpis{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 4px}
+    .fp-lkpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px 8px;background:#f8f9fc;border-radius:9px;padding:8px 10px}
+    .fp-lkpi-h{grid-column:1/-1;font-size:12px;font-weight:800;color:#3d4566}
+    .fp-lkpi span{display:flex;flex-direction:column;min-width:0}.fp-lkpi small{font-size:10.5px;color:var(--sub)}.fp-lkpi b{font-size:15px;font-feature-settings:"tnum"}
+    .fp-lkpi .fp-ex{color:var(--amber)}
+    .fp-lmode{display:flex;gap:6px;margin:8px 0 2px}
+    .fp-lmode button{border:1px solid var(--line-strong);background:#fff;border-radius:999px;padding:4px 12px;font:inherit;font-size:12px;font-weight:700;color:#5a6080;cursor:pointer}
+    .fp-lmode button.on{background:var(--navy);border-color:var(--navy);color:#fff}
+    @media(max-width:760px){.fp-lkpis{grid-template-columns:1fr}.fp-lkpi b{font-size:14px}}
     .fp-muted{color:var(--sub)}
     .fp-unit-inline{display:none;margin-left:6px;font-size:11.5px;font-weight:600;color:var(--sub)}
     .fp-rate{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end;min-width:110px}
