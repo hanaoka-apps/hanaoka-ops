@@ -176,7 +176,7 @@ function applyData(raw){
   ASOF=new Date(last+'T00:00:00');
   const cur=last.slice(0,7);MONTHS=[];
   for(let m=m0;m<=cur;m=nextMonth(m))MONTHS.push(m);
-  if(!MONTHS.includes(MONTH))MONTH=MONTHS.includes(prevMonth(cur))?prevMonth(cur):cur;
+  if(!MONTHS.includes(MONTH)&&!isHalf(MONTH))MONTH=MONTHS.includes(prevMonth(cur))?prevMonth(cur):cur;
 }
 async function reload(){applyData(await scLoad());render()}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,6000)}
@@ -243,9 +243,23 @@ function chip(id){
   if(v&&v.label&&v.label!=='未確認')h+=` <span class="chip conf" title="確認済みの判定">確認済: ${esc(v.label)}</span>`;
   return h;
 }
-function monthLinks(id,m){return LK.filter(l=>l.i===id&&strong(l)&&l.d.startsWith(m))}
+/* ---------- 期間（月／上期／下期）。MONTH には 'YYYY-MM' か 'H1'（4〜9月）／'H2'（10〜3月）が入る ---------- */
+const isHalf=m=>m==='H1'||m==='H2';
+function perMonths(m,y=FY){
+  if(m==='H1')return[4,5,6,7,8,9].map(k=>y+'-0'+k);
+  if(m==='H2')return[10,11,12].map(k=>y+'-'+k).concat([1,2,3].map(k=>(y+1)+'-0'+k));
+  return[m];
+}
+const inPer=(d,m)=>perMonths(m).some(x=>d.startsWith(x));
+const perLabel=m=>m==='H1'?'上期（4〜9月）':m==='H2'?'下期（10〜3月）':ml(m);
+const nextPer=m=>m==='H1'?{months:perMonths('H2'),label:'下期（10〜3月）'}:m==='H2'?{months:perMonths('H1',FY+1),label:(FY+1)+'年度の上期'}:{months:[nextMonth(m)],label:ml(nextMonth(m))};
+const addMonth=()=>{const ms=perMonths(MONTH).filter(x=>MONTHS.includes(x));return ms.length?ms[ms.length-1]:MONTHS[MONTHS.length-1]};   // 追記・予定の既定の月
+const sumKey=(m,id)=>(isHalf(m)?FY+'-'+m:m)+'|'+id;
+const doneHead=m=>isHalf(m)?perLabel(m):'先月（'+ml(m)+'）';
+const planHead=(m,np)=>isHalf(m)?'次の期：'+np.label:'今月（'+np.label+'）';
+function monthLinks(id,m){return LK.filter(l=>l.i===id&&strong(l)&&inPer(l.d,m))}
 function bulletsFor(id,m){
-  const key=m+'|'+id;
+  const key=sumKey(m,id);
   if(S.summary[key]&&S.summary[key].text)return S.summary[key].text.split('\n').filter(Boolean).map(t=>({t,m:true}));
   const ls=monthLinks(id,m).sort((a,b)=>a.d<b.d?-1:1);const seen=new Set();const out=[];
   ls.forEach(l=>{if(seen.has(l.e))return;seen.add(l.e);out.push({t:l.e,w:MS[l.w],d:l.d.slice(5).replace('-','/')})});
@@ -256,21 +270,26 @@ function bulletsFor(id,m){
 let VIEW='present',MONTH='',FILTER={hideEmpty:true,member:'all',pillar:'all',dmem:'all'};
 const TABS=[['present','発表'],['goals','目標一覧'],['detail','日報・紐づけ明細'],['members','メンバー別'],['offsheet','目標外の取り組み'],['data','データ・運用']];
 function renderTabs(){document.getElementById('tabs').innerHTML=TABS.map(([k,l])=>`<button role="tab" aria-selected="${VIEW===k}" data-v="${k}">${l}</button>`).join('')}
-function renderMonthSel(){document.getElementById('month').innerHTML=MONTHS.map(m=>`<option value="${m}" ${m===MONTH?'selected':''}>${ml(m)}${m===MONTHS[MONTHS.length-1]?'（今月）':m===prevMonth(MONTHS[MONTHS.length-1])?'（先月）':''}</option>`).join('')}
+function renderMonthSel(){
+  const last=MONTHS[MONTHS.length-1],has=h=>perMonths(h).some(x=>MONTHS.includes(x));
+  const halves=['H1','H2'].filter(has).map(h=>`<option value="${h}" ${h===MONTH?'selected':''}>${perLabel(h)}</option>`).join('');
+  const months=MONTHS.map(m=>`<option value="${m}" ${m===MONTH?'selected':''}>${ml(m)}${m===last?'（今月）':m===prevMonth(last)?'（先月）':''}</option>`).join('');
+  document.getElementById('month').innerHTML=(halves?`<optgroup label="半期">${halves}</optgroup>`:'')+`<optgroup label="月">${months}</optgroup>`;
+}
 
 function kpis(){
   const sts=DATA.items.map(i=>statusOf(i.id));
   const moved=DATA.items.filter(i=>monthLinks(i.id,MONTH).length).length;
-  const reps=RP.filter(r=>r.d.startsWith(MONTH));
+  const reps=RP.filter(r=>inPer(r.d,MONTH));
   const linked=new Set(LK.filter(strong).map(l=>l.rid));
   const lr=reps.filter(r=>linked.has(r.rid)).length;
   const cnt=k=>sts.filter(s=>s.k===k).length;
   return `<div class="kpis">
-   <div class="kpi"><div class="l">${ml(MONTH)}に動きのあった目標</div><div class="v">${moved}<span style="font-size:14px;color:var(--ink-3)"> / ${DATA.items.length}</span></div><div class="s">日報で確認できた項目</div></div>
+   <div class="kpi"><div class="l">${perLabel(MONTH)}に動きのあった目標</div><div class="v">${moved}<span style="font-size:14px;color:var(--ink-3)"> / ${DATA.items.length}</span></div><div class="s">日報で確認できた項目</div></div>
    <div class="kpi"><div class="l">日報に動きなし（通期）</div><div class="v">${cnt('none')}</div><div class="s">確認待ち</div></div>
    <div class="kpi"><div class="l">停滞の疑い</div><div class="v">${cnt('stale')}</div><div class="s">${STALE_DAYS}日以上動きなし</div></div>
    <div class="kpi"><div class="l">進行中・検討・完了</div><div class="v">${cnt('go')+cnt('plan')+cnt('done')}</div><div class="s">通期の判定</div></div>
-   <div class="kpi"><div class="l">${ml(MONTH)}の日報が目標に結びつく率</div><div class="v">${reps.length?Math.round(lr/reps.length*100):0}%</div><div class="s">${lr}/${reps.length}件</div></div>
+   <div class="kpi"><div class="l">${perLabel(MONTH)}の日報が目標に結びつく率</div><div class="v">${reps.length?Math.round(lr/reps.length*100):0}%</div><div class="s">${lr}/${reps.length}件</div></div>
   </div>`;
 }
 
@@ -280,7 +299,7 @@ function planLi(x){
    ${isDraft(x)?'<span class="chip warn" title="Claudeが作った下書きです。直して確定すると発表に出ます">下書き</span> ':''}<button class="add" data-plan="${x.id}">${isDraft(x)?'直して確定':'編集'}</button><button class="x" data-del="${x.id}" title="削除">×</button></li>`;
 }
 function viewPresent(){
-  const nm=nextMonth(MONTH);
+  const np=nextPer(MONTH),nm=np.months[0];
   let h=kpis();
   h+=`<div class="bar filters"><span class="hint">表示:</span>
    <span class="chip pill" role="button" tabindex="0" aria-pressed="${FILTER.hideEmpty}" data-f="hideEmpty">動きのある項目のみ</span>
@@ -293,8 +312,8 @@ function viewPresent(){
     items.forEach(it=>{
       let bl=bulletsFor(it.id,MONTH);
       if(FILTER.member!=='all')bl=bl.filter(b=>b.m||b.w===MS[FILTER.member]);
-      const man=S.manual.filter(x=>x.item===it.id&&x.month===MONTH&&x.type==='実績'&&(FILTER.member==='all'||MS[FILTER.member]===x.who));
-      const plan=S.manual.filter(x=>x.item===it.id&&x.month===nm&&x.type==='予定'&&(FILTER.member==='all'||MS[FILTER.member]===x.who));
+      const man=S.manual.filter(x=>x.item===it.id&&perMonths(MONTH).includes(x.month)&&x.type==='実績'&&(FILTER.member==='all'||MS[FILTER.member]===x.who));
+      const plan=S.manual.filter(x=>x.item===it.id&&np.months.includes(x.month)&&x.type==='予定'&&(FILTER.member==='all'||MS[FILTER.member]===x.who));
       const has=bl.length||man.length||plan.length;
       if(FILTER.hideEmpty&&!has)return;
       shown++;
@@ -302,13 +321,13 @@ function viewPresent(){
        <div><ul class="b">${bl.slice(0,5).map(b=>`<li class="${b.m?'m':''}">${b.w?`<span class="who">${b.w}</span>`:''}${esc(b.t)}${b.d?` <span class="mut">(${b.d})</span>`:''}</li>`).join('')}${bl.length>5?`<li class="mut">ほか${bl.length-5}件（「要約を編集」で発表用にまとめられます）</li>`:''}
         ${man.map(x=>`<li class="m"><span class="who">${esc(x.who)}</span>${esc(x.text)} <span class="chip conf">追記</span><button class="x" data-del="${x.id}" title="削除">×</button></li>`).join('')}</ul>
         ${!has?'<span class="mut">日報での動きなし</span>':''}
-        <div><button class="add" data-add="${it.id}|実績|${MONTH}">＋日報にない実績を追記</button> <button class="add" data-sum="${it.id}">要約を編集</button></div></div>
+        <div><button class="add" data-add="${it.id}|実績|${addMonth()}">＋日報にない実績を追記</button> <button class="add" data-sum="${it.id}">要約を編集</button></div></div>
        <div><ul class="b">${plan.map(planLi).join("")}</ul>
         ${!plan.length?'<span class="mut">予定は未入力</span>':''}
-        <div><button class="add" data-add="${it.id}|予定|${nm}">＋${ml(nm)}の予定を追加</button></div></div></div>`;
+        <div><button class="add" data-add="${it.id}|予定|${nm}">＋${np.label}の予定を追加</button></div></div></div>`;
     });
     h+=`<section class="sec"><h2>${'①②③④⑤'[pi]} ${p}<span class="n">${shown}項目を表示（全${items.length}）</span></h2>
-     <div class="cols head"><div>目標の取り組み・状態</div><div>先月（${ml(MONTH)}）の実施内容</div><div>今月（${ml(nm)}）の予定</div></div>
+     <div class="cols head"><div>目標の取り組み・状態</div><div>${doneHead(MONTH)}の実施内容</div><div>${planHead(MONTH,np)}の予定</div></div>
      ${rows||'<div class="cols"><div style="grid-column:1/-1" class="mut">この月に動きのある項目はありません。</div></div>'}</section>`;
   });
   h+=offSheetBlock(MONTH,true);
@@ -316,21 +335,21 @@ function viewPresent(){
 }
 
 function offSheetBlock(m,compact){
-  const reps=RP.filter(r=>r.d.startsWith(m)&&r.g);
-  const nm=nextMonth(m);
+  const reps=RP.filter(r=>inPer(r.d,m)&&r.g);
+  const np=nextPer(m),nm=np.months[0];
   const by={};
   reps.forEach(r=>{(by[r.g]=by[r.g]||{days:0,who:{},labels:{}});const g=by[r.g];g.days++;g.who[MS[r.w]]=(g.who[MS[r.w]]||0)+1;g.labels[r.o]=(g.labels[r.o]||0)+1});
   const gs=Object.keys(by).sort((a,b)=>by[b].days-by[a].days);
   const man=S.manual.filter(x=>x.item==='OFF');
   let rows=gs.map(g=>{const o=by[g];
-    const plan=man.filter(x=>x.month===nm&&x.type==='予定'&&x.group===g);
+    const plan=man.filter(x=>np.months.includes(x.month)&&x.type==='予定'&&x.group===g);
     return `<div class="cols"><div><div class="tt">${esc(g)}</div><span class="chip mute">目標シートにない</span></div>
     <div><div>${Object.entries(o.who).sort((a,b)=>b[1]-a[1]).map(([w,n])=>`<span class="who">${w}</span>${n}日`).join('　')}</div>
     <div class="mut" style="margin-top:4px">${Object.entries(o.labels).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v])=>esc(k)+'('+v+')').join('、')}</div></div>
     <div><ul class="b">${plan.map(planLi).join("")}</ul>
     ${!plan.length?'<span class="mut">予定は未入力</span>':''}<div><button class="add" data-add="OFF|予定|${nm}|${esc(g)}">＋予定を追加</button></div></div></div>`}).join('');
-  return `<section class="sec"><h2>目標シートにない取り組み<span class="n">${ml(m)}の日報から。目標項目に当てはまらない仕事</span></h2>
-   <div class="cols head"><div>取り組み</div><div>先月（${ml(m)}）の実施内容（日報の日数）</div><div>今月（${ml(nm)}）の予定</div></div>${rows||'<div class="cols"><div style="grid-column:1/-1" class="mut">この月の該当はありません。</div></div>'}</section>`;
+  return `<section class="sec"><h2>目標シートにない取り組み<span class="n">${perLabel(m)}の日報から。目標項目に当てはまらない仕事</span></h2>
+   <div class="cols head"><div>取り組み</div><div>${doneHead(m)}の実施内容（日報の日数）</div><div>${planHead(m,np)}の予定</div></div>${rows||'<div class="cols"><div style="grid-column:1/-1" class="mut">この月の該当はありません。</div></div>'}</section>`;
 }
 
 function viewGoals(){
@@ -358,13 +377,13 @@ function catOf(r,linked){
 }
 function viewMembers(){
   const linked=new Set(LK.filter(strong).map(l=>l.rid));
-  let h=`<p class="hint" style="margin-top:0">${ml(MONTH)}の日報の中身。紐づき率の低さは貢献度の低さではありません。定常業務が中心の担当は低く出ます。</p><div class="grid5">`;
+  let h=`<p class="hint" style="margin-top:0">${perLabel(MONTH)}の日報の中身。紐づき率の低さは貢献度の低さではありません。定常業務が中心の担当は低く出ます。</p><div class="grid5">`;
   MEM.forEach((n,wi)=>{
-    const reps=RP.filter(r=>r.w===wi&&r.d.startsWith(MONTH));
+    const reps=RP.filter(r=>r.w===wi&&inPer(r.d,MONTH));
     const cnt=CATS.map(()=>0);reps.forEach(r=>cnt[catOf(r,linked)]++);
     const tot=reps.length||1;
-    const pl=DATA.pillars.map((p,pi)=>LK.filter(l=>l.w===wi&&strong(l)&&l.d.startsWith(MONTH)&&ITEM[l.i]&&ITEM[l.i].p===pi).length);
-    h+=`<div class="card"><h3>${n}</h3><div class="mut">${ml(MONTH)}の日報 ${reps.length}件 ／ 目標に紐づく ${Math.round(cnt[0]/tot*100)}%</div>
+    const pl=DATA.pillars.map((p,pi)=>LK.filter(l=>l.w===wi&&strong(l)&&inPer(l.d,MONTH)&&ITEM[l.i]&&ITEM[l.i].p===pi).length);
+    h+=`<div class="card"><h3>${n}</h3><div class="mut">${perLabel(MONTH)}の日報 ${reps.length}件 ／ 目標に紐づく ${Math.round(cnt[0]/tot*100)}%</div>
      <div class="stack">${cnt.map((c,i)=>c?`<i style="width:${c/tot*100}%;background:var(${CATS[i][1]})" title="${CATS[i][0]}: ${c}件"></i>`:'').join('')}</div>
      <div class="leg">${CATS.map((c,i)=>cnt[i]?`<span style="--c:var(${c[1]})">${c[0]} ${c2(cnt[i],tot)}</span>`:'').join('')}</div>
      <div style="margin-top:10px;font-size:12px;color:var(--ink-2)">重点柱別の紐づき: ${pl.map((v,i)=>`${'①②③④⑤'[i]}${v}`).join('　')}</div></div>`;
@@ -431,10 +450,10 @@ function dlgPlan(id){
 function dlgSum(id){
   const m=MONTH;const cur=bulletsFor(id,m).map(b=>b.t).join('\n');
   openDlg(`<h3>発表用の要約を編集</h3><div class="mut">${esc(ITEM[id].t)} ／ ${ml(m)}</div>
-  <label>1行1項目。空にすると日報からの自動表示に戻ります</label><textarea id="fSum" style="min-height:140px">${esc(S.summary[m+'|'+id]?S.summary[m+'|'+id].text:cur)}</textarea>
+  <label>1行1項目。空にすると日報からの自動表示に戻ります</label><textarea id="fSum" style="min-height:140px">${esc(S.summary[sumKey(m,id)]?S.summary[sumKey(m,id)].text:cur)}</textarea>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" id="fCancel">キャンセル</button><button class="btn primary" id="fOk">保存</button></div>`);
   document.getElementById('fCancel').onclick=closeDlg;
-  document.getElementById('fOk').onclick=()=>{const v=document.getElementById('fSum').value.trim(),k=m+'|'+id,old=S.summary[k];
+  document.getElementById('fOk').onclick=()=>{const v=document.getElementById('fSum').value.trim(),k=sumKey(m,id),old=S.summary[k];
     if(v){const s=old||{text:''};s.text=v;S.summary[k]=s;run(()=>scSaveSummary(k,s))}
     else if(old){delete S.summary[k];run(()=>scRemoveState(old._sp))}
     closeDlg();render()};
@@ -455,7 +474,7 @@ function dlgItem(id){
   <label>メモ（日報にない進捗・理由など）</label><textarea id="vNote">${esc(v.note)}</textarea>
   <div style="display:flex;gap:8px;justify-content:space-between;margin-top:14px"><button class="btn" id="vAdd">＋実績を追記</button><div style="display:flex;gap:8px"><button class="btn" id="fCancel">閉じる</button><button class="btn primary" id="fOk">判定を保存</button></div></div>`);
   document.getElementById('fCancel').onclick=closeDlg;
-  document.getElementById('vAdd').onclick=()=>dlgAdd(`${id}|実績|${MONTH}`);
+  document.getElementById('vAdd').onclick=()=>dlgAdd(`${id}|実績|${addMonth()}`);
   document.getElementById('fOk').onclick=()=>{const label=document.getElementById('vLabel').value,note=document.getElementById('vNote').value.trim();
     const old=S.verdict[id];
     if(label==='未確認'&&!note){if(old){delete S.verdict[id];run(()=>scRemoveState(old._sp))}}
@@ -476,7 +495,7 @@ const linksOf=rid=>rid?LK.filter(l=>l.rid===rid):[];
 /* 紐づけ1件の追加・編集。key: 既存の紐づけ（無ければ新規）、pre: 新規の初期値、back: 閉じたあとに開き直す画面 */
 function dlgLink(key,pre,back){
   const old=key?LK.find(l=>l.key===key):null;
-  const v=old||Object.assign({i:DATA.items[0].id,rid:'',d:MONTH+'-01',mem:MEM[0]||'',c:'H',s:'実行',e:''},pre||{});
+  const v=old||Object.assign({i:DATA.items[0].id,rid:'',d:addMonth()+"-01",mem:MEM[0]||'',c:'H',s:'実行',e:''},pre||{});
   openDlg(`<h3>紐づけを${old?'編集':'追加'}</h3><div class="mut">日報の仕事が、どの目標をどこまで進めたか</div>
   <label>目標の項目</label><select id="lItem">${itemOpts(v.i)}</select>
   <div class="row2"><div><label>日付</label><input type="date" id="lDate" value="${esc(v.d)}"></div><div><label>担当</label><select id="lMem">${memOpts(v.mem)}</select></div></div>
@@ -505,7 +524,7 @@ function dlgLink(key,pre,back){
 function dlgReport(rid,pre){
   CUR_BACK=rid?()=>dlgReport(rid):null;
   const old=rid?RP.find(r=>r.rid===rid):null;
-  const v=old||Object.assign({rid:'man|'+uid(),d:MONTH+'-01',mem:MEM[0]||'',r:'',o:'',g:''},pre||{});
+  const v=old||Object.assign({rid:'man|'+uid(),d:addMonth()+"-01",mem:MEM[0]||'',r:'',o:'',g:''},pre||{});
   const gs=groupList();if(v.g&&!gs.includes(v.g))gs.push(v.g);
   const ls=linksOf(v.rid);
   openDlg(`<h3>日報を${old?'編集':'追加'}</h3>
@@ -533,9 +552,9 @@ function dlgReport(rid,pre){
 }
 
 function viewDetail(){
-  const reps=RP.filter(r=>r.d.startsWith(MONTH)&&(FILTER.dmem==='all'||MEM[FILTER.dmem]===r.mem)).sort((a,b)=>a.d<b.d?1:a.d>b.d?-1:a.mem<b.mem?-1:1);
+  const reps=RP.filter(r=>inPer(r.d,MONTH)&&(FILTER.dmem==='all'||MEM[FILTER.dmem]===r.mem)).sort((a,b)=>a.d<b.d?1:a.d>b.d?-1:a.mem<b.mem?-1:1);
   const rids=new Set(RP.map(r=>r.rid));
-  const orphan=LK.filter(l=>l.d.startsWith(MONTH)&&(!l.rid||!rids.has(l.rid))&&(FILTER.dmem==='all'||MEM[FILTER.dmem]===l.mem));
+  const orphan=LK.filter(l=>inPer(l.d,MONTH)&&(!l.rid||!rids.has(l.rid))&&(FILTER.dmem==='all'||MEM[FILTER.dmem]===l.mem));
   const rou=Object.fromEntries(ROUTINES);
   const chipL=l=>`<span class="chip ${l.c==='L'?'mute':'info'}" title="${esc(l.e)}／${l.s}／確度${l.c}" data-elink="${esc(l.key)}" style="cursor:pointer">${esc(l.i)}</span>`;
   const rows=reps.map(r=>{const ls=linksOf(r.rid);
@@ -544,7 +563,7 @@ function viewDetail(){
      <td>${esc(rou[(r.r||'').split(',')[0]]||'')}${r.g?` <span class="chip mute">${esc(r.g)}</span>`:''}</td><td>${r.ed?'<span class="chip conf">手修正</span>':''}</td></tr>`}).join('');
   return `<div class="bar filters"><span class="ctl">担当 <select data-f="dmem"><option value="all">全員</option>${MEM.map((n,i)=>`<option value="${i}" ${String(FILTER.dmem)===String(i)?'selected':''}>${esc(MS[i])}</option>`).join('')}</select></span>
    <button class="btn primary" data-arep="1">＋日報を追加</button><span class="hint">行をクリックで日報を編集。目標の印（IDのチップ）をクリックで、その紐づけだけを編集。</span></div>
-  <section class="sec"><h2>${ml(MONTH)}の日報・紐づけ明細<span class="n">${reps.length}件</span></h2><div style="overflow:auto"><table class="tbl"><thead><tr><th>日付</th><th>担当</th><th>紐づく目標</th><th>定常・目標外</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="mut">この月の日報はありません</td></tr>'}</tbody></table></div></section>
+  <section class="sec"><h2>${perLabel(MONTH)}の日報・紐づけ明細<span class="n">${reps.length}件</span></h2><div style="overflow:auto"><table class="tbl"><thead><tr><th>日付</th><th>担当</th><th>紐づく目標</th><th>定常・目標外</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="mut">この月の日報はありません</td></tr>'}</tbody></table></div></section>
   ${orphan.length?`<section class="sec"><h2>日報に結びついていない紐づけ<span class="n">${orphan.length}件</span></h2><div style="padding:10px 16px">${orphan.map(l=>`<div style="padding:3px 0"><span class="who">${esc(MS[l.w]||l.mem)}</span>${l.d.slice(5).replace('-','/')} ${chipL(l)} ${esc(l.e)}</div>`).join('')}</div></section>`:''}
   <p class="hint">画面で直した行は「手修正」と表示され、次回の取込で上書きされません。削除した行も、取込で復活しません。</p>`;
 }
