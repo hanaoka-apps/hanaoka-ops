@@ -351,13 +351,23 @@ function ensureUploadFolder(){if(!folderReady)folderReady=(async()=>{
 async function apBlob(path){path=String(path||'').split(/[\r\n;]+/)[0].trim().replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');if(!path)return null;
   const alt=/\/incoming\//i.test(path)?path.replace(/\/incoming\//i,'/processed/'):path.replace(/\/processed\//i,'/incoming/');
   for(const p of [path,alt]){try{return {blob:await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true),name:p.split('/').pop()};}catch(e){}}return null;}
+// 仕入（SMILE取込）で、この決済月の請求書が1枚も無い支払先（支払先ごと）。why＝請求書なしの理由（無ければ総務のコメント）
+function noInvoiceOf(rows,ym){const spById={};SP.items.forEach(x=>spById[String(x.id)]=x.f);const out=[],seen={};
+  rows.filter(p=>pv(p,'元')==='仕入（SMILE取込）').forEach(p=>{const k=payeeKey(p),code=String(pv(p,'支払先コード')||'').trim();if(seen[k])return;seen[k]=1;
+    if(INV.items.some(x=>(iv(x.f,'支払区分')||'').endsWith('仕入')&&(iv(x.f,'対象年月')||'')===ym&&String(iv(x.f,'支払先コード')||'').trim()===code&&iv(x.f,'アーカイブフラグ')!==true))return;
+    const sp=spById[pv(p,'AP_SmilePayの行ID')],g=d=>sp?String(sp[F(SP,d)]||'').trim():'';
+    out.push({key:k,name:pv(p,'支払先名')||code,why:g('請求書なしの理由')||g('コメント')});});
+  return out;}
 async function sendToSettle(round,dept){
   if(!canSend(dept)){snack('工場の担当は工場の分だけ決裁に回せます',true);return;}
   const ym=month(),rows=piOf(round,dept);if(!rows.length){snack('支払指図がありません',true);return;}
   const pd=pendingOf(round,dept);if(pd.sp||pd.ex){snack('未確認のものがあります（仕入 '+pd.sp+'社・経費 '+pd.ex+'件）',true);return;}
   if(!WF.siteId){snack('ワークフローのサイトを読めないため回せません',true);return;}
   const total=rows.reduce((s,p)=>s+(+pv(p,'支払額')||0),0);
-  if(!confirm(`${ym} ${round}払い・${dept} の支払 ${rows.length}件（${yen(total)} 円）を決裁に回します。\n\n・この時点の内容で固定します（照合の鍵）\n・明細（口座番号・名義を除く）と請求書 PDF のコピーを、ワークフローの受付フォルダに置きます\n・そのあと「支払決済」の申請画面が開くので、内容と経路を確かめて申請してください`))return;
+  // 請求書の添付忘れ：仕入で請求書が1枚も無い先。理由（請求書なしの理由・総務のコメント）があれば回せる（決裁の明細にも理由を出す）
+  const noInv=noInvoiceOf(rows,ym),noWhy=noInv.filter(x=>!x.why);
+  if(noWhy.length){snack(`請求書も理由も無い仕入先があります：${noWhy.map(x=>x.name).join('、')}（仕入の確認で請求書を置くか、理由を書いてください）`,true);return;}
+  if(!confirm(`${ym} ${round}払い・${dept} の支払 ${rows.length}件（${yen(total)} 円）を決裁に回します。\n\n`+(noInv.length?`⚠ 請求書なしの仕入先 ${noInv.length}社（理由を決裁の明細に出します）\n${noInv.map(x=>`・${x.name}：${x.why}`).join('\n')}\n\n`:'')+`・この時点の内容で固定します（照合の鍵）\n・明細（口座番号・名義を除く）と請求書 PDF のコピーを、ワークフローの受付フォルダに置きます\n・そのあと「支払決済」の申請画面が開くので、内容と経路を確かめて申請してください`))return;
   logOut('決裁に回す準備をしています...');
   try{
     const prev=b=>prevRows(round,dept,b),p1=prev(1),p2=prev(2),hash=await hashOf(rows);
@@ -381,6 +391,7 @@ async function sendToSettle(round,dept){
       const bankNow=[pv(p0,'銀行コード'),pv(p0,'支店コード'),pv(p0,'口座番号')].join('|'),bankPrev=lastBank[k];
       const notes=[];if(sp){String(g('気づき')||'').split('\n').filter(Boolean).forEach(s=>notes.push(s));if(g('変えた理由'))notes.push('分け方：'+g('変えた理由'));if(g('コメント'))notes.push('総務：'+g('コメント'));}
       ps.forEach(p=>{if(pv(p,'メモ'))notes.push(pv(p,'メモ'));});
+      const ni=noInv.find(x=>x.key===k);if(ni)notes.unshift('📄 請求書なし：'+ni.why);
       let exLines;if(src==='経費'){exLines=[];for(const x of invOf(p0)){const sl=(x.f[F(INV,'請求NO')]?'No.'+x.f[F(INV,'請求NO')]+' ':'');
           // 仕訳の明細：科目・税区分（税込／税抜・税率・課／共）・税抜・消費税も渡す（決裁する人が税区分を見られるように）
           (SL.byInv[String(x.id)]||[]).forEach(l=>{const g=d=>l[F(SL,d)],rate=g('税率区分')||'',acct=g('勘定科目コード')||'',dept=g('部門コード')||'';
@@ -394,7 +405,7 @@ async function sendToSettle(round,dept){
         lines:exLines||(ps.length>1?ps.map(p=>({genre:pv(p,'支払手段')==='総合振込'?'振込':pv(p,'支払手段'),amount:+pv(p,'支払額')||0,note:pv(p,'期日')?'期日 '+pv(p,'期日'):''})):undefined),
         due:ps.map(p=>pv(p,'期日')).filter(Boolean)[0]||'',payDate:pv(p0,'実支払日')||'',prev1:p1[k]||0,prev2:p2[k]||0,
         smile:sp?{incl:+g('税込仕入額')||0,balance:+g('今回支払残高')||0,carry:+g('繰越残高')||0,held:+g('保留した繰越')||0}:undefined,
-        note:notes.join(' ／ '),flag:!!(sp&&g('コメント')),invoices:inv,
+        note:notes.join(' ／ '),flag:!!(sp&&g('コメント'))||!!ni,invoices:inv,
         bankChange:(pv(p0,'支払手段')==='総合振込'&&bankPrev&&bankPrev!==bankNow)?`${pv(p0,'銀行コード')}-${pv(p0,'支店コード')} ****${String(pv(p0,'口座番号')||'').slice(-4)}`:'',
         prepaid:ps.some(p=>pv(p,'支払状態')==='先行支払済')});}
     const byM={};rows.forEach(p=>{const m=pv(p,'支払手段')==='総合振込'?'振込':pv(p,'支払手段');byM[m]=(byM[m]||0)+(+pv(p,'支払額')||0);});
