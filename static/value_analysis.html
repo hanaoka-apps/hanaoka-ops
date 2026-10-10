@@ -89,6 +89,9 @@
     </div>
         <div class="box"><h2 class="va-card-title">工場別の月次グラフ</h2><div id="factoryCharts"></div></div>
       </div>
+      <div class="va-section" id="sec-focus"><div class="va-section-head"><h2 class="va-section-title">重点品目の生産実績</h2><span class="fp-head-right"><span class="va-section-note" id="focusNote"></span><button type="button" class="fp-edit-btn" id="focusEditBtn" hidden>⚙ 重点品目の設定</button></span></div>
+        <div id="focusProduction"><div class="fp-empty">読み込んでいます…</div></div>
+      </div>
       <div class="va-section" id="sec-inventory"><div class="va-section-head"><h2 class="va-section-title">在庫</h2><span class="va-section-note">工場別在庫の内訳 → 推移 → 内訳と根拠</span></div>
         <div class="box" id="trend-inventory"><h2 class="va-card-title">工場別在庫の内訳（月末残高）</h2><p class="lead">月末在庫の金額そのものです。合計が全社の月末在庫です。</p><div id="inventoryMonthlyTable"></div><div class="va-chart" id="inventoryChart"></div></div>
         <div id="inventoryBreakdown" class="box"></div>
@@ -136,7 +139,8 @@
       <div class="scroll"><table><thead><tr><th>#</th><th>チェック項目</th><th>判定</th><th>結果</th><th>対象件数</th><th>根拠データ</th></tr></thead><tbody id="checkRows"></tbody></table></div>
     </div></section>
   </main>
-  <div id="analysisModal" class="modal-backdrop" hidden>
+  <div id="focusModal" hidden role="dialog" aria-modal="true" aria-labelledby="focusModalTitle"><div class="fp-shell"><div class="fp-shell-head"><h2 id="focusModalTitle">⚙ 重点品目の設定</h2><div class="fp-tabs"><button type="button" data-fp-tab="groups" class="on">グループと条件</button><button type="button" data-fp-tab="plans">計画（手入力）</button></div><button type="button" class="fp-close" data-fp-close aria-label="閉じる">✕</button></div><div class="fp-body"><div id="fpGroupsPane"></div><div id="fpPlansPane" hidden></div></div></div></div>
+<div id="analysisModal" class="modal-backdrop" hidden>
     <div class="modal-shell" role="dialog" aria-modal="true" aria-labelledby="analysisModalTitle">
       <div class="modal-head"><h2 id="analysisModalTitle">詳細</h2><button type="button" id="analysisModalClose" class="modal-close" aria-label="閉じる">×</button></div>
       <div id="analysisModalBody" class="modal-body"></div>
@@ -682,6 +686,142 @@
     const vaRenderInventoryBreakdown=renderInventoryBreakdown;renderInventoryBreakdown=function(){vaRenderInventoryBreakdown();el('inventoryBreakdown')?.querySelectorAll('table').forEach(t=>t.classList.add('va-table','va-cards'));vaCardify(el('inventoryBreakdown'))};
     const vaRenderLow=renderLowValueSummary;renderLowValueSummary=function(){vaRenderLow();el('lowValueSummary')?.querySelectorAll('table').forEach(t=>t.classList.add('va-table','va-cards'));vaCardify(el('lowValueSummary'))};
     const vaRenderLead=renderLeadTimeSummary;renderLeadTimeSummary=function(){vaRenderLead();el('leadTimeSummary')?.querySelectorAll('table').forEach(t=>t.classList.add('va-table','va-cards'));vaCardify(el('leadTimeSummary'))};
+    // ===== 2026-10-10 重点品目の生産実績（計画＝手入力 vs 完成報告）=====
+    // 完成数は保護JSON value_analysis_production_results.json（Codex集計：最終社内工程の報告数量）。
+    // どの品目をどのグループに入れるかは、SharePointリスト「FUJIN_重点品目グループ」の条件で、ここ（ブラウザ）で当てはめる。
+    // 計画は SharePointリスト「FUJIN_重点品目計画」に手入力。業務データ・IDはコードに書かない（サイトはSharedMastersドライブから辿る）。
+    const FP={results:null,resultsError:'',groups:null,plans:null,listError:'',site:'',loading:null,factory:'第一工場',edit:null,planMonth:null,busy:false};
+    const FP_LISTS={groups:'FUJIN_重点品目グループ',plans:'FUJIN_重点品目計画'};
+    const FP_FACTORIES=['第一工場','第二工場','第三工場'];
+    const FP_COND=[['大分類','大分類（コード or 名前）'],['中分類','中分類（コード or 名前）'],['小分類','小分類（コード or 名前）'],['品目コード','品目コード（完全一致）'],['前方一致','品目コードの先頭']];
+    const fpYm=ym=>ym&&ym.length===6?`${ym.slice(0,4)}-${ym.slice(4)}`:ym;
+    const fpYmLabel=m=>m?`${m.slice(0,4)}年${Number(m.slice(5,7))}月`:'';
+    const fpNum=v=>v==null||!Number.isFinite(v)?'—':Number(v).toLocaleString('ja-JP',{maximumFractionDigits:2});
+    const fpNorm=v=>String(v??'').normalize('NFKC').trim();
+    function fpPrevMonth(m){const d=new Date(Number(m.slice(0,4)),Number(m.slice(5,7))-2,1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+    function fpNextMonth(m){const d=new Date(Number(m.slice(0,4)),Number(m.slice(5,7)),1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+    async function fpToken(scopes){const t=window.top,msal=t&&t._fujinMsal;if(!msal)throw new Error('サインイン情報がありません');const account=msal.getActiveAccount?.()||msal.getAllAccounts?.()[0];if(!account)throw new Error('サインインしていません');return (await msal.acquireTokenSilent({scopes,account})).accessToken}
+    async function fpGraph(path,opt,scopes){const tk=await fpToken(scopes||['https://graph.microsoft.com/Lists.SelectedOperations.Selected']);const r=await fetch(path.startsWith('http')?path:'https://graph.microsoft.com/v1.0'+path,Object.assign({cache:'no-store'},opt||{},{headers:Object.assign({Authorization:'Bearer '+tk,'Content-Type':'application/json'},(opt&&opt.headers)||{})}));return r}
+    async function fpLoadResults(){
+      const driveId=existingSharedMastersDriveId(window.top);if(!driveId)throw new Error('保存先を特定できません');
+      const r=await fpGraph(`/drives/${encodeURIComponent(driveId)}/root:/value_analysis_production_results.json:/content`,null,['Files.Read.All']);
+      if(r.status===404){FP.resultsError='完成実績データはまだ作成されていません（日次集計に組み込まれると表示されます）';return null}
+      if(!r.ok)throw new Error(`完成実績データを取得できませんでした（HTTP ${r.status}）`);
+      const d=await r.json();if(!d||!Array.isArray(d.rows)||!d.items)throw new Error('完成実績データの形式が正しくありません');return d}
+    async function fpSite(){if(FP.site)return FP.site;const driveId=existingSharedMastersDriveId(window.top);const r=await fpGraph(`/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`,null,['Files.Read.All']);if(!r.ok)throw new Error('サイトを特定できません（HTTP '+r.status+'）');const j=await r.json();FP.site=j.sharePointIds&&j.sharePointIds.siteId;if(!FP.site)throw new Error('サイトを特定できません');return FP.site}
+    async function fpListItems(title){const site=await fpSite();let url=`/sites/${site}/lists/${encodeURIComponent(title)}/items?expand=fields&$top=999`,out=[];while(url){const r=await fpGraph(url);if(!r.ok){const e=new Error(`${title} を読めません（HTTP ${r.status}）`);e.status=r.status;throw e}const j=await r.json();out=out.concat((j.value||[]).map(x=>Object.assign({id:x.id},x.fields||{})));url=j['@odata.nextLink']||null}return out}
+    function fpMapGroups(rows){return rows.map(x=>({id:x.id,group:fpNorm(x.Title),factory:fpNorm(x.Factory),type:fpNorm(x.CondType),value:fpNorm(x.CondValue),exclude:!!x.Exclude,inTotal:x.InTotal!==false,sort:Number(x.SortNo)||0,active:x.Active!==false}))}
+    function fpMapPlans(rows){return rows.map(x=>({id:x.id,month:fpNorm(x.Title),factory:fpNorm(x.Factory),group:fpNorm(x.GroupName),qty:x.PlanQty==null||x.PlanQty===''?null:Number(x.PlanQty),note:fpNorm(x.Note)}))}
+    async function fpLoadLists(){const [g,p]=await Promise.all([fpListItems(FP_LISTS.groups),fpListItems(FP_LISTS.plans)]);FP.groups=fpMapGroups(g);FP.plans=fpMapPlans(p)}
+    function fpLoad(force){
+      if(FP.loading&&!force)return FP.loading;
+      if(window.top===window){FP.resultsError='認証済みFUJIN画面から開くと表示されます';return Promise.resolve()}
+      FP.loading=(async()=>{
+        const [res,lists]=await Promise.allSettled([fpLoadResults(),fpLoadLists()]);
+        if(res.status==='fulfilled'){FP.results=res.value}else{FP.results=null;FP.resultsError=res.reason.message}
+        if(lists.status==='fulfilled'){FP.listError=''}else{FP.groups=FP.groups||[];FP.plans=FP.plans||[];FP.listError=lists.reason.status===403||lists.reason.status===401?'重点品目の設定を読む権限がありません（管理者に連絡してください）':lists.reason.status===404?'重点品目の設定リストがまだありません':lists.reason.message}
+        renderFocusProduction()})();
+      return FP.loading}
+    // ---- 当てはめ ----
+    function fpCondMatch(c,code,it){const v=c.value;if(!v)return false;const nv=v.toLocaleLowerCase('ja-JP'),eq=x=>fpNorm(x).toLocaleLowerCase('ja-JP')===nv;
+      switch(c.type){case '大分類':return eq(it.dc)||eq(it.dn);case '中分類':return eq(it.mc)||eq(it.mn);case '小分類':return eq(it.sc)||eq(it.sn);case '品目コード':return eq(code);case '前方一致':return fpNorm(code).toLocaleLowerCase('ja-JP').startsWith(nv);default:return false}}
+    function fpMatchItems(conds){const items=FP.results?.items||{},inc=conds.filter(c=>!c.exclude&&c.value),exc=conds.filter(c=>c.exclude&&c.value);if(!inc.length)return new Set();const out=new Set();for(const [code,it] of Object.entries(items)){if(inc.some(c=>fpCondMatch(c,code,it))&&!exc.some(c=>fpCondMatch(c,code,it)))out.add(code)}return out}
+    function fpGroupDefs(factory,source){const rows=(source||FP.groups||[]).filter(c=>c.factory===factory&&c.active!==false&&c.group);const m=new Map();for(const c of rows){let g=m.get(c.group);if(!g){g={name:c.group,factory,sort:c.sort,inTotal:c.inTotal,conds:[]};m.set(c.group,g)}g.sort=Math.min(g.sort,c.sort);if(c.inTotal===false)g.inTotal=false;g.conds.push(c)}return [...m.values()].sort((a,b)=>a.sort-b.sort||a.name.localeCompare(b.name,'ja'))}
+    function fpQty(codes,factory,month){let q=0;for(const r of FP.results?.rows||[]){if(r.m===month&&r.factory===factory&&codes.has(r.item))q+=Number(r.qty)||0}return q}
+    function fpUnits(codes){const items=FP.results?.items||{};return [...new Set([...codes].map(c=>items[c]?.unit||'').filter(Boolean))]}
+    function fpPlan(month,factory,group){const p=(FP.plans||[]).find(x=>x.month===month&&x.factory===factory&&x.group===group);return p&&p.qty!=null&&Number.isFinite(p.qty)?p.qty:null}
+    function fpRows(factory,month){return fpGroupDefs(factory).map(g=>{const codes=fpMatchItems(g.conds),units=fpUnits(codes),done=FP.results?fpQty(codes,factory,month):null,plan=fpPlan(month,factory,g.name);return{...g,codes,units,unit:units.length===1?units[0]:units.length?'混在':'',done,plan,diff:plan!=null&&done!=null?done-plan:null,rate:plan>0&&done!=null?done/plan:null}})}
+    // ---- サマリー表示 ----
+    function fpRateCell(rate){if(rate==null)return '<span class="fp-muted">—</span>';const pct=Math.round(rate*1000)/10,cls=rate>=1?'ok':rate>=0.8?'mid':'low';return `<span class="fp-rate ${cls}"><i style="--w:${Math.min(100,Math.max(2,rate*100))}%"></i><b>${pct.toFixed(1)}%</b></span>`}
+    function renderFocusProduction(){
+      const box=el('focusProduction');if(!box)return;const month=fpYm(state.month);const editor=canEditInventory();
+      el('focusEditBtn')&&(el('focusEditBtn').hidden=!editor);
+      const latest=FP.results?.source_latest_date||'',isLatest=latest&&latest.slice(0,7)===month;
+      el('focusNote').textContent=`${fpYmLabel(month)}・完成報告数（最終社内工程）${isLatest?`・${Number(latest.slice(5,7))}/${Number(latest.slice(8,10))}時点`:''}・計画は手入力`;
+      if(FP.groups==null){box.innerHTML='<div class="fp-empty">重点品目の設定を読み込んでいます…</div>';return}
+      const notes=[FP.listError&&`<div class="va-note warn">${esc(FP.listError)}</div>`,!FP.results&&FP.resultsError&&`<div class="va-note">${esc(FP.resultsError)}</div>`].filter(Boolean).join('');
+      const factories=FP_FACTORIES.filter(f=>fpGroupDefs(f).length);
+      if(!factories.length){box.innerHTML=notes+`<div class="fp-empty">重点品目がまだ登録されていません。${editor?'右上の「⚙ 重点品目の設定」から、工場ごとにグループ（例：ダンディ、プラ）と条件を登録してください。':'管理者が設定すると表示されます。'}</div>`;return}
+      box.innerHTML=notes+factories.map(f=>{const rows=fpRows(f,month),tot=rows.filter(r=>r.inTotal),tu=[...new Set(tot.map(r=>r.unit))],tPlan=tot.some(r=>r.plan!=null)?tot.reduce((s,r)=>s+(r.plan||0),0):null,tDone=FP.results?tot.reduce((s,r)=>s+(r.done||0),0):null,tDiff=tPlan!=null&&tDone!=null?tDone-tPlan:null,tRate=tPlan>0&&tDone!=null?tDone/tPlan:null;
+        return `<div class="box fp-factory"><h2 class="va-card-title">${esc(f)}</h2><div class="scroll va-table-wrap"><table class="va-table va-cards fp-table"><thead><tr><th>グループ</th><th>計画</th><th>完成</th><th>差</th><th>達成率</th><th>単位</th></tr></thead><tbody>${rows.map(r=>`<tr><td data-label="グループ"><b>${esc(r.name)}</b>${r.unit&&r.unit!=='混在'?`<span class="fp-unit-inline">（${esc(r.unit)}）</span>`:''}${r.inTotal?'':'<span class="fp-tag">合計外</span>'}${r.unit==='混在'?'<span class="fp-tag warn" title="台と枚など単位の違う品目が混ざっています">単位混在</span>':''}${!r.codes.size&&FP.results?'<span class="fp-tag warn">該当品目なし</span>':''}</td><td data-label="計画">${fpNum(r.plan)}</td><td data-label="完成" class="va-strong">${fpNum(r.done)}</td><td data-label="差" class="${r.diff==null?'':r.diff<0?'negative':'positive'}">${r.diff==null?'—':(r.diff>0?'+':'')+fpNum(r.diff)}</td><td data-label="達成率">${fpRateCell(r.rate)}</td><td data-label="単位">${esc(r.unit||'—')}</td></tr>`).join('')}${tot.length>1?`<tr class="total"><td data-label="グループ">合計${tu.length>1?'<span class="fp-tag warn">単位混在</span>':''}</td><td data-label="計画">${fpNum(tPlan)}</td><td data-label="完成">${fpNum(tDone)}</td><td data-label="差">${tDiff==null?'—':(tDiff>0?'+':'')+fpNum(tDiff)}</td><td data-label="達成率">${fpRateCell(tRate)}</td><td data-label="単位">${esc(tu.length===1?tu[0]:'')}</td></tr>`:''}</tbody></table></div></div>`}).join('');
+    }
+    // ---- 設定（管理者のみ表示。保存はリスト権限で最終判定）----
+    function fpOpenSettings(){if(!canEditInventory())return;FP.planMonth=FP.planMonth||fpYm(state.month);fpStartEdit(FP.factory);el('focusModal').hidden=false;fpSetTab('groups')}
+    function fpStartEdit(factory){FP.factory=factory;FP.edit=fpGroupDefs(factory).map(g=>({name:g.name,orig:g.name,inTotal:g.inTotal,conds:g.conds.map(c=>({id:c.id,type:c.type,value:c.value,exclude:c.exclude}))}))}
+    function fpSetTab(t){document.querySelectorAll('#focusModal [data-fp-tab]').forEach(b=>b.classList.toggle('on',b.dataset.fpTab===t));el('fpGroupsPane').hidden=t!=='groups';el('fpPlansPane').hidden=t!=='plans';t==='groups'?fpRenderGroups():fpRenderPlans()}
+    function fpFactoryTabs(cur){return `<div class="fp-factory-tabs">${FP_FACTORIES.map(f=>`<button type="button" data-fp-factory="${esc(f)}" class="${f===cur?'on':''}">${esc(f)}</button>`).join('')}</div>`}
+    function fpSuggest(){const items=FP.results?.items||{},s=new Set();for(const it of Object.values(items)){[it.dn,it.mn,it.sn].forEach(v=>v&&s.add(v))}return [...s].sort((a,b)=>a.localeCompare(b,'ja'))}
+    function fpRenderGroups(){
+      const pane=el('fpGroupsPane'),month=fpYm(state.month),prev=fpPrevMonth(month),items=FP.results?.items||{};
+      pane.innerHTML=fpFactoryTabs(FP.factory)+`<p class="lead">1つのグループに条件を何行でも足せます（分類と品目の混在可）。「除く」にした条件に当てはまる品目は外します。単位は品目マスタの単位です。${FP.results?'':'<br><b>完成実績データがまだ無いため、該当品目の確認はできません。</b>'}</p>`
+        +FP.edit.map((g,gi)=>{const codes=fpMatchItems(g.conds),units=fpUnits(codes),list=[...codes].map(c=>({c,it:items[c],cur:fpQty(new Set([c]),FP.factory,month),pre:fpQty(new Set([c]),FP.factory,prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre);
+          return `<div class="fp-group"><div class="fp-group-head"><input class="fp-gname" data-gi="${gi}" value="${esc(g.name)}" placeholder="グループ名（例：ダンディ）"><label><input type="checkbox" data-gtotal="${gi}" ${g.inTotal?'checked':''}> 合計に含める</label><span class="fp-gbtns"><button type="button" data-gup="${gi}" ${gi===0?'disabled':''} aria-label="上へ">↑</button><button type="button" data-gdown="${gi}" ${gi===FP.edit.length-1?'disabled':''} aria-label="下へ">↓</button><button type="button" class="fp-del" data-gdel="${gi}">グループを削除</button></span></div>
+            <table class="fp-conds"><tbody>${g.conds.map((c,ci)=>`<tr><td><select data-ctype="${gi}:${ci}">${FP_COND.map(([v,l])=>`<option value="${v}" ${c.type===v?'selected':''}>${esc(l)}</option>`).join('')}</select></td><td><input data-cval="${gi}:${ci}" value="${esc(c.value)}" list="fpSuggest" placeholder="値"></td><td><label><input type="checkbox" data-cexc="${gi}:${ci}" ${c.exclude?'checked':''}> 除く</label></td><td><button type="button" class="fp-del" data-cdel="${gi}:${ci}" aria-label="条件を削除">✕</button></td></tr>`).join('')}</tbody></table>
+            <button type="button" class="fp-add" data-cadd="${gi}">＋ 条件を追加</button>
+            <details class="fp-preview" ${list.length&&list.length<=30?'':''}><summary>該当品目 ${codes.size}件${units.length>1?`<span class="fp-tag warn">単位混在：${esc(units.join('・'))}</span>`:units.length?`（${esc(units[0])}）`:''}　${fpYmLabel(month)} 完成 <b>${fpNum(fpQty(codes,FP.factory,month))}</b>／${fpYmLabel(prev)} <b>${fpNum(fpQty(codes,FP.factory,prev))}</b></summary>
+              ${list.length?`<table class="fp-mini"><thead><tr><th>品目コード</th><th>品目名</th><th>分類</th><th>単位</th><th>${esc(fpYmLabel(month))}</th><th>${esc(fpYmLabel(prev))}</th></tr></thead><tbody>${list.slice(0,200).map(x=>`<tr><td>${esc(x.c)}</td><td>${esc(x.it?.name)}</td><td class="fp-muted">${esc([x.it?.dn,x.it?.mn,x.it?.sn].filter(Boolean).join(' / '))}</td><td>${esc(x.it?.unit)}</td><td class="num">${fpNum(x.cur)}</td><td class="num">${fpNum(x.pre)}</td></tr>`).join('')}</tbody></table>${list.length>200?`<p class="fp-muted">ほか ${list.length-200}件</p>`:''}`:'<p class="fp-muted">該当する品目がありません（この工場で完成報告がある品目だけが対象です）</p>'}
+            </details></div>`}).join('')
+        +`<datalist id="fpSuggest">${fpSuggest().map(v=>`<option value="${esc(v)}">`).join('')}</datalist><div class="fp-actions"><button type="button" class="fp-add" id="fpAddGroup">＋ グループを追加</button><span class="fp-spacer"></span><span id="fpMsg" class="fp-muted"></span><button type="button" class="fp-primary" id="fpSaveGroups">${esc(FP.factory)}の設定を保存</button></div>`;
+    }
+    function fpRenderPlans(){
+      const pane=el('fpPlansPane'),m=FP.planMonth,groups=fpGroupDefs(FP.factory);
+      const months=[fpPrevMonth(m),m,fpNextMonth(m)];
+      pane.innerHTML=fpFactoryTabs(FP.factory)+`<div class="fp-month"><button type="button" data-fp-month="${months[0]}">← ${esc(fpYmLabel(months[0]))}</button><b>${esc(fpYmLabel(m))}の計画</b><button type="button" data-fp-month="${months[2]}">${esc(fpYmLabel(months[2]))} →</button></div>`
+        +(groups.length?`<table class="fp-plan"><thead><tr><th>グループ</th><th>計画数</th><th>単位</th><th>メモ</th></tr></thead><tbody>${groups.map(g=>{const p=(FP.plans||[]).find(x=>x.month===m&&x.factory===FP.factory&&x.group===g.name),u=fpUnits(fpMatchItems(g.conds));return `<tr><td><b>${esc(g.name)}</b></td><td><input type="number" inputmode="decimal" min="0" step="any" data-pq="${esc(g.name)}" value="${p&&p.qty!=null?p.qty:''}"></td><td>${esc(u.length===1?u[0]:u.length?'混在':'—')}</td><td><input data-pn="${esc(g.name)}" value="${esc(p?.note||'')}" placeholder="任意"></td></tr>`}).join('')}</tbody></table>`:'<p class="fp-muted">この工場にはまだグループがありません。先に「グループと条件」で登録してください。</p>')
+        +`<div class="fp-actions"><span class="fp-spacer"></span><span id="fpMsg" class="fp-muted"></span>${groups.length?`<button type="button" class="fp-primary" id="fpSavePlans">${esc(fpYmLabel(m))}の計画を保存</button>`:''}</div>`;
+    }
+    function fpMsg(t,bad){const m=el('fpMsg');if(m){m.textContent=t;m.style.color=bad?'var(--red)':''}}
+    async function fpReq(method,path,body){const r=await fpGraph(path,{method,body:body?JSON.stringify(body):undefined});if(!r.ok&&!(method==='DELETE'&&r.status===404)){const e=new Error(`保存できませんでした（HTTP ${r.status}${r.status===403?'：このリストを編集する権限がありません':''}）`);throw e}return r.status===204?null:r.json().catch(()=>null)}
+    async function fpSaveGroups(){
+      if(FP.busy)return;const names=FP.edit.map(g=>fpNorm(g.name));
+      if(names.some(n=>!n))return fpMsg('グループ名が空欄のものがあります',true);
+      if(new Set(names).size!==names.length)return fpMsg('同じ名前のグループがあります',true);
+      if(FP.edit.some(g=>!g.conds.some(c=>!c.exclude&&fpNorm(c.value))))return fpMsg('「除く」以外の条件が1つも無いグループがあります',true);
+      FP.busy=true;fpMsg('保存しています…');
+      try{const site=await fpSite(),base=`/sites/${site}/lists/${encodeURIComponent(FP_LISTS.groups)}/items`,pbase=`/sites/${site}/lists/${encodeURIComponent(FP_LISTS.plans)}/items`;
+        const keep=new Set();
+        for(const [gi,g] of FP.edit.entries()){for(const c of g.conds){if(!fpNorm(c.value))continue;const fields={Title:fpNorm(g.name),Factory:FP.factory,CondType:c.type,CondValue:fpNorm(c.value),Exclude:!!c.exclude,InTotal:!!g.inTotal,SortNo:(gi+1)*10,Active:true};
+          if(c.id){await fpReq('PATCH',`${base}/${c.id}/fields`,fields);keep.add(String(c.id))}else{const j=await fpReq('POST',base,{fields});if(j&&j.id)keep.add(String(j.id))}}}
+        for(const c of (FP.groups||[]).filter(c=>c.factory===FP.factory&&!keep.has(String(c.id))))await fpReq('DELETE',`${base}/${c.id}`);
+        // グループ名を変えたら、計画の名前も合わせる
+        for(const g of FP.edit){if(g.orig&&fpNorm(g.name)!==g.orig){for(const p of (FP.plans||[]).filter(p=>p.factory===FP.factory&&p.group===g.orig))await fpReq('PATCH',`${pbase}/${p.id}/fields`,{GroupName:fpNorm(g.name)})}}
+        await fpLoadLists();fpStartEdit(FP.factory);fpRenderGroups();renderFocusProduction();fpMsg('保存しました')}
+      catch(e){fpMsg(e.message,true)}finally{FP.busy=false}}
+    async function fpSavePlans(){
+      if(FP.busy)return;FP.busy=true;fpMsg('保存しています…');
+      try{const site=await fpSite(),base=`/sites/${site}/lists/${encodeURIComponent(FP_LISTS.plans)}/items`,m=FP.planMonth;
+        for(const inp of el('fpPlansPane').querySelectorAll('input[data-pq]')){const g=inp.dataset.pq,raw=fpNorm(inp.value).replace(/,/g,''),qty=raw===''?null:Number(raw),note=fpNorm(el('fpPlansPane').querySelector(`input[data-pn="${CSS.escape(g)}"]`)?.value);
+          if(qty!=null&&(!Number.isFinite(qty)||qty<0))throw new Error(`${g} の計画数が正しくありません`);
+          const p=(FP.plans||[]).find(x=>x.month===m&&x.factory===FP.factory&&x.group===g);
+          if(p){if(qty==null&&!note)await fpReq('DELETE',`${base}/${p.id}`);else if(p.qty!==qty||p.note!==note)await fpReq('PATCH',`${base}/${p.id}/fields`,{PlanQty:qty,Note:note})}
+          else if(qty!=null||note)await fpReq('POST',base,{fields:{Title:m,Factory:FP.factory,GroupName:g,PlanQty:qty,Note:note}})}
+        await fpLoadLists();fpRenderPlans();renderFocusProduction();fpMsg('保存しました')}
+      catch(e){fpMsg(e.message,true)}finally{FP.busy=false}}
+    function fpBindSettings(){
+      const modal=el('focusModal');if(!modal||modal.dataset.bound)return;modal.dataset.bound='1';
+      el('focusEditBtn').addEventListener('click',fpOpenSettings);
+      modal.addEventListener('click',e=>{const t=e.target;
+        if(t===modal||t.closest('[data-fp-close]')){modal.hidden=true;return}
+        if(t.dataset.fpTab)return fpSetTab(t.dataset.fpTab);
+        if(t.dataset.fpFactory){fpStartEdit(t.dataset.fpFactory);return el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}
+        if(t.dataset.fpMonth){FP.planMonth=t.dataset.fpMonth;return fpRenderPlans()}
+        if(t.id==='fpAddGroup'){FP.edit.push({name:'',orig:'',inTotal:true,conds:[{type:'小分類',value:'',exclude:false}]});return fpRenderGroups()}
+        if(t.dataset.cadd!=null){FP.edit[+t.dataset.cadd].conds.push({type:'品目コード',value:'',exclude:false});return fpRenderGroups()}
+        if(t.dataset.cdel){const [g,c]=t.dataset.cdel.split(':').map(Number);FP.edit[g].conds.splice(c,1);return fpRenderGroups()}
+        if(t.dataset.gdel!=null){const g=FP.edit[+t.dataset.gdel];if(!confirm(`「${g.name||'名前なし'}」を削除します（保存するまで反映されません）`))return;FP.edit.splice(+t.dataset.gdel,1);return fpRenderGroups()}
+        if(t.dataset.gup!=null||t.dataset.gdown!=null){const i=+(t.dataset.gup??t.dataset.gdown),j=t.dataset.gup!=null?i-1:i+1;[FP.edit[i],FP.edit[j]]=[FP.edit[j],FP.edit[i]];return fpRenderGroups()}
+        if(t.id==='fpSaveGroups')return fpSaveGroups();
+        if(t.id==='fpSavePlans')return fpSavePlans()});
+      modal.addEventListener('change',e=>{const t=e.target;
+        if(t.dataset.ctype){const [g,c]=t.dataset.ctype.split(':').map(Number);FP.edit[g].conds[c].type=t.value;return fpRenderGroups()}
+        if(t.dataset.cval){const [g,c]=t.dataset.cval.split(':').map(Number);FP.edit[g].conds[c].value=t.value;return fpRenderGroups()}
+        if(t.dataset.cexc){const [g,c]=t.dataset.cexc.split(':').map(Number);FP.edit[g].conds[c].exclude=t.checked;return fpRenderGroups()}
+        if(t.dataset.gtotal!=null){FP.edit[+t.dataset.gtotal].inTotal=t.checked;return}
+        if(t.classList.contains('fp-gname')){FP.edit[+t.dataset.gi].name=t.value}});
+      document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)modal.hidden=true});
+    }
+    const fpRenderSummaryBase=renderSummary;renderSummary=function(){fpRenderSummaryBase.apply(this,arguments);try{fpBindSettings();renderFocusProduction()}catch(e){console.warn('[重点品目]',e)}};
+    const fpAcceptData=acceptData;acceptData=function(data){fpAcceptData(data);fpLoad().catch(e=>console.warn('[重点品目]',e))};
     function purchaseAxisLabel(value){
       const absolute=Math.abs(value);
       if(absolute>=100000000)return (value/100000000).toFixed(1)+'億';
@@ -1021,6 +1161,85 @@
       #summary table.va-cards td[style]{text-align:right!important}
       .va-tooltip{min-width:0;max-width:calc(100% - 12px)}
       .va-axis{font-size:10px}.va-month{font-size:11px}.va-rate{font-size:10.5px}.va-rate-head{font-size:10px}
+    }
+  </style>
+  <style>
+    /* ===== 2026-10-10 重点品目の生産実績 ===== */
+    #sec-focus .va-section-head{align-items:center}
+    .fp-head-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .fp-edit-btn{border:1px solid var(--line-strong);background:#fff;color:var(--navy);font-weight:700;font-size:12.5px;padding:6px 12px;border-radius:999px;cursor:pointer;font-family:inherit}
+    .fp-edit-btn:hover{background:var(--navy-soft)}
+    .fp-empty{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px 20px;color:var(--sub);font-size:13px;line-height:1.7}
+    #focusProduction{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:0 18px}
+    #focusProduction>.va-note{grid-column:1/-1;margin:0 0 12px}
+    #focusProduction>.fp-empty{grid-column:1/-1}
+    .fp-table td:first-child b{font-weight:800}
+    .fp-tag{display:inline-block;margin-left:6px;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;background:#f1f3f8;color:var(--sub);vertical-align:1px}
+    .fp-tag.warn{background:var(--amber-soft);color:var(--amber)}
+    .fp-muted{color:var(--sub)}
+    .fp-unit-inline{display:none;margin-left:6px;font-size:11.5px;font-weight:600;color:var(--sub)}
+    .fp-rate{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end;min-width:110px}
+    .fp-rate i{display:block;height:6px;border-radius:3px;background:#e6eaf3;position:relative;flex:0 0 52px;overflow:hidden}
+    .fp-rate i{background:linear-gradient(90deg,var(--c) var(--w,0%),#e6eaf3 0)}
+    .fp-rate.ok{--c:var(--green)}.fp-rate.mid{--c:var(--orange)}.fp-rate.low{--c:var(--red)}
+    .fp-rate b{font-feature-settings:"tnum";min-width:48px;text-align:right}
+    .fp-rate.low b{color:var(--red)}.fp-rate.ok b{color:var(--green)}
+    /* 設定モーダル */
+    #focusModal{position:fixed;inset:0;z-index:50;background:rgba(15,20,60,.35);display:grid;place-items:center;padding:20px}
+    #focusModal[hidden]{display:none}
+    .fp-shell{background:#fff;border-radius:14px;width:min(980px,100%);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(10,20,60,.25)}
+    .fp-shell-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+    .fp-shell-head h2{margin:0;font-size:16px;flex:1}
+    .fp-tabs{display:flex;gap:6px}
+    .fp-tabs button,.fp-factory-tabs button,.fp-month button{border:1px solid var(--line-strong);background:#fff;border-radius:8px;padding:6px 12px;font:inherit;font-size:12.5px;font-weight:700;color:#5a6080;cursor:pointer}
+    .fp-tabs button.on,.fp-factory-tabs button.on{background:var(--navy);border-color:var(--navy);color:#fff}
+    .fp-close{border:0;background:transparent;font-size:22px;line-height:1;cursor:pointer;color:var(--sub);padding:4px 8px}
+    .fp-body{overflow:auto;padding:14px 18px 18px}
+    .fp-factory-tabs{display:flex;gap:6px;margin-bottom:10px}
+    .fp-group{border:1px solid var(--line-strong);border-radius:10px;padding:12px;margin:0 0 12px;background:#fbfcfe}
+    .fp-group-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+    .fp-group-head label{font-size:12.5px;color:#5a6080}
+    .fp-gname{font:inherit;font-size:14px;font-weight:800;padding:6px 10px;border:1px solid var(--line-strong);border-radius:8px;min-width:200px}
+    .fp-gbtns{margin-left:auto;display:flex;gap:4px}
+    .fp-gbtns button,.fp-add,.fp-del{border:1px solid var(--line-strong);background:#fff;border-radius:7px;padding:4px 9px;font:inherit;font-size:12px;cursor:pointer;color:#5a6080}
+    .fp-del{color:var(--red)}
+    .fp-add{color:var(--navy);font-weight:700}
+    .fp-conds{border-collapse:collapse;margin-bottom:6px}
+    .fp-conds td{padding:3px 6px 3px 0}
+    .fp-conds select,.fp-conds input:not([type=checkbox]),.fp-plan input{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line-strong);border-radius:7px;background:#fff}
+    .fp-conds input:not([type=checkbox]){min-width:240px}
+    .fp-conds label{font-size:12.5px;color:#5a6080;white-space:nowrap}
+    .fp-preview{margin-top:8px;font-size:12.5px}
+    .fp-preview summary{cursor:pointer;color:#3d4566}
+    .fp-mini{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
+    .fp-mini th{background:#f8f9fc;color:var(--sub);font-weight:600;text-align:left;padding:5px 7px}
+    .fp-mini td{padding:5px 7px;border-bottom:1px solid var(--line)}
+    .fp-mini .num{text-align:right;font-feature-settings:"tnum"}
+    .fp-actions{display:flex;align-items:center;gap:10px;margin-top:12px;position:sticky;bottom:-18px;background:#fff;padding:10px 0}
+    .fp-spacer{flex:1}
+    .fp-primary{border:0;background:var(--navy);color:#fff;font:inherit;font-weight:700;font-size:13px;padding:9px 16px;border-radius:9px;cursor:pointer}
+    .fp-month{display:flex;align-items:center;gap:12px;margin:4px 0 10px}
+    .fp-plan{border-collapse:collapse;width:100%;font-size:13px}
+    .fp-plan th{background:#f8f9fc;color:var(--sub);font-weight:600;text-align:left;padding:7px 8px}
+    .fp-plan td{padding:6px 8px;border-bottom:1px solid var(--line)}
+    .fp-plan input[type=number]{width:120px;text-align:right}
+    .fp-plan input[data-pn]{width:100%}
+    @media(max-width:760px){
+      #focusProduction{grid-template-columns:1fr}
+      #summary table.va-cards.fp-table tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 10px}
+      #summary table.va-cards.fp-table td{display:flex;flex-direction:column;align-items:flex-start;gap:1px;border-bottom:0;padding:3px 0;text-align:left;font-size:15px;font-weight:700}
+      #summary table.va-cards.fp-table td::before{font-size:11px;font-weight:600}
+      #summary table.va-cards.fp-table td:first-child{grid-column:1/-1;flex-direction:row;align-items:center;flex-wrap:wrap;font-size:14.5px}
+      #summary table.va-cards.fp-table td[data-label="達成率"]{grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between;border-top:1px dashed var(--line);padding-top:7px;margin-top:3px}
+      #summary table.va-cards.fp-table td[data-label="達成率"] .fp-rate i{flex-basis:140px}
+      #summary table.va-cards.fp-table td[data-label="単位"]{display:none}
+      .fp-unit-inline{display:inline!important}
+      #focusModal{padding:0;place-items:end center}
+      .fp-shell{max-height:100dvh;border-radius:14px 14px 0 0}
+      .fp-conds,.fp-conds tbody{display:block}.fp-conds tr{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:8px}.fp-conds td{padding:0}.fp-conds td:nth-child(-n+2){flex:1 1 45%}
+      .fp-conds input:not([type=checkbox]){min-width:0;width:100%}
+      .fp-gname{min-width:0;width:100%}
+      .fp-mini th:nth-child(3),.fp-mini td:nth-child(3){display:none}
     }
   </style>
 </body>
