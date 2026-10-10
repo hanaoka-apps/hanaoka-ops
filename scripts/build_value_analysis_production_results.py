@@ -39,6 +39,22 @@ ITEM_REQUIRED = (
     "中分類ｺｰﾄﾞ", "中分類名", "小分類ｺｰﾄﾞ", "小分類名",
 )
 FACTORIES = ("第一工場", "第二工場", "第三工場")
+# 重点品目の条件で選べる分類（あれば持つ。列が無くても止めない）。キーは画面側と共通：<k>c=コード, <k>n=名前
+OPTIONAL_CLASSES = (
+    ("h", "標/部/特売上ｺｰﾄﾞ", "標/部/特売上名"),
+    ("p", "価格表記載名ｺｰﾄﾞ", "価格表記載名名"),
+    ("b", "仕入大分類ｺｰﾄﾞ", "仕入大分類名"),
+    ("g", "工場別出荷郡ｺｰﾄﾞ", "工場別出荷郡名"),
+    ("o", "仕入諸口ｺｰﾄﾞｺｰﾄﾞ", "仕入諸口ｺｰﾄﾞ名"),
+    ("f", "工場別付加価ｺｰﾄﾞ", "工場別付加価名"),
+    ("n", "業務納期確認ｺｰﾄﾞ", "業務納期確認名"),
+    ("x1", "詳細分類ｺｰﾄﾞ", "詳細分類/部品名①"),
+    ("x2", "詳細分類②ｺｰﾄﾞ", "詳細分類②/部品名②"),
+    ("x3", "詳細分類③ｺｰﾄﾞ", "詳細分類③/部品名③"),
+    ("x4", "詳細分類④ｺｰﾄﾞ", "詳細分類④/部品名④"),
+    ("x5", "詳細分類⑤ｺｰﾄﾞ", "詳細分類⑤/部品名⑤"),
+    ("x6", "詳細分類⑥ｺｰﾄﾞ", "詳細分類⑥/部品名⑥"),
+)
 
 
 def require_columns(headers: list[str], required: tuple[str, ...], source: str) -> None:
@@ -112,10 +128,17 @@ def build(
                 "mc": norm(row.get("中分類ｺｰﾄﾞ")), "mn": norm(row.get("中分類名")),
                 "sc": norm(row.get("小分類ｺｰﾄﾞ")), "sn": norm(row.get("小分類名")),
             }
+            for key, code_col, name_col in OPTIONAL_CLASSES:
+                if norm(row.get(code_col)) or norm(row.get(name_col)):
+                    master[code][key + "c"] = norm(row.get(code_col))
+                    master[code][key + "n"] = norm(row.get(name_col))
+            if norm(row.get("品目名索引")):
+                master[code]["idx"] = norm(row.get("品目名索引"))
 
     selected_by_month: dict[str, dict] = {}
     final_by_month: dict[str, dict] = {}
     totals: dict[tuple[str, str, str, str], Decimal] = defaultdict(Decimal)
+    daily: dict[tuple[str, str, str, str], Decimal] = defaultdict(Decimal)
     used_items: set[str] = set()
     observed_months: set[str] = set()
     diagnostics: dict[str, int] = defaultdict(int)
@@ -166,9 +189,12 @@ def build(
         if norm(route.get("手配先名")) != work_area:
             diagnostics["route_work_area_differs"] += 1
         totals[(month, item, factory, work_area)] += qty
+        daily[(day.isoformat(), item, factory, work_area)] += qty
         used_items.add(item)
         diagnostics["counted_reports"] += 1
 
+    # 日別（当日・月内累計・日別グラフ用）。サイズを抑えるため、実績がある直近2か月だけ持つ。
+    daily_months = sorted(observed_months)[-2:]
     return {
         "generated_at": datetime.now(JST).isoformat(timespec="seconds"),
         "source": "製造実績明細出力.csv",
@@ -180,6 +206,12 @@ def build(
         "rows": [
             {"m": month, "item": item, "factory": factory, "ws": work_area, "qty": json_number(qty)}
             for (month, item, factory, work_area), qty in sorted(totals.items())
+        ],
+        "daily_months": daily_months,
+        "daily_rows": [
+            {"d": day_key, "item": item, "factory": factory, "ws": work_area, "qty": json_number(qty)}
+            for (day_key, item, factory, work_area), qty in sorted(daily.items())
+            if day_key[:7] in daily_months
         ],
         "diagnostics": dict(sorted(diagnostics.items())),
     }

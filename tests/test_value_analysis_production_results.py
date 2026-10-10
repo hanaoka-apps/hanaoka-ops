@@ -97,6 +97,27 @@ class ProductionResultsTests(unittest.TestCase):
             ("2026-09", 3), ("2026-10", 5),
         ])
 
+    def test_daily_rows_cover_latest_two_observed_months_only(self):
+        routes = [route(1)]
+        actuals = [
+            actual(1, 1, day="20260801"), actual(1, 2, day="20260902"),
+            actual(1, 3, day="20260902"), actual(1, 4, day="20261005"),
+            actual(1, 5, day="20261005", work_area="第三工場 組立"),
+        ]
+        result = production.build(actuals, routes, [item()], today=date(2026, 10, 8))
+        self.assertEqual(result["daily_months"], ["2026-09", "2026-10"])
+        self.assertEqual([(r["d"], r["factory"], r["ws"], r["qty"]) for r in result["daily_rows"]], [
+            ("2026-09-02", "第一工場", "第一工場 組立", 5), ("2026-10-05", "第一工場", "第一工場 組立", 4),
+            ("2026-10-05", "第三工場", "第三工場 組立", 5),
+        ])
+
+    def test_optional_classes_and_index_are_kept_when_present(self):
+        extra = dict(item(), **{"品目名索引": "ﾀﾞﾝﾃﾞｨ", "工場別付加価ｺｰﾄﾞ": "000001", "工場別付加価名": "第一工場"})
+        result = production.build([actual(1, 1)], [route(1)], [extra], today=date(2026, 10, 8))
+        got = result["items"]["SAMPLE-A"]
+        self.assertEqual((got["idx"], got["fc"], got["fn"]), ("ダンディ", "000001", "第一工場"))
+        self.assertNotIn("x1c", got)
+
     def test_required_columns_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "報告数量"):
             production.require_columns(["伝票日付"], production.ACTUAL_REQUIRED, "actuals")

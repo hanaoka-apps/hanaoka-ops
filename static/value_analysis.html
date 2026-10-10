@@ -687,19 +687,34 @@
     const vaRenderLow=renderLowValueSummary;renderLowValueSummary=function(){vaRenderLow();el('lowValueSummary')?.querySelectorAll('table').forEach(t=>t.classList.add('va-table','va-cards'));vaCardify(el('lowValueSummary'))};
     const vaRenderLead=renderLeadTimeSummary;renderLeadTimeSummary=function(){vaRenderLead();el('leadTimeSummary')?.querySelectorAll('table').forEach(t=>t.classList.add('va-table','va-cards'));vaCardify(el('leadTimeSummary'))};
     // ===== 2026-10-10 重点品目の生産実績（計画＝手入力 vs 完成報告）=====
-    // 完成数は保護JSON value_analysis_production_results.json（Codex集計：最終社内工程の報告数量）。
+    // 完成数は保護JSON value_analysis_production_results.json（最終社内工程の報告数量。月別＋直近2か月の日別）。
     // どの品目をどのグループに入れるかは、SharePointリスト「FUJIN_重点品目グループ」の条件で、ここ（ブラウザ）で当てはめる。
     // 計画は SharePointリスト「FUJIN_重点品目計画」に手入力。業務データ・IDはコードに書かない（サイトはSharedMastersドライブから辿る）。
-    const FP={open:new Set(),results:null,resultsError:'',groups:null,plans:null,listError:'',site:'',loading:null,factory:'第一工場',edit:null,planMonth:null,busy:false};
+    const FP={open:new Set(),sumOpen:new Set(),daySel:{},results:null,resultsError:'',groups:null,plans:null,listError:'',site:'',loading:null,factory:'第一工場',edit:null,planMonth:null,busy:false};
     const FP_LISTS={groups:'FUJIN_重点品目グループ',plans:'FUJIN_重点品目計画'};
     const FP_FACTORIES=['第一工場','第二工場','第三工場'];
-    const FP_COND=[['大分類','大分類（コード or 名前）'],['中分類','中分類（コード or 名前）'],['小分類','小分類（コード or 名前）'],['品目コード','品目コード（完全一致）'],['前方一致','品目コードの先頭']];
+    // 品目マスタの分類（k＋c＝コード、k＋n＝名前。集計JSONと同じキー）
+    const FP_CLS=[
+      {t:'大分類',k:'d',c:'大分類ｺｰﾄﾞ',n:'大分類名'},{t:'中分類',k:'m',c:'中分類ｺｰﾄﾞ',n:'中分類名'},{t:'小分類',k:'s',c:'小分類ｺｰﾄﾞ',n:'小分類名'},
+      {t:'標/部/特売上',k:'h',c:'標/部/特売上ｺｰﾄﾞ',n:'標/部/特売上名'},{t:'価格表記載名',k:'p',c:'価格表記載名ｺｰﾄﾞ',n:'価格表記載名名'},
+      {t:'仕入大分類',k:'b',c:'仕入大分類ｺｰﾄﾞ',n:'仕入大分類名'},{t:'工場別出荷群',k:'g',c:'工場別出荷郡ｺｰﾄﾞ',n:'工場別出荷郡名'},
+      {t:'仕入諸口',k:'o',c:'仕入諸口ｺｰﾄﾞｺｰﾄﾞ',n:'仕入諸口ｺｰﾄﾞ名'},{t:'工場別付加価値',k:'f',c:'工場別付加価ｺｰﾄﾞ',n:'工場別付加価名'},
+      {t:'業務納期確認',k:'n',c:'業務納期確認ｺｰﾄﾞ',n:'業務納期確認名'},
+      {t:'詳細分類①',k:'x1',c:'詳細分類ｺｰﾄﾞ',n:'詳細分類/部品名①'},{t:'詳細分類②',k:'x2',c:'詳細分類②ｺｰﾄﾞ',n:'詳細分類②/部品名②'},
+      {t:'詳細分類③',k:'x3',c:'詳細分類③ｺｰﾄﾞ',n:'詳細分類③/部品名③'},{t:'詳細分類④',k:'x4',c:'詳細分類④ｺｰﾄﾞ',n:'詳細分類④/部品名④'},
+      {t:'詳細分類⑤',k:'x5',c:'詳細分類⑤ｺｰﾄﾞ',n:'詳細分類⑤/部品名⑤'},{t:'詳細分類⑥',k:'x6',c:'詳細分類⑥ｺｰﾄﾞ',n:'詳細分類⑥/部品名⑥'}];
+    const FP_CLS_BY=Object.fromEntries(FP_CLS.map(x=>[x.t,x]));
+    const FP_COND=[...FP_CLS.map(x=>[x.t,x.t,'分類']),['索引','品目名索引（文字が完全一致）','品目'],['品目コード','品目コード（完全一致）','品目'],['前方一致','品目コードの先頭','品目'],['作業区','作業区（完成報告の作業区）','作業区']];
+    const FP_COLORS=['#23268f','#1fa2e6','#e08a1e','#12a76a','#6a3fc4','#e0475b','#0f8f9c','#a8620a','#7a8297','#c04fa3'];
     const fpYm=ym=>ym&&ym.length===6?`${ym.slice(0,4)}-${ym.slice(4)}`:ym;
     const fpYmLabel=m=>m?`${m.slice(0,4)}年${Number(m.slice(5,7))}月`:'';
+    const fpDayLabel=d=>d?`${Number(d.slice(5,7))}/${Number(d.slice(8,10))}`:'';
     const fpNum=v=>v==null||!Number.isFinite(v)?'—':Number(v).toLocaleString('ja-JP',{maximumFractionDigits:2});
     const fpNorm=v=>String(v??'').normalize('NFKC').trim();
+    const fpLow=v=>fpNorm(v).toLocaleLowerCase('ja-JP');
     function fpPrevMonth(m){const d=new Date(Number(m.slice(0,4)),Number(m.slice(5,7))-2,1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
     function fpNextMonth(m){const d=new Date(Number(m.slice(0,4)),Number(m.slice(5,7)),1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+    function fpMonthDays(m){const n=new Date(Number(m.slice(0,4)),Number(m.slice(5,7)),0).getDate();return Array.from({length:n},(_,i)=>`${m}-${String(i+1).padStart(2,'0')}`)}
     async function fpToken(scopes){const t=window.top,msal=t&&t._fujinMsal;if(!msal)throw new Error('サインイン情報がありません');const account=msal.getActiveAccount?.()||msal.getAllAccounts?.()[0];if(!account)throw new Error('サインインしていません');return (await msal.acquireTokenSilent({scopes,account})).accessToken}
     async function fpGraph(path,opt,scopes){const tk=await fpToken(scopes||['https://graph.microsoft.com/Lists.SelectedOperations.Selected']);const r=await fetch(path.startsWith('http')?path:'https://graph.microsoft.com/v1.0'+path,Object.assign({cache:'no-store'},opt||{},{headers:Object.assign({Authorization:'Bearer '+tk,'Content-Type':'application/json'},(opt&&opt.headers)||{})}));return r}
     async function fpLoadResults(){
@@ -707,25 +722,23 @@
       const r=await fpGraph(`/drives/${encodeURIComponent(driveId)}/root:/value_analysis_production_results.json:/content`,null,['Files.Read.All']);
       if(r.status===404){FP.resultsError='完成実績データはまだ作成されていません（日次集計に組み込まれると表示されます）';return null}
       if(!r.ok)throw new Error(`完成実績データを取得できませんでした（HTTP ${r.status}）`);
-      const d=await r.json();if(!d||!Array.isArray(d.rows)||!d.items)throw new Error('完成実績データの形式が正しくありません');return d}
+      const d=await r.json();if(!d||!Array.isArray(d.rows)||!d.items)throw new Error('完成実績データの形式が正しくありません');d.daily_rows=d.daily_rows||[];d.daily_months=d.daily_months||[];return d}
     async function fpSite(){if(FP.site)return FP.site;const driveId=existingSharedMastersDriveId(window.top);const r=await fpGraph(`/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`,null,['Files.Read.All']);if(!r.ok)throw new Error('サイトを特定できません（HTTP '+r.status+'）');const j=await r.json();FP.site=j.sharePointIds&&j.sharePointIds.siteId;if(!FP.site)throw new Error('サイトを特定できません');return FP.site}
     async function fpListItems(title){const site=await fpSite();let url=`/sites/${site}/lists/${encodeURIComponent(title)}/items?expand=fields&$top=999`,out=[];while(url){const r=await fpGraph(url);if(!r.ok){const e=new Error(`${title} を読めません（HTTP ${r.status}）`);e.status=r.status;throw e}const j=await r.json();out=out.concat((j.value||[]).map(x=>Object.assign({id:x.id},x.fields||{})));url=j['@odata.nextLink']||null}return out}
     function fpMapGroups(rows){return rows.map(x=>({id:x.id,group:fpNorm(x.Title),factory:fpNorm(x.Factory),type:fpNorm(x.CondType),value:fpNorm(x.CondValue),exclude:!!x.Exclude,inTotal:x.InTotal!==false,sort:Number(x.SortNo)||0,active:x.Active!==false}))}
     function fpMapPlans(rows){return rows.map(x=>({id:x.id,month:fpNorm(x.Title),factory:fpNorm(x.Factory),group:fpNorm(x.GroupName),qty:x.PlanQty==null||x.PlanQty===''?null:Number(x.PlanQty),note:fpNorm(x.Note)}))}
-    async function fpLoadLists(){const [g,p]=await Promise.all([fpListItems(FP_LISTS.groups),fpListItems(FP_LISTS.plans)]);FP.groups=fpMapGroups(g);FP.plans=fpMapPlans(p)}
+    async function fpLoadLists(){const [g,p]=await Promise.all([fpListItems(FP_LISTS.groups),fpListItems(FP_LISTS.plans)]);FP.groups=fpMapGroups(g);FP.plans=fpMapPlans(p);FP.selCache=new Map()}
     function fpLoad(force){
       if(FP.loading&&!force)return FP.loading;
       if(window.top===window){FP.resultsError='認証済みFUJIN画面から開くと表示されます';return Promise.resolve()}
       FP.loading=(async()=>{
         const [res,lists]=await Promise.allSettled([fpLoadResults(),fpLoadLists()]);
-        if(res.status==='fulfilled'){FP.results=res.value;if(FP.master)FP.allItems=Object.assign({},FP.results?.items||{},FP.master)}else{FP.results=null;FP.resultsError=res.reason.message}
+        if(res.status==='fulfilled'){FP.results=res.value;fpMergeItems()}else{FP.results=null;FP.resultsError=res.reason.message}
         if(lists.status==='fulfilled'){FP.listError=''}else{FP.groups=FP.groups||[];FP.plans=FP.plans||[];FP.listError=lists.reason.status===403||lists.reason.status===401?'重点品目の設定を読む権限がありません（管理者に連絡してください）':lists.reason.status===404?'重点品目の設定リストがまだありません':lists.reason.message}
         renderFocusProduction()})();
       return FP.loading}
-    // ---- 当てはめ ----
-    function fpCondMatch(c,code,it){const v=c.value;if(!v)return false;const nv=v.toLocaleLowerCase('ja-JP'),eq=x=>fpNorm(x).toLocaleLowerCase('ja-JP')===nv;
-      switch(c.type){case '大分類':return eq(it.dc)||eq(it.dn);case '中分類':return eq(it.mc)||eq(it.mn);case '小分類':return eq(it.sc)||eq(it.sn);case '品目コード':return eq(code);case '前方一致':return fpNorm(code).toLocaleLowerCase('ja-JP').startsWith(nv);default:return false}}
-    // 品目マスタ（SharedMasters 品目マスタ.csv）。設定の選択肢・詳細はマスタから出す（完成報告の有無・月に依存しない）
+    // ---- 品目マスタ（SharedMasters 品目マスタ.csv）。設定の選択肢・詳細はマスタから出す（完成報告の有無・月に依存しない）----
+    function fpMergeItems(){FP.allItems=Object.assign({},FP.results?.items||{},FP.master||{});FP.selCache=new Map()}
     function fpItems(){return FP.allItems||FP.results?.items||{}}
     function fpParseCsv(text){const rows=[];let row=[],f='',q=false;for(let i=0;i<text.length;i++){const c=text[i];if(q){if(c==='"'){if(text[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else if(c==='"')q=true;else if(c===','){row.push(f);f=''}else if(c==='\n'){row.push(f);rows.push(row);row=[];f=''}else if(c!=='\r')f+=c}if(f!==''||row.length){row.push(f);rows.push(row)}return rows}
     function fpLoadMaster(){
@@ -735,82 +748,152 @@
         if(!r.ok)throw new Error(`品目マスタを取得できませんでした（HTTP ${r.status}）`);
         const buf=await r.arrayBuffer();let txt=new TextDecoder('utf-8').decode(buf);if(txt.includes('�')){try{txt=new TextDecoder('shift_jis').decode(buf)}catch(_){}}
         const rows=fpParseCsv(txt.replace(/^﻿/,'')),h=rows[0].map(x=>fpNorm(x)),ix=n=>h.indexOf(fpNorm(n));
-        const I={code:ix('品目ｺｰﾄﾞ'),name:ix('品目名'),unit:ix('単位'),dc:ix('大分類ｺｰﾄﾞ'),dn:ix('大分類名'),mc:ix('中分類ｺｰﾄﾞ'),mn:ix('中分類名'),sc:ix('小分類ｺｰﾄﾞ'),sn:ix('小分類名'),ban:ix('使用禁止日')};
-        if(I.code<0||I.sc<0)throw new Error('品目マスタの列が想定と違います');
+        const I={code:ix('品目ｺｰﾄﾞ'),name:ix('品目名'),unit:ix('単位'),idx:ix('品目名索引'),ban:ix('使用禁止日')},C=FP_CLS.map(x=>({k:x.k,c:ix(x.c),n:ix(x.n)}));
+        if(I.code<0)throw new Error('品目マスタの列が想定と違います');
         const today=new Date(),ymd=`${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`;
         const m={};for(let i=1;i<rows.length;i++){const x=rows[i],code=fpNorm(x[I.code]);if(!code)continue;const ban=I.ban>=0?fpNorm(x[I.ban]):'';if(/^\d{8}$/.test(ban)&&ban<=ymd)continue;
-          const o={};for(const k of ['name','unit','dc','dn','mc','mn','sc','sn'])o[k]=I[k]>=0?fpNorm(x[I[k]]):'';m[code]=o}
-        FP.master=m;FP.allItems=Object.assign({},FP.results?.items||{},m)})();
+          const o={name:I.name>=0?fpNorm(x[I.name]):'',unit:I.unit>=0?fpNorm(x[I.unit]):''};if(I.idx>=0&&fpNorm(x[I.idx]))o.idx=fpNorm(x[I.idx]);
+          for(const c of C){const cv=c.c>=0?fpNorm(x[c.c]):'',nv=c.n>=0?fpNorm(x[c.n]):'';if(cv||nv){o[c.k+'c']=cv;o[c.k+'n']=nv}}m[code]=o}
+        FP.master=m;FP._dl=null;fpMergeItems()})();
       FP.masterLoading.catch(e=>{FP.masterError=e.message;FP.masterLoading=null});
       return FP.masterLoading}
-    function fpMatchItems(conds){const items=fpItems(),inc=conds.filter(c=>!c.exclude&&c.value),exc=conds.filter(c=>c.exclude&&c.value);if(!inc.length)return new Set();const out=new Set();for(const [code,it] of Object.entries(items)){if(inc.some(c=>fpCondMatch(c,code,it))&&!exc.some(c=>fpCondMatch(c,code,it)))out.add(code)}return out}
-    function fpGroupDefs(factory,source){const rows=(source||FP.groups||[]).filter(c=>c.factory===factory&&c.active!==false&&c.group);const m=new Map();for(const c of rows){let g=m.get(c.group);if(!g){g={name:c.group,factory,sort:c.sort,inTotal:c.inTotal,conds:[]};m.set(c.group,g)}g.sort=Math.min(g.sort,c.sort);if(c.inTotal===false)g.inTotal=false;g.conds.push(c)}return [...m.values()].sort((a,b)=>a.sort-b.sort||a.name.localeCompare(b.name,'ja'))}
-    function fpQty(codes,factory,month){let q=0;for(const r of FP.results?.rows||[]){if(r.m===month&&r.factory===factory&&codes.has(r.item))q+=Number(r.qty)||0}return q}
+    // ---- 当てはめ：品目の条件（分類・索引・コード）と、作業区の条件を分けて扱う ----
+    const fpBlankCode=v=>!v||/^0+$/.test(v);
+    function fpCondMatch(c,code,it){const v=c.value;if(!v||!it)return false;const nv=fpLow(v),eq=x=>fpLow(x)===nv,cls=FP_CLS_BY[c.type];
+      if(cls)return (!fpBlankCode(it[cls.k+'c'])&&eq(it[cls.k+'c']))||(!!it[cls.k+'n']&&eq(it[cls.k+'n']));
+      switch(c.type){case '索引':return eq(it.idx);case '品目コード':return eq(code);case '前方一致':return fpLow(code).startsWith(nv);default:return false}}
+    function fpSel(conds){
+      const key=JSON.stringify(conds.map(c=>[c.type,c.value,!!c.exclude]));FP.selCache=FP.selCache||new Map();if(FP.selCache.has(key))return FP.selCache.get(key);
+      const items=fpItems(),live=conds.filter(c=>fpNorm(c.value)),iInc=live.filter(c=>c.type!=='作業区'&&!c.exclude),iExc=live.filter(c=>c.type!=='作業区'&&c.exclude),wInc=live.filter(c=>c.type==='作業区'&&!c.exclude),wExc=live.filter(c=>c.type==='作業区'&&c.exclude);
+      const codes=new Set();if(iInc.length||wInc.length){for(const [code,it] of Object.entries(items)){if((!iInc.length||iInc.some(c=>fpCondMatch(c,code,it)))&&!iExc.some(c=>fpCondMatch(c,code,it)))codes.add(code)}}
+      const sel={codes,wsInc:wInc.length?new Set(wInc.map(c=>fpNorm(c.value))):null,wsExc:new Set(wExc.map(c=>fpNorm(c.value))),empty:!iInc.length&&!wInc.length};
+      sel.ok=r=>!sel.empty&&sel.codes.has(r.item)&&(!sel.wsInc||sel.wsInc.has(fpNorm(r.ws)))&&!sel.wsExc.has(fpNorm(r.ws));
+      FP.selCache.set(key,sel);return sel}
+    function fpMatchItems(conds){return fpSel(conds).codes}
+    function fpQtySel(sel,factory,month){let q=0;for(const r of FP.results?.rows||[]){if(r.m===month&&r.factory===factory&&sel.ok(r))q+=Number(r.qty)||0}return q}
+    function fpHasDaily(month){return !!FP.results?.daily_months?.includes(month)}
+    // 当日・月内累計（選んだ日まで）。日別が無い月は累計＝月合計、当日は「—」
+    function fpAgg(sel,factory,month,day){if(!FP.results)return{day:null,cum:null};if(!fpHasDaily(month))return{day:null,cum:fpQtySel(sel,factory,month)};let d=0,c=0;for(const r of FP.results.daily_rows){if(r.factory!==factory||r.d.slice(0,7)!==month||!sel.ok(r))continue;const q=Number(r.qty)||0;if(!day||r.d<=day)c+=q;if(r.d===day)d+=q}return{day:d,cum:c}}
+    function fpUnitsSel(sel){const items=fpItems(),seen=new Set();for(const r of FP.results?.rows||[])if(sel.ok(r))seen.add(r.item);const src=seen.size?seen:(sel.codes.size<=2000?sel.codes:new Set());return [...new Set([...src].map(c=>items[c]?.unit||'').filter(Boolean))]}
     function fpUnits(codes){const items=fpItems();return [...new Set([...codes].map(c=>items[c]?.unit||'').filter(Boolean))]}
+    function fpGroupDefs(factory,source){const rows=(source||FP.groups||[]).filter(c=>c.factory===factory&&c.active!==false&&c.group);const m=new Map();for(const c of rows){let g=m.get(c.group);if(!g){g={name:c.group,factory,sort:c.sort,inTotal:c.inTotal,conds:[]};m.set(c.group,g)}g.sort=Math.min(g.sort,c.sort);if(c.inTotal===false)g.inTotal=false;g.conds.push(c)}return [...m.values()].sort((a,b)=>a.sort-b.sort||a.name.localeCompare(b.name,'ja'))}
     function fpPlan(month,factory,group){const p=(FP.plans||[]).find(x=>x.month===month&&x.factory===factory&&x.group===group);return p&&p.qty!=null&&Number.isFinite(p.qty)?p.qty:null}
-    function fpRows(factory,month){return fpGroupDefs(factory).map(g=>{const codes=fpMatchItems(g.conds),units=fpUnits(codes),done=FP.results?fpQty(codes,factory,month):null,plan=fpPlan(month,factory,g.name);return{...g,codes,units,unit:units.length===1?units[0]:units.length?'混在':'',done,plan,diff:plan!=null&&done!=null?done-plan:null,rate:plan>0&&done!=null?done/plan:null}})}
+    function fpLatestDay(factory,month){let d='';for(const r of FP.results?.daily_rows||[])if(r.factory===factory&&r.d.slice(0,7)===month&&r.d>d)d=r.d;return d}
+    function fpDay(factory,month){const sel=FP.daySel[factory+'|'+month];return sel||fpLatestDay(factory,month)}
+    function fpRows(factory,month,day){return fpGroupDefs(factory).map((g,i)=>{const sel=fpSel(g.conds),units=fpUnitsSel(sel),a=fpAgg(sel,factory,month,day),plan=fpPlan(month,factory,g.name);return{...g,sel,color:FP_COLORS[i%FP_COLORS.length],units,unit:units.length===1?units[0]:units.length?'混在':'',today:a.day,done:a.cum,plan,diff:plan!=null&&a.cum!=null?a.cum-plan:null,rate:plan>0&&a.cum!=null?a.cum/plan:null}})}
+    // 条件の表示名（分類はコード＋名前）
+    function fpCondLabel(c){const cls=FP_CLS_BY[c.type],items=fpItems();if(cls){const it=Object.values(items).find(it=>it[cls.k+'c']===c.value||it[cls.k+'n']===c.value);return `${c.type}：${c.value}${it&&it[cls.k+'n']&&it[cls.k+'n']!==c.value?'　'+it[cls.k+'n']:''}`}if(c.type==='品目コード'){const it=items[c.value];return `品目：${c.value}${it?'　'+it.name:''}`}return `${c.type}：${c.value}`}
+    // ---- サマリー：日別グラフ（グループ積み上げ棒＋月内累計の線）----
+    function fpDailyChart(root,factory,month,rows,day){
+      if(!root)return;const days=fpMonthDays(month),stack=rows.filter(r=>r.inTotal),latest=fpLatestDay(factory,month);
+      if(!fpHasDaily(month)){root.innerHTML='<div class="va-chart-empty">この月は日別データがありません（直近2か月のみ）</div>';return}
+      const lastIdx=Math.max(0,days.indexOf(latest)),shown=days.slice(0,Math.max(lastIdx+1,1));
+      const per=new Map(stack.map(r=>[r.name,new Map()]));for(const x of FP.results.daily_rows){if(x.factory!==factory||x.d.slice(0,7)!==month)continue;for(const r of stack){if(r.sel.ok(x)){const mm=per.get(r.name);mm.set(x.d,(mm.get(x.d)||0)+(Number(x.qty)||0))}}}
+      const tot=shown.map(d=>stack.reduce((s,r)=>s+(per.get(r.name).get(d)||0),0));let run=0;const cum=tot.map(v=>run+=v);
+      const width=Math.max(300,Math.round(root.clientWidth||700)),narrow=width<560,H=narrow?220:250,L=narrow?40:52,R=narrow?44:58,T=26,B=26,plotW=width-L-R,plotH=H-T-B,base=T+plotH,n=shown.length,step=plotW/n,cx=i=>L+step*(i+.5);
+      const lr=vaRange(tot.concat([0]),{zero:true}),ticks=Math.max(1,Math.round((lr.max-lr.min)/lr.step)),rr=vaRangeTicks(cum,ticks,true),yL=v=>base-(v-lr.min)/(lr.max-lr.min)*plotH,yR=v=>base-(v-rr.min)/(rr.max-rr.min)*plotH;
+      const unit=[...new Set(stack.map(r=>r.unit).filter(u=>u&&u!=='混在'))];const ul=unit.length===1?unit[0]:'';
+      let s=`<svg class="va-chart-svg" viewBox="0 0 ${width} ${H}" width="${width}" height="${H}" role="img" aria-label="${esc(factory)}の日別完成数"><text class="va-axis-title" x="${L}" y="14">日別完成（左軸${ul?'・'+esc(ul):''}）</text><text class="va-axis-title" x="${width-R}" y="14" text-anchor="end">月内累計（右軸）</text>`;
+      for(let i=0;i<=ticks;i++){const v=lr.min+lr.step*i,y=yL(v),rv=rr.min+(rr.max-rr.min)*i/ticks;s+=`<line class="va-grid" x1="${L}" y1="${y}" x2="${width-R}" y2="${y}"/><text class="va-axis" x="${L-6}" y="${y+4}" text-anchor="end">${fpNum(Math.round(v))}</text><text class="va-axis" x="${width-R+6}" y="${yR(rv)+4}">${fpNum(Math.round(rv))}</text>`}
+      const si=shown.indexOf(day);if(si>=0)s+=`<rect class="va-selected-band" x="${L+step*si+1}" y="${T}" width="${Math.max(2,step-2)}" height="${plotH}" rx="4"/>`;
+      const bw=Math.min(narrow?12:22,step*.7);shown.forEach((d,i)=>{let pos=0;stack.forEach(r=>{const v=per.get(r.name).get(d)||0;if(!v)return;const y1=yL(pos+v),y2=yL(pos);pos+=v;s+=`<rect x="${cx(i)-bw/2}" y="${y1}" width="${bw}" height="${Math.max(1,y2-y1)}" fill="${r.color}"/>`})});
+      s+=`<path class="va-line va-line-dashed" d="M${cum.map((v,i)=>`${cx(i)},${yR(v)}`).join('L')}" stroke="#161a5c" stroke-width="2.2" stroke-dasharray="6 4" fill="none"/>`;
+      const every=n>20?(narrow?7:5):1;shown.forEach((d,i)=>{const dn=Number(d.slice(8));if(i%every===0||d===day||i===n-1)s+=`<text class="va-month${d===day?' va-month-selected':''}" x="${cx(i)}" y="${base+17}" text-anchor="middle">${dn}</text>`});
+      shown.forEach((d,i)=>{s+=`<rect class="va-hit" data-fp-day="${d}" data-fp-factory-day="${esc(factory)}" x="${L+step*i}" y="${T}" width="${step}" height="${plotH+B-2}" tabindex="0" role="button" aria-label="${fpDayLabel(d)}を選ぶ"/>`});
+      s+='</svg>';
+      root.innerHTML=`<div class="va-chart-legend">${stack.map(r=>`<span><i class="va-key-bar" style="background:${r.color}"></i>${esc(r.name)}</span>`).join('')}<span><i class="va-key-line dashed" style="border-color:#161a5c"></i>月内累計（右軸）</span></div><div class="va-chart-plot">${s}<div class="va-tooltip" role="status" hidden></div></div>`;
+      const plot=root.querySelector('.va-chart-plot'),tip=plot.querySelector('.va-tooltip');
+      plot.querySelectorAll('.va-hit').forEach((hit,i)=>{const d=hit.dataset.fpDay;const show=ev=>{tip.innerHTML=`<div class="va-tip-month">${fpDayLabel(d)}<small>${esc(factory)}</small></div>`+vaTipRows(stack.map(r=>[r.name,`${fpNum(per.get(r.name).get(d)||0)}${r.unit&&r.unit!=='混在'?r.unit:''}`,r.color]).concat([['当日合計',fpNum(tot[i])],['月内累計',fpNum(cum[i])]]));tip.hidden=false;const pb=plot.getBoundingClientRect(),hb=hit.getBoundingClientRect();let left=hb.left-pb.left+hb.width+8;if(left+tip.offsetWidth>plot.clientWidth-6)left=hb.left-pb.left-tip.offsetWidth-8;tip.style.left=Math.max(6,left)+'px';tip.style.top='28px'};
+        hit.addEventListener('mouseenter',show);hit.addEventListener('focus',show);hit.addEventListener('mouseleave',()=>tip.hidden=true);hit.addEventListener('blur',()=>tip.hidden=true);
+        hit.addEventListener('click',()=>{FP.daySel[factory+'|'+month]=d;renderFocusProduction()});hit.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();FP.daySel[factory+'|'+month]=d;renderFocusProduction()}})});
+    }
+    // ---- サマリー：グループの「› 詳細」（条件ごと → 下位分類・品目。0の行は出さない）----
+    function fpTreeRows(codes,sel,factory,month,day,cond){
+      const items=fpItems(),cls=FP_CLS_BY[cond.type],rowsOut=[];
+      const qty=set=>{const s2={ok:r=>set.has(r.item)&&sel.ok(r)};return fpAgg(s2,factory,month,day)};
+      const group=(list,k)=>{const m=new Map();list.forEach(code=>{const it=items[code]||{},key=it[k+'c']||it[k+'n']||'';if(!m.has(key))m.set(key,{name:it[k+'n']||'分類なし',codes:new Set()});m.get(key).codes.add(code)});return [...m].sort((a,b)=>a[0].localeCompare(b[0]))};
+      const itemsOf=list=>list.map(code=>({code,a:qty(new Set([code]))})).filter(x=>x.a.cum||x.a.day).sort((a,b)=>(b.a.cum||0)-(a.a.cum||0)).map(x=>({label:`${x.code}　<span class="fp-muted">${esc(items[x.code]?.name||'')}</span>`,a:x.a,lv:'item'}));
+      const list=[...codes];
+      if(cls&&cls.k==='d'){for(const [mc,mg] of group(list,'m')){const a=qty(mg.codes);if(!a.cum&&!a.day)continue;rowsOut.push({label:`${esc(mc)}　${esc(mg.name)}`,a,lv:'mid'});for(const [sc,sg] of group([...mg.codes],'s')){const b=qty(sg.codes);if(b.cum||b.day)rowsOut.push({label:`${esc(sc)}　${esc(sg.name)}`,a:b,lv:'small'})}}}
+      else if(cls&&cls.k==='m'){for(const [sc,sg] of group(list,'s')){const b=qty(sg.codes);if(b.cum||b.day)rowsOut.push({label:`${esc(sc)}　${esc(sg.name)}`,a:b,lv:'small'})}}
+      else rowsOut.push(...itemsOf(list));
+      return rowsOut}
+    function fpSummaryDetail(r,factory,month,day){
+      const live=r.conds.filter(c=>fpNorm(c.value)&&!c.exclude),items=fpItems();let html='';
+      for(const c of live){const sub={...r.sel,ok:x=>r.sel.ok(x)&&(c.type==='作業区'?fpNorm(x.ws)===fpNorm(c.value):fpCondMatch(c,x.item,items[x.item]))};const a=fpAgg(sub,factory,month,day);
+        const codes=c.type==='作業区'?new Set((FP.results?.daily_rows||[]).concat(FP.results?.rows||[]).filter(x=>x.factory===factory&&sub.ok(x)).map(x=>x.item)):new Set([...r.sel.codes].filter(code=>fpCondMatch(c,code,items[code])));
+        html+=`<tr class="fp-lv-cond"><td>${esc(fpCondLabel(c))}</td><td class="num">${fpNum(a.day)}</td><td class="num">${fpNum(a.cum)}</td></tr>`;
+        for(const t of fpTreeRows(codes,sub,factory,month,day,c))html+=`<tr class="fp-lv-${t.lv}"><td>${t.label}</td><td class="num">${fpNum(t.a.day)}</td><td class="num">${fpNum(t.a.cum)}</td></tr>`}
+      const ex=r.conds.filter(c=>fpNorm(c.value)&&c.exclude);
+      return `<table class="fp-mini fp-tree fp-sum-tree"><thead><tr><th>内訳</th><th>当日</th><th>累計</th></tr></thead><tbody>${html||'<tr><td colspan="3" class="fp-muted">内訳はありません</td></tr>'}</tbody></table>${ex.length?`<p class="fp-muted">除外：${ex.map(c=>esc(fpCondLabel(c))).join('、')}</p>`:''}`}
     // ---- サマリー表示 ----
     function fpRateCell(rate){if(rate==null)return '<span class="fp-muted">—</span>';const pct=Math.round(rate*1000)/10,cls=rate>=1?'ok':rate>=0.8?'mid':'low';return `<span class="fp-rate ${cls}"><i style="--w:${Math.min(100,Math.max(2,rate*100))}%"></i><b>${pct.toFixed(1)}%</b></span>`}
     function renderFocusProduction(){
       const box=el('focusProduction');if(!box)return;const month=fpYm(state.month);const editor=canEditInventory();
       el('focusEditBtn')&&(el('focusEditBtn').hidden=!editor);
-      const latest=FP.results?.source_latest_date||'',isLatest=latest&&latest.slice(0,7)===month;
-      el('focusNote').textContent=`${fpYmLabel(month)}・完成報告数（最終社内工程）${isLatest?`・${Number(latest.slice(5,7))}/${Number(latest.slice(8,10))}時点`:''}・計画は手入力`;
+      el('focusNote').textContent=`${fpYmLabel(month)}・完成報告数（最終社内工程）・計画は手入力`;
       if(FP.groups==null){box.innerHTML='<div class="fp-empty">重点品目の設定を読み込んでいます…</div>';return}
       const notes=[FP.listError&&`<div class="va-note warn">${esc(FP.listError)}</div>`,!FP.results&&FP.resultsError&&`<div class="va-note">${esc(FP.resultsError)}</div>`].filter(Boolean).join('');
       const factories=FP_FACTORIES.filter(f=>fpGroupDefs(f).length);
       if(!factories.length){box.innerHTML=notes+`<div class="fp-empty">重点品目がまだ登録されていません。${editor?'右上の「⚙ 重点品目の設定」から、工場ごとにグループ（例：ダンディ、プラ）と条件を登録してください。':'管理者が設定すると表示されます。'}</div>`;return}
-      box.innerHTML=notes+factories.map(f=>{const rows=fpRows(f,month),tot=rows.filter(r=>r.inTotal),tu=[...new Set(tot.map(r=>r.unit))],tPlan=tot.some(r=>r.plan!=null)?tot.reduce((s,r)=>s+(r.plan||0),0):null,tDone=FP.results?tot.reduce((s,r)=>s+(r.done||0),0):null,tDiff=tPlan!=null&&tDone!=null?tDone-tPlan:null,tRate=tPlan>0&&tDone!=null?tDone/tPlan:null;
-        return `<div class="box fp-factory"><h2 class="va-card-title">${esc(f)}</h2><div class="scroll va-table-wrap"><table class="va-table va-cards fp-table"><thead><tr><th>グループ</th><th>計画</th><th>完成</th><th>差</th><th>達成率</th><th>単位</th></tr></thead><tbody>${rows.map(r=>`<tr><td data-label="グループ"><b>${esc(r.name)}</b>${r.unit&&r.unit!=='混在'?`<span class="fp-unit-inline">（${esc(r.unit)}）</span>`:''}${r.inTotal?'':'<span class="fp-tag">合計外</span>'}${r.unit==='混在'?'<span class="fp-tag warn" title="台と枚など単位の違う品目が混ざっています">単位混在</span>':''}${!r.codes.size&&FP.results?'<span class="fp-tag warn">該当品目なし</span>':''}</td><td data-label="計画">${fpNum(r.plan)}</td><td data-label="完成" class="va-strong">${fpNum(r.done)}</td><td data-label="差" class="${r.diff==null?'':r.diff<0?'negative':'positive'}">${r.diff==null?'—':(r.diff>0?'+':'')+fpNum(r.diff)}</td><td data-label="達成率">${fpRateCell(r.rate)}</td><td data-label="単位">${esc(r.unit||'—')}</td></tr>`).join('')}${tot.length>1?`<tr class="total"><td data-label="グループ">合計${tu.length>1?'<span class="fp-tag warn">単位混在</span>':''}</td><td data-label="計画">${fpNum(tPlan)}</td><td data-label="完成">${fpNum(tDone)}</td><td data-label="差">${tDiff==null?'—':(tDiff>0?'+':'')+fpNum(tDiff)}</td><td data-label="達成率">${fpRateCell(tRate)}</td><td data-label="単位">${esc(tu.length===1?tu[0]:'')}</td></tr>`:''}</tbody></table></div></div>`}).join('');
+      box.innerHTML=notes+factories.map((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'',rows=fpRows(f,month,day),tot=rows.filter(r=>r.inTotal),tu=[...new Set(tot.map(r=>r.unit))],sum=k=>tot.some(r=>r[k]!=null)?tot.reduce((s,r)=>s+(r[k]||0),0):null,tPlan=sum('plan'),tDay=sum('today'),tDone=sum('done'),tDiff=tPlan!=null&&tDone!=null?tDone-tPlan:null,tRate=tPlan>0&&tDone!=null?tDone/tPlan:null;
+        const dl=day?fpDayLabel(day):'',hd=day?`当日（${dl}）`:'当日',hc=day?`累計（〜${dl}）`:'累計';
+        return `<div class="box fp-factory"><div class="fp-factory-head"><h2 class="va-card-title">${esc(f)}</h2>${day?`<span class="fp-muted">グラフの日を押すと、その日の当日・累計に切り替わります</span>`:''}</div>
+          <div class="va-chart fp-daily" id="fpDaily${fi}"></div>
+          <div class="scroll va-table-wrap"><table class="va-table va-cards fp-table"><thead><tr><th>グループ</th><th>計画</th><th>${esc(hd)}</th><th>${esc(hc)}</th><th>差</th><th>達成率</th><th>単位</th></tr></thead><tbody>${rows.map(r=>{const k=f+'|'+r.name,open=FP.sumOpen.has(k);return `<tr class="fp-grow" data-fp-sum="${esc(k)}"><td data-label="グループ"><button type="button" class="fp-sum-toggle" data-fp-sum-toggle="${esc(k)}" aria-expanded="${open}"><span class="fp-chev">›</span><i class="fp-dot" style="background:${r.inTotal?r.color:'#c7ccdb'}"></i><b>${esc(r.name)}</b></button>${r.unit&&r.unit!=='混在'?`<span class="fp-unit-inline">（${esc(r.unit)}）</span>`:''}${r.inTotal?'':'<span class="fp-tag">合計外</span>'}${r.unit==='混在'?'<span class="fp-tag warn" title="台と枚など単位の違う品目が混ざっています">単位混在</span>':''}</td><td data-label="計画">${fpNum(r.plan)}</td><td data-label="${esc(hd)}">${fpNum(r.today)}</td><td data-label="${esc(hc)}" class="va-strong">${fpNum(r.done)}</td><td data-label="差" class="${r.diff==null?'':r.diff<0?'negative':'positive'}">${r.diff==null?'—':(r.diff>0?'+':'')+fpNum(r.diff)}</td><td data-label="達成率">${fpRateCell(r.rate)}</td><td data-label="単位">${esc(r.unit||'—')}</td></tr>${open?`<tr class="fp-detail-row"><td colspan="7">${fpSummaryDetail(r,f,month,day)}</td></tr>`:''}`}).join('')}${tot.length>1?`<tr class="total"><td data-label="グループ">合計${tu.length>1?'<span class="fp-tag warn">単位混在</span>':''}</td><td data-label="計画">${fpNum(tPlan)}</td><td data-label="${esc(hd)}">${fpNum(tDay)}</td><td data-label="${esc(hc)}">${fpNum(tDone)}</td><td data-label="差">${tDiff==null?'—':(tDiff>0?'+':'')+fpNum(tDiff)}</td><td data-label="達成率">${fpRateCell(tRate)}</td><td data-label="単位">${esc(tu.length===1?tu[0]:'')}</td></tr>`:''}</tbody></table></div></div>`}).join('');
+      factories.forEach((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'';try{fpDailyChart(el('fpDaily'+fi),f,month,fpRows(f,month,day),day)}catch(e){console.warn('[重点品目グラフ]',e)}});
+      if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',e=>{const b=e.target.closest('[data-fp-sum-toggle]');if(!b)return;const k=b.dataset.fpSumToggle;FP.sumOpen.has(k)?FP.sumOpen.delete(k):FP.sumOpen.add(k);renderFocusProduction()})}
     }
     // ---- 設定（管理者のみ表示。保存はリスト権限で最終判定）----
     function fpOpenSettings(){if(!canEditInventory())return;FP.planMonth=FP.planMonth||fpYm(state.month);fpStartEdit(FP.factory);el('focusModal').hidden=false;fpSetTab('groups');if(!FP.master)fpLoadMaster().then(()=>{if(!el('focusModal').hidden)el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}).catch(()=>{if(!el('focusModal').hidden&&!el('fpGroupsPane').hidden)fpRenderGroups()})}
     function fpStartEdit(factory){FP.factory=factory;FP.edit=fpGroupDefs(factory).map(g=>({name:g.name,orig:g.name,inTotal:g.inTotal,conds:g.conds.map(c=>({id:c.id,type:c.type,value:c.value,exclude:c.exclude}))}))}
     function fpSetTab(t){document.querySelectorAll('#focusModal [data-fp-tab]').forEach(b=>b.classList.toggle('on',b.dataset.fpTab===t));el('fpGroupsPane').hidden=t!=='groups';el('fpPlansPane').hidden=t!=='plans';t==='groups'?fpRenderGroups():fpRenderPlans()}
     function fpFactoryTabs(cur){return `<div class="fp-factory-tabs">${FP_FACTORIES.map(f=>`<button type="button" data-fp-factory="${esc(f)}" class="${f===cur?'on':''}">${esc(f)}</button>`).join('')}</div>`}
-    // 選択肢：この工場で完成報告がある品目から、分類・品目の一覧を作る
-    const FP_LV={'大分類':['dc','dn'],'中分類':['mc','mn'],'小分類':['sc','sn']};
-    function fpFactoryCodes(){const out=new Set();for(const r of FP.results?.rows||[])if(r.factory===FP.factory)out.add(r.item);return out}
-    function fpOptions(type){const items=FP.master||{},m=new Map();
-      const [kc,kn]=FP_LV[type]||[];if(!kc)return [];
-      for(const it of Object.values(items)){if(!it[kc]||/^0+$/.test(it[kc]))continue;let o=m.get(it[kc]);if(!o){o={v:it[kc],l:`${it[kc]}　${it[kn]||''}`,n:0};m.set(it[kc],o)}o.n++}
-      return [...m.values()].sort((a,b)=>a.v.localeCompare(b.v)).map(o=>({v:o.v,l:`${o.l}（${o.n}品目）`}))}
+    // 選択肢：品目マスタ（分類・索引）／完成報告（作業区）
+    function fpOptions(type){FP.optCache=FP.optCache||{};const ck=type+'|'+FP.factory+'|'+(FP.master?1:0);if(FP.optCache[ck])return FP.optCache[ck];const items=FP.master||{},m=new Map(),cls=FP_CLS_BY[type];let out=[];
+      if(cls){for(const it of Object.values(items)){const v=it[cls.k+'c']||'',nm=it[cls.k+'n']||'';const key=fpBlankCode(v)?nm:v;if(!key)continue;let o=m.get(key);if(!o){o={v:key,l:fpBlankCode(v)?nm:`${v}　${nm}`,n:0};m.set(key,o)}o.n++}out=[...m.values()].sort((a,b)=>a.v.localeCompare(b.v,'ja')).map(o=>({v:o.v,l:`${o.l}（${o.n}品目）`}))}
+      else if(type==='索引'){for(const it of Object.values(items)){if(!it.idx)continue;let o=m.get(it.idx);if(!o){o={v:it.idx,n:0};m.set(it.idx,o)}o.n++}out=[...m.values()].sort((a,b)=>a.v.localeCompare(b.v,'ja')).map(o=>({v:o.v,l:`${o.v}（${o.n}品目）`}))}
+      else if(type==='作業区'){for(const r of (FP.results?.rows||[])){if(r.factory!==FP.factory||!r.ws)continue;m.set(r.ws,(m.get(r.ws)||0)+1)}out=[...m.keys()].sort((a,b)=>a.localeCompare(b,'ja')).map(v=>({v,l:v}))}
+      return FP.optCache[ck]=out}
     function fpValueCell(c,key){
       if(c.type==='前方一致')return `<input data-cval="${key}" value="${esc(c.value)}" placeholder="品目コードの先頭（例：DX-）">`;
-      if(!FP.master)return `<select class="fp-val" disabled><option>${FP.masterError?esc('品目マスタを読めません：'+FP.masterError):'品目マスタを読み込んでいます…'}</option></select>`;
+      if(c.type!=='作業区'&&!FP.master)return `<select class="fp-val" disabled><option>${FP.masterError?esc('品目マスタを読めません：'+FP.masterError):'品目マスタを読み込んでいます…'}</option></select>`;
       if(c.type==='品目コード'){const it=FP.master[c.value];return `<span class="fp-val fp-item-pick"><input data-cval="${key}" value="${esc(c.value)}" list="fpItemList" placeholder="品目コード・品目名で検索して選ぶ" autocomplete="off">${c.value?(it?`<small>${esc(it.name)}（${esc(it.unit||'単位なし')}）</small>`:'<small class="fp-warn">品目マスタに無いコード</small>'):''}</span>`}
-      const opts=fpOptions(c.type);let cur=c.value;
+      const opts=fpOptions(c.type);let cur=c.value;const cls=FP_CLS_BY[c.type];
       // 以前に名前で保存された値はコードに読み替えて選択状態にする
-      if(cur&&!opts.some(o=>o.v===cur)){const lv=FP_LV[c.type];if(lv){const hit=Object.values(FP.master).find(it=>fpNorm(it[lv[1]])===cur);if(hit&&opts.some(o=>o.v===hit[lv[0]]))cur=hit[lv[0]]}}
-      const extra=cur&&!opts.some(o=>o.v===cur)?`<option value="${esc(cur)}" selected>${esc(cur)}（品目マスタに無い値）</option>`:'';
-      return `<select data-cval="${key}" class="fp-val"><option value="">選んでください</option>${extra}${opts.map(o=>`<option value="${esc(o.v)}" ${o.v===cur?'selected':''}>${esc(o.l)}</option>`).join('')}</select>`}
+      if(cur&&cls&&!opts.some(o=>o.v===cur)){const hit=Object.values(FP.master).find(it=>fpNorm(it[cls.k+'n'])===cur&&!fpBlankCode(it[cls.k+'c']));if(hit&&opts.some(o=>o.v===hit[cls.k+'c']))cur=hit[cls.k+'c']}
+      const extra=cur&&!opts.some(o=>o.v===cur)?`<option value="${esc(cur)}" selected>${esc(cur)}（${c.type==='作業区'?'完成報告に無い作業区':'品目マスタに無い値'}）</option>`:'';
+      return `<select data-cval="${key}" class="fp-val"><option value="">${opts.length?'選んでください':'（選べる項目がありません）'}</option>${extra}${opts.map(o=>`<option value="${esc(o.v)}" ${o.v===cur?'selected':''}>${esc(o.l)}</option>`).join('')}</select>`}
     function fpItemDatalist(){if(!FP.master)return '';if(!FP._dl)FP._dl=`<datalist id="fpItemList">${Object.entries(FP.master).sort((a,b)=>a[0].localeCompare(b[0])).map(([c,it])=>`<option value="${esc(c)}">${esc(it.name)}${it.sn?'　/ '+esc(it.sn):''}</option>`).join('')}</datalist>`;return FP._dl}
-    // 「＞詳細」：選んだ項目の下にぶら下がっている分類・品目と、その完成数
+    // 「＞詳細」（設定画面）：選んだ項目の下にぶら下がっている分類・品目と、当月・前月の完成数
     function fpCondDetail(c){
-      if(!FP.master)return '<p class="fp-muted">品目マスタを読み込んでいます…</p>';
+      if(c.type!=='作業区'&&!FP.master)return '<p class="fp-muted">品目マスタを読み込んでいます…</p>';
       if(!fpNorm(c.value))return '<p class="fp-muted">項目を選ぶと、内訳が表示されます</p>';
-      const items=fpItems(),month=fpYm(state.month),prev=fpPrevMonth(month),codes=Object.keys(items).filter(code=>fpCondMatch(c,code,items[code]));
-      if(!codes.length)return '<p class="fp-muted">品目マスタに該当する品目がありません</p>';
-      const q=(set,m)=>fpQty(set,FP.factory,m),head=`<th>${esc(fpYmLabel(month))}</th><th>${esc(fpYmLabel(prev))}</th>`;
+      const items=fpItems(),month=fpYm(state.month),prev=fpPrevMonth(month),cls=FP_CLS_BY[c.type];
+      const wsOnly=c.type==='作業区',baseSel={ok:r=>!wsOnly||fpNorm(r.ws)===fpNorm(c.value)};
+      const codes=wsOnly?[...new Set((FP.results?.rows||[]).filter(r=>r.factory===FP.factory&&baseSel.ok(r)).map(r=>r.item))]:Object.keys(items).filter(code=>fpCondMatch(c,code,items[code]));
+      if(!codes.length)return `<p class="fp-muted">${wsOnly?'この作業区の完成報告はありません':'品目マスタに該当する品目がありません'}</p>`;
+      const q=(set,m)=>fpQtySel({ok:r=>set.has(r.item)&&baseSel.ok(r)},FP.factory,m),head=`<th>${esc(fpYmLabel(month))}</th><th>${esc(fpYmLabel(prev))}</th>`;
       const unitOf=set=>{const u=fpUnits(set);return u.length===1?u[0]:u.length?'混在':''};
-      const node=(label,set,cls)=>`<tr class="${cls}"><td>${label}</td><td class="num">${set.size}</td><td>${esc(unitOf(set))}</td><td class="num">${fpNum(q(set,month))}</td><td class="num">${fpNum(q(set,prev))}</td></tr>`;
-      const itemRows=list=>list.slice(0,400).map(code=>({code,cur:q(new Set([code]),month),pre:q(new Set([code]),prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre||a.code.localeCompare(b.code)).map(x=>`<tr class="fp-lv-item"><td>${esc(x.code)}　<span class="fp-muted">${esc(items[x.code].name)}</span></td><td class="num">—</td><td>${esc(items[x.code].unit)}</td><td class="num">${fpNum(x.cur)}</td><td class="num">${fpNum(x.pre)}</td></tr>`).join('');
-      const groupBy=(list,k,kn)=>{const m=new Map();list.forEach(code=>{const it=items[code],key=it[k]||'';if(!m.has(key))m.set(key,{name:it[kn]||'分類なし',codes:[]});m.get(key).codes.push(code)});return [...m].sort((a,b)=>a[0].localeCompare(b[0]))};
-      let rows='';
-      if(c.type==='大分類'){for(const [mc,mg] of groupBy(codes,'mc','mn')){rows+=node(`<b>${esc(mc)}　${esc(mg.name)}</b>`,new Set(mg.codes),'fp-lv-mid');for(const [sc,sg] of groupBy(mg.codes,'sc','sn'))rows+=node(`${esc(sc)}　${esc(sg.name)}`,new Set(sg.codes),'fp-lv-small')}}
-      else if(c.type==='中分類'){for(const [sc,sg] of groupBy(codes,'sc','sn'))rows+=node(`${esc(sc)}　${esc(sg.name)}`,new Set(sg.codes),'fp-lv-small')}
+      const node=(label,set,cls2)=>`<tr class="${cls2}"><td>${label}</td><td class="num">${set.size}</td><td>${esc(unitOf(set))}</td><td class="num">${fpNum(q(set,month))}</td><td class="num">${fpNum(q(set,prev))}</td></tr>`;
+      const itemRows=list=>list.map(code=>({code,cur:q(new Set([code]),month),pre:q(new Set([code]),prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre||a.code.localeCompare(b.code)).slice(0,400).map(x=>`<tr class="fp-lv-item"><td>${esc(x.code)}　<span class="fp-muted">${esc(items[x.code]?.name||'')}</span></td><td class="num">—</td><td>${esc(items[x.code]?.unit||'')}</td><td class="num">${fpNum(x.cur)}</td><td class="num">${fpNum(x.pre)}</td></tr>`).join('');
+      const groupBy=(list,k)=>{const m=new Map();list.forEach(code=>{const it=items[code]||{},key=it[k+'c']||'';if(!m.has(key))m.set(key,{name:it[k+'n']||'分類なし',codes:[]});m.get(key).codes.push(code)});return [...m].sort((a,b)=>a[0].localeCompare(b[0]))};
+      let rows='',head1='品目';
+      if(cls&&cls.k==='d'){head1='中分類 ＞ 小分類';for(const [mc,mg] of groupBy(codes,'m')){rows+=node(`<b>${esc(mc)}　${esc(mg.name)}</b>`,new Set(mg.codes),'fp-lv-mid');for(const [sc,sg] of groupBy(mg.codes,'s'))rows+=node(`${esc(sc)}　${esc(sg.name)}`,new Set(sg.codes),'fp-lv-small')}}
+      else if(cls&&cls.k==='m'){head1='小分類';for(const [sc,sg] of groupBy(codes,'s'))rows+=node(`${esc(sc)}　${esc(sg.name)}`,new Set(sg.codes),'fp-lv-small')}
       else rows=itemRows(codes);
       const all=new Set(codes);
-      return `<table class="fp-mini fp-tree"><thead><tr><th>${c.type==='大分類'?'中分類 ＞ 小分類':c.type==='中分類'?'小分類':'品目'}</th><th>品目数</th><th>単位</th>${head}</tr></thead><tbody>${rows}<tr class="fp-lv-total"><td>合計</td><td class="num">${all.size}</td><td>${esc(unitOf(all))}</td><td class="num">${fpNum(q(all,month))}</td><td class="num">${fpNum(q(all,prev))}</td></tr></tbody></table>`}
+      return `<table class="fp-mini fp-tree"><thead><tr><th>${head1}</th><th>品目数</th><th>単位</th>${head}</tr></thead><tbody>${rows}<tr class="fp-lv-total"><td>合計</td><td class="num">${all.size}</td><td>${esc(unitOf(all))}</td><td class="num">${fpNum(q(all,month))}</td><td class="num">${fpNum(q(all,prev))}</td></tr></tbody></table>`}
+    function fpTypeSelect(c,key){const groups=['分類','品目','作業区'];return `<select data-ctype="${key}" class="fp-type">${groups.map(g=>`<optgroup label="${g}">${FP_COND.filter(x=>x[2]===g).map(([v,l])=>`<option value="${esc(v)}" ${c.type===v?'selected':''}>${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select>`}
     function fpRenderGroups(){
       const pane=el('fpGroupsPane'),month=fpYm(state.month),prev=fpPrevMonth(month),items=fpItems();
-      pane.innerHTML=fpFactoryTabs(FP.factory)+`<p class="lead">1つのグループに条件を何行でも足せます（分類と品目の混在可）。「除く」にした条件に当てはまる品目は外します。単位は品目マスタの単位です。${FP.results?'':'<br><b>完成実績データがまだ無いため、完成数は0で表示されます。</b>'}</p>`+fpItemDatalist()
-        +FP.edit.map((g,gi)=>{const codes=fpMatchItems(g.conds),units=fpUnits(codes),list=[...codes].map(c=>({c,it:items[c],cur:fpQty(new Set([c]),FP.factory,month),pre:fpQty(new Set([c]),FP.factory,prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre);
+      pane.innerHTML=fpFactoryTabs(FP.factory)+`<p class="lead">1つのグループに条件を何行でも足せます（分類・索引・品目・作業区の混在可）。品目の条件のどれかに当てはまり、作業区の条件があればその作業区で完成したものだけを数えます。「除く」にした条件は外します。単位は品目マスタの単位です。${FP.results?'':'<br><b>完成実績データがまだ無いため、完成数は0で表示されます。</b>'}</p>`+fpItemDatalist()
+        +FP.edit.map((g,gi)=>{const sel=fpSel(g.conds),units=fpUnitsSel(sel),active=[...new Set((FP.results?.rows||[]).filter(r=>r.factory===FP.factory&&(r.m===month||r.m===prev)&&sel.ok(r)).map(r=>r.item))],list=active.map(c=>({c,it:items[c],cur:fpQtySel({ok:r=>r.item===c&&sel.ok(r)},FP.factory,month),pre:fpQtySel({ok:r=>r.item===c&&sel.ok(r)},FP.factory,prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre);
           return `<div class="fp-group"><div class="fp-group-head"><input class="fp-gname" data-gi="${gi}" value="${esc(g.name)}" placeholder="グループ名（例：ダンディ）"><label><input type="checkbox" data-gtotal="${gi}" ${g.inTotal?'checked':''}> 合計に含める</label><span class="fp-gbtns"><button type="button" data-gup="${gi}" ${gi===0?'disabled':''} aria-label="上へ">↑</button><button type="button" data-gdown="${gi}" ${gi===FP.edit.length-1?'disabled':''} aria-label="下へ">↓</button><button type="button" class="fp-del" data-gdel="${gi}">グループを削除</button></span></div>
-            <div class="fp-conds">${g.conds.map((c,ci)=>`<div class="fp-cond${c.exclude?' exc':''}"><div class="fp-cond-row"><select data-ctype="${gi}:${ci}" class="fp-type">${FP_COND.map(([v,l])=>`<option value="${v}" ${c.type===v?'selected':''}>${esc(l)}</option>`).join('')}</select>${fpValueCell(c,`${gi}:${ci}`)}<label class="fp-exc"><input type="checkbox" data-cexc="${gi}:${ci}" ${c.exclude?'checked':''}> 除く</label><button type="button" class="fp-del" data-cdel="${gi}:${ci}" aria-label="条件を削除">✕</button></div><details class="fp-cond-detail" data-cdet="${gi}:${ci}" ${FP.open.has(`${gi}:${ci}`)?'open':''}><summary>詳細</summary>${FP.open.has(`${gi}:${ci}`)?fpCondDetail(c):''}</details></div>`).join('')}</div>
+            <div class="fp-conds">${g.conds.map((c,ci)=>`<div class="fp-cond${c.exclude?' exc':''}"><div class="fp-cond-row">${fpTypeSelect(c,`${gi}:${ci}`)}${fpValueCell(c,`${gi}:${ci}`)}<label class="fp-exc"><input type="checkbox" data-cexc="${gi}:${ci}" ${c.exclude?'checked':''}> 除く</label><button type="button" class="fp-del" data-cdel="${gi}:${ci}" aria-label="条件を削除">✕</button></div><details class="fp-cond-detail" data-cdet="${gi}:${ci}" ${FP.open.has(`${gi}:${ci}`)?'open':''}><summary>詳細</summary>${FP.open.has(`${gi}:${ci}`)?fpCondDetail(c):''}</details></div>`).join('')}</div>
             <button type="button" class="fp-add" data-cadd="${gi}">＋ 条件を追加</button>
-            <details class="fp-preview" ${list.length&&list.length<=30?'':''}><summary>該当品目 ${codes.size}件${units.length>1?`<span class="fp-tag warn">単位混在：${esc(units.join('・'))}</span>`:units.length?`（${esc(units[0])}）`:''}　${fpYmLabel(month)} 完成 <b>${fpNum(fpQty(codes,FP.factory,month))}</b>／${fpYmLabel(prev)} <b>${fpNum(fpQty(codes,FP.factory,prev))}</b></summary>
-              ${list.length?`<table class="fp-mini"><thead><tr><th>品目コード</th><th>品目名</th><th>分類</th><th>単位</th><th>${esc(fpYmLabel(month))}</th><th>${esc(fpYmLabel(prev))}</th></tr></thead><tbody>${list.slice(0,200).map(x=>`<tr><td>${esc(x.c)}</td><td>${esc(x.it?.name)}</td><td class="fp-muted">${esc([x.it?.dn,x.it?.mn,x.it?.sn].filter(Boolean).join(' / '))}</td><td>${esc(x.it?.unit)}</td><td class="num">${fpNum(x.cur)}</td><td class="num">${fpNum(x.pre)}</td></tr>`).join('')}</tbody></table>${list.length>200?`<p class="fp-muted">ほか ${list.length-200}件</p>`:''}`:'<p class="fp-muted">該当する品目がありません</p>'}
+            <details class="fp-preview"><summary>完成報告がある品目 ${active.length}件${units.length>1?`<span class="fp-tag warn">単位混在：${esc(units.join('・'))}</span>`:units.length?`（${esc(units[0])}）`:''}　${fpYmLabel(month)} 完成 <b>${fpNum(fpQtySel(sel,FP.factory,month))}</b>／${fpYmLabel(prev)} <b>${fpNum(fpQtySel(sel,FP.factory,prev))}</b></summary>
+              ${list.length?`<table class="fp-mini"><thead><tr><th>品目コード</th><th>品目名</th><th>分類</th><th>単位</th><th>${esc(fpYmLabel(month))}</th><th>${esc(fpYmLabel(prev))}</th></tr></thead><tbody>${list.slice(0,200).map(x=>`<tr><td>${esc(x.c)}</td><td>${esc(x.it?.name)}</td><td class="fp-muted">${esc([x.it?.dn,x.it?.mn,x.it?.sn].filter(Boolean).join(' / '))}</td><td>${esc(x.it?.unit)}</td><td class="num">${fpNum(x.cur)}</td><td class="num">${fpNum(x.pre)}</td></tr>`).join('')}</tbody></table>${list.length>200?`<p class="fp-muted">ほか ${list.length-200}件</p>`:''}`:'<p class="fp-muted">この2か月に完成報告がある品目はありません</p>'}
             </details></div>`}).join('')
         +`<div class="fp-actions"><button type="button" class="fp-add" id="fpAddGroup">＋ グループを追加</button><span class="fp-spacer"></span><span id="fpMsg" class="fp-muted"></span><button type="button" class="fp-primary" id="fpSaveGroups">${esc(FP.factory)}の設定を保存</button></div>`;
     }
@@ -818,7 +901,7 @@
       const pane=el('fpPlansPane'),m=FP.planMonth,groups=fpGroupDefs(FP.factory);
       const months=[fpPrevMonth(m),m,fpNextMonth(m)];
       pane.innerHTML=fpFactoryTabs(FP.factory)+`<div class="fp-month"><button type="button" data-fp-month="${months[0]}">← ${esc(fpYmLabel(months[0]))}</button><b>${esc(fpYmLabel(m))}の計画</b><button type="button" data-fp-month="${months[2]}">${esc(fpYmLabel(months[2]))} →</button></div>`
-        +(groups.length?`<table class="fp-plan"><thead><tr><th>グループ</th><th>計画数</th><th>単位</th><th>メモ</th></tr></thead><tbody>${groups.map(g=>{const p=(FP.plans||[]).find(x=>x.month===m&&x.factory===FP.factory&&x.group===g.name),u=fpUnits(fpMatchItems(g.conds));return `<tr><td><b>${esc(g.name)}</b></td><td><input type="number" inputmode="decimal" min="0" step="any" data-pq="${esc(g.name)}" value="${p&&p.qty!=null?p.qty:''}"></td><td>${esc(u.length===1?u[0]:u.length?'混在':'—')}</td><td><input data-pn="${esc(g.name)}" value="${esc(p?.note||'')}" placeholder="任意"></td></tr>`}).join('')}</tbody></table>`:'<p class="fp-muted">この工場にはまだグループがありません。先に「グループと条件」で登録してください。</p>')
+        +(groups.length?`<table class="fp-plan"><thead><tr><th>グループ</th><th>計画数</th><th>単位</th><th>メモ</th></tr></thead><tbody>${groups.map(g=>{const p=(FP.plans||[]).find(x=>x.month===m&&x.factory===FP.factory&&x.group===g.name),u=fpUnitsSel(fpSel(g.conds));return `<tr><td><b>${esc(g.name)}</b></td><td><input type="number" inputmode="decimal" min="0" step="any" data-pq="${esc(g.name)}" value="${p&&p.qty!=null?p.qty:''}"></td><td>${esc(u.length===1?u[0]:u.length?'混在':'—')}</td><td><input data-pn="${esc(g.name)}" value="${esc(p?.note||'')}" placeholder="任意"></td></tr>`}).join('')}</tbody></table>`:'<p class="fp-muted">この工場にはまだグループがありません。先に「グループと条件」で登録してください。</p>')
         +`<div class="fp-actions"><span class="fp-spacer"></span><span id="fpMsg" class="fp-muted"></span>${groups.length?`<button type="button" class="fp-primary" id="fpSavePlans">${esc(fpYmLabel(m))}の計画を保存</button>`:''}</div>`;
     }
     function fpMsg(t,bad){const m=el('fpMsg');if(m){m.textContent=t;m.style.color=bad?'var(--red)':''}}
@@ -857,7 +940,7 @@
         if(t.dataset.fpFactory){FP.open.clear();fpStartEdit(t.dataset.fpFactory);return el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}
         if(t.dataset.fpMonth){FP.planMonth=t.dataset.fpMonth;return fpRenderPlans()}
         if(t.id==='fpAddGroup'){FP.edit.push({name:'',orig:'',inTotal:true,conds:[{type:'小分類',value:'',exclude:false}]});return fpRenderGroups()}
-        if(t.dataset.cadd!=null){FP.edit[+t.dataset.cadd].conds.push({type:'品目コード',value:'',exclude:false});return fpRenderGroups()}
+        if(t.dataset.cadd!=null){FP.edit[+t.dataset.cadd].conds.push({type:'小分類',value:'',exclude:false});return fpRenderGroups()}
         if(t.dataset.cdel){FP.open.clear();const [g,c]=t.dataset.cdel.split(':').map(Number);FP.edit[g].conds.splice(c,1);return fpRenderGroups()}
         if(t.dataset.gdel!=null){FP.open.clear();const g=FP.edit[+t.dataset.gdel];if(!confirm(`「${g.name||'名前なし'}」を削除します（保存するまで反映されません）`))return;FP.edit.splice(+t.dataset.gdel,1);return fpRenderGroups()}
         if(t.dataset.gup!=null||t.dataset.gdown!=null){FP.open.clear();const i=+(t.dataset.gup??t.dataset.gdown),j=t.dataset.gup!=null?i-1:i+1;[FP.edit[i],FP.edit[j]]=[FP.edit[j],FP.edit[i]];return fpRenderGroups()}
@@ -1228,6 +1311,19 @@
     .fp-table td:first-child b{font-weight:800}
     .fp-tag{display:inline-block;margin-left:6px;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;background:#f1f3f8;color:var(--sub);vertical-align:1px}
     .fp-tag.warn{background:var(--amber-soft);color:var(--amber)}
+    .fp-factory-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    .fp-factory-head span{font-size:11.5px}
+    .fp-daily{margin:6px 0 10px}
+    .fp-sum-toggle{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+    .fp-chev{display:inline-block;color:var(--navy);font-weight:800;transition:transform .15s}
+    .fp-sum-toggle[aria-expanded="true"] .fp-chev{transform:rotate(90deg)}
+    .fp-dot{width:9px;height:9px;border-radius:2px;display:inline-block}
+    #summary .fp-detail-row>td{background:#fbfcfe;padding:4px 10px 12px 26px;white-space:normal}
+    #summary .fp-detail-row:hover td{background:#fbfcfe}
+    .fp-sum-tree{max-width:720px}
+    .fp-sum-tree th:nth-child(n+2),.fp-sum-tree td:nth-child(n+2){text-align:right;width:90px}
+    .fp-tree .fp-lv-cond td{font-weight:800;color:var(--navy);border-top:1px solid var(--line-strong);background:#f3f5fb}
+    .fp-tree .fp-lv-item td:first-child{padding-left:22px}
     .fp-muted{color:var(--sub)}
     .fp-unit-inline{display:none;margin-left:6px;font-size:11.5px;font-weight:600;color:var(--sub)}
     .fp-rate{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end;min-width:110px}
@@ -1298,6 +1394,19 @@
       #summary table.va-cards.fp-table td[data-label="達成率"]{grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between;border-top:1px dashed var(--line);padding-top:7px;margin-top:3px}
       #summary table.va-cards.fp-table td[data-label="達成率"] .fp-rate i{flex-basis:140px}
       #summary table.va-cards.fp-table td[data-label="単位"]{display:none}
+      #summary table.va-cards.fp-table tr.fp-detail-row{display:block;padding:6px 8px;margin-top:-6px;border-top:0;border-radius:0 0 10px 10px}
+      #summary table.va-cards.fp-table tr.fp-detail-row>td{display:block;grid-column:auto;padding:0;font-size:13px;font-weight:400}
+      #summary table.va-cards.fp-table tr.fp-detail-row>td::before{content:none}
+      .fp-sum-tree td,.fp-sum-tree th{padding:5px 4px}
+      #summary table.va-cards .fp-sum-tree{display:table;width:100%}
+      #summary table.va-cards .fp-sum-tree thead{display:table-header-group}
+      #summary table.va-cards .fp-sum-tree tbody{display:table-row-group}
+      #summary table.va-cards .fp-sum-tree tr{display:table-row;margin:0;padding:0;border:0;border-radius:0;background:none}
+      #summary table.va-cards .fp-sum-tree td,#summary table.va-cards .fp-sum-tree th{display:table-cell;border-bottom:1px solid var(--line);font-size:12.5px;font-weight:400;white-space:normal;margin:0}
+      #summary table.va-cards .fp-sum-tree td::before{content:none}
+      #summary table.va-cards .fp-sum-tree td:first-child{font-weight:400;font-size:12.5px;padding-bottom:5px}
+      #summary table.va-cards .fp-sum-tree tr.fp-lv-cond td{font-weight:800}
+      #summary table.va-cards .fp-sum-tree tr.fp-lv-small td:first-child,#summary table.va-cards .fp-sum-tree tr.fp-lv-item td:first-child{padding-left:16px}
       .fp-unit-inline{display:inline!important}
       #focusModal{padding:0;place-items:end center}
       .fp-shell{max-height:100dvh;border-radius:14px 14px 0 0}
