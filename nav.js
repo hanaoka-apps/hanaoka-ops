@@ -7,9 +7,9 @@
       apps: [
         { f: 'ap_dashboard.html',      l: 'ホーム' },
         { f: 'ap_expense.html',        l: '経費' },
+        { f: 'ap_entry.html',          l: '手入力', sub: true },      // sub：上の項目（経費）の下に字下げして出す
+        { f: 'ap_recurring.html',      l: '毎月の支払', sub: true },
         { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
-        { f: 'ap_entry.html',          l: '手入力' },
-        { f: 'ap_recurring.html',      l: '毎月の支払' },
         { f: 'ap_payment.html',        l: '支払（決裁・出力）' }
       ]
     },
@@ -163,7 +163,7 @@
       g.apps.map(function (a) {
         /* gate：権限を確かめてから出す項目（画面側がクラスの hide を外す） */
         var gated = g.gate && g.gate.page === cur && a.f !== cur ? ' ' + g.gate.cls + ' hide' : '';
-        return '<a class="hx-item' + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
+        return '<a class="hx-item' + (a.sub ? ' hx-sub' : '') + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
           svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
       }).join('') +
       '<div class="hx-foot">' +
@@ -214,7 +214,7 @@
     injectStyle();
     var html = '<div class="app-nav">' + g.apps.map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
-      return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + a.l + '</a>';
+      return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + (a.sub ? '└ ' : '') + a.l + '</a>';
     }).join('') + '</div>';
     slot.innerHTML = html;
     slot.addEventListener('click', function (e) {
