@@ -44,7 +44,8 @@
     jr.filter(x => (/^000[5-7]/.test(x['科目コード']) && x['科目コード'] !== '000501') || x['科目コード'] === '000317').forEach(x => { const k = key(x['摘要']); if (k) (hg[k] = hg[k] || []).push(x); });
     const histT = Object.keys(hg).filter(k => hg[k].length >= 2).sort().map(k => {
       const c = {}; hg[k].forEach(x => { const s = `${x['科目コード']} ${x['科目名']}・部門 ${x['部門コード']}・${x['税区分']}` + (x['内訳'] ? `・内訳 ${x['内訳']}` : ''); c[s] = (c[s] || 0) + 1; });
-      return `${k}（${hg[k].length}回）：` + Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, n]) => `${s}×${n}`).join(' / ');
+      const last = hg[k].slice().sort((a, b) => String(b['伝票日付'] || b['年月']).localeCompare(String(a['伝票日付'] || a['年月'])))[0];   // 摘要の書き方をそろえるため、新しい1件の例
+      return `${k}（${hg[k].length}回）：` + Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, n]) => `${s}×${n}`).join(' / ') + (last && last['摘要'] ? `　摘要の例「${String(last['摘要']).replace(/\s+/g, ' ').slice(0, 40)}」` : '');
     }).join('\n');
     const yms = [...new Set(jr.map(x => x['年月']).filter(Boolean))].sort();
     return `## マスタ：科目（コード 名前 既定の税）\n${kmT}\n\n## マスタ：部門（コード 名前）\n${bmT}\n\n## マスタ：内訳が要る科目（科目コード 名前：内訳コード 名前）\n${umT}\n\n## 過去の仕訳（支払先 → よく使う科目・部門・税。${yms[0] || ''}〜${yms[yms.length - 1] || ''}）\n${histT}`;
