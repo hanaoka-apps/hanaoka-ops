@@ -92,7 +92,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 /* ===== 縦型BOMツリー ===== */
 .bom-tree { font-size: 12.5px; }
 .bom-tree .row {
-  display: grid; grid-template-columns: minmax(0, 1fr) var(--barcode-column, 86mm) 18mm; gap: 3mm;
+  display: grid; grid-template-columns: minmax(0, 1fr) 18mm var(--barcode-column, 86mm); gap: 3mm;
   padding: 6px 0; border-bottom: 1px dashed #e5e7eb; align-items: center;
 }
 .bom-tree .row:hover { background: #f8fafc; }
@@ -115,7 +115,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .bom-tree .itemname { color: #475569; }
 .bom-tree .qty { text-align: right; font-variant-numeric: tabular-nums; color: #166534; font-weight: 600; }
 .bom-tree .child-count { color: #0ea5e9; font-size: 10.5px; margin-left: 4px; font-weight: 600; }
-.bom-tree .hdr { display: grid; grid-template-columns: minmax(0, 1fr) var(--barcode-column, 86mm) 18mm; gap: 3mm; padding: 6px 0; font-size: 10.5px; color: #64748b; font-weight: 700; border-bottom: 1px solid #e5e7eb; margin-bottom: 4px; }
+.bom-tree .hdr { display: grid; grid-template-columns: minmax(0, 1fr) 18mm var(--barcode-column, 86mm); gap: 3mm; padding: 6px 0; font-size: 10.5px; color: #64748b; font-weight: 700; border-bottom: 1px solid #e5e7eb; margin-bottom: 4px; }
 .bom-tree .hdr .qty { color: #64748b; }
 .bom-tree .note { color: #94a3b8; font-size: 11px; padding: 8px 0; }
 .bom-tree .dup { color: #f59e0b; font-size: 10px; font-style: italic; }
@@ -357,13 +357,13 @@ const CODE128B_PATTERNS = [
 ];
 const CODE128B_START = [2,1,1,4,1,2];
 const CODE128_STOP = [2,3,3,1,1,1,2];
-const CODE128_MODULE_MM = 0.40;
+const CODE128_MODULE_MM = 0.50;
 const CODE128_QUIET_MODULES = 12;
 function code128WidthMm(value) {
   // Start (11), data (11 each), checksum (11), stop (13), and both quiet zones.
   return (35 + 2 * CODE128_QUIET_MODULES + 11 * String(value || '').length) * CODE128_MODULE_MM;
 }
-function code128Svg(value) {
+function code128Svg(value, targetWidthMm) {
   const text = String(value || '');
   if (!text || [...text].some(ch => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) > 126)) return '';
   const symbols = [CODE128B_START];
@@ -383,7 +383,7 @@ function code128Svg(value) {
     x += width;
     isBar = !isBar;
   }
-  const widthMm = (totalModules * CODE128_MODULE_MM).toFixed(2);
+  const widthMm = Number(targetWidthMm || totalModules * CODE128_MODULE_MM).toFixed(2);
   return `<svg class="barcode" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalModules} 40" width="${widthMm}mm" height="15mm" role="img" aria-label="Code 128 ${escapeHtml(text)}" preserveAspectRatio="none">${bars.join('')}</svg>`;
 }
 function getChildren(code, seiban) {
@@ -432,7 +432,8 @@ function renderDetail(code) {
   currentDetail = { code, seiban, name: itemName, rows, collapsed: new Set() };
   const indent = (lv) => '　'.repeat(Math.max(0,lv-1)) + (lv > 0 ? '└─ ' : '');
   const allCodes = [code, ...rows.map(r => r.code)];
-  const barcodeColumnMm = allCodes.reduce((max, itemCode) => Math.max(max, code128WidthMm(itemCode) + 4), 86);
+  const barcodeWidthMm = allCodes.reduce((max, itemCode) => Math.max(max, code128WidthMm(itemCode)), 82);
+  const barcodeColumnMm = barcodeWidthMm + 4.5;
   let modeLabel = '<span class="mode default">デフォルト構成</span>';
   if (seiban && usedSeibanBom)       modeLabel = `<span class="mode seiban">製番別構成 (${escapeHtml(seiban)})</span>`;
   else if (seiban && !usedSeibanBom) modeLabel = `<span class="mode fallback">⚠ 製番別BOMなし → デフォルトで展開</span>`;
@@ -446,11 +447,11 @@ function renderDetail(code) {
       ${maxLv >= 3 ? '<button onclick="collapseToLevel(3)">Lv.3まで</button>' : ''}
       <span class="summary">親行▼/▶クリックで個別に畳めます</span>
     </div>
-    <div class="hdr"><div>品目コード・品目名</div><div>バーコード</div><div class="qty">1台あたり</div></div>
+    <div class="hdr"><div>品目コード・品目名</div><div class="qty">1台あたり</div><div>バーコード</div></div>
     <div class="row lv0">
       <div class="item-cell"><span class="toggle empty">●</span><span class="code">${escapeHtml(code)}</span><span class="itemname">${escapeHtml(itemName)}</span></div>
-      <div class="barcode-cell">${code128Svg(code)}</div>
       <div class="qty">1</div>
+      <div class="barcode-cell">${code128Svg(code, barcodeWidthMm)}</div>
     </div>`;
   if (rows.length === 0) {
     bomHtml += `<div class="note">この品目には構成が登録されていません(=終端の購買部品・最終製品)</div>`;
@@ -460,8 +461,8 @@ function renderDetail(code) {
       const cc  = b.hasChild ? `<span class="child-count">(${b.childCount})</span>` : '';
       bomHtml += `<div class="row" data-id="${b.id}" data-lv="${b.lv}" data-parent="${b.parentId}"${b.hasChild?' data-haschild="1"':''}>
         <div class="item-cell"><span class="indent">${indent(b.lv)}</span>${tog}<span class="code">${escapeHtml(b.code)}</span><span class="itemname">${escapeHtml(b.name)}</span>${cc}</div>
-        <div class="barcode-cell">${code128Svg(b.code)}</div>
         <div class="qty">${b.qty}</div>
+        <div class="barcode-cell">${code128Svg(b.code, barcodeWidthMm)}</div>
       </div>`;
     }
   }
