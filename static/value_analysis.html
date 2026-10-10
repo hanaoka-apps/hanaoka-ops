@@ -783,6 +783,48 @@
     function fpRows(factory,month,day){return fpGroupDefs(factory).map((g,i)=>{const sel=fpSel(g.conds),units=fpUnitsSel(sel),a=fpAgg(sel,factory,month,day),plan=fpPlan(month,factory,g.name);return{...g,sel,color:FP_COLORS[i%FP_COLORS.length],units,unit:units.length===1?units[0]:units.length?'混在':'',today:a.day,done:a.cum,plan,diff:plan!=null&&a.cum!=null?a.cum-plan:null,rate:plan>0&&a.cum!=null?a.cum/plan:null}})}
     // 条件の表示名（分類はコード＋名前）
     function fpCondLabel(c){const cls=FP_CLS_BY[c.type],items=fpItems();if(cls){const it=Object.values(items).find(it=>it[cls.k+'c']===c.value||it[cls.k+'n']===c.value);return `${c.type}：${c.value}${it&&it[cls.k+'n']&&it[cls.k+'n']!==c.value?'　'+it[cls.k+'n']:''}`}if(c.type==='品目コード'){const it=items[c.value];return `品目：${c.value}${it?'　'+it.name:''}`}return `${c.type}：${c.value}`}
+    const fpWeekend=d=>{const w=new Date(Number(d.slice(0,4)),Number(d.slice(5,7))-1,Number(d.slice(8,10))).getDay();return w===0||w===6};
+    const fpHours=m=>m==null?null:m/60;
+    const fpH=m=>m==null?'—':(Math.round(m/6)/10).toLocaleString('ja-JP',{minimumFractionDigits:1,maximumFractionDigits:1});
+    // 土日の列を薄く塗る（休日か報告が無いのかを見分けやすくする）
+    function fpWeekendBands(shown,L,T,step,plotH){return shown.map((d,i)=>fpWeekend(d)?`<rect x="${L+step*i}" y="${T}" width="${step}" height="${plotH}" fill="#eef0f5"/>`:'').join('')}
+    function fpDayText(d,i,n,every,day,base){const dn=Number(d.slice(8)),we=fpWeekend(d);return (i%every===0||d===day||i===n-1)?`<text class="va-month${d===day?' va-month-selected':''}" x="__X__" y="${base+17}" text-anchor="middle"${we&&d!==day?' fill="#a0a6bb"':''}>${dn}</text>`:''}
+    // ---- サマリー：日別の作業時間（基準内＝主要製品グループ＋その他、基準外）----
+    function fpLaborDays(factory,month){const out=new Map();for(const x of FP.results?.daily_labor||[]){if(x.factory!==factory||x.d.slice(0,7)!==month)continue;if(!out.has(x.d))out.set(x.d,[]);out.get(x.d).push(x)}return out}
+    function fpLaborSplit(list,stack){const g=new Map(stack.map(r=>[r.name,{in:0,ex:0}]));let oin=0,oex=0,z=0;const other=new Map();for(const x of list||[]){z+=Number(x.z)||0;const hit=stack.find(r=>r.sel.ok(x));const i=Number(x.in)||0,e=Number(x.ex)||0;if(hit){const a=g.get(hit.name);a.in+=i;a.ex+=e}else{oin+=i;oex+=e;const k=x.item+'|'+x.ws;const o=other.get(k)||{item:x.item,ws:x.ws,in:0,ex:0};o.in+=i;o.ex+=e;other.set(k,o)}}const exAll=[...g.values()].reduce((s,a)=>s+a.ex,0)+oex,inAll=[...g.values()].reduce((s,a)=>s+a.in,0)+oin;return{g,oin,oex,inAll,exAll,z,other:[...other.values()].sort((a,b)=>(b.in+b.ex)-(a.in+a.ex))}}
+    function fpLaborChart(root,factory,month,rows,day){
+      if(!root)return;const stack=rows.filter(r=>r.inTotal),byDay=fpLaborDays(factory,month);
+      if(!fpHasDaily(month)||!FP.results?.daily_labor){root.innerHTML='<div class="va-chart-empty">この月は日別の作業時間データがありません</div>';return}
+      const days=fpMonthDays(month),latest=fpLatestDay(factory,month),lastIdx=Math.max(0,days.indexOf(latest)),shown=days.slice(0,Math.max(lastIdx+1,1));
+      const split=shown.map(d=>fpLaborSplit(byDay.get(d),stack));
+      const OTHER='#b7bdcc',EXC='#f2b84b';
+      const segs=sp=>[...stack.map(r=>({v:fpHours(sp.g.get(r.name).in),c:r.color,n:r.name+'（基準内）'})),{v:fpHours(sp.oin),c:OTHER,n:'その他（基準内）'},{v:fpHours(sp.exAll),c:EXC,n:'基準外（全体）'}];
+      const tot=split.map(sp=>fpHours(sp.inAll+sp.exAll));
+      const width=Math.max(300,Math.round(root.clientWidth||700)),narrow=width<560,H=narrow?210:240,L=narrow?40:52,R=16,T=26,B=26,plotW=width-L-R,plotH=H-T-B,base=T+plotH,n=shown.length,step=plotW/n,cx=i=>L+step*(i+.5);
+      const lr=vaRange(tot.concat([0]),{zero:true}),ticks=Math.max(1,Math.round((lr.max-lr.min)/lr.step)),yL=v=>base-(v-lr.min)/(lr.max-lr.min)*plotH;
+      let s=`<svg class="va-chart-svg" viewBox="0 0 ${width} ${H}" width="${width}" height="${H}" role="img" aria-label="${esc(factory)}の日別作業時間"><text class="va-axis-title" x="${L}" y="14">日別作業時間（人時）</text>`+fpWeekendBands(shown,L,T,step,plotH);
+      for(let i=0;i<=ticks;i++){const v=lr.min+lr.step*i,y=yL(v);s+=`<line class="va-grid" x1="${L}" y1="${y}" x2="${width-R}" y2="${y}"/><text class="va-axis" x="${L-6}" y="${y+4}" text-anchor="end">${fpNum(Math.round(v))}</text>`}
+      const si=shown.indexOf(day);if(si>=0)s+=`<rect class="va-selected-band" x="${L+step*si+1}" y="${T}" width="${Math.max(2,step-2)}" height="${plotH}" rx="4"/>`;
+      const bw=Math.min(narrow?12:22,step*.7);shown.forEach((d,i)=>{let pos=0;segs(split[i]).forEach(sg=>{if(!sg.v)return;const y1=yL(pos+sg.v),y2=yL(pos);pos+=sg.v;s+=`<rect x="${cx(i)-bw/2}" y="${y1}" width="${bw}" height="${Math.max(1,y2-y1)}" fill="${sg.c}"/>`})});
+      const every=n>20?(narrow?7:5):1;shown.forEach((d,i)=>{s+=fpDayText(d,i,n,every,day,base).replace('__X__',cx(i))});
+      shown.forEach((d,i)=>{s+=`<rect class="va-hit" data-fp-day="${d}" x="${L+step*i}" y="${T}" width="${step}" height="${plotH+B-2}" tabindex="0" role="button" aria-label="${fpDayLabel(d)}を選ぶ"/>`});
+      s+='</svg>';
+      root.innerHTML=`<div class="va-chart-legend">${stack.map(r=>`<span><i class="va-key-bar" style="background:${r.color}"></i>${esc(r.name)}</span>`).join('')}<span><i class="va-key-bar" style="background:${OTHER}"></i>その他の作業</span><span><i class="va-key-bar" style="background:${EXC}"></i>基準外（段取り・手直し等）</span><span><i class="va-key-bar" style="background:#eef0f5;border:1px solid #d9dce6"></i>土日</span></div><div class="va-chart-plot">${s}<div class="va-tooltip" role="status" hidden></div></div>`;
+      const plot=root.querySelector('.va-chart-plot'),tip=plot.querySelector('.va-tooltip');
+      plot.querySelectorAll('.va-hit').forEach((hit,i)=>{const d=hit.dataset.fpDay,sp=split[i];const show=()=>{tip.innerHTML=`<div class="va-tip-month">${fpDayLabel(d)}${fpWeekend(d)?'（土日）':''}<small>${esc(factory)}・人時</small></div>`+vaTipRows(stack.map(r=>{const a=sp.g.get(r.name);return [r.name,`${fpH(a.in)}${a.ex?` ＋外 ${fpH(a.ex)}`:''}`,r.color]}).concat([['その他',`${fpH(sp.oin)}${sp.oex?` ＋外 ${fpH(sp.oex)}`:''}`,OTHER],['基準外 計',fpH(sp.exAll),EXC],['合計',fpH(sp.inAll+sp.exAll)]]));tip.hidden=false;const pb=plot.getBoundingClientRect(),hb=hit.getBoundingClientRect();let left=hb.left-pb.left+hb.width+8;if(left+tip.offsetWidth>plot.clientWidth-6)left=hb.left-pb.left-tip.offsetWidth-8;tip.style.left=Math.max(6,left)+'px';tip.style.top='28px'};
+        hit.addEventListener('mouseenter',show);hit.addEventListener('focus',show);hit.addEventListener('mouseleave',()=>tip.hidden=true);hit.addEventListener('blur',()=>tip.hidden=true);
+        hit.addEventListener('click',()=>{FP.daySel[factory+'|'+month]=d;renderFocusProduction()});hit.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();FP.daySel[factory+'|'+month]=d;renderFocusProduction()}})});
+    }
+    // 選んだ日の作業時間の内訳（主要製品グループ・その他の上位）
+    function fpLaborBreakdown(factory,month,rows,day){
+      if(!day||!FP.results?.daily_labor)return '';const stack=rows.filter(r=>r.inTotal),sp=fpLaborSplit(fpLaborDays(factory,month).get(day),stack),items=fpItems();
+      const line=(label,i,e,cls)=>`<tr class="${cls||''}"><td>${label}</td><td class="num">${fpH(i)}</td><td class="num">${fpH(e)}</td><td class="num"><b>${fpH(i+e)}</b></td></tr>`;
+      let h=stack.map(r=>{const a=sp.g.get(r.name);return line(`<i class="fp-dot" style="background:${r.color}"></i>${esc(r.name)}`,a.in,a.ex)}).join('');
+      h+=line('<i class="fp-dot" style="background:#b7bdcc"></i>その他の作業',sp.oin,sp.oex,'fp-lv-cond');
+      h+=sp.other.slice(0,8).map(o=>line(`${esc(o.item)}　<span class="fp-muted">${esc(items[o.item]?.name||'')}</span><small class="fp-ws">${esc(o.ws)}</small>`,o.in,o.ex,'fp-lv-item')).join('');
+      if(sp.other.length>8)h+=`<tr class="fp-lv-item"><td class="fp-muted">ほか ${sp.other.length-8}件</td><td></td><td></td><td></td></tr>`;
+      h+=line('合計',sp.inAll,sp.exAll,'fp-lv-total');
+      return `<details class="fp-labor-detail" ${FP.laborOpen?.has(factory)?'open':''} data-fp-labor="${esc(factory)}"><summary>${fpDayLabel(day)}${fpWeekend(day)?'（土日）':''}の作業時間の内訳（人時）</summary><table class="fp-mini fp-tree fp-sum-tree fp-labor-table"><thead><tr><th>区分</th><th>基準内</th><th>基準外</th><th>計</th></tr></thead><tbody>${h}</tbody></table><p class="fp-muted">基準内＝作業時間×人数、基準外＝基準外工数×基準外人数（付加価値アプリの工数と同じ式）。主要製品の部品・中間品の作業は「その他」に入ります。${sp.z?`作業時間が入っていない完成報告 ${sp.z}件（この日）は時間に含まれません。`:''}</p></details>`}
     // ---- サマリー：日別グラフ（グループ積み上げ棒＋月内累計の線）----
     function fpDailyChart(root,factory,month,rows,day){
       if(!root)return;const days=fpMonthDays(month),stack=rows.filter(r=>r.inTotal),latest=fpLatestDay(factory,month);
@@ -793,15 +835,15 @@
       const width=Math.max(300,Math.round(root.clientWidth||700)),narrow=width<560,H=narrow?220:250,L=narrow?40:52,R=narrow?44:58,T=26,B=26,plotW=width-L-R,plotH=H-T-B,base=T+plotH,n=shown.length,step=plotW/n,cx=i=>L+step*(i+.5);
       const lr=vaRange(tot.concat([0]),{zero:true}),ticks=Math.max(1,Math.round((lr.max-lr.min)/lr.step)),rr=vaRangeTicks(cum,ticks,true),yL=v=>base-(v-lr.min)/(lr.max-lr.min)*plotH,yR=v=>base-(v-rr.min)/(rr.max-rr.min)*plotH;
       const unit=[...new Set(stack.map(r=>r.unit).filter(u=>u&&u!=='混在'))];const ul=unit.length===1?unit[0]:'';
-      let s=`<svg class="va-chart-svg" viewBox="0 0 ${width} ${H}" width="${width}" height="${H}" role="img" aria-label="${esc(factory)}の日別完成数"><text class="va-axis-title" x="${L}" y="14">日別完成（左軸${ul?'・'+esc(ul):''}）</text><text class="va-axis-title" x="${width-R}" y="14" text-anchor="end">月内累計（右軸）</text>`;
+      let s=`<svg class="va-chart-svg" viewBox="0 0 ${width} ${H}" width="${width}" height="${H}" role="img" aria-label="${esc(factory)}の日別完成数"><text class="va-axis-title" x="${L}" y="14">主要製品の日別完成（左軸${ul?'・'+esc(ul):''}）</text><text class="va-axis-title" x="${width-R}" y="14" text-anchor="end">月内累計（右軸）</text>`+fpWeekendBands(shown,L,T,step,plotH);
       for(let i=0;i<=ticks;i++){const v=lr.min+lr.step*i,y=yL(v),rv=rr.min+(rr.max-rr.min)*i/ticks;s+=`<line class="va-grid" x1="${L}" y1="${y}" x2="${width-R}" y2="${y}"/><text class="va-axis" x="${L-6}" y="${y+4}" text-anchor="end">${fpNum(Math.round(v))}</text><text class="va-axis" x="${width-R+6}" y="${yR(rv)+4}">${fpNum(Math.round(rv))}</text>`}
       const si=shown.indexOf(day);if(si>=0)s+=`<rect class="va-selected-band" x="${L+step*si+1}" y="${T}" width="${Math.max(2,step-2)}" height="${plotH}" rx="4"/>`;
       const bw=Math.min(narrow?12:22,step*.7);shown.forEach((d,i)=>{let pos=0;stack.forEach(r=>{const v=per.get(r.name).get(d)||0;if(!v)return;const y1=yL(pos+v),y2=yL(pos);pos+=v;s+=`<rect x="${cx(i)-bw/2}" y="${y1}" width="${bw}" height="${Math.max(1,y2-y1)}" fill="${r.color}"/>`})});
       s+=`<path class="va-line va-line-dashed" d="M${cum.map((v,i)=>`${cx(i)},${yR(v)}`).join('L')}" stroke="#161a5c" stroke-width="2.2" stroke-dasharray="6 4" fill="none"/>`;
-      const every=n>20?(narrow?7:5):1;shown.forEach((d,i)=>{const dn=Number(d.slice(8));if(i%every===0||d===day||i===n-1)s+=`<text class="va-month${d===day?' va-month-selected':''}" x="${cx(i)}" y="${base+17}" text-anchor="middle">${dn}</text>`});
+      const every=n>20?(narrow?7:5):1;shown.forEach((d,i)=>{s+=fpDayText(d,i,n,every,day,base).replace('__X__',cx(i))});
       shown.forEach((d,i)=>{s+=`<rect class="va-hit" data-fp-day="${d}" data-fp-factory-day="${esc(factory)}" x="${L+step*i}" y="${T}" width="${step}" height="${plotH+B-2}" tabindex="0" role="button" aria-label="${fpDayLabel(d)}を選ぶ"/>`});
       s+='</svg>';
-      root.innerHTML=`<div class="va-chart-legend">${stack.map(r=>`<span><i class="va-key-bar" style="background:${r.color}"></i>${esc(r.name)}</span>`).join('')}<span><i class="va-key-line dashed" style="border-color:#161a5c"></i>月内累計（右軸）</span></div><div class="va-chart-plot">${s}<div class="va-tooltip" role="status" hidden></div></div>`;
+      root.innerHTML=`<div class="va-chart-legend">${stack.map(r=>`<span><i class="va-key-bar" style="background:${r.color}"></i>${esc(r.name)}</span>`).join('')}<span><i class="va-key-line dashed" style="border-color:#161a5c"></i>月内累計（右軸）</span><span><i class="va-key-bar" style="background:#eef0f5;border:1px solid #d9dce6"></i>土日</span></div><div class="va-chart-plot">${s}<div class="va-tooltip" role="status" hidden></div></div>`;
       const plot=root.querySelector('.va-chart-plot'),tip=plot.querySelector('.va-tooltip');
       plot.querySelectorAll('.va-hit').forEach((hit,i)=>{const d=hit.dataset.fpDay;const show=ev=>{tip.innerHTML=`<div class="va-tip-month">${fpDayLabel(d)}<small>${esc(factory)}</small></div>`+vaTipRows(stack.map(r=>[r.name,`${fpNum(per.get(r.name).get(d)||0)}${r.unit&&r.unit!=='混在'?r.unit:''}`,r.color]).concat([['当日合計',fpNum(tot[i])],['月内累計',fpNum(cum[i])]]));tip.hidden=false;const pb=plot.getBoundingClientRect(),hb=hit.getBoundingClientRect();let left=hb.left-pb.left+hb.width+8;if(left+tip.offsetWidth>plot.clientWidth-6)left=hb.left-pb.left-tip.offsetWidth-8;tip.style.left=Math.max(6,left)+'px';tip.style.top='28px'};
         hit.addEventListener('mouseenter',show);hit.addEventListener('focus',show);hit.addEventListener('mouseleave',()=>tip.hidden=true);hit.addEventListener('blur',()=>tip.hidden=true);
@@ -839,8 +881,12 @@
       box.innerHTML=notes+factories.map((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'',rows=fpRows(f,month,day),tot=rows.filter(r=>r.inTotal),tu=[...new Set(tot.map(r=>r.unit))],sum=k=>tot.some(r=>r[k]!=null)?tot.reduce((s,r)=>s+(r[k]||0),0):null,tPlan=sum('plan'),tDay=sum('today'),tDone=sum('done'),tDiff=tPlan!=null&&tDone!=null?tDone-tPlan:null,tRate=tPlan>0&&tDone!=null?tDone/tPlan:null;
         const dl=day?fpDayLabel(day):'',hd=day?`当日（${dl}）`:'当日',hc=day?`累計（〜${dl}）`:'累計';
         return `<div class="box fp-factory"><div class="fp-factory-head"><h2 class="va-card-title">${esc(f)}</h2>${day?`<span class="fp-muted">グラフの日を押すと、その日の当日・累計に切り替わります</span>`:''}</div>
+          <p class="fp-scope"><b>主要製品のみの完成台数</b>です（設定したグループだけ。部品・中間品・梱包などの作業は含みません）。工場全体の仕事量は下の「作業時間」で見てください。</p>
           <div class="va-chart fp-daily" id="fpDaily${fi}"></div>
-          <div class="scroll va-table-wrap"><table class="va-table va-cards fp-table"><thead><tr><th>グループ</th><th>計画</th><th>${esc(hd)}</th><th>${esc(hc)}</th><th>差</th><th>達成率</th><th>単位</th></tr></thead><tbody>${rows.map(r=>{const k=f+'|'+r.name,open=FP.sumOpen.has(k);return `<tr class="fp-grow" data-fp-sum="${esc(k)}"><td data-label="グループ"><button type="button" class="fp-sum-toggle" data-fp-sum-toggle="${esc(k)}" aria-expanded="${open}"><span class="fp-chev">›</span><i class="fp-dot" style="background:${r.inTotal?r.color:'#c7ccdb'}"></i><b>${esc(r.name)}</b></button>${r.unit&&r.unit!=='混在'?`<span class="fp-unit-inline">（${esc(r.unit)}）</span>`:''}${r.inTotal?'':'<span class="fp-tag">合計外</span>'}${r.unit==='混在'?'<span class="fp-tag warn" title="台と枚など単位の違う品目が混ざっています">単位混在</span>':''}</td><td data-label="計画">${fpNum(r.plan)}</td><td data-label="${esc(hd)}">${fpNum(r.today)}</td><td data-label="${esc(hc)}" class="va-strong">${fpNum(r.done)}</td><td data-label="差" class="${r.diff==null?'':r.diff<0?'negative':'positive'}">${r.diff==null?'—':(r.diff>0?'+':'')+fpNum(r.diff)}</td><td data-label="達成率">${fpRateCell(r.rate)}</td><td data-label="単位">${esc(r.unit||'—')}</td></tr>${open?`<tr class="fp-detail-row"><td colspan="7">${fpSummaryDetail(r,f,month,day)}</td></tr>`:''}`}).join('')}${tot.length>1?`<tr class="total"><td data-label="グループ">合計${tu.length>1?'<span class="fp-tag warn">単位混在</span>':''}</td><td data-label="計画">${fpNum(tPlan)}</td><td data-label="${esc(hd)}">${fpNum(tDay)}</td><td data-label="${esc(hc)}">${fpNum(tDone)}</td><td data-label="差">${tDiff==null?'—':(tDiff>0?'+':'')+fpNum(tDiff)}</td><td data-label="達成率">${fpRateCell(tRate)}</td><td data-label="単位">${esc(tu.length===1?tu[0]:'')}</td></tr>`:''}</tbody></table></div></div>`}).join('');
+          <div class="scroll va-table-wrap"><table class="va-table va-cards fp-table"><thead><tr><th>グループ</th><th>計画</th><th>${esc(hd)}</th><th>${esc(hc)}</th><th>差</th><th>達成率</th><th>単位</th></tr></thead><tbody>${rows.map(r=>{const k=f+'|'+r.name,open=FP.sumOpen.has(k);return `<tr class="fp-grow" data-fp-sum="${esc(k)}"><td data-label="グループ"><button type="button" class="fp-sum-toggle" data-fp-sum-toggle="${esc(k)}" aria-expanded="${open}"><span class="fp-chev">›</span><i class="fp-dot" style="background:${r.inTotal?r.color:'#c7ccdb'}"></i><b>${esc(r.name)}</b></button>${r.unit&&r.unit!=='混在'?`<span class="fp-unit-inline">（${esc(r.unit)}）</span>`:''}${r.inTotal?'':'<span class="fp-tag">合計外</span>'}${r.unit==='混在'?'<span class="fp-tag warn" title="台と枚など単位の違う品目が混ざっています">単位混在</span>':''}</td><td data-label="計画">${fpNum(r.plan)}</td><td data-label="${esc(hd)}">${fpNum(r.today)}</td><td data-label="${esc(hc)}" class="va-strong">${fpNum(r.done)}</td><td data-label="差" class="${r.diff==null?'':r.diff<0?'negative':'positive'}">${r.diff==null?'—':(r.diff>0?'+':'')+fpNum(r.diff)}</td><td data-label="達成率">${fpRateCell(r.rate)}</td><td data-label="単位">${esc(r.unit||'—')}</td></tr>${open?`<tr class="fp-detail-row"><td colspan="7">${fpSummaryDetail(r,f,month,day)}</td></tr>`:''}`}).join('')}${tot.length>1?`<tr class="total"><td data-label="グループ">合計${tu.length>1?'<span class="fp-tag warn">単位混在</span>':''}</td><td data-label="計画">${fpNum(tPlan)}</td><td data-label="${esc(hd)}">${fpNum(tDay)}</td><td data-label="${esc(hc)}">${fpNum(tDone)}</td><td data-label="差">${tDiff==null?'—':(tDiff>0?'+':'')+fpNum(tDiff)}</td><td data-label="達成率">${fpRateCell(tRate)}</td><td data-label="単位">${esc(tu.length===1?tu[0]:'')}</td></tr>`:''}</tbody></table></div>
+          <h3 class="fp-sub">作業時間（工場全体）</h3><div class="va-chart fp-daily" id="fpLabor${fi}"></div>${fpLaborBreakdown(f,month,rows,day)}</div>`}).join('');
+      factories.forEach((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'';try{fpLaborChart(el('fpLabor'+fi),f,month,fpRows(f,month,day),day)}catch(e){console.warn('[重点品目作業時間]',e)}});
+      box.querySelectorAll('details[data-fp-labor]').forEach(d=>d.addEventListener('toggle',()=>{FP.laborOpen=FP.laborOpen||new Set();d.open?FP.laborOpen.add(d.dataset.fpLabor):FP.laborOpen.delete(d.dataset.fpLabor)}));
       factories.forEach((f,fi)=>{const day=fpHasDaily(month)?fpDay(f,month):'';try{fpDailyChart(el('fpDaily'+fi),f,month,fpRows(f,month,day),day)}catch(e){console.warn('[重点品目グラフ]',e)}});
       if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',e=>{const b=e.target.closest('[data-fp-sum-toggle]');if(!b)return;const k=b.dataset.fpSumToggle;FP.sumOpen.has(k)?FP.sumOpen.delete(k):FP.sumOpen.add(k);renderFocusProduction()})}
     }
@@ -1324,6 +1370,12 @@
     .fp-sum-tree th:nth-child(n+2),.fp-sum-tree td:nth-child(n+2){text-align:right;width:90px}
     .fp-tree .fp-lv-cond td{font-weight:800;color:var(--navy);border-top:1px solid var(--line-strong);background:#f3f5fb}
     .fp-tree .fp-lv-item td:first-child{padding-left:22px}
+    .fp-scope{margin:2px 0 4px;font-size:12px;color:#5a6080;background:#f3f5fb;border-radius:8px;padding:7px 10px;line-height:1.6}
+    .fp-sub{font-size:13.5px;font-weight:800;margin:18px 0 0;color:var(--txt)}
+    .fp-labor-detail{margin-top:6px;font-size:12.5px}
+    .fp-labor-detail>summary{cursor:pointer;color:var(--navy);font-weight:700}
+    .fp-labor-table{margin-top:6px}
+    .fp-labor-table .fp-ws{display:block;font-size:11px;color:var(--sub)}
     .fp-muted{color:var(--sub)}
     .fp-unit-inline{display:none;margin-left:6px;font-size:11.5px;font-weight:600;color:var(--sub)}
     .fp-rate{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end;min-width:110px}
@@ -1412,6 +1464,7 @@
       .fp-shell{max-height:100dvh;border-radius:14px 14px 0 0}
       .fp-type{flex:1 1 100%}.fp-val,.fp-cond-row input:not([type=checkbox]){flex:1 1 60%}
       .fp-tree th:nth-child(3),.fp-tree td:nth-child(3){display:none}
+      #summary table.va-cards .fp-labor-table th:nth-child(3),#summary table.va-cards .fp-labor-table td:nth-child(3),.fp-labor-table th:nth-child(3),.fp-labor-table td:nth-child(3){display:table-cell!important}
       .fp-gname{min-width:0;width:100%}
       .fp-mini th:nth-child(3),.fp-mini td:nth-child(3){display:none}
     }

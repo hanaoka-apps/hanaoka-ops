@@ -90,6 +90,14 @@ def quantity(value: object) -> Decimal | None:
     return result if result.is_finite() and result > 0 else None
 
 
+def minutes(value: object) -> Decimal | None:
+    try:
+        result = Decimal(norm(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    return result if result.is_finite() and result >= 0 else None
+
+
 def json_number(value: Decimal) -> int | float:
     return int(value) if value == value.to_integral_value() else float(value)
 
@@ -139,6 +147,9 @@ def build(
     final_by_month: dict[str, dict] = {}
     totals: dict[tuple[str, str, str, str], Decimal] = defaultdict(Decimal)
     daily: dict[tuple[str, str, str, str], Decimal] = defaultdict(Decimal)
+    # 日別の作業時間（全工程・社内作業区）。付加価値アプリの工数と同じ式：
+    #   基準内＝作業時間×人数、基準外＝基準外工数/分×基準外人数/人（別に集計し、引き算しない）
+    labor: dict[tuple[str, str, str, str], list] = defaultdict(lambda: [Decimal(0), Decimal(0), 0])
     used_items: set[str] = set()
     observed_months: set[str] = set()
     diagnostics: dict[str, int] = defaultdict(int)
@@ -154,6 +165,20 @@ def build(
             continue
         observed_months.add(month)
         source_latest_date = max(source_latest_date, day.isoformat())
+        labor_area = norm(row.get("手配先名"))
+        labor_factory = factory_from_work_area(labor_area)
+        labor_item = normalize_code(row.get("品目ｺｰﾄﾞ"))
+        if labor_factory and labor_item:
+            work = minutes(row.get("作業時間"))
+            people = minutes(row.get("人数"))
+            inside = work * people if work is not None and people is not None else Decimal(0)
+            outside = (minutes(row.get("基準外工数/分")) or Decimal(0)) * (minutes(row.get("基準外人数/人")) or Decimal(0))
+            entry = labor[(day.isoformat(), labor_item, labor_factory, labor_area)]
+            entry[0] += inside
+            entry[1] += outside
+            reported = quantity(row.get("報告数量"))
+            if reported is not None and inside == 0 and outside == 0:
+                entry[2] += 1  # 完成数はあるのに作業時間が入っていない報告
         if ym not in selected_by_month:
             selected, ambiguous = choose_internal_routes(route_rows, month_end(ym))
             selected_by_month[ym] = selected
@@ -212,6 +237,13 @@ def build(
             {"d": day_key, "item": item, "factory": factory, "ws": work_area, "qty": json_number(qty)}
             for (day_key, item, factory, work_area), qty in sorted(daily.items())
             if day_key[:7] in daily_months
+        ],
+        "labor_formula": "基準内=作業時間×人数、基準外=基準外工数/分×基準外人数/人（分）",
+        "daily_labor": [
+            {"d": day_key, "item": item, "factory": factory, "ws": work_area,
+             "in": json_number(values[0]), "ex": json_number(values[1]), "z": values[2]}
+            for (day_key, item, factory, work_area), values in sorted(labor.items())
+            if day_key[:7] in daily_months and (values[0] or values[1] or values[2])
         ],
         "diagnostics": dict(sorted(diagnostics.items())),
     }
