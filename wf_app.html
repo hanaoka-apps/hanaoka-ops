@@ -447,6 +447,22 @@ const GraphApi = {
         || ((!applicantUpn || lc(applicantUpn) === st.me.upn) && await get(this.drive('WF_Upload'), encPath(st.me.upn, key)))
         || null;
   },
+  /* 組織マスタの同期（WF管理者）：M365（Entra）の上司を読む。業務アプリの User.Read.All（委任・管理者の同意済み。組織図アプリと同じ） */
+  async entraUsers() {
+    const sc = ['User.Read.All'];
+    let tk; try { tk = (await msalInstance.acquireTokenSilent({ scopes: sc, account })).accessToken; } catch { tk = (await msalInstance.acquireTokenPopup({ scopes: sc })).accessToken; }
+    let out = [], url = 'https://graph.microsoft.com/v1.0/users?$select=displayName,userPrincipalName,accountEnabled,department&$expand=manager($select=userPrincipalName,displayName)&$top=100';
+    while (url) {
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tk } });
+      if (!r.ok) throw new Error(`M365 の利用者を読めませんでした（${r.status}）`);
+      const j = await r.json(); out = out.concat(j.value || []); url = j['@odata.nextLink'] || null;
+    }
+    return out.map(u => ({ upn: lc(u.userPrincipalName), name: u.displayName, enabled: u.accountEnabled !== false, dept: u.department || '', mgr: u.manager ? lc(u.manager.userPrincipalName) : '' }));
+  },
+  async updateOrg(id, fields) {
+    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await graph(`/sites/${siteId}/lists/WF_Org/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) });
+  },
   /* 自分の受付フォルダのファイルを読む（支払アプリが置いた「中身入りで開く」ための下書き） */
   async readUpload(key) {
     const b = await this.fileBlob('', key, st.me.upn);
@@ -488,6 +504,16 @@ const DevApi = {
   async deleteStaging(key) { delete this.blobs[key]; },
   async fileUrl(reqNo, key) { return this.blobs[key] || null; },
   async fileBlob(reqNo, key) { const u = this.blobs[key]; return u ? (await fetch(u)).blob() : null; },
+  // 開発：M365 の上司の代わりに、組織マスタの1人目の上長を使う（違いが見えるよう、2人だけ変えておく）
+  async entraUsers() {
+    const org = window.DEV_DATA.org.filter(p => p.Active !== false);
+    const out = org.map(p => ({ upn: lc(p.UPN), name: p.Title, enabled: true, dept: p.Dept, mgr: lc(((p.ManagerUPNs || '').split(';')[0]) || '') }));
+    const sai = org.find(p => p.Tier === '部門長' && p.Site === '工場'), x = out.find(u => u.dept === '第三工場' && u.upn !== lc((sai || {}).UPN || ''));
+    if (sai && x) x.mgr = lc(sai.UPN);                       // 第三工場の1人の上司を工場の部門長（工場長）に
+    const y = out.find(u => u !== x && u.mgr); if (y) y.mgr = '';   // 上司が未設定の人
+    return out.concat([{ upn: 'shared-pc@example.test', name: '共有PC（組織マスタにいない）', enabled: true, dept: '', mgr: '' }]);
+  },
+  async updateOrg(id, fields) { const p = window.DEV_DATA.org.find(o => Number(o.id) === Number(id) || o.UPN === id); if (p) Object.assign(p, fields); },
   // 開発：支払アプリの代わりに dev/settle-dev/ の下書きを読む。下書きの添付（devUrl）は画面の中の添付として持つ
   async readUpload(key) {
     const t = await (await fetch('settle-dev/' + encodeURIComponent(key))).text();
@@ -656,6 +682,8 @@ function renderAbsenceBtn() {
   } else { b.textContent = '不在設定'; b.classList.remove('on'); }
 }
 /* WF 管理者は、ほかの人の分（例：社長の出張）も設定できる（フローA が役割を確かめる） */
+/* 役割（WF_Role）に入っているか。画面に出すかどうかだけ（実際に書けるかは SharePoint の権限） */
+const hasRole = title => st.M.roles.some(r => r.Title === title && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn));
 const isWfAdmin = () => st.M.roles.some(r => r.Title === 'WF管理者' && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn));
 function openAbsence(forUpn) {
   if (!st.me.org) return;
@@ -702,6 +730,7 @@ const TABS = [
   { key: 'involved', label: '関わった申請' },
   { key: 'all',      label: 'すべての申請', show: () => st.allReqs != null },
   { key: 'payroll',  label: '給与精算の集計', show: () => st.allReqs != null && !!settleRule() },
+  { key: 'orgsync',  label: '組織マスタの同期', show: () => hasRole('組織マスタの同期') },   // 出す人は役割「組織マスタの同期」（WF_Role）
 ];
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 const isPostTodo = t => t.StepType === '後処理' && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
@@ -717,7 +746,8 @@ const NAV_ICONS = {
   mine: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/>',
   involved: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   all: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
-  payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>'
+  payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
+  orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
 };
 function render() {
   $('tabs').innerHTML = TABS.filter(t => !t.show || t.show()).map(t => {
@@ -734,9 +764,74 @@ function render() {
   const main = $('main'); main.classList.remove('m-detail');
   if (st.view === 'new') return st.editor ? renderEditor(main) : renderCatalog(main);
   if (st.view === 'payroll') return renderPayroll(main);
+  if (st.view === 'orgsync') return renderOrgSync(main);
   renderListView(main);
 }
 
+/* ---------- 組織マスタの同期（WF管理者）
+   M365（Entra）の「上司」を、組織マスタ（WF_Org）の直属上長（承認ラインの上長をたどる元）に写す。
+   階層区分（部門長・管理職など）・部署・拠点は組織マスタのまま。違いを一覧で見せ、選んだものだけ書く */
+const orgSync = { rows: null, extra: [], onlyDiff: true, busy: false, err: '' };
+async function loadOrgSync() {
+  orgSync.busy = true; orgSync.err = ''; render();
+  try {
+    const ent = await api.entraUsers(), byUpn = Object.fromEntries(ent.map(u => [u.upn, u]));
+    const org = st.M.org.filter(p => p.Active !== false), inOrg = new Set(org.map(p => lc(p.UPN)));
+    const mgrMap = Object.fromEntries(org.map(p => [lc(p.UPN), ((p.ManagerUPNs || '').split(';').map(lc).filter(Boolean))[0] || '']));
+    orgSync.rows = org.map(p => {
+      const e = byUpn[lc(p.UPN)], cur = (p.ManagerUPNs || '').split(';').map(lc).filter(Boolean);
+      let state, ok = false, note = '';
+      if (!e) state = 'M365にいない';
+      else if (!e.mgr) state = 'M365に上司なし';
+      else if (cur.length === 1 && cur[0] === e.mgr) state = '同じ';
+      else if (!inOrg.has(e.mgr)) state = '上司が組織マスタにいない';
+      else if (e.mgr === lc(p.UPN)) state = '自分が上司になっている';
+      else { state = '変わる'; ok = cur.length <= 1; if (cur.length > 1) note = `今は ${cur.length} 人（予備の上長）→ 1人になる`; }
+      return { p, e, cur, state, ok, note, sel: ok, mgr: e ? e.mgr : '' };
+    });
+    // 新しい上司で、上長をたどったライン（部門長で止まる。承認の「上長承認」の段の並び）
+    orgSync.rows.forEach(r => { if (r.state === '変わる') mgrMap[lc(r.p.UPN)] = r.mgr; });
+    const tierOf = u => (st.M.orgByUpn[u] || {}).Tier;
+    orgSync.rows.forEach(r => { const line = []; let u = lc(r.p.UPN);
+      for (let i = 0; i < 6; i++) { const m = mgrMap[u]; if (!m || line.includes(m)) break; line.push(m); if (tierOf(m) === '部門長' || tierOf(m) === '役員') break; u = m; }
+      r.line = line; });
+    orgSync.extra = ent.filter(u => u.enabled && !inOrg.has(u.upn));
+  } catch (e) { orgSync.err = e.message; }
+  orgSync.busy = false; render();
+}
+function renderOrgSync(main) {
+  const S = orgSync, rows = S.rows || [], cls = { '変わる': 'warn', '同じ': 'ok', 'M365に上司なし': 'gray', 'M365にいない': 'gray', '上司が組織マスタにいない': 'ng', '自分が上司になっている': 'ng' };
+  const shown = S.onlyDiff ? rows.filter(r => r.state !== '同じ') : rows, nSel = rows.filter(r => r.sel).length;
+  const cnt = k => rows.filter(r => r.state === k).length;
+  main.innerHTML = `<div class="detail" style="flex:1"><div class="card">
+      <h3>組織マスタの同期（M365 の上司 → 承認ライン）</h3>
+      <div class="muted" style="margin-bottom:10px">M365（Entra）の「上司」を、ワークフローの組織マスタの直属上長に写します。承認の「上長承認」は、ここから上長をたどって部門長（工場長など）まで回ります。<br>階層区分・部署・拠点は組織マスタのままです。M365 に上司が無い人は、今のまま変えません。</div>
+      <div class="actions"><button class="pri" id="osLoad" ${S.busy ? 'disabled' : ''}>${S.busy ? '読み込み中…' : S.rows ? 'M365 から読み直す' : 'M365 から読み込む'}</button>
+        ${S.rows ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="osDiff" style="width:auto" ${S.onlyDiff ? 'checked' : ''}>違いだけ表示</label>
+        <span style="flex:1"></span><button class="pri" id="osApply" ${nSel ? '' : 'disabled'}>選んだ ${nSel} 人を反映する</button>` : ''}</div>
+      ${S.err ? `<div class="errbox" style="margin-top:10px">${esc(S.err)}</div>` : ''}
+      ${S.rows ? `<div class="muted" style="margin-top:10px">変わる ${cnt('変わる')}人・同じ ${cnt('同じ')}人・M365に上司なし ${cnt('M365に上司なし')}人・M365にいない ${cnt('M365にいない')}人${cnt('上司が組織マスタにいない') + cnt('自分が上司になっている') ? `・<b style="color:var(--ng)">直せないもの ${cnt('上司が組織マスタにいない') + cnt('自分が上司になっている')}人</b>` : ''}</div>
+      <div style="overflow-x:auto;margin-top:8px"><table class="tbl os"><tr><th></th><th>名前</th><th>部署</th><th>階層</th><th>今の上長</th><th>M365 の上司</th><th>状態</th><th>上長をたどったライン（反映後）</th></tr>
+        ${shown.map(r => `<tr><td>${r.ok ? `<input type="checkbox" data-os="${esc(r.p.UPN)}" ${r.sel ? 'checked' : ''} style="width:auto">` : ''}</td>
+          <td>${esc(r.p.Title)}</td><td>${esc(r.p.Dept || '')}</td><td>${esc(r.p.Tier || '')}</td>
+          <td>${esc(r.cur.map(nameOf).join('・') || '—')}</td><td>${esc(r.mgr ? nameOf(r.mgr) : '—')}</td>
+          <td>${pill({ label: r.state, cls: cls[r.state] || 'gray' })}${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}</td>
+          <td class="muted">${esc(r.line.map(nameOf).join(' → '))}</td></tr>`).join('') || '<tr><td colspan="8" class="muted" style="padding:12px">違いはありません</td></tr>'}</table></div>
+      ${S.extra.length ? `<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">M365 にいて、組織マスタにいない人（${S.extra.length}人。共有の PC・携帯や新しく入った人。組織マスタに足すときは総務で）</summary>
+        <div class="muted" style="margin-top:6px">${esc(S.extra.map(u => u.name + (u.mgr ? `（上司：${nameOf(u.mgr)}）` : '')).join('、'))}</div></details>` : ''}` : ''}
+    </div></div>`;
+  $('osLoad').onclick = loadOrgSync;
+  if ($('osDiff')) $('osDiff').onchange = e => { S.onlyDiff = e.target.checked; render(); };
+  main.querySelectorAll('input[data-os]').forEach(c => c.onchange = () => { const r = rows.find(x => x.p.UPN === c.dataset.os); if (r) r.sel = c.checked; renderOrgSync(main); });
+  if ($('osApply')) $('osApply').onclick = async () => {
+    const list = rows.filter(r => r.sel);
+    if (!confirm(`${list.length} 人の直属上長を、M365 の上司に書き換えます。\n${list.slice(0, 8).map(r => `・${r.p.Title}：${r.cur.map(nameOf).join('・') || 'なし'} → ${nameOf(r.mgr)}`).join('\n')}${list.length > 8 ? '\n…ほか' : ''}\n\nこれから出す申請の承認ラインが変わります（すでに回っている申請は変わりません）。よろしいですか？`)) return;
+    S.busy = true; render(); let n = 0; const ng = [];
+    for (const r of list) { try { await api.updateOrg(r.p.id ?? r.p.UPN, { ManagerUPNs: r.mgr }); n++; } catch (e) { ng.push(`${r.p.Title}（${e.message}）`); } }
+    S.busy = false; toast(`${n} 人の上長を書き換えました`); if (ng.length) alert('書き換えられなかった人：\n' + ng.join('\n') + '\n\n（組織マスタを書き換える権限が無いときは 403 になります）');
+    st.M = null; await load(true); await loadOrgSync();
+  };
+}
 /* ---------- 一覧＋詳細 ---------- */
 function itemsForView() {
   const byNewest = (a, b) => String(b._sort || '').localeCompare(String(a._sort || ''));
