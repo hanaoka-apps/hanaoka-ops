@@ -183,6 +183,10 @@ const sbv=(b,d)=>b.f[F(SB,d)];
 function batchOf(round,dept){return SB.items.filter(b=>sbv(b,'支払日区分')===round&&sbv(b,'部門')===dept&&sbv(b,'状態')!=='取り下げ')
   .sort((a,b)=>String(sbv(b,'回した日時')).localeCompare(String(sbv(a,'回した日時'))))[0]||null;}
 const LOCKED=['決裁中','決裁済み','出力済み'];
+// 工場の担当（経費の決まり expense.rules の工場の1段目＝石井・春日など）は、工場の分だけ決裁に回せる（ワークフローの経路：工場分は工場の担当が申請 → 工場長 → 社長）
+const nmKey=s=>String(s||'').replace(/[\s　]/g,'');
+function factoryStaff(){const st0=((EXR.steps||{})['工場']||[])[0],me=nmKey(acct&&acct.name);return !!(st0&&me&&(st0.members||[]).some(n=>nmKey(n)===me));}
+const canSend=d=>!factoryStaff()||d==='工場';
 function deptsOf(round){const s=new Set(round==='月末'?DEPTS_END:['総務']);piOf(round).forEach(p=>s.add(deptOf(p)));return [...s];}
 // 確認がまだの元（仕入＝仕入（SMILE）で未確認、経費＝確定前の請求書）
 function pendingOf(round,dept){
@@ -217,7 +221,8 @@ function render(){
       ${pd.sp||pd.ex?`<div class="s" style="color:var(--warn)">未確認：${pd.sp?`<a href="ap_smile_import.html?month=${encodeURIComponent(month())}">仕入 ${pd.sp}社</a>`:''}${pd.sp&&pd.ex?'・':''}${pd.ex?`<a href="ap_expense.html?month=${encodeURIComponent(month())}">経費 ${pd.ex}件</a>`:''}</div>`:''}
       ${b?`<div class="s">${sbv(b,'申請番号')?`申請 <a href="${wfUrl(sbv(b,'申請番号'))}" target="_blank">${esc(sbv(b,'申請番号'))}</a>`:'申請はまだ出ていません'}・${esc(sbv(b,'回した人')||'')}</div>`:''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
-        ${s.s==='決裁に回せる'||s.s==='差し戻し'?`<button class="pri" data-send="${d}">決裁に回す</button>`:''}
+        ${(s.s==='決裁に回せる'||s.s==='差し戻し')&&canSend(d)?`<button class="pri" data-send="${d}">決裁に回す</button>`:''}
+        ${(s.s==='決裁に回せる'||s.s==='差し戻し')&&!canSend(d)?`<span class="s">総務が決裁に回します</span>`:''}
         ${s.s==='申請前'?`<button data-reopen="${b.id}">申請画面をもう一度開く</button><button data-drop="${b.id}">やめる（取り下げ）</button>`:''}
         ${s.s==='差し戻し'?`<span class="s">直してから「決裁に回す」で出し直します（前の申請は wf_app で取り下げてください）</span>`:''}</div></div>`;}).join('')}</div>`;
   h+=outputCard();
@@ -347,6 +352,7 @@ async function apBlob(path){path=String(path||'').split(/[\r\n;]+/)[0].trim().re
   const alt=/\/incoming\//i.test(path)?path.replace(/\/incoming\//i,'/processed/'):path.replace(/\/processed\//i,'/incoming/');
   for(const p of [path,alt]){try{return {blob:await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true),name:p.split('/').pop()};}catch(e){}}return null;}
 async function sendToSettle(round,dept){
+  if(!canSend(dept)){snack('工場の担当は工場の分だけ決裁に回せます',true);return;}
   const ym=month(),rows=piOf(round,dept);if(!rows.length){snack('支払指図がありません',true);return;}
   const pd=pendingOf(round,dept);if(pd.sp||pd.ex){snack('未確認のものがあります（仕入 '+pd.sp+'社・経費 '+pd.ex+'件）',true);return;}
   if(!WF.siteId){snack('ワークフローのサイトを読めないため回せません',true);return;}
