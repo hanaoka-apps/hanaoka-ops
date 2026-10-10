@@ -42,7 +42,7 @@
   function man(n) { return Math.round((Number(n) || 0) / 10000).toLocaleString('ja-JP') + '万'; }
   function diff(cur, prev) { if (!prev) return '<span style="color:#c3c9d6">—</span>'; var d = cur - prev, p = Math.round(d / prev * 100);
     return '<span class="' + (d > 0 ? 'd-up' : d < 0 ? 'd-down' : '') + '">' + (d > 0 ? '▲' : d < 0 ? '▼' : '±') + man(Math.abs(d)) + '（' + (p > 0 ? '+' : '') + p + '%）</span>'; }
-  function keyOf(x, i) { return (x.no || x.payee) + '#' + i; }
+  function keyOf(x, i) { return x.key || (x.no || x.payee) + '#' + i; }   // key：呼ぶ側が決める（ハナオカ：支払の行 ID）
   // 特記＝総務が付けた印・コメント。気づき＝自動（初めて・前月から大きく増えた・振込先が変わった・相殺・先行支払）
   function tags(x) { var t = [];
     if (x.flag) t.push(['特記', 't-flag']);
@@ -52,6 +52,7 @@
     if (/相殺/.test(x.method || '')) t.push(['相殺', 't-new']);
     if (x.prepaid) t.push(['先行支払済', 't-new']);
     if (x.smile && x.smile.held) t.push(['繰越保留', 't-new']);
+    (x.tags || []).forEach(function (a) { t.push(a); });   // 呼ぶ側の気づき [[文字, 't-new' など], …]
     return t; }
   var MINI = { on: (function () { try { return localStorage.getItem('settle.listMini') === '1'; } catch (e) { return false; } })(), set: function (v) { this.on = v; try { localStorage.setItem('settle.listMini', v ? '1' : ''); } catch (e) {} } };
   var FULL = { on: (function () { try { return localStorage.getItem('settle.full') === '1'; } catch (e) { return false; } })(), set: function (v) { this.on = v; try { localStorage.setItem('settle.full', v ? '1' : ''); } catch (e) {} } };
@@ -75,8 +76,10 @@
   function mount(el, o) {
     css();
     var snap = o.snap, rows = (snap.rows || []).map(function (x, i) { return Object.assign({ _k: keyOf(x, i) }, x); });
-    var S = Object.assign({ checks: {}, comments: {} }, load(o.storeKey)), ui = MEM[o.storeKey] || (MEM[o.storeKey] = { tab: 'rev', sel: null, only: '', sort: 'amount', q: '', pdf: {}, cache: {} }), placed = false;   // placed：この表示で一度だけ明細のカードまでスクロールする
-    function persist() { save(o.storeKey, { checks: S.checks, comments: S.comments }); state(); }
+    // o.state を渡すと、確認OK・保留・コメントはそれを使い、変わるたびに o.onChange(state) を呼ぶ（ハナオカ：SharePoint に保存して共有）。無ければ今までどおりブラウザに残す
+    var S = o.state ? Object.assign(o.state, { checks: o.state.checks || {}, comments: o.state.comments || {} }) : Object.assign({ checks: {}, comments: {} }, load(o.storeKey)), ui = MEM[o.storeKey] || (MEM[o.storeKey] = { tab: 'rev', sel: null, only: '', sort: 'amount', q: '', pdf: {}, cache: {} }), placed = false;   // placed：この表示で一度だけ明細のカードまでスクロールする
+    if (o.select) { ui.sel = o.select; ui.tab = 'rev'; ui.only = ''; }   // 呼ぶ側から「この明細を見せて」（気づきを押したとき）
+    function persist() { if (o.onChange) o.onChange(S); else save(o.storeKey, { checks: S.checks, comments: S.comments }); state(); }
     function state() { var ok = rows.filter(function (x) { return S.checks[x._k] === 'ok'; }).length, hold = rows.filter(function (x) { return S.checks[x._k] === 'hold'; }).length;
       if (o.onState) o.onState({ ok: ok, total: rows.length, hold: hold }); }
     function list() { var a = rows.slice();

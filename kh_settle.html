@@ -9,6 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="settle_view.js?v=20261010"></script><!-- 確認の画面は花岡車輌の支払決済と同じ部品 -->
 <!--
   株式会社ハナオカ 支払決済（月1回・月末）。花岡車輌のワークフロー・支払アプリとは別。
   データ：SharePoint サイト hanaoka-kh の KH_ リスト（admin\Provision-KH.ps1 で作る）。決まり（人・振込元・突合の決まり）は KH_Setting の kh.rules。
@@ -314,36 +315,56 @@ function renderSummary(ym) {
   h += `<div class="card"><h2>月ごとの支払総額</h2><div class="spark">${yms.map(k => `<div class="${k === ym ? 'cur' : ''}" style="height:${totals(k).all / mx * 100}%" title="${yen(totals(k).all)}"><span>${+k.slice(5)}月</span></div>`).join('')}</div></div>`;
   $('#main').innerHTML = h;
 }
-let cur = null;
+
 const actingRole = ym => { const st = settle(ym); if (ROLE === 'shitsucho' && st.Status === 'shacho' && st.ShachoAbsent) return 'shacho'; return ROLE === st.Status ? ROLE : null; };
-function renderReview(ym) {
-  const its = itemsOf(ym), st = settle(ym), act = actingRole(ym), view = act || (ROLE === 'shacho' ? 'shacho' : 'shitsucho'), ck = st.Checks[view] || {};
-  if (!cur || !its.find(i => i.id === cur)) cur = its[0]?.id;
-  const it = its.find(i => i.id === cur), idx = its.indexOf(it);
-  let h = `<div class="review"><div class="rlist"><table><tbody>${its.map(i => { const c = needsOk(i) ? ck[i.id] : 'ref'; return `<tr class="row ${c === 'ok' ? 'ok' : c === 'hold' ? 'hold' : ''} ${i.id === cur ? 'sel' : ''}" data-cur="${i.id}"><td class="st">${c === 'ok' ? '✔' : c === 'hold' ? '⏸' : c === 'ref' ? '📎' : '○'}</td><td><b>${esc(itemName(i))}</b><br><span class="small muted">${esc(i.kind === 'salary' ? '決裁済み（参考）' : i.p.kamoku + '・' + (R.methods[i.p.method] || ''))}</span>${(st.Comments[i.id] || []).length ? ' 💬' : ''}</td><td class="n">${yen(itemAmt(i))}</td></tr>`; }).join('')}</tbody></table></div><div class="detail">`;
-  if (it) {
-    h += `<div class="dnav"><button data-step="-1" ${idx <= 0 ? 'disabled' : ''}>◀ 前へ</button><span class="muted">${idx + 1}／${its.length}</span><button data-step="1" ${idx >= its.length - 1 ? 'disabled' : ''}>次へ ▶</button><span class="sp"></span><span class="small muted">${act ? (act === 'shacho' && ROLE === 'shitsucho' ? '社長の代理として確認中' : '確認中') : view === 'shacho' ? '社長の確認' : '室長の確認'}</span></div><div class="dbody">${detailHtml(ym, it)}</div>`;
-    const can = act && needsOk(it);
-    h += `<div class="dact"><button data-cmt="1">💬 コメント</button><span class="sp"></span>${can ? `<button data-mark="hold">⏸ 保留</button><button class="ok" data-mark="ok">✔ OK・次へ</button>` : `<span class="small muted">${!needsOk(it) ? '給与は決裁済み（参考）' : ''}</span>`}</div>`;
-  }
-  $('#main').innerHTML = h + '</div></div>';
-  showAtts();
+// 確認：花岡車輌の支払決済と同じ画面（settle_view.js）。確認OK・保留・コメントは KH_Settle に段ごとに保存（室長と社長は別々）
+const SVM = { furikomi: '振込', jidou: '口座振替', nouzei: '納税', genkin: '現金', zumi: '支払済', tatekae: '立替（給与で精算）', salary: '給与振込' };
+function svRows(ym, view) {
+  const st = settle(ym), other = view === 'shacho' ? 'shitsucho' : 'shacho', oc = (st.Comments[other] || {});
+  return itemsOf(ym).map(it => {
+    const pv = [1, 2].map(b => prevAmt(ym, it, b) || 0), cmo = oc[it.id] ? `${view === 'shacho' ? '室長' : '社長'}のコメント：${oc[it.id]}` : '';
+    if (it.kind === 'salary') { const pr = it.pr; return { key: it.id, payee: `給与（${pr.people.length}名）`, amount: pr.total.bank, method: SVM.salary, genre: '給与', payDate: pr.payDate, prev1: pv[0], prev2: pv[1], tags: [['決裁済（参考）', 't-ok']], note: [`総支給 ${yen(pr.total.gross)}・控除 ${yen(pr.total.deduct)}`, cmo].filter(Boolean).join(' ／ '),
+      lines: pr.people.map(x => ({ genre: x.name, amount: x.bank, note: `課税支給 ${yen(x.taxable)}${x.tatekae ? '・立替 ' + yen(x.tatekae) : ''}・社保 ${yen(x.shaho)}・所得税 ${yen(x.shotoku)}${x.jumin ? '・住民税 ' + yen(x.jumin) : ''}` })) }; }
+    const p = it.p, pe = payeeOf(p.payee), tg = [];
+    if (p.recurringId) tg.push(['毎月', 't-ok']); else if (p.source === '都度' || p.source === '通帳') tg.push(['都度', 't-new']);
+    if (p.varies) tg.push(['金額を入れる', 't-up']);
+    if (p.method === 'tatekae') tg.push(['給与で精算', 't-new']);
+    if (p.method === 'furikomi' && !pe?.AcctNo) tg.push(['口座未登録', 't-up']);
+    const acct = p.method === 'furikomi' && pe?.AcctNo ? `振込先 ${pe.BankKana} ${pe.BranchKana} ****${String(pe.AcctNo).slice(-3)}` : '';
+    const lines = [{ genre: '確定高', amount: p.kakutei }].concat(p.tax ? [{ genre: '消費税', amount: p.tax }] : [], p.gensen ? [{ genre: '源泉税', amount: -p.gensen }] : [], p.fee ? [{ genre: '手数料（先方負担）', amount: -p.fee }] : []);
+    if (p.recurringId && R.interest && p.kamoku === R.interest.kamoku) lines.push({ genre: '計算', amount: p.pay, note: `借入 ${DB.loans.filter(l => l.Active !== false).length}本 × 利率 × ${daysIn(ym)}日 ÷ ${R.interest.basis}（1本ずつ切り捨て）` });
+    return { key: it.id, payee: p.payee, amount: p.pay, method: SVM[p.method] || p.method, genre: p.kamoku, due: p.due, prev1: pv[0], prev2: pv[1], tags: tg, lines,
+      note: [p.memo, p.note, acct, cmo].filter(Boolean).join(' ／ '), invoices: (p.files || []).map(f => f.path) };
+  });
 }
-function detailHtml(ym, it) {
-  const st = settle(ym), hist = [5, 4, 3, 2, 1, 0].map(b => ({ ym: addMonth(ym, -b), v: b ? prevAmt(ym, it, b) : itemAmt(it) })), mx = Math.max(1, ...hist.map(x => x.v || 0));
-  let h = '';
-  if (it.kind === 'salary') {
-    const pr = it.pr;
-    h += `<h3>給与（${pr.people.length}名）<span class="tag t-ok">決裁済</span></h3><div class="muted small">支給日 ${esc(pr.payDate)}　資料：${esc(pr.file)}</div><table style="margin-top:10px"><thead><tr><th>社員</th><th class="n">課税支給</th><th class="n">立替経費</th><th class="n">社保</th><th class="n">所得税</th><th class="n">住民税</th><th class="n">振込額</th></tr></thead><tbody>${pr.people.map(p => `<tr><td>${esc(p.name)}</td><td class="n">${yen(p.taxable)}</td><td class="n">${p.tatekae ? yen(p.tatekae) : ''}</td><td class="n">${yen(p.shaho)}</td><td class="n">${yen(p.shotoku)}</td><td class="n">${p.jumin ? yen(p.jumin) : ''}</td><td class="n"><b>${yen(p.bank)}</b></td></tr>`).join('')}<tr class="tot"><td>計</td><td class="n">${yen(pr.total.taxable)}</td><td class="n">${yen(pr.total.tatekae)}</td><td class="n">${yen(pr.total.shaho)}</td><td class="n">${yen(pr.total.shotoku)}</td><td class="n">${yen(pr.total.jumin)}</td><td class="n">${yen(pr.total.bank)}</td></tr></tbody></table><p class="small muted">立替経費は明細の「立替（給与で精算）」と同じもの。</p>`;
-  } else {
-    const p = it.p, pe = payeeOf(p.payee);
-    h += `<h3>${esc(p.payee)}${p.recurringId ? '<span class="tag t-rec">毎月</span>' : ''}</h3><div class="muted">${esc(p.memo)}</div><div class="kv"><span class="k">区分（科目）</span><span>${esc(p.kamoku)}</span><span class="k">確定高</span><span>${yen(p.kakutei)}</span><span class="k">消費税</span><span>${yen(p.tax)}</span>${p.gensen ? `<span class="k">源泉税</span><span>${yen(-p.gensen)}</span>` : ''}${p.fee ? `<span class="k">手数料（先方負担）</span><span>${yen(-p.fee)}</span>` : ''}<span class="k">支払高</span><span><b style="font-size:17px">${yen(p.pay)}</b> 円</span><span class="k">方法</span><span>${esc(R.methods[p.method] || p.method)}${p.due ? '　' + esc(p.due) : ''}</span>${p.method === 'furikomi' ? `<span class="k">振込先</span><span>${pe?.AcctNo ? `${esc(pe.BankKana)} ${esc(pe.BranchKana)} ****${esc(String(pe.AcctNo).slice(-3))}` : '<span class="tag t-up">口座未登録</span>'}</span>` : ''}${p.note ? `<span class="k">備考</span><span>${esc(p.note)}</span>` : ''}<span class="k">請求書</span><span>${p.files.length ? `${p.files.length}枚` : '<span class="muted">なし</span>'}${editable(ym) ? ` <label class="btn small">📎 付ける<input type="file" accept="application/pdf,image/*" multiple hidden data-attach="${p.id}"></label>` : ''}</span></div>`;
-    if (p.files.length) h += `<div class="atts">${p.files.map(f => `<div class="att"><div class="atth"><span>${esc(f.name)}</span><span class="sp"></span><a href="#" data-pdf="${esc(f.path)}">別のタブで開く</a></div><div class="attb" data-view="${esc(f.path)}" data-type="${esc(f.type || '')}"><span class="muted small">読み込み中…</span></div></div>`).join('')}</div>`;
-    if (p.recurringId && R.interest && p.kamoku === R.interest.kamoku) h += `<p class="small">利息＝借入 ${DB.loans.filter(l => l.Active !== false).length}本 × 利率 × ${daysIn(ym)}日 ÷ ${R.interest.basis}（1本ずつ切り捨て）</p>`;
-  }
-  h += `<div class="small muted">6か月の推移</div><div class="spark">${hist.map(x => `<div class="${x.ym === ym ? 'cur' : ''}" style="height:${(x.v || 0) / mx * 100}%" title="${x.v == null ? 'なし' : yen(x.v)}"><span>${+x.ym.slice(5)}月 ${x.v == null ? '—' : Math.round(x.v / 1000).toLocaleString() + '千'}</span></div>`).join('')}</div>`;
-  const cs = st.Comments[it.id] || []; if (cs.length) h += `<div class="small muted">コメント</div>` + cs.map(c => `<div class="cmt"><b>${esc(c.who)}</b> <span class="small muted">${esc(c.at)}</span><br>${esc(c.text)}</div>`).join('');
-  return h;
+// 承認・差し戻しの履歴に足す「保留・明細へのコメント」
+function svNote(ym, role) {
+  const st = settle(ym), ck = st.Checks[role] || {}, cm = Array.isArray(st.Comments[role]) ? {} : (st.Comments[role] || {});
+  const out = itemsOf(ym).filter(i => ck[i.id] === 'hold' || cm[i.id]).map(i => `${itemName(i)}${ck[i.id] === 'hold' ? '【保留】' : ''}${cm[i.id] ? '：' + cm[i.id] : ''}`);
+  return out.length ? '（' + out.join('／') + '）' : '';
+}
+let svSel = null, svSave = null;
+function renderReview(ym) {
+  const st = settle(ym), act = actingRole(ym), view = act || (ROLE === 'shacho' ? 'shacho' : 'shitsucho'), t = totals(ym), p1 = totals(addMonth(ym, -1));
+  const state = { checks: (st.Checks[view] ||= {}), comments: (st.Comments[view] && !Array.isArray(st.Comments[view]) ? st.Comments[view] : (st.Comments[view] = {})) };
+  const its = itemsOf(ym); its.filter(i => !needsOk(i)).forEach(i => { if (act) state.checks[i.id] = 'ok'; });   // 給与は決裁済み（参考）＝はじめから OK
+  const byMethod = {}; for (const it of its) { const m = SVM[itemMethod(it)] || itemMethod(it); byMethod[m] = (byMethod[m] || 0) + itemAmt(it); }
+  const sent = [...st.Log].reverse().find(l => /確認に回す/.test(l.text));
+  $('#main').innerHTML = `<div class="card sv-card"><div class="small muted" style="margin-bottom:6px">${act ? (act === 'shacho' && ROLE === 'shitsucho' ? '社長の代理として確認中' : (ROLE === 'shacho' ? '社長' : '室長') + 'として確認中') : `${view === 'shacho' ? '社長' : '室長'}の確認（${st.Status === 'draft' ? '登録中' : '見るだけ'}）`}</div><div id="sv"></div></div>`;
+  SettleView.mount($('#sv'), {
+    snap: { rows: svRows(ym, view), total: t.all, prevTotal: p1.all, byMethod, batch: { ym: ymLabel(ym), round: '月末', dept: R.company, by: sent?.who || '', at: sent?.at || '' } },
+    canAct: !!act, storeKey: `kh:${ym}:${view}`, state, select: svSel,
+    loadPdf: key => attUrl(key),
+    onChange: () => { clearTimeout(svSave); svSave = setTimeout(() => saveSettle(ym).catch(e => snack(e.message, 1)), 400); renderBar(ym); },
+    onState: () => renderBar(ym)
+  });
+  svSel = null;
+}
+// 添付の中身を Graph から取ってブラウザの中の URL にする（確認の画面の請求書）
+const ATT = new Map();
+async function attUrl(path) {
+  if (ATT.has(path)) return ATT.get(path);
+  try { const t = await token(), r = await fetch(`${GRAPH}/sites/${SITE}/drive/root:${encodeURI(path)}:/content`, { headers: { Authorization: 'Bearer ' + t } }); if (!r.ok) return null; const u = URL.createObjectURL(await r.blob()); ATT.set(path, u); return u; } catch { return null; }
 }
 function renderBank(ym) {
   const r = reconcile(ym), out = r.rows.filter(x => x.io === 'out'), inn = r.rows.filter(x => x.io === 'in'), ngOut = out.filter(x => !x.m);
@@ -409,22 +430,21 @@ async function flow(act) {
     snack('確認に回しました（Teams で案内）');
   } else if (act === 'pull') { if (!confirm('引き戻して登録中に戻しますか（確認の OK は消えます）')) return; st.Status = 'draft'; st.Checks = { shitsucho: {}, shacho: {} }; log('引き戻す'); await saveSettle(ym); }
   else if (act === 'okall') { const a = actingRole(ym), ck = st.Checks[a] ||= {}; itemsOf(ym).filter(needsOk).forEach(i => { if (!ck[i.id]) ck[i.id] = 'ok'; }); await saveSettle(ym); }
-  else if (act === 'back') { const why = prompt('差し戻す理由'); if (!why) return; st.Status = 'draft'; log('差し戻し：' + why); await saveSettle(ym); for (const u of P.register) await notify(u, `【差し戻し】${lab}：${why}`, ym); }
+  else if (act === 'back') { const why = prompt('差し戻す理由'); if (!why) return; st.Status = 'draft'; log('差し戻し：' + why + svNote(ym, actingRole(ym) || ROLE)); await saveSettle(ym); for (const u of P.register) await notify(u, `【差し戻し】${lab}：${why}`, ym); }
   else if (act === 'approve') {
     const a = actingRole(ym);
     if (a === 'shitsucho') {
-      log('室長 承認'); st.Status = 'shacho';
+      log('室長 承認' + svNote(ym, 'shitsucho')); st.Status = 'shacho';
       if (st.ShachoAbsent) { st.Checks.shacho = { ...st.Checks.shitsucho }; await saveSettle(ym); snack('続けて社長の代理で承認してください'); }
       else { await saveSettle(ym); await notify(P.shacho, `【確認のお願い】${lab}（${amt}）。室長の確認が済みました。確認をお願いします。`, ym); snack('承認しました（社長へ Teams で案内）'); }
     } else {
-      st.Status = 'done'; log(ROLE === 'shacho' ? '社長 承認' : '室長が社長の代理で承認'); await saveSettle(ym);
+      st.Status = 'done'; log((ROLE === 'shacho' ? '社長 承認' : '室長が社長の代理で承認') + svNote(ym, 'shacho')); await saveSettle(ym);
       for (const u of P.register) await notify(u, `【承認済】${lab}（${amt}）が承認されました。全銀データを作れます。`, ym);
       snack('承認しました');
     }
   }
   render();
 }
-async function mark(v) { const ym = S.ym, a = actingRole(ym), its = itemsOf(ym), st = settle(ym); (st.Checks[a] ||= {})[cur] = v; if (v === 'ok') { const nx = its.slice(its.findIndex(i => i.id === cur) + 1).concat(its).find(i => needsOk(i) && st.Checks[a][i.id] !== 'ok'); if (nx) cur = nx.id; } render(); await saveSettle(ym); }
 
 function payFields(q) { return { YM: q.ym, SortNo: q.order || 0, Section: q.sec, Kamoku: q.kamoku, Payee: q.payee, Memo: q.memo, Seikyu: q.seikyu || (q.kakutei + q.tax), Kakutei: q.kakutei, Tax: q.tax, Gensen: q.gensen, Fee: q.fee, Pay: q.pay, Method: q.method, DueDate: q.due || '', Note: q.note || '', Source: q.source || '都度', RecurringId: q.recurringId || '', BankKey: q.bankKey || '', Varies: !!q.varies, Files: JSON.stringify(q.files || []), PdfPath: '' }; }
 // 請求書の画像：大きな写真（長い辺 2400px 超か 1.5MB 超）はブラウザで縮めて JPEG にする。PDF・小さい画像はそのまま
@@ -439,24 +459,6 @@ async function imgSize(file) { try { const b = await createImageBitmap(file); re
 async function uploadAtt(ym, file) {
   const name = file.name.replace(/[\\/:*?"<>|#%]/g, '_'), path = `/KH/${ym}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${name}`;
   await putFile(path, file); return { path, name, type: file.type || '', size: file.size, at: now() };
-}
-// 確認の画面で添付を見せる（Graph から取ってブラウザの中で表示。PDF は枠、画像はそのまま・押すと原寸）
-const ATT = new Map();
-async function showAtts() {
-  for (const el of document.querySelectorAll('[data-view]')) {
-    const path = el.dataset.view;
-    try {
-      let u = ATT.get(path);
-      if (!u) { const t = await token(), r = await fetch(`${GRAPH}/sites/${SITE}/drive/root:${encodeURI(path)}:/content`, { headers: { Authorization: 'Bearer ' + t } }); if (!r.ok) throw new Error(r.status); const b = await r.blob(); u = { url: URL.createObjectURL(b), type: b.type || el.dataset.type }; ATT.set(path, u); }
-      if (!el.isConnected) continue;
-      const pdf = /pdf/.test(u.type) || /\.pdf$/i.test(path);
-      el.innerHTML = pdf ? `<iframe src="${u.url}#view=FitH"></iframe>` : /heic/i.test(path) ? '<span class="small muted">HEIC は表示できません（別のタブで開く）</span>' : `<img src="${u.url}" alt="">`;
-    } catch (e) { el.innerHTML = `<span class="small" style="color:var(--up)">表示できません（${esc(e.message)}）</span>`; }
-  }
-}
-async function attachTo(id, files) {
-  const p = DB.payments.find(x => String(x.id) === String(id)); if (!p) return;
-  try { const add = []; for (const x of files) add.push(await uploadAtt(p.ym, await prepImage(x))); p.files = (p.files || []).concat(add); await setItem('KH_Payment', p.id, { Files: JSON.stringify(p.files) }); snack(`${add.length}枚を付けました`); render(); } catch (e) { snack(e.message, 1); }
 }
 function editDialog(p, from) {
   const ym = S.ym, isNew = !p?.id; p = { sec: 'other', kamoku: '', payee: '', memo: '', kakutei: 0, tax: 0, gensen: 0, fee: 0, method: 'furikomi', due: '', bankKey: '', note: '', ...(p || {}) };
@@ -602,18 +604,14 @@ function recDialog(x) {
 }
 
 document.addEventListener('click', async e => {
-  if (e.target.matches('.attb img')) return e.target.classList.toggle('zoom');
-  const t = e.target.closest('[data-tab],[data-open],[data-act],[data-cur],[data-step],[data-mark],[data-cmt],[data-flow],[data-addbank],[data-ignore],[data-unmatch],[data-zengin],[data-flag],[data-pdf],[data-payee],[data-rec],[data-sb]');
+  if (e.target.closest('.sv')) return;   // 確認の画面（settle_view.js）は自分で操作を受ける
+  const t = e.target.closest('[data-tab],[data-open],[data-act],[data-flow],[data-addbank],[data-ignore],[data-unmatch],[data-zengin],[data-flag],[data-pdf],[data-payee],[data-rec],[data-sb]');
   if (!t) return; const ym = S.ym;
   try {
     if (t.dataset.sb) return sbToggle();
     if (t.dataset.tab) { e.preventDefault(); S.tab = t.dataset.tab; }
-    else if (t.dataset.open) { const it = itemsOf(ym).find(i => i.id === t.dataset.open); if (editable(ym) && it?.kind === 'pay') return editDialog(it.p); cur = t.dataset.open; S.tab = 'review'; }
+    else if (t.dataset.open) { const it = itemsOf(ym).find(i => i.id === t.dataset.open); if (editable(ym) && it?.kind === 'pay') return editDialog(it.p); svSel = t.dataset.open; S.tab = 'review'; }
     else if (t.dataset.act === 'add') return editDialog(null);
-    else if (t.dataset.cur) cur = t.dataset.cur;
-    else if (t.dataset.step) { const its = itemsOf(ym); cur = its[its.findIndex(i => i.id === cur) + +t.dataset.step]?.id || cur; }
-    else if (t.dataset.mark) return mark(t.dataset.mark);
-    else if (t.dataset.cmt) { const s = prompt('コメント'); if (!s) return; const st = settle(ym); (st.Comments[cur] ||= []).push({ who: myName(), at: now(), text: s }); await saveSettle(ym); }
     else if (t.dataset.flow) return flow(t.dataset.flow);
     else if (t.dataset.zengin) return makeZengin();
     else if (t.dataset.addbank) { const b = DB.bank.find(x => x.id === t.dataset.addbank); return editDialog({ payee: b.who || b.desc, memo: `${b.date} 引落`, kakutei: b.amount, method: /^PE /.test(b.who) ? 'nouzei' : 'jidou', due: b.date, bankKey: (b.desc.replace(/^ｺｳｻﾞﾌﾘｶｴ\s*/, '') || b.who).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }, '通帳'); }
@@ -622,7 +620,7 @@ document.addEventListener('click', async e => {
     else if (t.dataset.pdf) { e.preventDefault(); return openPdf(t.dataset.pdf); }
     else if ('payee' in t.dataset) return payeeDialog(DB.payees.find(p => String(p.id) === t.dataset.payee));
     else if ('rec' in t.dataset) return recDialog(DB.recurring.find(x => String(x.id) === t.dataset.rec));
-    else if ('flag' in t.dataset) { if (t.dataset.ftab) S.tab = t.dataset.ftab; else if (t.dataset.flag) { cur = t.dataset.flag; S.tab = 'review'; } }
+    else if ('flag' in t.dataset) { if (t.dataset.ftab) S.tab = t.dataset.ftab; else if (t.dataset.flag) { svSel = t.dataset.flag; S.tab = 'review'; } }
     render();
   } catch (err) { snack(err.message, 1); }
 });
@@ -630,13 +628,6 @@ document.addEventListener('change', e => {
   if (e.target.id === 'ym') { if (e.target.value === '__new') return newMonth(); S.ym = e.target.value; render(); }
   else if (e.target.dataset.file === 'bank') importBank([...e.target.files]);
   else if (e.target.dataset.file === 'payroll' && e.target.files[0]) importPayroll(e.target.files[0]);
-  else if (e.target.dataset.attach) attachTo(e.target.dataset.attach, [...e.target.files]);
-});
-document.addEventListener('keydown', e => {
-  if (S.tab !== 'review' || e.target.closest('input,textarea,select,dialog')) return;
-  if (e.key === 'Enter' && document.querySelector('[data-mark=ok]')) { e.preventDefault(); mark('ok'); }
-  else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const its = itemsOf(S.ym); cur = its[its.findIndex(i => i.id === cur) + (e.key === 'ArrowRight' ? 1 : -1)]?.id || cur; render(); }
-  else if (e.key.toLowerCase() === 'h' && document.querySelector('[data-mark=hold]')) mark('hold');
 });
 boot();
 </script>
