@@ -22,6 +22,9 @@
     '.sv .tsum{margin-top:8px}.sv .tsum .tt{display:flex;align-items:center;margin-bottom:4px;font-size:13px}.sv .tsum .more{font-size:12px;padding:2px 8px}' +
     '.sv .dt.wide .di{display:flex;flex-direction:column;overflow:hidden!important}.sv .dt.wide .di>*{flex:none}.sv .dt.wide .ib{flex:1 1 auto;overflow:auto;min-height:0}' +
     '.sv .di{overflow-x:hidden}.sv .di td,.sv .di th{white-space:normal;overflow-wrap:anywhere}.sv .di td:first-child{white-space:nowrap}.sv .di td.n,.sv .di th.n{white-space:nowrap;word-break:normal}.sv .di .cmp td{white-space:nowrap}' +
+    '.sv .parts{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin-bottom:8px;padding:6px 8px;background:#fff;border:1px solid var(--line);border-radius:10px}.sv .parts .pl{align-self:center;font-size:13px;color:var(--sub);margin-right:6px}' +
+    '.sv .parts .pt{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 14px;border-radius:8px;min-width:130px}.sv .parts .pt.cur{border-color:var(--pri);box-shadow:inset 0 -3px 0 var(--pri);background:var(--pri-l)}.sv .parts .pa{font-size:12px;color:var(--sub)}.sv .parts .ps{font-size:11.5px;font-weight:700;color:var(--sub)}.sv .parts .ps.ok{color:var(--down)}.sv .parts .ps.run{color:var(--warn)}.sv .parts .ps.ret{color:var(--up)}' +
+    '.sv .pn{margin-top:8px;border:1px solid var(--flag-l);background:#faf6fe;border-radius:8px;padding:6px 9px;font-size:13px}.sv .pnh{font-size:11.5px;font-weight:700;color:var(--flag);margin-bottom:3px}.sv .pni{display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}.sv .pni .pw{font-weight:600;color:var(--sub);font-size:12px}' +
     '.sv .lt{margin-left:auto}.sv table.ln tr:not(.lm) td{border-bottom:none}.sv table.ln tr.lm td{white-space:normal;font-size:12px;color:var(--sub);padding-top:0}' +
     '.sv .dl{display:flex;flex-direction:column;min-height:0;flex:1 1 auto!important}.sv .dl .chips:empty{display:none}.sv .dl .chips{margin-top:8px}.sv .di{min-width:0}' +
     '.sv .dt.wide .db{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,1fr);gap:12px;overflow:hidden;padding:8px}.sv .dt.wide .dl{order:0;min-height:0}.sv .dt.wide .di{order:1;overflow:auto;min-height:0;padding-right:4px}' +
@@ -70,6 +73,15 @@
       '<tr class="now"><td>今回</td><td class="n">' + yen(x.amount) + '</td><td></td></tr>' +
       '<tr><td>前月</td><td class="n">' + (x.prev1 ? yen(x.prev1) : '—') + '</td>' + d(x.amount, x.prev1) + '</tr>' +
       '<tr><td>前々月</td><td class="n">' + (x.prev2 ? yen(x.prev2) : '—') + '</td>' + d(x.amount, x.prev2) + '</tr></table>'; }
+  // 補足メモ：承認・差し戻しのコメントの「【明細】」の下の「・支払先 金額円【保留】：メモ」を、支払先＋金額で明細につなぐ
+  function nk(x) { return String(x.payee || '').trim() + '|' + Math.round(+x.amount || 0); }
+  function prevNotes(hist, nameOf) { var out = {};
+    hist.forEach(function (h) { var c = String(h.comment || ''), i = c.indexOf('【明細】'); if (i < 0) return;
+      c.slice(i + 4).split(/\r?\n/).forEach(function (ln) { var m = ln.match(/^・(.+) ([\d,]+)円(【保留】)?(?:：([\s\S]*))?$/); if (!m) return;
+        var k = m[1].trim() + '|' + Number(m[2].replace(/,/g, '')); (out[k] = out[k] || []).push({ who: h.by && h.by !== 'system' ? nameOf(h.by) : '', step: h.step || '', type: h.type || '', at: h.at || '', hold: !!m[3], memo: m[4] || '' }); }); });
+    return out; }
+  function notesHtml(ns) { if (!ns || !ns.length) return '';
+    return '<div class="pn"><div class="pnh">これまでの補足メモ</div>' + ns.map(function (n) { return '<div class="pni"><span class="pw">' + esc(n.who) + (n.step ? '（' + esc(n.step) + '）' : '') + '</span>' + (n.hold ? '<span class="tag t-new">保留</span>' : '') + '<span>' + esc(n.memo) + '</span></div>'; }).join('') + '</div>'; }
   function load(k) { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } }
   function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 
@@ -77,6 +89,7 @@
     css();
     var snap = o.snap, rows = (snap.rows || []).map(function (x, i) { return Object.assign({ _k: keyOf(x, i) }, x); });
     // o.state を渡すと、確認OK・保留・コメントはそれを使い、変わるたびに o.onChange(state) を呼ぶ（ハナオカ：SharePoint に保存して共有）。無ければ今までどおりブラウザに残す
+    var NOTES = prevNotes(o.history || [], o.nameOf || function (x) { return x; });
     var S = o.state ? Object.assign(o.state, { checks: o.state.checks || {}, comments: o.state.comments || {} }) : Object.assign({ checks: {}, comments: {} }, load(o.storeKey)), ui = MEM[o.storeKey] || (MEM[o.storeKey] = { tab: 'rev', sel: null, only: '', sort: 'amount', q: '', pdf: {}, cache: {} }), placed = false;   // placed：この表示で一度だけ明細のカードまでスクロールする
     if (o.select) { ui.sel = o.select; ui.tab = 'rev'; ui.only = ''; }   // 呼ぶ側から「この明細を見せて」（気づきを押したとき）
     function persist() { if (o.onChange) o.onChange(S); else save(o.storeKey, { checks: S.checks, comments: S.comments }); state(); }
@@ -94,15 +107,22 @@
       var ok = rows.filter(function (x) { return S.checks[x._k] === 'ok'; }).length;
       var full = FULL.on && window.innerWidth > 900, done = o.canAct && ok === rows.length && rows.length;
       el.classList.toggle('sv-full', full); lock(full);
-      el.innerHTML = '<div class="sv"><div class="tabs"><button data-t="sum" class="' + (ui.tab === 'sum' ? 'on' : '') + '">📊 サマリー</button><button data-t="rev" class="' + (ui.tab === 'rev' ? 'on' : '') + '">📄 明細（確認 ' + ok + '／' + rows.length + '）</button>' +
-        '<span class="sp"></span>' + (full && done ? '<button class="pri fx" style="margin-bottom:4px">✔ すべて確認しました → 閉じて承認へ</button>' : '') +
+      el.innerHTML = '<div class="sv">' + partsHtml() + '<div class="tabs"><button data-t="sum" class="' + (ui.tab === 'sum' ? 'on' : '') + '">📊 サマリー</button><button data-t="rev" class="' + (ui.tab === 'rev' ? 'on' : '') + '">📄 明細（確認 ' + ok + '／' + rows.length + '）</button>' +
+        '<span class="sp"></span>' + (full && done ? '<button class="pri fx" style="margin-bottom:4px">' + (o.onApprove ? '✔ すべて確認しました → このパートを承認する' : '✔ すべて確認しました → 閉じて承認へ') + '</button>' : '') +
         '<button class="fs-t" title="' + (full ? '元の画面に戻す（Esc）' : 'このカードだけを画面いっぱいに出す') + '" style="margin-bottom:4px">' + (full ? '✕ 全画面を閉じる' : '⛶ 全画面') + '</button></div><div class="pane"></div></div>';
       var pane = el.querySelector('.pane');
       if (ui.tab === 'sum') summary(pane); else review(pane);
       el.querySelectorAll('[data-t]').forEach(function (b) { b.onclick = function () { ui.tab = b.dataset.t; render(); }; });
       el.querySelector('.fs-t').onclick = function () { FULL.set(!FULL.on); render(); };
-      if (el.querySelector('.fx')) el.querySelector('.fx').onclick = function () { FULL.set(false); render(); var bt = document.getElementById('bOk'); if (bt) bt.scrollIntoView({ block: 'center' }); };
+      el.querySelectorAll('[data-part]').forEach(function (b) { b.onclick = function () { var pt = (o.parts || [])[+b.dataset.part]; if (pt && !pt.cur) pt.open(); }; });
+      if (el.querySelector('.fx') && o.onApprove) el.querySelector('.fx').onclick = function () { if (confirm('このパートを' + (o.approveLabel || '承認') + 'します。よろしいですか？（コメント・補足メモも一緒に送ります）')) o.onApprove(); };
+      else if (el.querySelector('.fx')) el.querySelector('.fx').onclick = function () { FULL.set(false); render(); var bt = document.getElementById('bOk'); if (bt) bt.scrollIntoView({ block: 'center' }); };
     }
+    // パートのタブ（本社分＝総務・国内営業・ソリューション）。2つ以上届いているときだけ
+    function partsHtml() { var ps = o.parts || []; if (ps.length < 2) return '';
+      var tot = ps.reduce(function (s, p) { return s + p.total; }, 0), b = snap.batch || {};
+      return '<div class="parts"><span class="pl">' + esc(b.ym || '') + ' ' + esc(b.round || '') + '払い　' + ps.length + 'パート 合計 <b>' + yen(tot) + '</b> 円</span>' + ps.map(function (p, i) {
+        return '<button data-part="' + i + '" class="pt' + (p.cur ? ' cur' : '') + '"><b>' + esc(p.dept) + '</b><span class="pa">' + yen(p.total) + '</span><span class="ps ' + esc(p.cls) + '">' + (p.cls === 'ok' ? '✔ ' : p.cls === 'run' ? '⏳ ' : '') + esc(p.label) + '</span></button>'; }).join('') + '</div>'; }
     // 全画面：後ろの画面（wf_app の .detail）はスクロールさせない
     var locked = null;
     function lock(on) { var p = el.parentElement; while (p && !/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
@@ -158,7 +178,7 @@
       el.querySelector('.cnt').textContent = a.length + '件　' + yen(a.reduce(function (s, x) { return s + x.amount; }, 0)) + '円　確認OK ' + a.filter(function (x) { return S.checks[x._k] === 'ok'; }).length + '／' + a.length;
       tb.innerHTML = a.map(function (x) { var c = S.checks[x._k];
         return '<tr class="' + (x._k === ui.sel ? 'sel ' : '') + (c || '') + '" data-k="' + esc(x._k) + '"><td style="width:24px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
-          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] ? ' 💬' : '') + '</div><div class="s">' + mth(x.method) + esc(x.genre || '') + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
+          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] || NOTES[nk(x)] ? ' 💬' : '') + '</div><div class="s">' + mth(x.method) + esc(x.genre || '') + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
           '<td class="n"><b>' + yen(x.amount) + '</b><div class="s">' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</div></td></tr>'; }).join('') || '<tr><td style="color:var(--sub);padding:12px">該当する明細はありません</td></tr>';
       tb.querySelectorAll('tr[data-k]').forEach(function (tr) { tr.onclick = function () { ui.sel = tr.dataset.k; var rv = el.querySelector('.rv'); if (rv) rv.classList.remove('peek'); rowsHtml(); detail(); }; });
       var s = tb.querySelector('tr.sel'), rl = el.querySelector('.rl'); if (s && rl) { var top = s.offsetTop, bot = top + s.offsetHeight; if (top < rl.scrollTop) rl.scrollTop = top; else if (bot > rl.scrollTop + rl.clientHeight) rl.scrollTop = bot - rl.clientHeight; }
@@ -181,10 +201,10 @@
         // 仕訳の明細（税区分つき）があるときは「内容」と「仕訳明細」をタブで切り替える（明細が多くても、右の列の中だけで見られる）
         (txl ? '<div class="itabs"><button data-it="sum" class="' + (ui.itab !== 'ln' ? 'on' : '') + '">内容</button><button data-it="ln" class="' + (ui.itab === 'ln' ? 'on' : '') + '">仕訳明細（' + x.lines.length + '行）</button></div>' : '') +
         '<div class="ib">' + ibHtml() + '</div>' +
-        '<textarea class="cm" placeholder="この明細へのコメント（承認・差し戻しのコメントにまとめて送ります）" style="' + (S.comments[x._k] ? '' : 'display:none;') + 'width:100%;height:52px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:8px">' + esc(S.comments[x._k] || '') + '</textarea></div>' +
+        notesHtml(NOTES[nk(x)]) + '<textarea class="cm" placeholder="' + (o.onChange ? 'この明細の補足メモ（ほかの人にも見えます）' : 'この明細の補足メモ（承認のときにまとめて送り、次の人・社長にも見えます）') + '" style="' + (S.comments[x._k] ? '' : 'display:none;') + 'width:100%;height:52px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:8px">' + esc(S.comments[x._k] || '') + '</textarea></div>' +
         '<div class="dl"><div class="chips">' + (x.invoices || []).map(function (k, j) { return '<button class="chip' + (ui.pdf[x._k] === k ? ' on' : '') + '" data-pdf="' + esc(k) + '" style="margin:0 4px 4px 0">📄 請求書 ' + (j + 1) + '</button>'; }).join('') + '</div>' +
         '<div class="pdf">' + ((x.invoices || []).length ? '読み込み中...' : '請求書の添付はありません') + '</div></div></div>' +
-        '<div class="da">' + (o.canAct ? '<button class="h">⏸ 保留</button><button class="c">💬 コメント</button><span class="sp"></span><span style="font-size:11.5px;color:var(--sub)">Enter：OK・次へ　←→：前・次　H：保留</span><button class="pri ok" style="font-size:15px;padding:7px 20px">✔ OK・次へ</button>'
+        '<div class="da">' + (o.canAct ? '<button class="h">⏸ 保留</button><button class="c">💬 補足メモ</button><span class="sp"></span><span style="font-size:11.5px;color:var(--sub)">Enter：OK・次へ　←→：前・次　H：保留</span><button class="pri ok" style="font-size:15px;padding:7px 20px">✔ OK・次へ</button>'
           : '<span style="font-size:12px;color:var(--sub)">あなたの番になると「確認OK」を付けられます</span>') + '</div>';
       var q = function (s) { return dt.querySelector(s); };
       q('.p').onclick = function () { go(-1); }; q('.n').onclick = function () { go(1); };

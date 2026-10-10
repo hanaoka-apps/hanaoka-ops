@@ -1154,11 +1154,30 @@ async function mountSettle(o) {
     if ($('settleView') !== el) return;   // 読み込み中に別の申請を開いた
     curSettle = { no: o.no, storeKey, snap };
     SettleView.mount(el, { snap, canAct: o.canAct, storeKey,
+      history: o.hist || [], nameOf, parts: settleParts(o),   // 前の人の補足メモ（承認のコメント）・同じ支払回のほかのパート（本社分は総務・国内営業・ソリューション）
+      // 全画面から承認：押したら、まだ承認していない次のパートを開く（説明する人が替わったらそのまま次へ）
+      onApprove: o.canAct ? () => { const bt = $('bOk'); if (!bt || bt.disabled) return; const nx = settleParts(o).find(p => !p.cur && p.cls === 'run'); bt.click();
+        if (nx) { const t0 = Date.now(), w = setInterval(() => { if (!busy || Date.now() - t0 > 15000) { clearInterval(w); if (!busy) nx.open(); } }, 300); } } : null, approveLabel: o.task && o.task.StepType === '決裁' ? '決裁' : '承認',
       loadPdf: async k => { const x = await api.fileBlob(o.no, k, o.app); return x ? URL.createObjectURL(x.type === 'application/pdf' ? x : new Blob([x], { type: 'application/pdf' })) : null; },
       onState: s => { const bt = $('bOk'); if (!bt || !o.canAct) return; const done = s.ok === s.total && !s.hold;
         bt.disabled = !done; bt.title = done ? '' : `明細をすべて「確認OK」にすると押せます（あと ${s.total - s.ok} 件${s.hold ? `・保留 ${s.hold} 件` : ''}）`;
         if ($('settleRest')) $('settleRest').textContent = bt.title; } });
   } catch (e) { el.textContent = '明細を読めませんでした：' + e.message; }
+}
+
+// 同じ支払回（決済月・支払回）の支払決済で、自分に届いているもの。本社分（総務・国内営業・ソリューション）と工場分は分ける。2つ以上あればタブで切り替える
+function settleParts(o) {
+  if (!o.task) return [];
+  const ym = o.data.payYm, rd = o.data.round, fac = o.data.dept === '工場', by = {};
+  st.tasks.filter(t => t.FormCode === 'SETTLE' && ['承認', '決裁', '作業'].includes(t.StepType)).forEach(t => { const k = t.RequestNo; if (!by[k] || t.id > by[k].id) by[k] = t; });
+  const ps = Object.values(by).map(t => ({ t, s: pj(t.SnapshotJson, {}) })).filter(x => { const d = x.s.data || {}; return d.payYm === ym && d.round === rd && (d.dept === '工場') === fac; });
+  const ord = ['総務', '国内営業', 'ソリューション', '工場'];
+  return ps.sort((a, b) => ord.indexOf((a.s.data || {}).dept) - ord.indexOf((b.s.data || {}).dept)).map(({ t, s }) => {
+    const done = ['承認', '決裁'].includes(t.Status), x = taskState(t);
+    return { no: t.RequestNo, dept: (s.data || {}).dept || '', total: +(s.data || {}).total || 0, cur: t.RequestNo === o.no,
+      label: isInbox(t) ? (t.StepType === '決裁' ? '決裁待ち' : '承認待ち') : done ? '承認済' : x.label, cls: isInbox(t) ? 'run' : done ? 'ok' : t.Status === '差し戻し' ? 'ret' : '',
+      open: () => { const key = 't' + t.id, row = document.querySelector(`#rows .row[data-k="${key}"]`); if (row) row.click(); else { st.sel = key; renderTaskDetail(t, s); } } };
+  });
 }
 
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
@@ -1228,7 +1247,7 @@ function renderTaskDetail(t, s) {
   if ($('bGo')) $('bGo').onclick = () => { $('cmt').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('cmt').focus({ preventScroll: true }); };
   // 支払決済は、明細の保留・コメントを承認・差し戻しのコメントに足す
   const cmt = () => [($('cmt') ? $('cmt').value.trim() : ''), settle && curSettle && curSettle.no === t.RequestNo ? SettleView.comment(curSettle.storeKey, curSettle.snap) : ''].filter(Boolean).join('\n');
-  if (settle) mountSettle({ no: t.RequestNo, app: s.applicantUPN, data: s.data || {}, canAct });
+  if (settle) mountSettle({ no: t.RequestNo, app: s.applicantUPN, data: s.data || {}, canAct, hist, task: t });
   if ($('bOk')) $('bOk').onclick = () => act({ Title: `${t.StepType} ${t.RequestNo}`, ActionType: t.StepType === '決裁' ? '決裁' : '承認', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
   if ($('bRet')) $('bRet').onclick = () => {
     if (!cmt()) return alert('差し戻しの理由を入力してください');
@@ -1277,7 +1296,7 @@ function renderReqDetail(r) {
   if ((res.circulate || []).length) html += `<div class="card"><h3>回覧（決裁後に共有する人）</h3>${esc(res.circulate.map(nameOf).join('、'))}</div>`;
   if (form && form.PrintForSubmit) html += `<div class="card noprint"><h3>原本の提出</h3><div class="muted">${esc(form.PrintForSubmit === true ? '上の「🖨 印刷・PDF」で印刷したものと一緒に、レシート・領収書の原本を本社総務へ提出してください' : form.PrintForSubmit)}</div></div>`;
   $('detail').innerHTML = html;
-  if (settle) mountSettle({ no: r.RequestNo, app: r.ApplicantUPN, data: pj(r.DataJson, {}), canAct: false });
+  if (settle) mountSettle({ no: r.RequestNo, app: r.ApplicantUPN, data: pj(r.DataJson, {}), canAct: false, hist });
   if ($('bPrint')) $('bPrint').onclick = () => window.print();
   if ($('bPull')) $('bPull').onclick = () => { if (confirm('申請を引き戻しますか？\n次の人がまだ処理していなければ、申請を取り戻せます。')) act({ Title: `引き戻し ${r.RequestNo}`, ActionType: '引き戻し', RequestNo: r.RequestNo }); };
   const re = () => { st.view = 'new'; st.editor = { form, data: pj(r.DataJson, {}), resubmit: r, proxyFor: r.ProxyUPN ? lc(r.ApplicantUPN) : '' }; render(); };
