@@ -1209,6 +1209,7 @@ function renderTaskDetail(t, s) {
   const settle = form && form.View === 'settle';   // 支払決済：サマリー＋確認モード（settle_view.js）
   if (settle) html += `<div class="card"><h3>支払決済の明細${canAct ? '　<span class="muted" style="font-weight:400">すべて「確認OK」にすると承認できます</span>' : ''}</h3><div id="settleView">読み込み中...</div></div>`;
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
+  html += linkCardForChild(form, s.data || {}, t.RequestNo);
   html += followupCard(form, s.data || {}, { status: t.RequestStatus, req: t.RequestNo, app: s.applicantUPN });
   if (hist.length) html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
 
@@ -1291,6 +1292,7 @@ function renderReqDetail(r) {
   const settle = form && form.View === 'settle';
   if (settle) html += '<div class="card"><h3>支払決済の明細</h3><div id="settleView">読み込み中...</div></div>';
   html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
+  html += linkCardForChild(form, pj(r.DataJson, {}), r.RequestNo) + (form ? linkCardForParent(form, r) : '');
   html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN, proxy: r.ProxyUPN });
   html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
   if ((res.circulate || []).length) html += `<div class="card"><h3>回覧（決裁後に共有する人）</h3>${esc(res.circulate.map(nameOf).join('、'))}</div>`;
@@ -1391,6 +1393,48 @@ function toast(msg, isErr) {
    [{ form: 作るフォーム, label: ボタンの文言, who: "applicant"（申請者だけ。省略時は、そのフォームを申請できる人）,
       showIf: 条件, map: { 作る側の項目: 元の項目 | "=文字" | "@applicant" | "@requestNo" | "@dayAfter:元の日付の項目" } }]
    同じフォームを指せば「更新（次の期間）の申請」になる（期限の案内＝WF_Form.ReminderJson の通知から、ここへ来る） */
+/* ---------- 元の申請との比べ（例：稟議の予定額と、その稟議で出した支払依頼を並べる）
+   子のフォームの定義に "Link": { "field": 元の申請番号の項目, "form": 元のフォーム, "label": "稟議", "amount": 元の金額の項目, "childAmount": 子の金額の項目, "childLabel": 子の見出しの項目 }
+   申請のとき、見られる範囲（自分の申請・すべての申請）から data._link に写して送る（承認する人は元の申請を見られないため）。フローA が元の番号・金額を確かめる */
+const LINK_OUT = ['却下', '取下げ', '引き戻し'];   // 合計に入れない状態
+const reqData = r => pj(r.DataJson, {});
+function visibleReqs() { const m = new Map(); [...(st.myReqs || []), ...(st.allReqs || [])].forEach(r => m.set(r.RequestNo, r)); return [...m.values()]; }
+function linkOf(form) { return form && form.Link && form.Link.field ? form.Link : null; }
+/* 子の申請の入力から、比べの写しを作る（selfNo＝再申請のときの自分の番号。重ねて数えない） */
+function buildLink(form, data, selfNo) {
+  const L = linkOf(form); if (!L) return null;
+  const no = String(data[L.field] || '').trim(); if (!no) return null;
+  const all = visibleReqs(), parent = all.find(r => r.RequestNo === no);
+  const others = all.filter(r => r.FormCode === form.FormCode && r.RequestNo !== selfNo && String(reqData(r)[L.field] || '').trim() === no)
+    .map(r => ({ no: r.RequestNo, title: r.Title, label: reqData(r)[L.childLabel || 'payee'] || '', amount: Number(reqData(r)[L.childAmount || 'total']) || Number(r.Amount) || 0, status: r.Status }));
+  return { no, label: L.label || '元の申請', readable: !!parent, title: parent ? parent.Title : '', status: parent ? parent.Status : '',
+    amount: parent ? (Number(reqData(parent)[L.amount || 'amount']) || Number(parent.Amount) || 0) : null, others, at: new Date().toISOString() };
+}
+/* 比べの表。cur＝今回の { no, label, amount }（入力中・承認中の申請）。asOf＝写しを作った日時（申請時点） */
+function linkTableHtml(link, cur, asOf, compact) {
+  if (!link) return '';
+  if (!link.readable) return `<div class="lk"><div class="muted">${esc(link.label)} ${esc(link.no)}：見られる申請の中に見つかりません（ほかの人の${esc(link.label)}の場合は、申請のときにフローが番号を確かめます）</div></div>`;
+  const rows = (link.others || []).slice(), sumOf = a => a.filter(x => !LINK_OUT.includes(x.status)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const total = sumOf(rows) + (cur ? Number(cur.amount) || 0 : 0), plan = Number(link.amount) || 0, diff = total - plan, pct = plan ? Math.round(total / plan * 100) : null;
+  const tr = (x, me) => compact   // 入力画面の右の狭い欄：名前と金額の2列（番号・状態は小さく下に）
+    ? `<tr class="${me ? 'me' : ''} ${LINK_OUT.includes(x.status) ? 'out' : ''}"><td>${esc(x.label || x.title || '')}<div class="muted">${me ? '今回' : esc((x.no || '') + '・' + (x.status || ''))}</div></td><td class="n">${esc(yen(x.amount))}</td></tr>`
+    : `<tr class="${me ? 'me' : ''} ${LINK_OUT.includes(x.status) ? 'out' : ''}"><td>${esc(x.no || '（今回）')}</td><td>${esc(x.label || x.title || '')}</td><td>${me ? '<b>今回</b>' : esc(x.status || '')}</td><td class="n">${esc(yen(x.amount))}</td></tr>`;
+  return `<div class="lk"><div class="lk-h"><span>${esc(link.label)} <b>${esc(link.no)}</b> ${esc(link.title)}${link.status && link.status !== '決裁済' ? `（${esc(link.status)}）` : ''}</span><span>予定 <b>${esc(yen(plan))}</b></span></div>
+    <table class="lk-t"><tbody>${rows.map(x => tr(x, false)).join('')}${cur ? tr(cur, true) : ''}${!rows.length && !cur ? '<tr><td colspan="4" class="muted">まだ支払の申請はありません</td></tr>' : ''}</tbody></table>
+    <div class="lk-f"><span>合計 <b>${esc(yen(total))}</b></span><span class="${diff > 0 ? 'over' : ''}">予定との差 <b>${diff > 0 ? '＋' : diff < 0 ? '−' : '±'}${esc(yen(Math.abs(diff)) || '0円')}</b>${pct != null ? `（${pct}%）` : ''}</span></div>
+    ${asOf ? `<div class="muted" style="margin-top:4px">${esc(fmtDT(asOf))} 申請時点（申請した人が見られた範囲）。却下・引き戻しは合計に入れていません</div>` : '<div class="muted" style="margin-top:4px">却下・引き戻しは合計に入れていません</div>'}</div>`;
+}
+/* 子の申請（支払依頼など）の詳細・承認画面に出す：申請時点の写し＋今回 */
+function linkCardForChild(form, data, no) {
+  const L = linkOf(form); if (!L || !data._link) return '';
+  return `<div class="card"><h3>${esc(data._link.label)}との比べ</h3>${linkTableHtml(data._link, { no, label: data[L.childLabel || 'payee'] || '', amount: Number(data[L.childAmount || 'total']) || 0 }, data._link.at)}</div>`;
+}
+/* 元の申請（稟議など）の詳細に出す：この申請にひもづく子の申請（見られる範囲で今の状態） */
+function linkCardForParent(form, r) {
+  const kids = st.M.forms.filter(f => linkOf(f) && f.Link.form === form.FormCode); if (!kids.length) return '';
+  return kids.map(kf => { const link = buildLink(kf, { [kf.Link.field]: r.RequestNo }, ''); if (!link) return '';
+    return `<div class="card"><h3>この${esc(kf.Link.label || form.Title)}の${esc(kf.Title)}</h3>${linkTableHtml(link, null, null)}</div>`; }).join('');
+}
 function followupCard(form, data, ctx) {
   if (!form || ctx.status !== '決裁済') return '';
   const list = (form.followups || []).filter(fu => {
@@ -1856,7 +1900,13 @@ function preview() {
   $('preview').innerHTML = (res.errors.length ? `<div class="errbox">${res.errors.map(esc).join('<br>')}</div>` : '') +
     '<div class="proute">' + res.route.map(s => `<div class="${s.skipped ? 'skip' : ''} ${s.type === '決裁' ? 'kessai' : ''}"><b>${esc(s.name)}</b>（${esc(s.type)}）<br>${s.skipped ? esc(s.reason) : esc(s.upns.map(nameOf).join(' / ')) + (s.upns.length > 1 ? (s.mode === 'all' ? '（全員）' : '（いずれか）') : '')}${!s.skipped && s.delegates && Object.keys(s.delegates).length ? `<br><span style="color:var(--warn)">🏖 ${esc(Object.entries(s.delegates).map(([u, d]) => nameOf(u) + ' は不在中 → 代理：' + nameOf(d)).join('、'))}</span>` : ''}</div>`).join('') + '</div>' +
     (res.post.length ? `<h3>決裁後の後処理</h3><div class="muted">${res.post.map(p => esc(p.name) + '：' + esc(p.upns.map(nameOf).join('・'))).join('<br>')}</div>` : '') +
-    (res.circulate.length ? `<h3>回覧</h3><div class="muted">${esc(res.circulate.map(nameOf).join('、'))}</div>` : '');
+    (res.circulate.length ? `<h3>回覧</h3><div class="muted">${esc(res.circulate.map(nameOf).join('、'))}</div>` : '') + editorLinkHtml();
+}
+/* 入力中：元の申請（稟議など）との比べを右に出す */
+function editorLinkHtml() {
+  const ed = st.editor, L = linkOf(ed.form); if (!L) return '';
+  const link = buildLink(ed.form, ed.data, ed.resubmit ? ed.resubmit.RequestNo : ''); if (!link) return '';
+  return `<h3>${esc(link.label)}との比べ</h3>` + linkTableHtml(link, { no: '', label: ed.data[L.childLabel || 'payee'] || '', amount: Number(ed.data[L.childAmount || 'total']) || 0 }, null, true);
 }
 /* dry＝数えるだけ（画面の印・タブの切り替えはしない） */
 function validate(ed, dry) {
@@ -1941,7 +1991,7 @@ async function submit() {
   const summary = Object.fromEntries((f.SummaryFields || '').split(';').filter(Boolean).map(x => x.split('=')).map(([c, k]) => [c, ed.data[k]]));
   const payload = { prefix: f.NumberPrefix, title, formVersion: f.Version, workflowVersion: res.wf.Version,
     applicantName: edApplicant().Title, applicantDept: edApplicant().Dept, proxyFor: ed.proxyFor || '', notifyOnFinish: !!f.NotifyOnFinish, confidential: !!f.Confidential,
-    amount: summary.Amount ?? null, summary, data: ed.data,
+    amount: summary.Amount ?? null, summary, data: Object.assign(ed.data, { _link: buildLink(f, ed.data, ed.resubmit ? ed.resubmit.RequestNo : '') || undefined }),
     route: { route: res.route, post: res.post, circulate: res.circulate }, resubmitNote: note,
     // 今回アップロードして、申請に含めるファイル（フローが受付フォルダから保管フォルダへ移す）
     newFiles: f.fields.filter(fd => fd.type === 'file').flatMap(fd => (ed.data[fd.key] || []).map(x => x.key)).filter(k => ed.newKeys && ed.newKeys.has(k)) };
