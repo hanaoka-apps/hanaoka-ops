@@ -68,12 +68,14 @@ const RpaQueue = (() => {
 
   // 依頼を登録する。同じジョブがすでに待っていれば登録せず、その依頼を返す
   // （RPA専用機は同じジョブをまとめて1回で実行するので、重ねて依頼する意味がない）
-  async function request(job, { app = '', requestedBy = '' } = {}) {
+  // params：ジョブに渡す値（例 支払管理の仕入 { payYm: '2026/10' }）。依頼ファイルにそのまま入る（RPA 専用機のフローが読む）
+  async function request(job, { app = '', requestedBy = '', params = null } = {}) {
     const pending = await list('pending');
     const dup = pending.find(n => jobOf(n) === job);
     if (dup) return { name: dup, deduped: true };
     const name = newName(job);
     const body = { job, app, requestedBy, requestedAt: new Date().toISOString() };
+    if (params) body.params = params;
     await graph(itemUrl('pending', name) + ':/content', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

@@ -13,6 +13,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <script src="ap_intake.js"></script>
 <script src="ap_ai.js"></script>
+<script src="rpa_queue.js"></script>
 <script src="ap_smile.js"></script>
 <script src="nav.js" defer></script>
 <style>
@@ -86,7 +87,7 @@ details>summary{cursor:pointer;color:var(--sub);font-size:12.5px;font-weight:600
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.vs{grid-template-columns:1fr}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261004"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261010"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">仕入（SMILE）</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -127,7 +128,8 @@ const KIND_LABEL={payList:'支払一覧表',p9055:'9055 支払明細書',receipt
 const GROUPS=['全社','工場','国内営業','ソリューション','総務'];
 const METHODS=['振込','でんさい','相殺','調整','現金','海外送金','口座振替'];   // 調整＝端数の精算（お金は動かない。SMILE 支払伝票の取引区分6）
 const V3={ai:'AIStatus',com:'AIComment',by:'RegisteredBy',at:'RegisteredAt',loc:'SiteLocation'};   // AP_Invoice の受付・AI の列（経費の画面と同じ）
-let calc=null,saved={},prevSaved={},adjs=[],settleSel={},lastImport=null,OFFSET={},INV={};
+let calc=null,saved={},prevSaved={},adjs=[],settleSel={},lastImport=null,OFFSET={},INV={},SMR={};   // SMR：smile.rules（RPA の設定 rpa など）
+const SM_DRIVE='b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';   // SharedMasters（RPA 専用機が SMILE のファイルを出す場所）
 let rows=[],draft=null,pdfSel={},pdfCache={};
 let listClosed=(()=>{try{return localStorage.getItem('ap.review.list')==='closed';}catch{return false;}})();   // 確認モードの一覧をたたむ（ページ送りが中心）
 const st={tab:'imp',g:'全社',round:'',q:'',only:'',sort:'code',sel:null,cmOpen:false};
@@ -159,7 +161,7 @@ async function resolveLists(){
   const d=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);
   const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
   if(!it)throw new Error('AP_Setting に smile.rules がありません（Provision-SmileAP.ps1 -Apply で入れてください）');
-  S.setRules(JSON.parse(it.fields.Value||'{}'));
+  SMR=JSON.parse(it.fields.Value||'{}');S.setRules(SMR);
   // 相殺先（設計書 v2.5 3-7）：計算どおりに出したうえで、相殺の有無を確かめないと OK できない
   OFFSET={};try{const ov=await gget(`/sites/${AP_SITE}/lists/AP_OffsetVendor/items?$expand=fields&$top=200`);
     (ov.value||[]).forEach(x=>{const f=x.fields||{};if(f.OffsetFlag!==false&&f.VendorCode)OFFSET[String(f.VendorCode).trim().padStart(6,'0')]=f.VendorName||true;});}
@@ -193,7 +195,7 @@ const dash=ym=>ym.replace('/','-');
 async function showApp(){
   $('login-view').style.display='none';$('app-view').style.display='block';$('who').textContent=acct.name||acct.username;initMonth();
   try{await resolveLists();await loadSaved();}catch(e){msg('エラー');snack(e.message,true);}
-  if(Object.keys(saved).length)st.tab='sum';render();}
+  if(Object.keys(saved).length&&!rpaBusy())st.tab='sum';render();rpaResume();}
 async function loadSaved(){
   msg('読み込み中...');const ym=month();
   const toMap=items=>{const m={};items.forEach(it=>{const c=fv(L.pay,it.fields,'仕入先コード');if(c)m[c]={id:it.id,f:it.fields};});return m;};
@@ -354,7 +356,7 @@ const rowsG=()=>rows.filter(r=>inGroup(r,st.g)&&(!st.round||r.payRound===st.roun
 function render(){
   rows=buildRows();
   $('groups').innerHTML=GROUPS.map(g=>`<button class="${g===st.g?'on':''}" data-g="${g}">${g}${g==='全社'||!rows.length?'':'　'+man(totalsOf(rows.filter(r=>inGroup(r,g)),g).pay)}</button>`).join('')
-    +'<span style="width:10px"></span>'+[['','全回'],['月末','月末'],['10日','10日'],['20日','20日']].map(([k,l])=>`<button class="${st.round===k?'on':''}" data-round="${k}">${l}</button>`).join('');
+    +''   /* 仕入は月末払いだけ（10日・20日は無い）ので、支払回の切り替えは出さない */;
   const a=rowsG(),n=a.filter(needsCheck),ok=n.filter(r=>r.checked).length;
   $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='imp'?'on':''}" data-tab="imp">📥 取り込み${calc?'（未保存）':''}</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（${ok}／${n.length}）</button></div>`
     +`<div id="pane"></div>`;
@@ -365,10 +367,25 @@ function render(){
 function drawImport(){
   const list=checkList()||(lastImport?parseJ(fv(L.imp,lastImport.f,'照合と気づき'),null):null);
   const op=openAdjs();
-  let h=`<div class="card"><h2>SMILE のファイル</h2>
-    <label class="drop" id="drop">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">販売_支払一覧表MMDD.xlsx ／ 9055支払明細書.csv ／ 9521受入リスト.csv ／ 仕入先マスタ.csv。SMILE を直したら出し直して置けば取り込み直せます（確認・分け方・コメントは残ります）</span>
-      <input type="file" id="file-in" multiple accept=".csv,.xlsx,.xls"></label>
-    <div class="files">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div></div>`;}).join('')}</div></div>`;
+  // 「SMILE から取り込む」：ボタン1つで RPA 専用機が SMILE から4ファイルを出し直し、そのまま読み込む。手で置くこともできる
+  const busy=rpaBusy(),[y0,m0]=month().split('/').map(Number),close=new Date(y0,m0-1,0);
+  let h=`<div class="card ho"><div class="ho-grid">
+      <div class="drop ho-drop rpa ${busy?'busy':''}" id="rpaBox">
+        <span class="ho-ic"><svg viewBox="0 0 48 48" width="52" height="52" aria-hidden="true"><ellipse cx="20" cy="11" rx="12" ry="4.5" fill="#fff" stroke="currentColor" stroke-width="2.4"/><path d="M8 11v22c0 2.5 5.4 4.5 12 4.5s12-2 12-4.5V11" fill="#fff" stroke="currentColor" stroke-width="2.4"/><path d="M8 22c0 2.5 5.4 4.5 12 4.5s12-2 12-4.5" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="35" cy="35" r="9" fill="currentColor"/><path d="M31 35h8m-3-3.5 3.5 3.5-3.5 3.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="ho-t">SMILE から取り込む</span>
+        <span class="ho-s">RPA 専用機が SMILE から支払一覧表・9055・9521・仕入先マスタを出し直し、<br>そのまま読み込んで照合します（数分）</span>
+        <button class="ho-btn" id="bRpa" ${busy?'disabled':''}>${busy?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む'}</button>
+        <button class="lk" id="bNow" ${busy?'disabled':''} style="font-size:12px">今あるファイルで取り込む</button></div>
+      <div class="ho-side">
+        <div class="ho-row"><span class="ho-k">支払</span><b>${y0}年${m0}月払い</b><span class="ho-m">（${close.getMonth()+1}月${close.getDate()}日締め）</span></div>
+        <ol class="ho-flow"><li><b>頼む</b><span>RPA 専用機へ</span></li><li><b>SMILE から出力</b><span>数分</span></li><li><b>読み込んで保存</b><span>照合して確かめる</span></li></ol>
+        <div id="rpst">${rpaStatusHtml()}</div>
+        <div class="files">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div></div>`;}).join('')}</div>
+        <details class="ho-note"><summary style="cursor:pointer">ファイルを手で置く（RPA を使わないとき）</summary>
+          <label class="drop" id="drop" style="margin-top:6px">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">販売_支払一覧表MMDD.xlsx ／ 9055支払明細書.csv ／ 9521受入リスト.csv ／ 仕入先マスタ.csv</span>
+          <input type="file" id="file-in" multiple accept=".csv,.xlsx,.xls"></label></details>
+        <div class="ho-note">SMILE を直したら、もう一度取り込めば読み直せます（確認・分け方・コメントは残ります）</div>
+      </div></div></div>`;
   if(calc){const c={新規:0,金額が変わった:0,変化なし:0,なくなった:0};rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);const ng=(list||[]).filter(x=>x.ok===false).length;
     h+=`<div class="card" style="border-color:#efd3ad;background:var(--warn-l)"><b>まだ保存していません</b>　${rows.length}社：新規 ${c.新規}・金額が変わった ${c.金額が変わった}・変化なし ${c.変化なし}・なくなった ${c.なくなった}
       ${ng?`　<span class="ck-ng">照合で合わないものが ${ng} 件</span>`:''}
@@ -380,7 +397,61 @@ function drawImport(){
   const d=$('drop');['dragenter','dragover'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
   ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
   d.addEventListener('drop',ev=>onFiles(ev.dataTransfer.files));$('file-in').onchange=e=>{onFiles(e.target.files);e.target.value='';};
-  if($('bSave'))$('bSave').onclick=saveImport;}
+  if($('bSave'))$('bSave').onclick=saveImport;
+  if($('bRpa'))$('bRpa').onclick=rpaStart;if($('bNow'))$('bNow').onclick=()=>smLoad(0);}
+
+// ---------- SMILE から最新を取り込む（RPA 専用機：rpa_queue.js、ジョブは smile.rules の rpa.job）----------
+// 依頼 → 順番待ち → SMILE から出力 → 4ファイルが新しくなるのを待つ → 読み込む → 照合して保存（保存の前に確かめる）
+// 画面を閉じても、次に開いたときに続きから見る（依頼はこのブラウザに覚える）
+const RPA_KEY='ap.rpa.purchase';
+let RPA=(()=>{try{return JSON.parse(localStorage.getItem(RPA_KEY)||'null');}catch{return null;}})(),rpaStop=null;
+const RQ=()=>MOCK?MOCK.rpa:window.RpaQueue;
+const rpaBusy=()=>!!(RPA&&['依頼','順番待ち','出力中','同期待ち','読み込み中'].includes(RPA.phase));
+function rpaSet(o){RPA=Object.assign(RPA||{},o);try{localStorage.setItem(RPA_KEY,JSON.stringify(RPA));}catch{}const el=$('rpst');if(el)el.innerHTML=rpaStatusHtml();
+  const b=$('bRpa'),n=$('bNow'),box=$('rpaBox');if(b){b.disabled=rpaBusy();b.textContent=rpaBusy()?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む';}if(n)n.disabled=rpaBusy();if(box)box.classList.toggle('busy',rpaBusy());}
+function rpaStatusHtml(){if(!RPA||!RPA.phase)return '';const min=RPA.at?Math.floor((Date.now()-Date.parse(RPA.at))/60000):0;
+  if(rpaBusy())return `<div class="upl"><span class="spin"></span><div style="flex:1;min-width:0"><b>${esc(RPA.text||RPA.phase)}</b><div class="fn">${min}分経過・画面を閉じても、次に開いたときに続きから見ます</div></div></div>`;
+  const ng=RPA.phase==='失敗';return `<div class="upl ${ng?'ng':'ok'}"><span>${ng?'⚠':'✓'}</span><div style="flex:1">${esc(RPA.text||RPA.phase)}</div><button class="lk" id="rpX" onclick="RPA=null;try{localStorage.removeItem('${RPA_KEY}')}catch(e){};this.closest('.upl').remove()">閉じる</button></div>`;}
+async function rpaStart(){
+  const cfg=SMR.rpa||{};if(!cfg.job){snack('smile.rules に rpa（RPA の設定）がありません（Provision-SmileAP.ps1 -Apply -ResetRules）',true);return;}
+  if(!RQ()){snack('RPA の部品（rpa_queue.js）が読めません',true);return;}
+  if(!confirm(`SMILE から ${month()} 払いの仕入のファイルを出し直して取り込みます（数分かかります）。よろしいですか？`))return;
+  rpaSet({phase:'依頼',text:'RPA 専用機に頼んでいます…',at:new Date().toISOString(),ym:month(),name:''});
+  try{RQ().init({getToken:token,driveId:SM_DRIVE});
+    const r=await RQ().request(cfg.job,{app:'支払管理 仕入（SMILE）',requestedBy:(acct&&acct.username)||'',params:{payYm:month()}});
+    rpaSet({name:r.name,phase:'順番待ち',text:r.deduped?'すでに同じ依頼が順番待ちです。いっしょに待ちます':'RPA 専用機の受付待ち'});rpaWatch();}
+  catch(e){rpaSet({phase:'失敗',text:'頼めませんでした（SharedMasters に書く権限が要ります）：'+e.message});}}
+function rpaWatch(){if(!RPA||!RPA.name||rpaStop)return;const cfg=SMR.rpa||{},since=Date.parse(RPA.at);
+  RQ().init({getToken:token,driveId:SM_DRIVE});
+  rpaStop=RQ().watch(RPA.name,s=>{
+    if(s.state==='pending')rpaSet({phase:'順番待ち',text:s.ahead?`順番待ち（前に ${s.ahead} 件）`:'RPA 専用機の受付待ち'});
+    else if(s.state==='running'||s.state==='unknown')rpaSet({phase:'出力中',text:'SMILE からファイルを出力しています…'});
+    else if(s.state==='done'){rpaStop=null;rpaWaitFiles(since);}
+    else if(s.state==='failed'){rpaStop=null;rpaSet({phase:'失敗',text:'RPA 専用機で失敗しました：'+(s.error||'')});}
+    else{rpaStop=null;rpaSet({phase:'失敗',text:'時間内に終わりませんでした（RPA 専用機を確かめてください）'});}
+  },{intervalMs:MOCK?1000:15000,timeoutMs:Math.max(60000,(cfg.timeoutMinutes||40)*60000-(Date.now()-since))});}
+// 出力が終わったら、4ファイルの更新が SharedMasters に届くのを待ってから読む（同期の遅れ）
+async function smMeta(name){try{return await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(name)}?$select=lastModifiedDateTime,size`);}catch(e){return null;}}
+async function rpaWaitFiles(since){rpaSet({phase:'同期待ち',text:'出力できました。ファイルが届くのを待っています…'});
+  const names=Object.values((SMR.rpa||{}).files||{}),end=Date.now()+10*60000;
+  while(Date.now()<end){const ms=await Promise.all(names.map(smMeta));
+    if(ms.every(m=>m&&Date.parse(m.lastModifiedDateTime)>since)){await smLoad(since);return;}
+    await new Promise(r=>setTimeout(r,MOCK?500:15000));}
+  rpaSet({phase:'失敗',text:'出力は終わりましたが、ファイルが新しくなりません（少し待って「今あるファイルで取り込む」）'});}
+// SharedMasters の4ファイルを読んで、手で置いたときと同じ処理（onFiles）に渡す。照合がすべて合えば保存の確認まで進める
+async function smLoad(since){const cfg=SMR.rpa||{};const files=cfg.files||{};if(!Object.keys(files).length){snack('smile.rules に rpa.files がありません',true);return;}
+  rpaSet({phase:'読み込み中',text:'ファイルを読み込んでいます…',at:(RPA&&RPA.at)||new Date().toISOString()});
+  const list=[],miss=[],old=[];
+  for(const [k,n] of Object.entries(files)){const m=await smMeta(n);if(!m){miss.push(n);continue;}
+    if(!since&&Date.now()-Date.parse(m.lastModifiedDateTime)>3*86400000)old.push(`${n}（${fmtTime(m.lastModifiedDateTime)}）`);
+    try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(n)}:/content`,null,null,true);list.push(new File([b],n,{lastModified:Date.parse(m.lastModifiedDateTime)}));}catch(e){miss.push(n);}}
+  if(miss.length){rpaSet({phase:'失敗',text:'SharedMasters にないファイルがあります：'+miss.join('・')});return;}
+  await onFiles(list);
+  const ng=calc?(checkList()||[]).filter(c=>c.ok===false):[];
+  rpaSet({phase:'完了',text:`読み込みました（${list.length}ファイル）。`+(old.length?`古いファイルがあります：${old.join('・')}。`:'')+(ng.length?`照合で合わないものが ${ng.length} 件あります。下で確かめてから保存してください`:'照合はすべて合っています。保存の確認に進みます')});
+  if(calc&&allFiles()&&!ng.length&&!old.length)setTimeout(saveImport,300);}
+// 前に頼んだもの（画面を閉じた）を続きから見る
+function rpaResume(){if(rpaBusy()&&RPA.name&&!rpaStop&&RQ()){if(['同期待ち','読み込み中'].includes(RPA.phase))rpaWaitFiles(Date.parse(RPA.at));else rpaWatch();}}
 
 // ---- 📊 サマリー ----
 function drawSummary(){
