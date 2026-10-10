@@ -714,6 +714,15 @@
       for(const st of l.steps||[]){if(st.run==null)continue;parts.push({kind:'step',label:`手順${st['手順№']}　${st['工程']||'工程名なし'}`,min:Number(st.run)||0,st})}
       for(const ch of l.children||[]){const per=ch.cum_std_per_unit,q=Number(ch['必要数']||0);if(per==null||!(per*q))continue;parts.push({kind:'child',code:ch['品目コード'],label:`${ch['品目コード']}　${lbName(ch['品目コード'])}`,min:per*q,q})}
       return parts.sort((a,b)=>b.min-a.min)}
+    // 基準内・基準外（実績）：付加価値アプリの月別実績（monthly_actuals）を、標準工数と同じ期間（直近3/6か月）で集計
+    //   1個あたり＝手順ごとに Σ分 ÷ Σ報告数量 を足す（工数集計と同じ考え方）。基準外は 基準外工数×基準外人数。
+    function lbWindowMonths(month){const w=Number(state.laborWindow||3),y=Number(month.slice(0,4)),m=Number(month.slice(4));const out=[];for(let k=w-1;k>=0;k--){const idx=y*12+m-1-k;out.push(`${Math.floor(idx/12)}${String(idx%12+1).padStart(2,'0')}`)}return out}
+    function lbOwnActual(code,month){LB._own=LB._own||new Map();const key=code+'|'+month+'|'+(state.laborWindow||3);if(LB._own.has(key))return LB._own.get(key);const ma=lbLabor()?.monthly_actuals||{},steps=new Map(),reasons=new Map();
+      for(const m of lbWindowMonths(month)){const it=ma[m]?.items?.[code];if(!it)continue;for(const [st,v] of Object.entries(it.steps||{})){const a=steps.get(st)||{in:0,ex:0,q:0};a.in+=Number(v.baseline_minutes??v.processing_minutes??0);a.ex+=Number(v.exception_minutes||0);a.q+=Number(v.quantity||0);steps.set(st,a)}for(const [r,v] of Object.entries(it.exception_reasons||{})){reasons.set(r,(reasons.get(r)||0)+Number(v.minutes||0))}}
+      let inU=0,exU=0,any=false;const per={};for(const [st,a] of steps){if(a.q>0){any=true;inU+=a.in/a.q;exU+=a.ex/a.q;per[st]={in:a.in/a.q,ex:a.ex/a.q}}}
+      const r={in:any?inU:null,ex:any?exU:null,per,reasons};LB._own.set(key,r);return r}
+    function lbRoll(code,month,depth=0,seen=new Set()){LB._roll=LB._roll||new Map();const key=code+'|'+month+'|'+(state.laborWindow||3);if(LB._roll.has(key))return LB._roll.get(key);if(depth>10||seen.has(code))return{in:0,ex:0};const own=lbOwnActual(code,month),h=lbHandoff(month)[code];let i=own.in||0,e=own.ex||0;for(const ch of h?.children||[]){const c=ch['品目コード'],q=Number(ch['必要数']||0);if(!q)continue;const r=lbRoll(c,month,depth+1,new Set([...seen,code]));i+=r.in*q;e+=r.ex*q}const out={in:i,ex:e};LB._roll.set(key,out);return out}
+    function lbReasons(code,month,mult=1,depth=0,seen=new Set(),acc=new Map()){if(depth>10||seen.has(code))return acc;const own=lbOwnActual(code,month),h=lbHandoff(month)[code];for(const [r,v] of own.reasons)acc.set(r,(acc.get(r)||0)+v);for(const ch of h?.children||[])lbReasons(ch['品目コード'],month,mult,depth+1,new Set([...seen,code]),acc);return acc}
     function lbTrend(code){return lbMonths().map(m=>({m,v:lbHandoff(m)[code]?.cum_std_per_unit??null}))}
     function lbDelta(cur,prev){if(cur==null||prev==null||!prev)return null;return(cur-prev)/prev*100}
     function lbDeltaChip(cur,prev,label){const d=lbDelta(cur,prev);if(d==null)return `<span class="lb-chip mute">${label}：比較なし</span>`;const cls=Math.abs(d)<5?'flat':d>0?'up':'down';return `<span class="lb-chip ${cls}">${label} ${d>0?'+':''}${d.toFixed(1)}%</span>`}
@@ -724,7 +733,8 @@
     function lbCrumb(){const parts=[`<button type="button" data-lb-go="genre">すべてのジャンル</button>`];if(LB.genre)parts.push(`<button type="button" data-lb-go="list">${esc(LB.genre.split('｜')[1]||LB.genre)}</button>`);if(LB.code)parts.push(`<b>${esc(lbName(LB.code))}</b>`);return `<nav class="lb-crumb" aria-label="工数の階層">${parts.join('<span>›</span>')}</nav>`}
     // ---- 画面1：ジャンルのカード ----
     function lbRenderGenres(root,month){const prev=previousMonth(month),yoy=`${Number(month.slice(0,4))-1}${month.slice(4)}`,cur=lbGenres(month,LB.group),pm=lbGenres(prev,LB.group),ym=lbGenres(yoy,LB.group),months=lbMonths().slice(-6);
-      const cards=[...cur.entries()].map(([k,list])=>({k,list,s:lbStats(list),p:lbStats(pm.get(k)||[]),y:lbStats(ym.get(k)||[]),sold:list.reduce((t,p)=>t+p.sold,0)})).filter(c=>c.s.ok).sort((a,b)=>(b.sold-a.sold)||(b.s.avg-a.s.avg));
+      const exOf=list=>{const ok=list.filter(p=>p.cum!=null);let i=0,e=0;for(const p of ok){const w=p.sold||1;i+=p.cum*w;e+=lbRoll(p.code,month).ex*w}return i+e>0?e/(i+e)*100:null};
+      const cards=[...cur.entries()].map(([k,list])=>({k,list,ex:exOf(list),s:lbStats(list),p:lbStats(pm.get(k)||[]),y:lbStats(ym.get(k)||[]),sold:list.reduce((t,p)=>t+p.sold,0)})).filter(c=>c.s.ok).sort((a,b)=>(b.sold-a.sold)||(b.s.avg-a.s.avg));
       const maxAvg=Math.max(1,...cards.map(c=>c.s.avg||0));
       const groupBtns=Object.entries(LB_LV).map(([g,[, ,label]])=>`<button type="button" data-lb-group="${g}" class="${LB.group===g?'on':''}">${label}</button>`).join('');
       root.innerHTML=`<div class="lb-intro"><div><h2>製品1台をつくるのに、どれだけの時間がかかっているか</h2><p>ジャンルを選ぶと製品ごとの時間、製品を選ぶと「どの部品・どの手順に時間がかかっているか」まで見られます。数字は付加価値アプリの標準工数（基準内・直近${state.laborWindow||3}か月の実績から算出）です。</p></div><div class="lb-group" role="group" aria-label="ジャンルの分け方">${groupBtns}</div></div>
@@ -733,7 +743,7 @@
           <span class="lb-big"><b data-lb-count="${c.s.avg}">0</b><small>分／台</small></span>
           <span class="lb-meter"><i data-lb-w="${Math.max(3,c.s.avg/maxAvg*100)}"></i></span>
           <span class="lb-card-sub">${c.s.weighted?'販売台数で重みづけした平均':'製品の単純平均'}・${c.s.ok}製品${c.sold?`・今月 ${c.sold.toLocaleString('ja-JP')}台販売`:''}</span>
-          <span class="lb-chips">${lbDeltaChip(c.s.avg,c.p.avg,'前月比')}${lbDeltaChip(c.s.avg,c.y.avg,'前年比')}</span>
+          <span class="lb-chips">${lbDeltaChip(c.s.avg,c.p.avg,'前月比')}${lbDeltaChip(c.s.avg,c.y.avg,'前年比')}${c.ex!=null?`<span class="lb-chip ex">基準外 ${c.ex.toFixed(1)}%</span>`:''}</span>
           <span class="lb-card-foot">${lbSpark(spark)}<span class="lb-range">${lbMin(c.s.min)}〜${lbMin(c.s.max)}分</span></span></button>`}).join('')||'<p class="lb-empty">この月は工数が出ている製品がありません。</p>'}</div>`;
     }
     // ---- 画面2：ジャンル内の製品（1台あたりの時間、自工程と部品の内訳） ----
@@ -744,11 +754,12 @@
         <div class="lb-rows">${rows.map((r,i)=>{const own=Math.min(r.cum,Math.max(0,r.own||0)),comp=Math.max(0,r.cum-own);return `<button type="button" class="lb-row" data-lb-code="${esc(r.code)}" style="--i:${i}">
           <span class="lb-row-name"><b>${esc(r.it?.n||lbName(r.code))}</b><small>${esc(r.code)}${r.sold?`・今月${r.sold}台`:''}${(r.l.flags||[]).includes('期間外実績')?'・<em>期間外の実績を含む</em>':''}</small></span>
           <span class="lb-row-bar"><span class="lb-stack" data-lb-w="${r.cum/max*100}" style="width:0"><i class="own" style="flex:${own}"></i><i class="comp" style="flex:${comp}"></i></span>${r.pc!=null?`<i class="lb-ghost" style="left:${Math.min(100,r.pc/max*100)}%"></i>`:''}</span>
-          <span class="lb-row-num"><b>${lbMin(r.cum)}</b><small>分</small>${lbDeltaChip(r.cum,r.pc,'前月')}</span></button>`}).join('')||'<p class="lb-empty">工数が出ている製品がありません。</p>'}</div>`;
+          <span class="lb-row-num"><b>${lbMin(r.cum)}</b><small>分</small>${(()=>{const e=lbRoll(r.code,month).ex;return e>0.05?`<span class="lb-chip ex">外 +${lbMin(e)}</span>`:''})()}${lbDeltaChip(r.cum,r.pc,'前月')}</span></button>`}).join('')||'<p class="lb-empty">工数が出ている製品がありません。</p>'}</div>`;
     }
     // ---- 画面3：製品の分解（どの部品・どの手順に時間がかかっているか） ----
     function lbRenderProduct(root,month){const h=lbHandoff(month),l=h[LB.code],prev=previousMonth(month),pl=lbHandoff(prev)[LB.code],yoy=`${Number(month.slice(0,4))-1}${month.slice(4)}`,yl=lbHandoff(yoy)[LB.code],rate=lbRate(month);
       if(!l){root.innerHTML='<p class="lb-empty">この月の工数データがありません。</p>';return}
+      const roll=lbRoll(LB.code,month),exU=roll.ex,exRate=total0=>total0!=null&&(total0+exU)>0?exU/(total0+exU)*100:null;
       const parts=lbParts(LB.code,month),total=l.cum_std_per_unit,sum=parts.reduce((t,p)=>t+p.min,0)||1,trend=lbTrend(LB.code).slice(-12);
       // 前月から増えた手順（自工程・部品の手順まで）
       const flat=[];const walk=(code,mult,depth,seen)=>{if(depth>8||seen.has(code))return;const x=h[code];if(!x)return;const px=lbHandoff(prev)[code];for(const st of x.steps||[]){if(st.run==null)continue;const ps=(px?.steps||[]).find(s=>s['手順№']===st['手順№']);flat.push({code,label:st['工程']||'工程名なし',step:st['手順№'],cur:st.run*mult,prev:ps&&ps.run!=null?ps.run*mult:null,st})}for(const ch of x.children||[])walk(ch['品目コード'],mult*Number(ch['必要数']||0),depth+1,new Set([...seen,code]))};walk(LB.code,1,0,new Set());
@@ -756,27 +767,30 @@
       const heavy=[...flat].sort((a,b)=>b.cur-a.cur).slice(0,3);
       const fb=flat.filter(f=>f.st.fallback_period);
       const tw=Math.max(300,(root.clientWidth||900)-40);
-      const tv=trend.filter(t=>t.v!=null),mx=Math.max(1,...tv.map(t=>t.v)),bw=Math.min(46,(tw-20)/Math.max(1,trend.length)*.6);
-      const trendSvg=tv.length?`<svg class="lb-trend" viewBox="0 0 ${tw} 150" width="100%" height="150" role="img" aria-label="1台あたり工数の推移">${trend.map((t,i)=>{const x=20+i*(tw-40)/Math.max(1,trend.length-1),hh=t.v==null?0:t.v/mx*100;return `${t.v!=null?`<rect class="lb-tbar${t.m===month?' cur':''}" x="${x-bw/2}" y="${120-hh}" width="${bw}" height="${hh}" rx="4" style="--i:${i}"/><text x="${x}" y="${114-hh}" text-anchor="middle" class="lb-tval">${lbMin(t.v)}</text>`:''}<text x="${x}" y="140" text-anchor="middle" class="lb-tlab${t.m===month?' cur':''}">${Number(t.m.slice(4))}月</text>`}).join('')}</svg>`:'';
+      trend.forEach(t=>{t.ex=t.v!=null?lbRoll(LB.code,t.m).ex:null});const tv=trend.filter(t=>t.v!=null),mx=Math.max(1,...tv.map(t=>t.v+(t.ex||0))),bw=Math.min(46,(tw-20)/Math.max(1,trend.length)*.6);
+      const trendSvg=tv.length?`<svg class="lb-trend" viewBox="0 0 ${tw} 150" width="100%" height="150" role="img" aria-label="1台あたり工数の推移">${trend.map((t,i)=>{const x=20+i*(tw-40)/Math.max(1,trend.length-1),hh=t.v==null?0:t.v/mx*100,he=t.ex?t.ex/mx*100:0;return `${t.v!=null?`<rect class="lb-tbar${t.m===month?' cur':''}" x="${x-bw/2}" y="${120-hh}" width="${bw}" height="${hh}" rx="4" style="--i:${i}"/>${he?`<rect class="lb-tbar ex" x="${x-bw/2}" y="${120-hh-he}" width="${bw}" height="${he}" rx="3" style="--i:${i}"/>`:''}<text x="${x}" y="${114-hh-he}" text-anchor="middle" class="lb-tval">${lbMin(t.v+(t.ex||0))}</text>`:''}<text x="${x}" y="140" text-anchor="middle" class="lb-tlab${t.m===month?' cur':''}">${Number(t.m.slice(4))}月</text>`}).join('')}</svg>`:'';
       root.innerHTML=`<div class="lb-hero"><div><span class="lb-kicker">${esc(LB.code)}</span><h2>${esc(lbName(LB.code))}</h2><p>1台をつくるのに、自工程と部品・中間品（構成表の必要数で積み上げ）を合わせてかかる時間です。</p><div class="lb-chips">${lbDeltaChip(total,pl?.cum_std_per_unit,'前月比')}${lbDeltaChip(total,yl?.cum_std_per_unit,'前年同月比')}${(l.flags||[]).includes('期間外実績')?'<span class="lb-chip warn">期間外の実績を含む</span>':''}${l.input_rate!=null&&l.input_rate<100?`<span class="lb-chip warn">作業時間の入力率 ${l.input_rate}%</span>`:''}</div></div>
-          <div class="lb-hero-num"><b ${total!=null?`data-lb-count="${total}"`:''}>${total==null?'未算定':'0'}</b><small>分／台${total!=null?`（${lbHours(total)}時間）`:''}</small>${total!=null&&rate?`<span class="lb-yen">工数金額 ${Math.round(total*rate).toLocaleString('ja-JP')}円／台</span>`:`<span class="lb-yen mute">${rate?'':'この月の工数レートは未確定'}</span>`}</div></div>
+          <div class="lb-hero-num"><b ${total!=null?`data-lb-count="${total}"`:''}>${total==null?'未算定':'0'}</b><small>分／台・基準内${total!=null?`（${lbHours(total)}時間）`:''}</small>${total!=null?`<span class="lb-exline">＋ 基準外 <strong>${lbMin(exU)}</strong>分／台（割合 ${exRate(total)==null?'—':exRate(total).toFixed(1)+'%'}）</span>`:''}${total!=null&&rate?`<span class="lb-yen">工数金額 ${Math.round(total*rate).toLocaleString('ja-JP')}円／台</span>`:`<span class="lb-yen mute">${rate?'':'この月の工数レートは未確定'}</span>`}</div></div>
         ${total==null?`<p class="lb-empty">${esc(l.labor_status||'工数未取得')}：構成のどこかに実績が無い手順があります。</p>`:''}
         <div class="lb-panel"><h3>時間はどこにかかっているか</h3><div class="lb-strip">${parts.map((p,i)=>`<i data-lb-w="${p.min/sum*100}" style="width:0;background:${LB_SEG[i%LB_SEG.length]}" title="${esc(p.label)}：${lbMin(p.min)}分"></i>`).join('')}</div>
           <div class="lb-legend">${parts.map((p,i)=>`<button type="button" class="lb-leg" ${p.kind==='child'?`data-lb-code="${esc(p.code)}"`:''}><i style="background:${LB_SEG[i%LB_SEG.length]}"></i><span>${p.kind==='step'?'自工程 ':''}${esc(p.label)}</span><b>${lbMin(p.min)}分</b><small>${(p.min/sum*100).toFixed(0)}%</small></button>`).join('')}</div></div>
+        ${(()=>{const rs=[...lbReasons(LB.code,month).entries()].filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);if(!rs.length)return '';const tot=rs.reduce((t,[,v])=>t+v,0);return `<div class="lb-panel"><h3>基準外の中身（直近${state.laborWindow||3}か月・この製品と部品の合計）</h3><div class="lb-reasons">${rs.slice(0,6).map(([r,v],i)=>`<div class="lb-reason"><span>${esc(r)}</span><span class="lb-rbar"><i data-lb-w="${v/rs[0][1]*100}" style="width:0"></i></span><b>${lbHours(v)}時間</b><small>${(v/tot*100).toFixed(0)}%</small></div>`).join('')}</div></div>`})()}
         <div class="lb-insights">
           <div class="lb-ins"><h4>時間が長い手順</h4>${heavy.map(f=>`<p><b>${lbMin(f.cur)}分</b>　${esc(f.label)}<small>${esc(f.code)}　${esc(lbName(f.code))}</small></p>`).join('')||'<p class="mute">—</p>'}</div>
           <div class="lb-ins up"><h4>前月より長くなった手順</h4>${ups.map(f=>`<p><b>+${lbMin(f.cur-f.prev)}分</b>　${esc(f.label)}<small>${esc(f.code)}　${lbMin(f.prev)}→${lbMin(f.cur)}分</small></p>`).join('')||'<p class="mute">目立って長くなった手順はありません</p>'}</div>
           <div class="lb-ins warn"><h4>確認したいところ</h4>${fb.length?fb.slice(0,3).map(f=>`<p>${esc(f.label)}<small>${esc(f.code)}　直近に実績がなく、${String(f.st.fallback_period.from).slice(0,4)}年${Number(String(f.st.fallback_period.from).slice(4))}〜${Number(String(f.st.fallback_period.to).slice(4))}月の実績で算出</small></p>`).join(''):''}${l.input_rate!=null&&l.input_rate<100?`<p>作業時間が0の報告が含まれています<small>入力率 ${l.input_rate}%（低いほど実際より短く見えます）</small></p>`:''}${!fb.length&&!(l.input_rate<100)?'<p class="mute">特にありません</p>':''}</div>
         </div>
-        <div class="lb-panel"><h3>1台あたりの時間の推移（${String(state.laborWindow||3)}か月の実績で毎月算出）</h3>${trendSvg||'<p class="mute">推移はまだありません</p>'}</div>
+        <div class="lb-panel"><h3>1台あたりの時間の推移（${String(state.laborWindow||3)}か月の実績で毎月算出）</h3><div class="lb-tlegend"><span><i class="in"></i>基準内（標準工数）</span><span><i class="ex"></i>基準外（段取り・手直し等の実績）</span></div>${trendSvg||'<p class="mute">推移はまだありません</p>'}
+          ${trend.some(t=>t.v!=null)?`<div class="fp-tscroll"><table class="lb-mtable"><thead><tr><th>月</th><th>基準内</th><th>基準外</th><th>計</th><th>基準外の割合</th></tr></thead><tbody>${trend.filter(t=>t.v!=null).map(t=>`<tr class="${t.m===month?'cur':''}"><td>${lbYm(t.m)}</td><td class="num">${lbMin(t.v)}</td><td class="num ex">${lbMin(t.ex)}</td><td class="num"><b>${lbMin(t.v+(t.ex||0))}</b></td><td class="num ex">${t.v+(t.ex||0)>0?((t.ex||0)/(t.v+(t.ex||0))*100).toFixed(1)+'%':'—'}</td></tr>`).join('')}</tbody></table></div><p class="lb-note">分／台。基準内は付加価値アプリの標準工数（構成で積み上げ）。基準外は同じ期間の実績（基準外工数×基準外人数÷報告数量）を構成で積み上げた参考値です。</p>`:''}</div>
         <div class="lb-panel"><h3>部品・手順ごとの内訳（押すと下の階層が開きます）</h3><div class="lb-tree">${lbTree(LB.code,1,month,0,new Set())}</div></div>`;
     }
     function lbTree(code,mult,month,depth,seen){if(depth>8||seen.has(code))return '';const h=lbHandoff(month),x=h[code];if(!x)return `<div class="lb-node mute">${esc(code)}　データなし</div>`;const ph=lbHandoff(previousMonth(month))[code];
-      let out='';for(const st of x.steps||[]){const ps=(ph?.steps||[]).find(s=>s['手順№']===st['手順№']);const cur=st.run==null?null:st.run*mult,pv=ps&&ps.run!=null?ps.run*mult:null;out+=`<div class="lb-node step" style="--d:${depth}"><span><i class="lb-tag">手順${esc(st['手順№'])}</i>${esc(st['工程']||'工程名なし')}<small>${Number(st.rows||0)}件の報告${st.fallback_period?`・${esc(String(st.fallback_period.from).slice(0,4))}年${Number(String(st.fallback_period.from).slice(4))}〜${Number(String(st.fallback_period.to).slice(4))}月の実績`:''}${st.run==null?'・期間内実績なし':''}</small></span><b>${lbMin(cur)}<small>分</small></b>${cur!=null&&pv!=null&&Math.abs(cur-pv)>0.05?`<em class="${cur>pv?'up':'down'}">${cur>pv?'+':''}${lbMin(cur-pv)}</em>`:'<em></em>'}</div>`}
+      let out='';for(const st of x.steps||[]){const ps=(ph?.steps||[]).find(s=>s['手順№']===st['手順№']);const cur=st.run==null?null:st.run*mult,pv=ps&&ps.run!=null?ps.run*mult:null,exs=lbOwnActual(code,month).per[st['手順№']]?.ex,exm=exs?exs*mult:0;out+=`<div class="lb-node step" style="--d:${depth}"><span><i class="lb-tag">手順${esc(st['手順№'])}</i>${esc(st['工程']||'工程名なし')}<small>${Number(st.rows||0)}件の報告${st.fallback_period?`・${esc(String(st.fallback_period.from).slice(0,4))}年${Number(String(st.fallback_period.from).slice(4))}〜${Number(String(st.fallback_period.to).slice(4))}月の実績`:''}${st.run==null?'・期間内実績なし':''}${exm>0.05?`・<span class="lb-exs">基準外 ${lbMin(exm)}分</span>`:''}</small></span><b>${lbMin(cur)}<small>分</small></b>${cur!=null&&pv!=null&&Math.abs(cur-pv)>0.05?`<em class="${cur>pv?'up':'down'}">${cur>pv?'+':''}${lbMin(cur-pv)}</em>`:'<em></em>'}</div>`}
       for(const ch of x.children||[]){const c=ch['品目コード'],q=Number(ch['必要数']||0),per=ch.cum_std_per_unit,key=`${code}>${c}`,open=LB.open.has(key),sub=lbHandoff(month)[c],has=(sub?.steps||[]).length||(sub?.children||[]).length;out+=`<div class="lb-node child${open?' open':''}" style="--d:${depth}"><button type="button" ${has?`data-lb-open="${esc(key)}"`:'disabled'}><span class="lb-chev">${has?'›':'·'}</span><span>${esc(c)}　${esc(lbName(c))}<small>必要数 ${q.toLocaleString('ja-JP',{maximumFractionDigits:4})}${per!=null?`・1個 ${lbMin(per)}分`:''}${sub?.labor_status&&sub.labor_status!=='集計済み'?`・${esc(sub.labor_status)}`:''}</small></span></button><b>${per==null?'—':lbMin(per*q*mult)}<small>分</small></b><em></em></div>${open?lbTree(c,mult*q,month,depth+1,new Set([...seen,code])):''}`}
       return out}
     function renderLaborBoard(){const root=el('laborBoard');if(!root||el('labor')?.hidden)return;const month=state.month;
       if(!lbLabor()){root.innerHTML='<p class="lb-empty">工数データがまだありません。</p>';return}
+      LB._own=new Map();LB._roll=new Map();
       el('laborCrumb').innerHTML=lbCrumb();el('laborMonth').textContent=`${lbYm(month)}・直近${state.laborWindow||3}か月の実績`;
       const body=el('laborBody');body.classList.remove('lb-in');
       if(LB.level==='product'&&LB.code)lbRenderProduct(body,month);else if(LB.level==='list'&&LB.genre)lbRenderList(body,month);else lbRenderGenres(body,month);
@@ -1649,7 +1663,7 @@
     .lb-chip{font-size:11.5px;font-weight:800;padding:3px 9px;border-radius:999px;background:#f1f3f8;color:#5a6080}
     .lb-chip.up{background:#fdecee;color:#c0364a}.lb-chip.down{background:#e3f6ee;color:#0d8a57}.lb-chip.flat{background:#eef0ff;color:#23268f}.lb-chip.warn{background:#fdefd6;color:#a8620a}.lb-chip.mute{color:#a0a6bb;font-weight:700}
     .lb-card-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px}
-    .lb-spark{animation:lbFade .8s .3s var(--lb-ease) both}
+    .lb-spark{display:block}
     .lb-spark-empty{font-size:11px;color:#b3b8cb}.lb-range{font-size:11.5px;color:var(--sub,#8a90a8);font-feature-settings:"tnum"}
     .lb-hero{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;background:#fff;border-radius:16px;padding:18px 20px;margin-bottom:14px;box-shadow:0 1px 2px rgba(22,26,92,.04),0 8px 24px rgba(22,26,92,.06)}
     .lb-hero .lb-chips{margin-top:8px}
@@ -1687,6 +1701,15 @@
     .lb-chev{display:inline-block;width:12px;color:var(--navy,#23268f);font-weight:800;transition:transform .2s}.lb-node.open .lb-chev{transform:rotate(90deg)}
     .lb-tag{font-style:normal;font-size:10.5px;font-weight:800;color:#fff;background:#23268f;border-radius:4px;padding:1px 6px;margin-right:6px}
     .lb-empty{color:var(--sub,#8a90a8);padding:20px;background:#fff;border-radius:12px}
+    .lb-exline{margin-top:6px;font-size:13px;font-weight:700;color:#a8620a;background:#fdefd6;border-radius:999px;padding:4px 12px}.lb-exline strong{font-size:17px;font-weight:800;margin:0 2px;font-feature-settings:"tnum"}
+    .lb-chip.ex{background:#fdefd6;color:#a8620a}
+    .lb-trend .lb-tbar.ex{fill:#f2b84b}
+    .lb-tlegend{display:flex;gap:14px;font-size:12px;color:#5a6080;margin-bottom:4px}.lb-tlegend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}.lb-tlegend i.in{background:#23268f}.lb-tlegend i.ex{background:#f2b84b}
+    .lb-mtable{margin-top:8px;max-width:640px;width:100%;border-collapse:collapse;font-size:12.5px}.lb-mtable th{background:#f8f9fc;color:var(--sub,#8a90a8);font-weight:600;padding:6px 8px;text-align:left}.lb-mtable td{padding:6px 8px;border-bottom:1px solid var(--line,#edf0f6);font-feature-settings:"tnum"}.lb-mtable td.num,.lb-mtable th:nth-child(n+2){text-align:right}.lb-mtable .ex{color:#a8620a}.lb-mtable tr.cur td{background:#fdf6e9;font-weight:700}
+    .lb-note{font-size:11.5px;color:var(--sub,#8a90a8);margin:6px 0 0}
+    .lb-reasons{display:grid;gap:6px}.lb-reason{display:grid;grid-template-columns:minmax(90px,180px) 1fr 80px 40px;align-items:center;gap:10px;font-size:12.5px}.lb-reason b{text-align:right;font-feature-settings:"tnum"}.lb-reason small{color:var(--sub,#8a90a8);text-align:right}
+    .lb-rbar{height:10px;background:#f1f3f8;border-radius:99px;overflow:hidden}.lb-rbar i{display:block;height:100%;background:#f2b84b;border-radius:99px;transition:width 1s var(--lb-ease)}
+    .lb-exs{color:#a8620a;font-weight:700}
     @media(max-width:760px){
       .lb-intro h2,.lb-hero h2{font-size:17px}.lb-big b{font-size:30px}.lb-hero-num{align-items:flex-start;text-align:left}.lb-hero-num b{font-size:36px}
       .lb-row{grid-template-columns:1fr auto;gap:6px 10px}.lb-row-bar{grid-column:1/-1;grid-row:2}
