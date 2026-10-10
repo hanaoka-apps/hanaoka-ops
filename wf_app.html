@@ -817,9 +817,12 @@ function renderOrgSync(main) {
           <td>${esc(r.cur.map(nameOf).join('・') || '—')}</td><td>${esc(r.mgr ? nameOf(r.mgr) : '—')}</td>
           <td>${pill({ label: r.state, cls: cls[r.state] || 'gray' })}${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}</td>
           <td class="muted">${esc(r.line.map(nameOf).join(' → '))}</td></tr>`).join('') || '<tr><td colspan="8" class="muted" style="padding:12px">違いはありません</td></tr>'}</table></div>
-      ${S.extra.length ? `<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">M365 にいて、組織マスタにいない人（${S.extra.length}人。共有の PC・携帯や新しく入った人。組織マスタに足すときは総務で）</summary>
+      ${S.extra.length ? `<details style="margin-top:12px" data-extra><summary class="muted" style="cursor:pointer">M365 にいて、組織マスタにいない人（${S.extra.length}人。共有の PC・携帯や新しく入った人。組織マスタに足すときは総務で）</summary>
         <div class="muted" style="margin-top:6px">${esc(S.extra.map(u => u.name + (u.mgr ? `（上司：${nameOf(u.mgr)}）` : '')).join('、'))}</div></details>` : ''}` : ''}
     </div></div>`;
+  main.querySelector('.detail').insertAdjacentHTML('beforeend', orgTreeHtml() + tierCardHtml());
+  bindTierCard(main);
+  $('otAll').onclick = () => main.querySelectorAll('.ot details').forEach(d => d.open = true);
   $('osLoad').onclick = loadOrgSync;
   if ($('osDiff')) $('osDiff').onchange = e => { S.onlyDiff = e.target.checked; render(); };
   main.querySelectorAll('input[data-os]').forEach(c => c.onchange = () => { const r = rows.find(x => x.p.UPN === c.dataset.os); if (r) r.sel = c.checked; renderOrgSync(main); });
@@ -830,6 +833,67 @@ function renderOrgSync(main) {
     for (const r of list) { try { await api.updateOrg(r.p.id ?? r.p.UPN, { ManagerUPNs: r.mgr }); n++; } catch (e) { ng.push(`${r.p.Title}（${e.message}）`); } }
     S.busy = false; toast(`${n} 人の上長を書き換えました`); if (ng.length) alert('書き換えられなかった人：\n' + ng.join('\n') + '\n\n（組織マスタを書き換える権限が無いときは 403 になります）');
     st.M = null; await load(true); await loadOrgSync();
+  };
+}
+/* ---------- 組織図（承認ライン）：組織マスタの直属上長（＝M365 の上司）を木にする。
+   「上長承認」は、ここを下から上へたどって部門長（または役員）で止まる。部門長の行に印 */
+function orgTreeHtml() {
+  const org = st.M.org.filter(p => p.Active !== false), by = Object.fromEntries(org.map(p => [lc(p.UPN), p]));
+  const rank = { '社長': 0, '役員': 1, '相談役': 1, '部門長': 2, '管理職': 3, '一般': 4 };
+  const kids = {}, roots = [];
+  org.forEach(p => { const m = lc(((p.ManagerUPNs || '').split(';')[0]) || '');
+    if (m && by[m] && m !== lc(p.UPN)) (kids[m] = kids[m] || []).push(p); else roots.push(p); });
+  const sortP = a => a.sort((x, y) => (rank[x.Tier] ?? 5) - (rank[y.Tier] ?? 5) || String(x.Dept).localeCompare(String(y.Dept)) || String(x.Title).localeCompare(String(y.Title)));
+  const count = u => (kids[u] || []).reduce((n, c) => n + 1 + count(lc(c.UPN)), 0);
+  const node = (p, depth, seen) => {
+    const u = lc(p.UPN), ch = seen.has(u) ? [] : sortP((kids[u] || []).slice()); seen.add(u);
+    const stop = p.Tier === '部門長' ? '<span class="ot-stop" title="上長承認はここで止まる">上長承認の止まり</span>' : '';
+    const head = `<span class="ot-n">${esc(p.Title)}</span><span class="ot-d">${esc(p.Dept || '')}</span>${p.Tier && p.Tier !== '一般' ? `<span class="ot-t t-${esc(p.Tier)}">${esc(p.Tier)}</span>` : ''}${stop}${ch.length ? `<span class="ot-c">${count(u)}人</span>` : ''}`;
+    return ch.length ? `<li><details ${depth < 3 ? 'open' : ''}><summary>${head}</summary><ul>${ch.map(c => node(c, depth + 1, seen)).join('')}</ul></details></li>` : `<li><div class="ot-leaf">${head}</div></li>`;
+  };
+  const top = sortP(roots.filter(p => kids[lc(p.UPN)])), alone = roots.filter(p => !kids[lc(p.UPN)]);
+  return `<div class="card"><h3 class="h3f"><span>組織図（承認ライン）</span><button class="mini" id="otAll">すべて開く</button></h3>
+    <div class="muted" style="margin-bottom:8px">組織マスタの直属上長（M365 の上司を写したもの）の木です。申請の「上長承認」は、申請者から上へたどって「上長承認の止まり」（部門長）まで回ります。予備の上長（2人目）は線に出していません。</div>
+    <ul class="ot">${top.map(p => node(p, 0, new Set())).join('')}</ul>
+    ${alone.length ? `<div class="muted" style="margin-top:8px">上長も部下もいない人：${esc(alone.map(p => p.Title).join('、'))}</div>` : ''}</div>`;
+}
+/* ---------- 階層区分・役職（M365 に無いので、ここで直す）
+   階層区分は承認ラインの止まり（部門長）や経路の条件に使う。選べる値は今の組織マスタにある値（＋基本の5つ） */
+const tierEdit = { q: '', changes: {} };   // UPN → { Tier, JobTitle }
+const TIER_BASE = ['一般', '管理職', '部門長', '役員', '社長'];
+function tierCardHtml() {
+  const T = tierEdit, org = st.M.org.filter(p => p.Active !== false);
+  const tiers = [...new Set(TIER_BASE.concat(org.map(p => p.Tier).filter(Boolean)))];
+  const words = T.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+  const list = org.filter(p => !words.length || words.every(w => [p.Title, p.Dept, p.Site, p.Tier, p.JobTitle].join(' ').toLowerCase().includes(w)))
+    .sort((a, b) => String(a.Site).localeCompare(String(b.Site)) || String(a.Dept).localeCompare(String(b.Dept)) || tiers.indexOf(b.Tier) - tiers.indexOf(a.Tier));
+  const val = (p, k) => (T.changes[p.UPN] || {})[k] ?? (p[k] || '');
+  const n = Object.keys(T.changes).length;
+  return `<div class="card" id="tierCard"><h3>階層区分・役職</h3>
+    <div class="muted" style="margin-bottom:10px">M365 に無い項目なので、ここで直します。階層区分は承認の「上長承認」が止まる所（部門長）や、経路の条件（管理職以上 など）に使います。直してから出す申請から効きます。</div>
+    <div class="actions" style="margin-top:0"><input id="tqQ" type="search" placeholder="🔍 名前・部署・役職で探す" value="${esc(T.q)}" style="max-width:280px">
+      <span style="flex:1"></span>${n ? `<button id="tqReset">元に戻す</button>` : ''}<button class="pri" id="tqSave" ${n ? '' : 'disabled'}>変えた ${n} 人を保存する</button></div>
+    <div style="overflow-x:auto;margin-top:8px"><table class="tbl os"><tr><th>名前</th><th>拠点</th><th>部署</th><th>階層区分</th><th>役職</th></tr>
+      ${list.map(p => `<tr class="${T.changes[p.UPN] ? 'chg' : ''}"><td>${esc(p.Title)}</td><td>${esc(p.Site || '')}</td><td>${esc(p.Dept || '')}</td>
+        <td><select data-tier="${esc(p.UPN)}" style="width:auto">${tiers.map(t => `<option ${val(p, 'Tier') === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></td>
+        <td><input data-title="${esc(p.UPN)}" value="${esc(val(p, 'JobTitle'))}" style="min-width:160px"></td></tr>`).join('')}</table></div></div>`;
+}
+function bindTierCard(main) {
+  const T = tierEdit, redraw = () => { const c = $('tierCard'), y = c.querySelector('div[style*="overflow"]').scrollTop; c.outerHTML = tierCardHtml(); bindTierCard(main); };
+  const orgOf = upn => st.M.org.find(p => p.UPN === upn);
+  const setChg = (upn, k, v) => { const p = orgOf(upn), c = T.changes[upn] || {}; c[k] = v;
+    if ((c.Tier ?? (p.Tier || '')) === (p.Tier || '') && (c.JobTitle ?? (p.JobTitle || '')) === (p.JobTitle || '')) delete T.changes[upn]; else T.changes[upn] = c; };
+  $('tqQ').oninput = e => { T.q = e.target.value; const pos = e.target.selectionStart; redraw(); const q = $('tqQ'); q.focus(); q.setSelectionRange(pos, pos); };
+  main.querySelectorAll('select[data-tier]').forEach(s => s.onchange = () => { setChg(s.dataset.tier, 'Tier', s.value); redraw(); });
+  main.querySelectorAll('input[data-title]').forEach(i => i.onchange = () => { setChg(i.dataset.title, 'JobTitle', i.value.trim()); redraw(); });
+  if ($('tqReset')) $('tqReset').onclick = () => { T.changes = {}; redraw(); };
+  $('tqSave').onclick = async () => {
+    const list = Object.entries(T.changes); if (!list.length) return;
+    if (!confirm(`${list.length} 人の階層区分・役職を保存します。\n${list.slice(0, 8).map(([u, c]) => { const p = orgOf(u); return `・${p.Title}：${c.Tier && c.Tier !== p.Tier ? `${p.Tier || '—'} → ${c.Tier}` : ''}${c.JobTitle != null && c.JobTitle !== (p.JobTitle || '') ? `　役職 ${p.JobTitle || '—'} → ${c.JobTitle || '—'}` : ''}`; }).join('\n')}${list.length > 8 ? '\n…ほか' : ''}\n\nよろしいですか？`)) return;
+    let ok = 0; const ng = [];
+    for (const [u, c] of list) { const p = orgOf(u); try { await api.updateOrg(p.id ?? p.UPN, c); ok++; delete T.changes[u]; } catch (e) { ng.push(`${p.Title}（${e.message}）`); } }
+    toast(`${ok} 人を保存しました`); if (ng.length) alert('保存できなかった人：\n' + ng.join('\n') + '\n\n（組織マスタを書き換える権限が無いときは 403 になります）');
+    st.M = null; await load(true);
   };
 }
 /* ---------- 一覧＋詳細 ---------- */
