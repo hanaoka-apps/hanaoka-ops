@@ -121,14 +121,14 @@ const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8
 const S=window.APSmile, MOCK=window.AP_MOCK||null;   // MOCK は dev だけ（本番の HTML には無い）
 const $=id=>document.getElementById(id);
 let msalApp=null,acct=null;
-const L={imp:{name:'AP_SmileImport'},pay:{name:'AP_SmilePay'},adj:{name:'AP_CarryAdjust'},inv:{name:'AP_Invoice'}};
+const L={imp:{name:'AP_SmileImport'},pay:{name:'AP_SmilePay'},adj:{name:'AP_CarryAdjust'},inv:{name:'AP_Invoice'},vb:{name:'AP_VendorBank'}};
 Object.values(L).forEach(o=>{o.id=null;o.fmap={};});
 const FILES={payList:null,p9055:null,receipts:null,master:null};
 const KIND_LABEL={payList:'支払一覧表',p9055:'9055 支払明細書',receipts:'9521 受入リスト',master:'仕入先マスタ'};
 const GROUPS=['全社','工場','国内営業','ソリューション','総務'];
 const METHODS=['振込','でんさい','相殺','調整','現金','海外送金','口座振替'];   // 調整＝端数の精算（お金は動かない。SMILE 支払伝票の取引区分6）
 const V3={ai:'AIStatus',com:'AIComment',by:'RegisteredBy',at:'RegisteredAt',loc:'SiteLocation'};   // AP_Invoice の受付・AI の列（経費の画面と同じ）
-let calc=null,saved={},prevSaved={},adjs=[],settleSel={},lastImport=null,OFFSET={},INV={},SMR={};   // SMR：smile.rules（RPA の設定 rpa など）
+let calc=null,saved={},prevSaved={},adjs=[],settleSel={},lastImport=null,OFFSET={},INV={},SMR={},INBX=[],REGNO={},VBK=null;   // INBX：仕入先がまだ決まっていない請求書（受信トレイ）、REGNO：登録番号→仕入先、VBK：振込先マスタ   // SMR：smile.rules（RPA の設定 rpa など）
 const SM_DRIVE='b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';   // SharedMasters（RPA 専用機が SMILE のファイルを出す場所）
 let rows=[],draft=null,pdfSel={},pdfCache={};
 let listClosed=(()=>{try{return localStorage.getItem('ap.review.list')==='closed';}catch{return false;}})();   // 確認モードの一覧をたたむ（ページ送りが中心）
@@ -212,11 +212,15 @@ async function loadSaved(){
 async function loadInvoices(){
   // AI の読み取り結果（ai_result）を先に取り込む（請求額・口座のアラート）
   try{const a=await APIntake.apply({call,site:AP_SITE,onMsg:msg,ym:month()});if(a.applied)snack(`AI の読み取り結果を ${a.applied} 件取り込みました`);if(a.errors.length)console.warn(a.errors);}catch(e){console.warn(e);}
-  INV={};const ym=month(),iv=(f,d)=>fv(L.inv,f,d);
+  INV={};INBX=[];REGNO={};const ym=month(),iv=(f,d)=>fv(L.inv,f,d);
   (await fetchAll(L.inv)).forEach(it=>{const f=it.fields;const c=iv(f,'支払区分')||'';if(c!=='本社仕入'&&c!=='工場仕入')return;
-    if((iv(f,'対象年月')||'')!==ym||iv(f,'アーカイブフラグ')===true)return;const code=String(iv(f,'支払先コード')||'').trim();if(!code)return;
+    const code0=String(iv(f,'支払先コード')||'').trim(),rn=String(iv(f,'登録番号')||'').trim();if(code0&&/^T\d{13}$/.test(rn))REGNO[rn]=code0;   // 登録番号 → 仕入先（過去に付けたもの。受信トレイの当てに使う）
+    if((iv(f,'対象年月')||'')!==ym||iv(f,'アーカイブフラグ')===true)return;const code=code0;
+    if(!code){INBX.push({id:String(it.id),f,payee:iv(f,'支払先名')||'',title:f.Title||'',amount:+iv(f,'金額_税込')||0,regNo:rn,doc:String(iv(f,'DOCコード')||''),ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',
+      bank:{code:String(f.PayeeBankCode||''),bcode:String(f.PayeeBranchCode||''),no:String(f.PayeeAcctNo||''),name:String(f.PayeeBankName||''),holder:String(f.PayeeAcctHolder||'')}});return;}
     (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,doc:String(iv(f,'DOCコード')||''),
-      ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||''});});}
+      ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||''});});
+  if(INBX.length)setTimeout(()=>matchInbox(),0);}   // 受信トレイ：今月の支払先リストがあれば仕入先を当てる（リストを取り込んだ後も、ここで当たる）
 
 // ---------- ファイル（取り込み） ----------
 async function readRows(file){
@@ -358,34 +362,28 @@ function render(){
   $('groups').innerHTML=GROUPS.map(g=>`<button class="${g===st.g?'on':''}" data-g="${g}">${g}${g==='全社'||!rows.length?'':'　'+man(totalsOf(rows.filter(r=>inGroup(r,g)),g).pay)}</button>`).join('')
     +''   /* 仕入は月末払いだけ（10日・20日は無い）ので、支払回の切り替えは出さない */;
   const a=rowsG(),n=a.filter(needsCheck),ok=n.filter(r=>r.checked).length;
-  $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='imp'?'on':''}" data-tab="imp">📥 取り込み${calc?'（未保存）':''}</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（${ok}／${n.length}）</button></div>`
+  $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='imp'?'on':''}" data-tab="imp">📥 取り込み${calc?'（未保存）':''}</button><button class="${st.tab==='inb'?'on':''}" data-tab="inb">📨 請求書を渡す${INBX.length?'（'+INBX.length+'）':''}</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（${ok}／${n.length}）</button></div>`
     +`<div id="pane"></div>`;
-  if(st.tab==='imp')drawImport();else if(st.tab==='sum')drawSummary();else drawReview();
+  if(st.tab==='imp')drawImport();else if(st.tab==='inb')drawInbox();else if(st.tab==='sum')drawSummary();else drawReview();
   drawApprove();}
 
 // ---- 📥 取り込み ----
 function drawImport(){
   const list=checkList()||(lastImport?parseJ(fv(L.imp,lastImport.f,'照合と気づき'),null):null);
   const op=openAdjs();
-  // 「SMILE から取り込む」：ボタン1つで RPA 専用機が SMILE から4ファイルを出し直し、そのまま読み込む。手で置くこともできる
+  // 「SMILE から最新を取り込む」：RPA 専用機を動かすボタン（取り込みが終わるまで押せない）。大きな置き場は請求書（📨 請求書を渡す）だけに使う
   const busy=rpaBusy(),[y0,m0]=month().split('/').map(Number),close=new Date(y0,m0-1,0);
-  let h=`<div class="card ho"><div class="ho-grid">
-      <div class="drop ho-drop rpa ${busy?'busy':''}" id="rpaBox">
-        <span class="ho-ic"><svg viewBox="0 0 48 48" width="52" height="52" aria-hidden="true"><ellipse cx="20" cy="11" rx="12" ry="4.5" fill="#fff" stroke="currentColor" stroke-width="2.4"/><path d="M8 11v22c0 2.5 5.4 4.5 12 4.5s12-2 12-4.5V11" fill="#fff" stroke="currentColor" stroke-width="2.4"/><path d="M8 22c0 2.5 5.4 4.5 12 4.5s12-2 12-4.5" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="35" cy="35" r="9" fill="currentColor"/><path d="M31 35h8m-3-3.5 3.5 3.5-3.5 3.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-        <span class="ho-t">SMILE から取り込む</span>
-        <span class="ho-s">RPA 専用機が SMILE から支払一覧表・9055・9521・仕入先マスタを出し直し、<br>そのまま読み込んで照合します（数分）</span>
-        <button class="ho-btn" id="bRpa" ${busy?'disabled':''}>${busy?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む'}</button>
-        <button class="lk" id="bNow" ${busy?'disabled':''} style="font-size:12px">今あるファイルで取り込む</button></div>
-      <div class="ho-side">
-        <div class="ho-row"><span class="ho-k">支払</span><b>${y0}年${m0}月払い</b><span class="ho-m">（${close.getMonth()+1}月${close.getDate()}日締め）</span></div>
-        <ol class="ho-flow"><li><b>頼む</b><span>RPA 専用機へ</span></li><li><b>SMILE から出力</b><span>数分</span></li><li><b>読み込んで保存</b><span>照合して確かめる</span></li></ol>
-        <div id="rpst">${rpaStatusHtml()}</div>
-        <div class="files">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div></div>`;}).join('')}</div>
-        <details class="ho-note"><summary style="cursor:pointer">ファイルを手で置く（RPA を使わないとき）</summary>
-          <label class="drop" id="drop" style="margin-top:6px">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">販売_支払一覧表MMDD.xlsx ／ 9055支払明細書.csv ／ 9521受入リスト.csv ／ 仕入先マスタ.csv</span>
-          <input type="file" id="file-in" multiple accept=".csv,.xlsx,.xls"></label></details>
-        <div class="ho-note">SMILE を直したら、もう一度取り込めば読み直せます（確認・分け方・コメントは残ります）</div>
-      </div></div></div>`;
+  let h=`<div class="card"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <b>${y0}年${m0}月払い</b><span style="font-size:13px;color:var(--sub)">（${close.getMonth()+1}月${close.getDate()}日締め）</span>
+      <span style="flex:1"></span>
+      <button class="lk" id="bNow" ${busy?'disabled':''} style="font-size:12px">今あるファイルで取り込む</button>
+      <button class="pri" id="bRpa" ${busy?'disabled':''} title="RPA 専用機が SMILE から支払一覧表・9055・9521・仕入先マスタを出し直し、読み込んで照合します（数分）">${busy?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む'}</button></div>
+      <div id="rpst" style="margin-top:8px">${rpaStatusHtml()}</div>
+      <div class="files" style="margin-top:8px">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div></div>`;}).join('')}</div>
+      <details style="margin-top:8px;font-size:13px"><summary style="cursor:pointer;color:var(--sub)">ファイルを手で置く（RPA を使わないとき）</summary>
+        <label class="drop" id="drop" style="margin-top:6px">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">販売_支払一覧表MMDD.xlsx ／ 9055支払明細書.csv ／ 9521受入リスト.csv ／ 仕入先マスタ.csv</span>
+        <input type="file" id="file-in" multiple accept=".csv,.xlsx,.xls"></label></details>
+      <div style="margin-top:6px;font-size:12px;color:var(--sub)">SMILE を直したら、もう一度取り込めば読み直せます（確認・分け方・コメントは残ります）。請求書は「📨 請求書を渡す」へ</div></div>`;
   if(calc){const c={新規:0,金額が変わった:0,変化なし:0,なくなった:0};rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);const ng=(list||[]).filter(x=>x.ok===false).length;
     h+=`<div class="card" style="border-color:#efd3ad;background:var(--warn-l)"><b>まだ保存していません</b>　${rows.length}社：新規 ${c.新規}・金額が変わった ${c.金額が変わった}・変化なし ${c.変化なし}・なくなった ${c.なくなった}
       ${ng?`　<span class="ck-ng">照合で合わないものが ${ng} 件</span>`:''}
@@ -657,6 +655,124 @@ function readByAI(jobs){if(!window.APAI||!jobs.length)return;
     .then(x=>{if(!x.ok)snack(`AI が読めませんでした：${j.pdfName}（${x.message}）`,true);},e=>snack('AI の読み取りエラー：'+e.message,true))
     .then(()=>{aiChain=aiChain.then(async()=>{await loadInvoices();render();});}));}
 
+// ---------- 📨 請求書を渡す（受信トレイ）：仕入先を選ばずに置く → AI が読む → 今月の支払先リストから仕入先を当てる ----------
+// 当て方（決まった手順。AI の推測だけでは付けない）：①振込先口座が振込先マスタと一致 ②登録番号が過去に付けたものと一致 ③名前が一致（会社の種類・表記を除く）
+//   ④AI が今月のリストから選んだ候補（AIComment の「AI の候補：コード」）。①〜③で1社に決まり、AI の候補と食い違わなければ付ける。決まらなければ人が選ぶ
+// 今月のリストに無い請求書は経費の可能性が高い →「経費に回す」（経費として読み直して、経費の確認待ちへ）
+const AIRUN=new Set();let matching=false;
+const nName=s=>String(s||'').normalize('NFKC').replace(/株式会社|有限会社|合同会社|一般社団法人|公益財団法人|\(株\)|\(有\)|㈱|㈲|[\s・.,，。\-ｰー（）()]/g,'').toUpperCase();
+function monthList(){const o={};Object.entries(saved).forEach(([c,s])=>{const g=d=>fv(L.pay,s.f,d);if(g('取り込みの状態')==='なくなった')return;
+  o[c]={code:c,name:g('仕入先名')||'',amount:Math.round(+g('支払額')||0),balance:Math.round(+g('今回支払残高')||0),dept:g('決裁の部門')||'総務'};});return o;}
+async function loadVB(){if(VBK)return VBK;VBK=[];try{(await fetchAll(L.vb)).forEach(it=>{const f=it.fields,g=d=>fv(L.vb,f,d);
+  VBK.push({code:String(g('仕入先コード')||'').trim().padStart(6,'0'),bank:String(g('銀行コード')||'').padStart(4,'0'),bcode:String(g('支店コード')||'').padStart(3,'0'),no:String(g('口座番号')||'').replace(/\D/g,'').padStart(7,'0'),regNo:String(g('登録番号')||'').trim()});});}catch(e){console.warn(e);}return VBK;}
+function matchOne(x,C){
+  const has=c=>!!C[c],bank=[],reg=[],nm=[],near=[],why={};
+  if(x.bank.no&&x.bank.code){const no=x.bank.no.replace(/\D/g,'').padStart(7,'0'),bc=x.bank.code.padStart(4,'0');(VBK||[]).filter(v=>v.no===no&&v.bank===bc&&has(v.code)).forEach(v=>{if(!bank.includes(v.code))bank.push(v.code);});}
+  if(x.regNo){const c=REGNO[x.regNo]||((VBK||[]).find(v=>v.regNo===x.regNo)||{}).code;if(c&&has(c))reg.push(c);}
+  const n0=nName(x.payee);if(n0)Object.values(C).forEach(v=>{const n1=nName(v.name);if(!n1)return;if(n1===n0)nm.push(v.code);else if(n0.includes(n1)||n1.includes(n0))near.push(v.code);});
+  const ai=((x.com.match(/AI の候補：(\d{6})/)||[])[1])||'',aiIn=ai&&has(ai)?ai:'';
+  bank.forEach(c=>why[c]=(why[c]||[]).concat('振込先口座が一致'));reg.forEach(c=>why[c]=(why[c]||[]).concat('登録番号が一致'));nm.forEach(c=>why[c]=(why[c]||[]).concat('名前が一致'));
+  near.forEach(c=>why[c]=(why[c]||[]).concat('名前が似ている'));if(aiIn)why[aiIn]=(why[aiIn]||[]).concat('AI の候補');
+  Object.keys(why).forEach(c=>{if(x.amount&&Math.abs(C[c].balance-x.amount)<=Math.max(10,x.amount*0.01))why[c].push('金額が今回支払残高とほぼ同じ');});
+  const strong=[...new Set([...bank,...reg,...nm])];
+  if(strong.length===1&&(!aiIn||aiIn===strong[0]))return {code:strong[0],reason:why[strong[0]].join('・')};
+  if(!strong.length&&aiIn&&(near.includes(aiIn)||why[aiIn].some(w=>/金額/.test(w))))return {code:aiIn,reason:why[aiIn].join('・')};
+  const cands=Object.keys(why).sort((a,b)=>why[b].length-why[a].length);
+  return {cands,why,inList:cands.length>0};}
+async function assignVendor(x,code,reason){const v=monthList()[code]||{code,name:'',dept:'総務'},fac=v.dept==='工場';
+  const fields=toFields(L.inv,{'支払先コード':code,'支払区分':fac?'工場仕入':'本社仕入'});fields[V3.loc]=fac?'工場':'本社';
+  fields[V3.com]=[`仕入先：${v.name||code}（${code}）に付けました（${reason}）`,x.com].filter(Boolean).join('\n');
+  await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,fields);}
+async function matchInbox(){if(matching||!INBX.length)return;const C=monthList();if(!Object.keys(C).length)return;
+  matching=true;let n=0;try{await loadVB();
+    for(const x of INBX){if(x.ai!=='AI確認済'||AIRUN.has(x.id))continue;const m=matchOne(x,C);if(m.code){try{await assignVendor(x,m.code,m.reason);n++;}catch(e){console.warn(e);}}}}
+  finally{matching=false;}
+  if(n){snack(`請求書 ${n} 件を仕入先に付けました`);await loadInvoices();render();}}
+// 置く：仕入先は決めずに受け付けて、すぐ AI に読ませる（今月の支払先リストも渡す）
+async function registerInbox(files){
+  const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
+  if(IUPL.busy){snack('いま受け付けています。終わってから置いてください',true);return;}
+  Object.assign(IUPL,{busy:true,total:list.length,done:0,cur:'',errs:[],result:''});drawIupl();const jobs=[];
+  for(const f of list){const code=apCode();IUPL.cur=f.name;drawIupl();
+    try{const d=await APDoc.prep(f);
+      const base=d.base.replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,60),fname=`${code}_${base||'請求書'}.${d.ext}`;
+      await gputFile(`/BILLS/incoming/${fname}`,d.blob,d.type);
+      const hf=toFields(L.inv,{Title:d.base,'支払区分':'本社仕入','対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':`/Shared Documents/BILLS/incoming/${fname}`});
+      hf[V3.ai]='受付';hf[V3.by]=me();hf[V3.at]=new Date().toISOString();hf[V3.loc]='本社';
+      const created=await gpost(`/sites/${AP_SITE}/lists/${L.inv.id}/items`,{fields:hf});
+      const task={ap_code:code,pdf_file:fname,invoice_id:String(created.id),category:'本社仕入',location:'本社',vendor_code:'',target_ym:month(),inbox:true,registered_by:me(),registered_at:new Date().toISOString(),source_name:f.name};
+      await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
+      jobs.push({apCode:code,invoiceId:String(created.id),category:'本社仕入',location:'本社',targetYm:month(),inbox:true,candidates:candText(),file:d.blob,pdfName:fname});
+    }catch(e){IUPL.errs.push(`${f.name}（${e.message}）`);}
+    IUPL.done++;drawIupl();}
+  IUPL.busy=false;IUPL.result=`<b>${jobs.length}件を受け付けました。</b>AI が読んで、今月の支払先リストから仕入先を当てます（1件20〜30秒）`+(IUPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの：${IUPL.errs.map(esc).join('、')}</div>`:'');
+  jobs.forEach(j=>AIRUN.add(j.invoiceId));await loadInvoices();render();readInboxByAI(jobs);}
+const candText=()=>{const C=Object.values(monthList());return C.length?C.sort((a,b)=>a.code.localeCompare(b.code)).map(v=>`${v.code} ${v.name} ${v.balance}`).join('\n'):'';};
+function readInboxByAI(jobs){if(!window.APAI||!jobs.length)return;
+  jobs.forEach(j=>APAI.readInvoice({call,site:AP_SITE},j)
+    .then(x=>{if(!x.ok)snack(`AI が読めませんでした：${j.pdfName}（${x.message}）`,true);},e=>snack('AI の読み取りエラー：'+e.message,true))
+    .then(()=>{aiChain=aiChain.then(async()=>{await loadInvoices();AIRUN.delete(String(j.invoiceId));render();await matchInbox();});}));}
+// 経費に回す：今月の支払先リストに無い＝経費の請求書。経費として AI に読み直させる（仕訳を作る）→ 経費の確認待ちへ
+async function toExpense(x,loc){if(!confirm(`「${x.payee||x.title}」を${loc}の経費に回します（AI が経費として読み直し、経費の確認待ちに並びます）。よろしいですか？`))return;
+  const path=x.doc.split(/[\r\n;]+/)[0].trim().replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');let blob=null,at='';
+  for(const p of [path,path.replace(/\/incoming\//i,'/processed/'),path.replace(/\/processed\//i,'/incoming/')]){try{blob=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true);at=p;break;}catch(e){}}
+  if(!blob){snack('請求書のファイルを開けません',true);return;}
+  const cat=loc==='工場'?'工場経費':'本社経費',f=toFields(L.inv,{'支払区分':cat});f[V3.loc]=loc;f[V3.ai]='受付';f.ExpenseStep=0;
+  f[V3.com]='仕入の「請求書を渡す」から経費に回しました（今月の支払先リストに無いため）';   // 読み直しの答えが後ろに付く
+  await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,f);
+  const name=at.split('/').pop(),code=(name.match(/^(AP\d{8}[A-Z0-9]{8})_/)||[])[1]||apCode(),type=/\.pdf$/i.test(name)?'application/pdf':/\.png$/i.test(name)?'image/png':'image/jpeg';
+  snack('経費に回しました。AI が経費として読み直しています（経費の画面の確認待ちに並びます）');await loadInvoices();render();
+  APAI.readInvoice({call,site:AP_SITE},{apCode:code,invoiceId:x.id,category:cat,location:loc,targetYm:month(),file:new Blob([blob],{type}),pdfName:name,moved:/\/processed\//i.test(at)})
+    .then(()=>{aiChain=aiChain.then(async()=>{await APIntake.apply({call,site:AP_SITE,ym:month()}).catch(()=>{});});});}
+const IUPL={busy:false,total:0,done:0,cur:'',errs:[],result:''};
+function drawIupl(){const el=$('iupst');if(!el)return;const d=$('ibdrop');if(d)d.classList.toggle('busy',IUPL.busy);let h='';
+  if(IUPL.busy){const pc=IUPL.total?Math.round(IUPL.done/IUPL.total*100):0;h=`<div class="upl"><span class="spin"></span><div style="flex:1;min-width:0"><b>受け付けています… ${Math.min(IUPL.done+1,IUPL.total)} / ${IUPL.total}</b><div class="fn">${esc(IUPL.cur)}</div><div class="progbar"><i style="width:${pc}%"></i></div></div></div>`;}
+  else if(IUPL.result)h=`<div class="upl ${IUPL.errs.length?'ng':'ok'}"><span>${IUPL.errs.length?'⚠':'✓'}</span><div style="flex:1">${IUPL.result}</div><button class="lk" id="iuplX">閉じる</button></div>`;
+  if(!IUPL.busy&&AIRUN.size)h+=`<div class="upl ai"><span class="spin"></span><div style="flex:1"><b>AI が読んでいます：${AIRUN.size}件</b><div class="fn">読み終わったものから仕入先を当てます</div></div></div>`;
+  el.innerHTML=h;const x=$('iuplX');if(x)x.onclick=()=>{IUPL.result='';drawIupl();};}
+function drawInbox(){
+  const C=monthList(),nC=Object.keys(C).length,[y0,m0]=month().split('/').map(Number),close=new Date(y0,m0-1,0),cl=`${close.getMonth()+1}月${close.getDate()}日締め`;
+  const busyX=x=>x.ai==='受付'||AIRUN.has(x.id);
+  const reading=INBX.filter(busyX),fail=INBX.filter(x=>x.ai==='読取失敗'&&!busyX(x)),open=INBX.filter(x=>x.ai==='AI確認済'&&!busyX(x));
+  const done=Object.values(INV).flat().filter(i=>/仕入先：.*に付けました/.test(i.com)).length;
+  const icon='<svg viewBox="0 0 48 48" width="52" height="52" aria-hidden="true"><path d="M13 6h15l9 9v21a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="#fff" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M28 6v9h9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M15 23h12M15 29h8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="36" cy="36" r="9" fill="currentColor"/><path d="M36 31.5l1.3 3.2 3.2 1.3-3.2 1.3-1.3 3.2-1.3-3.2-3.2-1.3 3.2-1.3z" fill="#fff"/></svg>';
+  let h=`<div class="card" style="${nC?'':'border-color:#efd3ad;background:var(--warn-l)'}"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <b>${nC?'✔':'⚠'} 今月の支払先リスト（${y0}年${m0}月払い・${cl}）</b>
+      <span style="font-size:13px">${nC?`取り込み済み ${nC}社${lastImport?'（'+esc(fmtTime(fv(L.imp,lastImport.f,'取り込み日時')))+'）':''}`:'まだ取り込んでいません。先に SMILE から取り込むと、仕入先を正しく当てられます（置いた請求書は預かっておき、取り込んだら付けます）'}</span>
+      <span style="flex:1"></span>${nC?'':'<button class="pri" id="ibGoImp">📥 SMILE から取り込む</button>'}</div></div>
+    <div class="card ho"><div class="ho-grid">
+      <label class="drop ho-drop" id="ibdrop"><input type="file" id="ibfile" accept="${APDoc.ACCEPT}" multiple>
+        <span class="ho-ic">${icon}</span>
+        <span class="ho-t">仕入の請求書を AI に渡す</span>
+        <span class="ho-s">仕入先を選ばずに、まとめてドラッグ（またはクリックして選ぶ）<br>AI が読んで、今月の支払先リストから仕入先を当てます</span>
+        <span class="ho-btn">ファイルを選ぶ</span></label>
+      <div class="ho-side">
+        <div class="ho-row"><span class="ho-k">支払</span><b>${y0}年${m0}月払い</b><span class="ho-m">（${cl}）</span></div>
+        <ol class="ho-flow"><li><b>渡す</b><span>まとめて置く</span></li><li><b>AI が読む</b><span>20〜30秒</span></li><li><b>仕入先に付ける</b><span>口座・登録番号・名前で</span></li></ol>
+        <div id="iupst"></div>
+        <div class="ho-note">1つのファイルに1社の請求書にしてください（何社分もまとめたスキャンは分けられません）。今月のリストに無いものは「経費に回す」へ</div>
+      </div></div></div>
+    <div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}</h2>
+      <table><tr><th>受け付け</th><th>請求書（AI が読んだ支払先）</th><th class="n">金額</th><th>仕入先</th><th></th></tr>
+      ${[...reading,...fail,...open].map(x=>{const m=x.ai==='AI確認済'&&!busyX(x)&&nC?matchOne(x,C):null,cs=m&&m.cands?m.cands:[];
+        const opts=cs.map(c=>`<option value="${c}">${esc(C[c].name)}（${c}）— ${esc(m.why[c].join('・'))}</option>`).join('')+`<option value="" disabled>──── 今月のリストから ────</option>`+Object.values(C).filter(v=>!cs.includes(v.code)).sort((a,b)=>a.name.localeCompare(b.name,'ja')).map(v=>`<option value="${v.code}">${esc(v.name)}（${v.code}）</option>`).join('');
+        return `<tr><td style="font-size:12px">${esc(fmtTime(x.at))}<div style="color:var(--sub)">${esc(x.by)}</div></td>
+          <td style="white-space:normal"><b>${esc(x.payee||x.title)}</b>${x.regNo?`<div style="font-size:11.5px;color:var(--sub)">${esc(x.regNo)}</div>`:''}<div><a href="#" data-ibpdf="${esc(x.id)}" style="font-size:12px">📄 請求書を見る</a></div></td>
+          <td class="n">${busyX(x)?'<span class="spin" title="AI が読んでいます"></span>':yen(x.amount)}</td>
+          <td style="white-space:normal;min-width:260px">${x.ai==='読取失敗'&&!busyX(x)?'<span style="color:var(--up)">AI が読めませんでした。仕入先を選んでください</span><br>':''}${busyX(x)?'<span style="color:var(--sub)">AI が読んでいます…</span>':nC?`<select data-ibsel="${x.id}" style="max-width:340px">${cs.length?'':'<option value="">（候補なし：今月のリストに無い＝経費かも）</option>'}${opts}</select>`:'<span style="color:var(--warn)">支払先リスト待ち</span>'}</td>
+          <td style="white-space:nowrap">${busyX(x)?'':`${nC?`<button class="pri" data-ibset="${x.id}">付ける</button> `:''}<button data-ibexp="${x.id}" title="今月の支払先リストに無い請求書は経費の可能性。経費として読み直して、経費の確認待ちへ">経費に回す</button> <select data-ibloc="${x.id}" style="width:auto"><option>本社</option><option>工場</option></select>`}</td></tr>`;}).join('')||'<tr><td colspan="5" style="color:var(--sub);padding:14px">ありません（置いた請求書は、仕入先が決まると「確認」の仕入先の欄に付きます）</td></tr>'}</table>
+      <div id="ibview"></div></div>`;
+  $('pane').innerHTML=h;
+  const d=$('ibdrop');['dragenter','dragover'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
+  ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
+  d.addEventListener('drop',ev=>registerInbox(ev.dataTransfer.files));$('ibfile').onchange=e=>{registerInbox(e.target.files);e.target.value='';};
+  if($('ibGoImp'))$('ibGoImp').onclick=()=>{st.tab='imp';render();};
+  document.querySelectorAll('[data-ibset]').forEach(b=>b.onclick=async()=>{const x=INBX.find(i=>i.id===b.dataset.ibset),s=document.querySelector(`[data-ibsel="${x.id}"]`);if(!s||!s.value){snack('仕入先を選んでください',true);return;}
+    try{await assignVendor(x,s.value,'人が選んだ');snack('仕入先に付けました');await loadInvoices();render();}catch(e){snack('付けられませんでした：'+e.message,true);}});
+  document.querySelectorAll('[data-ibexp]').forEach(b=>b.onclick=()=>{const x=INBX.find(i=>i.id===b.dataset.ibexp),l=document.querySelector(`[data-ibloc="${x.id}"]`);toExpense(x,l?l.value:'本社');});
+  document.querySelectorAll('[data-ibpdf]').forEach(a=>a.onclick=e=>{e.preventDefault();const x=INBX.find(i=>i.id===a.dataset.ibpdf),v=$('ibview');v.innerHTML='<div class="pdf" id="pdfv" style="margin-top:10px">読み込み中...</div>';
+    showPdf({code:st.sel||'',invoices:[{id:x.id,doc:x.doc}]},x.id);v.scrollIntoView({behavior:'smooth',block:'start'});});
+  drawIupl();}
 // ---------- 取り込みの保存 ----------
 function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
 async function saveImport(){

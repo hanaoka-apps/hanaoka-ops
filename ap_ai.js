@@ -135,6 +135,8 @@
       `- 区分：${job.category || ''}`, `- 拠点：${job.location || ''}`, `- 払う月：${job.targetYm || '（未定）'}`, `- 支払回：${job.round || '（受付では未定）'}`,
       `- 支払方法：${job.method || '（受付では未定）'}`, `- 仕入先コード：${job.vendorCode || 'なし'}${job.vendorName ? '（' + job.vendorName + '）' : ''}`,
       `- SMILE の額：${job.smileAmount != null && job.smileAmount !== '' ? yen(job.smileAmount) + ' 円' : 'なし'}`,
+      // 仕入の「請求書を渡す」：仕入先は決まっていない。今月の支払先リストから発行元を選ばせる（PayeeCode）。付けるのは画面の決まった手順
+      ...(job.candidates ? ['', '## 今月の支払先リスト（仕入先コード 名前 今回支払残高）', job.candidates] : []),
       '', 'この請求書を読んで、決められた形で答えてください。'].join('\n');
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema: cfg.schema } },
@@ -149,6 +151,8 @@
     else { try { d = JSON.parse(r.text); } catch (e) { err = 'AI の答えを読めませんでした'; } }
     const loc = job.location === '工場' ? '工場' : '本社';
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
+    const pc = d && d.header && /^\d{6}$/.test(String(d.header.PayeeCode || '')) ? String(d.header.PayeeCode) : '';
+    if (job.inbox && pc) rec.comments.unshift(`AI の候補：${pc}`);
     const doc = { v: 3, ap_code: job.apCode, invoice_id: String(job.invoiceId || ''), category: job.category || '', status: d ? (d.status === '読取失敗' ? '読取失敗' : 'AI確認済') : '読取失敗',
       pdf_files: [job.pdfName], moved: !!job.moved, new: false, location: loc, received_at: '',
       header: rec.header, lines: rec.lines, comments: rec.comments, validation: rec.validation,
