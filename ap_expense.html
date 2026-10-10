@@ -11,6 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ap_intake.js"></script>
+<script src="ap_ai.js"></script>
 <script src="nav.js" defer></script>
 <style>
 /* 見た目は支払決済アプリ（settle-proto）・仕入（SMILE）にそろえる */
@@ -419,7 +420,7 @@ function drawInbox(){
       <table><tr><th>受け付け</th><th>支払先</th><th class="n">金額</th><th>支払</th><th>気づき</th></tr>
       ${list.sort((x,y)=>String(y.at).localeCompare(String(x.at))).map(r=>`<tr class="row" data-open="${r.id}"><td>${esc(fmtTime(r.at))}<div style="font-size:11.5px;color:var(--sub)">${esc(r.by)}・${esc(r.loc)}</div></td>
         <td style="white-space:normal"><b>${esc(r.payee||r.title||'（読み取り前）')}</b>${r.wf?`<div style="font-size:11.5px;color:var(--sub)">ワークフロー ${esc(r.wf)}（社長決裁済み）</div>`:''}</td>
-        <td class="n">${r.reading?'—':yen(r.amount)}</td><td>${esc(r.ym||'')} ${esc(r.round||'')}<div style="font-size:11.5px;color:var(--sub)">${esc(r.method||'')}</div></td>
+        <td class="n">${r.reading?(AIRUN.has(r.id)?'<span class="spin" title="AI が読んでいます"></span>':'—'):yen(r.amount)}${canReread(r)?`<div><button class="lk" data-reread="${r.id}" style="font-size:12px">🤖 AI でもう一度読む</button></div>`:''}</td><td>${esc(r.ym||'')} ${esc(r.round||'')}<div style="font-size:11.5px;color:var(--sub)">${esc(r.method||'')}</div></td>
         <td style="white-space:normal">${tagsOf(r).filter(t=>!/^WF |AI 読み取り中/.test(t[0])).map(t=>`<span class="tag ${t[1]}">${esc(t[0])}</span>`).join('')}</td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--sub);padding:14px">ありません</td></tr>'}</table></div>`;
   const d=$('drop');['dragenter','dragover'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
   ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
@@ -752,7 +753,7 @@ function apCode(){const d=new Date(),p=n=>String(n).padStart(2,'0'),s='ABCDEFGHI
 async function registerExpense(files){
   const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
   if(UPL.busy){snack('いま受け付けています。終わってから置いてください',true);return;}
-  const loc=$('rc-loc')?$('rc-loc').value:myLoc(),cat=loc==='工場'?'工場経費':'本社経費';let ok=0;
+  const loc=$('rc-loc')?$('rc-loc').value:myLoc(),cat=loc==='工場'?'工場経費':'本社経費';let ok=0;const jobs=[];
   Object.assign(UPL,{busy:true,total:list.length,done:0,cur:'',ok:0,errs:[],result:''});drawUpl();
   for(const f of list){const code=apCode();UPL.cur=f.name;drawUpl();
     try{msg('受付中... '+f.name);
@@ -767,10 +768,29 @@ async function registerExpense(files){
         checks:['支払先・金額・消費税・請求No・登録番号・期日','振込先口座','科目・部門・税率の仕訳の案（過去の仕訳を参考に）','仕入の請求書ではないか','二重請求・前月比'],
         registered_by:me(),registered_at:new Date().toISOString(),source_name:f.name};
       await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
+      jobs.push({apCode:code,invoiceId:String(created.id),category:cat,location:loc,targetYm:month(),file:d.blob,pdfName:fname});
       ok++;}catch(e){UPL.errs.push(`${f.name}（${e.message}）`);}
     UPL.done++;drawUpl();}
-  UPL.busy=false;UPL.result=`<b>${ok}件を受け付けました。</b>AI の読み取り待ちです（「AI 読み取り中」に並びます）`+(UPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの ${UPL.errs.length}件：${UPL.errs.map(esc).join('、')}</div>`:'');
-  await loadAll();msg('');st.box='reading';render();}
+  UPL.busy=false;UPL.result=`<b>${ok}件を受け付けました。</b>AI が読んでいます（1件20〜30秒。終わると「確認待ち」に並びます）`+(UPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの ${UPL.errs.length}件：${UPL.errs.map(esc).join('、')}</div>`:'');
+  await loadAll();msg('');st.box='reading';render();
+  readByAI(jobs);}
+// ---------- AI（Claude API）ですぐ読む（ap_ai.js）。読み終わったものから取り込む（APIntake）。画面を閉じても、次に開いたときに読み直せる ----------
+let aiChain=Promise.resolve();const AIRUN=new Set();   // AIRUN：いま読んでいる請求書（一覧の印・二重に頼まない）
+const canReread=r=>!!window.APAI&&!AIRUN.has(r.id)&&(r.failed||(r.reading&&Date.now()-Date.parse(r.at||0)>3*60*1000));
+function readByAI(jobs){if(!window.APAI||!jobs.length)return;jobs.forEach(j=>AIRUN.add(String(j.invoiceId)));
+  jobs.forEach(j=>APAI.readInvoice({call,site:AP_SITE},j)
+    .then(r=>{if(!r.ok)snack(`AI が読めませんでした：${j.pdfName}（${r.message}）。「読み取り失敗」から手で入れてください`,true);},e=>snack('AI の読み取りエラー：'+e.message,true))
+    .then(()=>{aiChain=aiChain.then(async()=>{await takeAI();AIRUN.delete(String(j.invoiceId));await loadAll();render();});}));}
+// 「AI 読み取り中」のまま止まっているもの（画面を閉じた・失敗した）を、もう一度 AI に読ませる。PDF は incoming（読む前）か processed から読む
+async function rereadByAI(r){if(!window.APAI){snack('AI の読み取りの部品（ap_ai.js）が読めません',true);return;}
+  const path=pdfPaths(r)[0];if(!path){snack('請求書の PDF がありません',true);return;}
+  const p0=path.replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');let blob=null,at='';
+  for(const p of [p0,p0.replace(/\/processed\//i,'/incoming/'),p0.replace(/\/incoming\//i,'/processed/')]){try{blob=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true);at=p;break;}catch(e){}}
+  if(!blob){snack('請求書の PDF を開けません',true);return;}
+  const name=path.split('/').pop(),code=(name.match(/^(AP\d{8}[A-Z0-9]{8})_/)||[])[1]||apCode(),type=/\.pdf$/i.test(name)?'application/pdf':/\.png$/i.test(name)?'image/png':'image/jpeg';
+  if(r.failed)await patchInv(r,{[V.ai]:'受付'},{act:'AI に読み直しを頼んだ',step:r.step}).catch(()=>{});
+  snack('AI に読み直しを頼みました（20〜30秒）');
+  readByAI([{apCode:code,invoiceId:r.id,category:r.cat||(r.loc==='工場'?'工場経費':'本社経費'),location:r.loc,targetYm:r.ym||month(),round:r.round,method:r.method,file:new Blob([blob],{type}),pdfName:name,moved:/\/processed\//i.test(at)}]);}
 
 // ---------- 下：進み具合 ----------
 function drawApprove(){
@@ -787,6 +807,7 @@ document.addEventListener('click',e=>{
   const lc=e.target.closest('[data-loc]');if(lc){st.loc=lc.dataset.loc;render();return;}
   const rd=e.target.closest('[data-round]');if(rd){st.round=rd.dataset.round;render();return;}
   const sp=e.target.closest('[data-step]');if(sp){st.step=sp.dataset.step;draft=null;hdrDraft=null;drawReview();return;}
+  const rr=e.target.closest('[data-reread]');if(rr){const r=items.find(x=>x.id===rr.dataset.reread);if(r)rereadByAI(r);return;}
   const op=e.target.closest('[data-open]');if(op){const r=items.find(x=>x.id===op.dataset.open);if(!r)return;if(r.ym&&r.ym!==month()){setMonth(r.ym);loadAll().then(()=>{openInReview(r.id);});return;}openInReview(r.id);return;}
   const s=e.target.closest('[data-sel]');if(s&&st.tab==='rev'){openOne(s.dataset.sel);}
   if(!e.target.closest('.docs')){const m=$('oDocsM');if(m)m.hidden=true;}});

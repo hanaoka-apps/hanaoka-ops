@@ -12,6 +12,7 @@
 <script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <script src="ap_intake.js"></script>
+<script src="ap_ai.js"></script>
 <script src="ap_smile.js"></script>
 <script src="nav.js" defer></script>
 <style>
@@ -561,7 +562,7 @@ async function addAdjust(r){const a=Math.round(+$('adjA').value||0),why=$('adjR'
 function apCode(){const d=new Date(),p=n=>String(n).padStart(2,'0'),s='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';let x='';for(let i=0;i<8;i++)x+=s[Math.floor(Math.random()*s.length)];return `AP${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${x}`;}
 async function registerInvoices(r,files){
   const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
-  const cat=r.mainDept==='工場'?'工場仕入':'本社仕入',loc=r.mainDept==='工場'?'工場':'本社';let ok=0;
+  const cat=r.mainDept==='工場'?'工場仕入':'本社仕入',loc=r.mainDept==='工場'?'工場':'本社';let ok=0;const jobs=[];
   for(const f of list){const code=apCode();
     try{msg('受付中... '+f.name);
       const d=await APDoc.prep(f);   // 画像は大きければ縮めて JPEG に
@@ -574,8 +575,16 @@ async function registerInvoices(r,files){
       const task={ap_code:code,pdf_file:fname,invoice_id:String(created.id),category:cat,location:loc,vendor_code:r.code,vendor_name:r.name,target_ym:month(),
         smile_amount:r.amount,smile_incl:r.smile.incl,checks:['請求額とSMILEの額の差','振込先口座とAP_VendorBankの違い','二重請求'],registered_by:me(),registered_at:new Date().toISOString(),source_name:f.name};
       await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
+      jobs.push({apCode:code,invoiceId:String(created.id),category:cat,location:loc,targetYm:month(),vendorCode:r.code,vendorName:r.name,smileAmount:r.amount,file:d.blob,pdfName:fname});
       ok++;}catch(e){snack('受付エラー: '+e.message,true);}}
-  await loadInvoices();msg('');snack(`✓ ${ok}件を受け付けました（AI 読み取り待ち）`);render();}
+  await loadInvoices();msg('');snack(`✓ ${ok}件を受け付けました（AI が読んでいます。1件20〜30秒）`);render();
+  readByAI(jobs);}
+// AI（Claude API）ですぐ読む（ap_ai.js）。読み終わったものから取り込む（loadInvoices が APIntake で取り込む）
+let aiChain=Promise.resolve();
+function readByAI(jobs){if(!window.APAI||!jobs.length)return;
+  jobs.forEach(j=>APAI.readInvoice({call,site:AP_SITE},j)
+    .then(x=>{if(!x.ok)snack(`AI が読めませんでした：${j.pdfName}（${x.message}）`,true);},e=>snack('AI の読み取りエラー：'+e.message,true))
+    .then(()=>{aiChain=aiChain.then(async()=>{await loadInvoices();render();});}));}
 
 // ---------- 取り込みの保存 ----------
 function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
