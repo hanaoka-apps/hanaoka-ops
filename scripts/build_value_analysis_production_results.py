@@ -150,8 +150,10 @@ def build(
     # 日別の作業時間（全工程・社内作業区）。付加価値アプリの工数と同じ式：
     #   基準内＝作業時間×人数、基準外＝基準外工数/分×基準外人数/人（別に集計し、引き算しない）
     labor: dict[tuple[str, str, str, str], list] = defaultdict(lambda: [Decimal(0), Decimal(0), 0])
-    # 品目手順ごとの日別（全社内工程）：報告数量と作業時間。主要製品以外に何を作ったかの一覧用
-    steps: dict[tuple[str, str, str, str, str], list] = defaultdict(lambda: [Decimal(0), Decimal(0), Decimal(0), "", False])
+    # 品目手順ごとの月別（全社内工程）：製造実績の一覧用。
+    #   [報告数量, 基準内分, 基準外分, 工程名, 完成印, 報告件数, 人数の合計, 人数が入った件数, 1人作業の件数, 作業時間が入った件数]
+    steps: dict[tuple[str, str, str, str, str], list] = defaultdict(
+        lambda: [Decimal(0), Decimal(0), Decimal(0), "", False, 0, Decimal(0), 0, 0, 0])
     used_items: set[str] = set()
     observed_months: set[str] = set()
     diagnostics: dict[str, int] = defaultdict(int)
@@ -181,12 +183,20 @@ def build(
             reported = quantity(row.get("報告数量"))
             if reported is not None and inside == 0 and outside == 0:
                 entry[2] += 1  # 完成数はあるのに作業時間が入っていない報告
-            step_entry = steps[(day.isoformat(), labor_item, norm(row.get("手順№")), labor_factory, labor_area)]
+            step_entry = steps[(month, labor_item, norm(row.get("手順№")), labor_factory, labor_area)]
             step_entry[0] += reported or Decimal(0)
             step_entry[1] += inside
             step_entry[2] += outside
             if not step_entry[3]:
                 step_entry[3] = norm(row.get("工程名")) or norm(row.get("工程略称"))
+            step_entry[5] += 1
+            if people is not None and people > 0:
+                step_entry[6] += people
+                step_entry[7] += 1
+                if people <= 1:
+                    step_entry[8] += 1
+            if inside or outside:
+                step_entry[9] += 1
         if ym not in selected_by_month:
             selected, ambiguous = choose_internal_routes(route_rows, month_end(ym))
             selected_by_month[ym] = selected
@@ -221,8 +231,8 @@ def build(
             continue
         if norm(route.get("手配先名")) != work_area:
             diagnostics["route_work_area_differs"] += 1
-        if (day.isoformat(), item, step, factory, work_area) in steps:
-            steps[(day.isoformat(), item, step, factory, work_area)][4] = True  # 完成（最終の社内工程）として数えた
+        if (month, item, step, factory, work_area) in steps:
+            steps[(month, item, step, factory, work_area)][4] = True  # 完成（最終の社内工程）として数えた
         totals[(month, item, factory, work_area)] += qty
         daily[(day.isoformat(), item, factory, work_area)] += qty
         used_items.add(item)
@@ -231,15 +241,16 @@ def build(
     # 日別（当日・月内累計・日別グラフ用）。サイズを抑えるため、実績がある直近2か月だけ持つ。
     daily_months = sorted(observed_months)[-2:]
     step_rows = []
-    for (day_key, item, step, factory, work_area), values in sorted(steps.items()):
-        if day_key[:7] not in daily_months or not (values[0] or values[1] or values[2]):
+    for (step_month, item, step, factory, work_area), values in sorted(steps.items()):
+        if not (values[0] or values[1] or values[2]):
             continue
         name = values[3]
         if not name:
-            route = selected_by_month.get(day_key[:4] + day_key[5:7], {}).get((item, step))
+            route = selected_by_month.get(step_month[:4] + step_month[5:7], {}).get((item, step))
             name = norm(route.get("工程名")) if route else ""
-        out = {"d": day_key, "item": item, "s": step, "p": name, "factory": factory, "ws": work_area,
-               "q": json_number(values[0]), "in": json_number(values[1]), "ex": json_number(values[2])}
+        out = {"m": step_month, "item": item, "s": step, "p": name, "factory": factory, "ws": work_area,
+               "q": json_number(values[0]), "in": json_number(values[1]), "ex": json_number(values[2]),
+               "n": values[5], "pp": json_number(values[6]), "pn": values[7], "p1": values[8], "tn": values[9]}
         if values[4]:
             out["fin"] = 1
         step_rows.append(out)
@@ -270,7 +281,7 @@ def build(
             for (day_key, item, factory, work_area), values in sorted(labor.items())
             if day_key[:7] in daily_months and (values[0] or values[1] or values[2])
         ],
-        "daily_steps": step_rows,
+        "month_steps": step_rows,
         "diagnostics": dict(sorted(diagnostics.items())),
     }
 

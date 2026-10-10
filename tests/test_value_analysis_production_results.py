@@ -133,19 +133,23 @@ class ProductionResultsTests(unittest.TestCase):
             {"d": "2026-09-10", "item": "SAMPLE-A", "factory": "第一工場", "ws": "第一工場 組立", "in": 24, "ex": 5, "z": 1},
         ])
 
-    def test_daily_steps_list_every_internal_step_and_mark_completion(self):
+    def test_month_steps_list_every_internal_step_with_people_and_completion(self):
         routes = [route(1), route(2)]
         actuals = [
             actual(1, 3, **{"作業時間": "10", "人数": "2"}),
+            actual(1, 2, day="20260911", **{"作業時間": "5", "人数": "1"}),
             actual(2, 3, **{"作業時間": "4", "人数": "1", "基準外工数/分": "6", "基準外人数/人": "1"}),
-            actual(1, 5, code="SAMPLE-B", **{"作業時間": "2", "人数": "1"}),
+            actual(1, 5, code="SAMPLE-B", **{"作業時間": "0", "人数": "1"}),
             actual(1, 1, work_area="外注先", **{"作業時間": "9", "人数": "1"}),
         ]
         result = production.build(actuals, routes, [item(), item("SAMPLE-B")], today=date(2026, 10, 8))
-        self.assertEqual(result["daily_steps"], [
-            {"d": "2026-09-10", "item": "SAMPLE-A", "s": "1", "p": "架空工程1", "factory": "第一工場", "ws": "第一工場 組立", "q": 3, "in": 20, "ex": 0},
-            {"d": "2026-09-10", "item": "SAMPLE-A", "s": "2", "p": "架空工程2", "factory": "第一工場", "ws": "第一工場 組立", "q": 3, "in": 4, "ex": 6, "fin": 1},
-            {"d": "2026-09-10", "item": "SAMPLE-B", "s": "1", "p": "", "factory": "第一工場", "ws": "第一工場 組立", "q": 5, "in": 2, "ex": 0},
+        self.assertEqual(result["month_steps"], [
+            {"m": "2026-09", "item": "SAMPLE-A", "s": "1", "p": "架空工程1", "factory": "第一工場", "ws": "第一工場 組立",
+             "q": 5, "in": 25, "ex": 0, "n": 2, "pp": 3, "pn": 2, "p1": 1, "tn": 2},
+            {"m": "2026-09", "item": "SAMPLE-A", "s": "2", "p": "架空工程2", "factory": "第一工場", "ws": "第一工場 組立",
+             "q": 3, "in": 4, "ex": 6, "n": 1, "pp": 1, "pn": 1, "p1": 1, "tn": 1, "fin": 1},
+            {"m": "2026-09", "item": "SAMPLE-B", "s": "1", "p": "", "factory": "第一工場", "ws": "第一工場 組立",
+             "q": 5, "in": 0, "ex": 0, "n": 1, "pp": 1, "pn": 1, "p1": 1, "tn": 0},
         ])
         self.assertIn("SAMPLE-B", result["items"])
 
