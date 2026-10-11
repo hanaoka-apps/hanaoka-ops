@@ -152,6 +152,13 @@ class ProductionResultsTests(unittest.TestCase):
              "q": 5, "in": 0, "ex": 0, "n": 1, "pp": 1, "pn": 1, "p1": 1, "tn": 0},
         ])
         self.assertIn("SAMPLE-B", result["items"])
+        self.assertEqual(result["step_days"][:2], [
+            {"d": "2026-09-10", "item": "SAMPLE-A", "s": "1", "factory": "第一工場", "ws": "第一工場 組立",
+             "q": 3, "in": 20, "ex": 0, "n": 1, "pp": 2, "pn": 1, "p1": 0},
+            {"d": "2026-09-10", "item": "SAMPLE-A", "s": "2", "factory": "第一工場", "ws": "第一工場 組立",
+             "q": 3, "in": 4, "ex": 6, "n": 1, "pp": 1, "pn": 1, "p1": 1, "fin": 1},
+        ])
+        self.assertEqual([r["d"] for r in result["step_days"]], ["2026-09-10", "2026-09-10", "2026-09-10", "2026-09-11"])
 
     def test_required_columns_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "報告数量"):
