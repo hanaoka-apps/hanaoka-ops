@@ -558,7 +558,7 @@ const DevApi = {
     const sample = (p, k) => p.type === 'array' ? (p.items.type === 'object' ? [sample(p.items, k), sample(p.items, k)] : (p.items.enum ? [p.items.enum[0]] : ['見本']))
       : p.type === 'object' ? Object.fromEntries(Object.entries(p.properties).map(([kk, pp]) => [kk, sample(pp, kk)]))
       : p.enum ? p.enum[0] : (Array.isArray(p.type) ? p.type[0] : p.type) === 'number' ? 12000
-      : /YYYY-MM-DD/.test(p.description || '') ? d : /登録番号/.test(p.description || '') ? 'T1234567890123' : `（見本）${(p.description || k).split('／')[0]}`;
+      : /数字だけ/.test(p.description || '') ? '12000' : /YYYY-MM-DD/.test(p.description || '') ? d : /登録番号/.test(p.description || '') ? 'T1234567890123' : `（見本）${(p.description || k).split('／')[0]}`;
     const fields = sample(sch.properties.fields);
     if (sch.properties.reply) {   // 相談：受け答えのたびに少しずつ埋まり、3回目でそろう
       const n = body.messages.filter(m => m.role === 'user').length, ks = Object.keys(fields), upto = Math.ceil(ks.length * n / 3);
@@ -1820,7 +1820,7 @@ async function consultTurn(text, file) {
     const schema = { type: 'object', additionalProperties: false, required: ['reply', 'fields', 'missing', 'ready', 'noApply'], properties: {
       reply: { type: 'string', description: '社員への返事（短く。聞くことは2〜3個まで）' }, fields: sch.properties.fields,
       missing: { type: 'array', items: { type: 'string' }, description: 'まだ足りない項目の名前（必須・必要な書類）' },
-      ready: { type: 'boolean', description: '必須がそろい、書類も確かめた' }, noApply: { type: ['string', 'null'], description: '申請が要らない場合に当たるとき、その理由（一覧の when）' } } };
+      ready: { type: 'boolean', description: '必須がそろい、書類も確かめた' }, noApply: { type: 'string', description: '申請が要らない場合に当たるとき、その理由（一覧の when）。当たらなければ空の文字' } } };
     const d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const ctx = [`## したいこと：${C.it.label}`, C.it.ask ? `聞くこと・確かめること：${C.it.ask}` : '',
       (C.it.noApply || []).length ? `## 申請が要らない場合\n${C.it.noApply.map(n => `- ${n.when} → ${n.msg}`).join('\n')}` : '',
@@ -2021,23 +2021,24 @@ function proxyBadge(r) { return r.ProxyUPN ? `<span class="badge b-warn" title="
    指示文は WF_Setting の ai.read、モデルは ai.models（read）。フォームごとに止めるときは "AiRead": false。AI は申請しない（本人が確かめて申請） */
 const PASTE_SKIP = ['file', 'note', 'calc', 'user', 'tabs', 'section'];
 function pasteTargets(f) { return f.fields.filter(fd => fd.label && !PASTE_SKIP.includes(fd.type) && !fd.readonly); }
+/* 答えの形の1項目。★null を許す型（["string","null"] や anyOf の null）は使わない：数が多いと API が断る（2026-10-11 確認。30項目で断られ、文字だけなら通る）。
+   分からない項目は空の文字 ""、金額・数量も文字（数字だけ）で答えてもらい、入れるときに applyPaste が数字に直す */
 function aiProp(fd) {
   const o = ['select', 'radio', 'checkbox'].includes(fd.type) ? opts(fd) : [];
   let p, d = [fd.label, fd.help, fd.placeholder].filter(Boolean).join('／');
   if (fd.type === 'table') {
     const cols = fd.columns.filter(c => c.label && !PASTE_SKIP.includes(c.type));
     p = { type: 'array', items: { type: 'object', additionalProperties: false, required: cols.map(c => c.key), properties: Object.fromEntries(cols.map(c => [c.key, aiProp(c)])) } };
-    d += '（書類の明細1行ごとに1つ）';
-  } else if (fd.type === 'checkbox') p = { type: 'array', items: o.length ? { type: 'string', enum: o } : { type: 'string' } };
-  else if (o.length) p = { type: ['string', 'null'], enum: [...o, null] };
-  else if (['number', 'currency'].includes(fd.type)) p = { type: ['number', 'null'] };
-  else p = { type: ['string', 'null'] };
+    d += '（書類の明細1行ごとに1つ。無ければ空の配列）';
+  } else if (fd.type === 'checkbox') { p = { type: 'array', items: { type: 'string' } }; if (o.length) d += '（次の中から当てはまるものだけ：' + o.join('／') + '）'; }
+  else if (o.length) p = { type: 'string', enum: [...o, ''] };
+  else p = { type: 'string' };
   if (fd.type === 'date') d += '（YYYY-MM-DD）';
-  if (fd.type === 'currency') d += '（円・数字だけ）';
+  if (['number', 'currency'].includes(fd.type)) d += '（数字だけ。円・カンマは付けない）';
   if (fd.patternMsg) d += `（書き方：${fd.patternMsg}）`;
+  if (fd.type !== 'table' && fd.type !== 'checkbox') d += '（分からなければ空の文字）';
   p.description = d; return p;
-}
-function aiSchema(f) {
+}function aiSchema(f) {
   const t = pasteTargets(f);
   return { type: 'object', additionalProperties: false, required: ['fields', 'comments'], properties: {
     fields: { type: 'object', additionalProperties: false, required: t.map(fd => fd.key), properties: Object.fromEntries(t.map(fd => [fd.key, aiProp(fd)])) },
