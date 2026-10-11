@@ -463,6 +463,13 @@ const GraphApi = {
     if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
     await graph(`/sites/${siteId}/lists/WF_Org/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) });
   },
+  /* AI の使用量（WF管理者）：AI_Request の行（用途・状態・モデル・トークン数・頼んだ人）。見られるのは SharePoint の権限どおり */
+  async aiUsage(since) {
+    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    const rows = await graphAll(`/sites/${siteId}/lists/AI_Request/items?expand=fields(select=Title,Status,Model,InTokens,OutTokens,Caller,Created)&$filter=${encodeURIComponent(`fields/Created ge '${since}'`)}&$top=999`);
+    return rows.map(i => ({ use: i.fields.Title || '', status: i.fields.Status || '', model: i.fields.Model || '', inT: Number(i.fields.InTokens) || 0, outT: Number(i.fields.OutTokens) || 0,
+      caller: i.fields.Caller || '', at: i.fields.Created || i.createdDateTime, by: (i.createdBy && i.createdBy.user && i.createdBy.user.displayName) || '' }));
+  },
   /* AI に頼む（11_Claude読み取りの仕組み.md）：AI_Request に行（自分の行だけ見られる）→ PA「AI_Claude中継」を呼ぶ → 行が完了になるまで待つ。
      依頼の本文（書類の中身）は呼び出しで渡すだけで SharePoint に残さない。URL は WF_Setting の flow.urlAI（公開 HTML には書かない） */
   async aiAsk(use, caller, body) {
@@ -531,6 +538,18 @@ const DevApi = {
     return out.concat([{ upn: 'shared-pc@example.test', name: '共有PC（組織マスタにいない）', enabled: true, dept: '', mgr: '' }]);
   },
   async updateOrg(id, fields) { const p = window.DEV_DATA.org.find(o => Number(o.id) === Number(id) || o.UPN === id); if (p) Object.assign(p, fields); },
+  // 開発：AI の使用量の見本（ここ2か月ほどの架空の行）
+  async aiUsage(since) {
+    const uses = [['wf.consult', 'claude-haiku-5-5', 3500, 400], ['wf.read', 'claude-sonnet-5-5', 9000, 900], ['ap.invoice', 'claude-sonnet-5-5', 14000, 2500]];
+    const people = window.DEV_DATA.org.filter(p => p.Active !== false).slice(0, 8).map(p => p.Title), out = [], t0 = Date.parse(since);
+    for (let d = 0; d < 60; d++) for (let k = 0; k < (d % 3) + 2; k++) {
+      const u = uses[(d + k) % 3], at = new Date(Date.now() - d * 86400000 - k * 3600000);
+      if (at < t0) continue;
+      out.push({ use: u[0], status: (d + k) % 17 === 0 ? 'エラー' : '完了', model: u[1], inT: Math.round(u[2] * (0.6 + ((d * 7 + k) % 9) / 10)), outT: Math.round(u[3] * (0.6 + ((d + k * 3) % 7) / 10)),
+        caller: u[0] === 'ap.invoice' ? 'ap_expense:AP' : 'wf_app:RINGI', at: at.toISOString(), by: people[(d + k) % people.length] });
+    }
+    return out;
+  },
   // 開発：AI の代わりに、答えの形（JSON Schema）から見本の答えを作る（本物の書類は読まない）
   async aiAsk(use, caller, body) {
     await new Promise(ok => setTimeout(ok, 1500));
@@ -769,6 +788,7 @@ const TABS = [
   { key: 'all',      label: 'すべての申請', show: () => st.allReqs != null },
   { key: 'payroll',  label: '給与精算の集計', show: () => st.allReqs != null && !!settleRule() },
   { key: 'orgsync',  label: '組織マスタの同期', show: () => hasRole('組織マスタの同期') },   // 出す人は役割「組織マスタの同期」（WF_Role）
+  { key: 'aiusage',  label: 'AI の使用量', show: () => isWfAdmin() },   // 出す人は役割「組織マスタの同期」（WF_Role）
 ];
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 const isPostTodo = t => t.StepType === '後処理' && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
@@ -785,6 +805,7 @@ const NAV_ICONS = {
   involved: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   all: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
+  aiusage: '<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>',
   orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
 };
 function render() {
@@ -803,6 +824,7 @@ function render() {
   if (st.view === 'new') return st.editor ? renderEditor(main) : st.consult ? renderConsult(main) : renderCatalog(main);
   if (st.view === 'payroll') return renderPayroll(main);
   if (st.view === 'orgsync') return renderOrgSync(main);
+  if (st.view === 'aiusage') return renderAiUsage(main);
   renderListView(main);
 }
 
@@ -873,7 +895,47 @@ function renderOrgSync(main) {
     st.M = null; await load(true); await loadOrgSync();
   };
 }
-/* ---------- 組織図（承認ライン）：組織マスタの直属上長（＝M365 の上司）を木にする。
+/* ---------- AI の使用量（WF管理者）：AI_Request の行を月ごとに集計。金額は目安（設定 ai.prices の 100万トークンあたりの料金 × 為替）
+   1回の入力が10万トークンを超えた Haiku や、断られたときの別モデル（fallback）の差は入れていない。正確な額は Anthropic の管理画面で */
+const aiUse = { month: '', rows: null, busy: false, err: '' };
+const USE_LABEL = { 'ap.invoice': '支払の請求書（支払アプリ）', 'wf.read': '書類から入力する', 'wf.consult': '申請の相談', 'test': '試し' };
+async function loadAiUsage() {
+  aiUse.busy = true; aiUse.err = ''; render();
+  try { const d = new Date(); d.setMonth(d.getMonth() - 2, 1); d.setHours(0, 0, 0, 0); aiUse.rows = await api.aiUsage(d.toISOString()); }
+  catch (e) { aiUse.err = 'AI の使用量を読めませんでした：' + e.message; }
+  aiUse.busy = false; render();
+}
+function renderAiUsage(main) {
+  if (!aiUse.rows && !aiUse.busy && !aiUse.err) { loadAiUsage(); return; }
+  const P = pj(st.M.settings['ai.prices'], {}), rate = Number(P.usdJpy) || 150;
+  const cost = r => { const p = (P.models || {})[r.model] || {}; return (r.inT * (p.in || 0) + r.outT * (p.out || 0)) / 1e6 * rate; };
+  const ym = s => String(s || '').slice(0, 7);
+  const months = [...new Set((aiUse.rows || []).map(r => ym(r.at)))].sort().reverse();
+  const cur = aiUse.month && months.includes(aiUse.month) ? aiUse.month : (months[0] || new Date().toISOString().slice(0, 7));
+  const rows = (aiUse.rows || []).filter(r => ym(r.at) === cur);
+  const sum = a => ({ n: a.length, err: a.filter(r => r.status === 'エラー').length, inT: a.reduce((s, r) => s + r.inT, 0), outT: a.reduce((s, r) => s + r.outT, 0), yen: a.reduce((s, r) => s + cost(r), 0) });
+  const T = sum(rows), fmtN = n => Number(n).toLocaleString('ja-JP'), fmtY = n => '約 ' + Math.round(n).toLocaleString('ja-JP') + '円';
+  const group = key => { const g = {}; rows.forEach(r => { const k = key(r) || '（不明）'; (g[k] = g[k] || []).push(r); });
+    return Object.entries(g).map(([k, a]) => [k, sum(a)]).sort((x, y) => y[1].yen - x[1].yen); };
+  const table = (title, list, label) => `<div class="card"><h3>${esc(title)}</h3><div style="overflow-x:auto"><table class="tbl au"><tr><th></th><th>回数</th><th>エラー</th><th>入力トークン</th><th>出力トークン</th><th>金額の目安</th><th style="width:30%"></th></tr>
+    ${list.map(([k, v]) => `<tr><td>${esc(label ? label(k) : k)}</td><td class="n">${fmtN(v.n)}</td><td class="n">${v.err ? `<span style="color:var(--ng)">${v.err}</span>` : '0'}</td><td class="n">${fmtN(v.inT)}</td><td class="n">${fmtN(v.outT)}</td><td class="n"><b>${fmtY(v.yen)}</b></td>
+      <td><div class="bar"><i style="width:${T.yen ? Math.max(2, v.yen / T.yen * 100) : 0}%"></i></div></td></tr>`).join('') || '<tr><td colspan="7" class="muted">この月はまだありません</td></tr>'}</table></div></div>`;
+  const days = group(r => String(r.at).slice(0, 10)).sort((a, b) => a[0].localeCompare(b[0]));
+  const maxDay = Math.max(1, ...days.map(([, v]) => v.yen));
+  main.innerHTML = `<div class="detail" style="flex:1">
+    <div class="card"><h3 class="h3f"><span>AI の使用量</span>
+      <select id="auMonth" style="width:auto">${(months.length ? months : [cur]).map(m => `<option ${m === cur ? 'selected' : ''}>${m}</option>`).join('')}</select><button class="mini" id="auReload">読み直す</button></h3>
+      ${aiUse.busy ? '<div class="muted">読み込み中…</div>' : aiUse.err ? `<div class="errbox">${esc(aiUse.err)}</div>` : ''}
+      <div class="au-kpi"><div><span>回数</span><b>${fmtN(T.n)}</b></div><div><span>エラー</span><b>${fmtN(T.err)}</b></div><div><span>入力トークン</span><b>${fmtN(T.inT)}</b></div><div><span>出力トークン</span><b>${fmtN(T.outT)}</b></div>
+        <div class="main"><span>金額の目安（${cur}）</span><b>${fmtY(T.yen)}</b></div></div>
+      <div class="muted" style="margin-top:8px">料金は設定 ai.prices（100万トークンあたり：${Object.entries(P.models || {}).map(([m, p]) => `${m} 入力 $${p.in}・出力 $${p.out}`).join('／')}）、1ドル ${rate}円で計算した目安です。正確な請求は Anthropic の管理画面で確かめてください。</div></div>
+    <div class="card"><h3>日ごと</h3><div class="au-days">${days.map(([d, v]) => `<div title="${esc(d)}：${fmtN(v.n)}回・${fmtY(v.yen)}"><i style="height:${Math.max(2, v.yen / maxDay * 100)}%"></i><span>${Number(d.slice(8))}</span></div>`).join('') || '<div class="muted">この月はまだありません</div>'}</div></div>
+    ${table('使い道ごと', group(r => r.use), k => USE_LABEL[k] || k)}
+    ${table('モデルごと', group(r => r.model))}
+    ${table('人ごと', group(r => r.by))}</div>`;
+  $('auMonth').onchange = e => { aiUse.month = e.target.value; render(); };
+  $('auReload').onclick = () => { aiUse.rows = null; loadAiUsage(); };
+}/* ---------- 組織図（承認ライン）：組織マスタの直属上長（＝M365 の上司）を木にする。
    「上長承認」は、ここを下から上へたどって部門長（または役員）で止まる。部門長の行に印 */
 function orgTreeHtml() {
   const org = st.M.org.filter(p => p.Active !== false), by = Object.fromEntries(org.map(p => [lc(p.UPN), p]));
