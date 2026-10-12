@@ -624,7 +624,7 @@ const DevApi = {
         P('見本 総組一', '工場/製造部/第二工場/総組(溶接)', '社員', { JobLabel: '班長' }), P('見本 総組二', '工場/製造部/第二工場/総組(溶接)', '特定技能', { EmpCode: '900103' }), P('見本 シルバー', '工場/製造部/第二工場/総組(溶接)', 'シルバー', { Agency: 'シルバー人材センター' }),
         P('見本 予定', '工場/製造部/第二工場/総組(溶接)', '社員', { State: '入社予定', StartDate: '2026-11-01', RequestNo: 'HIRE-2026-0099' })];
       const openings = [{ id: 1, Title: '総組(溶接) 2名', UnitPath: '工場/製造部/第二工場/総組(溶接)', Count: 2, Filled: 0, State: '募集中', Memo: 'Excel から引き継ぎ' }];
-      this.staff = { units, persons, openings, snaps: [] };
+      this.staff = { units, persons, openings, snaps: [] }; window.DEV_STAFF = this.staff;   // mock-flow.js の「内密の募集」が使う
     }
     return JSON.parse(JSON.stringify(this.staff));
   },
@@ -1097,7 +1097,7 @@ async function loadStaff() {
 /* 場所の木と数 */
 function staffModel(d) {
   const units = d.units.filter(u => u.Active !== false).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
-  const persons = d.persons.filter(p => p.State !== '退職'), opens = d.openings.filter(o => ['募集中', '求人の稟議中'].includes(o.State));
+  const persons = d.persons.filter(p => p.State !== '退職'), opens = d.openings.filter(o => ['募集中', '求人の稟議中'].includes(o.State) && !o.Secret), secrets = d.openings.filter(o => o.State === '募集中' && o.Secret);
   const rest = o => Math.max(0, (Number(o.Count) || 0) - (Number(o.Filled) || 0));
   const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
   const kids = {}; units.forEach(u => (kids[parentOf(u.Path)] = kids[parentOf(u.Path)] || []).push(u));
@@ -1108,7 +1108,7 @@ function staffModel(d) {
   const count = path => { const o = own(path), c = { act: o.act.length, plan: o.plan.length, open: o.open, pend: o.pendP.length + o.pendO };
     (kids[path] || []).forEach(k => { const x = count(k.Path); c.act += x.act; c.plan += x.plan; c.open += x.open; c.pend += x.pend; }); c.need = c.act + c.plan + c.open; return cnt[path] = c; };
   (kids[''] || []).forEach(u => count(u.Path));
-  return { units, persons, opens, kids, own, cnt, rest };
+  return { units, persons, opens, secrets, kids, own, cnt, rest };
 }
 function renderStaff(main) {
   const S = staff;
@@ -1126,21 +1126,22 @@ function renderStaff(main) {
   const node = (u, depth) => {
     const c = M.cnt[u.Path] || { act: 0, plan: 0, open: 0, need: 0, pend: 0 }, o = M.own(u.Path), kids = M.kids[u.Path] || [];
     const act = o.act.filter(hit), plan = o.plan.filter(hit), canEd = inScope(u.Path, scopes);
-    const opens = M.opens.filter(x => x.UnitPath === u.Path);
+    const opens = M.opens.filter(x => x.UnitPath === u.Path), secrets = M.secrets.filter(x => x.UnitPath === u.Path);
     const childHtml = kids.map(k => node(k, depth + 1)).join('');
     if (words.length && !act.length && !plan.length && !childHtml) return '';
     if (u.Title === '（班未定）' && !c.need) return '';   // 班未定が空なら出さない
     const open = !S.closed.has(u.Path) || words.length;
     return `<li class="sf-u lv${Math.min(depth, 3)}"><details ${open ? 'open' : ''} data-su="${esc(u.Path)}"><summary><span class="sf-n">${esc(u.Title)}</span>${u.Head ? `<span class="muted">${esc(u.Head)}</span>` : ''}
         <span class="sf-c"><span title="必要＝在籍＋入社予定＋募集中">必要 <b>${c.need}</b></span><span>在籍 <b>${c.act}</b></span>${c.plan ? `<span class="pl">予定 <b>${c.plan}</b></span>` : ''}${c.open ? `<span class="op">募集中 <b>${c.open}</b></span>` : ''}${c.pend ? `<span class="pd" title="求人・採用の稟議が回っている数（必要には入れない）">稟議中 <b>${c.pend}</b></span>` : ''}</span>
-        ${canEd ? `<span class="sf-act noprint">${u.Path.includes('/') ? `<button class="mini" data-ujob="${esc(u.Path)}" title="この場所の求人の稟議を作る">＋求人</button><button class="mini" data-uhire="${esc(u.Path)}" title="この場所の採用の稟議を作る">＋採用</button>` : ''}<button class="mini" data-uadd="${esc(u.Path)}">＋人</button><button class="mini" data-uedit="${esc(u.Path)}">メモ</button></span>` : ''}</summary>
+        ${canEd ? `<span class="sf-act noprint">${u.Path.includes('/') ? `<button class="mini" data-ujob="${esc(u.Path)}" title="この場所の求人の稟議を作る">＋求人</button><button class="mini" data-uhire="${esc(u.Path)}" title="この場所の採用の稟議を作る">＋採用</button>` : ''}${hasRole('人員表の内密') && u.Path.includes('/') ? `<button class="mini" data-usec="${esc(u.Path)}" title="役員・総務の一部だけに見える求人を足す">🔒＋内密</button>` : ''}<button class="mini" data-uadd="${esc(u.Path)}">＋人</button><button class="mini" data-uedit="${esc(u.Path)}">メモ</button></span>` : ''}</summary>
       ${u.Memo ? `<div class="muted sf-memo">${esc(u.Memo)}</div>` : ''}
-      ${act.length || plan.length || opens.length || o.pendP.length ? `<ul class="sf-ps">${act.map(personRow).join('')}
+      ${act.length || plan.length || opens.length || o.pendP.length || secrets.length ? `<ul class="sf-ps">${act.map(personRow).join('')}
         ${plan.map(p => `<li class="sf-p sf-plan" data-sp="${p.id}">▷ 入社予定：<b>${esc(p.Title)}</b>${p.StartDate ? ' ' + esc(dIn(p.StartDate)) : ''}${p.RequestNo ? `<span class="muted">（${esc(p.RequestNo)}）</span>` : ''}</li>`).join('')}
         ${o.pendP.map(p => `<li class="sf-p sf-pend" data-sp="${p.id}">▷ 採用の稟議中：<b>${esc(p.Title)}</b>${p.RequestNo ? `<span class="muted">（${esc(p.RequestNo)}）</span>` : ''}</li>`).join('')}
         ${opens.flatMap(x => Array.from({ length: M.rest(x) }, () => x)).map(x => x.State === '求人の稟議中'
           ? `<li class="sf-p sf-pend">▷ 求人の稟議中<span class="muted">${esc([x.RequestNo, x.Memo].filter(Boolean).join('・'))}</span></li>`
-          : `<li class="sf-p sf-open">▷ 求人募集中<span class="muted">${esc([x.RequestNo, x.Media, x.Memo].filter(Boolean).join('・'))}</span>${canEd ? `<button class="mini noprint" style="margin-left:auto" data-ohire="${x.id}" data-opath="${esc(u.Path)}">＋採用</button>` : ''}</li>`).join('')}</ul>` : ''}
+          : `<li class="sf-p sf-open">▷ 求人募集中<span class="muted">${esc([x.RequestNo, x.Media, x.Memo].filter(Boolean).join('・'))}</span>${canEd ? `<button class="mini noprint" style="margin-left:auto" data-ohire="${x.id}" data-opath="${esc(u.Path)}">＋採用</button>` : ''}</li>`).join('')}
+        ${secrets.flatMap(x => Array.from({ length: M.rest(x) }, () => x)).map(x => `<li class="sf-p sf-secret" data-sec="${x.id}">🔒 内密の求人<span class="muted">${esc(x.Memo || '')}</span><span class="muted" style="margin-left:auto">役員・総務の一部だけに見えています（数には入れていません）</span></li>`).join('')}</ul>` : ''}
       ${childHtml ? `<ul class="sf-tree">${childHtml}</ul>` : ''}</details></li>`;
   };
   const top = M ? (M.kids[''] || []) : [];
@@ -1179,6 +1180,8 @@ function renderStaff(main) {
   main.querySelectorAll('[data-ujob]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('RINGI', b.dataset.ujob); });
   main.querySelectorAll('[data-uhire]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('HIRE', b.dataset.uhire); });
   main.querySelectorAll('[data-ohire]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('HIRE', b.dataset.opath, Number(b.dataset.ohire)); });
+  main.querySelectorAll('[data-usec]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.secAdd = b.dataset.usec; S.sel = null; S.add = null; S.unitEdit = null; render(); });
+  main.querySelectorAll('[data-sec]').forEach(li => li.onclick = () => { S.secSel = Number(li.dataset.sec); S.sel = null; render(); });
   main.querySelectorAll('[data-uedit]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.unitEdit = b.dataset.uedit; S.sel = null; S.add = null; render(); });
   bindStaffSync(main);
   staffPanel($('sfPanel'), M, scopes);
@@ -1349,14 +1352,40 @@ function staffMarks(p) {
 function staffPanel(box, M, scopes) {
   const S = staff, p = S.sel ? M.persons.find(x => x.id === S.sel) || S.data.persons.find(x => x.id === S.sel) : null;
   const u = S.unitEdit ? M.units.find(x => x.Path === S.unitEdit) : null;
-  if (!p && !S.add && !u) return;
-  // 一覧の上ではなく、右から出るドロワーに出す（人員表を見たまま直せる）。外側・Esc・閉じるで閉じる
+  const sec = S.secSel ? (M.secrets.find(x => x.id === S.secSel)) : null;
+  if (!p && !S.add && !u && !S.secAdd && !sec) return;  // 一覧の上ではなく、右から出るドロワーに出す（人員表を見たまま直せる）。外側・Esc・閉じるで閉じる
   const dr = document.createElement('div'); dr.id = 'sfDrawer'; dr.className = 'sdr-bg noprint';
   dr.innerHTML = '<aside class="sdr sdr-form" role="dialog" aria-label="人員表の編集"><div class="sdr-b"></div></aside>'; document.body.appendChild(dr);
-  const closeDr = () => { S.sel = null; S.add = null; S.unitEdit = null; render(); };
+  const closeDr = () => { S.sel = null; S.add = null; S.unitEdit = null; S.secAdd = null; S.secSel = null; render(); };
   dr.onclick = e => { if (e.target === dr) closeDr(); };
   const onKey = e => { if (e.key === 'Escape' && document.body.contains(dr)) { document.removeEventListener('keydown', onKey); closeDr(); } }; document.addEventListener('keydown', onKey);
   box = dr.querySelector('.sdr-b');
+  if (S.secAdd || sec) {
+    box.innerHTML = sec ? `<div class="card"><h3 class="h3f"><span>🔒 内密の求人</span><button class="mini" id="sfX">閉じる</button></h3>
+        <div>${esc(unitLabel(sec.UnitPath))}　${M.rest(sec)}名</div><div class="muted" style="margin:6px 0">${esc(sec.Memo || '')}</div>
+        <div class="muted">見られるのは、役割「人員表の内密」の人（役員・総務の一部）だけです。人員表の数には入れていません。決まったとき・やめるときは「終える」を押してください。</div>
+        <div class="actions"><span style="flex:1"></span><button class="pri" id="secEnd">この内密の求人を終える</button></div></div>`
+      : `<div class="card"><h3 class="h3f"><span>🔒 内密の求人を足す</span><button class="mini" id="sfX">閉じる</button></h3>
+        <div style="margin-bottom:8px">${esc(unitLabel(S.secAdd))}</div>
+        <div class="muted" style="margin-bottom:8px">役員と総務の一部（役割「人員表の内密」）だけに見える求人です。ほかの人の人員表には出ず、必要・募集中の数にも入りません。例：責任者の入れ替えを考えての求人。</div>
+        <div class="lg-form"><label class="fld"><span>人数</span><input id="secCount" type="number" min="1" max="20" value="1"></label>
+          <label class="fld wide"><span>メモ（何のための求人か）</span><textarea id="secMemo" rows="3" placeholder="例：技術部の責任者のポスト"></textarea></label></div>
+        <div class="actions"><span style="flex:1"></span><button class="pri" id="secGo">内密の求人を足す</button></div></div>`;
+    $('sfX').onclick = () => { S.secAdd = null; S.secSel = null; render(); };
+    if ($('secEnd')) $('secEnd').onclick = async () => { try { await api.staffSave('STF_Opening', sec.id, { State: '終了' }); toast('内密の求人を終えました'); S.secSel = null; S.data = null; loadStaff(); } catch (e) { alert('終えられませんでした：' + e.message); } };
+    if ($('secGo')) $('secGo').onclick = async () => {
+      const count = Number($('secCount').value) || 0; if (count < 1 || count > 20) return alert('人数は1〜20で入れてください');
+      const b = $('secGo'); b.disabled = true; b.textContent = '作っています…';
+      try {
+        const { id } = await api.postAction({ Title: '内密の募集', ActionType: '内密の募集', PayloadJson: JSON.stringify({ unitPath: S.secAdd, count, memo: $('secMemo').value.trim() }) });
+        const t0 = Date.now(); let ok = false;
+        while (Date.now() - t0 < 120000) { await new Promise(r => setTimeout(r, 2500)); const r = await api.actionResult(id); if (r.Result === '完了') { ok = true; break; } if (r.Result === 'エラー') throw new Error(r.ResultMessage || ''); }
+        if (!ok) throw new Error('時間がかかっています。少ししてから人員表を読み直してください');
+        toast('内密の求人を足しました'); S.secAdd = null; S.data = null; loadStaff();
+      } catch (e) { b.disabled = false; b.textContent = '内密の求人を足す'; alert('足せませんでした：' + e.message); }
+    };
+    return;
+  }
   const canEd = p ? inScope(p.UnitPath, scopes) : true;
   const unitOpts = sel => M.units.filter(x => inScope(x.Path, scopes) || x.Path === sel).map(x => `<option value="${esc(x.Path)}" ${x.Path === sel ? 'selected' : ''}>${esc(x.Path.replace(/\//g, ' › '))}</option>`).join('');
   const sel = (k, list, v) => `<select data-sf="${k}">${list.map(x => `<option ${x === v ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>`;
