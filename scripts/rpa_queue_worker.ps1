@@ -52,6 +52,8 @@ $RunningDir        = Join-Path $QueueRoot 'running'
 $DoneDir           = Join-Path $QueueRoot 'done'
 $FailedDir         = Join-Path $QueueRoot 'failed'
 $LegacyRequestPath = Join-Path $SharedMastersPath '_regenerate_request.json'
+# 動いている印(アプリ側の rpa_queue.js が、20分以上更新されていなければ「応答なし」と表示する)
+$HeartbeatPath     = Join-Path $QueueRoot 'heartbeat.json'
 $LogPath           = "$env:USERPROFILE\regenerate_watcher.log"
 $RepoRawBase       = 'https://raw.githubusercontent.com/hanaoka-apps/hanaoka-ops/main'
 $WorkDir           = "$env:TEMP\hanaoka-regenerate-watcher"
@@ -67,6 +69,7 @@ $script:BadReads = @{}
 $script:JobDefsCache = $null
 $script:JobDefsCachedAt = [datetime]::MinValue
 $script:BadScheduleLogged = @{}
+$script:HeartbeatAt = [datetime]::MinValue
 
 function Write-Log {
   param([string]$Message)
@@ -119,6 +122,20 @@ function Get-JobDefinitions {
   }
 }
 
+# 動いている印を書く。OneDriveの同期を増やしすぎないよう、5分に1回まで(-Force で今すぐ)。
+# 書けなくても本来の処理は止めない。
+function Update-Heartbeat([string]$Job = '', [switch]$Force) {
+  if (-not $Force -and ((Get-Date) - $script:HeartbeatAt).TotalMinutes -lt 5) { return }
+  try {
+    Write-JsonFile $HeartbeatPath ([pscustomobject]@{
+      updatedAt = (Get-Date).ToString('o')
+      host = $env:COMPUTERNAME
+      job = $Job
+    })
+    $script:HeartbeatAt = Get-Date
+  } catch { }
+}
+
 function Test-FileReadable([string]$Path) {
   # 書き込み中(他プロセスが書き込みロック中)なら開けない
   try {
@@ -152,6 +169,7 @@ function Invoke-PadFlow($Def) {
   $locked = @()
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 10
+    Update-Heartbeat $flow
     $pending = @()
     $snapshot = @()
     foreach ($name in $outputs) {
@@ -289,6 +307,7 @@ function Invoke-NextJob {
   }
   $requesters = ($batch | ForEach-Object { $_.Request.requestedBy } | Select-Object -Unique) -join ', '
   Write-Log "ジョブを開始します: $jobName (依頼 $($batch.Count) 件 / $requesters)"
+  Update-Heartbeat $jobName -Force
 
   $errorMessage = $null
   try {
@@ -319,6 +338,7 @@ function Invoke-NextJob {
     }
     if ($r.Request.legacyRequestedAt) { Remove-LegacyRequestIfDone ([string]$r.Request.legacyRequestedAt) }
   }
+  Update-Heartbeat -Force
   if ($errorMessage) { Write-Log "エラー: ジョブ $jobName が失敗しました: $errorMessage" }
   else { Write-Log "ジョブが完了しました: $jobName" }
   return $true
@@ -398,6 +418,7 @@ Write-Log "監視を開始します: $QueueRoot"
 
 while ($true) {
   $worked = $false
+  Update-Heartbeat
   try {
     Convert-LegacyRequest
     Invoke-Schedules

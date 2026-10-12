@@ -28,6 +28,7 @@
 - OneDrive同期で届いたファイルはファイル変更通知（FileSystemWatcher）が来ないことがあるため、30秒ごとの確認にしている
 - 依頼から開始までは、OneDrive同期（数十秒〜1分強）＋最大30秒かかる
 - done / failed の記録は30日で自動削除
+- 常駐スクリプトは動いている印 `_rpa_queue/heartbeat.json` を5分ごとに書く。20分以上更新されないと、各アプリの待ち表示が「⚠️ RPA専用機が応答していません（最終応答: …）」に変わる（`RpaQueue.workerWarning`）
 
 ## 部品
 
