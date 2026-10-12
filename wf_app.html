@@ -620,6 +620,7 @@ const DevApi = {
   }
 };
 const api = DEV ? DevApi : GraphApi;
+if (DEV) window.DEV_LEDGER = DevApi.ledger;   // 開発：mock-flow.js の「契約更新の依頼」が台帳の見本を読む
 
 /* ============================================================
    起動
@@ -834,9 +835,15 @@ const TABS = [
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 const isPostTodo = t => t.StepType === '後処理' && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 const isCircTodo = t => t.StepType === '回覧' && ['未読', '既読'].includes(t.Status);   // 「確認しました」を押すまで
+/* 申請の依頼（例：契約更新の申請依頼。総務が台帳から渡す）。稟議を出したら（data._contract.key が同じ申請がある）一覧から消える。タスク自体はフローH が翌朝に完了にする */
+//   自分の申請・見られる申請のほか、承認で届いた稟議（もう一人の相手が出した稟議）も見る
+const askReq = t => visibleReqs().find(r => r.FormCode === 'HIRE' && !['却下', '取下げ', '引き戻し'].includes(r.Status) && (pj(r.DataJson, {})._contract || {}).key === t.RequestNo)
+  || (st.tasks || []).filter(x => x.StepType !== '依頼' && x.FormCode === 'HIRE' && !['却下', '取下げ', '引き戻し'].includes(x.RequestStatus))
+    .map(x => ({ RequestNo: x.RequestNo, Status: x.RequestStatus || '申請中', s: pj(x.SnapshotJson, {}) })).find(x => ((x.s.data || {})._contract || {}).key === t.RequestNo);
+const isAskTodo = t => t.StepType === '依頼' && t.Status === '処理待ち' && !hiddenTasks.has(t.id) && !askReq(t);
 /* 「自分の対応待ち」＝承認・決裁／後処理／回覧（未確認）。種類は上の切り替え（st.sub）で絞る */
-const SUBS = [{ k: '', label: 'すべて' }, { k: 'approve', label: '承認・決裁', f: isInbox }, { k: 'post', label: '後処理', f: isPostTodo }, { k: 'circ', label: '回覧', f: isCircTodo }];
-const todoTasks = sub => { const x = SUBS.find(o => o.k === (sub || '')); return st.tasks.filter(t => x && x.f ? x.f(t) : isInbox(t) || isPostTodo(t) || isCircTodo(t)); };
+const SUBS = [{ k: '', label: 'すべて' }, { k: 'approve', label: '承認・決裁', f: isInbox }, { k: 'ask', label: '申請の依頼', f: isAskTodo }, { k: 'post', label: '後処理', f: isPostTodo }, { k: 'circ', label: '回覧', f: isCircTodo }];
+const todoTasks = sub => { const x = SUBS.find(o => o.k === (sub || '')); return st.tasks.filter(t => x && x.f ? x.f(t) : isInbox(t) || isAskTodo(t) || isPostTodo(t) || isCircTodo(t)); };
 
 /* サイドメニューのアイコン（線の絵。HUB と同じ太さ） */
 const NAV_ICONS = {
@@ -1198,6 +1205,68 @@ function renderLedgerEdit(box, r) {
   };
   $('leAttend').onclick = refresh;
   if (!a && L.autoFor !== r.id && L.attendBusy !== r.id) { L.autoFor = r.id; refresh(); }
+  // 申請担当者に渡す：上司・責任者に「申請の依頼」が届き、契約更新のチャットにメンション付きで知らせる（チャットには氏名・部署・満了日だけ）
+  const due = dIn(r.ContractTo) || dIn(r.ProbationEnd), kind = dIn(r.ContractTo) ? '契約の更新' : '試用期間の満了';
+  if (!due || r.State === '終了') return;
+  const np = nextPeriod(r), asked = r.AskedFor === due, sending = [...pending.values()].some(p => p.label === '契約更新の依頼');
+  const to0 = [r.ManagerUPN, r.Manager2UPN].map(x => lc(x || '')).filter(Boolean);
+  box.insertAdjacentHTML('beforeend', `<div class="card" id="leAsk"><h3>申請担当者に渡す（${kind}）</h3>
+    ${asked ? `<div class="return-banner" style="margin:0 0 8px;border-color:var(--ok);border-left-color:var(--ok);background:var(--bg)">渡し済み：${esc(fmtDT(r.AskedAt))}　→ ${esc(String(r.AskedTo || '').split(';').filter(Boolean).map(nameOf).join('・'))}（稟議が出るまで、${esc(((ledgerCfg().remind || {}).again || []).join('・'))}日前にもう一度お願いが届きます）</div>` : ''}
+    <div class="muted" style="margin-bottom:8px">渡した相手に「申請の依頼」が届き、契約更新のチャットでメンションされます。<b>チャットに出るのは氏名・部署・満了日だけ</b>で、勤怠の数字とひとことは、相手の依頼の中にだけ入ります。</div>
+    <div class="lg-form">
+      <label class="fld"><span>渡す相手（上司）</span><select data-ask="0"><option value="">（なし）</option>${orgOptions(to0[0])}</select></label>
+      <label class="fld"><span>渡す相手（その上の責任者）</span><select data-ask="1"><option value="">（なし）</option>${orgOptions(to0[1])}</select></label>
+      ${kind === '契約の更新' ? `<label class="fld"><span>次の契約期間（稟議に入れる初めの値）</span><b style="color:var(--text)">${esc(np.from)} 〜 ${esc(np.to)}</b></label>` : `<label class="fld"><span>試用期間の満了日</span><b style="color:var(--text)">${esc(due)}</b></label>`}
+      <label class="fld wide"><span>ひとこと（相手にだけ届きます）</span><textarea id="askNote" rows="2" placeholder="例：欠勤が少し多めです。面談のうえ判断してください"></textarea></label></div>
+    <div class="actions"><span class="muted">${a ? '勤怠の表（' + esc(ymLabel(a.from)) + '〜' + esc(ymLabel(a.to)) + '）も一緒に渡します' : '<span style="color:var(--warn)">勤怠の集計がまだありません（表なしで渡します）</span>'}</span><span style="flex:1"></span>
+      <button class="pri" id="leAskGo" ${sending ? 'disabled' : ''}>${sending ? '渡しています…' : asked ? 'もう一度渡す' : '申請担当者に渡す'}</button></div></div>`);
+  $('leAskGo').onclick = async () => {
+    const to = [...new Set([...box.querySelectorAll('select[data-ask]')].map(s => s.value).filter(Boolean))];
+    if (!to.length) return alert('渡す相手を選んでください');
+    if (!(await confirmBox(`${r.Title}さんの${kind}の申請を、${to.map(nameOf).join('・')}さんにお願いします。`,
+      ['契約更新のチャットで、相手にメンションして知らせます（氏名・部署・満了日だけ）', '勤怠の表とひとことは、相手の依頼の中にだけ入ります', asked ? '前に渡したお願いは片付けて、渡し直します' : ''].filter(Boolean)))) return;
+    await act({ Title: `契約更新の依頼 ${r.Title}`, ActionType: '契約更新の依頼', PayloadJson: JSON.stringify({ ledgerId: r.id, to, note: $('askNote').value.trim(), nextFrom: np.from, nextTo: np.to }) });
+    L.rows = null; setTimeout(loadLedger, 4000);
+  };
+}
+/* 次の契約期間（稟議に入れる初めの値）：特定技能は満了日の翌日から tokuteiMonths、ほかは翌日から次の区切りの日まで */
+function nextPeriod(r) {
+  const R = ledgerCfg().rules || {}, to = dIn(r.ContractTo); if (!to) return { from: '', to: '' };
+  const from = addDaysS(to, 1);
+  return { from, to: r.Tokutei ? addDaysS(addMonthsS(from, Number(R.tokuteiMonths) || 12), -1) : cycleEnd(addDaysS(from, 1), R, true) };
+}
+const orgOptions = sel => st.M.org.filter(p => p.Active !== false).sort((a, b) => String(a.Dept).localeCompare(String(b.Dept)) || String(a.Title).localeCompare(String(b.Title)))
+  .map(p => `<option value="${esc(lc(p.UPN))}" ${lc(sel || '') === lc(p.UPN) ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept || '')}）</option>`).join('');
+/* 稟議に付いた勤怠の表（総務が台帳から渡したもの。data._contract.attend）。承認する人も見られる */
+function contractAttendCard(data) {
+  const c = data && data._contract; if (!c || !c.attend) return '';
+  return `<div class="card"><h3>勤怠の集計（${esc(c.by || '総務')}より）</h3>${attendHtml(c.attend)}</div>`;
+}
+/* 申請の依頼（上司・責任者に届く）：内容を見て「稟議を作る」。氏名・期間・勤怠が入った採用・雇用の稟議が開く */
+function renderAskDetail(t, s) {
+  const d = $('detail'), open = isAskTodo(t), done = askReq(t), isC = s.hireKind !== '試用期間の満了';
+  const x = done ? { label: '稟議を出しました', cls: 'ok', icon: '✓' } : taskState(t), left = daysTo(s.contractTo);
+  let html = detailHead({ x, no: '', form: formName('HIRE'), title: t.Title, extra: `<span class="badge b-gray">${esc(t.StepName)}</span>`,
+    nextLabel: open ? '対応者' : '', next: open ? 'あなたの番です（内容を見て、稟議を作ってください）' : '', btns: open ? ['<button class="pri" id="askMake">稟議を作る</button>'] : [],
+    facts: [['依頼した人', s.byName || ''], ['満了日', s.contractTo ? `${s.contractTo}${left != null ? `（${left < 0 ? -left + '日すぎ' : 'あと' + left + '日'}）` : ''}` : ''], ['届いた日', fmtDT(t.Created)]] });
+  html += `<div class="card"><h3>${esc(s.name)}さん（${esc(s.dept || '')}）</h3>
+    <table class="tbl os"><tr><th>区分</th><td>${esc(s.hireKind || '')}</td></tr><tr><th>雇用形態</th><td>${esc(s.empType || '')}</td></tr>
+      ${isC ? `<tr><th>今の契約期間</th><td>${esc(s.contractFrom || '')} 〜 ${esc(s.contractTo || '')}</td></tr><tr><th>次の契約期間（案）</th><td>${esc(s.nextFrom || '')} 〜 ${esc(s.nextTo || '')}</td></tr>`
+        : `<tr><th>入社日</th><td>${esc(s.hireDate || '')}</td></tr><tr><th>試用期間の満了日</th><td>${esc(s.contractTo || '')}</td></tr>`}</table>
+    ${s.note ? `<div class="return-banner" style="margin-top:10px;border-color:var(--pri);border-left-color:var(--pri);background:var(--pri-l)"><b style="color:var(--pri)">${esc(s.byName || '総務')}さんより</b><div style="margin-top:4px;white-space:pre-wrap">${esc(s.note)}</div></div>` : ''}</div>`;
+  if (s.attend) html += `<div class="card"><h3>勤怠の集計</h3>${attendHtml(s.attend)}<div class="muted" style="margin-top:4px">この数字は、あなたと稟議を承認する人だけが見られます。</div></div>`;
+  html += done ? `<div class="card"><h3>稟議</h3>${esc(done.RequestNo)}（${esc(done.Status)}）を出しました。</div>`
+    : open ? `<div class="card"><h3>この後</h3><div class="muted">「稟議を作る」を押すと、区分・氏名・${isC ? '次の契約期間' : '試用期間の満了日'}・勤怠の表が入った「${esc(formName('HIRE'))}」が開きます。勤務の様子や評価を書き足して申請してください。承認の経路は、開いた画面の右に出ます。</div>
+        <div class="actions"><span style="flex:1"></span><button class="pri" id="askMake2">稟議を作る</button></div></div>` : '';
+  d.innerHTML = html;
+  const make = () => {
+    const form = st.M.forms.find(f => f.FormCode === 'HIRE'); if (!form) return alert('採用・雇用の稟議のフォームが見つかりません（総務にご連絡ください）');
+    const data = { kind: s.hireKind, targetName: s.name, empCode: s.empCode, dept: s.dept,
+      ...(isC ? { contractFrom: s.nextFrom, contractTo: s.nextTo, condChange: '今と同じ' } : { hireDate: s.hireDate, probationEnd: s.contractTo }),
+      _contract: { key: s.key, ledgerId: s.ledgerId, attend: s.attend || null, by: s.byName || '' } };
+    st.view = 'new'; st.sel = null; st.editor = { form, data, fromAsk: t.id }; render();
+  };
+  ['askMake', 'askMake2'].forEach(id => { if ($(id)) $(id).onclick = make; });
 }/* ---------- 組織図（承認ライン）：組織マスタの直属上長（＝M365 の上司）を木にする。
    「上長承認」は、ここを下から上へたどって部門長（または役員）で止まる。部門長の行に印 */
 function orgTreeHtml() {
@@ -1264,7 +1333,7 @@ function itemsForView() {
   const byNewest = (a, b) => String(b._sort || '').localeCompare(String(a._sort || ''));
   switch (st.view) {
     // 承認・決裁 → 後処理 → 回覧 の順、その中は新しい順
-    case 'inbox': { const rank = t => isInbox(t) ? 0 : isPostTodo(t) ? 1 : 2; return todoTasks(st.sub).map(t => taskItem(t)).sort((a, b) => rank(a.t) - rank(b.t) || byNewest(a, b)); }
+    case 'inbox': { const rank = t => isInbox(t) || isAskTodo(t) ? 0 : isPostTodo(t) ? 1 : 2; return todoTasks(st.sub).map(t => taskItem(t)).sort((a, b) => rank(a.t) - rank(b.t) || byNewest(a, b)); }
     case 'mine':  return st.myReqs.map(r => reqItem(r)).sort(byNewest);
     case 'all':   return (st.allReqs || []).map(r => reqItem(r)).sort(byNewest);
     case 'involved': {
@@ -1279,7 +1348,9 @@ function itemsForView() {
 /* 検索用の文字列（件名・番号・申請者・部署・フォーム名・段・申請内容） */
 const flatText = v => v == null ? '' : typeof v === 'object' ? Object.values(v).map(flatText).join(' ') : String(v);
 function taskItem(t, involved) {
-  const s = pj(t.SnapshotJson, {});
+  const s0 = pj(t.SnapshotJson, {});
+  // 申請の依頼の控え（氏名・期間・勤怠）は検索の文字に入れない。依頼した人を「申請者」の欄に出す
+  const s = s0.kind === 'contract' ? { title: t.Title, applicantName: s0.byName, applicantDept: '', submittedAt: t.Created, data: { name: s0.name } } : s0;
   const x = involved ? stateOf({ Status: t.RequestStatus }) : taskState(t);
   return { key: 't' + t.id, t, s, _sort: t.ActedAt || t.Created || s.submittedAt,
     f: { no: t.RequestNo, title: s.title || t.Title, form: t.FormCode, applicant: s.applicantName, dept: s.applicantDept,
@@ -1294,7 +1365,7 @@ function taskItem(t, involved) {
 /* 自分に届いたタスクの状態（対応待ちは「何をするか」を出す） */
 function taskState(t) {
   if (t.Status === '処理待ち') {
-    const m = { '承認': ['承認待ち', 'run', '⏳'], '決裁': ['決裁待ち', 'run', '⏳'], '作業': ['作業待ち', 'run', '⏳'], '後処理': ['後処理待ち', 'warn', '📝'] };
+    const m = { '承認': ['承認待ち', 'run', '⏳'], '決裁': ['決裁待ち', 'run', '⏳'], '作業': ['作業待ち', 'run', '⏳'], '後処理': ['後処理待ち', 'warn', '📝'], '依頼': ['申請の依頼', 'warn', '📨'] };
     const v = m[t.StepType] || ['対応待ち', 'run', '⏳'];
     return { label: v[0], cls: v[1], icon: v[2] };
   }
@@ -1704,6 +1775,7 @@ function settleParts(o) {
 
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
 function renderTaskDetail(t, s) {
+  if (t.StepType === '依頼') return renderAskDetail(t, pj(t.SnapshotJson, {}));
   const form = st.M.forms.find(f => f.FormCode === t.FormCode);
   const route = s.route || [];
   const d = $('detail');
@@ -1731,6 +1803,7 @@ function renderTaskDetail(t, s) {
   const settle = form && form.View === 'settle';   // 支払決済：サマリー＋確認モード（settle_view.js）
   if (settle) html += `<div class="card"><h3>支払決済の明細${canAct ? '　<span class="muted" style="font-weight:400">すべて「確認OK」にすると承認できます</span>' : ''}</h3><div id="settleView">読み込み中...</div></div>`;
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
+  html += contractAttendCard(s.data || {});
   html += linkCardForChild(form, s.data || {}, t.RequestNo);
   html += followupCard(form, s.data || {}, { status: t.RequestStatus, req: t.RequestNo, app: s.applicantUPN });
   if (hist.length) html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
@@ -1814,6 +1887,7 @@ function renderReqDetail(r) {
   const settle = form && form.View === 'settle';
   if (settle) html += '<div class="card"><h3>支払決済の明細</h3><div id="settleView">読み込み中...</div></div>';
   html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
+  html += contractAttendCard(pj(r.DataJson, {}));
   html += linkCardForChild(form, pj(r.DataJson, {}), r.RequestNo) + (form ? linkCardForParent(form, r) : '');
   html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN, proxy: r.ProxyUPN });
   html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
@@ -2160,6 +2234,7 @@ function renderEditor(main) {
       ${f.Description ? `<div class="desc">${esc(f.Description)}</div>` : ''}
       ${proxyCardHtml(f)}
       ${pasteCardHtml(f)}
+      ${contractAttendCard(ed.data)}
       <div id="flds" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">${sectionsHtml(f)}</div>
       ${ed.resubmit ? `<div class="fsec"><div class="fld" data-k="__resubmit"><label class="l">修正コメント<span class="req">必須</span></label><textarea id="resubmitNote" placeholder="何を直したかを書いてください（承認者の画面の一番上に表示されます）"></textarea></div></div>` : ''}
       </div>
@@ -2580,7 +2655,9 @@ function recalc() {
     if (fd.type === 'table') (ed.data[fd.key] || []).forEach((r, i) => fd.columns.filter(c => c.type === 'calc').forEach(c => {
       r[c.key] = calcExpr(c.expr, r); const el = document.querySelector(`[data-cell="${fd.key}.${i}.${c.key}"]`); if (el) el.textContent = yen(r[c.key]); }));
   });
-  ed.form.fields.filter(fd => fd.type === 'calc').forEach(fd => { ed.data[fd.key] = calcExpr(fd.expr, ed.data); if ($('f_' + fd.key)) $('f_' + fd.key).textContent = calcText(fd, ed.data[fd.key]); });
+  // 隠れている欄（例：給与の形を時給から月給に変えたときの時給）は計算に入れない
+  const scope = { ...ed.data }; ed.form.fields.forEach(fd => { if (fd.key && fd.showIf && !isShown(fd, ed.data)) delete scope[fd.key]; });
+  ed.form.fields.filter(fd => fd.type === 'calc').forEach(fd => { ed.data[fd.key] = scope[fd.key] = calcExpr(fd.expr, scope); if ($('f_' + fd.key)) $('f_' + fd.key).textContent = calcText(fd, ed.data[fd.key]); });
 }
 function routeFor(ed) {
   const wf = st.M.workflows.find(w => w.WorkflowCode === ed.form.WorkflowCode);
@@ -2719,6 +2796,7 @@ function confirmSubmit(ed, f, title, res, note) {
         <div><span class="muted">申請者</span>${esc(app.Title)}（${esc(app.Dept || '')}）${ed.proxyFor ? `<span class="badge b-warn">代理申請（あなたが代わりに出す）</span>` : ''}</div></div>
       <div class="cf-body" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">
         ${dataCard(f, ed.data, null, { req: ed.resubmit ? ed.resubmit.RequestNo : '', app: st.me.upn }).replace(/<button class="mini noprint" data-copy[^>]*>.*?<\/button>/, '')}
+        ${contractAttendCard(ed.data)}
         ${note ? `<div class="card"><h3>修正コメント</h3><div style="white-space:pre-wrap">${esc(note)}</div></div>` : ''}
         <div class="card"><h3>承認ルート</h3><ol class="cf-route">${steps.map(s => `<li><b>${esc(s.name)}</b>　${esc(s.upns.map(nameOf).join(' / '))}${s.type === '決裁' ? '<span class="badge b-warn">決裁</span>' : ''}</li>`).join('')}</ol>
           ${res.post.length ? `<div class="muted">決裁のあと：${esc(res.post.map(p => p.name).join('、'))}</div>` : ''}
@@ -2733,6 +2811,22 @@ function confirmSubmit(ed, f, title, res, note) {
     bg.querySelector('#cfGo').onclick = () => done(true);
     bg.onclick = e => { if (e.target === bg) done(false); };
     bg.querySelector('#cfGo').focus();
+  });
+}
+
+/* 確かめの画面（はい・やめる）。points は箇条書き */
+function confirmBox(title, points) {
+  return new Promise(ok => {
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal" role="dialog" aria-label="確認"><h3>${esc(title)}</h3>
+      ${(points || []).length ? `<ul class="muted" style="margin:8px 0 0;padding-left:18px">${points.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      <div class="actions cf-btns"><button id="cbNo">やめる</button><span style="flex:1"></span><button class="pri" id="cbGo">はい、渡す</button></div></div>`;
+    document.body.appendChild(bg);
+    const done = v => { bg.remove(); document.removeEventListener('keydown', k); ok(v); };
+    const k = e => { if (e.key === 'Escape') done(false); };
+    document.addEventListener('keydown', k);
+    bg.querySelector('#cbNo').onclick = () => done(false); bg.querySelector('#cbGo').onclick = () => done(true);
+    bg.onclick = e => { if (e.target === bg) done(false); }; bg.querySelector('#cbGo').focus();
   });
 }
 
