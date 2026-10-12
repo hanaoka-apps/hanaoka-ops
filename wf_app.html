@@ -2390,23 +2390,30 @@ function renderTaskDetail(t, s) {
   const cmt = () => [($('cmt') ? $('cmt').value.trim() : ''), settle && curSettle && curSettle.no === t.RequestNo ? SettleView.comment(curSettle.storeKey, curSettle.snap) : ''].filter(Boolean).join('\n');
   if (settle) mountSettle({ no: t.RequestNo, app: s.applicantUPN, data: s.data || {}, canAct, hist, task: t });
   bindStepForm(t, form, route);
+  // 押し間違いを防ぐ：どの判断か・コメント・差し戻し先を出して、確かめてから送る
+  const info = { title: s.title || t.Title, no: t.RequestNo, applicant: s.applicantName || '', amount: amt ? yen(amt) : '' };
   if ($('bOk')) $('bOk').onclick = async () => {
+    const kind = t.StepType === '決裁' ? '決裁' : t.StepType === '作業' ? (stepFields(t, form, route).length ? '作業完了' : '確認して完了') : '承認';
+    if (!(await decideBox(kind, { ...info, comment: cmt(), step: t.StepName }))) return;
     // 途中の段で書き足す項目があれば、先に申請へ書き込む（終わってから、この段を終える）
     if (stepEd && stepEd.taskId === t.id && !(await saveStep(t))) return;
     act({ Title: `${t.StepType} ${t.RequestNo}`, ActionType: t.StepType === '決裁' ? '決裁' : '承認', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
   };
-  if ($('bRet')) $('bRet').onclick = () => {
+  if ($('bRet')) $('bRet').onclick = async () => {
     if (!cmt()) return alert('差し戻しの理由を入力してください');
     const to = Number($('retTo').value);
-    if (!confirm(`${to ? '「' + route[to - 1].name + '」' : '申請者'}へ差し戻します。よろしいですか？`)) return;
+    if (!(await decideBox('差し戻し', { ...info, comment: cmt(), step: t.StepName, to: to ? `「${route[to - 1].name}」（${route[to - 1].upns.map(nameOf).join('・')}）` : `申請者（${info.applicant}）` }))) return;
     act({ Title: `差し戻し ${t.RequestNo}`, ActionType: '差し戻し', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt(), toStep: to }) });
   };
-  if ($('bNg')) $('bNg').onclick = () => {
+  if ($('bNg')) $('bNg').onclick = async () => {
     if (!cmt()) return alert('却下の理由を入力してください');
-    if (!confirm('却下すると、この申請は終了します。よろしいですか？')) return;
+    if (!(await decideBox('却下', { ...info, comment: cmt(), step: t.StepName }))) return;
     act({ Title: `却下 ${t.RequestNo}`, ActionType: '却下', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
   };
-  if ($('bDone')) $('bDone').onclick = () => act({ Title: `後処理完了 ${t.RequestNo}`, ActionType: '後処理完了', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
+  if ($('bDone')) $('bDone').onclick = async () => {
+    if (!(await decideBox('後処理完了', { ...info, comment: cmt(), step: t.StepName }))) return;
+    act({ Title: `後処理完了 ${t.RequestNo}`, ActionType: '後処理完了', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
+  };
   if ($('bSeen')) $('bSeen').onclick = () => { t.Status = '確認済'; optimistic.set(t.id, '確認済'); act({ Title: `確認 ${t.RequestNo}`, ActionType: '確認', TaskId: t.id, RequestNo: t.RequestNo }); };
 }
 
@@ -3433,6 +3440,36 @@ function confirmSubmit(ed, f, title, res, note) {
   });
 }
 
+/* 判断の確かめ（承認・決裁・差し戻し・却下・作業完了・後処理完了）。押し間違いを防ぐため、判断・申請・コメント・差し戻し先を出す */
+const DECIDE = {
+  '承認': { cls: 'ok', btn: 'この内容で承認する', note: '承認すると、次の人に回ります。' },
+  '決裁': { cls: 'ok', btn: 'この内容で決裁する', note: '決裁すると、この申請は決まりです（後処理・回覧があればそちらへ）。' },
+  '作業完了': { cls: 'ok', btn: 'この内容で作業を終える', note: '入れた内容と書類が申請に書き込まれ、次の段へ進みます。' },
+  '確認して完了': { cls: 'ok', btn: '確かめて完了にする', note: 'この申請は完了になります。' },
+  '後処理完了': { cls: 'ok', btn: '後処理を完了にする', note: '後処理を完了にします。' },
+  '差し戻し': { cls: 'warn', btn: 'この内容で差し戻す', note: '差し戻し先から、承認をやり直します。取り消される承認をした人にも通知が届きます。' },
+  '却下': { cls: 'ng', btn: 'この内容で却下する', note: '却下すると、この申請は終わります（元に戻せません）。' }
+};
+function decideBox(kind, o) {
+  const D = DECIDE[kind] || DECIDE['承認'];
+  return new Promise(ok => {
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal decide d-${D.cls}" role="dialog" aria-label="判断の確認">
+      <div class="dc-kind">${esc(kind)}</div><h3>この内容で${esc({ '差し戻し': '差し戻します', '作業完了': '作業を終えます', '確認して完了': '完了にします', '後処理完了': '後処理を完了にします' }[kind] || kind + 'します')}か？</h3>
+      <dl class="dc-dl"><dt>申請</dt><dd>${esc(o.title || '')}<div class="muted">${esc(o.no || '')}${o.applicant ? '　申請者 ' + esc(o.applicant) : ''}${o.amount ? '　' + esc(o.amount) : ''}</div></dd>
+        ${o.step ? `<dt>あなたの段</dt><dd>${esc(o.step)}</dd>` : ''}
+        ${o.to ? `<dt>差し戻し先</dt><dd><b>${esc(o.to)}</b></dd>` : ''}
+        <dt>コメント</dt><dd>${o.comment ? `<div class="dc-cm">${esc(o.comment)}</div>` : '<span class="muted">（なし）</span>'}</dd></dl>
+      <div class="muted" style="margin-top:8px">${esc(D.note)}</div>
+      <div class="actions cf-btns"><button id="dcNo">← 戻る</button><span style="flex:1"></span><button class="${D.cls === 'ok' ? 'pri' : D.cls}" id="dcGo">${esc(D.btn)}</button></div></div>`;
+    document.body.appendChild(bg);
+    const done = v => { bg.remove(); document.removeEventListener('keydown', k); ok(v); };
+    const k = e => { if (e.key === 'Escape') done(false); };
+    document.addEventListener('keydown', k);
+    bg.querySelector('#dcNo').onclick = () => done(false); bg.querySelector('#dcGo').onclick = () => done(true);
+    bg.onclick = e => { if (e.target === bg) done(false); }; bg.querySelector('#dcNo').focus();   // 初めは「戻る」に（Enter の押し間違いで送らない）
+  });
+}
 /* 確かめの画面（はい・やめる）。points は箇条書き */
 function confirmBox(title, points) {
   return new Promise(ok => {
