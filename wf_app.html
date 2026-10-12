@@ -508,6 +508,15 @@ const GraphApi = {
     if (id) { await graph(`/sites/${s}/lists/${L}/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) }); return id; }
     return Number((await graph(`/sites/${s}/lists/${L}/items`, { method: 'POST', body: JSON.stringify({ fields }) })).id);
   },
+  async staffLoad() {
+    const [units, persons, openings, snaps] = await Promise.all(['STF_Unit', 'STF_Person', 'STF_Opening', 'STF_Snapshot'].map(l => this.items(l)));
+    return { units, persons, openings, snaps };
+  },
+  async staffSave(list, id, fields) {
+    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    if (id) { await graph(`/sites/${siteId}/lists/${list}/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) }); return id; }
+    return Number((await graph(`/sites/${siteId}/lists/${list}/items`, { method: 'POST', body: JSON.stringify({ fields }) })).id);
+  },
   async payrollJson(rel) {   // 無いファイルは null
     const s = await this.ledgerSite();
     const r = await fetch(`https://graph.microsoft.com/v1.0/sites/${s}/drive/root:/${encodeURI(ledgerCfg().payrollFolder + '/' + rel)}:/content`, { headers: { Authorization: 'Bearer ' + await getToken() } });
@@ -599,6 +608,30 @@ const DevApi = {
     const p = pj(t, {});
     Object.values(p.data || {}).forEach(v => Array.isArray(v) && v.forEach(x => { if (x && x.key && x.devUrl) this.blobs[x.key] = x.devUrl; }));
     return t;
+  },
+  // 開発：人員表の見本（架空の場所・人）
+  staff: null,
+  async staffLoad() {
+    if (!this.staff) {
+      const U = (path, site, head, memo) => ({ id: 0, Title: path.split('/').pop(), Path: path, Site: site, Head: head || '', Memo: memo || '', Active: true });
+      const units = [U('役員', '役員'), U('本社', '本社'), U('本社/営業部', '本社', '部長'), U('本社/営業部/国内営業', '本社', '部門長'), U('本社/営業部/国内営業/東京営業', '本社'), U('本社/総務部', '本社'),
+        U('工場', '工場', '工場長'), U('工場/製造部', '工場'), U('工場/製造部/第一工場', '工場', '次長'), U('工場/製造部/第一工場/資材管理', '工場'), U('工場/製造部/第一工場/プレス組付', '工場', '', '※無料求人継続'),
+        U('工場/製造部/第一工場/（班未定）', '工場', '', '給与にいて Excel にいなかった人'), U('工場/製造部/第二工場', '工場', '次長'), U('工場/製造部/第二工場/総組(溶接)', '工場')].map((u, i) => ({ ...u, id: i + 1, Sort: (i + 1) * 10 }));
+      let n = 0; const P = (name, path, kind, extra) => ({ id: ++n, Title: name, UnitPath: path, Kind: kind || '社員', State: '在籍', Sort: n * 10, EmpCode: kind === '派遣' ? '' : String(900200 + n), ...(extra || {}) });
+      const persons = [P('見本 社長', '役員', '役員'), P('見本 部長', '本社/営業部'), P('見本 営業一', '本社/営業部/国内営業/東京営業'), P('見本 営業二', '本社/営業部/国内営業/東京営業', 'パート'),
+        P('見本 総務', '本社/総務部'), P('見本 資材', '工場/製造部/第一工場/資材管理', '社員', { JobLabel: '課長' }), P('見本 プレス', '工場/製造部/第一工場/プレス組付', '契約', { EmpCode: '900101' }),
+        P('見本 派遣A', '工場/製造部/第一工場/プレス組付', '派遣', { Agency: '見本スタッフ' }), P('見本 新人', '工場/製造部/第一工場/（班未定）', '社員', { EmpCode: '900104' }),
+        P('見本 総組一', '工場/製造部/第二工場/総組(溶接)', '社員', { JobLabel: '班長' }), P('見本 総組二', '工場/製造部/第二工場/総組(溶接)', '特定技能', { EmpCode: '900103' }), P('見本 シルバー', '工場/製造部/第二工場/総組(溶接)', 'シルバー', { Agency: 'シルバー人材センター' }),
+        P('見本 予定', '工場/製造部/第二工場/総組(溶接)', '社員', { State: '入社予定', StartDate: '2026-11-01', RequestNo: 'HIRE-2026-0099' })];
+      const openings = [{ id: 1, Title: '総組(溶接) 2名', UnitPath: '工場/製造部/第二工場/総組(溶接)', Count: 2, Filled: 0, State: '募集中', Memo: 'Excel から引き継ぎ' }];
+      this.staff = { units, persons, openings, snaps: [] };
+    }
+    return JSON.parse(JSON.stringify(this.staff));
+  },
+  async staffSave(list, id, fields) {
+    const key = { STF_Unit: 'units', STF_Person: 'persons', STF_Opening: 'openings', STF_Snapshot: 'snaps' }[list], arr = this.staff[key];
+    if (id) { Object.assign(arr.find(x => x.id === id) || {}, fields); return id; }
+    const nid = Math.max(0, ...arr.map(x => x.id)) + 1; arr.push({ id: nid, ...fields }); return nid;
   },
   // 開発：雇用契約の台帳と給与のデータの見本（架空の人。本物の給与は読まない）
   ledger: [], ledgerSeq: 0,
@@ -830,6 +863,7 @@ const TABS = [
   { key: 'payroll',  label: '給与精算の集計', show: () => st.allReqs != null && !!settleRule() },
   { key: 'orgsync',  label: '組織マスタの同期', show: () => hasRole('組織マスタの同期') },   // 出す人は役割「組織マスタの同期」（WF_Role）
   { key: 'aiusage',  label: 'AI の使用量', show: () => isWfAdmin() },   // 出す人は役割「組織マスタの同期」（WF_Role）
+  { key: 'staff',    label: '人員表', show: () => canSeeStaff() },   // 幹部（階層区分が管理職以上）と、役割「人員表を見る・直す・申請」の人
   { key: 'contract', label: '雇用契約の台帳', show: () => hasRole('雇用契約の台帳') && !!ledgerCfg().site },   // 出す人は役割「雇用契約の台帳」。台帳そのものは役員と総務幹部だけのサイトにある
 ];
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
@@ -854,6 +888,7 @@ const NAV_ICONS = {
   all: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
   aiusage: '<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>',
+  staff: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
   contract: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h4"/>',
   orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
 };
@@ -875,6 +910,7 @@ function render() {
   if (st.view === 'orgsync') return renderOrgSync(main);
   if (st.view === 'aiusage') return renderAiUsage(main);
   if (st.view === 'contract') return renderContract(main);
+  if (st.view === 'staff') return renderStaff(main);
   renderListView(main);
 }
 
@@ -985,6 +1021,162 @@ function renderAiUsage(main) {
     ${table('人ごと', group(r => r.by))}</div>`;
   $('auMonth').onchange = e => { aiUse.month = e.target.value; render(); };
   $('auReload').onclick = () => { aiUse.rows = null; loadAiUsage(); };
+}
+/* ---------- 人員表（設計：13_人員表.md）
+   場所（STF_Unit のパス 例 工場/製造部/第二工場/総組(溶接)）ごとに、在籍・入社予定・募集中と、必要（＝在籍＋入社予定＋募集中。手では持たない）を出す。
+   見られる：幹部（階層区分が管理職以上）と役割「人員表を見る・直す・申請」の人（SharePoint の権限はグループ WF 人員表（見る））
+   直せる：役割「人員表を直す」「人員表の申請」の人。範囲（WF_Role の Scope：全社／工場／本社/営業部/国内営業 など）の中だけ */
+const STAFF_ROLES = ['人員表を見る', '人員表を直す', '人員表の申請'];
+const STAFF_KINDS = ['社員', '契約', 'パート', '特定技能', '派遣', 'シルバー', 'スポット', '役員'];
+const STAFF_STATES = ['在籍', '入社予定', '退職予定', '退職'];
+const canSeeStaff = () => STAFF_ROLES.some(hasRole) || ['管理職', '部門長', '役員', '社長'].includes((st.me.org || {}).Tier);
+/* 自分が直せる範囲（パスの頭）。'' は全社 */
+function staffScopes() {
+  return st.M.roles.filter(r => ['人員表を直す', '人員表の申請'].includes(r.Title) && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn))
+    .flatMap(r => String(r.Scope || '全社').split(';').map(x => x.trim())).map(x => x === '全社' ? '' : x).filter((x, i, a) => a.indexOf(x) === i);
+}
+const inScope = (path, scopes) => scopes.some(s => s === '' || path === s || String(path).startsWith(s + '/'));
+const staff = { data: null, busy: false, err: '', q: '', closed: new Set(), sel: null, add: null, unitEdit: null, cmp: '', ledger: null };
+async function loadStaff() {
+  staff.busy = true; staff.err = ''; render();
+  try {
+    staff.data = await api.staffLoad();
+    // 満了が近い人の色：雇用契約の台帳を見られる人だけ（台帳は役員と総務幹部だけのサイト）
+    if (hasRole('雇用契約の台帳') && ledgerCfg().site && !staff.ledger) { try { staff.ledger = await api.ledgerItems(); } catch { staff.ledger = []; } }
+  } catch (e) { staff.err = '人員表を読めませんでした：' + e.message + (e.status === 403 || e.status === 404 ? '（人員表を見る権限が無いときに出ます。総務にご連絡ください）' : ''); }
+  staff.busy = false; render();
+}
+/* 場所の木と数 */
+function staffModel(d) {
+  const units = d.units.filter(u => u.Active !== false).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
+  const persons = d.persons.filter(p => p.State !== '退職'), opens = d.openings.filter(o => o.State === '募集中');
+  const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+  const kids = {}; units.forEach(u => (kids[parentOf(u.Path)] = kids[parentOf(u.Path)] || []).push(u));
+  const own = path => ({ act: persons.filter(p => p.UnitPath === path && p.State !== '入社予定'), plan: persons.filter(p => p.UnitPath === path && p.State === '入社予定'),
+    open: opens.filter(o => o.UnitPath === path).reduce((n, o) => n + Math.max(0, (Number(o.Count) || 0) - (Number(o.Filled) || 0)), 0) });
+  const cnt = {};
+  const count = path => { const o = own(path), c = { act: o.act.length, plan: o.plan.length, open: o.open };
+    (kids[path] || []).forEach(k => { const x = count(k.Path); c.act += x.act; c.plan += x.plan; c.open += x.open; }); c.need = c.act + c.plan + c.open; return cnt[path] = c; };
+  (kids[''] || []).forEach(u => count(u.Path));
+  return { units, persons, opens, kids, own, cnt };
+}
+function renderStaff(main) {
+  const S = staff;
+  if (!S.data && !S.busy && !S.err) { loadStaff(); return; }
+  const scopes = staffScopes(), M = S.data ? staffModel(S.data) : null;
+  const dueOf = p => { const r = (S.ledger || []).find(x => p.EmpCode && codeKey(x.EmpCode) === codeKey(p.EmpCode) && x.State !== '終了'); if (!r) return null;
+    const d = dIn(r.ContractTo) || dIn(r.ProbationEnd); if (!d) return null; const n = daysTo(d), warn = (ledgerCfg().remind || {}).owner || 40;
+    return { d, n, cls: n < 0 ? 'ng' : n <= warn ? 'warn' : '', label: (dIn(r.ContractTo) ? '契約満了 ' : '試用満了 ') + d, state: r.State }; };
+  const words = S.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+  const hit = p => !words.length || words.every(w => [p.Title, p.Kana, p.UnitPath, p.Kind, p.Agency, p.JobLabel].join(' ').toLowerCase().includes(w));
+  const kindBadge = p => p.Kind && p.Kind !== '社員' ? `<span class="sf-k k-${esc(p.Kind)}">${esc(p.Kind)}${p.Agency && p.Kind !== 'シルバー' ? '・' + esc(p.Agency) : ''}</span>` : '';
+  const personRow = p => { const due = dueOf(p);
+    return `<li class="sf-p ${S.sel === p.id ? 'on' : ''} ${due && due.cls ? 'd-' + due.cls : ''}" data-sp="${p.id}"><b>${esc(p.Title)}</b>${p.JobLabel ? `<span class="muted">${esc(p.JobLabel)}</span>` : ''}${kindBadge(p)}
+      ${p.State === '退職予定' ? '<span class="sf-k k-out">退職予定</span>' : ''}${due ? `<span class="sf-due ${due.cls}">${esc(due.label)}${due.state === '更新の稟議中' ? '・稟議中' : ''}</span>` : ''}${p.Memo ? `<span class="muted sf-m">${esc(p.Memo)}</span>` : ''}</li>`; };
+  const node = (u, depth) => {
+    const c = M.cnt[u.Path] || { act: 0, plan: 0, open: 0, need: 0 }, o = M.own(u.Path), kids = M.kids[u.Path] || [];
+    const act = o.act.filter(hit), plan = o.plan.filter(hit), canEd = inScope(u.Path, scopes);
+    const opens = M.opens.filter(x => x.UnitPath === u.Path);
+    const childHtml = kids.map(k => node(k, depth + 1)).join('');
+    if (words.length && !act.length && !plan.length && !childHtml) return '';
+    if (u.Title === '（班未定）' && !c.need) return '';   // 班未定が空なら出さない
+    const open = !S.closed.has(u.Path) || words.length;
+    return `<li class="sf-u lv${Math.min(depth, 3)}"><details ${open ? 'open' : ''} data-su="${esc(u.Path)}"><summary><span class="sf-n">${esc(u.Title)}</span>${u.Head ? `<span class="muted">${esc(u.Head)}</span>` : ''}
+        <span class="sf-c"><span title="必要＝在籍＋入社予定＋募集中">必要 <b>${c.need}</b></span><span>在籍 <b>${c.act}</b></span>${c.plan ? `<span class="pl">予定 <b>${c.plan}</b></span>` : ''}${c.open ? `<span class="op">募集中 <b>${c.open}</b></span>` : ''}</span>
+        ${canEd ? `<span class="sf-act noprint"><button class="mini" data-uadd="${esc(u.Path)}">＋人</button><button class="mini" data-uedit="${esc(u.Path)}">メモ</button></span>` : ''}</summary>
+      ${u.Memo ? `<div class="muted sf-memo">${esc(u.Memo)}</div>` : ''}
+      ${act.length || plan.length || opens.length ? `<ul class="sf-ps">${act.map(personRow).join('')}
+        ${plan.map(p => `<li class="sf-p sf-plan" data-sp="${p.id}">▷ 入社予定：<b>${esc(p.Title)}</b>${p.StartDate ? ' ' + esc(dIn(p.StartDate)) : ''}${p.RequestNo ? `<span class="muted">（${esc(p.RequestNo)}）</span>` : ''}</li>`).join('')}
+        ${opens.map(x => `<li class="sf-p sf-open">▷ 募集中：<b>${Math.max(0, (Number(x.Count) || 0) - (Number(x.Filled) || 0))}名</b><span class="muted">${esc([x.RequestNo, x.Media, x.Memo].filter(Boolean).join('・'))}</span></li>`).join('')}</ul>` : ''}
+      ${childHtml ? `<ul class="sf-tree">${childHtml}</ul>` : ''}</details></li>`;
+  };
+  const top = M ? (M.kids[''] || []) : [];
+  const snaps = S.data ? [...S.data.snaps].sort((a, b) => String(b.Title).localeCompare(String(a.Title))) : [];
+  const ym = new Date().toISOString().slice(0, 7);
+  main.innerHTML = `<div class="detail" style="flex:1">
+    <div class="card noprint"><h3 class="h3f"><span>人員表</span><span><button class="mini" id="sfReload">読み直す</button> <button class="mini" id="sfPrint">🖨 印刷・PDF</button></span></h3>
+      <div class="muted" style="margin-bottom:10px">必要＝在籍＋入社予定＋募集中（手では持ちません。人を増やすときは求人の稟議から）。${S.ledger ? '契約・試用期間の満了が近い人は色が変わります（オレンジ＝' + ((ledgerCfg().remind || {}).owner || 40) + '日を切った、赤＝すぎた）。' : ''}
+        ${scopes.length ? `あなたが直せる範囲：${esc(scopes.map(s => s || '全社').join('・'))}` : '見るだけです。'}</div>
+      <div class="actions" style="margin-top:0"><input id="sfQ" type="search" placeholder="🔍 名前・場所・区分で探す" value="${esc(S.q)}" style="max-width:260px">
+        <button class="mini" id="sfOpen">すべて開く</button><button class="mini" id="sfClose">たたむ</button><span style="flex:1"></span>
+        ${snaps.length ? `<select id="sfCmp" style="width:auto"><option value="">月の控えと比べる…</option>${snaps.map(x => `<option value="${x.id}" ${String(S.cmp) === String(x.id) ? 'selected' : ''}>${esc(x.Title)}</option>`).join('')}</select>` : ''}
+        ${scopes.includes('') ? `<button class="mini" id="sfSnap">${esc(ym)} の控えを残す</button>` : ''}</div>
+      ${S.busy ? '<div class="muted" style="margin-top:8px">読み込み中…</div>' : ''}${S.err ? `<div class="errbox" style="margin-top:10px">${esc(S.err)}</div>` : ''}</div>
+    <div id="sfPanel"></div>
+    ${S.cmp && M ? staffDiffHtml(snaps.find(x => String(x.id) === String(S.cmp)), M) : ''}
+    ${M ? `<div class="card sf-card"><div class="sf-title">人員表　${esc(fmtDT(new Date()))}</div><ul class="sf-tree root">${top.map(u => node(u, 0)).join('')}</ul></div>` : ''}</div>`;
+  if (!M) return;
+  $('sfReload').onclick = () => { S.data = null; S.ledger = null; loadStaff(); };
+  $('sfPrint').onclick = () => { main.querySelectorAll('details[data-su]').forEach(d => d.open = true); window.print(); };
+  $('sfQ').oninput = e => { S.q = e.target.value; const pos = e.target.selectionStart; renderStaff(main); const q = $('sfQ'); q.focus(); q.setSelectionRange(pos, pos); };
+  $('sfOpen').onclick = () => { S.closed.clear(); render(); };
+  $('sfClose').onclick = () => { M.units.filter(u => u.Path.split('/').length >= 2).forEach(u => S.closed.add(u.Path)); render(); };
+  main.querySelectorAll('details[data-su]').forEach(d => d.addEventListener('toggle', () => { d.open ? S.closed.delete(d.dataset.su) : S.closed.add(d.dataset.su); }));
+  if ($('sfCmp')) $('sfCmp').onchange = e => { S.cmp = e.target.value; render(); };
+  if ($('sfSnap')) $('sfSnap').onclick = async () => {
+    const data = { at: new Date().toISOString(), units: M.units.map(u => ({ path: u.Path, ...M.cnt[u.Path] })), persons: M.persons.map(p => ({ id: p.id, name: p.Title, path: p.UnitPath, kind: p.Kind, state: p.State })) };
+    const ex = S.data.snaps.find(x => x.Title === ym);
+    if (ex && !confirm(`${ym} の控えはもうあります。いまの人員表で置き換えますか？`)) return;
+    try { await api.staffSave('STF_Snapshot', ex ? ex.id : 0, { Title: ym, DataJson: JSON.stringify(data) }); toast(`${ym} の控えを残しました`); S.data = null; loadStaff(); }
+    catch (e) { alert('残せませんでした：' + e.message); }
+  };
+  main.querySelectorAll('[data-sp]').forEach(li => li.onclick = () => { const id = Number(li.dataset.sp); S.sel = S.sel === id ? null : id; S.add = null; S.unitEdit = null; render(); });
+  main.querySelectorAll('[data-uadd]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.add = b.dataset.uadd; S.sel = null; S.unitEdit = null; render(); });
+  main.querySelectorAll('[data-uedit]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.unitEdit = b.dataset.uedit; S.sel = null; S.add = null; render(); });
+  staffPanel($('sfPanel'), M, scopes);
+}
+/* 人を直す・足す、場所のメモ（一覧の上に出す） */
+function staffPanel(box, M, scopes) {
+  const S = staff, p = S.sel ? M.persons.find(x => x.id === S.sel) || S.data.persons.find(x => x.id === S.sel) : null;
+  const u = S.unitEdit ? M.units.find(x => x.Path === S.unitEdit) : null;
+  if (!p && !S.add && !u) return;
+  const canEd = p ? inScope(p.UnitPath, scopes) : true;
+  const unitOpts = sel => M.units.filter(x => inScope(x.Path, scopes) || x.Path === sel).map(x => `<option value="${esc(x.Path)}" ${x.Path === sel ? 'selected' : ''}>${esc(x.Path.replace(/\//g, ' › '))}</option>`).join('');
+  const sel = (k, list, v) => `<select data-sf="${k}">${list.map(x => `<option ${x === v ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>`;
+  if (u) {
+    box.innerHTML = `<div class="card"><h3 class="h3f"><span>${esc(u.Path.replace(/\//g, ' › '))}</span><button class="mini" id="sfX">閉じる</button></h3><div class="lg-form">
+      <label class="fld"><span>長の表示</span><input data-sf="Head" value="${esc(u.Head || '')}" placeholder="例：次長 山田 太郎"></label>
+      <label class="fld wide"><span>メモ</span><textarea data-sf="Memo" rows="2" placeholder="例：※無料求人継続、3・4月に有料検討">${esc(u.Memo || '')}</textarea></label></div>
+      <div class="actions"><span style="flex:1"></span><button class="pri" id="sfSave">保存する</button></div></div>`;
+  } else {
+    const x = p || { Title: '', Kind: '派遣', State: '在籍', UnitPath: S.add };
+    const ro = p && !canEd;
+    box.innerHTML = `<div class="card"><h3 class="h3f"><span>${p ? esc(p.Title) : '人を足す（' + esc(S.add.split('/').pop()) + '）'}${p && p.EmpCode ? `　<span class="muted" style="font-weight:400">従業員コード ${esc(p.EmpCode)}・もと ${esc(p.Source || '')}</span>` : ''}</span><button class="mini" id="sfX">閉じる</button></h3>
+      ${ro ? '<div class="muted">この人はあなたの範囲の外なので、見るだけです。</div>' : ''}
+      ${!p ? '<div class="muted" style="margin-bottom:8px">給与にいない人（派遣・シルバー人材・スポットなど）を足します。社員は給与から自動で入るので、ここでは足しません。</div>' : ''}
+      <fieldset ${ro ? 'disabled' : ''} style="border:0;padding:0;margin:0"><div class="lg-form">
+        ${!p ? `<label class="fld"><span>氏名</span><input data-sf="Title" value=""></label>` : ''}
+        <label class="fld"><span>場所</span><select data-sf="UnitPath">${unitOpts(x.UnitPath)}</select></label>
+        <label class="fld"><span>役職の表示</span><input data-sf="JobLabel" value="${esc(x.JobLabel || '')}" placeholder="例：班長・主任"></label>
+        <label class="fld"><span>区分</span>${sel('Kind', p ? STAFF_KINDS : ['派遣', 'シルバー', 'スポット'], x.Kind)}</label>
+        <label class="fld"><span>派遣会社など</span><input data-sf="Agency" value="${esc(x.Agency || '')}" placeholder="例：〇〇スタッフ"></label>
+        <label class="fld"><span>状態</span>${sel('State', STAFF_STATES, x.State || '在籍')}</label>
+        <label class="fld"><span>入社日・受け入れ日</span><input type="date" data-sf="StartDate" value="${esc(dIn(x.StartDate))}"></label>
+        <label class="fld wide"><span>メモ</span><textarea data-sf="Memo" rows="2">${esc(x.Memo || '')}</textarea></label></div></fieldset>
+      ${ro ? '' : `<div class="actions"><span class="muted">${p && p.Source === '給与' ? '氏名・入社日は給与から入ります。場所・役職・メモをここで直します。' : ''}</span><span style="flex:1"></span><button class="pri" id="sfSave">${p ? '保存する' : '足す'}</button></div>`}</div>`;
+  }
+  $('sfX').onclick = () => { S.sel = null; S.add = null; S.unitEdit = null; render(); };
+  if ($('sfSave')) $('sfSave').onclick = async () => {
+    const f = {}; box.querySelectorAll('[data-sf]').forEach(el => { f[el.dataset.sf] = el.value.trim(); });
+    if (!u && !p && !f.Title) return alert('氏名を入れてください');
+    if (!u && !inScope(f.UnitPath, scopes)) return alert('その場所は、あなたの範囲の外です');
+    if (!u) f.StartDate = f.StartDate ? dOut(f.StartDate) : null;
+    if (!u && !p) f.Source = '手入力';
+    try { await api.staffSave(u ? 'STF_Unit' : 'STF_Person', u ? u.id : p ? p.id : 0, f); toast('人員表を保存しました'); S.sel = null; S.add = null; S.unitEdit = null; S.data = null; loadStaff(); }
+    catch (e) { alert('保存できませんでした：' + e.message + (e.status === 403 ? '（直す権限がありません）' : '')); }
+  };
+}
+/* 月の控えと比べる：増えた人・減った人・場所が変わった人と、場所ごとの数の変化 */
+function staffDiffHtml(snap, M) {
+  const old = pj(snap && snap.DataJson, null); if (!old) return '';
+  const before = Object.fromEntries((old.persons || []).filter(p => p.state !== '退職').map(p => [p.id, p])), now = Object.fromEntries(M.persons.map(p => [p.id, p]));
+  const added = M.persons.filter(p => !before[p.id]), gone = Object.values(before).filter(p => !now[p.id]), moved = M.persons.filter(p => before[p.id] && before[p.id].path !== p.UnitPath);
+  const ou = Object.fromEntries((old.units || []).map(x => [x.path, x]));
+  const ch = M.units.map(u => ({ u, a: ou[u.Path] || { need: 0, act: 0 }, b: M.cnt[u.Path] || { need: 0, act: 0 } })).filter(x => x.a.need !== x.b.need || x.a.act !== x.b.act);
+  const li = (a, f) => a.length ? a.map(f).join('、') : 'なし';
+  return `<div class="card"><h3>${esc(snap.Title)} の控えとの比べ</h3>
+    <div class="muted">増えた人：${esc(li(added, p => p.Title + '（' + p.UnitPath.split('/').pop() + '）'))}<br>減った人：${esc(li(gone, p => p.name + '（' + String(p.path).split('/').pop() + '）'))}<br>場所が変わった人：${esc(li(moved, p => p.Title + '：' + String(before[p.id].path).split('/').pop() + ' → ' + p.UnitPath.split('/').pop()))}</div>
+    ${ch.length ? `<div style="overflow-x:auto;margin-top:8px"><table class="tbl os"><tr><th>場所</th><th>必要</th><th>在籍</th></tr>${ch.map(x => `<tr><td>${esc(x.u.Path.replace(/\//g, ' › '))}</td><td>${x.a.need} → <b>${x.b.need}</b></td><td>${x.a.act} → <b>${x.b.act}</b></td></tr>`).join('')}</table></div>` : ''}</div>`;
 }
 /* ---------- 雇用契約の台帳（役割「雇用契約の台帳」の人だけ。台帳と給与のデータは設定 contract.ledger の site＝役員と総務幹部だけのサイト）
    ・人事情報から取り込む：給与の人事情報（employee_master.json の最新の月・在職）から、契約・パート・試用期間中の人を入れる。
