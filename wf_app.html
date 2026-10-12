@@ -1046,15 +1046,21 @@ async function loadLedger() {
   ledger.busy = true; ledger.err = ''; render();
   try { ledger.rows = await api.ledgerItems(); }
   catch (e) { ledger.err = '台帳を読めませんでした：' + e.message + (e.status === 403 || e.status === 404 ? '（台帳のサイトを見る権限が無いときに出ます）' : ''); }
-  ledger.busy = false; render();
+  ledger.busy = false;
+  // 開くたびに人事情報と比べる（違いがあれば上に知らせるだけ。入れるのは確かめてから）
+  if (ledger.rows) return planLedger(true);
+  render();
 }
-async function planLedger() {
-  ledger.busy = true; ledger.err = ''; render();
+async function planLedger(silent) {
+  ledger.busy = true; ledger.err = ''; if (!silent) render();
   try {
     const R = ledgerCfg().rules || {}, today = dIn(new Date());
-    const em = (await api.payrollJson('history/employee_master.json')) || [];
+    const em = await api.payrollJson('history/employee_master.json');
+    if (!Array.isArray(em) || !em.length) throw new Error('給与の人事情報（history/employee_master.json）が見つかりません。設定 contract.ledger の payrollFolder を確かめてください');
     const last = em.map(e => e.年月).filter(Boolean).sort().pop() || '';
     const active = em.filter(e => e.年月 === last && e.在職区分名称 === '在職' && !e.退職年月日);
+    // 画面の氏名・部署・所属などは、台帳の写しではなく人事情報（給与ダッシュボードと同じもの）を出す
+    ledger.master = Object.fromEntries(em.filter(e => e.年月 === last).map(e => [codeKey(e.従業員コード), e]));
     const byCode = Object.fromEntries(ledger.rows.map(r => [codeKey(r.EmpCode), r])), plan = [];
     active.forEach(e => {
       const d = ledgerDefaults(e, R, today), r = byCode[codeKey(e.従業員コード)];
@@ -1068,15 +1074,19 @@ async function planLedger() {
         if (LEDGER_DATES.includes(k) && ov) return;   // 日付は空のときだけ埋める（更新で延びた期間を戻さない）
         if (String(nv) !== String(ov) && !(nv === '' && !ov)) ch[k] = nv;
       });
-      if (r.State === '終了') ch.State = '契約中';
+      // 特定技能に変わった（または外れた）ときは、手で直していなければ契約の期間を決まりで計算し直す
+      if ('Tokutei' in ch && !man.includes('ContractTo') && !man.includes('ContractFrom') && d.ContractTo) { ch.ContractFrom = d.ContractFrom; ch.ContractTo = d.ContractTo; }
+      if (r.State === '終了' && d.target) ch.State = '契約中';
       if (Object.keys(ch).length) plan.push({ kind: '直す', name: r.Title, r, fields: ch, sel: true });
     });
     const act = new Set(active.map(e => codeKey(e.従業員コード)));
     ledger.rows.filter(r => r.State !== '終了' && r.EmpCode && !act.has(codeKey(r.EmpCode))).forEach(r => plan.push({ kind: '終了にする', name: r.Title, r, fields: { State: '終了' }, sel: true, note: '人事情報の在職にいない' }));
-    ledger.plan = plan; ledger.planMonth = last;
+    ledger.plan = plan; ledger.planMonth = last; ledger.planSilent = !!silent;
   } catch (e) { ledger.err = '人事情報を読めませんでした：' + e.message; }
   ledger.busy = false; render();
 }
+const ledgerName = r => { const e = (ledger.master || {})[codeKey(r.EmpCode)]; return e ? String(e.従業員名 || '').trim() || r.Title : r.Title; };
+const ledgerDept = r => { const e = (ledger.master || {})[codeKey(r.EmpCode)]; return e ? e.部門 || r.Dept || '' : r.Dept || ''; };
 const toSp = f => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, LEDGER_DATES.includes(k) ? dOut(v) : v]));
 async function ledgerAttend(r) {
   const from = dIn(r.ContractFrom) || dIn(r.HireDate), to = dIn(r.ContractTo) || dIn(new Date());
@@ -1115,7 +1125,7 @@ function renderContract(main) {
   const due = r => [dIn(r.ContractTo), dIn(r.ProbationEnd)].filter(Boolean).sort()[0] || '';
   const words = L.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
   const rows = (L.rows || []).filter(r => L.showEnded || r.State !== '終了')
-    .filter(r => !words.length || words.every(w => [r.Title, r.Dept, r.EmpType, r.Shozoku, nameOf(r.ManagerUPN || '')].join(' ').toLowerCase().includes(w)))
+    .filter(r => !words.length || words.every(w => [ledgerName(r), ledgerDept(r), r.EmpType, r.Shozoku, nameOf(r.ManagerUPN || '')].join(' ').toLowerCase().includes(w)))
     .sort((a, b) => (a.State === '終了') - (b.State === '終了') || (due(a) || '9999').localeCompare(due(b) || '9999') || String(a.Title).localeCompare(String(b.Title)));
   const dueCell = s => { if (!s) return '<span class="muted">—</span>'; const n = daysTo(s);
     return `${esc(s)}<div class="muted" style="${n <= warnAt ? 'color:' + (n < 0 ? 'var(--ng)' : 'var(--warn)') + ';font-weight:700' : ''}">${n < 0 ? `${-n}日すぎ` : `あと${n}日`}</div>`; };
@@ -1124,12 +1134,13 @@ function renderContract(main) {
   main.innerHTML = `<div class="detail" style="flex:1">
     <div class="card"><h3 class="h3f"><span>雇用契約の台帳</span><button class="mini" id="lgReload">読み直す</button></h3>
       <div class="muted" style="margin-bottom:10px">契約社員・パート・試用期間中の人の、契約の期間と上司です。台帳は役員と総務幹部だけのサイトにあり、見られるのはそのサイトの人だけです。
-        満了の${warnAt}日前に総務へ、${((C.remind || {}).managers || []).join('・')}日前に上司とその上の責任者へ、更新のご案内が届きます（上司には、その人の数字と期間だけ）。</div>
+        満了の${warnAt}日前に総務へお知らせが届きます。勤怠を確かめて「申請担当者に渡す」と、上司とその上の責任者に申請の依頼が届き、稟議が出るまで${((C.remind || {}).again || []).join("・")}日前にもう一度お願いします（上司には、その人の数字と期間だけ）。</div>
       <div class="actions" style="margin-top:0"><input id="lgQ" type="search" placeholder="🔍 名前・部署・上司で探す" value="${esc(L.q)}" style="max-width:260px">
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lgEnded" style="width:auto" ${L.showEnded ? 'checked' : ''}>終了した人も表示</label>
-        <span style="flex:1"></span><button class="pri" id="lgPlan" ${L.busy || !L.rows ? 'disabled' : ''}>人事情報から取り込む</button></div>
+        <span style="flex:1"></span><button class="pri" id="lgPlan" ${L.busy || !L.rows ? 'disabled' : ''}>人事情報と比べる</button></div>
       ${L.busy ? '<div class="muted" style="margin-top:8px">読み込み中…</div>' : ''}${L.err ? `<div class="errbox" style="margin-top:10px">${esc(L.err)}</div>` : ''}</div>
-    ${P ? `<div class="card"><h3>人事情報（${esc(P.length ? L.planMonth : L.planMonth || '')}）から取り込む内容</h3>
+    ${P && L.planSilent ? (P.length ? `<div class="return-banner" style="margin:0"><b>人事情報（${esc(L.planMonth)}）と違うところがあります</b>：${['新しく入れる', '直す', '終了にする'].map(k => [k, P.filter(p => p.kind === k).length]).filter(x => x[1]).map(x => x[0] + ' ' + x[1] + '件').join('・')}　<button class="mini" id="lpShow">確かめる</button></div>` : '') : ''}
+    ${P && !L.planSilent ? `<div class="card"><h3>人事情報（${esc(P.length ? L.planMonth : L.planMonth || '')}）から取り込む内容</h3>
       ${P.length ? `<div class="muted" style="margin-bottom:8px">契約の期間・試用期間の満了日は決まりで入れた初めの値です。違う人は、取り込んだあとに直してください（直した項目は、次に取り込んでも変えません）。</div>
       <div style="overflow-x:auto"><table class="tbl os"><tr><th></th><th>区分</th><th>氏名</th><th>入れる・変わる内容</th></tr>
         ${P.map((p, i) => `<tr><td><input type="checkbox" data-lp="${i}" ${p.sel ? 'checked' : ''} style="width:auto"></td><td>${pill({ label: p.kind, cls: p.kind === '新しく入れる' ? 'ok' : p.kind === '終了にする' ? 'gray' : 'warn' })}</td><td>${esc(p.name)}</td>
@@ -1138,15 +1149,16 @@ function renderContract(main) {
       : `<div class="muted">台帳と人事情報に違いはありません。</div><div class="actions"><button id="lpCancel">閉じる</button></div>`}</div>` : ''}
     <div id="lgEdit"></div>
     <div class="card"><div style="overflow-x:auto"><table class="tbl os lg"><tr><th>氏名</th><th>部署</th><th>雇用形態</th><th>契約の満了日</th><th>試用期間の満了日</th><th>上司</th><th>その上の責任者</th><th>状態</th><th>勤怠の集計</th></tr>
-      ${rows.map(r => `<tr data-lg="${r.id}" class="${L.sel === r.id ? 'on' : ''}" style="cursor:pointer"><td><b>${esc(r.Title)}</b>${r.Tokutei ? ' <span class="pill p-gray">特定技能</span>' : ''}</td><td>${esc(r.Dept || '')}</td><td>${esc(r.EmpType || '')}</td>
+      ${rows.map(r => `<tr data-lg="${r.id}" class="${L.sel === r.id ? 'on' : ''}" style="cursor:pointer"><td><b>${esc(ledgerName(r))}</b>${r.Tokutei ? ' <span class="pill p-gray">特定技能</span>' : ''}</td><td>${esc(ledgerDept(r))}</td><td>${esc(r.EmpType || '')}</td>
         <td>${dueCell(dIn(r.ContractTo))}</td><td>${dueCell(dIn(r.ProbationEnd))}</td><td>${esc(r.ManagerUPN ? nameOf(r.ManagerUPN) : '—')}</td><td>${esc(r.Manager2UPN ? nameOf(r.Manager2UPN) : '—')}</td>
         <td>${pill({ label: r.State || '契約中', cls: r.State === '終了' ? 'gray' : r.State === '更新の稟議中' ? 'run' : 'ok' })}</td><td class="muted">${r.AttendAt ? esc(dIn(r.AttendAt)) : '—'}</td></tr>`).join('')
-        || `<tr><td colspan="9" class="muted" style="padding:12px">${L.rows && !L.rows.length ? '台帳はまだ空です。「人事情報から取り込む」から入れてください' : '当てはまる人はいません'}</td></tr>`}</table></div></div>
+        || `<tr><td colspan="9" class="muted" style="padding:12px">${L.rows && !L.rows.length ? '台帳はまだ空です。「人事情報と比べる」から入れてください' : '当てはまる人はいません'}</td></tr>`}</table></div></div>
     </div>`;
   $('lgReload').onclick = () => { L.rows = null; L.plan = null; loadLedger(); };
   $('lgQ').oninput = e => { L.q = e.target.value; const pos = e.target.selectionStart; renderContract(main); const q = $('lgQ'); q.focus(); q.setSelectionRange(pos, pos); };
   $('lgEnded').onchange = e => { L.showEnded = e.target.checked; render(); };
-  $('lgPlan').onclick = planLedger;
+  $('lgPlan').onclick = () => planLedger(false);
+  if ($('lpShow')) $('lpShow').onclick = () => { L.planSilent = false; render(); };
   main.querySelectorAll('tr[data-lg]').forEach(tr => tr.onclick = () => { L.sel = L.sel === Number(tr.dataset.lg) ? null : Number(tr.dataset.lg); L.attend = null; render(); if (L.sel) $('lgEdit').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   main.querySelectorAll('input[data-lp]').forEach(c => c.onchange = () => { P[Number(c.dataset.lp)].sel = c.checked; renderContract(main); });
   if ($('lpCancel')) $('lpCancel').onclick = () => { L.plan = null; render(); };
@@ -1166,7 +1178,7 @@ function renderLedgerEdit(box, r) {
   const pick = (k, v) => `<select data-le="${k}"><option value="">（なし）</option>${org.map(p => `<option value="${esc(lc(p.UPN))}" ${lc(v || '') === lc(p.UPN) ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept || '')}）</option>`).join('')}</select>`;
   const lab = (k, html) => `<label class="fld${man.includes(k) ? ' man' : ''}"><span>${LEDGER_LABEL[k]}${man.includes(k) ? ' <i title="手で直した項目。取り込み直しても変えません">✎</i>' : ''}</span>${html}</label>`;
   const a = pj(r.AttendJson, null), busy = L.attendBusy === r.id;
-  box.innerHTML = `<div class="card"><h3 class="h3f"><span>${esc(r.Title)}　<span class="muted" style="font-weight:400">${esc([r.EmpCode && '従業員コード ' + r.EmpCode, r.Dept, r.Shozoku, r.PayType, r.HireDate && '入社 ' + dIn(r.HireDate)].filter(Boolean).join('・'))}</span></span><button class="mini" id="leClose">閉じる</button></h3>
+  box.innerHTML = `<div class="card"><h3 class="h3f"><span>${esc(ledgerName(r))}　<span class="muted" style="font-weight:400">${esc((e => [r.EmpCode && '従業員コード ' + r.EmpCode, ledgerDept(r), e ? e.所属 : r.Shozoku, e ? e.給与種別名称 : r.PayType, (e ? dIn(e.入社年月日) : dIn(r.HireDate)) && '入社 ' + (e ? dIn(e.入社年月日) : dIn(r.HireDate))].filter(Boolean).join('・'))((ledger.master || {})[codeKey(r.EmpCode)]))}</span></span><button class="mini" id="leClose">閉じる</button></h3>
     <div class="lg-form">
       ${lab('EmpType', `<select data-le="EmpType">${EMP_TYPES.map(t => `<option ${r.EmpType === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`)}
       ${lab('Tokutei', `<span><input type="checkbox" data-le="Tokutei" style="width:auto" ${r.Tokutei ? 'checked' : ''}> 1年ごとの契約</span>`)}
