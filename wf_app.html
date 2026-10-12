@@ -1049,16 +1049,18 @@ async function loadStaff() {
 /* 場所の木と数 */
 function staffModel(d) {
   const units = d.units.filter(u => u.Active !== false).sort((a, b) => (a.Sort || 0) - (b.Sort || 0));
-  const persons = d.persons.filter(p => p.State !== '退職'), opens = d.openings.filter(o => o.State === '募集中');
+  const persons = d.persons.filter(p => p.State !== '退職'), opens = d.openings.filter(o => ['募集中', '求人の稟議中'].includes(o.State));
+  const rest = o => Math.max(0, (Number(o.Count) || 0) - (Number(o.Filled) || 0));
   const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
   const kids = {}; units.forEach(u => (kids[parentOf(u.Path)] = kids[parentOf(u.Path)] || []).push(u));
-  const own = path => ({ act: persons.filter(p => p.UnitPath === path && p.State !== '入社予定'), plan: persons.filter(p => p.UnitPath === path && p.State === '入社予定'),
-    open: opens.filter(o => o.UnitPath === path).reduce((n, o) => n + Math.max(0, (Number(o.Count) || 0) - (Number(o.Filled) || 0)), 0) });
+  const own = path => ({ act: persons.filter(p => p.UnitPath === path && ['在籍', '退職予定'].includes(p.State || '在籍')), plan: persons.filter(p => p.UnitPath === path && p.State === '入社予定'),
+    pendP: persons.filter(p => p.UnitPath === path && p.State === '採用の稟議中'),
+    open: opens.filter(o => o.UnitPath === path && o.State === '募集中').reduce((n, o) => n + rest(o), 0), pendO: opens.filter(o => o.UnitPath === path && o.State === '求人の稟議中').reduce((n, o) => n + rest(o), 0) });
   const cnt = {};
-  const count = path => { const o = own(path), c = { act: o.act.length, plan: o.plan.length, open: o.open };
-    (kids[path] || []).forEach(k => { const x = count(k.Path); c.act += x.act; c.plan += x.plan; c.open += x.open; }); c.need = c.act + c.plan + c.open; return cnt[path] = c; };
+  const count = path => { const o = own(path), c = { act: o.act.length, plan: o.plan.length, open: o.open, pend: o.pendP.length + o.pendO };
+    (kids[path] || []).forEach(k => { const x = count(k.Path); c.act += x.act; c.plan += x.plan; c.open += x.open; c.pend += x.pend; }); c.need = c.act + c.plan + c.open; return cnt[path] = c; };
   (kids[''] || []).forEach(u => count(u.Path));
-  return { units, persons, opens, kids, own, cnt };
+  return { units, persons, opens, kids, own, cnt, rest };
 }
 function renderStaff(main) {
   const S = staff;
@@ -1072,9 +1074,9 @@ function renderStaff(main) {
   const kindBadge = p => p.Kind && p.Kind !== '社員' ? `<span class="sf-k k-${esc(p.Kind)}">${esc(p.Kind)}${p.Agency && p.Kind !== 'シルバー' ? '・' + esc(p.Agency) : ''}</span>` : '';
   const personRow = p => { const due = dueOf(p);
     return `<li class="sf-p ${S.sel === p.id ? 'on' : ''} ${due && due.cls ? 'd-' + due.cls : ''}" data-sp="${p.id}"><b>${esc(p.Title)}</b>${p.JobLabel ? `<span class="muted">${esc(p.JobLabel)}</span>` : ''}${kindBadge(p)}
-      ${p.State === '退職予定' ? '<span class="sf-k k-out">退職予定</span>' : ''}${due ? `<span class="sf-due ${due.cls}">${esc(due.label)}${due.state === '更新の稟議中' ? '・稟議中' : ''}</span>` : ''}${p.Memo ? `<span class="muted sf-m">${esc(p.Memo)}</span>` : ''}</li>`; };
+      ${staffMarks(p)}${due ? `<span class="sf-due ${due.cls}">${esc(due.label)}${due.state === '更新の稟議中' ? '・稟議中' : ''}</span>` : ''}${p.Memo ? `<span class="muted sf-m">${esc(p.Memo)}</span>` : ''}</li>`; };
   const node = (u, depth) => {
-    const c = M.cnt[u.Path] || { act: 0, plan: 0, open: 0, need: 0 }, o = M.own(u.Path), kids = M.kids[u.Path] || [];
+    const c = M.cnt[u.Path] || { act: 0, plan: 0, open: 0, need: 0, pend: 0 }, o = M.own(u.Path), kids = M.kids[u.Path] || [];
     const act = o.act.filter(hit), plan = o.plan.filter(hit), canEd = inScope(u.Path, scopes);
     const opens = M.opens.filter(x => x.UnitPath === u.Path);
     const childHtml = kids.map(k => node(k, depth + 1)).join('');
@@ -1082,12 +1084,15 @@ function renderStaff(main) {
     if (u.Title === '（班未定）' && !c.need) return '';   // 班未定が空なら出さない
     const open = !S.closed.has(u.Path) || words.length;
     return `<li class="sf-u lv${Math.min(depth, 3)}"><details ${open ? 'open' : ''} data-su="${esc(u.Path)}"><summary><span class="sf-n">${esc(u.Title)}</span>${u.Head ? `<span class="muted">${esc(u.Head)}</span>` : ''}
-        <span class="sf-c"><span title="必要＝在籍＋入社予定＋募集中">必要 <b>${c.need}</b></span><span>在籍 <b>${c.act}</b></span>${c.plan ? `<span class="pl">予定 <b>${c.plan}</b></span>` : ''}${c.open ? `<span class="op">募集中 <b>${c.open}</b></span>` : ''}</span>
-        ${canEd ? `<span class="sf-act noprint"><button class="mini" data-uadd="${esc(u.Path)}">＋人</button><button class="mini" data-uedit="${esc(u.Path)}">メモ</button></span>` : ''}</summary>
+        <span class="sf-c"><span title="必要＝在籍＋入社予定＋募集中">必要 <b>${c.need}</b></span><span>在籍 <b>${c.act}</b></span>${c.plan ? `<span class="pl">予定 <b>${c.plan}</b></span>` : ''}${c.open ? `<span class="op">募集中 <b>${c.open}</b></span>` : ''}${c.pend ? `<span class="pd" title="求人・採用の稟議が回っている数（必要には入れない）">稟議中 <b>${c.pend}</b></span>` : ''}</span>
+        ${canEd ? `<span class="sf-act noprint">${u.Path.includes('/') ? `<button class="mini" data-ujob="${esc(u.Path)}" title="この場所の求人の稟議を作る">＋求人</button><button class="mini" data-uhire="${esc(u.Path)}" title="この場所の採用の稟議を作る">＋採用</button>` : ''}<button class="mini" data-uadd="${esc(u.Path)}">＋人</button><button class="mini" data-uedit="${esc(u.Path)}">メモ</button></span>` : ''}</summary>
       ${u.Memo ? `<div class="muted sf-memo">${esc(u.Memo)}</div>` : ''}
-      ${act.length || plan.length || opens.length ? `<ul class="sf-ps">${act.map(personRow).join('')}
+      ${act.length || plan.length || opens.length || o.pendP.length ? `<ul class="sf-ps">${act.map(personRow).join('')}
         ${plan.map(p => `<li class="sf-p sf-plan" data-sp="${p.id}">▷ 入社予定：<b>${esc(p.Title)}</b>${p.StartDate ? ' ' + esc(dIn(p.StartDate)) : ''}${p.RequestNo ? `<span class="muted">（${esc(p.RequestNo)}）</span>` : ''}</li>`).join('')}
-        ${opens.map(x => `<li class="sf-p sf-open">▷ 募集中：<b>${Math.max(0, (Number(x.Count) || 0) - (Number(x.Filled) || 0))}名</b><span class="muted">${esc([x.RequestNo, x.Media, x.Memo].filter(Boolean).join('・'))}</span></li>`).join('')}</ul>` : ''}
+        ${o.pendP.map(p => `<li class="sf-p sf-pend" data-sp="${p.id}">▷ 採用の稟議中：<b>${esc(p.Title)}</b>${p.RequestNo ? `<span class="muted">（${esc(p.RequestNo)}）</span>` : ''}</li>`).join('')}
+        ${opens.flatMap(x => Array.from({ length: M.rest(x) }, () => x)).map(x => x.State === '求人の稟議中'
+          ? `<li class="sf-p sf-pend">▷ 求人の稟議中<span class="muted">${esc([x.RequestNo, x.Memo].filter(Boolean).join('・'))}</span></li>`
+          : `<li class="sf-p sf-open">▷ 求人募集中<span class="muted">${esc([x.RequestNo, x.Media, x.Memo].filter(Boolean).join('・'))}</span>${canEd ? `<button class="mini noprint" style="margin-left:auto" data-ohire="${x.id}" data-opath="${esc(u.Path)}">＋採用</button>` : ''}</li>`).join('')}</ul>` : ''}
       ${childHtml ? `<ul class="sf-tree">${childHtml}</ul>` : ''}</details></li>`;
   };
   const top = M ? (M.kids[''] || []) : [];
@@ -1122,8 +1127,115 @@ function renderStaff(main) {
   };
   main.querySelectorAll('[data-sp]').forEach(li => li.onclick = () => { const id = Number(li.dataset.sp); S.sel = S.sel === id ? null : id; S.add = null; S.unitEdit = null; render(); });
   main.querySelectorAll('[data-uadd]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.add = b.dataset.uadd; S.sel = null; S.unitEdit = null; render(); });
+  main.querySelectorAll('[data-ujob]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('RINGI', b.dataset.ujob); });
+  main.querySelectorAll('[data-uhire]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('HIRE', b.dataset.uhire); });
+  main.querySelectorAll('[data-ohire]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('HIRE', b.dataset.opath, Number(b.dataset.ohire)); });
   main.querySelectorAll('[data-uedit]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.unitEdit = b.dataset.uedit; S.sel = null; S.add = null; render(); });
   staffPanel($('sfPanel'), M, scopes);
+}
+/* ---------- 稟議と人員表のつなぎ
+   選択肢 "@staff:units"＝人員表の場所（申請できる範囲だけ。人員表を見られない人は自由入力になる）、"@staff:openings"＝選んだ場所の募集中の枠
+   値は「工場 › 製造部 › 第二工場 › 総組(溶接)」の形。data._staff に { path, count, openingId, before } を写す（フローが決裁後に人員表へ入れる） */
+const unitLabel = path => String(path || '').replace(/\//g, ' › ');
+const unitPath = label => String(label || '').split(' › ').join('/');
+function loadStaffQuiet() {
+  if (staff.data || staff.loading || staff.denied) return;
+  staff.loading = api.staffLoad().then(d => { staff.data = d; }).catch(() => { staff.denied = true; })
+    .finally(() => { staff.loading = null; if (st.editor) { applyConditions(); recalc(); } });
+}
+function staffUnitOptions() {
+  if (!staff.data) { loadStaffQuiet(); return []; }
+  const sc = staffScopes();
+  return staff.data.units.filter(u => u.Active !== false && u.Path.includes('/') && (!sc.length || inScope(u.Path, sc))).sort((a, b) => (a.Sort || 0) - (b.Sort || 0)).map(u => unitLabel(u.Path));
+}
+function staffPersonOptions() {
+  if (!staff.data) { loadStaffQuiet(); return []; }
+  const sc = staffScopes();
+  return staff.data.persons.filter(p => ['在籍', '退職予定'].includes(p.State || '在籍') && (!sc.length || inScope(p.UnitPath, sc)))
+    .sort((a, b) => String(a.UnitPath).localeCompare(String(b.UnitPath)) || (a.Sort || 0) - (b.Sort || 0)).map(p => `#${p.id} ${p.Title}（${String(p.UnitPath).split('/').pop()}）`);
+}
+function staffOpeningOptions(label) {
+  if (!staff.data || !label) return [];
+  return staff.data.openings.filter(o => o.State === '募集中' && o.UnitPath === unitPath(label))
+    .map(o => `#${o.id} 募集中 ${Math.max(0, (Number(o.Count) || 0) - (Number(o.Filled) || 0))}名${o.RequestNo ? '（' + o.RequestNo + '）' : '（' + (o.Memo || '').slice(0, 20) + '）'}`);
+}
+function staffStamp(ed) {
+  const d = ed.data;
+  if (ed.form.FormCode === 'JININ') {
+    const m = String(d.staffPerson || '').match(/^#(\d+)/), p = m && staff.data ? staff.data.persons.find(x => x.id === Number(m[1])) : null;
+    if (!p) { delete d._staff; return; }
+    d.targetName = p.Title; d.empCode = p.EmpCode || ''; ['targetName', 'empCode'].forEach(k => { const f = ed.form.fields.find(x => x.key === k); if (f) setFieldValue(f, d[k]); });
+    d._staff = { personId: p.id, path: p.UnitPath };
+    const box = $('staffImpact'); if (box) box.innerHTML = staffImpactCard(d, 'JININ'); return;
+  }
+  const label = d.staffUnit;
+  if (!label || !staff.data || !['RINGI', 'HIRE'].includes(ed.form.FormCode)) { if (!label) delete d._staff; return; }
+  const path = unitPath(label), c = staffModel(staff.data).cnt[path] || { need: 0, act: 0, plan: 0, open: 0 };
+  const opening = String(d.staffOpening || '').match(/^#(\d+)/);
+  d._staff = { path, count: ed.form.FormCode === 'RINGI' ? Number(d.staffCount) || 0 : 1, openingId: opening ? Number(opening[1]) : null, before: { need: c.need, act: c.act, plan: c.plan, open: c.open } };
+  const box = $('staffImpact'); if (box) box.innerHTML = staffImpactCard(d, ed.form.FormCode);
+}
+/* 「その場所の今 → この稟議が通った後」（求人＝募集中が増える、採用＝入社予定が増える／募集の枠を使えば募集中が減る） */
+function staffImpactCard(data, formCode) {
+  const x = data && data._staff; if (!x || !x.path) return '';
+  if (formCode === 'JININ') {
+    const what = data.kind === '退職' ? `退職予定 ${esc(md(dIn(data.retireDate)) || '—')}` + (data.refill ? `・${esc(data.refill)}` : '') : `一時帰国予定（${esc(md(dIn(data.awayFrom)) || '—')}〜${esc(md(dIn(data.awayTo)) || '—')}）`;
+    return `<div class="card"><h3 class="h3f"><span>人員表：${esc(unitLabel(x.path))}</span><button class="mini noprint" data-staffdrawer="${esc(x.path)}">人員表で見る ›</button></h3>
+      <div>${esc(data.targetName || '')}　<span class="sf-k k-${data.kind === '退職' ? 'out' : 'away'}">${what}</span></div><div class="muted" style="margin-top:4px">決裁されると、人員表のこの人に出ます。</div></div>`;
+  }
+  if (!x.before) return '';
+  const b = x.before, a = { ...b };
+  if (formCode === 'RINGI') { a.open += x.count; a.need += x.count; }
+  else { a.plan += 1; if (x.openingId) a.open = Math.max(0, a.open - 1); else a.need += 1; }
+  const cell = (k, l) => `<span>${l} ${b[k]}${a[k] !== b[k] ? ` → <b>${a[k]}</b>` : ''}</span>`;
+  return `<div class="card"><h3 class="h3f"><span>人員表：${esc(unitLabel(x.path))}</span><button class="mini noprint" data-staffdrawer="${esc(x.path)}">人員表で見る ›</button></h3><div class="sf-c" style="font-size:13px;gap:14px">${cell('need', '必要')}${cell('act', '在籍')}${cell('plan', '入社予定')}${cell('open', '募集中')}</div>
+    <div class="muted" style="margin-top:4px">左が申請したときの数、→ の右がこの稟議が決裁されたあとの数です。${formCode === 'HIRE' && !x.openingId ? '募集の枠を使わない採用なので、必要の数が増えます。' : ''}</div></div>`;
+}
+/* 人員表のドロワー（右から出る）：申請・承認の画面を見ながら、その場所が人員表のどこかを確かめる。
+   その場所までの上の階層と、同じ親の場所（となりの班）を開き、その場所に印を付ける。見るだけ */
+document.addEventListener('click', e => { const b = e.target.closest('[data-staffdrawer]'); if (b) { e.preventDefault(); openStaffDrawer(b.dataset.staffdrawer); } });
+async function openStaffDrawer(path) {
+  let dr = $('staffDrawer');
+  if (!dr) { dr = document.createElement('div'); dr.id = 'staffDrawer'; dr.className = 'sdr-bg'; document.body.appendChild(dr);
+    dr.onclick = e => { if (e.target === dr || e.target.closest('[data-sdrx]')) dr.remove(); };
+    document.addEventListener('keydown', function k(e) { if (e.key === 'Escape') { const d = $('staffDrawer'); if (d) d.remove(); document.removeEventListener('keydown', k); } }); }
+  const shell = body => `<aside class="sdr" role="dialog" aria-label="人員表"><div class="sdr-h"><b>人員表</b><span class="muted">${esc(unitLabel(path))}</span><button class="mini" data-sdrx>閉じる ✕</button></div><div class="sdr-b">${body}</div></aside>`;
+  if (!staff.data) {
+    dr.innerHTML = shell('<div class="muted">読み込み中…</div>');
+    try { staff.data = await api.staffLoad(); } catch (e) { dr.innerHTML = shell(`<div class="errbox">人員表を見る権限がないため、開けません（${esc(e.message)}）。<br>稟議に写した数（申請のときの数）は、申請内容の画面で見られます。</div>`); return; }
+  }
+  const M = staffModel(staff.data), chain = path.split('/').map((_, i, a) => a.slice(0, i + 1).join('/')), parent = chain.length > 1 ? chain[chain.length - 2] : '';
+  const node = (u, depth) => {
+    const c = M.cnt[u.Path] || { need: 0, act: 0, plan: 0, open: 0 }, o = M.own(u.Path), kids = M.kids[u.Path] || [];
+    const onChain = chain.includes(u.Path), isFocus = u.Path === path, showPeople = isFocus || u.Path.startsWith(path + '/') || (M.kids[parent] || []).some(k => k.Path === u.Path);
+    const opens = M.opens.filter(x => x.UnitPath === u.Path);
+    const sub = onChain || u.Path.startsWith(path + '/') ? kids.map(k => node(k, depth + 1)).join('') : '';
+    return `<li class="sf-u lv${Math.min(depth, 3)} ${isFocus ? 'sdr-focus' : ''}"><div class="sdr-u"><span class="sf-n">${esc(u.Title)}</span>${u.Head ? `<span class="muted">${esc(u.Head)}</span>` : ''}
+        <span class="sf-c"><span>必要 <b>${c.need}</b></span><span>在籍 <b>${c.act}</b></span>${c.plan ? `<span class="pl">予定 <b>${c.plan}</b></span>` : ''}${c.open ? `<span class="op">募集中 <b>${c.open}</b></span>` : ''}</span></div>
+      ${showPeople && (o.act.length || o.plan.length || opens.length) ? `<ul class="sf-ps">${o.act.map(p => `<li class="sf-p" style="cursor:default"><b>${esc(p.Title)}</b>${p.JobLabel ? `<span class="muted">${esc(p.JobLabel)}</span>` : ''}${p.Kind && p.Kind !== '社員' ? `<span class="sf-k k-${esc(p.Kind)}">${esc(p.Kind)}</span>` : ''}${staffMarks(p)}</li>`).join('')}
+        ${o.plan.map(p => `<li class="sf-p sf-plan">▷ 入社予定：<b>${esc(p.Title)}</b>${p.StartDate ? ' ' + esc(dIn(p.StartDate)) : ''}</li>`).join('')}
+        ${opens.flatMap(x => Array.from({ length: M.rest(x) }, () => x)).map(x => `<li class="sf-p ${x.State === '募集中' ? 'sf-open' : 'sf-pend'}">▷ ${x.State === '募集中' ? '求人募集中' : '求人の稟議中'}<span class="muted">${esc([x.RequestNo, x.Memo].filter(Boolean).join('・'))}</span></li>`).join('')}</ul>` : ''}
+      ${sub ? `<ul class="sf-tree">${sub}</ul>` : ''}</li>`;
+  };
+  const tops = (M.kids[''] || []).filter(u => chain.includes(u.Path));
+  dr.innerHTML = shell(`<div class="muted" style="margin-bottom:8px">いまの人員表です（申請のときの数は、申請内容の画面の「人員表」の欄）。印の付いた場所と、となりの場所の人を出しています。</div><ul class="sf-tree root">${tops.map(u => node(u, 0)).join('')}</ul>`);
+  const f = dr.querySelector('.sdr-focus'); if (f) f.scrollIntoView({ block: 'center' });
+}
+/* 人員表の＋求人・＋採用：稟議を、場所（と募集の枠）が入った状態で開く */
+function staffStart(code, path, openingId) {
+  const form = st.M.forms.find(f => f.FormCode === code); if (!form) return alert('フォームが見つかりません（総務にご連絡ください）');
+  const data = code === 'RINGI' ? { kind: '採用・求人広告', staffUnit: unitLabel(path), staffCount: 1 } : { kind: '新規採用', staffUnit: unitLabel(path) };
+  if (openingId) { const o = (staffOpeningOptions(unitLabel(path)) || []).find(x => x.startsWith('#' + openingId + ' ')); if (o) data.staffOpening = o; }
+  st.view = 'new'; st.sel = null; st.editor = { form, data }; render();
+}
+/* 人の印（人員表とドロワー） */
+function staffMarks(p) {
+  const out = [], today = dIn(new Date());
+  if (p.State === '退職予定') out.push(`<span class="sf-k k-out">退職予定${p.EndDate ? ' ' + md(dIn(p.EndDate)) : ''}</span>`);
+  const f = dIn(p.AwayFrom), t = dIn(p.AwayTo), k = p.AwayKind || '一時帰国';
+  if (f && t && today <= t) out.push(today >= f ? `<span class="sf-k k-away">${esc(k)}中（${md(t)}帰国予定）</span>` : `<span class="sf-k k-away">${esc(k)}予定（${md(f)}〜${md(t)}）</span>`);
+  if (p.Pending) out.push(`<span class="sf-k k-pend">${esc(p.Pending)}</span>`);
+  return out.join('');
 }
 /* 人を直す・足す、場所のメモ（一覧の上に出す） */
 function staffPanel(box, M, scopes) {
@@ -1153,9 +1265,13 @@ function staffPanel(box, M, scopes) {
         <label class="fld"><span>状態</span>${sel('State', STAFF_STATES, x.State || '在籍')}</label>
         <label class="fld"><span>入社日・受け入れ日</span><input type="date" data-sf="StartDate" value="${esc(dIn(x.StartDate))}"></label>
         <label class="fld wide"><span>メモ</span><textarea data-sf="Memo" rows="2">${esc(x.Memo || '')}</textarea></label></div></fieldset>
+      ${p && !ro && hasRole('人員表の申請') && ['在籍', '退職予定'].includes(p.State || '在籍') ? `<div class="actions" style="margin-top:0"><button class="mini" data-jinin="退職">退職の届けを出す</button><button class="mini" data-jinin="一時帰国">一時帰国の届けを出す</button></div>` : ''}
       ${ro ? '' : `<div class="actions"><span class="muted">${p && p.Source === '給与' ? '氏名・入社日は給与から入ります。場所・役職・メモをここで直します。' : ''}</span><span style="flex:1"></span><button class="pri" id="sfSave">${p ? '保存する' : '足す'}</button></div>`}</div>`;
   }
   $('sfX').onclick = () => { S.sel = null; S.add = null; S.unitEdit = null; render(); };
+  box.querySelectorAll('[data-jinin]').forEach(b => b.onclick = () => {
+    const form = st.M.forms.find(f => f.FormCode === 'JININ'); if (!form) return alert('人員の届けのフォームが見つかりません（総務にご連絡ください）');
+    st.view = 'new'; st.sel = null; st.editor = { form, data: { kind: b.dataset.jinin, staffPerson: `#${p.id} ${p.Title}（${String(p.UnitPath).split('/').pop()}）` } }; S.sel = null; render(); });
   if ($('sfSave')) $('sfSave').onclick = async () => {
     const f = {}; box.querySelectorAll('[data-sf]').forEach(el => { f[el.dataset.sf] = el.value.trim(); });
     if (!u && !p && !f.Title) return alert('氏名を入れてください');
@@ -2007,7 +2123,7 @@ function renderTaskDetail(t, s) {
   const settle = form && form.View === 'settle';   // 支払決済：サマリー＋確認モード（settle_view.js）
   if (settle) html += `<div class="card"><h3>支払決済の明細${canAct ? '　<span class="muted" style="font-weight:400">すべて「確認OK」にすると承認できます</span>' : ''}</h3><div id="settleView">読み込み中...</div></div>`;
   html += dataCard(form, s.data || {}, canAct ? (s.lastReturn && s.lastReturn.prevData) || null : null, { req: t.RequestNo, app: s.applicantUPN });
-  html += contractAttendCard(s.data || {});
+  html += contractAttendCard(s.data || {}) + staffImpactCard(s.data || {}, t.FormCode);
   html += linkCardForChild(form, s.data || {}, t.RequestNo);
   html += followupCard(form, s.data || {}, { status: t.RequestStatus, req: t.RequestNo, app: s.applicantUPN });
   if (hist.length) html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: t.RequestStatus })}</div>`;
@@ -2091,7 +2207,7 @@ function renderReqDetail(r) {
   const settle = form && form.View === 'settle';
   if (settle) html += '<div class="card"><h3>支払決済の明細</h3><div id="settleView">読み込み中...</div></div>';
   html += dataCard(form, pj(r.DataJson, {}), null, { req: r.RequestNo, app: r.ApplicantUPN });
-  html += contractAttendCard(pj(r.DataJson, {}));
+  html += contractAttendCard(pj(r.DataJson, {})) + staffImpactCard(pj(r.DataJson, {}), r.FormCode);
   html += linkCardForChild(form, pj(r.DataJson, {}), r.RequestNo) + (form ? linkCardForParent(form, r) : '');
   html += followupCard(form, pj(r.DataJson, {}), { status: r.Status, req: r.RequestNo, app: r.ApplicantUPN, proxy: r.ProxyUPN });
   html += `<div class="card"><h3>承認・コメント履歴</h3>${timelineHtml(hist, { status: r.Status, approvedAt: r.ApprovedAt, waiting })}</div>`;
@@ -2439,6 +2555,7 @@ function renderEditor(main) {
       ${proxyCardHtml(f)}
       ${pasteCardHtml(f)}
       ${contractAttendCard(ed.data)}
+      <div id="staffImpact">${staffImpactCard(ed.data, f.FormCode)}</div>
       <div id="flds" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">${sectionsHtml(f)}</div>
       ${ed.resubmit ? `<div class="fsec"><div class="fld" data-k="__resubmit"><label class="l">修正コメント<span class="req">必須</span></label><textarea id="resubmitNote" placeholder="何を直したかを書いてください（承認者の画面の一番上に表示されます）"></textarea></div></div>` : ''}
       </div>
@@ -2778,6 +2895,9 @@ function discardUploads(ed) {
    たどった先に無いときは "*" を使う。選択肢が無ければ自由入力になる */
 function opts(fd, data) {
   let o = fd.options || [];
+  if (o === '@staff:units') return staffUnitOptions();
+  if (o === '@staff:persons') return staffPersonOptions();
+  if (o === '@staff:openings') return staffOpeningOptions(((data || (st.editor ? st.editor.data : {})) || {}).staffUnit);
   if (typeof o === 'string' && o.startsWith('@setting:')) o = pj(st.M.settings[o.slice(9)], []);
   for (const k of fd.optionsBy || []) {
     if (!o || Array.isArray(o)) break;
@@ -2859,6 +2979,7 @@ function recalc() {
     if (fd.type === 'table') (ed.data[fd.key] || []).forEach((r, i) => fd.columns.filter(c => c.type === 'calc').forEach(c => {
       r[c.key] = calcExpr(c.expr, r); const el = document.querySelector(`[data-cell="${fd.key}.${i}.${c.key}"]`); if (el) el.textContent = yen(r[c.key]); }));
   });
+  staffStamp(ed);
   // 隠れている欄（例：給与の形を時給から月給に変えたときの時給）は計算に入れない
   const scope = { ...ed.data }; ed.form.fields.forEach(fd => { if (fd.key && fd.showIf && !isShown(fd, ed.data)) delete scope[fd.key]; });
   ed.form.fields.filter(fd => fd.type === 'calc').forEach(fd => { ed.data[fd.key] = scope[fd.key] = calcExpr(fd.expr, scope); if ($('f_' + fd.key)) $('f_' + fd.key).textContent = calcText(fd, ed.data[fd.key]); });
@@ -3000,7 +3121,7 @@ function confirmSubmit(ed, f, title, res, note) {
         <div><span class="muted">申請者</span>${esc(app.Title)}（${esc(app.Dept || '')}）${ed.proxyFor ? `<span class="badge b-warn">代理申請（あなたが代わりに出す）</span>` : ''}</div></div>
       <div class="cf-body" data-req="${esc(ed.resubmit ? ed.resubmit.RequestNo : '')}" data-app="${esc(st.me.upn)}">
         ${dataCard(f, ed.data, null, { req: ed.resubmit ? ed.resubmit.RequestNo : '', app: st.me.upn }).replace(/<button class="mini noprint" data-copy[^>]*>.*?<\/button>/, '')}
-        ${contractAttendCard(ed.data)}
+        ${contractAttendCard(ed.data)}${staffImpactCard(ed.data, f.FormCode)}
         ${note ? `<div class="card"><h3>修正コメント</h3><div style="white-space:pre-wrap">${esc(note)}</div></div>` : ''}
         <div class="card"><h3>承認ルート</h3><ol class="cf-route">${steps.map(s => `<li><b>${esc(s.name)}</b>　${esc(s.upns.map(nameOf).join(' / '))}${s.type === '決裁' ? '<span class="badge b-warn">決裁</span>' : ''}</li>`).join('')}</ol>
           ${res.post.length ? `<div class="muted">決裁のあと：${esc(res.post.map(p => p.name).join('、'))}</div>` : ''}
