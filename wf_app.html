@@ -893,6 +893,7 @@ const NAV_ICONS = {
   orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
 };
 function render() {
+  const sfd = document.getElementById('sfDrawer'); if (sfd) sfd.remove();   // 人員表の編集のドロワーは、描き直すたびに作り直す
   $('tabs').innerHTML = TABS.filter(t => !t.show || t.show()).map(t => {
     const c = t.count ? t.count() : null;
     return `<a data-k="${t.key}" title="${esc(t.label)}" class="${st.view === t.key ? 'active' : ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[t.key] || NAV_ICONS.all}</svg><span>${t.label}</span>${c != null ? `<span class="cnt ${c ? '' : 'zero'}">${c}</span>` : ''}</a>`;
@@ -1042,6 +1043,8 @@ async function loadStaff() {
   try {
     staff.data = await api.staffLoad();
     // 満了が近い人の色：雇用契約の台帳を見られる人だけ（台帳は役員と総務幹部だけのサイト）
+    // 給与と比べる：給与の人事情報を読める人（役員サイトの人）で、全社を直せる人だけ
+    if (hasRole('雇用契約の台帳') && ledgerCfg().site && staffScopes().includes('')) { try { staff.sync = await staffSyncPlan(staff.data); } catch (e) { staff.sync = { err: e.message, items: [] }; } }
     if (hasRole('雇用契約の台帳') && ledgerCfg().site && !staff.ledger) { try { staff.ledger = await api.ledgerItems(); } catch { staff.ledger = []; } }
   } catch (e) { staff.err = '人員表を読めませんでした：' + e.message + (e.status === 403 || e.status === 404 ? '（人員表を見る権限が無いときに出ます。総務にご連絡ください）' : ''); }
   staff.busy = false; render();
@@ -1107,6 +1110,7 @@ function renderStaff(main) {
         ${snaps.length ? `<select id="sfCmp" style="width:auto"><option value="">月の控えと比べる…</option>${snaps.map(x => `<option value="${x.id}" ${String(S.cmp) === String(x.id) ? 'selected' : ''}>${esc(x.Title)}</option>`).join('')}</select>` : ''}
         ${scopes.includes('') ? `<button class="mini" id="sfSnap">${esc(ym)} の控えを残す</button>` : ''}</div>
       ${S.busy ? '<div class="muted" style="margin-top:8px">読み込み中…</div>' : ''}${S.err ? `<div class="errbox" style="margin-top:10px">${esc(S.err)}</div>` : ''}</div>
+    ${staffSyncHtml()}
     <div id="sfPanel"></div>
     ${S.cmp && M ? staffDiffHtml(snaps.find(x => String(x.id) === String(S.cmp)), M) : ''}
     ${M ? `<div class="card sf-card"><div class="sf-title">人員表　${esc(fmtDT(new Date()))}</div><ul class="sf-tree root">${top.map(u => node(u, 0)).join('')}</ul></div>` : ''}</div>`;
@@ -1131,6 +1135,7 @@ function renderStaff(main) {
   main.querySelectorAll('[data-uhire]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('HIRE', b.dataset.uhire); });
   main.querySelectorAll('[data-ohire]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); staffStart('HIRE', b.dataset.opath, Number(b.dataset.ohire)); });
   main.querySelectorAll('[data-uedit]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); S.unitEdit = b.dataset.uedit; S.sel = null; S.add = null; render(); });
+  bindStaffSync(main);
   staffPanel($('sfPanel'), M, scopes);
 }
 /* ---------- 稟議と人員表のつなぎ
@@ -1228,6 +1233,64 @@ function staffStart(code, path, openingId) {
   if (openingId) { const o = (staffOpeningOptions(unitLabel(path)) || []).find(x => x.startsWith('#' + openingId + ' ')); if (o) data.staffOpening = o; }
   st.view = 'new'; st.sel = null; st.editor = { form, data }; render();
 }
+/* ---------- 人員表と給与の人事情報を比べる（給与が正）
+   ・入社した：入社予定（または採用の稟議中）の人が給与に出てきた → 在籍（従業員コード・入社日を入れる）
+   ・新しく出てきた：給与にいて人員表にいない社員 → 給与の部門の場所（設定 staff.deptMap。その下に（班未定）があればそこ）に在籍で入れる
+   ・辞めた：人員表で在籍・退職予定の社員が、給与の在籍にいない → 退職
+   ・区分が変わった：契約・特定技能・パートの区分が給与と違う（派遣・シルバーなど給与にいない人は見ない）
+   違いは上に知らせるだけで、入れるのは確かめてから */
+const staffKindOf = e => /特定技能/.test(e.所属 || '') ? '特定技能' : /契約/.test(e.所属 || '') ? '契約' : ['時給者', '日給者'].includes(e.給与種別名称) ? 'パート' : e.部門 === '全社' ? '役員' : '社員';
+const nameKey = x => String(x || '').normalize('NFKC').replace(/[\s　・]/g, '').replace(/髙/g, '高');
+async function staffSyncPlan(d) {
+  const em = await api.payrollJson('history/employee_master.json');
+  if (!Array.isArray(em) || !em.length) throw new Error('給与の人事情報が見つかりません');
+  const last = em.map(e => e.年月).filter(Boolean).sort().pop();
+  const act = em.filter(e => e.年月 === last && e.在職区分名称 === '在職' && !/管理者/.test(e.従業員名 || ''));
+  const map = pj(st.M.settings['staff.deptMap'], {}), unitSet = new Set(d.units.map(u => u.Path));
+  const byCode = {}; d.persons.forEach(p => { if (p.EmpCode) byCode[codeKey(p.EmpCode)] = p; });
+  const items = [], seen = new Set();
+  act.forEach(e => {
+    const code = codeKey(e.従業員コード), start = dIn(String(e.入社年月日 || '').replace(/(\d+)年(\d+)月(\d+)日/, (_, y, m, dd) => y + '-' + m.padStart(2, '0') + '-' + dd.padStart(2, '0'))), kind = staffKindOf(e);
+    let p = byCode[code];
+    if (!p) p = d.persons.find(x => !x.EmpCode && ['入社予定', '採用の稟議中'].includes(x.State) && nameKey(x.Title) === nameKey(e.従業員名));
+    if (p) {
+      seen.add(p.id);
+      if (['入社予定', '採用の稟議中'].includes(p.State) || !p.EmpCode) items.push({ kind: '入社した', name: p.Title, id: p.id, fields: { State: '在籍', EmpCode: String(e.従業員コード), Kind: kind, StartDate: start ? dOut(start) : null, Source: '給与' }, note: (p.UnitPath || '').split('/').pop(), sel: true });
+      else if (!['派遣', 'シルバー', 'スポット'].includes(p.Kind) && p.Kind !== kind && p.State !== '退職') items.push({ kind: '区分が変わった', name: p.Title, id: p.id, fields: { Kind: kind }, note: `"${p.Kind}" → "${kind}"`, sel: true });
+      return;
+    }
+    const base = map[e.部門] || '', path = unitSet.has(base + '/（班未定）') ? base + '/（班未定）' : base;
+    items.push({ kind: '新しく出てきた', name: String(e.従業員名 || '').replace(/\s+/g, ' ').trim(), id: 0, fields: { Title: String(e.従業員名 || '').replace(/\s+/g, ' ').trim(), EmpCode: String(e.従業員コード), UnitPath: path, Kind: kind, State: '在籍', StartDate: start ? dOut(start) : null, Source: '給与' },
+      note: path ? unitLabel(path) : `給与の部門「${e.部門}」の場所が設定 staff.deptMap にありません`, sel: !!path && unitSet.has(path) });
+  });
+  const codes = new Set(act.map(e => codeKey(e.従業員コード)));
+  d.persons.filter(p => p.EmpCode && !['派遣', 'シルバー', 'スポット'].includes(p.Kind) && ['在籍', '退職予定'].includes(p.State || '在籍') && !codes.has(codeKey(p.EmpCode)) && !seen.has(p.id))
+    .forEach(p => items.push({ kind: '辞めた', name: p.Title, id: p.id, fields: { State: '退職', Pending: '' }, note: (p.UnitPath || '').split('/').pop() + (p.EndDate ? '・退職予定 ' + md(dIn(p.EndDate)) : ''), sel: true }));
+  return { month: last, items, open: false };
+}
+function staffSyncHtml() {
+  const y = staff.sync; if (!y) return '';
+  if (y.err) return `<div class="errbox">給与と比べられませんでした：${esc(y.err)}</div>`;
+  if (!y.items.length) return '';
+  const kinds = ['入社した', '新しく出てきた', '辞めた', '区分が変わった'], n = y.items.filter(i => i.sel).length;
+  if (!y.open) return `<div class="return-banner noprint" style="margin:0"><b>給与（${esc(y.month)}）と違うところがあります</b>：${kinds.map(k => [k, y.items.filter(i => i.kind === k).length]).filter(x => x[1]).map(x => x[0] + ' ' + x[1] + '人').join('・')}　<button class="mini" id="sySh">確かめる</button></div>`;
+  return `<div class="card noprint"><h3>給与（${esc(y.month)}）と比べて直すところ</h3><div class="muted" style="margin-bottom:8px">給与が正です。新しく出てきた人は、給与の部門の場所（班未定）に入るので、あとで班へ動かしてください。</div>
+    <div style="overflow-x:auto"><table class="tbl os"><tr><th></th><th>区分</th><th>氏名</th><th>内容</th></tr>
+    ${y.items.map((i, k) => `<tr><td><input type="checkbox" data-sy="${k}" ${i.sel ? 'checked' : ''} style="width:auto"></td><td>${pill({ label: i.kind, cls: i.kind === '辞めた' ? 'gray' : i.kind === '区分が変わった' ? 'warn' : 'ok' })}</td><td>${esc(i.name)}</td><td class="muted">${esc(i.note || '')}</td></tr>`).join('')}</table></div>
+    <div class="actions"><button id="syNo">閉じる</button><span style="flex:1"></span><button class="pri" id="syGo" ${n ? '' : 'disabled'}>選んだ ${n} 人を人員表に入れる</button></div></div>`;
+}
+function bindStaffSync(main) {
+  const y = staff.sync; if (!y) return;
+  if ($('sySh')) $('sySh').onclick = () => { y.open = true; render(); };
+  if ($('syNo')) $('syNo').onclick = () => { y.open = false; render(); };
+  main.querySelectorAll('[data-sy]').forEach(c => c.onchange = () => { y.items[Number(c.dataset.sy)].sel = c.checked; render(); });
+  if ($('syGo')) $('syGo').onclick = async () => {
+    const list = y.items.filter(i => i.sel); let ok = 0; const ng = [];
+    for (const i of list) { try { await api.staffSave('STF_Person', i.id, i.fields); ok++; } catch (e) { ng.push(i.name + '（' + e.message + '）'); } }
+    toast(`人員表に ${ok} 人入れました`); if (ng.length) alert('入れられなかった人：\n' + ng.join('\n'));
+    staff.data = null; staff.sync = null; loadStaff();
+  };
+}
 /* 人の印（人員表とドロワー） */
 function staffMarks(p) {
   const out = [], today = dIn(new Date());
@@ -1242,6 +1305,13 @@ function staffPanel(box, M, scopes) {
   const S = staff, p = S.sel ? M.persons.find(x => x.id === S.sel) || S.data.persons.find(x => x.id === S.sel) : null;
   const u = S.unitEdit ? M.units.find(x => x.Path === S.unitEdit) : null;
   if (!p && !S.add && !u) return;
+  // 一覧の上ではなく、右から出るドロワーに出す（人員表を見たまま直せる）。外側・Esc・閉じるで閉じる
+  const dr = document.createElement('div'); dr.id = 'sfDrawer'; dr.className = 'sdr-bg noprint';
+  dr.innerHTML = '<aside class="sdr sdr-form" role="dialog" aria-label="人員表の編集"><div class="sdr-b"></div></aside>'; document.body.appendChild(dr);
+  const closeDr = () => { S.sel = null; S.add = null; S.unitEdit = null; render(); };
+  dr.onclick = e => { if (e.target === dr) closeDr(); };
+  const onKey = e => { if (e.key === 'Escape' && document.body.contains(dr)) { document.removeEventListener('keydown', onKey); closeDr(); } }; document.addEventListener('keydown', onKey);
+  box = dr.querySelector('.sdr-b');
   const canEd = p ? inScope(p.UnitPath, scopes) : true;
   const unitOpts = sel => M.units.filter(x => inScope(x.Path, scopes) || x.Path === sel).map(x => `<option value="${esc(x.Path)}" ${x.Path === sel ? 'selected' : ''}>${esc(x.Path.replace(/\//g, ' › '))}</option>`).join('');
   const sel = (k, list, v) => `<select data-sf="${k}">${list.map(x => `<option ${x === v ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>`;
@@ -1253,7 +1323,7 @@ function staffPanel(box, M, scopes) {
   } else {
     const x = p || { Title: '', Kind: '派遣', State: '在籍', UnitPath: S.add };
     const ro = p && !canEd;
-    box.innerHTML = `<div class="card"><h3 class="h3f"><span>${p ? esc(p.Title) : '人を足す（' + esc(S.add.split('/').pop()) + '）'}${p && p.EmpCode ? `　<span class="muted" style="font-weight:400">従業員コード ${esc(p.EmpCode)}・もと ${esc(p.Source || '')}</span>` : ''}</span><button class="mini" id="sfX">閉じる</button></h3>
+    box.innerHTML = `<div class="card"><h3 class="h3f"><span>${p ? esc(p.Title) : '人を足す（' + esc(S.add.split('/').pop()) + '）'}${p && p.EmpCode ? `　<span class="muted" style="font-weight:400">従業員コード ${esc(p.EmpCode)}${p.Source ? '・もと ' + esc(p.Source) : ''}</span>` : ''}</span><button class="mini" id="sfX">閉じる</button></h3>
       ${ro ? '<div class="muted">この人はあなたの範囲の外なので、見るだけです。</div>' : ''}
       ${!p ? '<div class="muted" style="margin-bottom:8px">給与にいない人（派遣・シルバー人材・スポットなど）を足します。社員は給与から自動で入るので、ここでは足しません。</div>' : ''}
       <fieldset ${ro ? 'disabled' : ''} style="border:0;padding:0;margin:0"><div class="lg-form">
