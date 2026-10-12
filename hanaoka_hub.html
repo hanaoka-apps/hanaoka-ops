@@ -427,11 +427,7 @@
   }
   @media (max-width: 560px) { .pt-grid { grid-template-columns: minmax(0, 1fr); } }
   @media (min-width: 1101px) { .pt-grid .pt-sparkbox { display: none; } }
-  .pt-tile { position: relative; overflow: hidden; isolation: isolate; display: flex; flex-direction: column; gap: 2px; background: #fff; border-radius: 14px; padding: 12px 14px; min-width: 0; color: inherit; text-decoration: none; box-shadow: 0 1px 2px rgba(22,26,92,.04), 0 6px 18px rgba(22,26,92,.05); transition: transform .2s, box-shadow .2s; }
-  .pt-tile::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--navy); transform: scaleY(0); transform-origin: top; transition: transform .3s cubic-bezier(.2,.8,.2,1); }
-  .pt-tile:hover, .pt-tile:focus-visible { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(22,26,92,.06), 0 12px 26px rgba(22,26,92,.1); outline: none; }
-  .pt-tile:hover::before, .pt-tile:focus-visible::before { transform: scaleY(1); }
-  .pt-tl { font-size: 11.5px; font-weight: 700; color: var(--sub); }
+  .pt-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .pt-tile small { font-size: 11.5px; color: #5a6080; }
   .pt-tile em { font-style: normal; font-size: 12px; color: var(--sub); margin-left: 2px; }
   .pt-big { display: flex; gap: 16px; align-items: flex-end; margin-top: 2px; }
@@ -458,8 +454,6 @@
   .pt-spark-empty { position: absolute; left: 0; right: 0; top: 10px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--sub); }
   .pt-sx { position: relative; display: flex; justify-content: space-between; height: 14px; margin-top: 2px; font-size: 10px; color: var(--sub); font-feature-settings: "tnum"; }
   .pt-sx .sel { position: absolute; transform: translateX(-50%); font-weight: 800; color: var(--navy); }
-  .pt-go { margin-top: auto; padding-top: 6px; align-self: flex-end; font-size: 11.5px; font-weight: 800; color: var(--navy); opacity: .75; }
-  .pt-tile:hover .pt-go { opacity: 1; }
   .pt-sbar { transform-box: fill-box; transform-origin: center bottom; animation: ptGrow .55s cubic-bezier(.2,.8,.25,1) calc(var(--i, 0) * 22ms) both; }
   @keyframes ptGrow { from { transform: scaleY(0); } }
   @media (prefers-reduced-motion: reduce) { .pt-sbar { animation: none; } }
@@ -2004,7 +1998,7 @@ function renderPurchase(f) {
       },
       plugins: {
         legend: { position: 'bottom' },
-        tooltip: { callbacks: {
+        tooltip: { filter: c => c.dataset.type === 'line' || c.raw > 0, callbacks: {
           title: items => entries[items[0].dataIndex][0],
           label: c => `${c.dataset.label}　${formatYen(c.raw)}`,
         } },
@@ -2163,11 +2157,12 @@ function renderProduction(res, groups, plans) {
   const ym = [...(res.daily_months || [])].sort().pop();
   if (!ym) { setProductionMessage('日別の完成実績はまだありません'); return; }
   const items = res.items || {};
-  const days = new Map(), facP = new Map(), grpDay = new Map();
+  const days = new Map(), facP = new Map(), grpDay = new Map(), grpSeries = new Map();
   let plan = null, cum = 0;
   for (const fac of PROD_FACTORIES) {
     const defs = prodGroupDefs(groups, fac);
     const rows = defs.length ? prodRows(defs, fac, ym, items, plans).filter(r => r.inTotal) : [];
+    for (const r of rows) grpSeries.set(fac + '|' + r.name, { fac, name: r.name, day: new Map() });   // 右のグラフ用(グループ別・工場の順)
     const fp = { day: new Map(), cum: 0, plan: null };
     for (const r of rows) if (r.plan != null) { plan = (plan || 0) + r.plan; fp.plan = (fp.plan || 0) + r.plan; }
     for (const x of res.daily_rows || []) {
@@ -2178,6 +2173,8 @@ function renderProduction(res, groups, plans) {
       fp.day.set(x.d, (fp.day.get(x.d) || 0) + q); fp.cum += q;
       const gk = x.d + '|' + fac + '|' + hit.name;
       grpDay.set(gk, (grpDay.get(gk) || 0) + q);
+      const gs = grpSeries.get(fac + '|' + hit.name).day;
+      gs.set(x.d, (gs.get(x.d) || 0) + q);
     }
     if (rows.length) facP.set(fac, fp);
   }
@@ -2191,8 +2188,13 @@ function renderProduction(res, groups, plans) {
     + `<td class="cum">${prodNum(fp.cum)}台${fp.plan ? `<small>計画比 ${(fp.cum / fp.plan * 100).toFixed(0)}%</small>` : ''}</td></tr>`).join('');
 
   document.getElementById('productionBody').innerHTML = `
-    <a class="pt-tile" href="fujin/FUJIN.html#tab=value_analysis" target="_blank" rel="noopener">
-      <span class="pt-tl">生産（主要製品）</span>
+    <div class="card pt-tile">
+      <div class="card-head">
+        <div>
+          <div class="card-kicker">完成報告・重点品目</div>
+          <h2>生産（主要製品）</h2>
+        </div>
+      </div>
       <span class="pt-big">
         <span><small>当日 ${dl(ld)}</small><b>${ld ? prodNum(days.get(ld) || 0) : '—'}<em>台</em></b></span>
         <span class="cum"><small>月内累計</small><b>${prodNum(cum)}<em>台</em></b></span>
@@ -2201,38 +2203,42 @@ function renderProduction(res, groups, plans) {
       ${made.length ? `<span class="pt-made"><span class="pt-made-h">当日の主要機種</span>${made.map(x => `<span><i style="background:${PROD_COLORS[x.fac] || '#888'}"></i>${escapeHtml(x.g)} <b>${prodNum(x.q)}台</b></span>`).join('')}</span>` : ''}
       ${plan ? `<small class="pt-note">計画比 ${(cum / plan * 100).toFixed(0)}%（月内累計 ÷ 今月の計画）</small>` : ''}
       ${prodSpark(ym, d => days.get(d), '#23268f', ld)}
-      <span class="pt-go">押すとFUJINへ →</span>
-    </a>
+    </div>
     <div class="card pt-chartcard">
       <div class="card-head">
         <div>
           <div class="card-kicker">完成報告・重点品目</div>
           <h2>日別完成台数</h2>
         </div>
-        <span class="pill">棒=日別（工場別） / 破線=月内累計</span>
+        <span class="pill">棒=日別（重点品目グループ別） / 破線=月内累計</span>
       </div>
       <div class="purchase-chart"><canvas id="productionChart"></canvas></div>
     </div>`;
-  renderProductionChart(ym, ld, facP);
+  renderProductionChart(ym, ld, grpSeries);
 }
 
-// 広い画面の右側に出す日別グラフ(工場別の積み上げ棒＋月内累計の破線)。狭い画面ではCSSで隠す
-function renderProductionChart(ym, ld, facP) {
+// 広い画面の右側に出す日別グラフ(重点品目グループ別の積み上げ棒＋月内累計の破線)。狭い画面ではCSSで隠す
+//   色はFUJINの生産画面と同じ並びのパレット(PROD_PALETTE)を、グループの並び順(工場→設定の順)に割り当てる
+const PROD_PALETTE = ['#23268f', '#1fa2e6', '#e08a1e', '#12a76a', '#6a3fc4', '#e0475b', '#0f8f9c', '#a8620a', '#7a8297', '#c04fa3'];
+function renderProductionChart(ym, ld, grpSeries) {
   destroyChart('productionChart');
   const el = document.getElementById('productionChart');
   if (!el || !ld || !setupChart()) return;
   const n = Number(ld.slice(8, 10));
   const dates = Array.from({ length: n }, (_, i) => `${ym}-${String(i + 1).padStart(2, '0')}`);
   const weekend = dates.map(d => { const w = new Date(Number(d.slice(0, 4)), Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10))).getDay(); return w === 0 || w === 6; });
-  const facs = [...facP.keys()];
+  // データのあるグループだけを、工場→設定の順のまま系列にする。複数の工場にまたがるときは「第一 グループ名」と表示
+  const series = [...grpSeries.values()].filter(s => s.day.size);
+  const multiFac = new Set(series.map(s => s.fac)).size > 1;
+  series.forEach((s, i) => { s.color = PROD_PALETTE[i % PROD_PALETTE.length]; s.label = multiFac ? `${PROD_SHORT[s.fac] || s.fac} ${s.name}` : s.name; });
   let running = 0;
-  const total = dates.map(d => facs.reduce((t, z) => t + (facP.get(z).day.get(d) || 0), 0));
+  const total = dates.map(d => series.reduce((t, s) => t + (s.day.get(d) || 0), 0));
   const cumulative = total.map(v => (running += v));
   CHARTS.productionChart = new Chart(el, {
     data: {
       labels: dates.map(d => `${Number(d.slice(8, 10))}日`),
       datasets: [
-        ...facs.map(z => ({ type: 'bar', label: PROD_SHORT[z] || z, data: dates.map(d => facP.get(z).day.get(d) || 0), backgroundColor: PROD_COLORS[z] || '#b7bdcc', borderRadius: 2, yAxisID: 'y', stack: 'day', order: 2, maxBarThickness: 28 })),
+        ...series.map(s => ({ type: 'bar', label: s.label, data: dates.map(d => s.day.get(d) || 0), backgroundColor: s.color, borderRadius: 2, yAxisID: 'y', stack: 'day', order: 2, maxBarThickness: 28 })),
         { type: 'line', label: '月内累計', data: cumulative, borderColor: '#f5a524', backgroundColor: '#f5a524', borderDash: [6, 4], pointRadius: 2.5, pointBackgroundColor: '#fff', pointBorderColor: '#f5a524', pointBorderWidth: 2, tension: 0, yAxisID: 'y1', order: 1 },
       ],
     },
@@ -2246,7 +2252,7 @@ function renderProductionChart(ym, ld, facP) {
       },
       plugins: {
         legend: { position: 'bottom' },
-        tooltip: { callbacks: {
+        tooltip: { filter: c => c.dataset.type === 'line' || c.raw > 0, callbacks: {
           title: items => `${Number(ym.slice(5, 7))}/${Number(dates[items[0].dataIndex].slice(8, 10))}${weekend[items[0].dataIndex] ? '（土日）' : ''}`,
           label: c => `${c.dataset.label}　${prodNum(c.raw)}台`,
           footer: items => `当日合計　${prodNum(total[items[0].dataIndex])}台`,
