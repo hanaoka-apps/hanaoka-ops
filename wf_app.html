@@ -492,6 +492,28 @@ const GraphApi = {
     const b = await this.fileBlob('', key, st.me.upn);
     if (!b) throw new Error('受付フォルダに見つかりません：' + key);
     return b.text();
+  },
+  /* ---- 雇用契約の台帳（設定 contract.ledger の site＝役員と総務幹部だけのサイト）。読めるかどうかは SharePoint の権限どおり。
+     給与のデータ（人事情報・勤怠）も同じサイトの「給与データ」フォルダから読む（画面の中で集計し、台帳には集計だけを書く） */
+  async ledgerSite() {
+    if (!this._ls) { const u = new URL(ledgerCfg().site); this._ls = (await graph(`/sites/${u.hostname}:${u.pathname}`)).id; }
+    return this._ls;
+  },
+  async ledgerItems() {
+    const s = await this.ledgerSite();
+    return (await graphAll(`/sites/${s}/lists/${ledgerCfg().list}/items?expand=fields&$top=999`)).map(i => ({ id: Number(i.id), ...i.fields }));
+  },
+  async ledgerSave(id, fields) {
+    const s = await this.ledgerSite(), L = ledgerCfg().list;
+    if (id) { await graph(`/sites/${s}/lists/${L}/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) }); return id; }
+    return Number((await graph(`/sites/${s}/lists/${L}/items`, { method: 'POST', body: JSON.stringify({ fields }) })).id);
+  },
+  async payrollJson(rel) {   // 無いファイルは null
+    const s = await this.ledgerSite();
+    const r = await fetch(`https://graph.microsoft.com/v1.0/sites/${s}/drive/root:/${encodeURI(ledgerCfg().payrollFolder + '/' + rel)}:/content`, { headers: { Authorization: 'Bearer ' + await getToken() } });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`給与のデータを読めませんでした（${r.status}）`);
+    return r.json();
   }
 };
 
@@ -577,6 +599,24 @@ const DevApi = {
     const p = pj(t, {});
     Object.values(p.data || {}).forEach(v => Array.isArray(v) && v.forEach(x => { if (x && x.key && x.devUrl) this.blobs[x.key] = x.devUrl; }));
     return t;
+  },
+  // 開発：雇用契約の台帳と給与のデータの見本（架空の人。本物の給与は読まない）
+  ledger: [], ledgerSeq: 0,
+  async ledgerItems() { return this.ledger.map(x => ({ ...x })); },
+  async ledgerSave(id, fields) {
+    if (id) { Object.assign(this.ledger.find(x => x.id === id) || {}, fields); return id; }
+    this.ledger.push({ id: ++this.ledgerSeq, ...fields }); return this.ledgerSeq;
+  },
+  async payrollJson(rel) {
+    const dept = ['第一工場', '第二工場', '第三工場', '技術部'];
+    const people = [['900101', '見本 一郎', '契約', '時給者', '2024-11-01'], ['900102', '見本 花子', '契約', '時給者', '2025-05-16'], ['900103', '見本 次郎', '契約（特定技能）', '月給者', '2025-02-10'],
+      ['900104', '見本 三郎', 'MGR1-2', '月給者', '2026-08-01'], ['900105', '見本 四郎', '', '時給者', '2023-04-01'], ['900106', '見本 五郎', 'MGR1-3', '月給者', '2010-04-01']];
+    if (rel === 'history/employee_master.json') return people.map((p, i) => ({ 年月: '2026-09', 拠点: '工場', 従業員コード: p[0], 従業員名: p[1], 部門: dept[i % 4], 所属: p[2], 給与種別名称: p[3], 入社年月日: p[4], 退職年月日: '', 在職区分名称: '在職' }));
+    const m = rel.match(/payroll_detail\/(\d{4}-\d{2})_(工場|本社)\.json$/);
+    if (!m || m[2] !== '工場' || m[1] > '2026-09') return null;
+    const k = Number(m[1].slice(5));
+    return people.map((p, i) => ({ 従業員コード: p[0], 氏名: p[1], 所属: p[2], 内訳: { 勤怠_出勤日数: 19 + (k + i) % 3, 勤怠_欠勤日数: (k + i) % 5 === 0 ? 1 : 0, 勤怠_有給日数: (k * i) % 4 === 1 ? 1 : 0,
+      勤怠_就労時間: 120 + (k * 7 + i * 3) % 40 + 0.5, 勤怠_普通残業: (k + i * 2) % 9 + 0.25, 勤怠_遅早時間: (k + i) % 4 === 0 ? 0.75 : 0, 勤怠_遅早回数: (k + i) % 4 === 0 ? 2 : 0 } }));
   }
 };
 const api = DEV ? DevApi : GraphApi;
@@ -789,6 +829,7 @@ const TABS = [
   { key: 'payroll',  label: '給与精算の集計', show: () => st.allReqs != null && !!settleRule() },
   { key: 'orgsync',  label: '組織マスタの同期', show: () => hasRole('組織マスタの同期') },   // 出す人は役割「組織マスタの同期」（WF_Role）
   { key: 'aiusage',  label: 'AI の使用量', show: () => isWfAdmin() },   // 出す人は役割「組織マスタの同期」（WF_Role）
+  { key: 'contract', label: '雇用契約の台帳', show: () => hasRole('雇用契約の台帳') && !!ledgerCfg().site },   // 出す人は役割「雇用契約の台帳」。台帳そのものは役員と総務幹部だけのサイトにある
 ];
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 const isPostTodo = t => t.StepType === '後処理' && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
@@ -806,6 +847,7 @@ const NAV_ICONS = {
   all: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
   aiusage: '<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>',
+  contract: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h4"/>',
   orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
 };
 function render() {
@@ -825,6 +867,7 @@ function render() {
   if (st.view === 'payroll') return renderPayroll(main);
   if (st.view === 'orgsync') return renderOrgSync(main);
   if (st.view === 'aiusage') return renderAiUsage(main);
+  if (st.view === 'contract') return renderContract(main);
   renderListView(main);
 }
 
@@ -935,6 +978,226 @@ function renderAiUsage(main) {
     ${table('人ごと', group(r => r.by))}</div>`;
   $('auMonth').onchange = e => { aiUse.month = e.target.value; render(); };
   $('auReload').onclick = () => { aiUse.rows = null; loadAiUsage(); };
+}
+/* ---------- 雇用契約の台帳（役割「雇用契約の台帳」の人だけ。台帳と給与のデータは設定 contract.ledger の site＝役員と総務幹部だけのサイト）
+   ・人事情報から取り込む：給与の人事情報（employee_master.json の最新の月・在職）から、契約・パート・試用期間中の人を入れる。
+     契約の期間・試用期間の満了日は決まり（contract.ledger の rules）で初めの値を入れる。すでにある人の日付は空のときだけ埋め、
+     画面で直した項目（ManualKeys）は取り込み直しても変えない。人事情報にいなくなった人は「終了」にする
+   ・勤怠を集計：契約の期間の給与の月（締めの月）の勤怠を足して、1人分の表を台帳に書く（給与の明細そのものは写さない） */
+const ledgerCfg = () => pj((st.M && st.M.settings['contract.ledger']) || '', {});
+const ledger = { rows: null, busy: false, err: '', sel: null, plan: null, planMonth: '', q: '', showEnded: false, attend: null };
+const payCache = {};
+const LEDGER_KEYS = ['Title', 'Dept', 'Site', 'Shozoku', 'PayType', 'EmpType', 'HireDate', 'Tokutei', 'ContractFrom', 'ContractTo', 'ProbationEnd', 'ManagerUPN', 'Manager2UPN'];
+const LEDGER_DATES = ['HireDate', 'ContractFrom', 'ContractTo', 'ProbationEnd'];
+const LEDGER_LABEL = { Title: '氏名', Dept: '部署', Site: '拠点', Shozoku: '所属', PayType: '給与種別', EmpType: '雇用形態', HireDate: '入社日', Tokutei: '特定技能', ContractFrom: '契約の開始日',
+  ContractTo: '契約の満了日', ProbationEnd: '試用期間の満了日', ManagerUPN: '上司', Manager2UPN: 'その上の責任者', State: '状態', Memo: 'メモ' };
+const EMP_TYPES = ['正社員', '契約社員・嘱託', 'パート・アルバイト', 'スポット（短期）', '派遣'];
+const dIn = v => { if (!v) return ''; const d = v instanceof Date ? v : new Date(v); return isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const dOut = s => s ? new Date(s + 'T00:00:00').toISOString() : null;   // 日付だけの列：日本の0時で書く
+const addDaysS = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return dIn(d); };
+const addMonthsS = (s, n) => { const d = new Date(s + 'T00:00:00'), day = d.getDate(), t = new Date(d.getFullYear(), d.getMonth() + n, day); if (t.getDate() !== day) t.setDate(0); return dIn(t); };
+const codeKey = c => String(c == null ? '' : c).trim().replace(/^0+/, '');
+const hm = h => { const t = Math.round((Number(h) || 0) * 60); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+const ymLabel = ym => ym ? `${Number(ym.slice(0, 4))}年${Number(ym.slice(5, 7))}月分` : '';
+const daysTo = s => s ? Math.round((new Date(s + 'T00:00:00') - new Date(dIn(new Date()) + 'T00:00:00')) / 864e5) : null;
+function cycleEnd(s, R, after) {   // 区切りの日（例 03-31・09-30）で、s 以後（after=false）／s より前（after=true でなく before）の一番近い日
+  const y = Number(s.slice(0, 4)), c = [y - 1, y, y + 1].flatMap(yy => (R.cycleEnds || []).map(e => `${yy}-${e}`)).sort();
+  return after ? (c.find(e => e >= s) || '') : (c.reverse().find(e => e < s) || '');
+}
+function ledgerDefaults(e, R, today) {
+  const sh = String(e.所属 || ''), pay = String(e.給与種別名称 || ''), hire = dIn(e.入社年月日);
+  const tokutei = !!R.tokuteiMark && sh.includes(R.tokuteiMark);
+  const contract = tokutei || (!!R.contractShozoku && sh.includes(R.contractShozoku)), part = (R.partPayTypes || []).includes(pay);
+  const o = { Title: String(e.従業員名 || '').trim(), EmpCode: String(e.従業員コード), Dept: e.部門 || '', Site: e.拠点 || '', Shozoku: sh, PayType: pay, HireDate: hire, Tokutei: tokutei,
+    EmpType: contract ? '契約社員・嘱託' : part ? 'パート・アルバイト' : '正社員', ContractFrom: '', ContractTo: '', ProbationEnd: '' };
+  const base = hire && hire > today ? hire : today;
+  if (tokutei && hire) {   // 入社日から tokuteiMonths ごと
+    const n = Number(R.tokuteiMonths) || 12; let k = 1;
+    while (addDaysS(addMonthsS(hire, n * k), -1) < base && k < 50) k++;
+    o.ContractTo = addDaysS(addMonthsS(hire, n * k), -1); o.ContractFrom = addMonthsS(hire, n * (k - 1));
+  } else if (contract || part) {   // 区切りの日にそろえる（入社した人は次の区切りまで）
+    o.ContractTo = cycleEnd(base, R, true);
+    const prev = cycleEnd(o.ContractTo, R, false), from = prev ? addDaysS(prev, 1) : '';
+    o.ContractFrom = hire && hire > from ? hire : from;
+  } else if (hire) {   // 正社員：試用期間中の人だけ
+    const pe = addDaysS(addMonthsS(hire, Number(R.probationMonths) || 3), -1);
+    if (pe >= today) o.ProbationEnd = pe;
+  }
+  o.target = contract || part || !!o.ProbationEnd;
+  return o;
+}
+/* 上司・責任者の初めの値：組織マスタにいる人はその直属上長とその上。いない人（工場のパートなど）は同じ部署の管理職（いなければ部門長）とその上 */
+function ledgerManagers(name, dept) {
+  const org = st.M.org.filter(p => p.Active !== false), norm = s => String(s || '').replace(/[\s　]/g, '');
+  const first = p => lc(((p && p.ManagerUPNs) || '').split(';')[0] || '');
+  const me = org.find(p => norm(p.Title) === norm(name));
+  let m1 = me ? first(me) : '';
+  if (!m1) { const same = org.filter(p => norm(p.Dept) === norm(dept)); const b = same.find(p => p.Tier === '管理職') || same.find(p => p.Tier === '部門長'); m1 = b ? lc(b.UPN) : ''; }
+  return { ManagerUPN: m1, Manager2UPN: m1 ? first(st.M.orgByUpn[m1]) : '' };
+}
+async function loadLedger() {
+  ledger.busy = true; ledger.err = ''; render();
+  try { ledger.rows = await api.ledgerItems(); }
+  catch (e) { ledger.err = '台帳を読めませんでした：' + e.message + (e.status === 403 || e.status === 404 ? '（台帳のサイトを見る権限が無いときに出ます）' : ''); }
+  ledger.busy = false; render();
+}
+async function planLedger() {
+  ledger.busy = true; ledger.err = ''; render();
+  try {
+    const R = ledgerCfg().rules || {}, today = dIn(new Date());
+    const em = (await api.payrollJson('history/employee_master.json')) || [];
+    const last = em.map(e => e.年月).filter(Boolean).sort().pop() || '';
+    const active = em.filter(e => e.年月 === last && e.在職区分名称 === '在職' && !e.退職年月日);
+    const byCode = Object.fromEntries(ledger.rows.map(r => [codeKey(r.EmpCode), r])), plan = [];
+    active.forEach(e => {
+      const d = ledgerDefaults(e, R, today), r = byCode[codeKey(e.従業員コード)];
+      if (!r && !d.target) return;
+      Object.assign(d, ledgerManagers(d.Title, d.Dept));
+      if (!r) { const f = { EmpCode: d.EmpCode, State: '契約中' }; LEDGER_KEYS.forEach(k => { if (d[k] !== '' && d[k] != null) f[k] = d[k]; }); plan.push({ kind: '新しく入れる', name: d.Title, fields: f, sel: true }); return; }
+      const man = String(r.ManualKeys || '').split(';'), ch = {};
+      LEDGER_KEYS.forEach(k => {
+        if (man.includes(k)) return;
+        const ov = LEDGER_DATES.includes(k) ? dIn(r[k]) : k === 'Tokutei' ? !!r[k] : (r[k] ?? ''), nv = d[k] ?? '';
+        if (LEDGER_DATES.includes(k) && ov) return;   // 日付は空のときだけ埋める（更新で延びた期間を戻さない）
+        if (String(nv) !== String(ov) && !(nv === '' && !ov)) ch[k] = nv;
+      });
+      if (r.State === '終了') ch.State = '契約中';
+      if (Object.keys(ch).length) plan.push({ kind: '直す', name: r.Title, r, fields: ch, sel: true });
+    });
+    const act = new Set(active.map(e => codeKey(e.従業員コード)));
+    ledger.rows.filter(r => r.State !== '終了' && r.EmpCode && !act.has(codeKey(r.EmpCode))).forEach(r => plan.push({ kind: '終了にする', name: r.Title, r, fields: { State: '終了' }, sel: true, note: '人事情報の在職にいない' }));
+    ledger.plan = plan; ledger.planMonth = last;
+  } catch (e) { ledger.err = '人事情報を読めませんでした：' + e.message; }
+  ledger.busy = false; render();
+}
+const toSp = f => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, LEDGER_DATES.includes(k) ? dOut(v) : v]));
+async function ledgerAttend(r) {
+  const from = dIn(r.ContractFrom) || dIn(r.HireDate), to = dIn(r.ContractTo) || dIn(new Date());
+  if (!from) throw new Error('契約の開始日（か入社日）を入れてから集計してください');
+  if (!r.EmpCode) throw new Error('従業員コードがありません');
+  const yms = []; let y = Number(from.slice(0, 4)), m = Number(from.slice(5, 7));
+  while (`${y}-${String(m).padStart(2, '0')}` <= to.slice(0, 7) && yms.length < 36) { yms.push(`${y}-${String(m).padStart(2, '0')}`); if (++m > 12) { m = 1; y++; } }
+  const code = codeKey(r.EmpCode), months = [];
+  for (const ym of yms) {
+    let row = null;
+    for (const site of ['工場', '本社']) {
+      const k = `${ym}_${site}`;
+      if (!(k in payCache)) payCache[k] = await api.payrollJson(`history/payroll_detail/${k}.json`);
+      if (!row && payCache[k]) row = payCache[k].find(x => codeKey(x.従業員コード) === code) || null;
+    }
+    if (!row) continue;
+    const b = row.内訳 || {}, n = k => Number(b['勤怠_' + k]) || 0;
+    months.push({ ym, days: n('出勤日数'), absent: n('欠勤日数'), paid: n('有給日数'), work: n('就労時間'), ot: n('普通残業'), late: n('遅早時間'), lateN: n('遅早回数'), hol: n('休日出勤日数') });
+  }
+  if (!months.length) throw new Error(`${ymLabel(from.slice(0, 7))}以降の給与の勤怠がまだありません（契約が始まったばかりのときは、給与の月が入ってから「最新に更新」を押してください。続くときは従業員コードを確かめてください）`);
+  const sum = {}; ['days', 'absent', 'paid', 'work', 'ot', 'late', 'lateN', 'hol'].forEach(k => sum[k] = Math.round(months.reduce((s, x) => s + x[k], 0) * 100) / 100);
+  return { from: months[0].ym, to: months[months.length - 1].ym, months, sum };
+}
+/* 1人分の勤怠の表（上司に渡すのと同じ数字。更新の稟議にも、この形で載せる） */
+function attendHtml(a) {
+  if (!a || !a.months) return '';
+  const tr = (l, x, b) => `<tr${b ? ' class="sum"' : ''}><td>${b ? '<b>' + l + '</b>' : l}</td><td class="n">${x.days}</td><td class="n">${x.absent}</td><td class="n">${x.paid}</td><td class="n">${hm(x.work)}</td><td class="n">${hm(x.ot)}</td><td class="n">${hm(x.late)}（${x.lateN}回）</td></tr>`;
+  return `<div style="overflow-x:auto"><table class="tbl os at"><tr><th>給与の月</th><th>出勤日数</th><th>欠勤</th><th>有給</th><th>就労時間</th><th>普通残業</th><th>遅刻・早退</th></tr>
+    ${a.months.map(x => tr(ymLabel(x.ym), x)).join('')}${tr('合計', a.sum, true)}</table></div>
+    <div class="muted" style="margin-top:4px">集計期間：${ymLabel(a.from)}〜${ymLabel(a.to)}の給与（締めの月ごと。暦の月とは日がずれます）</div>`;
+}
+function renderContract(main) {
+  const L = ledger;
+  if (!L.rows && !L.busy && !L.err) { loadLedger(); return; }
+  const today = dIn(new Date()), C = ledgerCfg(), warnAt = (C.remind || {}).owner || 40;
+  const due = r => [dIn(r.ContractTo), dIn(r.ProbationEnd)].filter(Boolean).sort()[0] || '';
+  const words = L.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+  const rows = (L.rows || []).filter(r => L.showEnded || r.State !== '終了')
+    .filter(r => !words.length || words.every(w => [r.Title, r.Dept, r.EmpType, r.Shozoku, nameOf(r.ManagerUPN || '')].join(' ').toLowerCase().includes(w)))
+    .sort((a, b) => (a.State === '終了') - (b.State === '終了') || (due(a) || '9999').localeCompare(due(b) || '9999') || String(a.Title).localeCompare(String(b.Title)));
+  const dueCell = s => { if (!s) return '<span class="muted">—</span>'; const n = daysTo(s);
+    return `${esc(s)}<div class="muted" style="${n <= warnAt ? 'color:' + (n < 0 ? 'var(--ng)' : 'var(--warn)') + ';font-weight:700' : ''}">${n < 0 ? `${-n}日すぎ` : `あと${n}日`}</div>`; };
+  const P = L.plan, nSel = P ? P.filter(p => p.sel).length : 0;
+  const showV = (k, v) => k === 'Tokutei' ? (v ? 'あり' : 'なし') : k.endsWith('UPN') ? (v ? nameOf(v) : '—') : (v === '' || v == null ? '—' : String(v));
+  main.innerHTML = `<div class="detail" style="flex:1">
+    <div class="card"><h3 class="h3f"><span>雇用契約の台帳</span><button class="mini" id="lgReload">読み直す</button></h3>
+      <div class="muted" style="margin-bottom:10px">契約社員・パート・試用期間中の人の、契約の期間と上司です。台帳は役員と総務幹部だけのサイトにあり、見られるのはそのサイトの人だけです。
+        満了の${warnAt}日前に総務へ、${((C.remind || {}).managers || []).join('・')}日前に上司とその上の責任者へ、更新のご案内が届きます（上司には、その人の数字と期間だけ）。</div>
+      <div class="actions" style="margin-top:0"><input id="lgQ" type="search" placeholder="🔍 名前・部署・上司で探す" value="${esc(L.q)}" style="max-width:260px">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lgEnded" style="width:auto" ${L.showEnded ? 'checked' : ''}>終了した人も表示</label>
+        <span style="flex:1"></span><button class="pri" id="lgPlan" ${L.busy || !L.rows ? 'disabled' : ''}>人事情報から取り込む</button></div>
+      ${L.busy ? '<div class="muted" style="margin-top:8px">読み込み中…</div>' : ''}${L.err ? `<div class="errbox" style="margin-top:10px">${esc(L.err)}</div>` : ''}</div>
+    ${P ? `<div class="card"><h3>人事情報（${esc(P.length ? L.planMonth : L.planMonth || '')}）から取り込む内容</h3>
+      ${P.length ? `<div class="muted" style="margin-bottom:8px">契約の期間・試用期間の満了日は決まりで入れた初めの値です。違う人は、取り込んだあとに直してください（直した項目は、次に取り込んでも変えません）。</div>
+      <div style="overflow-x:auto"><table class="tbl os"><tr><th></th><th>区分</th><th>氏名</th><th>入れる・変わる内容</th></tr>
+        ${P.map((p, i) => `<tr><td><input type="checkbox" data-lp="${i}" ${p.sel ? 'checked' : ''} style="width:auto"></td><td>${pill({ label: p.kind, cls: p.kind === '新しく入れる' ? 'ok' : p.kind === '終了にする' ? 'gray' : 'warn' })}</td><td>${esc(p.name)}</td>
+          <td class="muted">${esc(Object.entries(p.fields).filter(([k]) => LEDGER_LABEL[k] && k !== 'Title').map(([k, v]) => `${LEDGER_LABEL[k]}：${p.r ? showV(k, LEDGER_DATES.includes(k) ? dIn(p.r[k]) : p.r[k]) + ' → ' : ''}${showV(k, v)}`).join('／'))}${p.note ? `（${esc(p.note)}）` : ''}</td></tr>`).join('')}</table></div>
+      <div class="actions"><button id="lpCancel">やめる</button><span style="flex:1"></span><button class="pri" id="lpApply" ${nSel ? '' : 'disabled'}>選んだ ${nSel} 件を台帳に入れる</button></div>`
+      : `<div class="muted">台帳と人事情報に違いはありません。</div><div class="actions"><button id="lpCancel">閉じる</button></div>`}</div>` : ''}
+    <div id="lgEdit"></div>
+    <div class="card"><div style="overflow-x:auto"><table class="tbl os lg"><tr><th>氏名</th><th>部署</th><th>雇用形態</th><th>契約の満了日</th><th>試用期間の満了日</th><th>上司</th><th>その上の責任者</th><th>状態</th><th>勤怠の集計</th></tr>
+      ${rows.map(r => `<tr data-lg="${r.id}" class="${L.sel === r.id ? 'on' : ''}" style="cursor:pointer"><td><b>${esc(r.Title)}</b>${r.Tokutei ? ' <span class="pill p-gray">特定技能</span>' : ''}</td><td>${esc(r.Dept || '')}</td><td>${esc(r.EmpType || '')}</td>
+        <td>${dueCell(dIn(r.ContractTo))}</td><td>${dueCell(dIn(r.ProbationEnd))}</td><td>${esc(r.ManagerUPN ? nameOf(r.ManagerUPN) : '—')}</td><td>${esc(r.Manager2UPN ? nameOf(r.Manager2UPN) : '—')}</td>
+        <td>${pill({ label: r.State || '契約中', cls: r.State === '終了' ? 'gray' : r.State === '更新の稟議中' ? 'run' : 'ok' })}</td><td class="muted">${r.AttendAt ? esc(dIn(r.AttendAt)) : '—'}</td></tr>`).join('')
+        || `<tr><td colspan="9" class="muted" style="padding:12px">${L.rows && !L.rows.length ? '台帳はまだ空です。「人事情報から取り込む」から入れてください' : '当てはまる人はいません'}</td></tr>`}</table></div></div>
+    </div>`;
+  $('lgReload').onclick = () => { L.rows = null; L.plan = null; loadLedger(); };
+  $('lgQ').oninput = e => { L.q = e.target.value; const pos = e.target.selectionStart; renderContract(main); const q = $('lgQ'); q.focus(); q.setSelectionRange(pos, pos); };
+  $('lgEnded').onchange = e => { L.showEnded = e.target.checked; render(); };
+  $('lgPlan').onclick = planLedger;
+  main.querySelectorAll('tr[data-lg]').forEach(tr => tr.onclick = () => { L.sel = L.sel === Number(tr.dataset.lg) ? null : Number(tr.dataset.lg); L.attend = null; render(); if (L.sel) $('lgEdit').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+  main.querySelectorAll('input[data-lp]').forEach(c => c.onchange = () => { P[Number(c.dataset.lp)].sel = c.checked; renderContract(main); });
+  if ($('lpCancel')) $('lpCancel').onclick = () => { L.plan = null; render(); };
+  if ($('lpApply')) $('lpApply').onclick = async () => {
+    const list = P.filter(p => p.sel); L.busy = true; render(); let n = 0; const ng = [];
+    for (const p of list) { try { await api.ledgerSave(p.r ? p.r.id : 0, toSp(p.fields)); n++; } catch (e) { ng.push(`${p.name}（${e.message}）`); } }
+    L.busy = false; L.plan = null; toast(`台帳に ${n} 件入れました`); if (ng.length) alert('入れられなかった人：\n' + ng.join('\n'));
+    L.rows = null; await loadLedger();
+  };
+  const r = (L.rows || []).find(x => x.id === L.sel);
+  if (r) renderLedgerEdit($('lgEdit'), r);
+}
+/* 1人分：直す・勤怠を集計する */
+function renderLedgerEdit(box, r) {
+  const L = ledger, org = st.M.org.filter(p => p.Active !== false).sort((a, b) => String(a.Dept).localeCompare(String(b.Dept)) || String(a.Title).localeCompare(String(b.Title)));
+  const man = String(r.ManualKeys || '').split(';').filter(Boolean);
+  const pick = (k, v) => `<select data-le="${k}"><option value="">（なし）</option>${org.map(p => `<option value="${esc(lc(p.UPN))}" ${lc(v || '') === lc(p.UPN) ? 'selected' : ''}>${esc(p.Title)}（${esc(p.Dept || '')}）</option>`).join('')}</select>`;
+  const lab = (k, html) => `<label class="fld${man.includes(k) ? ' man' : ''}"><span>${LEDGER_LABEL[k]}${man.includes(k) ? ' <i title="手で直した項目。取り込み直しても変えません">✎</i>' : ''}</span>${html}</label>`;
+  const a = pj(r.AttendJson, null), busy = L.attendBusy === r.id;
+  box.innerHTML = `<div class="card"><h3 class="h3f"><span>${esc(r.Title)}　<span class="muted" style="font-weight:400">${esc([r.EmpCode && '従業員コード ' + r.EmpCode, r.Dept, r.Shozoku, r.PayType, r.HireDate && '入社 ' + dIn(r.HireDate)].filter(Boolean).join('・'))}</span></span><button class="mini" id="leClose">閉じる</button></h3>
+    <div class="lg-form">
+      ${lab('EmpType', `<select data-le="EmpType">${EMP_TYPES.map(t => `<option ${r.EmpType === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`)}
+      ${lab('Tokutei', `<span><input type="checkbox" data-le="Tokutei" style="width:auto" ${r.Tokutei ? 'checked' : ''}> 1年ごとの契約</span>`)}
+      ${lab('ContractFrom', `<input type="date" data-le="ContractFrom" value="${esc(dIn(r.ContractFrom))}">`)}
+      ${lab('ContractTo', `<input type="date" data-le="ContractTo" value="${esc(dIn(r.ContractTo))}">`)}
+      ${lab('ProbationEnd', `<input type="date" data-le="ProbationEnd" value="${esc(dIn(r.ProbationEnd))}">`)}
+      ${lab('State', `<select data-le="State">${['契約中', '更新の稟議中', '終了'].map(t => `<option ${(r.State || '契約中') === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`)}
+      ${lab('ManagerUPN', pick('ManagerUPN', r.ManagerUPN))}
+      ${lab('Manager2UPN', pick('Manager2UPN', r.Manager2UPN))}
+      <label class="fld wide"><span>メモ</span><textarea data-le="Memo" rows="2">${esc(r.Memo || '')}</textarea></label></div>
+    <div class="actions"><span class="muted">${r.LastRequestNo ? '直近の稟議：' + esc(r.LastRequestNo) : ''}</span><span style="flex:1"></span><button class="pri" id="leSave">保存する</button></div>
+    <h3 class="h3f" style="margin-top:14px"><span>勤怠の集計</span><button id="leAttend" ${busy ? 'disabled' : ''}>${busy ? '集計中…' : '最新に更新'}</button></h3>
+    ${L.attendErr && !busy ? `<div class="errbox">${esc(L.attendErr)}</div>` : ''}
+    ${a ? attendHtml(a) + `<div class="muted">集計した日：${esc(dIn(r.AttendAt))}（新しい給与の月が入ったら「最新に更新」を押してください）</div>`
+      : busy ? '<div class="muted">給与のデータから集計しています…</div>' : ''}</div>`;
+  $('leClose').onclick = () => { L.sel = null; L.attend = null; render(); };
+  $('leSave').onclick = async () => {
+    const f = {}, keys = new Set(man);
+    box.querySelectorAll('[data-le]').forEach(el => {
+      const k = el.dataset.le, v = el.type === 'checkbox' ? el.checked : el.value;
+      const ov = LEDGER_DATES.includes(k) ? dIn(r[k]) : k === 'Tokutei' ? !!r[k] : k.endsWith('UPN') ? lc(r[k] || '') : (r[k] ?? (k === 'State' ? '契約中' : ''));
+      if (String(v) !== String(ov)) { f[k] = v; if (LEDGER_KEYS.includes(k)) keys.add(k); }
+    });
+    if (!Object.keys(f).length) return toast('変わったところはありません');
+    const cf = f.ContractFrom ?? dIn(r.ContractFrom), ct = f.ContractTo ?? dIn(r.ContractTo);
+    if (cf && ct && cf > ct) return alert('契約の満了日が開始日より前になっています');
+    f.ManualKeys = [...keys].join(';');
+    try { await api.ledgerSave(r.id, toSp(f)); toast('台帳を保存しました'); L.rows = null; await loadLedger(); }
+    catch (e) { alert('保存できませんでした：' + e.message); }
+  };
+  // 勤怠：集計して台帳に書く（開いたときにまだ無ければ自動で。給与の月が増えたら「最新に更新」で取り直す）
+  const refresh = async () => {
+    L.attendBusy = r.id; L.attendErr = ''; render();
+    try { const x = await ledgerAttend(r); await api.ledgerSave(r.id, { AttendJson: JSON.stringify(x), AttendAt: new Date().toISOString() }); L.rows = null; L.attendBusy = null; await loadLedger(); }
+    catch (e) { L.attendBusy = null; L.attendErr = e.message; render(); }
+  };
+  $('leAttend').onclick = refresh;
+  if (!a && L.autoFor !== r.id && L.attendBusy !== r.id) { L.autoFor = r.id; refresh(); }
 }/* ---------- 組織図（承認ライン）：組織マスタの直属上長（＝M365 の上司）を木にする。
    「上長承認」は、ここを下から上へたどって部門長（または役員）で止まる。部門長の行に印 */
 function orgTreeHtml() {
