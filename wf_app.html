@@ -2163,6 +2163,74 @@ function settleParts(o) {
   });
 }
 
+/* ---------- 途中の段で書き足す（例：海外送金の「送金の予約」で依頼書を添付・予約日を入れる）
+   書ける項目は、ワークフロー定義の段の editable（経路の控え route[].editable）。フォームの項目は stepOnly（申請するときは出ない）。
+   「作業を終える」で、まず WF_Action「作業の書き込み」を送り（フローが担当者・項目を確かめて申請に書き、添付を保管フォルダへ移す）、
+   済んでから、いつもの承認（作業完了）を送る */
+let stepEd = null;
+function stepFields(t, form, route) {
+  const step = (route || []).find(x => x.stepNo === t.StepNo && !x.skipped), keys = (step && step.editable) || [];
+  return form ? form.fields.filter(fd => keys.includes(fd.key)) : [];
+}
+function stepFormHtml(t, form, route) {
+  const fs = stepFields(t, form, route); if (!fs.length) { stepEd = null; return ''; }
+  if (!stepEd || stepEd.taskId !== t.id) stepEd = { taskId: t.id, data: {}, files: {}, busy: '' };
+  stepEd.types = Object.fromEntries(fs.map(fd => [fd.key, fd.type]));
+  const E = stepEd, inp = fd => fd.type === 'file'
+    ? `<div class="fdrop sf-drop" data-sfd="${esc(fd.key)}"><label class="fpick">＋ 書類を選ぶ<input type="file" data-sff="${esc(fd.key)}" accept="application/pdf,image/*" multiple style="display:none"></label><span class="muted">ここにドラッグ＆ドロップもできます</span>
+        <div>${(E.files[fd.key] || []).map((x, i) => `<span class="ask-file">📎 ${esc(x.name)} <button class="mini" data-sfx="${esc(fd.key)}:${i}">✕</button></span>`).join('')}</div></div>`
+    : `<input data-sfk="${esc(fd.key)}" type="${fd.type === 'date' ? 'date' : 'text'}" ${['number', 'currency'].includes(fd.type) ? 'inputmode="decimal"' : ''} value="${esc(E.data[fd.key] ?? '')}" placeholder="${esc(fd.placeholder || '')}">`;
+  return `<div class="card step-card"><h3>${esc(t.StepName)}で入れること</h3>
+    <div class="fdrop" id="sfAi">${E.busy ? `<span class="spin"></span> AI が「${esc(E.busy)}」を読んでいます…` : '<label class="fpick">📄 書類から読み取る<input type="file" id="sfAiFile" accept="application/pdf,image/*" style="display:none"></label><span class="muted">依頼書・計算書などを置くと、AI が下の欄を埋めます（置いた書類は添付にも入ります）</span>'}</div>
+    <div class="lg-form" style="margin-top:10px">${fs.map(fd => `<label class="fld ${fd.type === 'file' ? 'wide' : ''}"><span>${esc(fd.label)}</span>${inp(fd)}</label>`).join('')}</div>
+    <div class="muted" style="margin-top:6px">「作業を終える」を押すと、ここに入れた内容と書類が申請に書き込まれ、次の段へ進みます。</div></div>`;
+}
+function bindStepForm(t, form, route) {
+  const fs = stepFields(t, form, route); if (!fs.length || !stepEd) return;
+  const E = stepEd, again = () => { const d = $('detail'), y = d ? d.scrollTop : 0; renderTaskDetail(t, pj(t.SnapshotJson, {})); if ($('detail')) $('detail').scrollTop = y; };
+  const fileF = fs.find(fd => fd.type === 'file');
+  const addF = (key, list) => { E.files[key] = (E.files[key] || []).concat([...list].map(f => ({ name: f.name, size: f.size, file: f, key: fileKey(f.name) }))); again(); };
+  document.querySelectorAll('[data-sfk]').forEach(el => el.oninput = () => { E.data[el.dataset.sfk] = el.value.trim(); });
+  document.querySelectorAll('[data-sff]').forEach(el => el.onchange = () => addF(el.dataset.sff, el.files));
+  document.querySelectorAll('[data-sfd]').forEach(z => { z.ondragover = e => { e.preventDefault(); z.classList.add('over'); }; z.ondragleave = () => z.classList.remove('over'); z.ondrop = e => { e.preventDefault(); addF(z.dataset.sfd, e.dataTransfer.files); }; });
+  document.querySelectorAll('[data-sfx]').forEach(b => b.onclick = e => { e.preventDefault(); const [k, i] = b.dataset.sfx.split(':'); E.files[k].splice(Number(i), 1); again(); });
+  if ($('sfAiFile')) $('sfAiFile').onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    E.busy = file.name; again();
+    try {
+      const pf = { ...form, fields: fs.filter(fd => fd.type !== 'file').map(fd => ({ ...fd, stepOnly: false, showIf: null })) };
+      const ans = await aiReadDoc(pf, file);
+      Object.entries(ans.fields || {}).forEach(([k, v]) => { if (v != null && v !== '') E.data[k] = String(v); });
+      if (fileF) E.files[fileF.key] = (E.files[fileF.key] || []).concat([{ name: file.name, size: file.size, file, key: fileKey(file.name) }]);
+      if ((ans.comments || []).length) toast('AI：' + ans.comments.join('／'));
+    } catch (er) { alert('読み取れませんでした：' + er.message); }
+    E.busy = ''; again();
+  };
+}
+async function saveStep(t) {
+  const E = stepEd, b = $('bOk'); b.disabled = true; const label = b.textContent; b.textContent = '書き込んでいます…';
+  try {
+    const data = {}, newFiles = [];
+    const toNum = v => Number(String(v).replace(/[,¥円\s]/g, ''));
+    Object.entries(E.data).forEach(([k, v]) => { if (v === '') return; data[k] = ['number', 'currency'].includes(E.types[k]) && !isNaN(toNum(v)) ? toNum(v) : v; });
+    for (const [k, list] of Object.entries(E.files)) {
+      if (!list.length) continue;
+      for (const x of list) { await api.upload(x.file, x.key, () => {}); newFiles.push(x.key); }
+      data[k] = list.map(x => ({ name: x.name, key: x.key, size: x.size }));
+    }
+    if (!Object.keys(data).length) return confirm('入れた内容がありません。このまま作業を終えますか？');
+    const { id } = await api.postAction({ Title: `作業の書き込み ${t.RequestNo}`, ActionType: '作業の書き込み', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ pairs: Object.entries(data).map(([k, v]) => ({ k, v })), newFiles }) });   // フローは項目名を1つずつ確かめるので、名前と値の組で送る
+    const t0 = Date.now();
+    while (Date.now() - t0 < 180000) {
+      await new Promise(ok => setTimeout(ok, 2500));
+      const r = await api.actionResult(id);
+      if (r.Result === '完了') { stepEd = null; return true; }
+      if (r.Result === 'エラー') throw new Error(r.ResultMessage || '書き込めませんでした');
+    }
+    throw new Error('書き込みに時間がかかっています。少し待ってから、もう一度「作業を終える」を押してください');
+  } catch (e) { alert('書き込めませんでした：' + e.message); return false; }
+  finally { if (b) { b.disabled = false; b.textContent = label; } }
+}
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
 function renderTaskDetail(t, s) {
   if (t.StepType === '依頼') return renderAskDetail(t, pj(t.SnapshotJson, {}));
@@ -2200,10 +2268,11 @@ function renderTaskDetail(t, s) {
 
   if (canAct) {
     const back = route.slice(0, t.StepNo - 1).map((x, i) => ({ x, i })).filter(o => !o.x.skipped);
+    html += stepFormHtml(t, form, route);
     html += `<div class="card"><h3>あなたの処理（${esc(t.StepName)}）</h3>
       <textarea id="cmt" placeholder="コメント（差し戻し・却下のときは必須）"></textarea>
       <div class="actions">
-        <button class="pri" id="bOk" ${settle ? 'disabled' : ''}>${t.StepType === '決裁' ? '決裁する' : '承認する'}</button>
+        <button class="pri" id="bOk" ${settle ? 'disabled' : ''}>${t.StepType === '決裁' ? '決裁する' : t.StepType === '作業' ? (stepFields(t, form, route).length ? '作業を終える' : '確かめて完了にする') : '承認する'}</button>
         ${settle ? '<span id="settleRest" class="muted"></span>' : ''}
         <span style="flex:1"></span>
         <select id="retTo" style="width:auto"><option value="0">申請者へ差し戻す</option>${back.map(o => `<option value="${o.i + 1}">「${esc(o.x.name)}」（${esc(o.x.upns.map(nameOf).join('/'))}）へ差し戻す</option>`).join('')}</select>
@@ -2234,7 +2303,12 @@ function renderTaskDetail(t, s) {
   // 支払決済は、明細の保留・コメントを承認・差し戻しのコメントに足す
   const cmt = () => [($('cmt') ? $('cmt').value.trim() : ''), settle && curSettle && curSettle.no === t.RequestNo ? SettleView.comment(curSettle.storeKey, curSettle.snap) : ''].filter(Boolean).join('\n');
   if (settle) mountSettle({ no: t.RequestNo, app: s.applicantUPN, data: s.data || {}, canAct, hist, task: t });
-  if ($('bOk')) $('bOk').onclick = () => act({ Title: `${t.StepType} ${t.RequestNo}`, ActionType: t.StepType === '決裁' ? '決裁' : '承認', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
+  bindStepForm(t, form, route);
+  if ($('bOk')) $('bOk').onclick = async () => {
+    // 途中の段で書き足す項目があれば、先に申請へ書き込む（終わってから、この段を終える）
+    if (stepEd && stepEd.taskId === t.id && !(await saveStep(t))) return;
+    act({ Title: `${t.StepType} ${t.RequestNo}`, ActionType: t.StepType === '決裁' ? '決裁' : '承認', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ comment: cmt() }) });
+  };
   if ($('bRet')) $('bRet').onclick = () => {
     if (!cmt()) return alert('差し戻しの理由を入力してください');
     const to = Number($('retTo').value);
@@ -2484,9 +2558,9 @@ function renderCatalog(main) {
     <div class="ask-hero2"><h2>何をしたいですか？</h2>
       <p class="muted">申請したいことや、分からないことをそのまま書いてください。請求書や見積書などの書類があれば、一緒に置けます（書類だけでも始められます）。</p>
       <div class="ask-grid"><div class="ask-box"><textarea id="freeQ" rows="4" placeholder="例：業者から請求書が届いたので支払ってほしい">${esc(ask.text)}</textarea>
-        <div class="ask-row"><span class="muted" style="font-size:12px">Enter で相談をはじめます（改行は Shift＋Enter）</span><span style="flex:1"></span><button class="pri" id="freeGo">AI に相談する</button></div></div>
+        <div class="ask-row"><span class="muted" style="font-size:12px">${isPhone() ? '' : 'Enter で相談をはじめます（改行は Shift＋Enter）'}</span><span style="flex:1"></span><button class="pri" id="freeGo">AI に相談する</button></div></div>
         <div class="ask-drop" id="askDrop"><div class="ad-ic">📄</div><b>書類を置く</b><div class="muted">PDF・写真をここにドラッグ、またはクリックして選ぶ（複数可）<br>スマホはその場で撮影もできます</div>
-          <div class="ad-btns"><label class="pri-btn">ファイルを選ぶ<input type="file" id="askFile" accept="application/pdf,image/*" multiple style="display:none"></label><label class="cam-btn">📷 撮影する<input type="file" id="askCam" accept="image/*" capture="environment" style="display:none"></label></div>
+          <div class="ad-btns"><label class="pri-btn">ファイルを選ぶ<input type="file" id="askFile" accept="application/pdf,image/*" multiple style="display:none"></label><label class="cam-btn"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> 撮影する<input type="file" id="askCam" accept="image/*" capture="environment" style="display:none"></label></div>
           ${ask.files.length ? `<div class="ad-list">${ask.files.map((f, i) => `<span class="ask-file">📎 ${esc(f.name)} <button class="mini" data-axf="${i}" title="外す">✕</button></span>`).join('')}</div>` : ''}</div></div>
       ${chips.length ? `<div class="ask-chips">${chips.map(i => `<button class="chip" data-it="${esc(i.key)}">${esc(i.label)}</button>`).join('')}</div>` : ''}</div>
     <h3 class="cat-h">よくある相談<small>選ぶと、AI が必要なことを聞いて申請書の下書きを作ります</small></h3>
@@ -2496,7 +2570,7 @@ function renderCatalog(main) {
   main.querySelector('.catalog').onclick = e => { const b = e.target.closest('[data-it]'); if (b) { st.nextHint = null; startConsult(b.dataset.it); } };
   $('showForms').onclick = e => { e.preventDefault(); st.showForms = true; render(); };
   $('freeQ').oninput = e => { ask.text = e.target.value; };
-  $('freeQ').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('freeGo').click(); } };
+  $('freeQ').onkeydown = e => { if (!isPhone() && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('freeGo').click(); } };
   const addAsk = list => { ask.files = ask.files.concat([...list].filter(f => /pdf|image/.test(f.type) || /\.(pdf|jpe?g|png|heic|webp)$/i.test(f.name))).slice(0, 5); render(); };
   $('askFile').onchange = e => addAsk(e.target.files); $('askCam').onchange = e => addAsk(e.target.files);
   main.querySelectorAll('[data-axf]').forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); ask.files.splice(Number(b.dataset.axf), 1); render(); });
@@ -2564,7 +2638,7 @@ function startConsult(key, firstText, file, cand) {   // file：書類（1つか
 function formSummary(f) {
   const lab = Object.fromEntries(f.fields.filter(x => x.key).map(x => [x.key, x.label]));
   const cond = c => !c ? '' : c.all ? c.all.map(cond).join(' かつ ') : c.any ? c.any.map(cond).join(' または ') : c.not ? `「${cond(c.not)}」でない` : `${lab[c.field] || c.field} ${c.op} ${Array.isArray(c.value) ? c.value.join('・') : c.value ?? ''}`;
-  return f.fields.map(fd => {
+  return f.fields.filter(fd => !fd.stepOnly).map(fd => {
     if (fd.type === 'section') return `### ${fd.label}`;
     if (fd.type === 'note') return `（説明）${fd.text}`;
     if (['tabs', 'calc'].includes(fd.type) || !fd.label) return fd.type === 'calc' ? `- ${fd.label}：自動で計算（入れない）` : '';
@@ -2608,6 +2682,7 @@ async function consultTurn(text, file, hidden) {   // hidden：入口で見せ�
   } catch (e) { C.msgs.push({ me: false, text: '⚠ ' + e.message + '（もう一度送るか、「今の内容で下書きを作る」から手で入力してください）', err: true }); }
   C.busy = false; renderConsultIfOpen();
 }
+const isPhone = () => matchMedia('(max-width: 800px)').matches || matchMedia('(pointer: coarse)').matches;
 function renderConsultIfOpen() { if (st.view === 'new' && st.consult && !st.editor) renderConsult($('main')); }
 /* 申請に要る項目（いまの内容で出ていて、必須のもの）と、埋まっているか */
 function consultNeeds(C) {
@@ -2641,14 +2716,15 @@ function renderConsult(main) {
     <div class="cs-draftp">${draftHtml}</div>
     <div class="cs-chat"><div class="cs-head"><a href="#" id="csBack">← 最初に戻る</a><b>${esc(C.it.icon || '')} ${esc(C.it.label)}</b></div>
       <div class="cs-log" id="csLog">${C.msgs.filter(m => !m.hidden).map(m => `<div class="msg ${m.me ? 'me' : 'ai'} ${m.err ? 'err' : ''}">${m.file ? `<div class="mf">📎 ${esc(m.file)}</div>` : ''}${esc(m.text).replace(/\n/g, '<br>')}</div>`).join('')}
-        ${C.busy ? '<div class="msg ai busy"><span class="spin"></span>考えています…</div>' : ''}</div>
-      <div class="cs-in"><label class="fpick" title="見積書・請求書・領収書・住民票などを置く（複数可）">📎<input type="file" id="csFile" accept="application/pdf,image/*" multiple style="display:none"></label><label class="fpick cs-cam" title="その場で撮影する">📷<input type="file" id="csCam" accept="image/*" capture="environment" style="display:none"></label>
-        <textarea id="csText" placeholder="ここに答えを書いて送る（Enter で送信・Shift+Enter で改行）" ${C.busy ? 'disabled' : ''}></textarea><button class="pri" id="csSend" ${C.busy ? 'disabled' : ''}>送る</button></div></div>
+        ${C.busy ? '<div class="msg ai busy"><span class="spin"></span>考えています…</div>' : ''}
+        ${!C.busy && needs.length && !left ? `<div class="msg sys done">✔ 申請に必要なことがそろいました。${isPhone() ? '「申請内容」で中身を確かめてから、申請へ進んでください。' : '右の「申請内容を確認する」から、中身を確かめて申請へ進んでください。'}${isPhone() ? '<div><button class="pri mini" id="csGoDraft">申請内容を見る →</button></div>' : ''}</div>` : ''}</div>
+      <div class="cs-in"><label class="cs-icon" title="書類を置く（見積書・請求書・領収書・住民票など。複数可）" aria-label="書類を置く"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg><input type="file" id="csFile" accept="application/pdf,image/*" multiple style="display:none"></label><label class="cs-icon cs-cam" title="その場で撮影する" aria-label="撮影する"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg><input type="file" id="csCam" accept="image/*" capture="environment" style="display:none"></label>
+        <textarea id="csText" placeholder="${isPhone() ? 'ここに答えを書いて、右のボタンで送る' : 'ここに答えを書いて送る（Enter で送信・Shift+Enter で改行）'}" ${C.busy ? 'disabled' : ''}></textarea><button class="pri cs-send" id="csSend" title="送る" aria-label="送る" ${C.busy ? 'disabled' : ''}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg></button></div></div>
     <div class="cs-needp">${needHtml}</div></div>`;
   const log = $('csLog'); log.scrollTop = log.scrollHeight;
   const send = () => { const t = $('csText').value.trim(); if (!t) return; consultTurn(t, null); };
   $('csSend').onclick = send;
-  $('csText').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
+  $('csText').onkeydown = e => { if (!isPhone() && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
   const putFiles = list => { const fl = [...list]; if (fl.length) consultTurn(`書類を置きました：${fl.map(x => x.name).join('・')}`, fl); };
   $('csFile').onchange = e => putFiles(e.target.files); $('csCam').onchange = e => putFiles(e.target.files);
   const chat = main.querySelector('.cs-chat'); chat.ondragover = e => { e.preventDefault(); chat.classList.add('over'); }; chat.ondragleave = () => chat.classList.remove('over'); chat.ondrop = e => { e.preventDefault(); chat.classList.remove('over'); putFiles(e.dataTransfer.files); };
@@ -2658,7 +2734,9 @@ function renderConsult(main) {
   if ($('csOther')) $('csOther').onclick = () => { if (!confirm('ほかの申請を選び直します。置いた書類は、選び直した申請でも使います。')) return;
     st.ask = { text: (C.msgs.find(m => m.me && !m.hidden) || {}).text || '', files: C.files.slice() }; st.consult = null; render(); };
   $('csDraft').onclick = () => { C.confirmed = true; openDraft(true); };
-  if (!C.busy && C.tab === 'chat') $('csText').focus();
+  if (!C.busy && C.tab === 'chat' && !isPhone()) $('csText').focus();
+  if (isPhone() && C.tab === 'chat') { const last = log.lastElementChild; if (last) last.scrollIntoView({ block: 'nearest' }); }
+  if ($('csGoDraft')) $('csGoDraft').onclick = () => { C.tab = 'draft'; renderConsult(main); window.scrollTo(0, 0); };
 }
 /* 下書き → いつもの申請画面（AI が入れた項目に色。置いた書類は添付へ） */
 function openDraft(toConfirm) {   // toConfirm：開いたらそのまま「申請内容の確認」へ（足りないところがあれば入力の画面に残る）
@@ -2809,7 +2887,7 @@ function proxyBadge(r) { return r.ProxyUPN ? `<span class="badge b-warn" title="
    ③ 答えを applyPaste と同じ決まりで項目に入れる（選択肢にない値・日付や金額として読めない値は入れずに知らせる）④ 置いた書類は添付の欄に入れる
    指示文は WF_Setting の ai.read、モデルは ai.models（read）。フォームごとに止めるときは "AiRead": false。AI は申請しない（本人が確かめて申請） */
 const PASTE_SKIP = ['file', 'note', 'calc', 'user', 'tabs', 'section'];
-function pasteTargets(f) { return f.fields.filter(fd => fd.label && !PASTE_SKIP.includes(fd.type) && !fd.readonly); }
+function pasteTargets(f) { return f.fields.filter(fd => fd.label && !PASTE_SKIP.includes(fd.type) && !fd.readonly && !fd.stepOnly); }   // stepOnly＝途中の段で担当が書く項目（申請するときは AI も埋めない）
 /* 答えの形の1項目。★null を許す型（["string","null"] や anyOf の null）は使わない：数が多いと API が断る（2026-10-11 確認。30項目で断られ、文字だけなら通る）。
    分からない項目は空の文字 ""、金額・数量も文字（数字だけ）で答えてもらい、入れるときに applyPaste が数字に直す */
 function aiProp(fd) {
