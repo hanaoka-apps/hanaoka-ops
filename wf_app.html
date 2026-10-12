@@ -848,7 +848,8 @@ function openAbsence(forUpn) {
 
 /* 「すべての申請」タブを出すかどうか（表示の切り替えだけ。実際に見えるかは SharePoint が決める） */
 function hasAllView() {
-  return st.M.roles.some(r => r.Kind === '閲覧権限' && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').includes(st.me.upn));
+  // 閲覧の範囲（AccessLevel：全件・機密・管理者など）を持つ閲覧権限の役割だけ。人員表を見る などの役割は入れない
+  return st.M.roles.some(r => r.Kind === '閲覧権限' && r.AccessLevel && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn));
 }
 
 /* ============================================================
@@ -860,11 +861,12 @@ const TABS = [
   { key: 'mine',     label: '自分が申請したもの' },
   { key: 'involved', label: '関わった申請' },
   { key: 'all',      label: 'すべての申請', show: () => st.allReqs != null },
-  { key: 'payroll',  label: '給与精算の集計', show: () => st.allReqs != null && !!settleRule() },
-  { key: 'orgsync',  label: '組織マスタの同期', show: () => hasRole('組織マスタの同期') },   // 出す人は役割「組織マスタの同期」（WF_Role）
-  { key: 'aiusage',  label: 'AI の使用量', show: () => isWfAdmin() },   // 出す人は役割「組織マスタの同期」（WF_Role）
+  { key: 'payroll',  label: '立替精算明細', show: () => st.allReqs != null && !!settleRule() },   // 全件を見られる人（総務など）だけ。給与で精算する立替（経費精算など）の明細
   { key: 'staff',    label: '人員表', show: () => canSeeStaff() },   // 幹部（階層区分が管理職以上）と、役割「人員表を見る・直す・申請」の人
   { key: 'contract', label: '雇用契約の台帳', show: () => hasRole('雇用契約の台帳') && !!ledgerCfg().site },   // 出す人は役割「雇用契約の台帳」。台帳そのものは役員と総務幹部だけのサイトにある
+  { key: 'orgsync',  label: '組織マスタの同期', show: () => hasRole('組織マスタの同期') },   // 出す人は役割「組織マスタの同期」（WF_Role）
+  { key: 'aiusage',  label: 'AI の使用量', show: () => isWfAdmin() },   // 出す人は役割「WF管理者」
+  { key: 'flows',    label: '申請書と経路', show: () => isWfAdmin() || hasRole('組織マスタの同期') },   // 申請書ごとの経路・担当者の一覧（定義から作る）
 ];
 const isInbox = t => ['承認', '決裁', '作業'].includes(t.StepType) && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
 const isPostTodo = t => t.StepType === '後処理' && t.Status === '処理待ち' && !hiddenTasks.has(t.id);
@@ -888,6 +890,7 @@ const NAV_ICONS = {
   all: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
   aiusage: '<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>',
+  flows: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10M6 8l5 8M18 8l-5 8"/>',
   staff: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
   contract: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h4"/>',
   orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
@@ -912,6 +915,7 @@ function render() {
   if (st.view === 'aiusage') return renderAiUsage(main);
   if (st.view === 'contract') return renderContract(main);
   if (st.view === 'staff') return renderStaff(main);
+  if (st.view === 'flows') return renderFlows(main);
   renderListView(main);
 }
 
@@ -1022,6 +1026,47 @@ function renderAiUsage(main) {
     ${table('人ごと', group(r => r.by))}</div>`;
   $('auMonth').onchange = e => { aiUse.month = e.target.value; render(); };
   $('auReload').onclick = () => { aiUse.rows = null; loadAiUsage(); };
+}
+/* ---------- 申請書と経路（WF管理者・組織マスタの同期の人）：申請書ごとに、申請できる人・経路（段・担当・条件・書き足す項目）・決裁後の後処理・回覧を、
+   いまの定義（WF_Form・WF_Workflow・WF_Role）から一覧にする。定義を直せば、ここもそのまま変わる */
+const flowsView = { q: '', showOff: false, open: new Set() };
+function renderFlows(main) {
+  const V = flowsView, roleBy = t => st.M.roles.filter(r => r.Title === t && r.Active !== false);
+  const people = t => [...new Set(roleBy(t).flatMap(r => (r.MemberUPNs || '').split(';').map(x => x.trim()).filter(Boolean)))].map(nameOf).join('・') || '（担当なし）';
+  const lab = f => Object.fromEntries((f.fields || []).filter(x => x.key).map(x => [x.key, x.label || x.key]));
+  const cond = (c, L) => !c ? '' : c.all ? c.all.map(x => cond(x, L)).join(' かつ ') : c.any ? c.any.map(x => cond(x, L)).join(' または ') : c.not ? `「${cond(c.not, L)}」でない`
+    : `${String(c.field || '').startsWith('@applicant.') ? '申請者の' + ({ Site: '拠点', Dept: '部署', Tier: '階層区分' }[c.field.slice(11)] || c.field.slice(11)) : (L[c.field] || c.field)}${{ '==': ' が ', '!=': ' が次でない：', '>': ' が次より大きい：', '>=': ' が次以上：', '<': ' が次より小さい：', '<=': ' が次以下：', in: ' が次のどれか：', contains: ' に次を含む：', empty: ' が空', notEmpty: ' が入っている' }[c.op] || ' ' + c.op + ' '}${['empty', 'notEmpty'].includes(c.op) ? '' : Array.isArray(c.value) ? c.value.join('・') : (c.value ?? '')}`;
+  const who = a => !a ? '' : a.kind === 'role' ? `役割「${a.role}」：${people(a.role)}${a.by ? `（${a.by}ごと）` : ''}` : a.kind === 'chain' ? `上長を順に（${a.until || '部門長'}まで）` : a.kind === 'applicant' ? '申請した人'
+    : a.kind === 'field' ? `申請書で選んだ人（${a.field}）` : a.kind === 'managersOf' ? `選んだ人それぞれの上長（${a.field}）` : a.kind === 'user' ? (a.upns || []).map(nameOf).join('・') : a.kind;
+  const words = V.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+  const forms = st.M.forms.filter(f => (V.showOff || f.Active !== false) && !/【(テスト|デモ)】/.test(f.Title || ''))
+    .filter(f => !words.length || words.every(w => [f.Title, f.Category, f.FormCode, f.WorkflowCode].join(' ').toLowerCase().includes(w)))
+    .sort((a, b) => String(a.Category).localeCompare(String(b.Category)) || (a.Sort || 0) - (b.Sort || 0));
+  const card = f => {
+    const wf = st.M.workflows.find(w => w.WorkflowCode === f.WorkflowCode), def = pj(wf && wf.StepsJson, {}), L = lab(f);
+    const sub = (f.SubmitRoles || '').split(';').map(x => x.trim()).filter(Boolean);
+    const step = s => `<li><span class="fl-no">${s.no}</span><div><b>${esc(s.name)}</b> <span class="badge ${s.type === '決裁' ? 'b-warn' : 'b-gray'}">${esc(s.type)}</span>${s.selfOk ? ' <span class="badge b-gray">申請者本人も可</span>' : ''}
+        <div class="muted">${esc(who(s.assignee))}${(st.M.roles.find(r => s.assignee && r.Title === s.assignee.role) || {}).ApproveMode === '全員' ? '（全員の承認）' : ''}</div>
+        ${s.condition ? `<div class="fl-cond">条件：${esc(cond(s.condition, L))} のときだけ</div>` : ''}${(s.editable || []).length ? `<div class="fl-cond">この段で書き足す：${esc(s.editable.map(k => L[k] || k).join('・'))}</div>` : ''}</div></li>`;
+    return `<details class="card fl-card" ${V.open.has(f.FormCode) || words.length ? 'open' : ''} data-fl="${esc(f.FormCode)}"><summary><b>${esc(f.Title)}</b>${f.Active === false ? ' <span class="badge b-gray">公開前</span>' : ''}${f.Confidential ? ' <span class="badge b-warn">機密</span>' : ''}
+        <span class="muted">${esc(f.Category || '')}・${esc((def.steps || []).map(s => s.name).join(' → ') || '経路なし')}</span></summary>
+      <div class="fl-body"><div class="fl-meta"><span>申請できる人：${sub.length ? esc(sub.map(t => `役割「${t}」（${people(t)}）`).join('、')) : 'だれでも'}</span>${f.AllowProxy ? '<span>代理申請できる</span>' : ''}<span class="muted">${esc(f.FormCode)}／${esc(f.WorkflowCode || '')}</span></div>
+        ${wf ? `<ol class="fl-steps"><li class="fl-start"><span class="fl-no">申</span><div><b>申請</b></div></li>${(def.steps || []).map(step).join('')}</ol>
+          ${(def.post || []).length ? `<div class="fl-after"><b>決裁のあと（後処理）</b><ul>${def.post.map(p => `<li>${esc(p.name)} — ${esc(who(p.assignee))}${p.condition ? `<span class="fl-cond">（${esc(cond(p.condition, L))} のとき）</span>` : ''}</li>`).join('')}</ul></div>` : ''}
+          ${(def.circulate || []).length ? `<div class="fl-after"><b>決裁のあと（回覧）</b><ul>${def.circulate.map(c => `<li>${esc(c.kind === 'role' ? `役割「${c.role}」：${people(c.role)}` : c.kind === 'user' ? (c.upns || []).map(nameOf).join('・') : c.kind === 'dept' ? '申請者の部署の人' : c.kind)}${c.condition ? `<span class="fl-cond">（${esc(cond(c.condition, L))} のとき）</span>` : ''}</li>`).join('')}</ul></div>` : ''}`
+          : `<div class="errbox">ワークフロー「${esc(f.WorkflowCode || '')}」が見つかりません</div>`}</div></details>`;
+  };
+  const cats = [...new Set(forms.map(f => f.Category || 'その他'))];
+  main.innerHTML = `<div class="detail" style="flex:1"><div class="card"><h3>申請書と経路</h3>
+      <div class="muted" style="margin-bottom:10px">いまの定義から作った一覧です。「上長を順に」は、申請者から組織マスタの上長をたどります（実際の人は、申請する人によって変わります）。役割の担当者を直せば、ここもそのまま変わります。</div>
+      <div class="actions" style="margin-top:0"><input id="flQ" type="search" placeholder="🔍 申請書の名前・分類で探す" value="${esc(V.q)}" style="max-width:280px">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="flOff" style="width:auto" ${V.showOff ? 'checked' : ''}>公開前の申請書も出す</label>
+        <span style="flex:1"></span><button class="mini" id="flAll">すべて開く</button></div></div>
+    ${cats.map(c => `<h3 class="fl-cat">${esc(c)}</h3>${forms.filter(f => (f.Category || 'その他') === c).map(card).join('')}`).join('') || '<div class="card muted">当てはまる申請書はありません</div>'}</div>`;
+  $('flQ').oninput = e => { V.q = e.target.value; const pos = e.target.selectionStart; renderFlows(main); const q = $('flQ'); q.focus(); q.setSelectionRange(pos, pos); };
+  $('flOff').onchange = e => { V.showOff = e.target.checked; renderFlows(main); };
+  $('flAll').onclick = () => { forms.forEach(f => V.open.add(f.FormCode)); renderFlows(main); };
+  main.querySelectorAll('details[data-fl]').forEach(d => d.addEventListener('toggle', () => { d.open ? V.open.add(d.dataset.fl) : V.open.delete(d.dataset.fl); }));
 }
 /* ---------- 人員表（設計：13_人員表.md）
    場所（STF_Unit のパス 例 工場/製造部/第二工場/総組(溶接)）ごとに、在籍・入社予定・募集中と、必要（＝在籍＋入社予定＋募集中。手では持たない）を出す。
