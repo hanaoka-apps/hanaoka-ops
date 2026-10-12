@@ -104,9 +104,15 @@
 
 ### 3. 常駐スクリプトの登録
 - タスクスケジューラーに登録：トリガー＝「ログオン時」に**1回だけ**起動、実行時間の上限なし、多重起動しない
-- 操作：プログラム `conhost.exe`、引数 `--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<クローン先>\scripts\watch_regenerate_request.ps1"`
-  - `powershell.exe -WindowStyle Hidden` を直接起動にしない。Windows 11 で既定のターミナルが「Windows ターミナル」だと
-    画面が見えてしまい、それを閉じると常駐スクリプトも終了する（タスクの結果 `0xC000013A`。実際に発生した）
+- 操作：プログラム `wscript.exe`、引数 `"<クローン先>\scripts\start_rpa_worker.vbs"`
+  - `start_rpa_worker.vbs` は、同じフォルダの `watch_regenerate_request.ps1` を最初から非表示で起動し、終了まで待つ
+    （タスクが「実行中」のままになり、多重起動しない設定が効く）
+  - 次の方法は、このPCでは使えなかった（実際に発生した）
+    - `powershell.exe -WindowStyle Hidden` を直接起動: 既定のターミナルが「Windows ターミナル」だと画面が見え、
+      それを閉じると常駐スクリプトも終了する（タスクの結果 `0xC000013A`）
+    - `conhost.exe --headless powershell.exe ...`: タスクスケジューラーから起動すると、PowerShellを動かさずに終了する
+- 動いているかの確認：タスクの状態が「実行中」で、ログ（`%USERPROFILE%\regenerate_watcher.log`）に「監視を開始します」が出ていること。
+  Claude Codeなどから手動で起動した常駐スクリプトは、そのセッションが閉じると一緒に止まることがあるので、運用はタスクからの起動だけにする
 - PADが画面を操作するので、ログオン中のユーザーとして（対話型で）実行する
 - 環境変数の設定は不要（以前の `SMILE_EXPORT_COMMAND` / `AZURE_*` は使わない）
 
