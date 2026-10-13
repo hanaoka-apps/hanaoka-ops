@@ -10,15 +10,19 @@
      const stop = RpaQueue.watch(name, s => { ... s.state: pending / running / done / failed / timeout ... });
 
    status の中身:
-     pending : { state, ahead }        … 前に待っているジョブ数（実行中を含む）
-     running : { state, startedAt }
+     pending : { state, ahead, workerOk, workerSeenAt }  … 前に待っているジョブ数（実行中を含む）
+     running : { state, startedAt, workerOk, workerSeenAt }
      done    : { state, startedAt, finishedAt }
      failed  : { state, finishedAt, error }
      unknown : { state }               … 同期の途中などで一時的に見つからない（待ち続けてよい）
-     timeout : { state }               … watch の上限時間を過ぎた */
+     timeout : { state }               … watch の上限時間を過ぎた
+   workerOk が false のときは、RPA専用機の常駐スクリプトが止まっている（_rpa_queue/heartbeat.json が
+   20分以上更新されていない）。RpaQueue.workerWarning(s) で画面に出す文言が取れる。 */
 const RpaQueue = (() => {
   const GRAPH = 'https://graph.microsoft.com/v1.0';
   const ROOT = '_rpa_queue';
+  // 常駐スクリプトは動いている印(heartbeat.json)を5分ごとに書く。同期の遅れも見込んで20分で「応答なし」
+  const HEARTBEAT_STALE_MS = 20 * 60 * 1000;
   let cfg = null;
 
   function init({ getToken, driveId }) {
@@ -84,6 +88,37 @@ const RpaQueue = (() => {
     return { name, deduped: false };
   }
 
+  // RPA専用機の常駐スクリプトが動いているか。確認できなかったときは null（誤って「止まっている」と出さない）
+  async function health() {
+    try {
+      const hb = await read(null, 'heartbeat.json');
+      const seenAt = hb ? Date.parse(hb.updatedAt) : NaN;
+      return {
+        ok: !isNaN(seenAt) && Date.now() - seenAt < HEARTBEAT_STALE_MS,
+        seenAt: isNaN(seenAt) ? null : seenAt,
+        job: (hb && hb.job) || '',
+      };
+    } catch (e) {
+      console.warn('[RpaQueue] 稼働状況の確認に失敗', e);
+      return null;
+    }
+  }
+
+  function withHealth(s, h) {
+    return h ? { ...s, workerOk: h.ok, workerSeenAt: h.seenAt } : s;
+  }
+
+  // 待ち・実行中の依頼について、RPA専用機が止まっていそうなら画面に出す文言を返す（問題なければ空文字）
+  function workerWarning(s) {
+    if (!s || s.workerOk !== false || (s.state !== 'pending' && s.state !== 'running')) return '';
+    let seen = '記録なし';
+    if (s.workerSeenAt) {
+      const d = new Date(s.workerSeenAt);
+      seen = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+    return `⚠️ RPA専用機が応答していません（最終応答: ${seen}）。RPA専用機が動いているか確認してください（依頼は残っているので、動けば順番に処理されます）`;
+  }
+
   async function status(name) {
     const [pending, running] = await Promise.all([list('pending'), list('running')]);
     const idx = pending.indexOf(name);
@@ -91,11 +126,11 @@ const RpaQueue = (() => {
       // 自分より前の別ジョブの数（同じジョブはまとめて実行されるので数えない）＋実行中
       const job = jobOf(name);
       const before = new Set(pending.slice(0, idx).map(jobOf).filter(j => j !== job));
-      return { state: 'pending', ahead: before.size + (running.length ? 1 : 0) };
+      return withHealth({ state: 'pending', ahead: before.size + (running.length ? 1 : 0) }, await health());
     }
     if (running.includes(name)) {
       const r = await read('running', name);
-      return { state: 'running', startedAt: r && r.startedAt };
+      return withHealth({ state: 'running', startedAt: r && r.startedAt }, await health());
     }
     const done = await read('done', name);
     if (done) return { state: 'done', startedAt: done.startedAt, finishedAt: done.finishedAt };
@@ -130,5 +165,5 @@ const RpaQueue = (() => {
     return () => { stopped = true; if (timer) clearTimeout(timer); };
   }
 
-  return { init, request, status, watch, jobOf };
+  return { init, request, status, watch, health, workerWarning, jobOf };
 })();
