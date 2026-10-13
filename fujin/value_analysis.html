@@ -69,7 +69,7 @@
   <header><div><h1>FUJIN付加価値アプリ</h1><p>売上・仕入・在庫差から、付加価値率の理由と月次確定前の異常を確認します。</p></div><a class="fujin-app-link" href="FUJIN.html#tab=stock_detective" target="_top">← FUJINアプリを開く</a></header>
   <div class="bar"><label for="month">対象年月</label><select id="month" disabled></select><span id="closeState" class="close-state collecting">収集中</span><span id="freshness" class="muted"></span>
     <label for="fiscalYear">年度</label><select id="fiscalYear" disabled></select>
-    <nav aria-label="分析メニュー"><button type="button" class="active" data-view="summary">日報・月次</button><button type="button" data-view="items">品目別</button><button type="button" data-view="components">構成原価</button><button type="button" data-view="factors" hidden style="display:none">要因分析</button><button type="button" data-view="checks" hidden style="display:none">確定前チェック</button><button type="button" data-view="production">生産</button><button type="button" data-view="labor">工数</button></nav>
+    <nav aria-label="分析メニュー"><button type="button" class="active" data-view="summary">日報・月次</button><button type="button" data-view="items">品目別</button><button type="button" data-view="components">構成原価</button><button type="button" data-view="factors" hidden style="display:none">要因分析</button><button type="button" data-view="checks" hidden style="display:none">確定前チェック</button><button type="button" data-view="production">生産</button><button type="button" data-view="labor">工数</button><button type="button" data-view="kaigi">付加価値会議</button></nav>
   </div>
   <main>
     <div id="message" class="notice">認証済みデータを取得しています…</div>
@@ -123,6 +123,7 @@
         <div id="focusProduction"><div class="fp-empty">読み込んでいます…</div></div>
       </div>
     </section>
+    <section id="kaigi" class="view" hidden><div id="kaigiBoard"><div class="fp-empty">読み込んでいます…</div></div></section>
     <section id="labor" class="view" hidden><div id="laborBoard"><div class="lb-top"><div id="laborCrumb"></div><span class="lb-month" id="laborMonth"></span></div><div id="laborBody"></div></div></section>
     <section id="items" class="view" hidden>
       <div class="item-page-heading"><div><span class="item-page-kicker">VALUE ANALYSIS · ITEM VIEW</span><h2>品目別の付加価値</h2><p>原価と工数を分けて確認。標準工数は分／個、月別実績工数は分／月で表示します。</p></div><div class="item-page-guide"><span>現行標準原価</span><span>工数は参考指標</span></div></div>
@@ -1259,7 +1260,86 @@
       root.addEventListener('change',e=>{const k=e.target.dataset?.ml;if(!k||k==='q')return;ML[k]=e.target.value;ML.all=false;if(k==='factory')ML.ws='';if(k!=='sort')ML.sel='';mlRender()});
       let t=null;root.addEventListener('input',e=>{if(e.target.dataset?.ml!=='q')return;clearTimeout(t);t=setTimeout(()=>{ML.q=e.target.value;ML.sel='';mlRender()},250)});
       let rt=null;window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{if(ML.mode==='list'&&el('mlChart')?.offsetWidth)mlRender()},250)})}
+    // ===== 2026-10-13 付加価値会議：任意に選んだ主要機種の 売上・平均単価・最安実売・標準原価・付加価値率 =====
+    // 機種の選び方は「生産」の重点品目と同じ設定画面（SharePointリスト FUJIN_重点品目グループ、区分＝付加価値会議）。
+    // グループ名は「カテゴリ｜機種名」。標準原価は手入力せず、FUJINの月別標準原価（standard_cost_history）を使う。
+    const KG={scope:'付加価値会議',period:(()=>{try{return localStorage.getItem('fujin-va-kaigi-period')||'fy'}catch(_){return 'fy'}})(),sel:'',sort:'',open:new Set()};
+    const KG_PERIODS=[['m','単月'],['fy','今期累計'],['3','直近3か月'],['6','直近6か月'],['12','直近12か月']];
+    function kgSplit(name){const s=String(name||''),i=s.indexOf('｜');return i>0?{cat:s.slice(0,i),model:s.slice(i+1)}:{cat:'未分類',model:s}}
+    function kgDefs(){return fpGroupDefs(KG.scope).map((g,i)=>({...g,...kgSplit(g.name),color:FP_COLORS[i%FP_COLORS.length]}))}
+    function kgMonths(){const a=state.data?.item_analysis,all=(a?.months||[]).filter(m=>m<=state.month).sort();if(KG.period==='m')return [state.month];if(KG.period==='fy')return all.filter(m=>fiscalYearOf(m)===fiscalYearOf(state.month));const n=Number(KG.period)||12;return all.slice(-n)}
+    function kgMatch(conds,code){const items=fpItems(),it=items[code]||{},live=conds.filter(c=>fpNorm(c.value)&&c.type!=='作業区'),inc=live.filter(c=>!c.exclude),exc=live.filter(c=>c.exclude);return inc.length>0&&inc.some(c=>fpCondMatch(c,code,it))&&!exc.some(c=>fpCondMatch(c,code,it))}
+    // 品目コード → 機種（並び順で最初に当てはまった機種だけに数える）
+    function kgAssign(defs){const key=JSON.stringify(defs.map(d=>[d.name,d.conds.map(c=>[c.type,c.value,c.exclude])]))+'|'+Object.keys(fpItems()).length;if(KG._ak===key)return KG._am;const m=new Map(),codes=new Set((state.data?.item_analysis?.rows||[]).map(r=>r.i));for(const code of codes){const i=defs.findIndex(d=>kgMatch(d.conds,code));if(i>=0)m.set(code,i)}KG._ak=key;KG._am=m;return m}
+    function kgStd(code,ym){const h=state.data?.item_analysis?.standard_cost_history||{};const ms=Object.keys(h).filter(m=>m<=ym).sort().reverse();for(const m of ms){const c=h[m]?.[code]||h[m]?.[String(code).toUpperCase()];if(c&&Number(c.total)>0)return{v:Number(c.total),m}}return null}
+    function kgBlank(){return{q:0,a:0,ac:0,qc:0,cs:0,mn:null,mnRow:null,codes:new Map(),nocost:0}}
+    function kgAdd(t,r){const q=Number(r.q)||0,a=Number(r.a)||0;t.q+=q;t.a+=a;if(r.cs!=null&&Number.isFinite(Number(r.cs))){t.ac+=a;t.qc+=q;t.cs+=Number(r.cs)}else if(a)t.nocost+=a;if(r.mn!=null&&Number(r.mn)>0&&(t.mn==null||Number(r.mn)<t.mn)){t.mn=Number(r.mn);t.mnRow=r}}
+    const kgRate=t=>t.ac>0?(t.ac-t.cs)/t.ac*100:null;
+    const kgVa=t=>t.ac>0?t.ac-t.cs:null;
+    function kgData(months){const defs=kgDefs(),assign=kgAssign(defs),set=new Set(months),byModel=defs.map(()=>({tot:kgBlank(),month:new Map()}));
+      for(const r of state.data?.item_analysis?.rows||[]){if(!set.has(r.y))continue;const i=assign.get(r.i);if(i==null)continue;const b=byModel[i];kgAdd(b.tot,r);if(!b.month.has(r.y))b.month.set(r.y,kgBlank());kgAdd(b.month.get(r.y),r);if(!b.tot.codes.has(r.i))b.tot.codes.set(r.i,kgBlank());kgAdd(b.tot.codes.get(r.i),r)}
+      return{defs,byModel}}
+    const kgYen=v=>v==null||!Number.isFinite(v)?'—':Math.round(v).toLocaleString('ja-JP');
+    const kgMan=v=>v==null||!Number.isFinite(v)?'—':sbOku(v);
+    const kgPct=v=>v==null?'—':v.toFixed(1)+'%';
+    const kgBand=v=>v==null?'':v>=30?'pos':v>=15?'warn':'neg';
+    function kgStdUnit(tot,ym){let q=0,s=0,miss=0;for(const [code,t] of tot.codes){const st=kgStd(code,ym);if(st){q+=t.q||1;s+=st.v*(t.q||1)}else miss++}return q?{v:s/q,miss}:{v:null,miss}}
+    function renderKaigi(){const root=el('kaigiBoard');if(!root||!state.data)return;if(el('kaigi')?.hidden)return;
+      if(!FP.master&&!FP.masterError){root.innerHTML='<div class="fp-empty">品目マスタを読み込んでいます…</div>';fpLoadMaster().then(renderKaigi).catch(renderKaigi);return}
+      const editor=canEditInventory(),months=kgMonths(),{defs,byModel}=kgData(months),ym=state.month;
+      const periodLabel=KG.period==='m'?fpYmLabel(fpYm(ym)):months.length?`${fpYmLabel(fpYm(months[0]))}〜${fpYmLabel(fpYm(months[months.length-1]))}`:'—';
+      const head=`<div class="kg-head"><div><h2 class="va-section-title">付加価値会議</h2><span class="va-section-note">重点機種の売上・平均単価・最安実売・標準原価（FUJINの月別標準原価）・付加価値率／${esc(periodLabel)}</span></div><div class="kg-tools"><div class="ml-seg kg-period">${KG_PERIODS.map(([v,l])=>`<button type="button" data-kg-period="${v}" class="${KG.period===v?'on':''}">${l}</button>`).join('')}</div>${editor?'<button type="button" class="fp-edit-btn" data-kg-edit>⚙ 機種の設定</button>':''}</div></div>`;
+      if(FP.groups==null){root.innerHTML=head+'<div class="fp-empty">機種の設定を読み込んでいます…</div>';return}
+      if(!defs.length){root.innerHTML=head+`<div class="fp-empty">付加価値会議の機種がまだ登録されていません。${editor?'右上の「⚙ 機種の設定」から、カテゴリと機種（品目・分類・索引の条件）を登録してください。':'管理者が設定すると表示されます。'}</div>`;return}
+      const all=kgBlank();byModel.forEach(b=>{all.q+=b.tot.q;all.a+=b.tot.a;all.ac+=b.tot.ac;all.cs+=b.tot.cs;all.nocost+=b.tot.nocost});const noCostModels=byModel.filter(b=>b.tot.a>0&&b.tot.ac===0).length;
+      const r0=kgRate(all);
+      const cards=`<div class="kg-cards"><div class="kg-card"><small>付加価値率（重点機種）</small><b class="${kgBand(r0)}">${kgPct(r0)}</b><span>（売上−標準原価×数量）÷売上</span></div><div class="kg-card"><small>売上金額</small><b>${kgMan(all.a)}</b><span>${all.q.toLocaleString('ja-JP')} 台・個</span></div><div class="kg-card"><small>付加価値額</small><b>${kgMan(kgVa(all))}</b><span>標準原価がある売上で計算</span></div><div class="kg-card"><small>対象機種</small><b>${defs.length}<em>機種</em></b><span>${noCostModels?`標準原価なし ${noCostModels}機種`:'すべて標準原価あり'}</span></div></div>`;
+      // 月別：カテゴリ積み上げの売上（棒）＋付加価値率（線・右軸）
+      const cats=[...new Set(defs.map(d=>d.cat))],catColor=c=>FP_COLORS[cats.indexOf(c)%FP_COLORS.length];
+      const fyMonths=(state.data.item_analysis.months||[]).filter(m=>m<=ym).sort().filter(m=>KG.period==='m'||KG.period==='fy'?fiscalYearOf(m)===fiscalYearOf(ym):months.includes(m));
+      const mAgg=m=>{const t=kgBlank();byModelFor(m).forEach(x=>{t.a+=x.a;t.ac+=x.ac;t.cs+=x.cs;t.q+=x.q});return t};
+      const monthData=kgData(fyMonths),byModelFor=m=>monthData.byModel.map(b=>b.month.get(m)||kgBlank());
+      const selI=defs.findIndex(d=>d.name===KG.sel);
+      const chart1=`<div class="box kg-chart"><h3 class="fp-sub">月別の売上（カテゴリ別）と付加価値率</h3><div class="va-chart" id="kgChart1"></div></div>`;
+      const chart2=selI>=0?`<div class="box kg-chart kg-selbox"><div class="kg-selhead"><div><span class="ml-k">選んだ機種</span><b>${esc(defs[selI].cat)}｜${esc(defs[selI].model)}</b></div><button type="button" class="ml-clear" data-kg-unsel>選択を外す ×</button></div><div class="va-chart" id="kgChart2"></div>${kgCodes(byModel[selI].tot,ym)}</div>`:'';
+      // 表：カテゴリ → 機種
+      const rowsOf=cats.map(c=>({c,items:defs.map((d,i)=>({d,i,t:byModel[i].tot})).filter(x=>x.d.cat===c)}));
+      const line=(label,t,cls,attrs,dot)=>{const rate=kgRate(t),avg=t.q?t.a/t.q:null,std=t.codes?kgStdUnit(t,ym):{v:null};return `<${attrs?'button type="button"':'div'} class="kg-row ${cls}" ${attrs||''}><span class="kg-nm">${dot?`<i class="fp-dot" style="background:${dot}"></i>`:''}<span><b>${esc(label)}</b>${t.a>0&&t.ac===0?'<small class="kg-warn">標準原価なし</small>':t.nocost>0?`<small class="kg-warn">一部標準原価なし ${kgMan(t.nocost)}</small>`:''}</span></span><span class="kg-v" data-l="数量">${t.q?t.q.toLocaleString('ja-JP'):'—'}</span><span class="kg-v" data-l="売上">${kgMan(t.a)}</span><span class="kg-v" data-l="平均単価">${kgYen(avg)}</span><span class="kg-v" data-l="最安実売">${kgYen(t.mn)}</span><span class="kg-v" data-l="標準原価">${std.v!=null?kgYen(std.v):'—'}</span><span class="kg-v kg-rate ${kgBand(rate)}" data-l="付加価値率"><i style="--w:${Math.max(0,Math.min(100,rate||0))}%"></i>${kgPct(rate)}</span><span class="kg-v" data-l="付加価値額">${kgMan(kgVa(t))}</span></${attrs?'button':'div'}>`};
+      const hd=`<div class="kg-row kg-hd" aria-hidden="true"><span class="kg-nm">カテゴリ／機種</span><span class="kg-v">数量</span><span class="kg-v">売上</span><span class="kg-v">平均単価</span><span class="kg-v">最安実売</span><span class="kg-v">標準原価</span><span class="kg-v">付加価値率</span><span class="kg-v">付加価値額</span></div>`;
+      const sub=list=>{const t=kgBlank();list.forEach(x=>{t.q+=x.t.q;t.a+=x.t.a;t.ac+=x.t.ac;t.cs+=x.t.cs;t.nocost+=x.t.nocost;if(x.t.mn!=null&&(t.mn==null||x.t.mn<t.mn))t.mn=x.t.mn});t.codes=null;return t};
+      const table=`<div class="kg-table">${hd}${rowsOf.map(g=>`<div class="kg-cat"><span class="kg-catname"><i style="background:${catColor(g.c)}"></i>${esc(g.c)}</span></div>${g.items.map(x=>line(x.d.model,x.t,'kg-model'+(x.d.name===KG.sel?' on':''),`data-kg-sel="${esc(x.d.name)}"`,x.d.color)).join('')}${g.items.length>1?line(`${g.c} 小計`,sub(g.items),'kg-sub'):''}`).join('')}${line('重点機種 合計',sub(rowsOf.flatMap(g=>g.items)),'kg-total')}</div>`;
+      root.innerHTML=head+cards+chart1+chart2+`<h3 class="fp-sub">機種別 付加価値サマリー<small class="fp-muted">　押すと上に、その機種の月別推移と品目ごとの内訳が出ます</small></h3>`+table+`<p class="fp-muted kg-foot">売上・数量・最安実売は売上明細（返品・消費税・移動行を除く）。標準原価はFUJINの月別標準原価（各月の売上×その月の標準原価で積み上げ。表の「標準原価」は対象月時点の1台あたり、品目が複数なら数量で加重）。標準原価が無い月・品目の売上は付加価値率の計算から外します。最安実売は期間内でいちばん安く売った単価。</p>`;
+      vaComboChart(el('kgChart1'),{key:'kg1',months:fyMonths,stacked:true,ariaLabel:'重点機種の月別売上と付加価値率',leftTitle:'売上（円）',rightTitle:'付加価値率（右軸・%）',
+        bars:cats.map(c=>({name:c,color:catColor(c),get:m=>byModelFor(m).reduce((t,x,i)=>t+(defs[i].cat===c?x.a:0),0)})),
+        lines:[{name:'付加価値率',color:'#e0475b',axis:'right',get:m=>kgRate(mAgg(m))}],
+        tooltip:m=>{const t=mAgg(m);return vaTipHead(m,'重点機種')+vaTipRows(cats.map(c=>[c,kgMan(byModelFor(m).reduce((s,x,i)=>s+(defs[i].cat===c?x.a:0),0)),catColor(c)]).concat([['売上 計',kgMan(t.a)],['付加価値率',kgPct(kgRate(t)),'#e0475b']]))}});
+      if(selI>=0){const mm=m=>monthData.byModel[selI].month.get(m)||kgBlank();
+        vaComboChart(el('kgChart2'),{key:'kg2',months:fyMonths,ariaLabel:'選んだ機種の月別推移',leftTitle:'単価（円）',
+          lines:[{name:'平均単価',color:'#23268f',get:m=>{const t=mm(m);return t.q?t.a/t.q:null}},{name:'標準原価（1台）',color:'#e08a1e',get:m=>{const t=mm(m);return t.qc?t.cs/t.qc:null}},{name:'最安実売',color:'#1fa2e6',dash:'5 4',get:m=>mm(m).mn}],
+          topRows:[{name:'数量',color:'#5a6080',get:m=>mm(m).q||null,fmt:v=>v.toLocaleString('ja-JP')}],
+          rateRows:[{name:'率',fullName:'付加価値率',color:'#12a76a',get:m=>kgRate(mm(m))}],
+          tooltip:m=>{const t=mm(m);return vaTipHead(m,defs[selI].model)+vaTipRows([['数量',t.q.toLocaleString('ja-JP')],['売上',kgMan(t.a)],['平均単価',kgYen(t.q?t.a/t.q:null),'#23268f'],['標準原価',kgYen(t.qc?t.cs/t.qc:null),'#e08a1e'],['最安実売',kgYen(t.mn),'#1fa2e6'],['付加価値率',kgPct(kgRate(t)),'#12a76a']])}})}}
+    // 選んだ機種の品目ごと（押すと品目別の詳細）
+    function kgCodes(tot,ym){const items=fpItems(),list=[...tot.codes].sort((a,b)=>b[1].a-a[1].a);if(!list.length)return '<p class="fp-muted">この期間の売上はありません。</p>';
+      return `<div class="kg-codes">${list.map(([code,t])=>{const st=kgStd(code,ym),avg=t.q?t.a/t.q:null,rate=kgRate(t);return `<button type="button" class="kg-code" data-kg-item="${esc(code)}"><span class="kg-nm"><span><b>${esc(code)}</b><small>${esc(items[code]?.name||state.data.item_analysis.items?.[code]?.n||'')}</small></span></span><span class="kg-v" data-l="数量">${t.q.toLocaleString('ja-JP')}</span><span class="kg-v" data-l="売上">${kgMan(t.a)}</span><span class="kg-v" data-l="平均単価">${kgYen(avg)}</span><span class="kg-v" data-l="最安実売">${kgYen(t.mn)}</span><span class="kg-v" data-l="標準原価">${st?kgYen(st.v):'—'}${st&&st.m!==ym?`<small>${Number(st.m.slice(4))}月時点</small>`:''}</span><span class="kg-v kg-rate ${kgBand(rate)}" data-l="付加価値率"><i style="--w:${Math.max(0,Math.min(100,rate||0))}%"></i>${kgPct(rate)}</span></button>`}).join('')}</div><p class="fp-muted">品目を押すと「品目別」の詳細（標準原価の内訳・最安販売の伝票）を開きます（対象年月に売上がある品目）。</p>`}
+    function kgOpenSettings(){if(!canEditInventory())return;FP.kaigi=true;fpStartEdit(KG.scope);const m=el('focusModal');m.classList.add('fp-kaigi');el('focusModalTitle').textContent='⚙ 付加価値会議の機種';const gt=m.querySelector('[data-fp-tab="groups"]');if(gt)gt.textContent='機種と条件';m.hidden=false;fpSetTab('groups');if(!FP.master)fpLoadMaster().then(()=>{if(!m.hidden)fpRenderGroups()}).catch(()=>{if(!m.hidden)fpRenderGroups()})}
+    // 設定画面の1機種（カテゴリ＋機種名。作業区の条件は使わない。下に「売上がある品目」）
+    function kgEditGroup(g,gi){const sp=kgSplit(g.name),month=state.month,prev=(()=>{const y=Number(month.slice(0,4)),m=Number(month.slice(4));return m===1?`${y-1}12`:`${y}${String(m-1).padStart(2,'0')}`})(),items=fpItems(),rows=state.data?.item_analysis?.rows||[];
+      const codes=new Set(rows.filter(r=>(r.y===month||r.y===prev)&&kgMatch(g.conds,r.i)).map(r=>r.i)),sum=(c,m)=>rows.filter(r=>r.i===c&&r.y===m).reduce((t,r)=>t+(Number(r.q)||0),0),list=[...codes].map(c=>({c,cur:sum(c,month),pre:sum(c,prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre);
+      return `<div class="fp-group"><div class="fp-group-head"><input class="kg-gcat" data-gcat="${gi}" value="${esc(sp.cat==='未分類'&&!g.name.includes('｜')?'':sp.cat)}" placeholder="カテゴリ（例：電動台車）"><input class="fp-gname kg-gmodel" data-gmodel="${gi}" value="${esc(sp.model)}" placeholder="機種名（例：ダンディ）"><span class="fp-gbtns"><button type="button" data-gup="${gi}" ${gi===0?'disabled':''} aria-label="上へ">↑</button><button type="button" data-gdown="${gi}" ${gi===FP.edit.length-1?'disabled':''} aria-label="下へ">↓</button><button type="button" class="fp-del" data-gdel="${gi}">機種を削除</button></span></div>
+        <div class="fp-conds">${g.conds.map((c,ci)=>`<div class="fp-cond${c.exclude?' exc':''}"><div class="fp-cond-row">${fpTypeSelect(c,`${gi}:${ci}`)}${fpValueCell(c,`${gi}:${ci}`)}<label class="fp-exc"><input type="checkbox" data-cexc="${gi}:${ci}" ${c.exclude?'checked':''}> 除く</label><button type="button" class="fp-del" data-cdel="${gi}:${ci}" aria-label="条件を削除">✕</button></div></div>`).join('')}</div>
+        <button type="button" class="fp-add" data-cadd="${gi}">＋ 条件を追加</button>
+        <details class="fp-preview"><summary>売上がある品目 ${list.length}件　${fpYmLabel(fpYm(month))} <b>${list.reduce((t,x)=>t+x.cur,0).toLocaleString('ja-JP')}</b>／${fpYmLabel(fpYm(prev))} <b>${list.reduce((t,x)=>t+x.pre,0).toLocaleString('ja-JP')}</b>（販売数量）</summary>${list.length?`<table class="fp-mini"><thead><tr><th>品目コード</th><th>品目名</th><th>標準原価</th><th>${esc(fpYmLabel(fpYm(month)))}</th><th>${esc(fpYmLabel(fpYm(prev)))}</th></tr></thead><tbody>${list.slice(0,200).map(x=>{const st=kgStd(x.c,month);return `<tr><td>${esc(x.c)}</td><td>${esc(items[x.c]?.name||'')}</td><td class="num">${st?kgYen(st.v):'—'}</td><td class="num">${x.cur.toLocaleString('ja-JP')}</td><td class="num">${x.pre.toLocaleString('ja-JP')}</td></tr>`}).join('')}</tbody></table>`:'<p class="fp-muted">この2か月に売上がある品目はありません（条件を確認してください）。</p>'}</details></div>`}
+    function kgBind(){if(document.body.dataset.kgBound)return;document.body.dataset.kgBound='1';
+      document.addEventListener('click',e=>{const root=el('kaigi');if(!root||!root.contains(e.target))return;
+        const p=e.target.closest('[data-kg-period]');if(p){KG.period=p.dataset.kgPeriod;try{localStorage.setItem('fujin-va-kaigi-period',KG.period)}catch(_){}renderKaigi();return}
+        if(e.target.closest('[data-kg-edit]')){kgOpenSettings();return}
+        if(e.target.closest('[data-kg-unsel]')){KG.sel='';renderKaigi();return}
+        const it=e.target.closest('[data-kg-item]');if(it){const code=it.dataset.kgItem;if(itemRowsForMonth().some(r=>r.i===code))openItemModal(code);else{it.classList.add('kg-shake');setTimeout(()=>it.classList.remove('kg-shake'),500)}return}
+        const s=e.target.closest('[data-kg-sel]');if(s){KG.sel=KG.sel===s.dataset.kgSel?'':s.dataset.kgSel;renderKaigi();if(KG.sel)el('kaigiBoard')?.querySelector('.kg-selbox')?.scrollIntoView({behavior:'smooth',block:'start'})}});
+      document.querySelectorAll('nav button[data-view]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.view==='kaigi')setTimeout(renderKaigi,0)}))}
     function renderFocusProduction(){
+      try{kgBind();renderKaigi()}catch(e){console.warn('[付加価値会議]',e)}
       try{mlBind();if(ML.mode==='list'){ML.toolsFor='';mlRender()}}catch(e){console.warn('[製造実績の一覧]',e)}
       const box=el('focusProduction');if(!box)return;const month=fpYm(state.month);const editor=canEditInventory();
       el('focusEditBtn')&&(el('focusEditBtn').hidden=!editor);
@@ -1289,7 +1369,7 @@
       if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',e=>{const gl=e.target.closest('[data-fp-go-list]');if(gl){mlOpen({factory:gl.dataset.fpGoList,cls:'その他'});return}const la=e.target.closest('[data-fp-lall]');if(la){const f=la.dataset.fpLall;FP.laborAll=FP.laborAll||new Set();FP.laborAll.has(f)?FP.laborAll.delete(f):FP.laborAll.add(f);renderFocusProduction();return}const lm=e.target.closest('[data-fp-lmode]');if(lm){const [f,m]=lm.dataset.fpLmode.split('|');FP.laborMode=FP.laborMode||{};FP.laborMode[f]=m;FP.laborOpen=FP.laborOpen||new Set();FP.laborOpen.add(f);renderFocusProduction();return}const b=e.target.closest('[data-fp-sum-toggle]');if(!b)return;const k=b.dataset.fpSumToggle;FP.sumOpen.has(k)?FP.sumOpen.delete(k):FP.sumOpen.add(k);renderFocusProduction()})}
     }
     // ---- 設定（管理者のみ表示。保存はリスト権限で最終判定）----
-    function fpOpenSettings(){if(!canEditInventory())return;FP.planMonth=FP.planMonth||fpYm(state.month);fpStartEdit(FP.factory);el('focusModal').hidden=false;fpSetTab('groups');if(!FP.master)fpLoadMaster().then(()=>{if(!el('focusModal').hidden)el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}).catch(()=>{if(!el('focusModal').hidden&&!el('fpGroupsPane').hidden)fpRenderGroups()})}
+    function fpOpenSettings(){if(!canEditInventory())return;FP.kaigi=false;el('focusModal')?.classList.remove('fp-kaigi');el('focusModalTitle')&&(el('focusModalTitle').textContent='⚙ 重点品目の設定');{const gt=el('focusModal')?.querySelector('[data-fp-tab="groups"]');if(gt)gt.textContent='グループと条件'}if(!FP_FACTORIES.includes(FP.factory))FP.factory=FP_FACTORIES[0];FP.planMonth=FP.planMonth||fpYm(state.month);fpStartEdit(FP.factory);el('focusModal').hidden=false;fpSetTab('groups');if(!FP.master)fpLoadMaster().then(()=>{if(!el('focusModal').hidden)el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}).catch(()=>{if(!el('focusModal').hidden&&!el('fpGroupsPane').hidden)fpRenderGroups()})}
     function fpStartEdit(factory){FP.factory=factory;FP.edit=fpGroupDefs(factory).map(g=>({name:g.name,orig:g.name,inTotal:g.inTotal,trend:!!g.trend,conds:g.conds.map(c=>({id:c.id,type:c.type,value:c.value,exclude:c.exclude}))}))}
     function fpSetTab(t){document.querySelectorAll('#focusModal [data-fp-tab]').forEach(b=>b.classList.toggle('on',b.dataset.fpTab===t));el('fpGroupsPane').hidden=t!=='groups';el('fpPlansPane').hidden=t!=='plans';t==='groups'?fpRenderGroups():fpRenderPlans()}
     function fpFactoryTabs(cur){return `<div class="fp-factory-tabs">${FP_FACTORIES.map(f=>`<button type="button" data-fp-factory="${esc(f)}" class="${f===cur?'on':''}">${esc(f)}</button>`).join('')}</div>`}
@@ -1328,18 +1408,18 @@
       else rows=itemRows(codes);
       const all=new Set(codes);
       return `<table class="fp-mini fp-tree"><thead><tr><th>${head1}</th><th>品目数</th><th>単位</th>${head}</tr></thead><tbody>${rows}<tr class="fp-lv-total"><td>合計</td><td class="num">${all.size}</td><td>${esc(unitOf(all))}</td><td class="num">${fpNum(q(all,month))}</td><td class="num">${fpNum(q(all,prev))}</td></tr></tbody></table>`}
-    function fpTypeSelect(c,key){const groups=['分類','品目','作業区'];return `<select data-ctype="${key}" class="fp-type">${groups.map(g=>`<optgroup label="${g}">${FP_COND.filter(x=>x[2]===g).map(([v,l])=>`<option value="${esc(v)}" ${c.type===v?'selected':''}>${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select>`}
+    function fpTypeSelect(c,key){const groups=FP.kaigi?['分類','品目']:['分類','品目','作業区'];return `<select data-ctype="${key}" class="fp-type">${groups.map(g=>`<optgroup label="${g}">${FP_COND.filter(x=>x[2]===g).map(([v,l])=>`<option value="${esc(v)}" ${c.type===v?'selected':''}>${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select>`}
     function fpRenderGroups(){
       const pane=el('fpGroupsPane'),month=fpYm(state.month),prev=fpPrevMonth(month),items=fpItems();
-      pane.innerHTML=fpFactoryTabs(FP.factory)+`<p class="lead">1つのグループに条件を何行でも足せます（分類・索引・品目・作業区の混在可）。品目の条件のどれかに当てはまり、作業区の条件があればその作業区で完成したものだけを数えます。「除く」にした条件は外します。単位は品目マスタの単位です。${FP.results?'':'<br><b>完成実績データがまだ無いため、完成数は0で表示されます。</b>'}</p>`+fpItemDatalist()
-        +FP.edit.map((g,gi)=>{const sel=fpSel(g.conds),units=fpUnitsSel(sel),active=[...new Set((FP.results?.rows||[]).filter(r=>r.factory===FP.factory&&(r.m===month||r.m===prev)&&sel.ok(r)).map(r=>r.item))],list=active.map(c=>({c,it:items[c],cur:fpQtySel({ok:r=>r.item===c&&sel.ok(r)},FP.factory,month),pre:fpQtySel({ok:r=>r.item===c&&sel.ok(r)},FP.factory,prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre);
+      pane.innerHTML=(FP.kaigi?`<p class="lead">付加価値会議で報告する機種を登録します。カテゴリと機種名を入れ、品目コード・分類・索引の条件で品目を選びます（1つの品目は上の機種から順に1つだけに数えます）。標準原価はFUJINの月別標準原価を自動で使うので入力は不要です。</p>`+fpItemDatalist():'')+(FP.kaigi?'':fpFactoryTabs(FP.factory)+`<p class="lead">1つのグループに条件を何行でも足せます（分類・索引・品目・作業区の混在可）。品目の条件のどれかに当てはまり、作業区の条件があればその作業区で完成したものだけを数えます。「除く」にした条件は外します。単位は品目マスタの単位です。${FP.results?'':'<br><b>完成実績データがまだ無いため、完成数は0で表示されます。</b>'}</p>`+fpItemDatalist())
+        +FP.edit.map((g,gi)=>{if(FP.kaigi)return kgEditGroup(g,gi);const sel=fpSel(g.conds),units=fpUnitsSel(sel),active=[...new Set((FP.results?.rows||[]).filter(r=>r.factory===FP.factory&&(r.m===month||r.m===prev)&&sel.ok(r)).map(r=>r.item))],list=active.map(c=>({c,it:items[c],cur:fpQtySel({ok:r=>r.item===c&&sel.ok(r)},FP.factory,month),pre:fpQtySel({ok:r=>r.item===c&&sel.ok(r)},FP.factory,prev)})).sort((a,b)=>b.cur-a.cur||b.pre-a.pre);
           return `<div class="fp-group"><div class="fp-group-head"><input class="fp-gname" data-gi="${gi}" value="${esc(g.name)}" placeholder="グループ名（例：ダンディ）"><label title="サマリーの「月別の推移」グラフに出します"><input type="checkbox" data-gtrend="${gi}" ${g.trend?'checked':''}> 月別推移に出す</label><label><input type="checkbox" data-gtotal="${gi}" ${g.inTotal?'checked':''}> 合計に含める</label><span class="fp-gbtns"><button type="button" data-gup="${gi}" ${gi===0?'disabled':''} aria-label="上へ">↑</button><button type="button" data-gdown="${gi}" ${gi===FP.edit.length-1?'disabled':''} aria-label="下へ">↓</button><button type="button" class="fp-del" data-gdel="${gi}">グループを削除</button></span></div>
             <div class="fp-conds">${g.conds.map((c,ci)=>`<div class="fp-cond${c.exclude?' exc':''}"><div class="fp-cond-row">${fpTypeSelect(c,`${gi}:${ci}`)}${fpValueCell(c,`${gi}:${ci}`)}<label class="fp-exc"><input type="checkbox" data-cexc="${gi}:${ci}" ${c.exclude?'checked':''}> 除く</label><button type="button" class="fp-del" data-cdel="${gi}:${ci}" aria-label="条件を削除">✕</button></div><details class="fp-cond-detail" data-cdet="${gi}:${ci}" ${FP.open.has(`${gi}:${ci}`)?'open':''}><summary>詳細</summary>${FP.open.has(`${gi}:${ci}`)?fpCondDetail(c):''}</details></div>`).join('')}</div>
             <button type="button" class="fp-add" data-cadd="${gi}">＋ 条件を追加</button>
             <details class="fp-preview"><summary>完成報告がある品目 ${active.length}件${units.length>1?`<span class="fp-tag warn">単位混在：${esc(units.join('・'))}</span>`:units.length?`（${esc(units[0])}）`:''}　${fpYmLabel(month)} 完成 <b>${fpNum(fpQtySel(sel,FP.factory,month))}</b>／${fpYmLabel(prev)} <b>${fpNum(fpQtySel(sel,FP.factory,prev))}</b></summary>
               ${list.length?`<table class="fp-mini"><thead><tr><th>品目コード</th><th>品目名</th><th>分類</th><th>単位</th><th>${esc(fpYmLabel(month))}</th><th>${esc(fpYmLabel(prev))}</th></tr></thead><tbody>${list.slice(0,200).map(x=>`<tr><td>${esc(x.c)}</td><td>${esc(x.it?.name)}</td><td class="fp-muted">${esc([x.it?.dn,x.it?.mn,x.it?.sn].filter(Boolean).join(' / '))}</td><td>${esc(x.it?.unit)}</td><td class="num">${fpNum(x.cur)}</td><td class="num">${fpNum(x.pre)}</td></tr>`).join('')}</tbody></table>${list.length>200?`<p class="fp-muted">ほか ${list.length-200}件</p>`:''}`:'<p class="fp-muted">この2か月に完成報告がある品目はありません</p>'}
             </details></div>`}).join('')
-        +`<div class="fp-actions"><button type="button" class="fp-add" id="fpAddGroup">＋ グループを追加</button><span class="fp-spacer"></span><span id="fpMsg" class="fp-muted"></span><button type="button" class="fp-primary" id="fpSaveGroups">${esc(FP.factory)}の設定を保存</button></div>`;
+        +`<div class="fp-actions"><button type="button" class="fp-add" id="fpAddGroup">${FP.kaigi?'＋ 機種を追加':'＋ グループを追加'}</button><span class="fp-spacer"></span><span id="fpMsg" class="fp-muted"></span><button type="button" class="fp-primary" id="fpSaveGroups">${FP.kaigi?'付加価値会議の機種を保存':esc(FP.factory)+'の設定を保存'}</button></div>`;
     }
     function fpRenderPlans(){
       const pane=el('fpPlansPane'),m=FP.planMonth,groups=fpGroupDefs(FP.factory);
@@ -1363,7 +1443,7 @@
         for(const c of (FP.groups||[]).filter(c=>c.factory===FP.factory&&!keep.has(String(c.id))))await fpReq('DELETE',`${base}/${c.id}`);
         // グループ名を変えたら、計画の名前も合わせる
         for(const g of FP.edit){if(g.orig&&fpNorm(g.name)!==g.orig){for(const p of (FP.plans||[]).filter(p=>p.factory===FP.factory&&p.group===g.orig))await fpReq('PATCH',`${pbase}/${p.id}/fields`,{GroupName:fpNorm(g.name)})}}
-        await fpLoadLists();fpStartEdit(FP.factory);fpRenderGroups();renderFocusProduction();fpMsg('保存しました')}
+        await fpLoadLists();fpStartEdit(FP.factory);fpRenderGroups();renderFocusProduction();try{KG._ak=null;renderKaigi()}catch(_){}fpMsg('保存しました')}
       catch(e){fpMsg(e.message,true)}finally{FP.busy=false}}
     async function fpSavePlans(){
       if(FP.busy)return;FP.busy=true;fpMsg('保存しています…');
@@ -1383,7 +1463,7 @@
         if(t.dataset.fpTab)return fpSetTab(t.dataset.fpTab);
         if(t.dataset.fpFactory){FP.open.clear();fpStartEdit(t.dataset.fpFactory);return el('fpGroupsPane').hidden?fpRenderPlans():fpRenderGroups()}
         if(t.dataset.fpMonth){FP.planMonth=t.dataset.fpMonth;return fpRenderPlans()}
-        if(t.id==='fpAddGroup'){FP.edit.push({name:'',orig:'',inTotal:true,trend:false,conds:[{type:'小分類',value:'',exclude:false}]});return fpRenderGroups()}
+        if(t.id==='fpAddGroup'){FP.edit.push({name:'',orig:'',inTotal:true,trend:false,conds:[{type:FP.kaigi?'品目コード':'小分類',value:'',exclude:false}]});return fpRenderGroups()}
         if(t.dataset.cadd!=null){FP.edit[+t.dataset.cadd].conds.push({type:'小分類',value:'',exclude:false});return fpRenderGroups()}
         if(t.dataset.cdel){FP.open.clear();const [g,c]=t.dataset.cdel.split(':').map(Number);FP.edit[g].conds.splice(c,1);return fpRenderGroups()}
         if(t.dataset.gdel!=null){FP.open.clear();const g=FP.edit[+t.dataset.gdel];if(!confirm(`「${g.name||'名前なし'}」を削除します（保存するまで反映されません）`))return;FP.edit.splice(+t.dataset.gdel,1);return fpRenderGroups()}
@@ -1396,6 +1476,7 @@
         if(t.dataset.cexc){const [g,c]=t.dataset.cexc.split(':').map(Number);FP.edit[g].conds[c].exclude=t.checked;return fpRenderGroups()}
         if(t.dataset.gtotal!=null){FP.edit[+t.dataset.gtotal].inTotal=t.checked;return}
         if(t.dataset.gtrend!=null){FP.edit[+t.dataset.gtrend].trend=t.checked;return}
+        if(t.dataset.gcat!=null||t.dataset.gmodel!=null){const gi=+(t.dataset.gcat??t.dataset.gmodel),grp=t.closest('.fp-group'),cat=fpNorm(grp.querySelector('[data-gcat]')?.value).replace(/｜/g,''),model=fpNorm(grp.querySelector('[data-gmodel]')?.value).replace(/｜/g,'');FP.edit[gi].name=cat?`${cat}｜${model}`:model;return}
         if(t.classList.contains('fp-gname')){FP.edit[+t.dataset.gi].name=t.value}});
       modal.addEventListener('toggle',e=>{const d=e.target;if(!d.dataset||!d.dataset.cdet)return;const k=d.dataset.cdet;if(d.open&&!FP.open.has(k)){FP.open.add(k);const [g,c]=k.split(':').map(Number);d.insertAdjacentHTML('beforeend',fpCondDetail(FP.edit[g].conds[c]))}else if(!d.open){FP.open.delete(k);d.querySelectorAll('table,p').forEach(n=>n.remove())}},true);
       document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)modal.hidden=true});
@@ -2027,6 +2108,28 @@
     .sb-teaser{border-left:5px solid #12a76a}
     .sb-modebar{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 18px}
     .sb-orders{margin-top:14px}
+    #focusModal.fp-kaigi [data-fp-tab="plans"]{display:none}.kg-gcat{flex:0 1 200px;font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line-strong,#dfe4ef);border-radius:8px}
+    .kg-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin:0 0 12px}.kg-head .va-section-note{display:block;margin-top:2px}.kg-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.kg-period{background:#fff}
+    .kg-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0 0 14px}.kg-card{position:relative;overflow:hidden;background:#fff;border-radius:14px;padding:14px 16px 12px;box-shadow:0 1px 2px rgba(22,26,92,.04),0 6px 18px rgba(22,26,92,.05);display:flex;flex-direction:column;gap:3px;animation:fpFade .45s ease-out both}.kg-card::before{content:'';position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,#23268f,#1fa2e6)}
+    .kg-card small{font-size:11.5px;font-weight:700;color:var(--sub,#8a90a8)}.kg-card b{font-size:26px;font-weight:800;font-feature-settings:"tnum";color:#161a3d}.kg-card b em{font-style:normal;font-size:12px;color:var(--sub,#8a90a8);margin-left:3px}.kg-card span{font-size:11px;color:#5a6080}.kg-card b.pos{color:#0e7a4e}.kg-card b.warn{color:#b8660b}.kg-card b.neg{color:#d23c4f}
+    .kg-chart{margin:0 0 14px}.kg-selbox{border:2px solid #23268f;animation:fpFade .4s ease-out both}.kg-selhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.kg-selhead .ml-k{display:block;font-size:11px;font-weight:700;color:var(--sub,#8a90a8)}.kg-selhead b{font-size:16px;font-weight:800}
+    .kg-table{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+    .kg-row,.kg-code{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:minmax(180px,2fr) repeat(7,minmax(70px,1fr));gap:10px;align-items:center;background:#fff;border-radius:12px;padding:10px 14px;position:relative;isolation:isolate;overflow:hidden;box-shadow:0 1px 2px rgba(22,26,92,.04)}
+    .kg-code{grid-template-columns:minmax(180px,2fr) repeat(6,minmax(70px,1fr));cursor:pointer;background:#f8f9fc;box-shadow:none;margin-top:4px;transition:background .2s}.kg-code:hover{background:#eef0ff}.kg-codes{margin-top:10px}
+    button.kg-row{cursor:pointer;transition:color .3s,box-shadow .25s,transform .2s}button.kg-row::before{content:'';position:absolute;inset:0;background:linear-gradient(90deg,#23268f,#2d33b0);transform:scaleX(0);transform-origin:left;transition:transform .38s cubic-bezier(.2,.8,.2,1);z-index:-1}
+    button.kg-row:hover{box-shadow:0 4px 14px rgba(22,26,92,.1);transform:translateY(-1px)}button.kg-row.on{color:#fff}button.kg-row.on::before{transform:scaleX(1)}button.kg-row.on small{color:rgba(255,255,255,.8)!important}button.kg-row.on .kg-rate{color:#fff!important}button.kg-row.on .kg-rate i{background:rgba(255,255,255,.25)}
+    .kg-hd{background:none;box-shadow:none;padding:0 14px;font-size:11px;font-weight:700;color:var(--sub,#8a90a8)}.kg-hd .kg-v{color:var(--sub,#8a90a8)}
+    .kg-cat{margin:10px 0 0;padding:0 4px}.kg-catname{font-size:12.5px;font-weight:800;color:#3a4060}.kg-catname i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+    .kg-sub{background:#f3f5fb;box-shadow:none;font-weight:700}.kg-total{background:#e9ecfb;box-shadow:none;font-weight:800;margin-top:8px}
+    .kg-nm{display:flex;align-items:center;gap:8px;min-width:0}.kg-nm>span{min-width:0}.kg-nm b{display:block;font-size:13px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kg-nm small{display:block;font-size:11px;color:var(--sub,#8a90a8)}.kg-nm .fp-dot{flex:0 0 8px;width:8px;height:8px;border-radius:2px}
+    .kg-v{text-align:right;font-size:12.5px;font-feature-settings:"tnum";white-space:nowrap}.kg-v small{display:block;font-size:10.5px;color:var(--sub,#8a90a8)}.kg-warn{color:#b8660b!important}
+    .kg-rate{font-weight:800;position:relative}.kg-rate i{display:block;height:5px;border-radius:3px;background:#eef0f5;margin-bottom:3px;overflow:hidden}.kg-rate i::after{content:'';display:block;height:100%;width:var(--w);background:currentColor;border-radius:3px;transform-origin:left;animation:sbGrowX .7s cubic-bezier(.2,.8,.2,1) both}
+    .kg-rate.pos{color:#0e7a4e}.kg-rate.warn{color:#b8660b}.kg-rate.neg{color:#d23c4f}
+    .kg-shake{animation:kgShake .4s}@keyframes kgShake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+    .kg-foot{margin-top:10px;font-size:11.5px;line-height:1.6}
+    @media(max-width:900px){.kg-cards{grid-template-columns:1fr 1fr;gap:8px}.kg-card b{font-size:20px}.kg-hd{display:none}
+      .kg-row,.kg-code{grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 10px;padding:10px 12px}.kg-row .kg-nm,.kg-code .kg-nm{grid-column:1/-1}.kg-v{text-align:left;font-size:12px}.kg-v::before{content:attr(data-l);display:block;font-size:10px;color:var(--sub,#8a90a8);font-weight:600}button.kg-row.on .kg-v::before{color:rgba(255,255,255,.7)}}
+
     .fp-bar,.sb-sbar{transform-box:fill-box;transform-origin:center bottom;animation:fpGrow .55s cubic-bezier(.2,.8,.25,1) calc(var(--i,0)*22ms) both}@keyframes fpGrow{from{transform:scaleY(0)}}
     .fp-daily .va-line{animation:fpFade .6s ease-out .35s both}@keyframes fpFade{from{opacity:0}}
     .ml-bar i{transform-origin:left;animation:sbGrowX .6s cubic-bezier(.2,.8,.2,1) both}@keyframes sbGrowX{from{transform:scaleX(0)}}
