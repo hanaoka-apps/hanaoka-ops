@@ -71,11 +71,15 @@ $script:JobDefsCachedAt = [datetime]::MinValue
 $script:BadScheduleLogged = @{}
 $script:HeartbeatAt = [datetime]::MinValue
 
+# ログは記録用なので、書けなくても本来の処理は止めない。
+# (ほかのプロセスがログを開いている瞬間に書くと失敗し、以前はそれで常駐スクリプトごと止まった)
 function Write-Log {
   param([string]$Message)
   $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
   Write-Host $line
-  Add-Content -Path $LogPath -Value $line
+  for ($i = 0; $i -lt 5; $i++) {
+    try { Add-Content -Path $LogPath -Value $line -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 300 }
+  }
 }
 
 function Read-JsonFile([string]$Path) {
@@ -406,6 +410,16 @@ function Remove-OldItems {
   Get-ChildItem -LiteralPath $DoneDir, $FailedDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
     Where-Object { $_.LastWriteTime -lt $limit } |
     Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+# 二重に起動しない(タスクを止めても、起動用の wscript だけが終わって前の常駐スクリプトが
+# 残ることがある。2つ同時に動くと同じ依頼を取り合う)。プロセスが終われば自動で解放される。
+$script:SingleInstance = New-Object System.Threading.Mutex($false, 'Local\HanaokaRpaQueueWorker')
+$owned = $false
+try { $owned = $script:SingleInstance.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
+if (-not $owned) {
+  Write-Log "ほかの常駐スクリプトがすでに動いているため、起動を取りやめます (PID $PID)"
+  exit 0
 }
 
 foreach ($d in $PendingDir, $RunningDir, $DoneDir, $FailedDir) {
