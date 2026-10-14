@@ -219,7 +219,7 @@ body { display: flex; flex-direction: column; }
     <button class="go" id="go">探す</button>
   </div>
   <button class="clear" id="clear" title="クリア">✕</button>
-  <button class="go price-sim-btn" id="priceSimBtn" type="button" hidden title="この品目の原価（単価）が上がったら、どの製品にいくら効くかを付加価値アプリで試す">💴 値上げシミュレーション</button>
+  <button class="go price-sim-btn" id="priceSimBtn" type="button" title="この品目の原価（単価）が上がったら、どの製品にいくら効くかを付加価値アプリで試す">💴 値上げシミュレーション</button>
   <details class="search-tools"><summary>補助操作・注意品目・最近使った品目</summary>
   <div class="sb-wrap" id="sbWrap" title="この品目に紐づく製番でBOMを切替えます">
     <label>製番:</label>
@@ -579,7 +579,7 @@ function _doSearchWithCode(code){
 }
 
 // 付加価値アプリの「価格・値上げ」へ：この品目を「原価が上がる品目」に入れた状態で開く
-(function(){ const b = document.getElementById("priceSimBtn"); if(!b) return; b.addEventListener("click", function(){ const code = window._sdCode; if(!code) return; let prev = ""; try { prev = window.top.sessionStorage.getItem("_fujin_price_raise") || ""; window.top.sessionStorage.setItem("_fujin_price_raise", [prev, code].filter(Boolean).join(",")); } catch(_){} try { window.top.location.hash = "#tab=value_analysis&va_view=price&raise=" + encodeURIComponent(code); } catch(_) { location.href = "FUJIN.html#tab=value_analysis&va_view=price&raise=" + encodeURIComponent(code); } }); })();
+(function(){ const b = document.getElementById("priceSimBtn"); if(!b) return; b.addEventListener("click", function(){ const code = window._sdCode || (q.value || "").normalize("NFKC").trim().toUpperCase(); if(!code){ alert("品目を探してから押してください"); return; } let prev = ""; try { prev = window.top.sessionStorage.getItem("_fujin_price_raise") || ""; window.top.sessionStorage.setItem("_fujin_price_raise", [prev, code].filter(Boolean).join(",")); } catch(_){} try { window.top.location.hash = "#tab=value_analysis&va_view=price&raise=" + encodeURIComponent(code); } catch(_) { location.href = "FUJIN.html#tab=value_analysis&va_view=price&raise=" + encodeURIComponent(code); } }); })();
 function search(){
   const raw = (q.value || "").trim();
   console.log("[stock_detective.search] raw=", raw);
@@ -618,7 +618,7 @@ sbSel.addEventListener('change', () => {
 // ・検索後は入力欄を全選択 → 次の読み取りで自動的に上書きされる
 // ・高速連続入力(キー間隔30ms未満)を検知したら、読み取り開始前の文字を捨てる
 // ・Enterが来なくても、高速入力が150ms止まったら検索する
-let _scanLastKey = 0, _scanBurst = false, _scanStart = 0, _scanTimer = null;
+let _scanLastKey = 0, _scanBurst = false, _scanStart = 0, _scanTimer = null, _scanFast = 0;
 function _scanRunSearch(){
   clearTimeout(_scanTimer); _scanBurst = false;
   q.value = (q.value || "").normalize('NFKC').trim();
@@ -631,12 +631,16 @@ q.addEventListener('keydown', e => {
   if (e.isComposing || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
   const now = Date.now(), gap = now - _scanLastKey;
   _scanLastKey = now;
+  // 2026-10-14 人が速く打っただけ（UDA など）で読み取り扱いになり、自動検索→全選択で入力が消えていたため、
+  // 30ms未満の打鍵が3回続いたとき（＝4文字以上を一気に入力）だけハンディ読み取りとみなす。
   if (gap > 300) {
-    _scanBurst = false;
+    _scanBurst = false; _scanFast = 0;
     _scanStart = q.selectionStart || 0;
-  } else if (gap < 30 && !_scanBurst) {
-    _scanBurst = true;
-    q.value = q.value.slice(_scanStart);
+  } else if (gap < 30) {
+    _scanFast++;
+    if (!_scanBurst && _scanFast >= 3) { _scanBurst = true; q.value = q.value.slice(_scanStart); }
+  } else {
+    _scanFast = 0;
   }
   if (_scanBurst) { clearTimeout(_scanTimer); _scanTimer = setTimeout(_scanRunSearch, 150); }
 });
@@ -664,10 +668,15 @@ function _globalScanKey(e){
   if (gap > 300 || (!_gBurst && gap >= 30)) {       // 読み取り開始候補(1文字目)
     _gBuf = e.key; _gFirst = e.target; _gBurst = false; return;
   }
-  if (!_gBurst) {                                   // 2文字目が高速 → ハンディと判定
+  if (!_gBurst) {                                   // 2026-10-14 高速打鍵が3回続いたら（4文字目で）ハンディと判定。人の速打ちでは反応しない
+    _gBuf += e.key;
+    if (_gBuf.length < 4) return;                   // まだ人の入力かもしれない → そのまま入力させる
     _gBurst = true;
-    const t = _gFirst;                              // 1文字目が別の入力欄に入っていたら取り消す
-    try { if (_gIsText(t) && typeof t.value === 'string' && t.value.endsWith(_gBuf)) t.value = t.value.slice(0, -_gBuf.length); } catch(_){}
+    const t = _gFirst, typed = _gBuf.slice(0, -1);  // ここまでに別の入力欄へ入った文字は取り消す
+    try { if (_gIsText(t) && typeof t.value === 'string' && t.value.endsWith(typed)) t.value = t.value.slice(0, -typed.length); } catch(_){}
+    e.preventDefault(); e.stopPropagation();
+    clearTimeout(_gTimer); _gTimer = setTimeout(_gFinish, 150);
+    return;
   }
   _gBuf += e.key;
   e.preventDefault(); e.stopPropagation();
@@ -1036,7 +1045,7 @@ window.addEventListener('load', () => {
 // ===== 2026-09-30 自動更新：FUJIN本体がこの画面をキャッシュしたまま開くと古い版が出るため、
 // 開くたびに公開中の版番号を確認し、新しければ ?v=版番号 を付けて読み直す（1回だけ）。
 (function(){
-  var BUILD = "20261014-01";
+  var BUILD = "20261014-02";
   window.FUJIN_SD_BUILD = BUILD;
   if (location.protocol === "file:") return;
   var url = location.pathname + "?chk=" + Date.now();
