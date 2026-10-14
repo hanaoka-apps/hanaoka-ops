@@ -260,6 +260,27 @@
   .schedule-title { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
   .schedule-loc { display: flex; align-items: center; gap: 4px; color: var(--text-sub); font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
   .schedule-loc svg { flex-shrink: 0; }
+  .schedule-item.clickable { cursor: pointer; border-radius: 8px; transition: background .12s; }
+  .schedule-item.clickable:hover, .schedule-item.clickable:focus-visible { background: var(--bg); outline: none; }
+
+  /* 予定の詳細（今日の予定をクリック）。メモのURLはリンクにする */
+  .ev-modal { position: fixed; inset: 0; z-index: 300; display: none; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(22, 26, 61, 0.45); }
+  .ev-modal.on { display: flex; }
+  .ev-card { background: #fff; border-radius: 14px; width: 100%; max-width: 520px; max-height: 90vh; overflow: auto;
+    box-shadow: 0 20px 50px rgba(22, 26, 92, 0.25); }
+  .ev-card h3 { margin: 0; padding: 16px 20px; font-size: 16px; font-weight: 800; border-bottom: 1px solid var(--border);
+    overflow-wrap: anywhere; }
+  .ev-card dl { margin: 0; padding: 16px 20px; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px 12px; font-size: 13.5px; }
+  .ev-card dt { color: var(--text-sub); font-weight: 600; }
+  .ev-card dd { margin: 0; overflow-wrap: anywhere; }
+  .ev-memo { white-space: pre-wrap; max-height: 240px; overflow: auto; line-height: 1.6; }
+  .ev-card a { color: var(--navy); text-decoration: underline; }
+  .ev-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border);
+    background: #f8f9fd; border-radius: 0 0 14px 14px; }
+  .ev-foot a, .ev-foot button { font: inherit; font-size: 13px; font-weight: 700; padding: 8px 16px; border-radius: 8px;
+    border: 1px solid var(--border-strong); background: #fff; color: var(--text-main); cursor: pointer; text-decoration: none; }
+  .ev-foot a:hover, .ev-foot button:hover { background: var(--bg); }
 
   .task-item {
     display: flex; align-items: center; gap: 12px;
@@ -746,6 +767,17 @@
       </div>
     </section>
 
+    <div class="ev-modal" id="evModal" role="dialog" aria-modal="true" aria-labelledby="evTitle">
+      <div class="ev-card">
+        <h3 id="evTitle"></h3>
+        <dl id="evBody"></dl>
+        <div class="ev-foot">
+          <a id="evOpen" href="#" target="_blank" rel="noopener noreferrer" hidden>Outlookで開く ↗</a>
+          <button type="button" id="evClose">閉じる</button>
+        </div>
+      </div>
+    </div>
+
     <div class="read-mode" id="readMode" hidden role="dialog" aria-modal="true" aria-label="朝礼 読み上げモード">
       <div class="read-bar">
         <h2>朝礼 読み上げモード</h2>
@@ -1172,8 +1204,9 @@ async function loadTodaySchedule() {
   const now = new Date();
   const start = encodeURIComponent(localMidnightIso(now, 0));
   const end = encodeURIComponent(localMidnightIso(now, 1));
-  const path = `/me/calendarView?startDateTime=${start}&endDateTime=${end}&$orderby=start/dateTime&$top=20&$select=subject,start,end,location,isAllDay`;
-  const data = await graphGet(path, { Prefer: 'outlook.timezone="Tokyo Standard Time"' });
+  const path = `/me/calendarView?startDateTime=${start}&endDateTime=${end}&$orderby=start/dateTime&$top=20&$select=id,subject,start,end,location,isAllDay,showAs,body,organizer,webLink`;
+  /* 本文（メモ）は text で受け取り、詳細モーダルでURLだけリンクにする */
+  const data = await graphGet(path, { Prefer: 'outlook.timezone="Tokyo Standard Time", outlook.body-content-type="text"' });
   renderSchedule(data.value || []);
   // 何時の時点の予定かが分かるように、読み込んだ時刻を出す(古い画面が残っているときに気づける)
   const n = new Date();
@@ -1192,23 +1225,83 @@ async function loadTodaySchedule() {
   });
 })();
 
+let SCHEDULE_EVENTS = [];
 function renderSchedule(events) {
   const el = document.getElementById('scheduleList');
+  SCHEDULE_EVENTS = events;
   if (!events.length) {
     el.innerHTML = '<div class="empty-state">本日の予定はありません</div>';
     return;
   }
-  el.innerHTML = events.map(ev => {
+  el.innerHTML = events.map((ev, i) => {
     const timeLabel = ev.isAllDay ? '終日' : `${(ev.start.dateTime||'').slice(11,16)} – ${(ev.end.dateTime||'').slice(11,16)}`;
     const loc = ev.location && ev.location.displayName ? ev.location.displayName : '';
     return `
-      <div class="schedule-item">
+      <div class="schedule-item clickable" data-ev="${i}" role="button" tabindex="0" title="クリックで詳細">
         <div class="schedule-time">${escapeHtml(timeLabel)}</div>
         <div class="schedule-title">${escapeHtml(ev.subject || '(件名なし)')}</div>
         <div class="schedule-loc">${loc ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>${escapeHtml(loc)}` : ''}</div>
       </div>`;
   }).join('');
 }
+
+// ============================================================
+// 今日の予定の詳細（クリックで開く。メモのURLはリンクにする）
+// ============================================================
+// URLは半角の英数記号だけで判定し(直後の日本語・句読点を巻き込まない)、本文は片ごとにHTMLエスケープする
+// (<script> 等は文字として出るだけ。javascript: などは対象外)。
+function linkifyMemo(text) {
+  const t = String(text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const re = /https?:\/\/[A-Za-z0-9\-._~:\/?#@!$&'()*+,;=%\[\]゠-ヿ㐀-鿿]+/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(t))) {
+    let u = m[0];
+    const tail = u.match(/[.,;:!?)'\]]+$/);
+    if (tail) u = u.slice(0, -tail[0].length);
+    out += escapeHtml(t.slice(last, m.index)) + `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${escapeHtml(u)}</a>`;
+    last = m.index + u.length; re.lastIndex = last;
+  }
+  return out + escapeHtml(t.slice(last));
+}
+const SHOWAS_JA = { busy: '予定あり', tentative: '仮の予定', oof: '不在・休暇', workingElsewhere: '別の場所で勤務', free: '空き時間', unknown: '不明' };
+function evWhenLabel(ev) {
+  // 取得時に日本時間(Tokyo Standard Time)を指定しているので、文字列のまま読めばよい
+  const s = ev.start.dateTime || '', e = ev.end.dateTime || '';
+  const ymd = x => x.slice(0, 10).replace(/-/g, '/');
+  if (ev.isAllDay) {
+    const [y, m, d] = e.slice(0, 10).split('-').map(Number);
+    const endIncl = new Date(y, m - 1, d - 1);   // 終日の終わりは「翌日0:00」なので1日戻す
+    const endStr = `${endIncl.getFullYear()}/${pad2(endIncl.getMonth() + 1)}/${pad2(endIncl.getDate())}`;
+    return ymd(s) === endStr ? `${ymd(s)}（終日）` : `${ymd(s)} 〜 ${endStr}（終日）`;
+  }
+  const sameDay = s.slice(0, 10) === e.slice(0, 10);
+  return `${ymd(s)} ${s.slice(11, 16)} 〜 ${sameDay ? '' : ymd(e) + ' '}${e.slice(11, 16)}`;
+}
+function openEventModal(i) {
+  const ev = SCHEDULE_EVENTS[i]; if (!ev) return;
+  document.getElementById('evTitle').textContent = ev.subject || '(件名なし)';
+  const org = ev.organizer && ev.organizer.emailAddress ? (ev.organizer.emailAddress.name || ev.organizer.emailAddress.address || '') : '';
+  const memo = ev.body && ev.body.content ? ev.body.content.trim() : '';
+  const rows = [['日時', escapeHtml(evWhenLabel(ev))], ['状態', escapeHtml(SHOWAS_JA[ev.showAs] || ev.showAs || '—')],
+    ['場所', escapeHtml(ev.location && ev.location.displayName ? ev.location.displayName : '') || '—']];
+  if (org) rows.push(['主催者', escapeHtml(org)]);
+  rows.push(['メモ', memo ? `<div class="ev-memo">${linkifyMemo(memo)}</div>` : '—']);
+  document.getElementById('evBody').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  const open = document.getElementById('evOpen');
+  if (ev.webLink) { open.href = ev.webLink; open.hidden = false; } else { open.hidden = true; }
+  document.getElementById('evModal').classList.add('on');
+}
+(function initEventModal() {
+  const modal = document.getElementById('evModal');
+  const close = () => modal.classList.remove('on');
+  document.getElementById('evClose').addEventListener('click', close);
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  const list = document.getElementById('scheduleList');
+  const openFrom = t => { const it = t.closest('.schedule-item[data-ev]'); if (it) openEventModal(Number(it.dataset.ev)); };
+  list.addEventListener('click', e => openFrom(e.target));
+  list.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFrom(e.target); } });
+})();
 
 // ============================================================
 // お知らせ（会社共通予定表: company_schedule.html(月表示)・staff_schedule.html

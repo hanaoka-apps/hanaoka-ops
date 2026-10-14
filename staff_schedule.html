@@ -343,7 +343,8 @@
   <div id="toolsWrap">
     <div id="privacy-note">
       <b>この画面は見るだけです。</b>予定の登録・変更は Outlook で行ってください。
-      表示されるのは<b>件名・場所・時間帯</b>だけで、<b>本文と添付は表示されません</b>（読む権限もありません）。
+      他の人の予定は<b>件名・場所・時間帯</b>だけが表示され、<b>本文と添付は表示されません</b>（読む権限もありません）。
+      <b>自分の予定だけ</b>、予定をクリックした詳細でメモ（本文）も見られます。
       Outlook で予定を<b>「非公開」</b>にすると、この画面では「非公開」と表示され件名は出ません。
     </div>
 
@@ -394,7 +395,7 @@
 <div class="modal" id="mDetail"><div class="card">
   <h3 id="dTitle">予定の詳細</h3>
   <div class="bd"><dl id="dBody"></dl><div class="note" id="dNote"></div></div>
-  <div class="ft"><button class="act" onclick="closeM('mDetail')">閉じる</button></div>
+  <div class="ft"><button class="act" id="dOpen" style="display:none">Outlookで開く ↗</button><button class="act" onclick="closeM('mDetail')">閉じる</button></div>
 </div></div>
 
 <div id="snackbar"></div>
@@ -632,6 +633,7 @@ async function gBatch(requests){
    状態
    ============================================================ */
 let PEOPLE = [], RES = [], COMMON = [];
+let ME_EVENTS = [];   /* 自分の予定（メモつき）。自分の行をクリックしたときの詳細用 */
 /* ★読み込みの追い越し対策★
    loadRes は await をまたいで RES に push する。2つ同時に走ると同じ予定が
    2回入る（営業車の画面で「読めた 26人ぶん / 全13台」のような形で実際に出た）。
@@ -1043,6 +1045,14 @@ async function loadRes(){
            + `&$select=id,subject,start,end,location,isCancelled,isAllDay,showAs`
            + `&$orderby=start/dateTime&$top=200`;
 
+  /* ★自分の予定だけ、メモ（本文）つきで取る★ getSchedule は他人の予定と同じ「空き情報」で本文が
+     付かないため、自分の行をクリックしたときの詳細用に /me/calendarView も同じ $batch に載せる。 */
+  const ME_IX = chunks.length + 1;
+  const mq = `startDateTime=${encodeURIComponent(toUtcLocal(f0) + 'Z')}`
+           + `&endDateTime=${encodeURIComponent(toUtcLocal(f1) + 'Z')}`
+           + `&$select=id,subject,start,end,location,isCancelled,isAllDay,showAs,body,organizer,webLink`
+           + `&$orderby=start/dateTime&$top=200`;
+
   const reqs = chunks.map(c => ({
     method: 'POST',
     url: '/me/calendar/getSchedule',
@@ -1056,6 +1066,12 @@ async function loadRes(){
     headers: { Prefer: 'outlook.timezone="UTC"' }
   });
 
+  reqs.push({
+    method: 'GET',
+    url: `/me/calendarView?${mq}`,
+    headers: { Prefer: 'outlook.timezone="UTC", outlook.body-content-type="text"' }
+  });
+
   const res = await gBatch(reqs);
   if (seq !== LOAD_SEQ) return;          /* 追い越された。この結果は使わない */
 
@@ -1065,6 +1081,7 @@ async function loadRes(){
        別の人の予定が誰かの行に入りうる。 */
     const ci = Number(r.id);
     if (ci === COMMON_IX) { takeCommon(r); return; }
+    if (ci === ME_IX) { takeMe(r); return; }
     const group = chunks[ci];
     if (!group) return;
     if (r.status !== 200 || !r.body || !Array.isArray(r.body.value)) {
@@ -1105,7 +1122,7 @@ async function loadRes(){
         if (subj) SRC.withSubject++;
         RES.push({
           rid : `${person.mail}|${s}|${e}`,
-          who : person.n, mail: person.mail, dep: person.dep,
+          who : person.n, mail: person.mail, dep: person.dep, me: isMePerson(person),
           s, e, status,
           priv,
           t   : priv ? '非公開' : (subj || '(件名なし)'),
@@ -1114,6 +1131,40 @@ async function loadRes(){
       });
     });
   });
+}
+
+/* サインインしている本人の行か。メールは UPN と別のことがあるので、オブジェクトID（oid）でも見る。 */
+function isMePerson(p){
+  const oid = String(currentAccount?.idTokenClaims?.oid || currentAccount?.localAccountId || '').toLowerCase();
+  const un  = String(currentAccount?.username || '').toLowerCase();
+  return !!p && ((!!oid && String(p.id || '').toLowerCase() === oid) || String(p.mail || '').toLowerCase() === un);
+}
+function takeMe(r){
+  ME_EVENTS = [];
+  if (r.status !== 200 || !r.body || !Array.isArray(r.body.value)) return;   /* 取れなくても表は出す（詳細にメモが出ないだけ） */
+  r.body.value.forEach(ev => {
+    if (ev.isCancelled) return;
+    const s = pTZ(ev.start), e = pTZ(ev.end);
+    if (isNaN(s) || isNaN(e)) return;
+    ME_EVENTS.push({ s, e, t: ev.subject || '(件名なし)', loc: ev.location?.displayName || '',
+      org: ev.organizer?.emailAddress?.name || ev.organizer?.emailAddress?.address || '',
+      body: ev.body?.content || '', webLink: ev.webLink || '' });
+  });
+}
+/* メモ（本文）のURLだけをリンクにする。URLは半角の英数記号だけで判定し（直後の日本語・句読点を
+   巻き込まない）、本文は片ごとにHTMLエスケープする（<script> 等は文字として出るだけ）。 */
+function linkify(text){
+  const t = String(text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const re = /https?:\/\/[A-Za-z0-9\-._~:\/?#@!$&'()*+,;=%\[\]゠-ヿ㐀-鿿]+/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(t))) {
+    let u = m[0];
+    const tail = u.match(/[.,;:!?)'\]]+$/);
+    if (tail) u = u.slice(0, -tail[0].length);
+    out += esc(t.slice(last, m.index)) + `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`;
+    last = m.index + u.length; re.lastIndex = last;
+  }
+  return out + esc(t.slice(last));
 }
 
 /* 会社共通予定表の取り込み。人の予定（RES）とは混ぜない。 */
@@ -1776,7 +1827,14 @@ el('grid').addEventListener('click', ev => {
 });
 function openDetail(rid){
   const r = RES.find(x => x.rid === rid) || COMMON.find(x => x.rid === rid); if (!r) return;
-  el('dTitle').textContent = r.t;
+  /* 自分の予定は、同じ時間帯の /me/calendarView の予定（メモつき）と突き合わせる。
+     非公開にした予定も、自分には件名・場所が見えるので、ここでは出す。 */
+  const mine = r.me ? (ME_EVENTS.find(x => x.s === r.s && x.e === r.e && x.t === r.t)
+                    || ME_EVENTS.find(x => x.s === r.s && x.e === r.e)) : null;
+  el('dTitle').textContent = mine ? mine.t : r.t;
+  const dOpen = el('dOpen');
+  dOpen.style.display = (mine && mine.webLink) ? '' : 'none';
+  dOpen.onclick = (mine && mine.webLink) ? () => window.open(mine.webLink, '_blank', 'noopener') : null;
   el('dBody').innerHTML = [
     ['氏名',   `${esc(r.who)}${r.dep ? ` <span class="badge b-dep">${esc(r.dep)}</span>` : ''}`],
     /* ★終日は終わりを1分手前で見せる★ 0:00〜翌0:00 をそのまま出すと
@@ -1784,9 +1842,17 @@ function openDetail(rid){
     ['時間',   wholeDay(r) ? `${jFull(r.s)} 〜 ${jFull(r.e - 60e3)}（終日）`
                            : `${jFull(r.s)} 〜 ${jFull(r.e)}`],
     ['状態',   esc((ST[r.status] || ST.unknown)[0])],
-    ['場所',   esc(r.loc) || '—'],
+    ['場所',   esc(mine ? mine.loc : r.loc) || '—'],
+    ...(mine ? [
+      ...(mine.org ? [['主催者', esc(mine.org)]] : []),
+      ['メモ', mine.body && mine.body.trim()
+        ? `<div style="white-space:pre-wrap;max-height:240px;overflow:auto;word-break:break-word">${linkify(mine.body)}</div>` : '—'],
+    ] : []),
   ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  el('dNote').textContent = r.priv
+  el('dNote').textContent = mine
+    ? '自分の予定です（メモも表示しています）。予定の変更は Outlook で行ってください。'
+    : r.me ? '自分の予定ですが、メモを取得できませんでした。「更新」を押して、もう一度お試しください。'
+    : r.priv
     ? 'この予定は「非公開」に設定されているため、件名と場所は表示されません。'
     : '表示されるのは件名・場所・時間だけです。本文と添付は表示されません。予定の変更は Outlook で行ってください。';
   openM('mDetail');
