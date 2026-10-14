@@ -199,6 +199,49 @@ function Invoke-PadFlow($Def) {
   throw ("PADフローの出力が{0}分以内に完了しませんでした(未更新/書き込み中: {1})" -f $timeoutMinutes, (($pending + $locked) -join ', '))
 }
 
+# SMILEのメイン画面(題名がちょうど windowTitle のウィンドウ)が開いているか。
+# 出力画面などを開いていると .NET の MainWindowTitle はそちらの題名になるため、
+# UI オートメーションでプロセスのトップレベルウィンドウをすべて見る。
+function Test-SmileReady($Cfg) {
+  $procs = @(Get-Process -Name ([string]$Cfg.process) -ErrorAction SilentlyContinue)
+  if ($procs.Count -eq 0) { return $false }
+  Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  foreach ($p in $procs) {
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $p.Id)
+    foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
+      if ($w.Current.Name -eq [string]$Cfg.windowTitle) { return $true }
+    }
+  }
+  return $false
+}
+
+# SMILEを使うジョブの前に、SMILEが起動してログイン済みかを確かめる。
+# 起動していなければ起動用のPADフロー(ログインと業務予定通知を閉じるまで)を動かして待つ。
+# (PC再起動後やSMILEの自動更新後に、SMILEが閉じたままでジョブが失敗しないように)
+function Ensure-Smile($Cfg) {
+  if (Test-SmileReady $Cfg) { return }
+  $timeoutMinutes = 5
+  if ($Cfg.timeoutMinutes) { $timeoutMinutes = [int]$Cfg.timeoutMinutes }
+  $settleSeconds = 30
+  if ($Cfg.settleSeconds) { $settleSeconds = [int]$Cfg.settleSeconds }
+  Write-Log "SMILEが起動していないため、PADフローで起動します: $($Cfg.startFlow)"
+  Start-Process ('ms-powerautomate:/console/flow/run?workflowName=' + [uri]::EscapeDataString([string]$Cfg.startFlow))
+  $deadline = (Get-Date).AddMinutes($timeoutMinutes)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 5
+    Update-Heartbeat ([string]$Cfg.startFlow)
+    if (Test-SmileReady $Cfg) {
+      # メイン画面が出たあと、起動フローが業務予定通知を閉じ終わるまで待つ
+      Start-Sleep -Seconds $settleSeconds
+      Write-Log 'SMILEの起動を確認しました'
+      return
+    }
+  }
+  throw "SMILEを${timeoutMinutes}分以内に起動できませんでした(起動フロー: $($Cfg.startFlow))"
+}
+
 # ジョブの手順(PADフローと出力ファイルの組)を返す。
 # steps があればその順に、なければ flow / outputs の1手順。timeoutMinutes は手順になければジョブの値を使う。
 function Get-JobSteps($Def) {
@@ -315,10 +358,13 @@ function Invoke-NextJob {
 
   $errorMessage = $null
   try {
-    $def = (Get-JobDefinitions).jobs.$jobName
+    $defs = Get-JobDefinitions
+    $def = $defs.jobs.$jobName
     if (-not $def) { throw "未定義のジョブです: $jobName" }
     if ($def.after -and $def.after -ne 'regenerate_facts') { throw "未対応の後処理です: $($def.after)" }
     $steps = @(Get-JobSteps $def)
+    # PADフローを動かすジョブは、SMILEを使わないと書いたもの(needsSmile: false)以外、先にSMILEを起動しておく
+    if ($steps.Count -gt 0 -and $defs.smile -and $def.needsSmile -ne $false) { Ensure-Smile $defs.smile }
     for ($i = 0; $i -lt $steps.Count; $i++) {
       try {
         Invoke-PadFlow $steps[$i]
