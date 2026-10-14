@@ -12,7 +12,7 @@
 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="fax_reply.js?v=20261014c"></script>
+<script src="fax_reply.js?v=20261014d"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
 <script>
 // MSALが読み込めなかった場合のフォールバック
@@ -2073,7 +2073,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           </label>
           <ol class="help-ol">
             <li>案件のタイムラインで、受信FAXの <strong>「✍ 返信（β）」</strong> を押す</li>
-            <li>FAXが大きく開きます。画面上部に返信先のFAX番号が出ます。上のボタンで書くものを切り替えます
+            <li>FAXが大きく開きます。画面上部に<strong>返信先のFAX番号</strong>が出ます（受信時にAIが用紙から読み取った「送信元FAX」です。読み違いは <strong>「✎ 直す」</strong> で直せ、元の受信FAXの記録も直ります）。上のボタンで書くものを切り替えます
               <ul class="help-ul">
                 <li><strong>Ａ 文字</strong>：書きたい所をクリックして入力（⠿ をドラッグで移動、小さなボタンで文字の大きさ・削除、Enter で改行）</li>
                 <li><strong>□ 枠／／ 線</strong>：ドラッグで描く（線はほぼ水平・垂直なら真っすぐにそろいます。太さは 細・中・太）。描いたものをクリックすると「✕ 消す」が出ます</li>
@@ -6566,7 +6566,10 @@ async function openFaxReplyBeta(idx, revise) {
     pdfBytes = await fetchSpPdfBytes(revise ? prev.sourcePdf : ev.AttachedPDFPath);
     setStatus('success', '');
   } catch (e) { setStatus('error', (revise ? '続きを編集できません: ' : 'PDF取得エラー: ') + e.message); return; }
-  const senderFax = revise ? (prev.senderFax || '') : (ev.SenderFax || '');
+  // 返信先FAX＝元の受信FAXの「送信元FAX」（AIの読み取り、受信トレイや返信画面の ✎ で直したもの）。マスタは使わない
+  const srcSpId = revise ? (prev.sourceEventSpId || null) : (ev._spId || null);
+  const srcEv = srcSpId ? events.find(x => x._spId === srcSpId) : null;
+  let senderFax = revise ? ((srcEv && srcEv.SenderFax) || prev.senderFax || '') : (ev.SenderFax || '');
   // 送信先区分・送付種別・メモの初期値（続きを編集では前回のもの）
   const pf = (revise && prev.form) || {};
   const defTarget = revise ? (pf.target || ev.RelationType || '')
@@ -6595,6 +6598,13 @@ async function openFaxReplyBeta(idx, revise) {
     submitLabel: revise ? '修正版を登録して印刷' : '登録して印刷',
     extraPanelHtml: panel,
     initial: revise ? prev.edit : null,
+    // ✎ 直す：元の受信FAXの SenderFax を直す（次にこのFAXへ返信するときも正しい番号が出る）
+    onFaxEdit: srcSpId ? async (num) => {
+      const sid = await getSiteId();
+      await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${srcSpId}/fields`, { SenderFax: num });
+      senderFax = num;
+      if (srcEv) srcEv.SenderFax = num;
+    } : null,
     onSubmit: async (r, ui) => {
       const target = document.getElementById('frTarget').value;
       const type = document.getElementById('frType').value;

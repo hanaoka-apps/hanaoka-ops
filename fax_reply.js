@@ -118,7 +118,8 @@
       <div class="fr-head">
         <span class="fr-title" title="${esc(o.title)}">✍ ${esc(o.title)}</span><span class="fr-beta">β</span>
         <span class="fr-fax"><span class="l">返信先FAX</span><span class="n">${esc(o.senderFax || '（不明）')}</span>
-          ${o.senderFax ? '<button class="fr-btn" data-act="copy">コピー</button>' : ''}</span>
+          <button class="fr-btn" data-act="copy"${o.senderFax ? '' : ' style="display:none"'}>コピー</button>
+          ${o.onFaxEdit ? '<button class="fr-btn" data-act="faxedit" title="読み違いを直す（元の受信FAXの「送信元FAX」も直ります）">✎ 直す</button>' : ''}</span>
         <span class="fr-modes"><button class="fr-btn on" data-mode="text" title="クリックした所に文字を書く">Ａ 文字</button><button class="fr-btn" data-mode="rect" title="ドラッグで四角い枠を描く">□ 枠</button><button class="fr-btn" data-mode="line" title="ドラッグで直線を描く（ほぼ水平・垂直なら真っすぐにそろえる。Shiftで必ずそろえる）">／ 線</button></span>
         <select class="fr-lw" title="枠・線の太さ"><option value="1">細</option><option value="1.5" selected>中</option><option value="2.5">太</option></select>
         <button class="fr-btn" data-act="undo" title="最後に書いたものを消す">↶ 元に戻す</button>
@@ -157,6 +158,23 @@
       e.preventDefault(); removeShape(selShape);
     };
     document.addEventListener('keydown', onKey);
+    // 返信先FAX番号の読み違いを直す。保存は呼び出し側（onFaxEdit）が元の受信FAXの記録に行う
+    async function editFax() {
+      let v = prompt('返信先のFAX番号を入力してください\n（元の受信FAXの「送信元FAX」も直ります）', o.senderFax || '');
+      if (v == null) return;
+      v = v.trim().replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[－ー―‐−]/g, '-').replace(/\s/g, '');
+      if (v === (o.senderFax || '')) return;
+      const digits = v.replace(/\D/g, '');
+      if (v && (!/^[0-9-]+$/.test(v) || digits.length < 9 || digits.length > 12)) { alert('FAX番号の形になっていません（例：06-1234-5678）'); return; }
+      try {
+        status('FAX番号を保存中...');
+        await o.onFaxEdit(v);
+        o.senderFax = v;
+        $('.fr-fax .n').textContent = v || '（不明）';
+        $('[data-act="copy"]').style.display = v ? '' : 'none';
+        status('FAX番号を直しました');
+      } catch (err) { status('FAX番号を保存できませんでした：' + err.message); }
+    }
     const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); ov.remove(); };
     ov.addEventListener('click', async e => {
       const act = e.target && e.target.dataset && e.target.dataset.act;
@@ -165,6 +183,7 @@
       if (act === 'undo') undo();
       if (act === 'close') { if (!hasWork() || confirm('書き込んだ内容は保存されません。閉じますか？')) close(); }
       if (act === 'copy') { try { await navigator.clipboard.writeText(o.senderFax); status('FAX番号をコピーしました'); } catch (_) { status('コピーできませんでした'); } }
+      if (act === 'faxedit') await editFax();
       if (act === 'zoomin') { scale = Math.min(3, scale * 1.2); await renderAll(); }
       if (act === 'zoomout') { scale = Math.max(0.4, scale / 1.2); await renderAll(); }
       if (act === 'submit') await submit();
