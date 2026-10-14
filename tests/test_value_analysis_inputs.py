@@ -44,6 +44,28 @@ def base_payload() -> dict:
 
 
 class PurchaseMergeTest(unittest.TestCase):
+    def test_purchases_exclude_expense_codes_and_include_discounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "受入明細出力.csv"
+            destination = root / "value_analysis.json"
+            destination.write_text(json.dumps({"months": [], "monthly": {}, "zones": []}), encoding="utf-8")
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["伝票日付", "受入金額", "取引区分属性名", "倉庫名", "品目ｺｰﾄﾞ"])
+                writer.writeheader()
+                writer.writerows([
+                    {"伝票日付": "20260601", "受入金額": "1000", "取引区分属性名": "仕入", "倉庫名": "鴻巣工場第一", "品目ｺｰﾄﾞ": "A1"},
+                    {"伝票日付": "20260601", "受入金額": "500", "取引区分属性名": "仕入", "倉庫名": "鴻巣工場第二", "品目ｺｰﾄﾞ": "ZZ500"},
+                    {"伝票日付": "20260601", "受入金額": "300", "取引区分属性名": "仕入", "倉庫名": "鴻巣工場第三", "品目ｺｰﾄﾞ": "ZZ600"},
+                    {"伝票日付": "20260602", "受入金額": "-40", "取引区分属性名": "値引", "倉庫名": "鴻巣工場第一", "品目ｺｰﾄﾞ": "A1"},
+                    {"伝票日付": "20260602", "受入金額": "200", "取引区分属性名": "仕入", "倉庫名": "仕入直送", "品目ｺｰﾄﾞ": "113"},
+                ])
+            PURCHASES.merge(source, destination)
+            month = json.loads(destination.read_text(encoding="utf-8"))["monthly"]["202606"]
+            self.assertEqual(month["total"]["purchase"], 1160)
+            self.assertEqual(month["zones"]["第一工場"]["purchase"], 960)
+            self.assertEqual(month["zones"]["購買"]["purchase"], 200)
+
     def test_only_purchase_category_is_included(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "受入明細出力.csv"

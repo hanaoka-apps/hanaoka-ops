@@ -615,7 +615,11 @@ sbSel.addEventListener('change', () => {
 // ・検索後は入力欄を全選択 → 次の読み取りで自動的に上書きされる
 // ・高速連続入力(キー間隔30ms未満)を検知したら、読み取り開始前の文字を捨てる
 // ・Enterが来なくても、高速入力が150ms止まったら検索する
-let _scanLastKey = 0, _scanBurst = false, _scanStart = 0, _scanTimer = null, _scanFast = 0;
+// 2026-10-14b 読み取りの見分け方を「連続した打鍵の平均間隔」に変更：
+//   80ms以内で続く打鍵を1まとまりとし、4文字以上・平均45ms未満ならハンディ読み取り（人は4文字を135ms以内では打てない）。
+//   人がたまたま2文字を速く打っても読み取り扱いにしない（以前の「UDAが消える」対策）／ハンディの間隔が少しばらついても拾う。
+const SCAN_GAP = 80, SCAN_AVG = 45, SCAN_MIN = 4;
+let _scanBurst = false, _scanStart = 0, _scanTimer = null, _sqT0 = 0, _sqLast = 0, _sqN = 0;
 function _scanRunSearch(){
   clearTimeout(_scanTimer); _scanBurst = false;
   q.value = (q.value || "").normalize('NFKC').trim();
@@ -624,58 +628,55 @@ function _scanRunSearch(){
   setTimeout(() => { try { q.focus(); q.select(); } catch(_){} }, 0);
 }
 q.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); _scanRunSearch(); return; }
-  if (e.isComposing || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-  const now = Date.now(), gap = now - _scanLastKey;
-  _scanLastKey = now;
-  // 2026-10-14 人が速く打っただけ（UDA など）で読み取り扱いになり、自動検索→全選択で入力が消えていたため、
-  // 30ms未満の打鍵が3回続いたとき（＝4文字以上を一気に入力）だけハンディ読み取りとみなす。
-  if (gap > 300) {
-    _scanBurst = false; _scanFast = 0;
-    _scanStart = q.selectionStart || 0;
-  } else if (gap < 30) {
-    _scanFast++;
-    if (!_scanBurst && _scanFast >= 3) { _scanBurst = true; q.value = q.value.slice(_scanStart); }
-  } else {
-    _scanFast = 0;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    // 短いコードをEnter付きで読んだ場合も、読み取り前に残っていた文字は捨てる
+    if (!_scanBurst && _sqN >= 3 && (_sqLast - _sqT0) / (_sqN - 1) < SCAN_AVG) q.value = q.value.slice(_scanStart);
+    _sqN = 0; _scanRunSearch(); return;
   }
+  if (e.isComposing || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+  const now = Date.now();
+  if (now - _sqLast > SCAN_GAP) { _sqT0 = now; _sqN = 1; _scanBurst = false; _scanStart = q.selectionStart || 0; }
+  else {
+    _sqN++;
+    if (!_scanBurst && _sqN >= SCAN_MIN && (now - _sqT0) / (_sqN - 1) < SCAN_AVG) { _scanBurst = true; q.value = q.value.slice(_scanStart); }
+  }
+  _sqLast = now;
   if (_scanBurst) { clearTimeout(_scanTimer); _scanTimer = setTimeout(_scanRunSearch, 150); }
 });
 // ===== 2026-09-26 v2: カーソルが検索欄以外(下のツリー画面など)にあってもバーコードを受ける =====
 // ハンディの高速入力(キー間隔30ms未満)を画面全体で拾い、検索欄に入れて検索する。
 // 人の手入力(ゆっくり)には反応しない。構成なし品目などのモーダル表示中は反応しない。
-let _gBuf = "", _gLast = 0, _gBurst = false, _gTimer = null, _gFirst = null, _scanRefocus = 0;
+let _gBuf = "", _gLast = 0, _gBurst = false, _gTimer = null, _gFirst = null, _scanRefocus = 0, _gT0 = 0;
 function _gIsText(el){ return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
 function _gFinish(){
   clearTimeout(_gTimer);
   const code = _gBuf; _gBuf = ""; _gBurst = false;
   if (code.length >= 3) { q.value = code; _scanRefocus = Date.now(); _scanRunSearch(); }
 }
+// 読み取り判定までに別の入力欄へ入ってしまった文字を取り消す
+function _gUndoTyped(typed){ const t = _gFirst; try { if (_gIsText(t) && typeof t.value === 'string' && typed && t.value.endsWith(typed)) t.value = t.value.slice(0, -typed.length); } catch(_){} }
 function _globalScanKey(e){
   if (e.target === q) return;                       // 検索欄は既存処理に任せる
   if (document.getElementById('orphanModal').classList.contains('open')) return;
   if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const now = Date.now();
   if (e.key === 'Enter') {
+    const n = _gBuf.length, avg = n > 1 ? (_gLast - _gT0) / (n - 1) : 999;
     if (_gBurst) { e.preventDefault(); e.stopPropagation(); _gFinish(); }
+    else if (n >= 3 && avg < SCAN_AVG && now - _gLast < SCAN_GAP * 2) { e.preventDefault(); e.stopPropagation(); _gUndoTyped(_gBuf); _gFinish(); }
     _gBuf = ""; return;
   }
   if (e.key.length !== 1) return;
-  const now = Date.now(), gap = now - _gLast;
-  _gLast = now;
-  if (gap > 300 || (!_gBurst && gap >= 30)) {       // 読み取り開始候補(1文字目)
-    _gBuf = e.key; _gFirst = e.target; _gBurst = false; return;
+  if (now - _gLast > SCAN_GAP) {                    // 新しいまとまり（1文字目）：そのまま入力させる
+    _gBuf = e.key; _gFirst = e.target; _gBurst = false; _gT0 = now; _gLast = now; return;
   }
-  if (!_gBurst) {                                   // 2026-10-14 高速打鍵が3回続いたら（4文字目で）ハンディと判定。人の速打ちでは反応しない
-    _gBuf += e.key;
-    if (_gBuf.length < 4) return;                   // まだ人の入力かもしれない → そのまま入力させる
-    _gBurst = true;
-    const t = _gFirst, typed = _gBuf.slice(0, -1);  // ここまでに別の入力欄へ入った文字は取り消す
-    try { if (_gIsText(t) && typeof t.value === 'string' && t.value.endsWith(typed)) t.value = t.value.slice(0, -typed.length); } catch(_){}
-    e.preventDefault(); e.stopPropagation();
-    clearTimeout(_gTimer); _gTimer = setTimeout(_gFinish, 150);
-    return;
+  _gLast = now; _gBuf += e.key;
+  if (!_gBurst) {
+    const n = _gBuf.length, avg = (now - _gT0) / (n - 1);
+    if (n < SCAN_MIN || avg >= SCAN_AVG) return;    // まだ人の入力の可能性 → そのまま入力させる
+    _gBurst = true; _gUndoTyped(_gBuf.slice(0, -1));
   }
-  _gBuf += e.key;
   e.preventDefault(); e.stopPropagation();
   clearTimeout(_gTimer); _gTimer = setTimeout(_gFinish, 150);
 }
@@ -1042,7 +1043,7 @@ window.addEventListener('load', () => {
 // ===== 2026-09-30 自動更新：FUJIN本体がこの画面をキャッシュしたまま開くと古い版が出るため、
 // 開くたびに公開中の版番号を確認し、新しければ ?v=版番号 を付けて読み直す（1回だけ）。
 (function(){
-  var BUILD = "20261014-03";
+  var BUILD = "20261014-04";
   window.FUJIN_SD_BUILD = BUILD;
   if (location.protocol === "file:") return;
   var url = location.pathname + "?chk=" + Date.now();

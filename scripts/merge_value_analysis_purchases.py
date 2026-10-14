@@ -1,7 +1,9 @@
 """SharedMastersの受入明細から月次仕入を付加価値分析JSONへ反映する。
 
-経費などを仕入へ混入させないため、区分列を確認でき、かつ値が厳密に
-「仕入」の行だけを集計する。区分列が見つからない場合は既存値を変更しない。
+経費などを仕入へ混入させないため、区分列を確認でき、かつ値が「仕入」または「値引」の行だけを集計する。
+さらに諸口の経費コード（ZZ500・ZZ600）は除く（2026-10-14 花岡さん確認：付加価値速報の伝票集計でも除外）。
+2026年6月の受入明細で、この条件の合計が付加価値速報「仕入・外注 本社集計」103,518,950円と1円まで一致。
+区分列が見つからない場合は既存値を変更しない。
 元CSVは読み取り専用で扱い、同じ年月は毎回置換して二重加算を防ぐ。
 """
 
@@ -34,6 +36,10 @@ CATEGORY_COLUMNS = (
 )
 ZONE_COLUMNS = ("工場別付加価名", "工場別付加価値", "部門名", "倉庫名")
 ITEM_CODE_COLUMNS = ("品目ｺｰﾄﾞ", "品目コード")
+# 仕入として数える区分（値引は負の金額で入っているのでそのまま足す）
+PURCHASE_CATEGORIES = {"仕入", "値引"}
+# 諸口の経費コード。仕入区分で入っていても仕入には数えない
+EXPENSE_CODE_PREFIXES = ("ZZ500", "ZZ600")
 
 
 def normalized(value: object) -> str:
@@ -103,7 +109,8 @@ def zone_from_text(value: object) -> str | None:
         return "第二工場"
     if "第三" in text:
         return "第三工場"
-    if "購買" in text or "輸入仕入" in text:
+    if "購買" in text or "輸入仕入" in text or "仕入直送" in text or "東京本社" in text:
+        # 仕入直送・東京本社の倉庫＝付加価値速報の購買「本社入力」（6月で1円一致）
         return "購買"
     if "運賃" in text:
         return "運賃"
@@ -209,6 +216,8 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
             "source_rows": 0,
             "included_rows": 0,
             "excluded_non_purchase_rows": 0,
+            "excluded_expense_code_rows": 0,
+            "excluded_expense_code_amount": 0.0,
             "invalid_rows": 0,
             "daily_invalid_date_rows": 0,
             "unclassified_zone_rows": 0,
@@ -221,8 +230,13 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
         }
         for row in reader:
             stats["source_rows"] += 1
-            if normalized(row.get(category_column)) != "仕入":
+            if normalized(row.get(category_column)) not in PURCHASE_CATEGORIES:
                 stats["excluded_non_purchase_rows"] += 1
+                continue
+            code = normalized(row.get(item_column)).upper() if item_column else ""
+            if code.startswith(EXPENSE_CODE_PREFIXES):
+                stats["excluded_expense_code_rows"] += 1
+                stats["excluded_expense_code_amount"] += number(row.get(amount_column)) or 0
                 continue
             ym = month_key(row.get(date_column))
             amount = number(row.get(amount_column))
