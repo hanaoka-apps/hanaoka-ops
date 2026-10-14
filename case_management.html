@@ -1927,6 +1927,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <li>「追加」で記録（投稿者名・日時が自動で残ります）</li>
             <li>「送信FAX登録」タブからは、送付種別を選びPDFを添付して送信記録を残せます</li>
           </ol>
+          <div class="help-callout info">タイムラインの記録は、カーソルを合わせると出る <strong>🗑</strong> で削除できます。<strong>削除できるのは自分が登録したものだけ</strong>です（ほかの人のコメント・記録や、自動で登録された受信には 🗑 が出ません）。</div>
           <div class="help-callout info">重複して登録された案件は、左パネルの「既存案件に統合」で1件にまとめられます。同じ案件かもしれない組は「🔗 マージ候補」にも自動で出ます（12章）。</div>
         </div>
 
@@ -3256,7 +3257,8 @@ async function loadCases(opts) {
 async function loadEvents(caseId) {
   try {
     const sid = await getSiteId();
-    const mapEv = v => ({ _spId: v.id, _author: (v.createdBy && v.createdBy.user && v.createdBy.user.displayName) || '', ...v.fields });
+    const mapEv = v => ({ _spId: v.id, _author: (v.createdBy && v.createdBy.user && v.createdBy.user.displayName) || '',
+                          _authorEmail: (v.createdBy && v.createdBy.user && v.createdBy.user.email) || '', ...v.fields });
     let allEvents;
     try {
       // CaseId列がインデックス済みなら、この案件のイベントだけサーバー側で取得（軽量・推奨）
@@ -3589,7 +3591,16 @@ function isStatusEvent(eventType) {
   const statusTypes = ['ステータス変更', '工場回答', '案件作成'];
   return statusTypes.some(t => (eventType || '').includes(t));
 }
+// 自分が登録したイベントか（タイムラインの削除は自分のものだけ）。作成者のメールで比べ、無ければ表示名で比べる
+function isMyEvent(ev) {
+  if (!ev || !account) return false;
+  const me = String(account.username || '').toLowerCase();
+  if (ev._authorEmail && me) return ev._authorEmail.toLowerCase() === me;
+  return !!(account.name && ev._author && ev._author === account.name);
+}
 async function deleteTimelineEvent(eventItemId, evIdx) {
+  const target = events.find(e => String(e._spId) === String(eventItemId));
+  if (!isMyEvent(target)) { alert('ほかの人が登録したものは削除できません'); return; }
   if (!confirm('このコメントを削除しますか？\n（この操作は取り消せません）')) return;
   try {
     setStatus('loading', 'コメントを削除中...');
@@ -3645,7 +3656,7 @@ function renderTimeline() {
       const typeClass = getEventTypeClass(ev.EventType);
       const isLast = i === events.length - 1;
       const hasPdf = !!ev.AttachedPDFPath;
-      const canDelete = !isStatusEvent(ev.EventType) && ev._spId;
+      const canDelete = !isStatusEvent(ev.EventType) && ev._spId && isMyEvent(ev);   // 自分が登録したものだけ消せる
       const clickAttr = hasPdf
         ? ` onclick="selectTimelinePdf(${i})" title="クリックでPDFを表示"`
         : '';
@@ -6722,8 +6733,10 @@ async function openFaxReplyBeta(idx, revise) {
         return false;
       } finally { _registeringFax = false; }
       // 修正版を登録できたら、修正前（間違えたもの）を消すか聞く。送ってしまった場合は残す
+      //   ほかの人が登録した送信FAXは消さない（タイムラインの削除と同じく、自分のものだけ）
       let removedOld = false;
-      if (revise && confirm('修正版を登録しました。\n\n修正前の送信FAX（' + formatDate(ev.EventDate) + '）を削除しますか？\n'
+      if (revise && !isMyEvent(ev)) alert('修正版を登録しました。\n修正前の送信FAXはほかの人が登録したものなので、そのまま残します。');
+      else if (revise && confirm('修正版を登録しました。\n\n修正前の送信FAX（' + formatDate(ev.EventDate) + '）を削除しますか？\n'
           + '・まだ送っていない間違いなら「OK」：タイムラインから消し、PDFは SharePoint のごみ箱へ移します\n'
           + '・もう送ってしまった場合は「キャンセル」：記録として残します\n'
           + '（修正前の内容は、どちらでも修正版の記録に残ります）')) {
