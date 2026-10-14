@@ -34,7 +34,10 @@ CATEGORY_COLUMNS = (
     "区分名",
     "区分",
 )
-ZONE_COLUMNS = ("工場別付加価名", "工場別付加価値", "部門名", "倉庫名")
+# 工場の決め方（2026-10-15）：付加価値速報の「伝票集計」は伝票の部門で集計しているため、部門名を最優先。
+# ただし仕入直送・東京本社の倉庫は部門に関係なく購買（本社入力）。外注先の倉庫で受けた分も、発注した部門の工場になる。
+ZONE_COLUMNS = ("部門名", "倉庫名", "工場別付加価名", "工場別付加価値")
+HQ_PURCHASE_WAREHOUSE_WORDS = ("仕入直送", "東京本社")
 ITEM_CODE_COLUMNS = ("品目ｺｰﾄﾞ", "品目コード")
 # 仕入として数える区分（値引は負の金額で入っているのでそのまま足す）
 PURCHASE_CATEGORIES = {"仕入", "値引"}
@@ -118,6 +121,9 @@ def zone_from_text(value: object) -> str | None:
 
 
 def purchase_zone(row: dict[str, str], zone_columns: list[str], item_column: str | None, item_zones: dict[str, str]) -> str | None:
+    warehouse = normalized(row.get("倉庫名"))
+    if any(word in warehouse for word in HQ_PURCHASE_WAREHOUSE_WORDS):
+        return "購買"
     for zone_column in zone_columns:
         direct = zone_from_text(row.get(zone_column))
         if direct:
