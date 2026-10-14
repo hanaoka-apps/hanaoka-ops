@@ -1245,6 +1245,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <div id="triageEditBody" style="display:none;"></div>
             <!-- 仕訳アクション（編集モード中は非表示） -->
             <div id="triageActionArea">
+            <!-- FAXのとき：案件にする前に返信先FAX（AIが読んだ送信元FAX）を確かめる。直した値は「新規案件として登録」「紐づける」のときに編集履歴つきで保存 -->
+            <div id="triageFaxCheck" style="display:none;align-items:center;gap:6px;margin-bottom:6px;padding:6px 8px;border:1px solid #d4d8fb;border-radius:6px;background:#f6f7fe;font-size:12px;">
+              <span style="white-space:nowrap;color:#23268f;font-weight:600">📠 返信先FAX</span>
+              <input class="search-input" id="triageFaxCheckInput" style="width:150px;padding:3px 8px;font-size:13px;font-weight:600" placeholder="読み取れず" oninput="onTriageFaxCheckInput()">
+              <span id="triageFaxCheckNote" style="color:var(--text-muted);font-size:11px">用紙の送信元と合っているか確認（違えば直してから登録）</span>
+            </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
               <button class="btn btn-primary" onclick="triageAs('案件管理','新規')" style="font-size:11px;">📋 新規案件として登録</button>
               <button class="btn" onclick="triageAs('案件管理','既存')" style="background:var(--surface2);font-size:11px;">🔗 既存案件に紐づけ</button>
@@ -1897,6 +1903,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <tr><td>🗂 アーカイブ</td><td>誰も見なくてよいもの（広告・DMなど）を、案件化も部署回覧もせずに退避します。部署回覧の「🗂 アーカイブ」から開き「↩ 未仕訳に戻す」で戻せます</td></tr>
           </tbody></table>
           <div class="help-callout info"><strong>📧 Mail</strong>には、AIの仕訳判定（案件管理／部署回覧（部署名つき）／アーカイブ）が表示されます。判定と実際の仕訳は後日見比べ、判定基準の改善に使います。判定と違う仕訳をしても問題ありません。</div>
+          <div class="help-callout info"><strong>📠 返信先FAX</strong>：FAXでは仕訳ボタンの上に、AIが用紙の送信元から読み取ったFAX番号が出ます。<strong>案件にする前に用紙と合っているか確認</strong>し、違っていれば直してから「新規案件として登録」「紐づける」を押してください。直した番号は「編集」と同じく修正履歴に残り、AIの読み取り改善に使います。この番号は返信作成（15章）の返信先にもなります。</div>
           <div class="help-callout tip">新規案件登録のフォームは、上部の見出しを<strong>ドラッグして移動</strong>できます。背景が透けて裏のFAX原本が見えるので、FAXを見ながら入力できます。</div>
           <div class="help-callout info">誤って仕訳してしまった場合は、案件管理のタイムラインで対象のFAX受信イベントにカーソルを合わせ、<strong>「↩ 受信トレイ」</strong>を押すと未仕訳に戻せます。</div>
         </div>
@@ -5198,6 +5205,7 @@ function selectTriage(spId) {
   document.getElementById('triageCaseName').textContent = e.CaseName || '-';
   document.getElementById('triageDate').textContent = formatDate(e.EventDate);
   document.getElementById('triageSenderFax').textContent = e.SenderFax || '-';
+  setupTriageFaxCheck(e);
   document.getElementById('triageEventType').textContent = e.EventType || '-';
   document.getElementById('triageRelationType').textContent = e.RelationType || '-';
   document.getElementById('triageSummary').textContent = e.Summary || '-';
@@ -5480,6 +5488,63 @@ async function saveEdits() {
     saveBar.querySelector('.left').innerHTML = origHtml;
   }
 }
+// ---- 受信トレイ：案件にする前の「返信先FAX」確認 ----
+// FAX番号の表記をそろえる（全角数字・各種ハイフン → 半角、空白を除く）
+function normFaxNo(v) {
+  return String(v || '').trim()
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[－ー―‐−]/g, '-').replace(/\s/g, '');
+}
+function setupTriageFaxCheck(e) {
+  const box = document.getElementById('triageFaxCheck');
+  if (!box) return;
+  const isFax = routeOf(e && e.EventType) === 'fax';
+  box.style.display = isFax ? 'flex' : 'none';
+  if (!isFax) return;
+  document.getElementById('triageFaxCheckInput').value = e.SenderFax || '';
+  onTriageFaxCheckInput();
+}
+function onTriageFaxCheckInput() {
+  const e = triageItems.find(x => x._spId === currentTriageId);
+  const v = normFaxNo(document.getElementById('triageFaxCheckInput').value);
+  const note = document.getElementById('triageFaxCheckNote');
+  const box = document.getElementById('triageFaxCheck');
+  const changed = !!e && v !== (e.SenderFax || '');
+  box.style.background = !v ? '#fff6e5' : changed ? '#eefaf3' : '#f6f7fe';
+  note.textContent = !v ? '読み取れていません。用紙の送信元FAXを入れてください（空のままでも登録できます）'
+    : changed ? '直した番号は登録時に保存されます' : '用紙の送信元と合っているか確認（違えば直してから登録）';
+}
+// 直されていれば、受信トレイの「編集」と同じ形（HumanEdit_JSON に追記）で SenderFax を保存。続けてよければ true
+async function commitTriageFaxCheck() {
+  const e = triageItems.find(x => x._spId === currentTriageId);
+  const box = document.getElementById('triageFaxCheck');
+  if (!e || !box || box.style.display === 'none') return true;
+  const v = normFaxNo(document.getElementById('triageFaxCheckInput').value);
+  const from = e.SenderFax || '';
+  if (v === from) return true;
+  const digits = v.replace(/\D/g, '');
+  if (v && (!/^[0-9-]+$/.test(v) || digits.length < 9 || digits.length > 12)) {
+    alert('返信先FAXが番号の形になっていません（例：06-1234-5678）');
+    return false;
+  }
+  let editLog;
+  try { editLog = e.HumanEdit_JSON ? JSON.parse(e.HumanEdit_JSON) : { edits: [] }; if (!editLog.edits) editLog.edits = []; }
+  catch (_) { editLog = { edits: [] }; }
+  editLog.edits.push({ at: new Date().toISOString(), by: (account && (account.username || account.name)) || '',
+                       changes: { SenderFax: { from, to: v } } });
+  const patch = { SenderFax: v, IsModified: true, HumanEdit_JSON: JSON.stringify(editLog) };
+  try {
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${e._spId}/fields`, patch);
+    Object.assign(e, patch);
+    const el = document.getElementById('triageSenderFax');
+    if (el) el.textContent = v || '-';
+    return true;
+  } catch (err) {
+    alert('返信先FAXを保存できませんでした: ' + err.message);
+    return false;
+  }
+}
 // FAX_PDFStorage ドライブID取得（キャッシュあり）
 async function getFaxDriveId() {
   if (faxDriveId) return faxDriveId;
@@ -5572,8 +5637,9 @@ async function loadPdfWithAuth(url, areaId) {
     area.innerHTML = `<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">PDF取得エラー<br><small>${escapeHtml(e.message)}</small></div></div>`;
   }
 }
-function triageAs(kubun, sub) {
+async function triageAs(kubun, sub) {
   if (!currentTriageId) return;
+  if (kubun === '案件管理' && sub === '新規' && !(await commitTriageFaxCheck())) return;
   if (kubun === '案件管理' && sub === '既存') {
     document.getElementById('triageLinkRow').style.display = 'flex';
     document.getElementById('triageLinkSearch').value = '';
@@ -5661,6 +5727,7 @@ function selectTriageLink(caseId, company, status) {
 const REOPEN_STATUS = '業務セ'; // 完了案件を再開する際の戻し先ステータス
 async function confirmLink(mode) {
   if (!triageLinkSelectedId) { alert('案件を選択してください'); return; }
+  if (!(await commitTriageFaxCheck())) return;
   const targetId = triageLinkSelectedId;
   await updateTriageKubun('案件管理', null, targetId);
   // updateTriageKubun は成功時に currentTriageId を null にする（失敗時は残る）
