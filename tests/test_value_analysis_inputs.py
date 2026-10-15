@@ -44,6 +44,28 @@ def base_payload() -> dict:
 
 
 class PurchaseMergeTest(unittest.TestCase):
+    def test_purchases_skip_tax_lines_and_keep_outsourcer_warehouses_unassigned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "受入明細出力.csv"
+            destination = root / "value_analysis.json"
+            destination.write_text(json.dumps({"months": [], "monthly": {}, "zones": []}), encoding="utf-8")
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["伝票日付", "受入金額", "取引区分属性名", "明細区分名", "部門名", "倉庫名", "品目ｺｰﾄﾞ"])
+                writer.writeheader()
+                writer.writerows([
+                    {"伝票日付": "20260901", "受入金額": "1000", "取引区分属性名": "仕入", "明細区分名": "通常", "部門名": "第一工場", "倉庫名": "鴻巣工場第三", "品目ｺｰﾄﾞ": "A1"},
+                    {"伝票日付": "20260901", "受入金額": "100", "取引区分属性名": "仕入", "明細区分名": "消費税", "部門名": "第一工場", "倉庫名": "鴻巣工場第三", "品目ｺｰﾄﾞ": ""},
+                    {"伝票日付": "20260902", "受入金額": "300", "取引区分属性名": "仕入", "明細区分名": "通常", "部門名": "第二工場", "倉庫名": "三陽", "品目ｺｰﾄﾞ": "B1"},
+                ])
+            PURCHASES.merge(source, destination)
+            result = json.loads(destination.read_text(encoding="utf-8"))
+            month = result["monthly"]["202609"]
+            self.assertEqual(month["total"]["purchase"], 1300)
+            self.assertEqual(month["zones"]["第三工場"]["purchase"], 1000)
+            self.assertIsNone(month["zones"]["第二工場"]["purchase"])
+            self.assertEqual(result["purchase_unclassified_by_month"]["202609"], 300)
+
     def test_purchases_exclude_expense_codes_and_include_discounts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

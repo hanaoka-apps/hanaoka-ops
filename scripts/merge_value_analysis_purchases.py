@@ -34,10 +34,15 @@ CATEGORY_COLUMNS = (
     "区分名",
     "区分",
 )
-# 工場の決め方（2026-10-15）：付加価値速報の「伝票集計」は伝票の部門で集計しているため、部門名を最優先。
-# ただし仕入直送・東京本社の倉庫は部門に関係なく購買（本社入力）。外注先の倉庫で受けた分も、発注した部門の工場になる。
-ZONE_COLUMNS = ("部門名", "倉庫名", "工場別付加価名", "工場別付加価値")
+# 工場の決め方（2026-10-15 9月の受入明細で速報と照合）：
+#   ・伝票の倉庫が鴻巣工場第一／第二／第三 → その工場（第二・第三は速報と1円一致。部門ではなく倉庫）
+#   ・仕入直送・東京本社の倉庫 → 購買（速報の本社入力）
+#   ・外注先などそれ以外の倉庫 → 工場は決めない（工場未分類）。どの工場に入れるかは要決定
+#   ・倉庫名が無い明細だけ、部門名 → 品目マスタの工場別付加価値の順で補う
+ZONE_COLUMNS = ("倉庫名", "部門名", "工場別付加価名", "工場別付加価値")
 HQ_PURCHASE_WAREHOUSE_WORDS = ("仕入直送", "東京本社")
+# 消費税の明細行（明細区分名＝消費税）は仕入に入れない。9月は 8,222,813円がこれで、速報との差と1円一致
+TAX_DETAIL_WORDS = ("消費税",)
 ITEM_CODE_COLUMNS = ("品目ｺｰﾄﾞ", "品目コード")
 # 仕入として数える区分（値引は負の金額で入っているのでそのまま足す）
 PURCHASE_CATEGORIES = {"仕入", "値引"}
@@ -106,6 +111,7 @@ def zone_from_text(value: object) -> str | None:
     for zone in ZONES:
         if zone in text:
             return zone
+    text = text.replace("第1", "第一").replace("第2", "第二").replace("第3", "第三")
     if "第一" in text:
         return "第一工場"
     if "第二" in text:
@@ -124,6 +130,9 @@ def purchase_zone(row: dict[str, str], zone_columns: list[str], item_column: str
     warehouse = normalized(row.get("倉庫名"))
     if any(word in warehouse for word in HQ_PURCHASE_WAREHOUSE_WORDS):
         return "購買"
+    if warehouse:
+        # 倉庫がある明細は倉庫だけで決める（外注先の倉庫は部門に引っ張られないよう未分類のまま）
+        return zone_from_text(warehouse) if any(w in warehouse for w in ("第一", "第二", "第三", "第1", "第2", "第3")) else None
     for zone_column in zone_columns:
         direct = zone_from_text(row.get(zone_column))
         if direct:
@@ -236,6 +245,9 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
         }
         for row in reader:
             stats["source_rows"] += 1
+            if any(word in normalized(row.get("明細区分名")) for word in TAX_DETAIL_WORDS):
+                stats["excluded_tax_rows"] = stats.get("excluded_tax_rows", 0) + 1
+                continue
             if normalized(row.get(category_column)) not in PURCHASE_CATEGORIES:
                 stats["excluded_non_purchase_rows"] += 1
                 continue
