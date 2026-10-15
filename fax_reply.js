@@ -77,7 +77,7 @@
   .fr-page{position:relative;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.15);cursor:crosshair;flex-shrink:0;margin:0 auto}
   .fr-page canvas{display:block}
   .fr-pno{position:absolute;top:-14px;left:0;font-size:10px;color:#6b7089}
-  .fr-box{position:absolute;display:flex;align-items:flex-start;cursor:default}
+  .fr-box{position:absolute;z-index:2;display:flex;align-items:flex-start;cursor:default}
   .fr-grip{width:12px;margin-right:2px;cursor:move;color:#23268f;font-size:11px;line-height:1;opacity:0;user-select:none}
   .fr-text{min-width:6px;outline:1px dashed rgba(35,38,143,.55);background:rgba(255,255,230,.55);white-space:pre;color:#000;line-height:1.25;padding:0;font-family:'BIZ UDGothic','BIZ UDPGothic','Yu Gothic',sans-serif}
   .fr-box:focus-within .fr-text{outline:2px solid #23268f;background:rgba(255,255,200,.85)}
@@ -103,12 +103,13 @@
   .fr-modes .fr-btn{border-color:transparent;background:transparent}
   .fr-modes .fr-btn.on{background:#23268f;color:#fff}
   .fr-lw{border:1px solid #d5d8e5;border-radius:6px;padding:4px 6px;font-size:12px;background:#fff}
-  .fr-shapes{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
+  .fr-shapes{position:absolute;left:0;top:0;z-index:1;pointer-events:none;overflow:visible}
+  .fr-shapes.fr-stamps{z-index:3}
   .fr-shapes .hit{pointer-events:stroke;cursor:move}
   .fr-stamp{display:grid;grid-template-columns:auto 1fr;gap:4px 6px;align-items:center;margin:4px 0 2px}
   .fr-stamp input,.fr-stamp select{border:1px solid #d5d8e5;border-radius:5px;padding:3px 6px;font-size:12px;min-width:0}
-  .fr-hdl{position:absolute;z-index:2;width:10px;height:10px;margin:-6px 0 0 -6px;background:#fff;border:2px solid #d33;border-radius:2px;box-sizing:content-box}
-  .fr-sdel{position:absolute;z-index:2;border:none;background:#c0392b;color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;cursor:pointer}
+  .fr-hdl{position:absolute;z-index:4;width:10px;height:10px;margin:-6px 0 0 -6px;background:#fff;border:2px solid #d33;border-radius:2px;box-sizing:content-box}
+  .fr-sdel{position:absolute;z-index:4;border:none;background:#c0392b;color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;cursor:pointer}
   `;
   function injectCss() {
     if (document.getElementById('fr-css')) return;
@@ -167,6 +168,8 @@
     if (s.kind === 'seal') { const L = sealLayout(s); return { x1: s.x1, y1: s.y1, x2: s.x1 + L.w, y2: s.y1 + L.h }; }
     return { x1: Math.min(s.x1, s.x2), y1: Math.min(s.y1, s.y2), x2: Math.max(s.x1, s.x2), y2: Math.max(s.y1, s.y2) };
   }
+  // スタンプ（データ印・完了・社判）は文字より上に重ねる
+  const isStampKind = s => s.kind === 'stamp' || s.kind === 'done' || s.kind === 'seal';
   // 「枠1・線2・丸1・データ印1」
   function shapeCountNote(list, sp) {
     const names = [['rect', '枠'], ['line', '線'], ['ellipse', '丸'], ['stamp', 'データ印'], ['done', '完了'], ['seal', '社判']];
@@ -218,7 +221,7 @@
             <div class="fr-h">社判</div>
             <textarea class="fr-seal" data-seal rows="6"></textarea>
             <select class="fr-lw" data-seal-bg style="margin-top:4px;padding:3px 6px;font-size:11px" title="社判の背景（白にすると下の文字や線を隠せます）"><option value="none">背景：透明</option><option value="white">背景：白</option></select>
-            <button class="fr-btn" data-seal-reset style="margin-top:4px;padding:3px 8px;font-size:11px" title="社判の内容を最初の状態（住所・会社名・TEL・登録番号・担当・Mail）に戻す">↺ 初期値に戻す</button>
+            <button class="fr-btn" data-seal-reset style="margin-top:4px;padding:3px 8px;font-size:11px" title="社判の内容を最初の状態（住所・会社名・TEL・担当・Mail）に戻す">↺ 初期値に戻す</button>
             <div style="color:#8a8fa8;margin-bottom:10px">1行ずつ入れます（「株式会社」の行は大きく出ます）。「社判（住所・会社名）」を選ぶと、会社名の行までを押します。このパソコンに覚えます。押したあと □ のつまみで大きさを変えられます。</div>
             ${o.extraPanelHtml}
           </div>
@@ -251,10 +254,11 @@
     const today = new Date();
     const stampCfg = Object.assign({ top: '花岡車輌', bottom: '', d: 42.5 }, o.stamp || {}, loadStampCfg(),
       { date: `${String(today.getFullYear()).slice(2)}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}` });
-    const sealDefault = () => ['〒135-0021 東京都江東区白河2-17-10', '花岡車輌株式会社', 'TEL 03-3643-5271', '登録番号：T9010601007789',
+    const sealDefault = () => ['〒135-0021 東京都江東区白河2-17-10', '花岡車輌株式会社', 'TEL 03-3643-5271',
                                '担当：' + (stampCfg.bottom || ''), 'Mail：gyoumu@hanaoka-corp.co.jp'].join('\n');
     if (!stampCfg.seal) stampCfg.seal = sealDefault();
-    stampCfg.seal = stampCfg.seal.replace('白河2-1710', '白河2-17-10');   // 試験中に配った番地の誤りを直す
+    stampCfg.seal = stampCfg.seal.replace('白河2-1710', '白河2-17-10')   // 試験中に配った番地の誤りを直す
+      .replace(/^登録番号：T9010601007789\n?/m, '');                     // 初めの版に入れていた登録番号は不要（10/15）
     const sealEl = ov.querySelector('[data-seal]');
     sealEl.value = stampCfg.seal;
     const saveSeal = () => saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal, sealBg: stampCfg.sealBg });
@@ -358,11 +362,15 @@
         wrap.appendChild(div);
         await page.render({ canvasContext: cv.getContext('2d'), viewport: page.getViewport({ scale: scale * dpr }) }).promise;
         const idx = i - 1;
-        const svg = document.createElementNS(SVGNS, 'svg');
-        svg.setAttribute('class', 'fr-shapes');
-        svg.setAttribute('width', vp.width); svg.setAttribute('height', vp.height);
-        div.appendChild(svg);
-        pages.push({ page, div, svg });
+        // 重なり順：svg（枠・線・丸）→ 文字（.fr-box）→ svg2（スタンプ、いちばん上）
+        const mkSvg = cls => {
+          const v = document.createElementNS(SVGNS, 'svg');
+          v.setAttribute('class', cls);
+          v.setAttribute('width', vp.width); v.setAttribute('height', vp.height);
+          div.appendChild(v); return v;
+        };
+        const svg = mkSvg('fr-shapes'), svg2 = mkSvg('fr-shapes fr-stamps');
+        pages.push({ page, div, svg, svg2 });
         div.addEventListener('mousedown', e => {
           if (e.target !== cv) return;   // 文字や枠の上をクリックしたときは新しく作らない
           const r = div.getBoundingClientRect();
@@ -538,9 +546,11 @@
           + L.items.map(t => `<text x="${t.x0 * z}" y="${t.base * z}" font-size="${t.size * z}" fill="${col}" ${FF}>${esc(t.text)}</text>`).join('')
           + hitRect(s, shapeBox(s));
       };
-      pg.svg.innerHTML = shapes.filter(s => s.page === pageIdx).map(one).join('') + (temp ? one(temp) : '');
+      const onPage = shapes.filter(s => s.page === pageIdx).concat(temp ? [temp] : []);
+      pg.svg.innerHTML = onPage.filter(s => !isStampKind(s)).map(one).join('');
+      pg.svg2.innerHTML = onPage.filter(isStampKind).map(one).join('');
       // 押すと選ぶ（✕ 消す が出る）。そのままドラッグすると移動
-      pg.svg.querySelectorAll('.hit').forEach(h => h.addEventListener('mousedown', e => {
+      pg.div.querySelectorAll('svg .hit').forEach(h => h.addEventListener('mousedown', e => {
         e.preventDefault(); e.stopPropagation();
         if (document.activeElement && document.activeElement.isContentEditable) document.activeElement.blur();
         const prev = selShape;
@@ -677,7 +687,7 @@
       const textW = (text, size) => fk.layout(text).positions.reduce((a, q) => a + q.xAdvance, 0) / fk.unitsPerEm * size;
       const rectCmds = (x1, y1, x2, y2) => [['M', x1, y1], ['L', x2, y1], ['L', x2, y2], ['L', x1, y2], ['Z']];
       const texts = [];
-      for (const b of boxes) {
+      const drawTexts = () => { for (const b of boxes) {
         const text = b.text.replace(/\s+$/, '');
         if (!text.trim()) continue;
         const { P, pathPdf, page } = conv(b.page);
@@ -705,13 +715,13 @@
         });
         texts.push({ page: b.page + 1, text, size: b.size, color: b.color, bold: b.bold, underline: b.underline, boxed: b.boxed,
                      xMm: Math.round(b.x * MM_PER_PT * 10) / 10, yMm: Math.round(b.y * MM_PER_PT * 10) / 10 });
-      }
+      } };
       // 枠・線：両端（枠は4隅）をPDFの座標に直して線で結ぶ（回転したページでも見たままの向き）
       const { LineCapStyle } = PDFLib;
       const shapesOut = [];
       const mm = v => Math.round(v * MM_PER_PT * 10) / 10;
       const red = rgb(0.78, 0.06, 0.18);
-      for (const s of shapes) {
+      const drawShapePdf = s => {
         const { P, pathPdf, page } = conv(s.page);
         const col = rgb(...colRgb(s.color));   // 色の無い古い記録は黒
         const seg = (a, b, cap) => page.drawLine({ start: a, end: b, thickness: s.kind === 'stamp' ? 0.8 : s.w,
@@ -759,7 +769,11 @@
         shapesOut.push(Object.assign({ page: s.page + 1, kind: s.kind, w: s.w, color: s.color, x1Mm: mm(s.x1), y1Mm: mm(s.y1), x2Mm: mm(s.x2), y2Mm: mm(s.y2) },
           s.kind === 'stamp' ? { dMm: mm(s.d), top: s.top, date: s.date, bottom: s.bottom } : {},
           s.kind === 'done' ? { dMm: mm(s.d) } : {}, s.kind === 'seal' ? { size: s.d, lines: s.lines, bg: s.bg || 'none' } : {}));
-      }
+      };
+      // 重なり順（画面と同じ）：枠・線・丸 → 文字・テキストボックス → スタンプ（いちばん上）
+      shapes.filter(s => !isStampKind(s)).forEach(drawShapePdf);
+      drawTexts();
+      shapes.filter(isStampKind).forEach(drawShapePdf);
       const bytes = await doc.save();
       const cn = shapeCountNote(shapesOut, '');
       const shapeNote = cn ? `［${cn}］` : '';
