@@ -6,6 +6,7 @@
 <title>スケジュール 自分の予定 | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="car_booking.js?v=20261015"></script>
 <script src="nav.js?v=20261014" defer></script>
 <link rel="icon" type="image/svg+xml" href="favicon_schedule.svg">
 <style>
@@ -244,8 +245,8 @@
          しても、選んだ機体をまとめて予約するボタンを探しに戻らなくて済むように。 -->
     <div id="seekBar" style="position:sticky;top:0;z-index:5;background:#f3f9f5;margin:-13px -16px 10px;
          padding:9px 16px;border-bottom:1px solid #cfe5d7;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="act go" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだ機体をまとめて予約（0台）</button>
-      <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); paintSeekDemo();">選択解除</button>
+      <button class="act go" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだものをまとめて予約（0件）</button>
+      <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); CarBook.clearSel(); paintSeekDemo();">選択解除</button>
     </div>
     <div class="fm">
       <div class="f2">
@@ -987,6 +988,13 @@ function linkDateTimePair(startId, endId){
 linkDateTimePair('sFrom', 'sTo');
 linkDatePair('sFromD', 'sToD');
 
+/* 営業車の空き確認・予約（car_booking.js）。デモ機と同じ期間で営業車も見て、一緒に予約する */
+CarBook.init({
+  msal: () => msalInstance, account: () => currentAccount, siteId: SITE_ID,
+  gGet: p => gGet(p), gGetAll: p => gGetAll(p),
+  onChange: () => paintSeekBar()
+});
+
 function openSeekDemo(){
   /* ★開始日の既定★ 表示中の週が今週（または過去）なら、週の頭（過去日付になりうる）
      ではなく今日にする。来週以降を見ているときは、その週の頭のまま。 */
@@ -1003,6 +1011,7 @@ function openSeekDemo(){
   el('sAllDay').checked = true;   /* 既定は終日 */
   paintSAllDayMy();
   SEEK = null; SEEK_SEL = new Set();
+  CarBook.reset(); CarBook.mount();
   el('seek-panel').innerHTML = '';
   paintSeekBar();
   openM('mSeek');
@@ -1018,6 +1027,7 @@ async function runSeekDemo(){
     if (isNaN(s) || isNaN(e) || e <= s) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
   }
   SEEK = { s, e, allDay: sAllDayOn() };
+  CarBook.search(s, e, sAllDayOn());   /* 営業車の空きも同じ期間で（待たずに並行で） */
   el('seek-panel').innerHTML = `<div style="color:var(--muted)">検索中...</div>`;
   try {
     const busyRows = await fetchDemoBusy(s, e);
@@ -1079,10 +1089,10 @@ function paintSeekDemo(){
 }
 /* 上に固定した予約ボタン・選択解除の表示（台数と有効/無効）を合わせる */
 function paintSeekBar(){
-  const n = SEEK_SEL.size;
-  el('seekBulkGo').textContent = `選んだ機体をまとめて予約（${n}台）`;
-  el('seekBulkGo').disabled = !n;
-  el('seekSelClear').disabled = !n;
+  const n = SEEK_SEL.size, c = CarBook.selCount();
+  el('seekBulkGo').textContent = c ? `選んだものをまとめて予約（デモ機${n}台＋営業車${c}台）` : `選んだ機体をまとめて予約（${n}台）`;
+  el('seekBulkGo').disabled = !(n + c);
+  el('seekSelClear').disabled = !(n + c);
 }
 el('seek-panel').addEventListener('click', ev => {
   const c = ev.target.closest('.chip'); if (!c || c.classList.contains('busy') || !c.dataset.mid) return;
@@ -1126,8 +1136,9 @@ function bulkRangeMs(){
 let BULK_BUSY = new Map();   /* 「空き状況を確認」の直近の結果。機体id→重なる予約 */
 function renderBulkMachinesMy(){
   const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
-  el('bMachinesLabel').textContent = `機体（${list.length}台）`;
-  el('bMachines').innerHTML = list.map(m => {
+  const cn = CarBook.selCount();
+  el('bMachinesLabel').textContent = `機体（${list.length}台）` + (cn ? `＋営業車（${cn}台）` : '');
+  el('bMachines').innerHTML = CarBook.bulkChipsHtml() + list.map(m => {
     const r = BULK_BUSY.get(m.id);
     if (r) {
       const who = [r.cust, r.req].filter(Boolean).join(' / ');
@@ -1145,26 +1156,28 @@ async function bulkCheckAvailabilityMy(){
     const rows = await fetchDemoBusy(s, e);
     BULK_BUSY = new Map();
     rows.forEach(r => { if (SEEK_SEL.has(r.mid) && !BULK_BUSY.has(r.mid)) BULK_BUSY.set(r.mid, r); });
+    let cr = { total: 0, busy: 0 };
+    if (CarBook.selCount()) { try { cr = await CarBook.check(s, e); } catch (err) { msg.textContent = '営業車の確認に失敗しました：' + err.message; renderBulkMachinesMy(); return; } }
     renderBulkMachinesMy();
-    const total = SEEK_SEL.size, busy = BULK_BUSY.size;
-    msg.textContent = busy ? `${total - busy}/${total}台が空いています（埋まっている機体は下の一覧で分かります）` : `${total}台とも空いています`;
+    const total = SEEK_SEL.size + cr.total, busy = BULK_BUSY.size + cr.busy;
+    msg.textContent = busy ? `${total - busy}/${total}件が空いています（埋まっているものは下の一覧で分かります）` : `${total}件とも空いています`;
   } catch (err) {
     msg.textContent = '確認に失敗しました：' + err.message;
   }
 }
 
 function openBulkNewMy(){
-  if (!SEEK || !SEEK_SEL.size) return;
+  if (!SEEK || !(SEEK_SEL.size || CarBook.selCount())) return;
   fillBulkRange(SEEK.s, SEEK.e, SEEK.allDay);
-  BULK_BUSY = new Map();
+  BULK_BUSY = new Map(); CarBook.resetCheck();
   el('bCheckMsg').textContent = '';
   renderBulkMachinesMy();
   ['bTitle','bCust','bDest','bNotes'].forEach(id => el(id).value = '');
   el('bReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   el('bMsg').textContent = ''; el('bMsg').className = 'msg';
   el('b-result').innerHTML = '';
-  el('bSave').disabled = !CAP.lock;
-  el('bNote').innerHTML = CAP.lock
+  el('bSave').disabled = !CAP.lock && !CarBook.selCount();
+  el('bNote').innerHTML = (CAP.lock || CarBook.selCount())
     ? `1台ずつ空きを確認して予約します。同じ枠を他の方が同時に押さえていた場合、その機体だけ失敗します（失敗した機体はあとでこの画面からもう一度お試しください）。`
     : `<b style="color:var(--danger)">デモ機予約の設定が未整備のため、この画面からは予約できません。</b>demo_reserve.html で確認してください。`;
   openM('mBulk');
@@ -1240,7 +1253,7 @@ async function doReserveBulkMy(){
   const msg = el('bMsg'), btn = el('bSave');
   const resultBox = el('b-result');
   const title = el('bTitle').value.trim();
-  if (!SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
+  if (!SEEK_SEL.size && !CarBook.selCount()) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
   if (!title) { msg.textContent = '予約件名を入力してください'; msg.className = 'msg ng'; return; }
   const { s, e } = bulkRangeMs();
   if (isNaN(s) || isNaN(e)) { msg.textContent = bAllDayOn() ? '開始日と終了日を入力してください' : '開始と終了を入力してください'; msg.className = 'msg ng'; return; }
@@ -1252,6 +1265,8 @@ async function doReserveBulkMy(){
   /* まとめて予約した機体は同じセットIDを共有する（デモ機管理アプリの
      セット詳細から、あとで追加・削除できるようにするための束ねキー） */
   const setId = newSetId();
+  const carCount = CarBook.selCount();
+  if (carCount) CarBook.prepare();   /* 営業車の書き込み権限は、押した直後に先に取っておく（初回同意のポップアップ対策） */
   const targets = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
   btn.disabled = true; msg.textContent = `予約中... (0/${targets.length})`; msg.className = 'msg';
   resultBox.innerHTML = '';
@@ -1278,12 +1293,27 @@ async function doReserveBulkMy(){
     }
     resultBox.insertAdjacentHTML('beforeend', `<div>${line}</div>`);
   }
+  /* 営業車：Outlookの予定を1件作り、選んだ車を招待する（車の自動承諾が重複を判定する） */
+  let carOk = 0;
+  if (carCount) {
+    msg.textContent = `営業車を予約中... (${carCount}台)`;
+    let cr;
+    try {
+      cr = await CarBook.book({ title, cust: details.cust, dest: details.dest, notes: details.notes, s, e, allDay: bAllDayOn() });
+    } catch (err) {
+      cr = { okCount: 0, total: carCount, changed: false, lines: [`<span style="color:var(--danger)">✗ 営業車の予約でエラー: ${esc(err.message)}</span>`] };
+    }
+    carOk = cr.okCount;
+    cr.lines.forEach(l => resultBox.insertAdjacentHTML('beforeend', `<div>${l}</div>`));
+    await loadAll();
+  }
   btn.disabled = false;
-  msg.textContent = `${ok}/${targets.length}台を予約しました`;
-  msg.className = 'msg' + (ok === targets.length ? ' ok' : ok === 0 ? ' ng' : '');
+  const allOk = ok === targets.length && carOk === carCount;
+  msg.textContent = `${ok}/${targets.length}台を予約しました` + (carCount ? `（営業車 ${carOk}/${carCount}台）` : '');
+  msg.className = 'msg' + (allOk ? ' ok' : (ok + carOk) === 0 ? ' ng' : '');
   await loadDemo(); renderAll(); paintSeekBar();
-  if (ok === targets.length) {
-    showSnack(`${ok}台を予約しました`);
+  if (allOk) {
+    showSnack(carCount ? `デモ機${ok}台・営業車${carOk}台を予約しました` : `${ok}台を予約しました`);
     setTimeout(() => { closeM('mBulk'); closeM('mSeek'); }, 900);
   }
 }
