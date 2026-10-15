@@ -28,6 +28,7 @@
   ];
   const FONT_URL = 'static/fonts/BIZUDGothic-Regular.ttf';
   const DEFAULT_SIZE = 12;          // 文字の大きさ（pt）
+  const BOX_PAD = 3;                // テキストボックスの余白（pt）
   const MM_PER_PT = 25.4 / 72;
   const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -84,6 +85,8 @@
   .fr-box:focus-within .fr-tools{display:flex}
   .fr-tools button{border:none;background:transparent;color:#fff;font-size:11px;padding:1px 6px;cursor:pointer;border-radius:3px}
   .fr-tools button:hover{background:rgba(255,255,255,.2)}
+  .fr-tools button.on{background:#fff;color:#23268f}
+  .fr-seal{width:100%;box-sizing:border-box;border:1px solid #d5d8e5;border-radius:5px;padding:4px 6px;font-size:11px;line-height:1.5;font-family:inherit;resize:vertical}
   .fr-side{width:300px;border-left:1px solid #e3e5ef;display:flex;flex-direction:column;min-height:0}
   .fr-side-in{flex:1;overflow:auto;padding:12px 14px;font-size:12px}
   .fr-help{background:#f6f7fb;border-radius:8px;padding:8px 10px;color:#4a4f68;line-height:1.6;margin-bottom:10px}
@@ -134,13 +137,36 @@
       texts: [mk(s.top, cy - r * 0.64, r * 0.4, r * 1.3), mk(s.date, cy, r * 0.42, r * 1.7), mk(s.bottom, cy + r * 0.64, r * 0.46, r * 1.3)],
     };
   }
+  // 色（画面の色, PDFの色）。文字・枠・線・丸・社判は選べる（最初は青）。データ印・完了は赤
+  const COLORS = { blue: ['#1f3fbf', [0.12, 0.25, 0.75]], black: ['#000000', [0, 0, 0]], red: ['#c8102e', [0.78, 0.06, 0.18]] };
+  const colHex = c => (COLORS[c] || COLORS.black)[0];
+  const colRgb = c => (COLORS[c] || COLORS.black)[1];
+  const estW = t => [...(t || '')].reduce((a, ch) => a + (/[ -~]/.test(ch) ? 0.55 : 1), 0);   // おおよその字幅（1pt あたり）
+  // 完了：中心 (x1,y1)、幅 d。二重の四角に「完了」
+  function doneLayout(s) {
+    const W = s.d, H = s.d * 0.46, cx = s.x1, cy = s.y1, ins = H * 0.09, size = H * 0.6;
+    return { W, H, outer: [cx - W / 2, cy - H / 2, cx + W / 2, cy + H / 2], inner: [cx - W / 2 + ins, cy - H / 2 + ins, cx + W / 2 - ins, cy + H / 2 - ins],
+             text: { text: '完　了', cx, base: cy + size * 0.36, size, maxW: W - ins * 4 } };
+  }
+  // 社判：左上 (x1,y1)、d＝基本の字の大きさ。会社名の行だけ大きく
+  function sealLayout(s) {
+    const fs = s.d, items = []; let y = s.y1, w = 0;
+    (s.lines || []).forEach(t => {
+      const size = /株式会社|有限会社|合同会社/.test(t) ? fs * 1.45 : fs;
+      items.push({ text: t, size, x0: s.x1, base: y + size * 0.88 });
+      w = Math.max(w, estW(t) * size); y += size * 1.3;
+    });
+    return { items, w: Math.max(w, fs * 4), h: Math.max(y - s.y1, fs) };
+  }
   function shapeBox(s) {
     if (s.kind === 'stamp') { const r = s.d / 2; return { x1: s.x1 - r, y1: s.y1 - r, x2: s.x1 + r, y2: s.y1 + r }; }
+    if (s.kind === 'done') { const L = doneLayout(s); return { x1: L.outer[0], y1: L.outer[1], x2: L.outer[2], y2: L.outer[3] }; }
+    if (s.kind === 'seal') { const L = sealLayout(s); return { x1: s.x1, y1: s.y1, x2: s.x1 + L.w, y2: s.y1 + L.h }; }
     return { x1: Math.min(s.x1, s.x2), y1: Math.min(s.y1, s.y2), x2: Math.max(s.x1, s.x2), y2: Math.max(s.y1, s.y2) };
   }
   // 「枠1・線2・丸1・データ印1」
   function shapeCountNote(list, sp) {
-    const names = [['rect', '枠'], ['line', '線'], ['ellipse', '丸'], ['stamp', 'データ印']];
+    const names = [['rect', '枠'], ['line', '線'], ['ellipse', '丸'], ['stamp', 'データ印'], ['done', '完了'], ['seal', '社判']];
     return names.map(([k, n]) => { const c = list.filter(s => s.kind === k).length; return c ? `${n}${sp}${c}` : ''; }).filter(Boolean).join('・');
   }
 
@@ -156,8 +182,10 @@
         <span class="fr-fax"><span class="l">返信先FAX</span><span class="n">${esc(o.senderFax || '（不明）')}</span>
           <button class="fr-btn" data-act="copy"${o.senderFax ? '' : ' style="display:none"'}>コピー</button>
           ${o.onFaxEdit ? '<button class="fr-btn" data-act="faxedit" title="読み違いを直す（元の受信FAXの「送信元FAX」も直ります）">✎ 直す</button>' : ''}</span>
-        <span class="fr-modes"><button class="fr-btn on" data-mode="text" title="クリックした所に文字を書く">Ａ 文字</button><button class="fr-btn" data-mode="rect" title="ドラッグで四角い枠を描く">□ 枠</button><button class="fr-btn" data-mode="line" title="ドラッグで直線を描く（ほぼ水平・垂直なら真っすぐにそろえる。Shiftで必ずそろえる）">／ 線</button><button class="fr-btn" data-mode="ellipse" title="ドラッグで丸（楕円）を描く。Shiftで正円">◯ 丸</button><button class="fr-btn" data-mode="stamp" title="押したい所をクリックしてデータ印を押す（内容は右側で設定）">印 データ印</button></span>
-        <select class="fr-lw" title="枠・線の太さ"><option value="1">細</option><option value="1.5" selected>中</option><option value="2.5">太</option></select>
+        <span class="fr-modes"><button class="fr-btn on" data-mode="text" title="クリックした所に文字を書く">Ａ 文字</button><button class="fr-btn" data-mode="textbox" title="クリックした所に、枠つき・白背景の文字（コメント）を書く">▭ テキストボックス</button><button class="fr-btn" data-mode="rect" title="ドラッグで四角い枠を描く">□ 枠</button><button class="fr-btn" data-mode="line" title="ドラッグで直線を描く（ほぼ水平・垂直なら真っすぐにそろえる。Shiftで必ずそろえる）">／ 線</button><button class="fr-btn" data-mode="ellipse" title="ドラッグで丸（楕円）を描く。Shiftで正円">◯ 丸</button><button class="fr-btn" data-mode="stamp" title="押したい所をクリックしてスタンプを押す（種類は右の選択、内容は右側で設定）">印 スタンプ</button></span>
+        <select class="fr-lw fr-stype" title="スタンプの種類"><option value="data">データ印</option><option value="done">完了</option><option value="seal">社判（全部）</option><option value="sealshort">社判（住所・会社名）</option></select>
+        <select class="fr-lw fr-col" title="文字・枠・線・丸・社判の色"><option value="blue" selected>色：青</option><option value="black">色：黒</option><option value="red">色：赤</option></select>
+        <select class="fr-lw fr-width" title="枠・線の太さ"><option value="1">細</option><option value="1.5" selected>中</option><option value="2.5">太</option></select>
         <button class="fr-btn" data-act="undo" title="最後に書いたものを消す">↶ 元に戻す</button>
         <span style="flex:1"></span>
         <button class="fr-btn" data-act="zoomout">－</button><span class="fr-zoom" style="font-size:12px;min-width:42px;text-align:center"></span><button class="fr-btn" data-act="zoomin">＋</button>
@@ -167,10 +195,12 @@
         <div class="fr-pages"><div style="padding:40px;color:#6b7089">PDFを読み込み中...</div></div>
         <div class="fr-side">
           <div class="fr-side-in">
-            <div class="fr-help"><b>Ａ 文字</b>：書きたい所をクリックして入力（⠿ で移動、小さなボタンで大きさ・削除、Enter で改行）。<br>
+            <div class="fr-help"><b>Ａ 文字</b>：書きたい所をクリックして入力（⠿ で移動、Enter で改行）。入力中に出る小さなボタンで 大きさ・<b>B 太字</b>・<b>U 下線</b>・<b>▭ 枠と白背景</b>・削除。<br>
+              <b>▭ テキストボックス</b>：枠つき・白背景の文字（コメント）。<br>
               <b>□ 枠／／ 線／◯ 丸</b>：ドラッグで描く（丸は Shift で正円）。<br>
               描いた枠・線・丸・データ印は<b>ドラッグで移動</b>（選んで矢印キーでも少しずつ動く）。クリックで選ぶと、<b>□ のつまみで大きさ</b>を変えられ、✕ で消せます。<br>
-              <b>印 データ印</b>：押したい所をクリック（内容は下で設定）。<br>
+              <b>印 スタンプ</b>：右の選択で データ印／完了／社判（全部・住所と会社名だけ）を選び、押したい所をクリック（内容は下で設定）。<br>
+              色は上の「色」で選びます（最初は青。データ印・完了は赤）。<br>
               <b>↶ 元に戻す</b>：最後に書いたものを消します。</div>
             <div class="fr-h">書き込んだ文字</div>
             <div class="fr-list"><div style="color:#8a8fa8">まだありません</div></div>
@@ -182,6 +212,9 @@
               <span>大きさ</span><select data-st="d"><option value="34">小（12mm）</option><option value="42.5">中（15mm）</option><option value="51">大（18mm）</option></select>
             </div>
             <div style="color:#8a8fa8;margin-bottom:10px">上段・下段・大きさはこのパソコンに覚えます。日付は毎回その日になります。</div>
+            <div class="fr-h">社判</div>
+            <textarea class="fr-seal" data-seal rows="6"></textarea>
+            <div style="color:#8a8fa8;margin-bottom:10px">1行ずつ入れます（「株式会社」の行は大きく出ます）。「社判（住所・会社名）」を選ぶと、会社名の行までを押します。このパソコンに覚えます。押したあと □ のつまみで大きさを変えられます。</div>
             ${o.extraPanelHtml}
           </div>
           <div class="fr-side-foot">
@@ -213,11 +246,19 @@
     const today = new Date();
     const stampCfg = Object.assign({ top: '花岡車輌', bottom: '', d: 42.5 }, o.stamp || {}, loadStampCfg(),
       { date: `${String(today.getFullYear()).slice(2)}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}` });
+    const SEAL_DEFAULT = ['〒135-0021 東京都江東区白河2-17-10', '花岡車輌株式会社', 'TEL 03-3643-5271', '登録番号：T9010601007789',
+                          '担当：' + (stampCfg.bottom || ''), 'Mail：gyoumu@hanaoka-corp.co.jp'].join('\n');
+    if (!stampCfg.seal) stampCfg.seal = SEAL_DEFAULT;
+    stampCfg.seal = stampCfg.seal.replace('白河2-1710', '白河2-17-10');   // 試験中に配った番地の誤りを直す
+    const sealEl = ov.querySelector('[data-seal]');
+    sealEl.value = stampCfg.seal;
+    sealEl.addEventListener('input', () => { stampCfg.seal = sealEl.value; saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal }); });
+    const curColor = () => $('.fr-col').value || 'blue';
     ov.querySelectorAll('[data-st]').forEach(el => {
       el.value = stampCfg[el.dataset.st];
       el.addEventListener('input', () => {
         stampCfg[el.dataset.st] = el.dataset.st === 'd' ? +el.value : el.value.trim();
-        saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d });
+        saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal });
       });
     });
     // 返信先FAX番号の読み違いを直す。保存は呼び出し側（onFaxEdit）が元の受信FAXの記録に行う
@@ -238,6 +279,7 @@
       } catch (err) { status('FAX番号を保存できませんでした：' + err.message); }
     }
     const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); ov.remove(); };
+    $('.fr-stype').addEventListener('change', () => { mode = 'stamp'; ov.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x.dataset.mode === 'stamp')); });
     ov.addEventListener('click', async e => {
       const act = e.target && e.target.dataset && e.target.dataset.act;
       const md = e.target && e.target.dataset && e.target.dataset.mode;
@@ -264,7 +306,8 @@
       await renderAll();
       // 続きを編集：前回書いたもの（build() が返した edit）を戻す
       const ini = o.initial || {};
-      (ini.boxes || []).forEach(b => { if (pages[b.page] && b.text) addBox(b.page, b.x, b.y, b.text, b.size, false); });
+      (ini.boxes || []).forEach(b => { if (pages[b.page] && b.text) addBox(b.page, b.x, b.y, b.text, b.size, false,
+        { color: b.color || 'black', bold: !!b.bold, underline: !!b.underline, boxed: !!b.boxed }); });
       (ini.shapes || []).forEach(x => {
         if (!pages[x.page]) return;
         const sh = Object.assign({}, x, { id: nextId++, w: x.w || 1.5 });
@@ -308,12 +351,29 @@
           const at = ev => [(ev.clientX - r.left) / scale, (ev.clientY - r.top) / scale];
           e.preventDefault();
           if (selShape) { const p = selShape.page; selShape = null; drawShapes(p); }
-          if (mode === 'text') {
-            addBox(idx, at(e)[0], at(e)[1] - DEFAULT_SIZE * 0.6, '', DEFAULT_SIZE, true);
+          if (mode === 'text' || mode === 'textbox') {
+            addBox(idx, at(e)[0], at(e)[1] - DEFAULT_SIZE * 0.6, '', DEFAULT_SIZE, true,
+                   { color: curColor(), boxed: mode === 'textbox' });
             return;
           }
           if (document.activeElement && document.activeElement.isContentEditable) document.activeElement.blur();
           const [x1, y1] = at(e);
+          if (mode === 'stamp' && $('.fr-stype').value === 'done') {   // 完了：クリックした所を中心に
+            const st = { id: nextId++, kind: 'done', page: idx, x1, y1, x2: x1, y2: y1, w: 1.5, d: 56 };
+            shapes.push(st); history.push(st); drawShapes(idx); refreshList();
+            return;
+          }
+          if (mode === 'stamp' && /^seal/.test($('.fr-stype').value)) {   // 社判：クリックした所が左上
+            let lines = String(stampCfg.seal || '').split('\n').map(t => t.trim()).filter(Boolean);
+            if ($('.fr-stype').value === 'sealshort') {   // 住所・会社名だけ＝会社名の行まで（会社名が無ければ先頭2行）
+              const ci = lines.findIndex(t => /株式会社|有限会社|合同会社/.test(t));
+              lines = lines.slice(0, ci >= 0 ? ci + 1 : 2);
+            }
+            if (!lines.length) { status('社判の内容を右側で入れてください'); sealEl.focus(); return; }
+            const st = { id: nextId++, kind: 'seal', page: idx, x1, y1, x2: x1, y2: y1, w: 1, d: 8, lines, color: curColor() };
+            shapes.push(st); history.push(st); drawShapes(idx); refreshList();
+            return;
+          }
           if (mode === 'stamp') {   // データ印はクリックした所を中心に押す
             if (!stampCfg.bottom) { status('データ印の下段（名前）を右側で入れてください'); const b = ov.querySelector('[data-st="bottom"]'); if (b) b.focus(); return; }
             const st = { id: nextId++, kind: 'stamp', page: idx, x1, y1, x2: x1, y2: y1, w: 1.2,
@@ -321,7 +381,7 @@
             shapes.push(st); history.push(st); drawShapes(idx); refreshList();
             return;
           }
-          const s = { id: nextId++, kind: mode, page: idx, x1, y1, x2: x1, y2: y1, w: +$('.fr-lw').value };
+          const s = { id: nextId++, kind: mode, page: idx, x1, y1, x2: x1, y2: y1, w: +$('.fr-width').value, color: curColor() };
           const mv = ev => {
             let [x2, y2] = at(ev);
             if (s.kind === 'line') {   // ほぼ水平・垂直なら真っすぐに（Shift で必ず）
@@ -349,8 +409,10 @@
     }
 
     // b.x, b.y は「縮尺1の画面上の左上（pt）」
-    function addBox(pageIdx, x, y, text, size, focus) {
-      const b = { id: nextId++, page: pageIdx, x, y, text: text || '', size: size || DEFAULT_SIZE };
+    // fmt：{ color, bold, underline, boxed }（boxed＝枠つき・白背景のテキストボックス）
+    function addBox(pageIdx, x, y, text, size, focus, fmt) {
+      const b = Object.assign({ id: nextId++, page: pageIdx, x, y, text: text || '', size: size || DEFAULT_SIZE,
+                                color: 'black', bold: false, underline: false, boxed: false }, fmt || {});
       boxes.push(b); history.push(b);
       placeBox(b);
       refreshList();
@@ -366,7 +428,9 @@
       el.innerHTML = `<span class="fr-grip" title="ドラッグで移動">⠿</span>`
         + `<div class="fr-text" contenteditable="plaintext-only" spellcheck="false"></div>`
         + `<div class="fr-tools"><button data-t="minus" title="小さく">A−</button><span style="color:#fff;font-size:11px;padding:1px 4px" data-t="size"></span>`
-        + `<button data-t="plus" title="大きく">A＋</button><button data-t="del" title="削除">✕</button></div>`;
+        + `<button data-t="plus" title="大きく">A＋</button><button data-t="bold" title="太字" style="font-weight:700">B</button>`
+        + `<button data-t="underline" title="下線" style="text-decoration:underline">U</button><button data-t="boxed" title="枠と白背景（テキストボックス）">▭</button>`
+        + `<button data-t="del" title="削除">✕</button></div>`;
       const t = el.querySelector('.fr-text');
       t.textContent = b.text;
       host.appendChild(el);
@@ -378,6 +442,8 @@
         const k = e.target.dataset.t; if (!k) return;
         e.preventDefault();   // 入力欄のフォーカスを外さない
         if (k === 'del') { removeBox(b); return; }
+        if (k === 'bold' || k === 'underline' || k === 'boxed') { b[k] = !b[k]; layoutBox(b); refreshList(); return; }
+        if (k !== 'plus' && k !== 'minus') return;
         b.size = Math.max(6, Math.min(36, b.size + (k === 'plus' ? 1 : -1)));
         layoutBox(b); refreshList();
       });
@@ -394,8 +460,18 @@
       if (!b.el) return;
       b.el.style.left = (b.x * scale - 14) + 'px';   // ⠿ の分だけ左にずらし、文字の頭がクリック位置に来るように
       b.el.style.top = (b.y * scale) + 'px';
-      b.el.querySelector('.fr-text').style.fontSize = (b.size * scale) + 'px';
+      const t = b.el.querySelector('.fr-text'), pad = BOX_PAD * scale;
+      t.style.fontSize = (b.size * scale) + 'px';
+      t.style.color = colHex(b.color);
+      t.style.fontWeight = b.bold ? '700' : '400';
+      t.style.textDecoration = b.underline ? 'underline' : 'none';
+      // テキストボックス：文字の位置は変えずに、周りに余白・枠・白背景（PDFでも同じ寸法で描く）
+      t.style.border = b.boxed ? `${Math.max(1, 0.8 * scale)}px solid ${colHex(b.color)}` : '';
+      t.style.background = b.boxed ? '#fff' : '';
+      t.style.padding = b.boxed ? pad + 'px' : '0';
+      t.style.margin = b.boxed ? `${-pad}px 0 0 ${-pad}px` : '0';
       b.el.querySelector('[data-t="size"]').textContent = b.size + 'pt';
+      ['bold', 'underline', 'boxed'].forEach(k => b.el.querySelector(`[data-t="${k}"]`).classList.toggle('on', !!b[k]));
     }
     function removeBox(b) {
       boxes = boxes.filter(x => x !== b);
@@ -405,9 +481,12 @@
     function drawShapes(pageIdx, temp) {
       const pg = pages[pageIdx];
       if (!pg) return;
+      const SEL = '#ff8c00';   // 選んでいるもの
       const one = s => {
         if (s.kind === 'stamp') return stampSvg(s);
-        const st = `stroke="${s === selShape ? '#d33' : '#000'}" stroke-width="${Math.max(1, s.w * scale)}" fill="none"`;
+        if (s.kind === 'done') return doneSvg(s);
+        if (s.kind === 'seal') return sealSvg(s);
+        const st = `stroke="${s === selShape ? SEL : colHex(s.color)}" stroke-width="${Math.max(1, s.w * scale)}" fill="none"`;
         const shape = s.kind === 'rect'
           ? a => `<rect x="${Math.min(s.x1, s.x2) * scale}" y="${Math.min(s.y1, s.y2) * scale}" width="${Math.abs(s.x2 - s.x1) * scale}" height="${Math.abs(s.y2 - s.y1) * scale}" ${a}/>`
           : s.kind === 'ellipse'
@@ -417,7 +496,7 @@
       };
       // データ印の見た目（PDFでは stampLayout の同じ配置で字の形を描く）
       const stampSvg = s => {
-        const L = stampLayout(s), z = scale, col = s === selShape ? '#d33' : '#c8102e';
+        const L = stampLayout(s), z = scale, col = s === selShape ? SEL : '#c8102e';
         const r = s.d / 2;
         const tx = t => t.text ? `<text x="${t.cx * z}" y="${t.base * z}" font-size="${t.size * z}" text-anchor="middle" fill="${col}"
             font-family="'BIZ UDGothic','Yu Gothic',sans-serif"${t.estW > t.maxW ? ` textLength="${t.maxW * z}" lengthAdjust="spacingAndGlyphs"` : ''}>${esc(t.text)}</text>` : '';
@@ -425,6 +504,20 @@
           + L.chords.map(c => `<line x1="${c[0] * z}" y1="${c[1] * z}" x2="${c[2] * z}" y2="${c[3] * z}" stroke="${col}" stroke-width="${0.8 * z}"/>`).join('')
           + L.texts.map(tx).join('')
           + `<circle class="hit" data-sid="${s.id}" cx="${s.x1 * z}" cy="${s.y1 * z}" r="${r * z}" fill="transparent" stroke="transparent" style="pointer-events:all"/>`;
+      };
+      const FF = `font-family="'BIZ UDGothic','Yu Gothic',sans-serif"`;
+      const hitRect = (s, b) => `<rect class="hit" data-sid="${s.id}" x="${b.x1 * scale}" y="${b.y1 * scale}" width="${(b.x2 - b.x1) * scale}" height="${(b.y2 - b.y1) * scale}" fill="transparent" stroke="transparent" style="pointer-events:all"/>`;
+      const doneSvg = s => {
+        const L = doneLayout(s), z = scale, col = s === selShape ? SEL : '#c8102e', t = L.text;
+        const rc = (q, w) => `<rect x="${q[0] * z}" y="${q[1] * z}" width="${(q[2] - q[0]) * z}" height="${(q[3] - q[1]) * z}" rx="${L.H * 0.12 * z}" fill="none" stroke="${col}" stroke-width="${w * z}"/>`;
+        return rc(L.outer, 1.6) + rc(L.inner, 0.6)
+          + `<text x="${t.cx * z}" y="${t.base * z}" font-size="${t.size * z}" text-anchor="middle" fill="${col}" font-weight="700" ${FF}>${esc(t.text)}</text>`
+          + hitRect(s, shapeBox(s));
+      };
+      const sealSvg = s => {
+        const L = sealLayout(s), z = scale, col = s === selShape ? SEL : colHex(s.color);
+        return L.items.map(t => `<text x="${t.x0 * z}" y="${t.base * z}" font-size="${t.size * z}" fill="${col}" ${FF}>${esc(t.text)}</text>`).join('')
+          + hitRect(s, shapeBox(s));
       };
       pg.svg.innerHTML = shapes.filter(s => s.page === pageIdx).map(one).join('') + (temp ? one(temp) : '');
       // 押すと選ぶ（✕ 消す が出る）。そのままドラッグすると移動
@@ -457,7 +550,9 @@
         pg.div.appendChild(btn);
         // 大きさを変えるつまみ：枠・丸は4隅、線は両端、データ印は右下（円周上）
         const r = s.d / 2, dg = Math.SQRT1_2;
+        const bb2 = shapeBox(s);
         const hs = s.kind === 'stamp' ? [['r', s.x1 + r * dg, s.y1 + r * dg, 'nwse-resize']]
+          : (s.kind === 'done' || s.kind === 'seal') ? [['k', bb2.x2, bb2.y2, 'nwse-resize']]
           : s.kind === 'line' ? [['x1y1', s.x1, s.y1, 'move'], ['x2y2', s.x2, s.y2, 'move']]
           : [['x1y1', s.x1, s.y1], ['x2y1', s.x2, s.y1], ['x2y2', s.x2, s.y2], ['x1y2', s.x1, s.y2]].map(h => {
               const left = h[1] === Math.min(s.x1, s.x2), top = h[2] === Math.min(s.y1, s.y2);
@@ -474,6 +569,11 @@
               let x = (ev.clientX - rc.left) / scale, y = (ev.clientY - rc.top) / scale;
               if (key === 'r') {   // データ印：中心からの距離で直径（約7〜28mm）
                 s.d = Math.max(20, Math.min(80, Math.hypot(x - s.x1, y - s.y1) * 2));
+              } else if (key === 'k' && s.kind === 'done') {   // 完了：幅（約11〜70mm）
+                s.d = Math.max(30, Math.min(200, Math.abs(x - s.x1) * 2));
+              } else if (key === 'k') {   // 社判：右下の位置に合わせて字の大きさ（5〜20pt）
+                const L = sealLayout(s);
+                s.d = Math.max(5, Math.min(20, s.d * Math.max(0.1, (x - s.x1)) / L.w));
               } else {
                 const kx = key.slice(0, 2), ky = 'y' + key[3];
                 if (s.kind === 'line') {   // 線は描くときと同じく、ほぼ水平・垂直ならそろえる（Shiftで必ず）
@@ -511,7 +611,7 @@
       const list = $('.fr-list');
       const live = boxes.filter(b => b.text.trim());
       list.innerHTML = live.length ? live.map(b =>
-        `<div class="fr-li" data-id="${b.id}">${esc(b.text)}<br><small>${b.page + 1}ページ・${b.size}pt</small></div>`).join('')
+        `<div class="fr-li" data-id="${b.id}">${esc(b.text)}<br><small>${b.page + 1}ページ・${b.size}pt${b.bold ? '・太字' : ''}${b.underline ? '・下線' : ''}${b.boxed ? '・ボックス' : ''}</small></div>`).join('')
         : '<div style="color:#8a8fa8">まだありません</div>';
       const note = shapeCountNote(shapes, ' ');
       if (note) list.insertAdjacentHTML('beforeend', `<div style="color:#5a5f7a">${note}</div>`);
@@ -523,77 +623,97 @@
 
     // ---- PDFを作る ----
     async function build() {
-      const { PDFDocument, rgb, degrees } = PDFLib;
+      const { PDFDocument, rgb } = PDFLib;
       const doc = await PDFDocument.load(o._bytes, { ignoreEncryption: true });
       // 文字はフォントを埋め込まず、字の形（アウトライン）を図形として描く。
       //   pdf-lib の subset 埋め込みは日本語フォントで字が欠ける不具合があり（「あいうえお」→「えお」）、
       //   丸ごと埋め込むと1通4.7MBになるため。FAXで送るので文字として選べなくても困らない（文字は記録に残す）
       const fk = parsedFont || (parsedFont = fontkit.create(new Uint8Array(await ensureFont())));
-      const glyphSvg = (line, size) => {
-        const k = size / fk.unitsPerEm, run = fk.layout(line);
-        let pen = 0, d = '';
-        const f = v => Math.round(v * 1000) / 1000;
+      // ページごとの座標変換：画面上の点（縮尺1）→ PDFの点。図形は画面上の点で作ってから変換する（回転したページでも見たまま）
+      const conv = pageIdx => {
+        const vp1 = pages[pageIdx].page.getViewport({ scale: 1 });
+        const P = (x, y) => { const q = vp1.convertToPdfPoint(x, y); return { x: q[0], y: q[1] }; };
+        // M/L/Q/C/Z の線を PDF の座標に（drawSvgPath は y を反転するので -Y を渡す）
+        const pathPdf = cmds => cmds.map(c => c[0] + (c.length > 1 ? c.slice(1).reduce((a, v, i) => {
+          if (i % 2) return a; const q = P(v, c[i + 2]); return a + `${Math.round(q.x * 1000) / 1000} ${Math.round(-q.y * 1000) / 1000} `;
+        }, '') : '')).join('');
+        return { P, pathPdf, page: doc.getPage(pageIdx) };
+      };
+      // 1行の字の形（画面上の点）。x0＝左端、by＝ベースライン
+      const glyphCmds = (text, size, x0, by) => {
+        const run = fk.layout(text), k = size / fk.unitsPerEm, cmds = [];
+        let pen = 0;
         run.glyphs.forEach((g, i) => {
           for (const c of g.path.commands) {
-            const a = c.args, pt = j => `${f(pen + a[j] * k)} ${f(-a[j + 1] * k)}`;
-            if (c.command === 'moveTo') d += `M${pt(0)}`;
-            else if (c.command === 'lineTo') d += `L${pt(0)}`;
-            else if (c.command === 'quadraticCurveTo') d += `Q${pt(0)} ${pt(2)}`;
-            else if (c.command === 'bezierCurveTo') d += `C${pt(0)} ${pt(2)} ${pt(4)}`;
-            else if (c.command === 'closePath') d += 'Z';
+            const a = c.args, pts = [];
+            for (let j = 0; j < a.length; j += 2) pts.push(x0 + pen + a[j] * k, by - a[j + 1] * k);
+            const op = { moveTo: 'M', lineTo: 'L', quadraticCurveTo: 'Q', bezierCurveTo: 'C', closePath: 'Z' }[c.command];
+            if (op) cmds.push([op, ...pts]);
           }
           pen += run.positions[i].xAdvance * k;
         });
-        return d;
+        return { cmds, w: pen };
       };
+      const textW = (text, size) => fk.layout(text).positions.reduce((a, q) => a + q.xAdvance, 0) / fk.unitsPerEm * size;
+      const rectCmds = (x1, y1, x2, y2) => [['M', x1, y1], ['L', x2, y1], ['L', x2, y2], ['L', x1, y2], ['Z']];
       const texts = [];
       for (const b of boxes) {
         const text = b.text.replace(/\s+$/, '');
         if (!text.trim()) continue;
-        const pg = pages[b.page].page;
-        const vp1 = pg.getViewport({ scale: 1 });
-        // 画面上の3点をPDFの座標に直し、文字の進む向き(dx)と下向き(dy)を求める（回転したページでもそのまま正しい）
-        const p0 = vp1.convertToPdfPoint(b.x, b.y);
-        const px = vp1.convertToPdfPoint(b.x + 1, b.y);
-        const py = vp1.convertToPdfPoint(b.x, b.y + 1);
-        const dx = [px[0] - p0[0], px[1] - p0[1]], dy = [py[0] - p0[0], py[1] - p0[1]];
-        const angle = Math.atan2(dx[1], dx[0]) * 180 / Math.PI;
+        const { P, pathPdf, page } = conv(b.page);
+        const col = rgb(...colRgb(b.color));
         const ascent = fk.ascent / fk.unitsPerEm * b.size;
         const lineH = b.size * 1.25;
-        const page = doc.getPage(b.page);
-        text.split('\n').forEach((line, i) => {
+        const lines = text.split('\n');
+        const maxW = Math.max(...lines.map(l => l ? textW(l, b.size) : 0));
+        if (b.boxed) {   // テキストボックス：白で塗って枠（画面と同じ余白）
+          page.drawSvgPath(pathPdf(rectCmds(b.x - BOX_PAD, b.y - BOX_PAD, b.x + maxW + BOX_PAD, b.y + lineH * lines.length + BOX_PAD)),
+            { x: 0, y: 0, color: rgb(1, 1, 1), borderColor: col, borderWidth: 0.8 });
+        }
+        lines.forEach((line, i) => {
           if (!line) return;
-          const down = ascent + lineH * i;
-          const d = glyphSvg(line, b.size);
-          if (!d) return;
-          page.drawSvgPath(d, {
-            x: p0[0] + dy[0] * down, y: p0[1] + dy[1] * down,
-            color: rgb(0, 0, 0), rotate: degrees(angle),
-          });
+          const by = b.y + ascent + lineH * i;
+          const g = glyphCmds(line, b.size, b.x, by);
+          if (!g.cmds.length) return;
+          // 太字は字の輪郭を同じ色でなぞって太くする（太字フォントを読み込まずに済む）
+          page.drawSvgPath(pathPdf(g.cmds), Object.assign({ x: 0, y: 0, color: col },
+            b.bold ? { borderColor: col, borderWidth: b.size * 0.05 } : {}));
+          if (b.underline) {
+            const uy = by + b.size * 0.13;
+            page.drawLine({ start: P(b.x, uy), end: P(b.x + g.w, uy), thickness: b.size * 0.06, color: col });
+          }
         });
-        texts.push({ page: b.page + 1, text, size: b.size,
+        texts.push({ page: b.page + 1, text, size: b.size, color: b.color, bold: b.bold, underline: b.underline, boxed: b.boxed,
                      xMm: Math.round(b.x * MM_PER_PT * 10) / 10, yMm: Math.round(b.y * MM_PER_PT * 10) / 10 });
       }
       // 枠・線：両端（枠は4隅）をPDFの座標に直して線で結ぶ（回転したページでも見たままの向き）
       const { LineCapStyle } = PDFLib;
       const shapesOut = [];
       const mm = v => Math.round(v * MM_PER_PT * 10) / 10;
+      const red = rgb(0.78, 0.06, 0.18);
       for (const s of shapes) {
-        const vp1 = pages[s.page].page.getViewport({ scale: 1 });
-        const P = (x, y) => { const q = vp1.convertToPdfPoint(x, y); return { x: q[0], y: q[1] }; };
-        const page = doc.getPage(s.page);
+        const { P, pathPdf, page } = conv(s.page);
+        const col = rgb(...colRgb(s.color));   // 色の無い古い記録は黒
         const seg = (a, b, cap) => page.drawLine({ start: a, end: b, thickness: s.kind === 'stamp' ? 0.8 : s.w,
-                                                    color: s.kind === 'stamp' ? rgb(0.78, 0.06, 0.18) : rgb(0, 0, 0), lineCap: cap });
-        // 画面上の点で作った線（M/L/C/Z）をPDFの座標に直して描く（drawSvgPath は y を反転するので -Y を渡す）
-        const pathPdf = cmds => cmds.map(c => c[0] + (c.length > 1 ? c.slice(1).reduce((a, v, i) => {
-          if (i % 2) return a; const q = P(v, c[i + 2]); return a + `${Math.round(q.x * 1000) / 1000} ${Math.round(-q.y * 1000) / 1000} `;
-        }, '') : '')).join('');
+                                                    color: s.kind === 'stamp' ? red : col, lineCap: cap });
         if (s.kind === 'line') seg(P(s.x1, s.y1), P(s.x2, s.y2), LineCapStyle.Round);
         else if (s.kind === 'ellipse') {
           page.drawSvgPath(pathPdf(ellipseCmds((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, Math.abs(s.x2 - s.x1) / 2, Math.abs(s.y2 - s.y1) / 2)),
-            { x: 0, y: 0, borderColor: rgb(0, 0, 0), borderWidth: s.w });
+            { x: 0, y: 0, borderColor: col, borderWidth: s.w });
+        } else if (s.kind === 'done') {
+          const L = doneLayout(s), t = L.text;
+          page.drawSvgPath(pathPdf(rectCmds(...L.outer)), { x: 0, y: 0, borderColor: red, borderWidth: 1.6 });
+          page.drawSvgPath(pathPdf(rectCmds(...L.inner)), { x: 0, y: 0, borderColor: red, borderWidth: 0.6 });
+          const size = Math.min(t.size, t.maxW / Math.max(textW(t.text, 1), 0.01));
+          const g = glyphCmds(t.text, size, t.cx - textW(t.text, size) / 2, t.base);
+          if (g.cmds.length) page.drawSvgPath(pathPdf(g.cmds), { x: 0, y: 0, color: red, borderColor: red, borderWidth: size * 0.04 });
+        } else if (s.kind === 'seal') {
+          for (const t of sealLayout(s).items) {
+            const g = glyphCmds(t.text, t.size, t.x0, t.base);
+            if (g.cmds.length) page.drawSvgPath(pathPdf(g.cmds), { x: 0, y: 0, color: col });
+          }
         } else if (s.kind === 'stamp') {
-          const red = rgb(0.78, 0.06, 0.18), r = s.d / 2, L = stampLayout(s);
+          const r = s.d / 2, L = stampLayout(s);
           page.drawSvgPath(pathPdf(ellipseCmds(s.x1, s.y1, r, r)), { x: 0, y: 0, borderColor: red, borderWidth: 1.2 });
           L.chords.forEach(c => seg(P(c[0], c[1]), P(c[2], c[3]), LineCapStyle.Butt));
           for (const t of L.texts) {
@@ -602,25 +722,16 @@
             const run = fk.layout(t.text);
             const w1 = run.positions.reduce((a, q) => a + q.xAdvance, 0) / fk.unitsPerEm;   // 1pt あたりの幅
             const size = Math.min(t.size, t.maxW / Math.max(w1, 0.01));
-            const k = size / fk.unitsPerEm, x0 = t.cx - w1 * size / 2, by = t.base;
-            let pen = 0; const cmds = [];
-            run.glyphs.forEach((g, i) => {
-              for (const c of g.path.commands) {
-                const a = c.args, pts = [];
-                for (let j = 0; j < a.length; j += 2) pts.push(x0 + pen + a[j] * k, by - a[j + 1] * k);
-                const op = { moveTo: 'M', lineTo: 'L', quadraticCurveTo: 'Q', bezierCurveTo: 'C', closePath: 'Z' }[c.command];
-                if (op) cmds.push([op, ...pts]);
-              }
-              pen += run.positions[i].xAdvance * k;
-            });
-            if (cmds.length) page.drawSvgPath(pathPdf(cmds), { x: 0, y: 0, color: red });
+            const g = glyphCmds(t.text, size, t.cx - w1 * size / 2, t.base);
+            if (g.cmds.length) page.drawSvgPath(pathPdf(g.cmds), { x: 0, y: 0, color: red });
           }
         } else {
           const c = [P(s.x1, s.y1), P(s.x2, s.y1), P(s.x2, s.y2), P(s.x1, s.y2)];
           c.forEach((a, i) => seg(a, c[(i + 1) % 4], LineCapStyle.Projecting));   // 角が欠けないよう線端を伸ばす
         }
-        shapesOut.push(Object.assign({ page: s.page + 1, kind: s.kind, w: s.w, x1Mm: mm(s.x1), y1Mm: mm(s.y1), x2Mm: mm(s.x2), y2Mm: mm(s.y2) },
-          s.kind === 'stamp' ? { dMm: mm(s.d), top: s.top, date: s.date, bottom: s.bottom } : {}));
+        shapesOut.push(Object.assign({ page: s.page + 1, kind: s.kind, w: s.w, color: s.color, x1Mm: mm(s.x1), y1Mm: mm(s.y1), x2Mm: mm(s.x2), y2Mm: mm(s.y2) },
+          s.kind === 'stamp' ? { dMm: mm(s.d), top: s.top, date: s.date, bottom: s.bottom } : {},
+          s.kind === 'done' ? { dMm: mm(s.d) } : {}, s.kind === 'seal' ? { size: s.d, lines: s.lines } : {}));
       }
       const bytes = await doc.save();
       const cn = shapeCountNote(shapesOut, '');
@@ -629,9 +740,13 @@
       // edit：あとで「続きを編集」で戻すための元の値（縮尺1の画面上の点）
       const r2 = v => Math.round(v * 100) / 100;
       const edit = {
-        boxes: boxes.filter(b => b.text.trim()).map(b => ({ page: b.page, x: r2(b.x), y: r2(b.y), size: b.size, text: b.text })),
-        shapes: shapes.map(x => Object.assign({ kind: x.kind, page: x.page, x1: r2(x.x1), y1: r2(x.y1), x2: r2(x.x2), y2: r2(x.y2), w: x.w },
-          x.kind === 'stamp' ? { d: x.d, top: x.top, date: x.date, bottom: x.bottom } : {})),
+        boxes: boxes.filter(b => b.text.trim()).map(b => ({ page: b.page, x: r2(b.x), y: r2(b.y), size: b.size, text: b.text,
+                                                           color: b.color, bold: b.bold, underline: b.underline, boxed: b.boxed })),
+        shapes: shapes.map(x => {
+          const o2 = { kind: x.kind, page: x.page, x1: r2(x.x1), y1: r2(x.y1), x2: r2(x.x2), y2: r2(x.y2), w: x.w };
+          ['color', 'd', 'top', 'date', 'bottom', 'lines'].forEach(k => { if (x[k] !== undefined) o2[k] = x[k]; });
+          return o2;
+        }),
       };
       return { bytes, texts, shapes: shapesOut, summaryText, edit };
     }
