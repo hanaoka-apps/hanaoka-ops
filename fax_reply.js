@@ -29,6 +29,7 @@
   const FONT_URL = 'static/fonts/BIZUDGothic-Regular.ttf';
   const DEFAULT_SIZE = 12;          // 文字の大きさ（pt）
   const BOX_PAD = 3;                // テキストボックスの余白（pt）
+  const SEAL_PAD = 2;               // 社判の白い背景の余白（pt）
   const MM_PER_PT = 25.4 / 72;
   const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -90,6 +91,8 @@
   .fr-side{width:300px;border-left:1px solid #e3e5ef;display:flex;flex-direction:column;min-height:0}
   .fr-side-in{flex:1;overflow:auto;padding:12px 14px;font-size:12px}
   .fr-help{background:#f6f7fb;border-radius:8px;padding:8px 10px;color:#4a4f68;line-height:1.6;margin-bottom:10px}
+  .fr-helpbox summary{cursor:pointer;color:#23268f;font-weight:700;margin-bottom:8px;user-select:none}
+  .fr-helpbox[open] summary{margin-bottom:6px}
   .fr-list{display:flex;flex-direction:column;gap:4px;margin:6px 0 12px}
   .fr-li{border:1px solid #e3e5ef;border-radius:6px;padding:5px 8px;cursor:pointer;white-space:pre-wrap;word-break:break-all}
   .fr-li:hover{border-color:#23268f}.fr-li small{color:#8a8fa8}
@@ -195,13 +198,13 @@
         <div class="fr-pages"><div style="padding:40px;color:#6b7089">PDFを読み込み中...</div></div>
         <div class="fr-side">
           <div class="fr-side-in">
-            <div class="fr-help"><b>Ａ 文字</b>：書きたい所をクリックして入力（⠿ で移動、Enter で改行）。入力中に出る小さなボタンで 大きさ・<b>B 太字</b>・<b>U 下線</b>・<b>▭ 枠と白背景</b>・削除。<br>
+            <details class="fr-helpbox"><summary>❓ 使い方（クリックで開く）</summary><div class="fr-help"><b>Ａ 文字</b>：書きたい所をクリックして入力（⠿ で移動、Enter で改行）。入力中に出る小さなボタンで 大きさ・<b>B 太字</b>・<b>U 下線</b>・<b>▭ 枠と白背景</b>・削除。<br>
               <b>▭ テキストボックス</b>：枠つき・白背景の文字（コメント）。<br>
               <b>□ 枠／／ 線／◯ 丸</b>：ドラッグで描く（丸は Shift で正円）。<br>
               描いた枠・線・丸・データ印は<b>ドラッグで移動</b>（選んで矢印キーでも少しずつ動く）。クリックで選ぶと、<b>□ のつまみで大きさ</b>を変えられ、✕ で消せます。<br>
               <b>印 スタンプ</b>：右の選択で データ印／完了／社判（全部・住所と会社名だけ）を選び、押したい所をクリック（内容は下で設定）。<br>
               色は上の「色」で選びます（最初は青。データ印・完了は赤）。<br>
-              <b>↶ 元に戻す</b>：最後に書いたものを消します。</div>
+              <b>↶ 元に戻す</b>：最後に書いたものを消します。</div></details>
             <div class="fr-h">書き込んだ文字</div>
             <div class="fr-list"><div style="color:#8a8fa8">まだありません</div></div>
             <div class="fr-h">データ印</div>
@@ -214,6 +217,8 @@
             <div style="color:#8a8fa8;margin-bottom:10px">上段・下段・大きさはこのパソコンに覚えます。日付は毎回その日になります。</div>
             <div class="fr-h">社判</div>
             <textarea class="fr-seal" data-seal rows="6"></textarea>
+            <select class="fr-lw" data-seal-bg style="margin-top:4px;padding:3px 6px;font-size:11px" title="社判の背景（白にすると下の文字や線を隠せます）"><option value="none">背景：透明</option><option value="white">背景：白</option></select>
+            <button class="fr-btn" data-seal-reset style="margin-top:4px;padding:3px 8px;font-size:11px" title="社判の内容を最初の状態（住所・会社名・TEL・登録番号・担当・Mail）に戻す">↺ 初期値に戻す</button>
             <div style="color:#8a8fa8;margin-bottom:10px">1行ずつ入れます（「株式会社」の行は大きく出ます）。「社判（住所・会社名）」を選ぶと、会社名の行までを押します。このパソコンに覚えます。押したあと □ のつまみで大きさを変えられます。</div>
             ${o.extraPanelHtml}
           </div>
@@ -246,19 +251,32 @@
     const today = new Date();
     const stampCfg = Object.assign({ top: '花岡車輌', bottom: '', d: 42.5 }, o.stamp || {}, loadStampCfg(),
       { date: `${String(today.getFullYear()).slice(2)}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}` });
-    const SEAL_DEFAULT = ['〒135-0021 東京都江東区白河2-17-10', '花岡車輌株式会社', 'TEL 03-3643-5271', '登録番号：T9010601007789',
-                          '担当：' + (stampCfg.bottom || ''), 'Mail：gyoumu@hanaoka-corp.co.jp'].join('\n');
-    if (!stampCfg.seal) stampCfg.seal = SEAL_DEFAULT;
+    const sealDefault = () => ['〒135-0021 東京都江東区白河2-17-10', '花岡車輌株式会社', 'TEL 03-3643-5271', '登録番号：T9010601007789',
+                               '担当：' + (stampCfg.bottom || ''), 'Mail：gyoumu@hanaoka-corp.co.jp'].join('\n');
+    if (!stampCfg.seal) stampCfg.seal = sealDefault();
     stampCfg.seal = stampCfg.seal.replace('白河2-1710', '白河2-17-10');   // 試験中に配った番地の誤りを直す
     const sealEl = ov.querySelector('[data-seal]');
     sealEl.value = stampCfg.seal;
-    sealEl.addEventListener('input', () => { stampCfg.seal = sealEl.value; saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal }); });
+    const saveSeal = () => saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal, sealBg: stampCfg.sealBg });
+    // 社判の背景（透明／白）。選んでいる社判があれば、それも切り替える
+    const sealBgEl = ov.querySelector('[data-seal-bg]');
+    sealBgEl.value = stampCfg.sealBg === 'white' ? 'white' : 'none';
+    sealBgEl.addEventListener('change', () => {
+      stampCfg.sealBg = sealBgEl.value; saveSeal();
+      if (selShape && selShape.kind === 'seal') { selShape.bg = sealBgEl.value; drawShapes(selShape.page); }
+    });
+    sealEl.addEventListener('input', () => { stampCfg.seal = sealEl.value; saveSeal(); });
+    // 社判を最初の内容に戻す（担当はデータ印の下段＝今の名前）
+    ov.querySelector('[data-seal-reset]').addEventListener('click', () => {
+      if (!confirm('社判の内容を初期値に戻しますか？\n（直した内容は消えます）')) return;
+      stampCfg.seal = sealDefault(); sealEl.value = stampCfg.seal; saveSeal(); status('社判を初期値に戻しました');
+    });
     const curColor = () => $('.fr-col').value || 'blue';
     ov.querySelectorAll('[data-st]').forEach(el => {
       el.value = stampCfg[el.dataset.st];
       el.addEventListener('input', () => {
         stampCfg[el.dataset.st] = el.dataset.st === 'd' ? +el.value : el.value.trim();
-        saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal });
+        saveSeal();
       });
     });
     // 返信先FAX番号の読み違いを直す。保存は呼び出し側（onFaxEdit）が元の受信FAXの記録に行う
@@ -370,7 +388,7 @@
               lines = lines.slice(0, ci >= 0 ? ci + 1 : 2);
             }
             if (!lines.length) { status('社判の内容を右側で入れてください'); sealEl.focus(); return; }
-            const st = { id: nextId++, kind: 'seal', page: idx, x1, y1, x2: x1, y2: y1, w: 1, d: 8, lines, color: curColor() };
+            const st = { id: nextId++, kind: 'seal', page: idx, x1, y1, x2: x1, y2: y1, w: 1, d: 8, lines, color: curColor(), bg: stampCfg.sealBg || 'none' };
             shapes.push(st); history.push(st); drawShapes(idx); refreshList();
             return;
           }
@@ -515,8 +533,9 @@
           + hitRect(s, shapeBox(s));
       };
       const sealSvg = s => {
-        const L = sealLayout(s), z = scale, col = s === selShape ? SEL : colHex(s.color);
-        return L.items.map(t => `<text x="${t.x0 * z}" y="${t.base * z}" font-size="${t.size * z}" fill="${col}" ${FF}>${esc(t.text)}</text>`).join('')
+        const L = sealLayout(s), z = scale, col = s === selShape ? SEL : colHex(s.color), b = shapeBox(s);
+        return (s.bg === 'white' ? `<rect x="${(b.x1 - SEAL_PAD) * z}" y="${(b.y1 - SEAL_PAD) * z}" width="${(b.x2 - b.x1 + SEAL_PAD * 2) * z}" height="${(b.y2 - b.y1 + SEAL_PAD * 2) * z}" fill="#fff"/>` : '')
+          + L.items.map(t => `<text x="${t.x0 * z}" y="${t.base * z}" font-size="${t.size * z}" fill="${col}" ${FF}>${esc(t.text)}</text>`).join('')
           + hitRect(s, shapeBox(s));
       };
       pg.svg.innerHTML = shapes.filter(s => s.page === pageIdx).map(one).join('') + (temp ? one(temp) : '');
@@ -527,6 +546,7 @@
         const prev = selShape;
         const sh = shapes.find(x => x.id === +h.dataset.sid) || null;
         selShape = sh;
+        if (sh && sh.kind === 'seal') sealBgEl.value = sh.bg === 'white' ? 'white' : 'none';   // 選んだ社判の背景を表示
         if (prev && prev.page !== pageIdx) drawShapes(prev.page);
         drawShapes(pageIdx);
         if (!sh) return;
@@ -708,7 +728,14 @@
           const g = glyphCmds(t.text, size, t.cx - textW(t.text, size) / 2, t.base);
           if (g.cmds.length) page.drawSvgPath(pathPdf(g.cmds), { x: 0, y: 0, color: red, borderColor: red, borderWidth: size * 0.04 });
         } else if (s.kind === 'seal') {
-          for (const t of sealLayout(s).items) {
+          const items = sealLayout(s).items;
+          if (s.bg === 'white') {   // 背景を白：元のFAXの上に白を敷いてから字（幅は実際の字幅で）
+            const w = Math.max(...items.map(t => textW(t.text, t.size)), 0);
+            const last = items[items.length - 1];
+            page.drawSvgPath(pathPdf(rectCmds(s.x1 - SEAL_PAD, s.y1 - SEAL_PAD, s.x1 + w + SEAL_PAD, (last ? last.base + last.size * 0.3 : s.y1) + SEAL_PAD)),
+              { x: 0, y: 0, color: rgb(1, 1, 1) });
+          }
+          for (const t of items) {
             const g = glyphCmds(t.text, t.size, t.x0, t.base);
             if (g.cmds.length) page.drawSvgPath(pathPdf(g.cmds), { x: 0, y: 0, color: col });
           }
@@ -731,7 +758,7 @@
         }
         shapesOut.push(Object.assign({ page: s.page + 1, kind: s.kind, w: s.w, color: s.color, x1Mm: mm(s.x1), y1Mm: mm(s.y1), x2Mm: mm(s.x2), y2Mm: mm(s.y2) },
           s.kind === 'stamp' ? { dMm: mm(s.d), top: s.top, date: s.date, bottom: s.bottom } : {},
-          s.kind === 'done' ? { dMm: mm(s.d) } : {}, s.kind === 'seal' ? { size: s.d, lines: s.lines } : {}));
+          s.kind === 'done' ? { dMm: mm(s.d) } : {}, s.kind === 'seal' ? { size: s.d, lines: s.lines, bg: s.bg || 'none' } : {}));
       }
       const bytes = await doc.save();
       const cn = shapeCountNote(shapesOut, '');
@@ -744,7 +771,7 @@
                                                            color: b.color, bold: b.bold, underline: b.underline, boxed: b.boxed })),
         shapes: shapes.map(x => {
           const o2 = { kind: x.kind, page: x.page, x1: r2(x.x1), y1: r2(x.y1), x2: r2(x.x2), y2: r2(x.y2), w: x.w };
-          ['color', 'd', 'top', 'date', 'bottom', 'lines'].forEach(k => { if (x[k] !== undefined) o2[k] = x[k]; });
+          ['color', 'd', 'top', 'date', 'bottom', 'lines', 'bg'].forEach(k => { if (x[k] !== undefined) o2[k] = x[k]; });
           return o2;
         }),
       };
