@@ -62,9 +62,11 @@
 
   // ---- 見た目 ----
   const CSS = `
-  .fr-overlay{position:fixed;inset:0;background:rgba(15,17,40,.55);z-index:3000;display:flex;align-items:center;justify-content:center}
-  .fr-modal{background:#fff;color:#1f2330;width:min(1400px,97vw);height:94vh;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);font-family:inherit}
-  .fr-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e3e5ef;flex-wrap:wrap}
+  /* 後ろの幕は薄く・クリックを通す（開いたまま裏のアプリも見たり触ったりできる）。編集画面は見出しで移動、右下で大きさ変更 */
+  .fr-overlay{position:fixed;inset:0;background:rgba(15,17,40,.15);z-index:3000;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .fr-modal{pointer-events:auto;background:#fff;color:#1f2330;width:min(1400px,97vw);height:94vh;min-width:560px;min-height:360px;max-width:100vw;max-height:100vh;resize:both;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);font-family:inherit}
+  .fr-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e3e5ef;flex-wrap:wrap;cursor:move;user-select:none}
+  .fr-head button,.fr-head select{cursor:pointer}
   .fr-title{font-weight:700;font-size:14px;max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fr-beta{font-size:10px;background:#fff1d6;color:#8a5a00;border-radius:8px;padding:1px 7px;font-weight:700}
   .fr-fax{display:flex;align-items:center;gap:6px;background:#eef0fc;border:1px solid #c9cdf3;border-radius:8px;padding:4px 10px}
@@ -207,7 +209,8 @@
               描いた枠・線・丸・データ印は<b>ドラッグで移動</b>（選んで矢印キーでも少しずつ動く）。クリックで選ぶと、<b>□ のつまみで大きさ</b>を変えられ、✕ で消せます。<br>
               <b>印 スタンプ</b>：右の選択で データ印／完了／社判（全部・住所と会社名だけ）を選び、押したい所をクリック（内容は下で設定）。<br>
               色は上の「色」で選びます（最初は青。データ印・完了は赤）。<br>
-              <b>↶ 元に戻す</b>：最後に書いたものを消します。</div></details>
+              <b>↶ 元に戻す</b>：最後に書いたものを消します。<br>
+              <b>画面の移動</b>：上の見出しをドラッグで移動、右下の角で大きさ変更（ダブルクリックで中央に戻る）。開いたまま裏の画面も見られます。</div></details>
             <div class="fr-h">書き込んだ文字</div>
             <div class="fr-list"><div style="color:#8a8fa8">まだありません</div></div>
             <div class="fr-h">データ印</div>
@@ -234,6 +237,28 @@
     document.body.appendChild(ov);
     const $ = sel => ov.querySelector(sel);
     const status = t => { $('.fr-status').textContent = t || ''; };
+    // 見出しをドラッグで編集画面を移動（ボタン・選択欄の上は除く）。ダブルクリックで中央に戻す
+    {
+      const modal = $('.fr-modal'), head = $('.fr-head');
+      let mx = 0, my = 0;
+      const place = () => { modal.style.transform = `translate(${mx}px, ${my}px)`; };
+      head.title = '見出しをドラッグで移動（ダブルクリックで中央に戻す）／右下の角で大きさを変えられます';
+      head.addEventListener('mousedown', e => {
+        if (e.button !== 0 || e.target.closest('button,select,input,textarea,a')) return;
+        e.preventDefault();
+        const sx = e.clientX - mx, sy = e.clientY - my;
+        const mv = ev => {
+          // 見出しが画面の外に出ないように（少なくとも80px は残す）
+          const r = modal.getBoundingClientRect(), bx = r.left - mx, by = r.top - my;
+          mx = Math.max(80 - bx - r.width, Math.min(window.innerWidth - 80 - bx, ev.clientX - sx));
+          my = Math.max(-by, Math.min(window.innerHeight - 40 - by, ev.clientY - sy));
+          place();
+        };
+        const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      });
+      head.addEventListener('dblclick', e => { if (e.target.closest('button,select,input,textarea,a')) return; mx = my = 0; place(); });
+    }
     let scale = 1.4, baseScale = 1.4, pdf = null, pages = [], boxes = [], nextId = 1, closed = false;
     // 枠・線：{ id, kind:'rect'|'line', page, x1, y1, x2, y2, w }（座標は文字と同じ「縮尺1の画面上の点」、w は線の太さpt）
     let mode = 'text', shapes = [], selShape = null;
