@@ -4,7 +4,8 @@
    指示文と答えの形：AP_Setting の ai.invoice（正本 admin/defs/ap-ai-invoice.json）。モデル：WF_Setting の ai.models（read）
    マスタ（科目・部門・内訳・過去の仕訳）は /BILLS/masters の CSV から作り、指示文と一緒にキャッシュする（2件目から安い）
    使い方：await APAI.readInvoice({ call, site, onMsg }, { apCode, invoiceId, category, location, targetYm, round, method, vendorCode, vendorName, smileAmount, file, pdfName })
-          file＝PDF か画像の Blob、pdfName＝incoming での名前。戻り値 { ok, status, message } */
+          file＝PDF か画像の Blob、pdfName＝incoming での名前。戻り値 { ok, status, message }
+          1件の請求書が何ファイルかに分かれているとき：files＝[{ file, name }]（file・pdfName の代わり。全部を1回で渡し、1枚の請求書として読む） */
 (function () {
   'use strict';
   const WF_SITE_PATH = 'hanaokacorp.sharepoint.com:/sites/msteams_7aab51:';
@@ -137,6 +138,10 @@
   async function readInvoice(ctx, job) {
     const msg = ctx.onMsg || (() => {});
     const s = await setup(ctx), cfg = s.cfg;
+    // ファイル：1つ（file・pdfName）か、まとめた何ファイルか（files）。まとめたときは「1枚の請求書」と伝える
+    const fs = job.files && job.files.length ? job.files : [{ file: job.file, name: job.pdfName }];
+    const docs = []; for (const f of fs) docs.push(docBlock(await b64(f.file), f.file.type, f.name));
+    job.pdfName = job.pdfName || fs.map(f => f.name).join('・');
     const info = [
       '## 受付の情報',
       `- 区分：${job.category || ''}`, `- 拠点：${job.location || ''}`, `- 払う月：${job.targetYm || '（未定）'}`, `- 支払回：${job.round || '（受付では未定）'}`,
@@ -144,11 +149,12 @@
       `- SMILE の額：${job.smileAmount != null && job.smileAmount !== '' ? yen(job.smileAmount) + ' 円' : 'なし'}`,
       // 仕入の「請求書を渡す」：仕入先は決まっていない。今月の支払先リストから発行元を選ばせる（PayeeCode）。付けるのは画面の決まった手順
       ...(job.candidates ? ['', '## 今月の支払先リスト（仕入先コード 名前 今回支払残高）', job.candidates] : []),
+      ...(fs.length > 1 ? ['', `## 添付は  つのファイルですが、1枚の請求書です（ページが分かれたもの・明細が別紙のものなど）。全部を合わせて1件として読み、total・items・仕訳は全体で1つにしてください（extra に分けない）`] : []),
       '', 'この請求書を読んで、決められた形で答えてください。'].join('\n');
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema: cfg.schema } },
       system: [{ type: 'text', text: cfg.system }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: [docBlock(await b64(job.file), job.file.type, job.pdfName), { type: 'text', text: info }] }] };
+      messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     const r = await ask(ctx, s, job, body);
     let d = null, err = '';
@@ -161,7 +167,7 @@
     const pc = d && d.header && /^\d{6}$/.test(String(d.header.PayeeCode || '')) ? String(d.header.PayeeCode) : '';
     if (job.inbox && pc) rec.comments.unshift(`AI の候補：${pc}`);
     const doc = { v: 3, ap_code: job.apCode, invoice_id: String(job.invoiceId || ''), category: job.category || '', status: d ? (d.status === '読取失敗' ? '読取失敗' : 'AI確認済') : '読取失敗',
-      pdf_files: [job.pdfName], moved: !!job.moved, new: false, location: loc, received_at: '',
+      pdf_files: fs.map(f => f.name), moved: !!job.moved, new: false, location: loc, received_at: '',
       header: rec.header, lines: rec.lines, comments: rec.comments, validation: rec.validation,
       items: d && Array.isArray(d.items) ? d.items.map(normItem) : [], items_amount: d && /^税(抜|込)$/.test(d.itemsAmount || '') ? d.itemsAmount : '',   // 請求書に印字された明細（受入明細・仕訳と比べる）
       extra: d ? (d.extra || []).map(x => record(x.header, x.lines, x.total, x.comments, loc)) : [],
