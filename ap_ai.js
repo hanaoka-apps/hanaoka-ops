@@ -127,6 +127,13 @@
     return { status: 'エラー', message: 'AI の読み取りが5分たっても終わりません' };
   }
 
+  // 答えの形は null をほとんど使わない（structured outputs の上限：型を2つ持つ項目は16個まで）。分からないものは 文字＝""、数量・単価＝0 で来るので null に戻す
+  function normItem(x) {
+    const o = {};
+    Object.keys(x || {}).forEach(k => { const v = x[k]; o[k] = (v === '' || ((k === 'Qty' || k === 'UnitPrice') && v === 0)) ? null : v; });
+    return o;
+  }
+
   async function readInvoice(ctx, job) {
     const msg = ctx.onMsg || (() => {});
     const s = await setup(ctx), cfg = s.cfg;
@@ -156,7 +163,7 @@
     const doc = { v: 3, ap_code: job.apCode, invoice_id: String(job.invoiceId || ''), category: job.category || '', status: d ? (d.status === '読取失敗' ? '読取失敗' : 'AI確認済') : '読取失敗',
       pdf_files: [job.pdfName], moved: !!job.moved, new: false, location: loc, received_at: '',
       header: rec.header, lines: rec.lines, comments: rec.comments, validation: rec.validation,
-      items: d && Array.isArray(d.items) ? d.items : [], items_amount: d && d.itemsAmount || '',   // 請求書に印字された明細（受入明細・仕訳と比べる）
+      items: d && Array.isArray(d.items) ? d.items.map(normItem) : [], items_amount: d && /^税(抜|込)$/.test(d.itemsAmount || '') ? d.itemsAmount : '',   // 請求書に印字された明細（受入明細・仕訳と比べる）
       extra: d ? (d.extra || []).map(x => record(x.header, x.lines, x.total, x.comments, loc)) : [],
       processed_at: new Date().toISOString(), ai: { model: r.model || '', usage: r.usage || null, via: 'claude-api' } };
     await ctx.call('PUT', `/sites/${ctx.site}/drive/root:${encodeURI(`${RES}/${job.apCode}.result.json`)}:/content`, new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' }), 'application/json');
