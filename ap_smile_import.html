@@ -381,7 +381,20 @@ function render(){
   drawApprove();}
 
 // ---- 📥 取り込み ----
+// 各ファイルの SharedMasters での更新日時（RPA が出したもの）。これを見て「SMILE から最新を取り込む」かを決める
+//   今月1日より前の更新＝前月の締めより前に出たもの → 古い（赤）。今日の更新は緑
+const SMT={at:0,m:{},busy:false};
+async function loadSmTimes(force){const files=(SMR.rpa||{}).files||{};if(SMT.busy||!Object.keys(files).length||(!force&&Date.now()-SMT.at<60000))return;
+  SMT.busy=true;try{await Promise.all(Object.entries(files).map(async([k,n])=>{const m=await smMeta(n);SMT.m[k]=m?{name:n,t:m.lastModifiedDateTime}:{name:n,t:null};}));SMT.at=Date.now();}
+  finally{SMT.busy=false;}
+  document.querySelectorAll('[data-smt]').forEach(e=>e.innerHTML=smAgeHtml(e.dataset.smt));}   // カードの欄だけ書き換える（開いている欄は閉じない）
+function smAgeHtml(k){const x=SMT.m[k];if(!x)return '<div class="k" style="margin-top:3px">SharedMasters：確かめています…</div>';
+  if(!x.t)return `<div class="k" style="margin-top:3px;color:var(--up)">SharedMasters に ${esc(x.name)} がありません</div>`;
+  const t=new Date(x.t),now=new Date(),m1=new Date(now.getFullYear(),now.getMonth(),1),today=t.toDateString()===now.toDateString(),days=Math.floor((now-t)/86400000);
+  const col=t<m1?'var(--up)':today?'var(--down)':'var(--txt,#333)',rel=today?'今日':days<=1?'昨日':days+'日前';
+  return `<div class="k" style="margin-top:3px">SharedMasters の更新：<b style="color:${col}">${esc(fmtTime(x.t))}（${rel}）</b>${t<m1?'<br><span style="color:var(--up)">前月の締めより前のファイルです</span>':''}</div>`;}
 function drawImport(){
+  loadSmTimes(false);
   const list=checkList()||(lastImport?parseJ(fv(L.imp,lastImport.f,'照合と気づき'),null):null);
   const op=openAdjs();
   // 「SMILE から最新を取り込む」：RPA 専用機を動かすボタン（取り込みが終わるまで押せない）。大きな置き場は請求書（📨 請求書を渡す）だけに使う
@@ -392,7 +405,7 @@ function drawImport(){
       <button class="lk" id="bNow" ${busy?'disabled':''} style="font-size:12px">今あるファイルで取り込む</button>
       <button class="pri" id="bRpa" ${busy?'disabled':''} title="RPA 専用機が SMILE から前月締めの支払一覧表・月次支払明細表・月次受入リスト・仕入先マスタを出し直し、読み込んで照合します（数分）。決済月は読み込んだ締め月の翌月に切り替わります">${busy?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む'}</button></div>
       <div id="rpst" style="margin-top:8px">${rpaStatusHtml()}</div>
-      <div class="files" style="margin-top:8px">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div></div>`;}).join('')}</div>
+      <div class="files" style="margin-top:8px">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div><div data-smt="${k}">${smAgeHtml(k)}</div></div>`;}).join('')}</div>
       <details style="margin-top:8px;font-size:13px"><summary style="cursor:pointer;color:var(--sub)">ファイルを手で置く（RPA を使わないとき）</summary>
         <label class="drop" id="drop" style="margin-top:6px">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">支払一覧表.csv（または 販売_支払一覧表.xlsx）／ 月次支払明細表.csv ／ 月次受入リスト.csv ／ 仕入先マスタ.csv</span>
         <input type="file" id="file-in" multiple accept=".csv,.xlsx,.xls"></label></details>
@@ -462,6 +475,7 @@ async function smLoad(since){const cfg=SMR.rpa||{};const files=cfg.files||{};if(
   if(miss.length){rpaSet({phase:'失敗',text:'SharedMasters にないファイルがあります：'+miss.join('・')});return;}
   await onFiles(list);
   const ng=calc?(checkList()||[]).filter(c=>c.ok===false):[];
+  loadSmTimes(true);
   rpaSet({phase:'完了',text:`読み込みました（${list.length}ファイル）。`+(old.length?`古いファイルがあります：${old.join('・')}。`:'')+(ng.length?`照合で合わないものが ${ng.length} 件あります。下で確かめてから保存してください`:'照合はすべて合っています。保存の確認に進みます')});
   if(calc&&allFiles()&&!ng.length&&!old.length)setTimeout(saveImport,300);}
 // 前に頼んだもの（画面を閉じた）を続きから見る
