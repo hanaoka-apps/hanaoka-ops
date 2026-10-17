@@ -6,6 +6,7 @@
       key: 'ap',
       apps: [
         { f: 'ap_dashboard.html',      l: 'ホーム' },
+        { f: 'ap_capture.html',        l: 'AI に渡す（撮る）' },   // スマホで請求書を撮って渡すだけの画面
         { f: 'ap_expense.html',        l: '経費' },
         { f: 'ap_entry.html',          l: '手入力', sub: true },      // sub：上の項目（経費）の下に字下げして出す
         { f: 'ap_recurring.html',      l: '毎月の支払', sub: true },
@@ -107,6 +108,7 @@
     'reserve_manual.html': '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/>',
     // 支払管理
     'ap_dashboard.html':     '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+    'ap_capture.html':       '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
     'ap_expense.html':       '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h7"/>',
     'ap_smile_import.html':  '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     'ap_entry.html':         '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
