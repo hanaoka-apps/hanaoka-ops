@@ -59,6 +59,71 @@
     return `## マスタ：科目（コード 名前 既定の税）\n${kmT}\n\n## マスタ：部門（コード 名前）\n${bmT}\n\n## マスタ：内訳が要る科目（科目コード 名前：内訳コード 名前）\n${umT}\n\n## 過去の仕訳（支払先 → よく使う科目・部門・税。${yms[0] || ''}〜${yms[yms.length - 1] || ''}）\n${histT}` + (sqT ? `\n\n## 過去の決裁メモ（取引先 → いちばん新しい支払の 内訳｜決裁メモ｜税込。社長・室長への説明。ApprovalNote はこの書き方にそろえる）\n${sqT}` : '');
   }
 
+  // ---- アプリで確かめた決裁メモ（AP_PaymentSlip の 決裁メモ × AP_Invoice の 支払先・払う月）----
+  //   1段目より先に進んだもの・確定したものだけ（AI が書いたままの確認待ちは入れない）。決裁メモ.csv と同じ形にして、払う月の末日を取引日にする
+  async function listAll(ctx, name) {
+    const ls = await ctx.call('GET', `/sites/${ctx.site}/lists?$select=id,displayName`);
+    const l = (ls.value || []).find(x => x.displayName === name); if (!l) return { rows: [], fmap: {} };
+    const cols = await ctx.call('GET', `/sites/${ctx.site}/lists/${l.id}/columns?$select=name,displayName`), fmap = {};
+    (cols.value || []).forEach(c => { fmap[c.displayName] = c.name; });
+    const rows = []; let next = `/sites/${ctx.site}/lists/${l.id}/items?$expand=fields&$top=500`;
+    while (next) { const r = await ctx.call('GET', next); (r.value || []).forEach(x => rows.push(x)); next = r['@odata.nextLink'] ? r['@odata.nextLink'].replace(/^https:\/\/graph\.microsoft\.com\/v1\.0/, '') : null; }
+    return { rows, fmap };
+  }
+  async function appNotes(ctx) {
+    const [sl, iv] = await Promise.all([listAll(ctx, 'AP_PaymentSlip'), listAll(ctx, 'AP_Invoice')]);
+    const fs = d => sl.fmap[d] || d, fi = d => iv.fmap[d] || d;
+    if (!sl.fmap['決裁メモ']) return [];
+    const inv = {}; iv.rows.forEach(x => { const f = x.fields;
+      if (f[fi('アーカイブフラグ')] === true) return;
+      const ok = (+f.ExpenseStep || 0) >= 1 || (f[fi('支払ステータス')] && f[fi('支払ステータス')] !== '確認待');
+      if (ok) inv[String(x.id)] = { payee: f[fi('支払先名')] || '', ym: f[fi('対象年月')] || '' }; });
+    return sl.rows.map(x => x.fields).filter(f => f[fs('決裁メモ')] && inv[String(f[fs('請求書ID')])]).map(f => {
+      const v = inv[String(f[fs('請求書ID')])];
+      return { '取引日': (v.ym || '') + '/28', '取引先名': v.payee, '内訳名': f[fs('勘定科目名')] || '', '金額（税込）': String(Math.round(+f[fs('金額_税込')] || 0)), '備考': f[fs('決裁メモ')] };
+    });
+  }
+  // ---- 覚えたこと（人が「AI に教える」で教えたこと。/BILLS/masters/ai_memory.json）。読み取りのとき、いちばん優先の手がかりにする ----
+  const MEM = MASTERS + '/ai_memory.json';
+  async function loadMemory(ctx) {
+    try { const b = await ctx.call('GET', `/sites/${ctx.site}/drive/root:${encodeURI(MEM)}:/content`, null, null, true); const j = JSON.parse(await b.text()); return Array.isArray(j) ? j : []; }
+    catch (e) { return []; }
+  }
+  const memoryText = mem => mem.length ? '\n\n## 覚えたこと（人が教えた。過去の決裁メモよりも優先する）\n' + mem.map(m => `- ${m.key}：${m.fact}${m.payee ? `（${m.payee}）` : ''}`).join('\n') : '';
+  async function remember(ctx, items, by) {
+    const mem = await loadMemory(ctx), now = new Date().toISOString();
+    (items || []).filter(x => x && x.key && x.fact).forEach(x => {
+      const i = mem.findIndex(m => m.key === x.key && (m.payee || '') === (x.payee || ''));
+      const v = { key: String(x.key).trim(), fact: String(x.fact).trim(), payee: x.payee || '', by: by || '', at: now };
+      if (i >= 0) mem[i] = v; else mem.push(v);
+    });
+    await ctx.call('PUT', `/sites/${ctx.site}/drive/root:${encodeURI(MEM)}:/content`, new Blob([JSON.stringify(mem, null, 1)], { type: 'application/json' }), 'application/json');
+    S = null;   // 次の読み取りから、覚えたことを入れて作り直す
+    return mem;
+  }
+  // ---- AI に教える（会話。Haiku）：人の答えから、決裁メモの直しと「覚えたこと」を作る ----
+  const TEACH_SCHEMA = { type: 'object', additionalProperties: false, required: ['reply', 'notes', 'memory'], properties: {
+    reply: { type: 'string' },
+    notes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'ApprovalNote'], properties: { index: { type: 'integer' }, ApprovalNote: { type: 'string' } } } },
+    memory: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'fact'], properties: { key: { type: 'string' }, fact: { type: 'string' } } } } } };
+  async function teach(ctx, t) {
+    const s = await setup(ctx);
+    const sys = 'あなたは花岡車輌の総務で、経費の請求書の「決裁メモ」（社長・室長が決裁で読む、仕訳の行ごとの短い説明）を直す担当です。AI が請求書を読んだときにわからなかったこと（気づき）について、人が答えを教えてくれます。\n' +
+      '- 人の答えをもとに、直す行の決裁メモ（ApprovalNote）を、今の書き方（拠点＋物件名・回数・ナンバーなど）を残したまま、わからなかった所だけ埋めて返す（notes。index は行の番号。直さない行は入れない）\n' +
+      '- 次の請求書から同じことを聞かないように、覚えておくことを memory に入れる：key はナンバー・契約番号・品番など請求書に出てくる見分けの手がかり、fact はそれが何か（例 key「なにわ480あ1234」fact「大阪のエブリィ（リース車）」）。一般的すぎること・一度きりのことは入れない\n' +
+      '- 答えがあいまいで決められないときは、notes と memory は空にして、reply で短く聞き返す\n- reply は短い日本語（直したこと・覚えたこと、または聞き返し）';
+    const ctxText = `## 請求書\n支払先：${t.payee || ''}\n\n## 仕訳の行（番号｜科目｜税込｜決裁メモ｜摘要）\n` +
+      (t.lines || []).map((l, i) => `${i}｜${l.aname || ''}｜${yen(l.amount)}｜${l.memo || ''}｜${l.note || ''}`).join('\n') + `\n\n## AI の気づき（わからなかったこと）\n${t.issue || ''}`;
+    const msgs = [{ role: 'user', content: ctxText }].concat((t.history || []).map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.text })));
+    // 会話は user／assistant を交互に。最初の文脈と最初の人の答えをつなげる
+    const merged = []; msgs.forEach(m => { const p = merged[merged.length - 1]; if (p && p.role === m.role) p.content += '\n\n' + m.content; else merged.push({ role: m.role, content: m.content }); });
+    const body = { model: s.models.chat || 'claude-haiku-5-5', max_tokens: 2000, system: sys, messages: merged,
+      output_config: { format: { type: 'json_schema', schema: TEACH_SCHEMA } } };
+    const r = await ask(ctx, s, { title: 'ap.teach', caller: t.invoiceId || '' }, body);
+    if (r.status !== '完了') throw new Error(r.message || 'AI に聞けませんでした');
+    return JSON.parse(r.text);
+  }
+
   async function setup(ctx) {
     if (S) return S;
     const call = ctx.call, s = {};
@@ -69,7 +134,9 @@
     s.cfg = JSON.parse(it.fields.Value || '{}');
     // マスタ
     const [km, bm, um, jr, sq] = await Promise.all(['smile_kamoku.csv', 'smile_bumon.csv', 'smile_uchiwake.csv', '仕訳インデックス.csv', '決裁メモ.csv'].map(n => csv(ctx, n).catch(() => [])));
-    s.masters = mastersText(km, bm, um, jr, sq);
+    // アプリで確かめた決裁メモ（人が直したものも）を、請求Quick の分より新しい例として足す ／ 人が教えた「覚えたこと」
+    const [appSq, mem] = await Promise.all([appNotes(ctx).catch(e => { console.warn('アプリの決裁メモを読めません', e); return []; }), loadMemory(ctx)]);
+    s.masters = mastersText(km, bm, um, jr, sq.concat(appSq)) + memoryText(mem);
     if (window.AP_MOCK) { s.mock = true; s.models = { read: 'claude-sonnet-5-5' }; return (S = s); }
     // ワークフローのサイト（AI_Request・WF_Setting の flow.urlAI・ai.models）
     s.wf = (await call('GET', `/sites/${WF_SITE_PATH}`)).id;
@@ -121,7 +188,7 @@
   async function ask(ctx, s, job, body) {
     const call = ctx.call;
     if (s.mock) return window.AP_MOCK.ai ? await window.AP_MOCK.ai(job, body) : { status: 'エラー', message: 'dev：AP_MOCK.ai がありません' };
-    const it = await call('POST', `/sites/${s.wf}/lists/${s.aiList}/items`, { fields: { Title: 'ap.invoice', Status: '受付', Caller: `ap:${job.apCode}` } });
+    const it = await call('POST', `/sites/${s.wf}/lists/${s.aiList}/items`, { fields: { Title: job.title || 'ap.invoice', Status: '受付', Caller: `ap:${job.apCode || job.caller || ''}` } });
     const payload = { id: Number(it.id), body };
     if (body.fallbacks) payload.beta = 'server-side-fallback-2026-07-01';
     await fetch(s.url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(payload) }).catch(() => {});
@@ -185,5 +252,5 @@
     return { ok: !!d, status: doc.status, message: err };
   }
 
-  window.APAI = { readInvoice, _record: record, _mastersText: mastersText };
+  window.APAI = { readInvoice, teach, remember, loadMemory, _record: record, _mastersText: mastersText };
 })();

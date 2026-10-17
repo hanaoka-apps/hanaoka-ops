@@ -121,7 +121,7 @@ button.lk{border:0;background:none;color:var(--pri);font-weight:700;padding:4px 
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261020"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261021"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">経費</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -589,6 +589,32 @@ const payDayText=h=>{if(!h.ym)return '—';const [y,m]=h.ym.split('/');return h.
 let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
 function setFull(v){FULLR=v;try{localStorage.setItem('ap.review.full',v?'1':'');}catch{}const c=document.querySelector('.one');if(c)c.classList.toggle('ap-full',v);document.body.classList.toggle('ap-lock',v);const b=$('oFull');if(b)b.textContent=v?'✕ 全画面をやめる':'⛶ 全画面';}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&FULLR&&document.querySelector('.one'))setFull(false);});
+// ---------- 💬 AI に教える：気づき（わからなかったこと）に答えると、AI が決裁メモを直して保存し、次から覚える（BILLS/masters/ai_memory.json） ----------
+const TEACH={rid:null,issue:'',msgs:[],busy:false};
+function teachHtml(){return `<div class="teach"><div class="teach-h"><b>💬 AI に教える</b><span class="sp"></span><button class="lk" id="tClose">閉じる</button></div>
+  <div class="teach-m">${TEACH.msgs.map(m=>`<div class="tm ${m.role}">${m.role==='ai'?'<span class="who">AI</span>':''}<div>${esc(m.text).replace(/\n/g,'<br>')}</div></div>`).join('')}${TEACH.busy?'<div class="tm ai"><span class="who">AI</span><div><span class="spin"></span> 考えています…</div></div>':''}</div>
+  <div class="teach-i"><input type="text" id="tIn" placeholder="例：大阪のエブリィ" ${TEACH.busy?'disabled':''}><button class="pri" id="tSend" ${TEACH.busy?'disabled':''}>送る</button></div>
+  <div style="font-size:11.5px;color:var(--sub);margin-top:4px">答えると、AI が決裁メモを直して保存し、ナンバーなどの手がかりを「覚えたこと」に残します（次の請求書から使います）</div></div>`;}
+function startTeach(r,x){Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,
+  msgs:[{role:'ai',text:`${x.t}${x.d?'（'+x.d+'）':''}\nわかることを教えてください。決裁メモを直して、次から覚えます。`}]});drawOne();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
+async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!text||TEACH.busy)return;
+  TEACH.msgs.push({role:'me',text});TEACH.busy=true;drawOne();
+  try{const ls=dLines(r);
+    const a=await APAI.teach({call,site:AP_SITE},{payee:r.payee||r.title,invoiceId:r.id,issue:TEACH.issue,history:TEACH.msgs,lines:ls.map(l=>({aname:l.aname,amount:l.incl,memo:l.memo||'',note:l.note}))});
+    const done=[];
+    (a.notes||[]).forEach(n=>{if(ls[n.index]&&n.ApprovalNote){ls[n.index].memo=n.ApprovalNote;done.push(`${n.index+1}行目「${n.ApprovalNote}」`);}});
+    if(done.length)await saveAll(r,true);
+    const mem=(a.memory||[]).filter(m=>m.key&&m.fact);
+    if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.payee||''})),me());
+    if(done.length||mem.length)await patchInv(r,{},{act:'AI に教えた',memo:[text,...mem.map(m=>`${m.key}＝${m.fact}`)].join(' ／ ').slice(0,200),step:r.step}).catch(()=>{});
+    TEACH.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 決裁メモを直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});}
+  catch(e){TEACH.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
+  TEACH.busy=false;drawOne();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
+function wireTeach(r){const iss=issuesOf(r),shown=st.allIss?iss:iss.slice(0,3);
+  document.querySelectorAll('[data-teach]').forEach(b=>b.onclick=()=>{const x=shown[+b.dataset.teach];if(x)startTeach(r,x);});
+  const c=$('tClose');if(c)c.onclick=()=>{TEACH.rid=null;drawOne();};
+  const s=$('tSend');if(s)s.onclick=()=>sendTeach(r);
+  const i=$('tIn');if(i)i.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendTeach(r);}};}
 // 請求書の明細は、確認の右端の縦のバー（ドロワー）。仕入と同じ：乗せるとさっと開き、外すと閉じる。クリックで開いたまま（もう一度クリック・Esc で閉じる）
 const MDR={open:false,pin:false,t:null};
 const drawerLabel=n=>(MDR.pin?'📌 ':'')+`請求書の明細${n?`（${n}行）`:''} ⇔ 仕訳`;
@@ -637,7 +663,8 @@ function drawOne(){
   const shown=st.allIss?iss:iss.slice(0,3),LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']};
   const issCard=`<div class="oc"><div class="oh"><b>AIの気づき</b><span class="ocnt">${iss.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span>${iss.length>3?`<button class="lk" id="oAll">${st.allIss?'たたむ':'すべての気づきを見る ›'}</button>`:''}</div>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
-    ${shown.map(x=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div></div>`).join('')||'<div class="none">気づきはありません</div>'}</div>`;
+    ${shown.map((x,xi)=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div>${ed&&window.APAI&&x.sev!=='info'&&!r.reading?`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`:''}</div>`).join('')||'<div class="none">気づきはありません</div>'}
+    ${TEACH.rid===r.id?teachHtml():''}</div>`;
   // 支払内容（ふだんは読むだけ。「編集」で直す）
   const eh=ed&&st.editHdr,rd=(lab,v)=>`<div><label>${lab}</label><div class="v">${v||'—'}</div></div>`;
   const hdrCard=`<div class="oc"><div class="oh"><b>支払内容</b><span class="sp"></span>${ed?`<button class="lk" id="oEditH">${eh?'閉じる':'✎ 編集'}</button>`:''}</div>
@@ -715,7 +742,7 @@ function wireOne(r){
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',okRow);on('oSave',async()=>{if(await saveAll(r))render();});
   on('oFull',()=>setFull(!FULLR));document.body.classList.toggle('ap-lock',FULLR);
   wireDrawer();
-  on('oAll',()=>{st.allIss=!st.allIss;drawOne();});on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
+  on('oAll',()=>{st.allIss=!st.allIss;drawOne();});wireTeach(r);on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
   on('oDocs',()=>{const m=$('oDocsM');m.hidden=!m.hidden;});
   const cm=$('oCm');if(cm)cm.oninput=()=>{cmDraft=cm.value;const s=$('oSave');if(s)s.disabled=!isDirty(r);};
   const mo=$('dMore');if(mo)mo.onchange=()=>{const v=mo.value;mo.value='';if(v==='hold')act(r,{[V.hold]:!r.hold},r.hold?'保留を外しました':'保留にしました',{act:r.hold?'保留を外す':'保留',step:r.step});else if(v==='back')backRow(r);else more(r,v);};
