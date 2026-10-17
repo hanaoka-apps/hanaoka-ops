@@ -47,9 +47,12 @@
         msg(`AI の読み取り結果を取り込んでいます（${applied + 1}/${names.length}）`);
         const r = JSON.parse(await text(call, site, path));
         let id = String(r.invoice_id || ''), f = null;
+        // 片付け：_archive に同じ名前があると移せずに残り、読み直しのあと古い結果を取り込んでしまう → 名前の頭に日時を付けて移す
+        const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+        const archive = (from) => call('PATCH', `/sites/${site}/drive/root:${encodeURI(from)}`, { parentReference: { path: `/drive/root:${ARCH}` }, name: `${stamp}_${from.split('/').pop()}` });
         const done = async () => {
-          await move(call, site, path, ARCH).catch(() => {});
-          if (r.ap_code) await move(call, site, `${INC}/${r.ap_code}.task.json`, ARCH).catch(() => {}); };
+          await archive(path).catch(() => {});
+          if (r.ap_code) await archive(`${INC}/${r.ap_code}.task.json`).catch(() => {}); };
         const H = r.header || {}, cmt = (r.comments || []).slice(), patch = {};
         if (r.new && !id) {
           // 複合機のスキャン（受付の無い経費）：ここで経費の行を作る。拠点は読み取りの判断（無ければ本社）
@@ -64,6 +67,8 @@
           if (!it || !it.fields) { errors.push(`${name}：受付の行（ID ${id}）がありません`); await done(); continue; }
           f = it.fields;
           if (f.AIStatus && f.AIStatus !== '受付') { await done(); continue; }   // 取り込み済み・人が先に入れたもの
+          // 古い結果：読み直し・まとめるで「受付」に戻すより前に作られた結果は取り込まない（新しい結果を待つ）
+          if (r.processed_at && f.Modified && Date.parse(r.processed_at) < Date.parse(f.Modified) - 120000) { await done(); continue; }   // 端末とサーバーの時計のずれを見て2分の幅
         }
         const set = (d, v) => { if (v !== undefined && v !== null && v !== '') patch[fi(d)] = v; };
         const setIfEmpty = (d, v) => { const cur = f[fi(d)]; if (cur === undefined || cur === null || cur === '') set(d, v); };
