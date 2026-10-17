@@ -102,7 +102,9 @@
       v.incl += incl; v.lines++; v.byDept[dept] = (v.byDept[dept] || 0) + incl;
       // 行も残す（確認の全画面で請求書の明細と1行ずつ比べる）。数量・単価・品目コードは列があれば
       //   月次受入リスト（RPA・2026-10〜）は「受入数量」「受注単価」「品目ｺｰﾄﾞ」。ほかの書き出しの「数量」「単価」も読む
-      var q = g(r, '受入数量') || g(r, '数量'), up = g(r, '受注単価') || g(r, '単価');
+      //   「受注単価」は受注の単価で、受注の無い仕入は 0（2026-10 締めはすべて 0）→ 単価は 税抜受入金額 ÷ 受入数量 で出す
+      var q = g(r, '受入数量') || g(r, '数量'), up = g(r, '受入単価') || g(r, '受注単価') || g(r, '単価');
+      if (q !== '' && num(q) && !num(up)) up = String(Math.round(num(g(r, '税抜受入金額')) / num(q) * 100) / 100);
       v.items.push({ date: d, inDate: g(r, '入荷日付'), slip: g(r, '伝票№'), dept: dept, staff: g(r, '担当者名称'), itemCode: g(r, '品目ｺｰﾄﾞ') || g(r, '品目コード'),
         item: g(r, '品目名'), spec: g(r, '型番'), unit: g(r, '単位'), qty: q === '' ? null : num(q), price: up === '' ? null : num(up),
         excl: num(g(r, '税抜受入金額')), tax: num(g(r, '消費税等')), order: g(r, '受注№'), kind: g(r, '取引区分略称'), note: g(r, '備考'),
