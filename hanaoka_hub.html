@@ -115,6 +115,9 @@
   .card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
   .card-head h2 { margin: 0; }
   .card-kicker { font-size: 11px; font-weight: 700; color: var(--text-sub); letter-spacing: 0.06em; margin-bottom: 2px; }
+  /* どの時点のデータを見ているか(営業・生産・仕入のカードに共通)。丸一日以上古いときは黄色にする */
+  .asof { display: inline-block; font-size: 11.5px; font-weight: 600; color: var(--text-sub); background: #f1f3f9; border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+  .asof.stale { color: #a8620a; background: var(--amber-soft); }
   .card-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
   .card-title svg { color: var(--navy); }
   .card-link {
@@ -712,7 +715,7 @@
       <div class="section-note" id="statusAsOf" style="margin:-6px 2px 14px"></div>
 
       <div class="topic-head">
-        <div class="app-group-title">営業<span>受注・売上</span></div>
+        <div class="app-group-title">営業<span>受注・売上</span><span id="salesAsOf"></span></div>
         <div class="topic-actions">
           <button type="button" class="regen-btn" id="regenerateBtn" hidden title="SMILEの最新データで日報を再集計します(管理者のみ)">🔄 再集計をリクエスト</button>
           <button type="button" class="read-btn" id="readModeBtn" disabled title="朝礼で営業日報を読み上げるための画面">
@@ -760,6 +763,7 @@
           <div>
             <div class="card-kicker">受入明細・仕入区分のみ</div>
             <h2>日別仕入金額</h2>
+            <div id="purchaseAsOf"></div>
           </div>
           <span class="pill" id="purchasePill">棒=日別 / 破線=月内累計</span>
         </div>
@@ -1557,6 +1561,18 @@ function formatUpdatedAt(iso) {
   return `${parseInt(m[2], 10)}/${parseInt(m[3], 10)} ${m[4]}:${m[5]}`;
 }
 
+// 「データ更新 10/17 06:37（10/16 まで）」のチップ。updated は ISO8601(+09:00) か "2026-10-17 06:36 JST"、
+// latest は "2026-10-16"(そのデータにある最新の日)。更新から30時間を超えたら黄色(stale)にする
+const ASOF_STALE_MS = 30 * 60 * 60 * 1000;
+function asOfHtml(updated, latest) {
+  const m = String(updated || '').match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return '';
+  const age = Date.now() - Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00+09:00`);
+  const l = String(latest || '').match(/^\d{4}-(\d{2})-(\d{2})/);
+  const text = `データ更新 ${parseInt(m[2], 10)}/${parseInt(m[3], 10)} ${m[4]}:${m[5]}` + (l ? `（${parseInt(l[1], 10)}/${parseInt(l[2], 10)} まで）` : '');
+  return `<span class="asof${age > ASOF_STALE_MS ? ' stale' : ''}"${age > ASOF_STALE_MS ? ' title="更新から1日以上たっています。数字が古い可能性があります"' : ''}>${escapeHtml(text)}</span>`;
+}
+
 // ---- 営業日カレンダー（休業日は土日祝。祝日は holidays-jp から取得、失敗時は前回分→組み込み） ----
 const JP_HOLIDAYS_URL = 'https://holidays-jp.github.io/api/v1/date.json';
 const JP_HOLIDAYS = new Set([
@@ -1864,6 +1880,7 @@ function setStatusMessage(msg, isError) {
   document.getElementById('deptAchieveRow').innerHTML = '';
   destroyChart('deptBulletChart');
   document.getElementById('statusAsOf').textContent = '';
+  document.getElementById('salesAsOf').innerHTML = '';
 }
 
 // dashboard_facts.json の明細から、HUBに出す数字だけを集計する
@@ -1984,6 +2001,7 @@ function fetchKpiFacts(urls, token, newProductItems) {
 // ============================================================
 function setPurchaseMessage(msg, isError) {
   destroyChart('purchaseChart');
+  document.getElementById('purchaseAsOf').innerHTML = '';
   document.getElementById('purchaseBody').innerHTML =
     `<div class="empty-state${isError ? ' error' : ''}">${escapeHtml(msg)}</div>`;
 }
@@ -2010,6 +2028,7 @@ function renderPurchase(f) {
   const days = ym ? ((f.months[ym] || {}).days || {}) : {};
   const entries = Object.entries(days).sort(([a], [b]) => a.localeCompare(b));
   const updated = f.updated_at || '基準日未取得';
+  document.getElementById('purchaseAsOf').innerHTML = asOfHtml(f.updated_at || f.generated_at, f.latest_date);
   if (!entries.length) {
     setPurchaseMessage(f.status === 'blocked'
       ? '仕入明細の列を確認できず、日別仕入を取得できません。'
@@ -2285,6 +2304,7 @@ function renderProduction(res, groups, plans) {
         <div>
           <div class="card-kicker">完成報告・重点品目</div>
           <h2>生産（主要製品）</h2>
+          <div>${asOfHtml(res.generated_at, res.source_latest_date)}</div>
         </div>
       </div>
       <span class="pt-big">
@@ -2742,6 +2762,8 @@ async function loadKpis() {
   const updated = formatUpdatedAt(k.updatedAt);
   document.getElementById('statusAsOf').textContent =
     `表示日: ${today.y}年${today.mo}月${today.d}日` + (updated ? `（データ更新: ${updated} 時点の入力まで反映）` : '');
+  const pad2 = n => String(n).padStart(2, '0');
+  document.getElementById('salesAsOf').innerHTML = asOfHtml(k.updatedAt, `${today.y}-${pad2(today.mo)}-${pad2(today.d)}`);
 
   renderKpiCards(plans, orderMetrics, salesMetrics, prevOrderMetrics, prevSalesMetrics);
   renderAchievementRow('deptAchieveRow', DEPT_GROUPS, plans, orderMetrics, salesMetrics, DEPT_COLORS);
