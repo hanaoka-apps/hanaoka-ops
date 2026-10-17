@@ -105,7 +105,8 @@
       var q = g(r, '受入数量') || g(r, '数量'), up = g(r, '受注単価') || g(r, '単価');
       v.items.push({ date: d, inDate: g(r, '入荷日付'), slip: g(r, '伝票№'), dept: dept, staff: g(r, '担当者名称'), itemCode: g(r, '品目ｺｰﾄﾞ') || g(r, '品目コード'),
         item: g(r, '品目名'), spec: g(r, '型番'), unit: g(r, '単位'), qty: q === '' ? null : num(q), price: up === '' ? null : num(up),
-        excl: num(g(r, '税抜受入金額')), tax: num(g(r, '消費税等')), order: g(r, '受注№'), kind: g(r, '取引区分略称'), note: g(r, '備考') });
+        excl: num(g(r, '税抜受入金額')), tax: num(g(r, '消費税等')), order: g(r, '受注№'), kind: g(r, '取引区分略称'), note: g(r, '備考'),
+        soko: g(r, '倉庫ｺｰﾄﾞ').replace(/^0+/, '') || '0' });
     }
     return { from: from, to: to, rows: out };
   }
@@ -228,7 +229,7 @@
       var row = { code: code, name: L.name || (P && P.name) || (v && v.name) || '',
         deptCode: P ? P.deptCode : '', deptName: P ? P.deptName : '',
         prevBalance: L.prevBalance, paid: L.paid, carry: L.carry, listIncl: L.incl, listBalance: L.balance,
-        balance9055: P ? P.balance : null, receiptIncl: R ? R.incl : null, byDept: R ? R.byDept : {},
+        balance9055: P ? P.balance : null, receiptIncl: R ? R.incl : null, byDept: R ? R.byDept : {}, receiptItems: R ? R.items : null,
         payDate: L.payDate, payRound: payRoundOf(L.payDate), feeKbn: v ? v.feeKbn : '',
         base: base, offset: a.offset || 0, other: a.other || 0, amount: amount,
         rule: sp.rule, transfer: transfer, densai: densai, fee: fee, transferNet: transfer - fee,
@@ -289,10 +290,24 @@
     var m = {}; for (var k in p9055) { var p = p9055[k]; if (p.deptName && p.deptCode && !m[p.deptName]) m[p.deptName] = p.deptCode; }
     return m;
   }
+  /* 受入の1行の決裁の部門（決まりの deptByReceipt。仕入支払管理ダッシュボード v5.30 と同じ）：
+     倉庫ｺｰﾄﾞ → 本社／工場。本社は部門名称で ソリューション／国内営業。消費税の倉庫は null（分けに入れない） */
+  function receiptGroupOf(it) {
+    var R = rules().deptByReceipt; if (!R) return undefined;
+    var k = (R.soko || {})[String(it.soko || '')], dept = String(it.dept || '');
+    if (k === '消費税') return null;
+    if (k === '工場') return '工場';
+    if (k === '本社') return (R.honshaDept || {})[dept] || R.honshaDefault || '国内営業';
+    return /工場/.test(dept) ? '工場' : (R.honshaDefault || '国内営業');   // 表に無い倉庫
+  }
   /* 案A：支払額を受入の部門内訳で按分する。端数・繰越の分は受入がいちばん多い部門へ。
-     受入が無い（繰越だけ）ときは、9055 の仕入先の部門へ全額 */
+     受入が無い（繰越だけ）ときは、9055 の仕入先の部門へ全額
+     部門内訳は、決まりに deptByReceipt があれば受入の行ごと（税抜）、無ければ 部門名称→9055 の部門コード→deptGroups */
   function allocateDept(row, nameMap) {
     var g = {}, total = 0, d;
+    if (rules().deptByReceipt && row.receiptItems) {
+      row.receiptItems.forEach(function (it) { var grp = receiptGroupOf(it); if (!grp) return; var v = +it.excl || 0; g[grp] = (g[grp] || 0) + v; total += v; });
+    } else
     for (d in row.byDept) { var grp = deptGroupOf(nameMap[d]); g[grp] = (g[grp] || 0) + row.byDept[d]; total += row.byDept[d]; }
     var out = {};
     if (!total) { out[deptGroupOf(row.deptCode)] = row.amount; return { byGroup: out, main: deptGroupOf(row.deptCode) }; }
