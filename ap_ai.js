@@ -33,7 +33,7 @@
     return objs(parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer())));
   }
   // マスタの文（科目・部門・内訳が要る科目・過去の仕訳）。scratchpad の試し（ai-eval.ps1）と同じ作り
-  function mastersText(km, bm, um, jr) {
+  function mastersText(km, bm, um, jr, sq) {
     const kmT = km.filter(x => x['科目コード']).map(x => `${x['科目コード']} ${x['科目名']} ${x['既定税名'] || ''}`.trim()).join('\n');
     const bmT = bm.filter(x => x['部門名']).map(x => `${x['部門コード']} ${x['部門名']}`).join('\n');
     const ug = {}; um.forEach(x => { if (x['科目コード']) (ug[x['科目コード']] = ug[x['科目コード']] || []).push(x); });
@@ -49,7 +49,14 @@
       return `${k}（${hg[k].length}回）：` + Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, n]) => `${s}×${n}`).join(' / ') + (last && last['摘要'] ? `　摘要の例「${String(last['摘要']).replace(/\s+/g, ' ').slice(0, 40)}」` : '');
     }).join('\n');
     const yms = [...new Set(jr.map(x => x['年月']).filter(Boolean))].sort();
-    return `## マスタ：科目（コード 名前 既定の税）\n${kmT}\n\n## マスタ：部門（コード 名前）\n${bmT}\n\n## マスタ：内訳が要る科目（科目コード 名前：内訳コード 名前）\n${umT}\n\n## 過去の仕訳（支払先 → よく使う科目・部門・税。${yms[0] || ''}〜${yms[yms.length - 1] || ''}）\n${histT}`;
+    // 過去の決裁メモ（請求Quick の明細の備考。社長・室長が見る説明）：取引先ごとに、いちばん新しい支払の行（最大10行）
+    //   リースの回数（36/84回 → 次は 37/84回）・部署ごとの内訳・人数×単価などを、同じ書き方で続けられるように
+    const sg = {}; (sq || []).forEach(x => { const k = String(x['取引先名'] || '').trim(); if (k && x['備考']) (sg[k] = sg[k] || []).push(x); });
+    const sqT = Object.keys(sg).sort().map(k => {
+      const last = sg[k].map(x => x['取引日']).sort().pop(), ls = sg[k].filter(x => x['取引日'] === last).slice(0, 10);
+      return `${k}（${last}）：` + ls.map(x => `${x['内訳名']}｜${String(x['備考']).replace(/\s+/g, ' ').slice(0, 60)}｜${x['金額（税込）']}円`).join(' ／ ');
+    }).join('\n');
+    return `## マスタ：科目（コード 名前 既定の税）\n${kmT}\n\n## マスタ：部門（コード 名前）\n${bmT}\n\n## マスタ：内訳が要る科目（科目コード 名前：内訳コード 名前）\n${umT}\n\n## 過去の仕訳（支払先 → よく使う科目・部門・税。${yms[0] || ''}〜${yms[yms.length - 1] || ''}）\n${histT}` + (sqT ? `\n\n## 過去の決裁メモ（取引先 → いちばん新しい支払の 内訳｜決裁メモ｜税込。社長・室長への説明。ApprovalNote はこの書き方にそろえる）\n${sqT}` : '');
   }
 
   async function setup(ctx) {
@@ -61,8 +68,8 @@
     if (!it) throw new Error('AP_Setting に ai.invoice がありません（Provision-SmileAP.ps1 -Apply）');
     s.cfg = JSON.parse(it.fields.Value || '{}');
     // マスタ
-    const [km, bm, um, jr] = await Promise.all(['smile_kamoku.csv', 'smile_bumon.csv', 'smile_uchiwake.csv', '仕訳インデックス.csv'].map(n => csv(ctx, n).catch(() => [])));
-    s.masters = mastersText(km, bm, um, jr);
+    const [km, bm, um, jr, sq] = await Promise.all(['smile_kamoku.csv', 'smile_bumon.csv', 'smile_uchiwake.csv', '仕訳インデックス.csv', '決裁メモ.csv'].map(n => csv(ctx, n).catch(() => [])));
+    s.masters = mastersText(km, bm, um, jr, sq);
     if (window.AP_MOCK) { s.mock = true; s.models = { read: 'claude-sonnet-5-5' }; return (S = s); }
     // ワークフローのサイト（AI_Request・WF_Setting の flow.urlAI・ai.models）
     s.wf = (await call('GET', `/sites/${WF_SITE_PATH}`)).id;
@@ -92,7 +99,7 @@
       const tx = l.Tax != null && l.Tax !== '' ? Math.round(+l.Tax) : Math.floor(ex * (RATE[l.TaxRate] || 0));
       ls.push({ LineNo: i, Location: String(l.DeptCode || '').startsWith('003') ? '工場' : loc,
         AccountName: l.AccountName || '', AccountCode: l.AccountCode || '', SubCode: l.SubCode || '', DeptCode: l.DeptCode || '',
-        TaxMethod: l.TaxMethod || '税込', TaxRate: l.TaxRate || '', AmountExclTax: ex, Tax: tx, AmountInclTax: ex + tx, Description: l.Description || '', LineConfidence: +l.LineConfidence || 0 });
+        TaxMethod: l.TaxMethod || '税込', TaxRate: l.TaxRate || '', AmountExclTax: ex, Tax: tx, AmountInclTax: ex + tx, Description: l.Description || '', ApprovalNote: l.ApprovalNote || '', LineConfidence: +l.LineConfidence || 0 });
     }
     const cm = (comments || []).filter(x => x && String(x).trim());
     const tot = Math.round(+total || 0);
