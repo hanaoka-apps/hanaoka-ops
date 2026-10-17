@@ -751,11 +751,15 @@
 
       <div class="topic-head" style="margin-top:34px">
         <div class="app-group-title">生産・仕入<span>主要製品の完成台数・日別仕入金額</span></div>
-        <a class="card-link" href="fujin/FUJIN.html#tab=value_analysis" target="_blank" rel="noopener">
-          FUJINで詳しく見る
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-        </a>
+        <div class="topic-actions">
+          <button type="button" class="regen-btn" id="fujinRefreshBtn" hidden title="SMILEから受入明細・製造実績明細を出力し直します(管理者のみ)。数字への反映は次のFUJINの自動ビルドです">🔄 更新をリクエスト</button>
+          <a class="card-link" href="fujin/FUJIN.html#tab=value_analysis" target="_blank" rel="noopener">
+            FUJINで詳しく見る
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+          </a>
+        </div>
       </div>
+      <div class="regen-status" id="fujinRefreshStatus" hidden></div>
       <div class="pt-grid" id="productionBody" style="margin-bottom:20px"><div class="empty-state" style="grid-column:1/-1">サインインすると表示されます</div></div>
       <div class="card" id="purchaseCard">
         <div class="card-head">
@@ -1130,6 +1134,8 @@ function showSignedOutState() {
   setProductionMessage('サインインすると表示されます', false);
   document.getElementById('readModeBtn').disabled = true;
   document.getElementById('regenerateBtn').hidden = true;
+  document.getElementById('fujinRefreshBtn').hidden = true;
+  setFujinRefreshStatus('');
 }
 
 async function onSignedIn() {
@@ -1148,6 +1154,7 @@ async function onSignedIn() {
     setStatusMessage('数字を取得できませんでした', true);
   });
   initRegenerateButton();
+  initFujinRefreshButton();
   loadPurchase().catch(e => {
     console.error('仕入カードの取得失敗', e);
     setPurchaseMessage('仕入の数字を取得できませんでした', true);
@@ -2003,7 +2010,7 @@ async function loadPurchase() {
   const url = `https://graph.microsoft.com/v1.0/drives/${SP.mastersDriveId}/root:/hub_purchase_facts.json:/content`;
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t }, cache: 'no-store' });
   if (res.status === 404) {
-    setPurchaseMessage('仕入のデータは、FUJINの次回の自動更新(毎日 3:30・16:30)のあとに表示されます');
+    setPurchaseMessage('仕入のデータは、FUJINの次回の自動更新(1日2回)のあとに表示されます');
     return;
   }
   if (!res.ok) throw new Error('hub_purchase_facts.json が取得できません: HTTP ' + res.status);
@@ -2734,6 +2741,110 @@ function resumeRegenerateWatch() {
     return;
   }
   startRegenerateWatch(pending);
+}
+
+// ============================================================
+// 生産・仕入の更新リクエスト(管理者のみ。営業の「再集計をリクエスト」と同じ作り)
+//   RPA専用機に fujin_source ジョブ(SMILEから 受入明細出力.csv・製造実績明細出力.csv を出し直す)を依頼する。
+//   FUJINのデータは GitHub Actions の日次ビルドが SharedMasters のCSVから作る。RPA専用機にGitHubの
+//   トークンは置かないので、ビルドは起動しない＝出し直したCSVは「次の自動ビルド」で生産・仕入に反映される。
+//   したがって、ここでの「完了」は SMILEの出力が終わったこと。数字はすぐには変わらない。
+//   (ジョブの定義は scripts/rpa_jobs.json の fujin_source。PADフローの作成は scripts/rpa_setup/連絡_fujin_source_フロー作成.md)
+// ============================================================
+const FUJIN_REFRESH_JOB = 'fujin_source';
+const FUJIN_REFRESH_BTN_LABEL = '🔄 更新をリクエスト';
+const FUJIN_REFRESH_PENDING_KEY = 'fujinRefreshPending';
+const FUJIN_REFRESH_TIMEOUT_MS = 60 * 60 * 1000;
+let stopFujinRefreshWatch = null;
+
+function setFujinRefreshStatus(text, state) {
+  const el = document.getElementById('fujinRefreshStatus');
+  el.textContent = text || '';
+  el.className = 'regen-status' + (state ? ' ' + state : '');
+  el.hidden = !text;
+}
+
+function initFujinRefreshButton() {
+  const btn = document.getElementById('fujinRefreshBtn');
+  btn.hidden = !isAdminAccount();          // 表示ルール: 管理者だけ(営業のボタンと同じ)
+  if (btn.hidden) return;
+  if (!btn.dataset.bound) { btn.dataset.bound = '1'; btn.addEventListener('click', requestFujinRefresh); }
+  resumeFujinRefreshWatch();
+}
+
+async function requestFujinRefresh() {
+  const btn = document.getElementById('fujinRefreshBtn');
+  if (!confirm('SMILEから受入明細・製造実績明細を出力し直します（約10〜20分）。\n出力したデータは、次のFUJINの自動ビルド（1日2回）で生産・仕入に反映されます。よろしいですか？')) return;
+  const requestedAt = new Date().toISOString();
+  let req;
+  try {
+    btn.disabled = true;
+    btn.textContent = '送信中…';
+    RpaQueue.init({ getToken: getWriteToken, driveId: SP.mastersDriveId });
+    req = await RpaQueue.request(FUJIN_REFRESH_JOB, { app: 'HANAOKA HUB', requestedBy: (account && account.username) || '' });
+  } catch (e) {
+    console.error('[更新リクエスト] 失敗', e);
+    alert('リクエストに失敗しました。時間をおいて再度お試しください。');
+    btn.disabled = false;
+    btn.textContent = FUJIN_REFRESH_BTN_LABEL;
+    return;
+  }
+  startFujinRefreshWatch({ name: req.name, requestedAt });
+}
+
+function startFujinRefreshWatch(pending) {
+  if (stopFujinRefreshWatch) stopFujinRefreshWatch();
+  try { localStorage.setItem(FUJIN_REFRESH_PENDING_KEY, JSON.stringify(pending)); } catch (_) {}
+  const btn = document.getElementById('fujinRefreshBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 出力中…';
+  const sinceMs = Date.parse(pending.requestedAt);
+  const minutes = () => Math.floor((Date.now() - sinceMs) / 60000);
+
+  RpaQueue.init({ getToken: getWriteToken, driveId: SP.mastersDriveId });
+  stopFujinRefreshWatch = RpaQueue.watch(pending.name, s => {
+    const warn = RpaQueue.workerWarning(s);   // RPA専用機が止まっていそうなら、待ち続けるより先に知らせる
+    if (warn) {
+      setFujinRefreshStatus(warn, 'failed');
+    } else if (s.state === 'pending') {
+      setFujinRefreshStatus(s.ahead
+        ? `順番待ち（前に${s.ahead}件／${minutes()}分経過）`
+        : `RPA専用機の受付待ち（${minutes()}分経過）`, 'pending');
+    } else if (s.state === 'running' || s.state === 'unknown') {
+      setFujinRefreshStatus(`SMILEから出力中（${minutes()}分経過）`, 'pending');
+    } else {
+      finishFujinRefreshWatch(s.state, s.error);
+    }
+  }, { timeoutMs: Math.max(0, FUJIN_REFRESH_TIMEOUT_MS - (Date.now() - sinceMs)) });
+}
+
+function finishFujinRefreshWatch(result, error) {
+  if (stopFujinRefreshWatch) stopFujinRefreshWatch();
+  stopFujinRefreshWatch = null;
+  try { localStorage.removeItem(FUJIN_REFRESH_PENDING_KEY); } catch (_) {}
+  const btn = document.getElementById('fujinRefreshBtn');
+  btn.disabled = false;
+  btn.textContent = FUJIN_REFRESH_BTN_LABEL;
+  if (result === 'done') {
+    setFujinRefreshStatus('✅ SMILEの出力が完了しました。次のFUJINの自動ビルド（1日2回）で、生産・仕入に反映されます。反映後にページを再読み込みしてください（更新日時は各カードの「データ更新」で確認できます）', 'done');
+  } else if (result === 'failed') {
+    setFujinRefreshStatus(`⚠️ SMILEの出力に失敗しました：${error || '原因不明'}（RPA専用機のログも確認してください）`, 'failed');
+  } else {
+    setFujinRefreshStatus('⚠️ 1時間たっても完了しません。RPA専用機が動いているか確認してください', 'failed');
+  }
+}
+
+// ページを開き直したときに、待機中の依頼があれば確認を再開する
+function resumeFujinRefreshWatch() {
+  if (stopFujinRefreshWatch) return;
+  let pending = null;
+  try { pending = JSON.parse(localStorage.getItem(FUJIN_REFRESH_PENDING_KEY) || 'null'); } catch (_) {}
+  if (!pending || !pending.name || !pending.requestedAt) return;
+  if (!(Date.now() - Date.parse(pending.requestedAt) < FUJIN_REFRESH_TIMEOUT_MS)) {
+    try { localStorage.removeItem(FUJIN_REFRESH_PENDING_KEY); } catch (_) {}
+    return;
+  }
+  startFujinRefreshWatch(pending);
 }
 
 async function loadKpis() {
