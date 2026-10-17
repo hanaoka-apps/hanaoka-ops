@@ -91,15 +91,20 @@
         // 請求書の明細（確認の全画面で受入明細・仕訳と比べる）。列が無ければ入れない
         if (IV.fmap['請求書の明細'] && (r.items || []).length) patch[fi('請求書の明細')] = JSON.stringify({ amount: r.items_amount || '', items: r.items });
         patch.AIStatus = r.status === '読取失敗' ? '読取失敗' : 'AI確認済';
-        patch.AIComment = [String(f.AIComment || '').trim()].concat(cmt).filter(Boolean).join('\n');
+        // 読み直し（replace_lines）は前の AI のコメントを新しい答えで置き換える（積み重ねない）
+        patch.AIComment = (r.replace_lines ? [] : [String(f.AIComment || '').trim()]).concat(cmt).filter(Boolean).join('\n');
         await call('PATCH', `/sites/${site}/lists/${IV.id}/items/${id}/fields`, patch);
         const cat = f[fi('支払区分')] || r.category || '', loc = f.SiteLocation || (cat.startsWith('工場') ? '工場' : '本社');
         const addLines = async (invId, lines) => {
           if (!EXPENSE.includes(cat) || !(lines || []).length) return;
-          // 二重に作らない（同時に2人が開いたとき）
-          const ex = await call('GET', `/sites/${site}/lists/${SL.id}/items?$expand=fields&$top=5&$filter=${encodeURIComponent(`fields/${fs('請求書ID')} eq '${invId}'`)}`).catch(() => ({ value: [] }));
-          if ((ex.value || []).some(x => String(x.fields[fs('請求書ID')]) === String(invId))) return;
-          for (const l of lines) {
+          // 二重に作らない（同時に2人が開いたとき）。ただし「読み直し（replace_lines）」は、前の行を新しい答えで書き換える
+          const ex = await call('GET', `/sites/${site}/lists/${SL.id}/items?$expand=fields&$top=100&$filter=${encodeURIComponent(`fields/${fs('請求書ID')} eq '${invId}'`)}`).catch(() => ({ value: [] }));
+          const old = (ex.value || []).filter(x => String(x.fields[fs('請求書ID')]) === String(invId)).sort((a, b) => (+a.fields[fs('明細行番号')] || 0) - (+b.fields[fs('明細行番号')] || 0));
+          if (old.length && !r.replace_lines) return;
+          // 新しい答えより多い前の行は消さずに、請求書から外して残す（請求書ID に「#旧」を付ける）
+          for (const x of old.slice(lines.length)) await call('PATCH', `/sites/${site}/lists/${SL.id}/items/${x.id}/fields`, { [fs('請求書ID')]: `${invId}#旧` });
+          for (let li = 0; li < lines.length; li++) {
+            const l = lines[li];
             const g = { Title: `${H.PayeeName || ''} ${l.LineNo}` };
             const s = (d, v) => { g[fs(d)] = v; };
             s('請求書ID', String(invId)); s('明細行番号', l.LineNo); s('拠点', l.Location || loc); s('勘定科目名', l.AccountName || ''); s('勘定科目コード', l.AccountCode || '');
@@ -107,7 +112,10 @@
             if (l.ApprovalNote && SL.fmap['決裁メモ']) s('決裁メモ', l.ApprovalNote);   // 社長・室長向けの説明（経理の摘要とは別）
             s('部門コード', l.DeptCode || ''); s('税区分', l.TaxMethod || '税込'); s('税率区分', l.TaxRate || '課税10%');
             s('金額_税抜', +l.AmountExclTax || 0); s('消費税', +l.Tax || 0); s('金額_税込', +l.AmountInclTax || 0); s('摘要', l.Description || ''); s('AI信頼スコア', +l.LineConfidence || 0);
-            await call('POST', `/sites/${site}/lists/${SL.id}/items`, { fields: g });
+            if (!l.SubCode && old[li] && SL.fmap['内訳コード']) s('内訳コード', '');   // 書き換えるときは前の値を残さない
+            if (!l.ApprovalNote && old[li] && SL.fmap['決裁メモ']) s('決裁メモ', '');
+            if (old[li]) await call('PATCH', `/sites/${site}/lists/${SL.id}/items/${old[li].id}/fields`, g);
+            else await call('POST', `/sites/${site}/lists/${SL.id}/items`, { fields: g });
           }
         };
         await addLines(id, r.lines);

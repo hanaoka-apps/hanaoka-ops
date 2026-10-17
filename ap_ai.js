@@ -178,7 +178,8 @@
       header: rec.header, lines: rec.lines, comments: rec.comments, validation: rec.validation,
       items: d && Array.isArray(d.items) ? d.items.map(normItem) : [], items_amount: d && /^税(抜|込)$/.test(d.itemsAmount || '') ? d.itemsAmount : '',   // 請求書に印字された明細（受入明細・仕訳と比べる）
       extra: d ? (d.extra || []).map(x => record(x.header, x.lines, x.total, x.comments, loc)) : [],
-      processed_at: new Date().toISOString(), ai: { model: r.model || '', usage: r.usage || null, via: 'claude-api' } };
+      processed_at: new Date().toISOString(), ai: { model: r.model || '', usage: r.usage || null, via: 'claude-api' },
+      replace_lines: !!job.replaceLines };   // 読み直し：取り込みで前の仕訳を新しい答えで書き換える
     await ctx.call('PUT', `/sites/${ctx.site}/drive/root:${encodeURI(`${RES}/${job.apCode}.result.json`)}:/content`, new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' }), 'application/json');
     msg('');
     return { ok: !!d, status: doc.status, message: err };
