@@ -121,7 +121,7 @@ button.lk{border:0;background:none;color:var(--pri);font-weight:700;padding:4px 
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261019"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261020"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">経費</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -166,7 +166,7 @@ const ROUNDS=['10日','20日','月末'],METHODS=['総合振込','口座振替','
 const LOCKED=['決裁中','決裁済み','出力済み'];
 let RULES=null,KAMOKU=[],BUMON=[],UCHI={},JOURNAL=null;
 let listClosed=(()=>{try{return localStorage.getItem('ap.review.list')==='closed';}catch{return false;}})();   // 確認モードの一覧をたたむ（ページ送りが中心）
-let ALL=[],LINES={},VB={},SPM=[],PIS=[],SBS=[],items=[],draft=null,hdrDraft=null,cmDraft=null,pdfSel={},pdfCache={},acks={};
+let INVMETA={},SQN=null,ALL=[],LINES={},VB={},SPM=[],PIS=[],SBS=[],items=[],draft=null,hdrDraft=null,cmDraft=null,pdfSel={},pdfCache={},acks={};
 const st={tab:'inbox',box:'wait',loc:'',round:'',step:'mine',q:'',sel:null,cmOpen:false,view:'list',editHdr:false,editBank:false,allIss:false,openLines:null,openLog:false};
 
 // ---------- 認証・Graph ----------
@@ -312,7 +312,10 @@ async function showApp(){
 async function loadAll(){
   msg('読み込み中...');const ym=month();
   await takeAI();
-  ALL=(await fetchAll(L.inv)).filter(it=>{const c=fv(L.inv,it.fields,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,it.fields,'アーカイブフラグ')!==true;}).map(it=>({id:String(it.id),f:it.fields}));
+  const invAll=await fetchAll(L.inv);
+  // 燃料単価の表（サマリー）用に、請求書ごとの 払う月・拠点 を持つ（対象外・まとめた＝アーカイブは除く）
+  INVMETA={};invAll.forEach(it=>{const f=it.fields,c=fv(L.inv,f,'支払区分')||'';if((c==='本社経費'||c==='工場経費')&&fv(L.inv,f,'アーカイブフラグ')!==true)INVMETA[String(it.id)]={ym:fv(L.inv,f,'対象年月')||'',loc:f[V.loc]||(c==='工場経費'?'工場':'本社'),payee:fv(L.inv,f,'支払先名')||''};});
+  ALL=invAll.filter(it=>{const c=fv(L.inv,it.fields,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,it.fields,'アーカイブフラグ')!==true;}).map(it=>({id:String(it.id),f:it.fields}));
   LINES={};(await fetchAll(L.sl)).forEach(it=>{const k=String(fv(L.sl,it.fields,'請求書ID')||'');if(k)(LINES[k]=LINES[k]||[]).push({id:String(it.id),f:it.fields});});
   Object.values(LINES).forEach(a=>a.sort((x,y)=>(+fv(L.sl,x.f,'明細行番号')||0)-(+fv(L.sl,y.f,'明細行番号')||0)));
   VB={};VBL=[];(await fetchAll(L.vb)).forEach(it=>{const f=it.fields,c=String(fv(L.vb,f,'仕入先コード')||'').trim();if(c)VB[c]=f;
@@ -472,8 +475,46 @@ function drawSummary(){
   <div class="card"><h2>支払回 × 拠点</h2><table><tr><th>支払回</th><th>拠点</th><th class="n">件数</th><th class="n">金額</th><th class="n">確定</th><th class="n">前月</th></tr>
     ${[...ROUNDS,''].flatMap(rd=>['本社','工場'].map(lc=>{const l=a.filter(r=>(r.round||'')===rd&&r.loc===lc);if(!l.length)return '';const p=items.filter(r=>r.ym===prevMonth(month())&&r.round===rd&&r.loc===lc).reduce((s,r)=>s+r.amount,0);
       return `<tr><td>${esc(rd||'（未設定）')}</td><td>${lc}</td><td class="n">${l.length}</td><td class="n">${yen(l.reduce((s,r)=>s+r.amount,0))}</td><td class="n">${l.filter(r=>r.done).length}／${l.length}</td><td class="n">${p?yen(p):'—'}</td></tr>`;})).join('')}</table></div>
-  <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>`;
-  $('pane').innerHTML=h;}
+  <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>
+  <div class="card" id="fuelCard"><h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">読み込み中…</div></div>`;
+  $('pane').innerHTML=h;fuelCard();}
+// ---------- 燃料の単価（決裁メモの「…ガソリン…@168～184.8」）を、拠点×燃料 × 払う月 で並べる ----------
+// 元：アプリの仕訳の決裁メモ（AP_PaymentSlip）＋ 請求Quick の決裁メモ（/BILLS/masters/決裁メモ.csv。アプリより前の月）
+const FUEL_LOC=['大阪','名古屋','東京','本社','工場','鴻巣'];
+function parseFuel(memo){const s=String(memo||'').normalize('NFKC');const out=[];
+  // 「大阪ガソリン代@176～187」「5月分ガソリン代(本社)@162.2」「軽油税(本社)@151.4」「工場 軽油@158.4円/L」
+  const re=/(ハイオク|レギュラー|ガソリン|軽油|灯油)[^@]{0,30}@\s*([\d,]+(?:\.\d+)?)\s*(?:円)?(?:\s*[~～〜\-]\s*([\d,]+(?:\.\d+)?))?/g;let m;
+  while((m=re.exec(s))){const lo=+m[2].replace(/,/g,''),hi=m[3]?+m[3].replace(/,/g,''):lo;if(!(lo>50&&hi<500))continue;
+    const fuel=m[1]==='軽油'?'軽油':m[1]==='灯油'?'灯油':m[1]==='ハイオク'?'ハイオク':'ガソリン';
+    const loc=FUEL_LOC.find(l=>s.includes(l))||'';out.push({fuel,lo:Math.min(lo,hi),hi:Math.max(lo,hi),loc});}
+  return out;}
+async function loadSqNotes(){if(SQN)return SQN;
+  try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/決裁メモ.csv')}:/content`,null,null,true);
+    const rows=parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer())),h=rows[0]||[],ix=n=>h.indexOf(n);
+    SQN=rows.slice(1).map(r=>({pay:r[ix('振込予定日')]||'',date:r[ix('取引日')]||'',dept:r[ix('負担部門名')]||'',memo:r[ix('備考')]||'',payee:r[ix('取引先名')]||''}));}
+  catch(e){SQN=[];}
+  return SQN;}
+const ymOfDate=(d,plus)=>{const m=String(d||'').match(/(\d{4})\D(\d{1,2})/);if(!m)return '';const x=new Date(+m[1],+m[2]-1+(plus||0),1);return `${x.getFullYear()}/${String(x.getMonth()+1).padStart(2,'0')}`;};
+async function fuelCard(){const el=$('fuelCard');if(!el)return;
+  const pts=[];   // {ym, key:拠点｜燃料, lo, hi, src, payee}
+  const add=(ym,loc0,memo,src,payee)=>parseFuel(memo).forEach(p=>{const loc=p.loc||loc0||'（拠点なし）';if(ym)pts.push({ym,key:`${loc}｜${p.fuel}`,lo:p.lo,hi:p.hi,src,payee});});
+  const pn=s=>String(s||'').normalize('NFKC').replace(/株式会社|有限会社|\(株\)|\(有\)|㈱|[\s・.]/g,''),appKey=new Set();
+  Object.entries(LINES).forEach(([id,ls])=>{const inv=INVMETA[id];if(!inv)return;ls.forEach(l=>{const memo=fv(L.sl,l.f,'決裁メモ');if(!memo||!parseFuel(memo).length)return;
+    const dn=(BUMON.find(b=>b.code===fv(L.sl,l.f,'部門コード'))||{}).name||'';add(inv.ym,FUEL_LOC.find(x=>dn.includes(x))||inv.loc,memo,'app',inv.payee);appKey.add(inv.ym+'|'+pn(inv.payee));});});
+  (await loadSqNotes()).forEach(x=>{const ym=x.pay?ymOfDate(x.pay):ymOfDate(x.date,1);if(appKey.has(ym+'|'+pn(x.payee)))return;   // アプリで読んだ支払（同じ月・同じ支払先）はアプリの分だけ
+    add(ym,FUEL_LOC.find(l=>x.dept.includes(l))||x.dept,x.memo,'sq',x.payee);});
+  if(!pts.length){el.innerHTML='<h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">まだありません（ガソリン・軽油の請求書を AI が読むと、決裁メモの単価から並びます）</div>';return;}
+  const yms=[...new Set(pts.map(p=>p.ym))].sort().slice(-8),keys=[...new Set(pts.map(p=>p.key))].sort((a,b)=>a.split('｜')[1].localeCompare(b.split('｜')[1])||a.localeCompare(b));
+  const cell={};pts.forEach(p=>{if(!yms.includes(p.ym))return;const k=p.key+'@'+p.ym,c=cell[k]||(cell[k]={lo:p.lo,hi:p.hi,src:new Set(),payee:new Set()});c.lo=Math.min(c.lo,p.lo);c.hi=Math.max(c.hi,p.hi);c.src.add(p.src);c.payee.add(p.payee);});
+  const mid=c=>(c.lo+c.hi)/2,fmt=v=>(+v).toLocaleString('ja-JP',{maximumFractionDigits:1});
+  // 月ごと・燃料ごとに、いちばん安い拠点は緑、いちばん高い拠点は赤（2拠点以上あるとき）
+  const mark={};yms.forEach(ym=>{['ガソリン','軽油','ハイオク','灯油'].forEach(fu=>{const cs=keys.filter(k=>k.endsWith('｜'+fu)).map(k=>[k,cell[k+'@'+ym]]).filter(x=>x[1]);
+    if(cs.length<2)return;cs.sort((a,b)=>mid(a[1])-mid(b[1]));mark[cs[0][0]+'@'+ym]='lo';mark[cs[cs.length-1][0]+'@'+ym]='hi';});});
+  el.innerHTML=`<h2>燃料の単価（1Lあたり・拠点ごと・払う月）</h2>
+    <div style="overflow-x:auto"><table class="fuel"><tr><th>拠点</th><th>燃料</th>${yms.map(y=>`<th class="n">${y.replace(/^\d{4}\//,'')}月払い</th>`).join('')}</tr>
+    ${keys.map(k=>{const [loc,fu]=k.split('｜');return `<tr><td>${esc(loc)}</td><td>${esc(fu)}</td>${yms.map(y=>{const c=cell[k+'@'+y];if(!c)return '<td class="n" style="color:#c3c9d6">—</td>';
+      const mk=mark[k+'@'+y];return `<td class="n ${mk==='lo'?'f-lo':mk==='hi'?'f-hi':''} ${c.src.has('app')?'':'f-sq'}" title="${esc([...c.payee].join('・'))}${c.src.has('app')?'':'（請求Quick の決裁メモ）'}">${c.lo===c.hi?fmt(c.lo):`${fmt(c.lo)}～${fmt(c.hi)}`}</td>`;}).join('')}</tr>`;}).join('')}</table></div>
+    <div style="font-size:12px;color:var(--sub);margin-top:6px">決裁メモの「@単価」から並べています。<span class="f-lo" style="padding:0 4px">緑</span>＝その月いちばん安い拠点、<span class="f-hi" style="padding:0 4px">赤</span>＝いちばん高い拠点。斜体は請求Quick の決裁メモ（アプリより前の月。税込かどうかは書き方しだい）。軽油は軽油引取税込み</div>`;}
 // 段の名前。全拠点のときは本社と工場で担当が違うので分けて出す（例：確認（Ａ／工場 Ｂ・Ｃ））
 function stepLabelAll(i){const locs=st.loc?[st.loc]:['本社','工場'];const parts=[];let label='';
   locs.forEach(l=>{const s=stepsOf(l)[i];if(!s)return;label=label||s.label;parts.push((locs.length>1&&l==='工場'?'工場 ':'')+(s.members||[]).map(n=>String(n).split(/[\s　]/)[0]).join('・'));});
