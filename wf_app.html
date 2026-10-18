@@ -1144,13 +1144,18 @@ function renderStaff(main) {
         ${secrets.flatMap(x => Array.from({ length: M.rest(x) }, () => x)).map(x => `<li class="sf-p sf-secret" data-sec="${x.id}">🔒 内密の求人<span class="muted">${esc(x.Memo || '')}</span><span class="muted" style="margin-left:auto">役員・総務の一部だけに見えています（数には入れていません）</span></li>`).join('')}</ul>` : ''}
       ${childHtml ? `<ul class="sf-tree">${childHtml}</ul>` : ''}</details></li>`;
   };
-  const top = M ? (M.kids[''] || []) : [];
+  // 工場／本社（役員を含む）／すべて の切り替え。初めは自分の拠点（覚えておく）
+  if (!S.site) { try { S.site = localStorage.getItem('wf.staffSite') || ''; } catch { } S.site = S.site || ((st.me.org || {}).Site === '工場' ? '工場' : '本社'); }
+  const inSite = u => S.site === 'all' || (S.site === '工場' ? u.Path === '工場' : u.Path !== '工場');
+  const top = M ? (M.kids[''] || []).filter(inSite) : [];
+  const siteCnt = k => M ? (M.kids[''] || []).filter(u => k === 'all' || (k === '工場' ? u.Path === '工場' : u.Path !== '工場')).reduce((n, u) => n + ((M.cnt[u.Path] || {}).act || 0), 0) : 0;
   const snaps = S.data ? [...S.data.snaps].sort((a, b) => String(b.Title).localeCompare(String(a.Title))) : [];
   const ym = new Date().toISOString().slice(0, 7);
   main.innerHTML = `<div class="detail" style="flex:1">
     <div class="card noprint"><h3 class="h3f"><span>人員表</span><span><button class="mini" id="sfReload">読み直す</button> <button class="mini" id="sfPrint">🖨 印刷・PDF</button></span></h3>
       <div class="muted" style="margin-bottom:10px">必要＝在籍＋入社予定＋募集中（手では持ちません。人を増やすときは求人の稟議から）。${S.ledger ? '契約・試用期間の満了が近い人は色が変わります（オレンジ＝' + ((ledgerCfg().remind || {}).owner || 40) + '日を切った、赤＝すぎた）。' : ''}
         ${scopes.length ? `あなたが直せる範囲：${esc(scopes.map(s => s || '全社').join('・'))}` : '見るだけです。'}</div>
+      <div class="sf-sites">${[['工場', '工場'], ['本社', '本社（役員を含む）'], ['all', 'すべて']].map(([k, l]) => `<button class="${S.site === k ? 'on' : ''}" data-site="${k}">${l}<span>${siteCnt(k)}人</span></button>`).join('')}</div>
       <div class="actions" style="margin-top:0"><input id="sfQ" type="search" placeholder="🔍 名前・場所・区分で探す" value="${esc(S.q)}" style="max-width:260px">
         <button class="mini" id="sfOpen">すべて開く</button><button class="mini" id="sfClose">たたむ</button><span style="flex:1"></span>
         ${snaps.length ? `<select id="sfCmp" style="width:auto"><option value="">月の控えと比べる…</option>${snaps.map(x => `<option value="${x.id}" ${String(S.cmp) === String(x.id) ? 'selected' : ''}>${esc(x.Title)}</option>`).join('')}</select>` : ''}
@@ -1162,6 +1167,7 @@ function renderStaff(main) {
     ${M ? `<div class="card sf-card"><div class="sf-title">人員表　${esc(fmtDT(new Date()))}</div><ul class="sf-tree root">${top.map(u => node(u, 0)).join('')}</ul></div>` : ''}</div>`;
   if (!M) return;
   $('sfReload').onclick = () => { S.data = null; S.ledger = null; loadStaff(); };
+  main.querySelectorAll('[data-site]').forEach(b => b.onclick = () => { S.site = b.dataset.site; try { localStorage.setItem('wf.staffSite', S.site); } catch { } render(); });
   $('sfPrint').onclick = () => { main.querySelectorAll('details[data-su]').forEach(d => d.open = true); window.print(); };
   $('sfQ').oninput = e => { S.q = e.target.value; const pos = e.target.selectionStart; renderStaff(main); const q = $('sfQ'); q.focus(); q.setSelectionRange(pos, pos); };
   $('sfOpen').onclick = () => { S.closed.clear(); render(); };
@@ -3110,7 +3116,9 @@ function fieldHtml(fd) {
     case 'number': inp = `<input id="${id}" type="number" style="max-width:220px" placeholder="${esc(fd.placeholder || '')}">`; break;
     case 'currency': inp = `<div class="money"><input id="${id}" type="text" inputmode="numeric" data-money autocomplete="off" placeholder="${esc(fd.placeholder || '0')}"><span>円</span></div>`; break;
     case 'date': inp = `<input id="${id}" type="date" style="max-width:220px">`; break;
-    case 'select': { const o = opts(fd); inp = o.length || !fd.optionsBy ? `<select id="${id}"><option value=""></option>${o.map(x => `<option>${esc(x)}</option>`).join('')}</select>` : `<input id="${id}" type="text" placeholder="${esc(fd.placeholder || '')}">`; break; }
+    case 'select': { const o = opts(fd);
+      if (String(fd.options || '').startsWith('@staff:') && !o.length) { inp = `<select id="${id}" disabled><option value="">${staff.denied ? '人員表を見る権限がないため選べません（部門長・総務へ）' : staff.loading || !staff.data ? '人員表を読み込んでいます…' : fd.options === '@staff:openings' ? '（この場所に募集中の枠はありません）' : '選べる場所・人がありません'}</option></select>`; break; }
+      inp = o.length || !fd.optionsBy ? `<select id="${id}"><option value=""></option>${o.map(x => `<option>${esc(x)}</option>`).join('')}</select>` : `<input id="${id}" type="text" placeholder="${esc(fd.placeholder || '')}">`; break; }
     case 'radio': inp = `<div class="opts">${opts(fd).map(o => `<label><input type="radio" name="${id}" value="${esc(o)}">${esc(o)}</label>`).join('')}</div>`; break;
     case 'checkbox': inp = `<div class="opts">${opts(fd).map(o => `<label><input type="checkbox" name="${id}" value="${esc(o)}">${esc(o)}</label>`).join('')}</div>`; break;
     case 'user': inp = `<select id="${id}"><option value=""></option>${st.M.org.map(p => `<option value="${esc(lc(p.UPN))}">${esc(p.Title)}（${esc(p.Dept)}）</option>`).join('')}</select>`; break;
@@ -3377,7 +3385,9 @@ async function submit() {
   if (ups.some(u => u.st === 'up')) return alert('添付ファイルをアップロード中です。終わってから申請してください。');
   if (ups.some(u => u.st === 'ng')) return alert('アップロードに失敗した添付ファイルがあります。「削除」してから選び直してください。');
   const bad = validate(ed);
-  if (bad.length) { alert('次の項目を入力してください\n・' + bad.join('\n・')); const e1 = document.querySelector('.fld.err'); if (e1) e1.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+  // 人員を増やす・変える申請は、必ず人員表を通す（場所・人は人員表にあるものだけ。求人の稟議は役割「人員表の申請」の人だけ）
+  f.fields.filter(fd => String(fd.options || '').startsWith('@staff:') && isShown(fd, ed.data) && ed.data[fd.key]).forEach(fd => { if (!opts(fd, ed.data).includes(ed.data[fd.key])) bad.push(`【${fd.label}】は人員表から選んでください`); });
+  if (f.FormCode === 'RINGI' && ed.data.kind === '採用・求人広告' && !hasRole('人員表の申請')) return alert('求人の稟議は、人員表の申請ができる人（部門長など）が、人員表の「＋求人」から出します。\n部門長にご相談ください。');  if (bad.length) { alert('次の項目を入力してください\n・' + bad.join('\n・')); const e1 = document.querySelector('.fld.err'); if (e1) e1.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
   const res = routeFor(ed);
   if (res.errors.length) return alert('承認経路を決められません\n' + res.errors.join('\n'));
   const note = ed.resubmit ? $('resubmitNote').value.trim() : '';
