@@ -1922,6 +1922,8 @@ function taskState(t) {
    色：run＝承認待ち（青）、warn＝後処理待ち（オレンジ）、ng＝差し戻し・却下（赤）、ok＝完了（緑）、gray＝引き戻し
    次の対応者：いま誰が何をすればよいか */
 function stateOf(r) {
+  let pd = ''; try { pd = pendingReq(r.RequestNo); } catch (e) {}   // 画面から送った操作を処理中（フローの反映待ち）。読み込みの初めは pending がまだ無い
+  if (pd) return { label: pd + '・処理中', cls: 'run', icon: '⏳', nextLabel: '', next: '' };
   const names = s => (s || '').split(';').filter(Boolean).map(nameOf).join('・');
   const who = r.ProxyUPN ? nameOf(r.ProxyUPN) : (r.ApplicantName || nameOf(r.ApplicantUPN));
   if (r.Status === '申請中') return { label: '承認待ち', cls: 'run', icon: '⏳', nextLabel: '現在の対応者', next: names(r.CurrentAssignees) || '—' };
@@ -2502,10 +2504,10 @@ function renderReqDetail(r) {
   const waiting = r.Status === '申請中' && r.CurrentAssignees ? `${r.CurrentAssignees.split(';').map(nameOf).join(' / ')} の処理待ち`
     : ['差し戻し中', '引き戻し'].includes(r.Status) ? `${nameOf(r.ApplicantUPN)} の再申請待ち`
     : r.Status === '決裁済' && r.PostStatus === '処理待ち' ? `後処理：${(r.PostAssignees || '').split(';').filter(Boolean).map(nameOf).join('・')} の対応待ち` : '';
-  const x = stateOf(r), canRe = mine && ['差し戻し中', '引き戻し'].includes(r.Status);
+  const pd = pendingReq(r.RequestNo), x = stateOf(r), canRe = mine && !pd && ['差し戻し中', '引き戻し'].includes(r.Status);
   const btns = [];
   if (canRe && r.Status === '差し戻し中' && !pj(r.LastReturnJson, null)) btns.push('<button id="bRe" class="pri">✎ 修正して再申請する</button>');   // ふだんは下の差し戻しの枠の中に出す
-  if (mine && r.Status === '申請中') btns.push('<button id="bPull" class="warn" title="次の人がまだ処理していなければ、申請を取り戻せます">⤺ 引き戻す</button>');
+  if (mine && !pd && r.Status === '申請中') btns.push('<button id="bPull" class="warn" title="次の人がまだ処理していなければ、申請を取り戻せます">⤺ 引き戻す</button>');
   if (canRe) btns.push('<button id="bDrop" class="warn" title="この申請をやめます（もう再申請しないとき。例：支払決済を新しく回し直した）">🗑 取り下げる</button>');
   if (mine && form) btns.push('<button id="bDup">⧉ 複製して新規申請</button>');
   btns.push('<button id="bPrint">🖨 印刷・PDF</button>');
@@ -2513,6 +2515,7 @@ function renderReqDetail(r) {
     extra: settleBadge(r) + proxyBadge(r), nextLabel: x.nextLabel, next: x.next, btns,
     facts: [['金額', r.Amount ? yen(r.Amount) : ''], ['申請者', r.ApplicantName + (r.ApplicantDept ? `（${r.ApplicantDept}）` : '')],
       ['申請日', fmtDT(r.SubmittedAt)], ['更新日', fmtDT(lastAt(r)) + (last && last.by !== 'system' ? `　${nameOf(last.by)}（${last.type}）` : '')]] });
+  if (pd) html += `<div class="return-banner gray"><b>⏳ ${esc(pd)}を処理しています。</b>完了すると表示が変わります（数十秒ほど）。もう一度押す必要はありません。</div>`;
   if (r.Status === '差し戻し中') html += returnBanner(pj(r.LastReturnJson, null), canRe);
   if (r.Status === '引き戻し' && canRe) html += `<div class="return-banner gray"><b>引き戻し中です。</b>内容を直して、もう一度申請してください。<div class="actions"><button class="pri" data-re>✎ 修正して再申請する</button></div></div>`;
   html += `<div class="card"><h3>進み具合</h3>${progressHtml(m)}</div>`;
@@ -2565,18 +2568,24 @@ const pending = new Map();     // WF_Action の番号 → { label, taskId, t0 }
 const hiddenTasks = new Set(); // 処理中で一覧から隠しているタスク
 const optimistic = new Map();   // 押した直後に画面だけ先に変えた状態（タスク番号 → 状態）。SharePoint に反映されたら消す
 let trackTimer = null;
+// 同じ操作の二度押しを防ぐ：送っている間と、フローの処理を待っている間は、同じ申請・タスクへの同じ操作を受け付けない
+const actKey = f => [f.ActionType, f.RequestNo || '', f.TaskId || ''].join('|'), sending = new Set();
+// その申請に、画面から送って処理を待っている操作があれば、その名前（一覧の状態・詳細のボタンに使う）
+const pendingReq = no => { if (!no) return ''; for (const p of pending.values()) if (!p.silent && p.reqNo === no) return p.label; return ''; };
 async function act(fields, silent) {
-  busy = true;
+  const k = actKey(fields);
+  if (sending.has(k) || [...pending.values()].some(p => p.key === k)) { if (!silent) status(`${fields.ActionType}は処理中です。完了すると表示が変わります`, 'busy'); return null; }
+  sending.add(k); busy = true;
   try {
     const { id } = await api.postAction(fields);
     const label = fields.ActionType;
-    pending.set(id, { label, taskId: fields.TaskId, reqNo: fields.RequestNo, silent: !!silent, t0: Date.now() });
+    pending.set(id, { label, key: k, taskId: fields.TaskId, reqNo: fields.RequestNo, silent: !!silent, t0: Date.now() });
     if (fields.TaskId && !silent) hiddenTasks.add(fields.TaskId);
     if (!silent) { st.sel = null; render(); showPending(); }
     if (!trackTimer) trackTimer = setInterval(trackPending, 2000);
     return { id };
   } catch (e) { status('送信に失敗しました: ' + e.message + '（もう一度お試しください）', 'err'); return null; }
-  finally { busy = false; }
+  finally { busy = false; sending.delete(k); }
 }
 function showPending() {
   const n = [...pending.values()].filter(p => !p.silent).length;
