@@ -222,7 +222,9 @@ const uchiOf=ac=>(UCHI[ac]||[]).filter(u=>u.code&&u.code!=='000000');
 const uchiNeed=ac=>!!(UCHI[ac]&&UCHI[ac].length&&!UCHI[ac].some(u=>u.code==='000000'));
 const uchiName=(ac,c)=>(uchiOf(ac).find(u=>u.code===c)||{}).name||c||'';
 // ---------- 振込先（経費） ----------
-function hdrOf(r){return {payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc,bk:Object.assign({},r.bk)};}
+function hdrOf(r){return {payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc,debit:r.debit,bk:Object.assign({},r.bk)};}
+// 引落予定日（UTC の日付で入っている）を日本の日付 YYYY-MM-DD に
+const jstDay=v=>{if(!v)return '';const d=new Date(v);if(isNaN(d))return '';return new Date(d.getTime()+9*3600e3).toISOString().slice(0,10);};
 const bankFull=b=>!!(b&&b.code&&b.bcode&&b.type&&b.no&&b.holder);
 const digits=s=>String(s||'').replace(/\D/g,'');
 const sameBank=(a,b)=>digits(a.code).padStart(4,'0')===digits(b.code).padStart(4,'0')&&digits(a.bcode).padStart(3,'0')===digits(b.bcode).padStart(3,'0')&&digits(a.no).padStart(7,'0')===digits(b.no).padStart(7,'0');
@@ -337,7 +339,7 @@ function mk(x){
   const done=DONE.includes(status),lines=LINES[x.id]||[];
   const r={id:x.id,x,f,loc,cat,steps,status,done,lines,
     payee:g(x,'支払先名')||'',code:String(g(x,'支払先コード')||'').trim(),amount:+g(x,'金額_税込')||0,ym:g(x,'対象年月')||'',round:g(x,'支払日区分')||'',method:g(x,'支払手段')||'',
-    invNo:g(x,'請求NO')||'',regNo:g(x,'登録番号')||'',title:f.Title||'',doc:String(g(x,'DOCコード')||''),
+    invNo:g(x,'請求NO')||'',regNo:g(x,'登録番号')||'',title:f.Title||'',doc:String(g(x,'DOCコード')||''),debit:jstDay(g(x,'引落予定日')),
     bk:Object.fromEntries(Object.entries(BK).map(([k,n])=>[k,String(f[n]??'')])),
     ai:f[V.ai]||'',aicom:String(f[V.com]||''),by:f[V.by]||'',at:f[V.at]||'',wf:f[V.wf]||'',
     log:parseJ(f[V.log],[]),hold:!!f[V.hold],note:f[V.note]||'',reject:g(x,'差戻し理由')||'',prepaid:g(x,'先行支払日')||''};
@@ -583,7 +585,9 @@ function issuesOf(r){
   const ord={fix:0,check:1,info:2};return out.sort((x,y)=>ord[x.sev]-ord[y.sev]);}
 function whyNot(r){if(r.done)return '';if(r.reading)return 'AI が読み取り中です';if(!canAct(r))return `${stepName(r,r.step)} の番です`;
   const f=issuesOf(r).find(x=>x.sev==='fix');return f?'要修正：'+f.t:'';}
-const payDayText=h=>{if(!h.ym)return '—';const [y,m]=h.ym.split('/');return h.round==='月末'?`${y}年${+m}月末`:h.round?`${y}年${+m}月${h.round}`:`${y}年${+m}月`;};
+// 支払日：口座振替・納税は実際にお金が出る引落予定日（支払回は報告する回）。それ以外は支払回の日
+const payDayText=h=>{if(['口座振替','納税'].includes(h.method)&&h.debit){const [y,m,d]=h.debit.split('-');return `${y}年${+m}月${+d}日（引落）`;}
+  if(!h.ym)return '—';const [y,m]=h.ym.split('/');return h.round==='月末'?`${y}年${+m}月末`:h.round?`${y}年${+m}月${h.round}`:`${y}年${+m}月`;};
 // ---------- 全画面（支払決済アプリと同じ。Esc で戻る）と「請求書の明細」タブ ----------
 // 請求書の明細＝AI が請求書から写した行（AP_Invoice の 請求書の明細）。税率ごとの合計を仕訳と比べる（税区分・金額の見落としに気づく）
 let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
@@ -677,12 +681,13 @@ function drawOne(){
       <div><label>対象年月（払う月）</label><input type="text" data-h="ym" value="${esc(h.ym)}" placeholder="2026/10"></div>
       <div><label>支払回</label><select data-h="round">${opt(ROUNDS,h.round)}</select></div>
       <div><label>支払方法</label><select data-h="method">${opt(METHODS,h.method)}</select></div>
+      ${['口座振替','納税'].includes(h.method)?`<div><label>支払日（引落日）</label><input type="date" data-h="debit" value="${esc(h.debit||'')}"></div>`:''}
       <div><label>拠点</label><select data-h="loc">${opt(['本社','工場'],h.loc)}</select></div>
       <div><label>請求No</label><input type="text" data-h="invNo" value="${esc(h.invNo)}"></div>
       <div><label>登録番号（インボイス）</label><input type="text" data-h="regNo" value="${esc(h.regNo)}"></div>
       <div><label>支払先コード（SMILE）</label><input type="text" data-h="code" value="${esc(h.code)}"></div></div>
       ${!h.code&&vendorCands(h.payee).length?`<div class="box info" style="margin-top:6px;font-size:12.5px">仕入先マスタに名前の合う先があります：${vendorCands(h.payee).map(v=>`<button data-vc="${esc(v.code)}" style="margin:2px">${esc(v.name)}（${esc(v.code)}）にする</button>`).join('')}</div>`:''}`
-    :`<div class="fg ro">${rd('支払金額（税込）',yen(h.amount))}${rd('対象年月（払う月）',esc(h.ym))}${rd('支払日',esc(payDayText(h)))}${rd('支払方法',esc(h.method))}${rd('拠点',esc(h.loc))}${rd('請求No',esc(h.invNo))}${rd('登録番号',esc(h.regNo))}${h.code?rd('支払先コード（SMILE）',esc(h.code)):''}</div>`}</div>`;
+    :`<div class="fg ro">${rd('支払金額（税込）',yen(h.amount))}${rd('対象年月（払う月）',esc(h.ym))}${rd('支払日',esc(payDayText(h)))}${['口座振替','納税'].includes(h.method)&&h.debit&&h.round?rd('報告する回',esc(h.ym.replace('/','年')+'月 '+h.round+'払い')):''}${rd('支払方法',esc(h.method))}${rd('拠点',esc(h.loc))}${rd('請求No',esc(h.invNo))}${rd('登録番号',esc(h.regNo))}${h.code?rd('支払先コード（SMILE）',esc(h.code)):''}</div>`}</div>`;
   // 振込先（総合振込のとき）
   let bankCard='';
   if(h.method==='総合振込'){const b=h.bk,m=masterBankOf(Object.assign({},r,{payee:h.payee,code:h.code,regNo:h.regNo})),full=bankFull(b),eb=ed&&(st.editBank||(!full&&!m));
@@ -824,8 +829,10 @@ async function saveHeader(r){const h=hdrDraft;if(!h)return;
   const src={'支払先名':h.payee,'支払先コード':h.code,'金額_税込':h.amount,'対象年月':h.ym,'請求NO':h.invNo,'登録番号':h.regNo,'支払区分':h.loc==='工場'?'工場経費':'本社経費'};
   if(h.round)src['支払日区分']=h.round;if(h.method)src['支払手段']=h.method;   // 選択肢の列は空にしない
   const o=toFields(L.inv,src);o[V.loc]=h.loc;
+  // 支払日（引落日）：口座振替・納税だけ。AI の読み取りと同じ形（日付の 0 時 UTC）で入れる。空にすれば消す
+  if(['口座振替','納税'].includes(h.method)&&(h.debit||'')!==(r.debit||''))o[F(L.inv,'引落予定日')]=h.debit?`${h.debit}T00:00:00Z`:null;
   Object.entries(BK).forEach(([k,n])=>{let v=String(h.bk[k]||'').trim();if(v){if(k==='holder')v=toHanKana(v);if(k==='code')v=digits(v).padStart(4,'0');if(k==='bcode')v=digits(v).padStart(3,'0');if(k==='no')v=digits(v).padStart(7,'0');}o[n]=v;});
-  const ch=[];if(Object.keys(BK).some(k=>String(h.bk[k]||'')!==String(r.bk[k]||'')))ch.push('振込先');if(h.payee!==r.payee)ch.push('支払先');if(h.amount!==r.amount)ch.push(`金額 ${yen(r.amount)}→${yen(h.amount)}`);if(h.method!==r.method)ch.push('支払方法');if(h.round!==r.round)ch.push('支払回');if(h.code!==r.code)ch.push('支払先コード');if(h.loc!==r.loc)ch.push('拠点');
+  const ch=[];if(Object.keys(BK).some(k=>String(h.bk[k]||'')!==String(r.bk[k]||'')))ch.push('振込先');if(h.payee!==r.payee)ch.push('支払先');if(h.amount!==r.amount)ch.push(`金額 ${yen(r.amount)}→${yen(h.amount)}`);if(h.method!==r.method)ch.push('支払方法');if(h.round!==r.round)ch.push('支払回');if(h.code!==r.code)ch.push('支払先コード');if(h.loc!==r.loc)ch.push('拠点');if((h.debit||'')!==(r.debit||''))ch.push(`引落日 ${r.debit||'—'}→${h.debit||'—'}`);
   if(r.failed)o[V.ai]='対象外';   // 読み取り失敗を人が入れた → 確認待ちへ
   await patchInv(r,o,{act:'内容を直した',memo:ch.join('・')||(r.failed?'手で入力':''),step:r.step});hdrDraft=null;}
 async function saveLines(r){const d=draft;if(!d)return;
