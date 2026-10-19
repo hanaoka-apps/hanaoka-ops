@@ -38,10 +38,10 @@
     '.sv .pdf{flex:1 1 auto!important;min-height:300px;border:1px dashed var(--line);border-radius:8px;margin-top:6px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub);overflow:hidden}.sv .pdf iframe{width:100%;height:100%;min-height:300px;border:0}.sv .pdf .imgv{width:100%;height:100%;overflow:auto;text-align:center}' +
     '.sv button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer;font:inherit}.sv button.pri{background:var(--pri);border-color:var(--pri);color:#fff}.sv .chip.on{background:var(--pri);color:#fff;border-color:var(--pri)}' +
     // 請求書の明細（AI が読んだもの）：右端の縦のバー → ドロワー（右の列にかぶせる）。燃料の単価の表（サマリー）
-    '.sv .dt{position:relative}.sv .dt.hasit .db{padding-right:34px}.sv .sdr{position:absolute;right:0;top:0;bottom:0;z-index:30;display:flex;flex-direction:row-reverse;align-items:stretch;pointer-events:none}' +
-    '.sv .sdr-bar{pointer-events:auto;writing-mode:vertical-rl;width:26px;padding:12px 0;border:0;border-radius:8px 0 0 8px;background:var(--navy,#23268f);color:#fff;font-size:12.5px;font-weight:600;letter-spacing:.12em;cursor:pointer}.sv .sdr-bar.pin{background:#161a6b}' +
-    '.sv .sdr-p{pointer-events:auto;box-sizing:border-box;width:480px;background:#fff;box-shadow:-8px 0 28px rgba(20,24,60,.22);border-radius:10px 0 0 10px;overflow:auto;padding:12px 14px;transform:translateX(104%);opacity:0;visibility:hidden;transition:transform .18s,opacity .18s,visibility 0s .18s}' +
-    '.sv .sdr.open .sdr-p{transform:none;opacity:1;visibility:visible;transition:transform .18s,opacity .18s}.sv .sdr-p table{width:100%}.sv .sdr-p td,.sv .sdr-p th{font-size:12.5px;padding:4px 6px;vertical-align:top}.sv .sdr-p .s{font-size:11px;color:var(--sub)}' +
+    '.sv .dt{position:relative}.sv .dt.hasit .db{padding-right:34px}.sv .svdr{position:absolute;right:0;top:0;bottom:0;z-index:30;display:flex;flex-direction:row-reverse;align-items:stretch;pointer-events:none}' +
+    '.sv .svdr-bar{pointer-events:auto;writing-mode:vertical-rl;width:26px;padding:12px 0;border:0;border-radius:8px 0 0 8px;background:var(--navy,#23268f);color:#fff;font-size:12.5px;font-weight:600;letter-spacing:.12em;cursor:pointer}.sv .svdr-bar.pin{background:#161a6b}' +
+    '.sv .svdr-p{pointer-events:auto;box-sizing:border-box;width:480px;background:#fff;box-shadow:-8px 0 28px rgba(20,24,60,.22);border-radius:10px 0 0 10px;overflow:auto;padding:12px 14px;transform:translateX(104%);opacity:0;visibility:hidden;transition:transform .18s,opacity .18s,visibility 0s .18s}' +
+    '.sv .svdr.open .svdr-p{transform:none;opacity:1;visibility:visible;transition:transform .18s,opacity .18s}.sv .svdr-p table{width:100%}.sv .svdr-p td,.sv .svdr-p th{font-size:12.5px;padding:4px 6px;vertical-align:top}.sv .svdr-p .s{font-size:11px;color:var(--sub)}' +
     '.sv table.fuel{width:auto}.sv table.fuel td,.sv table.fuel th{padding:4px 9px;white-space:nowrap}.sv .f-lo{background:#e3f4ea;color:#17703f;font-weight:700}.sv .f-hi{background:#fde6e6;color:#b42318;font-weight:700}.sv .f-sq{font-style:italic}' +
     '.sv input[type=search],.sv select{width:auto;max-width:100%;padding:4px 8px}.sv input[type=search]{width:220px}.sv .tb td,.sv .tb th{font-size:13px}' +
     '@media (max-width:900px){.sv .rv,.sv .rv.mini{grid-template-columns:1fr;height:auto!important}.sv .rv.mini .rstrip,.sv .lt{display:none!important}.sv .rv.mini .rl{position:static;transform:none;opacity:1;pointer-events:auto;width:auto;box-shadow:none}.sv .rl{max-height:40vh}.sv .pdf{min-height:420px}}';
@@ -134,8 +134,8 @@
     function lock(on) { var p = el.parentElement; while (p && !/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
       if (on && p) { locked = p; p.style.overflow = 'hidden'; } else if (!on && locked) { locked.style.overflow = ''; locked = null; } }
     // Esc：明細のドロワーが開いていれば、まずそれだけ閉じる（全画面の解除より先）
-    window.addEventListener('keydown', function (e) { if (e.key !== 'Escape' || !document.body.contains(el)) return; var d = el.querySelector('.sdr.open'); if (!d) return;
-      e.stopPropagation(); ui.dPin = false; ui.dOpen = false; d.classList.remove('open'); var bb = d.querySelector('.sdr-bar'); if (bb) bb.classList.remove('pin'); }, true);
+    window.addEventListener('keydown', function (e) { if (e.key !== 'Escape' || !document.body.contains(el)) return; var d = el.querySelector('.svdr.open'); if (!d) return;
+      e.stopPropagation(); ui.dPin = false; ui.dOpen = false; d.classList.remove('open'); var bb = d.querySelector('.svdr-bar'); if (bb) bb.classList.remove('pin'); }, true);
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && el.classList.contains('sv-full') && document.body.contains(el)) { FULL.set(false); render(); } });
     function summary(pane) {
       var b = snap.batch || {}, flagged = rows.filter(function (x) { return tags(x).length; }).sort(function (x, y) { return y.amount - x.amount; });
@@ -163,15 +163,15 @@
     }
     // 請求書の明細（AI が読んだもの）。items：{amount:'税込'|'税抜', items:[{Date, SlipNo, ItemName, Spec, Note, Qty, Unit, UnitPrice, Amount, TaxRate}]}
     function itemsHtml(x) { var j = x.items, it = (j && j.items) || [], tot = it.reduce(function (s, a) { return s + (+a.Amount || 0); }, 0);
-      return '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px"><b style="font-size:15px">請求書の明細</b><span class="s">' + esc(x.payee) + '・' + it.length + '行・' + esc(j.amount || '') + '</span><span style="flex:1"></span><button class="sdr-x">✕</button></div>' +
+      return '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px"><b style="font-size:15px">請求書の明細</b><span class="s">' + esc(x.payee) + '・' + it.length + '行・' + esc(j.amount || '') + '</span><span style="flex:1"></span><button class="svdr-x">✕</button></div>' +
         '<table class="ln"><tr><th>日付</th><th>品名</th><th class="n">数量</th><th class="n">単価</th><th class="n">金額</th><th>税率</th></tr>' + it.map(function (a) {
           return '<tr><td style="white-space:nowrap">' + esc(a.Date || '') + (a.SlipNo ? '<div class="s">' + esc(a.SlipNo) + '</div>' : '') + '</td><td>' + esc(a.ItemName || '') + (a.Spec ? ' <span class="s">' + esc(a.Spec) + '</span>' : '') + (a.Note ? '<div class="s">' + esc(a.Note) + '</div>' : '') + '</td>' +
             '<td class="n">' + (a.Qty != null && a.Qty !== '' ? esc(String(a.Qty)) + esc(a.Unit || '') : '') + '</td><td class="n">' + (a.UnitPrice != null && a.UnitPrice !== '' ? yen(a.UnitPrice) : '') + '</td><td class="n">' + yen(a.Amount) + '</td><td style="font-size:11.5px">' + esc(a.TaxRate || '') + '</td></tr>'; }).join('') +
         '<tr><td colspan="4"><b>合計</b></td><td class="n"><b>' + yen(tot) + '</b></td><td></td></tr></table>'; }
     // ドロワー：バーにホバーで開く・クリックで固定・Esc で閉じる。幅は右の列（内容）にそろえ、請求書は隠さない
-    function wireDrawer(dt, x) { var d = dt.querySelector('.sdr'); if (!d) return; var bar = d.querySelector('.sdr-bar'), p = d.querySelector('.sdr-p'), t = null;
+    function wireDrawer(dt, x) { var d = dt.querySelector('.svdr'); if (!d) return; var bar = d.querySelector('.svdr-bar'), p = d.querySelector('.svdr-p'), t = null;
       var fitW = function () { var di = dt.classList.contains('wide') ? dt.querySelector('.di') : dt, w = Math.round(bar.getBoundingClientRect().left - di.getBoundingClientRect().left) - (di === dt ? 8 : 0); if (w > 220) p.style.width = w + 'px'; };
-      var set = function (on) { clearTimeout(t); ui.dOpen = on; if (on) { fitW(); p.innerHTML = itemsHtml(x); var xb = p.querySelector('.sdr-x'); if (xb) xb.onclick = function () { ui.dPin = false; bar.classList.remove('pin'); set(false); }; } d.classList.toggle('open', on); };
+      var set = function (on) { clearTimeout(t); ui.dOpen = on; if (on) { fitW(); p.innerHTML = itemsHtml(x); var xb = p.querySelector('.svdr-x'); if (xb) xb.onclick = function () { ui.dPin = false; bar.classList.remove('pin'); set(false); }; } d.classList.toggle('open', on); };
       bar.onmouseenter = function () { clearTimeout(t); t = setTimeout(function () { set(true); }, 120); };
       d.onmouseleave = function () { if (ui.dPin) return; clearTimeout(t); t = setTimeout(function () { set(false); }, 300); };
       d.onmouseenter = function () { if (ui.dOpen) clearTimeout(t); };
@@ -253,7 +253,7 @@
       dt.querySelectorAll('[data-it]').forEach(function (b) { b.onclick = function () { setIt(b.dataset.it); }; }); wireIb();
       if ((x.invoices || []).length) showPdf(x, ui.pdf[x._k] || x.invoices[0]);
       var hasIt = !!(x.items && (x.items.items || []).length); dt.classList.toggle('hasit', hasIt);
-      if (hasIt) { dt.insertAdjacentHTML('beforeend', '<div class="sdr"><button class="sdr-bar" title="ホバーで開く・クリックで固定（Esc で閉じる）">請求書の明細（' + x.items.items.length + '行）</button><div class="sdr-p"></div></div>'); wireDrawer(dt, x); }
+      if (hasIt) { dt.insertAdjacentHTML('beforeend', '<div class="svdr"><button class="svdr-bar" title="ホバーで開く・クリックで固定（Esc で閉じる）">請求書の明細（' + x.items.items.length + '行）</button><div class="svdr-p"></div></div>'); wireDrawer(dt, x); }
     }
     // 税区分ごとの合計（「内容」に出す。行ごとは「仕訳明細」タブ）
     function taxSum(ls) { var g = {}, ord = [];
