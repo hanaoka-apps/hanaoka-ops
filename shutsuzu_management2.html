@@ -502,6 +502,10 @@ table.hist .zn.no{background:#f3f3f5;color:#999}
   background:#f6f7fa;border:1px solid #e6e8ee!important;border-radius:8px;padding-left:9px}
 .det.view #mainForm .bd2 .carsum{display:inline-block;min-width:60px;background:#f6f7fa;
   border:1px solid #e6e8ee;border-radius:8px;padding:7px 9px;font-weight:500}
+/* 1台口の内訳は、車体番号を保存の前でもその場で書ける。2台以上は従来どおり「この内訳だけ入力」 */
+.bd .m-carin{display:none}
+.bd.solo .m-carin{display:block}
+.bd.solo .carsum,.bd.solo .carpick{display:none}
 .det-bar label{white-space:nowrap}
 .det.view #mainForm select{appearance:none}
 .det.view .mdel,.det.view #btnAddMeisai,.det.view #btnAddSticker,
@@ -2090,6 +2094,7 @@ function meisaiRowHtml(r){
     f("車両重量(kg)",    t("m-vw",r.vw,"別紙 など"),"s2")+
     f("車体番号",'<span class="carsum">—</span>'+
                  '<button type="button" class="msmall carpick" style="margin-left:8px">この内訳だけ入力</button>'+
+                 '<input type="text" class="m-carin" list="car_no_options" value="'+esc(r.carNo||"")+'" placeholder="車体番号（無いときは「なし」）">'+
                  '<input type="hidden" class="m-carno" value="'+esc(r.carNo||"")+'">',"s3")+
     f("納期",            '<input class="m-due" type="date" value="'+esc(r.due||"")+'">',"s3")+
     f("図面仕様番号",    '<div class="zufield">'+t("m-specNo",r.specNo,"HSEC001 など",' list="specList"')+
@@ -2552,6 +2557,7 @@ function recalcMeisai(){
     tr.classList.toggle("diff",diff>0);
     const fEl=tr.querySelector(".m-from"),tEl=tr.querySelector(".m-to");
     const q=parseInt(tr.querySelector(".m-qty").value,10);
+    tr.classList.toggle("solo",q===1);
     let from=parseInt(fEl.value,10);
     if(!isFinite(from)&&next!==null&&isFinite(q)&&q>0){from=next;fEl.value=pad5(String(from))}
     /* 台数の検算は製造番号と切り離す。kintoneから取り込んだ直後は
@@ -3135,6 +3141,7 @@ async function refreshCarSummaries(shipNo){
       const text=carSummaryText(byBk[bk]||[]);
       if(s)s.textContent=text||"未入力";
       if(hid)hid.value=text;
+      const ci=c.querySelector(".m-carin");if(ci)ci.value=text;
     });
   }catch(e){console.warn("車体番号の集計に失敗",e)}
 }
@@ -3524,6 +3531,24 @@ function validate(e){
   $("customer").classList.toggle("invalid",!ok&&!trim(e.customer));
   return ok;
 }
+/* 1台口の内訳に直接書いた車体番号を、できあがった製造番号明細（1台）へ入れる。
+   2台以上は「この内訳だけ入力」から行ごとに入れる。空欄は何もしない（消さない）。 */
+async function applySoloCarNos(e){
+  const solos=(e.meisai||[]).filter(r=>parseInt(r.qty,10)===1&&trim(r.bk)&&trim(r.carNo));
+  if(!solos.length)return;
+  const items=await fetchUnits(e.ship_no);
+  const reqs=[];
+  solos.forEach(r=>{
+    const it=items.find(x=>(x.fields||{}).BreakdownKey===trim(r.bk));
+    if(it&&trim((it.fields||{}).CarNo)!==trim(r.carNo))
+      reqs.push({method:"PATCH",url:`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items/${it.id}/fields`,
+        headers:{"Content-Type":"application/json"},body:{CarNo:trim(r.carNo)}});
+  });
+  if(reqs.length){
+    const res=await gBatch(reqs);
+    if(res.some(x=>x.status>=300))throw new Error("車体番号の保存に一部失敗しました");
+  }
+}
 async function addOrUpdateEntry(){
   if(!requireSignIn())return;
   const e=getEntry();if(!validate(e))return;
@@ -3563,6 +3588,10 @@ async function addOrUpdateEntry(){
         if(r.failed)msg+=`　※${r.failed}件が失敗（コンソール参照）`;
       }
       toast(msg,!!(r.failed||r.locked));
+      if(!r.cancelled){
+        try{await applySoloCarNos(e)}
+        catch(errC){toast("車体番号の保存に失敗しました: "+(errC.message||errC),true);console.error(errC)}
+      }
       /* 展開した直後にその場で見せられるようにする */
       if(r.created&&confirm(`製造番号明細に ${r.created}件できました。\n\nいま開いて確認しますか？`))
         openUnits(e.ship_no);
@@ -3898,6 +3927,18 @@ function carFillSeq(){
   carCheck();
   toast(filled+"件、連番で埋めました。ちがう行はその場で書き直してください。");
 }
+/* 車体番号が無い車両は「なし」と入れる。空欄のままだと「まだ入れていない」と区別できない */
+function carFillNone(){
+  const n=CAR_UNITS.length;
+  const lines=$("carNoText").value.replace(/\r/g,"").split("\n");
+  while(lines.length<n)lines.push("");
+  let filled=0;
+  for(let i=0;i<n;i++){if(!trim(lines[i])){lines[i]="なし";filled++}}
+  if(!filled){toast("空の行がありません",true);return}
+  $("carNoText").value=lines.slice(0,n).join("\n");
+  carCheck();
+  toast(filled+"件を「なし」にしました。ちがう行はその場で書き直してください。");
+}
 /* この内訳の見出し（仕向地・型式）を、車体番号入力の画面に出すため */
 function carScopeLabel(bk){
   const r=readMeisai().find(x=>x.bk===bk);
@@ -3988,6 +4029,10 @@ document.addEventListener("DOMContentLoaded",()=>{
   /* 車両重量は「別紙」も入る欄なので、数字だけにはしない。全角を半角に直すだけ。 */
   $("vehicle_weight").addEventListener("input",e=>{const v=toHalfNum(e.target.value);if(v!==e.target.value)e.target.value=v});["length_mm","width_mm","height_mm"].forEach(id=>{$(id).addEventListener("input",e=>{e.target.value=decimalOnly(e.target.value);updateMFields()})});
   $("skChips").addEventListener("click",e=>{const b=e.target.closest(".skchip");if(b)pickSticker(b.dataset.k)});
+  $("meisaiRows").addEventListener("input",e=>{
+    if(!e.target.classList.contains("m-carin"))return;
+    const hid=e.target.closest(".bd").querySelector(".m-carno");if(hid)hid.value=e.target.value;
+  });
   $("stickerRows").addEventListener("input",e=>{
     if(e.target.classList.contains("s-per"))e.target.value=digitsOnly(e.target.value);
     recalcSticker();
@@ -4157,7 +4202,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     }
     if(e.target.closest(".carpick")){
       const bk=card.dataset.bk||"";
-      if(!bk){toast("先に出図を保存してください（この内訳がまだ確定していません）",true);return}
+      if(!bk){toast("2台以上の車体番号は、先に出図を保存してから入れます。（1台口なら、この欄に直接書けます）",true);return}
       carOpen(bk); return;
     }
     /* 複製。ゼロからではなく、ここから1か所だけ直す */
@@ -4214,7 +4259,7 @@ document.addEventListener("DOMContentLoaded",()=>{
    ["btnCarNos",()=>carOpen()],["btnDrawings",()=>dwOpen()],
    ["btnZumen",()=>dwOpen(trim($("drawing_no").value))],["btnDwClose",dwClose],
    ["btnDwRegister",registerDrawings],["btnCarSave",carSave],["btnCarClose",carClose],
-   ["btnCarSeq",carFillSeq],
+   ["btnCarSeq",carFillSeq],["btnCarNone",carFillNone],
    ["btnBomCommit",commitBomReview],["btnBomCancel",closeBomReview],
    ["btnRefresh",renderList],["scrim",detClose]
   ].forEach(([id,fn])=>$(id).onclick=fn);
@@ -4282,7 +4327,8 @@ document.addEventListener("DOMContentLoaded",()=>{
   <div class="cnwrap">
     <div><h3 id="carSnHead">製造番号</h3><div class="cnlist" id="carSnList"></div></div>
     <div><h3>車体番号（貼り付け）</h3><textarea id="carNoText" spellcheck="false" placeholder="CD-25-110&#10;CD-25-111&#10;CD-25-118"></textarea>
-      <button type="button" class="ghost" id="btnCarSeq" style="margin-top:8px">1行目から連番で埋める</button></div>
+      <button type="button" class="ghost" id="btnCarSeq" style="margin-top:8px">1行目から連番で埋める</button>
+      <button type="button" class="ghost" id="btnCarNone" style="margin-top:8px" title="車体番号が無い車両は、空欄ではなく「なし」と入れます（空欄は「まだ入っていない」の意味になるため）">空の行を「なし」にする</button></div>
   </div>
   <div class="foot">
     <button type="button" id="btnCarSave">この内容で保存</button>
