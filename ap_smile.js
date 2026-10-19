@@ -107,8 +107,10 @@
       var q = g(r, '受入数量') || g(r, '数量'), up = g(r, '受入単価') || g(r, '受注単価') || g(r, '単価');
       if (q !== '' && num(q) && !num(up)) up = String(Math.round(num(g(r, '税抜受入金額')) / num(q) * 100) / 100);
       var op = num(g(r, '発注単価'));
+      // 「受入単価」の列があって 0 なのに数量がある＝単価を使わず金額を直接入れた行（値引き・まとめ・手直しなど）
+      var direct = ix('受入単価') >= 0 && !num(g(r, '受入単価')) && !!num(q) && !!num(g(r, '税抜受入金額'));
       v.items.push({ date: d, inDate: g(r, '入荷日付'), slip: g(r, '伝票№'), dept: dept, staff: g(r, '担当者名称'), itemCode: g(r, '品目ｺｰﾄﾞ') || g(r, '品目コード'),
-        item: g(r, '品目名'), spec: g(r, '型番'), unit: g(r, '単位'), qty: q === '' ? null : num(q), price: up === '' ? null : num(up), oprice: op > 0 ? op : null,
+        item: g(r, '品目名'), spec: g(r, '型番'), unit: g(r, '単位'), qty: q === '' ? null : num(q), price: up === '' ? null : num(up), oprice: op > 0 ? op : null, direct: direct || undefined,
         excl: num(g(r, '税抜受入金額')), tax: num(g(r, '消費税等')), order: g(r, '受注№'), kind: g(r, '取引区分略称'), note: g(r, '備考'),
         soko: g(r, '倉庫ｺｰﾄﾞ').replace(/^0+/, '') || '0' });
     }
