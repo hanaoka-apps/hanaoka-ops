@@ -271,7 +271,13 @@ function wire(){
 function wfUrl(no){const base=(WF.settings['app.url']||'wf_app.html').replace(/\?.*$/,'');return `${base}?req=${encodeURIComponent(no)}`;}
 
 // ---------- 支払指図を作る・更新する ----------
+// 同時に2回動かさない（2回押した・動いている間に押した → 両方が「まだ無い」と見て二重に作る）
+let GENERATING=false;
 async function generate(){
+  if(GENERATING){snack('いま支払指図を作っています。終わるまで待ってください',true);return;}
+  GENERATING=true;const gb=$('bGen');if(gb){gb.disabled=true;gb.textContent='⏳ 作っています…';}
+  try{await generateRun();}finally{GENERATING=false;const b=$('bGen');if(b){b.disabled=false;b.textContent='▶ 支払指図を作る・更新する';}}}
+async function generateRun(){
   const ym=month(),due=st.round,log=[];
   const lockedDept=new Set(deptsOf(due).filter(d=>{const b=batchOf(due,d);return b&&LOCKED.includes(sbv(b,'状態'));}));
   const drafts={};
@@ -301,7 +307,10 @@ async function generate(){
   // 今ある支払指図と突き合わせる：同じキーは額などを直す、無いものは足す、元が無くなった自動の行は消す（決裁中・決裁済みの部門は触らない）
   const cur=piOf(due).filter(p=>!lockedDept.has(deptOf(p)));
   const keyOfPI=p=>(pv(p,'支払先コード')||pv(p,'支払先名')||'')+'|'+(pv(p,'支払手段')||'')+'|'+(pv(p,'期日')||'')+'|'+(pv(p,'支払状態')==='先行支払済'?'P':'N');
-  const byKey={};cur.forEach(p=>byKey[keyOfPI(p)]=p);let made=0,upd=0,del=0;
+  // 同じキーの支払指図が2つ以上ある（同時に2回作ったなど）→ 1つを残し、残りは片付ける
+  const byKey={},dups=[];cur.forEach(p=>{const k=keyOfPI(p);if(byKey[k])dups.push(p);else byKey[k]=p;});let made=0,upd=0,del=0;
+  for(const p of dups){if(['EB出力済','支払済'].includes(pv(p,'支払状態')))continue;
+    try{await call('DELETE',`/sites/${AP_SITE}/lists/${PI.id}/items/${p.id}`);del++;log.push(`🗑 ${pv(p,'支払先名')}／${pv(p,'支払手段')}／${yen(pv(p,'支払額'))}（重複）`);}catch(e){log.push(`❌ ${pv(p,'支払先名')} の重複を消せません：${e.message}`);}}
   for(const [k,dft] of Object.entries(drafts)){const ex=byKey[k];delete byKey[k];
     const fields={};const set=(d,v)=>{if(PI.fmap[d]||['決済月','支払日区分','実支払日','支払先名','支払先コード','支払手段','支払額','拠点','元請求書ID','承認状態','支払状態','メモ'].includes(d))fields[F(PI,d)]=v;};
     set('支払額',dft.amount);set('振込手数料',dft.fee||0);set('決裁の部門',dft.dept);set('期日',dft.due||'');set('元',dft.source);set('AP_SmilePayの行ID',dft.smileId||'');set('元請求書ID',dft.ids.join(','));
