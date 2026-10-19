@@ -37,7 +37,7 @@
     '.sv .sp{flex:1}.sv .db{flex:1;overflow:auto;padding:8px 12px;display:flex;flex-direction:column;min-height:0}.sv .db>*{flex:none}.sv .kv{display:grid;grid-template-columns:84px minmax(0,1fr) 84px minmax(0,1fr);gap:2px 10px;font-size:13px;margin:6px 0}.sv .kv .k{color:var(--sub)}' +
     '.sv .pdf{flex:1 1 auto!important;min-height:300px;border:1px dashed var(--line);border-radius:8px;margin-top:6px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub);overflow:hidden}.sv .pdf iframe{width:100%;height:100%;min-height:300px;border:0}.sv .pdf .imgv{width:100%;height:100%;overflow:auto;text-align:center}' +
     '.sv button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer;font:inherit}.sv button.pri{background:var(--pri);border-color:var(--pri);color:#fff}.sv .chip.on{background:var(--pri);color:#fff;border-color:var(--pri)}' +
-    // 請求書の明細（AI が読んだもの）：右端の縦のバー → ドロワー（右の列より広めにかぶせる）。燃料の単価の表（サマリー）
+    // 請求書の明細（AI が読んだもの）：右端の縦のバー → ドロワー（右の列にかぶせる・PDF との境まで）。燃料の単価の表（サマリー）
     '.sv .dt{position:relative}.sv .dt.hasit .db{padding-right:34px}.sv .svdr{position:absolute;right:0;top:0;bottom:0;z-index:30;display:flex;flex-direction:row-reverse;align-items:stretch;pointer-events:none}' +
     '.sv .svdr-bar{pointer-events:auto;writing-mode:vertical-rl;width:26px;padding:12px 0;border:0;border-radius:8px 0 0 8px;background:var(--navy,#23268f);color:#fff;font-size:12.5px;font-weight:600;letter-spacing:.12em;cursor:pointer}.sv .svdr-bar.pin{background:#161a6b}' +
     '.sv .svdr-p{pointer-events:auto;box-sizing:border-box;width:480px;background:#fff;box-shadow:-8px 0 28px rgba(20,24,60,.22);border-radius:10px 0 0 10px;overflow:auto;padding:12px 14px;transform:translateX(104%);opacity:0;visibility:hidden;transition:transform .18s,opacity .18s,visibility 0s .18s}' +
@@ -179,9 +179,9 @@
         '<div><div class="l">請求書の明細（' + (inc ? '税込' : '税抜') + '）</div><div class="v">' + yen(tot) + '</div><div class="s">' + (j.items || []).length + '行</div></div>' +
         (ls.length ? '<div><div class="l">仕訳（' + (inc ? '税込' : '税抜') + '）</div><div class="v">' + yen(lsT) + '</div><div class="s">' + ls.length + '行' + (ok ? '・✔ 支払金額と一致' : '') + '</div></div>' +
           '<div class="' + (Math.abs(d) <= 1 ? 'good' : 'bad') + '"><div class="l">差（明細 − 仕訳）</div><div class="v">' + (Math.abs(d) <= 1 ? '✔ 0' : (d > 0 ? '+' : '') + yen(d)) + '</div></div>' : '') + '</div>'; }
-    // ドロワー：バーにホバーで開く・クリックで固定・Esc で閉じる。幅は右の列か詳細の6割（最大 900px）の広いほう
+    // ドロワー：バーにホバーで開く・クリックで固定・Esc で閉じる。幅は右の列（内容）にそろえ、請求書 PDF との境まで
     function wireDrawer(dt, x) { var d = dt.querySelector('.svdr'); if (!d) return; var bar = d.querySelector('.svdr-bar'), p = d.querySelector('.svdr-p'), t = null;
-      var fitW = function () { var di = dt.classList.contains('wide') ? dt.querySelector('.di') : dt, room = bar.getBoundingClientRect().left - dt.getBoundingClientRect().left - 8, w = Math.round(Math.max(bar.getBoundingClientRect().left - di.getBoundingClientRect().left - (di === dt ? 8 : 0), Math.min(900, room * 0.62))); if (w > 220) p.style.width = Math.min(w, room) + 'px'; };
+      var fitW = function () { var wd = dt.classList.contains('wide'), di = wd ? dt.querySelector('.di') : dt, w = Math.round(bar.getBoundingClientRect().left - di.getBoundingClientRect().left - (wd ? 0 : 8)); if (w > 220) p.style.width = w + 'px'; };
       var set = function (on) { clearTimeout(t); ui.dOpen = on; if (on) { fitW(); p.innerHTML = itemsHtml(x); var xb = p.querySelector('.svdr-x'); if (xb) xb.onclick = function () { ui.dPin = false; bar.classList.remove('pin'); set(false); }; } d.classList.toggle('open', on); };
       bar.onmouseenter = function () { clearTimeout(t); t = setTimeout(function () { set(true); }, 120); };
       d.onmouseleave = function () { if (ui.dPin) return; clearTimeout(t); t = setTimeout(function () { set(false); }, 300); };
