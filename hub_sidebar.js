@@ -178,6 +178,37 @@
     setInterval(renderAccount, 2000);
   }
 
+  /* ============================================================
+     PCで左メニューをたたむ（HUB以外の画面）
+     ------------------------------------------------------------
+     メニューの右上の「<」でたたみ、たたむと本文が左いっぱいに広がる。もとに戻すのは、
+     画面上部の左端に出る「≡」。たたんだ状態はこのブラウザに覚える。
+     スマホ幅（820px以下）は今までどおり、≡で引き出す方式のまま。
+     見た目はここで差し込む（hub_sidebar.css は各ページのキャッシュ更新が重いので触らない）。
+     ============================================================ */
+  var COLLAPSE_KEY = 'hanaoka.sidebar.collapsed.v1';
+  var canCollapse = !onHub;
+  function isDesktop() { return window.matchMedia('(min-width: 821px)').matches; }
+  function setCollapsed(v) {
+    document.body.classList.toggle('sidebar-collapsed', v);
+    try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch (e) {}
+  }
+  function injectCollapseStyle() {
+    if (document.getElementById('sideCollapseStyle')) return;
+    var st = document.createElement('style'); st.id = 'sideCollapseStyle';
+    st.textContent =
+      '.side-collapse{position:absolute;top:74px;right:12px;width:24px;height:24px;border:1px solid var(--border);border-radius:8px;' +
+        'background:#fff;color:#5a6080;cursor:pointer;display:none;align-items:center;justify-content:center;padding:0}' +
+      '.side-collapse:hover{background:var(--bg);color:var(--text-main)}' +
+      '@media (min-width:821px){' +
+        '.side-collapse{display:inline-flex}' +
+        'body.sidebar-collapsed .sidebar{transform:translateX(-100%);visibility:hidden;box-shadow:none}' +
+        'body.sidebar-collapsed{padding-left:0}' +
+        'body.sidebar-collapsed .menu-btn{display:inline-flex}' +
+      '}';
+    document.head.appendChild(st);
+  }
+
   function mount() {
     var aside = document.createElement('aside');
     aside.className = 'sidebar'; aside.id = 'hubSidebar';
@@ -187,6 +218,18 @@
     document.body.insertBefore(backdrop, document.body.firstChild);
     document.body.insertBefore(aside, document.body.firstChild);
     mountAccount(aside);
+
+    if (canCollapse) {
+      injectCollapseStyle();
+      var cb = document.createElement('button');
+      cb.type = 'button'; cb.className = 'side-collapse'; cb.id = 'sideCollapse';
+      cb.title = 'メニューをたたむ'; cb.setAttribute('aria-label', 'メニューをたたむ');
+      cb.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>';
+      cb.addEventListener('click', function () { setCollapsed(true); });
+      aside.appendChild(cb);
+      var saved = null; try { saved = localStorage.getItem(COLLAPSE_KEY); } catch (e) {}
+      if (saved === '1') document.body.classList.add('sidebar-collapsed');
+    }
 
     // 開閉(アコーディオン)
     aside.addEventListener('click', function (e) {
@@ -216,7 +259,11 @@
       document.body.classList.toggle('sidebar-open', open);
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
-    btn.addEventListener('click', function () { setOpen(!document.body.classList.contains('sidebar-open')); });
+    btn.addEventListener('click', function () {
+      /* PCでたたんでいるときは、≡で開く（スマホ幅は今までどおり引き出す） */
+      if (canCollapse && isDesktop()) { setCollapsed(false); return; }
+      setOpen(!document.body.classList.contains('sidebar-open'));
+    });
     backdrop.addEventListener('click', function () { setOpen(false); });
     aside.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('a')) setOpen(false); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setOpen(false); });

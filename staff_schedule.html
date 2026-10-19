@@ -336,6 +336,8 @@
     <button class="act" id="toolsToggle" onclick="toggleTools()"></button>
     <button class="act" onclick="loadAll()">🔄 更新</button>
     <button class="act" onclick="window.print()">印刷</button>
+    <button class="act" id="shotCopy" title="下の表を画像にしてコピーします（Teams・メールにそのまま貼り付け）">📷 画像コピー</button>
+    <button class="act" id="shotSave" title="下の表を画像ファイル（PNG）として保存します">画像を保存</button>
   </div>
 
   <!-- ★表示の設定（折りたたみ）★ my_schedule.html と同じ作り。
@@ -1859,6 +1861,102 @@ function openDetail(rid){
 }
 document.querySelectorAll('.modal').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.classList.remove('on'); }));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.modal.on').forEach(m => m.classList.remove('on')); });
+
+/* ============================================================
+   表を画像にする（Teams・メールに貼る用）
+   ------------------------------------------------------------
+   下の表（日付の見出し＋全員の行）を、スクロールで隠れている部分も含めて1枚のPNGにする。
+   ・📷 画像コピー … クリップボードに入る。Teams などでそのまま Ctrl+V
+   ・画像を保存   … PNGファイルをダウンロード
+   画像の先頭に「期間・表示している部署」を1行入れる（一覧は日付だけで月が出ないため）。
+   画像化の部品（html2canvas）は、ボタンを初めて押したときだけ読み込む。
+   ============================================================ */
+const H2C_SRC  = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+const H2C_SRI  = 'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H';
+let H2C_P = null;
+function loadH2C(){
+  if (window.html2canvas) return Promise.resolve();
+  if (H2C_P) return H2C_P;
+  H2C_P = new Promise((ok, ng) => {
+    const sc = document.createElement('script');
+    sc.src = H2C_SRC; sc.integrity = H2C_SRI; sc.crossOrigin = 'anonymous';
+    sc.onload = ok;
+    sc.onerror = () => { H2C_P = null; ng(new Error('画像にする部品を読み込めませんでした（ネットワークをご確認ください）')); };
+    document.head.appendChild(sc);
+  });
+  return H2C_P;
+}
+function shotCaption(){
+  const dep = (el('depSummary').textContent || '').trim();
+  return `全社員の予定　${el('range').textContent}${dep ? '　／　' + dep : ''}`;
+}
+async function renderGridCanvas(){
+  await loadH2C();
+  if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch {} }
+  const box = document.querySelector('.scroll');
+  const full = box.scrollWidth;
+  const caption = shotCaption();
+  return window.html2canvas(box, {
+    backgroundColor: '#ffffff',
+    scale: Math.max(2, window.devicePixelRatio || 1),
+    useCORS: true, logging: false,
+    windowWidth: Math.max(window.innerWidth, full + 400),
+    onclone: doc => {
+      /* 画面ではスクロール枠の中で見切れている部分も、画像には全部入れる。
+         見出し・氏名列は「固定表示（sticky）」なので、そのままだと位置がずれて写る → 通常配置に戻す。 */
+      const sc = doc.querySelector('.scroll');
+      sc.style.overflow = 'visible'; sc.style.maxHeight = 'none';
+      sc.style.width = full + 'px'; sc.style.boxShadow = 'none'; sc.style.borderRadius = '0';
+      doc.querySelectorAll('.scroll .hrow, .scroll .hname, .scroll .name, .scroll .grp span, .scroll .grp2 span')
+        .forEach(n => { n.style.position = 'static'; });
+      const cap = doc.createElement('div');
+      cap.textContent = caption;
+      cap.style.cssText = 'padding:8px 12px;font-weight:700;font-size:13px;color:#1e2533;background:#fff;border-bottom:1px solid #dde2ec';
+      sc.insertBefore(cap, sc.firstChild);
+    }
+  });
+}
+const canvasToBlob = c => new Promise((ok, ng) => c.toBlob(b => b ? ok(b) : ng(new Error('画像を作れませんでした')), 'image/png'));
+function shotFileName(){
+  const r = (el('range').textContent || '').replace(/\s/g, '').replace(/\//g, '-').replace('〜', '_');
+  return `全社員の予定_${r || jKey(Date.now())}.png`;
+}
+function downloadBlob(blob, name){
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 10000);
+}
+async function shotRun(mode){
+  const btns = [el('shotCopy'), el('shotSave')];
+  const labels = btns.map(b => b.textContent);
+  btns.forEach(b => b.disabled = true);
+  el(mode === 'copy' ? 'shotCopy' : 'shotSave').textContent = '画像を作成中...';
+  try {
+    /* ブロブを Promise のまま渡す：作成に時間がかかっても、ボタンを押した操作の許可が切れない */
+    const blobP = renderGridCanvas().then(canvasToBlob);
+    if (mode === 'copy' && navigator.clipboard && window.ClipboardItem) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobP })]);
+        showSnack('表を画像にしてコピーしました。Teams やメールで貼り付け（Ctrl+V）できます');
+        return;
+      } catch (e) {
+        /* コピーを許可されない環境では、保存に切り替える */
+        downloadBlob(await blobP, shotFileName());
+        showSnack('コピーできなかったため、画像ファイルを保存しました');
+        return;
+      }
+    }
+    downloadBlob(await blobP, shotFileName());
+    showSnack(mode === 'copy' ? 'このブラウザはコピーに対応していないため、画像ファイルを保存しました' : '画像ファイルを保存しました');
+  } catch (e) {
+    showSnack('画像にできませんでした：' + (e.message || e));
+  } finally {
+    btns.forEach((b, i) => { b.disabled = false; b.textContent = labels[i]; });
+  }
+}
+el('shotCopy').addEventListener('click', () => shotRun('copy'));
+el('shotSave').addEventListener('click', () => shotRun('save'));
 
 initMsal();
 </script>
