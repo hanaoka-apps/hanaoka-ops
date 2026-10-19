@@ -93,6 +93,15 @@
   .fr-side{width:300px;border-left:1px solid #e3e5ef;display:flex;flex-direction:column;min-height:0}
   .fr-side-in{flex:1;overflow:auto;padding:12px 14px;font-size:12px}
   .fr-help{background:#f6f7fb;border-radius:8px;padding:8px 10px;color:#4a4f68;line-height:1.6;margin-bottom:10px}
+  .fr-snipbox{margin-bottom:10px}
+  .fr-snipbox summary{cursor:pointer;color:#23268f;font-weight:700;margin-bottom:6px;user-select:none}
+  .fr-snips{display:flex;flex-direction:column;gap:3px;max-height:260px;overflow:auto}
+  .fr-snip{display:flex;align-items:stretch;border:1px solid #d5d8e5;border-radius:6px;background:#fff}
+  .fr-snip:hover{border-color:#23268f}
+  .fr-snip .t{flex:1;min-width:0;padding:4px 7px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+  .fr-snip .x{border:none;border-left:1px solid #e3e5ef;background:transparent;color:#8a8fa8;cursor:pointer;padding:0 7px;font-size:11px}
+  .fr-snip .x:hover{color:#c0392b}
+  .fr-snips.pending .fr-snip.on{background:#eef0fc;border-color:#23268f}
   .fr-helpbox summary{cursor:pointer;color:#23268f;font-weight:700;margin-bottom:8px;user-select:none}
   .fr-helpbox[open] summary{margin-bottom:6px}
   .fr-list{display:flex;flex-direction:column;gap:4px;margin:6px 0 12px}
@@ -124,6 +133,24 @@
   const STAMP_KEY = 'fax-reply-stamp-v1';
   function loadStampCfg() { try { return JSON.parse(localStorage.getItem(STAMP_KEY) || '{}'); } catch (_) { return {}; } }
   function saveStampCfg(c) { try { localStorage.setItem(STAMP_KEY, JSON.stringify(c)); } catch (_) {} }
+  // 定型文（このブラウザに保存）。〇＝あとで直す所、{名前}＝データ印の下段の名前、{今日}＝今日の月/日
+  //   初期の文は 10/14〜10/19 の返信記録でくり返し打たれていた文から作った
+  const SNIP_KEY = 'fax-reply-snippets-v1';
+  const SNIP_DEFAULT = [
+    '様',
+    'いつもお世話になっております。',
+    '宜しくお願いいたします。',
+    '花岡車輌㈱ 業務センター {名前}',
+    'ご注文ありがとうございます。\n〇月〇日出荷にて手配いたします。\n宜しくお願いいたします。',
+    '送料（〇〇県送り）1台一式：〇〇\n納期（現況・実働）：受注後、約〇週間後出荷\n※混載便・車上渡しです。\n※お客様組み立て品\nよろしくお願いいたします。',
+    '受注後実働で約〇か月前後の出荷となります\n※混載便の車上渡しとなります\n宜しくお願い致します',
+    '※2026年11月1日のご注文分より価格改定で、値上価格となります。\nご了承下さいませ。',
+    '26年11月1日以降受注分より価格改定を行わせていただきます。\n上記お見積りは10月までに受注の場合の御見積となります。',
+    '現在欠品中のため、納期が掛かり申し訳ありません。',
+    'ご回答が遅くなり申し訳ございません。',
+  ];
+  function loadSnippets() { try { const v = JSON.parse(localStorage.getItem(SNIP_KEY) || 'null'); return Array.isArray(v) ? v : SNIP_DEFAULT.slice(); } catch (_) { return SNIP_DEFAULT.slice(); } }
+  function saveSnippets(a) { try { localStorage.setItem(SNIP_KEY, JSON.stringify(a)); } catch (_) {} }
   // 楕円を4本のベジェ曲線で（画面上の点）
   function ellipseCmds(cx, cy, rx, ry) {
     const k = 0.5523, a = rx * k, b = ry * k;
@@ -210,7 +237,20 @@
               <b>印 スタンプ</b>：右の選択で データ印／完了／社判（全部・住所と会社名だけ）を選び、押したい所をクリック（内容は下で設定）。<br>
               色は上の「色」で選びます（最初は青。データ印・完了は赤）。<br>
               <b>↶ 元に戻す</b>：最後に書いたものを消します。<br>
-              <b>画面の移動</b>：上の見出しをドラッグで移動、右下の角で大きさ変更（ダブルクリックで中央に戻る）。開いたまま裏の画面も見られます。</div></details>
+              <b>画面の移動</b>：上の見出しをドラッグで移動、右下の角で大きさ変更（ダブルクリックで中央に戻る）。開いたまま裏の画面も見られます。<br>
+              <b>定型文</b>：文字の入力中に押すとカーソルの所に入り、入力していないときは押してから置きたい所をクリック。〇の所を直します。</div></details>
+            <details class="fr-snipbox" open><summary>📝 定型文</summary>
+              <div class="fr-snips"></div>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
+                <button class="fr-btn" data-snip-act="fromtext" style="padding:3px 8px;font-size:11px" title="入力中（または最後に入力した）文字を定型文に登録">＋ 入力中の文字を登録</button>
+                <button class="fr-btn" data-snip-act="new" style="padding:3px 8px;font-size:11px">＋ 新しく入力</button>
+                <button class="fr-btn" data-snip-act="reset" style="padding:3px 8px;font-size:11px" title="定型文を最初の状態に戻す">↺ 初期に戻す</button>
+              </div>
+              <div class="fr-snipnew" style="display:none;margin-top:4px">
+                <textarea class="fr-seal" rows="3" placeholder="登録する文（改行もそのまま入ります）"></textarea>
+                <button class="fr-btn" data-snip-act="add" style="margin-top:4px;padding:3px 8px;font-size:11px">登録</button>
+              </div>
+            </details>
             <div class="fr-h">書き込んだ文字</div>
             <div class="fr-list"><div style="color:#8a8fa8">まだありません</div></div>
             <div class="fr-h">データ印</div>
@@ -301,6 +341,58 @@
       stampCfg.seal = sealDefault(); sealEl.value = stampCfg.seal; saveSeal(); status('社判を初期値に戻しました');
     });
     const curColor = () => $('.fr-col').value || 'blue';
+    // ---- 定型文 ----
+    let snippets = loadSnippets(), pendingSnip = null;   // pendingSnip：押したあと「置きたい所をクリック」待ちの文
+    const fillSnip = t => t.replace(/\{名前\}/g, stampCfg.bottom || '')
+      .replace(/\{今日\}/g, `${today.getMonth() + 1}/${today.getDate()}`);
+    const focusedBox = () => { const a = document.activeElement; return boxes.find(b => b.el && a && b.el.contains(a)) || null; };
+    function renderSnips() {
+      const host = $('.fr-snips');
+      host.classList.toggle('pending', pendingSnip !== null);
+      host.innerHTML = snippets.length ? snippets.map((t, i) =>
+        `<div class="fr-snip${pendingSnip === i ? ' on' : ''}" data-i="${i}"><span class="t" title="${esc(fillSnip(t))}">${esc(fillSnip(t).replace(/\n/g, ' ⏎ '))}</span><button class="x" title="この定型文を消す">✕</button></div>`).join('')
+        : '<div style="color:#8a8fa8">定型文がありません</div>';
+    }
+    renderSnips();
+    // 押してもフォーカス（入力中の文字）を外さないよう mousedown で処理する
+    $('.fr-snips').addEventListener('mousedown', e => {
+      const row = e.target.closest('.fr-snip'); if (!row) return;
+      e.preventDefault();
+      const i = +row.dataset.i;
+      if (e.target.closest('.x')) {
+        if (!confirm('この定型文を消しますか？\n\n' + fillSnip(snippets[i]))) return;
+        snippets.splice(i, 1); saveSnippets(snippets); pendingSnip = null; renderSnips(); return;
+      }
+      const text = fillSnip(snippets[i]);
+      const fb = focusedBox();
+      if (fb) {   // 入力中：カーソルの所に入れる
+        text.split('\n').forEach((l, k) => { if (k) document.execCommand('insertLineBreak'); if (l) document.execCommand('insertText', false, l); });
+        status('定型文を入れました。〇の所を直してください');
+        return;
+      }
+      pendingSnip = pendingSnip === i ? null : i;   // もう一度押すと取り消し
+      renderSnips();
+      status(pendingSnip === null ? '' : '定型文：置きたい所をクリックしてください（もう一度押すと取り消し）');
+    });
+    ov.querySelectorAll('[data-snip-act]').forEach(btn => btn.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const act = btn.dataset.snipAct, nw = $('.fr-snipnew'), ta = nw.querySelector('textarea');
+      if (act === 'fromtext') {   // 入力中（無ければ最後に書いた）文字を登録
+        const b = focusedBox() || [...boxes].reverse().find(x => x.text.trim());
+        if (!b || !b.text.trim()) { status('登録する文字がありません。先に文字を書いてください'); return; }
+        if (snippets.includes(b.text)) { status('同じ定型文がすでにあります'); return; }
+        snippets.push(b.text); saveSnippets(snippets); renderSnips(); status('定型文に登録しました');
+      } else if (act === 'new') {
+        nw.style.display = nw.style.display === 'none' ? '' : 'none'; if (nw.style.display === '') setTimeout(() => ta.focus(), 0);
+      } else if (act === 'add') {
+        const v = ta.value.replace(/\s+$/, '');
+        if (!v.trim()) { status('登録する文を入れてください'); return; }
+        snippets.push(v); saveSnippets(snippets); ta.value = ''; nw.style.display = 'none'; renderSnips(); status('定型文に登録しました');
+      } else if (act === 'reset') {
+        if (!confirm('定型文を最初の状態に戻しますか？\n（自分で足した定型文は消えます）')) return;
+        snippets = SNIP_DEFAULT.slice(); saveSnippets(snippets); pendingSnip = null; renderSnips(); status('定型文を初期に戻しました');
+      }
+    }));
     ov.querySelectorAll('[data-st]').forEach(el => {
       el.value = stampCfg[el.dataset.st];
       el.addEventListener('input', () => {
@@ -402,6 +494,12 @@
           const at = ev => [(ev.clientX - r.left) / scale, (ev.clientY - r.top) / scale];
           e.preventDefault();
           if (selShape) { const p = selShape.page; selShape = null; drawShapes(p); }
+          if (pendingSnip !== null) {   // 定型文を押したあとのクリック：そこに置く（テキストボックスのモードなら枠つき）
+            const t = fillSnip(snippets[pendingSnip] || '');
+            pendingSnip = null; renderSnips(); status('定型文を置きました。〇の所を直してください');
+            addBox(idx, at(e)[0], at(e)[1] - DEFAULT_SIZE * 0.6, t, DEFAULT_SIZE, true, { color: curColor(), boxed: mode === 'textbox' });
+            return;
+          }
           if (mode === 'text' || mode === 'textbox') {
             addBox(idx, at(e)[0], at(e)[1] - DEFAULT_SIZE * 0.6, '', DEFAULT_SIZE, true,
                    { color: curColor(), boxed: mode === 'textbox' });
