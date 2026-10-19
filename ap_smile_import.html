@@ -551,7 +551,10 @@ const rcvPrice=a=>+a.price>0?+a.price:(+a.qty?Math.round(+a.excl/+a.qty*100)/100
 const upYen=v=>v==null?'—':(+v).toLocaleString('ja-JP',{maximumFractionDigits:2});
 // 発注単価（約束の単価）と実際の単価（税抜 ÷ 数量）が違う：差が 0.5円 かつ 0.5% を超える（数量×単価の端数は違いにしない）
 const opDiff=a=>{const p=rcvPrice(a),o=+a.oprice;return !!(o&&p!=null&&Math.abs(p-o)>Math.max(0.5,o*0.005));};
-const opHtml=a=>(a.direct?' <span class="mst warn" title="SMILE の受入単価が 0（単価を使わず金額を直接入れた行）">金額を直接入力</span>':'')+(opDiff(a)?` <span class="mst ng" title="発注単価 ${upYen(a.oprice)} 円 → 実際 ${upYen(rcvPrice(a))} 円">発注 ${upYen(a.oprice)} → ${upYen(rcvPrice(a))}（${(rcvPrice(a)>a.oprice?'+':'')+Math.round((rcvPrice(a)-a.oprice)/a.oprice*100)}%）</span>`:'');
+// 発注数量と受入数量：多い＝赤（発注より多く入った・請求された）、少ない＝分納かもしれないので注意（橙）
+const oqDiff=a=>!!(+a.oqty&&+a.qty&&Math.abs(+a.qty-+a.oqty)>1e-6);
+const oqHtml=a=>!oqDiff(a)?'':+a.qty>+a.oqty?` <span class="mst ng" title="発注数量より多く受け入れています">発注 ${upYen(a.oqty)} → 受入 ${upYen(a.qty)}（多い）</span>`:` <span class="mst warn" title="発注数量より少ない（分納の途中かもしれません）">発注 ${upYen(a.oqty)} のうち ${upYen(a.qty)}（分納？）</span>`;
+const opHtml=a=>oqHtml(a)+(a.direct?' <span class="mst warn" title="SMILE の受入単価が 0（単価を使わず金額を直接入れた行）">金額を直接入力</span>':'')+(opDiff(a)?` <span class="mst ng" title="発注単価 ${upYen(a.oprice)} 円 → 実際 ${upYen(rcvPrice(a))} 円">発注 ${upYen(a.oprice)} → ${upYen(rcvPrice(a))}（${(rcvPrice(a)>a.oprice?'+':'')+Math.round((rcvPrice(a)-a.oprice)/a.oprice*100)}%）</span>`:'');
 const MST={'一致':'ok','金額が違う':'ng','受入だけ':'warn','請求書だけ':'warn'};
 function matchHtml(r){
   const src=rcvSrc();
@@ -559,7 +562,7 @@ function matchHtml(r){
   const rv=src.rows&&src.rows[r.code]||null,invs=r.invoices.filter(x=>itemsOf(x).length),noItems=r.invoices.filter(x=>!itemsOf(x).length&&x.ai!=='受付');
   const m=matchItems(rv&&rv.items||[],invs),g=m.groups,cnt=k=>g.filter(o=>o.st===k).length;
   const rT=g.reduce((s,o)=>s+(o.ra||0),0),iT=g.reduce((s,o)=>s+(o.ia||0),0),only=!!st.mOnly;
-  const body=g.filter(o=>!only||o.st!=='一致'||(o.r&&o.r.lines.some(a=>opDiff(a)||a.direct))).map(o=>{const c=MST[o.st],n=Math.max(o.r?o.r.lines.length:0,o.i?o.i.lines.length:0);
+  const body=g.filter(o=>!only||o.st!=='一致'||(o.r&&o.r.lines.some(a=>opDiff(a)||a.direct||oqDiff(a)))).map(o=>{const c=MST[o.st],n=Math.max(o.r?o.r.lines.length:0,o.i?o.i.lines.length:0);
     let h=`<tr class="mg ${c}"><td>${esc(o.date)}</td><td>${esc(o.r?o.r.slip:o.i.slip)}${o.r&&o.i&&o.i.slip&&slipN(o.i.slip)!==slipN(o.r.slip)?`<div class="s">請求書 ${esc(o.i.slip)}</div>`:''}</td><td>${o.r?esc(o.r.dept):''}</td>
       <td class="n">${o.ra==null?'—':yen(o.ra)}</td><td class="n">${o.ia==null?'—':yen(o.ia)}</td><td class="n">${o.diff?(o.diff>0?'+':'')+yen(o.diff):''}</td><td><span class="mst ${c}">${o.st}</span></td></tr>`;
     for(let k=0;k<n;k++){const a=o.r&&o.r.lines[k],b=o.i&&o.i.lines[k],ap=a?rcvPrice(a):null,pd=a&&b&&ap!=null&&b.UnitPrice!=null&&Math.abs(ap-b.UnitPrice)>0.5;
@@ -568,13 +571,13 @@ function matchHtml(r){
         <td colspan="2">${b?`${esc(b.ItemName||'')}${b.Qty!=null?` <span class="s ${pd?'pd':''}">${b.Qty}${esc(b.Unit||'')}×${upYen(b.UnitPrice)}</span>`:''}${pd?' <span class="mst ng">単価が違う</span>':''}`:''}</td></tr>`;}
     return h;}).join('');
   return `<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px"><b style="font-size:15px">${esc(r.name)}</b><span class="s" style="color:var(--sub);font-size:12px">${esc(r.code)}・${esc(r.mainDept||'')}</span><span style="flex:1"></span><span>支払額 <b>${yen(r.amount)}</b> 円</span></div>
-    <div class="msum"><div><div class="l">受入明細（SMILE 月次受入リスト・${m.tin?'税込':'税抜'}）</div><div class="v">${rv?yen(rT):'—'}</div><div class="s">${rv?rv.items.length+'行'+(rv.items.filter(opDiff).length?`・<b style="color:var(--up)">発注単価と違う ${rv.items.filter(opDiff).length}行</b>`:''):(src.err||'この仕入先の受入はありません')}</div></div>
+    <div class="msum"><div><div class="l">受入明細（SMILE 月次受入リスト・${m.tin?'税込':'税抜'}）</div><div class="v">${rv?yen(rT):'—'}</div><div class="s">${rv?rv.items.length+'行'+(rv.items.filter(opDiff).length?`・<b style="color:var(--up)">発注単価と違う ${rv.items.filter(opDiff).length}行</b>`:'')+(rv.items.filter(a=>oqDiff(a)&&+a.qty>+a.oqty).length?`・<b style="color:var(--up)">発注より多い ${rv.items.filter(a=>oqDiff(a)&&+a.qty>+a.oqty).length}行</b>`:''):(src.err||'この仕入先の受入はありません')}</div></div>
       <div><div class="l">請求書の明細</div><div class="v">${invs.length?yen(iT):'—'}</div><div class="s">${invs.reduce((s,x)=>s+itemsOf(x).length,0)}行${r.invoices.length?'':'（請求書がまだありません）'}</div></div>
       <div class="${!rv||!invs.length?'':Math.abs(iT-rT)<=1?'good':'bad'}"><div class="l">差（請求書 − 受入）</div><div class="v">${rv&&invs.length?(iT-rT>0?'+':'')+yen(iT-rT):'—'}</div></div></div>
     <div class="mchips">${Object.keys(MST).map(k=>`<span class="mst ${MST[k]}">${k} ${cnt(k)}</span>`).join('')}<span class="sp"></span><label><input type="checkbox" id="mOnly" ${only?'checked':''}> 違うものだけ</label></div>
     ${noItems.length?`<div class="s" style="color:var(--warn);margin-bottom:6px">明細を読んでいない請求書：${noItems.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} <button data-rdi="${x.id}" style="padding:0 7px;font-size:12px">🤖 明細を読む</button>`).join('　')}</div>`:''}
     <table class="mt"><tr><th>日付</th><th>伝票№</th><th>部門</th><th class="n">受入</th><th class="n">請求書</th><th class="n">差</th><th></th></tr>${body||'<tr><td colspan="7" class="s" style="padding:12px">ありません</td></tr>'}</table>
-    <div class="s" style="margin-top:6px">受入の数量・単価は SMILE の月次受入リストから（単価＝税抜 ÷ 数量）。発注単価と違う行・請求書の単価と違う行に印を付けます</div>`;}
+    <div class="s" style="margin-top:6px">受入の数量・単価は SMILE の月次受入リストから（単価＝税抜 ÷ 数量）。発注単価・発注数量と違う行、請求書の単価と違う行に印を付けます</div>`;}
 // 明細の照合は、確認の右端の縦のバー（ドロワー）。乗せるとさっと開き、外すと閉じる。クリックで開いたまま（もう一度クリック・Esc で閉じる）
 const MDR={open:false,pin:false,t:null};
 const drawerHtml=()=>`<div class="mdr ${MDR.open?'open':''}" id="mdr"><button type="button" class="mdr-bar ${MDR.pin?'pin':''}" id="mdrBar" title="乗せると開く・クリックで開いたまま">${MDR.pin?'📌 ':''}明細の照合（受入明細 ⇔ 請求書）</button><div class="mdr-panel" id="mdrP"></div></div>`;
