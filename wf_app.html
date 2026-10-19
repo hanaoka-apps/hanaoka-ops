@@ -239,7 +239,7 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="wf_theme.css?v=20261018b">
+<link rel="stylesheet" href="wf_theme.css?v=20261019b">
 </head>
 <body>
 
@@ -1154,7 +1154,7 @@ function renderStaff(main) {
   const snaps = S.data ? [...S.data.snaps].sort((a, b) => String(b.Title).localeCompare(String(a.Title))) : [];
   const ym = new Date().toISOString().slice(0, 7);
   main.innerHTML = `<div class="detail" style="flex:1">
-    <div class="card noprint"><h3 class="h3f"><span>人員表</span><span><button class="mini" id="sfReload">読み直す</button> <button class="mini" id="sfPrint">🖨 印刷・PDF</button></span></h3>
+    <div class="card noprint"><h3 class="h3f"><span>人員表</span><span>${hasRole('人員表を直す') ? '<button class="mini" id="sfUnits">部署・班の設定</button> ' : ''}<button class="mini" id="sfReload">読み直す</button> <button class="mini" id="sfPrint">🖨 印刷・PDF</button></span></h3>
       <div class="muted" style="margin-bottom:10px">必要＝在籍＋入社予定＋募集中（手では持ちません。人を増やすときは求人の稟議から）。${S.ledger ? '契約・試用期間の満了が近い人は色が変わります（オレンジ＝' + ((ledgerCfg().remind || {}).owner || 40) + '日を切った、赤＝すぎた）。' : ''}
         ${scopes.length ? `あなたが直せる範囲：${esc(scopes.map(s => s || '全社').join('・'))}` : '見るだけです。'}</div>
       <div class="sf-sites">${[['工場', '工場'], ['本社', '本社（役員を含む）'], ['all', 'すべて']].map(([k, l]) => `<button class="${S.site === k ? 'on' : ''}" data-site="${k}">${l}<span>${siteCnt(k)}人</span></button>`).join('')}</div>
@@ -1169,6 +1169,7 @@ function renderStaff(main) {
     ${M ? `<div class="card sf-card"><div class="sf-title">人員表　${esc(fmtDT(new Date()))}</div><ul class="sf-tree root">${top.map(u => node(u, 0)).join('')}</ul></div>` : ''}</div>`;
   if (!M) return;
   $('sfReload').onclick = () => { S.data = null; S.ledger = null; loadStaff(); };
+  if ($('sfUnits')) $('sfUnits').onclick = () => { S.ucfg = { mode: '' }; S.sel = null; S.add = null; S.unitEdit = null; S.secAdd = null; S.secSel = null; render(); };
   main.querySelectorAll('[data-site]').forEach(b => b.onclick = () => { S.site = b.dataset.site; try { localStorage.setItem('wf.staffSite', S.site); } catch { } render(); });
   $('sfPrint').onclick = () => { main.querySelectorAll('details[data-su]').forEach(d => d.open = true); window.print(); };
   $('sfQ').oninput = e => { S.q = e.target.value; const pos = e.target.selectionStart; renderStaff(main); const q = $('sfQ'); q.focus(); q.setSelectionRange(pos, pos); };
@@ -1362,18 +1363,123 @@ function staffMarks(p) {
   if (p.Pending) out.push(`<span class="sf-k k-pend">${esc(p.Pending)}</span>`);
   return out.join('');
 }
+/* ---------- 部署・班の設定（役割「人員表を直す」の人だけ）
+   場所はパス（例 工場/製造部/第一工場/サブ）で見分けるので、名前を変える・移すときは、下の班・人・求人の枠・枠の希望のパスもまとめて書き換える。
+   申請できる範囲（役割の Scope）と給与の部門の対応（設定 staff.deptMap）は定義ファイルから入るので、ここでは直さず「直してください」と出す */
+const ucfgParent = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+const ucfgUnder = (path, base) => path === base || String(path).startsWith(base + '/');
+function staffUnitRefs(base, M) {   // その場所（と下）を使っているもの
+  const d = staff.data;
+  const units = d.units.filter(u => ucfgUnder(u.Path, base)), persons = d.persons.filter(p => ucfgUnder(p.UnitPath || '', base)), openings = d.openings.filter(o => ucfgUnder(o.UnitPath || '', base));
+  const roles = st.M.roles.filter(r => r.Active !== false && String(r.Scope || '').split(';').map(x => x.trim()).some(x => x && ucfgUnder(x, base)))
+    .map(r => `${r.Title}（${String(r.Scope).split(';').map(x => x.trim()).filter(x => ucfgUnder(x, base)).join('・')}）`);
+  const dept = Object.entries(pj(st.M.settings['staff.deptMap'], {})).filter(([, v]) => ucfgUnder(String(v), base)).map(([k]) => k);
+  const busy = persons.filter(p => p.State !== '退職' && (p.State === '採用の稟議中' || p.Pending)).length + openings.filter(o => o.State === '求人の稟議中').length;
+  const live = persons.filter(p => p.State !== '退職').length, liveO = openings.filter(o => ['募集中', '求人の稟議中', '希望'].includes(o.State)).length;
+  return { units, persons, openings, roles: [...new Set(roles)], dept, busy, live, liveO };
+}
+function staffUnitCfg(box, M, closeDr) {
+  const S = staff, c = S.ucfg, d = S.data, all = d.units.filter(u => u.Active !== false);
+  const sortOf = u => Number(u.Sort) || 0, sibs = path => all.filter(x => ucfgParent(x.Path) === path).sort((a, b) => sortOf(a) - sortOf(b));
+  const label = path => path.split('/').join(' › ');
+  const row = (u, depth) => {
+    const kids = sibs(u.Path), n = (M.cnt[u.Path] || {}).act || 0, on = c.path === u.Path;
+    return `<li class="uc-row ${on ? 'on' : ''}" style="padding-left:${depth * 18 + 8}px"><span class="uc-n">${esc(u.Title)}</span><span class="muted">${n}人</span><span style="flex:1"></span>
+      <span class="uc-btns"><button class="mini" data-uc="up" data-p="${esc(u.Path)}" title="上へ">↑</button><button class="mini" data-uc="down" data-p="${esc(u.Path)}" title="下へ">↓</button>
+      <button class="mini" data-uc="add" data-p="${esc(u.Path)}">＋班</button>${depth ? `<button class="mini" data-uc="rename" data-p="${esc(u.Path)}">名前</button><button class="mini" data-uc="move" data-p="${esc(u.Path)}">移す</button><button class="mini" data-uc="close" data-p="${esc(u.Path)}">閉じる</button>` : ''}</span></li>
+      ${on && c.mode ? `<li class="uc-form">${staffUnitForm(u)}</li>` : ''}${kids.map(k => row(k, depth + 1)).join('')}`;
+  };
+  box.innerHTML = `<div class="card"><h3 class="h3f"><span>部署・班の設定</span><button class="mini" id="ucX">閉じる</button></h3>
+    <div class="muted" style="margin-bottom:8px">班を足す・名前を変える・別の部署の下へ移す・並べ替える・閉じる、ができます。名前を変える・移すと、その下の班・人・求人の枠もまとめて新しい場所に書き換えます。</div>
+    <ul class="uc-tree">${sibs('').map(u => row(u, 0)).join('')}</ul></div>`;
+  $('ucX').onclick = closeDr;
+  box.querySelectorAll('[data-uc]').forEach(b => b.onclick = () => {
+    const path = b.dataset.p, m = b.dataset.uc;
+    if (m === 'up' || m === 'down') return ucfgSort(path, m === 'up' ? -1 : 1, sibs);
+    S.ucfg = c.path === path && c.mode === m ? { mode: '' } : { mode: m, path }; render();
+  });
+  if ($('ucNo')) $('ucNo').onclick = () => { S.ucfg = { mode: '' }; render(); };
+  if ($('ucName')) { $('ucName').focus(); $('ucName').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) $('ucGo').click(); }; }
+  if ($('ucGo')) $('ucGo').onclick = () => ucfgRun(M, sibs);
+}
+function staffUnitForm(u) {
+  const c = staff.ucfg, r = c.mode === 'add' ? null : staffUnitRefs(u.Path);
+  const warn = r ? [
+    r.roles.length ? `申請できる範囲（役割）にこの場所が入っています：${esc(r.roles.join('、'))}。名前を変えたら、総務に伝えて定義を直してもらってください` : '',
+    r.dept.length ? `給与の部門「${esc(r.dept.join('・'))}」の人がこの場所に入ります（設定 staff.deptMap）。名前を変えたら、こちらも直してもらってください` : '',
+    r.busy ? `この場所で稟議・届けが進んでいます（${r.busy}件）。決裁のあと古い名前の場所に入ってしまうので、終わってから変えるのがおすすめです` : ''].filter(Boolean) : [];
+  const warnHtml = warn.length ? `<div class="uc-warn">${warn.map(w => '⚠ ' + w).join('<br>')}</div>` : '';
+  const btns = (go) => `<div class="actions"><button id="ucNo">やめる</button><span style="flex:1"></span><button class="pri" id="ucGo">${go}</button></div>`;
+  if (c.mode === 'add') return `<div class="lg-form"><label class="fld wide"><span>「${esc(u.Title)}」の下に足す班・部署の名前</span><input id="ucName" placeholder="例：ジャッキ"></label></div>${btns('足す')}`;
+  if (c.mode === 'rename') return `<div class="lg-form"><label class="fld wide"><span>新しい名前</span><input id="ucName" value="${esc(u.Title)}"></label></div>
+    <div class="muted">書き換えるもの：場所 ${r.units.length}件・人 ${r.persons.length}人・求人の枠など ${r.openings.length}件</div>${warnHtml}${btns('名前を変える')}`;
+  if (c.mode === 'move') {
+    const opts = staff.data.units.filter(x => x.Active !== false && !ucfgUnder(x.Path, u.Path) && x.Path !== ucfgParent(u.Path)).sort((a, b) => a.Path.localeCompare(b.Path, 'ja'));
+    return `<div class="lg-form"><label class="fld wide"><span>移す先（この下に入ります）</span><select id="ucTo"><option value="">選んでください</option>${opts.map(x => `<option value="${esc(x.Path)}">${esc(x.Path.split('/').join(' › '))}</option>`).join('')}</select></label></div>
+      <div class="muted">中の人・班・求人の枠も一緒に移ります（場所 ${r.units.length}件・人 ${r.persons.length}人・求人の枠など ${r.openings.length}件）</div>${warnHtml}${btns('移す')}`;
+  }
+  if (c.mode === 'close') {
+    if (r.live || r.liveO) return `<div class="uc-warn">この場所（と下の班）には、まだ人が ${r.live}人・求人の枠や枠の希望が ${r.liveO}件あります。先に「移す」か、人を別の場所へ異動してから閉じてください。</div><div class="actions"><button id="ucNo">わかった</button></div>`;
+    return `<div class="muted">「${esc(u.Title)}」${r.units.length > 1 ? `と下の班（${r.units.length - 1}件）` : ''}を閉じます。人員表に出なくなります（消しはしません）。</div>${warnHtml}${btns('閉じる')}`;
+  }
+  return '';
+}
+async function ucfgSort(path, dir, sibs) {
+  const list = sibs(ucfgParent(path)), i = list.findIndex(x => x.Path === path), j = i + dir;
+  if (j < 0 || j >= list.length) return;
+  [list[i], list[j]] = [list[j], list[i]];
+  try { for (const [k, u] of list.entries()) { const v = (k + 1) * 10; if ((Number(u.Sort) || 0) !== v) { await api.staffSave('STF_Unit', u.id, { Sort: v }); u.Sort = v; } } render(); }
+  catch (e) { alert('並べ替えられませんでした：' + e.message); staff.data = null; loadStaff(); }
+}
+async function ucfgRun(M, sibs) {
+  const S = staff, c = S.ucfg, d = S.data, u = d.units.find(x => x.Path === c.path && x.Active !== false); if (!u) return;
+  const btn = $('ucGo'); const done = msg => { toast(msg); S.ucfg = { mode: '' }; S.data = null; loadStaff(); };
+  const bad = n => !n ? '名前を入れてください' : /[\/;]/.test(n) ? '名前に「/」「;」は使えません' : '';
+  try {
+    if (c.mode === 'add') {
+      const n = $('ucName').value.trim(), e = bad(n); if (e) return alert(e);
+      const path = u.Path + '/' + n; if (d.units.some(x => x.Path === path && x.Active !== false)) return alert('同じ名前の班がもうあります');
+      const old = d.units.find(x => x.Path === path);   // 前に閉じた同じ場所があれば、それを開け直す
+      btn.disabled = true;
+      if (old) await api.staffSave('STF_Unit', old.id, { Active: true });
+      else await api.staffSave('STF_Unit', 0, { Title: n, Path: path, Site: u.Site || path.split('/')[0], Sort: (Math.max(0, ...sibs(u.Path).map(x => Number(x.Sort) || 0)) + 10), Active: true });
+      return done(`「${n}」を足しました`);
+    }
+    if (c.mode === 'close') {
+      const r = staffUnitRefs(u.Path); btn.disabled = true;
+      for (const x of r.units) await api.staffSave('STF_Unit', x.id, { Active: false });
+      return done(`「${u.Title}」を閉じました`);
+    }
+    let to;
+    if (c.mode === 'rename') { const n = $('ucName').value.trim(), e = bad(n); if (e) return alert(e); if (n === u.Title) return alert('名前が変わっていません'); to = (ucfgParent(u.Path) ? ucfgParent(u.Path) + '/' : '') + n; }
+    else { const t = $('ucTo').value; if (!t) return alert('移す先を選んでください'); to = t + '/' + u.Title; }
+    if (d.units.some(x => x.Path === to && x.Active !== false)) return alert('移した先に同じ名前の場所がもうあります');
+    const r = staffUnitRefs(u.Path), np = x => to + String(x).slice(u.Path.length), site = to.split('/')[0];
+    if (!confirm(`「${u.Path.split('/').join(' › ')}」を「${to.split('/').join(' › ')}」にします。\n場所 ${r.units.length}件・人 ${r.persons.length}人・求人の枠など ${r.openings.length}件を書き換えます。よろしいですか？`)) return;
+    btn.disabled = true; let k = 0; const total = r.units.length + r.persons.length + r.openings.length;
+    const step = () => { btn.textContent = `書き換え中… ${++k}/${total}`; };
+    const clash = d.units.find(x => x.Path === to && x.Active === false);   // 閉じた同じ名前の場所が残っていたら、名前をよける
+    if (clash) await api.staffSave('STF_Unit', clash.id, { Path: clash.Path + '（閉じた ' + clash.id + '）' });
+    for (const x of r.units) { await api.staffSave('STF_Unit', x.id, { Path: np(x.Path), ...(x.Path === u.Path ? { Title: to.split('/').pop() } : {}), ...(site !== u.Path.split('/')[0] ? { Site: site } : {}) }); step(); }
+    for (const x of r.persons) { await api.staffSave('STF_Person', x.id, { UnitPath: np(x.UnitPath) }); step(); }
+    for (const x of r.openings) { await api.staffSave('STF_Opening', x.id, { UnitPath: np(x.UnitPath) }); step(); }
+    S.closed = new Set([...S.closed].map(x => ucfgUnder(x, u.Path) ? np(x) : x));
+    done(r.roles.length || r.dept.length ? '書き換えました。申請できる範囲・給与の部門の対応も直す必要があります（総務へ）' : '書き換えました');
+  } catch (e) { alert('途中で止まりました：' + e.message + '\n途中まで書き換わっています。このまま総務に連絡してください。'); S.data = null; loadStaff(); }
+}
 /* 人を直す・足す、場所のメモ（一覧の上に出す） */
 function staffPanel(box, M, scopes) {
   const S = staff, p = S.sel ? M.persons.find(x => x.id === S.sel) || S.data.persons.find(x => x.id === S.sel) : null;
   const u = S.unitEdit ? M.units.find(x => x.Path === S.unitEdit) : null;
   const sec = S.secSel ? (M.secrets.find(x => x.id === S.secSel)) : null;
-  if (!p && !S.add && !u && !S.secAdd && !sec) return;  // 一覧の上ではなく、右から出るドロワーに出す（人員表を見たまま直せる）。外側・Esc・閉じるで閉じる
+  if (!p && !S.add && !u && !S.secAdd && !sec && !S.ucfg) return;  // 一覧の上ではなく、右から出るドロワーに出す（人員表を見たまま直せる）。外側・Esc・閉じるで閉じる
   const dr = document.createElement('div'); dr.id = 'sfDrawer'; dr.className = 'sdr-bg noprint';
   dr.innerHTML = '<aside class="sdr sdr-form" role="dialog" aria-label="人員表の編集"><div class="sdr-b"></div></aside>'; document.body.appendChild(dr);
-  const closeDr = () => { S.sel = null; S.add = null; S.addWish = null; S.unitEdit = null; S.secAdd = null; S.secSel = null; render(); };
+  const closeDr = () => { S.sel = null; S.add = null; S.addWish = null; S.unitEdit = null; S.secAdd = null; S.secSel = null; S.ucfg = null; render(); };
   dr.onclick = e => { if (e.target === dr) closeDr(); };
   const onKey = e => { if (e.key === 'Escape' && document.body.contains(dr)) { document.removeEventListener('keydown', onKey); closeDr(); } }; document.addEventListener('keydown', onKey);
   box = dr.querySelector('.sdr-b');
+  if (S.ucfg) return staffUnitCfg(box, M, closeDr);
   if (S.secAdd || sec) {
     box.innerHTML = sec ? `<div class="card"><h3 class="h3f"><span>🔒 内密の求人</span><button class="mini" id="sfX">閉じる</button></h3>
         <div>${esc(unitLabel(sec.UnitPath))}　${M.rest(sec)}名</div><div class="muted" style="margin:6px 0">${esc(sec.Memo || '')}</div>
@@ -2083,6 +2189,7 @@ function dataCard(form, data, prev, ctx = {}) {
   const show = (f, v) => {
     if (v == null || v === '' || (f.type === 'file' && !v.length)) return '<span class="muted">（未入力）</span>';
     if (f.type === 'table') return tableView(f, v, receiptOffsets(form ? form.fields : [], data)[f.key]);
+    if (f.type === 'rowlog') return rowlogView(f, data);
     if (f.type === 'file') return v.map(x => `<a class="flink" data-fkey="${esc(x.key)}">📎 ${esc(x.name)}</a> <span class="muted">${fsize(x.size)}</span>`).join('<br>');
     if (Array.isArray(v)) return esc(v.join('、'));
     if (f.type === 'currency' || (f.type === 'calc' && !f.unit)) return esc(yen(v));
@@ -2337,6 +2444,7 @@ function stepFields(t, form, route) {
 function stepFormHtml(t, form, route) {
   const fs = stepFields(t, form, route); if (!fs.length) { stepEd = null; return ''; }
   if (!stepEd || stepEd.taskId !== t.id) stepEd = { taskId: t.id, data: {}, files: {}, busy: '' };
+  const rl = fs.find(fd => fd.type === 'rowlog'); if (rl) { stepEd.rowlog = rl; return rowlogStepHtml(t, form, rl); }
   stepEd.types = Object.fromEntries(fs.map(fd => [fd.key, fd.type]));
   const E = stepEd, inp = fd => fd.type === 'file'
     ? `<div class="fdrop sf-drop" data-sfd="${esc(fd.key)}"><label class="fpick">＋ 書類を選ぶ<input type="file" data-sff="${esc(fd.key)}" accept="application/pdf,image/*" multiple style="display:none"></label><span class="muted">ここにドラッグ＆ドロップもできます</span>
@@ -2349,6 +2457,7 @@ function stepFormHtml(t, form, route) {
 }
 function bindStepForm(t, form, route) {
   const fs = stepFields(t, form, route); if (!fs.length || !stepEd) return;
+  if (stepEd.rowlog) return bindRowlog(t, form, stepEd.rowlog);
   const E = stepEd, again = () => { const d = $('detail'), y = d ? d.scrollTop : 0; renderTaskDetail(t, pj(t.SnapshotJson, {})); if ($('detail')) $('detail').scrollTop = y; };
   const fileF = fs.find(fd => fd.type === 'file');
   const addF = (key, list) => { E.files[key] = (E.files[key] || []).concat([...list].map(f => ({ name: f.name, size: f.size, file: f, key: fileKey(f.name) }))); again(); };
@@ -2370,7 +2479,13 @@ function bindStepForm(t, form, route) {
   };
 }
 async function saveStep(t) {
-  const E = stepEd, b = $('bOk'); b.disabled = true; const label = b.textContent; b.textContent = '書き込んでいます…';
+  const E = stepEd;
+  if (E.rowlog) {
+    const d = pj(t.SnapshotJson, {}).data || {}, rest = rowlogRest(E.rowlog, d);
+    if (rest.length) { alert(`まだ済んでいない回があります（${rest.map(i => (i + 1) + '回目').join('・')}）。すべての回の「${E.rowlog.phases[E.rowlog.phases.length - 1].label}」を記録してから終えてください。`); return false; }
+    stepEd = null; return true;
+  }
+  const b = $('bOk'); b.disabled = true; const label = b.textContent; b.textContent = '書き込んでいます…';
   try {
     const data = {}, newFiles = [];
     const toNum = v => Number(String(v).replace(/[,¥円\s]/g, ''));
@@ -2381,17 +2496,89 @@ async function saveStep(t) {
       data[k] = list.map(x => ({ name: x.name, key: x.key, size: x.size }));
     }
     if (!Object.keys(data).length) return confirm('入れた内容がありません。このまま作業を終えますか？');
+    await writeStepData(t, data, newFiles); stepEd = null; return true;
+  } catch (e) { alert('書き込めませんでした：' + e.message); return false; }
+  finally { if (b) { b.disabled = false; b.textContent = label; } }
+}
+/* 段の担当が申請に書き込む（WF_Action「作業の書き込み」→ フローI）。済むまで待つ */
+async function writeStepData(t, data, newFiles) {
+  {
     const { id } = await api.postAction({ Title: `作業の書き込み ${t.RequestNo}`, ActionType: '作業の書き込み', TaskId: t.id, RequestNo: t.RequestNo, PayloadJson: JSON.stringify({ pairs: Object.entries(data).map(([k, v]) => ({ k, v })), newFiles }) });   // フローは項目名を1つずつ確かめるので、名前と値の組で送る
     const t0 = Date.now();
     while (Date.now() - t0 < 180000) {
       await new Promise(ok => setTimeout(ok, 2500));
       const r = await api.actionResult(id);
-      if (r.Result === '完了') { stepEd = null; return true; }
+      if (r.Result === '完了') return true;
       if (r.Result === 'エラー') throw new Error(r.ResultMessage || '書き込めませんでした');
     }
-    throw new Error('書き込みに時間がかかっています。少し待ってから、もう一度「作業を終える」を押してください');
-  } catch (e) { alert('書き込めませんでした：' + e.message); return false; }
-  finally { if (b) { b.disabled = false; b.textContent = label; } }
+    throw new Error('書き込みに時間がかかっています。少し待ってから、もう一度押してください');
+  }
+}
+/* ---------- 回ごとの記録（type "rowlog"）：表 of（例：送金の予定）の行ごとに、段の担当が phases（例：予約 → 送金の完了）を順に記録する。
+   1つの段の中で何度も書く（回ごとに「作業の書き込み」）。すべての行の最後の phase が済んだら「作業を終える」 */
+const rowlogRows = (f, d) => Array.isArray(d[f.of]) ? d[f.of] : [];
+const rowlogRest = (f, d) => rowlogRows(f, d).map((_, i) => i).filter(i => !(((d[f.key] || [])[i] || {})[f.phases[f.phases.length - 1].key]));
+function rowlogLabel(f, r) {
+  return String(f.rowLabel || '').replace(/\{(\w+)(?:\|([^}]*))?\}/g, (_, k, suf) => { const v = r[k]; if (v == null || v === '') return ''; return (typeof v === 'number' ? v.toLocaleString() : String(v)) + (suf || ''); }).replace(/\s+/g, ' ').trim();
+}
+function rowlogDone(ph, x) {   // 記録済みの phase の中身（ラベル：値）
+  return ph.fields.map(fd => { const v = x[fd.key]; if (v == null || v === '' || (Array.isArray(v) && !v.length)) return '';
+    const val = fd.type === 'file' ? v.map(y => `<a class="flink" data-fkey="${esc(y.key)}">📎 ${esc(y.name)}</a>`).join(' ') : fd.type === 'currency' ? esc(yen(v)) : esc(typeof v === 'number' ? v.toLocaleString() : v);
+    return `<span class="rl-kv"><span class="muted">${esc(fd.label)}</span> ${val}</span>`; }).filter(Boolean).join('');
+}
+function rowlogView(f, d) {   // 申請内容に出す表
+  const log = d[f.key] || [];
+  return `<div class="rl-list">${rowlogRows(f, d).map((r, i) => { const x = log[i] || {};
+    return `<div class="rl-row"><div class="rl-h"><b>${i + 1}回目</b> ${esc(rowlogLabel(f, r))} ${rowlogBadge(f, x)}</div>${f.phases.filter(ph => x[ph.key]).map(ph => `<div class="rl-ph"><span class="rl-pl">${esc(ph.label)}</span>${rowlogDone(ph, x[ph.key])}</div>`).join('')}</div>`; }).join('')}</div>`;
+}
+function rowlogBadge(f, x) {
+  const last = [...f.phases].reverse().find(ph => x[ph.key]);
+  return last ? `<span class="badge ${last === f.phases[f.phases.length - 1] ? 'b-ok' : 'b-run'}">${esc(last.done || last.label + '済')}</span>` : '<span class="badge b-gray">まだ</span>';
+}
+function rowlogStepHtml(t, form, f) {
+  const d = pj(t.SnapshotJson, {}).data || {}, log = d[f.key] || [], E = stepEd, rest = rowlogRest(f, d);
+  const inp = (i, fd) => { const id = `rl_${i}_${fd.key}`;
+    return fd.type === 'file'
+      ? `<div class="fdrop sf-drop" data-sfd="${id}"><label class="fpick">＋ 書類を選ぶ<input type="file" data-sff="${id}" accept="application/pdf,image/*" multiple style="display:none"></label><span class="muted">ここにドラッグ＆ドロップ</span>
+        <div>${(E.files[id] || []).map((x, k) => `<span class="ask-file">📎 ${esc(x.name)} <button class="mini" data-sfx="${id}:${k}">✕</button></span>`).join('')}</div></div>`
+      : `<input data-sfk="${id}" type="${fd.type === 'date' ? 'date' : 'text'}" ${['number', 'currency'].includes(fd.type) ? 'inputmode="decimal"' : ''} value="${esc(E.data[id] ?? '')}" placeholder="${esc(fd.placeholder || '')}">`; };
+  return `<div class="card step-card"><h3>${esc(t.StepName)}　<span class="muted" style="font-weight:400">回ごとに記録します（残り ${rest.length}回）</span></h3>
+    <div class="rl-list">${rowlogRows(f, d).map((r, i) => { const x = log[i] || {}, next = f.phases.find(ph => !x[ph.key]);
+      return `<div class="rl-row ${next ? '' : 'done'}"><div class="rl-h"><b>${i + 1}回目</b> ${esc(rowlogLabel(f, r))} ${rowlogBadge(f, x)}</div>
+        ${f.phases.filter(ph => x[ph.key]).map(ph => `<div class="rl-ph"><span class="rl-pl">${esc(ph.label)}</span>${rowlogDone(ph, x[ph.key])}</div>`).join('')}
+        ${next ? `<details class="rl-in" ${i === rest[0] ? 'open' : ''}><summary>${esc(next.label)}を記録する</summary><div class="lg-form" style="margin-top:8px">${next.fields.map(fd => `<label class="fld ${fd.type === 'file' ? 'wide' : ''}"><span>${esc(fd.label)}${fd.required ? ' <span class="req">必須</span>' : ''}</span>${inp(i, fd)}</label>`).join('')}</div>
+          <div class="actions"><span style="flex:1"></span><button class="pri" data-rlgo="${i}">${i + 1}回目の${esc(next.label)}を記録する</button></div></details>` : ''}</div>`; }).join('')}</div>
+    <div class="muted" style="margin-top:6px">「記録する」を押すと、その回の内容と書類がすぐ申請に書き込まれます（この段はそのまま残ります）。すべての回が済んだら、下の「作業を終える」を押してください。</div></div>`;
+}
+function bindRowlog(t, form, f) {
+  const E = stepEd, again = () => { const dd = $('detail'), y = dd ? dd.scrollTop : 0; renderTaskDetail(t, pj(t.SnapshotJson, {})); if ($('detail')) $('detail').scrollTop = y; };
+  const addF = (key, list) => { E.files[key] = (E.files[key] || []).concat([...list].map(x => ({ name: x.name, size: x.size, file: x, key: fileKey(x.name) }))); again(); };
+  document.querySelectorAll('[data-sfk]').forEach(el => el.oninput = () => { E.data[el.dataset.sfk] = el.value.trim(); });
+  document.querySelectorAll('[data-sff]').forEach(el => el.onchange = () => addF(el.dataset.sff, el.files));
+  document.querySelectorAll('[data-sfd]').forEach(z => { z.ondragover = e => { e.preventDefault(); z.classList.add('over'); }; z.ondragleave = () => z.classList.remove('over'); z.ondrop = e => { e.preventDefault(); addF(z.dataset.sfd, e.dataTransfer.files); }; });
+  document.querySelectorAll('[data-sfx]').forEach(b => b.onclick = e => { e.preventDefault(); const k = b.dataset.sfx.lastIndexOf(':'); E.files[b.dataset.sfx.slice(0, k)].splice(Number(b.dataset.sfx.slice(k + 1)), 1); again(); });
+  document.querySelectorAll('[data-rlgo]').forEach(b => b.onclick = async () => {
+    const i = Number(b.dataset.rlgo), snap = pj(t.SnapshotJson, {}), d = snap.data || {}, log = JSON.parse(JSON.stringify(d[f.key] || [])), x = log[i] || {}, ph = f.phases.find(p => !x[p.key]); if (!ph) return;
+    const toNum = v => Number(String(v).replace(/[,¥円\s]/g, '')), val = {}, miss = [];
+    for (const fd of ph.fields) {
+      const id = `rl_${i}_${fd.key}`;
+      if (fd.type === 'file') { if ((E.files[id] || []).length) val[fd.key] = E.files[id]; }
+      else { const v = (E.data[id] || '').trim(); if (v !== '') { if (['number', 'currency'].includes(fd.type) && isNaN(toNum(v))) return alert(`「${fd.label}」は数字で入れてください`); val[fd.key] = ['number', 'currency'].includes(fd.type) ? toNum(v) : v; } }
+      if (fd.required && val[fd.key] == null) miss.push(fd.label);
+    }
+    if (miss.length) return alert('入れてください：' + miss.join('、'));
+    b.disabled = true; const label = b.textContent; b.textContent = '書き込んでいます…';
+    try {
+      const newFiles = [];
+      for (const fd of ph.fields.filter(fd => fd.type === 'file' && val[fd.key])) { for (const y of val[fd.key]) { await api.upload(y.file, y.key, () => {}); newFiles.push(y.key); } val[fd.key] = val[fd.key].map(y => ({ name: y.name, key: y.key, size: y.size })); }
+      while (log.length < i) log.push({});
+      log[i] = { ...x, [ph.key]: { ...val, at: new Date().toISOString(), by: st.me.upn } };
+      await writeStepData(t, { [f.key]: log }, newFiles);
+      snap.data = { ...d, [f.key]: log }; t.SnapshotJson = JSON.stringify(snap);   // フローIもタスクの写しを直す。画面は先に直しておく
+      ph.fields.forEach(fd => { delete E.data[`rl_${i}_${fd.key}`]; delete E.files[`rl_${i}_${fd.key}`]; });
+      toast(`${i + 1}回目の${ph.label}を記録しました`); again();
+    } catch (e) { alert('書き込めませんでした：' + e.message); b.disabled = false; b.textContent = label; }
+  });
 }
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
 function renderTaskDetail(t, s) {
