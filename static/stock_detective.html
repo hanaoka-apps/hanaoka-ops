@@ -206,6 +206,7 @@ body { display: flex; flex-direction: column; }
 .orphan-table .num.neg { color: #dc2626; font-weight: 600; }
 .orphan-table .empty { padding: 40px 20px; text-align: center; color: #94a3b8; }
 .orphan-table .badge-active { background: #fee2e2; color: #991b1b; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+.price-sim-btn { background:#23268f !important; color:#fff !important; white-space:nowrap; }
 .orphan-table .badge-prohibited { background: #f1f5f9; color: #64748b; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
 </style>
 </head>
@@ -567,6 +568,7 @@ function _showCandidatesPicker(candidates){
 
 // 確定したコードでiframe更新
 function _doSearchWithCode(code){
+  window._sdCode = code; try { const b = document.getElementById("priceSimBtn"); if (b) { b.hidden = false; b.title = code + " の原価（単価）が上がったら、どの製品にいくら効くかを付加価値アプリで試す"; } } catch(_){}
   refreshSbOptions(code);
   sbSel.value = '';
   sbWrap.classList.add('active');
@@ -613,7 +615,11 @@ sbSel.addEventListener('change', () => {
 // ・検索後は入力欄を全選択 → 次の読み取りで自動的に上書きされる
 // ・高速連続入力(キー間隔30ms未満)を検知したら、読み取り開始前の文字を捨てる
 // ・Enterが来なくても、高速入力が150ms止まったら検索する
-let _scanLastKey = 0, _scanBurst = false, _scanStart = 0, _scanTimer = null;
+// 2026-10-14b 読み取りの見分け方を「連続した打鍵の平均間隔」に変更：
+//   80ms以内で続く打鍵を1まとまりとし、4文字以上・平均45ms未満ならハンディ読み取り（人は4文字を135ms以内では打てない）。
+//   人がたまたま2文字を速く打っても読み取り扱いにしない（以前の「UDAが消える」対策）／ハンディの間隔が少しばらついても拾う。
+const SCAN_GAP = 80, SCAN_AVG = 45, SCAN_MIN = 4;
+let _scanBurst = false, _scanStart = 0, _scanTimer = null, _sqT0 = 0, _sqLast = 0, _sqN = 0;
 function _scanRunSearch(){
   clearTimeout(_scanTimer); _scanBurst = false;
   q.value = (q.value || "").normalize('NFKC').trim();
@@ -622,49 +628,55 @@ function _scanRunSearch(){
   setTimeout(() => { try { q.focus(); q.select(); } catch(_){} }, 0);
 }
 q.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); _scanRunSearch(); return; }
-  if (e.isComposing || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-  const now = Date.now(), gap = now - _scanLastKey;
-  _scanLastKey = now;
-  if (gap > 300) {
-    _scanBurst = false;
-    _scanStart = q.selectionStart || 0;
-  } else if (gap < 30 && !_scanBurst) {
-    _scanBurst = true;
-    q.value = q.value.slice(_scanStart);
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    // 短いコードをEnter付きで読んだ場合も、読み取り前に残っていた文字は捨てる
+    if (!_scanBurst && _sqN >= 3 && (_sqLast - _sqT0) / (_sqN - 1) < SCAN_AVG) q.value = q.value.slice(_scanStart);
+    _sqN = 0; _scanRunSearch(); return;
   }
+  if (e.isComposing || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+  const now = Date.now();
+  if (now - _sqLast > SCAN_GAP) { _sqT0 = now; _sqN = 1; _scanBurst = false; _scanStart = q.selectionStart || 0; }
+  else {
+    _sqN++;
+    if (!_scanBurst && _sqN >= SCAN_MIN && (now - _sqT0) / (_sqN - 1) < SCAN_AVG) { _scanBurst = true; q.value = q.value.slice(_scanStart); }
+  }
+  _sqLast = now;
   if (_scanBurst) { clearTimeout(_scanTimer); _scanTimer = setTimeout(_scanRunSearch, 150); }
 });
 // ===== 2026-09-26 v2: カーソルが検索欄以外(下のツリー画面など)にあってもバーコードを受ける =====
 // ハンディの高速入力(キー間隔30ms未満)を画面全体で拾い、検索欄に入れて検索する。
 // 人の手入力(ゆっくり)には反応しない。構成なし品目などのモーダル表示中は反応しない。
-let _gBuf = "", _gLast = 0, _gBurst = false, _gTimer = null, _gFirst = null, _scanRefocus = 0;
+let _gBuf = "", _gLast = 0, _gBurst = false, _gTimer = null, _gFirst = null, _scanRefocus = 0, _gT0 = 0;
 function _gIsText(el){ return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
 function _gFinish(){
   clearTimeout(_gTimer);
   const code = _gBuf; _gBuf = ""; _gBurst = false;
   if (code.length >= 3) { q.value = code; _scanRefocus = Date.now(); _scanRunSearch(); }
 }
+// 読み取り判定までに別の入力欄へ入ってしまった文字を取り消す
+function _gUndoTyped(typed){ const t = _gFirst; try { if (_gIsText(t) && typeof t.value === 'string' && typed && t.value.endsWith(typed)) t.value = t.value.slice(0, -typed.length); } catch(_){} }
 function _globalScanKey(e){
   if (e.target === q) return;                       // 検索欄は既存処理に任せる
   if (document.getElementById('orphanModal').classList.contains('open')) return;
   if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const now = Date.now();
   if (e.key === 'Enter') {
+    const n = _gBuf.length, avg = n > 1 ? (_gLast - _gT0) / (n - 1) : 999;
     if (_gBurst) { e.preventDefault(); e.stopPropagation(); _gFinish(); }
+    else if (n >= 3 && avg < SCAN_AVG && now - _gLast < SCAN_GAP * 2) { e.preventDefault(); e.stopPropagation(); _gUndoTyped(_gBuf); _gFinish(); }
     _gBuf = ""; return;
   }
   if (e.key.length !== 1) return;
-  const now = Date.now(), gap = now - _gLast;
-  _gLast = now;
-  if (gap > 300 || (!_gBurst && gap >= 30)) {       // 読み取り開始候補(1文字目)
-    _gBuf = e.key; _gFirst = e.target; _gBurst = false; return;
+  if (now - _gLast > SCAN_GAP) {                    // 新しいまとまり（1文字目）：そのまま入力させる
+    _gBuf = e.key; _gFirst = e.target; _gBurst = false; _gT0 = now; _gLast = now; return;
   }
-  if (!_gBurst) {                                   // 2文字目が高速 → ハンディと判定
-    _gBurst = true;
-    const t = _gFirst;                              // 1文字目が別の入力欄に入っていたら取り消す
-    try { if (_gIsText(t) && typeof t.value === 'string' && t.value.endsWith(_gBuf)) t.value = t.value.slice(0, -_gBuf.length); } catch(_){}
+  _gLast = now; _gBuf += e.key;
+  if (!_gBurst) {
+    const n = _gBuf.length, avg = (now - _gT0) / (n - 1);
+    if (n < SCAN_MIN || avg >= SCAN_AVG) return;    // まだ人の入力の可能性 → そのまま入力させる
+    _gBurst = true; _gUndoTyped(_gBuf.slice(0, -1));
   }
-  _gBuf += e.key;
   e.preventDefault(); e.stopPropagation();
   clearTimeout(_gTimer); _gTimer = setTimeout(_gFinish, 150);
 }
@@ -1031,7 +1043,7 @@ window.addEventListener('load', () => {
 // ===== 2026-09-30 自動更新：FUJIN本体がこの画面をキャッシュしたまま開くと古い版が出るため、
 // 開くたびに公開中の版番号を確認し、新しければ ?v=版番号 を付けて読み直す（1回だけ）。
 (function(){
-  var BUILD = "20261006-02";
+  var BUILD = "20261015-01";
   window.FUJIN_SD_BUILD = BUILD;
   if (location.protocol === "file:") return;
   var url = location.pathname + "?chk=" + Date.now();
@@ -1260,12 +1272,12 @@ window.addEventListener('load', () => {
 </div></div>
 <div id="tanaList"><div class="card">
   <div class="hd"><b style="font-size:16px;color:#115e59">📋 登録内容の確認</b><span class="tl-actions"><button class="s" id="tlModeSmile" style="border-color:#fdba74;color:#9a3412;background:#fff7ed">📤 SMILE取込用（倉庫別）</button> <button class="s" id="tlModeLedger">帳簿在庫との確認</button> <button class="s" id="tlModeWh">倉庫ごとのまとめ</button> <button class="s" id="tlModeList" style="background:#0f766e;color:#fff;border-color:#0f766e">登録一覧</button><button class="s" id="tlClose" aria-label="登録内容の確認を閉じる">閉じる ✕</button></span></div>
-  <div id="tlWhView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:11.5px;color:#64748b;flex:1">全員分（取消済みは除く）。行を押すと、その倉庫の登録一覧を開きます。</span><label style="font-size:12px"><input type="checkbox" id="tlWithItems" checked> 品目の内訳も含める</label><button class="s" id="tlPrint">🖨 印刷</button><button class="s" id="tlXls">📥 Excel（CSV）</button></div><table><thead><tr><th>倉庫</th><th class="num">品目数</th><th class="num">うち「無い(0)」</th><th class="num">登録件数</th><th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr></thead><tbody id="tlWhBody"></tbody></table></div>
+  <div id="tlWhView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:11.5px;color:#64748b;flex:1">全員分（取消済みは除く）。行を押すと、その倉庫の登録一覧を開きます。</span><label style="font-size:12px"><input type="checkbox" id="tlWithItems" checked> 品目の内訳も含める</label><button class="s" id="tlPrint">🖨 印刷</button><button class="s" id="tlXls">📥 Excel（CSV）</button></div><div id="tlCostBar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px;font-size:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:6px 10px"><b style="color:#9a3412">💴 評価金額</b><label>単価 <select id="tlCostKind"><option value="inv">在庫評価単価</option><option value="std">標準原価（積上原価計）</option></select></label><button class="s" id="tlCostBtn">評価金額を出す</button><span id="tlCostInfo" style="color:#64748b">数量 × 最新月の標準原価表の単価</span></div><table><thead><tr><th>倉庫</th><th class="num">品目数</th><th class="num">うち「無い(0)」</th><th class="num">登録件数</th><th class="num">評価金額</th><th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr></thead><tbody id="tlWhBody"></tbody></table></div>
   <div id="tlSmileView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="font-size:12px;color:#475569;line-height:1.7;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 12px;margin-bottom:8px">SMILEの<b>棚卸フォームと同じ30列</b>で、<b>倉庫ごと</b>にファイルを出します。取り込まれるのは 倉庫ｺｰﾄﾞ&lt;00001&gt;・ﾛｹｰｼｮﾝ&lt;00002&gt;・品目ｺｰﾄﾞ&lt;00003&gt;・実地棚卸数量&lt;00005&gt; だけで、ほかの列（&lt;&gt;）は品目マスタからの参考表示です（帳簿在庫数は空欄）。<br>中身：全員分の登録を<b>品目ごとに合計</b>（取消済みは除く）。ロケーションは<b>社内倉庫＝1、外注先＝空白</b>。出力前に最新の登録を読み直します。<br>数えていない品目は含みません（「無い」を0にしたい場合は0で登録してください）。</div><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span id="tsInfo" style="font-size:11.5px;color:#64748b;flex:1"></span><button class="s" id="tsAll">📤 全倉庫を1ファイルで出力</button></div><table><thead><tr><th>倉庫</th><th>区分</th><th>ロケーション</th><th class="num">品目数</th><th class="num">うち0</th><th class="num">数量合計</th><th></th></tr></thead><tbody id="tsBody"></tbody></table></div>
-  <div id="tlLedgerView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="font-size:12px;color:#475569;line-height:1.6;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:8px 12px;margin-bottom:8px"><span id="tlLedgerInfo">帳簿在庫を読み込み中…</span></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><select id="tlLedgerWh"><option value="">すべての倉庫</option></select><input id="tlLedgerQ" type="search" placeholder="品目コード・名前"><button class="s" id="tlLedgerCsv">📥 確認用 CSV</button><span id="tlLedgerCount" style="margin-left:auto;color:#64748b"></span></div><table><thead><tr><th class="ledger-sort" data-ledger-sort="wh">倉庫 <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="code">品目コード <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="name">品目名 <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="book" style="color:#94a3b8">帳簿在庫 <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="qty">数量 <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="memo">メモ <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="people">入力者 <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="state">状態 <span class="ledger-sort-arrow">↕</span></th></tr></thead><tbody id="tlLedgerBody"></tbody></table></div>
+  <div id="tlLedgerView" style="display:none;overflow:auto;flex:1;padding:10px 18px"><div style="font-size:12px;color:#475569;line-height:1.6;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:8px 12px;margin-bottom:8px"><span id="tlLedgerInfo">帳簿在庫を読み込み中…</span></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><select id="tlLedgerWh"><option value="">すべての倉庫</option></select><input id="tlLedgerQ" type="search" placeholder="品目コード・名前"><button class="s" id="tlLedgerCsv">📥 確認用 CSV</button><label style="font-size:12px"><input type="checkbox" id="tlLedgerNoCost"> 単価なしだけ</label><span class="tl-cost-note" style="font-size:11.5px;color:#64748b"></span><span id="tlLedgerCount" style="margin-left:auto;color:#64748b"></span></div><table><thead><tr><th class="ledger-sort" data-ledger-sort="wh">倉庫 <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="code">品目コード <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="name">品目名 <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="book" style="color:#94a3b8">帳簿在庫 <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="qty">数量 <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="price">単価 <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="diff">差（数量−帳簿） <span class="ledger-sort-arrow">↕</span></th><th class="num ledger-sort" data-ledger-sort="diffAmt">差額 <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="memo">メモ <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="people">入力者 <span class="ledger-sort-arrow">↕</span></th><th class="ledger-sort" data-ledger-sort="state">状態 <span class="ledger-sort-arrow">↕</span></th></tr></thead><tbody id="tlLedgerBody"></tbody></table></div>
   <div class="tb" id="tlTb"><label><input type="radio" name="tlWho" value="me" checked> 自分の登録</label><label><input type="radio" name="tlWho" value="all"> 全員</label>
-    <select id="tlWh"><option value="">すべての倉庫</option></select><input type="search" id="tlQ" placeholder="品目コード・名前"><label><input type="checkbox" id="tlCx"> 取消済みも表示</label><span id="tlInfo" style="margin-left:auto;color:#64748b"></span></div>
-  <div class="bd" id="tlListView"><table><thead><tr><th>日時</th><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">数量</th><th>メモ</th><th>入力者</th><th>状態</th><th></th></tr></thead><tbody id="tlBody"></tbody></table></div>
+    <select id="tlWh"><option value="">すべての倉庫</option></select><input type="search" id="tlQ" placeholder="品目コード・名前"><label><input type="checkbox" id="tlCx"> 取消済みも表示</label><label><input type="checkbox" id="tlNoCost"> 単価なしだけ</label><span class="tl-cost-note" style="font-size:11.5px;color:#64748b"></span><span id="tlInfo" style="margin-left:auto;color:#64748b"></span></div>
+  <div class="bd" id="tlListView"><table><thead><tr><th>日時</th><th>倉庫</th><th>品目コード</th><th>品目名</th><th class="num">数量</th><th class="num">単価</th><th>メモ</th><th>入力者</th><th>状態</th><th></th></tr></thead><tbody id="tlBody"></tbody></table></div>
 </div></div>
 <div id="tanaParents" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2400;display:none;align-items:center;justify-content:center;padding:3vh 3vw"><div class="card" style="background:#fff;border-radius:12px;width:100%;max-width:620px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden"><div class="hd" style="padding:12px 16px;background:#ccfbf1;display:flex;justify-content:space-between;align-items:center"><b id="tanaParentsTitle" style="color:#115e59">親品目</b><button class="s" id="tanaParentsClose">閉じる ✕</button></div><div id="tanaParentsBody" style="overflow:auto;padding:14px 18px"></div></div></div>
 <div id="tanaAdmin"><div class="card">
@@ -1666,6 +1678,30 @@ function renderHist(){
   $('tanaLast').innerHTML = last ? `最後の登録：${esc(fmtAt(last.at))}　${esc(last.code)}　${esc(last.whName||last.wh)}　<b>${fmtQ(last.qty)}</b>（自分の登録 ${mine.filter(x=>!x.canceled).length}件）` : 'まだ自分の登録はありません';
   if($('tanaList').classList.contains('open')) renderList();
 }
+// ---- 評価金額（2026-10-14）：数量 × 最新月の標準原価表の「在庫評価単価」（切替で積上原価計）----
+// 単価は保護データ value_analysis.json（SharePoint）の standard_cost_history の最新月から読む。公開ページには持たない。
+const TCOST={map:null,month:'',kind:'inv',loading:null,err:''};
+const _ck=c=>String(c==null?'':c).normalize('NFKC').trim().toUpperCase();
+function _spDrive(){ try{ const src=[...window.top.document.scripts].map(x=>x.textContent||'').join('\n'); const m=src.match(/\bvar\s+_SP_DRIVE7\s*=\s*["']([^"']+)["']/); return m?m[1]:''; }catch(_){ return ''; } }
+async function loadTanaCosts(){
+  if(TCOST.map) return; if(TCOST.loading) return TCOST.loading;
+  TCOST.loading=(async()=>{ const d=_spDrive(); if(!d) throw new Error('保存先を特定できません（FUJIN本体から開いてください）');
+    const r=await gfetch(`https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(d)}/root:/value_analysis.json:/content`, null, ['Files.Read.All']);
+    if(!r.ok) throw new Error('標準原価を読めません（HTTP '+r.status+'）');
+    const j=await r.json(), h=((j||{}).item_analysis||{}).standard_cost_history||{}, ms=Object.keys(h).sort();
+    if(!ms.length) throw new Error('標準原価の月別データがありません');
+    const m=ms[ms.length-1], map=new Map(); for(const [c,v] of Object.entries(h[m]||{})) map.set(_ck(c),{inv:Number(v&&v.inventory_unit_cost)||0, std:Number(v&&v.total)||0});
+    TCOST.map=map; TCOST.month=m; TCOST.err=''; })();
+  try{ await TCOST.loading; }catch(e){ TCOST.err=e.message; throw e; } finally{ TCOST.loading=null; }
+}
+function unitCost(code){ if(!TCOST.map) return null; const v=TCOST.map.get(_ck(code)); if(!v) return null; const u=TCOST.kind==='std'?v.std:v.inv; return u>0?u:null; }
+// 登録一覧・帳簿在庫との確認で単価を出す（単価が登録されていない品目を見つける用）。開いたときに自動で読み込む
+function ensureCosts(after){ if(TCOST.map||TCOST.err) return; if(TCOST.loading) return; document.querySelectorAll('.tl-cost-note').forEach(e=>e.textContent='単価を読み込んでいます…'); loadTanaCosts().then(after,after); }
+function priceCell(code){ if(!TCOST.map) return `<span style="color:#cbd5e1">${TCOST.err?'—':'…'}</span>`; const u=unitCost(code); return u==null?'<span style="color:#b91c1c;font-weight:700;background:#fee2e2;border-radius:4px;padding:0 5px">未登録</span>':yen0(u); }
+function costNote(){ const t=TCOST.map?`単価＝${costLabel()}`:(TCOST.err?'単価を読めませんでした：'+TCOST.err:'単価を読み込んでいます…'); document.querySelectorAll('.tl-cost-note').forEach(e=>e.textContent=t); }
+function costLabel(){ return TCOST.month?`${TCOST.month.slice(0,4)}年${Number(TCOST.month.slice(4))}月の標準原価表（${TCOST.kind==='std'?'積上原価計':'在庫評価単価'}）`:''; }
+function whAmounts(){ const m=new Map(); if(!TCOST.map) return m; for(const a of whItems()){ const u=unitCost(a.code), r=m.get(a.wh)||{amt:0,miss:0}; if(u==null){ if(a.total) r.miss++; } else r.amt+=u*a.total; m.set(a.wh,r); } return m; }
+const yen0=v=>v==null?'—':Math.round(v).toLocaleString('ja-JP');
 function whSummary(){
   const m=new Map();
   for(const x of MINE){ let r=m.get(x.wh); if(!r){ r={wh:x.wh, name:x.whName||(whByCode(x.wh)||{}).name||x.wh, codes:new Map(), n:0, cx:0, people:new Set(), first:null, last:null}; m.set(x.wh,r); }
@@ -1684,10 +1720,11 @@ function unitOf(code){ const ni=nodeInfo(code); return (ni&&ni.pm&&ni.pm.un)||''
 function csvCell(c){ const s=String(c==null?'':c); return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
 function exportWhCsv(){
   const rows=whSummary(), items=$('tlWithItems').checked?whItems():[]; const f2=t=>t?fmtAt(t):'';
-  const out=[['棚卸期間',PERIOD?PERIOD.id:''],['出力日時',fmtAt(new Date().toISOString())],[],['【倉庫ごとのまとめ】'],['倉庫コード','倉庫名','品目数','うち無い(0)','登録件数','入力した人','最初の登録','最後の登録']];
-  for(const r of rows) out.push([r.wh,r.name,r.codes.size,[...r.codes.values()].filter(v=>v===0).length,r.n,[...r.people].join('、'),f2(r.first),f2(r.last)]);
-  if(items.length){ out.push([],['【品目の内訳】'],['倉庫コード','倉庫名','品目コード','品目名','数量合計','単位','登録件数','入力した人','最後の登録']);
-    for(const a of items) out.push([a.wh,a.whName,a.code,a.name,a.total,unitOf(a.code),a.n,[...a.people].join('、'),f2(a.last)]); }
+  const AM=whAmounts(), C=!!TCOST.map;
+  const out=[['棚卸期間',PERIOD?PERIOD.id:''],['出力日時',fmtAt(new Date().toISOString())]].concat(C?[['評価単価',costLabel()]]:[]).concat([[],['【倉庫ごとのまとめ】'],['倉庫コード','倉庫名','品目数','うち無い(0)','登録件数'].concat(C?['評価金額','単価なし品目']:[]).concat(['入力した人','最初の登録','最後の登録'])]);
+  for(const r of rows){ const a=AM.get(canonicalWhCode(r.wh))||AM.get(r.wh)||{amt:0,miss:0}; out.push([r.wh,r.name,r.codes.size,[...r.codes.values()].filter(v=>v===0).length,r.n].concat(C?[Math.round(a.amt),a.miss]:[]).concat([[...r.people].join('、'),f2(r.first),f2(r.last)])); }
+  if(items.length){ out.push([],['【品目の内訳】'],['倉庫コード','倉庫名','品目コード','品目名','数量合計','単位'].concat(C?['評価単価','評価金額']:[]).concat(['登録件数','入力した人','最後の登録']));
+    for(const a of items){ const u=C?unitCost(a.code):null; out.push([a.wh,a.whName,a.code,a.name,a.total,unitOf(a.code)].concat(C?[u==null?'':u,u==null?'':Math.round(u*a.total)]:[]).concat([a.n,[...a.people].join('、'),f2(a.last)])); } }
   download(`棚卸_倉庫ごとのまとめ_${PERIOD?PERIOD.id:''}.csv`, '\uFEFF'+out.map(r=>r.map(csvCell).join(',')).join('\r\n'), 'text/csv');
 }
 function printWh(){
@@ -1700,10 +1737,11 @@ function printWh(){
   .wh{page-break-inside:avoid} @media print{.np{display:none}}</style></head><body>
   <div class="np" style="margin-bottom:8px"><button onclick="print()">🖨 印刷する</button></div>
   <h1>棚卸 倉庫ごとのまとめ（${e(PERIOD?PERIOD.id:'')}）</h1><div class="meta">出力：${e(fmtAt(new Date().toISOString()))}　全員分・取消済みは除く</div>
-  <table><tr><th>倉庫</th><th class="n">品目数</th><th class="n">うち無い(0)</th><th class="n">登録件数</th><th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr>
-  ${rows.map(r=>`<tr><td>${e(r.name)}（${e(r.wh)}）</td><td class="n">${r.codes.size}</td><td class="n">${[...r.codes.values()].filter(v=>v===0).length}</td><td class="n">${r.n}</td><td>${[...r.people].map(e).join('、')}</td><td>${e(f2(r.first))}</td><td>${e(f2(r.last))}</td></tr>`).join('')}</table>`;
+  ${TCOST.map?`<div class="meta">評価単価：${e(costLabel())}（数量×単価。単価が無い品目は金額に入れていません）</div>`:''}
+  <table><tr><th>倉庫</th><th class="n">品目数</th><th class="n">うち無い(0)</th><th class="n">登録件数</th>${TCOST.map?'<th class="n">評価金額</th>':''}<th>入力した人</th><th>最初の登録</th><th>最後の登録</th></tr>
+  ${rows.map(r=>`<tr><td>${e(r.name)}（${e(r.wh)}）</td><td class="n">${r.codes.size}</td><td class="n">${[...r.codes.values()].filter(v=>v===0).length}</td><td class="n">${r.n}</td>${TCOST.map?`<td class="n">${yen0(((whAmounts().get(canonicalWhCode(r.wh))||whAmounts().get(r.wh))||{amt:0}).amt)}</td>`:''}<td>${[...r.people].map(e).join('、')}</td><td>${e(f2(r.first))}</td><td>${e(f2(r.last))}</td></tr>`).join('')}</table>`;
   if(items.length){ for(const r of rows){ const its=items.filter(a=>a.wh===r.wh);
-    h+=`<div class="wh"><h2>${e(r.name)}（${e(r.wh)}）　${its.length}品目</h2><table><tr><th>品目コード</th><th>品目名</th><th class="n">数量合計</th><th>単位</th><th class="n">件数</th><th>入力した人</th><th>確認</th></tr>${its.map(a=>`<tr><td>${e(a.code)}</td><td>${e(a.name)}</td><td class="n"><b>${a.total}</b></td><td>${e(unitOf(a.code))}</td><td class="n">${a.n}</td><td>${[...a.people].map(e).join('、')}</td><td style="width:40px"></td></tr>`).join('')}</table></div>`; } }
+    h+=`<div class="wh"><h2>${e(r.name)}（${e(r.wh)}）　${its.length}品目</h2><table><tr><th>品目コード</th><th>品目名</th><th class="n">数量合計</th><th>単位</th>${TCOST.map?'<th class="n">評価単価</th><th class="n">評価金額</th>':''}<th class="n">件数</th><th>入力した人</th><th>確認</th></tr>${its.map(a=>{const u=TCOST.map?unitCost(a.code):null;return `<tr><td>${e(a.code)}</td><td>${e(a.name)}</td><td class="n"><b>${a.total}</b></td><td>${e(unitOf(a.code))}</td>${TCOST.map?`<td class="n">${yen0(u)}</td><td class="n">${u==null?'—':yen0(u*a.total)}</td>`:''}<td class="n">${a.n}</td><td>${[...a.people].map(e).join('、')}</td><td style="width:40px"></td></tr>`}).join('')}</table></div>`; } }
   h+='</body></html>';
   const wdw=window.open('', '_blank'); if(!wdw) return toast('ポップアップがブロックされました。許可してください', true);
   wdw.document.open(); wdw.document.write(h); wdw.document.close(); setTimeout(()=>{ try{ wdw.focus(); wdw.print(); }catch(_){} }, 300);
@@ -1712,9 +1750,10 @@ function setTlMode(md){ TLMODE=md; $('tlWhView').style.display=md==='wh'?'block'
   $('tlModeSmile').style.cssText = md==='smile'?'background:#9a3412;color:#fff;border-color:#9a3412':'border-color:#fdba74;color:#9a3412;background:#fff7ed'; $('tlModeWh').style.cssText = md==='wh'?'background:#0f766e;color:#fff;border-color:#0f766e':''; $('tlModeLedger').style.cssText = md==='ledger'?'background:#0f766e;color:#fff;border-color:#0f766e':''; $('tlModeList').style.cssText = md==='list'?'background:#0f766e;color:#fff;border-color:#0f766e':'';
   if(md==='ledger') renderLedgerView(); else renderList(); }
 function renderWhView(){
-  const rows=whSummary(), f2=t=>t?new Date(t).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
-  $('tlWhBody').innerHTML = rows.length ? rows.map(r=>`<tr data-wh="${esc(r.wh)}" style="cursor:pointer"><td><b>${esc(r.name)}</b> <span style="color:#94a3b8">${esc(r.wh)}</span></td><td class="num" style="font-size:15px">${r.codes.size}</td><td class="num">${[...r.codes.values()].filter(v=>v===0).length}</td><td class="num">${r.n}</td><td>${[...r.people].map(esc).join('、')}</td><td>${f2(r.first)}</td><td>${f2(r.last)}</td></tr>`).join('')
-    + `<tr style="color:#64748b"><td>合計</td><td class="num">${rows.reduce((t,r)=>t+r.codes.size,0)}</td><td></td><td class="num">${rows.reduce((t,r)=>t+r.n,0)}</td><td colspan="3"></td></tr>` : '<tr><td colspan="7" style="color:#94a3b8;padding:14px">まだ登録がありません</td></tr>';
+  const rows=whSummary(), f2=t=>t?new Date(t).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—', AM=whAmounts(), amt=wh=>{ if(!TCOST.map) return '<span style="color:#cbd5e1">—</span>'; const a=AM.get(canonicalWhCode(wh))||AM.get(wh)||{amt:0,miss:0}; return `<b>${yen0(a.amt)}</b>${a.miss?`<br><span style="font-size:10.5px;color:#b45309">単価なし ${a.miss}品目</span>`:''}`; };
+  $('tlWhBody').innerHTML = rows.length ? rows.map(r=>`<tr data-wh="${esc(r.wh)}" style="cursor:pointer"><td><b>${esc(r.name)}</b> <span style="color:#94a3b8">${esc(r.wh)}</span></td><td class="num" style="font-size:15px">${r.codes.size}</td><td class="num">${[...r.codes.values()].filter(v=>v===0).length}</td><td class="num">${r.n}</td><td class="num">${amt(r.wh)}</td><td>${[...r.people].map(esc).join('、')}</td><td>${f2(r.first)}</td><td>${f2(r.last)}</td></tr>`).join('')
+    + `<tr style="color:#64748b"><td>合計</td><td class="num">${rows.reduce((t,r)=>t+r.codes.size,0)}</td><td></td><td class="num">${rows.reduce((t,r)=>t+r.n,0)}</td><td class="num">${TCOST.map?`<b style="color:#0f172a">${yen0([...AM.values()].reduce((t,a)=>t+a.amt,0))}</b>`:''}</td><td colspan="3"></td></tr>` : '<tr><td colspan="8" style="color:#94a3b8;padding:14px">まだ登録がありません</td></tr>';
+  if($('tlCostInfo')) $('tlCostInfo').textContent = TCOST.map ? `単価：${costLabel()}。数量×単価。単価が無い品目は金額に入れていません` : (TCOST.err ? '読めませんでした：'+TCOST.err : '数量 × 最新月の標準原価表の単価');
   $('tlWhBody').querySelectorAll('tr[data-wh]').forEach(tr=>tr.onclick=()=>{ document.querySelector('input[name=tlWho][value=all]').checked=true; TL_PENDING_WH=tr.dataset.wh; setTlMode('list'); });
 }
 // ---- SMILE棚卸取込用ファイル（倉庫別）：必須4項目だけ。全員分・取消除く・品目ごと合計 ----
@@ -1771,9 +1810,10 @@ function renderList(){
   const who=(document.querySelector('input[name=tlWho]:checked')||{}).value||'me', w=(TL_PENDING_WH!=null?TL_PENDING_WH:$('tlWh').value), f=_normSearch($('tlQ').value||''), cx=$('tlCx').checked;
   const whs=[...new Map(MINE.map(x=>[x.wh,x.whName||x.wh]))]; const cur=(TL_PENDING_WH!=null?TL_PENDING_WH:$('tlWh').value); TL_PENDING_WH=null;
   $('tlWh').innerHTML='<option value="">すべての倉庫</option>'+whs.map(([c,n])=>`<option value="${esc(c)}">${esc(n)}</option>`).join(''); $('tlWh').value=cur;
-  const rows=MINE.filter(x=>(who==='all'||isMine(x)) && (!w||x.wh===w) && (cx||!x.canceled) && (!f||_normSearch(x.code+' '+x.name+' '+(x.memo||'')).includes(f)));
+  ensureCosts(renderList); costNote(); const noCost=$('tlNoCost')&&$('tlNoCost').checked&&TCOST.map;
+  const rows=MINE.filter(x=>(who==='all'||isMine(x)) && (!w||x.wh===w) && (cx||!x.canceled) && (!f||_normSearch(x.code+' '+x.name+' '+(x.memo||'')).includes(f)) && (!noCost||unitCost(x.code)==null));
   $('tlInfo').textContent = `${rows.length}件`;
-  $('tlBody').innerHTML = rows.length ? rows.map(x=>`<tr class="${x.canceled?'cx':''}"><td>${esc(fmtAt(x.at))}</td><td>${esc(x.whName||x.wh)}</td><td><button class="s tana-code" data-item-code="${esc(x.code)}">${esc(x.code)}</button></td><td>${esc(x.name)}</td><td class="num" style="color:${x.qty<0?'#b91c1c':'#0f766e'}">${fmtQ(x.qty)}</td><td style="max-width:220px;color:#475569">${esc(x.memo||'')}</td><td>${esc(x.by)}</td><td>${x.canceled?'取消済'+(x.note?'（'+esc(x.note)+'）':''):(x.pending?'送信中':(x.type==='zero'?'無い(0)':x.type==='adjust'?'訂正':'登録'))}</td><td>${(!x.canceled&&x.id&&isMine(x))?`<button class="s" data-id="${x.id}">取消</button>`:''}</td></tr>`).join('') : '<tr><td colspan="9" style="color:#94a3b8;padding:14px">該当する登録はありません</td></tr>';
+  $('tlBody').innerHTML = rows.length ? rows.map(x=>`<tr class="${x.canceled?'cx':''}"><td>${esc(fmtAt(x.at))}</td><td>${esc(x.whName||x.wh)}</td><td><button class="s tana-code" data-item-code="${esc(x.code)}">${esc(x.code)}</button></td><td>${esc(x.name)}</td><td class="num" style="color:${x.qty<0?'#b91c1c':'#0f766e'}">${fmtQ(x.qty)}</td><td class="num">${priceCell(x.code)}</td><td style="max-width:220px;color:#475569">${esc(x.memo||'')}</td><td>${esc(x.by)}</td><td>${x.canceled?'取消済'+(x.note?'（'+esc(x.note)+'）':''):(x.pending?'送信中':(x.type==='zero'?'無い(0)':x.type==='adjust'?'訂正':'登録'))}</td><td>${(!x.canceled&&x.id&&isMine(x))?`<button class="s" data-id="${x.id}">取消</button>`:''}</td></tr>`).join('') : '<tr><td colspan="10" style="color:#94a3b8;padding:14px">該当する登録はありません</td></tr>';
   $('tlBody').querySelectorAll('button[data-id]').forEach(b=>b.onclick=()=>cancelItem(b.dataset.id));
 }
 function parentRows(code){
@@ -1794,8 +1834,9 @@ function openParents(code){
 let LEDGER_SORT={key:'wh',dir:1}; // default: warehouse code, then item code ascending
 function compareLedgerValue(a,b,key){
   const av=a[key], bv=b[key];
-  if((key==='book'||key==='qty')&&(av==null||bv==null)) return av==null?(bv==null?0:1):-1;
-  if(key==='book'||key==='qty') return Number(av)-Number(bv);
+  const numKey=['book','qty','price','diff','diffAmt'].includes(key);
+  if(numKey&&(av==null||bv==null)) return av==null?(bv==null?0:1):-1;
+  if(numKey) return Number(av)-Number(bv);
   return String(av==null?'':av).localeCompare(String(bv==null?'':bv),'ja',{numeric:true,sensitivity:'base'});
 }
 function sortLedgerRows(rows){
@@ -1808,7 +1849,9 @@ function sortLedgerRows(rows){
 }
 function filteredLedgerRows(sourceRows){
   const w=$('tlLedgerWh').value,q=_normSearch($('tlLedgerQ').value||'');
-  return sortLedgerRows((sourceRows||ledgerRows()).filter(x=>(!w||x.wh===w)&&(!q||_normSearch(x.code+' '+x.name).includes(q))));
+  const noCost=$('tlLedgerNoCost')&&$('tlLedgerNoCost').checked&&TCOST.map;
+  const rows=(sourceRows||ledgerRows()).filter(x=>(!w||x.wh===w)&&(!q||_normSearch(x.code+' '+x.name).includes(q))).map(x=>{ const price=unitCost(x.code), diff=x.qty==null?null:(Number(x.qty)||0)-(Number(x.book)||0); /* 未実施（数えていない）は差を出さない */ return Object.assign({},x,{price,diff,diffAmt:diff!=null&&price!=null?diff*price:null}); }).filter(x=>!noCost||x.price==null);
+  return sortLedgerRows(rows);
 }
 function ledgerRows(){
   const counted=new Map(whItems().map(x=>[x.wh+'|'+x.code,x])), keys=new Set(counted.keys()), sourceByKey=new Map();
@@ -1825,26 +1868,27 @@ function renderLedgerView(){
   else info.textContent=`帳簿基準日：${LEDGER_META.date} ／ ${LEDGER_META.n.toLocaleString()}倉庫・品目 ／ SharePointから認証取得`;
   const rowsAll=ledgerRows(), whs=[...new Map(rowsAll.map(x=>[x.wh,x.whName]))], old=$('tlLedgerWh').value;
   $('tlLedgerWh').innerHTML='<option value="">すべての倉庫</option>'+whs.map(([c,n])=>`<option value="${esc(c)}">${esc(n)} (${esc(c)})</option>`).join(''); $('tlLedgerWh').value=old;
+  ensureCosts(renderLedgerView); costNote();
   const rows=filteredLedgerRows(rowsAll);
   $('tlLedgerCount').textContent=`${rows.length}件`;
-  $('tlLedgerBody').innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.whName)} <span style="color:#94a3b8">${esc(x.wh)}</span></td><td><button class="s tana-code" data-item-code="${esc(x.code)}">${esc(x.code)}</button></td><td>${esc(x.name)}</td><td class="num" style="color:#94a3b8">${x.book===null?'':x.book}</td><td class="num" style="color:${x.qty===null?'#94a3b8':'#0f766e'}">${x.qty===null?'':fmtQ(x.qty)}</td><td>${esc(x.memo)}</td><td>${esc(x.people)}</td><td>${x.state}</td></tr>`).join(''):'<tr><td colspan="8" style="color:#94a3b8;padding:14px">該当する品目はありません</td></tr>';
+  $('tlLedgerBody').innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.whName)} <span style="color:#94a3b8">${esc(x.wh)}</span></td><td><button class="s tana-code" data-item-code="${esc(x.code)}">${esc(x.code)}</button></td><td>${esc(x.name)}</td><td class="num" style="color:#94a3b8">${x.book===null?'':x.book}</td><td class="num" style="color:${x.qty===null?'#94a3b8':'#0f766e'}">${x.qty===null?'':fmtQ(x.qty)}</td><td class="num">${priceCell(x.code)}</td><td class="num" style="color:${!x.diff?'#94a3b8':x.diff<0?'#b91c1c':'#0f766e'}">${x.diff==null?'':fmtQ(x.diff)}</td><td class="num" style="color:${!x.diffAmt?'#94a3b8':x.diffAmt<0?'#b91c1c':'#0f766e'}">${x.diffAmt==null?'':yen0(x.diffAmt)}</td><td>${esc(x.memo)}</td><td>${esc(x.people)}</td><td>${x.state}</td></tr>`).join(''):'<tr><td colspan="11" style="color:#94a3b8;padding:14px">該当する品目はありません</td></tr>';
   document.querySelectorAll('#tlLedgerView .ledger-sort').forEach(th=>{const active=th.dataset.ledgerSort===LEDGER_SORT.key;th.classList.toggle('sorted',active);th.setAttribute('aria-sort',active?(LEDGER_SORT.dir===1?'ascending':'descending'):'none');th.querySelector('.ledger-sort-arrow').textContent=active?(LEDGER_SORT.dir===1?'▲':'▼'):'↕';});
 }
 function exportLedgerCsv(){
   if(!LEDGER_META||LEDGER_ERROR){toast('帳簿を取得できていないため CSV を出力できません',true);return;}
-  const rows=filteredLedgerRows(), out=[['帳簿基準日',LEDGER_META.date],['棚卸期間',PERIOD?PERIOD.id:''],[],['日時','倉庫コード','倉庫名','品目コード','品目名','帳簿在庫','数量','メモ','入力者','状態']];
-  for(const x of rows)out.push([x.last?fmtAt(x.last):'',x.wh,x.whName,x.code,x.name,x.book===null?'':x.book,x.qty===null?'':x.qty,x.memo,x.people,x.state]);
+  const rows=filteredLedgerRows(), out=[['帳簿基準日',LEDGER_META.date],['棚卸期間',PERIOD?PERIOD.id:''],[],['日時','倉庫コード','倉庫名','品目コード','品目名','帳簿在庫','数量','単価','差（数量−帳簿）','差額','メモ','入力者','状態']];
+  for(const x of rows)out.push([x.last?fmtAt(x.last):'',x.wh,x.whName,x.code,x.name,x.book===null?'':x.book,x.qty===null?'':x.qty,TCOST.map?(x.price==null?'未登録':x.price):'',x.diff==null?'':x.diff,x.diffAmt==null?'':Math.round(x.diffAmt),x.memo,x.people,x.state]);
   download(`帳簿在庫との確認_${PERIOD?PERIOD.id:''}.csv`,'\uFEFF'+out.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv');
 }
-$('tlLedgerWh').onchange=renderLedgerView; $('tlLedgerQ').oninput=renderLedgerView; $('tlLedgerCsv').onclick=exportLedgerCsv;
+$('tlLedgerWh').onchange=renderLedgerView; $('tlLedgerQ').oninput=renderLedgerView; $('tlLedgerNoCost').onchange=renderLedgerView; $('tlLedgerCsv').onclick=exportLedgerCsv;
 document.querySelectorAll('#tlLedgerView .ledger-sort').forEach(th=>th.onclick=()=>{const key=th.dataset.ledgerSort;LEDGER_SORT={key,dir:LEDGER_SORT.key===key?-LEDGER_SORT.dir:1};renderLedgerView();});
 const showParentForCode=e=>{const b=e.target.closest('[data-item-code]');if(b){e.preventDefault();openParents(b.dataset.itemCode)}};
 $('tanaList').addEventListener('click',showParentForCode); $('tanaAdmin').addEventListener('click',showParentForCode);
 $('tanaParentsClose').onclick=()=>$('tanaParents').style.display='none'; $('tanaParents').addEventListener('click',e=>{if(e.target===$('tanaParents'))$('tanaParents').style.display='none'});
 $('tanaListBtn').onclick = async ()=>{ $('tanaList').classList.add('open'); renderList(); await refreshMine(); renderList(); };
-$('tlModeSmile').onclick=()=>setTlMode('smile'); $('tsAll').onclick=()=>exportSmile(null); $('tlModeWh').onclick=()=>setTlMode('wh'); $('tlModeLedger').onclick=()=>setTlMode('ledger'); $('tlPrint').onclick=printWh; $('tlXls').onclick=exportWhCsv; $('tlModeList').onclick=()=>setTlMode('list');
+$('tlModeSmile').onclick=()=>setTlMode('smile'); $('tsAll').onclick=()=>exportSmile(null); $('tlModeWh').onclick=()=>setTlMode('wh'); $('tlModeLedger').onclick=()=>setTlMode('ledger'); $('tlPrint').onclick=printWh; $('tlXls').onclick=exportWhCsv; $('tlCostBtn').onclick=async()=>{ const bt=$('tlCostBtn'); bt.disabled=true; $('tlCostInfo').textContent='標準原価を読み込んでいます…（少し時間がかかります）'; try{ TCOST.kind=$('tlCostKind').value; await loadTanaCosts(); }catch(e){ toast('評価金額を出せません：'+e.message, true); } bt.disabled=false; renderWhView(); }; $('tlCostKind').onchange=()=>{ TCOST.kind=$('tlCostKind').value; if(TCOST.map) renderWhView(); }; $('tlModeList').onclick=()=>setTlMode('list');
 $('tlClose').onclick = ()=>{ $('tanaList').classList.remove('open'); setTimeout(()=>{ q.focus(); q.select(); },0); };
-document.querySelectorAll('input[name=tlWho]').forEach(r=>r.onchange=renderList); $('tlWh').onchange=renderList; $('tlQ').oninput=renderList; $('tlCx').onchange=renderList;
+document.querySelectorAll('input[name=tlWho]').forEach(r=>r.onchange=renderList); $('tlWh').onchange=renderList; $('tlQ').oninput=renderList; $('tlCx').onchange=renderList; $('tlNoCost').onchange=renderList;
 async function cancelItem(id, note){
   const x=MINE.find(m=>m.id===id); if(!x) return;
   const reason = note || prompt(`${x.code} × ${x.qty}（${x.whName}）を取り消します。理由（任意）`, '入力ミス'); if(reason===null) return;

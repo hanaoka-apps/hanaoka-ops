@@ -30,6 +30,7 @@
     mine:     '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
     contacts: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10.5" r="2.4"/><path d="M5.5 16.5c.6-1.7 2-2.6 3.5-2.6s2.9.9 3.5 2.6M14.5 9.5h4M14.5 13h4"/>',
     staff:    '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.4 0 4 1.8 4 4.5"/>',
+    book:     '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M8.5 14h7M8.5 17h4"/>',
     demo:     '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     car:      '<path d="M5 16h14l-1.5-6a2 2 0 0 0-1.9-1.5H8.4A2 2 0 0 0 6.5 10z"/><path d="M4 16v3M20 16v3"/><circle cx="8" cy="13" r=".6"/><circle cx="16" cy="13" r=".6"/>',
     room:     '<path d="M4 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16M14 9h5a1 1 0 0 1 1 1v11M2 21h20M8 8h2M8 12h2M8 16h2"/>',
@@ -47,6 +48,7 @@
       { f: 'my_schedule.html',      l: '自分の予定',       ic: lineIcon('mine') },
       { f: 'staff_schedule.html',   l: '全員の予定',       ic: lineIcon('staff') },
       { f: 'org_directory.html',    l: '社内連絡先',       ic: lineIcon('contacts') },
+      { f: 'reserve.html',          l: '予約',             ic: lineIcon('book') },
       { f: 'demo_reserve.html',     l: 'デモ機',           ic: lineIcon('demo') },
       { f: 'car_reserve.html',      l: '営業車',           ic: lineIcon('car') },
       { f: 'room_reserve.html',     l: '会議室',           ic: lineIcon('room') },
@@ -178,6 +180,37 @@
     setInterval(renderAccount, 2000);
   }
 
+  /* ============================================================
+     PCで左メニューをたたむ（HUB以外の画面）
+     ------------------------------------------------------------
+     メニューの右上の「<」でたたみ、たたむと本文が左いっぱいに広がる。もとに戻すのは、
+     画面上部の左端に出る「≡」。たたんだ状態はこのブラウザに覚える。
+     スマホ幅（820px以下）は今までどおり、≡で引き出す方式のまま。
+     見た目はここで差し込む（hub_sidebar.css は各ページのキャッシュ更新が重いので触らない）。
+     ============================================================ */
+  var COLLAPSE_KEY = 'hanaoka.sidebar.collapsed.v1';
+  var canCollapse = !onHub;
+  function isDesktop() { return window.matchMedia('(min-width: 821px)').matches; }
+  function setCollapsed(v) {
+    document.body.classList.toggle('sidebar-collapsed', v);
+    try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch (e) {}
+  }
+  function injectCollapseStyle() {
+    if (document.getElementById('sideCollapseStyle')) return;
+    var st = document.createElement('style'); st.id = 'sideCollapseStyle';
+    st.textContent =
+      '.side-collapse{position:absolute;top:74px;right:12px;width:24px;height:24px;border:1px solid var(--border);border-radius:8px;' +
+        'background:#fff;color:#5a6080;cursor:pointer;display:none;align-items:center;justify-content:center;padding:0}' +
+      '.side-collapse:hover{background:var(--bg);color:var(--text-main)}' +
+      '@media (min-width:821px){' +
+        '.side-collapse{display:inline-flex}' +
+        'body.sidebar-collapsed .sidebar{transform:translateX(-100%);visibility:hidden;box-shadow:none}' +
+        'body.sidebar-collapsed{padding-left:0}' +
+        'body.sidebar-collapsed .menu-btn{display:inline-flex}' +
+      '}';
+    document.head.appendChild(st);
+  }
+
   function mount() {
     var aside = document.createElement('aside');
     aside.className = 'sidebar'; aside.id = 'hubSidebar';
@@ -187,6 +220,18 @@
     document.body.insertBefore(backdrop, document.body.firstChild);
     document.body.insertBefore(aside, document.body.firstChild);
     mountAccount(aside);
+
+    if (canCollapse) {
+      injectCollapseStyle();
+      var cb = document.createElement('button');
+      cb.type = 'button'; cb.className = 'side-collapse'; cb.id = 'sideCollapse';
+      cb.title = 'メニューをたたむ'; cb.setAttribute('aria-label', 'メニューをたたむ');
+      cb.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>';
+      cb.addEventListener('click', function () { setCollapsed(true); });
+      aside.appendChild(cb);
+      var saved = null; try { saved = localStorage.getItem(COLLAPSE_KEY); } catch (e) {}
+      if (saved === '1') document.body.classList.add('sidebar-collapsed');
+    }
 
     // 開閉(アコーディオン)
     aside.addEventListener('click', function (e) {
@@ -216,7 +261,11 @@
       document.body.classList.toggle('sidebar-open', open);
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
-    btn.addEventListener('click', function () { setOpen(!document.body.classList.contains('sidebar-open')); });
+    btn.addEventListener('click', function () {
+      /* PCでたたんでいるときは、≡で開く（スマホ幅は今までどおり引き出す） */
+      if (canCollapse && isDesktop()) { setCollapsed(false); return; }
+      setOpen(!document.body.classList.contains('sidebar-open'));
+    });
     backdrop.addEventListener('click', function () { setOpen(false); });
     aside.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('a')) setOpen(false); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setOpen(false); });

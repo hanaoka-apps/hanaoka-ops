@@ -55,8 +55,8 @@ OPTIONAL_FILES = [
 ]
 
 STANDARD_COST_FOLDER = "standard-cost"
-STANDARD_COST_FILE = re.compile(r"^standard_cost_\d{6}\.(?:csv|xlsx)$", re.IGNORECASE)
-LEGACY_STANDARD_COST_FILE = re.compile(r"^品目別積上原価一覧表.*\.(?:csv|xlsx)$", re.IGNORECASE)
+STANDARD_COST_FILE = re.compile(r"^standard_cost_\d{6}\.(?:csv|xlsx|txt)$", re.IGNORECASE)
+LEGACY_STANDARD_COST_FILE = re.compile(r"^品目別積上原価一覧表.*\.(?:csv|xlsx|txt)$", re.IGNORECASE)
 
 # --------------------------------------------------------------------------
 

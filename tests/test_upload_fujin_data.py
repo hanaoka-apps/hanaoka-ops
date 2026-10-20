@@ -21,6 +21,12 @@ SPEC.loader.exec_module(UPLOAD)
 
 
 class LargeUploadTests(unittest.TestCase):
+    def test_production_results_is_only_a_protected_upload_target(self):
+        matching = [path for path, remote in UPLOAD.TARGETS
+                    if remote == "value_analysis_production_results.json"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].parent.name, "data")
+
     def test_large_file_uses_upload_session_and_sequential_ranges(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "fixture.json"
