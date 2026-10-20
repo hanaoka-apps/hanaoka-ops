@@ -720,15 +720,16 @@
     return { orders: orders, deliveries: deliveries };
   };
 
-  // 取込結果（result.json）の見方。再実行してよいのは「取込件数0の failed」だけ
+  // 取込結果（result.json）の見方。再実行してよいのは「failed かつ executed が false（SMILEの『実行』を押す前に止まった）」だけ。
+  // executed が true・不明（旧形式で項目なし）のときは、一部が入っているかもしれないので要確認で止める
   //   戻り値 { kind:'done'|'retry'|'partial'|'check', message }
   EC.judgeImportResult = function (r) {
     if (!r) return { kind: 'check', message: '取込の結果ファイル（result.json）が見つかりません。SMILE を見て判断してください' };
     var files = r.files || [], imported = files.reduce(function (a, f) { return a + (+f.imported || 0); }, 0), errors = files.reduce(function (a, f) { return a + (+f.errors || 0); }, 0);
     var msg = r.message || '';
     if (r.state === 'done' && errors === 0) return { kind: 'done', message: '' };
-    if (r.state === 'partial' || imported > 0) return { kind: 'partial', message: msg || '一部だけ取り込まれました（取込 ' + imported + '件・エラー ' + errors + '件）。SMILE を見て判断してください' };
-    if (r.state === 'failed' && imported === 0 && !/取込済み/.test(msg)) return { kind: 'retry', message: msg || '取り込めませんでした' };
+    if (r.state === 'failed' && r.executed === false && imported === 0 && !/取込済み/.test(msg)) return { kind: 'retry', message: msg || '取り込めませんでした（SMILEの実行前に止まりました）' };
+    if (r.state === 'partial' || r.state === 'failed' || imported > 0) return { kind: 'partial', message: msg || '一部だけ取り込まれました（取込 ' + imported + '件・エラー ' + errors + '件）。SMILE を見て判断してください' };
     return { kind: 'check', message: msg || '取込の状態が不明です。SMILE を見て判断してください' };
   };
 
@@ -814,6 +815,13 @@
     });
     return out;
   };
+
+  // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
+  EC.indexObjects = function (tbl) {
+    if (!tbl || !tbl.cols || !tbl.rows) return [];
+    return tbl.rows.map(function (r) { var o = {}; tbl.cols.forEach(function (c, i) { o[c] = r[i] == null ? '' : r[i]; }); return o; });
+  };
+  EC.pick = pick;   // 見出しの揺れ（ｺｰﾄﾞ／コード）を無視して列を取る
 
   root.EcSales = EC;
   if (typeof module !== 'undefined' && module.exports) module.exports = EC;
