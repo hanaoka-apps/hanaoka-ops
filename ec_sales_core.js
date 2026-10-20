@@ -391,11 +391,21 @@
     if (!o.ship.name) flag('error', '配送先の名前がありません');
     if (!o.ship.zip || !(o.ship.province || o.ship.city || o.ship.addr1)) flag('error', '配送先の住所が足りません');
     // 納品先は機械的にマスタへ追加する。入力が足りない・長すぎるときだけ知らせる
-    var dv = EC.deliveryFromOrder(o), lim = cfg.limits || {};
+    var dv = EC.deliveryFromOrder(o, cfg), lim = cfg.limits || {};
     if (!dv.tel) flag('warn', '電話番号がありません');
     if (lim.name && EC.sjisLen(dv.name) > lim.name) flag('warn', '納品先名が長いため切れる可能性（' + EC.sjisLen(dv.name) + 'バイト）');
     if (lim.addr1 && EC.sjisLen(dv.addr1) > lim.addr1) flag('warn', '住所１が長いため切れる可能性（' + EC.sjisLen(dv.addr1) + 'バイト）');
     if (lim.addr2 && EC.sjisLen(dv.addr2) > lim.addr2) flag('warn', '住所２が長いため切れる可能性（' + EC.sjisLen(dv.addr2) + 'バイト）');
+    if (dv.changed.length) flag('info', '文字を整えました（見えない文字・特殊な空白・機種依存文字）：' + dv.changed.join('／'));
+    dv.issues.forEach(function (x) {
+      flag('warn', '「' + x.ch + '」は' + (x.kind === 'dep' ? '機種依存文字' : 'Shift-JISにない文字') + 'で、配送会社の取込で化ける可能性があります。納品先を直してください');
+    });
+    (cfg.carriers || []).forEach(function (cr) {
+      var nl = Array.from(dv.name).length, p1 = Array.from(dv.addr1).length, p2 = Array.from(dv.addr2).length;
+      if (cr.nameChars && nl > cr.nameChars) flag('warn', cr.name + '：名称が' + cr.nameChars + '字を超えるとエラーになることがあります（' + nl + '字）');
+      if (cr.addrCharsTotal && p1 + p2 > cr.addrCharsTotal) flag('warn', cr.name + '：住所が合計' + cr.addrCharsTotal + '字を超えるとエラーになることがあります（' + (p1 + p2) + '字）');
+      if (cr.addrChars && (p1 > cr.addrChars || p2 > cr.addrChars)) flag('warn', cr.name + '：住所が' + cr.addrChars + '字を超えるとエラーになることがあります（住所１ ' + p1 + '字／住所２ ' + p2 + '字）');
+    });
     if (o.ship.zip && EC.normZip(o.ship.zip).length !== 7) flag('warn', '郵便番号が7桁ではありません：' + o.ship.zip);
     if (o.fulfillment === 'fulfilled') flag('info', 'Shopify では発送済み');
     if (slip.inSmile) flag('info', 'SMILE に同じ注文番号の伝票があります（取込済み）');
@@ -415,22 +425,101 @@
     return p || '';
   }
   EC.formatPhone = fmtPhone;
+
+  /* ---------- 配送会社で化けやすい文字の整理 ----------
+   * Shopify のコピペには、見えない文字（幅ゼロの空白など）や機種依存文字（①・㈱・髙 など）が混じることがある。
+   * 配送会社（西濃運輸・第一貨物）への取込は Shift-JIS なので、次の順に整える：
+   *   1) 見えない文字・制御文字・絵文字を除く、特殊な空白を普通の空白に
+   *   2) 機種依存文字は、まず互換の文字に直す（①→1、㈱→(株)）。直らないものは設定の charMap（髙→高 など）で置き換える
+   *   3) それでも Shift-JIS（JIS第1・第2水準）にない文字は、受注チェックで知らせる
+   */
+  var jisSet = null, cp932Set = null;
+  function buildSets() {
+    if (jisSet) return;
+    jisSet = {}; cp932Set = {};
+    var dec = new TextDecoder('shift_jis');
+    for (var lead = 0x81; lead <= 0xFC; lead++) {
+      if (lead > 0x9F && lead < 0xE0) continue;
+      for (var tr = 0x40; tr <= 0xFC; tr++) {
+        if (tr === 0x7F) continue;
+        var ch = dec.decode(new Uint8Array([lead, tr]));
+        if (ch.length !== 1 || ch === '\uFFFD') continue;
+        cp932Set[ch] = 1;
+        if ((lead >= 0x81 && lead <= 0x84) || (lead >= 0x88 && lead <= 0x9F) || (lead >= 0xE0 && lead <= 0xEA)) jisSet[ch] = 1;
+      }
+    }
+  }
+  // 'ok'＝そのまま使える／'dep'＝機種依存文字（Shift-JIS には入るが JIS 基本の外）／'out'＝Shift-JIS にない
+  EC.charKind = function (ch) {
+    buildSets();
+    var c = ch.charCodeAt(0);
+    if (ch.length === 1 && (c <= 0x7E || (c >= 0xFF61 && c <= 0xFF9F))) return 'ok';
+    if (jisSet[ch]) return 'ok';
+    if (cp932Set[ch]) return 'dep';
+    return 'out';
+  };
+  EC.cleanText = function (str, cfg) {
+    var map = (cfg && cfg.charMap) || {};
+    // Windows の Shift-JIS（CP932）で別の字に化ける記号（波ダッシュ問題）を、CP932 側の字に直す
+    var WIN = { '〜': '～', '‖': '∥', '¢': '￠', '£': '￡', '¬': '￢' };
+    var t = String(str == null ? '' : str)
+      .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
+      .replace(/[\u0000-\u001F\u007F]/g, ' ')
+      .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F]/g, ' ')
+      .replace(/\p{Extended_Pictographic}|\uFE0F/gu, '')
+      .replace(/ {2,}/g, ' ').trim();
+    // ハイフンの揺れ（‐ ‑ – — ― − － ー など）をそろえる：前後が全角の英数なら「－」、それ以外は半角の「-」。
+    // 「ー」「ｰ」（長音）は、前後が数字のときだけハイフンとみなす（コーヒー などはそのまま）
+    var HY = /[‐-―−﹣－─]/, LV = /[ーｰ]/, DG = /[0-9０-９]/, FW = /[０-９Ａ-Ｚａ-ｚ]/;
+    var arr = Array.from(t);
+    return arr.map(function (ch, i) {
+      var prev = arr[i - 1] || '', next = arr[i + 1] || '';
+      if (HY.test(ch) || (LV.test(ch) && DG.test(prev) && DG.test(next))) return (FW.test(prev) || FW.test(next)) ? '－' : '-';
+      if (WIN[ch]) return WIN[ch];
+      if (EC.charKind(ch) === 'ok') return ch;
+      if (map[ch] != null) return map[ch];
+      if (EC.charKind(ch) === 'dep') {
+        var n = ch.normalize('NFKC');
+        if (n !== ch && Array.from(n).every(function (x) { return EC.charKind(x) === 'ok'; })) return n;
+      }
+      return ch;
+    }).join('');
+  };
+  // Shift-JIS の基本（JIS第1・第2水準）の外にある文字：[{ch, kind}]
+  EC.charIssues = function (str) {
+    var seen = {}, out = [];
+    Array.from(String(str || '')).forEach(function (ch) {
+      var k = EC.charKind(ch);
+      if (k !== 'ok' && !seen[ch]) { seen[ch] = 1; out.push({ ch: ch, kind: k }); }
+    });
+    return out;
+  };
   function fmtZip(z) { var d = digits(z); return d.length === 7 ? d.slice(0, 3) + '-' + d.slice(3) : (z || ''); }
 
   // 配送先 → 納品先マスタの項目。個人は「お名前様」、会社は 納品先名＝会社名・荷受け人名１＝担当者様
-  EC.deliveryFromOrder = function (o) {
-    var s = o.ship, hasCo = !!s.company, nm = s.name;
+  EC.deliveryFromOrder = function (o, cfg) {
+    var fix = function (v) { return EC.cleanText(v, cfg); }, changed = [];
+    var raw = o.ship, s = {};
+    ['name', 'company', 'province', 'city', 'addr1', 'addr2'].forEach(function (k) {
+      s[k] = fix(raw[k]);
+      if (String(raw[k] || '').trim() !== s[k]) changed.push(raw[k] + ' → ' + s[k]);
+    });
+    s.zip = raw.zip; s.phone = raw.phone;
+    var hasCo = !!s.company, nm = s.name;
     var parts = [s.province, s.city, s.addr1, s.addr2].filter(Boolean), built = '';
     parts.forEach(function (p) { if (built.indexOf(p) < 0) built += p; });
     var a1 = (s.province || '') + (s.city && (s.province || '').indexOf(s.city) < 0 ? s.city : '');
     if (a1 && built.indexOf(a1) !== 0) a1 = '';
     var a2 = a1 ? built.slice(a1.length) : '';
     if (!a1) { a1 = built; a2 = ''; }
-    return {
+    var d = {
       name: hasCo ? s.company : nm + '様', person: hasCo ? nm + '様' : '',
       zip: fmtZip(s.zip), addr1: a1, addr2: a2, tel: fmtPhone(s.phone || o.bill.phone || o.phone),
-      key: EC.normName(hasCo ? s.company : nm) + '|' + EC.normZip(s.zip) + (hasCo ? '|' + EC.normName(nm) : '')
+      key: EC.normName(hasCo ? s.company : nm) + '|' + EC.normZip(s.zip) + (hasCo ? '|' + EC.normName(nm) : ''),
+      changed: changed
     };
+    d.issues = EC.charIssues(d.name + d.person + d.addr1 + d.addr2);
+    return d;
   };
 
   // 社内メモ：基本のメモ（花岡EC など）のあとに、担当者が追記した文を続ける
@@ -466,7 +555,7 @@
     cfg.reservedDeliveryCodes.forEach(function (c) { reserved[c] = 1; });
     Object.keys(master).forEach(function (cc) { next[cc] = +master[cc].max; created[cc] = {}; });
     slips.slice().sort(function (a, b) { return a.orderDate === b.orderDate ? (+a.id - +b.id) : (a.orderDate < b.orderDate ? -1 : 1); }).forEach(function (s) {
-      var d = EC.deliveryFromOrder(s.order), m = master[s.cust];
+      var d = EC.deliveryFromOrder(s.order, cfg), m = master[s.cust];
       s.delivery = d;
       if (reuse && m.keys[d.key]) { s.deliveryCode = m.keys[d.key]; s.deliveryNew = false; return; }
       if (reuse && created[s.cust][d.key]) { s.deliveryCode = created[s.cust][d.key]; s.deliveryNew = false; return; }

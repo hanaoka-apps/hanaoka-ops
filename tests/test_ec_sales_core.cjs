@@ -94,7 +94,7 @@ t('キャンセル・二重取込の印', () => {
 });
 t('納品先：個人は「様」、会社は会社名＋荷受け人、住所の重複除去、電話整形', () => {
   const d = EC.deliveryFromOrder(order());
-  assert.strictEqual(d.name, '中村達生様'); assert.strictEqual(d.addr1, '山口県周南市'); assert.strictEqual(d.addr2, '大島５−２８'); assert.strictEqual(d.tel, '090-4694-1826');
+  assert.strictEqual(d.name, '中村達生様'); assert.strictEqual(d.addr1, '山口県周南市'); assert.strictEqual(d.addr2, '大島５－２８');   // 「−」(U+2212) は CP932 の「－」に直る assert.strictEqual(d.tel, '090-4694-1826');
   const c = EC.deliveryFromOrder(order({ ship: { name: '山田', company: '(株)テスト', zip: '5670085', province: '大阪府', city: '茨木市彩都あさぎ2-1-6', addr1: '大阪府', addr2: '', phone: '+818030392250' } }));
   assert.strictEqual(c.name, '(株)テスト'); assert.strictEqual(c.person, '山田様'); assert.strictEqual(c.zip, '567-0085'); assert.strictEqual(c.tel, '080-3039-2250');
 });
@@ -138,6 +138,42 @@ t('社内メモ：基本のメモのあとに追記を全角スペースでつ�
   assert.strictEqual(EC.joinMemo('花岡EC', '', DEFAULT_CONFIG), '花岡EC');
   assert.strictEqual(EC.joinMemo('花岡EC', ' ブルー入荷待ち\n', DEFAULT_CONFIG), '花岡EC\u3000ブルー入荷待ち');
   assert.strictEqual(EC.joinMemo('花岡EC（ギフティング）', '指定着', DEFAULT_CONFIG), '花岡EC（ギフティング）\u3000指定着');
+});
+t('配送会社で化けやすい文字：見えない文字・機種依存文字・絵文字を整える', () => {
+  const C = DEFAULT_CONFIG;
+  assert.strictEqual(EC.cleanText('野口\u200b 秀樹', C), '野口 秀樹');
+  assert.strictEqual(EC.cleanText('東京\u00a0都', C), '東京 都');
+  assert.strictEqual(EC.cleanText('髙橋', C), '高橋');
+  assert.strictEqual(EC.cleanText('㈱テスト①', C), '(株)テスト1');
+  assert.strictEqual(EC.cleanText('山田😀太郎', C), '山田太郎');
+  // ハイフンの揺れ：前後が全角英数なら「－」、それ以外は「-」。長音は前後が数字のときだけ
+  assert.strictEqual(EC.cleanText('1‐2−3–4', C), '1-2-3-4');
+  assert.strictEqual(EC.cleanText('１ー２ー３', C), '１－２－３');
+  assert.strictEqual(EC.cleanText('3ｰ4', C), '3-4');
+  assert.strictEqual(EC.cleanText('コーヒーハウス', C), 'コーヒーハウス');
+  assert.strictEqual(EC.cleanText('ｺﾋｰ', C), 'ｺﾋｰ');
+  assert.strictEqual(EC.cleanText('A―B', C), 'A-B');
+  assert.strictEqual(EC.cleanText('大島５−２８〜', C), '大島５－２８～');   // 波ダッシュ問題の記号はCP932側へ
+  assert.strictEqual(EC.cleanText('山田\u3000太郎', C), '山田\u3000太郎');     // 全角空白はそのまま
+  assert.strictEqual(EC.charKind('あ'), 'ok'); assert.strictEqual(EC.charKind('ﾃ'), 'ok'); assert.strictEqual(EC.charKind('①'), 'dep'); assert.strictEqual(EC.charKind('\u{2A6B2}'), 'out');
+  const s = EC.buildSlip(order({ ship: { name: '山田\u200b太郎', company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: '', phone: '09012345678' } }), ctx);
+  assert.ok(s.flags.some(f => f.level === 'info' && /文字を整えました/.test(f.text)));
+  assert.strictEqual(EC.deliveryFromOrder(s.order, DEFAULT_CONFIG).name, '山田太郎様');
+  const bad = EC.buildSlip(order({ ship: { name: '\u{2A6B2}田', company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: '', phone: '09012345678' } }), ctx);
+  assert.ok(bad.flags.some(f => f.level === 'warn' && /Shift-JISにない文字/.test(f.text)));
+});
+t('第一貨物の文字数：名称30字・住所は合計45字', () => {
+  const ship = (name, a2) => ({ name, company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: a2, phone: '09012345678' });
+  const ok = EC.buildSlip(order({ ship: ship('あ'.repeat(10), 'い'.repeat(20)) }), ctx);
+  assert.ok(!ok.flags.some(f => /第一貨物/.test(f.text)));
+  const bad = EC.buildSlip(order({ ship: ship('あ'.repeat(30), 'い'.repeat(40)) }), ctx);   // 名称31字（様込み）・住所 7+3+40字
+  assert.ok(bad.flags.some(f => /第一貨物.*名称/.test(f.text)) && bad.flags.some(f => /第一貨物.*合計45字/.test(f.text)));
+});
+t('西濃運輸（宅配）の文字数：名称16字・住所24字を超えたら知らせる', () => {
+  const long = EC.buildSlip(order({ ship: { name: 'あ'.repeat(16), company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: 'い'.repeat(25), phone: '09012345678' } }), ctx);
+  assert.ok(long.flags.some(f => /西濃運輸.*名称/.test(f.text)));        // 16字＋「様」＝17字
+  assert.ok(long.flags.some(f => /西濃運輸.*住所/.test(f.text)));
+  assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
 });
 t('取込ファイル：受注の行・UTF-16', () => {
   assert.strictEqual(EC.buildSlip(order(), ctx).memo, '花岡EC');
