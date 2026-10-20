@@ -406,11 +406,13 @@ function Test-ImportBatch([string]$BatchDir, [string]$BatchId, $Def) {
 
 # executed = SMILEの「実行」を押したか。$false(押す前に止まった)の failed だけ、アプリが再実行を許す。
 # $true、または不明のとき(結果ファイルが出ない・旧形式)は、一部が入っているかもしれないので要確認(partial)で止める
-function Write-ImportResult([string]$BatchDir, [string]$BatchId, [string]$State, [string]$Message, $Files, [string]$StartedAt, [bool]$Executed) {
+# $Executed が $null(押したか不明)のときは executed のキー自体を書かない(アプリは false 以外を要確認で止める)
+function Write-ImportResult([string]$BatchDir, [string]$BatchId, [string]$State, [string]$Message, $Files, [string]$StartedAt, $Executed) {
   $obj = [pscustomobject]@{
-    batchId = $BatchId; state = $State; message = $Message; executed = $Executed; files = @($Files)
+    batchId = $BatchId; state = $State; message = $Message; files = @($Files)
     startedAt = $StartedAt; finishedAt = (Get-Date).ToString('o')
   }
+  if ($null -ne $Executed) { $obj | Add-Member -NotePropertyName executed -NotePropertyValue ([bool]$Executed) }
   Write-JsonFile (Join-Path $BatchDir 'result.json') $obj
   return $obj
 }
@@ -445,8 +447,70 @@ function Invoke-PadImportStep([string]$Flow, [string]$ResultPath, [int]$TimeoutM
   return $null
 }
 
-# 取込ジョブ本体。戻り値 { State; Message }。SMILEに触る前の失敗は imported=0 の failed になる
-function Invoke-EcImport($Def, $Request) {
+# 固定フォルダに残ったお客様のデータ(納品先.txt・受注.txt と PADの結果ファイル)を消す。$Def があれば、その steps のファイル名も消す
+function Clear-EcCurrentDir($Def = $null) {
+  $names = @('納品先.txt', '受注.txt', 'result_nouhin.json', 'result_juchu.json')
+  if ($Def -and $Def.steps) {
+    foreach ($s in @($Def.steps)) { $names += [string]$s.copyAs; $names += [string]$s.result }
+  }
+  foreach ($n in ($names | Where-Object { $_ } | Select-Object -Unique)) {
+    Remove-Item -LiteralPath (Join-Path $EcImportCurrentDir $n) -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# result.json が書かれないまま止まった取込を、result.json つきで failed へ移す(アプリは result.json で完了を判断する)。
+# 取込フォルダが無い・すでに result.json がある(その state のとおり done / failed へ移すだけ)ときも安全に扱う。
+# $Executed は $true / $false / $null(不明。result.json に executed のキーを書かない＝アプリは要確認で止める)
+function Complete-ImportWithoutResult([string]$BatchId, [string]$State, [string]$Message, $Executed, $Files = @()) {
+  if ($BatchId -notmatch '^ec-[0-9a-f]{16}$') { return }
+  $batchDir = Join-Path $ImportRoot $BatchId
+  if (-not (Test-Path -LiteralPath $batchDir)) { return }
+  $resultPath = Join-Path $batchDir 'result.json'
+  if (Test-Path -LiteralPath $resultPath) {
+    $st = ''
+    try { $st = [string](Read-JsonFile $resultPath).state } catch { }
+    if ($st -eq 'done' -or $st -eq 'failed' -or $st -eq 'partial') { Move-ImportBatch $BatchId $(if ($st -eq 'done') { 'done' } else { 'failed' }); return }
+  }
+  Write-ImportResult $batchDir $BatchId $State $Message $Files (Get-Date).ToString('o') $Executed | Out-Null
+  Move-ImportBatch $BatchId 'failed'
+}
+
+# 取込ジョブ本体。戻り値 { State; Message }。どの経路で終わっても(予期しない例外も)、取込フォルダがあれば result.json を書いて
+# done / failed へ移し、固定フォルダを空にする。SMILEのPADフローを1つでも起動したあとの例外は partial(要確認)、起動前は failed(executed:false)。
+# $SmileCfg があれば、確認(管理者・二重取込・中身)が済んだあとで SMILE を自動起動する(権限のない依頼でSMILEを起動しない)。
+function Invoke-EcImport($Def, $Request, $SmileCfg = $null) {
+  $batchId = [string]$Request.batchId
+  $script:EcImportLaunched = $false    # PADフローを起動したか
+  $script:EcImportExecuted = $null     # SMILEの「実行」を押したか($null は不明)
+  $script:EcImportFiles = @()          # ここまでの結果
+  try {
+    return (Invoke-EcImportCore $Def $Request $SmileCfg)
+  } catch {
+    $msg = $_.Exception.Message
+    Write-Log "エラー: 取込の途中で予期しない例外が出ました($batchId): $msg"
+    $out = $null
+    try {
+      if ($script:EcImportLaunched) {
+        $text = "取込の途中で予期しないエラーが出ました。SMILEにどこまで入ったか不明です。SMILE を見て判断してください: $msg"
+        Complete-ImportWithoutResult $batchId 'partial' $text $script:EcImportExecuted $script:EcImportFiles
+        $out = [pscustomobject]@{ State = 'partial'; Message = $text }
+      } else {
+        $text = "取込を始める前にエラーが出ました(SMILEには触っていません): $msg"
+        Complete-ImportWithoutResult $batchId 'failed' $text $false @()
+        $out = [pscustomobject]@{ State = 'failed'; Message = $text }
+      }
+    } catch {
+      Write-Log "エラー: result.json を書けませんでした: $($_.Exception.Message)"
+    }
+    if (-not $out) { $out = [pscustomobject]@{ State = 'failed'; Message = $msg } }
+    return $out
+  } finally {
+    # お客様の名前・住所・電話が入っているので、どの経路でも固定フォルダには残さない
+    try { Clear-EcCurrentDir $Def } catch { }
+  }
+}
+
+function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
   $batchId = [string]$Request.batchId
   $startedAt = (Get-Date).ToString('o')
   # batchId はフォルダ名になるので、決まった形以外は受け付けない(../ などの混入を防ぐ)
@@ -471,6 +535,7 @@ function Invoke-EcImport($Def, $Request) {
   # failed にある同じバッチ：「実行」を押す前に止まったもの(executed:false)だけ再実行を許す。
   # 実行済み・不明・旧形式(executed なし)は、一部が入っているかもしれないので再実行しない(failed の記録もそのまま残す)
   $oldFailed = Join-Path $ImportRoot "failed\$batchId"
+  $oldFailedRemove = $false
   if (Test-Path -LiteralPath $oldFailed) {
     $oldExecuted = $true
     $oldResult = Join-Path $oldFailed 'result.json'
@@ -482,17 +547,23 @@ function Invoke-EcImport($Def, $Request) {
       Write-ImportResult $batchDir $batchId 'partial' $m @() $startedAt $true | Out-Null
       return [pscustomobject]@{ State = 'partial'; Message = $m }
     }
-    Remove-Item -LiteralPath $oldFailed -Recurse -Force
+    $oldFailedRemove = $true
   }
   # 3. 中身の確認(だめなら SMILE には触らない)
   $problems = @(Test-ImportBatch $batchDir $batchId $Def)
   if ($problems.Count -gt 0) { return (& $fail ('ファイル不整合: ' + ($problems -join ' / '))) }
 
+  # 3b. SMILEが閉じていれば起動する(確認がすべて済んだあと)。失敗してもSMILEには触っていないので、やり直しOK(executed:false)
+  if ($SmileCfg) {
+    try { Ensure-Smile $SmileCfg }
+    catch { return (& $fail ("SMILEを起動できませんでした(SMILEには触っていません): " + $_.Exception.Message)) }
+  }
+  # 再実行の結果と混ざらないよう、前回失敗した同じバッチの記録を消す(再実行が確定してから)
+  if ($oldFailedRemove) { Remove-Item -LiteralPath $oldFailed -Recurse -Force }
+
   # 4. 固定フォルダへ配置(毎回同じ名前。前回の残りは先に消す)
   New-Item -ItemType Directory -Force -Path $EcImportCurrentDir | Out-Null
-  foreach ($step in @($Def.steps)) {
-    Remove-Item -LiteralPath (Join-Path $EcImportCurrentDir $step.copyAs), (Join-Path $EcImportCurrentDir $step.result) -Force -ErrorAction SilentlyContinue
-  }
+  Clear-EcCurrentDir $Def
   $manifest = Read-JsonFile (Join-Path $batchDir 'manifest.json')
   $present = @($manifest.files | ForEach-Object { $_.name })
   $files = @()
@@ -502,37 +573,37 @@ function Invoke-EcImport($Def, $Request) {
   $stopMessage = ''
   $stepTimeout = 15
   if ($Def.stepTimeoutMinutes) { $stepTimeout = [int]$Def.stepTimeoutMinutes }
-  try {
-    # 5. PADフローを順番に。納品先にエラーがあれば受注は実行しない
-    foreach ($step in @($Def.steps)) {
-      if ($present -notcontains $step.file) { continue }
-      if ($stop) { break }
-      Copy-Item -LiteralPath (Join-Path $batchDir $step.file) -Destination (Join-Path $EcImportCurrentDir $step.copyAs) -Force
-      $r = Invoke-PadImportStep ([string]$step.flow) (Join-Path $EcImportCurrentDir $step.result) $stepTimeout
-      if (-not $r) {
-        # 結果が出ない = SMILEにどこまで入ったか分からない。再実行させず、人が見て判断する
-        $files += [pscustomobject]@{ name = $step.file; executed = $true; imported = 0; errors = 0; errorRows = @() }
-        $executed = $true   # 不明は実行済みとして扱う
-        $stop = $true
-        $stopMessage = "$($step.flow) の結果ファイルが $stepTimeout 分以内に出ませんでした。SMILE を見て判断してください"
-        $hadTimeout = $true
-        break
-      }
-      $imp = [int]$r.imported
-      $err = [int]$r.errors
-      # PADの結果の executed が false のときだけ「押す前に止まった」。無い(旧形式)・true は実行済み扱い
-      $stepExecuted = $true
-      if ($r.executed -is [bool] -and -not $r.executed) { $stepExecuted = $false }
-      if ($stepExecuted) { $executed = $true }
-      $files += [pscustomobject]@{ name = $step.file; executed = $stepExecuted; imported = $imp; errors = $err; errorRows = @($r.errorRows) }
-      if ($err -gt 0) { $stop = $true; $stopMessage = "$($step.file) の取込にエラーが $err 件ありました" + $(if ($step.file -eq 'nouhin.txt') { '(受注は実行していません)' } else { '' }) }
+  # 5. PADフローを順番に。納品先にエラーがあれば受注は実行しない
+  foreach ($step in @($Def.steps)) {
+    if ($present -notcontains $step.file) { continue }
+    if ($stop) { break }
+    Copy-Item -LiteralPath (Join-Path $batchDir $step.file) -Destination (Join-Path $EcImportCurrentDir $step.copyAs) -Force
+    $script:EcImportLaunched = $true     # ここから先で例外が出たら、SMILEにどこまで入ったか分からない
+    # 押したか不明。ただし前のフローで押していれば、全体としては実行済み
+    $script:EcImportExecuted = $(if ($executed) { $true } else { $null })
+    $r = Invoke-PadImportStep ([string]$step.flow) (Join-Path $EcImportCurrentDir $step.result) $stepTimeout
+    if (-not $r) {
+      # 結果が出ない = SMILEにどこまで入ったか分からない。再実行させず、人が見て判断する
+      $files += [pscustomobject]@{ name = $step.file; executed = $true; imported = 0; errors = 0; errorRows = @() }
+      $executed = $true   # 不明は実行済みとして扱う
+      $stop = $true
+      $stopMessage = "$($step.flow) の結果ファイルが $stepTimeout 分以内に出ませんでした。SMILE を見て判断してください"
+      $hadTimeout = $true
+      $script:EcImportFiles = $files
+      break
     }
-  } finally {
-    # お客様の名前・住所・電話が入っているので、固定フォルダには残さない
-    foreach ($step in @($Def.steps)) {
-      Remove-Item -LiteralPath (Join-Path $EcImportCurrentDir $step.copyAs), (Join-Path $EcImportCurrentDir $step.result) -Force -ErrorAction SilentlyContinue
-    }
+    $imp = [int]$r.imported
+    $err = [int]$r.errors
+    # PADの結果の executed が false のときだけ「押す前に止まった」。無い(旧形式)・true は実行済み扱い
+    $stepExecuted = $true
+    if ($r.executed -is [bool] -and -not $r.executed) { $stepExecuted = $false }
+    if ($stepExecuted) { $executed = $true }
+    $files += [pscustomobject]@{ name = $step.file; executed = $stepExecuted; imported = $imp; errors = $err; errorRows = @($r.errorRows) }
+    $script:EcImportFiles = $files
+    $script:EcImportExecuted = $(if ($executed) { $true } else { $false })
+    if ($err -gt 0) { $stop = $true; $stopMessage = "$($step.file) の取込にエラーが $err 件ありました" + $(if ($step.file -eq 'nouhin.txt') { '(受注は実行していません)' } else { '' }) }
   }
+  Clear-EcCurrentDir $Def
 
   # 6. 結果。止まったとき、SMILEの「実行」を押す前なら failed(再実行OK)。押したあと(または不明)は、
   #    取込件数に関係なく partial(要確認。再実行しない)
@@ -610,10 +681,12 @@ function Invoke-NextJob {
     $def = $defs.jobs.$jobName
     if (-not $def) { throw "未定義のジョブです: $jobName" }
     if ($def.type -eq 'import') {
-      # SMILEに取り込むジョブ。SMILEが閉じていれば先に起動してから、取込のPADフローを順に動かす
-      if ($defs.smile -and $def.needsSmile -ne $false) { Ensure-Smile $defs.smile }
-      # 完了の判断は result.json(Invoke-EcImport が書く)。失敗・一部だけ入った場合も記録に理由を残す
-      $out = Invoke-EcImport $def $running[0].Request
+      # SMILEに取り込むジョブ。SMILEが閉じていれば、確認(管理者・二重取込・中身)のあとで起動してから、取込のPADフローを順に動かす
+      # (権限のない依頼でSMILEを起動しない。起動に失敗しても result.json を書いて failed へ移す)
+      $smileCfg = $null
+      if ($defs.smile -and $def.needsSmile -ne $false) { $smileCfg = $defs.smile }
+      # 完了の判断は result.json(Invoke-EcImport が必ず書く)。失敗・一部だけ入った場合も記録に理由を残す
+      $out = Invoke-EcImport $def $running[0].Request $smileCfg
       if ($out.State -eq 'done') { $importDone = $true }
       else { $errorMessage = "$($out.State): $($out.Message)" }
     } else {
@@ -634,6 +707,10 @@ function Invoke-NextJob {
     }
   } catch {
     $errorMessage = $_.Exception.Message
+    # 取込の依頼が Invoke-EcImport に入る前に落ちたとき(ジョブ定義を取れない等)も、result.json を書いて取込フォルダを残さない(SMILEには触っていない)
+    if ($isImport -or [string]$running[0].Request.batchId) {
+      try { Complete-ImportWithoutResult ([string]$running[0].Request.batchId) 'failed' ("取込を始める前にエラーが出ました(SMILEには触っていません): " + $errorMessage) $false } catch { Write-Log "result.json を書けませんでした: $($_.Exception.Message)" }
+    }
   }
 
   $finishedAt = (Get-Date).ToString('o')
@@ -707,6 +784,17 @@ function Invoke-Schedules {
 function Resolve-InterruptedJobs {
   foreach ($item in @(Get-ChildItem -LiteralPath $RunningDir -Filter '*.json' -File)) {
     Write-Log "前回の実行中に停止した依頼を失敗扱いにします: $($item.Name)"
+    # SMILEへの取込は、どこまで入ったか分からない。result.json(partial・executed は不明)を書いて failed へ移し、
+    # 取込フォルダを _rpa_import 直下に残さない(残すと、もう一度押したときに取り込めてしまう)。固定フォルダの中身も消す
+    try {
+      $req = Read-JsonFile $item.FullName
+      $importDef = $null
+      try { $importDef = (Get-JobDefinitions).jobs.([string]$req.job) } catch { }
+      if (([string]$req.batchId) -and (($importDef -and $importDef.type -eq 'import') -or -not $importDef)) {
+        Complete-ImportWithoutResult ([string]$req.batchId) 'partial' 'RPA専用機の常駐スクリプトが取込の途中で停止したため、SMILEにどこまで入ったか不明です。SMILE を見て判断してください' $null
+        Clear-EcCurrentDir $importDef
+      }
+    } catch { Write-Log "中断された取込の記録を書けませんでした: $($_.Exception.Message)" }
     Move-QueueItem $item.FullName $FailedDir @{ status = 'failed'; finishedAt = (Get-Date).ToString('o'); error = 'RPA専用機の監視スクリプトが実行中に停止したため中断しました。必要ならもう一度依頼してください' } | Out-Null
   }
 }
