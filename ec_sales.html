@@ -9,7 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ec_sales_layouts.js?v=1"></script>
-<script src="ec_sales_core.js?v=1"></script>
+<script src="ec_sales_core.js?v=2"></script>
+<script src="rpa_queue.js?v=2"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--txt); font: 14px/1.5 var(--font); }
@@ -105,6 +106,14 @@
   tbody tr:not(.gh):hover td { box-shadow: inset 0 0 0 999px rgba(35,38,143,.07); }
   tbody tr.err:hover td:first-child { box-shadow: inset 3px 0 0 var(--red), inset 0 0 0 999px rgba(35,38,143,.07); }
   tbody tr.warn:hover td:first-child { box-shadow: inset 3px 0 0 var(--orange), inset 0 0 0 999px rgba(35,38,143,.07); }
+  tr.importing td { background: var(--amber-soft); }
+  tr.check td { background: var(--red-soft); }
+  .imp { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .imp:last-child { border-bottom: none; }
+  .steps { display: inline-flex; gap: 4px; font-size: 12px; color: var(--sub); }
+  .steps span.on { color: var(--navy); font-weight: 800; }
+  .morewrap { position: relative; }
+  #moreMenu { position: absolute; right: 0; bottom: 38px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); padding: 10px; display: flex; flex-direction: column; gap: 6px; width: 300px; z-index: 35; }
   #scrim { position: fixed; inset: 0; background: rgba(22,26,61,.25); z-index: 40; }
   #drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); background: var(--surface); z-index: 41; box-shadow: -8px 0 28px rgba(22,26,92,.18); overflow-y: auto; padding: 18px 20px 28px; }
   #drawer h2 { font-size: 16px; margin: 0; }
@@ -154,6 +163,7 @@
       </div>
       <div class="muted" style="margin-top:6px">注文は SharedMasters の 自動取得のファイル があれば自動で読みます（自動取得の仕組みができたあと）。いまは Shopify 管理画面の「注文 → エクスポート」で落とした CSV を選んでください。</div>
     </div>
+    <div class="panel" id="importPanel" hidden></div>
     <div class="panel">
       <div class="row" style="margin-bottom:8px">
         <div id="chips" class="row" style="gap:6px"></div>
@@ -223,11 +233,12 @@
 'use strict';
 const EC = window.EcSales, LAY = window.EC_LAYOUTS;
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All', 'Calendars.Read'];
+const WRITE_SCOPES = ['Files.ReadWrite.All'];   // 取込ファイルと依頼を置くときだけ使う（tovas_checker.html と同じ）
 const STORE_KEY = 'ec_sales_v1';
 const CONFIG_URL = 'ec_sales_config.json';   // 業務の決まりごと（得意先・担当・品目・単価・納期など）はコードに書かず、ここから読む
 let CONF = null;                              // 読み込んだ設定（sharepoint / files / shopifyFiles / config / mapping）
 
-let msalInstance = null, account = null, driveId = null, isSoumu = false;
+let msalInstance = null, account = null, driveId = null, isSoumu = false, isAdmin = false;
 const M = { items: null, nouhin: null, smileCust: null, nyukin: null, stamps: {} };   // SMILE のマスタ・出力
 let orders = [], orderIndex = {}, slips = [], payTx = null, payouts = null;
 let store = null;
@@ -240,7 +251,10 @@ function loadStore() {
   let s = null;
   try { s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch (e) {}
   s = s || {};
-  return { orders: s.orders || {}, mapping: s.mapping || clone(CONF.mapping), cfg: Object.assign(clone(CONF.config), s.cfg || {}) };
+  // 取込の記録は30日で消す（お客様の名前・住所が入るため。専用機側の取込ファイルと同じ期限）
+  const imports = s.imports || {}, limit = Date.now() - 30 * 864e5;
+  Object.keys(imports).forEach(k => { if (Date.parse(imports[k].requestedAt) < limit) delete imports[k]; });
+  return { orders: s.orders || {}, imports, mapping: s.mapping || clone(CONF.mapping), cfg: Object.assign(clone(CONF.config), s.cfg || {}) };
 }
 function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(clone(store))); } catch (e) { console.warn('保存できません', e); } }
 
@@ -266,6 +280,10 @@ function sjisLen(s) { let n = 0; for (const ch of String(s || '')) { const c = c
 async function getToken() {
   try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
   catch { return (await msalInstance.acquireTokenPopup({ scopes: SCOPES })).accessToken; }
+}
+async function getWriteToken() {
+  try { return (await msalInstance.acquireTokenSilent({ scopes: WRITE_SCOPES, account })).accessToken; }
+  catch { return (await msalInstance.acquireTokenPopup({ scopes: WRITE_SCOPES })).accessToken; }
 }
 async function graphGet(url) {
   const r = await fetch('https://graph.microsoft.com/v1.0' + url, { headers: { Authorization: 'Bearer ' + await getToken() } });
@@ -432,6 +450,7 @@ function stateOf(s) {
   if (s.excluded) return 'excluded';
   const r = rec(s);
   if (r && r.status === 'exported') return 'exported';
+  if (r && (r.status === 'importing' || r.status === 'check')) return r.status;   // 取込の途中・要確認は、SMILEに伝票があっても取込済み扱いにしない
   if (s.inSmile) return 'smile';
   return r && r.status === 'ok' ? 'ok' : 'new';
 }
@@ -448,7 +467,8 @@ function visible() {
 }
 
 /* ------------------------------------------------------------ 描画：受注チェック */
-const FILTERS = [['new', '未確認'], ['ok', 'OK済（取込待ち）'], ['exported', '起票済'], ['smile', 'SMILE取込済'], ['excluded', '対象外'], ['all', 'すべて']];
+const FILTERS = [['new', '未確認'], ['ok', 'OK済（取込待ち）'], ['importing', '取込中'], ['check', '要確認'], ['exported', '起票済'], ['smile', 'SMILE取込済'], ['excluded', '対象外'], ['all', 'すべて']];
+const STATE_LABEL = { new: '未確認', ok: 'OK済', importing: '取込中', check: '要確認', exported: '起票済', smile: 'SMILE取込済', excluded: '対象外' };
 function destTag(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust];
   if (!m) return '';
@@ -468,6 +488,9 @@ function rowHtml(s) {
   if (st === 'new') act = '<button class="btn sm" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled title="赤い確認事項を先に直してください"' : '') + '>OK</button>';
   else if (st === 'ok') act = '<button class="btn sec sm" data-act="undo" data-id="' + s.id + '">戻す</button>';
   else if (st === 'exported') act = '<button class="btn sec sm" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>';
+  else if (st === 'importing') act = '<span class="tag warn">取込中</span>';
+  else if (st === 'check') act = '<span class="tag err">要確認</span>';
+  if (r && r.juchuNo && st === 'exported') act = '<div class="muted">受注№ ' + esc(r.juchuNo) + '</div>' + act;
   return '<tr class="' + cls + '" data-row="' + s.id + '"><td>' + (canSel ? '<input type="checkbox" data-sel="' + s.id + '"' + (sel.has(s.id) ? ' checked' : '') + '>' : '') + '</td>' +
     '<td><b>' + esc(s.name) + '</b><div class="muted">' + s.orderDate.slice(5).replace('-', '/') + ' ' + esc(s.order.createdTime) + '</div></td>' +
     '<td>' + who + '<div>' + (st === 'new' || st === 'ok' ? destTag(s) : '') + '</div></td>' +
@@ -507,8 +530,9 @@ function renderDrawer() {
   const o = s.order, st = stateOf(s), d = EC.deliveryFromOrder(o, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key];
   const ship = shipOf(s), r = rec(s);
   const row = (k, v) => v ? '<dt>' + k + '</dt><dd>' + esc(v) + '</dd>' : '';
-  dr.innerHTML = '<div class="row"><h2>' + esc(s.name) + '</h2><span class="tag ' + (st === 'ok' ? 'ok' : 'info') + '">' + ({ new: '未確認', ok: 'OK済', exported: '起票済', smile: 'SMILE取込済', excluded: '対象外' }[st]) + '</span><div class="grow"></div><button class="btn sec sm" data-close>閉じる ✕</button></div>' +
+  dr.innerHTML = '<div class="row"><h2>' + esc(s.name) + '</h2><span class="tag ' + (st === 'ok' || st === 'exported' ? 'ok' : st === 'check' ? 'err' : st === 'importing' ? 'warn' : 'info') + '">' + STATE_LABEL[st] + '</span><div class="grow"></div><button class="btn sec sm" data-close>閉じる ✕</button></div>' +
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
+    (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
     (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '') +
     '<h3>納品先（SMILE に登録される内容）</h3><dl>' + row('コード', code ? '既存 ' + code : '新規（取込時に採番）') + row('納品先名', d.name) + row('荷受け人', d.person) + row('郵便番号', d.zip) + row('住所１', d.addr1) + row('住所２', d.addr2) + row('電話', d.tel) + '</dl>' +
     '<h3>SMILE の明細（税抜）</h3><table><thead><tr><th>品目</th><th class="num">数量</th><th class="num">単価</th><th class="num">金額</th></tr></thead><tbody>' +
@@ -516,10 +540,19 @@ function renderDrawer() {
     '</tbody></table><div class="muted" style="margin-top:4px">税込 ' + yen(s.grossTotal) + '／Shopify 合計 ' + yen(o.total) + '</div>' +
     '<h3>Shopify の注文</h3><dl>' + o.lines.map(l => '<dt>商品</dt><dd>' + esc(l.name) + ' ×' + l.qty + '（' + yen(l.price) + '）</dd>').join('') + row('送料', o.shipping ? yen(o.shipping) : '') + row('割引', o.discountCode) + row('支払方法', o.paymentMethod) + row('支払状況', o.financial) + row('メモ', o.notes) + row('メール', o.email) + '</dl>' +
     '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。</div>' +
-    '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' ? ' disabled' : '') + '>' +
+    '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check' ? ' disabled' : '') + '>' +
     '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
     '<h3>出荷予定日</h3><div>' + md(ship) + '（受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '）</div>' +
-    '<div class="row" style="margin-top:18px">' + (st === 'new' ? '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>OK にする</button>' : (st === 'ok' || st === 'exported') ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') + '</div>';
+    '<div class="row" style="margin-top:18px">' + (st === 'new' ? '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>OK にする</button>' : (st === 'ok' || st === 'exported') ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') +
+    (st === 'check' && isAdmin ? '<button class="btn" data-act="confirmed" data-id="' + s.id + '">SMILEを見て問題なし（起票済みにする）</button><button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') + '</div>' +
+    (st === 'check' ? '<div class="muted" style="margin-top:6px">取込の途中で止まっている可能性があります。SMILE で伝票を確認してから選んでください（この画面からの再取込はできません）。</div>' : '');
+}
+// 要確認：SMILE の値とアプリの期待値を並べる
+function checkHtml(r, st) {
+  if (!r || st !== 'check') return '';
+  const d = r.diffs || [];
+  return '<h3>要確認（SMILE と期待値が違います）</h3>' + (r.checkMessage ? '<div class="alert err">' + esc(r.checkMessage) + '</div>' : '') +
+    (d.length ? '<table><thead><tr><th>項目</th><th>アプリの期待値</th><th>SMILE の値</th></tr></thead><tbody>' + d.map(x => '<tr><td>' + esc(x.label) + '</td><td>' + esc(x.expected) + '</td><td class="bad">' + esc(x.actual) + '</td></tr>').join('') + '</tbody></table>' : '');
 }
 
 /* ------------------------------------------------------------ 出力（納品先 → 受注伝票） */
@@ -537,13 +570,19 @@ function renderOutbar() {
   const ok = okSlips();
   if (!ok.length) { bar.hidden = true; return; }
   bar.hidden = false;
+  // 取込は管理者だけ（見た目の制限。専用機側でも管理者を照合する）
+  if (!isAdmin) { bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">（取込は管理者が行います）</span></div>'; return; }
   const p = planOut(), lines = ok.reduce((a, s) => a + s.lines.length, 0), bad = ok.filter(s => s.hasErr).length;
-  bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">納品先の新規 ' + p.fresh.length + '件／受注 ' + lines + '行</span></div><div class="grow"></div>' +
+  bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">納品先の新規 ' + p.fresh.length + '件・受注 ' + lines + '行</span></div><div class="grow"></div>' +
     (!M.nouhin || !M.items ? '<span class="tag err">品目マスタ・納品先マスタを読めていません</span>' : '') + (bad ? '<span class="tag err">赤い確認事項のある注文が ' + bad + '件</span>' : '') +
-    '<button class="btn sec" id="o-dest"' + (bad || !M.nouhin || !p.fresh.length ? ' disabled' : '') + '>① 納品先ファイルを保存（新規 ' + p.fresh.length + '件）</button>' +
-    '<button class="btn" id="o-juchu"' + (bad || !M.nouhin || !M.items ? ' disabled' : '') + '>② 受注伝票ファイルを保存（' + ok.length + '伝票）</button>' +
-    '<button class="btn sec" id="o-done" title="SMILE に取り込んだら押してください">取り込んだら「起票済みにする」</button>';
+    '<button class="btn" id="o-import"' + (bad || !M.nouhin || !M.items || importBusy ? ' disabled' : '') + '>SMILEに取り込む</button>' +
+    '<span class="morewrap"><button class="hbtn" id="o-more" title="予備の操作（専用機が使えないとき）" aria-label="予備の操作">⋯</button>' +
+    '<div id="moreMenu"' + (moreOpen ? '' : ' hidden') + '><div class="muted">専用機が使えないときだけ。ファイルを保存して、手で SMILE に取り込みます。</div>' +
+    '<button class="btn sec sm" id="o-dest"' + (bad || !M.nouhin || !p.fresh.length ? ' disabled' : '') + '>納品先ファイルを保存（新規 ' + p.fresh.length + '件）</button>' +
+    '<button class="btn sec sm" id="o-juchu"' + (bad || !M.nouhin || !M.items ? ' disabled' : '') + '>受注伝票ファイルを保存（' + ok.length + '伝票）</button>' +
+    '<button class="btn sec sm" id="o-done" title="手で SMILE に取り込んだら押してください">手で取り込んだので「起票済み」にする</button></div></span>';
 }
+let moreOpen = false, importBusy = false;
 function stampName() { const d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') + '_' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0'); }
 function outDest() {
   const p = planOut(); if (!p.fresh.length) return;
@@ -561,6 +600,170 @@ function markExported() {
   const at = new Date().toISOString();
   ok.forEach(s => { const r = rec(s); r.status = 'exported'; r.exportedAt = at; r.exportedBy = account && account.username; });
   save(); render();
+}
+
+/* ------------------------------------------------------------ SMILE に取り込む（RPA専用機に頼む）
+   アプリ → _rpa_import/<バッチ番号>/ にファイルを置いて ec_smile_import を依頼 → 専用機が取込 → result.json
+   → 続けて専用機が ec_smile_verify_export を依頼（SMILE から受注明細・納品先マスタを出力）→ 客先注番で突き合わせ。
+   約束事：scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md */
+const importTimers = {};   // バッチ番号 → 待機を止める関数
+const RI = () => CONF.rpaImport;
+async function rpaReady() {
+  const did = await resolveDriveId();
+  RpaQueue.init({ getToken: () => getToken(), getWriteToken: () => getWriteToken(), driveId: did });
+}
+async function loadAdmins() {
+  isAdmin = false;
+  try {
+    const did = await resolveDriveId();
+    const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + did + '/root:/' + RI().adminsFile.split('/').map(encodeURIComponent).join('/') + ':/content', { headers: { Authorization: 'Bearer ' + await getToken() } });
+    if (!r.ok) return;
+    const o = await r.json(), list = Array.isArray(o) ? o : (o.admins || []), me = String(account && account.username || '').toLowerCase();
+    isAdmin = !!me && list.some(m => String(m).toLowerCase() === me);
+  } catch (e) { console.warn('管理者の一覧を読めません', e); }
+}
+function saveImp(imp) { save(); renderImportPanel(); renderOutbarIfOrders(); }
+function renderOutbarIfOrders() { if (curTab !== 'pay') renderOutbar(); }
+
+async function startImport() {
+  if (!isAdmin || importBusy) return;
+  const p = planOut();
+  if (!p.ok.length || !M.nouhin || !M.items || p.ok.some(s => s.hasErr)) return;
+  const files = [], jrows = EC.juchuRows(p.ok, LAY.juchu, store.cfg, cal);
+  if (p.fresh.length) files.push({ name: 'nouhin.txt', rows: p.fresh.length, bytes: EC.encodeUtf16(EC.toSmileText(LAY.nouhin, EC.nouhinRows(p.fresh, LAY.nouhin, store.cfg))) });
+  files.push({ name: 'juchu.txt', rows: jrows.length, bytes: EC.encodeUtf16(EC.toSmileText(LAY.juchu, jrows)) });
+  const batch = EC.buildImportBatch(files, account.username, new Date().toISOString()), id = batch.batchId;
+  const net = p.ok.reduce((a, s) => a + s.netTotal, 0), gross = p.ok.reduce((a, s) => a + s.grossTotal, 0);
+  importBusy = true; renderOutbar();
+  try {
+    await rpaReady();
+    const old = store.imports[id];
+    if (old && !old.dismissed && ['queued', 'importing', 'verify'].includes(old.phase)) { alert('この内容はすでに取込を依頼しています（' + id + '）。状況は画面上の取込のところで確認できます。'); return; }
+    if (await RpaQueue.exists(RI().importDir + '/done/' + id)) { alert('この内容は取込済みです（二重取込を防ぐため止めました）。\nバッチ番号：' + id + '\nSMILE で確認し、必要なら「要確認」の扱いにしてください。'); return; }
+    if (!confirm('SMILE に取り込みます。\n\n納品先の新規：' + p.fresh.length + '件\n受注伝票：' + p.ok.length + '伝票（' + jrows.length + '行）\n金額合計：税抜 ' + yen(net) + '／税込 ' + yen(gross) + '\n\n取込は RPA 専用機が行い、終わると自動で SMILE と突き合わせます。よろしいですか？')) return;
+    setStatus('loading', '取込ファイルを置いています…');
+    const dir = RI().importDir + '/' + id + '/';
+    for (const f of batch.files) await RpaQueue.writeFile(dir + f.name, f.bytes, 'text/plain');
+    await RpaQueue.writeFile(dir + 'manifest.json', JSON.stringify(batch.manifest, null, 2), 'application/json');   // 最後に置く（これがそろえば全部そろっている）
+    const req = await RpaQueue.request(RI().jobImport, { app: 'EC売上', requestedBy: account.username, batchId: id });
+    store.imports[id] = { batchId: id, orderIds: p.ok.map(s => s.id), phase: 'queued', queueName: req.name, requestedBy: account.username, requestedAt: batch.manifest.requestedAt,
+      counts: { fresh: p.fresh.length, slips: p.ok.length, rows: jrows.length, net, gross }, expected: EC.expectedImport(p.ok, p.fresh), message: '' };
+    p.ok.forEach(s => Object.assign(rec(s), { status: 'importing', batchId: id }));
+    save(); setReady(); render(); trackImport(id);
+  } catch (e) {
+    console.error(e); setStatus('err', '取込を依頼できませんでした: ' + e.message); alert('取込を依頼できませんでした。\n' + e.message);
+  } finally { importBusy = false; renderOutbar(); }
+}
+
+function trackImport(id) {
+  const imp = store.imports[id]; if (!imp) return;
+  if (importTimers[id]) importTimers[id]();
+  if (imp.phase === 'queued' || imp.phase === 'importing') {
+    rpaReady().then(() => { importTimers[id] = RpaQueue.watch(imp.queueName, s => onImportQueue(id, s), { intervalMs: RI().pollSeconds * 1000 }); }).catch(e => console.warn(e));
+  } else if (imp.phase === 'verify') trackVerify(id);
+}
+async function onImportQueue(id, s) {
+  const imp = store.imports[id]; if (!imp) return;
+  if (s.state === 'pending') { imp.phase = 'queued'; imp.ahead = s.ahead; }
+  else if (s.state === 'running') imp.phase = 'importing';
+  else if (s.state === 'timeout') imp.message = '状況を確認できません（時間切れ）。ページを開き直すと続きを確認します';
+  else if (s.state === 'done' || s.state === 'failed') { await finishImport(imp, s); return; }
+  saveImp(imp);
+}
+async function readImportResult(id) {
+  for (const path of [RI().importDir + '/' + id + '/result.json', RI().importDir + '/done/' + id + '/result.json', RI().importDir + '/failed/' + id + '/result.json']) {
+    try { const r = await RpaQueue.readJson(path); if (r) return r; } catch (e) { console.warn(e); }
+  }
+  return null;
+}
+function setOrders(imp, status, extra) {
+  imp.orderIds.forEach(id => {
+    const r = store.orders[id]; if (!r) return;
+    r.status = status; if (status === 'ok') delete r.batchId;
+    Object.assign(r, extra || {});
+  });
+}
+async function finishImport(imp, s) {
+  const r = await readImportResult(imp.batchId), j = EC.judgeImportResult(r);
+  imp.result = r ? { state: r.state, message: r.message || '', files: r.files || [] } : null;
+  imp.importFinishedAt = s.finishedAt || (r && r.finishedAt) || new Date().toISOString();
+  if (j.kind === 'done' && s.state === 'done') { imp.phase = 'verify'; imp.message = ''; saveImp(imp); trackVerify(imp.batchId); return; }
+  if (j.kind === 'done') { j.kind = 'check'; j.message = '専用機の記録が失敗になっています：' + (s.error || ''); }
+  if (j.kind === 'retry') {            // 取込件数0 → 何も入っていないので、もう一度「SMILEに取り込む」を押せる
+    imp.phase = 'failed'; imp.message = j.message; delete imp.expected; setOrders(imp, 'ok');
+  } else {                              // 一部だけ入った・結果不明 → 再取込はさせず、SMILE を見て判断
+    imp.phase = 'check'; imp.message = j.message; delete imp.expected;
+    setOrders(imp, 'check', { checkMessage: j.message, diffs: [] });
+  }
+  save(); render();
+}
+
+async function trackVerify(id) {
+  const imp = store.imports[id]; if (!imp || imp.phase !== 'verify') return;
+  try {
+    await rpaReady();
+    if (!imp.verifyName) {
+      // 専用機は取込のあと確認用出力を自動で依頼する。見つかればそれを待ち、一定時間たっても無ければこちらで依頼する
+      const found = await RpaQueue.find(RI().jobVerify, imp.queueName);
+      if (found.length) imp.verifyName = found[found.length - 1].name;
+      else if (Date.now() - Date.parse(imp.importFinishedAt) > RI().verifyWaitSeconds * 1000) imp.verifyName = (await RpaQueue.request(RI().jobVerify, { app: 'EC売上（取込の確認）', requestedBy: imp.requestedBy })).name;
+      saveImp(imp);
+    }
+  } catch (e) { console.warn(e); }
+  if (!imp.verifyName) { const t = setTimeout(() => trackVerify(id), 15000); importTimers[id] = () => clearTimeout(t); return; }
+  importTimers[id] = RpaQueue.watch(imp.verifyName, s => onVerifyQueue(id, s), { intervalMs: RI().pollSeconds * 1000, timeoutMs: 40 * 60 * 1000 });
+}
+async function onVerifyQueue(id, s) {
+  const imp = store.imports[id]; if (!imp || imp.phase !== 'verify') return;
+  if (s.state === 'done') { await applyVerify(imp); return; }
+  if (s.state === 'failed') { imp.phase = 'verifyFailed'; imp.message = '確認用の出力に失敗しました：' + (s.error || ''); saveImp(imp); return; }
+  if (s.state === 'timeout') { imp.message = '確認用の出力が終わりません（時間切れ）。ページを開き直すと続きを確認します'; saveImp(imp); return; }
+  imp.verifyState = s.state; renderImportPanel();
+}
+async function retryVerify(id) {
+  const imp = store.imports[id]; if (!imp || !isAdmin) return;
+  try { await rpaReady(); imp.verifyName = (await RpaQueue.request(RI().jobVerify, { app: 'EC売上（取込の確認）', requestedBy: account.username })).name; imp.phase = 'verify'; imp.message = ''; saveImp(imp); trackVerify(id); }
+  catch (e) { alert('確認用の出力を依頼できませんでした。\n' + e.message); }
+}
+// SMILE の出力を読んで、注文ごとに突き合わせる。一致した注文だけ起票済みにして、SMILE の受注№を紐づける
+async function applyVerify(imp) {
+  try {
+    const [j, n] = await Promise.all([fetchCsv(CONF.files.juchu), fetchCsv(CONF.files.nouhin)]);
+    const old = [j, n].find(x => x.modified && Date.parse(x.modified) < Date.parse(imp.importFinishedAt) - 2 * 60 * 1000);
+    if (old) { imp.phase = 'verifyFailed'; imp.message = 'SMILE の出力が取込より前のままです（更新 ' + stamp(old.modified) + '）。もう一度、確認用の出力を依頼してください'; saveImp(imp); return; }
+    const res = EC.verifyImport(imp.expected, EC.parseAuto(j.text), EC.parseAuto(n.text));
+    let ok = 0, ng = 0;
+    imp.orderIds.forEach(id => {
+      const r = store.orders[id], v = res.orders[id]; if (!r || !v) return;
+      if (v.status === 'ok') {
+        ok++; r.status = 'exported'; r.exportedAt = new Date().toISOString(); r.exportedBy = imp.requestedBy; r.juchuNo = v.juchuNo; delete r.diffs; delete r.checkMessage;
+      } else { ng++; r.status = 'check'; r.diffs = v.diffs.slice(0, 40); r.checkMessage = v.status === 'missing' ? 'SMILE の受注明細に見つかりません（取込のエラー・出力の範囲外・遅れの可能性）' : 'SMILE の内容がアプリの期待値と違います'; if (v.juchuNo) r.juchuNo = v.juchuNo; }
+    });
+    imp.summary = { ok, ng }; imp.phase = ng ? 'check' : 'done'; imp.message = ng ? ng + '件が期待値と違います。注文をクリックして、SMILE の値と見比べてください' : '';
+    delete imp.expected;   // 比べ終わったら期待値（お客様の住所など）は持たない
+    save(); render();
+  } catch (e) {
+    console.warn(e); imp.phase = 'verifyFailed'; imp.message = '確認用の出力を読めませんでした：' + e.message; saveImp(imp);
+  }
+}
+
+const IMP_STEPS = ['依頼中', '取込中', '確認待ち', '確認OK'];
+function renderImportPanel() {
+  const el = $('importPanel'); if (!el || !store) return;
+  const list = Object.values(store.imports).filter(i => !i.dismissed).sort((a, b) => a.requestedAt < b.requestedAt ? 1 : -1);
+  el.hidden = !list.length;
+  el.innerHTML = list.map(i => {
+    const stepNow = { queued: 0, importing: 1, verify: 2, done: 3 }[i.phase];
+    const steps = stepNow == null ? '' : '<span class="steps">' + IMP_STEPS.map((l, k) => '<span' + (k === stepNow ? ' class="on"' : '') + '>' + (k ? '→ ' : '') + l + '</span>').join('') + '</span>';
+    const tag = { done: '<span class="tag ok">確認OK</span>', check: '<span class="tag err">要確認</span>', failed: '<span class="tag err">取込失敗</span>', verifyFailed: '<span class="tag err">確認の出力に失敗</span>' }[i.phase] || '';
+    const c = i.counts || {}, fin = ['done', 'check', 'failed'].includes(i.phase);
+    const extra = i.phase === 'queued' && i.ahead ? '（前に ' + i.ahead + '件待ち）' : '';
+    const sum = i.summary ? '起票済 ' + i.summary.ok + '件' + (i.summary.ng ? '／要確認 ' + i.summary.ng + '件' : '') : '';
+    return '<div class="imp">' + tag + steps + '<span><b>SMILE取込</b> 受注 ' + (c.slips || 0) + '伝票・納品先の新規 ' + (c.fresh || 0) + '件' + extra + '</span><span class="muted">' + esc(i.batchId) + '・' + stamp(i.requestedAt) + ' 依頼</span>' +
+      (sum ? '<span>' + esc(sum) + '</span>' : '') + (i.message ? '<span class="' + (i.phase === 'failed' || i.phase === 'check' || i.phase === 'verifyFailed' ? 'bad' : 'muted') + '">' + esc(i.message) + '</span>' : '') +
+      '<div class="grow"></div>' + (i.phase === 'verifyFailed' && isAdmin ? '<button class="btn sec sm" data-impverify="' + esc(i.batchId) + '">確認だけやり直す</button>' : '') +
+      (fin || i.phase === 'verifyFailed' ? '<button class="btn sec sm" data-impclose="' + esc(i.batchId) + '">閉じる</button>' : '') + '</div>';
+  }).join('');
 }
 
 /* ------------------------------------------------------------ 描画：対応表・設定 */
@@ -652,7 +855,7 @@ function render() {
   ['orders', 'map', 'pay'].forEach(t => { $('p-' + t).hidden = (t !== curTab); });
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === curTab));
   document.querySelectorAll('[data-v]').forEach(e => e.classList.toggle('active', e.dataset.v === curView));
-  renderOrders(); renderMap(); renderDrawer();
+  renderOrders(); renderMap(); renderDrawer(); renderImportPanel();
   if (isSoumu) renderPay();
   if (curTab === 'pay') renderPayBar(); else renderOutbar();
 }
@@ -664,6 +867,7 @@ function setReady() {
 }
 
 document.addEventListener('click', e => {
+  if (moreOpen && !e.target.closest('.morewrap') && $('moreMenu')) { moreOpen = false; $('moreMenu').hidden = true; }
   if (e.target.closest('[data-close]') || e.target.id === 'scrim') { openId = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
   if (tr && !e.target.closest('input,button,select,a,label')) { openId = tr.dataset.row; renderDrawer(); return; }
@@ -676,7 +880,8 @@ document.addEventListener('click', e => {
   if (d.act) {
     const s = slips.find(x => x.id === d.id); if (!s) return;
     if (d.act === 'ok') { store.orders[s.id] = Object.assign(store.orders[s.id] || {}, { status: 'ok', by: account && account.username, at: new Date().toISOString() }); }
-    else { const r = store.orders[s.id]; if (r) { delete r.status; delete r.exportedAt; } }
+    else if (d.act === 'confirmed') { const r = store.orders[s.id]; if (r) { r.status = 'exported'; r.exportedAt = new Date().toISOString(); r.exportedBy = account && account.username; r.manualConfirmed = true; delete r.checkMessage; } }
+    else { const r = store.orders[s.id]; if (r) ['status', 'exportedAt', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed'].forEach(k => delete r[k]); }
     save(); render(); return;
   }
   if (d.gok) { const g = window.__groups[d.gok]; g.list.filter(s => stateOf(s) === 'new' && !s.hasErr).forEach(s => { store.orders[s.id] = Object.assign(store.orders[s.id] || {}, { status: 'ok', by: account && account.username, at: new Date().toISOString() }); }); save(); render(); return; }
@@ -689,7 +894,11 @@ document.addEventListener('click', e => {
   if (d.rdel !== undefined) { store.mapping.rules.splice(+d.rdel, 1); save(); recompute(); render(); return; }
   if (d.mv !== undefined) { const i = +d.mv, j = i + +d.d, a = store.mapping.rules; if (j >= 0 && j < a.length) { [a[i], a[j]] = [a[j], a[i]]; save(); recompute(); render(); } return; }
   if (d.try) { $('try-name').value = d.try; tryName(d.try); return; }
+  if (d.impclose) { store.imports[d.impclose].dismissed = true; save(); renderImportPanel(); return; }
+  if (d.impverify) { retryVerify(d.impverify); return; }
   switch (t.id) {
+    case 'o-import': startImport(); break;
+    case 'o-more': moreOpen = !moreOpen; $('moreMenu').hidden = !moreOpen; break;
     case 'ov-add': store.mapping.leadOverrides.push({ from: today(), to: today(), days: 3, codes: [] }); save(); renderMap(); break;
     case 'map-add': store.mapping.rules.push({ id: 'r' + Date.now(), scope: 'option', label: '新しい行', words: [], match: 'contains', code: '', net: null }); save(); renderMap(); break;
     case 'map-reset': if (confirm('対応表を初期値に戻します。直した内容は消えます。よろしいですか？')) { store.mapping = clone(CONF.mapping); save(); recompute(); render(); } break;
@@ -753,7 +962,7 @@ async function initAuth() {
   msalInstance = new msal.PublicClientApplication(HanaokaAuth.msalConfig());
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
-  const enter = async () => {
+  window.enterApp = async () => {
     $('loginScreen').style.display = 'none';
     try { CONF = await (await fetch(CONFIG_URL, { cache: 'no-cache' })).json(); } catch (e) { setStatus('err', '設定ファイル（' + CONFIG_URL + '）を読めません'); return; }
     await loadSharedConfig();
@@ -764,12 +973,14 @@ async function initAuth() {
     setStatus('loading', 'SharePoint（SharedMasters）から読み込み中…');
     isSoumu = await soumuHasAccess();
     $('tab-pay').hidden = !isSoumu;
+    await loadAdmins();
     const failed = await loadMasters();
     recompute(); render();
+    Object.keys(store.imports).forEach(id => { if (['queued', 'importing', 'verify'].includes(store.imports[id].phase)) trackImport(id); });   // 開き直したら、待っている取込の続きを見る
     if (failed.length) setStatus('err', '読み込めませんでした: ' + failed.join('、') + '（二重取込の確認・品目名の取得ができません）'); else setReady();
   };
   $('loginBtn').onclick = async () => {
-    try { $('loginError').style.display = 'none'; account = await HanaokaAuth.login(msalInstance, SCOPES); await enter(); }
+    try { $('loginError').style.display = 'none'; account = await HanaokaAuth.login(msalInstance, SCOPES); await window.enterApp(); }
     catch (e) { showLoginError('サインインに失敗しました: ' + e.message); }
   };
   $('btn-reload').onclick = async () => {
@@ -779,7 +990,7 @@ async function initAuth() {
     $('btn-reload').disabled = false;
   };
   account = await HanaokaAuth.restore(msalInstance, SCOPES);
-  if (account) await enter();
+  if (account) await window.enterApp();
 }
 initAuth();
 </script>

@@ -5,8 +5,10 @@
    ジョブ名と中身は scripts/rpa_jobs.json で定義する。
 
    使い方（各画面のサインイン処理のあとで）:
-     RpaQueue.init({ getToken, driveId: <SharedMastersのドライブID> });
+     RpaQueue.init({ getToken, driveId: <SharedMastersのドライブID>, getWriteToken });   // getWriteToken は書き込み用（省略時は getToken）
      const { name } = await RpaQueue.request('sales_master', { app: '営業日報ダッシュボード', requestedBy: account.username });
+     // 取込のように「依頼ごとに別の仕事」になるジョブは batchId を付ける（同じ batchId の依頼だけをまとめる）。
+     // 依頼に付随するファイルは writeFile / readJson / exists で SharedMasters 直下から置き・読む。
      const stop = RpaQueue.watch(name, s => { ... s.state: pending / running / done / failed / timeout ... });
 
    status の中身:
@@ -21,8 +23,8 @@ const RpaQueue = (() => {
   const ROOT = '_rpa_queue';
   let cfg = null;
 
-  function init({ getToken, driveId }) {
-    cfg = { getToken, driveId };
+  function init({ getToken, driveId, getWriteToken }) {
+    cfg = { getToken, driveId, getWriteToken: getWriteToken || getToken };
   }
 
   function itemUrl(folder, name) {
@@ -32,9 +34,10 @@ const RpaQueue = (() => {
 
   async function graph(url, opts = {}) {
     if (!cfg) throw new Error('RpaQueue.init() を先に呼んでください');
-    const token = await cfg.getToken();
+    const { write, ...fetchOpts } = opts;
+    const token = await (write ? cfg.getWriteToken : cfg.getToken)();
     const res = await fetch(url, {
-      ...opts,
+      ...fetchOpts,
       headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) },
     });
     if (res.status === 404) return null;
@@ -66,16 +69,38 @@ const RpaQueue = (() => {
     return m ? m[1] : null;
   }
 
+  // SharedMasters 直下からのパス（_rpa_import/<バッチ番号>/manifest.json など）
+  function pathUrl(path) {
+    return `${GRAPH}/drives/${cfg.driveId}/root:/${String(path).split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
+  }
+  async function exists(path) {
+    return !!(await graph(pathUrl(path) + '?$select=id'));
+  }
+  async function readJson(path) {
+    const res = await graph(pathUrl(path) + ':/content');
+    return res ? res.json() : null;
+  }
+  // 小さいファイル（4MBまで）を置く。フォルダが無ければ自動で作られる。body は文字列か Uint8Array
+  async function writeFile(path, body, contentType = 'application/octet-stream') {
+    await graph(pathUrl(path) + ':/content', { method: 'PUT', write: true, headers: { 'Content-Type': contentType }, body });
+  }
+
   // 依頼を登録する。同じジョブがすでに待っていれば登録せず、その依頼を返す
-  // （RPA専用機は同じジョブをまとめて1回で実行するので、重ねて依頼する意味がない）
-  async function request(job, { app = '', requestedBy = '' } = {}) {
+  // （RPA専用機は同じジョブをまとめて1回で実行するので、重ねて依頼する意味がない）。
+  // batchId を付けたときは、同じ batchId の依頼だけをまとめる（別の batchId は別の仕事として並べる）
+  async function request(job, { app = '', requestedBy = '', batchId = '' } = {}) {
     const pending = await list('pending');
-    const dup = pending.find(n => jobOf(n) === job);
-    if (dup) return { name: dup, deduped: true };
+    for (const n of pending.filter(n => jobOf(n) === job)) {
+      if (!batchId) return { name: n, deduped: true };
+      const r = await read('pending', n).catch(() => null);
+      if (r && r.batchId === batchId) return { name: n, deduped: true };
+    }
     const name = newName(job);
     const body = { job, app, requestedBy, requestedAt: new Date().toISOString() };
+    if (batchId) body.batchId = batchId;
     await graph(itemUrl('pending', name) + ':/content', {
       method: 'PUT',
+      write: true,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
@@ -128,5 +153,18 @@ const RpaQueue = (() => {
     return () => { stopped = true; if (timer) clearTimeout(timer); };
   }
 
-  return { init, request, status, watch, jobOf };
+  // 名前の先頭の日時（UTC。名前順＝依頼順）
+  function stampOf(name) { return String(name).split('_')[0]; }
+
+  // 指定ジョブの依頼を、pending / running / done / failed から探す（afterName より後に依頼されたもの。新しい順）。
+  // 取込のあとに専用機が自動で足す確認用出力の依頼を、アプリが見つけるために使う
+  async function find(job, afterName = '') {
+    const out = [];
+    for (const folder of ['pending', 'running', 'done', 'failed']) {
+      (await list(folder)).forEach(n => { if (jobOf(n) === job && stampOf(n) > stampOf(afterName)) out.push({ name: n, folder }); });
+    }
+    return out.sort((a, b) => (a.name < b.name ? 1 : -1));
+  }
+
+  return { init, request, status, watch, jobOf, find, exists, readJson, writeFile };
 })();
