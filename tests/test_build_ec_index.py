@@ -148,5 +148,75 @@ class BuildEcIndexTest(unittest.TestCase):
         self.assertNotIn('テスト様', o2.getvalue())
 
 
+class TestCustomersTest(BuildEcIndexTest):
+    """テスト送信用の得意先（testImport.customerCode）は、本番ECとは分けて持つ"""
+
+    def write_with_test_rows(self):
+        self.write_all()
+        self.write('受注明細出力.csv', tsv([JUCHU_HEAD,
+                                         juchu_row('90001', 1, '599802', '1801'),
+                                         juchu_row('80001', 1, '000123', '9999'),
+                                         juchu_row('70001', 1, '110101', '2610161230', memo='花岡EC（テスト送信）'),
+                                         juchu_row('70001', 2, '110101', '2610161230', code='FR')], quote_all=True))
+        self.write('納品先マスタ.csv', '得意先ｺｰﾄﾞ,納品先ｺｰﾄﾞ,納品先名,納品先索引,荷受け人名１,荷受け人名２,郵便番号,住所１,住所２,住所３,電話番号\r\n'
+                   '599802,000001,既存様,,,,100-0001,東京都,,,03-0000-0000\r\n'
+                   '110101,999998,テスト納品先（削除予定）,,,,143-0006,東京都大田区,,,03-3765-5626\r\n'
+                   '110101,000249,別の納品先,,,,,,,,\r\n')
+
+    def test_テスト用の得意先は別に持つ(self):
+        self.write_with_test_rows()
+        with redirect_stdout(io.StringIO()):
+            B.build(self.dir, ['599801', '599802'], test_customers=['110101'])
+        idx = self.read_index()
+        co = [dict(zip(idx['orders']['cols'], r)) for r in idx['orders']['rows']]
+        to = [dict(zip(idx['testOrders']['cols'], r)) for r in idx['testOrders']['rows']]
+        self.assertEqual([r['客先注番'] for r in co], ['1801'])                      # 本番ECにテストは混ざらない
+        self.assertEqual([r['客先注番'] for r in to], ['2610161230', '2610161230'])
+        self.assertEqual({r['得意先コード'] for r in to}, {'110101'})
+        self.assertEqual(idx['testCustomers'], ['110101'])
+        self.assertEqual(len(idx['nouhin']['rows']), 1)                               # 本番ECの納品先だけ
+        self.assertEqual([r[1] for r in idx['testNouhin']['rows']], ['999998', '000249'])
+        self.assertEqual(idx['nouhin']['maxCode'], {'599802': '000001'})              # 最大コードにテストの 999998 は入らない
+
+    def test_テスト用の得意先が本番ECと同じなら無視する(self):
+        self.write_with_test_rows()
+        with redirect_stdout(io.StringIO()):
+            B.build(self.dir, ['599801', '599802'], test_customers=['599802'])
+        idx = self.read_index()
+        self.assertNotIn('testOrders', idx)
+        self.assertNotIn('testCustomers', idx)
+
+    def test_指定が無ければテスト用は出さない(self):
+        self.write_with_test_rows()
+        with redirect_stdout(io.StringIO()):
+            B.build(self.dir, ['599801', '599802'])
+        self.assertNotIn('testOrders', self.read_index())
+
+    def test_設定ファイルから得意先を読む(self):
+        self.write_with_test_rows()
+        conf = os.path.join(self.dir, 'conf.json')
+        with open(conf, 'w', encoding='utf-8') as f:
+            json.dump({'config': {'customers': {'599802': {}}}, 'testImport': {'customerCode': '110101'}}, f)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(B.main(['--dir', self.dir, '--config', conf]), 0)
+        idx = self.read_index()
+        self.assertEqual(idx['customers'], ['599802'])                                # 設定の customers のキーだけ
+        self.assertEqual(idx['testCustomers'], ['110101'])
+        self.assertEqual(len(idx['testOrders']['rows']), 2)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(B.main(['--dir', self.dir, '--config', os.path.join(self.dir, 'なし.json')]), 1)
+
+    def test_引数が設定より優先される(self):
+        self.write_with_test_rows()
+        conf = os.path.join(self.dir, 'conf.json')
+        with open(conf, 'w', encoding='utf-8') as f:
+            json.dump({'config': {'customers': {'599802': {}}}, 'testImport': {'customerCode': '110101'}}, f)
+        with redirect_stdout(io.StringIO()):
+            B.main(['--dir', self.dir, '--config', conf, '--customers', '599801,599802', '--test-customers', '000123'])
+        idx = self.read_index()
+        self.assertEqual(idx['customers'], ['599801', '599802'])
+        self.assertEqual(idx['testCustomers'], ['000123'])
+
+
 if __name__ == '__main__':
     unittest.main()

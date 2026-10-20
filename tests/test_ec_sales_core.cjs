@@ -330,6 +330,70 @@ t('軽量ファイル（ec_smile_index.json）の表 → オブジェクト。�
   assert.ok(Object.values(r.orders).every(o => o.status === 'ok') && r.orders['1801'].juchuNo === '90001');
 });
 
+/* ---------- テスト送信（管理者メニュー。SMILE のテスト用得意先に仮データを1件） ---------- */
+const TI = CONF.testImport;
+const TITEMS = Object.assign({}, ITEMS, { TC: { name: 'ﾃｰﾌﾞﾙｺﾝﾃﾅ', unit: '個', teihai: '1' } });
+const tOpt = (over) => Object.assign({ items: TITEMS, today: '2026-10-16', stamp: '2610161230', deliveryCodes: {} }, over);
+t('テスト送信：設定は本番ECの得意先と別で、安全弁を通る', () => {
+  assert.strictEqual(TI.customerCode, '110101'); assert.strictEqual(TI.deliveryCode, '999998');
+  assert.ok(!DEFAULT_CONFIG.customers[TI.customerCode]);
+  assert.strictEqual(EC.testSendGuard(TI, DEFAULT_CONFIG), '');
+});
+t('テスト送信：安全弁（本番ECの得意先・不備のある設定は拒否）', () => {
+  assert.ok(/本番ECの得意先/.test(EC.testSendGuard(Object.assign({}, TI, { customerCode: '599801' }), DEFAULT_CONFIG)));
+  assert.ok(/本番ECの得意先/.test(EC.testSendGuard(Object.assign({}, TI, { customerCode: '599802' }), DEFAULT_CONFIG)));
+  assert.ok(EC.testSendGuard(null, DEFAULT_CONFIG));
+  assert.ok(EC.testSendGuard(Object.assign({}, TI, { deliveryCode: '12' }), DEFAULT_CONFIG));
+  assert.ok(EC.testSendGuard(Object.assign({}, TI, { lines: [] }), DEFAULT_CONFIG));
+  const r = EC.buildTestImport(Object.assign({}, TI, { customerCode: '599801' }), DEFAULT_CONFIG, tOpt());
+  assert.ok(r.error && !r.slips);                                          // 拒否されたら取込データは作らない
+});
+t('テスト送信：仮の注文1件（2行・手配区分1と2・翌営業日・社内メモ・テスト用の得意先）', () => {
+  const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), s = r.slips[0];
+  assert.strictEqual(r.slips.length, 1);
+  assert.strictEqual(r.id, 'TEST2610161230');
+  assert.deepStrictEqual(s.lines.map(l => [l.code, l.qty, l.unitNet, l.amountNet, l.teihai]), [['TC', 1, 7000, 7000, '1'], ['FR', 1, 1500, 1500, '2']]);
+  assert.strictEqual(s.shipDate, '2026-10-19');                            // 金曜の翌営業日＝月曜
+  assert.strictEqual(s.memo, '花岡EC（テスト送信）'); assert.strictEqual(s.cust, '110101');
+  assert.strictEqual(r.net, 8500); assert.strictEqual(r.gross, 9350);
+  assert.strictEqual(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ today: '2026-10-15' })).slips[0].shipDate, '2026-10-16');
+});
+t('テスト送信：客先注番は毎回ユニーク。数字の部分で照合できる', () => {
+  const a = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()).id, b = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ stamp: '2610161231' })).id;
+  assert.notStrictEqual(a, b); assert.ok(/^TEST\d{10}$/.test(a)); assert.ok(a.replace(/\D/g, '').length === 10);
+});
+t('テスト送信：納品先 999998 が無ければ新規（納品先ファイルを作る）、あれば作らない', () => {
+  const fresh = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt());
+  assert.strictEqual(fresh.fresh.length, 1); assert.strictEqual(fresh.slips[0].deliveryNew, true);
+  const rows = EC.nouhinRows(fresh.fresh, L.nouhin, DEFAULT_CONFIG)[0];
+  assert.deepStrictEqual([rows[0], rows[1], rows[2], rows[6], rows[7], rows[11]], ['110101', '999998', 'テスト納品先（削除予定）', '143-0006', '東京都大田区平和島3-1-7', '03-3765-5626']);
+  const had = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ deliveryCodes: { '999998': true } }));
+  assert.strictEqual(had.fresh.length, 0); assert.strictEqual(had.slips[0].deliveryNew, false);
+});
+t('テスト送信：取込ファイル（受注）の中身と、品目マスタにない品目はエラー', () => {
+  const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), J = L.juchu;
+  const rows = EC.juchuRows(r.slips, J, EC.testCfg(TI, DEFAULT_CONFIG));
+  assert.strictEqual(rows.length, 2);
+  const col = n => J.indexOf(n);
+  assert.deepStrictEqual([rows[0][col('得意先コード')], rows[0][col('担当者コード')], rows[0][col('部門コード')], rows[0][col('倉庫コード')], rows[0][col('納品先コード')], rows[0][col('客先注番')], rows[0][col('社内メモ')]],
+    ['110101', '900230', '002220', '000105', '999998', '2610161230', '花岡EC（テスト送信）']);
+  assert.deepStrictEqual([rows[0][col('手配区分')], rows[1][col('手配区分')]], ['1', '2']);
+  assert.ok(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ items: { FR: TITEMS.FR } })).error);
+});
+t('テスト送信：突き合わせ（一致・金額違い）。本番ECの注文は対象外', () => {
+  const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), J = L.juchu, N = L.nouhin;
+  const expected = EC.expectedImport(r.slips, r.fresh);
+  const jobjs = EC.juchuRows(r.slips, J, EC.testCfg(TI, DEFAULT_CONFIG)).map(x => { const o = {}; J.forEach((h, i) => { o[h] = x[i]; }); o['受注№'] = '70001'; return o; });
+  const nobjs = EC.nouhinRows(r.fresh, N, DEFAULT_CONFIG).map(x => { const o = {}; N.forEach((h, i) => { o[h] = x[i]; }); return o; });
+  const ok = EC.verifyImport(expected, jobjs, nobjs);
+  assert.strictEqual(ok.orders[r.id].status, 'ok'); assert.strictEqual(ok.orders[r.id].juchuNo, '70001'); assert.strictEqual(ok.deliveries['999998'].status, 'ok');
+  const bad = JSON.parse(JSON.stringify(jobjs)); bad[1]['金額'] = '1499';
+  assert.ok(EC.verifyImport(expected, bad, nobjs).orders[r.id].diffs.some(d => d.field === 'amount' && d.line === 2));
+  // 同じ客先注番が本番EC の得意先にあっても、得意先が違えば見つからない扱い
+  const other = jobjs.map(o => Object.assign({}, o, { '得意先コード': '599802' }));
+  assert.strictEqual(EC.verifyImport(expected, other, nobjs).orders[r.id].status, 'missing');
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';

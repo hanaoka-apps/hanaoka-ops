@@ -816,6 +816,43 @@
     return out;
   };
 
+  /* ============================================================ テスト送信（管理者メニュー）
+   * SMILE のテスト用得意先に、仮の注文を1件だけ送って、取込〜突き合わせを通しで試す。本番EC の得意先・注文には触らない。 */
+  // 安全弁：テスト用の得意先が本番EC の得意先と同じなら、理由（文字）を返す。問題なければ ''
+  EC.testSendGuard = function (tc, cfg) {
+    if (!tc || !tc.customerCode) return 'テスト送信の設定（testImport）がありません';
+    var code = String(tc.customerCode);
+    if ((cfg.customers && cfg.customers[code]) || code === cfg.defaultCustomer || code === cfg.earlyCustomer) return 'テスト用の得意先（' + code + '）が本番ECの得意先と同じです。テスト送信は行いません';
+    if (!/^\d{6}$/.test(String(tc.deliveryCode || ''))) return 'テスト用の納品先コードが6桁の数字ではありません';
+    if (!tc.lines || !tc.lines.length) return 'テスト用の明細がありません';
+    return '';
+  };
+  // 取込（juchuRows）に渡す設定：倉庫だけテスト用の値に差し替える
+  EC.testCfg = function (tc, cfg) { return Object.assign({}, cfg, { warehouse: tc.warehouse || cfg.warehouse }); };
+  // 仮の注文を1件。opt = { items:{code:{name,unit,teihai}}, cal, today:'YYYY-MM-DD', stamp:'yymmddHHMM', deliveryCodes:{コード:true}（テスト用得意先の納品先マスタにあるコード） }
+  // 戻り値 { error } か { id, slips:[slip], fresh:[新規納品先], net, gross }。slip は juchuRows / expectedImport にそのまま渡せる
+  EC.buildTestImport = function (tc, cfg, opt) {
+    var err = EC.testSendGuard(tc, cfg);
+    if (err) return { error: err };
+    var cal = opt.cal || EC.makeCalendar(cfg), items = opt.items || {};
+    // 客先注番：テストと分かる形で毎回ユニーク（突き合わせは数字で照合するので、数字部分 yymmddHHMM がユニーク）
+    var id = (tc.poPrefix || 'TEST') + opt.stamp;
+    var lines = [], i, l, m;
+    for (i = 0; i < tc.lines.length; i++) {
+      l = tc.lines[i]; m = items[l.code];
+      if (!m) return { error: '品目マスタにない品目コードです：' + l.code };
+      lines.push({ code: l.code, name: m.name, unit: m.unit, teihai: m.teihai || '1', qty: l.qty, unitNet: l.unitNet, amountNet: l.qty * l.unitNet, kind: 'test', label: 'テスト' });
+    }
+    var exists = !!(opt.deliveryCodes && opt.deliveryCodes[tc.deliveryCode]);
+    var d = { name: tc.deliveryName, person: '', zip: tc.zip || '', addr1: tc.addr1 || '', addr2: tc.addr2 || '', tel: tc.tel || '' };
+    var net = lines.reduce(function (a, x) { return a + x.amountNet; }, 0);
+    var slip = { id: id, name: id, orderDate: opt.today, cust: tc.customerCode, custName: tc.customerName, staff: tc.staff, dept: tc.dept,
+      lines: lines, flags: [], shipDate: cal.add(opt.today, tc.leadBusinessDays == null ? 1 : tc.leadBusinessDays), memo: tc.memo,
+      deliveryCode: tc.deliveryCode, deliveryNew: !exists, delivery: d, netTotal: net, grossTotal: Math.round(net * 1.1), isTest: true };
+    var fresh = exists ? [] : [{ cust: tc.customerCode, code: tc.deliveryCode, d: d, orderId: id }];
+    return { id: id, slips: [slip], fresh: fresh, net: net, gross: slip.grossTotal };
+  };
+
   // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];
