@@ -21,6 +21,8 @@ EC売上に必要な分だけを SharedMasters 直下の ec_smile_index.json に
       "customers": ["599801", "599802"],
       "orders":  { "cols": [...見出し], "rows": [[...], ...] },   … EC の受注の行
       "nouhin":  { "cols": [...], "rows": [...], "maxCode": { "得意先": "最大の納品先コード" } },
+      "testCustomers": ["110101"],                    … テスト送信用の得意先（あれば）
+      "testOrders":  { "cols": [...], "rows": [...] }, "testNouhin": { "cols": [...], "rows": [...] },
       "items":   { "cols": [...], "rows": [...] },
       "nyukin":  { "cols": [...], "rows": [...] }
     }
@@ -28,6 +30,11 @@ EC売上に必要な分だけを SharedMasters 直下の ec_smile_index.json に
 
 引数・環境変数:
   EC_CUSTOMERS … EC の得意先コード（カンマ区切り。既定 599801,599802）。--customers でも指定できる
+  EC_TEST_CUSTOMERS … テスト送信用の得意先コード（カンマ区切り。既定なし）。--test-customers でも指定できる。
+                      本番ECの受注・納品先とは分けて testOrders・testNouhin に入れる（本番の二重取込確認・入金には混ぜない）
+  --config     … ec_sales_config.json のパス。あれば EC の得意先を config.customers のキー、テスト用の得意先を
+                  testImport.customerCode から読む（コードに埋め込まない。常駐スクリプトが main から取得して渡す）。
+                  --customers / 環境変数の指定があればそちらを優先する
   --dir        … SharedMasters フォルダ（既定は環境変数 SHARED_MASTERS_DIR）
 
 個人情報（名前・住所・電話）が入るので、ログには件数だけを出し、値は出さない。
@@ -143,12 +150,15 @@ def mtime_iso(path):
     return datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def build(shared_dir, customers, now=None):
-    """ec_smile_index.json を作って書き出す。成功したら書いた内容（dict）を返す。失敗したら例外（前回のファイルは残る）。"""
+def build(shared_dir, customers, now=None, test_customers=()):
+    """ec_smile_index.json を作って書き出す。成功したら書いた内容（dict）を返す。失敗したら例外（前回のファイルは残る）。
+    test_customers＝テスト送信用の得意先。本番ECの得意先と重なるコードは無視する（本番の注文を testOrders に入れないため）。"""
     custs = [c.strip() for c in customers if c.strip()]
     if not custs:
         raise ValueError('EC の得意先コードがありません')
+    tests = [c.strip() for c in test_customers if c.strip() and c.strip() not in custs]
     is_ec = lambda code: norm(code) in custs
+    is_test = lambda code: norm(code) in tests
     sources = []
 
     def src(name, required=True):
@@ -160,15 +170,23 @@ def build(shared_dir, customers, now=None):
         return path
 
     out = {'customers': custs}
+    if tests:
+        out['testCustomers'] = tests
 
     p = src('受注明細出力.csv')
-    cols, rows, total = collect(p, ORDER_COLS, ORDER_REQUIRED, lambda v: is_ec(v[3]))
-    out['orders'] = {'cols': cols, 'rows': rows}
+    cols, rows, total = collect(p, ORDER_COLS, ORDER_REQUIRED, lambda v: is_ec(v[3]) or is_test(v[3]))
+    out['orders'] = {'cols': cols, 'rows': [v for v in rows if is_ec(v[3])]}
+    if tests:
+        out['testOrders'] = {'cols': cols, 'rows': [v for v in rows if is_test(v[3])]}
     sources.append({'name': '受注明細出力.csv', 'modified': mtime_iso(p), 'rows': total})
-    log('受注明細出力: 全 %d 行のうち EC %d 行' % (total, len(rows)))
+    log('受注明細出力: 全 %d 行のうち EC %d 行・テスト %d 行' % (total, len(out['orders']['rows']), len(out['testOrders']['rows']) if tests else 0))
 
     p = src('納品先マスタ.csv')
-    cols, rows, total = collect(p, NOUHIN_COLS, NOUHIN_REQUIRED, lambda v: is_ec(v[0]))
+    cols, rows, total = collect(p, NOUHIN_COLS, NOUHIN_REQUIRED, lambda v: is_ec(v[0]) or is_test(v[0]))
+    all_nouhin = rows
+    rows = [v for v in all_nouhin if is_ec(v[0])]
+    if tests:
+        out['testNouhin'] = {'cols': cols, 'rows': [v for v in all_nouhin if is_test(v[0])]}
     max_code = {}
     for v in rows:
         code = v[1].strip()
@@ -176,7 +194,7 @@ def build(shared_dir, customers, now=None):
             max_code[v[0]] = code
     out['nouhin'] = {'cols': cols, 'rows': rows, 'maxCode': max_code}
     sources.append({'name': '納品先マスタ.csv', 'modified': mtime_iso(p), 'rows': total})
-    log('納品先マスタ: 全 %d 行のうち EC %d 行' % (total, len(rows)))
+    log('納品先マスタ: 全 %d 行のうち EC %d 行・テスト %d 行' % (total, len(rows), len(out['testNouhin']['rows']) if tests else 0))
 
     p = src('品目マスタ.csv')
     cols, rows, total = collect(p, ITEM_COLS, ITEM_REQUIRED, lambda v: bool(v[0]))
@@ -197,7 +215,7 @@ def build(shared_dir, customers, now=None):
     out['sources'] = sources
     out['generatedAt'] = (now or datetime.now(timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ')
     # 見出しの並びが分かりやすいよう、キーの順を固定して書く
-    ordered = {k: out[k] for k in ['generatedAt', 'sources', 'customers', 'orders', 'nouhin', 'items', 'nyukin']}
+    ordered = {k: out[k] for k in ['generatedAt', 'sources', 'customers', 'testCustomers', 'orders', 'nouhin', 'testOrders', 'testNouhin', 'items', 'nyukin'] if k in out}
 
     dest = os.path.join(shared_dir, OUT_NAME)
     tmp = dest + '.tmp'
@@ -216,13 +234,29 @@ def build(shared_dir, customers, now=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description='EC売上アプリ用の軽量ファイル ec_smile_index.json を作る')
     ap.add_argument('--dir', default=os.environ.get('SHARED_MASTERS_DIR'), help='SharedMasters フォルダ')
-    ap.add_argument('--customers', default=os.environ.get('EC_CUSTOMERS', DEFAULT_CUSTOMERS), help='EC の得意先コード（カンマ区切り）')
+    ap.add_argument('--customers', default=os.environ.get('EC_CUSTOMERS'), help='EC の得意先コード（カンマ区切り）')
+    ap.add_argument('--test-customers', default=os.environ.get('EC_TEST_CUSTOMERS'), help='テスト送信用の得意先コード（カンマ区切り）')
+    ap.add_argument('--config', default=None, help='ec_sales_config.json のパス（得意先コードをここから読む）')
     args = ap.parse_args(argv)
     if not args.dir:
         log('SHARED_MASTERS_DIR（または --dir）を指定してください')
         return 2
+    customers, tests = args.customers, args.test_customers
+    if args.config:
+        try:
+            with open(args.config, encoding='utf-8-sig') as f:
+                conf = json.load(f)
+            if customers is None:
+                customers = ','.join((conf.get('config') or {}).get('customers', {}).keys())
+            if tests is None:
+                tests = str((conf.get('testImport') or {}).get('customerCode') or '')
+        except Exception as e:
+            log('設定ファイルを読めません（%s）: %s' % (type(e).__name__, e))
+            return 1
+    if customers is None:
+        customers = DEFAULT_CUSTOMERS
     try:
-        build(args.dir, args.customers.split(','))
+        build(args.dir, customers.split(','), test_customers=(tests or '').split(','))
     except Exception as e:   # 失敗しても前回の ec_smile_index.json は残っている
         log('失敗しました（前回のファイルはそのままです）: %s: %s' % (type(e).__name__, e))
         return 1

@@ -278,7 +278,9 @@ function Get-JobSteps($Def) {
 
 # リポジトリの scripts/<名前> (Python) を GitHub の main から取得して、専用機の Python で実行する。
 # SHARED_MASTERS_DIR で同期フォルダを直接読み書きする(アップロードは OneDrive 同期に任せる)
-function Invoke-RepoPython([string]$ScriptName) {
+# $ConfigFile(リポジトリ内のパス。例 ec_sales_config.json)を渡すと、SharedMasters に同名のファイルがあればそれを、無ければ main から取得したものを
+# --config <パス> としてスクリプトに渡す(得意先コードなどをスクリプトに埋め込まないため。アプリも同じ優先順位で設定を読む)
+function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '') {
   Write-Log "$ScriptName を取得して実行します"
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   # 毎回別名で取得する。同じ名前に上書きすると、前回のファイルをウイルス対策の
@@ -288,13 +290,26 @@ function Invoke-RepoPython([string]$ScriptName) {
   $scriptPath = Join-Path $WorkDir "${base}_$stamp.py"
   $outPath = Join-Path $WorkDir "${base}_$stamp.out.txt"
   $errPath = Join-Path $WorkDir "${base}_$stamp.err.txt"
+  $configPath = ''
+  $configIsTemp = $false
   try {
     # 常に最新版を取得してから実行する(手元に古いコピーを置いて動かさない)
     Invoke-WebRequest -Uri "$RepoRawBase/scripts/$ScriptName" -OutFile $scriptPath -UseBasicParsing
+    $argText = '"{0}"' -f $scriptPath
+    if ($ConfigFile) {
+      $shared = Join-Path $SharedMastersPath ([System.IO.Path]::GetFileName($ConfigFile))
+      if (Test-Path -LiteralPath $shared) { $configPath = $shared }
+      else {
+        $configPath = Join-Path $WorkDir "${base}_$stamp.config.json"
+        $configIsTemp = $true
+        Invoke-WebRequest -Uri "$RepoRawBase/$ConfigFile" -OutFile $configPath -UseBasicParsing
+      }
+      $argText += ' --config "{0}"' -f $configPath
+    }
     $env:SHARED_MASTERS_DIR = $SharedMastersPath
     # 出力先が画面でないとPythonはcp932で書き出し、絵文字の表示で止まるためUTF-8にする
     $env:PYTHONIOENCODING = 'utf-8'
-    $proc = Start-Process -FilePath 'python' -ArgumentList ('"{0}"' -f $scriptPath) -NoNewWindow -Wait -PassThru `
+    $proc = Start-Process -FilePath 'python' -ArgumentList $argText -NoNewWindow -Wait -PassThru `
       -RedirectStandardOutput $outPath -RedirectStandardError $errPath
     if ($proc.ExitCode -ne 0) {
       # 原因を追えるよう、Pythonのエラー出力の最後をログに残す
@@ -305,6 +320,7 @@ function Invoke-RepoPython([string]$ScriptName) {
     }
   } finally {
     Remove-Item -LiteralPath $scriptPath, $outPath, $errPath -Force -ErrorAction SilentlyContinue
+    if ($configIsTemp) { Remove-Item -LiteralPath $configPath -Force -ErrorAction SilentlyContinue }
   }
 }
 
@@ -316,7 +332,8 @@ function Invoke-After([string]$After) {
   switch ($After) {
     'regenerate_facts' { Invoke-RegenerateFacts }
     # EC売上用の軽量ファイル ec_smile_index.json を作る(受注明細出力・納品先マスタ・品目マスタ・入金明細出力から)
-    'build_ec_index'   { Invoke-RepoPython 'build_ec_index.py' }
+    # EC の得意先・テスト送信用の得意先は ec_sales_config.json から読む(スクリプトには埋め込まない)
+    'build_ec_index'   { Invoke-RepoPython 'build_ec_index.py' 'ec_sales_config.json' }
   }
 }
 
