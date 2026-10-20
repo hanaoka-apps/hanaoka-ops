@@ -295,7 +295,120 @@ class ClientTests(unittest.TestCase):
             c.execute('q')
 
 
+class AuthTests(unittest.TestCase):
+    """client credentials（Dev Dashboard のアプリ）と固定トークン。秘密は ID/secret ともダミー"""
+    SECRET = 'dummy-secret-xyz'
+
+    def resp(self, status, body=None):
+        r = Mock(status_code=status, headers={})
+        r.json.return_value = body or {}
+        return r
+
+    def token_resp(self, tok='tok-1', ttl=86399):
+        return self.resp(200, {'access_token': tok, 'scope': 'read_orders', 'expires_in': ttl})
+
+    def test_client_credentials_token_is_used_for_graphql(self):
+        sess = Mock()
+        sess.post.side_effect = [self.token_resp('tok-1'), self.resp(200, {'data': {'ok': 1}}), self.resp(200, {'data': {'ok': 2}})]
+        auth = SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess)
+        c = SF.ShopifyClient('demo.myshopify.com', auth, '2026-07', session=sess, sleep=lambda s: None)
+        self.assertEqual(c.execute('q'), {'ok': 1})
+        self.assertEqual(c.execute('q'), {'ok': 2})            # 2回目はトークンを使い回す
+        self.assertEqual(sess.post.call_count, 3)
+        tok_call = sess.post.call_args_list[0]
+        self.assertEqual(tok_call.args[0], 'https://demo.myshopify.com/admin/oauth/access_token')
+        self.assertEqual(tok_call.kwargs['data'], {'grant_type': 'client_credentials', 'client_id': 'cid', 'client_secret': self.SECRET})
+        self.assertEqual(sess.post.call_args_list[1].kwargs['headers']['X-Shopify-Access-Token'], 'tok-1')
+
+    def test_refetch_when_near_expiry(self):
+        now = [1000.0]
+        sess = Mock()
+        sess.post.side_effect = [self.token_resp('a', 3600), self.token_resp('b', 3600)]
+        auth = SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess, clock=lambda: now[0])
+        self.assertEqual(auth.get(), 'a')
+        now[0] += 3000
+        self.assertEqual(auth.get(), 'a')                      # まだ有効
+        now[0] += 560                                           # 残り40秒（60秒を切った）
+        self.assertEqual(auth.get(), 'b')
+
+    def test_static_token_still_works(self):
+        sess = Mock()
+        sess.post.return_value = self.resp(200, {'data': {'ok': 1}})
+        c = SF.ShopifyClient('demo.myshopify.com', 'shpat_fixed', '2026-07', session=sess)
+        self.assertEqual(c.execute('q'), {'ok': 1})
+        self.assertEqual(sess.post.call_args.kwargs['headers']['X-Shopify-Access-Token'], 'shpat_fixed')
+        self.assertEqual(sess.post.call_count, 1)
+
+    def test_token_failure_does_not_leak_secret(self):
+        for r in (self.resp(400, {'error': 'shop_not_permitted', 'error_description': 'Client credentials cannot be performed on this shop. ' + self.SECRET}),
+                  self.resp(401, {'error': 'invalid_client', 'error_description': self.SECRET}), self.resp(200, {})):
+            sess = Mock()
+            sess.post.return_value = r
+            auth = SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess)
+            with self.assertRaises(SF.FetchError) as cm:
+                auth.get()
+            self.assertNotIn(self.SECRET, str(cm.exception))
+        sess = Mock()
+        sess.post.return_value = self.resp(400, {'error': 'shop_not_permitted'})
+        with self.assertRaisesRegex(SF.FetchError, '同じ Shopify 組織'):
+            SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess).get()
+
+    def test_connection_error_does_not_leak_secret(self):
+        sess = Mock()
+        sess.post.side_effect = SF.requests.exceptions.RequestException('failed ' + self.SECRET)
+        with self.assertRaises(SF.FetchError) as cm:
+            SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess).get()
+        self.assertNotIn(self.SECRET, str(cm.exception))
+
+    def test_401_refetches_token_once(self):
+        sess = Mock()
+        sess.post.side_effect = [self.token_resp('old'), self.resp(401), self.token_resp('new'), self.resp(200, {'data': {'ok': 1}})]
+        auth = SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess)
+        c = SF.ShopifyClient('demo.myshopify.com', auth, '2026-07', session=sess, sleep=lambda s: None)
+        self.assertEqual(c.execute('q'), {'ok': 1})
+        self.assertEqual(sess.post.call_args_list[3].kwargs['headers']['X-Shopify-Access-Token'], 'new')
+        # 取り直しても401なら、それ以上は繰り返さない
+        sess2 = Mock()
+        sess2.post.side_effect = [self.token_resp('old'), self.resp(401), self.token_resp('new'), self.resp(401)]
+        auth2 = SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess2)
+        c2 = SF.ShopifyClient('demo.myshopify.com', auth2, '2026-07', session=sess2, sleep=lambda s: None)
+        with self.assertRaisesRegex(SF.FetchError, '拒否'):
+            c2.execute('q')
+        self.assertEqual(sess2.post.call_count, 4)
+
+    def test_static_token_401_is_not_retried(self):
+        sess = Mock()
+        sess.post.return_value = self.resp(401)
+        c = SF.ShopifyClient('demo.myshopify.com', 'shpat_fixed', '2026-07', session=sess)
+        with self.assertRaises(SF.FetchError):
+            c.execute('q')
+        self.assertEqual(sess.post.call_count, 1)
+
+    def test_token_not_in_log_or_files(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sess = Mock()
+        sess.post.return_value = self.token_resp('tok-secret-abc')
+        log = SF.Logger(tmp)
+        auth = SF.ClientCredentialsToken('demo.myshopify.com', 'cid', self.SECRET, session=sess, log=log)
+        auth.get()
+        text = Path(tmp, '_rpa_queue', 'logs', 'shopify_fetch.log').read_text(encoding='utf-8')
+        self.assertNotIn('tok-secret-abc', text)
+        self.assertNotIn(self.SECRET, text)
+
+
 class SettingsTests(unittest.TestCase):
+    def test_auth_modes(self):
+        base = {'SHOPIFY_SHOP': 'demo.myshopify.com', 'SHARED_MASTERS_DIR': 'x'}
+        with self.assertRaisesRegex(SF.ConfigError, 'SHOPIFY_CLIENT_ID.*SHOPIFY_ACCESS_TOKEN'):
+            SF.load_settings(base)
+        with self.assertRaisesRegex(SF.ConfigError, '両方'):
+            SF.load_settings(dict(base, SHOPIFY_CLIENT_ID='a'))
+        s = SF.load_settings(dict(base, SHOPIFY_CLIENT_ID='a', SHOPIFY_CLIENT_SECRET='b'))
+        self.assertEqual((s['client_id'], s['client_secret'], s['token']), ('a', 'b', ''))
+        s = SF.load_settings(dict(base, SHOPIFY_ACCESS_TOKEN='t'))
+        self.assertEqual((s['client_id'], s['token']), ('', 't'))
+
     def test_missing_env(self):
         with self.assertRaisesRegex(SF.ConfigError, 'SHOPIFY_SHOP.*SHOPIFY_ACCESS_TOKEN'):
             SF.load_settings({'SHARED_MASTERS_DIR': 'x'})

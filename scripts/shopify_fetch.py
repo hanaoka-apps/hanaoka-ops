@@ -16,7 +16,11 @@ scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md の「1. Shopify �
 
 環境変数:
   SHOPIFY_SHOP          - ストアのドメイン（xxxx.myshopify.com）。必須
-  SHOPIFY_ACCESS_TOKEN  - カスタムアプリの Admin API アクセストークン。必須（コード・ログには出さない）
+  認証（次のどちらか。秘密の値はコード・ログ・エラーメッセージに出さない）:
+    SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET - Dev Dashboard のアプリ（2026/1/1 以降に作るアプリはこちら）。
+                          実行のたびに client credentials grant でトークンを取得する（約24時間で切れる。メモリだけに持つ）。
+                          両方あればこちらを使う
+    SHOPIFY_ACCESS_TOKEN  - 固定の Admin API アクセストークン（shpat_…。既存のレガシーなカスタムアプリ用）
   SHARED_MASTERS_DIR    - OneDrive 同期済みの SharedMasters フォルダのパス。必須
   SHOPIFY_API_VERSION   - (任意) Admin API のバージョン。既定 DEFAULT_API_VERSION
   SHOPIFY_FETCH_DAYS    - (任意) 直近何日ぶん取るか。既定 90。read_all_orders がないと Shopify は
@@ -91,7 +95,15 @@ class ConfigError(Exception):
 # ---------------------------------------------------------------- 設定・ログ
 def load_settings(env=None):
     env = os.environ if env is None else env
-    missing = [k for k in ('SHOPIFY_SHOP', 'SHOPIFY_ACCESS_TOKEN', 'SHARED_MASTERS_DIR') if not (env.get(k) or '').strip()]
+    def val(k):
+        return (env.get(k) or '').strip()
+
+    missing = [k for k in ('SHOPIFY_SHOP', 'SHARED_MASTERS_DIR') if not val(k)]
+    cid, csec, tok = val('SHOPIFY_CLIENT_ID'), val('SHOPIFY_CLIENT_SECRET'), val('SHOPIFY_ACCESS_TOKEN')
+    if bool(cid) != bool(csec):
+        raise ConfigError('SHOPIFY_CLIENT_ID と SHOPIFY_CLIENT_SECRET は両方設定してください')
+    if not (cid or tok):
+        missing.append('SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET（または SHOPIFY_ACCESS_TOKEN）')
     if missing:
         raise ConfigError('環境変数が設定されていません: ' + ', '.join(missing)
                           + '（手順は scripts/rpa_setup/ec_shopify_fetch_setup.md）')
@@ -109,7 +121,7 @@ def load_settings(env=None):
         raise ConfigError('SHOPIFY_FETCH_DAYS は1以上にしてください')
     return {
         'shop': shop,
-        'token': env['SHOPIFY_ACCESS_TOKEN'].strip(),
+        'client_id': cid, 'client_secret': csec, 'token': tok,
         'dir': env['SHARED_MASTERS_DIR'].strip(),
         'version': (env.get('SHOPIFY_API_VERSION') or DEFAULT_API_VERSION).strip(),
         'days': days,
@@ -134,22 +146,90 @@ class Logger:
             print('(ログファイルに書けません: {})'.format(e), file=sys.stderr)
 
 
+# ---------------------------------------------------------------- 認証
+class StaticToken:
+    """固定トークン（レガシーなカスタムアプリ）"""
+    refreshable = False
+
+    def __init__(self, token):
+        self._token = token
+
+    def get(self):
+        return self._token
+
+    def invalidate(self):
+        pass
+
+
+class ClientCredentialsToken:
+    """Dev Dashboard のアプリ用。POST https://{shop}/admin/oauth/access_token（form: grant_type=client_credentials,
+    client_id, client_secret）→ {access_token, scope, expires_in(=86399秒)}。トークンはメモリだけに持つ。
+    残り60秒を切ったら取り直す。エラーには応答の中身・秘密を出さない（Shopify の error コードだけ）。"""
+    refreshable = True
+    REFRESH_MARGIN = 60
+
+    def __init__(self, shop, client_id, client_secret, session=None, clock=time.time, log=None):
+        self.url = 'https://{}/admin/oauth/access_token'.format(shop)
+        self._id, self._secret = client_id, client_secret
+        self.session = session or requests
+        self.clock = clock
+        self.log = log or (lambda m: None)
+        self._token, self._expires = None, 0
+
+    def invalidate(self):
+        self._token = None
+
+    def get(self):
+        if self._token and self.clock() < self._expires - self.REFRESH_MARGIN:
+            return self._token
+        try:
+            res = self.session.post(self.url, timeout=60, headers={'Accept': 'application/json'},
+                                    data={'grant_type': 'client_credentials', 'client_id': self._id,
+                                          'client_secret': self._secret})
+        except requests.exceptions.RequestException as e:
+            raise FetchError('トークン取得で接続エラー（{}）'.format(type(e).__name__))
+        code = ''
+        try:
+            body = res.json()
+            code = str(body.get('error') or '') if isinstance(body, dict) else ''
+        except ValueError:
+            body = None
+        token = body.get('access_token') if isinstance(body, dict) else None
+        if res.status_code != 200 or not token:
+            hint = ''
+            if code == 'shop_not_permitted':
+                hint = '。アプリとストアが同じ Shopify 組織にあるか確認してください'
+            elif res.status_code in (400, 401, 403):
+                hint = '。Client ID / Client secret とストア名を確認してください'
+            raise FetchError('トークンを取得できませんでした（HTTP {}{}）{}'.format(
+                res.status_code, ' ' + code if re.fullmatch(r'[a-z_]{1,40}', code) else '', hint))
+        try:
+            ttl = float(body.get('expires_in') or 86399)
+        except (TypeError, ValueError):
+            ttl = 86399
+        self._token, self._expires = token, self.clock() + ttl
+        self.log('アクセストークンを取得しました（client credentials）')
+        return self._token
+
+
 # ---------------------------------------------------------------- GraphQL クライアント
 class ShopifyClient:
     def __init__(self, shop, token, version, session=None, sleep=time.sleep, log=None):
+        """token は固定トークンの文字列、または get()/invalidate() を持つトークン提供元"""
         self.url = 'https://{}/admin/api/{}/graphql.json'.format(shop, version)
-        self.headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        self.auth = StaticToken(token) if isinstance(token, str) else token
         self.session = session or requests
         self.sleep = sleep
         self.log = log or (lambda m: None)
 
     def execute(self, query, variables=None):
         """一時エラー(429・5xx・接続失敗・THROTTLED)は待って再試行。それ以外のエラーは FetchError。"""
-        last = ''
+        last, refreshed = '', False
         for attempt in range(MAX_RETRIES):
             wait = min(2 ** attempt, 60)
+            headers = {'X-Shopify-Access-Token': self.auth.get(), 'Content-Type': 'application/json'}
             try:
-                res = self.session.post(self.url, headers=self.headers, timeout=60,
+                res = self.session.post(self.url, headers=headers, timeout=60,
                                         json={'query': query, 'variables': variables or {}})
             except requests.exceptions.RequestException as e:
                 last = '接続エラー: ' + type(e).__name__
@@ -164,6 +244,11 @@ class ShopifyClient:
                 last = 'HTTP {}'.format(res.status_code)
                 self.log('{}（{}秒後に再試行 {}/{}）'.format(last, wait, attempt + 1, MAX_RETRIES))
                 self.sleep(wait)
+                continue
+            if res.status_code == 401 and self.auth.refreshable and not refreshed:
+                refreshed = True   # 期限切れの可能性。1回だけ取り直して再実行
+                self.auth.invalidate()
+                self.log('HTTP 401（トークンを取り直して再実行）')
                 continue
             if res.status_code in (401, 403):
                 raise FetchError('Shopify に拒否されました（HTTP {}）。トークンかアクセス権限を確認してください'.format(res.status_code))
@@ -531,7 +616,10 @@ def save_all(out_dir, files):
 
 def run(settings, client=None, log=None, now=None):
     log = log or Logger(settings['dir'])
-    client = client or ShopifyClient(settings['shop'], settings['token'], settings['version'], log=log)
+    if client is None:
+        auth = (ClientCredentialsToken(settings['shop'], settings['client_id'], settings['client_secret'], log=log)
+                if settings.get('client_id') else StaticToken(settings['token']))
+        client = ShopifyClient(settings['shop'], auth, settings['version'], log=log)
     tz = settings['tz']
     since = since_date(settings['days'], tz, now)
     log('取得を開始します（{} 以降 / API {}）'.format(since, settings['version']))

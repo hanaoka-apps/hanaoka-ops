@@ -45,9 +45,9 @@ Shopify ──(A) 定期取得──▶ ec_shopify_*.csv ──▶ 画面でチ�
 
 ### 2-2. 環境変数・Shopify（Shopifyの定期取得を使うとき）
 
-- ユーザー環境変数 `SHOPIFY_SHOP`（例：`xxxx.myshopify.com`）と `SHOPIFY_ACCESS_TOKEN`（カスタムアプリのトークン）の2つ。
-- **トークンは専用機の環境変数だけに入れる。リポジトリ・アプリ・チャット（Claude や Teams）に貼らない。**
-- Shopify側の準備（カスタムアプリの作成・読み取り権限・トークン発行）は福田さんが管理者に頼む。
+- ユーザー環境変数 `SHOPIFY_SHOP`（例：`xxxx.myshopify.com`）と、認証の `SHOPIFY_CLIENT_ID`・`SHOPIFY_CLIENT_SECRET`（Dev Dashboard のアプリ。2026/1/1 以降に作るアプリはこちら。実行のたびにスクリプトがトークンを取る）。既存のレガシーなカスタムアプリがある場合だけ、代わりに `SHOPIFY_ACCESS_TOKEN`（固定トークン）。
+- **Client secret・トークンは専用機の環境変数だけに入れる。リポジトリ・アプリ・チャット（Claude や Teams）に貼らない。**
+- Shopify側の準備（Dev Dashboard でのアプリ作成・読み取り権限・インストール・Client ID/Secret の確認。アプリとストアは同じ Shopify 組織にあること）は福田さんが管理者に頼む。
 
 ### 2-3. 管理者の一覧 `ec_import_admins.json`
 
@@ -80,7 +80,7 @@ Shopify ──(A) 定期取得──▶ ec_shopify_*.csv ──▶ 画面でチ�
 
 - [ ] 更新の取り込み（2-1）：`git pull` → 常駐スクリプトの再起動 → ログに「監視を開始します」
 - [ ] `rpa_jobs.json` に `ec_smile_import`・`ec_smile_verify_export`・`ec_index` があること（mainから自動取得）
-- [ ] 環境変数2つ（Shopifyの定期取得を使うとき。トークンはチャットに貼らない）
+- [ ] 環境変数 `SHOPIFY_SHOP`・`SHOPIFY_CLIENT_ID`・`SHOPIFY_CLIENT_SECRET`（Shopifyの定期取得を使うとき。秘密はチャットに貼らない）
 - [ ] `_rpa_queue\ec_import_admins.json`
 - [ ] `C:\RPA\ec_import\current\` と書き込み権限
 - [ ] PADフロー3つ
