@@ -21,6 +21,7 @@
         { f: 'company_schedule.html', l: '全社スケジュール' },
         { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'staff_schedule.html', l: '全社員の予定' },
+        { f: 'reserve.html', l: '予約' },
         { f: 'demo_reserve.html', l: 'デモ機' },
         { f: 'car_reserve.html',  l: '営業車' },
         { f: 'room_reserve.html', l: '会議室' },
@@ -101,6 +102,7 @@
   var ICONS = {
     'company_schedule.html': '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M7.5 13.5h.01M12 13.5h.01M16.5 13.5h.01M7.5 17h.01M12 17h.01"/>',
     'my_schedule.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
+    'reserve.html':        '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M8.5 14h7M8.5 17h4"/>',
     'demo_reserve.html':   '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     'car_reserve.html':    '<path d="M5 16h14l-1.5-6a2 2 0 0 0-1.9-1.5H8.4A2 2 0 0 0 6.5 10z"/><path d="M4 16v3M20 16v3"/><circle cx="8" cy="13" r=".6"/><circle cx="16" cy="13" r=".6"/>',
     'room_reserve.html':   '<path d="M4 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16M14 9h5a1 1 0 0 1 1 1v11M2 21h20M8 8h2M8 12h2M8 16h2"/>',
@@ -197,7 +199,7 @@
   function loadHubSidebar() {
     if (document.getElementById('hubSidebar')) return;
     var sc = document.createElement('script');
-    sc.src = 'hub_sidebar.js?v=20261019';
+    sc.src = 'hub_sidebar.js?v=20261020';
     document.body.appendChild(sc);
   }
 
