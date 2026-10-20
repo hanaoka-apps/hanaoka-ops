@@ -17,6 +17,29 @@
     'マ':'ﾏ','ミ':'ﾐ','ム':'ﾑ','メ':'ﾒ','モ':'ﾓ','ヤ':'ﾔ','ユ':'ﾕ','ヨ':'ﾖ','ラ':'ﾗ','リ':'ﾘ','ル':'ﾙ','レ':'ﾚ','ロ':'ﾛ','ワ':'ﾜ','ヲ':'ｦ','ン':'ﾝ','ァ':'ｱ','ィ':'ｲ','ゥ':'ｳ','ェ':'ｴ','ォ':'ｵ','ッ':'ﾂ','ャ':'ﾔ','ュ':'ﾕ','ョ':'ﾖ','ー':'-','（':'(','）':')','　':' ','．':'.','・':'.','，':',','－':'-'};
   const toHanKana = s => String(s || '').normalize('NFKC').replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60)).split('').map(c => HK[c] || c).join('').toUpperCase();
 
+  // 経費の決まり（AP_Setting の expense.rules）。取り込みで使うのは debitEarlyRound（引落日で支払回を決める）
+  let ER = null;
+  async function expenseRules(call, site) {
+    if (ER) return ER;
+    try { const d = await call('GET', `/sites/${site}/lists/AP_Setting/items?$expand=fields&$top=100`);
+      const it = (d.value || []).find(x => x.fields && x.fields.Title === 'expense.rules'); ER = it ? JSON.parse(it.fields.Value || '{}') : {}; }
+    catch (e) { ER = {}; }
+    return ER;
+  }
+  // その月・その回・部門の決裁をもう回したか（AP_SettleBatch が取り下げ以外で残っている）
+  let SBL = null; const SBC = {};
+  async function settled(call, site, ym, round, dept) {
+    const k = `${ym}|${round}|${dept}`; if (k in SBC) return SBC[k];
+    try {
+      if (!SBL) { const ls = await call('GET', `/sites/${site}/lists?$select=id,displayName`), l = ls.value.find(x => x.displayName === 'AP_SettleBatch');
+        if (!l) return (SBC[k] = false);
+        const c = await call('GET', `/sites/${site}/lists/${l.id}/columns?$select=name,displayName`), fmap = {}; c.value.forEach(x => fmap[x.displayName] = x.name); SBL = { id: l.id, fmap }; }
+      const fb = d => SBL.fmap[d] || d;
+      const d = await call('GET', `/sites/${site}/lists/${SBL.id}/items?$expand=fields&$top=200&$filter=${encodeURIComponent(`fields/${fb('決済月')} eq '${ym}'`)}`);
+      SBC[k] = (d.value || []).some(x => x.fields[fb('支払日区分')] === round && x.fields[fb('部門')] === dept && !/取り下げ|差し戻し/.test(x.fields[fb('状態')] || ''));   // 差し戻しは回し直せるので、まだ回していないのと同じ
+    } catch (e) { SBC[k] = false; }
+    return SBC[k];
+  }
   async function lists(call, site) {
     const ls = await call('GET', `/sites/${site}/lists?$select=id,displayName`);
     const o = {};
@@ -33,6 +56,7 @@
   const yen = n => Math.round(+n || 0).toLocaleString('ja-JP');
 
   async function apply(ctx) {
+    ER = null; Object.keys(SBC).forEach(k => delete SBC[k]);   // 決まり・決裁に回したかは、取り込みのたびに読み直す
     const { call, site } = ctx, msg = ctx.onMsg || (() => {});
     let names = [];
     try { const d = await call('GET', `/sites/${site}/drive/root:${encodeURI(DIR)}:/children?$select=name&$top=999`); names = (d.value || []).map(x => x.name).filter(n => /\.result\.json$/i.test(n)); }
@@ -47,9 +71,12 @@
         msg(`AI の読み取り結果を取り込んでいます（${applied + 1}/${names.length}）`);
         const r = JSON.parse(await text(call, site, path));
         let id = String(r.invoice_id || ''), f = null;
+        // 片付け：_archive に同じ名前があると移せずに残り、読み直しのあと古い結果を取り込んでしまう → 名前の頭に日時を付けて移す
+        const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+        const archive = (from) => call('PATCH', `/sites/${site}/drive/root:${encodeURI(from)}`, { parentReference: { path: `/drive/root:${ARCH}` }, name: `${stamp}_${from.split('/').pop()}` });
         const done = async () => {
-          await move(call, site, path, ARCH).catch(() => {});
-          if (r.ap_code) await move(call, site, `${INC}/${r.ap_code}.task.json`, ARCH).catch(() => {}); };
+          await archive(path).catch(() => {});
+          if (r.ap_code) await archive(`${INC}/${r.ap_code}.task.json`).catch(() => {}); };
         const H = r.header || {}, cmt = (r.comments || []).slice(), patch = {};
         if (r.new && !id) {
           // 複合機のスキャン（受付の無い経費）：ここで経費の行を作る。拠点は読み取りの判断（無ければ本社）
@@ -64,6 +91,8 @@
           if (!it || !it.fields) { errors.push(`${name}：受付の行（ID ${id}）がありません`); await done(); continue; }
           f = it.fields;
           if (f.AIStatus && f.AIStatus !== '受付') { await done(); continue; }   // 取り込み済み・人が先に入れたもの
+          // 古い結果：読み直し・まとめるで「受付」に戻すより前に作られた結果は取り込まない（新しい結果を待つ）
+          if (r.processed_at && f.Modified && Date.parse(r.processed_at) < Date.parse(f.Modified) - 120000) { await done(); continue; }   // 端末とサーバーの時計のずれを見て2分の幅
         }
         const set = (d, v) => { if (v !== undefined && v !== null && v !== '') patch[fi(d)] = v; };
         const setIfEmpty = (d, v) => { const cur = f[fi(d)]; if (cur === undefined || cur === null || cur === '') set(d, v); };
@@ -76,6 +105,26 @@
         if (METHODS.includes(H.PayMethod)) setIfEmpty('支払手段', H.PayMethod);
         if (CONF.includes(H.AIConfidence)) set('AI確信度', H.AIConfidence);
         if (H.DebitDate) set('引落予定日', H.DebitDate);
+        // 本社の経費で口座振替 → 引落の前に報告する回（expense.rules の debitEarlyRound：11〜20日→10日、21日〜月末→20日）。
+        //   その回の総務の決裁をもう回していたら、次の回で事後報告。仕訳の部門が工場・国内営業・ソリューションのものは外す（月末の支払決済で説明）
+        {
+          const R = (await expenseRules(call, site)).debitEarlyRound, cat0 = f[fi('支払区分')] || r.category || '', loc0 = f.SiteLocation || (cat0.startsWith('工場') ? '工場' : '本社');
+          const method = METHODS.includes(H.PayMethod) ? H.PayMethod : f[fi('支払手段')], dd = String(H.DebitDate || '').match(/(\d{4})-(\d{2})-(\d{2})/);
+          const hit = R && dd ? (R.byDay || []).find(b => +dd[3] >= b.from && +dd[3] <= b.to) : null;
+          if (hit && EXPENSE.includes(cat0) && loc0 === R.loc && (R.methods || []).includes(method)) {
+            const main = (r.lines || []).slice().sort((a, b) => (+b.AmountInclTax || 0) - (+a.AmountInclTax || 0))[0], dc = String((main && main.DeptCode) || '');
+            if (!((R.exceptDeptPrefix || []).some(p => dc.startsWith(p)) || (R.exceptDepts || []).includes(dc))) {
+              const ym = `${dd[1]}/${dd[2]}`, md = `${+dd[2]}/${+dd[3]}`;
+              let rd = hit.round; const passed = [];
+              while (rd && await settled(call, site, ym, rd, R.settleDept || '総務')) { passed.push(rd); rd = (R.next || {})[rd]; }
+              if (rd) {
+                set('支払日区分', rd); set('対象年月', ym);
+                cmt.push(passed.length ? `引落日 ${md}：${passed.join('・')}払いはもう決裁に回しているので、${rd}払いで事後報告にしました（本社経費の決まり）`
+                  : `引落日 ${md} の前に報告するため ${rd}払い にしました（本社経費の決まり）`);
+              }
+            }
+          }
+        }
         // 振込先（請求書から読んだもの。経費の支払先は振込先マスタに無いことが多い）。読めたものだけ入れる
         const BKF = { BankCode: 'PayeeBankCode', BankName: 'PayeeBankName', BranchCode: 'PayeeBranchCode', BranchName: 'PayeeBranchName', AcctType: 'PayeeAcctType', AcctNo: 'PayeeAcctNo', AcctHolder: 'PayeeAcctHolder', BankSource: 'PayeeBankSource' };
         Object.entries(BKF).forEach(([k, n]) => { if (H[k] != null && H[k] !== '' && !f[n]) patch[n] = k === 'AcctHolder' ? toHanKana(H[k]) : String(H[k]); });
@@ -88,23 +137,34 @@
           catch (e) { docs.push(`/Shared Documents${INC}/${p}`); }
         }
         if (docs.length) patch[fi('DOCコード')] = docs.join('\n');
+        // 請求書の明細（確認の全画面で受入明細・仕訳と比べる）。列が無ければ入れない
+        if (IV.fmap['請求書の明細'] && (r.items || []).length) patch[fi('請求書の明細')] = JSON.stringify({ amount: r.items_amount || '', items: r.items });
         patch.AIStatus = r.status === '読取失敗' ? '読取失敗' : 'AI確認済';
-        patch.AIComment = [String(f.AIComment || '').trim()].concat(cmt).filter(Boolean).join('\n');
+        // 読み直し（replace_lines）は前の AI のコメントを新しい答えで置き換える（積み重ねない）
+        patch.AIComment = (r.replace_lines ? [] : [String(f.AIComment || '').trim()]).concat(cmt).filter(Boolean).join('\n');
         await call('PATCH', `/sites/${site}/lists/${IV.id}/items/${id}/fields`, patch);
         const cat = f[fi('支払区分')] || r.category || '', loc = f.SiteLocation || (cat.startsWith('工場') ? '工場' : '本社');
         const addLines = async (invId, lines) => {
           if (!EXPENSE.includes(cat) || !(lines || []).length) return;
-          // 二重に作らない（同時に2人が開いたとき）
-          const ex = await call('GET', `/sites/${site}/lists/${SL.id}/items?$expand=fields&$top=5&$filter=${encodeURIComponent(`fields/${fs('請求書ID')} eq '${invId}'`)}`).catch(() => ({ value: [] }));
-          if ((ex.value || []).some(x => String(x.fields[fs('請求書ID')]) === String(invId))) return;
-          for (const l of lines) {
+          // 二重に作らない（同時に2人が開いたとき）。ただし「読み直し（replace_lines）」は、前の行を新しい答えで書き換える
+          const ex = await call('GET', `/sites/${site}/lists/${SL.id}/items?$expand=fields&$top=100&$filter=${encodeURIComponent(`fields/${fs('請求書ID')} eq '${invId}'`)}`).catch(() => ({ value: [] }));
+          const old = (ex.value || []).filter(x => String(x.fields[fs('請求書ID')]) === String(invId)).sort((a, b) => (+a.fields[fs('明細行番号')] || 0) - (+b.fields[fs('明細行番号')] || 0));
+          if (old.length && !r.replace_lines) return;
+          // 新しい答えより多い前の行は消さずに、請求書から外して残す（請求書ID に「#旧」を付ける）
+          for (const x of old.slice(lines.length)) await call('PATCH', `/sites/${site}/lists/${SL.id}/items/${x.id}/fields`, { [fs('請求書ID')]: `${invId}#旧` });
+          for (let li = 0; li < lines.length; li++) {
+            const l = lines[li];
             const g = { Title: `${H.PayeeName || ''} ${l.LineNo}` };
             const s = (d, v) => { g[fs(d)] = v; };
             s('請求書ID', String(invId)); s('明細行番号', l.LineNo); s('拠点', l.Location || loc); s('勘定科目名', l.AccountName || ''); s('勘定科目コード', l.AccountCode || '');
             if (l.SubCode && SL.fmap['内訳コード']) s('内訳コード', l.SubCode);   // 内訳（預り金の 000005 など）。列が無ければ入れない
+            if (l.ApprovalNote && SL.fmap['決裁メモ']) s('決裁メモ', l.ApprovalNote);   // 社長・室長向けの説明（経理の摘要とは別）
             s('部門コード', l.DeptCode || ''); s('税区分', l.TaxMethod || '税込'); s('税率区分', l.TaxRate || '課税10%');
             s('金額_税抜', +l.AmountExclTax || 0); s('消費税', +l.Tax || 0); s('金額_税込', +l.AmountInclTax || 0); s('摘要', l.Description || ''); s('AI信頼スコア', +l.LineConfidence || 0);
-            await call('POST', `/sites/${site}/lists/${SL.id}/items`, { fields: g });
+            if (!l.SubCode && old[li] && SL.fmap['内訳コード']) s('内訳コード', '');   // 書き換えるときは前の値を残さない
+            if (!l.ApprovalNote && old[li] && SL.fmap['決裁メモ']) s('決裁メモ', '');
+            if (old[li]) await call('PATCH', `/sites/${site}/lists/${SL.id}/items/${old[li].id}/fields`, g);
+            else await call('POST', `/sites/${site}/lists/${SL.id}/items`, { fields: g });
           }
         };
         await addLines(id, r.lines);

@@ -1,5 +1,13 @@
 {
-  "_comment": "RPA専用機で実行するジョブの定義。アプリは RpaQueue.request('<ジョブ名>') で依頼する。flow=PADのフロー名、outputs=フローがSharedMasters直下に出力するファイル(すべて更新されたら完了とみなす)、timeoutMinutes=出力完了を待つ上限、after=完了後の処理(regenerate_facts のみ対応)。type=import は SMILE への取込ジョブで、出力ファイルでは完了を判断できないため、steps のPADフローを順に起動し、PADが書く結果ファイル(result)と、_rpa_import/<バッチ番号>/result.json の出現で完了を判断する(依頼ごとに別の仕事なので、同じジョブでもまとめない)。追加手順は scripts/rpa_setup/新PC引き継ぎ.md、取込は scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md と ec_import.md を参照",
+  "_comment": "RPA専用機で実行するジョブの定義。アプリは RpaQueue.request('<ジョブ名>') で依頼する。flow=PADのフロー名、outputs=フローがSharedMasters直下に出力するファイル(すべて更新されたら完了とみなす)、timeoutMinutes=出力完了を待つ上限、after=完了後の処理(regenerate_facts のみ対応)。複数のフローを順に動かすときは flow/outputs の代わりに steps=[{flow, outputs, timeoutMinutes(省略時はジョブの値)}] を書く。flow も steps も無いジョブは after の処理だけを行う。schedules=[{job, time(HH:mm)}] は、RPA専用機が毎日その時刻に自分でジョブを依頼する。smile=SMILEの自動起動の設定。追加手順は scripts/rpa_setup/新PC引き継ぎ.md を参照 type=import は SMILE への取込ジョブで、出力ファイルでは完了を判断できないため、steps のPADフローを順に起動し、PADが書く結果ファイル(result)と、_rpa_import/<バッチ番号>/result.json の出現で完了を判断する(依頼ごとに別の仕事なので、同じジョブでもまとめない)。追加手順は scripts/rpa_setup/新PC引き継ぎ.md、取込は scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md と ec_import.md を参照",
+  "smile": {
+    "_comment": "PADフローを動かすジョブの前に、SMILEのメイン画面(題名 windowTitle)が開いているかを確かめ、なければ startFlow(ログインと業務予定通知を閉じるまで)で起動する。SMILEを使わないジョブには needsSmile: false を書く",
+    "process": "OSK.X1.V2",
+    "windowTitle": "SMILE",
+    "startFlow": "Smileの起動",
+    "timeoutMinutes": 5,
+    "settleSeconds": 30
+  },
   "jobs": {
     "sales_master": {
       "label": "SMILE 日報用マスタ出力",
@@ -23,6 +31,41 @@
       ],
       "timeoutMinutes": 20
     },
+    "fujin_source": {
+      "_comment": "HUB「生産・仕入」の「🔄 更新をリクエスト」ボタン用。FUJINの仕入・生産のもとになるSMILE出力2つを出し直す。後処理（after）は無い：FUJINのデータは GitHub Actions の日次ビルドが SharedMasters のCSVから作るので、出し直したCSVは次の自動ビルドで反映される（RPA専用機にGitHubのトークンは置かない）。PADフローは Smile_日報用マスタ出力 の複製で、画面名一覧を受入明細・製造実績明細の出力画面にする（scripts/rpa_setup/連絡_fujin_source_フロー作成.md）",
+      "label": "SMILE 受入明細・製造実績明細出力（FUJINの仕入・生産用）",
+      "flow": "Smile_生産仕入明細出力",
+      "outputs": [
+        "受入明細出力.csv",
+        "製造実績明細出力.csv"
+      ],
+      "timeoutMinutes": 20
+    },
+    "ap_purchase": {
+      "_comment": "支払管理アプリの仕入（SMILE）取り込み（ap_smile_import.html の「SMILE から最新を取り込む」）。SMILE の各画面の条件パターンは自動で前月締めになる（依頼の params.payYm はフローでは使わない）。① 汎用フロー（Smile_日報用マスタ出力 の複製）で 生産仕入先マスター出力・月次受入リスト（総務用）・月次支払明細表 を出力、② 支払一覧表はテキスト出力ができないので、画面出力の「コピー(P)」をそのまま保存（UTF-8・タブ区切り。Excel は通さない）。ページ側の変更は scripts/rpa_setup/連絡_ap_purchase_ファイル変更.md",
+      "label": "SMILE 仕入関係マスタ出力（仕入先マスタ・月次受入リスト・月次支払明細表・支払一覧表）",
+      "timeoutMinutes": 30,
+      "steps": [
+        {
+          "flow": "Smile_仕入関係マスタ出力",
+          "outputs": [
+            "仕入先マスタ.csv",
+            "月次受入リスト.csv",
+            "月次支払明細表.csv"
+          ]
+        },
+        {
+          "flow": "Smile_支払一覧表出力",
+          "outputs": [
+            "支払一覧表.csv"
+          ]
+        }
+      ]
+    },
+    "facts_only": {
+      "label": "ダッシュボード用JSONの再作成（SMILE出力なし）",
+      "after": "regenerate_facts"
+    },
     "ec_smile_import": {
       "label": "EC売上 SMILEへの取込(納品先・受注伝票)",
       "type": "import",
@@ -35,7 +78,11 @@
           "flow": "Smile_EC納品先取込",
           "result": "result_nouhin.json",
           "columns": 42,
-          "required": ["得意先コード", "納品先コード", "納品先名"]
+          "required": [
+            "得意先コード",
+            "納品先コード",
+            "納品先名"
+          ]
         },
         {
           "file": "juchu.txt",
@@ -43,7 +90,12 @@
           "flow": "Smile_EC受注取込",
           "result": "result_juchu.json",
           "columns": 121,
-          "required": ["得意先コード", "品目コード", "数量", "納期"]
+          "required": [
+            "得意先コード",
+            "品目コード",
+            "数量",
+            "納期"
+          ]
         }
       ],
       "then": "ec_smile_verify_export"
@@ -57,5 +109,12 @@
       ],
       "timeoutMinutes": 10
     }
-  }
+  },
+  "schedules": [
+    {
+      "_comment": "SMILEのマスタ出力(業務予定・毎日0:00)が終わったあとに、ダッシュボード用JSONを作り直す",
+      "job": "facts_only",
+      "time": "01:00"
+    }
+  ]
 }

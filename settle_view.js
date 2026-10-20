@@ -13,21 +13,47 @@
     '.sv table{border-collapse:collapse;width:100%}.sv th,.sv td{padding:4px 7px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.sv th{font-size:12px;color:var(--sub);background:#fafbfd}.sv td.n,.sv th.n{text-align:right;font-variant-numeric:tabular-nums}' +
     '.sv .flags{display:flex;flex-direction:column;gap:5px;max-height:240px;overflow:auto}.sv .flag{display:flex;gap:8px;align-items:baseline;padding:4px 8px;border-radius:6px;background:var(--flag-l);cursor:pointer}.sv .flag .why{font-size:11px;font-weight:700;color:var(--flag);white-space:nowrap}.sv .flag .who{flex:1}' +
     '.sv .tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:8px;margin-left:4px;font-weight:600}.sv .t-flag{background:var(--flag-l);color:var(--flag)}.sv .t-new{background:var(--warn-l);color:var(--warn)}.sv .t-up{background:var(--up-l);color:var(--up)}.sv .t-ok{background:var(--down-l);color:var(--down)}' +
-    '.sv .rv{display:grid;grid-template-columns:minmax(240px,.8fr) minmax(0,1.7fr);gap:12px;height:72vh;min-height:480px}.sv .rl{overflow:auto;border:1px solid var(--line);border-radius:8px}.sv .rl td{white-space:normal;vertical-align:top;padding:6px 8px}.sv .rl tr{cursor:pointer}' +
+    '.sv .rv{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(0,1.8fr);gap:12px;height:72vh;min-height:420px}.sv .rl{overflow:auto;border:1px solid var(--line);border-radius:8px}.sv .rl td{white-space:normal;vertical-align:top;padding:6px 8px}.sv .rl tr{cursor:pointer}' +
+    '.sv .rv{position:relative}.sv .rstrip{display:none}.sv .rv.mini{grid-template-columns:30px minmax(0,1fr)}' +
+    '.sv .rv.mini .rstrip{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;border:1px solid var(--line);border-radius:8px;background:#f7f9fc;color:var(--sub);font-size:12px;cursor:pointer;user-select:none}.sv .rv.mini .rstrip:hover{background:var(--pri-l);color:var(--pri)}.sv .rstrip .vt{writing-mode:vertical-rl;letter-spacing:2px}' +
+    '.sv .rv.mini .rl{position:absolute;left:0;top:0;bottom:0;width:min(360px,80%);z-index:6;background:#fff;box-shadow:6px 0 18px rgba(20,30,60,.18);transform:translateX(-104%);opacity:0;pointer-events:none;transition:transform .16s ease,opacity .16s ease}.sv .rv.mini.peek .rl{transform:none;opacity:1;pointer-events:auto}' +
+    '.sv-full{position:fixed!important;inset:0;z-index:950;background:#eef1f6;padding:10px 16px;overflow:hidden}.sv-full .sv{height:100%}.sv .tabs{align-items:flex-end}.sv .tabs .fs-t,.sv .tabs .fx{border-radius:6px;border-bottom:1px solid var(--line);margin-bottom:4px;font-weight:600}' +
+    '.sv .itabs{display:flex;gap:4px;margin:8px 0 6px;border-bottom:1px solid var(--line)}.sv .itabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:4px 10px;color:var(--sub);font-weight:600}.sv .itabs button.on{color:var(--pri);border-bottom-color:var(--pri)}' +
+    '.sv .tsum{margin-top:8px}.sv .tsum .tt{display:flex;align-items:center;margin-bottom:4px;font-size:13px}.sv .tsum .more{font-size:12px;padding:2px 8px}' +
+    '.sv .dt.wide .di{display:flex;flex-direction:column;overflow:hidden!important}.sv .dt.wide .di>*{flex:none}.sv .dt.wide .ib{flex:1 1 auto;overflow:auto;min-height:0}' +
+    '.sv .di{overflow-x:hidden}.sv .di td,.sv .di th{white-space:normal;overflow-wrap:anywhere}.sv .di td:first-child{white-space:nowrap}.sv .di td.n,.sv .di th.n{white-space:nowrap;word-break:normal}.sv .di .cmp td{white-space:nowrap}' +
+    '.sv .parts{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin-bottom:8px;padding:6px 8px;background:#fff;border:1px solid var(--line);border-radius:10px}.sv .parts .pl{align-self:center;font-size:13px;color:var(--sub);margin-right:6px}' +
+    '.sv .parts .pt{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 14px;border-radius:8px;min-width:130px}.sv .parts .pt.cur{border-color:var(--pri);box-shadow:inset 0 -3px 0 var(--pri);background:var(--pri-l)}.sv .parts .pa{font-size:12px;color:var(--sub)}.sv .parts .ps{font-size:11.5px;font-weight:700;color:var(--sub)}.sv .parts .ps.ok{color:var(--down)}.sv .parts .ps.run{color:var(--warn)}.sv .parts .ps.ret{color:var(--up)}' +
+    '.sv .pn{margin-top:8px;border:1px solid var(--flag-l);background:#faf6fe;border-radius:8px;padding:6px 9px;font-size:13px}.sv .pnh{font-size:11.5px;font-weight:700;color:var(--flag);margin-bottom:3px}.sv .pni{display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}.sv .pni .pw{font-weight:600;color:var(--sub);font-size:12px}' +
+    '.sv .lt{margin-left:auto}.sv table.ln tr:not(.lm) td{border-bottom:none}.sv table.ln tr.lm td{white-space:normal;font-size:12px;color:var(--sub);padding-top:0}' +
+    '.sv .dl{display:flex;flex-direction:column;min-height:0;flex:1 1 auto!important}.sv .dl .chips:empty{display:none}.sv .dl .chips{margin-top:8px}.sv .di{min-width:0}' +
+    '.sv .dt.wide .db{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,1fr);gap:12px;overflow:hidden;padding:8px}.sv .dt.wide .dl{order:0;min-height:0}.sv .dt.wide .di{order:1;overflow:auto;min-height:0;padding-right:4px}' +
+    '.sv .dt.wide .dl .chips{margin-top:0;margin-bottom:6px}.sv .dt.wide .pdf{margin-top:0;min-height:0}.sv .dt.wide .hd{flex-direction:column;align-items:stretch}.sv .dt.wide .cmp{width:100%}.sv .dt.wide .kv{grid-template-columns:84px minmax(0,1fr)}.sv .dt.wide table.ln td,.sv .dt.wide table.ln th{padding:4px 5px}' +
+    '.sv .mth{display:inline-block;font-size:11px;font-weight:700;padding:0 7px;border-radius:9px;border:1px solid;margin-right:5px;line-height:17px}.sv .mth.big{font-size:15px;padding:3px 14px;border-radius:999px;line-height:20px;margin-right:0}' +
+    '.sv .hd{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.sv .mrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.sv .mrow .when{font-size:13px;font-weight:600}' +
+    '.sv .cmp{width:auto;border:1px solid var(--line);border-radius:8px;border-collapse:separate;border-spacing:0;overflow:hidden;font-size:13px;flex:none}.sv .cmp th{padding:2px 10px;font-size:11px}.sv .cmp td{padding:3px 10px;border-bottom:1px solid var(--line)}.sv .cmp tr:last-child td{border-bottom:none}.sv .cmp tr.now td{font-size:20px;font-weight:700;background:#fafbfd}.sv .cmp small{font-size:11px;font-weight:400}' +
     '.sv .rl tr.ok{background:#f6fbf7}.sv .rl tr.hold{background:#fffaf2}.sv .rl tr.sel{background:var(--pri-l);box-shadow:inset 3px 0 0 var(--pri)}.sv .rl .nm{font-weight:600}.sv .rl .s{font-size:11.5px;color:var(--sub)}' +
     '.sv .dt{border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-width:0;overflow:hidden}.sv .dn,.sv .da{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#fafbfd;border-bottom:1px solid var(--line)}.sv .da{border-top:1px solid var(--line);border-bottom:none}' +
-    '.sv .sp{flex:1}.sv .db{flex:1;overflow:auto;padding:10px 14px}.sv .kv{display:grid;grid-template-columns:120px 1fr;gap:3px 10px;font-size:13px;margin:8px 0}.sv .kv .k{color:var(--sub)}' +
-    '.sv .pdf{min-height:380px;border:1px dashed var(--line);border-radius:8px;margin-top:8px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub)}.sv .pdf iframe{width:100%;height:520px;border:0}' +
+    '.sv .sp{flex:1}.sv .db{flex:1;overflow:auto;padding:8px 12px;display:flex;flex-direction:column;min-height:0}.sv .db>*{flex:none}.sv .kv{display:grid;grid-template-columns:84px minmax(0,1fr) 84px minmax(0,1fr);gap:2px 10px;font-size:13px;margin:6px 0}.sv .kv .k{color:var(--sub)}' +
+    '.sv .pdf{flex:1 1 auto!important;min-height:300px;border:1px dashed var(--line);border-radius:8px;margin-top:6px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub);overflow:hidden}.sv .pdf iframe{width:100%;height:100%;min-height:300px;border:0}.sv .pdf .imgv{width:100%;height:100%;overflow:auto;text-align:center}' +
     '.sv button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer;font:inherit}.sv button.pri{background:var(--pri);border-color:var(--pri);color:#fff}.sv .chip.on{background:var(--pri);color:#fff;border-color:var(--pri)}' +
+    // 請求書の明細（AI が読んだもの）：右端の縦のバー → ドロワー（右の列にかぶせる・PDF との境まで）。燃料の単価の表（サマリー）
+    '.sv .dt{position:relative}.sv .dt.hasit .db{padding-right:34px}.sv .svdr{position:absolute;right:0;top:0;bottom:0;z-index:30;display:flex;flex-direction:row-reverse;align-items:stretch;pointer-events:none}' +
+    '.sv .svdr-bar{pointer-events:auto;writing-mode:vertical-rl;width:26px;padding:12px 0;border:0;border-radius:8px 0 0 8px;background:var(--navy,#23268f);color:#fff;font-size:12.5px;font-weight:600;letter-spacing:.12em;cursor:pointer}.sv .svdr-bar.pin{background:#161a6b}' +
+    '.sv .svdr-p{pointer-events:auto;box-sizing:border-box;width:480px;background:#fff;box-shadow:-8px 0 28px rgba(20,24,60,.22);border-radius:10px 0 0 10px;overflow:auto;padding:12px 14px;transform:translateX(104%);opacity:0;visibility:hidden;transition:transform .18s,opacity .18s,visibility 0s .18s}' +
+    '.sv .svdr.open .svdr-p{transform:none;opacity:1;visibility:visible;transition:transform .18s,opacity .18s}.sv .svdr-p table{width:100%}.sv .svdr-p td,.sv .svdr-p th{font-size:12.5px;padding:4px 6px;vertical-align:top}.sv .svdr-p .s{font-size:11px;color:var(--sub)}' +
+    '.sv .svsum{display:grid;grid-template-columns:1.35fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px}.sv .svsum>div{background:#f6f8fb;border-radius:8px;padding:7px 9px;min-width:0}.sv .svsum .l{font-size:12px;color:var(--sub)}.sv .svsum .v{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}.sv .svsum .s{font-size:11.5px;color:var(--sub)}' +
+    '.sv .svsum .pay{background:var(--navy,#23268f);color:#fff}.sv .svsum .pay .l,.sv .svsum .pay .s{color:rgba(255,255,255,.85)}.sv .svsum .pay .v{font-size:24px;color:#fff}.sv .svsum .pay .v small{font-size:12px;font-weight:600}.sv .svsum .bad .v{color:var(--up,#c0392b)}.sv .svsum .good .v{color:var(--down,#17703f)}' +
+    '.sv table.fuel{width:auto}.sv table.fuel td,.sv table.fuel th{padding:4px 9px;white-space:nowrap}.sv .f-lo{background:#e3f4ea;color:#17703f;font-weight:700}.sv .f-hi{background:#fde6e6;color:#b42318;font-weight:700}.sv .f-sq{font-style:italic}' +
     '.sv input[type=search],.sv select{width:auto;max-width:100%;padding:4px 8px}.sv input[type=search]{width:220px}.sv .tb td,.sv .tb th{font-size:13px}' +
-    '@media (max-width:900px){.sv .rv{grid-template-columns:1fr;height:auto}.sv .rl{max-height:40vh}}';
+    '@media (max-width:900px){.sv .rv,.sv .rv.mini{grid-template-columns:1fr;height:auto!important}.sv .rv.mini .rstrip,.sv .lt{display:none!important}.sv .rv.mini .rl{position:static;transform:none;opacity:1;pointer-events:auto;width:auto;box-shadow:none}.sv .rl{max-height:40vh}.sv .pdf{min-height:420px}}';
   function css() { if (document.getElementById('sv-css')) return; var s = document.createElement('style'); s.id = 'sv-css'; s.textContent = CSS; document.head.appendChild(s); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function yen(n) { return Math.round(Number(n) || 0).toLocaleString('ja-JP'); }
   function man(n) { return Math.round((Number(n) || 0) / 10000).toLocaleString('ja-JP') + '万'; }
   function diff(cur, prev) { if (!prev) return '<span style="color:#c3c9d6">—</span>'; var d = cur - prev, p = Math.round(d / prev * 100);
     return '<span class="' + (d > 0 ? 'd-up' : d < 0 ? 'd-down' : '') + '">' + (d > 0 ? '▲' : d < 0 ? '▼' : '±') + man(Math.abs(d)) + '（' + (p > 0 ? '+' : '') + p + '%）</span>'; }
-  function keyOf(x, i) { return (x.no || x.payee) + '#' + i; }
+  function keyOf(x, i) { return x.key || (x.no || x.payee) + '#' + i; }   // key：呼ぶ側が決める（ハナオカ：支払の行 ID）
   // 特記＝総務が付けた印・コメント。気づき＝自動（初めて・前月から大きく増えた・振込先が変わった・相殺・先行支払）
   function tags(x) { var t = [];
     if (x.flag) t.push(['特記', 't-flag']);
@@ -37,15 +63,44 @@
     if (/相殺/.test(x.method || '')) t.push(['相殺', 't-new']);
     if (x.prepaid) t.push(['先行支払済', 't-new']);
     if (x.smile && x.smile.held) t.push(['繰越保留', 't-new']);
+    (x.tags || []).forEach(function (a) { t.push(a); });   // 呼ぶ側の気づき [[文字, 't-new' など], …]
     return t; }
+  var MINI = { on: (function () { try { return localStorage.getItem('settle.listMini') === '1'; } catch (e) { return false; } })(), set: function (v) { this.on = v; try { localStorage.setItem('settle.listMini', v ? '1' : ''); } catch (e) {} } };
+  var FULL = { on: (function () { try { return localStorage.getItem('settle.full') === '1'; } catch (e) { return false; } })(), set: function (v) { this.on = v; try { localStorage.setItem('settle.full', v ? '1' : ''); } catch (e) {} } };
+  var MEM = {};   // storeKey → 画面の状態（描き直しても選んだ明細・請求書を保つ）
+  // 支払方法：色分けした札（big＝詳細の見出し用）
+  var MCOL = { '振込': ['#1a5fa8', '#e3edf9'], '総合振込': ['#1a5fa8', '#e3edf9'], 'でんさい': ['#7a3db8', '#f1e8fb'], '手形': ['#7a3db8', '#f1e8fb'], '口座振替': ['#1e8449', '#e3f4e8'],
+    '納税': ['#a0520c', '#fdf0e1'], '現金': ['#5b6478', '#eceff4'], '海外送金': ['#0f7c86', '#e0f4f5'], '相殺': ['#a0520c', '#fdf0e1'] };
+  function mth(m, big) { if (!m) return ''; var c = MCOL[m] || MCOL[String(m).split(/[・ ]/)[0]] || ['#5b6478', '#eceff4'];
+    return '<span class="mth' + (big ? ' big' : '') + '" style="color:' + c[0] + ';background:' + c[1] + ';border-color:' + c[0] + '33">' + esc(m) + '</span>'; }
+  // 前月・前々月との比べ：金額と差（円・%）を並べる
+  function cmp(x) {
+    var d = function (a, b) { if (!b) return '<td class="n" style="color:#c3c9d6">—</td>'; var v = a - b, p = Math.round(v / b * 100);
+      return '<td class="n ' + (v > 0 ? 'd-up' : v < 0 ? 'd-down' : '') + '">' + (v > 0 ? '+' : v < 0 ? '−' : '±') + yen(Math.abs(v)) + '<small>（' + (p > 0 ? '+' : '') + p + '%）</small></td>'; };
+    return '<table class="cmp"><tr><th></th><th class="n">金額</th><th class="n">今回との差</th></tr>' +
+      '<tr class="now"><td>今回</td><td class="n">' + yen(x.amount) + '</td><td></td></tr>' +
+      '<tr><td>前月</td><td class="n">' + (x.prev1 ? yen(x.prev1) : '—') + '</td>' + d(x.amount, x.prev1) + '</tr>' +
+      '<tr><td>前々月</td><td class="n">' + (x.prev2 ? yen(x.prev2) : '—') + '</td>' + d(x.amount, x.prev2) + '</tr></table>'; }
+  // 補足メモ：承認・差し戻しのコメントの「【明細】」の下の「・支払先 金額円【保留】：メモ」を、支払先＋金額で明細につなぐ
+  function nk(x) { return String(x.payee || '').trim() + '|' + Math.round(+x.amount || 0); }
+  function prevNotes(hist, nameOf) { var out = {};
+    hist.forEach(function (h) { var c = String(h.comment || ''), i = c.indexOf('【明細】'); if (i < 0) return;
+      c.slice(i + 4).split(/\r?\n/).forEach(function (ln) { var m = ln.match(/^・(.+) ([\d,]+)円(【保留】)?(?:：([\s\S]*))?$/); if (!m) return;
+        var k = m[1].trim() + '|' + Number(m[2].replace(/,/g, '')); (out[k] = out[k] || []).push({ who: h.by && h.by !== 'system' ? nameOf(h.by) : '', step: h.step || '', type: h.type || '', at: h.at || '', hold: !!m[3], memo: m[4] || '' }); }); });
+    return out; }
+  function notesHtml(ns) { if (!ns || !ns.length) return '';
+    return '<div class="pn"><div class="pnh">これまでの補足メモ</div>' + ns.map(function (n) { return '<div class="pni"><span class="pw">' + esc(n.who) + (n.step ? '（' + esc(n.step) + '）' : '') + '</span>' + (n.hold ? '<span class="tag t-new">保留</span>' : '') + '<span>' + esc(n.memo) + '</span></div>'; }).join('') + '</div>'; }
   function load(k) { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } }
   function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 
   function mount(el, o) {
     css();
     var snap = o.snap, rows = (snap.rows || []).map(function (x, i) { return Object.assign({ _k: keyOf(x, i) }, x); });
-    var S = Object.assign({ checks: {}, comments: {} }, load(o.storeKey)), ui = { tab: 'rev', sel: null, only: '', sort: 'amount', q: '', pdf: {}, cache: {} };
-    function persist() { save(o.storeKey, { checks: S.checks, comments: S.comments }); state(); }
+    // o.state を渡すと、確認OK・保留・コメントはそれを使い、変わるたびに o.onChange(state) を呼ぶ（ハナオカ：SharePoint に保存して共有）。無ければ今までどおりブラウザに残す
+    var NOTES = prevNotes(o.history || [], o.nameOf || function (x) { return x; });
+    var S = o.state ? Object.assign(o.state, { checks: o.state.checks || {}, comments: o.state.comments || {} }) : Object.assign({ checks: {}, comments: {} }, load(o.storeKey)), ui = MEM[o.storeKey] || (MEM[o.storeKey] = { tab: 'rev', sel: null, only: '', sort: snap.sort || 'amount', q: '', pdf: {}, cache: {} }), placed = false;   // placed：この表示で一度だけ明細のカードまでスクロールする
+    if (o.select) { ui.sel = o.select; ui.tab = 'rev'; ui.only = ''; }   // 呼ぶ側から「この明細を見せて」（気づきを押したとき）
+    function persist() { if (o.onChange) o.onChange(S); else save(o.storeKey, { checks: S.checks, comments: S.comments }); state(); }
     function state() { var ok = rows.filter(function (x) { return S.checks[x._k] === 'ok'; }).length, hold = rows.filter(function (x) { return S.checks[x._k] === 'hold'; }).length;
       if (o.onState) o.onState({ ok: ok, total: rows.length, hold: hold }); }
     function list() { var a = rows.slice();
@@ -58,11 +113,32 @@
       return a; }
     function render() {
       var ok = rows.filter(function (x) { return S.checks[x._k] === 'ok'; }).length;
-      el.innerHTML = '<div class="sv"><div class="tabs"><button data-t="sum" class="' + (ui.tab === 'sum' ? 'on' : '') + '">📊 サマリー</button><button data-t="rev" class="' + (ui.tab === 'rev' ? 'on' : '') + '">📄 明細（確認 ' + ok + '／' + rows.length + '）</button></div><div class="pane"></div></div>';
+      var full = FULL.on && window.innerWidth > 900, done = o.canAct && ok === rows.length && rows.length;
+      el.classList.toggle('sv-full', full); lock(full);
+      el.innerHTML = '<div class="sv">' + partsHtml() + '<div class="tabs"><button data-t="sum" class="' + (ui.tab === 'sum' ? 'on' : '') + '">📊 サマリー</button><button data-t="rev" class="' + (ui.tab === 'rev' ? 'on' : '') + '">📄 明細（確認 ' + ok + '／' + rows.length + '）</button>' +
+        '<span class="sp"></span>' + (full && done ? '<button class="pri fx" style="margin-bottom:4px">' + (o.onApprove ? '✔ すべて確認しました → このパートを承認する' : '✔ すべて確認しました → 閉じて承認へ') + '</button>' : '') +
+        '<button class="fs-t" title="' + (full ? '元の画面に戻す（Esc）' : 'このカードだけを画面いっぱいに出す') + '" style="margin-bottom:4px">' + (full ? '✕ 全画面を閉じる' : '⛶ 全画面') + '</button></div><div class="pane"></div></div>';
       var pane = el.querySelector('.pane');
       if (ui.tab === 'sum') summary(pane); else review(pane);
       el.querySelectorAll('[data-t]').forEach(function (b) { b.onclick = function () { ui.tab = b.dataset.t; render(); }; });
+      el.querySelector('.fs-t').onclick = function () { FULL.set(!FULL.on); render(); };
+      el.querySelectorAll('[data-part]').forEach(function (b) { b.onclick = function () { var pt = (o.parts || [])[+b.dataset.part]; if (pt && !pt.cur) pt.open(); }; });
+      if (el.querySelector('.fx') && o.onApprove) el.querySelector('.fx').onclick = function () { if (confirm('このパートを' + (o.approveLabel || '承認') + 'します。よろしいですか？（コメント・補足メモも一緒に送ります）')) o.onApprove(); };
+      else if (el.querySelector('.fx')) el.querySelector('.fx').onclick = function () { FULL.set(false); render(); var bt = document.getElementById('bOk'); if (bt) bt.scrollIntoView({ block: 'center' }); };
     }
+    // パートのタブ（本社分＝総務・国内営業・ソリューション）。2つ以上届いているときだけ
+    function partsHtml() { var ps = o.parts || []; if (ps.length < 2) return '';
+      var tot = ps.reduce(function (s, p) { return s + p.total; }, 0), b = snap.batch || {};
+      return '<div class="parts"><span class="pl">' + esc(b.ym || '') + ' ' + esc(b.round || '') + '払い　' + ps.length + 'パート 合計 <b>' + yen(tot) + '</b> 円</span>' + ps.map(function (p, i) {
+        return '<button data-part="' + i + '" class="pt' + (p.cur ? ' cur' : '') + '"><b>' + esc(p.dept) + '</b><span class="pa">' + yen(p.total) + '</span><span class="ps ' + esc(p.cls) + '">' + (p.cls === 'ok' ? '✔ ' : p.cls === 'run' ? '⏳ ' : '') + esc(p.label) + '</span></button>'; }).join('') + '</div>'; }
+    // 全画面：後ろの画面（wf_app の .detail）はスクロールさせない
+    var locked = null;
+    function lock(on) { var p = el.parentElement; while (p && !/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
+      if (on && p) { locked = p; p.style.overflow = 'hidden'; } else if (!on && locked) { locked.style.overflow = ''; locked = null; } }
+    // Esc：明細のドロワーが開いていれば、まずそれだけ閉じる（全画面の解除より先）
+    window.addEventListener('keydown', function (e) { if (e.key !== 'Escape' || !document.body.contains(el)) return; var d = el.querySelector('.svdr.open'); if (!d) return;
+      e.stopPropagation(); ui.dPin = false; ui.dOpen = false; d.classList.remove('open'); var bb = d.querySelector('.svdr-bar'); if (bb) bb.classList.remove('pin'); }, true);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && el.classList.contains('sv-full') && document.body.contains(el)) { FULL.set(false); render(); } });
     function summary(pane) {
       var b = snap.batch || {}, flagged = rows.filter(function (x) { return tags(x).length; }).sort(function (x, y) { return y.amount - x.amount; });
       var bm = snap.byMethod || {};
@@ -74,64 +150,151 @@
         '<div class="box"><h4>支払方法の内訳</h4><table>' + Object.keys(bm).map(function (m) { return '<tr><td>' + esc(m) + '</td><td class="n">' + yen(bm[m]) + '</td></tr>'; }).join('') + '</table>' +
           (Object.keys(due).length ? '<h4 style="margin-top:10px">でんさいの期日</h4><table>' + Object.keys(due).sort().map(function (d) { return '<tr><td>' + esc(d) + '</td><td class="n">' + yen(due[d]) + '</td></tr>'; }).join('') + '</table>' : '') + '</div>' +
         '<div class="box"><h4>特記・気づき（' + flagged.length + '件）</h4><div class="flags">' + (flagged.length ? flagged.map(function (x) { return '<div class="flag" data-k="' + esc(x._k) + '"><span class="why">' + tags(x).map(function (t) { return esc(t[0]); }).join('・') + '</span><span class="who">' + esc(x.payee) + '</span><b>' + yen(x.amount) + '</b></div>'; }).join('') : '<div style="color:var(--sub)">ありません</div>') + '</div></div></div>';
+      if (snap.fuel && (snap.fuel.rows || []).length) pane.insertAdjacentHTML('beforeend', fuelHtml(snap.fuel));
       pane.querySelectorAll('.flag').forEach(function (f) { f.onclick = function () { ui.sel = f.dataset.k; ui.tab = 'rev'; ui.only = ''; render(); }; });
     }
+    // 燃料の単価（1Lあたり・拠点ごと・払う月）。fuel：{yms:['2026/09',…], rows:[{loc, fuel, cells:{ym:{lo,hi,sq}}}]}（呼ぶ側が作る）
+    function fuelHtml(fu) {
+      var yms = fu.yms || [], rs = fu.rows || [], mid = function (c) { return (c.lo + c.hi) / 2; }, fmt = function (v) { return (+v).toLocaleString('ja-JP', { maximumFractionDigits: 1 }); }, mk = {};
+      yms.forEach(function (ym) { ['ガソリン', '軽油', 'ハイオク', '灯油'].forEach(function (f) { var cs = rs.filter(function (r) { return r.fuel === f && r.cells[ym]; });
+        if (cs.length < 2) return; cs.sort(function (a, b) { return mid(a.cells[ym]) - mid(b.cells[ym]); }); mk[rs.indexOf(cs[0]) + '@' + ym] = 'f-lo'; mk[rs.indexOf(cs[cs.length - 1]) + '@' + ym] = 'f-hi'; }); });
+      return '<div class="box" style="margin-top:12px"><h4>燃料の単価（1Lあたり・拠点ごと・払う月）</h4><div style="overflow-x:auto"><table class="fuel"><tr><th>拠点</th><th>燃料</th>' + yms.map(function (y) { return '<th class="n">' + esc(String(y).replace(/^\d{4}\//, '')) + '月払い</th>'; }).join('') + '</tr>' +
+        rs.map(function (r, i) { return '<tr><td>' + esc(r.loc) + '</td><td>' + esc(r.fuel) + '</td>' + yms.map(function (y) { var c = r.cells[y]; if (!c) return '<td class="n" style="color:#c3c9d6">—</td>';
+          return '<td class="n ' + (mk[i + '@' + y] || '') + (c.sq ? ' f-sq' : '') + '">' + (c.lo === c.hi ? fmt(c.lo) : fmt(c.lo) + '～' + fmt(c.hi)) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>' +
+        '<div style="font-size:12px;color:var(--sub);margin-top:6px">決裁メモの「@単価」から。<span class="f-lo" style="padding:0 4px">緑</span>＝その月いちばん安い拠点、<span class="f-hi" style="padding:0 4px">赤</span>＝いちばん高い拠点。斜体は請求Quick の決裁メモ（アプリより前の月）</div></div>';
+    }
+    // 請求書の明細（AI が読んだもの）。items：{amount:'税込'|'税抜', items:[{Date, SlipNo, ItemName, Spec, Note, Qty, Unit, UnitPrice, Amount, TaxRate}]}
+    function itemsHtml(x) { var j = x.items, it = (j && j.items) || [], tot = it.reduce(function (s, a) { return s + (+a.Amount || 0); }, 0);
+      return '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px"><b style="font-size:15px">請求書の明細</b><span class="s">' + esc(x.payee) + '・' + it.length + '行・' + esc(j.amount || '') + '</span><span style="flex:1"></span><button class="svdr-x">✕</button></div>' +
+        sumCards(x, j, tot) +
+        '<table class="ln"><tr><th>日付</th><th>品名</th><th class="n">数量</th><th class="n">単価</th><th class="n">金額</th><th>税率</th></tr>' + it.map(function (a) {
+          return '<tr><td style="white-space:nowrap">' + esc(a.Date || '') + (a.SlipNo ? '<div class="s">' + esc(a.SlipNo) + '</div>' : '') + '</td><td>' + esc(a.ItemName || '') + (a.Spec ? ' <span class="s">' + esc(a.Spec) + '</span>' : '') + (a.Note ? '<div class="s">' + esc(a.Note) + '</div>' : '') + '</td>' +
+            '<td class="n">' + (a.Qty != null && a.Qty !== '' ? esc(String(a.Qty)) + esc(a.Unit || '') : '') + '</td><td class="n">' + (a.UnitPrice != null && a.UnitPrice !== '' ? yen(a.UnitPrice) : '') + '</td><td class="n">' + yen(a.Amount) + '</td><td style="font-size:11.5px">' + esc(a.TaxRate || '') + '</td></tr>'; }).join('') +
+        '<tr><td colspan="4"><b>合計</b></td><td class="n"><b>' + yen(tot) + '</b></td><td></td></tr></table>'; }
+    // 明細の上のカード（支払管理アプリと同じ）：支払金額（税込・税抜）／請求書の明細／仕訳（明細と同じ 税込・税抜 で）／差
+    function sumCards(x, j, tot) { var inc = j.amount === '税込', ls = x.lines || [], has = ls.some(function (l) { return l.rate || l.excl; });
+      var lIn = ls.reduce(function (s, l) { return s + (+l.amount || 0); }, 0), lEx = ls.reduce(function (s, l) { return s + (+l.excl || 0); }, 0), lTx = ls.reduce(function (s, l) { return s + (+l.tax || 0); }, 0);
+      var lsT = Math.round(inc ? lIn : lEx), d = Math.round(tot - lsT), ok = Math.round(lIn) === Math.round(x.amount || 0);
+      return '<div class="svsum"><div class="pay"><div class="l">支払金額（税込）</div><div class="v">' + yen(x.amount) + '<small> 円</small></div><div class="s">' + (has ? '税抜 ' + yen(lEx) + '・消費税 ' + yen(lTx) : '') + '</div></div>' +
+        '<div><div class="l">請求書の明細（' + (inc ? '税込' : '税抜') + '）</div><div class="v">' + yen(tot) + '</div><div class="s">' + (j.items || []).length + '行</div></div>' +
+        (ls.length ? '<div><div class="l">仕訳（' + (inc ? '税込' : '税抜') + '）</div><div class="v">' + yen(lsT) + '</div><div class="s">' + ls.length + '行' + (ok ? '・✔ 支払金額と一致' : '') + '</div></div>' +
+          '<div class="' + (Math.abs(d) <= 1 ? 'good' : 'bad') + '"><div class="l">差（明細 − 仕訳）</div><div class="v">' + (Math.abs(d) <= 1 ? '✔ 0' : (d > 0 ? '+' : '') + yen(d)) + '</div></div>' : '') + '</div>'; }
+    // ドロワー：バーにホバーで開く・クリックで固定・Esc で閉じる。幅は右の列（内容）にそろえ、請求書 PDF との境まで
+    function wireDrawer(dt, x) { var d = dt.querySelector('.svdr'); if (!d) return; var bar = d.querySelector('.svdr-bar'), p = d.querySelector('.svdr-p'), t = null;
+      var fitW = function () { var wd = dt.classList.contains('wide'), di = wd ? dt.querySelector('.di') : dt, w = Math.round(bar.getBoundingClientRect().left - di.getBoundingClientRect().left - (wd ? 0 : 8)); if (w > 220) p.style.width = w + 'px'; };
+      var set = function (on) { clearTimeout(t); ui.dOpen = on; if (on) { fitW(); p.innerHTML = itemsHtml(x); var xb = p.querySelector('.svdr-x'); if (xb) xb.onclick = function () { ui.dPin = false; bar.classList.remove('pin'); set(false); }; } d.classList.toggle('open', on); };
+      bar.onmouseenter = function () { clearTimeout(t); t = setTimeout(function () { set(true); }, 120); };
+      d.onmouseleave = function () { if (ui.dPin) return; clearTimeout(t); t = setTimeout(function () { set(false); }, 300); };
+      d.onmouseenter = function () { if (ui.dOpen) clearTimeout(t); };
+      bar.onclick = function () { ui.dPin = !ui.dPin; bar.classList.toggle('pin', ui.dPin); set(ui.dPin || ui.dOpen); };
+      if (ui.dPin) { bar.classList.add('pin'); set(true); } }
     function review(pane) {
       pane.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><input type="search" class="q" placeholder="支払先・備考で検索" value="' + esc(ui.q) + '" style="border:1px solid var(--line);border-radius:6px;padding:4px 8px">' +
         '<select class="fo">' + [['', 'すべて'], ['flag', '特記・気づきだけ'], ['unck', '未確認だけ'], ['hold', '保留だけ']].map(function (v) { return '<option value="' + v[0] + '"' + (ui.only === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select>' +
-        '<select class="fs">' + [['amount', '金額の大きい順'], ['diff', '前月からの増加が大きい順'], ['no', '総務が回した順']].map(function (v) { return '<option value="' + v[0] + '"' + (ui.sort === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select><span class="cnt" style="font-size:12px;color:var(--sub);align-self:center"></span></div>' +
-        '<div class="rv"><div class="rl"><table><tbody class="tb"></tbody></table></div><div class="dt"></div></div>';
+        '<select class="fs">' + [['amount', '金額の大きい順'], ['diff', '前月からの増加が大きい順'], ['no', '総務が回した順']].map(function (v) { return '<option value="' + v[0] + '"' + (ui.sort === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select><span class="cnt" style="font-size:12px;color:var(--sub);align-self:center"></span><button class="lt" title="たたむと請求書を広く見られます（左の帯にマウスを乗せると一覧が出ます）">' + (MINI.on ? '› 一覧を出す' : '‹ 一覧をたたむ') + '</button></div>' +
+        '<div class="rv' + (MINI.on ? ' mini' : '') + '"><div class="rstrip" title="マウスを乗せると明細の一覧が出ます（クリックで固定して出す）"><span>›</span><span class="vt">明細の一覧</span><span class="pos"></span></div><div class="rl"><table><tbody class="tb"></tbody></table></div><div class="dt"></div></div>';
       pane.querySelector('.q').oninput = function (e) { ui.q = e.target.value.trim(); rowsHtml(); detail(); };
       pane.querySelector('.fo').onchange = function (e) { ui.only = e.target.value; rowsHtml(); detail(); };
       pane.querySelector('.fs').onchange = function (e) { ui.sort = e.target.value; rowsHtml(); detail(); };
-      rowsHtml(); detail();
+      pane.querySelector('.lt').onclick = function () { MINI.set(!MINI.on); review(pane); };
+      var rv = pane.querySelector('.rv'), strip = pane.querySelector('.rstrip'), rl = pane.querySelector('.rl'), tmr = null;
+      var peek = function (on) { clearTimeout(tmr); if (on) rv.classList.add('peek'); else tmr = setTimeout(function () { rv.classList.remove('peek'); }, 280); };
+      strip.onmouseenter = function () { peek(true); }; strip.onmouseleave = function () { peek(false); }; strip.onclick = function () { clearTimeout(tmr); rv.classList.toggle('peek'); };
+      rl.onmouseenter = function () { peek(true); }; rl.onmouseleave = function () { peek(false); };
+      // 詳細の幅が広ければ 左＝請求書・右＝内容（一覧をたたむ・画面の幅が変わるたびに見直す）
+      var dtEl = pane.querySelector('.dt'), wide = function () { dtEl.classList.toggle('wide', dtEl.clientWidth >= 940 && window.innerWidth > 900); };
+      if (window.ResizeObserver) new ResizeObserver(wide).observe(dtEl); wide();
+      rowsHtml(); detail(); fit();
     }
+    // 明細のカードが1画面に収まるように：スクロールする枠（wf_app の .detail）の高さから、一覧と詳細の高さを決める。
+    // 初めて開いたときだけ、カードの上端が枠の上に来るまでスクロールする（進み具合などはその上）
+    function scroller() { for (var p = el.parentElement; p; p = p.parentElement) { var s = getComputedStyle(p).overflowY; if ((s === 'auto' || s === 'scroll') && p.clientHeight < p.scrollHeight + 1) return p; } return null; }
+    function fit() {
+      var rv = el.querySelector('.rv'); if (!rv || window.innerWidth <= 900) return;
+      if (el.classList.contains('sv-full')) { rv.style.height = Math.max(360, window.innerHeight - (rv.getBoundingClientRect().top - el.getBoundingClientRect().top) - 14) + 'px'; return; }
+      var box = scroller(), card = el.closest('.card') || el, viewH = box ? box.clientHeight : window.innerHeight;
+      var cr = card.getBoundingClientRect(), rr = rv.getBoundingClientRect();
+      var above = rr.top - cr.top, below = cr.bottom - rr.bottom;
+      rv.style.height = Math.max(420, viewH - above - below - 24) + 'px';
+      if (!placed && box) { placed = true; box.scrollTop += card.getBoundingClientRect().top - box.getBoundingClientRect().top - 8; }
+    }
+    window.addEventListener('resize', function () { if (document.body.contains(el)) fit(); });
     function rowsHtml() {
       var a = list(), tb = el.querySelector('.tb'); if (!tb) return;
       if (!a.some(function (x) { return x._k === ui.sel; })) ui.sel = a.length ? (a.filter(function (x) { return !S.checks[x._k]; })[0] || a[0])._k : null;
       el.querySelector('.cnt').textContent = a.length + '件　' + yen(a.reduce(function (s, x) { return s + x.amount; }, 0)) + '円　確認OK ' + a.filter(function (x) { return S.checks[x._k] === 'ok'; }).length + '／' + a.length;
       tb.innerHTML = a.map(function (x) { var c = S.checks[x._k];
         return '<tr class="' + (x._k === ui.sel ? 'sel ' : '') + (c || '') + '" data-k="' + esc(x._k) + '"><td style="width:24px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
-          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] ? ' 💬' : '') + '</div><div class="s">' + esc(x.genre || '') + '・' + esc(x.method || '') + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
+          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] || NOTES[nk(x)] ? ' 💬' : '') + '</div><div class="s">' + mth(x.method) + esc(x.genre || '') + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
           '<td class="n"><b>' + yen(x.amount) + '</b><div class="s">' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</div></td></tr>'; }).join('') || '<tr><td style="color:var(--sub);padding:12px">該当する明細はありません</td></tr>';
-      tb.querySelectorAll('tr[data-k]').forEach(function (tr) { tr.onclick = function () { ui.sel = tr.dataset.k; rowsHtml(); detail(); }; });
-      var s = tb.querySelector('tr.sel'); if (s) s.scrollIntoView({ block: 'nearest' });
+      tb.querySelectorAll('tr[data-k]').forEach(function (tr) { tr.onclick = function () { ui.sel = tr.dataset.k; var rv = el.querySelector('.rv'); if (rv) rv.classList.remove('peek'); rowsHtml(); detail(); }; });
+      var s = tb.querySelector('tr.sel'), rl = el.querySelector('.rl'); if (s && rl) { var top = s.offsetTop, bot = top + s.offsetHeight; if (top < rl.scrollTop) rl.scrollTop = top; else if (bot > rl.scrollTop + rl.clientHeight) rl.scrollTop = bot - rl.clientHeight; }
+      var ps = el.querySelector('.rstrip .pos'), ai = a.findIndex(function (x) { return x._k === ui.sel; }); if (ps) ps.textContent = (ai + 1) + '/' + a.length;
     }
     function detail() {
       var dt = el.querySelector('.dt'); if (!dt) return;
       var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }), x = a[i];
       if (!x) { dt.innerHTML = '<div style="padding:16px;color:var(--sub)">左の一覧から選んでください</div>'; return; }
       var c = S.checks[x._k], row = function (k, v) { return v == null || v === '' ? '' : '<div class="k">' + k + '</div><div>' + v + '</div>'; };
-      var sm = x.smile || {};
-      dt.innerHTML = '<div class="dn"><button class="p">◀ 前へ</button><span style="color:var(--sub)">' + (i + 1) + ' ／ ' + a.length + '</span><button class="n">次へ ▶</button><span class="sp"></span>' + (c ? '<span class="tag ' + (c === 'ok' ? 't-ok' : 't-new') + '">' + (c === 'ok' ? '✔ 確認OK' : '⏸ 保留') + '</span>' : '') + '</div>' +
-        '<div class="db"><div style="display:flex;justify-content:space-between;gap:10px"><div><div style="font-size:12px;color:var(--sub)">' + esc(x.genre || '') + (x.no ? '・' + esc(x.no) : '') + '</div><h3 style="margin:2px 0 4px;font-size:18px">' + esc(x.payee) + '</h3><div>' + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '" style="margin:0 4px 0 0">' + esc(t[0]) + '</span>'; }).join('') + '</div></div>' +
-          '<div style="text-align:right"><div class="big" style="font-size:24px">' + yen(x.amount) + '<small> 円</small></div><div style="font-size:13px;color:var(--sub)">前月 ' + (x.prev1 ? yen(x.prev1) : '—') + '　' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</div></div></div>' +
-        '<div class="kv">' + row('支払方法', esc(x.method)) + row('期日・支払日', esc(x.due || x.payDate)) + row('前々月', x.prev2 ? yen(x.prev2) + ' 円' : '') + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
+      var sm = x.smile || {}, txl = (x.lines || []).some(function (l) { return l.rate; });
+      var kvH = '<div class="kv">' + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
           row('SMILE の額', sm.incl != null ? '税込仕入額 ' + yen(sm.incl) + (sm.carry ? '／繰越 ' + yen(sm.carry) : '') + (sm.held ? '（保留 ' + yen(sm.held) + '・3月末に整理）' : '') : '') +
-          row('振込先の変更', x.bankChange ? '<b style="color:var(--up)">' + esc(x.bankChange) + '</b>' : '') + row('備考', esc(x.note)) + '</div>' +
-        (x.lines ? '<table><tr><th>内訳</th><th class="n">金額</th><th>備考</th></tr>' + x.lines.map(function (l) { return '<tr><td>' + esc(l.genre || '') + '</td><td class="n">' + yen(l.amount) + '</td><td>' + esc(l.note || '') + '</td></tr>'; }).join('') + '</table>' : '') +
-        '<div style="margin-top:8px">' + (x.invoices || []).map(function (k, j) { return '<button class="chip' + (ui.pdf[x._k] === k ? ' on' : '') + '" data-pdf="' + esc(k) + '" style="margin:0 4px 4px 0">📄 請求書 ' + (j + 1) + '</button>'; }).join('') + '</div>' +
-        '<div class="pdf">' + ((x.invoices || []).length ? '読み込み中...' : '請求書の添付はありません') + '</div>' +
-        '<textarea class="cm" placeholder="この明細へのコメント（承認・差し戻しのコメントにまとめて送ります）" style="' + (S.comments[x._k] ? '' : 'display:none;') + 'width:100%;height:52px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:8px">' + esc(S.comments[x._k] || '') + '</textarea></div>' +
-        '<div class="da">' + (o.canAct ? '<button class="h">⏸ 保留</button><button class="c">💬 コメント</button><span class="sp"></span><span style="font-size:11.5px;color:var(--sub)">Enter：OK・次へ　←→：前・次　H：保留</span><button class="pri ok" style="font-size:15px;padding:7px 20px">✔ OK・次へ</button>'
+          row('振込先の変更', x.bankChange ? '<b style="color:var(--up)">' + esc(x.bankChange) + '</b>' : '') + row('備考', esc(x.note)) + '</div>';
+      var ibHtml = function () { return txl && ui.itab === 'ln' ? linesHtml(x.lines) : kvH + (txl ? taxSum(x.lines) : linesHtml(x.lines)); };
+      dt.innerHTML = '<div class="dn"><button class="p">◀ 前へ</button><span style="color:var(--sub)">' + (i + 1) + ' ／ ' + a.length + '</span><button class="n">次へ ▶</button><span class="sp"></span>' + (c ? '<span class="tag ' + (c === 'ok' ? 't-ok' : 't-new') + '">' + (c === 'ok' ? '✔ 確認OK' : '⏸ 保留') + '</span>' : '') + '</div>' +
+        '<div class="db"><div class="di"><div class="hd"><div style="min-width:0"><div style="font-size:12px;color:var(--sub)">' + esc(x.genre || '') + (x.no ? '・' + esc(x.no) : '') + '</div><h3 style="margin:2px 0 6px;font-size:18px">' + esc(x.payee) + '</h3>' +
+          '<div class="mrow">' + mth(x.method, true) + '<span class="when">' + esc(x.due ? '期日 ' + x.due : x.payDate ? '支払日 ' + x.payDate : '') + '</span>' + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></div>' +
+          cmp(x) + '</div>' +
+        // 仕訳の明細（税区分つき）があるときは「内容」と「仕訳明細」をタブで切り替える（明細が多くても、右の列の中だけで見られる）
+        (txl ? '<div class="itabs"><button data-it="sum" class="' + (ui.itab !== 'ln' ? 'on' : '') + '">内容</button><button data-it="ln" class="' + (ui.itab === 'ln' ? 'on' : '') + '">仕訳明細（' + x.lines.length + '行）</button></div>' : '') +
+        '<div class="ib">' + ibHtml() + '</div>' +
+        notesHtml(NOTES[nk(x)]) + '<textarea class="cm" placeholder="' + (o.onChange ? 'この明細の補足メモ（ほかの人にも見えます）' : 'この明細の補足メモ（承認のときにまとめて送り、次の人・社長にも見えます）') + '" style="' + (S.comments[x._k] ? '' : 'display:none;') + 'width:100%;height:52px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:8px">' + esc(S.comments[x._k] || '') + '</textarea></div>' +
+        '<div class="dl"><div class="chips">' + (x.invoices || []).map(function (k, j) { return '<button class="chip' + (ui.pdf[x._k] === k ? ' on' : '') + '" data-pdf="' + esc(k) + '" style="margin:0 4px 4px 0">📄 請求書 ' + (j + 1) + '</button>'; }).join('') + '</div>' +
+        '<div class="pdf">' + ((x.invoices || []).length ? '読み込み中...' : '請求書の添付はありません') + '</div></div></div>' +
+        '<div class="da">' + (o.canAct ? '<button class="h">⏸ 保留</button><button class="c">💬 補足メモ</button><span class="sp"></span><span style="font-size:11.5px;color:var(--sub)">Enter：OK・次へ　←→：前・次　H：保留</span><button class="pri ok" style="font-size:15px;padding:7px 20px">✔ OK・次へ</button>'
           : '<span style="font-size:12px;color:var(--sub)">あなたの番になると「確認OK」を付けられます</span>') + '</div>';
       var q = function (s) { return dt.querySelector(s); };
       q('.p').onclick = function () { go(-1); }; q('.n').onclick = function () { go(1); };
       if (q('.ok')) { q('.ok').onclick = function () { mark('ok'); }; q('.h').onclick = function () { mark('hold'); }; q('.c').onclick = function () { q('.cm').style.display = ''; q('.cm').focus(); }; }
       q('.cm').oninput = function (e) { S.comments[x._k] = e.target.value; persist(); };
       dt.querySelectorAll('[data-pdf]').forEach(function (b) { b.onclick = function () { showPdf(x, b.dataset.pdf); }; });
+      // 内容／仕訳明細の切り替えは右の列だけ描き直す（請求書は読み直さない）
+      var setIt = function (v) { ui.itab = v; dt.querySelectorAll('[data-it]').forEach(function (b) { b.classList.toggle('on', (b.dataset.it === 'ln') === (v === 'ln')); }); var ib = q('.ib'); ib.innerHTML = ibHtml(); ib.scrollTop = 0; wireIb(); };
+      var wireIb = function () { var m = q('.tsum .more'); if (m) m.onclick = function () { setIt('ln'); }; };
+      dt.querySelectorAll('[data-it]').forEach(function (b) { b.onclick = function () { setIt(b.dataset.it); }; }); wireIb();
       if ((x.invoices || []).length) showPdf(x, ui.pdf[x._k] || x.invoices[0]);
+      var hasIt = !!(x.items && (x.items.items || []).length); dt.classList.toggle('hasit', hasIt);
+      if (hasIt) { dt.insertAdjacentHTML('beforeend', '<div class="svdr"><button class="svdr-bar" title="ホバーで開く・クリックで固定（Esc で閉じる）">請求書の明細（' + x.items.items.length + '行）</button><div class="svdr-p"></div></div>'); wireDrawer(dt, x); }
+    }
+    // 税区分ごとの合計（「内容」に出す。行ごとは「仕訳明細」タブ）
+    function taxSum(ls) { var g = {}, ord = [];
+      ls.forEach(function (l) { var k = (l.rate || '') + '|' + (l.kind || '') + '|' + (l.tm || ''); if (!g[k]) { g[k] = { rate: l.rate, kind: l.kind, tm: l.tm, excl: 0, tax: 0, amount: 0, n: 0 }; ord.push(k); } var s = g[k]; s.excl += +l.excl || 0; s.tax += +l.tax || 0; s.amount += +l.amount || 0; s.n++; });
+      return '<div class="tsum"><div class="tt"><b>税区分ごとの合計</b><span class="sp"></span><button class="more">仕訳明細 ' + ls.length + '行を見る ›</button></div><table class="ln"><tr><th>税区分</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th></tr>' +
+        ord.map(function (k) { var s = g[k]; return '<tr><td>' + esc(s.rate || '') + (s.kind ? '<span class="tag ' + (s.kind === '課' ? 't-new' : 't-ok') + '">' + esc(s.kind) + '</span>' : '') + (s.tm ? ' <span style="font-size:11px;color:var(--sub)">' + esc(s.tm) + '</span>' : '') + '<span style="font-size:11px;color:var(--sub)">（' + s.n + '行）</span></td><td class="n">' + yen(s.excl) + '</td><td class="n">' + yen(s.tax) + '</td><td class="n"><b>' + yen(s.amount) + '</b></td></tr>'; }).join('') + '</table></div>'; }
+    // 内訳（経費は仕訳の明細）。税区分（税率・税込／税抜・課／共）がある明細は、税抜・消費税も並べる
+    function linesHtml(ls) {
+      if (!ls || !ls.length) return '';
+      var tx = ls.some(function (l) { return l.rate; });
+      // memo（決裁メモ：社長・室長向けの説明。任意）があれば主に出し、経理の摘要（note）は小さく
+      var memoHtml = function (l) { return l.memo ? '<b>' + esc(l.memo) + '</b>' + (l.note ? '<div class="s" style="font-size:11px;color:var(--sub)">摘要：' + esc(l.note) + '</div>' : '') : esc(l.note || ''); };
+      if (!tx) return '<table><tr><th>内訳</th><th class="n">金額</th><th>備考</th></tr>' + ls.map(function (l) { return '<tr><td>' + esc(l.genre || '') + '</td><td class="n">' + yen(l.amount) + '</td><td>' + memoHtml(l) + '</td></tr>'; }).join('') + '</table>';
+      var zk = function (l) { return esc(l.rate || '') + (l.kind ? '<span class="tag ' + (l.kind === '課' ? 't-new' : 't-ok') + '" title="' + (l.kind === '課' ? '課税売上のための仕入（個別対応）' : '共通の仕入（個別対応）') + '">' + esc(l.kind) + '</span>' : '') + (l.tm ? '<div class="s" style="font-size:11px;color:var(--sub)">' + esc(l.tm) + '</div>' : ''); };
+      return '<div><table class="ln"><tr><th>科目</th><th>税区分</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th></tr>' + ls.map(function (l) {
+        return '<tr><td>' + esc(l.genre || '') + '</td><td>' + zk(l) + '</td><td class="n">' + yen(l.excl) + '</td><td class="n">' + yen(l.tax) + '</td><td class="n"><b>' + yen(l.amount) + '</b></td></tr>' + (l.memo || l.note ? '<tr class="lm"><td colspan="5">' + memoHtml(l) + '</td></tr>' : ''); }).join('') + '</table></div>';
     }
     // 請求書は PDF か画像（スマホの写真など）。画像は幅に合わせる
-    function docHtml(u, key) { return /\.(jpe?g|png|webp|heic|heif)$/i.test(String(key || '').split('?')[0]) ? '<div style="width:100%;max-height:520px;overflow:auto;text-align:center"><img src="' + u + '" alt="請求書の画像" style="max-width:100%;height:auto"></div>' : '<iframe src="' + u + '"></iframe>'; }
+    function docHtml(u, key) { return /\.(jpe?g|png|webp|heic|heif)$/i.test(String(key || '').split('?')[0]) ? '<div class="imgv"><img src="' + u + '" alt="請求書の画像" style="max-width:100%;height:auto"></div>' : '<iframe src="' + u + '"></iframe>'; }
+    // 請求書を差し込む：PDF の表示は読み込みでフォーカスを取り、枠がスクロールすることがあるので、元の位置に戻す
+    function put(box, html) { var db = el.querySelector('.db'), sc = scroller(), y1 = db ? db.scrollTop : 0, y2 = sc ? sc.scrollTop : 0; box.innerHTML = html;
+      var back = function () { if (db) db.scrollTop = y1; if (sc) sc.scrollTop = y2; }; var f = box.querySelector('iframe'); if (f) f.addEventListener('load', function () { back(); setTimeout(back, 300); }); }
     function showPdf(x, key) {
       ui.pdf[x._k] = key; el.querySelectorAll('[data-pdf]').forEach(function (b) { b.classList.toggle('on', b.dataset.pdf === key); });
       var box = el.querySelector('.pdf'); if (!box) return;
-      if (ui.cache[key]) { box.innerHTML = docHtml(ui.cache[key], key); return; }
+      if (ui.cache[key]) { put(box, docHtml(ui.cache[key], key)); return; }
       box.textContent = '読み込み中...';
       Promise.resolve(o.loadPdf ? o.loadPdf(key) : null).then(function (u) {
         if (u) ui.cache[key] = u; var b2 = el.querySelector('.pdf'); if (!b2 || ui.pdf[x._k] !== key || ui.sel !== x._k) return;
-        b2.innerHTML = u ? docHtml(u, key) : '請求書を開けませんでした'; });
+        put(b2, u ? docHtml(u, key) : "請求書を開けませんでした"); });
     }
     function go(d) { var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }), n = a[Math.min(a.length - 1, Math.max(0, i + d))]; if (n) { ui.sel = n._k; rowsHtml(); detail(); } }
     function mark(v) { if (!o.canAct) return; var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }); if (i < 0) return;

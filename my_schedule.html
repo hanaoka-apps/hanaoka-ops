@@ -6,6 +6,7 @@
 <title>スケジュール 自分の予定 | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="car_booking.js?v=20261015"></script>
 <script src="nav.js?v=20261014" defer></script>
 <link rel="icon" type="image/svg+xml" href="favicon_schedule.svg">
 <style>
@@ -104,6 +105,8 @@
     border-radius:3px;border:1px solid;border-left-width:3px;white-space:normal;word-break:break-word;text-align:left}
   .li .tm{font-size:10.5px;opacity:.9;white-space:nowrap;font-variant-numeric:tabular-nums}
   .li b{font-weight:600;flex:1}
+  .li[data-ev]{cursor:pointer}
+  .li[data-ev]:hover{filter:brightness(.95)}
   .li .ml{font-size:11px;line-height:1.4;margin-top:1px}
   .li .cancel{border:none;background:transparent;color:inherit;opacity:.65;cursor:pointer;font-size:12px;padding:0 2px;flex:0 0 auto}
   .li .cancel:hover{opacity:1}
@@ -112,6 +115,7 @@
   .s-oof  {background:#fdeccd;border-color:#d98c12;color:#6d4304}
   .s-else {background:#eaf5ee;border-color:#5da37c;color:#1d5a3c}
   .s-unk  {background:#f4f5f7;border-color:#c3c8d0;color:#98a0aa}
+  .s-free {background:#f7f9fc;border-color:#aebbd0;color:#4a5a78;border-left-style:dotted}
   .s-cmn  {background:#efe6fb;border-color:#7b5cc4;color:#3f2a73}
   .s-fac  {background:#e7eef7;border-color:#5a7db0;color:#233d63}
   .s-demo {background:#e3f6f2;border-color:#2f9e8f;color:#0f4f47}
@@ -211,6 +215,7 @@
     <div class="legend">
       <span><i class="s-cmn"></i>会社共通</span>
       <span><i class="s-busy"></i>予定あり</span>
+      <span><i class="s-free"></i>空き時間（終日など）</span>
       <span><i class="s-tent"></i>仮の予定</span>
       <span><i class="s-oof"></i>不在・休暇</span>
       <span><i class="s-else"></i>別の場所で勤務</span>
@@ -240,8 +245,8 @@
          しても、選んだ機体をまとめて予約するボタンを探しに戻らなくて済むように。 -->
     <div id="seekBar" style="position:sticky;top:0;z-index:5;background:#f3f9f5;margin:-13px -16px 10px;
          padding:9px 16px;border-bottom:1px solid #cfe5d7;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="act go" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだ機体をまとめて予約（0台）</button>
-      <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); paintSeekDemo();">選択解除</button>
+      <button class="act go" id="seekBulkGo" disabled onclick="openBulkNewMy()">選んだものをまとめて予約（0件）</button>
+      <button class="act" id="seekSelClear" disabled onclick="SEEK_SEL = new Set(); CarBook.clearSel(); paintSeekDemo();">選択解除</button>
     </div>
     <div class="fm">
       <div class="f2">
@@ -303,6 +308,16 @@
     <span class="msg" id="bMsg"></span>
     <button class="act" onclick="closeM('mBulk')">キャンセル</button>
     <button class="act pri" id="bSave" onclick="doReserveBulkMy()">まとめて予約する</button>
+  </div>
+</div></div>
+
+<!-- 予定の詳細（会社共通・自分の予定・施設）。自分の予定だけメモ（本文）を出し、URLはリンクにする -->
+<div class="modal" id="mEvDetail"><div class="card">
+  <h3 id="evTitle"></h3>
+  <div class="bd"><dl id="evBody"></dl><div class="note" id="evNote" style="display:none"></div></div>
+  <div class="ft">
+    <a class="act" id="evOpen" href="#" target="_blank" rel="noopener noreferrer" style="display:none;text-decoration:none">Outlookで開く ↗</a>
+    <button class="act" onclick="closeM('mEvDetail')">閉じる</button>
   </div>
 </div></div>
 
@@ -396,9 +411,17 @@ const pTZ = x => {
   const s = x.dateTime;
   return Date.parse(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z');
 };
+/* ★終日の境界は2通りで返ってくる★ 取得時に Prefer: outlook.timezone="UTC" を付けているので、
+   ・日本時間(JST)で作られた終日予定（自分のカレンダーはこちら）：10/1の終日 → 「9/30 15:00Z」
+   ・UTCで作られた終日予定（会社共通予定表など）：10/1の終日 → 「10/1 00:00Z」
+   日付部分だけ読むと前者が1日前にずれる（自分の終日予定が前日に出ていた）。
+   JSTの0時ちょうどに当たる値ならそのまま、そうでなければ日付だけを見る。 */
 const dateOnlyToMs = x => {
-  const m = String(x && x.dateTime || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const raw = String(x && x.dateTime || '');
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return NaN;
+  const t = pTZ(x);
+  if (!isNaN(t) && (((t + JST) % DAY) + DAY) % DAY === 0) return t;
   return Date.UTC(+m[1], +m[2]-1, +m[3]) - JST;
 };
 function evRange(ev){
@@ -411,7 +434,7 @@ function evRange(ev){
 function coversDay(r, d0, d1){ return (r.s <= d0 && r.e >= d1) ? 0 : 1; }
 
 /* 予定の状態（Graph の showAs をそのまま使う。free は占有ではないので描かない） */
-const ST = { busy:'s-busy', tentative:'s-tent', oof:'s-oof', workingElsewhere:'s-else', unknown:'s-unk' };
+const ST = { busy:'s-busy', tentative:'s-tent', oof:'s-oof', workingElsewhere:'s-else', unknown:'s-unk', free:'s-free' };
 
 /* ============================================================
    認証
@@ -534,6 +557,7 @@ let lastLoad = 0, refreshTimer = null;
 let CARS_BY_MAIL = new Map(), ROOMS_BY_MAIL = new Map();
 let MACHINES = [];
 let CAP = { lock:false, token:false, mid:false, cancel:false, setId:false };
+let EV = new Map();            /* 予定の詳細（キー m:/c: → 件名・時間・場所・メモ…）。クリックで開く詳細モーダル用 */
 let DEMO_GROUPS = new Map();   /* 表示中のデモ機予約。セットID（なければ _行ID）→ その行の配列 */
 let COMMON = [], MINE = [], FAC = [], DEMO = [];
 let STATUS_ERRS = [];
@@ -668,20 +692,27 @@ async function loadCommonAndMine(){
   const q = `startDateTime=${encodeURIComponent(iso(w0))}&endDateTime=${encodeURIComponent(iso(w1))}`
           + `&$select=id,subject,start,end,location,attendees,isCancelled,isAllDay,showAs`
           + `&$orderby=start/dateTime&$top=200`;
+  /* 自分の予定だけ、メモ（本文）・主催者・Outlookで開くURLも取る。本文は text で受け取り、
+     画面側でURLだけリンクにする（HTMLのまま出すとスタイルやスクリプトが混ざるため）。
+     会社共通予定表には本文は取りに行かない（件名・場所・時間だけで足りる）。 */
+  const qMine = q.replace('&$select=id,subject,start,end,location,attendees,isCancelled,isAllDay,showAs',
+                          '&$select=id,subject,start,end,location,attendees,isCancelled,isAllDay,showAs,body,organizer,webLink');
   const reqs = [
-    { method:'GET', url:`/me/calendarView?${q}`, headers:{ Prefer:'outlook.timezone="UTC"' } },
+    { method:'GET', url:`/me/calendarView?${qMine}`, headers:{ Prefer:'outlook.timezone="UTC", outlook.body-content-type="text"' } },
     { method:'GET', url:`/users/${encodeURIComponent(COMMON_CAL.mail)}/calendarView?${q}`, headers:{ Prefer:'outlook.timezone="UTC"' } }
   ];
   const res = await gBatch(reqs);
   const meRes = res.find(r => r.id === '0'), commonRes = res.find(r => r.id === '1');
 
-  COMMON = [];
+  COMMON = []; EV = new Map();
   if (commonRes && commonRes.status === 200 && commonRes.body && Array.isArray(commonRes.body.value)) {
     commonRes.body.value.forEach(ev => {
       if (ev.isCancelled) return;
       const { s, e } = evRange(ev);
       if (isNaN(s) || isNaN(e)) return;
-      COMMON.push({ rid:`c:${ev.id}`, s, e, t: ev.subject || '(件名なし)', cls:'s-cmn' });
+      const dk = `c:${ev.id}`;
+      COMMON.push({ rid:dk, dk, s, e, t: ev.subject || '(件名なし)', cls:'s-cmn' });
+      EV.set(dk, { kind:'common', t: ev.subject || '(件名なし)', s, e, allDay: !!ev.isAllDay, loc: ev.location?.displayName || '' });
     });
   } else {
     STATUS_ERRS.push('会社共通予定表が読めませんでした');
@@ -695,8 +726,15 @@ async function loadCommonAndMine(){
       const { s, e } = evRange(ev);
       if (isNaN(s) || isNaN(e)) return;
       const showAs = ev.showAs || 'unknown';
-      if (showAs === 'free') return;
-      MINE.push({ rid:`m:${ev.id}`, s, e, t: ev.subject || '(件名なし)', cls: ST[showAs] || ST.unknown });
+      /* ★「空き時間」の予定も表示する★ 終日予定は Outlook の既定が「空き時間」なので、
+         これを除外すると終日予定が出ない（時刻を付けて「予定あり」にすると出る）。
+         自分のカレンダーは、他人の空き状況と違い「空き時間」の予定も予定の一つ。 */
+      const dk = `m:${ev.id}`;
+      MINE.push({ rid:dk, dk, s, e, t: ev.subject || '(件名なし)', cls: ST[showAs] || ST.unknown });
+      const det = { kind:'mine', t: ev.subject || '(件名なし)', s, e, allDay: !!ev.isAllDay, showAs,
+        loc: ev.location?.displayName || '', org: ev.organizer?.emailAddress?.name || ev.organizer?.emailAddress?.address || '',
+        body: ev.body?.content || '', webLink: ev.webLink || '', facs: [] };
+      EV.set(dk, det);
 
       /* ★施設（車・会議室）は添付（attendees）の種類で判定しない★
          会議室は「会議室を追加」で付けるので type:'resource' になるが、
@@ -710,14 +748,16 @@ async function loadCommonAndMine(){
         const car  = CARS_BY_MAIL.get(mail), room = ROOMS_BY_MAIL.get(mail);
         if (car || room) {
           const label = car ? `🚗 ${car}` : `🏢 ${room}`;
-          FAC.push({ rid:`f:${ev.id}:${mail}`, s, e, t:`${label} — ${ev.subject || '(件名なし)'}`, cls:'s-fac' });
+          FAC.push({ rid:`f:${ev.id}:${mail}`, dk, s, e, t:`${label} — ${ev.subject || '(件名なし)'}`, cls:'s-fac' });
+          det.facs.push(label);
           return;
         }
         /* マスターに無い、本物の type:'resource' 添付（プロジェクタ等）は
            生の名前だけ出す。これは今まで通り type で判定する。 */
         if (a.type === 'resource') {
           const raw = a.emailAddress?.name || mail || '(リソース)';
-          FAC.push({ rid:`f:${ev.id}:${mail}`, s, e, t:`❓ ${raw} — ${ev.subject || '(件名なし)'}`, cls:'s-fac' });
+          FAC.push({ rid:`f:${ev.id}:${mail}`, dk, s, e, t:`❓ ${raw} — ${ev.subject || '(件名なし)'}`, cls:'s-fac' });
+          det.facs.push(`❓ ${raw}`);
         }
       });
     });
@@ -794,8 +834,9 @@ function liHtml(r, d0, d1){
   /* 1台だけ・セットIDなしの予約は、従来どおり行の✕でそのまま取消せる。
      セット予約の取消・機体の外しは、クリックで開く詳細画面の中で行う。 */
   const cancelBtn = r.cancelable ? `<button class="cancel" title="取消" onclick="event.stopPropagation();doCancelMy('${esc(r.rid)}')">✕</button>` : '';
-  const click = r.gkey ? ` style="cursor:pointer" onclick="openDemoDetail('${esc(r.gkey)}')"` : '';
-  return `<div class="li ${r.cls}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}${r.gkey ? '（クリックで詳細）' : ''}"${click}>`
+  const click = r.gkey ? ` style="cursor:pointer" onclick="openDemoDetail('${esc(r.gkey)}')"`
+              : r.dk   ? ` data-ev="${esc(r.dk)}"` : '';
+  return `<div class="li ${r.cls}" title="${esc(r.t)}　${jFull(r.s)} 〜 ${jFull(r.e)}${r.gkey || r.dk ? '（クリックで詳細）' : ''}"${click}>`
     /* 機体名を並べる行は、時刻だけ1行目に独立させ、件名・機体名を列幅いっぱいに使う
        （時刻を左に固定すると、その下が空白になり、長い機種名が狭い幅で折り返すため）。 */
     + (r.lines ? `<div style="flex:1;min-width:0"><div class="tm">${tm}</div><b>${esc(r.t)}</b>`
@@ -947,6 +988,13 @@ function linkDateTimePair(startId, endId){
 linkDateTimePair('sFrom', 'sTo');
 linkDatePair('sFromD', 'sToD');
 
+/* 営業車の空き確認・予約（car_booking.js）。デモ機と同じ期間で営業車も見て、一緒に予約する */
+CarBook.init({
+  msal: () => msalInstance, account: () => currentAccount, siteId: SITE_ID,
+  gGet: p => gGet(p), gGetAll: p => gGetAll(p),
+  onChange: () => paintSeekBar()
+});
+
 function openSeekDemo(){
   /* ★開始日の既定★ 表示中の週が今週（または過去）なら、週の頭（過去日付になりうる）
      ではなく今日にする。来週以降を見ているときは、その週の頭のまま。 */
@@ -963,6 +1011,7 @@ function openSeekDemo(){
   el('sAllDay').checked = true;   /* 既定は終日 */
   paintSAllDayMy();
   SEEK = null; SEEK_SEL = new Set();
+  CarBook.reset(); CarBook.mount();
   el('seek-panel').innerHTML = '';
   paintSeekBar();
   openM('mSeek');
@@ -978,6 +1027,7 @@ async function runSeekDemo(){
     if (isNaN(s) || isNaN(e) || e <= s) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
   }
   SEEK = { s, e, allDay: sAllDayOn() };
+  CarBook.search(s, e, sAllDayOn());   /* 営業車の空きも同じ期間で（待たずに並行で） */
   el('seek-panel').innerHTML = `<div style="color:var(--muted)">検索中...</div>`;
   try {
     const busyRows = await fetchDemoBusy(s, e);
@@ -1039,10 +1089,10 @@ function paintSeekDemo(){
 }
 /* 上に固定した予約ボタン・選択解除の表示（台数と有効/無効）を合わせる */
 function paintSeekBar(){
-  const n = SEEK_SEL.size;
-  el('seekBulkGo').textContent = `選んだ機体をまとめて予約（${n}台）`;
-  el('seekBulkGo').disabled = !n;
-  el('seekSelClear').disabled = !n;
+  const n = SEEK_SEL.size, c = CarBook.selCount();
+  el('seekBulkGo').textContent = c ? `選んだものをまとめて予約（デモ機${n}台＋営業車${c}台）` : `選んだ機体をまとめて予約（${n}台）`;
+  el('seekBulkGo').disabled = !(n + c);
+  el('seekSelClear').disabled = !(n + c);
 }
 el('seek-panel').addEventListener('click', ev => {
   const c = ev.target.closest('.chip'); if (!c || c.classList.contains('busy') || !c.dataset.mid) return;
@@ -1086,8 +1136,9 @@ function bulkRangeMs(){
 let BULK_BUSY = new Map();   /* 「空き状況を確認」の直近の結果。機体id→重なる予約 */
 function renderBulkMachinesMy(){
   const list = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
-  el('bMachinesLabel').textContent = `機体（${list.length}台）`;
-  el('bMachines').innerHTML = list.map(m => {
+  const cn = CarBook.selCount();
+  el('bMachinesLabel').textContent = `機体（${list.length}台）` + (cn ? `＋営業車（${cn}台）` : '');
+  el('bMachines').innerHTML = CarBook.bulkChipsHtml() + list.map(m => {
     const r = BULK_BUSY.get(m.id);
     if (r) {
       const who = [r.cust, r.req].filter(Boolean).join(' / ');
@@ -1105,26 +1156,28 @@ async function bulkCheckAvailabilityMy(){
     const rows = await fetchDemoBusy(s, e);
     BULK_BUSY = new Map();
     rows.forEach(r => { if (SEEK_SEL.has(r.mid) && !BULK_BUSY.has(r.mid)) BULK_BUSY.set(r.mid, r); });
+    let cr = { total: 0, busy: 0 };
+    if (CarBook.selCount()) { try { cr = await CarBook.check(s, e); } catch (err) { msg.textContent = '営業車の確認に失敗しました：' + err.message; renderBulkMachinesMy(); return; } }
     renderBulkMachinesMy();
-    const total = SEEK_SEL.size, busy = BULK_BUSY.size;
-    msg.textContent = busy ? `${total - busy}/${total}台が空いています（埋まっている機体は下の一覧で分かります）` : `${total}台とも空いています`;
+    const total = SEEK_SEL.size + cr.total, busy = BULK_BUSY.size + cr.busy;
+    msg.textContent = busy ? `${total - busy}/${total}件が空いています（埋まっているものは下の一覧で分かります）` : `${total}件とも空いています`;
   } catch (err) {
     msg.textContent = '確認に失敗しました：' + err.message;
   }
 }
 
 function openBulkNewMy(){
-  if (!SEEK || !SEEK_SEL.size) return;
+  if (!SEEK || !(SEEK_SEL.size || CarBook.selCount())) return;
   fillBulkRange(SEEK.s, SEEK.e, SEEK.allDay);
-  BULK_BUSY = new Map();
+  BULK_BUSY = new Map(); CarBook.resetCheck();
   el('bCheckMsg').textContent = '';
   renderBulkMachinesMy();
   ['bTitle','bCust','bDest','bNotes'].forEach(id => el(id).value = '');
   el('bReq').value = currentAccount?.name || currentAccount?.username || '（不明）';
   el('bMsg').textContent = ''; el('bMsg').className = 'msg';
   el('b-result').innerHTML = '';
-  el('bSave').disabled = !CAP.lock;
-  el('bNote').innerHTML = CAP.lock
+  el('bSave').disabled = !CAP.lock && !CarBook.selCount();
+  el('bNote').innerHTML = (CAP.lock || CarBook.selCount())
     ? `1台ずつ空きを確認して予約します。同じ枠を他の方が同時に押さえていた場合、その機体だけ失敗します（失敗した機体はあとでこの画面からもう一度お試しください）。`
     : `<b style="color:var(--danger)">デモ機予約の設定が未整備のため、この画面からは予約できません。</b>demo_reserve.html で確認してください。`;
   openM('mBulk');
@@ -1200,7 +1253,7 @@ async function doReserveBulkMy(){
   const msg = el('bMsg'), btn = el('bSave');
   const resultBox = el('b-result');
   const title = el('bTitle').value.trim();
-  if (!SEEK_SEL.size) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
+  if (!SEEK_SEL.size && !CarBook.selCount()) { msg.textContent = '機体が選ばれていません'; msg.className = 'msg ng'; return; }
   if (!title) { msg.textContent = '予約件名を入力してください'; msg.className = 'msg ng'; return; }
   const { s, e } = bulkRangeMs();
   if (isNaN(s) || isNaN(e)) { msg.textContent = bAllDayOn() ? '開始日と終了日を入力してください' : '開始と終了を入力してください'; msg.className = 'msg ng'; return; }
@@ -1212,6 +1265,8 @@ async function doReserveBulkMy(){
   /* まとめて予約した機体は同じセットIDを共有する（デモ機管理アプリの
      セット詳細から、あとで追加・削除できるようにするための束ねキー） */
   const setId = newSetId();
+  const carCount = CarBook.selCount();
+  if (carCount) CarBook.prepare();   /* 営業車の書き込み権限は、押した直後に先に取っておく（初回同意のポップアップ対策） */
   const targets = [...SEEK_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
   btn.disabled = true; msg.textContent = `予約中... (0/${targets.length})`; msg.className = 'msg';
   resultBox.innerHTML = '';
@@ -1238,12 +1293,27 @@ async function doReserveBulkMy(){
     }
     resultBox.insertAdjacentHTML('beforeend', `<div>${line}</div>`);
   }
+  /* 営業車：Outlookの予定を1件作り、選んだ車を招待する（車の自動承諾が重複を判定する） */
+  let carOk = 0;
+  if (carCount) {
+    msg.textContent = `営業車を予約中... (${carCount}台)`;
+    let cr;
+    try {
+      cr = await CarBook.book({ title, cust: details.cust, dest: details.dest, notes: details.notes, s, e, allDay: bAllDayOn() });
+    } catch (err) {
+      cr = { okCount: 0, total: carCount, changed: false, lines: [`<span style="color:var(--danger)">✗ 営業車の予約でエラー: ${esc(err.message)}</span>`] };
+    }
+    carOk = cr.okCount;
+    cr.lines.forEach(l => resultBox.insertAdjacentHTML('beforeend', `<div>${l}</div>`));
+    await loadAll();
+  }
   btn.disabled = false;
-  msg.textContent = `${ok}/${targets.length}台を予約しました`;
-  msg.className = 'msg' + (ok === targets.length ? ' ok' : ok === 0 ? ' ng' : '');
+  const allOk = ok === targets.length && carOk === carCount;
+  msg.textContent = `${ok}/${targets.length}台を予約しました` + (carCount ? `（営業車 ${carOk}/${carCount}台）` : '');
+  msg.className = 'msg' + (allOk ? ' ok' : (ok + carOk) === 0 ? ' ng' : '');
   await loadDemo(); renderAll(); paintSeekBar();
-  if (ok === targets.length) {
-    showSnack(`${ok}台を予約しました`);
+  if (allOk) {
+    showSnack(carCount ? `デモ機${ok}台・営業車${carOk}台を予約しました` : `${ok}台を予約しました`);
     setTimeout(() => { closeM('mBulk'); closeM('mSeek'); }, 900);
   }
 }
@@ -1283,6 +1353,54 @@ async function doCancelMy(rid){
   showSnack(res.freed ? '予約を取消しました' : '予約は取消しましたが、枠の解放に失敗しました。総務部にご連絡ください');
   await loadDemo(); renderAll();
 }
+
+/* ============================================================
+   予定の詳細（会社共通・自分の予定・施設をクリック）
+   ------------------------------------------------------------
+   メモ（本文）は自分の予定だけ。本文は text で受け取ってあるので、HTMLエスケープしたうえで
+   http(s):// から始まる部分だけをリンクにする（javascript: などは対象外）。 */
+function linkify(text){
+  const t = String(text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  /* URLは半角の英数記号だけで判定する（直後の日本語・全角の句読点をリンクに巻き込まない）。
+     本文は先に1片ずつエスケープするので、<script> などは文字として表示されるだけ。 */
+  const re = /https?:\/\/[A-Za-z0-9\-._~:\/?#@!$&'()*+,;=%\[\]゠-ヿ㐀-鿿]+/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(t))) {
+    let u = m[0];
+    const tail = u.match(/[.,;:!?)'\]]+$/);        /* 末尾の句読点・閉じ括弧はURLに含めない */
+    if (tail) u = u.slice(0, -tail[0].length);
+    out += esc(t.slice(last, m.index)) + `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`;
+    last = m.index + u.length; re.lastIndex = last;
+  }
+  return out + esc(t.slice(last));
+}
+const SHOWAS_JA = { busy:'予定あり', tentative:'仮の予定', oof:'不在・休暇', workingElsewhere:'別の場所で勤務', free:'空き時間', unknown:'不明' };
+function openEvDetail(key){
+  const d = EV.get(key); if (!d) return;
+  el('evTitle').textContent = d.t;
+  const when = d.allDay ? `${jFull(d.s).slice(0,10)}${(d.e - d.s) > DAY ? ' 〜 ' + jFull(d.e - 60e3).slice(0,10) : ''}（終日）`
+                        : `${jFull(d.s)} 〜 ${jFull(d.e)}`;
+  const rows = [['日時', esc(when)]];
+  if (d.kind === 'mine') rows.push(['状態', esc(SHOWAS_JA[d.showAs] || d.showAs)]);
+  rows.push(['場所', esc(d.loc) || '—']);
+  if (d.kind === 'mine') {
+    if (d.org) rows.push(['主催者', esc(d.org)]);
+    if (d.facs && d.facs.length) rows.push(['施設', d.facs.map(esc).join('<br>')]);
+    rows.push(['メモ', d.body && d.body.trim()
+      ? `<div style="white-space:pre-wrap;max-height:240px;overflow:auto;word-break:break-word">${linkify(d.body)}</div>` : '—']);
+  }
+  el('evBody').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  const note = el('evNote');
+  note.style.display = d.kind === 'common' ? '' : 'none';
+  note.textContent = '会社共通予定表の予定です。変更は Outlook で行ってください。';
+  const a = el('evOpen');
+  a.style.display = d.webLink ? '' : 'none';
+  if (d.webLink) a.href = d.webLink;
+  openM('mEvDetail');
+}
+el('grid').addEventListener('click', ev => {
+  const li = ev.target.closest('.li[data-ev]'); if (li) openEvDetail(li.dataset.ev);
+});
 
 /* ============================================================
    デモ機予約の詳細（この画面のまま見る。デモ機ページへは遷移しない）

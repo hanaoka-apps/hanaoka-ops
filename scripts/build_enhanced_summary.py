@@ -3974,6 +3974,18 @@ function setDetailFocus(code){
 }
 
 // このコードを起点にBOMツリーを再構築（左ペインが新しいツリーになる）
+// 2026-10-14 付加価値アプリ「価格・値上げ」へ：この品目を「原価が上がる品目」に入れて開く（続けて押すと追加）
+function dvPriceSim(code){
+  const hash = '#tab=value_analysis&va_view=price&raise=' + encodeURIComponent(code);
+  try {
+    const t = window.top;
+    const prev = t.sessionStorage.getItem('_fujin_price_raise') || '';
+    t.sessionStorage.setItem('_fujin_price_raise', [prev, code].filter(Boolean).join(','));
+    t.location.hash = hash;
+  } catch (_) {
+    window.open('FUJIN.html' + hash, '_top');
+  }
+}
 function dvRebuildTreeFrom(code){
   if(!code) code = detailFocus;
   if(!code) return;
@@ -4947,6 +4959,7 @@ function dvRenderTabInfo(){
         ${ni.ol?`<span class="dv-info-tag" style="background:${_olBadgeBg(ni.ol.k)};color:${_olBadgeFg(ni.ol.k)}">${olIcon(ni.ol.k)} ${escapeHtml(ni.ol.l||"")}</span>`:""}
       </div>
       ${!isFocus ? `<button class="dv-btn" style="margin-top:10px;width:100%;padding:8px;background:#1e40af;color:#fff;border-color:#1e40af;font-weight:600" onclick="dvRebuildTreeFrom('${escapeHtml(code)}')">📍 このコードを起点にツリーを再構築</button>` : '<div style="margin-top:10px;font-size:11px;color:#94a3b8;text-align:center">（このコードが現在のツリー起点です）</div>'}
+      <button class="dv-btn" style="margin-top:8px;width:100%;padding:8px;background:#fff7ec;color:#9a4d00;border-color:#f0b46a;font-weight:700" onclick="dvPriceSim('${escapeHtml(code)}')" title="この品目の原価（単価）が上がったら、どの製品にいくら効くかを付加価値アプリで試す">💴 この品目の値上げシミュレーション</button>
     </div>
     <div class="dv-info-block">
       <h4 style="font-size:10.5px">在庫の取得元</h4>

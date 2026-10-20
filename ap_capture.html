@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="favicon_ap.png">
+<link rel="apple-touch-icon" href="apple-touch-icon-ap.png">
+<link rel="manifest" href="ap_capture.webmanifest">
+<meta name="theme-color" content="#23268f">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI に渡す | 花岡車輌</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
+<script src="ap_intake.js"></script>
+<script src="ap_ai.js"></script>
+<script src="nav.js?v=20261021" defer></script>
+<style>
+/* スマホで請求書を撮って AI に渡すだけの画面。経費・仕入の受け付けと同じ（経費＝確認待ちへ、仕入＝「請求書を渡す」へ） */
+:root{--pri:#23268f;--bg:#f4f6f9;--line:#dde2ec;--txt:#1e2533;--sub:#6b7a99;--up:#c0392b;--down:#1e8449}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.5 "Yu Gothic UI","Meiryo",system-ui,sans-serif}
+#login-view{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:16px;padding:16px;text-align:center}
+#app-view{display:none}
+.cap{max-width:560px;margin:0 auto;padding:14px 16px calc(24px + env(safe-area-inset-bottom))}
+.cap h1{font-size:19px;margin:4px 0 2px;color:var(--pri)}.cap .who{font-size:12px;color:var(--sub);margin-bottom:12px}
+.row{margin:12px 0}.row .k{font-size:12px;color:var(--sub);margin-bottom:4px}
+.seg{display:flex;background:#fff;border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px}
+.seg button{flex:1;border:0;background:none;border-radius:9px;padding:11px 6px;font:inherit;font-weight:600;color:var(--sub);cursor:pointer}
+.seg button.on{background:var(--pri);color:#fff}
+select{font:inherit;border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fff;width:100%}
+.big{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;width:100%;border:0;border-radius:16px;background:var(--pri);color:#fff;
+  font:inherit;font-size:19px;font-weight:700;padding:26px 12px;margin-top:14px;cursor:pointer;box-shadow:0 8px 20px rgba(35,38,143,.25)}
+.big small{font-size:12px;font-weight:400;opacity:.85}
+.big.over{outline:3px dashed #9aa3e8;outline-offset:4px;filter:brightness(1.12)}
+@media (pointer:fine){.big{padding:46px 12px}}
+.sub{display:block;width:100%;margin-top:10px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:12px;font:inherit;font-weight:600;color:var(--pri);cursor:pointer;text-align:center}
+.tray{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.tray .t{position:relative;width:72px;height:92px;border-radius:8px;border:1px solid var(--line);background:#fff;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--sub);text-align:center;padding:2px}
+.tray .t img{width:100%;height:100%;object-fit:cover}.tray .t button{position:absolute;top:2px;right:2px;border:0;background:rgba(0,0,0,.55);color:#fff;border-radius:50%;width:22px;height:22px;line-height:20px;padding:0;cursor:pointer}
+.send{width:100%;margin-top:12px;border:0;border-radius:12px;background:var(--down);color:#fff;font:inherit;font-size:17px;font-weight:700;padding:15px;cursor:pointer}
+.send:disabled,.big:disabled{opacity:.5;cursor:not-allowed}
+.note{font-size:12px;color:var(--sub);margin-top:8px}
+.res{margin-top:16px}.res h2{font-size:13px;color:var(--sub);margin:0 0 6px}
+.res .it{background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:6px;font-size:13px;display:flex;gap:8px;align-items:center}
+.res .it .st{flex:none;font-size:12px;font-weight:700}.res .it .st.ok{color:var(--down)}.res .it .st.ng{color:var(--up)}.res .it .st.run{color:var(--pri)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid #c9cdf0;border-top-color:var(--pri);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px}@keyframes sp{to{transform:rotate(360deg)}}
+#snackbar{display:none;position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 16px;border-radius:8px;z-index:99;font-size:13px;max-width:92vw}
+input[type=file]{display:none}
+</style>
+<link rel="stylesheet" href="ap_theme.css?v=20261022">
+</head>
+<body>
+<div id="login-view"><h2 style="color:#23268f">AI に渡す</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="big" style="max-width:320px" onclick="signIn()">サインイン</button></div>
+<div id="app-view">
+<div id="app-nav-slot"></div>
+<div class="cap">
+  <h1>📷 請求書を AI に渡す</h1>
+  <div class="who" id="who"></div>
+  <div class="row"><div class="k">種類</div><div class="seg" id="sKind"></div></div>
+  <div class="row" id="rLoc"><div class="k">拠点</div><div class="seg" id="sLoc"></div></div>
+  <div class="row"><div class="k">何枚か撮ったとき</div><div class="seg" id="sMerge"></div></div>
+  <div class="row"><div class="k">払う月</div><select id="month"></select></div>
+  <button class="big" id="bCam">📷 撮る<small id="camHint">カメラで請求書を撮ります</small></button>
+  <button class="sub" id="bFile">📄 写真・PDF を選ぶ</button>
+  <input type="file" id="fCam" accept="image/*" capture="environment">
+  <input type="file" id="fFile" multiple>
+  <div class="tray" id="tray"></div>
+  <button class="send" id="bSend" style="display:none"></button>
+  <div class="note" id="note"></div>
+  <div class="res" id="res"></div>
+</div>
+</div>
+<div id="snackbar"></div>
+<script>
+'use strict';
+/* スマホ・タブレットで請求書を撮って AI に渡すだけの画面（ap_capture）
+   ・経費：経費の「AI に渡す」と同じ受付（AP_Invoice・支払区分＝本社経費／工場経費・確認の段 0）→ 経費の確認待ちへ
+   ・仕入：仕入の「請求書を渡す」と同じ受付（仕入先は選ばない。今月の支払先リストを AI に渡す）→ 仕入の画面を開くと仕入先に付く
+   ・別々／1件にまとめる：まとめると、撮った何枚かを1件の請求書として受け付け、AI に全部を1回で渡す
+   撮ったものはいったん並べ、「送る」で受け付ける（まとめるときに何枚も撮れるように） */
+const MSAL_CONFIG=HanaokaAuth.msalConfig(),SCOPES=['User.Read','Sites.ReadWrite.All','Files.ReadWrite.All'],GRAPH='https://graph.microsoft.com/v1.0';
+const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
+const MOCK=window.AP_MOCK||null,$=id=>document.getElementById(id);
+let msalApp=null,acct=null;
+const L={inv:{name:'AP_Invoice'},sp:{name:'AP_SmilePay'}};Object.values(L).forEach(o=>{o.id=null;o.fmap={};});
+const V={ai:'AIStatus',by:'RegisteredBy',at:'RegisteredAt',loc:'SiteLocation',step:'ExpenseStep'};
+const KEY='ap.capture.v1';
+const S=(()=>{try{return Object.assign({kind:'経費',loc:'本社',merge:false},JSON.parse(localStorage.getItem(KEY)||'{}'));}catch{return {kind:'経費',loc:'本社',merge:false};}})();
+const TRAY=[],RES=[];let busy=false;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const yen=n=>Math.round(+n||0).toLocaleString('ja-JP');
+function snack(m,e=false){const el=$('snackbar');el.textContent=m;el.style.background=e?'#c0392b':'#323232';el.style.display='block';clearTimeout(snack.t);snack.t=setTimeout(()=>el.style.display='none',4000);}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify({kind:S.kind,loc:S.loc,merge:S.merge}));}catch{}};
+// ---------- サインイン・Graph（経費の画面と同じ） ----------
+async function boot(){
+  if(MOCK){acct=MOCK.account;await showApp();return;}
+  msalApp=new msal.PublicClientApplication(MSAL_CONFIG);await msalApp.initialize();await msalApp.handleRedirectPromise();
+  acct=await HanaokaAuth.restore(msalApp,SCOPES);if(acct)await showApp();}
+async function signIn(){try{acct=await HanaokaAuth.login(msalApp,SCOPES);await showApp();}catch(e){if(e.errorCode!=='user_cancelled')snack('サインインエラー: '+e.message,true);}}
+async function token(){try{const r=await msalApp.acquireTokenSilent({scopes:SCOPES,account:acct});return r.accessToken;}catch{const r=await msalApp.acquireTokenPopup({scopes:SCOPES});acct=r.account;return r.accessToken;}}
+async function call(method,p,body,ctype,raw){
+  if(MOCK)return MOCK.call(method,p,body,raw);
+  const t=await token();const h={Authorization:'Bearer '+t};
+  if(body!=null&&!ctype)h['Content-Type']='application/json';if(ctype)h['Content-Type']=ctype;
+  const r=await fetch(p.startsWith('http')?p:GRAPH+p,{method,headers:h,body:body==null?null:(ctype?body:JSON.stringify(body))});
+  if(!r.ok)throw new Error('['+r.status+'] '+(await r.text()).slice(0,300));
+  if(raw)return r.blob();const x=await r.text();return x?JSON.parse(x):{};}
+const gputFile=(path,blob,type)=>call('PUT',`/sites/${AP_SITE}/drive/root:${encodeURI(path)}:/content`,blob,type||blob.type||'application/octet-stream');
+const F=(o,d)=>o.fmap[d]||d,toFields=(o,obj)=>{const r={};for(const k in obj)r[F(o,k)]=obj[k];return r;};
+const me=()=>acct.name||acct.username;
+async function resolveLists(){const ls=await call('GET',`/sites/${AP_SITE}/lists?$select=id,displayName`);
+  for(const o of Object.values(L)){const l=ls.value.find(x=>x.displayName===o.name);if(!l)throw new Error(o.name+' がありません');o.id=l.id;
+    const c=await call('GET',`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);c.value.forEach(x=>o.fmap[x.displayName]=x.name);}}
+const ymOf=d=>`${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}`;
+function initMonth(){const s=$('month'),n=new Date();for(let i=-1;i<3;i++){const d=new Date(n.getFullYear(),n.getMonth()+i,1),o=document.createElement('option');o.value=ymOf(d);o.textContent=ymOf(d).replace('/','年')+'月払い';if(i===0)o.selected=true;s.appendChild(o);}}
+const month=()=>$('month').value;
+async function showApp(){$('login-view').style.display='none';$('app-view').style.display='block';$('who').textContent=me();
+  initMonth();draw();try{await resolveLists();}catch(e){snack('読み込みエラー: '+e.message,true);}}
+// ---------- 画面 ----------
+const seg=(id,opts,cur,fn)=>{$(id).innerHTML=opts.map(([v,l])=>`<button type="button" data-v="${v}" class="${String(cur)===String(v)?'on':''}">${l}</button>`).join('');
+  $(id).querySelectorAll('button').forEach(b=>b.onclick=()=>{if(busy)return;fn(b.dataset.v);save();draw();});};
+function draw(){
+  seg('sKind',[['経費','経費'],['仕入','仕入']],S.kind,v=>S.kind=v);
+  seg('sLoc',[['本社','本社'],['工場','工場']],S.loc,v=>S.loc=v);$('rLoc').style.display=S.kind==='経費'?'':'none';   // 仕入の拠点は、仕入先が決まると付く
+  seg('sMerge',[['0','別々の請求書'],['1','1件にまとめる']],S.merge?'1':'0',v=>S.merge=v==='1');
+  $('camHint').textContent=S.merge?'何枚でも撮れます。撮り終わったら「送る」':'撮ったら「送る」で AI に渡します';
+  $('tray').innerHTML=TRAY.map((t,i)=>`<div class="t">${t.url?`<img src="${t.url}" alt="">`:`📄<br>${esc(t.file.name.slice(0,14))}`}<button data-del="${i}" aria-label="消す">×</button></div>`).join('');
+  $('tray').querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{const t=TRAY.splice(+b.dataset.del,1)[0];if(t&&t.url)URL.revokeObjectURL(t.url);draw();});
+  const n=TRAY.length,bs=$('bSend');bs.style.display=n?'':'none';bs.disabled=busy;
+  bs.textContent=busy?'受け付けています…':S.merge&&n>1?`送る（${n}枚を1件の請求書に）`:`送る（${n}件）`;
+  $('bCam').disabled=$('bFile').disabled=busy;
+  $('note').textContent=S.kind==='経費'?`${S.loc}の経費として受け付けます。AI が読み、経費の「確認待ち」に並びます`:'仕入の請求書として受け付けます（仕入先は選ばなくてよい）。AI が読み、仕入の画面で仕入先に付きます';
+  $('res').innerHTML=RES.length?'<h2>受け付けたもの</h2>'+RES.map(r=>`<div class="it"><span class="st ${r.st}">${r.st==='run'?'<span class="spin"></span> AI が読んでいます':r.st==='ok'?'✓ 読みました':'⚠ '+esc(r.err||'読めませんでした')}</span><span style="flex:1;min-width:0">${esc(r.kind)}・${esc(r.name)}${r.payee?`<br><b>${esc(r.payee)}</b> ${r.amount?yen(r.amount)+' 円':''}`:''}</span></div>`).join(''):'';}
+function addFiles(files){const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('写真か PDF を選んでください',true);return;}
+  list.forEach(f=>TRAY.push({file:f,url:/^image\//.test(f.type)?URL.createObjectURL(f):''}));draw();
+  if(!S.merge&&TRAY.length&&list.length===1&&/^image\//.test(list[0].type))window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});}
+// ---------- 受け付け（経費・仕入の画面と同じ形）→ すぐ AI が読む ----------
+function apCode(){const d=new Date(),p=n=>String(n).padStart(2,'0'),s='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';let x='';for(let i=0;i<8;i++)x+=s[Math.floor(Math.random()*s.length)];return `AP${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${x}`;}
+async function candText(){   // 仕入：今月の支払先リスト（仕入先コード 名前 今回支払残高）
+  try{const it=[];let n=`/sites/${AP_SITE}/lists/${L.sp.id}/items?$expand=fields&$top=500&$filter=${encodeURIComponent(`fields/${F(L.sp,'決済月')} eq '${month()}'`)}`;
+    while(n){const d=await call('GET',n);(d.value||[]).forEach(x=>it.push(x.fields));n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}
+    return it.filter(f=>f[F(L.sp,'取り込みの状態')]!=='なくなった').map(f=>`${f[F(L.sp,'仕入先コード')]} ${f[F(L.sp,'仕入先名')]||''} ${Math.round(+f[F(L.sp,'今回支払残高')]||0)}`).sort().join('\n');}catch(e){return '';}}
+async function send(){if(busy||!TRAY.length)return;if(!L.inv.id){snack('まだ読み込み中です。少し待ってから送ってください',true);return;}
+  busy=true;draw();const kind=S.kind,loc=kind==='経費'?S.loc:'本社',cat=kind==='経費'?(loc==='工場'?'工場経費':'本社経費'):'本社仕入';
+  const groups=S.merge&&TRAY.length>1?[TRAY.splice(0)]:TRAY.splice(0).map(t=>[t]);const cand=kind==='仕入'?await candText():'';
+  for(const g of groups){const code=apCode(),files=[],paths=[],r={kind,name:g.length>1?`${g.length}枚を1件に`:g[0].file.name,st:'run'};RES.unshift(r);draw();
+    try{for(let i=0;i<g.length;i++){const d=await APDoc.prep(g[i].file),base=d.base.replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,56);
+        const fname=g.length>1?`${code}_${i+1}_${base||'請求書'}.${d.ext}`:`${code}_${base||'請求書'}.${d.ext}`;
+        await gputFile(`/BILLS/incoming/${fname}`,d.blob,d.type);files.push({file:d.blob,name:fname});paths.push(`/Shared Documents/BILLS/incoming/${fname}`);}
+      g.forEach(t=>{if(t.url)URL.revokeObjectURL(t.url);});
+      const hf=toFields(L.inv,{Title:(g[0].file.name.replace(/\.[^.]+$/,'')||'請求書')+(g.length>1?`（ほか${g.length-1}枚）`:''),'支払区分':cat,'対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':paths.join('\n')});
+      hf[V.ai]='受付';hf[V.by]=me();hf[V.at]=new Date().toISOString();hf[V.loc]=loc;if(kind==='経費')hf[V.step]=0;
+      const created=await call('POST',`/sites/${AP_SITE}/lists/${L.inv.id}/items`,{fields:hf});
+      const task={ap_code:code,pdf_file:files[0].name,pdf_files:files.map(f=>f.name),invoice_id:String(created.id),category:cat,location:loc,vendor_code:'',target_ym:month(),inbox:kind==='仕入',
+        registered_by:me(),registered_at:new Date().toISOString(),source_name:'スマホ（AI に渡す）'};
+      await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
+      // すぐ AI が読む（終わったら取り込む。経費・仕入の画面を開かなくても「確認待ち」に並ぶ）
+      APAI.readInvoice({call,site:AP_SITE},{apCode:code,invoiceId:String(created.id),category:cat,location:loc,targetYm:month(),inbox:kind==='仕入',candidates:cand||undefined,files,pdfName:files.map(f=>f.name).join('・')})
+        .then(async x=>{await APIntake.apply({call,site:AP_SITE,ym:month()}).catch(()=>{});
+          if(!x.ok){r.st='ng';r.err=x.message;}else{r.st='ok';try{const it=await call('GET',`/sites/${AP_SITE}/lists/${L.inv.id}/items/${created.id}?$expand=fields`);r.payee=it.fields[F(L.inv,'支払先名')]||'';r.amount=+it.fields[F(L.inv,'金額_税込')]||0;}catch(e){}}draw();},
+          e=>{r.st='ng';r.err=e.message;draw();});}
+    catch(e){r.st='ng';r.err='受け付けられませんでした：'+e.message;}draw();}
+  busy=false;draw();snack('受け付けました。AI が読んでいます（1件20〜30秒）');}
+// PC（マウス・カメラなし）：大きなボタンは「ドラッグ／クリックして選ぶ」。ページのどこに落としても受け取る
+const PC=window.matchMedia&&window.matchMedia('(pointer:fine)').matches&&!('ontouchstart' in window);
+if(PC){$('bCam').innerHTML='📄 ここにドラッグ<small>またはクリックして写真・PDF を選ぶ（何枚でも）</small>';$('bFile').style.display='none';$('bCam').onclick=()=>$('fFile').click();
+  $('camHint')&&0;document.querySelector('.cap').style.maxWidth='640px';}
+else $('bCam').onclick=()=>$('fCam').click();
+$('bFile').onclick=()=>$('fFile').click();
+['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{if(!busy&&e.dataTransfer&&[...e.dataTransfer.types].includes('Files')){e.preventDefault();$('bCam').classList.add('over');}}));
+['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{if(e.type==='dragleave'&&e.relatedTarget)return;$('bCam').classList.remove('over');}));
+document.addEventListener('drop',e=>{if(!e.dataTransfer||!e.dataTransfer.files.length)return;e.preventDefault();if(!busy)addFiles(e.dataTransfer.files);});
+$('fFile').setAttribute('accept',APDoc.ACCEPT);
+$('fCam').onchange=e=>{addFiles(e.target.files);e.target.value='';};$('fFile').onchange=e=>{addFiles(e.target.files);e.target.value='';};
+$('bSend').onclick=send;$('month').onchange=draw;
+boot().catch(e=>{console.error(e);snack('起動エラー: '+e.message,true);});
+</script>
+</body>
+</html>
