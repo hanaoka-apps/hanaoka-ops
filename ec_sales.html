@@ -337,21 +337,25 @@ async function loadCalendar() {
     const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T00:00:00+09:00';
     let url = '/users/' + encodeURIComponent(cc.mailbox) + '/calendarView?startDateTime=' + encodeURIComponent(iso(d0)) + '&endDateTime=' + encodeURIComponent(iso(d1)) + '&$top=100&$select=subject,start,end,isAllDay,isCancelled';
     const re = new RegExp((cc.closedWords || []).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)');
-    const days = {}; let n = 0;
+    const days = {}, matched = {}; let n = 0, total = 0, allDay = 0;
     while (url && n++ < 20) {
       const token = await getToken();
       const r = await fetch(url.startsWith('http') ? url : 'https://graph.microsoft.com/v1.0' + url, { headers: { Authorization: 'Bearer ' + token, Prefer: 'outlook.timezone="Tokyo Standard Time"' } });
       if (!r.ok) throw new Error('Graph ' + r.status);
       const data = await r.json();
       (data.value || []).forEach(ev => {
-        if (ev.isCancelled || !ev.isAllDay || !re.test(ev.subject || '')) return;
+        if (ev.isCancelled) return;
+        total++; if (ev.isAllDay) allDay++;
+        if (!ev.isAllDay || !re.test(ev.subject || '')) return;
+        matched[ev.subject] = 1;
         let d = (ev.start.dateTime || '').slice(0, 10); const end = (ev.end.dateTime || '').slice(0, 10);
         for (let i = 0; d && d < end && i < 40; i++) { days[d] = ev.subject; d = EC.addDays(d, 1); }
       });
       url = data['@odata.nextLink'] || '';
     }
     outlookClosed = Object.keys(days).sort(); window.__closedNames = days;
-    calInfo = 'Outlook の会社共通予定表から ' + outlookClosed.length + '日分の休業日を読み込みました';
+    calInfo = 'Outlook の会社共通予定表から ' + outlookClosed.length + '日分の休業日を読み込みました（予定 ' + total + '件・うち終日 ' + allDay + '件）' +
+      (Object.keys(matched).length ? '。休業として読んだ予定：' + Object.keys(matched).join('、') : '。休業として読める予定はまだありません（件名に「' + (cc.closedWords || []).join('」「') + '」のどれかを含む終日の予定）');
   } catch (e) {
     console.warn('会社カレンダーを読めません', e);
     calInfo = '会社カレンダーを読めませんでした（' + e.message + '）。下の「個別に追加する休み」で補えます';
