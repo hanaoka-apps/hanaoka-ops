@@ -950,5 +950,90 @@
     document.body.appendChild(fr);
   }
 
-  window.FaxReply = { open, printPdf, fontUrl: FONT_URL, ensureLibs };
+  // ---- PDFの向きを直す（ページごと／全ページ）----
+  //   FaxReply.rotate({ pdfBytes, title, onSave: async (bytes, { before, after, changed }) => {...} })
+  //   ページの /Rotate だけを変える（画質は変わらない）。before/after は各ページの回転角、changed は変えたページ番号（1始まり）
+  async function rotate(opts) {
+    injectCss();
+    const o = Object.assign({ title: 'PDF' }, opts || {});
+    const ov = document.createElement('div');
+    ov.className = 'fr-overlay fr-rot-ov';
+    ov.innerHTML = `<div class="fr-modal" style="width:min(980px,96vw);height:88vh;resize:none">
+      <div class="fr-head" style="cursor:default">
+        <span class="fr-title">↻ PDFの向きを直す — ${esc(o.title)}</span>
+        <span style="flex:1"></span>
+        <span style="font-size:12px;color:#5a5f7a">全ページ：</span>
+        <button class="fr-btn" data-all="270">↺ 左に90°</button><button class="fr-btn" data-all="90">↻ 右に90°</button><button class="fr-btn" data-all="180">180°</button>
+        <button class="fr-btn" data-all="reset" title="この画面で回した分を取り消す">元に戻す</button>
+      </div>
+      <div class="fr-rot-grid" style="flex:1;overflow:auto;padding:16px;background:#e9ebf2;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;align-content:start">
+        <div style="color:#6b7089">PDFを読み込み中...</div></div>
+      <div class="fr-side-foot" style="flex-direction:row;align-items:center">
+        <div class="fr-status" style="flex:1">ページごとのボタンで回します。1ページ目だけ回して2ページ目はそのまま、もできます。</div>
+        <button class="fr-btn" data-act="cancel">やめる</button>
+        <button class="fr-btn primary" data-act="save">保存（元のPDFを直す）</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    const $ = s => ov.querySelector(s);
+    const status = t => { $('.fr-status').textContent = t || ''; };
+    const close = () => ov.remove();
+    let pdf, base = [], add = [];
+    try {
+      await ensureLibs();
+      const data = o.pdfBytes instanceof Uint8Array ? o.pdfBytes.slice() : new Uint8Array(o.pdfBytes);
+      o._bytes = data;
+      pdf = await pdfjsLib.getDocument({ data: data.slice() }).promise;
+      for (let i = 1; i <= pdf.numPages; i++) { base.push((await pdf.getPage(i)).rotate || 0); add.push(0); }
+    } catch (err) { $('.fr-rot-grid').innerHTML = `<div style="color:#c0392b">PDFを開けませんでした：${esc(err.message)}</div>`; }
+    async function draw(i) {   // i：0始まり
+      const cell = $(`.fr-rot-cell[data-i="${i}"]`); if (!cell) return;
+      const page = await pdf.getPage(i + 1);
+      const rot = (base[i] + add[i]) % 360;
+      const vp0 = page.getViewport({ scale: 1, rotation: rot });
+      const sc = Math.min(180 / vp0.width, 220 / vp0.height);
+      const vp = page.getViewport({ scale: sc * (window.devicePixelRatio || 1), rotation: rot });
+      const cv = cell.querySelector('canvas');
+      cv.width = vp.width; cv.height = vp.height;
+      cv.style.width = vp.width / (window.devicePixelRatio || 1) + 'px'; cv.style.height = vp.height / (window.devicePixelRatio || 1) + 'px';
+      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      cell.classList.toggle('on', add[i] !== 0);
+      cell.querySelector('.st').textContent = add[i] ? `${i + 1}ページ（${add[i] === 90 ? '右に90°' : add[i] === 270 ? '左に90°' : '180°'} 回す）` : `${i + 1}ページ`;
+    }
+    if (pdf) {
+      $('.fr-rot-grid').innerHTML = base.map((_, i) => `<div class="fr-rot-cell" data-i="${i}" style="background:#fff;border:2px solid transparent;border-radius:8px;padding:8px;display:flex;flex-direction:column;align-items:center;gap:6px">
+        <div style="height:224px;display:flex;align-items:center;justify-content:center"><canvas style="box-shadow:0 1px 4px rgba(0,0,0,.25)"></canvas></div>
+        <div class="st" style="font-size:12px;color:#4a4f68"></div>
+        <div style="display:flex;gap:4px"><button class="fr-btn" data-p="270">↺ 左90°</button><button class="fr-btn" data-p="90">↻ 右90°</button><button class="fr-btn" data-p="180">180°</button></div></div>`).join('');
+      const st = document.createElement('style'); st.textContent = '.fr-rot-cell.on{border-color:#23268f!important;background:#eef0fc!important}';
+      ov.appendChild(st);
+      for (let i = 0; i < base.length; i++) await draw(i);
+    }
+    ov.addEventListener('click', async e => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.act === 'cancel') { if (!add.some(Boolean) || confirm('回した向きは保存されません。やめますか？')) close(); return; }
+      if (b.dataset.p && pdf) { const i = +b.closest('.fr-rot-cell').dataset.i; add[i] = (add[i] + +b.dataset.p) % 360; await draw(i); return; }
+      if (b.dataset.all && pdf) {
+        for (let i = 0; i < add.length; i++) add[i] = b.dataset.all === 'reset' ? 0 : (add[i] + +b.dataset.all) % 360;
+        for (let i = 0; i < add.length; i++) await draw(i);
+        return;
+      }
+      if (b.dataset.act === 'save' && pdf) {
+        const changed = add.map((a, i) => a ? i + 1 : 0).filter(Boolean);
+        if (!changed.length) { status('回したページがありません'); return; }
+        b.disabled = true;
+        try {
+          status('保存中...');
+          const { PDFDocument, degrees } = PDFLib;
+          const doc = await PDFDocument.load(o._bytes, { ignoreEncryption: true });
+          doc.getPages().forEach((p, i) => { if (add[i]) p.setRotation(degrees((base[i] + add[i]) % 360)); });
+          const bytes = await doc.save();
+          const r = o.onSave ? await o.onSave(bytes, { before: base.slice(), after: base.map((v, i) => (v + add[i]) % 360), changed }) : null;
+          if (r !== false) close();
+        } catch (err) { console.error(err); status('保存できませんでした：' + err.message); }
+        finally { b.disabled = false; }
+      }
+    });
+  }
+
+  window.FaxReply = { open, rotate, printPdf, fontUrl: FONT_URL, ensureLibs };
 })();

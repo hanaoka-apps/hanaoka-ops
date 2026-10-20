@@ -12,7 +12,7 @@
 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="fax_reply.js?v=20261019a"></script>
+<script src="fax_reply.js?v=20261020a"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
 <script>
 // MSALが読み込めなかった場合のフォールバック
@@ -1296,6 +1296,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
       <div style="flex:1;display:flex;flex-direction:column;background:var(--surface2);overflow:hidden;">
         <div class="pdf-toolbar">
           <span class="pdf-filename" id="triagePdfName">FAXを選択するとPDFが表示されます</span>
+          <button class="btn" id="triagePdfRotateBtn" onclick="rotatePdfFrom('triage')" title="PDFの向きを直す（ページごと／全ページ）">↻ 回転</button>
           <button class="btn" id="triagePdfNewTabBtn" onclick="openTriagePdfNewTab()">別タブで開く</button>
         </div>
         <div style="flex:1;overflow:hidden;position:relative;" id="triagePdfArea">
@@ -1405,6 +1406,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="fax-detail-pdf" id="faxDetailPdf">
           <div class="pdf-toolbar">
             <span class="pdf-filename" id="faxViewPdfName">-</span>
+            <button class="btn" onclick="rotatePdfFrom('faxview')" title="PDFの向きを直す（ページごと／全ページ）">↻ 回転</button>
             <button class="btn" onclick="openFaxViewPdfNewTab()">別タブで開く</button>
           </div>
           <div class="pdf-area" id="faxViewPdfArea" style="flex:1;">
@@ -1713,7 +1715,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <!-- PDFヘッダー -->
             <div class="pdf-toolbar" style="justify-content:space-between">
               <span class="pdf-filename" id="pdfFilename" style="font-weight:400">PDF</span>
-              <button class="btn" onclick="openPdfNewTab()" style="padding:2px 8px;font-size:11px">別タブで開く</button>
+              <span style="display:flex;gap:4px"><button class="btn" onclick="rotatePdfFrom('case')" style="padding:2px 8px;font-size:11px" title="PDFの向きを直す（ページごと／全ページ）">↻ 回転</button><button class="btn" onclick="openPdfNewTab()" style="padding:2px 8px;font-size:11px">別タブで開く</button></span>
             </div>
             <!-- PDFタブ行 -->
             <div class="pdf-tabs" id="pdfTabs">
@@ -1993,6 +1995,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <div class="help-h3">案件管理画面でのPDF確認</div>
           <p class="help-p">案件詳細の右端パネルにPDFが表示されます。複数のFAXが紐づく場合は上部のタブで切り替えられます。</p>
           <div class="help-callout tip">スマートフォンからでもアプリ内でFAX（PDF）を表示できます。</div>
+          <div class="help-h3">PDFの向きを直す（↻ 回転）</div>
+          <p class="help-p">受信トレイ・部署回覧・案件の右側のPDFの上にある <strong>「↻ 回転」</strong> を押すと、全ページの小さな画像が並びます。ページごとの <strong>↺ 左90°／↻ 右90°／180°</strong> で回し（<strong>1ページ目だけ回して2ページ目はそのまま</strong>、もできます）、上の「全ページ」ボタンでまとめて回すこともできます。「保存」で<strong>元のPDFの向きが直り</strong>、次から誰が開いても正しい向きで出ます（画質は変わりません。前の版は SharePoint の版の履歴に残ります）。受信FAXで回したことは修正履歴に残り、AIの向き補正の改善に使います。</p>
           <div class="help-callout info">システムの処理を待たずに確認したい緊急時は、共有メールボックス <strong>fax-receive@hanaoka-corp.co.jp</strong> を直接確認してください。通常運用では不要です。</div>
         </div>
 
@@ -6782,6 +6786,70 @@ async function openFaxReplyBeta(idx, revise) {
     };
     sel.onchange();
   }
+}
+// ============================================================
+// PDFの向きを直す（受信トレイ・部署回覧・案件の右側の「↻ 回転」）。全員が使える。
+//   ページごと／全ページで回し、元のPDFを上書き保存（/Rotate だけ変えるので画質は変わらない。
+//   前の版は SharePoint の版の履歴に残る）。受信FAXなら HumanEdit_JSON に回転の記録を足す（AIの向き補正の見直し用。
+//   IsModified は変えない＝読み取り内容の修正率には数えない）
+// ============================================================
+let _rotatingPdf = false;
+async function rotatePdfFrom(where) {
+  if (_rotatingPdf || document.querySelector('.fr-rot-ov')) return;
+  if (!window.FaxReply || !FaxReply.rotate) { alert('回転の部品を読み込めませんでした。画面を再読み込みしてください'); return; }
+  let url = '', ev = null, reload = null, title = '';
+  if (where === 'triage') {
+    ev = triageItems.find(x => x._spId === currentTriageId) || null;
+    url = currentTriagePdfUrl || '';
+    reload = () => selectTriage(currentTriageId);
+  } else if (where === 'faxview') {
+    ev = faxViewItems.find(x => x._spId === currentFaxViewId) || null;
+    url = (ev && (ev.AttachedPDFPath || ev.添付PDFパス || ev.PDFPath)) || '';
+    reload = () => selectFaxView(currentFaxViewId);
+  } else {
+    url = currentPdfUrl || '';
+    const idx = events.findIndex(x => x.AttachedPDFPath === url);
+    ev = idx >= 0 ? events[idx] : null;
+    const name = document.getElementById('pdfFilename').textContent;
+    reload = () => (idx >= 0 ? selectTimelinePdf(idx) : loadPdf(url, name));
+  }
+  if (!url) { alert('表示中のPDFがありません'); return; }
+  if (!url.includes('sharepoint.com')) { alert('このPDFは回転できません（保存場所が SharePoint ではありません）'); return; }
+  title = (ev && (ev.RelationName || ev.Title)) || decodeURIComponent(url.split('/').pop());
+  _rotatingPdf = true;
+  let bytes;
+  try {
+    setStatus('loading', 'PDFを読み込み中...');
+    bytes = await fetchSpPdfBytes(url);
+    setStatus('success', '');
+  } catch (e) { setStatus('error', 'PDF取得エラー: ' + e.message); _rotatingPdf = false; return; }
+  _rotatingPdf = false;
+  FaxReply.rotate({
+    pdfBytes: bytes, title,
+    onSave: async (out, info) => {
+      const sid = await getSiteId();
+      const driveId = await getFaxDriveId();
+      const token = await getToken();
+      const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/drives/${driveId}/root:${spDrivePath(url)}:/content`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/pdf' }, body: out,
+      });
+      if (!res.ok) throw new Error(`PDFを保存できませんでした（${res.status}）`);
+      // 受信FAXなら回転の記録を残す（失敗しても回転の保存は済んでいるので止めない）
+      if (ev && ev._spId && routeOf(ev.EventType) === 'fax') {
+        try {
+          const it = await graphGet(`/sites/${sid}/lists/${SP.eventListId}/items/${ev._spId}?$expand=fields($select=HumanEdit_JSON)`);
+          let log; try { log = JSON.parse((it.fields || {}).HumanEdit_JSON || '') || {}; } catch (_) { log = {}; }
+          if (!Array.isArray(log.edits)) log.edits = [];
+          log.edits.push({ at: new Date().toISOString(), by: (account && (account.username || account.name)) || '', kind: 'rotation',
+                           changes: { Rotation: { from: info.before, to: info.after, pages: info.changed } } });
+          await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${ev._spId}/fields`, { HumanEdit_JSON: JSON.stringify(log) });
+          ev.HumanEdit_JSON = JSON.stringify(log);
+        } catch (e2) { console.warn('回転の記録を残せませんでした', e2); }
+      }
+      setStatus('success', `PDFの向きを直しました（${info.changed.join('・')}ページ）`);
+      try { reload(); } catch (_) {}
+    },
+  });
 }
 function loadPdf(url, name) {
   currentPdfUrl = url;
