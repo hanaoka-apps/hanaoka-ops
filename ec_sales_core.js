@@ -433,6 +433,12 @@
     };
   };
 
+  // 社内メモ：基本のメモ（HanaokaEC など）のあとに、担当者が追記した文を続ける
+  EC.joinMemo = function (base, note, cfg) {
+    note = String(note == null ? '' : note).replace(/[\r\n\t]+/g, ' ').trim();
+    return note ? base + (cfg.memoJoin == null ? ' ' : cfg.memoJoin) + note : base;
+  };
+
   // 納品先マスタ(CSV objects) → { '599802': { keys:{key:code}, max:'000770', used:{code:1} } }
   EC.indexDeliveryMaster = function (objs, cfg) {
     var out = {}, reserved = {};

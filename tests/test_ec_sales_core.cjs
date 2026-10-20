@@ -39,11 +39,12 @@ t('営業日：2営業日後・週末・年末年始', () => {
   assert.strictEqual(c.add('2026-12-28', 2), '2027-01-05');
   assert.strictEqual(c.prev('2026-10-19'), '2026-10-16');
 });
-t('受注の締め：16時以降は翌日分・休みの日は次の営業日から数える', () => {
+t('受注の締め：15時以降は翌日分・休みの日は次の営業日から数える', () => {
   const at = (date, time) => EC.buildSlip(order({ createdAt: date, createdTime: time }), ctx);
-  assert.strictEqual(at('2026-10-15', '15:59').shipDate, '2026-10-19');   // 木 → 当日処理 → +2営業日＝月
-  assert.strictEqual(at('2026-10-15', '16:00').shipDate, '2026-10-20');   // 木16時 → 金処理 → 火
-  assert.strictEqual(at('2026-10-16', '17:30').processDate, '2026-10-19'); // 金16時以降 → 月処理
+  assert.strictEqual(DEFAULT_CONFIG.cutoffTime, '15:00');
+  assert.strictEqual(at('2026-10-15', '14:59').shipDate, '2026-10-19');   // 木 → 当日処理 → +2営業日＝月
+  assert.strictEqual(at('2026-10-15', '15:00').shipDate, '2026-10-20');   // 木15時 → 金処理 → 火
+  assert.strictEqual(at('2026-10-16', '17:30').processDate, '2026-10-19'); // 金15時以降 → 月処理
   assert.strictEqual(at('2026-10-17', '10:00').processDate, '2026-10-19'); // 土 → 月処理
   assert.strictEqual(at('2026-10-17', '10:00').shipDate, '2026-10-21');
 });
@@ -70,7 +71,7 @@ t('値引き：本体が吸収。ギフティングは0円・送料なし', () =
   const d = EC.buildSlip(order({ total: 11000, discountCode: 'X', discountAmount: 6050 }), ctx);
   assert.deepStrictEqual(d.lines.map(l => l.unitNet), [8500, 1500]);
   const g = EC.buildSlip(order({ total: 0, discountCode: 'FREE, FREE_SHIPPING' }), ctx);
-  assert.deepStrictEqual(g.lines.map(l => [l.code, l.amountNet]), [['FCART2x4BK', 0]]); assert.strictEqual(g.memo, '花岡EC（ギフティング）');
+  assert.deepStrictEqual(g.lines.map(l => [l.code, l.amountNet]), [['FCART2x4BK', 0]]); assert.strictEqual(g.memo, 'HanaokaEC（ギフティング）');
 });
 t('送料無料コード：送料行なし・本体は定価', () => {
   const s = EC.buildSlip(order({ total: 15400, discountCode: 'FREE_SHIPPING' }), ctx);
@@ -133,7 +134,13 @@ t('対応表の「言葉」判定：含む・始まる・ちょうど・単位�
   assert.strictEqual(code('廃盤 UXA-LSCグレー'), '');                      // 始まる → 当たらない
   assert.strictEqual(code('F-CART 2×4（ブルー） - ケース3個追加'), 'FCART2x4×1,OP/CUP×3');   // 全角カッコも同じ扱い・3個→数量3
 });
+t('社内メモ：基本のメモのあとに追記を全角スペースでつなぐ', () => {
+  assert.strictEqual(EC.joinMemo('HanaokaEC', '', DEFAULT_CONFIG), 'HanaokaEC');
+  assert.strictEqual(EC.joinMemo('HanaokaEC', ' ブルー入荷待ち\n', DEFAULT_CONFIG), 'HanaokaEC\u3000ブルー入荷待ち');
+  assert.strictEqual(EC.joinMemo('HanaokaEC（ギフティング）', '指定着', DEFAULT_CONFIG), 'HanaokaEC（ギフティング）\u3000指定着');
+});
 t('取込ファイル：受注の行・UTF-16', () => {
+  assert.strictEqual(EC.buildSlip(order(), ctx).memo, 'HanaokaEC');
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);
   const rows = EC.juchuRows([s], L.juchu, DEFAULT_CONFIG);
   assert.strictEqual(rows.length, 2); assert.strictEqual(rows[0].length, L.juchu.length);

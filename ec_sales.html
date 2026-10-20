@@ -424,7 +424,7 @@ function recompute() {
   cal = buildCal();
   const smileOrders = M.smileCust || {};
   const ctx = { mapping: store.mapping, cfg: store.cfg, items: M.items || {}, smileOrders, cal };
-  slips = orders.map(o => { const s = EC.buildSlip(o, ctx); s.autoShip = s.shipDate; return s; });
+  slips = orders.map(o => { const s = EC.buildSlip(o, ctx); s.autoShip = s.shipDate; s.baseMemo = s.memo; return s; });
   slips.forEach(s => { s.hasErr = s.flags.some(f => f.level === 'error'); s.hasWarn = s.flags.some(f => f.level === 'warn'); });
 }
 function rec(s) { return store.orders[s.id] || null; }
@@ -435,6 +435,7 @@ function stateOf(s) {
   if (s.inSmile) return 'smile';
   return r && r.status === 'ok' ? 'ok' : 'new';
 }
+function memoOf(s) { const r = rec(s); return EC.joinMemo(s.baseMemo || s.memo, r && r.memoNote, store.cfg); }
 function shipOf(s) { const r = rec(s); return (r && r.shipDate) || s.autoShip; }
 function fromDate() { return $('f-from').value || '0000-00-00'; }
 function visible() {
@@ -460,7 +461,7 @@ function rowHtml(s) {
   const cls = [st, s.hasErr ? 'err' : (s.hasWarn ? 'warn' : '')].join(' ');
   const ship = shipOf(s), closed = ship && !cal.isBusinessDay(ship);
   const items = s.lines.length ? s.lines.map(l => '<div class="k-' + l.kind + '">' + esc(l.code) + ' ×' + l.qty + ' <span class="muted">' + yen(l.amountNet) + '</span></div>').join('') : '<span class="muted">（商品なし）</span>';
-  const flags = s.flags.map(f => '<span class="tag ' + f.level + '">' + esc(f.text) + '</span>').join('');
+  const flags = s.flags.map(f => '<span class="tag ' + f.level + '">' + esc(f.text) + '</span>').join('') + (r && r.memoNote ? '<span class="tag ok">社内メモ追記：' + esc(r.memoNote) + '</span>' : '');
   const who = esc(s.order.ship.company || s.order.ship.name) + (s.order.ship.company ? '<div class="muted">' + esc(s.order.ship.name) + '</div>' : '');
   const canSel = st === 'new' || st === 'ok';
   let act = '';
@@ -514,6 +515,9 @@ function renderDrawer() {
     s.lines.map(l => '<tr><td>' + esc(l.code) + '<div class="muted">' + esc(l.name) + '</div></td><td class="num">' + l.qty + '</td><td class="num">' + yen(l.unitNet) + '</td><td class="num">' + yen(l.amountNet) + '</td></tr>').join('') +
     '</tbody></table><div class="muted" style="margin-top:4px">税込 ' + yen(s.grossTotal) + '／Shopify 合計 ' + yen(o.total) + '</div>' +
     '<h3>Shopify の注文</h3><dl>' + o.lines.map(l => '<dt>商品</dt><dd>' + esc(l.name) + ' ×' + l.qty + '（' + yen(l.price) + '）</dd>').join('') + row('送料', o.shipping ? yen(o.shipping) : '') + row('割引', o.discountCode) + row('支払方法', o.paymentMethod) + row('支払状況', o.financial) + row('メモ', o.notes) + row('メール', o.email) + '</dl>' +
+    '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。</div>' +
+    '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' ? ' disabled' : '') + '>' +
+    '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
     '<h3>出荷予定日</h3><div>' + md(ship) + '（受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '）</div>' +
     '<div class="row" style="margin-top:18px">' + (st === 'new' ? '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>OK にする</button>' : (st === 'ok' || st === 'exported') ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') + '</div>';
 }
@@ -521,7 +525,7 @@ function renderDrawer() {
 /* ------------------------------------------------------------ 出力（納品先 → 受注伝票） */
 function okSlips() { return slips.filter(s => stateOf(s) === 'ok'); }
 function planOut() {
-  const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); });
+  const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); s.memo = memoOf(s); });
   const master = M.nouhin ? JSON.parse(JSON.stringify(M.nouhin)) : null;
   if (!master) return { ok, fresh: [], master: null };
   const fresh = EC.planDeliveries(ok, master, store.cfg, { reuse: true });
@@ -562,7 +566,7 @@ function markExported() {
 /* ------------------------------------------------------------ 描画：対応表・設定 */
 function renderMap() {
   const m = store.mapping, itemOk = c => !c || !M.items || M.items[c];
-  $('lead-days').value = m.leadDays; $('cutoff').value = store.cfg.cutoffTime || '16:00';
+  $('lead-days').value = m.leadDays; $('cutoff').value = store.cfg.cutoffTime || CONF.config.cutoffTime;
   $('closed-dates').value = (store.cfg.closedDates || []).join('\n');
   $('cal-status').textContent = calInfo;
   const today0 = today(), up = outlookClosed.filter(x => x >= today0).slice(0, 12);
@@ -706,10 +710,16 @@ document.addEventListener('change', e => {
     if (!t.value || t.value === s.autoShip) delete r.shipDate; else r.shipDate = t.value;
     save(); render(); return;
   }
+  if (d.memo !== undefined) {
+    const r = store.orders[d.memo] = store.orders[d.memo] || {};
+    const v = t.value.trim();
+    if (v) r.memoNote = v; else delete r.memoNote;
+    save(); render(); return;
+  }
   if (d.pay !== undefined) { renderPayBar(); return; }
   if (t.id === 'f-from' || t.id === 'f-q') { render(); return; }
   if (t.id === 'pay-from') { renderPay(); return; }
-  if (t.id === 'cutoff') { store.cfg.cutoffTime = t.value || '16:00'; save(); recompute(); render(); return; }
+  if (t.id === 'cutoff') { store.cfg.cutoffTime = t.value || CONF.config.cutoffTime; save(); recompute(); render(); return; }
   if (t.id === 'lead-days') { store.mapping.leadDays = Math.max(0, +t.value || 0); save(); recompute(); render(); return; }
   if (t.id === 'closed-dates') { store.cfg.closedDates = t.value.split(/\s+/).filter(x => /^\d{4}-\d\d-\d\d$/.test(x)); save(); recompute(); render(); return; }
   if (d.ov) {
