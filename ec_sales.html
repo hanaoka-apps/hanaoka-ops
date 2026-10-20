@@ -176,9 +176,11 @@
       <div class="muted" style="margin:8px 0 4px">期間を決めた例外（在庫の都合など）。品目コードは , 区切り、空なら全品目。</div>
       <div id="overrides"></div>
       <div style="margin-top:6px"><button class="btn sec sm" id="ov-add">＋ 例外を追加</button></div>
-      <div class="row" style="margin:12px 0 4px"><b>会社カレンダー</b><span class="muted">土日・祝日・年末年始（12/29〜1/3）は自動。ここには会社独自の休み（お盆・GW など）を1行に1日、YYYY-MM-DD で。</span></div>
-      <textarea id="closed-dates" rows="3"></textarea>
-      <div class="row" style="margin-top:6px"><button class="btn sec sm" id="cal-save">共有に保存</button><span class="muted" id="cal-status"></span></div>
+      <div class="row" style="margin:12px 0 4px"><b>会社カレンダー</b><span class="muted">土日・祝日・年末年始（12/29〜1/3）は自動。会社の休業日は Outlook の会社共通予定表から読みます（終日の予定で、件名に「休日」「休業」「祝」を含むもの）。</span></div>
+      <div id="cal-status" class="muted"></div>
+      <div id="cal-list" class="muted" style="margin:4px 0 8px"></div>
+      <div class="muted" style="margin:6px 0 4px">個別に追加する休み（この端末だけ。共通予定表に入っていない日を足すときだけ）。1行に1日、YYYY-MM-DD。</div>
+      <textarea id="closed-dates" rows="2"></textarea>
     </div>
     <div class="panel">
       <div class="row"><h2 style="margin:0">品目の対応表（Shopify の商品 → SMILE の品目）</h2><div class="grow"></div>
@@ -220,7 +222,7 @@
 <script>
 'use strict';
 const EC = window.EcSales, LAY = window.EC_LAYOUTS;
-const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All', 'Calendars.Read'];
 const STORE_KEY = 'ec_sales_v1';
 const CONFIG_URL = 'ec_sales_config.json';   // 業務の決まりごと（得意先・担当・品目・単価・納期など）はコードに書かず、ここから読む
 let CONF = null;                              // 読み込んだ設定（sharepoint / files / shopifyFiles / config / mapping）
@@ -304,31 +306,40 @@ async function loadSharedConfig() {
     if (o.mapping) CONF.mapping = o.mapping;
   } catch (e) { /* 共有の設定ファイルはなくてよい */ }
 }
-// 会社カレンダー：SharedMasters の共有ファイルを全員で使う（この画面から保存できる）
-let calDirty = false, calStamp = '';
+// 会社カレンダー：Outlook の会社共通予定表（HUBのお知らせと同じ共有メールボックス）から休業日を読む。
+// 終日の予定で、件名に「休日・休業・祝」などを含むものを休業日とする（言葉は設定ファイル）。読み取りだけで書き込みはしない。
+let outlookClosed = [], calInfo = '';
 async function loadCalendar() {
+  outlookClosed = []; calInfo = '';
+  const cc = CONF.calendar;
+  if (!cc || !cc.mailbox) { calInfo = '会社カレンダーの設定がありません'; return; }
   try {
-    const r = await fetchCsv(CONF.sharepoint.calendarFile), o = JSON.parse(r.text);
-    if (Array.isArray(o.closedDates)) store.cfg.closedDates = o.closedDates;
-    if (Array.isArray(o.closedYearly)) store.cfg.closedYearly = o.closedYearly;
-    calStamp = stamp(r.modified); calDirty = false;
-  } catch (e) { calStamp = ''; }
+    const d0 = new Date(); d0.setDate(1); d0.setMonth(d0.getMonth() - (cc.monthsBack || 1));
+    const d1 = new Date(); d1.setDate(1); d1.setMonth(d1.getMonth() + (cc.monthsAhead || 13));
+    const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T00:00:00+09:00';
+    let url = '/users/' + encodeURIComponent(cc.mailbox) + '/calendarView?startDateTime=' + encodeURIComponent(iso(d0)) + '&endDateTime=' + encodeURIComponent(iso(d1)) + '&$top=100&$select=subject,start,end,isAllDay,isCancelled';
+    const re = new RegExp((cc.closedWords || []).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)');
+    const days = {}; let n = 0;
+    while (url && n++ < 20) {
+      const token = await getToken();
+      const r = await fetch(url.startsWith('http') ? url : 'https://graph.microsoft.com/v1.0' + url, { headers: { Authorization: 'Bearer ' + token, Prefer: 'outlook.timezone="Tokyo Standard Time"' } });
+      if (!r.ok) throw new Error('Graph ' + r.status);
+      const data = await r.json();
+      (data.value || []).forEach(ev => {
+        if (ev.isCancelled || !ev.isAllDay || !re.test(ev.subject || '')) return;
+        let d = (ev.start.dateTime || '').slice(0, 10); const end = (ev.end.dateTime || '').slice(0, 10);
+        for (let i = 0; d && d < end && i < 40; i++) { days[d] = ev.subject; d = EC.addDays(d, 1); }
+      });
+      url = data['@odata.nextLink'] || '';
+    }
+    outlookClosed = Object.keys(days).sort(); window.__closedNames = days;
+    calInfo = 'Outlook の会社共通予定表から ' + outlookClosed.length + '日分の休業日を読み込みました';
+  } catch (e) {
+    console.warn('会社カレンダーを読めません', e);
+    calInfo = '会社カレンダーを読めませんでした（' + e.message + '）。下の「個別に追加する休み」で補えます';
+  }
 }
-async function saveCalendar() {
-  if (!confirm('会社カレンダーを共有ファイル（' + CONF.sharepoint.calendarFile + '）に保存します。全員の出荷予定日の計算に使われます。よろしいですか？')) return;
-  try {
-    const tok = await getWriteToken(), did = await resolveDriveId();
-    const body = JSON.stringify({ closedDates: store.cfg.closedDates || [], closedYearly: store.cfg.closedYearly || [], updatedBy: account && account.username, updatedAt: new Date().toISOString() }, null, 2);
-    const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + did + '/root:/' + encodeURIComponent(CONF.sharepoint.calendarFile) + ':/content', { method: 'PUT', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body });
-    if (!r.ok) throw new Error('Graph ' + r.status);
-    calDirty = false; calStamp = stamp(new Date().toISOString()); renderMap();
-  } catch (e) { alert('保存できませんでした（SharedMasters への書き込み権限が必要です）：' + e.message); }
-}
-async function getWriteToken() {
-  const sc = ['Files.ReadWrite.All'];
-  try { return (await msalInstance.acquireTokenSilent({ scopes: sc, account })).accessToken; }
-  catch { return (await msalInstance.acquireTokenPopup({ scopes: sc })).accessToken; }
-}
+function buildCal() { return EC.makeCalendar(Object.assign({}, store.cfg, { closedDates: (store.cfg.closedDates || []).concat(outlookClosed) })); }
 async function soumuHasAccess() {
   if (sessionStorage.getItem('soumuAccess') === '1') return true;
   try { await graphGet(CONF.sharepoint.soumuSite + '?$select=id'); sessionStorage.setItem('soumuAccess', '1'); return true; }
@@ -410,7 +421,7 @@ function wireDrop(key, kind) {
 
 /* ------------------------------------------------------------ 伝票を作る */
 function recompute() {
-  cal = EC.makeCalendar(store.cfg);
+  cal = buildCal();
   const smileOrders = M.smileCust || {};
   const ctx = { mapping: store.mapping, cfg: store.cfg, items: M.items || {}, smileOrders, cal };
   slips = orders.map(o => { const s = EC.buildSlip(o, ctx); s.autoShip = s.shipDate; return s; });
@@ -553,7 +564,9 @@ function renderMap() {
   const m = store.mapping, itemOk = c => !c || !M.items || M.items[c];
   $('lead-days').value = m.leadDays; $('cutoff').value = store.cfg.cutoffTime || '16:00';
   $('closed-dates').value = (store.cfg.closedDates || []).join('\n');
-  $('cal-status').textContent = calDirty ? '未保存の変更があります（「共有に保存」で全員に反映）' : (calStamp ? '共有ファイルを ' + calStamp + ' に更新（全員共通）' : '共有ファイルはまだありません（保存すると作られます）');
+  $('cal-status').textContent = calInfo;
+  const today0 = today(), up = outlookClosed.filter(x => x >= today0).slice(0, 12);
+  $('cal-list').innerHTML = up.length ? '今後の休業日：' + up.map(x => esc(md(x)) + ' ' + esc((window.__closedNames || {})[x] || '')).join('、') : '';
   $('overrides').innerHTML = (m.leadOverrides || []).map((o, i) => '<div class="row" style="margin-bottom:4px"><input type="date" data-ov="from" data-i="' + i + '" value="' + esc(o.from) + '"> 〜 <input type="date" data-ov="to" data-i="' + i + '" value="' + esc(o.to) + '"> <input type="number" data-ov="days" data-i="' + i + '" value="' + o.days + '" style="width:60px"> 営業日 <input type="text" data-ov="codes" data-i="' + i + '" value="' + esc((o.codes || []).join(',')) + '" placeholder="品目コード（空=全部）" size="30"><button class="btn sec sm" data-ovdel="' + i + '">削除</button></div>').join('') || '<span class="muted">例外はありません</span>';
   $('rules').innerHTML = m.rules.map((r, i) => '<tr><td class="num">' + (i + 1) + '<div><button class="btn sec sm" data-mv="' + i + '" data-d="-1">↑</button><button class="btn sec sm" data-mv="' + i + '" data-d="1">↓</button></div></td>' +
     '<td class="c-shop"><select data-r="scope" data-i="' + i + '">' + [['body', '本体'], ['option', 'オプション'], ['single', '単品']].map(([v, l]) => '<option value="' + v + '"' + (r.scope === v ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></td>' +
@@ -631,7 +644,7 @@ function outPay() {
 
 /* ------------------------------------------------------------ 全体 */
 function render() {
-  if (!cal) cal = EC.makeCalendar(store.cfg);
+  if (!cal) cal = buildCal();
   ['orders', 'map', 'pay'].forEach(t => { $('p-' + t).hidden = (t !== curTab); });
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === curTab));
   document.querySelectorAll('[data-v]').forEach(e => e.classList.toggle('active', e.dataset.v === curView));
@@ -677,7 +690,6 @@ document.addEventListener('click', e => {
     case 'map-add': store.mapping.rules.push({ id: 'r' + Date.now(), scope: 'option', label: '新しい行', words: [], match: 'contains', code: '', net: null }); save(); renderMap(); break;
     case 'map-reset': if (confirm('対応表を初期値に戻します。直した内容は消えます。よろしいですか？')) { store.mapping = clone(CONF.mapping); save(); recompute(); render(); } break;
     case 'map-csv': mapCsv(); break;
-    case 'cal-save': saveCalendar(); break;
     case 'o-dest': outDest(); break;
     case 'o-juchu': outJuchu(); break;
     case 'o-done': markExported(); break;
@@ -699,7 +711,7 @@ document.addEventListener('change', e => {
   if (t.id === 'pay-from') { renderPay(); return; }
   if (t.id === 'cutoff') { store.cfg.cutoffTime = t.value || '16:00'; save(); recompute(); render(); return; }
   if (t.id === 'lead-days') { store.mapping.leadDays = Math.max(0, +t.value || 0); save(); recompute(); render(); return; }
-  if (t.id === 'closed-dates') { store.cfg.closedDates = t.value.split(/\s+/).filter(x => /^\d{4}-\d\d-\d\d$/.test(x)); calDirty = true; save(); recompute(); render(); return; }
+  if (t.id === 'closed-dates') { store.cfg.closedDates = t.value.split(/\s+/).filter(x => /^\d{4}-\d\d-\d\d$/.test(x)); save(); recompute(); render(); return; }
   if (d.ov) {
     const o = store.mapping.leadOverrides[+d.i];
     o[d.ov] = d.ov === 'days' ? (+t.value || 0) : d.ov === 'codes' ? t.value.split(',').map(x => x.trim()).filter(Boolean) : t.value;
