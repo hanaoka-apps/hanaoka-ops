@@ -39,6 +39,19 @@ t('営業日：2営業日後・週末・年末年始', () => {
   assert.strictEqual(c.add('2026-12-28', 2), '2027-01-05');
   assert.strictEqual(c.prev('2026-10-19'), '2026-10-16');
 });
+t('受注の締め：16時以降は翌日分・休みの日は次の営業日から数える', () => {
+  const at = (date, time) => EC.buildSlip(order({ createdAt: date, createdTime: time }), ctx);
+  assert.strictEqual(at('2026-10-15', '15:59').shipDate, '2026-10-19');   // 木 → 当日処理 → +2営業日＝月
+  assert.strictEqual(at('2026-10-15', '16:00').shipDate, '2026-10-20');   // 木16時 → 金処理 → 火
+  assert.strictEqual(at('2026-10-16', '17:30').processDate, '2026-10-19'); // 金16時以降 → 月処理
+  assert.strictEqual(at('2026-10-17', '10:00').processDate, '2026-10-19'); // 土 → 月処理
+  assert.strictEqual(at('2026-10-17', '10:00').shipDate, '2026-10-21');
+});
+t('商品ごとの納期：品目の日数のうち最大', () => {
+  const m = JSON.parse(JSON.stringify(DEFAULT_MAPPING)); m.rules.find(r => r.id === 'body-din').leadDays = 5;
+  const o = order({ lines: [{ name: 'FLATCART DINING - オプションは注文しない', sku: '', qty: 1, price: 27500 }] });
+  assert.strictEqual(EC.buildSlip(o, Object.assign({}, ctx, { mapping: m })).shipDate, '2026-10-22');
+});
 t('得意先：1〜7日は東京（2026/9以降）', () => {
   assert.strictEqual(EC.customerFor('2026-10-07', DEFAULT_CONFIG), '599801'); assert.strictEqual(EC.customerFor('2026-10-08', DEFAULT_CONFIG), '599802');
   assert.strictEqual(EC.customerFor('2026-08-03', DEFAULT_CONFIG), '599802');
@@ -95,6 +108,15 @@ t('納品先コード：既存を再利用・新規は最大＋1・飛び番を�
   const fresh = EC.planDeliveries([a, b, c, d], master, DEFAULT_CONFIG);
   assert.strictEqual(a.deliveryCode, '000999'); assert.strictEqual(b.deliveryCode, '001001'); assert.strictEqual(c.deliveryCode, '001001'); assert.strictEqual(d.deliveryCode, '001002');
   assert.strictEqual(fresh.length, 2);
+});
+t('納品先の入力不足は受注チェックの要確認に出る', () => {
+  const none = EC.buildSlip(order({ ship: { name: '中村達生', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: '大島５−２８', addr2: '', phone: '' } }), ctx);
+  assert.ok(none.flags.some(f => f.level === 'warn' && /電話番号/.test(f.text)));
+  const noName = EC.buildSlip(order({ ship: { name: '', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: 'x', addr2: '', phone: '09012345678' } }), ctx);
+  assert.ok(noName.flags.some(f => f.level === 'error'));
+  const long = EC.buildSlip(order({ ship: { name: '山田', company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: 'あ'.repeat(30), addr2: '', phone: '09012345678' } }), ctx);
+  assert.ok(long.flags.some(f => /住所２が長い/.test(f.text)));
+  assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
 });
 t('取込ファイル：受注の行・UTF-16', () => {
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);

@@ -184,7 +184,11 @@
    */
 
   /* ============================================================ 商品行 → SMILE の品目 */
-  function compile(rule) { if (!rule._re) rule._re = new RegExp(rule.pattern, rule.scope === 'option' ? 'g' : ''); rule._re.lastIndex = 0; return rule._re; }
+  function compile(rule) {
+    var key = rule.scope + '/' + rule.pattern;
+    if (!(rule._re instanceof RegExp) || rule._reKey !== key) { rule._re = new RegExp(rule.pattern, rule.scope === 'option' ? 'g' : ''); rule._reKey = key; }
+    rule._re.lastIndex = 0; return rule._re;
+  }
   // 商品名のうち、品切れの案内（※…）を取り除く。案内に「次回発送は8月20日以降」とあれば日付も返す
   function splitName(raw, orderDate) {
     var t = norm(raw), hint = '';
@@ -356,7 +360,11 @@
       if (d > days) days = d;
     });
     slip.leadDays = days || mapping.leadDays;
-    slip.shipDate = cal.add(o.createdAt, slip.leadDays);
+    // 受注の締め（cutoffTime）以降は翌日分。休みの日に入った受注は次の営業日に処理する
+    var after = (o.createdTime || '') >= (cfg.cutoffTime || '24:00');
+    slip.processDate = cal.onOrAfter(after ? EC.addDays(o.createdAt, 1) : o.createdAt);
+    slip.shipDate = cal.add(slip.processDate, slip.leadDays);
+    if (slip.processDate !== o.createdAt) flag('info', (after ? cfg.cutoffTime + '以降の受注' : '休業日の受注') + '：' + slip.processDate.slice(5).replace('-', '/') + ' 分として処理');
     if (stockDate) {
       var sd = cal.onOrAfter(stockDate);
       if (sd > slip.shipDate) { slip.shipDate = sd; flag('info', '商品名の案内（次回発送 ' + stockDate.slice(5).replace('-', '/') + ' 以降）に合わせました'); }
@@ -369,6 +377,13 @@
     if (o.notes) flag('warn', 'お客様メモ：' + o.notes.slice(0, 60));
     if (!o.ship.name) flag('error', '配送先の名前がありません');
     if (!o.ship.zip || !(o.ship.province || o.ship.city || o.ship.addr1)) flag('error', '配送先の住所が足りません');
+    // 納品先は機械的にマスタへ追加する。入力が足りない・長すぎるときだけ知らせる
+    var dv = EC.deliveryFromOrder(o), lim = cfg.limits || {};
+    if (!dv.tel) flag('warn', '電話番号がありません');
+    if (lim.name && EC.sjisLen(dv.name) > lim.name) flag('warn', '納品先名が長いため切れる可能性（' + EC.sjisLen(dv.name) + 'バイト）');
+    if (lim.addr1 && EC.sjisLen(dv.addr1) > lim.addr1) flag('warn', '住所１が長いため切れる可能性（' + EC.sjisLen(dv.addr1) + 'バイト）');
+    if (lim.addr2 && EC.sjisLen(dv.addr2) > lim.addr2) flag('warn', '住所２が長いため切れる可能性（' + EC.sjisLen(dv.addr2) + 'バイト）');
+    if (o.ship.zip && EC.normZip(o.ship.zip).length !== 7) flag('warn', '郵便番号が7桁ではありません：' + o.ship.zip);
     if (o.fulfillment === 'fulfilled') flag('info', 'Shopify では発送済み');
     if (slip.inSmile) flag('info', 'SMILE に同じ注文番号の伝票があります（取込済み）');
     return slip;
@@ -377,6 +392,8 @@
   /* ============================================================ 納品先 */
   EC.normName = function (s) { return norm(s).replace(/様$/, '').replace(/[\s　]/g, '').toLowerCase(); };
   EC.normZip = function (s) { return digits(s); };
+  // SMILE の項目の長さ（半角1・全角2）。半角カナは1
+  EC.sjisLen = function (str) { var n = 0; for (var i = 0; i < String(str || '').length; i++) { var c = str.charCodeAt(i); n += (c < 0x100 || (c >= 0xFF61 && c <= 0xFF9F)) ? 1 : 2; } return n; };
   function fmtPhone(p) {
     var d = digits(p);
     if (/^81/.test(d) && d.length >= 11) d = '0' + d.slice(2);
