@@ -714,7 +714,8 @@ function canAutoRefresh() {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes((document.activeElement || {}).tagName)
               || [...document.querySelectorAll('#detail textarea')].some(t => t.value.trim());   // 書きかけのコメントを消さない
   const settle = !!document.querySelector('#settleView .sv');   // 支払決済の明細を見ている間は描き直さない（見ている請求書が変わらないように。「更新」で読み込む）
-  return !busy && !st.editor && !typing && !settle && document.visibilityState === 'visible';
+  const drawer = !!document.querySelector('.sdr-bg'), own = ['staff', 'contract'].includes(st.view);   // ドロワーで直している間・人員表と台帳は描き直さない（それぞれの「読み直す」で読む）
+  return !busy && !st.editor && !typing && !settle && !drawer && !own && document.visibilityState === 'visible';
 }
 function startAutoRefresh() {
   setInterval(() => { if (canAutoRefresh()) load(true); }, 60000);
@@ -896,7 +897,8 @@ const NAV_ICONS = {
   orgsync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/>'
 };
 function render() {
-  const sfd = document.getElementById('sfDrawer'); if (sfd) sfd.remove();   // 人員表の編集のドロワーは、描き直すたびに作り直す
+  const sfd = document.getElementById('sfDrawer');   // 人員表の編集のドロワーは、描き直すたびに作り直す（同じドロワーなら、スクロールと開いた欄はそのまま）
+  if (sfd) { const b = sfd.querySelector('.sdr-b'); const live = staff.drLive && staff.drLive.k === sfd.dataset.k ? staff.drLive.top : null; staff.drKeep = { k: sfd.dataset.k, top: live ?? (b ? b.scrollTop : 0), open: [...sfd.querySelectorAll('details')].map(d => d.open) }; sfd.remove(); }
   $('tabs').innerHTML = TABS.filter(t => !t.show || t.show()).map(t => {
     const c = t.count ? t.count() : null;
     return `<a data-k="${t.key}" title="${esc(t.label)}" class="${st.view === t.key ? 'active' : ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[t.key] || NAV_ICONS.all}</svg><span>${t.label}</span>${c != null ? `<span class="cnt ${c ? '' : 'zero'}">${c}</span>` : ''}</a>`;
@@ -914,7 +916,7 @@ function render() {
   if (st.view === 'orgsync') return renderOrgSync(main);
   if (st.view === 'aiusage') return renderAiUsage(main);
   if (st.view === 'contract') return renderContract(main);
-  if (st.view === 'staff') return renderStaff(main);
+  if (st.view === 'staff') { renderStaff(main); return staffKeepDrawer(); }
   if (st.view === 'flows') return renderFlows(main);
   renderListView(main);
 }
@@ -1083,7 +1085,7 @@ function staffScopes() {
 }
 const inScope = (path, scopes) => scopes.some(s => s === '' || path === s || String(path).startsWith(s + '/'));
 const staff = { data: null, busy: false, err: '', q: '', closed: new Set(), sel: null, add: null, unitEdit: null, cmp: '', ledger: null };
-async function loadStaff() {
+async function loadStaff() {   // 読み直す間も、今の人員表とドロワーは出したまま（直している画面が消えないように）
   staff.busy = true; staff.err = ''; render();
   try {
     staff.data = await api.staffLoad();
@@ -1181,7 +1183,7 @@ function renderStaff(main) {
     const data = { at: new Date().toISOString(), units: M.units.map(u => ({ path: u.Path, ...M.cnt[u.Path] })), persons: M.persons.map(p => ({ id: p.id, name: p.Title, path: p.UnitPath, kind: p.Kind, state: p.State })) };
     const ex = S.data.snaps.find(x => x.Title === ym);
     if (ex && !confirm(`${ym} の控えはもうあります。いまの人員表で置き換えますか？`)) return;
-    try { await api.staffSave('STF_Snapshot', ex ? ex.id : 0, { Title: ym, DataJson: JSON.stringify(data) }); toast(`${ym} の控えを残しました`); S.data = null; loadStaff(); }
+    try { await api.staffSave('STF_Snapshot', ex ? ex.id : 0, { Title: ym, DataJson: JSON.stringify(data) }); toast(`${ym} の控えを残しました`); loadStaff(); }
     catch (e) { alert('残せませんでした：' + e.message); }
   };
   main.querySelectorAll('[data-sp]').forEach(li => li.onclick = () => { const id = Number(li.dataset.sp); S.sel = S.sel === id ? null : id; S.add = null; S.unitEdit = null; render(); });
@@ -1351,7 +1353,7 @@ function bindStaffSync(main) {
     const list = y.items.filter(i => i.sel); let ok = 0; const ng = [];
     for (const i of list) { try { await api.staffSave('STF_Person', i.id, i.fields); ok++; } catch (e) { ng.push(i.name + '（' + e.message + '）'); } }
     toast(`人員表に ${ok} 人入れました`); if (ng.length) alert('入れられなかった人：\n' + ng.join('\n'));
-    staff.data = null; staff.sync = null; loadStaff();
+    staff.sync = null; loadStaff();
   };
 }
 /* 人の印（人員表とドロワー） */
@@ -1429,11 +1431,11 @@ async function ucfgSort(path, dir, sibs) {
   if (j < 0 || j >= list.length) return;
   [list[i], list[j]] = [list[j], list[i]];
   try { for (const [k, u] of list.entries()) { const v = (k + 1) * 10; if ((Number(u.Sort) || 0) !== v) { await api.staffSave('STF_Unit', u.id, { Sort: v }); u.Sort = v; } } render(); }
-  catch (e) { alert('並べ替えられませんでした：' + e.message); staff.data = null; loadStaff(); }
+  catch (e) { alert('並べ替えられませんでした：' + e.message); loadStaff(); }
 }
 async function ucfgRun(M, sibs) {
   const S = staff, c = S.ucfg, d = S.data, u = d.units.find(x => x.Path === c.path && x.Active !== false); if (!u) return;
-  const btn = $('ucGo'); const done = msg => { toast(msg); S.ucfg = { mode: '' }; S.data = null; loadStaff(); };
+  const btn = $('ucGo'); const done = msg => { toast(msg); S.ucfg = { mode: '' }; loadStaff(); };
   const bad = n => !n ? '名前を入れてください' : /[\/;]/.test(n) ? '名前に「/」「;」は使えません' : '';
   try {
     if (c.mode === 'add') {
@@ -1465,7 +1467,14 @@ async function ucfgRun(M, sibs) {
     for (const x of r.openings) { await api.staffSave('STF_Opening', x.id, { UnitPath: np(x.UnitPath) }); step(); }
     S.closed = new Set([...S.closed].map(x => ucfgUnder(x, u.Path) ? np(x) : x));
     done(r.roles.length || r.dept.length ? '書き換えました。申請できる範囲・給与の部門の対応も直す必要があります（総務へ）' : '書き換えました');
-  } catch (e) { alert('途中で止まりました：' + e.message + '\n途中まで書き換わっています。このまま総務に連絡してください。'); S.data = null; loadStaff(); }
+  } catch (e) { alert('途中で止まりました：' + e.message + '\n途中まで書き換わっています。このまま総務に連絡してください。'); loadStaff(); }
+}
+/* 描き直したドロワーに、前のスクロールと開いていた欄を戻す（同じドロワーのときだけ） */
+function staffKeepDrawer() {
+  const k = staff.drKeep, dr = document.getElementById('sfDrawer'); staff.drKeep = null;
+  if (!k || !dr || dr.dataset.k !== k.k) return;
+  const ds = [...dr.querySelectorAll('details')]; if (ds.length === k.open.length) ds.forEach((d, i) => { d.open = k.open[i]; });
+  const b = dr.querySelector('.sdr-b'); if (b) b.scrollTop = k.top;
 }
 /* 人を直す・足す、場所のメモ（一覧の上に出す） */
 function staffPanel(box, M, scopes) {
@@ -1479,6 +1488,9 @@ function staffPanel(box, M, scopes) {
   dr.onclick = e => { if (e.target === dr) closeDr(); };
   const onKey = e => { if (e.key === 'Escape' && document.body.contains(dr)) { document.removeEventListener('keydown', onKey); closeDr(); } }; document.addEventListener('keydown', onKey);
   box = dr.querySelector('.sdr-b');
+  dr.dataset.k = S.ucfg ? 'cfg' : sec ? 'sec' + sec.id : S.secAdd ? 'secadd' : p ? 'p' + p.id : u ? 'u' + u.Path : 'add' + S.add;
+  box.addEventListener('scroll', () => { S.drLive = { k: dr.dataset.k, top: box.scrollTop }; });
+  if (!S.drKeep || S.drKeep.k !== dr.dataset.k) S.drLive = null;   // 戻すのは描き終えてから（staffKeepDrawer）
   if (S.ucfg) return staffUnitCfg(box, M, closeDr);
   if (S.secAdd || sec) {
     box.innerHTML = sec ? `<div class="card"><h3 class="h3f"><span>🔒 内密の求人</span><button class="mini" id="sfX">閉じる</button></h3>
@@ -1493,7 +1505,7 @@ function staffPanel(box, M, scopes) {
           <label class="fld wide"><span>メモ（何のための求人か）</span><textarea id="secMemo" rows="3" placeholder="例：技術部の責任者のポスト"></textarea></label></div>
         <div class="actions"><span style="flex:1"></span><button class="pri" id="secGo">内密の求人を足す</button></div></div>`;
     $('sfX').onclick = () => { S.secAdd = null; S.secSel = null; render(); };
-    if ($('secEnd')) $('secEnd').onclick = async () => { try { await api.staffSave('STF_Opening', sec.id, { State: '終了' }); toast('内密の求人を終えました'); S.secSel = null; S.data = null; loadStaff(); } catch (e) { alert('終えられませんでした：' + e.message); } };
+    if ($('secEnd')) $('secEnd').onclick = async () => { try { await api.staffSave('STF_Opening', sec.id, { State: '終了' }); toast('内密の求人を終えました'); S.secSel = null; loadStaff(); } catch (e) { alert('終えられませんでした：' + e.message); } };
     if ($('secOpen')) $('secOpen').onclick = async () => {
       if (!confirm('内密を解除します。人員表を見られる幹部の方全員に「求人募集中」として見えるようになります。よろしいですか？')) return;
       const b = $('secOpen'); b.disabled = true; b.textContent = '解除しています…';
@@ -1502,7 +1514,7 @@ function staffPanel(box, M, scopes) {
         const t0 = Date.now(); let ok = false;
         while (Date.now() - t0 < 120000) { await new Promise(r => setTimeout(r, 2500)); const r = await api.actionResult(id); if (r.Result === '完了') { ok = true; break; } if (r.Result === 'エラー') throw new Error(r.ResultMessage || ''); }
         if (!ok) throw new Error('時間がかかっています。少ししてから人員表を読み直してください');
-        toast('内密を解除しました'); S.secSel = null; S.data = null; loadStaff();
+        toast('内密を解除しました'); S.secSel = null; loadStaff();
       } catch (e) { b.disabled = false; b.textContent = '内密を解除して人員表に出す'; alert('解除できませんでした：' + e.message); }
     };
     if ($('secGo')) $('secGo').onclick = async () => {
@@ -1513,7 +1525,7 @@ function staffPanel(box, M, scopes) {
         const t0 = Date.now(); let ok = false;
         while (Date.now() - t0 < 120000) { await new Promise(r => setTimeout(r, 2500)); const r = await api.actionResult(id); if (r.Result === '完了') { ok = true; break; } if (r.Result === 'エラー') throw new Error(r.ResultMessage || ''); }
         if (!ok) throw new Error('時間がかかっています。少ししてから人員表を読み直してください');
-        toast('内密の求人を足しました'); S.secAdd = null; S.data = null; loadStaff();
+        toast('内密の求人を足しました'); S.secAdd = null; loadStaff();
       } catch (e) { b.disabled = false; b.textContent = '内密の求人を足す'; alert('足せませんでした：' + e.message); }
     };
     return;
@@ -1550,13 +1562,13 @@ function staffPanel(box, M, scopes) {
     if ($('wishNo')) $('wishNo').onclick = () => { S.wishAdd = null; render(); };
     if ($('wishGo')) $('wishGo').onclick = async () => {
       const n = Number($('wishCount').value) || 0, memo = $('wishMemo').value.trim(); if (n < 1 || n > 20) return alert('人数は1〜20で入れてください');
-      try { await api.staffSave('STF_Opening', 0, { Title: `${u.Title} ${n}名（希望）`, UnitPath: u.Path, Count: n, Filled: 0, State: '希望', Memo: memo }); toast('枠の希望を足しました'); S.wishAdd = null; S.data = null; loadStaff(); }
+      try { await api.staffSave('STF_Opening', 0, { Title: `${u.Title} ${n}名（希望）`, UnitPath: u.Path, Count: n, Filled: 0, State: '希望', Memo: memo }); toast('枠の希望を足しました'); S.wishAdd = null; loadStaff(); }
       catch (e) { alert('足せませんでした：' + e.message); }
     };
     const wishOf = id => M.wishes.find(x => x.id === Number(id));
     box.querySelectorAll('[data-wjob]').forEach(b => b.onclick = () => { const w = wishOf(b.dataset.wjob); S.unitEdit = null; staffStart('RINGI', u.Path, null, { staffCount: Number(w.Count) || 1, purpose: w.Memo || '', _wish: w.id }); });
     box.querySelectorAll('[data-wdis]').forEach(b => b.onclick = () => { S.unitEdit = null; S.add = u.Path; S.addWish = Number(b.dataset.wdis); render(); });
-    box.querySelectorAll('[data-wend]').forEach(b => b.onclick = async () => { if (!confirm('この枠の希望を見送ります（人員表から消えます）。よろしいですか？')) return; try { await api.staffSave('STF_Opening', Number(b.dataset.wend), { State: '終了' }); toast('枠の希望を見送りました'); S.data = null; loadStaff(); } catch (e) { alert('できませんでした：' + e.message); } });
+    box.querySelectorAll('[data-wend]').forEach(b => b.onclick = async () => { if (!confirm('この枠の希望を見送ります（人員表から消えます）。よろしいですか？')) return; try { await api.staffSave('STF_Opening', Number(b.dataset.wend), { State: '終了' }); toast('枠の希望を見送りました'); loadStaff(); } catch (e) { alert('できませんでした：' + e.message); } });
   } else {
     const x = p || { Title: '', Kind: '派遣', State: '在籍', UnitPath: S.add };
     const ro = p && !canEd;
@@ -1581,7 +1593,7 @@ function staffPanel(box, M, scopes) {
       ${p && !ro ? '</details>' : ''}</div>`;
   }
   $('sfX').onclick = () => { S.sel = null; S.add = null; S.addWish = null; S.unitEdit = null; render(); };
-  if ($('sfMemoSave')) $('sfMemoSave').onclick = async () => { try { await api.staffSave('STF_Person', p.id, { Memo: $('sfMemoQ').value.trim() }); toast('メモを保存しました'); S.data = null; loadStaff(); } catch (e) { alert('保存できませんでした：' + e.message); } };
+  if ($('sfMemoSave')) $('sfMemoSave').onclick = async () => { try { await api.staffSave('STF_Person', p.id, { Memo: $('sfMemoQ').value.trim() }); toast('メモを保存しました'); loadStaff(); } catch (e) { alert('保存できませんでした：' + e.message); } };
   if ($('sfMove')) $('sfMove').onclick = () => { const d = box.querySelector('details.sdr-edit'); if (d) { d.open = true; const sl = d.querySelector('[data-sf=UnitPath]'); if (sl) { sl.focus(); sl.scrollIntoView({ block: 'center' }); } } };
   if ($('sfLedger')) $('sfLedger').onclick = () => { ledger.openEmp = p.EmpCode; S.sel = null; st.view = 'contract'; render(); };
   box.querySelectorAll('[data-jinin]').forEach(b => b.onclick = () => {
@@ -1594,7 +1606,7 @@ function staffPanel(box, M, scopes) {
     if (!u) f.StartDate = f.StartDate ? dOut(f.StartDate) : null;
     if (!u && !p) f.Source = '手入力';
     const closeWish = !u && !p && S.addWish ? S.addWish : null;   // 枠の希望から「派遣で補充」したときは、その希望を閉じる
-    try { await api.staffSave(u ? 'STF_Unit' : 'STF_Person', u ? u.id : p ? p.id : 0, f); if (closeWish) { await api.staffSave('STF_Opening', closeWish, { State: '終了' }); S.addWish = null; } toast('人員表を保存しました'); S.sel = null; S.add = null; S.unitEdit = null; S.data = null; loadStaff(); }
+    try { await api.staffSave(u ? 'STF_Unit' : 'STF_Person', u ? u.id : p ? p.id : 0, f); if (closeWish) { await api.staffSave('STF_Opening', closeWish, { State: '終了' }); S.addWish = null; } toast('人員表を保存しました'); S.sel = null; S.add = null; S.unitEdit = null; loadStaff(); }
     catch (e) { alert('保存できませんでした：' + e.message + (e.status === 403 ? '（直す権限がありません）' : '')); }
   };
 }
