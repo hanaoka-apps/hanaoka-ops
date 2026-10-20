@@ -11,7 +11,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ap_intake.js"></script>
-<script src="nav.js" defer></script>
+<script src="ap_ai.js"></script>
+<script src="nav.js?v=20261021" defer></script>
 <style>
 /* 見た目は支払決済アプリ（settle-proto）・仕入（SMILE）にそろえる */
 :root{--pri:#1a5fa8;--pri-l:#e3edf9;--bg:#f4f6f9;--card:#fff;--line:#dde2ec;--txt:#1e2533;--sub:#6b7a99;--up:#c0392b;--up-l:#fbe7e5;--down:#1e8449;--down-l:#e3f4e8;--warn:#a0520c;--warn-l:#fdf0e1;--flag:#7a3db8;--flag-l:#f1e8fb}
@@ -63,6 +64,7 @@ tr.row{cursor:pointer}tr.row:hover{background:#f7f9fc}
 /* 仕訳：1件を2段（上＝科目・部門・税・金額、下＝摘要を全幅） */
 .ln-t tr.l1 td{border-bottom:0 !important;padding-bottom:1px}.ln-t tr.l2 td{padding-top:1px;padding-bottom:7px}
 .ln-t .memo{display:flex;align-items:center;gap:8px}.ln-t .memo span{flex:none;font-size:11.5px;color:var(--sub)}.ln-t .memo input{flex:1}
+.ln-t .memo.am{margin-top:4px}.ln-t .memo.am span{color:var(--navy,#23268f);font-weight:600}.ln-t .memo.am input{border-color:#c9cdf0;background:#f7f8ff}   /* 決裁メモ（社長・室長向け） */
 .memo select.uchi{flex:none;width:auto;max-width:200px}.memo select.uchi.ng{border-color:var(--up);background:var(--up-l,#fdecec)}
 .lnw{overflow-x:auto}.ln-t{min-width:560px;font-size:13px}.ln-t td.n{white-space:nowrap}.ln-t td{padding:3px 4px;white-space:normal}.ln-t input,.ln-t select{padding:3px 5px;width:100%;font-size:13px}.ln-t .num{text-align:right}
 .drop{border:2px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--sub);cursor:pointer;display:block;font-size:13px}.drop.over{border-color:var(--pri);background:var(--pri-l)}.drop input{display:none}
@@ -119,7 +121,7 @@ button.lk{border:0;background:none;color:var(--pri);font-weight:700;padding:4px 
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261004"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261022"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">経費</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -164,7 +166,7 @@ const ROUNDS=['10日','20日','月末'],METHODS=['総合振込','口座振替','
 const LOCKED=['決裁中','決裁済み','出力済み'];
 let RULES=null,KAMOKU=[],BUMON=[],UCHI={},JOURNAL=null;
 let listClosed=(()=>{try{return localStorage.getItem('ap.review.list')==='closed';}catch{return false;}})();   // 確認モードの一覧をたたむ（ページ送りが中心）
-let ALL=[],LINES={},VB={},SPM=[],PIS=[],SBS=[],items=[],draft=null,hdrDraft=null,cmDraft=null,pdfSel={},pdfCache={},acks={};
+let INVMETA={},SQN=null,ALL=[],LINES={},VB={},SPM=[],PIS=[],SBS=[],items=[],draft=null,hdrDraft=null,cmDraft=null,pdfSel={},pdfCache={},acks={};
 const st={tab:'inbox',box:'wait',loc:'',round:'',step:'mine',q:'',sel:null,cmOpen:false,view:'list',editHdr:false,editBank:false,allIss:false,openLines:null,openLog:false};
 
 // ---------- 認証・Graph ----------
@@ -220,7 +222,9 @@ const uchiOf=ac=>(UCHI[ac]||[]).filter(u=>u.code&&u.code!=='000000');
 const uchiNeed=ac=>!!(UCHI[ac]&&UCHI[ac].length&&!UCHI[ac].some(u=>u.code==='000000'));
 const uchiName=(ac,c)=>(uchiOf(ac).find(u=>u.code===c)||{}).name||c||'';
 // ---------- 振込先（経費） ----------
-function hdrOf(r){return {payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc,bk:Object.assign({},r.bk)};}
+function hdrOf(r){return {payee:r.payee,code:r.code,amount:r.amount,ym:r.ym||month(),round:r.round,method:r.method,invNo:r.invNo,regNo:r.regNo,loc:r.loc,debit:r.debit,bk:Object.assign({},r.bk)};}
+// 引落予定日（UTC の日付で入っている）を日本の日付 YYYY-MM-DD に
+const jstDay=v=>{if(!v)return '';const d=new Date(v);if(isNaN(d))return '';return new Date(d.getTime()+9*3600e3).toISOString().slice(0,10);};
 const bankFull=b=>!!(b&&b.code&&b.bcode&&b.type&&b.no&&b.holder);
 const digits=s=>String(s||'').replace(/\D/g,'');
 const sameBank=(a,b)=>digits(a.code).padStart(4,'0')===digits(b.code).padStart(4,'0')&&digits(a.bcode).padStart(3,'0')===digits(b.bcode).padStart(3,'0')&&digits(a.no).padStart(7,'0')===digits(b.no).padStart(7,'0');
@@ -310,7 +314,10 @@ async function showApp(){
 async function loadAll(){
   msg('読み込み中...');const ym=month();
   await takeAI();
-  ALL=(await fetchAll(L.inv)).filter(it=>{const c=fv(L.inv,it.fields,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,it.fields,'アーカイブフラグ')!==true;}).map(it=>({id:String(it.id),f:it.fields}));
+  const invAll=await fetchAll(L.inv);
+  // 燃料単価の表（サマリー）用に、請求書ごとの 払う月・拠点 を持つ（対象外・まとめた＝アーカイブは除く）
+  INVMETA={};invAll.forEach(it=>{const f=it.fields,c=fv(L.inv,f,'支払区分')||'';if((c==='本社経費'||c==='工場経費')&&fv(L.inv,f,'アーカイブフラグ')!==true)INVMETA[String(it.id)]={ym:fv(L.inv,f,'対象年月')||'',loc:f[V.loc]||(c==='工場経費'?'工場':'本社'),payee:fv(L.inv,f,'支払先名')||''};});
+  ALL=invAll.filter(it=>{const c=fv(L.inv,it.fields,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,it.fields,'アーカイブフラグ')!==true;}).map(it=>({id:String(it.id),f:it.fields}));
   LINES={};(await fetchAll(L.sl)).forEach(it=>{const k=String(fv(L.sl,it.fields,'請求書ID')||'');if(k)(LINES[k]=LINES[k]||[]).push({id:String(it.id),f:it.fields});});
   Object.values(LINES).forEach(a=>a.sort((x,y)=>(+fv(L.sl,x.f,'明細行番号')||0)-(+fv(L.sl,y.f,'明細行番号')||0)));
   VB={};VBL=[];(await fetchAll(L.vb)).forEach(it=>{const f=it.fields,c=String(fv(L.vb,f,'仕入先コード')||'').trim();if(c)VB[c]=f;
@@ -332,7 +339,7 @@ function mk(x){
   const done=DONE.includes(status),lines=LINES[x.id]||[];
   const r={id:x.id,x,f,loc,cat,steps,status,done,lines,
     payee:g(x,'支払先名')||'',code:String(g(x,'支払先コード')||'').trim(),amount:+g(x,'金額_税込')||0,ym:g(x,'対象年月')||'',round:g(x,'支払日区分')||'',method:g(x,'支払手段')||'',
-    invNo:g(x,'請求NO')||'',regNo:g(x,'登録番号')||'',title:f.Title||'',doc:String(g(x,'DOCコード')||''),
+    invNo:g(x,'請求NO')||'',regNo:g(x,'登録番号')||'',title:f.Title||'',doc:String(g(x,'DOCコード')||''),debit:jstDay(g(x,'引落予定日')),
     bk:Object.fromEntries(Object.entries(BK).map(([k,n])=>[k,String(f[n]??'')])),
     ai:f[V.ai]||'',aicom:String(f[V.com]||''),by:f[V.by]||'',at:f[V.at]||'',wf:f[V.wf]||'',
     log:parseJ(f[V.log],[]),hold:!!f[V.hold],note:f[V.note]||'',reject:g(x,'差戻し理由')||'',prepaid:g(x,'先行支払日')||''};
@@ -407,30 +414,48 @@ function inboxOf(){const a=items.filter(r=>!r.done&&r.step===0&&(!st.loc||r.loc=
 function myLoc(){const f=(RULES.steps&&RULES.steps['工場'])||[];return f.some(s=>(s.members||[]).some(n=>sameName(me(),n)))&&!isSub()?'工場':'本社';}
 function drawInbox(){
   const b=inboxOf(),list=b[st.box]||[],who=stepLabelAll(0).replace(/^.*?（|）$/g,'');
-  $('pane').innerHTML=`<div class="card"><h2>請求書を受け付ける（稟議なしの経費。支払依頼のワークフローで決裁されたものは自動で届きます）</h2>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label class="drop" id="drop" style="flex:1;min-width:280px">📥 経費の請求書（PDF・写真）をここにドラッグ（またはクリックして選ぶ・複数可。スマホは撮影もできます）<input type="file" id="file-in" accept="${APDoc.ACCEPT}" multiple></label>
-        <label style="font-size:13px;color:var(--sub)">拠点 <select id="rc-loc" ${UPL.busy?'disabled':''}><option ${myLoc()==='本社'?'selected':''}>本社</option><option ${myLoc()==='工場'?'selected':''}>工場</option></select></label>
-        <span style="font-size:12px;color:var(--sub)">${month().replace('/','年')}月払いとして受け付けます</span></div></div>
+  // 受け付け＝「AI に渡す」：左半分が渡し口（ドラッグ・クリック・スマホは撮影）、右に拠点・流れ・進み具合
+  const L0=UPL.loc||myLoc();
+  $('pane').innerHTML=`<div class="card ho"><div class="ho-grid">
+      <label class="drop ho-drop" id="drop"><input type="file" id="file-in" accept="${APDoc.ACCEPT}" multiple>
+        <span class="ho-ic"><svg viewBox="0 0 48 48" width="52" height="52" aria-hidden="true"><path d="M13 6h15l9 9v21a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="#fff" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M28 6v9h9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M15 23h12M15 29h8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="36" cy="36" r="9" fill="currentColor"/><path d="M36 31.5l1.3 3.2 3.2 1.3-3.2 1.3-1.3 3.2-1.3-3.2-3.2-1.3 3.2-1.3z" fill="#fff"/></svg></span>
+        <span class="ho-t">請求書を AI に渡す</span>
+        <span class="ho-s">PDF・写真をここにドラッグ、またはクリックして選ぶ（複数可）<br>スマホはその場で撮影もできます</span>
+        <span class="ho-btn">ファイルを選ぶ</span></label>
+      <div class="ho-side">
+        <div class="ho-row"><span class="ho-k">拠点</span><span class="seg" id="rc-seg">${['本社','工場'].map(x=>`<button type="button" data-rcloc="${x}" class="${L0===x?'on':''}" ${UPL.busy?'disabled':''}>${x}</button>`).join('')}</span><input type="hidden" id="rc-loc" value="${L0}"></div>
+        <div class="ho-row"><span class="ho-k">複数</span><span class="seg" id="rc-mg">${[[0,'別々の請求書'],[1,'1件にまとめる']].map(([v,l])=>`<button type="button" data-rcmg="${v}" class="${+!!UPL.merge===v?'on':''}" ${UPL.busy?'disabled':''}>${l}</button>`).join('')}</span><span class="ho-m">${UPL.merge?'置いたファイルを1件の請求書として受け付けます（ページが分かれた PDF・別紙の明細）':''}</span></div>
+        <div class="ho-row"><span class="ho-k">支払</span><b>${month().replace('/','年')}月払い</b><span class="ho-m">として受け付けます</span></div>
+        <ol class="ho-flow"><li><b>渡す</b><span>受け付けて保存</span></li><li><b>AI が読む</b><span>20〜30秒</span></li><li><b>確かめる</b><span>確認待ちに並ぶ</span></li></ol>
+        <div id="upst"></div>
+        <div class="ho-note">稟議なしの経費を渡します。支払依頼のワークフローで決裁されたものは、自動で届きます</div>
+      </div></div></div>
     <div class="card"><div class="subtabs">
       <button class="${st.box==='reading'?'on':''}" data-box="reading">🤖 AI 読み取り中 ${b.reading.length}</button>
       <button class="${st.box==='failed'?'on':''}" data-box="failed">⚠ 読み取り失敗 ${b.failed.length}</button>
       <button class="${st.box==='wait'?'on':''}" data-box="wait">👀 確認待ち（${esc(who)}） ${b.wait.length}</button></div>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:6px">${st.box==='reading'?'AI が金額・科目などを読み取っています。終わると「確認待ち」に移ります。1日たっても残っているものは止まっているかもしれません':st.box==='failed'?'AI が読み取れなかった請求書です。開いて、請求書を見ながら支払先・金額・仕訳を入れてください（入れると確認待ちに移ります）':'AI が読み取ったものです。開いて内容を確かめ、✔ OK で次の段へ回します'}</div>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:6px">${st.box==='reading'?'AI が金額・科目などを読み取っています。終わると「確認待ち」に移ります。1日たっても残っているものは止まっているかもしれません':st.box==='failed'?'AI が読み取れなかった請求書です。開いて、請求書を見ながら支払先・金額・仕訳を入れてください（入れると確認待ちに移ります）':'AI が読み取ったものです。開いて内容を確かめ、✔ OK で次の段へ回します'}${st.box==='wait'&&b.wait.length&&window.APAI?`　<button class="lk" id="bRereadAll" style="font-size:12px" title="決裁メモなど、新しい読み方で支払内容と仕訳を作り直します">🤖 確認待ちを AI で読み直す（${b.wait.length}件）</button>`:''}</div>
       <table><tr><th>受け付け</th><th>支払先</th><th class="n">金額</th><th>支払</th><th>気づき</th></tr>
       ${list.sort((x,y)=>String(y.at).localeCompare(String(x.at))).map(r=>`<tr class="row" data-open="${r.id}"><td>${esc(fmtTime(r.at))}<div style="font-size:11.5px;color:var(--sub)">${esc(r.by)}・${esc(r.loc)}</div></td>
         <td style="white-space:normal"><b>${esc(r.payee||r.title||'（読み取り前）')}</b>${r.wf?`<div style="font-size:11.5px;color:var(--sub)">ワークフロー ${esc(r.wf)}（社長決裁済み）</div>`:''}</td>
-        <td class="n">${r.reading?'—':yen(r.amount)}</td><td>${esc(r.ym||'')} ${esc(r.round||'')}<div style="font-size:11.5px;color:var(--sub)">${esc(r.method||'')}</div></td>
+        <td class="n">${r.reading?(AIRUN.has(r.id)?'<span class="spin" title="AI が読んでいます"></span>':'—'):yen(r.amount)}${canReread(r)?`<div><button class="lk" data-reread="${r.id}" style="font-size:12px">🤖 AI でもう一度読む</button></div>`:''}</td><td>${esc(r.ym||'')} ${esc(r.round||'')}<div style="font-size:11.5px;color:var(--sub)">${esc(r.method||'')}</div></td>
         <td style="white-space:normal">${tagsOf(r).filter(t=>!/^WF |AI 読み取り中/.test(t[0])).map(t=>`<span class="tag ${t[1]}">${esc(t[0])}</span>`).join('')}</td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--sub);padding:14px">ありません</td></tr>'}</table></div>`;
   const d=$('drop');['dragenter','dragover'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
   ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
   d.addEventListener('drop',ev=>registerExpense(ev.dataTransfer.files));$('file-in').onchange=e=>{registerExpense(e.target.files);e.target.value='';};
-  d.insertAdjacentHTML('afterend','<div id="upst"></div>');drawUpl();}
-// 受け付けの進み具合：置いた直後から「受け付けています… 2/5」、終わったら結果を次の操作まで残す
-const UPL={busy:false,total:0,done:0,cur:'',ok:0,errs:[],result:''};
+  document.querySelectorAll('[data-rcmg]').forEach(b=>b.onclick=()=>{UPL.merge=b.dataset.rcmg==='1';drawInbox();});
+  if($('bRereadAll'))$('bRereadAll').onclick=rereadWaiting;
+  document.querySelectorAll('[data-rcloc]').forEach(b=>b.onclick=()=>{UPL.loc=b.dataset.rcloc;$('rc-loc').value=UPL.loc;document.querySelectorAll('[data-rcloc]').forEach(x=>x.classList.toggle('on',x===b));});
+  drawUpl();}
+// 受け付けの進み具合：置いた直後から「受け付けています… 2/5」、終わったら結果を次の操作まで残す。AI が読んでいる件数も出す
+const UPL={busy:false,total:0,done:0,cur:'',ok:0,errs:[],result:'',loc:'',merge:false};   // merge：置いた何ファイルかを1件の請求書にする（受け付けたら「別々」に戻す）
 function drawUpl(){const el=$('upst');if(!el)return;const d=$('drop');if(d)d.classList.toggle('busy',UPL.busy);
+  let h='';
   if(UPL.busy){const pc=UPL.total?Math.round(UPL.done/UPL.total*100):0;
-    el.innerHTML=`<div class="upl"><span class="spin"></span><div style="flex:1;min-width:0"><b>受け付けています… ${UPL.done+1 > UPL.total ? UPL.total : UPL.done+1} / ${UPL.total}</b><div class="fn">${esc(UPL.cur)}</div><div class="progbar"><i style="width:${pc}%"></i></div></div><span style="font-size:12px;color:var(--sub)">画面を閉じずにお待ちください</span></div>`;}
-  else el.innerHTML=UPL.result?`<div class="upl ${UPL.errs.length?'ng':'ok'}"><span>${UPL.errs.length?'⚠':'✓'}</span><div style="flex:1">${UPL.result}</div><button class="lk" id="uplX">閉じる</button></div>`:'';
+    h=`<div class="upl"><span class="spin"></span><div style="flex:1;min-width:0"><b>受け付けています… ${UPL.done+1 > UPL.total ? UPL.total : UPL.done+1} / ${UPL.total}</b><div class="fn">${esc(UPL.cur)}</div><div class="progbar"><i style="width:${pc}%"></i></div><div class="fn">画面を閉じずにお待ちください</div></div></div>`;}
+  else if(UPL.result)h=`<div class="upl ${UPL.errs.length?'ng':'ok'}"><span>${UPL.errs.length?'⚠':'✓'}</span><div style="flex:1">${UPL.result}</div><button class="lk" id="uplX">閉じる</button></div>`;
+  if(!UPL.busy&&typeof AIRUN!=='undefined'&&AIRUN.size)h+=`<div class="upl ai"><span class="spin"></span><div style="flex:1"><b>AI が読んでいます：${AIRUN.size}件</b><div class="fn">終わったものから「確認待ち」に並びます</div></div></div>`;
+  el.innerHTML=h;
   const x=$('uplX');if(x)x.onclick=()=>{UPL.result='';drawUpl();};}
 
 // ---- 📊 サマリー ----
@@ -452,8 +477,46 @@ function drawSummary(){
   <div class="card"><h2>支払回 × 拠点</h2><table><tr><th>支払回</th><th>拠点</th><th class="n">件数</th><th class="n">金額</th><th class="n">確定</th><th class="n">前月</th></tr>
     ${[...ROUNDS,''].flatMap(rd=>['本社','工場'].map(lc=>{const l=a.filter(r=>(r.round||'')===rd&&r.loc===lc);if(!l.length)return '';const p=items.filter(r=>r.ym===prevMonth(month())&&r.round===rd&&r.loc===lc).reduce((s,r)=>s+r.amount,0);
       return `<tr><td>${esc(rd||'（未設定）')}</td><td>${lc}</td><td class="n">${l.length}</td><td class="n">${yen(l.reduce((s,r)=>s+r.amount,0))}</td><td class="n">${l.filter(r=>r.done).length}／${l.length}</td><td class="n">${p?yen(p):'—'}</td></tr>`;})).join('')}</table></div>
-  <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>`;
-  $('pane').innerHTML=h;}
+  <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>
+  <div class="card" id="fuelCard"><h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">読み込み中…</div></div>`;
+  $('pane').innerHTML=h;fuelCard();}
+// ---------- 燃料の単価（決裁メモの「…ガソリン…@168～184.8」）を、拠点×燃料 × 払う月 で並べる ----------
+// 元：アプリの仕訳の決裁メモ（AP_PaymentSlip）＋ 請求Quick の決裁メモ（/BILLS/masters/決裁メモ.csv。アプリより前の月）
+const FUEL_LOC=['大阪','名古屋','東京','本社','工場','鴻巣'];
+function parseFuel(memo){const s=String(memo||'').normalize('NFKC');const out=[];
+  // 「大阪ガソリン代@176～187」「5月分ガソリン代(本社)@162.2」「軽油税(本社)@151.4」「工場 軽油@158.4円/L」
+  const re=/(ハイオク|レギュラー|ガソリン|軽油|灯油)[^@]{0,30}@\s*([\d,]+(?:\.\d+)?)\s*(?:円)?(?:\s*[~～〜\-]\s*([\d,]+(?:\.\d+)?))?/g;let m;
+  while((m=re.exec(s))){const lo=+m[2].replace(/,/g,''),hi=m[3]?+m[3].replace(/,/g,''):lo;if(!(lo>50&&hi<500))continue;
+    const fuel=m[1]==='軽油'?'軽油':m[1]==='灯油'?'灯油':m[1]==='ハイオク'?'ハイオク':'ガソリン';
+    const loc=FUEL_LOC.find(l=>s.includes(l))||'';out.push({fuel,lo:Math.min(lo,hi),hi:Math.max(lo,hi),loc});}
+  return out;}
+async function loadSqNotes(){if(SQN)return SQN;
+  try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/決裁メモ.csv')}:/content`,null,null,true);
+    const rows=parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer())),h=rows[0]||[],ix=n=>h.indexOf(n);
+    SQN=rows.slice(1).map(r=>({pay:r[ix('振込予定日')]||'',date:r[ix('取引日')]||'',dept:r[ix('負担部門名')]||'',memo:r[ix('備考')]||'',payee:r[ix('取引先名')]||''}));}
+  catch(e){SQN=[];}
+  return SQN;}
+const ymOfDate=(d,plus)=>{const m=String(d||'').match(/(\d{4})\D(\d{1,2})/);if(!m)return '';const x=new Date(+m[1],+m[2]-1+(plus||0),1);return `${x.getFullYear()}/${String(x.getMonth()+1).padStart(2,'0')}`;};
+async function fuelCard(){const el=$('fuelCard');if(!el)return;
+  const pts=[];   // {ym, key:拠点｜燃料, lo, hi, src, payee}
+  const add=(ym,loc0,memo,src,payee)=>parseFuel(memo).forEach(p=>{const loc=p.loc||loc0||'（拠点なし）';if(ym)pts.push({ym,key:`${loc}｜${p.fuel}`,lo:p.lo,hi:p.hi,src,payee});});
+  const pn=s=>String(s||'').normalize('NFKC').replace(/株式会社|有限会社|\(株\)|\(有\)|㈱|[\s・.]/g,''),appKey=new Set();
+  Object.entries(LINES).forEach(([id,ls])=>{const inv=INVMETA[id];if(!inv)return;ls.forEach(l=>{const memo=fv(L.sl,l.f,'決裁メモ');if(!memo||!parseFuel(memo).length)return;
+    const dn=(BUMON.find(b=>b.code===fv(L.sl,l.f,'部門コード'))||{}).name||'';add(inv.ym,FUEL_LOC.find(x=>dn.includes(x))||inv.loc,memo,'app',inv.payee);appKey.add(inv.ym+'|'+pn(inv.payee));});});
+  (await loadSqNotes()).forEach(x=>{const ym=x.pay?ymOfDate(x.pay):ymOfDate(x.date,1);if(appKey.has(ym+'|'+pn(x.payee)))return;   // アプリで読んだ支払（同じ月・同じ支払先）はアプリの分だけ
+    add(ym,FUEL_LOC.find(l=>x.dept.includes(l))||x.dept,x.memo,'sq',x.payee);});
+  if(!pts.length){el.innerHTML='<h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">まだありません（ガソリン・軽油の請求書を AI が読むと、決裁メモの単価から並びます）</div>';return;}
+  const yms=[...new Set(pts.map(p=>p.ym))].sort().slice(-8),keys=[...new Set(pts.map(p=>p.key))].sort((a,b)=>a.split('｜')[1].localeCompare(b.split('｜')[1])||a.localeCompare(b));
+  const cell={};pts.forEach(p=>{if(!yms.includes(p.ym))return;const k=p.key+'@'+p.ym,c=cell[k]||(cell[k]={lo:p.lo,hi:p.hi,src:new Set(),payee:new Set()});c.lo=Math.min(c.lo,p.lo);c.hi=Math.max(c.hi,p.hi);c.src.add(p.src);c.payee.add(p.payee);});
+  const mid=c=>(c.lo+c.hi)/2,fmt=v=>(+v).toLocaleString('ja-JP',{maximumFractionDigits:1});
+  // 月ごと・燃料ごとに、いちばん安い拠点は緑、いちばん高い拠点は赤（2拠点以上あるとき）
+  const mark={};yms.forEach(ym=>{['ガソリン','軽油','ハイオク','灯油'].forEach(fu=>{const cs=keys.filter(k=>k.endsWith('｜'+fu)).map(k=>[k,cell[k+'@'+ym]]).filter(x=>x[1]);
+    if(cs.length<2)return;cs.sort((a,b)=>mid(a[1])-mid(b[1]));mark[cs[0][0]+'@'+ym]='lo';mark[cs[cs.length-1][0]+'@'+ym]='hi';});});
+  el.innerHTML=`<h2>燃料の単価（1Lあたり・拠点ごと・払う月）</h2>
+    <div style="overflow-x:auto"><table class="fuel"><tr><th>拠点</th><th>燃料</th>${yms.map(y=>`<th class="n">${y.replace(/^\d{4}\//,'')}月払い</th>`).join('')}</tr>
+    ${keys.map(k=>{const [loc,fu]=k.split('｜');return `<tr><td>${esc(loc)}</td><td>${esc(fu)}</td>${yms.map(y=>{const c=cell[k+'@'+y];if(!c)return '<td class="n" style="color:#c3c9d6">—</td>';
+      const mk=mark[k+'@'+y];return `<td class="n ${mk==='lo'?'f-lo':mk==='hi'?'f-hi':''} ${c.src.has('app')?'':'f-sq'}" title="${esc([...c.payee].join('・'))}${c.src.has('app')?'':'（請求Quick の決裁メモ）'}">${c.lo===c.hi?fmt(c.lo):`${fmt(c.lo)}～${fmt(c.hi)}`}</td>`;}).join('')}</tr>`;}).join('')}</table></div>
+    <div style="font-size:12px;color:var(--sub);margin-top:6px">決裁メモの「@単価」から並べています。<span class="f-lo" style="padding:0 4px">緑</span>＝その月いちばん安い拠点、<span class="f-hi" style="padding:0 4px">赤</span>＝いちばん高い拠点。斜体は請求Quick の決裁メモ（アプリより前の月。税込かどうかは書き方しだい）。軽油は軽油引取税込み</div>`;}
 // 段の名前。全拠点のときは本社と工場で担当が違うので分けて出す（例：確認（Ａ／工場 Ｂ・Ｃ））
 function stepLabelAll(i){const locs=st.loc?[st.loc]:['本社','工場'];const parts=[];let label='';
   locs.forEach(l=>{const s=stepsOf(l)[i];if(!s)return;label=label||s.label;parts.push((locs.length>1&&l==='工場'?'工場 ':'')+(s.members||[]).map(n=>String(n).split(/[\s　]/)[0]).join('・'));});
@@ -469,7 +532,7 @@ function listRows(){
   if(st.q)a=a.filter(r=>(r.payee+r.title+r.code+r.invNo).includes(st.q));
   return a.sort((x,y)=>(x.round||'').localeCompare(y.round||'')||String(x.payee).localeCompare(String(y.payee),'ja'));}
 // ---- 📄 確認：一覧（自分の番・段ごと）→「1件ずつ」（左に請求書を大きく、右に 気づき・支払内容・振込先・仕訳・履歴） ----
-function drawReview(){if(st.view==='one'&&cur())drawOne();else{st.view='list';drawList();}}
+function drawReview(){if(st.view==='one'&&cur())drawOne();else{st.view='list';drawList();document.body.classList.remove('ap-lock');}}
 function drawDetail(){if(st.tab==='rev'&&st.view==='one'&&cur())drawOne();}
 function drawList(){
   const base=items.filter(r=>inMonth(r)&&inScope(r)),maxSteps=Math.max(1,...base.map(r=>r.steps.length),...['本社','工場'].map(l=>stepsOf(l).length));
@@ -492,7 +555,7 @@ function drawRows(){if(!$('tb'))return;
 function openOne(id){st.sel=id;st.view='one';st.editHdr=false;st.editBank=false;st.allIss=false;draft=null;hdrDraft=null;cmDraft=null;drawReview();}
 const cur=()=>items.find(r=>r.id===st.sel)||null;
 const linesOf=r=>r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',sub:fv(L.sl,l.f,'内訳コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
-  excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||'',conf:+fv(L.sl,l.f,'AI信頼スコア')||0}));
+  excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||'',memo:fv(L.sl,l.f,'決裁メモ')||'',conf:+fv(L.sl,l.f,'AI信頼スコア')||0}));
 // 開いている1件は、下書き（直したけれど保存していないもの）で見る
 function viewOf(r){const me1=r.id===st.sel;const h=(me1&&hdrDraft)||hdrOf(r),ls=(me1&&draft)||linesOf(r);return {h,ls,lsum:ls.reduce((s,l)=>s+(+l.incl||0),0)};}
 const isDirty=r=>!!(hdrDraft||draft||(cmDraft!=null&&cmDraft!==r.note));
@@ -522,7 +585,79 @@ function issuesOf(r){
   const ord={fix:0,check:1,info:2};return out.sort((x,y)=>ord[x.sev]-ord[y.sev]);}
 function whyNot(r){if(r.done)return '';if(r.reading)return 'AI が読み取り中です';if(!canAct(r))return `${stepName(r,r.step)} の番です`;
   const f=issuesOf(r).find(x=>x.sev==='fix');return f?'要修正：'+f.t:'';}
-const payDayText=h=>{if(!h.ym)return '—';const [y,m]=h.ym.split('/');return h.round==='月末'?`${y}年${+m}月末`:h.round?`${y}年${+m}月${h.round}`:`${y}年${+m}月`;};
+// 支払日：口座振替・納税は実際にお金が出る引落予定日（支払回は報告する回）。それ以外は支払回の日
+const payDayText=h=>{if(['口座振替','納税'].includes(h.method)&&h.debit){const [y,m,d]=h.debit.split('-');return `${y}年${+m}月${+d}日（引落）`;}
+  if(!h.ym)return '—';const [y,m]=h.ym.split('/');return h.round==='月末'?`${y}年${+m}月末`:h.round?`${y}年${+m}月${h.round}`:`${y}年${+m}月`;};
+// ---------- 全画面（支払決済アプリと同じ。Esc で戻る）と「請求書の明細」タブ ----------
+// 請求書の明細＝AI が請求書から写した行（AP_Invoice の 請求書の明細）。税率ごとの合計を仕訳と比べる（税区分・金額の見落としに気づく）
+let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
+function setFull(v){FULLR=v;try{localStorage.setItem('ap.review.full',v?'1':'');}catch{}const c=document.querySelector('.one');if(c)c.classList.toggle('ap-full',v);document.body.classList.toggle('ap-lock',v);const b=$('oFull');if(b)b.textContent=v?'✕ 全画面をやめる':'⛶ 全画面';}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&FULLR&&document.querySelector('.one'))setFull(false);});
+// ---------- 💬 AI に教える：気づき（わからなかったこと）に答えると、AI が決裁メモを直して保存し、次から覚える（BILLS/masters/ai_memory.json） ----------
+const TEACH={rid:null,issue:'',msgs:[],busy:false};
+function teachHtml(){return `<div class="teach"><div class="teach-h"><b>💬 AI に教える</b><span class="sp"></span><button class="lk" id="tClose">閉じる</button></div>
+  <div class="teach-m">${TEACH.msgs.map(m=>`<div class="tm ${m.role}">${m.role==='ai'?'<span class="who">AI</span>':''}<div>${esc(m.text).replace(/\n/g,'<br>')}</div></div>`).join('')}${TEACH.busy?'<div class="tm ai"><span class="who">AI</span><div><span class="spin"></span> 考えています…</div></div>':''}</div>
+  <div class="teach-i"><input type="text" id="tIn" placeholder="例：大阪のエブリィ" ${TEACH.busy?'disabled':''}><button class="pri" id="tSend" ${TEACH.busy?'disabled':''}>送る</button></div>
+  <div style="font-size:11.5px;color:var(--sub);margin-top:4px">答えると、AI が決裁メモを直して保存し、ナンバーなどの手がかりを「覚えたこと」に残します（次の請求書から使います）</div></div>`;}
+function startTeach(r,x){Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,
+  msgs:[{role:'ai',text:`${x.t}${x.d?'（'+x.d+'）':''}\nわかることを教えてください。決裁メモを直して、次から覚えます。`}]});drawOne();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
+async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!text||TEACH.busy)return;
+  TEACH.msgs.push({role:'me',text});TEACH.busy=true;drawOne();
+  try{const ls=dLines(r);
+    const a=await APAI.teach({call,site:AP_SITE},{payee:r.payee||r.title,invoiceId:r.id,issue:TEACH.issue,history:TEACH.msgs,lines:ls.map(l=>({aname:l.aname,amount:l.incl,memo:l.memo||'',note:l.note}))});
+    const done=[];
+    (a.notes||[]).forEach(n=>{if(ls[n.index]&&n.ApprovalNote){ls[n.index].memo=n.ApprovalNote;done.push(`${n.index+1}行目「${n.ApprovalNote}」`);}});
+    if(done.length)await saveAll(r,true);
+    const mem=(a.memory||[]).filter(m=>m.key&&m.fact);
+    if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.payee||''})),me());
+    if(done.length||mem.length)await patchInv(r,{},{act:'AI に教えた',memo:[text,...mem.map(m=>`${m.key}＝${m.fact}`)].join(' ／ ').slice(0,200),step:r.step}).catch(()=>{});
+    TEACH.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 決裁メモを直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});}
+  catch(e){TEACH.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
+  TEACH.busy=false;drawOne();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
+function wireTeach(r){const iss=issuesOf(r),shown=st.allIss?iss:iss.slice(0,3);
+  document.querySelectorAll('[data-teach]').forEach(b=>b.onclick=()=>{const x=shown[+b.dataset.teach];if(x)startTeach(r,x);});
+  const c=$('tClose');if(c)c.onclick=()=>{TEACH.rid=null;drawOne();};
+  const s=$('tSend');if(s)s.onclick=()=>sendTeach(r);
+  const i=$('tIn');if(i)i.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendTeach(r);}};}
+// 請求書の明細は、確認の右端の縦のバー（ドロワー）。仕入と同じ：乗せるとさっと開き、外すと閉じる。クリックで開いたまま（もう一度クリック・Esc で閉じる）
+const MDR={open:false,pin:false,t:null};
+const drawerLabel=n=>(MDR.pin?'📌 ':'')+`請求書の明細${n?`（${n}行）`:''} ⇔ 仕訳`;
+const drawerHtml=n=>`<div class="mdr ${MDR.open?'open':''}" id="mdr"><button type="button" class="mdr-bar ${MDR.pin?'pin':''}" id="mdrBar" data-n="${n||0}" title="乗せると開く・クリックで開いたまま">${drawerLabel(n)}</button><div class="mdr-panel" id="mdrP"></div></div>`;
+function fillDrawer(){const r=cur(),p=$('mdrP');if(p&&r)p.innerHTML=itemsTabHtml(r);}
+// ドロワーの幅は右側の列（.oside）にそろえる：請求書 PDF は隠さず、右側の列だけにかぶせる
+function fitDrawer(){const m=$('mdr'),p=$('mdrP'),b=$('mdrBar'),c=document.querySelector('.oside');if(!m||!p||!b||!c)return;
+  const w=Math.round(b.getBoundingClientRect().left-c.getBoundingClientRect().left);if(w>200)p.style.width=w+'px';}
+window.addEventListener('resize',()=>{if(MDR.open)fitDrawer();});
+function setDrawer(open){clearTimeout(MDR.t);MDR.open=open;const m=$('mdr');if(!m)return;if(open){fitDrawer();fillDrawer();}m.classList.toggle('open',open);}
+function wireDrawer(){const m=$('mdr'),b=$('mdrBar');if(!m||!b)return;
+  b.onmouseenter=()=>{clearTimeout(MDR.t);MDR.t=setTimeout(()=>setDrawer(true),120);};
+  m.onmouseleave=()=>{if(MDR.pin)return;clearTimeout(MDR.t);MDR.t=setTimeout(()=>setDrawer(false),300);};
+  m.onmouseenter=()=>{if(MDR.open)clearTimeout(MDR.t);};
+  b.onclick=()=>{MDR.pin=!MDR.pin;b.classList.toggle('pin',MDR.pin);b.textContent=drawerLabel(+b.dataset.n);setDrawer(MDR.pin||MDR.open);};
+  if(MDR.open){fitDrawer();fillDrawer();}}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&MDR.open){e.stopImmediatePropagation();MDR.pin=false;setDrawer(false);const b=$('mdrBar');if(b){b.classList.remove('pin');b.textContent=drawerLabel(+b.dataset.n);}}},true);
+function invItemsOf(r){const raw=ALL.find(a=>a.id===r.id);const j=raw?parseJ(fv(L.inv,raw.f,'請求書の明細'),null):null;return j&&Array.isArray(j.items)?j:null;}
+function itemsTabHtml(r){
+  const j=invItemsOf(r),{h,ls}=viewOf(r);
+  if(!j)return `<div class="oc"><div style="color:var(--sub)">請求書の明細はまだ読んでいません（この仕組みの前に読んだ請求書です）。</div>${canAct(r)?`<button data-reread="${r.id}" style="margin-top:8px">🤖 AI でもう一度読む（明細も読みます）</button>`:''}</div>`;
+  const inc=j.amount==='税込',it=j.items,tot=it.reduce((s,x)=>s+(+x.Amount||0),0);
+  // 税率ごと：請求書の明細（印字の額）と仕訳（明細と同じ 税抜／税込 で）
+  const rates=[...new Set(it.map(x=>x.TaxRate||'（不明）').concat(ls.map(l=>l.rate)))];
+  const byR=rates.map(k=>{const a=it.filter(x=>(x.TaxRate||'（不明）')===k).reduce((s,x)=>s+(+x.Amount||0),0),b=ls.filter(l=>l.rate===k).reduce((s,l)=>s+(inc?l.incl:l.excl),0);return {k,a:Math.round(a),b:Math.round(b)};});
+  const lsT=Math.round(ls.reduce((s,l)=>s+(inc?l.incl:l.excl),0));
+  // いちばん左に支払金額（税込）を大きく。仕訳の税込の合計と合っているかも添える
+  const lsIn=Math.round(ls.reduce((s,l)=>s+(+l.incl||0),0)),inOk=lsIn===Math.round(h.amount||0);
+  return `<div class="oc"><div class="msum msum4"><div class="pay"><div class="l">支払金額（税込）</div><div class="v">${yen(h.amount)}<small> 円</small></div><div class="s">${inOk?'✔ 仕訳の税込と一致':`仕訳の税込 ${yen(lsIn)}（差 ${yen(lsIn-h.amount)}）`}</div></div>
+      <div><div class="l">請求書の明細（${inc?'税込':'税抜'}）</div><div class="v">${yen(tot)}</div><div class="s">${it.length}行</div></div>
+      <div><div class="l">仕訳（${inc?'税込':'税抜'}）</div><div class="v">${yen(lsT)}</div><div class="s">${ls.length}行</div></div>
+      <div class="${Math.abs(tot-lsT)<=1?'good':'bad'}"><div class="l">差（明細 − 仕訳）</div><div class="v">${(tot-lsT>0?'+':'')+yen(tot-lsT)}</div></div></div>
+    <table class="mt" style="margin-bottom:10px"><tr><th>税率</th><th class="n">請求書の明細</th><th class="n">仕訳</th><th class="n">差</th></tr>
+      ${byR.map(x=>`<tr class="${Math.abs(x.a-x.b)>1?'mg ng':''}"><td>${esc(x.k)}</td><td class="n">${yen(x.a)}</td><td class="n">${yen(x.b)}</td><td class="n">${x.a-x.b?(x.a-x.b>0?'+':'')+yen(x.a-x.b):'✔'}</td></tr>`).join('')}</table>
+    <table class="mt"><tr><th>日付</th><th>伝票No</th><th>品名</th><th class="n">数量</th><th class="n">単価</th><th class="n">金額</th><th>税率</th></tr>
+      ${it.map(x=>`<tr class="ml"><td style="white-space:nowrap">${esc(x.Date||'')}</td><td>${esc(x.SlipNo||'')}</td><td>${esc(x.ItemName||'')}${x.Spec?` <span class="s">${esc(x.Spec)}</span>`:''}${x.Note?`<div class="s">${esc(x.Note)}</div>`:''}</td>
+        <td class="n">${x.Qty!=null?esc(String(x.Qty))+esc(x.Unit||''):''}</td><td class="n">${x.UnitPrice!=null?yen(x.UnitPrice):''}</td><td class="n">${yen(x.Amount)}</td><td style="font-size:11.5px">${esc(x.TaxRate||'')}</td></tr>`).join('')}
+      <tr class="mg"><td colspan="5">合計</td><td class="n">${yen(tot)}</td><td></td></tr></table></div>`;}
+
 function drawOne(){
   const r=cur(),a=listRows(),i=a.findIndex(x=>x.id===r.id),ed=canAct(r),lock=r.done?lockOf(r):'';
   const {h,ls,lsum}=viewOf(r),iss=issuesOf(r),nFix=iss.filter(x=>x.sev==='fix').length,docs=pdfPaths(r),pm=prevAmount(r),dirty=isDirty(r),why=whyNot(r);
@@ -535,7 +670,8 @@ function drawOne(){
   const shown=st.allIss?iss:iss.slice(0,3),LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']};
   const issCard=`<div class="oc"><div class="oh"><b>AIの気づき</b><span class="ocnt">${iss.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span>${iss.length>3?`<button class="lk" id="oAll">${st.allIss?'たたむ':'すべての気づきを見る ›'}</button>`:''}</div>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
-    ${shown.map(x=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div></div>`).join('')||'<div class="none">気づきはありません</div>'}</div>`;
+    ${shown.map((x,xi)=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div>${ed&&window.APAI&&x.sev!=='info'&&!r.reading?`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`:''}</div>`).join('')||'<div class="none">気づきはありません</div>'}
+    ${TEACH.rid===r.id?teachHtml():''}</div>`;
   // 支払内容（ふだんは読むだけ。「編集」で直す）
   const eh=ed&&st.editHdr,rd=(lab,v)=>`<div><label>${lab}</label><div class="v">${v||'—'}</div></div>`;
   const hdrCard=`<div class="oc"><div class="oh"><b>支払内容</b><span class="sp"></span>${ed?`<button class="lk" id="oEditH">${eh?'閉じる':'✎ 編集'}</button>`:''}</div>
@@ -545,12 +681,13 @@ function drawOne(){
       <div><label>対象年月（払う月）</label><input type="text" data-h="ym" value="${esc(h.ym)}" placeholder="2026/10"></div>
       <div><label>支払回</label><select data-h="round">${opt(ROUNDS,h.round)}</select></div>
       <div><label>支払方法</label><select data-h="method">${opt(METHODS,h.method)}</select></div>
+      ${['口座振替','納税'].includes(h.method)?`<div><label>支払日（引落日）</label><input type="date" data-h="debit" value="${esc(h.debit||'')}"></div>`:''}
       <div><label>拠点</label><select data-h="loc">${opt(['本社','工場'],h.loc)}</select></div>
       <div><label>請求No</label><input type="text" data-h="invNo" value="${esc(h.invNo)}"></div>
       <div><label>登録番号（インボイス）</label><input type="text" data-h="regNo" value="${esc(h.regNo)}"></div>
       <div><label>支払先コード（SMILE）</label><input type="text" data-h="code" value="${esc(h.code)}"></div></div>
       ${!h.code&&vendorCands(h.payee).length?`<div class="box info" style="margin-top:6px;font-size:12.5px">仕入先マスタに名前の合う先があります：${vendorCands(h.payee).map(v=>`<button data-vc="${esc(v.code)}" style="margin:2px">${esc(v.name)}（${esc(v.code)}）にする</button>`).join('')}</div>`:''}`
-    :`<div class="fg ro">${rd('支払金額（税込）',yen(h.amount))}${rd('対象年月（払う月）',esc(h.ym))}${rd('支払日',esc(payDayText(h)))}${rd('支払方法',esc(h.method))}${rd('拠点',esc(h.loc))}${rd('請求No',esc(h.invNo))}${rd('登録番号',esc(h.regNo))}${h.code?rd('支払先コード（SMILE）',esc(h.code)):''}</div>`}</div>`;
+    :`<div class="fg ro">${rd('支払金額（税込）',yen(h.amount))}${rd('対象年月（払う月）',esc(h.ym))}${rd('支払日',esc(payDayText(h)))}${['口座振替','納税'].includes(h.method)&&h.debit&&h.round?rd('報告する回',esc(h.ym.replace('/','年')+'月 '+h.round+'払い')):''}${rd('支払方法',esc(h.method))}${rd('拠点',esc(h.loc))}${rd('請求No',esc(h.invNo))}${rd('登録番号',esc(h.regNo))}${h.code?rd('支払先コード（SMILE）',esc(h.code)):''}</div>`}</div>`;
   // 振込先（総合振込のとき）
   let bankCard='';
   if(h.method==='総合振込'){const b=h.bk,m=masterBankOf(Object.assign({},r,{payee:h.payee,code:h.code,regNo:h.regNo})),full=bankFull(b),eb=ed&&(st.editBank||(!full&&!m));
@@ -575,9 +712,11 @@ function drawOne(){
         <td><select data-lk="${k}" data-lf="rate">${RATES.map(x=>`<option ${x===l.rate?'selected':''}>${x}</option>`).join('')}</select></td>
         <td><input class="num" type="number" data-lk="${k}" data-lf="excl" value="${l.excl}"></td><td><input class="num" type="number" data-lk="${k}" data-lf="tax" value="${l.tax}"></td>
         <td class="n">${yen(l.incl)}</td><td><button data-ldel="${k}" style="padding:1px 7px" title="この行を消す">×</button></td></tr>
-      <tr class="l2"><td colspan="8"><div class="memo">${uchiOf(l.acode).length?`<span>内訳</span><select class="uchi ${uchiNeed(l.acode)&&!l.sub?'ng':''}" data-lk="${k}" data-lf="sub"><option value="">${uchiNeed(l.acode)?'（選んでください）':''}</option>${uchiOf(l.acode).map(u=>`<option value="${esc(u.code)}" ${u.code===l.sub?'selected':''}>${esc(u.code)} ${esc(u.name)}</option>`).join('')}${l.sub&&!uchiOf(l.acode).some(u=>u.code===l.sub)?`<option selected value="${esc(l.sub)}">${esc(l.sub)}</option>`:''}</select>`:''}<span>摘要</span><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}" placeholder="支払先・内容・期間など（会計仕訳の摘要。全角40字まで）"></div></td></tr>`
+      <tr class="l2"><td colspan="8"><div class="memo">${uchiOf(l.acode).length?`<span>内訳</span><select class="uchi ${uchiNeed(l.acode)&&!l.sub?'ng':''}" data-lk="${k}" data-lf="sub"><option value="">${uchiNeed(l.acode)?'（選んでください）':''}</option>${uchiOf(l.acode).map(u=>`<option value="${esc(u.code)}" ${u.code===l.sub?'selected':''}>${esc(u.code)} ${esc(u.name)}</option>`).join('')}${l.sub&&!uchiOf(l.acode).some(u=>u.code===l.sub)?`<option selected value="${esc(l.sub)}">${esc(l.sub)}</option>`:''}</select>`:''}<span>摘要</span><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}" placeholder="支払先・内容・期間など（会計仕訳の摘要。全角40字まで）"></div>
+        <div class="memo am"><span>決裁メモ</span><input type="text" data-lk="${k}" data-lf="memo" value="${esc(l.memo||'')}" placeholder="社長・室長が決裁で読む説明（何のお金か・誰／どこの分・回数など。例：本社エブリィ(37/84回)）"></div></td></tr>`
       :`<tr class="l1"><td title="${esc(l.acode?'科目コード '+l.acode:'')}">${esc(l.aname)}</td><td>${esc(bname(l.dept))}</td><td>${esc(l.tm)}</td><td>${esc(l.rate)}</td><td class="n">${yen(l.excl)}</td><td class="n">${yen(l.tax)}</td><td class="n">${yen(l.incl)}</td><td></td></tr>
-      <tr class="l2"><td colspan="8"><div class="memo">${l.sub?`<span>内訳</span><b style="font-weight:500;white-space:nowrap">${esc(l.sub)} ${esc(uchiName(l.acode,l.sub))}</b>`:uchiNeed(l.acode)?'<span>内訳</span><b style="color:var(--up)">未選択</b>':''}<span>摘要</span><b style="font-weight:500">${esc(l.note)||'—'}</b></div></td></tr>`).join('')}
+      <tr class="l2"><td colspan="8"><div class="memo">${l.sub?`<span>内訳</span><b style="font-weight:500;white-space:nowrap">${esc(l.sub)} ${esc(uchiName(l.acode,l.sub))}</b>`:uchiNeed(l.acode)?'<span>内訳</span><b style="color:var(--up)">未選択</b>':''}<span>摘要</span><b style="font-weight:500">${esc(l.note)||'—'}</b></div>
+        <div class="memo am"><span>決裁メモ</span><b style="font-weight:600">${esc(l.memo||'')||'—'}</b></div></td></tr>`).join('')}
     <tr><td colspan="6"><b>合計</b> <span style="font-size:12px;color:var(--sub)">${lsum===h.amount?'金額と一致':`金額 ${yen(h.amount)} と ${yen(lsum-h.amount)} 違う`}</span>　<span style="font-size:12px;color:var(--sub)">貸方：${esc(creditOf(h.method).code||'—')}</span></td><td class="n"><b style="color:${lsum===h.amount?'var(--down)':'var(--up)'}">${yen(lsum)}</b></td><td></td></tr></table></div>
     ${ed?`<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="lAdd">＋ 行を足す</button><button id="lSug">🔍 過去の仕訳から案を作る</button>${draft?'<button id="lX">仕訳の直しを取り消す</button>':''}</div>`:''}<div id="sugBox"></div></details>`;
   // 確認履歴
@@ -586,13 +725,16 @@ function drawOne(){
     ${r.log.map(l=>`<div>${esc(fmtTime(l.at))} ${esc(l.by)}：${esc(l.act)}${l.step!=null?`（${l.step+1}段目）`:''}${l.sub?'【代理】':''}${l.memo?' — '+esc(l.memo):''}</div>`).join('')}</div></details>`;
   const toIdx=!myStepAt(r)&&myIdx(r)>r.step?myIdx(r):r.step,skipN=toIdx-r.step,lastStep=toIdx>=r.steps.length-1;
   const okLabel=(lastStep?'確認完了（確定）・次へ':'確認完了・次へ')+(skipN?`（${skipN}段飛ばす）`:'');
-  const more=`<select id="dMore" title="その他の操作"><option value="">その他…</option>${ed?`<option value="hold">${r.hold?'保留を外す':'保留にする'}（H）</option>`:''}${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed?'<option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
-  $('pane').innerHTML=`<div class="one">
-    <div class="onebar"><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
+  const more=`<select id="dMore" title="その他の操作"><option value="">その他…</option>${ed?`<option value="hold">${r.hold?'保留を外す':'保留にする'}（H）</option>`:''}${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed&&!r.reading&&window.APAI?'<option value="reread">AI で読み直す（支払内容・仕訳を作り直す）</option>':''}${ed?'<option value="merge">ほかの受付とまとめる（1件の請求書）</option><option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
+  const nIt=(invItemsOf(r)||{items:[]}).items.length;
+  $('pane').innerHTML=`<div class="one ${FULLR?'ap-full':''}">
+    <div class="onebar"><button id="oFull" title="全画面で確かめる（Esc で戻る）">${FULLR?'✕ 全画面をやめる':'⛶ 全画面'}</button><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
       <span class="stp ${r.done?'done':''}">${r.done?'✔ 確定':esc(stepName(r,r.step))}</span><span class="sp"></span>
       <div class="docs"><button id="oDocs">📎 関連書類（${docs.length}）</button><div class="docs-m" id="oDocsM" hidden>${docs.map(p=>`<button data-pdf="${esc(p)}">📄 ${esc(p.split('/').pop())}</button>`).join('')||'<div style="padding:6px 10px;color:var(--sub)">ありません</div>'}</div></div>${more}</div>
-    <div class="onegrid"><div class="opdf"><div class="pdf" id="pdfv">${docs.length?'読み込み中...':'請求書の PDF がありません'}</div></div>
+    <div class="onegrid">${drawerHtml(nIt)}<div class="opdf"><div class="pdf" id="pdfv">${docs.length?'読み込み中...':'請求書の PDF がありません'}</div></div>
       <div class="oside">
+
+
         <div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
           <div class="meta"><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span></div></div>
@@ -604,9 +746,11 @@ function drawOne(){
   wireOne(r);}
 function wireOne(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
-  on('oBack',()=>{if(isDirty(r)&&!confirm('保存していない直しがあります。捨てて一覧に戻りますか？'))return;draft=null;hdrDraft=null;cmDraft=null;st.view='list';drawReview();});
+  on('oBack',()=>{if(isDirty(r)&&!confirm('保存していない直しがあります。捨てて一覧に戻りますか？'))return;draft=null;hdrDraft=null;cmDraft=null;st.view='list';document.body.classList.remove('ap-lock');drawReview();});
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',okRow);on('oSave',async()=>{if(await saveAll(r))render();});
-  on('oAll',()=>{st.allIss=!st.allIss;drawOne();});on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
+  on('oFull',()=>setFull(!FULLR));document.body.classList.toggle('ap-lock',FULLR);
+  wireDrawer();
+  on('oAll',()=>{st.allIss=!st.allIss;drawOne();});wireTeach(r);on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
   on('oDocs',()=>{const m=$('oDocsM');m.hidden=!m.hidden;});
   const cm=$('oCm');if(cm)cm.oninput=()=>{cmDraft=cm.value;const s=$('oSave');if(s)s.disabled=!isDirty(r);};
   const mo=$('dMore');if(mo)mo.onchange=()=>{const v=mo.value;mo.value='';if(v==='hold')act(r,{[V.hold]:!r.hold},r.hold?'保留を外しました':'保留にしました',{act:r.hold?'保留を外す':'保留',step:r.step});else if(v==='back')backRow(r);else more(r,v);};
@@ -634,7 +778,7 @@ function wireOne(r){
 function creditOf(m){const c=(RULES.journal&&RULES.journal.credit)||{};return c[m]||c['総合振込']||{};}
 const pdfPaths=r=>r.doc.split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean);
 const dLines=r=>draft||(draft=r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',sub:fv(L.sl,l.f,'内訳コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
-  excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||''})));
+  excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||'',memo:fv(L.sl,l.f,'決裁メモ')||''})));
 function go(dlt){const a=listRows(),i=a.findIndex(x=>x.id===st.sel);const n=a[Math.min(a.length-1,Math.max(0,i+dlt))];if(!n||n.id===st.sel)return;
   const r=cur();if(r&&isDirty(r)&&!confirm('保存していない直しがあります。捨てて移りますか？'))return;openOne(n.id);}
 async function showPdf(r,path){
@@ -685,8 +829,10 @@ async function saveHeader(r){const h=hdrDraft;if(!h)return;
   const src={'支払先名':h.payee,'支払先コード':h.code,'金額_税込':h.amount,'対象年月':h.ym,'請求NO':h.invNo,'登録番号':h.regNo,'支払区分':h.loc==='工場'?'工場経費':'本社経費'};
   if(h.round)src['支払日区分']=h.round;if(h.method)src['支払手段']=h.method;   // 選択肢の列は空にしない
   const o=toFields(L.inv,src);o[V.loc]=h.loc;
+  // 支払日（引落日）：口座振替・納税だけ。AI の読み取りと同じ形（日付の 0 時 UTC）で入れる。空にすれば消す
+  if(['口座振替','納税'].includes(h.method)&&(h.debit||'')!==(r.debit||''))o[F(L.inv,'引落予定日')]=h.debit?`${h.debit}T00:00:00Z`:null;
   Object.entries(BK).forEach(([k,n])=>{let v=String(h.bk[k]||'').trim();if(v){if(k==='holder')v=toHanKana(v);if(k==='code')v=digits(v).padStart(4,'0');if(k==='bcode')v=digits(v).padStart(3,'0');if(k==='no')v=digits(v).padStart(7,'0');}o[n]=v;});
-  const ch=[];if(Object.keys(BK).some(k=>String(h.bk[k]||'')!==String(r.bk[k]||'')))ch.push('振込先');if(h.payee!==r.payee)ch.push('支払先');if(h.amount!==r.amount)ch.push(`金額 ${yen(r.amount)}→${yen(h.amount)}`);if(h.method!==r.method)ch.push('支払方法');if(h.round!==r.round)ch.push('支払回');if(h.code!==r.code)ch.push('支払先コード');if(h.loc!==r.loc)ch.push('拠点');
+  const ch=[];if(Object.keys(BK).some(k=>String(h.bk[k]||'')!==String(r.bk[k]||'')))ch.push('振込先');if(h.payee!==r.payee)ch.push('支払先');if(h.amount!==r.amount)ch.push(`金額 ${yen(r.amount)}→${yen(h.amount)}`);if(h.method!==r.method)ch.push('支払方法');if(h.round!==r.round)ch.push('支払回');if(h.code!==r.code)ch.push('支払先コード');if(h.loc!==r.loc)ch.push('拠点');if((h.debit||'')!==(r.debit||''))ch.push(`引落日 ${r.debit||'—'}→${h.debit||'—'}`);
   if(r.failed)o[V.ai]='対象外';   // 読み取り失敗を人が入れた → 確認待ちへ
   await patchInv(r,o,{act:'内容を直した',memo:ch.join('・')||(r.failed?'手で入力':''),step:r.step});hdrDraft=null;}
 async function saveLines(r){const d=draft;if(!d)return;
@@ -694,6 +840,7 @@ async function saveLines(r){const d=draft;if(!d)return;
   {const keep=new Set();let n=0;
     for(const l of d){n++;const f=toFields(L.sl,{'請求書ID':r.id,'明細行番号':n,'拠点':r.loc,'勘定科目名':l.aname,'勘定科目コード':l.acode,'部門コード':l.dept,'税区分':l.tm,'税率区分':l.rate,
         '金額_税抜':+l.excl||0,'消費税':+l.tax||0,'金額_税込':+l.incl||0,'摘要':l.note});
+      if(L.sl.fmap['決裁メモ'])f[L.sl.fmap['決裁メモ']]=l.memo||'';   // 社長・室長向けの説明（列が無ければ保存しない）
       if(L.sl.fmap['内訳コード'])f[L.sl.fmap['内訳コード']]=l.sub||'';else if(l.sub)throw new Error('AP_PaymentSlip に「内訳コード」の列がありません（Provision-SmileAP.ps1 -Apply）');
       if(l.id){await gpatch(`/sites/${AP_SITE}/lists/${L.sl.id}/items/${l.id}/fields`,f);keep.add(l.id);}
       else{f.Title=`${r.payee||r.title} ${n}`;const c=await gpost(`/sites/${AP_SITE}/lists/${L.sl.id}/items`,{fields:f});keep.add(String(c.id));}}
@@ -731,7 +878,31 @@ async function registerBank(r){
   catch(e){snack('振込先マスタに登録できませんでした：'+e.message,true);}}
 async function backRow(r){const why=prompt(`${stepName(r,r.step-1)} に戻します。理由を書いてください`);if(why===null)return;if(!why.trim()){snack('理由を書いてください',true);return;}
   await act(r,Object.assign({[V.step]:r.step-1},toFields(L.inv,{'差戻し理由':why.trim()})),'前の段へ戻しました',{act:'戻した',memo:why.trim(),step:r.step});}
+// ほかの受付とまとめる：1件の請求書が別々に受け付けられたとき。開いている方に相手のファイルを寄せ、相手は「対象外（まとめた）」にする（消さない）
+//   開いている方の仕訳の行は相手の側へ移して（残す）、AI が全部のファイルで読み直して仕訳を作り直す
+function mergeDialog(r){
+  const c=items.filter(x=>x.id!==r.id&&!x.done&&!x.reading&&(x.ym||'')===(r.ym||month())).sort((a,b)=>(a.loc===r.loc?0:1)-(b.loc===r.loc?0:1)||String(b.at).localeCompare(String(a.at)));
+  if(!c.length){snack('まとめられる受付がありません（同じ月で、確定していないもの）',true);return;}
+  const w=document.createElement('div');w.className='mg-dlg';
+  w.innerHTML=`<div class="mg-box"><div style="display:flex;align-items:center;gap:8px"><b>どの受付とまとめますか？</b><span style="flex:1"></span><button class="lk" data-mgx>閉じる</button></div>
+    <div style="font-size:12.5px;color:var(--sub);margin:4px 0 8px">選んだ受付のファイルを「${esc(r.payee||r.title||'この受付')}」に寄せ、AI が全部のファイルで読み直します。選んだ受付は「対象外（まとめた）」になります（消しません）</div>
+    <div class="mg-list">${c.map(x=>`<button data-mg="${x.id}"><span>${esc(fmtTime(x.at))}<br><small>${esc(x.by)}・${esc(x.loc)}</small></span><b>${esc(x.payee||x.title||'（読み取り前）')}</b><span class="n">${yen(x.amount)}</span><small>${pdfPaths(x).length}ファイル</small></button>`).join('')}</div></div>`;
+  document.body.appendChild(w);
+  w.onclick=e=>{if(e.target===w||e.target.closest('[data-mgx]')){w.remove();return;}const b=e.target.closest('[data-mg]');if(b){w.remove();mergeInto(r,c.find(x=>x.id===b.dataset.mg));}};}
+async function mergeInto(r,o){
+  if(!o||!confirm(`「${o.payee||o.title}」のファイルを「${r.payee||r.title}」に寄せて、1件の請求書にします。\n\n・AI が全部のファイルで読み直し、支払内容と仕訳を作り直します（直した仕訳は作り直されます）\n・「${o.payee||o.title}」は対象外（まとめた）にします`))return;
+  try{msg('まとめています...');
+    const docs=[...new Set(pdfPaths(r).concat(pdfPaths(o)))];
+    for(const l of r.lines)await gpatch(`/sites/${AP_SITE}/lists/${L.sl.id}/items/${l.id}/fields`,{[F(L.sl,'請求書ID')]:String(o.id)});   // 前の仕訳は相手の側へ（残す）
+    await patchInv(o,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':`まとめた（→ ${r.payee||r.title} #${r.id}）`}),{act:'まとめた（相手へ寄せた）',memo:`→ #${r.id}`,step:o.step});
+    await patchInv(r,Object.assign(toFields(L.inv,{'DOCコード':docs.join('\n')}),{[V.ai]:'受付'}),{act:'ほかの受付とまとめた',memo:`#${o.id} ${o.payee||o.title||''}`,step:r.step});
+    await loadAll();msg('');render();const nr=items.find(x=>x.id===r.id);   // render で一覧（items）を作り直してから、新しい DOCコードで読み直す
+    if(nr)await rereadByAI(nr);}
+  catch(e){msg('');snack('まとめられませんでした：'+e.message,true);}}
 async function more(r,v){
+  if(v==='merge'){mergeDialog(r);return;}
+  if(v==='reread'){if(!confirm('AI で読み直して、支払内容・仕訳（決裁メモも）・AI の気づきを作り直します。手で直した仕訳は書き換わります（コメント欄は残ります）。よろしいですか？'))return;
+    draft=null;hdrDraft=null;await rereadByAI(r,{replace:true});render();return;}
   if(v==='arch'){const why=prompt('対象外にする理由（重複・誤り・今月払わない など）');if(!why)return;leaveCur(r);
     await act(r,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':why}),'対象外にしました',{act:'対象外にした',memo:why,step:r.step});}
   else if(v==='move'){const code=prompt('仕入の請求書として「仕入（SMILE）」へ移します。SMILE の仕入先コード（6桁）を入れてください');if(!code)return;
@@ -752,7 +923,8 @@ function apCode(){const d=new Date(),p=n=>String(n).padStart(2,'0'),s='ABCDEFGHI
 async function registerExpense(files){
   const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
   if(UPL.busy){snack('いま受け付けています。終わってから置いてください',true);return;}
-  const loc=$('rc-loc')?$('rc-loc').value:myLoc(),cat=loc==='工場'?'工場経費':'本社経費';let ok=0;
+  if(UPL.merge&&list.length>1)return registerMerged(list);
+  const loc=$('rc-loc')?$('rc-loc').value:myLoc(),cat=loc==='工場'?'工場経費':'本社経費';let ok=0;const jobs=[];
   Object.assign(UPL,{busy:true,total:list.length,done:0,cur:'',ok:0,errs:[],result:''});drawUpl();
   for(const f of list){const code=apCode();UPL.cur=f.name;drawUpl();
     try{msg('受付中... '+f.name);
@@ -767,10 +939,60 @@ async function registerExpense(files){
         checks:['支払先・金額・消費税・請求No・登録番号・期日','振込先口座','科目・部門・税率の仕訳の案（過去の仕訳を参考に）','仕入の請求書ではないか','二重請求・前月比'],
         registered_by:me(),registered_at:new Date().toISOString(),source_name:f.name};
       await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
+      jobs.push({apCode:code,invoiceId:String(created.id),category:cat,location:loc,targetYm:month(),file:d.blob,pdfName:fname});
       ok++;}catch(e){UPL.errs.push(`${f.name}（${e.message}）`);}
     UPL.done++;drawUpl();}
-  UPL.busy=false;UPL.result=`<b>${ok}件を受け付けました。</b>AI の読み取り待ちです（「AI 読み取り中」に並びます）`+(UPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの ${UPL.errs.length}件：${UPL.errs.map(esc).join('、')}</div>`:'');
-  await loadAll();msg('');st.box='reading';render();}
+  UPL.busy=false;UPL.merge=false;UPL.result=`<b>${ok}件を受け付けました。</b>AI が読んでいます（1件20〜30秒。終わると「確認待ち」に並びます）`+(UPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの ${UPL.errs.length}件：${UPL.errs.map(esc).join('、')}</div>`:'');
+  await loadAll();msg('');st.box='reading';render();
+  readByAI(jobs);}
+// 1件にまとめて受け付ける：何ファイルかを同じ受付（AP コード）で置き、DOCコードに全部を書く。AI には全部を1回で渡す
+async function registerMerged(list){
+  const loc=$('rc-loc')?$('rc-loc').value:myLoc(),cat=loc==='工場'?'工場経費':'本社経費',code=apCode(),files=[],paths=[];
+  Object.assign(UPL,{busy:true,total:list.length,done:0,cur:'',ok:0,errs:[],result:''});drawUpl();
+  try{
+    for(let i=0;i<list.length;i++){const f=list[i];UPL.cur=f.name;drawUpl();msg('受付中... '+f.name);
+      const d=await APDoc.prep(f),base=d.base.replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,56),fname=`${code}_${i+1}_${base||'請求書'}.${d.ext}`;
+      await gputFile(`/BILLS/incoming/${fname}`,d.blob,d.type);files.push({file:d.blob,name:fname});paths.push(`/Shared Documents/BILLS/incoming/${fname}`);UPL.done++;drawUpl();}
+    const title=list[0].name.replace(/\.[^.]+$/,'')+`（ほか${list.length-1}ファイル）`;
+    const hf=toFields(L.inv,{Title:title,'支払区分':cat,'対象年月':month(),'仕分け済':true,'支払ステータス':'確認待','DOCコード':paths.join('\n')});
+    hf[V.ai]='受付';hf[V.by]=me();hf[V.at]=new Date().toISOString();hf[V.loc]=loc;hf[V.step]=0;
+    const created=await gpost(`/sites/${AP_SITE}/lists/${L.inv.id}/items`,{fields:hf});
+    const task={ap_code:code,pdf_file:files[0].name,pdf_files:files.map(f=>f.name),invoice_id:String(created.id),category:cat,location:loc,vendor_code:'',target_ym:month(),
+      registered_by:me(),registered_at:new Date().toISOString(),source_name:list.map(f=>f.name).join(' / ')};
+    await gputFile(`/BILLS/incoming/${code}.task.json`,new Blob([JSON.stringify(task,null,2)],{type:'application/json'}),'application/json');
+    UPL.busy=false;UPL.merge=false;UPL.result=`<b>${list.length}ファイルを1件の請求書として受け付けました。</b>AI が読んでいます（30秒〜1分。終わると「確認待ち」に並びます）`;
+    await loadAll();msg('');st.box='reading';render();
+    readByAI([{apCode:code,invoiceId:String(created.id),category:cat,location:loc,targetYm:month(),files,pdfName:files.map(f=>f.name).join('・')}]);}
+  catch(e){UPL.busy=false;UPL.errs.push(e.message);UPL.result=`<b>受け付けられませんでした</b>：${esc(e.message)}`;msg('');drawUpl();}}
+// ---------- AI（Claude API）ですぐ読む（ap_ai.js）。読み終わったものから取り込む（APIntake）。画面を閉じても、次に開いたときに読み直せる ----------
+let aiChain=Promise.resolve();const AIRUN=new Set();   // AIRUN：いま読んでいる請求書（一覧の印・二重に頼まない）
+const canReread=r=>!!window.APAI&&!AIRUN.has(r.id)&&(r.failed||(r.reading&&Date.now()-Date.parse(r.at||0)>3*60*1000));
+function readByAI(jobs){if(!window.APAI||!jobs.length)return;jobs.forEach(j=>AIRUN.add(String(j.invoiceId)));render();
+  jobs.forEach(j=>APAI.readInvoice({call,site:AP_SITE},j)
+    .then(r=>{if(!r.ok)snack(`AI が読めませんでした：${j.pdfName}（${r.message}）。「読み取り失敗」から手で入れてください`,true);},e=>snack('AI の読み取りエラー：'+e.message,true))
+    .then(()=>{aiChain=aiChain.then(async()=>{await takeAI();AIRUN.delete(String(j.invoiceId));
+      if(!AIRUN.size&&/AI が読んでいます/.test(UPL.result))UPL.result=UPL.result.replace(/AI が読んでいます（[^）]*）/,'AI が読み終わりました（「確認待ち」に並びました）');
+      await loadAll();render();});}));}
+// 「AI 読み取り中」のまま止まっているもの（画面を閉じた・失敗した）を、もう一度 AI に読ませる。PDF は incoming（読む前）か processed から読む
+async function rereadByAI(r,opt={}){if(!window.APAI){snack('AI の読み取りの部品（ap_ai.js）が読めません',true);return;}
+  const paths=pdfPaths(r);if(!paths.length){snack('請求書の PDF がありません',true);return;}
+  // 付いているファイルを全部読む（まとめた請求書は何ファイルか）。incoming（読む前）か processed から
+  const files=[];let moved=true;
+  for(const path of paths){const p0=path.replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');let blob=null,at='';
+    for(const p of [p0,p0.replace(/\/processed\//i,'/incoming/'),p0.replace(/\/incoming\//i,'/processed/')]){try{blob=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true);at=p;break;}catch(e){}}
+    if(!blob){snack('請求書のファイルを開けません：'+path.split('/').pop(),true);return;}
+    const name=path.split('/').pop(),type=/\.pdf$/i.test(name)?'application/pdf':/\.png$/i.test(name)?'image/png':/\.webp$/i.test(name)?'image/webp':'image/jpeg';
+    files.push({file:new Blob([blob],{type}),name});if(!/\/processed\//i.test(at))moved=false;}
+  const code=(files[0].name.match(/^(AP\d{8}[A-Z0-9]{8})_/)||[])[1]||apCode();
+  // replace：読み終わった請求書（確認待ちなど）を読み直す。支払内容・仕訳（決裁メモも）・AI のコメントを新しい答えで作り直す
+  if(r.failed||opt.replace)await patchInv(r,{[V.ai]:'受付'},{act:opt.replace?'AI で読み直した（仕訳を作り直す）':'AI に読み直しを頼んだ',step:r.step}).catch(()=>{});
+  if(!opt.quiet)snack(`AI に読み直しを頼みました（${files.length>1?files.length+'ファイルをまとめて。30秒〜1分':'20〜30秒'}）`);
+  readByAI([{apCode:code,invoiceId:r.id,category:r.cat||(r.loc==='工場'?'工場経費':'本社経費'),location:r.loc,targetYm:r.ym||month(),round:r.round,method:r.method,files,pdfName:files.map(f=>f.name).join('・'),moved,replaceLines:!!opt.replace}]);}
+// 確認待ち（1段目の手前）を全部読み直す：決裁メモなど、新しい読み方で作り直したいとき
+async function rereadWaiting(){const w=inboxOf().wait.filter(r=>!r.done&&!AIRUN.has(r.id));if(!w.length){snack('読み直すものがありません',true);return;}
+  if(!confirm(`確認待ちの ${w.length}件を AI で読み直します（1件20〜30秒・1件数円）。\n\n・支払内容・仕訳（決裁メモも）・AI の気づきを、新しい答えで作り直します\n・手で直した仕訳やメモは、新しい答えで書き換わります（コメント欄は残ります）`))return;
+  let n=0;for(const r of w){try{await rereadByAI(r,{replace:true,quiet:true});n++;}catch(e){console.warn(e);}}
+  snack(`${n}件を AI に読み直しに出しました（終わると確認待ちに戻ります）`);st.box='reading';render();}
 
 // ---------- 下：進み具合 ----------
 function drawApprove(){
@@ -787,6 +1009,7 @@ document.addEventListener('click',e=>{
   const lc=e.target.closest('[data-loc]');if(lc){st.loc=lc.dataset.loc;render();return;}
   const rd=e.target.closest('[data-round]');if(rd){st.round=rd.dataset.round;render();return;}
   const sp=e.target.closest('[data-step]');if(sp){st.step=sp.dataset.step;draft=null;hdrDraft=null;drawReview();return;}
+  const rr=e.target.closest('[data-reread]');if(rr){const r=items.find(x=>x.id===rr.dataset.reread);if(r)rereadByAI(r);return;}
   const op=e.target.closest('[data-open]');if(op){const r=items.find(x=>x.id===op.dataset.open);if(!r)return;if(r.ym&&r.ym!==month()){setMonth(r.ym);loadAll().then(()=>{openInReview(r.id);});return;}openInReview(r.id);return;}
   const s=e.target.closest('[data-sel]');if(s&&st.tab==='rev'){openOne(s.dataset.sel);}
   if(!e.target.closest('.docs')){const m=$('oDocsM');if(m)m.hidden=true;}});

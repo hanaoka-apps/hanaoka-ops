@@ -15,10 +15,22 @@
 
   ジョブの中身は scripts/rpa_jobs.json (毎回GitHubのmainから取得) で決める:
     PADフローをURIで起動 → outputs のファイルがすべて更新されるまで待つ → after の処理
+    (steps があれば、各手順のPADフロー起動と出力待ちを順に行ってから after の処理。
+     flow も steps も無いジョブは after の処理だけ)
+  schedules に書いたジョブは、毎日その時刻に自分で依頼する(例: 1:00 に facts_only)。
     (URIで起動したPADフローは完了を待たずに戻るため、出力ファイルで完了を判断する)
 
   PADは同時に1つのフローしか動かせないので、1件ずつ順番に処理する。
   同じジョブの依頼が複数待っていたら、まとめて1回だけ実行する。
+  ただし "type": "import"（SMILEへの取込）のジョブは、依頼ごとに別の仕事（batchId が違う）なので
+  まとめず、1件ずつ実行する。
+
+  取込ジョブ(type=import。EC売上の ec_smile_import)は、出力ファイルでは完了を判断できないため、
+  SharedMasters\_rpa_import\<バッチ番号>\ の result.json の出現で判断する。流れ:
+    管理者確認 → 二重取込確認 → manifest と実ファイルの照合 → 固定フォルダへ配置
+    → PADフローを順に起動(納品先にエラーがあれば受注は実行しない) → result.json を書く
+    → _rpa_import\done\ または failed\ へ移す(30日で削除) → 成功なら ec_smile_verify_export を依頼に追加
+  約束事は scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md、PADフローの作り方は scripts/rpa_setup/ec_import.md。
 
   旧方式の合図ファイル(SharedMasters\_regenerate_request.json)も sales_master の
   依頼として受け付ける。旧方式の画面は合図ファイルが消えたら完了とみなすので、
@@ -49,6 +61,13 @@ $RunningDir        = Join-Path $QueueRoot 'running'
 $DoneDir           = Join-Path $QueueRoot 'done'
 $FailedDir         = Join-Path $QueueRoot 'failed'
 $LegacyRequestPath = Join-Path $SharedMastersPath '_regenerate_request.json'
+# EC売上の取込(type=import のジョブ)
+$ImportRoot        = Join-Path $SharedMastersPath '_rpa_import'
+$ImportAdminsPath  = Join-Path $QueueRoot 'ec_import_admins.json'
+# PADに渡す固定フォルダ(毎回同じ名前でファイルを置く。取込が終わったら中身は消す)
+$EcImportCurrentDir = 'C:\RPA\ec_import\current'
+# 動いている印(アプリ側の rpa_queue.js が、20分以上更新されていなければ「応答なし」と表示する)
+$HeartbeatPath     = Join-Path $QueueRoot 'heartbeat.json'
 $LogPath           = "$env:USERPROFILE\regenerate_watcher.log"
 $RepoRawBase       = 'https://raw.githubusercontent.com/hanaoka-apps/hanaoka-ops/main'
 $WorkDir           = "$env:TEMP\hanaoka-regenerate-watcher"
@@ -57,14 +76,24 @@ $PollSeconds       = 30
 $KeepDays          = 30
 # 依頼ファイルが読めない(同期途中など)状態が続いたら失敗扱いにするまでの回数
 $MaxBadReads       = 3
+# 定時のジョブを今日依頼したかの記録(同期フォルダやTEMPには置かない)
+$ScheduleStatePath = "$env:LOCALAPPDATA\hanaoka-rpa\schedule_state.json"
 
 $script:BadReads = @{}
+$script:JobDefsCache = $null
+$script:JobDefsCachedAt = [datetime]::MinValue
+$script:BadScheduleLogged = @{}
+$script:HeartbeatAt = [datetime]::MinValue
 
+# ログは記録用なので、書けなくても本来の処理は止めない。
+# (ほかのプロセスがログを開いている瞬間に書くと失敗し、以前はそれで常駐スクリプトごと止まった)
 function Write-Log {
   param([string]$Message)
   $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
   Write-Host $line
-  Add-Content -Path $LogPath -Value $line
+  for ($i = 0; $i -lt 5; $i++) {
+    try { Add-Content -Path $LogPath -Value $line -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 300 }
+  }
 }
 
 function Read-JsonFile([string]$Path) {
@@ -111,6 +140,20 @@ function Get-JobDefinitions {
   }
 }
 
+# 動いている印を書く。OneDriveの同期を増やしすぎないよう、5分に1回まで(-Force で今すぐ)。
+# 書けなくても本来の処理は止めない。
+function Update-Heartbeat([string]$Job = '', [switch]$Force) {
+  if (-not $Force -and ((Get-Date) - $script:HeartbeatAt).TotalMinutes -lt 5) { return }
+  try {
+    Write-JsonFile $HeartbeatPath ([pscustomobject]@{
+      updatedAt = (Get-Date).ToString('o')
+      host = $env:COMPUTERNAME
+      job = $Job
+    })
+    $script:HeartbeatAt = Get-Date
+  } catch { }
+}
+
 function Test-FileReadable([string]$Path) {
   # 書き込み中(他プロセスが書き込みロック中)なら開けない
   try {
@@ -144,6 +187,7 @@ function Invoke-PadFlow($Def) {
   $locked = @()
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 10
+    Update-Heartbeat $flow
     $pending = @()
     $snapshot = @()
     foreach ($name in $outputs) {
@@ -167,6 +211,68 @@ function Invoke-PadFlow($Def) {
     }
   }
   throw ("PADフローの出力が{0}分以内に完了しませんでした(未更新/書き込み中: {1})" -f $timeoutMinutes, (($pending + $locked) -join ', '))
+}
+
+# SMILEのメイン画面(題名がちょうど windowTitle のウィンドウ)が開いているか。
+# 出力画面などを開いていると .NET の MainWindowTitle はそちらの題名になるため、
+# UI オートメーションでプロセスのトップレベルウィンドウをすべて見る。
+function Test-SmileReady($Cfg) {
+  $procs = @(Get-Process -Name ([string]$Cfg.process) -ErrorAction SilentlyContinue)
+  if ($procs.Count -eq 0) { return $false }
+  Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  foreach ($p in $procs) {
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $p.Id)
+    foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
+      if ($w.Current.Name -eq [string]$Cfg.windowTitle) { return $true }
+    }
+  }
+  return $false
+}
+
+# SMILEを使うジョブの前に、SMILEが起動してログイン済みかを確かめる。
+# 起動していなければ起動用のPADフロー(ログインと業務予定通知を閉じるまで)を動かして待つ。
+# (PC再起動後やSMILEの自動更新後に、SMILEが閉じたままでジョブが失敗しないように)
+function Ensure-Smile($Cfg) {
+  if (Test-SmileReady $Cfg) { return }
+  $timeoutMinutes = 5
+  if ($Cfg.timeoutMinutes) { $timeoutMinutes = [int]$Cfg.timeoutMinutes }
+  $settleSeconds = 30
+  if ($Cfg.settleSeconds) { $settleSeconds = [int]$Cfg.settleSeconds }
+  Write-Log "SMILEが起動していないため、PADフローで起動します: $($Cfg.startFlow)"
+  Start-Process ('ms-powerautomate:/console/flow/run?workflowName=' + [uri]::EscapeDataString([string]$Cfg.startFlow))
+  $deadline = (Get-Date).AddMinutes($timeoutMinutes)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 5
+    Update-Heartbeat ([string]$Cfg.startFlow)
+    if (Test-SmileReady $Cfg) {
+      # メイン画面が出たあと、起動フローが業務予定通知を閉じ終わるまで待つ
+      Start-Sleep -Seconds $settleSeconds
+      Write-Log 'SMILEの起動を確認しました'
+      return
+    }
+  }
+  throw "SMILEを${timeoutMinutes}分以内に起動できませんでした(起動フロー: $($Cfg.startFlow))"
+}
+
+# ジョブの手順(PADフローと出力ファイルの組)を返す。
+# steps があればその順に、なければ flow / outputs の1手順。timeoutMinutes は手順になければジョブの値を使う。
+function Get-JobSteps($Def) {
+  # flow も steps も無いジョブは、PADを動かさず after の処理だけを行う(例: facts_only)
+  if (-not $Def.steps -and -not $Def.flow) {
+    if (-not $Def.after) { throw 'ジョブ定義に flow / steps / after のどれもありません' }
+    return
+  }
+  if (-not $Def.steps) { return , $Def }
+  $steps = @($Def.steps)
+  if ($steps.Count -eq 0) { throw 'ジョブ定義の steps が空です' }
+  foreach ($s in $steps) {
+    if (-not $s.timeoutMinutes -and $Def.timeoutMinutes) {
+      $s | Add-Member -NotePropertyName timeoutMinutes -NotePropertyValue $Def.timeoutMinutes -Force
+    }
+  }
+  return $steps
 }
 
 function Invoke-RegenerateFacts {
@@ -223,7 +329,197 @@ function Remove-LegacyRequestIfDone([string]$LegacyRequestedAt) {
   }
 }
 
-# 待っている依頼を1件(同じジョブはまとめて)実行する。実行したら $true を返す。
+# ===== EC売上: SMILEへの取込(type=import) =====
+
+function Test-ImportAdmin([string]$Email) {
+  # 管理者の一覧は専用機側で管理する(リポジトリには置かない)。{ "admins": ["a@...", ...] } か、メールの配列
+  if (-not $Email -or -not (Test-Path -LiteralPath $ImportAdminsPath)) { return $false }
+  try { $o = Read-JsonFile $ImportAdminsPath } catch { return $false }
+  $list = if ($o -is [System.Array]) { @($o) } else { @($o.admins) }
+  foreach ($m in $list) { if ([string]$m -and ([string]$m).ToLower() -eq $Email.ToLower()) { return $true } }
+  return $false
+}
+
+# UTF-16(BOMつき)の取込ファイルを読んで、見出し・データ行を返す
+function Read-ImportTable([string]$Path) {
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if ($bytes.Length -lt 2 -or $bytes[0] -ne 0xFF -or $bytes[1] -ne 0xFE) { throw 'UTF-16(BOMつき)ではありません' }
+  $text = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+  $lines = @($text -split "`r`n" | Where-Object { $_ -ne '' })
+  if ($lines.Count -eq 0) { throw '中身が空です' }
+  $head = $lines[0] -split "`t"
+  $rows = @()
+  if ($lines.Count -gt 1) { $rows = @($lines[1..($lines.Count - 1)] | ForEach-Object { ,($_ -split "`t") }) }
+  return [pscustomobject]@{ Head = $head; Rows = $rows }
+}
+
+# manifest と実ファイルの照合。問題の一覧(文字列の配列)を返す。空なら問題なし
+function Test-ImportBatch([string]$BatchDir, [string]$BatchId, $Def) {
+  $problems = @()
+  $manifestPath = Join-Path $BatchDir 'manifest.json'
+  if (-not (Test-Path -LiteralPath $manifestPath)) { return @('manifest.json がありません') }
+  try { $manifest = Read-JsonFile $manifestPath } catch { return @('manifest.json を読めません') }
+  if ([string]$manifest.batchId -ne $BatchId) { $problems += 'manifest の batchId が依頼と違います' }
+  $files = @($manifest.files)
+  if (-not ($files | Where-Object { $_.name -eq 'juchu.txt' })) { $problems += 'manifest に juchu.txt がありません' }
+  foreach ($step in @($Def.steps)) {
+    $f = $files | Where-Object { $_.name -eq $step.file } | Select-Object -First 1
+    if (-not $f) { continue }   # 納品先は新規がなければ無い
+    $path = Join-Path $BatchDir $step.file
+    if (-not (Test-Path -LiteralPath $path)) { $problems += "$($step.file) がありません"; continue }
+    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+    if ($hash -ne ([string]$f.sha256).ToLower()) { $problems += "$($step.file) の sha256 が manifest と違います"; continue }
+    try { $t = Read-ImportTable $path } catch { $problems += "$($step.file): $($_.Exception.Message)"; continue }
+    if ($t.Head.Count -ne [int]$step.columns) { $problems += "$($step.file) の列数が $($t.Head.Count) です($($step.columns) のはず)"; continue }
+    if ($t.Rows.Count -ne [int]$f.rows) { $problems += "$($step.file) の行数が $($t.Rows.Count) です(manifest は $($f.rows))"; continue }
+    if ($t.Rows.Count -eq 0) { $problems += "$($step.file) にデータ行がありません"; continue }
+    $bad = 0
+    foreach ($r in $t.Rows) { if ($r.Count -ne $t.Head.Count) { $bad++ } }
+    if ($bad -gt 0) { $problems += "$($step.file) に列数の合わない行が $bad 行あります"; continue }
+    foreach ($col in @($step.required)) {
+      $idx = [Array]::IndexOf([string[]]$t.Head, [string]$col)
+      if ($idx -lt 0) { $problems += "$($step.file) に見出し「$col」がありません"; continue }
+      $empty = 0
+      foreach ($r in $t.Rows) { if (-not ([string]$r[$idx]).Trim()) { $empty++ } }
+      if ($empty -gt 0) { $problems += "$($step.file) の「$col」が空の行が $empty 行あります" }
+    }
+  }
+  return $problems
+}
+
+function Write-ImportResult([string]$BatchDir, [string]$BatchId, [string]$State, [string]$Message, $Files, [string]$StartedAt) {
+  $obj = [pscustomobject]@{
+    batchId = $BatchId; state = $State; message = $Message; files = @($Files)
+    startedAt = $StartedAt; finishedAt = (Get-Date).ToString('o')
+  }
+  Write-JsonFile (Join-Path $BatchDir 'result.json') $obj
+  return $obj
+}
+
+# 取込フォルダを done / failed へ移す(同じ名前が failed にあれば入れ替える)。30日の削除は Remove-OldImports
+function Move-ImportBatch([string]$BatchId, [string]$ToName) {
+  $src = Join-Path $ImportRoot $BatchId
+  if (-not (Test-Path -LiteralPath $src)) { return }
+  $toDir = Join-Path $ImportRoot $ToName
+  New-Item -ItemType Directory -Force -Path $toDir | Out-Null
+  $dest = Join-Path $toDir $BatchId
+  if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+  Move-Item -LiteralPath $src -Destination $dest
+  (Get-Item -LiteralPath $dest).LastWriteTime = Get-Date   # 30日の数え始め
+}
+
+# PADフローを起動し、結果ファイル(PADが書く result_*.json)が起動後に現れて読めるようになるまで待つ。
+# 現れたら中身を返す。時間内に出なければ $null
+function Invoke-PadImportStep([string]$Flow, [string]$ResultPath, [int]$TimeoutMinutes) {
+  if (Test-Path -LiteralPath $ResultPath) { Remove-Item -LiteralPath $ResultPath -Force }
+  $startedAt = (Get-Date).AddSeconds(-2)
+  Write-Log "PADフローを起動します: $Flow"
+  Start-Process ('ms-powerautomate:/console/flow/run?workflowName=' + [uri]::EscapeDataString($Flow))
+  $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 5
+    $item = Get-Item -LiteralPath $ResultPath -ErrorAction SilentlyContinue
+    if (-not $item -or $item.LastWriteTime -lt $startedAt) { continue }
+    if (-not (Test-FileReadable $ResultPath)) { continue }
+    try { return (Read-JsonFile $ResultPath) } catch { continue }   # 書き込み途中なら次の確認で
+  }
+  return $null
+}
+
+# 取込ジョブ本体。戻り値 { State; Message }。SMILEに触る前の失敗は imported=0 の failed になる
+function Invoke-EcImport($Def, $Request) {
+  $batchId = [string]$Request.batchId
+  $startedAt = (Get-Date).ToString('o')
+  # batchId はフォルダ名になるので、決まった形以外は受け付けない(../ などの混入を防ぐ)
+  if ($batchId -notmatch '^ec-[0-9a-f]{16}$') {
+    return [pscustomobject]@{ State = 'failed'; Message = 'バッチ番号が正しくありません' }
+  }
+  $batchDir = Join-Path $ImportRoot $batchId
+  $fail = {
+    param([string]$msg)
+    if (Test-Path -LiteralPath $batchDir) {
+      Write-ImportResult $batchDir $batchId 'failed' $msg @() $startedAt | Out-Null
+      Move-ImportBatch $batchId 'failed'
+    }
+    return [pscustomobject]@{ State = 'failed'; Message = $msg }
+  }
+
+  # 1. 押した人が管理者か
+  if (-not (Test-ImportAdmin ([string]$Request.requestedBy))) { return (& $fail '権限なし(依頼した人が管理者ではありません)') }
+  # 2. 二重取込の確認
+  if (Test-Path -LiteralPath (Join-Path $ImportRoot "done\$batchId")) { return (& $fail '取込済み(同じバッチ番号が done にあります)') }
+  if (-not (Test-Path -LiteralPath $batchDir)) { return [pscustomobject]@{ State = 'failed'; Message = 'ファイル不整合(取込フォルダがありません)' } }
+  # 前回失敗した同じバッチの記録は、再実行の結果と混ざらないよう消す
+  $oldFailed = Join-Path $ImportRoot "failed\$batchId"
+  if (Test-Path -LiteralPath $oldFailed) { Remove-Item -LiteralPath $oldFailed -Recurse -Force }
+  # 3. 中身の確認(だめなら SMILE には触らない)
+  $problems = @(Test-ImportBatch $batchDir $batchId $Def)
+  if ($problems.Count -gt 0) { return (& $fail ('ファイル不整合: ' + ($problems -join ' / '))) }
+
+  # 4. 固定フォルダへ配置(毎回同じ名前。前回の残りは先に消す)
+  New-Item -ItemType Directory -Force -Path $EcImportCurrentDir | Out-Null
+  foreach ($step in @($Def.steps)) {
+    Remove-Item -LiteralPath (Join-Path $EcImportCurrentDir $step.copyAs), (Join-Path $EcImportCurrentDir $step.result) -Force -ErrorAction SilentlyContinue
+  }
+  $manifest = Read-JsonFile (Join-Path $batchDir 'manifest.json')
+  $present = @($manifest.files | ForEach-Object { $_.name })
+  $files = @()
+  $stop = $false
+  $hadTimeout = $false
+  $stopMessage = ''
+  $stepTimeout = 15
+  if ($Def.stepTimeoutMinutes) { $stepTimeout = [int]$Def.stepTimeoutMinutes }
+  try {
+    # 5. PADフローを順番に。納品先にエラーがあれば受注は実行しない
+    foreach ($step in @($Def.steps)) {
+      if ($present -notcontains $step.file) { continue }
+      if ($stop) { break }
+      Copy-Item -LiteralPath (Join-Path $batchDir $step.file) -Destination (Join-Path $EcImportCurrentDir $step.copyAs) -Force
+      $r = Invoke-PadImportStep ([string]$step.flow) (Join-Path $EcImportCurrentDir $step.result) $stepTimeout
+      if (-not $r) {
+        # 結果が出ない = SMILEにどこまで入ったか分からない。再実行させず、人が見て判断する
+        $files += [pscustomobject]@{ name = $step.file; imported = 0; errors = 0; errorRows = @() }
+        $stop = $true
+        $stopMessage = "$($step.flow) の結果ファイルが $stepTimeout 分以内に出ませんでした。SMILE を見て判断してください"
+        $hadTimeout = $true
+        break
+      }
+      $imp = [int]$r.imported
+      $err = [int]$r.errors
+      $files += [pscustomobject]@{ name = $step.file; imported = $imp; errors = $err; errorRows = @($r.errorRows) }
+      if ($err -gt 0) { $stop = $true; $stopMessage = "$($step.file) の取込にエラーが $err 件ありました" + $(if ($step.file -eq 'nouhin.txt') { '(受注は実行していません)' } else { '' }) }
+    }
+  } finally {
+    # お客様の名前・住所・電話が入っているので、固定フォルダには残さない
+    foreach ($step in @($Def.steps)) {
+      Remove-Item -LiteralPath (Join-Path $EcImportCurrentDir $step.copyAs), (Join-Path $EcImportCurrentDir $step.result) -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  # 6. 結果。取込件数が1以上でエラーもあれば partial(一部だけ入った)、1件も入っていなければ failed
+  $totalImp = ($files | Measure-Object -Property imported -Sum).Sum
+  if (-not $totalImp) { $totalImp = 0 }
+  if (-not $stop) { $state = 'done'; $message = '' }
+  elseif ($hadTimeout -or $totalImp -gt 0) { $state = 'partial'; $message = $stopMessage }
+  else { $state = 'failed'; $message = $stopMessage }
+  Write-ImportResult $batchDir $batchId $state $message $files $startedAt | Out-Null
+  Move-ImportBatch $batchId $(if ($state -eq 'done') { 'done' } else { 'failed' })
+  return [pscustomobject]@{ State = $state; Message = $message }
+}
+
+# 取込のあと、確認用の出力(ec_smile_verify_export)を依頼に追加する(アプリが待たなくてよいように)
+function Add-VerifyRequest([string]$Job, [string]$RequestedBy) {
+  $exists = @(Get-ChildItem -LiteralPath $PendingDir -Filter "*_$($Job)_*.json" -File -ErrorAction SilentlyContinue)
+  if ($exists.Count -gt 0) { return }
+  $rand = [Guid]::NewGuid().ToString('N').Substring(0, 4)
+  $name = '{0}_{1}_{2}.json' -f (Get-Date).ToUniversalTime().ToString('yyyyMMdd\THHmmssfff\Z'), $Job, $rand
+  Write-JsonFile (Join-Path $PendingDir $name) ([pscustomobject]@{
+    job = $Job; requestedBy = $RequestedBy; requestedAt = (Get-Date).ToUniversalTime().ToString('o'); app = 'EC売上(取込のあとの確認)'
+  })
+  Write-Log "確認用の出力を依頼に追加しました: $name"
+}
+
+# 待っている依頼を1件(同じジョブはまとめて。取込ジョブはまとめず1件ずつ)実行する。実行したら $true を返す。
 function Invoke-NextJob {
   $found = @(Get-ChildItem -LiteralPath $PendingDir -Filter '*.json' -File)
   if ($found.Count -eq 0) { return $false }
@@ -248,9 +544,15 @@ function Invoke-NextJob {
   }
   $jobName = [string]$firstRequest.job
 
-  # 同じジョブの依頼をまとめて実行中にする
+  # ジョブ定義(取込ジョブかどうかを先に知る)。取得できなければ従来どおり(失敗は実行時に記録される)
+  $defs = $null
+  try { $defs = Get-JobDefinitions } catch { Write-Log "ジョブ定義を読めません: $($_.Exception.Message)" }
+  $isImport = [bool]($defs -and $defs.jobs.$jobName -and $defs.jobs.$jobName.type -eq 'import')
+
+  # 同じジョブの依頼をまとめて実行中にする(取込は依頼ごとに別の仕事なので、先頭の1件だけ)
   $batch = @()
   foreach ($item in $items) {
+    if ($isImport -and $batch.Count -ge 1) { break }
     try { $req = Read-JsonFile $item.FullName } catch { continue }
     if ([string]$req.job -eq $jobName) { $batch += [pscustomobject]@{ Path = $item.FullName; Request = $req } }
   }
@@ -262,14 +564,37 @@ function Invoke-NextJob {
   }
   $requesters = ($batch | ForEach-Object { $_.Request.requestedBy } | Select-Object -Unique) -join ', '
   Write-Log "ジョブを開始します: $jobName (依頼 $($batch.Count) 件 / $requesters)"
+  Update-Heartbeat $jobName -Force
 
   $errorMessage = $null
+  $importDone = $false
   try {
-    $def = (Get-JobDefinitions).jobs.$jobName
+    $defs = Get-JobDefinitions
+    $def = $defs.jobs.$jobName
     if (-not $def) { throw "未定義のジョブです: $jobName" }
-    if ($def.after -and $def.after -ne 'regenerate_facts') { throw "未対応の後処理です: $($def.after)" }
-    Invoke-PadFlow $def
-    if ($def.after -eq 'regenerate_facts') { Invoke-RegenerateFacts }
+    if ($def.type -eq 'import') {
+      # SMILEに取り込むジョブ。SMILEが閉じていれば先に起動してから、取込のPADフローを順に動かす
+      if ($defs.smile -and $def.needsSmile -ne $false) { Ensure-Smile $defs.smile }
+      # 完了の判断は result.json(Invoke-EcImport が書く)。失敗・一部だけ入った場合も記録に理由を残す
+      $out = Invoke-EcImport $def $running[0].Request
+      if ($out.State -eq 'done') { $importDone = $true }
+      else { $errorMessage = "$($out.State): $($out.Message)" }
+    } else {
+      if ($def.after -and $def.after -ne 'regenerate_facts') { throw "未対応の後処理です: $($def.after)" }
+      $steps = @(Get-JobSteps $def)
+      # PADフローを動かすジョブは、SMILEを使わないと書いたもの(needsSmile: false)以外、先にSMILEを起動しておく
+      if ($steps.Count -gt 0 -and $defs.smile -and $def.needsSmile -ne $false) { Ensure-Smile $defs.smile }
+      for ($i = 0; $i -lt $steps.Count; $i++) {
+        try {
+          Invoke-PadFlow $steps[$i]
+        } catch {
+          # 複数手順のジョブは、どの手順で止まったかを残す
+          if ($steps.Count -gt 1) { throw ("手順{0}/{1}（{2}）: {3}" -f ($i + 1), $steps.Count, $steps[$i].flow, $_.Exception.Message) }
+          throw
+        }
+      }
+      if ($def.after -eq 'regenerate_facts') { Invoke-RegenerateFacts }
+    }
   } catch {
     $errorMessage = $_.Exception.Message
   }
@@ -283,9 +608,62 @@ function Invoke-NextJob {
     }
     if ($r.Request.legacyRequestedAt) { Remove-LegacyRequestIfDone ([string]$r.Request.legacyRequestedAt) }
   }
+  if ($importDone -and $def.then) {
+    try { Add-VerifyRequest ([string]$def.then) ([string]$running[0].Request.requestedBy) } catch { Write-Log "確認用の出力を依頼に追加できませんでした: $($_.Exception.Message)" }
+  }
+  Update-Heartbeat -Force
   if ($errorMessage) { Write-Log "エラー: ジョブ $jobName が失敗しました: $errorMessage" }
   else { Write-Log "ジョブが完了しました: $jobName" }
   return $true
+}
+
+# 定時のジョブ(rpa_jobs.json の schedules)を確認するときのジョブ定義。
+# 30秒ごとにGitHubへ取りに行かないよう、10分間は前回の内容を使う。
+function Get-JobDefinitionsCached {
+  if (-not $script:JobDefsCache -or ((Get-Date) - $script:JobDefsCachedAt).TotalMinutes -ge 10) {
+    $script:JobDefsCache = Get-JobDefinitions
+    $script:JobDefsCachedAt = Get-Date
+  }
+  return $script:JobDefsCache
+}
+
+# schedules の時刻を過ぎていて、今日まだ依頼していなければ、そのジョブを自分で依頼する。
+# PCが止まっていて時刻を過ぎた場合も、その日のうちに起動すれば依頼する(取りこぼし防止)。
+function Invoke-Schedules {
+  $schedules = @((Get-JobDefinitionsCached).schedules | Where-Object { $_ })
+  if ($schedules.Count -eq 0) { return }
+  $state = [pscustomobject]@{}
+  if (Test-Path -LiteralPath $ScheduleStatePath) {
+    try { $state = Read-JsonFile $ScheduleStatePath } catch { $state = [pscustomobject]@{} }
+  }
+  $now = Get-Date
+  $today = $now.ToString('yyyy-MM-dd')
+  foreach ($s in $schedules) {
+    try { $at = [datetime]::ParseExact([string]$s.time, 'HH:mm', $null) } catch {
+      # 30秒ごとに同じ警告を出し続けないよう、1つの書き間違いにつき1回だけログに残す
+      $badKey = "$($s.job)@$($s.time)"
+      if (-not $script:BadScheduleLogged.ContainsKey($badKey)) {
+        $script:BadScheduleLogged[$badKey] = $true
+        Write-Log "定時の時刻が読めません(HH:mm で書く): job=$($s.job) time=$($s.time)"
+      }
+      continue
+    }
+    if ($now -lt $at) { continue }
+    $key = "$($s.job)@$($s.time)"
+    if ($state.$key -eq $today) { continue }
+    # 末尾は定時の時刻(同じ瞬間に複数の定時を依頼しても名前が重ならないように)
+    $name = '{0}_{1}_s{2}.json' -f $now.ToUniversalTime().ToString('yyyyMMdd\THHmmssfff\Z'), $s.job, $at.ToString('HHmm')
+    Write-JsonFile (Join-Path $PendingDir $name) ([pscustomobject]@{
+      job = [string]$s.job
+      app = 'RPA専用機の定時実行'
+      requestedBy = "定時 $($s.time)"
+      requestedAt = $now.ToUniversalTime().ToString('o')
+    })
+    Set-Props $state @{ $key = $today }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ScheduleStatePath) | Out-Null
+    Write-JsonFile $ScheduleStatePath $state
+    Write-Log "定時のジョブを依頼しました: $($s.job) ($($s.time))"
+  }
 }
 
 # 前回、実行中のまま止まった依頼は失敗扱いにする(どこまで進んだか分からないため)
@@ -303,18 +681,47 @@ function Remove-OldItems {
     Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
+# 取込ファイルにはお客様の名前・住所・電話が入っているので、done / failed に移して30日たったら消す。
+# 依頼されないまま残った取込フォルダも、30日たったら消す
+function Remove-OldImports {
+  if (-not (Test-Path -LiteralPath $ImportRoot)) { return }
+  $limit = (Get-Date).AddDays(-$KeepDays)
+  foreach ($sub in 'done', 'failed') {
+    $dir = Join-Path $ImportRoot $sub
+    Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTime -lt $limit } |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  Get-ChildItem -LiteralPath $ImportRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^ec-[0-9a-f]{16}$' -and $_.LastWriteTime -lt $limit } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 二重に起動しない(タスクを止めても、起動用の wscript だけが終わって前の常駐スクリプトが
+# 残ることがある。2つ同時に動くと同じ依頼を取り合う)。プロセスが終われば自動で解放される。
+$script:SingleInstance = New-Object System.Threading.Mutex($false, 'Local\HanaokaRpaQueueWorker')
+$owned = $false
+try { $owned = $script:SingleInstance.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
+if (-not $owned) {
+  Write-Log "ほかの常駐スクリプトがすでに動いているため、起動を取りやめます (PID $PID)"
+  exit 0
+}
+
 foreach ($d in $PendingDir, $RunningDir, $DoneDir, $FailedDir) {
   New-Item -ItemType Directory -Force -Path $d | Out-Null
 }
 Resolve-InterruptedJobs
 Remove-OldItems
+Remove-OldImports
 $lastCleanup = Get-Date
 Write-Log "監視を開始します: $QueueRoot"
 
 while ($true) {
   $worked = $false
+  Update-Heartbeat
   try {
     Convert-LegacyRequest
+    Invoke-Schedules
     $worked = Invoke-NextJob
   } catch {
     Write-Log "エラー: $($_.Exception.Message)"
@@ -323,6 +730,7 @@ while ($true) {
   if (-not $worked) { Start-Sleep -Seconds $PollSeconds }
   if (((Get-Date) - $lastCleanup).TotalHours -ge 1) {
     Remove-OldItems
+    Remove-OldImports
     $lastCleanup = Get-Date
   }
 }

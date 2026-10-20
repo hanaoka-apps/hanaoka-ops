@@ -33,6 +33,15 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
 
 ## 2. SMILE への取込（ジョブ `ec_smile_import`）
 
+### 画面の操作
+画面下のバーのボタンは **「SMILEに取り込む」の1つだけ**（納品先と受注伝票をまとめて登録する）。
+
+- 押せるのは管理者だけ。管理者でない人には、ボタンの代わりに「OK済 n件（取込は管理者が行います）」と出す。管理者の判定は、専用機側の `ec_import_admins.json`（下記）を画面も読んで決める（画面は見た目の制限。専用機側でも照合する）。
+- 押すと確認ダイアログ（納品先の新規件数・受注の伝票数と行数・金額合計）を出し、OKで取込ファイルを置いて依頼する。
+- 取込後の突き合わせで一致した注文は、**自動で「起票済み」**になり、SMILE が付けた受注№が注文に紐づく（手動の「起票済みにする」ボタンはバーに出さない）。
+- 専用機がまだ使えない間の予備として、管理者だけに出る小さな「⋯」メニュー（初期は閉じる）に、ファイルの手動保存と「手で取り込んだので起票済みにする」を残す。
+- 状態の表示：依頼中 → 取込中 → 確認待ち（SMILEから出力中）→ 確認OK／要確認／取込失敗。`partial` と結果不明は再実行させず「要確認（SMILEを見て判断）」で止める。再実行できるのは取込件数0の `failed` だけ。
+
 ### アプリが置くもの
 `SharedMasters/_rpa_import/<バッチ番号>/` に次を置いてから、依頼を `_rpa_queue/pending/` に入れる。
 
@@ -43,17 +52,18 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
 | `manifest.json` | `{ "batchId", "requestedBy", "requestedAt", "files": [{ "name", "rows", "sha256" }] }` |
 
 - **バッチ番号**はファイルの中身から作る（同じ内容なら同じ番号）。同じ番号を2回は実行しない。
-- 依頼ファイル（pending）には `{ "job": "ec_smile_import", "requestedBy", "batchId" }` を入れる。
+- 依頼ファイル（pending）には `{ "job": "ec_smile_import", "requestedBy", "batchId" }` を入れる。同じ `batchId` の依頼だけをまとめ、別の `batchId` は別の仕事として順に実行する（`rpa_queue.js` の `request()` が `batchId` を載せる）。
+- バッチ番号は `ec-` ＋ 16桁の16進（ファイルの sha256 から作る）。専用機はこの形以外を受け付けない。
 
 ### 専用機（常駐スクリプト）がやること
-1. **押した人を確認**：`requestedBy` が `SharedMasters/_rpa_queue/ec_import_admins.json`（管理者のメール一覧。専用機側で管理し、リポジトリには置かない）にあること。なければ failed（理由：権限なし）。
+1. **押した人を確認**：`requestedBy` が `SharedMasters/_rpa_queue/ec_import_admins.json`（管理者のメール一覧。専用機側で管理し、リポジトリには置かない。形は `{ "admins": ["メール", …] }`、大文字小文字は区別しない）にあること。なければ failed（理由：権限なし）。
 2. **二重取込の確認**：`_rpa_import/done/<バッチ番号>/` があれば failed（理由：取込済み）。
 3. **中身の確認**：`manifest.json` と実ファイルの行数・sha256 が合う、見出しの列数が 納品先42／受注121、必須項目（得意先・品目コード・数量・納期）が空でない。だめなら failed（SMILE には触らない）。
-4. **PAD に渡す**：専用機の固定フォルダ（例 `C:\RPA\ec_import\current\`）に、毎回同じ名前（`納品先.txt`・`受注.txt`）でコピーする。
+4. **PAD に渡す**：専用機の固定フォルダ（既定 `C:\RPA\ec_import\current\`。`rpa_queue_worker.ps1` の `$EcImportCurrentDir` で変える）に、毎回同じ名前（`納品先.txt`・`受注.txt`）でコピーする。取込が終わったら（失敗しても）固定フォルダのファイルは消す。
 5. **PAD フローを順番に実行**：①`Smile_EC納品先取込` → ②`Smile_EC受注取込`。**①にエラーがあれば②は実行しない**。
-6. **結果を書く**：`_rpa_import/<バッチ番号>/result.json`（下記）。完了を知らせるのはこのファイル。
-7. 終わったら `_rpa_import/done/<バッチ番号>/` に移す（失敗時は `failed/`）。**30日たったら消す**（お客様の名前・住所・電話が入っているため）。
-8. 取込が終わったら、**続けて `ec_smile_verify_export` を依頼に追加**する（アプリが待たなくてよいように）。
+6. **結果を書く**：`_rpa_import/<バッチ番号>/result.json`（下記）。完了を知らせるのはこのファイル。PADフローは固定フォルダに `result_nouhin.json`／`result_juchu.json`（`{ imported, errors, errorRows }`。作り方は `ec_import.md`）を書き、常駐スクリプトがそれをまとめて `result.json` にする。結果ファイルが時間内（1フロー15分）に出ないときは `partial`（SMILEにどこまで入ったか不明）にする。
+7. 終わったら `_rpa_import/done/<バッチ番号>/` に移す（失敗・一部だけ入った場合は `failed/`）。依頼ファイル（`_rpa_queue`）も、`done` のときだけ done、それ以外は failed に移す。**30日たったら消す**（お客様の名前・住所・電話が入っているため。アプリ側の端末に残す取込の記録も30日で消す）。アプリは `result.json` を `_rpa_import/<バッチ番号>/` → `failed/` → `done/` の順に探す。
+8. 取込が `done` で終わったら、**続けて `ec_smile_verify_export` を依頼に追加**する（アプリが待たなくてよいように。`rpa_jobs.json` の `then`）。アプリは取込の依頼より後のこのジョブを探して待ち、90秒たっても見つからなければ自分で依頼する。
 
 ### PAD フローで作るもの（専用機で人が作る）
 | フロー名 | することの概要 |
@@ -97,9 +107,9 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
 ## 専用機側のチェックリスト
 - [ ] `ec_shopify_fetch` のタスクスケジューラー登録と、環境変数2つ
 - [ ] `rpa_jobs.json` に `ec_smile_import`・`ec_smile_verify_export` が入ったことを確認（マージで常駐スクリプトに反映される）
-- [ ] 常駐スクリプトを更新（取込ジョブの種類を扱えるようにする。別セッションで作成中）
-- [ ] PAD フロー3つ（`Smile_EC納品先取込`・`Smile_EC受注取込`・`Smile_EC確認用出力`）
-- [ ] `_rpa_queue/ec_import_admins.json`（管理者のメール一覧）
+- [ ] 常駐スクリプトを更新して再起動（取込ジョブ `type: import` に対応した版。`rpa_queue_worker.ps1`）
+- [ ] PAD フロー3つ（`Smile_EC納品先取込`・`Smile_EC受注取込`・`Smile_EC確認用出力`。作り方・試運転は `ec_import.md`）
+- [ ] `_rpa_queue/ec_import_admins.json`（管理者のメール一覧。画面の「SMILEに取り込む」ボタンの表示もこれで決まる）
 - [ ] `C:\RPA\ec_import\current\` の作成と書き込み権限
 - [ ] テスト用の得意先・納品先で、1件を最初から最後まで通す（取込 → 確認用出力 → アプリの突き合わせ）
 

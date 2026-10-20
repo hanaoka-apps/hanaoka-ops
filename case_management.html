@@ -12,6 +12,7 @@
 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="fax_reply.js?v=20261020a"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
 <script>
 // MSALが読み込めなかった場合のフォールバック
@@ -134,6 +135,24 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 /* ===== 詳細モード（2カラム：タイムライン＋PDF）===== */
 .main.detail-mode .case-panel { display: none !important; }
 .main.detail-mode .detail-panel { display: flex; flex: 1; }
+/* ===== 詳細画面の左端「☰ 一覧」バーと引き出し（受信トレイ・案件管理） ===== */
+.ld-tab { display: none; width: 20px; flex-shrink: 0; align-items: center; justify-content: center; cursor: pointer;
+  writing-mode: vertical-rl; letter-spacing: .25em; font-size: 11px; font-weight: 600; color: var(--accent);
+  background: var(--surface2); border-right: 1px solid var(--border); user-select: none; }
+.ld-tab:hover { background: #e3e6fb; }
+#triageView.tri-detail > .ld-tab, .main.detail-mode > .ld-tab { display: flex; }
+.ld-mask { display: none; position: absolute; inset: 0; z-index: 58; background: rgba(15,17,40,.12); }
+.ld { display: none; position: absolute; top: 0; bottom: 0; left: 20px; width: 400px; max-width: calc(100vw - 40px); z-index: 59;
+  flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); box-shadow: 8px 0 28px rgba(0,0,0,.18); }
+.ld.open, .ld-mask.open { display: flex; }
+.ld-head { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+.ld-body { flex: 1; overflow-y: auto; min-height: 0; }
+.ld-row { padding: 7px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12px; }
+.ld-row:hover { background: var(--surface2); }
+.ld-row.active { background: #eef0fc; border-left: 3px solid var(--accent); }
+.ld-row .l1 { display: flex; gap: 6px; align-items: center; }
+.ld-row .co { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.ld-row .l2 { color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 /* ===== FAX履歴：一覧⇔詳細 切り替え ===== */
 .fax-main { display: flex; }
 .fax-main.fax-list-mode .fax-list-panel { display: flex; flex: 1; }
@@ -589,6 +608,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 }
 .tl-item:hover .tl-delete-btn { opacity: 1; }
 .tl-delete-btn:hover { background: #FFF0F0; }
+/* β：FAX返信の作成ボタン（試す人が見つけやすいよう常に表示） */
+.tl-reply-btn {
+  margin-left: 4px; padding: 1px 6px; font-size: 10px; border: 1px solid #bfe3d6;
+  border-radius: 4px; background: #f1faf6; cursor: pointer; color: #0f6e56; white-space: nowrap;
+}
+.tl-reply-btn:hover { background: #dff3ea; }
 /* コメントフォーム */
 .comment-form {
   border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
@@ -1131,7 +1156,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
   <!-- 受信トレイビュー（1次仕訳） -->
   <div id="triageWrapper" style="display:flex;flex:1;flex-direction:column;overflow:hidden;min-height:0;">
     <!-- 1次仕訳パネル（2カラム：左=リスト+詳細スライド / 右=PDF大表示） -->
-    <div id="triageView" style="display:flex;flex:1;overflow:hidden;min-height:0;">
+    <div id="triageView" style="display:flex;flex:1;overflow:hidden;min-height:0;position:relative;">
+      <!-- 詳細を見ているときだけ左端に出る「☰ 一覧」バー。押すと一覧を横から引き出す -->
+      <div class="ld-tab" id="ldTabTriage" onclick="openListDrawer('triage')" title="マウスを乗せると一覧が出ます（Esc で閉じる）">☰ 一覧</div>
+      <div class="ld-mask" onclick="closeListDrawer()"></div>
+      <div class="ld" id="ldTriage"></div>
       <!-- 左カラム（固定幅：一覧モード ⇔ 詳細モードを排他切替） -->
       <div style="width:360px;min-width:360px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--surface);overflow:hidden;">
         <!-- 一覧モード -->
@@ -1157,7 +1186,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <!-- 戻るバー -->
           <div style="position:sticky;top:0;z-index:15;background:var(--surface);border-bottom:1px solid var(--border);padding:8px 12px;display:flex;align-items:center;gap:8px;">
             <button class="btn" onclick="backToTriageList()" style="font-size:12px;padding:4px 10px;">← 一覧に戻る</button>
-            <span style="font-size:11px;color:var(--text-muted);" id="triageBackHint"></span>
+            <span style="flex:1"></span>
+            <button class="btn" id="triagePrevBtn" onclick="stepTriage(-1)" style="font-size:12px;padding:4px 10px;" title="一覧の1つ前の受信">◀ 前へ</button>
+            <span style="font-size:11px;color:var(--text-muted);white-space:nowrap" id="triageBackHint"></span>
+            <button class="btn" id="triageNextBtn" onclick="stepTriage(1)" style="font-size:12px;padding:4px 10px;" title="一覧の1つ後の受信">次へ ▶</button>
           </div>
           <!-- 編集モード時のsticky保存バー -->
           <div class="triage-save-bar" id="triageSaveBar">
@@ -1238,6 +1270,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <div id="triageEditBody" style="display:none;"></div>
             <!-- 仕訳アクション（編集モード中は非表示） -->
             <div id="triageActionArea">
+            <!-- FAXのとき：案件にする前に返信先FAX（AIが読んだ送信元FAX）を確かめる。直した値は「新規案件として登録」「紐づける」のときに編集履歴つきで保存 -->
+            <div id="triageFaxCheck" style="display:none;align-items:center;gap:6px;margin-bottom:6px;padding:6px 8px;border:1px solid #d4d8fb;border-radius:6px;background:#f6f7fe;font-size:12px;">
+              <span style="white-space:nowrap;color:#23268f;font-weight:600">📠 返信先FAX</span>
+              <input class="search-input" id="triageFaxCheckInput" style="width:150px;padding:3px 8px;font-size:13px;font-weight:600" placeholder="読み取れず" oninput="onTriageFaxCheckInput()">
+              <span id="triageFaxCheckNote" style="color:var(--text-muted);font-size:11px">用紙の送信元と合っているか確認（違えば直してから登録）</span>
+            </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
               <button class="btn btn-primary" onclick="triageAs('案件管理','新規')" style="font-size:11px;">📋 新規案件として登録</button>
               <button class="btn" onclick="triageAs('案件管理','既存')" style="background:var(--surface2);font-size:11px;">🔗 既存案件に紐づけ</button>
@@ -1271,6 +1309,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                 <option>総務部</option>
                 <option>営業部</option>
                 <option>工場</option>
+                <option>企画</option>
               </select>
               <button class="btn btn-primary" onclick="confirmFaxViewAssign()">割り当てる</button>
             </div>
@@ -1282,6 +1321,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
       <div style="flex:1;display:flex;flex-direction:column;background:var(--surface2);overflow:hidden;">
         <div class="pdf-toolbar">
           <span class="pdf-filename" id="triagePdfName">FAXを選択するとPDFが表示されます</span>
+          <button class="btn" id="triagePdfRotateBtn" onclick="rotatePdfFrom('triage')" title="PDFの向きを直す（ページごと／全ページ）">↻ 回転</button>
           <button class="btn" id="triagePdfNewTabBtn" onclick="openTriagePdfNewTab()">別タブで開く</button>
         </div>
         <div style="flex:1;overflow:hidden;position:relative;" id="triagePdfArea">
@@ -1308,6 +1348,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <option value="総務部">総務部</option>
           <option value="営業部">営業部</option>
           <option value="工場">工場</option>
+          <option value="企画">企画</option>
         </select>
       </div>
       <!-- 部署フィルター -->
@@ -1318,6 +1359,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="filter-btn" data-dept="総務部" onclick="setFaxDeptFilter('総務部',this)">総務</div>
         <div class="filter-btn" data-dept="営業部" onclick="setFaxDeptFilter('営業部',this)">営業</div>
         <div class="filter-btn" data-dept="工場" onclick="setFaxDeptFilter('工場',this)" title="工場（資材）">工場</div>
+        <div class="filter-btn" data-dept="企画" onclick="setFaxDeptFilter('企画',this)">企画</div>
         <div class="filter-btn" data-dept="archived" onclick="setFaxDeptFilter('archived',this)" title="受信トレイでアーカイブしたもの（ゴミ・不要なもの）。開いて「↩ 未仕訳に戻す」で受信トレイに戻せます">🗂 アーカイブ</div>
       </div>
       <!-- ステータスフィルター -->
@@ -1389,6 +1431,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="fax-detail-pdf" id="faxDetailPdf">
           <div class="pdf-toolbar">
             <span class="pdf-filename" id="faxViewPdfName">-</span>
+            <button class="btn" onclick="rotatePdfFrom('faxview')" title="PDFの向きを直す（ページごと／全ページ）">↻ 回転</button>
             <button class="btn" onclick="openFaxViewPdfNewTab()">別タブで開く</button>
           </div>
           <div class="pdf-area" id="faxViewPdfArea" style="flex:1;">
@@ -1406,7 +1449,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <!-- 旧サブタブ列（全案件・工場(全体)…）は廃止し、下の2段フィルタに統合した -->
     <div id="caseSubTabs" style="display:none"></div>
   <!-- メインレイアウト -->
-  <div class="main list-mode" id="caseMain" style="display:none;flex:1;min-height:0;">
+  <div class="main list-mode" id="caseMain" style="display:none;flex:1;min-height:0;position:relative;">
+    <!-- 案件詳細を見ているときだけ左端に出る「☰ 一覧」バー -->
+    <div class="ld-tab" id="ldTabCase" onclick="openListDrawer('case')" title="マウスを乗せると一覧が出ます（Esc で閉じる）">☰ 一覧</div>
+    <div class="ld-mask" onclick="closeListDrawer()"></div>
+    <div class="ld" id="ldCase"></div>
     <!-- 左：案件リスト -->
     <div class="case-panel">
       <div class="panel-header">
@@ -1697,7 +1744,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <!-- PDFヘッダー -->
             <div class="pdf-toolbar" style="justify-content:space-between">
               <span class="pdf-filename" id="pdfFilename" style="font-weight:400">PDF</span>
-              <button class="btn" onclick="openPdfNewTab()" style="padding:2px 8px;font-size:11px">別タブで開く</button>
+              <span style="display:flex;gap:4px"><button class="btn" onclick="rotatePdfFrom('case')" style="padding:2px 8px;font-size:11px" title="PDFの向きを直す（ページごと／全ページ）">↻ 回転</button><button class="btn" onclick="openPdfNewTab()" style="padding:2px 8px;font-size:11px">別タブで開く</button></span>
             </div>
             <!-- PDFタブ行 -->
             <div class="pdf-tabs" id="pdfTabs">
@@ -1848,7 +1895,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <li>左のリストからFAXをクリック → 詳細画面に切り替わります</li>
             <li>AIの読み取り内容（取引先名・案件名・サマリーなど）を確認</li>
             <li>右側に表示されるFAX原本（PDF）と照合</li>
-            <li>「一覧に戻る」ボタンで一覧に戻れます</li>
+            <li>「一覧に戻る」ボタンで一覧に戻れます。上の <strong>「◀ 前へ／次へ ▶」</strong> で、一覧に戻らずに前後の受信へ移れます（経路・検索で絞り込んだ一覧の順）</li>
+            <li>画面の左端の細いバー <strong>「☰ 一覧」</strong> に<strong>マウスを乗せる</strong>（またはクリックする）と、一覧が横から出てきます。選ぶとその受信に切り替わります（マウスを外すか、Esc・外側のクリックで閉じる）</li>
           </ol>
           <div class="help-h3">詳細画面の項目</div>
           <table class="help-tbl"><thead><tr><th>項目</th><th>内容</th></tr></thead><tbody>
@@ -1890,6 +1938,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <tr><td>🗂 アーカイブ</td><td>誰も見なくてよいもの（広告・DMなど）を、案件化も部署回覧もせずに退避します。部署回覧の「🗂 アーカイブ」から開き「↩ 未仕訳に戻す」で戻せます</td></tr>
           </tbody></table>
           <div class="help-callout info"><strong>📧 Mail</strong>には、AIの仕訳判定（案件管理／部署回覧（部署名つき）／アーカイブ）が表示されます。判定と実際の仕訳は後日見比べ、判定基準の改善に使います。判定と違う仕訳をしても問題ありません。</div>
+          <div class="help-callout info"><strong>📠 返信先FAX</strong>：FAXでは仕訳ボタンの上に、AIが用紙の送信元から読み取ったFAX番号が出ます。<strong>案件にする前に用紙と合っているか確認</strong>し、違っていれば直してから「新規案件として登録」「紐づける」を押してください。直した番号は「編集」と同じく修正履歴に残り、AIの読み取り改善に使います。この番号は返信作成（15章）の返信先にもなります。</div>
           <div class="help-callout tip">新規案件登録のフォームは、上部の見出しを<strong>ドラッグして移動</strong>できます。背景が透けて裏のFAX原本が見えるので、FAXを見ながら入力できます。</div>
           <div class="help-callout info">誤って仕訳してしまった場合は、案件管理のタイムラインで対象のFAX受信イベントにカーソルを合わせ、<strong>「↩ 受信トレイ」</strong>を押すと未仕訳に戻せます。</div>
         </div>
@@ -1897,6 +1946,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="help-section">
           <div class="help-h2"><span class="hn">5</span> 案件管理（対応の入力）</div>
           <p class="help-p">案件詳細は3カラム構成です。<strong>左：案件情報・操作 / 中央：タイムライン / 右：FAX原本PDF</strong>。</p>
+          <div class="help-callout tip">案件詳細を見ているとき、画面の左端の細いバー <strong>「☰ 一覧」</strong> に<strong>マウスを乗せる</strong>（またはクリックする）と、案件一覧（今の絞り込み・並び順のまま）が横から出てきます。別の案件を選ぶとそのまま切り替わり、「← 一覧」に戻らなくても移れます（マウスを外すか、Esc・外側のクリックで閉じる）。</div>
           <div class="help-h3">左パネル（変更は自動保存）</div>
           <ul class="help-ul">
             <li><strong>ステータス</strong>：いまボールが誰の所にあるか（所在）を選ぶ</li>
@@ -1910,6 +1960,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <li>「追加」で記録（投稿者名・日時が自動で残ります）</li>
             <li>「送信FAX登録」タブからは、送付種別を選びPDFを添付して送信記録を残せます</li>
           </ol>
+          <div class="help-callout info">タイムラインの記録は、カーソルを合わせると出る <strong>🗑</strong> で削除できます。<strong>削除できるのは自分が登録したものだけ</strong>です（ほかの人のコメント・記録や、自動で登録された受信には 🗑 が出ません）。</div>
           <div class="help-callout info">重複して登録された案件は、左パネルの「既存案件に統合」で1件にまとめられます。同じ案件かもしれない組は「🔗 マージ候補」にも自動で出ます（12章）。</div>
         </div>
 
@@ -1975,6 +2026,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <div class="help-h3">案件管理画面でのPDF確認</div>
           <p class="help-p">案件詳細の右端パネルにPDFが表示されます。複数のFAXが紐づく場合は上部のタブで切り替えられます。</p>
           <div class="help-callout tip">スマートフォンからでもアプリ内でFAX（PDF）を表示できます。</div>
+          <div class="help-h3">PDFの向きを直す（↻ 回転）</div>
+          <p class="help-p">受信トレイ・部署回覧・案件の右側のPDFの上にある <strong>「↻ 回転」</strong> を押すと、全ページの小さな画像が並びます。ページごとの <strong>↺ 左90°／↻ 右90°／180°</strong> で回し（<strong>1ページ目だけ回して2ページ目はそのまま</strong>、もできます）、上の「全ページ」ボタンでまとめて回すこともできます。「保存」で<strong>元のPDFの向きが直り</strong>、次から誰が開いても正しい向きで出ます（画質は変わりません。前の版は SharePoint の版の履歴に残ります）。受信FAXで回したことは修正履歴に残り、AIの向き補正の改善に使います。</p>
           <div class="help-callout info">システムの処理を待たずに確認したい緊急時は、共有メールボックス <strong>fax-receive@hanaoka-corp.co.jp</strong> を直接確認してください。通常運用では不要です。</div>
         </div>
 
@@ -1994,7 +2047,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <div class="help-h2"><span class="hn">10</span> 部署回覧</div>
           <p class="help-p">受信トレイで「📋 部署回覧へ」を押した受信（移転・休業日の案内など、案件にはならないが部署に見ておいてほしいもの）の一覧です。</p>
           <ul class="help-ul">
-            <li><strong>部署で絞る</strong>：自部署／全部署／業セ／総務／営業／工場。右上の「マイ部署」を設定すると「⭐ 自部署」で自分の部署だけ見られます</li>
+            <li><strong>部署で絞る</strong>：自部署／全部署／業セ／総務／営業／工場／企画。右上の「マイ部署」を設定すると「⭐ 自部署」で自分の部署だけ見られます</li>
             <li><strong>状態で絞る</strong>：🔴 未確認／✅ 確認済み</li>
             <li><strong>入口で絞る</strong>：すべて／📠 FAX／🌐 HP／🔷 ARU／🤖 AMR／📧 Mail（部署と組み合わせて使えます）</li>
             <li>中身を確認したら、メモを入れて<strong>「✅ 確認済みにする」</strong>。案件として扱うべきだったものは「📋 案件に紐付け」、受信トレイに戻すなら「↩ 未仕訳に戻す」</li>
@@ -2056,6 +2109,37 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <li>ほかの人が統合して消えた案件は、次の全件読み直し（「更新」または12時間ごと）まで一覧に残ることがあります。開こうとすると案内が出て、自動で読み直します</li>
             <li>サインアウトすると、パソコンに保存した内容は消えます</li>
           </ul>
+        </div>
+
+        <div class="help-section">
+          <div class="help-h2"><span class="hn">15</span> ✍ FAX返信の作成（β・試験中）</div>
+          <p class="help-p">受け取ったFAXに直接文字を書き込んで、返信用のPDFを作る機能です。<strong>試験中のため、下のスイッチをオンにした人にだけ</strong>表示されます（オン／オフはこのパソコンのこのブラウザだけに効きます）。</p>
+          <label style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #d4d8fb;border-radius:8px;background:#f6f7fe;cursor:pointer;font-size:13px;font-weight:700;color:#23268f">
+            <input type="checkbox" id="betaFaxReplyToggle" onchange="setBetaFaxReply(this.checked)"> FAX返信の作成（β）を使う
+          </label>
+          <ol class="help-ol">
+            <li>案件のタイムラインで、受信FAXの <strong>「✍ 返信（β）」</strong> を押す（送信FAX・メールの添付など、受信FAX以外のPDFは <strong>「✍ 編集（β）」</strong>。返信先FAXは、その案件でいちばん新しい受信FAXの番号になります）</li>
+            <li>FAXが大きく開きます（<strong>見出しをドラッグで移動、右下の角で大きさ変更</strong>。ダブルクリックで中央に戻ります。開いたまま裏の画面も見たり触ったりできます）。画面上部に<strong>返信先のFAX番号</strong>が出ます（受信時にAIが用紙から読み取った「送信元FAX」です。読み違いは <strong>「✎ 直す」</strong> で直せ、元の受信FAXの記録も直ります）。上のボタンで書くものを切り替えます
+              <ul class="help-ul">
+                <li><strong>Ａ 文字</strong>：書きたい所をクリックして入力（⠿ をドラッグで移動、Enter で改行）。入力中に出る小さなボタンで 大きさ・<strong>B 太字</strong>・<strong>U 下線</strong>・<strong>▭ 枠と白背景</strong>・削除</li>
+                <li><strong>▭ テキストボックス</strong>：枠つき・白背景の文字（コメント）を書きます</li>
+                <li><strong>色</strong>：文字・枠・線・丸・社判の色を 青（最初）・黒・赤 から選べます</li>
+                <li><strong>□ 枠／／ 線／◯ 丸</strong>：ドラッグで描く（線はほぼ水平・垂直なら真っすぐにそろいます。丸は Shift を押しながらで正円。太さは 細・中・太）。描いたもの（スタンプも）は<strong>ドラッグで移動</strong>でき（選んで矢印キーでも少しずつ動く）、クリックで選ぶと<strong>□ のつまみで大きさを変えられ</strong>（枠・丸は4隅、線は両端、スタンプは右下）、「✕ 消す」も出ます</li>
+                <li><strong>印 スタンプ</strong>：右の選択で <strong>データ印／完了／社判（全部・住所と会社名だけ）</strong> を選び、押したい所をクリックします。社判は右側で<strong>背景を 透明／白</strong> に切り替えられます（白にすると下の文字や線を隠せます）。完了は赤の「完了」印、社判は住所・社名・TEL・担当・Mail の印で、内容は右側の「社判」欄で直せます（そのパソコンに覚えます）。<strong>データ印</strong>は赤い丸印（上段・日付・下段）で、上段（最初は「花岡車輌」）・下段（最初はサインインした人の姓）・大きさ（12／15／18mm）は右側で変えられ、そのパソコンに覚えます。日付はその日になります</li>
+                <li><strong>↶ 元に戻す</strong>：最後に書いたものを消します</li>
+                <li><strong>📝 定型文</strong>（右側）：よく使う文をボタンで入れられます。文字の入力中に押すとカーソルの所に入り、入力していないときは押してから置きたい所をクリックします。「〇」の所を直して使います。最初は、よく打たれていた文（様・署名・手配・見積回答の送料と納期・価格改定のお知らせなど）が入っています。「＋ 入力中の文字を登録」「＋ 新しく入力」で自分の定型文を足せ、✕ で消せます（そのパソコンに覚えます）</li>
+              </ul>
+            </li>
+            <li>右側で送信先区分・送付種別（・メモ）を選び、<strong>「登録して印刷」</strong></li>
+            <li>文字を重ねたPDFが送信FAXとしてタイムラインに登録され、印刷画面が開きます。<strong>プリンターに PC-FAX を選んで送信</strong>してください</li>
+          </ol>
+          <div class="help-h3">間違いに気づいたとき（✍ 続きを編集）</div>
+          <ol class="help-ol">
+            <li>この機能で作った送信FAXの <strong>「✍ 続きを編集」</strong> を押すと、元のFAXの上に前回書いた文字・枠・線が戻ります</li>
+            <li>直して <strong>「修正版を登録して印刷」</strong> を押すと、修正版が新しい送信FAXとして登録されます（記録に【修正版】と付きます）</li>
+            <li>続けて「修正前を削除しますか？」と聞かれます。<strong>まだ送っていない間違いなら「OK」</strong>（タイムラインから消え、PDFは SharePoint のごみ箱へ）、<strong>送ってしまった場合は「キャンセル」</strong>で残してください。修正前の内容は、どちらでも修正版の記録に残ります</li>
+          </ol>
+          <div class="help-callout info">書き込んだ文字は、送信FAXの記録に「【追記】…」として残ります。よく使う返信の言葉をあとで集計し、定型文として選べるようにする予定です。使いにくい点は福田までお知らせください。</div>
         </div>
 
         <div class="help-section">
@@ -2177,7 +2261,7 @@ let faxViewItems = [];
 let currentTriageId = null;
 let currentFaxViewId = null;
 let faxViewFilter = 'undone';       // 'undone' | 'done' | 'all'
-let faxDeptFilter = 'mine';         // 'mine' | 'all' | '業務センター' | '総務部' | '営業部' | '工場' | 'archived'
+let faxDeptFilter = 'mine';         // 'mine' | 'all' | '業務センター' | '総務部' | '営業部' | '工場' | '企画' | 'archived'
 let myDept = '';                    // localStorage永続
 let faxDriveId = null; // FAX_PDFStorageドライブIDキャッシュ
 let droppedFile = null; // ドラッグ&ドロップで選択されたファイル
@@ -3211,7 +3295,8 @@ async function loadCases(opts) {
 async function loadEvents(caseId) {
   try {
     const sid = await getSiteId();
-    const mapEv = v => ({ _spId: v.id, _author: (v.createdBy && v.createdBy.user && v.createdBy.user.displayName) || '', ...v.fields });
+    const mapEv = v => ({ _spId: v.id, _author: (v.createdBy && v.createdBy.user && v.createdBy.user.displayName) || '',
+                          _authorEmail: (v.createdBy && v.createdBy.user && v.createdBy.user.email) || '', ...v.fields });
     let allEvents;
     try {
       // CaseId列がインデックス済みなら、この案件のイベントだけサーバー側で取得（軽量・推奨）
@@ -3544,7 +3629,16 @@ function isStatusEvent(eventType) {
   const statusTypes = ['ステータス変更', '工場回答', '案件作成'];
   return statusTypes.some(t => (eventType || '').includes(t));
 }
+// 自分が登録したイベントか（タイムラインの削除は自分のものだけ）。作成者のメールで比べ、無ければ表示名で比べる
+function isMyEvent(ev) {
+  if (!ev || !account) return false;
+  const me = String(account.username || '').toLowerCase();
+  if (ev._authorEmail && me) return ev._authorEmail.toLowerCase() === me;
+  return !!(account.name && ev._author && ev._author === account.name);
+}
 async function deleteTimelineEvent(eventItemId, evIdx) {
+  const target = events.find(e => String(e._spId) === String(eventItemId));
+  if (!isMyEvent(target)) { alert('ほかの人が登録したものは削除できません'); return; }
   if (!confirm('このコメントを削除しますか？\n（この操作は取り消せません）')) return;
   try {
     setStatus('loading', 'コメントを削除中...');
@@ -3600,7 +3694,7 @@ function renderTimeline() {
       const typeClass = getEventTypeClass(ev.EventType);
       const isLast = i === events.length - 1;
       const hasPdf = !!ev.AttachedPDFPath;
-      const canDelete = !isStatusEvent(ev.EventType) && ev._spId;
+      const canDelete = !isStatusEvent(ev.EventType) && ev._spId && isMyEvent(ev);   // 自分が登録したものだけ消せる
       const clickAttr = hasPdf
         ? ` onclick="selectTimelinePdf(${i})" title="クリックでPDFを表示"`
         : '';
@@ -3612,6 +3706,14 @@ function renderTimeline() {
       const returnBtn = isReceivedFax
         ? `<button class="tl-delete-btn" style="color:#23268f;border-color:#d4d8fb;margin-left:4px" onclick="event.stopPropagation();returnEventToTriage(${ev._spId},${i})" title="受信トレイ（未仕訳）に戻す">↩ 受信トレイ</button>`
         : '';
+      // β：受信FAXのPDFに書き込んで返信を作る（ヘルプ15章のスイッチをオンにした人だけ）
+      //   受信FAX＝返信（β）／この機能で作った送信FAX＝続きを編集／そのほかPDFのあるもの（送信FAX・Mail添付など）＝編集（β）
+      const replyBtn = !(betaFaxReplyOn && hasPdf && ev._spId) ? ''
+        : isFaxReplyBetaEvent(ev)
+        ? `<button class="tl-reply-btn" onclick="event.stopPropagation();openFaxReplyBeta(${i}, true)" title="間違いを直して修正版を作る（β）">✍ 続きを編集</button>`
+        : (ev.EventType || '').startsWith('FAX受信')
+        ? `<button class="tl-reply-btn" onclick="event.stopPropagation();openFaxReplyBeta(${i})" title="このFAXに書き込んで返信を作る（β）">✍ 返信（β）</button>`
+        : `<button class="tl-reply-btn" onclick="event.stopPropagation();openFaxReplyBeta(${i})" title="このPDFに書き込んで送信FAXを作る（β）">✍ 編集（β）</button>`;
       return `
         <div class="tl-item${hasPdf ? ' has-pdf' : ''}" data-tl-idx="${i}"${clickAttr}>
           <div class="tl-line-wrap">
@@ -3624,7 +3726,7 @@ function renderTimeline() {
               ${ev.ReviewFlag ? `<span class="tl-review-mark" title="${escapeHtml(ev.ReviewReason || '要確認')}">⚠</span>` : ''}
               <span class="tl-date">${formatDate(ev.EventDate)}</span>
               ${hasPdf ? '<span class="tl-pdf-icon" style="margin-left:auto;font-size:12px;color:#23268f;" title="PDF添付あり">📄</span>' : ''}
-              ${deleteBtn}${returnBtn}
+              ${deleteBtn}${returnBtn}${replyBtn}
             </div>
             <div class="tl-content">${escapeHtml(ev.Summary || '-')}</div>
             ${ev.RelationName ? `<div class="tl-sub">${escapeHtml(ev.RelationName)}</div>` : ''}
@@ -4093,6 +4195,7 @@ function applyEscalation() {
 // 一覧モードに戻る
 function backToListMode() {
   if (cardEditing) cancelCardEdit();
+  closeListDrawer();
   const main = document.getElementById('caseMain');
   main.classList.remove('detail-mode');
   main.classList.add('list-mode');
@@ -5148,16 +5251,17 @@ function selectTriage(spId) {
   document.getElementById('triageListMode').style.display = 'none';
   const detail = document.getElementById('triageDetail');
   detail.style.display = 'flex';
-  // 戻るヒントに件数表示
-  const idx = triageItems.findIndex(x => x._spId === spId);
-  document.getElementById('triageBackHint').textContent =
-    `${idx + 1} / ${triageItems.length} 件目`;
+  document.getElementById('triageView').classList.add('tri-detail');   // 左端の「☰ 一覧」バーを出す
+  closeListDrawer();
+  // 戻るヒントに件数表示（一覧に出ている順＝経路・検索の絞り込み後）と 前へ・次へ
+  updateTriageNav();
   document.getElementById('triageEventId').textContent = e.Title || e.EventId || '-';
   document.getElementById('triageCompany').textContent = e.RelationName || '-';
   document.getElementById('triageRelationName').textContent = e.RelationName || '-';
   document.getElementById('triageCaseName').textContent = e.CaseName || '-';
   document.getElementById('triageDate').textContent = formatDate(e.EventDate);
   document.getElementById('triageSenderFax').textContent = e.SenderFax || '-';
+  setupTriageFaxCheck(e);
   document.getElementById('triageEventType').textContent = e.EventType || '-';
   document.getElementById('triageRelationType').textContent = e.RelationType || '-';
   document.getElementById('triageSummary').textContent = e.Summary || '-';
@@ -5244,10 +5348,117 @@ function backToTriageList() {
   currentTriageId = null;
   document.getElementById('triageDetail').style.display = 'none';
   document.getElementById('triageListMode').style.display = 'flex';
+  document.getElementById('triageView').classList.remove('tri-detail');
+  closeListDrawer();
   // 右カラム（PDF／問い合わせ本文）もリセット
   resetTriageViewer();
   renderTriageList();
 }
+// ---- 受信トレイ：前へ・次へ（一覧に出ている順＝経路・検索で絞り込んだ後の並び）----
+function getTriageVisibleList() {
+  const q = normJa(document.getElementById('triageSearchInput')?.value || '');
+  let list = triageRoute ? triageItems.filter(e => routeOf(e.EventType) === triageRoute) : triageItems;
+  if (q) list = list.filter(e => matchTokens([e.RelationName, e.CaseName, e.Summary, e.EventType, e.SenderFax].map(normJa).join(' '), q));
+  return list;
+}
+function updateTriageNav() {
+  const list = getTriageVisibleList();
+  const i = list.findIndex(x => x._spId === currentTriageId);
+  document.getElementById('triageBackHint').textContent = i >= 0 ? `${i + 1} / ${list.length}件` : `${list.length}件`;
+  const prev = document.getElementById('triagePrevBtn'), next = document.getElementById('triageNextBtn');
+  if (prev) prev.disabled = i <= 0;
+  if (next) next.disabled = i < 0 || i >= list.length - 1;
+}
+function stepTriage(d) {
+  const list = getTriageVisibleList();
+  const i = list.findIndex(x => x._spId === currentTriageId);
+  const to = list[i + d];
+  if (to) selectTriage(to._spId);
+}
+// ---- 詳細画面の「☰ 一覧」引き出し（受信トレイ・案件管理）----
+//   受信トレイは一覧と同じカード（経路・検索の絞り込みもそのまま）、案件管理は一覧の絞り込み・並び順のまま1行ずつ
+let listDrawerKind = null, ldTypedAt = 0;   // ldTypedAt：引き出しの検索欄に最後に打った時刻（打っている間は閉じない）
+const LD_CASE_STEP = 200;
+let ldCaseLimit = LD_CASE_STEP;
+function toggleListDrawer(kind) { if (listDrawerKind === kind) closeListDrawer(); else openListDrawer(kind); }
+function closeListDrawer() {
+  listDrawerKind = null;
+  document.querySelectorAll('.ld.open, .ld-mask.open').forEach(x => x.classList.remove('open'));
+}
+function openListDrawer(kind) {
+  closeListDrawer();
+  listDrawerKind = kind;
+  const box = document.getElementById(kind === 'triage' ? 'ldTriage' : 'ldCase');
+  const searchId = kind === 'triage' ? 'triageSearchInput' : 'searchInput';
+  const q = document.getElementById(searchId)?.value || '';
+  box.innerHTML = `<div class="ld-head">
+      <input class="search-input" id="ldSearch" style="flex:1" placeholder="${kind === 'triage' ? '受信を検索...' : '案件を検索...'}" value="${escapeHtml(q)}">
+      <button class="btn" onclick="closeListDrawer()" style="padding:4px 10px;font-size:12px" title="閉じる（Esc）">✕</button>
+    </div><div class="ld-body"></div>`;
+  box.classList.add('open');
+  box.previousElementSibling.classList.add('open');   // .ld-mask
+  ldCaseLimit = LD_CASE_STEP;
+  renderListDrawer();
+  // 検索欄は一覧の検索欄と同じ値にそろえる（閉じたあと一覧に戻っても同じ絞り込み）
+  const inp = document.getElementById('ldSearch');
+  inp.addEventListener('input', () => {
+    ldTypedAt = Date.now();
+    const src = document.getElementById(searchId);
+    if (src) src.value = inp.value;
+    if (kind === 'case') renderCaseList();
+    ldCaseLimit = LD_CASE_STEP;
+    renderListDrawer();
+  });
+  // 選んだ受信・案件は真ん中あたりに見せる
+  const act = box.querySelector('.active');
+  if (act) act.scrollIntoView({ block: 'center' });
+}
+function renderListDrawer() {
+  if (!listDrawerKind) return;
+  const box = document.getElementById(listDrawerKind === 'triage' ? 'ldTriage' : 'ldCase');
+  const body = box.querySelector('.ld-body');
+  if (listDrawerKind === 'triage') {
+    renderTriageList();   // 隠れている一覧を今の状態で描き直し、そのカードを使う
+    body.innerHTML = document.getElementById('triageList').innerHTML;
+    body.onclick = e => { if (e.target.closest('.case-item')) setTimeout(closeListDrawer, 0); };
+    if (currentTriageId) updateTriageNav();
+    return;
+  }
+  const list = getFilteredCases();
+  const shown = list.slice(0, ldCaseLimit);
+  body.innerHTML = shown.length ? shown.map(c => {
+    const na = isNewArrival(c);
+    return `<div class="ld-row${c.CaseId === currentCaseId ? ' active' : ''}" onclick="closeListDrawer();selectCase('${escJsAttr(c.CaseId)}')">
+      <div class="l1">${getStatusDotHtml(c.Status, na)}<span class="co">${escapeHtml(c.CompanyName || '-')}</span>${getStatusBadge(c.Status, na, c)}</div>
+      <div class="l2">${escapeHtml(formatCaseDate(c))}　${escapeHtml(c.Title || '')}</div></div>`;
+  }).join('') + (list.length > shown.length
+    ? `<div style="padding:8px"><button class="btn" style="width:100%" onclick="ldCaseLimit+=LD_CASE_STEP;renderListDrawer()">さらに表示（残り${list.length - shown.length}件）</button></div>` : '')
+    : '<div class="empty-state"><div class="empty-text">案件がありません</div></div>';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && listDrawerKind) closeListDrawer(); });
+// 受信トレイ・案件管理とも、左端のバーにマウスを乗せると開き（0.15秒待って誤操作を防ぐ）、引き出しから外れると少し待って閉じる。
+//   引き出しの検索欄に入力中は閉じない。クリック（開くだけ）・Esc はこれまでどおり
+function setupListDrawerHover(tabId, boxId, kind) {
+  const tab = document.getElementById(tabId), box = document.getElementById(boxId);
+  if (!tab || !box) return;
+  let openT = null, closeT = null;
+  const cancel = () => { clearTimeout(openT); clearTimeout(closeT); openT = closeT = null; };
+  tab.addEventListener('mouseenter', () => { cancel(); if (listDrawerKind !== kind) openT = setTimeout(() => openListDrawer(kind), 150); });
+  tab.addEventListener('mouseleave', () => { clearTimeout(openT); openT = null; });
+  box.addEventListener('mouseenter', cancel);
+  box.addEventListener('mouseleave', () => {
+    cancel();
+    closeT = setTimeout(() => {
+      if (listDrawerKind !== kind) return;
+      const a = document.activeElement;
+      if ((a && a.id === 'ldSearch' && a.value) || Date.now() - ldTypedAt < 4000) return;   // 検索の入力中は閉じない
+      if (tab.matches(':hover') || box.matches(':hover')) return;
+      closeListDrawer();
+    }, 400);
+  });
+}
+setupListDrawerHover('ldTabTriage', 'ldTriage', 'triage');
+setupListDrawerHover('ldTabCase', 'ldCase', 'case');
 function enterEditMode() {
   if (!currentTriageId) return;
   const e = triageItems.find(x => x._spId === currentTriageId);
@@ -5440,6 +5651,63 @@ async function saveEdits() {
     saveBar.querySelector('.left').innerHTML = origHtml;
   }
 }
+// ---- 受信トレイ：案件にする前の「返信先FAX」確認 ----
+// FAX番号の表記をそろえる（全角数字・各種ハイフン → 半角、空白を除く）
+function normFaxNo(v) {
+  return String(v || '').trim()
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[－ー―‐−]/g, '-').replace(/\s/g, '');
+}
+function setupTriageFaxCheck(e) {
+  const box = document.getElementById('triageFaxCheck');
+  if (!box) return;
+  const isFax = routeOf(e && e.EventType) === 'fax';
+  box.style.display = isFax ? 'flex' : 'none';
+  if (!isFax) return;
+  document.getElementById('triageFaxCheckInput').value = e.SenderFax || '';
+  onTriageFaxCheckInput();
+}
+function onTriageFaxCheckInput() {
+  const e = triageItems.find(x => x._spId === currentTriageId);
+  const v = normFaxNo(document.getElementById('triageFaxCheckInput').value);
+  const note = document.getElementById('triageFaxCheckNote');
+  const box = document.getElementById('triageFaxCheck');
+  const changed = !!e && v !== (e.SenderFax || '');
+  box.style.background = !v ? '#fff6e5' : changed ? '#eefaf3' : '#f6f7fe';
+  note.textContent = !v ? '読み取れていません。用紙の送信元FAXを入れてください（空のままでも登録できます）'
+    : changed ? '直した番号は登録時に保存されます' : '用紙の送信元と合っているか確認（違えば直してから登録）';
+}
+// 直されていれば、受信トレイの「編集」と同じ形（HumanEdit_JSON に追記）で SenderFax を保存。続けてよければ true
+async function commitTriageFaxCheck() {
+  const e = triageItems.find(x => x._spId === currentTriageId);
+  const box = document.getElementById('triageFaxCheck');
+  if (!e || !box || box.style.display === 'none') return true;
+  const v = normFaxNo(document.getElementById('triageFaxCheckInput').value);
+  const from = e.SenderFax || '';
+  if (v === from) return true;
+  const digits = v.replace(/\D/g, '');
+  if (v && (!/^[0-9-]+$/.test(v) || digits.length < 9 || digits.length > 12)) {
+    alert('返信先FAXが番号の形になっていません（例：06-1234-5678）');
+    return false;
+  }
+  let editLog;
+  try { editLog = e.HumanEdit_JSON ? JSON.parse(e.HumanEdit_JSON) : { edits: [] }; if (!editLog.edits) editLog.edits = []; }
+  catch (_) { editLog = { edits: [] }; }
+  editLog.edits.push({ at: new Date().toISOString(), by: (account && (account.username || account.name)) || '',
+                       changes: { SenderFax: { from, to: v } } });
+  const patch = { SenderFax: v, IsModified: true, HumanEdit_JSON: JSON.stringify(editLog) };
+  try {
+    const sid = await getSiteId();
+    await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${e._spId}/fields`, patch);
+    Object.assign(e, patch);
+    const el = document.getElementById('triageSenderFax');
+    if (el) el.textContent = v || '-';
+    return true;
+  } catch (err) {
+    alert('返信先FAXを保存できませんでした: ' + err.message);
+    return false;
+  }
+}
 // FAX_PDFStorage ドライブID取得（キャッシュあり）
 async function getFaxDriveId() {
   if (faxDriveId) return faxDriveId;
@@ -5532,8 +5800,9 @@ async function loadPdfWithAuth(url, areaId) {
     area.innerHTML = `<div class="pdf-empty"><div class="pdf-empty-icon">📄</div><div class="pdf-empty-text">PDF取得エラー<br><small>${escapeHtml(e.message)}</small></div></div>`;
   }
 }
-function triageAs(kubun, sub) {
+async function triageAs(kubun, sub) {
   if (!currentTriageId) return;
+  if (kubun === '案件管理' && sub === '新規' && !(await commitTriageFaxCheck())) return;
   if (kubun === '案件管理' && sub === '既存') {
     document.getElementById('triageLinkRow').style.display = 'flex';
     document.getElementById('triageLinkSearch').value = '';
@@ -5621,6 +5890,7 @@ function selectTriageLink(caseId, company, status) {
 const REOPEN_STATUS = '業務セ'; // 完了案件を再開する際の戻し先ステータス
 async function confirmLink(mode) {
   if (!triageLinkSelectedId) { alert('案件を選択してください'); return; }
+  if (!(await commitTriageFaxCheck())) return;
   const targetId = triageLinkSelectedId;
   await updateTriageKubun('案件管理', null, targetId);
   // updateTriageKubun は成功時に currentTriageId を null にする（失敗時は残る）
@@ -6458,6 +6728,267 @@ async function registerFaxAndUpdateStatus() {
   if (FAX_STATUS_MAP[type]) {
     await updateCaseStatus(FAX_STATUS_MAP[type].status);
   }
+}
+// ============================================================
+// β：FAX返信の作成（fax_reply.js）。受信FAXのPDFに文字を書き込み、
+//   送信FAXとして登録 → 印刷画面（PC-FAX で送信）。ヘルプ15章のスイッチをオンにした人だけ表示。
+// ============================================================
+const BETA_FAX_REPLY_KEY = 'beta-fax-reply-v1';
+let betaFaxReplyOn = false;
+try { betaFaxReplyOn = localStorage.getItem(BETA_FAX_REPLY_KEY) === '1'; } catch (_) {}
+function setBetaFaxReply(on) {
+  betaFaxReplyOn = !!on;
+  try { on ? localStorage.setItem(BETA_FAX_REPLY_KEY, '1') : localStorage.removeItem(BETA_FAX_REPLY_KEY); } catch (_) {}
+  if (typeof events !== 'undefined' && events.length) renderTimeline();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const t = document.getElementById('betaFaxReplyToggle');
+  if (t) t.checked = betaFaxReplyOn;
+});
+// SharePoint の PDF の URL → ドライブ内のパス（loadPdfWithAuth と同じ割り出し）
+function spDrivePath(url) {
+  const cleanUrl = decodeURIComponent(url.split('?')[0]);
+  const libMarker = '/' + SP.pdfLibrary + '/';
+  const libIdx = cleanUrl.indexOf(libMarker);
+  return libIdx !== -1 ? '/' + cleanUrl.slice(libIdx + libMarker.length) : '/Inbox/' + cleanUrl.split('/').pop();
+}
+// SharePoint 上のPDFを中身（バイト列）で取る
+async function fetchSpPdfBytes(url) {
+  const sid = await getSiteId();
+  const driveId = await getFaxDriveId();
+  const item = await graphGet(`/sites/${sid}/drives/${driveId}/root:${spDrivePath(url)}`);
+  const downloadUrl = item['@microsoft.graph.downloadUrl'];
+  if (!downloadUrl) throw new Error('PDFのダウンロードURLを取得できません');
+  const res = await fetch(downloadUrl);
+  if (!res.ok) throw new Error('PDFを読み込めません（' + res.status + '）');
+  return await res.arrayBuffer();
+}
+// この機能で作った送信FAXか（Summary に【追記】が付く）
+function isFaxReplyBetaEvent(ev) {
+  return !!ev && (ev.EventType || '').startsWith('FAX送信') && (ev.Summary || '').includes('【追記】') && !!ev.AttachedPDFPath && !!ev._spId;
+}
+// revise=false：受信FAX（events[idx]）に書き込んで返信を作る
+// revise=true ：この機能で作った送信FAX（events[idx]）を「続きを編集」。元の受信FAXに前回の書き込みを戻して直し、
+//               修正版を新しい送信FAXとして登録 → 修正前（間違えたもの）は確認して削除できる。修正前の中身は修正版の記録に残す
+async function openFaxReplyBeta(idx, revise) {
+  const ev = events[idx];
+  if (!ev || !ev.AttachedPDFPath || !currentCaseId) return;
+  if (!window.FaxReply) { alert('返信作成の部品を読み込めませんでした。画面を再読み込みしてください'); return; }
+  // 編集画面を開いたまま裏のアプリも触れるので、2つ目は開かない
+  if (document.querySelector('.fr-overlay')) { alert('編集画面がすでに開いています。先に「閉じる」か「登録して印刷」で終えてください'); return; }
+  const caseId = currentCaseId;
+  const c = cases.find(x => x.CaseId === caseId) || {};
+  let pdfBytes, prev = null;
+  try {
+    setStatus('loading', 'FAXを読み込み中...');
+    if (revise) {
+      // AIOutput_JSON は一覧では取っていない（重いため）ので、この1件だけ読む
+      const sid = await getSiteId();
+      const it = await graphGet(`/sites/${sid}/lists/${SP.eventListId}/items/${ev._spId}?$expand=fields($select=AIOutput_JSON)`);
+      try { prev = JSON.parse((it.fields || {}).AIOutput_JSON || ''); } catch (_) {}
+      if (!prev || prev.kind !== 'fax_reply_beta' || !prev.sourcePdf) throw new Error('この送信FAXには編集用の記録がありません');
+      if (!prev.edit) {   // 古い記録（位置をmmだけで持つ）からも戻せるようにする
+        const pt = mm => mm * 72 / 25.4;
+        prev.edit = {
+          boxes: (prev.texts || []).map(t => ({ page: t.page - 1, x: pt(t.xMm), y: pt(t.yMm), size: t.size, text: t.text })),
+          shapes: (prev.shapes || []).map(s => ({ kind: s.kind, page: s.page - 1, x1: pt(s.x1Mm), y1: pt(s.y1Mm), x2: pt(s.x2Mm), y2: pt(s.y2Mm), w: s.w })),
+        };
+      }
+    }
+    pdfBytes = await fetchSpPdfBytes(revise ? prev.sourcePdf : ev.AttachedPDFPath);
+    setStatus('success', '');
+  } catch (e) { setStatus('error', (revise ? '続きを編集できません: ' : 'PDF取得エラー: ') + e.message); return; }
+  // 返信先FAX＝元の受信FAXの「送信元FAX」（AIの読み取り、受信トレイや返信画面の ✎ で直したもの）。マスタは使わない
+  //   受信FAX以外（送信FAX・Mail添付など）を編集するときは、この案件でいちばん新しい受信FAXの番号を使う
+  const latestFaxIn = () => events.filter(x => (x.EventType || '').startsWith('FAX受信') && x.SenderFax && x._spId)
+    .sort((a, b) => String(b.EventDate || '').localeCompare(String(a.EventDate || '')))[0] || null;
+  const faxEv0 = (ev.EventType || '').startsWith('FAX受信') ? ev : latestFaxIn();
+  const srcSpId = revise ? (prev.faxSpId || prev.sourceEventSpId || null) : ((faxEv0 && faxEv0._spId) || null);
+  const srcEv = srcSpId ? events.find(x => x._spId === srcSpId) : null;
+  let senderFax = revise ? ((srcEv && srcEv.SenderFax) || prev.senderFax || '') : ((faxEv0 && faxEv0.SenderFax) || '');
+  // 送信先区分・送付種別・メモの初期値（続きを編集では前回のもの）
+  const pf = (revise && prev.form) || {};
+  const defTarget = revise ? (pf.target || ev.RelationType || '')
+                           : (['得意先', '仕入先'].includes(ev.RelationType) ? ev.RelationType : '');
+  const defType = revise ? (pf.type || ((ev.Summary || '').split(/[：【]/)[0] || '')) : '';
+  const defMemo = revise ? (pf.memo || '') : '';
+  const opt = (v, sel) => `<option value="${v}"${v === sel ? ' selected' : ''}>${v}</option>`;
+  const panel = `
+    ${revise ? `<div style="background:#fff6e5;border:1px solid #f0d49a;border-radius:6px;padding:6px 8px;margin-bottom:8px;color:#7a5200">
+      <b>続きを編集</b>（${escapeHtml(formatDate(ev.EventDate))} の送信FAX）<br>直して登録すると修正版として登録され、そのあと修正前を削除するか聞きます。</div>` : ''}
+    <div class="fr-h">送信FAXとして登録</div>
+    <select id="frTarget" class="form-select" style="width:100%;margin-bottom:6px">
+      <option value="">送信先区分を選択</option>${['得意先', '仕入先', 'その他'].map(v => opt(v, defTarget)).join('')}
+    </select>
+    <select id="frType" class="form-select" style="width:100%;margin-bottom:6px">
+      <option value="">送付種別を選択</option>${['見積回答送付', '注文請書送付', '納品書・送り状送付', '納期回答送付', 'その他送付'].map(v => opt(v, defType)).join('')}
+    </select>
+    <textarea id="frMemo" class="form-textarea" rows="2" placeholder="内容メモ（任意）" style="width:100%;box-sizing:border-box">${escapeHtml(defMemo)}</textarea>
+    <label id="frStatusRow" style="display:none;margin-top:6px;font-size:12px;color:#23268f;cursor:pointer">
+      <input type="checkbox" id="frStatusUpd"> <span id="frStatusText"></span>
+    </label>`;
+  FaxReply.open({
+    pdfBytes,
+    title: `${revise ? '【続きを編集】' : ''}${caseId} ${c.CaseName || ev.RelationName || ''}`.trim(),
+    senderFax,
+    submitLabel: revise ? '修正版を登録して印刷' : '登録して印刷',
+    extraPanelHtml: panel,
+    initial: revise ? prev.edit : null,
+    // データ印の下段の初期値＝サインインした人の姓（右側で直せ、直した値はそのPCに覚える）
+    stamp: { bottom: (((typeof account !== 'undefined' && account && account.name) || '').split(/[\s　]/)[0] || '').slice(0, 6) },
+    // ✎ 直す：元の受信FAXの SenderFax を直す（次にこのFAXへ返信するときも正しい番号が出る）
+    onFaxEdit: srcSpId ? async (num) => {
+      const sid = await getSiteId();
+      await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${srcSpId}/fields`, { SenderFax: num });
+      senderFax = num;
+      if (srcEv) srcEv.SenderFax = num;
+    } : null,
+    onSubmit: async (r, ui) => {
+      const target = document.getElementById('frTarget').value;
+      const type = document.getElementById('frType').value;
+      const memo = document.getElementById('frMemo').value.trim();
+      const updStatus = FAX_STATUS_MAP[type] && document.getElementById('frStatusUpd').checked;
+      if (!target) { ui.status('送信先区分を選んでください'); return false; }
+      if (!type) { ui.status('送付種別を選んでください'); return false; }
+      if (_registeringFax) return false;
+      _registeringFax = true;
+      try {
+        ui.status('PDFを登録中...');
+        const sid = await getSiteId();
+        const file = new File([r.bytes], `reply_${caseId}.pdf`, { type: 'application/pdf' });
+        const attachedPdfPath = await uploadPdfToSharePoint(file);
+        // Summary は送信FAX登録と同じ「種別：メモ」に【追記】（書き込んだ内容）を足す。
+        //   位置つきの記録・編集用の元の値は AIOutput_JSON に置く（よく使う返信文の集計・続きを編集用）
+        const head = memo ? `${type}：${memo}` : type;
+        const log = { kind: 'fax_reply_beta', v: 2,
+          sourceEventSpId: revise ? (prev.sourceEventSpId || null) : (ev._spId || null),
+          sourcePdf: revise ? prev.sourcePdf : ev.AttachedPDFPath, senderFax, faxSpId: srcSpId,
+          form: { target, type, memo }, texts: r.texts, shapes: r.shapes || [], edit: r.edit };
+        if (revise) {   // 修正前の中身はログとして修正版に残す（修正前の送信FAXを消しても分かるように）
+          log.revisedFrom = { spId: ev._spId, eventDate: ev.EventDate, summary: ev.Summary || '', pdf: ev.AttachedPDFPath,
+                              texts: prev.texts || [], shapes: prev.shapes || [], history: prev.revisedFrom ? [prev.revisedFrom] : [] };
+        }
+        await graphPost(`/sites/${sid}/lists/${SP.eventListId}/items`, { fields: {
+          Title: 'EV-' + Date.now(),
+          CaseId: caseId,
+          EventType: `FAX送信（${target}）`,
+          EventDate: new Date().toISOString(),
+          RelationType: target,
+          Summary: `${head}${revise ? '【修正版】' : ''}【追記】${r.summaryText}`,
+          AttachedPDFPath: attachedPdfPath,
+          AIOutput_JSON: JSON.stringify(log),
+        } });
+        if (c._spId) {
+          await graphPatch(`/sites/${sid}/lists/${SP.caseListId}/items/${c._spId}/fields`, { LastAction: type, NewArrival: false });
+          c.LastAction = type; c.NewArrival = false;
+        }
+      } catch (e) {
+        ui.status('登録エラー：' + e.message);
+        return false;
+      } finally { _registeringFax = false; }
+      // 修正版を登録できたら、修正前（間違えたもの）を消すか聞く。送ってしまった場合は残す
+      //   ほかの人が登録した送信FAXは消さない（タイムラインの削除と同じく、自分のものだけ）
+      let removedOld = false;
+      if (revise && !isMyEvent(ev)) alert('修正版を登録しました。\n修正前の送信FAXはほかの人が登録したものなので、そのまま残します。');
+      else if (revise && confirm('修正版を登録しました。\n\n修正前の送信FAX（' + formatDate(ev.EventDate) + '）を削除しますか？\n'
+          + '・まだ送っていない間違いなら「OK」：タイムラインから消し、PDFは SharePoint のごみ箱へ移します\n'
+          + '・もう送ってしまった場合は「キャンセル」：記録として残します\n'
+          + '（修正前の内容は、どちらでも修正版の記録に残ります）')) {
+        try {
+          const sid = await getSiteId();
+          await graphDelete(`/sites/${sid}/lists/${SP.eventListId}/items/${ev._spId}`);
+          try {   // PDFはごみ箱へ（消せなくても記録の削除は済んでいるので続ける）
+            const driveId = await getFaxDriveId();
+            await graphDelete(`/sites/${sid}/drives/${driveId}/root:${spDrivePath(ev.AttachedPDFPath)}`);
+          } catch (e2) { console.warn('修正前PDFの削除に失敗', e2); }
+          removedOld = true;
+        } catch (e) { alert('修正前の削除に失敗しました: ' + e.message + '\nタイムラインの 🗑 から消せます'); }
+      }
+      FaxReply.printPdf(r.bytes);   // 印刷画面 → PC-FAX を選んで送信
+      if (updStatus) await updateCaseStatus(FAX_STATUS_MAP[type].status);
+      if (currentCaseId === caseId) {
+        await loadEvents(caseId);
+        const tl = document.getElementById('timelineContent');
+        if (tl) tl.scrollTop = tl.scrollHeight;
+      }
+      renderCaseList();
+      setStatus('success', `「${type}」を${revise ? '修正版として' : ''}登録しました${removedOld ? '（修正前は削除）' : ''}。印刷画面で PC-FAX を選んで送信してください`);
+    },
+  });
+  // 送付種別に応じて「ステータスも更新」を出す（通常の送信FAX登録と同じ候補）。画面は open の直後に出来ている
+  const sel = document.getElementById('frType');
+  if (sel) {
+    sel.onchange = () => {
+      const m = FAX_STATUS_MAP[sel.value];
+      document.getElementById('frStatusRow').style.display = m ? 'block' : 'none';
+      if (m) document.getElementById('frStatusText').textContent = `ステータスも「${m.status}」に更新する`;
+    };
+    sel.onchange();
+  }
+}
+// ============================================================
+// PDFの向きを直す（受信トレイ・部署回覧・案件の右側の「↻ 回転」）。全員が使える。
+//   ページごと／全ページで回し、元のPDFを上書き保存（/Rotate だけ変えるので画質は変わらない。
+//   前の版は SharePoint の版の履歴に残る）。受信FAXなら HumanEdit_JSON に回転の記録を足す（AIの向き補正の見直し用。
+//   IsModified は変えない＝読み取り内容の修正率には数えない）
+// ============================================================
+let _rotatingPdf = false;
+async function rotatePdfFrom(where) {
+  if (_rotatingPdf || document.querySelector('.fr-rot-ov')) return;
+  if (!window.FaxReply || !FaxReply.rotate) { alert('回転の部品を読み込めませんでした。画面を再読み込みしてください'); return; }
+  let url = '', ev = null, reload = null, title = '';
+  if (where === 'triage') {
+    ev = triageItems.find(x => x._spId === currentTriageId) || null;
+    url = currentTriagePdfUrl || '';
+    reload = () => selectTriage(currentTriageId);
+  } else if (where === 'faxview') {
+    ev = faxViewItems.find(x => x._spId === currentFaxViewId) || null;
+    url = (ev && (ev.AttachedPDFPath || ev.添付PDFパス || ev.PDFPath)) || '';
+    reload = () => selectFaxView(currentFaxViewId);
+  } else {
+    url = currentPdfUrl || '';
+    const idx = events.findIndex(x => x.AttachedPDFPath === url);
+    ev = idx >= 0 ? events[idx] : null;
+    const name = document.getElementById('pdfFilename').textContent;
+    reload = () => (idx >= 0 ? selectTimelinePdf(idx) : loadPdf(url, name));
+  }
+  if (!url) { alert('表示中のPDFがありません'); return; }
+  if (!url.includes('sharepoint.com')) { alert('このPDFは回転できません（保存場所が SharePoint ではありません）'); return; }
+  title = (ev && (ev.RelationName || ev.Title)) || decodeURIComponent(url.split('/').pop());
+  _rotatingPdf = true;
+  let bytes;
+  try {
+    setStatus('loading', 'PDFを読み込み中...');
+    bytes = await fetchSpPdfBytes(url);
+    setStatus('success', '');
+  } catch (e) { setStatus('error', 'PDF取得エラー: ' + e.message); _rotatingPdf = false; return; }
+  _rotatingPdf = false;
+  FaxReply.rotate({
+    pdfBytes: bytes, title,
+    onSave: async (out, info) => {
+      const sid = await getSiteId();
+      const driveId = await getFaxDriveId();
+      const token = await getToken();
+      const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/drives/${driveId}/root:${spDrivePath(url)}:/content`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/pdf' }, body: out,
+      });
+      if (!res.ok) throw new Error(`PDFを保存できませんでした（${res.status}）`);
+      // 受信FAXなら回転の記録を残す（失敗しても回転の保存は済んでいるので止めない）
+      if (ev && ev._spId && routeOf(ev.EventType) === 'fax') {
+        try {
+          const it = await graphGet(`/sites/${sid}/lists/${SP.eventListId}/items/${ev._spId}?$expand=fields($select=HumanEdit_JSON)`);
+          let log; try { log = JSON.parse((it.fields || {}).HumanEdit_JSON || '') || {}; } catch (_) { log = {}; }
+          if (!Array.isArray(log.edits)) log.edits = [];
+          log.edits.push({ at: new Date().toISOString(), by: (account && (account.username || account.name)) || '', kind: 'rotation',
+                           changes: { Rotation: { from: info.before, to: info.after, pages: info.changed } } });
+          await graphPatch(`/sites/${sid}/lists/${SP.eventListId}/items/${ev._spId}/fields`, { HumanEdit_JSON: JSON.stringify(log) });
+          ev.HumanEdit_JSON = JSON.stringify(log);
+        } catch (e2) { console.warn('回転の記録を残せませんでした', e2); }
+      }
+      setStatus('success', `PDFの向きを直しました（${info.changed.join('・')}ページ）`);
+      try { reload(); } catch (_) {}
+    },
+  });
 }
 function loadPdf(url, name) {
   currentPdfUrl = url;

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import re
 import unicodedata
@@ -33,10 +34,20 @@ def source_rows(path: Path):
         finally:
             workbook.close()
         return
-    if path.suffix.lower() != ".csv":
+    suffix = path.suffix.lower()
+    if suffix not in (".csv", ".txt"):
         raise ValueError(f"対応していないファイル形式です: {path.name}")
-    with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
-        yield from csv.reader(handle)
+    # .txt は Excel の「Unicode テキスト」（UTF-16・タブ区切り）や SMILE のタブ区切り出力を想定
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = raw.decode("utf-16")
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("cp932", errors="replace")
+    delimiter = "\t" if suffix == ".txt" else ","
+    yield from csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
 
 
 def parse(path: Path) -> tuple[str, dict[str, dict], int, int]:

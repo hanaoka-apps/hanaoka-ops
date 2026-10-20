@@ -1,7 +1,9 @@
 """SharedMastersの受入明細から月次仕入を付加価値分析JSONへ反映する。
 
-経費などを仕入へ混入させないため、区分列を確認でき、かつ値が厳密に
-「仕入」の行だけを集計する。区分列が見つからない場合は既存値を変更しない。
+経費などを仕入へ混入させないため、区分列を確認でき、かつ値が「仕入」または「値引」の行だけを集計する。
+さらに諸口の経費コード（ZZ500・ZZ600）は除く（2026-10-14 花岡さん確認：付加価値速報の伝票集計でも除外）。
+2026年6月の受入明細で、この条件の合計が付加価値速報「仕入・外注 本社集計」103,518,950円と1円まで一致。
+区分列が見つからない場合は既存値を変更しない。
 元CSVは読み取り専用で扱い、同じ年月は毎回置換して二重加算を防ぐ。
 """
 
@@ -32,8 +34,20 @@ CATEGORY_COLUMNS = (
     "区分名",
     "区分",
 )
-ZONE_COLUMNS = ("工場別付加価名", "工場別付加価値", "部門名", "倉庫名")
+# 工場の決め方（2026-10-15 9月の受入明細で速報と照合）：
+#   ・伝票の倉庫が鴻巣工場第一／第二／第三 → その工場（第二・第三は速報と1円一致。部門ではなく倉庫）
+#   ・仕入直送・東京本社の倉庫 → 購買（速報の本社入力）
+#   ・外注先などそれ以外の倉庫 → 工場は決めない（工場未分類）。どの工場に入れるかは要決定
+#   ・倉庫名が無い明細だけ、部門名 → 品目マスタの工場別付加価値の順で補う
+ZONE_COLUMNS = ("倉庫名", "部門名", "工場別付加価名", "工場別付加価値")
+HQ_PURCHASE_WAREHOUSE_WORDS = ("仕入直送", "東京本社")
+# 消費税の明細行（明細区分名＝消費税）は仕入に入れない。9月は 8,222,813円がこれで、速報との差と1円一致
+TAX_DETAIL_WORDS = ("消費税",)
 ITEM_CODE_COLUMNS = ("品目ｺｰﾄﾞ", "品目コード")
+# 仕入として数える区分（値引は負の金額で入っているのでそのまま足す）
+PURCHASE_CATEGORIES = {"仕入", "値引"}
+# 諸口の経費コード。仕入区分で入っていても仕入には数えない
+EXPENSE_CODE_PREFIXES = ("ZZ500", "ZZ600")
 
 
 def normalized(value: object) -> str:
@@ -97,13 +111,15 @@ def zone_from_text(value: object) -> str | None:
     for zone in ZONES:
         if zone in text:
             return zone
+    text = text.replace("第1", "第一").replace("第2", "第二").replace("第3", "第三")
     if "第一" in text:
         return "第一工場"
     if "第二" in text:
         return "第二工場"
     if "第三" in text:
         return "第三工場"
-    if "購買" in text or "輸入仕入" in text:
+    if "購買" in text or "輸入仕入" in text or "仕入直送" in text or "東京本社" in text:
+        # 仕入直送・東京本社の倉庫＝付加価値速報の購買「本社入力」（6月で1円一致）
         return "購買"
     if "運賃" in text:
         return "運賃"
@@ -111,6 +127,12 @@ def zone_from_text(value: object) -> str | None:
 
 
 def purchase_zone(row: dict[str, str], zone_columns: list[str], item_column: str | None, item_zones: dict[str, str]) -> str | None:
+    warehouse = normalized(row.get("倉庫名"))
+    if any(word in warehouse for word in HQ_PURCHASE_WAREHOUSE_WORDS):
+        return "購買"
+    if warehouse:
+        # 倉庫がある明細は倉庫だけで決める（外注先の倉庫は部門に引っ張られないよう未分類のまま）
+        return zone_from_text(warehouse) if any(w in warehouse for w in ("第一", "第二", "第三", "第1", "第2", "第3")) else None
     for zone_column in zone_columns:
         direct = zone_from_text(row.get(zone_column))
         if direct:
@@ -209,6 +231,8 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
             "source_rows": 0,
             "included_rows": 0,
             "excluded_non_purchase_rows": 0,
+            "excluded_expense_code_rows": 0,
+            "excluded_expense_code_amount": 0.0,
             "invalid_rows": 0,
             "daily_invalid_date_rows": 0,
             "unclassified_zone_rows": 0,
@@ -221,8 +245,16 @@ def read_purchases(source: Path, item_zones: dict[str, str] | None = None) -> tu
         }
         for row in reader:
             stats["source_rows"] += 1
-            if normalized(row.get(category_column)) != "仕入":
+            if any(word in normalized(row.get("明細区分名")) for word in TAX_DETAIL_WORDS):
+                stats["excluded_tax_rows"] = stats.get("excluded_tax_rows", 0) + 1
+                continue
+            if normalized(row.get(category_column)) not in PURCHASE_CATEGORIES:
                 stats["excluded_non_purchase_rows"] += 1
+                continue
+            code = normalized(row.get(item_column)).upper() if item_column else ""
+            if code.startswith(EXPENSE_CODE_PREFIXES):
+                stats["excluded_expense_code_rows"] += 1
+                stats["excluded_expense_code_amount"] += number(row.get(amount_column)) or 0
                 continue
             ym = month_key(row.get(date_column))
             amount = number(row.get(amount_column))

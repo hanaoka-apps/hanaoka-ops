@@ -144,8 +144,10 @@ def read_item_master() -> dict[str, dict]:
 
 
 def zone_for(row: list, master: dict) -> str:
-    dai = str(value(row, "dai_bunrui", "") or "")
-    chu = str(value(row, "chu_bunrui", "") or "")
+    return zone_for_parts(str(value(row, "dai_bunrui", "") or ""), str(value(row, "chu_bunrui", "") or ""), master)
+
+
+def zone_for_parts(dai: str, chu: str, master: dict) -> str:
     factory = str(master.get("factory") or "")
     combined = f"{dai} {chu} {factory}"
     if "運賃" in combined or dai.startswith("運賃・クレーム他") or dai.startswith("ｿﾘｭ運賃・他GSE"):
@@ -156,6 +158,120 @@ def zone_for(row: list, master: dict) -> str:
         if zone in factory:
             return zone
     return "第三工場"
+
+
+ORDER_DETAIL = DATA / "受注明細出力.csv"
+# 日報の「受注・売上（工場別）」用に持つ月数（直近）。受注残は今月以降の納期すべて。
+DAILY_ORDER_SALES_MONTHS = 3
+
+
+def ym_from_date_text(raw: object) -> str:
+    """納期・伝票日付の表記ゆれ（YYYYMMDD / YYYY/MM/DD / YY/MM/DD / Excelシリアル）を年月6桁へ。"""
+    s = text(raw)
+    if not s:
+        return ""
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if s.isdigit() and len(s) == 8:
+        return s[:6]
+    if s.isdigit() and len(s) == 6 and s[:2] in ("19", "20"):
+        return s
+    parts = [part for part in s.replace("-", "/").split("/") if part]
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        year = int(parts[0])
+        year = year + 2000 if year < 100 else year
+        return f"{year:04d}{int(parts[1]):02d}"
+    try:
+        serial = float(s)
+    except ValueError:
+        return digits[:6] if len(digits) >= 8 else ""
+    if 35000 <= serial <= 80000:
+        day = datetime(1899, 12, 30) + timedelta(days=int(serial))
+        return day.strftime("%Y%m")
+    return ""
+
+
+def iso_day(raw: object) -> str:
+    """伝票日付を YYYY-MM-DD へ。読めない値は空文字（推測しない）。"""
+    s = text(raw)
+    if s.isdigit() and len(s) == 8:
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    parts = [part for part in s.replace("-", "/").split("/") if part]
+    if len(parts) >= 3 and all(part[:2].isdigit() for part in parts[:3]):
+        year = int(parts[0])
+        year = year + 2000 if year < 100 else year
+        return f"{year:04d}-{int(parts[1]):02d}-{int(parts[2][:2]):02d}"
+    return ""
+
+
+def is_excluded_sales_row(fact: list) -> bool:
+    """SALES HUB と同じ除外：返品（区分2）、消費税行、単価0かつ数量0の移動行。"""
+    if int(number(value(fact, "kind"))) == 2:
+        return True
+    if "消費税" in text(value(fact, "item_nm", "")):
+        return True
+    return number(value(fact, "unit_price")) == 0 and number(value(fact, "qty")) == 0
+
+
+def build_order_sales_daily(facts: dict, master: dict[str, dict], today: str) -> dict:
+    """工場別の日別 売上・受注（納期月）と、今月以降の納期の受注残（未完納）を作る。
+
+    売上＝年月度が当月の売上明細を伝票日付で日別に。受注＝納期が当月の受注明細を受注日付で日別に
+    （SALES HUB の受注累計と同じ条件）。受注残＝受注明細出力.csv の未完納行の受注残金額（取得時点）。
+    工場は売上集計と同じ zone_for（品目マスタの工場別付加価値）で決める。
+    """
+    rows = facts.get("rows", []) if isinstance(facts, dict) else []
+    orders = facts.get("order_rows", []) if isinstance(facts, dict) else []
+    sales_days: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    order_days: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    for fact in rows if isinstance(rows, list) else []:
+        if not isinstance(fact, list) or is_excluded_sales_row(fact):
+            continue
+        ym = "".join(ch for ch in str(value(fact, "ym", "")) if ch.isdigit())[:6]
+        day = iso_day(value(fact, "voucher_date", ""))
+        if len(ym) != 6 or not day:
+            continue
+        zone = zone_for(fact, master.get(normalize_code(value(fact, "item_cd", "")), {}))
+        sales_days[ym][day][zone] += number(value(fact, "amount"))
+    for fact in orders if isinstance(orders, list) else []:
+        if not isinstance(fact, list) or is_excluded_sales_row(fact):
+            continue
+        ym = ym_from_date_text(fact[27] if len(fact) > 27 else "")
+        day = iso_day(value(fact, "voucher_date", ""))
+        if len(ym) != 6 or not day:
+            continue
+        zone = zone_for(fact, master.get(normalize_code(value(fact, "item_cd", "")), {}))
+        order_days[ym][day][zone] += number(value(fact, "amount"))
+    current = today[:4] + today[5:7]
+    keep = sorted({ym for ym in set(sales_days) | set(order_days) if ym <= current})[-DAILY_ORDER_SALES_MONTHS:]
+    pack = lambda days: {day: {zone: round(amount) for zone, amount in zones.items() if round(amount)} for day, zones in sorted(days.items())}
+    result = {
+        "zones": ZONES,
+        "months": {ym: {"sales": pack(sales_days.get(ym, {})), "orders": pack(order_days.get(ym, {}))} for ym in keep},
+        "backlog": {"status": "missing", "as_of": "", "by_month": {}},
+    }
+    records, errors = read_csv_records(ORDER_DETAIL, ("納期", "品目ｺｰﾄﾞ", "完納区分名", "受注残金額"))
+    if errors:
+        result["backlog"]["reason"] = errors
+        return result
+    backlog: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for record in records:
+        if text(record.get("完納区分名")).strip('"') == "完納":
+            continue
+        remain = number(record.get("受注残金額"))
+        if remain <= 0:
+            continue
+        ym = ym_from_date_text(record.get("納期"))
+        if len(ym) != 6 or ym < current:
+            continue
+        code = normalize_code(record.get("品目ｺｰﾄﾞ"))
+        master_row = master.get(code, {})
+        zone = zone_for_parts(text(master_row.get("d")), text(master_row.get("c")), master_row)
+        backlog[ym][zone] += remain
+    result["backlog"] = {
+        "status": "ok", "as_of": today,
+        "by_month": {ym: {zone: round(amount) for zone, amount in zones.items() if round(amount)} for ym, zones in sorted(backlog.items())},
+    }
+    return result
 
 
 def read_csv_records(path: Path, required: tuple[str, ...]) -> tuple[list[dict], list[str]]:
@@ -735,6 +851,10 @@ def main() -> int:
 
     output["months"] = sorted(set(output.get("months", [])) | set(source_months))
     jst = timezone(timedelta(hours=9))
+    try:
+        output["order_sales_daily"] = build_order_sales_daily(facts, master, datetime.now(jst).strftime("%Y-%m-%d"))
+    except (OSError, ValueError) as error:  # 日報の補助表示。失敗しても売上集計は止めない
+        output["order_sales_daily"] = {"status": "error", "reason": str(error)[:200]}
     output.setdefault("meta", {}).update({
         # これは付加価値分析JSONを最後に再生成した時刻。初期作成時の値を
         # 残したままにすると、日次更新済みでも画面が古い日付に見えてしまう。

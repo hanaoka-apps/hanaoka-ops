@@ -196,6 +196,117 @@ t('入金：入金日×得意先で振込＝純額・手数料の2行', () => {
   assert.strictEqual(r[0][L.nyukin.indexOf('備考')], 'SHOPIFY 10/09入金 2件');
 });
 
+/* ---------- SMILE への取込・取込後の突き合わせ ---------- */
+t('SHA-256：Node の crypto と同じ（空・短い・64バイト境界・日本語）', () => {
+  const crypto = require('crypto');
+  [new Uint8Array(0), Buffer.from('abc'), Buffer.alloc(55, 1), Buffer.alloc(56, 2), Buffer.alloc(64, 3), Buffer.alloc(1000, 4), EC.encodeUtf16('納品先\tテスト\r\n')].forEach(b => {
+    assert.strictEqual(EC.sha256(b), crypto.createHash('sha256').update(b).digest('hex'));
+  });
+});
+t('取込バッチ：中身が同じなら同じ番号、違えば別の番号。manifest に行数と sha256', () => {
+  const a = { name: 'juchu.txt', rows: 3, bytes: EC.encodeUtf16('a\r\n') }, b = { name: 'nouhin.txt', rows: 1, bytes: EC.encodeUtf16('b\r\n') };
+  const x = EC.buildImportBatch([b, a], 'u@example.com', '2026-10-20T01:00:00Z'), y = EC.buildImportBatch([b, a], 'v@example.com', '2026-10-21T01:00:00Z');
+  assert.strictEqual(x.batchId, y.batchId); assert.ok(/^ec-[0-9a-f]{16}$/.test(x.batchId));
+  assert.notStrictEqual(x.batchId, EC.buildImportBatch([b, { name: 'juchu.txt', rows: 3, bytes: EC.encodeUtf16('c\r\n') }], '', '').batchId);
+  assert.deepStrictEqual(x.manifest.files.map(f => [f.name, f.rows, f.sha256.length]), [['nouhin.txt', 1, 64], ['juchu.txt', 3, 64]]);
+  assert.strictEqual(x.manifest.requestedBy, 'u@example.com');
+});
+
+// 取込ファイルと同じ流れで「取り込むはずだった内容」と、SMILE が出力するはずの CSV を作る
+function importFixture() {
+  const o1 = order({ name: '#1801', id: '1801', total: 17050 + 15400, lines: [{ name: 'FLATCART 2x4（ブラック） - テーブルコンテナ(ブラック)2個追加', sku: '', qty: 1, price: 30800 }] });
+  const o2 = order({ name: '#1802', id: '1802', ship: { name: '山田花子', company: '', zip: '100-0001', province: '東京都', city: '千代田区', addr1: '千代田１−１', addr2: '', phone: '0312345678' } });
+  const slips = [o1, o2].map(o => EC.buildSlip(o, ctx));
+  const master = EC.indexDeliveryMaster([], DEFAULT_CONFIG);
+  const fresh = EC.planDeliveries(slips, master, DEFAULT_CONFIG, { reuse: true });
+  const expected = EC.expectedImport(slips, fresh);
+  const jh = L.juchu, nh = L.nouhin;
+  const jrows = EC.juchuRows(slips, jh, DEFAULT_CONFIG);
+  // SMILE の出力（見出しは半角カナ。受注№は SMILE が付ける）
+  const jobjs = jrows.map(r => { const o = {}; jh.forEach((h, i) => { o[h.replace('コード', 'ｺｰﾄﾞ')] = r[i]; }); o['受注№'] = o['受注№'] === '1' ? '90001' : '90002'; return o; });
+  const nobjs = EC.nouhinRows(fresh, nh, DEFAULT_CONFIG).map(r => { const o = {}; nh.forEach((h, i) => { o[h.replace('コード', 'ｺｰﾄﾞ')] = r[i]; }); return o; });
+  return { expected, jobjs, nobjs, slips, fresh };
+}
+const clone2 = x => JSON.parse(JSON.stringify(x));
+const res = (f, j, n) => EC.verifyImport(f.expected, j || f.jobjs, n || f.nobjs);
+
+t('突き合わせ：すべて一致 → ok と SMILE の受注№', () => {
+  const f = importFixture(), r = res(f);
+  assert.strictEqual(r.orders['1801'].status, 'ok'); assert.strictEqual(r.orders['1801'].juchuNo, '90001');
+  assert.strictEqual(r.orders['1802'].status, 'ok'); assert.strictEqual(r.orders['1802'].juchuNo, '90002');
+  assert.deepStrictEqual(r.orders['1801'].diffs, []);
+  assert.ok(f.expected.deliveries.length === 2 && Object.values(r.deliveries).every(d => d.status === 'ok'));
+});
+t('突き合わせ：金額が1円違う → ng（行・期待値・SMILEの値つき）', () => {
+  const f = importFixture(), j = clone2(f.jobjs);
+  const row = j.filter(x => x['客先注番'] === '1801')[0]; row['金額'] = String(+row['金額'] + 1);
+  const r = res(f, j).orders['1801'];
+  assert.strictEqual(r.status, 'ng');
+  const d = r.diffs.find(x => x.field === 'amount'); assert.strictEqual(d.line, 1); assert.strictEqual(d.expected, '14000'); assert.strictEqual(d.actual, '14001');
+  assert.strictEqual(res(f, j).orders['1802'].status, 'ok');   // ほかの注文には響かない
+});
+t('突き合わせ：品目違い・数量・単価・納期・出荷予定日・納品先コード・社内メモ', () => {
+  const f = importFixture(), j = clone2(f.jobjs), r1 = j.filter(x => x['客先注番'] === '1801');
+  r1[0]['品目ｺｰﾄﾞ'] = 'FCART2x4'; r1[1]['数量'] = '3.00'; r1[1]['単価'] = '7001.00'; r1[0]['納期'] = '20261030'; r1[0]['出荷予定日'] = '20261030'; r1[1]['納品先ｺｰﾄﾞ'] = '000999'; r1[1]['社内メモ'] = '別のメモ';
+  const fields = res(f, j).orders['1801'].diffs.map(d => d.field);
+  ['code', 'qty', 'unit', 'due', 'shipDate', 'deliveryCode', 'memo'].forEach(k => assert.ok(fields.includes(k), k));
+});
+t('突き合わせ：納期の書式（26/10/19・2026/10/19・20261019）の違いは同じ日として扱う', () => {
+  const f = importFixture(), j = clone2(f.jobjs);
+  const ship = f.expected.orders['1802'].shipDate;   // 2026-10-19
+  j.filter(x => x['客先注番'] === '1802').forEach(x => { x['納期'] = ship.replace(/-/g, '/'); x['出荷予定日'] = ship.slice(2).replace(/-/g, '/'); });
+  assert.strictEqual(res(f, j).orders['1802'].status, 'ok');
+});
+t('突き合わせ：納品先が未登録・住所や電話が違う → 注文も ng', () => {
+  const f = importFixture();
+  const r0 = res(f, f.jobjs, []);
+  assert.strictEqual(r0.orders['1801'].status, 'ng'); assert.ok(r0.orders['1801'].diffs.some(d => d.field === 'delivery'));
+  assert.ok(Object.values(r0.deliveries).every(d => d.status === 'ng'));
+  const n = clone2(f.nobjs); n[0]['電話番号'] = '000-0000-0000'; n[1]['住所１'] = '別の住所';
+  const r1 = res(f, f.jobjs, n);
+  assert.strictEqual(r1.deliveries[f.expected.deliveries[0].code].diffs[0].field, 'delivery.tel');
+  assert.strictEqual(r1.orders['1801'].status, 'ng'); assert.strictEqual(r1.orders['1802'].status, 'ng');
+});
+t('突き合わせ：電話・郵便番号のハイフンの有無は同じ。名前の空白の揺れも同じ', () => {
+  const f = importFixture(), n = clone2(f.nobjs);
+  n.forEach(x => { x['電話番号'] = x['電話番号'].replace(/-/g, ''); x['郵便番号'] = x['郵便番号'].replace('-', ''); x['納品先名'] = x['納品先名'].replace('様', ' 様'); });
+  assert.ok(Object.values(res(f, f.jobjs, n).orders).every(o => o.status === 'ok'));
+});
+t('突き合わせ：行数違い（1行足りない・1行多い）', () => {
+  const f = importFixture(), j = clone2(f.jobjs);
+  const short = j.filter(x => !(x['客先注番'] === '1801' && x['行'] === '3'));
+  const a = res(f, short).orders['1801']; assert.strictEqual(a.status, 'ng'); const d = a.diffs.find(x => x.field === 'rows'); assert.deepStrictEqual([d.expected, d.actual], ['3', '2']);
+  const extra = j.concat([Object.assign({}, j.find(x => x['客先注番'] === '1801'), { '行': '4' })]);
+  assert.strictEqual(res(f, extra).orders['1801'].diffs.find(x => x.field === 'rows').actual, '4');
+});
+t('突き合わせ：SMILE に見つからない（注文番号違い・得意先違い）→ missing', () => {
+  const f = importFixture();
+  const none = res(f, f.jobjs.filter(x => x['客先注番'] !== '1802'));
+  assert.strictEqual(none.orders['1802'].status, 'missing'); assert.strictEqual(none.orders['1801'].status, 'ok');
+  const other = clone2(f.jobjs); other.forEach(x => { x['得意先ｺｰﾄﾞ'] = '000000'; });
+  assert.strictEqual(res(f, other).orders['1801'].status, 'missing');
+  assert.strictEqual(res(f, []).orders['1801'].status, 'missing');
+});
+t('突き合わせ：1つの注文が複数の受注№に分かれていたら ng', () => {
+  const f = importFixture(), j = clone2(f.jobjs); j.filter(x => x['客先注番'] === '1801')[2]['受注№'] = '90099';
+  const r = res(f, j).orders['1801']; assert.strictEqual(r.status, 'ng'); assert.ok(r.diffs.some(d => d.field === 'juchuNo')); assert.strictEqual(r.juchuNo, '');
+});
+t('突き合わせ：SMILE が自動で付ける製番・処理連番などは比べない', () => {
+  const f = importFixture(), j = clone2(f.jobjs); j.forEach(x => { x['製番'] = 'SB' + x['行']; x['処理連番'] = '777'; x['BS受注№'] = '55'; });
+  assert.ok(Object.values(res(f, j).orders).every(o => o.status === 'ok'));
+});
+t('取込結果の見方：done / 取込0件のfailed だけ再実行可 / 一部は要確認で止める', () => {
+  const J = EC.judgeImportResult;
+  assert.strictEqual(J({ state: 'done', files: [{ imported: 3, errors: 0 }, { imported: 20, errors: 0 }] }).kind, 'done');
+  assert.strictEqual(J({ state: 'failed', message: '権限なし', files: [] }).kind, 'retry');
+  assert.strictEqual(J({ state: 'failed', message: 'SMILEのエラー', files: [{ imported: 0, errors: 2 }, { imported: 0, errors: 0 }] }).kind, 'retry');
+  assert.strictEqual(J({ state: 'failed', message: '取込済み', files: [] }).kind, 'check');
+  assert.strictEqual(J({ state: 'partial', files: [{ imported: 3, errors: 0 }, { imported: 5, errors: 1 }] }).kind, 'partial');
+  assert.strictEqual(J({ state: 'failed', files: [{ imported: 3, errors: 0 }, { imported: 0, errors: 1 }] }).kind, 'partial');   // 件数が入っていれば failed でも partial 扱い
+  assert.strictEqual(J({ state: 'done', files: [{ imported: 3, errors: 1 }] }).kind, 'partial');
+  assert.strictEqual(J(null).kind, 'check');
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';

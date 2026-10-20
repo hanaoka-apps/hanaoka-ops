@@ -98,8 +98,21 @@
       if (!code) continue;
       var d = g(r, '伝票日付'); if (d) { if (!from || d < from) from = d; if (!to || d > to) to = d; }
       var incl = num(g(r, '税抜受入金額')) + num(g(r, '消費税等')), dept = g(r, '部門名称') || '(部門なし)';
-      var v = out[code] || (out[code] = { code: code, name: g(r, '仕入先略称'), incl: 0, lines: 0, byDept: {} });
+      var v = out[code] || (out[code] = { code: code, name: g(r, '仕入先略称'), incl: 0, lines: 0, byDept: {}, items: [] });
       v.incl += incl; v.lines++; v.byDept[dept] = (v.byDept[dept] || 0) + incl;
+      // 行も残す（確認の全画面で請求書の明細と1行ずつ比べる）。数量・単価・品目コードは列があれば
+      //   月次受入リスト（RPA・2026-10〜）は「受入数量」「受注単価」「品目ｺｰﾄﾞ」。ほかの書き出しの「数量」「単価」も読む
+      //   「受注単価」は受注の単価で、受注の無い仕入は 0（2026-10 締めはすべて 0）→ 単価は 税抜受入金額 ÷ 受入数量 で出す
+      //   「発注単価」（2026-10-19 から書き出しに追加）＝発注したときの約束の単価。実際の単価（税抜 ÷ 数量）と比べる（oprice）
+      var q = g(r, '受入数量') || g(r, '数量'), up = g(r, '受入単価') || g(r, '受注単価') || g(r, '単価');
+      if (q !== '' && num(q) && !num(up)) up = String(Math.round(num(g(r, '税抜受入金額')) / num(q) * 100) / 100);
+      var op = num(g(r, '発注単価')), oq = num(g(r, '発注数量'));   // 発注数量：受入数量と同じ単位（2026-10 時点で「発注数量(発注単位)」と全行同じ）
+      // 「受入単価」の列があって 0 なのに数量がある＝単価を使わず金額を直接入れた行（値引き・まとめ・手直しなど）
+      var direct = ix('受入単価') >= 0 && !num(g(r, '受入単価')) && !!num(q) && !!num(g(r, '税抜受入金額'));
+      v.items.push({ date: d, inDate: g(r, '入荷日付'), slip: g(r, '伝票№'), dept: dept, staff: g(r, '担当者名称'), itemCode: g(r, '品目ｺｰﾄﾞ') || g(r, '品目コード'),
+        item: g(r, '品目名'), spec: g(r, '型番'), unit: g(r, '単位'), qty: q === '' ? null : num(q), price: up === '' ? null : num(up), oprice: op > 0 ? op : null, oqty: oq > 0 ? oq : null, direct: direct || undefined,
+        excl: num(g(r, '税抜受入金額')), tax: num(g(r, '消費税等')), order: g(r, '受注№'), kind: g(r, '取引区分略称'), note: g(r, '備考'),
+        soko: g(r, '倉庫ｺｰﾄﾞ').replace(/^0+/, '') || '0' });
     }
     return { from: from, to: to, rows: out };
   }
@@ -222,7 +235,7 @@
       var row = { code: code, name: L.name || (P && P.name) || (v && v.name) || '',
         deptCode: P ? P.deptCode : '', deptName: P ? P.deptName : '',
         prevBalance: L.prevBalance, paid: L.paid, carry: L.carry, listIncl: L.incl, listBalance: L.balance,
-        balance9055: P ? P.balance : null, receiptIncl: R ? R.incl : null, byDept: R ? R.byDept : {},
+        balance9055: P ? P.balance : null, receiptIncl: R ? R.incl : null, byDept: R ? R.byDept : {}, receiptItems: R ? R.items : null,
         payDate: L.payDate, payRound: payRoundOf(L.payDate), feeKbn: v ? v.feeKbn : '',
         base: base, offset: a.offset || 0, other: a.other || 0, amount: amount,
         rule: sp.rule, transfer: transfer, densai: densai, fee: fee, transferNet: transfer - fee,
@@ -283,10 +296,24 @@
     var m = {}; for (var k in p9055) { var p = p9055[k]; if (p.deptName && p.deptCode && !m[p.deptName]) m[p.deptName] = p.deptCode; }
     return m;
   }
+  /* 受入の1行の決裁の部門（決まりの deptByReceipt。仕入支払管理ダッシュボード v5.30 と同じ）：
+     倉庫ｺｰﾄﾞ → 本社／工場。本社は部門名称で ソリューション／国内営業。消費税の倉庫は null（分けに入れない） */
+  function receiptGroupOf(it) {
+    var R = rules().deptByReceipt; if (!R) return undefined;
+    var k = (R.soko || {})[String(it.soko || '')], dept = String(it.dept || '');
+    if (k === '消費税') return null;
+    if (k === '工場') return '工場';
+    if (k === '本社') return (R.honshaDept || {})[dept] || R.honshaDefault || '国内営業';
+    return /工場/.test(dept) ? '工場' : (R.honshaDefault || '国内営業');   // 表に無い倉庫
+  }
   /* 案A：支払額を受入の部門内訳で按分する。端数・繰越の分は受入がいちばん多い部門へ。
-     受入が無い（繰越だけ）ときは、9055 の仕入先の部門へ全額 */
+     受入が無い（繰越だけ）ときは、9055 の仕入先の部門へ全額
+     部門内訳は、決まりに deptByReceipt があれば受入の行ごと（税抜）、無ければ 部門名称→9055 の部門コード→deptGroups */
   function allocateDept(row, nameMap) {
     var g = {}, total = 0, d;
+    if (rules().deptByReceipt && row.receiptItems) {
+      row.receiptItems.forEach(function (it) { var grp = receiptGroupOf(it); if (!grp) return; var v = +it.excl || 0; g[grp] = (g[grp] || 0) + v; total += v; });
+    } else
     for (d in row.byDept) { var grp = deptGroupOf(nameMap[d]); g[grp] = (g[grp] || 0) + row.byDept[d]; total += row.byDept[d]; }
     var out = {};
     if (!total) { out[deptGroupOf(row.deptCode)] = row.amount; return { byGroup: out, main: deptGroupOf(row.deptCode) }; }

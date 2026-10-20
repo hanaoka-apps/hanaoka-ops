@@ -6,10 +6,11 @@
       key: 'ap',
       apps: [
         { f: 'ap_dashboard.html',      l: 'ホーム' },
+        { f: 'ap_capture.html',        l: 'AI に渡す（撮る）' },   // スマホで請求書を撮って渡すだけの画面
         { f: 'ap_expense.html',        l: '経費' },
+        { f: 'ap_entry.html',          l: '手入力', sub: true },      // sub：上の項目（経費）の下に字下げして出す
+        { f: 'ap_recurring.html',      l: '毎月の支払', sub: true },
         { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
-        { f: 'ap_entry.html',          l: '手入力' },
-        { f: 'ap_recurring.html',      l: '毎月の支払' },
         { f: 'ap_payment.html',        l: '支払（決裁・出力）' }
       ]
     },
@@ -20,6 +21,7 @@
         { f: 'company_schedule.html', l: '全社スケジュール' },
         { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'staff_schedule.html', l: '全社員の予定' },
+        { f: 'reserve.html', l: '予約' },
         { f: 'demo_reserve.html', l: 'デモ機' },
         { f: 'car_reserve.html',  l: '営業車' },
         { f: 'room_reserve.html', l: '会議室' },
@@ -100,6 +102,7 @@
   var ICONS = {
     'company_schedule.html': '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M7.5 13.5h.01M12 13.5h.01M16.5 13.5h.01M7.5 17h.01M12 17h.01"/>',
     'my_schedule.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
+    'reserve.html':        '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M8.5 14h7M8.5 17h4"/>',
     'demo_reserve.html':   '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     'car_reserve.html':    '<path d="M5 16h14l-1.5-6a2 2 0 0 0-1.9-1.5H8.4A2 2 0 0 0 6.5 10z"/><path d="M4 16v3M20 16v3"/><circle cx="8" cy="13" r=".6"/><circle cx="16" cy="13" r=".6"/>',
     'room_reserve.html':   '<path d="M4 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16M14 9h5a1 1 0 0 1 1 1v11M2 21h20M8 8h2M8 12h2M8 16h2"/>',
@@ -107,6 +110,7 @@
     'reserve_manual.html': '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/>',
     // 支払管理
     'ap_dashboard.html':     '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+    'ap_capture.html':       '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
     'ap_expense.html':       '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h7"/>',
     'ap_smile_import.html':  '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
     'ap_entry.html':         '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
@@ -163,7 +167,7 @@
       g.apps.map(function (a) {
         /* gate：権限を確かめてから出す項目（画面側がクラスの hide を外す） */
         var gated = g.gate && g.gate.page === cur && a.f !== cur ? ' ' + g.gate.cls + ' hide' : '';
-        return '<a class="hx-item' + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
+        return '<a class="hx-item' + (a.sub ? ' hx-sub' : '') + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
           svg(ICONS[a.f] || '') + '<span>' + a.l + '</span></a>';
       }).join('') +
       '<div class="hx-foot">' +
@@ -195,7 +199,7 @@
   function loadHubSidebar() {
     if (document.getElementById('hubSidebar')) return;
     var sc = document.createElement('script');
-    sc.src = 'hub_sidebar.js?v=20261014';
+    sc.src = 'hub_sidebar.js?v=20261020';
     document.body.appendChild(sc);
   }
 
@@ -214,7 +218,7 @@
     injectStyle();
     var html = '<div class="app-nav">' + g.apps.map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
-      return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + a.l + '</a>';
+      return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + (a.sub ? '└ ' : '') + a.l + '</a>';
     }).join('') + '</div>';
     slot.innerHTML = html;
     slot.addEventListener('click', function (e) {

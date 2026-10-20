@@ -28,6 +28,8 @@
 - OneDrive同期で届いたファイルはファイル変更通知（FileSystemWatcher）が来ないことがあるため、30秒ごとの確認にしている
 - 依頼から開始までは、OneDrive同期（数十秒〜1分強）＋最大30秒かかる
 - done / failed の記録は30日で自動削除
+- PADフローを動かすジョブの前に、常駐スクリプトがSMILEのメイン画面（題名「SMILE」）が開いているかを確かめ、なければPADフロー `Smileの起動`（ログインと業務予定通知を閉じるまで）で起動する（`rpa_jobs.json` の `smile`）。PC再起動後などにSMILEが閉じていても、ジョブが失敗しない
+- 常駐スクリプトは動いている印 `_rpa_queue/heartbeat.json` を5分ごとに書く。20分以上更新されないと、各アプリの待ち表示が「⚠️ RPA専用機が応答していません（最終応答: …）」に変わる（`RpaQueue.workerWarning`）
 
 ## 部品
 
@@ -37,12 +39,16 @@
 | 常駐スクリプト（本体） | `scripts/rpa_queue_worker.ps1` | 依頼の順番待ち処理。ログは `%USERPROFILE%\regenerate_watcher.log` |
 | 常駐スクリプト（入口） | `scripts/watch_regenerate_request.ps1` | タスクスケジューラーが起動するファイル。本体を呼ぶだけ |
 | アプリ用部品 | `rpa_queue.js` | 依頼の登録・状態の確認（使い方はファイル先頭のコメント） |
-| JSON生成 | `scripts/regenerate_facts.py` | `sales_master` の後処理。`SHARED_MASTERS_DIR` 指定で同期フォルダを直接読み書きする（`AZURE_*` 不要）。GitHub Actionsも毎日 06:00 / 16:15 JST にGraph経由で実行している |
+| JSON生成 | `scripts/regenerate_facts.py` | `sales_master` / `facts_only` の後処理。`SHARED_MASTERS_DIR` 指定で同期フォルダを直接読み書きする（`AZURE_*` 不要）。`dashboard_facts.json`（Sales HUB・日報・価値ダッシュボード・目標エディター）、`hub_kpi_facts.json`（HANAOKA HUB）、`dashboard_visits.json`（Sales HUBの訪問実績）を作る |
+| 定時の再作成 | `scripts/rpa_jobs.json` の `schedules` | 常駐スクリプトが毎日 **1:00** に `facts_only` を自分で依頼する（SMILEの業務予定「マスタ出力」が毎日 **0:00** に出力したCSVから作り直す）。PCが止まっていて時刻を過ぎても、その日のうちに起動すれば依頼する。依頼済みの記録は `%LOCALAPPDATA%\hanaoka-rpa\schedule_state.json` |
+| GitHub Actions | `.github/workflows/regenerate-facts.yml` | **手動実行専用**（非常用）。以前の定時実行（06:00 / 16:15）は、GitHubの定時実行が3〜7時間遅れて時刻どおりに動かなかったため止めた |
 | 旧方式の合図ファイル | `SharedMasters/_regenerate_request.json` | 移行用。置かれたら常駐スクリプトが `sales_master` の依頼として受け付け、ジョブ完了後に消す |
 
 ## ジョブを追加する
 
 1. RPA専用機でPADフローを作る。出力ファイルは SharedMasters 直下に**上書き保存**し、ファイル名は固定にする
+   - SMILEの出力画面を使うだけなら、`Smile_日報用マスタ出力` を複製して、5行目「テキストの分割」の画面名一覧を書き換えるのが早い
+     （各画面で条件パターン「SharedMasters更新」を**既定**として保存しておく。画面名はSMILEの検索欄に入れる名前）
 2. `scripts/rpa_jobs.json` にジョブを1件足してPRを出す（マージすれば常駐スクリプトに反映される。PC側の作業は不要）
    ```json
    "<ジョブ名>": {
@@ -53,7 +59,20 @@
    }
    ```
    - `outputs` は**すべて**が起動後に更新され、30秒サイズが変わらず、書き込み中でなくなったら完了とみなす
+   - 複数のPADフローを順に動かすジョブは、`flow` / `outputs` の代わりに `steps` を書く（各手順の出力完了を待ってから次へ進む。失敗時は「手順2/2（フロー名）: …」と止まった手順が出る）
+     ```json
+     "<ジョブ名>": {
+       "label": "画面に出す名前",
+       "timeoutMinutes": 20,
+       "steps": [
+         { "flow": "<1つ目のPADフロー名>", "outputs": ["<1つ目の出力ファイル名>"] },
+         { "flow": "<2つ目のPADフロー名>", "outputs": ["<2つ目の出力ファイル名>"] }
+       ]
+     }
+     ```
+     手順ごとに `timeoutMinutes` を書けば、その手順だけ待ち時間の上限を変えられる
    - 後処理が要るときは `"after": "regenerate_facts"`（今はこれだけ対応。増やすときは `rpa_queue_worker.ps1` の `Invoke-NextJob` に足す）
+   - 出力ファイルで完了を判断できないジョブ（SMILEへの取込など）は `"type": "import"`。PADフローの結果ファイルと `_rpa_import/<バッチ番号>/result.json` の出現で完了を判断し、依頼ごとに別の仕事として1件ずつ実行する（今は EC売上の `ec_smile_import` だけ。`scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md`・`ec_import.md`）
    - ジョブ名は英数字と `_` にする（ファイル名に入るため）
 3. アプリから依頼する
    ```js
@@ -79,12 +98,27 @@
   - `売上明細出力.csv`（当期の売上）
   - `目標_部門目標出力.csv` / `目標_担当者目標出力.csv`（`regenerate_facts.py` が月次目標として使う）
   - `目標_得意先目標出力.csv`（`regenerate_facts.py` では未使用だが同じフローで出力する）
+- `customer_master` のフロー `Smile_得意先マスタ出力` は、`Smile_日報用マスタ出力` の複製で、画面名一覧を
+  `生産得意先マスター出力,得意先別請求明細書情報出力` にしたもの
+  - → `得意先マスタ.csv`（UTF-8・カンマ・タイトル有り）と `TOVAS得意先別請求明細書情報.csv`
+  - `得意先マスタ.csv` はSMILE標準の定時処理「マスタ出力(毎日1時)」でも毎日1:05に出力されている（同じファイルを上書き）
+- `fujin_source` のフロー `Smile_生産仕入明細出力`（HUB「生産・仕入」の「🔄 更新をリクエスト」用）は、`Smile_日報用マスタ出力` の複製で、`受入明細出力.csv` と `製造実績明細出力.csv` を出す画面名にしたもの
+  - 出力したCSVは、FUJIN の日次ビルド（GitHub Actions）が次に動いたときに反映される。ビルドを起動する後処理（`after`）は無い（専用機にGitHubのトークンを置かないため）
+  - 詳細：`連絡_fujin_source_フロー作成.md`
 - CSVの列構成は `scripts/regenerate_facts.py` が前提にしているので、**列名・順序を変えない**
 - ほかのCSV（`daily_reports.csv`、`web_tracking_*` など）はSMILE出力ではないので触らない
 
 ### 3. 常駐スクリプトの登録
 - タスクスケジューラーに登録：トリガー＝「ログオン時」に**1回だけ**起動、実行時間の上限なし、多重起動しない
-- 操作：`powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "<クローン先>\scripts\watch_regenerate_request.ps1"`
+- 操作：プログラム `wscript.exe`、引数 `"<クローン先>\scripts\start_rpa_worker.vbs"`
+  - `start_rpa_worker.vbs` は、同じフォルダの `watch_regenerate_request.ps1` を最初から非表示で起動し、終了まで待つ
+    （タスクが「実行中」のままになり、多重起動しない設定が効く）
+  - 次の方法は、このPCでは使えなかった（実際に発生した）
+    - `powershell.exe -WindowStyle Hidden` を直接起動: 既定のターミナルが「Windows ターミナル」だと画面が見え、
+      それを閉じると常駐スクリプトも終了する（タスクの結果 `0xC000013A`）
+    - `conhost.exe --headless powershell.exe ...`: タスクスケジューラーから起動すると、PowerShellを動かさずに終了する
+- 動いているかの確認：タスクの状態が「実行中」で、ログ（`%USERPROFILE%\regenerate_watcher.log`）に「監視を開始します」が出ていること。
+  Claude Codeなどから手動で起動した常駐スクリプトは、そのセッションが閉じると一緒に止まることがあるので、運用はタスクからの起動だけにする
 - PADが画面を操作するので、ログオン中のユーザーとして（対話型で）実行する
 - 環境変数の設定は不要（以前の `SMILE_EXPORT_COMMAND` / `AZURE_*` は使わない）
 
@@ -102,6 +136,7 @@
 - PowerShellスクリプトは**BOM付きUTF-8**で保存する（Windows PowerShell 5.1 はBOMなしだと日本語を誤読し、パスが文字化けする）
 
 ## 補足
-- `regenerate_facts.py` のGitHub Actions実行（06:00 / 16:15）とRPA専用機の実行は同じ `dashboard_facts.json` を上書きする。Actionsとは排他していない
+- `regenerate_facts.py` をGitHub Actionsから手動実行すると、RPA専用機の実行と同じ `dashboard_facts.json` を上書きする。Actionsとは排他していないので、RPA専用機でジョブが動いていないときに使う
+- 定時の時刻を変えるときは `rpa_jobs.json` の `schedules` の `time`（HH:mm）を書き換えてPRを出す（RPA専用機は10分以内に新しい定義を読む）
 - Power Automate（クラウドフロー）からPADを直接起動する方式は、以前PADの更新などで止まったことがあるため使っていない（タスクスケジューラー常駐の方が安定）
 - 日次の業務フロー全体の手順書は「日報締め業務フロー」ランブック（Artifact）にある。RPA化が完了したら「SMILEからデータ出力」のステータスを更新する

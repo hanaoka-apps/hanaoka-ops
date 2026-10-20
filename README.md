@@ -16,12 +16,13 @@
 | マスタビューワー         | master_viewer.html   | 全社員               | 得意先・仕入先マスタの閲覧（読み取り専用）。得意先はTOVAS請求設定を請求情報に統合し、請求方法・回収方法を業務の言葉に組み立てて表示。仕入先は支払条件（振込・手形の振り分け）を中心に表示。CSV そのままの「元データ」表示も可。データは SharePoint `SharedMasters` の `得意先マスタ.csv` / `仕入先マスタ.csv` / `TOVAS得意先別請求明細書情報.csv` |
 | TOVAS登録チェッカー      | tovas_checker.html   | 総務・経理           | 得意先マスタ・TOVAS請求設定・月次請求一覧（貼り付け/CSV）を突合し、TOVAS未登録・送信区分の不一致などを洗い出す。①②は SharePoint `SharedMasters` から自動取得（読み取り専用）、失敗時は手動でCSV選択も可 |
 | 社内連絡先（スケジュールAPP） | org_directory.html | 全社員（Microsoft 365 のアカウントがある人を表示） | 部署ごとの一覧と図、今日の予定、検索、Teamsのチャット・通話、会社貸与の携帯番号。中身はすべて Entra（部署・役職・上司・携帯電話）を読むだけで、画面に名前や番号を書かない。共有PCは「従業員の種類」=共有PC で外し、部署の共用携帯は =共用携帯 の共有メールボックスに番号を置く。番号は `scripts/set_mobile_phones.ps1`、上司は `scripts/set_managers.ps1` で投入 |
-| EC売上（試作）            | ec_sales.html        | 営業・業務（入金タブは総務限定） | Shopify の注文を確認して SMILE に取り込むデータを作る。①注文CSV → 品目対応表で SMILE の品目に展開・出荷予定日（受注後2営業日）を決める → 人がチェックして OK → 納品先（新規）と受注伝票の取込ファイル（UTF-16）を出力。入金タブ（総務）は Shopify の入金を 入金日×得意先 でまとめて入金伝票の取込ファイルに。計算は `ec_sales_core.js`（テスト `tests/test_ec_sales_core.cjs`）、取込ファイルの見出しは `ec_sales_layouts.js`（`scripts/gen_ec_layouts.py` で生成）。決まりごとは SMILEマニュアル一式\明細取込\EC取込_2026-10\引き継ぎメモ.md。休業日は Outlook の会社共通予定表（HUBのお知らせと同じ共有メールボックス。終日の予定で件名に「休日・休業・祝」を含むもの）から読む。OK の状態・対応表はこの端末のブラウザに保存（共有は今後）。注文・入金の自動取得は `scripts/shopify_fetch.py`（Shopify Admin API → SharedMasters の `ec_shopify_*.csv`。RPA専用機のタスクスケジューラーで平日8〜18時の毎時。手順 `scripts/rpa_setup/ec_shopify_fetch_setup.md`、テスト `tests/test_shopify_fetch.py`。実トークンでの動作は未確認） |
+| EC売上（試作）            | ec_sales.html        | 営業・業務（入金タブは総務限定） | Shopify の注文を確認して SMILE に取り込むデータを作る。①注文CSV → 品目対応表で SMILE の品目に展開・出荷予定日（受注後2営業日）を決める → 人がチェックして OK → 納品先（新規）と受注伝票の取込ファイル（UTF-16）を出力。入金タブ（総務）は Shopify の入金を 入金日×得意先 でまとめて入金伝票の取込ファイルに。計算は `ec_sales_core.js`（テスト `tests/test_ec_sales_core.cjs`）、取込ファイルの見出しは `ec_sales_layouts.js`（`scripts/gen_ec_layouts.py` で生成）。決まりごとは SMILEマニュアル一式\明細取込\EC取込_2026-10\引き継ぎメモ.md。休業日は Outlook の会社共通予定表（HUBのお知らせと同じ共有メールボックス。終日の予定で件名に「休日・休業・祝」を含むもの）から読む。管理者は画面下の「SMILEに取り込む」で、取込ファイルを SharedMasters の `_rpa_import/<バッチ番号>/` に置いて RPA専用機（`rpa_queue.js` のジョブ `ec_smile_import`）に取り込みを頼む → 取込後に SMILE から出力した 受注明細・納品先マスタ（`ec_smile_verify_export`）と客先注番で突き合わせ（`EcSales.verifyImport`）、一致した注文だけ自動で「起票済み」にして SMILE の受注№を表示（違えば「要確認」）。専用機側は `scripts/rpa_queue_worker.ps1`（取込ジョブ `type: import`）と `scripts/rpa_setup/ec_import.md`（PADフローの作り方）、約束事は `scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md`。管理者の一覧は専用機側の `_rpa_queue/ec_import_admins.json`（リポジトリには置かない）。OK の状態・取込の状況・対応表はこの端末のブラウザに保存（共有は今後）。注文・入金の自動取得は `scripts/shopify_fetch.py`（Shopify Admin API → SharedMasters の `ec_shopify_*.csv`。RPA専用機のタスクスケジューラーで平日8〜18時の毎時。手順 `scripts/rpa_setup/ec_shopify_fetch_setup.md`、テスト `tests/test_shopify_fetch.py`。実トークンでの動作は未確認） |
 | 会計ダッシュボード       | kaikei_dashboard.html | 役員限定             | 月次経営会議用の会計サマリー・営業利益の増減要因（滝グラフ）・主要経費ランキング |
 | 会計 仕訳明細            | kaikei_ledger.html   | 役員限定             | 会計サマリーからのドリルダウン。科目・部門・摘要キーワードで仕訳明細を検索 |
 | 会計 予算                | kaikei_budget.html   | 役員限定             | 予算の版（事業計画・ストレス・確保計画…）の比較と中身（科目×月）。直すときは新しい版として保存し、過去の版は変更しない。採用中の版が月次資料の「予算・予算差」になる |
 | 会計 データ取り込み      | kaikei_upload.html   | 役員限定             | SMILE元帳CSVをブラウザで解析し、SharePointの会計データへ保存（月次） |
 | 書類管理システム         | doc_management.html  | 役員限定＋総務       | スキャンされた書類をAIが読み取って仕分け・要約。期限があるものはタスク化。全文検索と書類間のつながり追跡 |
+| 総務コンパス（試作） | soumu_compass.html | 総務部長＋室長のみ（SharePointのリスト権限で限定） | 社長方針→総務部の目標→日報を紐づけ、毎月の発表（先月の実施内容／今月の予定）に使う目標管理。HUBのタイルは、データのリストを読める人にだけ出る |
 | 社内ワークフロー（試験運用） | wf_app.html      | 全社員（フォームは順次公開） | 申請・承認・差し戻し・後処理・回覧。GRIDY/kintone の置き換え。経路計算は wf-engine.js。フォーム・経路・人はすべて SharePoint `WF_*` リストから読む（画面に業務データを書かない）。処理は Power Automate「WF_操作受付」「WF_段の起票」 |
 
 ## 認証（サインイン）
@@ -126,6 +127,11 @@ HUB・営業日報と同じ見た目（白い背景のカード＋紺 `#23268f`�
     版ファイルは一度保存したら上書きしない（`kaikei_budget.html` で「新しい版」として保存）。売上の月別の配分は営業目標エディタの部門月次目標から取る
   - `prior_actuals.json`：前年実績の初期データ（元帳を取り込む前の月の補完用）
   - 取り込みは `kaikei_upload.html` でSMILE元帳CSVをブラウザにドラッグするだけ（サーバー・定期実行スクリプトなし）
+- **総務コンパス（soumu_compass.html）**：`executive-workspace` サイトのリスト `SC_Items`（目標マスタ。Title は「年度|目標ID」）・`SC_Reports`（日報明細）・`SC_Links`（日報と目標の紐づけ）・`SC_Manual`（追記・予定）・`SC_State`（判定・要約）。
+  列は絞り込みに使うものだけで、中身は `Data` 列のJSON。**リポジトリにはデータ（氏名・目標・日報）を置かない。**
+  - 月次：Claudeのプロジェクトで日報を全員分まとめて分類し、「取込用JSON」（`reports` / `additions` / `plans`）を作る → 画面の「データ・運用」から取り込む。同じ日報IDは上書き、画面で直した行（手修正）・判定・要約・確定済みの予定は上書きしない。評価コメントは取り込まない。
+  - 毎年4月：新年度の目標マスタJSON（`fiscal_year` 入り）を取り込むと新しい年度になる。過去年度は消えず、画面の「年度」で切り替えて見られる。
+  - **閲覧を2人に絞るのは SharePoint のリスト権限**（5つのリストの「アクセス許可の管理」で継承を解除し、対象者だけにする）。HUBのタイルは `SC_Items` を読めた人にだけ出る。画面のコードに名前や判定は書かない。
 - **書類データ**：`executive-workspace` サイトの既定ドキュメントライブラリ配下 `書類管理/`
   （会計データ・給与データと同じサイト。銀行残高・融資・住民税明細・財形など個人名と
   金額を含む書類を扱うため、受付案件管理と同じサイトには置かない）
