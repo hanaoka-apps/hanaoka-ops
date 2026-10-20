@@ -72,6 +72,7 @@
      ```
      手順ごとに `timeoutMinutes` を書けば、その手順だけ待ち時間の上限を変えられる
    - 後処理が要るときは `"after": "regenerate_facts"`（今はこれだけ対応。増やすときは `rpa_queue_worker.ps1` の `Invoke-NextJob` に足す）
+   - 出力ファイルで完了を判断できないジョブ（SMILEへの取込など）は `"type": "import"`。PADフローの結果ファイルと `_rpa_import/<バッチ番号>/result.json` の出現で完了を判断し、依頼ごとに別の仕事として1件ずつ実行する（今は EC売上の `ec_smile_import` だけ。`scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md`・`ec_import.md`）
    - ジョブ名は英数字と `_` にする（ファイル名に入るため）
 3. アプリから依頼する
    ```js

@@ -659,6 +659,162 @@
     return rows;
   };
 
+  /* ============================================================ SMILE への取込（RPA専用機）と、取込後の突き合わせ
+   * 取込ファイルを SharedMasters/_rpa_import/<バッチ番号>/ に置き、RPA専用機が SMILE に取り込む。
+   * 取込のあと SMILE から出力した 受注明細出力.csv・納品先マスタ.csv を、客先注番（Shopify の注文番号）で
+   * 「取り込むはずだった内容（expected）」と突き合わせる。約束事は scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md */
+
+  // SHA-256（16進）。バイト列（Uint8Array）を渡す。画面とテストで同じ結果になるよう自前で持つ
+  var K256 = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+  EC.sha256 = function (bytes) {
+    var h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var n = bytes.length, total = (((n + 8) >> 6) + 1) << 6, m = new Uint8Array(total), i, w = new Array(64);
+    m.set(bytes); m[n] = 0x80;
+    var bits = n * 8, hi = Math.floor(bits / 4294967296), lo = bits >>> 0;
+    m[total - 8] = hi >>> 24; m[total - 7] = hi >>> 16; m[total - 6] = hi >>> 8; m[total - 5] = hi;
+    m[total - 4] = lo >>> 24; m[total - 3] = lo >>> 16; m[total - 2] = lo >>> 8; m[total - 1] = lo;
+    function rr(x, k) { return (x >>> k) | (x << (32 - k)); }
+    for (var off = 0; off < total; off += 64) {
+      for (i = 0; i < 16; i++) w[i] = (m[off + i * 4] << 24) | (m[off + i * 4 + 1] << 16) | (m[off + i * 4 + 2] << 8) | m[off + i * 4 + 3];
+      for (i = 16; i < 64; i++) {
+        var s0 = rr(w[i - 15], 7) ^ rr(w[i - 15], 18) ^ (w[i - 15] >>> 3), s1 = rr(w[i - 2], 17) ^ rr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+      }
+      var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+      for (i = 0; i < 64; i++) {
+        var t1 = (hh + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & f) ^ (~e & g)) + K256[i] + w[i]) | 0;
+        var t2 = ((rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
+      h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + hh) | 0;
+    }
+    return h.map(function (x) { return ('00000000' + (x >>> 0).toString(16)).slice(-8); }).join('');
+  };
+
+  // 取込ファイル一式 → { batchId, files:[{name,rows,sha256,bytes}], manifest }。
+  // files = [{ name:'nouhin.txt', bytes, rows }]（rows＝見出しを除いたデータ行数）。バッチ番号は中身から作る（同じ内容なら同じ番号）
+  EC.buildImportBatch = function (files, requestedBy, requestedAt) {
+    var list = files.map(function (f) { return { name: f.name, rows: f.rows, sha256: EC.sha256(f.bytes), bytes: f.bytes }; });
+    var seed = list.map(function (f) { return f.name + ':' + f.sha256; }).join('|');
+    var batchId = 'ec-' + EC.sha256(new TextEncoder().encode(seed)).slice(0, 16);
+    return {
+      batchId: batchId, files: list,
+      manifest: { batchId: batchId, requestedBy: requestedBy || '', requestedAt: requestedAt || new Date().toISOString(),
+        files: list.map(function (f) { return { name: f.name, rows: f.rows, sha256: f.sha256 }; }) }
+    };
+  };
+
+  // 取り込むはずだった内容。slips＝OKの伝票（shipDate・memo・deliveryCode・delivery が入っていること）、fresh＝planDeliveries の戻り値
+  EC.expectedImport = function (slips, fresh) {
+    var orders = {};
+    slips.forEach(function (s) {
+      orders[s.id] = { id: s.id, name: s.name, cust: s.cust, deliveryCode: s.deliveryCode, deliveryNew: !!s.deliveryNew,
+        shipDate: s.shipDate, memo: s.memo,
+        lines: s.lines.map(function (l) { return { code: l.code, qty: l.qty, unitNet: l.unitNet, amountNet: Math.round(l.amountNet) }; }) };
+    });
+    var deliveries = fresh.map(function (f) { return { cust: f.cust, code: f.code, name: f.d.name, person: f.d.person, zip: f.d.zip, addr1: f.d.addr1, addr2: f.d.addr2, tel: f.d.tel, orderId: f.orderId }; });
+    return { orders: orders, deliveries: deliveries };
+  };
+
+  // 取込結果（result.json）の見方。再実行してよいのは「取込件数0の failed」だけ
+  //   戻り値 { kind:'done'|'retry'|'partial'|'check', message }
+  EC.judgeImportResult = function (r) {
+    if (!r) return { kind: 'check', message: '取込の結果ファイル（result.json）が見つかりません。SMILE を見て判断してください' };
+    var files = r.files || [], imported = files.reduce(function (a, f) { return a + (+f.imported || 0); }, 0), errors = files.reduce(function (a, f) { return a + (+f.errors || 0); }, 0);
+    var msg = r.message || '';
+    if (r.state === 'done' && errors === 0) return { kind: 'done', message: '' };
+    if (r.state === 'partial' || imported > 0) return { kind: 'partial', message: msg || '一部だけ取り込まれました（取込 ' + imported + '件・エラー ' + errors + '件）。SMILE を見て判断してください' };
+    if (r.state === 'failed' && imported === 0 && !/取込済み/.test(msg)) return { kind: 'retry', message: msg || '取り込めませんでした' };
+    return { kind: 'check', message: msg || '取込の状態が不明です。SMILE を見て判断してください' };
+  };
+
+  // ---- 突き合わせ
+  function normHead(h) { return String(h == null ? '' : h).normalize('NFKC').replace(/\s+/g, ''); }
+  // 見出しの半角カナ・全角の違い（ｺｰﾄﾞ／コード）を無視して列を引く
+  function pick(r, names) {
+    var want = names.map(normHead), found;
+    Object.keys(r).some(function (k) { if (want.indexOf(normHead(k)) >= 0) { found = r[k]; return true; } return false; });
+    return found == null ? '' : found;
+  }
+  function ymdOf(v) {
+    var d = digits(v);
+    return d.length === 6 ? '20' + d : d.length === 8 ? d : '';
+  }
+  function same(a, b) { return norm(a).replace(/\s/g, '') === norm(b).replace(/\s/g, ''); }
+
+  // juchuObjs＝受注明細出力.csv（parseAuto）、nouhinObjs＝納品先マスタ.csv。
+  // 戻り値 { orders:{注文番号:{status:'ok'|'ng'|'missing', juchuNo, diffs:[{field,label,expected,actual,line}], actualLines}}, deliveries:{コード:{status,diffs}} }
+  // 比べない項目：製番・処理連番など SMILE が自動で付けるもの（受注№は紐づけにだけ使う）
+  EC.verifyImport = function (expected, juchuObjs, nouhinObjs) {
+    var byPo = {};
+    (juchuObjs || []).forEach(function (r) {
+      var po = digits(pick(r, ['客先注番']));
+      if (po) (byPo[po] = byPo[po] || []).push(r);
+    });
+    var master = {};
+    (nouhinObjs || []).forEach(function (r) {
+      master[pick(r, ['得意先コード']) + '|' + pick(r, ['納品先コード'])] = r;
+    });
+
+    var out = { orders: {}, deliveries: {} };
+    expected.deliveries.forEach(function (d) {
+      var r = master[d.cust + '|' + d.code], diffs = [];
+      if (!r) diffs.push({ field: 'delivery', label: '納品先 ' + d.code, expected: '登録されている', actual: 'マスタに見つかりません' });
+      else {
+        var act = { name: pick(r, ['納品先名']), person: pick(r, ['荷受け人名１']), zip: pick(r, ['郵便番号']), addr1: pick(r, ['住所１']), addr2: pick(r, ['住所２']), tel: pick(r, ['電話番号']) };
+        if (!same(act.name, d.name)) diffs.push({ field: 'delivery.name', label: '納品先名', expected: d.name, actual: act.name });
+        if (d.person && !same(act.person, d.person)) diffs.push({ field: 'delivery.person', label: '荷受け人', expected: d.person, actual: act.person });
+        if (digits(act.zip) !== digits(d.zip)) diffs.push({ field: 'delivery.zip', label: '郵便番号', expected: d.zip, actual: act.zip });
+        if (!same(act.addr1, d.addr1)) diffs.push({ field: 'delivery.addr1', label: '住所１', expected: d.addr1, actual: act.addr1 });
+        if (!same(act.addr2, d.addr2)) diffs.push({ field: 'delivery.addr2', label: '住所２', expected: d.addr2, actual: act.addr2 });
+        if (digits(act.tel) !== digits(d.tel)) diffs.push({ field: 'delivery.tel', label: '電話', expected: d.tel, actual: act.tel });
+      }
+      out.deliveries[d.code] = { status: diffs.length ? 'ng' : 'ok', diffs: diffs };
+    });
+
+    Object.keys(expected.orders).forEach(function (id) {
+      var e = expected.orders[id], rows = (byPo[digits(id)] || []).filter(function (r) { return pick(r, ['得意先コード']) === e.cust; });
+      if (!rows.length) { out.orders[id] = { status: 'missing', juchuNo: '', diffs: [{ field: 'order', label: '受注', expected: 'SMILEに入っている', actual: '見つかりません' }], actualLines: [] }; return; }
+      rows.sort(function (a, b) { return num(pick(a, ['行'])) - num(pick(b, ['行'])); });
+      var diffs = [], nos = {};
+      rows.forEach(function (r) { var n = pick(r, ['受注№', '受注No']); if (n) nos[n] = 1; });
+      var noList = Object.keys(nos);
+      if (noList.length > 1) diffs.push({ field: 'juchuNo', label: '受注№', expected: '1つの伝票', actual: noList.join('、') + '（複数の伝票に分かれています）' });
+      if (rows.length !== e.lines.length) diffs.push({ field: 'rows', label: '行数', expected: String(e.lines.length), actual: String(rows.length) });
+      var actualLines = rows.map(function (r) {
+        return { code: pick(r, ['品目コード']), qty: num(pick(r, ['数量'])), unit: num(pick(r, ['単価'])), amount: Math.round(num(pick(r, ['金額']))) };
+      });
+      var ship = e.shipDate ? EC.ymd(e.shipDate) : '';
+      rows.forEach(function (r, i) {
+        var l = e.lines[i], n = i + 1;
+        if (!l) return;
+        var a = actualLines[i];
+        if (a.code !== l.code) diffs.push({ field: 'code', line: n, label: n + '行目 品目', expected: l.code, actual: a.code });
+        if (Math.abs(a.qty - l.qty) > 0.004) diffs.push({ field: 'qty', line: n, label: n + '行目 数量', expected: String(l.qty), actual: String(a.qty) });
+        if (Math.abs(a.unit - l.unitNet) > 0.004) diffs.push({ field: 'unit', line: n, label: n + '行目 単価', expected: String(l.unitNet), actual: String(a.unit) });
+        if (a.amount !== l.amountNet) diffs.push({ field: 'amount', line: n, label: n + '行目 金額', expected: String(l.amountNet), actual: String(a.amount) });
+        var due = ymdOf(pick(r, ['納期'])), ps = ymdOf(pick(r, ['出荷予定日']));
+        if (due !== ship) diffs.push({ field: 'due', line: n, label: n + '行目 納期', expected: e.shipDate, actual: due || '（空）' });
+        if (ps !== ship) diffs.push({ field: 'shipDate', line: n, label: n + '行目 出荷予定日', expected: e.shipDate, actual: ps || '（空）' });
+        var dc = pick(r, ['納品先コード']);
+        if (dc !== e.deliveryCode) diffs.push({ field: 'deliveryCode', line: n, label: n + '行目 納品先コード', expected: e.deliveryCode, actual: dc });
+        var memo = pick(r, ['社内メモ']);
+        if (!same(memo, e.memo)) diffs.push({ field: 'memo', line: n, label: n + '行目 社内メモ', expected: e.memo, actual: memo });
+      });
+      if (e.deliveryNew) {
+        var dv = out.deliveries[e.deliveryCode];
+        if (!dv) diffs.push({ field: 'delivery', label: '納品先 ' + e.deliveryCode, expected: '登録されている', actual: '確認できません' });
+        else if (dv.status !== 'ok') diffs.push({ field: 'delivery', label: '納品先 ' + e.deliveryCode, expected: '登録内容が一致', actual: dv.diffs.map(function (x) { return x.label + '：' + x.actual; }).join('／') });
+      }
+      out.orders[id] = { status: diffs.length ? 'ng' : 'ok', juchuNo: noList.length === 1 ? noList[0] : '', diffs: diffs, actualLines: actualLines };
+    });
+    return out;
+  };
+
   root.EcSales = EC;
   if (typeof module !== 'undefined' && module.exports) module.exports = EC;
 })(typeof window !== 'undefined' ? window : globalThis);
