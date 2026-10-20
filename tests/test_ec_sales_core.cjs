@@ -71,7 +71,7 @@ t('値引き：本体が吸収。ギフティングは0円・送料なし', () =
   const d = EC.buildSlip(order({ total: 11000, discountCode: 'X', discountAmount: 6050 }), ctx);
   assert.deepStrictEqual(d.lines.map(l => l.unitNet), [8500, 1500]);
   const g = EC.buildSlip(order({ total: 0, discountCode: 'FREE, FREE_SHIPPING' }), ctx);
-  assert.deepStrictEqual(g.lines.map(l => [l.code, l.amountNet]), [['FCART2x4BK', 0]]); assert.strictEqual(g.memo, 'HanaokaEC（ギフティング）');
+  assert.deepStrictEqual(g.lines.map(l => [l.code, l.amountNet]), [['FCART2x4BK', 0]]); assert.strictEqual(g.memo, '花岡EC（ギフティング）');
 });
 t('送料無料コード：送料行なし・本体は定価', () => {
   const s = EC.buildSlip(order({ total: 15400, discountCode: 'FREE_SHIPPING' }), ctx);
@@ -135,12 +135,12 @@ t('対応表の「言葉」判定：含む・始まる・ちょうど・単位�
   assert.strictEqual(code('F-CART 2×4（ブルー） - ケース3個追加'), 'FCART2x4×1,OP/CUP×3');   // 全角カッコも同じ扱い・3個→数量3
 });
 t('社内メモ：基本のメモのあとに追記を全角スペースでつなぐ', () => {
-  assert.strictEqual(EC.joinMemo('HanaokaEC', '', DEFAULT_CONFIG), 'HanaokaEC');
-  assert.strictEqual(EC.joinMemo('HanaokaEC', ' ブルー入荷待ち\n', DEFAULT_CONFIG), 'HanaokaEC\u3000ブルー入荷待ち');
-  assert.strictEqual(EC.joinMemo('HanaokaEC（ギフティング）', '指定着', DEFAULT_CONFIG), 'HanaokaEC（ギフティング）\u3000指定着');
+  assert.strictEqual(EC.joinMemo('花岡EC', '', DEFAULT_CONFIG), '花岡EC');
+  assert.strictEqual(EC.joinMemo('花岡EC', ' ブルー入荷待ち\n', DEFAULT_CONFIG), '花岡EC\u3000ブルー入荷待ち');
+  assert.strictEqual(EC.joinMemo('花岡EC（ギフティング）', '指定着', DEFAULT_CONFIG), '花岡EC（ギフティング）\u3000指定着');
 });
 t('取込ファイル：受注の行・UTF-16', () => {
-  assert.strictEqual(EC.buildSlip(order(), ctx).memo, 'HanaokaEC');
+  assert.strictEqual(EC.buildSlip(order(), ctx).memo, '花岡EC');
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);
   const rows = EC.juchuRows([s], L.juchu, DEFAULT_CONFIG);
   assert.strictEqual(rows.length, 2); assert.strictEqual(rows[0].length, L.juchu.length);

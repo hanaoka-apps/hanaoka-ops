@@ -433,7 +433,7 @@
     };
   };
 
-  // 社内メモ：基本のメモ（HanaokaEC など）のあとに、担当者が追記した文を続ける
+  // 社内メモ：基本のメモ（花岡EC など）のあとに、担当者が追記した文を続ける
   EC.joinMemo = function (base, note, cfg) {
     note = String(note == null ? '' : note).replace(/[\r\n\t]+/g, ' ').trim();
     return note ? base + (cfg.memoJoin == null ? ' ' : cfg.memoJoin) + note : base;
