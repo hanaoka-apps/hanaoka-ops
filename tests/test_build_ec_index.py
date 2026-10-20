@@ -188,6 +188,20 @@ class TestSendTest(BuildEcIndexTest):
         self.assertIn('999998', codes)                                                     # マスタには出る（使用済みコードとして、アプリがテスト送信の有無を見るため）
         self.assertEqual(self.build_idx(delivery_code_limit='999999')['nouhin']['maxCode'], {'599801': '999998'})   # 上限を変えれば入る＝上限で除外している
 
+    def test_品目に手配区分と在庫管理区分を持つ(self):
+        """テスト送信は「手配区分2・在庫管理なし」の品目だけを使うので、アプリがマスタで確かめられるよう両方を持つ"""
+        self.write_with_test_rows()
+        self.write('品目マスタ.csv', '品目ｺｰﾄﾞ,品目名,単位,在庫管理区分,在庫管理区分名,初期表示用手配区分,初期表示用手配区分名\r\n'
+                   'FR,ｳﾝﾁﾝ,式,1,行わない,2,繰返(以外)\r\nTC,ﾃｰﾌﾞﾙｺﾝﾃﾅ,個,0,行う,1,繰返(製作)\r\n')
+        idx = self.build_idx()
+        items = {r[0]: dict(zip(idx['items']['cols'], r)) for r in idx['items']['rows']}
+        self.assertEqual((items['FR']['初期表示用手配区分'], items['FR']['在庫管理区分名']), ('2', '行わない'))
+        self.assertEqual((items['TC']['初期表示用手配区分'], items['TC']['在庫管理区分名']), ('1', '行う'))
+        # 在庫管理区分名の列が無い古い形式のマスタでも作れる（空になる。アプリは「確認できない」として送信しない）
+        self.write('品目マスタ.csv', '品目ｺｰﾄﾞ,品目名,単位,初期表示用手配区分\r\nFR,ｳﾝﾁﾝ,式,2\r\n')
+        idx = self.build_idx()
+        self.assertEqual(dict(zip(idx['items']['cols'], idx['items']['rows'][0]))['在庫管理区分名'], '')
+
     def test_印を空にすれば分けない(self):
         self.write_with_test_rows()
         idx = self.build_idx(test_po_prefix='')
