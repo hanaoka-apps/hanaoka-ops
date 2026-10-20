@@ -9,7 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ec_sales_layouts.js?v=1"></script>
-<script src="ec_sales_core.js?v=2"></script>
+<script src="ec_sales_core.js?v=3"></script>
 <script src="rpa_queue.js?v=2"></script>
 <style>
   * { box-sizing: border-box; }
@@ -365,39 +365,66 @@ async function soumuHasAccess() {
 }
 function stamp(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 
+// SMILE の品目・納品先・受注・入金。軽量ファイル（ec_smile_index.json。専用機が全件出力のあとに作る）を優先して読み、
+// 無い・読めないときだけ全件CSVを読む（重いので、画面にそのことを出す）
 async function loadMasters() {
   const failed = [];
+  const F = (r, names) => EC.pick(r, names);
+  const applyItems = objs => {
+    M.items = {};
+    objs.forEach(r => { M.items[F(r, ['品目コード'])] = { name: F(r, ['品目名']), unit: F(r, ['単位']), teihai: F(r, ['初期表示用手配区分']) || '1' }; });
+  };
+  const applyNouhin = objs => { M.nouhin = EC.indexDeliveryMaster(objs, store.cfg); };
+  const applyJuchu = objs => {
+    M.smileCust = {};
+    objs.forEach(r => {
+      const c = F(r, ['得意先コード']);
+      if (!store.cfg.customers[c]) return;
+      const k = String(F(r, ['客先注番'])).replace(/\D/g, '');
+      if (k) M.smileCust[k] = c;
+    });
+  };
+  const applyNyukin = objs => {
+    M.nyukin = {};
+    objs.forEach(r => {
+      const c = F(r, ['得意先コード']);
+      if (!store.cfg.customers[c]) return;
+      const d = String(F(r, ['伝票日付'])).replace(/\D/g, '');
+      if (d.length !== 8) return;
+      const key = c + '|' + d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6);
+      (M.nyukin[key] = M.nyukin[key] || []).push(+F(r, ['入金額']) || 0);
+    });
+  };
   const job = async (key, name, fn) => {
     try { const r = await fetchCsv(name); fn(r.text); M.stamps[key] = r.modified; }
     catch (e) { console.warn(name, e); failed.push(name); }
   };
-  await Promise.all([
-    job('items', CONF.files.items, t => {
-      M.items = {};
-      EC.parseObjects(t).forEach(r => { M.items[r['品目ｺｰﾄﾞ']] = { name: r['品目名'], unit: r['単位'], teihai: r['初期表示用手配区分'] || '1' }; });
-    }),
-    job('nouhin', CONF.files.nouhin, t => { M.nouhin = EC.indexDeliveryMaster(EC.parseObjects(t), store.cfg); }),
-    job('juchu', CONF.files.juchu, t => {
-      M.smileCust = {};
-      EC.parseAuto(t).forEach(r => {
-        const c = r['得意先ｺｰﾄﾞ'];
-        if (!store.cfg.customers[c]) return;
-        const k = (r['客先注番'] || '').replace(/\D/g, '');
-        if (k) M.smileCust[k] = c;
-      });
-    })
-  ]);
-  if (isSoumu) await job('nyukin', CONF.files.nyukin, t => {
-    M.nyukin = {};
-    EC.parseAuto(t).forEach(r => {
-      const c = r['得意先ｺｰﾄﾞ'];
-      if (!store.cfg.customers[c]) return;
-      const d = String(r['伝票日付'] || '').replace(/\D/g, '');
-      if (d.length !== 8) return;
-      const key = c + '|' + d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6);
-      (M.nyukin[key] = M.nyukin[key] || []).push(+r['入金額'] || 0);
-    });
-  });
+
+  let idx = null;
+  M.indexMissing = false;
+  try {
+    const r = await fetchCsv(CONF.files.index);
+    idx = JSON.parse(r.text);
+    if (!idx || !idx.generatedAt || !idx.items || !idx.nouhin || !idx.orders) idx = null;
+  } catch (e) { console.warn(CONF.files.index, e); }
+
+  if (idx) {
+    applyItems(EC.indexObjects(idx.items)); applyNouhin(EC.indexObjects(idx.nouhin)); applyJuchu(EC.indexObjects(idx.orders));
+    M.stamps.items = M.stamps.nouhin = M.stamps.juchu = idx.generatedAt;
+    const hasNyukin = (idx.sources || []).some(s => s.name === CONF.files.nyukin);
+    if (isSoumu) {
+      if (hasNyukin && idx.nyukin) { applyNyukin(EC.indexObjects(idx.nyukin)); M.stamps.nyukin = idx.generatedAt; }
+      else await job('nyukin', CONF.files.nyukin, t => applyNyukin(EC.parseAuto(t)));
+    }
+  } else {
+    M.indexMissing = true;
+    await Promise.all([
+      job('items', CONF.files.items, t => applyItems(EC.parseObjects(t))),
+      job('nouhin', CONF.files.nouhin, t => applyNouhin(EC.parseObjects(t))),
+      job('juchu', CONF.files.juchu, t => applyJuchu(EC.parseAuto(t)))
+    ]);
+    if (isSoumu) await job('nyukin', CONF.files.nyukin, t => applyNyukin(EC.parseAuto(t)));
+  }
   await loadCalendar();
   // 自動取得ファイル（あれば）
   for (const k of Object.keys(CONF.shopifyFiles)) {
@@ -686,7 +713,7 @@ function setOrders(imp, status, extra) {
 async function finishImport(imp, s) {
   const r = await readImportResult(imp.batchId), j = EC.judgeImportResult(r);
   imp.result = r ? { state: r.state, message: r.message || '', files: r.files || [] } : null;
-  imp.importFinishedAt = s.finishedAt || (r && r.finishedAt) || new Date().toISOString();
+  imp.importFinishedAt = (r && r.finishedAt) || s.finishedAt || new Date().toISOString();   // 確認用ファイルの generatedAt がこれより新しくなるのを待つ
   if (j.kind === 'done' && s.state === 'done') { imp.phase = 'verify'; imp.message = ''; saveImp(imp); trackVerify(imp.batchId); return; }
   if (j.kind === 'done') { j.kind = 'check'; j.message = '専用機の記録が失敗になっています：' + (s.error || ''); }
   if (j.kind === 'retry') {            // 取込件数0 → 何も入っていないので、もう一度「SMILEに取り込む」を押せる
@@ -725,25 +752,41 @@ async function retryVerify(id) {
   try { await rpaReady(); imp.verifyName = (await RpaQueue.request(RI().jobVerify, { app: 'EC売上（取込の確認）', requestedBy: account.username })).name; imp.phase = 'verify'; imp.message = ''; saveImp(imp); trackVerify(id); }
   catch (e) { alert('確認用の出力を依頼できませんでした。\n' + e.message); }
 }
-// SMILE の出力を読んで、注文ごとに突き合わせる。一致した注文だけ起票済みにして、SMILE の受注№を紐づける
+// 軽量ファイル（ec_smile_index.json）を読んで、注文ごとに突き合わせる。一致した注文だけ起票済みにして、SMILE の受注№を紐づける。
+// generatedAt が取込の完了時刻より新しくなるまでは「確認待ち」のまま待つ（古いファイルで「見つからない」と誤判定しない）
 async function applyVerify(imp) {
+  const waitAgain = (msg) => {
+    imp.waitTries = (imp.waitTries || 0) + 1;
+    if (imp.waitTries > 60) { imp.phase = 'verifyFailed'; imp.message = msg + '（30分待っても新しくなりません。専用機の状態を確認してください）'; saveImp(imp); return; }
+    imp.message = msg; saveImp(imp);
+    const t = setTimeout(() => applyVerify(imp), RI().pollSeconds * 1000);
+    importTimers[imp.batchId] = () => clearTimeout(t);
+  };
   try {
-    const [j, n] = await Promise.all([fetchCsv(CONF.files.verifyJuchu), fetchCsv(CONF.files.verifyNouhin)]);   // 突き合わせは確認用の出力だけを読む（本番の受注明細出力.csv は日報・FUJIN用なので使わない）
-    const old = [j, n].find(x => x.modified && Date.parse(x.modified) < Date.parse(imp.importFinishedAt) - 2 * 60 * 1000);
-    if (old) { imp.phase = 'verifyFailed'; imp.message = 'SMILE の出力が取込より前のままです（更新 ' + stamp(old.modified) + '）。もう一度、確認用の出力を依頼してください'; saveImp(imp); return; }
-    const res = EC.verifyImport(imp.expected, EC.parseAuto(j.text), EC.parseAuto(n.text));
+    const r = await fetchCsv(CONF.files.index);
+    const idx = JSON.parse(r.text);
+    if (!(Date.parse(idx.generatedAt) >= Date.parse(imp.importFinishedAt))) {
+      waitAgain('確認用ファイル（' + stamp(idx.generatedAt) + ' 作成）が取込より古いため、新しくなるのを待っています');
+      return;
+    }
+    const res = EC.verifyImport(imp.expected, EC.indexObjects(idx.orders), EC.indexObjects(idx.nouhin));
     let ok = 0, ng = 0;
     imp.orderIds.forEach(id => {
-      const r = store.orders[id], v = res.orders[id]; if (!r || !v) return;
+      const rec0 = store.orders[id], v = res.orders[id]; if (!rec0 || !v) return;
       if (v.status === 'ok') {
-        ok++; r.status = 'exported'; r.exportedAt = new Date().toISOString(); r.exportedBy = imp.requestedBy; r.juchuNo = v.juchuNo; delete r.diffs; delete r.checkMessage;
-      } else { ng++; r.status = 'check'; r.diffs = v.diffs.slice(0, 40); r.checkMessage = v.status === 'missing' ? 'SMILE の確認用出力に見つかりません（取込のエラー、確認用出力の範囲に入っていない可能性、出力の遅れなど）' : 'SMILE の内容がアプリの期待値と違います'; if (v.juchuNo) r.juchuNo = v.juchuNo; }
+        ok++; rec0.status = 'exported'; rec0.exportedAt = new Date().toISOString(); rec0.exportedBy = imp.requestedBy; rec0.juchuNo = v.juchuNo; delete rec0.diffs; delete rec0.checkMessage;
+      } else {
+        ng++; rec0.status = 'check'; rec0.diffs = v.diffs.slice(0, 40);
+        rec0.checkMessage = v.status === 'missing' ? 'SMILE の確認用ファイルに見つかりません（出力・JSON作成が終わっていない可能性、またはSMILE に入っていない可能性があります）' : 'SMILE の内容がアプリの期待値と違います';
+        if (v.juchuNo) rec0.juchuNo = v.juchuNo;
+      }
     });
     imp.summary = { ok, ng }; imp.phase = ng ? 'check' : 'done'; imp.message = ng ? ng + '件が期待値と違います。注文をクリックして、SMILE の値と見比べてください' : '';
-    delete imp.expected;   // 比べ終わったら期待値（お客様の住所など）は持たない
+    delete imp.expected;   // 比べ終えたら期待値（お客様の住所など）は持たない
     save(); render();
   } catch (e) {
-    console.warn(e); imp.phase = 'verifyFailed'; imp.message = '確認用の出力を読めませんでした：' + e.message; saveImp(imp);
+    console.warn(e);
+    waitAgain('確認用ファイル（' + CONF.files.index + '）を読めません：' + e.message);
   }
 }
 
@@ -863,7 +906,7 @@ function setReady() {
   const bits = [];
   const st = (k, l) => M.stamps[k] ? l + ' ' + stamp(M.stamps[k]) : null;
   [st('items', '品目'), st('nouhin', '納品先'), st('juchu', '受注')].filter(Boolean).forEach(b => bits.push(b));
-  setStatus('ok', 'SMILEマスタ読込済（' + (bits.join('／') || '—') + ' 時点）' + (orders.length ? ' ／ Shopify注文 ' + orders.length + '件' : ''));
+  setStatus(M.indexMissing ? 'loading' : 'ok', 'SMILEマスタ読込済（' + (bits.join('／') || '—') + ' 時点）' + (orders.length ? ' ／ Shopify注文 ' + orders.length + '件' : '') + (M.indexMissing ? ' ／ 軽量ファイルが無いので全件CSVを読んでいます（時間がかかります）' : ''));
 }
 
 document.addEventListener('click', e => {

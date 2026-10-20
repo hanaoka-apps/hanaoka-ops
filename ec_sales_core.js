@@ -816,6 +816,13 @@
     return out;
   };
 
+  // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
+  EC.indexObjects = function (tbl) {
+    if (!tbl || !tbl.cols || !tbl.rows) return [];
+    return tbl.rows.map(function (r) { var o = {}; tbl.cols.forEach(function (c, i) { o[c] = r[i] == null ? '' : r[i]; }); return o; });
+  };
+  EC.pick = pick;   // 見出しの揺れ（ｺｰﾄﾞ／コード）を無視して列を取る
+
   root.EcSales = EC;
   if (typeof module !== 'undefined' && module.exports) module.exports = EC;
 })(typeof window !== 'undefined' ? window : globalThis);

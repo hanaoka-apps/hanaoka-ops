@@ -17,7 +17,8 @@
     PADフローをURIで起動 → outputs のファイルがすべて更新されるまで待つ → after の処理
     (steps があれば、各手順のPADフロー起動と出力待ちを順に行ってから after の処理。
      flow も steps も無いジョブは after の処理だけ)
-  schedules に書いたジョブは、毎日その時刻に自分で依頼する(例: 1:00 に facts_only)。
+  after には regenerate_facts(ダッシュボード用JSON)と build_ec_index(EC売上用の軽量ファイル ec_smile_index.json)が使える。
+  schedules に書いたジョブは、毎日その時刻に自分で依頼する(例: 1:00 に facts_only、1:10 に ec_index)。
     (URIで起動したPADフローは完了を待たずに戻るため、出力ファイルで完了を判断する)
 
   PADは同時に1つのフローしか動かせないので、1件ずつ順番に処理する。
@@ -275,18 +276,21 @@ function Get-JobSteps($Def) {
   return $steps
 }
 
-function Invoke-RegenerateFacts {
-  Write-Log 'regenerate_facts.py を取得して実行します'
+# リポジトリの scripts/<名前> (Python) を GitHub の main から取得して、専用機の Python で実行する。
+# SHARED_MASTERS_DIR で同期フォルダを直接読み書きする(アップロードは OneDrive 同期に任せる)
+function Invoke-RepoPython([string]$ScriptName) {
+  Write-Log "$ScriptName を取得して実行します"
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   # 毎回別名で取得する。同じ名前に上書きすると、前回のファイルをウイルス対策の
   # スキャンなどが開いていた場合に「別のプロセスで使用されている」で失敗する。
   $stamp = '{0:yyyyMMdd_HHmmss}' -f (Get-Date)
-  $scriptPath = Join-Path $WorkDir "regenerate_facts_$stamp.py"
-  $outPath = Join-Path $WorkDir "regenerate_facts_$stamp.out.txt"
-  $errPath = Join-Path $WorkDir "regenerate_facts_$stamp.err.txt"
+  $base = [System.IO.Path]::GetFileNameWithoutExtension($ScriptName)
+  $scriptPath = Join-Path $WorkDir "${base}_$stamp.py"
+  $outPath = Join-Path $WorkDir "${base}_$stamp.out.txt"
+  $errPath = Join-Path $WorkDir "${base}_$stamp.err.txt"
   try {
     # 常に最新版を取得してから実行する(手元に古いコピーを置いて動かさない)
-    Invoke-WebRequest -Uri "$RepoRawBase/scripts/regenerate_facts.py" -OutFile $scriptPath -UseBasicParsing
+    Invoke-WebRequest -Uri "$RepoRawBase/scripts/$ScriptName" -OutFile $scriptPath -UseBasicParsing
     $env:SHARED_MASTERS_DIR = $SharedMastersPath
     # 出力先が画面でないとPythonはcp932で書き出し、絵文字の表示で止まるためUTF-8にする
     $env:PYTHONIOENCODING = 'utf-8'
@@ -294,12 +298,25 @@ function Invoke-RegenerateFacts {
       -RedirectStandardOutput $outPath -RedirectStandardError $errPath
     if ($proc.ExitCode -ne 0) {
       # 原因を追えるよう、Pythonのエラー出力の最後をログに残す
-      $tail = @(Get-Content -LiteralPath $errPath -Tail 8 -Encoding UTF8 -ErrorAction SilentlyContinue) -join ' / '
-      Write-Log "regenerate_facts.py のエラー出力: $tail"
-      throw "regenerate_facts.py が終了コード $($proc.ExitCode) で失敗しました"
+      # (Python が失敗の理由を標準出力に出すスクリプトもあるので、両方の最後を残す。build_ec_index.py は件数だけで個人情報は出さない)
+      $tail = @(Get-Content -LiteralPath $outPath -Tail 4 -Encoding UTF8 -ErrorAction SilentlyContinue) + @(Get-Content -LiteralPath $errPath -Tail 8 -Encoding UTF8 -ErrorAction SilentlyContinue) -join ' / '
+      Write-Log "$ScriptName のエラー出力: $tail"
+      throw "$ScriptName が終了コード $($proc.ExitCode) で失敗しました"
     }
   } finally {
     Remove-Item -LiteralPath $scriptPath, $outPath, $errPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-RegenerateFacts { Invoke-RepoPython 'regenerate_facts.py' }
+
+# 後処理(after)の名前 → 実行する関数。増やすときはここと Invoke-After に足す
+$AfterJobs = @('regenerate_facts', 'build_ec_index')
+function Invoke-After([string]$After) {
+  switch ($After) {
+    'regenerate_facts' { Invoke-RegenerateFacts }
+    # EC売上用の軽量ファイル ec_smile_index.json を作る(受注明細出力・納品先マスタ・品目マスタ・入金明細出力から)
+    'build_ec_index'   { Invoke-RepoPython 'build_ec_index.py' }
   }
 }
 
@@ -600,7 +617,7 @@ function Invoke-NextJob {
       if ($out.State -eq 'done') { $importDone = $true }
       else { $errorMessage = "$($out.State): $($out.Message)" }
     } else {
-      if ($def.after -and $def.after -ne 'regenerate_facts') { throw "未対応の後処理です: $($def.after)" }
+      if ($def.after -and $AfterJobs -notcontains [string]$def.after) { throw "未対応の後処理です: $($def.after)" }
       $steps = @(Get-JobSteps $def)
       # PADフローを動かすジョブは、SMILEを使わないと書いたもの(needsSmile: false)以外、先にSMILEを起動しておく
       if ($steps.Count -gt 0 -and $defs.smile -and $def.needsSmile -ne $false) { Ensure-Smile $defs.smile }
@@ -613,7 +630,7 @@ function Invoke-NextJob {
           throw
         }
       }
-      if ($def.after -eq 'regenerate_facts') { Invoke-RegenerateFacts }
+      if ($def.after) { Invoke-After ([string]$def.after) }
     }
   } catch {
     $errorMessage = $_.Exception.Message

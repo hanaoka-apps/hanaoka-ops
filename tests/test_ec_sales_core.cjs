@@ -318,6 +318,18 @@ t('取込結果の見方：再実行OKは「failed かつ executed:false」だ�
   assert.strictEqual(J(null).kind, 'check');
 });
 
+t('軽量ファイル（ec_smile_index.json）の表 → オブジェクト。見出しの揺れ（ｺｰﾄﾞ／コード）を無視して引ける。突き合わせにそのまま使える', () => {
+  assert.deepStrictEqual(EC.indexObjects({ cols: ['a', 'b'], rows: [['1', '2'], ['3']] }), [{ a: '1', b: '2' }, { a: '3', b: '' }]);
+  assert.deepStrictEqual(EC.indexObjects(null), []);
+  assert.strictEqual(EC.pick({ '品目ｺｰﾄﾞ': 'X' }, ['品目コード']), 'X');
+  assert.strictEqual(EC.pick({ '品目コード': 'Y' }, ['品目ｺｰﾄﾞ']), 'Y');
+  // 全角の見出し（JSON）に変えても突き合わせの結果は同じ
+  const f = importFixture();
+  const toIdx = objs => ({ cols: Object.keys(objs[0]).map(k => k.normalize('NFKC') === k ? k : k.replace('ｺｰﾄﾞ', 'コード')), rows: objs.map(o => Object.values(o)) });
+  const r = EC.verifyImport(f.expected, EC.indexObjects(toIdx(f.jobjs)), EC.indexObjects(toIdx(f.nobjs)));
+  assert.ok(Object.values(r.orders).every(o => o.status === 'ok') && r.orders['1801'].juchuNo === '90001');
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';
