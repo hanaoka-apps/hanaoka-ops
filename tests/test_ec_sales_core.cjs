@@ -295,14 +295,25 @@ t('突き合わせ：SMILE が自動で付ける製番・処理連番などは�
   const f = importFixture(), j = clone2(f.jobjs); j.forEach(x => { x['製番'] = 'SB' + x['行']; x['処理連番'] = '777'; x['BS受注№'] = '55'; });
   assert.ok(Object.values(res(f, j).orders).every(o => o.status === 'ok'));
 });
-t('取込結果の見方：done / 取込0件のfailed だけ再実行可 / 一部は要確認で止める', () => {
+t('取込結果の見方：再実行OKは「failed かつ executed:false」だけ。実行済み・不明は要確認で止める', () => {
   const J = EC.judgeImportResult;
-  assert.strictEqual(J({ state: 'done', files: [{ imported: 3, errors: 0 }, { imported: 20, errors: 0 }] }).kind, 'done');
-  assert.strictEqual(J({ state: 'failed', message: '権限なし', files: [] }).kind, 'retry');
-  assert.strictEqual(J({ state: 'failed', message: 'SMILEのエラー', files: [{ imported: 0, errors: 2 }, { imported: 0, errors: 0 }] }).kind, 'retry');
-  assert.strictEqual(J({ state: 'failed', message: '取込済み', files: [] }).kind, 'check');
-  assert.strictEqual(J({ state: 'partial', files: [{ imported: 3, errors: 0 }, { imported: 5, errors: 1 }] }).kind, 'partial');
-  assert.strictEqual(J({ state: 'failed', files: [{ imported: 3, errors: 0 }, { imported: 0, errors: 1 }] }).kind, 'partial');   // 件数が入っていれば failed でも partial 扱い
+  assert.strictEqual(J({ state: 'done', executed: true, files: [{ imported: 3, errors: 0 }, { imported: 20, errors: 0 }] }).kind, 'done');
+  // 押す前に止まった（権限なし・ファイル不整合・SMILEのログイン切れなど）→ 再実行OK
+  assert.strictEqual(J({ state: 'failed', executed: false, message: '権限なし', files: [] }).kind, 'retry');
+  assert.strictEqual(J({ state: 'failed', executed: false, message: 'SMILEの画面が想定外', files: [{ imported: 0, errors: 0 }] }).kind, 'retry');
+  // 押したあとに止まった → 取込0件でも再実行させない
+  assert.strictEqual(J({ state: 'failed', executed: true, message: 'SMILEのエラー', files: [{ imported: 0, errors: 2 }] }).kind, 'partial');
+  assert.strictEqual(J({ state: 'failed', executed: true, files: [] }).kind, 'partial');
+  // 旧形式（executed なし）・値が不明 → 要確認
+  assert.strictEqual(J({ state: 'failed', message: '権限なし', files: [] }).kind, 'partial');
+  assert.strictEqual(J({ state: 'failed', executed: null, files: [{ imported: 0, errors: 0 }] }).kind, 'partial');
+  assert.strictEqual(J({ state: 'failed', executed: 'false', files: [] }).kind, 'partial');
+  // 取込済み（二重取込）は executed:false でも再実行させない
+  assert.notStrictEqual(J({ state: 'failed', executed: false, message: '取込済み', files: [] }).kind, 'retry');
+  // 一部だけ入った
+  assert.strictEqual(J({ state: 'partial', executed: true, files: [{ imported: 3, errors: 0 }, { imported: 5, errors: 1 }] }).kind, 'partial');
+  assert.strictEqual(J({ state: 'partial', executed: false, files: [] }).kind, 'partial');
+  assert.strictEqual(J({ state: 'failed', executed: false, files: [{ imported: 3, errors: 0 }] }).kind, 'partial');   // 件数が入っているのに「押していない」は矛盾 → 要確認
   assert.strictEqual(J({ state: 'done', files: [{ imported: 3, errors: 1 }] }).kind, 'partial');
   assert.strictEqual(J(null).kind, 'check');
 });

@@ -40,7 +40,7 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
 - 押すと確認ダイアログ（納品先の新規件数・受注の伝票数と行数・金額合計）を出し、OKで取込ファイルを置いて依頼する。
 - 取込後の突き合わせで一致した注文は、**自動で「起票済み」**になり、SMILE が付けた受注№が注文に紐づく（手動の「起票済みにする」ボタンはバーに出さない）。
 - 専用機がまだ使えない間の予備として、管理者だけに出る小さな「⋯」メニュー（初期は閉じる）に、ファイルの手動保存と「手で取り込んだので起票済みにする」を残す。
-- 状態の表示：依頼中 → 取込中 → 確認待ち（SMILEから出力中）→ 確認OK／要確認／取込失敗。`partial` と結果不明は再実行させず「要確認（SMILEを見て判断）」で止める。再実行できるのは取込件数0の `failed` だけ。
+- 状態の表示：依頼中 → 取込中 → 確認待ち（SMILEから出力中）→ 確認OK／要確認／取込失敗。再実行できるのは「`state` が `failed` かつ `executed` が `false`（SMILEの『実行』を押す前に止まった）」の取込だけ。`partial`・`executed` が `true` または不明（項目なし）のものは、一部が入っているかもしれないので再実行させず「要確認（SMILEを見て判断）」で止める。
 
 ### アプリが置くもの
 `SharedMasters/_rpa_import/<バッチ番号>/` に次を置いてから、依頼を `_rpa_queue/pending/` に入れる。
@@ -57,11 +57,11 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
 
 ### 専用機（常駐スクリプト）がやること
 1. **押した人を確認**：`requestedBy` が `SharedMasters/_rpa_queue/ec_import_admins.json`（管理者のメール一覧。専用機側で管理し、リポジトリには置かない。形は `{ "admins": ["メール", …] }`、大文字小文字は区別しない）にあること。なければ failed（理由：権限なし）。
-2. **二重取込の確認**：`_rpa_import/done/<バッチ番号>/` があれば failed（理由：取込済み）。
+2. **二重取込の確認**：`_rpa_import/done/<バッチ番号>/` があれば failed（理由：取込済み）。`failed/<バッチ番号>/` に同じバッチがあるときは、その `result.json` の `executed` が `false`（実行を押す前に止まった）なら再実行を許し（古い failed の記録は消す）、`true`・不明（項目なし・旧形式）なら再実行せず `partial`（要確認）で止める（failed の記録は残す）。
 3. **中身の確認**：`manifest.json` と実ファイルの行数・sha256 が合う、見出しの列数が 納品先42／受注121、必須項目（得意先・品目コード・数量・納期）が空でない。だめなら failed（SMILE には触らない）。
 4. **PAD に渡す**：専用機の固定フォルダ（既定 `C:\RPA\ec_import\current\`。`rpa_queue_worker.ps1` の `$EcImportCurrentDir` で変える）に、毎回同じ名前（`納品先.txt`・`受注.txt`）でコピーする。取込が終わったら（失敗しても）固定フォルダのファイルは消す。
 5. **PAD フローを順番に実行**：①`Smile_EC納品先取込` → ②`Smile_EC受注取込`。**①にエラーがあれば②は実行しない**。
-6. **結果を書く**：`_rpa_import/<バッチ番号>/result.json`（下記）。完了を知らせるのはこのファイル。PADフローは固定フォルダに `result_nouhin.json`／`result_juchu.json`（`{ imported, errors, errorRows }`。作り方は `ec_import.md`）を書き、常駐スクリプトがそれをまとめて `result.json` にする。結果ファイルが時間内（1フロー15分）に出ないときは `partial`（SMILEにどこまで入ったか不明）にする。
+6. **結果を書く**：`_rpa_import/<バッチ番号>/result.json`（下記）。完了を知らせるのはこのファイル。PADフローは固定フォルダに `result_nouhin.json`／`result_juchu.json`（`{ executed, imported, errors, errorRows }`。作り方は `ec_import.md`）を書き、常駐スクリプトがそれをまとめて `result.json` にする。結果ファイルが時間内（1フロー15分）に出ないときは `partial`（SMILEにどこまで入ったか不明）にする。
 7. 終わったら `_rpa_import/done/<バッチ番号>/` に移す（失敗・一部だけ入った場合は `failed/`）。依頼ファイル（`_rpa_queue`）も、`done` のときだけ done、それ以外は failed に移す。**30日たったら消す**（お客様の名前・住所・電話が入っているため。アプリ側の端末に残す取込の記録も30日で消す）。アプリは `result.json` を `_rpa_import/<バッチ番号>/` → `failed/` → `done/` の順に探す。
 8. 取込が `done` で終わったら、**続けて `ec_smile_verify_export` を依頼に追加**する（アプリが待たなくてよいように。`rpa_jobs.json` の `then`）。アプリは取込の依頼より後のこのジョブを探して待ち、90秒たっても見つからなければ自分で依頼する。
 
@@ -81,14 +81,17 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
   "batchId": "…",
   "state": "done | failed | partial",
   "message": "失敗の理由（権限なし／取込済み／ファイル不整合／SMILEのエラー など）",
+  "executed": true,
   "files": [
-    { "name": "nouhin.txt", "imported": 3, "errors": 0, "errorRows": [] },
-    { "name": "juchu.txt",  "imported": 20, "errors": 1, "errorRows": [{ "row": 5, "message": "…" }] }
+    { "name": "nouhin.txt", "executed": true, "imported": 3, "errors": 0, "errorRows": [] },
+    { "name": "juchu.txt",  "executed": true, "imported": 20, "errors": 1, "errorRows": [{ "row": 5, "message": "…" }] }
   ],
   "startedAt": "ISO8601", "finishedAt": "ISO8601"
 }
 ```
-- `partial` は「一部だけ入った」状態（取込件数が1以上でエラーも1以上）。**アプリは再実行ボタンを出さず、「要確認」で止める**。再実行を許すのは、取込件数が0の failed のときだけ。
+- `executed`＝SMILEの「実行」ボタンを押したか。**再実行を許すのは `state` が `failed` かつ `executed` が `false` のときだけ**（権限なし・ファイル不整合・SMILEの画面が想定外で押す前に止まった、など）。
+- 押したあとに止まった（`executed: true`）、押したか分からない（結果ファイルが出ない・`executed` の項目がない旧形式）ときは、取込件数が0でも一部が入っているかもしれないので、常駐スクリプトが `state: "partial"` にし、**アプリは再実行ボタンを出さず「要確認」で止める**。
+- PADの `result_nouhin.json`／`result_juchu.json` にも `executed` を書く（フローが「実行」を押す直前までは `false`、押したら `true`）。常駐スクリプトがこれをまとめて `result.json` の `executed`（どれか1つでも `true` なら `true`）にする。
 
 ## 3. 確認用の出力（ジョブ `ec_smile_verify_export`）
 
@@ -97,12 +100,13 @@ Shopify ──(1) 定期取得スクリプト──▶ SharedMasters/ec_shopify_
 | 項目 | 内容 |
 |---|---|
 | PAD フロー | `Smile_EC確認用出力` |
-| 出力（SharedMasters 直下に上書き） | `受注明細出力.csv`、`納品先マスタ.csv` |
+| 出力（SharedMasters 直下に上書き） | **`EC確認_受注明細.csv`、`EC確認_納品先マスタ.csv`**（アプリの `ec_sales_config.json` の `files.verifyJuchu`／`verifyNouhin`、`rpa_jobs.json` の `outputs` と同じ名前）。**本番の `受注明細出力.csv`・`納品先マスタ.csv` は 0:00台の定時出力（日報ダッシュボード・FUJIN用。受注明細出力は当期全体で約93MB）なので、このジョブでは絶対に上書きしない** |
 | 完了の判断 | 既存のジョブと同じ：2つの出力ファイルがどちらも起動後に更新されたら完了 |
 | `rpa_jobs.json` | `outputs` に上の2ファイル、`timeoutMinutes` は 10 を目安 |
-| 範囲 | 直近の受注（例：受注日が1か月以内）だけでよい。短くすれば時間も短い |
+| 範囲 | 突き合わせの対象は今回取り込んだ伝票だけなので、期間ではなく**「操作日付が当日」の条件パターン（名前『EC確認』）**にするのを第一案とする（SMILEの受注明細出力は操作日付の列を持つ。条件に使えるかは専用機側でSMILE画面を見て確認）。使えなければ**受注日が直近7日**を代案にする。納品先マスタも、絞れるなら新規・更新だけに絞る |
+| 条件パターン | `sales_master` が使う既定のパターン（SharedMasters更新）とは**別のパターン『EC確認』を名前で選ぶ**。既存の汎用フローを複製して、パターンを名前で選ぶ手順を1つ足す（`ec_import.md`） |
 
-アプリは、このファイルと「取り込むはずだった内容」を、客先注番（Shopify の注文番号）で突き合わせる：品目・数量・金額・納期・出荷予定日・納品先コード・社内メモ・行数。納品先は、新規のコードがマスタに入っていて名前・住所・電話が合っているか。**一致しなければ「要確認」**（SMILE 側の値と期待値を並べて表示）。
+アプリは、この確認用の2ファイル（本番ファイルは読まない）と「取り込むはずだった内容」を、客先注番（Shopify の注文番号）で突き合わせる：品目・数量・金額・納期・出荷予定日・納品先コード・社内メモ・行数。納品先は、新規のコードがマスタに入っていて名前・住所・電話が合っているか。**一致しなければ「要確認」**（SMILE 側の値と期待値を並べて表示）。アプリは客先注番で探すので、出力の期間に関係なく動く。見つからないときは「確認用出力の範囲に入っていない可能性」と表示する。
 
 ## 専用機側のチェックリスト
 - [ ] `ec_shopify_fetch` のタスクスケジューラー登録と、環境変数2つ
