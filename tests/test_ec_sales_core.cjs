@@ -118,6 +118,21 @@ t('納品先の入力不足は受注チェックの要確認に出る', () => {
   assert.ok(long.flags.some(f => /住所２が長い/.test(f.text)));
   assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
 });
+t('対応表の「言葉」判定：含む・始まる・ちょうど・単位つき数量・記号は文字として扱う', () => {
+  const m = { leadDays: 2, rules: [
+    { id: 'a', scope: 'single', words: ['テーブルコンテナ', 'TC'], match: 'exact', code: 'TC', net: 7000 },
+    { id: 'b', scope: 'body', words: ['UXA-LSCグレー'], match: 'starts', code: 'UXALSCG' },
+    { id: 'c', scope: 'body', words: ['F-CART 2×4(ブルー)', 'ブルー'], match: 'contains', code: 'FCART2x4' },
+    { id: 'd', scope: 'option', words: ['ケース'], qtyUnit: '個', match: 'contains', code: 'OP/CUP', net: 1200 }
+  ] };
+  const code = name => EC.mapLine({ name, qty: 1, price: 11000 }, m, '2026-10-01').items.map(i => i.code + '×' + i.qty).join(',');
+  assert.strictEqual(code('テーブルコンテナ'), 'TC×1');
+  assert.strictEqual(code('TC'), 'TC×1');
+  assert.strictEqual(code('テーブルコンテナ グレー'), '');                 // ちょうど同じ → 当たらない
+  assert.strictEqual(code('UXA-LSCグレー_廃盤モデル'), 'UXALSCG×1');
+  assert.strictEqual(code('廃盤 UXA-LSCグレー'), '');                      // 始まる → 当たらない
+  assert.strictEqual(code('F-CART 2×4（ブルー） - ケース3個追加'), 'FCART2x4×1,OP/CUP×3');   // 全角カッコも同じ扱い・3個→数量3
+});
 t('取込ファイル：受注の行・UTF-16', () => {
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);
   const rows = EC.juchuRows([s], L.juchu, DEFAULT_CONFIG);

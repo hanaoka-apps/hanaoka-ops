@@ -184,9 +184,22 @@
    */
 
   /* ============================================================ 商品行 → SMILE の品目 */
+  // 判定の言葉（words）から正規表現を作る。利用者には正規表現を見せない。
+  //   match: contains＝含む／starts＝始まる／exact＝ちょうど一致。qtyUnit があれば「言葉の直後の数字＋単位（例：2個）」の数字を数量にする
+  //   words が無い古い行は pattern（正規表現）をそのまま使う
+  function escRe(t) { return t.replace(/[.*+?^${}()|[\]\\\/]/g, function (m) { return '\\' + m; }); }
+  EC.ruleSource = function (rule) {
+    if (rule.words && rule.words.length) {
+      var ws = rule.words.map(function (w) { return norm(w); }).filter(Boolean).map(escRe);
+      if (!ws.length) return '(?!)';
+      var alt = '(?:' + ws.join('|') + ')' + (rule.qtyUnit ? '(\\d+)' + escRe(norm(rule.qtyUnit)) : '');
+      return rule.match === 'exact' ? '^' + alt + '$' : rule.match === 'starts' ? '^' + alt : alt;
+    }
+    return rule.pattern || '(?!)';
+  };
   function compile(rule) {
-    var key = rule.scope + '/' + rule.pattern;
-    if (!(rule._re instanceof RegExp) || rule._reKey !== key) { rule._re = new RegExp(rule.pattern, rule.scope === 'option' ? 'g' : ''); rule._reKey = key; }
+    var src = EC.ruleSource(rule), key = rule.scope + '/' + src;
+    if (!(rule._re instanceof RegExp) || rule._reKey !== key) { rule._re = new RegExp(src, rule.scope === 'option' ? 'g' : ''); rule._reKey = key; }
     rule._re.lastIndex = 0; return rule._re;
   }
   // 商品名のうち、品切れの案内（※…）を取り除く。案内に「次回発送は8月20日以降」とあれば日付も返す
@@ -232,7 +245,7 @@
         var g = Array.prototype.slice.call(arguments);
         if (o.swap) { includes.forEach(function (x) { if (x.code === o.swap.from) x.code = o.swap.to; }); }
         else if (o.code) {
-          var q = o.qty === 'g1' ? (+g[1] || 1) : (o.qty || 1);
+          var q = (o.qtyUnit || o.qty === 'g1') ? (+g[1] || 1) : (o.qty || 1);
           out.items.push({ code: o.code, qty: q * line.qty, net: o.net != null ? o.net : null, kind: 'option', ruleId: o.id, label: o.label });
         }
         if (o.warn) out.warns.push(o.warn);
