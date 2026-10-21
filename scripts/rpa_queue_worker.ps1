@@ -375,7 +375,8 @@ function Invoke-Notify($Def, $Request) {
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   $inPath = Join-Path $WorkDir ('report_{0}.json' -f [Guid]::NewGuid().ToString('N'))
   try {
-    Write-JsonFile $inPath ([pscustomobject]@{ parts = $parts })
+    # mention＝依頼者へのメンション { id(メール), name }。無い・不正でも投稿は成功する(post_teams.py がメンションなしにする)
+    Write-JsonFile $inPath ([pscustomobject]@{ parts = $parts; mention = $Request.params.mention })
     Invoke-RepoPython $script '' @('--input', ('"{0}"' -f $inPath), '--webhook-env', $envName) -ShowOutput
   } finally {
     Remove-Item -LiteralPath $inPath -Force -ErrorAction SilentlyContinue

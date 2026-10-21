@@ -141,6 +141,82 @@ class PostTeamsTest(unittest.TestCase):
         self.assertEqual(self.run_main(s)[0], 0)
         self.assertEqual(len(s.calls), 1)
 
+    def write_input(self, parts, mention='__none__'):
+        data = {'parts': parts}
+        if mention != '__none__':
+            data['mention'] = mention
+        with open(self.path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+
+    def test_メンションあり_本文の先頭の_at_とentitiesが付く(self):
+        os.environ['EC_TEAMS_WEBHOOK_URL'] = SECRET_URL
+        self.write_input(['本文1', '本文2'], {'id': 'taro@example.com', 'name': '福田 太郎'})
+        s = FakeSession()
+        code, out = self.run_main(s)
+        self.assertEqual(code, 0)
+        first = s.calls[0]['json']['attachments'][0]['content']
+        self.assertEqual(first['body'][0]['text'], '<at>福田 太郎</at> EC取込の結果です。\n\n本文1')
+        self.assertEqual(first['msteams'], {'entities': [{'type': 'mention', 'text': '<at>福田 太郎</at>', 'mentioned': {'id': 'taro@example.com', 'name': '福田 太郎'}}]})
+        self.assertEqual(first['type'], 'AdaptiveCard')
+        # 2件目以降はメンションを付けない（通知が重ならない）
+        second = s.calls[1]['json']['attachments'][0]['content']
+        self.assertEqual(second['body'][0]['text'], '本文2')
+        self.assertNotIn('msteams', second)
+        self.assertIn('メンションあり', out)
+        self.assertNotIn('SECRET', out)
+
+    def test_メンションなし_従来どおり(self):
+        os.environ['EC_TEAMS_WEBHOOK_URL'] = SECRET_URL
+        self.write_input(['本文'])
+        s = FakeSession()
+        self.assertEqual(self.run_main(s)[0], 0)
+        content = s.calls[0]['json']['attachments'][0]['content']
+        self.assertEqual(content['body'][0]['text'], '本文')
+        self.assertNotIn('msteams', content)
+        self.assertNotIn('<at>', json.dumps(s.calls[0]['json'], ensure_ascii=False))
+        for empty in (None, {}, []):
+            self.write_input(['本文'], empty)
+            s = FakeSession()
+            self.assertEqual(self.run_main(s)[0], 0)
+            self.assertNotIn('msteams', s.calls[0]['json']['attachments'][0]['content'])
+
+    def test_メンションが不正な形でも投稿は成功しメンションなしになる(self):
+        os.environ['EC_TEAMS_WEBHOOK_URL'] = SECRET_URL
+        bads = [{'id': 'メールではない', 'name': '福田'}, {'id': 'a@example.com'}, {'name': '福田'}, {'id': 'a@example.com', 'name': ''},
+                {'id': 'a@example.com', 'name': '<>'}, {'id': 123, 'name': '福田'}, {'id': 'a b@example.com', 'name': '福田'},
+                'taro@example.com', ['a@example.com'], {'id': 'a@example.com', 'name': None}, {'id': 'a@b', 'name': '福田'}]
+        for bad in bads:
+            self.write_input(['本文'], bad)
+            s = FakeSession()
+            code, out = self.run_main(s)
+            self.assertEqual(code, 0, bad)
+            content = s.calls[0]['json']['attachments'][0]['content']
+            self.assertNotIn('msteams', content, bad)
+            self.assertEqual(content['body'][0]['text'], '本文', bad)
+            self.assertNotIn('メンションあり', out)
+
+    def test_表示名の記号は取り除く(self):
+        os.environ['EC_TEAMS_WEBHOOK_URL'] = SECRET_URL
+        self.write_input(['本文'], {'id': 'a@example.com', 'name': '福田</at><at>他人\n'})
+        s = FakeSession()
+        self.assertEqual(self.run_main(s)[0], 0)
+        c = s.calls[0]['json']['attachments'][0]['content']
+        text = c['body'][0]['text']
+        self.assertEqual(text.count('<at>'), 1)
+        self.assertEqual(text.count('</at>'), 1)                                          # 本文の <at> の形を壊されない
+        self.assertEqual(c['msteams']['entities'][0]['mentioned']['name'], '福田/atat他人')
+
+    def test_メンションがあっても失敗してURLが漏れない(self):
+        os.environ['EC_TEAMS_WEBHOOK_URL'] = SECRET_URL
+        self.write_input(['本文'], {'id': 'taro@example.com', 'name': '福田 太郎'})
+        err = ConnectionError('Max retries exceeded with url: ' + SECRET_URL)
+        code, out = self.run_main(FakeSession(error=err))
+        self.assertEqual(code, 1)
+        self.assertNotIn('SECRET', out)
+        self.assertNotIn('TOPSECRET', out)
+        code, out = self.run_main(FakeSession(statuses=[400]))
+        self.assertEqual((code, 'HTTP 400' in out, 'SECRET' in out), (1, True, False))
+
     def test_ファイル全体にURLを埋め込んでいない(self):
         src = (ROOT / 'scripts/post_teams.py').read_text(encoding='utf-8')
         self.assertNotIn('webhook.office.com', src)

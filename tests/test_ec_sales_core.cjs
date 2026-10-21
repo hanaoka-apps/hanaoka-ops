@@ -599,6 +599,22 @@ t('ログの1行：選択肢にない操作は「その他」。Title は操作�
   assert.strictEqual(EC.shortUser('taro@example.com'), 'taro');
 });
 
+t('報告の依頼者へのメンション：メールと表示名の形が正しいときだけ。params にメンション情報が入る（無い・不正なら入れない）', () => {
+  assert.deepStrictEqual(EC.reportMention('taro@example.com', '福田 太郎'), { id: 'taro@example.com', name: '福田 太郎' });
+  assert.deepStrictEqual(EC.reportMention('  taro@example.com ', '福田</at><at>他人\n'), { id: 'taro@example.com', name: '福田/atat他人' });   // < > & と制御文字は取り除く
+  [['メールではない', '福田'], ['a@b', '福田'], ['', '福田'], [null, '福田'], ['a b@example.com', '福田'], ['taro@example.com', ''], ['taro@example.com', '<>'], ['taro@example.com', null]].forEach(([e, n]) => assert.strictEqual(EC.reportMention(e, n), null, String(e) + '/' + n));
+  const parts = ['本文1', '本文2'];
+  const p = EC.reportParams({ batchId: 'ec-0123456789abcdef', parts, requestedBy: 'taro@example.com', requestedByName: '福田 太郎' });
+  assert.deepStrictEqual(p, { batchId: 'ec-0123456789abcdef', parts, mention: { id: 'taro@example.com', name: '福田 太郎' } });
+  const none = EC.reportParams({ batchId: 'b', parts, requestedBy: 'taro@example.com', requestedByName: '' });   // 表示名なし → メンションなし（報告は出る）
+  assert.deepStrictEqual(none, { batchId: 'b', parts }); assert.ok(!('mention' in none));
+  assert.ok(!('mention' in EC.reportParams({ batchId: 'b', parts })));
+  // 依頼者の情報は社員のもの。お客様の名前・住所・電話は params にも本文にも入らない
+  const body = EC.buildReport({ batchId: 'b', counts: { slips: 1, fresh: 0 }, orders: [{ name: '#1801', juchuNo: '9', shipDate: '2026-10-19', status: 'confirm', ship: { name: '山田花子', phone: '0312345678' } }], url: 'u' }).join('\n');
+  assert.ok(!/山田|0312345678/.test(body));
+  assert.ok(body.includes('確認OKは、アプリの画面で行ってください'));
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';
