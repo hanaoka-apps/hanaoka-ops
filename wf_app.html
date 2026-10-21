@@ -239,7 +239,7 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="wf_theme.css?v=20261019b">
+<link rel="stylesheet" href="wf_theme.css?v=20261021a">
 </head>
 <body>
 
@@ -1081,8 +1081,19 @@ const canSeeStaff = () => STAFF_ROLES.some(hasRole) || ['管理職', '部門長'
 /* 自分が直せる範囲（パスの頭）。'' は全社 */
 function staffScopes() {
   return st.M.roles.filter(r => ['人員表を直す', '人員表の申請'].includes(r.Title) && r.Active !== false && (r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).includes(st.me.upn))
-    .flatMap(r => String(r.Scope || '全社').split(';').map(x => x.trim())).map(x => x === '全社' ? '' : x).filter((x, i, a) => a.indexOf(x) === i);
+    .flatMap(r => String(r.Scope || '全社').split(';').map(x => x.trim())).filter(x => x !== '人員表').map(x => x === '全社' ? '' : x)
+    .concat(((staff.data && staff.data.units) || []).filter(u => u.Active !== false && staffApplicants(u).includes(st.me.upn)).map(u => u.Path))   // 場所の「申請できる人」（その場所と下の班）
+    .filter((x, i, a) => a.indexOf(x) === i);
 }
+const staffApplicants = u => String((u && u.Applicants) || '').toLowerCase().split(';').map(x => x.trim()).filter(Boolean);
+/* 申請できる人の一覧（印に使う）：{ upn: ['全社' か 場所のパス…] } */
+function staffApplyMap(units) {
+  const m = {}, add = (upn, where) => { (m[upn] = m[upn] || []).push(where); };
+  st.M.roles.filter(r => r.Title === '人員表の申請' && r.Active !== false && String(r.Scope || '全社') === '全社').forEach(r => String(r.MemberUPNs || '').toLowerCase().split(';').map(x => x.trim()).filter(Boolean).forEach(x => add(x, '全社')));
+  (units || []).filter(u => u.Active !== false).forEach(u => staffApplicants(u).forEach(x => add(x, u.Path)));
+  return m;
+}
+const staffUpnOf = p => lc(p.UPN || '') || lc(((st.M.org || []).find(o => nameKey(o.Title) === nameKey(p.Title)) || {}).UPN || '');
 const inScope = (path, scopes) => scopes.some(s => s === '' || path === s || String(path).startsWith(s + '/'));
 const staff = { data: null, busy: false, err: '', q: '', closed: new Set(), sel: null, add: null, unitEdit: null, cmp: '', ledger: null };
 async function loadStaff() {   // 読み直す間も、今の人員表とドロワーは出したまま（直している画面が消えないように）
@@ -1123,8 +1134,10 @@ function renderStaff(main) {
   const words = S.q.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
   const hit = p => !words.length || words.every(w => [p.Title, p.Kana, p.UnitPath, p.Kind, p.Agency, p.JobLabel].join(' ').toLowerCase().includes(w));
   const kindBadge = p => p.Kind && p.Kind !== '社員' ? `<span class="sf-k k-${esc(p.Kind)}">${esc(p.Kind)}${p.Agency && p.Kind !== 'シルバー' ? '・' + esc(p.Agency) : ''}</span>` : '';
+  const applyMap = M ? staffApplyMap(M.units) : {};
+  const applyMark = p => { const w = applyMap[staffUpnOf(p)]; return w ? `<span class="sf-apl" title="申請できる：${esc(w.map(x => x === '全社' ? '全社' : x.split('/').pop()).join('・'))}">申</span>` : ''; };
   const personRow = p => { const due = dueOf(p);
-    return `<li class="sf-p ${S.sel === p.id ? 'on' : ''} ${due && due.cls ? 'd-' + due.cls : ''}" data-sp="${p.id}"><b>${esc(p.Title)}</b>${p.JobLabel ? `<span class="muted">${esc(p.JobLabel)}</span>` : ''}${kindBadge(p)}
+    return `<li class="sf-p ${S.sel === p.id ? 'on' : ''} ${due && due.cls ? 'd-' + due.cls : ''}" data-sp="${p.id}">${applyMark(p)}<b>${esc(p.Title)}</b>${p.JobLabel ? `<span class="muted">${esc(p.JobLabel)}</span>` : ''}${kindBadge(p)}
       ${staffMarks(p)}${due ? `<span class="sf-due ${due.cls}">${esc(due.label)}${due.state === '更新の稟議中' ? '・稟議中' : ''}</span>` : ''}${p.Memo ? `<span class="muted sf-m">${esc(p.Memo)}</span>` : ''}</li>`; };
   const node = (u, depth) => {
     const c = M.cnt[u.Path] || { act: 0, plan: 0, open: 0, need: 0, pend: 0 }, o = M.own(u.Path), kids = M.kids[u.Path] || [];
@@ -1390,9 +1403,10 @@ function staffUnitCfg(box, M, closeDr) {
   const label = path => path.split('/').join(' › ');
   const row = (u, depth) => {
     const kids = sibs(u.Path), n = (M.cnt[u.Path] || {}).act || 0, on = c.path === u.Path;
-    return `<li class="uc-row ${on ? 'on' : ''}" style="padding-left:${depth * 18 + 8}px"><span class="uc-n">${esc(u.Title)}</span><span class="muted">${n}人</span><span style="flex:1"></span>
+    const apl = staffApplicants(u);
+    return `<li class="uc-row ${on ? 'on' : ''}" style="padding-left:${depth * 18 + 8}px"><span class="uc-n">${esc(u.Title)}</span><span class="muted">${n}人</span>${apl.length ? `<span class="uc-apl">申請：${esc(apl.map(nameOf).join('・'))}</span>` : ''}<span style="flex:1"></span>
       <span class="uc-btns"><button class="mini" data-uc="up" data-p="${esc(u.Path)}" title="上へ">↑</button><button class="mini" data-uc="down" data-p="${esc(u.Path)}" title="下へ">↓</button>
-      <button class="mini" data-uc="add" data-p="${esc(u.Path)}">＋班</button>${depth ? `<button class="mini" data-uc="rename" data-p="${esc(u.Path)}">名前</button><button class="mini" data-uc="move" data-p="${esc(u.Path)}">移す</button><button class="mini" data-uc="close" data-p="${esc(u.Path)}">閉じる</button>` : ''}</span></li>
+      <button class="mini" data-uc="apl" data-p="${esc(u.Path)}" title="この場所と下の班の申請ができる人">申請者</button><button class="mini" data-uc="add" data-p="${esc(u.Path)}">＋班</button>${depth ? `<button class="mini" data-uc="rename" data-p="${esc(u.Path)}">名前</button><button class="mini" data-uc="move" data-p="${esc(u.Path)}">移す</button><button class="mini" data-uc="close" data-p="${esc(u.Path)}">閉じる</button>` : ''}</span></li>
       ${on && c.mode ? `<li class="uc-form">${staffUnitForm(u)}</li>` : ''}${kids.map(k => row(k, depth + 1)).join('')}`;
   };
   box.innerHTML = `<div class="card"><h3 class="h3f"><span>部署・班の設定</span><button class="mini" id="ucX">閉じる</button></h3>
@@ -1402,10 +1416,12 @@ function staffUnitCfg(box, M, closeDr) {
   box.querySelectorAll('[data-uc]').forEach(b => b.onclick = () => {
     const path = b.dataset.p, m = b.dataset.uc;
     if (m === 'up' || m === 'down') return ucfgSort(path, m === 'up' ? -1 : 1, sibs);
-    S.ucfg = c.path === path && c.mode === m ? { mode: '' } : { mode: m, path }; render();
+    S.ucfg = c.path === path && c.mode === m ? { mode: '' } : { mode: m, path, apl: null }; render();
   });
   if ($('ucNo')) $('ucNo').onclick = () => { S.ucfg = { mode: '' }; render(); };
   if ($('ucName')) { $('ucName').focus(); $('ucName').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) $('ucGo').click(); }; }
+  if ($('ucApl')) $('ucApl').onchange = () => { const v = $('ucApl').value; if (v && !c.apl.includes(v)) c.apl = [...c.apl, v]; render(); };
+  box.querySelectorAll('[data-apx]').forEach(b => b.onclick = () => { c.apl = c.apl.filter(x => x !== b.dataset.apx); render(); });
   if ($('ucGo')) $('ucGo').onclick = () => ucfgRun(M, sibs);
 }
 function staffUnitForm(u) {
@@ -1416,6 +1432,13 @@ function staffUnitForm(u) {
     r.busy ? `この場所で稟議・届けが進んでいます（${r.busy}件）。決裁のあと古い名前の場所に入ってしまうので、終わってから変えるのがおすすめです` : ''].filter(Boolean) : [];
   const warnHtml = warn.length ? `<div class="uc-warn">${warn.map(w => '⚠ ' + w).join('<br>')}</div>` : '';
   const btns = (go) => `<div class="actions"><button id="ucNo">やめる</button><span style="flex:1"></span><button class="pri" id="ucGo">${go}</button></div>`;
+  if (c.mode === 'apl') {
+    if (!c.apl) c.apl = staffApplicants(u);
+    const org = (st.M.org || []).filter(o => o.UPN && !c.apl.includes(lc(o.UPN))).sort((a, b) => String(a.Dept).localeCompare(String(b.Dept), 'ja') || String(a.Title).localeCompare(String(b.Title), 'ja'));
+    return `<div class="muted">「${esc(u.Title)}」と下の班の、求人・採用の稟議と人員の届けを出せる人です。全社の人（役員・総務）は選ばなくても出せます。場所の名前を変えたり移したりしても、ここで決めた人はそのままついていきます。</div>
+      <div class="uc-chips">${c.apl.length ? c.apl.map(x => `<span class="sf-k k-apl">${esc(nameOf(x))} <button class="mini" data-apx="${esc(x)}" title="外す">✕</button></span>`).join(' ') : '<span class="muted">（まだいません）</span>'}</div>
+      <div class="lg-form"><label class="fld wide"><span>人を足す</span><select id="ucApl"><option value="">選んでください</option>${org.map(o => `<option value="${esc(lc(o.UPN))}">${esc(o.Title)}（${esc(o.Dept || '')}${o.JobTitle ? '・' + esc(o.JobTitle) : ''}）</option>`).join('')}</select></label></div>${btns('保存する')}`;
+  }
   if (c.mode === 'add') return `<div class="lg-form"><label class="fld wide"><span>「${esc(u.Title)}」の下に足す班・部署の名前</span><input id="ucName" placeholder="例：ジャッキ"></label></div>${btns('足す')}`;
   if (c.mode === 'rename') return `<div class="lg-form"><label class="fld wide"><span>新しい名前</span><input id="ucName" value="${esc(u.Title)}"></label></div>
     <div class="muted">書き換えるもの：場所 ${r.units.length}件・人 ${r.persons.length}人・求人の枠など ${r.openings.length}件</div>${warnHtml}${btns('名前を変える')}`;
@@ -1442,6 +1465,13 @@ async function ucfgRun(M, sibs) {
   const btn = $('ucGo'); const done = msg => { toast(msg); S.ucfg = { mode: '' }; loadStaff(); };
   const bad = n => !n ? '名前を入れてください' : /[\/;]/.test(n) ? '名前に「/」「;」は使えません' : '';
   try {
+    if (c.mode === 'apl') {   // 役割とグループも直すので、フロー（WF_人員表の内密）に頼む
+      btn.disabled = true; btn.textContent = '保存しています…';
+      const { id } = await api.postAction({ Title: '申請できる人', ActionType: '申請できる人', PayloadJson: JSON.stringify({ mode: 'applicants', unitPath: u.Path, upns: c.apl }) });
+      const t0 = Date.now();
+      while (Date.now() - t0 < 120000) { await new Promise(r => setTimeout(r, 2500)); const r = await api.actionResult(id); if (r.Result === '完了') return done(`「${u.Title}」の申請できる人を保存しました（選ばれた人は、アプリを開き直すと出せるようになります）`); if (r.Result === 'エラー') throw new Error(r.ResultMessage || ''); }
+      throw new Error('時間がかかっています。少ししてから読み直してください');
+    }
     if (c.mode === 'add') {
       const n = $('ucName').value.trim(), e = bad(n); if (e) return alert(e);
       const path = u.Path + '/' + n; if (d.units.some(x => x.Path === path && x.Active !== false)) return alert('同じ名前の班がもうあります');
@@ -1544,6 +1574,8 @@ function staffPanel(box, M, scopes) {
       <div class="muted">${esc(unitLabel(u.Path))}${u.Head ? '　' + esc(u.Head) : ''}</div>
       <div class="sdr-cnt"><div><span>必要</span><b>${c.need || 0}</b></div><div><span>在籍</span><b>${c.act || 0}</b></div><div><span>入社予定</span><b>${c.plan || 0}</b></div><div><span>募集中</span><b>${c.open || 0}</b></div>${c.pend ? `<div><span>稟議中</span><b>${c.pend}</b></div>` : ''}</div>
       ${u.Memo ? `<div class="sf-memo2">${esc(u.Memo)}</div>` : ''}
+      ${(() => { const up = M.units.filter(x => x.Path === u.Path || u.Path.startsWith(x.Path + '/')).flatMap(x => staffApplicants(x).map(a => ({ a, at: x.Path }))).filter((o, i, arr) => arr.findIndex(y => y.a === o.a) === i);
+        return `<div class="sdr-apl"><span class="muted">申請できる人</span> ${up.length ? up.map(o => `<span class="sf-k k-apl">${esc(nameOf(o.a))}${o.at !== u.Path ? `<span class="muted">（${esc(o.at.split('/').pop())}）</span>` : ''}</span>`).join(' ') : '<span class="muted">（全社の人だけ）</span>'}</div>`; })()}
       ${ued && leaf ? `<div class="sdr-acts"><button class="pri" data-ujob="${esc(u.Path)}">＋ 求人の稟議</button><button class="pri" data-uhire="${esc(u.Path)}">＋ 採用の稟議</button>
         <button data-uwish="${esc(u.Path)}">＋ 枠の希望（相談用のメモ）</button><button data-uadd="${esc(u.Path)}">＋ 人を足す（派遣など）</button>${hasRole('人員表の内密') ? `<button data-usec="${esc(u.Path)}">🔒 内密の求人</button>` : ''}</div>`
         : ued ? `<div class="sdr-acts"><button data-uadd="${esc(u.Path)}">＋ 人を足す（派遣など）</button></div>` : '<div class="muted" style="margin-top:8px">この場所は、あなたの申請できる範囲の外なので、見るだけです。</div>'}
