@@ -61,6 +61,10 @@ h1{font-size:19px;font-weight:700;margin:0;letter-spacing:.02em}
 .asof-badge:empty{display:none}
 .asof-badge small{font-size:11.5px;font-weight:500;opacity:.85}
 .asof-badge.data{background:var(--ok)}
+.postbox{margin-top:12px;border:1px solid var(--rule);border-radius:8px;background:var(--paper)}
+.postbox>summary{cursor:pointer;padding:10px 14px;font-weight:700;font-size:13.5px}
+.postbox .postbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:0 14px 8px;font-size:12px}
+.postbox textarea{display:block;width:calc(100% - 28px);margin:0 14px 14px;min-height:420px;font:inherit;font-size:13px;line-height:1.7;padding:10px 12px;border:1px solid var(--rule);border-radius:6px;resize:vertical;box-sizing:border-box}
 #histMonthSec .shead{flex-wrap:wrap}
 #histMonthSec .shead h2{white-space:nowrap}
 table.heatmap th.collabel.clickable{cursor:pointer}
@@ -263,6 +267,15 @@ table.heatmap tr:hover td .cell{outline:2px solid var(--ink);outline-offset:1px}
         <button class="btn dark noprint" id="copyActBtn">📋 画像コピー</button>
       </div>
       <div class="acts" id="acts"></div>
+      <details class="postbox noprint" id="postBox">
+        <summary>幹部チャットへの投稿文（画面の内容から作成・編集してコピー）</summary>
+        <div class="postbar">
+          <button class="btn dark" id="copyPostBtn" type="button">📋 投稿文コピー</button>
+          <button class="btn" id="regenPostBtn" type="button" style="color:var(--ink);border-color:var(--rule);background:var(--paper)">作り直す</button>
+          <span class="dim">先頭に「@皆様」などのメンションを付けて投稿してください。画像コピーとあわせて貼ると伝わりやすいです。</span>
+        </div>
+        <textarea id="postText" spellcheck="false"></textarea>
+      </details>
     </section>
 
     <section>
@@ -555,6 +568,7 @@ function render(){
     }).join("");
   }
 
+  if(!postEdited) $("#postText").value=buildLeavePost(act,asof);
   fillSel("#fSite","事業場",[...new Set(live.map(x=>x.site))]);
   fillSel("#fDept","部署",[...new Set(live.map(x=>x.dept))]);
   fillSel("#fStat","状況",["至急","要対応","計画","達成","義務対象外","未付与","要確認"]);
@@ -901,7 +915,7 @@ async function copyElementAsImage(el, btn) {
     const canvas = await html2canvas(el, {
       backgroundColor: "#ffffff",
       scale: Math.min(2, window.devicePixelRatio || 1),
-      ignoreElements: node => node === btn,
+      ignoreElements: node => node === btn || node.id === "postBox",  // 投稿文の欄は画像に入れない
     });
     const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("画像の生成に失敗しました");
@@ -923,6 +937,42 @@ async function copyElementAsImage(el, btn) {
   setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
 }
 $("#copyActBtn").onclick = () => copyElementAsImage($("#actSec"), $("#copyActBtn"));
+
+// ---------- 幹部チャットへの投稿文（年5日の取得状況） ----------
+let postEdited=false;  // 手で直したら、画面を更新しても上書きしない（「作り直す」で戻す）
+function buildLeavePost(act, asof){
+  const a=asof, jp=`${a.getFullYear()}年${a.getMonth()+1}月${a.getDate()}日`;
+  const dd=dataDate(), ddj=dd?`${dd.getMonth()+1}/${dd.getDate()}`:"";
+  const L=[];
+  L.push(`【年5日有給取得状況のご連絡｜${jp}時点】`,"","各部門の幹部の皆様","");
+  L.push("年次有給休暇の「年5日取得義務」について、今月時点の状況を共有します。");
+  if(act.length){
+    L.push(`期限までに5日の取得が間に合わない可能性のある方が${act.length}名います。`);
+    const res=act.filter(x=>x.resolved).length, plan=act.filter(x=>!x.resolved&&x.afterPlan>0&&x.afterTaken+x.afterPlan>=x.short).length;
+    if(dd&&(res||plan)) L.push(`（うち${[res?`${res}名は${ddj}までに取得して解消済み`:"",plan?`${plan}名は申請済みの予定で解消予定`:""].filter(Boolean).join("、")}です）`);
+    L.push("所属部門の方について、取得日のご確認をお願いします。","","■ 対応が必要な方");
+    act.forEach(x=>{
+      const note=x.resolved?`　※${ddj}までに取得済み（解消）`
+        :(x.afterPlan>0&&x.afterTaken+x.afterPlan>=x.short?`　※申請済みの予定で解消予定`
+        :(x.afterTaken>0?`　※${ddj}までに${x.afterTaken}日取得`:""));
+      L.push(`・${x.name}（${x.dept}）　あと${x.short}日／期限 ${fmt(x.due)}（残り${x.days}日）${note}`);
+    });
+    L.push("","■ お願いしたいこと","・上記対象者の上長は直接本人に状況を伝えてください。","・期限が迫っている対象者には上長が取得予定日を相談し取得日を決めてください。");
+  }else{
+    L.push("期限までに5日の取得が間に合わない可能性のある方はいません。");
+  }
+  L.push("","■ 補足","年5日の取得は本人の意思に関わらず会社側に課された義務で、未達の場合は対象者1人につき会社に罰則が科されます。本人任せにせず、部門側で日程を確保していただくようお願いします。");
+  L.push("","本リストは毎月15日に更新して共有します。","ご不明点は総務までご連絡ください。");
+  return L.join("\n");
+}
+$("#postText").addEventListener("input",()=>{ postEdited=true; });
+$("#regenPostBtn").onclick=()=>{ postEdited=false; render(); };
+$("#copyPostBtn").onclick=async()=>{
+  const b=$("#copyPostBtn"), t=b.textContent;
+  try{ await navigator.clipboard.writeText($("#postText").value); b.textContent="✓ コピーしました"; }
+  catch(e){ $("#postText").select(); document.execCommand("copy"); b.textContent="✓ コピーしました"; }
+  setTimeout(()=>{ b.textContent=t; },1500);
+};
 ["#asof","#fSite","#fDept","#fStat","#fRetire","#actAll"].forEach(s=>$(s).onchange=render);
 $("#fName").oninput=render;
 document.querySelectorAll("#tbl th").forEach(th=>th.onclick=()=>{
