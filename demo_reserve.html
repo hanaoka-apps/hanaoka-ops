@@ -633,7 +633,7 @@ async function showApp(){
   await resolveHistList();
   await checkColumns();
   await loadAll(want);
-  if (want.openSet && CAP.setId) openSetView(want.openSet);
+  if (want.openSet && (CAP.setId || String(want.openSet).startsWith('~'))) openSetView(want.openSet);
   startAutoRefresh();
 }
 
@@ -1589,7 +1589,7 @@ function openDetail(rid){
   /* BookingSetIdが使える環境では常にセット表示にする（1台だけの予約も
      要素数1のセットとして同じ画面で見せる。特別扱いしない）。
      列がまだ無い/移行前で setId が空の行だけ、従来の単発詳細にフォールバックする。 */
-  if (CAP.setId && r.setId) { openSetView(r.setId); return; }
+  if ((CAP.setId && r.setId) || groupMembers(r).length > 1) { openSetView(r.setId || ('~' + r.rid)); return; }
   renderSingleDetail(rid);
 }
 
@@ -1640,9 +1640,26 @@ let CURRENT_SET_ID = null;
 let ADD_SEL = new Set();      /* このセットに追加する機体の一時選択 */
 let ADD_CAT_FILTER = '';      /* 追加候補を所有先（区分）で絞り込む */
 
-function setMembers(setId){
-  return RES.filter(x => x.setId === setId && x.st !== '取消').sort((a,b) => a.mid - b.mid);
+/* ★同じ予約は1つにまとめて扱う（横串）★
+   「同じ予約」＝ ①セットIDが同じ ②依頼者・件名・期間がすべて同じ のどちらか。
+   1台ずつ別々に予約した（セットIDが無い・別々の）ものでも、同じ依頼者が同じ件名・同じ期間で
+   押さえたものは同じ予約として並べ、期間や件名の変更を全機体にまとめてかけられる。
+   セットIDが無い予約の詳細は「~行ID」（その行を起点にまとめる）で開く。 */
+const bookingKey = r => `${String(r.reqMail || '').toLowerCase()}|${r.t}|${r.s}|${r.e}`;
+function groupMembers(anchor){
+  if (!anchor) return [];
+  const live = RES.filter(x => x.st !== '取消');
+  const base = new Set(anchor.setId ? live.filter(x => x.setId === anchor.setId) : [anchor]);
+  const keys = new Set([...base].map(bookingKey));
+  live.forEach(x => { if (keys.has(bookingKey(x))) base.add(x); });
+  return [...base].filter(x => x.st !== '取消').sort((a,b) => a.mid - b.mid);
 }
+function anchorRow(id){
+  if (!id) return null;
+  if (String(id).startsWith('~')) return RES.find(x => x.rid === String(id).slice(1)) || null;
+  return RES.find(x => x.setId === id && x.st !== '取消') || RES.find(x => x.setId === id) || null;
+}
+function setMembers(setId){ return groupMembers(anchorRow(setId)); }
 /* セットの代表値。件名・顧客名などは先頭の機体のもの、期間は全機体の最小開始〜最大終了。
    一部の機体だけ早く返却・延長した後でも、セット全体の期間として扱えるようにする。 */
 function setRep(members){
@@ -1705,7 +1722,9 @@ function renderSetView(){
   if (ADD_CAT_FILTER && !cats.includes(ADD_CAT_FILTER)) ADD_CAT_FILTER = '';
   const candidates = ADD_CAT_FILTER ? allCandidates.filter(m => m.cat === ADD_CAT_FILTER) : allCandidates;
 
+  const mixed = members.length > 1 && (!rep.setId || members.some(x => (x.setId || '') !== rep.setId));
   document.getElementById('dBody').innerHTML = `
+    ${mixed ? '<div class="cnt" style="margin-bottom:6px">件名・依頼者・期間が同じ予約を、1つの予約としてまとめて表示しています。</div>' : ''}
     <dl>
       <dt>予約期間</dt><dd>${jFull(rep.s)} 〜 ${jFull(rep.e)}${isAllDay(rep) ? '（終日）' : ''}</dd>
       <dt>顧客名</dt><dd>${esc(rep.cust) || '—'}</dd>
@@ -1786,12 +1805,21 @@ async function cancelWholeSet(){
 }
 
 async function doAddToSet(){
-  const setId = CURRENT_SET_ID;
+  let setId = CURRENT_SET_ID;
   const members = setMembers(setId);
   const rep = setRep(members); if (!rep) return;
   const targets = [...ADD_SEL].map(id => MACHINES.find(m => m.id === id)).filter(Boolean);
   if (!targets.length) return;
   const details = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
+  /* セットIDの無い予約に機体を足すときは、まず今の機体に新しいセットIDを付けてまとめる */
+  if (String(setId).startsWith('~')) {
+    if (!CAP.setId) { showSnack('この環境では機体を追加できません（BookingSetId列がありません）'); return; }
+    const nid = newSetId();
+    for (const x of members.filter(x => !x.setId)) {
+      try { await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${x.rid}/fields`, { BookingSetId: nid }, null); } catch {}
+    }
+    setId = nid; CURRENT_SET_ID = nid;
+  }
   let ok = 0;
   for (const m of targets) {
     const r = await reserve({ machine:m, s:rep.s, e:rep.e, setId, details });
@@ -1831,8 +1859,8 @@ function startDuplicateSet(){
        1. 占有を「元の期間と新しい期間の合算」に広げる（新しい期間が他の予約と重なれば、ここで失敗）
        2. 履歴を新しい期間に書き換える（失敗したら占有を元に戻す）
        3. 占有を新しい期間まで縮める（失敗しても安全側＝枠が少し長く塞がるだけ）
-   ・新しい期間が元の期間とまったく重ならない（別の日に移す）変更はここでは扱わない。
-     「複製」して別の期間で予約し、元を取消す。
+   ・新しい期間が元の期間と重ならない（別の日へ丸ごと移す）変更は moveRowFar が扱う。
+     新しい期間の占有を別に追加 → 履歴を書き換え → 元の占有を外す、の順。
    ============================================================ */
 /* 占有情報を CAS で書き換える共通処理。fn(live) は {next} か {abort:結果} を返す */
 async function lockEdit(m, fn){
@@ -1876,7 +1904,7 @@ async function modifyRow(r, patch, range){
   if (!m) return { ok:false, message:'機体が見つかりません' };
   const newS = range.s, newE = range.e;
   if (!(newE > newS)) return { ok:false, message:'終了が開始より後になるようにしてください' };
-  if (!(newS <= r.e && newE >= r.s)) return { ok:false, reason:'DISJOINT' };
+  if (!(newS <= r.e && newE >= r.s)) return moveRowFar(r, m, fields, newS, newE, histUrl);   /* 別の日へ丸ごと移す */
   const uS = Math.min(r.s, newS), uE = Math.max(r.e, newE);
   let tok = r.token || '', created = false;
 
@@ -1925,9 +1953,33 @@ async function modifyRow(r, patch, range){
   return { ok:true, freed };
 }
 
+/* 元の期間と重ならない日へ丸ごと移す（切り貼り）。
+   占有は「新しい期間を別に追加 → 履歴を書き換え → 元の期間を外す」の順。
+   履歴より占有が狭くなる瞬間を作らないので、移している最中に他の人が同じ枠を取れてしまうことはない。 */
+async function moveRowFar(r, m, fields, newS, newE, histUrl){
+  const tmp = newToken();
+  const isOld = x => r.token ? x.token === r.token : (x.s === r.s && x.e === r.e && x.token !== tmp);
+  const s1 = await lockEdit(m, live => {
+    const hit = live.find(x => !isOld(x) && overlaps(x, newS, newE));
+    if (hit) return { abort: { ok:false, reason:'CONFLICT', conflict:hit } };
+    return { next: [...live, { token: tmp, s:newS, e:newE }] };
+  });
+  if (!s1.ok) return s1;
+  fields.ReservationStart = new Date(newS).toISOString();
+  fields.ReservationEnd   = new Date(newE).toISOString();
+  if (CAP.token) fields.LockToken = tmp;
+  let pr;
+  try { pr = await gPatchIf(histUrl, fields, null); } catch (err) { pr = { status: 0, body: { error: { message: err.message } } }; }
+  if (pr.status !== 200) {
+    await lockEdit(m, live => ({ next: live.filter(x => x.token !== tmp) })).catch(() => {});   /* 追加した新しい枠を取り下げる */
+    return { ok:false, message:`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）` };
+  }
+  const s3 = await lockEdit(m, live => ({ next: live.filter(x => x.token === tmp || !isOld(x)) })).catch(() => ({ ok:false }));
+  return { ok:true, freed: !!s3.ok };
+}
+
 function editReasonJa(r){
   if (r.reason === 'CONFLICT')   return `新しい期間に、この機体の他の予約が入っています（${jFull(r.conflict.s)}〜${jFull(r.conflict.e)}）`;
-  if (r.reason === 'DISJOINT')   return '元の期間とまったく重ならない変更は、ここではできません（「複製」で別の期間に予約し、元を取消してください）';
   if (r.reason === 'BUSY')       return '他の方が操作中でした。もう一度お試しください';
   if (r.reason === 'LOCK_FAILED') return `占有情報を更新できませんでした（${r.status || ''}）`;
   return r.message || '変更できませんでした';
@@ -1982,7 +2034,7 @@ function openEdit(rids){
   }).join('');
   document.getElementById('eNote').innerHTML =
     `<b>早く返ってきたとき</b>は終了を前に、<b>遅れるとき</b>は終了を後ろに直してください（機体の「返却済みに」ボタンなら、いまの時刻で終了にできます）。`
-    + `延長は、その機体の他の予約と重なるとできません。`;
+    + `別の日へ丸ごと移すこともできます。新しい期間に、その機体の他の予約が入っているとできません。`;
   document.getElementById('eMsg').textContent = ''; document.getElementById('eMsg').className = 'msg';
   document.getElementById('e-result').innerHTML = '';
   document.getElementById('eSave').disabled = !CAP.lock;
