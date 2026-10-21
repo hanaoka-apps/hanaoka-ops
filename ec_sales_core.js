@@ -949,6 +949,121 @@
     return parts.length > 1 ? parts.map(function (p, i) { return p + '\n（' + (i + 1) + '/' + parts.length + '）'; }) : parts;
   };
 
+  /* ============================================================ 共有の履歴（SharePoint のリスト EC_Order・EC_Log）
+   * 注文の状態・確認OK・受注№・変更の記録を、各自のブラウザではなくリストに持つ。リストが正で、localStorage はオフラインのときのキャッシュ。
+   * お客様の名前・住所・電話は、リストに書かない（注文番号・状態・日時・人・件数・項目名だけ）。
+   * 列の定義は scripts/create_ec_lists.ps1 が正。 */
+
+  // アプリ内の状態 ↔ リストの Status（選択肢）。1か所の対応表
+  var STATUS_PAIRS = [['new', '未確認'], ['ok', 'OK済'], ['importing', '取込中'], ['waiting', '突合待ち'], ['confirm', '確認待ち'], ['exported', '起票済み'], ['check', '要確認'], ['excluded', '対象外']];
+  EC.STATUS_PAIRS = STATUS_PAIRS;
+  EC.listStatus = function (app) { var p = STATUS_PAIRS.filter(function (x) { return x[0] === (app || 'new'); })[0]; return p ? p[1] : ''; };
+  EC.appStatus = function (list) { var p = STATUS_PAIRS.filter(function (x) { return x[1] === list; })[0]; return p ? p[0] : ''; };
+  // リストの操作（EC_Log.Action）の選択肢
+  EC.LOG_ACTIONS = ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'その他'];
+  // 注文番号（Title）＝数字だけ（# なし）
+  EC.orderNo = function (id) { return digits(id); };
+  // 人の表示（メールの @ より前）
+  EC.shortUser = function (u) { return String(u == null ? '' : u).split('@')[0]; };
+
+  var DATE_ONLY = { OrderDate: 1, ShipDate: 1 };
+  var DATE_TIME = { OkAt: 1, ImportAt: 1, ConfirmAt: 1, ReportedAt: 1 };
+  function dOnly(s) { return s ? String(s).slice(0, 10) + 'T12:00:00Z' : null; }   // 正午(UTC)にして、日本時間でも同じ日になるようにする
+  function nz(v) { return v == null ? null : v; }
+
+  // 注文の記録（store.orders[id]）→ リストの行の項目。rec に cust・orderDate・net（注文の金額）を持たせておく
+  EC.orderFields = function (id, rec) {
+    rec = rec || {};
+    var manual = !!rec.shipDate;
+    var f = {
+      Title: EC.orderNo(id), OrderDate: dOnly(rec.orderDate), CustomerCode: nz(rec.cust) || '', Status: EC.listStatus(rec.status || 'new'),
+      BatchId: rec.batchId || '', SmileOrderNo: rec.juchuNo || '', ShipDate: dOnly(rec.shipDate || rec.matchedShip), ShipDateManual: manual,
+      MemoNote: rec.memoNote || '', NetTotal: rec.net == null ? null : Math.round(rec.net),
+      OkBy: rec.by || '', OkAt: nz(rec.at), ImportBy: rec.importBy || '', ImportAt: nz(rec.importAt),
+      ConfirmBy: rec.confirmedBy || '', ConfirmAt: nz(rec.confirmedAt), ReportedAt: nz(rec.reportedAt)
+    };
+    return f;
+  };
+  // リストの行の項目 → 注文の記録（状態・OK・取込・確認OK・受注№・出荷予定日・社内メモ）
+  EC.fieldsToRec = function (f) {
+    f = f || {};
+    var r = {}, st = EC.appStatus(f.Status);
+    if (st && st !== 'new' && st !== 'excluded') r.status = st;
+    if (f.OrderDate) r.orderDate = String(f.OrderDate).slice(0, 10);
+    if (f.CustomerCode) r.cust = f.CustomerCode;
+    if (f.BatchId) r.batchId = f.BatchId;
+    if (f.SmileOrderNo) r.juchuNo = f.SmileOrderNo;
+    if (f.ShipDate) { if (f.ShipDateManual) r.shipDate = String(f.ShipDate).slice(0, 10); else r.matchedShip = String(f.ShipDate).slice(0, 10); }
+    if (f.MemoNote) r.memoNote = f.MemoNote;
+    if (f.NetTotal != null && f.NetTotal !== '') r.net = +f.NetTotal;
+    if (f.OkBy) r.by = f.OkBy; if (f.OkAt) r.at = f.OkAt;
+    if (f.ImportBy) r.importBy = f.ImportBy; if (f.ImportAt) r.importAt = f.ImportAt;
+    if (f.ConfirmBy) { r.confirmedBy = f.ConfirmBy; r.exportedBy = f.ConfirmBy; }
+    if (f.ConfirmAt) { r.confirmedAt = f.ConfirmAt; r.exportedAt = f.ConfirmAt; }
+    if (f.ReportedAt) r.reportedAt = f.ReportedAt;
+    if (f.Title) r.orderName = '#' + f.Title;
+    return r;
+  };
+  function normVal(k, v) {
+    if (v == null || v === '') return '';
+    if (DATE_ONLY[k]) return String(v).slice(0, 10);
+    if (DATE_TIME[k]) { var t = Date.parse(v); return isNaN(t) ? String(v) : String(Math.floor(t / 1000)); }
+    if (k === 'NetTotal') return String(Math.round(+v));
+    if (k === 'ShipDateManual') return v === true || v === 'true' ? 'true' : 'false';
+    return String(v);
+  }
+  // 変わった項目だけ（PATCH するもの）。current＝リストにいまある項目、next＝書きたい項目。Title は含めない。
+  // 値が空になったものは null（リストの項目を空にする）。Status が空（不明な状態）なら書かない
+  EC.diffFields = function (current, next) {
+    var out = {};
+    Object.keys(next).forEach(function (k) {
+      if (k === 'Title') return;
+      if (k === 'Status' && !next[k]) return;
+      if (normVal(k, current && current[k]) !== normVal(k, next[k])) out[k] = (next[k] === '' || next[k] == null) ? null : next[k];
+    });
+    return out;
+  };
+  // 個人情報（電話・メール・郵便番号）らしい文字を伏せる。リストに書く文章（Detail など）の最後の安全弁
+  EC.scrubText = function (text) {
+    return String(text == null ? '' : text)
+      .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '（メール）')
+      .replace(/\+?\d{2,4}-\d{2,4}-\d{3,4}/g, '（電話）')
+      .replace(/〒\s*\d{3}-?\d{4}|(^|[^\d-])\d{3}-\d{4}(?![\d-])/g, function (m, pre) { return (pre || '') + '（郵便番号）'; })
+      .replace(/(^|[^\d])0\d{9,10}(?!\d)/g, '$1（電話）');
+  };
+  // EC_Log の1行（追記のみ）。action が選択肢になければ「その他」
+  EC.logRow = function (o) {
+    var action = EC.LOG_ACTIONS.indexOf(o.action) >= 0 ? o.action : 'その他';
+    var no = o.orderNo ? EC.orderNo(o.orderNo) : '';
+    return { Title: (action + (no ? ' #' + no : '')).slice(0, 250), LogTime: o.now || new Date().toISOString(), Actor: o.actor || '', OrderNo: no, Action: action, BatchId: o.batchId || '', Detail: EC.scrubText(o.detail || '').slice(0, 1500) };
+  };
+  // リストから読んだ行（{注文番号: 項目}）を、この端末の記録にあてはめる。リストが正。
+  // pending＝この端末でまだリストに書けていない注文（上書きしない）。戻り値 { orders, fromList, localOnly:[id], kept:[id] }
+  EC.mergeFromList = function (local, rows, pending) {
+    pending = pending || {};
+    var out = {}, kept = [], fromList = 0, byNo = {};
+    Object.keys(local || {}).forEach(function (id) { byNo[EC.orderNo(id)] = id; });
+    Object.keys(local || {}).forEach(function (id) {
+      var no = EC.orderNo(id);
+      if (rows[no] && !pending[id]) return;          // リストにある：下で作り直す
+      out[id] = local[id]; if (rows[no] && pending[id]) kept.push(id);
+    });
+    Object.keys(rows).forEach(function (no) {
+      var id = byNo[no] || no;
+      if (pending[id]) return;
+      var old = local && local[id] || {}, rec = EC.fieldsToRec(rows[no]);
+      // 状態が同じなら、リストに持たない補足（突合の差分・メッセージ）は残す。違うなら捨てる
+      if (old.status === rec.status) ['diffs', 'checkMessage', 'manualConfirmed', 'matchedAt'].forEach(function (k) { if (old[k] != null) rec[k] = old[k]; });
+      out[id] = rec; fromList++;
+    });
+    var localOnly = Object.keys(out).filter(function (id) { return !rows[EC.orderNo(id)] && out[id] && out[id].status; });
+    return { orders: out, fromList: fromList, localOnly: localOnly, kept: kept };
+  };
+  // この端末の記録のうち、リストに無い注文（状態があるもの）。管理者の「この端末の記録をリストに移す」の対象。何度押しても同じ結果
+  EC.migrationPlan = function (local, rows) {
+    return Object.keys(local || {}).filter(function (id) { var r = local[id]; return r && r.status && r.status !== 'excluded' && !rows[EC.orderNo(id)]; });
+  };
+
   // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];

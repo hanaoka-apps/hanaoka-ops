@@ -532,6 +532,73 @@ t('報告本文：長いときは分割する（各パートが上限以内・�
   assert.ok(long.length >= 5); assert.ok(long.join('').split('あ').length - 1 === 5000);
 });
 
+/* ---------- 共有の履歴（SharePoint のリスト）：状態の対応表・行への変換・差分・復元・移行 ---------- */
+t('状態の対応表：アプリの状態 ↔ リストの Status（scripts/create_ec_lists.ps1 の選択肢と同じ言葉・往復できる）', () => {
+  const LIST = ['未確認', 'OK済', '取込中', '突合待ち', '確認待ち', '起票済み', '要確認', '対象外'];   // create_ec_lists.ps1 の $StatusChoices
+  assert.deepStrictEqual(EC.STATUS_PAIRS.map(p => p[1]), LIST);
+  const APP = ['new', 'ok', 'importing', 'waiting', 'confirm', 'exported', 'check', 'excluded'];
+  APP.forEach((a, i) => { assert.strictEqual(EC.listStatus(a), LIST[i]); assert.strictEqual(EC.appStatus(LIST[i]), a); });
+  assert.strictEqual(EC.listStatus(undefined), '未確認');                   // 状態なし＝未確認
+  assert.strictEqual(EC.listStatus('nonsense'), ''); assert.strictEqual(EC.appStatus('変な状態'), '');
+  // ログの操作の選択肢も同じ（create_ec_lists.ps1 の $ActionChoices）
+  assert.deepStrictEqual(EC.LOG_ACTIONS, ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'その他']);
+});
+const fullRec = { status: 'exported', by: 'ok@example.com', at: '2026-10-21T01:00:00.000Z', cust: '599801', orderDate: '2026-10-20', net: 14000, batchId: 'ec-0123456789abcdef', juchuNo: '90001',
+  shipDate: '2026-10-23', memoNote: 'ブルー入荷待ち', importBy: 'imp@example.com', importAt: '2026-10-21T02:00:00.000Z', confirmedBy: 'cf@example.com', confirmedAt: '2026-10-21T03:00:00.000Z', reportedAt: '2026-10-21T02:30:00.000Z' };
+t('注文の記録 ↔ リストの行：往復できる（OK・取込・確認OK・受注№・出荷予定日の手動変更・社内メモ・報告）', () => {
+  const f = EC.orderFields('#1801', fullRec);
+  assert.deepStrictEqual([f.Title, f.Status, f.OkBy, f.ImportBy, f.ConfirmBy, f.SmileOrderNo, f.ShipDateManual, f.MemoNote, f.NetTotal, f.CustomerCode, f.BatchId], ['1801', '起票済み', 'ok@example.com', 'imp@example.com', 'cf@example.com', '90001', true, 'ブルー入荷待ち', 14000, '599801', 'ec-0123456789abcdef']);
+  assert.strictEqual(f.ShipDate, '2026-10-23T12:00:00Z'); assert.strictEqual(f.OrderDate, '2026-10-20T12:00:00Z');
+  const back = EC.fieldsToRec(f);
+  ['status', 'by', 'at', 'cust', 'orderDate', 'net', 'batchId', 'juchuNo', 'shipDate', 'memoNote', 'importBy', 'importAt', 'confirmedBy', 'confirmedAt', 'reportedAt'].forEach(k => assert.strictEqual(back[k], fullRec[k], k));
+  assert.strictEqual(back.exportedBy, 'cf@example.com'); assert.strictEqual(back.orderName, '#1801');
+  // 手動で変えていない出荷予定日（突合のとき決まった日）は matchedShip に戻る（shipDate にはならない＝手動変更ではない）
+  const auto = EC.fieldsToRec(EC.orderFields('1802', { status: 'confirm', matchedShip: '2026-10-19', juchuNo: '9' }));
+  assert.deepStrictEqual([auto.matchedShip, auto.shipDate], ['2026-10-19', undefined]);
+  // 状態ごとに往復
+  ['ok', 'importing', 'waiting', 'confirm', 'exported', 'check'].forEach(s => assert.strictEqual(EC.fieldsToRec(EC.orderFields('1', { status: s })).status, s));
+  assert.strictEqual(EC.fieldsToRec(EC.orderFields('1', {})).status, undefined);   // 未確認＝状態なし
+});
+t('差分：変わった項目だけ（空・null・日時の秒未満・日付の時刻部分の違いは同じ）。Title と不明な状態は書かない', () => {
+  const cur = EC.orderFields('1801', fullRec);
+  assert.deepStrictEqual(EC.diffFields(cur, EC.orderFields('1801', fullRec)), {});
+  const sp = Object.assign({}, cur, { OkAt: '2026-10-21T01:00:00Z', ShipDate: '2026-10-23T00:00:00Z', NetTotal: '14000', ShipDateManual: 'true' });   // SharePoint が返す形
+  assert.deepStrictEqual(EC.diffFields(sp, cur), {});
+  assert.deepStrictEqual(EC.diffFields(cur, EC.orderFields('1801', Object.assign({}, fullRec, { status: 'check', juchuNo: '' }))), { Status: '要確認', SmileOrderNo: null });
+  assert.deepStrictEqual(EC.diffFields({ Title: '1', Status: 'OK済' }, { Title: '2', Status: '' }), {});
+  assert.deepStrictEqual(EC.diffFields(null, { Title: '1', Status: 'OK済', MemoNote: '' }), { Status: 'OK済' });
+});
+t('リストを正として復元：リストの内容で上書き。まだ書けていない注文（pending）は上書きしない。リストに無い端末だけの注文は残る', () => {
+  const local = { 1801: { status: 'ok', by: 'me@example.com', diffs: [{ x: 1 }] }, 1802: { status: 'ok' }, 1803: { status: 'ok', memoNote: '端末だけ' }, 1804: { status: 'confirm', checkMessage: 'x', diffs: [{ a: 1 }], matchedAt: 'm' } };
+  const rows = { 1801: { Title: '1801', Status: '確認待ち', SmileOrderNo: '9' }, 1802: { Title: '1802', Status: '未確認' }, 1804: { Title: '1804', Status: '確認待ち', SmileOrderNo: '10' }, 1805: { Title: '1805', Status: '起票済み', ConfirmBy: 'x@example.com' } };
+  const m = EC.mergeFromList(local, rows, { 1802: true });
+  assert.strictEqual(m.orders[1801].status, 'confirm');                       // 他の人が進めた状態がリストから入る
+  assert.strictEqual(m.orders[1801].diffs, undefined);                         // 状態が変わったので補足は捨てる
+  assert.strictEqual(m.orders[1802].status, 'ok');                             // pending：この端末の内容を守る
+  assert.strictEqual(m.orders[1803].memoNote, '端末だけ');                     // リストに無い＝残す
+  assert.deepStrictEqual(m.localOnly, ['1803', '1802'].filter(id => id === '1803'));
+  assert.deepStrictEqual(m.orders[1804].diffs, [{ a: 1 }]);                    // 状態が同じなら補足を残す
+  assert.strictEqual(m.orders[1805].status, 'exported'); assert.strictEqual(m.orders[1805].confirmedBy, 'x@example.com');   // 他の人が作った注文
+  assert.deepStrictEqual(m.kept, ['1802']);
+  // 「未確認」に戻された注文は状態なしに
+  assert.strictEqual(EC.mergeFromList({ 1802: { status: 'ok' } }, { 1802: { Title: '1802', Status: '未確認' } }, {}).orders[1802].status, undefined);
+});
+t('移行：リストに無い注文（状態があるもの）だけが対象。何度やっても同じ（移したあとは対象にならない）', () => {
+  const local = { 1801: { status: 'ok' }, 1802: { status: 'exported' }, 1803: {}, 1804: { shipDate: '2026-10-20' }, 1805: { status: 'check' } };
+  assert.deepStrictEqual(EC.migrationPlan(local, { 1805: {} }), ['1801', '1802']);
+  assert.deepStrictEqual(EC.migrationPlan(local, { 1801: {}, 1802: {}, 1805: {} }), []);
+  assert.deepStrictEqual(EC.migrationPlan({}, {}), []);
+});
+t('ログの1行：選択肢にない操作は「その他」。Title は操作＋注文番号。電話・メール・郵便番号は伏せる', () => {
+  const r = EC.logRow({ action: '確認OK', orderNo: '#1801', actor: 'a@example.com', batchId: 'ec-1', detail: '受注№ 90001', now: '2026-10-21T00:00:00.000Z' });
+  assert.deepStrictEqual(r, { Title: '確認OK #1801', LogTime: '2026-10-21T00:00:00.000Z', Actor: 'a@example.com', OrderNo: '1801', Action: '確認OK', BatchId: 'ec-1', Detail: '受注№ 90001' });
+  assert.strictEqual(EC.logRow({ action: '謎', orderNo: '' }).Action, 'その他');
+  assert.strictEqual(EC.logRow({ action: 'OK' }).Title, 'OK');
+  assert.ok(!/03-1234|a@b\.jp/.test(EC.logRow({ action: 'OK', detail: '電話 03-1234-5678 / a@b.jp' }).Detail));
+  assert.strictEqual(EC.scrubText('注文2610161230・受注№ 90001・14,000円・2026-10-21'), '注文2610161230・受注№ 90001・14,000円・2026-10-21');   // 注文番号・日付・金額はそのまま
+  assert.strictEqual(EC.shortUser('taro@example.com'), 'taro');
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';
