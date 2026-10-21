@@ -918,6 +918,21 @@
     if ((o.diffs || []).length > 6) out.push('ほか ' + (o.diffs.length - 6) + ' 項目');
     return out;
   };
+  // 報告の依頼者へのメンション情報 { id: メール(UPN), name: 表示名 }。使えない形なら null（メンションなしで報告する）。
+  // 社員の情報で、お客様の個人情報ではない。専用機の post_teams.py も同じ規則で確かめる（< > & や制御文字は取り除く）
+  EC.reportMention = function (email, name) {
+    var id = String(email == null ? '' : email).trim();
+    var nm = Array.from(String(name == null ? '' : name)).filter(function (ch) { return ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127 && '<>&'.indexOf(ch) < 0; }).join('').trim().slice(0, 100);
+    if (!nm || id.length > 254 || !/^[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+$/.test(id)) return null;
+    return { id: id, name: nm };
+  };
+  // ec_report の依頼の params。mention は使える形のときだけ載せる（無ければ載せない＝メンションなしで投稿される）
+  EC.reportParams = function (o) {
+    var p = { batchId: o.batchId, parts: o.parts }, m = EC.reportMention(o.requestedBy, o.requestedByName);
+    if (m) p.mention = m;
+    return p;
+  };
+
   // 担当者への報告（Teams）の本文。件数・注文番号・受注№・出荷予定日・要確認とその理由・アプリのURLだけ（住所・電話・お客様名は入れない）。
   // opt = { batchId, counts:{slips, fresh}, orders:[{name, juchuNo, shipDate, status:'confirm'|'check'|'exported', diffs, message}], url, maxChars }
   // 戻り値＝文字列の配列（長いときは maxChars ごとに分ける）
@@ -929,7 +944,7 @@
     var lines = ['【EC売上】SMILEへの取込と突合の結果（' + opt.batchId + '）',
       '取込 ' + ((opt.counts && opt.counts.slips) || orders.length) + '件／一致 ' + okList.length + '件／要確認 ' + ngList.length + '件／納品先の新規 ' + ((opt.counts && opt.counts.fresh) || 0) + '件', ''];
     if (okList.length) {
-      lines.push('■ 一致（担当者の確認OKをお願いします）');
+      lines.push('■ 一致（確認OKは、アプリの画面で行ってください）');
       okList.forEach(function (o) { lines.push('・' + o.name + '　受注№ ' + (o.juchuNo || '—') + '　出荷予定日 ' + md(o.shipDate)); });
       lines.push('');
     }

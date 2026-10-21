@@ -15,6 +15,13 @@ PAD は使わない。標準ライブラリ以外は requests だけ。
   **専用機の環境変数にだけ置く。リポジトリ・アプリ・ログ・エラー文には出さない**（この中でも、URL を含む文字を出力しない）。
   Webhook の作成（Teams 側の「ワークフロー」→「Webhook 要求を受信したらチャネルに投稿する」）の細かい手順は要確認。
 
+メンション（依頼した人への通知）:
+  入力の JSON に "mention": { "id": "<メール(UPN)>", "name": "<表示名>" } があれば、最初の投稿の本文の先頭に「<at>表示名</at> EC取込の結果です。」を入れ、
+  Adaptive Card の msteams.entities に { "type": "mention", "text": "<at>表示名</at>", "mentioned": { "id": メール, "name": 表示名 } } を付ける。
+  mention が無い・使えない形（メールの形でない・表示名が空など）のときは、メンションなしで投稿する（失敗にはしない）。
+  表示名・メールは社員の情報で、お客様の名前・住所・電話ではない。
+  投稿先は、チャネルでも、チャット（ワークフローの「Webhook アラートをチャットに送信する」）でもよい（Webhook の形は同じ）。
+
 投稿の形（Teams ワークフローの Webhook が受け付ける Adaptive Card のメッセージ）:
   { "type": "message", "attachments": [{ "contentType": "application/vnd.microsoft.card.adaptive",
       "content": { "type": "AdaptiveCard", "version": "1.4", "body": [{ "type": "TextBlock", "wrap": true, "text": "本文" }] } }] }
@@ -29,9 +36,11 @@ PAD は使わない。標準ライブラリ以外は requests だけ。
 import argparse
 import json
 import os
+import re
 import sys
 
 DEFAULT_ENV = 'EC_TEAMS_WEBHOOK_URL'
+MAIL_RE = re.compile(r'^[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+$')
 TIMEOUT = 30
 
 
@@ -39,24 +48,46 @@ def out(msg):
     print(msg, flush=True)
 
 
-def build_payload(text):
-    """Teams ワークフローの Webhook に送る JSON（Adaptive Card）。"""
+def normalize_mention(raw):
+    """メンション情報 { "id": メール(UPN), "name": 表示名 } を検べて (id, name) を返す。使えない形なら None（メンションなしで投稿する）。
+    表示名・メールは社員の情報（お客様の個人情報ではない）。< > や制御文字は取り除く（本文の <at> の形を壊さないため）。"""
+    if not isinstance(raw, dict):
+        return None
+    uid, name = raw.get('id'), raw.get('name')
+    if not isinstance(uid, str) or not isinstance(name, str):
+        return None
+    uid = uid.strip()
+    name = ''.join(ch for ch in name if ch.isprintable() and ch not in '<>&').strip()[:100]
+    if not name or not MAIL_RE.match(uid) or len(uid) > 254:
+        return None
+    return uid, name
+
+
+def build_payload(text, mention=None):
+    """Teams ワークフローの Webhook に送る JSON（Adaptive Card）。
+    mention（normalize_mention の結果）があれば、本文の先頭に <at>表示名</at> を入れ、msteams.entities にメンションを付ける。"""
+    body_text = text
+    content = {
+        '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',
+        'type': 'AdaptiveCard',
+        'version': '1.4',
+    }
+    if mention:
+        uid, name = mention
+        tag = '<at>%s</at>' % name
+        body_text = '%s EC取込の結果です。\n\n%s' % (tag, text)
+        content['msteams'] = {'entities': [{'type': 'mention', 'text': tag, 'mentioned': {'id': uid, 'name': name}}]}
+    content['body'] = [{'type': 'TextBlock', 'wrap': True, 'text': body_text}]
     return {
         'type': 'message',
-        'attachments': [{
-            'contentType': 'application/vnd.microsoft.card.adaptive',
-            'content': {
-                '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',
-                'type': 'AdaptiveCard',
-                'version': '1.4',
-                'body': [{'type': 'TextBlock', 'wrap': True, 'text': text}],
-            },
-        }],
+        'attachments': [{'contentType': 'application/vnd.microsoft.card.adaptive', 'content': content}],
     }
 
 
-def read_parts(path):
-    """parts.json（または標準入力）から本文の配列を読む。"""
+def read_input(path):
+    """parts.json（または標準入力）から (本文の配列, メンション情報) を読む。
+    形：{ "parts": [...], "mention": { "id": "メール", "name": "表示名" } }（mention は省略できる）か、文字列の配列。
+    mention が無い・使えない形のときは None（メンションなしで投稿する。投稿は失敗させない）。"""
     if path:
         with open(path, encoding='utf-8-sig') as f:
             raw = f.read()
@@ -66,7 +97,13 @@ def read_parts(path):
     parts = data.get('parts') if isinstance(data, dict) else data
     if not isinstance(parts, list) or not parts or not all(isinstance(p, str) and p.strip() for p in parts):
         raise ValueError('本文（parts）が空か、文字列の配列ではありません')
-    return parts
+    mention = normalize_mention(data.get('mention')) if isinstance(data, dict) else None
+    return parts, mention
+
+
+def read_parts(path):
+    """本文の配列だけ（互換用）。"""
+    return read_input(path)[0]
 
 
 def scrub(text, url):
@@ -74,14 +111,14 @@ def scrub(text, url):
     return str(text).replace(url, '<webhook>') if url else str(text)
 
 
-def post_all(url, parts, session=None):
-    """parts を順に投稿する。失敗したら例外（メッセージに URL は含めない）。"""
+def post_all(url, parts, session=None, mention=None):
+    """parts を順に投稿する（メンションは最初の1件だけ）。失敗したら例外（メッセージに URL は含めない）。"""
     if session is None:
         import requests
         session = requests
     for i, text in enumerate(parts, 1):
         try:
-            res = session.post(url, json=build_payload(text), timeout=TIMEOUT)
+            res = session.post(url, json=build_payload(text, mention if i == 1 else None), timeout=TIMEOUT)
         except Exception as e:   # requests の例外には URL が入ることがある
             raise RuntimeError('%d/%d 件目の投稿で通信エラー（%s）' % (i, len(parts), type(e).__name__))
         status = getattr(res, 'status_code', 0)
@@ -99,16 +136,16 @@ def main(argv=None, session=None):
         out('NG: 環境変数 %s が設定されていません（専用機の環境変数に Teams の Webhook の URL を設定してください）' % args.webhook_env)
         return 2
     try:
-        parts = read_parts(args.input)
+        parts, mention = read_input(args.input)
     except Exception as e:
         out('NG: 報告の本文を読めません（%s）' % scrub(type(e).__name__ + ': ' + str(e)[:80], url))
         return 2
     try:
-        post_all(url, parts, session)
+        post_all(url, parts, session, mention)
     except Exception as e:
         out('NG: %s' % scrub(e, url))
         return 1
-    out('OK: %d 件を投稿しました' % len(parts))
+    out('OK: %d 件を投稿しました%s' % (len(parts), '（メンションあり）' if mention else ''))
     return 0
 
 
