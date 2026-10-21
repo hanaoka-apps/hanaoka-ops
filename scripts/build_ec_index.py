@@ -21,8 +21,8 @@ EC売上に必要な分だけを SharedMasters 直下の ec_smile_index.json に
       "customers": ["599801", "599802"],
       "orders":  { "cols": [...見出し], "rows": [[...], ...] },   … EC の受注の行
       "nouhin":  { "cols": [...], "rows": [...], "maxCode": { "得意先": "最大の納品先コード" } },
-      "testCustomers": ["110101"],                    … テスト送信用の得意先（あれば）
-      "testOrders":  { "cols": [...], "rows": [...] }, "testNouhin": { "cols": [...], "rows": [...] },
+      "testPoPrefix": "TEST",
+      "testOrders":  { "cols": [...], "rows": [...] },   … 客先注番が TEST… の行（orders には入れない）
       "items":   { "cols": [...], "rows": [...] },
       "nyukin":  { "cols": [...], "rows": [...] }
     }
@@ -30,11 +30,14 @@ EC売上に必要な分だけを SharedMasters 直下の ec_smile_index.json に
 
 引数・環境変数:
   EC_CUSTOMERS … EC の得意先コード（カンマ区切り。既定 599801,599802）。--customers でも指定できる
-  EC_TEST_CUSTOMERS … テスト送信用の得意先コード（カンマ区切り。既定なし）。--test-customers でも指定できる。
-                      本番ECの受注・納品先とは分けて testOrders・testNouhin に入れる（本番の二重取込確認・入金には混ぜない）
-  --config     … ec_sales_config.json のパス。あれば EC の得意先を config.customers のキー、テスト用の得意先を
-                  testImport.customerCode から読む（コードに埋め込まない。常駐スクリプトが main から取得して渡す）。
-                  --customers / 環境変数の指定があればそちらを優先する
+  EC_TEST_PO_PREFIX … テスト送信の客先注番の先頭の印（既定 TEST。--test-po-prefix でも指定できる）。
+                      客先注番がこの印で始まる行（EC売上の管理者メニューの「テスト送信」の注文）は、本番ECの受注（orders）には入れず
+                      testOrders に分けて持つ（本番の二重取込確認・件数に混ぜない）
+  EC_DELIVERY_CODE_LIMIT … 納品先コードの連番の上限（既定 099999。--delivery-code-limit でも指定できる）。これより大きいコード
+                      （テスト用の 999998 など）は、得意先ごとの最大コード（maxCode）の計算に入れない
+  --config     … ec_sales_config.json のパス。あれば EC の得意先を config.customers のキー、テストの印を testImport.poPrefix、
+                  連番の上限を config.deliveryCodeLimit から読む（コードに埋め込まない。常駐スクリプトが main から取得して渡す）。
+                  --customers などの指定や環境変数があればそちらを優先する
   --dir        … SharedMasters フォルダ（既定は環境変数 SHARED_MASTERS_DIR）
 
 個人情報（名前・住所・電話）が入るので、ログには件数だけを出し、値は出さない。
@@ -51,6 +54,8 @@ from datetime import datetime, timezone
 
 OUT_NAME = 'ec_smile_index.json'
 DEFAULT_CUSTOMERS = '599801,599802'
+DEFAULT_TEST_PO_PREFIX = 'TEST'
+DEFAULT_CODE_LIMIT = '099999'
 
 # 取り出す列。名前は NFKC にそろえて比べる（ｺｰﾄﾞ／コード、全角半角の違いを吸収する）。
 # 先頭の名前が出力の見出しになる。別名があれば後ろに並べる。
@@ -63,7 +68,7 @@ NOUHIN_COLS = [
     ['得意先コード', '得意先ｺｰﾄﾞ'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['納品先名'], ['納品先索引'],
     ['荷受け人名１'], ['荷受け人名２'], ['郵便番号'], ['住所１'], ['住所２'], ['電話番号'],
 ]
-ITEM_COLS = [['品目コード', '品目ｺｰﾄﾞ'], ['品目名'], ['単位'], ['初期表示用手配区分']]
+ITEM_COLS = [['品目コード', '品目ｺｰﾄﾞ'], ['品目名'], ['単位'], ['初期表示用手配区分'], ['在庫管理区分名']]
 NYUKIN_COLS = [['伝票日付'], ['得意先コード', '得意先ｺｰﾄﾞ'], ['入金額'], ['備考']]
 
 # 必須の列（無ければ別の形式のファイルとみなして失敗にする。書き出し途中のファイルを読んだときも検知できる）
@@ -150,15 +155,16 @@ def mtime_iso(path):
     return datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def build(shared_dir, customers, now=None, test_customers=()):
+def build(shared_dir, customers, now=None, test_po_prefix=DEFAULT_TEST_PO_PREFIX, delivery_code_limit=DEFAULT_CODE_LIMIT):
     """ec_smile_index.json を作って書き出す。成功したら書いた内容（dict）を返す。失敗したら例外（前回のファイルは残る）。
-    test_customers＝テスト送信用の得意先。本番ECの得意先と重なるコードは無視する（本番の注文を testOrders に入れないため）。"""
+    test_po_prefix＝テスト送信の客先注番の先頭の印。この印で始まる受注の行は orders に入れず testOrders に分ける。
+    delivery_code_limit＝納品先コードの連番の上限。これより大きいコード（テスト用の 999998 など）は maxCode に入れない。"""
     custs = [c.strip() for c in customers if c.strip()]
     if not custs:
         raise ValueError('EC の得意先コードがありません')
-    tests = [c.strip() for c in test_customers if c.strip() and c.strip() not in custs]
     is_ec = lambda code: norm(code) in custs
-    is_test = lambda code: norm(code) in tests
+    prefix = (test_po_prefix or '').strip().upper()
+    is_test_po = lambda po: bool(prefix) and norm(po).upper().startswith(prefix)
     sources = []
 
     def src(name, required=True):
@@ -170,31 +176,27 @@ def build(shared_dir, customers, now=None, test_customers=()):
         return path
 
     out = {'customers': custs}
-    if tests:
-        out['testCustomers'] = tests
 
     p = src('受注明細出力.csv')
-    cols, rows, total = collect(p, ORDER_COLS, ORDER_REQUIRED, lambda v: is_ec(v[3]) or is_test(v[3]))
-    out['orders'] = {'cols': cols, 'rows': [v for v in rows if is_ec(v[3])]}
-    if tests:
-        out['testOrders'] = {'cols': cols, 'rows': [v for v in rows if is_test(v[3])]}
+    cols, rows, total = collect(p, ORDER_COLS, ORDER_REQUIRED, lambda v: is_ec(v[3]))
+    out['orders'] = {'cols': cols, 'rows': [v for v in rows if not is_test_po(v[13])]}
+    if prefix:
+        out['testPoPrefix'] = test_po_prefix.strip()
+        out['testOrders'] = {'cols': cols, 'rows': [v for v in rows if is_test_po(v[13])]}
     sources.append({'name': '受注明細出力.csv', 'modified': mtime_iso(p), 'rows': total})
-    log('受注明細出力: 全 %d 行のうち EC %d 行・テスト %d 行' % (total, len(out['orders']['rows']), len(out['testOrders']['rows']) if tests else 0))
+    log('受注明細出力: 全 %d 行のうち EC %d 行・テスト送信 %d 行' % (total, len(out['orders']['rows']), len(out['testOrders']['rows']) if prefix else 0))
 
     p = src('納品先マスタ.csv')
-    cols, rows, total = collect(p, NOUHIN_COLS, NOUHIN_REQUIRED, lambda v: is_ec(v[0]) or is_test(v[0]))
-    all_nouhin = rows
-    rows = [v for v in all_nouhin if is_ec(v[0])]
-    if tests:
-        out['testNouhin'] = {'cols': cols, 'rows': [v for v in all_nouhin if is_test(v[0])]}
+    cols, rows, total = collect(p, NOUHIN_COLS, NOUHIN_REQUIRED, lambda v: is_ec(v[0]))
     max_code = {}
     for v in rows:
         code = v[1].strip()
-        if code.isdigit() and code > max_code.get(v[0], ''):
+        # 連番の上限より大きいコード（テスト用の 999998 など）は、最大コードの計算に入れない（アプリの deliveryCodeLimit と同じ）
+        if code.isdigit() and code <= delivery_code_limit and code > max_code.get(v[0], ''):
             max_code[v[0]] = code
     out['nouhin'] = {'cols': cols, 'rows': rows, 'maxCode': max_code}
     sources.append({'name': '納品先マスタ.csv', 'modified': mtime_iso(p), 'rows': total})
-    log('納品先マスタ: 全 %d 行のうち EC %d 行・テスト %d 行' % (total, len(rows), len(out['testNouhin']['rows']) if tests else 0))
+    log('納品先マスタ: 全 %d 行のうち EC %d 行' % (total, len(rows)))
 
     p = src('品目マスタ.csv')
     cols, rows, total = collect(p, ITEM_COLS, ITEM_REQUIRED, lambda v: bool(v[0]))
@@ -215,7 +217,7 @@ def build(shared_dir, customers, now=None, test_customers=()):
     out['sources'] = sources
     out['generatedAt'] = (now or datetime.now(timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ')
     # 見出しの並びが分かりやすいよう、キーの順を固定して書く
-    ordered = {k: out[k] for k in ['generatedAt', 'sources', 'customers', 'testCustomers', 'orders', 'nouhin', 'testOrders', 'testNouhin', 'items', 'nyukin'] if k in out}
+    ordered = {k: out[k] for k in ['generatedAt', 'sources', 'customers', 'testPoPrefix', 'orders', 'testOrders', 'nouhin', 'items', 'nyukin'] if k in out}
 
     dest = os.path.join(shared_dir, OUT_NAME)
     tmp = dest + '.tmp'
@@ -235,28 +237,35 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description='EC売上アプリ用の軽量ファイル ec_smile_index.json を作る')
     ap.add_argument('--dir', default=os.environ.get('SHARED_MASTERS_DIR'), help='SharedMasters フォルダ')
     ap.add_argument('--customers', default=os.environ.get('EC_CUSTOMERS'), help='EC の得意先コード（カンマ区切り）')
-    ap.add_argument('--test-customers', default=os.environ.get('EC_TEST_CUSTOMERS'), help='テスト送信用の得意先コード（カンマ区切り）')
-    ap.add_argument('--config', default=None, help='ec_sales_config.json のパス（得意先コードをここから読む）')
+    ap.add_argument('--test-po-prefix', default=os.environ.get('EC_TEST_PO_PREFIX'), help='テスト送信の客先注番の先頭の印')
+    ap.add_argument('--delivery-code-limit', default=os.environ.get('EC_DELIVERY_CODE_LIMIT'), help='納品先コードの連番の上限')
+    ap.add_argument('--config', default=None, help='ec_sales_config.json のパス（得意先コードなどをここから読む）')
     args = ap.parse_args(argv)
     if not args.dir:
         log('SHARED_MASTERS_DIR（または --dir）を指定してください')
         return 2
-    customers, tests = args.customers, args.test_customers
+    customers, prefix, limit = args.customers, args.test_po_prefix, args.delivery_code_limit
     if args.config:
         try:
             with open(args.config, encoding='utf-8-sig') as f:
                 conf = json.load(f)
             if customers is None:
                 customers = ','.join((conf.get('config') or {}).get('customers', {}).keys())
-            if tests is None:
-                tests = str((conf.get('testImport') or {}).get('customerCode') or '')
+            if prefix is None:
+                prefix = str((conf.get('testImport') or {}).get('poPrefix') or '')
+            if limit is None:
+                limit = str((conf.get('config') or {}).get('deliveryCodeLimit') or '')
         except Exception as e:
             log('設定ファイルを読めません（%s）: %s' % (type(e).__name__, e))
             return 1
     if customers is None:
         customers = DEFAULT_CUSTOMERS
+    if prefix is None:
+        prefix = DEFAULT_TEST_PO_PREFIX
+    if not limit:
+        limit = DEFAULT_CODE_LIMIT
     try:
-        build(args.dir, customers.split(','), test_customers=(tests or '').split(','))
+        build(args.dir, customers.split(','), test_po_prefix=prefix, delivery_code_limit=limit)
     except Exception as e:   # 失敗しても前回の ec_smile_index.json は残っている
         log('失敗しました（前回のファイルはそのままです）: %s: %s' % (type(e).__name__, e))
         return 1

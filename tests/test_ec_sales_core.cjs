@@ -330,66 +330,129 @@ t('軽量ファイル（ec_smile_index.json）の表 → オブジェクト。�
   assert.ok(Object.values(r.orders).every(o => o.status === 'ok') && r.orders['1801'].juchuNo === '90001');
 });
 
-/* ---------- テスト送信（管理者メニュー。SMILE のテスト用得意先に仮データを1件） ---------- */
+/* ---------- テスト送信（管理者メニュー。EC売上の東京 599801 に TEST… の仮注文1件と納品先 999998） ---------- */
 const TI = CONF.testImport;
-const TITEMS = Object.assign({}, ITEMS, { TC: { name: 'ﾃｰﾌﾞﾙｺﾝﾃﾅ', unit: '個', teihai: '1' } });
+// 品目マスタ（手配区分・在庫管理）。FR（運賃）＝手配区分2・在庫管理なし＝製番・製造手配が作られない。TC＝手配区分1・在庫管理あり（製番が付く）
+const TITEMS = { FR: { name: 'ｳﾝﾁﾝ', unit: '式', teihai: '2', stock: '行わない' }, TC: { name: 'ﾃｰﾌﾞﾙｺﾝﾃﾅ', unit: '個', teihai: '1', stock: '行う' } };
 const tOpt = (over) => Object.assign({ items: TITEMS, today: '2026-10-16', stamp: '2610161230', deliveryCodes: {} }, over);
-t('テスト送信：設定は本番ECの得意先と別で、安全弁を通る', () => {
-  assert.strictEqual(TI.customerCode, '110101'); assert.strictEqual(TI.deliveryCode, '999998');
-  assert.ok(!DEFAULT_CONFIG.customers[TI.customerCode]);
+t('テスト送信：送り先はEC売上の東京（599801）。名前・担当者・部門は config.customers から引き、testImport に重ねて書かない', () => {
+  assert.strictEqual(TI.customerCode, '599801'); assert.strictEqual(TI.deliveryCode, '999998');
+  ['customerName', 'staff', 'dept', 'warehouse'].forEach(k => assert.ok(!(k in TI), k + ' は testImport に書かない'));
   assert.strictEqual(EC.testSendGuard(TI, DEFAULT_CONFIG), '');
+  const s = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()).slips[0], c = DEFAULT_CONFIG.customers['599801'];
+  assert.deepStrictEqual([s.cust, s.custName, s.staff, s.dept], ['599801', c.name, c.staff, c.dept]);
+  assert.deepStrictEqual([c.name, c.staff, c.dept], ['直販EC 東京', '000157', '002220']);
+  // 設定の customers を変えれば、仮注文の名前・担当者もそれに従う（埋め込みではない）
+  const cfg2 = Object.assign({}, DEFAULT_CONFIG, { customers: Object.assign({}, DEFAULT_CONFIG.customers, { '599801': { name: '別名', staff: '000001', dept: '009999', short: '東' } }) });
+  const s2 = EC.buildTestImport(TI, cfg2, tOpt()).slips[0];
+  assert.deepStrictEqual([s2.custName, s2.staff, s2.dept], ['別名', '000001', '009999']);
 });
-t('テスト送信：安全弁（本番ECの得意先・不備のある設定は拒否）', () => {
-  assert.ok(/本番ECの得意先/.test(EC.testSendGuard(Object.assign({}, TI, { customerCode: '599801' }), DEFAULT_CONFIG)));
-  assert.ok(/本番ECの得意先/.test(EC.testSendGuard(Object.assign({}, TI, { customerCode: '599802' }), DEFAULT_CONFIG)));
-  assert.ok(EC.testSendGuard(null, DEFAULT_CONFIG));
+t('テスト送信：安全弁（得意先が設定にない・納品先コードが連番の範囲内・印なし・明細なしは拒否）', () => {
+  assert.ok(/config\.customers/.test(EC.testSendGuard(Object.assign({}, TI, { customerCode: '110101' }), DEFAULT_CONFIG)));
+  assert.ok(/連番の範囲/.test(EC.testSendGuard(Object.assign({}, TI, { deliveryCode: '000770' }), DEFAULT_CONFIG)));
+  assert.ok(/連番の範囲/.test(EC.testSendGuard(Object.assign({}, TI, { deliveryCode: '099999' }), DEFAULT_CONFIG)));
+  assert.strictEqual(EC.testSendGuard(Object.assign({}, TI, { deliveryCode: '100000' }), DEFAULT_CONFIG), '');
   assert.ok(EC.testSendGuard(Object.assign({}, TI, { deliveryCode: '12' }), DEFAULT_CONFIG));
+  assert.ok(/poPrefix/.test(EC.testSendGuard(Object.assign({}, TI, { poPrefix: '' }), DEFAULT_CONFIG)));
+  assert.ok(EC.testSendGuard(null, DEFAULT_CONFIG));
   assert.ok(EC.testSendGuard(Object.assign({}, TI, { lines: [] }), DEFAULT_CONFIG));
-  const r = EC.buildTestImport(Object.assign({}, TI, { customerCode: '599801' }), DEFAULT_CONFIG, tOpt());
+  const r = EC.buildTestImport(Object.assign({}, TI, { deliveryCode: '000770' }), DEFAULT_CONFIG, tOpt());
   assert.ok(r.error && !r.slips);                                          // 拒否されたら取込データは作らない
 });
-t('テスト送信：仮の注文1件（2行・手配区分1と2・翌営業日・社内メモ・テスト用の得意先）', () => {
+t('テスト送信：仮の注文だと一目で分かる（客先注番 TEST…・社内メモ・納品先名）。2行・手配区分はすべて2・翌営業日', () => {
   const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), s = r.slips[0];
   assert.strictEqual(r.slips.length, 1);
-  assert.strictEqual(r.id, 'TEST2610161230');
-  assert.deepStrictEqual(s.lines.map(l => [l.code, l.qty, l.unitNet, l.amountNet, l.teihai]), [['TC', 1, 7000, 7000, '1'], ['FR', 1, 1500, 1500, '2']]);
+  assert.strictEqual(r.id, 'TEST2610161230'); assert.strictEqual(s.po, 'TEST2610161230');
+  assert.deepStrictEqual(s.lines.map(l => [l.code, l.qty, l.unitNet, l.amountNet, l.teihai]), [['FR', 1, 1500, 1500, '2'], ['FR', 1, 500, 500, '2']]);   // 単価を変えて2行（同じ品目・同じ単価だと取込側で1行にまとまることがある）
   assert.strictEqual(s.shipDate, '2026-10-19');                            // 金曜の翌営業日＝月曜
-  assert.strictEqual(s.memo, '花岡EC（テスト送信）'); assert.strictEqual(s.cust, '110101');
-  assert.strictEqual(r.net, 8500); assert.strictEqual(r.gross, 9350);
+  assert.strictEqual(s.memo, '花岡EC（テスト送信）'); assert.strictEqual(s.delivery.name, 'テスト納品先（削除予定）');
+  assert.strictEqual(r.net, 2000); assert.strictEqual(r.gross, 2200);
   assert.strictEqual(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ today: '2026-10-15' })).slips[0].shipDate, '2026-10-16');
 });
-t('テスト送信：客先注番は毎回ユニーク。数字の部分で照合できる', () => {
+t('テスト送信：客先注番は毎回ユニークで、数字部分（10桁）は本番の注文番号と衝突しない。TEST で本番の注文と見分けられる', () => {
   const a = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()).id, b = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ stamp: '2610161231' })).id;
-  assert.notStrictEqual(a, b); assert.ok(/^TEST\d{10}$/.test(a)); assert.ok(a.replace(/\D/g, '').length === 10);
+  assert.notStrictEqual(a, b); assert.ok(/^TEST\d{10}$/.test(a));
+  assert.strictEqual(a.replace(/\D/g, '').length, 10);                      // 本番の注文番号（4桁など）とは桁が違う
+  assert.ok(EC.isTestPo(a, 'TEST') && EC.isTestPo('test2610161230', 'TEST'));
+  assert.ok(!EC.isTestPo('1801', 'TEST') && !EC.isTestPo('', 'TEST') && !EC.isTestPo('TEST1', ''));
+});
+t('テスト送信：取込ファイル（受注）は東京の得意先・担当・部門・倉庫で、客先注番は TEST…、社内メモ・納品先 999998', () => {
+  const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), J = L.juchu;
+  const rows = EC.juchuRows(r.slips, J, DEFAULT_CONFIG);
+  assert.strictEqual(rows.length, 2);
+  const col = n => J.indexOf(n);
+  assert.deepStrictEqual([rows[0][col('得意先コード')], rows[0][col('得意先名１')], rows[0][col('担当者コード')], rows[0][col('部門コード')], rows[0][col('倉庫コード')], rows[0][col('納品先コード')], rows[0][col('客先注番')], rows[0][col('社内メモ')]],
+    ['599801', '直販EC 東京', '000157', '002220', DEFAULT_CONFIG.warehouse, '999998', 'TEST2610161230', '花岡EC（テスト送信）']);
+  // 製番・製造手配が作られない形（FR と同じ）：手配区分 2・製造数量 0.00・製造納期 0・当初製造納期 0。品目は FR だけ
+  rows.forEach(x => assert.deepStrictEqual([x[col('品目コード')], x[col('手配区分')], x[col('製造数量')], x[col('製造納期')], x[col('当初製造納期')]], ['FR', '2', '0.00', '0', '0']));
+  assert.deepStrictEqual(rows.map(x => x[col('単価')]), ['1500.00', '500.00']);
+  // 本番の注文（客先注番は数字だけ）は今までどおり
+  const real = EC.buildSlip(order(), ctx); real.deliveryCode = '000001'; real.delivery = { name: 'x' }; real.shipDate = '2026-10-19';
+  assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][col('客先注番')], '1800');
+  assert.ok(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ items: {} })).error);   // 品目マスタにない品目はエラー
+});
+t('テスト送信：テスト行の品目は「手配区分2・在庫管理なし」だけ。マスタの品目がそれに当たらなければ拒否（製番・製造手配を作らない）', () => {
+  assert.deepStrictEqual([TI.safeTeihai, TI.safeStock], ['2', '行わない']);
+  assert.ok(TI.lines.every(l => l.code === 'FR'));                          // 設定の明細は FR（運賃）だけ。TC など製番が付く品目は使わない
+  const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt());
+  assert.ok(!r.error && r.slips[0].lines.every(l => String(l.teihai) === TI.safeTeihai && TITEMS[l.code].stock === TI.safeStock));
+  const refuse = (items, re) => { const x = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ items })); assert.ok(x.error && re.test(x.error), x.error); assert.ok(!x.slips); };
+  refuse({ FR: Object.assign({}, TITEMS.FR, { teihai: '1' }) }, /製番・製造手配が作られる可能性/);                // 手配区分が 1 に変わった
+  refuse({ FR: Object.assign({}, TITEMS.FR, { stock: '行う' }) }, /製番・製造手配が作られる可能性/);            // 在庫管理が「行う」に変わった
+  refuse({ FR: Object.assign({}, TITEMS.FR, { teihai: '1', stock: '行う' }) }, /製番・製造手配が作られる可能性/);
+  refuse({ FR: { name: 'ｳﾝﾁﾝ', unit: '式', teihai: '2' } }, /在庫管理区分をマスタで確認できません/);            // 在庫管理の列が読めない（索引が古い）
+  refuse({ FR: Object.assign({}, TITEMS.FR, { stock: '' }) }, /在庫管理区分をマスタで確認できません/);
+  // テーブルコンテナ（手配区分1・在庫管理あり）をテストに入れようとしても送らない
+  const tc = EC.buildTestImport(Object.assign({}, TI, { lines: [{ code: 'TC', qty: 1, unitNet: 7000 }] }), DEFAULT_CONFIG, tOpt());
+  assert.ok(tc.error && /TC/.test(tc.error) && !tc.slips);
+  // 条件の設定が無ければ拒否
+  assert.ok(/safeTeihai/.test(EC.testSendGuard(Object.assign({}, TI, { safeTeihai: '' }), DEFAULT_CONFIG)));
+  assert.ok(/safeStock/.test(EC.testSendGuard(Object.assign({}, TI, { safeStock: undefined }), DEFAULT_CONFIG)));
+  // 本番の注文（手配区分1の本体）は従来どおり製番が付く形のまま（テスト送信のための変更を入れていない）
+  const real = EC.buildSlip(order(), ctx); real.deliveryCode = '000001'; real.delivery = { name: 'x' }; real.shipDate = '2026-10-19';
+  const jr = EC.juchuRows([real], L.juchu, DEFAULT_CONFIG), jc = n => L.juchu.indexOf(n);
+  assert.deepStrictEqual([jr[0][jc('手配区分')], jr[0][jc('製造数量')]], ['1', '1.00']);
+  assert.notStrictEqual(jr[0][jc('製造納期')], '0');
 });
 t('テスト送信：納品先 999998 が無ければ新規（納品先ファイルを作る）、あれば作らない', () => {
   const fresh = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt());
   assert.strictEqual(fresh.fresh.length, 1); assert.strictEqual(fresh.slips[0].deliveryNew, true);
   const rows = EC.nouhinRows(fresh.fresh, L.nouhin, DEFAULT_CONFIG)[0];
-  assert.deepStrictEqual([rows[0], rows[1], rows[2], rows[6], rows[7], rows[11]], ['110101', '999998', 'テスト納品先（削除予定）', '143-0006', '東京都大田区平和島3-1-7', '03-3765-5626']);
+  assert.deepStrictEqual([rows[0], rows[1], rows[2]], ['599801', '999998', 'テスト納品先（削除予定）']);
   const had = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ deliveryCodes: { '999998': true } }));
   assert.strictEqual(had.fresh.length, 0); assert.strictEqual(had.slips[0].deliveryNew, false);
 });
-t('テスト送信：取込ファイル（受注）の中身と、品目マスタにない品目はエラー', () => {
-  const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), J = L.juchu;
-  const rows = EC.juchuRows(r.slips, J, EC.testCfg(TI, DEFAULT_CONFIG));
-  assert.strictEqual(rows.length, 2);
-  const col = n => J.indexOf(n);
-  assert.deepStrictEqual([rows[0][col('得意先コード')], rows[0][col('担当者コード')], rows[0][col('部門コード')], rows[0][col('倉庫コード')], rows[0][col('納品先コード')], rows[0][col('客先注番')], rows[0][col('社内メモ')]],
-    ['110101', '900230', '002220', '000105', '999998', '2610161230', '花岡EC（テスト送信）']);
-  assert.deepStrictEqual([rows[0][col('手配区分')], rows[1][col('手配区分')]], ['1', '2']);
-  assert.ok(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ items: { FR: TITEMS.FR } })).error);
+t('テスト送信：納品先 999998 は納品先コードの連番の計算に混ざらない（deliveryCodeLimit で除外）', () => {
+  assert.strictEqual(DEFAULT_CONFIG.deliveryCodeLimit, '099999');
+  const row = (code) => ({ '得意先ｺｰﾄﾞ': '599801', '納品先ｺｰﾄﾞ': code, '納品先名': 'x' + code, '郵便番号': '100-0001' });
+  const m = EC.indexDeliveryMaster([row('000001'), row('000770'), row('999998')], DEFAULT_CONFIG);
+  assert.strictEqual(m['599801'].max, '000770');                           // 999998 は最大コードにならない
+  assert.ok(m['599801'].used['999998']);                                    // 使用済みのコードとしては数える（再利用しない）
+  const mk = (id) => { const s = EC.buildSlip(order({ id, name: '#' + id, ship: { name: '新規' + id, company: '', zip: '100-0003', province: '東京都', city: '千代田区', addr1: 'x', addr2: '', phone: '0312345678' } }), Object.assign({}, ctx, { items: ITEMS })); s.cust = '599801'; return s; };
+  const slips = [mk('1901'), mk('1902')];
+  EC.planDeliveries(slips, m, DEFAULT_CONFIG, { reuse: true });
+  assert.deepStrictEqual(slips.map(s => s.deliveryCode), ['000771', '000772']);   // 連番は 000770 の次から。999998・999999 にはならない
+  // 連番が 999998 に届く前に、上限（099999）を超えるときは範囲内のコードが尽きる＝テスト用コードとは別の範囲
+  assert.ok('999998' > DEFAULT_CONFIG.deliveryCodeLimit);
 });
-t('テスト送信：突き合わせ（一致・金額違い）。本番ECの注文は対象外', () => {
+t('テスト送信：TEST の注文は本番の件数・二重取込の確認に出ない（索引・CSVのどちらから読んでも除外）', () => {
+  const rows = [
+    { '得意先コード': '599801', '客先注番': '1802' }, { '得意先コード': '599801', '客先注番': 'TEST2610161230' }, { '得意先ｺｰﾄﾞ': '599802', '客先注番': 'test2610161231' }];
+  const real = rows.filter(r => !EC.isTestPo(EC.pick(r, ['客先注番']), TI.poPrefix));
+  assert.deepStrictEqual(real.map(r => EC.pick(r, ['客先注番'])), ['1802']);
+  // 数字だけで照合する二重取込の確認（smileOrders）に、テスト送信の注文番号（数字10桁）が入っても、本番の注文番号（4桁）とは一致しない
+  const o = EC.buildSlip(order({ id: '2610161230', name: '#2610161230' }), Object.assign({}, ctx, { smileOrders: {} }));
+  assert.ok(!o.inSmile);
+});
+t('テスト送信：突き合わせ（一致・金額違い）。TEST の客先注番でも数字で照合でき、別の得意先の同じ注文番号は見つからない扱い', () => {
   const r = EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt()), J = L.juchu, N = L.nouhin;
   const expected = EC.expectedImport(r.slips, r.fresh);
-  const jobjs = EC.juchuRows(r.slips, J, EC.testCfg(TI, DEFAULT_CONFIG)).map(x => { const o = {}; J.forEach((h, i) => { o[h] = x[i]; }); o['受注№'] = '70001'; return o; });
+  const jobjs = EC.juchuRows(r.slips, J, DEFAULT_CONFIG).map(x => { const o = {}; J.forEach((h, i) => { o[h] = x[i]; }); o['受注№'] = '70001'; return o; });
   const nobjs = EC.nouhinRows(r.fresh, N, DEFAULT_CONFIG).map(x => { const o = {}; N.forEach((h, i) => { o[h] = x[i]; }); return o; });
   const ok = EC.verifyImport(expected, jobjs, nobjs);
   assert.strictEqual(ok.orders[r.id].status, 'ok'); assert.strictEqual(ok.orders[r.id].juchuNo, '70001'); assert.strictEqual(ok.deliveries['999998'].status, 'ok');
   const bad = JSON.parse(JSON.stringify(jobjs)); bad[1]['金額'] = '1499';
   assert.ok(EC.verifyImport(expected, bad, nobjs).orders[r.id].diffs.some(d => d.field === 'amount' && d.line === 2));
-  // 同じ客先注番が本番EC の得意先にあっても、得意先が違えば見つからない扱い
   const other = jobjs.map(o => Object.assign({}, o, { '得意先コード': '599802' }));
   assert.strictEqual(EC.verifyImport(expected, other, nobjs).orders[r.id].status, 'missing');
 });
@@ -411,6 +474,14 @@ if (fs.existsSync(SM + '請求明細出力.txt') && fs.existsSync(SH + 'orders_e
       if (net === s.netTotal) okA++;
     });
     assert.ok(cmp > 200, '比較件数 ' + cmp); assert.ok(okA / cmp > 0.95, '金額一致 ' + okA + '/' + cmp);
+  });
+}
+// 実際の品目マスタで、テスト送信の品目が「手配区分2・在庫管理なし」に当たること（手元にあるPCだけ）
+if (fs.existsSync(SM + '品目マスタ.csv')) {
+  t('実データ：品目マスタで、テスト送信の品目（FR）は 手配区分2・在庫管理なし。TC は当たらない（製番が付く）', () => {
+    const real = {}; EC.parseObjects(fs.readFileSync(SM + '品目マスタ.csv', 'utf8')).forEach(r => { real[r['品目ｺｰﾄﾞ']] = { name: r['品目名'], unit: r['単位'], teihai: r['初期表示用手配区分'], stock: r['在庫管理区分名'] }; });
+    assert.ok(!EC.buildTestImport(TI, DEFAULT_CONFIG, { items: real, today: '2026-10-16', stamp: '2610161230' }).error);
+    assert.ok(EC.buildTestImport(Object.assign({}, TI, { lines: [{ code: 'TC', qty: 1, unitNet: 7000 }] }), DEFAULT_CONFIG, { items: real, today: '2026-10-16', stamp: '2610161230' }).error);
   });
 }
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

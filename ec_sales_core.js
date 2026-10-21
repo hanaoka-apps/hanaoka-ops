@@ -597,7 +597,7 @@
     var rows = [], seq = 0;
     slips.slice().sort(function (a, b) { return a.orderDate === b.orderDate ? (+a.id - +b.id) : (a.orderDate < b.orderDate ? -1 : 1); }).forEach(function (s) {
       seq++;
-      var ship = EC.ymd(s.shipDate), po = digits(s.id);
+      var ship = EC.ymd(s.shipDate), po = s.po || digits(s.id);   // テスト送信の注文だけ客先注番が TEST…（s.po）
       var mfg = EC.ymd(cal.prev(s.shipDate));
       s.lines.forEach(function (l, i) {
         var o = new Array(header.length).fill('');
@@ -817,36 +817,60 @@
   };
 
   /* ============================================================ テスト送信（管理者メニュー）
-   * SMILE のテスト用得意先に、仮の注文を1件だけ送って、取込〜突き合わせを通しで試す。本番EC の得意先・注文には触らない。 */
-  // 安全弁：テスト用の得意先が本番EC の得意先と同じなら、理由（文字）を返す。問題なければ ''
+   * EC売上の東京（599801）に、テストと分かる仮の注文を1件と、テスト用の納品先（999998）を送って、取込〜突き合わせを通しで試す。
+   * 客先注番が TEST…、社内メモが『花岡EC（テスト送信）』、納品先名が『テスト納品先（削除予定）』で、本番の注文と見分けられる。
+   * 納品先 999998 は連番の範囲の外（deliveryCodeLimit より大きい）なので、納品先コードの連番の計算には混ざらない。
+   * SMILE に入っている間は、東京の売上・日報に載りうる（終わったら SMILE で受注伝票と納品先を削除する）。 */
+  // 安全弁：テスト送信の設定に問題があれば、理由（文字）を返す。問題なければ ''
+  //   ・得意先は EC売上の得意先の設定（config.customers。名前・担当者・部門はそこから引く）にあること
+  //   ・納品先コードは、連番の範囲（deliveryCodeLimit 以下）の外であること（連番の計算に絶対に混ぜないため）
+  //   ・客先注番の先頭の印（poPrefix）があること（本番の注文と見分け、本番の件数に混ぜないため）
+  //   ・テスト行の品目は、製番・製造手配・在庫引当が起きないものだけ（手配区分 safeTeihai＝2:繰返(以外)・在庫管理 safeStock＝行わない）。
+  //     品目マスタで確かめ（buildTestImport）、当たらなければ送らない
+  //   ・テスト行の品目は、製番・製造手配・在庫引当が起きないものだけ（手配区分 safeTeihai＝2:繰返(以外)・在庫管理 safeStock＝行わない）。
+  //     品目マスタで確かめ（buildTestImport）、当たらなければ送らない
   EC.testSendGuard = function (tc, cfg) {
     if (!tc || !tc.customerCode) return 'テスト送信の設定（testImport）がありません';
     var code = String(tc.customerCode);
-    if ((cfg.customers && cfg.customers[code]) || code === cfg.defaultCustomer || code === cfg.earlyCustomer) return 'テスト用の得意先（' + code + '）が本番ECの得意先と同じです。テスト送信は行いません';
-    if (!/^\d{6}$/.test(String(tc.deliveryCode || ''))) return 'テスト用の納品先コードが6桁の数字ではありません';
+    if (!cfg.customers || !cfg.customers[code]) return 'テスト送信の得意先（' + code + '）が、EC売上の得意先の設定（config.customers）にありません';
+    var dc = String(tc.deliveryCode || '');
+    if (!/^\d{6}$/.test(dc)) return 'テスト用の納品先コードが6桁の数字ではありません';
+    if (cfg.deliveryCodeLimit && dc <= String(cfg.deliveryCodeLimit)) return 'テスト用の納品先コード（' + dc + '）が、納品先コードの連番の範囲（' + cfg.deliveryCodeLimit + ' 以下）に入っています。連番の計算に混ざるため、テスト送信は行いません';
+    if (!tc.poPrefix) return 'テスト用の客先注番の印（poPrefix）がありません。本番の注文と見分けられないため、テスト送信は行いません';
+    if (!tc.safeTeihai || !tc.safeStock) return 'テスト用の品目の条件（safeTeihai・safeStock）がありません。製番・製造手配が作られる品目を使わないための条件なので、テスト送信は行いません';
+    if (!tc.safeTeihai || !tc.safeStock) return 'テスト用の品目の条件（safeTeihai・safeStock）がありません。製番・製造手配が作られる品目を使わないための条件なので、テスト送信は行いません';
     if (!tc.lines || !tc.lines.length) return 'テスト用の明細がありません';
     return '';
   };
-  // 取込（juchuRows）に渡す設定：倉庫だけテスト用の値に差し替える
-  EC.testCfg = function (tc, cfg) { return Object.assign({}, cfg, { warehouse: tc.warehouse || cfg.warehouse }); };
-  // 仮の注文を1件。opt = { items:{code:{name,unit,teihai}}, cal, today:'YYYY-MM-DD', stamp:'yymmddHHMM', deliveryCodes:{コード:true}（テスト用得意先の納品先マスタにあるコード） }
+  // 客先注番がテスト送信のもの（先頭が印。大文字小文字は区別しない）か。本番の注文・件数・二重取込の確認には入れない
+  EC.isTestPo = function (po, prefix) {
+    return !!prefix && String(po == null ? '' : po).toUpperCase().indexOf(String(prefix).toUpperCase()) === 0;
+  };
+  // 仮の注文を1件。得意先の名前・担当者・部門は cfg.customers から、倉庫は cfg.warehouse から引く（testImport に重ねて書かない）。
+  // opt = { items:{code:{name,unit,teihai}}, cal, today:'YYYY-MM-DD', stamp:'yymmddHHMM', deliveryCodes:{コード:true}（この得意先の納品先マスタにあるコード） }
   // 戻り値 { error } か { id, slips:[slip], fresh:[新規納品先], net, gross }。slip は juchuRows / expectedImport にそのまま渡せる
   EC.buildTestImport = function (tc, cfg, opt) {
     var err = EC.testSendGuard(tc, cfg);
     if (err) return { error: err };
-    var cal = opt.cal || EC.makeCalendar(cfg), items = opt.items || {};
-    // 客先注番：テストと分かる形で毎回ユニーク（突き合わせは数字で照合するので、数字部分 yymmddHHMM がユニーク）
-    var id = (tc.poPrefix || 'TEST') + opt.stamp;
+    var cal = opt.cal || EC.makeCalendar(cfg), items = opt.items || {}, cinfo = cfg.customers[tc.customerCode];
+    // 客先注番：TEST ＋ yymmddHHMM。数字部分（10桁）は毎回ユニークで、本番の注文番号とは衝突しない。突き合わせは数字で照合する
+    var id = tc.poPrefix + opt.stamp;
     var lines = [], i, l, m;
     for (i = 0; i < tc.lines.length; i++) {
       l = tc.lines[i]; m = items[l.code];
       if (!m) return { error: '品目マスタにない品目コードです：' + l.code };
+      // 製番・製造手配が SMILE に残らないよう、手配区分と在庫管理がテスト用の条件に当たる品目だけを使う（マスタが変わったときの安全弁）
+      if (m.stock == null || m.stock === '') return { error: '品目 ' + l.code + ' の在庫管理区分をマスタで確認できません（専用機の build_ec_index が古い可能性）。製番・製造手配が作られないことを確かめられないため、テスト送信は行いません' };
+      if (String(m.teihai) !== String(tc.safeTeihai) || m.stock !== tc.safeStock) return { error: '品目 ' + l.code + ' は、製番・製造手配が作られる可能性があります（手配区分 ' + m.teihai + '・在庫管理 ' + m.stock + '。テスト用は 手配区分 ' + tc.safeTeihai + '・在庫管理 ' + tc.safeStock + ' のみ）。テスト送信は行いません' };
+      // 製番・製造手配が SMILE に残らないよう、手配区分と在庫管理がテスト用の条件に当たる品目だけを使う（マスタが変わったときの安全弁）
+      if (m.stock == null || m.stock === '') return { error: '品目 ' + l.code + ' の在庫管理区分をマスタで確認できません（専用機の build_ec_index が古い可能性）。製番・製造手配が作られないことを確かめられないため、テスト送信は行いません' };
+      if (String(m.teihai) !== String(tc.safeTeihai) || m.stock !== tc.safeStock) return { error: '品目 ' + l.code + ' は、製番・製造手配が作られる可能性があります（手配区分 ' + m.teihai + '・在庫管理 ' + m.stock + '。テスト用は 手配区分 ' + tc.safeTeihai + '・在庫管理 ' + tc.safeStock + ' のみ）。テスト送信は行いません' };
       lines.push({ code: l.code, name: m.name, unit: m.unit, teihai: m.teihai || '1', qty: l.qty, unitNet: l.unitNet, amountNet: l.qty * l.unitNet, kind: 'test', label: 'テスト' });
     }
     var exists = !!(opt.deliveryCodes && opt.deliveryCodes[tc.deliveryCode]);
     var d = { name: tc.deliveryName, person: '', zip: tc.zip || '', addr1: tc.addr1 || '', addr2: tc.addr2 || '', tel: tc.tel || '' };
     var net = lines.reduce(function (a, x) { return a + x.amountNet; }, 0);
-    var slip = { id: id, name: id, orderDate: opt.today, cust: tc.customerCode, custName: tc.customerName, staff: tc.staff, dept: tc.dept,
+    var slip = { id: id, po: id, name: id, orderDate: opt.today, cust: tc.customerCode, custName: cinfo.name, staff: cinfo.staff, dept: cinfo.dept,
       lines: lines, flags: [], shipDate: cal.add(opt.today, tc.leadBusinessDays == null ? 1 : tc.leadBusinessDays), memo: tc.memo,
       deliveryCode: tc.deliveryCode, deliveryNew: !exists, delivery: d, netTotal: net, grossTotal: Math.round(net * 1.1), isTest: true };
     var fresh = exists ? [] : [{ cust: tc.customerCode, code: tc.deliveryCode, d: d, orderId: id }];

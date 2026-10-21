@@ -148,61 +148,78 @@ class BuildEcIndexTest(unittest.TestCase):
         self.assertNotIn('テスト様', o2.getvalue())
 
 
-class TestCustomersTest(BuildEcIndexTest):
-    """テスト送信用の得意先（testImport.customerCode）は、本番ECとは分けて持つ"""
+class TestSendTest(BuildEcIndexTest):
+    """テスト送信（EC売上の東京 599801 に TEST… の注文と納品先 999998）は、本番の受注・件数・連番に混ぜない"""
 
     def write_with_test_rows(self):
         self.write_all()
         self.write('受注明細出力.csv', tsv([JUCHU_HEAD,
                                          juchu_row('90001', 1, '599802', '1801'),
+                                         juchu_row('90002', 1, '599801', '1802'),
                                          juchu_row('80001', 1, '000123', '9999'),
-                                         juchu_row('70001', 1, '110101', '2610161230', memo='花岡EC（テスト送信）'),
-                                         juchu_row('70001', 2, '110101', '2610161230', code='FR')], quote_all=True))
+                                         juchu_row('70001', 1, '599801', 'TEST2610161230', memo='花岡EC（テスト送信）'),
+                                         juchu_row('70001', 2, '599801', 'TEST2610161230', code='FR'),
+                                         juchu_row('70002', 1, '599802', 'test2610161231')], quote_all=True))   # 小文字でも印として扱う
         self.write('納品先マスタ.csv', '得意先ｺｰﾄﾞ,納品先ｺｰﾄﾞ,納品先名,納品先索引,荷受け人名１,荷受け人名２,郵便番号,住所１,住所２,住所３,電話番号\r\n'
-                   '599802,000001,既存様,,,,100-0001,東京都,,,03-0000-0000\r\n'
-                   '110101,999998,テスト納品先（削除予定）,,,,143-0006,東京都大田区,,,03-3765-5626\r\n'
-                   '110101,000249,別の納品先,,,,,,,,\r\n')
+                   '599801,000001,既存様,,,,100-0001,東京都,,,03-0000-0000\r\n'
+                   '599801,000770,新規様,,,,100-0002,東京都,,,03-1111-2222\r\n'
+                   '599801,999998,テスト納品先（削除予定）,,,,100-0001,東京都千代田区千代田,1-1（テスト）,,03-0000-0000\r\n')
 
-    def test_テスト用の得意先は別に持つ(self):
-        self.write_with_test_rows()
+    def build_idx(self, **kw):
         with redirect_stdout(io.StringIO()):
-            B.build(self.dir, ['599801', '599802'], test_customers=['110101'])
-        idx = self.read_index()
+            B.build(self.dir, ['599801', '599802'], **kw)
+        return self.read_index()
+
+    def test_TESTの注文は本番の受注に入れず分けて持つ(self):
+        self.write_with_test_rows()
+        idx = self.build_idx()
         co = [dict(zip(idx['orders']['cols'], r)) for r in idx['orders']['rows']]
         to = [dict(zip(idx['testOrders']['cols'], r)) for r in idx['testOrders']['rows']]
-        self.assertEqual([r['客先注番'] for r in co], ['1801'])                      # 本番ECにテストは混ざらない
-        self.assertEqual([r['客先注番'] for r in to], ['2610161230', '2610161230'])
-        self.assertEqual({r['得意先コード'] for r in to}, {'110101'})
-        self.assertEqual(idx['testCustomers'], ['110101'])
-        self.assertEqual(len(idx['nouhin']['rows']), 1)                               # 本番ECの納品先だけ
-        self.assertEqual([r[1] for r in idx['testNouhin']['rows']], ['999998', '000249'])
-        self.assertEqual(idx['nouhin']['maxCode'], {'599802': '000001'})              # 最大コードにテストの 999998 は入らない
+        self.assertEqual([r['客先注番'] for r in co], ['1801', '1802'])                      # 本番ECの二重取込確認に TEST は出ない
+        self.assertEqual([r['客先注番'] for r in to], ['TEST2610161230', 'TEST2610161230', 'test2610161231'])
+        self.assertEqual(idx['testPoPrefix'], 'TEST')
+        self.assertEqual({r['得意先コード'] for r in to}, {'599801', '599802'})            # 得意先は本番ECのまま（東京）
 
-    def test_テスト用の得意先が本番ECと同じなら無視する(self):
+    def test_納品先999998は最大コードの計算に入れない(self):
         self.write_with_test_rows()
-        with redirect_stdout(io.StringIO()):
-            B.build(self.dir, ['599801', '599802'], test_customers=['599802'])
-        idx = self.read_index()
+        idx = self.build_idx()
+        self.assertEqual(idx['nouhin']['maxCode'], {'599801': '000770'})                  # 999998 は連番の上限（099999）より大きい
+        codes = [r[1] for r in idx['nouhin']['rows']]
+        self.assertIn('999998', codes)                                                     # マスタには出る（使用済みコードとして、アプリがテスト送信の有無を見るため）
+        self.assertEqual(self.build_idx(delivery_code_limit='999999')['nouhin']['maxCode'], {'599801': '999998'})   # 上限を変えれば入る＝上限で除外している
+
+    def test_品目に手配区分と在庫管理区分を持つ(self):
+        """テスト送信は「手配区分2・在庫管理なし」の品目だけを使うので、アプリがマスタで確かめられるよう両方を持つ"""
+        self.write_with_test_rows()
+        self.write('品目マスタ.csv', '品目ｺｰﾄﾞ,品目名,単位,在庫管理区分,在庫管理区分名,初期表示用手配区分,初期表示用手配区分名\r\n'
+                   'FR,ｳﾝﾁﾝ,式,1,行わない,2,繰返(以外)\r\nTC,ﾃｰﾌﾞﾙｺﾝﾃﾅ,個,0,行う,1,繰返(製作)\r\n')
+        idx = self.build_idx()
+        items = {r[0]: dict(zip(idx['items']['cols'], r)) for r in idx['items']['rows']}
+        self.assertEqual((items['FR']['初期表示用手配区分'], items['FR']['在庫管理区分名']), ('2', '行わない'))
+        self.assertEqual((items['TC']['初期表示用手配区分'], items['TC']['在庫管理区分名']), ('1', '行う'))
+        # 在庫管理区分名の列が無い古い形式のマスタでも作れる（空になる。アプリは「確認できない」として送信しない）
+        self.write('品目マスタ.csv', '品目ｺｰﾄﾞ,品目名,単位,初期表示用手配区分\r\nFR,ｳﾝﾁﾝ,式,2\r\n')
+        idx = self.build_idx()
+        self.assertEqual(dict(zip(idx['items']['cols'], idx['items']['rows'][0]))['在庫管理区分名'], '')
+
+    def test_印を空にすれば分けない(self):
+        self.write_with_test_rows()
+        idx = self.build_idx(test_po_prefix='')
         self.assertNotIn('testOrders', idx)
-        self.assertNotIn('testCustomers', idx)
+        self.assertEqual(len(idx['orders']['rows']), 5)
 
-    def test_指定が無ければテスト用は出さない(self):
-        self.write_with_test_rows()
-        with redirect_stdout(io.StringIO()):
-            B.build(self.dir, ['599801', '599802'])
-        self.assertNotIn('testOrders', self.read_index())
-
-    def test_設定ファイルから得意先を読む(self):
+    def test_設定ファイルから得意先と印と上限を読む(self):
         self.write_with_test_rows()
         conf = os.path.join(self.dir, 'conf.json')
         with open(conf, 'w', encoding='utf-8') as f:
-            json.dump({'config': {'customers': {'599802': {}}}, 'testImport': {'customerCode': '110101'}}, f)
+            json.dump({'config': {'customers': {'599801': {}}, 'deliveryCodeLimit': '099999'}, 'testImport': {'poPrefix': 'TEST'}}, f)
         with redirect_stdout(io.StringIO()):
             self.assertEqual(B.main(['--dir', self.dir, '--config', conf]), 0)
         idx = self.read_index()
-        self.assertEqual(idx['customers'], ['599802'])                                # 設定の customers のキーだけ
-        self.assertEqual(idx['testCustomers'], ['110101'])
+        self.assertEqual(idx['customers'], ['599801'])                                    # 設定の customers のキーだけ
+        self.assertEqual({dict(zip(idx['orders']['cols'], r))['客先注番'] for r in idx['orders']['rows']}, {'1802'})
         self.assertEqual(len(idx['testOrders']['rows']), 2)
+        self.assertEqual(idx['nouhin']['maxCode'], {'599801': '000770'})
         with redirect_stdout(io.StringIO()):
             self.assertEqual(B.main(['--dir', self.dir, '--config', os.path.join(self.dir, 'なし.json')]), 1)
 
@@ -210,12 +227,13 @@ class TestCustomersTest(BuildEcIndexTest):
         self.write_with_test_rows()
         conf = os.path.join(self.dir, 'conf.json')
         with open(conf, 'w', encoding='utf-8') as f:
-            json.dump({'config': {'customers': {'599802': {}}}, 'testImport': {'customerCode': '110101'}}, f)
+            json.dump({'config': {'customers': {'599801': {}}}, 'testImport': {'poPrefix': 'TEST'}}, f)
         with redirect_stdout(io.StringIO()):
-            B.main(['--dir', self.dir, '--config', conf, '--customers', '599801,599802', '--test-customers', '000123'])
+            B.main(['--dir', self.dir, '--config', conf, '--customers', '599801,599802', '--test-po-prefix', 'ZZ'])
         idx = self.read_index()
         self.assertEqual(idx['customers'], ['599801', '599802'])
-        self.assertEqual(idx['testCustomers'], ['000123'])
+        self.assertEqual(idx['testPoPrefix'], 'ZZ')
+        self.assertEqual(len(idx['testOrders']['rows']), 0)                               # ZZ で始まる注文は無い（TEST は本番扱い）
 
 
 if __name__ == '__main__':
