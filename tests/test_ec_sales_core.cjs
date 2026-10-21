@@ -457,6 +457,81 @@ t('テスト送信：突き合わせ（一致・金額違い）。TEST の客先
   assert.strictEqual(EC.verifyImport(expected, other, nobjs).orders[r.id].status, 'missing');
 });
 
+/* ---------- 取込後の流れ（確認待ち → 確認OK）と、担当者への報告 ---------- */
+t('状態の遷移：突合が一致 → 確認待ち（自動で起票済みにしない）／一致しない・見つからない → 要確認', () => {
+  assert.strictEqual(EC.matchToStatus({ status: 'ok' }), 'confirm');
+  assert.strictEqual(EC.matchToStatus({ status: 'ng' }), 'check');
+  assert.strictEqual(EC.matchToStatus({ status: 'missing' }), 'check');
+  assert.strictEqual(EC.matchToStatus(null), 'check');
+});
+t('確認OK：管理者だけ・確認待ちの注文だけ。押した人と日時を記録する', () => {
+  const rec = { status: 'confirm', juchuNo: '90001' };
+  assert.deepStrictEqual(EC.confirmOk(rec, 'user@example.com', '2026-10-21T01:00:00Z', false), { ok: false, error: '確認OKは管理者だけが行えます' });
+  assert.strictEqual(rec.status, 'confirm');                               // 管理者でなければ何も変わらない
+  for (const st of ['ok', 'importing', 'check', 'exported', undefined]) {
+    const r2 = { status: st }; assert.strictEqual(EC.confirmOk(r2, 'a@example.com', 'x', true).ok, false); assert.strictEqual(r2.status, st);
+  }
+  assert.strictEqual(EC.confirmOk(null, 'a@example.com', 'x', true).ok, false);
+  assert.deepStrictEqual(EC.confirmOk(rec, 'admin@example.com', '2026-10-21T01:00:00Z', true), { ok: true });
+  assert.deepStrictEqual([rec.status, rec.confirmedBy, rec.confirmedAt, rec.exportedBy, rec.exportedAt, rec.juchuNo], ['exported', 'admin@example.com', '2026-10-21T01:00:00Z', 'admin@example.com', '2026-10-21T01:00:00Z', '90001']);
+  assert.strictEqual(EC.confirmOk(rec, 'admin@example.com', 'y', true).ok, false);   // 二度は押せない（起票済み）
+});
+t('まとめて確認OK：確認待ちだけが対象。管理者でなければ何も変えない。取込の段階は 確認待ち → 要確認 → 起票済み の順', () => {
+  const map = { 1: { status: 'confirm' }, 2: { status: 'confirm' }, 3: { status: 'check' }, 4: { status: 'importing' } };
+  const imp = { orderIds: ['1', '2', '3'] };
+  assert.strictEqual(EC.importPhase(imp, map), 'confirm');
+  const no = EC.confirmAll(map, ['1', '2', '3', '4'], 'u', 'now', false);
+  assert.deepStrictEqual(no.done, []); assert.ok(no.error); assert.strictEqual(map[1].status, 'confirm');
+  const yes = EC.confirmAll(map, ['1', '2', '3', '4'], 'admin', 'now', true);
+  assert.deepStrictEqual(yes.done, ['1', '2']);                            // 要確認・取込中は対象外
+  assert.deepStrictEqual([map[3].status, map[4].status], ['check', 'importing']);
+  assert.strictEqual(EC.importPhase(imp, map), 'check');                   // 確認待ちが無くなり、要確認が残る
+  map[3].status = 'exported';
+  assert.strictEqual(EC.importPhase(imp, map), 'done');
+});
+const rOrders = [
+  { name: '#1801', juchuNo: '90001', shipDate: '2026-10-19', status: 'confirm' },
+  { name: '#1802', juchuNo: '90002', shipDate: '2026-10-20', status: 'confirm' },
+  { name: '#1803', juchuNo: '90003', shipDate: '2026-10-20', status: 'check', diffs: [
+    { field: 'amount', line: 1, label: '1行目 金額', expected: '14000', actual: '14001' },
+    { field: 'delivery', label: '納品先 000771', expected: '登録内容が一致', actual: '住所１：東京都千代田区千代田1-1／電話：03-1234-5678' },
+    { field: 'delivery.addr1', label: '住所１', expected: '東京都千代田区千代田1-1', actual: '別の住所' },
+    { field: 'memo', line: 1, label: '1行目 社内メモ', expected: '花岡EC 山田様', actual: 'x' }] },
+  { name: '#1804', status: 'check', message: 'SMILE の確認用ファイルに見つかりません' }];
+t('報告本文：件数サマリ・一致した注文の「注文番号・受注№・出荷予定日」・要確認とその理由・アプリのURL', () => {
+  const parts = EC.buildReport({ batchId: 'ec-0123456789abcdef', counts: { slips: 4, fresh: 2 }, orders: rOrders, url: 'https://example.test/ec_sales.html' });
+  assert.strictEqual(parts.length, 1);
+  const p = parts[0];
+  assert.ok(p.includes('ec-0123456789abcdef'));
+  assert.ok(p.includes('取込 4件／一致 2件／要確認 2件／納品先の新規 2件'));
+  assert.ok(p.includes('・#1801　受注№ 90001　出荷予定日 10/19(月)'));
+  assert.ok(p.includes('・#1802　受注№ 90002　出荷予定日 10/20(火)'));
+  assert.ok(p.includes('#1803　受注№ 90003：1行目 金額（期待 14000／SMILE 14001）'));
+  assert.ok(p.includes('#1804：SMILE の確認用ファイルに見つかりません'));
+  assert.ok(p.includes('アプリ：https://example.test/ec_sales.html'));
+});
+t('報告本文：お客様の名前・住所・電話・社内メモの値は入れない（項目名だけ）', () => {
+  const p = EC.buildReport({ batchId: 'ec-0123456789abcdef', counts: { slips: 4, fresh: 2 }, orders: rOrders, url: 'u' }).join('\n');
+  ['千代田', '03-1234-5678', '別の住所', '山田', '登録内容が一致'].forEach(w => assert.ok(!p.includes(w), w));
+  assert.ok(p.includes('納品先 000771が違います') && p.includes('住所１が違います') && p.includes('1行目 社内メモが違います'));   // 項目名は出す
+  // 注文に配送先などの個人情報を持たせていても、本文には使われない（受け取るのは名前・受注№・出荷予定日・差分だけ）
+  const o = Object.assign({}, rOrders[0], { ship: { name: '山田花子', phone: '09012345678', addr1: '千代田1-1' }, email: 'a@example.com' });
+  const q = EC.buildReport({ batchId: 'b', counts: { slips: 1, fresh: 0 }, orders: [o], url: 'u' }).join('\n');
+  ['山田花子', '09012345678', '千代田', 'a@example.com'].forEach(w => assert.ok(!q.includes(w), w));
+});
+t('報告本文：長いときは分割する（各パートが上限以内・番号つき・全件が漏れず入る）', () => {
+  const many = []; for (let i = 0; i < 200; i++) many.push({ name: '#' + (2000 + i), juchuNo: String(91000 + i), shipDate: '2026-10-19', status: 'confirm' });
+  const parts = EC.buildReport({ batchId: 'ec-0123456789abcdef', counts: { slips: 200, fresh: 0 }, orders: many, url: 'u', maxChars: 1200 });
+  assert.ok(parts.length > 1);
+  parts.forEach((p, i) => { assert.ok(p.length <= 1200 + 20, 'パート' + i + ' が長い'); assert.ok(p.endsWith('（' + (i + 1) + '/' + parts.length + '）')); });
+  const all = parts.join('\n');
+  for (let i = 0; i < 200; i += 37) assert.ok(all.includes('#' + (2000 + i) + '　受注№ ' + (91000 + i)));
+  assert.strictEqual((all.match(/　受注№ /g) || []).length, 200);
+  // 1行が上限を超える場合は、行の途中で切って、落とさない
+  const long = EC.buildReport({ batchId: 'b', counts: { slips: 1, fresh: 0 }, orders: [{ name: '#1', status: 'check', message: 'あ'.repeat(5000) }], url: 'u', maxChars: 1000 });
+  assert.ok(long.length >= 5); assert.ok(long.join('').split('あ').length - 1 === 5000);
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';

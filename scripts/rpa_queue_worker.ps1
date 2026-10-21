@@ -280,7 +280,9 @@ function Get-JobSteps($Def) {
 # SHARED_MASTERS_DIR で同期フォルダを直接読み書きする(アップロードは OneDrive 同期に任せる)
 # $ConfigFile(リポジトリ内のパス。例 ec_sales_config.json)を渡すと、SharedMasters に同名のファイルがあればそれを、無ければ main から取得したものを
 # --config <パス> としてスクリプトに渡す(得意先コードなどをスクリプトに埋め込まないため。アプリも同じ優先順位で設定を読む)
-function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '') {
+# $ExtraArgs＝スクリプトに渡す追加の引数(空白を含む値は呼び出し側で " で囲む)。-ShowOutput を付けると、失敗したとき標準出力の最後の1行を
+# 例外のメッセージに含める(post_teams.py のように、URL などの秘密を出力しないと決めてあるスクリプトだけに使う)
+function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '', [string[]]$ExtraArgs = @(), [switch]$ShowOutput) {
   Write-Log "$ScriptName を取得して実行します"
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   # 毎回別名で取得する。同じ名前に上書きすると、前回のファイルをウイルス対策の
@@ -306,6 +308,7 @@ function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '') {
       }
       $argText += ' --config "{0}"' -f $configPath
     }
+    if ($ExtraArgs.Count -gt 0) { $argText += ' ' + ($ExtraArgs -join ' ') }
     $env:SHARED_MASTERS_DIR = $SharedMastersPath
     # 出力先が画面でないとPythonはcp932で書き出し、絵文字の表示で止まるためUTF-8にする
     $env:PYTHONIOENCODING = 'utf-8'
@@ -316,7 +319,13 @@ function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '') {
       # (Python が失敗の理由を標準出力に出すスクリプトもあるので、両方の最後を残す。build_ec_index.py は件数だけで個人情報は出さない)
       $tail = @(Get-Content -LiteralPath $outPath -Tail 4 -Encoding UTF8 -ErrorAction SilentlyContinue) + @(Get-Content -LiteralPath $errPath -Tail 8 -Encoding UTF8 -ErrorAction SilentlyContinue) -join ' / '
       Write-Log "$ScriptName のエラー出力: $tail"
-      throw "$ScriptName が終了コード $($proc.ExitCode) で失敗しました"
+      $reason = ''
+      if ($ShowOutput) {
+        $last = @(Get-Content -LiteralPath $outPath -Tail 1 -Encoding UTF8 -ErrorAction SilentlyContinue) -join ''
+        if ($last.Length -gt 300) { $last = $last.Substring(0, 300) }
+        if ($last) { $reason = ': ' + $last }
+      }
+      throw "$ScriptName が終了コード $($proc.ExitCode) で失敗しました$reason"
     }
   } finally {
     Remove-Item -LiteralPath $scriptPath, $outPath, $errPath -Force -ErrorAction SilentlyContinue
@@ -334,6 +343,42 @@ function Invoke-After([string]$After) {
     # EC売上用の軽量ファイル ec_smile_index.json を作る(受注明細出力・納品先マスタ・品目マスタ・入金明細出力から)
     # EC の得意先・テスト送信用の得意先は ec_sales_config.json から読む(スクリプトには埋め込まない)
     'build_ec_index'   { Invoke-RepoPython 'build_ec_index.py' 'ec_sales_config.json' }
+  }
+}
+
+# 報告ジョブ(type: notify。EC売上の ec_report)：依頼の params.parts(報告の本文の配列)を Teams のチャネルへ投稿する。PAD は使わない。
+# 投稿先 URL は専用機の環境変数(既定 EC_TEAMS_WEBHOOK_URL)だけに置く。この中でも、URL をログ・エラー文に出さない。
+# 未設定なら、投稿せずに理由を例外にする(依頼の failed の error として、アプリの「報告に失敗」に出る)。
+function Invoke-Notify($Def, $Request) {
+  $parts = @($Request.params.parts | Where-Object { $null -ne $_ })
+  if ($parts.Count -eq 0) { throw '報告の本文(params.parts)がありません' }
+  $total = 0
+  foreach ($p in $parts) {
+    if (-not ([string]$p).Trim()) { throw '報告の本文に空の部分があります' }
+    $total += ([string]$p).Length
+  }
+  if ($total -gt 60000) { throw '報告の本文が長すぎます' }
+  $script = 'post_teams.py'
+  if ($Def.script) { $script = [string]$Def.script }
+  if ($script -notmatch '^[A-Za-z0-9_]+\.py$') { throw "報告のスクリプト名が正しくありません: $script" }
+  $envName = 'EC_TEAMS_WEBHOOK_URL'
+  if ($Def.webhookEnv) { $envName = [string]$Def.webhookEnv }
+  if ($envName -notmatch '^[A-Za-z0-9_]+$') { throw "環境変数の名前が正しくありません: $envName" }
+  # 常駐スクリプトの起動後にユーザー環境変数を設定した場合も、再ログオンなしで使えるようにする(値はログに出さない)
+  if (-not [Environment]::GetEnvironmentVariable($envName, 'Process')) {
+    $u = [Environment]::GetEnvironmentVariable($envName, 'User')
+    if ($u) { [Environment]::SetEnvironmentVariable($envName, $u, 'Process') }
+  }
+  if (-not [Environment]::GetEnvironmentVariable($envName, 'Process')) {
+    throw "Teams への投稿先が未設定です(専用機の環境変数 $envName に Teams の Webhook の URL を設定してください)"
+  }
+  New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+  $inPath = Join-Path $WorkDir ('report_{0}.json' -f [Guid]::NewGuid().ToString('N'))
+  try {
+    Write-JsonFile $inPath ([pscustomobject]@{ parts = $parts })
+    Invoke-RepoPython $script '' @('--input', ('"{0}"' -f $inPath), '--webhook-env', $envName) -ShowOutput
+  } finally {
+    Remove-Item -LiteralPath $inPath -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -673,11 +718,12 @@ function Invoke-NextJob {
   $defs = $null
   try { $defs = Get-JobDefinitions } catch { Write-Log "ジョブ定義を読めません: $($_.Exception.Message)" }
   $isImport = [bool]($defs -and $defs.jobs.$jobName -and $defs.jobs.$jobName.type -eq 'import')
+  $isNotify = [bool]($defs -and $defs.jobs.$jobName -and $defs.jobs.$jobName.type -eq 'notify')
 
   # 同じジョブの依頼をまとめて実行中にする(取込は依頼ごとに別の仕事なので、先頭の1件だけ)
   $batch = @()
   foreach ($item in $items) {
-    if ($isImport -and $batch.Count -ge 1) { break }
+    if (($isImport -or $isNotify) -and $batch.Count -ge 1) { break }   # 取込・報告は依頼ごとに別の仕事なので、1件ずつ
     try { $req = Read-JsonFile $item.FullName } catch { continue }
     if ([string]$req.job -eq $jobName) { $batch += [pscustomobject]@{ Path = $item.FullName; Request = $req } }
   }
@@ -706,6 +752,9 @@ function Invoke-NextJob {
       $out = Invoke-EcImport $def $running[0].Request $smileCfg
       if ($out.State -eq 'done') { $importDone = $true }
       else { $errorMessage = "$($out.State): $($out.Message)" }
+    } elseif ($def.type -eq 'notify') {
+      # Teams への報告。SMILE も PAD も使わない
+      Invoke-Notify $def $running[0].Request
     } else {
       if ($def.after -and $AfterJobs -notcontains [string]$def.after) { throw "未対応の後処理です: $($def.after)" }
       $steps = @(Get-JobSteps $def)
@@ -725,7 +774,7 @@ function Invoke-NextJob {
   } catch {
     $errorMessage = $_.Exception.Message
     # 取込の依頼が Invoke-EcImport に入る前に落ちたとき(ジョブ定義を取れない等)も、result.json を書いて取込フォルダを残さない(SMILEには触っていない)
-    if ($isImport -or [string]$running[0].Request.batchId) {
+    if (-not $isNotify -and ($isImport -or [string]$running[0].Request.batchId)) {
       try { Complete-ImportWithoutResult ([string]$running[0].Request.batchId) 'failed' ("取込を始める前にエラーが出ました(SMILEには触っていません): " + $errorMessage) $false } catch { Write-Log "result.json を書けませんでした: $($_.Exception.Message)" }
     }
   }

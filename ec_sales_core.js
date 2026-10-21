@@ -877,6 +877,78 @@
     return { id: id, slips: [slip], fresh: fresh, net: net, gross: slip.grossTotal };
   };
 
+  /* ============================================================ 取込後の流れ（確認待ち・確認OK）と、担当者への報告
+   * 注文の状態：OK済 → 取込中（依頼中・取込中・突合待ち）→ 確認待ち（SMILEと突合が一致。担当者の最終確認待ち）→ 起票済み（担当者が確認OK）
+   *                                                  └→ 要確認（突合が一致しない・一部だけ入った・結果不明） */
+
+  // 突合の結果 → 注文の状態。一致したら「確認待ち」（自動で起票済みにはしない）、それ以外は「要確認」
+  EC.matchToStatus = function (v) { return v && v.status === 'ok' ? 'confirm' : 'check'; };
+
+  // 確認OK（起票済みにする）。管理者だけ・確認待ちの注文だけ。押した人と日時を記録する。戻り値 { ok, error }
+  EC.confirmOk = function (rec, who, nowIso, isAdmin) {
+    if (!isAdmin) return { ok: false, error: '確認OKは管理者だけが行えます' };
+    if (!rec || rec.status !== 'confirm') return { ok: false, error: '確認待ちの注文ではありません' };
+    rec.status = 'exported'; rec.confirmedBy = who; rec.confirmedAt = nowIso;
+    rec.exportedBy = who; rec.exportedAt = nowIso;
+    return { ok: true };
+  };
+  // まとめて確認OK。確認待ちの注文だけを対象にする。戻り値 { done:[id], error }
+  EC.confirmAll = function (orderMap, ids, who, nowIso, isAdmin) {
+    if (!isAdmin) return { done: [], error: '確認OKは管理者だけが行えます' };
+    var done = [];
+    ids.forEach(function (id) { if (EC.confirmOk(orderMap[id], who, nowIso, true).ok) done.push(id); });
+    return { done: done };
+  };
+  // 取込1回分の表示上の段階（突合のあと）：確認待ちが残っていれば confirm、なければ要確認が残っていれば check、なければ done
+  EC.importPhase = function (imp, orderMap) {
+    var c = { confirm: 0, check: 0, exported: 0 };
+    (imp.orderIds || []).forEach(function (id) { var r = orderMap[id]; if (r && c[r.status] != null) c[r.status]++; });
+    return c.confirm > 0 ? 'confirm' : (c.check > 0 ? 'check' : 'done');
+  };
+
+  // 報告に値を書いてよい項目（お客様の名前・住所・電話・社内メモは入れない。項目名だけ書く）
+  var REPORT_VALUE_FIELDS = { code: 1, qty: 1, unit: 1, amount: 1, due: 1, shipDate: 1, deliveryCode: 1, rows: 1, juchuNo: 1 };
+  // 要確認の理由（文字）。ラベルだけ、または 期待値→SMILEの値（個人情報でない項目だけ）
+  EC.reportReasons = function (o) {
+    var out = [];
+    if (o.message) out.push(String(o.message));
+    (o.diffs || []).slice(0, 6).forEach(function (d) {
+      out.push(REPORT_VALUE_FIELDS[d.field] ? d.label + '（期待 ' + d.expected + '／SMILE ' + d.actual + '）' : d.label + 'が違います');
+    });
+    if ((o.diffs || []).length > 6) out.push('ほか ' + (o.diffs.length - 6) + ' 項目');
+    return out;
+  };
+  // 担当者への報告（Teams）の本文。件数・注文番号・受注№・出荷予定日・要確認とその理由・アプリのURLだけ（住所・電話・お客様名は入れない）。
+  // opt = { batchId, counts:{slips, fresh}, orders:[{name, juchuNo, shipDate, status:'confirm'|'check'|'exported', diffs, message}], url, maxChars }
+  // 戻り値＝文字列の配列（長いときは maxChars ごとに分ける）
+  EC.buildReport = function (opt) {
+    var orders = opt.orders || [], max = opt.maxChars || 3000;
+    var okList = orders.filter(function (o) { return o.status !== 'check'; }), ngList = orders.filter(function (o) { return o.status === 'check'; });
+    var wd = ['日', '月', '火', '水', '木', '金', '土'];
+    var md = function (s) { return s ? s.slice(5).replace('-', '/') + '(' + wd[EC.weekday(s)] + ')' : '（未定）'; };
+    var lines = ['【EC売上】SMILEへの取込と突合の結果（' + opt.batchId + '）',
+      '取込 ' + ((opt.counts && opt.counts.slips) || orders.length) + '件／一致 ' + okList.length + '件／要確認 ' + ngList.length + '件／納品先の新規 ' + ((opt.counts && opt.counts.fresh) || 0) + '件', ''];
+    if (okList.length) {
+      lines.push('■ 一致（担当者の確認OKをお願いします）');
+      okList.forEach(function (o) { lines.push('・' + o.name + '　受注№ ' + (o.juchuNo || '—') + '　出荷予定日 ' + md(o.shipDate)); });
+      lines.push('');
+    }
+    if (ngList.length) {
+      lines.push('■ 要確認（SMILEを見て判断してください）');
+      ngList.forEach(function (o) { lines.push('・' + o.name + (o.juchuNo ? '　受注№ ' + o.juchuNo : '') + '：' + (EC.reportReasons(o).join('／') || '理由不明')); });
+      lines.push('');
+    }
+    if (opt.url) lines.push('アプリ：' + opt.url);
+    // maxChars ごとに、行の区切りで分ける（1行が長すぎるときだけ行の途中で切る）
+    var parts = [], cur = '';
+    lines.forEach(function (ln) {
+      while (ln.length > max) { if (cur) { parts.push(cur); cur = ''; } parts.push(ln.slice(0, max)); ln = ln.slice(max); }
+      if (cur && (cur + '\n' + ln).length > max) { parts.push(cur); cur = ln; } else cur = cur ? cur + '\n' + ln : ln;
+    });
+    if (cur) parts.push(cur);
+    return parts.length > 1 ? parts.map(function (p, i) { return p + '\n（' + (i + 1) + '/' + parts.length + '）'; }) : parts;
+  };
+
   // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];
