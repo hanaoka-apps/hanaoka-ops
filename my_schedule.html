@@ -7,6 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="car_booking.js?v=20261015"></script>
+<script src="event_edit.js?v=20261021"></script>
 <script src="nav.js?v=20261014" defer></script>
 <link rel="icon" type="image/svg+xml" href="favicon_schedule.svg">
 <style>
@@ -325,34 +326,6 @@
     <button class="act dngr" id="evDelBtn" style="display:none" onclick="deleteMyEvent()">削除</button>
     <button class="act" onclick="closeM('mEvDetail')">閉じる</button>
   </div>
-</div></div>
-
-<!-- 自分の予定の追加・変更（営業車・会議室の予定の変更画面と同じ形） -->
-<div class="modal" id="mEvEdit"><div class="card">
-  <h3 id="peHead">予定を追加する</h3>
-  <div class="bd"><div class="fm">
-    <div class="f"><span>件名（必須）</span><input type="text" id="peTitle"></div>
-    <div class="f"><span>場所</span><input type="text" id="peLoc"></div>
-    <label class="chk"><input type="checkbox" id="peAllDay"> 終日</label>
-    <div class="f2" id="peTimeRow">
-      <div class="f"><span>開始（JST）</span><input type="datetime-local" id="peFrom"></div>
-      <div class="f"><span>終了（JST）</span><input type="datetime-local" id="peTo"></div>
-    </div>
-    <div class="f2" id="peDateRow" style="display:none">
-      <div class="f"><span>開始日（JST）</span><input type="date" id="peFromD"></div>
-      <div class="f"><span>終了日（この日も含む）</span><input type="date" id="peToD"></div>
-    </div>
-    <div class="f"><span>表示（他の人から見たときの状態）</span>
-      <select id="peShowAs">
-        <option value="busy">予定あり</option><option value="free">空き時間</option><option value="tentative">仮の予定</option>
-        <option value="oof">不在・休暇</option><option value="workingElsewhere">別の場所で勤務</option>
-      </select></div>
-    <label class="chk"><input type="checkbox" id="pePrivate"> 非公開（他の人には件名が見えません）</label>
-    <label class="chk" id="peTeamsRow"><input type="checkbox" id="peTeams"> Teams会議にする（会議のURLを予定に付けます）</label>
-    <div class="f"><span>メモ</span><textarea id="peMemo" rows="4" style="border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:13px;font-family:inherit;resize:vertical"></textarea></div>
-  </div>
-  <div class="note" id="peNote"></div></div>
-  <div class="ft"><span class="msg" id="peMsg"></span><button class="act" onclick="closeM('mEvEdit')">キャンセル</button><button class="act pri" id="peSave" onclick="saveMyEvent()">保存</button></div>
 </div></div>
 
 <!-- デモ機予約の詳細（セット予約も1台の予約も同じ画面） -->
@@ -1452,126 +1425,18 @@ el('grid').addEventListener('click', ev => {
 /* ============================================================
    自分の予定の追加・変更・削除
    ------------------------------------------------------------
-   Outlook の予定表を直接書き換える（このアプリ専用のデータは持たない）。
-   ・変更・削除できるのは、自分が主催した、繰り返しでない予定だけ。
-   ・書き込み権限（Calendars.ReadWrite）は、押したときに別に取る。取れなければ Outlook へ案内する。
-   ・営業車・会議室の予定の変更画面と同じ項目（件名・場所・終日・期間）に、
-     表示の状態・非公開・Teams会議・メモを加えた形。
+   フォームと書き込みは共通部品 event_edit.js（全社員の予定と共通）。ここは橋渡しだけ。
+   変更・削除できるのは、自分が主催した、繰り返しでない予定だけ。
    ============================================================ */
-async function getWriteToken(interactive){
-  const scopes = ['Calendars.ReadWrite'];
-  try { return (await msalInstance.acquireTokenSilent({ scopes, account: currentAccount })).accessToken; }
-  catch {
-    if (!interactive || HanaokaAuth.useRedirect()) return null;
-    try { return (await msalInstance.acquireTokenPopup({ scopes, account: currentAccount })).accessToken; } catch { return null; }
-  }
-}
-async function gSend(tok, method, path, body){
-  const r = await fetch(GRAPH_BASE + path, { method, headers:{ Authorization:'Bearer ' + tok, 'Content-Type':'application/json' },
-    body: body ? JSON.stringify(body) : undefined });
-  let b = null; try { b = await r.json(); } catch {}
-  return { status: r.status, body: b };
-}
-const wallOf = ms => `${msToLocal(ms)}:00`;
-let PE = { mode:'new', key:null };
-function peAllDayOn(){ return el('peAllDay').checked; }
-function paintPeAllDay(){ const on = peAllDayOn(); el('peTimeRow').style.display = on ? 'none' : ''; el('peDateRow').style.display = on ? '' : 'none'; }
-el('peAllDay').addEventListener('change', paintPeAllDay);
-linkDateTimePair('peFrom', 'peTo'); linkDatePair('peFromD', 'peToD');
-function peRange(){
-  if (peAllDayOn()) { const a = dateToMs(el('peFromD').value), b = dateToMs(el('peToD').value); return { s:a, e: isNaN(b) ? NaN : b + DAY }; }
-  return { s: localToMs(el('peFrom').value), e: localToMs(el('peTo').value) };
-}
+MyEvent.init({ msal: () => msalInstance, account: () => currentAccount, snack: showSnack, reload: () => loadAll() });
 function openEvEdit(mode, key){
-  PE = { mode, key };
-  const d = mode === 'edit' ? EV.get(key) : null;
-  if (mode === 'edit' && !d) return;
-  el('peHead').textContent = mode === 'edit' ? '予定を変更する' : '予定を追加する';
-  let s, e, all = false;
-  if (d) { s = d.s; e = d.e; all = d.allDay; }
-  else { const h = Math.ceil(Date.now() / 3600e3) * 3600e3; s = h; e = h + 3600e3; }
-  el('peTitle').value = d ? d.t.replace(/^\(件名なし\)$/, '') : '';
-  el('peLoc').value = d ? (d.loc || '') : '';
-  el('peAllDay').checked = all;
-  el('peFrom').value = msToLocal(all ? s + 9*3600e3 : s); el('peTo').value = msToLocal(all ? s + 17*3600e3 : e);
-  el('peFromD').value = msToDate(s);
-  const dd = toJ(e), mid = dd.getUTCHours() === 0 && dd.getUTCMinutes() === 0;
-  el('peToD').value = msToDate(all && mid ? e - DAY : e);
-  paintPeAllDay();
-  el('peShowAs').value = d && ['busy','free','tentative','oof','workingElsewhere'].includes(d.showAs) ? d.showAs : (mode === 'new' ? 'busy' : 'busy');
-  el('pePrivate').checked = !!d && (d.sens === 'private' || d.sens === 'confidential');
-  el('peTeams').checked = false;
-  el('peTeamsRow').style.display = (!d || !d.online) ? '' : 'none';      /* すでにTeams会議なら出さない */
-  el('peMemo').value = d ? (d.body || '').trim() : '';
-  const notes = [];
-  if (d && d.others) notes.push(`<b>この予定には他の参加者（${d.others}人）がいます。変更は参加者にも通知されます。</b>`);
-  if (d && d.facs && d.facs.length) notes.push('営業車・会議室が入っています。時間を変えて断られたものがあれば、自動で元の時間に戻します。');
-  if (d && d.body && d.body.trim()) notes.push('メモを書き換えると、元の書式（太字・表など）は失われ、文字だけの内容になります。');
-  el('peNote').innerHTML = notes.join('<br>') || '保存すると、あなたのOutlookの予定表に反映されます。';
-  el('peNote').style.display = '';
-  el('peMsg').textContent = ''; el('peMsg').className = 'msg';
-  closeM('mEvDetail'); openM('mEvEdit');
-}
-async function saveMyEvent(){
-  const msg = el('peMsg'), btn = el('peSave');
-  const title = el('peTitle').value.trim();
-  if (!title) { msg.textContent = '件名を入力してください'; msg.className = 'msg ng'; return; }
-  const { s, e } = peRange();
-  if (isNaN(s) || isNaN(e) || e <= s) { msg.textContent = '開始と終了を確認してください（終了は開始より後）'; msg.className = 'msg ng'; return; }
-  const d = PE.mode === 'edit' ? EV.get(PE.key) : null;
-  const allDay = peAllDayOn(), timeChanged = !d || s !== d.s || e !== d.e || allDay !== d.allDay;
-  btn.disabled = true; msg.textContent = '保存中...'; msg.className = 'msg';
-  const tok = await getWriteToken(true);
-  if (!tok) {
-    msg.innerHTML = '予定の書き込み権限が取得できません。いったんサインアウトして入り直すか、<a href="https://outlook.office.com/calendar/" target="_blank" rel="noopener noreferrer">Outlook</a> で行ってください';
-    msg.className = 'msg ng'; btn.disabled = false; return;
-  }
-  const body = { subject: title, location:{ displayName: el('peLoc').value.trim() }, showAs: el('peShowAs').value,
-    sensitivity: el('pePrivate').checked ? 'private' : 'normal' };
-  if (!d || timeChanged) Object.assign(body, { isAllDay: allDay, start:{ dateTime: wallOf(s), timeZone:'Tokyo Standard Time' }, end:{ dateTime: wallOf(e), timeZone:'Tokyo Standard Time' } });
-  const memo = el('peMemo').value.trim();
-  if (!d ? !!memo : memo !== (d.body || '').trim()) body.body = { contentType:'text', content: memo };
-  if (el('peTeams').checked && (!d || !d.online)) Object.assign(body, { isOnlineMeeting:true, onlineMeetingProvider:'teamsForBusiness' });
-  let r;
-  if (!d) { body.transactionId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
-    r = await gSend(tok, 'POST', '/me/events', body); }
-  else r = await gSend(tok, 'PATCH', `/me/events/${d.id}`, body);
-  if (r.status !== 200 && r.status !== 201) {
-    msg.textContent = `保存できませんでした（${r.status} ${r.body?.error?.message || ''}）`; msg.className = 'msg ng'; btn.disabled = false; return;
-  }
-  /* 営業車・会議室が入っている予定の時間を変えたら、断られていないか確かめ、断られたら元の時間に戻す */
-  if (d && timeChanged && d.facs && d.facs.length) {
-    msg.textContent = '車・会議室の承諾を確認中...';
-    let declined = [];
-    for (let i = 0; i < 4; i++) {
-      await new Promise(rs => setTimeout(rs, i === 0 ? 2000 : 2500));
-      const g = await gSend(tok, 'GET', `/me/events/${d.id}?$select=attendees`);
-      const res = ((g.body && g.body.attendees) || []).filter(a => a.type === 'resource');
-      declined = res.filter(a => a.status?.response === 'declined');
-      if (res.every(a => { const x = a.status?.response || 'none'; return x !== 'none' && x !== 'notResponded'; })) break;
-    }
-    if (declined.length) {
-      await gSend(tok, 'PATCH', `/me/events/${d.id}`, { isAllDay: d.allDay, start:{ dateTime: wallOf(d.s), timeZone:'Tokyo Standard Time' }, end:{ dateTime: wallOf(d.e), timeZone:'Tokyo Standard Time' } });
-      msg.textContent = `新しい時間は ${declined.map(a => a.emailAddress?.name || '').join('、')} が他の予約と重なるため、時間は元に戻しました（件名などの変更は反映済み）`;
-      msg.className = 'msg ng'; btn.disabled = false; await loadAll(); return;
-    }
-  }
-  btn.disabled = false; closeM('mEvEdit'); await loadAll();
-  showSnack(d ? '予定を変更しました' : '予定を追加しました');
+  if (mode === 'new') { MyEvent.openNew(); return; }
+  const d = EV.get(key); if (!d) return;
+  closeM('mEvDetail'); MyEvent.openEdit(d);
 }
 async function deleteMyEvent(){
-  const d = EV.get(EV_CUR); if (!d || !d.isOrg || d.recurring) return;
-  const msg = el('evMsg');
-  let q = `予定「${d.t}」を削除します。\n\n　${d.allDay ? jFull(d.s).slice(0,10) + '（終日）' : jFull(d.s) + ' 〜 ' + jFull(d.e)}\n`;
-  if (d.facs && d.facs.length) q += `\n含まれる営業車・会議室の枠も空きに戻ります。\n`;
-  if (d.others) q += `\n★他の参加者（${d.others}人）にも取消が通知されます。★\n`;
-  q += `\nOutlook の「削除済みアイテム」に残るので、必要なら戻せます。よろしいですか？`;
-  if (!confirm(q)) return;
-  const tok = await getWriteToken(true);
-  if (!tok) { msg.textContent = '予定の書き込み権限が取得できません。サインインし直してください'; msg.className = 'msg ng'; return; }
-  const r = await gSend(tok, 'DELETE', `/me/events/${d.id}`);
-  if (r.status >= 300) { msg.textContent = `削除できませんでした（${r.status}）`; msg.className = 'msg ng'; return; }
-  closeM('mEvDetail'); await loadAll(); showSnack('予定を削除しました');
+  const d = EV.get(EV_CUR);
+  if (await MyEvent.remove(d)) closeM('mEvDetail');
 }
 
 /* ============================================================

@@ -6,6 +6,7 @@
   <title>スケジュール 全社員の予定 | 花岡車輌</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
   <script src="hanaoka_auth.js"></script>
+  <script src="event_edit.js?v=20261021"></script>
   <script src="nav.js?v=20261014" defer></script>
   <link rel="icon" type="image/svg+xml" href="favicon_schedule.svg">
   <!-- サインインした人がこのアプリを使えるアカウントかを見る -->
@@ -66,6 +67,8 @@
        この画面は説明・部署トグル・空き検索・凡例で上が4段になり、
        89人の表が画面の下へ押し出されていた。畳めるようにする。 */
     #toolsWrap.collapsed{display:none}
+    button.go{background:var(--success);border-color:var(--success);color:#fff}
+    button.go:hover:not(:disabled){background:#236a41}
     /* 畳んでいるときだけ出す、いま効いている絞り込みの要約 */
     #depSummary{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
       background:#eef4fb;border-color:#bcd4ee;color:var(--primary-dk);font-weight:600}
@@ -334,6 +337,7 @@
     <button class="act" id="depSummary" onclick="openTools()" title="表示する部署を変える"></button>
     <span class="cnt" id="updated"></span>
     <button class="act" id="toolsToggle" onclick="toggleTools()"></button>
+    <button class="act go" id="evNewBtn" title="自分の予定を追加します（Outlookの予定表に入ります）">＋ 予定を追加</button>
     <button class="act" onclick="loadAll()">🔄 更新</button>
     <button class="act" onclick="window.print()">印刷</button>
     <button class="act" id="shotCopy" title="下の表を画像にしてコピーします（Teams・メールにそのまま貼り付け）">📷 画像コピー</button>
@@ -344,7 +348,7 @@
        開閉はこのブラウザに記憶する（端末・ブラウザごと）。 -->
   <div id="toolsWrap">
     <div id="privacy-note">
-      <b>この画面は見るだけです。</b>予定の登録・変更は Outlook で行ってください。
+      <b>他の人の予定は見るだけです。</b><b>自分の予定</b>は、この画面から追加・変更・削除もできます（「＋予定を追加」／自分の予定をクリック → 変更・削除。自分が主催した繰り返しでない予定が対象）。
       他の人の予定は<b>件名・場所・時間帯</b>だけが表示され、<b>本文と添付は表示されません</b>（読む権限もありません）。
       <b>自分の予定だけ</b>、予定をクリックした詳細でメモ（本文）も見られます。
       Outlook で予定を<b>「非公開」</b>にすると、この画面では「非公開」と表示され件名は出ません。
@@ -397,7 +401,10 @@
 <div class="modal" id="mDetail"><div class="card">
   <h3 id="dTitle">予定の詳細</h3>
   <div class="bd"><dl id="dBody"></dl><div class="note" id="dNote"></div></div>
-  <div class="ft"><button class="act" id="dOpen" style="display:none">Outlookで開く ↗</button><button class="act" onclick="closeM('mDetail')">閉じる</button></div>
+  <div class="ft"><button class="act" id="dOpen" style="display:none">Outlookで開く ↗</button>
+    <button class="act" id="dEditBtn" style="display:none">変更…</button>
+    <button class="act dngr" id="dDelBtn" style="display:none">削除</button>
+    <button class="act" onclick="closeM('mDetail')">閉じる</button></div>
 </div></div>
 
 <div id="snackbar"></div>
@@ -1052,7 +1059,7 @@ async function loadRes(){
   const ME_IX = chunks.length + 1;
   const mq = `startDateTime=${encodeURIComponent(toUtcLocal(f0) + 'Z')}`
            + `&endDateTime=${encodeURIComponent(toUtcLocal(f1) + 'Z')}`
-           + `&$select=id,subject,start,end,location,isCancelled,isAllDay,showAs,body,organizer,webLink`
+           + `&$select=id,subject,start,end,location,isCancelled,isAllDay,showAs,body,organizer,webLink,isOrganizer,type,sensitivity,isOnlineMeeting,onlineMeeting,attendees`
            + `&$orderby=start/dateTime&$top=200`;
 
   const reqs = chunks.map(c => ({
@@ -1148,9 +1155,17 @@ function takeMe(r){
     if (ev.isCancelled) return;
     const s = pTZ(ev.start), e = pTZ(ev.end);
     if (isNaN(s) || isNaN(e)) return;
+    const meMail = String(currentAccount?.username || '').toLowerCase();
+    const att = ev.attendees || [];
     ME_EVENTS.push({ s, e, t: ev.subject || '(件名なし)', loc: ev.location?.displayName || '',
       org: ev.organizer?.emailAddress?.name || ev.organizer?.emailAddress?.address || '',
-      body: ev.body?.content || '', webLink: ev.webLink || '' });
+      body: ev.body?.content || '', webLink: ev.webLink || '',
+      /* 変更・削除用（共通部品 event_edit.js）。自分が主催した、繰り返しでない予定だけ直せる */
+      id: ev.id, allDay: !!ev.isAllDay, showAs: ev.showAs || 'busy', sens: ev.sensitivity || 'normal',
+      isOrg: !!ev.isOrganizer, recurring: !!ev.type && ev.type !== 'singleInstance',
+      online: !!ev.isOnlineMeeting, joinUrl: ev.onlineMeeting?.joinUrl || '',
+      facs: att.filter(a => a.type === 'resource').map(a => a.emailAddress?.name || ''),
+      others: att.filter(a => a.type !== 'resource' && String(a.emailAddress?.address || '').toLowerCase() !== meMail).length });
   });
 }
 /* メモ（本文）のURLだけをリンクにする。URLは半角の英数記号だけで判定し（直後の日本語・句読点を
@@ -1827,6 +1842,11 @@ el('grid').addEventListener('click', ev => {
   const bar = ev.target.closest('.bar-i, .li');
   if (bar) openDetail(bar.dataset.r);
 });
+let EDIT_CUR = null;
+MyEvent.init({ msal: () => msalInstance, account: () => currentAccount, snack: showSnack, reload: () => loadAll() });
+el('dEditBtn').addEventListener('click', () => { if (EDIT_CUR) { closeM('mDetail'); MyEvent.openEdit(EDIT_CUR); } });
+el('dDelBtn').addEventListener('click', async () => { if (EDIT_CUR && await MyEvent.remove(EDIT_CUR)) closeM('mDetail'); });
+el('evNewBtn').addEventListener('click', () => MyEvent.openNew());
 function openDetail(rid){
   const r = RES.find(x => x.rid === rid) || COMMON.find(x => x.rid === rid); if (!r) return;
   /* 自分の予定は、同じ時間帯の /me/calendarView の予定（メモつき）と突き合わせる。
@@ -1847,12 +1867,19 @@ function openDetail(rid){
     ['場所',   esc(mine ? mine.loc : r.loc) || '—'],
     ...(mine ? [
       ...(mine.org ? [['主催者', esc(mine.org)]] : []),
+      ...(mine.joinUrl ? [['Teams', `<a href="${esc(mine.joinUrl)}" target="_blank" rel="noopener noreferrer">会議に参加 ↗</a>`]] : []),
       ['メモ', mine.body && mine.body.trim()
         ? `<div style="white-space:pre-wrap;max-height:240px;overflow:auto;word-break:break-word">${linkify(mine.body)}</div>` : '—'],
     ] : []),
   ].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  const canEdit = !!mine && MyEvent.canEdit(mine);
+  EDIT_CUR = mine || null;
+  el('dEditBtn').style.display = canEdit ? '' : 'none';
+  el('dDelBtn').style.display  = canEdit ? '' : 'none';
   el('dNote').textContent = mine
-    ? '自分の予定です（メモも表示しています）。予定の変更は Outlook で行ってください。'
+    ? (canEdit ? '自分の予定です（メモも表示しています）。「変更…」「削除」で、この画面から直せます。'
+       : mine.recurring ? '自分の予定です（メモも表示しています）。繰り返しの予定は、Outlook で開いて変更してください。'
+       : '自分の予定です（メモも表示しています）。他の人が主催した予定は、主催者が変更します。')
     : r.me ? '自分の予定ですが、メモを取得できませんでした。「更新」を押して、もう一度お試しください。'
     : r.priv
     ? 'この予定は「非公開」に設定されているため、件名と場所は表示されません。'
