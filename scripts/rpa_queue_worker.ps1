@@ -664,7 +664,21 @@ function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
     $files += [pscustomobject]@{ name = $step.file; executed = $stepExecuted; imported = $imp; errors = $err; errorRows = @($r.errorRows) }
     $script:EcImportFiles = $files
     $script:EcImportExecuted = $(if ($executed) { $true } else { $false })
-    if ($err -gt 0) { $stop = $true; $stopMessage = "$($step.file) の取込にエラーが $err 件ありました" + $(if ($step.file -eq 'nouhin.txt') { '(受注は実行していません)' } else { '' }) }
+    $mf = @($manifest.files | Where-Object { $_.name -eq $step.file })[0]
+    $hasCount = [bool]($r.PSObject.Properties.Name -contains 'imported' -and $null -ne $r.imported -and "$($r.imported)" -ne '')   # 件数を取れない旧形式は比べない
+    if (-not $stepExecuted) {
+      # SMILEの「実行」を押す前に止まった(PADが executed:false と、止まった工程を errorRows に書く)。成功扱いにしない・以降は実行しない
+      $stop = $true
+      $why = @($r.errorRows | Where-Object { $_ -and $_.message } | ForEach-Object { [string]$_.message })[0]
+      if (-not $why) { $why = '止まった工程は不明です' }
+      $stopMessage = "$($step.file) は SMILE の実行を押す前に止まりました：$why"
+      if ($executed) { $stopMessage += $(if ($step.file -eq 'juchu.txt') { '（納品先は取り込み済み、受注は実行されていません）' } else { "（先に実行した分は取り込み済みで、$($step.file) は実行されていません）" }) }
+    } elseif ($err -gt 0) {
+      $stop = $true; $stopMessage = "$($step.file) の取込にエラーが $err 件ありました" + $(if ($step.file -eq 'nouhin.txt') { '(受注は実行していません)' } else { '' })
+    } elseif ($hasCount -and $mf -and $null -ne $mf.rows -and [int]$mf.rows -ne $imp) {
+      # 実行したのに、取込件数が manifest の行数と合わない(0件のまま終わった、など)。done にせず要確認
+      $stop = $true; $stopMessage = "$($step.file) の件数が合いません(manifest $($mf.rows)行／取込 $($imp)件)。SMILE を見て判断してください"
+    }
   }
   Clear-EcCurrentDir $Def
 
