@@ -615,6 +615,28 @@ t('報告の依頼者へのメンション：メールと表示名の形が正�
   assert.ok(body.includes('確認OKは、アプリの画面で行ってください'));
 });
 
+t('manifest：受注には slips（伝票の数）を付ける（1伝票2行→1／2伝票5行→2）。納品先には付けない。バッチ番号は slips を含めず、同じ内容は同じ番号のまま', () => {
+  const f = importFixture(), J = L.juchu;
+  const mkBatch = (slips, user) => {
+    const jr = EC.juchuRows(slips, J, DEFAULT_CONFIG), nr = EC.nouhinRows(f.fresh.filter(x => slips.some(s => s.id === x.orderId)), L.nouhin, DEFAULT_CONFIG);
+    const files = [{ name: 'nouhin.txt', rows: nr.length, bytes: EC.encodeUtf16(EC.toSmileText(L.nouhin, nr)) }, { name: 'juchu.txt', rows: jr.length, slips: EC.slipCount(jr, J), bytes: EC.encodeUtf16(EC.toSmileText(J, jr)) }];
+    return { jr, b: EC.buildImportBatch(files, user, '2026-10-23T00:00:00Z') };
+  };
+  const two = mkBatch(f.slips, 'a@example.com'), one = mkBatch([f.slips[1]], 'a@example.com');
+  assert.strictEqual(two.jr.length, 5); assert.strictEqual(EC.slipCount(two.jr, J), 2);
+  const mj = m => m.manifest.files.find(x => x.name === 'juchu.txt'), mn = m => m.manifest.files.find(x => x.name === 'nouhin.txt');
+  assert.deepStrictEqual([mj(two.b).rows, mj(two.b).slips], [5, 2]);
+  assert.strictEqual(one.jr.length, 2); assert.deepStrictEqual([mj(one.b).rows, mj(one.b).slips], [2, 1]);
+  assert.ok(!('slips' in mn(two.b)));                                       // 納品先は 1行＝1件。slips は付けない
+  // バッチ番号：同じ内容なら（依頼者・時刻が違っても）同じ番号。slips の有無で変わらない（従来のバッチ番号の作り方のまま）
+  assert.strictEqual(mkBatch(f.slips, 'b@example.com').b.batchId, two.b.batchId);
+  const old = EC.buildImportBatch([{ name: 'juchu.txt', rows: 5, bytes: two.b.files[1].bytes }, { name: 'nouhin.txt', rows: 2, bytes: two.b.files[0].bytes }].reverse(), 'a', 'b');
+  assert.ok(!('slips' in mj(old)));                                          // slips を渡さなければ manifest にも付かない（旧形式）
+  assert.strictEqual(old.batchId, two.b.batchId);
+  assert.notStrictEqual(one.b.batchId, two.b.batchId);
+  assert.strictEqual(EC.slipCount([], J), 0);
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';

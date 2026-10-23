@@ -21,7 +21,7 @@ $def = (Get-Content -LiteralPath (Join-Path $Repo 'scripts\rpa_jobs.json') -Raw 
 
 # PADの模擬：コピーされたファイルがあれば、設定したとおりの result_*.json を書く
 $script:padCalls = @()
-$script:padPlan = @{ 'Smile_EC納品先取込' = @{ imported = 1; errors = 0 }; 'Smile_EC受注取込' = @{ imported = 2; errors = 0 } }
+$script:padPlan = @{ 'Smile_EC納品先取込' = @{ imported = 1; errors = 0 }; 'Smile_EC受注取込' = @{ imported = 1; errors = 0 } }
 function Invoke-PadImportStep([string]$Flow, [string]$ResultPath, [int]$TimeoutMinutes) {
   $script:padCalls += $Flow
   $p = $script:padPlan[$Flow]
@@ -49,7 +49,7 @@ $r = Invoke-EcImport $def (Req $id 'admin@example.com')
 Check '正常: done' ($r.State -eq 'done')
 Check '正常: 納品先→受注の順に起動' (($script:padCalls -join ',') -eq 'Smile_EC納品先取込,Smile_EC受注取込')
 $res = Result $id 'done'
-Check '正常: result.json が done/ にあり、件数が入る' ($res.state -eq 'done' -and $res.files.Count -eq 2 -and $res.files[1].imported -eq 2 -and $res.batchId -eq $id)
+Check '正常: result.json が done/ にあり、件数が入る' ($res.state -eq 'done' -and $res.files.Count -eq 2 -and $res.files[1].imported -eq 1 -and $res.batchId -eq $id)
 Check '正常: 取込元フォルダは移動済み' (-not (Test-Path (Join-Path $ImportRoot $id)))
 # 2. 二重取込（done にある同じ番号）
 $null = & node (Join-Path $PSScriptRoot 'ec_import_batch_maker.cjs') $Repo $ImportRoot 'ok'
@@ -84,7 +84,7 @@ Check '納品先エラー: errorRows が残る' ((Result $id4 'failed').files[0]
 Check 'executed:false の failed: result.json の executed が false' ((Result $id4 'failed').executed -eq $false -and (Result $id4 'failed').state -eq 'failed')
 # 7b. 同じバッチを再実行：executed:false の failed は許す（今度は成功）
 $script:padPlan['Smile_EC納品先取込'] = @{ imported = 1; errors = 0; executed = $true }
-$script:padPlan['Smile_EC受注取込'] = @{ imported = 2; errors = 0; executed = $true }
+$script:padPlan['Smile_EC受注取込'] = @{ imported = 1; errors = 0; executed = $true }
 $null = Make-Batch 'v1'; $script:padCalls = @()
 $r = Invoke-EcImport $def (Req $id4 'admin@example.com')
 Check '再実行: executed:false の failed は許す → done' ($r.State -eq 'done' -and $script:padCalls.Count -eq 2 -and (Result $id4 'done').executed -eq $true)
@@ -124,7 +124,7 @@ $script:smileCalls = 0; $script:smileFail = $false
 function Ensure-Smile($Cfg) { $script:smileCalls++; if ($script:smileFail) { throw 'SMILEを5分以内に起動できませんでした' } }
 $smileCfg = [pscustomobject]@{ process = 'x' }
 $script:padPlan['Smile_EC納品先取込'] = @{ imported = 1; errors = 0; executed = $true }
-$script:padPlan['Smile_EC受注取込'] = @{ imported = 2; errors = 0; executed = $true }
+$script:padPlan['Smile_EC受注取込'] = @{ imported = 1; errors = 0; executed = $true }
 # 経路1: SMILEの自動起動に失敗 → SMILEには触っていないので failed・executed:false の result.json
 $id8 = Make-Batch 'v8'; $script:padCalls = @(); $script:smileFail = $true
 $r = Invoke-EcImport $def (Req $id8 'admin@example.com') $smileCfg
@@ -175,7 +175,7 @@ Check '例外(起動直後): partial・executed のキー自体がない(不明)
 Set-Item Function:\Invoke-PadImportStep $realPad
 
 # ===== PADのステップが「実行」を押す前に止まった／取込件数が合わない（本番の試運転で見つかった不具合） =====
-function PlanReset { $script:padPlan['Smile_EC納品先取込'] = @{ imported = 1; errors = 0; executed = $true }; $script:padPlan['Smile_EC受注取込'] = @{ imported = 2; errors = 0; executed = $true } }
+function PlanReset { $script:padPlan['Smile_EC納品先取込'] = @{ imported = 1; errors = 0; executed = $true }; $script:padPlan['Smile_EC受注取込'] = @{ imported = 1; errors = 0; executed = $true } }
 $stopRow = @(@{ row = 0; message = '画面を開く(取込画面の待ち): ' })
 # (a) 納品先は取り込めたが、受注は取込画面を開く工程で止まり「実行」を押さなかった（executed=false・errorRows に工程）→ done にせず partial
 PlanReset; $script:padPlan['Smile_EC受注取込'] = @{ imported = 0; errors = 0; executed = $false; errorRows = $stopRow }
@@ -205,13 +205,13 @@ PlanReset; $script:padPlan['Smile_EC受注取込'] = @{ imported = 0; errors = 0
 $idc = Make-Batch 'v23'
 $r = Invoke-EcImport $def (Req $idc 'admin@example.com'); $res = Result $idc 'failed'
 Check '(c) 受注の取込件数が合わない: partial・executed:true' ($r.State -eq 'partial' -and $res.executed -eq $true)
-Check '(c) 理由に manifest の行数と取込件数が入る' ($res.message -match 'juchu\.txt の件数が合いません\(manifest 2行／取込 0件\)')
+Check '(c) 理由に manifest の行数と取込件数が入る' ($res.message -match 'juchu\.txt の件数が合いません\(manifest 1伝票／取込 0件\)')
 PlanReset; $script:padPlan['Smile_EC納品先取込'] = @{ imported = 0; errors = 0; executed = $true }; $script:padCalls = @()
 $idc2 = Make-Batch 'v24'; $r = Invoke-EcImport $def (Req $idc2 'admin@example.com')
 Check '(c) 納品先の件数が合わない: partial・受注は実行しない' ($r.State -eq 'partial' -and $r.Message -match 'nouhin\.txt の件数が合いません\(manifest 1行／取込 0件\)' -and ($script:padCalls -join ',') -eq 'Smile_EC納品先取込')
 PlanReset; $script:padPlan['Smile_EC受注取込'] = @{ imported = 3; errors = 0; executed = $true }
 $idc3 = Make-Batch 'v25'; $r = Invoke-EcImport $def (Req $idc3 'admin@example.com')
-Check '(c) 件数が多すぎても合わない扱い（partial）' ($r.State -eq 'partial' -and $r.Message -match 'manifest 2行／取込 3件')
+Check '(c) 件数が多すぎても合わない扱い（partial）' ($r.State -eq 'partial' -and $r.Message -match 'manifest 1伝票／取込 3件')
 # 件数を取れない旧形式（imported が無い）は比べない
 PlanReset; $script:padPlan['Smile_EC納品先取込'] = @{ errors = 0; executed = $true }; $script:padPlan['Smile_EC受注取込'] = @{ errors = 0; executed = $true }
 $idc4 = Make-Batch 'v26'; $r = Invoke-EcImport $def (Req $idc4 'admin@example.com')
@@ -219,8 +219,49 @@ Check '(c) 件数なしの旧形式は比べず done' ($r.State -eq 'done')
 # (d) 正常 → done
 PlanReset; $script:padCalls = @()
 $idd = Make-Batch 'v27'; $r = Invoke-EcImport $def (Req $idd 'admin@example.com'); $res = Result $idd 'done'
-Check '(d) 正常: done・executed:true・件数が入る' ($r.State -eq 'done' -and $res.state -eq 'done' -and $res.executed -eq $true -and $res.files[0].imported -eq 1 -and $res.files[1].imported -eq 2 -and $res.message -eq '')
+Check '(d) 正常: done・executed:true・件数が入る' ($r.State -eq 'done' -and $res.state -eq 'done' -and $res.executed -eq $true -and $res.files[0].imported -eq 1 -and $res.files[1].imported -eq 1 -and $res.message -eq '')
 Check '(d) 納品先→受注の順に起動' (($script:padCalls -join ',') -eq 'Smile_EC納品先取込,Smile_EC受注取込')
+PlanReset
+
+# ===== 受注の取込件数は「伝票の数」（manifest の slips）と比べる（納品先は行数）。PAD が返す受注の imported は SMILE の正常件数＝伝票の数 =====
+function ManifestPath([string]$bid) { return (Join-Path $ImportRoot "$bid\manifest.json") }
+function EditManifest([string]$bid, [scriptblock]$edit) {
+  $mp = ManifestPath $bid; $mo = Get-Content -LiteralPath $mp -Raw -Encoding UTF8 | ConvertFrom-Json; & $edit $mo
+  [System.IO.File]::WriteAllText($mp, ($mo | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding $false))
+}
+$idm = Make-Batch 'v30'
+$mo0 = Get-Content -LiteralPath (ManifestPath $idm) -Raw -Encoding UTF8 | ConvertFrom-Json
+$mj0 = @($mo0.files | Where-Object { $_.name -eq 'juchu.txt' })[0]; $mn0 = @($mo0.files | Where-Object { $_.name -eq 'nouhin.txt' })[0]
+Check 'manifest: 受注は 2行1伝票（rows=2・slips=1）、納品先は slips なし' ($mj0.rows -eq 2 -and $mj0.slips -eq 1 -and -not ($mn0.PSObject.Properties.Name -contains 'slips'))
+# 2行1伝票で imported=1（SMILEの正常件数）→ 取込が成功なら done（今まで「manifest 2行／取込 1件」で partial になっていた）
+PlanReset; $script:padCalls = @()
+$r = Invoke-EcImport $def (Req $idm 'admin@example.com')
+Check '受注 2行1伝票・imported=1 → done' ($r.State -eq 'done' -and (Result $idm 'done').files[1].imported -eq 1)
+# imported=0 → partial（メッセージは伝票の数で）
+PlanReset; $script:padPlan['Smile_EC受注取込'] = @{ imported = 0; errors = 0; executed = $true }
+$idm2 = Make-Batch 'v31'; $r = Invoke-EcImport $def (Req $idm2 'admin@example.com')
+Check '受注 imported=0 → partial・「manifest 1伝票／取込 0件」' ($r.State -eq 'partial' -and $r.Message -match 'manifest 1伝票／取込 0件')
+# 行数と同じ 2 を返しても（伝票は1）合わない扱い
+PlanReset; $script:padPlan['Smile_EC受注取込'] = @{ imported = 2; errors = 0; executed = $true }
+$idm3 = Make-Batch 'v32'; $r = Invoke-EcImport $def (Req $idm3 'admin@example.com')
+Check '受注 imported=2（行数）は伝票の数1と合わない → partial' ($r.State -eq 'partial')
+# 旧形式の manifest（slips なし）の受注：件数を比べない（0でも2でも done）。比べなかったことをログに残す
+$idm4 = Make-Batch 'v33'; EditManifest $idm4 { param($mo) $mo.files | Where-Object { $_.name -eq 'juchu.txt' } | ForEach-Object { $_.PSObject.Properties.Remove('slips') } }
+if (Test-Path $LogPath) { Remove-Item $LogPath -Force }
+PlanReset; $script:padPlan['Smile_EC受注取込'] = @{ imported = 0; errors = 0; executed = $true }
+$r = Invoke-EcImport $def (Req $idm4 'admin@example.com')
+Check '旧形式 manifest（slips なし）の受注は件数を比べず done' ($r.State -eq 'done')
+Check '旧形式: 比べなかったことをログに残す' ((Test-Path $LogPath) -and ((Get-Content $LogPath -Raw) -match '取込件数を比べません: juchu\.txt の manifest に slips がありません'))
+# 旧形式でも納品先は rows と比べる
+PlanReset; $script:padPlan['Smile_EC納品先取込'] = @{ imported = 0; errors = 0; executed = $true }
+$idm5 = Make-Batch 'v34'; EditManifest $idm5 { param($mo) $mo.files | Where-Object { $_.name -eq 'juchu.txt' } | ForEach-Object { $_.PSObject.Properties.Remove('slips') } }
+$r = Invoke-EcImport $def (Req $idm5 'admin@example.com')
+Check '旧形式でも納品先は rows と比べる → partial' ($r.State -eq 'partial' -and $r.Message -match 'nouhin\.txt の件数が合いません\(manifest 1行／取込 0件\)')
+# ファイル確認：manifest の slips と、実ファイルの仮の受注№の種類の数が合わなければ SMILE に触らず failed
+PlanReset; $script:padCalls = @()
+$idm6 = Make-Batch 'v35'; EditManifest $idm6 { param($mo) $mo.files | Where-Object { $_.name -eq 'juchu.txt' } | ForEach-Object { $_.slips = 2 } }
+$r = Invoke-EcImport $def (Req $idm6 'admin@example.com'); $res = Result $idm6 'failed'
+Check 'manifest の slips と実ファイルの伝票の数が違う → ファイル不整合で failed・SMILE に触らない' ($r.State -eq 'failed' -and $r.Message -match 'ファイル不整合' -and $r.Message -match '伝票の数が 1 です\(manifest の slips は 2\)' -and $script:padCalls.Count -eq 0 -and $res.executed -eq $false)
 PlanReset
 
 # 経路2: 取込の途中で常駐スクリプトが止まった（running に残った依頼）

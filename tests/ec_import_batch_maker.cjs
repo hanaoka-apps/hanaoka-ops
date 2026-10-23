@@ -15,7 +15,7 @@ const nb = EC.encodeUtf16(EC.toSmileText(L.nouhin, EC.nouhinRows(fresh, L.nouhin
 let jrows = EC.juchuRows([s], L.juchu, CONF.config);
 if (mode === 'emptyqty') jrows[0][22] = '';
 const jb = EC.encodeUtf16(EC.toSmileText(L.juchu, jrows));
-const b = EC.buildImportBatch([{ name: 'nouhin.txt', rows: fresh.length, bytes: nb }, { name: 'juchu.txt', rows: jrows.length, bytes: jb }], 'admin@example.com', new Date().toISOString());
+const b = EC.buildImportBatch([{ name: 'nouhin.txt', rows: fresh.length, bytes: nb }, { name: 'juchu.txt', rows: jrows.length, slips: EC.slipCount(jrows, L.juchu), bytes: jb }], 'admin@example.com', new Date().toISOString());
 const dir = path.join(root, b.batchId); fs.mkdirSync(dir, { recursive: true });
 b.files.forEach(f => fs.writeFileSync(path.join(dir, f.name), f.bytes));
 if (mode === 'badhash') fs.appendFileSync(path.join(dir, 'juchu.txt'), 'x');
