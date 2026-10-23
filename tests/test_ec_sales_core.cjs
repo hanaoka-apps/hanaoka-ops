@@ -649,7 +649,7 @@ const tempSlips = () => [
   mkTempSlip('1904', '2026-10-16', '山田', '100-0001'),     // 大阪・1903 と同じお客様
   mkTempSlip('1905', '2026-10-05', '田中', '100-0009')];    // 東京・既存（マスタにある）
 t('仮の番号モード：新規の納品先にだけ N00001… を割り当てる（得意先をまたいで重複しない・同じお客様は同じ番号・既存は本当のコード）', () => {
-  assert.deepStrictEqual([TEMP.mode, TEMP.prefix, TEMP.digits], ['temp', 'N', 5]);       // 形は設定から
+  assert.deepStrictEqual([TEMP.mode, TEMP.prefix, TEMP.digits, TEMP.requiredFeature], ['auto', 'N', 5, 'tempDeliveryCodes']);       // 形は設定から。既定は auto（専用機が対応しているときだけ仮の番号）
   const slips = tempSlips(), master = tempMaster();
   const fresh = EC.planDeliveries(slips, master, DEFAULT_CONFIG, { reuse: true, temp: TEMP });
   const by = Object.fromEntries(slips.map(s => [s.id, s]));
@@ -750,7 +750,7 @@ t('報告：一致した注文に最終の納品先コードを出す（仮の�
   assert.ok(p.includes('・#1901　受注№ 70001　出荷予定日 10/19(月)　納品先 000771')); assert.ok(!/N00\d\d\d/.test(p));
 });
 t('テスト送信（temp モード）：納品先の新規は仮の番号。同じ名前・郵便番号のものがあればそれを使う。assigned で最終のコードに', () => {
-  assert.strictEqual(TI_CONF.codeMode, 'temp');                                              // 既定は temp
+  assert.strictEqual(TI_CONF.codeMode, 'auto');                                              // 既定は auto（専用機が対応していれば temp、なければ fixed）
   assert.strictEqual(EC.testSendGuard(TI_CONF, DEFAULT_CONFIG), '');
   assert.strictEqual(EC.testSendGuard(Object.assign({}, TI_CONF, { deliveryCode: '000770' }), DEFAULT_CONFIG), '');   // temp では固定のコードの範囲を見ない
   assert.ok(/連番の範囲/.test(EC.testSendGuard(Object.assign({}, TI_CONF, { codeMode: 'fixed', deliveryCode: '000770' }), DEFAULT_CONFIG)));   // fixed では見る
@@ -775,6 +775,68 @@ t('テスト送信（temp モード）：納品先の新規は仮の番号。同
   const v = EC.verifyImport(ok.expected, jobjs, nobjs);
   assert.strictEqual(v.orders[r.id].status, 'ok'); assert.strictEqual(v.deliveries['000805'].status, 'ok'); assert.strictEqual(ok.codes.N00001, '000805');
   assert.strictEqual(EC.verifyImport(EC.resolveAssigned(exp, []).expected, jobjs, nobjs).orders[r.id].status, 'ng');
+});
+
+/* ---------- 仮の番号は、専用機が対応しているときだけ（稼働の印 heartbeat.json の features で自動判定） ---------- */
+t('仮の番号の判定（auto）：印に tempDeliveryCodes があり、印が新しいときだけ temp。それ以外は real（今までどおり）', () => {
+  const D = EC.deliveryCodeMode, cfgAuto = { mode: 'auto', requiredFeature: 'tempDeliveryCodes' };
+  const hb = (o) => Object.assign({ ok: true, seenAt: Date.now(), features: ['tempDeliveryCodes'] }, o);
+  assert.strictEqual(CONF.rpaImport.tempCodes.mode, 'auto');                                     // 既定は auto
+  assert.deepStrictEqual([D(cfgAuto, hb()).mode, D(cfgAuto, hb()).blocked], ['temp', '']);          // feature あり・印が新しい → temp
+  assert.deepStrictEqual([D(cfgAuto, hb({ features: [] })).mode, D(cfgAuto, hb({ features: [] })).blocked], ['real', '']);   // feature なし → real（止めない）
+  assert.strictEqual(D(cfgAuto, hb({ features: undefined })).mode, 'real');                          // features の項目なし（古い常駐スクリプト）
+  assert.strictEqual(D(cfgAuto, hb({ features: ['別の機能'] })).mode, 'real');
+  assert.strictEqual(D(cfgAuto, hb({ ok: false })).mode, 'real');                                   // 印が古い（応答なし）→ feature があっても real
+  assert.strictEqual(D(cfgAuto, null).mode, 'real');                                                // 印なし・確認できない → real
+  assert.strictEqual(D(undefined, hb()).mode, 'temp');                                              // 設定の mode を省けば auto
+  assert.ok(/応答していません/.test(D(cfgAuto, hb({ ok: false })).reason) && /対応していません/.test(D(cfgAuto, hb({ features: [] })).reason) && /確認できません/.test(D(cfgAuto, null).reason));
+  assert.strictEqual(D(cfgAuto, hb()).reason, '取込時に専用機が番号を決めます'); assert.ok(D(cfgAuto, hb({ features: [] })).reason.startsWith('アプリが番号を決めます'));
+  // requiredFeature は設定から
+  assert.strictEqual(D({ mode: 'auto', requiredFeature: 'x' }, hb({ features: ['x'] })).mode, 'temp');
+  assert.strictEqual(D({ mode: 'auto', requiredFeature: 'x' }, hb()).mode, 'real');
+});
+t('仮の番号の判定（temp を明示）：印に feature が無ければ blocked（送信を止める）。real は常に real', () => {
+  const D = EC.deliveryCodeMode, hb = (o) => Object.assign({ ok: true, features: ['tempDeliveryCodes'] }, o), tmp = { mode: 'temp' }, real = { mode: 'real' };
+  assert.deepStrictEqual([D(tmp, hb()).mode, D(tmp, hb()).blocked], ['temp', '']);
+  [hb({ features: [] }), hb({ ok: false }), null, hb({ features: undefined })].forEach(h => {
+    const d = D(tmp, h); assert.strictEqual(d.mode, 'temp'); assert.ok(d.blocked && /送信を止めました/.test(d.blocked), JSON.stringify(h));   // 誤って仮の番号が SMILE に入らない
+  });
+  [hb(), hb({ features: [] }), null].forEach(h => assert.deepStrictEqual([D(real, h).mode, D(real, h).blocked], ['real', '']));
+});
+t('real のときは今までどおりのファイル：新規の納品先に本当のコード・manifest に tempCodes なし（仮の番号が入らない）', () => {
+  const slips = tempSlips(), fresh = EC.planDeliveries(slips, tempMaster(), DEFAULT_CONFIG, { reuse: true, temp: null });   // real（auto で専用機が未対応・real 指定）
+  assert.ok(slips.every(s => /^\d{6}$/.test(s.deliveryCode) && !s.deliveryTemp));
+  assert.ok(fresh.every(f => !f.temp && /^\d{6}$/.test(f.code)));
+  assert.deepStrictEqual(EC.tempCodes(fresh), []);
+  const nr = EC.nouhinRows(fresh, L.nouhin, DEFAULT_CONFIG), jr = EC.juchuRows(slips, L.juchu, DEFAULT_CONFIG);
+  assert.ok(nr.every(r => /^\d{6}$/.test(r[1])) && jr.every(r => /^\d{6}$/.test(r[6])));
+  const b = EC.buildImportBatch([{ name: 'nouhin.txt', rows: nr.length, bytes: EC.encodeUtf16(EC.toSmileText(L.nouhin, nr)) }], 'a', 'b', { tempCodes: EC.tempCodes(fresh) });
+  assert.ok(!('tempCodes' in b.manifest));
+  // モードが違えば別のバッチ（同じ注文でも取込ファイルの中身が違う）
+  const t2 = tempSlips(), f2 = EC.planDeliveries(t2, tempMaster(), DEFAULT_CONFIG, { reuse: true, temp: TEMP });
+  const nr2 = EC.nouhinRows(f2, L.nouhin, DEFAULT_CONFIG);
+  assert.notStrictEqual(EC.buildImportBatch([{ name: 'nouhin.txt', rows: nr2.length, bytes: EC.encodeUtf16(EC.toSmileText(L.nouhin, nr2)) }], 'a', 'b').batchId, b.batchId);
+});
+t('テスト送信も同じ判定：auto＝対応していなければ固定の 999998、temp 明示で対応なし→止める、fixed は常に固定', () => {
+  const D = EC.deliveryCodeMode, hbOk = { ok: true, features: ['tempDeliveryCodes'] }, hbNo = { ok: true, features: [] };
+  const mode = (codeMode) => ({ mode: codeMode === 'temp' ? 'temp' : (codeMode === 'fixed' ? 'real' : 'auto'), requiredFeature: 'tempDeliveryCodes' });
+  assert.strictEqual(TI_CONF.codeMode, 'auto');
+  assert.strictEqual(D(mode(TI_CONF.codeMode), hbOk).mode, 'temp'); assert.strictEqual(D(mode(TI_CONF.codeMode), hbNo).mode, 'real'); assert.strictEqual(D(mode(TI_CONF.codeMode), null).mode, 'real');
+  assert.ok(D(mode('temp'), hbNo).blocked); assert.strictEqual(D(mode('fixed'), hbOk).mode, 'real');
+  // real に倒れたとき（codeMode: fixed）は、これまでと同じファイル（999998）
+  const r = EC.buildTestImport(Object.assign({}, TI_CONF, { codeMode: 'fixed' }), DEFAULT_CONFIG, tOpt());
+  assert.deepStrictEqual([r.slips[0].deliveryCode, r.slips[0].deliveryTemp, r.fresh[0].temp], ['999998', false, false]);
+  assert.deepStrictEqual(EC.tempCodes(r.fresh), []);
+});
+t('稼働の印（RpaQueue.health）：features を返す。印が古いと ok:false・無ければ空', async () => {
+  const src = fs.readFileSync(__dirname + '/../rpa_queue.js', 'utf8');
+  const make = (hb) => { globalThis.fetch = async () => (hb === undefined ? { ok: false, status: 404, text: async () => '' } : { ok: true, status: 200, json: async () => hb, text: async () => '' }); const Q = new Function(src + '; return RpaQueue;')(); Q.init({ getToken: async () => 't', driveId: 'D' }); return Q; };
+  const now = new Date().toISOString(), old = new Date(Date.now() - 3 * 3600e3).toISOString();
+  let h = await make({ updatedAt: now, job: '', features: ['tempDeliveryCodes'] }).health();
+  assert.deepStrictEqual([h.ok, h.features], [true, ['tempDeliveryCodes']]); assert.strictEqual(EC.deliveryCodeMode({ mode: 'auto' }, h).mode, 'temp');
+  h = await make({ updatedAt: now }).health(); assert.deepStrictEqual([h.ok, h.features], [true, []]); assert.strictEqual(EC.deliveryCodeMode({ mode: 'auto' }, h).mode, 'real');
+  h = await make({ updatedAt: old, features: ['tempDeliveryCodes'] }).health(); assert.strictEqual(h.ok, false); assert.strictEqual(EC.deliveryCodeMode({ mode: 'auto' }, h).mode, 'real');
+  assert.strictEqual(await make(undefined).health().then(x => x && x.ok), false);                // 印なし（ファイルが無い）→ ok:false → real
 });
 
 /* ---------- 実データ（手元にあるときだけ） ---------- */

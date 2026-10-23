@@ -745,6 +745,21 @@
     var deliveries = fresh.map(function (f) { return { cust: f.cust, code: f.code, name: f.d.name, person: f.d.person, zip: f.d.zip, addr1: f.d.addr1, addr2: f.d.addr2, tel: f.d.tel, orderId: f.orderId, temp: !!f.temp }; });
     return { orders: orders, deliveries: deliveries };
   };
+  // 新しい納品先のコードを、仮の番号（専用機が取込の直前に決める）にするか、本当のコード（アプリが決める）にするかの判定。
+  //   tc＝設定 rpaImport.tempCodes（mode: 'auto'（既定）／'temp'／'real'、requiredFeature: 既定 'tempDeliveryCodes'）、health＝RpaQueue.health()（{ ok, features } か null）
+  //   auto＝専用機の稼働の印（heartbeat.json）に features: ['tempDeliveryCodes'] があり、かつ印が新しい（応答なしでない）ときだけ temp。それ以外は real（今までどおり）。
+  //   temp（明示）＝印に feature が無ければ blocked（送信を止める理由）。専用機が置き換えを実装する前に、仮の番号が SMILE にそのまま入らないようにする安全弁。
+  //   real＝常に real。戻り値 { mode:'temp'|'real', blocked:'' | 理由, reason: 画面に出す説明 }
+  EC.deliveryCodeMode = function (tc, health) {
+    tc = tc || {};
+    var cfgMode = tc.mode === 'temp' || tc.mode === 'real' ? tc.mode : 'auto', feat = tc.requiredFeature || 'tempDeliveryCodes';
+    var supported = !!(health && health.ok && Array.isArray(health.features) && health.features.indexOf(feat) >= 0);
+    var why = supported ? '' : !health ? '専用機の稼働を確認できません' : !health.ok ? '専用機が応答していません（稼働の印が古い）' : '専用機が仮の番号（置き換え）にまだ対応していません（稼働の印に ' + feat + ' がありません）';
+    if (cfgMode === 'real') return { mode: 'real', blocked: '', reason: 'アプリが番号を決めます' };
+    if (supported) return { mode: 'temp', blocked: '', reason: '取込時に専用機が番号を決めます' };
+    if (cfgMode === 'temp') return { mode: 'temp', blocked: why + '。仮の番号のまま取り込むと SMILE に仮の番号が登録されるおそれがあるため、送信を止めました', reason: why };
+    return { mode: 'real', blocked: '', reason: 'アプリが番号を決めます（' + why + '）' };
+  };
   // 専用機が決めた本当の納品先コード（result.json の assigned: [{ customer, temp, code }]）を、期待値にあてはめる。
   // 仮の番号が assigned に無い・code が空の注文は unresolved（突合で「要確認（番号を確認できません）」）。assigned の無い旧形式でも、仮の番号を使っていなければ何も変わらない。
   // 戻り値 { expected（新しい期待値）, unresolved:[注文番号], codes:{ 仮の番号: 本当のコード } }

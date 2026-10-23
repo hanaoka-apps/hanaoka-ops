@@ -11,7 +11,7 @@
 <script src="ec_sales_layouts.js?v=1"></script>
 <script src="ec_sales_core.js?v=6"></script>
 <script src="ec_sales_shared.js?v=1"></script>
-<script src="rpa_queue.js?v=2"></script>
+<script src="rpa_queue.js?v=3"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--txt); font: 14px/1.5 var(--font); }
@@ -608,7 +608,17 @@ function checkHtml(r, st) {
 /* ------------------------------------------------------------ 出力（納品先 → 受注伝票） */
 function okSlips() { return slips.filter(s => stateOf(s) === 'ok'); }
 // 新しい納品先のコードは、アプリではなく専用機が取込の直前に決める。取込ファイルの中では、新規の納品先にだけ仮の番号（N00001…）を使う（mode: real なら本当のコード）
-function tempCfg() { const t = (CONF.rpaImport || {}).tempCodes; return t && t.mode === 'temp' ? t : null; }
+// 仮の番号を使うかは、専用機の稼働の印（heartbeat.json の features に tempDeliveryCodes）で決める（mode: auto。EC.deliveryCodeMode）。
+// 専用機が対応していないうちは、今までどおりアプリが本当のコードを決める（仮の番号が SMILE にそのまま入らないように）
+let codeDecision = { mode: 'real', blocked: '', reason: 'アプリが番号を決めます' }, lastHealth = null;
+function tempCfg() { const t = (CONF.rpaImport || {}).tempCodes; return t && codeDecision.mode === 'temp' && !codeDecision.blocked ? t : null; }
+async function refreshCodeMode() {
+  const t = (CONF.rpaImport || {}).tempCodes;
+  try { await rpaReady(); lastHealth = await RpaQueue.health(); } catch (e) { lastHealth = null; }
+  codeDecision = EC.deliveryCodeMode(t, lastHealth);
+  if (typeof renderOutbarIfOrders === 'function' && store) renderOutbarIfOrders();
+  return codeDecision;
+}
 // forceReal＝専用機を使わない手動の取込ファイル（「⋯」メニュー）。仮の番号は専用機が置き換えるものなので、手動の取込には使わず本当のコードを決める
 function planOut(forceReal) {
   const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); s.memo = memoOf(s); });
@@ -626,7 +636,7 @@ function renderOutbar() {
   // 取込は管理者だけ（見た目の制限。専用機側でも管理者を照合する）
   if (!isAdmin) { bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">（取込は管理者が行います）</span></div>'; return; }
   const p = planOut(), lines = ok.reduce((a, s) => a + s.lines.length, 0), bad = ok.filter(s => s.hasErr).length;
-  bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">納品先の新規 ' + p.fresh.length + '件・受注 ' + lines + '行</span></div><div class="grow"></div>' +
+  bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">納品先の新規 ' + p.fresh.length + '件・受注 ' + lines + '行</span><div class="muted" style="font-size:11px' + (codeDecision.blocked ? ';color:var(--red)' : '') + '">新規の納品先：' + esc(codeDecision.blocked || codeDecision.reason) + '</div></div><div class="grow"></div>' +
     (!M.nouhin || !M.items ? '<span class="tag err">品目マスタ・納品先マスタを読めていません</span>' : '') + (bad ? '<span class="tag err">赤い確認事項のある注文が ' + bad + '件</span>' : '') +
     '<button class="btn" id="o-import"' + (!ok.length || bad || !M.nouhin || !M.items || importBusy ? ' disabled' : '') + '>SMILEに取り込む</button>' +
     '<span class="morewrap"><button class="hbtn" id="o-more" title="予備の操作（専用機が使えないとき）" aria-label="予備の操作">⋯</button>' +
@@ -894,6 +904,8 @@ async function submitImport(o) {
 
 async function startImport() {
   if (!isAdmin || importBusy) return;
+  await refreshCodeMode();   // 取込の直前に、専用機が仮の番号に対応しているかを確かめる
+  if (codeDecision.blocked) { alert('取り込めません：' + codeDecision.blocked); return; }
   const p = planOut();
   if (!p.ok.length || !M.nouhin || !M.items || p.ok.some(s => s.hasErr)) return;
   const files = [], jrows = EC.juchuRows(p.ok, LAY.juchu, store.cfg, cal);
@@ -902,7 +914,7 @@ async function startImport() {
   const net = p.ok.reduce((a, s) => a + s.netTotal, 0), gross = p.ok.reduce((a, s) => a + s.grossTotal, 0);
   await submitImport({ files, tempCodes: EC.tempCodes(p.fresh), expected: EC.expectedImport(p.ok, p.fresh), orderIds: p.ok.map(s => s.id), counts: { fresh: p.fresh.length, slips: p.ok.length, rows: jrows.length, net, gross },
     confirmMsg: (isIndexStale() ? '⚠ SMILE の最新データが ' + agoText(indexAgeHours()) + 'です。二重取込の確認が古い可能性があります。先に「SMILEの最新を取り込む」を押すことをおすすめします。\n\n' : '') +
-      'SMILE に取り込みます。\n\n今回の取込：' + p.ok.length + '件（うち納品先の新規 ' + p.fresh.length + '件）。SMILE に実際に登録されます（手配区分1の本体は製番が付きます）。\n受注伝票：' + p.ok.length + '伝票（' + jrows.length + '行）\n金額合計：税抜 ' + yen(net) + '／税込 ' + yen(gross) + '\n\n取込は RPA 専用機が行い、終わると自動で SMILE と突き合わせて、Teams に報告します。担当者が画面で確認OKを押すと起票済みになります。よろしいですか？' });
+      'SMILE に取り込みます。\n新規の納品先：' + codeDecision.reason + '\n\n今回の取込：' + p.ok.length + '件（うち納品先の新規 ' + p.fresh.length + '件）。SMILE に実際に登録されます（手配区分1の本体は製番が付きます）。\n受注伝票：' + p.ok.length + '伝票（' + jrows.length + '行）\n金額合計：税抜 ' + yen(net) + '／税込 ' + yen(gross) + '\n\n取込は RPA 専用機が行い、終わると自動で SMILE と突き合わせて、Teams に報告します。担当者が画面で確認OKを押すと起票済みになります。よろしいですか？' });
 }
 
 // テスト送信（管理者メニュー）：SMILE のテスト用得意先に仮の注文を1件。本番の注文・得意先（599801・599802）には触らない。
@@ -914,7 +926,13 @@ async function startTestImport() {
   if (guard) { alert(guard); return; }
   if (!M.items) { alert('品目マスタを読めていないため、テスト送信できません。「↻ 更新」で読み直してください'); return; }
   const d = new Date(), stamp = twoDigits(d.getFullYear() % 100) + twoDigits(d.getMonth() + 1) + twoDigits(d.getDate()) + twoDigits(d.getHours()) + twoDigits(d.getMinutes());
-  const tmp = tempCfg(), tcm = tmp ? tc : Object.assign({}, tc, { codeMode: 'fixed' });   // 仮の番号を使わない設定（mode: real）のときは、固定のコードの形で送る
+  // testImport.codeMode：auto（既定。仮の番号に対応した専用機のときだけ仮の番号、なければ固定のコード 999998）／temp（明示。対応していなければ止める）／fixed
+  await refreshCodeMode();
+  const td = EC.deliveryCodeMode(Object.assign({}, (CONF.rpaImport || {}).tempCodes, { mode: tc.codeMode === 'temp' ? 'temp' : (tc.codeMode === 'fixed' ? 'real' : 'auto') }), lastHealth);
+  if (td.blocked) { alert('テスト送信できません：' + td.blocked); return; }
+  const tmp = td.mode === 'temp' ? (CONF.rpaImport || {}).tempCodes : null, tcm = Object.assign({}, tc, { codeMode: tmp ? 'temp' : 'fixed' });
+  const guard2 = EC.testSendGuard(tcm, store.cfg);
+  if (guard2) { alert(guard2); return; }
   const exist = M.nouhin && M.nouhin[tc.customerCode] && M.nouhin[tc.customerCode].keys[EC.testDeliveryKey(tc)];   // 同じ名前・郵便番号のテスト用の納品先がすでにあれば、それを使う
   const r = EC.buildTestImport(tcm, store.cfg, { items: M.items, cal, today: today(), stamp, deliveryCodes: M.testDeliveryCodes || {}, temp: tmp, existingCode: exist });
   if (r.error) { alert('テスト送信できません：' + r.error); return; }
@@ -1473,6 +1491,8 @@ async function initAuth() {
     sharedInit(); await syncFromList({ first: true, noRender: true });   // 共有の履歴（リスト）を読んで、この端末の記録を復元する
     recompute(); render();
     Object.keys(store.imports).forEach(id => { if (['queued', 'importing', 'verify'].includes(store.imports[id].phase)) trackImport(id); });
+    codeDecision = EC.deliveryCodeMode((CONF.rpaImport || {}).tempCodes, null); refreshCodeMode();   // 専用機の稼働の印で、新規の納品先のコードの決め方を判定する
+    setInterval(() => { if (document.visibilityState === 'visible') refreshCodeMode(); }, 60 * 1000);
     resumeReports();   // 突合が済んでいて、まだ報告していない取込があれば、1回だけ報告する   // 開き直したら、待っている取込の続きを見る
     // 他の人が更新した内容を、定期的に反映する（画面が見えているときだけ）
     setInterval(() => { if (document.visibilityState === 'visible' && shared && !importBusy && !syncBusy) syncFromList({ quiet: true }); }, ((CONF.sharedHistory || {}).pollSeconds || 60) * 1000);
