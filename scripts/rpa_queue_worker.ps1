@@ -433,6 +433,172 @@ function Read-ImportTable([string]$Path) {
   return [pscustomobject]@{ Head = $head; Rows = $rows }
 }
 
+# ===== 新しい納品先のコードは、取込の直前に専用機で決める =====
+# アプリは新しい納品先に仮の番号(例 N00001)を入れて送る。SMILEの納品先マスター取込には自動採番がなく、
+# 既にあるコードはエラーチェックで「納品先が存在します」になる(上書きはしない)。そこで、取込の直前に
+# 最新の ec_smile_index.json から空いている番号を決めて、nouhin.txt と juchu.txt の納品先コードの列だけを置き換える。
+# 番号がぶつかったら(PADが「納品先が存在します」だけのエラーと報告したら)、番号を進めてやり直す。
+# 番号の決め方はアプリ(ec_sales_core.js の indexDeliveryMaster / planDeliveries)と同じ：
+#   得意先ごとに、使われている番号のうち予約(reservedDeliveryCodes)を除き上限(deliveryCodeLimit)以下の最大を起点に、
+#   予約・使用済みを飛ばして順に振る。予約と上限は ec_sales_config.json から読む(アプリと食い違わないように)。
+$EcDeliveryTempPattern = '^N\d{5}$'
+$EcDeliveryCodeColumn  = '納品先コード'
+$EcCustomerColumn      = '得意先コード'
+
+# ec_sales_config.json を読む(SharedMasters にあればそれ、なければ GitHub の main、だめなら手元のリポジトリ)
+function Get-EcSalesConfig {
+  $shared = Join-Path $SharedMastersPath 'ec_sales_config.json'
+  if (Test-Path -LiteralPath $shared) { return (Read-JsonFile $shared) }
+  New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+  $path = Join-Path $WorkDir ('ec_sales_config_{0:yyyyMMdd_HHmmss}.json' -f (Get-Date))
+  try {
+    Invoke-WebRequest -Uri "$RepoRawBase/ec_sales_config.json" -OutFile $path -UseBasicParsing
+    return (Read-JsonFile $path)
+  } catch {
+    Write-Log "ec_sales_config.json をGitHubから取得できないため、手元のファイルを使います: $($_.Exception.Message)"
+    return (Read-JsonFile (Join-Path (Split-Path $PSScriptRoot -Parent) 'ec_sales_config.json'))
+  } finally {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-EcSmileIndex { return (Read-JsonFile (Join-Path $SharedMastersPath 'ec_smile_index.json')) }
+
+# 取込ファイル(UTF-16・タブ区切り)の1つの値。前後の " は外して比べる
+function Get-FieldValue([string]$Field) { $v = $Field.Trim(); if ($v.Length -ge 2 -and $v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length - 2) }; return $v }
+
+# 仮の番号の一覧(nouhin.txt の出てくる順)と、ファイルの問題(文字列の配列)を返す
+function Get-TempDeliveryCodes([string]$BatchDir) {
+  $temps = @(); $problems = @(); $seen = @{}
+  $np = Join-Path $BatchDir 'nouhin.txt'; $jp = Join-Path $BatchDir 'juchu.txt'
+  if (Test-Path -LiteralPath $np) {
+    $t = Read-ImportTable $np
+    $ci = [Array]::IndexOf([string[]]$t.Head, $EcCustomerColumn); $di = [Array]::IndexOf([string[]]$t.Head, $EcDeliveryCodeColumn)
+    if ($ci -lt 0 -or $di -lt 0) { return [pscustomobject]@{ Temps = @(); Problems = @("nouhin.txt に「$EcCustomerColumn」「$EcDeliveryCodeColumn」の見出しがありません") } }
+    foreach ($r in $t.Rows) {
+      $code = Get-FieldValue $r[$di]
+      if ($code -notmatch $EcDeliveryTempPattern) { continue }
+      $key = (Get-FieldValue $r[$ci]) + '|' + $code
+      if ($seen.ContainsKey($key)) { $problems += "nouhin.txt に同じ仮の番号が2行あります($key)"; continue }
+      $seen[$key] = 1
+      $temps += [pscustomobject]@{ customer = (Get-FieldValue $r[$ci]); temp = $code }
+    }
+  }
+  if (Test-Path -LiteralPath $jp) {
+    $t = Read-ImportTable $jp
+    $ci = [Array]::IndexOf([string[]]$t.Head, $EcCustomerColumn); $di = [Array]::IndexOf([string[]]$t.Head, $EcDeliveryCodeColumn)
+    if ($ci -lt 0 -or $di -lt 0) { $problems += "juchu.txt に「$EcCustomerColumn」「$EcDeliveryCodeColumn」の見出しがありません" }
+    else {
+      foreach ($r in $t.Rows) {
+        $code = Get-FieldValue $r[$di]
+        if ($code -notmatch $EcDeliveryTempPattern) { continue }
+        $key = (Get-FieldValue $r[$ci]) + '|' + $code
+        if (-not $seen.ContainsKey($key)) { $problems += "juchu.txt の仮の番号が nouhin.txt にありません($key)"; $seen[$key] = 1 }
+      }
+    }
+  }
+  return [pscustomobject]@{ Temps = $temps; Problems = $problems }
+}
+
+# 仮の番号ごとに、SMILEで空いている番号を決める。$Avoid(得意先|番号)は、前回ぶつかった番号(使わない)
+function New-DeliveryCodePlan($Temps, $Index, $Config, [hashtable]$Avoid) {
+  $cfg = $Config.config
+  $reserved = @{}; foreach ($c in @($cfg.reservedDeliveryCodes)) { $reserved[[string]$c] = 1 }
+  $limit = [int]([string]$cfg.deliveryCodeLimit)
+  $cols = @($Index.nouhin.cols); $ci = [Array]::IndexOf([string[]]$cols, $EcCustomerColumn); $di = [Array]::IndexOf([string[]]$cols, $EcDeliveryCodeColumn)
+  if ($ci -lt 0 -or $di -lt 0) { throw 'ec_smile_index.json の納品先に得意先コード・納品先コードの列がありません' }
+  $used = @{}; $max = @{}
+  foreach ($r in @($Index.nouhin.rows)) {
+    $cc = [string]$r[$ci]; $code = ([string]$r[$di]).Trim()
+    if ($code -notmatch '^\d+$') { continue }
+    $used["$cc|$code"] = 1
+    if (-not $reserved.ContainsKey($code) -and [int]$code -le $limit -and (-not $max.ContainsKey($cc) -or [int]$code -gt $max[$cc])) { $max[$cc] = [int]$code }
+  }
+  $next = @{}; $plan = @()
+  foreach ($t in @($Temps)) {
+    $cc = [string]$t.customer
+    if (-not $next.ContainsKey($cc)) { $next[$cc] = $(if ($max.ContainsKey($cc)) { $max[$cc] } else { 0 }) }
+    do {
+      $next[$cc]++
+      $code = '{0:D6}' -f $next[$cc]
+    } while ($reserved.ContainsKey($code) -or $used.ContainsKey("$cc|$code") -or ($Avoid -and $Avoid.ContainsKey("$cc|$code")))
+    if ($next[$cc] -gt $limit) { throw "得意先 $cc の納品先コードが連番の上限($($cfg.deliveryCodeLimit))を超えます" }
+    $used["$cc|$code"] = 1
+    $plan += [pscustomobject]@{ customer = $cc; temp = [string]$t.temp; code = $code }
+  }
+  return $plan
+}
+
+# 取込ファイルの納品先コードの列だけを、得意先とセットで置き換えて書き出す(ほかの列・行の並び・改行・BOMはそのまま)
+function Write-AssignedImportFile([string]$Src, [string]$Dst, $Plan) {
+  $map = @{}; foreach ($p in @($Plan)) { $map["$($p.customer)|$($p.temp)"] = $p.code }
+  $bytes = [System.IO.File]::ReadAllBytes($Src)
+  if ($bytes.Length -lt 2 -or $bytes[0] -ne 0xFF -or $bytes[1] -ne 0xFE) { throw "$([System.IO.Path]::GetFileName($Src)) が UTF-16(BOMつき)ではありません" }
+  $lines = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2) -split "`r`n"
+  $head = $lines[0] -split "`t"
+  $ci = [Array]::IndexOf([string[]]$head, $EcCustomerColumn); $di = [Array]::IndexOf([string[]]$head, $EcDeliveryCodeColumn)
+  for ($i = 1; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -eq '') { continue }
+    $f = $lines[$i] -split "`t"
+    $code = Get-FieldValue $f[$di]
+    if ($code -notmatch $EcDeliveryTempPattern) { continue }
+    $key = (Get-FieldValue $f[$ci]) + '|' + $code
+    if (-not $map.ContainsKey($key)) { throw "仮の番号 $key の置き換え先がありません" }
+    $f[$di] = $f[$di].Replace($code, $map[$key])
+    $lines[$i] = $f -join "`t"
+  }
+  $out = [System.Text.Encoding]::Unicode.GetBytes($lines -join "`r`n")
+  [System.IO.File]::WriteAllBytes($Dst, ([byte[]](0xFF, 0xFE) + $out))
+}
+
+# 置き換えたファイルの納品先コードの列に、仮の番号の形が残っていないか(残っていたら SMILE に進まない)
+function Test-TempCodesLeft([string]$Path) {
+  $t = Read-ImportTable $Path
+  $di = [Array]::IndexOf([string[]]$t.Head, $EcDeliveryCodeColumn)
+  if ($di -lt 0) { return 0 }
+  return @($t.Rows | Where-Object { (Get-FieldValue $_[$di]) -match $EcDeliveryTempPattern }).Count
+}
+
+# 置き換えの準備。仮の番号がなければ Active=$false(今までどおり、ファイルをそのまま使う)
+function Initialize-DeliveryAssignment([string]$BatchDir, $Def) {
+  $st = [pscustomobject]@{ Active = $false; Temps = @(); Plan = @(); Avoid = @{}; Retries = 0; MaxRetries = 10; Dir = (Join-Path $BatchDir 'assigned'); Index = $null; Config = $null }
+  if ($Def.deliveryCodeRetries) { $st.MaxRetries = [int]$Def.deliveryCodeRetries }
+  $g = Get-TempDeliveryCodes $BatchDir
+  if (@($g.Problems).Count -gt 0) { throw (@($g.Problems) -join ' / ') }
+  if (@($g.Temps).Count -eq 0) { return $st }
+  $st.Active = $true; $st.Temps = @($g.Temps)
+  $st.Config = Get-EcSalesConfig
+  $st.Index = Get-EcSmileIndex
+  Update-DeliveryAssignment $st $BatchDir
+  return $st
+}
+
+# 番号を決め直して、置き換えたファイルを assigned\ に書き、残っていないかを確かめる
+function Update-DeliveryAssignment($St, [string]$BatchDir) {
+  $St.Plan = @(New-DeliveryCodePlan $St.Temps $St.Index $St.Config $St.Avoid)
+  New-Item -ItemType Directory -Force -Path $St.Dir | Out-Null
+  foreach ($n in 'nouhin.txt', 'juchu.txt') {
+    $src = Join-Path $BatchDir $n
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+    $dst = Join-Path $St.Dir $n
+    Write-AssignedImportFile $src $dst $St.Plan
+    $left = Test-TempCodesLeft $dst
+    if ($left -gt 0) { throw "$n の納品先コードに仮の番号が $left 行残っています" }
+  }
+  Write-Log ('納品先の番号を決めました: ' + ((@($St.Plan) | ForEach-Object { "$($_.customer) $($_.temp)→$($_.code)" }) -join ', '))
+}
+
+# PADの結果が「納品先が存在します」だけのエラーで、実行を押す前に止まったか(番号がぶつかった)。
+# PADはエラーチェックの画面のエラー件数(errorCount)と、エラーリストで「存在します」を検索した件数(existsCount)を書く
+function Test-DeliveryCodeConflict($R) {
+  if (-not ($R.executed -is [bool]) -or $R.executed) { return $false }
+  $names = $R.PSObject.Properties.Name
+  if (-not ($names -contains 'errorCount') -or -not ($names -contains 'existsCount')) { return $false }
+  $e = 0; $x = 0
+  if (-not [int]::TryParse([string]$R.errorCount, [ref]$e) -or -not [int]::TryParse([string]$R.existsCount, [ref]$x)) { return $false }
+  return ($e -gt 0 -and $x -eq $e)
+}
+
 # manifest と実ファイルの照合。問題の一覧(文字列の配列)を返す。空なら問題なし
 function Test-ImportBatch([string]$BatchDir, [string]$BatchId, $Def) {
   $problems = @()
@@ -486,6 +652,12 @@ function Write-ImportResult([string]$BatchDir, [string]$BatchId, [string]$State,
     startedAt = $StartedAt; finishedAt = (Get-Date).ToString('o')
   }
   if ($null -ne $Executed) { $obj | Add-Member -NotePropertyName executed -NotePropertyValue ([bool]$Executed) }
+  # 新しい納品先の番号を専用機で決めたときは、仮の番号→SMILEの番号の対応と、ぶつかってやり直した回数を書く(アプリが突き合わせ・表示に使う)
+  $as = $script:EcImportAssign
+  if ($as -and $as.Active) {
+    $obj | Add-Member -NotePropertyName assigned -NotePropertyValue @(@($as.Plan) | ForEach-Object { [pscustomobject]@{ customer = $_.customer; temp = $_.temp; code = $_.code } })
+    $obj | Add-Member -NotePropertyName retries -NotePropertyValue ([int]$as.Retries)
+  }
   Write-JsonFile (Join-Path $BatchDir 'result.json') $obj
   return $obj
 }
@@ -556,6 +728,7 @@ function Invoke-EcImport($Def, $Request, $SmileCfg = $null) {
   $script:EcImportLaunched = $false    # PADフローを起動したか
   $script:EcImportExecuted = $null     # SMILEの「実行」を押したか($null は不明)
   $script:EcImportFiles = @()          # ここまでの結果
+  $script:EcImportAssign = $null       # 新しい納品先の番号の置き換え(Initialize-DeliveryAssignment)
   try {
     return (Invoke-EcImportCore $Def $Request $SmileCfg)
   } catch {
@@ -625,6 +798,11 @@ function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
   # 3. 中身の確認(だめなら SMILE には触らない)
   $problems = @(Test-ImportBatch $batchDir $batchId $Def)
   if ($problems.Count -gt 0) { return (& $fail ('ファイル不整合: ' + ($problems -join ' / '))) }
+  # 3a. 新しい納品先の仮の番号(N00001 など)を、SMILEで空いている番号に置き換える(manifest の確認は置き換える前のファイルで済ませた)。
+  #     置き換えたファイルは取込フォルダの assigned\ に置く(done / failed に一緒に残る)。仮の番号が残っていたら SMILE に進まない
+  try { $script:EcImportAssign = Initialize-DeliveryAssignment $batchDir $Def }
+  catch { $script:EcImportAssign = $null; return (& $fail ('納品先の番号を決められませんでした(SMILEには触っていません): ' + $_.Exception.Message)) }
+  $assign = $script:EcImportAssign
 
   # 3b. SMILEが閉じていれば起動する(確認がすべて済んだあと)。失敗してもSMILEには触っていないので、やり直しOK(executed:false)
   if ($SmileCfg) {
@@ -644,17 +822,33 @@ function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
   $hadTimeout = $false
   $executed = $false
   $stopMessage = ''
+  $assignError = $null
   $stepTimeout = 15
   if ($Def.stepTimeoutMinutes) { $stepTimeout = [int]$Def.stepTimeoutMinutes }
   # 5. PADフローを順番に。納品先にエラーがあれば受注は実行しない
   foreach ($step in @($Def.steps)) {
     if ($present -notcontains $step.file) { continue }
     if ($stop) { break }
-    Copy-Item -LiteralPath (Join-Path $batchDir $step.file) -Destination (Join-Path $EcImportCurrentDir $step.copyAs) -Force
-    $script:EcImportLaunched = $true     # ここから先で例外が出たら、SMILEにどこまで入ったか分からない
-    # 押したか不明。ただし前のフローで押していれば、全体としては実行済み
-    $script:EcImportExecuted = $(if ($executed) { $true } else { $null })
-    $r = Invoke-PadImportStep ([string]$step.flow) (Join-Path $EcImportCurrentDir $step.result) $stepTimeout
+    while ($true) {
+      # 新しい納品先の番号を置き換えたときは、置き換えたファイル(assigned\)を使う
+      $srcFile = Join-Path $batchDir $step.file
+      if ($assign -and $assign.Active) { $af = Join-Path $assign.Dir $step.file; if (Test-Path -LiteralPath $af) { $srcFile = $af } }
+      Copy-Item -LiteralPath $srcFile -Destination (Join-Path $EcImportCurrentDir $step.copyAs) -Force
+      $script:EcImportLaunched = $true     # ここから先で例外が出たら、SMILEにどこまで入ったか分からない
+      # 押したか不明。ただし前のフローで押していれば、全体としては実行済み
+      $script:EcImportExecuted = $(if ($executed) { $true } else { $null })
+      $r = Invoke-PadImportStep ([string]$step.flow) (Join-Path $EcImportCurrentDir $step.result) $stepTimeout
+      # 番号がぶつかった(エラーが全部「納品先が存在します」で、実行を押す前に止まった)：SMILEには何も入っていないので、番号を進めてやり直す
+      if ($r -and $assign -and $assign.Active -and $step.file -eq 'nouhin.txt' -and (Test-DeliveryCodeConflict $r) -and $assign.Retries -lt $assign.MaxRetries) {
+        foreach ($p in @($assign.Plan)) { $assign.Avoid["$($p.customer)|$($p.code)"] = 1 }
+        $assign.Retries++
+        Write-Log "納品先の番号がぶつかったため、番号を進めてやり直します($($assign.Retries)/$($assign.MaxRetries)回目)"
+        try { Update-DeliveryAssignment $assign $batchDir }
+        catch { $assignError = $_.Exception.Message; break }   # 決め直せない(上限など)。SMILEには入っていないので、実行前に止まった扱いのまま
+        continue
+      }
+      break
+    }
     if (-not $r) {
       # 結果が出ない = SMILEにどこまで入ったか分からない。再実行させず、人が見て判断する
       $files += [pscustomobject]@{ name = $step.file; executed = $true; imported = 0; errors = 0; errorRows = @() }
@@ -681,6 +875,10 @@ function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
       $stop = $true
       $why = @($r.errorRows | Where-Object { $_ -and $_.message } | ForEach-Object { [string]$_.message })[0]
       if (-not $why) { $why = '止まった工程は不明です' }
+      if ($assign -and $assign.Active -and $step.file -eq 'nouhin.txt' -and (Test-DeliveryCodeConflict $r)) {
+        $why = "納品先の番号がSMILEの既存の番号とぶつかりました(番号を進めて $($assign.Retries) 回やり直しました)"
+        if ($assignError) { $why += "。番号を決め直せませんでした: $assignError" }
+      }
       $stopMessage = "$($step.file) は SMILE の実行を押す前に止まりました：$why"
       if ($executed) { $stopMessage += $(if ($step.file -eq 'juchu.txt') { '（納品先は取り込み済み、受注は実行されていません）' } else { "（先に実行した分は取り込み済みで、$($step.file) は実行されていません）" }) }
     } elseif ($err -gt 0) {
