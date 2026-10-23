@@ -122,6 +122,8 @@ const RpaQueue = (() => {
         ok: !isNaN(seenAt) && Date.now() - seenAt < HEARTBEAT_STALE_MS,
         seenAt: isNaN(seenAt) ? null : seenAt,
         job: (hb && hb.job) || '',
+        // 専用機が対応している機能（heartbeat.json の features。例 ['tempDeliveryCodes']）。無い・古い版は空
+        features: hb && Array.isArray(hb.features) ? hb.features.map(String) : [],
       };
     } catch (e) {
       console.warn('[RpaQueue] 稼働状況の確認に失敗', e);
