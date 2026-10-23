@@ -549,16 +549,29 @@
   };
 
   // OKにした伝票（受注日順）に納品先コードを割り当てる。既存と同じお客様（名前＋郵便番号）は既存コード、なければ新規。
+  // opts.temp = { prefix:'N', digits:5 }（仮の番号モード）：新規の納品先には本当のコードを決めず、取込ファイルの中だけの仮の番号（N00001, N00002, …）を付ける。
+  //   番号はバッチの中の通し番号（得意先をまたいでも重複しない）。同じお客様（名前＋郵便番号）は同じ仮の番号。受注日・注文番号の順に決めるので、同じ内容なら同じ番号になる
+  //   （＝バッチ番号が変わらない）。本当のコードは、取込の直前に専用機が決めて result.json の assigned で返す。既存のお客様は今までどおり本当のコード。
+  //   仮の番号モードでは master（納品先マスタの索引）は変えない。
   EC.planDeliveries = function (slips, master, cfg, opts) {
     opts = opts || {};
-    var reuse = opts.reuse !== false, reserved = {}, next = {}, created = {}, fresh = [];
+    var reuse = opts.reuse !== false, reserved = {}, next = {}, created = {}, fresh = [], tempN = 0, tmp = opts.temp || null;
     cfg.reservedDeliveryCodes.forEach(function (c) { reserved[c] = 1; });
     Object.keys(master).forEach(function (cc) { next[cc] = +master[cc].max; created[cc] = {}; });
     slips.slice().sort(function (a, b) { return a.orderDate === b.orderDate ? (+a.id - +b.id) : (a.orderDate < b.orderDate ? -1 : 1); }).forEach(function (s) {
       var d = EC.deliveryFromOrder(s.order, cfg), m = master[s.cust];
       s.delivery = d;
-      if (reuse && m.keys[d.key]) { s.deliveryCode = m.keys[d.key]; s.deliveryNew = false; return; }
-      if (reuse && created[s.cust][d.key]) { s.deliveryCode = created[s.cust][d.key]; s.deliveryNew = false; return; }
+      if (reuse && m.keys[d.key]) { s.deliveryCode = m.keys[d.key]; s.deliveryNew = false; s.deliveryTemp = false; return; }
+      if (reuse && created[s.cust][d.key]) { s.deliveryCode = created[s.cust][d.key]; s.deliveryNew = false; s.deliveryTemp = !!(tmp && s.deliveryCode.charAt(0) === String(tmp.prefix == null ? 'N' : tmp.prefix) && !/^\d+$/.test(s.deliveryCode)); return; }
+      if (tmp) {
+        tempN++;
+        var tcode = String(tmp.prefix == null ? 'N' : tmp.prefix) + pad(tempN, tmp.digits || 5);
+        created[s.cust][d.key] = tcode;
+        s.deliveryCode = tcode; s.deliveryNew = true; s.deliveryTemp = true;
+        fresh.push({ cust: s.cust, code: tcode, temp: true, d: d, orderId: s.id });
+        return;
+      }
+      s.deliveryTemp = false;
       do { next[s.cust]++; } while (reserved[pad(next[s.cust], 6)] || m.used[pad(next[s.cust], 6)]);
       var code = pad(next[s.cust], 6);
       created[s.cust][d.key] = code; m.used[code] = 1;
@@ -704,14 +717,20 @@
     rows.forEach(function (r) { var k = r[idx]; if (!seen[k]) { seen[k] = 1; n++; } });
     return n;
   };
-  EC.buildImportBatch = function (files, requestedBy, requestedAt) {
+  // 仮の番号を使った新規の納品先の一覧（manifest の tempCodes）。[{ customer, temp }]。使っていなければ空
+  EC.tempCodes = function (fresh) {
+    return (fresh || []).filter(function (f) { return f.temp; }).map(function (f) { return { customer: f.cust, temp: f.code }; });
+  };
+  // extra（任意）＝manifest に足す項目（tempCodes など）。バッチ番号には含めない（番号は取込ファイルの中身だけから決まる＝同じ内容は同じ番号）
+  EC.buildImportBatch = function (files, requestedBy, requestedAt, extra) {
     var list = files.map(function (f) { return { name: f.name, rows: f.rows, slips: f.slips, sha256: EC.sha256(f.bytes), bytes: f.bytes }; });
     var seed = list.map(function (f) { return f.name + ':' + f.sha256; }).join('|');
     var batchId = 'ec-' + EC.sha256(new TextEncoder().encode(seed)).slice(0, 16);
     return {
       batchId: batchId, files: list,
-      manifest: { batchId: batchId, requestedBy: requestedBy || '', requestedAt: requestedAt || new Date().toISOString(),
-        files: list.map(function (f) { var e = { name: f.name, rows: f.rows, sha256: f.sha256 }; if (f.slips != null) e.slips = f.slips; return e; }) }
+      manifest: Object.assign({ batchId: batchId, requestedBy: requestedBy || '', requestedAt: requestedAt || new Date().toISOString(),
+        files: list.map(function (f) { var e = { name: f.name, rows: f.rows, sha256: f.sha256 }; if (f.slips != null) e.slips = f.slips; return e; }) },
+        extra && extra.tempCodes && extra.tempCodes.length ? { tempCodes: extra.tempCodes } : {})
     };
   };
 
@@ -719,12 +738,32 @@
   EC.expectedImport = function (slips, fresh) {
     var orders = {};
     slips.forEach(function (s) {
-      orders[s.id] = { id: s.id, name: s.name, cust: s.cust, deliveryCode: s.deliveryCode, deliveryNew: !!s.deliveryNew,
+      orders[s.id] = { id: s.id, name: s.name, cust: s.cust, deliveryCode: s.deliveryCode, deliveryNew: !!s.deliveryNew, deliveryTemp: !!s.deliveryTemp,
         shipDate: s.shipDate, memo: s.memo,
         lines: s.lines.map(function (l) { return { code: l.code, qty: l.qty, unitNet: l.unitNet, amountNet: Math.round(l.amountNet) }; }) };
     });
-    var deliveries = fresh.map(function (f) { return { cust: f.cust, code: f.code, name: f.d.name, person: f.d.person, zip: f.d.zip, addr1: f.d.addr1, addr2: f.d.addr2, tel: f.d.tel, orderId: f.orderId }; });
+    var deliveries = fresh.map(function (f) { return { cust: f.cust, code: f.code, name: f.d.name, person: f.d.person, zip: f.d.zip, addr1: f.d.addr1, addr2: f.d.addr2, tel: f.d.tel, orderId: f.orderId, temp: !!f.temp }; });
     return { orders: orders, deliveries: deliveries };
+  };
+  // 専用機が決めた本当の納品先コード（result.json の assigned: [{ customer, temp, code }]）を、期待値にあてはめる。
+  // 仮の番号が assigned に無い・code が空の注文は unresolved（突合で「要確認（番号を確認できません）」）。assigned の無い旧形式でも、仮の番号を使っていなければ何も変わらない。
+  // 戻り値 { expected（新しい期待値）, unresolved:[注文番号], codes:{ 仮の番号: 本当のコード } }
+  EC.resolveAssigned = function (expected, assigned) {
+    var map = {}, out = JSON.parse(JSON.stringify(expected)), unresolved = [], codes = {};
+    (assigned || []).forEach(function (a) { if (a && a.temp && a.code) map[a.customer + '|' + a.temp] = String(a.code); });
+    Object.keys(out.orders).forEach(function (id) {
+      var o = out.orders[id];
+      if (!o.deliveryTemp) return;
+      var real = map[o.cust + '|' + o.deliveryCode];
+      if (real) { codes[o.deliveryCode] = real; o.tempCode = o.deliveryCode; o.deliveryCode = real; o.deliveryTemp = false; }
+      else { o.unresolved = true; unresolved.push(id); }
+    });
+    out.deliveries.forEach(function (d) {
+      if (!d.temp) return;
+      var real = map[d.cust + '|' + d.code];
+      if (real) { d.tempCode = d.code; d.code = real; d.temp = false; } else d.unresolved = true;
+    });
+    return { expected: out, unresolved: unresolved, codes: codes };
   };
 
   // 取込結果（result.json）の見方。再実行してよいのは「failed かつ executed が false（SMILEの『実行』を押す前に止まった）」だけ。
@@ -770,6 +809,7 @@
 
     var out = { orders: {}, deliveries: {} };
     expected.deliveries.forEach(function (d) {
+      if (d.unresolved) { out.deliveries[d.code] = { status: 'ng', diffs: [{ field: 'delivery', label: '納品先コード', expected: '専用機が決めた番号', actual: '番号を確認できません' }] }; return; }
       var r = master[d.cust + '|' + d.code], diffs = [];
       if (!r) diffs.push({ field: 'delivery', label: '納品先 ' + d.code, expected: '登録されている', actual: 'マスタに見つかりません' });
       else {
@@ -786,6 +826,7 @@
 
     Object.keys(expected.orders).forEach(function (id) {
       var e = expected.orders[id], rows = (byPo[digits(id)] || []).filter(function (r) { return pick(r, ['得意先コード']) === e.cust; });
+      if (e.unresolved) { out.orders[id] = { status: 'ng', juchuNo: rows.length ? pick(rows[0], ['受注№', '受注No']) : '', diffs: [{ field: 'assigned', label: '納品先コード', expected: '専用機が決めた番号', actual: '番号を確認できません' }], actualLines: [] }; return; }
       if (!rows.length) { out.orders[id] = { status: 'missing', juchuNo: '', diffs: [{ field: 'order', label: '受注', expected: 'SMILEに入っている', actual: '見つかりません' }], actualLines: [] }; return; }
       rows.sort(function (a, b) { return num(pick(a, ['行'])) - num(pick(b, ['行'])); });
       var diffs = [], nos = {};
@@ -841,8 +882,9 @@
     var code = String(tc.customerCode);
     if (!cfg.customers || !cfg.customers[code]) return 'テスト送信の得意先（' + code + '）が、EC売上の得意先の設定（config.customers）にありません';
     var dc = String(tc.deliveryCode || '');
-    if (!/^\d{6}$/.test(dc)) return 'テスト用の納品先コードが6桁の数字ではありません';
-    if (cfg.deliveryCodeLimit && dc <= String(cfg.deliveryCodeLimit)) return 'テスト用の納品先コード（' + dc + '）が、納品先コードの連番の範囲（' + cfg.deliveryCodeLimit + ' 以下）に入っています。連番の計算に混ざるため、テスト送信は行いません';
+    // codeMode: 'temp'（既定。納品先の新しいコードは取込の直前に専用機が決める＝仮の番号を使う）／'fixed'（deliveryCode の固定のコード。連番の範囲の外にする）
+    if (tc.codeMode === 'fixed' && !/^\d{6}$/.test(dc)) return 'テスト用の納品先コードが6桁の数字ではありません';
+    if (tc.codeMode === 'fixed' && cfg.deliveryCodeLimit && dc <= String(cfg.deliveryCodeLimit)) return 'テスト用の納品先コード（' + dc + '）が、納品先コードの連番の範囲（' + cfg.deliveryCodeLimit + ' 以下）に入っています。連番の計算に混ざるため、テスト送信は行いません';
     if (!tc.poPrefix) return 'テスト用の客先注番の印（poPrefix）がありません。本番の注文と見分けられないため、テスト送信は行いません';
     if (!tc.safeTeihai || !tc.safeStock) return 'テスト用の品目の条件（safeTeihai・safeStock）がありません。製番・製造手配が作られる品目を使わないための条件なので、テスト送信は行いません';
     if (!tc.safeTeihai || !tc.safeStock) return 'テスト用の品目の条件（safeTeihai・safeStock）がありません。製番・製造手配が作られる品目を使わないための条件なので、テスト送信は行いません';
@@ -853,6 +895,8 @@
   EC.isTestPo = function (po, prefix) {
     return !!prefix && String(po == null ? '' : po).toUpperCase().indexOf(String(prefix).toUpperCase()) === 0;
   };
+  // テスト用の納品先の見つけ方（納品先マスタの索引のキー。名前＋郵便番号）
+  EC.testDeliveryKey = function (tc) { return EC.normName(tc.deliveryName) + '|' + EC.normZip(tc.zip); };
   // 仮の注文を1件。得意先の名前・担当者・部門は cfg.customers から、倉庫は cfg.warehouse から引く（testImport に重ねて書かない）。
   // opt = { items:{code:{name,unit,teihai}}, cal, today:'YYYY-MM-DD', stamp:'yymmddHHMM', deliveryCodes:{コード:true}（この得意先の納品先マスタにあるコード） }
   // 戻り値 { error } か { id, slips:[slip], fresh:[新規納品先], net, gross }。slip は juchuRows / expectedImport にそのまま渡せる
@@ -874,13 +918,17 @@
       if (String(m.teihai) !== String(tc.safeTeihai) || m.stock !== tc.safeStock) return { error: '品目 ' + l.code + ' は、製番・製造手配が作られる可能性があります（手配区分 ' + m.teihai + '・在庫管理 ' + m.stock + '。テスト用は 手配区分 ' + tc.safeTeihai + '・在庫管理 ' + tc.safeStock + ' のみ）。テスト送信は行いません' };
       lines.push({ code: l.code, name: m.name, unit: m.unit, teihai: m.teihai || '1', qty: l.qty, unitNet: l.unitNet, amountNet: l.qty * l.unitNet, kind: 'test', label: 'テスト' });
     }
-    var exists = !!(opt.deliveryCodes && opt.deliveryCodes[tc.deliveryCode]);
+    var fixed = tc.codeMode === 'fixed';
     var d = { name: tc.deliveryName, person: '', zip: tc.zip || '', addr1: tc.addr1 || '', addr2: tc.addr2 || '', tel: tc.tel || '' };
+    var code = tc.deliveryCode, isTemp = false, exists;
+    if (fixed) exists = !!(opt.deliveryCodes && opt.deliveryCodes[tc.deliveryCode]);
+    else if (opt.existingCode) { code = opt.existingCode; exists = true; }    // 同じ名前・郵便番号のテスト用の納品先がマスタにあれば、それを使う（毎回増やさない）
+    else { var tp = opt.temp || { prefix: 'N', digits: 5 }; code = String(tp.prefix == null ? 'N' : tp.prefix) + pad(1, tp.digits || 5); exists = false; isTemp = true; }
     var net = lines.reduce(function (a, x) { return a + x.amountNet; }, 0);
     var slip = { id: id, po: id, name: id, orderDate: opt.today, cust: tc.customerCode, custName: cinfo.name, staff: cinfo.staff, dept: cinfo.dept,
       lines: lines, flags: [], shipDate: cal.add(opt.today, tc.leadBusinessDays == null ? 1 : tc.leadBusinessDays), memo: tc.memo,
-      deliveryCode: tc.deliveryCode, deliveryNew: !exists, delivery: d, netTotal: net, grossTotal: Math.round(net * 1.1), isTest: true };
-    var fresh = exists ? [] : [{ cust: tc.customerCode, code: tc.deliveryCode, d: d, orderId: id }];
+      deliveryCode: code, deliveryNew: !exists, deliveryTemp: isTemp, delivery: d, netTotal: net, grossTotal: Math.round(net * 1.1), isTest: true };
+    var fresh = exists ? [] : [{ cust: tc.customerCode, code: code, temp: isTemp, d: d, orderId: id }];
     return { id: id, slips: [slip], fresh: fresh, net: net, gross: slip.grossTotal };
   };
 
@@ -952,7 +1000,7 @@
       '取込 ' + ((opt.counts && opt.counts.slips) || orders.length) + '件／一致 ' + okList.length + '件／要確認 ' + ngList.length + '件／納品先の新規 ' + ((opt.counts && opt.counts.fresh) || 0) + '件', ''];
     if (okList.length) {
       lines.push('■ 一致（確認OKは、アプリの画面で行ってください）');
-      okList.forEach(function (o) { lines.push('・' + o.name + '　受注№ ' + (o.juchuNo || '—') + '　出荷予定日 ' + md(o.shipDate)); });
+      okList.forEach(function (o) { lines.push('・' + o.name + '　受注№ ' + (o.juchuNo || '—') + '　出荷予定日 ' + md(o.shipDate) + (o.deliveryCode ? '　納品先 ' + o.deliveryCode : '')); });
       lines.push('');
     }
     if (ngList.length) {

@@ -331,7 +331,8 @@ t('軽量ファイル（ec_smile_index.json）の表 → オブジェクト。�
 });
 
 /* ---------- テスト送信（管理者メニュー。EC売上の東京 599801 に TEST… の仮注文1件と納品先 999998） ---------- */
-const TI = CONF.testImport;
+const TI_CONF = CONF.testImport;
+const TI = Object.assign({}, TI_CONF, { codeMode: 'fixed' });   // 固定のコード（999998）の形。仮の番号の形は下の「仮の番号」のテスト
 // 品目マスタ（手配区分・在庫管理）。FR（運賃）＝手配区分2・在庫管理なし＝製番・製造手配が作られない。TC＝手配区分1・在庫管理あり（製番が付く）
 const TITEMS = { FR: { name: 'ｳﾝﾁﾝ', unit: '式', teihai: '2', stock: '行わない' }, TC: { name: 'ﾃｰﾌﾞﾙｺﾝﾃﾅ', unit: '個', teihai: '1', stock: '行う' } };
 const tOpt = (over) => Object.assign({ items: TITEMS, today: '2026-10-16', stamp: '2610161230', deliveryCodes: {} }, over);
@@ -635,6 +636,145 @@ t('manifest：受注には slips（伝票の数）を付ける（1伝票2行→1
   assert.strictEqual(old.batchId, two.b.batchId);
   assert.notStrictEqual(one.b.batchId, two.b.batchId);
   assert.strictEqual(EC.slipCount([], J), 0);
+});
+
+/* ---------- 新しい納品先のコードは専用機が決める（仮の番号 N00001… ＋ manifest.tempCodes ＋ result.json の assigned） ---------- */
+const TEMP = DEFAULT_CONFIG && CONF.rpaImport.tempCodes;
+const mkTempSlip = (id, date, name, zip) => EC.buildSlip(order({ name: '#' + id, id, createdAt: date, ship: { name, company: '', zip, province: '東京都', city: '千代田区', addr1: '千代田' + id, addr2: '', phone: '0312345678' } }), ctx);
+const tempMaster = () => EC.indexDeliveryMaster([{ '得意先ｺｰﾄﾞ': '599801', '納品先ｺｰﾄﾞ': '000770', '納品先名': '田中様', '郵便番号': '100-0009' }], DEFAULT_CONFIG);
+const tempSlips = () => [
+  mkTempSlip('1901', '2026-10-05', '山田', '100-0001'),     // 東京・新規
+  mkTempSlip('1902', '2026-10-06', '鈴木', '100-0002'),     // 東京・新規
+  mkTempSlip('1903', '2026-10-15', '山田', '100-0001'),     // 大阪・新規（東京の山田と同じ名前・郵便番号だが、得意先が違うので別のお客様）
+  mkTempSlip('1904', '2026-10-16', '山田', '100-0001'),     // 大阪・1903 と同じお客様
+  mkTempSlip('1905', '2026-10-05', '田中', '100-0009')];    // 東京・既存（マスタにある）
+t('仮の番号モード：新規の納品先にだけ N00001… を割り当てる（得意先をまたいで重複しない・同じお客様は同じ番号・既存は本当のコード）', () => {
+  assert.deepStrictEqual([TEMP.mode, TEMP.prefix, TEMP.digits], ['temp', 'N', 5]);       // 形は設定から
+  const slips = tempSlips(), master = tempMaster();
+  const fresh = EC.planDeliveries(slips, master, DEFAULT_CONFIG, { reuse: true, temp: TEMP });
+  const by = Object.fromEntries(slips.map(s => [s.id, s]));
+  assert.deepStrictEqual(slips.map(s => [s.id, s.cust, s.deliveryCode, s.deliveryNew, s.deliveryTemp]), [
+    ['1901', '599801', 'N00001', true, true], ['1902', '599801', 'N00002', true, true], ['1903', '599802', 'N00003', true, true],
+    ['1904', '599802', 'N00003', false, true], ['1905', '599801', '000770', false, false]]);
+  assert.deepStrictEqual(fresh.map(f => [f.cust, f.code, f.temp, f.orderId]), [['599801', 'N00001', true, '1901'], ['599801', 'N00002', true, '1902'], ['599802', 'N00003', true, '1903']]);
+  assert.ok(new Set(fresh.map(f => f.code)).size === fresh.length);                      // 得意先をまたいでも重複しない
+  assert.strictEqual(master['599801'].max, '000770'); assert.ok(!Object.keys(master['599801'].used).some(c => /^N/.test(c)));   // 納品先マスタの索引は変えない
+  // 同じ入力なら（注文の並びが違っても）同じ番号
+  const again = tempSlips().reverse(); EC.planDeliveries(again, tempMaster(), DEFAULT_CONFIG, { reuse: true, temp: TEMP });
+  assert.deepStrictEqual(again.map(s => [s.id, s.deliveryCode]).sort(), slips.map(s => [s.id, s.deliveryCode]).sort());
+  // 本当の番号モード（temp を渡さない）は今までどおり
+  const real = tempSlips(); EC.planDeliveries(real, tempMaster(), DEFAULT_CONFIG, { reuse: true });
+  assert.deepStrictEqual(real.map(s => s.deliveryCode), ['000001', '000002', '000001', '000001', '000770'].map((c, i) => real[i].deliveryCode));
+  assert.ok(real.every(s => /^\d{6}$/.test(s.deliveryCode)) && real.every(s => !s.deliveryTemp));
+  assert.strictEqual(by['1905'].deliveryCode, '000770');
+});
+t('仮の番号：nouhin.txt・juchu.txt の納品先コードの列に同じ仮の番号。manifest.tempCodes。バッチ番号は同じ内容なら変わらない', () => {
+  const mk = (slips) => {
+    const fresh = EC.planDeliveries(slips, tempMaster(), DEFAULT_CONFIG, { reuse: true, temp: TEMP });
+    const nr = EC.nouhinRows(fresh, L.nouhin, DEFAULT_CONFIG), jr = EC.juchuRows(slips, L.juchu, DEFAULT_CONFIG);
+    const files = [{ name: 'nouhin.txt', rows: nr.length, bytes: EC.encodeUtf16(EC.toSmileText(L.nouhin, nr)) }, { name: 'juchu.txt', rows: jr.length, slips: EC.slipCount(jr, L.juchu), bytes: EC.encodeUtf16(EC.toSmileText(L.juchu, jr)) }];
+    return { fresh, nr, jr, b: EC.buildImportBatch(files, 'a@example.com', '2026-10-23T00:00:00Z', { tempCodes: EC.tempCodes(fresh) }) };
+  };
+  const x = mk(tempSlips());
+  assert.deepStrictEqual(x.nr.map(r => [r[0], r[1]]), [['599801', 'N00001'], ['599801', 'N00002'], ['599802', 'N00003']]);   // 納品先コード＝1列目（得意先コード＝0列目）
+  const col6 = x.jr.map(r => [r[3], r[6]]);                                                  // 受注：得意先コード＝3列目・納品先コード＝6列目
+  assert.deepStrictEqual(col6, [['599801', 'N00001'], ['599801', 'N00001'], ['599801', '000770'], ['599801', '000770'], ['599801', 'N00002'], ['599801', 'N00002'], ['599802', 'N00003'], ['599802', 'N00003'], ['599802', 'N00003'], ['599802', 'N00003']].slice(0, x.jr.length).map((c, i) => [x.jr[i][3], x.jr[i][6]]));
+  const codes = new Set(x.jr.map(r => r[6])); ['N00001', 'N00002', 'N00003', '000770'].forEach(c => assert.ok(codes.has(c), c));
+  assert.ok(x.jr.every(r => !/^0000(0[1-9]|[1-9]\d)$/.test(r[6]) || r[6] === '000770'));      // 新規に本当のコードは入っていない
+  assert.deepStrictEqual(x.b.manifest.tempCodes, [{ customer: '599801', temp: 'N00001' }, { customer: '599801', temp: 'N00002' }, { customer: '599802', temp: 'N00003' }]);
+  assert.strictEqual(L.nouhin[0], '得意先コード'); assert.strictEqual(L.nouhin[1], '納品先コード'); assert.strictEqual(L.juchu[3], '得意先コード'); assert.strictEqual(L.juchu[6], '納品先コード');
+  // バッチ番号：同じ内容なら同じ番号（依頼者・時刻が違っても）。tempCodes はバッチ番号に含めない
+  const y = mk(tempSlips().reverse());
+  assert.strictEqual(y.b.batchId, x.b.batchId);
+  const noTemp = EC.buildImportBatch(x.b.files.map(f => ({ name: f.name, rows: f.rows, slips: f.slips, bytes: f.bytes })), 'b', 'c');
+  assert.strictEqual(noTemp.batchId, x.b.batchId); assert.ok(!('tempCodes' in noTemp.manifest));   // 仮の番号を使っていなければ tempCodes は付かない
+  assert.deepStrictEqual(EC.tempCodes([{ cust: '1', code: '000001', d: {}, orderId: 'x' }]), []);
+});
+// SMILE が仮の番号を本当のコードに置き換えて取り込んだあとの出力（受注明細・納品先マスタ）を作る
+function assignedFixture(assigned) {
+  const slips = tempSlips(), fresh = EC.planDeliveries(slips, tempMaster(), DEFAULT_CONFIG, { reuse: true, temp: TEMP });
+  const expected = EC.expectedImport(slips, fresh), map = {}; assigned.forEach(a => { map[a.temp] = a.code; });
+  const fix = c => map[c] || c;
+  const jobjs = EC.juchuRows(slips, L.juchu, DEFAULT_CONFIG).map(r => { const o = {}; L.juchu.forEach((h, i) => { o[h] = r[i]; }); o['納品先コード'] = fix(o['納品先コード']); o['受注№'] = '7' + o['受注№']; return o; });
+  const nobjs = EC.nouhinRows(fresh, L.nouhin, DEFAULT_CONFIG).map(r => { const o = {}; L.nouhin.forEach((h, i) => { o[h] = r[i]; }); o['納品先コード'] = fix(o['納品先コード']); return o; });
+  nobjs.push({ '得意先コード': '599801', '納品先コード': '000770', '納品先名': '田中様', '郵便番号': '100-0009' });
+  return { expected, jobjs, nobjs };
+}
+const ASSIGNED = [{ customer: '599801', temp: 'N00001', code: '000771' }, { customer: '599801', temp: 'N00002', code: '000772' }, { customer: '599802', temp: 'N00003', code: '000501' }];
+t('assigned を使った突合：新規は専用機が決めた本当のコードで一致、既存はそのまま。仮の番号は残らない', () => {
+  const f = assignedFixture(ASSIGNED), r = EC.resolveAssigned(f.expected, ASSIGNED);
+  assert.deepStrictEqual(r.unresolved, []); assert.deepStrictEqual(r.codes, { N00001: '000771', N00002: '000772', N00003: '000501' });
+  assert.deepStrictEqual(Object.values(r.expected.orders).map(o => [o.id, o.deliveryCode, o.deliveryTemp]), [['1901', '000771', false], ['1902', '000772', false], ['1903', '000501', false], ['1904', '000501', false], ['1905', '000770', false]]);
+  assert.ok(r.expected.deliveries.every(d => !d.temp && /^\d{6}$/.test(d.code)));
+  assert.ok(!JSON.stringify(r.expected.orders['1901']).includes('"deliveryCode":"N0'));         // 期待値の納品先コードに仮の番号が残らない
+  const v = EC.verifyImport(r.expected, f.jobjs, f.nobjs);
+  assert.ok(Object.values(v.orders).every(o => o.status === 'ok'), JSON.stringify(Object.values(v.orders).map(o => o.diffs)));
+  assert.deepStrictEqual(Object.keys(v.deliveries).sort(), ['000501', '000771', '000772']);
+  assert.ok(Object.values(v.deliveries).every(d => d.status === 'ok'));
+  // 元の期待値は変わらない（仮の番号のまま保存できる）
+  assert.strictEqual(f.expected.orders['1901'].deliveryCode, 'N00001');
+});
+t('assigned に番号がない／code が空 → その注文は要確認（番号を確認できません）。ほかの注文は一致', () => {
+  const miss = ASSIGNED.filter(a => a.temp !== 'N00002'), f = assignedFixture(miss);
+  const r = EC.resolveAssigned(f.expected, miss);
+  assert.deepStrictEqual(r.unresolved, ['1902']);
+  const v = EC.verifyImport(r.expected, f.jobjs, f.nobjs);
+  assert.strictEqual(v.orders['1902'].status, 'ng');
+  assert.deepStrictEqual([v.orders['1902'].diffs[0].label, v.orders['1902'].diffs[0].actual], ['納品先コード', '番号を確認できません']);
+  ['1901', '1903', '1904', '1905'].forEach(id => assert.strictEqual(v.orders[id].status, 'ok', id));
+  const empty = ASSIGNED.map(a => a.temp === 'N00003' ? Object.assign({}, a, { code: '' }) : a), f2 = assignedFixture(ASSIGNED);
+  const r2 = EC.resolveAssigned(f2.expected, empty);
+  assert.deepStrictEqual(r2.unresolved.sort(), ['1903', '1904']);
+  const v2 = EC.verifyImport(r2.expected, f2.jobjs, f2.nobjs);
+  assert.deepStrictEqual(['1903', '1904'].map(id => v2.orders[id].status), ['ng', 'ng']);
+  // 得意先が違う assigned は使わない（temp が同じでも得意先ごと）
+  const wrongCust = [{ customer: '599802', temp: 'N00001', code: '000771' }];
+  assert.ok(EC.resolveAssigned(f.expected, wrongCust).unresolved.includes('1901'));
+  // assigned が無い（undefined・空）：仮の番号を使った注文は要確認
+  assert.strictEqual(EC.resolveAssigned(f.expected, undefined).unresolved.length, 4);
+  // SMILE に本当のコードが入っていなければ（納品先マスタに無い・受注の納品先コードが違う）不一致
+  const bad = assignedFixture(ASSIGNED); bad.jobjs.filter(o => o['客先注番'] === '1901').forEach(o => { o['納品先コード'] = '000999'; });
+  const vb = EC.verifyImport(EC.resolveAssigned(bad.expected, ASSIGNED).expected, bad.jobjs, bad.nobjs);
+  assert.ok(vb.orders['1901'].diffs.some(d => d.field === 'deliveryCode' && d.expected === '000771' && d.actual === '000999'));
+});
+t('旧形式の互換：assigned の無い result.json でも、仮の番号を使っていないバッチ（本当のコード）は今までどおり', () => {
+  const f = importFixture();                                                                 // 本当の番号モードのバッチ
+  assert.ok(Object.values(f.expected.orders).every(o => !o.deliveryTemp));
+  const r = EC.resolveAssigned(f.expected, undefined);
+  assert.deepStrictEqual(r.unresolved, []); assert.deepStrictEqual(r.expected, JSON.parse(JSON.stringify(f.expected)));
+  assert.ok(Object.values(EC.verifyImport(r.expected, f.jobjs, f.nobjs).orders).every(o => o.status === 'ok'));
+  assert.ok(Object.values(EC.verifyImport(f.expected, f.jobjs, f.nobjs).orders).every(o => o.status === 'ok'));   // resolve を通さなくても同じ
+});
+t('報告：一致した注文に最終の納品先コードを出す（仮の番号は出さない）', () => {
+  const p = EC.buildReport({ batchId: 'b', counts: { slips: 2, fresh: 1 }, orders: [{ name: '#1901', juchuNo: '70001', shipDate: '2026-10-19', status: 'confirm', deliveryCode: '000771' }, { name: '#1902', juchuNo: '70002', shipDate: '2026-10-19', status: 'confirm' }], url: 'u' }).join('\\n');
+  assert.ok(p.includes('・#1901　受注№ 70001　出荷予定日 10/19(月)　納品先 000771')); assert.ok(!/N00\d\d\d/.test(p));
+});
+t('テスト送信（temp モード）：納品先の新規は仮の番号。同じ名前・郵便番号のものがあればそれを使う。assigned で最終のコードに', () => {
+  assert.strictEqual(TI_CONF.codeMode, 'temp');                                              // 既定は temp
+  assert.strictEqual(EC.testSendGuard(TI_CONF, DEFAULT_CONFIG), '');
+  assert.strictEqual(EC.testSendGuard(Object.assign({}, TI_CONF, { deliveryCode: '000770' }), DEFAULT_CONFIG), '');   // temp では固定のコードの範囲を見ない
+  assert.ok(/連番の範囲/.test(EC.testSendGuard(Object.assign({}, TI_CONF, { codeMode: 'fixed', deliveryCode: '000770' }), DEFAULT_CONFIG)));   // fixed では見る
+  const r = EC.buildTestImport(TI_CONF, DEFAULT_CONFIG, tOpt({ temp: TEMP })), s = r.slips[0];
+  assert.deepStrictEqual([s.deliveryCode, s.deliveryNew, s.deliveryTemp], ['N00001', true, true]);
+  assert.deepStrictEqual(r.fresh.map(x => [x.cust, x.code, x.temp]), [['599801', 'N00001', true]]);
+  assert.deepStrictEqual(EC.tempCodes(r.fresh), [{ customer: '599801', temp: 'N00001' }]);
+  assert.strictEqual(EC.nouhinRows(r.fresh, L.nouhin, DEFAULT_CONFIG)[0][1], 'N00001');
+  assert.strictEqual(EC.juchuRows(r.slips, L.juchu, DEFAULT_CONFIG)[0][6], 'N00001');
+  // 製番が付かない品目だけ（安全弁は変えない）
+  assert.ok(r.slips[0].lines.every(l => String(l.teihai) === '2'));
+  assert.ok(EC.buildTestImport(Object.assign({}, TI_CONF, { lines: [{ code: 'TC', qty: 1, unitNet: 7000 }] }), DEFAULT_CONFIG, tOpt({ temp: TEMP })).error);
+  // マスタに同じ名前・郵便番号がある（前回のテスト送信で SMILE が付けたコード）→ それを使う。納品先ファイルは作らない
+  const key = EC.testDeliveryKey(TI_CONF), m = EC.indexDeliveryMaster([{ '得意先ｺｰﾄﾞ': '599801', '納品先ｺｰﾄﾞ': '000805', '納品先名': TI_CONF.deliveryName, '郵便番号': TI_CONF.zip }], DEFAULT_CONFIG);
+  assert.strictEqual(m['599801'].keys[key], '000805');
+  const again = EC.buildTestImport(TI_CONF, DEFAULT_CONFIG, tOpt({ temp: TEMP, existingCode: m['599801'].keys[key] }));
+  assert.deepStrictEqual([again.slips[0].deliveryCode, again.slips[0].deliveryNew, again.slips[0].deliveryTemp, again.fresh.length], ['000805', false, false, 0]);
+  // assigned → 最終のコードで突合
+  const exp = EC.expectedImport(r.slips, r.fresh), jobjs = EC.juchuRows(r.slips, L.juchu, DEFAULT_CONFIG).map(x => { const o = {}; L.juchu.forEach((h, i) => { o[h] = x[i]; }); o['受注№'] = '70001'; o['納品先コード'] = '000805'; return o; });
+  const nobjs = EC.nouhinRows(r.fresh, L.nouhin, DEFAULT_CONFIG).map(x => { const o = {}; L.nouhin.forEach((h, i) => { o[h] = x[i]; }); o['納品先コード'] = '000805'; return o; });
+  const ok = EC.resolveAssigned(exp, [{ customer: '599801', temp: 'N00001', code: '000805' }]);
+  const v = EC.verifyImport(ok.expected, jobjs, nobjs);
+  assert.strictEqual(v.orders[r.id].status, 'ok'); assert.strictEqual(v.deliveries['000805'].status, 'ok'); assert.strictEqual(ok.codes.N00001, '000805');
+  assert.strictEqual(EC.verifyImport(EC.resolveAssigned(exp, []).expected, jobjs, nobjs).orders[r.id].status, 'ng');
 });
 
 /* ---------- 実データ（手元にあるときだけ） ---------- */

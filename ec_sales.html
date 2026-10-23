@@ -580,7 +580,7 @@ function renderDrawer() {
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
     (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '') +
-    '<h3>納品先（SMILE に登録される内容）</h3><dl>' + row('コード', code ? '既存 ' + code : '新規（取込時に採番）') + row('納品先名', d.name) + row('荷受け人', d.person) + row('郵便番号', d.zip) + row('住所１', d.addr1) + row('住所２', d.addr2) + row('電話', d.tel) + '</dl>' +
+    '<h3>納品先（SMILE に登録される内容）</h3><dl>' + row('コード', r && r.deliveryCode ? r.deliveryCode : (code ? '既存 ' + code : '新規（取込時に番号を決めます）')) + row('納品先名', d.name) + row('荷受け人', d.person) + row('郵便番号', d.zip) + row('住所１', d.addr1) + row('住所２', d.addr2) + row('電話', d.tel) + '</dl>' +
     '<h3>SMILE の明細（税抜）</h3><table><thead><tr><th>品目</th><th class="num">数量</th><th class="num">単価</th><th class="num">金額</th></tr></thead><tbody>' +
     s.lines.map(l => '<tr><td>' + esc(l.code) + '<div class="muted">' + esc(l.name) + '</div></td><td class="num">' + l.qty + '</td><td class="num">' + yen(l.unitNet) + '</td><td class="num">' + yen(l.amountNet) + '</td></tr>').join('') +
     '</tbody></table><div class="muted" style="margin-top:4px">税込 ' + yen(s.grossTotal) + '／Shopify 合計 ' + yen(o.total) + '</div>' +
@@ -607,11 +607,14 @@ function checkHtml(r, st) {
 
 /* ------------------------------------------------------------ 出力（納品先 → 受注伝票） */
 function okSlips() { return slips.filter(s => stateOf(s) === 'ok'); }
-function planOut() {
+// 新しい納品先のコードは、アプリではなく専用機が取込の直前に決める。取込ファイルの中では、新規の納品先にだけ仮の番号（N00001…）を使う（mode: real なら本当のコード）
+function tempCfg() { const t = (CONF.rpaImport || {}).tempCodes; return t && t.mode === 'temp' ? t : null; }
+// forceReal＝専用機を使わない手動の取込ファイル（「⋯」メニュー）。仮の番号は専用機が置き換えるものなので、手動の取込には使わず本当のコードを決める
+function planOut(forceReal) {
   const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); s.memo = memoOf(s); });
   const master = M.nouhin ? JSON.parse(JSON.stringify(M.nouhin)) : null;
   if (!master) return { ok, fresh: [], master: null };
-  const fresh = EC.planDeliveries(ok, master, store.cfg, { reuse: true });
+  const fresh = EC.planDeliveries(ok, master, store.cfg, { reuse: true, temp: forceReal ? null : tempCfg() });
   return { ok, fresh, master };
 }
 function renderOutbar() {
@@ -632,18 +635,18 @@ function renderOutbar() {
     '<button class="btn sec sm" id="o-juchu"' + (bad || !M.nouhin || !M.items ? ' disabled' : '') + '>受注伝票ファイルを保存（' + ok.length + '伝票）</button>' +
     '<button class="btn sec sm" id="o-done"' + (ok.length ? '' : ' disabled') + ' title="手で SMILE に取り込んだら押してください">手で取り込んだので「起票済み」にする</button>' +
     (shared ? '<button class="btn sec sm" id="o-migrate" title="この端末のブラウザにだけある記録のうち、共有の履歴（リスト）に無い注文を、リストに追加します（何度押しても安全）">この端末の記録をリストに移す</button>' : '') +
-    (CONF.testImport ? '<hr style="border:none;border-top:1px solid var(--line);width:100%;margin:2px 0"><div class="muted">専用機の試運転用。EC売上の東京（' + esc(CONF.testImport.customerCode) + '）に、テスト用の注文1件（客先注番 ' + esc(CONF.testImport.poPrefix) + '…）と納品先 ' + esc(CONF.testImport.deliveryCode) + ' を登録します。終わったら SMILE で削除してください（入っている間は東京の売上・日報に載ります）。</div>' +
+    (CONF.testImport ? '<hr style="border:none;border-top:1px solid var(--line);width:100%;margin:2px 0"><div class="muted">専用機の試運転用。EC売上の東京（' + esc(CONF.testImport.customerCode) + '）に、テスト用の注文1件（客先注番 ' + esc(CONF.testImport.poPrefix) + '…）と新しい納品先（' + (CONF.testImport.codeMode === 'fixed' || !tempCfg() ? esc(CONF.testImport.deliveryCode) : '取込の直前に専用機が番号を決めます') + '）を登録します。終わったら SMILE で削除してください（入っている間は東京の売上・日報に載ります）。</div>' +
       '<button class="btn sec sm" id="o-test"' + (importBusy ? ' disabled' : '') + '>テスト送信（仮データ1件）</button>' : '') + '</div></span>';
 }
 let moreOpen = false, importBusy = false;
 function stampName() { const d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') + '_' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0'); }
 function outDest() {
-  const p = planOut(); if (!p.fresh.length) return;
+  const p = planOut(true); if (!p.fresh.length) return;
   const rows = EC.nouhinRows(p.fresh, LAY.nouhin, store.cfg);
   download('納品先マスタ_取込_EC_' + stampName() + '.txt', EC.encodeUtf16(EC.toSmileText(LAY.nouhin, rows)));
 }
 function outJuchu() {
-  const p = planOut();
+  const p = planOut(true);
   const rows = EC.juchuRows(p.ok, LAY.juchu, store.cfg, cal);
   download('受注明細_取込_EC_' + stampName() + '.txt', EC.encodeUtf16(EC.toSmileText(LAY.juchu, rows)));
 }
@@ -863,7 +866,7 @@ function renderOutbarIfOrders() { if (curTab !== 'pay') renderOutbar(); }
 // 取込ファイルを置いて ec_smile_import を依頼する（本番の取込もテスト送信も同じ道）。
 // o = { files, expected, orderIds, counts:{fresh,slips,rows,net,gross}, confirmMsg, test }
 async function submitImport(o) {
-  const batch = EC.buildImportBatch(o.files, account.username, new Date().toISOString()), id = batch.batchId, c = o.counts;
+  const batch = EC.buildImportBatch(o.files, account.username, new Date().toISOString(), { tempCodes: o.tempCodes }), id = batch.batchId, c = o.counts;
   importBusy = true; renderOutbar();
   try {
     await rpaReady();
@@ -897,7 +900,7 @@ async function startImport() {
   if (p.fresh.length) files.push({ name: 'nouhin.txt', rows: p.fresh.length, bytes: EC.encodeUtf16(EC.toSmileText(LAY.nouhin, EC.nouhinRows(p.fresh, LAY.nouhin, store.cfg))) });
   files.push({ name: 'juchu.txt', rows: jrows.length, slips: EC.slipCount(jrows, LAY.juchu), bytes: EC.encodeUtf16(EC.toSmileText(LAY.juchu, jrows)) });
   const net = p.ok.reduce((a, s) => a + s.netTotal, 0), gross = p.ok.reduce((a, s) => a + s.grossTotal, 0);
-  await submitImport({ files, expected: EC.expectedImport(p.ok, p.fresh), orderIds: p.ok.map(s => s.id), counts: { fresh: p.fresh.length, slips: p.ok.length, rows: jrows.length, net, gross },
+  await submitImport({ files, tempCodes: EC.tempCodes(p.fresh), expected: EC.expectedImport(p.ok, p.fresh), orderIds: p.ok.map(s => s.id), counts: { fresh: p.fresh.length, slips: p.ok.length, rows: jrows.length, net, gross },
     confirmMsg: (isIndexStale() ? '⚠ SMILE の最新データが ' + agoText(indexAgeHours()) + 'です。二重取込の確認が古い可能性があります。先に「SMILEの最新を取り込む」を押すことをおすすめします。\n\n' : '') +
       'SMILE に取り込みます。\n\n今回の取込：' + p.ok.length + '件（うち納品先の新規 ' + p.fresh.length + '件）。SMILE に実際に登録されます（手配区分1の本体は製番が付きます）。\n受注伝票：' + p.ok.length + '伝票（' + jrows.length + '行）\n金額合計：税抜 ' + yen(net) + '／税込 ' + yen(gross) + '\n\n取込は RPA 専用機が行い、終わると自動で SMILE と突き合わせて、Teams に報告します。担当者が画面で確認OKを押すと起票済みになります。よろしいですか？' });
 }
@@ -911,13 +914,15 @@ async function startTestImport() {
   if (guard) { alert(guard); return; }
   if (!M.items) { alert('品目マスタを読めていないため、テスト送信できません。「↻ 更新」で読み直してください'); return; }
   const d = new Date(), stamp = twoDigits(d.getFullYear() % 100) + twoDigits(d.getMonth() + 1) + twoDigits(d.getDate()) + twoDigits(d.getHours()) + twoDigits(d.getMinutes());
-  const r = EC.buildTestImport(tc, store.cfg, { items: M.items, cal, today: today(), stamp, deliveryCodes: M.testDeliveryCodes || {} });
+  const tmp = tempCfg(), tcm = tmp ? tc : Object.assign({}, tc, { codeMode: 'fixed' });   // 仮の番号を使わない設定（mode: real）のときは、固定のコードの形で送る
+  const exist = M.nouhin && M.nouhin[tc.customerCode] && M.nouhin[tc.customerCode].keys[EC.testDeliveryKey(tc)];   // 同じ名前・郵便番号のテスト用の納品先がすでにあれば、それを使う
+  const r = EC.buildTestImport(tcm, store.cfg, { items: M.items, cal, today: today(), stamp, deliveryCodes: M.testDeliveryCodes || {}, temp: tmp, existingCode: exist });
   if (r.error) { alert('テスト送信できません：' + r.error); return; }
   const tcfg = store.cfg, jrows = EC.juchuRows(r.slips, LAY.juchu, tcfg, cal), files = [];
   if (r.fresh.length) files.push({ name: 'nouhin.txt', rows: r.fresh.length, bytes: EC.encodeUtf16(EC.toSmileText(LAY.nouhin, EC.nouhinRows(r.fresh, LAY.nouhin, tcfg))) });
   files.push({ name: 'juchu.txt', rows: jrows.length, slips: EC.slipCount(jrows, LAY.juchu), bytes: EC.encodeUtf16(EC.toSmileText(LAY.juchu, jrows)) });
-  await submitImport({ files, expected: EC.expectedImport(r.slips, r.fresh), orderIds: [], test: true, counts: { fresh: r.fresh.length, slips: 1, rows: jrows.length, net: r.net, gross: r.gross, po: r.id },
-    confirmMsg: store.cfg.customers[tc.customerCode].name + '（' + tc.customerCode + '）に、テスト用の注文1件と、納品先 ' + tc.deliveryCode + ' を登録します。終わったら SMILE で削除してください。\n\n（SMILE に入っている間は、東京の売上・日報に載ります）\n\n客先注番：' + r.id + '\n納品先の新規：' + r.fresh.length + '件' + (M.testDeliveryCodes ? '' : '（テスト用の納品先がマスタにあるか確認できないため、新規として送ります）') +
+  await submitImport({ files, tempCodes: EC.tempCodes(r.fresh), expected: EC.expectedImport(r.slips, r.fresh), orderIds: [], test: true, counts: { fresh: r.fresh.length, slips: 1, rows: jrows.length, net: r.net, gross: r.gross, po: r.id },
+    confirmMsg: store.cfg.customers[tc.customerCode].name + '（' + tc.customerCode + '）に、テスト用の注文1件と、' + (!r.fresh.length ? '既存の納品先 ' + r.slips[0].deliveryCode + ' を使い' : (r.slips[0].deliveryTemp ? '新しい納品先（番号は取込の直前に専用機が決めます）を登録し' : '納品先 ' + tc.deliveryCode + ' を登録し')) + 'ます。終わったら SMILE で削除してください。\n\n（SMILE に入っている間は、東京の売上・日報に載ります）\n\n客先注番：' + r.id + '\n納品先の新規：' + r.fresh.length + '件' + (M.testDeliveryCodes ? '' : '（テスト用の納品先がマスタにあるか確認できないため、新規として送ります）') +
       '\n受注伝票：1伝票（' + jrows.length + '行）\n品目：' + r.slips[0].lines.map(l => l.code + '（' + yen(l.unitNet) + '）').join('・') + '（製番・製造手配が作られない品目だけを使います）\n金額合計：税抜 ' + yen(r.net) + '／税込 ' + yen(r.gross) + '\n\nよろしいですか？' });
 }
 
@@ -951,7 +956,9 @@ function setOrders(imp, status, extra) {
 }
 async function finishImport(imp, s) {
   const r = await readImportResult(imp.batchId), j = EC.judgeImportResult(r);
-  imp.result = r ? { state: r.state, message: r.message || '', files: r.files || [] } : null;
+  imp.result = r ? { state: r.state, message: r.message || '', files: r.files || [], retries: r.retries || 0 } : null;
+  imp.assigned = (r && Array.isArray(r.assigned)) ? r.assigned : [];   // 専用機が決めた本当の納品先コード [{ customer, temp, code }]（無い旧形式は空）
+  imp.retries = (r && r.retries) || 0;
   imp.importFinishedAt = (r && r.finishedAt) || s.finishedAt || new Date().toISOString();   // 確認用ファイルの generatedAt がこれより新しくなるのを待つ
   if (j.kind === 'done' && s.state === 'done') { imp.phase = 'verify'; imp.message = ''; setOrders(imp, 'waiting'); pushMany(imp.orderIds, '取込結果', () => '取込完了。SMILE との突合待ち'); saveImp(imp); trackVerify(imp.batchId); return; }
   if (j.kind === 'done') { j.kind = 'check'; j.message = '専用機の記録が失敗になっています：' + (s.error || ''); }
@@ -963,7 +970,10 @@ async function finishImport(imp, s) {
     setOrders(imp, 'check', { checkMessage: j.message, diffs: [] });
     pushMany(imp.orderIds, '取込結果', () => '要確認：' + j.message);
   }
+  // 取込が止まった・失敗したときも、専用機が result.json に書いた理由（message）を Teams に報告する（突合に進んだバッチは done/、止まったバッチは failed/ に印を置く）
+  imp.reportDir = 'failed';
   save(); render();
+  sendReport(imp, false);
 }
 
 async function trackVerify(id) {
@@ -997,9 +1007,10 @@ async function retryVerify(id) {
 // generatedAt が取込の完了時刻より新しくなるまでは「確認待ち」のまま待つ（古いファイルで「見つからない」と誤判定しない）
 // テスト送信の突き合わせ：結果は imp.testResult だけに持つ（store.orders＝本番の注文には書かない）
 function applyTestVerify(imp, idx) {
+  imp.expected = EC.resolveAssigned(imp.expected, imp.assigned).expected;   // 仮の番号 → 最終の納品先コード
   const res = EC.verifyImport(imp.expected, EC.indexObjects(idx.testOrders || idx.orders), EC.indexObjects(idx.nouhin)), id = Object.keys(imp.expected.orders)[0], v = res.orders[id];
-  const dc = imp.expected.deliveries[0] && imp.expected.deliveries[0].code, dv = dc && res.deliveries[dc];
-  imp.testResult = { id, status: v.status, juchuNo: v.juchuNo, diffs: v.diffs.slice(0, 40), deliveryStatus: dv ? dv.status : '' };
+  const eo = imp.expected.orders[id], dc = imp.expected.deliveries[0] && imp.expected.deliveries[0].code, dv = dc && res.deliveries[dc];
+  imp.testResult = { id, status: v.status, juchuNo: v.juchuNo, diffs: v.diffs.slice(0, 40), deliveryStatus: dv ? dv.status : '', deliveryCode: eo.unresolved ? '' : eo.deliveryCode };   // 最終の納品先コード（SMILE で削除するもの）
   imp.phase = v.status === 'ok' ? 'done' : 'check';
   imp.message = v.status === 'ok' ? '' : (v.status === 'missing' ? 'SMILE の確認用ファイルに見つかりません（出力・JSON作成が終わっていない可能性、またはSMILE に入っていない可能性。' + (idx.testOrders ? '' : '軽量ファイルにテスト送信の注文の欄（testOrders）がありません。専用機の build_ec_index が古い可能性もあります。') + '）' : 'SMILE の内容が期待値と違います');
   delete imp.expected;
@@ -1021,6 +1032,8 @@ async function applyVerify(imp) {
       return;
     }
     if (imp.test) { applyTestVerify(imp, idx); return; }
+    const rs = EC.resolveAssigned(imp.expected, imp.assigned);   // 仮の番号 → 専用機が決めた本当のコード（無ければ要確認）
+    imp.expected = rs.expected;
     const res = EC.verifyImport(imp.expected, EC.indexObjects(idx.orders), EC.indexObjects(idx.nouhin));
     let ok = 0, ng = 0;
     imp.orderIds.forEach(id => {
@@ -1028,11 +1041,11 @@ async function applyVerify(imp) {
       if (v.status === 'ok') {
         // 一致：担当者の最終確認を待つ（自動では起票済みにしない）。受注№は確認待ちの時点で表示する
         const eo = imp.expected.orders[id] || {};
-        ok++; rec0.status = EC.matchToStatus(v); rec0.matchedAt = new Date().toISOString(); rec0.juchuNo = v.juchuNo; rec0.matchedShip = eo.shipDate || ''; rec0.orderName = eo.name || ''; delete rec0.diffs; delete rec0.checkMessage;
+        ok++; rec0.status = EC.matchToStatus(v); rec0.matchedAt = new Date().toISOString(); rec0.juchuNo = v.juchuNo; rec0.matchedShip = eo.shipDate || ''; rec0.orderName = eo.name || ''; rec0.deliveryCode = eo.deliveryCode; delete rec0.diffs; delete rec0.checkMessage;
       } else {
         const eo = imp.expected.orders[id] || {};
-        ng++; rec0.status = EC.matchToStatus(v); rec0.diffs = v.diffs.slice(0, 40); rec0.matchedShip = eo.shipDate || ''; rec0.orderName = eo.name || '';
-        rec0.checkMessage = v.status === 'missing' ? 'SMILE の確認用ファイルに見つかりません（出力・JSON作成が終わっていない可能性、またはSMILE に入っていない可能性があります）' : 'SMILE の内容がアプリの期待値と違います';
+        ng++; if (!eo.unresolved) rec0.deliveryCode = eo.deliveryCode; rec0.status = EC.matchToStatus(v); rec0.diffs = v.diffs.slice(0, 40); rec0.matchedShip = eo.shipDate || ''; rec0.orderName = eo.name || '';
+        rec0.checkMessage = eo.unresolved ? '納品先コードの番号を確認できません（専用機が決めた番号が結果ファイルにありません。専用機の常駐スクリプトが古い可能性があります。SMILE を見て判断してください）' : v.status === 'missing' ? 'SMILE の確認用ファイルに見つかりません（出力・JSON作成が終わっていない可能性、またはSMILE に入っていない可能性があります）' : 'SMILE の内容がアプリの期待値と違います';
         if (v.juchuNo) rec0.juchuNo = v.juchuNo;
       }
     });
@@ -1048,6 +1061,11 @@ async function applyVerify(imp) {
 }
 
 const IMP_STEPS = ['依頼中', '取込中', '突合待ち', '確認待ち'];
+// テスト送信で SMILE に登録された納品先コード（仮の番号のときは、専用機が決めた最終のコード。まだ分からないときは説明）
+function testDCode(tc, tr) {
+  if (tr && tr.deliveryCode) return tr.deliveryCode;
+  return tc.codeMode === 'fixed' || !tempCfg() ? (tc.deliveryCode || '') : '（取込の直前に専用機が決めます）';
+}
 // テスト送信の結果（本番の注文一覧・件数には混ぜない）
 function renderTestPanel() {
   const el = $('testPanel'); if (!el || !store) return;
@@ -1062,10 +1080,10 @@ function renderTestPanel() {
     let body = '';
     if (tr) {
       body += '<div>突き合わせ：' + (tr.status === 'ok' ? '<span class="tag ok">一致</span>' : '<span class="tag err">' + (tr.status === 'missing' ? 'SMILEに見つかりません' : '不一致') + '</span>') +
-        (tr.juchuNo ? ' ／ SMILE の受注№ <b>' + esc(tr.juchuNo) + '</b>' : '') + (tr.deliveryStatus ? ' ／ 納品先 ' + esc(tc.deliveryCode || '') + '：' + (tr.deliveryStatus === 'ok' ? '一致' : '不一致') : '') + '</div>';
+        (tr.juchuNo ? ' ／ SMILE の受注№ <b>' + esc(tr.juchuNo) + '</b>' : '') + (tr.deliveryStatus ? ' ／ 納品先 ' + esc(testDCode(tc, tr)) + '：' + (tr.deliveryStatus === 'ok' ? '一致' : '不一致') : '') + '</div>';
       if (tr.diffs && tr.diffs.length) body += '<table style="margin-top:4px"><thead><tr><th>項目</th><th>アプリの期待値</th><th>SMILE の値</th></tr></thead><tbody>' + tr.diffs.map(x => '<tr><td>' + esc(x.label) + '</td><td>' + esc(x.expected) + '</td><td class="bad">' + esc(x.actual) + '</td></tr>').join('') + '</tbody></table>';
     }
-    if (fin) body += '<div class="muted" style="margin-top:6px"><b>次に SMILE で削除するもの：</b>受注伝票（客先注番 ' + esc(c.po || '') + (tr && tr.juchuNo ? '／受注№ ' + esc(tr.juchuNo) : '') + '）' + (c.fresh ? '、納品先 ' + esc(tc.deliveryCode || '') + '（今回の送信で新規に登録）' : '') + '。<b>削除するまで、東京（' + esc(tc.customerCode || '') + '）の売上・日報に載ります。</b>テスト送信は製番・製造手配を作らない品目（手配区分2・在庫管理なし）だけを使っています。</div>';
+    if (fin && i.phase !== 'failed') body += '<div class="muted" style="margin-top:6px"><b>次に SMILE で削除するもの：</b>受注伝票（客先注番 ' + esc(c.po || '') + (tr && tr.juchuNo ? '／受注№ ' + esc(tr.juchuNo) : '') + '）' + (c.fresh ? '、<b>最終の納品先コード ' + esc(testDCode(tc, tr)) + '</b>（今回の送信で新規に登録）' : '') + '。<b>削除するまで、東京（' + esc(tc.customerCode || '') + '）の売上・日報に載ります。</b>テスト送信は製番・製造手配を作らない品目（手配区分2・在庫管理なし）だけを使っています。</div>';
     return '<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="imp" style="border:none"><b>テスト送信の結果</b>' + tag + steps + '<span class="muted">客先注番 ' + esc(c.po || '') + '・' + stamp(i.requestedAt) + ' 依頼・' + esc(i.batchId) + '</span>' +
       (i.message ? '<span class="' + (i.phase === 'done' ? 'muted' : 'bad') + '">' + esc(i.message) + '</span>' : '') + '<div class="grow"></div>' +
       (i.phase === 'verifyFailed' && isAdmin ? '<button class="btn sec sm" data-impverify="' + esc(i.batchId) + '">確認だけやり直す</button>' : '') +
@@ -1138,7 +1156,8 @@ function confirmBulk(ids) {
 function reportOrders(imp) {
   return imp.orderIds.map(id => {
     const r = store.orders[id] || {}, s = slips.find(x => x.id === id);
-    return { name: r.orderName || (s && s.name) || ('#' + id), juchuNo: r.juchuNo || '', shipDate: r.matchedShip || (s && shipOf(s)) || '', status: r.status, diffs: r.diffs || [], message: r.checkMessage || '' };
+    if (imp.phase === 'failed') return { name: r.orderName || (s && s.name) || ('#' + id), juchuNo: '', shipDate: '', status: 'check', diffs: [], message: imp.message || '取り込めませんでした' };   // 取込に失敗（やり直せる）：理由をそのまま
+    return { name: r.orderName || (s && s.name) || ('#' + id), juchuNo: r.juchuNo || '', shipDate: r.matchedShip || (s && shipOf(s)) || '', status: r.status, diffs: r.diffs || [], message: r.checkMessage || '', deliveryCode: r.deliveryCode || '' };
   });
 }
 async function sendReport(imp, force) {
@@ -1147,7 +1166,7 @@ async function sendReport(imp, force) {
   if (!force && imp.orderIds.length && imp.orderIds.every(id => store.orders[id] && store.orders[id].reportedAt)) { imp.report = { state: 'sent' }; saveImp(imp); return; }
   try {
     await rpaReady();
-    const marker = RI().importDir + '/done/' + imp.batchId + '/reported.json';
+    const marker = RI().importDir + '/' + (imp.reportDir || 'done') + '/' + imp.batchId + '/reported.json';
     if (!force && await RpaQueue.exists(marker)) { imp.report = Object.assign({}, imp.report, { state: 'sent' }); markReported(imp); saveImp(imp); return; }
     const parts = EC.buildReport({ batchId: imp.batchId, counts: imp.counts, orders: reportOrders(imp), url: location.origin + location.pathname, maxChars: RI().reportMaxChars || 3000 });
     imp.report = { state: 'requested', at: new Date().toISOString() }; saveImp(imp);
@@ -1179,7 +1198,7 @@ function watchReport(imp) {
 // 開き直したとき：突合が済んでいて、まだ報告していない取込を再開して1回だけ報告する
 async function resumeReports() {
   for (const imp of Object.values(store.imports)) {
-    if (imp.test || !imp.needsReport || !['confirm', 'check', 'done'].includes(imp.phase)) continue;
+    if (imp.test || !imp.needsReport || !['confirm', 'check', 'done', 'failed'].includes(imp.phase) || (imp.phase === 'failed' && !imp.reportDir)) continue;
     const r = imp.report;
     if (r && r.state === 'sent') continue;
     if (r && r.state === 'requested' && r.queueName) { try { await rpaReady(); watchReport(imp); } catch (e) { console.warn(e); } continue; }
