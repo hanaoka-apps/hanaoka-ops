@@ -463,6 +463,16 @@ function Test-ImportBatch([string]$BatchDir, [string]$BatchId, $Def) {
       foreach ($r in $t.Rows) { if (-not ([string]$r[$idx]).Trim()) { $empty++ } }
       if ($empty -gt 0) { $problems += "$($step.file) の「$col」が空の行が $empty 行あります" }
     }
+    # 伝票の数(slips)：取込ファイル内の仮の受注№の種類の数が、manifest の slips と合うこと(旧形式の manifest は slips が無いので見ない)
+    if ($step.slipColumn -and $null -ne $f.slips -and "$($f.slips)" -ne '') {
+      $si = [Array]::IndexOf([string[]]$t.Head, [string]$step.slipColumn)
+      if ($si -lt 0) { $problems += "$($step.file) に見出し「$($step.slipColumn)」がありません" }
+      else {
+        $kinds = @{}
+        foreach ($r in $t.Rows) { $kinds[[string]$r[$si]] = 1 }
+        if ($kinds.Count -ne [int]$f.slips) { $problems += "$($step.file) の伝票の数が $($kinds.Count) です(manifest の slips は $($f.slips))" }
+      }
+    }
   }
   return $problems
 }
@@ -675,9 +685,19 @@ function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
       if ($executed) { $stopMessage += $(if ($step.file -eq 'juchu.txt') { '（納品先は取り込み済み、受注は実行されていません）' } else { "（先に実行した分は取り込み済みで、$($step.file) は実行されていません）" }) }
     } elseif ($err -gt 0) {
       $stop = $true; $stopMessage = "$($step.file) の取込にエラーが $err 件ありました" + $(if ($step.file -eq 'nouhin.txt') { '(受注は実行していません)' } else { '' })
-    } elseif ($hasCount -and $mf -and $null -ne $mf.rows -and [int]$mf.rows -ne $imp) {
-      # 実行したのに、取込件数が manifest の行数と合わない(0件のまま終わった、など)。done にせず要確認
-      $stop = $true; $stopMessage = "$($step.file) の件数が合いません(manifest $($mf.rows)行／取込 $($imp)件)。SMILE を見て判断してください"
+    } elseif ($hasCount -and $mf) {
+      # 実行したのに、取込件数が合わない(0件のまま終わった、など)。done にせず要確認。
+      # 比べる件数：受注は manifest の slips(伝票の数＝SMILEの「正常件数」。PADが返す imported は伝票の数)、納品先は rows(1行＝1件)。
+      # slips が無い旧形式の manifest の受注は、行数と伝票数が違うので比べない(誤って partial にしない。比べなかったことをログに残す)
+      $expectCount = $null
+      $unit = '行'
+      if ($step.slipColumn) {
+        if ($null -ne $mf.slips -and "$($mf.slips)" -ne '') { $expectCount = [int]$mf.slips; $unit = '伝票' }
+        else { Write-Log "取込件数を比べません: $($step.file) の manifest に slips がありません(旧形式)" }
+      } elseif ($null -ne $mf.rows) { $expectCount = [int]$mf.rows }
+      if ($null -ne $expectCount -and $expectCount -ne $imp) {
+        $stop = $true; $stopMessage = "$($step.file) の件数が合いません(manifest $($expectCount)$($unit)／取込 $($imp)件)。SMILE を見て判断してください"
+      }
     }
   }
   Clear-EcCurrentDir $Def

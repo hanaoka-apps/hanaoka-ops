@@ -696,15 +696,22 @@
   };
 
   // 取込ファイル一式 → { batchId, files:[{name,rows,sha256,bytes}], manifest }。
-  // files = [{ name:'nouhin.txt', bytes, rows }]（rows＝見出しを除いたデータ行数）。バッチ番号は中身から作る（同じ内容なら同じ番号）
+  // files = [{ name:'nouhin.txt', bytes, rows }, { name:'juchu.txt', bytes, rows, slips }]（rows＝見出しを除いたデータ行数）。バッチ番号は中身から作る（同じ内容なら同じ番号）
+  // 受注（juchu.txt）には slips（伝票の数＝取込ファイル内の仮の受注№の種類の数）も付ける。PAD が返す受注の取込件数は SMILE の「正常件数」＝伝票の数なので、
+  // 件数の突き合わせは slips と行う（納品先は 1行＝1件なので rows）。slips は中身から決まるので、バッチ番号（名前＋sha256）には含めない（同じ内容は同じ番号のまま）
+  EC.slipCount = function (rows, header) {
+    var idx = header.indexOf('受注№'), seen = {}, n = 0;
+    rows.forEach(function (r) { var k = r[idx]; if (!seen[k]) { seen[k] = 1; n++; } });
+    return n;
+  };
   EC.buildImportBatch = function (files, requestedBy, requestedAt) {
-    var list = files.map(function (f) { return { name: f.name, rows: f.rows, sha256: EC.sha256(f.bytes), bytes: f.bytes }; });
+    var list = files.map(function (f) { return { name: f.name, rows: f.rows, slips: f.slips, sha256: EC.sha256(f.bytes), bytes: f.bytes }; });
     var seed = list.map(function (f) { return f.name + ':' + f.sha256; }).join('|');
     var batchId = 'ec-' + EC.sha256(new TextEncoder().encode(seed)).slice(0, 16);
     return {
       batchId: batchId, files: list,
       manifest: { batchId: batchId, requestedBy: requestedBy || '', requestedAt: requestedAt || new Date().toISOString(),
-        files: list.map(function (f) { return { name: f.name, rows: f.rows, sha256: f.sha256 }; }) }
+        files: list.map(function (f) { var e = { name: f.name, rows: f.rows, sha256: f.sha256 }; if (f.slips != null) e.slips = f.slips; return e; }) }
     };
   };
 
