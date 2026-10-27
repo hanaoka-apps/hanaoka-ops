@@ -500,6 +500,8 @@ function drawSummary(){
   const dues=Object.entries(byDue).sort((x,y)=>x[0].localeCompare(y[0]));
   let h=`<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>🖨 仕入明細の印刷（払う仕入先をまとめて・1社1ページ）</b>${['全部','本社','工場'].map(s=>`<button data-prt="${s}">${s==='本社'?'本社のみ（国内営業＋ソリューション）':s==='工場'?'工場のみ':'全部'}</button>`).join('')}
     <span style="font-size:12px;color:var(--sub)">仕入先ごとに 受入明細（SMILE）と支払の合計。1社だけなら確認の画面の「🖨 仕入明細」から。新しいタブで印刷の画面を出します（PDF にも保存できます）</span></div>
+  <div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>📤 Excel（今の支払明細表と同じ形）</b><button id="bXl">支払明細(買掛)・支払明細シート(工場)・まとめ</button>
+    <span style="font-size:12px;color:var(--sub)">仕入先 × 部門（国内営業・ソリューション・工場）の行。並行の Excel と突き合わせに</span></div>
   <div class="top">
     <div class="card"><h2>払う額（${esc(st.g)}）</h2><div class="big">${yen(t.pay)}<small> 円</small></div>
       <div class="cmp"><span>前月</span><span>${t1?yen(t1):'—'}</span>${diffHtml(t.pay,t1)}</div>
@@ -516,7 +518,43 @@ function drawSummary(){
   $('pane').innerHTML=h;
   const cp=$('bMissCp');if(cp)cp.onclick=async()=>{try{await navigator.clipboard.writeText(missText(invProgress(rowsG()).miss));snack('コピーしました（Teams などに貼って催促できます）');}catch(e){snack('コピーできませんでした',true);}};
   const gm=$('bMissGo');if(gm)gm.onclick=()=>{st.only='miss';st.tab='rev';render();};
+  const bx=$('bXl');if(bx)bx.onclick=()=>{try{exportSmileXlsx();}catch(e){snack('Excel を作れませんでした：'+e.message,true);}};
   document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>printRcvReport(rows.filter(needsCheck).sort((x,y)=>x.code.localeCompare(y.code)).map(r=>r.code),b.dataset.prt));}
+
+// ---------- Excel：今の「支払明細(買掛)」（本社）と「支払明細シート」（工場）と同じ形 ----------
+//   行＝仕入先 × 部門の分（国内営業・ソリューション・工場）。税抜・消費税は SMILE の税抜仕入額の割合で分ける
+//   お金の欄（振込＝C・でんさい＝手形・期日・相殺・手数料・調整）は仕入先の最後の行に。反対側の部門の行は「工場計上」「本社計上」（今の Excel と同じ）
+//   決裁の部門がこの表の側の仕入先だけ、支払高を数える（本社と工場で二重に数えない）
+function exportSmileXlsx(){
+  const ym=month(),[y,m]=ym.split('/').map(Number),pd=new Date(y,m-2,1),pl=`${pd.getFullYear()}年${pd.getMonth()+1}月分(${m}/末日支払)`;
+  const vs=rows.filter(needsCheck).sort((a,b)=>a.code.localeCompare(b.code));if(!vs.length){snack('支払う仕入先がありません',true);return;}
+  const head=['No,','証憑','会社名','コード','部門','月末買掛金残高(smile)','請求書高','先方','当方','確定高','消費税','相殺','手数料','支払高','取決','手形サイト','方法','C（振込）','手形（でんさい）','手形期日','確認','備考'];
+  const SUM={本社:{},工場:{}},add=(sd,k,v)=>{SUM[sd][k]=(SUM[sd][k]||0)+(+v||0);};
+  const build=(side,title)=>{const mine=g=>side==='工場'?g==='工場':g!=='工場';let no=0;
+    const aoa=[[title],[`作成：${new Date().toLocaleDateString('ja-JP')}（支払アプリから）`],[],head];
+    vs.filter(r=>Object.entries(r.byGroup||{}).some(([g,v])=>mine(g)&&v)).forEach(r=>{no++;
+      const ls=linesOf(r),fee=feeOf(r),sum=mt=>ls.filter(l=>l.method===mt).reduce((s,l)=>s+(+l.amount||0),0),bank=sum('振込')-fee,den=sum('でんさい'),adj=sum('調整'),off=sum('相殺');
+      const ratio=r.smile&&r.smile.incl?(r.smile.excl||0)/r.smile.incl:1/1.1,own=mine(r.mainDept||'国内営業');
+      const due=[...new Set(ls.filter(l=>l.method==='でんさい'&&l.due).map(l=>l.due))].join(' '),site=(ls.find(l=>l.method==='でんさい'&&l.site)||{}).site||'';
+      const mth=[bank?'振':'',den?'で':'',sum('現金')?'現金':'',sum('海外送金')?'海外':'',sum('口座振替')?'口振':''].filter(Boolean).join('/');
+      const parts=Object.entries(r.byGroup||{}).filter(([g,v])=>v).sort((a,b)=>(mine(b[0])-mine(a[0]))||(GROUPS.indexOf(a[0])-GROUPS.indexOf(b[0])));
+      if(own){add(side,'支払高',r.amount);add(side,'振込',bank);add(side,'でんさい',den);add(side,'相殺',off);add(side,'調整',adj);add(side,'手数料',fee);add(side,'社',1);}
+      parts.forEach(([g,v],i)=>{const last=i===parts.length-1,cross=!mine(g)||!own,ex=Math.round(v*ratio);
+        aoa.push([no,r.invoices.length?'有':null,`${r.name}${parts.length>1?'/'+g+'分':''}`,+r.code||r.code,g,i===0&&r.smile?r.smile.balance:null,cross?null:ex,null,last&&adj&&own?adj:null,cross?null:ex,cross?null:v-ex,
+          last&&own&&off?off:null,last&&own&&fee?fee:null,cross?(side==='工場'?'本社計上':'工場計上'):v,last?r.rule||'':null,last&&site?site:null,last?mth:null,
+          last&&own?bank:null,last&&own?den:null,last&&due?due:null,last?(r.checked?'✔ '+String(r.checkedBy||'').split(/[\s　]/)[0]:r.hold?'保留':''):null,
+          last?[r.comment&&'総務：'+r.comment,r.reason&&'分け方：'+r.reason,!r.invoices.length&&(r.noInvReason||'請求書なし'),r.invDiff?`請求書との差 ${r.invDiff}`:''].filter(Boolean).join(' ／ '):null]);});});
+    const S0=SUM[side];aoa.push([],[null,null,'合計（決裁の部門がこの表の仕入先）',null,null,null,null,null,S0.調整||null,null,null,S0.相殺||null,S0.手数料||null,S0.支払高||0,null,null,null,S0.振込||0,S0.でんさい||0]);
+    const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=[5,5,34,8,12,13,12,7,8,12,10,10,8,12,14,8,8,12,12,12,10,40].map(w=>({wch:w}));return ws;};
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,build('本社',`<買掛>${pl} 本社支払明細表`),'支払明細(買掛)');
+  XLSX.utils.book_append_sheet(wb,build('工場',`${pd.getFullYear()}.${pd.getMonth()+1}月度(${m}/末日)分 工場支払明細表`),'支払明細シート(工場)');
+  const ma=[[`${pl} 仕入 支払明細表まとめ`],[`作成：${new Date().toLocaleDateString('ja-JP')}（支払アプリから）`],[],[null,'本社(買掛)','工場','合計'],
+    ...['支払高','振込','でんさい','相殺','調整','手数料'].map(k=>[k,SUM.本社[k]||0,SUM.工場[k]||0,(SUM.本社[k]||0)+(SUM.工場[k]||0)]),['仕入先（社）',SUM.本社.社||0,SUM.工場.社||0,(SUM.本社.社||0)+(SUM.工場.社||0)],[],
+    ['確認OK',vs.filter(r=>r.checked).length+'社'],['保留',vs.filter(r=>r.hold).length+'社'],['請求書なし',vs.filter(r=>!r.invoices.length).length+'社'],[],
+    ['でんさいの期日別'],...Object.entries(vs.reduce((o,r)=>{linesOf(r).filter(l=>l.method==='でんさい').forEach(l=>{const d=l.due||'（期日なし）';o[d]=(o[d]||0)+(+l.amount||0);});return o;},{})).sort().map(([d,v])=>[d,v])];
+  const ws=XLSX.utils.aoa_to_sheet(ma);ws['!cols']=[{wch:16},{wch:14},{wch:14},{wch:14}];XLSX.utils.book_append_sheet(wb,ws,'まとめ');
+  XLSX.writeFile(wb,`支払明細表（仕入） - ${y}${String(m).padStart(2,'0')}末日.xlsx`);snack(`Excel を作りました（${vs.length}社）`);}
 
 // ---------- 仕入明細の印刷：今までの仕入支払管理ダッシュボード（v5.30）の「🖨 明細PDF」と同じ使い方 ----------
 //   仕入先ごとに 1ページ：受入の合計（本社＝国内営業・ソリューション／工場、税抜・消費税・税込）、支払（SMILE の額と分け方・請求書）、受入明細（SMILE 9521）
