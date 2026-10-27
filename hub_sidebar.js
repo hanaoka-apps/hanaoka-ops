@@ -45,6 +45,7 @@
     { t: 'item', f: 'hanaoka_hub.html', l: 'ホーム', icon: P.home },
     { t: 'group', id: 'schedule', l: 'スケジュールAPP', icon: P.schedule, children: [
       { f: 'company_schedule.html', l: '全社スケジュール', ic: lineIcon('company') },
+      { f: 'payment_schedule.html',  l: '支払決済予定',     ic: lineIcon('company') },
       { f: 'my_schedule.html',      l: '自分の予定',       ic: lineIcon('mine') },
       { f: 'staff_schedule.html',   l: '全員の予定',       ic: lineIcon('staff') },
       { f: 'org_directory.html',    l: '社内連絡先',       ic: lineIcon('contacts') },

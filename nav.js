@@ -19,6 +19,7 @@
       /* スケジュール（HANAOKA SCHEDULE）。HUBの「全社スケジュール」カードからもここへ来る */
       apps: [
         { f: 'company_schedule.html', l: '全社スケジュール' },
+        { f: 'payment_schedule.html', l: '支払決済予定' },
         { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'staff_schedule.html', l: '全社員の予定' },
         { f: 'reserve.html', l: '予約' },
@@ -100,6 +101,7 @@
      reserve_theme.css（各ページが読み込む）、メニューの中身はここ1か所だけで管理する。
      ============================================================ */
   var ICONS = {
+    'payment_schedule.html': '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M9 15h6M12 12v6"/>',
     'company_schedule.html': '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M7.5 13.5h.01M12 13.5h.01M16.5 13.5h.01M7.5 17h.01M12 17h.01"/>',
     'my_schedule.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
     'reserve.html':        '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="M8.5 14h7M8.5 17h4"/>',
@@ -199,7 +201,7 @@
   function loadHubSidebar() {
     if (document.getElementById('hubSidebar')) return;
     var sc = document.createElement('script');
-    sc.src = 'hub_sidebar.js?v=20261020';
+    sc.src = 'hub_sidebar.js?v=20261028';
     document.body.appendChild(sc);
   }
 
