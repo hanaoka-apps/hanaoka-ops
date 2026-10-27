@@ -221,7 +221,7 @@ async function loadInvoices(){
     if(!code){INBX.push({id:String(it.id),f,payee:iv(f,'支払先名')||'',title:f.Title||'',amount:+iv(f,'金額_税込')||0,regNo:rn,doc:String(iv(f,'DOCコード')||''),ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',
       bank:{code:String(f.PayeeBankCode||''),bcode:String(f.PayeeBranchCode||''),no:String(f.PayeeAcctNo||''),name:String(f.PayeeBankName||''),holder:String(f.PayeeAcctHolder||'')}});return;}
     (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,doc:String(iv(f,'DOCコード')||''),items:parseJ(iv(f,'請求書の明細'),null),
-      ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||''});});
+      ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',log:parseJ(f.CheckLog,[])||[]});});
   DOCN={};[...Object.values(INV).flat(),...INBX].forEach(x=>{const k=String(x.doc||'').split('\n')[0].trim();if(k)DOCN[k]=(DOCN[k]||0)+1;});
   if(INBX.length)setTimeout(()=>matchInbox(),0);}   // 受信トレイ：今月の支払先リストがあれば仕入先を当てる（リストを取り込んだ後も、ここで当たる）
 
@@ -309,7 +309,11 @@ function buildRows(){
     r.invoices=INV[r.code]||[];r.invTotal=r.invoices.reduce((s,x)=>s+x.amount,0);
     r.invReading=r.invoices.some(x=>x.ai==='受付');r.invFailed=r.invoices.some(x=>x.ai==='読取失敗');
     r.invDiff=r.invoices.length&&!r.invReading?r.invTotal-r.amount:null;
-    r.aiAlerts=r.invoices.flatMap(x=>x.com.split(/\n+/).map(s=>s.trim()).filter(Boolean));
+    // AI のアラート：請求書ごとに1文ずつ。人が「確かめた」もの・請求書の合計で SMILE と合った「残高と違う」は片付いた側へ
+    const sumOk=r.invDiff!=null&&Math.abs(r.invDiff)<=1;
+    r.aiAll=r.invoices.flatMap(x=>x.com.split(/\n+/).map(s=>s.trim()).filter(s=>s&&!/^仕入先：.*に付けました/.test(s)).map(s=>{const key=alertKey(s),ok=(x.log||[]).find(e=>e.act==='アラートを確かめた'&&e.key===key);
+      return {x,s,key,ok:ok?`✔ ${ok.by||''} が確かめた`:sumOk&&BAL_ALERT.test(s)?'請求書の合計が SMILE の額と一致（自動）':''};}));
+    r.aiAlerts=r.aiAll.filter(a=>!a.ok).map(a=>a.s);
     r.bankAlert=r.aiAlerts.some(s=>/口座/.test(s));});
   return out;}
 function linesOf(r){return r.override&&r.override.length?S.splitLines(r,r.override,dash(month())):r.calcLines;}
@@ -690,7 +694,7 @@ function drawDetail(){
       </div>
       ${ed&&d?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${Math.abs(d)<100?`<button id="bFix">請求書どおりに払い、差 ${yen(-d)} を調整にする</button>`:''}${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}<span style="font-size:12px;color:var(--sub);align-self:center">入力ミスなら SMILE を直して、ファイルを出し直して取り込み直してください</span></div>`:''}
       ${needsCheck(r)&&!r.invoices.length?noInvHtml(r,ed):''}
-      ${r.aiAlerts.length||r.invFailed?`<div class="sec box ${r.bankAlert||r.invFailed?'alert':'warn'}"><h4>AI のアラート</h4>${r.aiAlerts.map(s=>`<div style="font-size:13px">・${esc(s)}</div>`).join('')}${r.invFailed?'<div style="font-size:13px">・読み取りに失敗した請求書があります（金額を手で入れてください）</div>':''}${r.bankAlert?'<div style="font-size:12px;color:var(--up);margin-top:4px">口座は自動で変えません。電話などで確かめ、口座の登録は別の手続きで</div>':''}</div>`:''}
+      ${alertsHtml(r)}
       ${r.offsetVendor?`<div class="sec box warn"><h4>相殺先（AP_OffsetVendor）</h4><div style="font-size:13px">支払額は請求額（計算どおり）で出しています。相殺があるときは、分け方に「相殺」の行を入れ、支払の行を減らしてから確かめてください。</div>
         ${ed?`<label style="display:block;margin-top:4px"><input type="checkbox" id="cOff" ${r.offsetChecked?'checked':''}> 相殺の有無を確認した</label>`:r.offsetChecked?'<div>✔ 確認済み</div>':''}</div>`:''}
       <div class="sec"><h4>分け方 <span style="font-weight:400">— マスタの決まり：${esc(r.rule||'')}</span></h4>
@@ -722,6 +726,7 @@ function drawDetail(){
   wireDetail(r);}
 function wireDetail(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
+  document.querySelectorAll('[data-ack]').forEach(b=>b.onclick=()=>{const a=r.aiAll[+b.dataset.ack];if(a)ackAlert(a);});
   document.querySelectorAll('[data-iunl]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.iunl);if(x)unlinkInvoice(x,r);});
   document.querySelectorAll('[data-idrop]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.idrop);if(x)dropInvoice(x.id,(x.no?'No.'+x.no+' ':'')+(x.name||r.name)+' '+yen(x.amount));});
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',confirmRow);on('dUn',()=>act(r,{'確認済み':false,'確認者':'','確認日時':''}));
@@ -887,6 +892,19 @@ function readInboxByAI(jobs){if(!window.APAI||!jobs.length)return;
   jobs.forEach(j=>APAI.readInvoice({call,site:AP_SITE},j)
     .then(x=>{if(!x.ok)snack(`AI が読めませんでした：${j.pdfName}（${x.message}）`,true);},e=>snack('AI の読み取りエラー：'+e.message,true))
     .then(()=>{aiChain=aiChain.then(async()=>{await loadInvoices();AIRUN.delete(String(j.invoiceId));render();await matchInbox();});}));}
+// AI のアラートの片付け
+//   ・「今回支払残高と一致しません」などは、AI が請求書を1枚ずつ読むので、2枚以上ある仕入先では出てしまう → 請求書の合計が SMILE の額と合えば自動で片付ける
+//   ・ほかは人が「✔ 確かめた」を押す。請求書の CheckLog（確認の記録）に {act:'アラートを確かめた', key, text, by, at} を残す
+const BAL_ALERT=/(支払残高|残高|請求額|合計).{0,40}(一致しません|違います|違い|差)|(一致しません|違います).{0,30}残高/;
+function alertKey(s){let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))|0;return 'a'+(h>>>0).toString(36);}
+async function ackAlert(a){const lg=(a.x.log||[]).concat([{act:'アラートを確かめた',key:a.key,text:a.s.slice(0,200),by:acct&&acct.name||'',at:new Date().toISOString()}]);
+  try{await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${a.x.id}/fields`,{CheckLog:JSON.stringify(lg)});a.x.log=lg;snack('確かめた印を付けました');await loadInvoices();render();}
+  catch(e){snack('付けられませんでした：'+e.message,true);}}
+function alertsHtml(r){const act=r.aiAll.filter(a=>!a.ok),done=r.aiAll.filter(a=>a.ok);if(!act.length&&!done.length&&!r.invFailed)return '';
+  const one=(a,i)=>`<div style="font-size:13px;display:flex;gap:6px;align-items:baseline"><span style="flex:1">・${esc(a.s)}</span><button class="lk" data-ack="${i}" title="確かめた（このアラートを片付ける。誰が押したか残ります）" style="padding:0 4px;white-space:nowrap">✔ 確かめた</button></div>`;
+  return `<div class="sec box ${r.bankAlert||r.invFailed?'alert':act.length?'warn':''}"><h4>AI のアラート${act.length?`（${act.length}件）`:'（片付きました）'}</h4>${act.map(a=>one(a,r.aiAll.indexOf(a))).join('')}
+    ${r.invFailed?'<div style="font-size:13px">・読み取りに失敗した請求書があります（金額を手で入れてください）</div>':''}${r.bankAlert?'<div style="font-size:12px;color:var(--up);margin-top:4px">口座は自動で変えません。電話などで確かめ、口座の登録は別の手続きで</div>':''}
+    ${done.length?`<details style="margin-top:6px"><summary style="font-size:12px;color:var(--sub);cursor:pointer">片付いたアラート ${done.length}件</summary>${done.map(a=>`<div style="font-size:12px;color:var(--sub)">・<s>${esc(a.s)}</s> <span style="color:var(--down)">${esc(a.ok)}</span></div>`).join('')}</details>`:''}</div>`;}
 // 請求書の印：1つのファイルから何件もできた（何社分もまとめたスキャン）・同じ仕入先に同じ金額の請求書がもう1枚ある（二重かも）
 function invMarks(x,list){const m=[],k=String(x.doc||'').split('\n')[0].trim();
   if(k&&DOCN[k]>1)m.push(['まとめたスキャン（'+DOCN[k]+'件）','1つのファイルから '+DOCN[k]+' 件の請求書ができています。添付が別の会社の請求書かもしれません。1社ずつのファイルを置き直したら、こちらは取り消してください']);
