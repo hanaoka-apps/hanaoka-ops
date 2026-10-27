@@ -78,7 +78,6 @@
      ・月末：最終営業日を起算日にして、1・3・3・4・5営業日前の作業ステップ
      ・総合会議：その月の土曜出社日（共通カレンダーにあれば） */
   function generate(ym, ctx, opts) {
-    const payBefore = (opts && opts.payrollBefore) || 1;
     const [y, m] = ym.split('-').map(Number);
     const out = [];
     const add = (date, title, kind, owner, memo) => out.push({ date, title, kind, owner: owner || '', memo: memo || '' });
@@ -89,18 +88,13 @@
       add(shiftBiz(base, 1, ctx), `${day}日支払決済`, 'main', '総務幹部', `${day}日から1営業日前`);
       add(shiftBiz(base, 2, ctx), `<${day}日>支払決済資料 完成`, 'sub', '幹部', `${day}日から2営業日前`);
     }
-    /* 給与決済：支給日（25日。営業日でなければ前の営業日）の n営業日前。過去20か月では1営業日前が13回、3営業日前が6回
-       （賞与などの月）だったので、既定は1営業日前。月ごとに画面で切り替える */
-    const pr = opts && opts.payroll;                           /* 社労士と決めた日程 { m:振込方法, a:勤怠確定日, p:給与決裁日, s:支給日 }（日にち） */
-    if (pr && pr.p) {
-      add(ymd(y, m, pr.p), '車輌・株ハナ 給与決済', 'main', '花岡', `給与決裁日（支給日${pr.s}日${pr.m ? '・' + pr.m : ''}）`);
-    } else {
-      const payDay = prevBizOrSelf(ymd(y, m, 25), ctx);
-      add(shiftBiz(payDay, payBefore, ctx), '車輌・株ハナ 給与決済', 'main', '花岡', `給与支給日（${m}/${Number(payDay.slice(8))}）の${payBefore}営業日前`);
-    }
+    /* 給与決済：社労士と決めた日程の表（画面の「給与スケジュール」）に、その月があるときだけ入れる。
+       表は年に1回入力して、各月へ一括登録する運用（営業日からの自動計算はしない） */
+    const pr = opts && opts.payroll;                           /* { m:振込方法, a:勤怠確定日, p:給与決裁日, s:支給日 }（日にち） */
+    if (pr && pr.p) add(ymd(y, m, pr.p), '車輌・株ハナ 給与決済', 'main', '花岡', `給与決裁日（支給日${pr.s}日${pr.m ? '・' + pr.m : ''}）`);
     const LB = lastBizOfMonth(y, m, ctx);
     add(shiftBiz(LB, 1, ctx), '月末支払決済・でんさい(本社・工場)', 'main', '総務幹部', '最終営業日の1営業日前');
-    add(shiftBiz(LB, 1, ctx), '株ハナ月末支払決済', 'main', '花岡', '最終営業日の1営業日前');
+    add(shiftBiz(LB, 1, ctx), '株ハナ月末支払決済', 'main', '総務幹部', '最終営業日の1営業日前');
     add(LB, '<月末>でんさい決済', 'sub', '総務', '最終営業日');
     add(shiftBiz(LB, 1, ctx), '<月末>銀行送金・送金内容確認', 'sub', '総務', '1営業日前');
     add(shiftBiz(LB, 3, ctx), '<月末>各部提出・確認', 'sub', '全社', '3営業日前');

@@ -141,8 +141,6 @@
     <span id="badge"></span>
     <span class="cnt" id="stateNote"></span>
     <span class="spacer"></span>
-    <span class="cnt" title="給与スケジュールの表にない月だけ使います。給与の支給日（25日。休日なら前の営業日）から何営業日前に決済するか">表にない月の給与決済：支給日の
-      <select id="payrollSel" style="font-size:12px;padding:3px 4px;border:1px solid var(--border);border-radius:4px"><option value="1">1営業日前</option><option value="2">2営業日前</option><option value="3">3営業日前</option></select></span>
     <button class="act" id="autoBtn" title="ルールから、この月の予定の案を作ります（いまの内容は置き換わります）">⚙ ルールから自動作成</button>
     <button class="act" id="saveBtn">💾 下書きを保存</button>
     <button class="act" onclick="window.print()">🖨 印刷（A4）</button>
@@ -152,12 +150,13 @@
   </div>
 
   <details class="card2" id="payCard">
-    <summary style="cursor:pointer;font-size:13.5px;font-weight:700;color:var(--primary)">給与スケジュール（社労士と決めた日程）　<span class="cnt" style="font-weight:400">年に1回、表ができたときに入力します。給与決済・勤怠確定の日付は、この表から作ります（表にない月は営業日からの案）</span></summary>
+    <summary style="cursor:pointer;font-size:13.5px;font-weight:700;color:var(--primary)">給与スケジュール（社労士と決めた日程）　<span class="cnt" style="font-weight:400">年に1回、表ができたときに入力して、「各月に一括登録」を押します。給与決済は各月の予定に入り、印刷シートの給与欄にも、この表が出ます</span></summary>
     <div style="margin-top:8px"><table class="ed" style="max-width:640px"><thead><tr><th style="width:90px">月</th><th style="width:110px">振込方法</th><th>勤怠確定（日）</th><th>給与決裁（日）</th><th>支給日（日）</th><th>備考（空なら自動）</th><th style="width:34px"></th></tr></thead>
       <tbody id="payBody"></tbody></table>
       <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
         <input type="month" id="payNewMonth" style="border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12.5px">
         <button class="act" id="payAdd">＋ 月を追加</button>
+        <button class="act go" id="payBulk" title="表の各月の給与決済を、その月の予定に一括で入れます（保存も一緒に行います）">📥 表の日程を各月に一括登録</button>
         <span class="spacer"></span><span class="msg" id="payMsg"></span>
         <button class="act pri" id="paySave">給与スケジュールを保存</button></div></div>
   </details>
@@ -429,7 +428,7 @@ function paintHead(){
   el('stateNote').textContent = st === 'approved' ? `承認 ${HEAD.approvedAt.slice(0, 10)}（${HEAD.approvedBy}）`
     : st === 'published' ? `公開 ${HEAD.publishedAt.slice(0, 10)}（${HEAD.publishedBy}）` : (dirty ? '※保存していない変更があります' : '');
   const lk = isLocked(), noLists = !(LISTS.items && LISTS.month);
-  el('autoBtn').disabled = lk || LOADING; el('payrollSel').disabled = lk; el('saveBtn').disabled = lk || LOADING;      /* リストがなくても押せる（押すと作成を案内する） */
+  el('autoBtn').disabled = lk || LOADING; el('saveBtn').disabled = lk || LOADING;      /* リストがなくても押せる（押すと作成を案内する） */
   el('addBtn').disabled = lk; el('presetSel').disabled = lk;
   el('approveBtn').style.display = st === 'draft' ? '' : 'none'; el('approveBtn').disabled = LOADING;
   el('publishBtn').style.display = (st === 'approved' || st === 'published') ? '' : 'none';
@@ -527,6 +526,45 @@ el('paySave').onclick = async () => {
   } catch (e) { showSnack(e.message); }
 };
 
+/* 表の各月の「給与決済」を、その月の予定に一括で入れる（その月の他の予定には触れない） */
+const PAY_TITLE = '車輌・株ハナ 給与決済';
+async function bulkRegisterPayroll(){
+  if (!(await ensureLists())) return;
+  const keys = Object.keys(PAYROLL).sort().filter(k => PAYROLL[k] && PAYROLL[k].p);
+  if (!keys.length) { showSnack('給与スケジュールが空です'); return; }
+  if (!confirm(`給与スケジュールの${keys.length}か月分（${keys[0]}〜${keys[keys.length - 1]}）の「給与決済」を、各月の予定に一括で入れます。\n\n・すでに入っている月は、日付が違うときだけ直します\n・承認済み・公開済みの月は、触れずにとばします（先に「編集に戻す」をしてください）\n・先に給与スケジュールの表も保存します\n\nよろしいですか？`)) return;
+  const msg = el('payMsg'); msg.className = 'msg'; el('payBulk').disabled = true;
+  const res = { created: 0, updated: 0, same: 0, skipped: [] };
+  try {
+    await el('paySave').onclick();                                         /* 表そのものを保存 */
+    for (const k of keys) {
+      msg.textContent = `登録中... ${k}`;
+      const p = PAYROLL[k], [y, m] = k.split('-').map(Number), date = R.ymd(y, m, p.p);
+      const memo = `給与決裁日（支給日${p.s}日${p.m ? '・' + p.m : ''}）`;
+      const flt = encodeURIComponent(`fields/YM eq '${k}'`);
+      const rows = await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.items}/items?$expand=fields&$top=500&$filter=${flt}`, NONINDEX);
+      const hrows = await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.month}/items?$expand=fields&$top=100&$filter=${encodeURIComponent(`fields/Title eq '${k}'`)}`, NONINDEX);
+      const st = hrows[0]?.fields?.Status;
+      if (st === 'approved' || st === 'published') { res.skipped.push(k); continue; }
+      const ex = rows.find(r => r.fields?.Title === PAY_TITLE && r.fields?.Deleted !== '1');
+      if (ex) {
+        if (ex.fields.ItemDate === date && (ex.fields.Memo || '') === memo) { res.same++; }
+        else { const r = await gSend('PATCH', `/sites/${SITE_ID}/lists/${LISTS.items}/items/${ex.id}/fields`, { ItemDate: date, Memo: memo }); if (!r.ok) throw new Error(`${k} を直せませんでした（${r.status}）`); res.updated++; }
+      } else {
+        const r = await gSend('POST', `/sites/${SITE_ID}/lists/${LISTS.items}/items`, { fields: { Title: PAY_TITLE, ItemDate: date, YM: k, Kind: 'main', Owner: '花岡', Memo: memo, PublishedId: '', Deleted: '' } });
+        if (!r.ok) throw new Error(`${k} を登録できませんでした（${r.status}）`); res.created++;
+      }
+      if (!hrows[0]) await gSend('POST', `/sites/${SITE_ID}/lists/${LISTS.month}/items`, { fields: { Title: k, Status: 'draft', ApprovedAt: '', ApprovedBy: '', PublishedAt: '', PublishedBy: '' } });
+    }
+    msg.className = 'msg ok';
+    msg.textContent = `登録${res.created}件・直した${res.updated}件・変更なし${res.same}件` + (res.skipped.length ? `・とばした月（承認済み/公開済み）：${res.skipped.join('、')}` : '');
+    showSnack('給与決済を各月に一括登録しました');
+    if (dirty) { /* 開いている月に未保存の変更があるときは、読み直さない */ } else await reload();
+  } catch (e) { msg.className = 'msg ng'; msg.textContent = e.message; showSnack(e.message); }
+  el('payBulk').disabled = false;
+}
+el('payBulk').onclick = bulkRegisterPayroll;
+
 /* ---- 編集操作 ---- */
 function markDirty(){ dirty = true; paintHead(); }
 el('edBody').addEventListener('input', e => {
@@ -553,7 +591,7 @@ function addItem(o){ ITEMS.push({ uid: uidSeq++, id: null, pubId: '', del: false
 el('autoBtn').onclick = () => {
   if (ITEMS.some(i => !i.del) && !confirm('いまの予定を、ルールから作った案に置き換えます（すでに保存した内容も置き換わります）。よろしいですか？')) return;
   ITEMS.forEach(i => { i.del = true; });
-  R.generate(YM, ctx(), { payrollBefore: Number(el('payrollSel').value), payroll: PAYROLL[YM] }).forEach(g => ITEMS.push({ uid: uidSeq++, id: null, pubId: '', del: false, orig: '', ...g }));
+  R.generate(YM, ctx(), { payroll: PAYROLL[YM] }).forEach(g => ITEMS.push({ uid: uidSeq++, id: null, pubId: '', del: false, orig: '', ...g }));
   /* 公開済みの予定は、あとで公開のときに消える。保存すると下書きに戻る */
   markDirty(); render(); showSnack('ルールから案を作りました。日付や件名を確認・修正してください');
 };
