@@ -77,7 +77,8 @@
      ・10日／20日：起算日（営業日でなければ前の営業日）の1営業日前が決済、2営業日前が資料完成
      ・月末：最終営業日を起算日にして、1・3・3・4・5営業日前の作業ステップ
      ・総合会議：その月の土曜出社日（共通カレンダーにあれば） */
-  function generate(ym, ctx) {
+  function generate(ym, ctx, opts) {
+    const payBefore = (opts && opts.payrollBefore) || 1;
     const [y, m] = ym.split('-').map(Number);
     const out = [];
     const add = (date, title, kind, owner, memo) => out.push({ date, title, kind, owner: owner || '', memo: memo || '' });
@@ -88,6 +89,10 @@
       add(shiftBiz(base, 1, ctx), `${day}日支払決済`, 'main', '総務幹部', `${day}日から1営業日前`);
       add(shiftBiz(base, 2, ctx), `<${day}日>支払決済資料 完成`, 'sub', '幹部', `${day}日から2営業日前`);
     }
+    /* 給与決済：支給日（25日。営業日でなければ前の営業日）の n営業日前。過去20か月では1営業日前が13回、3営業日前が6回
+       （賞与などの月）だったので、既定は1営業日前。月ごとに画面で切り替える */
+    const payDay = prevBizOrSelf(ymd(y, m, 25), ctx);
+    add(shiftBiz(payDay, payBefore, ctx), '車輌・株ハナ 給与決済', 'main', '花岡', `給与支給日（${m}/${Number(payDay.slice(8))}）の${payBefore}営業日前`);
     const LB = lastBizOfMonth(y, m, ctx);
     add(shiftBiz(LB, 1, ctx), '月末支払決済・でんさい(本社・工場)', 'main', '総務幹部', '最終営業日の1営業日前');
     add(shiftBiz(LB, 1, ctx), '株ハナ月末支払決済', 'main', '花岡', '最終営業日の1営業日前');
