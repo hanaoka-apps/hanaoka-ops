@@ -2317,6 +2317,8 @@ function parseKintone(raw){
   const L=t.split("\n").map(x=>x.replace(/　/g," ").trim());
   const o={no:"",kind:"",made:"",customer:"",route:"",user:"",dest:"",models:"",rows:[],total:0};
   const m=t.match(/(\d{8}-\d{4})/); if(m)o.no=m[1];
+  /* GSEではない別アプリ（引き合い書/生産依頼書）は、依頼ナンバーが「0071」のような短い番号 */
+  if(!o.no){const n=kAfterLabel(L,"依頼ナンバー");if(n&&/^[0-9A-Za-z\-]{3,20}$/.test(n))o.no=n}
 
   /* (1) 項目名が単独行のとき */
   o.kind     = kAfterLabel(L,"GSE引き合い書/生産依頼書")||"";
@@ -2349,6 +2351,15 @@ function parseKintone(raw){
   /* 確度が混ざっていたら落とす */
   o.dest=trim(String(o.dest).replace(/[SABC]ランク.*$|受注\s*[（(].*$|失注.*$/,""));
 
+  /* 別アプリの書式：区分は「引き合い書/生産依頼書」の次の行。引き合い先の項目は無いので、
+     引き合いルートで花岡車輌の次に出てくる会社を受注先の候補にする（画面で直せる）。 */
+  if(!o.kind){const k=L.indexOf("引き合い書/生産依頼書");if(k>=0&&L[k+1]&&L[k+1].length<12)o.kind=L[k+1]}
+  if(!o.customer&&o.route){
+    const ps=o.route.split(/[→＞>]/).map(x=>trim(x)).filter(Boolean);
+    const k=ps.findIndex(x=>x.indexOf("花岡")<0);
+    if(k>=0)o.customer=ps[k];
+  }
+
   /* 見積り表 */
   i=L.findIndex(x=>/^機種[\s\t]+台数[\s\t]+販売金額/.test(x));
   if(i>=0){
@@ -2361,6 +2372,19 @@ function parseKintone(raw){
         if(r&&!kSkipRow(r.model))o.rows.push(r);
         else if(o.rows.length)o.rows[o.rows.length-1].note=(o.rows[o.rows.length-1].note+" "+L[j]).trim();
       }
+    }
+  }
+  /* 別アプリの書式：見積り表は無く、型式・品名と台数が単独の項目で並ぶ。
+     納期は希望納期、仕向地は納品先を使う。 */
+  if(!o.rows.length){
+    const ti=L.findIndex(x=>x==="型式・品名");
+    if(ti>=0){
+      let j=ti+1;while(j<L.length&&!L[j])j++;
+      const model=L[j]||"";
+      const qi=L.findIndex((x,k)=>k>ti&&x==="台数");
+      const qty=qi>=0&&/^\d{1,4}$/.test(L[qi+1]||"")?L[qi+1]:"";
+      const due=kAfterLabel(L,"希望納期")||"";
+      if(model)o.rows.push({model:model,dest:o.dest,qty:qty,due:due,note:""});
     }
   }
   o.total=o.rows.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0);
