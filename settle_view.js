@@ -277,7 +277,8 @@
       var tx = ls.some(function (l) { return l.rate; });
       // memo（決裁メモ：社長・室長向けの説明。任意）があれば主に出し、経理の摘要（note）は小さく
       var memoHtml = function (l) { return l.memo ? '<b>' + esc(l.memo) + '</b>' + (l.note ? '<div class="s" style="font-size:11px;color:var(--sub)">摘要：' + esc(l.note) + '</div>' : '') : esc(l.note || ''); };
-      if (!tx) return '<table><tr><th>内訳</th><th class="n">金額</th><th>備考</th></tr>' + ls.map(function (l) { return '<tr><td>' + esc(l.genre || '') + '</td><td class="n">' + yen(l.amount) + '</td><td>' + memoHtml(l) + '</td></tr>'; }).join('') + '</table>';
+      // l.strong：小計・合計の行（ハナオカ：請求額（税込）・今回の支払額）を太字に、上に線
+      if (!tx) return '<table><tr><th>内訳</th><th class="n">金額</th><th>備考</th></tr>' + ls.map(function (l) { var st = l.strong ? ' style="font-weight:700;border-top:2px solid var(--line)"' : ''; return '<tr><td' + st + '>' + esc(l.genre || '') + '</td><td class="n"' + st + '>' + yen(l.amount) + '</td><td' + (l.strong ? ' style="border-top:2px solid var(--line)"' : '') + '>' + memoHtml(l) + '</td></tr>'; }).join('') + '</table>';
       var zk = function (l) { return esc(l.rate || '') + (l.kind ? '<span class="tag ' + (l.kind === '課' ? 't-new' : 't-ok') + '" title="' + (l.kind === '課' ? '課税売上のための仕入（個別対応）' : '共通の仕入（個別対応）') + '">' + esc(l.kind) + '</span>' : '') + (l.tm ? '<div class="s" style="font-size:11px;color:var(--sub)">' + esc(l.tm) + '</div>' : ''); };
       return '<div><table class="ln"><tr><th>科目</th><th>税区分</th><th class="n">税抜</th><th class="n">消費税</th><th class="n">税込</th></tr>' + ls.map(function (l) {
         return '<tr><td>' + esc(l.genre || '') + '</td><td>' + zk(l) + '</td><td class="n">' + yen(l.excl) + '</td><td class="n">' + yen(l.tax) + '</td><td class="n"><b>' + yen(l.amount) + '</b></td></tr>' + (l.memo || l.note ? '<tr class="lm"><td colspan="5">' + memoHtml(l) + '</td></tr>' : ''); }).join('') + '</table></div>';
