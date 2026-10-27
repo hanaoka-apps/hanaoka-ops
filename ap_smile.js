@@ -112,7 +112,7 @@
       v.items.push({ date: d, inDate: g(r, '入荷日付'), slip: g(r, '伝票№'), dept: dept, staff: g(r, '担当者名称'), itemCode: g(r, '品目ｺｰﾄﾞ') || g(r, '品目コード'),
         item: g(r, '品目名'), spec: g(r, '型番'), unit: g(r, '単位'), qty: q === '' ? null : num(q), price: up === '' ? null : num(up), oprice: op > 0 ? op : null, oqty: oq > 0 ? oq : null, direct: direct || undefined,
         excl: num(g(r, '税抜受入金額')), tax: num(g(r, '消費税等')), order: g(r, '受注№'), kind: g(r, '取引区分略称'), note: g(r, '備考'),
-        soko: g(r, '倉庫ｺｰﾄﾞ').replace(/^0+/, '') || '0',
+        soko: g(r, '倉庫ｺｰﾄﾞ').replace(/^0+/, '') || '0', sokoName: g(r, '倉庫略称') || undefined,
         fuka: num(g(r, '付加価値率(％)') || g(r, '付加価値率(%)')) || undefined });   // 付加価値率（％）。0 は持たない（仕入明細の印刷に出す）
     }
     return { from: from, to: to, rows: out };
