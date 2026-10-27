@@ -42,7 +42,10 @@
   #rosterWrap.scrollx { flex:1; min-height:0; }
   table { border-collapse:collapse; white-space:nowrap; font-size:12.5px; width:100%; }
   th, td { padding:6px 9px; text-align:left; border-bottom:1px solid var(--border); }
-  th:nth-child(4), td:nth-child(4), th:nth-child(9), td:nth-child(9), th:nth-child(12), td:nth-child(12) { text-align:right; }
+  #rosterTable th:nth-child(4), #rosterTable td:nth-child(4), #rosterTable th:nth-child(9), #rosterTable td:nth-child(9), #rosterTable th:nth-child(12), #rosterTable td:nth-child(12) { text-align:right; }
+  th[data-sort] { cursor:pointer; user-select:none; }
+  th[data-sort]:hover { color:var(--accent); }
+  th.sorted { color:var(--accent); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) {
     position:sticky; background:var(--panel); z-index:2;
   }
@@ -111,10 +114,7 @@
   <section>
     <h2>所属異動履歴（データが蓄積した範囲で検出）</h2>
     <p class="note" id="movesNote"></p>
-    <div class="scrollx"><table id="movesTable">
-      <thead><tr><th>氏名</th><th>拠点</th><th>変更前部門</th><th>変更前所属</th><th>→</th><th>変更後部門</th><th>変更後所属</th><th>検出月</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
+    <div class="scrollx"><table id="movesTable"></table></div>
   </section>
 </main>
 </div>
@@ -211,6 +211,71 @@ $('#tabAll').addEventListener('click', () => setSite('すべて'));
 $('#tabHonsha').addEventListener('click', () => setSite('本社'));
 $('#tabKoujou').addEventListener('click', () => setSite('工場'));
 
+// 見出しクリックで並び替え：1回目 昇順 → 2回目 降順 → 3回目 元の並び（名簿は部門順、異動履歴は新しい順）
+// 型：code=従業員コード（数値）/ num / date=「YYYY年M月D日」/ tenure=「N年Mヶ月」/ text
+const SORT = { roster: null, moves: null };
+function sortKey(v, type) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  if (type === 'code' || type === 'num') { const n = parseFloat(s); return isNaN(n) ? null : n; }
+  if (type === 'date') { const m = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/); return m ? +m[1] * 10000 + +m[2] * 100 + +m[3] : null; }
+  if (type === 'tenure') { const m = s.match(/(\d+)年(?:(\d+)ヶ月)?/) || s.match(/()(\d+)ヶ月/); return m ? (+m[1] || 0) * 12 + (+m[2] || 0) : null; }
+  return s;
+}
+function applySort(rows, cols, sort) {
+  if (!sort) return rows;
+  const col = cols.find(c => c.k === sort.k);
+  const keyed = rows.map(r => [sortKey(col.v(r), col.t), r]);
+  keyed.sort((a, b) => {
+    if (a[0] === null || b[0] === null) return (a[0] === null) - (b[0] === null);  // 空欄は常に最後
+    const d = typeof a[0] === 'number' ? a[0] - b[0] : a[0].localeCompare(b[0], 'ja');
+    return d * sort.dir;
+  });
+  return keyed.map(x => x[1]);
+}
+function sortHead(cols, sort) {
+  return '<thead><tr>' + cols.map(c => c.t
+    ? `<th data-sort="${c.k}" class="${sort && sort.k === c.k ? 'sorted' : ''}" title="クリックで並び替え">${c.l}${sort && sort.k === c.k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`
+    : `<th>${c.l}</th>`).join('') + '</tr></thead>';
+}
+function onSortClick(which, e) {
+  const th = e.target.closest('th[data-sort]');
+  if (!th) return;
+  const k = th.dataset.sort, cur = SORT[which];
+  SORT[which] = !cur || cur.k !== k ? { k, dir: 1 } : cur.dir > 0 ? { k, dir: -1 } : null;
+  render();
+}
+$('#rosterTable').addEventListener('click', e => onSortClick('roster', e));
+$('#movesTable').addEventListener('click', e => onSortClick('moves', e));
+
+const ROSTER_COLS = [
+  { l: '従業員コード', k: 'code', t: 'code', v: r => r.従業員コード },
+  { l: '氏名', k: 'name', t: 'text', v: r => r.従業員名 },
+  { l: '拠点', k: 'site', t: 'text', v: r => r.拠点 },
+  { l: '部門', k: 'dept', t: 'text', v: r => r.部門 },
+  { l: '所属', k: 'group', t: 'text', v: r => r.所属 },
+  { l: '在職区分', k: 'status', t: 'text', v: r => statusOf(r) },
+  { l: '役職', k: 'post', t: 'text', v: r => r.役職 },
+  { l: '給与種別', k: 'paytype', t: 'text', v: r => r.給与種別名称 },
+  { l: '性別', k: 'sex', t: 'text', v: r => r.性別 },
+  { l: '年齢', k: 'age', t: 'num', v: r => r.年齢 },
+  { l: '生年月日', k: 'birth', t: 'date', v: r => r.生年月日 },
+  { l: '入社年月日', k: 'hired', t: 'date', v: r => r.入社年月日 },
+  { l: '勤続年数', k: 'tenure', t: 'tenure', v: r => r.勤続年数 },
+  { l: '退職年月日', k: 'retired', t: 'date', v: r => r.退職年月日 },
+];
+const MOVES_COLS = [
+  { l: '従業員コード', k: 'code', t: 'code', v: m => m.従業員コード },
+  { l: '氏名', k: 'name', t: 'text', v: m => m.氏名 },
+  { l: '拠点', k: 'site', t: 'text', v: m => m.拠点 },
+  { l: '変更前部門', k: 'pdept', t: 'text', v: m => m.前部門 },
+  { l: '変更前所属', k: 'pgroup', t: 'text', v: m => m.前所属 },
+  { l: '→' },
+  { l: '変更後部門', k: 'dept', t: 'text', v: m => m.後部門 },
+  { l: '変更後所属', k: 'group', t: 'text', v: m => m.後所属 },
+  { l: '検出月', k: 'ym', t: 'text', v: m => m.検出月 },
+];
+
 function fillDeptSelect(rows) {
   const keep = $('#deptSel').value;
   const depts = [...new Set(rows.map(r => r.部門).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
@@ -233,17 +298,19 @@ function render() {
   if (q) rows = rows.filter(r => (r.従業員名 || '').replace(/\s/g, '').includes(q.replace(/\s/g, '')));
 
   rows.sort((a, b) => (a.部門 || '').localeCompare(b.部門 || '', 'ja') || a.従業員コード.localeCompare(b.従業員コード, undefined, {numeric:true}));
+  const sort = SORT.roster;
+  rows = applySort(rows, ROSTER_COLS, sort);
 
   const planned = rows.filter(r => statusOf(r) === '入社予定').length;
-  $('#rosterNote').textContent = `${ym} 時点　${rows.length}名を表示` + (planned ? `（うち入社予定 ${planned}名）` : '');
+  $('#rosterNote').textContent = `${ym} 時点　${rows.length}名を表示` + (planned ? `（うち入社予定 ${planned}名）` : '')
+    + (sort ? `　｜　${ROSTER_COLS.find(c => c.k === sort.k).l}の${sort.dir > 0 ? '昇順' : '降順'}で並び替え中（同じ見出しをもう一度押すと${sort.dir > 0 ? '降順' : '部門順'}）` : '　｜　見出しをクリックすると並び替えできます');
 
-  let thead = '<thead><tr><th>従業員コード</th><th>氏名</th><th>拠点</th><th>部門</th><th>所属</th>'
-    + '<th>在職区分</th><th>役職</th><th>給与種別</th><th>性別</th><th>年齢</th><th>生年月日</th><th>入社年月日</th><th>勤続年数</th><th>退職年月日</th></tr></thead>';
+  const thead = sortHead(ROSTER_COLS, sort);
 
   let tbody = '<tbody>';
   let lastDept = null;
   for (const r of rows) {
-    if (r.部門 !== lastDept) {
+    if (!sort && r.部門 !== lastDept) {  // 部門の区切り行は、部門順（並び替えなし）のときだけ
       lastDept = r.部門;
       tbody += `<tr class="dept-sep"><td colspan="14">${esc(lastDept || '（部門不明）')}</td></tr>`;
     }
@@ -277,7 +344,7 @@ function renderMoves() {
       if (!prev || statusOf(prev) !== '在職') continue;
       if (prev.部門 !== r.部門 || prev.所属 !== r.所属) {
         moves.push({
-          氏名: r.従業員名, 拠点: r.拠点,
+          従業員コード: r.従業員コード, 氏名: r.従業員名, 拠点: r.拠点,
           前部門: prev.部門, 前所属: prev.所属, 後部門: r.部門, 後所属: r.所属,
           検出月: `${prevYm}→${curYm}`,
         });
@@ -285,14 +352,16 @@ function renderMoves() {
     }
   }
   moves.reverse();
+  const sort = SORT.moves;
+  const list = applySort(moves, MOVES_COLS, sort);
   $('#movesNote').textContent = moves.length
-    ? `${moves.length}件の異動を検出（新しい順）`
+    ? `${moves.length}件の異動を検出（${sort ? `${MOVES_COLS.find(c => c.k === sort.k).l}の${sort.dir > 0 ? '昇順' : '降順'}` : '新しい順'}）`
     : `検出できた異動はありません（現在保存されている ${months.length} ヶ月分の範囲では変化なし。データが増えるほど検出精度が上がります）`;
-  $('#movesTable tbody').innerHTML = moves.map(m => `<tr>
-    <td>${esc(m.氏名)}</td><td>${esc(m.拠点)}</td>
+  $('#movesTable').innerHTML = sortHead(MOVES_COLS, sort) + '<tbody>' + list.map(m => `<tr>
+    <td>${esc(m.従業員コード)}</td><td>${esc(m.氏名)}</td><td>${esc(m.拠点)}</td>
     <td>${esc(m.前部門)}</td><td>${esc(m.前所属)}</td><td>→</td>
     <td>${esc(m.後部門)}</td><td>${esc(m.後所属)}</td><td>${esc(m.検出月)}</td>
-  </tr>`).join('');
+  </tr>`).join('') + '</tbody>';
 }
 
 $('#deptSel').addEventListener('change', render);
