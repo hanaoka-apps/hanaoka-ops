@@ -343,5 +343,5 @@
   }
 
   root.APSmile = { setRules: setRules, deptGroupOf: deptGroupOf, deptNameMap: deptNameMap, allocateDept: allocateDept, payRoundOf: payRoundOf, splitLines: splitLines, transferFeeOf: function (t, feeKbn) { return transferFee(t, { feeKbn: feeKbn }); }, parseCSV: parseCSV, readVendorMaster: readVendorMaster, read9055: read9055, readReceipts: readReceipts, readPayList: readPayList,
-    splitBySetting: splitBySetting, transferFee: transferFee, dueDate: dueDate, compute: compute };
+    splitBySetting: splitBySetting, transferFee: transferFee, dueDate: dueDate, compute: compute, receiptGroupOf: receiptGroupOf };
 })(typeof window !== 'undefined' ? window : this);

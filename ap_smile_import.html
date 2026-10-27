@@ -498,8 +498,8 @@ function drawSummary(){
   const ms=['振込','でんさい','相殺','調整','現金','海外送金','口座振替'].filter(m=>t[m]);
   const byDue={};a.forEach(r=>linesOf(r).forEach(l=>{if(l.method!=='でんさい')return;const d=l.due||'（期日なし）';byDue[d]=(byDue[d]||0)+l.amount;}));
   const dues=Object.entries(byDue).sort((x,y)=>x[0].localeCompare(y[0]));
-  let h=`<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>🖨 印刷</b><button data-prt="本社">支払明細表（本社）</button><button data-prt="工場">支払明細表（工場）</button>
-    <span style="font-size:12px;color:var(--sub)">社内に渡す紙用（押印欄つき・A4 横）。新しいタブで開いて印刷の画面を出します（PDF にも保存できます）</span></div>
+  let h=`<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>🖨 仕入明細の印刷（払う仕入先をまとめて・1社1ページ）</b>${['全部','本社','工場'].map(s=>`<button data-prt="${s}">${s==='本社'?'本社のみ（国内営業＋ソリューション）':s==='工場'?'工場のみ':'全部'}</button>`).join('')}
+    <span style="font-size:12px;color:var(--sub)">仕入先ごとに 受入明細（SMILE）と支払の合計。1社だけなら確認の画面の「🖨 仕入明細」から。新しいタブで印刷の画面を出します（PDF にも保存できます）</span></div>
   <div class="top">
     <div class="card"><h2>払う額（${esc(st.g)}）</h2><div class="big">${yen(t.pay)}<small> 円</small></div>
       <div class="cmp"><span>前月</span><span>${t1?yen(t1):'—'}</span>${diffHtml(t.pay,t1)}</div>
@@ -516,55 +516,52 @@ function drawSummary(){
   $('pane').innerHTML=h;
   const cp=$('bMissCp');if(cp)cp.onclick=async()=>{try{await navigator.clipboard.writeText(missText(invProgress(rowsG()).miss));snack('コピーしました（Teams などに貼って催促できます）');}catch(e){snack('コピーできませんでした',true);}};
   const gm=$('bMissGo');if(gm)gm.onclick=()=>{st.only='miss';st.tab='rev';render();};
-  document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>printPayReport(b.dataset.prt));}
+  document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>printRcvReport(rows.filter(needsCheck).sort((x,y)=>x.code.localeCompare(y.code)).map(r=>r.code),b.dataset.prt));}
 
-// ---------- 支払明細表（印刷）：今までの仕入支払管理ダッシュボード（v5.30）の「本社／工場支払明細表」と同じ使い方 ----------
-//   完全に移るまで、印刷して社内に回す（押印欄：社長・総務・総務・担当）。新しいタブに表を作って印刷の画面を出す
-//   行＝仕入先 × 部門（受入の内訳で按分した 国内営業・ソリューション・工場）。混在の仕入先は、反対側の部門も「参考」で並べる
-//   振込・でんさい・仕入先計などお金の欄は仕入先の最後の行に。表の合計は、決裁の部門がこの表の側の仕入先だけ（本社と工場で二重に数えない）
-async function printPayReport(side){
-  const ym=month(),[y,m]=ym.split('/').map(Number),pd=new Date(y,m-2,1),w=window.open('','_blank');
-  if(!w){snack('新しいタブを開けませんでした（ポップアップを許可してください）',true);return;}
-  w.document.write('<p style="font:14px sans-serif;padding:20px">支払明細表を作っています…</p>');
-  const p2={};try{(await fetchAll(L.pay,`fields/${F(L.pay,'決済月')} eq '${prevMonth(prevMonth(ym))}'`)).forEach(it=>{const c=fv(L.pay,it.fields,'仕入先コード');if(c)p2[c]={id:it.id,f:it.fields};});}catch(e){}
-  const payOf=(mp,c)=>mp[c]?+fv(L.pay,mp[c].f,'支払額')||0:null,k=v=>v==null||!v?'':Math.round(v/1000).toLocaleString('ja-JP');
-  const mine=g=>side==='工場'?g==='工場':g!=='工場',n0=v=>v?yen(v):'';
-  const vs=rows.filter(r=>needsCheck(r)&&Object.entries(r.byGroup||{}).some(([g,v])=>mine(g)&&v)).sort((a,b)=>a.code.localeCompare(b.code));
-  const T={part:0,bank:0,densai:0,other:0,fee:0,adj:0,off:0,total:0,ok:0,hold:0,noinv:0};let no=0;
-  const body=vs.map(r=>{const ls=linesOf(r),sum=mth=>ls.filter(l=>l.method===mth).reduce((s,l)=>s+(+l.amount||0),0),fee=feeOf(r);
-    const bank=sum('振込')-fee,densai=sum('でんさい'),adj=sum('調整'),off=sum('相殺'),other=['現金','海外送金','口座振替'].reduce((s,x)=>s+sum(x),0),total=bank+densai+other;
-    const mth=[...new Set(ls.filter(l=>+l.amount&&!['調整','相殺'].includes(l.method)).map(l=>l.method))].join('・'),due=[...new Set(ls.filter(l=>l.method==='でんさい'&&l.due).map(l=>l.due))].join(' ');
-    const notes=[r.comment&&'総務：'+r.comment,r.reason&&'分け方：'+r.reason,!r.invoices.length&&(r.noInvReason?'請求書なし：'+r.noInvReason:'請求書なし'),r.invDiff?`請求書との差 ${r.invDiff>0?'+':''}${yen(r.invDiff)}`:''].filter(Boolean).join(' ／ ');
-    const parts=Object.entries(r.byGroup||{}).filter(([g,v])=>v).sort((a,b)=>(mine(b[0])-mine(a[0]))||(GROUPS.indexOf(a[0])-GROUPS.indexOf(b[0])));
-    const counted=mine(r.mainDept||'国内営業');
-    parts.forEach(([g,v])=>{if(mine(g))T.part+=v;});
-    if(counted){T.bank+=bank;T.densai+=densai;T.other+=other;T.fee+=fee;T.adj+=adj;T.off+=off;T.total+=total;if(r.checked)T.ok++;if(r.hold)T.hold++;if(!r.invoices.length)T.noinv++;}
-    return parts.map(([g,v],i)=>{const last=i===parts.length-1;no++;
-      return `<tr class="${last?'ge':''} ${mine(g)?'':'ref'}"><td class="c">${no}</td><td class="l">${esc(r.name)}<span class="g">／${esc(g)}分${mine(g)?'':'（参考）'}</span></td><td class="c">${esc(r.code)}</td><td class="r">${yen(v)}</td>
-        ${last?`<td class="r">${r.invoices.length?yen(r.invTotal):'—'}</td><td class="r">${n0(adj)}</td><td class="r">${n0(off)}</td><td class="r">${n0(fee)}</td><td class="r b">${n0(bank)}</td><td class="r b">${n0(densai)}</td><td class="r b">${yen(total)}</td>
-          <td class="c">${esc(r.payRound)} ${esc(mth)}${other?`<br>${esc(['現金','海外送金','口座振替'].filter(x=>sum(x)).join('・'))}`:''}</td><td class="c">${esc(due)}</td><td class="c">${r.checked?'✔ '+esc(String(r.checkedBy||'').split(/[\s　]/)[0]):r.hold?'保留':''}</td><td class="l nt">${esc(notes)}</td><td class="r">${k(r.lastMonth)}</td><td class="r">${k(payOf(p2,r.code))}</td>`
-        :'<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'}</tr>`;}).join('');}).join('');
-  const title=`${pd.getFullYear()}年${pd.getMonth()+1}月仕入分　${m}月払い　支払明細表（${side}）`;
-  const css=`@page{size:A4 landscape;margin:8mm}body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;margin:0;font-size:9px}
-    .hd{display:grid;grid-template-columns:120px 1fr 240px;align-items:end;gap:10px;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:6px}.hd h1{font-size:16px;margin:0;text-align:center}.meta{font-size:10px}
-    .st{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid #000}.st div{border-left:1px solid #000;text-align:center}.st div:nth-child(4n+1){border-left:0}.st .t{font-size:10px;border-bottom:1px solid #000;padding:1px}.st .bx{height:44px}
-    table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:1px solid #888;padding:2px 3px;vertical-align:top;overflow-wrap:anywhere}th{background:#eee;font-weight:600;font-size:8.5px}
-    td.r{text-align:right;white-space:nowrap}td.c{text-align:center}td.b{font-weight:700}.g{color:#444;font-size:8px}tr.ge td{border-bottom:1.5px solid #000}tr.ref td{color:#666}.nt{font-size:8px}
-    tr.tot td{font-weight:700;background:#f3f3f3;border-top:2px solid #000}thead{display:table-header-group}tr{page-break-inside:avoid}.ft{margin-top:4px;font-size:8.5px;color:#333}
-    .np{margin:8px 0}@media print{.np{display:none}}`;
-  const cols=[3,15,4.2,6.5,6.5,4.6,4.6,4,6.5,6.5,6.8,6,5.2,4.6,13,3.4,3.4];
+// ---------- 仕入明細の印刷：今までの仕入支払管理ダッシュボード（v5.30）の「🖨 明細PDF」と同じ使い方 ----------
+//   仕入先ごとに 1ページ：受入の合計（本社＝国内営業・ソリューション／工場、税抜・消費税・税込）、支払（SMILE の額と分け方・請求書）、受入明細（SMILE 9521）
+//   完全に移るまで、印刷して社内に回す。新しいタブに作って印刷の画面を出す
+//   side：'全部'／'本社'（国内営業＋ソリューション）／'工場'。本社・工場は受入明細をその側の行だけにする（v5.30 の「全て・本社・工場」と同じ）
+async function printRcvReport(codes,side){side=side||'全部';
+  const w=window.open('','_blank');if(!w){snack('新しいタブを開けませんでした（ポップアップを許可してください）',true);return;}
+  w.document.write('<p style="font:14px sans-serif;padding:20px">仕入明細を作っています…</p>');
+  let src=rcvSrc();if(src===RCV)src=await loadRcv();
+  const ym=month(),[y,m]=ym.split('/').map(Number),pd=new Date(y,m-2,1),period=`${pd.getFullYear()}年${pd.getMonth()+1}月仕入分（${m}月払い）`;
+  const grpOf=it=>{const g=S.receiptGroupOf?S.receiptGroupOf(it):undefined;return g===undefined?(/工場/.test(it.dept||'')?'工場':'国内営業'):g;};
+  const n0=v=>v?yen(v):'',d8=s=>{const t=String(s||'');return /^\d{8}$/.test(t)?`${t.slice(0,4)}/${t.slice(4,6)}/${t.slice(6)}`:t;};
+  const inSide=k=>side==='全部'||(side==='工場'?k==='工場':(k==='国内営業'||k==='ソリューション'));
+  const page=code=>{const r=rows.find(x=>x.code===code);if(!r)return '';const all=((src.rows||{})[code]||{}).items||[],its=all.filter(it=>inSide(grpOf(it)));
+    if(side!=='全部'&&!its.length)return '';
+    const fx=its.reduce((s,it)=>s+(+it.excl||0),0),ft=its.reduce((s,it)=>s+(+it.tax||0),0);
+    const g={'国内営業':{e:0,t:0},'ソリューション':{e:0,t:0},'工場':{e:0,t:0}};let ex=0,tx=0;
+    all.forEach(it=>{const k=grpOf(it);ex+=+it.excl||0;tx+=+it.tax||0;if(k&&g[k]){g[k].e+=+it.excl||0;g[k].t+=+it.tax||0;}});
+    const ls=linesOf(r),fee=feeOf(r),sum=mt=>ls.filter(l=>l.method===mt).reduce((s,l)=>s+(+l.amount||0),0);
+    const pays=METHODS.map(mt=>[mt,mt==='振込'?sum(mt)-fee:sum(mt)]).filter(x=>x[1]),due=[...new Set(ls.filter(l=>l.method==='でんさい'&&l.due).map(l=>l.due))].join('・');
+    const body=its.map(it=>{const k=grpOf(it),p=rcvPrice(it);return `<tr><td>${esc(k||'消費税')}</td><td>${esc(it.dept||'')}</td><td>${esc(d8(it.date))}</td><td>${esc(it.slip||'')}</td><td>${esc(it.staff||'')}</td>
+      <td>${esc(it.item||'')}${it.spec?`<div class="s">${esc(it.spec)}</div>`:''}${opDiff(it)?`<div class="w">発注単価 ${upYen(it.oprice)} → ${upYen(p)}</div>`:''}${oqDiff(it)?`<div class="w">発注数量 ${upYen(it.oqty)} → ${upYen(it.qty)}</div>`:''}</td>
+      <td class="r">${it.qty!=null&&+it.qty?upYen(it.qty):''}</td><td>${esc(it.unit||'')}</td><td class="r">${p!=null&&+it.qty?upYen(p):''}</td><td class="r">${yen(+it.excl||0)}</td><td class="r">${+it.tax?yen(it.tax):'-'}</td>
+      <td>${esc(it.soko||'')}</td><td>${esc(it.order||'')}</td><td>${esc(it.kind||'')}${it.note?` ${esc(it.note)}`:''}</td></tr>`;}).join('');
+    const card=(l,v,s,c)=>`<div class="c ${c||''}"><div class="l">${l}</div><div class="v">${v}</div>${s?`<div class="s">${s}</div>`:''}</div>`;
+    return `<section><div class="hd"><div><b>${esc(r.name)}</b> <span class="cd">${esc(r.code)}</span></div><div>${esc(period)}　仕入明細${side==='全部'?'':`（${side==='本社'?'本社：国内営業＋ソリューション':'工場'}）`}</div><div class="st">${r.checked?'✔ 確認済 '+esc(String(r.checkedBy||'').split(/[\s　]/)[0]):r.hold?'⏸ 保留':'未確認'}</div></div>
+      <div class="cards">${card('本社計（税抜）',yen(g['国内営業'].e+g['ソリューション'].e),`国内 ${yen(g['国内営業'].e)}<br>ｿﾘｭｰｼｮﾝ ${yen(g['ソリューション'].e)}`)}${card('工場（税抜）',yen(g['工場'].e))}${card('税抜計',yen(ex))}${card('消費税',yen(tx))}${card('税込合計（受入）',yen(ex+tx),'','hi')}
+        ${card('支払額（SMILE）',yen(r.amount),`${esc(r.payRound)}払い（${esc(r.payDate||'')}）`,'pay')}${card('支払の分け方',pays.map(([mt,v])=>`${mt} ${yen(v)}`).join('<br>')||'—',(fee?`手数料 ${yen(fee)}`:'')+(due?`<br>でんさい期日 ${esc(due)}`:''))}
+        ${card('請求書',r.invoices.length?yen(r.invTotal):'なし',r.invoices.length?(r.invDiff?`支払額との差 ${r.invDiff>0?'+':''}${yen(r.invDiff)}`:'支払額と一致'):esc(r.noInvReason||''),r.invDiff?'ng':'')}</div>
+      ${r.comment||r.reason?`<div class="nt">${r.comment?'総務：'+esc(r.comment):''}${r.comment&&r.reason?'　':''}${r.reason?'分け方：'+esc(r.reason):''}</div>`:''}
+      <table><thead><tr><th>区分</th><th>部門名称</th><th>伝票日付</th><th>伝票№</th><th>担当者</th><th>品目名</th><th>数量</th><th>単位</th><th>単価</th><th>税抜金額</th><th>消費税</th><th>倉庫</th><th>受注№</th><th>取引・備考</th></tr></thead>
+        <tbody>${body||'<tr><td colspan="14" style="text-align:center;padding:8px">受入明細がありません</td></tr>'}</tbody>
+        <tfoot><tr><td colspan="9">${side==='全部'?'':`${side==='本社'?'本社（国内営業＋ソリューション）':'工場'}の行だけ　`}${its.length}行${side==='全部'?`　国内 ${yen(g['国内営業'].e)}　ｿﾘｭｰｼｮﾝ ${yen(g['ソリューション'].e)}　工場 ${yen(g['工場'].e)}`:''}</td><td class="r">${yen(fx)}</td><td class="r">${yen(ft)}</td><td colspan="3">税込 ${yen(fx+ft)}</td></tr></tfoot></table></section>`;};
+  const pages=codes.map(page).filter(Boolean),title=codes.length===1?`仕入明細 ${(rows.find(x=>x.code===codes[0])||{}).name||''} ${period}`:`仕入明細 ${period}${side==='全部'?'':'・'+side}（${pages.length}社）`;
+  const css=`@page{size:A4 landscape;margin:8mm}body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;margin:0;font-size:9.5px}section{page-break-after:always}section:last-child{page-break-after:auto}
+    .hd{display:flex;gap:16px;align-items:baseline;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:6px}.hd b{font-size:15px}.hd .cd{font-size:11px;color:#444}.hd .st{margin-left:auto;font-size:11px}
+    .cards{display:grid;grid-template-columns:repeat(8,1fr);gap:5px;margin-bottom:6px}.c{border:1px solid #bbb;border-radius:4px;padding:3px 6px}.c .l{font-size:8.5px;color:#444}.c .v{font-size:12px;font-weight:700;white-space:nowrap}.c .s{font-size:8.5px;color:#333;line-height:1.4}
+    .c.hi{background:#eef4fb}.c.pay{background:#23268f;color:#fff}.c.pay .l,.c.pay .s{color:#e6e7ff}.c.ng .s{color:#b42318;font-weight:700}.nt{font-size:9px;margin:0 0 5px}
+    table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:2px 4px;vertical-align:top}th{background:#eee;font-size:9px}td.r{text-align:right;white-space:nowrap}.s{font-size:8px;color:#555}.w{font-size:8px;color:#b42318;font-weight:700}
+    thead{display:table-header-group}tfoot td{font-weight:700;background:#f3f3f3}tr{page-break-inside:avoid}.np{margin:8px 0}@media print{.np{display:none}}`;
   w.document.open();w.document.write(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>
-    <div class="np"><button onclick="print()">🖨 印刷する</button> <span style="font-size:12px">印刷の画面で「PDF に保存」も選べます。A4 横・余白は既定のままで</span></div>
-    <div class="hd"><div class="meta">＜買掛＞<br>作成 ${esc(fmtTime(new Date().toISOString()))}<br>${esc(acct&&acct.name||'')}</div><h1>${esc(title)}</h1>
-      <div class="st"><div class="t">社長</div><div class="t">総務</div><div class="t">総務</div><div class="t">担当</div><div class="bx"></div><div class="bx"></div><div class="bx"></div><div class="bx"></div></div></div>
-    <table><colgroup>${cols.map(c=>`<col style="width:${c}%">`).join('')}</colgroup>
-      <thead><tr><th>No</th><th>購入先名／部門</th><th>コード</th><th>支払額<br>（部門分）</th><th>請求書</th><th>調整</th><th>相殺</th><th>手数料</th><th>振込額</th><th>でんさい額</th><th>仕入先計</th><th>支払回・方法</th><th>でんさい<br>期日</th><th>確認</th><th>備考</th><th>前月<br>千円</th><th>前々月<br>千円</th></tr></thead>
-      <tbody>${body||'<tr><td colspan="17" class="c">この部門の支払はありません</td></tr>'}
-        <tr class="tot"><td colspan="3" class="c">合計（${vs.length}社）</td><td class="r">${yen(T.part)}</td><td></td><td class="r">${n0(T.adj)}</td><td class="r">${n0(T.off)}</td><td class="r">${n0(T.fee)}</td><td class="r">${yen(T.bank)}</td><td class="r">${yen(T.densai)}</td><td class="r">${yen(T.total)}</td>
-          <td colspan="6" class="l">確認OK ${T.ok}社${T.hold?` ／ 保留 ${T.hold}社`:''}${T.noinv?` ／ 請求書なし ${T.noinv}社`:''}</td></tr></tbody></table>
-    <div class="ft">支払額（部門分）は受入の内訳で按分した額。振込額は手数料（先方負担）を引いた後。振込・でんさい・仕入先計の合計は、決裁の部門が${side}の仕入先だけ（本社と工場の両方に出る仕入先を二重に数えない）。灰色の行は反対側の部門の分（参考）</div>
-    </body></html>`);
+    <div class="np"><button onclick="print()">🖨 印刷する</button> <span style="font-size:12px">印刷の画面で「PDF に保存」も選べます（A4 横）。${src.err?'　⚠ '+esc(src.err):''}</span></div>
+    ${pages.join('')||'<p>印刷する仕入先がありません</p>'}</body></html>`);
   w.document.close();w.focus();setTimeout(()=>{try{w.print();}catch(e){}},400);}
+
 // 請求書の揃い：払う仕入先のうち、請求書がある／理由があるの割合。無いものを部門ごとに（だれに集めてもらうか）
 function invCard(a){const p=invProgress(a),by={};p.miss.forEach(r=>(by[r.mainDept||'国内営業']=by[r.mainDept||'国内営業']||[]).push(r));
   return `<div class="card" style="${p.miss.length?'border-color:#efd3ad':''}"><h2>請求書の揃い（${esc(st.g)}）　<span style="font-weight:400;font-size:13px">${p.has+p.why} ／ ${p.n}社${p.why?`（うち請求書なしの理由あり ${p.why}）`:''}</span></h2>
@@ -726,7 +723,7 @@ function drawDetail(){
   const reasonOk=!(r.override&&r.override.length)||r.reason;
   const why=!ed?(calc?'取り込みを保存すると確認できます':''):!needsCheck(r)?'支払なし（確認は不要）':!splitOk(r)||draft?'分け方の合計を支払額に合わせて保存してください':!reasonOk?'分け方を変えた理由を書いてください'
     :(r.offsetVendor&&!r.offsetChecked)?'相殺先です。相殺の有無を確認してください':(!r.invoices.length&&!r.comment&&!r.noInvReason)?'請求書がありません。請求書を置くか、「請求書なしで払う理由」を書いてください':'';
-  el.innerHTML=`<div class="dnav"><button id="dPrev">◀ 前へ</button><span class="pos">${i+1} ／ ${a.length}</span><button id="dNext">次へ ▶</button><span class="sp"></span>
+  el.innerHTML=`<div class="dnav"><button id="dPrev">◀ 前へ</button><span class="pos">${i+1} ／ ${a.length}</span><button id="dNext">次へ ▶</button><span class="sp"></span><span style="font-size:12px;color:var(--sub)">🖨 仕入明細</span>${['全部','本社','工場'].map(s=>`<button data-dprt="${s}" title="この仕入先の受入明細と支払の合計を印刷（PDF にも保存できます）${s==='本社'?'。本社＝国内営業＋ソリューション':''}" style="padding:2px 8px">${s}</button>`).join('')}
       ${r.checked?`<span class="tag t-ok">✔ 確認OK ${esc(r.checkedBy)}</span>`:r.hold?'<span class="tag t-new">⏸ 保留</span>':''}</div>
     <div class="dbody">${drawerHtml()}<div class="dsplit">
       <div class="dpdf">
@@ -782,7 +779,7 @@ function wireDetail(r){
   document.querySelectorAll('[data-ack]').forEach(b=>b.onclick=()=>{const a=r.aiAll[+b.dataset.ack];if(a)ackAlert(a);});
   document.querySelectorAll('[data-iunl]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.iunl);if(x)unlinkInvoice(x,r);});
   document.querySelectorAll('[data-idrop]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.idrop);if(x)dropInvoice(x.id,(x.no?'No.'+x.no+' ':'')+(x.name||r.name)+' '+yen(x.amount));});
-  on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',confirmRow);on('dUn',()=>act(r,{'確認済み':false,'確認者':'','確認日時':''}));
+  document.querySelectorAll('[data-dprt]').forEach(b=>b.onclick=()=>printRcvReport([r.code],b.dataset.dprt));on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',confirmRow);on('dUn',()=>act(r,{'確認済み':false,'確認者':'','確認日時':''}));
   on('dHold',()=>act(r,{'保留':!r.hold,'確認済み':false}));on('dCmB',()=>{st.cmOpen=true;$('dCm').style.display='';$('dCm').focus();});
   const cm=$('dCm');if(cm)cm.onchange=()=>act(r,{'コメント':cm.value},'コメントを保存しました');
   const co=$('cOff');if(co)co.onchange=()=>act(r,{'相殺の確認':co.checked,'確認済み':false});
