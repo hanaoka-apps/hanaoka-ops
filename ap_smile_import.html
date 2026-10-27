@@ -685,7 +685,7 @@ function drawDetail(){
         <div style="text-align:right"><div class="big" style="font-size:26px">${yen(r.amount)}<small> 円</small></div><div style="font-size:13px;color:var(--sub)">前月 ${r.lastMonth?yen(r.lastMonth):'—'}　${r.lastMonth?diffHtml(r.amount,r.lastMonth):''}</div></div></div>
       <div class="vs">
         <div><div class="l">SMILE の額（支払額）</div><div class="v">${yen(r.amount)}</div><div class="s">税込仕入額 ${yen(sm.incl)}${sm.carry?`<br>繰越 ${yen(sm.carry)}（${r.carryHeld?'保留：3月末に整理':'端数：今回で精算'}）`:''}${r.status==='金額が変わった'&&r.prevPay!=null?`<br>前回の取り込み ${yen(r.prevPay)}`:''}</div></div>
-        <div><div class="l">請求書（${r.invoices.length}枚）</div><div class="v">${r.invoices.length?(r.invReading?'読み取り中':yen(r.invTotal)):'—'}</div><div class="s">${r.invoices.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} ${x.ai==='受付'?'（AI 読み取り中）':x.ai==='読取失敗'?'（読み取り失敗）':yen(x.amount)}${invMarks(x,r.invoices)}${ed&&x.ai!=='受付'?` <button class="lk" data-idrop="${x.id}" title="この請求書を取り消す（二重・間違い）" style="padding:0 4px">🗑</button>`:''}`).join('<br>')||'まだ置いていません'}</div></div>
+        <div><div class="l">請求書（${r.invoices.length}枚）</div><div class="v">${r.invoices.length?(r.invReading?'読み取り中':yen(r.invTotal)):'—'}</div><div class="s">${r.invoices.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} ${x.ai==='受付'?'（AI 読み取り中）':x.ai==='読取失敗'?'（読み取り失敗）':yen(x.amount)}${invMarks(x,r.invoices)}${x.ai!=='受付'?` <button class="lk" data-iunl="${x.id}" title="この仕入先から外して「仕入先が決まらない」に戻す（付け間違い）" style="padding:0 4px">↩ 外す</button><button class="lk" data-idrop="${x.id}" title="この請求書を取り消す（二重・間違い）" style="padding:0 4px">🗑 取り消す</button>`:''}`).join('<br>')||'まだ置いていません'}</div></div>
         <div class="${dCls}"><div class="l">差（請求書 − SMILE）</div><div class="v">${d==null?'—':(d>0?'+':'')+yen(d)}</div><div class="s">${d==null?'':d===0?'一致':Math.abs(d)<100?'端数 → 調整で合わせる':'相殺・期ズレ・入力ミス → 相殺の行か、SMILE を直して取り込み直し'}</div></div>
       </div>
       ${ed&&d?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${Math.abs(d)<100?`<button id="bFix">請求書どおりに払い、差 ${yen(-d)} を調整にする</button>`:''}${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}<span style="font-size:12px;color:var(--sub);align-self:center">入力ミスなら SMILE を直して、ファイルを出し直して取り込み直してください</span></div>`:''}
@@ -722,6 +722,7 @@ function drawDetail(){
   wireDetail(r);}
 function wireDetail(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
+  document.querySelectorAll('[data-iunl]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.iunl);if(x)unlinkInvoice(x,r);});
   document.querySelectorAll('[data-idrop]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.idrop);if(x)dropInvoice(x.id,(x.no?'No.'+x.no+' ':'')+(x.name||r.name)+' '+yen(x.amount));});
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',confirmRow);on('dUn',()=>act(r,{'確認済み':false,'確認者':'','確認日時':''}));
   on('dHold',()=>act(r,{'保留':!r.hold,'確認済み':false}));on('dCmB',()=>{st.cmOpen=true;$('dCm').style.display='';$('dCm').focus();});
@@ -860,7 +861,7 @@ async function assignVendor(x,code,reason){const v=monthList()[code]||{code,name
   await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,fields);}
 async function matchInbox(){if(matching||!INBX.length)return;const C=monthList();if(!Object.keys(C).length)return;
   matching=true;let n=0;try{await loadVB();
-    for(const x of INBX){if(x.ai!=='AI確認済'||AIRUN.has(x.id))continue;const m=matchOne(x,C);if(m.code){try{await assignVendor(x,m.code,m.reason);n++;}catch(e){console.warn(e);}}}}
+    for(const x of INBX){if(x.ai!=='AI確認済'||AIRUN.has(x.id)||x.com.includes(UNLINK_MARK))continue;const m=matchOne(x,C);if(m.code){try{await assignVendor(x,m.code,m.reason);n++;}catch(e){console.warn(e);}}}}
   finally{matching=false;}
   if(n){snack(`請求書 ${n} 件を仕入先に付けました`);await loadInvoices();render();}}
 // 置く：仕入先は決めずに受け付けて、すぐ AI に読ませる（今月の支払先リストも渡す）
@@ -896,6 +897,12 @@ async function dropInvoice(id,label){const why=prompt(`「${label}」の請求�
   if(why===null)return;
   try{await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${id}/fields`,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':`取り消し：${why.trim()||'理由なし'}（${acct&&acct.name||''}）`}));
     snack('取り消しました');await loadInvoices();render();}catch(e){snack('取り消せませんでした：'+e.message,true);}}
+// 仕入先から外す（付け間違い）：支払先コードを空にして「仕入先が決まらない」に戻す。自動では付け直さない（AI コメントに印を残す）
+const UNLINK_MARK='【仕入先から外した】';
+async function unlinkInvoice(x,r){if(!confirm(`「${x.no?'No.'+x.no+' ':''}${x.name||r.name} ${yen(x.amount)}」を ${r.name} から外して、「仕入先が決まらない」に戻します。よろしいですか？`))return;
+  const f=toFields(L.inv,{'支払先コード':''});f[V3.com]=[`${UNLINK_MARK}${r.name}（${r.code}）から外しました（${acct&&acct.name||''}）。自動では付け直しません`,x.com].filter(Boolean).join('\n');
+  try{await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,f);snack('外しました。「請求書を渡す」の「仕入先が決まらない」に戻っています');await loadInvoices();render();}
+  catch(e){snack('外せませんでした：'+e.message,true);}}
 // 経費に回す：今月の支払先リストに無い＝経費の請求書。経費として AI に読み直させる（仕訳を作る）→ 経費の確認待ちへ
 async function toExpense(x,loc){if(!confirm(`「${x.payee||x.title}」を${loc}の経費に回します（AI が経費として読み直し、経費の確認待ちに並びます）。よろしいですか？`))return;
   let d;try{d=await docFiles(x.doc);}catch(e){snack(e.message,true);return;}
