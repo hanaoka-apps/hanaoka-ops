@@ -91,8 +91,13 @@
     }
     /* 給与決済：支給日（25日。営業日でなければ前の営業日）の n営業日前。過去20か月では1営業日前が13回、3営業日前が6回
        （賞与などの月）だったので、既定は1営業日前。月ごとに画面で切り替える */
-    const payDay = prevBizOrSelf(ymd(y, m, 25), ctx);
-    add(shiftBiz(payDay, payBefore, ctx), '車輌・株ハナ 給与決済', 'main', '花岡', `給与支給日（${m}/${Number(payDay.slice(8))}）の${payBefore}営業日前`);
+    const pr = opts && opts.payroll;                           /* 社労士と決めた日程 { m:振込方法, a:勤怠確定日, p:給与決裁日, s:支給日 }（日にち） */
+    if (pr && pr.p) {
+      add(ymd(y, m, pr.p), '車輌・株ハナ 給与決済', 'main', '花岡', `給与決裁日（支給日${pr.s}日${pr.m ? '・' + pr.m : ''}）`);
+    } else {
+      const payDay = prevBizOrSelf(ymd(y, m, 25), ctx);
+      add(shiftBiz(payDay, payBefore, ctx), '車輌・株ハナ 給与決済', 'main', '花岡', `給与支給日（${m}/${Number(payDay.slice(8))}）の${payBefore}営業日前`);
+    }
     const LB = lastBizOfMonth(y, m, ctx);
     add(shiftBiz(LB, 1, ctx), '月末支払決済・でんさい(本社・工場)', 'main', '総務幹部', '最終営業日の1営業日前');
     add(shiftBiz(LB, 1, ctx), '株ハナ月末支払決済', 'main', '花岡', '最終営業日の1営業日前');

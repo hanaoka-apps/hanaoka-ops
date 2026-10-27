@@ -141,7 +141,7 @@
     <span id="badge"></span>
     <span class="cnt" id="stateNote"></span>
     <span class="spacer"></span>
-    <span class="cnt" title="給与の支給日（25日。休日なら前の営業日）から何営業日前に決済するか。賞与の月などは3営業日前にします">給与決済：支給日の
+    <span class="cnt" title="給与スケジュールの表にない月だけ使います。給与の支給日（25日。休日なら前の営業日）から何営業日前に決済するか">表にない月の給与決済：支給日の
       <select id="payrollSel" style="font-size:12px;padding:3px 4px;border:1px solid var(--border);border-radius:4px"><option value="1">1営業日前</option><option value="2">2営業日前</option><option value="3">3営業日前</option></select></span>
     <button class="act" id="autoBtn" title="ルールから、この月の予定の案を作ります（いまの内容は置き換わります）">⚙ ルールから自動作成</button>
     <button class="act" id="saveBtn">💾 下書きを保存</button>
@@ -150,6 +150,17 @@
     <button class="act pri" id="publishBtn">📢 公開（全社スケジュールへ登録）</button>
     <button class="act" id="reopenBtn">編集に戻す</button>
   </div>
+
+  <details class="card2" id="payCard">
+    <summary style="cursor:pointer;font-size:13.5px;font-weight:700;color:var(--primary)">給与スケジュール（社労士と決めた日程）　<span class="cnt" style="font-weight:400">年に1回、表ができたときに入力します。給与決済・勤怠確定の日付は、この表から作ります（表にない月は営業日からの案）</span></summary>
+    <div style="margin-top:8px"><table class="ed" style="max-width:640px"><thead><tr><th style="width:90px">月</th><th style="width:110px">振込方法</th><th>勤怠確定（日）</th><th>給与決裁（日）</th><th>支給日（日）</th><th>備考（空なら自動）</th><th style="width:34px"></th></tr></thead>
+      <tbody id="payBody"></tbody></table>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <input type="month" id="payNewMonth" style="border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12.5px">
+        <button class="act" id="payAdd">＋ 月を追加</button>
+        <span class="spacer"></span><span class="msg" id="payMsg"></span>
+        <button class="act pri" id="paySave">給与スケジュールを保存</button></div></div>
+  </details>
 
   <div class="card2" id="editCard">
     <h4>予定の編集
@@ -204,6 +215,13 @@ const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
 const CAL_MAIL = 'company-calendar@hanaoka-corp.co.jp';
 const LIST_ITEMS = '支払決済スケジュール', LIST_MONTH = '支払決済スケジュール月';
+/* 社労士と決めた給与の日程（初期値。画面の「給与スケジュール」で直して保存する）。m:振込方法 a:勤怠確定日 p:給与決裁日 s:支給日 */
+const DEFAULT_PAYROLL = {
+  '2026-02': { m:'総合振込', a:17, p:24, s:25 }, '2026-03': { m:'総合振込', a:17, p:24, s:25 }, '2026-04': { m:'給与振込', a:17, p:21, s:24 },
+  '2026-05': { m:'給与振込', a:18, p:20, s:25 }, '2026-06': { m:'給与振込', a:17, p:22, s:25 }, '2026-07': { m:'総合振込', a:17, p:23, s:24 },
+  '2026-08': { m:'給与振込', a:18, p:20, s:25, n:'16日(日)' }, '2026-09': { m:'総合振込', a:16, p:24, s:25 }, '2026-10': { m:'総合振込', a:19, p:22, s:23 },
+  '2026-11': { m:'総合振込', a:18, p:24, s:25 }, '2026-12': { m:'給与振込', a:17, p:22, s:25 }, '2027-01': { m:'給与振込', a:18, p:22, s:25 }
+};
 const CATEGORY = { main: '定例・決済', sub: '準備・作業' };
 /* 使える人（氏名から空白を除いた形）。メールでも許可する */
 const ALLOWED_NAMES = ['福田剛史', '花岡雅', '石井絢子'];
@@ -274,6 +292,7 @@ let ITEMS = [];                       /* {uid,id,date,title,kind,owner,memo,pubI
 let HEAD = { id: null, status: 'draft', approvedAt: '', approvedBy: '', publishedAt: '', publishedBy: '' };
 let CAL = { holidays: new Set(), satWork: new Set(), names: new Map(), ok: false };
 let LISTS = { items: null, month: null };
+let PAYROLL = JSON.parse(JSON.stringify(DEFAULT_PAYROLL)), PAYROLL_ID = null;
 let uidSeq = 1, dirty = false, LOADING = false;
 const ctx = () => ({ calHolidays: CAL.holidays, satWork: CAL.satWork });
 const ymLabel = ym => `${ym.slice(0, 4)}年${Number(ym.slice(5))}月`;
@@ -326,6 +345,10 @@ async function loadMonthData(ym){
   let mrows;
   try { mrows = await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.month}/items?$expand=fields&$top=500&$filter=${encodeURIComponent(`fields/Title eq '${ym}'`)}`, NONINDEX); }
   catch (e) { if (e.status !== 400) throw e; mrows = (await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.month}/items?$expand=fields&$top=500`)).filter(r => r.fields?.Title === ym); }
+  try {
+    const pr = await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.month}/items?$expand=fields&$top=500&$filter=${encodeURIComponent("fields/Title eq '_payroll'")}`, NONINDEX);
+    if (pr[0]) { PAYROLL_ID = pr[0].id; const j = JSON.parse(pr[0].fields?.Note || 'null'); if (j && typeof j === 'object') PAYROLL = j; }
+  } catch {}
   if (mrows[0]) { const f = mrows[0].fields || {};
     HEAD = { id: mrows[0].id, status: ['approved','published'].includes(f.Status) ? f.Status : 'draft', approvedAt: f.ApprovedAt || '', approvedBy: f.ApprovedBy || '', publishedAt: f.PublishedAt || '', publishedBy: f.PublishedBy || '' }; }
 }
@@ -398,7 +421,7 @@ function dayInfo(d){
 function sortedItems(){ return ITEMS.filter(i => !i.del).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'main' ? -1 : 1) || a.title.localeCompare(b.title, 'ja')); }
 function render(){
   el('monthLabel').textContent = ymLabel(YM);
-  paintHead(); renderEditor(); renderSheet(); paintStatus();
+  paintHead(); renderEditor(); renderSheet(); renderPayroll(); paintStatus();
 }
 function paintHead(){
   const st = HEAD.status;
@@ -433,6 +456,25 @@ function renderEditor(){
   const sv = document.activeElement && document.activeElement.closest && document.activeElement.closest('#edBody') ? null : null;
   el('edBody').innerHTML = h;
 }
+/* 社長確認用：その月の給与の日程（社労士と決めた表）。共通予定表には登録しない情報もここに出す */
+function payrollBox(y, m){
+  const p = PAYROLL[`${y}-${pad(m)}`]; if (!p) return '';
+  const wd = d => d ? `${m}/${d}(${WD[R.dow(R.ymd(y, m, d))]})` : '—';
+  return `<table style="margin-top:2.5mm"><thead><tr><th colspan="5" style="text-align:left">■給与スケジュール（社労士と決定した日程）</th></tr>
+    <tr><th>振込方法</th><th>勤怠確定</th><th>給与決裁</th><th>支給日</th><th>備考</th></tr></thead>
+    <tbody><tr><td style="text-align:center">${esc(p.m || '')}</td><td style="text-align:center">${wd(p.a)}</td><td style="text-align:center;font-weight:700">${wd(p.p)}</td><td style="text-align:center">${wd(p.s)}</td>
+    <td>${esc(payNote(y, m, p))}</td></tr></tbody></table>`;
+}
+/* 備考：勤怠確定日の直前に続く休日から、給与決裁日までの休日（社労士の表と同じ見方）。表の「備考」に書けば、そちらを使う */
+function payNote(y, m, p){
+  if (p && p.n) return p.n;
+  if (!p || !p.a || !p.p) return '';
+  const ym = `${y}-${pad(m)}`; let start = R.ymd(y, m, p.a);
+  for (let g = 0; g < 10; g++) { const prev = R.addDays(start, -1); if (R.isBiz(prev, ctx()) || !prev.startsWith(ym)) break; start = prev; }
+  const out = [], end = R.ymd(y, m, p.p);
+  for (let d = start; d <= end; d = R.addDays(d, 1)) if (!R.isBiz(d, ctx())) out.push(`${Number(d.slice(8))}日(${R.isPublicHoliday(d) ? '祝' : WD[R.dow(d)]})`);
+  return out.join('、');
+}
 function renderSheet(){
   const y = Number(YM.slice(0, 4)), m = Number(YM.slice(5)), n = R.lastDay(y, m);
   const by = new Map(); sortedItems().forEach(i => { if (!by.has(i.date)) by.set(i.date, []); by.get(i.date).push(i); });
@@ -449,8 +491,41 @@ function renderSheet(){
       <div class="sub">総務部　作成：${esc(myName())}　／　${lock ? `社長OK：${esc(HEAD.approvedAt.slice(0, 10).replace(/-/g, '/'))}` : '※社長確認前（案）'}</div></div>
       <div class="stamp"><div>社長<i>印</i></div><div>総務<i>印</i></div></div></div>
     <table><thead><tr><th style="width:17mm">日付</th><th style="width:19mm">区分</th><th style="width:70mm">本編（★＝支払決済などの本編）</th><th>補足（準備・作業）</th></tr></thead><tbody>${rows}</tbody></table>
+    ${payrollBox(y, m)}
     <div class="foot">※社長の都合により決済日がズレる事がございます。　※営業日は土日・祝日・会社休日を除いて数えます（土曜出社日は数えません）。</div>`;
 }
+
+/* ---- 給与スケジュール（社労士と決めた日程） ---- */
+function renderPayroll(){
+  const keys = Object.keys(PAYROLL).sort();
+  el('payBody').innerHTML = keys.map(k => { const p = PAYROLL[k]; const [y, m] = k.split('-');
+    const warn = [p.a, p.p, p.s].some(d => d && !R.isBiz(R.ymd(Number(y), Number(m), d), ctx())) ? ' title="休日の日付が入っています"' : '';
+    return `<tr data-k="${k}"${warn}><td>${y}年${Number(m)}月${k === YM ? ' ◀' : ''}</td>
+      <td><select data-pf="m"><option${p.m === '総合振込' ? ' selected' : ''}>総合振込</option><option${p.m === '給与振込' ? ' selected' : ''}>給与振込</option></select></td>
+      <td><input type="number" min="1" max="31" data-pf="a" value="${p.a || ''}"></td><td><input type="number" min="1" max="31" data-pf="p" value="${p.p || ''}"></td>
+      <td><input type="number" min="1" max="31" data-pf="s" value="${p.s || ''}"></td>
+      <td><input type="text" data-pf="n" value="${esc(p.n || '')}" placeholder="${esc(payNote(Number(y), Number(m), { ...p, n: '' }))}"></td><td><button class="x" data-pdel="${k}" title="この月を削除">✕</button></td></tr>`; }).join('');
+}
+el('payBody').addEventListener('input', e => {
+  const tr = e.target.closest('tr[data-k]'); if (!tr || !e.target.dataset.pf) return;
+  const p = PAYROLL[tr.dataset.k], f = e.target.dataset.pf;
+  p[f] = (f === 'm' || f === 'n') ? e.target.value : Number(e.target.value) || 0;
+  el('payMsg').textContent = '※保存していません'; el('payMsg').className = 'msg ng';
+});
+el('payBody').addEventListener('click', e => { const b = e.target.closest('[data-pdel]'); if (!b) return; delete PAYROLL[b.dataset.pdel]; renderPayroll(); el('payMsg').textContent = '※保存していません'; el('payMsg').className = 'msg ng'; });
+el('payAdd').onclick = () => { const v = el('payNewMonth').value; if (!/^[0-9]{4}-[0-9]{2}$/.test(v)) { showSnack('追加する月を選んでください'); return; }
+  if (!PAYROLL[v]) PAYROLL[v] = { m: '給与振込', a: 17, p: 22, s: 25 }; renderPayroll(); };
+el('paySave').onclick = async () => {
+  if (!(await ensureLists())) return;
+  const fields = { Title: '_payroll', Note: JSON.stringify(PAYROLL) };
+  try {
+    const r = PAYROLL_ID ? await gSend('PATCH', `/sites/${SITE_ID}/lists/${LISTS.month}/items/${PAYROLL_ID}/fields`, fields)
+                         : await gSend('POST', `/sites/${SITE_ID}/lists/${LISTS.month}/items`, { fields });
+    if (!r.ok) throw new Error(`保存できませんでした（${r.status}）`);
+    if (!PAYROLL_ID) PAYROLL_ID = r.body.id;
+    el('payMsg').textContent = '保存しました'; el('payMsg').className = 'msg ok'; showSnack('給与スケジュールを保存しました');
+  } catch (e) { showSnack(e.message); }
+};
 
 /* ---- 編集操作 ---- */
 function markDirty(){ dirty = true; paintHead(); }
@@ -478,7 +553,7 @@ function addItem(o){ ITEMS.push({ uid: uidSeq++, id: null, pubId: '', del: false
 el('autoBtn').onclick = () => {
   if (ITEMS.some(i => !i.del) && !confirm('いまの予定を、ルールから作った案に置き換えます（すでに保存した内容も置き換わります）。よろしいですか？')) return;
   ITEMS.forEach(i => { i.del = true; });
-  R.generate(YM, ctx(), { payrollBefore: Number(el('payrollSel').value) }).forEach(g => ITEMS.push({ uid: uidSeq++, id: null, pubId: '', del: false, orig: '', ...g }));
+  R.generate(YM, ctx(), { payrollBefore: Number(el('payrollSel').value), payroll: PAYROLL[YM] }).forEach(g => ITEMS.push({ uid: uidSeq++, id: null, pubId: '', del: false, orig: '', ...g }));
   /* 公開済みの予定は、あとで公開のときに消える。保存すると下書きに戻る */
   markDirty(); render(); showSnack('ルールから案を作りました。日付や件名を確認・修正してください');
 };
