@@ -611,6 +611,8 @@
     slips.slice().sort(function (a, b) { return a.orderDate === b.orderDate ? (+a.id - +b.id) : (a.orderDate < b.orderDate ? -1 : 1); }).forEach(function (s) {
       seq++;
       var ship = EC.ymd(s.shipDate), po = s.po || digits(s.id);   // テスト送信の注文だけ客先注番が TEST…（s.po）
+      // 行摘要２は長さの上限がある（15文字の注番で「行摘要２不正」になった。上限は10文字前後と思われ、正確な桁数は未確認）ので、テスト送信の TEST… は入れず、数字の末尾8桁だけにする（本番の注文は今までどおり注文番号の数字）
+      var memo2 = s.po ? digits(s.id).slice(-8) : po;
       var mfg = EC.ymd(cal.prev(s.shipDate));
       s.lines.forEach(function (l, i) {
         var o = new Array(header.length).fill('');
@@ -620,7 +622,7 @@
           0: EC.ymd(s.orderDate), 1: String(seq), 2: String(i + 1), 3: s.cust, 4: s.custName, 6: s.deliveryCode, 7: s.delivery.name,
           8: s.staff, 9: s.dept, 11: '0', 12: '1', 13: '1', 14: ship, 15: po, 16: cfg.warehouse, 17: l.code, 18: l.name,
           22: q2(l.qty), 23: l.unit, 24: q2(l.unitNet), 25: String(amt), 26: '0.00', 27: '0', 29: String(amt), 30: '0.0',
-          31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: po,
+          31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: memo2,
           45: '00000', 49: '0', 50: '0', 52: '0', 54: s.memo, 56: '1', 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
           94: ship, 95: '0', 96: '1', 101: l.name, 105: ship, 106: made ? mfg : '0', 107: ship, 108: po, 109: made ? mfg : '0',
           110: made ? q2(l.qty) : '0.00', 111: l.teihai || '1', 112: '0'

@@ -387,9 +387,13 @@ t('テスト送信：取込ファイル（受注）は東京の得意先・担�
   // 製番・製造手配が作られない形（FR と同じ）：手配区分 2・製造数量 0.00・製造納期 0・当初製造納期 0。品目は FR だけ
   rows.forEach(x => assert.deepStrictEqual([x[col('品目コード')], x[col('手配区分')], x[col('製造数量')], x[col('製造納期')], x[col('当初製造納期')]], ['FR', '2', '0.00', '0', '0']));
   assert.deepStrictEqual(rows.map(x => x[col('単価')]), ['1500.00', '500.00']);
+  // 行摘要２（44列目）は長さの上限がある（15文字で「行摘要２不正」になった）ので、TEST… は入れず数字の末尾8桁だけ。客先注番（15・108列目）は TEST… のまま
+  const memo2 = J.indexOf('行摘要２');
+  assert.strictEqual(memo2, 44);
+  rows.forEach(x => { assert.strictEqual(x[memo2], '10161230'); assert.ok(x[memo2].length <= 10); assert.ok(!/TEST/.test(x[memo2])); assert.strictEqual(x[col('客先注番')], 'TEST2610161230'); });
   // 本番の注文（客先注番は数字だけ）は今までどおり
   const real = EC.buildSlip(order(), ctx); real.deliveryCode = '000001'; real.delivery = { name: 'x' }; real.shipDate = '2026-10-19';
-  assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][col('客先注番')], '1800');
+  assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][col('客先注番')], '1800'); assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][J.indexOf('行摘要２')], '1800');   // 本番の行摘要２は今までどおり（注文番号の数字）
   assert.ok(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ items: {} })).error);   // 品目マスタにない品目はエラー
 });
 t('テスト送信：テスト行の品目は「手配区分2・在庫管理なし」だけ。マスタの品目がそれに当たらなければ拒否（製番・製造手配を作らない）', () => {
