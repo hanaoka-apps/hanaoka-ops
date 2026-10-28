@@ -40,7 +40,8 @@ def line(name, qty, price, sku='', unful=None, disc='0.0'):
 
 
 def addr(name, zip_, phone):
-    return {'name': name, 'company': '', 'zip': zip_, 'province': '東京都', 'provinceCode': 'JP-13', 'city': '千代田区',
+    last, first = name.split(' ', 1)
+    return {'name': first + ' ' + last, 'firstName': first, 'lastName': last, 'company': '', 'zip': zip_, 'province': '東京都', 'provinceCode': 'JP-13', 'city': '千代田区',
             'address1': '架空1-2-3', 'address2': 'テストビル4F', 'phone': phone, 'countryCodeV2': 'JP'}
 
 
@@ -177,6 +178,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual((b['Financial Status'], b['Fulfillment Status'], b['Payment Method']),
                          ('partially_refunded', 'fulfilled', 'shopify_payments + bank_deposit'))
         self.assertEqual((b['Lineitem quantity'], b['Lineitem price'], b['Lineitem fulfillment status']), ('2', '5000', 'fulfilled'))
+        self.assertEqual((a['Shipping Name'], a['Billing Name']), ('架空 太郎', '架空 太郎'))    # APIは「名 姓」で返すが、姓 名 に直す
         self.assertEqual(c['Name'], '#9002')
         self.assertEqual(c['Total'], '')
         self.assertEqual({k for k, v in c.items() if v != ''} - {'Name'},

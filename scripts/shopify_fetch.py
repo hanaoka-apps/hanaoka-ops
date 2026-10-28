@@ -338,8 +338,8 @@ ORDER_FIELDS = '''
   discountCodes
   paymentGatewayNames
   shippingLine { title }
-  shippingAddress { name company zip province provinceCode city address1 address2 phone countryCodeV2 }
-  billingAddress { name company zip province provinceCode city address1 address2 phone countryCodeV2 }
+  shippingAddress { name firstName lastName company zip province provinceCode city address1 address2 phone countryCodeV2 }
+  billingAddress { name firstName lastName company zip province provinceCode city address1 address2 phone countryCodeV2 }
 '''
 LINE_FIELDS = '''
   quantity name sku vendor requiresShipping taxable unfulfilledQuantity
@@ -396,6 +396,14 @@ def fetch_orders(client, since, log=None):
     return orders
 
 
+def full_name(a):
+    """API の name は「名 姓」の順で返る。日本のお届け先は「姓 名」に直す（管理画面のエクスポートと同じ並び）"""
+    last, first = (a.get('lastName') or '').strip(), (a.get('firstName') or '').strip()
+    if a.get('countryCodeV2') == 'JP' and last and first:
+        return last + ' ' + first
+    return a.get('name') or ''
+
+
 def street(a):
     return ' '.join(x for x in ((a or {}).get('address1'), (a or {}).get('address2')) if x)
 
@@ -403,7 +411,7 @@ def street(a):
 def address_cols(prefix, a):
     a = a or {}
     return {
-        prefix + ' Name': a.get('name') or '', prefix + ' Street': street(a),
+        prefix + ' Name': full_name(a), prefix + ' Street': street(a),
         prefix + ' Address1': a.get('address1') or '', prefix + ' Address2': a.get('address2') or '',
         prefix + ' Company': a.get('company') or '', prefix + ' City': a.get('city') or '',
         prefix + ' Zip': quoted(a.get('zip')), prefix + ' Province': a.get('provinceCode') or '',
