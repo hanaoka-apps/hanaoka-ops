@@ -12,6 +12,7 @@
 <script src="hanaoka_auth.js"></script>
 <script src="ap_intake.js"></script>
 <script src="ap_ai.js"></script>
+<script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261021" defer></script>
 <style>
 /* 見た目は支払決済アプリ（settle-proto）・仕入（SMILE）にそろえる */
@@ -429,7 +430,12 @@ function tagsOf(r){const t=[];
   if(r.reject&&!r.done)t.push(['差し戻し','t-up']);if(r.status==='先行支払済')t.push(['先行支払済','t-pri']);
   return t;}
 // 対象外にした・仕入へ移したものは、読み直さなくてもすぐ外す
-function buildItems(){items=ALL.filter(x=>{const c=fv(L.inv,x.f,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,x.f,'アーカイブフラグ')!==true;}).map(mk);}
+function buildItems(){items=ALL.filter(x=>{const c=fv(L.inv,x.f,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,x.f,'アーカイブフラグ')!==true;}).map(mk);
+  LEARN=window.APDept?APDept.learn(items):{};}
+// 決裁の部門（支払決済でだれが説明するか。仕訳の部門とは別）：ap_dept.js。人が選んだもの・覚えたもの・総務の科目・部門コードの順
+let LEARN={};
+function deptOf(r){if(!window.APDept)return {dept:r.loc==='工場'?'工場':'総務',why:''};
+  return APDept.decide({payee:r.payee,round:r.round,loc:r.loc,log:r.log,lines:r.lines.map(l=>({acct:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',incl:+fv(L.sl,l.f,'金額_税込')||0}))},RULES,LEARN);}
 // 今の1件が一覧から外れるとき：次の件を開く（無ければ一覧へ）
 function leaveCur(r){const a=listRows(),i=a.findIndex(x=>x.id===r.id),nx=a.slice(i+1).concat(a.slice(0,Math.max(i,0))).find(x=>x.id!==r.id);
   draft=null;hdrDraft=null;cmDraft=null;if(nx&&st.view==='one'){st.sel=nx.id;}else{st.view='list';st.sel=null;}}
@@ -547,8 +553,8 @@ function expenseBook(round){
   // 前月・前々月：支払先・科目・部門ごとの税込（同じ支払回）
   const prevMap=n=>{const pm=ymOf(new Date(y,m-1-n,1)),mp={};items.filter(r=>r.ym===pm&&r.round===round&&r.loc==='本社').forEach(r=>r.lines.forEach(l=>{const k=jnorm(r.payee)+'|'+c6(lv(l,'勘定科目コード'))+'|'+c6(lv(l,'部門コード'));mp[k]=(mp[k]||0)+(+lv(l,'金額_税込')||0);}));return mp;};
   const p1=prevMap(1),p2=prevMap(2),k1=v=>v==null?null:Math.round(v/100)/10;
-  const sheetOf=r=>{if(round!=='月末')return '本社';const big=r.lines.slice().sort((a,b)=>Math.abs(+lv(b,'金額_税込')||0)-Math.abs(+lv(a,'金額_税込')||0))[0],d=big?c6(lv(big,'部門コード')):'';
-    return XL_K.includes(d)?'K':XL_S.includes(d)?'S':'本社';};
+  // 本社／営業：決裁の部門（ap_dept.js）で。10日・20日は総務。月末は 人が選んだ・覚えた・総務の科目・部門コード の順
+  const sheetOf=r=>{const d=deptOf(r).dept;return d==='国内営業'?'K':d==='ソリューション'?'S':'本社';};
   const MTH={'総合振込':'振込','口座振替':'口振','でんさい':'手形','納税':'納税','現金':'現金','海外送金':'海外'};
   const groups={本社:[],K:[],S:[]};rs.forEach(r=>groups[sheetOf(r)].push(r));
   const head=['No,','証憑','特記','会社名','科目CD','科目','部門CD','部門','税抜','消費税','税込','請求書計','取引先計','方法','決済日','振込','口座振替','手形','備考','前月','前々月','確認'];
@@ -812,6 +818,11 @@ function drawOne(){
     <div style="font-size:13px">${esc(pre.payee)}　${esc(pre.round||'')}払い　<b>${yen(pre.amount)} 円</b>${pre.amount!==h.amount?`<span style="color:var(--up)">（この請求書は ${yen(h.amount)} 円）</span>`:'（金額も同じ）'}　${pre.done?'確定済み':esc(stepName(pre,pre.step))}</div>
     <div style="font-size:12px;color:var(--sub);margin:4px 0 6px">毎月の支払・手入力・複製で先に入れたものです。この請求書（PDF）をそちらに付けると、二重になりません</div>
     <button class="pri" id="oPre">📎 先に登録した請求書に付ける</button> <button class="lk" id="oPreOpen">先に登録した方を開く</button></div>`:'';
+  // 決裁の部門（支払決済でだれが説明するか）：月末だけ選べる。選ぶと同じ支払先の翌月からも同じ部門になる
+  const dp=deptOf(r),dpEd=(ed||r.done)&&!lock&&r.loc==='本社'&&r.round==='月末';
+  const deptCard=r.loc==='本社'?`<div class="oc"><div class="oh"><b>決裁の部門</b><span class="bd">${esc(dp.dept)}</span><span style="font-size:11.5px;color:var(--sub)">${esc(dp.why)}</span><span class="sp"></span>
+      ${dpEd?`<select id="oDept" style="width:auto">${window.APDept?APDept.DEPTS.map(d=>`<option ${d===dp.dept?'selected':''}>${d}</option>`).join(''):''}</select>${dp.manual?'<button class="lk" id="oDeptAuto" title="人が選んだ部門を消して、自動の決め方に戻す">自動に戻す</button>':''}`:''}</div>
+    <div style="font-size:12px;color:var(--sub)">支払決済でだれが説明するか（仕訳の部門とは別）。月末払いだけ営業（国内営業・ソリューション）に分けます。選ぶと、同じ支払先の翌月からも同じ部門になります</div></div>`:'';
   // 特記事項（イレギュラーな支払）：自動の判定を見せ、直せる（特記にする／外す・文）
   const tk=tokkiOf(r),tkE=st.editTk===r.id,tkEd=ed||r.done;
   const tkCard=`<div class="oc"><div class="oh"><b>特記事項</b>${tk.on?'<span class="bd warn">特記</span>':'<span class="bd">特記なし</span>'}<span style="font-size:11.5px;color:var(--sub)">${tk.manual?`${esc(tk.by||'')} が直した`:tk.auto?'自動（初めて・久しぶりの支払）':''}</span><span class="sp"></span>${tkEd?`<button class="lk" id="oTk">${tkE?'閉じる':'✎ 直す'}</button>`:''}</div>
@@ -885,7 +896,7 @@ function drawOne(){
         <div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
           <div class="meta"><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span></div></div>
-        ${preCard}${tkCard}${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
+        ${preCard}${tkCard}${deptCard}${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
       </div></div>
     <div class="onefoot"><input type="text" id="oCm" placeholder="コメントを入力（メモとして保存されます。全員に見えます）" value="${esc(cmDraft??r.note)}" ${ed||r.done?'':'disabled'}>
       <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):r.done?'':'Enter：確認完了・次へ　←→：前・次'}</span>
@@ -901,6 +912,8 @@ function wireOne(r){
   const ai=$('oAttachIn');if(ai)ai.onchange=e=>{const fs=[...e.target.files];e.target.value='';if(fs.length)attachDocs(r,fs);};
   on('oAttach',()=>ai&&ai.click());
   const pv=$('pdfv');if(pv&&(canAct(r)||r.done)&&!pdfPaths(r).length){pv.addEventListener('dragover',e=>e.preventDefault());pv.addEventListener('drop',e=>{e.preventDefault();attachDocs(r,e.dataTransfer.files);});}
+  const od=$('oDept');if(od)od.onchange=()=>act(r,{},`決裁の部門を ${od.value} にしました`,{act:'決裁の部門',dept:od.value,memo:od.value,step:r.step});
+  on('oDeptAuto',()=>act(r,{},'自動の決め方に戻しました',{act:'決裁の部門',auto:true,memo:'自動に戻す',step:r.step}));
   on('oPre',()=>{const o=preOf(r);if(o)attachToPre(r,o);});
   on('oPreOpen',()=>{const o=preOf(r);if(o){st.sel=o.id;drawOne();}});
   on('oTk',()=>{st.editTk=st.editTk===r.id?null:r.id;drawOne();});

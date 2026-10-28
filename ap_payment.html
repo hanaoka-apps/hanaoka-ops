@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ap_smile.js?v=20261027"></script>
+<script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261021" defer></script>
 <style>
 /* 見た目は支払決済アプリ（settle-proto）にそろえる */
@@ -133,7 +134,7 @@ async function resolveLists(){
 async function reload(){
   msg('読み込み中...');
   PI.items=(await fetchAll(AP_SITE,PI.id)).map(it=>({id:it.id,f:it.fields}));
-  INV.items=(await fetchAll(AP_SITE,INV.id)).map(it=>({id:it.id,f:it.fields}));
+  INV.items=(await fetchAll(AP_SITE,INV.id)).map(it=>({id:it.id,f:it.fields}));EXLEARN=null;
   SP.items=(await fetchAll(AP_SITE,SP.id,`fields/${F(SP,'決済月')} eq '${month()}'`)).map(it=>({id:it.id,f:it.fields}));
   SB.items=(await fetchAll(AP_SITE,SB.id,`fields/${F(SB,'決済月')} eq '${month()}'`)).map(it=>({id:it.id,f:it.fields}));
   PM.items=PM.id?(await fetchAll(AP_SITE,PM.id)).map(it=>({id:it.id,f:it.fields})):[];
@@ -187,6 +188,13 @@ const LOCKED=['決裁中','決裁済み','出力済み'];
 const nmKey=s=>String(s||'').replace(/[\s　]/g,'');
 function factoryStaff(){const st0=((EXR.steps||{})['工場']||[])[0],me=nmKey(acct&&acct.name);return !!(st0&&me&&(st0.members||[]).some(n=>nmKey(n)===me));}
 const canSend=d=>!factoryStaff()||d==='工場';
+// 経費の決裁の部門（ap_dept.js。経費の画面と同じ決め方）：工場／10日・20日は総務／人が選んだ／覚えた／総務の科目／部門コード
+let EXLEARN=null;
+function exDeptOf(x){const f=x.f;if((iv(f,'支払区分')||'')==='工場経費')return '工場';if(!window.APDept)return '総務';
+  const pj=s=>{try{return JSON.parse(s||'[]')||[];}catch{return [];}};
+  if(!EXLEARN)EXLEARN=APDept.learn(INV.items.filter(o=>(iv(o.f,'支払区分')||'').endsWith('経費')).map(o=>({payee:iv(o.f,'支払先名')||'',ym:iv(o.f,'対象年月')||'',log:pj(o.f.CheckLog)})));
+  const ls=(SL.byInv[String(x.id)]||[]).map(l=>({acct:l[F(SL,'勘定科目名')]||'',dept:l[F(SL,'部門コード')]||'',incl:+l[F(SL,'金額_税込')]||0}));
+  return APDept.decide({payee:iv(f,'支払先名')||'',round:iv(f,'支払日区分')||'',loc:'本社',log:pj(f.CheckLog),lines:ls},EXR,EXLEARN).dept;}
 function deptsOf(round){const s=new Set(round==='月末'?DEPTS_END:['総務']);piOf(round).forEach(p=>s.add(deptOf(p)));return [...s];}
 // 確認がまだの元（仕入＝仕入（SMILE）で未確認、経費＝確定前の請求書）
 function pendingOf(round,dept){
@@ -195,7 +203,7 @@ function pendingOf(round,dept){
     if(!lines.some(l=>+l.amount)&&!(+g('支払額')>0))return false;return (g('決裁の部門')||'総務')===dept&&g('確認済み')!==true;}).length;
   const ex=INV.items.filter(x=>{const f=x.f,c=iv(f,'支払区分')||'';if(c!=='本社経費'&&c!=='工場経費')return false;
     if(iv(f,'アーカイブフラグ')===true||(iv(f,'対象年月')||'')!==month()||(iv(f,'支払日区分')||'')!==round)return false;
-    const d=c==='工場経費'?'工場':'総務';const s=iv(f,'支払ステータス')||'';return d===dept&&s!=='確定済（ロック）'&&s!=='先行支払済';}).length;
+    const d=exDeptOf(x);const s=iv(f,'支払ステータス')||'';return d===dept&&s!=='確定済（ロック）'&&s!=='先行支払済';}).length;
   return {sp,ex};}
 function stateOf(round,dept){
   const b=batchOf(round,dept),rows=piOf(round,dept),pd=pendingOf(round,dept);
@@ -281,7 +289,9 @@ async function generateRun(){
   const ym=month(),due=st.round,log=[];
   const lockedDept=new Set(deptsOf(due).filter(d=>{const b=batchOf(due,d);return b&&LOCKED.includes(sbv(b,'状態'));}));
   const drafts={};
-  const add=(o)=>{if(lockedDept.has(o.dept))return;const k=o.key+'|'+(o.prepaid?'P':'N');if(drafts[k]){drafts[k].amount+=o.amount;drafts[k].fee+=o.fee||0;drafts[k].ids.push(...o.ids);return;}drafts[k]=Object.assign({fee:0,ids:[]},o);};
+  // 決裁中の部門に入っている請求書は、決裁の部門が変わっても動かさない（別の部門で二重に作らない）
+  const lockedIds=new Set(piOf(due).filter(p=>lockedDept.has(deptOf(p))).flatMap(p=>String(pv(p,'元請求書ID')||'').split(',').filter(Boolean)));
+  const add=(o)=>{if(lockedDept.has(o.dept)||(o.ids||[]).some(i=>lockedIds.has(i)))return;const k=o.key+'|'+(o.prepaid?'P':'N');if(drafts[k]){drafts[k].amount+=o.amount;drafts[k].fee+=o.fee||0;drafts[k].ids.push(...o.ids);return;}drafts[k]=Object.assign({fee:0,ids:[]},o);};
   // 経費：確定済（ロック）か先行支払済・この決済月・この支払回
   INV.items.forEach(x=>{const f=x.f,cat=iv(f,'支払区分')||'';if(cat!=='本社経費'&&cat!=='工場経費')return;
     if(iv(f,'仕分け済')!==true||iv(f,'アーカイブフラグ')===true||(iv(f,'対象年月')||'')!==ym||(iv(f,'支払日区分')||'')!==due)return;
@@ -289,7 +299,7 @@ async function generateRun(){
     const code=iv(f,'支払先コード')||'',name=iv(f,'支払先名')||'',method=iv(f,'支払手段')||'総合振込',loc=cat==='工場経費'?'工場':'本社';
     // 口座振替・納税（e-Tax）は、請求書の引落日（納付日）があればその日が支払日（会計仕訳の伝票日付）
     const pdate=DEBIT_METHODS.includes(method)?jstDay(iv(f,'引落予定日')):'';
-    add({code,name,method,amount:+iv(f,'金額_税込')||0,loc,dept:loc==='工場'?'工場':'総務',ids:[String(x.id)],prepaid:pst==='先行支払済',ppdate:iv(f,'先行支払日')||'',pdate,due:'',source:'経費',key:(code||name)+'|'+method+'|#'+x.id,bank:invBank(f)});});
+    add({code,name,method,amount:+iv(f,'金額_税込')||0,loc,dept:exDeptOf(x),ids:[String(x.id)],prepaid:pst==='先行支払済',ppdate:iv(f,'先行支払日')||'',pdate,due:'',source:'経費',key:(code||name)+'|'+method+'|#'+x.id,bank:invBank(f)});});
   // 仕入：「仕入（SMILE）」で確認OKの仕入先。分け方（振込・でんさい・相殺・調整・現金・海外送金・口座振替）ごとに1行
   const MM={振込:'総合振込',でんさい:'でんさい',手形:'でんさい',相殺:'相殺',調整:'調整',現金:'現金',海外送金:'海外送金',口座振替:'口座振替'};
   const pj=s=>{try{return JSON.parse(s||'null');}catch{return null;}};let unchecked=0;
