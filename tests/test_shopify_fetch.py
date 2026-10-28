@@ -420,7 +420,7 @@ class SettingsTests(unittest.TestCase):
             SF.load_settings(env)
         env['SHOPIFY_SHOP'] = 'https://Demo.myshopify.com/'
         s = SF.load_settings(env)
-        self.assertEqual((s['shop'], s['days'], s['version']), ('demo.myshopify.com', 90, SF.DEFAULT_API_VERSION))
+        self.assertEqual((s['shop'], s['days'], s['version']), ('demo.myshopify.com', 55, SF.DEFAULT_API_VERSION))
         env.update(SHOPIFY_FETCH_DAYS='365', SHOPIFY_API_VERSION='2026-10')
         s = SF.load_settings(env)
         self.assertEqual((s['days'], s['version']), (365, '2026-10'))
