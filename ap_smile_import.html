@@ -556,6 +556,23 @@ function exportSmileXlsx(){
   const ws=XLSX.utils.aoa_to_sheet(ma);ws['!cols']=[{wch:16},{wch:14},{wch:14},{wch:14}];XLSX.utils.book_append_sheet(wb,ws,'まとめ');
   XLSX.writeFile(wb,`支払明細表（仕入） - ${y}${String(m).padStart(2,'0')}末日.xlsx`);snack(`Excel を作りました（${vs.length}社）`);}
 
+// ---------- 売先（受注№ → 得意先・納品先）：SMILE の受注明細出力.csv（SharedMasters・毎晩）から引く ----------
+//   ファイルは大きい（約90MB・2023年から）ので全部は読まない。新しい受注ほど後ろにあるので、後ろから 8MB ずつ範囲を指定して読み、
+//   要る受注№が全部見つかったらやめる（最大 48MB）。区切りをまたぐ行を落とさないよう、前の塊と 64KB 重ねて読む
+const JUCHU={};   // 受注№ → {tokui, nohin}（この画面を開いている間だけ）
+const jno=s=>String(s==null?'':s).replace(/"/g,'').trim().replace(/^0+/,'');
+async function juchuLookup(nos){
+  const need=new Set([...nos].map(jno).filter(n=>n&&!(n in JUCHU)));if(!need.size||MOCK)return JUCHU;
+  const meta=await gget(`/drives/${SM_DRIVE}/root:/${encodeURIComponent('受注明細出力.csv')}`),url=meta['@microsoft.graph.downloadUrl'],size=+meta.size||0;if(!url||!size)return JUCHU;
+  const part=async(a,b)=>new TextDecoder('shift_jis').decode(await (await fetch(url,{headers:{Range:`bytes=${a}-${b}`}})).arrayBuffer());
+  const cell=s=>String(s||'').replace(/^"|"$/g,'').trim(),hd=(await part(0,65535)).split(/\r?\n/)[0].split('\t').map(cell);
+  const iNo=hd.indexOf('受注№'),iT=hd.indexOf('得意先名略称'),iN=hd.indexOf('納品先名');if(iNo<0)return JUCHU;
+  const CH=8*1024*1024,OV=65536;let end=size-1;
+  for(let k=0;k<6&&end>0&&need.size;k++){const start=Math.max(0,end-CH+1),ls=(await part(start,Math.min(size-1,end+OV))).split(/\r?\n/);if(start>0)ls.shift();
+    ls.forEach(l=>{const c=l.split('\t'),n=jno(c[iNo]);if(n&&need.has(n)){JUCHU[n]={tokui:cell(c[iT]),nohin:iN>=0?cell(c[iN]):''};need.delete(n);}});end=start-1;}
+  need.forEach(n=>{JUCHU[n]=null;});   // 見つからなかった（古い受注など）。何度も探さない
+  return JUCHU;}
+
 // ---------- 仕入明細の印刷：今までの仕入支払管理ダッシュボード（v5.30）の「🖨 明細PDF」と同じ使い方 ----------
 //   仕入先ごとに 1ページ：受入の合計（本社＝国内営業・ソリューション／工場、税抜・消費税・税込）、支払（SMILE の額と分け方・請求書）、受入明細（SMILE 9521）
 //   完全に移るまで、印刷して社内に回す。新しいタブに作って印刷の画面を出す
@@ -564,6 +581,9 @@ async function printRcvReport(codes,side){side=side||'全部';
   const w=window.open('','_blank');if(!w){snack('新しいタブを開けませんでした（ポップアップを許可してください）',true);return;}
   w.document.write('<p style="font:14px sans-serif;padding:20px">仕入明細を作っています…</p>');
   let src=rcvSrc();if(src===RCV)src=await loadRcv();
+  // 売先（得意先・納品先）：受注№のある行だけ。引けなくても印刷は続ける
+  let jerr='';try{w.document.write('<p style="font:13px sans-serif;padding:0 20px">売先（受注明細）を探しています…</p>');
+    await juchuLookup(codes.flatMap(c=>(((src.rows||{})[c]||{}).items||[]).map(it=>it.order)).filter(Boolean));}catch(e){jerr='売先（受注明細）を読めませんでした：'+e.message;}
   const ym=month(),[y,m]=ym.split('/').map(Number),pd=new Date(y,m-2,1),period=`${pd.getFullYear()}年${pd.getMonth()+1}月仕入分（${m}月払い）`;
   const grpOf=it=>{const g=S.receiptGroupOf?S.receiptGroupOf(it):undefined;return g===undefined?(/工場/.test(it.dept||'')?'工場':'国内営業'):g;};
   const n0=v=>v?yen(v):'',d8=s=>{const t=String(s||'');return /^\d{8}$/.test(t)?`${t.slice(0,4)}/${t.slice(4,6)}/${t.slice(6)}`:t;};
@@ -578,16 +598,16 @@ async function printRcvReport(codes,side){side=side||'全部';
     const body=its.map(it=>{const k=grpOf(it),p=rcvPrice(it);return `<tr><td>${esc(k||'消費税')}</td><td>${esc(it.dept||'')}</td><td>${esc(d8(it.date))}</td><td>${esc(it.slip||'')}</td><td>${esc(it.staff||'')}</td>
       <td>${esc(it.item||'')}${it.spec?`<div class="s">${esc(it.spec)}</div>`:''}${opDiff(it)?`<div class="w">発注単価 ${upYen(it.oprice)} → ${upYen(p)}</div>`:''}${oqDiff(it)?`<div class="w">発注数量 ${upYen(it.oqty)} → ${upYen(it.qty)}</div>`:''}</td>
       <td class="r">${it.qty!=null&&+it.qty?upYen(it.qty):''}</td><td>${esc(it.unit||'')}</td><td class="r">${p!=null&&+it.qty?upYen(p):''}</td><td class="r">${yen(+it.excl||0)}</td><td class="r">${+it.tax?yen(it.tax):'-'}</td>
-      <td>${esc(it.sokoName||it.soko||'')}</td><td>${esc(it.order||'')}</td><td class="r">${+it.fuka?esc(String(it.fuka))+'%':''}</td><td>${esc(it.kind||'')}${it.note?` ${esc(it.note)}`:''}</td></tr>`;}).join('');
+      <td>${esc(it.sokoName||it.soko||'')}</td><td>${esc(it.order||'')}</td><td>${esc(((JUCHU[jno(it.order)]||{}).tokui)||'')}</td><td>${esc(((JUCHU[jno(it.order)]||{}).nohin)||'')}</td><td class="r">${+it.fuka?esc(String(it.fuka))+'%':''}</td><td>${esc(it.kind||'')}${it.note?` ${esc(it.note)}`:''}</td></tr>`;}).join('');
     const card=(l,v,s,c)=>`<div class="c ${c||''}"><div class="l">${l}</div><div class="v">${v}</div>${s?`<div class="s">${s}</div>`:''}</div>`;
     return `<section><div class="hd"><div><b>${esc(r.name)}</b> <span class="cd">${esc(r.code)}</span></div><div>${esc(period)}　仕入明細${side==='全部'?'':`（${side==='本社'?'本社：国内営業＋ソリューション':'工場'}）`}</div><div class="st">${r.checked?'✔ 確認済 '+esc(String(r.checkedBy||'').split(/[\s　]/)[0]):r.hold?'⏸ 保留':'未確認'}</div></div>
       <div class="cards">${card('本社計（税抜）',yen(g['国内営業'].e+g['ソリューション'].e),`国内 ${yen(g['国内営業'].e)}<br>ｿﾘｭｰｼｮﾝ ${yen(g['ソリューション'].e)}`)}${card('工場（税抜）',yen(g['工場'].e))}${card('税抜計',yen(ex))}${card('消費税',yen(tx))}${card('税込合計（受入）',yen(ex+tx),'','hi')}
         ${card('支払額（SMILE）',yen(r.amount),`${esc(r.payRound)}払い（${esc(r.payDate||'')}）`,'pay')}${card('支払の分け方',pays.map(([mt,v])=>`${mt} ${yen(v)}`).join('<br>')||'—',(fee?`手数料 ${yen(fee)}`:'')+(due?`<br>でんさい期日 ${esc(due)}`:''))}
         ${card('請求書',r.invoices.length?yen(r.invTotal):'なし',r.invoices.length?(r.invDiff?`支払額との差 ${r.invDiff>0?'+':''}${yen(r.invDiff)}`:'支払額と一致'):esc(r.noInvReason||''),r.invDiff?'ng':'')}</div>
       ${r.comment||r.reason?`<div class="nt">${r.comment?'総務：'+esc(r.comment):''}${r.comment&&r.reason?'　':''}${r.reason?'分け方：'+esc(r.reason):''}</div>`:''}
-      <table><thead><tr><th>区分</th><th>部門名称</th><th>伝票日付</th><th>伝票№</th><th>担当者</th><th>品目名</th><th>数量</th><th>単位</th><th>単価</th><th>税抜金額</th><th>消費税</th><th>倉庫</th><th>受注№</th><th>付加(%)</th><th>取引・備考</th></tr></thead>
-        <tbody>${body||'<tr><td colspan="15" style="text-align:center;padding:8px">受入明細がありません</td></tr>'}</tbody>
-        <tfoot><tr><td colspan="9">${side==='全部'?'':`${side==='本社'?'本社（国内営業＋ソリューション）':'工場'}の行だけ　`}${its.length}行${side==='全部'?`　国内 ${yen(g['国内営業'].e)}　ｿﾘｭｰｼｮﾝ ${yen(g['ソリューション'].e)}　工場 ${yen(g['工場'].e)}`:''}</td><td class="r">${yen(fx)}</td><td class="r">${yen(ft)}</td><td colspan="4">税込 ${yen(fx+ft)}</td></tr></tfoot></table></section>`;};
+      <table><thead><tr><th>区分</th><th>部門名称</th><th>伝票日付</th><th>伝票№</th><th>担当者</th><th>品目名</th><th>数量</th><th>単位</th><th>単価</th><th>税抜金額</th><th>消費税</th><th>倉庫</th><th>受注№</th><th>得意先</th><th>納品先</th><th>付加(%)</th><th>取引・備考</th></tr></thead>
+        <tbody>${body||'<tr><td colspan="17" style="text-align:center;padding:8px">受入明細がありません</td></tr>'}</tbody>
+        <tfoot><tr><td colspan="9">${side==='全部'?'':`${side==='本社'?'本社（国内営業＋ソリューション）':'工場'}の行だけ　`}${its.length}行${side==='全部'?`　国内 ${yen(g['国内営業'].e)}　ｿﾘｭｰｼｮﾝ ${yen(g['ソリューション'].e)}　工場 ${yen(g['工場'].e)}`:''}</td><td class="r">${yen(fx)}</td><td class="r">${yen(ft)}</td><td colspan="6">税込 ${yen(fx+ft)}</td></tr></tfoot></table></section>`;};
   const pages=codes.map(page).filter(Boolean),title=codes.length===1?`仕入明細 ${(rows.find(x=>x.code===codes[0])||{}).name||''} ${period}`:`仕入明細 ${period}${side==='全部'?'':'・'+side}（${pages.length}社）`;
   const css=`@page{size:A4 landscape;margin:8mm}body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;margin:0;font-size:9.5px}section{page-break-after:always}section:last-child{page-break-after:auto}
     .hd{display:flex;gap:16px;align-items:baseline;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:6px}.hd b{font-size:15px}.hd .cd{font-size:11px;color:#444}.hd .st{margin-left:auto;font-size:11px}
@@ -596,7 +616,7 @@ async function printRcvReport(codes,side){side=side||'全部';
     table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:2px 4px;vertical-align:top}th{background:#eee;font-size:9px}td.r{text-align:right;white-space:nowrap}.s{font-size:8px;color:#555}.w{font-size:8px;color:#b42318;font-weight:700}
     thead{display:table-header-group}tfoot td{font-weight:700;background:#f3f3f3}tr{page-break-inside:avoid}.np{margin:8px 0}@media print{.np{display:none}}`;
   w.document.open();w.document.write(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>
-    <div class="np"><button onclick="print()">🖨 印刷する</button> <span style="font-size:12px">印刷の画面で「PDF に保存」も選べます（A4 横）。${src.err?'　⚠ '+esc(src.err):''}</span></div>
+    <div class="np"><button onclick="print()">🖨 印刷する</button> <span style="font-size:12px">印刷の画面で「PDF に保存」も選べます（A4 横）。${src.err?'　⚠ '+esc(src.err):''}${jerr?'　⚠ '+esc(jerr):''}</span></div>
     ${pages.join('')||'<p>印刷する仕入先がありません</p>'}</body></html>`);
   w.document.close();w.focus();setTimeout(()=>{try{w.print();}catch(e){}},400);}
 
