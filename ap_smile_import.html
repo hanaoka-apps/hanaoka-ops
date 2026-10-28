@@ -220,7 +220,7 @@ async function loadInvoices(){
     if((iv(f,'対象年月')||'')!==ym||iv(f,'アーカイブフラグ')===true)return;const code=code0;
     if(!code){INBX.push({id:String(it.id),f,payee:iv(f,'支払先名')||'',title:f.Title||'',amount:+iv(f,'金額_税込')||0,regNo:rn,doc:String(iv(f,'DOCコード')||''),ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',
       bank:{code:String(f.PayeeBankCode||''),bcode:String(f.PayeeBranchCode||''),no:String(f.PayeeAcctNo||''),name:String(f.PayeeBankName||''),holder:String(f.PayeeAcctHolder||'')}});return;}
-    (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,doc:String(iv(f,'DOCコード')||''),items:parseJ(iv(f,'請求書の明細'),null),
+    (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,excl:+iv(f,'金額_税抜')||0,doc:String(iv(f,'DOCコード')||''),items:parseJ(iv(f,'請求書の明細'),null),
       ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',log:parseJ(f.CheckLog,[])||[]});});
   DOCN={};[...Object.values(INV).flat(),...INBX].forEach(x=>{const k=String(x.doc||'').split('\n')[0].trim();if(k)DOCN[k]=(DOCN[k]||0)+1;});
   if(INBX.length)setTimeout(()=>matchInbox(),0);}   // 受信トレイ：今月の支払先リストがあれば仕入先を当てる（リストを取り込んだ後も、ここで当たる）
@@ -556,6 +556,37 @@ function exportSmileXlsx(){
   const ws=XLSX.utils.aoa_to_sheet(ma);ws['!cols']=[{wch:16},{wch:14},{wch:14},{wch:14}];XLSX.utils.book_append_sheet(wb,ws,'まとめ');
   XLSX.writeFile(wb,`支払明細表（仕入） - ${y}${String(m).padStart(2,'0')}末日.xlsx`);snack(`Excel を作りました（${vs.length}社）`);}
 
+// 受入の行の部門の分（国内営業・ソリューション・工場。消費税の行は null）：smile.rules の deptByReceipt（倉庫・部門名称）
+function rcvGroup(it){const g=S.receiptGroupOf?S.receiptGroupOf(it):undefined;return g===undefined?(/工場/.test(it.dept||'')?'工場':'国内営業'):g;}
+// ---------- 税抜の照合：受入（SMILE）の税抜を 本社（国内営業＋ソリューション）・工場 に分け、請求書1枚ずつの税抜と合わせる ----------
+//   2枚あるときは、1枚は本社あて・1枚は工場あてに分けて出してもらっている → それぞれがどちらかの額と一致するはず
+//   請求書は、額の合う側に1枚ずつ当てる（差 SIDE_TOL 円まで一致とみる）。当たらない請求書・請求書の無い側は印を付ける
+const SIDE_TOL=1;
+function sideCheck(r){
+  const src=rcvSrc(),its=((src.rows||{})[r.code]||{}).items||[],side={本社:0,工場:0};
+  its.forEach(it=>{const g=rcvGroup(it);if(!g)return;side[g==='工場'?'工場':'本社']+=+it.excl||0;});
+  const invs=r.invoices.filter(x=>x.ai!=='受付'),sides=Object.keys(side).filter(k=>side[k]),used={},rows=[],tot=side.本社+side.工場;
+  // 税抜が読めていない請求書は 税込 ÷ 1.1 で見る（印を付ける）
+  const ex=x=>x.excl?{v:x.excl,est:false}:{v:Math.round((x.amount||0)/1.1),est:true};
+  invs.forEach(x=>{const e=ex(x),k=sides.find(s=>!used[s]&&Math.abs(side[s]-e.v)<=SIDE_TOL);if(k)used[k]=x;rows.push({x,e,side:k||''});});
+  // 1枚で本社・工場の両方（残りの分の合計）に合う請求書
+  rows.filter(o=>!o.side).forEach(o=>{const rest=sides.filter(s=>!used[s]);if(rest.length>1&&Math.abs(rest.reduce((t,s)=>t+side[s],0)-o.e.v)<=SIDE_TOL){rest.forEach(s=>used[s]=o.x);o.side=rest.join('＋');}});
+  const invTot=invs.reduce((s,x)=>s+ex(x).v,0);
+  return {side,sides,rows,used,tot,invTot,has:its.length>0,loading:src===RCV&&(RCV.ym!==month()||RCV.loading),err:src.err};}
+function sideCheckHtml(r){
+  const c=sideCheck(r);
+  if(c.loading){loadRcv().then(()=>{if(st.sel===r.code)drawDetail();});return '<div class="sec box"><h4>税抜の照合（SMILE ⇔ 請求書）</h4><div style="font-size:13px;color:var(--sub)">受入明細を読み込んでいます…</div></div>';}
+  if(!c.has)return `<div class="sec box"><h4>税抜の照合（SMILE ⇔ 請求書）</h4><div style="font-size:13px;color:var(--sub)">${esc(c.err||'この仕入先の受入明細がありません')}</div></div>`;
+  const ok=v=>`<span class="mst ${v?'ok':'ng'}">${v?'一致':'違う'}</span>`,allOk=c.sides.every(s=>c.used[s])&&c.rows.every(o=>o.side);
+  const sumOk=c.rows.length&&Math.abs(c.invTot-c.tot)<=SIDE_TOL,lab=s=>s.split('＋').map(k=>k==='本社'?'本社（国内営業＋ソリューション）':'工場').join('＋');
+  const dif=(a,b)=>a-b?(a-b>0?'+':'')+yen(a-b):'0',nm=x=>esc(x.no?'No.'+x.no:x.name||'請求書'),ev=o=>yen(o.e.v)+(o.e.est?'<span class="s">（税込÷1.1）</span>':'');
+  return `<div class="sec box ${!c.rows.length?'warn':allOk?'':'alert'}"><h4>税抜の照合（SMILE 受入 ⇔ 請求書）${c.rows.length?(allOk?' <span class="mst ok">✔ すべて一致</span>':sumOk?' <span class="mst warn">合計は一致・分け方が違う</span>':' <span class="mst ng">違いあり</span>'):''}</h4>
+    <table class="mt"><tr><th>SMILE の分</th><th class="n">受入の税抜</th><th>請求書</th><th class="n">請求書の税抜</th><th class="n">差</th><th></th></tr>
+      ${c.rows.filter(o=>o.side).map(o=>{const v=o.side.split('＋').reduce((t,s)=>t+c.side[s],0);return `<tr><td>${lab(o.side)}</td><td class="n">${yen(v)}</td><td>${nm(o.x)}</td><td class="n">${ev(o)}</td><td class="n">${dif(o.e.v,v)}</td><td>${ok(true)}</td></tr>`;}).join('')}
+      ${c.sides.filter(s=>!c.used[s]).map(s=>`<tr><td>${lab(s)}</td><td class="n">${yen(c.side[s])}</td><td colspan="4"><span style="color:var(--up)">この分に合う請求書がありません</span></td></tr>`).join('')}
+      ${c.rows.filter(o=>!o.side).map(o=>`<tr><td><span style="color:var(--up)">当たらない請求書</span></td><td></td><td>${esc(o.x.no?'No.'+o.x.no:o.x.name||'請求書')}</td><td class="n">${yen(o.e.v)}${o.e.est?'<span class="s">（税込÷1.1）</span>':''}</td><td class="n" colspan="2"><span class="s">本社 ${yen(c.side.本社)}・工場 ${yen(c.side.工場)}・合計 ${yen(c.tot)} のどれとも合いません</span></td></tr>`).join('')}
+      <tr class="mg"><td>合計</td><td class="n">${yen(c.tot)}</td><td>${c.rows.length}枚</td><td class="n">${c.rows.length?yen(c.invTot):'—'}</td><td class="n">${c.rows.length?(c.invTot-c.tot?(c.invTot-c.tot>0?'+':'')+yen(c.invTot-c.tot):'0'):'—'}</td><td>${c.rows.length?ok(sumOk):''}</td></tr></table>
+    <div class="s" style="margin-top:4px">受入の税抜は SMILE の月次受入リスト（消費税の行を除く）を倉庫・部門名称で本社／工場に分けたもの。請求書は1枚ずつ、額の合う分に当てます（1枚で本社・工場の合計に合う請求書もあります）</div></div>`;}
 // ---------- 売先（受注№ → 得意先・納品先）：SMILE の受注明細出力.csv（SharedMasters・毎晩）から引く ----------
 //   ファイルは大きい（約90MB・2023年から）ので全部は読まない。新しい受注ほど後ろにあるので、後ろから 8MB ずつ範囲を指定して読み、
 //   要る受注№が全部見つかったらやめる（最大 48MB）。区切りをまたぐ行を落とさないよう、前の塊と 64KB 重ねて読む
@@ -589,7 +620,7 @@ async function printRcvReport(codes,side){side=side||'全部';
   let jerr='';try{w.document.write('<p style="font:13px sans-serif;padding:0 20px">売先（受注明細）を探しています…</p>');
     await juchuLookup(codes.flatMap(c=>(((src.rows||{})[c]||{}).items||[]).map(it=>it.order)).filter(Boolean));}catch(e){jerr='売先（受注明細）を読めませんでした：'+e.message;}
   const ym=month(),[y,m]=ym.split('/').map(Number),pd=new Date(y,m-2,1),period=`${pd.getFullYear()}年${pd.getMonth()+1}月仕入分（${m}月払い）`;
-  const grpOf=it=>{const g=S.receiptGroupOf?S.receiptGroupOf(it):undefined;return g===undefined?(/工場/.test(it.dept||'')?'工場':'国内営業'):g;};
+  const grpOf=rcvGroup;
   const n0=v=>v?yen(v):'',d8=s=>{const t=String(s||'');return /^\d{8}$/.test(t)?`${t.slice(0,4)}/${t.slice(4,6)}/${t.slice(6)}`:t;};
   const inSide=k=>side==='全部'||(side==='工場'?k==='工場':(k==='国内営業'||k==='ソリューション'));
   const page=code=>{const r=rows.find(x=>x.code===code);if(!r)return '';const all=((src.rows||{})[code]||{}).items||[],its=all.filter(it=>inSide(grpOf(it)));
@@ -806,6 +837,7 @@ function drawDetail(){
         <div class="${dCls}"><div class="l">差（請求書 − SMILE）</div><div class="v">${d==null?'—':(d>0?'+':'')+yen(d)}</div><div class="s">${d==null?'':d===0?'一致':Math.abs(d)<100?'端数 → 調整で合わせる':'相殺・期ズレ・入力ミス → 相殺の行か、SMILE を直して取り込み直し'}</div></div>
       </div>
       ${ed&&d?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${Math.abs(d)<100?`<button id="bFix">請求書どおりに払い、差 ${yen(-d)} を調整にする</button>`:''}${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}<span style="font-size:12px;color:var(--sub);align-self:center">入力ミスなら SMILE を直して、ファイルを出し直して取り込み直してください</span></div>`:''}
+      ${r.invoices.length?sideCheckHtml(r):''}
       ${needsCheck(r)&&!r.invoices.length?noInvHtml(r,ed):''}
       ${alertsHtml(r)}
       ${r.offsetVendor?`<div class="sec box warn"><h4>相殺先（AP_OffsetVendor）</h4><div style="font-size:13px">支払額は請求額（計算どおり）で出しています。相殺があるときは、分け方に「相殺」の行を入れ、支払の行を減らしてから確かめてください。</div>
