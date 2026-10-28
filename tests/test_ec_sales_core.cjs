@@ -870,4 +870,16 @@ if (fs.existsSync(SM + '品目マスタ.csv')) {
     assert.ok(EC.buildTestImport(Object.assign({}, TI, { lines: [{ code: 'TC', qty: 1, unitNet: 7000 }] }), DEFAULT_CONFIG, { items: real, today: '2026-10-16', stamp: '2610161230' }).error);
   });
 }
+t('桁はバイト数：切る処理（全角2・半角1）と、取込ファイルの各項目', () => {
+  assert.strictEqual(EC.cutBytes('桁'.repeat(25), 48), '桁'.repeat(24));
+  assert.strictEqual(EC.cutBytes('A'.repeat(49), 48), 'A'.repeat(48));
+  assert.strictEqual(EC.cutBytes('桁'.repeat(3) + 'A', 6), '桁桁桁'); assert.strictEqual(EC.cutBytes('A桁桁', 4), 'A桁');   // 全角が入りきらないところで止める
+  assert.strictEqual(EC.cutBytes('短い', 48), '短い');
+  const lim = DEFAULT_CONFIG.limits;
+  assert.deepStrictEqual([lim.name, lim.addr1, lim.addr2, lim.custName, lim.itemName, lim.memo], [48, 48, 48, 48, 36, 64]);
+  const memo = EC.joinMemo('花岡EC', 'あ'.repeat(40), DEFAULT_CONFIG);
+  assert.ok(EC.sjisLen(memo) <= 64);
+  const nr = EC.nouhinRows([{ cust: '599801', code: '999990', d: { name: '桁'.repeat(25), person: '', zip: '1430006', addr1: '東京都', addr2: 'あ'.repeat(30), tel: '03-0000-0000' } }], L.nouhin, DEFAULT_CONFIG)[0];
+  assert.strictEqual(nr[2], '桁'.repeat(24)); assert.strictEqual(EC.sjisLen(nr[8]), 48);
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));
