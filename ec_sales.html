@@ -11,7 +11,7 @@
 <script src="ec_sales_layouts.js?v=1"></script>
 <script src="ec_sales_core.js?v=6"></script>
 <script src="ec_sales_shared.js?v=1"></script>
-<script src="rpa_queue.js?v=3"></script>
+<script src="rpa_queue.js?v=4"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--txt); font: 14px/1.5 var(--font); }
@@ -390,6 +390,7 @@ function stamp(iso) { if (!iso) return ''; const d = new Date(iso); return (d.ge
 // 無い・読めないときだけ全件CSVを読む（重いので、画面にそのことを出す）
 async function loadMasters() {
   const failed = [];
+  await loadEdits();
   const F = (r, names) => EC.pick(r, names);
   const applyItems = objs => {
     M.items = {};
@@ -493,11 +494,57 @@ function wireDrop(key, kind) {
 }
 
 /* ------------------------------------------------------------ 伝票を作る */
+/* ------------------------------------------------------------ 納品先の手動編集（SharedMasters の _ec_edits/<注文番号>.json）
+   お客様の名前・住所・電話は共有のリスト（EC_Order・EC_Log）に書かない決まりなので、直した値は SharedMasters のファイルに置く（Shopify の注文 CSV と同じ置き場）。
+   リスト（EC_Log）には「誰がいつどの項目を直した」だけを残す（値は書かない）。取込後の「何が違うか」は、Shopify と SMILE の見比べで分かる。
+   保存の前に、必ず確認の画面を出す。直した項目は個別にも、まとめても元（Shopify の値）に戻せる。 */
+const EDIT_DIR = '_ec_edits';
+let EDITS = {};            // { 注文番号: { fields, orig, updatedAt, updatedBy } }
+let editId = null, editDraft = null;
+const orderNo = id => String(id).replace(/\D/g, '');
+async function loadEdits() {
+  EDITS = {};
+  try {
+    await rpaReady();
+    const names = await RpaQueue.listDir(EDIT_DIR);
+    await Promise.all(names.map(async n => {
+      try { const b = await RpaQueue.readJson(EDIT_DIR + '/' + n); if (b && b.orderNo && b.fields && Object.keys(b.fields).length) EDITS[b.orderNo] = b; }
+      catch (e) { console.warn('編集ファイルを読めません', n, e); }
+    }));
+  } catch (e) { console.warn('納品先の編集内容を読めません', e); }
+}
+// 直した内容を保存する（fields＝元と違う項目だけ。空なら元に戻す）。他の人が先に直していたら保存しない
+async function saveDeliveryEdit(s, fields, auto, what) {
+  const no = orderNo(s.id), path = EDIT_DIR + '/' + no + '.json';
+  try {
+    await rpaReady();
+    const cur = await RpaQueue.readJson(path), base = EDITS[no];
+    if (((cur && cur.updatedAt) || '') !== ((base && base.updatedAt) || '')) {
+      alert('他の人が先にこの注文の納品先を直しました。最新の内容を読み直します。内容を確認して、もう一度直してください。');
+      await loadEdits(); editId = null; editDraft = null; recompute(); render(); return false;
+    }
+    const keys = Object.keys(fields), body = { orderNo: no, updatedAt: new Date().toISOString(), updatedBy: account && account.username, fields, orig: {} };
+    keys.forEach(k => { body.orig[k] = auto[k]; });
+    await RpaQueue.writeFile(path, JSON.stringify(body), 'application/json');
+    if (keys.length) EDITS[no] = body; else delete EDITS[no];
+    const labels = keys.map(k => EC.EDIT_FIELDS.find(f => f.k === k).label);
+    logOnly('その他', s.id, '', what + (labels.length ? '：' + labels.join('・') : ''));   // 値は書かない（項目名だけ）
+    editId = null; editDraft = null; recompute(); render();
+    return true;
+  } catch (e) {
+    console.warn(e);
+    alert('保存できませんでした（SharedMasters に書く権限がないか、通信の問題です）。内容は変わっていません。\n' + (e && e.message ? e.message.slice(0, 120) : ''));
+    return false;
+  }
+}
+
 function recompute() {
   cal = buildCal();
   const smileOrders = M.smileCust || {};
   const ctx = { mapping: store.mapping, cfg: store.cfg, items: M.items || {}, smileOrders, cal };
+  orders.forEach(o => { const e = EDITS[orderNo(o.id)]; o.deliveryEdit = e && e.fields && Object.keys(e.fields).length ? e.fields : null; });
   slips = orders.map(o => { const s = EC.buildSlip(o, ctx); s.autoShip = s.shipDate; s.baseMemo = s.memo; return s; });
+  slips.forEach(s => { const e = EDITS[orderNo(s.id)]; if (s.order.deliveryEdit && e) s.flags.push({ level: 'info', text: '納品先を手動で直しています（' + Object.keys(e.fields).map(k => EC.EDIT_FIELDS.find(f => f.k === k).label).join('・') + '）' }); });
   slips.forEach(s => { s.hasErr = s.flags.some(f => f.level === 'error'); s.hasWarn = s.flags.some(f => f.level === 'warn'); });
 }
 function rec(s) { return store.orders[s.id] || null; }
@@ -636,7 +683,7 @@ function smileActual(s) {
 }
 function ymdText(v) { const d = String(v || '').replace(/\D/g, ''); return d.length === 8 ? d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6) : d.length === 6 ? '20' + d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4) : '（なし）'; }
 function compareHtml(s) {
-  const o = s.order, d = EC.deliveryFromOrder(o, store.cfg), act = smileActual(s), P = EC.pick, E = esc;
+  const o = s.order, d = EC.deliveryFromOrder(o, store.cfg), act = smileActual(s), P = EC.pick, E = esc, stNow = stateOf(s), editing = editId === s.id && stNow === 'new' && !act;
   const nz = v => String(v == null ? '' : v).normalize('NFKC').replace(/[\s　]/g, ''), dg = v => String(v == null ? '' : v).replace(/\D/g, '');
   const nm = v => nz(v).replace(/(様|殿|御中)$/, '');   // 取込では末尾に「様」などが付くので、同じ名前なら違いとしない
   const tel = v => { const t = String(v || '').trim(), x = dg(t); return t.startsWith('+81') ? '0' + x.slice(2) : x; };   // Shopify の電話は +81… の形で来ることがある
@@ -652,11 +699,26 @@ function compareHtml(s) {
   let h = '<h3>Shopify と SMILE の見比べ</h3><div class="legend"><b style="background:#3b6fd4;color:#fff">Shopify の注文</b> ／ <b style="background:#2e8b57;color:#fff">' +
     (act ? 'SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE に入る予定の内容') + '</b> ／ <b style="background:#fff1c2;outline:2px solid #e0a800">違う項目</b></div>' +
     '<table class="cmp"><thead><tr><th></th><th class="hd shop">Shopify</th><th class="hd smile">SMILE' + (act ? '' : '（予定）') + '</th></tr></thead><tbody>';
-  h += row('納品先名', E(sh.company || sh.name), E(A.name), nm(sh.company || sh.name) !== nm(A.name));
-  h += row('荷受け人', E(sh.company ? sh.name : ''), E(A.person), !!(sh.company && nm(sh.name) !== nm(A.person)));
-  h += row('郵便番号', E(sh.zip), E(A.zip), dg(sh.zip) !== dg(A.zip));
-  h += row('住所', E(shopAddr), E(A.addr1) + (A.addr2 ? '<br>' + E(A.addr2) : ''), nz(shopAddr) !== nz(A.addr));
-  h += row('電話', E(sh.phone), E(A.tel), tel(sh.phone) !== tel(A.tel));
+  const edTag = k => d.edited.indexOf(k) >= 0 && !act ? '<div class="sub" style="color:#a8620a">手動で直した値（元：' + E(d.auto[k] || '（空）') + '）</div>' : '';
+  if (editing) {
+    const inp = (k, label) => {
+      const v = editDraft[k] == null ? '' : editDraft[k], changed = String(v) !== String(d.auto[k] == null ? '' : d.auto[k]);
+      return '<input type="text" data-ed="' + k + '" value="' + E(v) + '" style="width:100%' + (changed ? ';background:#fff1c2' : '') + '">' +
+        (changed ? '<div class="sub">元：' + E(d.auto[k] || '（空）') + ' <button class="btn sec sm" data-act="edrev" data-k="' + k + '">この項目を元に戻す</button></div>' : '');
+    };
+    h += row('納品先名', E(sh.company || sh.name), inp('name'), false);
+    h += row('荷受け人', E(sh.company ? sh.name : ''), inp('person'), false);
+    h += row('郵便番号', E(sh.zip), inp('zip') + '<div class="sub"><button class="btn sec sm" data-act="edzip">郵便番号から住所を確認</button> <span id="zipHint"></span></div>', false);
+    h += row('住所１', E(shopAddr), inp('addr1'), false);
+    h += row('住所２', '', inp('addr2'), false);
+    h += row('電話', E(sh.phone), inp('tel'), false);
+  } else {
+  h += row('納品先名', E(sh.company || sh.name), E(A.name) + edTag('name'), nm(sh.company || sh.name) !== nm(A.name));
+  h += row('荷受け人', E(sh.company ? sh.name : ''), E(A.person) + edTag('person'), !!(sh.company && nm(sh.name) !== nm(A.person)));
+  h += row('郵便番号', E(sh.zip), E(A.zip) + edTag('zip'), dg(sh.zip) !== dg(A.zip));
+  h += row('住所', E(shopAddr), E(A.addr1) + (A.addr2 ? '<br>' + E(A.addr2) : '') + edTag('addr1') + edTag('addr2'), nz(shopAddr) !== nz(A.addr));
+  h += row('電話', E(sh.phone), E(A.tel) + edTag('tel'), tel(sh.phone) !== tel(A.tel));
+  }
   if (A.code) h += row('納品先コード', '', E(A.code), false);
   // 商品：Shopify の行 ↔ SMILE の行（同じ順に並べる。商品名は対応表で品目に変わるので、違いは強調しない）
   const sl = o.lines, ml = act ? act.rows.map(x => ({ code: P(x, ['品目コード']), name: P(x, ['品目名', '品名']), qty: +P(x, ['数量']) || 0, amt: Math.round(+P(x, ['金額']) || 0) })) : s.lines.map(l => ({ code: l.code, name: l.name, qty: l.qty, amt: Math.round(l.amountNet) }));
@@ -669,7 +731,13 @@ function compareHtml(s) {
   h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : E(md(shipOf(s)) + ' 出荷予定（受注から ' + s.leadDays + ' 営業日）'), false);
   h += row('メモ', E(o.notes || ''), E(act ? P(act.rows[0], ['社内メモ']) : memoOf(s)), false, act ? '社内メモ' : '社内メモ（取込予定）');
   h += row('支払', E(o.paymentMethod + '／' + o.financial), act ? '受注№ ' + E(act.juchuNo) : '', false);
-  return h + '</tbody></table>';
+  h += '</tbody></table>';
+  if (stNow === 'new' && !act) {
+    if (editing) h += '<div class="row" style="margin:8px 0"><button class="btn" data-act="edreview">内容を確認する</button><button class="btn sec" data-act="edcancel">やめる（保存しない）</button><span class="muted">まだ保存されません。次の画面で確認してから保存します</span></div>';
+    else h += '<div class="row" style="margin:8px 0"><button class="btn sec" data-act="edstart">納品先を直す</button>' +
+      (d.edited.length ? '<button class="btn sec" data-act="edrevall">すべて Shopify の値に戻す</button><span class="muted">' + d.edited.length + '項目を手動で直しています（' + E(EDITS[orderNo(s.id)] ? EC.shortUser(EDITS[orderNo(s.id)].updatedBy) : '') + '）</span>' : '') + '</div>';
+  } else if (stNow === 'ok' && (d.edited.length || true)) h += '<div class="muted" style="margin:6px 0">納品先を直すには、先に「戻す」で未確認に戻してください（OK した内容と食い違わないように）。' + (d.edited.length ? '手動で直した項目があります。' : '') + '</div>';
+  return h;
 }
 function checkHtml(r, st) {
   if (!r || st !== 'check') return '';
@@ -1440,9 +1508,9 @@ function setReady() {
 
 document.addEventListener('click', async e => {
   if (moreOpen && !e.target.closest('.morewrap') && $('moreMenu')) { moreOpen = false; $('moreMenu').hidden = true; }
-  if (e.target.closest('[data-close]') || e.target.id === 'scrim') { openId = null; renderDrawer(); return; }
+  if (e.target.closest('[data-close]') || e.target.id === 'scrim') { openId = null; editId = null; editDraft = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
-  if (tr && !e.target.closest('input,button,select,a,label')) { openId = tr.dataset.row; renderDrawer(); return; }
+  if (tr && !e.target.closest('input,button,select,a,label')) { if (openId !== tr.dataset.row) { editId = null; editDraft = null; } openId = tr.dataset.row; renderDrawer(); return; }
   const t = e.target.closest('[data-tab],[data-f],[data-v],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
   if (!t) return;
   const d = t.dataset;
@@ -1458,6 +1526,15 @@ document.addEventListener('click', async e => {
       await commit({ ids: [s.id], expect: () => ['要確認'], action: '確認OK', detail: () => '要確認の注文を SMILE で確認して起票済みにした',
         mutate: id => { const r = store.orders[id]; if (!r) return false; r.status = 'exported'; r.exportedAt = now; r.exportedBy = who; r.confirmedBy = who; r.confirmedAt = now; r.manualConfirmed = true; delete r.checkMessage; return true; } });
       return;
+    }
+    if (d.act === 'edstart') { const dv = EC.deliveryFromOrder(s.order, store.cfg); editId = s.id; editDraft = {}; EC.EDIT_FIELDS.forEach(f => { editDraft[f.k] = dv[f.k] == null ? '' : dv[f.k]; }); renderDrawer(); return; }
+    if (d.act === 'edcancel') { editId = null; editDraft = null; renderDrawer(); return; }
+    if (d.act === 'edrev') { const dv = EC.deliveryFromOrder(s.order, store.cfg); editDraft[t.dataset.k] = dv.auto[t.dataset.k] || ''; renderDrawer(); return; }
+    if (d.act === 'edzip') { await zipHint(s); return; }
+    if (d.act === 'edreview') { reviewDeliveryEdit(s); return; }
+    if (d.act === 'edrevall') {
+      if (!confirm('「' + s.name + '」の納品先を、Shopify の値に戻します（直した内容は消えます）。よろしいですか？')) return;
+      const dv = EC.deliveryFromOrder(s.order, store.cfg); await saveDeliveryEdit(s, {}, dv.auto, '納品先の手動変更をすべて元に戻した'); return;
     }
     if (d.act === 'shipauto') {
       const r0 = store.orders[s.id]; if (!r0 || !r0.shipDate) return;
@@ -1512,6 +1589,42 @@ document.addEventListener('click', async e => {
     case 'o-pay': outPay(); break;
   }
 });
+document.addEventListener('input', e => { const k = e.target.dataset && e.target.dataset.ed; if (k && editDraft) editDraft[k] = e.target.value; });
+// 保存の前の確認の画面。変更前→変更後を並べて、「この内容で保存」を押したときだけ保存する
+function reviewDeliveryEdit(s) {
+  const dv = EC.deliveryFromOrder(s.order, store.cfg), diff = EC.diffDeliveryEdit(dv.auto, editDraft);
+  if (!Object.keys(diff).length) { alert('変更がありません'); return; }
+  const merged = Object.assign({}, dv.auto, diff), chk = EC.checkDeliveryEdit(merged, store.cfg);
+  const rows = Object.keys(diff).map(k => { const f = EC.EDIT_FIELDS.find(x => x.k === k); return '<tr><th>' + esc(f.label) + '</th><td>' + esc(dv.auto[k] || '（空）') + '</td><td style="background:#fff1c2;font-weight:600">' + esc(diff[k] || '（空）') + '</td></tr>'; }).join('');
+  const ov = document.createElement('div');
+  ov.id = 'editConfirm';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,26,61,.5);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:640px;width:100%;padding:20px 24px;max-height:90vh;overflow:auto"><h2 style="margin:0 0 6px;font-size:16px">この内容で納品先を変更しますか？</h2>' +
+    '<div class="muted" style="margin-bottom:8px">注文 ' + esc(s.name) + '。SMILE に取り込まれる納品先が、この内容になります。</div>' +
+    '<table style="width:100%;border-collapse:collapse"><thead><tr><th></th><th>変更前（Shopify の値）</th><th>変更後</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    chk.errors.map(x => '<div class="alert err" style="margin-top:8px">' + esc(x) + '（直してから保存してください）</div>').join('') +
+    chk.warns.map(x => '<div class="alert warn" style="margin-top:8px">' + esc(x) + '</div>').join('') +
+    '<div class="muted" style="margin-top:8px">保存すると、誰がいつどの項目を直したかが履歴に残ります（値は残りません）。あとから「元に戻す」で Shopify の値に戻せます。</div>' +
+    '<div class="row" style="margin-top:14px;justify-content:flex-end;gap:8px"><button class="btn sec" id="ec-back">戻って直す</button><button class="btn" id="ec-save"' + (chk.errors.length ? ' disabled' : '') + '>この内容で保存する</button></div></div>';
+  document.body.appendChild(ov);
+  $('ec-back').onclick = () => ov.remove();
+  $('ec-save').onclick = async () => { $('ec-save').disabled = true; $('ec-back').disabled = true; const ok = await saveDeliveryEdit(s, diff, dv.auto, '納品先を手動で変更'); ov.remove(); if (!ok) renderDrawer(); };
+}
+// 郵便番号から住所を引く（郵便番号だけを zipcloud.ibsnet.jp に送る。個人情報は送らない）。結果は確認用の表示だけで、自動では入れない
+async function zipHint(s) {
+  const el = $('zipHint'), z = String(editDraft.zip || '').replace(/\D/g, '');
+  if (z.length !== 7) { el.textContent = '郵便番号を7桁で入れてください'; return; }
+  el.textContent = '確認中…';
+  try {
+    const r = await (await fetch('https://zipcloud.ibsnet.jp/api/search?zipcode=' + z)).json();
+    const x = r && r.results && r.results[0];
+    if (!x) { el.textContent = 'この郵便番号の住所が見つかりません'; return; }
+    const base = x.address1 + x.address2, town = x.address3, cur = String(editDraft.addr1 || '') + String(editDraft.addr2 || '');
+    const ok = cur.normalize('NFKC').replace(/\s/g, '').startsWith(base) ;
+    el.innerHTML = '郵便番号の住所：<b>' + esc(base + town) + '</b> ' + (ok ? '<span style="color:#12a76a">（住所１と一致）</span>' : '<span style="color:#a8620a">⚠ いまの住所と違います</span> <button class="btn sec sm" id="zipfill">住所１を「' + esc(base) + '」にする</button>');
+    const b = $('zipfill'); if (b) b.onclick = () => { editDraft.addr1 = base; renderDrawer(); };
+  } catch (e) { el.textContent = '取得できませんでした（通信を確認）'; }
+}
 document.addEventListener('change', e => {
   const t = e.target, d = t.dataset;
   if (t.matches('[data-selall]')) { document.querySelectorAll('[data-sel]').forEach(c => { c.checked = t.checked; t.checked ? sel.add(c.dataset.sel) : sel.delete(c.dataset.sel); }); return; }

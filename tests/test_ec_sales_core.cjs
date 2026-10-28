@@ -883,4 +883,25 @@ t('桁はバイト数：切る処理（全角2・半角1）と、取込ファイ
   const nr = EC.nouhinRows([{ cust: '599801', code: '999990', d: { name: '桁'.repeat(25), person: '', zip: '1430006', addr1: '東京都', addr2: 'あ'.repeat(30), tel: '03-0000-0000' } }], L.nouhin, DEFAULT_CONFIG)[0];
   assert.strictEqual(nr[2], '桁'.repeat(24)); assert.strictEqual(EC.sjisLen(nr[8]), 48);
 });
+t('納品先の手動編集：反映・元の値・チェック・差分', () => {
+  const o = order({ ship: { name: '架空 太郎', company: '', zip: '100-0001', province: '北海道', city: '千代田区', addr1: '架空1-2-3', addr2: '', phone: '09012345678' } });
+  const base = EC.deliveryFromOrder(o, DEFAULT_CONFIG);
+  assert.deepStrictEqual(base.edited, []);
+  assert.strictEqual(base.auto.addr1, base.addr1);
+  o.deliveryEdit = { zip: '092-0022', addr1: '北海道網走郡美幌町', tel: base.tel };   // tel は元と同じ＝直したことにならない
+  const d = EC.deliveryFromOrder(o, DEFAULT_CONFIG);
+  assert.strictEqual(d.zip, '092-0022'); assert.strictEqual(d.addr1, '北海道網走郡美幌町');
+  assert.deepStrictEqual(d.edited, ['zip', 'addr1']);
+  assert.strictEqual(d.auto.zip, '100-0001');                       // 元の値は残る
+  assert.notStrictEqual(d.key, base.key);                           // 郵便番号が変わったので、既存の納品先との照合キーも変わる
+  // 直した内容は納品先の取込ファイル・突き合わせの期待値にも使われる
+  assert.strictEqual(EC.diffDeliveryEdit(base.auto, Object.assign({}, base.auto, { addr1: 'X', zip: base.auto.zip })).addr1, 'X');
+  assert.deepStrictEqual(EC.diffDeliveryEdit(base.auto, base.auto), {});                      // 変更なし
+  const ok = EC.checkDeliveryEdit(Object.assign({}, base.auto), DEFAULT_CONFIG);
+  assert.deepStrictEqual(ok.errors, []);
+  assert.ok(EC.checkDeliveryEdit(Object.assign({}, base.auto, { zip: '123' }), DEFAULT_CONFIG).errors.some(x => /7桁/.test(x)));
+  assert.ok(EC.checkDeliveryEdit(Object.assign({}, base.auto, { name: '' }), DEFAULT_CONFIG).errors.some(x => /納品先名/.test(x)));
+  assert.ok(EC.checkDeliveryEdit(Object.assign({}, base.auto, { addr2: 'あ'.repeat(40) }), DEFAULT_CONFIG).warns.some(x => /長い/.test(x)));
+  assert.ok(EC.checkDeliveryEdit(Object.assign({}, base.auto, { tel: '123' }), DEFAULT_CONFIG).warns.some(x => /電話/.test(x)));
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

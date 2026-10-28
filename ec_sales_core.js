@@ -527,8 +527,41 @@
       key: EC.normName(hasCo ? s.company : nm) + '|' + EC.normZip(s.zip) + (hasCo ? '|' + EC.normName(nm) : ''),
       changed: changed
     };
+    // 人が画面で直した納品先（o.deliveryEdit＝{項目:値}。SharedMasters の _ec_edits/<注文番号>.json）を重ねる。元の値は d.auto に残す
+    d.auto = { name: d.name, person: d.person, zip: d.zip, addr1: d.addr1, addr2: d.addr2, tel: d.tel };
+    d.edited = [];
+    if (o.deliveryEdit) {
+      EC.EDIT_FIELDS.forEach(function (f) { if (o.deliveryEdit[f.k] != null && o.deliveryEdit[f.k] !== d.auto[f.k]) { d[f.k] = o.deliveryEdit[f.k]; d.edited.push(f.k); } });
+      if (d.edited.length) {
+        var bare = function (v) { return String(v || '').replace(/様$/, ''); };
+        d.key = EC.normName(bare(d.name)) + '|' + EC.normZip(d.zip) + (d.person ? '|' + EC.normName(bare(d.person)) : '');
+      }
+    }
     d.issues = EC.charIssues(d.name + d.person + d.addr1 + d.addr2);
     return d;
+  };
+  // 画面で直せる納品先の項目（k＝deliveryFromOrder の項目名）
+  EC.EDIT_FIELDS = [{ k: 'name', label: '納品先名', limit: 'name' }, { k: 'person', label: '荷受け人', limit: 'name' }, { k: 'zip', label: '郵便番号' },
+    { k: 'addr1', label: '住所１', limit: 'addr1' }, { k: 'addr2', label: '住所２', limit: 'addr2' }, { k: 'tel', label: '電話' }];
+  // 保存する前の確認。戻り値 { errors:[文言], warns:[文言] }（errors があれば保存させない）
+  EC.checkDeliveryEdit = function (v, cfg) {
+    var errors = [], warns = [], lim = (cfg && cfg.limits) || {};
+    if (!String(v.name || '').trim()) errors.push('納品先名が空です');
+    if (!String(v.addr1 || '').trim()) errors.push('住所１が空です');
+    if (EC.normZip(v.zip).length !== 7) errors.push('郵便番号は7桁の数字にしてください');
+    var td = digits(v.tel);
+    if (v.tel && (td.length < 10 || td.length > 11)) warns.push('電話番号が10〜11桁ではありません');
+    EC.EDIT_FIELDS.forEach(function (f) { if (f.limit && lim[f.limit] && EC.sjisLen(v[f.k]) > lim[f.limit]) warns.push(f.label + 'が長いため、SMILE で切れます（' + EC.sjisLen(v[f.k]) + 'バイト／上限 ' + lim[f.limit] + '）'); });
+    EC.charIssues(String(v.name || '') + String(v.person || '') + String(v.addr1 || '') + String(v.addr2 || '')).forEach(function (x) {
+      warns.push('「' + x.ch + '」は' + (x.kind === 'dep' ? '機種依存文字' : 'Shift-JISにない文字') + 'で、配送会社の取込で化ける可能性があります');
+    });
+    return { errors: errors, warns: warns };
+  };
+  // 元の値（auto）と違う項目だけを返す
+  EC.diffDeliveryEdit = function (auto, v) {
+    var out = {};
+    EC.EDIT_FIELDS.forEach(function (f) { var a = String(auto[f.k] == null ? '' : auto[f.k]), b = String(v[f.k] == null ? '' : v[f.k]).trim(); if (a !== b) out[f.k] = b; });
+    return out;
   };
 
   // 社内メモ：基本のメモ（花岡EC など）のあとに、担当者が追記した文を続ける

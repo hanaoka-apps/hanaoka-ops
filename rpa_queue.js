@@ -80,6 +80,12 @@ const RpaQueue = (() => {
   async function exists(path) {
     return !!(await graph(pathUrl(path) + '?$select=id'));
   }
+  // SharedMasters 直下からのパスのフォルダにある .json のファイル名（フォルダが無ければ空）
+  async function listDir(path) {
+    const res = await graph(pathUrl(path) + ':/children?$select=name&$top=999');
+    if (!res) return [];
+    return (await res.json()).value.map(f => f.name).filter(n => /\.json$/i.test(n)).sort();
+  }
   async function readJson(path) {
     const res = await graph(pathUrl(path) + ':/content');
     return res ? res.json() : null;
@@ -205,5 +211,5 @@ const RpaQueue = (() => {
     return out.sort((a, b) => (a.name < b.name ? 1 : -1));
   }
 
-  return { init, request, status, watch, health, workerWarning, jobOf, find, exists, readJson, writeFile };
+  return { init, request, status, watch, health, workerWarning, jobOf, find, exists, readJson, writeFile, listDir };
 })();
