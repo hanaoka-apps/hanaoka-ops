@@ -166,7 +166,7 @@
       <div class="drops">
         <label class="drop" id="drop-orders"><b>Shopify 注文 CSV</b><span class="muted" id="st-orders">orders_export をここにドロップ／クリックで選択</span><input type="file" accept=".csv" id="file-orders"></label>
       </div>
-      <div class="muted" style="margin-top:6px">注文は SharedMasters の 自動取得のファイル があれば自動で読みます（自動取得の仕組みができたあと）。いまは Shopify 管理画面の「注文 → エクスポート」で落とした CSV を選んでください。</div>
+      <div class="muted" style="margin-top:6px">注文は SharedMasters の自動取得のファイル（専用機が毎日 Shopify から取得）を自動で読みます。自動で読めないとき・急ぎで最新にしたいときは、Shopify 管理画面の「注文 → エクスポート」で落とした CSV を選んでください（選んだものを優先します）。</div>
     </div>
     <div class="panel" id="importPanel" hidden></div>
     <div class="panel" id="testPanel" hidden></div>
@@ -444,7 +444,7 @@ async function loadMasters() {
   await loadCalendar();
   // 自動取得ファイル（あれば）
   for (const k of Object.keys(CONF.shopifyFiles)) {
-    try { const r = await fetchCsv(CONF.shopifyFiles[k]); ingestShopify(k, r.text, CONF.shopifyFiles[k] + '（SharePoint ' + stamp(r.modified) + '）'); } catch (e) { /* まだ無い */ }
+    try { const r = await fetchCsv(CONF.shopifyFiles[k]); M.stamps['shopify_' + k] = r.modified; ingestShopify(k, r.text, CONF.shopifyFiles[k] + '（SharePoint ' + stamp(r.modified) + '）'); } catch (e) { /* まだ無い */ }
   }
   return failed;
 }
@@ -1227,6 +1227,12 @@ async function resumeReports() {
 
 // ---- SMILE の最新データ（ec_smile_index.json）の古さと、管理者の「SMILEの最新を取り込む」
 function indexAgeHours() { return M.indexInfo ? (Date.now() - Date.parse(M.indexInfo.generatedAt)) / 36e5 : null; }
+// Shopify の自動取得ファイルが古いとき（取得が止まっている）に知らせる。しきい値は設定 shopifyStaleHours（既定36）
+function shopifyAgeText() {
+  const m = M.stamps.shopify_orders; if (!m) return '';
+  const h = (Date.now() - Date.parse(m)) / 36e5, lim = (CONF.config && CONF.config.shopifyStaleHours) || 36;
+  return ' ／ Shopify取得：' + agoText(h) + (h >= lim ? ' ⚠ 自動取得が止まっている可能性があります（専用機のタスクを確認）' : '');
+}
 function isIndexStale() { const h = indexAgeHours(); return h != null && h >= (RI().staleHours || 6); }
 function agoText(h) { return h < 1 ? Math.max(1, Math.round(h * 60)) + '分前' : (h < 48 ? '約' + Math.round(h) + '時間前' : '約' + Math.round(h / 24) + '日前'); }
 let syncBusy = false;
@@ -1353,7 +1359,7 @@ function setReady() {
   const st = (k, l) => M.stamps[k] ? l + ' ' + stamp(M.stamps[k]) : null;
   [st('items', '品目'), st('nouhin', '納品先'), st('juchu', '受注')].filter(Boolean).forEach(b => bits.push(b));
   const stale = isIndexStale(), h = indexAgeHours();
-  setStatus(M.indexMissing || stale ? 'loading' : 'ok', 'SMILEマスタ読込済（' + (bits.join('／') || '—') + ' 時点）' + (orders.length ? ' ／ Shopify注文 ' + orders.length + '件' : '') +
+  setStatus(M.indexMissing || stale ? 'loading' : 'ok', 'SMILEマスタ読込済（' + (bits.join('／') || '—') + ' 時点）' + (orders.length ? ' ／ Shopify注文 ' + orders.length + '件' : '') + shopifyAgeText() +
     (h != null ? ' ／ SMILEの最新データ：' + agoText(h) : '') +
     (stale ? ' ⚠ 古いため、二重取込の確認が最新のSMILEに基づきません。' + (isAdmin ? '「SMILEの最新を取り込む」を押してから取り込んでください' : '管理者に最新化を頼んでください') : '') +
     (M.indexMissing ? ' ／ 軽量ファイルが無いので全件CSVを読んでいます（時間がかかります）' : ''));
