@@ -425,6 +425,7 @@ function tagsOf(r){const t=[];
   const ak={};alertsOf(r).filter(a=>a.k!=='読み取り失敗').forEach(a=>{const o=ak[a.k]||(ak[a.k]={n:0,cls:'t-flag'});o.n++;if(a.block||a.k==='二重？'||a.k==='仕入では？')o.cls='t-up';});
   Object.entries(ak).forEach(([k,o])=>t.push([o.n>1?`${k} ${o.n}`:k,o.cls]));
   if(!r.reading&&r.lines.length&&r.lsum!==r.amount)t.push(['仕訳と金額が違う','t-up']);if(!r.reading&&!r.lines.length)t.push(['仕訳なし','t-new']);
+  if(!r.done&&preOf(r))t.push(['先に登録あり','t-up']);   // 毎月の支払などで PDF なしで先に入れた請求書がある（二重になる）
   if(r.reject&&!r.done)t.push(['差し戻し','t-up']);if(r.status==='先行支払済')t.push(['先行支払済','t-pri']);
   return t;}
 // 対象外にした・仕入へ移したものは、読み直さなくてもすぐ外す
@@ -805,6 +806,12 @@ function drawOne(){
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
     ${shown.map((x,xi)=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div>${ed&&window.APAI&&x.sev!=='info'&&!r.reading?`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`:''}</div>`).join('')||'<div class="none">気づきはありません</div>'}
     ${TEACH.rid===r.id?teachHtml():''}</div>`;
+  // 先に登録した請求書（PDF なし）がある：そちらに付ける
+  const pre=ed?preOf(r):null;
+  const preCard=pre?`<div class="oc" style="border-color:var(--warn);background:var(--warn-l,#fff7e6)"><div class="oh"><b>先に登録した請求書があります</b><span class="bd warn">PDF なし</span></div>
+    <div style="font-size:13px">${esc(pre.payee)}　${esc(pre.round||'')}払い　<b>${yen(pre.amount)} 円</b>${pre.amount!==h.amount?`<span style="color:var(--up)">（この請求書は ${yen(h.amount)} 円）</span>`:'（金額も同じ）'}　${pre.done?'確定済み':esc(stepName(pre,pre.step))}</div>
+    <div style="font-size:12px;color:var(--sub);margin:4px 0 6px">毎月の支払・手入力・複製で先に入れたものです。この請求書（PDF）をそちらに付けると、二重になりません</div>
+    <button class="pri" id="oPre">📎 先に登録した請求書に付ける</button> <button class="lk" id="oPreOpen">先に登録した方を開く</button></div>`:'';
   // 特記事項（イレギュラーな支払）：自動の判定を見せ、直せる（特記にする／外す・文）
   const tk=tokkiOf(r),tkE=st.editTk===r.id,tkEd=ed||r.done;
   const tkCard=`<div class="oc"><div class="oh"><b>特記事項</b>${tk.on?'<span class="bd warn">特記</span>':'<span class="bd">特記なし</span>'}<span style="font-size:11.5px;color:var(--sub)">${tk.manual?`${esc(tk.by||'')} が直した`:tk.auto?'自動（初めて・久しぶりの支払）':''}</span><span class="sp"></span>${tkEd?`<button class="lk" id="oTk">${tkE?'閉じる':'✎ 直す'}</button>`:''}</div>
@@ -878,7 +885,7 @@ function drawOne(){
         <div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
           <div class="meta"><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span></div></div>
-        ${tkCard}${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
+        ${preCard}${tkCard}${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
       </div></div>
     <div class="onefoot"><input type="text" id="oCm" placeholder="コメントを入力（メモとして保存されます。全員に見えます）" value="${esc(cmDraft??r.note)}" ${ed||r.done?'':'disabled'}>
       <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):r.done?'':'Enter：確認完了・次へ　←→：前・次'}</span>
@@ -894,6 +901,8 @@ function wireOne(r){
   const ai=$('oAttachIn');if(ai)ai.onchange=e=>{const fs=[...e.target.files];e.target.value='';if(fs.length)attachDocs(r,fs);};
   on('oAttach',()=>ai&&ai.click());
   const pv=$('pdfv');if(pv&&(canAct(r)||r.done)&&!pdfPaths(r).length){pv.addEventListener('dragover',e=>e.preventDefault());pv.addEventListener('drop',e=>{e.preventDefault();attachDocs(r,e.dataTransfer.files);});}
+  on('oPre',()=>{const o=preOf(r);if(o)attachToPre(r,o);});
+  on('oPreOpen',()=>{const o=preOf(r);if(o){st.sel=o.id;drawOne();}});
   on('oTk',()=>{st.editTk=st.editTk===r.id?null:r.id;drawOne();});
   on('tkSave',()=>{const on1=$('tkOn').checked,tx=$('tkTx').value.trim();st.editTk=null;act(r,{},'特記事項を保存しました',{act:'特記',on:on1,text:tx,memo:(on1?'特記にする':'特記から外す')+(tx?'：'+tx.slice(0,40):''),step:r.step});});
   on('tkAuto',()=>{st.editTk=null;act(r,{},'自動の判定に戻しました',{act:'特記',on:undefined,text:'',auto:true,memo:'自動の判定に戻す',step:r.step});});
@@ -1079,6 +1088,29 @@ async function attachDocs(r,files){
     msg('');snack(`請求書を付けました（${list.length}ファイル）`);await loadAll();render();
     const nr=items.find(x=>x.id===r.id);
     if(nr&&window.APAI&&canAct(nr)&&confirm('付けた請求書で AI に読み直させますか？\n\n・OK：支払内容・仕訳（決裁メモも）・AI の気づきを、請求書から作り直します（手で入れた仕訳は書き換わります）\n・キャンセル：ファイルを付けるだけ（今の内容のまま）'))await rereadByAI(nr,{replace:true});}
+  catch(e){msg('');snack('付けられませんでした：'+e.message,true);}}
+// ---------- 先に登録した請求書（毎月の支払・手入力・複製。PDF なし）に、あとで AI が読んだ請求書を付ける ----------
+//   同じ払う月・同じ支払先（コードか名前）で PDF の無い請求書があれば、確認の画面で知らせる。ボタンで PDF をそちらに付け、読んだ方は対象外（まとめた）にする
+//   金額と仕訳は「読み取った方（請求書の内容）」か「先に登録した方」かを選ぶ
+function preOf(r){if(r.reading||!pdfPaths(r).length)return null;const n=jnorm(r.payee);
+  const c=items.filter(o=>o.id!==r.id&&!o.reading&&!pdfPaths(o).length&&(o.ym||'')===(r.ym||'')&&((r.code&&o.code===r.code)||(n&&jnorm(o.payee)===n)));
+  return c.sort((a,b)=>Math.abs(a.amount-r.amount)-Math.abs(b.amount-r.amount))[0]||null;}
+async function attachToPre(r,o){
+  const same=o.amount===r.amount;
+  if(!confirm(`読み取った請求書を、先に登録した「${o.payee}」（${o.round||''}払い・${yen(o.amount)} 円）に付けます。\n${same?'金額は同じです。':`金額が違います（先に登録 ${yen(o.amount)} 円 → 請求書 ${yen(r.amount)} 円）。`}\n読み取った方の受付は対象外（まとめた）にします。よろしいですか？`))return;
+  const lk=lockOf(o);if(lk)snack(`先に登録した方は ${lk} の支払に入っているので、PDF を付けるだけにします（金額・仕訳は変えません）`);
+  const useRead=!lk&&confirm(`金額と仕訳はどちらを使いますか？\n\n・OK：読み取った方（請求書の内容 ${yen(r.amount)} 円・仕訳 ${r.lines.length}行）\n・キャンセル：先に登録した方（${yen(o.amount)} 円・仕訳 ${o.lines.length}行）`);
+  try{msg('付けています...');const g=(x,d)=>fv(L.inv,x.f,d),docs=[...new Set(pdfPaths(o).concat(pdfPaths(r)))];
+    const up=toFields(L.inv,{'DOCコード':docs.join('\n')});
+    if(useRead){
+      for(const l of o.lines)await gpatch(`/sites/${AP_SITE}/lists/${L.sl.id}/items/${l.id}/fields`,{[F(L.sl,'請求書ID')]:String(r.id)});   // 先の仕訳は読んだ方へ（対象外側に残す）
+      for(const l of r.lines)await gpatch(`/sites/${AP_SITE}/lists/${L.sl.id}/items/${l.id}/fields`,{[F(L.sl,'請求書ID')]:String(o.id)});
+      Object.assign(up,toFields(L.inv,{'金額_税込':+g(r,'金額_税込')||0,'金額_税抜':+g(r,'金額_税抜')||0,'消費税':+g(r,'消費税')||0,'請求NO':g(r,'請求NO')||g(o,'請求NO')||'','登録番号':g(r,'登録番号')||g(o,'登録番号')||''}));
+      if(L.inv.fmap['請求書の明細']&&g(r,'請求書の明細'))Object.assign(up,toFields(L.inv,{'請求書の明細':g(r,'請求書の明細')}));}
+    up[V.com]=[String(o.x.f[V.com]||''),r.aicom?`【請求書を読んだときの AI の気づき】\n${r.aicom}`:''].filter(Boolean).join('\n');
+    await patchInv(o,up,{act:'請求書を付けた（AI で読んだ受付から）',memo:`#${r.id}・${useRead?'金額と仕訳は請求書の内容':'金額と仕訳は先に登録した内容'}`,step:o.step});
+    await patchInv(r,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':`先に登録した請求書に付けた（→ ${o.payee} #${o.id}）`}),{act:'先に登録した請求書に付けた',memo:`→ #${o.id}`,step:r.step});
+    msg('');snack('先に登録した請求書に付けました');await loadAll();st.sel=o.id;st.view='one';render();}
   catch(e){msg('');snack('付けられませんでした：'+e.message,true);}}
 // ---------- 過去の取引から作る（毎月の支払で、請求書がぎりぎりに届くもの） ----------
 //   選んだ請求書の支払内容（支払先・コード・方法・支払回・拠点・振込先・金額）と仕訳（科目・部門・税・金額・摘要・決裁メモ）を写して、今月の請求書を作る
