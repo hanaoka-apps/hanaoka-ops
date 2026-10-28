@@ -377,6 +377,22 @@ function alertsOf(r){
   if(r.loc==='本社'&&fd&&!hd)a.push({k:'拠点',t:'仕訳の部門が工場ですが、本社の経費として受け付けています',ack:true});
   if(r.loc==='工場'&&hd&&!fd)a.push({k:'拠点',t:'仕訳の部門が本社ですが、工場の経費として受け付けています',ack:true});
   return a;}
+// ---------- 特記事項（イレギュラーな支払）：毎月ではない支払を自動で拾い、人が直せる ----------
+//   自動：初めての支払先／直近 N か月（設定 alerts.irregularMonths・既定 3）支払が無かった支払先。文は理由＋決裁メモ（何の支払か）
+//   履歴はアプリの請求書と請求Quick の決裁メモ（/BILLS/masters/決裁メモ.csv・アプリより前の月）の両方で見る
+//   人が直したもの（特記にする／外す・文）は請求書の確認の記録（CheckLog）に {act:'特記', on, text} で残し、いちばん新しいものを使う
+function payMonthsOf(n){const s=new Set();if(!n)return s;
+  ALL.forEach(o=>{if(jnorm(fv(L.inv,o.f,'支払先名'))===n){const y=fv(L.inv,o.f,'対象年月');if(y)s.add(y);}});
+  (SQN||[]).forEach(x=>{if(jnorm(x.payee)===n){const y=x.pay?ymOfDate(x.pay):ymOfDate(x.date,1);if(y)s.add(y);}});return s;}
+const ymDiff=(a,b)=>{const [y1,m1]=a.split('/').map(Number),[y2,m2]=b.split('/').map(Number);return (y1-y2)*12+(m1-m2);};
+function tokkiAuto(r){if(r.reading||!r.payee)return null;const ym=r.ym||month(),N=((RULES&&RULES.alerts)||{}).irregularMonths||3;
+  const past=[...payMonthsOf(jnorm(r.payee))].filter(y=>y<ym).sort(),last=past[past.length-1];
+  const memo=(r.lines[0]&&(fv(L.sl,r.lines[0].f,'決裁メモ')||fv(L.sl,r.lines[0].f,'摘要')))||'';
+  const why=!last?'初めての支払先':ymDiff(ym,last)>N?`${ymDiff(ym,last)}か月ぶり（前回 ${last}）`:'';
+  return why?{on:true,auto:true,text:why+(memo?'：'+memo:'')}:null;}
+function tokkiOf(r){const m=(r.log||[]).filter(e=>e.act==='特記').pop();
+  if(m&&!m.auto)return {on:!!m.on,manual:true,by:m.by,text:m.text||'',auto:false};   // auto:true は「自動に戻す」
+  return tokkiAuto(r)||{on:false,text:''};}
 function prevAmount(r){const ym=prevMonth(r.ym||month()),n=jnorm(r.payee);if(!n)return null;
   const p=ALL.filter(o=>fv(L.inv,o.f,'対象年月')===ym&&jnorm(fv(L.inv,o.f,'支払先名'))===n);return p.length?p.reduce((s,o)=>s+(+fv(L.inv,o.f,'金額_税込')||0),0):null;}
 function tagsOf(r){const t=[];
@@ -483,7 +499,7 @@ function drawSummary(){
   <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>
   <div class="card" id="fuelCard"><h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">読み込み中…</div></div>`;
   $('pane').innerHTML=h;fuelCard();
-  document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>{try{printExpenseReport(b.dataset.prt);}catch(e){snack('印刷の表を作れませんでした：'+e.message,true);}});
+  document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>printExpenseReport(b.dataset.prt).catch(e=>snack('印刷の表を作れませんでした：'+e.message,true)));
   document.querySelectorAll('[data-xl]').forEach(b=>b.onclick=()=>exportExpenseXlsx(b.dataset.xl).catch(e=>snack('Excel を作れませんでした：'+e.message,true)));}
 
 // ---------- Excel：今の「請求Quick支払明細書」と同じ形（支払明細表(経費)本社・営業・まとめ） ----------
@@ -517,7 +533,7 @@ function expenseBook(round){
       ls.forEach((l,i)=>{const no=++cnt[pre],ac=l?lv(l,'勘定科目コード'):'',dp=l?lv(l,'部門コード'):'',key=pk+'|'+c6(ac)+'|'+c6(dp);
         const memo=l?(lv(l,'決裁メモ')||lv(l,'摘要')||''):'',incl=l?+lv(l,'金額_税込')||0:r.amount;
         const loc=XL_LOC[c6(dp)]||'本社',sm=sumRow[side];sm[mt]=sm[mt]||{};sm[mt][loc]=(sm[mt][loc]||0)+incl;
-        aoa.push([pre?pre+no:no,i===0&&r.doc?'有':null,i===0&&(r.note||r.hold)?'特':null,r.payee,l?+short(ac)||short(ac):null,l?lv(l,'勘定科目名')||'':null,l?+short(dp)||short(dp):null,l?bname(dp):null,
+        aoa.push([pre?pre+no:no,i===0&&r.doc?'有':null,i===0&&tokkiOf(r).on?'特':null,r.payee,l?+short(ac)||short(ac):null,l?lv(l,'勘定科目名')||'':null,l?+short(dp)||short(dp):null,l?bname(dp):null,
           l?+lv(l,'金額_税抜')||0:null,l?+lv(l,'消費税')||0:null,incl,i===0?r.amount:null,i===0&&firstPayee?payeeTot[pk]:null,mt,day,
           i===0&&firstPayee&&mt==='振込'?payeeTot[pk]:0,i===0&&firstPayee&&mt==='口振'?payeeTot[pk]:0,i===0&&firstPayee&&mt==='手形'?payeeTot[pk]:0,memo,k1(p1[key]),k1(p2[key]),
           i===0?(r.done?'確定':r.hold?'保留':`${r.step+1}段目`):null]);});});
@@ -535,18 +551,19 @@ function expenseBook(round){
     [null,'TOTAL',...LOCS.map(lc=>MS.reduce((s,mt)=>s+((all[mt]||{})[lc]||0),0)),T],[null,'前月',null,null,null,pv||null],[],
     ['<区分>'],[null,'本社(経費)',sumBy(groups.本社)],...(round==='月末'?[[null,'営業(経費) 国内営業',sumBy(groups.K)],[null,'営業(経費) ソリューション',sumBy(groups.S)]]:[]),[null,'合計',T],[],
     ['<特記事項>'],['支払先名',null,'支払高','科目','備考'],
-    ...rs.filter(r=>r.note||r.hold).map(r=>[r.payee,null,r.amount,(r.lines[0]?lv(r.lines[0],'勘定科目名'):'')||'',(r.hold?'【保留】':'')+(r.note||'')])];
+    ...rs.filter(r=>tokkiOf(r).on).map(r=>[r.payee,null,r.amount,(r.lines[0]?lv(r.lines[0],'勘定科目名'):'')||'',tokkiOf(r).text])];
   return {lbl,sheets,ma,n:rs.length,T,file:`支払明細書（経費・${round}） - ${y}${String(m).padStart(2,'0')}${round==='月末'?last:round.replace('日','')}`};}
 async function exportExpenseXlsx(round){
-  const bk=expenseBook(round);if(!bk){snack(`${month()} ${round}払いの本社の経費がありません`,true);return;}
+  await loadSqNotes();const bk=expenseBook(round);if(!bk){snack(`${month()} ${round}払いの本社の経費がありません`,true);return;}
   await loadXLSX();const wb=XLSX.utils.book_new();
   bk.sheets.forEach(s=>{const ws=XLSX.utils.aoa_to_sheet(s.aoa);ws['!cols']=[6,5,5,30,7,14,7,10,11,9,11,11,11,6,11,11,11,8,40,7,7,8].map(w=>({wch:w}));XLSX.utils.book_append_sheet(wb,ws,s.name);});
   const ws=XLSX.utils.aoa_to_sheet(bk.ma);ws['!cols']=[{wch:30},{wch:22},{wch:13},{wch:13},{wch:13},{wch:13}];XLSX.utils.book_append_sheet(wb,ws,'まとめ');
   XLSX.writeFile(wb,bk.file+'.xlsx');snack(`Excel を作りました（${bk.n}件・${yen(bk.T)} 円）`);}
 // 印刷（PDF）：Excel と同じ中身を、罫線つきの表で（A4 横・押印欄つき）。明細の表ごとに改ページし、最後にまとめ
-function printExpenseReport(round){
-  const bk=expenseBook(round);if(!bk){snack(`${month()} ${round}払いの本社の経費がありません`,true);return;}
+async function printExpenseReport(round){
   const w=window.open('','_blank');if(!w){snack('新しいタブを開けませんでした（ポップアップを許可してください）',true);return;}
+  w.document.write('<p style="font:14px sans-serif;padding:20px">支払明細表を作っています…</p>');
+  await loadSqNotes();const bk=expenseBook(round);if(!bk){w.close();snack(`${month()} ${round}払いの本社の経費がありません`,true);return;}
   const cv=v=>v==null||v===''?'':typeof v==='number'?(Number.isInteger(v)?v.toLocaleString('ja-JP'):String(v)):esc(String(v));
   const NUMC=new Set([8,9,10,11,12,15,16,17,19,20]),stamp=`<div class="st"><div class="t">社長</div><div class="t">総務</div><div class="t">総務</div><div class="t">担当</div><div class="bx"></div><div class="bx"></div><div class="bx"></div><div class="bx"></div></div>`;
   const sec=s=>{const a=s.aoa,head=a[5],rows=a.slice(6).filter(r=>r&&r.length),tot=rows.pop();
@@ -747,6 +764,7 @@ function itemsTabHtml(r){
       <tr class="mg"><td colspan="5">合計</td><td class="n">${yen(tot)}</td><td></td></tr></table></div>`;}
 
 function drawOne(){
+  if(SQN===null){loadSqNotes().then(()=>{if(st.view==='one')drawOne();});}   // 特記（久しぶりの支払）の判定に請求Quick の履歴を使う
   const r=cur(),a=listRows(),i=a.findIndex(x=>x.id===r.id),ed=canAct(r),lock=r.done?lockOf(r):'';
   const {h,ls,lsum}=viewOf(r),iss=issuesOf(r),nFix=iss.filter(x=>x.sev==='fix').length,docs=pdfPaths(r),pm=prevAmount(r),dirty=isDirty(r),why=whyNot(r);
   const opt=(arr,v)=>'<option value=""></option>'+arr.map(x=>`<option ${x===v?'selected':''}>${esc(x)}</option>`).join('');
@@ -760,6 +778,13 @@ function drawOne(){
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
     ${shown.map((x,xi)=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div>${ed&&window.APAI&&x.sev!=='info'&&!r.reading?`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`:''}</div>`).join('')||'<div class="none">気づきはありません</div>'}
     ${TEACH.rid===r.id?teachHtml():''}</div>`;
+  // 特記事項（イレギュラーな支払）：自動の判定を見せ、直せる（特記にする／外す・文）
+  const tk=tokkiOf(r),tkE=st.editTk===r.id,tkEd=ed||r.done;
+  const tkCard=`<div class="oc"><div class="oh"><b>特記事項</b>${tk.on?'<span class="bd warn">特記</span>':'<span class="bd">特記なし</span>'}<span style="font-size:11.5px;color:var(--sub)">${tk.manual?`${esc(tk.by||'')} が直した`:tk.auto?'自動（初めて・久しぶりの支払）':''}</span><span class="sp"></span>${tkEd?`<button class="lk" id="oTk">${tkE?'閉じる':'✎ 直す'}</button>`:''}</div>
+    ${tkE?`<div style="display:flex;flex-direction:column;gap:6px"><label style="font-size:13px"><input type="checkbox" id="tkOn" ${tk.on?'checked':''}> 特記にする（社長・室長に説明する、いつもと違う支払）</label>
+      <input type="text" id="tkTx" value="${esc(tk.text)}" placeholder="例：初めての支払先：役員変更の登記費用">
+      <div style="display:flex;gap:6px"><button class="pri" id="tkSave">保存</button>${tk.manual?'<button id="tkAuto" title="人が直した内容を消して、自動の判定に戻す">自動に戻す</button>':''}</div></div>`
+    :tk.on?`<div style="font-size:13px">${esc(tk.text)||'—'}</div>`:''}</div>`;
   // 支払内容（ふだんは読むだけ。「編集」で直す）
   const eh=ed&&st.editHdr,rd=(lab,v)=>`<div><label>${lab}</label><div class="v">${v||'—'}</div></div>`;
   const hdrCard=`<div class="oc"><div class="oh"><b>支払内容</b><span class="sp"></span>${ed?`<button class="lk" id="oEditH">${eh?'閉じる':'✎ 編集'}</button>`:''}</div>
@@ -826,7 +851,7 @@ function drawOne(){
         <div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
           <div class="meta"><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span></div></div>
-        ${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
+        ${tkCard}${issCard}${hdrCard}${bankCard}${lnCard}${logCard}
       </div></div>
     <div class="onefoot"><input type="text" id="oCm" placeholder="コメントを入力（メモとして保存されます。全員に見えます）" value="${esc(cmDraft??r.note)}" ${ed||r.done?'':'disabled'}>
       <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):r.done?'':'Enter：確認完了・次へ　←→：前・次'}</span>
@@ -838,6 +863,9 @@ function wireOne(r){
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',okRow);on('oSave',async()=>{if(await saveAll(r))render();});
   on('oFull',()=>setFull(!FULLR));document.body.classList.toggle('ap-lock',FULLR);
   wireDrawer();
+  on('oTk',()=>{st.editTk=st.editTk===r.id?null:r.id;drawOne();});
+  on('tkSave',()=>{const on1=$('tkOn').checked,tx=$('tkTx').value.trim();st.editTk=null;act(r,{},'特記事項を保存しました',{act:'特記',on:on1,text:tx,memo:(on1?'特記にする':'特記から外す')+(tx?'：'+tx.slice(0,40):''),step:r.step});});
+  on('tkAuto',()=>{st.editTk=null;act(r,{},'自動の判定に戻しました',{act:'特記',on:undefined,text:'',auto:true,memo:'自動の判定に戻す',step:r.step});});
   on('oAll',()=>{st.allIss=!st.allIss;drawOne();});wireTeach(r);on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
   on('oDocs',()=>{const m=$('oDocsM');m.hidden=!m.hidden;});
   const cm=$('oCm');if(cm)cm.oninput=()=>{cmDraft=cm.value;const s=$('oSave');if(s)s.disabled=!isDirty(r);};
