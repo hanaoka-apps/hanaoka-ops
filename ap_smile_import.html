@@ -564,8 +564,12 @@ const jno=s=>String(s==null?'':s).replace(/"/g,'').trim().replace(/^0+/,'');
 async function juchuLookup(nos){
   const need=new Set([...nos].map(jno).filter(n=>n&&!(n in JUCHU)));if(!need.size||MOCK)return JUCHU;
   const meta=await gget(`/drives/${SM_DRIVE}/root:/${encodeURIComponent('受注明細出力.csv')}`),url=meta['@microsoft.graph.downloadUrl'],size=+meta.size||0;if(!url||!size)return JUCHU;
-  const part=async(a,b)=>new TextDecoder('shift_jis').decode(await (await fetch(url,{headers:{Range:`bytes=${a}-${b}`}})).arrayBuffer());
-  const cell=s=>String(s||'').replace(/^"|"$/g,'').trim(),hd=(await part(0,65535)).split(/\r?\n/)[0].split('\t').map(cell);
+  // 文字コード：今の受注明細出力.csv は UTF-8（BOM 付き）。先頭が BOM でなく、UTF-8 で読めない字があれば Shift_JIS
+  const bytes=async(a,b)=>new Uint8Array(await (await fetch(url,{headers:{Range:`bytes=${a}-${b}`}})).arrayBuffer());
+  const h0=await bytes(0,65535),bom=h0[0]===0xEF&&h0[1]===0xBB&&h0[2]===0xBF;
+  const enc=bom||!new TextDecoder('utf-8').decode(h0.slice(0,60000)).includes('�')?'utf-8':'shift_jis';
+  const part=async(a,b)=>new TextDecoder(enc).decode(await bytes(a,b));
+  const cell=s=>String(s||'').replace(/^﻿/,'').replace(/^"|"$/g,'').trim(),hd=new TextDecoder(enc).decode(h0).split(/\r?\n/)[0].split('\t').map(cell);
   const iNo=hd.indexOf('受注№'),iT=hd.indexOf('得意先名略称'),iN=hd.indexOf('納品先名');if(iNo<0)return JUCHU;
   const CH=8*1024*1024,OV=65536;let end=size-1;
   for(let k=0;k<6&&end>0&&need.size;k++){const start=Math.max(0,end-CH+1),ls=(await part(start,Math.min(size-1,end+OV))).split(/\r?\n/);if(start>0)ls.shift();
@@ -616,7 +620,8 @@ async function printRcvReport(codes,side){side=side||'全部';
     table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:2px 4px;vertical-align:top}th{background:#eee;font-size:9px}td.r{text-align:right;white-space:nowrap}.s{font-size:8px;color:#555}.w{font-size:8px;color:#b42318;font-weight:700}
     thead{display:table-header-group}tfoot td{font-weight:700;background:#f3f3f3}tr{page-break-inside:avoid}.np{margin:8px 0}@media print{.np{display:none}}`;
   w.document.open();w.document.write(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>
-    <div class="np"><button onclick="print()">🖨 印刷する</button> <span style="font-size:12px">印刷の画面で「PDF に保存」も選べます（A4 横）。${src.err?'　⚠ '+esc(src.err):''}${jerr?'　⚠ '+esc(jerr):''}</span></div>
+    <div class="np"><button onclick="print()">🖨 印刷する</button> <span style="font-size:12px">印刷の画面で「PDF に保存」も選べます（A4 横）。${src.err?'　⚠ '+esc(src.err):''}</span></div>
+    ${jerr?`<div style="color:#b42318;font-size:11px;margin-bottom:4px">⚠ ${esc(jerr)}（得意先・納品先は空欄です）</div>`:''}
     ${pages.join('')||'<p>印刷する仕入先がありません</p>'}</body></html>`);
   w.document.close();w.focus();setTimeout(()=>{try{w.print();}catch(e){}},400);}
 
