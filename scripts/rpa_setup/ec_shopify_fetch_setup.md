@@ -34,7 +34,7 @@ Shopify は **2026/1/1 から、管理画面で新しい「レガシーなカス
 | スコープ | 何のため | 備考（公式の access scopes ページ） |
 |---|---|---|
 | `read_orders` | 注文 | **直近60日の注文だけ**が対象 |
-| `read_all_orders` | 60日より前の注文 | **Shopify の承認が必要**（Partner Dashboard の API access requests から申請。理由の記入が要る）。`read_orders` と一緒に使う。承認されるまでは `SHOPIFY_FETCH_DAYS` を60以下にする（既定の90日にするなら必要） |
+| `read_all_orders` | 60日より前の注文 | **Shopify の承認が必要**（Partner Dashboard の API access requests から申請。理由の記入が要る）。`read_orders` と一緒に使う。承認されるまでは `SHOPIFY_FETCH_DAYS` を60以下にする（60日を超える日数にするなら必要。既定は55日で不要） |
 | `read_shopify_payments_payouts` | 入金（`ShopifyPaymentsPayout`）と取引（`ShopifyPaymentsBalanceTransaction`） | 入金・取引はこのスコープに含まれる |
 | `read_shopify_payments_accounts` | `shopifyPaymentsAccount`（入金・取引を引く入口） | **要確認**：スクリプトは `shopifyPaymentsAccount` の下から入金・取引を引く。権限エラー（ACCESS_DENIED）が出たらこれも追加する |
 
@@ -59,7 +59,7 @@ Shopify は **2026/1/1 から、管理画面で新しい「レガシーなカス
 | `SHOPIFY_ACCESS_TOKEN` | 1-B の固定トークン（レガシーなカスタムアプリがある場合だけ。上の2つが無いときに使う） |
 | `SHARED_MASTERS_DIR` | OneDrive 同期済みの SharedMasters のパス（既存の `regenerate_facts.py` と同じもの） |
 | `SHOPIFY_API_VERSION` | （任意）Admin API のバージョン。省略時はスクリプトの `DEFAULT_API_VERSION`。Shopify は古いバージョンを順に止めるので、四半期ごとに新しいものへ上げる |
-| `SHOPIFY_FETCH_DAYS` | （任意）直近何日ぶん。省略時は 90 |
+| `SHOPIFY_FETCH_DAYS` | （任意）直近何日ぶん。省略時は 55（`read_all_orders` が無い間は60日以内にする） |
 | `SHOPIFY_TZ_OFFSET_HOURS` | （任意）日時の時差。省略時は 9（日本時間） |
 
 PowerShell で設定する例（秘密の行は画面に残らないよう、実行後に履歴を消す）：

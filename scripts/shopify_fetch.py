@@ -23,7 +23,7 @@ scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md の「1. Shopify �
     SHOPIFY_ACCESS_TOKEN  - 固定の Admin API アクセストークン（shpat_…。既存のレガシーなカスタムアプリ用）
   SHARED_MASTERS_DIR    - OneDrive 同期済みの SharedMasters フォルダのパス。必須
   SHOPIFY_API_VERSION   - (任意) Admin API のバージョン。既定 DEFAULT_API_VERSION
-  SHOPIFY_FETCH_DAYS    - (任意) 直近何日ぶん取るか。既定 90。read_all_orders がないと Shopify は
+  SHOPIFY_FETCH_DAYS    - (任意) 直近何日ぶん取るか。既定 55（read_all_orders の承認が下りるまでは60日以内にする）。read_all_orders がないと Shopify は
                           60日より前の注文を返さない
   SHOPIFY_TZ_OFFSET_HOURS - (任意) 日時をそろえる時差。既定 9（日本時間。エクスポートの "+0900" と同じ）
 
@@ -40,7 +40,7 @@ from decimal import Decimal, InvalidOperation
 import requests
 
 DEFAULT_API_VERSION = '2026-07'
-DEFAULT_DAYS = 90
+DEFAULT_DAYS = 55
 ORDERS_PAGE = 25          # GraphQL のコスト上限(1000)に収めるため小さめ
 LINES_PAGE = 20
 PAYOUTS_PAGE = 50
@@ -531,7 +531,7 @@ def fetch_transactions(client, since, log=None):
 
 PAYOUT_STATUS = {'scheduled': 'scheduled', 'in_transit': 'in_transit', 'paid': 'paid', 'failed': 'failed', 'canceled': 'canceled'}
 TXN_PAYOUT_STATUS = {'scheduled': 'pending', 'in_transit': 'in_transit', 'paid': 'paid', 'failed': 'failed', 'canceled': 'canceled'}
-TXN_TYPE = {'payout_failure': 'transfer_failure', 'payout_cancellation': 'transfer_cancel'}
+TXN_TYPE = {'payout_failure': 'transfer_failure', 'payout_cancellation': 'transfer_cancel'}   # TRANSFER_FAILURE などはそのまま小文字になる
 
 
 def payout_rows(payouts, tz):
@@ -562,7 +562,7 @@ def transaction_rows(txns, payouts, tz, since):
         if t.get('test'):
             continue
         typ = status_text(t.get('type'))
-        if typ == 'payout':      # 入金そのものの行。エクスポートには出てこない
+        if typ in ('payout', 'transfer'):   # 入金そのものの行（実機のAPIでは TRANSFER）。エクスポートには出てこない
             continue
         ap = t.get('associatedPayout') or {}
         pdate = pay_date.get(ap.get('id'), '') if ap else ''

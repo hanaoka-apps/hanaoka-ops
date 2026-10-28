@@ -96,7 +96,8 @@ TXNS = [
     txn('PAYOUT', '', '-128504.0', '0.0', '-128504.0', '11'),                       # 入金そのものの行（出さない）
     txn('CHARGE', '#9999', '1.0', '0.0', '1.0', '11', test=True),                   # テスト取引（出さない）
     txn('CHARGE', '#8000', '5000.0', '100.0', '4900.0', '5'),                        # 期間より前の入金に属する（出さない）
-    txn('PAYOUT_FAILURE', '', '0.0', '0.0', '0.0', '11'),
+    txn('TRANSFER', '', '-128504.0', '0.0', '-128504.0', '11'),                      # 実機のAPIでは入金の行は TRANSFER（出さない）
+    txn('TRANSFER_FAILURE', '', '0.0', '0.0', '0.0', '11'),
 ]
 
 
@@ -191,7 +192,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(p[0]['Status'], 'scheduled')
         t = read_dicts(self.tmp + '/ec_shopify_transactions.csv')
         self.assertEqual(sorted(x['Order'] for x in t if x['Type'] == 'charge'), ['#9001', '#9002'])
-        self.assertFalse([x for x in t if x['Type'] == 'payout' or x['Order'] in ('#9999', '#8000')])
+        self.assertFalse([x for x in t if x['Type'] in ('payout', 'transfer') or x['Order'] in ('#9999', '#8000')])
         x = [y for y in t if y['Order'] == '#9001'][0]
         self.assertEqual((x['Amount'], x['Fee'], x['Net'], x['Payout Date'], x['Payout Status'], x['Payout ID'], x['Currency']),
                          ('17050', '580', '16470', '2026-10-23', 'pending', '12', 'JPY'))
@@ -419,7 +420,7 @@ class SettingsTests(unittest.TestCase):
             SF.load_settings(env)
         env['SHOPIFY_SHOP'] = 'https://Demo.myshopify.com/'
         s = SF.load_settings(env)
-        self.assertEqual((s['shop'], s['days'], s['version']), ('demo.myshopify.com', 90, SF.DEFAULT_API_VERSION))
+        self.assertEqual((s['shop'], s['days'], s['version']), ('demo.myshopify.com', 55, SF.DEFAULT_API_VERSION))
         env.update(SHOPIFY_FETCH_DAYS='365', SHOPIFY_API_VERSION='2026-10')
         s = SF.load_settings(env)
         self.assertEqual((s['days'], s['version']), (365, '2026-10'))
