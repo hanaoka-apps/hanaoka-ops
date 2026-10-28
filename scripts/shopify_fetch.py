@@ -338,8 +338,8 @@ ORDER_FIELDS = '''
   discountCodes
   paymentGatewayNames
   shippingLine { title }
-  shippingAddress { name company zip province provinceCode city address1 address2 phone countryCodeV2 }
-  billingAddress { name company zip province provinceCode city address1 address2 phone countryCodeV2 }
+  shippingAddress { name firstName lastName company zip province provinceCode city address1 address2 phone countryCodeV2 }
+  billingAddress { name firstName lastName company zip province provinceCode city address1 address2 phone countryCodeV2 }
 '''
 LINE_FIELDS = '''
   quantity name sku vendor requiresShipping taxable unfulfilledQuantity
@@ -396,6 +396,29 @@ def fetch_orders(client, since, log=None):
     return orders
 
 
+# 都道府県コード(JP-01〜JP-47)→日本語名。API の province は「Hokkaidō」のようなローマ字（マクロン付き）で返るので、
+# 管理画面のエクスポートと同じ日本語に直す（マクロン付きの字は SMILE・配送会社の取込で化ける）
+PREFECTURES = ['北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県', '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県',
+               '東京都', '神奈川県', '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県', '静岡県', '愛知県', '三重県',
+               '滋賀県', '京都府', '大阪府', '兵庫県', '奈良県', '和歌山県', '鳥取県', '島根県', '岡山県', '広島県', '山口県', '徳島県',
+               '香川県', '愛媛県', '高知県', '福岡県', '佐賀県', '長崎県', '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県']
+
+
+def province_name(a):
+    m = re.fullmatch(r'(?:JP-)?(\d{1,2})', (a.get('provinceCode') or '').strip())
+    if a.get('countryCodeV2') == 'JP' and m and 1 <= int(m.group(1)) <= 47:
+        return PREFECTURES[int(m.group(1)) - 1]
+    return a.get('province') or ''
+
+
+def full_name(a):
+    """API の name は「名 姓」の順で返る。日本のお届け先は「姓 名」に直す（管理画面のエクスポートと同じ並び）"""
+    last, first = (a.get('lastName') or '').strip(), (a.get('firstName') or '').strip()
+    if a.get('countryCodeV2') == 'JP' and last and first:
+        return last + ' ' + first
+    return a.get('name') or ''
+
+
 def street(a):
     return ' '.join(x for x in ((a or {}).get('address1'), (a or {}).get('address2')) if x)
 
@@ -403,12 +426,12 @@ def street(a):
 def address_cols(prefix, a):
     a = a or {}
     return {
-        prefix + ' Name': a.get('name') or '', prefix + ' Street': street(a),
+        prefix + ' Name': full_name(a), prefix + ' Street': street(a),
         prefix + ' Address1': a.get('address1') or '', prefix + ' Address2': a.get('address2') or '',
         prefix + ' Company': a.get('company') or '', prefix + ' City': a.get('city') or '',
         prefix + ' Zip': quoted(a.get('zip')), prefix + ' Province': a.get('provinceCode') or '',
         prefix + ' Country': a.get('countryCodeV2') or '', prefix + ' Phone': quoted(a.get('phone')),
-        prefix + ' Province Name': a.get('province') or '',
+        prefix + ' Province Name': province_name(a),
     }
 
 

@@ -40,7 +40,8 @@ def line(name, qty, price, sku='', unful=None, disc='0.0'):
 
 
 def addr(name, zip_, phone):
-    return {'name': name, 'company': '', 'zip': zip_, 'province': '東京都', 'provinceCode': 'JP-13', 'city': '千代田区',
+    last, first = name.split(' ', 1)
+    return {'name': first + ' ' + last, 'firstName': first, 'lastName': last, 'company': '', 'zip': zip_, 'province': 'Tōkyō', 'provinceCode': 'JP-13', 'city': '千代田区',
             'address1': '架空1-2-3', 'address2': 'テストビル4F', 'phone': phone, 'countryCodeV2': 'JP'}
 
 
@@ -177,6 +178,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual((b['Financial Status'], b['Fulfillment Status'], b['Payment Method']),
                          ('partially_refunded', 'fulfilled', 'shopify_payments + bank_deposit'))
         self.assertEqual((b['Lineitem quantity'], b['Lineitem price'], b['Lineitem fulfillment status']), ('2', '5000', 'fulfilled'))
+        self.assertEqual((a['Shipping Name'], a['Billing Name']), ('架空 太郎', '架空 太郎'))    # APIは「名 姓」で返すが、姓 名 に直す
         self.assertEqual(c['Name'], '#9002')
         self.assertEqual(c['Total'], '')
         self.assertEqual({k for k, v in c.items() if v != ''} - {'Name'},
@@ -198,6 +200,13 @@ class RunTests(unittest.TestCase):
                          ('17050', '580', '16470', '2026-10-23', 'pending', '12', 'JPY'))
         self.assertEqual(x['Transaction Date'], '2026-10-14 11:00:00 +0900')
         self.assertIn('transfer_failure', [y['Type'] for y in t])
+
+    def test_province_in_japanese(self):
+        self.assertEqual(SF.province_name({'countryCodeV2': 'JP', 'provinceCode': 'JP-01', 'province': 'Hokkaidō'}), '北海道')
+        self.assertEqual(SF.province_name({'countryCodeV2': 'JP', 'provinceCode': '47', 'province': 'Okinawa'}), '沖縄県')
+        self.assertEqual(SF.province_name({'countryCodeV2': 'US', 'provinceCode': 'US-CA', 'province': 'California'}), 'California')
+        self.assertEqual(SF.province_name({'countryCodeV2': 'JP', 'provinceCode': None, 'province': '東京都'}), '東京都')
+        self.assertEqual(len(SF.PREFECTURES), 47)
 
     def test_paging_and_extra_lines(self):
         many = order('#9003', [line('a', 1, '1.0')])
