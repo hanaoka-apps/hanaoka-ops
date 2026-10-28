@@ -393,6 +393,27 @@ function tokkiAuto(r){if(r.reading||!r.payee)return null;const ym=r.ym||month(),
 function tokkiOf(r){const m=(r.log||[]).filter(e=>e.act==='特記').pop();
   if(m&&!m.auto)return {on:!!m.on,manual:true,by:m.by,text:m.text||'',auto:false};   // auto:true は「自動に戻す」
   return tokkiAuto(r)||{on:false,text:''};}
+// サマリーの特記事項の一覧：支払回ごとに（今の Excel の「まとめ」の特記事項と同じ）。その場で文を直す・外す・足す
+function tokkiListHtml(){
+  if(SQN===null){loadSqNotes().then(()=>{if(st.tab==='sum')drawSummary();});}
+  const rd=st.tkRound||st.round||'月末',base=items.filter(r=>r.ym===month()&&r.round===rd&&r.loc==='本社'&&!r.reading);
+  const on=base.filter(r=>tokkiOf(r).on),off=base.filter(r=>!tokkiOf(r).on).sort((a,b)=>b.amount-a.amount);
+  const ac=r=>(r.lines[0]&&fv(L.sl,r.lines[0].f,'勘定科目名'))||'';
+  return `<div class="card"><h2 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">特記事項（いつもと違う支払）<span style="display:inline-flex;gap:4px">${ROUNDS.map(x=>`<button data-tkr="${x}" class="${x===rd?'pri':''}" style="padding:2px 10px;font-size:12px">${x}</button>`).join('')}</span>
+      <span style="font-size:12px;color:var(--sub);font-weight:400">本社の経費・${on.length}件。自動＝初めて・久しぶりの支払先。文を直すと支払明細表のまとめに出ます</span></h2>
+    <table><tr><th>支払先</th><th class="n">支払高</th><th>科目</th><th style="width:46%">特記の文</th><th></th></tr>
+      ${on.map(r=>{const t=tokkiOf(r);return `<tr><td><a href="#" data-tko="${r.id}">${esc(r.payee)}</a><div style="font-size:11px;color:var(--sub)">${t.manual?esc(t.by||'')+' が直した':'自動'}</div></td><td class="n">${yen(r.amount)}</td><td>${esc(ac(r))}</td>
+        <td><input type="text" data-tkt="${r.id}" value="${esc(t.text)}" style="width:100%"></td><td style="white-space:nowrap"><button data-tkx="${r.id}" title="特記から外す" style="padding:2px 8px">外す</button>${t.manual?`<button class="lk" data-tka="${r.id}" title="自動の判定に戻す">自動に戻す</button>`:''}</td></tr>`;}).join('')||'<tr><td colspan="5" style="color:var(--sub)">ありません</td></tr>'}</table>
+    ${off.length?`<div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap"><select id="tkAdd" style="max-width:420px"><option value="">＋ 特記に足す（${esc(rd)}払いの請求書から選ぶ）</option>${off.map(r=>`<option value="${r.id}">${esc(r.payee)}　${yen(r.amount)} 円　${esc(ac(r))}</option>`).join('')}</select><button id="tkAddB">足す</button></div>`:''}</div>`;}
+function wireTokkiList(){
+  const one=id=>items.find(r=>r.id===id),save=(r,on1,tx)=>act(r,{},on1?'特記事項を保存しました':'特記から外しました',{act:'特記',on:on1,text:tx,memo:(on1?'特記にする':'特記から外す')+(tx?'：'+tx.slice(0,40):''),step:r.step});
+  document.querySelectorAll('[data-tkr]').forEach(b=>b.onclick=()=>{st.tkRound=b.dataset.tkr;drawSummary();});
+  document.querySelectorAll('[data-tkt]').forEach(e=>e.onchange=()=>{const r=one(e.dataset.tkt);if(r)save(r,true,e.value.trim());});
+  document.querySelectorAll('[data-tkx]').forEach(b=>b.onclick=()=>{const r=one(b.dataset.tkx);if(r)save(r,false,tokkiOf(r).text);});
+  document.querySelectorAll('[data-tka]').forEach(b=>b.onclick=()=>{const r=one(b.dataset.tka);if(r)act(r,{},'自動の判定に戻しました',{act:'特記',auto:true,text:'',memo:'自動の判定に戻す',step:r.step});});
+  document.querySelectorAll('[data-tko]').forEach(a=>a.onclick=e=>{e.preventDefault();st.tab='rev';st.step='all';openOne(a.dataset.tko);render();});
+  const ad=$('tkAddB');if(ad)ad.onclick=()=>{const r=one($('tkAdd').value);if(!r){snack('請求書を選んでください',true);return;}
+    const memo=(r.lines[0]&&(fv(L.sl,r.lines[0].f,'決裁メモ')||fv(L.sl,r.lines[0].f,'摘要')))||'';save(r,true,memo);};}
 function prevAmount(r){const ym=prevMonth(r.ym||month()),n=jnorm(r.payee);if(!n)return null;
   const p=ALL.filter(o=>fv(L.inv,o.f,'対象年月')===ym&&jnorm(fv(L.inv,o.f,'支払先名'))===n);return p.length?p.reduce((s,o)=>s+(+fv(L.inv,o.f,'金額_税込')||0),0):null;}
 function tagsOf(r){const t=[];
@@ -486,6 +507,7 @@ function drawSummary(){
   let h=`<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>🖨 支払明細表（今の形・PDF）</b>${ROUNDS.map(rd=>`<button data-prt="${rd}">${month().replace('/','年')}月 ${rd}払い</button>`).join('')}
     <span style="font-size:12px;color:var(--sub)">本社の経費。本社・営業（月末だけ部門で K・S 番）・まとめ。罫線つき・A4 横・押印欄つき</span>
     <span style="flex:1"></span><span style="font-size:12px;color:var(--sub)">📤 Excel</span>${ROUNDS.map(rd=>`<button data-xl="${rd}" style="padding:2px 8px">${rd}</button>`).join('')}</div>
+  ${tokkiListHtml()}
   <div class="top">
     <div class="card"><h2>経費の支払（${esc(st.loc||'全拠点')}・${esc(st.round||'全回')}）</h2><div class="big">${yen(tot)}<small> 円</small></div>
       <div class="cmp"><span>前月</span><span>${pv?yen(pv):'—'}</span>${diffHtml(tot,pv)}</div>
@@ -499,6 +521,7 @@ function drawSummary(){
   <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>
   <div class="card" id="fuelCard"><h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">読み込み中…</div></div>`;
   $('pane').innerHTML=h;fuelCard();
+  wireTokkiList();
   document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>printExpenseReport(b.dataset.prt).catch(e=>snack('印刷の表を作れませんでした：'+e.message,true)));
   document.querySelectorAll('[data-xl]').forEach(b=>b.onclick=()=>exportExpenseXlsx(b.dataset.xl).catch(e=>snack('Excel を作れませんでした：'+e.message,true)));}
 
