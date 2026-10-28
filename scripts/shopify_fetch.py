@@ -531,7 +531,7 @@ def fetch_transactions(client, since, log=None):
 
 PAYOUT_STATUS = {'scheduled': 'scheduled', 'in_transit': 'in_transit', 'paid': 'paid', 'failed': 'failed', 'canceled': 'canceled'}
 TXN_PAYOUT_STATUS = {'scheduled': 'pending', 'in_transit': 'in_transit', 'paid': 'paid', 'failed': 'failed', 'canceled': 'canceled'}
-TXN_TYPE = {'payout_failure': 'transfer_failure', 'payout_cancellation': 'transfer_cancel'}
+TXN_TYPE = {'payout_failure': 'transfer_failure', 'payout_cancellation': 'transfer_cancel'}   # TRANSFER_FAILURE などはそのまま小文字になる
 
 
 def payout_rows(payouts, tz):
@@ -562,7 +562,7 @@ def transaction_rows(txns, payouts, tz, since):
         if t.get('test'):
             continue
         typ = status_text(t.get('type'))
-        if typ == 'payout':      # 入金そのものの行。エクスポートには出てこない
+        if typ in ('payout', 'transfer'):   # 入金そのものの行（実機のAPIでは TRANSFER）。エクスポートには出てこない
             continue
         ap = t.get('associatedPayout') or {}
         pdate = pay_date.get(ap.get('id'), '') if ap else ''
