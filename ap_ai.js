@@ -158,7 +158,8 @@
   const yen = n => Math.round(+n || 0).toLocaleString('ja-JP');
 
   // 返事 → result.json の1件分（ap_read.ps1 の Record と同じ：消費税・合計・検算はここで計算する）
-  function record(h, lines, total, comments, loc) {
+  //   it：{items, amount}（請求書の明細と、その金額が 税抜／税込）。仕訳の無い仕入の請求書で、税抜・消費税を出すのに使う
+  function record(h, lines, total, comments, loc, it) {
     const ls = []; let i = 0;
     for (const l of lines || []) {
       if (!l) continue; i++;
@@ -172,7 +173,15 @@
     const tot = Math.round(+total || 0);
     let ex2, tx2, in2;
     if (ls.length) { ex2 = ls.reduce((s, x) => s + x.AmountExclTax, 0); tx2 = ls.reduce((s, x) => s + x.Tax, 0); in2 = ex2 + tx2; }
-    else { in2 = tot; tx2 = 0; ex2 = in2; }
+    else {
+      // 仕入（仕訳なし）：税抜は請求書の明細（税抜の明細ならその合計）から。無ければ 税込 ÷ 1.1（前は 税抜＝税込・消費税 0 にしていた）
+      in2 = tot;const isum = Math.round(((it && it.items) || []).reduce((s, x) => s + (+x.Amount || 0), 0));
+      if (it && it.amount === '税抜' && isum > 0 && isum <= tot) ex2 = isum;
+      else if (it && it.amount === '税込' && isum === tot) ex2 = Math.round(tot / 1.1);
+      else ex2 = Math.round(tot / 1.1);
+      tx2 = tot - ex2;
+      if (tot && !(it && it.amount === '税抜' && isum > 0 && isum <= tot)) cm.push(`税抜 ${yen(ex2)} 円は 税込÷1.1 で出しました（請求書の税抜の印字と違えば直してください）`);
+    }
     const diff = in2 - tot;
     if (ls.length && diff) cm.push(`仕訳の合計 ${yen(in2)} 円が請求書の総額 ${yen(tot)} 円と ${diff > 0 ? '+' : '−'}${yen(Math.abs(diff))} 円違います（端数か読み落とし）`);
     const hh = {};
@@ -237,7 +246,7 @@
     else if (r.stop === 'max_tokens') err = 'AI の答えが長すぎて途中で切れました';
     else { try { d = JSON.parse(r.text); } catch (e) { err = 'AI の答えを読めませんでした'; } }
     const loc = job.location === '工場' ? '工場' : '本社';
-    const rec = d ? record(d.header, d.lines, d.total, d.comments, loc) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
+    const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '' }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
     const pc = d && d.header && /^\d{6}$/.test(String(d.header.PayeeCode || '')) ? String(d.header.PayeeCode) : '';
     if (job.inbox && pc) rec.comments.unshift(`AI の候補：${pc}`);
     const doc = { v: 3, ap_code: job.apCode, invoice_id: String(job.invoiceId || ''), category: job.category || '', status: d ? (d.status === '読取失敗' ? '読取失敗' : 'AI確認済') : '読取失敗',
