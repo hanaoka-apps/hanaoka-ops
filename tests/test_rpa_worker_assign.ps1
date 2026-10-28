@@ -156,6 +156,21 @@ Check '10 ぶつかり判定: executed:false・エラー件数=存在します�
 $plan = New-DeliveryCodePlan @([pscustomobject]@{ customer = '599803'; temp = 'N00001' }) (Read-JsonFile (Join-Path $SharedMastersPath 'ec_smile_index.json')) (Read-JsonFile (Join-Path $SharedMastersPath 'ec_sales_config.json')) @{}
 Check '10 索引にまだ無い得意先は 000001 から' ($plan[0].code -eq '000001')
 
+# 11. 稼働の印(heartbeat.json)の features：専用機の中のファイルがあるときだけ、知っている機能名だけを書く
+$KnownWorkerFeatures = @('tempDeliveryCodes')
+$HeartbeatPath = Join-Path $Scratch 'heartbeat.json'; $WorkerFeaturesPath = Join-Path $Scratch 'features.json'
+function HB { Update-Heartbeat '' -Force; return (Get-Content -LiteralPath $HeartbeatPath -Raw -Encoding UTF8 | ConvertFrom-Json) }
+$hb = HB
+Check '11 ファイルなし: features を書かない' (-not ($hb.PSObject.Properties.Name -contains 'features') -and $hb.updatedAt)
+[IO.File]::WriteAllText($WorkerFeaturesPath, '{"features":["tempDeliveryCodes","unknownFeature"]}', $utf8)
+$hb = HB
+Check '11 ファイルあり: 知っている機能だけを書く' (@($hb.features).Count -eq 1 -and $hb.features[0] -eq 'tempDeliveryCodes')
+[IO.File]::WriteAllText($WorkerFeaturesPath, '{ こわれた', $utf8)
+$hb = HB
+Check '11 ファイルが壊れていても印は書く(features なし)' (-not ($hb.PSObject.Properties.Name -contains 'features') -and $hb.updatedAt)
+Remove-Item $WorkerFeaturesPath -Force; $hb = HB
+Check '11 ファイルを消せば features が消える' (-not ($hb.PSObject.Properties.Name -contains 'features'))
+
 Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "失敗: $fail"
 if ($fail -gt 0) { exit 1 }

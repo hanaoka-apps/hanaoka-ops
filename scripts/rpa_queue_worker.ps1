@@ -79,6 +79,8 @@ $KeepDays          = 30
 $MaxBadReads       = 3
 # 定時のジョブを今日依頼したかの記録(同期フォルダやTEMPには置かない)
 $ScheduleStatePath = "$env:LOCALAPPDATA\hanaoka-rpa\schedule_state.json"
+# 稼働の印に書く「対応している機能」を有効にするファイル(専用機の中だけ。Get-WorkerFeatures)
+$WorkerFeaturesPath = "$env:LOCALAPPDATA\hanaoka-rpa\features.json"
 
 $script:BadReads = @{}
 $script:JobDefsCache = $null
@@ -146,13 +148,29 @@ function Get-JobDefinitions {
 function Update-Heartbeat([string]$Job = '', [switch]$Force) {
   if (-not $Force -and ((Get-Date) - $script:HeartbeatAt).TotalMinutes -lt 5) { return }
   try {
-    Write-JsonFile $HeartbeatPath ([pscustomobject]@{
+    $hb = [pscustomobject]@{
       updatedAt = (Get-Date).ToString('o')
       host = $env:COMPUTERNAME
       job = $Job
-    })
+    }
+    # 専用機が対応している機能(アプリが切り替えに使う)。専用機の中のファイルでだけ有効にする(下の Get-WorkerFeatures)
+    $features = @(Get-WorkerFeatures)
+    if ($features.Count -gt 0) { $hb | Add-Member -NotePropertyName features -NotePropertyValue $features }
+    Write-JsonFile $HeartbeatPath $hb
     $script:HeartbeatAt = Get-Date
   } catch { }
+}
+
+# 稼働の印(heartbeat.json)に書く「対応している機能」。専用機の中のファイル $WorkerFeaturesPath でだけ有効にする
+# (例 { "features": ["tempDeliveryCodes"] })。リポジトリには書かない＝動作確認が済んだ専用機で、ファイルを置いたときだけ有効。
+# ファイルを消せば、次の書き込み(5分以内)で印から消え、アプリは自動で元の動き(アプリが納品先の番号を決める)に戻る。
+# この常駐スクリプトが実装している機能の名前だけを書く(知らない名前・形の違う値は無視する)
+$KnownWorkerFeatures = @('tempDeliveryCodes')
+function Get-WorkerFeatures {
+  if (-not $WorkerFeaturesPath -or -not (Test-Path -LiteralPath $WorkerFeaturesPath)) { return @() }
+  try { $o = Read-JsonFile $WorkerFeaturesPath } catch { return @() }
+  $list = if ($o -is [System.Array]) { @($o) } else { @($o.features) }
+  return @($list | ForEach-Object { [string]$_ } | Where-Object { $KnownWorkerFeatures -contains $_ } | Select-Object -Unique)
 }
 
 function Test-FileReadable([string]$Path) {
