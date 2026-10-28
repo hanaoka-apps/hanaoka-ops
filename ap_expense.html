@@ -467,8 +467,9 @@ function drawSummary(){
   const bySt=[];for(let i=0;i<maxSteps;i++)bySt.push(a.filter(r=>!r.done&&r.step===i));
   const byM={};a.forEach(r=>{const m=r.method||'（未設定）';byM[m]=(byM[m]||0)+r.amount;});
   const flagged=a.map(r=>({r,t:tagsOf(r).filter(t=>!/^WF /.test(t[0]))})).filter(o=>o.t.length).sort((x,y)=>y.r.amount-x.r.amount);
-  let h=`<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>📤 Excel（今の支払明細表と同じ形）</b>${ROUNDS.map(rd=>`<button data-xl="${rd}">${month().replace('/','年')}月 ${rd}払い</button>`).join('')}
-    <span style="font-size:12px;color:var(--sub)">本社の経費。シート：支払明細表(経費)本社・営業（月末だけ部門で K・S 番に分ける）・まとめ。並行の Excel と突き合わせに</span></div>
+  let h=`<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px"><b>🖨 支払明細表（今の形・PDF）</b>${ROUNDS.map(rd=>`<button data-prt="${rd}">${month().replace('/','年')}月 ${rd}払い</button>`).join('')}
+    <span style="font-size:12px;color:var(--sub)">本社の経費。本社・営業（月末だけ部門で K・S 番）・まとめ。罫線つき・A4 横・押印欄つき</span>
+    <span style="flex:1"></span><span style="font-size:12px;color:var(--sub)">📤 Excel</span>${ROUNDS.map(rd=>`<button data-xl="${rd}" style="padding:2px 8px">${rd}</button>`).join('')}</div>
   <div class="top">
     <div class="card"><h2>経費の支払（${esc(st.loc||'全拠点')}・${esc(st.round||'全回')}）</h2><div class="big">${yen(tot)}<small> 円</small></div>
       <div class="cmp"><span>前月</span><span>${pv?yen(pv):'—'}</span>${diffHtml(tot,pv)}</div>
@@ -482,6 +483,7 @@ function drawSummary(){
   <div class="card"><h2>支払方法</h2><table>${Object.entries(byM).sort((x,y)=>y[1]-x[1]).map(([m,v])=>`<tr><td>${esc(m)}</td><td class="n">${yen(v)}</td><td style="width:40%"><div class="bar"><i style="width:${tot?Math.round(v/tot*100):0}%"></i></div></td></tr>`).join('')}</table></div>
   <div class="card" id="fuelCard"><h2>燃料の単価（1Lあたり・拠点ごと）</h2><div style="color:var(--sub)">読み込み中…</div></div>`;
   $('pane').innerHTML=h;fuelCard();
+  document.querySelectorAll('[data-prt]').forEach(b=>b.onclick=()=>{try{printExpenseReport(b.dataset.prt);}catch(e){snack('印刷の表を作れませんでした：'+e.message,true);}});
   document.querySelectorAll('[data-xl]').forEach(b=>b.onclick=()=>exportExpenseXlsx(b.dataset.xl).catch(e=>snack('Excel を作れませんでした：'+e.message,true)));}
 
 // ---------- Excel：今の「請求Quick支払明細書」と同じ形（支払明細表(経費)本社・営業・まとめ） ----------
@@ -490,13 +492,14 @@ function drawSummary(){
 //   備考は決裁メモ（社長・室長向け）、無ければ経理の摘要。前月・前々月は 同じ支払先・科目・部門 の額（千円）
 function loadXLSX(){if(window.XLSX)return Promise.resolve();return new Promise((ok,ng)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=ok;s.onerror=()=>ng(new Error('Excel の部品を読めませんでした'));document.head.appendChild(s);});}
 const XL_K=['002220','002230','002240'],XL_S=['002410'],XL_LOC={'002240':'名古屋','002230':'大阪'};
-async function exportExpenseXlsx(round){
-  await loadXLSX();const ym=month(),[y,m]=ym.split('/').map(Number),last=new Date(y,m,0).getDate();
+// 表の中身（Excel と印刷で同じものを使う）：{lbl, sheets:[{name,title,aoa}], ma（まとめ）, n, T}
+function expenseBook(round){
+  const ym=month(),[y,m]=ym.split('/').map(Number),last=new Date(y,m,0).getDate();
   const payDay=`${y}/${m}/${round==='10日'?10:round==='20日'?20:last}`;
   const lv=(l,d)=>fv(L.sl,l.f,d),c6=s=>String(s||'').trim().padStart(6,'0'),short=s=>String(s||'').replace(/^0+/,'')||'';
   const bname=c=>(BUMON.find(b=>b.code===c6(c))||{}).name||'';
   const rs=items.filter(r=>r.ym===ym&&r.round===round&&r.loc==='本社'&&!r.reading).sort((a,b)=>jnorm(a.payee).localeCompare(jnorm(b.payee),'ja')||a.id.localeCompare(b.id));
-  if(!rs.length){snack(`${ym} ${round}払いの本社の経費がありません`,true);return;}
+  if(!rs.length)return null;
   // 前月・前々月：支払先・科目・部門ごとの税込（同じ支払回）
   const prevMap=n=>{const pm=ymOf(new Date(y,m-1-n,1)),mp={};items.filter(r=>r.ym===pm&&r.round===round&&r.loc==='本社').forEach(r=>r.lines.forEach(l=>{const k=jnorm(r.payee)+'|'+c6(lv(l,'勘定科目コード'))+'|'+c6(lv(l,'部門コード'));mp[k]=(mp[k]||0)+(+lv(l,'金額_税込')||0);}));return mp;};
   const p1=prevMap(1),p2=prevMap(2),k1=v=>v==null?null:Math.round(v/100)/10;
@@ -518,11 +521,10 @@ async function exportExpenseXlsx(round){
           l?+lv(l,'金額_税抜')||0:null,l?+lv(l,'消費税')||0:null,incl,i===0?r.amount:null,i===0&&firstPayee?payeeTot[pk]:null,mt,day,
           i===0&&firstPayee&&mt==='振込'?payeeTot[pk]:0,i===0&&firstPayee&&mt==='口振'?payeeTot[pk]:0,i===0&&firstPayee&&mt==='手形'?payeeTot[pk]:0,memo,k1(p1[key]),k1(p2[key]),
           i===0?(r.done?'確定':r.hold?'保留':`${r.step+1}段目`):null]);});});
-    const tot=list.reduce((s,r)=>s+r.amount,0);aoa.push([],[null,null,null,'合計',null,null,null,null,null,null,tot,tot,tot]);
-    const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=[6,5,5,30,7,14,7,10,11,9,11,11,11,6,11,11,11,8,40,7,7,8].map(w=>({wch:w}));return ws;};
-  const wb=XLSX.utils.book_new(),lbl=`${y}年${m}月分(${m}/${round==='月末'?last:round.replace('日','')} 支払)`;
-  XLSX.utils.book_append_sheet(wb,build(`<経費-本社>${lbl} 本社支払明細表`,groups.本社,'本社'),'支払明細表(経費)本社');
-  if(round==='月末')XLSX.utils.book_append_sheet(wb,build(`<経費-営業>${lbl} 本社支払明細表`,groups.K.concat(groups.S),'営業'),'支払明細表(経費)営業');
+    const tot=list.reduce((s,r)=>s+r.amount,0);aoa.push([],[null,null,null,'合計',null,null,null,null,null,null,tot,tot,tot]);return aoa;};
+  const lbl=`${y}年${m}月分(${m}/${round==='月末'?last:round.replace('日','')} 支払)`,sheets=[];
+  sheets.push({name:'支払明細表(経費)本社',title:`<経費-本社>${lbl} 本社支払明細表`});sheets[0].aoa=build(sheets[0].title,groups.本社,'本社');
+  if(round==='月末'){const t=`<経費-営業>${lbl} 本社支払明細表`;sheets.push({name:'支払明細表(経費)営業',title:t,aoa:build(t,groups.K.concat(groups.S),'営業')});}
   // まとめ：支払方法 × 拠点（本社・名古屋・大阪）と、本社・営業の合計、特記（コメント・保留のある請求書）
   const MS=['振込','口振','手形','納税','現金','海外'],LOCS=['本社','名古屋','大阪'];
   const all={};['本社','営業'].forEach(sd=>Object.entries(sumRow[sd]).forEach(([mt,o])=>Object.entries(o).forEach(([lc,v])=>{all[mt]=all[mt]||{};all[mt][lc]=(all[mt][lc]||0)+v;})));
@@ -534,9 +536,38 @@ async function exportExpenseXlsx(round){
     ['<区分>'],[null,'本社(経費)',sumBy(groups.本社)],...(round==='月末'?[[null,'営業(経費) 国内営業',sumBy(groups.K)],[null,'営業(経費) ソリューション',sumBy(groups.S)]]:[]),[null,'合計',T],[],
     ['<特記事項>'],['支払先名',null,'支払高','科目','備考'],
     ...rs.filter(r=>r.note||r.hold).map(r=>[r.payee,null,r.amount,(r.lines[0]?lv(r.lines[0],'勘定科目名'):'')||'',(r.hold?'【保留】':'')+(r.note||'')])];
-  const ws=XLSX.utils.aoa_to_sheet(ma);ws['!cols']=[{wch:30},{wch:22},{wch:13},{wch:13},{wch:13},{wch:13}];XLSX.utils.book_append_sheet(wb,ws,'まとめ');
-  XLSX.writeFile(wb,`支払明細書（経費・${round}） - ${y}${String(m).padStart(2,'0')}${round==='月末'?last:round.replace('日','')}.xlsx`);
-  snack(`Excel を作りました（${rs.length}件・${yen(T)} 円）`);}
+  return {lbl,sheets,ma,n:rs.length,T,file:`支払明細書（経費・${round}） - ${y}${String(m).padStart(2,'0')}${round==='月末'?last:round.replace('日','')}`};}
+async function exportExpenseXlsx(round){
+  const bk=expenseBook(round);if(!bk){snack(`${month()} ${round}払いの本社の経費がありません`,true);return;}
+  await loadXLSX();const wb=XLSX.utils.book_new();
+  bk.sheets.forEach(s=>{const ws=XLSX.utils.aoa_to_sheet(s.aoa);ws['!cols']=[6,5,5,30,7,14,7,10,11,9,11,11,11,6,11,11,11,8,40,7,7,8].map(w=>({wch:w}));XLSX.utils.book_append_sheet(wb,ws,s.name);});
+  const ws=XLSX.utils.aoa_to_sheet(bk.ma);ws['!cols']=[{wch:30},{wch:22},{wch:13},{wch:13},{wch:13},{wch:13}];XLSX.utils.book_append_sheet(wb,ws,'まとめ');
+  XLSX.writeFile(wb,bk.file+'.xlsx');snack(`Excel を作りました（${bk.n}件・${yen(bk.T)} 円）`);}
+// 印刷（PDF）：Excel と同じ中身を、罫線つきの表で（A4 横・押印欄つき）。明細の表ごとに改ページし、最後にまとめ
+function printExpenseReport(round){
+  const bk=expenseBook(round);if(!bk){snack(`${month()} ${round}払いの本社の経費がありません`,true);return;}
+  const w=window.open('','_blank');if(!w){snack('新しいタブを開けませんでした（ポップアップを許可してください）',true);return;}
+  const cv=v=>v==null||v===''?'':typeof v==='number'?(Number.isInteger(v)?v.toLocaleString('ja-JP'):String(v)):esc(String(v));
+  const NUMC=new Set([8,9,10,11,12,15,16,17,19,20]),stamp=`<div class="st"><div class="t">社長</div><div class="t">総務</div><div class="t">総務</div><div class="t">担当</div><div class="bx"></div><div class="bx"></div><div class="bx"></div><div class="bx"></div></div>`;
+  const sec=s=>{const a=s.aoa,head=a[5],rows=a.slice(6).filter(r=>r&&r.length),tot=rows.pop();
+    return `<section><div class="hd"><div><h1>${esc(s.title)}</h1><div class="m">支払日：${esc(a[1][2])}　作成日：${esc(a[2][2])}（支払アプリから）</div></div>${stamp}</div>
+      <table><colgroup>${[3,2.6,2.6,13,3.2,6.5,3.4,5,6,5,6,6,6,3.4,5.6,6,6,4,14,3.2,3.2,4].map(x=>`<col style="width:${x}%">`).join('')}</colgroup>
+      <thead><tr><th colspan="3"></th><th colspan="10">請求内容</th><th colspan="6">支払方法</th><th colspan="3">確定高実績（千円）</th></tr><tr>${head.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r=>`<tr class="${r[11]!=null?'iv':''}">${head.map((_,i)=>`<td class="${NUMC.has(i)?'r':i===18?'nt':''}">${i>=15&&i<=17&&r[i]===0?'':cv(r[i])}</td>`).join('')}</tr>`).join('')}</tbody>
+      <tfoot><tr><td colspan="10" class="r">合計</td><td class="r">${cv(tot[10])}</td><td class="r">${cv(tot[11])}</td><td class="r">${cv(tot[12])}</td><td colspan="9"></td></tr></tfoot></table></section>`;};
+  const ma=bk.ma,cell=(r,i)=>r&&r[i]!=null?cv(r[i]):'';
+  const mHtml=`<section><div class="hd"><div><h1>${esc(ma[0][0])}</h1><div class="m">${esc(ma[1][0])}</div></div>${stamp}</div>
+    <table class="ma">${ma.slice(2).map(r=>!r||!r.length?'<tr class="sp"><td colspan="6"></td></tr>':r.length===1?`<tr><th colspan="6" class="l">${cell(r,0)}</th></tr>`:`<tr>${[0,1,2,3,4,5].map(i=>`<td class="${typeof (r[i])==='number'?'r':''}">${cell(r,i)}</td>`).join('')}</tr>`).join('')}</table></section>`;
+  const css=`@page{size:A4 landscape;margin:7mm}body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;margin:0;font-size:8.5px}section{page-break-after:always}section:last-child{page-break-after:auto}
+    .hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #000;padding-bottom:3px;margin-bottom:5px}.hd h1{font-size:14px;margin:0}.m{font-size:9.5px;color:#333}
+    .st{display:grid;grid-template-columns:repeat(4,46px);border:1px solid #000}.st div{border-left:1px solid #000;text-align:center}.st div:nth-child(4n+1){border-left:0}.st .t{font-size:9px;border-bottom:1px solid #000}.st .bx{height:40px}
+    table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:1px solid #777;padding:1.5px 3px;vertical-align:top;overflow-wrap:anywhere}th{background:#e8e8e8;font-weight:600}
+    td.r{text-align:right;white-space:nowrap}.nt{font-size:8px}tr.iv td{border-top:1.4px solid #000}tfoot td{font-weight:700;background:#f2f2f2;border-top:2px solid #000}thead{display:table-header-group}tr{page-break-inside:avoid}
+    table.ma{width:auto;min-width:60%;font-size:10px}table.ma td,table.ma th{padding:3px 8px}table.ma th.l{text-align:left;background:#f2f2f2}tr.sp td{border:0;height:6px}
+    .np{margin:8px 0;font-size:12px}@media print{.np{display:none}}`;
+  w.document.open();w.document.write(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${esc(bk.file)}</title><style>${css}</style></head><body>
+    <div class="np"><button onclick="print()">🖨 印刷する</button> 印刷の画面で「PDF に保存」も選べます（A4 横）</div>${bk.sheets.map(sec).join('')}${mHtml}</body></html>`);
+  w.document.close();w.focus();setTimeout(()=>{try{w.print();}catch(e){}},400);}
 // ---------- 燃料の単価（決裁メモの「…ガソリン…@168～184.8」）を、拠点×燃料 × 払う月 で並べる ----------
 // 元：アプリの仕訳の決裁メモ（AP_PaymentSlip）＋ 請求Quick の決裁メモ（/BILLS/masters/決裁メモ.csv。アプリより前の月）
 const FUEL_LOC=['大阪','名古屋','東京','本社','工場','鴻巣'];
