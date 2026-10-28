@@ -492,12 +492,20 @@ function rec(s) { return store.orders[s.id] || null; }
 function stateOf(s) {
   if (s.excluded) return 'excluded';
   const r = rec(s);
+  if (r && r.status === 'excluded') return 'excluded';   // 人が手で対象外にした
   if (r && r.status === 'exported') return 'exported';
   if (r && r.status === 'waiting') return 'importing';   // 突合待ち（取込中の仲間）
   if (r && (r.status === 'importing' || r.status === 'confirm' || r.status === 'check')) return r.status;   // 取込の途中・要確認は、SMILEに伝票があっても取込済み扱いにしない
   if (s.inSmile) return 'smile';
   return r && r.status === 'ok' ? 'ok' : 'new';
 }
+// 対象外の理由（キャンセル等の自動のもの、または人が手で外したもの）。対象外でなければ ''
+function excludedText(s) {
+  if (s.excluded) return s.excluded;
+  const r = rec(s);
+  return r && r.status === 'excluded' ? '手動で対象外' + (r.excludeReason ? '：' + r.excludeReason : '（理由は履歴）') : '';
+}
+function isManualExcluded(s) { const r = rec(s); return !!(r && r.status === 'excluded' && !s.excluded); }
 function memoOf(s) { const r = rec(s); return EC.joinMemo(s.baseMemo || s.memo, r && r.memoNote, store.cfg); }
 function shipOf(s) { const r = rec(s); return (r && r.shipDate) || s.autoShip; }
 function fromDate() { return $('f-from').value || '0000-00-00'; }
@@ -535,6 +543,8 @@ function rowHtml(s) {
   else if (st === 'importing') act = '<span class="tag warn">' + (r && r.status === 'waiting' ? '突合待ち' : '取込中') + '</span>';
   else if (st === 'confirm') act = '<div class="muted">受注№ ' + esc((r && r.juchuNo) || '') + '</div>' + (isAdmin ? '<button class="btn sm" data-act="confirmok" data-id="' + s.id + '">確認OK</button>' : '<span class="tag warn">確認待ち</span>');
   else if (st === 'check') act = '<span class="tag err">要確認</span>';
+  else if (st === 'excluded' && isManualExcluded(s)) act = '<button class="btn sec sm" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>';
+  if (st === 'new' || st === 'check') act += ' <button class="btn sec sm" data-act="exclude" data-id="' + s.id + '" title="SMILEに取り込まない注文を一覧から外す（理由を記録。あとで戻せます）">対象外</button>';
   if (r && r.juchuNo && st === 'exported') act = '<div class="muted">受注№ ' + esc(r.juchuNo) + '</div>' + act;
   act += whoHtml(r);   // OKした人・確認OKした人
   return '<tr class="' + cls + '" data-row="' + s.id + '"><td>' + (canSel ? '<input type="checkbox" data-sel="' + s.id + '"' + (sel.has(s.id) ? ' checked' : '') + '>' : '') + '</td>' +
@@ -542,8 +552,8 @@ function rowHtml(s) {
     '<td>' + who + '<div>' + (st === 'new' || st === 'ok' ? destTag(s) : '') + '</div></td>' +
     '<td class="items">' + items + '</td><td class="num">' + yen(s.order.total) + '</td>' +
     '<td><span class="tag ' + (s.cust === store.cfg.earlyCustomer ? 'tokyo' : 'info') + '">' + esc(store.cfg.customers[s.cust].short) + '</span></td>' +
-    '<td>' + (s.excluded ? '' : '<input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (closed ? '<div class="closed">休業日です</div>' : '<div class="muted">' + md(ship) + (manual ? ' 手動' : '') + '</div>')) + '</td>' +
-    '<td><div class="flags">' + (s.excluded ? '<span class="tag info">' + esc(s.excluded) + '</span>' : flags) + '</div></td><td>' + act + '</td></tr>';
+    '<td>' + (st === 'excluded' ? '' : '<input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (closed ? '<div class="closed">休業日です</div>' : '<div class="muted">' + md(ship) + (manual ? ' 手動' : '') + '</div>')) + '</td>' +
+    '<td><div class="flags">' + (st === 'excluded' ? '<span class="tag info">' + esc(excludedText(s)) + '</span>' : flags) + '</div></td><td>' + act + '</td></tr>';
 }
 const THEAD = '<thead><tr><th><input type="checkbox" data-selall></th><th>注文</th><th>お客様・納品先</th><th>SMILEの明細（税抜）</th><th class="num">税込合計</th><th>得意先</th><th>出荷予定日</th><th>確認</th><th></th></tr></thead>';
 function renderOrders() {
@@ -591,7 +601,9 @@ function renderDrawer() {
     '<h3>出荷予定日</h3><div>' + md(ship) + '（受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '）</div>' +
     '<div class="row" style="margin-top:18px">' + (st === 'new' ? '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>OK にする</button>' : (st === 'ok' || st === 'exported') ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') +
     (st === 'confirm' ? (isAdmin ? '<button class="btn" data-act="confirmok" data-id="' + s.id + '">確認OK（起票済みにする）</button>' : '<span class="muted">確認OKは管理者が行います</span>') : '') +
-    (st === 'check' && isAdmin ? '<button class="btn" data-act="confirmed" data-id="' + s.id + '">SMILEを見て問題なし（起票済みにする）</button><button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') + '</div>' +
+    (st === 'check' && isAdmin ? '<button class="btn" data-act="confirmed" data-id="' + s.id + '">SMILEを見て問題なし（起票済みにする）</button><button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') +
+    (st === 'new' || st === 'check' ? '<button class="btn sec" data-act="exclude" data-id="' + s.id + '">対象外にする</button>' : '') +
+    (st === 'excluded' && isManualExcluded(s) ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button><span class="muted">' + esc(excludedText(s)) + '</span>' : '') + '</div>' +
     (st === 'check' ? '<div class="muted" style="margin-top:6px">取込の途中で止まっている可能性があります。SMILE で伝票を確認してから選んでください（この画面からの再取込はできません）。</div>' : '');
   const who = (r && (r.by || r.importBy || r.confirmedBy || r.reportedAt)) ? '<h3>操作した人</h3><dl>' + row('OK', EC.shortUser(r.by)) + row('取込を依頼', EC.shortUser(r.importBy)) + row('確認OK', EC.shortUser(r.confirmedBy)) + row('Teams報告', r.reportedAt ? stamp(r.reportedAt) : '') + '</dl>' : '';
   dr.insertAdjacentHTML('beforeend', who + '<h3>履歴（誰がいつ何をしたか）</h3><div id="histBox" class="muted">読み込み中…</div>');
@@ -805,7 +817,7 @@ function setOk(s) {
   store.orders[s.id] = Object.assign(store.orders[s.id] || {}, { status: 'ok', by: account && account.username, at: new Date().toISOString(), cust: s.cust, orderDate: s.orderDate, net: s.netTotal });
   return true;
 }
-const UNDO_KEYS = ['status', 'exportedAt', 'exportedBy', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed', 'confirmedBy', 'confirmedAt', 'matchedAt', 'matchedShip', 'orderName', 'by', 'at', 'importBy', 'importAt', 'reportedAt'];
+const UNDO_KEYS = ['excludeReason', 'excludedBy', 'excludedAt', 'status', 'exportedAt', 'exportedBy', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed', 'confirmedBy', 'confirmedAt', 'matchedAt', 'matchedShip', 'orderName', 'by', 'at', 'importBy', 'importAt', 'reportedAt'];
 
 // 1つのログだけを書く（注文の行は書かない）：テスト送信・報告の失敗など
 function logOnly(action, orderNo, batchId, detail) {
@@ -1278,7 +1290,7 @@ function renderMap() {
     '<td><input type="text" data-r="note" data-i="' + i + '" value="' + esc(r.note || r.warn || '') + '"></td><td><button class="btn sec sm" data-rdel="' + i + '">削除</button></td></tr>').join('');
   // 対応表にない商品
   const un = {};
-  slips.forEach(s => { if (s.excluded || s.inSmile || stateOf(s) === 'exported') return; s.flags.forEach(f => { if (f.text.startsWith('対応表にない商品：')) { const k = f.text.slice(9); un[k] = (un[k] || 0) + 1; } }); });
+  slips.forEach(s => { if (stateOf(s) === 'excluded' || s.inSmile || stateOf(s) === 'exported') return; s.flags.forEach(f => { if (f.text.startsWith('対応表にない商品：')) { const k = f.text.slice(9); un[k] = (un[k] || 0) + 1; } }); });
   const keys = Object.keys(un);
   $('cnt-map').textContent = keys.length;
   $('unmapped').innerHTML = keys.length ? '<h2>対応表にない商品（' + keys.length + '種）</h2>' + keys.map(k => '<div><span class="tag err">' + un[k] + '件</span> ' + esc(k) + ' <button class="btn sec sm" data-try="' + esc(k) + '">判定を見る</button></div>').join('') + '<div class="muted" style="margin-top:6px">下の表に行を足すと、該当の注文が自動で直ります。</div>' : '<h2>対応表にない商品</h2><div class="muted">ありません</div>';
@@ -1386,8 +1398,17 @@ document.addEventListener('click', async e => {
         mutate: id => { const r = store.orders[id]; if (!r) return false; r.status = 'exported'; r.exportedAt = now; r.exportedBy = who; r.confirmedBy = who; r.confirmedAt = now; r.manualConfirmed = true; delete r.checkMessage; return true; } });
       return;
     }
+    if (d.act === 'exclude') {
+      const st0 = stateOf(s); if (st0 !== 'new' && st0 !== 'check') return;
+      const reason = prompt('「' + s.name + '」を対象外にします（SMILEには取り込みません。あとで「未確認に戻す」で戻せます）。' + String.fromCharCode(10) + (st0 === 'check' ? '※要確認の注文は、SMILE に取り込まれている可能性があります。SMILE を確認してから外してください。' + String.fromCharCode(10) : '') + String.fromCharCode(10) + '理由を入力してください（例：返金対応・別経路で処理済み・テスト注文）。お客様の名前・住所・電話は書かないでください。');
+      if (reason === null) return;
+      if (!reason.trim()) { alert('理由を入力してください'); return; }
+      await commit({ ids: [s.id], expect: () => [st0 === 'check' ? '要確認' : '未確認'], action: 'その他', detail: () => '対象外にした：' + reason.trim(),
+        mutate: id => { const r = store.orders[id] = store.orders[id] || {}; Object.assign(r, { status: 'excluded', excludeReason: reason.trim(), excludedBy: who, excludedAt: now, cust: s.cust, orderDate: s.orderDate, net: s.netTotal }); return true; } });
+      return;
+    }
     const was = store.orders[s.id] && store.orders[s.id].status; if (!was) return;
-    await commit({ ids: [s.id], expect: () => [EC.listStatus(was)], action: 'OK取消', detail: () => EC.listStatus(was) + 'から未確認に戻した',
+    await commit({ ids: [s.id], expect: () => [EC.listStatus(was)], action: was === 'excluded' ? 'その他' : 'OK取消', detail: () => EC.listStatus(was) + 'から未確認に戻した',
       mutate: id => { const r = store.orders[id]; if (!r) return false; UNDO_KEYS.forEach(k => delete r[k]); return true; } });
     return;
   }

@@ -562,6 +562,7 @@ t('注文の記録 ↔ リストの行：往復できる（OK・取込・確認O
   assert.deepStrictEqual([auto.matchedShip, auto.shipDate], ['2026-10-19', undefined]);
   // 状態ごとに往復
   ['ok', 'importing', 'waiting', 'confirm', 'exported', 'check'].forEach(s => assert.strictEqual(EC.fieldsToRec(EC.orderFields('1', { status: s })).status, s));
+  assert.strictEqual(EC.fieldsToRec(EC.orderFields('1', { status: 'excluded' })).status, 'excluded');   // 人が手で対象外にした注文は、リストから復元される
   assert.strictEqual(EC.fieldsToRec(EC.orderFields('1', {})).status, undefined);   // 未確認＝状態なし
 });
 t('差分：変わった項目だけ（空・null・日時の秒未満・日付の時刻部分の違いは同じ）。Title と不明な状態は書かない', () => {

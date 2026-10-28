@@ -1086,7 +1086,7 @@
   EC.fieldsToRec = function (f) {
     f = f || {};
     var r = {}, st = EC.appStatus(f.Status);
-    if (st && st !== 'new' && st !== 'excluded') r.status = st;
+    if (st && st !== 'new') r.status = st;   // 'excluded'＝人が手で対象外にした注文（キャンセル等の自動の対象外は記録しない）
     if (f.OrderDate) r.orderDate = String(f.OrderDate).slice(0, 10);
     if (f.CustomerCode) r.cust = f.CustomerCode;
     if (f.BatchId) r.batchId = f.BatchId;
