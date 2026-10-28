@@ -387,9 +387,13 @@ t('テスト送信：取込ファイル（受注）は東京の得意先・担�
   // 製番・製造手配が作られない形（FR と同じ）：手配区分 2・製造数量 0.00・製造納期 0・当初製造納期 0。品目は FR だけ
   rows.forEach(x => assert.deepStrictEqual([x[col('品目コード')], x[col('手配区分')], x[col('製造数量')], x[col('製造納期')], x[col('当初製造納期')]], ['FR', '2', '0.00', '0', '0']));
   assert.deepStrictEqual(rows.map(x => x[col('単価')]), ['1500.00', '500.00']);
+  // 行摘要２（44列目）は長さの上限がある（15文字で「行摘要２不正」になった）ので、TEST… は入れず数字の末尾8桁だけ。客先注番（15・108列目）は TEST… のまま
+  const memo2 = J.indexOf('行摘要２');
+  assert.strictEqual(memo2, 44);
+  rows.forEach(x => { assert.strictEqual(x[memo2], '10161230'); assert.ok(x[memo2].length <= 10); assert.ok(!/TEST/.test(x[memo2])); assert.strictEqual(x[col('客先注番')], 'TEST2610161230'); });
   // 本番の注文（客先注番は数字だけ）は今までどおり
   const real = EC.buildSlip(order(), ctx); real.deliveryCode = '000001'; real.delivery = { name: 'x' }; real.shipDate = '2026-10-19';
-  assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][col('客先注番')], '1800');
+  assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][col('客先注番')], '1800'); assert.strictEqual(EC.juchuRows([real], J, DEFAULT_CONFIG)[0][J.indexOf('行摘要２')], '1800');   // 本番の行摘要２は今までどおり（注文番号の数字）
   assert.ok(EC.buildTestImport(TI, DEFAULT_CONFIG, tOpt({ items: {} })).error);   // 品目マスタにない品目はエラー
 });
 t('テスト送信：テスト行の品目は「手配区分2・在庫管理なし」だけ。マスタの品目がそれに当たらなければ拒否（製番・製造手配を作らない）', () => {
@@ -866,4 +870,16 @@ if (fs.existsSync(SM + '品目マスタ.csv')) {
     assert.ok(EC.buildTestImport(Object.assign({}, TI, { lines: [{ code: 'TC', qty: 1, unitNet: 7000 }] }), DEFAULT_CONFIG, { items: real, today: '2026-10-16', stamp: '2610161230' }).error);
   });
 }
+t('桁はバイト数：切る処理（全角2・半角1）と、取込ファイルの各項目', () => {
+  assert.strictEqual(EC.cutBytes('桁'.repeat(25), 48), '桁'.repeat(24));
+  assert.strictEqual(EC.cutBytes('A'.repeat(49), 48), 'A'.repeat(48));
+  assert.strictEqual(EC.cutBytes('桁'.repeat(3) + 'A', 6), '桁桁桁'); assert.strictEqual(EC.cutBytes('A桁桁', 4), 'A桁');   // 全角が入りきらないところで止める
+  assert.strictEqual(EC.cutBytes('短い', 48), '短い');
+  const lim = DEFAULT_CONFIG.limits;
+  assert.deepStrictEqual([lim.name, lim.addr1, lim.addr2, lim.custName, lim.itemName, lim.memo], [48, 48, 48, 48, 36, 64]);
+  const memo = EC.joinMemo('花岡EC', 'あ'.repeat(40), DEFAULT_CONFIG);
+  assert.ok(EC.sjisLen(memo) <= 64);
+  const nr = EC.nouhinRows([{ cust: '599801', code: '999990', d: { name: '桁'.repeat(25), person: '', zip: '1430006', addr1: '東京都', addr2: 'あ'.repeat(30), tel: '03-0000-0000' } }], L.nouhin, DEFAULT_CONFIG)[0];
+  assert.strictEqual(nr[2], '桁'.repeat(24)); assert.strictEqual(EC.sjisLen(nr[8]), 48);
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

@@ -396,6 +396,7 @@
     if (lim.name && EC.sjisLen(dv.name) > lim.name) flag('warn', '納品先名が長いため切れる可能性（' + EC.sjisLen(dv.name) + 'バイト）');
     if (lim.addr1 && EC.sjisLen(dv.addr1) > lim.addr1) flag('warn', '住所１が長いため切れる可能性（' + EC.sjisLen(dv.addr1) + 'バイト）');
     if (lim.addr2 && EC.sjisLen(dv.addr2) > lim.addr2) flag('warn', '住所２が長いため切れる可能性（' + EC.sjisLen(dv.addr2) + 'バイト）');
+    if (lim.itemName) slip.lines.forEach(function (l) { if (EC.sjisLen(l.name) > lim.itemName) flag('info', '品目名が長いため切って取り込みます（' + l.code + '：' + EC.sjisLen(l.name) + 'バイト）'); });
     if (dv.changed.length) flag('info', '文字を整えました（見えない文字・特殊な空白・機種依存文字）：' + dv.changed.join('／'));
     dv.issues.forEach(function (x) {
       flag('warn', '「' + x.ch + '」は' + (x.kind === 'dep' ? '機種依存文字' : 'Shift-JISにない文字') + 'で、配送会社の取込で化ける可能性があります。納品先を直してください');
@@ -417,6 +418,14 @@
   EC.normZip = function (s) { return digits(s); };
   // SMILE の項目の長さ（半角1・全角2）。半角カナは1
   EC.sjisLen = function (str) { var n = 0; for (var i = 0; i < String(str || '').length; i++) { var c = str.charCodeAt(i); n += (c < 0x100 || (c >= 0xFF61 && c <= 0xFF9F)) ? 1 : 2; } return n; };
+  // SMILE の「桁」はバイト数（全角2・半角1。画面で確認済み：納品先名は全角24字・半角48字まで）。超えた分は SMILE が黙って切るので、こちらで先に切って、取込結果の照合とずれないようにする
+  EC.cutBytes = function (str, n) {
+    str = String(str == null ? '' : str);
+    if (!n || EC.sjisLen(str) <= n) return str;
+    var out = '', used = 0, chars = Array.from(str);
+    for (var i = 0; i < chars.length; i++) { var w = EC.sjisLen(chars[i]); if (used + w > n) break; out += chars[i]; used += w; }
+    return out;
+  };
   function fmtPhone(p) {
     var d = digits(p);
     if (/^81/.test(d) && d.length >= 11) d = '0' + d.slice(2);
@@ -525,7 +534,8 @@
   // 社内メモ：基本のメモ（花岡EC など）のあとに、担当者が追記した文を続ける
   EC.joinMemo = function (base, note, cfg) {
     note = String(note == null ? '' : note).replace(/[\r\n\t]+/g, ' ').trim();
-    return note ? base + (cfg.memoJoin == null ? ' ' : cfg.memoJoin) + note : base;
+    var full = note ? base + (cfg.memoJoin == null ? ' ' : cfg.memoJoin) + note : base;
+    return EC.cutBytes(full, (cfg.limits || {}).memo);
   };
 
   // 納品先マスタ(CSV objects) → { '599802': { keys:{key:code}, max:'000770', used:{code:1} } }
@@ -596,8 +606,9 @@
   EC.nouhinRows = function (fresh, header, cfg) {
     return fresh.map(function (f) {
       var o = new Array(header.length).fill('');
-      o[0] = f.cust; o[1] = f.code; o[2] = f.d.name; o[3] = ''; o[4] = f.d.person; o[5] = '';
-      o[6] = f.d.zip; o[7] = f.d.addr1; o[8] = f.d.addr2; o[9] = ''; o[10] = ''; o[11] = f.d.tel; o[12] = '';
+      var lim = (cfg && cfg.limits) || {}, cut = function (v) { return EC.cutBytes(v, lim.name); };
+      o[0] = f.cust; o[1] = f.code; o[2] = cut(f.d.name); o[3] = ''; o[4] = cut(f.d.person); o[5] = '';
+      o[6] = f.d.zip; o[7] = EC.cutBytes(f.d.addr1, lim.addr1); o[8] = EC.cutBytes(f.d.addr2, lim.addr2); o[9] = ''; o[10] = ''; o[11] = f.d.tel; o[12] = '';
       o[15] = '0'; o[38] = '0'; o[39] = '1'; o[40] = '1';
       return o;
     });
@@ -611,18 +622,20 @@
     slips.slice().sort(function (a, b) { return a.orderDate === b.orderDate ? (+a.id - +b.id) : (a.orderDate < b.orderDate ? -1 : 1); }).forEach(function (s) {
       seq++;
       var ship = EC.ymd(s.shipDate), po = s.po || digits(s.id);   // テスト送信の注文だけ客先注番が TEST…（s.po）
-      var mfg = EC.ymd(cal.prev(s.shipDate));
+      // 行摘要２は長さの上限がある（15文字の注番で「行摘要２不正」になった。上限は10文字前後と思われ、正確な桁数は未確認）ので、テスト送信の TEST… は入れず、数字の末尾8桁だけにする（本番の注文は今までどおり注文番号の数字）
+      var memo2 = s.po ? digits(s.id).slice(-8) : po;
+      var mfg = EC.ymd(cal.prev(s.shipDate)), lim = cfg.limits || {};
       s.lines.forEach(function (l, i) {
         var o = new Array(header.length).fill('');
         var made = String(l.teihai) === '1';
         var amt = Math.round(l.amountNet);
         var set = {
-          0: EC.ymd(s.orderDate), 1: String(seq), 2: String(i + 1), 3: s.cust, 4: s.custName, 6: s.deliveryCode, 7: s.delivery.name,
-          8: s.staff, 9: s.dept, 11: '0', 12: '1', 13: '1', 14: ship, 15: po, 16: cfg.warehouse, 17: l.code, 18: l.name,
+          0: EC.ymd(s.orderDate), 1: String(seq), 2: String(i + 1), 3: s.cust, 4: EC.cutBytes(s.custName, lim.custName), 6: s.deliveryCode, 7: EC.cutBytes(s.delivery.name, lim.name),
+          8: s.staff, 9: s.dept, 11: '0', 12: '1', 13: '1', 14: ship, 15: po, 16: cfg.warehouse, 17: l.code, 18: EC.cutBytes(l.name, lim.itemName),
           22: q2(l.qty), 23: l.unit, 24: q2(l.unitNet), 25: String(amt), 26: '0.00', 27: '0', 29: String(amt), 30: '0.0',
-          31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: po,
-          45: '00000', 49: '0', 50: '0', 52: '0', 54: s.memo, 56: '1', 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
-          94: ship, 95: '0', 96: '1', 101: l.name, 105: ship, 106: made ? mfg : '0', 107: ship, 108: po, 109: made ? mfg : '0',
+          31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: memo2,
+          45: '00000', 49: '0', 50: '0', 52: '0', 54: EC.cutBytes(s.memo, lim.memo), 56: '1', 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
+          94: ship, 95: '0', 96: '1', 101: EC.cutBytes(l.name, lim.itemName), 105: ship, 106: made ? mfg : '0', 107: ship, 108: po, 109: made ? mfg : '0',
           110: made ? q2(l.qty) : '0.00', 111: l.teihai || '1', 112: '0'
         };
         Object.keys(set).forEach(function (k) { o[+k] = set[k]; });
