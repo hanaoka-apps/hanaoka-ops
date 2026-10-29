@@ -368,7 +368,9 @@ function ensureUploadFolder(){if(!folderReady)folderReady=(async()=>{
     const t0=Date.now();while(Date.now()-t0<120000){await new Promise(ok=>setTimeout(ok,2500));const f=(await gget(`/sites/${WF.siteId}/lists/${WF.lists.WF_Action}/items/${it.id}?expand=fields`)).fields;
       if(f.Result==='完了')return;if(f.Result==='エラー')throw new Error(f.ResultMessage||'受付フォルダを準備できませんでした');}
     throw new Error('受付フォルダの準備に時間がかかっています。しばらくしてからもう一度お試しください');})().catch(e=>{folderReady=null;throw e;});return folderReady;}
-async function apBlob(path){path=String(path||'').split(/[\r\n;]+/)[0].trim().replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');if(!path)return null;
+// DOCコードは1行に1ファイル（何枚か付けた請求書は複数行）。docPaths で全部に分け、apBlob で1ファイルずつ読む
+const docPaths=v=>String(v||'').split(/[\r\n;]+/).map(t=>t.trim()).filter(Boolean);
+async function apBlob(path){path=String(path||'').trim().replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');if(!path)return null;
   const alt=/\/incoming\//i.test(path)?path.replace(/\/incoming\//i,'/processed/'):path.replace(/\/processed\//i,'/incoming/');
   for(const p of [path,alt]){try{return {blob:await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true),name:p.split('/').pop()};}catch(e){}}return null;}
 // 仕入（SMILE取込）で、この決済月の請求書が1枚も無い支払先（支払先ごと）。why＝請求書なしの理由（無ければ総務のコメント）
@@ -437,8 +439,9 @@ async function sendToSettle(round,dept){
     const prevOf=(pl,p0,amt)=>{const c=pl.filter(x=>!x.used&&x.k===payeeKey(p0)&&x.m===pv(p0,'支払手段')).sort((a,b)=>Math.abs(a.a-amt)-Math.abs(b.a-amt))[0];if(!c)return 0;c.used=true;return c.a;};
     for(const k of keys){const ps=groups[k],p0=ps[0],pk=payeeKey(p0),src=pv(p0,'元')||'',sp=spById[pv(p0,'AP_SmilePayの行ID')]||null,g=d=>sp?sp[F(SP,d)]:undefined;
       n++;logOut(`請求書をコピーしています ${n}/${keys.length}　${pv(p0,'支払先名')}`);
-      const inv=[];for(const x of invOf(p0)){if(done[x.id]){inv.push(done[x.id]);continue;}const got=await apBlob(iv(x.f,'DOCコード'));if(!got)continue;
-        const key=fileKey(`${pv(p0,'支払先名')}_${got.name}`);await wfPut(key,got.blob);const it={name:`${pv(p0,'支払先名')}_${got.name}`,key,size:got.blob.size};files.push(it);done[x.id]=key;inv.push(key);}
+      const inv=[];for(const x of invOf(p0)){if(done[x.id]){inv.push(...done[x.id]);continue;}done[x.id]=[];
+        for(const dp of docPaths(iv(x.f,'DOCコード'))){const got=await apBlob(dp);if(!got)continue;
+          const key=fileKey(`${pv(p0,'支払先名')}_${got.name}`);await wfPut(key,got.blob);const it={name:`${pv(p0,'支払先名')}_${got.name}`,key,size:got.blob.size};files.push(it);done[x.id].push(key);inv.push(key);}}
       const bankNow=[pv(p0,'銀行コード'),pv(p0,'支店コード'),pv(p0,'口座番号')].join('|'),bankPrev=lastBank[pk];
       const notes=[];if(sp){String(g('気づき')||'').split('\n').filter(Boolean).forEach(s=>notes.push(s));if(g('変えた理由'))notes.push('分け方：'+g('変えた理由'));if(g('コメント'))notes.push('総務：'+g('コメント'));}
       ps.forEach(p=>{if(pv(p,'メモ'))notes.push(pv(p,'メモ'));});
