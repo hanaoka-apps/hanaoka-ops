@@ -136,20 +136,47 @@
   // 定型文（このブラウザに保存）。〇＝あとで直す所、{名前}＝データ印の下段の名前、{今日}＝今日の月/日
   //   初期の文は 10/14〜10/19 の返信記録でくり返し打たれていた文から作った
   const SNIP_KEY = 'fax-reply-snippets-v1';
-  const SNIP_DEFAULT = [
-    '様',
-    'いつもお世話になっております。',
-    '宜しくお願いいたします。',
-    '花岡車輌㈱ 業務センター {名前}',
-    'ご注文ありがとうございます。\n〇月〇日出荷にて手配いたします。\n宜しくお願いいたします。',
-    '送料（〇〇県送り）1台一式：〇〇\n納期（現況・実働）：受注後、約〇週間後出荷\n※混載便・車上渡しです。\n※お客様組み立て品\nよろしくお願いいたします。',
-    '受注後実働で約〇か月前後の出荷となります\n※混載便の車上渡しとなります\n宜しくお願い致します',
-    '※2026年11月1日のご注文分より価格改定で、値上価格となります。\nご了承下さいませ。',
-    '26年11月1日以降受注分より価格改定を行わせていただきます。\n上記お見積りは10月までに受注の場合の御見積となります。',
-    '現在欠品中のため、納期が掛かり申し訳ありません。',
-    'ご回答が遅くなり申し訳ございません。',
+  const SNIP_SEEN_KEY = 'fax-reply-snippets-seen-v1';   // 一度でも配った初期の定型文（消した人にもう一度は足さない）
+  // 初期の定型文。until（その日から外す）は期限つきの文。あとから足した文は、次に開いたとき各自の定型文の最後に加わる
+  const SNIP_DEFAULT_ALL = [
+    { t: '様' },
+    { t: 'いつもお世話になっております。' },
+    { t: '宜しくお願いいたします。' },
+    { t: '花岡車輌㈱ 業務センター {名前}' },
+    { t: 'ご注文ありがとうございます。\n〇月〇日出荷にて手配いたします。\n宜しくお願いいたします。' },
+    { t: '送料（〇〇県送り）1台一式：〇〇\n納期（現況・実働）：受注後、約〇週間後出荷\n※混載便・車上渡しです。\n※お客様組み立て品\nよろしくお願いいたします。' },
+    { t: '受注後実働で約〇か月前後の出荷となります\n※混載便の車上渡しとなります\n宜しくお願い致します' },
+    { t: '※2026年11月1日のご注文分より価格改定で、値上価格となります。\nご了承下さいませ。', until: '2026-11-01' },
+    { t: '26年11月1日以降受注分より価格改定を行わせていただきます。\n上記お見積りは10月までに受注の場合の御見積となります。', until: '2026-11-01' },
+    { t: '現在欠品中のため、納期が掛かり申し訳ありません。' },
+    { t: 'ご回答が遅くなり申し訳ございません。' },
+    // 10/29 追加（10/20〜10/29 の返信記録でくり返し打たれていた文）
+    { t: '受注後約〇～〇か月後出荷（現況・実働納期）' },
+    { t: 'ご注文ありがとうございます。\nよろしくお願いいたします。' },
+    { t: '宜しくお願い致します。\n花岡車輌(株)' },
+    { t: '※お客様組み立て品\n※混載便・車上渡し\nよろしくお願いいたします。' },
+    { t: '〇/〇出荷 〇/〇AM着 になります。' },
   ];
-  function loadSnippets() { try { const v = JSON.parse(localStorage.getItem(SNIP_KEY) || 'null'); return Array.isArray(v) ? v : SNIP_DEFAULT.slice(); } catch (_) { return SNIP_DEFAULT.slice(); } }
+  const SNIP_FIRST = SNIP_DEFAULT_ALL.slice(0, 11).map(x => x.t);   // 10/19 版で配った11文（それまでに使い始めた人は配り済み）
+  const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  const snipActive = () => SNIP_DEFAULT_ALL.filter(x => !x.until || todayStr() < x.until).map(x => x.t);
+  const snipRetired = () => SNIP_DEFAULT_ALL.filter(x => x.until && todayStr() >= x.until).map(x => x.t);
+  function loadSnippets() {
+    let list = null, seen = null;
+    try { const v = JSON.parse(localStorage.getItem(SNIP_KEY) || 'null'); if (Array.isArray(v)) list = v; } catch (_) {}
+    try { const v = JSON.parse(localStorage.getItem(SNIP_SEEN_KEY) || 'null'); if (Array.isArray(v)) seen = v; } catch (_) {}
+    const act = snipActive();
+    if (!list) { list = act.slice(); seen = act.slice(); }
+    else {
+      if (!seen) seen = SNIP_FIRST.slice();
+      act.forEach(t => { if (!seen.includes(t)) { if (!list.includes(t)) list.push(t); seen.push(t); } });   // 新しく足した初期の文を配る
+    }
+    const ret = snipRetired();
+    list = list.filter(t => !ret.includes(t));   // 期限の過ぎた初期の文（変えずに残っているもの）を外す
+    saveSnippets(list);
+    try { localStorage.setItem(SNIP_SEEN_KEY, JSON.stringify(seen)); } catch (_) {}
+    return list;
+  }
   function saveSnippets(a) { try { localStorage.setItem(SNIP_KEY, JSON.stringify(a)); } catch (_) {} }
   // 楕円を4本のベジェ曲線で（画面上の点）
   function ellipseCmds(cx, cy, rx, ry) {
@@ -390,7 +417,7 @@
         snippets.push(v); saveSnippets(snippets); ta.value = ''; nw.style.display = 'none'; renderSnips(); status('定型文に登録しました');
       } else if (act === 'reset') {
         if (!confirm('定型文を最初の状態に戻しますか？\n（自分で足した定型文は消えます）')) return;
-        snippets = SNIP_DEFAULT.slice(); saveSnippets(snippets); pendingSnip = null; renderSnips(); status('定型文を初期に戻しました');
+        snippets = snipActive(); saveSnippets(snippets); pendingSnip = null; renderSnips(); status('定型文を初期に戻しました');
       }
     }));
     ov.querySelectorAll('[data-st]').forEach(el => {
