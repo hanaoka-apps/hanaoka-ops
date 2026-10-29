@@ -43,12 +43,19 @@
     const key = m => String(m || '').replace(/^\(\d+\)/, '').replace(/[　\s]+/g, ' ').trim().split(' ')[0];
     const hg = {};
     jr.filter(x => (/^000[5-7]/.test(x['科目コード']) && x['科目コード'] !== '000501') || x['科目コード'] === '000317').forEach(x => { const k = key(x['摘要']); if (k) (hg[k] = hg[k] || []).push(x); });
-    const histT = Object.keys(hg).filter(k => hg[k].length >= 2).sort().map(k => {
-      const c = {}; hg[k].forEach(x => { const s = `${x['科目コード']} ${x['科目名']}・部門 ${x['部門コード']}・${x['税区分']}` + (x['内訳'] ? `・内訳 ${x['内訳']}` : ''); c[s] = (c[s] || 0) + 1; });
-      const last = hg[k].slice().sort((a, b) => String(b['伝票日付'] || b['年月']).localeCompare(String(a['伝票日付'] || a['年月'])))[0];   // 摘要の書き方をそろえるため、新しい1件の例
-      return `${k}（${hg[k].length}回）：` + Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, n]) => `${s}×${n}`).join(' / ') + (last && last['摘要'] ? `　摘要の例「${String(last['摘要']).replace(/\s+/g, ' ').slice(0, 40)}」` : '');
-    }).join('\n');
     const yms = [...new Set(jr.map(x => x['年月']).filter(Boolean))].sort();
+    // 直近を正にする：会計（外注）の付け方は年度の変わり目などで変わる（例：2026/04 から 001110→005110）。直近6か月にある支払先は、その6か月の付け方だけを数える
+    const ymEnd = yms[yms.length - 1] || '', recentFrom = (() => { const m = ymEnd.match(/^(\d{4})\/(\d{2})$/); if (!m) return ''; const d = new Date(+m[1], +m[2] - 6, 1); return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0'); })();
+    const recentOf = k => { const r = hg[k].filter(x => String(x['年月'] || '') >= recentFrom); return r.length ? r : hg[k]; };
+    const histT = Object.keys(hg).filter(k => hg[k].length >= 2).sort().map(k => {
+      const rs = recentOf(k), c = {}; rs.forEach(x => { const s = `${x['科目コード']} ${x['科目名']}・部門 ${x['部門コード']}・${x['税区分']}` + (x['内訳'] ? `・内訳 ${x['内訳']}` : ''); c[s] = (c[s] || 0) + 1; });
+      const last = hg[k].slice().sort((a, b) => String(b['伝票日付'] || b['年月']).localeCompare(String(a['伝票日付'] || a['年月'])))[0];   // 摘要の書き方をそろえるため、新しい1件の例
+      return `${k}（${rs.length < hg[k].length ? `直近${rs.length}回` : `${hg[k].length}回・最後 ${last ? last['年月'] : ''}`}）：` + Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, n]) => `${s}×${n}`).join(' / ') + (last && last['摘要'] ? `　摘要の例「${String(last['摘要']).replace(/\s+/g, ' ').slice(0, 40)}」` : '');
+    }).join('\n');
+    // アプリで確かめた決裁メモ（app）：会計の直近の科目に無い科目の行は手本にしない（人が直した科目が会計と違うことがある）。支払日・払う月・振込先名義の話は外す（その月だけのこと）
+    const nk = s => String(s || '').normalize('NFKC').replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|[\s　・.,、。()（）]/g, '');
+    const acctOf = payee => { const p = nk(payee); if (p.length < 2) return null; const k = Object.keys(hg).find(k => { const q = nk(k); return q.length >= 2 && (p.includes(q) || q.includes(p)); }); return k ? new Set(recentOf(k).map(x => x['科目コード'])) : null; };
+    sq = (sq || []).filter(x => { if (!x.app) return true; const s = acctOf(x['取引先名']); return !s || !x['科目コード'] || s.has(x['科目コード']); }).map(x => x.app ? Object.assign({}, x, { '備考': cleanNote(x['備考']) }) : x).filter(x => x['備考']);
     // 過去の決裁メモ（請求Quick の明細の備考。社長・室長が見る説明）：取引先ごとに、いちばん新しい支払の行（最大20行。リース会社は車が10台以上ある）
     //   リースの回数（36/84回 → 次は 37/84回）・部署ごとの内訳・人数×単価などを、同じ書き方で続けられるように
     const sg = {}; (sq || []).forEach(x => { const k = String(x['取引先名'] || '').trim(); if (k && x['備考']) (sg[k] = sg[k] || []).push(x); });
@@ -56,7 +63,7 @@
       const last = sg[k].map(x => x['取引日']).sort().pop(), ls = sg[k].filter(x => x['取引日'] === last).slice(0, 20);
       return `${k}（${last}）：` + ls.map(x => `${x['内訳名']}｜${String(x['備考']).replace(/\s+/g, ' ').slice(0, 60)}｜${x['金額（税込）']}円`).join(' ／ ');
     }).join('\n');
-    return `## マスタ：科目（コード 名前 既定の税）\n${kmT}\n\n## マスタ：部門（コード 名前）\n${bmT}\n\n## マスタ：内訳が要る科目（科目コード 名前：内訳コード 名前）\n${umT}\n\n## 過去の仕訳（支払先 → よく使う科目・部門・税。${yms[0] || ''}〜${yms[yms.length - 1] || ''}）\n${histT}` + (sqT ? `\n\n## 過去の決裁メモ（取引先 → いちばん新しい支払の 内訳｜決裁メモ｜税込。社長・室長への説明。ApprovalNote はこの書き方にそろえる）\n${sqT}` : '');
+    return `## マスタ：科目（コード 名前 既定の税）\n${kmT}\n\n## マスタ：部門（コード 名前）\n${bmT}\n\n## マスタ：内訳が要る科目（科目コード 名前：内訳コード 名前）\n${umT}\n\n## 過去の仕訳（支払先 → よく使う科目・部門・税。${yms[0] || ''}〜${ymEnd}。直近6か月（${recentFrom}〜）にある支払先は、その付け方を正とする）\n${histT}` + (sqT ? `\n\n## 過去の決裁メモ（取引先 → いちばん新しい支払の 内訳｜決裁メモ｜税込。社長・室長への説明。ApprovalNote はこの書き方にそろえる）\n${sqT}` : '');
   }
 
   // ---- アプリで確かめた決裁メモ（AP_PaymentSlip の 決裁メモ × AP_Invoice の 支払先・払う月）----
@@ -80,8 +87,14 @@
       if (ok) inv[String(x.id)] = { payee: f[fi('支払先名')] || '', ym: f[fi('対象年月')] || '' }; });
     return sl.rows.map(x => x.fields).filter(f => f[fs('決裁メモ')] && inv[String(f[fs('請求書ID')])]).map(f => {
       const v = inv[String(f[fs('請求書ID')])];
-      return { '取引日': (v.ym || '') + '/28', '取引先名': v.payee, '内訳名': f[fs('勘定科目名')] || '', '金額（税込）': String(Math.round(+f[fs('金額_税込')] || 0)), '備考': f[fs('決裁メモ')] };
+      return { '取引日': (v.ym || '') + '/28', '取引先名': v.payee, '内訳名': f[fs('勘定科目名')] || '', '科目コード': String(f[fs('勘定科目コード')] || '').padStart(6, '0'), '金額（税込）': String(Math.round(+f[fs('金額_税込')] || 0)), '備考': f[fs('決裁メモ')], app: true };
     });
+  }
+  // 決裁メモから、その月だけの話（支払日・払う月・納期限・引落・振込先名義）を外す。かっこの中は ・ で分けて、その項目だけ外す
+  const NOTE_X = /払う月|支払日|納期限|振替日|引落|振込先名義|月末払い/;
+  function cleanNote(s) {
+    s = String(s || '').replace(/[（(]([^）)]*)[）)]/g, (m, a) => { if (!NOTE_X.test(a)) return m; const k = a.split('・').filter(t => !NOTE_X.test(t)); return k.length ? '（' + k.join('・') + '）' : ''; });
+    return s.split(/[。｜|／]/).map(t => NOTE_X.test(t) ? t.split('・').filter(u => !NOTE_X.test(u)).join('・') : t).map(t => t.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
   }
   // ---- 覚えたこと（人が「AI に教える」で教えたこと。/BILLS/masters/ai_memory.json）。読み取りのとき、いちばん優先の手がかりにする ----
   const MEM = MASTERS + '/ai_memory.json';
