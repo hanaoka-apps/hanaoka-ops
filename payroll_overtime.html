@@ -207,7 +207,7 @@
         <div id="anomCard" class="share-card"></div>
       </div>
       <div class="panel hide" id="sub-notice">
-        <p class="note no-print">限度時間を超える見込みの方ごとに、従業員代表あての通告文を作ります。事由の2行目（具体的な内容）を記入してから、Teams等で送ってください。</p>
+        <p class="note no-print">限度時間を超える見込みの方を、従業員代表あての1通にまとめます。事由を必要に応じて書き足してから、Teams等で送ってください（1人ずつの文面も下に用意しています）。</p>
         <div id="noticeList"></div>
       </div>
       <div class="panel hide" id="sub-excl">
@@ -856,6 +856,7 @@ function buildPost() {
 // 10日（最終）：次の確認日がないため必ずどちらかに決める。どちらかが限度超え＝超える見込み→通告（迷う場合は安全側）／両方とも限度内＝収まる見込み。
 // 締め後：お知らせ・通告をした人に、給与の確定値で「結果のお知らせ」（履歴タブ）。
 const NOTICE_LABEL = { お知らせ: '事前のお知らせ', 通告: '事前通告', 経過_未定: '経過のお知らせ（まだ分からない）', 経過_収まり: '経過のお知らせ（収まる見込み）' };
+const NOTICE_CLOSING = ['ご確認いただけたら👍でリアクションいただければ結構です。', '※承認をいただくものではなく、協定に定める手続として状況をお伝えするものです。'];
 function noticeStage(m, cd) {
   const list = m.差の掲載基準 || OT.DEFAULT_MASTER.差の掲載基準;
   const day = Number(cd.split('/')[2]);
@@ -915,7 +916,7 @@ function buildNoticeText(x, kind, prevDate) {
     `　現在の状況　${jpDate(r.asOf)}までで${aboutH(now)}`];
   const reason = [`　事由　　　　${m.事由[x.業務] || '（事由を記入）'}`, '　　　　　　　（具体的な内容を記入）'];
   const sender = m.通告の差出人 || '総務部';
-  const tail = ['', 'ご確認のうえ返信をお願いします。', '※承認をいただくものではなく、協定に定める手続として状況をお伝えするものです。', '', sender];
+  const tail = ['', ...NOTICE_CLOSING, '', sender];
   const L = [];
   if (kind === 'お知らせ') {
     L.push('【事前のお知らせ】時間外労働の限度時間について', '', repName, '',
@@ -956,6 +957,46 @@ function buildNotices() {
     return kind ? { 従業員コード: x.従業員コード, 氏名: x.氏名, 種類: kind, text: buildNoticeText(x, kind, prev[x.従業員コード]) } : null;
   }).filter(Boolean);
 }
+/** 対象者全員分を1通にまとめた連絡文（種類ごとに見出しを分け、1人4行ほどにまとめる） */
+const NOTICE_GROUPS = [
+  ['通告', '■ 事前通告（限度時間を超える見込み・すでに超えた方）'],
+  ['お知らせ', '■ 事前のお知らせ（限度時間を超える可能性がある方）'],
+  ['経過_未定', '■ 経過のお知らせ（超えるかどうか、まだ見極めが必要な方）'],
+  ['経過_収まり', '■ 経過のお知らせ（限度時間内に収まる見込みの方）'],
+];
+function buildCombinedNotice(list) {
+  const r = S.result, m = master(), p = r.period, rep = m.従業員代表 || {};
+  const cd = checkDateStr(), next = nextCheckDate(m, cd), prev = prevNotified();
+  const repName = rep.氏名 ? rep.氏名.split(/[\s　]+/)[0] + 'さん' : '（従業員代表）さん';
+  const L = [`【時間外労働の限度時間について】${jpDate(cd)}時点のお知らせ`, '', repName, '',
+    '協定に定める手続として、限度時間に関する状況をお知らせします。',
+    `対象期間　${reiwa(p.開始)}〜${jpDate(p.締日)}（${Number(p.給与月.slice(5))}月分）`];
+  for (const [kind, title] of NOTICE_GROUPS) {
+    const group = list.map(n => [n, r.people.find(x => x.従業員コード === n.従業員コード)]).filter(([n, x]) => x && (n.種類 || 'お知らせ') === kind);
+    if (!group.length) continue;
+    L.push('', `${title}　${group.length}名`);
+    group.forEach(([, x]) => {
+      const now = Math.max(x.打刻推定, x.申請済), lim = x.限度 / 60, count = x.過去超過回数 + 1;
+      const pd = prev[x.従業員コード];
+      const outlook = kind === '通告'
+        ? (now > x.限度 ? `すでに限度時間を超えています（締日までに${aboutH(x.見込み)}の見込み）` : `締日までに${aboutH(Math.max(x.見込み, x.締め見込み || 0))}で、超える見込みです`)
+        : kind === 'お知らせ' ? `このペースが続くと締日までに${aboutH(x.見込み)}で、超える可能性があります`
+        : kind === '経過_未定' ? `打刻のペースで${aboutH(x.見込み)}、申請ベースで${aboutH(x.締め見込み)}（まだ見極めが必要です）`
+        : `業務配分の調整により、${aboutH(Math.max(x.見込み, x.締め見込み || 0))}で収まる見込みです`;
+      L.push('', `　・${zenName(x.氏名)}さん（${x.所属}・${kubunNo(m, x.区分)}／限度時間 1か月${lim}時間）` + (pd ? `　※${jpDate(pd)}にお知らせ済み` : ''),
+        `　　${jpDate(r.asOf)}までで${aboutH(now)} → ${outlook}`,
+        `　　事由：${m.事由[x.業務] || '（事由を記入）'}`);
+      if (kind === '通告' || kind === 'お知らせ') {
+        L.push(`　　特別条項：${kind === '通告' ? '' : '超えた場合は'}今年度${count}回目（年${m.特別条項.年回数}回以内）・1か月${m.特別条項.月上限}時間以内`
+          + (count > m.特別条項.年回数 ? '　※年間の上限回数を超えます' : ''));
+      }
+    });
+  }
+  L.push('', '会社の対応　所属長へ業務配分の調整を依頼しています。');
+  if (noticeStage(m, cd) !== '最終' && next) L.push(`　　　　　　${jpDate(next)}の確認で改めて状況をお知らせします。`);
+  L.push('', ...NOTICE_CLOSING, '', m.通告の差出人 || '総務部');
+  return L.join('\n');
+}
 /** 一覧から手動で作る（確認日以外に所属長から連絡があった場合など）。判定で対象外でも「事前のお知らせ」として作る */
 function addManualNotice(code) {
   const x = S.result.people.find(p => p.従業員コード === code); if (!x) return;
@@ -963,6 +1004,7 @@ function addManualNotice(code) {
   const kind = noticeKind(x, stage, prev[code]) || (prev[code] ? '経過_未定' : 'お知らせ');
   const n = { 従業員コード: code, 氏名: x.氏名, 種類: kind, text: buildNoticeText(x, kind, prev[code]) };
   S.texts.notice = (S.texts.notice || []).filter(y => y.従業員コード !== code).concat([n]);
+  S.texts.noticeAll = null;  // まとめ文は対象者が変わったので作り直す
   renderNotices();
   document.querySelector('[data-sub="notice"]').click();
 }
@@ -973,18 +1015,35 @@ function renderNotices() {
     (stage === '最終' ? '次の確認日がないため、超えるか収まるかをどちらかに決めて伝えます（迷う場合は超える見込みとして通告）。' : '') +
     '同じ月に以前お知らせした人は、保存済みの確認結果から自動で分かります（「SharePointに保存」を忘れずに）。</p>';
   if (!list.length) { $('noticeList').innerHTML = head + '<div class="card">今回、従業員代表への連絡が必要な方はいません。</div>'; return; }
-  $('noticeList').innerHTML = head + list.map((n, i) => `<div class="card">
+  // 保存済みの結果を開いたとき、まとめ文がない（古い記録）・人の情報がない場合は個別の文面だけを出す
+  const canCombine = S.result && list.every(n => S.result.people.some(x => x.従業員コード === n.従業員コード));
+  if (canCombine && S.texts.noticeAll == null) S.texts.noticeAll = buildCombinedNotice(list);
+  const counts = NOTICE_GROUPS.map(([k]) => [k, list.filter(n => (n.種類 || 'お知らせ') === k).length]).filter(([, c]) => c)
+    .map(([k, c]) => `${NOTICE_LABEL[k]} ${c}名`).join('・');
+  const combined = S.texts.noticeAll != null ? `<div class="card">
+      <div class="row no-print" style="margin-bottom:8px;"><h2 style="margin:0;">まとめて1通で送る（${list.length}名）</h2>
+        <button class="btn" data-ncopy="all">コピー</button><button class="btn ghost" data-nregen="all">作り直す</button></div>
+      <p class="note no-print">${esc(counts)}。事由は必要に応じて具体的な内容を書き足してください。</p>
+      <textarea class="txt" data-ntext="all" style="min-height:${Math.min(900, 300 + list.length * 80)}px;max-width:720px;">${esc(S.texts.noticeAll)}</textarea></div>` : '';
+  const cards = list.map((n, i) => `<div class="card">
       <div class="row no-print" style="margin-bottom:8px;"><h2 style="margin:0;">${esc(n.氏名)}さん　<span class="pill ${n.種類 === '通告' ? 'j-crit' : n.種類 === '経過_収まり' ? 'j-info' : 'j-warn'}">${esc(NOTICE_LABEL[n.種類] || '')}</span></h2>
         <button class="btn" data-ncopy="${i}">コピー</button><button class="btn ghost" data-nregen="${i}">作り直す</button></div>
       <textarea class="txt" data-ntext="${i}" style="min-height:460px;max-width:720px;">${esc(n.text)}</textarea></div>`).join('');
+  $('noticeList').innerHTML = head + combined + (combined
+    ? `<details class="no-print"><summary style="cursor:pointer;margin:6px 0 10px;">1人ずつの文面を見る（個別に送りたいときだけ）</summary>${cards}</details>`
+    : cards);
 }
-$('noticeList').addEventListener('input', e => { const i = e.target.dataset.ntext; if (i != null) S.texts.notice[i].text = e.target.value; });
+$('noticeList').addEventListener('input', e => {
+  const i = e.target.dataset.ntext; if (i == null) return;
+  if (i === 'all') S.texts.noticeAll = e.target.value; else S.texts.notice[i].text = e.target.value;
+});
 $('noticeList').addEventListener('click', async e => {
   const c = e.target.dataset.ncopy, g = e.target.dataset.nregen;
   if (c != null) {
-    await navigator.clipboard.writeText(S.texts.notice[c].text);
+    await navigator.clipboard.writeText(c === 'all' ? S.texts.noticeAll : S.texts.notice[c].text);
     const t = e.target.textContent; e.target.textContent = '✓ コピーしました'; setTimeout(() => { e.target.textContent = t; }, 1500);
   }
+  if (g === 'all') { S.texts.noticeAll = buildCombinedNotice(S.texts.notice || []); renderNotices(); return; }
   if (g != null) {
     const cur = S.texts.notice[g], x = S.result.people.find(p => p.従業員コード === cur.従業員コード);
     if (x) { const prev = prevNotified(); S.texts.notice[g] = { ...cur, text: buildNoticeText(x, cur.種類 || 'お知らせ', prev[x.従業員コード]) }; renderNotices(); }
@@ -1051,7 +1110,7 @@ $('saveBtn').onclick = async () => {
     const rec = {
       確認日: cd, 事業場: site, 基準日: r.asOf, 期間: r.period, 保存日時: new Date().toISOString(), 保存者: whoName(),
       元CSV: csvPath, 元CSV名: S.csv.name, マスタ: master(), 結果: r,
-      投稿文: $('postText').value, 通告文: S.texts.notice, 投稿しない打刻異常: [...S.anomSkip],
+      投稿文: $('postText').value, 通告文: S.texts.notice, 通告まとめ文: S.texts.noticeAll, 投稿しない打刻異常: [...S.anomSkip],
     };
     const resultPath = `results/${ym}/${key}_${site}.json`;
     await otPutFile(resultPath, rec);
@@ -1098,7 +1157,7 @@ async function loadIndex() {
       if (o != null) {
         const rec = await otGetFile(idx[o].結果);
         S.fromHistory = rec; S.result = rec.結果; S.csv = null; S.openCode = null; S.site = rec.事業場 || '本社'; S.dept = '';
-        S.texts = { post: rec.投稿文, notice: Array.isArray(rec.通告文) ? rec.通告文 : (rec.通告文 ? [{ 従業員コード: '', 氏名: '（保存時の通告文）', text: rec.通告文 }] : []) };
+        S.texts = { post: rec.投稿文, notice: Array.isArray(rec.通告文) ? rec.通告文 : (rec.通告文 ? [{ 従業員コード: '', 氏名: '（保存時の通告文）', text: rec.通告文 }] : []), noticeAll: rec.通告まとめ文 ?? null };
         S.anomSkip = new Set(rec.投稿しない打刻異常 || []);
         $('saveMsg').textContent = '';
         switchTab('check'); render();
