@@ -182,5 +182,66 @@ const ITEMS = { FCARTDIN: { name: 'FLATCART DINING' }, TC: { name: 'テーブル
     assert.strictEqual(await ok.readJson('_rpa_queue/nothing.json'), null);
   });
 
+  await t('明細の行ごとの差：セット内の追加・削除・変更、本体の品目コード変更', () => {
+    const b = clone(base().mapping.rules.find(r => r.id === 'body-dinset-bk'));   // 本体 FCARTDIN ＋ セット内 TCBK×2(7000)
+    const a = clone(b); a.includes = [{ code: 'TCBK', qty: 3, net: 7000 }, { code: 'FR', qty: 1, net: 500 }];
+    let rows = S.lineDiff(b, a, ITEMS, 2);
+    assert.deepStrictEqual(rows.map(r => r.status), ['same', 'chg', 'add']);
+    assert.ok(/×3/.test(rows[1].after) && /×2/.test(rows[1].before) && /FR/.test(rows[2].after) && rows[2].before === '');
+    const a2 = clone(b); a2.includes = [];
+    rows = S.lineDiff(b, a2, ITEMS, 2); assert.deepStrictEqual(rows.map(r => r.status), ['same', 'del']);
+    const a3 = clone(b); a3.code = 'FCARTXX'; rows = S.lineDiff(b, a3, ITEMS, 2);
+    assert.deepStrictEqual(rows.map(r => r.status), ['chg', 'same']);   // 本体の品目コードを変えても、同じ「本体」の行の変更になる
+    const a4 = clone(b); a4.includes = [{ code: 'TC', qty: 2, net: 7000 }]; rows = S.lineDiff(b, a4, ITEMS, 2);
+    assert.deepStrictEqual(rows.map(r => r.status).sort(), ['add', 'del', 'same']);   // セット内の品目コードを変えたら、削除＋追加
+    // 差分に行ごとの差が入る（追加・削除のルールも）
+    const bb = base(), aa = base(); const i = aa.mapping.rules.findIndex(r => r.id === 'body-dinset-bk'); aa.mapping.rules[i].includes.push({ code: 'FR', qty: 1, net: 500 });
+    aa.mapping.rules.push({ id: 'nr', scope: 'option', label: '新', words: ['x'], match: 'contains', code: 'FR', net: 1 });
+    const d = S.diffSettings(bb, aa, ITEMS), e = d.rules.find(x => x.type === 'edit'), ad = d.rules.find(x => x.type === 'add');
+    assert.ok(e.lines.some(l => l.status === 'add') && e.lines.some(l => l.status === 'same')); assert.ok(ad.lines.length === 1 && ad.lines[0].status === 'add');
+    const dd = S.diffSettings(aa, bb, ITEMS); assert.ok(dd.rules.find(x => x.type === 'del').lines.every(l => l.status === 'del'));
+  });
+
+  await t('品目マスタの引き当て：名前・単位・手配区分、無ければ赤（found=false）、マスタ未読込なら赤にしない', () => {
+    const items = { FR: { name: 'フレーム', unit: '台', teihai: '2' } };
+    assert.deepStrictEqual(S.itemInfo(items, 'FR'), { found: true, name: 'フレーム', unit: '台', teihai: '2' });
+    assert.strictEqual(S.itemInfo(items, 'NOPE').found, false); assert.strictEqual(S.itemInfo(null, 'NOPE').found, true); assert.strictEqual(S.itemInfo(items, '').found, true);
+    const d = S.describeRule({ id: 'x', scope: 'body', label: 'b', words: ['a'], code: 'FR', includes: [{ code: 'NOPE', qty: 1, net: 1 }] }, items, 2);
+    assert.deepStrictEqual(d.lines.map(l => [l.code, l.found, l.unit]), [['FR', true, '台'], ['NOPE', false, '']]); assert.deepStrictEqual(d.missing, ['NOPE']);
+  });
+
+  await t('数量：固定（1以上の整数）／言葉の中のN個。保存の形', () => {
+    const op = { scope: 'option', label: 'x', words: ['a'], match: 'contains', code: 'FR' };
+    assert.deepStrictEqual(S.validateRule(Object.assign({}, op, { qty: 2 })), []); assert.deepStrictEqual(S.validateRule(Object.assign({}, op, { qty: 'g1' })), []);
+    assert.ok(S.validateRule(Object.assign({}, op, { qty: 0 })).some(x => /数量/.test(x))); assert.ok(S.validateRule(Object.assign({}, op, { qty: 1.5 })).some(x => /数量/.test(x)));
+    assert.deepStrictEqual(S.validateRule(Object.assign({}, op, { qtyUnit: '個', qty: 0 })), []);   // 単位があれば固定の数量は使わない
+    assert.strictEqual(S.normalizeRule(Object.assign({}, op, { qty: '3' })).qty, 3);
+    assert.ok(!('qty' in S.normalizeRule(Object.assign({}, op, { qty: '3', qtyUnit: '個' }))));
+    assert.ok(!('qty' in S.normalizeRule(Object.assign({}, op, { qty: '' }))));
+    assert.strictEqual(S.normalizeRule(Object.assign({}, op, { qty: 'g1' })).qty, 'g1');
+    assert.ok(/×N（商品名の「N」個）/.test(S.describeRule(Object.assign({}, op, { qtyUnit: '個' }), null, 2).lines[0].qty)); assert.strictEqual(S.describeRule(Object.assign({}, op, { qty: 2 }), null, 2).lines[0].qty, '×2');
+  });
+
+  await t('実際の注文での組み合わせ・よく一緒に付くオプション・関連ルール', () => {
+    const m = base().mapping, mk = (i, name, date, q) => ({ id: String(i), name: '#' + i, createdAt: date, lines: [{ name, qty: q || 1, price: 0 }] });
+    const orders = [mk(1, 'FLATCART 2x4（ブラック） - テーブルコンテナ(グレー)2個追加', '2026-10-01'), mk(2, 'FLATCART 2x4（ブラック） - テーブルコンテナ(グレー)2個追加', '2026-10-03'),
+      mk(3, 'FLATCART 2x4（ブラック）', '2026-10-05'), mk(4, 'FLATCART 2x4（ブラック） - テーブルコンテナ(ブラック)1個追加', '2026-10-07', 2), mk(5, 'キャスター', '2026-10-08')];
+    const body = m.rules.find(r => EC.mapLine({ name: 'FLATCART 2x4（ブラック）', qty: 1, price: 1 }, m, '2026-10-01').items.some(i => i.kind === 'body' && i.ruleId === r.id));
+    const combos = S.comboStats(body, orders, m, 5);
+    assert.deepStrictEqual(combos.map(c => [c.productName, c.count]), [['FLATCART 2x4（ブラック） - テーブルコンテナ(ブラック)1個追加', 1], ['FLATCART 2x4（ブラック）', 1], ['FLATCART 2x4（ブラック） - テーブルコンテナ(グレー)2個追加', 2]]);   // 新しい順
+    assert.deepStrictEqual(combos[2].items.map(i => i.code + '×' + i.qty), ['FCART2x4BK×1', 'TC×2']);
+    assert.deepStrictEqual(combos[0].items.map(i => i.code + '×' + i.qty), ['FCART2x4BK×1', 'TCBK×1']);   // 数量は注文の数量（2）で割って、1台あたりにする
+    assert.strictEqual(S.comboStats(body, orders, m, 2).length, 2);
+    const st = S.optionStats(orders, m), top = S.topOptions(st, body.id, m.rules, 3);
+    assert.deepStrictEqual(top.map(x => x.count), [2, 1]); assert.ok(/グレー/.test(top[0].label) && /ブラック/.test(top[1].label));
+    assert.deepStrictEqual(S.topOptions(st, 'nothing', m.rules, 3), []);
+    // swap の関連ルール：セット内の TC／TCBK を持つ本体 ↔ 色の差し替えルール
+    const sw = { id: 'sw', scope: 'option', label: '黒に', words: ['ブラック'], match: 'contains', swap: { from: 'TC', to: 'TCBK' } };
+    const rules = m.rules.concat([sw]), set = rules.find(r => r.id === 'body-dinset');
+    const rel = S.relatedRules(sw, rules); assert.ok(rel.length >= 2 && rel.every(r => r.scopeLabel === '本体')); assert.ok(rel.some(r => r.id === 'body-dinset'));
+    const rel2 = S.relatedRules(set, rules); assert.deepStrictEqual(rel2.map(r => r.id), ['opt-swap-bk', 'sw']); assert.ok(rel2.every(r => r.swap));
+    assert.deepStrictEqual(S.relatedRules(rules.find(r => r.id === 'opt-tc'), rules), []);
+  });
+
   console.log('ec_sales_settings: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));
 })();

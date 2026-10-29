@@ -27,6 +27,13 @@
 
   /* ============================================================ 表示用の文章 */
   function itemName(items, code) { return code && items && items[code] ? items[code].name : ''; }
+  // 品目コード → 品目マスタの名前・単位・手配区分。items が無い（まだ読めていない）ときは found を true にして、赤くしない
+  function itemInfo(items, code) {
+    if (!code) return { found: true, name: '', unit: '', teihai: '' };
+    if (!items) return { found: true, name: '', unit: '', teihai: '' };
+    var it = items[code];
+    return it ? { found: true, name: it.name || '', unit: it.unit || '', teihai: it.teihai || '' } : { found: false, name: '', unit: '', teihai: '' };
+  }
   function wordsText(r) {
     if (!(r.words && r.words.length) && r.pattern) return '詳細な指定（旧）：' + r.pattern;
     var w = (r.words || []).map(function (x) { return '「' + x + '」'; });
@@ -38,16 +45,16 @@
   function describeRule(r, items, leadDefault) {
     var lines = [], missing = [], itemsOk = !!items;
     function line(role, code, qty, price) {
-      var nm = itemName(items, code);
+      var nm = itemName(items, code), it = itemInfo(items, code);
       if (code && itemsOk && !items[code]) missing.push(code);
-      lines.push({ role: role, code: code || '', name: nm, qty: qty, price: price });
+      lines.push({ role: role, code: code || '', name: nm, qty: qty, price: price, unit: it.unit, teihai: it.teihai, found: it.found });
     }
     if (r.scope === 'body') {
       line('本体', r.code, '×注文の数量', '合計から計算（値引きは本体が吸収）');
       (r.includes || []).forEach(function (x) { line('＋セット内', x.code, '×' + x.qty + '（注文の数量ごと）', x.net != null ? '標準単価 ' + yen(x.net) : '標準単価なし'); });
     } else if (r.scope === 'option') {
-      if (r.swap) lines.push({ role: '色の差し替え', code: '', name: '', qty: '', price: '', text: '色はオプションの文言で ' + r.swap.from + '→' + r.swap.to });
-      if (r.code) line('オプション', r.code, r.qtyUnit ? '×N（商品名の「N」' + r.qtyUnit + '）' : '×' + (r.qty || 1), r.net != null ? '標準単価 ' + yen(r.net) : '標準単価なし');
+      if (r.swap) lines.push({ role: '色の差し替え', code: '', name: '', qty: '', price: '', text: '色はオプションの文言で ' + r.swap.from + '→' + r.swap.to, found: true });
+      if (r.code) line('オプション', r.code, r.qtyUnit ? '×N（商品名の「N」' + r.qtyUnit + '）' : r.qty === 'g1' ? '×N（言葉の中の数字）' : '×' + (r.qty || 1), r.net != null ? '標準単価 ' + yen(r.net) : '標準単価なし');
     } else {
       line('単品', r.code, '×注文の数量', r.net != null ? '標準単価 ' + yen(r.net) : '商品の値段から計算');
     }
@@ -70,6 +77,7 @@
     if (r.swap && (!r.swap.from || !r.swap.to)) e.push('色の差し替えは、元と先の品目コードを入れてください');
     if (!isNum(r.net)) e.push('標準単価は 0 以上の数字で入れてください');
     if (r.leadDays != null && r.leadDays !== '' && !(isFinite(r.leadDays) && +r.leadDays >= 0 && Math.floor(r.leadDays) === +r.leadDays)) e.push('納期（営業日）は 0 以上の整数で入れてください');
+    if (r.scope === 'option' && !r.qtyUnit && r.qty != null && r.qty !== '' && r.qty !== 'g1' && !(isFinite(r.qty) && +r.qty >= 1 && Math.floor(r.qty) === +r.qty)) e.push('数量は 1 以上の整数で入れてください');
     (r.includes || []).forEach(function (x, i) {
       if (!String(x.code || '').trim()) e.push('セット内 ' + (i + 1) + ' 行目の品目コードが空です');
       if (!(+x.qty > 0)) e.push('セット内 ' + (i + 1) + ' 行目の数量は 1 以上で入れてください');
@@ -88,6 +96,7 @@
     if (o.scope !== 'option') { delete o.qtyUnit; delete o.swap; }
     if (o.scope !== 'body') delete o.includes;
     if (o.qtyUnit === '') delete o.qtyUnit;
+    if (o.qty === '' || o.qty == null || o.qtyUnit) delete o.qty; else if (o.qty !== 'g1') o.qty = +o.qty;
     if (o.includes) { o.includes = o.includes.map(function (x) { return { code: String(x.code || '').trim(), qty: +x.qty, net: num(x.net) }; }); if (!o.includes.length) delete o.includes; }
     if (!o.note) delete o.note; if (!o.warn) delete o.warn;
     if (o.swap) { o.swap = { from: String(o.swap.from || '').trim(), to: String(o.swap.to || '').trim() }; delete o.code; }
@@ -142,14 +151,36 @@
     return out;
   }
   // before / after は { mapping, cfg }。戻り値 { rules:[{type:'add'|'del'|'edit'|'move', id, label, fields}], settings:[{label,before,after}], count, summary:[文] }
-  function diffSettings(before, after) {
+  // SMILE に入る明細の行ごとの差（確認の画面用）。status: same / chg / add / del。セット内の行は品目コードで対応づける
+  function lineText(l) { return l.text || (l.code + (l.name ? ' ' + l.name : '') + ' ' + l.qty + '・' + l.price); }
+  function lineKeyed(rule, items, lead) {
+    if (!rule) return [];
+    var cnt = {};
+    return describeRule(rule, items, lead).lines.map(function (l) {
+      var base = l.role === '＋セット内' ? l.role + '|' + l.code : l.role; cnt[base] = (cnt[base] || 0) + 1;
+      return { key: base + '#' + cnt[base], role: l.role, text: lineText(l) };
+    });
+  }
+  function lineDiff(b, a, items, lead) {
+    var bl = lineKeyed(b, items, lead), al = lineKeyed(a, items, lead), bm = {}, used = {}, rows = [];
+    bl.forEach(function (x) { bm[x.key] = x; });
+    al.forEach(function (x) {
+      var y = bm[x.key];
+      if (y) { used[x.key] = 1; rows.push({ status: y.text === x.text ? 'same' : 'chg', role: x.role, before: y.text, after: x.text }); }
+      else rows.push({ status: 'add', role: x.role, before: '', after: x.text });
+    });
+    bl.forEach(function (y) { if (!used[y.key]) rows.push({ status: 'del', role: y.role, before: y.text, after: '' }); });
+    return rows;
+  }
+  function diffSettings(before, after, items) {
     var br = (before.mapping.rules || []), ar = (after.mapping.rules || []), bi = {}, ai = {};
     br.forEach(function (r) { bi[r.id] = r; }); ar.forEach(function (r) { ai[r.id] = r; });
     var rules = [], settings = [];
-    br.forEach(function (r) { if (!ai[r.id]) rules.push({ type: 'del', id: r.id, label: ruleLabel(r), fields: [] }); });
+    var lead = before.mapping.leadDays;
+    br.forEach(function (r) { if (!ai[r.id]) rules.push({ type: 'del', id: r.id, label: ruleLabel(r), fields: [], lines: lineDiff(r, null, items, lead) }); });
     ar.forEach(function (r) {
-      if (!bi[r.id]) { rules.push({ type: 'add', id: r.id, label: ruleLabel(r), fields: ruleFieldDiff({}, r) }); return; }
-      var f = ruleFieldDiff(bi[r.id], r); if (f.length) rules.push({ type: 'edit', id: r.id, label: ruleLabel(r), fields: f });
+      if (!bi[r.id]) { rules.push({ type: 'add', id: r.id, label: ruleLabel(r), fields: ruleFieldDiff({}, r), lines: lineDiff(null, r, items, lead) }); return; }
+      var f = ruleFieldDiff(bi[r.id], r); if (f.length) rules.push({ type: 'edit', id: r.id, label: ruleLabel(r), fields: f, lines: lineDiff(bi[r.id], r, items, lead) });
     });
     // 順番：両方にあるルールだけを並べて、位置が変わったもの
     var bc = br.filter(function (r) { return ai[r.id]; }).map(function (r) { return r.id; }), ac = ar.filter(function (r) { return bi[r.id]; }).map(function (r) { return r.id; });
@@ -201,6 +232,53 @@
       }
     }
     return out;
+  }
+  // 実際の注文での組み合わせ：このルールが当たった商品名ごとに、SMILE の明細（品目×数量）と注文の件数。新しい順に最大 n 件
+  function comboStats(rule, orders, mapping, n) {
+    var m = clone(mapping), i = m.rules.findIndex(function (r) { return r.id === rule.id; });
+    if (i >= 0) m.rules[i] = clone(rule); else m.rules.push(clone(rule));
+    var groups = {}, order = [], list = (orders || []).slice().sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0; });
+    list.forEach(function (o) {
+      o.lines.forEach(function (ln) {
+        var r = EC.mapLine(ln, m, o.createdAt);
+        if (!r.items.some(function (it) { return it.ruleId === rule.id; })) return;
+        var g = groups[ln.name];
+        if (!g) { g = groups[ln.name] = { productName: ln.name, count: 0, last: o.createdAt, lastOrder: o.name, items: r.items.map(function (it) { return { code: it.code, qty: ln.qty > 0 ? it.qty / ln.qty : it.qty, label: it.label, kind: it.kind }; }) }; order.push(g); }
+        g.count++;
+      });
+    });
+    return order.slice(0, n);
+  }
+  // 本体ごとの「よく一緒に付くオプション」：{ 本体ルールid: { オプションルールid: 件数 } }。注文の行ごとに1回だけ判定する
+  function optionStats(orders, mapping) {
+    var out = {};
+    (orders || []).forEach(function (o) {
+      o.lines.forEach(function (ln) {
+        var r = EC.mapLine(ln, mapping, o.createdAt), body = r.items.filter(function (it) { return it.kind === 'body'; })[0];
+        if (!body) return;
+        var seen = {};
+        r.items.forEach(function (it) {
+          if (it.kind !== 'option' || it.ruleId === body.ruleId || seen[it.ruleId]) return;
+          seen[it.ruleId] = 1; var s = out[body.ruleId] = out[body.ruleId] || {}; s[it.ruleId] = (s[it.ruleId] || 0) + 1;
+        });
+      });
+    });
+    return out;
+  }
+  function topOptions(stats, bodyId, rules, n) {
+    var s = (stats && stats[bodyId]) || {};
+    return Object.keys(s).map(function (id) { var r = rules.filter(function (x) { return x.id === id; })[0]; return r ? { id: id, label: r.label, count: s[id] } : null; })
+      .filter(Boolean).sort(function (a, b) { return b.count - a.count; }).slice(0, n);
+  }
+  // 関連するルール：色の差し替え（swap）と、それが対象にするセット内の品目を持つ本体ルール
+  function relatedRules(rule, rules) {
+    var out = [];
+    if (rule.swap) rules.forEach(function (r) { if (r.id !== rule.id && r.scope === 'body' && (r.includes || []).some(function (x) { return x.code === rule.swap.from || x.code === rule.swap.to; })) out.push(r); });
+    else if (rule.scope === 'body' && (rule.includes || []).length) {
+      var codes = rule.includes.map(function (x) { return x.code; });
+      rules.forEach(function (r) { if (r.id !== rule.id && r.swap && (codes.indexOf(r.swap.from) >= 0 || codes.indexOf(r.swap.to) >= 0)) out.push(r); });
+    }
+    return out.map(function (r) { return { id: r.id, label: ruleLabel(r), scopeLabel: SCOPE_LABEL[r.scope] || r.scope, swap: !!r.swap }; });
   }
   // 一覧の検索：言葉・名前・品目コード
   function searchRules(rules, q) {
@@ -266,7 +344,7 @@
   var api = {
     create: create, describeRule: describeRule, wordsText: wordsText, validateRule: validateRule, normalizeRule: normalizeRule,
     fileOf: fileOf, applyFile: applyFile, canEdit: canEdit, diffSettings: diffSettings, logDetail: logDetail, migrationPlan: migrationPlan,
-    recentMatches: recentMatches, searchRules: searchRules, fmtVal: fmtVal, SCOPE_LABEL: SCOPE_LABEL, FIELD_LABEL: FIELD_LABEL
+    recentMatches: recentMatches, searchRules: searchRules, itemInfo: itemInfo, lineDiff: lineDiff, comboStats: comboStats, optionStats: optionStats, topOptions: topOptions, relatedRules: relatedRules, fmtVal: fmtVal, SCOPE_LABEL: SCOPE_LABEL, FIELD_LABEL: FIELD_LABEL
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.EcSettings = api;
 })(typeof window !== 'undefined' ? window : globalThis);
