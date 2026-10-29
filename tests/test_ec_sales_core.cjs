@@ -175,6 +175,21 @@ t('西濃運輸（宅配）の文字数：名称16字・住所24字を超えた�
   assert.ok(long.flags.some(f => /西濃運輸.*住所/.test(f.text)));
   assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
 });
+t('商品名の揺れ（空白・×とx・大文字小文字）は同じ品目に当てる（API の商品名「FLAT CART 2×4」対応）', () => {
+  const code = name => EC.mapLine({ name, qty: 1, price: 15400 }, DEFAULT_MAPPING, '2026-10-29').items.map(i => i.code + '×' + i.qty).join(',');
+  assert.strictEqual(code('FLATCART 2x4（ブラック） - オプションは注文しない'), 'FCART2x4BK×1');
+  assert.strictEqual(code('FLAT CART 2×4（ブラック） - オプションは注文しない'), 'FCART2x4BK×1');
+  assert.strictEqual(code('FLAT CART 2×4（ブラック） - テーブルコンテナ(ブラック)2個追加'), 'FCART2x4BK×1,TCBK×2');
+  assert.strictEqual(code('FLAT CART 2×4（ブルー）　　 - オプションは注文しない'), 'FCART2x4×1');
+  assert.strictEqual(code('flat cart dining - オプションは注文しない'), 'FCARTDIN×1');
+  assert.strictEqual(code('FLAT CART DINING テーブルコンテナ/ブラック(2個)セット - オプションは注文しない'), 'FCARTDIN×1,TCBK×2');
+  // 揺れを許しても、別の品目には当てない（言葉が入っていない商品は当たらない）
+  assert.strictEqual(code('FLAT CART 2×4（グリーン）'), '');
+  assert.strictEqual(code('FLATCART 2x4用バッグ'), 'OP/2x4-BAG×1');
+  const s = EC.buildSlip(order({ total: 32450, lines: [{ name: 'FLAT CART 2×4（ブラック） - テーブルコンテナ(ブラック)2個追加', sku: '', qty: 1, price: 30800 }] }), ctx);
+  assert.strictEqual(s.grossTotal, 32450);
+  assert.ok(!s.flags.some(f => /対応表にない商品|一致しません|ずれて/.test(f.text)));
+});
 t('取込ファイル：受注の行・UTF-16', () => {
   assert.strictEqual(EC.buildSlip(order(), ctx).memo, '花岡EC');
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);

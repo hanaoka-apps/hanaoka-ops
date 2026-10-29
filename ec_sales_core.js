@@ -188,11 +188,15 @@
   //   match: contains＝含む／starts＝始まる／exact＝ちょうど一致。qtyUnit があれば「言葉の直後の数字＋単位（例：2個）」の数字を数量にする
   //   words が無い古い行は pattern（正規表現）をそのまま使う
   function escRe(t) { return t.replace(/[.*+?^${}()|[\]\\\/]/g, function (m) { return '\\' + m; }); }
+  // 商品名の照合は、空白の有無・大文字小文字・「×」と「x」の違いを無視する
+  // （Shopify の商品名が「FLATCART 2x4」「FLAT CART 2×4」のように揺れても同じ品目に当てるため）。言葉の側も同じにそろえる
+  function mkey(t) { return norm(t).toLowerCase().replace(/\s+/g, '').replace(/[×✕✖]/g, 'x'); }
+  EC.matchKey = mkey;
   EC.ruleSource = function (rule) {
     if (rule.words && rule.words.length) {
-      var ws = rule.words.map(function (w) { return norm(w); }).filter(Boolean).map(escRe);
+      var ws = rule.words.map(function (w) { return mkey(w); }).filter(Boolean).map(escRe);
       if (!ws.length) return '(?!)';
-      var alt = '(?:' + ws.join('|') + ')' + (rule.qtyUnit ? '(\\d+)' + escRe(norm(rule.qtyUnit)) : '');
+      var alt = '(?:' + ws.join('|') + ')' + (rule.qtyUnit ? '(\\d+)' + escRe(mkey(rule.qtyUnit)) : '');
       return rule.match === 'exact' ? '^' + alt + '$' : rule.match === 'starts' ? '^' + alt : alt;
     }
     return rule.pattern || '(?!)';
@@ -220,14 +224,15 @@
   // 戻り値 { items:[{code,qty,net,kind,ruleId,label}], unknown:[文言], warns:[文言], stockDate }
   EC.mapLine = function (line, mapping, orderDate) {
     var rules = mapping.rules, s = splitName(line.name, orderDate), out = { items: [], unknown: [], warns: [], stockDate: s.stockDate };
+    var k = { full: mkey(s.full), body: mkey(s.body), option: mkey(s.option) };
     var r, i, m, single = null, body = null;
-    for (i = 0; i < rules.length && !single; i++) { r = rules[i]; if (r.scope === 'single' && compile(r).test(s.full)) single = r; }
+    for (i = 0; i < rules.length && !single; i++) { r = rules[i]; if (r.scope === 'single' && compile(r).test(k.full)) single = r; }
     if (single) {
       out.items.push({ code: single.code, qty: line.qty, net: single.net != null ? single.net : null, kind: 'part', ruleId: single.id, label: single.label, lineNet: Math.round(line.price / 1.1) });
       if (single.warn) out.warns.push(single.warn);
       return out;
     }
-    for (i = 0; i < rules.length && !body; i++) { r = rules[i]; if (r.scope === 'body' && compile(r).test(s.body)) body = r; }
+    for (i = 0; i < rules.length && !body; i++) { r = rules[i]; if (r.scope === 'body' && compile(r).test(k.body)) body = r; }
     var includes = [];
     if (body) {
       out.items.push({ code: body.code, qty: line.qty, net: null, kind: 'body', ruleId: body.id, label: body.label, lineNet: Math.round(line.price / 1.1) });
@@ -237,7 +242,7 @@
       out.unknown.push(s.body);
     }
     // オプション：当たったところを消して、残った文字があれば「対応表にないオプション」
-    var rest = s.option;
+    var rest = k.option;
     rules.forEach(function (o) {
       if (o.scope !== 'option') return;
       var re = compile(o);
