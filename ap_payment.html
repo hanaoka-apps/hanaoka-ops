@@ -221,7 +221,7 @@ function render(){
   let h=`<div class="card"><h2>${esc(month().replace('/','年'))}月 ${st.round}払い（支払日 ${payDate(month(),st.round)}）</h2>
     <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:baseline"><div class="big">${yen(tot)}<small> 円・${all.length}件</small></div>
       <div style="font-size:13px;color:var(--sub)">${Object.entries(byM).map(([m,v])=>`${esc(m)} ${yen(v)}`).join('　')||'まだ支払指図がありません'}</div>
-      <span style="flex:1"></span><button class="pri" id="bGen">▶ 支払指図を作る・更新する</button></div>
+      <span style="flex:1"></span><button id="bSum" ${all.length?'':'disabled'} title="総合計・支払方法別、仕入／経費、部門ごとの内訳（総務の資料）">🖨 まとめ（PDF）</button><button class="pri" id="bGen">▶ 支払指図を作る・更新する</button></div>
     <div style="font-size:12px;color:var(--sub);margin-top:6px">仕入は「仕入（SMILE）」で確認OKにした仕入先、経費は確定した請求書から作ります。決裁中・決裁済みの部門は変えません。</div></div>
   <div class="depts">${depts.map(d=>{const s=stateOf(st.round,d),rows=piOf(st.round,d),t=rows.reduce((x,p)=>x+(+pv(p,'支払額')||0),0),pd=pendingOf(st.round,d),b=s.b;
     return `<div class="dept ${d===st.dept?'sel':''}" data-dept="${d}"><div style="display:flex;justify-content:space-between;align-items:center"><h3>${esc(d)}</h3><span class="st ${s.cls}">${esc(s.label)}</span></div>
@@ -252,6 +252,41 @@ function outputCard(){
     <div class="out" style="margin-top:8px"><button id="bVerify" ${ready?'':'disabled title="すべての部門が決裁済みになると照合できます"'}>🔒 決裁した内容と照合する</button>
       <button class="pri" id="bZen" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 全銀（総合振込）</button><button class="pri" id="bDen" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 でんさい</button><button class="pri" id="bSmile" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 SMILE 支払伝票</button><button class="pri" id="bJnl" ${v&&v.every(c=>c.ok)?'':'disabled'}>📤 会計仕訳（経費）</button>
       <span style="font-size:12px;color:var(--sub)">出力の直前に、決裁した内容（支払先・金額・期日・振込先口座）と今の支払指図を照合します。違うときは出力できません。</span></div></div>`;}
+// 支払回のまとめ（総務の資料）：総合計・支払方法別、仕入／経費、部門（工場・国内営業・ソリューション・総務）ごとの内訳と決裁の状態。印刷（PDF）・A4 縦・押印欄つき
+function printRoundSummary(round){
+  const all=piOf(round);if(!all.length){snack(`${month()} ${round}払いの支払指図がありません`,true);return;}
+  const w=window.open('','_blank');if(!w){snack('新しいタブを開けませんでした（ポップアップを許可してください）',true);return;}
+  const ML=p=>{const m=pv(p,'支払手段')||'';return m==='総合振込'?'振込':m||'（なし）';},kind=p=>pv(p,'元')==='経費'?'経費':'仕入',amt=p=>+pv(p,'支払額')||0;
+  const ORDER=['振込','でんさい','口座振替','納税','海外送金','現金'],ms=[...new Set(all.map(ML))].sort((a,b)=>(ORDER.indexOf(a)+1||99)-(ORDER.indexOf(b)+1||99));
+  const sum=(rs,f)=>rs.filter(f||(()=>true)).reduce((s,p)=>s+amt(p),0),Y=v=>v?yen(v):'';
+  const [y,m]=month().split('/').map(Number),d1=new Date(y,m-2,1),ym1=d1.getFullYear()+'/'+String(d1.getMonth()+1).padStart(2,'0');
+  const prev=PI.items.filter(p=>pv(p,'決済月')===ym1&&pv(p,'支払日区分')===round),prevOf=f=>sum(prev,f);
+  const T=sum(all),P1=prevOf(),depts=deptsOf(round).filter(d=>piOf(round,d).length);
+  const diff=(a,b)=>b?`${a-b>=0?'+':'−'}${yen(Math.abs(a-b))}`:'';
+  const head=first=>`<tr><th class="l">${first}</th>${ms.map(x=>`<th>${esc(x)}</th>`).join('')}<th>合計</th><th>件数</th><th>前月</th><th>前月差</th></tr>`;
+  const row=(lab,rs,pv1,cls)=>{const t=sum(rs);return `<tr class="${cls||''}"><td class="l">${lab}</td>${ms.map(x=>`<td class="r">${Y(sum(rs,p=>ML(p)===x))}</td>`).join('')}<td class="r b">${yen(t)}</td><td class="r">${rs.length}</td><td class="r">${Y(pv1)}</td><td class="r">${diff(t,pv1)}</td></tr>`;};
+  const byKind=[['仕入',p=>kind(p)==='仕入'],['経費',p=>kind(p)==='経費']].filter(([,f])=>all.some(f));
+  const deptRows=depts.map(d=>{const rs=piOf(round,d),s=stateOf(round,d),b=s.b,no=b?sbv(b,'申請番号'):'',pd=p=>deptOf(p)===d;
+    return row(`<b>${esc(d)}</b><span class="s">${esc(s.label)}${no?`・${esc(no)}`:''}</span>`,rs,prevOf(pd),'dp')+byKind.filter(([,f])=>rs.some(f)).map(([k,f])=>row(`　${k}`,rs.filter(f),prevOf(p=>pd(p)&&f(p)),'sub')).join('');}).join('');
+  const stamp=`<div class="st"><div class="t">社長</div><div class="t">総務</div><div class="t">総務</div><div class="t">担当</div><div class="bx"></div><div class="bx"></div><div class="bx"></div><div class="bx"></div></div>`;
+  const ttl=`${y}年${m}月 ${round}払い 支払決済まとめ`;
+  const css=`@page{size:A4 portrait;margin:10mm}body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;margin:0;font-size:10px}
+    .hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:10px}.hd h1{font-size:17px;margin:0}.m{font-size:10px;color:#333;margin-top:2px}
+    .st{display:grid;grid-template-columns:repeat(4,48px);border:1px solid #000}.st div{border-left:1px solid #000;text-align:center}.st div:nth-child(4n+1){border-left:0}.st .t{font-size:9px;border-bottom:1px solid #000}.st .bx{height:42px}
+    .kp{display:flex;gap:10px;margin-bottom:12px}.kp div{border:1px solid #777;padding:6px 10px;min-width:120px}.kp b{display:block;font-size:16px}.kp span{font-size:9.5px;color:#333}
+    h2{font-size:12px;margin:14px 0 4px;border-left:4px solid #000;padding-left:6px}
+    table{width:100%;border-collapse:collapse}th,td{border:1px solid #777;padding:3px 5px}th{background:#e8e8e8;font-weight:600}td.r{text-align:right;white-space:nowrap}td.l,th.l{text-align:left}td.b{font-weight:700}
+    tr.tt td{font-weight:700;background:#f2f2f2;border-top:2px solid #000}tr.dp td{border-top:1.5px solid #000;background:#fafafa}tr.sub td{color:#333}.s{font-size:9px;color:#444;margin-left:6px}
+    .np{margin:8px 0;font-size:12px}@media print{.np{display:none}}tr{page-break-inside:avoid}`;
+  w.document.open();w.document.write(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${esc(ttl)}</title><style>${css}</style></head><body>
+    <div class="np"><button onclick="print()">🖨 印刷する</button> 印刷の画面で「PDF に保存」も選べます（A4 縦）</div>
+    <div class="hd"><div><h1>${esc(ttl)}</h1><div class="m">支払日：${esc(payDate(month(),round))}　作成日：${new Date().toLocaleDateString('ja-JP')}（支払アプリから）</div></div>${stamp}</div>
+    <div class="kp"><div><span>支払の合計</span><b>${yen(T)} 円</b></div><div><span>件数</span><b>${all.length} 件</b></div><div><span>前月（${esc(ym1)}）</span><b>${P1?yen(P1)+' 円':'—'}</b></div><div><span>前月差</span><b>${diff(T,P1)||'—'}</b></div></div>
+    <h2>支払方法別</h2><table>${head('')}${row('合計',all,P1,'tt')}</table>
+    <h2>仕入・経費</h2><table>${head('区分')}${byKind.map(([k,f])=>row(k,all.filter(f),prevOf(f))).join('')}${row('合計',all,P1,'tt')}</table>
+    <h2>部門ごと（決裁の単位）</h2><table>${head('部門・決裁の状態')}${deptRows}${row('合計',all,P1,'tt')}</table>
+    </body></html>`);
+  w.document.close();w.focus();setTimeout(()=>{try{w.print();}catch(e){}},400);}
 function detailCard(){
   const d=st.dept;if(!d)return '';const rows=piOf(st.round,d);
   if(!rows.length)return `<div class="card"><h2>${esc(d)}の支払指図</h2><div style="color:var(--sub)">ありません</div></div>`;
@@ -268,7 +303,7 @@ function detailCard(){
           <td>${ps==='先行支払済'?`<button data-unpre="${p.id}" style="padding:1px 8px;font-size:12px">先行支払を取り消す</button>`:ps==='未'&&m==='総合振込'?`<button data-pre="${p.id}" style="padding:1px 8px;font-size:12px" title="急ぎで先に振込済み。全銀の出力から外し、報告には残す">先行支払済</button>`:''}</td></tr>`;}).join('')).join('')}</table></div>`;}
 function wire(){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
-  on('bGen',generate);on('bVerify',()=>verifyRound(st.round));on('bZen',outputZengin);on('bDen',outputDensai);on('bSmile',outputSmileDenpyo);on('bJnl',outputJournal);
+  on('bGen',generate);on('bSum',()=>printRoundSummary(st.round));on('bVerify',()=>verifyRound(st.round));on('bZen',outputZengin);on('bDen',outputDensai);on('bSmile',outputSmileDenpyo);on('bJnl',outputJournal);
   document.querySelectorAll('[data-round]').forEach(b=>b.onclick=()=>{st.round=b.dataset.round;st.dept=null;render();});
   document.querySelectorAll('[data-dept]').forEach(b=>b.onclick=e=>{if(e.target.closest('button,a'))return;st.dept=b.dataset.dept;render();});
   document.querySelectorAll('[data-send]').forEach(b=>b.onclick=()=>sendToSettle(st.round,b.dataset.send));
