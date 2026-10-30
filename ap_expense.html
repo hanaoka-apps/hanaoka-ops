@@ -191,26 +191,31 @@ async function fetchAll(o,filter){let all=[],n=`/sites/${AP_SITE}/lists/${o.id}/
   while(n){const d=await gget(n);all=all.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}return all;}
 async function resolveLists(){
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);
-  for(const o of Object.values(L)){const l=ls.value.find(x=>x.displayName===o.name);if(!l)throw new Error(o.name+' がありません（Provision-SmileAP.ps1 で作ってください）');o.id=l.id;
-    const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
-  const d=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);
+  // 列の名前・決まり・マスタは互いに関係しないので、同時に読む（順に待つと開くのが遅い）
+  const mst=loadMasters();
+  const [,d]=await Promise.all([Promise.all(Object.values(L).map(async o=>{const l=ls.value.find(x=>x.displayName===o.name);if(!l)throw new Error(o.name+' がありません（Provision-SmileAP.ps1 で作ってください）');o.id=l.id;
+    const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);c.value.forEach(x=>o.fmap[x.displayName]=x.name);})),
+    gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`)]);
   const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='expense.rules');
   if(!it)throw new Error('AP_Setting に expense.rules がありません（Provision-SmileAP.ps1 -Apply で入れてください）');
   RULES=JSON.parse(it.fields.Value||'{}');
   if(!L.inv.fmap['確認の段']&&!MOCK)snack('AP_Invoice に「確認の段」の列がありません（Provision-SmileAP.ps1 -Apply）',true);
-  await loadMasters();}
+  await mst;}
 // 科目・部門は SMILE のマスタ（/BILLS/masters）から。取れなければ手で入れる
 async function loadMasters(){
   const csv=async n=>{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/'+n)}:/content`,null,null,true);return parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer()));};
-  try{const r=await csv('smile_kamoku.csv');const h=r[0];const ix=n=>h.indexOf(n);
+  // 4つのファイルは同時に読み始め、届いた順に使う
+  const pk=csv('smile_kamoku.csv'),pu=csv('smile_uchiwake.csv'),pb=csv('smile_bumon.csv'),pv=call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(SM_FILE)}:/content`,null,null,true);
+  [pk,pu,pb,pv].forEach(p=>p.catch(()=>{}));
+  try{const r=await pk;const h=r[0];const ix=n=>h.indexOf(n);
     KAMOKU=r.slice(1).filter(x=>x[ix('科目コード')]).map(x=>({code:x[ix('科目コード')],name:x[ix('科目名')]}));
     $('dl-kamoku').innerHTML=[...new Set(KAMOKU.map(k=>k.name))].map(n=>`<option value="${esc(n)}">`).join('');}catch(e){KAMOKU=[];}
   // 内訳（補助）：科目ごと。000000（空）が無い科目（預り金など）は内訳が要る
-  try{const r=await csv('smile_uchiwake.csv');const h=r[0];const ix=n=>h.indexOf(n);UCHI={};
+  try{const r=await pu;const h=r[0];const ix=n=>h.indexOf(n);UCHI={};
     r.slice(1).filter(x=>x[ix('科目コード')]).forEach(x=>(UCHI[x[ix('科目コード')]]=UCHI[x[ix('科目コード')]]||[]).push({code:x[ix('内訳コード')],name:x[ix('略称')]||x[ix('内訳名')]||''}));}catch(e){UCHI={};}
-  try{const r=await csv('smile_bumon.csv');BUMON=r.slice(1).filter(x=>x[0]&&x[1]).map(x=>({code:x[0],name:x[1]}));}catch(e){BUMON=[];}
+  try{const r=await pb;BUMON=r.slice(1).filter(x=>x[0]&&x[1]).map(x=>({code:x[0],name:x[1]}));}catch(e){BUMON=[];}
   // 仕入先マスタ（SharedMasters。支払（決裁・出力）と同じ）：支払先の名前から SMILE の仕入先コードを当てる
-  try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(SM_FILE)}:/content`,null,null,true);
+  try{const b=await pv;
     const r=parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer())),h=r[0].map(x=>String(x||'').trim()),ix=n=>h.indexOf(n);
     VM=r.slice(1).filter(x=>x[ix('仕入先ｺｰﾄﾞ')]).map(x=>{const name=x[ix('仕入先名１')]||'',short=x[ix('仕入先名略称')]||'';
       return {code:String(x[ix('仕入先ｺｰﾄﾞ')]).trim().padStart(6,'0'),name,n:jnorm(name),s:jnorm(short)};});}catch(e){VM=[];}}
@@ -314,18 +319,20 @@ async function showApp(){
   render();}
 async function loadAll(){
   msg('読み込み中...');const ym=month();
+  // AI の結果の取り込みは請求書・仕訳を書き換えるので、その2つは取り込みのあと。ほかのリストは同時に読む
+  const others=Promise.all([fetchAll(L.vb),fetchAll(L.sp,`fields/${F(L.sp,'決済月')} eq '${ym}'`),fetchAll(L.pi,`fields/${F(L.pi,'決済月')} eq '${ym}'`),fetchAll(L.sb,`fields/${F(L.sb,'決済月')} eq '${ym}'`)]);others.catch(()=>{});
   await takeAI();
-  const invAll=await fetchAll(L.inv);
+  const [invAll,slAll]=await Promise.all([fetchAll(L.inv),fetchAll(L.sl)]),[vbAll,spAll,piAll,sbAll]=await others;
   // 燃料単価の表（サマリー）用に、請求書ごとの 払う月・拠点 を持つ（対象外・まとめた＝アーカイブは除く）
   INVMETA={};invAll.forEach(it=>{const f=it.fields,c=fv(L.inv,f,'支払区分')||'';if((c==='本社経費'||c==='工場経費')&&fv(L.inv,f,'アーカイブフラグ')!==true)INVMETA[String(it.id)]={ym:fv(L.inv,f,'対象年月')||'',loc:f[V.loc]||(c==='工場経費'?'工場':'本社'),payee:fv(L.inv,f,'支払先名')||''};});
   ALL=invAll.filter(it=>{const c=fv(L.inv,it.fields,'支払区分')||'';return (c==='本社経費'||c==='工場経費')&&fv(L.inv,it.fields,'アーカイブフラグ')!==true;}).map(it=>({id:String(it.id),f:it.fields}));
-  LINES={};(await fetchAll(L.sl)).forEach(it=>{const k=String(fv(L.sl,it.fields,'請求書ID')||'');if(k)(LINES[k]=LINES[k]||[]).push({id:String(it.id),f:it.fields});});
+  LINES={};slAll.forEach(it=>{const k=String(fv(L.sl,it.fields,'請求書ID')||'');if(k)(LINES[k]=LINES[k]||[]).push({id:String(it.id),f:it.fields});});
   Object.values(LINES).forEach(a=>a.sort((x,y)=>(+fv(L.sl,x.f,'明細行番号')||0)-(+fv(L.sl,y.f,'明細行番号')||0)));
-  VB={};VBL=[];(await fetchAll(L.vb)).forEach(it=>{const f=it.fields,c=String(fv(L.vb,f,'仕入先コード')||'').trim();if(c)VB[c]=f;
+  VB={};VBL=[];vbAll.forEach(it=>{const f=it.fields,c=String(fv(L.vb,f,'仕入先コード')||'').trim();if(c)VB[c]=f;
     if(fv(L.vb,f,'有効フラグ')!==false)VBL.push({id:String(it.id),code:c,name:fv(L.vb,f,'仕入先名')||'',n:jnorm(fv(L.vb,f,'仕入先名')),reg:String(fv(L.vb,f,'登録番号')||'').trim(),f});});
-  SPM=(await fetchAll(L.sp,`fields/${F(L.sp,'決済月')} eq '${ym}'`)).map(it=>({code:fv(L.sp,it.fields,'仕入先コード'),name:fv(L.sp,it.fields,'仕入先名')||'',incl:+fv(L.sp,it.fields,'税込仕入額')||0,n:jnorm(fv(L.sp,it.fields,'仕入先名'))}));
-  PIS=(await fetchAll(L.pi,`fields/${F(L.pi,'決済月')} eq '${ym}'`)).map(it=>it.fields);
-  SBS=(await fetchAll(L.sb,`fields/${F(L.sb,'決済月')} eq '${ym}'`)).map(it=>({id:String(it.id),f:it.fields}));
+  SPM=spAll.map(it=>({code:fv(L.sp,it.fields,'仕入先コード'),name:fv(L.sp,it.fields,'仕入先名')||'',incl:+fv(L.sp,it.fields,'税込仕入額')||0,n:jnorm(fv(L.sp,it.fields,'仕入先名'))}));
+  PIS=piAll.map(it=>it.fields);
+  SBS=sbAll.map(it=>({id:String(it.id),f:it.fields}));
   msg(`経費の請求書 ${ALL.length} 件`);}
 
 // AI の読み取り結果（ai_result）を取り込む。取り込んだら受信トレイの「AI 読み取り中」から「確認待ち」へ移る

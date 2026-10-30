@@ -156,15 +156,17 @@ async function fetchAll(o,filter){let all=[],n=`/sites/${AP_SITE}/lists/${o.id}/
   while(n){const d=await gget(n);all=all.concat(d.value||[]);n=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH,''):null;}return all;}
 async function resolveLists(){
   const ls=await gget(`/sites/${AP_SITE}/lists?$select=id,displayName`);
-  for(const o of Object.values(L)){const l=ls.value.find(x=>x.displayName===o.name);if(!l)throw new Error(o.name+' がありません（Provision-SmileAP.ps1 で作ってください）');o.id=l.id;
-    const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
+  // 列の名前・決まり・相殺先は互いに関係しないので、同時に読む（順に待つと開くのが遅い）
+  const ovP=gget(`/sites/${AP_SITE}/lists/AP_OffsetVendor/items?$expand=fields&$top=200`);ovP.catch(()=>{});
+  const [,d]=await Promise.all([Promise.all(Object.values(L).map(async o=>{const l=ls.value.find(x=>x.displayName===o.name);if(!l)throw new Error(o.name+' がありません（Provision-SmileAP.ps1 で作ってください）');o.id=l.id;
+    const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);c.value.forEach(x=>o.fmap[x.displayName]=x.name);})),
+    gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`)]);
   // 決まり（部門の振り分け・手数料・サイトと期日・支払率の判定額）は AP_Setting の smile.rules（画面に書かない）
-  const d=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);
   const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
   if(!it)throw new Error('AP_Setting に smile.rules がありません（Provision-SmileAP.ps1 -Apply で入れてください）');
   SMR=JSON.parse(it.fields.Value||'{}');S.setRules(SMR);
   // 相殺先（設計書 v2.5 3-7）：計算どおりに出したうえで、相殺の有無を確かめないと OK できない
-  OFFSET={};try{const ov=await gget(`/sites/${AP_SITE}/lists/AP_OffsetVendor/items?$expand=fields&$top=200`);
+  OFFSET={};try{const ov=await ovP;
     (ov.value||[]).forEach(x=>{const f=x.fields||{};if(f.OffsetFlag!==false&&f.VendorCode)OFFSET[String(f.VendorCode).trim().padStart(6,'0')]=f.VendorName||true;});}
   catch(e){snack('相殺先リスト（AP_OffsetVendor）を読めませんでした：'+e.message,true);}}
 const F=(o,d)=>o.fmap[d]||d, fv=(o,f,d)=>f[F(o,d)];
@@ -200,10 +202,10 @@ async function showApp(){
 async function loadSaved(){
   msg('読み込み中...');const ym=month();
   const toMap=items=>{const m={};items.forEach(it=>{const c=fv(L.pay,it.fields,'仕入先コード');if(c)m[c]={id:it.id,f:it.fields};});return m;};
-  saved=toMap(await fetchAll(L.pay,`fields/${F(L.pay,'決済月')} eq '${ym}'`));
-  prevSaved=toMap(await fetchAll(L.pay,`fields/${F(L.pay,'決済月')} eq '${prevMonth(ym)}'`));
-  adjs=(await fetchAll(L.adj)).map(it=>({id:it.id,f:it.fields}));
-  const imps=(await fetchAll(L.imp,`fields/${F(L.imp,'決済月')} eq '${ym}'`)).filter(it=>fv(L.imp,it.fields,'状態')!=='取り消し');
+  // 4つのリストは同時に読む（請求書は、支払先リスト（saved）を使って当てるので、そのあと）
+  const [sv,psv,adj,imp]=await Promise.all([fetchAll(L.pay,`fields/${F(L.pay,'決済月')} eq '${ym}'`),fetchAll(L.pay,`fields/${F(L.pay,'決済月')} eq '${prevMonth(ym)}'`),fetchAll(L.adj),fetchAll(L.imp,`fields/${F(L.imp,'決済月')} eq '${ym}'`)]);
+  saved=toMap(sv);prevSaved=toMap(psv);adjs=adj.map(it=>({id:it.id,f:it.fields}));
+  const imps=imp.filter(it=>fv(L.imp,it.fields,'状態')!=='取り消し');
   imps.sort((a,b)=>String(fv(L.imp,b.fields,'取り込み日時')).localeCompare(String(fv(L.imp,a.fields,'取り込み日時'))));
   lastImport=imps[0]?{id:imps[0].id,f:imps[0].fields,count:imps.length}:null;
   await loadInvoices();

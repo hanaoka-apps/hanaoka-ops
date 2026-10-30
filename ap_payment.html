@@ -111,7 +111,8 @@ function logOut(t){const el=$('log');if(!el)return;el.style.display='block';el.t
 async function showApp(){
   $('login-view').style.display='none';$('app-view').style.display='block';$('who').textContent=acct.name||acct.username;ME=String(acct.username||'').toLowerCase();
   initMonth();
-  try{msg('読み込み中...');await fetchCfg();await resolveLists();await loadShiharai();await reload();}catch(e){msg('エラー');snack(e.message,true);}}
+  // 設定・リスト・仕入先マスタは互いに関係しないので同時に読む（順に待つと開くのが遅い）
+  try{msg('読み込み中...');await Promise.all([fetchCfg(),resolveLists(),loadShiharai()]);await reload();}catch(e){msg('エラー');snack(e.message,true);}}
 function initMonth(){const s=$('month');const n=new Date();for(let i=-1;i<6;i++){const d=new Date(n.getFullYear(),n.getMonth()-i,1);const v=d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0');const o=document.createElement('option');o.value=v;o.textContent=v.replace('/','年')+'月払い';if(i===0)o.selected=true;s.appendChild(o);}
   const q=new URLSearchParams(location.search);const qm=q.get('month');if(qm){if(![...s.options].some(o=>o.value===qm)){const o=document.createElement('option');o.value=qm;o.textContent=qm.replace('/','年')+'月払い';s.insertBefore(o,s.firstChild);}s.value=qm;}
   if(ROUNDS.includes(q.get('round')))st.round=q.get('round');
@@ -122,25 +123,29 @@ async function resolveLists(){
   const need={AP_PaymentInstruction:PI,AP_Invoice:INV,AP_VendorBank:VB,AP_SmilePay:SP,AP_SettleBatch:SB,AP_PaymentSlip:SL};
   for(const [n,o] of Object.entries(need)){const l=find(n);if(!l)throw new Error(n+' がありません（Provision-SmileAP.ps1 -Apply で作ってください）');o.id=l.id;}
   const pm=find('AP_PurchaseMatch');if(pm)PM.id=pm.id;
-  for(const o of [PI,INV,VB,SP,SB,SL].concat(PM.id?[PM]:[])){const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);o.fmap={};c.value.forEach(x=>o.fmap[x.displayName]=x.name);}
+  const wf=loadWf();
+  const [,d]=await Promise.all([Promise.all([PI,INV,VB,SP,SB,SL].concat(PM.id?[PM]:[]).map(async o=>{const c=await gget(`/sites/${AP_SITE}/lists/${o.id}/columns?$select=name,displayName`);o.fmap={};c.value.forEach(x=>o.fmap[x.displayName]=x.name);})),
+    gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`)]);
   // 決まり（手数料・サイトと期日）は AP_Setting の smile.rules（仕入の画面と同じ）
-  const d=await gget(`/sites/${AP_SITE}/lists/AP_Setting/items?$expand=fields&$top=100`);const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
+  const it=(d.value||[]).find(x=>x.fields&&x.fields.Title==='smile.rules');
   if(it)APSmile.setRules(JSON.parse(it.fields.Value||'{}'));
   const ex=(d.value||[]).find(x=>x.fields&&x.fields.Title==='expense.rules');EXR=ex?JSON.parse(ex.fields.Value||'{}'):{};
-  // ワークフロー（申請の状態を読む・受付フォルダに置く）
+  await wf;}
+// ワークフロー（申請の状態を読む・受付フォルダに置く）
+async function loadWf(){
   try{WF.siteId=(await gget(`/sites/${WF_SITE_PATH}`)).id;const wl=await gget(`/sites/${WF.siteId}/lists?$select=id,displayName`);WF.lists={};wl.value.forEach(x=>WF.lists[x.displayName]=x.id);
     const ss=await fetchAll(WF.siteId,WF.lists.WF_Setting);ss.forEach(x=>{WF.settings[x.fields.Title]=x.fields.Value;});}
   catch(e){snack('ワークフローのサイトを読めませんでした（決裁に回す・決裁の確認ができません）：'+e.message,true);}}
 async function reload(){
   msg('読み込み中...');
-  PI.items=(await fetchAll(AP_SITE,PI.id)).map(it=>({id:it.id,f:it.fields}));
-  INV.items=(await fetchAll(AP_SITE,INV.id)).map(it=>({id:it.id,f:it.fields}));EXLEARN=null;
-  SP.items=(await fetchAll(AP_SITE,SP.id,`fields/${F(SP,'決済月')} eq '${month()}'`)).map(it=>({id:it.id,f:it.fields}));
-  SB.items=(await fetchAll(AP_SITE,SB.id,`fields/${F(SB,'決済月')} eq '${month()}'`)).map(it=>({id:it.id,f:it.fields}));
-  PM.items=PM.id?(await fetchAll(AP_SITE,PM.id)).map(it=>({id:it.id,f:it.fields})):[];
-  SL.byInv={};(await fetchAll(AP_SITE,SL.id)).forEach(it=>{const k=String(it.fields[F(SL,'請求書ID')]||'');if(k)(SL.byInv[k]=SL.byInv[k]||[]).push(it.fields);});
+  // 7つのリストは同時に読む
+  const items=a=>a.map(it=>({id:it.id,f:it.fields}));
+  const [pi,inv,sp,sb,pm,sl,vb]=await Promise.all([fetchAll(AP_SITE,PI.id),fetchAll(AP_SITE,INV.id),fetchAll(AP_SITE,SP.id,`fields/${F(SP,'決済月')} eq '${month()}'`),fetchAll(AP_SITE,SB.id,`fields/${F(SB,'決済月')} eq '${month()}'`),
+    PM.id?fetchAll(AP_SITE,PM.id):Promise.resolve([]),fetchAll(AP_SITE,SL.id),fetchAll(AP_SITE,VB.id)]);
+  PI.items=items(pi);INV.items=items(inv);EXLEARN=null;SP.items=items(sp);SB.items=items(sb);PM.items=items(pm);
+  SL.byInv={};sl.forEach(it=>{const k=String(it.fields[F(SL,'請求書ID')]||'');if(k)(SL.byInv[k]=SL.byInv[k]||[]).push(it.fields);});
   Object.values(SL.byInv).forEach(a=>a.sort((x,y)=>(+x[F(SL,'明細行番号')]||0)-(+y[F(SL,'明細行番号')]||0)));
-  VB.byCode={};(await fetchAll(AP_SITE,VB.id)).forEach(it=>{const c=(it.fields[F(VB,'仕入先コード')]||'').trim();if(c)VB.byCode[c]=it.fields;});
+  VB.byCode={};vb.forEach(it=>{const c=(it.fields[F(VB,'仕入先コード')]||'').trim();if(c)VB.byCode[c]=it.fields;});
   await syncBatches();msg('');render();}
 
 // ---------- 仕入先マスタ（でんさい番号・SMILE の仕入先名） ----------
