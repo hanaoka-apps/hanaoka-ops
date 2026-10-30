@@ -129,7 +129,7 @@ Shopify ──(A) 定期取得──▶ ec_shopify_*.csv ──▶ 画面でチ�
 4. **PADに渡す**：固定フォルダに `納品先.txt`・`受注.txt` をコピー。
 5. **PADフローを順に実行**：①`Smile_EC納品先取込` → ②`Smile_EC受注取込`。**①にエラーがあれば②は実行しない**。SMILEが閉じていれば自動起動する（**1〜3の確認がすべて済んだあと**。権限のない依頼ではSMILEを起動しない。起動に失敗したら、SMILEには触っていないので `failed`・`executed: false` の `result.json` を書いて `failed/` へ移す）。
 6. **結果を書く**：PADが固定フォルダに書く `result_nouhin.json`／`result_juchu.json`（`{ executed, imported, errors, errorRows }`）を待って、`_rpa_import/<バッチ番号>/result.json` にまとめる。完了を知らせるのは `result.json`。結果ファイルが時間内（1フロー15分）に出ないときは `partial`。
-7. **移す・消す**：`_rpa_import/done/<バッチ番号>/`（`done` のとき）または `failed/`（それ以外）へ移す。依頼ファイルも done／failed に移す。**30日たったら消す**（お客様の名前・住所・電話が入っているため。アプリ側の記録も30日）。
+7. **移す・消す**：`_rpa_import/done/<バッチ番号>/`（`done` のとき）または `failed/`（それ以外）へ移す。依頼ファイルも done／failed に移す。**7日たったら消す**（お客様の名前・住所・電話が入っているため。アプリ側の記録も30日）。
 8. **続けて確認用出力**：`done` のとき `ec_smile_verify_export` を依頼に追加する（アプリが待たなくてよいように）。アプリは取込の依頼より後のこのジョブを探して待ち、90秒たっても見つからなければ自分で依頼する。
 
 ### 3-3b. どの経路で終わっても `result.json` を書く
@@ -295,7 +295,7 @@ SMILEの出力は**全データを上書き保存する限り、日中に何度�
 | 担当 | やること |
 |---|---|
 | Power Automate（クラウドフロー） | トリガー「新しいメールが届いたとき（V3）」。フローの持ち主は、配布リストのメンバーのアカウント（個人ではなく、専用機用の共有的なアカウントがあればそちら。退職・異動で止まらないように）。条件：**宛先に配布リストのアドレスを含む**・添付あり・送信元／件名（確認中）。ZIPを `SharedMasters\_furusato_inbox\` に **`yyyyMMdd_HHmmss_<元のファイル名>.zip`** で保存（先頭の日付がパスワードの日付になる。日本時間で付ける） |
-| 専用機（タスクスケジューラー） | `scripts/furusato_unzip.py` を数分おきに実行。ZIPを解凍し、CSVを `_furusato_inbox\csv\<ZIPの名前>\` に置く。ZIPは `done\`（失敗は `failed\`）へ移し、30日たったら消す。ログは `_rpa_queue\logs\furusato_unzip.log`（パスワードは出さない） |
+| 専用機（タスクスケジューラー） | `scripts/furusato_unzip.py` を数分おきに実行。ZIPを解凍し、CSVを `_furusato_inbox\csv\<ZIPの名前>\` に置く。ZIPは `done\`（失敗は `failed\`）へ移し、7日たったら消す。ログは `_rpa_queue\logs\furusato_unzip.log`（パスワードは出さない） |
 | アプリ | （次のPR）`csv\` の CSV を読んで「受注チェック」に並べる。列は実物を見て決める |
 
 - パスワード＝**英語（小文字・秘密）＋届いた日**。英語の部分は専用機の環境変数 `FURUSATO_ZIP_WORD` にだけ置く（コード・設定・ログ・チャットに書かない）。日付は**月日の4桁（例：10月30日＝`1030`）**。書き方・前後何日ぶん試すかは `ec_sales_config.json` の `furusato`。実物のZIPで解凍できることを確認済み（中のCSVは Shift_JIS）。
