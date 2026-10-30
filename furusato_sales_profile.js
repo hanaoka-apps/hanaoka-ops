@@ -10,7 +10,7 @@
     var did = await api.resolveDriveId(), orders = {}, seen = 0, newest = '';
     var dirs;
     try { dirs = (await api.graphGet('/drives/' + did + '/root:/' + enc(base) + ':/children?$select=name,folder&$top=200')).value || []; }
-    catch (e) { api.setOrders([]); return; }   // まだ1通も届いていない
+    catch (e) { api.setOrders([]); api.note('注文CSVのフォルダ（' + base + '）を読めませんでした：' + (e && e.message || e)); return; }
     dirs = dirs.filter(function (d) { return d.folder; }).sort(function (a, b) { return a.name < b.name ? 1 : -1; }).slice(0, 120);
     for (var i = 0; i < dirs.length; i++) {
       var files = (await api.graphGet('/drives/' + did + '/root:/' + enc(base + '/' + dirs[i].name) + ':/children?$select=name,file,lastModifiedDateTime,@microsoft.graph.downloadUrl&$top=50')).value || [];
@@ -23,7 +23,9 @@
         seen++;
       }
     }
-    api.setOrders(Object.keys(orders).map(function (k) { return orders[k]; }));
+    var list = Object.keys(orders).map(function (k) { return orders[k]; });
+    api.setOrders(list);
+    api.note('注文CSV：フォルダ ' + dirs.length + '個・CSV ' + seen + '件を読み、注文 ' + list.length + '件（' + base + '）');
   }
 
   window.EC_PROFILE = {

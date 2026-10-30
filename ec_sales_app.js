@@ -224,13 +224,18 @@ async function loadMasters() {
     try {
       await PROFILE.loadOrders({
         conf: CONF, graphGet, resolveDriveId, stamp,
+        note(msg) {   // 読み込みの結果（読めなかった理由など）を、注文欄の上に出す
+          const e = $('st-source'); if (!e) return;
+          let n = $('st-load'); if (!n) { n = document.createElement('div'); n.id = 'st-load'; n.className = 'muted'; n.style.marginTop = '4px'; e.parentNode.appendChild(n); }
+          n.textContent = msg;
+        },
         setOrders(list) {
           orders = list; orderIndex = {}; orders.forEach(o => { orderIndex[o.id.replace(/\D/g, '')] = o; });
           const latest = orders.reduce((a, o) => o.createdAt > a ? o.createdAt : a, '');
           if (!$('f-from').value) $('f-from').value = EC.addDays(latest || today(), -30);
         }
       });
-    } catch (e) { console.warn('注文を読めません', e); failed.push('注文CSV'); }
+    } catch (e) { console.warn('注文を読めません', e); failed.push('注文CSV'); try { const n = $('st-source'); if (n) { let m = $('st-load'); if (!m) { m = document.createElement('div'); m.id = 'st-load'; m.className = 'muted'; n.parentNode.appendChild(m); } m.textContent = '注文CSVを読めませんでした：' + (e && e.message || e); } } catch (x) { /* 表示だけ */ } }
   }
   for (const k of PROFILE.loadOrders ? [] : Object.keys(CONF.shopifyFiles || {})) {
     try { const r = await fetchCsv(CONF.shopifyFiles[k]); M.stamps['shopify_' + k] = r.modified; ingestShopify(k, r.text, CONF.shopifyFiles[k] + '（SharePoint ' + stamp(r.modified) + '）'); } catch (e) { /* まだ無い */ }
