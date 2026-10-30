@@ -55,6 +55,9 @@ main{flex:1;overflow:hidden;display:flex}
 /* 一覧（左から2列目）をたためる：境目の細い帯を押す。たたんだかどうかはこのブラウザに覚える */
 .ltgl{flex:none;width:14px;display:flex;align-items:flex-start;justify-content:center;padding-top:14px;border-right:1px solid var(--line);background:#f7f9fc;color:var(--sub);cursor:pointer;font-size:13px;user-select:none}.ltgl:hover{background:var(--pri-l,#e3edf9);color:var(--pri)}
 main.list-mini .list{display:none}
+main.list-mini .ltgl{width:34px;padding-top:12px;flex-direction:column;align-items:center;gap:6px;background:var(--pri-l,#e3edf9);color:var(--pri);font-weight:700}
+.ltgl .lt-v{writing-mode:vertical-rl;letter-spacing:.15em;font-size:12px}
+.empty .lt-open{margin-top:10px}
 .list{display:flex;flex-direction:column}
 .filters{position:sticky;top:0;z-index:5;background:#f7f9fc;border-bottom:1px solid var(--line);padding:8px 10px;display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .filters input,.filters select{font-size:12.5px;padding:4px 6px}
@@ -239,7 +242,7 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="wf_theme.css?v=20261029b">
+<link rel="stylesheet" href="wf_theme.css?v=20261030b">
 </head>
 <body>
 
@@ -1327,10 +1330,11 @@ async function staffSyncPlan(d) {
   act.forEach(e => {
     const code = codeKey(e.従業員コード), start = dIn(String(e.入社年月日 || '').replace(/(\d+)年(\d+)月(\d+)日/, (_, y, m, dd) => y + '-' + m.padStart(2, '0') + '-' + dd.padStart(2, '0'))), kind = staffKindOf(e);
     let p = byCode[code];
-    if (!p) p = d.persons.find(x => !x.EmpCode && ['入社予定', '採用の稟議中'].includes(x.State) && nameKey(x.Title) === nameKey(e.従業員名));
+    const alpha = x => ((String(x.Memo || '').match(/アルファベット表記：(.+)/) || [])[1] || '').trim();
+    if (!p) p = d.persons.find(x => !x.EmpCode && ['入社予定', '採用の稟議中'].includes(x.State) && (nameKey(x.Title) === nameKey(e.従業員名) || (alpha(x) && nameKey(alpha(x)).toLowerCase() === nameKey(e.従業員名).toLowerCase())));
     if (p) {
       seen.add(p.id);
-      if (['入社予定', '採用の稟議中'].includes(p.State) || !p.EmpCode) items.push({ kind: '入社した', name: p.Title, id: p.id, fields: { State: '在籍', EmpCode: String(e.従業員コード), Kind: kind, StartDate: start ? dOut(start) : null, Source: '給与' }, note: (p.UnitPath || '').split('/').pop(), sel: true });
+      if (['入社予定', '採用の稟議中'].includes(p.State) || !p.EmpCode) items.push({ kind: '入社した', name: p.Title, id: p.id, fields: { State: '在籍', EmpCode: String(e.従業員コード), Kind: kind, StartDate: start ? dOut(start) : null, Source: '給与', ...(nameKey(p.Title) !== nameKey(e.従業員名) ? { NameLock: true } : {}) }, note: (p.UnitPath || '').split('/').pop(), sel: true });
       else if (map[e.部門] && p.UnitPath && !(p.UnitPath === map[e.部門] || String(p.UnitPath).startsWith(map[e.部門] + '/') || String(map[e.部門]).startsWith(p.UnitPath + '/')) && p.State !== '退職') {   // 班の違いは見ない。上の場所にいる人（工場長が「工場」など）も見ない
         // 部署は人員表が正。人員表は書き換えず、給与の部門を直してもらう（人員表の場所に当たる給与の部門名は staff.deptMap を逆に引く）
         const want = Object.entries(map).filter(([, v]) => p.UnitPath === v || String(p.UnitPath).startsWith(v + '/')).sort((a, b) => b[1].length - a[1].length)[0];
@@ -1339,7 +1343,7 @@ async function staffSyncPlan(d) {
       else if (!['派遣', 'シルバー', 'スポット'].includes(p.Kind) && p.Kind !== kind && p.State !== '退職') items.push({ kind: '区分が変わった', name: p.Title, id: p.id, fields: { Kind: kind }, note: `"${p.Kind}" → "${kind}"`, sel: true });
       // 氏名：給与が正（最初の取り込みで Excel の名字だけが入った人など）
       const full = String(e.従業員名 || '').replace(/\s+/g, ' ').trim();
-      if (p.EmpCode && full && nameKey(p.Title) !== nameKey(full) && p.State !== '退職') items.push({ kind: '氏名が違う', name: p.Title, id: p.id, fields: { Title: full }, note: `"${p.Title}" → "${full}"`, sel: true });
+      if (p.EmpCode && full && !p.NameLock && nameKey(p.Title) !== nameKey(full) && p.State !== '退職') items.push({ kind: '氏名が違う', name: p.Title, id: p.id, fields: { Title: full }, note: `"${p.Title}" → "${full}"`, sel: true });
       return;
     }
     const base = map[e.部門] || '', path = unitSet.has(base + '/（班未定）') ? base + '/（班未定）' : base;
@@ -1618,15 +1622,15 @@ function staffPanel(box, M, scopes) {
       ${p && !ro ? '<details class="sdr-edit"><summary>場所・役職・区分・メモを直す</summary>' : ''}
       ${!p ? '<div class="muted" style="margin-bottom:8px">給与にいない人（派遣・シルバー人材・スポットなど）を足します。社員は給与から自動で入るので、ここでは足しません。</div>' : ''}
       <fieldset ${ro ? 'disabled' : ''} style="border:0;padding:0;margin:0;${ro ? 'display:none' : ''}"><div class="lg-form" style="margin-top:8px">
-        ${!p ? `<label class="fld"><span>氏名</span><input data-sf="Title" value=""></label>` : ''}
+        <label class="fld"><span>氏名</span><input data-sf="Title" value="${esc(x.Title || '')}" placeholder="外国籍の方はカタカナで"></label>
         <label class="fld"><span>場所</span><select data-sf="UnitPath">${unitOpts(x.UnitPath)}</select></label>
         <label class="fld"><span>役職の表示</span><input data-sf="JobLabel" value="${esc(x.JobLabel || '')}" placeholder="例：班長・主任"></label>
         <label class="fld"><span>区分</span>${sel('Kind', p ? STAFF_KINDS : ['派遣', 'シルバー', 'スポット'], x.Kind)}</label>
         <label class="fld"><span>派遣会社など</span><input data-sf="Agency" value="${esc(x.Agency || '')}" placeholder="例：〇〇スタッフ"></label>
-        <label class="fld"><span>状態</span>${sel('State', STAFF_STATES, x.State || '在籍')}</label>
+        <label class="fld"><span>状態</span>${sel('State', STAFF_STATES.includes(x.State || '在籍') ? STAFF_STATES : [x.State, ...STAFF_STATES], x.State || '在籍')}</label>
         <label class="fld"><span>入社日・受け入れ日</span><input type="date" data-sf="StartDate" value="${esc(dIn(x.StartDate))}"></label>
         <label class="fld wide"><span>メモ</span><textarea data-sf="Memo" rows="2">${esc(x.Memo || '')}</textarea></label></div></fieldset>
-      ${ro ? '' : `<div class="actions"><span class="muted">${p && p.Source === '給与' ? '氏名・入社日は給与から入ります。場所・役職・メモをここで直します。' : ''}</span><span style="flex:1"></span><button class="pri" id="sfSave">${p ? '保存する' : '足す'}</button></div>`}
+      ${ro ? '' : `<div class="actions"><span class="muted">${p && p.EmpCode ? '氏名を直すと、それからは給与の氏名と比べません（外国籍の方をカタカナにするとき）。アルファベット表記はメモへ。' : ''}</span><span style="flex:1"></span><button class="pri" id="sfSave">${p ? '保存する' : '足す'}</button></div>`}
       ${p && !ro ? '</details>' : ''}</div>`;
   }
   $('sfX').onclick = () => { S.sel = null; S.add = null; S.addWish = null; S.unitEdit = null; render(); };
@@ -1638,10 +1642,15 @@ function staffPanel(box, M, scopes) {
     st.view = 'new'; st.sel = null; st.editor = { form, data: { kind: b.dataset.jinin, staffPerson: `#${p.id} ${p.Title}（${String(p.UnitPath).split('/').pop()}）` } }; S.sel = null; render(); });
   if ($('sfSave')) $('sfSave').onclick = async () => {
     const f = {}; box.querySelectorAll('[data-sf]').forEach(el => { f[el.dataset.sf] = el.value.trim(); });
-    if (!u && !p && !f.Title) return alert('氏名を入れてください');
+    if (!u && !f.Title) return alert('氏名を入れてください');
     if (!u && !inScope(f.UnitPath, scopes)) return alert('その場所は、あなたの範囲の外です');
     if (!u) f.StartDate = f.StartDate ? dOut(f.StartDate) : null;
     if (!u && !p) f.Source = '手入力';
+    // 直すときは、変えた項目だけを書く（触っていない状態・日付などを、画面の表示のせいで書き換えない）
+    const was = u || p;
+    if (was) Object.keys(f).forEach(k => { const old = k === 'StartDate' ? (was.StartDate ? dOut(dIn(was.StartDate)) : null) : String(was[k] == null ? '' : was[k]).trim(); if (f[k] === old) delete f[k]; });
+    if (was && !Object.keys(f).length) { toast('変わったところはありません'); return; }
+    if (p && p.EmpCode && 'Title' in f) f.NameLock = true;   // 人員表で決めた氏名。給与と比べて戻さない
     const closeWish = !u && !p && S.addWish ? S.addWish : null;   // 枠の希望から「派遣で補充」したときは、その希望を閉じる
     try { await api.staffSave(u ? 'STF_Unit' : 'STF_Person', u ? u.id : p ? p.id : 0, f); if (closeWish) { await api.staffSave('STF_Opening', closeWish, { State: '終了' }); S.addWish = null; } toast('人員表を保存しました'); S.sel = null; S.add = null; S.unitEdit = null; loadStaff(); }
     catch (e) { alert('保存できませんでした：' + e.message + (e.status === 403 ? '（直す権限がありません）' : '')); }
@@ -2143,10 +2152,23 @@ function renderListView(main) {
   const all = itemsForView();
   const empty = { inbox: st.sub ? `${SUBS.find(x => x.k === st.sub).label}の対応待ちはありません` : '対応待ちはありません 🎉', mine: 'まだ申請はありません', involved: '関わった申請はありません', all: '申請はありません' }[st.view];
   main.innerHTML = `<div class="list">${filtersHtml(all)}<div class="rows" id="rows"></div></div>
-                    <div class="ltgl" id="ltgl"></div><div class="detail" id="detail"><div class="empty">左の一覧から選んでください</div></div>`;
-  const setListMini = on => { main.classList.toggle('list-mini', on); $('ltgl').textContent = on ? '›' : '‹'; $('ltgl').title = on ? '一覧を出す' : '一覧をたたむ（右を広く使う）'; try { localStorage.setItem('wf.listMini', on ? '1' : ''); } catch { } };
-  let listMini = false; try { listMini = localStorage.getItem('wf.listMini') === '1'; } catch { }
-  setListMini(listMini); $('ltgl').onclick = () => { setListMini(!main.classList.contains('list-mini')); window.dispatchEvent(new Event('resize')); };
+                    <div class="ltgl" id="ltgl"></div><div class="detail" id="detail"></div>`;
+  // 一覧をたたむのは、申請を開いて右を広く見たいときだけ。メニューを切り替えたら開いた状態から始める（たたんだままだと空の画面に見えるため）
+  if (st.miniView !== st.view) { st.listMini = false; st.miniView = st.view; }
+  let shownN = all.length;
+  const emptyDetail = () => {
+    if (st.sel && all.some(i => i.key === st.sel)) return;
+    $('detail').innerHTML = st.listMini ? `<div class="empty">一覧をたたんでいます（${shownN}件）<br><button class="lt-open" id="ltOpen">一覧を開く</button></div>`
+      : `<div class="empty">${all.length ? '左の一覧から選んでください' : esc(empty)}</div>`;
+    if ($('ltOpen')) $('ltOpen').onclick = () => setListMini(false);
+  };
+  const setListMini = on => {
+    st.listMini = on; main.classList.toggle('list-mini', on);
+    $('ltgl').innerHTML = on ? `<span>›</span><span class="lt-v">一覧 ${shownN}件</span>` : '‹';
+    $('ltgl').title = on ? '一覧を開く' : '一覧をたたむ（右を広く使う）';
+    emptyDetail(); window.dispatchEvent(new Event('resize'));
+  };
+  $('ltgl').onclick = () => setListMini(!st.listMini);
   const drawRows = () => {
     const items = applyFilter(all), on = Object.values(flt).some(Boolean);
     $('fCount').textContent = on ? `${items.length} 件（全 ${all.length} 件中）` : `${all.length} 件`;
@@ -2155,8 +2177,9 @@ function renderListView(main) {
       : `<div class="empty">${all.length ? '条件に合うものはありません' : empty}</div>`;
     return items;
   };
-  let shown = drawRows();
-  const onChange = () => { flt.q = $('fQ').value; flt.form = $('fForm').value; flt.status = $('fStatus').value; flt.from = $('fFrom').value; flt.to = $('fTo').value; shown = drawRows(); };
+  let shown = drawRows(); shownN = shown.length;
+  setListMini(!!st.listMini);
+  const onChange = () => { flt.q = $('fQ').value; flt.form = $('fForm').value; flt.status = $('fStatus').value; flt.from = $('fFrom').value; flt.to = $('fTo').value; shown = drawRows(); shownN = shown.length; };
   $('fQ').addEventListener('input', onChange);
   ['fForm', 'fStatus', 'fFrom', 'fTo'].forEach(id => $(id).addEventListener('change', onChange));
   $('fClear').onclick = () => { Object.keys(flt).forEach(k => flt[k] = ''); renderListView(main); };
