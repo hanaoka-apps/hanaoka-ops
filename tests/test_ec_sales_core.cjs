@@ -928,13 +928,13 @@ t('SMILE の伝票イメージ：取込前（予定）', () => {
     { code: 'FR', name: 'フレーム', unit: '式', teihai: '2', qty: 1, unitNet: 1500, amountNet: 1500 }] };
   const img = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { isNew: true, name: '山田様' } });
   assert.strictEqual(img.mode, 'plan');
-  assert.deepStrictEqual([img.head.juchuNo.pending, img.head.juchuNo.text], [true, '取込時に SMILE が付けます']);
+  assert.deepStrictEqual([img.head.juchuNo.pending, img.head.juchuNo.text], [true, '取込時に付与']);
   assert.deepStrictEqual(img.head.customer, { code: '599802', name: '直販EC 大阪' }); assert.strictEqual(img.head.staff.code, '000092'); assert.strictEqual(img.head.dept.code, '002230'); assert.strictEqual(img.head.warehouse.code, '000105');
   assert.strictEqual(img.head.orderDate, '2026/10/26'); assert.strictEqual(img.head.nouki, '2026/10/28'); assert.strictEqual(img.head.shipDate, '2026/10/28'); assert.strictEqual(img.head.mfgDate, '2026/10/27'); assert.strictEqual(img.head.po, '1767');
-  assert.deepStrictEqual([img.head.delivery.pending, img.head.delivery.text, img.head.delivery.name], [true, '取込時に番号を決めます', '山田様']);
+  assert.deepStrictEqual([img.head.delivery.pending, img.head.delivery.text, img.head.delivery.name], [true, '取込時に決定', '山田様']);
   assert.strictEqual(EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '000123', name: '山田様' } }).head.delivery.code, '000123');   // 既存の納品先はコード＋名前
   assert.deepStrictEqual(img.lines.map(l => l.no + ':' + l.code + ':' + l.teihai.code + ':' + l.teihai.label), ['1:FCART2x4BK:1:繰返(製作)', '2:TCBK:1:繰返(製作)', '3:FR:2:繰返(以外)']);
-  assert.ok(img.lines[0].seiban.pending && /取込時に自動で付きます（手配区分が 1:繰返\(製作\) のため）/.test(img.lines[0].seiban.text)); assert.strictEqual(img.lines[2].seiban.value, '-'); assert.ok(!img.lines[2].seiban.pending);
+  assert.ok(img.lines[0].seiban.pending && img.lines[0].seiban.text === '自動で付与（手配区分1）'); assert.strictEqual(img.lines[2].seiban.value, '-'); assert.ok(!img.lines[2].seiban.pending);
   assert.deepStrictEqual([img.lines[0].qty, img.lines[0].price, img.lines[0].amount, img.lines[0].unit, img.lines[0].mfgQty, img.lines[0].mfgDate, img.lines[2].mfgQty, img.lines[2].mfgDate], ['1.00', '14,000.00', '14,000', '台', '1.00', '2026/10/27', '0.00', '']);
   assert.deepStrictEqual(img.lines[0].genUnit, { value: '5,248.00', master: true }); assert.strictEqual(img.lines[0].genAmount, '5,248'); assert.strictEqual(img.lines[1].genUnit, null);   // 原単価は品目マスタに標準の原価があるときだけ
   assert.deepStrictEqual(img.total, { qty: '3.00', amount: '22,500' });   // 実物 #1767 の合計 22,500

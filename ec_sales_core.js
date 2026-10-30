@@ -1242,7 +1242,7 @@
         var th = String(l.teihai || '1'), mi = items[l.code] || {}, cost = mi.cost !== undefined && mi.cost !== '' ? Number(mi.cost) : NaN;
         lines.push({
           no: i + 1, warehouse: wh, teihai: { code: th, label: EC.teihaiLabel(th) },
-          seiban: th === '1' ? { value: '', pending: true, text: '取込時に自動で付きます（手配区分が 1:繰返(製作) のため）' } : { value: '-' },
+          seiban: th === '1' ? { value: '', pending: true, text: '自動で付与（手配区分1）' } : { value: '-' },
           qty: fmtNum(l.qty, 2), genUnit: isFinite(cost) ? { value: fmtNum(cost, 2), master: true } : null, genAmount: isFinite(cost) ? fmtNum(Math.round(cost * l.qty)) : '',
           nouki: EC.fmtDate(ship), code: l.code, tax: '抜', unit: l.unit || '', name: l.name || '',
           mfgQty: th === '1' ? fmtNum(l.qty, 2) : '0.00', price: fmtNum(l.unitNet, 2), amount: fmtNum(Math.round(l.amountNet)),
@@ -1255,11 +1255,11 @@
     else s.lines.forEach(function (l) { qtySum += l.qty; amtSum += Math.round(l.amountNet); });
     var r0 = act ? act.rows[0] : null, d = o.delivery || {};
     var head = {
-      juchuNo: act ? { value: act.juchuNo || '' } : { value: '', pending: true, text: '取込時に SMILE が付けます' },
+      juchuNo: act ? { value: act.juchuNo || '' } : { value: '', pending: true, text: '取込時に付与' },
       orderDate: act ? EC.fmtDate(P(r0, ['受注日付'])) : EC.fmtDate(s.orderDate), taxRate: '10.00', juchuKubun: '確定', torihiki: '売掛',
       customer: { code: s.cust, name: cinfo.name || '' }, staff: { code: cinfo.staff || '', name: cinfo.staffName || '' }, dept: { code: cinfo.dept || '', name: cinfo.deptName || '' },
       warehouse: { code: wh, name: cfg.warehouseName || '' },
-      delivery: act ? { code: act.deliveryCode || '', name: P(r0, ['納品先名']) || d.name || '' } : (d.isNew ? { code: '', name: d.name || '', pending: true, text: '取込時に番号を決めます' } : { code: d.code || '', name: d.name || '' }),
+      delivery: act ? { code: act.deliveryCode || '', name: P(r0, ['納品先名']) || d.name || '' } : (d.isNew ? { code: '', name: d.name || '', pending: true, text: '取込時に決定' } : { code: d.code || '', name: d.name || '' }),
       po: act ? P(r0, ['客先注番']) : po,
       nouki: act ? EC.fmtDate(P(r0, ['納期', '受注納期'])) : EC.fmtDate(ship), shipDate: act ? EC.fmtDate(P(r0, ['出荷予定日'])) : EC.fmtDate(ship),
       mfgDate: act ? '' : (lines.some(function (l) { return l.teihai.code === '1'; }) ? EC.fmtDate(mfg) : '')
