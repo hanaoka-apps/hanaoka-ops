@@ -298,7 +298,7 @@ SMILEの出力は**全データを上書き保存する限り、日中に何度�
 | 専用機（タスクスケジューラー） | `scripts/furusato_unzip.py` を数分おきに実行。ZIPを解凍し、CSVを `_furusato_inbox\csv\<ZIPの名前>\` に置く。ZIPは `done\`（失敗は `failed\`）へ移し、30日たったら消す。ログは `_rpa_queue\logs\furusato_unzip.log`（パスワードは出さない） |
 | アプリ | （次のPR）`csv\` の CSV を読んで「受注チェック」に並べる。列は実物を見て決める |
 
-- パスワード＝**英語（小文字・秘密）＋届いた日**。英語の部分は専用機の環境変数 `FURUSATO_ZIP_WORD` にだけ置く（コード・設定・ログ・チャットに書かない）。日付の書き方・前後何日ぶん試すかは `ec_sales_config.json` の `furusato`（日付の書き方は確認中）。
+- パスワード＝**英語（小文字・秘密）＋届いた日**。英語の部分は専用機の環境変数 `FURUSATO_ZIP_WORD` にだけ置く（コード・設定・ログ・チャットに書かない）。日付は**月日の4桁（例：10月30日＝`1030`）**。書き方・前後何日ぶん試すかは `ec_sales_config.json` の `furusato`。実物のZIPで解凍できることを確認済み（中のCSVは Shift_JIS）。
 - 専用機：`pip install pyzipper`（`scripts/requirements.txt`）。環境変数 `SHARED_MASTERS_DIR`・`FURUSATO_ZIP_WORD`。
 - CSV には個人情報が入る。SharedMasters（社内限定）の外には出さない。
 
