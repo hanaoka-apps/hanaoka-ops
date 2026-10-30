@@ -242,6 +242,22 @@ class TestSendTest(BuildEcIndexTest):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(B.main(['--dir', self.dir, '--config', os.path.join(self.dir, 'なし.json')]), 1)
 
+    def test_兄弟アプリの設定の得意先も入れる(self):
+        conf = os.path.join(self.dir, 'ec.json'); other = os.path.join(self.dir, 'fs.json')
+        with open(conf, 'w', encoding='utf-8') as f:
+            json.dump({'config': {'customers': {'599801': {}}}, 'indexAlsoConfigs': ['fs.json']}, f)
+        with open(other, 'w', encoding='utf-8') as f:
+            json.dump({'config': {'customers': {'341401': {}}}}, f)
+        captured = {}
+        orig = B.build
+        B.build = lambda d, customers, **kw: captured.setdefault('c', list(customers))
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(B.main(['--dir', self.dir, '--config', conf]), 0)
+        finally:
+            B.build = orig
+        self.assertEqual(captured['c'], ['599801', '341401'])
+
     def test_引数が設定より優先される(self):
         self.write_with_test_rows()
         conf = os.path.join(self.dir, 'conf.json')

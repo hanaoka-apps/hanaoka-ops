@@ -62,7 +62,6 @@
       var id = (r['発注番号'] || '').trim();
       if (!id || !/^\d+$/.test(id)) return;
       var code = (r['商品番号'] || '').trim(), qty = Number(r['数量']) || 1;
-      var rule = FS.findRule(conf.mapping, code), netEach = rule && rule.net != null ? rule.net : 0;
       var nameRaw = String(r['品名'] || '').replace(/ - /g, ' ').replace(/※/g, '');
       var o = map[id];
       if (!o) {
@@ -79,11 +78,22 @@
         list.push(o);
       }
       o.fileRows++;
-      o.lines.push({ name: code + ' ' + nameRaw, sku: code, qty: qty, price: Math.round(netEach * 1.1), discount: 0, shipped: '' });
-      var add = Math.round(netEach * qty * 1.1);
-      o.total += add; o.subtotal += add;
+      o.lines.push({ name: code + ' ' + nameRaw, sku: code, qty: qty, price: 0, discount: 0, shipped: '' });
     });
+    list.forEach(function (o) { FS.priceOrder(o, conf.mapping); });
     return list;
+  };
+
+  // 金額は対応表の契約単価（税抜）から決める：行の単価＝税込、注文の合計＝行の合計。
+  // 対応表を直したあとにも使えるよう、伝票を作るたびにやり直す（画面で単価を直したとき、すぐ反映される）
+  FS.priceOrder = function (o, mapping) {
+    var total = 0;
+    o.lines.forEach(function (l) {
+      var rule = FS.findRule(mapping, l.sku), net = rule && rule.net != null ? Number(rule.net) : 0;
+      l.price = Math.round(net * 1.1); total += Math.round(net * l.qty * 1.1);
+    });
+    o.total = total; o.subtotal = total;
+    return o;
   };
 
   // 時間帯の「希望無」「指定なし」は指定ではない
@@ -92,6 +102,7 @@
   // 注文 → 伝票（EC売上の buildSlip に、ふるさと納税の確認ポイントを足す）
   // ctx: { mapping, cfg, items, smileOrders, cal }。ctx.mapping / ctx.cfg は furusato_config.json の mapping / config
   FS.buildSlip = function (o, ctx) {
+    FS.priceOrder(o, ctx.mapping);
     var s = EC.buildSlip(o, ctx);
     s.source = 'furusato';
     // 合計0円の扱い（ギフティング）は EC 用。ふるさと納税では出さない
