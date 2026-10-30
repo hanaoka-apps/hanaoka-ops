@@ -919,4 +919,48 @@ t('納品先の手動編集：反映・元の値・チェック・差分', () =>
   assert.ok(EC.checkDeliveryEdit(Object.assign({}, base.auto, { addr2: 'あ'.repeat(40) }), DEFAULT_CONFIG).warns.some(x => /長い/.test(x)));
   assert.ok(EC.checkDeliveryEdit(Object.assign({}, base.auto, { tel: '123' }), DEFAULT_CONFIG).warns.some(x => /電話/.test(x)));
 });
+t('SMILE の伝票イメージ：取込前（予定）', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG);
+  const items = { FCART2x4BK: { name: 'FCART2x4 ブラック', unit: '台', teihai: '1', cost: '5248' }, TCBK: { name: 'テーブルコンテナ(ブラック)', unit: '個', teihai: '1' }, FR: { name: 'フレーム', unit: '式', teihai: '2' } };
+  const slip = { id: '1767', name: '#1767', cust: '599802', orderDate: '2026-10-26', shipDate: '2026-10-28', memo: '花岡EC', lines: [
+    { code: 'FCART2x4BK', name: 'FCART2x4 ブラック', unit: '台', teihai: '1', qty: 1, unitNet: 14000, amountNet: 14000 },
+    { code: 'TCBK', name: 'テーブルコンテナ(ブラック)', unit: '個', teihai: '1', qty: 1, unitNet: 7000, amountNet: 7000 },
+    { code: 'FR', name: 'フレーム', unit: '式', teihai: '2', qty: 1, unitNet: 1500, amountNet: 1500 }] };
+  const img = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { isNew: true, name: '山田様' } });
+  assert.strictEqual(img.mode, 'plan');
+  assert.deepStrictEqual([img.head.juchuNo.pending, img.head.juchuNo.text], [true, '取込時に SMILE が付けます']);
+  assert.deepStrictEqual(img.head.customer, { code: '599802', name: '直販EC 大阪' }); assert.strictEqual(img.head.staff.code, '000092'); assert.strictEqual(img.head.dept.code, '002230'); assert.strictEqual(img.head.warehouse.code, '000105');
+  assert.strictEqual(img.head.orderDate, '2026/10/26'); assert.strictEqual(img.head.nouki, '2026/10/28'); assert.strictEqual(img.head.shipDate, '2026/10/28'); assert.strictEqual(img.head.mfgDate, '2026/10/27'); assert.strictEqual(img.head.po, '1767');
+  assert.deepStrictEqual([img.head.delivery.pending, img.head.delivery.text, img.head.delivery.name], [true, '取込時に番号を決めます', '山田様']);
+  assert.strictEqual(EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '000123', name: '山田様' } }).head.delivery.code, '000123');   // 既存の納品先はコード＋名前
+  assert.deepStrictEqual(img.lines.map(l => l.no + ':' + l.code + ':' + l.teihai.code + ':' + l.teihai.label), ['1:FCART2x4BK:1:繰返(製作)', '2:TCBK:1:繰返(製作)', '3:FR:2:繰返(以外)']);
+  assert.ok(img.lines[0].seiban.pending && /取込時に自動で付きます（手配区分が 1:繰返\(製作\) のため）/.test(img.lines[0].seiban.text)); assert.strictEqual(img.lines[2].seiban.value, '-'); assert.ok(!img.lines[2].seiban.pending);
+  assert.deepStrictEqual([img.lines[0].qty, img.lines[0].price, img.lines[0].amount, img.lines[0].unit, img.lines[0].mfgQty, img.lines[0].mfgDate, img.lines[2].mfgQty, img.lines[2].mfgDate], ['1.00', '14,000.00', '14,000', '台', '1.00', '2026/10/27', '0.00', '']);
+  assert.deepStrictEqual(img.lines[0].genUnit, { value: '5,248.00', master: true }); assert.strictEqual(img.lines[0].genAmount, '5,248'); assert.strictEqual(img.lines[1].genUnit, null);   // 原単価は品目マスタに標準の原価があるときだけ
+  assert.deepStrictEqual(img.total, { qty: '3.00', amount: '22,500' });   // 実物 #1767 の合計 22,500
+  assert.ok(img.lines.every(l => l.po === '1767' && l.memo === '1767' && l.warehouse === '000105' && l.tax === '抜'));
+  // テスト送信の注文は、行摘要は末尾8桁（TEST… を入れない）。客先注番は TEST…
+  const tst = EC.slipImage(Object.assign({}, slip, { po: 'TEST2610301234' }), { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '000123', name: 'x' } });
+  assert.ok(tst.lines.every(l => l.po === 'TEST2610301234' && l.memo === '1767'));
+  // 手配区分が全部 2 なら、製造納期は出さない
+  const only2 = EC.slipImage(Object.assign({}, slip, { lines: [slip.lines[2]] }), { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }); assert.strictEqual(only2.head.mfgDate, '');
+  assert.deepStrictEqual([EC.fmtDate('2026-10-28'), EC.fmtDate('20261028'), EC.fmtDate('261028'), EC.fmtDate('0'), EC.fmtDate('')], ['2026/10/28', '2026/10/28', '2026/10/28', '', '']);
+});
+t('SMILE の伝票イメージ：取込後（実際の値）・旧形式の index', () => {
+  const items = { FCART2x4BK: { name: 'FCART2x4 ブラック', unit: '台', teihai: '1' }, FR: { name: 'フレーム', unit: '式', teihai: '2' } };
+  const slip = { id: '1767', name: '#1767', cust: '599802', orderDate: '2026-10-26', lines: [] };
+  const mkAct = rows => ({ rows, juchuNo: '26846', deliveryCode: '000812', nouhin: null });
+  const full = [
+    { '受注№': '26846', 行: '1', 受注日付: '20261026', 納品先コード: '000812', 納品先名: '山田様', 品目コード: 'FCART2x4BK', 品目名: 'FCART2x4 ブラック', 数量: '1.00', 単価: '14000.00', 金額: '14000', 納期: '20261028', 出荷予定日: '20261028', 客先注番: '1767', 社内メモ: '花岡EC', 手配区分: '1', 製造数量: '1.00', 製番: 'J26-0123-00', 原単価: '5248.00' },
+    { '受注№': '26846', 行: '2', 受注日付: '20261026', 納品先コード: '000812', 納品先名: '山田様', 品目コード: 'FR', 品目名: 'フレーム', 数量: '1.00', 単価: '1500.00', 金額: '1500', 納期: '20261028', 出荷予定日: '20261028', 客先注番: '1767', 社内メモ: '花岡EC', 手配区分: '2', 製造数量: '0.00', 製番: '', 原単価: '800.00' }];
+  const a = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, act: mkAct(full) });
+  assert.strictEqual(a.mode, 'actual'); assert.deepStrictEqual(a.head.juchuNo, { value: '26846' }); assert.strictEqual(a.head.orderDate, '2026/10/26'); assert.deepStrictEqual(a.head.delivery, { code: '000812', name: '山田様' });
+  assert.strictEqual(a.lines[0].seiban.value, 'J26-0123-00'); assert.strictEqual(a.lines[1].seiban.value, '-');   // 手配区分2は「-」
+  assert.deepStrictEqual(a.lines[0].genUnit, { value: '5,248.00' }); assert.strictEqual(a.lines[0].genAmount, '5,248'); assert.strictEqual(a.lines[0].shipDate, '2026/10/28'); assert.strictEqual(a.lines[0].mfgQty, '1.00');
+  assert.deepStrictEqual(a.total, { qty: '2.00', amount: '15,500' }); assert.strictEqual(a.head.po, '1767'); assert.strictEqual(a.memo, '花岡EC');
+  // 旧形式の index（製番・原単価・手配区分・納期の列が無い）でも壊れない：製番は「無い」、手配区分は品目マスタから
+  const old = [{ '受注№': '26846', 行: '1', 受注日付: '20261026', 納品先コード: '000812', 品目コード: 'FCART2x4BK', 品目名: 'FCART2x4 ブラック', 数量: '1.00', 単価: '14000.00', 金額: '14000', 客先注番: '1767' }];
+  const o = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, act: mkAct(old) });
+  assert.deepStrictEqual(o.lines[0].seiban, { value: '', missing: true }); assert.strictEqual(o.lines[0].genUnit, null); assert.strictEqual(o.lines[0].teihai.code, '1'); assert.strictEqual(o.lines[0].nouki, ''); assert.strictEqual(o.head.nouki, '');
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

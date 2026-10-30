@@ -67,7 +67,7 @@ ec_smile_verify_export を依頼に追加 ───▶   ③ Smile_EC確認用�
 3. 出力先は SharedMasters 直下の `受注明細出力.csv`・`納品先マスタ.csv`（夜間の出力と**同じ名前**）。約2分の見込み。
 4. 2つとも書き終わったら終了。常駐スクリプトは「2つが起動後に更新され、30秒サイズが変わらず、書き込み中でない」ことで完了と判断する（上限10分）。
 
-そのあと常駐スクリプトが後処理 `build_ec_index`（専用機のPythonで `scripts/build_ec_index.py` を毎回GitHubのmainから取得して実行）を行い、SharedMasters直下に **`ec_smile_index.json`** を作る（ECの得意先の受注・納品先、品目、入金だけ。1MB前後。失敗したら前回のファイルが残る）。アプリはこのJSONで突き合わせる。PAD側ですることは増えない。
+そのあと常駐スクリプトが後処理 `build_ec_index`（注文の詳細の「SMILE の伝票イメージ」のため、受注の行に **製番・原単価**（と 手配区分・納期・出荷予定日）、品目に任意の **標準原価** も入れる。出力CSVに列が無ければ空で、古い形式の index でもアプリは動く）（専用機のPythonで `scripts/build_ec_index.py` を毎回GitHubのmainから取得して実行）を行い、SharedMasters直下に **`ec_smile_index.json`** を作る（ECの得意先の受注・納品先、品目、入金だけ。1MB前後。失敗したら前回のファイルが残る）。アプリはこのJSONで突き合わせる。PAD側ですることは増えない。
 
 - 夜間の `ec_index` ジョブ（01:10）は、PADなしで `build_ec_index` だけを実行する。
 - JSONの `generatedAt` が取込の完了時刻より新しくなるまで、アプリは「確認待ち」のままになる。

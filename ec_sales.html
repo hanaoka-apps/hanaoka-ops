@@ -9,7 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ec_sales_layouts.js?v=1"></script>
-<script src="ec_sales_core.js?v=6"></script>
+<script src="ec_sales_core.js?v=7"></script>
 <script src="ec_sales_shared.js?v=1"></script>
 <script src="ec_sales_settings.js?v=2"></script>
 <script src="rpa_queue.js?v=4"></script>
@@ -118,6 +118,17 @@
   .lt { width: 100%; border-collapse: collapse; margin: 4px 0 10px; font-size: 13px; } .lt td { padding: 3px 8px; vertical-align: top; word-break: break-all; border-bottom: 1px solid var(--line); }
   .lt td.add { background: #e3f6ea; font-weight: 600; } .lt td.del { background: #fde6e6; text-decoration: line-through; } .lt td.chg { background: #fff1c2; font-weight: 600; }
   .combo { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  /* SMILE の「受注伝票内容」画面に似せた並び（項目名＝薄い青の見出し、値＝白）。細部の再現はしない */
+  .sl { border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); padding: 10px 12px; }
+  .sl-banner { font-size: 12px; padding: 5px 10px; border-radius: 6px; margin-bottom: 8px; background: var(--amber-soft); color: var(--amber); font-weight: 600; } .sl-banner.actual { background: var(--green-soft); color: var(--green); }
+  .sl-row { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 3px 0; }
+  .sl-f { display: inline-flex; align-items: stretch; font-size: 12.5px; min-width: 0; }
+  .sl-l { background: #dfe7f5; color: #2c3a66; padding: 2px 7px; border-radius: 4px 0 0 4px; white-space: nowrap; font-size: 11.5px; display: flex; align-items: center; }
+  .sl-v { border: 1px solid #c9d3e8; border-left: 0; border-radius: 0 4px 4px 0; padding: 2px 8px; background: #fff; min-width: 40px; word-break: break-all; }
+  .sl-v.num { text-align: right; } .sl-p { color: var(--sub); opacity: .8; font-style: italic; } .sl-v.pend { background: #f6f7fb; border-style: dashed; }
+  .sl-line { border: 1px solid #c9d3e8; border-left: 4px solid var(--navy); border-radius: 6px; padding: 6px 8px; margin: 8px 0; background: #fbfcff; }
+  .sl-line .no { font-weight: 700; color: var(--navy); margin-right: 4px; }
+  .sl-sum { display: flex; gap: 14px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
   /* マウスが乗った行を薄い紺で重ねて示す（セルの色分けはそのまま見える） */
   tbody tr:not(.gh):hover td { box-shadow: inset 0 0 0 999px rgba(35,38,143,.07); }
   tbody tr.err:hover td:first-child { box-shadow: inset 3px 0 0 var(--red), inset 0 0 0 999px rgba(35,38,143,.07); }
@@ -402,7 +413,7 @@ async function loadMasters() {
   const F = (r, names) => EC.pick(r, names);
   const applyItems = objs => {
     M.items = {};
-    objs.forEach(r => { M.items[F(r, ['品目コード'])] = { name: F(r, ['品目名']), unit: F(r, ['単位']), teihai: F(r, ['初期表示用手配区分']) || '1', stock: F(r, ['在庫管理区分名']) }; });   // stock＝在庫管理（行う／行わない）。テスト送信の安全確認に使う
+    objs.forEach(r => { M.items[F(r, ['品目コード'])] = { name: F(r, ['品目名']), unit: F(r, ['単位']), cost: F(r, ['標準原価']), teihai: F(r, ['初期表示用手配区分']) || '1', stock: F(r, ['在庫管理区分名']) }; });   // stock＝在庫管理（行う／行わない）。テスト送信の安全確認に使う
   };
   const applyNouhin = objs => { M.nouhin = EC.indexDeliveryMaster(objs, store.cfg); };
   const applyJuchu = objs => {
@@ -658,7 +669,7 @@ function renderDrawer() {
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
     (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '') +
-    compareHtml(s) +
+    detailViewHtml(s) +
     '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。</div>' +
     '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check' ? ' disabled' : '') + '>' +
     '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
@@ -691,6 +702,40 @@ function smileActual(s) {
   return { rows, nouhin: I.byNouhin[s.cust + '|' + dc] || null, deliveryCode: dc, juchuNo: EC.pick(rows[0], ['受注№', '受注No']) };
 }
 function ymdText(v) { const d = String(v || '').replace(/\D/g, ''); return d.length === 8 ? d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6) : d.length === 6 ? '20' + d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4) : '（なし）'; }
+// 注文の詳細：「伝票イメージ」と「見比べ」の切り替え（選んだほうは覚えておく。納品先を直している間は見比べ）
+let slipView = (() => { try { return localStorage.getItem('ec_sales_slipview') === 'cmp' ? 'cmp' : 'image'; } catch (e) { return 'image'; } })();
+function detailViewHtml(s) {
+  const view = editId === s.id ? 'cmp' : slipView;
+  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px"><span class="chip' + (view === 'image' ? ' active' : '') + '" data-dview="image">SMILE の伝票イメージ</span><span class="chip' + (view === 'cmp' ? ' active' : '') + '" data-dview="cmp">Shopify と SMILE の見比べ</span></div>';
+  return tabs + (view === 'cmp' ? compareHtml(s) : slipImageHtml(s));
+}
+function slipImageHtml(s) {
+  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
+  const sl = Object.assign({}, s, { memo: memoOf(s) });
+  const img = EC.slipImage(sl, { cfg: store.cfg, items: M.items, cal, shipDate: shipOf(s), act, delivery: { code: code || '', name: d.name, isNew: !code } });
+  const E = esc, H = img.head;
+  const f = (lb, v, cls, st) => '<span class="sl-f"' + (st ? ' style="' + st + '"' : '') + '><span class="sl-l">' + lb + '</span><span class="sl-v' + (cls ? ' ' + cls : '') + '">' + v + '</span></span>';
+  const pend = t => '<span class="sl-p">' + E(t) + '</span>';
+  const cn = x => (x.code ? E(x.code) : '') + (x.name ? ' ' + E(x.name) : '');
+  const banner = act ? '<div class="sl-banner actual">SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') + '</div>'
+    : '<div class="sl-banner">取込後はこうなります（予定）　<span style="font-weight:400">いまアプリが作る取込内容のとおりです。<i>薄い斜めの文字</i>は、取込時に SMILE が付ける項目です。</span></div>';
+  let h = '<div class="sl">' + banner +
+    '<div class="sl-row">' + f('受注No', H.juchuNo.pending ? pend(H.juchuNo.text) : E(H.juchuNo.value || '（不明）'), H.juchuNo.pending ? 'pend' : '') + f('受注日', E(H.orderDate)) + f('税率', E(H.taxRate), 'num') + f('受注区分', E(H.juchuKubun)) + '</div>' +
+    '<div class="sl-row">' + f('得意先', cn(H.customer)) + f('取引', E(H.torihiki)) + f('担当者', cn(H.staff)) + f('部門', cn(H.dept)) + f('倉庫', cn(H.warehouse)) + '</div>' +
+    '<div class="sl-row">' + f('納品先', H.delivery.pending ? pend(H.delivery.text) + (H.delivery.name ? '　' + E(H.delivery.name) : '') : cn(H.delivery), H.delivery.pending ? 'pend' : '') + f('客先注番', E(H.po)) + '</div>' +
+    '<div class="sl-row">' + f('受注納期', E(H.nouki)) + f('出荷予定日', E(H.shipDate)) + (H.mfgDate ? f('製造納期', E(H.mfgDate)) : '') + '</div>';
+  img.lines.forEach(l => {
+    const sb = l.seiban.pending ? f('製番', pend(l.seiban.text), 'pend') : l.seiban.missing ? f('製番', pend('（この確認用データには製番がありません）'), 'pend') : f('製番', E(l.seiban.value));
+    const gen = l.genUnit ? f(l.genUnit.master ? '原単価（マスタ）' : '原単価', '<span class="' + (l.genUnit.master ? 'sl-p' : '') + '">' + E(l.genUnit.value) + '</span>', 'num') + f('原価金額', '<span class="' + (l.genUnit.master ? 'sl-p' : '') + '">' + E(l.genAmount) + '</span>', 'num') : '';
+    h += '<div class="sl-line"><div class="sl-row"><span class="no">行 ' + l.no + '</span>' + f('倉庫', E(l.warehouse)) + f('手配区分', E(l.teihai.code) + (l.teihai.label ? ':' + E(l.teihai.label) : '')) + sb +
+      (act ? '' : f('完納・出荷済数量', pend('0.00'), 'num')) + f('受注数量', E(l.qty), 'num') + gen + f('受注納期', E(l.nouki)) + '</div>' +
+      '<div class="sl-row">' + f('品目コード', E(l.code)) + f('税', E(l.tax)) + f('単位', E(l.unit)) + f('品目名', E(l.name)) + f('製造数量', E(l.mfgQty), 'num') + f('受注単価', E(l.price), 'num') + f('受注金額', E(l.amount), 'num') + f('出荷予定日', E(l.shipDate)) + (l.mfgDate ? f('製造納期', E(l.mfgDate)) : '') + '</div>' +
+      '<div class="sl-row">' + f('客先注番', E(l.po)) + (l.memo ? f('摘要', E(l.memo)) : '') + '</div></div>';
+  });
+  h += '<div class="sl-sum">' + f('受注数量合計', E(img.total.qty), 'num') + f('合計金額（税抜）', E(img.total.amount), 'num') + '</div>' +
+    '<div class="sl-row">' + f('備考', '', '', 'flex:1') + '</div>' + (img.memo ? '<div class="sl-row">' + f('社内メモ', E(img.memo)) + '</div>' : '') + '</div>';
+  return h;
+}
 function compareHtml(s) {
   const o = s.order, d = EC.deliveryFromOrder(o, store.cfg), act = smileActual(s), P = EC.pick, E = esc, stNow = stateOf(s), editing = editId === s.id && stNow === 'new' && !act;
   const nz = v => String(v == null ? '' : v).normalize('NFKC').replace(/[\s　]/g, ''), dg = v => String(v == null ? '' : v).replace(/\D/g, '');
@@ -1834,7 +1879,7 @@ document.addEventListener('click', async e => {
         mutate: id => { const r = store.orders[id]; if (!r) return false; r.status = 'exported'; r.exportedAt = now; r.exportedBy = who; r.confirmedBy = who; r.confirmedAt = now; r.manualConfirmed = true; delete r.checkMessage; return true; } });
       return;
     }
-    if (d.act === 'edstart') { const dv = EC.deliveryFromOrder(s.order, store.cfg); editId = s.id; editDraft = {}; EC.EDIT_FIELDS.forEach(f => { editDraft[f.k] = dv[f.k] == null ? '' : dv[f.k]; }); renderDrawer(); return; }
+    if (d.act === 'edstart') { slipView = 'cmp'; const dv = EC.deliveryFromOrder(s.order, store.cfg); editId = s.id; editDraft = {}; EC.EDIT_FIELDS.forEach(f => { editDraft[f.k] = dv[f.k] == null ? '' : dv[f.k]; }); renderDrawer(); return; }
     if (d.act === 'edcancel') { editId = null; editDraft = null; renderDrawer(); return; }
     if (d.act === 'edrev') { const dv = EC.deliveryFromOrder(s.order, store.cfg); editDraft[t.dataset.k] = dv.auto[t.dataset.k] || ''; renderDrawer(); return; }
     if (d.act === 'edzip') { await zipHint(s); return; }
@@ -1967,6 +2012,8 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => { const t = e.target; if (t.dataset && t.dataset.md !== undefined) { mdInput(t); if (t.dataset.mdre !== undefined) renderMapDrawer(); } });
 // 対応表・設定：行クリック → ドロワー／ドロワーのボタン
 document.addEventListener('click', e => {
+  const dv = e.target.closest('[data-dview]');
+  if (dv) { slipView = dv.dataset.dview === 'cmp' ? 'cmp' : 'image'; try { localStorage.setItem('ec_sales_slipview', slipView); } catch (x) { /* 覚えられなくても動く */ } renderDrawer(); return; }
   const t = e.target.closest('[data-mdact],[data-newrule],[data-mdclose],[data-rulelink],.rcard[data-maprule]'); if (!t) return;
   if (t.matches('.rcard[data-maprule]')) { if (!e.target.closest('input,button,select,a,label')) openRule(t.dataset.maprule); return; }
   if (t.dataset.rulelink !== undefined) { if (mapDrawer && !closeMapDrawer()) return; openRule(t.dataset.rulelink); return; }
