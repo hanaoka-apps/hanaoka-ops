@@ -105,22 +105,27 @@
         if (METHODS.includes(H.PayMethod)) setIfEmpty('支払手段', H.PayMethod);
         if (CONF.includes(H.AIConfidence)) set('AI確信度', H.AIConfidence);
         if (H.DebitDate) set('引落予定日', H.DebitDate);
-        // 本社の経費で口座振替 → 引落の前に報告する回（expense.rules の debitEarlyRound：11〜20日→10日、21日〜月末→20日）。
-        //   その回の総務の決裁をもう回していたら、次の回で事後報告。仕訳の部門が工場・国内営業・ソリューションのものは外す（月末の支払決済で説明）
+        // 本社の経費で口座振替 → 引落日で支払回（expense.rules の debitEarlyRound：10〜19日→10日、20日〜月末→20日、翌月1〜9日→前の月の月末）。
+        //   その回の総務の決裁をもう回していたら、次の回で事後報告。仕訳の部門が工場・国内営業・ソリューションのものは、10〜31日の引落もその月の月末（月末の支払決済で説明）
         {
           const R = (await expenseRules(call, site)).debitEarlyRound, cat0 = f[fi('支払区分')] || r.category || '', loc0 = f.SiteLocation || (cat0.startsWith('工場') ? '工場' : '本社');
           const method = METHODS.includes(H.PayMethod) ? H.PayMethod : f[fi('支払手段')], dd = String(H.DebitDate || '').match(/(\d{4})-(\d{2})-(\d{2})/);
-          const hit = R && dd ? (R.byDay || []).find(b => +dd[3] >= b.from && +dd[3] <= b.to) : null;
+          let hit = R && dd ? (R.byDay || []).find(b => +dd[3] >= b.from && +dd[3] <= b.to) : null;
           if (hit && EXPENSE.includes(cat0) && loc0 === R.loc && (R.methods || []).includes(method)) {
             const main = (r.lines || []).slice().sort((a, b) => (+b.AmountInclTax || 0) - (+a.AmountInclTax || 0))[0], dc = String((main && main.DeptCode) || '');
-            if (!((R.exceptDeptPrefix || []).some(p => dc.startsWith(p)) || (R.exceptDepts || []).includes(dc))) {
-              const ym = `${dd[1]}/${dd[2]}`, md = `${+dd[2]}/${+dd[3]}`;
-              let rd = hit.round; const passed = [];
-              while (rd && await settled(call, site, ym, rd, R.settleDept || '総務')) { passed.push(rd); rd = (R.next || {})[rd]; }
+            if (!hit.prevMonth && ((R.exceptDeptPrefix || []).some(p => dc.startsWith(p)) || (R.exceptDepts || []).includes(dc))) hit = { round: '月末', dept: true };
+            {
+              const pm = new Date(+dd[1], +dd[2] - 2, 1), md = `${+dd[2]}/${+dd[3]}`;
+              let ym = hit.prevMonth ? `${pm.getFullYear()}/${String(pm.getMonth() + 1).padStart(2, '0')}` : `${dd[1]}/${dd[2]}`, rd = hit.round; const passed = [];
+              // 営業・工場の部門はその部門が月末に説明する（総務の決裁は見ない）。前の月の月末をもう回していたら、引落の月の10日払いで事後報告
+              while (!hit.dept && rd && await settled(call, site, ym, rd, R.settleDept || '総務')) {
+                passed.push(`${ym} ${rd}`); rd = (R.next || {})[rd];
+                if (!rd && hit.prevMonth && ym !== `${dd[1]}/${dd[2]}`) { ym = `${dd[1]}/${dd[2]}`; rd = '10日'; } }
               if (rd) {
                 set('支払日区分', rd); set('対象年月', ym);
-                cmt.push(passed.length ? `引落日 ${md}：${passed.join('・')}払いはもう決裁に回しているので、${rd}払いで事後報告にしました（本社経費の決まり）`
-                  : `引落日 ${md} の前に報告するため ${rd}払い にしました（本社経費の決まり）`);
+                cmt.push(hit.dept ? `引落日 ${md}：部門が営業・工場のため ${ym} ${rd}払い にしました（本社経費の決まり）`
+                  : passed.length ? `引落日 ${md}：${passed.join('・')}払いはもう決裁に回しているので、${ym} ${rd}払いで事後報告にしました（本社経費の決まり）`
+                  : `引落日 ${md} の前に報告するため ${ym} ${rd}払い にしました（本社経費の決まり）`);
               }
             }
           }
