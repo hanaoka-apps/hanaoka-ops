@@ -1264,7 +1264,7 @@
       nouki: act ? EC.fmtDate(P(r0, ['納期', '受注納期'])) : EC.fmtDate(ship), shipDate: act ? EC.fmtDate(P(r0, ['出荷予定日'])) : EC.fmtDate(ship),
       mfgDate: act ? '' : (lines.some(function (l) { return l.teihai.code === '1'; }) ? EC.fmtDate(mfg) : '')
     };
-    return { mode: act ? 'actual' : 'plan', head: head, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? '' : '', memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
+    return { mode: act ? 'actual' : 'plan', head: head, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? P(r0, ['備考']) : (o.biko || ''), memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
   };
 
   EC.indexObjects = function (tbl) {

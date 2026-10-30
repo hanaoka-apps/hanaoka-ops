@@ -39,6 +39,7 @@
     emptyOrders: 'サイネックスからの注文メール（ZIP）を専用機が解凍すると、ここに注文が並びます',
     buildSlip: function (o, ctx) { return FS.buildSlip(o, ctx); },
     juchuRows: function (slips, header, cfg, cal, conf) { return FS.juchuRows(slips, header, cfg, cal, conf && conf.biko); },
+    biko: function (conf) { return conf.biko || ''; },   // SMILE の備考欄（伝票イメージの表示用）
     loadOrders: loadOrders
   };
 })();

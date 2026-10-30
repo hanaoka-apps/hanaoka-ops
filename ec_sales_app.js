@@ -432,7 +432,7 @@ function renderDrawer() {
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
     (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '') +
     detailViewHtml(s) +
-    '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。</div>' +
+    '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">' + ((s.baseMemo || s.memo) ? '基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。' : '基本は空です。書き足したいことがあれば入力します。') + '</div>' +
     '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check' ? ' disabled' : '') + '>' +
     '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
     '<h3>出荷予定日</h3><div>' + (st === 'new' || st === 'ok' ? '<input type="date" class="dateinp' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : md(ship)) + '</div>' +
@@ -474,7 +474,7 @@ function detailViewHtml(s) {
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
   const sl = Object.assign({}, s, { memo: memoOf(s) });
-  const opt = { cfg: store.cfg, items: M.items, cal, shipDate: shipOf(s), delivery: { code: code || '', name: d.name, isNew: !code } };
+  const opt = { cfg: store.cfg, items: M.items, cal, biko: PROFILE.biko ? PROFILE.biko(CONF) : '', shipDate: shipOf(s), delivery: { code: code || '', name: d.name, isNew: !code } };
   const img = EC.slipImage(sl, Object.assign({ act }, opt));
   const plan = act ? EC.slipImage(sl, opt) : null;   // 取込後は、アプリが作るはずだった内容と違う項目を黄色にする
   const E = esc, H = img.head, PH = plan && plan.head;
@@ -506,7 +506,7 @@ function slipImageHtml(s) {
   h += '</tbody></table></div>';
   if (plan && plan.lines.length !== img.lines.length) h += '<div class="alert warn" style="margin-top:6px">明細の行数が違います（アプリの予定 ' + plan.lines.length + '行／SMILE ' + img.lines.length + '行）</div>';
   h += '<div class="sl-sum">受注数量合計 <b' + (plan && plan.total.qty !== img.total.qty ? ' class="sl-vv diff"' : '') + '>' + E(img.total.qty) + '</b>合計金額（税抜） <b' + (plan && plan.total.amount !== img.total.amount ? ' class="sl-vv diff"' : '') + '>' + E(img.total.amount) + '</b></div>' +
-    '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', '') + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
+    '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
     (act ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
   return h;
 }
