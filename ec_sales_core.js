@@ -1201,6 +1201,72 @@
   };
 
   // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
+  /* ============================================================ SMILE の伝票イメージ（注文の詳細）
+   * 担当者が見慣れている SMILE の「受注伝票内容」画面に似せた並びで、取込後にどうなるかを見せるためのデータ。
+   * 取込前（act が無い）：今アプリが作る取込内容そのまま。SMILE が付ける項目（受注No・製番）は pending にして「取込時に SMILE が付けます」と出す。
+   * 取込後（act＝ec_smile_index.json の受注の行）：SMILE の実際の値。製番・原単価が index に無い古い形式のときは、無いものとして扱う（壊れない）。
+   * s＝buildSlip の戻り値（lines に code/name/unit/teihai/qty/unitNet/amountNet）。o＝{ cfg, items, delivery:{code,name,isNew}, shipDate, cal, act }。 */
+  var TEIHAI = { '1': '繰返(製作)', '2': '繰返(以外)' };
+  EC.teihaiLabel = function (c) { c = String(c == null ? '' : c).trim(); return c ? (TEIHAI[c] || c) : ''; };
+  EC.fmtDate = function (v) {
+    var d = String(v == null ? '' : v).replace(/\D/g, '');
+    if (d.length === 6) d = '20' + d;
+    return d.length === 8 && d !== '00000000' ? d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6) : '';
+  };
+  function fmtNum(v, dec) {
+    var n = Number(String(v == null ? '' : v).replace(/,/g, ''));
+    if (!isFinite(n) || v === '' || v == null) return '';
+    return n.toLocaleString('ja-JP', { minimumFractionDigits: dec || 0, maximumFractionDigits: dec == null ? 2 : dec });
+  }
+  EC.slipImage = function (s, o) {
+    var cfg = o.cfg || {}, items = o.items || {}, act = o.act || null, P = EC.pick;
+    var cinfo = (cfg.customers || {})[s.cust] || {}, wh = cfg.warehouse || '';
+    var po = s.po || digits(s.id), memo2 = s.po ? digits(s.id).slice(-8) : po;
+    var ship = o.shipDate || s.shipDate || '', mfg = ship && o.cal ? o.cal.prev(ship) : '';
+    var lines = [];
+    if (act) {
+      act.rows.forEach(function (r, i) {
+        var code = P(r, ['品目コード']), mi = items[code] || {}, th = String(P(r, ['手配区分']) || mi.teihai || '').trim();
+        var seiban = P(r, ['製番']), gen = P(r, ['原単価']), qty = P(r, ['数量']);
+        lines.push({
+          no: +P(r, ['行']) || i + 1, warehouse: wh, teihai: { code: th, label: EC.teihaiLabel(th) },
+          seiban: th === '2' ? { value: '-' } : seiban ? { value: seiban } : { value: '', missing: true },
+          qty: fmtNum(qty, 2), genUnit: gen !== '' ? { value: fmtNum(gen, 2) } : null, genAmount: gen !== '' ? fmtNum(Math.round(Number(gen) * Number(qty || 0))) : '',
+          nouki: EC.fmtDate(P(r, ['納期', '受注納期'])), code: code, tax: '抜', unit: mi.unit || '', name: P(r, ['品目名', '品名']) || mi.name || '',
+          mfgQty: fmtNum(P(r, ['製造数量']) || 0, 2), price: fmtNum(P(r, ['単価']), 2), amount: fmtNum(Math.round(Number(P(r, ['金額'])) || 0)),
+          shipDate: EC.fmtDate(P(r, ['出荷予定日'])), mfgDate: '', po: P(r, ['客先注番']), memo: ''
+        });
+      });
+    } else {
+      s.lines.forEach(function (l, i) {
+        var th = String(l.teihai || '1'), mi = items[l.code] || {}, cost = mi.cost !== undefined && mi.cost !== '' ? Number(mi.cost) : NaN;
+        lines.push({
+          no: i + 1, warehouse: wh, teihai: { code: th, label: EC.teihaiLabel(th) },
+          seiban: th === '1' ? { value: '', pending: true, text: '取込時に自動で付きます（手配区分が 1:繰返(製作) のため）' } : { value: '-' },
+          qty: fmtNum(l.qty, 2), genUnit: isFinite(cost) ? { value: fmtNum(cost, 2), master: true } : null, genAmount: isFinite(cost) ? fmtNum(Math.round(cost * l.qty)) : '',
+          nouki: EC.fmtDate(ship), code: l.code, tax: '抜', unit: l.unit || '', name: l.name || '',
+          mfgQty: th === '1' ? fmtNum(l.qty, 2) : '0.00', price: fmtNum(l.unitNet, 2), amount: fmtNum(Math.round(l.amountNet)),
+          shipDate: EC.fmtDate(ship), mfgDate: th === '1' ? EC.fmtDate(mfg) : '', po: po, memo: memo2, label: l.label || ''
+        });
+      });
+    }
+    var qtySum = 0, amtSum = 0;
+    if (act) act.rows.forEach(function (r) { qtySum += Number(P(r, ['数量'])) || 0; amtSum += Math.round(Number(P(r, ['金額'])) || 0); });
+    else s.lines.forEach(function (l) { qtySum += l.qty; amtSum += Math.round(l.amountNet); });
+    var r0 = act ? act.rows[0] : null, d = o.delivery || {};
+    var head = {
+      juchuNo: act ? { value: act.juchuNo || '' } : { value: '', pending: true, text: '取込時に SMILE が付けます' },
+      orderDate: act ? EC.fmtDate(P(r0, ['受注日付'])) : EC.fmtDate(s.orderDate), taxRate: '10.00', juchuKubun: '確定', torihiki: '売掛',
+      customer: { code: s.cust, name: cinfo.name || '' }, staff: { code: cinfo.staff || '', name: cinfo.staffName || '' }, dept: { code: cinfo.dept || '', name: cinfo.deptName || '' },
+      warehouse: { code: wh, name: cfg.warehouseName || '' },
+      delivery: act ? { code: act.deliveryCode || '', name: P(r0, ['納品先名']) || d.name || '' } : (d.isNew ? { code: '', name: d.name || '', pending: true, text: '取込時に番号を決めます' } : { code: d.code || '', name: d.name || '' }),
+      po: act ? P(r0, ['客先注番']) : po,
+      nouki: act ? EC.fmtDate(P(r0, ['納期', '受注納期'])) : EC.fmtDate(ship), shipDate: act ? EC.fmtDate(P(r0, ['出荷予定日'])) : EC.fmtDate(ship),
+      mfgDate: act ? '' : (lines.some(function (l) { return l.teihai.code === '1'; }) ? EC.fmtDate(mfg) : '')
+    };
+    return { mode: act ? 'actual' : 'plan', head: head, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? '' : '', memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
+  };
+
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];
     return tbl.rows.map(function (r) { var o = {}; tbl.cols.forEach(function (c, i) { o[c] = r[i] == null ? '' : r[i]; }); return o; });

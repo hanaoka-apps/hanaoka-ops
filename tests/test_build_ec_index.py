@@ -16,12 +16,12 @@ B = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(B)
 
 JUCHU_HEAD = ['受注日付', '受注№', '行', '得意先ｺｰﾄﾞ', '納品先ｺｰﾄﾞ', '納品先名', '品目ｺｰﾄﾞ', '品目名', '数量', '単価', '金額',
-              '納期', '出荷予定日', '客先注番', '社内メモ', '操作日付', '手配区分', '製造数量', '製番']
+              '納期', '出荷予定日', '客先注番', '社内メモ', '操作日付', '手配区分', '製造数量', '製番', '原単価']
 
 
 def juchu_row(no, line, cust, po, memo='花岡EC', code='FCART2x4BK'):
     return ['20261015', no, str(line), cust, '000001', 'テスト様', code, '品目名', '1.00', '14000.00', '14000',
-            '20261019', '20261019', po, memo, '20261015', '1', '1.00', 'SB' + no]
+            '20261019', '20261019', po, memo, '20261015', '1', '1.00', 'SB' + no, '5248.00']
 
 
 def tsv(rows, quote_all=False):
@@ -76,12 +76,31 @@ class BuildEcIndexTest(unittest.TestCase):
         self.assertEqual([r['客先注番'] for r in rows], ['1801', '1801', '1802'])
         self.assertEqual(rows[0]['受注№'], '90001')
         self.assertEqual(rows[2]['社内メモ'], 'メモ\n改行あり')          # クォート内の改行も1つの値
-        self.assertNotIn('製番', cols)                                   # 必要な列だけ
+        self.assertEqual((rows[0]['製番'], rows[0]['原単価'], rows[0]['手配区分'], rows[0]['納期'], rows[0]['出荷予定日']), ('SB90001', '5248.00', '1', '20261019', '20261019'))   # 伝票イメージ用の項目
+        self.assertNotIn('操作者', cols)                                 # 必要な列だけ
         self.assertEqual(len(idx['nouhin']['rows']), 2)
         self.assertEqual(idx['nouhin']['maxCode'], {'599802': '000770'})
         self.assertEqual(dict(zip(idx['nouhin']['cols'], idx['nouhin']['rows'][1]))['住所２'], '千代田,1-1')
         self.assertEqual(len(idx['items']['rows']), 2)
         self.assertEqual(idx['nyukin']['rows'], [['20261009', '599802', '32900', 'SHOPIFY']])
+
+    def test_製番や原単価が無い形式の出力でも作れる(self):
+        self.write_all()
+        head = ['受注日付', '受注№', '行', '得意先ｺｰﾄﾞ', '納品先ｺｰﾄﾞ', '納品先名', '品目ｺｰﾄﾞ', '品目名', '数量', '受注納期', '客先注番']   # 製番・原単価なし。納期は「受注納期」の名前
+        self.write('受注明細出力.csv', tsv([head, ['20261015', '90001', '1', '599802', '000001', 'テスト様', 'FR', 'ｳﾝﾁﾝ', '1.00', '20261019', '1801']]))
+        self.run_build()
+        idx = self.read_index()
+        r = dict(zip(idx['orders']['cols'], idx['orders']['rows'][0]))
+        self.assertEqual((r['製番'], r['原単価'], r['納期']), ('', '', '20261019'))   # 無い列は空。「受注納期」は「納期」として入る
+
+    def test_品目マスタの標準原価は任意(self):
+        self.write_all()
+        idx0 = self.run_build()[0]
+        self.assertEqual(dict(zip(idx0['items']['cols'], idx0['items']['rows'][0])).get('標準原価'), '')
+        self.write('品目マスタ.csv', '品目ｺｰﾄﾞ,品目名,単位,初期表示用手配区分,標準原価\r\nFR,ｳﾝﾁﾝ,式,2,1200.00\r\n')
+        self.run_build()
+        it = dict(zip(self.read_index()['items']['cols'], self.read_index()['items']['rows'][0]))
+        self.assertEqual((it['品目コード'], it['標準原価']), ('FR', '1200.00'))
 
     def test_generatedAtと元ファイルの更新日時(self):
         self.write_all()
