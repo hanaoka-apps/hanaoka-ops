@@ -52,11 +52,11 @@ t('注文：1行・金額は契約単価の税込', () => {
   assert.strictEqual(o.ship.name, '山田 太郎'); assert.strictEqual(o.ship.province, '愛知県'); assert.strictEqual(o.ship.city, '豊橋市');
   assert.strictEqual(o.wantTime, '希望無'); assert.strictEqual(o.donorNo, '133285685');
 });
-t('伝票：FCART2x4BK 14,000・得意先 341401・15時以降は翌営業日から2営業日', () => {
+t('伝票：FCART2x4BK 14,000・得意先 341401・受注日から2営業日', () => {
   const s = FS.buildSlip(FS.parseOrders(csv(row({})), STAMP, CONF)[0], ctx);
   assert.strictEqual(s.cust, '341401'); assert.strictEqual(s.staff, '000125'); assert.strictEqual(s.dept, '002110');
   assert.strictEqual(s.lines.length, 1); assert.strictEqual(s.lines[0].code, 'FCART2x4BK'); assert.strictEqual(s.lines[0].unitNet, 14000); assert.strictEqual(s.netTotal, 14000);
-  assert.strictEqual(s.processDate, '2026-11-02'); assert.strictEqual(s.shipDate, '2026-11-05');   // 11/03 は文化の日
+  assert.strictEqual(s.processDate, '2026-10-30'); assert.strictEqual(s.shipDate, '2026-11-04');   // 締めの時刻なし（当日分）。土日と 11/03（文化の日）は数えない
   assert.ok(!s.flags.some(f => f.level === 'error'), JSON.stringify(s.flags));
   assert.ok(!s.flags.some(f => f.text.indexOf('ギフティング') === 0));
 });
@@ -109,6 +109,12 @@ t('取込ファイル：客先注番＝発注番号・備考にふるさと納�
 t('納品先：氏名＋様・住所１＝都道府県＋市区町村', () => {
   const d = EC.deliveryFromOrder(FS.parseOrders(csv(row({})), STAMP, CONF)[0], CONF.config);
   assert.strictEqual(d.name, '山田 太郎様'); assert.strictEqual(d.addr1, '愛知県豊橋市'); assert.strictEqual(d.addr2, '大手町1-2-3'); assert.strictEqual(d.zip, '441-0001');
+});
+t('対応表の単価を直すと、伝票の金額もすぐ変わる', () => {
+  const o = FS.parseOrders(csv(row({})), STAMP, CONF)[0];
+  const m = JSON.parse(JSON.stringify(CONF.mapping)); FS.findRule(m, 'A112170384').net = 15000;
+  const s = FS.buildSlip(o, Object.assign({}, ctx, { mapping: m }));
+  assert.strictEqual(s.lines[0].unitNet, 15000);
 });
 t('設定：対応表の商品番号が重複していない・品目コードと単価がある', () => {
   const ids = CONF.mapping.rules.map(r => r.words[0]); assert.strictEqual(new Set(ids).size, ids.length);

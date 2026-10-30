@@ -251,7 +251,12 @@ def main(argv=None):
             with open(args.config, encoding='utf-8-sig') as f:
                 conf = json.load(f)
             if customers is None:
-                customers = ','.join((conf.get('config') or {}).get('customers', {}).keys())
+                keys = list((conf.get('config') or {}).get('customers', {}).keys())
+                # 同じ軽量ファイルを使う兄弟アプリ（ふるさと納税など）の得意先も入れる。conf の indexAlsoConfigs に、同じフォルダの設定ファイル名を書く
+                for other in conf.get('indexAlsoConfigs') or []:
+                    with open(os.path.join(os.path.dirname(os.path.abspath(args.config)), other), encoding='utf-8-sig') as f2:
+                        keys += [k for k in (json.load(f2).get('config') or {}).get('customers', {}).keys() if k not in keys]
+                customers = ','.join(keys)
             if prefix is None:
                 prefix = str((conf.get('testImport') or {}).get('poPrefix') or '')
             if limit is None:
