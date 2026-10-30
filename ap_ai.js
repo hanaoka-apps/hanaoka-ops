@@ -119,6 +119,52 @@
     reply: { type: 'string' },
     notes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'ApprovalNote'], properties: { index: { type: 'integer' }, ApprovalNote: { type: 'string' } } } },
     memory: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'fact'], properties: { key: { type: 'string' }, fact: { type: 'string' } } } } } };
+  // ---- 仕訳を決める（会話。Sonnet）：科目・部門・税は AI が会計の実績から決める。決められないときは、人に「何の支払か」を聞く（科目は聞かない） ----
+  const JOURNAL_SCHEMA = { type: 'object', additionalProperties: false, required: ['reply', 'decided', 'summary', 'lines', 'memory'], properties: {
+    reply: { type: 'string' }, decided: { type: 'boolean' }, summary: { type: 'string' },
+    lines: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'AccountCode', 'DeptCode', 'TaxRate', 'SubCode', 'ApprovalNote', 'reason'], properties: {
+      index: { type: 'integer' }, AccountCode: { type: 'string' }, DeptCode: { type: 'string' }, TaxRate: { type: 'string', enum: ['課税10%', '軽減8%', '非課税', '対象外'] }, SubCode: { type: 'string' }, ApprovalNote: { type: 'string' }, reason: { type: 'string' } } } },
+    memory: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'fact'], properties: { key: { type: 'string' }, fact: { type: 'string' } } } } } };
+  const nkey = s => String(s || '').normalize('NFKC').replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|[\s　・.,、。()（）]/g, '');
+  // 支払先の会計の実績（摘要に支払先名が入っている行）：直近6か月を先に、新しい順
+  function historyOf(jr, payee) {
+    const p = nkey(payee); if (p.length < 2) return [];
+    const hit = jr.filter(x => { const q = nkey(String(x['摘要'] || '').replace(/^\(\d+\)/, '').trim().split(/[\s　]/)[0]); return q.length >= 2 && (p.includes(q) || q.includes(p)); });
+    return hit.sort((a, b) => String(b['伝票日付'] || b['年月']).localeCompare(String(a['伝票日付'] || a['年月'])));
+  }
+  async function journal(ctx, t) {
+    const s = await setup(ctx), R = s.raw || { km: [], bm: [], um: [], jr: [], mem: [] };
+    const hist = historyOf(R.jr, t.payee), ymEnd = hist.length ? hist[0]['年月'] : '';
+    const sys = 'あなたは花岡車輌の総務で、経費の請求書の仕訳（科目・部門・税・内訳）を決める担当です。正解は「会計（外注の会計事務所）に実際に入っている仕訳」です。人の Excel の付け方や好みではありません。\n' +
+      '- 科目・部門・税・内訳は、あなたが決める。人に「どの科目ですか」とは聞かない\n' +
+      '- まず「この支払先の会計の実績」を見る。同じ内容の実績があれば、いちばん新しい付け方にそろえる（会計の付け方は 2026/04 に変わったものがあるので、古いものより新しいものを正とする）\n' +
+      '- 実績が無い・内容が違う・実績で付け方が割れていて決められないときは、決めずに（decided=false、lines は空）、人に支払の中身を聞く：何を買った／何のサービスか、どの拠点・部署で使うか、一回きりか毎月か、など。1回に1〜2問、短く\n' +
+      '- 人の答えで決められたら decided=true、lines に直す行を入れる（index は行の番号、AccountCode は科目マスタの6桁、DeptCode は部門マスタの6桁、内訳が要る科目は SubCode、要らなければ ""。ApprovalNote は直さないなら ""）。reason に決めた理由（どの実績にそろえたか、実績が無いなら何から判断したか）を短く\n' +
+      '- 決めたとき（decided=true）は summary に、この相談の要約を1〜3文で書く：AI が何を聞き、人がどう答え、それでどの科目・部門・税にしたか（例「名古屋で使うコピー用紙かを確認。人の答え：名古屋営業所の事務用。会計の実績どおり 消耗事務費・002240 にした」）。人に聞かずに決めたときは、どの実績にそろえたか。決めていないときは ""\n' +
+      '- 金額や行の分け方は変えない（人が決める）。行を分けた方がよいと思ったら reply で伝える\n' +
+      '- memory には、次から聞かずに済む「毎月変わらない事実」だけを入れる（例 key「契約番号 00-4049-0155」fact「名古屋営業所のネット回線」）。科目・部門・税そのもの、支払日・払う月、一度きりのことは入れない\n' +
+      '- reply は短い日本語';
+    const kmT = R.km.filter(x => x['科目コード']).map(x => `${x['科目コード']} ${x['科目名']}`).join('\n');
+    const bmT = R.bm.filter(x => x['部門名']).map(x => `${x['部門コード']} ${x['部門名']}`).join('\n');
+    const ug = {}; R.um.forEach(x => { if (x['科目コード']) (ug[x['科目コード']] = ug[x['科目コード']] || []).push(x); });
+    const umT = Object.entries(ug).filter(([, g]) => g.length <= 30 && !g.some(x => x['内訳コード'] === '000000')).map(([k, g]) => `${k}：` + g.map(x => `${x['内訳コード']} ${x['略称'] || x['内訳名']}`).join(' / ')).join('\n');
+    const histT = hist.slice(0, 40).map(x => `${x['年月']}｜${x['科目コード']} ${x['科目名']}｜部門 ${x['部門コード']}｜${x['税区分']}${x['内訳'] ? '｜内訳 ' + x['内訳'] : ''}｜${x['金額']}円｜${String(x['摘要'] || '').replace(/\s+/g, ' ').slice(0, 50)}`).join('\n');
+    const mem = (R.mem || []).filter(m => !m.payee || nkey(m.payee) === nkey(t.payee)).map(m => `- ${m.key}：${m.fact}`).join('\n');
+    const ctxText = `## 請求書\n支払先：${t.payee || ''}\n拠点：${t.loc || ''}\n\n## 今の仕訳の行（番号｜科目｜部門｜税率｜内訳｜税込｜摘要｜決裁メモ）\n` +
+      (t.lines || []).map((l, i) => `${i}｜${l.acode || ''} ${l.aname || ''}｜${l.dept || ''}｜${l.rate || ''}｜${l.sub || ''}｜${yen(l.amount)}｜${l.note || ''}｜${l.memo || ''}`).join('\n') +
+      (t.items && t.items.length ? `\n\n## 請求書の明細（AI が読んだもの）\n${t.items.slice(0, 40).map(x => `${x.Name || x.Description || ''}｜${x.Amount || ''}`).join('\n')}` : '') +
+      `\n\n## この支払先の会計の実績（新しい順・最大40行${ymEnd ? `・最新 ${ymEnd}` : ''}）\n${histT || '（実績なし：初めての支払先か、摘要の書き方が違う）'}` +
+      (mem ? `\n\n## 覚えたこと（人が教えた事実）\n${mem}` : '') +
+      `\n\n## 科目マスタ\n${kmT}\n\n## 部門マスタ\n${bmT}\n\n## 内訳が要る科目\n${umT}\n\n## 相談のきっかけ\n${t.issue || '仕訳を決めてください'}`;
+    const msgs = [{ role: 'user', content: ctxText }].concat((t.history || []).map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.text })));
+    const merged = []; msgs.forEach(m => { const p = merged[merged.length - 1]; if (p && p.role === m.role) p.content += '\n\n' + m.content; else merged.push({ role: m.role, content: m.content }); });
+    if (merged[merged.length - 1].role !== 'user') merged.push({ role: 'user', content: '続けてください' });
+    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 3000, system: sys, messages: merged,
+      output_config: { format: { type: 'json_schema', schema: JOURNAL_SCHEMA } } };
+    const r = await ask(ctx, s, { title: 'ap.journal', caller: t.invoiceId || '' }, body);
+    if (r.status !== '完了') throw new Error(r.message || 'AI に聞けませんでした');
+    const a = JSON.parse(r.text); a.history = hist.length; return a;
+  }
   async function teach(ctx, t) {
     const s = await setup(ctx);
     const sys = 'あなたは花岡車輌の総務で、経費の請求書の「決裁メモ」（社長・室長が決裁で読む、仕訳の行ごとの短い説明）を直す担当です。AI が請求書を読んだときにわからなかったこと（気づき）について、人が答えを教えてくれます。\n' +
@@ -150,6 +196,7 @@
     // アプリで確かめた決裁メモ（人が直したものも）を、請求Quick の分より新しい例として足す ／ 人が教えた「覚えたこと」
     const [appSq, mem] = await Promise.all([appNotes(ctx).catch(e => { console.warn('アプリの決裁メモを読めません', e); return []; }), loadMemory(ctx)]);
     s.masters = mastersText(km, bm, um, jr, sq.concat(appSq)) + memoryText(mem);
+    s.raw = { km, bm, um, jr, mem };   // 仕訳の相談（teach の journal）で、支払先の分だけを渡す
     if (window.AP_MOCK) { s.mock = true; s.models = { read: 'claude-sonnet-5-5' }; return (S = s); }
     // ワークフローのサイト（AI_Request・WF_Setting の flow.urlAI・ai.models）
     s.wf = (await call('GET', `/sites/${WF_SITE_PATH}`)).id;
@@ -274,5 +321,5 @@
     return { ok: !!d, status: doc.status, message: err };
   }
 
-  window.APAI = { readInvoice, teach, remember, loadMemory, _record: record, _mastersText: mastersText };
+  window.APAI = { readInvoice, teach, journal, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
 })();
