@@ -325,7 +325,12 @@ const nameOf = upn => (st.M.orgByUpn[lc(upn)] || {}).Title || upn;
 /* ============================================================
    データの読み書き（本番＝Graph／開発＝テストデータ）
    ============================================================ */
-let msalInstance = null, account = null, siteId = null;
+let msalInstance = null, account = null, siteId = null, siteIdP = null;
+try { siteId = localStorage.getItem('wf.siteId') || null; } catch { }
+function ensureSite() {
+  if (siteId) return Promise.resolve(siteId);
+  return siteIdP = siteIdP || graph(`/sites/${SITE_PATH}`).then(x => { siteId = x.id; try { localStorage.setItem('wf.siteId', siteId); } catch { } return siteId; }).finally(() => { siteIdP = null; });
+}
 
 async function getToken() {
   try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
@@ -350,11 +355,12 @@ async function graphAll(path) {
 
 const GraphApi = {
   async me() {
+    if (account && account.username) return { upn: lc(account.username), name: account.name || account.username };
     const m = await graph('/me?$select=displayName,userPrincipalName');
     return { upn: lc(m.userPrincipalName), name: m.displayName };
   },
   async items(list, filter) {
-    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await ensureSite();
     const q = `/sites/${siteId}/lists/${list}/items?expand=fields&$top=999` + (filter ? `&$filter=${encodeURIComponent(filter)}` : '');
     return (await graphAll(q)).map(i => ({ ...i.fields, id: Number(i.id) }));   // fields にも id（文字列）があるので、数の id をあとに置く
   },
@@ -367,7 +373,7 @@ const GraphApi = {
   myRequests(upn) { return this.items('WF_Request', `fields/ApplicantUPN eq '${upn}' or fields/ProxyUPN eq '${upn}'`); },   // 代理で出した分も
   allRequests()   { return this.items('WF_Request'); },   // SharePoint が見られる分だけ返す
   async postAction(fields) {
-    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await ensureSite();
     const it = await graph(`/sites/${siteId}/lists/WF_Action/items`, { method: 'POST', body: JSON.stringify({ fields: { Result: '受付', ...fields } }) });
     // フローAを直接呼ぶ。伝えるのは行の番号だけ（中身と操作者はフローが SharePoint から読み直す）。
     // URL は WF_Setting にある（公開HTMLには書かない）。呼び出しに失敗しても WF_滞留チェック が数分以内に拾う
@@ -463,12 +469,12 @@ const GraphApi = {
     return out.map(u => ({ upn: lc(u.userPrincipalName), name: u.displayName, enabled: u.accountEnabled !== false, dept: u.department || '', mgr: u.manager ? lc(u.manager.userPrincipalName) : '' }));
   },
   async updateOrg(id, fields) {
-    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await ensureSite();
     await graph(`/sites/${siteId}/lists/WF_Org/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) });
   },
   /* AI の使用量（WF管理者）：AI_Request の行（用途・状態・モデル・トークン数・頼んだ人）。見られるのは SharePoint の権限どおり */
   async aiUsage(since) {
-    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await ensureSite();
     const rows = await graphAll(`/sites/${siteId}/lists/AI_Request/items?expand=fields(select=Title,Status,Model,InTokens,OutTokens,Caller,Created)&$filter=${encodeURIComponent(`fields/Created ge '${since}'`)}&$top=999`);
     return rows.map(i => ({ use: i.fields.Title || '', status: i.fields.Status || '', model: i.fields.Model || '', inT: Number(i.fields.InTokens) || 0, outT: Number(i.fields.OutTokens) || 0,
       caller: i.fields.Caller || '', at: i.fields.Created || i.createdDateTime, by: (i.createdBy && i.createdBy.user && i.createdBy.user.displayName) || '' }));
@@ -477,7 +483,7 @@ const GraphApi = {
      依頼の本文（書類の中身）は呼び出しで渡すだけで SharePoint に残さない。URL は WF_Setting の flow.urlAI（公開 HTML には書かない） */
   async aiAsk(use, caller, body) {
     const url = st.M.settings['flow.urlAI']; if (!url) throw new Error('AI の読み取りの設定（flow.urlAI）がありません（総務へ）');
-    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await ensureSite();
     const it = await graph(`/sites/${siteId}/lists/AI_Request/items`, { method: 'POST', body: JSON.stringify({ fields: { Title: use, Status: '受付', Caller: caller } }) });
     const payload = { id: Number(it.id), body }; if (body.fallbacks) payload.beta = 'server-side-fallback-2026-07-01';
     await fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(payload) }).catch(() => {});
@@ -516,7 +522,7 @@ const GraphApi = {
     return { units, persons, openings, snaps };
   },
   async staffSave(list, id, fields) {
-    if (!siteId) siteId = (await graph(`/sites/${SITE_PATH}`)).id;
+    await ensureSite();
     if (id) { await graph(`/sites/${siteId}/lists/${list}/items/${id}/fields`, { method: 'PATCH', body: JSON.stringify(fields) }); return id; }
     return Number((await graph(`/sites/${siteId}/lists/${list}/items`, { method: 'POST', body: JSON.stringify({ fields }) })).id);
   },
@@ -736,8 +742,12 @@ function scheduleFollowUp() {
 async function load(quiet) {
   try {
     if (!quiet) status('読み込み中…', 'busy');
+    const me = await api.me();
+    // 全件は「すべての申請」を見られる人だけが使う。先に取りに行き、見られない人の分は捨てる（SharePoint は見られる分しか返さない）
+    const pM = st.M ? null : api.masters(), pT = api.tasks(me.upn), pR = api.myRequests(me.upn), pA = api.allRequests().catch(() => null);
+    pT.catch(() => { }); pR.catch(() => { });
     if (!st.M) {
-      const m = await api.masters();
+      const m = await pM;
       m.org = m.org.filter(p => p.Active !== false);
       m.orgByUpn = Object.fromEntries(m.org.map(p => [lc(p.UPN), p]));
       m.settings = Object.fromEntries(m.settings.map(s => [s.Title, s.Value]));
@@ -747,16 +757,16 @@ async function load(quiet) {
       document.title = ($('appTitle').textContent) + ' | 花岡車輌';
       if (m.settings['app.notice']) { $('notice').textContent = m.settings['app.notice']; $('notice').style.display = 'block'; }
     }
-    st.me = await api.me();
+    st.me = me;
     st.me.org = st.M.orgByUpn[st.me.upn] || null;
     $('userName').textContent = st.me.name; $('userName').title = 'サインイン中のアカウント：' + st.me.upn;
     $('avatar').textContent = String(st.me.name || '').replace(/\s/g, '').slice(0, 1); $('userDept').textContent = (st.me.org && st.me.org.Dept) || st.me.upn;
     renderAbsenceBtn();
-    const [tasks, myReqs] = await Promise.all([api.tasks(st.me.upn), api.myRequests(st.me.upn)]);
+    const [tasks, myReqs] = await Promise.all([pT, pR]);
     st.tasks = tasks; st.myReqs = myReqs;
     // 裏の処理がまだなら、押した直後の状態を保つ（再読み込みで表示が戻らないように）
     st.tasks.forEach(t => { const o = optimistic.get(t.id); if (!o) return; if (t.Status === o || (o === '既読' && t.Status === '確認済')) optimistic.delete(t.id); else t.Status = o; });
-    st.allReqs = hasAllView() ? await api.allRequests() : null;
+    st.allReqs = hasAllView() ? await pA : null;
     status(`更新 ${fmtDT(new Date())}` + (st.me.org ? '' : `　※このアカウント（${st.me.upn}）は組織マスタに登録がないため、申請・承認はできません。普段のアカウントでない場合は、右上の「サインアウト」から入り直してください（それでも出るときは総務へ）`), st.me.org ? '' : 'err');
     openDeepLink();
     await openPrefill();
