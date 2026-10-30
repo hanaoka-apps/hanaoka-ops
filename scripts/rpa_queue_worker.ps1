@@ -323,6 +323,14 @@ function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '', [strin
         $configPath = Join-Path $WorkDir "${base}_$stamp.config.json"
         $configIsTemp = $true
         Invoke-WebRequest -Uri "$RepoRawBase/$ConfigFile" -OutFile $configPath -UseBasicParsing
+        # 設定の indexAlsoConfigs(同じフォルダの別の設定ファイル。例: furusato_config.json)も、同じ作業フォルダに取得する
+        $also = @((Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json).indexAlsoConfigs)
+        foreach ($name in $also) {
+          if (-not $name -or $name -notmatch '^[\w.-]+\.json$') { continue }
+          $dir = [System.IO.Path]::GetDirectoryName($ConfigFile) -replace '\\', '/'
+          $rel = if ($dir) { "$dir/$name" } else { $name }
+          Invoke-WebRequest -Uri "$RepoRawBase/$rel" -OutFile (Join-Path $WorkDir $name) -UseBasicParsing
+        }
       }
       $argText += ' --config "{0}"' -f $configPath
     }
