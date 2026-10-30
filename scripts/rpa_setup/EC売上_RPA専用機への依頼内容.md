@@ -90,6 +90,7 @@ Shopify ──(A) 定期取得──▶ ec_shopify_*.csv ──▶ 画面でチ�
 - [ ] PADフロー3つ
 - [ ] 試運転（テスト用の得意先・納品先 `999999`）：取込 → 全件出力＋JSON → アプリの突き合わせ（起票済み・受注№）まで1件通す
 - [ ] 夜間：翌朝 `ec_smile_index.json` の更新日時が 01:10 ごろになっていること
+- [ ] ふるさと納税（3-11）：`pip install pyzipper`・環境変数 `FURUSATO_ZIP_WORD`・タスクスケジューラー（`furusato_unzip.py`）・Power Automate のフロー
 
 ---
 
@@ -286,6 +287,20 @@ SMILEの出力は**全データを上書き保存する限り、日中に何度�
 | いつ | 平日 8:00〜18:00 の毎時0分（受注の締め15時の前後で最新になるよう）。休日は不要 |
 | 出力先 | SharedMasters直下に**上書き保存**：`ec_shopify_orders.csv`・`ec_shopify_payouts.csv`・`ec_shopify_transactions.csv` |
 | 失敗したとき | ログを `SharedMasters/_rpa_queue/logs/` に残し、前回のファイルはそのまま残す（上書きは成功したときだけ） |
+
+### 3-11. ふるさと納税の注文メール（パスワード付きZIP）を受け取って解凍する（Power Automate ＋ 専用機）
+
+注文データは、配布リスト（業務センター）宛のメールに、パスワード付きZIPのCSVとして届く。配布リストにはメールボックスがないので、**メンバーのひとりのメールボックス**で受ける。
+
+| 担当 | やること |
+|---|---|
+| Power Automate（クラウドフロー） | トリガー「新しいメールが届いたとき（V3）」。フローの持ち主は、配布リストのメンバーのアカウント（個人ではなく、専用機用の共有的なアカウントがあればそちら。退職・異動で止まらないように）。条件：**宛先に配布リストのアドレスを含む**・添付あり・送信元／件名（確認中）。ZIPを `SharedMasters\_furusato_inbox\` に **`yyyyMMdd_HHmmss_<元のファイル名>.zip`** で保存（先頭の日付がパスワードの日付になる。日本時間で付ける） |
+| 専用機（タスクスケジューラー） | `scripts/furusato_unzip.py` を数分おきに実行。ZIPを解凍し、CSVを `_furusato_inbox\csv\<ZIPの名前>\` に置く。ZIPは `done\`（失敗は `failed\`）へ移し、30日たったら消す。ログは `_rpa_queue\logsurusato_unzip.log`（パスワードは出さない） |
+| アプリ | （次のPR）`csv\` の CSV を読んで「受注チェック」に並べる。列は実物を見て決める |
+
+- パスワード＝**英語（小文字・秘密）＋届いた日**。英語の部分は専用機の環境変数 `FURUSATO_ZIP_WORD` にだけ置く（コード・設定・ログ・チャットに書かない）。日付の書き方・前後何日ぶん試すかは `ec_sales_config.json` の `furusato`（日付の書き方は確認中）。
+- 専用機：`pip install pyzipper`（`scripts/requirements.txt`）。環境変数 `SHARED_MASTERS_DIR`・`FURUSATO_ZIP_WORD`。
+- CSV には個人情報が入る。SharedMasters（社内限定）の外には出さない。
 
 ## 4. 専用機側で決めてほしいこと
 
