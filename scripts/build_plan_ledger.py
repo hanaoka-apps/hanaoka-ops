@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
-"""計画品 出入り台帳 (plan_ledger.json) を生成する。
+"""納期確認画面 (plan_ledger.json) を生成する。
 
 目的:
-  生産計画を入れている品目(Dフレーム FullASSY・ダンディリフト・レベラー等)について、
-  日別に「計画 / 計画分の完成 / 所要量分の実績 / 所要量(確定指示残) / 出(使用・出荷)」を並べ、
-  現在庫(全社)からの予定残と安全在庫を比べる。営業・業務の納期回答の根拠に使う。
+  営業・業務センターが工場に聞かずに納期の目安を答えられるよう、
+  型式 → 部品(フレーム／ハンドル／キャスター) または 完成品(第3工場リフト等) について
+  日別の入出と予測在庫・回答可能数を出す元データを作る。(弟・尚さん設計の画面 + 2026-10 雅さん確認ルール)
 
-入力 (data/ = download_shared_masters.py の取得先、item_history は build_item_history.py の出力):
-  - data/item_history.json   … 製造実績・使用実績(親機種の完組)・売上・受注残・確定済工程手配
-  - data/生産計画出力.csv     … 計画(完了分も含む: 計画数量・完成済数・状態)
-  - data/品目マスタ.csv       … 生産計画区分・安全在庫数・大分類・業務納期確認
-  - data/有効在庫一覧表.csv   … 現在庫(全社)。品目コードが無いため品目名で突き合わせ
+入力(data/ = download_shared_masters.py の取得先):
+  item_history.json(build_item_history.py出力) / 生産計画出力.csv / 品目マスタ.csv / 有効在庫一覧表.csv /
+  構成マスタ.csv / 確定済_工程手配一覧.csv / 未確定_購買手配データ.csv
 
-ルール(2026-10 雅さん確認):
-  - 対象: 品目マスタで「生産計画区分=行う」かつ使用禁止でない品目のうち、表示期間に計画がある品目
-  - グループ: 業務納期確認が「Dﾌﾚｰﾑ FULL ASSY」→ Dフレーム、それ以外は大分類
-  - フレームの出: 親機種の受注残 × 使用数 を出荷予定日に計上 / 実績は親機種の完組での使用
-  - 完成品の出: 自品目の受注残(出荷予定日) / 実績は売上(出荷)
-  - 計画日を過ぎて未完成の計画は「付け替え漏れ」(できない計画は当日中に先へずらすルール)。
-    いつ入るか不明なため予定残には含めない
-  - 予定残「計画のみ」と「計画+所要量(確定済M製番の残)」の2本
-  - 過去日の残は現在庫から実績入出を逆算した参考値
+数量の考え方(確定・仮説の区別は画面の「数字の出どころ」にも記載):
+  入(供給)
+    plan : 生産計画(K製番)の残。状態「手配確定」と「手配予定」を区別。計画日が過去で未完成=付け替え漏れ(当日中に先へずらすルール違反)
+    conf : 確定済み手配の残。社内/外注工程は 確定済_工程手配一覧 の最終工程行(M製番のみ。K製番は計画側で数える)、
+           購買品は item_history の確定発注残。納期が過去のものは「遅れ(実績未入力の可能性)」として本日に置く
+    unc  : 所要量計算の未確定手配(未確定_購買手配データ、M製番の最終工程/購買行)。納期が過去のものは件数だけ警告
+    実績 : 製造報告(K/M別)・受入
+  出(需要)
+    req  : 親品目の組立による使用予定(所要量の考え方。親の在庫は所要量計算で差し引き済み)
+           = 親のK計画残 × 取数 + 親の確定手配残(子部品登録行) × 取数 + 親の未確定手配(子部品登録行) × 取数
+    ord  : 参考。親機種の受注残 × 取数(出荷予定日)。計算には使わず、客先の確認用
+    完成品(リフト等)は自品目の受注残(出荷予定日)を出とする
+    使用実績: 親の完組での使用 / 完成品は売上(出荷)
+  在庫: 有効在庫一覧表の現在庫(全社)。品目コードが無いため品目名で突き合わせ
 
-出力: data/plan_ledger.json (業務データのため公開Pagesには置かず、upload_fujin_data.py で SharePoint へ)
+出力: data/plan_ledger.json (公開Pagesに置かず upload_fujin_data.py で SharePoint へ)
 """
 import csv
 import json
@@ -36,24 +39,26 @@ if BASE.name == "scripts":
     BASE = BASE.parent
 DATA = BASE / "data"
 
-FRAME_KEY = "ﾌﾚｰﾑ FULL ASSY"  # 品目マスタ「業務納期確認名」
-GROUP_ORDER = ["Dフレーム", "ダンディリフト", "レベラー"]
+PAST_DAYS = 14      # 表示する過去日数
+FUTURE_DAYS = 100   # 表示する先の日数(まとめ計画を拾えるよう長め)
+FRAME_KEY = "ﾌﾚｰﾑ FULL ASSY"
+HANDLE_KEY = "ﾊﾝﾄﾞﾙ FULL ASSY"
 
 
-def nk(s: str) -> str:
+def nk(s):
     return unicodedata.normalize("NFKC", s or "").strip()
 
 
-def sf(s) -> float:
+def sf(s):
     try:
         return float(str(s).replace(",", "").strip() or 0)
     except ValueError:
         return 0.0
 
 
-def pd(s: str):
+def pd(s):
     s = (s or "").replace("/", "").replace("-", "").strip()
-    if len(s) != 8 or not s.isdigit() or s == "00000000":
+    if len(s) != 8 or not s.isdigit() or s in ("00000000", "99999999"):
         return None
     try:
         return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
@@ -61,230 +66,364 @@ def pd(s: str):
         return None
 
 
-def read_csv(path: Path):
+def read_dicts(path):
+    """UTF-8 BOM / タブorカンマ 自動判定。列名の前後空白と全角スペースのゆれを吸収した dict を返す"""
+    if not path.exists():
+        print(f"[WARN] {path.name} が無い")
+        return []
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         head = f.readline()
         f.seek(0)
         delim = "\t" if head.count("\t") > head.count(",") else ","
-        return list(csv.reader(f, delimiter=delim))
+        rows = []
+        for r in csv.DictReader(f, delimiter=delim):
+            rows.append({nk(k).replace(" ", ""): (v or "").strip().strip('"') for k, v in r.items() if k})
+        return rows
 
 
-def load_master():
-    rows = read_csv(DATA / "品目マスタ.csv")
-    h = {k: i for i, k in enumerate(rows[0])}
-    out = {}
-    for r in rows[1:]:
-        if len(r) < len(h):
-            continue
-        g = lambda k: r[h[k]] if k in h else ""
-        out[g("品目ｺｰﾄﾞ")] = {
-            "name": g("品目名"),
-            "big": g("大分類名"),
-            "gyomu": g("業務納期確認名"),
-            "safety": sf(g("安全在庫数")),
-            "plan_flag": g("生産計画区分名"),
-            "banned": g("使用禁止日") not in ("", "0"),
-        }
-    return out
-
-
-def load_plans():
-    rows = read_csv(DATA / "生産計画出力.csv")
-    h = {k: i for i, k in enumerate(rows[0])}
-    plans = defaultdict(list)
-    for r in rows[1:]:
-        if len(r) < len(h):
-            continue
-        d = pd(r[h["生産計画日付"]])
-        if not d:
-            continue
-        plans[r[h["品目ｺｰﾄﾞ"]]].append({
-            "date": d, "sb": r[h["製番"]], "q": sf(r[h["生産計画数量"]]),
-            "done": sf(r[h["完成済数"]]), "st": r[h["製番状態区分名"]],
-        })
-    return plans
-
-
-def load_stock():
-    """有効在庫一覧表.csv: 先頭に表題行があり、『品目名』で始まる行が見出し。"""
-    rows = read_csv(DATA / "有効在庫一覧表.csv")
-    hi = next((i for i, r in enumerate(rows) if r and nk(r[0]) == "品目名"), None)
-    if hi is None:
-        return {}
-    h = {nk(k): i for i, k in enumerate(rows[hi])}
-    out = {}
-    for r in rows[hi + 1:]:
-        if not r or not r[0].strip():
-            continue
-        g = lambda k: r[h[k]] if k in h and h[k] < len(r) else ""
-        out[nk(r[0])] = {"stock": sf(g("現在庫数")), "in": sf(g("入庫予定数")),
-                         "out": sf(g("出庫予定数")), "eff": sf(g("有効在庫数"))}
-    return out
-
-
-def short_name(code, name, kind):
-    n = nk(name)
-    if kind == "frame":
-        i = n.find("フレーム")
-        s = n[:i].strip(" /") if i > 0 else ""
-        return s if 0 < len(s) <= 12 else code
-    return code.replace("/SW", " SW")
+def g(r, *keys):
+    for k in keys:
+        v = r.get(nk(k).replace(" ", ""))
+        if v not in (None, ""):
+            return v
+    return ""
 
 
 def main():
     ih = json.loads((DATA / "item_history.json").read_text(encoding="utf-8"))
-    items = ih["items"]
-    as_of = datetime.strptime(ih["as_of"], "%Y/%m/%d").date()
-    master, plans, stock = load_master(), load_plans(), load_stock()
+    items_h = ih["items"]
+    today = datetime.strptime(ih["as_of"], "%Y/%m/%d").date()
+    start, end = today - timedelta(days=PAST_DAYS), today + timedelta(days=FUTURE_DAYS)
+    DATES = [start + timedelta(i) for i in range((end - start).days + 1)]
+    di = {d: i for i, d in enumerate(DATES)}
+    T = di[today]
+
+    def idx(d, clamp_past=True):
+        """日付→列番号。過去(表示開始より前)は clamp_past なら本日扱いにせず None"""
+        if d is None:
+            return None
+        if d < start:
+            return None
+        if d > end:
+            return None
+        return di[d]
+
+    # ---- マスタ
+    master = {}
+    for r in read_dicts(DATA / "品目マスタ.csv"):
+        c = g(r, "品目ｺｰﾄﾞ", "品目コード")
+        if not c:
+            continue
+        master[c] = {
+            "name": nk(g(r, "品目名")), "big": nk(g(r, "大分類名")), "gyomu": g(r, "業務納期確認名"),
+            "safety": sf(g(r, "安全在庫数")), "plan_flag": g(r, "生産計画区分名"),
+            "banned": g(r, "使用禁止日") not in ("", "0"), "lt": sf(g(r, "累積ﾘｰﾄﾞﾀｲﾑ", "累積リードタイム")),
+            "unit": nk(g(r, "単位")),
+        }
+
+    # ---- 在庫(全社・品目名で突合)
+    stock = {}
+    p = DATA / "有効在庫一覧表.csv"
+    if p.exists():
+        with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
+            rows = list(csv.reader(f))
+        hi = next((i for i, r in enumerate(rows) if r and nk(r[0]) == "品目名"), None)
+        if hi is not None:
+            h = {nk(k): i for i, k in enumerate(rows[hi])}
+            for r in rows[hi + 1:]:
+                if r and r[0].strip():
+                    gg = lambda k: r[h[k]] if k in h and h[k] < len(r) else ""
+                    stock[nk(r[0])] = sf(gg("現在庫数"))
     stock_mtime = ""
-    meta_p = DATA / "_stock_mtime.txt"  # download_shared_masters.py が保存(JST)
-    if meta_p.exists():
-        stock_mtime = meta_p.read_text(encoding="utf-8").strip()[:16]
+    if (DATA / "_stock_mtime.txt").exists():
+        stock_mtime = (DATA / "_stock_mtime.txt").read_text(encoding="utf-8").strip()[:16]
 
-    start = (as_of.replace(day=1) - timedelta(days=1)).replace(day=1)  # 前月1日
-    end_m = (as_of.replace(day=1) + timedelta(days=95)).replace(day=1)  # 3か月先の月初
-    end = end_m - timedelta(days=1)
-    dates = [start + timedelta(i) for i in range((end - start).days + 1)]
+    # ---- BOM 親→子, 子→親
+    bom = defaultdict(dict)
+    for r in read_dicts(DATA / "構成マスタ.csv"):
+        pa, ch = g(r, "親品目ｺｰﾄﾞ"), g(r, "子品目ｺｰﾄﾞ")
+        if not pa or not ch:
+            continue
+        fb = pd(g(r, "使用禁止日"))
+        if fb and fb <= today:
+            continue
+        ex = pd(g(r, "失効日"))
+        if ex and ex < today:
+            continue
+        num, den = sf(g(r, "取数(分子)")), sf(g(r, "取数(分母)")) or 1
+        if num <= 0:
+            continue
+        bom[pa][ch] = bom[pa].get(ch, 0) + num / den
+    parents_of = defaultdict(dict)
+    for pa, chs in bom.items():
+        for ch, q in chs.items():
+            parents_of[ch][pa] = q
 
-    targets = [c for c, m in master.items()
-               if m["plan_flag"] == "行う" and not m["banned"]
-               and any(start <= p["date"] <= end for p in plans.get(c, []))]
+    # ---- 生産計画
+    plans = defaultdict(list)
+    plan_upd = {}
+    for r in read_dicts(DATA / "生産計画出力.csv"):
+        c = g(r, "品目ｺｰﾄﾞ")
+        d = pd(g(r, "生産計画日付"))
+        if not c or not d:
+            continue
+        plans[c].append({"d": d, "sb": g(r, "製番"), "q": sf(g(r, "生産計画数量")), "done": sf(g(r, "完成済数")),
+                         "st": g(r, "製番状態区分名")})
+        od = pd(g(r, "操作日付"))
+        if od and (c not in plan_upd or od > plan_upd[c]):
+            plan_upd[c] = od
 
-    out = []
-    for code in targets:
-        m = master[code]
-        kind = "frame" if FRAME_KEY in (m["gyomu"] or "") else "product"
-        group = "Dフレーム" if kind == "frame" else (m["big"] or "その他")
-        it = items.get(code, {})
-        st = stock.get(nk(m["name"]), {})
-        cur = st.get("stock", 0.0)
-        days = defaultdict(lambda: defaultdict(float))
-        lists = defaultdict(lambda: defaultdict(list))
+    # ---- 確定済み工程手配(最終工程=供給 / 子部品登録行=親の使用)
+    conf_proc = defaultdict(list)
+    conf_parent_use = defaultdict(list)
+    for r in read_dicts(DATA / "確定済_工程手配一覧.csv"):
+        c = g(r, "品目コード")
+        if not c:
+            continue
+        if "完納" in g(r, "手配強制完納区分") and "未完" not in g(r, "手配強制完納区分"):
+            continue
+        qty = sf(g(r, "手配数量(在庫単位)", "手配数量"))
+        done = sf(g(r, "報告済数量(在庫単位)", "報告済数量"))
+        rem = qty - done
+        if rem <= 0:
+            continue
+        sb = g(r, "製番")
+        due = pd(g(r, "手配納期(年月日）", "手配納期(年月日)"))
+        if "最終工程" in g(r, "最終工程区分") and sb.startswith("M"):
+            conf_proc[c].append({"d": due, "q": rem, "sb": sb, "who": nk(g(r, "手配先略称")), "proc": nk(g(r, "工程略称"))})
+        if "あり" in g(r, "子部品登録区分"):
+            ud = pd(g(r, "子部品出庫予定日(年月日)", "子部品出庫予定日（年月日）")) or due
+            conf_parent_use[c].append({"d": ud, "q": rem, "sb": sb})
 
-        for p in plans.get(code, []):
-            d = p["date"]
-            if not (start <= d <= end):
+    # ---- 未確定手配(所要量計算の結果)
+    unc_sup = defaultdict(list)
+    unc_parent_use = defaultdict(list)
+    seen = set()
+    for r in read_dicts(DATA / "未確定_購買手配データ.csv"):
+        c = g(r, "品目コード")
+        if not c:
+            continue
+        qty = sf(g(r, "手配数量"))
+        if qty <= 0:
+            continue
+        sb = g(r, "製番", "内部製番")
+        due = pd(g(r, "手配納期(年月日）", "手配納期(年月日)"))
+        plan_d = pd(g(r, "手配予定日（年月日）", "手配予定日(年月日)"))
+        final = "最終工程" in g(r, "最終工程区分") or "購買" in g(r, "手配データ区分")
+        if final and not sb.startswith("K"):  # K製番は生産計画側で数える
+            key = (c, sb, g(r, "手配番号"), due)
+            if key not in seen:
+                seen.add(key)
+                unc_sup[c].append({"d": due or plan_d, "q": qty, "sb": sb, "who": nk(g(r, "手配先略称")),
+                                   "kind": "購買" if "購買" in g(r, "手配データ区分") else "工程"})
+        if "あり" in g(r, "子部品登録区分"):
+            ud = pd(g(r, "子部品出庫予定日（年月日）", "子部品出庫予定日(年月日)")) or plan_d
+            unc_parent_use[c].append({"d": ud, "q": qty, "sb": sb})
+
+    # ---- 対象品目の決定
+    frames = {c for c, m in master.items() if FRAME_KEY in m["gyomu"] and not m["banned"]}
+    handles_all = {c for c, m in master.items() if HANDLE_KEY in m["gyomu"] and not m["banned"]}
+    # 仮説: キャスター本体は名称に「固定キャスター」「自在キャスター」を含む(キャスターストッパー等の付属品は除外)
+    is_caster = lambda c: c in master and ("固定キャスター" in master[c]["name"] or "自在キャスター" in master[c]["name"])
+
+    def is_model(c):
+        m = master.get(c)
+        return bool(m) and not m["banned"] and m["big"] not in ("", "部品", "輸入仕入", "運賃・クレーム他") \
+            and c not in frames and c not in handles_all
+
+    models = {}
+    for fc in frames:
+        for pa, q in parents_of.get(fc, {}).items():
+            if not is_model(pa):
                 continue
-            days[d]["plan"] += p["q"]
-            days[d]["planDone"] += p["done"]
-            lists[d]["plan_l"].append({"sb": p["sb"], "q": p["q"], "done": p["done"], "st": p["st"]})
-            if p["q"] > p["done"] and d < as_of:
-                days[as_of]["planLate"] += p["q"] - p["done"]
+            parts = []
+            for ch, per in bom.get(pa, {}).items():
+                if ch in frames:
+                    parts.append((ch, per, "frame"))
+                elif ch in handles_all or ("ハンドル" in master.get(ch, {}).get("name", "") and "FullASSY".lower() in master.get(ch, {}).get("name", "").replace(" ", "").lower()):
+                    parts.append((ch, per, "handle"))
+                elif is_caster(ch):
+                    parts.append((ch, per, "caster"))
+            if parts:
+                models[pa] = parts
+    products = {c for c, m in master.items() if m["plan_flag"] == "行う" and not m["banned"]
+                and c not in frames and c not in handles_all
+                and any(start <= p["d"] <= end for p in plans.get(c, []))}
 
+    kind_of = {}
+    for c in frames:
+        kind_of[c] = "frame"
+    for parts in models.values():
+        for ch, _, k in parts:
+            kind_of.setdefault(ch, k)
+    for c in products:
+        kind_of.setdefault(c, "product")
+
+    # ---- メッキ品(フレームFULL ASSYの子孫で名称に「ﾒｯｷ」)
+    def find_plating(fc):
+        frontier, depth = [fc], 0
+        while frontier and depth < 3:
+            nxt = []
+            for x in frontier:
+                for ch in bom.get(x, {}):
+                    nm = master.get(ch, {}).get("name", "")
+                    if "メッキ" in nm and "戻" not in nm:
+                        return ch
+                    nxt.append(ch)
+            frontier, depth = nxt, depth + 1
+        return None
+
+    # ---- 品目ごとのイベント
+    def item_events(c, kind):
+        ev = []  # [dateIdx, type, qty, info]
+        late = {"plan": 0.0, "conf": 0.0, "unc": 0}
+        it = items_h.get(c, {})
+        for p in plans.get(c, []):
+            i = idx(p["d"])
+            rem = p["q"] - p["done"]
+            firm = "確定" in p["st"]
+            if p["d"] < today and rem > 0 and "完了" not in p["st"]:
+                late["plan"] += rem
+                ev.append([T, "planLate", rem, {"sb": p["sb"], "d": p["d"].isoformat(), "st": p["st"], "q": p["q"], "done": p["done"]}])
+            if i is not None:
+                ev.append([i, "plan", p["q"], {"sb": p["sb"], "done": p["done"], "st": p["st"], "firm": firm}])
         for r in it.get("production", []):
             d = pd(r.get("date"))
-            if not d or d < start:
+            i = idx(d)
+            if i is None or d > today:
                 continue
-            k = "actK" if str(r.get("seiban", "")).startswith("K") else "actM"
-            q = sf(r.get("reported_qty"))
-            days[d][k] += q
-            lists[d]["act_l"].append({"sb": r.get("seiban", ""), "q": q, "pd": r.get("planned_date", ""), "k": k[-1]})
-
-        for r in it.get("process_orders_conf", []):
-            if str(r.get("seiban", "")).startswith("M") and sf(r.get("remaining_qty")) > 0:
-                d = max(pd(r.get("date")) or as_of, as_of)
-                days[d]["mrp"] += sf(r.get("remaining_qty"))
-
-        orders, cons = [], []
-        if kind == "frame":
-            per = {}
-            for c in it.get("consumption", []) + it.get("planned_consumption", []):
-                if c.get("parent_code"):
-                    per[c["parent_code"]] = sf(c.get("qty_per")) or 1.0
-            for pc, qp in per.items():
-                for o in items.get(pc, {}).get("sales_orders", []):
-                    rq = sf(o.get("remaining_qty"))
-                    if rq > 0:
-                        orders.append({"p": pc, "c": o.get("customer", ""), "no": o.get("order_no", ""), "q": rq,
-                                       "per": qp, "f": rq * qp, "ship": o.get("shipment_date") or o.get("due"), "due": o.get("due", "")})
-            for c in it.get("consumption", []):
-                cons.append({"date": c.get("date"), "p": c.get("parent_code", ""), "q": sf(c.get("qty")), "per": sf(c.get("qty_per")) or 1})
-            n_par = len(per)
-        else:
+            sb = str(r.get("seiban", ""))
+            ev.append([i, "actK" if sb.startswith("K") else "actM", sf(r.get("reported_qty")), {"sb": sb, "pd": r.get("planned_date", "")}])
+        for r in it.get("receipts", []):
+            d = pd(r.get("date"))
+            i = idx(d)
+            if i is None or d > today:
+                continue
+            ev.append([i, "rcv", sf(r.get("qty")), {"who": r.get("supplier", "")}])
+        for r in conf_proc.get(c, []):
+            d = r["d"] or today
+            if d < today:
+                late["conf"] += r["q"]
+            i = idx(max(d, today))
+            if i is not None:
+                ev.append([i, "conf", r["q"], {"sb": r["sb"], "who": r["who"], "late": d < today, "due": d.isoformat()}])
+        for r in it.get("purchase_orders_conf", []):
+            d = pd(r.get("date")) or today
+            q = sf(r.get("qty"))
+            if q <= 0:
+                continue
+            if d < today:
+                late["conf"] += q
+            i = idx(max(d, today))
+            if i is not None:
+                ev.append([i, "conf", q, {"sb": r.get("seiban", ""), "who": r.get("supplier", ""), "late": d < today, "due": d.isoformat()}])
+        for r in unc_sup.get(c, []):
+            d = r["d"] or today
+            if d < today:
+                late["unc"] += 1
+                continue
+            i = idx(d)
+            if i is not None:
+                ev.append([i, "unc", r["q"], {"sb": r["sb"], "who": r["who"], "k": r["kind"]}])
+        # 出
+        if kind == "product":
             for o in it.get("sales_orders", []):
-                rq = sf(o.get("remaining_qty"))
-                if rq > 0:
-                    orders.append({"p": code, "c": o.get("customer", ""), "no": o.get("order_no", ""), "q": rq,
-                                   "per": 1, "f": rq, "ship": o.get("shipment_date") or o.get("due"), "due": o.get("due", "")})
+                q = sf(o.get("remaining_qty"))
+                if q <= 0:
+                    continue
+                d0 = pd(o.get("shipment_date") or o.get("due")) or today
+                i = idx(max(d0, today))
+                if i is not None:
+                    ev.append([i, "req", q, {"c": o.get("customer", ""), "no": o.get("order_no", ""), "due": o.get("due", ""), "late": d0 < today, "src": "受注"}])
             for s in it.get("sales", []):
-                cons.append({"date": s.get("date"), "p": s.get("customer", ""), "q": sf(s.get("qty")), "per": 1})
-            n_par = 0
+                d = pd(s.get("date"))
+                i = idx(d)
+                if i is not None and d <= today:
+                    ev.append([i, "use", sf(s.get("qty")), {"p": s.get("customer", "")}])
+        else:
+            for pa, per in parents_of.get(c, {}).items():
+                if master.get(pa, {}).get("banned"):
+                    continue
+                for p in plans.get(pa, []):
+                    rem = p["q"] - p["done"]
+                    if rem <= 0 or p["d"] < today or "完了" in p["st"]:
+                        continue
+                    i = idx(p["d"])
+                    if i is not None:
+                        ev.append([i, "req", rem * per, {"p": pa, "sb": p["sb"], "per": per, "src": "親の計画"}])
+                for r in conf_parent_use.get(pa, []):
+                    d = r["d"] or today
+                    i = idx(max(d, today))
+                    if i is not None:
+                        ev.append([i, "req", r["q"] * per, {"p": pa, "sb": r["sb"], "per": per, "src": "親の確定手配", "late": d < today}])
+                for r in unc_parent_use.get(pa, []):
+                    d = r["d"] or today
+                    if d < today:
+                        continue
+                    i = idx(d)
+                    if i is not None:
+                        ev.append([i, "req", r["q"] * per, {"p": pa, "sb": r["sb"], "per": per, "src": "親の未確定手配"}])
+                for o in items_h.get(pa, {}).get("sales_orders", []):
+                    q = sf(o.get("remaining_qty"))
+                    if q <= 0:
+                        continue
+                    d0 = pd(o.get("shipment_date") or o.get("due")) or today
+                    i = idx(max(d0, today))
+                    if i is not None:
+                        ev.append([i, "ord", q * per, {"p": pa, "c": o.get("customer", ""), "no": o.get("order_no", ""), "q": q, "per": per, "due": o.get("due", "")}])
+            for r in it.get("consumption", []):
+                d = pd(r.get("date"))
+                i = idx(d)
+                if i is not None and d <= today:
+                    ev.append([i, "use", sf(r.get("qty")), {"p": r.get("parent_code", ""), "per": sf(r.get("qty_per")) or 1}])
+        return ev, late
 
-        for c in cons:
-            d = pd(c.pop("date"))
-            if not d or d < start or d > end:
-                continue
-            days[d]["cons"] += c["q"]
-            lists[d]["cons_l"].append(c)
-        for o in orders:
-            d0 = pd(o["ship"]) or as_of
-            o["late"] = d0 < as_of
-            d = max(d0, as_of)
-            if d > end:
-                continue
-            days[d]["ord"] += o["f"]
-            lists[d]["ord_l"].append(o)
+    out_items = {}
+    for c, kind in kind_of.items():
+        m = master.get(c)
+        if not m:
+            continue
+        ev, late = item_events(c, kind)
+        nm = m["name"]
+        upcoming = [p for p in plans.get(c, []) if today <= p["d"] <= today + timedelta(days=14)]
+        rec = {
+            "code": c, "name": nm, "kind": kind, "grp": m["big"] or "", "unit": m["unit"], "safety": m["safety"],
+            "stock": stock.get(nm, 0.0), "stockFound": nm in stock, "lt": m["lt"],
+            "planUpd": plan_upd[c].isoformat() if c in plan_upd else "",
+            "planned": m["plan_flag"] == "行う", "noPlan14": m["plan_flag"] == "行う" and not upcoming,
+            "late": late, "ev": ev, "parents": len(parents_of.get(c, {})),
+        }
+        if kind == "frame":
+            pc = find_plating(c)
+            if pc and pc in master:
+                pev, _ = item_events(pc, "plating")
+                rec["plating"] = {"code": pc, "name": master[pc]["name"],
+                                  "ev": [e for e in pev if e[1] in ("conf", "unc", "actK", "actM", "rcv")]}
+        out_items[c] = rec
 
-        # 残: 過去は現在庫から逆算(参考) / 本日以降は予定
-        bal = {}
-        b = cur
-        for d in reversed([x for x in dates if x < as_of]):
-            bal[d] = b
-            x = days.get(d)
-            if x:
-                b = b - (x["actK"] + x["actM"]) + x["cons"]
-        bp = bm = cur
-        for d in [x for x in dates if x >= as_of]:
-            x = days.get(d)
-            if x:
-                pr = sum(p["q"] - p["done"] for p in lists[d]["plan_l"])
-                bp += pr - x["ord"]
-                bm += pr + x["mrp"] - x["ord"]
-            bal[d] = (bp, bm)
+    out_models = {}
+    for pa, parts in models.items():
+        m = master[pa]
+        out_models[pa] = {"name": m["name"], "grp": m["big"], "lt": m["lt"], "stock": stock.get(m["name"]),
+                          "parts": [[ch, round(per, 4), k] for ch, per, k in parts if ch in out_items]}
+    for c in products:
+        if c in out_items:
+            m = master[c]
+            out_models[c] = {"name": m["name"], "grp": m["big"], "lt": 0, "stock": stock.get(m["name"]),
+                             "parts": [[c, 1, "product"]], "self": True}
 
-        rows = []
-        for d in dates:
-            if d.weekday() >= 5 and d not in days and d != as_of:
-                continue
-            r = {"d": d.isoformat()}
-            for k, v in days.get(d, {}).items():
-                if v:
-                    r[k] = round(v, 2)
-            for k, v in lists.get(d, {}).items():
-                if v:
-                    r[k] = v
-            if d < as_of:
-                r["bal"] = round(bal[d], 2)
-            else:
-                r["balP"], r["balM"] = round(bal[d][0], 2), round(bal[d][1], 2)
-            rows.append(r)
-
-        out.append({
-            "code": code, "group": group, "kind": kind,
-            "short": short_name(code, m["name"], kind), "name": nk(m["name"]),
-            "safety": m["safety"], "stock": cur, "inSched": st.get("in", 0), "outSched": st.get("out", 0),
-            "eff": st.get("eff", 0), "stockFound": bool(st), "parents": n_par, "days": rows,
-        })
-
-    # 略称の重複(例: SLフレーム/スポット と SLフレーム/裾きり)は「/」以降を付けて区別
-    cnt = defaultdict(int)
-    for f in out:
-        cnt[f["short"]] += 1
-    for f in out:
-        if cnt[f["short"]] > 1 and "/" in f["name"]:
-            f["short"] = f"{f['short']} {f['name'].split('/', 1)[1].strip()}"
-
-    groups = [g for g in GROUP_ORDER if any(f["group"] == g for f in out)]
-    groups += sorted({f["group"] for f in out} - set(groups))
-    out.sort(key=lambda f: (groups.index(f["group"]), f["code"]))
-    payload = {"asOf": as_of.isoformat(), "stockAsOf": stock_mtime, "groups": groups, "frames": out}
+    payload = {"asOf": today.isoformat(), "stockAsOf": stock_mtime, "dates": [d.isoformat() for d in DATES],
+               "today": T, "items": out_items, "models": out_models}
     DATA.mkdir(exist_ok=True)
     p = DATA / "plan_ledger.json"
     p.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"[出力] {p} ({p.stat().st_size:,} bytes) 品目 {len(out)} / グループ {groups}")
-    miss = [f["code"] for f in out if not f["stockFound"]]
+    cnt = defaultdict(int)
+    for r in out_items.values():
+        cnt[r["kind"]] += 1
+    print(f"[出力] {p} ({p.stat().st_size:,} bytes) 品目 {dict(cnt)} / 型式 {len(out_models)}")
+    miss = [c for c, r in out_items.items() if not r["stockFound"]]
     if miss:
-        print(f"[WARN] 有効在庫一覧表に品目名が見つからず現在庫0扱い: {miss}")
+        print(f"[WARN] 有効在庫一覧表に品目名が無く現在庫0扱い: {len(miss)}件 例 {miss[:8]}")
 
 
 if __name__ == "__main__":
