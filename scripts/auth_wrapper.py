@@ -430,7 +430,7 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[orphan_items] 例外:", e); window._fujinOrphanPromise = Promise.resolve(null); }
 
-    // ★ 2026-10 計画品 出入り台帳(plan_ledger)も SharePoint から認証取得。
+    // ★ 2026-10 納期確認(plan_ledger)も SharePoint から認証取得。
     //   画面(plan_ledger.html)は window.top._fujinPlanLedger / _fujinPlanLedgerPromise を読む。
     try {
       var _SP_DRIVE_PL = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
