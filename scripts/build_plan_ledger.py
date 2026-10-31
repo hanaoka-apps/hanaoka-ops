@@ -14,7 +14,8 @@
   入(供給)
     plan : 生産計画(K製番)の残。状態「手配確定」と「手配予定」を区別。計画日が過去で未完成=付け替え漏れ(当日中に先へずらすルール違反)
     conf : 確定済み手配の残。社内/外注工程は 確定済_工程手配一覧 の最終工程行(M製番のみ。K製番は計画側で数える)、
-           購買品は item_history の確定発注残。納期が過去のものは「遅れ(実績未入力の可能性)」として本日に置く
+           購買品は item_history の確定発注残。納期が過去のものは「遅れ(実績未入力の可能性)」として
+           次の稼働日(本日が土日なら翌月曜)に置く。※FUJINが土日に手配したわけではなく、この画面の置き場所
     unc  : 所要量計算の未確定手配(未確定_購買手配データ、M製番の最終工程/購買行)。納期が過去のものは件数だけ警告
     実績 : 製造報告(K/M別)・受入
   出(需要)
@@ -97,6 +98,11 @@ def main():
     DATES = [start + timedelta(i) for i in range((end - start).days + 1)]
     di = {d: i for i, d in enumerate(DATES)}
     T = di[today]
+    # 遅れ分の置き場所: 本日が土日なら次の平日(会社カレンダーの祝日は未考慮)
+    nb = today
+    while nb.weekday() >= 5:
+        nb += timedelta(days=1)
+    LB = di[nb]
 
     def idx(d, clamp_past=True):
         """日付→列番号。過去(表示開始より前)は clamp_past なら本日扱いにせず None"""
@@ -190,7 +196,9 @@ def main():
         sb = g(r, "製番")
         due = pd(g(r, "手配納期(年月日）", "手配納期(年月日)"))
         if "最終工程" in g(r, "最終工程区分") and sb.startswith("M"):
-            conf_proc[c].append({"d": due, "q": rem, "sb": sb, "who": nk(g(r, "手配先略称")), "proc": nk(g(r, "工程略称"))})
+            conf_proc[c].append({"d": due, "q": rem, "sb": sb, "who": nk(g(r, "手配先略称")), "proc": nk(g(r, "工程略称")),
+                                 "od": pd(g(r, "手配日付（年月日）", "手配日付(年月日)")), "no": g(r, "手配番号"),
+                                 "tq": qty, "done": done})
         if "あり" in g(r, "子部品登録区分"):
             ud = pd(g(r, "子部品出庫予定日(年月日)", "子部品出庫予定日（年月日）")) or due
             conf_parent_use[c].append({"d": ud, "q": rem, "sb": sb})
@@ -284,7 +292,7 @@ def main():
             firm = "確定" in p["st"]
             if p["d"] < today and rem > 0 and "完了" not in p["st"]:
                 late["plan"] += rem
-                ev.append([T, "planLate", rem, {"sb": p["sb"], "d": p["d"].isoformat(), "st": p["st"], "q": p["q"], "done": p["done"]}])
+                ev.append([LB, "planLate", rem, {"sb": p["sb"], "d": p["d"].isoformat(), "st": p["st"], "q": p["q"], "done": p["done"]}])
             if i is not None:
                 ev.append([i, "plan", p["q"], {"sb": p["sb"], "done": p["done"], "st": p["st"], "firm": firm}])
         for r in it.get("production", []):
@@ -293,20 +301,27 @@ def main():
             if i is None or d > today:
                 continue
             sb = str(r.get("seiban", ""))
-            ev.append([i, "actK" if sb.startswith("K") else "actM", sf(r.get("reported_qty")), {"sb": sb, "pd": r.get("planned_date", "")}])
+            q = sf(r.get("reported_qty"))
+            if q <= 0:
+                continue
+            ev.append([i, "actK" if sb.startswith("K") else "actM", q, {"sb": sb, "no": r.get("tehai_no", ""), "proc": r.get("process_name", "")}])
         for r in it.get("receipts", []):
             d = pd(r.get("date"))
             i = idx(d)
             if i is None or d > today:
                 continue
-            ev.append([i, "rcv", sf(r.get("qty")), {"who": r.get("supplier", "")}])
+            q = sf(r.get("qty"))
+            if q <= 0:
+                continue
+            ev.append([i, "rcv", q, {"who": r.get("supplier", ""), "sb": r.get("seiban", ""), "hat": r.get("hat_no", ""), "arr": r.get("arrival_no", "")}])
         for r in conf_proc.get(c, []):
             d = r["d"] or today
             if d < today:
                 late["conf"] += r["q"]
-            i = idx(max(d, today))
+            i = LB if d < today else idx(d)
             if i is not None:
-                ev.append([i, "conf", r["q"], {"sb": r["sb"], "who": r["who"], "late": d < today, "due": d.isoformat()}])
+                ev.append([i, "conf", r["q"], {"sb": r["sb"], "who": r["who"], "late": d < today, "due": d.isoformat(),
+                                               "od": r["od"].isoformat() if r["od"] else "", "no": r["no"], "tq": r["tq"], "done": r["done"]}])
         for r in it.get("purchase_orders_conf", []):
             d = pd(r.get("date")) or today
             q = sf(r.get("qty"))
@@ -314,9 +329,10 @@ def main():
                 continue
             if d < today:
                 late["conf"] += q
-            i = idx(max(d, today))
+            i = LB if d < today else idx(d)
             if i is not None:
-                ev.append([i, "conf", q, {"sb": r.get("seiban", ""), "who": r.get("supplier", ""), "late": d < today, "due": d.isoformat()}])
+                ev.append([i, "conf", q, {"sb": r.get("seiban", ""), "who": r.get("supplier", ""), "late": d < today, "due": d.isoformat(),
+                                          "od": r.get("order_date", ""), "hat": r.get("hat_no", "")}])
         for r in unc_sup.get(c, []):
             d = r["d"] or today
             if d < today:
@@ -332,14 +348,15 @@ def main():
                 if q <= 0:
                     continue
                 d0 = pd(o.get("shipment_date") or o.get("due")) or today
-                i = idx(max(d0, today))
+                i = LB if d0 < today else idx(d0)
                 if i is not None:
-                    ev.append([i, "req", q, {"c": o.get("customer", ""), "no": o.get("order_no", ""), "due": o.get("due", ""), "late": d0 < today, "src": "受注"}])
+                    ev.append([i, "req", q, {"c": o.get("customer", ""), "no": o.get("order_no", ""), "due": o.get("due", ""), "late": d0 < today}])
             for s in it.get("sales", []):
                 d = pd(s.get("date"))
                 i = idx(d)
                 if i is not None and d <= today:
-                    ev.append([i, "use", sf(s.get("qty")), {"p": s.get("customer", "")}])
+                    ev.append([i, "use", sf(s.get("qty")), {"c": s.get("customer", ""), "sales": s.get("sales_no", ""),
+                                                             "ship": s.get("shipment_no", ""), "sb": s.get("seiban", "")}])
         else:
             for pa, per in parents_of.get(c, {}).items():
                 if master.get(pa, {}).get("banned"):
@@ -353,9 +370,9 @@ def main():
                         ev.append([i, "req", rem * per, {"p": pa, "sb": p["sb"], "per": per, "src": "親の計画"}])
                 for r in conf_parent_use.get(pa, []):
                     d = r["d"] or today
-                    i = idx(max(d, today))
+                    i = LB if d < today else idx(d)
                     if i is not None:
-                        ev.append([i, "req", r["q"] * per, {"p": pa, "sb": r["sb"], "per": per, "src": "親の確定手配", "late": d < today}])
+                        ev.append([i, "req", r["q"] * per, {"p": pa, "sb": r["sb"], "per": per, "src": "親の確定手配", "late": d < today, "due": d.isoformat()}])
                 for r in unc_parent_use.get(pa, []):
                     d = r["d"] or today
                     if d < today:
@@ -368,14 +385,16 @@ def main():
                     if q <= 0:
                         continue
                     d0 = pd(o.get("shipment_date") or o.get("due")) or today
-                    i = idx(max(d0, today))
+                    i = LB if d0 < today else idx(d0)
                     if i is not None:
                         ev.append([i, "ord", q * per, {"p": pa, "c": o.get("customer", ""), "no": o.get("order_no", ""), "q": q, "per": per, "due": o.get("due", "")}])
             for r in it.get("consumption", []):
                 d = pd(r.get("date"))
                 i = idx(d)
                 if i is not None and d <= today:
-                    ev.append([i, "use", sf(r.get("qty")), {"p": r.get("parent_code", ""), "per": sf(r.get("qty_per")) or 1}])
+                    ev.append([i, "use", sf(r.get("qty")), {"p": r.get("parent_code", ""), "per": sf(r.get("qty_per")) or 1,
+                                                             "sb": r.get("parent_seiban", ""), "no": r.get("parent_tehai_no", ""),
+                                                             "proc": r.get("process_name", "")}])
         return ev, late
 
     out_items = {}
@@ -398,7 +417,7 @@ def main():
             if pc and pc in master:
                 pev, _ = item_events(pc, "plating")
                 rec["plating"] = {"code": pc, "name": master[pc]["name"],
-                                  "ev": [e for e in pev if e[1] in ("conf", "unc", "actK", "actM", "rcv")]}
+                                  "ev": [e for e in pev if e[1] in ("conf", "unc", "actK", "actM", "rcv") and e[2] > 0]}
         out_items[c] = rec
 
     out_models = {}
