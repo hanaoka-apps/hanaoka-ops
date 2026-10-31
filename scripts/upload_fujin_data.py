@@ -50,6 +50,7 @@ TARGETS = [
     (DATA / "value_analysis.json", "value_analysis.json"),  # 付加価値分析（認証配信）
     (DATA / "hub_purchase_facts.json", "hub_purchase_facts.json"),  # HUB「会社の現在地」仕入カード用の軽量版(日別仕入のみ)
     (DATA / "value_analysis_production_results.json", "value_analysis_production_results.json"),  # 品目別完成報告（認証配信）
+    (DATA / "plan_ledger.json", "plan_ledger.json"),  # 計画品 出入り台帳(計画/実績/受注残/在庫) (2026-10追加)
 ]
 
 
