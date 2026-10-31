@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 納期確認: データは scripts/build_plan_ledger.py → SharePoint(plan_ledger.json) → 親FUJINの window._fujinPlanLedger
+     在庫確認の印は SharePoint リスト「FUJIN_在庫確認」(押した人の名前・日時・帳簿/実数を記録) -->
+<title>納期確認 - FUJIN</title>
+<style>
+:root{
+  --bg:#f4f5f7;--paper:#fff;--ink:#1f2937;--ink2:#4b5563;--ink3:#6b7280;--line:#e5e7eb;--line2:#eef0f3;
+  --primary:#2563eb;--primary-dark:#1e40af;--primary-bg:#eff6ff;--hd0:#172f73;--hd1:#1e40af;--hd2:#3b82f6;
+  --plan:#92400e;--plan-bg:#fef3c7;--conf:#1d4ed8;--conf-bg:#dbeafe;--unc:#0f766e;--unc-bg:#ccfbf1;
+  --out:#c2410c;--out-bg:#ffedd5;--crit:#b91c1c;--crit-bg:#fee2e2;--good:#15803d;--good-bg:#dcfce7;--warn:#a16207;--warn-bg:#fef9c3;
+  --past:#f1f5f9;--f-num:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:"Hiragino Sans",Meiryo,"Noto Sans JP",sans-serif;font-size:14px;line-height:1.5}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+.wrap{max-width:1400px;margin:0 auto;padding:14px max(14px,env(safe-area-inset-right,0px)) 40px max(14px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:14px}
+.loading{padding:60px 20px;text-align:center;color:var(--ink3)}
+header.top{background:linear-gradient(120deg,var(--hd0) 0%,var(--hd1) 42%,var(--hd2) 100%);color:#fff;border-radius:14px;padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;position:relative;overflow:hidden}
+header.top::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(420px 90px at 18% -30%,rgba(255,255,255,.28),transparent 70%),radial-gradient(260px 70px at 62% 130%,rgba(147,197,253,.28),transparent 70%)}
+header.top>*{position:relative}
+header.top h1{margin:0;font-size:19px;font-weight:800;letter-spacing:.04em}
+header.top .meta{font-size:12px;opacity:.92}
+.mode{display:inline-flex;background:rgba(255,255,255,.15);border-radius:999px;padding:3px;gap:2px;flex-wrap:wrap}
+.mode button{border:0;background:transparent;color:#fff;font:inherit;font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:999px;cursor:pointer;min-height:34px}
+.mode button[aria-pressed="true"]{background:#fff;color:var(--primary-dark);box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding:2px}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{flex:0 0 auto;border:1.5px solid var(--line);background:var(--paper);color:var(--ink2);font:inherit;font-weight:700;border-radius:999px;padding:7px 15px;cursor:pointer;min-height:38px;transition:transform .2s}
+.tabs button:hover{transform:translateY(-1px)}
+.tabs button[aria-pressed="true"]{background:linear-gradient(120deg,var(--hd1),var(--hd2));color:#fff;border-color:transparent}
+button:focus-visible,input:focus-visible{outline:2.5px solid var(--primary);outline-offset:2px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.searchrow{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+.searchrow label{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--ink3);font-weight:700}
+.searchrow input{font:inherit;font-size:15px;padding:8px 11px;border:1.5px solid #cbd5e1;border-radius:9px;min-height:40px}
+#q{width:min(340px,70vw)}#qty{width:90px}
+.sugg{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1.5px solid #cbd5e1;background:#fff;color:var(--ink);font:inherit;font-size:12.5px;font-weight:700;border-radius:8px;padding:5px 10px;cursor:pointer;min-height:34px;display:inline-flex;gap:6px;align-items:center}
+.chip[aria-pressed="true"]{background:var(--primary-dark);color:#fff;border-color:var(--primary-dark)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:0 0 8px}
+.dot.ng{background:var(--crit)}.dot.ok{background:var(--good)}.dot.wn{background:#f59e0b}
+.answer{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.ans{border-radius:12px;padding:10px 14px;background:var(--bg);display:flex;flex-direction:column;gap:2px}
+.ans .k{font-size:11.5px;color:var(--ink3);font-weight:700}
+.ans .v{font-size:22px;font-weight:800}
+.ans.main{background:var(--primary-bg);border:2px solid var(--primary)}
+.ans.main .v{color:var(--primary-dark)}
+.ans.ng .v{color:var(--crit)}
+.ans .n{font-size:11.5px;color:var(--ink2)}
+.parts{display:flex;gap:8px;flex-wrap:wrap}
+.part{flex:1 1 210px;text-align:left;border:1.5px solid var(--line);background:#fff;border-radius:10px;padding:9px 12px;cursor:pointer;font:inherit;color:inherit;display:flex;flex-direction:column;gap:2px;transition:transform .2s,border-color .2s;min-width:0}
+.part:hover{transform:translateY(-2px);border-color:var(--primary)}
+.part.neck{border-color:var(--crit);background:#fff7f7}
+.part .pn{font-weight:800;font-size:13px}
+.part .pd{font-size:17px;font-weight:800}
+.part .tag{font-size:11px;font-weight:800;color:var(--crit)}
+.part .sm{font-size:11.5px;color:var(--ink3)}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:700;border-radius:999px;padding:2px 9px;width:max-content;max-width:100%}
+.b-ok{background:var(--good-bg);color:var(--good)}.b-ng{background:var(--crit-bg);color:var(--crit)}.b-wn{background:var(--warn-bg);color:var(--warn)}.b-gr{background:var(--line2);color:var(--ink2)}
+.ihead{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;justify-content:space-between}
+.ihead h2{margin:0;font-size:17px;font-weight:800}
+.ihead .sub{font-size:12px;color:var(--ink3)}
+.badges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.btn{border:1.5px solid var(--primary);background:#fff;color:var(--primary-dark);font:inherit;font-size:12.5px;font-weight:700;border-radius:8px;padding:5px 11px;cursor:pointer;min-height:34px}
+.btn.pri{background:var(--primary);color:#fff}
+.tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;-webkit-overflow-scrolling:touch}
+table.led{border-collapse:separate;border-spacing:0;font-size:12.5px;min-width:max-content}
+.led th,.led td{padding:6px 7px;text-align:right;border-left:1px solid var(--line2);white-space:nowrap}
+.led thead th{background:#f8fafc;font-weight:700;font-size:11.5px;color:var(--ink2);position:sticky;top:0}
+.led thead th.past{background:#e2e8f0}
+.led thead th.today{background:var(--primary-dark);color:#fff}
+.led thead th.hit{background:var(--primary);color:#fff}
+.led .rl{position:sticky;left:0;background:#fff;text-align:left;font-weight:700;border-right:1px solid var(--line);z-index:1;min-width:150px;font-size:12px}
+.led tr+tr td{border-top:1px solid var(--line2)}
+.led td.p{background:var(--past)}
+.led td.z{color:#cbd5e1}
+.led td.c{cursor:pointer}
+.led td.c:hover{outline:2px solid var(--primary);outline-offset:-2px}
+.r-plan{color:var(--plan)}.r-conf{color:var(--conf)}.r-unc{color:var(--unc)}.r-out{color:var(--out)}.r-act{color:#334155}.r-ref{color:#94a3b8;font-weight:500}
+td.v-plan{background:var(--plan-bg);color:var(--plan);font-weight:700}
+td.v-plan.soft{background:#fffbeb;opacity:.85}
+td.v-conf{background:var(--conf-bg);color:var(--conf);font-weight:700}
+td.v-unc{background:var(--unc-bg);color:var(--unc);font-weight:700}
+td.v-out{color:var(--out);font-weight:700}
+td.v-miss{background:var(--crit-bg);color:var(--crit);font-weight:800}
+td.v-late{box-shadow:inset 0 0 0 2px var(--crit)}
+td.v-neg{background:var(--crit-bg);color:var(--crit);font-weight:800}
+td.v-low{color:var(--warn);font-weight:800}
+td.v-stock{font-weight:800}
+td.v-atp{background:var(--primary-bg);color:var(--primary-dark);font-weight:800}
+td.v-atp0{color:#94a3b8}
+.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px}
+.it{border:1.5px solid var(--line);background:#fff;border-radius:10px;padding:8px 11px;text-align:left;font:inherit;color:inherit;cursor:pointer;display:flex;flex-direction:column;gap:3px;min-width:0;transition:transform .2s,border-color .2s}
+.it:hover{transform:translateY(-2px);border-color:var(--primary)}
+.it[aria-pressed="true"]{border-color:var(--primary-dark);box-shadow:0 0 0 2px var(--primary-bg)}
+.it .nm{font-weight:800;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.it .sm{font-size:11.5px;color:var(--ink3);display:flex;gap:8px;flex-wrap:wrap}
+.notes{font-size:12px;color:var(--ink2);max-width:100%}
+.notes h3{margin:0;font-size:13px}
+.notes ul{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:3px;max-width:90ch}
+.scrim{position:fixed;inset:0;background:rgba(10,14,20,.38);opacity:0;pointer-events:none;transition:opacity .2s;z-index:20}
+.scrim.on{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:0;right:0;bottom:0;max-height:82%;background:#fff;border-radius:18px 18px 0 0;box-shadow:0 -10px 40px rgba(0,0,0,.2);transform:translateY(calc(100% + 40px));visibility:hidden;transition:transform .35s cubic-bezier(.2,1.1,.3,1),visibility 0s .35s;z-index:21;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom,0px)}
+.sheet.on{transform:none;visibility:visible;transition:transform .35s cubic-bezier(.2,1.1,.3,1),visibility 0s}
+@media (min-width:760px){.sheet{left:auto;right:20px;bottom:20px;width:460px;border-radius:16px}}
+.shd{display:flex;justify-content:space-between;align-items:center;padding:12px 16px 6px}
+.shd h3{margin:0;font-size:16px}
+.close{border:0;background:var(--bg);width:34px;height:34px;border-radius:50%;cursor:pointer;font-size:15px}
+.sbody{overflow-y:auto;padding:0 16px 18px;display:flex;flex-direction:column;gap:10px}
+.sec h4{margin:0 0 4px;font-size:12px;color:var(--ink2)}
+.li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:6px 9px;border-radius:8px;background:var(--bg);font-size:12.5px;margin-bottom:4px}
+.li .m{grid-column:1/-1;font-size:11px;color:var(--ink3)}
+.li .q{font-family:var(--f-num);font-weight:700}
+.form{display:flex;flex-direction:column;gap:8px}
+.form label{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:700;color:var(--ink2)}
+.form input{font:inherit;font-size:15px;padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:8px}
+.msg{font-size:12px}.msg.err{color:var(--crit)}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.anim{animation:rise .35s ease both}
+@media (prefers-reduced-motion:reduce){.anim{animation:none}.part,.it,.tabs button{transition:none}}
+</style>
+</head>
+<body>
+<div class="loading" id="loading">納期確認のデータを読み込み中…</div>
+<div class="wrap" id="app" hidden>
+  <header class="top">
+    <div>
+      <h1>納期確認</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="mode" role="group" aria-label="予測在庫の見込み方" id="mode">
+      <button data-m="0">在庫・実績だけ（確実）</button>
+      <button data-m="1">確定済み手配まで</button>
+      <button data-m="2">計画・所要量も見込む</button>
+    </div>
+  </header>
+  <nav class="tabs" role="group" aria-label="表示" id="tabs">
+    <button data-v="model">型式で探す</button>
+    <button data-v="frame">フレーム</button>
+    <button data-v="handle">ハンドル</button>
+    <button data-v="caster">キャスター</button>
+    <button data-v="product">完成品（第3工場ほか）</button>
+  </nav>
+  <section id="view" style="display:flex;flex-direction:column;gap:14px"></section>
+  <section class="notes card">
+    <h3>この画面の数字の出どころ（毎朝6:30更新）</h3>
+    <ul>
+      <li>現在庫：有効在庫一覧表（全社）。品目名で突き合わせ。帳簿と実在庫がずれている品目があるため、「在庫確認」の印で確かめた人と日付を表示します。30日以内に確認のない品目を使う回答は「目安」です。</li>
+      <li>入：生産計画（K製番）／確定済み手配の残（M製番の工程手配・購買発注）／所要量計算の未確定手配。上の切り替えで、どこまで見込むかを変えられます。</li>
+      <li>出：部品は親機種の組立による使用予定（所要量計算の考え方。親機種の在庫は差し引き済み）。完成品は受注残の出荷予定日。部品の「参考：親機種の受注×使用数」は計算に使いません。</li>
+      <li>回答可能数：その日以降の予測在庫の最小値（先の出荷を食わない数）。型式の回答目安＝一番遅い部品が揃う日＋組立LT（品目マスタの累積LT・仮）。</li>
+      <li>警告：計画日を過ぎて未完成の計画（当日中に先へずらすルールの付け替え漏れ）、納期を過ぎた確定手配（実績未入力の可能性）、2週間先まで計画がない計画品。いずれも工場に確認してください。</li>
+    </ul>
+  </section>
+</div>
+<div class="scrim" id="scrim"></div>
+<aside class="sheet" id="sheet" aria-hidden="true">
+  <div class="shd"><h3 id="stitle"></h3><button class="close" id="sclose" aria-label="閉じる">✕</button></div>
+  <div class="sbody" id="sbody"></div>
+</aside>
+
+<script>
+function _boot(D){
+document.getElementById('loading').hidden=true;document.getElementById('app').hidden=false;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>(n==null||isNaN(n))?'–':(Math.round(n)||0).toLocaleString('ja-JP');
+const WD=['日','月','火','水','木','金','土'];
+const DT=D.dates.map(s=>new Date(s+'T00:00:00')),T=D.today,N=D.dates.length;
+const md=i=>(DT[i].getMonth()+1)+'/'+DT[i].getDate();
+const mdw=i=>md(i)+'（'+WD[DT[i].getDay()]+'）';
+const KLAB={frame:'フレーム',handle:'ハンドル',caster:'キャスター',product:'完成品'};
+const MLAB=['予測在庫（在庫・実績だけ）','予測在庫（確定済みまで）','予測在庫（計画・所要量込み）'];
+let st={v:'model',mode:2,q:'',qty:1,sel:{}};
+try{const s=JSON.parse(localStorage.getItem('fujinNouki')||'{}');Object.assign(st,{v:s.v||st.v,mode:s.mode??st.mode,q:s.q||'',qty:s.qty||1,sel:s.sel||{}})}catch(e){}
+const save=()=>{try{localStorage.setItem('fujinNouki',JSON.stringify({v:st.v,mode:st.mode,q:st.q,qty:st.qty,sel:st.sel}))}catch(e){}};
+$('meta').innerHTML=`基準日 <b class="num">${esc(D.asOf.replace(/-/g,'/'))}</b> ・ 在庫 ${esc((D.stockAsOf||'—').replace(/-/g,'/'))} 時点（全社）`;
+
+/* ---------- 計算 ---------- */
+let cache={};
+function calc(code){
+  const key=code+'|'+st.mode;if(cache[key])return cache[key];
+  const r=D.items[code];if(!r)return null;
+  const inF=new Array(N).fill(0),outF=new Array(N).fill(0),actIn=new Array(N).fill(0),useP=new Array(N).fill(0);
+  for(const [i,t,q,x] of r.ev){
+    if(t==='actK'||t==='actM'||t==='rcv'){if(i<=T)actIn[i]+=q}
+    else if(t==='use'){if(i<=T)useP[i]+=q}
+    else if(i>=T){
+      if(t==='req')outF[i]+=q;
+      else if(t==='conf'&&st.mode>=1)inF[i]+=q;
+      else if(t==='plan'&&((x.firm&&st.mode>=1)||st.mode>=2))inF[i]+=Math.max(0,q-(x.done||0));
+      else if(t==='unc'&&st.mode>=2)inF[i]+=q;
+    }
+  }
+  const bal=new Array(N).fill(null);
+  // 過去: 現在庫から実績で逆算(参考値。本日分の実績は現在庫に反映済みとみなす)
+  let b=r.stock;
+  for(let i=T-1;i>=0;i--){b=b-actIn[i+1]+useP[i+1];bal[i]=b}
+  let s=r.stock;
+  for(let i=T;i<N;i++){s+=inF[i]-outF[i];bal[i]=s}
+  const atp=new Array(N).fill(null);let mn=Infinity;
+  for(let i=N-1;i>=T;i--){mn=Math.min(mn,bal[i]);atp[i]=Math.max(0,mn)}
+  let minI=T;for(let i=T;i<N;i++)if(bal[i]<bal[minI])minI=i;
+  return cache[key]={bal,atp,minI};
+}
+function earliest(code,need){const c=calc(code);if(!c)return -1;for(let i=T;i<N;i++)if(c.atp[i]>=need)return i;return -1}
+function addBiz(i,days){let k=i,n=Math.ceil(days||0);while(n>0&&k<N-1){k++;const w=DT[k].getDay();if(w!==0&&w!==6)n--}return k}
+
+/* ---------- 在庫確認(SharePoint リスト) ---------- */
+const CHK_LIST='FUJIN_在庫確認';const CHK={site:null,map:{},state:'loading',err:''};
+function driveId(){try{const src=Array.from(window.top.document.scripts).map(s=>s.textContent||'').join('\n');const m=src.match(/\bvar\s+_SP_DRIVE_PL\s*=\s*["']([^"']+)["']/)||src.match(/\bvar\s+_SP_DRIVE\s*=\s*["']([^"']+)["']/);return m?m[1]:''}catch(_){return''}}
+async function tok(scopes){const t=window.top,msal=t&&t._fujinMsal;if(!msal)throw new Error('サインイン情報がありません');const a=msal.getActiveAccount?.()||msal.getAllAccounts?.()[0];if(!a)throw new Error('サインインしていません');return (await msal.acquireTokenSilent({scopes,account:a})).accessToken}
+async function gx(path,opt,scopeSets){
+  let last=null;
+  for(const sc of (scopeSets||[['https://graph.microsoft.com/Lists.SelectedOperations.Selected'],['https://graph.microsoft.com/Sites.ReadWrite.All']])){
+    let t;try{t=await tok(sc)}catch(e){last=e;continue}
+    const r=await fetch(path.startsWith('http')?path:'https://graph.microsoft.com/v1.0'+path,Object.assign({cache:'no-store'},opt||{},{headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'}}));
+    if(r.status===401||r.status===403){last=new Error('権限がありません（HTTP '+r.status+'）');continue}
+    return r;
+  }
+  throw last||new Error('接続できません');
+}
+async function site(){if(CHK.site)return CHK.site;const id=driveId();if(!id)throw new Error('保存先を特定できません');const r=await gx(`/drives/${encodeURIComponent(id)}?$select=sharePointIds`,null,[['Files.Read.All']]);if(!r.ok)throw new Error('サイトを特定できません（HTTP '+r.status+'）');const j=await r.json();CHK.site=j.sharePointIds&&j.sharePointIds.siteId;return CHK.site}
+async function loadChecks(){
+  try{const s=await site();let url=`/sites/${s}/lists/${encodeURIComponent(CHK_LIST)}/items?$expand=fields&$top=999`,all=[];
+    while(url){const r=await gx(url);if(r.status===404){CHK.state='missing';render();return}if(!r.ok)throw new Error('在庫確認を読めません（HTTP '+r.status+'）');const j=await r.json();all=all.concat(j.value||[]);url=j['@odata.nextLink']||null}
+    const map={};for(const x of all){const f=x.fields||{},c=String(f.Title||'');if(!c)continue;const rec={at:x.createdDateTime,by:(x.createdBy&&x.createdBy.user&&x.createdBy.user.displayName)||f.CheckedBy||'',book:f.BookQty,count:f.CountQty,note:f.Note||''};if(!map[c]||rec.at>map[c].at)map[c]=rec}
+    CHK.map=map;CHK.state='ok';
+  }catch(e){CHK.state='error';CHK.err=e.message}
+  render();
+}
+async function createList(){
+  const s=await site(),body={displayName:CHK_LIST,list:{template:'genericList'},columns:[{name:'ItemName',text:{}},{name:'BookQty',number:{}},{name:'CountQty',number:{}},{name:'Note',text:{allowMultipleLines:true,textType:'plain'}},{name:'CheckedBy',text:{}}]};
+  const r=await gx(`/sites/${s}/lists`,{method:'POST',body:JSON.stringify(body)},[['https://graph.microsoft.com/Sites.Manage.All'],['https://graph.microsoft.com/Sites.ReadWrite.All']]);
+  if(!r.ok)throw new Error(`リストを作れませんでした（HTTP ${r.status}）。SharePoint で「${CHK_LIST}」を作ってください（列：ItemName 1行テキスト、BookQty 数値、CountQty 数値、Note 複数行テキスト、CheckedBy 1行テキスト）`);
+}
+async function saveCheck(code,count,note){
+  const r0=D.items[code],s=await site();let by='';try{const u=window.top._fujinUser;by=u&&(u.name||u.username)||''}catch(_){}
+  const fields={Title:code,ItemName:r0.name,BookQty:r0.stock,CountQty:count,Note:note,CheckedBy:by};
+  const r=await gx(`/sites/${s}/lists/${encodeURIComponent(CHK_LIST)}/items`,{method:'POST',body:JSON.stringify({fields})});
+  if(!r.ok)throw new Error(`保存できませんでした（HTTP ${r.status}${r.status===404?'：リストがありません':''}）`);
+  CHK.map[code]={at:new Date().toISOString(),by,book:r0.stock,count,note};
+}
+function chkInfo(code){
+  const c=CHK.map[code];if(!c)return {ok:false,html:`<span class="badge b-wn">⚠ 在庫未確認</span>`};
+  const days=Math.floor((new Date(D.asOf)-new Date(c.at.slice(0,10)))/864e5),d=new Date(c.at),ds=`${d.getMonth()+1}/${d.getDate()}`;
+  const differs=c.count!=null&&c.book!=null&&Number(c.count)!==Number(c.book);
+  const diff=differs?`・実数${fmt(c.count)}（帳簿${fmt(c.book)}）`:(c.count!=null?`・実数${fmt(c.count)}`:'');
+  if(days>30)return {ok:false,html:`<span class="badge b-gr" title="${esc(c.note)}">前回確認 ${ds} ${esc(c.by)}（30日超）${diff}</span>`};
+  return {ok:true,html:`<span class="badge ${differs?'b-wn':'b-ok'}" title="${esc(c.note)}">✓ 在庫確認 ${ds} ${esc(c.by)}${diff}</span>`};
+}
+
+/* ---------- 品目の警告 ---------- */
+function warns(r){
+  const w=[];
+  const lp=r.ev.filter(e=>e[1]==='planLate');if(lp.length)w.push(`<span class="badge b-ng" title="できない計画は当日中に先の日付へずらすルール">⚠ 計画の付け替え漏れ ${lp.length}件・${fmt(r.late.plan)}</span>`);
+  if(r.late.conf)w.push(`<span class="badge b-ng" title="納期を過ぎても完了していない確定手配">⚠ 確定手配の遅れ ${fmt(r.late.conf)}（実績未入力？）</span>`);
+  if(r.late.unc)w.push(`<span class="badge b-wn" title="所要量計算の未確定手配で、納期が過去のまま">未確定手配の過去日 ${r.late.unc}件</span>`);
+  if(r.noPlan14)w.push(`<span class="badge b-wn">2週間先まで計画なし → 工場へ入力依頼</span>`);
+  if(r.planUpd)w.push(`<span class="badge b-gr">計画の最終更新 ${esc(r.planUpd.slice(5).replace('-','/'))}</span>`);
+  if(!r.stockFound)w.push(`<span class="badge b-gr">有効在庫一覧表に無し（在庫0扱い）</span>`);
+  return w.join('');
+}
+
+/* ---------- 台帳テーブル ---------- */
+function cols(code){
+  const r=D.items[code],used=new Set(r.ev.map(e=>e[0]));
+  const out=[];for(let i=Math.max(0,T-7);i<N;i++){const w=DT[i].getDay();if((w===0||w===6)&&!used.has(i)&&i!==T)continue;out.push(i)}
+  return out;
+}
+function ledger(code,hit){
+  const r=D.items[code],c=calc(code),C=cols(code);
+  const sum=types=>{const a={};for(const [i,t,q] of r.ev)if(types.includes(t))a[i]=(a[i]||0)+q;return a};
+  const plan=sum(['plan']),act=sum(['actK','actM','rcv']),conf=sum(['conf']),unc=sum(['unc']),req=sum(['req']),ord=sum(['ord']),use=sum(['use']);
+  const firm={};for(const [i,t,q,x] of r.ev)if(t==='plan'&&x.firm)firm[i]=1;
+  const miss={};for(const [i,t,q,x] of r.ev)if(t==='plan'&&i<T&&x.done<q)miss[i]=(miss[i]||0)+(q-x.done);
+  const lateC={};for(const [i,t,q,x] of r.ev)if((t==='conf'||t==='req')&&x.late)lateC[i]=1;
+  let plat=null;if(r.plating){plat={};for(const [i,t,q] of r.plating.ev)plat[i]=(plat[i]||0)+q}
+  const head=C.map(i=>`<th class="${i<T?'past':''}${i===T?' today':''}${i===hit?' hit':''}">${md(i)}<br>${WD[DT[i].getDay()]}${i===T?'・本日':''}</th>`).join('');
+  const row=(label,cls,fn)=>`<tr><td class="rl ${cls}">${label}</td>${C.map(i=>fn(i)).join('')}</tr>`;
+  const cell=(i,v,cl,sign)=>v?`<td class="c ${i<T?'p ':''}${cl||''}" data-i="${i}">${sign||''}${fmt(v)}</td>`:`<td class="${i<T?'p ':''}z">·</td>`;
+  const rows=[];const isP=r.kind==='caster';
+  if(plat)rows.push(row('メッキ上がり（予定）','r-unc',i=>cell(i,plat[i],'v-unc')));
+  if(!isP)rows.push(row('計画（K製番）','r-plan',i=>{if(!plan[i])return cell(i,0);const used=i>=T&&((firm[i]&&st.mode>=1)||st.mode>=2);return `<td class="c ${i<T?'p ':''}v-plan${(i>=T&&!used)?' soft':''}" data-i="${i}" title="${firm[i]?'手配確定':'手配予定'}">${fmt(plan[i])}${(firm[i]||i<T)?'':'<small style="font-weight:500">予</small>'}</td>`}));
+  rows.push(row(isP?'確定発注の入荷予定':'確定済み手配（所要量）','r-conf',i=>conf[i]?`<td class="c v-conf${lateC[i]?' v-late':''}" data-i="${i}" title="${lateC[i]?'納期超過の確定手配を含む':''}">${fmt(conf[i])}</td>`:cell(i,0)));
+  rows.push(row('未確定手配（所要量計算）','r-unc',i=>cell(i,unc[i],'v-unc')));
+  rows.push(row(isP?'入荷実績':'完成実績','r-act',i=>{if(i>T)return `<td></td>`;if(miss[i]&&!act[i])return `<td class="c v-miss" data-i="${i}">未入力</td>`;return cell(i,act[i],miss[i]?'v-miss':'')}));
+  rows.push(row(r.kind==='product'?'出荷予定（受注残）':'使用予定（親機種の組立）','r-out',i=>req[i]?`<td class="c v-out${lateC[i]?' v-late':''}" data-i="${i}">−${fmt(req[i])}</td>`:cell(i,0)));
+  if(r.kind!=='product')rows.push(row('参考：親機種の受注×使用数','r-ref',i=>ord[i]?`<td class="c r-ref" data-i="${i}">(${fmt(ord[i])})</td>`:cell(i,0)));
+  rows.push(row(r.kind==='product'?'出荷実績':'使用実績','r-act',i=>i<=T?cell(i,use[i],'','−'):`<td></td>`));
+  rows.push(row(MLAB[st.mode],'',i=>{const v=c.bal[i];if(v==null)return `<td class="p"></td>`;const cl=v<0?'v-neg':(v<r.safety&&i>=T?'v-low':'v-stock');return `<td class="c ${i<T?'p ':''}${cl}" data-i="${i}" title="${i<T?'現在庫から実績で逆算した参考値':''}">${v<0?'⚠ ':''}${fmt(v)}</td>`}));
+  rows.push(row('回答可能数','',i=>{if(i<T)return `<td class="p"></td>`;const v=c.atp[i];return `<td class="c ${v>0?'v-atp':'v-atp0'}" data-i="${i}">${fmt(v)}</td>`}));
+  return `<div class="tblwrap"><table class="led" data-code="${esc(code)}"><thead><tr><th class="rl">日付</th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+}
+function itemBlock(code,need){
+  const r=D.items[code],c=calc(code),ck=chkInfo(code);
+  const e=need!=null?earliest(code,need):-1;
+  const minv=c.bal[c.minI];
+  return `<div class="card anim" id="blk-${esc(code)}">
+    <div class="ihead"><div><h2>${esc(r.name)}</h2><div class="sub">${KLAB[r.kind]} ・ 品目 <span class="num">${esc(r.code)}</span>${r.parents?` ・ 親機種 ${r.parents}`:''} ・ 現在庫 <b class="num">${fmt(r.stock)}</b>${esc(r.unit||'')} ・ 安全在庫 <b class="num">${fmt(r.safety)}</b> ・ 最小予定残 <b class="num" style="color:${minv<0?'var(--crit)':minv<r.safety?'var(--warn)':'inherit'}">${fmt(minv)}</b>（${mdw(c.minI)}）</div></div>
+      <div class="badges">${ck.html}<button class="btn" data-chk="${esc(code)}">在庫を確認した</button></div></div>
+    <div class="badges">${warns(r)}${need!=null?`<span class="badge ${e>=0?'b-ok':'b-ng'}">必要数 ${fmt(need)} → ${e>=0?mdw(e)+' から回答可':'表示期間内は不可（工場確認）'}</span>`:''}</div>
+    ${ledger(code,e)}
+  </div>`;
+}
+
+/* ---------- 画面 ---------- */
+function modelAnswer(code,qty){
+  const M=D.models[code];if(!M)return '';
+  const parts=[];let worst=-1,ng=false,unconf=false;
+  for(const [pc,per,k] of M.parts){const need=qty*per;const e=earliest(pc,need);if(e<0)ng=true;else worst=Math.max(worst,e);if(!chkInfo(pc).ok)unconf=true;parts.push({pc,per,k,need,e})}
+  const lt=M.self?0:(M.lt||0);
+  const keep=st.mode;const modes=[0,1,2].map(m=>{st.mode=m;let w=-1,n2=false;for(const p of parts){const e=earliest(p.pc,p.need);if(e<0)n2=true;else w=Math.max(w,e)}return n2?-1:addBiz(w,lt)});st.mode=keep;
+  const allSame=!ng&&parts.every(p=>p.e===worst);
+  const pcards=parts.map(p=>{const r=D.items[p.pc];const neck=parts.length>1&&!allSame&&(ng?p.e<0:p.e===worst);
+    return `<button class="part${neck?' neck':''}" data-go="${esc(p.pc)}"><span class="sm">${KLAB[p.k]}${p.per!==1?` ・ 1台あたり${p.per}`:''}</span><span class="pn">${esc(r.name)}</span><span class="pd">${p.e>=0?mdw(p.e):'表示期間内は不可'}</span><span class="sm">必要 ${fmt(p.need)} ・ 現在庫 ${fmt(r.stock)}</span>${neck?'<span class="tag">ここが律速（ボトルネック）</span>':''}${chkInfo(p.pc).html}</button>`}).join('');
+  const lab=['在庫・実績だけ（確実）','確定済み手配まで','計画・所要量も見込む'];
+  const ansCards=[0,1,2].map(m=>`<div class="ans${m===st.mode?' main':''}${modes[m]<0?' ng':''}"><span class="k">${lab[m]}</span><span class="v">${modes[m]>=0?mdw(modes[m]):'期間内は不可'}</span><span class="n">${m===st.mode?'いま表で見ている見込み方':''}</span></div>`).join('');
+  return `<div class="card anim">
+    <div class="ihead"><div><h2>${esc(M.name)}（${esc(code)}）× ${fmt(qty)}台 の回答目安</h2><div class="sub">${esc(M.grp||'')}${M.stock!=null?` ・ 完成品の現在庫 ${fmt(M.stock)}（受注に引き当て済みの可能性があるため回答には使っていません）`:''}${!M.self?` ・ 組立LT ${fmt(lt)}営業日（品目マスタ累積LT・仮）`:''}</div></div></div>
+    <div class="answer">${ansCards}</div>
+    <div>${unconf?`<span class="badge b-wn">⚠ 在庫未確認の部品があります。お客様には「目安」としてお伝えください</span>`:`<span class="badge b-ok">✓ 部品の在庫は30日以内に確認済み</span>`}</div>
+    ${allSame&&parts.length>1?'<div class="msg">すべての部品が同じ日に揃います（律速なし）</div>':''}<div class="parts">${pcards}</div>
+  </div>`+parts.map(p=>itemBlock(p.pc,p.need)).join('');
+}
+function renderModel(){
+  const norm=s=>String(s).toUpperCase().normalize('NFKC').replace(/[\s\-ー－/]/g,'');
+  const qn=norm(st.q),keys=Object.keys(D.models);
+  let hit=null,sug=[];
+  if(qn){hit=keys.find(k=>norm(k)===qn)||null;sug=keys.filter(k=>norm(k).includes(qn)||norm(D.models[k].name).includes(qn)).slice(0,24)}
+  else sug=['UDALS','UDALSC','DAT2','DAP','DABW','UDL15','UDL25','UDA50','UDA35W','UDA80','UDS50W'].filter(k=>D.models[k]);
+  return `<div class="card">
+    <div class="searchrow"><label for="q">型式（例：UDALS／DAT2／UDL15）<input id="q" value="${esc(st.q)}" autocomplete="off" placeholder="型式コードか名前"></label>
+    <label for="qty">台数<input id="qty" type="number" min="1" inputmode="numeric" value="${esc(st.qty)}"></label></div>
+    <div class="sugg">${sug.map(k=>`<button class="chip" data-q="${esc(k)}" aria-pressed="${k===hit}">${esc(k)}<span style="font-weight:500;opacity:.7">${esc(D.models[k].name)}</span></button>`).join('')||'<span class="msg">該当する型式がありません</span>'}</div>
+  </div>`+(hit?modelAnswer(hit,Math.max(1,parseInt(st.qty,10)||1)):'');
+}
+function renderKind(kind){
+  let codes=Object.keys(D.items).filter(c=>D.items[c].kind===kind);
+  if(kind==='handle'){const used=new Set();for(const m of Object.values(D.models))for(const [pc,,k] of m.parts)if(k==='handle')used.add(pc);codes=codes.filter(c=>used.has(c))}
+  codes.sort((a,b)=>(D.items[b].planned-D.items[a].planned)||(D.items[b].stockFound-D.items[a].stockFound)||D.items[a].name.localeCompare(D.items[b].name,'ja'));
+  const sel=codes.includes(st.sel[kind])?st.sel[kind]:codes[0];
+  const cards=codes.map(c=>{const r=D.items[c],x=calc(c),mn=x.bal[x.minI],bad=mn<0,low=mn<r.safety,late=r.ev.some(e=>e[1]==='planLate')||r.late.conf;
+    return `<button class="it" data-sel="${esc(c)}" aria-pressed="${c===sel}"><span class="nm"><i class="dot ${bad?'ng':(low||late)?'wn':'ok'}"></i> ${esc(r.name)}</span><span class="sm"><span>在庫 <b class="num">${fmt(r.stock)}</b></span><span>最小 <b class="num">${fmt(mn)}</b></span>${late?'<span style="color:var(--crit)">遅れ・漏れ</span>':''}${CHK.map[c]?'<span style="color:var(--good)">✓確認</span>':''}</span></button>`}).join('');
+  return `<div class="card"><div class="list">${cards||'<span class="msg">対象がありません</span>'}</div></div>`+(sel?itemBlock(sel,null):'');
+}
+function render(){
+  cache={};
+  document.querySelectorAll('#mode button').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.m===st.mode));
+  document.querySelectorAll('#tabs button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===st.v));
+  let h='';
+  if(CHK.state==='missing')h+=`<div class="card"><span class="badge b-wn">在庫確認の保存先（SharePoint リスト「${CHK_LIST}」）がまだありません</span><div><button class="btn pri" id="mklist">保存先のリストを作る</button></div><div class="msg" id="mkmsg"></div></div>`;
+  else if(CHK.state==='error')h+=`<div class="card"><span class="badge b-wn">在庫確認の印を読めませんでした：${esc(CHK.err)}</span></div>`;
+  h+=st.v==='model'?renderModel():renderKind(st.v);
+  const ae=document.activeElement,fid=ae&&ae.id,pos=fid==='q'?ae.selectionStart:null;
+  $('view').innerHTML=h;
+  if(fid==='q'){const q=$('q');q.focus();try{q.setSelectionRange(pos,pos)}catch(_){}}
+  if(fid==='qty')$('qty').focus();
+  bind();
+}
+function bind(){
+  const q=$('q');if(q){let t;q.oninput=()=>{clearTimeout(t);t=setTimeout(()=>{st.q=q.value;save();render()},200)}}
+  const qty=$('qty');if(qty){let t2;qty.oninput=()=>{clearTimeout(t2);t2=setTimeout(()=>{st.qty=Math.max(1,parseInt(qty.value,10)||1);save();render()},250)}}
+  document.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{st.q=b.dataset.q;save();render()});
+  document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{const el=document.getElementById('blk-'+b.dataset.go);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})});
+  document.querySelectorAll('[data-sel]').forEach(b=>b.onclick=()=>{st.sel[st.v]=b.dataset.sel;save();render()});
+  document.querySelectorAll('[data-chk]').forEach(b=>b.onclick=()=>openCheck(b.dataset.chk));
+  document.querySelectorAll('table.led td.c').forEach(td=>td.onclick=()=>openDay(td.closest('table').dataset.code,+td.dataset.i));
+  const mk=$('mklist');if(mk)mk.onclick=async()=>{mk.disabled=true;$('mkmsg').textContent='作っています…';try{await createList();$('mkmsg').textContent='作りました';CHK.state='loading';loadChecks()}catch(e){$('mkmsg').textContent=e.message;$('mkmsg').className='msg err';mk.disabled=false}};
+}
+/* ---------- シート ---------- */
+function openSheet(title,html){$('stitle').textContent=title;$('sbody').innerHTML=html;$('sheet').classList.add('on');$('scrim').classList.add('on');$('sheet').setAttribute('aria-hidden','false');$('sclose').focus({preventScroll:true})}
+function closeSheet(){$('sheet').classList.remove('on');$('scrim').classList.remove('on');$('sheet').setAttribute('aria-hidden','true')}
+$('sclose').onclick=closeSheet;$('scrim').onclick=closeSheet;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSheet()});
+function openDay(code,i){
+  const r=D.items[code],c=calc(code);
+  const L={plat:'メッキ上がり（'+(r.plating?r.plating.name:'')+'）',plan:'計画（K製番）',planLate:'付け替え漏れの計画',actK:'完成実績（計画分）',actM:'完成実績（所要量分）',rcv:'入荷実績',conf:'確定済み手配',unc:'未確定手配（所要量計算）',req:r.kind==='product'?'出荷予定（受注残）':'使用予定（親機種の組立）',ord:'参考：親機種の受注×使用数',use:r.kind==='product'?'出荷実績':'使用実績'};
+  const by={};for(const e of r.ev)if(e[0]===i)(by[e[1]]=by[e[1]]||[]).push(e);
+  if(r.plating)for(const e of r.plating.ev)if(e[0]===i)(by.plat=by.plat||[]).push(e);
+  const desc=(t,x,q)=>{const a=[];if(x.sb)a.push(x.sb);if(x.st)a.push(x.st);if(t==='plan'&&i<T)a.push(`完成 ${fmt(x.done)}/${fmt(q)}`+(x.done<q?'・付け替え漏れ':''));if(t==='planLate')a.push(`元の計画日 ${x.d}・完成 ${fmt(x.done)}/${fmt(x.q)}`);if(x.who)a.push(x.who);if(x.late)a.push('納期超過（'+(x.due||'')+'）');if(x.p&&!x.c)a.push(x.p+(x.per&&x.per!==1?` ×${x.per}`:''));if(x.c&&x.p)a.push(x.p+` ${fmt(x.q)}台`+(x.per&&x.per!==1?` ×${x.per}`:''));if(x.src)a.push(x.src);if(x.no)a.push('受注№'+x.no);if(x.due&&!x.late)a.push('納期 '+x.due);return a.map(esc).join(' ・ ')};
+  let h=`<div class="li"><span>${MLAB[st.mode]}${i<T?'（逆算の参考値）':''}</span><span class="q">${fmt(c.bal[i])}</span>${i>=T?`<span class="m">回答可能数 ${fmt(c.atp[i])}</span>`:''}</div>`;
+  for(const t of ['plat','plan','planLate','actK','actM','rcv','conf','unc','req','ord','use']){if(!by[t])continue;h+=`<div class="sec"><h4>${esc(L[t])}</h4>${by[t].map(([,tt,q,x])=>`<div class="li"><span>${esc(x.c||x.p||x.sb||'')}</span><span class="q">${fmt(q)}</span><span class="m">${desc(tt,x,q)}</span></div>`).join('')}</div>`}
+  openSheet(`${r.name} ・ ${mdw(i)}`,h);
+}
+function openCheck(code){
+  const r=D.items[code],c=CHK.map[code];
+  let me='';try{const u=window.top._fujinUser;me=u&&(u.name||u.username)||''}catch(_){}
+  openSheet(`在庫確認：${r.name}`,`<div class="form">
+    <div class="msg">帳簿の現在庫（全社・${esc((D.stockAsOf||'').replace(/-/g,'/'))}）は <b class="num">${fmt(r.stock)}</b>${esc(r.unit||'')} です。実際に数えた数を入れて保存すると、確認した人の名前と日時が画面に表示されます。</div>
+    ${c?`<div class="msg">前回：${esc(c.at.slice(0,10).replace(/-/g,'/'))} ${esc(c.by)}（実数 ${fmt(c.count)}）</div>`:''}
+    <label for="ckc">実数<input id="ckc" type="number" inputmode="numeric" value="${esc(r.stock)}"></label>
+    <label for="ckn">メモ（任意）<input id="ckn" placeholder="例：第一工場 棚A-3で確認"></label>
+    <div class="msg">確認者：${esc(me||'（サインイン中のユーザー）')}</div>
+    <button class="btn pri" id="cks">確認済みにする</button><div class="msg" id="ckm"></div></div>`);
+  $('cks').onclick=async()=>{const b=$('cks');b.disabled=true;$('ckm').textContent='保存しています…';$('ckm').className='msg';
+    try{const v=$('ckc').value===''?null:Number($('ckc').value);await saveCheck(code,v,$('ckn').value.trim());$('ckm').textContent='保存しました';setTimeout(()=>{closeSheet();render()},600)}
+    catch(e){$('ckm').textContent=e.message+(CHK.state==='missing'?'（先に保存先のリストを作ってください）':'');$('ckm').className='msg err';b.disabled=false}};
+}
+document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{st.mode=+b.dataset.m;save();render()});
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{st.v=b.dataset.v;save();render()});
+render();
+loadChecks();
+}
+(function(){
+  function fail(msg){document.getElementById('loading').textContent=msg}
+  let d=null;try{d=window.top&&window.top._fujinPlanLedger}catch(e){}
+  if(d&&d.items){_boot(d);return}
+  let p=null;try{p=window.top&&window.top._fujinPlanLedgerPromise}catch(e){}
+  if(p&&p.then){p.then(x=>x&&x.items?_boot(x):fail('納期確認のデータを取得できませんでした。FUJINにサインインし直すか、日次ビルド(plan_ledger.json)を確認してください。')).catch(()=>fail('納期確認のデータ取得でエラーが発生しました。'))}
+  else fail('このページはFUJIN本体(FUJIN.html)のタブから開いてください。');
+})();
+</script>
+</body>
+</html>
