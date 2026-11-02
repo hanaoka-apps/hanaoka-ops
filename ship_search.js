@@ -1,0 +1,269 @@
+'use strict';
+/* 出荷・配送の検索画面。SharedMasters の ship_index.json（専用機が scripts/build_ship_index.py で作る）を読んで探すだけ。書き込みはしない。
+ * 計算部品は ship_core.js（ShipSearch）、運送会社の名前・追跡URLの型・古さの警告は ship_config.json。
+ * ?q=… で開くと、その言葉で検索した状態になる（案件管理・EC売上・ふるさと納税から、受注№や客先注番で開けるように）。 */
+const S = window.ShipSearch;
+const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
+const CONFIG_URL = 'ship_config.json';
+const PAGE = 50;          // 1回に出す件数
+const LINES_SHOWN = 6;    // 1件のカードに出す品目の行数（これより多いときは「ほか n 行」）
+
+let CONF = null, IDX = null, msalInstance = null, account = null, driveId = null;
+let results = [], shown = 0;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function setStatus(type, msg) { $('statusBar').className = type || ''; $('sp-status').textContent = msg; }
+function showLoginError(m) { HanaokaAuth.done(); const e = $('loginError'); e.textContent = m; e.style.display = 'block'; }
+function today(offsetDays) {
+  const d = new Date(); d.setDate(d.getDate() + (offsetDays || 0));
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function stamp(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+const fd = iso => S.fmtDate(iso, today());
+
+/* ------------------------------------------------------------ SharePoint（SharedMasters・読み取りのみ） */
+async function getToken() {
+  try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
+  catch { return (await msalInstance.acquireTokenPopup({ scopes: SCOPES })).accessToken; }
+}
+async function graphGet(url) {
+  const r = await fetch('https://graph.microsoft.com/v1.0' + url, { headers: { Authorization: 'Bearer ' + await getToken() } });
+  if (!r.ok) throw new Error('Graph ' + r.status + ': ' + url);
+  return r.json();
+}
+async function resolveDriveId() {
+  if (driveId) return driveId;
+  const nm = CONF.sharepoint.driveName, re = new RegExp(nm, 'i');
+  const drives = (await graphGet('/sites/' + CONF.sharepoint.siteId + '/drives?$select=id,name,webUrl&$top=100')).value || [];
+  const hit = drives.find(d => d.name === nm) || drives.find(d => re.test(d.name || '') || re.test(d.webUrl || ''));
+  if (!hit) throw new Error('SharePoint のライブラリ（' + nm + '）が見つかりません');
+  driveId = hit.id; return driveId;
+}
+async function fetchText(name) {   // ダウンロード用の URL は、ファイルごとの情報から取る（一覧の $select には入れない）
+  const did = await resolveDriveId();
+  const meta = await graphGet('/drives/' + did + '/root:/' + encodeURIComponent(name));
+  const dl = meta['@microsoft.graph.downloadUrl'];
+  if (!dl) throw new Error('downloadUrl がありません: ' + name);
+  const r = await fetch(dl);
+  if (!r.ok) throw new Error('取得失敗 ' + r.status + ': ' + name);
+  return { text: await r.text(), modified: meta.lastModifiedDateTime || '' };
+}
+// SharedMasters に同名の設定ファイルがあれば、リポジトリのものより優先（コードを変えずに決まりごとを直せる）
+async function loadSharedConfig() {
+  try {
+    const o = JSON.parse((await fetchText(CONF.sharepoint.configFile)).text);
+    Object.keys(o).forEach(k => {
+      if (k === 'sharepoint') return;
+      if (k === 'carriers') Object.keys(o.carriers).forEach(c => { CONF.carriers[c] = Object.assign(CONF.carriers[c] || {}, o.carriers[c]); });
+      else if (o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) CONF[k] = Object.assign(CONF[k] || {}, o[k]);
+      else CONF[k] = o[k];
+    });
+  } catch (e) { /* 共有の設定ファイルはなくてよい */ }
+}
+async function loadIndex() {
+  const r = await fetchText(CONF.files.index);
+  const idx = JSON.parse(r.text);
+  if (!idx || !Array.isArray(idx.ships)) throw new Error('検索用のデータの形が違います');
+  IDX = idx;
+}
+
+/* ------------------------------------------------------------ 絞り込み */
+const PERIODS = [{ k: '7', label: '直近7日', days: 7 }, { k: '30', label: '直近30日', days: 30 }, { k: '90', label: '直近90日', days: 90 }, { k: '', label: 'すべて', days: 0 }];
+let period = '';
+const STATUS_OPTS = [['', 'すべて'], ['ok', '送り状あり'], ['attention', '要確認（見つからない・設定なし）'], ['pending', '待ち（運送会社のデータがまだ）'], ['outside', '取得期間外'], ['none', '運送会社を使わない']];
+
+function buildFilters() {
+  const cs = Object.keys(CONF.carriers).filter(k => k[0] !== '_' && typeof CONF.carriers[k] === 'object');
+  $('f-carrier').innerHTML = '<option value="">すべて</option>' + cs.map(k => '<option value="' + esc(k) + '">' + esc(CONF.carriers[k].name || k) + '</option>').join('') + '<option value="none">運送会社を使わない</option>';
+  $('f-status').innerHTML = STATUS_OPTS.map(o => '<option value="' + o[0] + '">' + esc(o[1]) + '</option>').join('');
+  drawPeriods();
+}
+function drawPeriods() {
+  $('periods').innerHTML = PERIODS.map(p => '<span class="chip' + (p.k === period ? ' active' : '') + '" data-period="' + p.k + '">' + p.label + '</span>').join('');
+}
+function readFilters() {
+  return { q: $('f-q').value, from: $('f-from').value, to: $('f-to').value, carrier: $('f-carrier').value, status: $('f-status').value };
+}
+
+function doSearch() {
+  const f = readFilters();
+  results = S.search(IDX, CONF, f);
+  shown = 0;
+  $('list').innerHTML = '';
+  try { history.replaceState(null, '', f.q.trim() ? '?q=' + encodeURIComponent(f.q.trim()) : location.pathname); } catch (e) { /* 履歴を触れない環境でも検索はできる */ }
+  more();
+}
+function more() {
+  const next = results.slice(shown, shown + PAGE);
+  $('list').insertAdjacentHTML('beforeend', next.map((s, i) => card(s, shown + i)).join(''));
+  shown += next.length;
+  $('summary').textContent = results.length ? '全 ' + results.length + ' 件中 ' + shown + ' 件を表示（出荷日の新しい順）' : '';
+  $('moreBox').hidden = shown >= results.length;
+  if (!results.length) $('list').innerHTML = '<div class="empty">' + (IDX.ships.length ? '見つかりませんでした。言葉を減らすか、出荷日・運送会社の絞り込みを外してみてください。<br><span class="muted">検索できるのは ' + esc(fd(IDX.from)) + ' 以降の出荷です。</span>' : '出荷のデータがありません') + '</div>';
+}
+
+/* ------------------------------------------------------------ 出荷のカード */
+const carrierClass = key => { const ks = Object.keys(CONF.carriers).filter(k => k[0] !== '_' && typeof CONF.carriers[k] === 'object'); const i = ks.indexOf(key); return i < 0 ? 'cr-none' : 'cr-' + (i % 4); };
+const STATUS_TAG = { missing: 'err', nodata: 'err', pending: 'warn', outside: 'info', none: 'info' };
+
+function slipLine(sl, s, cls) {
+  const url = S.trackingUrl(CONF, sl.c, sl.no);
+  const detail = [sl.qty ? sl.qty + '個' : '', sl.kg && sl.kg !== '0' ? sl.kg + 'kg' : '', S.carrierName(CONF, sl.c) !== S.kubunName(CONF, s.kubun) ? S.carrierName(CONF, sl.c) : ''].filter(Boolean).join('・');
+  return '<div class="slip' + (cls ? ' ' + cls : '') + '"><span class="slip-no">' + esc(sl.no) + '</span><button type="button" class="cbtn" data-act="copy" data-v="' + esc(sl.no) + '">コピー</button>' +
+    (url ? '<a class="track" href="' + esc(url) + '" target="_blank" rel="noopener">配送状況 ↗</a>' : '') +
+    (detail ? '<span class="muted">' + esc(detail) + '</span>' : '') + '</div>';
+}
+function slipsHtml(s, st) {
+  if (s.slips && s.slips.length) return s.slips.map(sl => slipLine(sl, s)).join('');
+  let html = '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + esc(st.text || '送り状番号はまだありません') + '</div>';
+  const cand = st.code === 'missing' ? S.candidates(CONF, IDX, s) : [];
+  if (cand.length) {
+    html += '<div class="slip-none">候補：同じ日に、SMILE の売上№が見つからない送り状があります（SMILE の売上を直して番号が変わったときに起こります。別の荷物のこともあるので、お届け先を確かめてください）</div>' +
+      cand.map(u => slipLine({ c: u.c, no: u.slip, qty: '', kg: '' }, s, 'cand')).join('');
+  }
+  return html;
+}
+function linesHtml(s, idxCard) {
+  const groups = S.linesByJuchu(s), multi = groups.length > 1, expanded = s._open;
+  const total = (s.lines || []).length;
+  let left = expanded ? Infinity : LINES_SHOWN, html = '';
+  groups.forEach(g => {
+    if (left <= 0) return;
+    const part = g.lines.slice(0, left); left -= part.length;
+    if (multi) html += '<div class="jg">受注 ' + esc(g.juchu) + '</div>';
+    html += part.map(l => '<div class="ln"><span>' + esc(l.name || l.code) + (l.name && l.name !== l.code ? ' <span class="muted">' + esc(l.code) + '</span>' : '') + '</span><span class="q">× ' + esc(l.qty) + '</span></div>').join('');
+  });
+  if (!total) html = '<div class="muted">品目の行はありません</div>';
+  else if (!expanded && total > LINES_SHOWN) html += '<div class="more"><span class="lnk" data-act="lines" data-i="' + idxCard + '">ほか ' + (total - LINES_SHOWN) + ' 行を表示</span></div>';
+  return html;
+}
+function juchuHtml(s) {
+  if (!(s.juchu || []).length) return '<span class="muted">-</span>';
+  return s.juchu.map(no => {
+    const j = S.juchuInfo(IDX, no);
+    const info = j ? [j.date ? '受注 ' + fd(j.date) : '', j.due ? '納期 ' + fd(j.due) : '', j.plan ? '出荷予定 ' + fd(j.plan) : ''].filter(Boolean).join('　') : '';
+    return '<div><span class="lnk" data-act="q" data-v="' + esc(no) + '" title="この受注で探す">' + esc(no) + '</span>' + (info ? ' <span class="muted">' + esc(info) + '</span>' : '') + '</div>';
+  }).join('');
+}
+function card(s, i) {
+  const st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
+  const sib = S.siblings(IDX, s);
+  const want = [s.want ? fd(s.want) : '', s.time].filter(Boolean).join(' ');
+  return '<div class="scard' + (st.code === 'missing' || st.code === 'nodata' ? ' attn' : '') + '" data-i="' + i + '">' +
+    '<div class="sc-head"><b class="sc-date">' + esc(fd(s.date)) + '</b>' +
+    '<span class="cr ' + (key ? carrierClass(key) : 'cr-none') + '">' + esc(S.kubunName(CONF, s.kubun)) + '</span>' +
+    (st.code !== 'ok' ? '<span class="tag ' + (STATUS_TAG[st.code] || 'info') + '">' + esc({ missing: '見つからない', nodata: '要確認', pending: '番号待ち', outside: '取得期間外', none: '運送会社なし' }[st.code]) + '</span>' : '') +
+    (s.ret ? '<span class="tag warn">返品</span>' : '') +
+    '<span class="sc-no">売上№ <span class="lnk" data-act="q" data-v="' + esc(s.no) + '">' + esc(s.no) + '</span>' + (s.shipNo ? '　出荷№ ' + esc(s.shipNo) : '') + '</span></div>' +
+    '<div class="sc-slips">' + slipsHtml(s, st) + '</div>' +
+    '<div class="sc-grid">' +
+    '<div><span class="k">納品先</span>' + esc(s.destName || '-') + '</div>' +
+    '<div><span class="k">得意先</span>' + esc(s.custName || '-') + (s.cust ? ' <span class="muted">' + esc(s.cust) + '</span>' : '') + '</div>' +
+    '<div><span class="k">受注№</span><span style="display:inline-block;vertical-align:top">' + juchuHtml(s) + '</span></div>' +
+    '<div><span class="k">客先注番</span>' + ((s.po || []).length ? s.po.map(p => '<span class="lnk" data-act="q" data-v="' + esc(p) + '">' + esc(p) + '</span>').join('　') : '<span class="muted">-</span>') + '</div>' +
+    (want ? '<div><span class="k">配送指定</span>' + esc(want) + '</div>' : '') +
+    '<div><span class="k">担当</span>' + esc(s.staff || '-') + '</div>' +
+    '</div>' +
+    '<div class="sc-lines" id="ln-' + i + '">' + linesHtml(s, i) + '</div>' +
+    (sib.length ? '<div class="sc-sib">同じ受注の別の出荷：' + sib.slice(0, 6).map(x => '<span class="lnk" data-act="q" data-v="' + esc(x.no) + '">' + esc(fd(x.date)) + ' 売上№' + esc(x.no) + '</span>').join('') + (sib.length > 6 ? 'ほか ' + (sib.length - 6) + ' 件' : '') + '</div>' : '') +
+    '</div>';
+}
+
+/* ------------------------------------------------------------ 画面の下のほうと注意 */
+function renderMeta() {
+  const w = S.warnings(IDX, CONF, Date.now());
+  $('warnBox').hidden = !w.length;
+  $('warnBox').innerHTML = w.map(m => '<div>⚠ ' + esc(m) + '</div>').join('');
+  const um = IDX.unmatched || [];
+  $('unmatchedBox').hidden = !um.length;
+  if (um.length) {
+    $('unmatchedTitle').textContent = 'SMILE の出荷明細に見つからない送り状（' + um.length + '件）';
+    $('unmatchedList').innerHTML = '<table class="lt"><thead><tr><th>運送会社</th><th>売上№（管理番号）</th><th>送り状番号</th><th>出荷日</th></tr></thead><tbody>' +
+      um.slice(0, 200).map(u => '<tr><td>' + esc(S.carrierName(CONF, u.c)) + '</td><td>' + esc(u.key) + '</td><td>' + esc(u.slip) + '</td><td>' + esc(fd(u.date)) + '</td></tr>').join('') + '</tbody></table>' +
+      (um.length > 200 ? '<div class="muted">ほか ' + (um.length - 200) + ' 件</div>' : '');
+  }
+  const lines = ['検索用データの作成：' + stamp(IDX.generatedAt) + '（' + fd(IDX.from) + ' 以降の出荷 ' + IDX.ships.length + ' 件）'];
+  (IDX.sources || []).forEach(s => lines.push('SMILE の出力 ' + s.name + '：' + stamp(s.modified)));
+  Object.keys(IDX.carriers || {}).forEach(k => {
+    const c = IDX.carriers[k];
+    lines.push((c.name || k) + '：' + (c.files ? '出荷日 ' + fd(c.from) + ' ～ ' + fd(c.to) + '・ファイル ' + c.files + ' 個・最新 ' + stamp(c.newest) : 'データがまだありません'));
+  });
+  if (IDX.counts && IDX.counts.blankKey) lines.push('管理番号が空で、つなげられなかった送り状：' + IDX.counts.blankKey + ' 行');
+  $('stateList').innerHTML = lines.map(l => '<div>' + esc(l) + '</div>').join('');
+}
+
+/* ------------------------------------------------------------ 操作 */
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch (e) {
+    const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e2) { /* 何もしない */ }
+    ta.remove(); return ok;
+  }
+}
+function wire() {
+  $('searchForm').onsubmit = e => { e.preventDefault(); doSearch(); };
+  let timer = null;
+  $('f-q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(doSearch, 250); });
+  ['f-from', 'f-to'].forEach(id => $(id).addEventListener('change', () => { period = ''; drawPeriods(); doSearch(); }));
+  ['f-carrier', 'f-status'].forEach(id => $(id).addEventListener('change', doSearch));
+  $('btn-clear').onclick = () => { $('f-q').value = ''; $('f-from').value = ''; $('f-to').value = ''; $('f-carrier').value = ''; $('f-status').value = ''; period = ''; drawPeriods(); doSearch(); $('f-q').focus(); };
+  $('btn-more').onclick = more;
+  $('periods').addEventListener('click', e => {
+    const c = e.target.closest('[data-period]'); if (!c) return;
+    period = c.dataset.period; const p = PERIODS.find(x => x.k === period);
+    $('f-from').value = p && p.days ? today(-p.days) : ''; $('f-to').value = '';
+    drawPeriods(); doSearch();
+  });
+  $('list').addEventListener('click', async e => {
+    const a = e.target.closest('[data-act]'); if (!a) return;
+    if (a.dataset.act === 'copy') {
+      const ok = await copyText(a.dataset.v), t = a.textContent;
+      a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500);
+    } else if (a.dataset.act === 'q') {
+      $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; $('f-carrier').value = ''; $('f-status').value = ''; period = ''; drawPeriods(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (a.dataset.act === 'lines') {
+      const s = results[+a.dataset.i]; if (!s) return;
+      s._open = true; $('ln-' + a.dataset.i).innerHTML = linesHtml(s, a.dataset.i);
+    }
+  });
+  $('btn-reload').onclick = async () => {
+    $('btn-reload').disabled = true; setStatus('loading', '読み込み中…');
+    try { await loadIndex(); renderMeta(); doSearch(); setReady(); } catch (e) { setStatus('err', '読み込めませんでした：' + e.message); }
+    $('btn-reload').disabled = false;
+  };
+}
+function setReady() {
+  setStatus('ok', '検索用データ ' + stamp(IDX.generatedAt) + ' 作成（' + IDX.ships.length + ' 件）');
+}
+
+/* ------------------------------------------------------------ 起動 */
+async function initAuth() {
+  if (typeof msal === 'undefined') { showLoginError('MSALライブラリを読み込めませんでした。再読み込みしてください。'); return; }
+  msalInstance = new msal.PublicClientApplication(HanaokaAuth.msalConfig());
+  await msalInstance.initialize();
+  await msalInstance.handleRedirectPromise();
+  window.enterApp = async () => {
+    $('loginScreen').style.display = 'none';
+    try { CONF = await (await fetch(CONFIG_URL, { cache: 'no-cache' })).json(); } catch (e) { setStatus('err', '設定ファイル（' + CONFIG_URL + '）を読めません'); return; }
+    const n = account.name || account.username;
+    $('sp-user').textContent = n; $('sp-avatar').textContent = (n || '?').charAt(0);
+    setStatus('loading', 'SharePoint（SharedMasters）から読み込み中…');
+    await loadSharedConfig();
+    buildFilters(); wire();
+    const q = new URLSearchParams(location.search).get('q');
+    if (q) $('f-q').value = q;
+    try { await loadIndex(); }
+    catch (e) { console.warn(e); setStatus('err', '検索用のデータ（' + CONF.files.index + '）を読めません：' + e.message + '。専用機の定時実行がまだか、データが作られていません'); $('list').innerHTML = '<div class="empty">検索用のデータがありません</div>'; return; }
+    renderMeta(); doSearch(); setReady();
+    setInterval(() => { if (document.visibilityState === 'visible') { try { renderMeta(); } catch (e) { /* 注意の表示だけ */ } } }, 10 * 60 * 1000);   // 開きっぱなしでも、古さの警告を更新する
+  };
+  $('loginBtn').onclick = async () => {
+    try { $('loginError').style.display = 'none'; account = await HanaokaAuth.login(msalInstance, SCOPES); await window.enterApp(); }
+    catch (e) { showLoginError('サインインに失敗しました: ' + e.message); }
+  };
+  account = await HanaokaAuth.restore(msalInstance, SCOPES);
+  if (account) await window.enterApp();
+}
+initAuth();
