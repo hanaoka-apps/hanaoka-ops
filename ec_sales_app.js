@@ -23,7 +23,9 @@ let msalInstance = null, account = null, driveId = null, isSoumu = false, isAdmi
 const M = { items: null, nouhin: null, smileCust: null, nyukin: null, stamps: {} };   // SMILE のマスタ・出力
 let orders = [], orderIndex = {}, slips = [], payTx = null, payouts = null;
 let store = null;
-let curTab = 'orders', curView = 'list', curFilter = 'new';
+const SORT_KEY = STORE_KEY + '_sort';   // 一覧の注文日の並び順（asc＝昇順・古い順／desc＝降順・新しい順）。この端末の表示の好みだけを覚える
+function loadSort() { try { return localStorage.getItem(SORT_KEY) === 'desc' ? 'desc' : 'asc'; } catch (e) { return 'asc'; } }
+let curTab = 'orders', curView = 'list', curFilter = 'new', curSort = loadSort();
 const sel = new Set();
 
 /* ------------------------------------------------------------ 保存（この端末のブラウザ） */
@@ -400,7 +402,8 @@ function renderOrders() {
   const vis = visible(), count = k => vis.filter(s => k === 'all' || stateOf(s) === k).length;
   $('chips').innerHTML = FILTERS.map(([k, l]) => '<span class="chip' + (curFilter === k ? ' active' : '') + '" data-f="' + k + '">' + l + '<b>' + count(k) + '</b></span>').join('');
   $('cnt-orders').textContent = vis.filter(s => stateOf(s) === 'new').length;
-  const list = vis.filter(s => curFilter === 'all' || stateOf(s) === curFilter).sort((a, b) => a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : 1) : (a.orderDate < b.orderDate ? -1 : 1));
+  const dir = curSort === 'desc' ? -1 : 1;   // 注文日（同じ日は注文の時刻）の昇順・降順
+  const list = vis.filter(s => curFilter === 'all' || stateOf(s) === curFilter).sort((a, b) => dir * (a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : (a.order.createdTime > b.order.createdTime ? 1 : 0)) : (a.orderDate < b.orderDate ? -1 : 1)));
   const el = $('list');
   if (!orders.length) { el.innerHTML = '<div class="empty">' + (PROFILE.emptyOrders || 'Shopify の注文 CSV を上のボックスに入れると、ここに注文が並びます') + '</div>'; return; }
   if (!list.length) { el.innerHTML = '<div class="empty">この条件の注文はありません</div>'; return; }
@@ -1618,6 +1621,7 @@ function render() {
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === curTab));
   $('btn-sync').hidden = !isAdmin;
   document.querySelectorAll('[data-v]').forEach(e => e.classList.toggle('active', e.dataset.v === curView));
+  document.querySelectorAll('[data-s]').forEach(e => e.classList.toggle('active', e.dataset.s === curSort));
   renderOrders(); renderMap(); renderDrawer(); renderImportPanel(); renderSharedBanner();
   if (isSoumu) renderPay();
   if (curTab === 'pay') renderPayBar(); else renderOutbar();
@@ -1638,12 +1642,13 @@ document.addEventListener('click', async e => {
   if (e.target.closest('[data-close]') || e.target.id === 'scrim') { if (mapDrawer && !closeMapDrawer()) return; openId = null; editId = null; editDraft = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
   if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; } openId = tr.dataset.row; renderDrawer(); return; }
-  const t = e.target.closest('[data-tab],[data-f],[data-v],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
+  const t = e.target.closest('[data-tab],[data-f],[data-v],[data-s],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
   if (!t) return;
   const d = t.dataset;
   if (d.tab) { if (mapDrawer && !closeMapDrawer()) return; curTab = d.tab; render(); return; }
   if (d.f) { curFilter = d.f; sel.clear(); render(); return; }
   if (d.v) { curView = d.v; render(); return; }
+  if (d.s) { curSort = d.s === 'desc' ? 'desc' : 'asc'; try { localStorage.setItem(SORT_KEY, curSort); } catch (err) { /* 覚えられなくても並び替えはできる */ } render(); return; }
   if (d.act) {
     const s = slips.find(x => x.id === d.id); if (!s) return;
     const who = account && account.username, now = new Date().toISOString();
