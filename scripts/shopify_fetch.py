@@ -26,6 +26,12 @@ scripts/rpa_setup/EC売上_RPA専用機への依頼内容.md の「1. Shopify �
   SHOPIFY_FETCH_DAYS    - (任意) 直近何日ぶん取るか。既定 55（read_all_orders の承認が下りるまでは60日以内にする）。read_all_orders がないと Shopify は
                           60日より前の注文を返さない
   SHOPIFY_TZ_OFFSET_HOURS - (任意) 日時をそろえる時差。既定 9（日本時間。エクスポートの "+0900" と同じ）
+  EC_TEAMS_WEBHOOK_URL  - (任意) Teams のチャット「EC売上_自動入力通知」の Webhook の URL（ec_report と同じ。秘密）。
+                          あれば、保存のあと、前回までに通知していない注文を1通にまとめて通知する
+                          （例「Shopify 新しい注文 2件：#1801 12,800円、#1802 3,300円」。注文番号と金額だけ）。
+                          キャンセル・テストの注文は通知しない。通知済みの注文番号は SharedMasters/_rpa_queue/state/shopify_notified.json
+                          に記録し（送れたときだけ更新）、記録が無い最初の1回は記録だけで通知しない。通知に失敗しても取得は成功のまま
+                          （ログに「通知に失敗」）。詳しくは order_notify.py
 
 終了コード: 0=成功、1=取得・保存の失敗（前回のファイルは残る）、2=設定が足りない
 """
@@ -38,6 +44,9 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 import requests
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # python -I で動かしても、同じフォルダの order_notify.py を読めるように
+import order_notify  # noqa: E402
 
 DEFAULT_API_VERSION = '2026-07'
 DEFAULT_DAYS = 55
@@ -52,6 +61,7 @@ ORDERS_CSV = 'ec_shopify_orders.csv'
 PAYOUTS_CSV = 'ec_shopify_payouts.csv'
 TRANSACTIONS_CSV = 'ec_shopify_transactions.csv'
 LOG_NAME = 'shopify_fetch.log'
+NOTIFIED_NAME = 'shopify_notified.json'   # 通知済みの注文番号（SharedMasters/_rpa_queue/state/）
 
 SHOP_RE = re.compile(r'^[a-z0-9][a-z0-9-]*\.myshopify\.com$')
 
@@ -326,7 +336,7 @@ def status_text(v):
 
 # ---------------------------------------------------------------- 注文
 ORDER_FIELDS = '''
-  id name email phone note tags cancelledAt createdAt sourceName
+  id name email phone note tags cancelledAt createdAt sourceName test
   displayFinancialStatus displayFulfillmentStatus
   currencyCode
   totalPriceSet { shopMoney { amount currencyCode } }
@@ -637,7 +647,21 @@ def save_all(out_dir, files):
                     pass
 
 
-def run(settings, client=None, log=None, now=None):
+def notify_candidates(orders):
+    """新しい注文の通知の対象（キャンセルされた注文・テストの注文は通知しない）。[(注文番号, '#1801 12,800円')]。
+    お客様の名前・住所・電話は入れない。"""
+    out = []
+    for o in orders:
+        name = o.get('name') or ''
+        if not name or o.get('cancelledAt') or o.get('test'):
+            continue
+        amt, cur = money(o.get('totalPriceSet'))
+        out.append((name, '{} {}'.format(name, order_notify.yen(amt, cur))))
+    return out
+
+
+def run(settings, client=None, log=None, now=None, session=None):
+    """session＝Teams に投稿する通信（試験用に差し替える。普通は None）"""
     log = log or Logger(settings['dir'])
     if client is None:
         auth = (ClientCredentialsToken(settings['shop'], settings['client_id'], settings['client_secret'], log=log)
@@ -658,6 +682,8 @@ def run(settings, client=None, log=None, now=None):
     }
     save_all(settings['dir'], files)
     log('保存しました: ' + ', '.join('{} {}行'.format(n, len(r)) for n, (_, r) in files.items()))
+    # 新しい注文の Teams 通知。取得・保存が済んだあとにやり、失敗しても取得は失敗にしない（通知の記録は送れたときだけ更新する）
+    order_notify.notify_new('Shopify', notify_candidates(orders), order_notify.state_path(settings['dir'], NOTIFIED_NAME), log, session=session)
     return files
 
 
