@@ -83,9 +83,9 @@ class LaborCalculationTests(unittest.TestCase):
 
     def test_monthly_actuals_zero_only_and_unregistered_rate_are_not_missing_zero(self):
         route = [{"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1"}]
-        row = {"伝票日付": "20260901", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "0", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
+        row = {"伝票日付": "20261001", "品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "報告数量": "1", "人数": "1", "作業時間": "0", "基準外人数/人": "0", "基準外工数/分": "0", "基準外項目": ""}
         monthly, _ = LABOR.aggregate_monthly_actuals([row], route, LABOR.DEFAULT_SETTINGS)
-        item = monthly["202609"]["items"]["ITEM"]
+        item = monthly["202610"]["items"]["ITEM"]
         self.assertEqual(item["baseline_minutes"], 0)
         self.assertEqual(item["status"], "zero_only")
         self.assertIsNone(item["baseline_amount_yen"])
@@ -144,11 +144,18 @@ class LaborCalculationTests(unittest.TestCase):
         part = result["handoff"]["items"]["PART"]
         self.assertNotIn("期間外実績", part["flags"])
 
+    def test_saved_rate_history_gets_newly_confirmed_rates(self):
+        saved = [{"from": "202604", "through": "202608", "yen_per_minute": 124.64}]
+        merged = LABOR.merge_rate_history(saved, LABOR.DEFAULT_SETTINGS["labor_rate_history"])
+        self.assertEqual(LABOR.rate_for_month({"labor_rate_history": merged}, "202609"), 108.25)
+        self.assertEqual(LABOR.rate_for_month({"labor_rate_history": merged}, "202608"), 124.64)
+
     def test_window_dates_route_selection_and_unregistered_rate(self):
         self.assertEqual(LABOR.period_start("202608", 3), "202606")
         self.assertEqual(LABOR.period_start("202608", 6), "202603")
         self.assertEqual(LABOR.rate_for_month(LABOR.DEFAULT_SETTINGS, "202608"), 124.64)
-        self.assertIsNone(LABOR.rate_for_month(LABOR.DEFAULT_SETTINGS, "202609"))
+        self.assertEqual(LABOR.rate_for_month(LABOR.DEFAULT_SETTINGS, "202609"), 108.25)
+        self.assertIsNone(LABOR.rate_for_month(LABOR.DEFAULT_SETTINGS, "202610"))
         chosen, ambiguous = LABOR.choose_internal_routes([
             {"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20200101", "失効日": "0", "優先№": "1", "工程名": "old"},
             {"品目ｺｰﾄﾞ": "ITEM", "手順№": "1", "内外区分": "0", "有効日": "20250101", "失効日": "0", "優先№": "1", "工程名": "new"},
@@ -226,7 +233,8 @@ class LaborCalculationTests(unittest.TestCase):
             self.assertIn("基準外人数/人", handoff["meta"]["settings"]["exception_formula"])
             for key in ("製造実績の最終日付", "品目手順マスタ更新日時", "構成マスタ更新日時"):
                 self.assertIn(key, handoff["meta"]["sources"])
-            self.assertEqual(handoff["rates"], [{"from_month": "202604", "through_month": "202608", "yen_per_min": 124.64}])
+            self.assertEqual(handoff["rates"], [{"from_month": "202604", "through_month": "202608", "yen_per_min": 124.64},
+                                            {"from_month": "202609", "through_month": "202609", "yen_per_min": 108.25}])
             self.assertEqual(handoff["items"]["ROOT"]["cum_std_per_unit"], root["cum_std_per_unit"])
             self.assertAlmostEqual(handoff["items"]["ROOT"]["cum_std_per_unit"], 25.0)
             self.assertAlmostEqual(handoff["items"]["ROOT"]["own_run_per_unit"], 15.0)

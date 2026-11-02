@@ -37,7 +37,11 @@ DEFAULT_SETTINGS = {
     "allocated_exception_keywords": [],
     "setup_exception_keywords": ["段取り"],
     "excluded_exception_keywords": ["段取り", "手直し", "修正作業"],
-    "labor_rate_history": [{"from": "202604", "through": "202608", "yen_per_minute": 124.64}],
+    # 月次で確定した工数レート(円/分)。確定したら1行追加する。保存済みの設定より優先して反映される。
+    "labor_rate_history": [
+        {"from": "202604", "through": "202608", "yen_per_minute": 124.64},
+        {"from": "202609", "through": "202609", "yen_per_minute": 108.25},
+    ],
 }
 JST = timezone(timedelta(hours=9))
 
@@ -97,6 +101,17 @@ def period_start(anchor: str, months: int) -> str:
     year, month = int(anchor[:4]), int(anchor[4:6])
     index = year * 12 + month - 1 - (months - 1)
     return f"{index // 12:04d}{index % 12 + 1:02d}"
+
+
+def merge_rate_history(saved: list | None, defaults: list) -> list:
+    """保存済みのレート履歴に、コードで定義した確定レートを足す(同じ期間はコード側を優先)。"""
+    merged: dict[tuple[str, str], dict] = {}
+    for row in list(saved or []) + list(defaults):
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("from", "")), str(row.get("through", "")))
+        merged[key] = dict(row)
+    return sorted(merged.values(), key=lambda r: (str(r.get("from", "")), str(r.get("through", ""))))
 
 
 def rate_for_month(settings: dict, ym: str) -> float | None:
@@ -637,6 +652,7 @@ def merge(destination: Path, actuals_path: Path, routes_path: Path, bom_path: Pa
         raise ValueError("工数入力CSVの必須列が不足しています")
     bom_children, bom_stats = read_bom(bom_path)
     settings = {**DEFAULT_SETTINGS, **((analysis.get("labor") or {}).get("settings") or {})}
+    settings["labor_rate_history"] = merge_rate_history(settings.get("labor_rate_history"), DEFAULT_SETTINGS["labor_rate_history"])
     old_allocated = [norm(value) for value in settings.get("allocated_exception_keywords", []) if norm(value)]
     setup_categories = [norm(value) for value in settings.get("setup_exception_keywords", []) if norm(value)] or old_allocated or list(DEFAULT_SETTINGS["setup_exception_keywords"])
     settings["setup_exception_keywords"] = list(dict.fromkeys(setup_categories))
