@@ -17,7 +17,7 @@ furusato.dateWindowDays 日ぶん前後の日付も試す。
 
 解凍できたら、新しい注文を Teams のチャット「EC売上_自動入力通知」に通知する（例「ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円」）。
   金額は、画面と同じく対応表（furusato_config.json。共有の設定ファイルがあればそちら）の契約単価（税抜）×数量×1.1。対応表に無い商品があれば「金額未確定」。
-  載せるのは発注番号と金額だけ（お客様の名前・住所・電話は載せない）。同じ発注番号は2回通知しない
+  載せるのは発注番号と金額だけ（お客様の名前・住所・電話は載せない）。最後に「アプリ：<URL>」を付ける（URL は furusato_config.json の notify.appUrl）。同じ発注番号は2回通知しない
   （通知済みは SharedMasters/_rpa_queue/state/furusato_notified.json。送れたときだけ更新し、送れなかった分は次の回に送り直す）。
   通知に失敗しても解凍は成功のまま（ログに「通知に失敗」）。詳しくは order_notify.py
 
@@ -240,7 +240,8 @@ def run(shared, word, conf, session=None, rules=None):
         logger = lambda m: log(logdir, m)   # noqa: E731
         cands = notify_candidates(new_dirs, rules, logger)
         order_notify.notify_new('ふるさと納税', cands, order_notify.state_path(shared, NOTIFIED_NAME), logger,
-                                first_run_silent=False, keep_pending=True, session=session)
+                                first_run_silent=False, keep_pending=True, session=session,
+                                footer=order_notify.app_footer(FURUSATO_CONFIG))   # 最後に「アプリ：<URL>」（URL は furusato_config.json の notify.appUrl）
     except Exception as e:
         log(logdir, f'Teams への通知に失敗（{type(e).__name__}）')
     return 1 if ng else 0

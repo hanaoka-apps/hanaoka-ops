@@ -268,6 +268,9 @@ console.log(JSON.stringify({ orders, groups }));
         self.assertTrue(g['2026-10-23']['match'])
 
 
+FOOT = '\n\nアプリ：https://hanaoka-apps.github.io/hanaoka-ops/ec_sales.html'   # 通知の最後に付く、開くアプリの URL（ec_sales_config.json の notify.appUrl）
+
+
 class NotifyTests(unittest.TestCase):
     """新しい注文の Teams 通知（ダミーの URL・ダミーの注文。実際には投稿しない）"""
     URL = 'https://example.invalid/workflows/SECRET-TOKEN-123/triggers/manual/paths/invoke?sig=TOPSECRET'
@@ -302,7 +305,7 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(list(json.loads(self.state_file.read_text(encoding='utf-8'))['orders']), ['#9001'])   # キャンセルの #9002 は記録に入れない
         new = ORDERS + [order('#9101', [line('a', 1, '1.0')], total='12800.0'), order('#9102', [line('b', 1, '1.0')], total='3300.0')]
         self.go(new, s)
-        self.assertEqual(s.texts(), ['Shopify 新しい注文 2件：#9101 12,800円、#9102 3,300円'])   # 1通にまとめる
+        self.assertEqual(s.texts(), ['Shopify 新しい注文 2件：#9101 12,800円、#9102 3,300円' + FOOT])   # 1通にまとめる
         self.go(new, s)
         self.assertEqual(len(s.calls), 1)                      # 同じ注文は2回通知しない
 
@@ -313,7 +316,7 @@ class NotifyTests(unittest.TestCase):
                         order('#9202', [line('a', 1, '1.0')], test=True),
                         order('#9203', [line('a', 1, '1.0')], total='5000.0')]
         self.go(new, s)
-        self.assertEqual(s.texts(), ['Shopify 新しい注文 1件：#9203 5,000円'])
+        self.assertEqual(s.texts(), ['Shopify 新しい注文 1件：#9203 5,000円' + FOOT])
 
     def test_message_has_no_personal_data(self):
         s = self.Session()
@@ -334,7 +337,7 @@ class NotifyTests(unittest.TestCase):
         self.assertNotIn('#9401', json.loads(self.state_file.read_text(encoding='utf-8'))['orders'])   # 記録しない
         retry = self.Session()
         self.go(new, retry)
-        self.assertEqual(retry.texts(), ['Shopify 新しい注文 1件：#9401 900円'])   # 次の回に送り直す
+        self.assertEqual(retry.texts(), ['Shopify 新しい注文 1件：#9401 900円' + FOOT])   # 次の回に送り直す
 
     def test_webhook_url_never_in_log(self):
         s = self.Session(status=500)

@@ -77,6 +77,40 @@ class T(unittest.TestCase):
         self.assertTrue(m[0][0].endswith('（1/%d）' % len(m)))
         self.assertEqual([i for _, ids in m for i in ids], [k for k, _ in items])   # 抜けも重なりもない
 
+    # ---- 開くアプリの URL（各通の最後）
+    def test_footer_is_appended_to_every_message(self):
+        foot = 'アプリ：https://example.invalid/app.html'
+        m = N.build_messages('Shopify', [('#1801', '#1801 12,800円'), ('#1802', '#1802 3,300円')], footer=foot)
+        self.assertEqual(m[0][0], 'Shopify 新しい注文 2件：#1801 12,800円、#1802 3,300円\n\n' + foot)
+        items = [('#%d' % i, '#%d 1,000円' % i) for i in range(1000, 1040)]
+        m = N.build_messages('Shopify', items, max_chars=200, footer=foot)
+        self.assertGreater(len(m), 2)
+        self.assertTrue(all(t.endswith('\n\n' + foot) for t, _ in m))       # 分けた各通に付く
+        self.assertTrue(all(len(t) <= 200 + 40 for t, _ in m))                # URL の分を引いて分けるので、長くなりすぎない
+        self.assertEqual([i for _, ids in m for i in ids], [k for k, _ in items])
+        self.assertIn('（1/%d）\n\n' % len(m), m[0][0])                       # （1/2）は本文の後、URL の前
+
+    def test_footer_goes_through_notify_new(self):
+        foot = 'アプリ：https://example.invalid/app.html'
+        self.go([('#1', '#1 100円')], FakeSession(), footer=foot)
+        s = FakeSession()
+        self.go([('#1', '#1 100円'), ('#2', '#2 200円')], s, footer=foot)
+        self.assertEqual(s.texts(), ['Shopify 新しい注文 1件：#2 200円\n\n' + foot])
+
+    def test_app_footer_reads_config_and_never_fails(self):
+        p = Path(self.tmp, 'conf.json')
+        self.assertEqual(N.app_footer(p), '')                                  # ファイルが無い
+        p.write_text('{ broken', encoding='utf-8')
+        self.assertEqual(N.app_footer(p), '')                                  # 壊れている
+        p.write_text('{"x": 1}', encoding='utf-8')
+        self.assertEqual(N.app_footer(p), '')                                  # notify が無い
+        p.write_text(json.dumps({'notify': {'appUrl': ' https://example.invalid/a.html '}}), encoding='utf-8')
+        self.assertEqual(N.app_footer(p), 'アプリ：https://example.invalid/a.html')
+
+    def test_repo_configs_have_the_app_urls(self):
+        self.assertEqual(N.app_footer(ROOT / 'ec_sales_config.json'), 'アプリ：https://hanaoka-apps.github.io/hanaoka-ops/ec_sales.html')
+        self.assertEqual(N.app_footer(ROOT / 'furusato_config.json'), 'アプリ：https://hanaoka-apps.github.io/hanaoka-ops/furusato_sales.html')
+
     # ---- 最初の1回
     def test_first_run_only_records(self):
         s = FakeSession()
