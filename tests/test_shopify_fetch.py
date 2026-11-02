@@ -268,6 +268,90 @@ console.log(JSON.stringify({ orders, groups }));
         self.assertTrue(g['2026-10-23']['match'])
 
 
+class NotifyTests(unittest.TestCase):
+    """新しい注文の Teams 通知（ダミーの URL・ダミーの注文。実際には投稿しない）"""
+    URL = 'https://example.invalid/workflows/SECRET-TOKEN-123/triggers/manual/paths/invoke?sig=TOPSECRET'
+
+    class Session:
+        def __init__(self, status=202):
+            self.calls, self.status = [], status
+
+        def post(self, url, json=None, timeout=None):
+            self.calls.append(json)
+            return types.SimpleNamespace(status_code=self.status)
+
+        def texts(self):
+            return [c['attachments'][0]['content']['body'][0]['text'] for c in self.calls]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.logs = []
+        p = unittest.mock.patch.dict(os.environ, {'EC_TEAMS_WEBHOOK_URL': self.URL})
+        p.start()
+        self.addCleanup(p.stop)
+        self.state_file = Path(self.tmp, '_rpa_queue', 'state', 'shopify_notified.json')
+
+    def go(self, orders, session):
+        SF.run(settings(self.tmp), client=FakeClient(orders=orders), log=self.logs.append, now=NOW, session=session)
+
+    def test_first_run_records_only_then_next_run_notifies_new_orders_together(self):
+        s = self.Session()
+        self.go(ORDERS, s)                                    # 最初の1回：記録だけ。通知しない
+        self.assertEqual(s.calls, [])
+        self.assertEqual(list(json.loads(self.state_file.read_text(encoding='utf-8'))['orders']), ['#9001'])   # キャンセルの #9002 は記録に入れない
+        new = ORDERS + [order('#9101', [line('a', 1, '1.0')], total='12800.0'), order('#9102', [line('b', 1, '1.0')], total='3300.0')]
+        self.go(new, s)
+        self.assertEqual(s.texts(), ['Shopify 新しい注文 2件：#9101 12,800円、#9102 3,300円'])   # 1通にまとめる
+        self.go(new, s)
+        self.assertEqual(len(s.calls), 1)                      # 同じ注文は2回通知しない
+
+    def test_cancelled_and_test_orders_are_not_notified(self):
+        s = self.Session()
+        self.go(ORDERS, s)
+        new = ORDERS + [order('#9201', [line('a', 1, '1.0')], cancelledAt='2026-10-19T00:00:00Z'),
+                        order('#9202', [line('a', 1, '1.0')], test=True),
+                        order('#9203', [line('a', 1, '1.0')], total='5000.0')]
+        self.go(new, s)
+        self.assertEqual(s.texts(), ['Shopify 新しい注文 1件：#9203 5,000円'])
+
+    def test_message_has_no_personal_data(self):
+        s = self.Session()
+        self.go(ORDERS, s)
+        self.go(ORDERS + [order('#9301', [line('a', 1, '1.0')])], s)
+        blob = json.dumps(s.calls, ensure_ascii=False)
+        for secret in ('架空', '09012345678', 'taro@example.com', '千代田', '100-0001'):
+            self.assertNotIn(secret, blob)
+
+    def test_notify_failure_does_not_fail_fetch_and_is_retried(self):
+        s = self.Session()
+        self.go(ORDERS, s)
+        new = ORDERS + [order('#9401', [line('a', 1, '1.0')], total='900.0')]
+        before = Path(self.tmp, 'ec_shopify_orders.csv').read_bytes()
+        self.go(new, self.Session(status=500))                # 通知は失敗。でも取得・保存は成功のまま（例外にならない）
+        self.assertNotEqual(Path(self.tmp, 'ec_shopify_orders.csv').read_bytes(), before)
+        self.assertTrue(any('通知に失敗' in m for m in self.logs))
+        self.assertNotIn('#9401', json.loads(self.state_file.read_text(encoding='utf-8'))['orders'])   # 記録しない
+        retry = self.Session()
+        self.go(new, retry)
+        self.assertEqual(retry.texts(), ['Shopify 新しい注文 1件：#9401 900円'])   # 次の回に送り直す
+
+    def test_webhook_url_never_in_log(self):
+        s = self.Session(status=500)
+        self.go(ORDERS, s)
+        self.go(ORDERS + [order('#9501', [line('a', 1, '1.0')])], s)
+        self.assertNotIn('SECRET-TOKEN', ' '.join(self.logs))
+        self.assertNotIn('TOPSECRET', ' '.join(self.logs))
+
+    def test_unset_webhook_still_succeeds(self):
+        os.environ.pop('EC_TEAMS_WEBHOOK_URL', None)
+        s = self.Session()
+        self.go(ORDERS, s)
+        self.go(ORDERS + [order('#9601', [line('a', 1, '1.0')])], s)
+        self.assertEqual(s.calls, [])
+        self.assertTrue(any('EC_TEAMS_WEBHOOK_URL' in m for m in self.logs))
+
+
 class ClientTests(unittest.TestCase):
     def resp(self, status, body=None, headers=None):
         r = Mock(status_code=status, headers=headers or {})
