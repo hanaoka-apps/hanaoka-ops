@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -52,12 +53,13 @@ class BuildShipIndexTest(unittest.TestCase):
         self.write('出荷明細出力.txt', csv_text([SHIP_HEAD,
             ship_row('20261002', '0036683', 'UDL-250', '2.00', juchu='9001', kubun='3'),
             ship_row('20261002', '0036683', 'FR', '1.00', juchu='9001', kubun='3'),
-            ship_row('20261002', '0036683', '消費税', '0', juchu='9001', kubun='3', kind='消費税'),
+            ship_row('20261002', '0036683', '消費税', '0', juchu='0', kubun='3', kind='消費税'),   # 実物の消費税の行は、受注№ が 0
             ship_row('20261030', '37610', 'DA-P', '1.00', juchu='9002', kubun='1', po='PO-2', want='20261105', time='午前', ship_no='555'),
             ship_row('20261031', '37611', 'XA', '3.00', juchu='9002', kubun='1', po='PO-2'),
             ship_row('20261101', '37620', 'KOTEI', '1', juchu='9003', kubun='0', po=''),
             ship_row('20261005', '36729', 'UDL-150', '1', juchu='9004', kubun='2', po='PO-4'),
             ship_row('20261020', '37300', 'RET', '-1.00', juchu='9005', kubun='1', torihiki='掛返品'),
+            ship_row('20261026', '37630', 'DIRECT', '1', juchu='0', kubun='1', po=''),      # 受注を通さない売上（受注№ が 0）
             ship_row('20250301', '12345', 'OLD', '1', juchu='7000', kubun='1')]))      # 180日より前
 
     def write_carriers(self):
@@ -105,7 +107,7 @@ class BuildShipIndexTest(unittest.TestCase):
         self.run_build()
         idx = self.read_index()
         S = self.ships(idx)
-        self.assertEqual(sorted(S), ['36683', '36729', '37300', '37610', '37611', '37620'])      # 先頭の 0 は外す・古い出荷は入らない
+        self.assertEqual(sorted(S), ['36683', '36729', '37300', '37610', '37611', '37620', '37630'])      # 先頭の 0 は外す・古い出荷は入らない
         s = S['36683']
         self.assertEqual((s['date'], s['cust'], s['dest'], s['destName'], s['kubun']), ('2026-10-02', '100001', '000010', '架空商事 本社', '3'))
         self.assertEqual(s['lines'], [['UDL-250', 'UDL-250名', '2', '9001'], ['FR', 'FR名', '1', '9001']])     # 消費税の行は品目に入れない・数量は 2.00 → 2
@@ -113,9 +115,10 @@ class BuildShipIndexTest(unittest.TestCase):
         s = S['37610']
         self.assertEqual((s['shipNo'], s['want'], s['time']), ('555', '2026-11-05', '午前'))
         self.assertEqual(S['37620']['po'], [])
+        self.assertEqual((S['37630']['juchu'], S['37630']['lines']), ([], [['DIRECT', 'DIRECT名', '1', '']]))   # 受注№ 0 は受注なし（'0' を受注として出さない）
         self.assertTrue(S['37300']['ret'])
         self.assertFalse(S['37610']['ret'])
-        self.assertEqual([x['no'] for x in idx['ships']], ['37620', '37611', '37610', '37300', '36729', '36683'])   # 出荷日の新しい順
+        self.assertEqual([x['no'] for x in idx['ships']], ['37620', '37611', '37610', '37630', '37300', '36729', '36683'])   # 出荷日の新しい順
 
     def test_3社の送り状番号が売上番号でつながる(self):
         self.write_ships(); self.write_carriers()
@@ -138,7 +141,7 @@ class BuildShipIndexTest(unittest.TestCase):
         res, _ = self.run_build()
         self.assertEqual(res['unmatched'], [{'c': 'seino', 'key': '39999', 'slip': '9072200998', 'date': '2026-11-01'}])   # 古い出荷（12345）は SMILE に有るので不一致にしない
         self.assertEqual(res['counts']['blankKey'], 1)
-        self.assertEqual(res['counts']['ships'], 6)
+        self.assertEqual(res['counts']['ships'], 7)
         self.assertEqual(res['counts']['withSlip'], 4)
 
     def test_運送会社ごとの取得期間と最新のファイル(self):
@@ -179,10 +182,59 @@ class BuildShipIndexTest(unittest.TestCase):
         self.assertNotIn('03-9999-0000', text)
         self.assertNotIn('架空県架空市', text)
 
+    def test_消費税だけの伝票は出荷として出さない(self):
+        self.write('出荷明細出力.txt', csv_text([SHIP_HEAD,
+            ship_row('20261030', '40001', 'DA-P', '1.00', juchu='9002'),
+            ship_row('20261030', '40001', '消費税', '0', juchu='0', kind='消費税'),
+            ship_row('20261030', '40002', '消費税', '0', juchu='0', kind='消費税')]))      # 品目の行が無い（消費税だけの伝票）
+        res, _ = self.run_build()
+        self.assertEqual([s['no'] for s in res['ships']], ['40001'])
+        self.assertEqual(res['counts']['ships'], 1)
+
+    def test_送り状は前回の索引から引き継いで積み足す(self):
+        self.write_ships(); self.write_carriers()
+        self.run_build()
+        shutil.rmtree(os.path.join(self.dir, '_ship_inbox'))        # 運送会社のCSVが無くなっても（古いファイルを消した）、送り状番号は残る
+        res, _ = self.run_build()
+        S = self.ships(self.read_index())
+        self.assertEqual(S['36683']['slips'][0]['no'], '40100000001')
+        self.assertEqual(sorted(x['no'] for x in S['37610']['slips']), ['9072200101', '9072200102'])
+        self.assertEqual(S['36729']['slips'][0]['no'], '5910000002')
+        self.assertEqual((res['counts']['withSlip'], res['counts']['carried']), (4, 4))
+        self.assertEqual(res['unmatched'], [])                                  # 運送会社のCSVが無いので、SMILE に無い送り状は今回の分だけ（空）
+
+    def test_積み足しは今回の送り状を優先し前回にだけあるものを足す(self):
+        self.write_ships(); self.write_carriers()
+        self.run_build()
+        shutil.rmtree(os.path.join(self.dir, '_ship_inbox'))
+        head = ['出荷予定日', '管理番号', 'お問合せ番号', '個数', '重量（Ｋ)']
+        self.write('_ship_inbox/seino/new2.csv', csv_text([head, ['20261030', '37610', '9072200101', '9', '999'],      # 同じ番号（今回の個数・重量を使う）
+                                                           ['20261030', '37610', '9072200103', '1', '5']]), 'cp932', mtime=1_795_000_000)   # 新しい送り状
+        self.run_build()
+        slips = {x['no']: x for x in self.ships(self.read_index())['37610']['slips']}
+        self.assertEqual(sorted(slips), ['9072200101', '9072200102', '9072200103'])     # 前回の 102 も残る
+        self.assertEqual((slips['9072200101']['qty'], slips['9072200101']['kg']), ('9', '999'))
+
+    def test_前回の索引が壊れていても作れる(self):
+        self.write_ships(); self.write_carriers()
+        self.write('ship_index.json', '{ broken')
+        res, _ = self.run_build()
+        self.assertEqual(res['counts']['carried'], 0)
+        self.assertEqual(self.ships(self.read_index())['36683']['slips'][0]['no'], '40100000001')
+
+    def test_保持期間より古い出荷は引き継がない(self):
+        self.write_ships(); self.write_carriers()
+        self.run_build()
+        shutil.rmtree(os.path.join(self.dir, '_ship_inbox'))
+        res, _ = self.run_build(keep_days=20)                                    # 境目は 2026-10-13。10/2 の 36683 は対象外
+        S = self.ships(self.read_index())
+        self.assertNotIn('36683', S)
+        self.assertEqual(S['37610']['slips'][0]['no'][:8], '90722001')
+
     def test_keepDaysで期間を変えられる(self):
         self.write_ships()
         res, _ = self.run_build(keep_days=20)      # 境目は 2026-10-13
-        self.assertEqual(sorted(s['no'] for s in res['ships']), ['37300', '37610', '37611', '37620'])
+        self.assertEqual(sorted(s['no'] for s in res['ships']), ['37300', '37610', '37611', '37620', '37630'])
         self.assertEqual(res['from'], '2026-10-13')
 
     def test_読めない運送会社ファイルは飛ばす(self):

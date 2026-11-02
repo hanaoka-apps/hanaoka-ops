@@ -20,7 +20,7 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
 出力（SharedMasters）:
   - ship_index.json … 一時ファイルに書いてから置き換える。失敗したら前回のファイルをそのまま残す。
     {
-      "generatedAt": "UTC ISO", "keepDays": 180, "from": "yyyy-mm-dd（これ以降の出荷だけ入っている）",
+      "generatedAt": "UTC ISO", "keepDays": 365, "from": "yyyy-mm-dd（これ以降の出荷だけ入っている）",
       "sources":  [{ "name", "modified"(UTC ISO), "rows" }],
       "carriers": { "<キー>": { "name", "kubun", "files", "rows", "from", "to", "newest"(UTC ISO) } },   … 運送会社データがいつからいつまで・いつ届いたか
       "ships":    [ { "no": 売上№, "date", "shipNo", "cust", "custName", "dest", "destName", "staff", "kubun", "want", "time", "ret",
@@ -51,7 +51,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 OUT_NAME = 'ship_index.json'
-DEFAULT_KEEP_DAYS = 180
+DEFAULT_KEEP_DAYS = 365
 JST = timezone(timedelta(hours=9))
 
 # 出荷明細から取り出す列。名前は NFKC にそろえて比べる（ｺｰﾄﾞ／コード、全角半角、№／No の違いを吸収する）。
@@ -267,6 +267,8 @@ def build_ships(path, cutoff):
                 'ret': '返品' in g('取引区分名'), 'juchu': [], 'po': [], 'lines': [],
             }
         jn = g('受注№')
+        if not jn.strip('0'):   # 受注№ が 0 は「受注なし」（消費税の行・受注を通さない売上）。受注として扱わない
+            jn = ''
         if jn and jn not in s['juchu']:
             s['juchu'].append(jn)
         po = g('客先注番')
@@ -303,6 +305,24 @@ def build_juchu(path, wanted):
     return out, total
 
 
+def load_previous_slips(path):
+    """前回の ship_index.json から、売上№ごとの送り状 {売上№: [送り状…]} を読む（積み足しのため）。
+    無い・読めないときは空（今回の分だけで作る）。送り状番号・個数・重量・出荷日だけで、お客様の名前・住所・電話は入っていない。"""
+    try:
+        with open(path, encoding='utf-8') as f:
+            prev = json.load(f)
+        return {s['no']: [x for x in (s.get('slips') or []) if isinstance(x, dict) and x.get('no')]
+                for s in prev.get('ships') or [] if s.get('slips')}
+    except Exception:
+        return {}
+
+
+def merge_slips(current, previous):
+    """今回の送り状を先に、前回にだけあるものを後ろに足す（同じ運送会社・同じ番号は今回を使う）。"""
+    seen = {(x['c'], x['no']) for x in current}
+    return list(current) + [x for x in previous if (x.get('c'), x.get('no')) not in seen]
+
+
 def build(shared_dir, conf, now=None, keep_days=None):
     """ship_index.json を作って書き出す。成功したら書いた内容（dict）を返す。失敗したら例外（前回のファイルは残る）。"""
     now = now or datetime.now(timezone.utc)
@@ -316,7 +336,11 @@ def build(shared_dir, conf, now=None, keep_days=None):
         raise FileNotFoundError(os.path.basename(p) + ' がありません')
     ships, all_nos, total = build_ships(p, cutoff)
     sources.append({'name': os.path.basename(p), 'modified': mtime_iso(p), 'rows': total})
-    log('出荷明細: 全 %d 行のうち、%s 以降の出荷 %d 件' % (total, cutoff, len(ships)))
+    # 品目の行が1つも無い売上№（消費税だけの伝票）は、出荷ではないので検索の対象にしない（実データでは出荷の2割ほど。all_nos には残すので、運送会社の番号の突き合わせには影響しない）
+    tax_only = [k for k, s in ships.items() if not s['lines']]
+    for k in tax_only:
+        del ships[k]
+    log('出荷明細: 全 %d 行のうち、%s 以降の出荷 %d 件（消費税だけの伝票 %d 件は除く）' % (total, cutoff, len(ships), len(tax_only)))
 
     inbox = os.path.join(shared_dir, conf.get('inboxDir') or '_ship_inbox')
     carriers, slips_by_key, unmatched = {}, {}, []
@@ -334,9 +358,13 @@ def build(shared_dir, conf, now=None, keep_days=None):
                 unmatched.extend({'c': r['c'], 'key': key, 'slip': r['no'], 'date': r['date']} for r in recs)
         log('%s: ファイル %d 個・%d 行・売上№ %d 件%s' % (cconf.get('name', ckey), res['meta']['files'], res['meta']['rows'], len(res['best']),
                                                   '（読めないファイル %d 個）' % res['bad'] if res['bad'] else ''))
-    attached = 0
+    # 運送会社のCSVは直近45日ぶんだけなので、前回の索引にある送り状は引き継いで積み足す（出荷の保持期間 keepDays の間は、送り状番号が残る）
+    previous = load_previous_slips(os.path.join(shared_dir, OUT_NAME))
+    attached = carried = 0
     for key, s in ships.items():
-        s['slips'] = slips_by_key.get(key, [])
+        cur = slips_by_key.get(key, [])
+        s['slips'] = merge_slips(cur, previous.get(key, []))
+        carried += 1 if len(s['slips']) > len(cur) else 0
         attached += 1 if s['slips'] else 0
 
     wanted = {j for s in ships.values() for j in s['juchu']}
@@ -354,7 +382,7 @@ def build(shared_dir, conf, now=None, keep_days=None):
     out = {
         'generatedAt': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'keepDays': keep, 'from': cutoff, 'sources': sources, 'carriers': carriers,
         'ships': out_ships, 'juchu': juchu, 'unmatched': unmatched,
-        'counts': {'ships': len(out_ships), 'withSlip': attached, 'unmatched': len(unmatched), 'blankKey': blank_total},
+        'counts': {'ships': len(out_ships), 'withSlip': attached, 'carried': carried, 'unmatched': len(unmatched), 'blankKey': blank_total},
     }
     dest = os.path.join(shared_dir, OUT_NAME)
     tmp = dest + '.tmp'
@@ -366,7 +394,7 @@ def build(shared_dir, conf, now=None, keep_days=None):
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
-    log('出荷 %d 件（送り状あり %d 件）・SMILE に無い送り状 %d 件 → %s（%.2f MB）' % (len(out_ships), attached, len(unmatched), OUT_NAME, os.path.getsize(dest) / 1048576))
+    log('出荷 %d 件（送り状あり %d 件・うち前回から引き継ぎ %d 件）・SMILE に無い送り状 %d 件 → %s（%.2f MB）' % (len(out_ships), attached, carried, len(unmatched), OUT_NAME, os.path.getsize(dest) / 1048576))
     return out
 
 
