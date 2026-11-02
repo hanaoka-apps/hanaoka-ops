@@ -81,9 +81,22 @@ def yen(amount, currency='JPY'):
     return txt + '円' if (currency or 'JPY') == 'JPY' else '{} {}'.format(txt, currency)
 
 
-def build_messages(label, items, max_chars=MAX_CHARS):
+def app_footer(config_path):
+    """設定ファイルの notify.appUrl があれば「アプリ：<URL>」の1行を返す。無い・読めないときは ''（通知は止めない）。
+    URL はコードに書かず、設定ファイル（ec_sales_config.json・furusato_config.json）に置く。"""
+    try:
+        url = str(((json.loads(Path(config_path).read_text(encoding='utf-8-sig')).get('notify')) or {}).get('appUrl') or '').strip()
+    except Exception:
+        return ''
+    return 'アプリ：' + url if url else ''
+
+
+def build_messages(label, items, max_chars=MAX_CHARS, footer=''):
     """items＝[(注文番号, 表示の文)] → 通知の文のリスト [(文, [この文に入れた注文番号])]。
-    例：「Shopify 新しい注文 2件：#1801 12,800円、#1802 3,300円」。長いときは分けて、末尾に（1/2）を付ける。"""
+    例：「Shopify 新しい注文 2件：#1801 12,800円、#1802 3,300円」。長いときは分けて、末尾に（1/2）を付ける。
+    footer（例「アプリ：https://…」）があれば、分けた各通の最後に空行をはさんで付ける。"""
+    if footer:
+        max_chars = max(1, max_chars - len(footer) - 2)   # 各通に付ける分の長さを引いて分ける
     chunks, cur, cur_len = [], [], 0
     for oid, text in items:
         add = len(text) + 1
@@ -99,6 +112,8 @@ def build_messages(label, items, max_chars=MAX_CHARS):
         msg = '{} 新しい注文 {}件：{}'.format(label, len(ch), '、'.join(t for _, t in ch))
         if len(chunks) > 1:
             msg += '（{}/{}）'.format(i, len(chunks))
+        if footer:
+            msg += '\n\n' + footer
         out.append((msg, [oid for oid, _ in ch]))
     return out
 
@@ -115,10 +130,11 @@ def send(text, env_name=DEFAULT_ENV, session=None):
     return True, ''
 
 
-def notify_new(label, candidates, path, log, first_run_silent=True, keep_pending=False, env_name=DEFAULT_ENV, session=None, now=None):
+def notify_new(label, candidates, path, log, first_run_silent=True, keep_pending=False, env_name=DEFAULT_ENV, session=None, now=None, footer=''):
     """まだ通知していない注文があれば、まとめて通知する。結果の文字列を返す（例外は出さない）：
        'seeded'（最初の1回。記録だけ）／'none'（新しい注文なし）／'sent'（全部送れた）／'failed'（送れなかった分がある）／'skipped'（記録を読めない）
-    candidates＝[(注文番号, 表示の文)]。キャンセル・テストの注文は呼び出し側で除いておく。"""
+    candidates＝[(注文番号, 表示の文)]。キャンセル・テストの注文は呼び出し側で除いておく。
+    footer＝各通の最後に付ける1行（開くアプリの URL。app_footer で設定ファイルから作る）。"""
     try:
         kind, state = load_state(path)
         if kind == 'broken':
@@ -140,7 +156,7 @@ def notify_new(label, candidates, path, log, first_run_silent=True, keep_pending
         if not todo:
             return 'none'
         failed_reason, sent_ids = '', []
-        for msg, ids in build_messages(label, todo, MAX_CHARS):
+        for msg, ids in build_messages(label, todo, MAX_CHARS, footer):
             ok, reason = send(msg, env_name, session)
             if not ok:
                 failed_reason = reason

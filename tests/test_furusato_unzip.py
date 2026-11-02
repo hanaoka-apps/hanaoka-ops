@@ -117,6 +117,9 @@ def order_csv(*rows):
     return '\n'.join(lines) + '\n'
 
 
+FOOT = '\n\nアプリ：https://hanaoka-apps.github.io/hanaoka-ops/furusato_sales.html'   # 通知の最後に付く、開くアプリの URL（furusato_config.json の notify.appUrl）
+
+
 class FakeSession:
     def __init__(self, status=202):
         self.calls, self.status = [], status
@@ -150,19 +153,19 @@ class NotifyTests(unittest.TestCase):
         self.put('20261030_a.zip', ('2630248', 'A100', 1))
         s = FakeSession()
         self.assertEqual(self.run_it(s), 0)
-        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円'])   # 8,400円（税抜）× 1.1
+        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円' + FOOT])   # 8,400円（税抜）× 1.1
 
     def test_multi_line_order_is_one_item_and_sums(self):
         self.put('20261030_a.zip', ('2630300', 'A100', 2), ('2630300', 'A200', 1), ('2630301', 'A200', 1))
         s = FakeSession()
         self.run_it(s)
-        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 2件：発注番号 2630300 32,780円、発注番号 2630301 14,300円'])
+        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 2件：発注番号 2630300 32,780円、発注番号 2630301 14,300円' + FOOT])
 
     def test_unmapped_product_says_amount_undecided(self):
         self.put('20261030_a.zip', ('2630400', 'A999', 1))
         s = FakeSession()
         self.run_it(s)
-        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630400 金額未確定'])
+        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630400 金額未確定' + FOOT])
 
     def test_same_order_number_is_not_notified_twice(self):
         self.put('20261030_a.zip', ('2630248', 'A100', 1))
@@ -170,7 +173,7 @@ class NotifyTests(unittest.TestCase):
         self.run_it(s)
         self.put('20261030_b.zip', ('2630248', 'A100', 1), ('2630249', 'A100', 1))   # 同じ注文の再送＋新しい注文
         self.run_it(s)
-        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円', 'ふるさと納税 新しい注文 1件：発注番号 2630249 9,240円'])
+        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円' + FOOT, 'ふるさと納税 新しい注文 1件：発注番号 2630249 9,240円' + FOOT])
         self.put('20261030_c.zip', ('2630248', 'A100', 1))
         self.run_it(s)
         self.assertEqual(len(s.calls), 2)
@@ -191,7 +194,7 @@ class NotifyTests(unittest.TestCase):
         self.assertIn('通知に失敗', self.log())
         s = FakeSession()
         self.assertEqual(self.run_it(s), 0)                                             # 新しい ZIP が無くても、次の回に送り直す
-        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円'])
+        self.assertEqual(s.texts(), ['ふるさと納税 新しい注文 1件：発注番号 2630248 9,240円' + FOOT])
         self.assertEqual(self.run_it(s), 0)
         self.assertEqual(len(s.calls), 1)
 
