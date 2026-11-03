@@ -13,6 +13,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="fax_reply.js?v=20261029a"></script>
+<script src="ship_core.js?v=1"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
 <script>
 // MSALが読み込めなかった場合のフォールバック
@@ -153,6 +154,18 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .ld-row .l1 { display: flex; gap: 6px; align-items: center; }
 .ld-row .co { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .ld-row .l2 { color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+/* ===== 案件カードの「📦 出荷・送り状」 ===== */
+.ship-jno { font-size: 11px; font-weight: 700; color: var(--accent); margin: 6px 0 2px; }
+.ship-row { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; background: var(--surface); }
+.ship-l1 { font-size: 12px; font-weight: 600; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.ship-sub { font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.ship-slip { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.ship-slipno { font-family: ui-monospace, Consolas, monospace; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+.ship-btn { padding: 1px 6px !important; font-size: 10px !important; }
+.ship-track { font-size: 11px; color: var(--accent); }
+.ship-none { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.ship-none.warn { color: #b06000; }
+.ship-foot { font-size: 10px; color: var(--text-muted); margin-top: 4px; text-align: right; }
 /* ===== FAX履歴：一覧⇔詳細 切り替え ===== */
 .fax-main { display: flex; }
 .fax-main.fax-list-mode .fax-list-panel { display: flex; flex: 1; }
@@ -1591,6 +1604,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                   <div class="card-value" id="cardOrderNumber">-</div>
                 </div>
               </div>
+              <!-- 受注番号から 出荷（売上№）→ 送り状番号 を出す（SharedMasters の ship_index.json。送り状検索と同じデータ） -->
+              <div class="card-section ship-panel" id="shipPanel" style="display:none">
+                <div class="card-label" style="display:flex;align-items:center;gap:6px">📦 出荷・送り状<span style="flex:1"></span><a href="ship_search.html" target="_blank" rel="noopener" style="font-size:10px;color:var(--text-muted)">送り状検索 ↗</a></div>
+                <div id="shipPanelBody"></div>
+              </div>
               <div class="card-section">
                 <div class="card-label">備考</div>
                 <div class="card-notes" id="cardNotes">-</div>
@@ -1954,6 +1972,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <li><strong>担当者</strong>：対応者を選ぶ</li>
             <li><strong>対応期限</strong>：カレンダーから期限日を入力</li>
           </ul>
+          <div class="help-h3">📦 出荷・送り状</div>
+          <p class="help-p">案件に<strong>受注番号</strong>（SMILEの受注№。「J-26668」のように書いても、数字だけでも可）が入っていると、左パネルの受注番号の下に <strong>出荷日・売上№・運送会社・送り状番号</strong> が出ます（受注番号が複数なら、それぞれ出ます）。</p>
+          <ul class="help-ul">
+            <li><strong>コピー</strong>：送り状番号をコピー</li>
+            <li><strong>連絡文</strong>：「10/28に西濃運輸にて出荷いたしました。送り状No.…」をコピー（お客様への連絡に貼り付けて使えます）</li>
+            <li><strong>配送状況 ↗</strong>：運送会社の追跡ページを開く（追跡ページのある運送会社のみ）</li>
+          </ul>
+          <div class="help-callout info">データは「送り状検索」と同じもので、SMILEの出荷（毎晩更新）と運送会社の送り状データ（1時間ごと）をつないでいます。出荷した翌朝までに出ます。直近1年の出荷が対象です。自社便・引取など運送会社を使わない出荷には送り状番号はありません。</div>
           <div class="help-h3">対応メモ・コメントの記録</div>
           <ol class="help-ol">
             <li>中央タイムライン下部のテキストエリアに入力</li>
@@ -2966,8 +2992,108 @@ function refreshCardView(c) {
   setCard('cardOrderNumber', c.OrderNumber);
   setCard('cardNotes', c.Notes);
   setCard('cardLastAction', c.LastAction);
+  renderShipPanel(c);   // 受注番号があれば 出荷・送り状 を出す（裏で読み込む）
   // 工場回答状況パネル
   renderFactoryProgress(c);
+}
+// ============================================================
+// 出荷・送り状（受注番号 → 出荷（売上№）→ 送り状番号）
+//   データは送り状検索（ship_search.html）と同じ SharedMasters の ship_index.json（専用機が1時間ごとに作る。直近365日の出荷）。
+//   5MB ほどあるので、最初に要るときに1回だけ読み、ブラウザ（IndexedDB）にも置く（ファイルが変わっていなければ読み直さない）。
+//   運送会社の名前・追跡URLは ship_config.json（リポジトリ）。計算は ship_core.js（ShipSearch）を使う
+// ============================================================
+const SHIP_CACHE_KEY = 'ship-index-v1';
+const SHIP_RECHECK_MS = 30 * 60 * 1000;   // 30分たったらファイルが新しくなっていないか確かめる
+let shipData = { conf: null, idx: null, modified: '', checkedAt: 0, loading: null };
+// 受注番号の欄から受注№を取り出す（「J-26668」「26668・26670」などにも対応。4桁以上の数字、先頭の0は外す）
+function orderNosOf(s) {
+  return [...new Set((String(s || '').normalize('NFKC').match(/\d{4,}/g) || []).map(x => x.replace(/^0+/, '')))];
+}
+async function loadShipData() {
+  if (shipData.idx && Date.now() - shipData.checkedAt < SHIP_RECHECK_MS) return shipData;
+  if (shipData.loading) return shipData.loading;
+  shipData.loading = (async () => {
+    if (!shipData.conf) shipData.conf = await (await fetch('ship_config.json', { cache: 'no-cache' })).json();
+    const sid = await getSiteId();
+    const drives = await graphGet(`/sites/${sid}/drives?$select=id,name`);
+    const drive = (drives.value || []).find(d => d.name === SP.masterLibrary);
+    if (!drive) throw new Error('SharedMasters が見つかりません');
+    const meta = await graphGet(`/drives/${drive.id}/root:/ship_index.json`);
+    const modified = meta.lastModifiedDateTime || '';
+    if (!shipData.idx || shipData.modified !== modified) {
+      // ブラウザに置いたものが同じ版ならそれを使う
+      let cached = null;
+      try {
+        const db = await caseCacheDb();
+        cached = await new Promise(res => { const r = db.transaction(CASE_CACHE_STORE).objectStore(CASE_CACHE_STORE).get(SHIP_CACHE_KEY); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); });
+      } catch (_) {}
+      if (cached && cached.modified === modified && cached.idx) {
+        shipData.idx = cached.idx;
+      } else {
+        const dl = meta['@microsoft.graph.downloadUrl'];
+        if (!dl) throw new Error('出荷データのダウンロードURLを取得できません');
+        const idx = await (await fetch(dl)).json();
+        if (!idx || !Array.isArray(idx.ships)) throw new Error('出荷データの形が違います');
+        // 案件画面で使う所だけ持つ（受注№で引くための索引も作る）
+        shipData.idx = idx;
+        try { const db = await caseCacheDb(); db.transaction(CASE_CACHE_STORE, 'readwrite').objectStore(CASE_CACHE_STORE).put({ modified, idx }, SHIP_CACHE_KEY); } catch (_) {}
+      }
+      shipData.modified = modified;
+      shipData.byJuchu = null;
+    }
+    if (!shipData.byJuchu) {
+      const m = new Map();
+      shipData.idx.ships.forEach(s => (s.juchu || []).forEach(j => { const k = String(j).replace(/^0+/, ''); if (!m.has(k)) m.set(k, []); m.get(k).push(s); }));
+      shipData.byJuchu = m;
+    }
+    shipData.checkedAt = Date.now();
+    return shipData;
+  })();
+  try { return await shipData.loading; } finally { shipData.loading = null; }
+}
+async function renderShipPanel(c) {
+  const panel = document.getElementById('shipPanel'), body = document.getElementById('shipPanelBody');
+  if (!panel || !body) return;
+  const nos = orderNosOf(c && c.OrderNumber);
+  if (!nos.length || !window.ShipSearch) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const caseId = c.CaseId;
+  if (!shipData.idx) body.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">出荷データを読み込み中...</div>';
+  let d;
+  try { d = await loadShipData(); }
+  catch (e) { if (currentCaseId === caseId) body.innerHTML = `<div style="font-size:11px;color:var(--danger)">出荷データを読めませんでした：${escapeHtml(e.message)}</div>`; return; }
+  if (currentCaseId !== caseId) return;   // 読み込み中に別の案件へ移った
+  const S = window.ShipSearch, conf = d.conf, idx = d.idx, today = new Date().toISOString().slice(0, 10);
+  const html = nos.map(no => {
+    const ships = (d.byJuchu.get(no) || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    const head = `<div class="ship-jno">受注 ${escapeHtml(no)}</div>`;
+    if (!ships.length) {
+      return head + `<div class="ship-none">まだ出荷の記録がありません（出荷されると、翌朝までにここに出ます）</div>`;
+    }
+    return head + ships.map(s => {
+      const st = S.slipStatus(conf, idx, s);
+      const carrier = S.kubunName(conf, s.kubun);
+      const slips = (s.slips || []).map(sl => {
+        const url = S.trackingUrl(conf, sl.c, sl.no);
+        const cname = S.carrierName(conf, sl.c);
+        const msg = `${S.fmtDate(s.date, today).replace(/\(.\)$/, '')}に${cname}にて出荷いたしました。送り状No.${sl.no}`;
+        return `<div class="ship-slip"><span class="ship-slipno">${escapeHtml(sl.no)}</span>`
+          + `<button class="btn ship-btn" onclick="copyShipText(this, '${escJsAttr(sl.no)}')" title="送り状番号をコピー">コピー</button>`
+          + `<button class="btn ship-btn" onclick="copyShipText(this, '${escJsAttr(msg)}')" title="「${escapeHtml(msg)}」をコピー（お客様への連絡に）">連絡文</button>`
+          + (url ? `<a class="ship-track" href="${escapeHtml(url)}" target="_blank" rel="noopener">配送状況 ↗</a>` : '')
+          + (sl.qty ? `<span class="ship-sub">${escapeHtml(sl.qty)}個</span>` : '') + `</div>`;
+      }).join('');
+      return `<div class="ship-row"><div class="ship-l1">${escapeHtml(S.fmtDate(s.date, today))} 出荷<span class="ship-sub">売上№${escapeHtml(s.no)}・${escapeHtml(carrier)}</span></div>`
+        + (slips || (st.code === 'none' ? '' :   // 運送会社を使わない出荷は、上の行の「運送会社を使わない」で足りる
+            `<div class="ship-none${st.code === 'missing' || st.code === 'nodata' ? ' warn' : ''}">${escapeHtml(st.text || '送り状番号はまだありません')}</div>`)) + `</div>`;
+    }).join('');
+  }).join('');
+  const gen = idx.generatedAt ? new Date(idx.generatedAt) : null;
+  body.innerHTML = html + (gen ? `<div class="ship-foot">出荷データ ${gen.getMonth() + 1}/${gen.getDate()} ${String(gen.getHours()).padStart(2, '0')}:${String(gen.getMinutes()).padStart(2, '0')} 時点</div>` : '');
+}
+async function copyShipText(btn, text) {
+  try { await navigator.clipboard.writeText(text); const t = btn.textContent; btn.textContent = 'コピーしました'; setTimeout(() => { btn.textContent = t; }, 1200); }
+  catch (_) { prompt('コピーしてください', text); }
 }
 function renderFactoryProgress(c) {
   const panel = document.getElementById('factoryProgressPanel');
