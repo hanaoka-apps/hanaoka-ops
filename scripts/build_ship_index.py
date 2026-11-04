@@ -15,7 +15,15 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
 運送会社のCSVの扱い:
   - つなぎの項目は「売上№」（西濃・第一貨物＝管理番号、トナミ＝指定No記号）。先頭の 0 は外して比べる（'037339' と '37339' は同じ）。空は除く。
   - 取得期間が重なる複数のファイルは、売上№ごとに「新しいファイルに載っているもの」を使う（1回抜けても前のファイルで補える。送り状を発行し直したときは新しい方）。
-  - 電話・住所・お届け先の名前は索引に入れない（送り状番号・個数・重量・出荷日だけ）。
+  - 運送会社のCSVの電話・住所・お届け先の名前は索引に入れない（送り状番号・個数・重量・出荷日だけ）。
+  - 送り先の住所は、SMILE のマスタから足す（下の「住所」）。電話・FAX は入れない。
+
+住所（出荷明細には住所の列が無い）:
+  - 納品先が決まっている出荷 … 納品先マスタ.csv（得意先ｺｰﾄﾞ＋納品先ｺｰﾄﾞ）の郵便番号・住所１〜３
+  - 納品先なし（納品先ｺｰﾄﾞが 000000 か空）の出荷 … 得意先マスタ.csv（得意先ｺｰﾄﾞ）の郵便番号・住所１〜３
+  - マスタに無い組み合わせは、住所なし。マスタは「いまの」住所で、出荷した時点のものとは限らない。
+  - 出荷ごとには持たず、"addr": { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所 } } に、使われる組み合わせの分だけ入れる。
+  - マスタのファイル名・納品先なしの値は、設定 smile.destMaster / custMaster / noDest。
 
 出力（SharedMasters）:
   - ship_index.json … 一時ファイルに書いてから置き換える。失敗したら前回のファイルをそのまま残す。
@@ -27,6 +35,8 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
                       "juchu": [受注№], "po": [客先注番], "lines": [[品目コード, 品目名, 数量, 受注№]],
                       "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date" }] } ],
       "juchu":    { "<受注№>": { "date", "due", "plan", "lines", "staff" } },
+      "addr":     { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所 } },   … 送り先の住所（上の「住所」）
+      "masters":  [{ "name", "modified"(UTC ISO), "rows" }],              … 住所を読んだマスタ（古さの警告には使わない）
       "unmatched": [{ "c", "key", "slip", "date" }],   … 運送会社にあって、SMILE の出荷明細に売上№が無いもの（SMILE の出力待ちか、番号の違い）
       "counts":   { ... }
     }
@@ -37,7 +47,7 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
   --config … ship_config.json のパス（運送会社の読み方・keepDays・ファイル名。コードに埋め込まない。常駐スクリプトが main から取得して渡す）
   --keep-days … 直近何日の出荷を入れるか（設定ファイルより優先）
 
-個人情報（得意先・納品先の名前）が入るので、ログには件数だけを出し、値は出さない。
+個人情報（得意先・納品先の名前・住所）が入るので、ログには件数だけを出し、値は出さない。
 標準ライブラリだけで動く（requests などは不要）。専用機の常駐スクリプトが毎回 GitHub の最新を取得して実行する。
 """
 import argparse
@@ -64,6 +74,10 @@ SHIP_COLS = [
 SHIP_REQUIRED = ['伝票日付', '売上№', '品目コード', '受注№']
 JUCHU_COLS = [['受注№'], ['行'], ['受注日付'], ['納期', '受注納期'], ['出荷予定日'], ['担当者名']]
 JUCHU_REQUIRED = ['受注№']
+# 納品先マスタ・得意先マスタから取り出す列（住所。電話は取らない）
+DEST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３']]
+CUST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３']]
+NO_DEST = '000000'   # 納品先コードが「納品先なし」（得意先そのものに送る）のときの値（設定 smile.noDest で変えられる）
 
 
 def log(msg):
@@ -305,6 +319,63 @@ def build_juchu(path, wanted):
     return out, total
 
 
+def addr_entry(zip_code, parts):
+    """郵便番号と住所１〜３から {z, a}。どちらも空なら None。住所は、１〜３をそのままつなぐ。"""
+    a = ''.join(p for p in parts if p)
+    z = zip_code.strip()
+    if not z and not a:
+        return None
+    e = {}
+    if z:
+        e['z'] = z
+    if a:
+        e['a'] = a
+    return e
+
+
+def build_addr(dest_path, cust_path, ships, no_dest):
+    """出荷の送り先の住所 {"<得意先>|<納品先>": {z, a}} を作る。ships に出てくる組み合わせだけ。
+    納品先が決まっている出荷＝納品先マスタ（得意先＋納品先）、納品先なし（no_dest か空）の出荷＝得意先マスタ（得意先そのもの）。
+    マスタに無ければ入れない（住所は付かない）。電話・FAX は取らない。(addr の dict, 読んだマスタの情報のリスト) を返す。"""
+    want_dest, want_cust = set(), set()
+    for s in ships.values():
+        if s['dest'] and s['dest'] != no_dest:
+            want_dest.add((s['cust'], s['dest']))
+        else:
+            want_cust.add(s['cust'])
+    out, meta = {}, []
+    if want_dest and dest_path and os.path.exists(dest_path):
+        it = read_rows(dest_path)
+        plan = column_plan(next(it), DEST_COLS, ['得意先コード', '納品先コード'])
+        total = 0
+        for r in it:
+            total += 1
+            v = pick(r, plan)
+            if (v[0], v[1]) in want_dest:
+                e = addr_entry(v[2], v[3:6])
+                if e:
+                    out[v[0] + '|' + v[1]] = e
+        meta.append({'name': os.path.basename(dest_path), 'modified': mtime_iso(dest_path), 'rows': total})
+    if want_cust and cust_path and os.path.exists(cust_path):
+        it = read_rows(cust_path)
+        plan = column_plan(next(it), CUST_COLS, ['得意先コード'])
+        total = 0
+        keys = {}
+        for s in ships.values():
+            if not s['dest'] or s['dest'] == no_dest:
+                keys.setdefault(s['cust'], set()).add(s['dest'])
+        for r in it:
+            total += 1
+            v = pick(r, plan)
+            if v[0] in keys:
+                e = addr_entry(v[1], v[2:5])
+                if e:
+                    for d in keys[v[0]]:
+                        out[v[0] + '|' + d] = e
+        meta.append({'name': os.path.basename(cust_path), 'modified': mtime_iso(cust_path), 'rows': total})
+    return out, meta
+
+
 def load_previous_slips(path):
     """前回の ship_index.json から、売上№ごとの送り状 {売上№: [送り状…]} を読む（積み足しのため）。
     無い・読めないときは空（今回の分だけで作る）。送り状番号・個数・重量・出荷日だけで、お客様の名前・住所・電話は入っていない。"""
@@ -367,6 +438,17 @@ def build(shared_dir, conf, now=None, keep_days=None):
         carried += 1 if len(s['slips']) > len(cur) else 0
         attached += 1 if s['slips'] else 0
 
+    # 送り先の住所（出荷明細には住所が無い）。マスタが無い・読めないときは、住所なしで作る（検索はできる）
+    addr, masters = {}, []
+    try:
+        addr, masters = build_addr(os.path.join(shared_dir, smile.get('destMaster') or '納品先マスタ.csv'),
+                                   os.path.join(shared_dir, smile.get('custMaster') or '得意先マスタ.csv'),
+                                   ships, str(smile.get('noDest') or NO_DEST))
+    except Exception as e:
+        log('住所を読めませんでした（住所なしで作ります）: %s: %s' % (type(e).__name__, e))
+    with_addr = sum(1 for s in ships.values() if s['cust'] + '|' + s['dest'] in addr)
+    log('住所: 出荷 %d 件のうち %d 件に付きました（マスタ %s）' % (len(ships), with_addr, '・'.join(m['name'] for m in masters) or 'なし'))
+
     wanted = {j for s in ships.values() for j in s['juchu']}
     juchu = {}
     jp = os.path.join(shared_dir, smile.get('juchu') or '受注明細出力.csv')
@@ -381,8 +463,8 @@ def build(shared_dir, conf, now=None, keep_days=None):
     unmatched.sort(key=lambda u: (u['date'], u['key']), reverse=True)
     out = {
         'generatedAt': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'keepDays': keep, 'from': cutoff, 'sources': sources, 'carriers': carriers,
-        'ships': out_ships, 'juchu': juchu, 'unmatched': unmatched,
-        'counts': {'ships': len(out_ships), 'withSlip': attached, 'carried': carried, 'unmatched': len(unmatched), 'blankKey': blank_total},
+        'ships': out_ships, 'juchu': juchu, 'unmatched': unmatched, 'addr': addr, 'masters': masters,
+        'counts': {'ships': len(out_ships), 'withSlip': attached, 'withAddr': with_addr, 'carried': carried, 'unmatched': len(unmatched), 'blankKey': blank_total},
     }
     dest = os.path.join(shared_dir, OUT_NAME)
     tmp = dest + '.tmp'

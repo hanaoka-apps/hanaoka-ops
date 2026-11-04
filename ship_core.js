@@ -156,6 +156,60 @@
     return out;
   };
 
+  /* ------------------------------------------------------------ 送り先（実際の納品先）と出荷連絡 */
+  // 送り先の住所（索引の addr。無ければ null）。{ zip, addr }
+  S.addrOf = function (idx, ship) {
+    var e = ((idx && idx.addr) || {})[(ship.cust || '') + '|' + (ship.dest || '')];
+    return e ? { zip: e.z || '', addr: e.a || '' } : null;
+  };
+  // 送り先の名前：納品先があればその名前、納品先なし（得意先そのものに送る）なら得意先の名前
+  S.destLabel = function (ship) { return ship.destName || ship.custName || ''; };
+  // 直送：納品先が決まっていて、得意先とは別の名前（代理店から、その先のお客様へ送る、など）
+  S.isDirect = function (conf, ship) {
+    var none = String(((conf && conf.smile) || {}).noDest || '000000');
+    return !!ship.dest && String(ship.dest) !== none && !!ship.destName && S.norm(ship.destName) !== S.norm(ship.custName);
+  };
+  S.zipAddr = function (a) { return a ? [a.zip ? '〒' + a.zip : '', a.addr].filter(Boolean).join('　') : ''; };
+
+  function dateJa(iso) { var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? m[1] + '年' + (+m[2]) + '月' + (+m[3]) + '日' : ''; }
+
+  /* 出荷連絡の文面。conf.notice の { subject, lines[] } を、この出荷の値で埋める。
+   *   {po}客先注番 {juchu}受注№ {items}品目 {dest}送り先の名前 {zipaddr}〒郵便番号　住所 {zip} {addr} {date}出荷日 {carrier}運送会社 {slip}送り状番号 {staff}担当
+   * ・値が空の行は出さない  ・{items}・{carrier}・{slip} は複数あるので、その数だけ行（\n を含む行は、まとまりごと）を繰り返す
+   * 戻り値 { subject, body, hasSlip, hasAddr } */
+  S.noticeText = function (conf, idx, ship) {
+    var nt = (conf && conf.notice) || {}, a = S.addrOf(idx, ship);
+    var items = (ship.lines || []).map(function (l) { return (l[1] || l[0]) + ' × ' + l[2]; });
+    var slips = ship.slips || [];
+    var V = {
+      po: (ship.po || []).join('、'), juchu: (ship.juchu || []).join('、'), items: items, dest: S.destLabel(ship),
+      zipaddr: S.zipAddr(a), zip: a ? a.zip : '', addr: a ? a.addr : '', date: dateJa(ship.date), staff: ship.staff || '',
+      carrier: slips.map(function (s) { return S.carrierName(conf, s.c); }), slip: slips.map(function (s) { return s.no; })
+    };
+    function fill(tpl) {
+      var names = (tpl.match(/\{(\w+)\}/g) || []).map(function (x) { return x.slice(1, -1); });
+      var lens = names.filter(function (k) { return Array.isArray(V[k]); }).map(function (k) { return V[k].length; });
+      var n = lens.length ? Math.max.apply(null, lens) : 1;   // 複数ある値を含む行は、その数だけ繰り返す（0 個なら出さない）
+      var out = [];
+      for (var i = 0; i < n; i++) {
+        var empty = false;
+        var t = tpl.replace(/\{(\w+)\}/g, function (_, k) {
+          var v = Array.isArray(V[k]) ? V[k][i] : V[k];
+          if (v == null || v === '') empty = true;
+          return v == null ? '' : v;
+        });
+        if (!empty) out.push(t);
+      }
+      return out;
+    }
+    var lines = [];
+    (nt.lines || []).forEach(function (tpl) { if (tpl === '') lines.push(''); else fill(String(tpl)).forEach(function (x) { lines.push(x); }); });
+    // 続けて空行になるものや、最初・最後の空行は詰める
+    var body = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+    var subject = (fill(String(nt.subject || '出荷のご連絡 {po}'))[0] || String(nt.subject || '出荷のご連絡 {po}').replace(/\{po\}/g, '')).trim();
+    return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)) };
+  };
+
   // 土日（日本時間）を除いた時間数。運送会社のデータは平日にしか届かないので、月曜の朝に「古い」と出さないため
   S.weekdayHours = function (fromMs, toMs) {
     if (!(toMs > fromMs)) return 0;

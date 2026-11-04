@@ -22,8 +22,8 @@ SHIP_HEAD = ['伝票日付', '年月度', '出荷№', '売上№', '明細区�
              '品目ｺｰﾄﾞ', '品目名', '数量', '受注№', '配送指定日', '配達指定名', '運送業者利用区分', '運送業者利用区分', '客先注番']
 
 
-def ship_row(date, no, code, qty='1.00', juchu='9001', kubun='1', po='PO-1', kind='通常', torihiki='掛売上', want='0', time='', ship_no='0', dest='架空商事 本社'):
-    return [date, date[:6], ship_no, no, kind, '100001', '架空得意先', '000010', dest, '山田', torihiki, code, code + '名', qty, juchu, want, time,
+def ship_row(date, no, code, qty='1.00', juchu='9001', kubun='1', po='PO-1', kind='通常', torihiki='掛売上', want='0', time='', ship_no='0', dest='架空商事 本社', dest_code='000010'):
+    return [date, date[:6], ship_no, no, kind, '100001', '架空得意先', dest_code, dest, '山田', torihiki, code, code + '名', qty, juchu, want, time,
             kubun, {'0': '', '1': '西濃利用', '2': 'トナミ利用', '3': '第一貨物利用'}[kubun], po]
 
 
@@ -174,13 +174,63 @@ class BuildShipIndexTest(unittest.TestCase):
         self.assertEqual(res['carriers']['seino']['files'], 0)
         self.assertTrue(all(s['slips'] == [] for s in res['ships']))
 
-    def test_電話や住所は索引に入れない(self):
+    def test_運送会社のCSVの電話や住所は索引に入れない(self):
         self.write_ships(); self.write_carriers(); self.write_juchu()
         self.run_build()
         with open(os.path.join(self.dir, 'ship_index.json'), encoding='utf-8') as f:
             text = f.read()
         self.assertNotIn('03-9999-0000', text)
         self.assertNotIn('架空県架空市', text)
+
+    # ---- 送り先の住所（納品先マスタ・得意先マスタ）
+    DEST_HEAD = ['得意先ｺｰﾄﾞ', '得意先名', '納品先ｺｰﾄﾞ', '納品先名', '荷受け人名１', '郵便番号', '住所１', '住所２', '住所３', '電話番号', 'ＦＡＸ番号']
+    CUST_HEAD = ['得意先ｺｰﾄﾞ', '得意先名１', '郵便番号', '住所１', '住所２', '住所３', '電話番号']
+
+    def write_masters(self):
+        self.write('納品先マスタ.csv', csv_text([self.DEST_HEAD,
+            ['100001', '架空得意先', '000010', '架空商事 本社', '山田様', '123-0001', '架空県架空市', '1-2-3', '', '03-1111-2222', '03-1111-3333'],
+            ['100001', '架空得意先', '000020', '別の納品先', '', '', '', '', '', '03-1111-4444', ''],      # 住所なし
+            ['999999', '関係ない得意先', '000010', '関係ない納品先', '', '999-9999', '関係ない県', '', '', '', '']]))
+        self.write('得意先マスタ.csv', csv_text([self.CUST_HEAD,
+            ['100001', '架空得意先', '456-0002', '架空県本社市', '4-5-6', '架空ビル', '03-5555-6666'],
+            ['888888', '関係ない得意先', '888-8888', '関係ない県', '', '', '']]))
+
+    def test_住所は納品先マスタから付く_電話は入れない(self):
+        self.write_ships(); self.write_masters()
+        res, out = self.run_build()
+        self.assertEqual(res['addr']['100001|000010'], {'z': '123-0001', 'a': '架空県架空市1-2-3'})   # 住所１〜３をつなぐ
+        self.assertNotIn('999999|000010', res['addr'])                      # 出荷に出てこない組み合わせは入れない
+        self.assertEqual(res['counts']['withAddr'], len(res['ships']))
+        with open(os.path.join(self.dir, 'ship_index.json'), encoding='utf-8') as f:
+            text = f.read()
+        for secret in ('03-1111-2222', '03-1111-3333', '03-5555-6666', '山田様', '関係ない'):
+            self.assertNotIn(secret, text)
+        self.assertEqual([m['name'] for m in res['masters']], ['納品先マスタ.csv'])
+        self.assertNotIn('架空県架空市', out)                               # ログには値を出さない
+
+    def test_納品先なしの出荷は得意先マスタの住所(self):
+        self.write('出荷明細出力.txt', csv_text([SHIP_HEAD,
+            ship_row('20261030', '40001', 'A', dest_code='000000', dest=''),
+            ship_row('20261030', '40002', 'B', dest_code='', dest=''),
+            ship_row('20261030', '40003', 'C', dest_code='000020'),        # 納品先マスタに住所が無い → 得意先の住所は使わない
+            ship_row('20261030', '40004', 'D')]))
+        self.write_masters()
+        res, _ = self.run_build()
+        self.assertEqual(res['addr']['100001|000000'], {'z': '456-0002', 'a': '架空県本社市4-5-6架空ビル'})
+        self.assertEqual(res['addr']['100001|'], res['addr']['100001|000000'])
+        self.assertNotIn('100001|000020', res['addr'])
+        self.assertEqual(res['counts']['withAddr'], 3)
+        self.assertEqual([m['name'] for m in res['masters']], ['納品先マスタ.csv', '得意先マスタ.csv'])
+
+    def test_マスタが無い_読めなくても作れる(self):
+        self.write_ships()
+        res, _ = self.run_build()
+        self.assertEqual((res['addr'], res['masters'], res['counts']['withAddr']), ({}, [], 0))
+        self.write('納品先マスタ.csv', csv_text([['全然違う見出し', 'x'], ['1', '2']]))     # 必須の列が無い
+        res, out = self.run_build()
+        self.assertEqual(res['addr'], {})
+        self.assertIn('住所を読めませんでした', out)
+        self.assertTrue(res['ships'])
 
     def test_消費税だけの伝票は出荷として出さない(self):
         self.write('出荷明細出力.txt', csv_text([SHIP_HEAD,
