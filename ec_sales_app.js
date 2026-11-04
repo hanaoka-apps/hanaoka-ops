@@ -524,7 +524,9 @@ function detailViewHtml(s, editBlock) {
   const FL = FLOW_UI(), view = editId === s.id ? 'cmp' : slipView;
   const chip = (k, l) => '<span class="chip' + (view === k ? ' active' : '') + '" data-dview="' + k + '">' + l + '</span>';
   const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + (FL ? chip('sum', '確認サマリー') : '') + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
-  return tabs + (view === 'sum' && FL ? summaryHtml(s, editBlock) : view === 'cmp' ? compareHtml(s) : slipImageHtml(s));
+  // 「担当者が編集できる項目」は、どの画面でも同じ場所（いちばん下）に出す。確認サマリーでは summaryHtml の中に含む。納品先の修正ボタンは、比較の画面には元からあるので重ねない
+  const grp = (btn) => FL ? '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (btn && stateOf(s) === 'new' && !smileActual(s) ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>' : '';
+  return tabs + (view === 'sum' && FL ? summaryHtml(s, editBlock) : view === 'cmp' ? compareHtml(s) + grp(false) : slipImageHtml(s) + grp(true));
 }
 // 確認サマリー：システムの判定結果 → SMILE起票予定の要約 → 伝票イメージの案内 → 担当者が編集できる項目
 function summaryHtml(s, editBlock) {

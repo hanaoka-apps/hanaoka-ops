@@ -1016,6 +1016,11 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
   assert.strictEqual(p.risky, true);
   assert.deepStrictEqual(lv(p).filter(x => !x.startsWith('ok:')), ['err:商品コードを特定できません', 'warn:金額を確認してください', 'err:配送先の情報を確認してください', 'warn:支払方法を確認してください：銀行振込', 'warn:同じ注文番号の伝票がSMILEにあります', 'warn:お客様メモ：置き配希望']);
   assert.ok(/キャスター交換セット/.test(p.items[0].detail) && /9091円/.test(p.items[1].detail));   // 元の確認事項は、詳細に入る（重複して出さない）
+  // Shopify の注文CSVの支払方法は shopify_payments（小文字・アンダースコア）で来る。Shopify Payments と同じ扱い（支払方法の確認事項を出さない）
+  const sp = EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'shopify_payments', financial: 'paid' } }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } });
+  assert.ok(sp.items.some(x => x.level === 'ok' && /Shopify Payments（支払済み）/.test(x.text))); assert.strictEqual(sp.risky, false);
+  assert.ok(!EC.buildSlip(order({ paymentMethod: 'shopify_payments' }), ctx).flags.some(x => /^支払方法：/.test(x.text)));
+  assert.ok(EC.buildSlip(order({ paymentMethod: '銀行振込' }), ctx).flags.some(x => /^支払方法：銀行振込/.test(x.text)));
   // 入金待ち・返金
   assert.ok(EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'Shopify Payments', financial: 'pending' } }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } }).items.some(x => x.level === 'warn' && x.text === '入金待ちです'));
   assert.ok(EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'Shopify Payments', financial: 'refunded' }, flags: [F('warn', '返金あり（1,000円）')] }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } }).items.some(x => x.text === '返金があります'));

@@ -391,7 +391,7 @@
     // ---- 注文そのものの確認ポイント
     if (o.financial === 'pending') flag('warn', '入金待ち（' + (o.paymentMethod || '支払方法不明') + '）');
     else if (o.financial === 'refunded' || o.financial === 'partially_refunded') flag('warn', '返金あり（' + (o.refunded ? o.refunded.toLocaleString() + '円' : o.financial) + '）');
-    if (o.paymentMethod && !/^Shopify Payments$/.test(o.paymentMethod)) flag('info', '支払方法：' + o.paymentMethod);
+    if (o.paymentMethod && !/^shopify[ _]?payments$/i.test(o.paymentMethod)) flag('info', '支払方法：' + o.paymentMethod);
     if (o.notes) flag('warn', 'お客様メモ：' + o.notes.slice(0, 60));
     if (!o.ship.name) flag('error', '配送先の名前がありません');
     if (!o.ship.zip || !(o.ship.province || o.ship.city || o.ship.addr1)) flag('error', '配送先の住所が足りません');
@@ -1352,7 +1352,7 @@
     var pay = take(/^入金待ち|^返金あり|^支払方法：/), method = ord.paymentMethod || '', fin = ord.financial || '';
     if (fin === 'pending') add('warn', '入金待ちです', (method ? method + '。' : '') + 'SMILEに起票する前に、入金の状況を確認してください。');
     else if (fin === 'refunded' || fin === 'partially_refunded') add('warn', '返金があります', texts(pay));
-    else if (/^Shopify Payments$/.test(method)) add('ok', '支払方法：Shopify Payments（支払済み）', 'この注文は、SMILE起票後に総務の入金確認対象になります。');
+    else if (/^shopify[ _]?payments$/i.test(method)) add('ok', '支払方法：Shopify Payments（支払済み）', 'この注文は、SMILE起票後に総務の入金確認対象になります。');
     else if (method) add('warn', '支払方法を確認してください：' + method, 'Shopify Payments 以外です。入金の確認が必要かどうかを確認してください。');
 
     var dup = take(/^SMILE に同じ注文番号/);
