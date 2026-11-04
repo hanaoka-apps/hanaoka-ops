@@ -363,7 +363,7 @@ function visible() {
 }
 
 /* ------------------------------------------------------------ 描画：受注チェック */
-// ---- 業務フロー（EC売上）：状態を5工程に読み替えて見せる（EcSales.flowOf）。絞り込みの値は p1〜p5・check（要対応）・excluded・all
+// ---- 業務フロー（EC売上）：状態を4工程に読み替えて見せる（EcSales.flowOf）。絞り込みの値は p1〜p4・check（要対応）・excluded・all
 const flowRole = () => ({ canImport: canImport(), canConfirm: isAdmin });
 function flowOfSlip(s) { return EC.flowOf(stateOf(s), rec(s), flowRole()); }
 function matchFilter(s) {
@@ -374,7 +374,7 @@ function matchFilter(s) {
 }
 function renderFlowBar(vis) {
   const n = {}; vis.forEach(s => { const x = flowOfSlip(s), k = x.key === 'attn' ? 'check' : stateOf(s) === 'excluded' ? 'excluded' : x.key; n[k] = (n[k] || 0) + 1; });
-  const sub = x => x.kind === 'human' ? (x.key === 'p4' && !isAdmin ? '管理者の作業' : 'あなたの作業') : x.kind === 'robot' ? '専用機が処理' : '処理済み';
+  const sub = x => x.kind === 'human' ? (x.key === 'p3' && !isAdmin ? '管理者の作業' : 'あなたの作業') : x.kind === 'robot' ? '専用機が処理' : '処理済み';
   const tile = x => '<div class="ftile k-' + x.kind + (curFilter === x.key ? ' active' : '') + '" data-f="' + x.key + '" role="button" tabindex="0"><div class="ft-t"><span class="ft-n">' + x.num + '</span>' + esc(x.label) + (curFilter === x.key ? '<span class="ft-on">表示中</span>' : '') + '</div><div class="ft-s">' + sub(x) + '</div><div class="ft-c">' + (n[x.key] || 0) + '<small>件</small></div></div>';
   const attn = n.check || 0;
   $('flowBar').innerHTML = EC.FLOW.map(tile).join('<div class="farrow">→</div>') +
@@ -1211,7 +1211,7 @@ function confirmWaitingIds(only) {
   return (only || Object.keys(store.orders)).filter(id => store.orders[id] && store.orders[id].status === 'confirm');
 }
 function confirmBulkHtml() {
-  if (curFilter !== (FLOW_UI() ? 'p4' : 'confirm') || !isAdmin) return '';
+  if (curFilter !== (FLOW_UI() ? 'p3' : 'confirm') || !isAdmin) return '';
   const n = confirmWaitingIds().length;
   return n ? '<div class="row" style="margin-bottom:8px"><button class="btn" id="o-confirmall">確認待ち ' + n + '件をまとめて確認OK（起票済みにする）</button><span class="muted">SMILEの受注№・出荷予定日を見て、問題なければ押します</span></div>' : '';
 }
