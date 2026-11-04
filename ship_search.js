@@ -186,7 +186,7 @@ function card(s, i) {
   const st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
   const sib = S.siblings(IDX, s, CONF);
   const want = [s.want ? fd(s.want) : '', s.time].filter(Boolean).join(' ');
-  return '<div class="scard' + (st.code === 'missing' || st.code === 'nodata' ? ' attn' : '') + '" data-i="' + i + '">' +
+  return '<div class="scard ' + (key ? carrierClass(key).replace('cr-', 'cs-') : 'cs-none') + (st.code === 'missing' || st.code === 'nodata' ? ' attn' : '') + '" data-i="' + i + '">' +
     '<div class="sc-head"><b class="sc-date">' + esc(fd(s.date)) + '</b>' +
     '<span class="cr ' + (key ? carrierClass(key) : 'cr-none') + (logoOf(key) ? ' has-logo' : '') + '">' + logoOrName(key, S.kubunName(CONF, s.kubun)) + '</span>' +
     (st.code !== 'ok' ? '<span class="tag ' + (STATUS_TAG[st.code] || 'info') + '">' + esc({ missing: '見つからない', nodata: '要確認', pending: '番号待ち', outside: '取得期間外', none: '運送会社なし' }[st.code]) + '</span>' : '') +
