@@ -215,6 +215,7 @@ function card(s, i) {
 const MAIL_LIMIT = 8000;   // mailto の長さ（日本語は1文字が9文字ぶんになる。長すぎると、メールのアプリが開けない・途中で切ることがある）
 function openNotice(s) {
   const n = S.noticeText(CONF, IDX, s), warn = [];
+  if (n.isReturn) warn.push('返品の伝票です。出荷の連絡には使えません（数量がマイナスの行があります）。');
   if (!n.hasSlip) warn.push('送り状番号がまだありません。番号が入ってから、もう一度開いてください。');
   if (!n.hasAddr) warn.push('住所の登録がありません（納品先の名前だけの案内になります）。');
   $('np-warn').innerHTML = warn.map(m => '<div>⚠ ' + esc(m) + '</div>').join('');
