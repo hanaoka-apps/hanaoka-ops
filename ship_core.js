@@ -160,7 +160,7 @@
   // 送り先の住所（索引の addr。無ければ null）。{ zip, addr }
   S.addrOf = function (idx, ship) {
     var e = ((idx && idx.addr) || {})[(ship.cust || '') + '|' + (ship.dest || '')];
-    return e ? { zip: e.z || '', addr: e.a || '' } : null;
+    return e ? { zip: e.z || '', addr: e.a || '', recv: e.r || '' } : null;
   };
   // 送り先の名前：納品先があればその名前、納品先なし（得意先そのものに送る）なら得意先の名前
   S.destLabel = function (ship) { return ship.destName || ship.custName || ''; };
@@ -236,23 +236,37 @@
     m = /(\d{1,2})月(\d{1,2})日/.exec(t);
     return m ? y + '-' + ('0' + m[1]).slice(-2) + '-' + ('0' + m[2]).slice(-2) : '';
   }
+  // 伝票の値 exp と、送り状の値 got の比べ方（記号・空白・全角半角をそろえてから）。
+  //   ok＝同じ（送り状のほうが長いのも可）／cut＝送り状が、伝票の途中までしか入っていない（運送会社の欄の長さで切れた）／diff＝違う／none＝どちらかが空
+  function cmpText(exp, got) {
+    var x = bare(exp), y = bare(got);
+    if (!x || !y) return 'none';
+    if (y.indexOf(x) >= 0) return 'ok';
+    return x.indexOf(y) === 0 ? 'cut' : 'diff';
+  }
+  var BAD = { diff: 3, missing: 2, cut: 1 };
+  function worse(a, b) { return (BAD[b] || 0) > (BAD[a] || 0) ? b : a; }
   S.compareSlip = function (conf, idx, ship, slip) {
     var rows = [], ad = S.addrOf(idx, ship), none = function (v) { return v === '' || v == null; };
+    var cdef = (((conf && conf.carriers) || {})[slip.c] || {}).cols || {};
     function add(k, a, b, st) { rows.push({ k: k, a: a || '', b: b || '', st: st }); }
     // 出荷日
     add('出荷日', ship.date ? S.fmtDate(ship.date) : '', slip.date ? S.fmtDate(slip.date) : '', none(slip.date) || none(ship.date) ? 'none' : (slip.date === ship.date ? 'ok' : 'diff'));
-    // お届け先の名前
-    var an = S.destLabel(ship), bn = slip.n || '';
-    var xn = nname(an), yn = nname(bn);
-    add('お届け先', S.zen(an), S.zen(bn), none(bn) ? 'none' : (similar(xn, yn) ? 'ok' : 'diff'));
+    // 宛名：1行目＝納品先名（送り状の名称１）、2行目＝荷受け人名（送り状の名称２）。名称２の列を持たない運送会社（第一貨物）は、1行目だけ
+    var an = S.destLabel(ship), recv = ad ? ad.recv : '', n1 = slip.n1 != null ? slip.n1 : slip.n;
+    var two = slip.n1 != null && (cdef.toName || []).length >= 2;
+    var st1 = none(n1) ? 'none' : cmpText(nname(an), nname(n1)), st2 = 'ok';
+    if (two && recv) st2 = none(slip.n2) ? 'missing' : cmpText(nname(recv), nname(slip.n2));
+    var stn = st1 === 'none' ? 'none' : worse(worse('ok', st1), st2);
+    add('お届け先', S.zen([an, two ? recv : ''].filter(Boolean).join(' ')), S.zen(slip.n || ''), stn);
     // 郵便番号・住所
     var az = ad ? ad.zip : '', bz = slip.z || '';
     add('郵便番号', az, bz, none(az) || none(bz) ? 'none' : (S.digits(az) === S.digits(bz) ? 'ok' : 'diff'));
-    var aa = ad ? ad.addr : '', ba = slip.a || '', xa = naddr(aa), ya = naddr(ba);
-    add('住所', S.zen(aa), S.zen(ba), none(aa) || none(ba) ? 'none' : (similar(xa, ya) ? 'ok' : 'diff'));
+    var aa = ad ? ad.addr : '', ba = slip.a || '';
+    add('住所', S.zen(aa), S.zen(ba), none(aa) || none(ba) ? 'none' : cmpText(naddr(aa), naddr(ba)));
     // 配達指定（日付と午前・午後）
     var aw = [ship.want ? S.fmtDate(ship.want) : '', ship.time || ''].filter(Boolean).join(' '), bw = slip.w || '';
-    var wantCol = !!((((conf && conf.carriers) || {})[slip.c] || {}).cols || {}).want;   // 運送会社のデータに配達指定の列を設定している会社だけ比べる
+    var wantCol = !!cdef.want;   // 運送会社のデータに配達指定の列を設定している会社だけ比べる
     if ((aw || bw) && wantCol) {
       var st = 'ok';
       if (none(aw) !== none(bw)) st = 'diff';
@@ -270,10 +284,10 @@
     if (slip.m) add('品名（記事）', (ship.lines || []).slice(0, 3).map(function (l) { return S.zen(l[1] || l[0]); }).join('、') + ((ship.lines || []).length > 3 ? ' ほか' : ''), S.zen(slip.m), 'info');
     return rows;
   };
-  // カードに出す印用：違うかもしれない項目の数（送り状にお届け先などの控えがあるものだけ）
+  // カードに出す印用：確認が必要な項目（違うかも・切れている・入っていない）の数（送り状にお届け先などの控えがあるものだけ）
   S.diffCount = function (conf, idx, ship) {
     var n = 0;
-    (ship.slips || []).forEach(function (sl) { if (sl.n || sl.a || sl.z) S.compareSlip(conf, idx, ship, sl).forEach(function (r) { if (r.st === 'diff') n++; }); });
+    (ship.slips || []).forEach(function (sl) { if (sl.n || sl.a || sl.z) S.compareSlip(conf, idx, ship, sl).forEach(function (r) { if (r.st === 'diff' || r.st === 'cut' || r.st === 'missing') n++; }); });
     return n;
   };
 
