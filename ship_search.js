@@ -121,7 +121,7 @@ const STATUS_TAG = { missing: 'err', nodata: 'err', pending: 'warn', outside: 'i
 function slipLine(sl, s, cls) {
   const url = S.trackingUrl(CONF, sl.c, sl.no);
   const detail = [sl.qty ? sl.qty + '個' : '', sl.kg && sl.kg !== '0' ? sl.kg + 'kg' : '', S.carrierName(CONF, sl.c) !== S.kubunName(CONF, s.kubun) ? S.carrierName(CONF, sl.c) : ''].filter(Boolean).join('・');
-  return '<div class="slip' + (cls ? ' ' + cls : '') + '"><span class="slip-no">' + esc(sl.no) + '</span><button type="button" class="cbtn" data-act="copy" data-v="' + esc(sl.no) + '">コピー</button>' +
+  return '<div class="slip' + (cls ? ' ' + cls : '') + '"><span class="slip-no copyable" data-act="copy" data-v="' + esc(sl.no) + '" title="押すと、番号がコピーされます">' + esc(sl.no) + '</span>' +
     (url ? '<a class="track" href="' + esc(url) + '" target="_blank" rel="noopener"' + (String((CONF.carriers[sl.c] || {}).tracking || '').indexOf('{no}') < 0 ? ' title="運送会社のページが開きます。番号をコピーして、貼り付けてください"' : '') + '>配送状況 ↗</a>' : '') +
     (detail ? '<span class="muted">' + esc(detail) + '</span>' : '') + '</div>';
 }
@@ -180,7 +180,7 @@ function destHtml(s, i) {
   return '<div class="sc-dest' + (S.isDirect(CONF, s) ? ' direct' : '') + '"><div class="sd-main"><div class="sd-k">納品先' + (S.isDirect(CONF, s) ? '（直送：得意先と別の納品先）' : '') + '</div>' +
     '<div class="sd-n">' + esc(S.destLabel(s) || '-') + '</div>' +
     '<div class="sd-a' + (za ? '' : ' muted') + '">' + (za ? esc(za) : '住所の登録がありません') + '</div></div>' +
-    '<div class="sd-btns"><button type="button" class="btn sm sec" data-act="detail" data-i="' + i + '">伝票</button><button type="button" class="btn sm" data-act="notice" data-i="' + i + '">出荷連絡</button></div></div>';
+    '<div class="sd-btns"><button type="button" class="btn sm sec" data-act="detail" data-i="' + i + '">伝票</button><button type="button" class="btn sm" data-act="notice" data-i="' + i + '">お客様へ報告</button></div></div>';
 }
 function card(s, i) {
   const st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
@@ -209,7 +209,7 @@ function card(s, i) {
     '</div>';
 }
 
-/* ------------------------------------------------------------ 出荷連絡（右のパネル）
+/* ------------------------------------------------------------ お客様へ報告（右のパネル）
  * 文面は ship_config.json の notice。ここで直してから、コピー・メール作成（mailto：Outlook など、いつも使うメールのアプリが開く）。
  * 自動では送らない。担当者が中身を確認して使う。 */
 const MAIL_LIMIT = 8000;   // mailto の長さ（日本語は1文字が9文字ぶんになる。長すぎると、メールのアプリが開けない・途中で切ることがある）
@@ -242,7 +242,7 @@ function wireNotice() {
     const a = e.target.closest('[data-act]'); if (!a) return;
     if (a.dataset.act === 'detailno') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) { openDetail(s); $('detailBody').scrollTop = 0; } }
     else if (a.dataset.act === 'notice-detail') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openNotice(s); }
-    else if (a.dataset.act === 'copy') { const ok = await copyText(a.dataset.v), t = a.textContent; a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500); }
+    else if (a.dataset.act === 'copy') await doCopy(a);
   });
   document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!$('noticePanel').hidden) closeNotice(); if (!$('detailPanel').hidden) closeDetail(); });
   ['np-slipblock', 'np-track'].forEach(id => $(id).addEventListener('change', () => {   // 付ける・付けないを変えたら、文を作り直す（直した内容があるときは、確かめる）
@@ -322,7 +322,7 @@ function detailHtml(s, d, gen) {
   const T = S.detailTotals(d), hasD = !!(d && d.lines && d.lines.length);
   const banner = d ? '<div class="sl-banner actual">SMILE の出荷伝票の内容' + (gen ? '（' + E(stamp(gen)) + ' 時点）' : '') + '</div>'
                    : '<div class="sl-banner">伝票の詳細がありません（品目の数量だけ出します）</div>';
-  let h = '<div class="dt-act"><button type="button" class="btn sm" data-act="notice-detail" data-no="' + E(s.no) + '">お客様への報告（まとめてコピー・メール）</button></div><div class="sl">' + banner +
+  let h = '<div class="sl">' + banner +
     '<div class="sl-hd c4">' + it('売上№', E(s.no)) + it('伝票日付', E(fd(s.date))) + it('出荷№', E(s.shipNo || '')) + it('取引', s.ret ? '返品' : '') + '</div>' +
     '<div class="sl-hd c3">' + it('得意先', E(Z(s.custName)) + (s.cust ? ' <span class="muted">' + E(s.cust) + '</span>' : '')) + it('担当者', E(Z(s.staff))) + it('運送業者', logoOf(key) ? logoImg(key, S.kubunName(CONF, s.kubun)) : E(S.kubunName(CONF, s.kubun))) + '</div>' +
     '<div class="sl-hd c2">' + it('納品先', E(Z(S.destLabel(s))) + (s.dest && s.dest !== '000000' ? ' <span class="muted">' + E(s.dest) + '</span>' : '') + (za ? '<br><span class="muted">' + E(za) + '</span>' : '')) + it('客先注番', (s.po || []).map(E).join('　')) + '</div>' +
@@ -343,7 +343,7 @@ function detailHtml(s, d, gen) {
   }
   h += '</div>';
   h += bunnoHtml(s);
-  h += '<h3 class="dt-h">伝票と送り状の見比べ</h3>' + (s.slips && s.slips.length ? s.slips.map(sl => compareHtml(s, sl)).join('') : '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + E(st.text || '送り状番号はまだありません') + '</div>');
+  h += '<h3 class="dt-h dt-hrow"><span>伝票と送り状の見比べ</span><button type="button" class="btn sm" data-act="notice-detail" data-no="' + E(s.no) + '">お客様へ報告</button></h3>' + (s.slips && s.slips.length ? s.slips.map(sl => compareHtml(s, sl)).join('') : '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + E(st.text || '送り状番号はまだありません') + '</div>');
   return h;
 }
 
@@ -371,6 +371,16 @@ function renderMeta() {
 }
 
 /* ------------------------------------------------------------ 操作 */
+// 押した要素の値（data-v）をコピーする。番号（copyable）は、そのまま残して、横に「コピーしました」を出す
+async function doCopy(a) {
+  const ok = await copyText(a.dataset.v);
+  if (a.classList.contains('copyable')) {
+    a.dataset.msg = ok ? '✓ コピーしました' : 'コピーできません'; a.classList.add('copied');
+    setTimeout(() => { a.classList.remove('copied'); delete a.dataset.msg; }, 1500);
+    return;
+  }
+  const t = a.textContent; a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500);
+}
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); return true; }
   catch (e) {
@@ -406,8 +416,7 @@ function wire() {
       return;
     }
     if (a.dataset.act === 'copy') {
-      const ok = await copyText(a.dataset.v), t = a.textContent;
-      a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500);
+      await doCopy(a);
     } else if (a.dataset.act === 'q') {
       $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
     } else if (a.dataset.act === 'detail') {
