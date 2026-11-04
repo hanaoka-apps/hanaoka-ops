@@ -408,7 +408,7 @@
     });
     // 運送会社の送り状に入る長さ（設定の carriers。実際の送り状のデータで測った、バイト数。全角2・半角1）。超えた分は、送り状で切れる
     (cfg.carriers || []).forEach(function (cr) {
-      var nb = EC.sjisLen(dv.name), ab = EC.sjisLen(dv.addr1) + EC.sjisLen(dv.addr2);
+      var nb = EC.carrierLen(dv.name), ab = EC.carrierLen(dv.addr1) + EC.carrierLen(dv.addr2);
       if (cr.nameBytes && nb > cr.nameBytes) {
         var sg = EC.shortenName(dv.name, cr.nameBytes);
         flag('warn', cr.name + '：宛名が' + nb + 'バイトで、送り状には' + cr.nameBytes + 'バイト（全角' + Math.floor(cr.nameBytes / 2) + '字）までしか入らず、超えた分は切れます'
@@ -448,9 +448,11 @@
   /* 宛名を、運送会社の送り状の長さ（max バイト）に収める案。{ text 案, dropped 省いた語, steps 行ったこと }
    * 情報を落とさない順に：①「株式会社」などを (株) に ②空白を1つに ③空白を除く ④（それでも長いとき）後ろの語を省く。
    * 案を出すだけで、勝手には直さない（納品先名は、SMILE の納品書・請求書にも使う大事な名前なので、人が見て選ぶ） */
+  // 送り状での長さ：お届け先の名前・住所は、西濃・第一貨物のデータでは半角カナが全角に変わっている（実データで確認：半角カナ0件）ので、半角カナも2バイトで数える。SMILE の項目の長さ（sjisLen）とは別
+  EC.carrierLen = function (str) { return EC.sjisLen(str) + (String(str == null ? '' : str).match(/[\uFF61-\uFF9F]/g) || []).length; };
   EC.shortenName = function (name, max) {
     var s = String(name == null ? '' : name), steps = [];
-    function fit(x) { return EC.sjisLen(x) <= max; }
+    function fit(x) { return EC.carrierLen(x) <= max; }
     if (!max || fit(s)) return { text: s, dropped: '', steps: steps };
     var cur = s.replace(/株式会社/g, '(株)').replace(/有限会社/g, '(有)').replace(/合同会社/g, '(合)').replace(/一般社団法人/g, '(一社)').replace(/一般財団法人/g, '(一財)').replace(/医療法人/g, '(医)').replace(/社会福祉法人/g, '(福)');
     if (cur !== s) { steps.push('法人名を略す'); if (fit(cur)) return { text: cur, dropped: '', steps: steps }; }
@@ -461,7 +463,7 @@
     var tokens = cur.split(' '), kept = '', i = 0;   // 語（空白の区切り）の前から、入るだけ
     for (; i < tokens.length; i++) { var cand = kept + tokens[i]; if (fit(cand)) kept = cand; else break; }
     var dropped = tokens.slice(i).join(' ');
-    if (!kept) { kept = EC.cutBytes(r3, max); dropped = r3.slice(kept.length); }
+    if (!kept) { var chars = Array.from(r3); for (var q = 0; q < chars.length; q++) { if (EC.carrierLen(kept + chars[q]) > max) break; kept += chars[q]; } dropped = r3.slice(kept.length); }   // 送り状での長さで、入るところまで
     steps.push('後ろの語を省く');
     return { text: kept, dropped: dropped, steps: steps };
   };
