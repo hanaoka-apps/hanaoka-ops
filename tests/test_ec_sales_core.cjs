@@ -999,4 +999,28 @@ t('業務フロー：内部の状態を5工程に読み替える（ボールの�
   // 起票待ちと起票中・照合中の区別は内部に残す（上部では ②③ に分けるだけ）
   assert.strictEqual(EC.flowOf('importing', null, me).key, 'p2');
 });
+t('システムの判定結果：意味つきで並べる（問題なし／確認が必要）', () => {
+  const base = { cust: '599801', lines: [{ code: 'FCART02', qty: 1 }, { code: 'FR', qty: 1 }], netTotal: 13500, grossTotal: 14850, flags: [], order: { paymentMethod: 'Shopify Payments', financial: 'paid' } };
+  const lv = j => j.items.map(x => x.level + ':' + x.text);
+  const ok = EC.judgeSlip(base, { cfg: DEFAULT_CONFIG, delivery: { code: '000123', name: 'x' }, shipLabel: '11/06(金)' });
+  assert.deepStrictEqual(lv(ok), ['ok:商品コードを特定できました（2行）', 'ok:税込金額は一致しています', 'ok:得意先を特定できました：599801 直販EC 東京', 'ok:既存の納品先に取り込みます（000123）', 'ok:出荷予定日を計算しました：11/06(金)', 'ok:支払方法：Shopify Payments（支払済み）']);
+  assert.strictEqual(ok.risky, false); assert.ok(/総務の入金確認対象/.test(ok.items[5].detail));   // 支払方法も、意味を出す
+  assert.deepStrictEqual([ok.summary.lines, ok.summary.net, ok.summary.gross, ok.summary.count], ['FCART02 ×1、FR ×1', 13500, 14850, 2]);
+  // 新規の納品先は、確認すべきこと
+  const nw = EC.judgeSlip(base, { cfg: DEFAULT_CONFIG, delivery: { isNew: true, name: 'x' }, shipLabel: '11/06' });
+  assert.strictEqual(nw.risky, true); assert.ok(nw.items.some(x => x.level === 'warn' && /新規の納品先/.test(x.text) && /取込時に番号を決めます/.test(x.detail)));
+  // 問題：商品・金額・住所・電話・支払・二重起票
+  const F = (level, text) => ({ level, text });
+  const prob = Object.assign({}, base, { flags: [F('error', '対応表にない商品：キャスター交換セット'), F('warn', '合計と明細が 9091円ずれています（値引き？）'), F('warn', 'Shopify合計 10,000円 と明細（税込）0円 が一致しません'), F('error', '配送先の住所が足りません'), F('warn', '電話番号がありません'), F('info', 'SMILE に同じ注文番号の伝票があります（取込済み）'), F('warn', 'お客様メモ：置き配希望')], order: { paymentMethod: '銀行振込', financial: 'paid' } });
+  const p = EC.judgeSlip(prob, { cfg: DEFAULT_CONFIG, delivery: { code: '000123' }, shipLabel: '11/06' });
+  assert.strictEqual(p.risky, true);
+  assert.deepStrictEqual(lv(p).filter(x => !x.startsWith('ok:')), ['err:商品コードを特定できません', 'warn:金額を確認してください', 'err:配送先の情報を確認してください', 'warn:支払方法を確認してください：銀行振込', 'warn:同じ注文番号の伝票がSMILEにあります', 'warn:お客様メモ：置き配希望']);
+  assert.ok(/キャスター交換セット/.test(p.items[0].detail) && /9091円/.test(p.items[1].detail));   // 元の確認事項は、詳細に入る（重複して出さない）
+  // 入金待ち・返金
+  assert.ok(EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'Shopify Payments', financial: 'pending' } }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } }).items.some(x => x.level === 'warn' && x.text === '入金待ちです'));
+  assert.ok(EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'Shopify Payments', financial: 'refunded' }, flags: [F('warn', '返金あり（1,000円）')] }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } }).items.some(x => x.text === '返金があります'));
+  // 取り込み済みの確認事項（info）のうち、分類にないものはそのまま残す
+  const other = EC.judgeSlip(Object.assign({}, base, { flags: [F('info', '値引きあり：本体の税抜 5,000円 → 4,000円')] }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } });
+  assert.ok(other.items.some(x => x.level === 'info' && /値引きあり/.test(x.text))); assert.strictEqual(other.risky, false);
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

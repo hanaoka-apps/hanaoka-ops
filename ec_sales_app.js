@@ -457,6 +457,18 @@ function renderOrders() {
 }
 
 /* ------------------------------------------------------------ 詳細ドロワー（行をクリック） */
+// 注文の確認事項・社内メモ・出荷予定日（EC売上の5工程画面では、確認の一覧は「確認サマリー」に、メモと出荷予定日は「担当者が編集できる項目」にまとめる）
+function flagsHtml(s) {
+  return (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '');
+}
+function editBlockHtml(s, st, r, ship) {
+  return '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">' + ((s.baseMemo || s.memo) ? '基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。' : '基本は空です。書き足したいことがあれば入力します。') + '</div>' +
+    '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check' ? ' disabled' : '') + '>' +
+    '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
+    '<h3>出荷予定日</h3><div>' + (st === 'new' || st === 'ok' ? '<input type="date" class="dateinp' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : md(ship)) + '</div>' +
+    '<div class="muted">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
+    '';
+}
 function renderDrawer() {
   const dr = $('drawer'), sc = $('scrim');
   if (mapDrawer) { if (!(mapDrawer.mode === 'edit' && mapDrawer.rendered)) renderMapDrawer(); return; }   // 対応表のドロワー（編集中は、入力を消さないよう描き直さない）
@@ -470,13 +482,7 @@ function renderDrawer() {
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
     (FLOW_UI() ? flowBoxHtml(s) : '') +
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
-    (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '') +
-    detailViewHtml(s) +
-    '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">' + ((s.baseMemo || s.memo) ? '基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。' : '基本は空です。書き足したいことがあれば入力します。') + '</div>' +
-    '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check' ? ' disabled' : '') + '>' +
-    '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
-    '<h3>出荷予定日</h3><div>' + (st === 'new' || st === 'ok' ? '<input type="date" class="dateinp' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : md(ship)) + '</div>' +
-    '<div class="muted">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
+    (FLOW_UI() ? '' : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
     '';
   const FL = FLOW_UI();
   const okBtn = '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>' + (FL ? '確認OK（起票依頼待ちへ）' : 'OK にする') + '</button>';
@@ -513,11 +519,30 @@ function smileActual(s) {
 }
 function ymdText(v) { const d = String(v || '').replace(/\D/g, ''); return d.length === 8 ? d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6) : d.length === 6 ? '20' + d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4) : '（なし）'; }
 // 注文の詳細：「見比べ」と「伝票イメージ」の切り替え（選んだほうは覚えておく。選んだことがなければ見比べ。納品先を直している間も見比べ）
-let slipView = 'cmp'; // 開くたびに見比べから（切り替えは開いている間だけ）
-function detailViewHtml(s) {
-  const view = editId === s.id ? 'cmp' : slipView;
-  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px"><span class="chip' + (view === 'cmp' ? ' active' : '') + '" data-dview="cmp">Shopify と SMILE の見比べ</span><span class="chip' + (view === 'image' ? ' active' : '') + '" data-dview="image">SMILE の伝票イメージ</span></div>';
-  return tabs + (view === 'cmp' ? compareHtml(s) : slipImageHtml(s));
+let slipView = 'cmp'; // 開くたびに最初の画面へ（EC売上の5工程画面は確認サマリー、そのほかは見比べ。切り替えは開いている間だけ）
+function detailViewHtml(s, editBlock) {
+  const FL = FLOW_UI(), view = editId === s.id ? 'cmp' : slipView;
+  const chip = (k, l) => '<span class="chip' + (view === k ? ' active' : '') + '" data-dview="' + k + '">' + l + '</span>';
+  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + (FL ? chip('sum', '確認サマリー') : '') + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
+  return tabs + (view === 'sum' && FL ? summaryHtml(s, editBlock) : view === 'cmp' ? compareHtml(s) : slipImageHtml(s));
+}
+// 確認サマリー：システムの判定結果 → SMILE起票予定の要約 → 伝票イメージの案内 → 担当者が編集できる項目
+function summaryHtml(s, editBlock) {
+  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s), st = stateOf(s), P = EC.pick;
+  const j = EC.judgeSlip(s, { cfg: store.cfg, delivery: { code: code || '', name: d.name, isNew: !code }, shipLabel: md(shipOf(s)) });
+  const ico = { ok: '✓', warn: '△', err: '✗', info: '・' };
+  let h = '<div class="judge"><div class="jh">システムの判定結果</div>' + j.items.map(x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>').join('') + '</div>';
+  // 要約：取込前は「SMILE起票予定の内容」、取込後は「SMILEの実際の値」
+  const rows = act ? act.rows : null;
+  const net = rows ? rows.reduce((a, x) => a + Math.round(+P(x, ['金額']) || 0), 0) : j.summary.net, gross = rows ? Math.round(net * 1.1) : j.summary.gross;
+  const lines = rows ? rows.map(x => P(x, ['品目コード']) + ' ×' + (+P(x, ['数量']) || 0)).join('、') : j.summary.lines, cnt = rows ? rows.length : j.summary.count;
+  const dest = act ? esc(P(act.rows[0], ['納品先名']) || d.name) + (act.deliveryCode ? ' <span class="muted">' + esc(act.deliveryCode) + '</span>' : '') : esc(d.name) + ' ' + (code ? '<span class="muted">既存 ' + esc(code) + '</span>' : '<span class="tag new">新規（取込時に番号を決めます）</span>');
+  const kv = (k, v) => '<tr><th>' + k + '</th><td>' + v + '</td></tr>';
+  h += '<div class="sumbox"><div class="jh">' + (act ? 'SMILEの実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE起票予定の内容') + '</div><table>' + kv('得意先', esc(j.summary.customer)) + kv('納品先', dest) + kv('商品明細', esc(lines || '（なし）')) + kv('税抜合計', yen(net)) + kv('税込合計', yen(gross)) + kv('出荷予定日', act ? esc(ymdText(P(act.rows[0], ['出荷予定日']))) : esc(md(shipOf(s)))) + '</table></div>';
+  h += j.risky ? '<div class="alert warn" style="margin-top:8px">確認が必要な項目があります。伝票の内容も確認してください。 <button class="btn sec sm" data-dview="image">SMILE伝票イメージを見る</button></div>'
+    : '<div class="slipok"><b>✓ SMILE伝票を作成できます</b><span class="muted">明細 ' + cnt + '行・税抜 ' + yen(net) + '・税込 ' + yen(gross) + '</span><button class="btn sec sm" data-dview="image">SMILE伝票イメージを見る</button></div>';
+  h += '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (st === 'new' && !act ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>';
+  return h;
 }
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
@@ -571,9 +596,10 @@ function compareHtml(s) {
   } else {
     A = { name: d.name, person: d.person, zip: d.zip, addr: (d.addr1 || '') + (d.addr2 || ''), addr1: d.addr1, addr2: d.addr2, tel: d.tel, code: '' };
   }
-  const row = (label, a, b, diff, sub) => '<tr><th>' + label + '</th><td class="shop' + (diff ? ' diff' : '') + '">' + a + '</td><td class="smile' + (diff ? ' diff' : '') + '">' + b + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</td></tr>';
+  const FLc = FLOW_UI(), convs = [];   // convs＝正常な自動変換（違う項目とは言わない）
+  const row = (label, a, b, diff, sub, conv) => { const isConv = !!conv && !diff; if (isConv) convs.push(conv); const dc = diff ? (FLc ? ' bad' : ' diff') : ''; return '<tr><th>' + label + '</th><td class="shop' + dc + '">' + a + '</td><td class="smile' + dc + (isConv && FLc ? ' conv' : '') + '">' + b + (sub ? '<div class="sub">' + sub + '</div>' : '') + (isConv && FLc ? '<div class="sub conv-t">自動変換：' + conv + '</div>' : '') + '</td></tr>'; };
   let h = '<h3>Shopify と SMILE の見比べ</h3><div class="legend"><b style="background:#3b6fd4;color:#fff">Shopify の注文</b> ／ <b style="background:#2e8b57;color:#fff">' +
-    (act ? 'SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE に入る予定の内容') + '</b> ／ <b style="background:#fff1c2;outline:2px solid #e0a800">違う項目</b></div>' +
+    (act ? 'SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE に入る予定の内容') + '</b> ／ ' + (FLc ? '<b class="lg-conv">自動変換（正常）</b> ／ <b class="lg-bad">確認が必要な不一致</b>' : '<b style="background:#fff1c2;outline:2px solid #e0a800">違う項目</b>') + '</div><!--CMPSUM-->' +
     '<table class="cmp"><thead><tr><th></th><th class="hd shop">Shopify</th><th class="hd smile">SMILE' + (act ? '' : '（予定）') + '</th></tr></thead><tbody>';
   const edTag = k => d.edited.indexOf(k) >= 0 && !act ? '<div class="sub" style="color:#a8620a">手動で直した値（元：' + E(d.auto[k] || '（空）') + '）</div>' : '';
   if (editing) {
@@ -589,18 +615,20 @@ function compareHtml(s) {
     h += row('住所２', '', inp('addr2'), false);
     h += row('電話', E(sh.phone), inp('tel'), false);
   } else {
-  h += row('納品先名', E(sh.company || sh.name), E(A.name) + edTag('name'), nm(sh.company || sh.name) !== nm(A.name));
-  h += row('荷受け人', E(sh.company ? sh.name : ''), E(A.person) + edTag('person'), !!(sh.company && nm(sh.name) !== nm(A.person)));
-  h += row('郵便番号', E(sh.zip), E(A.zip) + edTag('zip'), dg(sh.zip) !== dg(A.zip));
-  h += row('住所', E(shopAddr), E(A.addr1) + (A.addr2 ? '<br>' + E(A.addr2) : '') + edTag('addr1') + edTag('addr2'), nz(shopAddr) !== nz(A.addr));
-  h += row('電話', E(sh.phone), E(A.tel) + edTag('tel'), tel(sh.phone) !== tel(A.tel));
+  const rawNm = sh.company || sh.name;
+  h += row('納品先名', E(rawNm), E(A.name) + edTag('name'), nm(rawNm) !== nm(A.name), '', String(rawNm) !== String(A.name) ? '納品先名に「様」などを付加' : '');
+  h += row('荷受け人', E(sh.company ? sh.name : ''), E(A.person) + edTag('person'), !!(sh.company && nm(sh.name) !== nm(A.person)), '', sh.company && String(sh.name) !== String(A.person) ? '荷受け人に「様」を付加' : '');
+  h += row('郵便番号', E(sh.zip), E(A.zip) + edTag('zip'), dg(sh.zip) !== dg(A.zip), '', String(sh.zip) !== String(A.zip) ? '郵便番号の形を整える' : '');
+  h += row('住所', E(shopAddr), E(A.addr1) + (A.addr2 ? '<br>' + E(A.addr2) : '') + edTag('addr1') + edTag('addr2'), nz(shopAddr) !== nz(A.addr), '', String(shopAddr) !== String(A.addr) ? '住所を整える（全角・半角・文字の置き換え）' : '');
+  h += row('電話', E(sh.phone), E(A.tel) + edTag('tel'), tel(sh.phone) !== tel(A.tel), '', String(sh.phone) !== String(A.tel) ? '電話番号を国内形式に変換' : '');
   }
   if (A.code) h += row('納品先コード', '', E(A.code), false);
   // 商品：Shopify の行 ↔ SMILE の行（同じ順に並べる。商品名は対応表で品目に変わるので、違いは強調しない）
   const sl = o.lines, ml = act ? act.rows.map(x => ({ code: P(x, ['品目コード']), name: P(x, ['品目名', '品名']), qty: +P(x, ['数量']) || 0, amt: Math.round(+P(x, ['金額']) || 0) })) : s.lines.map(l => ({ code: l.code, name: l.name, qty: l.qty, amt: Math.round(l.amountNet) }));
   for (let i = 0; i < Math.max(sl.length, ml.length); i++) {
     const a = sl[i], b = ml[i];
-    h += row(i ? '' : '商品', a ? E(a.name) + '<div class="sub">×' + a.qty + '（' + yen(a.price) + '）</div>' : '', b ? E(b.code) + (b.name ? ' ' + E(b.name) : '') + '<div class="sub">×' + b.qty + '（税抜 ' + yen(b.amt) + '）</div>' : '', false);
+    const isShip = b && CONF.config && b.code === CONF.config.shipItem && !sl[i];
+    h += row(i ? '' : '商品', a ? E(a.name) + '<div class="sub">×' + a.qty + '（' + yen(a.price) + '）</div>' : '', b ? E(b.code) + (b.name ? ' ' + E(b.name) : '') + '<div class="sub">×' + b.qty + '（税抜 ' + yen(b.amt) + '）</div>' : '', false, '', b ? (isShip ? '送料を' + b.code + 'として明細化' : '商品名をSMILE品目コードへ変換') : '');
   }
   const smileNet = ml.reduce((a, x) => a + x.amt, 0), smileGross = Math.round(smileNet * 1.1);
   h += row('金額（税込）', yen(o.total) + '<div class="sub">送料 ' + yen(o.shipping || 0) + (o.discountCode ? '／割引 ' + E(o.discountCode) : '') + '</div>', yen(smileGross) + '<div class="sub">税抜合計 ' + yen(smileNet) + ' の1.1倍</div>', Math.abs(smileGross - o.total) > 2);
@@ -608,6 +636,11 @@ function compareHtml(s) {
   h += row('メモ', E(o.notes || ''), E(act ? P(act.rows[0], ['社内メモ']) : memoOf(s)), false, act ? '社内メモ' : '社内メモ（取込予定）');
   h += row('支払', E(o.paymentMethod + '／' + o.financial), act ? '受注№ ' + E(act.juchuNo) : '', false);
   h += '</tbody></table>';
+  if (FLc) {
+    const bad = (h.match(/td class="shop bad"/g) || []).length, uniq = [...new Set(convs)];
+    h = h.replace('<!--CMPSUM-->', '<div class="cmpsum ' + (bad ? 'bad' : 'ok') + '">' + (bad ? '<b>✗ 確認が必要な不一致：' + bad + '件</b>（赤い項目）' : '<b>✓ 問題は見つかりませんでした</b>') +
+      '<span class="muted">　自動変換された項目：' + uniq.length + '件</span>' + (uniq.length ? '<details style="margin-top:4px"><summary>変換の内容を見る</summary><ul style="margin:4px 0 0 18px;padding:0">' + uniq.map(x => '<li>' + E(x) + '</li>').join('') + '</ul></details>' : '') + '</div>');
+  } else h = h.replace('<!--CMPSUM-->', '');
   if (stNow === 'new' && !act) {
     if (editing) h += '<div class="row" style="margin:8px 0"><button class="btn" data-act="edreview" data-id="' + s.id + '">内容を確認する</button><button class="btn sec" data-act="edcancel" data-id="' + s.id + '">やめる（保存しない）</button><span class="muted">まだ保存されません。次の画面で確認してから保存します</span></div>';
     else h += '<div class="row" style="margin:8px 0"><button class="btn sec" data-act="edstart" data-id="' + s.id + '">納品先を直す</button>' +
@@ -1698,7 +1731,7 @@ document.addEventListener('click', async e => {
   if (moreOpen && !e.target.closest('.morewrap') && $('moreMenu')) { moreOpen = false; $('moreMenu').hidden = true; }
   if (e.target.closest('[data-close]') || e.target.id === 'scrim') { if (mapDrawer && !closeMapDrawer()) return; openId = null; editId = null; editDraft = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
-  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; } openId = tr.dataset.row; renderDrawer(); return; }
+  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; slipView = FLOW_UI() ? 'sum' : 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
   const t = e.target.closest('[data-tab],[data-f],[data-v],[data-s],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
   if (!t) return;
   const d = t.dataset;
@@ -1852,7 +1885,7 @@ document.addEventListener('change', e => { const t = e.target; if (t.dataset && 
 // 対応表・設定：行クリック → ドロワー／ドロワーのボタン
 document.addEventListener('click', e => {
   const dv = e.target.closest('[data-dview]');
-  if (dv) { slipView = dv.dataset.dview === 'cmp' ? 'cmp' : 'image'; renderDrawer(); return; }
+  if (dv) { slipView = ['sum', 'cmp', 'image'].indexOf(dv.dataset.dview) >= 0 ? dv.dataset.dview : 'cmp'; renderDrawer(); return; }
   const t = e.target.closest('[data-mdact],[data-newrule],[data-mdclose],[data-rulelink],.rcard[data-maprule]'); if (!t) return;
   if (t.matches('.rcard[data-maprule]')) { if (!e.target.closest('input,button,select,a,label')) openRule(t.dataset.maprule); return; }
   if (t.dataset.rulelink !== undefined) { if (mapDrawer && !closeMapDrawer()) return; openRule(t.dataset.rulelink); return; }

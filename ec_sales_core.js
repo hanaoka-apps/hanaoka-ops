@@ -1318,6 +1318,54 @@
     return { key: 'other', num: '', label: '', kind: 'none', sub: '', who: '', next: '' };
   };
 
+  /* ============================================================ システムの判定結果（注文の詳細の「確認サマリー」）
+   * 注文に付いた確認事項（flags）と、取込内容から、「何が問題なく、何を確認すべきか」を意味つきで並べる。
+   * items：{ level: ok / warn / err / info, text, detail }。risky＝確認すべきこと（warn・err）か、新規の納品先がある。
+   * s＝buildSlip の戻り値。o＝{ cfg, delivery:{code,name,isNew}, shipLabel（出荷予定日の表示文）} */
+  EC.judgeSlip = function (s, o) {
+    o = o || {};
+    var cfg = o.cfg || {}, flags = s.flags || [], ord = s.order || {}, d = o.delivery || {}, items = [], used = [];
+    function take(re) { return flags.filter(function (f) { if (re.test(f.text) && used.indexOf(f) < 0) { used.push(f); return true; } return false; }); }
+    var texts = function (a) { return a.map(function (f) { return f.text; }).join('／'); };
+    var add = function (level, text, detail) { items.push({ level: level, text: text, detail: detail || '' }); };
+
+    var bad = take(/^対応表にない商品|^商品行がありません|^品目マスタにない品目コード/);
+    if (bad.length) add('err', '商品コードを特定できません', texts(bad));
+    else add('ok', '商品コードを特定できました（' + (s.lines || []).length + '行）');
+
+    var amt = take(/^合計と明細が|^Shopify合計|^本体の単価が割り切れません|^本体が0円以下/);
+    if (amt.length) add('warn', '金額を確認してください', texts(amt));
+    else add('ok', '税込金額は一致しています');
+
+    var cust = (cfg.customers || {})[s.cust];
+    add('ok', '得意先を特定できました：' + s.cust + (cust ? ' ' + cust.name : ''));
+
+    var lack = take(/^配送先の名前がありません|^配送先の住所が足りません|^電話番号がありません|^郵便番号が7桁/);
+    var lackErr = lack.some(function (f) { return f.level === 'error'; });
+    if (lack.length) add(lackErr ? 'err' : 'warn', '配送先の情報を確認してください', texts(lack));
+    if (d.isNew) add('warn', '新規の納品先として登録します', '取込時に番号を決めます。名前・住所・電話を確認してください。');
+    else if (d.code) add('ok', '既存の納品先に取り込みます（' + d.code + '）');
+
+    var shipInfo = take(/^休日の受注|以降の受注|^商品名の案内/);
+    add('ok', '出荷予定日を計算しました' + (o.shipLabel ? '：' + o.shipLabel : ''), texts(shipInfo));
+
+    var pay = take(/^入金待ち|^返金あり|^支払方法：/), method = ord.paymentMethod || '', fin = ord.financial || '';
+    if (fin === 'pending') add('warn', '入金待ちです', (method ? method + '。' : '') + 'SMILEに起票する前に、入金の状況を確認してください。');
+    else if (fin === 'refunded' || fin === 'partially_refunded') add('warn', '返金があります', texts(pay));
+    else if (/^Shopify Payments$/.test(method)) add('ok', '支払方法：Shopify Payments（支払済み）', 'この注文は、SMILE起票後に総務の入金確認対象になります。');
+    else if (method) add('warn', '支払方法を確認してください：' + method, 'Shopify Payments 以外です。入金の確認が必要かどうかを確認してください。');
+
+    var dup = take(/^SMILE に同じ注文番号/);
+    if (dup.length) add('warn', '同じ注文番号の伝票がSMILEにあります', '二重起票になっていないか確認してください。');
+
+    flags.forEach(function (f) { if (used.indexOf(f) < 0) add(f.level === 'error' ? 'err' : f.level === 'warn' ? 'warn' : 'info', f.text); });
+    var risky = items.some(function (x) { return x.level === 'err' || x.level === 'warn'; });
+    return {
+      items: items, risky: risky,
+      summary: { customer: s.cust + (cust ? ' ' + cust.name : ''), delivery: d, lines: (s.lines || []).map(function (l) { return l.code + ' ×' + l.qty; }).join('、'), count: (s.lines || []).length, net: s.netTotal, gross: s.grossTotal, ship: o.shipLabel || '' }
+    };
+  };
+
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];
     return tbl.rows.map(function (r) { var o = {}; tbl.cols.forEach(function (c, i) { o[c] = r[i] == null ? '' : r[i]; }); return o; });
