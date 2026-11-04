@@ -158,7 +158,7 @@ t('出荷連絡の文面：行の繰り返し・空の行は出さない・住�
   assert.ok(L.includes('客先注番：NYF-1') && L.includes('商品名：商品A × 1') && L.includes('商品名：商品B × 2'));
   assert.ok(L.includes('納品先：架空商事 本社') && L.includes('　　　　〒123-0001 架空県架空市1-2-3') && L.includes('出荷日：2026年11月2日'));
   const i = L.indexOf('運送会社：西濃運輸');                                                    // 運送会社と送り状番号は、組で繰り返す
-  assert.deepStrictEqual(L.slice(i, i + 4), ['運送会社：西濃運輸', '送り状番号：9072200002', '運送会社：トナミ運輸', '送り状番号：5910000002']);
+  assert.deepStrictEqual(L.slice(i, i + 6), ['運送会社：西濃運輸', '送り状番号：9072200002', '追跡：https://track.seino.co.jp/cgi-bin/gnpquery.pgm?GNPNO1=9072200002', '運送会社：トナミ運輸', '送り状番号：5910000002', '追跡：https://trc1.tonami.co.jp/trc/search3/excSearch3?id[0]=5910000002']);   // 個数・重量が空の行は出ない
   assert.ok(!/\n\n\n/.test(r.body) && !/^\n|\n$/.test(r.body));
   // 住所なし・注番なし・送り状なし
   const r2 = S.noticeText(CONF, { ships: [] }, ship({ po: [], slips: [] }));
@@ -233,6 +233,26 @@ t('宛名：引き継いだ古い送り状（名称１・２に分かれてい�
   const two = nw('(株)落合 東北支店', '村上様');
   assert.strictEqual(two.find(r => r.k === '宛名（1行目）').st, 'ok'); assert.strictEqual(two.find(r => r.k === '宛名（2行目）').st, 'ok');
   assert.strictEqual(nw('(株)落合 東北支店', '').find(r => r.k === '宛名（2行目）').st, 'missing');
+});
+t('出荷連絡：配達指定・個数・重量・追跡URL・送り状に書かれている内容（付ける・付けないを選べる）', () => {
+  const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市1-2-3', r: '小久保所長様', t: '0276-56-5351' } } };
+  const sh = ship({ date: '2026-11-02', want: '2026-11-05', time: '午前', po: ['NYF1'], destName: '架空商事 本社', lines: [['A', 'ｷｬｽﾀｰ', '2', '9001']],
+    slips: [{ c: 'seino', no: '9072200002', qty: '2', kg: '280', n: '架空商事 本社 小久保所長様', n1: '架空商事 本社', z: '1230001', a: '架空県架空市1-2-3', p: '0276-56-5351', w: '配達指定【11月05日午前】', m: 'キャスター / ウンチン' },
+            { c: 'daiichi', no: '40100000001', qty: '1', kg: '30', n: '架空商事 本社', a: '架空県架空市1-2-3' }] });
+  const all = S.noticeText(CONF, idx, sh), L = all.body.split('\n');
+  assert.ok(L.includes('配達指定：11/5(木) 午前') && L.includes('個数・重量：2個・280kg') && L.includes('個数・重量：1個・30kg'));
+  assert.ok(L.includes('追跡：https://track.seino.co.jp/cgi-bin/gnpquery.pgm?GNPNO1=9072200002'));
+  assert.ok(L.includes('■送り状に書かれている内容（西濃運輸　9072200002）') && L.includes('■送り状に書かれている内容（第一貨物　40100000001）'));
+  assert.ok(L.includes('お届け先：架空商事 本社 小久保所長様') && L.includes('住所：〒123-0001 架空県架空市1-2-3') && L.includes('電話：0276-56-5351'));
+  assert.ok(L.includes('配達指定：【11月05日午前】') && L.includes('品名：キャスター / ウンチン'));
+  assert.ok(!all.body.includes('注番：\n') && !L.some(x => /^電話：$/.test(x)));                   // 値が空の行（第一貨物の電話など）は出ない
+  assert.ok(all.hasSlipData);
+  const noBlock = S.noticeText(CONF, idx, sh, { slipBlock: false, track: false });
+  assert.ok(!noBlock.body.includes('送り状に書かれている内容') && !noBlock.body.includes('追跡：') && noBlock.body.includes('送り状番号：9072200002'));
+  // 注番が送り状に書かれていれば、そのまま出る
+  const po = S.noticeText(CONF, idx, ship({ slips: [{ c: 'seino', no: '1', n: '架空商事 注番：OLD123' }] }));
+  assert.ok(po.body.split('\n').includes('注番：OLD123'));
+  assert.strictEqual(S.noticeText(CONF, idx, ship({ slips: [] })).hasSlipData, false);
 });
 t('見比べの表：SMILE の項目と、送り状（運送会社のデータ）の項目の対応', () => {
   const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市新田町1-2-3', r: '小久保所長様' } } };

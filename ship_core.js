@@ -176,38 +176,62 @@
   /* 出荷連絡の文面。conf.notice の { subject, lines[] } を、この出荷の値で埋める。
    *   {po}客先注番 {juchu}受注№ {items}品目 {dest}送り先の名前 {zipaddr}〒郵便番号　住所 {zip} {addr} {date}出荷日 {carrier}運送会社 {slip}送り状番号 {staff}担当
    * ・値が空の行は出さない  ・{items}・{carrier}・{slip} は複数あるので、その数だけ行（\n を含む行は、まとまりごと）を繰り返す
-   * 戻り値 { subject, body, hasSlip, hasAddr, isReturn（返品の伝票） } */
-  S.noticeText = function (conf, idx, ship) {
-    var nt = (conf && conf.notice) || {}, a = S.addrOf(idx, ship);
+   * 戻り値 { subject, body, hasSlip, hasAddr, isReturn（返品の伝票）, hasSlipData（送り状に、お届け先などの控えがある） }
+   * opts：{ slipBlock: 送り状に書かれている内容を付ける（既定 true）, track: 追跡のURLを付ける（既定 true） }
+   *   {want}配達指定 {sQtyKg}個数・重量 {track}追跡URL {sName}{sZipAddr}{sTel}{sWant}{sNote}{sPo}＝送り状に書かれているお届け先・住所・電話・配達指定・品名・注番 */
+  S.noticeText = function (conf, idx, ship, opts) {
+    opts = opts || {};
+    var nt = (conf && conf.notice) || {}, a = S.addrOf(idx, ship), withBlock = opts.slipBlock !== false, withTrack = opts.track !== false;
     var items = (ship.lines || []).map(function (l) { return S.zen(l[1] || l[0]) + ' × ' + S.fmtNum(l[2]); });   // 品名の半角カナは全角にそろえる
     var slips = ship.slips || [];
+    var perSlip = function (fn) { return slips.map(function (s) { var v = fn(s); return v == null ? '' : v; }); };
     var V = {
       po: (ship.po || []).join('、'), juchu: (ship.juchu || []).join('、'), items: items, dest: S.zen(S.destLabel(ship)),
       zipaddr: S.zen(S.zipAddr(a)), zip: a ? a.zip : '', addr: a ? S.zen(a.addr) : '', date: dateJa(ship.date), staff: ship.staff || '',
-      carrier: slips.map(function (s) { return S.carrierName(conf, s.c); }), slip: slips.map(function (s) { return s.no; })
+      want: [ship.want ? S.fmtDate(ship.want) : '', ship.time || ''].filter(Boolean).join(' '),
+      carrier: perSlip(function (s) { return S.carrierName(conf, s.c); }), slip: perSlip(function (s) { return s.no; }),
+      sQtyKg: perSlip(function (s) { return [s.qty ? s.qty + '個' : '', s.kg && s.kg !== '0' ? s.kg + 'kg' : ''].filter(Boolean).join('・'); }),
+      track: perSlip(function (s) { return withTrack ? S.trackingUrl(conf, s.c, s.no) : ''; }),
+      // 送り状に書かれている内容（運送会社のデータ）。お客様に、送り状の内容を知らせる用
+      sName: perSlip(function (s) { return S.zen(s.n || ''); }), sTel: perSlip(function (s) { return s.p || ''; }),
+      sZipAddr: perSlip(function (s) { return S.zen([s.z ? '〒' + String(s.z).replace(/^(\d{3})(\d{4})$/, '$1-$2') : '', s.a || ''].filter(Boolean).join(' ')); }),
+      sWant: perSlip(function (s) { return S.zen(s.w || '').replace(/^配達指定/, ''); }),   // 「配達指定【11月05日午前】」→「【11月05日午前】」（行の見出しと重ならないように）
+      sNote: perSlip(function (s) { return S.zen(s.m || ''); }),
+      sPo: perSlip(function (s) { return S.slipPoMentions([s.n, s.a, s.m]).join('、'); })
     };
+    // tpl の {名前} を値で置き換える。複数ある値（品目・送り状）を含むものは、その数だけ繰り返す（0 個なら出さない）。
+    // \n を含む tpl は、まとまりごとに繰り返し、値が空の行だけを出さない
     function fill(tpl) {
       var names = (tpl.match(/\{(\w+)\}/g) || []).map(function (x) { return x.slice(1, -1); });
       var lens = names.filter(function (k) { return Array.isArray(V[k]); }).map(function (k) { return V[k].length; });
-      var n = lens.length ? Math.max.apply(null, lens) : 1;   // 複数ある値を含む行は、その数だけ繰り返す（0 個なら出さない）
-      var out = [];
+      var n = lens.length ? Math.max.apply(null, lens) : 1, out = [];
       for (var i = 0; i < n; i++) {
-        var empty = false;
-        var t = tpl.replace(/\{(\w+)\}/g, function (_, k) {
-          var v = Array.isArray(V[k]) ? V[k][i] : V[k];
-          if (v == null || v === '') empty = true;
-          return v == null ? '' : v;
+        String(tpl).split('\n').forEach(function (sub) {
+          var empty = false;
+          var t = sub.replace(/\{(\w+)\}/g, function (_, k) {
+            var v = Array.isArray(V[k]) ? V[k][i] : V[k];
+            if (v == null || v === '') empty = true;
+            return v == null ? '' : v;
+          });
+          if (!empty) out.push(t);
         });
-        if (!empty) out.push(t);
       }
       return out;
     }
     var lines = [];
-    (nt.lines || []).forEach(function (tpl) { if (tpl === '') lines.push(''); else fill(String(tpl)).forEach(function (x) { lines.push(x); }); });
+    (nt.lines || []).forEach(function (tpl) {
+      if (tpl === '') { lines.push(''); return; }
+      if (tpl === '{slipblock}') {   // 送り状に書かれている内容のまとまり（送り状ごと。付けないときは出さない）
+        if (withBlock && nt.slipBlock) fill(String(nt.slipBlock)).forEach(function (x) { lines.push(x); });
+        return;
+      }
+      fill(String(tpl)).forEach(function (x) { lines.push(x); });
+    });
     // 続けて空行になるものや、最初・最後の空行は詰める
     var body = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
     var subject = (fill(String(nt.subject || '出荷のご連絡 {po}'))[0] || String(nt.subject || '出荷のご連絡 {po}').replace(/\{po\}/g, '')).trim();
-    return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)), isReturn: !!ship.ret };
+    return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)), isReturn: !!ship.ret,
+             hasSlipData: slips.some(function (s) { return s.n || s.a || s.p || s.w || s.m; }) };
   };
 
   /* ------------------------------------------------------------ 伝票と送り状の見比べ

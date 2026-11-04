@@ -213,15 +213,23 @@ function card(s, i) {
  * 文面は ship_config.json の notice。ここで直してから、コピー・メール作成（mailto：Outlook など、いつも使うメールのアプリが開く）。
  * 自動では送らない。担当者が中身を確認して使う。 */
 const MAIL_LIMIT = 8000;   // mailto の長さ（日本語は1文字が9文字ぶんになる。長すぎると、メールのアプリが開けない・途中で切ることがある）
-function openNotice(s) {
-  const n = S.noticeText(CONF, IDX, s), warn = [];
+let noticeShip = null, noticeGenerated = '';
+function noticeOpts() { return { slipBlock: $('np-slipblock').checked, track: $('np-track').checked }; }
+function renderNotice(s) {
+  const n = S.noticeText(CONF, IDX, s, noticeOpts()), warn = [];
   if (n.isReturn) warn.push('返品の伝票です。出荷の連絡には使えません（数量がマイナスの行があります）。');
   if (!n.hasSlip) warn.push('送り状番号がまだありません。番号が入ってから、もう一度開いてください。');
   if (!n.hasAddr) warn.push('住所の登録がありません（納品先の名前だけの案内になります）。');
   $('np-warn').innerHTML = warn.map(m => '<div>⚠ ' + esc(m) + '</div>').join('');
   $('np-warn').hidden = !warn.length;
-  $('np-subject').value = n.subject; $('np-text').value = n.body;
-  $('np-note').textContent = '住所は、SMILE の納品先マスタ（得意先マスタ）の、いまの内容です。出荷した時点の住所とは違うことがあります。';
+  $('np-slipblock').disabled = !n.hasSlipData;   // 送り状のデータ（お届け先など）が無いときは、選べない
+  $('np-subject').value = n.subject; $('np-text').value = n.body; noticeGenerated = n.body;
+}
+function openNotice(s) {
+  noticeShip = s;
+  $('np-slipblock').checked = true; $('np-track').checked = true;
+  renderNotice(s);
+  $('np-note').textContent = '住所は、SMILE の納品先マスタ（得意先マスタ）の、いまの内容です。出荷した時点の住所とは違うことがあります。「送り状に書かれている内容」は、運送会社のデータ（送り状）のとおりです。';
   $('noticePanel').hidden = false; $('noticeBackdrop').hidden = false;
   document.body.classList.add('np-open');
   $('np-text').focus();
@@ -233,9 +241,14 @@ function wireNotice() {
   $('detailBody').addEventListener('click', async e => {   // パネルの中：分納の行で別の出荷へ、番号のコピー
     const a = e.target.closest('[data-act]'); if (!a) return;
     if (a.dataset.act === 'detailno') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) { openDetail(s); $('detailBody').scrollTop = 0; } }
+    else if (a.dataset.act === 'notice-detail') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openNotice(s); }
     else if (a.dataset.act === 'copy') { const ok = await copyText(a.dataset.v), t = a.textContent; a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500); }
   });
   document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!$('noticePanel').hidden) closeNotice(); if (!$('detailPanel').hidden) closeDetail(); });
+  ['np-slipblock', 'np-track'].forEach(id => $(id).addEventListener('change', () => {   // 付ける・付けないを変えたら、文を作り直す（直した内容があるときは、確かめる）
+    if (noticeShip && $('np-text').value !== noticeGenerated && !confirm('画面で直した内容が消えます。作り直しますか？')) { $(id).checked = !$(id).checked; return; }
+    if (noticeShip) renderNotice(noticeShip);
+  }));
   $('np-copy').onclick = async () => {
     const b = $('np-copy'), t = b.textContent, ok = await copyText($('np-text').value);
     b.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { b.textContent = t; }, 1500);
@@ -309,7 +322,7 @@ function detailHtml(s, d, gen) {
   const T = S.detailTotals(d), hasD = !!(d && d.lines && d.lines.length);
   const banner = d ? '<div class="sl-banner actual">SMILE の出荷伝票の内容' + (gen ? '（' + E(stamp(gen)) + ' 時点）' : '') + '</div>'
                    : '<div class="sl-banner">伝票の詳細がありません（品目の数量だけ出します）</div>';
-  let h = '<div class="sl">' + banner +
+  let h = '<div class="dt-act"><button type="button" class="btn sm" data-act="notice-detail" data-no="' + E(s.no) + '">お客様への報告（まとめてコピー・メール）</button></div><div class="sl">' + banner +
     '<div class="sl-hd c4">' + it('売上№', E(s.no)) + it('伝票日付', E(fd(s.date))) + it('出荷№', E(s.shipNo || '')) + it('取引', s.ret ? '返品' : '') + '</div>' +
     '<div class="sl-hd c3">' + it('得意先', E(Z(s.custName)) + (s.cust ? ' <span class="muted">' + E(s.cust) + '</span>' : '')) + it('担当者', E(Z(s.staff))) + it('運送業者', logoOf(key) ? logoImg(key, S.kubunName(CONF, s.kubun)) : E(S.kubunName(CONF, s.kubun))) + '</div>' +
     '<div class="sl-hd c2">' + it('納品先', E(Z(S.destLabel(s))) + (s.dest && s.dest !== '000000' ? ' <span class="muted">' + E(s.dest) + '</span>' : '') + (za ? '<br><span class="muted">' + E(za) + '</span>' : '')) + it('客先注番', (s.po || []).map(E).join('　')) + '</div>' +
