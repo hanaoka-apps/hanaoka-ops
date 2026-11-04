@@ -647,12 +647,10 @@ function compareHtml(s) {
   }
   if (A.code) h += row('納品先コード', '', E(A.code), false);
   {   // 受注伝票のほうの項目（Shopify には無いものは、SMILE 側だけ）
-    const cinfo = (store.cfg.customers || {})[s.cust] || {}, po = String(s.id).replace(/\D/g, '');
+    const po = String(s.id).replace(/\D/g, '');   // 得意先・担当・部門・倉庫は Shopify に対応する値が無いので、比較には出さない（伝票イメージにある）
     const ext = EC.slipImage(Object.assign({}, s, { memo: memoOf(s) }), { cfg: store.cfg, items: M.items, cal, shipDate: shipOf(s), act, delivery: { code: A.code || '', name: A.name } }).ext;
-    h += row('得意先', '', E(s.cust + ' ' + (cinfo.name || '')), false);
-    h += row('担当・部門・倉庫', '', E('担当者 ' + (cinfo.staff || '—') + '／部門 ' + (cinfo.dept || '—') + '／倉庫 ' + ((store.cfg.warehouse) || '—')), false);
     h += row('客先注番', E(s.name), E(act ? P(act.rows[0], ['客先注番']) : po), false, '', String(s.name) !== po ? '注文番号の数字だけを入れる' : '');
-    h += row('運送・配送指定', '', E([ext.carrier.missing ? '運送業者：（この確認用データにはありません）' : '運送業者：' + (ext.carrier.label || '—'), '配送指定日：' + (ext.deliveryDate || '指定なし'), '配達指定：' + (ext.deliveryKubun.label || 'なし'), ext.officeName ? '営業所止め：' + ext.officeName : ''].filter(Boolean).join('／')), false, act ? '' : '運送業者は、設定の値で取り込みます。お客様の希望日は入れません');
+    h += row('運送・配送指定', E([o.shippingMethod ? '配送方法：' + o.shippingMethod : '', o.notes ? 'お客様メモ：' + o.notes : ''].filter(Boolean).join('／')), E([ext.carrier.missing ? '運送業者：（この確認用データにはありません）' : '運送業者：' + (ext.carrier.label || '—'), '配送指定日：' + (ext.deliveryDate || '指定なし'), '配達指定：' + (ext.deliveryKubun.label || 'なし'), ext.officeName ? '営業所止め：' + ext.officeName : ''].filter(Boolean).join('／')), false, act ? '' : '運送業者は、設定の値で取り込みます。お客様の希望日は入れません');
   }
   // 商品：Shopify の行 ↔ SMILE の行（同じ順に並べる。商品名は対応表で品目に変わるので、違いは強調しない）
   const sl = o.lines, ml = act ? act.rows.map(x => ({ code: P(x, ['品目コード']), name: P(x, ['品目名', '品名']), qty: +P(x, ['数量']) || 0, amt: Math.round(+P(x, ['金額']) || 0) })) : s.lines.map(l => ({ code: l.code, name: l.name, qty: l.qty, amt: Math.round(l.amountNet) }));
