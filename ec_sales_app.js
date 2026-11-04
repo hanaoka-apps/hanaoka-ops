@@ -469,6 +469,19 @@ function editBlockHtml(s, st, r, ship) {
     '<div class="muted">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
     '';
 }
+// SMILE に起票したあと（③結果を確認・④完了）の注文か
+const isImported = st => st === 'confirm' || st === 'exported' || st === 'smile';
+// 起票済みの帯：「この内容で起票した」ことと、受注№を大きく見せる
+function importedBannerHtml(s) {
+  const st = stateOf(s), r = rec(s) || {}, act = smileActual(s), no = r.juchuNo || (act && act.juchuNo) || '';
+  const who = u => (u ? EC.shortUser(u) : '');
+  let sub = '';
+  if (st === 'smile') sub = 'このアプリを使う前から、SMILE に入っていた注文です';
+  else if (st === 'confirm') sub = '取込と照合が終わりました。' + (isAdmin ? 'SMILE の内容を確認して、「確認OK」を押してください' : '管理者が「確認OK」を押すのを待っています');
+  else sub = [r.importBy ? '起票を依頼 ' + who(r.importBy) : '', r.confirmedBy ? '確認OK ' + who(r.confirmedBy) + (r.confirmedAt ? ' ' + stamp(r.confirmedAt) : '') : ''].filter(Boolean).join('　／　');
+  return '<div class="donebox' + (st === 'confirm' ? ' pending' : '') + '"><div class="db-l"><div class="db-h">' + (st === 'confirm' ? '✓ SMILE に起票しました（確認待ち）' : '✓ SMILE に起票しました') + '</div>' + (sub ? '<div class="db-sub">' + esc(sub) + '</div>' : '') + '</div>' +
+    (no ? '<div class="db-no"><span>受注№</span><b>' + esc(no) + '</b></div>' : '') + '</div>';
+}
 function renderDrawer() {
   const dr = $('drawer'), sc = $('scrim');
   if (mapDrawer) { if (!(mapDrawer.mode === 'edit' && mapDrawer.rendered)) renderMapDrawer(); return; }   // 対応表のドロワー（編集中は、入力を消さないよう描き直さない）
@@ -480,9 +493,9 @@ function renderDrawer() {
   const row = (k, v) => v ? '<dt>' + k + '</dt><dd>' + esc(v) + '</dd>' : '';
   dr.innerHTML = '<div class="row"><h2>' + esc(s.name) + '</h2><span class="tag ' + (st === 'ok' || st === 'exported' ? 'ok' : st === 'check' ? 'err' : st === 'importing' || st === 'confirm' ? 'warn' : 'info') + '">' + STATE_LABEL[st] + '</span><div class="grow"></div><button class="btn sec sm" data-close>閉じる ✕</button></div>' +
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
-    (FLOW_UI() ? flowBoxHtml(s) : '') +
-    (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
-    (FLOW_UI() ? judgeHtml(s) : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
+    (FLOW_UI() ? (isImported(st) ? importedBannerHtml(s) : flowBoxHtml(s)) : '') +
+    (r && r.juchuNo && !(FLOW_UI() && isImported(st)) ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
+    (FLOW_UI() ? (isImported(st) ? '' : judgeHtml(s)) : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
     '';
   const FL = FLOW_UI();
   const okBtn = '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>' + (FL ? '確認OK（起票依頼待ちへ）' : 'OK にする') + '</button>';
@@ -603,7 +616,10 @@ function slipImageHtml(s) {
   const pend = t => '<span class="sl-p">' + E(t) + '</span>';
   const cn = x => (x.code ? E(x.code) : '') + (x.name ? ' ' + E(x.name) : '');
   const it = (k, v, cls) => '<div class="sl-i"><span class="sl-k">' + k + '</span><span class="sl-vv' + (cls || '') + '">' + v + '</span></div>';
-  const banner = act ? '<div class="sl-banner actual">SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') + '　<span style="font-weight:400">黄色＝取込前にアプリが作る予定だった内容と違う項目</span></div>'
+  const IMPD = isImported(st0);   // 起票後（③④）
+  if (IMPD && !act && r0 && r0.juchuNo) H.juchuNo = { value: r0.juchuNo };   // 確認用データに無くても、記録の受注№を出す
+  const banner = act ? '<div class="sl-banner actual">SMILE　受注№ ' + E(H.juchuNo.value || '') + ' の伝票' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') + (IMPD ? '' : '　<span style="font-weight:400">黄色＝取込前にアプリが作る予定だった内容と違う項目</span>') + '</div>'
+    : IMPD ? '<div class="sl-banner actual">SMILE に起票した内容' + (r0 && r0.juchuNo ? '　受注№ ' + E(r0.juchuNo) : '') + '</div>'
     : '<div class="sl-banner">取込後はこうなります（予定）　<span style="font-weight:400">いまアプリが作る取込内容のとおりです</span></div>';
   let h = '<div class="sl">' + banner +
     '<div class="sl-hd c4">' + it('受注No', H.juchuNo.pending ? pend(H.juchuNo.text) : E(H.juchuNo.value || '（不明）')) + it('受注日', E(H.orderDate), df(H.orderDate, PH && PH.orderDate)) + it('税率', E(H.taxRate)) + it('受注区分', E(H.juchuKubun)) + '</div>' +
@@ -615,7 +631,7 @@ function slipImageHtml(s) {
   h += '<div class="sl-tw"><table class="sl-t"><colgroup>' + col.map(w => '<col' + (w ? ' style="width:' + w + 'px"' : '') + '>').join('') + '</colgroup><thead><tr><th class="n">行</th><th>品目コード</th><th>品目名</th><th>手配区分</th><th>製番</th><th class="n">数量</th><th>単位</th><th class="n">単価(税抜)</th><th class="n">金額(税抜)</th><th>出荷予定日</th></tr></thead><tbody>';
   img.lines.forEach((l, i) => {
     const pl = plan && plan.lines[i], c = (a, b) => (pl ? df(a, b) : plan ? ' diff' : '');
-    const sb = l.seiban.pending ? pend(l.seiban.text) : l.seiban.missing ? pend('（データなし）') : E(l.seiban.value);
+    const sb = l.seiban.pending ? pend(IMPD ? '確認用データの更新待ち' : l.seiban.text) : l.seiban.missing ? pend('（データなし）') : E(l.seiban.value);
     const sub = [
       '倉庫 ' + E(l.warehouse), l.nouki ? '受注納期 ' + E(l.nouki) : '', '製造数量 ' + E(l.mfgQty), l.mfgDate ? '製造納期 ' + E(l.mfgDate) : '', '客先注番 ' + E(l.po), l.memo ? '摘要 ' + E(l.memo) : '',
       act ? '' : '完納・出荷済数量 ' + pend('0.00'), l.genUnit ? (l.genUnit.master ? '原単価（マスタ） ' + pend(l.genUnit.value) : '原単価 ' + E(l.genUnit.value)) + (l.genAmount ? '・原価金額 ' + (l.genUnit.master ? pend(l.genAmount) : E(l.genAmount)) : '') : ''
@@ -634,7 +650,7 @@ function slipImageHtml(s) {
     it('運送業者', img.ext.carrier.missing ? pend('（この確認用データにはありません）') : E(img.ext.carrier.label || '（不明）'), df(img.ext.carrier.code, plan && plan.ext.carrier.code)) +
     it('配送指定日', img.ext.deliveryDate ? E(img.ext.deliveryDate) : '<span class="muted">指定なし</span>', df(img.ext.deliveryDate, plan && plan.ext.deliveryDate)) +
     it('配達指定', img.ext.deliveryKubun.label ? E(img.ext.deliveryKubun.label) : '<span class="muted">なし</span>', df(img.ext.deliveryKubun.code, plan && plan.ext.deliveryKubun.code)) + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + (img.ext.tonami.code ? it('トナミ指定', E(img.ext.tonami.label)) : '') + (img.ext.daiichiMust ? it('必着指定（第一貨物）', E(img.ext.daiichiMust)) : '') + (img.ext.daiichiTime ? it('時間区分（第一貨物）', E(img.ext.daiichiTime)) : '') + (img.ext.tonamiShipper.code ? it('トナミ荷送人', E(img.ext.tonamiShipper.code + (img.ext.tonamiShipper.name ? ' ' + img.ext.tonamiShipper.name : ''))) : '') + '</div></div></div>' +
-    (act ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
+    (act || IMPD ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
   return h;
 }
 function compareHtml(s) {
@@ -651,10 +667,13 @@ function compareHtml(s) {
     A = { name: d.name, person: d.person, memo: d.memo, zip: d.zip, addr: (d.addr1 || '') + (d.addr2 || ''), addr1: d.addr1, addr2: d.addr2, tel: d.tel, code: '' };
   }
   const FLc = FLOW_UI(), convs = [];   // convs＝正常な自動変換（違う項目とは言わない）
-  const row = (label, a, b, diff, sub, conv) => { const isConv = !!conv && !diff; if (isConv) convs.push(conv); const dc = diff ? (FLc ? ' bad' : ' diff') : ''; return '<tr><th>' + label + '</th><td class="shop' + dc + '">' + a + '</td><td class="smile' + dc + (isConv && FLc ? ' conv' : '') + '">' + b + (sub ? '<div class="sub">' + sub + '</div>' : '') + (isConv && FLc ? '<div class="sub conv-t">自動変換：' + conv + '</div>' : '') + '</td></tr>'; };
-  let h = '<h3>Shopify と SMILE の見比べ</h3><div class="legend"><b style="background:#3b6fd4;color:#fff">Shopify の注文</b> ／ <b style="background:#2e8b57;color:#fff">' +
-    (act ? 'SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE に入る予定の内容') + '</b> ／ ' + (FLc ? '<b class="lg-conv">自動変換（正常）</b> ／ <b class="lg-bad">確認が必要な不一致</b>' : '<b style="background:#fff1c2;outline:2px solid #e0a800">違う項目</b>') + '</div><!--CMPSUM-->' +
-    '<table class="cmp"><thead><tr><th></th><th class="hd shop">Shopify</th><th class="hd smile">SMILE' + (act ? '' : '（予定）') + '</th></tr></thead><tbody>';
+  const IMP = FLc && isImported(stNow);   // 起票後（③④）：予定・凡例・自動変換のメモは出さない
+  const showConv = FLc && !IMP;
+  const row = (label, a, b, diff, sub, conv) => { const isConv = !!conv && !diff; if (isConv) convs.push(conv); const dc = diff ? (FLc ? ' bad' : ' diff') : ''; return '<tr><th>' + label + '</th><td class="shop' + dc + '">' + a + '</td><td class="smile' + dc + (isConv && showConv ? ' conv' : '') + '">' + b + (sub ? '<div class="sub">' + sub + '</div>' : '') + (isConv && showConv ? '<div class="sub conv-t">自動変換：' + conv + '</div>' : '') + '</td></tr>'; };
+  const smileHd = act ? (IMP ? 'SMILE　受注№ ' + E(act.juchuNo) + ' の伝票' : 'SMILE') : IMP ? 'SMILE（起票した内容）' : 'SMILE（予定）';
+  let h = (IMP ? '' : '<h3>Shopify と SMILE の見比べ</h3><div class="legend"><b style="background:#3b6fd4;color:#fff">Shopify の注文</b> ／ <b style="background:#2e8b57;color:#fff">' +
+    (act ? 'SMILE の実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE に入る予定の内容') + '</b> ／ ' + (FLc ? '<b class="lg-conv">自動変換（正常）</b> ／ <b class="lg-bad">確認が必要な不一致</b>' : '<b style="background:#fff1c2;outline:2px solid #e0a800">違う項目</b>') + '</div>') + '<!--CMPSUM-->' +
+    '<table class="cmp"><thead><tr><th></th><th class="hd shop">Shopify</th><th class="hd smile">' + smileHd + '</th></tr></thead><tbody>';
   const edTag = k => d.edited.indexOf(k) >= 0 && !act ? '<div class="sub" style="color:#a8620a">手動で直した値（元：' + E(d.auto[k] || '（空）') + '）</div>' : '';
   if (editing) {
     const inp = k => edInput(s, d, k);
@@ -694,8 +713,9 @@ function compareHtml(s) {
   h += row('メモ', E(o.notes || ''), act ? E(P(act.rows[0], ['社内メモ'])) : '社内メモ（取込予定）' + memoCtl(s, stNow, rec(s)), false);
   h += row('支払', E(o.paymentMethod + '／' + o.financial), act ? '受注№ ' + E(act.juchuNo) : '', false);
   h += '</tbody></table>';
-  if (FLc) {
-    const bad = (h.match(/td class="shop bad"/g) || []).length, uniq = [...new Set(convs)];
+  const badN = (h.match(/td class="shop bad"/g) || []).length;
+  if (FLc && !(IMP && !badN)) {   // 起票後は、本当の不一致があるときだけ、先頭に出す
+    const bad = badN, uniq = [...new Set(convs)];
     h = h.replace('<!--CMPSUM-->', '<div class="cmpsum ' + (bad ? 'bad' : 'ok') + '">' + (bad ? '<b>✗ 確認が必要な不一致：' + bad + '件</b>（赤い項目）' : '<b>✓ 問題は見つかりませんでした</b>') +
       '<span class="muted">　自動変換された項目：' + uniq.length + '件</span>' + (uniq.length ? '<details style="margin-top:4px"><summary>変換の内容を見る</summary><ul style="margin:4px 0 0 18px;padding:0">' + uniq.map(x => '<li>' + E(x) + '</li>').join('') + '</ul></details>' : '') + '</div>');
   } else h = h.replace('<!--CMPSUM-->', '');
