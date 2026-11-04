@@ -1183,7 +1183,7 @@ function renderStaff(main) {
   const snaps = S.data ? [...S.data.snaps].sort((a, b) => String(b.Title).localeCompare(String(a.Title))) : [];
   const ym = new Date().toISOString().slice(0, 7);
   main.innerHTML = `<div class="detail" style="flex:1">
-    <div class="card noprint"><h3 class="h3f"><span>人員表</span><span>${hasRole('人員表を直す') ? '<button class="mini" id="sfUnits">部署・班の設定</button> ' : ''}<button class="mini" id="sfReload">読み直す</button> <button class="mini" id="sfPrint">🖨 印刷・PDF</button></span></h3>
+    <div class="card noprint"><h3 class="h3f"><span>人員表</span><span>${hasRole('人員表を直す') ? '<button class="mini" id="sfUnits">部署・班の設定</button> ' : ''}<button class="mini" id="sfReload">読み直す</button> <button class="mini" id="sfPrint">🖨 印刷・PDF</button>${hasRole('人員表のCSV出力') ? ' <button class="mini" id="sfCsv" title="在籍中の人（退職予定を含む）の従業員コード・氏名・所属を CSV で保存します">CSV出力</button>' : ''}</span></h3>
       <div class="muted" style="margin-bottom:10px">必要＝在籍＋入社予定＋募集中（手では持ちません。人を増やすときは求人の稟議から）。${S.ledger ? '契約・試用期間の満了が近い人は色が変わります（オレンジ＝' + ((ledgerCfg().remind || {}).owner || 40) + '日を切った、赤＝すぎた）。' : ''}
         ${scopes.length ? `あなたが直せる範囲：${esc(scopes.map(s => s || '全社').join('・'))}` : '見るだけです。'}</div>
       <div class="sf-sites">${[['工場', '工場'], ['本社', '本社（役員を含む）'], ['all', 'すべて']].map(([k, l]) => `<button class="${S.site === k ? 'on' : ''}" data-site="${k}">${l}<span>${siteCnt(k)}人</span></button>`).join('')}</div>
@@ -1201,6 +1201,7 @@ function renderStaff(main) {
   if ($('sfUnits')) $('sfUnits').onclick = () => { S.ucfg = { mode: '' }; S.sel = null; S.add = null; S.unitEdit = null; S.secAdd = null; S.secSel = null; render(); };
   main.querySelectorAll('[data-site]').forEach(b => b.onclick = () => { S.site = b.dataset.site; try { localStorage.setItem('wf.staffSite', S.site); } catch { } render(); });
   $('sfPrint').onclick = () => { main.querySelectorAll('details[data-su]').forEach(d => d.open = true); window.print(); };
+  if ($('sfCsv')) $('sfCsv').onclick = () => S.data && downloadStaffCsv(staffModel(S.data));
   $('sfQ').oninput = e => { S.q = e.target.value; const pos = e.target.selectionStart; renderStaff(main); const q = $('sfQ'); q.focus(); q.setSelectionRange(pos, pos); };
   $('sfOpen').onclick = () => { S.closed.clear(); render(); };
   $('sfClose').onclick = () => { M.units.filter(u => u.Path.split('/').length >= 2).forEach(u => S.closed.add(u.Path)); render(); };
@@ -2217,6 +2218,26 @@ function renderListView(main) {
   main.classList.remove('m-detail');
   const cur = all.find(i => i.key === st.sel);
   if (cur) openDetail(cur);
+}
+/* 人員表の CSV（役割「人員表のCSV出力」の人だけ）：在籍・退職予定の人の 従業員コード・氏名・所属1〜n（場所のパスを段ごとに分ける）。
+   並びは人員表と同じ場所の順（部署・班の設定の並び）、同じ場所の中は従業員コード順 */
+function downloadStaffCsv(M) {
+  const order = {}; let n = 0;
+  const walk = path => (M.kids[path] || []).forEach(u => { order[u.Path] = n++; walk(u.Path); });
+  walk('');
+  const rows = M.persons.filter(p => ['在籍', '退職予定'].includes(p.State || '在籍'))
+    .sort((a, b) => (order[a.UnitPath] ?? 1e9) - (order[b.UnitPath] ?? 1e9) || String(a.EmpCode || '').localeCompare(String(b.EmpCode || ''), undefined, { numeric: true }));
+  const depth = Math.max(1, ...rows.map(p => String(p.UnitPath || '').split('/').length));
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const head = ['従業員コード', '氏名', ...Array.from({ length: depth }, (_, i) => '所属' + (i + 1))];
+  const lines = [head.map(q).join(',')].concat(rows.map(p => {
+    const parts = String(p.UnitPath || '').split('/');
+    return [p.EmpCode, p.Title, ...Array.from({ length: depth }, (_, i) => parts[i] || '')].map(q).join(',');
+  }));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));   // Excel で文字化けしないよう BOM 付き
+  a.download = `人員表_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click(); URL.revokeObjectURL(a.href);
 }
 function downloadCsv(items) {
   const head = ['申請番号', '件名', 'フォーム', '申請者', '部署', '状態', '申請日時'];
