@@ -15,9 +15,9 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
 運送会社のCSVの扱い:
   - つなぎの項目は「売上№」（西濃・第一貨物＝管理番号、トナミ＝指定No記号）。先頭の 0 は外して比べる（'037339' と '37339' は同じ）。空は除く。
   - 取得期間が重なる複数のファイルは、売上№ごとに「新しいファイルに載っているもの」を使う（1回抜けても前のファイルで補える。送り状を発行し直したときは新しい方）。
-  - 運送会社のCSVの電話は索引に入れない。お届け先の名前・郵便番号・住所・配達指定・記事（品名のメモ）は、伝票と見比べるために、送り状ごとに入れる
-    （n＝名前（名称１・２をつなげたもの）、n1・n2＝名称１・名称２、z＝郵便番号、a＝住所、w＝配達指定、m＝記事。列は ship_config.json の cols の toName・toZip・toAddr・want・note）。
-  - 送り先の住所は、SMILE のマスタから足す（下の「住所」）。電話・FAX は入れない。
+  - お届け先の名前・郵便番号・電話・住所・配達指定・記事（品名のメモ）は、伝票と見比べるために、送り状ごとに索引に入れる。送り状のデータにある全項目は、ship_detail.json の slipFields に入れる
+    （n＝名前（名称１・２をつなげたもの）、n1・n2＝名称１・名称２、z＝郵便番号、p＝電話、a＝住所、w＝配達指定、m＝記事。列は ship_config.json の cols の toName・toZip・toAddr・want・note）。
+  - 送り先の住所・電話は、SMILE のマスタから足す（下の「住所」。送り状の電話と見比べるため。FAX は入れない）。
 
 住所（出荷明細には住所の列が無い）:
   - 納品先が決まっている出荷 … 納品先マスタ.csv（得意先ｺｰﾄﾞ＋納品先ｺｰﾄﾞ）の郵便番号・住所１〜３
@@ -28,7 +28,9 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
 
 出力（SharedMasters）:
   - ship_detail.json … 伝票の詳細 { "generatedAt", "details": { "<売上№>": { "memo": 社内メモ, "note": 備考, "stop": 営業所止め, "tax": 消費税の合計,
-                         "lines": [[行, 品目コード, 品名, 数量, 単位, 単価, 金額, 課税区分, 行摘要１, 行摘要２, 倉庫]] } } }
+                         "lines": [[行, 品目コード, 品名, 数量, 単位, 単価, 金額, 課税区分, 行摘要１, 行摘要２, 倉庫]] } },
+                       "slipFields": { "labels": { "<運送会社>": [列ごとの項目名] }, "consts": { "<運送会社>": { "<列>": 全部同じ値（荷送人など） } },
+                                       "slips": { "<運送会社>|<送り状番号>": { "<列>": 値 } } } }   … 送り状のデータにある全項目（空でないもの）
                        画面は、カードを押したときに初めて読む（索引を重くしない）。原単価・原価金額・粗利は入れない。
   - ship_index.json … 一時ファイルに書いてから置き換える。失敗したら前回のファイルをそのまま残す。
     {
@@ -37,9 +39,9 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
       "carriers": { "<キー>": { "name", "kubun", "files", "rows", "from", "to", "newest"(UTC ISO) } },   … 運送会社データがいつからいつまで・いつ届いたか
       "ships":    [ { "no": 売上№, "date", "shipNo", "cust", "custName", "dest", "destName", "staff", "kubun", "want", "time", "ret",
                       "juchu": [受注№], "po": [客先注番], "lines": [[品目コード, 品目名, 数量, 受注№]],
-                      "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date", "n", "n1", "n2", "z", "a", "w", "m" }] } ],
+                      "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date", "n", "n1", "n2", "z", "p", "a", "w", "m" }] } ],
       "juchu":    { "<受注№>": { "date", "due", "plan", "lines", "staff" } },
-      "addr":     { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所, "r": 荷受け人名（納品先マスタの荷受け人名１・２。宛名の２行目に入る） } },   … 送り先の住所（上の「住所」）
+      "addr":     { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所, "r": 荷受け人名（納品先マスタの荷受け人名１・２。宛名の２行目に入る）, "t": 電話番号（送り状の電話と見比べる） } },   … 送り先の住所（上の「住所」）
       "masters":  [{ "name", "modified"(UTC ISO), "rows" }],              … 住所を読んだマスタ（古さの警告には使わない）
       "unmatched": [{ "c", "key", "slip", "date" }],   … 運送会社にあって、SMILE の出荷明細に売上№が無いもの（SMILE の出力待ちか、番号の違い）
       "counts":   { ... }
@@ -82,8 +84,8 @@ SHIP_REQUIRED = ['伝票日付', '売上№', '品目コード', '受注№']
 JUCHU_COLS = [['受注№'], ['行'], ['受注日付'], ['納期', '受注納期'], ['出荷予定日'], ['担当者名']]
 JUCHU_REQUIRED = ['受注№']
 # 納品先マスタ・得意先マスタから取り出す列（住所。電話は取らない）
-DEST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３'], ['荷受け人名１'], ['荷受け人名２']]
-CUST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３']]
+DEST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３'], ['荷受け人名１'], ['荷受け人名２'], ['電話番号']]
+CUST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３'], ['電話番号']]
 NO_DEST = '000000'   # 納品先コードが「納品先なし」（得意先そのものに送る）のときの値（設定 smile.noDest で変えられる）
 
 
@@ -193,7 +195,7 @@ def carrier_files(inbox, cdir):
     return [p for _m, _n, p in out]
 
 
-CARRIER_SINGLE = ['key', 'slip', 'date', 'qty', 'weight', 'toZip']        # 1つの列
+CARRIER_SINGLE = ['key', 'slip', 'date', 'qty', 'weight', 'toZip', 'toTel']        # 1つの列
 CARRIER_MULTI = ['toName', 'toAddr', 'want', 'note']                      # 複数の列をつなげるもの（名前１・２、住所１・２ など）
 
 
@@ -234,6 +236,7 @@ def load_carrier(inbox, ckey, conf):
     売上№ごとに、その売上№が載っている中で一番新しいファイルの記録だけを残す。"""
     files = carrier_files(inbox, conf['dir'])
     best, blank, rows_total, bad = {}, 0, 0, 0
+    last_header = []
     dmin = dmax = ''
     newest = ''
     used = 0
@@ -243,6 +246,7 @@ def load_carrier(inbox, ckey, conf):
             header = []
             if conf.get('header', True):
                 header = next(it)
+                last_header = header
             plan = carrier_plan(conf, header)
         except Exception:   # 空・別の形式のファイルは読み飛ばす（ファイル名だけログに残す。中身は出さない）
             bad += 1
@@ -267,9 +271,10 @@ def load_carrier(inbox, ckey, conf):
                 dmin = d if not dmin or d < dmin else dmin
                 dmax = d if d > dmax else dmax
             rec = {'c': ckey, 'no': slip, 'qty': num(g('qty')), 'kg': num(g('weight')), 'date': d}
+            rec['_f'] = {i: v.strip() for i, v in enumerate(r) if v.strip()}   # 送り状のデータにある全項目（列の番号 → 値）。索引には入れず、ship_detail.json に入れる
             # 送り状に載るお届け先など（伝票と見比べる用）。n＝お届け先の名前、z＝郵便番号、a＝住所、w＝配達指定、m＝記事（品名のメモ）。電話は入れない
             tn = [r[p].strip() for p in plan['toName'][:2] if 0 <= p < len(r)]   # 名称１・名称２（宛名の欄ごとに、切れているか見るため）
-            for k, v in (('n', join_cols(r, plan['toName'], ' ')), ('n1', tn[0] if tn else ''), ('n2', tn[1] if len(tn) > 1 else ''), ('z', g('toZip')), ('a', join_cols(r, plan['toAddr'])),
+            for k, v in (('n', join_cols(r, plan['toName'], ' ')), ('n1', tn[0] if tn else ''), ('n2', tn[1] if len(tn) > 1 else ''), ('z', g('toZip')), ('p', g('toTel')), ('a', join_cols(r, plan['toAddr'])),
                          ('w', join_cols(r, plan['want'], ' ')), ('m', join_cols(r, plan['note'], ' / '))):
                 if v:
                     rec[k] = v
@@ -277,7 +282,28 @@ def load_carrier(inbox, ckey, conf):
         for key, recs in mine.items():
             best[key] = recs    # 古い順に読むので、あとのファイルが上書きする
     meta = {'name': conf.get('name', ckey), 'kubun': str(conf.get('kubun', '')), 'files': used, 'rows': rows_total, 'from': dmin, 'to': dmax, 'newest': newest}
-    return {'meta': meta, 'best': best, 'blank': blank, 'bad': bad}
+    return {'meta': meta, 'best': best, 'blank': blank, 'bad': bad, 'fields': field_meta(conf, last_header, best)}
+
+
+def field_meta(conf, header, best):
+    """送り状の全項目の、列ごとの名前 labels（見出し、無ければ設定 fieldLabels の列番号、それも無ければ「項目N」）と、
+    ほぼ全部の送り状で同じ値の列 consts（荷送人の住所・電話など。1回だけ持つ）。consts の列は、各送り状の _f から外す。"""
+    recs = [x for rs in best.values() for x in rs]
+    width = max([len(header)] + [max(x['_f']) + 1 for x in recs if x['_f']] + [0])
+    fl = conf.get('fieldLabels') or {}
+    labels = [(header[i].strip() if i < len(header) and header[i].strip() else fl.get(str(i), '項目%d' % i)) for i in range(width)]
+    consts = {}
+    n = len(recs)
+    if n >= 20:
+        for i in range(width):
+            vals = [x['_f'].get(i) for x in recs]
+            ne = [v for v in vals if v]
+            if len(ne) >= n * 0.95 and len(set(ne)) == 1:
+                consts[i] = ne[0]
+        for x in recs:
+            for i in consts:
+                x['_f'].pop(i, None)
+    return {'labels': labels, 'consts': consts}
 
 
 # ---------------------------------------------------------------- 出荷明細
@@ -366,13 +392,14 @@ def build_juchu(path, wanted):
     return out, total
 
 
-def addr_entry(zip_code, parts, recv=''):
+def addr_entry(zip_code, parts, recv='', tel=''):
     """郵便番号と住所１〜３（と、あれば荷受け人名）から {z, a, r}。みな空なら None。住所は、１〜３をそのままつなぐ。
     荷受け人名は、送り状の宛名（お届け先の名称２）に入るもの（納品先マスタの荷受け人名１・２）。"""
     a = ''.join(p for p in parts if p)
     z = zip_code.strip()
     r = recv.strip()
-    if not z and not a and not r:
+    tl = tel.strip()
+    if not z and not a and not r and not tl:
         return None
     e = {}
     if z:
@@ -381,6 +408,8 @@ def addr_entry(zip_code, parts, recv=''):
         e['a'] = a
     if r:
         e['r'] = r
+    if tl:
+        e['t'] = tl
     return e
 
 
@@ -403,7 +432,7 @@ def build_addr(dest_path, cust_path, ships, no_dest):
             total += 1
             v = pick(r, plan)
             if (v[0], v[1]) in want_dest:
-                e = addr_entry(v[2], v[3:6], ' '.join(x for x in (v[6], v[7]) if x))
+                e = addr_entry(v[2], v[3:6], ' '.join(x for x in (v[6], v[7]) if x), v[8])
                 if e:
                     out[v[0] + '|' + v[1]] = e
         meta.append({'name': os.path.basename(dest_path), 'modified': mtime_iso(dest_path), 'rows': total})
@@ -419,12 +448,22 @@ def build_addr(dest_path, cust_path, ships, no_dest):
             total += 1
             v = pick(r, plan)
             if v[0] in keys:
-                e = addr_entry(v[1], v[2:5])
+                e = addr_entry(v[1], v[2:5], '', v[5])
                 if e:
                     for d in keys[v[0]]:
                         out[v[0] + '|' + d] = e
         meta.append({'name': os.path.basename(cust_path), 'modified': mtime_iso(cust_path), 'rows': total})
     return out, meta
+
+
+def load_previous_slip_fields(path):
+    """前回の ship_detail.json の slipFields（送り状の全項目）を読む。無い・読めないときは空。"""
+    try:
+        with open(path, encoding='utf-8') as f:
+            sf = json.load(f).get('slipFields') or {}
+        return sf if isinstance(sf, dict) else {}
+    except Exception:
+        return {}
 
 
 def load_previous_slips(path):
@@ -481,13 +520,14 @@ def build(shared_dir, conf, now=None, keep_days=None):
     log('出荷明細: 全 %d 行のうち、%s 以降の出荷 %d 件（消費税だけの伝票 %d 件は除く）' % (total, cutoff, len(ships), len(tax_only)))
 
     inbox = os.path.join(shared_dir, conf.get('inboxDir') or '_ship_inbox')
-    carriers, slips_by_key, unmatched = {}, {}, []
+    carriers, slips_by_key, unmatched, field_metas = {}, {}, [], {}
     blank_total = 0
     for ckey, cconf in (conf.get('carriers') or {}).items():
         if ckey.startswith('_') or not isinstance(cconf, dict):
             continue
         res = load_carrier(inbox, ckey, cconf)
         carriers[ckey] = res['meta']
+        field_metas[ckey] = res['fields']
         blank_total += res['blank']
         for key, recs in res['best'].items():
             if key in all_nos:
@@ -499,9 +539,18 @@ def build(shared_dir, conf, now=None, keep_days=None):
     # 運送会社のCSVは直近45日ぶんだけなので、前回の索引にある送り状は引き継いで積み足す（出荷の保持期間 keepDays の間は、送り状番号が残る）
     previous = load_previous_slips(os.path.join(shared_dir, OUT_NAME))
     attached = carried = 0
+    prev_fields = load_previous_slip_fields(os.path.join(shared_dir, DETAIL_NAME))
+    slip_fields = {}
     for key, s in ships.items():
         cur = slips_by_key.get(key, [])
         s['slips'] = merge_slips(cur, previous.get(key, []))
+        for x in s['slips']:
+            f = x.pop('_f', None)
+            fk = x['c'] + '|' + x['no']
+            if f is None:
+                f = (prev_fields.get('slips') or {}).get(fk)   # 前回から引き継いだ送り状は、全項目も前回から引き継ぐ
+            if f:
+                slip_fields[fk] = {str(i): v for i, v in f.items()}
         carried += 1 if len(s['slips']) > len(cur) else 0
         attached += 1 if s['slips'] else 0
 
@@ -513,7 +562,7 @@ def build(shared_dir, conf, now=None, keep_days=None):
                                    ships, str(smile.get('noDest') or NO_DEST))
     except Exception as e:
         log('住所を読めませんでした（住所なしで作ります）: %s: %s' % (type(e).__name__, e))
-    with_addr = sum(1 for s in ships.values() if s['cust'] + '|' + s['dest'] in addr)
+    with_addr = sum(1 for s in ships.values() if (addr.get(s['cust'] + '|' + s['dest']) or {}).get('a') or (addr.get(s['cust'] + '|' + s['dest']) or {}).get('z'))   # 住所（郵便番号）が付いた出荷
     log('住所: 出荷 %d 件のうち %d 件に付きました（マスタ %s）' % (len(ships), with_addr, '・'.join(m['name'] for m in masters) or 'なし'))
 
     wanted = {j for s in ships.values() for j in s['juchu']}
@@ -527,6 +576,7 @@ def build(shared_dir, conf, now=None, keep_days=None):
         log('受注明細出力.csv はありません（受注の要約なしで出力します）')
 
     out_ships = sorted(ships.values(), key=lambda s: (s['date'], int(s['no']) if s['no'].isdigit() else 0), reverse=True)
+    unmatched = [u for u in unmatched if not u['date'] or u['date'] >= cutoff]   # 出荷明細の期間より前の送り状は、SMILE に無くて当たり前なので出さない
     unmatched.sort(key=lambda u: (u['date'], u['key']), reverse=True)
     out = {
         'generatedAt': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'keepDays': keep, 'from': cutoff, 'sources': sources, 'carriers': carriers,
@@ -537,7 +587,8 @@ def build(shared_dir, conf, now=None, keep_days=None):
     write_json_atomic(dest, out)
     # 伝票の詳細（カードを押したときだけ画面が読む別のファイル）。失敗しても索引は有効（詳細だけ出ない）
     try:
-        write_json_atomic(os.path.join(shared_dir, DETAIL_NAME), {'generatedAt': out['generatedAt'], 'details': details})
+        sf = {'labels': {c: m['labels'] for c, m in field_metas.items()}, 'consts': {c: {str(i): v for i, v in m['consts'].items()} for c, m in field_metas.items()}, 'slips': slip_fields}
+        write_json_atomic(os.path.join(shared_dir, DETAIL_NAME), {'generatedAt': out['generatedAt'], 'details': details, 'slipFields': sf})
         log('伝票の詳細 %d 件 → %s（%.2f MB）' % (len(details), DETAIL_NAME, os.path.getsize(os.path.join(shared_dir, DETAIL_NAME)) / 1048576))
     except Exception as e:
         log('伝票の詳細を書けませんでした（索引はできています）: %s: %s' % (type(e).__name__, e))

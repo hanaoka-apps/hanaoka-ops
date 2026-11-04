@@ -257,7 +257,7 @@ async function loadDetail(force) {
   const r = await fetchText(CONF.files.detail || 'ship_detail.json');
   const o = JSON.parse(r.text);
   if (!o || typeof o.details !== 'object') throw new Error('伝票の詳細の形が違います');
-  DETAIL = { details: o.details, generatedAt: o.generatedAt || '' };
+  DETAIL = { details: o.details, generatedAt: o.generatedAt || '', slipFields: o.slipFields || null };
   return DETAIL;
 }
 async function openDetail(s) {
@@ -281,7 +281,24 @@ function compareHtml(s, sl) {
   h += '<table class="cmp-t"><thead><tr><th>見る所</th><th>SMILE（納品先マスタ・伝票）の項目</th><th>→ 送り状（' + E(S.carrierName(CONF, sl.c)) + 'のデータ）の項目</th><th></th></tr></thead><tbody>' +
     rows.map(r => '<tr class="' + r.st + '"><th>' + E(r.k) + '</th><td>' + cell(r.ka, r.a) + '</td><td' + (r.kb === '（欄なし）' ? ' class="nocol"' : '') + '>' + cell(r.kb, r.b) + '</td><td class="cmp-m">' + ({ ok: '✓', diff: '違うかも', cut: '切れています', missing: '入っていません', none: '', info: '' }[r.st] || '') + '</td></tr>').join('') + '</tbody></table>';
   const hint = rows.some(r => r.st === 'cut') ? '「切れています」は、送り状の欄の長さで、途中までしか入っていません（運送会社ごとに、1つの欄の長さが決まっています。第一貨物＝宛名・住所とも全角15文字（30バイト）、西濃＝名称・住所とも全角30文字（60バイト））。' : '', hint2 = rows.some(r => r.st === 'missing') ? '「入っていません」は、荷受け人名が送り状に入っていません。' : '';
-  return h + (nd ? '<div class="alert warn">伝票と送り状で、確認が必要な項目が ' + nd + ' 個あります。' + hint + hint2 + '表記の違い（全角・半角、「様」）のこともあるので、内容を見て確認してください。</div>' : '') + '</div>';
+  const hint3 = rows.some(r => r.k === '客先注番' && r.st === 'diff') ? '送り状に書かれている注番が、この注文の客先注番と違います（納品先マスタに、古い注番が残っているかもしれません）。' : '';
+  return h + (nd ? '<div class="alert warn">伝票と送り状で、確認が必要な項目が ' + nd + ' 個あります。' + hint + hint2 + hint3 + '表記の違い（全角・半角、「様」）のこともあるので、内容を見て確認してください。</div>' : '') + allFieldsHtml(sl) + '</div>';
+}
+// この送り状に書かれている項目（運送会社のデータにあるもの全部。空の項目は出さない）。見出しが無い運送会社は、設定の項目名（「推定」は、データの中身から推した名前）
+function allFieldsHtml(sl) {
+  const sf = DETAIL && DETAIL.slipFields;
+  if (!sf) return '';
+  const E = esc, labels = (sf.labels || {})[sl.c] || [], consts = (sf.consts || {})[sl.c] || {}, own = ((sf.slips || {})[sl.c + '|' + sl.no]) || null;
+  if (!own) return '';
+  const cols = {};
+  Object.keys(consts).forEach(i => { cols[i] = { v: consts[i], common: true }; });
+  Object.keys(own).forEach(i => { cols[i] = { v: own[i], common: false }; });
+  const ids = Object.keys(cols).map(Number).sort((a, b) => a - b);
+  const vn = ((CONF.carriers[sl.c] || {}).valueNotes) || {};
+  const shown = (lab, v) => { const n = vn[lab], z = S.zen(v); return n ? (n[v] ? z + '（' + n[v] + '）' : n['*'] ? (/^（/.test(n['*']) ? z + n['*'] : z + n['*']) : z) : z; };
+  const rows = ids.map(i => '<tr' + (cols[i].common ? ' class="common"' : '') + '><th>' + E(labels[i] || ('項目' + i)) + '</th><td>' + E(shown(labels[i], cols[i].v)) + '</td></tr>').join('');
+  return '<details class="cmp-all"><summary>この送り状に書かれている項目（全部・' + ids.length + '項目）</summary><table class="all-t">' + rows + '</table>' +
+    '<div class="muted" style="font-size:11px">運送会社のデータ（CSV）にある、空でない項目をすべて出しています。灰色の行は、どの送り状も同じ値の項目（荷送人など）です。受付店・配達店・仕分コードなど、運送会社のシステムが付ける項目は、CSV にないので、「配送状況」のページで見てください。</div></details>';
 }
 function detailHtml(s, d, gen) {
   const E = esc, Z = S.zen, F = S.fmtNum;
