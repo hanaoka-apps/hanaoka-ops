@@ -35,7 +35,7 @@
 
   window.EC_PROFILE = {
     storeKey: 'furusato_sales_v1', configUrl: 'furusato_config.json', noPay: true,
-    words: { 'Shopify': 'サイネックス', 'EC売上': 'ふるさと納税', 'EC_Order': 'FS_Order', 'EC_Log': 'FS_Log' },
+    words: { 'Shopify': 'サイネックス', 'EC売上': 'ふるさと納税', 'EC_Order': 'FS_Order', 'EC_Log': 'FS_Log', '商品名をSMILE品目コードへ変換': '商品番号をSMILE品目コードへ変換' },
     emptyOrders: 'サイネックスからの注文メール（ZIP）を専用機が解凍すると、ここに注文が並びます',
     buildSlip: function (o, ctx) { return FS.buildSlip(o, ctx); },
     juchuRows: function (slips, header, cfg, cal, conf) { return FS.juchuRows(slips, header, cfg, cal, conf && conf.biko); },
