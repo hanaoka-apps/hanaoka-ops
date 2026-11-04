@@ -967,6 +967,24 @@ t('SMILE の伝票イメージ：取込前（予定）', () => {
   const only2 = EC.slipImage(Object.assign({}, slip, { lines: [slip.lines[2]] }), { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }); assert.strictEqual(only2.head.mfgDate, '');
   assert.deepStrictEqual([EC.fmtDate('2026-10-28'), EC.fmtDate('20261028'), EC.fmtDate('261028'), EC.fmtDate('0'), EC.fmtDate('')], ['2026/10/28', '2026/10/28', '2026/10/28', '', '']);
 });
+t('出荷チェック：客先注番で出荷・送り状番号を引く（分納・複数の運送会社・得意先違い）', () => {
+  const idx = { generatedAt: '2026-11-04T07:14:09Z', carriers: { seino: { name: '西濃運輸' }, daiichi: { name: '第一貨物' } }, ships: [
+    { no: '35808', date: '2026-09-14', cust: '599802', po: ['1679'], juchu: ['26001'], slips: [{ c: 'seino', no: '9072283622', date: '2026-09-14' }] },
+    { no: '35900', date: '2026-09-16', cust: '599802', po: ['1700'], juchu: ['26010'], slips: [] },
+    { no: '36001', date: '2026-09-20', cust: '599802', po: ['1710', 'A-1711'], juchu: ['26020'], slips: [{ c: 'seino', no: '9072283700' }, { c: 'daiichi', no: '40148717965' }] },
+    { no: '36002', date: '2026-09-21', cust: '599802', po: ['1710'], juchu: ['26020'], slips: [{ c: 'seino', no: '9072283700' }] },   // 同じ送り状は1つにまとめる
+    { no: '90001', date: '2026-09-22', cust: '000123', po: ['1679'], juchu: ['1'], slips: [{ c: 'seino', no: '1111111111' }] }] };
+  const L = EC.shipLookup(idx);
+  const a = EC.shipOf(L, '#1679', '599802');
+  assert.deepStrictEqual([a.state, a.shipDate, a.shipNos, a.slips.map(x => x.carrier + ':' + x.fmt)], ['done', '2026-09-14', ['35808'], ['西濃運輸:907-228-3622']]);   // #1679 の「#」は外して引く。ほかの得意先の同じ番号は混ぜない
+  assert.strictEqual(EC.shipOf(L, '1700', '599802').state, 'noslip');   // 出荷伝票はあるが送り状番号がまだ
+  assert.strictEqual(EC.shipOf(L, '1800', '599802').state, 'none');   // 出荷が見つからない
+  const m2 = EC.shipOf(L, '1710', '599802');
+  assert.deepStrictEqual([m2.state, m2.shipNos, m2.slips.map(x => x.c + x.no), m2.shipDate], ['done', ['36001', '36002'], ['seino9072283700', 'daiichi40148717965'], '2026-09-20']);   // 分納：送り状は重複を除く・出荷日は早いほう
+  assert.strictEqual(EC.shipOf(L, '1711', '599802').state, 'done'); assert.strictEqual(EC.shipOf(L, '1679', '').ships.length, 2);   // 得意先を言わなければ両方
+  assert.deepStrictEqual([EC.fmtSlipNo('seino', '9072283622'), EC.fmtSlipNo('daiichi', '40148717965'), EC.fmtSlipNo('seino', '123')], ['907-228-3622', '40148717965', '123']);
+  assert.strictEqual(EC.shipOf(EC.shipLookup(null), '1', '').state, 'none');   // 出荷データが無くても壊れない
+});
 t('必須項目（納品先名・住所１・郵便番号）は空にできない', () => {
   assert.deepStrictEqual(EC.editFieldErrors({ name: '山田様', addr1: '山口県', zip: '745-0803' }), {});
   assert.deepStrictEqual(Object.keys(EC.editFieldErrors({ name: ' ', addr1: '', zip: '123' })).sort(), ['addr1', 'name', 'zip']);

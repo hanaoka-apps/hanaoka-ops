@@ -1403,6 +1403,38 @@
     };
   };
 
+  /* ============================================================ 出荷チェック（出荷・送り状番号の引き当て）
+   * 専用機が毎時作る ship_index.json（出荷ごとに 客先注番・受注№・出荷№・出荷日・送り状（運送会社・番号））を、注文の客先注番（数字だけ）で引く。
+   * 状態：none＝出荷が見つからない（出荷待ち）／noslip＝出荷伝票はあるが送り状番号がまだ（出荷待ち）／done＝送り状番号あり */
+  EC.shipLookup = function (idx) {
+    var byPo = {};
+    ((idx && idx.ships) || []).forEach(function (sh) {
+      (sh.po || []).forEach(function (p) { var k = digits(p); if (k) (byPo[k] = byPo[k] || []).push(sh); });
+    });
+    return { byPo: byPo, carriers: (idx && idx.carriers) || {}, generatedAt: (idx && idx.generatedAt) || '' };
+  };
+  // 西濃の問合せ番号は 3-3-4 桁に区切って見せる（サイネックスへの出荷報告と同じ形）。そのほかの運送会社は、そのまま
+  EC.fmtSlipNo = function (carrier, no) {
+    var d = digits(no);
+    return carrier === 'seino' && d.length === 10 ? d.slice(0, 3) + '-' + d.slice(3, 6) + '-' + d.slice(6) : String(no == null ? '' : no);
+  };
+  EC.shipOf = function (lookup, po, cust) {
+    var ships = ((lookup && lookup.byPo[digits(po)]) || []).filter(function (sh) { return !cust || !sh.cust || sh.cust === cust; });
+    var slips = [], seen = {};
+    ships.forEach(function (sh) {
+      (sh.slips || []).forEach(function (sl) {
+        var key = sl.c + '|' + sl.no; if (seen[key]) return; seen[key] = 1;
+        var car = lookup.carriers[sl.c] || {};
+        slips.push({ c: sl.c, carrier: car.name || sl.c, no: sl.no, fmt: EC.fmtSlipNo(sl.c, sl.no), date: sl.date || '' });
+      });
+    });
+    var dates = ships.map(function (sh) { return sh.date; }).filter(Boolean).sort();
+    return {
+      state: slips.length ? 'done' : ships.length ? 'noslip' : 'none', ships: ships, slips: slips,
+      shipNos: ships.map(function (sh) { return sh.no; }), shipDate: dates.length ? dates[0] : '', juchu: ships.reduce(function (a, sh) { return a.concat(sh.juchu || []); }, [])
+    };
+  };
+
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];
     return tbl.rows.map(function (r) { var o = {}; tbl.cols.forEach(function (c, i) { o[c] = r[i] == null ? '' : r[i]; }); return o; });
