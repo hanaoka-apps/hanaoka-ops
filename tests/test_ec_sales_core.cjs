@@ -182,6 +182,9 @@ t('西濃運輸（宅配）の長さ：宛名60バイト（全角30字）・住�
   assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
 });
 t('宛名の短縮案：法人名を略す→空白を整える→後ろの語を省く（案を出すだけ）', () => {
+  // 送り状では半角カナが全角（2バイト）になる：SMILE の長さ（半角カナ＝1）とは別に数える
+  assert.deepStrictEqual([EC.sjisLen('ｱｲｳ山'), EC.carrierLen('ｱｲｳ山'), EC.carrierLen('ABC山'), EC.carrierLen('')], [5, 8, 5, 0]);
+  assert.strictEqual(EC.shortenName('ｱ'.repeat(20), 30).text.length < 20, true);   // 半角カナ20字＝送り状では40バイトなので、30バイトに収まるよう短くする
   assert.deepStrictEqual(EC.shortenName('山田 太郎様', 30), { text: '山田 太郎様', dropped: '', steps: [] });          // 収まるなら、そのまま
   const a = EC.shortenName('株式会社フセラシ群馬営業所本社ビル', 30);                                                          // 34バイト→法人名を略すと30バイトで入る
   assert.strictEqual(a.text, '(株)フセラシ群馬営業所本社ビル'); assert.deepStrictEqual(a.steps, ['法人名を略す']); assert.strictEqual(a.dropped, '');
