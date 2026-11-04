@@ -525,8 +525,9 @@ let slipView = 'cmp'; // 開くたびに最初の画面へ（EC売上の5工程�
 const ED_REQUIRED = ['name', 'zip', 'addr1'];
 function memoCtl(s, st, r) {
   const can = !(st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check');
-  return '<input type="text" class="ed-live" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="書き足すメモ（例：ブルー入荷待ち／入金確認済）"' + (can ? '' : ' disabled') + ' style="width:100%">' +
-    '<div class="sub">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b>' + (can ? '（入力すると、すぐ保存されます）' : '') + '</div>';
+  return '<div class="memo-out"><span>取り込まれるメモ</span><b id="memoOut-' + s.id + '">' + esc(memoOf(s)) + '</b></div>' +
+    '<input type="text" class="ed-live" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="書き足すメモ（例：ブルー入荷待ち／入金確認済）"' + (can ? '' : ' disabled') + ' style="width:100%">' +
+    (can ? '<div class="sub">基本は「花岡EC」。続けて書き足せます。入力すると、すぐ保存されます</div>' : '');
 }
 function shipCtl(s, st, r, ship, brief) {
   if (!(st === 'new' || st === 'ok')) return esc(md(ship));
@@ -1953,6 +1954,7 @@ document.addEventListener('input', e => {
   if (t.id === 'try-name') tryName(t.value);
   else if (t.id === 'map-q') { mapQ = t.value; $('rules').innerHTML = mapRulesHtml(); }
   else if (t.dataset && t.dataset.md !== undefined) mdInput(t);
+  else if (t.dataset && t.dataset.memo !== undefined) { const sl = slips.find(x => x.id === t.dataset.memo), out = document.getElementById('memoOut-' + t.dataset.memo); if (sl && out) out.textContent = EC.joinMemo(sl.baseMemo || sl.memo, t.value, store.cfg); }   // 取り込まれるメモを、入力に合わせて見せる
 });
 document.addEventListener('change', e => { const t = e.target; if (t.dataset && t.dataset.md !== undefined) { mdInput(t); if (t.dataset.mdre !== undefined) renderMapDrawer(); } });
 // 対応表・設定：行クリック → ドロワー／ドロワーのボタン
