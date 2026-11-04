@@ -964,6 +964,20 @@ t('SMILE の伝票イメージ：取込前（予定）', () => {
   const only2 = EC.slipImage(Object.assign({}, slip, { lines: [slip.lines[2]] }), { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }); assert.strictEqual(only2.head.mfgDate, '');
   assert.deepStrictEqual([EC.fmtDate('2026-10-28'), EC.fmtDate('20261028'), EC.fmtDate('261028'), EC.fmtDate('0'), EC.fmtDate('')], ['2026/10/28', '2026/10/28', '2026/10/28', '', '']);
 });
+t('配達員向けメモ：荷受け人名１に入る・納品先の判定には使わない・既存の編集の仕組みに乗る', () => {
+  const o = order(), base = EC.deliveryFromOrder(o, DEFAULT_CONFIG);
+  assert.strictEqual(base.memo, ''); assert.ok(EC.EDIT_FIELDS.some(f => f.k === 'memo'));
+  const withMemo = EC.deliveryFromOrder(Object.assign({}, o, { deliveryEdit: { memo: '午前中配達希望' } }), DEFAULT_CONFIG);
+  assert.strictEqual(withMemo.memo, '午前中配達希望'); assert.deepStrictEqual(withMemo.edited, ['memo']); assert.strictEqual(withMemo.key, base.key);   // メモだけなら、同じ納品先として扱う
+  const row = EC.nouhinRows([{ cust: '599801', code: '000900', d: withMemo }], L.nouhin, DEFAULT_CONFIG)[0];
+  assert.strictEqual(row[4], '午前中配達希望');   // 荷受け人名１（荷受け人が空なら、メモだけ）
+  const co = EC.deliveryFromOrder(Object.assign({}, o, { ship: Object.assign({}, o.ship, { company: '(株)テスト' }), deliveryEdit: { memo: '14-16時希望' } }), DEFAULT_CONFIG);
+  assert.strictEqual(EC.nouhinRows([{ cust: '599801', code: '000901', d: co }], L.nouhin, DEFAULT_CONFIG)[0][4], '中村達生様 14-16時希望');   // 荷受け人があれば、続ける
+  const long = EC.nouhinRows([{ cust: '599801', code: '000902', d: Object.assign({}, withMemo, { memo: 'あ'.repeat(30) }) }], L.nouhin, DEFAULT_CONFIG)[0][4];
+  assert.ok(EC.sjisLen(long) <= 48);   // 48バイトで切る
+  assert.deepStrictEqual(EC.diffDeliveryEdit(base.auto, Object.assign({}, base, { memo: '午前中配達希望' })), { memo: '午前中配達希望' });
+  assert.ok(EC.checkDeliveryEdit({ name: 'x様', person: '中村達生様', memo: 'あ'.repeat(24), zip: '745-0803', addr1: '山口県', tel: '' }, DEFAULT_CONFIG).warns.some(x => /荷受け人＋配達員向けメモが長い/.test(x)));
+});
 t('SMILE の伝票イメージ：拡張項目（運送業者・配送指定日）', () => {
   const slip = { id: '1767', cust: '599802', orderDate: '2026-10-26', shipDate: '2026-10-28', memo: '花岡EC', lines: [{ code: 'FR', name: 'f', unit: '式', teihai: '2', qty: 1, unitNet: 1500, amountNet: 1500 }] };
   const plan = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } });

@@ -546,6 +546,27 @@ function summaryHtml(s, editBlock) {
   h += '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (st === 'new' && !act ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>';
   return h;
 }
+// 納品先マスタ（取込用）の枠：新規ならこの注文から作る登録内容、既存なら SMILE にすでにある登録内容（取込では変えない）、取込後は SMILE の実際の値
+function nouhinBlockHtml(s, d, code, act, it, pend) {
+  const P = EC.pick, E = esc, lim = (store.cfg.limits || {});
+  let title, v, hint = '';
+  if (act && act.nouhin) {
+    const n = act.nouhin; title = '納品先マスタ（SMILEの実際の値）';
+    v = { code: act.deliveryCode, name: P(n, ['納品先名']), p1: P(n, ['荷受け人名１']), p2: P(n, ['荷受け人名２']), zip: P(n, ['郵便番号']), a1: P(n, ['住所１']), a2: P(n, ['住所２']), tel: P(n, ['電話番号']) };
+  } else if (code) {
+    const I = M.smileIdx, n = I && I.byNouhin && I.byNouhin[s.cust + '|' + code];
+    title = '納品先マスタ（既存の納品先。SMILEの登録内容は、取込では変わりません）';
+    v = n ? { code, name: P(n, ['納品先名']), p1: P(n, ['荷受け人名１']), p2: P(n, ['荷受け人名２']), zip: P(n, ['郵便番号']), a1: P(n, ['住所１']), a2: P(n, ['住所２']), tel: P(n, ['電話番号']) } : { code, name: d.name, p1: '', p2: '', zip: d.zip, a1: d.addr1, a2: d.addr2, tel: d.tel };
+    if (d.memo) hint = '<div class="alert warn" style="margin-top:4px">配達員向けメモは、既存の納品先には入りません（納品先マスタの取込は新規だけ）。SMILE の荷受け人名１に直接入れてください</div>';
+  } else {
+    title = '納品先マスタ（新規。取込で SMILE に登録します）';
+    v = { code: '', name: EC.cutBytes(d.name, lim.name), p1: EC.cutBytes([d.person, d.memo].filter(Boolean).join(' '), lim.name), p2: '', zip: d.zip, a1: EC.cutBytes(d.addr1, lim.addr1), a2: EC.cutBytes(d.addr2, lim.addr2), tel: d.tel };
+  }
+  const val = x => x ? E(x) : '<span class="muted">なし</span>';
+  return '<div class="muted" style="margin:8px 0 2px;font-size:11px">' + title + '</div><div class="sl-hd c3">' +
+    it('納品先コード', v.code ? E(v.code) : pend('取込時に決定'), v.code ? '' : ' ') + it('納品先名', val(v.name)) + it('荷受け人名１', val(v.p1)) +
+    it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint;
+}
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
   const sl = Object.assign({}, s, { memo: memoOf(s) });
@@ -583,6 +604,7 @@ function slipImageHtml(s) {
   h += '<div class="sl-sum">受注数量合計 <b' + (plan && plan.total.qty !== img.total.qty ? ' class="sl-vv diff"' : '') + '>' + E(img.total.qty) + '</b>合計金額（税抜） <b' + (plan && plan.total.amount !== img.total.amount ? ' class="sl-vv diff"' : '') + '>' + E(img.total.amount) + '</b></div>' +
     '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
     // 拡張項目（SMILE の「受注伝票拡張項目」の画面）：運送業者・配送指定日など。取込後に、お客様の希望日が入っている注文などが分かる
+    nouhinBlockHtml(s, d, code, act, it, pend) +
     '<div class="muted" style="margin:8px 0 2px;font-size:11px">拡張項目</div><div class="sl-hd c3">' +
     it('運送業者', img.ext.carrier.missing ? pend('（この確認用データにはありません）') : E(img.ext.carrier.label || '（不明）'), df(img.ext.carrier.code, plan && plan.ext.carrier.code)) +
     it('配送指定日', img.ext.deliveryDate ? E(img.ext.deliveryDate) : '<span class="muted">指定なし</span>', df(img.ext.deliveryDate, plan && plan.ext.deliveryDate)) +
@@ -601,7 +623,7 @@ function compareHtml(s) {
     const n = act.nouhin;
     A = { name: P(n, ['納品先名']), person: P(n, ['荷受け人名１']), zip: P(n, ['郵便番号']), addr: P(n, ['住所１']) + P(n, ['住所２']), addr1: P(n, ['住所１']), addr2: P(n, ['住所２']), tel: P(n, ['電話番号']), code: act.deliveryCode };
   } else {
-    A = { name: d.name, person: d.person, zip: d.zip, addr: (d.addr1 || '') + (d.addr2 || ''), addr1: d.addr1, addr2: d.addr2, tel: d.tel, code: '' };
+    A = { name: d.name, person: d.person, memo: d.memo, zip: d.zip, addr: (d.addr1 || '') + (d.addr2 || ''), addr1: d.addr1, addr2: d.addr2, tel: d.tel, code: '' };
   }
   const FLc = FLOW_UI(), convs = [];   // convs＝正常な自動変換（違う項目とは言わない）
   const row = (label, a, b, diff, sub, conv) => { const isConv = !!conv && !diff; if (isConv) convs.push(conv); const dc = diff ? (FLc ? ' bad' : ' diff') : ''; return '<tr><th>' + label + '</th><td class="shop' + dc + '">' + a + '</td><td class="smile' + dc + (isConv && FLc ? ' conv' : '') + '">' + b + (sub ? '<div class="sub">' + sub + '</div>' : '') + (isConv && FLc ? '<div class="sub conv-t">自動変換：' + conv + '</div>' : '') + '</td></tr>'; };
@@ -617,6 +639,7 @@ function compareHtml(s) {
     };
     h += row('納品先名', E(sh.company || sh.name), inp('name'), false);
     h += row('荷受け人', E(sh.company ? sh.name : ''), inp('person'), false);
+    h += row('配達員向けメモ', '', inp('memo') + '<div class="sub">SMILE の荷受け人名１に入ります（例：午前中配達希望／14-16時配達希望）。配達員の目に留まるためのメモで、納品先の同じ・違うの判定には使いません。<b>新規の納品先にだけ入ります</b></div>', false);
     h += row('郵便番号', E(sh.zip), inp('zip') + '<div class="sub"><button class="btn sec sm" data-act="edzip" data-id="' + s.id + '">郵便番号から住所を確認</button> <span id="zipHint"></span></div>', false);
     h += row('住所１', E(shopAddr), inp('addr1'), false);
     h += row('住所２', '', inp('addr2'), false);
@@ -625,11 +648,20 @@ function compareHtml(s) {
   const rawNm = sh.company || sh.name;
   h += row('納品先名', E(rawNm), E(A.name) + edTag('name'), nm(rawNm) !== nm(A.name), '', String(rawNm) !== String(A.name) ? '納品先名に「様」などを付加' : '');
   h += row('荷受け人', E(sh.company ? sh.name : ''), E(A.person) + edTag('person'), !!(sh.company && nm(sh.name) !== nm(A.person)), '', sh.company && String(sh.name) !== String(A.person) ? '荷受け人に「様」を付加' : '');
+  if (A.memo) h += row('配達員向けメモ', '', E(A.memo) + edTag('memo'), false, '荷受け人名１に入ります');
   h += row('郵便番号', E(sh.zip), E(A.zip) + edTag('zip'), dg(sh.zip) !== dg(A.zip), '', String(sh.zip) !== String(A.zip) ? '郵便番号の形を整える' : '');
   h += row('住所', E(shopAddr), E(A.addr1) + (A.addr2 ? '<br>' + E(A.addr2) : '') + edTag('addr1') + edTag('addr2'), nz(shopAddr) !== nz(A.addr), '', String(shopAddr) !== String(A.addr) ? '住所を整える（全角・半角・文字の置き換え）' : '');
   h += row('電話', E(sh.phone), E(A.tel) + edTag('tel'), tel(sh.phone) !== tel(A.tel), '', String(sh.phone) !== String(A.tel) ? '電話番号を国内形式に変換' : '');
   }
   if (A.code) h += row('納品先コード', '', E(A.code), false);
+  {   // 受注伝票のほうの項目（Shopify には無いものは、SMILE 側だけ）
+    const cinfo = (store.cfg.customers || {})[s.cust] || {}, po = String(s.id).replace(/\D/g, '');
+    const ext = EC.slipImage(Object.assign({}, s, { memo: memoOf(s) }), { cfg: store.cfg, items: M.items, cal, shipDate: shipOf(s), act, delivery: { code: A.code || '', name: A.name } }).ext;
+    h += row('得意先', '', E(s.cust + ' ' + (cinfo.name || '')), false);
+    h += row('担当・部門・倉庫', '', E('担当者 ' + (cinfo.staff || '—') + '／部門 ' + (cinfo.dept || '—') + '／倉庫 ' + ((store.cfg.warehouse) || '—')), false);
+    h += row('客先注番', E(s.name), E(act ? P(act.rows[0], ['客先注番']) : po), false, '', String(s.name) !== po ? '注文番号の数字だけを入れる' : '');
+    h += row('運送・配送指定', '', E([ext.carrier.missing ? '運送業者：（この確認用データにはありません）' : '運送業者：' + (ext.carrier.label || '—'), '配送指定日：' + (ext.deliveryDate || '指定なし'), '配達指定：' + (ext.deliveryKubun.label || 'なし'), ext.officeName ? '営業所止め：' + ext.officeName : ''].filter(Boolean).join('／')), false, act ? '' : '運送業者は、設定の値で取り込みます。お客様の希望日は入れません');
+  }
   // 商品：Shopify の行 ↔ SMILE の行（同じ順に並べる。商品名は対応表で品目に変わるので、違いは強調しない）
   const sl = o.lines, ml = act ? act.rows.map(x => ({ code: P(x, ['品目コード']), name: P(x, ['品目名', '品名']), qty: +P(x, ['数量']) || 0, amt: Math.round(+P(x, ['金額']) || 0) })) : s.lines.map(l => ({ code: l.code, name: l.name, qty: l.qty, amt: Math.round(l.amountNet) }));
   for (let i = 0; i < Math.max(sl.length, ml.length); i++) {
@@ -1822,6 +1854,8 @@ function reviewDeliveryEdit(s) {
   const dv = EC.deliveryFromOrder(s.order, store.cfg), diff = EC.diffDeliveryEdit(dv.auto, editDraft);
   if (!Object.keys(diff).length) { alert('変更がありません'); return; }
   const merged = Object.assign({}, dv.auto, diff), chk = EC.checkDeliveryEdit(merged, store.cfg);
+  const exCode = M.nouhin && M.nouhin[s.cust] && M.nouhin[s.cust].keys[dv.key];
+  if (exCode && diff.memo) chk.warns.push('既存の納品先（' + exCode + '）です。配達員向けメモは、取込では入りません（納品先マスタの取込は新規だけ）。SMILE の荷受け人名１に直接入れてください');
   const rows = Object.keys(diff).map(k => { const f = EC.EDIT_FIELDS.find(x => x.k === k); return '<tr><th>' + esc(f.label) + '</th><td>' + esc(dv.auto[k] || '（空）') + '</td><td style="background:#fff1c2;font-weight:600">' + esc(diff[k] || '（空）') + '</td></tr>'; }).join('');
   const ov = document.createElement('div');
   ov.id = 'editConfirm';

@@ -556,14 +556,15 @@
       name: hasCo ? s.company : nm + '様', person: hasCo ? nm + '様' : '',
       zip: fmtZip(s.zip), addr1: a1, addr2: a2, tel: fmtPhone(s.phone || o.bill.phone || o.phone),
       key: EC.normName(hasCo ? s.company : nm) + '|' + EC.normZip(s.zip) + (hasCo ? '|' + EC.normName(nm) : ''),
+      memo: '',   // 配達員向けメモ（荷受け人名１に入る。画面で直接入れる。納品先の同じ・違うの判定には使わない）
       changed: changed
     };
     // 人が画面で直した納品先（o.deliveryEdit＝{項目:値}。SharedMasters の _ec_edits/<注文番号>.json）を重ねる。元の値は d.auto に残す
-    d.auto = { name: d.name, person: d.person, zip: d.zip, addr1: d.addr1, addr2: d.addr2, tel: d.tel };
+    d.auto = { name: d.name, person: d.person, memo: '', zip: d.zip, addr1: d.addr1, addr2: d.addr2, tel: d.tel };
     d.edited = [];
     if (o.deliveryEdit) {
       EC.EDIT_FIELDS.forEach(function (f) { if (o.deliveryEdit[f.k] != null && o.deliveryEdit[f.k] !== d.auto[f.k]) { d[f.k] = o.deliveryEdit[f.k]; d.edited.push(f.k); } });
-      if (d.edited.length) {
+      if (d.edited.some(function (k) { return k !== 'memo'; })) {   // メモだけの変更では、納品先の同じ・違うの判定（key）を変えない
         var bare = function (v) { return String(v || '').replace(/様$/, ''); };
         d.key = EC.normName(bare(d.name)) + '|' + EC.normZip(d.zip) + (d.person ? '|' + EC.normName(bare(d.person)) : '');
       }
@@ -572,7 +573,7 @@
     return d;
   };
   // 画面で直せる納品先の項目（k＝deliveryFromOrder の項目名）
-  EC.EDIT_FIELDS = [{ k: 'name', label: '納品先名', limit: 'name' }, { k: 'person', label: '荷受け人', limit: 'name' }, { k: 'zip', label: '郵便番号' },
+  EC.EDIT_FIELDS = [{ k: 'name', label: '納品先名', limit: 'name' }, { k: 'person', label: '荷受け人', limit: 'name' }, { k: 'memo', label: '配達員向けメモ', limit: 'name' }, { k: 'zip', label: '郵便番号' },
     { k: 'addr1', label: '住所１', limit: 'addr1' }, { k: 'addr2', label: '住所２', limit: 'addr2' }, { k: 'tel', label: '電話' }];
   // 保存する前の確認。戻り値 { errors:[文言], warns:[文言] }（errors があれば保存させない）
   EC.checkDeliveryEdit = function (v, cfg) {
@@ -583,7 +584,8 @@
     var td = digits(v.tel);
     if (v.tel && (td.length < 10 || td.length > 11)) warns.push('電話番号が10〜11桁ではありません');
     EC.EDIT_FIELDS.forEach(function (f) { if (f.limit && lim[f.limit] && EC.sjisLen(v[f.k]) > lim[f.limit]) warns.push(f.label + 'が長いため、SMILE で切れます（' + EC.sjisLen(v[f.k]) + 'バイト／上限 ' + lim[f.limit] + '）'); });
-    EC.charIssues(String(v.name || '') + String(v.person || '') + String(v.addr1 || '') + String(v.addr2 || '')).forEach(function (x) {
+    if (lim.name && v.memo && v.person && EC.sjisLen(String(v.person) + ' ' + String(v.memo)) > lim.name) warns.push('荷受け人＋配達員向けメモが長いため、SMILE の荷受け人名１で切れます（' + EC.sjisLen(String(v.person) + ' ' + String(v.memo)) + 'バイト／上限 ' + lim.name + '）');
+    EC.charIssues(String(v.name || '') + String(v.person || '') + String(v.memo || '') + String(v.addr1 || '') + String(v.addr2 || '')).forEach(function (x) {
       warns.push('「' + x.ch + '」は' + (x.kind === 'dep' ? '機種依存文字' : 'Shift-JISにない文字') + 'で、配送会社の取込で化ける可能性があります');
     });
     return { errors: errors, warns: warns };
@@ -671,7 +673,7 @@
     return fresh.map(function (f) {
       var o = new Array(header.length).fill('');
       var lim = (cfg && cfg.limits) || {}, cut = function (v) { return EC.cutBytes(v, lim.name); };
-      o[0] = f.cust; o[1] = f.code; o[2] = cut(f.d.name); o[3] = ''; o[4] = cut(f.d.person); o[5] = '';
+      o[0] = f.cust; o[1] = f.code; o[2] = cut(f.d.name); o[3] = ''; o[4] = cut([f.d.person, f.d.memo].filter(Boolean).join(' ')); o[5] = '';   // 荷受け人名１＝荷受け人＋配達員向けメモ
       o[6] = f.d.zip; o[7] = EC.cutBytes(f.d.addr1, lim.addr1); o[8] = EC.cutBytes(f.d.addr2, lim.addr2); o[9] = ''; o[10] = ''; o[11] = f.d.tel; o[12] = '';
       o[15] = '0'; o[38] = '0'; o[39] = '1'; o[40] = '1';
       return o;
