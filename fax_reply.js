@@ -247,6 +247,7 @@
         <span class="fr-modes"><button class="fr-btn on" data-mode="text" title="クリックした所に文字を書く">Ａ 文字</button><button class="fr-btn" data-mode="textbox" title="クリックした所に、枠つき・白背景の文字（コメント）を書く">▭ テキストボックス</button><button class="fr-btn" data-mode="rect" title="ドラッグで四角い枠を描く">□ 枠</button><button class="fr-btn" data-mode="line" title="ドラッグで直線を描く（ほぼ水平・垂直なら真っすぐにそろえる。Shiftで必ずそろえる）">／ 線</button><button class="fr-btn" data-mode="ellipse" title="ドラッグで丸（楕円）を描く。Shiftで正円">◯ 丸</button><button class="fr-btn" data-mode="stamp" title="押したい所をクリックしてスタンプを押す（種類は右の選択、内容は右側で設定）">印 スタンプ</button></span>
         <select class="fr-lw fr-stype" title="スタンプの種類"><option value="data">データ印</option><option value="done">完了</option><option value="seal">社判（全部）</option><option value="sealshort">社判（住所・会社名）</option></select>
         <select class="fr-lw fr-col" title="文字・枠・線・丸・社判の色"><option value="blue" selected>色：青</option><option value="black">色：黒</option><option value="red">色：赤</option></select>
+        <select class="fr-lw fr-size" title="新しく書く文字の大きさ（このパソコンに覚えます）">${[8, 9, 10, 11, 12, 14, 16, 18].map(n => `<option value="${n}">文字：${n}pt</option>`).join('')}</select>
         <select class="fr-lw fr-width" title="枠・線の太さ"><option value="1">細</option><option value="1.5" selected>中</option><option value="2.5">太</option></select>
         <button class="fr-btn" data-act="undo" title="最後に書いたものを消す">↶ 元に戻す</button>
         <span style="flex:1"></span>
@@ -353,7 +354,7 @@
       .replace(/^登録番号：T9010601007789\n?/m, '');                     // 初めの版に入れていた登録番号は不要（10/15）
     const sealEl = ov.querySelector('[data-seal]');
     sealEl.value = stampCfg.seal;
-    const saveSeal = () => saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal, sealBg: stampCfg.sealBg });
+    const saveSeal = () => saveStampCfg({ top: stampCfg.top, bottom: stampCfg.bottom, d: stampCfg.d, seal: stampCfg.seal, sealBg: stampCfg.sealBg, fontSize: stampCfg.fontSize });
     // 社判の背景（透明／白）。選んでいる社判があれば、それも切り替える
     const sealBgEl = ov.querySelector('[data-seal-bg]');
     sealBgEl.value = stampCfg.sealBg === 'white' ? 'white' : 'none';
@@ -368,6 +369,11 @@
       stampCfg.seal = sealDefault(); sealEl.value = stampCfg.seal; saveSeal(); status('社判を初期値に戻しました');
     });
     const curColor = () => $('.fr-col').value || 'blue';
+    // 新しく書く文字の大きさ。選んだ大きさはこのブラウザに覚える（人によって 9pt が多い、など）
+    const sizeEl = $('.fr-size');
+    sizeEl.value = String([8, 9, 10, 11, 12, 14, 16, 18].includes(+stampCfg.fontSize) ? stampCfg.fontSize : DEFAULT_SIZE);
+    sizeEl.addEventListener('change', () => { stampCfg.fontSize = +sizeEl.value; saveSeal(); });
+    const curSize = () => +sizeEl.value || DEFAULT_SIZE;
     // ---- 定型文 ----
     let snippets = loadSnippets(), pendingSnip = null;   // pendingSnip：押したあと「置きたい所をクリック」待ちの文
     const fillSnip = t => t.replace(/\{名前\}/g, stampCfg.bottom || '')
@@ -524,11 +530,11 @@
           if (pendingSnip !== null) {   // 定型文を押したあとのクリック：そこに置く（テキストボックスのモードなら枠つき）
             const t = fillSnip(snippets[pendingSnip] || '');
             pendingSnip = null; renderSnips(); status('定型文を置きました。〇の所を直してください');
-            addBox(idx, at(e)[0], at(e)[1] - DEFAULT_SIZE * 0.6, t, DEFAULT_SIZE, true, { color: curColor(), boxed: mode === 'textbox' });
+            addBox(idx, at(e)[0], at(e)[1] - curSize() * 0.6, t, curSize(), true, { color: curColor(), boxed: mode === 'textbox' });
             return;
           }
           if (mode === 'text' || mode === 'textbox') {
-            addBox(idx, at(e)[0], at(e)[1] - DEFAULT_SIZE * 0.6, '', DEFAULT_SIZE, true,
+            addBox(idx, at(e)[0], at(e)[1] - curSize() * 0.6, '', curSize(), true,
                    { color: curColor(), boxed: mode === 'textbox' });
             return;
           }
