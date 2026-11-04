@@ -186,35 +186,52 @@ t('伝票と送り状の見比べ：同じ・違うかも・比べない', () =>
   // 全部同じ（表記ゆれ：㈱・様・全角ハイフン・丁目）
   const ok = S.compareSlip(conf, idx, sh, { c: 'seino', no: '1', qty: '2', kg: '30', date: '2026-11-02', n: '架空商事 本社 山田様', z: '1230001', a: '架空県架空市新田町１－２－３', w: '配達指定【11月05日午前】', m: 'キャスター' });
   assert.deepStrictEqual(ok.filter(r => r.st === 'diff'), []);
-  assert.strictEqual(by(ok, 'お届け先').st, 'ok'); assert.strictEqual(by(ok, '郵便番号').st, 'ok'); assert.strictEqual(by(ok, '住所').st, 'ok'); assert.strictEqual(by(ok, '配達指定').st, 'ok');
-  assert.strictEqual(by(ok, '個数').st, 'info'); assert.strictEqual(by(ok, '個数').b, '2個'); assert.strictEqual(by(ok, '品名（記事）').a, 'キャスター');
+  assert.strictEqual(by(ok, '宛名（1行目）').st, 'ok'); assert.strictEqual(by(ok, '郵便番号').st, 'ok'); assert.strictEqual(by(ok, '住所').st, 'ok'); assert.strictEqual(by(ok, '配達指定').st, 'ok');
+  assert.strictEqual(by(ok, '個数').st, 'info'); assert.strictEqual(by(ok, '個数').b, '2個'); assert.strictEqual(by(ok, '品名').a, 'キャスター');
   // 違う：名前・郵便番号・住所・配達指定（日付・午前午後）・出荷日
   const ng = S.compareSlip(conf, idx, sh, { c: 'seino', no: '1', date: '2026-11-03', n: '別の会社', z: '9990001', a: '別県別市9-9-9', w: '配達指定【11月06日午後】' });
-  ['出荷日', 'お届け先', '郵便番号', '住所', '配達指定'].forEach(k => assert.strictEqual(by(ng, k).st, 'diff', k));
+  ['出荷日', '宛名（1行目）', '郵便番号', '住所', '配達指定'].forEach(k => assert.strictEqual(by(ng, k).st, 'diff', k));
   assert.strictEqual(by(S.compareSlip(conf, idx, sh, { c: 'seino', no: '1', w: '配達指定【11月05日午後】' }), '配達指定').st, 'diff');   // 午前と午後
   // 宛名：名称１＝納品先名、名称２＝荷受け人名。送り状の欄の長さで切れているものは「切れています」、荷受け人名が無いものは「入っていません」
   const idxR = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市新田町1-2-3', r: '小久保所長様' } } };
   const sr = ship({ destName: '架空商事 群馬営業所本館', date: '2026-11-02' });
   const sl = o => Object.assign({ c: 'seino', no: '1', date: '2026-11-02' }, o);
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所本館 小久保所長様', n1: '架空商事 群馬営業所本館', n2: '小久保所長様' })), 'お届け先').st, 'ok');
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所 小久保所長様', n1: '架空商事 群馬営業所', n2: '小久保所長様' })), 'お届け先').st, 'cut');   // 名称１が途中まで
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所本館', n1: '架空商事 群馬営業所本館', n2: '' })), 'お届け先').st, 'missing');   // 荷受け人名が無い
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '別の会社 小久保所長様', n1: '別の会社', n2: '小久保所長様' })), 'お届け先').st, 'diff');
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所本館 小久保所長様', n1: '架空商事 群馬営業所本館', n2: '小久保所長様' })), '宛名（1行目）').st, 'ok');
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所 小久保所長様', n1: '架空商事 群馬営業所', n2: '小久保所長様' })), '宛名（1行目）').st, 'cut');   // 名称１が途中まで
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所本館', n1: '架空商事 群馬営業所本館', n2: '' })), '宛名（2行目）').st, 'missing');   // 荷受け人名が無い（2行目）
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '別の会社 小久保所長様', n1: '別の会社', n2: '小久保所長様' })), '宛名（1行目）').st, 'diff');
   assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所本館 小久保所長様', n1: '架空商事 群馬営業所本館', n2: '小久保所長様', a: '架空県架空市新田町1-2' })), '住所').st, 'cut');   // 住所が途中まで
   assert.strictEqual(by(S.compareSlip(conf, idxR, sr, sl({ n: '架空商事 群馬営業所本館', n1: '架空商事 群馬営業所本館', a: '架空県架空市新田町１－２－３ 別館' })), '住所').st, 'ok');   // 送り状のほうが長いのは可
   // 第一貨物（名称２の列が無い）は、荷受け人名の有無を比べない。名称１が切れていれば「切れています」
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, { c: 'daiichi', no: '1', n: '架空商事 群馬', n1: '架空商事 群馬' }), 'お届け先').st, 'cut');
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, { c: 'daiichi', no: '1', n: '架空商事 群馬営業所本館', n1: '架空商事 群馬営業所本館' }), 'お届け先').st, 'ok');
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, { c: 'daiichi', no: '1', n: '架空商事 群馬', n1: '架空商事 群馬' }), '宛名（1行目）').st, 'cut');
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, { c: 'daiichi', no: '1', n: '架空商事 群馬営業所本館', n1: '架空商事 群馬営業所本館' }), '宛名（1行目）').st, 'ok');
   // 古い送り状（名称１・２を別々に持たない）は、つなげた名前で比べる
-  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, { c: 'seino', no: '1', n: '架空商事 群馬営業所本館 小久保所長様' }), 'お届け先').st, 'ok');
+  assert.strictEqual(by(S.compareSlip(conf, idxR, sr, { c: 'seino', no: '1', n: '架空商事 群馬営業所本館 小久保所長様' }), '宛名（1行目）').st, 'ok');
   // 値が無い側は「比べない」。配達指定の列を設定していない会社（第一貨物）は、配達指定を比べない
   const none = S.compareSlip(conf, { ships: [] }, sh, { c: 'tonami', no: '1' });
-  assert.strictEqual(by(none, 'お届け先').st, 'none'); assert.strictEqual(by(none, '住所').st, 'none');
+  assert.strictEqual(by(none, '宛名（1行目）').st, 'none'); assert.strictEqual(by(none, '住所').st, 'none');
   assert.strictEqual(by(S.compareSlip(conf, idx, sh, { c: 'daiichi', no: '1', n: '架空商事 本社', a: '架空県架空市新田町1-2-3' }), '配達指定'), undefined);
   // カードの印
   const withDiff = Object.assign({}, sh, { slips: [{ c: 'seino', no: '1', n: '別の会社', date: '2026-11-02' }] });
   assert.strictEqual(S.diffCount(conf, idx, withDiff), 2);   // お届け先と配達指定（送り状に配達指定が無い）
   assert.strictEqual(S.diffCount(conf, idx, Object.assign({}, sh, { slips: [{ c: 'seino', no: '1', qty: '1' }] })), 0);   // お届け先などの控えが無い送り状は数えない
+});
+t('見比べの表：SMILE の項目と、送り状（運送会社のデータ）の項目の対応', () => {
+  const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市新田町1-2-3', r: '小久保所長様' } } };
+  const sh = ship({ destName: '架空商事 本社', date: '2026-11-02', want: '2026-11-05', time: '午前', lines: [['A', '商品A', '1', '9001']] });
+  const rows = S.compareSlip(CONF, idx, sh, { c: 'seino', no: '1', date: '2026-11-02', qty: '1', kg: '30', n: '架空商事 本社 小久保所長様', n1: '架空商事 本社', n2: '小久保所長様', z: '1230001', a: '架空県架空市新田町1-2-3', w: '配達指定【11月05日午前】', m: '商品A' });
+  const m = {}; rows.forEach(r => { m[r.k] = r.ka + ' → ' + r.kb; });
+  assert.strictEqual(m['宛名（1行目）'], '納品先名 → お届け先名称１'); assert.strictEqual(m['宛名（2行目）'], '荷受け人名１ → お届け先名称２');
+  assert.strictEqual(m['郵便番号'], '郵便番号 → お届け先郵便番号'); assert.strictEqual(m['住所'], '住所１＋２＋３ → お届け先住所１＋住所２');
+  assert.strictEqual(m['配達指定'], '配送指定日＋配達指定名 → 輸送指示１'); assert.strictEqual(m['出荷日'], '伝票日付 → 出荷予定日'); assert.strictEqual(m['品名'], '品目名 → 記事１〜５');
+  // 納品先なしの出荷は、得意先マスタの項目
+  const nd = S.compareSlip(CONF, { ships: [], addr: { '100001|000000': { z: '123-0001', a: '架空県本社市4-5-6' } } }, ship({ dest: '000000', destName: '' }), { c: 'seino', no: '1', n1: '架空得意先', n: '架空得意先', a: '架空県本社市4-5-6' });
+  assert.strictEqual(nd.find(r => r.k === '宛名（1行目）').ka, '得意先名１（納品先なし）');
+  // 第一貨物：郵便番号・名称２・配達指定の欄が無い
+  const dd = S.compareSlip(CONF, idx, sh, { c: 'daiichi', no: '1', date: '2026-11-02', n: '架空商事 本社', n1: '架空商事 本社', a: '架空県架空市新田町1-2-3' });
+  const dm = {}; dd.forEach(r => { dm[r.k] = r; });
+  assert.strictEqual(dm['宛名（2行目）'].kb, '（欄なし）'); assert.strictEqual(dm['宛名（2行目）'].st, 'info');
+  assert.strictEqual(dm['郵便番号'].kb, '（欄なし）'); assert.strictEqual(dm['郵便番号'].st, 'none'); assert.strictEqual(dm['配達指定'], undefined);
 });
 t('土日を除いた時間数', () => {
   assert.strictEqual(S.weekdayHours(jst(2026, 10, 30, 18), jst(2026, 11, 2, 8)), 14);       // 金 18:00 → 月 8:00（金の6時間＋月の8時間）

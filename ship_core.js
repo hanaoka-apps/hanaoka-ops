@@ -246,28 +246,40 @@
   }
   var BAD = { diff: 3, missing: 2, cut: 1 };
   function worse(a, b) { return (BAD[b] || 0) > (BAD[a] || 0) ? b : a; }
+  // 見比べの表の「SMILE 側の項目名」。納品先が決まっている出荷は、納品先マスタの項目。納品先なしの出荷は、得意先マスタ（得意先そのもの）の項目
+  function smileLabels(ship, conf) {
+    var none = String(((conf && conf.smile) || {}).noDest || '000000'), direct = !!ship.dest && String(ship.dest) !== none;
+    return { name1: direct ? '納品先名' : '得意先名１（納品先なし）', name2: '荷受け人名１', zip: '郵便番号', addr: '住所１＋２＋３', date: '伝票日付', want: '配送指定日＋配達指定名', item: '品目名' };
+  }
+  /* 行：{ k 見る所, ka SMILE 側の項目名, kb 運送会社のデータの項目名, a 伝票の値, b 送り状の値, st }
+   * 表は「SMILE の納品先マスタの項目 → 送り状（運送会社のデータ）の項目」の対応で並べる（項目名は ship_config.json の carriers.<会社>.labels）。
+   * 運送会社のデータに欄が無い項目は、kb を「（欄なし）」にして、比べない */
   S.compareSlip = function (conf, idx, ship, slip) {
     var rows = [], ad = S.addrOf(idx, ship), none = function (v) { return v === '' || v == null; };
-    var cdef = (((conf && conf.carriers) || {})[slip.c] || {}).cols || {};
-    function add(k, a, b, st) { rows.push({ k: k, a: a || '', b: b || '', st: st }); }
+    var cdef = (((conf && conf.carriers) || {})[slip.c] || {}), cols = cdef.cols || {}, lb = cdef.labels || {}, sm = smileLabels(ship, conf), NOCOL = '（欄なし）';
+    function add(k, ka, kb, a, b, st) { rows.push({ k: k, ka: ka, kb: kb, a: a || '', b: b || '', st: st }); }
     // 出荷日
-    add('出荷日', ship.date ? S.fmtDate(ship.date) : '', slip.date ? S.fmtDate(slip.date) : '', none(slip.date) || none(ship.date) ? 'none' : (slip.date === ship.date ? 'ok' : 'diff'));
-    // 宛名：1行目＝納品先名（送り状の名称１）、2行目＝荷受け人名（送り状の名称２）。名称２の列を持たない運送会社（第一貨物）は、1行目だけ
+    add('出荷日', sm.date, lb.date || '出荷日', ship.date ? S.fmtDate(ship.date) : '', slip.date ? S.fmtDate(slip.date) : '', none(slip.date) || none(ship.date) ? 'none' : (slip.date === ship.date ? 'ok' : 'diff'));
+    // 宛名：1行目＝納品先名（送り状の名称１）、2行目＝荷受け人名（送り状の名称２）。名称２の欄を持たない運送会社（第一貨物）は「（欄なし）」
     var an = S.destLabel(ship), recv = ad ? ad.recv : '', n1 = slip.n1 != null ? slip.n1 : slip.n;
-    var two = slip.n1 != null && (cdef.toName || []).length >= 2;
-    var st1 = none(n1) ? 'none' : cmpText(nname(an), nname(n1)), st2 = 'ok';
-    if (two && recv) st2 = none(slip.n2) ? 'missing' : cmpText(nname(recv), nname(slip.n2));
-    var stn = st1 === 'none' ? 'none' : worse(worse('ok', st1), st2);
-    add('お届け先', S.zen([an, two ? recv : ''].filter(Boolean).join(' ')), S.zen(slip.n || ''), stn);
+    var hasName2 = (cols.toName || []).length >= 2, two = slip.n1 != null && hasName2;
+    var st1 = none(n1) ? 'none' : cmpText(nname(an), nname(n1));
+    add('宛名（1行目）', sm.name1, lb.toName1 || 'お届け先名称', S.zen(an), S.zen(n1 || ''), st1);
+    if (recv || slip.n2 || two) {
+      var st2 = 'none';
+      if (!hasName2) st2 = 'info';
+      else if (two && recv) st2 = none(slip.n2) ? 'missing' : cmpText(nname(recv), nname(slip.n2));
+      else if (two && !recv && slip.n2) st2 = 'info';
+      add('宛名（2行目）', sm.name2, hasName2 ? (lb.toName2 || 'お届け先名称２') : NOCOL, S.zen(recv), S.zen(slip.n2 || ''), st2);
+    }
     // 郵便番号・住所
     var az = ad ? ad.zip : '', bz = slip.z || '';
-    add('郵便番号', az, bz, none(az) || none(bz) ? 'none' : (S.digits(az) === S.digits(bz) ? 'ok' : 'diff'));
+    add('郵便番号', sm.zip, cols.toZip ? (lb.toZip || 'お届け先郵便番号') : NOCOL, az, bz, none(az) || none(bz) ? 'none' : (S.digits(az) === S.digits(bz) ? 'ok' : 'diff'));
     var aa = ad ? ad.addr : '', ba = slip.a || '';
-    add('住所', S.zen(aa), S.zen(ba), none(aa) || none(ba) ? 'none' : cmpText(naddr(aa), naddr(ba)));
-    // 配達指定（日付と午前・午後）
+    add('住所', sm.addr, lb.toAddr || 'お届け先住所', S.zen(aa), S.zen(ba), none(aa) || none(ba) ? 'none' : cmpText(naddr(aa), naddr(ba)));
+    // 配達指定（日付と午前・午後）。運送会社のデータに欄がある会社だけ
     var aw = [ship.want ? S.fmtDate(ship.want) : '', ship.time || ''].filter(Boolean).join(' '), bw = slip.w || '';
-    var wantCol = !!cdef.want;   // 運送会社のデータに配達指定の列を設定している会社だけ比べる
-    if ((aw || bw) && wantCol) {
+    if ((aw || bw) && cols.want) {
       var st = 'ok';
       if (none(aw) !== none(bw)) st = 'diff';
       else {
@@ -276,12 +288,12 @@
         var apm = /午前|午後/.exec(S.zen(ship.time || '')), bpm = /午前|午後/.exec(S.zen(bw));
         if (apm && bpm && apm[0] !== bpm[0]) st = 'diff';
       }
-      add('配達指定', aw, S.zen(bw), st);
+      add('配達指定', sm.want, lb.want || '配達指定', aw, S.zen(bw), st);
     }
     // 参考：個数・重量・品名（伝票に無い値、または機械で比べにくい値）
-    if (slip.qty) add('個数', '', slip.qty + '個', 'info');
-    if (slip.kg && slip.kg !== '0') add('重量', '', slip.kg + 'kg', 'info');
-    if (slip.m) add('品名（記事）', (ship.lines || []).slice(0, 3).map(function (l) { return S.zen(l[1] || l[0]); }).join('、') + ((ship.lines || []).length > 3 ? ' ほか' : ''), S.zen(slip.m), 'info');
+    if (slip.qty) add('個数', '', '個数', '', slip.qty + '個', 'info');
+    if (slip.kg && slip.kg !== '0') add('重量', '', '重量', '', slip.kg + 'kg', 'info');
+    if (slip.m) add('品名', sm.item, lb.note || '記事', (ship.lines || []).slice(0, 3).map(function (l) { return S.zen(l[1] || l[0]); }).join('、') + ((ship.lines || []).length > 3 ? ' ほか' : ''), S.zen(slip.m), 'info');
     return rows;
   };
   // カードに出す印用：確認が必要な項目（違うかも・切れている・入っていない）の数（送り状にお届け先などの控えがあるものだけ）
