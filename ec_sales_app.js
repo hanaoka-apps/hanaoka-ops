@@ -586,7 +586,7 @@ function slipImageHtml(s) {
     '<div class="muted" style="margin:8px 0 2px;font-size:11px">拡張項目</div><div class="sl-hd c3">' +
     it('運送業者', img.ext.carrier.missing ? pend('（この確認用データにはありません）') : E(img.ext.carrier.label || '（不明）'), df(img.ext.carrier.code, plan && plan.ext.carrier.code)) +
     it('配送指定日', img.ext.deliveryDate ? E(img.ext.deliveryDate) : '<span class="muted">指定なし</span>', df(img.ext.deliveryDate, plan && plan.ext.deliveryDate)) +
-    it('配達指定', img.ext.deliveryKubun.label ? E(img.ext.deliveryKubun.label) : '<span class="muted">なし</span>', df(img.ext.deliveryKubun.code, plan && plan.ext.deliveryKubun.code)) + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + (img.ext.tonami.code ? it('トナミ指定', E(img.ext.tonami.label)) : '') + '</div>' +
+    it('配達指定', img.ext.deliveryKubun.label ? E(img.ext.deliveryKubun.label) : '<span class="muted">なし</span>', df(img.ext.deliveryKubun.code, plan && plan.ext.deliveryKubun.code)) + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + (img.ext.tonami.code ? it('トナミ指定', E(img.ext.tonami.label)) : '') + (img.ext.daiichiMust ? it('必着指定（第一貨物）', E(img.ext.daiichiMust)) : '') + (img.ext.daiichiTime ? it('時間区分（第一貨物）', E(img.ext.daiichiTime)) : '') + (img.ext.tonamiShipper.code ? it('トナミ荷送人', E(img.ext.tonamiShipper.code + (img.ext.tonamiShipper.name ? ' ' + img.ext.tonamiShipper.name : ''))) : '') + '</div>' +
     (act ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
   return h;
 }

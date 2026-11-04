@@ -979,6 +979,12 @@ t('SMILE の伝票イメージ：拡張項目（運送業者・配送指定日�
   assert.deepStrictEqual([1, 9, 13].map(c => EC.tonamiSpecLabel(c)), ['1:期日指定', '9:午前', '13:日曜配送']); assert.strictEqual(EC.tonamiSpecLabel(''), '');
   const tn = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '2', '配送指定（トナミ用）': '3' })], juchuNo: '1', deliveryCode: '1' } });
   assert.deepStrictEqual([tn.ext.carrier.label, tn.ext.tonami.label], ['2:トナミ利用', '3:必着']);
+  assert.deepStrictEqual([EC.tonamiShipper('1203430'), EC.tonamiShipper('0000000'), EC.tonamiShipper(''), EC.tonamiShipper('9999999')], [{ code: '1203430', name: '㈱ミスミ メーカー直送品' }, { code: '', name: '' }, { code: '', name: '' }, { code: '9999999', name: '' }]);   // 0000000 は荷送人なし
+  const tn2 = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '2', 'トナミ荷送人コード': '3685839' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual(tn2.ext.tonamiShipper, { code: '3685839', name: 'DCM eくらしONLINE' });
+  assert.deepStrictEqual([EC.daiichiLabel('must', 1), EC.daiichiLabel('must', 2), EC.daiichiLabel('time', 1), EC.daiichiLabel('time', 2), EC.daiichiLabel('must', 0), EC.daiichiLabel('time', '')], ['1:指定', '2:必着', '1:午前', '2:午後', '', '']);   // 第一貨物用（0・空は「なし」）
+  const dn = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '3', '必着指定(第一貨物用)': '2', '時間区分(第一貨物用)': '1' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual([dn.ext.carrier.label, dn.ext.daiichiMust, dn.ext.daiichiTime], ['3:第一貨物利用', '2:必着', '1:午前']);
   assert.strictEqual(EC.carrierLabel(2, { carrierUseNames: { 2: 'トナミ運輸' } }), '2:トナミ運輸'); assert.strictEqual(EC.carrierLabel(''), '');
   const none = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '配送指定日': '0', '運送業者利用区分': '1' })], juchuNo: '1', deliveryCode: '1' } });
   assert.deepStrictEqual([none.ext.deliveryDate, none.ext.carrier.label], ['', '1:西濃利用']);   // 0 は「指定なし」
