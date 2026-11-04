@@ -131,6 +131,39 @@ t('分納：日数の設定・表に出す数・分納でないとき', () => {
   assert.strictEqual(S.bunno(idx, mkAlone(), CONF), null);
   function mkAlone() { return ship({ no: '99', juchu: ['Z'], po: ['注-Z'] }); }
 });
+t('送り先：住所・直送・名前', () => {
+  const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市1-2-3' }, '100001|000000': { a: '架空県本社市4-5-6' } } };
+  const s = ship({});
+  assert.deepStrictEqual(S.addrOf(idx, s), { zip: '123-0001', addr: '架空県架空市1-2-3' });
+  assert.deepStrictEqual(S.addrOf(idx, ship({ dest: '000000' })), { zip: '', addr: '架空県本社市4-5-6' });
+  assert.strictEqual(S.addrOf(idx, ship({ dest: '000099' })), null);
+  assert.strictEqual(S.addrOf({}, s), null);                                               // addr の無い索引でも動く
+  assert.strictEqual(S.zipAddr({ zip: '123-0001', addr: '架空県' }), '〒123-0001　架空県');
+  assert.strictEqual(S.zipAddr({ zip: '', addr: '架空県' }), '架空県'); assert.strictEqual(S.zipAddr(null), '');
+  assert.strictEqual(S.destLabel(ship({ dest: '000000', destName: '' })), '架空得意先');   // 納品先なしは、得意先の名前
+  assert.strictEqual(S.isDirect(CONF, ship({ custName: '代理店', destName: 'エンドユーザー' })), true);
+  assert.strictEqual(S.isDirect(CONF, ship({ custName: '代理店', destName: '代理店' })), false);       // 同じ名前
+  assert.strictEqual(S.isDirect(CONF, ship({ custName: '代理店', destName: '', dest: '000000' })), false);   // 納品先なし
+});
+t('出荷連絡の文面：行の繰り返し・空の行は出さない・住所なし', () => {
+  const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市1-2-3' } } };
+  const s = ship({ date: '2026-11-02', po: ['NYF-1'], destName: '架空商事 本社', lines: [['A', '商品A', '1', '9001'], ['B', '商品B', '2', '9001']],
+    slips: [{ c: 'seino', no: '9072200002' }, { c: 'tonami', no: '5910000002' }] });
+  const r = S.noticeText(CONF, idx, s);
+  assert.strictEqual(r.subject, '出荷のご連絡 NYF-1');
+  assert.ok(r.hasSlip && r.hasAddr);
+  const L = r.body.split('\n');
+  assert.ok(L.includes('客先注番：NYF-1') && L.includes('商品名：商品A × 1') && L.includes('商品名：商品B × 2'));
+  assert.ok(L.includes('納品先：架空商事 本社') && L.includes('　　　　〒123-0001　架空県架空市1-2-3') && L.includes('出荷日：2026年11月2日'));
+  const i = L.indexOf('運送会社：西濃運輸');                                                    // 運送会社と送り状番号は、組で繰り返す
+  assert.deepStrictEqual(L.slice(i, i + 4), ['運送会社：西濃運輸', '送り状番号：9072200002', '運送会社：トナミ運輸', '送り状番号：5910000002']);
+  assert.ok(!/\n\n\n/.test(r.body) && !/^\n|\n$/.test(r.body));
+  // 住所なし・注番なし・送り状なし
+  const r2 = S.noticeText(CONF, { ships: [] }, ship({ po: [], slips: [] }));
+  assert.strictEqual(r2.subject, '出荷のご連絡'); assert.ok(!r2.hasSlip && !r2.hasAddr);
+  assert.ok(!r2.body.includes('客先注番') && !r2.body.includes('〒') && !r2.body.includes('送り状番号') && !r2.body.includes('運送会社'));
+  assert.ok(r2.body.includes('納品先：架空商事 本社'));
+});
 t('土日を除いた時間数', () => {
   assert.strictEqual(S.weekdayHours(jst(2026, 10, 30, 18), jst(2026, 11, 2, 8)), 14);       // 金 18:00 → 月 8:00（金の6時間＋月の8時間）
   assert.strictEqual(S.weekdayHours(jst(2026, 11, 2, 8), jst(2026, 11, 2, 9, 30)), 1.5);

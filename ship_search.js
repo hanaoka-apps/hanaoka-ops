@@ -73,17 +73,23 @@ const PERIODS = [{ k: '7', label: '直近7日', days: 7 }, { k: '30', label: '�
 let period = '';
 const STATUS_OPTS = [['', 'すべて'], ['ok', '送り状あり'], ['attention', '要確認（見つからない・設定なし）'], ['pending', '待ち（運送会社のデータがまだ）'], ['outside', '取得期間外'], ['none', '運送会社を使わない']];
 
+let carrier = '';   // 運送会社の絞り込み（'' ですべて、運送会社のキー、'none' は使わない出荷）
 function buildFilters() {
-  const cs = Object.keys(CONF.carriers).filter(k => k[0] !== '_' && typeof CONF.carriers[k] === 'object');
-  $('f-carrier').innerHTML = '<option value="">すべて</option>' + cs.map(k => '<option value="' + esc(k) + '">' + esc(CONF.carriers[k].name || k) + '</option>').join('') + '<option value="none">運送会社を使わない</option>';
   $('f-status').innerHTML = STATUS_OPTS.map(o => '<option value="' + o[0] + '">' + esc(o[1]) + '</option>').join('');
-  drawPeriods();
+  drawPeriods(); drawCarriers();
 }
 function drawPeriods() {
   $('periods').innerHTML = PERIODS.map(p => '<span class="chip' + (p.k === period ? ' active' : '') + '" data-period="' + p.k + '">' + p.label + '</span>').join('');
 }
+// 運送会社のチップ（カードの運送会社のバッジと同じ色）
+function drawCarriers() {
+  const cs = Object.keys(CONF.carriers).filter(k => k[0] !== '_' && typeof CONF.carriers[k] === 'object');
+  const chip = (k, label, cls) => '<span class="chip ' + cls + (k === carrier ? ' active' : '') + '" data-carrier="' + esc(k) + '">' + esc(label) + '</span>';
+  $('carriers').innerHTML = '<span class="muted">運送会社</span>' + chip('', 'すべて', 'cr-none') +
+    cs.map(k => chip(k, CONF.carriers[k].name || k, carrierClass(k))).join('') + chip('none', '運送会社なし', 'cr-none');
+}
 function readFilters() {
-  return { q: $('f-q').value, from: $('f-from').value, to: $('f-to').value, carrier: $('f-carrier').value, status: $('f-status').value };
+  return { q: $('f-q').value, from: $('f-from').value, to: $('f-to').value, carrier: carrier, status: $('f-status').value };
 }
 
 function doSearch() {
@@ -163,6 +169,14 @@ function bunnoHtml(s) {
   }).join('');
   return '<div class="sc-bn"><div class="bn-t">分納あり：同じ注文の出荷（全 ' + b.total + ' 回）</div>' + rows + (b.hidden ? '<div class="muted">ほか ' + b.hidden + ' 件（日付の近いものを出しています）</div>' : '') + '</div>';
 }
+// 実際の納品先：名前と住所（SMILE のマスタの、いまの住所）。直送のときは、ご注文元と別であることが分かるように印を付ける
+function destHtml(s, i) {
+  const a = S.addrOf(IDX, s), za = S.zipAddr(a);
+  return '<div class="sc-dest' + (S.isDirect(CONF, s) ? ' direct' : '') + '"><div class="sd-main"><div class="sd-k">実際の納品先' + (S.isDirect(CONF, s) ? '（直送）' : '') + '</div>' +
+    '<div class="sd-n">' + esc(S.destLabel(s) || '-') + '</div>' +
+    '<div class="sd-a' + (za ? '' : ' muted') + '">' + (za ? esc(za) : '住所の登録がありません') + '</div></div>' +
+    '<button type="button" class="btn sm" data-act="notice" data-i="' + i + '">出荷連絡</button></div>';
+}
 function card(s, i) {
   const st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
   const sib = S.siblings(IDX, s, CONF);
@@ -172,20 +186,53 @@ function card(s, i) {
     '<span class="cr ' + (key ? carrierClass(key) : 'cr-none') + '">' + esc(S.kubunName(CONF, s.kubun)) + '</span>' +
     (st.code !== 'ok' ? '<span class="tag ' + (STATUS_TAG[st.code] || 'info') + '">' + esc({ missing: '見つからない', nodata: '要確認', pending: '番号待ち', outside: '取得期間外', none: '運送会社なし' }[st.code]) + '</span>' : '') +
     (s.ret ? '<span class="tag warn">返品</span>' : '') +
+    (S.isDirect(CONF, s) ? '<span class="tag direct">直送</span>' : '') +
     (sib.length ? '<span class="tag ok">分納あり ' + (sib.length + 1) + '回</span>' : '') +
     '<span class="sc-no">売上№ ' + esc(s.no) + (s.shipNo ? '　出荷№ ' + esc(s.shipNo) : '') + '</span></div>' +
     '<div class="sc-slips">' + slipsHtml(s, st) + '</div>' +
+    destHtml(s, i) +
     '<div class="sc-grid">' +
-    '<div><span class="k">納品先</span>' + esc(s.destName || '-') + '</div>' +
-    '<div><span class="k">得意先</span>' + esc(s.custName || '-') + (s.cust ? ' <span class="muted">' + esc(s.cust) + '</span>' : '') + '</div>' +
+    '<div><span class="k">ご注文元</span>' + esc(s.custName || '-') + (s.cust ? ' <span class="muted">' + esc(s.cust) + '</span>' : '') + '</div>' +
     '<div><span class="k">受注№</span><span style="display:inline-block;vertical-align:top">' + juchuHtml(s) + '</span></div>' +
-    '<div><span class="k">客先注番</span>' + ((s.po || []).length ? s.po.map(p => '<span class="lnk" data-act="q" data-v="' + esc(p) + '">' + esc(p) + '</span>').join('　') : '<span class="muted">-</span>') + '</div>' +
+    '<div><span class="k">発注番号</span>' + ((s.po || []).length ? s.po.map(p => '<span class="lnk" data-act="q" data-v="' + esc(p) + '">' + esc(p) + '</span>').join('　') : '<span class="muted">-</span>') + '</div>' +
     (want ? '<div><span class="k">配送指定</span>' + esc(want) + '</div>' : '') +
     '<div><span class="k">担当</span>' + esc(s.staff || '-') + '</div>' +
     '</div>' +
     '<div class="sc-lines" id="ln-' + i + '">' + linesHtml(s, i) + '</div>' +
     bunnoHtml(s) +
     '</div>';
+}
+
+/* ------------------------------------------------------------ 出荷連絡（右のパネル）
+ * 文面は ship_config.json の notice。ここで直してから、コピー・メール作成（mailto：Outlook など、いつも使うメールのアプリが開く）。
+ * 自動では送らない。担当者が中身を確認して使う。 */
+const MAIL_LIMIT = 8000;   // mailto の長さ（日本語は1文字が9文字ぶんになる。長すぎると、メールのアプリが開けない・途中で切ることがある）
+function openNotice(s) {
+  const n = S.noticeText(CONF, IDX, s), warn = [];
+  if (!n.hasSlip) warn.push('送り状番号がまだありません。番号が入ってから、もう一度開いてください。');
+  if (!n.hasAddr) warn.push('住所の登録がありません（納品先の名前だけの案内になります）。');
+  $('np-warn').innerHTML = warn.map(m => '<div>⚠ ' + esc(m) + '</div>').join('');
+  $('np-warn').hidden = !warn.length;
+  $('np-subject').value = n.subject; $('np-text').value = n.body;
+  $('np-note').textContent = '住所は、SMILE の納品先マスタ（得意先マスタ）の、いまの内容です。出荷した時点の住所とは違うことがあります。';
+  $('noticePanel').hidden = false; $('noticeBackdrop').hidden = false;
+  document.body.classList.add('np-open');
+  $('np-text').focus();
+}
+function closeNotice() { $('noticePanel').hidden = true; $('noticeBackdrop').hidden = true; document.body.classList.remove('np-open'); }
+function wireNotice() {
+  $('np-close').onclick = closeNotice; $('noticeBackdrop').onclick = closeNotice;
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('noticePanel').hidden) closeNotice(); });
+  $('np-copy').onclick = async () => {
+    const b = $('np-copy'), t = b.textContent, ok = await copyText($('np-text').value);
+    b.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { b.textContent = t; }, 1500);
+  };
+  $('np-mail').onclick = () => {
+    const subj = $('np-subject').value, body = $('np-text').value.replace(/\r?\n/g, '\r\n');
+    const url = 'mailto:?subject=' + encodeURIComponent(subj) + '&body=' + encodeURIComponent(body);
+    if (url.length > MAIL_LIMIT) { $('np-note').textContent = '文が長いので、メールが途中で切れることがあります。「本文をコピー」で、メールに貼り付けてください。'; return; }
+    location.href = url;
+  };
 }
 
 /* ------------------------------------------------------------ 画面の下のほうと注意 */
@@ -225,8 +272,13 @@ function wire() {
   let timer = null;
   $('f-q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(doSearch, 250); });
   ['f-from', 'f-to'].forEach(id => $(id).addEventListener('change', () => { period = ''; drawPeriods(); doSearch(); }));
-  ['f-carrier', 'f-status'].forEach(id => $(id).addEventListener('change', doSearch));
-  $('btn-clear').onclick = () => { $('f-q').value = ''; $('f-from').value = ''; $('f-to').value = ''; $('f-carrier').value = ''; $('f-status').value = ''; period = ''; drawPeriods(); doSearch(); $('f-q').focus(); };
+  $('f-status').addEventListener('change', doSearch);
+  $('carriers').addEventListener('click', e => {
+    const c = e.target.closest('[data-carrier]'); if (!c) return;
+    carrier = c.dataset.carrier; drawCarriers(); doSearch();
+  });
+  $('btn-clear').onclick = () => { $('f-q').value = ''; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); $('f-q').focus(); };
+  wireNotice();
   $('btn-more').onclick = more;
   $('periods').addEventListener('click', e => {
     const c = e.target.closest('[data-period]'); if (!c) return;
@@ -240,7 +292,9 @@ function wire() {
       const ok = await copyText(a.dataset.v), t = a.textContent;
       a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500);
     } else if (a.dataset.act === 'q') {
-      $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; $('f-carrier').value = ''; $('f-status').value = ''; period = ''; drawPeriods(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
+      $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (a.dataset.act === 'notice') {
+      const s = results[+a.dataset.i]; if (s) openNotice(s);
     } else if (a.dataset.act === 'lines') {
       const s = results[+a.dataset.i]; if (!s) return;
       s._open = true; $('ln-' + a.dataset.i).innerHTML = linesHtml(s, a.dataset.i);
