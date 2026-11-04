@@ -102,6 +102,35 @@ t('同じ受注の別の出荷・受注ごとの品目', () => {
   assert.deepStrictEqual(S.linesByJuchu(s).map(g => [g.juchu, g.lines.map(l => l.code)]), [['A', ['X', 'Z']], ['B', ['Y']]]);
   assert.deepStrictEqual(S.juchuInfo(IDX, '9001'), IDX.juchu['9001']); assert.strictEqual(S.juchuInfo(IDX, '9999'), null);
 });
+t('分納：受注№が違っても、得意先と客先注番が同じなら同じ注文（日数で区切る・空の注番は対象外）', () => {
+  const mk = (no, date, o) => ship(Object.assign({ no, date, juchu: ['J' + no], po: ['注-A'], cust: '100001' }, o || {}));
+  const idx = { ships: [
+    mk('1', '2026-10-01'), mk('2', '2026-10-10'), mk('3', '2026-10-25'),
+    mk('4', '2026-12-30'),                                   // 同じ注番でも、30日より離れている
+    mk('5', '2026-10-10', { cust: '200002' }),               // 注番が同じでも、得意先が違う
+    mk('6', '2026-10-10', { po: [] }), mk('7', '2026-10-11', { po: [] }),   // 注番が空どうしは、つなげない
+    mk('8', '2026-10-12', { juchu: ['J2'], po: ['注-B'] }),  // 注番は違うが、受注№が2と同じ
+  ] };
+  const by = no => idx.ships.find(s => s.no === no);
+  assert.deepStrictEqual(nos(S.siblings(idx, by('2'), CONF)), ['1', '8', '3']);             // 日付順。8 は受注№が同じ
+  assert.deepStrictEqual(nos(S.siblings(idx, by('1'), CONF)), ['2', '3']);                  // 10/1 から10/25 は24日差で入る
+  assert.deepStrictEqual(nos(S.siblings(idx, by('3'), CONF)), ['1', '2']);
+  assert.deepStrictEqual(S.siblings(idx, by('4'), CONF), []);                               // 30日より離れている
+  assert.deepStrictEqual(S.siblings(idx, by('5'), CONF), []);                               // 得意先が違う
+  assert.deepStrictEqual(S.siblings(idx, by('6'), CONF), []);                               // 注番が空
+});
+t('分納：日数の設定・表に出す数・分納でないとき', () => {
+  const mk = (no, date) => ship({ no, date, juchu: ['J' + no], po: ['注-A'] });
+  const idx = { ships: ['1', '2', '3', '4', '5', '6', '7', '8'].map((n, i) => mk(n, '2026-10-' + String(1 + i * 2).padStart(2, '0'))) };
+  const by = no => idx.ships.find(s => s.no === no);
+  assert.deepStrictEqual(nos(S.siblings(idx, by('4'), { bunno: { windowDays: 3 } })), ['3', '5']);   // 7日の前後3日
+  const b = S.bunno(idx, by('4'), CONF);                                                    // 全部で8回 → 6件まで・この出荷に近い順
+  assert.strictEqual(b.total, 8); assert.strictEqual(b.hidden, 2); assert.strictEqual(b.ships.length, 6);
+  assert.ok(b.ships.includes(by('4')));
+  assert.deepStrictEqual(nos(b.ships), nos(b.ships.slice().sort((x, y) => x.date < y.date ? -1 : 1)));   // 日付順
+  assert.strictEqual(S.bunno(idx, mkAlone(), CONF), null);
+  function mkAlone() { return ship({ no: '99', juchu: ['Z'], po: ['注-Z'] }); }
+});
 t('土日を除いた時間数', () => {
   assert.strictEqual(S.weekdayHours(jst(2026, 10, 30, 18), jst(2026, 11, 2, 8)), 14);       // 金 18:00 → 月 8:00（金の6時間＋月の8時間）
   assert.strictEqual(S.weekdayHours(jst(2026, 11, 2, 8), jst(2026, 11, 2, 9, 30)), 1.5);
