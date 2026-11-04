@@ -2640,7 +2640,7 @@ function rowlogStepHtml(t, form, f) {
 }
 function bindRowlog(t, form, f) {
   const E = stepEd, again = () => { const dd = $('detail'), y = dd ? dd.scrollTop : 0; renderTaskDetail(t, pj(t.SnapshotJson, {})); if ($('detail')) $('detail').scrollTop = y; };
-  const addF = (key, list) => { const added = [...list]; E.files[key] = (E.files[key] || []).concat(added.map(x => ({ name: x.name, size: x.size, file: x, key: fileKey(x.name) }))); again(); rowlogAiRead(t, form, f, key, added, again); };
+  const addF = (key, list) => { const added = [...list]; E.files[key] = (E.files[key] || []).concat(added.map(x => ({ name: x.name, size: x.size, file: x, key: fileKey(x.name) }))); again(); if (added.length) rowlogAiRead(t, form, f, key, again); };
   document.querySelectorAll('[data-sfk]').forEach(el => el.oninput = () => { E.data[el.dataset.sfk] = el.value.trim(); });
   document.querySelectorAll('[data-sff]').forEach(el => el.onchange = () => addF(el.dataset.sff, el.files));
   document.querySelectorAll('[data-sfd]').forEach(z => { z.ondragover = e => { e.preventDefault(); z.classList.add('over'); }; z.ondragleave = () => z.classList.remove('over'); z.ondrop = e => { e.preventDefault(); addF(z.dataset.sfd, e.dataTransfer.files); }; });
@@ -2674,15 +2674,18 @@ function rowlogAiHtml(a) {
   if (!a) return '';
   if (a.busy) return '<div class="rl-ai muted">🤖 AI が書類を読んでいます…</div>';
   if (a.err) return `<div class="rl-ai warn">🤖 読み取れませんでした：${esc(a.err)}（手で入れてください）</div>`;
-  return `<div class="rl-ai">🤖 ${a.filled.length ? `書類から入れました：${esc(a.filled.join('・'))}。書類と見比べてから記録してください` : '書類から入れられる値はありませんでした'}${a.comments.length ? `<ul>${a.comments.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}</div>`;
+  return `<div class="rl-ai">🤖 ${a.filled.length ? `書類から入れました：${esc(a.filled.join('・'))}。書類と見比べてから記録してください` : '新しく入れた欄はありません（空いている欄が無いか、書類に値が見当たりません。入っている値はそのままです）'}${a.comments.length ? `<ul>${a.comments.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}</div>`;
 }
-async function rowlogAiRead(t, form, f, key, files, again) {
-  const m = /^rl_(\d+)_(.+)$/.exec(key); if (!m || !files.length) return;
+async function rowlogAiRead(t, form, f, key, again) {
+  const m = /^rl_(\d+)_(.+)$/.exec(key); if (!m) return;
   if (!DEV && !st.M.settings['flow.urlAI']) return;
   const i = Number(m[1]), d = pj(t.SnapshotJson, {}).data || {}, x = (d[f.key] || [])[i] || {}, ph = f.phases.find(p => !x[p.key]);
   if (!ph || !ph.fields.some(fd => fd.key === m[2])) return;
   const targets = ph.fields.filter(fd => fd.type !== 'file' && fd.label); if (!targets.length) return;
-  const E = stepEd; E.ai = E.ai || {}; E.ai[i] = { busy: true }; again();
+  const E = stepEd, files = ph.fields.filter(fd => fd.type === 'file').flatMap(fd => (E.files[`rl_${i}_${fd.key}`] || []).map(y => y.file)).filter(Boolean);
+  if (!files.length) return;
+  const seq = (E.aiSeq = (E.aiSeq || 0) + 1);   // 続けて置いたときは、最後に読んだ答えだけを使う
+  E.ai = E.ai || {}; E.ai[i] = { busy: true }; again();
   try {
     const cfg = pj(st.M.settings['ai.read'], {}), models = pj(st.M.settings['ai.models'], {}), docs = [];
     for (const file of files.slice(0, 4)) {
@@ -2706,7 +2709,8 @@ async function rowlogAiRead(t, form, f, key, files, again) {
       messages: [{ role: 'user', content: [...docs, { type: 'text', text: info }] }] };
     const r = await api.aiAsk('wf.read', `wf_app:${form.FormCode}:${f.key}`, body);
     if (r.stop === 'refusal') throw new Error('AI が読み取りを断りました');
-    const a = pj(r.text, null); if (!a || !a.fields) throw new Error('AI の答えを読めませんでした');
+    const a = pj(r.text, null); if (seq !== E.aiSeq) return;
+    if (!a || !a.fields) throw new Error('AI の答えを読めませんでした');
     const filled = [];
     targets.forEach(fd => {
       const id = `rl_${i}_${fd.key}`; if (String(E.data[id] || '').trim()) return;   // 手で入れた値は変えない
@@ -2716,7 +2720,7 @@ async function rowlogAiRead(t, form, f, key, files, again) {
       E.data[id] = v; filled.push(fd.label);
     });
     E.ai[i] = { filled, comments: (a.comments || []).filter(Boolean) };
-  } catch (e) { E.ai[i] = { err: e.message }; }
+  } catch (e) { if (seq !== E.aiSeq) return; E.ai[i] = { err: e.message }; }
   if (stepEd === E) again();
 }
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
