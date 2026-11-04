@@ -883,6 +883,7 @@ function fillMeta(id) {
   if (r && s) { if (!r.cust) r.cust = s.cust; if (!r.orderDate) r.orderDate = s.orderDate; if (r.net == null) r.net = s.netTotal; }
 }
 // 1注文をリストに書く（変わった項目だけ）＋ログを1行。状態のない注文（未確認のまま）は書かない（リストに行を作らない）
+let lastPushErr = null;
 async function pushOrder(id, action, detail, noLog) {
   const r = store.orders[id]; if (!r) return;
   fillMeta(id);
@@ -897,6 +898,7 @@ async function pushOrder(id, action, detail, noLog) {
     if (log) await shared.appendLog(log);
     delete histCache[id];
   } catch (e) {
+    lastPushErr = e;
     if (log) sharedPendingLogs().push(log);
     if (r.status) sharedPending()[id] = true;
     sharedOffline(e);
@@ -1793,9 +1795,13 @@ function outPay() {
 // 出荷チェック（ec_ship_tab.js）：受注を SMILE に起票した注文の、出荷伝票・送り状番号を、専用機が毎時作る ship_index.json から見せる
 // 出荷チェックの「報告済み」の印（EC＝Shopify に送り状№を登録した／ふるさと＝サイネックスに出荷報告した）。共有のリストに残る
 async function markShipReported(ids, on) {
+  lastPushErr = null;
   const at = new Date().toISOString(), who = account && account.username;
   await commit({ ids, action: 'その他', detail: () => on ? '出荷報告済みにした' : '出荷報告済みを戻した',
     mutate: id => { const r = store.orders[id]; if (!r) return false; if (on) { r.shipReportedAt = at; r.shipReportedBy = who; } else { delete r.shipReportedAt; delete r.shipReportedBy; } return true; } });
+  await pushChain;
+  if (lastPushErr) { const m = String(lastPushErr && lastPushErr.message || lastPushErr); lastPushErr = null;
+    alert(['この端末には記録しましたが、共有のリストに保存できませんでした（他の人には反映されません）。', '注文のリストに、列「ShipReportedBy」「ShipReportedAt」が無い可能性があります。専用機に列の追加を依頼してください。', '', m.slice(0, 200)].join(String.fromCharCode(10))); }
 }
 function shipCtx() {
   return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported,
