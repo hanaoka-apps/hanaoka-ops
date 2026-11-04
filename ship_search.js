@@ -168,7 +168,7 @@ function bunnoHtml(s) {
       ? x.slips.map(sl => '<span class="bn-slip">' + esc(sl.no) + '</span>' + (S.carrierName(CONF, sl.c) !== S.kubunName(CONF, x.kubun) ? ' <span class="muted">' + esc(S.carrierName(CONF, sl.c)) + '</span>' : '')).join('　')
       : '<span class="muted">' + esc(BN_STATUS[st.code] || '') + '</span>';
     const items = (x.lines || []).slice(0, 2).map(l => esc(l[1] || l[0]) + ' × ' + esc(l[2])).join('、') + ((x.lines || []).length > 2 ? ' ほか' : '');
-    return '<div class="bn-row' + (me ? ' me' : '') + '"><span class="bn-d">' + esc(fd(x.date)) + '</span><span class="bn-no">売上№ ' + esc(x.no) + '</span>' +
+    return '<div class="bn-row' + (me ? ' me' : ' go') + '"' + (me ? '' : ' data-act="detailno" data-no="' + esc(x.no) + '" title="この出荷の伝票の詳細を開く"') + '><span class="bn-d">' + esc(fd(x.date)) + '</span><span class="bn-no">売上№ ' + esc(x.no) + '</span>' +
       '<span class="bn-c">' + esc(S.kubunName(CONF, x.kubun)) + '</span><span class="bn-s">' + slips + '</span>' +
       (me ? '<span class="tag info">この出荷</span>' : '') + (items ? '<div class="bn-i muted">' + items + '</div>' : '') + '</div>';
   }).join('');
@@ -230,6 +230,11 @@ function closeNotice() { $('noticePanel').hidden = true; $('noticeBackdrop').hid
 function wireNotice() {
   $('np-close').onclick = closeNotice; $('noticeBackdrop').onclick = closeNotice;
   $('dt-close').onclick = closeDetail; $('detailBackdrop').onclick = closeDetail;
+  $('detailBody').addEventListener('click', async e => {   // パネルの中：分納の行で別の出荷へ、番号のコピー
+    const a = e.target.closest('[data-act]'); if (!a) return;
+    if (a.dataset.act === 'detailno') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) { openDetail(s); $('detailBody').scrollTop = 0; } }
+    else if (a.dataset.act === 'copy') { const ok = await copyText(a.dataset.v), t = a.textContent; a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500); }
+  });
   document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!$('noticePanel').hidden) closeNotice(); if (!$('detailPanel').hidden) closeDetail(); });
   $('np-copy').onclick = async () => {
     const b = $('np-copy'), t = b.textContent, ok = await copyText($('np-text').value);
@@ -305,6 +310,7 @@ function detailHtml(s, d, gen) {
       (s.lines || []).map(l => '<tr><td>' + E(Z(l[0])) + '</td><td>' + E(Z(l[1])) + '</td><td class="n">' + E(F(l[2])) + '</td></tr>').join('') + '</tbody></table></div>';
   }
   h += '</div>';
+  h += bunnoHtml(s);
   h += '<h3 class="dt-h">伝票と送り状の見比べ</h3>' + (s.slips && s.slips.length ? s.slips.map(sl => compareHtml(s, sl)).join('') : '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + E(st.text || '送り状番号はまだありません') + '</div>');
   return h;
 }
@@ -374,6 +380,8 @@ function wire() {
       $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
     } else if (a.dataset.act === 'detail') {
       const s = results[+a.dataset.i]; if (s) openDetail(s);
+    } else if (a.dataset.act === 'detailno') {
+      const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openDetail(s);
     } else if (a.dataset.act === 'notice') {
       const s = results[+a.dataset.i]; if (s) openNotice(s);
     } else if (a.dataset.act === 'lines') {
