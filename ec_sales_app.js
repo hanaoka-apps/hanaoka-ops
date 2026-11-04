@@ -1770,14 +1770,20 @@ function outPay() {
 }
 
 /* ------------------------------------------------------------ 全体 */
+// 出荷チェック（ec_ship_tab.js）：受注を SMILE に起票した注文の、出荷伝票・送り状番号を、専用機が毎時作る ship_index.json から見せる
+function shipCtx() {
+  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec,
+    loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
+}
 function render() {
   if (!cal) cal = buildCal();
-  ['orders', 'map', 'pay'].forEach(t => { $('p-' + t).hidden = (t !== curTab); });
+  ['orders', 'map', 'pay', 'ship'].forEach(t => { const el = $('p-' + t); if (el) el.hidden = (t !== curTab); });
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === curTab));
   $('btn-sync').hidden = !canImport();
   document.querySelectorAll('[data-v]').forEach(e => e.classList.toggle('active', e.dataset.v === curView));
   document.querySelectorAll('[data-s]').forEach(e => e.classList.toggle('active', e.dataset.s === curSort));
   renderOrders(); renderMap(); renderDrawer(); renderImportPanel(); renderSharedBanner(); renderStale();
+  if (window.EcShipTab && $('shipBox')) EcShipTab.render(shipCtx());
   if (isSoumu) renderPay();
   if (curTab === 'pay') renderPayBar(); else renderOutbar();
 }
@@ -2015,6 +2021,7 @@ async function initAuth() {
   $('btn-sync').onclick = syncSmile;
   $('btn-reload').onclick = async () => {
     $('btn-reload').disabled = true; setStatus('loading', '読み込み中…');
+    if (window.EcShipTab) EcShipTab.reset();
     const failed = await loadMasters(); await loadSettings(); await syncFromList({ noRender: true }); recompute(); render();
     failed.length ? setStatus('err', '読み込めませんでした: ' + failed.join('、')) : setReady();
     $('btn-reload').disabled = false;
