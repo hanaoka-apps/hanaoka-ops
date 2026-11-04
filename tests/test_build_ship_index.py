@@ -311,7 +311,7 @@ class BuildShipIndexTest(unittest.TestCase):
         self.assertEqual((res['counts']['withSlip'], res['counts']['carried']), (4, 4))
         self.assertEqual(res['unmatched'], [])                                  # 運送会社のCSVが無いので、SMILE に無い送り状は今回の分だけ（空）
 
-    def test_積み足しは今回の送り状を優先し前回にだけあるものを足す(self):
+    def test_今回のCSVにある売上番号は今回の送り状だけ_発行し直して無効になった番号は残さない(self):
         self.write_ships(); self.write_carriers()
         self.run_build()
         shutil.rmtree(os.path.join(self.dir, '_ship_inbox'))
@@ -319,9 +319,28 @@ class BuildShipIndexTest(unittest.TestCase):
         self.write('_ship_inbox/seino/new2.csv', csv_text([head, ['20261030', '37610', '9072200101', '9', '999'],      # 同じ番号（今回の個数・重量を使う）
                                                            ['20261030', '37610', '9072200103', '1', '5']]), 'cp932', mtime=1_795_000_000)   # 新しい送り状
         self.run_build()
-        slips = {x['no']: x for x in self.ships(self.read_index())['37610']['slips']}
-        self.assertEqual(sorted(slips), ['9072200101', '9072200102', '9072200103'])     # 前回の 102 も残る
+        S = self.ships(self.read_index())
+        slips = {x['no']: x for x in S['37610']['slips']}
+        self.assertEqual(sorted(slips), ['9072200101', '9072200103'])     # 前回の 102 は、今回のCSVに無いので、発行し直して無効になったものとして残さない
         self.assertEqual((slips['9072200101']['qty'], slips['9072200101']['kg']), ('9', '999'))
+        self.assertEqual(S['36683']['slips'][0]['no'], '40100000001')     # 今回のCSVに第一貨物の分が無い売上№は、前回から引き継ぐ
+        self.assertEqual(S['36729']['slips'][0]['no'], '5910000002')       # トナミも同じ
+
+    def test_運送会社ごとに判断する_西濃だけ今回のCSVにあっても第一貨物の送り状は引き継ぐ(self):
+        self.write_ships()
+        self.write('_ship_inbox/daiichi/ID1.csv', csv_text([[''] * 45]), 'cp932')
+        head = ['出荷予定日', '管理番号', 'お問合せ番号', '個数', '重量（Ｋ)']
+        self.write('_ship_inbox/seino/a.csv', csv_text([head, ['20261030', '37610', '9072200101', '1', '1']]), 'cp932', mtime=1_790_000_000)
+        r1, _ = self.run_build()
+        prev = json.loads(json.dumps(r1))
+        for s in prev['ships']:
+            if s['no'] == '37610':
+                s['slips'].append({'c': 'daiichi', 'no': '40100000009', 'qty': '1', 'kg': '1', 'date': '2026-10-30'})    # 別の運送会社の、前回の送り状
+        with open(os.path.join(self.dir, 'ship_index.json'), 'w', encoding='utf-8') as f:
+            json.dump(prev, f, ensure_ascii=False)
+        self.write('_ship_inbox/seino/b.csv', csv_text([head, ['20261030', '37610', '9072200102', '1', '1']]), 'cp932', mtime=1_795_000_000)   # 西濃だけ、新しい番号に
+        self.run_build()
+        self.assertEqual(sorted((x['c'], x['no']) for x in self.ships(self.read_index())['37610']['slips']), [('daiichi', '40100000009'), ('seino', '9072200102')])
 
     def test_前回の索引が壊れていても作れる(self):
         self.write_ships(); self.write_carriers()

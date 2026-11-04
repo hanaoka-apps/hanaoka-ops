@@ -260,17 +260,25 @@
     function add(k, ka, kb, a, b, st) { rows.push({ k: k, ka: ka, kb: kb, a: a || '', b: b || '', st: st }); }
     // 出荷日
     add('出荷日', sm.date, lb.date || '出荷日', ship.date ? S.fmtDate(ship.date) : '', slip.date ? S.fmtDate(slip.date) : '', none(slip.date) || none(ship.date) ? 'none' : (slip.date === ship.date ? 'ok' : 'diff'));
-    // 宛名：1行目＝納品先名（送り状の名称１）、2行目＝荷受け人名（送り状の名称２）。名称２の欄を持たない運送会社（第一貨物）は「（欄なし）」
-    var an = S.destLabel(ship), recv = ad ? ad.recv : '', n1 = slip.n1 != null ? slip.n1 : slip.n;
-    var hasName2 = (cols.toName || []).length >= 2, two = slip.n1 != null && hasName2;
-    var st1 = none(n1) ? 'none' : cmpText(nname(an), nname(n1));
-    add('宛名（1行目）', sm.name1, lb.toName1 || 'お届け先名称', S.zen(an), S.zen(n1 || ''), st1);
-    if (recv || slip.n2 || two) {
-      var st2 = 'none';
+    // 宛名：1行目＝納品先名（送り状の名称１）、2行目＝荷受け人名（送り状の名称２）。名称２の欄を持たない運送会社（第一貨物）は「（欄なし）」。
+    // 名称１・２に分かれていない古い送り状（前回のデータから引き継いだもの）は、つなげた名前を1行で比べる
+    var an = S.destLabel(ship), recv = ad ? ad.recv : '';
+    var anRecv = [an, recv].filter(Boolean).join(' ');
+    if (slip.n1 == null) {
+      var got = slip.n || '', stOld = none(got) ? 'none' : cmpText(nname(anRecv), nname(got));
+      if ((stOld === 'diff' || stOld === 'cut') && recv && cmpText(nname(an), nname(got)) === 'ok' && nname(got).indexOf(nname(recv)) < 0) stOld = 'missing';   // 納品先名は入っているが、荷受け人名が入っていない
+      add('宛名', recv ? sm.name1 + '＋' + sm.name2 : sm.name1, (cols.toName || []).length >= 2 ? (lb.toName1 || 'お届け先名称１') + '＋' + (lb.toName2 || 'お届け先名称２') : (lb.toName1 || 'お届け先名称'), S.zen(anRecv), S.zen(got), stOld);
+    } else {
+      var n1 = slip.n1, n2 = slip.n2 || '', hasName2 = (cols.toName || []).length >= 2, two = hasName2;
+      var st1 = none(n1) ? 'none' : cmpText(nname(an), nname(n1));
+      var st2 = 'none', inN1 = !!recv && nname(n1).indexOf(nname(recv)) >= 0;
       if (!hasName2) st2 = 'info';
-      else if (two && recv) st2 = none(slip.n2) ? 'missing' : cmpText(nname(recv), nname(slip.n2));
-      else if (two && !recv && slip.n2) st2 = 'info';
-      add('宛名（2行目）', sm.name2, hasName2 ? (lb.toName2 || 'お届け先名称２') : NOCOL, S.zen(recv), S.zen(slip.n2 || ''), st2);
+      else if (recv) st2 = none(n2) ? 'missing' : cmpText(nname(recv), nname(n2));
+      else if (n2) st2 = 'info';
+      // 並び方が違うだけ（名称１に荷受け人名まで入っている、など）は、つなげて同じなら「同じ」
+      if (!none(n1) && cmpText(nname(anRecv), nname(n1 + n2)) === 'ok') { st1 = 'ok'; if (st2 !== 'none' && st2 !== 'info') st2 = 'ok'; }
+      add('宛名（1行目）', sm.name1, lb.toName1 || 'お届け先名称', S.zen(an), S.zen(n1), st1);
+      if (recv || n2 || two) add('宛名（2行目）', sm.name2, hasName2 ? (lb.toName2 || 'お届け先名称２') : NOCOL, S.zen(recv), n2 ? S.zen(n2) : (inN1 && st2 === 'ok' ? '（名称１に続けて入っています）' : ''), st2);
     }
     // 郵便番号・住所
     var az = ad ? ad.zip : '', bz = slip.z || '';
