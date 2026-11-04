@@ -440,9 +440,11 @@ def load_previous_slips(path):
 
 
 def merge_slips(current, previous):
-    """今回の送り状を先に、前回にだけあるものを後ろに足す（同じ運送会社・同じ番号は今回を使う）。"""
-    seen = {(x['c'], x['no']) for x in current}
-    return list(current) + [x for x in previous if (x.get('c'), x.get('no')) not in seen]
+    """今回の送り状を使い、前回の送り状は、今回のCSVにその運送会社の分が無い売上№のぶんだけ引き継ぐ。
+    今回のCSVにその売上№の送り状がある運送会社は、今回の分だけ（送り状を発行し直すと、前の番号は無効になる。前の番号を残すと、お客様に古い番号を伝えてしまう）。
+    今回のCSVに、その運送会社の分が無いもの（取得期間より前の出荷・運送会社のCSVが届いていない）は、前回から引き継ぐ。"""
+    cur_carriers = {x['c'] for x in current}
+    return list(current) + [x for x in previous if x.get('c') not in cur_carriers]
 
 
 def write_json_atomic(dest, obj):
