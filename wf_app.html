@@ -242,7 +242,7 @@ a.flink{color:var(--pri);text-decoration:none;cursor:pointer}a.flink:hover{text-
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="wf_theme.css?v=20261030b">
+<link rel="stylesheet" href="wf_theme.css?v=20261104a">
 </head>
 <body>
 
@@ -2634,12 +2634,13 @@ function rowlogStepHtml(t, form, f) {
       return `<div class="rl-row ${next ? '' : 'done'}"><div class="rl-h"><b>${i + 1}回目</b> ${esc(rowlogLabel(f, r))} ${rowlogBadge(f, x)}</div>
         ${f.phases.filter(ph => x[ph.key]).map(ph => `<div class="rl-ph"><span class="rl-pl">${esc(ph.label)}</span>${rowlogDone(ph, x[ph.key])}</div>`).join('')}
         ${next ? `<details class="rl-in" ${i === rest[0] ? 'open' : ''}><summary>${esc(next.label)}を記録する</summary><div class="lg-form" style="margin-top:8px">${next.fields.map(fd => `<label class="fld ${fd.type === 'file' ? 'wide' : ''}"><span>${esc(fd.label)}${fd.required ? ' <span class="req">必須</span>' : ''}</span>${inp(i, fd)}</label>`).join('')}</div>
+          ${rowlogAiHtml(E.ai && E.ai[i])}
           <div class="actions"><span style="flex:1"></span><button class="pri" data-rlgo="${i}">${i + 1}回目の${esc(next.label)}を記録する</button></div></details>` : ''}</div>`; }).join('')}</div>
     <div class="muted" style="margin-top:6px">「記録する」を押すと、その回の内容と書類がすぐ申請に書き込まれます（この段はそのまま残ります）。すべての回が済んだら、下の「作業を終える」を押してください。</div></div>`;
 }
 function bindRowlog(t, form, f) {
   const E = stepEd, again = () => { const dd = $('detail'), y = dd ? dd.scrollTop : 0; renderTaskDetail(t, pj(t.SnapshotJson, {})); if ($('detail')) $('detail').scrollTop = y; };
-  const addF = (key, list) => { E.files[key] = (E.files[key] || []).concat([...list].map(x => ({ name: x.name, size: x.size, file: x, key: fileKey(x.name) }))); again(); };
+  const addF = (key, list) => { const added = [...list]; E.files[key] = (E.files[key] || []).concat(added.map(x => ({ name: x.name, size: x.size, file: x, key: fileKey(x.name) }))); again(); rowlogAiRead(t, form, f, key, added, again); };
   document.querySelectorAll('[data-sfk]').forEach(el => el.oninput = () => { E.data[el.dataset.sfk] = el.value.trim(); });
   document.querySelectorAll('[data-sff]').forEach(el => el.onchange = () => addF(el.dataset.sff, el.files));
   document.querySelectorAll('[data-sfd]').forEach(z => { z.ondragover = e => { e.preventDefault(); z.classList.add('over'); }; z.ondragleave = () => z.classList.remove('over'); z.ondrop = e => { e.preventDefault(); addF(z.dataset.sfd, e.dataTransfer.files); }; });
@@ -2666,6 +2667,57 @@ function bindRowlog(t, form, f) {
       toast(`${i + 1}回目の${ph.label}を記録しました`); again();
     } catch (e) { alert('書き込めませんでした：' + e.message); b.disabled = false; b.textContent = label; }
   });
+}
+/* 回ごとの記録：書類（計算書・RPR・送金依頼書の控えなど）を置いたら、AI が読んで、その回の空いている欄を埋める。
+   埋めるのは空の欄だけ（手で入れた値は変えない）。記録するのは本人が確かめて「記録する」を押したとき */
+function rowlogAiHtml(a) {
+  if (!a) return '';
+  if (a.busy) return '<div class="rl-ai muted">🤖 AI が書類を読んでいます…</div>';
+  if (a.err) return `<div class="rl-ai warn">🤖 読み取れませんでした：${esc(a.err)}（手で入れてください）</div>`;
+  return `<div class="rl-ai">🤖 ${a.filled.length ? `書類から入れました：${esc(a.filled.join('・'))}。書類と見比べてから記録してください` : '書類から入れられる値はありませんでした'}${a.comments.length ? `<ul>${a.comments.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}</div>`;
+}
+async function rowlogAiRead(t, form, f, key, files, again) {
+  const m = /^rl_(\d+)_(.+)$/.exec(key); if (!m || !files.length) return;
+  if (!DEV && !st.M.settings['flow.urlAI']) return;
+  const i = Number(m[1]), d = pj(t.SnapshotJson, {}).data || {}, x = (d[f.key] || [])[i] || {}, ph = f.phases.find(p => !x[p.key]);
+  if (!ph || !ph.fields.some(fd => fd.key === m[2])) return;
+  const targets = ph.fields.filter(fd => fd.type !== 'file' && fd.label); if (!targets.length) return;
+  const E = stepEd; E.ai = E.ai || {}; E.ai[i] = { busy: true }; again();
+  try {
+    const cfg = pj(st.M.settings['ai.read'], {}), models = pj(st.M.settings['ai.models'], {}), docs = [];
+    for (const file of files.slice(0, 4)) {
+      const blob = await aiPrep(file);
+      if (blob.size > AI_MAX_MB * 1024 * 1024) throw new Error(`書類が大きすぎます（${AI_MAX_MB}MB まで）`);
+      const type = blob.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'image/jpeg');
+      docs.push(type === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: type, data: await b64Of(blob) } }
+        : { type: 'image', source: { type: 'base64', media_type: /^image\/(png|webp|gif)$/.test(type) ? type : 'image/jpeg', data: await b64Of(blob) } });
+    }
+    const row = rowlogRows(f, d)[i] || {}, cur = (form.fields.find(fd => fd.key === 'currency') && d.currency) || '';
+    const before = f.phases.filter(p => x[p.key]).map(p => `${p.label}：` + p.fields.filter(fd => fd.type !== 'file' && x[p.key][fd.key] != null).map(fd => `${fd.label} ${x[p.key][fd.key]}`).join('、')).join('\n');
+    const info = [`## 申請書：${form.Title}（${t.RequestNo}）`, d.payee ? `相手：${d.payee}` : '', `## この回：${i + 1}回目 ${rowlogLabel(f, row)}${cur ? '（通貨 ' + cur + '）' : ''}`, before ? `## これまでの記録\n${before}` : '',
+      `## 記録すること：${ph.label}`, '', '添付の書類（銀行の計算書・送金の控えなど）を読んで、この回の記録の項目（fields）を決められた形で答えてください。書類に無い値は空の文字にしてください。',
+      '書類の金額・相手・日付がこの回と合わないときは、comments に書いてください。'].filter(Boolean).join('\n');
+    const schema = { type: 'object', additionalProperties: false, required: ['fields', 'comments'], properties: {
+      fields: { type: 'object', additionalProperties: false, required: targets.map(fd => fd.key), properties: Object.fromEntries(targets.map(fd => [fd.key, aiProp(fd)])) },
+      comments: { type: 'array', items: { type: 'string' }, description: '読めなかった所・この回と合わない所・確かめてほしい所（短く）' } } };
+    const body = { model: models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 8000, fallbacks: 'default',
+      output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
+      system: cfg.system || '社内の申請書の入力を手伝います。添付の書類から分かることだけを答え、分からない項目は空にします。',
+      messages: [{ role: 'user', content: [...docs, { type: 'text', text: info }] }] };
+    const r = await api.aiAsk('wf.read', `wf_app:${form.FormCode}:${f.key}`, body);
+    if (r.stop === 'refusal') throw new Error('AI が読み取りを断りました');
+    const a = pj(r.text, null); if (!a || !a.fields) throw new Error('AI の答えを読めませんでした');
+    const filled = [];
+    targets.forEach(fd => {
+      const id = `rl_${i}_${fd.key}`; if (String(E.data[id] || '').trim()) return;   // 手で入れた値は変えない
+      let v = String(a.fields[fd.key] ?? '').trim(); if (!v) return;
+      if (['number', 'currency'].includes(fd.type)) { v = v.replace(/[,¥円\s]/g, ''); if (isNaN(Number(v))) return; }
+      if (fd.type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+      E.data[id] = v; filled.push(fd.label);
+    });
+    E.ai[i] = { filled, comments: (a.comments || []).filter(Boolean) };
+  } catch (e) { E.ai[i] = { err: e.message }; }
+  if (stepEd === E) again();
 }
 /* ---------- 詳細：タスク（承認待ち・TODO・回覧・関わった申請） ---------- */
 function renderTaskDetail(t, s) {
