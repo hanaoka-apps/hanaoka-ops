@@ -192,9 +192,9 @@ class BuildShipIndexTest(unittest.TestCase):
             ['5910000002', '36729', '2026/10/05', '1', '70', '大阪ロジス', '', '06-0000-0000', '5400001', '大阪府大阪市', '1-1', '2026/10/07', '午後', 'メモ']]), 'cp932')
         res, _ = self.run_build()
         S = self.ships(res)
-        self.assertEqual(S['37610']['slips'][0], {'c': 'seino', 'no': '9072200101', 'qty': '4', 'kg': '110', 'date': '2026-10-30', 'n': '架空商事 本社 山田様', 'z': '1230001',
+        self.assertEqual(S['37610']['slips'][0], {'c': 'seino', 'no': '9072200101', 'qty': '4', 'kg': '110', 'date': '2026-10-30', 'n': '架空商事 本社 山田様', 'n1': '架空商事', 'n2': '本社 山田様', 'z': '1230001',
                                                   'a': '架空県架空市1-2-3', 'w': '配達指定【11月05日午前】', 'm': 'ダンディ / ウンチン'})
-        self.assertEqual(S['36729']['slips'][0], {'c': 'tonami', 'no': '5910000002', 'qty': '1', 'kg': '70', 'date': '2026-10-05', 'n': '大阪ロジス', 'z': '5400001',
+        self.assertEqual(S['36729']['slips'][0], {'c': 'tonami', 'no': '5910000002', 'qty': '1', 'kg': '70', 'date': '2026-10-05', 'n': '大阪ロジス', 'n1': '大阪ロジス', 'z': '5400001',
                                                   'a': '大阪府大阪市1-1', 'w': '2026/10/07 午後', 'm': 'メモ'})
         with open(os.path.join(self.dir, 'ship_index.json'), encoding='utf-8') as f:
             text = f.read()
@@ -256,12 +256,12 @@ class BuildShipIndexTest(unittest.TestCase):
     def test_住所は納品先マスタから付く_電話は入れない(self):
         self.write_ships(); self.write_masters()
         res, out = self.run_build()
-        self.assertEqual(res['addr']['100001|000010'], {'z': '123-0001', 'a': '架空県架空市1-2-3'})   # 住所１〜３をつなぐ
+        self.assertEqual(res['addr']['100001|000010'], {'z': '123-0001', 'a': '架空県架空市1-2-3', 'r': '山田様'})   # 住所１〜３をつなぐ。荷受け人名（送り状の宛名の2行目）も入る
         self.assertNotIn('999999|000010', res['addr'])                      # 出荷に出てこない組み合わせは入れない
         self.assertEqual(res['counts']['withAddr'], len(res['ships']))
         with open(os.path.join(self.dir, 'ship_index.json'), encoding='utf-8') as f:
             text = f.read()
-        for secret in ('03-1111-2222', '03-1111-3333', '03-5555-6666', '山田様', '関係ない'):
+        for secret in ('03-1111-2222', '03-1111-3333', '03-5555-6666', '関係ない'):
             self.assertNotIn(secret, text)
         self.assertEqual([m['name'] for m in res['masters']], ['納品先マスタ.csv'])
         self.assertNotIn('架空県架空市', out)                               # ログには値を出さない

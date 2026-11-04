@@ -193,7 +193,7 @@ function card(s, i) {
     (s.ret ? '<span class="tag warn">返品</span>' : '') +
     (S.isDirect(CONF, s) ? '<span class="tag direct">直送</span>' : '') +
     (sib.length ? '<span class="tag ok">分納あり ' + (sib.length + 1) + '回</span>' : '') +
-    (S.diffCount(CONF, IDX, s) ? '<span class="tag warn" title="伝票と、運送会社に渡った送り状で、違うかもしれない項目があります（カードを押すと見比べられます）">送り状と違うかも</span>' : '') +
+    (S.diffCount(CONF, IDX, s) ? '<span class="tag warn" title="伝票と、運送会社に渡った送り状で、違う・切れている・入っていない項目があります（カードを押すと見比べられます）">送り状と違うかも</span>' : '') +
     '<span class="sc-no">売上№ ' + esc(s.no) + (s.shipNo ? '　出荷№ ' + esc(s.shipNo) : '') + '</span></div>' +
     '<div class="sc-slips">' + slipsHtml(s, st) + '</div>' +
     destHtml(s, i) +
@@ -274,12 +274,13 @@ async function openDetail(s) {
 function closeDetail() { $('detailPanel').hidden = true; $('detailBackdrop').hidden = true; document.body.classList.remove('np-open'); }
 // 伝票（SMILE）と送り状（運送会社のデータ）の見比べの表。違うかもしれない項目は黄色（表記ゆれで違って見えることもあるので、断定しない）
 function compareHtml(s, sl) {
-  const E = esc, rows = (sl.n || sl.a || sl.z || sl.w || sl.m) ? S.compareSlip(CONF, IDX, s, sl) : [], nd = rows.filter(r => r.st === 'diff').length;
+  const E = esc, rows = (sl.n || sl.a || sl.z || sl.w || sl.m) ? S.compareSlip(CONF, IDX, s, sl) : [], nd = rows.filter(r => r.st === 'diff' || r.st === 'cut' || r.st === 'missing').length;
   let h = '<div class="cmp-one">' + slipLine(sl, s);
   if (!rows.length) return h + '<div class="muted" style="margin-top:4px;font-size:12px">この送り状には、お届け先などの控えがありません（運送会社のデータが古い形か、引き継いだ番号です）。</div></div>';
   h += '<table class="cmp-t"><thead><tr><th></th><th>伝票（SMILE）</th><th>送り状（' + E(S.carrierName(CONF, sl.c)) + '）</th><th></th></tr></thead><tbody>' +
-    rows.map(r => '<tr class="' + r.st + '"><th>' + E(r.k) + '</th><td>' + (E(r.a) || '<span class="muted">-</span>') + '</td><td>' + (E(r.b) || '<span class="muted">-</span>') + '</td><td class="cmp-m">' + ({ ok: '✓', diff: '違うかも', none: '', info: '' }[r.st] || '') + '</td></tr>').join('') + '</tbody></table>';
-  return h + (nd ? '<div class="alert warn">伝票と送り状で、違うかもしれない項目が ' + nd + ' 個あります。表記の違い（全角・半角、「様」、名前の切れ）のこともあるので、内容を見て確認してください。</div>' : '') + '</div>';
+    rows.map(r => '<tr class="' + r.st + '"><th>' + E(r.k) + '</th><td>' + (E(r.a) || '<span class="muted">-</span>') + '</td><td>' + (E(r.b) || '<span class="muted">-</span>') + '</td><td class="cmp-m">' + ({ ok: '✓', diff: '違うかも', cut: '切れています', missing: '入っていません', none: '', info: '' }[r.st] || '') + '</td></tr>').join('') + '</tbody></table>';
+  const hint = rows.some(r => r.st === 'cut') ? '「切れています」は、送り状の欄の長さで、途中までしか入っていません（第一貨物の宛名は17文字ほど、西濃は名称・住所ごとに30文字ほど）。' : '', hint2 = rows.some(r => r.st === 'missing') ? '「入っていません」は、荷受け人名が送り状に入っていません。' : '';
+  return h + (nd ? '<div class="alert warn">伝票と送り状で、確認が必要な項目が ' + nd + ' 個あります。' + hint + hint2 + '表記の違い（全角・半角、「様」）のこともあるので、内容を見て確認してください。</div>' : '') + '</div>';
 }
 function detailHtml(s, d, gen) {
   const E = esc, Z = S.zen, F = S.fmtNum;

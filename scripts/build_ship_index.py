@@ -16,7 +16,7 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
   - つなぎの項目は「売上№」（西濃・第一貨物＝管理番号、トナミ＝指定No記号）。先頭の 0 は外して比べる（'037339' と '37339' は同じ）。空は除く。
   - 取得期間が重なる複数のファイルは、売上№ごとに「新しいファイルに載っているもの」を使う（1回抜けても前のファイルで補える。送り状を発行し直したときは新しい方）。
   - 運送会社のCSVの電話は索引に入れない。お届け先の名前・郵便番号・住所・配達指定・記事（品名のメモ）は、伝票と見比べるために、送り状ごとに入れる
-    （n＝名前、z＝郵便番号、a＝住所、w＝配達指定、m＝記事。列は ship_config.json の cols の toName・toZip・toAddr・want・note）。
+    （n＝名前（名称１・２をつなげたもの）、n1・n2＝名称１・名称２、z＝郵便番号、a＝住所、w＝配達指定、m＝記事。列は ship_config.json の cols の toName・toZip・toAddr・want・note）。
   - 送り先の住所は、SMILE のマスタから足す（下の「住所」）。電話・FAX は入れない。
 
 住所（出荷明細には住所の列が無い）:
@@ -37,9 +37,9 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
       "carriers": { "<キー>": { "name", "kubun", "files", "rows", "from", "to", "newest"(UTC ISO) } },   … 運送会社データがいつからいつまで・いつ届いたか
       "ships":    [ { "no": 売上№, "date", "shipNo", "cust", "custName", "dest", "destName", "staff", "kubun", "want", "time", "ret",
                       "juchu": [受注№], "po": [客先注番], "lines": [[品目コード, 品目名, 数量, 受注№]],
-                      "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date", "n", "z", "a", "w", "m" }] } ],
+                      "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date", "n", "n1", "n2", "z", "a", "w", "m" }] } ],
       "juchu":    { "<受注№>": { "date", "due", "plan", "lines", "staff" } },
-      "addr":     { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所 } },   … 送り先の住所（上の「住所」）
+      "addr":     { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所, "r": 荷受け人名（納品先マスタの荷受け人名１・２。宛名の２行目に入る） } },   … 送り先の住所（上の「住所」）
       "masters":  [{ "name", "modified"(UTC ISO), "rows" }],              … 住所を読んだマスタ（古さの警告には使わない）
       "unmatched": [{ "c", "key", "slip", "date" }],   … 運送会社にあって、SMILE の出荷明細に売上№が無いもの（SMILE の出力待ちか、番号の違い）
       "counts":   { ... }
@@ -82,7 +82,7 @@ SHIP_REQUIRED = ['伝票日付', '売上№', '品目コード', '受注№']
 JUCHU_COLS = [['受注№'], ['行'], ['受注日付'], ['納期', '受注納期'], ['出荷予定日'], ['担当者名']]
 JUCHU_REQUIRED = ['受注№']
 # 納品先マスタ・得意先マスタから取り出す列（住所。電話は取らない）
-DEST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３']]
+DEST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３'], ['荷受け人名１'], ['荷受け人名２']]
 CUST_COLS = [['得意先コード', '得意先ｺｰﾄﾞ'], ['郵便番号'], ['住所１'], ['住所２'], ['住所３']]
 NO_DEST = '000000'   # 納品先コードが「納品先なし」（得意先そのものに送る）のときの値（設定 smile.noDest で変えられる）
 
@@ -268,7 +268,8 @@ def load_carrier(inbox, ckey, conf):
                 dmax = d if d > dmax else dmax
             rec = {'c': ckey, 'no': slip, 'qty': num(g('qty')), 'kg': num(g('weight')), 'date': d}
             # 送り状に載るお届け先など（伝票と見比べる用）。n＝お届け先の名前、z＝郵便番号、a＝住所、w＝配達指定、m＝記事（品名のメモ）。電話は入れない
-            for k, v in (('n', join_cols(r, plan['toName'], ' ')), ('z', g('toZip')), ('a', join_cols(r, plan['toAddr'])),
+            tn = [r[p].strip() for p in plan['toName'][:2] if 0 <= p < len(r)]   # 名称１・名称２（宛名の欄ごとに、切れているか見るため）
+            for k, v in (('n', join_cols(r, plan['toName'], ' ')), ('n1', tn[0] if tn else ''), ('n2', tn[1] if len(tn) > 1 else ''), ('z', g('toZip')), ('a', join_cols(r, plan['toAddr'])),
                          ('w', join_cols(r, plan['want'], ' ')), ('m', join_cols(r, plan['note'], ' / '))):
                 if v:
                     rec[k] = v
@@ -365,17 +366,21 @@ def build_juchu(path, wanted):
     return out, total
 
 
-def addr_entry(zip_code, parts):
-    """郵便番号と住所１〜３から {z, a}。どちらも空なら None。住所は、１〜３をそのままつなぐ。"""
+def addr_entry(zip_code, parts, recv=''):
+    """郵便番号と住所１〜３（と、あれば荷受け人名）から {z, a, r}。みな空なら None。住所は、１〜３をそのままつなぐ。
+    荷受け人名は、送り状の宛名（お届け先の名称２）に入るもの（納品先マスタの荷受け人名１・２）。"""
     a = ''.join(p for p in parts if p)
     z = zip_code.strip()
-    if not z and not a:
+    r = recv.strip()
+    if not z and not a and not r:
         return None
     e = {}
     if z:
         e['z'] = z
     if a:
         e['a'] = a
+    if r:
+        e['r'] = r
     return e
 
 
@@ -398,7 +403,7 @@ def build_addr(dest_path, cust_path, ships, no_dest):
             total += 1
             v = pick(r, plan)
             if (v[0], v[1]) in want_dest:
-                e = addr_entry(v[2], v[3:6])
+                e = addr_entry(v[2], v[3:6], ' '.join(x for x in (v[6], v[7]) if x))
                 if e:
                     out[v[0] + '|' + v[1]] = e
         meta.append({'name': os.path.basename(dest_path), 'modified': mtime_iso(dest_path), 'rows': total})
