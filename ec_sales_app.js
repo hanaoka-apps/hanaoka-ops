@@ -531,8 +531,8 @@ function memoCtl(s, st, r) {
 }
 function shipCtl(s, st, r, ship, brief) {
   if (!(st === 'new' || st === 'ok')) return esc(md(ship));
-  return '<input type="date" class="dateinp ed-live' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') +
-    (brief ? '' : '<div class="sub">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。空にすると自動の日付に戻ります。変えると、すぐ保存され、SMILE の納期・出荷予定日として取り込まれます</div>');
+  return '<div class="ship-out' + (r && r.shipDate ? ' manual' : '') + '"><input type="date" class="dateinp ed-live' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') +
+    (brief ? '' : '<div class="sub">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。空にすると自動の日付に戻ります。変えると、すぐ保存され、SMILE の納期・出荷予定日として取り込まれます</div>') + '</div>';
 }
 function edInput(s, d, k) {
   const v = editDraft[k] == null ? '' : editDraft[k], changed = String(v) !== String(d.auto[k] == null ? '' : d.auto[k]);
