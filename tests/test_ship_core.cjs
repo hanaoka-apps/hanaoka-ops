@@ -136,8 +136,8 @@ t('分納：日数の設定・表に出す数・分納でないとき', () => {
 t('送り先：住所・直送・名前', () => {
   const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市1-2-3' }, '100001|000000': { a: '架空県本社市4-5-6' } } };
   const s = ship({});
-  assert.deepStrictEqual(S.addrOf(idx, s), { zip: '123-0001', addr: '架空県架空市1-2-3', recv: '' });
-  assert.deepStrictEqual(S.addrOf(idx, ship({ dest: '000000' })), { zip: '', addr: '架空県本社市4-5-6', recv: '' });
+  assert.deepStrictEqual(S.addrOf(idx, s), { zip: '123-0001', addr: '架空県架空市1-2-3', recv: '', tel: '' });
+  assert.deepStrictEqual(S.addrOf(idx, ship({ dest: '000000' })), { zip: '', addr: '架空県本社市4-5-6', recv: '', tel: '' });
   assert.strictEqual(S.addrOf(idx, ship({ dest: '000099' })), null);
   assert.strictEqual(S.addrOf({}, s), null);                                               // addr の無い索引でも動く
   assert.strictEqual(S.zipAddr({ zip: '123-0001', addr: '架空県' }), '〒123-0001　架空県');
@@ -250,6 +250,24 @@ t('見比べの表：SMILE の項目と、送り状（運送会社のデータ�
   const dm = {}; dd.forEach(r => { dm[r.k] = r; });
   assert.strictEqual(dm['宛名（2行目）'].kb, '（欄なし）'); assert.strictEqual(dm['宛名（2行目）'].st, 'info');
   assert.strictEqual(dm['郵便番号'].kb, '（欄なし）'); assert.strictEqual(dm['郵便番号'].st, 'none'); assert.strictEqual(dm['配達指定'], undefined);
+});
+t('電話番号と客先注番：マスタ・注文と送り状を比べる', () => {
+  const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市1-2-3', r: '小久保所長様', t: '0276-56-5351' } } };
+  const sh = ship({ destName: '架空商事', po: ['NYF2007026009'], date: '2026-11-02' });
+  const rows = o => S.compareSlip(CONF, idx, sh, Object.assign({ c: 'seino', no: '1', date: '2026-11-02', n1: '架空商事', n: '架空商事' }, o));
+  const by = (rs, k) => rs.find(r => r.k === k);
+  assert.strictEqual(by(rows({ p: '0276565351' }), '電話番号').st, 'ok');                       // ハイフンの有無は問わない
+  assert.strictEqual(by(rows({ p: '03-1111-2222' }), '電話番号').st, 'diff');
+  assert.strictEqual(by(rows({ p: '0276565351' }), '電話番号').kb, 'お届け先電話番号');
+  assert.strictEqual(by(S.compareSlip(CONF, idx, sh, { c: 'daiichi', no: '1', date: '2026-11-02', n1: '架空商事', p: '0276-56-5351' }), '電話番号').st, 'ok');
+  assert.strictEqual(by(rows({}), '電話番号').st, 'none');                                       // 送り状に電話が無い
+  // 客先注番：送り状に「注番」が書かれているときだけ行を出す
+  assert.strictEqual(by(rows({}), '客先注番'), undefined);
+  assert.strictEqual(by(rows({ n2: '注番：NYF2007026009 様', n: '架空商事 注番：NYF2007026009 様' }), '客先注番').st, 'ok');
+  assert.strictEqual(by(rows({ a: '架空県（注番:NYF-2007-026009）' }), '客先注番').st, 'ok');   // ハイフンの違いは同じ
+  const ng = by(rows({ m: '部品 注番　XYZ1234567' }), '客先注番');
+  assert.strictEqual(ng.st, 'diff'); assert.strictEqual(ng.a, 'NYF2007026009'); assert.strictEqual(ng.b, 'XYZ1234567');                     // 古い注番が印字されている
+  assert.deepStrictEqual(S.slipPoMentions(['注番：A-1', '客先注番 B2', '注文番号 C3']), ['A-1', 'B2']);
 });
 t('土日を除いた時間数', () => {
   assert.strictEqual(S.weekdayHours(jst(2026, 10, 30, 18), jst(2026, 11, 2, 8)), 14);       // 金 18:00 → 月 8:00（金の6時間＋月の8時間）

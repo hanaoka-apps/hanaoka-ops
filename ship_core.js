@@ -160,7 +160,7 @@
   // 送り先の住所（索引の addr。無ければ null）。{ zip, addr }
   S.addrOf = function (idx, ship) {
     var e = ((idx && idx.addr) || {})[(ship.cust || '') + '|' + (ship.dest || '')];
-    return e ? { zip: e.z || '', addr: e.a || '', recv: e.r || '' } : null;
+    return e ? { zip: e.z || '', addr: e.a || '', recv: e.r || '', tel: e.t || '' } : null;
   };
   // 送り先の名前：納品先があればその名前、納品先なし（得意先そのものに送る）なら得意先の名前
   S.destLabel = function (ship) { return ship.destName || ship.custName || ''; };
@@ -246,10 +246,19 @@
   }
   var BAD = { diff: 3, missing: 2, cut: 1 };
   function worse(a, b) { return (BAD[b] || 0) > (BAD[a] || 0) ? b : a; }
+  // 送り状の宛名・住所・記事に書かれた「注番：○○」の番号（複数なら全部）
+  S.slipPoMentions = function (texts) {
+    var out = [];
+    (texts || []).forEach(function (s) {
+      var re = /(?:客先)?注番[:：\s]*([A-Za-z0-9][A-Za-z0-9\-_]*)/g, m, t = S.zen(s || '');
+      while ((m = re.exec(t))) { if (out.indexOf(m[1]) < 0) out.push(m[1]); }
+    });
+    return out;
+  };
   // 見比べの表の「SMILE 側の項目名」。納品先が決まっている出荷は、納品先マスタの項目。納品先なしの出荷は、得意先マスタ（得意先そのもの）の項目
   function smileLabels(ship, conf) {
     var none = String(((conf && conf.smile) || {}).noDest || '000000'), direct = !!ship.dest && String(ship.dest) !== none;
-    return { name1: direct ? '納品先名' : '得意先名１（納品先なし）', name2: '荷受け人名１', zip: '郵便番号', addr: '住所１＋２＋３', date: '伝票日付', want: '配送指定日＋配達指定名', item: '品目名' };
+    return { name1: direct ? '納品先名' : '得意先名１（納品先なし）', name2: '荷受け人名１', zip: '郵便番号', tel: '電話番号', addr: '住所１＋２＋３', date: '伝票日付', want: '配送指定日＋配達指定名', item: '品目名' };
   }
   /* 行：{ k 見る所, ka SMILE 側の項目名, kb 運送会社のデータの項目名, a 伝票の値, b 送り状の値, st }
    * 表は「SMILE の納品先マスタの項目 → 送り状（運送会社のデータ）の項目」の対応で並べる（項目名は ship_config.json の carriers.<会社>.labels）。
@@ -285,6 +294,17 @@
     add('郵便番号', sm.zip, cols.toZip ? (lb.toZip || 'お届け先郵便番号') : NOCOL, az, bz, none(az) || none(bz) ? 'none' : (S.digits(az) === S.digits(bz) ? 'ok' : 'diff'));
     var aa = ad ? ad.addr : '', ba = slip.a || '';
     add('住所', sm.addr, lb.toAddr || 'お届け先住所', S.zen(aa), S.zen(ba), none(aa) || none(ba) ? 'none' : cmpText(naddr(aa), naddr(ba)));
+    // 電話番号（送り状にも、お届け先の電話が載る）。マスタの電話と、数字だけにして比べる
+    var at = ad ? ad.tel : '', bt = slip.p || '';
+    if (at || bt) add('電話番号', sm.tel, cols.toTel ? (lb.toTel || 'お届け先電話番号') : NOCOL, at, bt, !cols.toTel || none(at) || none(bt) ? 'none' : (S.digits(at) === S.digits(bt) ? 'ok' : 'diff'));
+    // 客先注番：納品先マスタの宛名・住所に「注番：…」と書き込んで、送り状に印字しているケースがある。送り状に注番が書かれているときだけ、この注文の客先注番と比べる
+    // （納品先マスタの注番は納品先ごとに1つなので、古い注番が残ると、次の注文でも同じ注番が印字される）
+    var pos = S.slipPoMentions([slip.n, slip.a, slip.m]);
+    if (pos.length) {
+      var mine = (ship.po || []).map(function (x) { return S.zen(x).replace(/[\s\-_]/g, '').toUpperCase(); }).filter(Boolean);
+      var ok = pos.some(function (p) { return mine.indexOf(p.replace(/[\-_]/g, '').toUpperCase()) >= 0; });
+      add('客先注番', '客先注番', '宛名・住所・記事に書かれた「注番」', (ship.po || []).join('、'), pos.join('、'), mine.length ? (ok ? 'ok' : 'diff') : 'none');
+    }
     // 配達指定（日付と午前・午後）。運送会社のデータに欄がある会社だけ
     var aw = [ship.want ? S.fmtDate(ship.want) : '', ship.time || ''].filter(Boolean).join(' '), bw = slip.w || '';
     if ((aw || bw) && cols.want) {
