@@ -279,7 +279,7 @@ function compareHtml(s, sl) {
   if (!rows.length) return h + '<div class="muted" style="margin-top:4px;font-size:12px">この送り状には、お届け先などの控えがありません（運送会社のデータが古い形か、引き継いだ番号です）。</div></div>';
   h += '<table class="cmp-t"><thead><tr><th></th><th>伝票（SMILE）</th><th>送り状（' + E(S.carrierName(CONF, sl.c)) + '）</th><th></th></tr></thead><tbody>' +
     rows.map(r => '<tr class="' + r.st + '"><th>' + E(r.k) + '</th><td>' + (E(r.a) || '<span class="muted">-</span>') + '</td><td>' + (E(r.b) || '<span class="muted">-</span>') + '</td><td class="cmp-m">' + ({ ok: '✓', diff: '違うかも', cut: '切れています', missing: '入っていません', none: '', info: '' }[r.st] || '') + '</td></tr>').join('') + '</tbody></table>';
-  const hint = rows.some(r => r.st === 'cut') ? '「切れています」は、送り状の欄の長さで、途中までしか入っていません（第一貨物の宛名は17文字ほど、西濃は名称・住所ごとに30文字ほど）。' : '', hint2 = rows.some(r => r.st === 'missing') ? '「入っていません」は、荷受け人名が送り状に入っていません。' : '';
+  const hint = rows.some(r => r.st === 'cut') ? '「切れています」は、送り状の欄の長さで、途中までしか入っていません（運送会社ごとに、1つの欄の長さが決まっています。第一貨物＝宛名・住所とも全角15文字（30バイト）、西濃＝名称・住所とも全角30文字（60バイト））。' : '', hint2 = rows.some(r => r.st === 'missing') ? '「入っていません」は、荷受け人名が送り状に入っていません。' : '';
   return h + (nd ? '<div class="alert warn">伝票と送り状で、確認が必要な項目が ' + nd + ' 個あります。' + hint + hint2 + '表記の違い（全角・半角、「様」）のこともあるので、内容を見て確認してください。</div>' : '') + '</div>';
 }
 function detailHtml(s, d, gen) {
