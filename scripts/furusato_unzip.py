@@ -24,6 +24,7 @@ furusato.dateWindowDays 日ぶん前後の日付も試す。
 環境変数:
   SHARED_MASTERS_DIR  - OneDrive 同期済みの SharedMasters のパス。必須
   FURUSATO_ZIP_WORD   - パスワードの英語の部分。必須（秘密）
+  FURUSATO_BACKFILL   - (任意) 1 のとき、過去分の取り込み。解凍はするが、Teams には通知せず、通知済みとして記録だけする（過去の ZIP を入れ直すときに、通知が大量に出ないように）
   EC_TEAMS_WEBHOOK_URL - (任意) Teams の Webhook の URL（ec_report と同じ。秘密）。無ければ通知しない（ログに残す）
 終了コード: 0=成功（処理するものがなかった場合も）、1=失敗した ZIP がある、2=設定が足りない
 """
@@ -209,7 +210,7 @@ def notify_candidates(csv_dirs, rules, logger):
     return list(seen.items())
 
 
-def run(shared, word, conf, session=None, rules=None):
+def run(shared, word, conf, session=None, rules=None, silent=False):
     """session＝Teams に投稿する通信（試験用に差し替える。普通は None）／rules＝金額の計算に使う対応表（試験用。普通は読み込む）"""
     inbox = Path(shared) / conf['inboxDir']
     logdir = Path(shared) / '_rpa_queue' / 'logs'
@@ -240,7 +241,7 @@ def run(shared, word, conf, session=None, rules=None):
         logger = lambda m: log(logdir, m)   # noqa: E731
         cands = notify_candidates(new_dirs, rules, logger)
         order_notify.notify_new('ふるさと納税', cands, order_notify.state_path(shared, NOTIFIED_NAME), logger,
-                                first_run_silent=False, keep_pending=True, session=session,
+                                first_run_silent=False, keep_pending=True, session=session, silent=silent,
                                 footer=order_notify.app_footer(FURUSATO_CONFIG))   # 最後に「アプリ：<URL>」（URL は furusato_config.json の notify.appUrl）
     except Exception as e:
         log(logdir, f'Teams への通知に失敗（{type(e).__name__}）')
@@ -251,7 +252,8 @@ def main():
     shared, word = os.environ.get('SHARED_MASTERS_DIR'), os.environ.get('FURUSATO_ZIP_WORD')
     if not shared or not word:
         print('SHARED_MASTERS_DIR と FURUSATO_ZIP_WORD の環境変数が必要です', file=sys.stderr); return 2
-    return run(shared, word, load_conf())
+    # 過去分の取り込み（バックフィル）：環境変数 FURUSATO_BACKFILL=1 のときは、解凍はするが、新しい注文の Teams 通知はせず、通知済みとして記録だけする
+    return run(shared, word, load_conf(), silent=os.environ.get('FURUSATO_BACKFILL') == '1')
 
 
 if __name__ == '__main__':

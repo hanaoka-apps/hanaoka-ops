@@ -130,7 +130,7 @@ def send(text, env_name=DEFAULT_ENV, session=None):
     return True, ''
 
 
-def notify_new(label, candidates, path, log, first_run_silent=True, keep_pending=False, env_name=DEFAULT_ENV, session=None, now=None, footer=''):
+def notify_new(label, candidates, path, log, first_run_silent=True, keep_pending=False, env_name=DEFAULT_ENV, session=None, now=None, footer='', silent=False):
     """まだ通知していない注文があれば、まとめて通知する。結果の文字列を返す（例外は出さない）：
        'seeded'（最初の1回。記録だけ）／'none'（新しい注文なし）／'sent'（全部送れた）／'failed'（送れなかった分がある）／'skipped'（記録を読めない）
     candidates＝[(注文番号, 表示の文)]。キャンセル・テストの注文は呼び出し側で除いておく。
@@ -147,6 +147,17 @@ def notify_new(label, candidates, path, log, first_run_silent=True, keep_pending
             log('通知の記録を作りました（{}件。最初の1回なので通知はしません）'.format(len(state['orders'])))
             return 'seeded'
         known = state['orders']
+        if silent:   # 過去分の取り込み（バックフィル）：通知はせず、通知済みとして記録だけする（あとから通知が出ないように）
+            now_s = _now_iso(now)
+            added = 0
+            for oid, _ in candidates:
+                if oid not in known:
+                    known[oid] = now_s; added += 1
+                state['pending'].pop(oid, None)
+            if added:
+                save_state(path, state, now)
+            log('通知を止めて記録しました（{}件。過去分の取り込み）'.format(added))
+            return 'seeded'
         todo, seen = [], set()
         pending = state.get('pending', {}) if keep_pending else {}
         for oid, text in list(pending.items()) + list(candidates):
