@@ -1296,12 +1296,12 @@
   /* ============================================================ 業務フロー（画面の見せ方）
    * 内部の状態（new/ok/importing/confirm/check/exported/smile/excluded。importing は record の status が waiting なら照合中）を、
    * 利用者向けの5工程に読み替える。内部の状態は変えない。
-   *   ① 注文を確認（人：内容確認 → OK → 「SMILEに取り込む」で起票を依頼）→ ② SMILE起票（専用機）→ ③ 起票結果の照合（専用機）→ ④ 結果を確認（人：確認OK）→ ⑤ 完了
+   *   ① 注文を確認（人：内容確認 → OK → 「SMILEに取り込む」で起票を依頼）→ ② SMILE起票中（専用機：起票と、起票結果の照合）→ ③ 結果を確認（人：確認OK）→ ④ 完了
    *   要対応（要確認）と対象外は、フローの外。
    * role：{ canImport（取込を依頼できる＝管理者＋取込担当者）, canConfirm（確認OKを押せる＝管理者） } */
   EC.FLOW = [
-    { key: 'p1', num: '①', label: '注文を確認', kind: 'human' }, { key: 'p2', num: '②', label: 'SMILE起票', kind: 'robot' },
-    { key: 'p3', num: '③', label: '起票結果の照合', kind: 'robot' }, { key: 'p4', num: '④', label: '結果を確認', kind: 'human' }, { key: 'p5', num: '⑤', label: '完了', kind: 'none' }
+    { key: 'p1', num: '①', label: '注文を確認', kind: 'human' }, { key: 'p2', num: '②', label: 'SMILE起票中', kind: 'robot' },
+    { key: 'p3', num: '③', label: '結果を確認', kind: 'human' }, { key: 'p4', num: '④', label: '完了', kind: 'none' }
   ];
   EC.flowOf = function (st, rec, role) {
     role = role || {};
@@ -1309,10 +1309,10 @@
     var robot = '専用機が処理しています。現在行う操作はありません。';
     if (st === 'new') return f('p1', '確認前', role.canImport ? 'あなた' : 'あなた（取込は取込担当者）', role.canImport ? 'SMILEに起票する内容を確認してください。問題がなければ「OK」を押し、まとめて「SMILEに取り込む」で起票を依頼します。' : 'SMILEに起票する内容を確認してください。問題がなければ「OK」を押してください（取込は取込担当者が行います）。');
     if (st === 'ok') return f('p1', 'OK済・起票依頼待ち', role.canImport ? 'あなた' : '取込担当者', role.canImport ? '「SMILEに取り込む」を押して、起票を依頼してください。' : '取込担当者が「SMILEに取り込む」を押すのを待っています。');
-    if (st === 'importing') return rec && rec.status === 'waiting' ? f('p3', '照合中', '専用機', robot) : f('p2', '起票中', '専用機', robot);
-    if (st === 'confirm') return f('p4', '確認待ち', role.canConfirm ? 'あなた' : '管理者', role.canConfirm ? '起票結果を確認して、「確認OK」を押してください。' : '管理者が「確認OK」を押すのを待っています。');
-    if (st === 'exported') return f('p5', '起票済み', '', '');
-    if (st === 'smile') return f('p5', 'SMILE取込済', '', '');
+    if (st === 'importing') return f('p2', rec && rec.status === 'waiting' ? '照合中' : '起票中', '専用機', robot);   // 起票も照合も専用機の番。上では ② にまとめ、内部の区別は小さく出す
+    if (st === 'confirm') return f('p3', '確認待ち', role.canConfirm ? 'あなた' : '管理者', role.canConfirm ? '起票結果を確認して、「確認OK」を押してください。' : '管理者が「確認OK」を押すのを待っています。');
+    if (st === 'exported') return f('p4', '起票済み', '', '');
+    if (st === 'smile') return f('p4', 'SMILE取込済', '', '');
     if (st === 'check') return { key: 'attn', num: '', label: '要対応', kind: 'attn', sub: '要確認', who: role.canConfirm ? 'あなた' : '管理者', next: '取込の途中で止まっている可能性があります。SMILE で伝票を確認してから、「SMILEを見て問題なし」か「未確認に戻す」を選んでください。' };
     if (st === 'excluded') return { key: 'other', num: '', label: '対象外', kind: 'none', sub: '', who: '', next: '' };
     return { key: 'other', num: '', label: '', kind: 'none', sub: '', who: '', next: '' };
