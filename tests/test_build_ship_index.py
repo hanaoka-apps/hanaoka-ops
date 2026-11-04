@@ -195,6 +195,39 @@ class BuildShipIndexTest(unittest.TestCase):
             ['100001', '架空得意先', '456-0002', '架空県本社市', '4-5-6', '架空ビル', '03-5555-6666'],
             ['888888', '関係ない得意先', '888-8888', '関係ない県', '', '', '']]))
 
+    # ---- 伝票の詳細（ship_detail.json）
+    def test_伝票の詳細は行と金額と消費税とメモが入り_原価は入らない(self):
+        head = SHIP_HEAD + ['行', '数量単位', '単価', '金額', '課税区分名', '行摘要１', '行摘要２', '備考', '社内メモ', '営業所止め名', '倉庫名', '原単価', '原価金額', '粗利']
+
+        def row(no, code, kind, line, unit, price, amount, tax, t1, t2, memo, note, cost='7777', juchu='9001'):
+            return ship_row('20261030', no, code, '2.00', juchu=juchu, kind=kind) + [line, unit, price, amount, tax, t1, t2, note, memo, '', '本社倉庫', cost, cost, '8888']
+        self.write('出荷明細出力.txt', csv_text([head,
+            row('40001', 'A-1', '通常', '1', '台', '1000.00', '2000', '税抜き', '摘要甲', '', '社内の連絡', 'お客様への備考'),
+            row('40001', 'B-2', '通常', '2', '個', '1100.00', '2200', '税抜き', '', '摘要乙', '社内の連絡', 'お客様への備考'),
+            row('40001', '消費税', '消費税', '1', '', '0.00', '420', '消費税等', '', '', '社内の連絡', 'お客様への備考', juchu='0'),
+            row('40002', 'C-3', '通常', '1', '式', '300.00', '300', '非課税', '', '', '', '')]))
+        res, _ = self.run_build()
+        with open(os.path.join(self.dir, 'ship_detail.json'), encoding='utf-8') as f:
+            raw = f.read()
+        d = json.loads(raw)['details']
+        self.assertEqual(sorted(d), ['40001', '40002'])
+        self.assertEqual(d['40001']['tax'], 420)                                        # 消費税の行の金額
+        self.assertEqual((d['40001']['memo'], d['40001']['note']), ('社内の連絡', 'お客様への備考'))
+        self.assertEqual([l[1] for l in d['40001']['lines']], ['A-1', 'B-2'])           # 消費税の行は品目に入れない
+        self.assertEqual(d['40001']['lines'][0], ['1', 'A-1', 'A-1名', '2', '台', '1000', '2000', '税抜き', '摘要甲', '', '本社倉庫'])
+        self.assertEqual(d['40002']['tax'], 0)
+        for secret in ('7777', '8888'):                                                 # 原単価・原価金額・粗利は入れない
+            self.assertNotIn(secret, raw)
+        self.assertEqual(len(res['ships']), 2)
+
+    def test_消費税だけの伝票は詳細に入れない(self):
+        self.write('出荷明細出力.txt', csv_text([SHIP_HEAD,
+            ship_row('20261030', '40001', 'DA-P', '1.00'),
+            ship_row('20261030', '40002', '消費税', '0', juchu='0', kind='消費税')]))
+        self.run_build()
+        with open(os.path.join(self.dir, 'ship_detail.json'), encoding='utf-8') as f:
+            self.assertEqual(sorted(json.load(f)['details']), ['40001'])
+
     def test_住所は納品先マスタから付く_電話は入れない(self):
         self.write_ships(); self.write_masters()
         res, out = self.run_build()

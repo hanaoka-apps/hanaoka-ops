@@ -26,6 +26,9 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
   - マスタのファイル名・納品先なしの値は、設定 smile.destMaster / custMaster / noDest。
 
 出力（SharedMasters）:
+  - ship_detail.json … 伝票の詳細 { "generatedAt", "details": { "<売上№>": { "memo": 社内メモ, "note": 備考, "stop": 営業所止め, "tax": 消費税の合計,
+                         "lines": [[行, 品目コード, 品名, 数量, 単位, 単価, 金額, 課税区分, 行摘要１, 行摘要２, 倉庫]] } } }
+                       画面は、カードを押したときに初めて読む（索引を重くしない）。原単価・原価金額・粗利は入れない。
   - ship_index.json … 一時ファイルに書いてから置き換える。失敗したら前回のファイルをそのまま残す。
     {
       "generatedAt": "UTC ISO", "keepDays": 365, "from": "yyyy-mm-dd（これ以降の出荷だけ入っている）",
@@ -61,6 +64,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 OUT_NAME = 'ship_index.json'
+DETAIL_NAME = 'ship_detail.json'   # 伝票の詳細（品目の全行・単価・金額・摘要・備考・社内メモ）。カードを押したときだけ画面が読む
 DEFAULT_KEEP_DAYS = 365
 JST = timezone(timedelta(hours=9))
 
@@ -70,6 +74,8 @@ SHIP_COLS = [
     ['伝票日付'], ['売上№'], ['出荷№'], ['得意先コード', '得意先ｺｰﾄﾞ'], ['得意先名１', '得意先名'], ['納品先コード', '納品先ｺｰﾄﾞ'], ['納品先名'],
     ['担当者名'], ['品目コード', '品目ｺｰﾄﾞ'], ['品目名'], ['数量'], ['受注№'], ['配送指定日'], ['配達指定名'],
     ['運送業者利用区分'], ['客先注番'], ['明細区分名'], ['取引区分名'],
+    # 伝票の詳細（ship_detail.json）用。原単価・原価金額・粗利は取らない
+    ['行'], ['数量単位'], ['単価'], ['金額'], ['課税区分名'], ['行摘要１'], ['行摘要２'], ['備考'], ['社内メモ'], ['営業所止め名'], ['倉庫名'],
 ]
 SHIP_REQUIRED = ['伝票日付', '売上№', '品目コード', '受注№']
 JUCHU_COLS = [['受注№'], ['行'], ['受注日付'], ['納期', '受注納期'], ['出荷予定日'], ['担当者名']]
@@ -248,7 +254,8 @@ def load_carrier(inbox, ckey, conf):
 
 # ---------------------------------------------------------------- 出荷明細
 def build_ships(path, cutoff):
-    """出荷明細から売上№ごとの出荷（cutoff 以降）を作る。(ships の dict, 全売上№の集合, 行数) を返す。"""
+    """出荷明細から売上№ごとの出荷（cutoff 以降）を作る。(ships の dict, 全売上№の集合, 行数, 伝票の詳細の dict) を返す。
+    詳細＝{売上№: {memo 社内メモ, note 備考, stop 営業所止め, tax 消費税の合計, lines [[行, コード, 品名, 数量, 単位, 単価, 金額, 課税区分, 行摘要１, 行摘要２, 倉庫]]}}"""
     it = read_rows(path)
     try:
         header = next(it)
@@ -256,7 +263,7 @@ def build_ships(path, cutoff):
         raise ValueError('中身が空です')
     plan = column_plan(header, SHIP_COLS, SHIP_REQUIRED)
     P = {names[0]: plan[i] for i, names in enumerate(SHIP_COLS)}
-    ships, all_nos, total = {}, set(), 0
+    ships, all_nos, total, details = {}, set(), 0, {}
     for r in it:
         total += 1
 
@@ -288,12 +295,24 @@ def build_ships(path, cutoff):
         po = g('客先注番')
         if po and po not in s['po']:
             s['po'].append(po)
-        if g('明細区分名') == '消費税':   # 消費税の行は品目ではない
+        d = details.get(no)
+        if d is None:
+            d = details[no] = {'memo': '', 'note': '', 'stop': '', 'tax': 0, 'lines': []}
+        for key, col in (('memo', '社内メモ'), ('note', '備考'), ('stop', '営業所止め名')):   # 伝票の項目は、どの行にも同じものが入っている
+            if not d[key] and g(col):
+                d[key] = g(col)
+        if g('明細区分名') == '消費税':   # 消費税の行は品目ではない（金額＝消費税）
+            try:
+                d['tax'] += int(float(g('金額').replace(',', '') or 0))
+            except ValueError:
+                pass
             continue
         code = g('品目コード')
         if code:
             s['lines'].append([code, g('品目名'), num(g('数量')), jn])
-    return ships, all_nos, total
+            d['lines'].append([g('行'), code, g('品目名'), num(g('数量')), g('数量単位'), num(g('単価')), num(g('金額')), g('課税区分名'),
+                               g('行摘要１'), g('行摘要２'), g('倉庫名')])
+    return ships, all_nos, total, details
 
 
 def build_juchu(path, wanted):
@@ -394,6 +413,19 @@ def merge_slips(current, previous):
     return list(current) + [x for x in previous if (x.get('c'), x.get('no')) not in seen]
 
 
+def write_json_atomic(dest, obj):
+    """一時ファイルに書いてから置き換える。途中で失敗しても、前回のファイルは壊れない。"""
+    tmp = dest + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8', newline='') as f:
+            json.dump(obj, f, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, dest)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def build(shared_dir, conf, now=None, keep_days=None):
     """ship_index.json を作って書き出す。成功したら書いた内容（dict）を返す。失敗したら例外（前回のファイルは残る）。"""
     now = now or datetime.now(timezone.utc)
@@ -405,12 +437,13 @@ def build(shared_dir, conf, now=None, keep_days=None):
     p = os.path.join(shared_dir, smile.get('shipment') or '出荷明細出力.txt')
     if not os.path.exists(p):
         raise FileNotFoundError(os.path.basename(p) + ' がありません')
-    ships, all_nos, total = build_ships(p, cutoff)
+    ships, all_nos, total, details = build_ships(p, cutoff)
     sources.append({'name': os.path.basename(p), 'modified': mtime_iso(p), 'rows': total})
     # 品目の行が1つも無い売上№（消費税だけの伝票）は、出荷ではないので検索の対象にしない（実データでは出荷の2割ほど。all_nos には残すので、運送会社の番号の突き合わせには影響しない）
     tax_only = [k for k, s in ships.items() if not s['lines']]
     for k in tax_only:
         del ships[k]
+    details = {k: v for k, v in details.items() if k in ships}
     log('出荷明細: 全 %d 行のうち、%s 以降の出荷 %d 件（消費税だけの伝票 %d 件は除く）' % (total, cutoff, len(ships), len(tax_only)))
 
     inbox = os.path.join(shared_dir, conf.get('inboxDir') or '_ship_inbox')
@@ -467,15 +500,13 @@ def build(shared_dir, conf, now=None, keep_days=None):
         'counts': {'ships': len(out_ships), 'withSlip': attached, 'withAddr': with_addr, 'carried': carried, 'unmatched': len(unmatched), 'blankKey': blank_total},
     }
     dest = os.path.join(shared_dir, OUT_NAME)
-    tmp = dest + '.tmp'
+    write_json_atomic(dest, out)
+    # 伝票の詳細（カードを押したときだけ画面が読む別のファイル）。失敗しても索引は有効（詳細だけ出ない）
     try:
-        with open(tmp, 'w', encoding='utf-8', newline='') as f:
-            json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
-        os.replace(tmp, dest)   # 置き換えは一瞬。途中で失敗しても前回のファイルは壊れない
-    except Exception:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+        write_json_atomic(os.path.join(shared_dir, DETAIL_NAME), {'generatedAt': out['generatedAt'], 'details': details})
+        log('伝票の詳細 %d 件 → %s（%.2f MB）' % (len(details), DETAIL_NAME, os.path.getsize(os.path.join(shared_dir, DETAIL_NAME)) / 1048576))
+    except Exception as e:
+        log('伝票の詳細を書けませんでした（索引はできています）: %s: %s' % (type(e).__name__, e))
     log('出荷 %d 件（送り状あり %d 件・うち前回から引き継ぎ %d 件）・SMILE に無い送り状 %d 件 → %s（%.2f MB）' % (len(out_ships), attached, carried, len(unmatched), OUT_NAME, os.path.getsize(dest) / 1048576))
     return out
 

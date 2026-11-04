@@ -210,6 +210,20 @@
     return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)) };
   };
 
+  /* ------------------------------------------------------------ 伝票の詳細（ship_detail.json）の計算 */
+  // 表示用：半角カナ・全角英数をそろえる（SMILE の品目名は半角カナが多い）
+  S.zen = function (s) { return String(s == null ? '' : s).normalize('NFKC'); };
+  function numOf(v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? 0 : n; }
+  // 伝票の数量合計・小計（税抜＝品目の金額の合計）・消費税・合計。d＝{lines:[[行,コード,品名,数量,単位,単価,金額,課税,摘要1,摘要2,倉庫]], tax}
+  S.detailTotals = function (d) {
+    var qty = 0, sub = 0;
+    ((d && d.lines) || []).forEach(function (l) { qty += numOf(l[3]); sub += numOf(l[6]); });
+    var tax = numOf(d && d.tax);
+    return { qty: qty, sub: sub, tax: tax, total: sub + tax };
+  };
+  // 3桁区切り（数でなければそのまま）
+  S.fmtNum = function (v) { if (v === '' || v == null) return ''; var n = Number(String(v).replace(/,/g, '')); return isNaN(n) ? String(v) : n.toLocaleString('ja-JP'); };
+
   // 土日（日本時間）を除いた時間数。運送会社のデータは平日にしか届かないので、月曜の朝に「古い」と出さないため
   S.weekdayHours = function (fromMs, toMs) {
     if (!(toMs > fromMs)) return 0;

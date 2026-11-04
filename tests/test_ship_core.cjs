@@ -166,6 +166,14 @@ t('出荷連絡の文面：行の繰り返し・空の行は出さない・住�
   assert.ok(!r2.body.includes('客先注番') && !r2.body.includes('〒') && !r2.body.includes('送り状番号') && !r2.body.includes('運送会社'));
   assert.ok(r2.body.includes('納品先：架空商事 本社'));
 });
+t('伝票の詳細：合計・数の表示・表示用の文字', () => {
+  const d = { tax: 420, lines: [['1', 'A', 'ｷｬｽﾀｰ', '2', '個', '1000', '2000', '税抜き', '', '', ''], ['2', 'B', 'ＢＢ', '1.5', '式', '1100', '2200', '税抜き', '', '', '']] };
+  assert.deepStrictEqual(S.detailTotals(d), { qty: 3.5, sub: 4200, tax: 420, total: 4620 });
+  assert.deepStrictEqual(S.detailTotals(null), { qty: 0, sub: 0, tax: 0, total: 0 });
+  assert.strictEqual(S.fmtNum('1234567'), '1,234,567'); assert.strictEqual(S.fmtNum('-1000'), '-1,000');
+  assert.strictEqual(S.fmtNum(''), ''); assert.strictEqual(S.fmtNum('abc'), 'abc');
+  assert.strictEqual(S.zen('ｷｬｽﾀｰ ＢＢ１'), 'キャスター BB1');
+});
 t('土日を除いた時間数', () => {
   assert.strictEqual(S.weekdayHours(jst(2026, 10, 30, 18), jst(2026, 11, 2, 8)), 14);       // 金 18:00 → 月 8:00（金の6時間＋月の8時間）
   assert.strictEqual(S.weekdayHours(jst(2026, 11, 2, 8), jst(2026, 11, 2, 9, 30)), 1.5);

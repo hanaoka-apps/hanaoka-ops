@@ -174,13 +174,13 @@ function bunnoHtml(s) {
   }).join('');
   return '<div class="sc-bn"><div class="bn-t">分納あり：同じ注文の出荷（全 ' + b.total + ' 回）</div>' + rows + (b.hidden ? '<div class="muted">ほか ' + b.hidden + ' 件（日付の近いものを出しています）</div>' : '') + '</div>';
 }
-// 実際の納品先：名前と住所（SMILE のマスタの、いまの住所）。直送のときは、ご注文元と別であることが分かるように印を付ける
+// 納品先：名前と住所（SMILE のマスタの、いまの住所）。直送のときは、得意先と別であることが分かるように印を付ける
 function destHtml(s, i) {
   const a = S.addrOf(IDX, s), za = S.zipAddr(a);
-  return '<div class="sc-dest' + (S.isDirect(CONF, s) ? ' direct' : '') + '"><div class="sd-main"><div class="sd-k">実際の納品先' + (S.isDirect(CONF, s) ? '（直送）' : '') + '</div>' +
+  return '<div class="sc-dest' + (S.isDirect(CONF, s) ? ' direct' : '') + '"><div class="sd-main"><div class="sd-k">納品先' + (S.isDirect(CONF, s) ? '（直送：得意先と別の納品先）' : '') + '</div>' +
     '<div class="sd-n">' + esc(S.destLabel(s) || '-') + '</div>' +
     '<div class="sd-a' + (za ? '' : ' muted') + '">' + (za ? esc(za) : '住所の登録がありません') + '</div></div>' +
-    '<button type="button" class="btn sm" data-act="notice" data-i="' + i + '">出荷連絡</button></div>';
+    '<div class="sd-btns"><button type="button" class="btn sm sec" data-act="detail" data-i="' + i + '">伝票</button><button type="button" class="btn sm" data-act="notice" data-i="' + i + '">出荷連絡</button></div></div>';
 }
 function card(s, i) {
   const st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
@@ -197,9 +197,9 @@ function card(s, i) {
     '<div class="sc-slips">' + slipsHtml(s, st) + '</div>' +
     destHtml(s, i) +
     '<div class="sc-grid">' +
-    '<div><span class="k">ご注文元</span>' + esc(s.custName || '-') + (s.cust ? ' <span class="muted">' + esc(s.cust) + '</span>' : '') + '</div>' +
+    '<div><span class="k">得意先</span>' + esc(s.custName || '-') + (s.cust ? ' <span class="muted">' + esc(s.cust) + '</span>' : '') + '</div>' +
     '<div><span class="k">受注№</span><span style="display:inline-block;vertical-align:top">' + juchuHtml(s) + '</span></div>' +
-    '<div><span class="k">発注番号</span>' + ((s.po || []).length ? s.po.map(p => '<span class="lnk" data-act="q" data-v="' + esc(p) + '">' + esc(p) + '</span>').join('　') : '<span class="muted">-</span>') + '</div>' +
+    '<div><span class="k">客先注番</span>' + ((s.po || []).length ? s.po.map(p => '<span class="lnk" data-act="q" data-v="' + esc(p) + '">' + esc(p) + '</span>').join('　') : '<span class="muted">-</span>') + '</div>' +
     (want ? '<div><span class="k">配送指定</span>' + esc(want) + '</div>' : '') +
     '<div><span class="k">担当</span>' + esc(s.staff || '-') + '</div>' +
     '</div>' +
@@ -227,7 +227,8 @@ function openNotice(s) {
 function closeNotice() { $('noticePanel').hidden = true; $('noticeBackdrop').hidden = true; document.body.classList.remove('np-open'); }
 function wireNotice() {
   $('np-close').onclick = closeNotice; $('noticeBackdrop').onclick = closeNotice;
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('noticePanel').hidden) closeNotice(); });
+  $('dt-close').onclick = closeDetail; $('detailBackdrop').onclick = closeDetail;
+  document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!$('noticePanel').hidden) closeNotice(); if (!$('detailPanel').hidden) closeDetail(); });
   $('np-copy').onclick = async () => {
     const b = $('np-copy'), t = b.textContent, ok = await copyText($('np-text').value);
     b.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { b.textContent = t; }, 1500);
@@ -238,6 +239,63 @@ function wireNotice() {
     if (url.length > MAIL_LIMIT) { $('np-note').textContent = '文が長いので、メールが途中で切れることがあります。「本文をコピー」で、メールに貼り付けてください。'; return; }
     location.href = url;
   };
+}
+
+/* ------------------------------------------------------------ 伝票の詳細（カードを押すと開く。SMILE の伝票ふうの表示）
+ * 品目の全行・単価・金額・摘要・備考・社内メモは、別のファイル ship_detail.json（専用機が索引と一緒に作る）から、押したときに初めて読む。
+ * 原価・粗利は入っていない。 */
+let DETAIL = null;   // { details, generatedAt }（読めたら持っておく）
+async function loadDetail(force) {
+  if (DETAIL && !force) return DETAIL;
+  const r = await fetchText(CONF.files.detail || 'ship_detail.json');
+  const o = JSON.parse(r.text);
+  if (!o || typeof o.details !== 'object') throw new Error('伝票の詳細の形が違います');
+  DETAIL = { details: o.details, generatedAt: o.generatedAt || '' };
+  return DETAIL;
+}
+async function openDetail(s) {
+  $('detailBody').innerHTML = '<div class="muted" style="padding:20px">読み込み中…</div>';
+  $('detailPanel').hidden = false; $('detailBackdrop').hidden = false; document.body.classList.add('np-open');
+  try {
+    const D = await loadDetail();
+    $('detailBody').innerHTML = detailHtml(s, D.details[s.no], D.generatedAt);
+  } catch (e) {
+    console.warn(e);
+    $('detailBody').innerHTML = detailHtml(s, null, '') + '<div class="alert warn">伝票の詳細（' + esc(CONF.files.detail || 'ship_detail.json') + '）を読めませんでした：' + esc(e.message) + '。専用機の定時実行がまだか、データが作られていません。</div>';
+  }
+}
+function closeDetail() { $('detailPanel').hidden = true; $('detailBackdrop').hidden = true; document.body.classList.remove('np-open'); }
+function detailHtml(s, d, gen) {
+  const E = esc, Z = S.zen, F = S.fmtNum;
+  const a = S.addrOf(IDX, s), za = S.zipAddr(a), st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
+  const it = (k, v) => '<div class="sl-i"><span class="sl-k">' + k + '</span><span class="sl-vv">' + (v === '' || v == null ? '<span class="muted">-</span>' : v) + '</span></div>';
+  const j0 = (s.juchu || []).map(no => { const j = S.juchuInfo(IDX, no); return E(no) + (j ? ' <span class="muted">' + [j.date ? '受注 ' + E(fd(j.date)) : '', j.due ? '納期 ' + E(fd(j.due)) : '', j.plan ? '出荷予定 ' + E(fd(j.plan)) : ''].filter(Boolean).join('　') + '</span>' : ''); }).join('<br>');
+  const want = [s.want ? fd(s.want) : '', s.time].filter(Boolean).join(' ');
+  const T = S.detailTotals(d), hasD = !!(d && d.lines && d.lines.length);
+  const banner = d ? '<div class="sl-banner actual">SMILE の出荷伝票の内容' + (gen ? '（' + E(stamp(gen)) + ' 時点）' : '') + '</div>'
+                   : '<div class="sl-banner">伝票の詳細がありません（品目の数量だけ出します）</div>';
+  let h = '<div class="sl">' + banner +
+    '<div class="sl-hd c4">' + it('売上№', E(s.no)) + it('伝票日付', E(fd(s.date))) + it('出荷№', E(s.shipNo || '')) + it('取引', s.ret ? '返品' : '') + '</div>' +
+    '<div class="sl-hd c3">' + it('得意先', E(Z(s.custName)) + (s.cust ? ' <span class="muted">' + E(s.cust) + '</span>' : '')) + it('担当者', E(Z(s.staff))) + it('運送業者', logoOf(key) ? logoImg(key, S.kubunName(CONF, s.kubun)) : E(S.kubunName(CONF, s.kubun))) + '</div>' +
+    '<div class="sl-hd c2">' + it('納品先', E(Z(S.destLabel(s))) + (s.dest && s.dest !== '000000' ? ' <span class="muted">' + E(s.dest) + '</span>' : '') + (za ? '<br><span class="muted">' + E(za) + '</span>' : '')) + it('客先注番', (s.po || []).map(E).join('　')) + '</div>' +
+    '<div class="sl-hd c3">' + it('受注№', j0) + it('配送指定', E(want)) + it('営業所止め', E(Z((d && d.stop) || ''))) + '</div>';
+  if (hasD) {
+    h += '<div class="sl-tw"><table class="sl-t"><colgroup><col style="width:34px"><col style="width:110px"><col><col style="width:60px"><col style="width:36px"><col style="width:78px"><col style="width:86px"><col style="width:62px"></colgroup>' +
+      '<thead><tr><th class="n">行</th><th>品目コード</th><th>品目名</th><th class="n">数量</th><th>単位</th><th class="n">単価</th><th class="n">金額</th><th>課税</th></tr></thead><tbody>' +
+      d.lines.map(l => {
+        const sub = [l[10] ? '倉庫 ' + E(Z(l[10])) : '', l[8] ? '摘要 ' + E(Z(l[8])) : '', l[9] ? '摘要 ' + E(Z(l[9])) : ''].filter(Boolean).join('・');
+        return '<tr><td class="n">' + E(l[0]) + '</td><td>' + E(Z(l[1])) + '</td><td>' + E(Z(l[2])) + '</td><td class="n">' + E(F(l[3])) + '</td><td>' + E(l[4]) + '</td><td class="n">' + E(F(l[5])) + '</td><td class="n">' + E(F(l[6])) + '</td><td>' + E(l[7]) + '</td></tr>' +
+          (sub ? '<tr class="sub"><td></td><td colspan="7">' + sub + '</td></tr>' : '');
+      }).join('') + '</tbody></table></div>' +
+      '<div class="sl-sum">数量合計 <b>' + E(F(T.qty)) + '</b>小計（税抜） <b>' + E(F(T.sub)) + '</b>消費税 <b>' + E(F(T.tax)) + '</b>合計（税込） <b>' + E(F(T.total)) + '</b></div>' +
+      '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(Z(d.note))) + it('社内メモ', E(Z(d.memo))) + '</div>';
+  } else {
+    h += '<div class="sl-tw"><table class="sl-t"><thead><tr><th>品目コード</th><th>品目名</th><th class="n">数量</th></tr></thead><tbody>' +
+      (s.lines || []).map(l => '<tr><td>' + E(Z(l[0])) + '</td><td>' + E(Z(l[1])) + '</td><td class="n">' + E(F(l[2])) + '</td></tr>').join('') + '</tbody></table></div>';
+  }
+  h += '</div>';
+  h += '<h3 class="dt-h">送り状（運送会社のデータ）</h3>' + (s.slips && s.slips.length ? '<div class="dt-slips">' + s.slips.map(sl => slipLine(sl, s)).join('') + '</div>' : '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + E(st.text || '送り状番号はまだありません') + '</div>');
+  return h;
 }
 
 /* ------------------------------------------------------------ 画面の下のほうと注意 */
@@ -292,12 +350,19 @@ function wire() {
     drawPeriods(); doSearch();
   });
   $('list').addEventListener('click', async e => {
-    const a = e.target.closest('[data-act]'); if (!a) return;
+    const a = e.target.closest('[data-act]');
+    if (!a) {   // カードの空いているところを押したら、伝票の詳細を開く（リンク・ボタン・文字の選択中は開かない）
+      const c = e.target.closest('.scard');
+      if (c && !e.target.closest('a, button, input, textarea, select') && !String(window.getSelection && window.getSelection()).trim()) { const s = results[+c.dataset.i]; if (s) openDetail(s); }
+      return;
+    }
     if (a.dataset.act === 'copy') {
       const ok = await copyText(a.dataset.v), t = a.textContent;
       a.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { a.textContent = t; }, 1500);
     } else if (a.dataset.act === 'q') {
       $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (a.dataset.act === 'detail') {
+      const s = results[+a.dataset.i]; if (s) openDetail(s);
     } else if (a.dataset.act === 'notice') {
       const s = results[+a.dataset.i]; if (s) openNotice(s);
     } else if (a.dataset.act === 'lines') {
