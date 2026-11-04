@@ -156,7 +156,7 @@ t('出荷連絡の文面：行の繰り返し・空の行は出さない・住�
   assert.ok(r.hasSlip && r.hasAddr);
   const L = r.body.split('\n');
   assert.ok(L.includes('客先注番：NYF-1') && L.includes('商品名：商品A × 1') && L.includes('商品名：商品B × 2'));
-  assert.ok(L.includes('納品先：架空商事 本社') && L.includes('　　　　〒123-0001　架空県架空市1-2-3') && L.includes('出荷日：2026年11月2日'));
+  assert.ok(L.includes('納品先：架空商事 本社') && L.includes('　　　　〒123-0001 架空県架空市1-2-3') && L.includes('出荷日：2026年11月2日'));
   const i = L.indexOf('運送会社：西濃運輸');                                                    // 運送会社と送り状番号は、組で繰り返す
   assert.deepStrictEqual(L.slice(i, i + 4), ['運送会社：西濃運輸', '送り状番号：9072200002', '運送会社：トナミ運輸', '送り状番号：5910000002']);
   assert.ok(!/\n\n\n/.test(r.body) && !/^\n|\n$/.test(r.body));
@@ -165,6 +165,10 @@ t('出荷連絡の文面：行の繰り返し・空の行は出さない・住�
   assert.strictEqual(r2.subject, '出荷のご連絡'); assert.ok(!r2.hasSlip && !r2.hasAddr);
   assert.ok(!r2.body.includes('客先注番') && !r2.body.includes('〒') && !r2.body.includes('送り状番号') && !r2.body.includes('運送会社'));
   assert.ok(r2.body.includes('納品先：架空商事 本社'));
+  // 半角カナは全角にそろえる・返品の印・数量の3桁区切り
+  const rk = S.noticeText(CONF, idx, ship({ ret: true, lines: [['A', 'ｼﾞｻﾞｲ100WJ ﾍﾝﾋﾟﾝ', '-20', '9001'], ['B', '部品', '1500', '9001']] }));
+  assert.ok(rk.isReturn && rk.body.includes('商品名：ジザイ100WJ ヘンピン × -20') && rk.body.includes('商品名：部品 × 1,500'));
+  assert.strictEqual(S.noticeText(CONF, idx, s).isReturn, false);
 });
 t('伝票の詳細：合計・数の表示・表示用の文字', () => {
   const d = { tax: 420, lines: [['1', 'A', 'ｷｬｽﾀｰ', '2', '個', '1000', '2000', '税抜き', '', '', ''], ['2', 'B', 'ＢＢ', '1.5', '式', '1100', '2200', '税抜き', '', '', '']] };

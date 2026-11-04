@@ -176,14 +176,14 @@
   /* 出荷連絡の文面。conf.notice の { subject, lines[] } を、この出荷の値で埋める。
    *   {po}客先注番 {juchu}受注№ {items}品目 {dest}送り先の名前 {zipaddr}〒郵便番号　住所 {zip} {addr} {date}出荷日 {carrier}運送会社 {slip}送り状番号 {staff}担当
    * ・値が空の行は出さない  ・{items}・{carrier}・{slip} は複数あるので、その数だけ行（\n を含む行は、まとまりごと）を繰り返す
-   * 戻り値 { subject, body, hasSlip, hasAddr } */
+   * 戻り値 { subject, body, hasSlip, hasAddr, isReturn（返品の伝票） } */
   S.noticeText = function (conf, idx, ship) {
     var nt = (conf && conf.notice) || {}, a = S.addrOf(idx, ship);
-    var items = (ship.lines || []).map(function (l) { return (l[1] || l[0]) + ' × ' + l[2]; });
+    var items = (ship.lines || []).map(function (l) { return S.zen(l[1] || l[0]) + ' × ' + S.fmtNum(l[2]); });   // 品名の半角カナは全角にそろえる
     var slips = ship.slips || [];
     var V = {
-      po: (ship.po || []).join('、'), juchu: (ship.juchu || []).join('、'), items: items, dest: S.destLabel(ship),
-      zipaddr: S.zipAddr(a), zip: a ? a.zip : '', addr: a ? a.addr : '', date: dateJa(ship.date), staff: ship.staff || '',
+      po: (ship.po || []).join('、'), juchu: (ship.juchu || []).join('、'), items: items, dest: S.zen(S.destLabel(ship)),
+      zipaddr: S.zen(S.zipAddr(a)), zip: a ? a.zip : '', addr: a ? S.zen(a.addr) : '', date: dateJa(ship.date), staff: ship.staff || '',
       carrier: slips.map(function (s) { return S.carrierName(conf, s.c); }), slip: slips.map(function (s) { return s.no; })
     };
     function fill(tpl) {
@@ -207,7 +207,7 @@
     // 続けて空行になるものや、最初・最後の空行は詰める
     var body = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
     var subject = (fill(String(nt.subject || '出荷のご連絡 {po}'))[0] || String(nt.subject || '出荷のご連絡 {po}').replace(/\{po\}/g, '')).trim();
-    return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)) };
+    return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)), isReturn: !!ship.ret };
   };
 
   /* ------------------------------------------------------------ 伝票と送り状の見比べ
