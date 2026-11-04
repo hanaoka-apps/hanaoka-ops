@@ -967,14 +967,16 @@ t('SMILE の伝票イメージ：取込前（予定）', () => {
 t('SMILE の伝票イメージ：拡張項目（運送業者・配送指定日）', () => {
   const slip = { id: '1767', cust: '599802', orderDate: '2026-10-26', shipDate: '2026-10-28', memo: '花岡EC', lines: [{ code: 'FR', name: 'f', unit: '式', teihai: '2', qty: 1, unitNet: 1500, amountNet: 1500 }] };
   const plan = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } });
-  assert.deepStrictEqual([plan.ext.carrier.code, plan.ext.carrier.label, plan.ext.carrier.missing, plan.ext.deliveryDate, plan.ext.deliveryKubun, plan.ext.officeName], ['1', '1:西濃利用', false, '', '', '']);   // 取込前＝西濃利用・配送指定日なし
+  assert.deepStrictEqual([plan.ext.carrier.code, plan.ext.carrier.label, plan.ext.carrier.missing, plan.ext.deliveryDate, plan.ext.deliveryKubun.label, plan.ext.officeName], ['1', '1:西濃利用', false, '', '', '']);   // 取込前＝西濃利用・配送指定日なし
   assert.strictEqual(EC.juchuRows([Object.assign({ custName: 'x', staff: '1', dept: '2', deliveryCode: '1', delivery: { name: 'n' } }, slip)], require('../ec_sales_layouts.js').juchu, DEFAULT_CONFIG)[0][56], '1');   // 取込ファイルの運送業者利用区分と同じ
   const cfg2 = Object.assign({}, DEFAULT_CONFIG, { carrierUse: '3' });
   assert.strictEqual(EC.slipImage(slip, { cfg: cfg2, items: {}, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }).ext.carrier.code, '3'); assert.strictEqual(EC.juchuRows([Object.assign({ custName: 'x', staff: '1', dept: '2', deliveryCode: '1', delivery: { name: 'n' } }, slip)], require('../ec_sales_layouts.js').juchu, cfg2)[0][56], '3');   // 設定で変えられる
   // 取込後：SMILE の実際の値（お客様の希望日が入っている注文など）。旧形式の index には列が無い
   const row = { '受注№': '26846', '行': '1', '受注日付': '20261026', '納品先コード': '000812', '品目コード': 'FR', '品目名': 'f', '数量': '1.00', '単価': '1500.00', '金額': '1500', '客先注番': '1767', '運送業者利用区分': '3', '配送指定日': '20261030', '配達指定区分': '1', '営業所止め名': '' };
   const act = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [row], juchuNo: '26846', deliveryCode: '000812' } });
-  assert.deepStrictEqual([act.ext.carrier.code, act.ext.carrier.label, act.ext.deliveryDate, act.ext.deliveryKubun], ['3', '3', '2026/10/30', '1']);
+  assert.deepStrictEqual([act.ext.carrier.code, act.ext.carrier.label, act.ext.deliveryDate, act.ext.deliveryKubun.label], ['3', '3:第一貨物利用', '2026/10/30', '1:午前']);   // 区分の名前も出す（実データで確認した対応）
+  assert.deepStrictEqual([0, 1, 2, 3].map(c => EC.carrierLabel(c)), ['0:利用なし', '1:西濃利用', '2:トナミ利用', '3:第一貨物利用']); assert.deepStrictEqual([0, 1, 2, 3, 9].map(c => EC.deliverySpecLabel(c)), ['0:当日中', '1:午前', '2:午後', '3:営業所止め', '9']);
+  assert.strictEqual(EC.carrierLabel(2, { carrierUseNames: { 2: 'トナミ運輸' } }), '2:トナミ運輸'); assert.strictEqual(EC.carrierLabel(''), '');
   const none = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '配送指定日': '0', '運送業者利用区分': '1' })], juchuNo: '1', deliveryCode: '1' } });
   assert.deepStrictEqual([none.ext.deliveryDate, none.ext.carrier.label], ['', '1:西濃利用']);   // 0 は「指定なし」
   const old = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [{ '受注№': '1', '行': '1', '品目コード': 'FR', '数量': '1', '金額': '1500' }], juchuNo: '1', deliveryCode: '1' } });
