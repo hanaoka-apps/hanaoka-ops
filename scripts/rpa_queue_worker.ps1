@@ -442,10 +442,11 @@ function Remove-LegacyRequestIfDone([string]$LegacyRequestedAt) {
 # ===== EC売上: SMILEへの取込(type=import) =====
 
 function Test-ImportAdmin([string]$Email) {
-  # 管理者の一覧は専用機側で管理する(リポジトリには置かない)。{ "admins": ["a@...", ...] } か、メールの配列
+  # 取込を依頼できる人の一覧は専用機側で管理する(リポジトリには置かない)。{ "admins": ["a@...", ...], "operators": ["b@...", ...] } か、メールの配列(管理者)。
+  # admins＝管理者、operators＝取込担当者(取込を依頼できる。確認OKは管理者だけ。無くてもよい)。どちらの人の依頼も受け付ける
   if (-not $Email -or -not (Test-Path -LiteralPath $ImportAdminsPath)) { return $false }
   try { $o = Read-JsonFile $ImportAdminsPath } catch { return $false }
-  $list = if ($o -is [System.Array]) { @($o) } else { @($o.admins) }
+  $list = if ($o -is [System.Array] -or $o -is [string]) { @($o) } else { $l = @($o.admins); if ($o.PSObject.Properties['operators']) { $l += @($o.operators) }; $l }
   foreach ($m in $list) { if ([string]$m -and ([string]$m).ToLower() -eq $Email.ToLower()) { return $true } }
   return $false
 }
@@ -804,7 +805,7 @@ function Invoke-EcImportCore($Def, $Request, $SmileCfg) {
   }
 
   # 1. 押した人が管理者か
-  if (-not (Test-ImportAdmin ([string]$Request.requestedBy))) { return (& $fail '権限なし(依頼した人が管理者ではありません)') }
+  if (-not (Test-ImportAdmin ([string]$Request.requestedBy))) { return (& $fail '権限なし(依頼した人が管理者・取込担当者ではありません)') }
   # 2. 二重取込の確認
   if (Test-Path -LiteralPath (Join-Path $ImportRoot "done\$batchId")) { return (& $fail '取込済み(同じバッチ番号が done にあります)') }
   if (-not (Test-Path -LiteralPath $batchDir)) { return [pscustomobject]@{ State = 'failed'; Message = 'ファイル不整合(取込フォルダがありません)' } }

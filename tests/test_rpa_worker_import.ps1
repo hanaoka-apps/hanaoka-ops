@@ -62,6 +62,14 @@ $id2 = Make-Batch 'emptyqty'; $script:padCalls = @()
 $r = Invoke-EcImport $def (Req $id2 'other@example.com')
 Check '権限なし: failed' ($r.State -eq 'failed' -and $r.Message -match '権限なし' -and $script:padCalls.Count -eq 0)
 Check '権限なし: failed/ に result.json' ((Result $id2 'failed').message -match '権限なし')
+# 取込担当者（operators）も依頼できる。確認OKは管理者だけなので、一覧の形は admins＋operators。無ければ管理者だけ
+[System.IO.File]::WriteAllText($ImportAdminsPath, '{"admins":["Admin@Example.com"],"operators":["Op@Example.com"]}', (New-Object System.Text.UTF8Encoding $false))
+Check '取込担当者: 依頼できる(大文字小文字は区別しない)' ((Test-ImportAdmin 'op@example.COM') -and (Test-ImportAdmin 'admin@example.com'))
+Check '取込担当者: 一覧にない人は依頼できない' (-not (Test-ImportAdmin 'other@example.com'))
+[System.IO.File]::WriteAllText($ImportAdminsPath, '["Admin@Example.com"]', (New-Object System.Text.UTF8Encoding $false))
+Check '管理者の配列だけの古い形でも動く' ((Test-ImportAdmin 'admin@example.com') -and -not (Test-ImportAdmin 'op@example.com'))
+[System.IO.File]::WriteAllText($ImportAdminsPath, '{"admins":["Admin@Example.com"]}', (New-Object System.Text.UTF8Encoding $false))
+Check 'operators が無い一覧でも動く' ((Test-ImportAdmin 'admin@example.com') -and -not (Test-ImportAdmin 'op@example.com'))
 # 4. 必須項目が空
 Remove-Item (Join-Path $ImportRoot "failed\$id2") -Recurse -Force
 $id2 = Make-Batch 'emptyqty'
