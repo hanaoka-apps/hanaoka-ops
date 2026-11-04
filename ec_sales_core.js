@@ -698,7 +698,7 @@
           8: s.staff, 9: s.dept, 11: '0', 12: '1', 13: '1', 14: ship, 15: po, 16: cfg.warehouse, 17: l.code, 18: EC.cutBytes(l.name, lim.itemName),
           22: q2(l.qty), 23: l.unit, 24: q2(l.unitNet), 25: String(amt), 26: '0.00', 27: '0', 29: String(amt), 30: '0.0',
           31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: memo2,
-          45: '00000', 49: '0', 50: '0', 52: '0', 54: EC.cutBytes(s.memo, lim.memo), 56: '1', 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
+          45: '00000', 49: '0', 50: '0', 52: '0', 54: EC.cutBytes(s.memo, lim.memo), 56: cfg.carrierUse == null ? '1' : String(cfg.carrierUse), 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
           94: ship, 95: '0', 96: '1', 101: EC.cutBytes(l.name, lim.itemName), 105: ship, 106: made ? mfg : '0', 107: ship, 108: po, 109: made ? mfg : '0',
           110: made ? q2(l.qty) : '0.00', 111: l.teihai || '1', 112: '0'
         };
@@ -1244,6 +1244,9 @@
     if (!isFinite(n) || v === '' || v == null) return '';
     return n.toLocaleString('ja-JP', { minimumFractionDigits: dec || 0, maximumFractionDigits: dec == null ? 2 : dec });
   }
+  // 運送業者利用区分（受注伝票の拡張項目）。画面で確認できたのは 1＝西濃利用。ほかの値は、コードのまま出す
+  var CARRIER = { '0': '利用なし', '1': '西濃利用' };
+  EC.carrierLabel = function (c) { c = String(c == null ? '' : c).trim(); return c === '' ? '' : c + (CARRIER[c] ? ':' + CARRIER[c] : ''); };
   EC.slipImage = function (s, o) {
     var cfg = o.cfg || {}, items = o.items || {}, act = o.act || null, P = EC.pick;
     var cinfo = (cfg.customers || {})[s.cust] || {}, wh = cfg.warehouse || '';
@@ -1290,7 +1293,13 @@
       nouki: act ? EC.fmtDate(P(r0, ['納期', '受注納期'])) : EC.fmtDate(ship), shipDate: act ? EC.fmtDate(P(r0, ['出荷予定日'])) : EC.fmtDate(ship),
       mfgDate: act ? '' : (lines.some(function (l) { return l.teihai.code === '1'; }) ? EC.fmtDate(mfg) : '')
     };
-    return { mode: act ? 'actual' : 'plan', head: head, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? P(r0, ['備考']) : (o.biko || ''), memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
+    // 拡張項目：取込前はアプリが作る値（運送業者＝設定、配送指定日などは指定なし）。取込後は SMILE の実際の値（古い形式の index に無いときは missing）
+    var carrierCode = act ? String(P(r0, ['運送業者利用区分'])).trim() : (cfg.carrierUse == null ? '1' : String(cfg.carrierUse));
+    var ext = {
+      carrier: { code: carrierCode, label: EC.carrierLabel(carrierCode), missing: !!(act && carrierCode === '') },
+      deliveryDate: act ? EC.fmtDate(P(r0, ['配送指定日'])) : '', deliveryKubun: act ? String(P(r0, ['配達指定区分'])).trim() : '', officeName: act ? String(P(r0, ['営業所止め名'])).trim() : ''
+    };
+    return { mode: act ? 'actual' : 'plan', head: head, ext: ext, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? P(r0, ['備考']) : (o.biko || ''), memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
   };
 
   /* ============================================================ 業務フロー（画面の見せ方）

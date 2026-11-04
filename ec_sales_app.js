@@ -582,6 +582,11 @@ function slipImageHtml(s) {
   if (plan && plan.lines.length !== img.lines.length) h += '<div class="alert warn" style="margin-top:6px">明細の行数が違います（アプリの予定 ' + plan.lines.length + '行／SMILE ' + img.lines.length + '行）</div>';
   h += '<div class="sl-sum">受注数量合計 <b' + (plan && plan.total.qty !== img.total.qty ? ' class="sl-vv diff"' : '') + '>' + E(img.total.qty) + '</b>合計金額（税抜） <b' + (plan && plan.total.amount !== img.total.amount ? ' class="sl-vv diff"' : '') + '>' + E(img.total.amount) + '</b></div>' +
     '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
+    // 拡張項目（SMILE の「受注伝票拡張項目」の画面）：運送業者・配送指定日など。取込後に、お客様の希望日が入っている注文などが分かる
+    '<div class="muted" style="margin:8px 0 2px;font-size:11px">拡張項目</div><div class="sl-hd c3">' +
+    it('運送業者', img.ext.carrier.missing ? pend('（この確認用データにはありません）') : E(img.ext.carrier.label || '（不明）'), df(img.ext.carrier.code, plan && plan.ext.carrier.code)) +
+    it('配送指定日', img.ext.deliveryDate ? E(img.ext.deliveryDate) : '<span class="muted">指定なし</span>', df(img.ext.deliveryDate, plan && plan.ext.deliveryDate)) +
+    it('配達指定', img.ext.deliveryKubun ? E(img.ext.deliveryKubun) : '<span class="muted">なし</span>') + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + '</div>' +
     (act ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
   return h;
 }
