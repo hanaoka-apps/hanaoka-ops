@@ -47,6 +47,8 @@ t('運送会社の区分と名前', () => {
 });
 t('追跡リンク：設定の型の {no} を番号にする。型が空なら出さない', () => {
   assert.strictEqual(S.trackingUrl(CONF, 'tonami', '5910000002'), 'https://trc1.tonami.co.jp/trc/search3/excSearch3?id[0]=5910000002');
+  assert.strictEqual(S.trackingUrl(CONF, 'seino', '9072284189'), 'https://track.seino.co.jp/cgi-bin/gnpquery.pgm?GNPNO1=9072284189');   // 番号が入った形で開く
+  assert.strictEqual(S.trackingUrl(CONF, 'daiichi', '40151856673'), 'https://www.daiichi-kamotsu.co.jp/cgi/W3X05IM.php?KEY1=40151856673');
   const c2 = { carriers: { x: { tracking: 'https://example.test/?n={no}' } } };
   assert.strictEqual(S.trackingUrl(c2, 'x', ' 12 3 '), 'https://example.test/?n=12%203');
   assert.strictEqual(S.trackingUrl({ carriers: { seino: { tracking: '' } } }, 'seino', '1'), '');
