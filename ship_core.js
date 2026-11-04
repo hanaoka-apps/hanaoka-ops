@@ -210,6 +210,73 @@
     return { subject: subject, body: body, hasSlip: slips.length > 0, hasAddr: !!(a && (a.zip || a.addr)) };
   };
 
+  /* ------------------------------------------------------------ 伝票と送り状の見比べ
+   * 伝票（SMILE）と、運送会社に渡った送り状のデータ（お届け先の名前・郵便番号・住所・配達指定・出荷日）を比べる。
+   * 表記ゆれ（全角半角・㈱・様・丁目の書き方）で違って見えることがあるので、ゆるく比べ、違っても「違うかもしれません」と出すだけ。
+   * 行：{ k 項目, a 伝票の値, b 送り状の値, st 'ok'（同じ）／'diff'（違うかも）／'info'（比べない・参考）／'none'（どちらかに値が無い） } */
+  function nname(s) {
+    return S.zen(s).replace(/[\s　]/g, '').replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|\(合\)|㈱|㈲/g, '').replace(/(様|殿|御中)$/, '').toLowerCase();
+  }
+  function naddr(s) {
+    return S.zen(s).replace(/[\s　]/g, '').replace(/[\u2010-\u2015\u2212\u30fc\uff0d-]+/g, '-').replace(/丁目|番地|番/g, '-').replace(/号/g, '').replace(/-+/g, '-').replace(/-$/, '').toLowerCase();
+  }
+  function bare(s) { return s.replace(/[^0-9a-z぀-ヿ一-鿿]/g, ''); }   // 記号・空白・文字化けの「?」などを外す
+  // ほぼ同じ：どちらかがもう一方を含む、または、先頭からの一致が短いほうの 9 割以上（運送会社の欄の長さで、名前の末尾が切れる・つながることがあるため）
+  function similar(x, y) {
+    x = bare(x); y = bare(y);
+    if (!x || !y) return false;
+    if (x.indexOf(y) >= 0 || y.indexOf(x) >= 0) return true;
+    var n = Math.min(x.length, y.length), i = 0;
+    while (i < n && x.charAt(i) === y.charAt(i)) i++;
+    return i / n >= 0.9;
+  }
+  function ymdOfText(s, ref) {   // '11月05日午前'・'2026/11/05' → 'yyyy-mm-dd'（年が無ければ ref の年）
+    var t = S.zen(s), m = /(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/.exec(t), y = (ref || '').slice(0, 4);
+    if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+    m = /(\d{1,2})月(\d{1,2})日/.exec(t);
+    return m ? y + '-' + ('0' + m[1]).slice(-2) + '-' + ('0' + m[2]).slice(-2) : '';
+  }
+  S.compareSlip = function (conf, idx, ship, slip) {
+    var rows = [], ad = S.addrOf(idx, ship), none = function (v) { return v === '' || v == null; };
+    function add(k, a, b, st) { rows.push({ k: k, a: a || '', b: b || '', st: st }); }
+    // 出荷日
+    add('出荷日', ship.date ? S.fmtDate(ship.date) : '', slip.date ? S.fmtDate(slip.date) : '', none(slip.date) || none(ship.date) ? 'none' : (slip.date === ship.date ? 'ok' : 'diff'));
+    // お届け先の名前
+    var an = S.destLabel(ship), bn = slip.n || '';
+    var xn = nname(an), yn = nname(bn);
+    add('お届け先', S.zen(an), S.zen(bn), none(bn) ? 'none' : (similar(xn, yn) ? 'ok' : 'diff'));
+    // 郵便番号・住所
+    var az = ad ? ad.zip : '', bz = slip.z || '';
+    add('郵便番号', az, bz, none(az) || none(bz) ? 'none' : (S.digits(az) === S.digits(bz) ? 'ok' : 'diff'));
+    var aa = ad ? ad.addr : '', ba = slip.a || '', xa = naddr(aa), ya = naddr(ba);
+    add('住所', S.zen(aa), S.zen(ba), none(aa) || none(ba) ? 'none' : (similar(xa, ya) ? 'ok' : 'diff'));
+    // 配達指定（日付と午前・午後）
+    var aw = [ship.want ? S.fmtDate(ship.want) : '', ship.time || ''].filter(Boolean).join(' '), bw = slip.w || '';
+    var wantCol = !!((((conf && conf.carriers) || {})[slip.c] || {}).cols || {}).want;   // 運送会社のデータに配達指定の列を設定している会社だけ比べる
+    if ((aw || bw) && wantCol) {
+      var st = 'ok';
+      if (none(aw) !== none(bw)) st = 'diff';
+      else {
+        var bd = ymdOfText(bw, ship.date);
+        if (ship.want && bd && ship.want !== bd) st = 'diff';
+        var apm = /午前|午後/.exec(S.zen(ship.time || '')), bpm = /午前|午後/.exec(S.zen(bw));
+        if (apm && bpm && apm[0] !== bpm[0]) st = 'diff';
+      }
+      add('配達指定', aw, S.zen(bw), st);
+    }
+    // 参考：個数・重量・品名（伝票に無い値、または機械で比べにくい値）
+    if (slip.qty) add('個数', '', slip.qty + '個', 'info');
+    if (slip.kg && slip.kg !== '0') add('重量', '', slip.kg + 'kg', 'info');
+    if (slip.m) add('品名（記事）', (ship.lines || []).slice(0, 3).map(function (l) { return S.zen(l[1] || l[0]); }).join('、') + ((ship.lines || []).length > 3 ? ' ほか' : ''), S.zen(slip.m), 'info');
+    return rows;
+  };
+  // カードに出す印用：違うかもしれない項目の数（送り状にお届け先などの控えがあるものだけ）
+  S.diffCount = function (conf, idx, ship) {
+    var n = 0;
+    (ship.slips || []).forEach(function (sl) { if (sl.n || sl.a || sl.z) S.compareSlip(conf, idx, ship, sl).forEach(function (r) { if (r.st === 'diff') n++; }); });
+    return n;
+  };
+
   /* ------------------------------------------------------------ 伝票の詳細（ship_detail.json）の計算 */
   // 表示用：半角カナ・全角英数をそろえる（SMILE の品目名は半角カナが多い）
   S.zen = function (s) { return String(s == null ? '' : s).normalize('NFKC'); };
