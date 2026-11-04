@@ -406,11 +406,16 @@
     dv.issues.forEach(function (x) {
       flag('warn', '「' + x.ch + '」は' + (x.kind === 'dep' ? '機種依存文字' : 'Shift-JISにない文字') + 'で、配送会社の取込で化ける可能性があります。納品先を直してください');
     });
+    // 運送会社の送り状に入る長さ（設定の carriers。実際の送り状のデータで測った、バイト数。全角2・半角1）。超えた分は、送り状で切れる
     (cfg.carriers || []).forEach(function (cr) {
-      var nl = Array.from(dv.name).length, p1 = Array.from(dv.addr1).length, p2 = Array.from(dv.addr2).length;
-      if (cr.nameChars && nl > cr.nameChars) flag('warn', cr.name + '：名称が' + cr.nameChars + '字を超えるとエラーになることがあります（' + nl + '字）');
-      if (cr.addrCharsTotal && p1 + p2 > cr.addrCharsTotal) flag('warn', cr.name + '：住所が合計' + cr.addrCharsTotal + '字を超えるとエラーになることがあります（' + (p1 + p2) + '字）');
-      if (cr.addrChars && (p1 > cr.addrChars || p2 > cr.addrChars)) flag('warn', cr.name + '：住所が' + cr.addrChars + '字を超えるとエラーになることがあります（住所１ ' + p1 + '字／住所２ ' + p2 + '字）');
+      var nb = EC.sjisLen(dv.name), ab = EC.sjisLen(dv.addr1) + EC.sjisLen(dv.addr2);
+      if (cr.nameBytes && nb > cr.nameBytes) {
+        var sg = EC.shortenName(dv.name, cr.nameBytes);
+        flag('warn', cr.name + '：宛名が' + nb + 'バイトで、送り状には' + cr.nameBytes + 'バイト（全角' + Math.floor(cr.nameBytes / 2) + '字）までしか入らず、超えた分は切れます'
+          + (sg.text && sg.text !== dv.name ? '。短縮案：「' + sg.text + '」' + (sg.dropped ? '（省く：' + sg.dropped + '）' : '') : ''));
+      }
+      var cap = (cr.addrBytes || 0) * (cr.addrFields || 1);
+      if (cap && ab > cap) flag('warn', cr.name + '：住所が合計' + ab + 'バイトで、送り状には合計' + cap + 'バイト（全角' + Math.floor(cap / 2) + '字）までしか入らず、超えた分は切れます');
     });
     if (o.ship.zip && EC.normZip(o.ship.zip).length !== 7) flag('warn', '郵便番号が7桁ではありません：' + o.ship.zip);
     if (o.fulfillment === 'fulfilled') flag('info', 'Shopify では発送済み');
@@ -439,6 +444,27 @@
     return p || '';
   }
   EC.formatPhone = fmtPhone;
+
+  /* 宛名を、運送会社の送り状の長さ（max バイト）に収める案。{ text 案, dropped 省いた語, steps 行ったこと }
+   * 情報を落とさない順に：①「株式会社」などを (株) に ②空白を1つに ③空白を除く ④（それでも長いとき）後ろの語を省く。
+   * 案を出すだけで、勝手には直さない（納品先名は、SMILE の納品書・請求書にも使う大事な名前なので、人が見て選ぶ） */
+  EC.shortenName = function (name, max) {
+    var s = String(name == null ? '' : name), steps = [];
+    function fit(x) { return EC.sjisLen(x) <= max; }
+    if (!max || fit(s)) return { text: s, dropped: '', steps: steps };
+    var cur = s.replace(/株式会社/g, '(株)').replace(/有限会社/g, '(有)').replace(/合同会社/g, '(合)').replace(/一般社団法人/g, '(一社)').replace(/一般財団法人/g, '(一財)').replace(/医療法人/g, '(医)').replace(/社会福祉法人/g, '(福)');
+    if (cur !== s) { steps.push('法人名を略す'); if (fit(cur)) return { text: cur, dropped: '', steps: steps }; }
+    var r2 = cur.replace(/[\s\u3000]+/g, ' ').trim();
+    if (r2 !== cur) { steps.push('空白を1つに'); cur = r2; if (fit(cur)) return { text: cur, dropped: '', steps: steps }; }
+    var r3 = cur.replace(/ /g, '');
+    if (r3 !== cur) { steps.push('空白を除く'); if (fit(r3)) return { text: r3, dropped: '', steps: steps }; }
+    var tokens = cur.split(' '), kept = '', i = 0;   // 語（空白の区切り）の前から、入るだけ
+    for (; i < tokens.length; i++) { var cand = kept + tokens[i]; if (fit(cand)) kept = cand; else break; }
+    var dropped = tokens.slice(i).join(' ');
+    if (!kept) { kept = EC.cutBytes(r3, max); dropped = r3.slice(kept.length); }
+    steps.push('後ろの語を省く');
+    return { text: kept, dropped: dropped, steps: steps };
+  };
 
   /* ---------- 配送会社で化けやすい文字の整理 ----------
    * Shopify のコピペには、見えない文字（幅ゼロの空白など）や機種依存文字（①・㈱・髙 など）が混じることがある。
