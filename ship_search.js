@@ -84,7 +84,7 @@ function drawPeriods() {
 // 運送会社のチップ（カードの運送会社のバッジと同じ色）
 function drawCarriers() {
   const cs = Object.keys(CONF.carriers).filter(k => k[0] !== '_' && typeof CONF.carriers[k] === 'object');
-  const chip = (k, label, cls) => '<span class="chip ' + cls + (k === carrier ? ' active' : '') + '" data-carrier="' + esc(k) + '">' + esc(label) + '</span>';
+  const chip = (k, label, cls) => '<span class="chip ' + cls + (logoOf(k) ? ' has-logo' : '') + (k === carrier ? ' active' : '') + '" data-carrier="' + esc(k) + '" title="' + esc(label) + '">' + logoOrName(k, label) + '</span>';
   $('carriers').innerHTML = '<span class="muted">運送会社</span>' + chip('', 'すべて', 'cr-none') +
     cs.map(k => chip(k, CONF.carriers[k].name || k, carrierClass(k))).join('') + chip('none', '運送会社なし', 'cr-none');
 }
@@ -110,6 +110,11 @@ function more() {
 }
 
 /* ------------------------------------------------------------ 出荷のカード */
+// 運送会社のロゴ（設定の carriers.<キー>.logo。無ければ社名の文字だけ）
+const logoOf = key => { const c = key && CONF.carriers[key]; return c && typeof c === 'object' && c.logo ? String(c.logo) : ''; };
+// ロゴの画像には社名が入っているので、ロゴを出すときは文字の社名は出さない（alt・title に社名を入れる）
+const logoImg = (key, name) => logoOf(key) ? '<img class="cr-logo" src="' + esc(logoOf(key)) + '" alt="' + esc(name || '') + '" title="' + esc(name || '') + '">' : '';
+const logoOrName = (key, name) => logoOf(key) ? logoImg(key, name) : esc(name);
 const carrierClass = key => { const ks = Object.keys(CONF.carriers).filter(k => k[0] !== '_' && typeof CONF.carriers[k] === 'object'); const i = ks.indexOf(key); return i < 0 ? 'cr-none' : 'cr-' + (i % 4); };
 const STATUS_TAG = { missing: 'err', nodata: 'err', pending: 'warn', outside: 'info', none: 'info' };
 
@@ -183,7 +188,7 @@ function card(s, i) {
   const want = [s.want ? fd(s.want) : '', s.time].filter(Boolean).join(' ');
   return '<div class="scard' + (st.code === 'missing' || st.code === 'nodata' ? ' attn' : '') + '" data-i="' + i + '">' +
     '<div class="sc-head"><b class="sc-date">' + esc(fd(s.date)) + '</b>' +
-    '<span class="cr ' + (key ? carrierClass(key) : 'cr-none') + '">' + esc(S.kubunName(CONF, s.kubun)) + '</span>' +
+    '<span class="cr ' + (key ? carrierClass(key) : 'cr-none') + (logoOf(key) ? ' has-logo' : '') + '">' + logoOrName(key, S.kubunName(CONF, s.kubun)) + '</span>' +
     (st.code !== 'ok' ? '<span class="tag ' + (STATUS_TAG[st.code] || 'info') + '">' + esc({ missing: '見つからない', nodata: '要確認', pending: '番号待ち', outside: '取得期間外', none: '運送会社なし' }[st.code]) + '</span>' : '') +
     (s.ret ? '<span class="tag warn">返品</span>' : '') +
     (S.isDirect(CONF, s) ? '<span class="tag direct">直送</span>' : '') +
