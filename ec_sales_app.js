@@ -525,7 +525,7 @@ let slipView = 'cmp'; // 開くたびに最初の画面へ（EC売上の5工程�
 const ED_REQUIRED = ['name', 'zip', 'addr1'];
 function memoCtl(s, st, r) {
   const can = !(st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check');
-  return '<div class="memo-out"><span>取り込まれるメモ</span><b id="memoOut-' + s.id + '">' + esc(memoOf(s)) + '</b></div>' +
+  return '<div class="memo-out" title="SMILE の社内メモに、この内容で入ります"><b id="memoOut-' + s.id + '">' + esc(memoOf(s)) + '</b></div>' +
     '<input type="text" class="ed-live" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="書き足すメモ（例：ブルー入荷待ち／入金確認済）"' + (can ? '' : ' disabled') + ' style="width:100%">' +
     (can ? '<div class="sub">基本は「花岡EC」。続けて書き足せます。入力すると、すぐ保存されます</div>' : '');
 }
