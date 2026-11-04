@@ -13,7 +13,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" integrity="sha384-yXVL3cgcbuPa1TOmTYdr5MVOeFWnnXoYXcSIPBJ4lrnGHn8EZrbyurhG/xZMygBB" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="fax_reply.js?v=20261029a"></script>
-<script src="ship_core.js?v=1"></script>
+<script src="ship_core.js?v=5"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
 <script>
 // MSALが読み込めなかった場合のフォールバック
@@ -166,6 +166,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .ship-none { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .ship-none.warn { color: #b06000; }
 .ship-foot { font-size: 10px; color: var(--text-muted); margin-top: 4px; text-align: right; }
+.ship-row.bunno { border-style: dashed; }
+.ship-tag { font-size: 10px; font-weight: 700; color: #8a5a00; background: #fff1d6; border-radius: 6px; padding: 0 5px; }
+.ship-logo { height: 12px; vertical-align: -2px; margin-right: 3px; }
+.ship-acts { display: flex; gap: 6px; align-items: center; margin-top: 5px; flex-wrap: wrap; }
 /* ===== FAX履歴：一覧⇔詳細 切り替え ===== */
 .fax-main { display: flex; }
 .fax-main.fax-list-mode .fax-list-panel { display: flex; flex: 1; }
@@ -1976,8 +1980,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <p class="help-p">案件に<strong>受注番号</strong>（SMILEの受注№。「J-26668」のように書いても、数字だけでも可）が入っていると、左パネルの受注番号の下に <strong>出荷日・売上№・運送会社・送り状番号</strong> が出ます（受注番号が複数なら、それぞれ出ます）。</p>
           <ul class="help-ul">
             <li><strong>コピー</strong>：送り状番号をコピー</li>
-            <li><strong>連絡文</strong>：「10/28に西濃運輸にて出荷いたしました。送り状No.…」をコピー（お客様への連絡に貼り付けて使えます）</li>
-            <li><strong>配送状況 ↗</strong>：運送会社の追跡ページを開く（追跡ページのある運送会社のみ）</li>
+            <li><strong>配送状況 ↗</strong>：運送会社の追跡ページを開く</li>
+            <li><strong>📋 出荷連絡をコピー</strong>：お客様・代理店への出荷連絡の文面（件名・客先注番・商品名・納品先と住所・出荷日・運送会社・送り状番号）をコピー。文面は送り状検索の「出荷連絡」と同じです</li>
+            <li><strong>伝票・メール ↗</strong>：送り状検索でその出荷を開く（伝票の詳細、出荷連絡を直してメール作成）</li>
+            <li><strong>分納</strong>：同じ注文を分けて出荷したもの（SMILEでは出荷ごとに受注№が変わるため、得意先と客先注番が同じで30日以内の出荷）も「分納」の印つきで出ます</li>
           </ul>
           <div class="help-callout info">データは「送り状検索」と同じもので、SMILEの出荷（毎晩更新）と運送会社の送り状データ（1時間ごと）をつないでいます。出荷した翌朝までに出ます。直近1年の出荷が対象です。自社便・引取など運送会社を使わない出荷には送り状番号はありません。</div>
           <div class="help-h3">対応メモ・コメントの記録</div>
@@ -3018,6 +3024,21 @@ async function loadShipData() {
     const drives = await graphGet(`/sites/${sid}/drives?$select=id,name`);
     const drive = (drives.value || []).find(d => d.name === SP.masterLibrary);
     if (!drive) throw new Error('SharedMasters が見つかりません');
+    // SharedMasters に ship_config.json があれば、リポジトリのものより優先（送り状検索と同じ。出荷連絡の文面などをコードを変えずに直せる）
+    if (!shipData.confMerged) {
+      shipData.confMerged = true;
+      try {
+        const cm = await graphGet(`/drives/${drive.id}/root:/ship_config.json`);
+        const o = await (await fetch(cm['@microsoft.graph.downloadUrl'])).json();
+        const C0 = shipData.conf;
+        Object.keys(o).forEach(k => {
+          if (k === 'sharepoint') return;
+          if (k === 'carriers') Object.keys(o.carriers).forEach(cn => { C0.carriers[cn] = Object.assign(C0.carriers[cn] || {}, o.carriers[cn]); });
+          else if (o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) C0[k] = Object.assign(C0[k] || {}, o[k]);
+          else C0[k] = o[k];
+        });
+      } catch (_) { /* 共有の設定ファイルはなくてよい */ }
+    }
     const meta = await graphGet(`/drives/${drive.id}/root:/ship_index.json`);
     const modified = meta.lastModifiedDateTime || '';
     if (!shipData.idx || shipData.modified !== modified) {
@@ -3064,32 +3085,49 @@ async function renderShipPanel(c) {
   catch (e) { if (currentCaseId === caseId) body.innerHTML = `<div style="font-size:11px;color:var(--danger)">出荷データを読めませんでした：${escapeHtml(e.message)}</div>`; return; }
   if (currentCaseId !== caseId) return;   // 読み込み中に別の案件へ移った
   const S = window.ShipSearch, conf = d.conf, idx = d.idx, today = new Date().toISOString().slice(0, 10);
+  shipNotices = {};
+  const logoOf = key => { const c = (conf.carriers || {})[key]; return c && c.logo ? `<img class="ship-logo" src="${escapeHtml(c.logo)}" alt="">` : ''; };
+  const shipHtml = (s, isBunno) => {
+    const st = S.slipStatus(conf, idx, s);
+    const ckey = S.carrierKeyOf(conf, s.kubun);
+    const carrier = S.kubunName(conf, s.kubun);
+    shipNotices[s.no] = S.noticeText(conf, idx, s);   // 出荷連絡の文面（送り状検索と同じ。ship_config.json の notice）
+    const slips = (s.slips || []).map(sl => {
+      const url = S.trackingUrl(conf, sl.c, sl.no);
+      return `<div class="ship-slip"><span class="ship-slipno">${escapeHtml(sl.no)}</span>`
+        + `<button class="btn ship-btn" onclick="copyShipText(this, '${escJsAttr(sl.no)}')" title="送り状番号をコピー">コピー</button>`
+        + (url ? `<a class="ship-track" href="${escapeHtml(url)}" target="_blank" rel="noopener">配送状況 ↗</a>` : '')
+        + (sl.qty ? `<span class="ship-sub">${escapeHtml(sl.qty)}個</span>` : '') + `</div>`;
+    }).join('');
+    return `<div class="ship-row${isBunno ? ' bunno' : ''}"><div class="ship-l1">${isBunno ? '<span class="ship-tag">分納</span>' : ''}${escapeHtml(S.fmtDate(s.date, today))} 出荷`
+      + `<span class="ship-sub">${logoOf(ckey)}${escapeHtml(carrier)}・売上№${escapeHtml(s.no)}${isBunno && (s.juchu || []).length ? '・受注' + escapeHtml(s.juchu.join('、')) : ''}</span></div>`
+      + (slips || (st.code === 'none' ? '' :   // 運送会社を使わない出荷は、上の行の「運送会社を使わない」で足りる
+          `<div class="ship-none${st.code === 'missing' || st.code === 'nodata' ? ' warn' : ''}">${escapeHtml(st.text || '送り状番号はまだありません')}</div>`))
+      + `<div class="ship-acts"><button class="btn ship-btn" onclick="copyShipNotice(this, '${escJsAttr(s.no)}')" title="出荷連絡の文面（客先注番・商品名・納品先・送り状番号）をコピー">📋 出荷連絡をコピー</button>`
+      + `<a class="ship-track" href="ship_search.html?q=${encodeURIComponent(s.no)}" target="_blank" rel="noopener" title="送り状検索で開く（伝票の詳細・出荷連絡のメール作成）">伝票・メール ↗</a></div></div>`;
+  };
+  const shown = new Set();
   const html = nos.map(no => {
-    const ships = (d.byJuchu.get(no) || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    const ships = (d.byJuchu.get(no) || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
     const head = `<div class="ship-jno">受注 ${escapeHtml(no)}</div>`;
     if (!ships.length) {
       return head + `<div class="ship-none">まだ出荷の記録がありません（出荷されると、翌朝までにここに出ます）</div>`;
     }
-    return head + ships.map(s => {
-      const st = S.slipStatus(conf, idx, s);
-      const carrier = S.kubunName(conf, s.kubun);
-      const slips = (s.slips || []).map(sl => {
-        const url = S.trackingUrl(conf, sl.c, sl.no);
-        const cname = S.carrierName(conf, sl.c);
-        const msg = `${S.fmtDate(s.date, today).replace(/\(.\)$/, '')}に${cname}にて出荷いたしました。送り状No.${sl.no}`;
-        return `<div class="ship-slip"><span class="ship-slipno">${escapeHtml(sl.no)}</span>`
-          + `<button class="btn ship-btn" onclick="copyShipText(this, '${escJsAttr(sl.no)}')" title="送り状番号をコピー">コピー</button>`
-          + `<button class="btn ship-btn" onclick="copyShipText(this, '${escJsAttr(msg)}')" title="「${escapeHtml(msg)}」をコピー（お客様への連絡に）">連絡文</button>`
-          + (url ? `<a class="ship-track" href="${escapeHtml(url)}" target="_blank" rel="noopener">配送状況 ↗</a>` : '')
-          + (sl.qty ? `<span class="ship-sub">${escapeHtml(sl.qty)}個</span>` : '') + `</div>`;
-      }).join('');
-      return `<div class="ship-row"><div class="ship-l1">${escapeHtml(S.fmtDate(s.date, today))} 出荷<span class="ship-sub">売上№${escapeHtml(s.no)}・${escapeHtml(carrier)}</span></div>`
-        + (slips || (st.code === 'none' ? '' :   // 運送会社を使わない出荷は、上の行の「運送会社を使わない」で足りる
-            `<div class="ship-none${st.code === 'missing' || st.code === 'nodata' ? ' warn' : ''}">${escapeHtml(st.text || '送り状番号はまだありません')}</div>`)) + `</div>`;
-    }).join('');
+    ships.forEach(s => shown.add(s.no));
+    // 分納：SMILE は出荷のたびに新しい受注ができるので、同じ注文の別の出荷（得意先＋客先注番が同じ、30日以内）も足す
+    const sib = [];
+    ships.forEach(s => (S.siblings(idx, s, conf) || []).forEach(x => { if (!shown.has(x.no)) { shown.add(x.no); sib.push(x); } }));
+    const all = ships.map(s => [s, false]).concat(sib.map(s => [s, true])).sort((a, b) => String(a[0].date).localeCompare(String(b[0].date)));
+    return head + all.map(([s, b]) => shipHtml(s, b)).join('');
   }).join('');
   const gen = idx.generatedAt ? new Date(idx.generatedAt) : null;
   body.innerHTML = html + (gen ? `<div class="ship-foot">出荷データ ${gen.getMonth() + 1}/${gen.getDate()} ${String(gen.getHours()).padStart(2, '0')}:${String(gen.getMinutes()).padStart(2, '0')} 時点</div>` : '');
+}
+let shipNotices = {};
+function copyShipNotice(btn, no) {
+  const n = shipNotices[no];
+  if (!n) return;
+  copyShipText(btn, (n.subject ? '件名：' + n.subject + '\n\n' : '') + n.body);
 }
 async function copyShipText(btn, text) {
   try { await navigator.clipboard.writeText(text); const t = btn.textContent; btn.textContent = 'コピーしました'; setTimeout(() => { btn.textContent = t; }, 1200); }
