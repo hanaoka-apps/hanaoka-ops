@@ -942,7 +942,7 @@ function setOk(s) {
   store.orders[s.id] = Object.assign(store.orders[s.id] || {}, { status: 'ok', by: account && account.username, at: new Date().toISOString(), cust: s.cust, orderDate: s.orderDate, net: s.netTotal });
   return true;
 }
-const UNDO_KEYS = ['excludeReason', 'excludedBy', 'excludedAt', 'status', 'exportedAt', 'exportedBy', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed', 'confirmedBy', 'confirmedAt', 'matchedAt', 'matchedShip', 'orderName', 'by', 'at', 'importBy', 'importAt', 'reportedAt'];
+const UNDO_KEYS = ['excludeReason', 'excludedBy', 'excludedAt', 'status', 'exportedAt', 'exportedBy', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed', 'confirmedBy', 'confirmedAt', 'matchedAt', 'matchedShip', 'orderName', 'by', 'at', 'importBy', 'importAt', 'reportedAt', 'shipReportedAt', 'shipReportedBy'];
 
 // 1つのログだけを書く（注文の行は書かない）：テスト送信・報告の失敗など
 function logOnly(action, orderNo, batchId, detail) {
@@ -1791,8 +1791,14 @@ function outPay() {
 
 /* ------------------------------------------------------------ 全体 */
 // 出荷チェック（ec_ship_tab.js）：受注を SMILE に起票した注文の、出荷伝票・送り状番号を、専用機が毎時作る ship_index.json から見せる
+// 出荷チェックの「報告済み」の印（EC＝Shopify に送り状№を登録した／ふるさと＝サイネックスに出荷報告した）。共有のリストに残る
+async function markShipReported(ids, on) {
+  const at = new Date().toISOString(), who = account && account.username;
+  await commit({ ids, action: 'その他', detail: () => on ? '出荷報告済みにした' : '出荷報告済みを戻した',
+    mutate: id => { const r = store.orders[id]; if (!r) return false; if (on) { r.shipReportedAt = at; r.shipReportedBy = who; } else { delete r.shipReportedAt; delete r.shipReportedBy; } return true; } });
+}
 function shipCtx() {
-  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec,
+  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported,
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }
 function render() {
