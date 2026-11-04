@@ -1247,6 +1247,8 @@
   // 受注伝票の拡張項目の区分の名前。SMILE の受注明細出力に入っている名前と同じ（実データで確認：運送業者利用区分 1西濃・2トナミ・3第一貨物／配達指定区分 0当日中・1午前・2午後・3営業所止め）。設定（carrierUseNames・deliverySpecNames）で変えられる
   var CARRIER = { '0': '利用なし', '1': '西濃利用', '2': 'トナミ利用', '3': '第一貨物利用' };
   var DELIVERY_SPEC = { '0': '当日中', '1': '午前', '2': '午後', '3': '営業所止め' };
+  var TONAMI_SPEC = { '1': '期日指定', '2': '迄に着', '3': '必着', '4': '朝一着指定', '5': '朝一必着', '6': '午前着指定', '7': '午前必着', '8': '午後着指定', '9': '午前', '10': '午後', '11': '10時以降着', '12': '配達指定', '13': '日曜配送' };
+  EC.tonamiSpecLabel = function (c, cfg) { return kubunLabel(Object.assign({}, TONAMI_SPEC, (cfg || {}).tonamiSpecNames), c); };
   function kubunLabel(map, c) { c = String(c == null ? '' : c).trim(); return c === '' ? '' : c + (map[c] ? ':' + map[c] : ''); }
   EC.carrierLabel = function (c, cfg) { return kubunLabel(Object.assign({}, CARRIER, (cfg || {}).carrierUseNames), c); };
   EC.deliverySpecLabel = function (c, cfg) { return kubunLabel(Object.assign({}, DELIVERY_SPEC, (cfg || {}).deliverySpecNames), c); };
@@ -1301,6 +1303,7 @@
     var specCode = act ? String(P(r0, ['配達指定区分'])).trim() : '';
     var ext = {
       deliveryKubun: { code: specCode, label: EC.deliverySpecLabel(specCode, cfg) },
+      tonami: { code: act ? String(P(r0, ['配送指定（トナミ用）'])).trim() : '', label: act ? EC.tonamiSpecLabel(String(P(r0, ['配送指定（トナミ用）'])).trim(), cfg) : '' },
       carrier: { code: carrierCode, label: EC.carrierLabel(carrierCode, cfg), missing: !!(act && carrierCode === '') },
       deliveryDate: act ? EC.fmtDate(P(r0, ['配送指定日'])) : '', officeName: act ? String(P(r0, ['営業所止め名'])).trim() : ''
     };

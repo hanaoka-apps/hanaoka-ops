@@ -976,6 +976,9 @@ t('SMILE の伝票イメージ：拡張項目（運送業者・配送指定日�
   const act = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [row], juchuNo: '26846', deliveryCode: '000812' } });
   assert.deepStrictEqual([act.ext.carrier.code, act.ext.carrier.label, act.ext.deliveryDate, act.ext.deliveryKubun.label], ['3', '3:第一貨物利用', '2026/10/30', '1:午前']);   // 区分の名前も出す（実データで確認した対応）
   assert.deepStrictEqual([0, 1, 2, 3].map(c => EC.carrierLabel(c)), ['0:利用なし', '1:西濃利用', '2:トナミ利用', '3:第一貨物利用']); assert.deepStrictEqual([0, 1, 2, 3, 9].map(c => EC.deliverySpecLabel(c)), ['0:当日中', '1:午前', '2:午後', '3:営業所止め', '9']);
+  assert.deepStrictEqual([1, 9, 13].map(c => EC.tonamiSpecLabel(c)), ['1:期日指定', '9:午前', '13:日曜配送']); assert.strictEqual(EC.tonamiSpecLabel(''), '');
+  const tn = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '2', '配送指定（トナミ用）': '3' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual([tn.ext.carrier.label, tn.ext.tonami.label], ['2:トナミ利用', '3:必着']);
   assert.strictEqual(EC.carrierLabel(2, { carrierUseNames: { 2: 'トナミ運輸' } }), '2:トナミ運輸'); assert.strictEqual(EC.carrierLabel(''), '');
   const none = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '配送指定日': '0', '運送業者利用区分': '1' })], juchuNo: '1', deliveryCode: '1' } });
   assert.deepStrictEqual([none.ext.deliveryDate, none.ext.carrier.label], ['', '1:西濃利用']);   // 0 は「指定なし」

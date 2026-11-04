@@ -16,12 +16,12 @@ B = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(B)
 
 JUCHU_HEAD = ['受注日付', '受注№', '行', '得意先ｺｰﾄﾞ', '納品先ｺｰﾄﾞ', '納品先名', '品目ｺｰﾄﾞ', '品目名', '数量', '単価', '金額',
-              '納期', '出荷予定日', '客先注番', '社内メモ', '操作日付', '手配区分', '製造数量', '製番', '原単価', '運送業者利用区分', '配送指定日', '配達指定区分', '営業所止め名']
+              '納期', '出荷予定日', '客先注番', '社内メモ', '操作日付', '手配区分', '製造数量', '製番', '原単価', '運送業者利用区分', '配送指定日', '配達指定区分', '営業所止め名', '配送指定（トナミ用）']
 
 
 def juchu_row(no, line, cust, po, memo='花岡EC', code='FCART2x4BK'):
     return ['20261015', no, str(line), cust, '000001', 'テスト様', code, '品目名', '1.00', '14000.00', '14000',
-            '20261019', '20261019', po, memo, '20261015', '1', '1.00', 'SB' + no, '5248.00', '1', '0', '', '']
+            '20261019', '20261019', po, memo, '20261015', '1', '1.00', 'SB' + no, '5248.00', '1', '0', '', '', '']
 
 
 def tsv(rows, quote_all=False):
@@ -77,7 +77,7 @@ class BuildEcIndexTest(unittest.TestCase):
         self.assertEqual(rows[0]['受注№'], '90001')
         self.assertEqual(rows[2]['社内メモ'], 'メモ\n改行あり')          # クォート内の改行も1つの値
         self.assertEqual((rows[0]['製番'], rows[0]['原単価'], rows[0]['手配区分'], rows[0]['納期'], rows[0]['出荷予定日']), ('SB90001', '5248.00', '1', '20261019', '20261019'))   # 伝票イメージ用の項目
-        self.assertEqual((rows[0]['運送業者利用区分'], rows[0]['配送指定日'], rows[0]['配達指定区分'], rows[0]['営業所止め名']), ('1', '0', '', ''))   # 拡張項目
+        self.assertEqual((rows[0]['運送業者利用区分'], rows[0]['配送指定日'], rows[0]['配達指定区分'], rows[0]['営業所止め名'], rows[0]['配送指定（トナミ用）']), ('1', '0', '', '', ''))   # 拡張項目
         self.assertNotIn('操作者', cols)                                 # 必要な列だけ
         self.assertEqual(len(idx['nouhin']['rows']), 2)
         self.assertEqual(idx['nouhin']['maxCode'], {'599802': '000770'})
