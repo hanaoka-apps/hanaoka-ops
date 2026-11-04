@@ -1141,7 +1141,7 @@
   EC.shortUser = function (u) { return String(u == null ? '' : u).split('@')[0]; };
 
   var DATE_ONLY = { OrderDate: 1, ShipDate: 1 };
-  var DATE_TIME = { OkAt: 1, ImportAt: 1, ConfirmAt: 1, ReportedAt: 1 };
+  var DATE_TIME = { OkAt: 1, ImportAt: 1, ConfirmAt: 1, ReportedAt: 1, ShipReportedAt: 1 };
   function dOnly(s) { return s ? String(s).slice(0, 10) + 'T12:00:00Z' : null; }   // 正午(UTC)にして、日本時間でも同じ日になるようにする
   function nz(v) { return v == null ? null : v; }
 
@@ -1154,7 +1154,8 @@
       BatchId: rec.batchId || '', SmileOrderNo: rec.juchuNo || '', ShipDate: dOnly(rec.shipDate || rec.matchedShip), ShipDateManual: manual,
       MemoNote: rec.memoNote || '', NetTotal: rec.net == null ? null : Math.round(rec.net),
       OkBy: rec.by || '', OkAt: nz(rec.at), ImportBy: rec.importBy || '', ImportAt: nz(rec.importAt),
-      ConfirmBy: rec.confirmedBy || '', ConfirmAt: nz(rec.confirmedAt), ReportedAt: nz(rec.reportedAt)
+      ConfirmBy: rec.confirmedBy || '', ConfirmAt: nz(rec.confirmedAt), ReportedAt: nz(rec.reportedAt),
+      ShipReportedBy: rec.shipReportedBy || '', ShipReportedAt: nz(rec.shipReportedAt)   // 出荷チェックの「報告済み」（EC＝Shopify に送り状№を登録／ふるさと＝サイネックスに出荷報告）
     };
     return f;
   };
@@ -1175,6 +1176,7 @@
     if (f.ConfirmBy) { r.confirmedBy = f.ConfirmBy; r.exportedBy = f.ConfirmBy; }
     if (f.ConfirmAt) { r.confirmedAt = f.ConfirmAt; r.exportedAt = f.ConfirmAt; }
     if (f.ReportedAt) r.reportedAt = f.ReportedAt;
+    if (f.ShipReportedBy) r.shipReportedBy = f.ShipReportedBy; if (f.ShipReportedAt) r.shipReportedAt = f.ShipReportedAt;
     if (f.Title) r.orderName = '#' + f.Title;
     return r;
   };

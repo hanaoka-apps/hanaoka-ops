@@ -83,6 +83,8 @@ $Definitions = @(
       (Col-Text 'ConfirmBy' '確認OKした人'),
       (Col-Date 'ConfirmAt' '確認OK日時'),
       (Col-Date 'ReportedAt' 'Teams報告日時'),
+      (Col-Text 'ShipReportedBy' '出荷報告した人'),
+      (Col-Date 'ShipReportedAt' '出荷報告日時'),
       (Col-Text 'Note' '備考' $true)
     )
   },
