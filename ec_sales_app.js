@@ -482,7 +482,7 @@ function renderDrawer() {
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
     (FLOW_UI() ? flowBoxHtml(s) : '') +
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
-    (FLOW_UI() ? '' : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
+    (FLOW_UI() ? judgeHtml(s) : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
     '';
   const FL = FLOW_UI();
   const okBtn = '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>' + (FL ? '確認OK（起票依頼待ちへ）' : 'OK にする') + '</button>';
@@ -523,26 +523,41 @@ let slipView = 'cmp'; // 開くたびに最初の画面へ（EC売上の5工程�
 function detailViewHtml(s, editBlock) {
   const FL = FLOW_UI(), view = editId === s.id ? 'cmp' : slipView;
   const chip = (k, l) => '<span class="chip' + (view === k ? ' active' : '') + '" data-dview="' + k + '">' + l + '</span>';
-  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + (FL ? chip('sum', '確認サマリー') : '') + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
-  return tabs + (view === 'sum' && FL ? summaryHtml(s, editBlock) : view === 'cmp' ? compareHtml(s) : slipImageHtml(s));
+  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
+  // 「担当者が編集できる項目」は、どの画面でも同じ場所（いちばん下）に出す。確認サマリーでは summaryHtml の中に含む。納品先の修正ボタンは、比較の画面には元からあるので重ねない
+  const grp = (btn) => FL ? '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (btn && stateOf(s) === 'new' && !smileActual(s) ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>' : '';
+  return tabs + (view === 'image' ? slipImageHtml(s) + grp(true) : compareHtml(s) + grp(false));
 }
-// 確認サマリー：システムの判定結果 → SMILE起票予定の要約 → 伝票イメージの案内 → 担当者が編集できる項目
-function summaryHtml(s, editBlock) {
-  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s), st = stateOf(s), P = EC.pick;
+// システムの判定結果（タブの上に小さく出す）：確認が必要なもの（△・✗）は常に、問題なしの項目は「✓ 問題なし n項目」にまとめる（開くと意味つきで見られる）
+function judgeHtml(s) {
+  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key];
   const j = EC.judgeSlip(s, { cfg: store.cfg, delivery: { code: code || '', name: d.name, isNew: !code }, shipLabel: md(shipOf(s)) });
   const ico = { ok: '✓', warn: '△', err: '✗', info: '・' };
-  let h = '<div class="judge"><div class="jh">システムの判定結果</div>' + j.items.map(x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>').join('') + '</div>';
-  // 要約：取込前は「SMILE起票予定の内容」、取込後は「SMILEの実際の値」
-  const rows = act ? act.rows : null;
-  const net = rows ? rows.reduce((a, x) => a + Math.round(+P(x, ['金額']) || 0), 0) : j.summary.net, gross = rows ? Math.round(net * 1.1) : j.summary.gross;
-  const lines = rows ? rows.map(x => P(x, ['品目コード']) + ' ×' + (+P(x, ['数量']) || 0)).join('、') : j.summary.lines, cnt = rows ? rows.length : j.summary.count;
-  const dest = act ? esc(P(act.rows[0], ['納品先名']) || d.name) + (act.deliveryCode ? ' <span class="muted">' + esc(act.deliveryCode) + '</span>' : '') : esc(d.name) + ' ' + (code ? '<span class="muted">既存 ' + esc(code) + '</span>' : '<span class="tag new">新規（取込時に番号を決めます）</span>');
-  const kv = (k, v) => '<tr><th>' + k + '</th><td>' + v + '</td></tr>';
-  h += '<div class="sumbox"><div class="jh">' + (act ? 'SMILEの実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE起票予定の内容') + '</div><table>' + kv('得意先', esc(j.summary.customer)) + kv('納品先', dest) + kv('商品明細', esc(lines || '（なし）')) + kv('税抜合計', yen(net)) + kv('税込合計', yen(gross)) + kv('出荷予定日', act ? esc(ymdText(P(act.rows[0], ['出荷予定日']))) : esc(md(shipOf(s)))) + '</table></div>';
-  h += j.risky ? '<div class="alert warn" style="margin-top:8px">確認が必要な項目があります。伝票の内容も確認してください。 <button class="btn sec sm" data-dview="image">SMILE伝票イメージを見る</button></div>'
-    : '<div class="slipok"><b>✓ SMILE伝票を作成できます</b><span class="muted">明細 ' + cnt + '行・税抜 ' + yen(net) + '・税込 ' + yen(gross) + '</span><button class="btn sec sm" data-dview="image">SMILE伝票イメージを見る</button></div>';
-  h += '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (st === 'new' && !act ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>';
-  return h;
+  const row = x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>';
+  const oks = j.items.filter(x => x.level === 'ok'), rest = j.items.filter(x => x.level !== 'ok');
+  return '<div class="judge"><div class="jh">システムの判定結果' + (j.risky ? '<button class="btn sec sm" data-dview="image" style="margin-left:10px">SMILE伝票イメージを見る</button>' : '') + '</div>' + rest.map(row).join('') +
+    (oks.length ? '<details class="jok"><summary><span class="ji" style="color:var(--green)">✓</span><b>問題なし ' + oks.length + '項目</b></summary>' + oks.map(row).join('') + '</details>' : '') + '</div>';
+}
+// 納品先マスタ（取込用）の枠：新規ならこの注文から作る登録内容、既存なら SMILE にすでにある登録内容（取込では変えない）、取込後は SMILE の実際の値
+function nouhinBlockHtml(s, d, code, act, it, pend) {
+  const P = EC.pick, E = esc, lim = (store.cfg.limits || {});
+  let title, v, hint = '';
+  if (act && act.nouhin) {
+    const n = act.nouhin; title = '納品先マスタ（SMILEの実際の値）';
+    v = { code: act.deliveryCode, name: P(n, ['納品先名']), p1: P(n, ['荷受け人名１']), p2: P(n, ['荷受け人名２']), zip: P(n, ['郵便番号']), a1: P(n, ['住所１']), a2: P(n, ['住所２']), tel: P(n, ['電話番号']) };
+  } else if (code) {
+    const I = M.smileIdx, n = I && I.byNouhin && I.byNouhin[s.cust + '|' + code];
+    title = '納品先マスタ（既存の納品先。SMILEの登録内容は、取込では変わりません）';
+    v = n ? { code, name: P(n, ['納品先名']), p1: P(n, ['荷受け人名１']), p2: P(n, ['荷受け人名２']), zip: P(n, ['郵便番号']), a1: P(n, ['住所１']), a2: P(n, ['住所２']), tel: P(n, ['電話番号']) } : { code, name: d.name, p1: '', p2: '', zip: d.zip, a1: d.addr1, a2: d.addr2, tel: d.tel };
+    if (d.memo) hint = '<div class="alert warn" style="margin-top:4px">配達員向けメモは、既存の納品先には入りません（納品先マスタの取込は新規だけ）。SMILE の荷受け人名１に直接入れてください</div>';
+  } else {
+    title = '納品先マスタ（新規。取込で SMILE に登録します）';
+    v = { code: '', name: EC.cutBytes(d.name, lim.name), p1: EC.cutBytes([d.person, d.memo].filter(Boolean).join(' '), lim.name), p2: '', zip: d.zip, a1: EC.cutBytes(d.addr1, lim.addr1), a2: EC.cutBytes(d.addr2, lim.addr2), tel: d.tel };
+  }
+  const val = x => x ? E(x) : '<span class="muted">なし</span>';
+  return '<div class="sl-box"><div class="sl-bt">' + title + '</div><div class="sl-hd c3">' +
+    it('納品先コード', v.code ? E(v.code) : pend('取込時に決定'), v.code ? '' : ' ') + it('納品先名', val(v.name)) + it('荷受け人名１', val(v.p1)) +
+    it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint + '</div>';
 }
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
@@ -580,6 +595,12 @@ function slipImageHtml(s) {
   if (plan && plan.lines.length !== img.lines.length) h += '<div class="alert warn" style="margin-top:6px">明細の行数が違います（アプリの予定 ' + plan.lines.length + '行／SMILE ' + img.lines.length + '行）</div>';
   h += '<div class="sl-sum">受注数量合計 <b' + (plan && plan.total.qty !== img.total.qty ? ' class="sl-vv diff"' : '') + '>' + E(img.total.qty) + '</b>合計金額（税抜） <b' + (plan && plan.total.amount !== img.total.amount ? ' class="sl-vv diff"' : '') + '>' + E(img.total.amount) + '</b></div>' +
     '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
+    // 拡張項目（SMILE の「受注伝票拡張項目」の画面）：運送業者・配送指定日など。取込後に、お客様の希望日が入っている注文などが分かる
+    '<div class="sl-boxes">' + nouhinBlockHtml(s, d, code, act, it, pend) +
+    '<div class="sl-box"><div class="sl-bt">拡張項目（受注伝票）</div><div class="sl-hd c3">' +
+    it('運送業者', img.ext.carrier.missing ? pend('（この確認用データにはありません）') : E(img.ext.carrier.label || '（不明）'), df(img.ext.carrier.code, plan && plan.ext.carrier.code)) +
+    it('配送指定日', img.ext.deliveryDate ? E(img.ext.deliveryDate) : '<span class="muted">指定なし</span>', df(img.ext.deliveryDate, plan && plan.ext.deliveryDate)) +
+    it('配達指定', img.ext.deliveryKubun.label ? E(img.ext.deliveryKubun.label) : '<span class="muted">なし</span>', df(img.ext.deliveryKubun.code, plan && plan.ext.deliveryKubun.code)) + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + (img.ext.tonami.code ? it('トナミ指定', E(img.ext.tonami.label)) : '') + (img.ext.daiichiMust ? it('必着指定（第一貨物）', E(img.ext.daiichiMust)) : '') + (img.ext.daiichiTime ? it('時間区分（第一貨物）', E(img.ext.daiichiTime)) : '') + (img.ext.tonamiShipper.code ? it('トナミ荷送人', E(img.ext.tonamiShipper.code + (img.ext.tonamiShipper.name ? ' ' + img.ext.tonamiShipper.name : ''))) : '') + '</div></div></div>' +
     (act ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
   return h;
 }
@@ -594,7 +615,7 @@ function compareHtml(s) {
     const n = act.nouhin;
     A = { name: P(n, ['納品先名']), person: P(n, ['荷受け人名１']), zip: P(n, ['郵便番号']), addr: P(n, ['住所１']) + P(n, ['住所２']), addr1: P(n, ['住所１']), addr2: P(n, ['住所２']), tel: P(n, ['電話番号']), code: act.deliveryCode };
   } else {
-    A = { name: d.name, person: d.person, zip: d.zip, addr: (d.addr1 || '') + (d.addr2 || ''), addr1: d.addr1, addr2: d.addr2, tel: d.tel, code: '' };
+    A = { name: d.name, person: d.person, memo: d.memo, zip: d.zip, addr: (d.addr1 || '') + (d.addr2 || ''), addr1: d.addr1, addr2: d.addr2, tel: d.tel, code: '' };
   }
   const FLc = FLOW_UI(), convs = [];   // convs＝正常な自動変換（違う項目とは言わない）
   const row = (label, a, b, diff, sub, conv) => { const isConv = !!conv && !diff; if (isConv) convs.push(conv); const dc = diff ? (FLc ? ' bad' : ' diff') : ''; return '<tr><th>' + label + '</th><td class="shop' + dc + '">' + a + '</td><td class="smile' + dc + (isConv && FLc ? ' conv' : '') + '">' + b + (sub ? '<div class="sub">' + sub + '</div>' : '') + (isConv && FLc ? '<div class="sub conv-t">自動変換：' + conv + '</div>' : '') + '</td></tr>'; };
@@ -610,6 +631,7 @@ function compareHtml(s) {
     };
     h += row('納品先名', E(sh.company || sh.name), inp('name'), false);
     h += row('荷受け人', E(sh.company ? sh.name : ''), inp('person'), false);
+    h += row('配達員向けメモ', '', inp('memo') + '<div class="sub">SMILE の荷受け人名１に入ります（例：午前中配達希望／14-16時配達希望）。配達員の目に留まるためのメモで、納品先の同じ・違うの判定には使いません。<b>新規の納品先にだけ入ります</b></div>', false);
     h += row('郵便番号', E(sh.zip), inp('zip') + '<div class="sub"><button class="btn sec sm" data-act="edzip" data-id="' + s.id + '">郵便番号から住所を確認</button> <span id="zipHint"></span></div>', false);
     h += row('住所１', E(shopAddr), inp('addr1'), false);
     h += row('住所２', '', inp('addr2'), false);
@@ -618,11 +640,18 @@ function compareHtml(s) {
   const rawNm = sh.company || sh.name;
   h += row('納品先名', E(rawNm), E(A.name) + edTag('name'), nm(rawNm) !== nm(A.name), '', String(rawNm) !== String(A.name) ? '納品先名に「様」などを付加' : '');
   h += row('荷受け人', E(sh.company ? sh.name : ''), E(A.person) + edTag('person'), !!(sh.company && nm(sh.name) !== nm(A.person)), '', sh.company && String(sh.name) !== String(A.person) ? '荷受け人に「様」を付加' : '');
+  if (A.memo) h += row('配達員向けメモ', '', E(A.memo) + edTag('memo'), false, '荷受け人名１に入ります');
   h += row('郵便番号', E(sh.zip), E(A.zip) + edTag('zip'), dg(sh.zip) !== dg(A.zip), '', String(sh.zip) !== String(A.zip) ? '郵便番号の形を整える' : '');
   h += row('住所', E(shopAddr), E(A.addr1) + (A.addr2 ? '<br>' + E(A.addr2) : '') + edTag('addr1') + edTag('addr2'), nz(shopAddr) !== nz(A.addr), '', String(shopAddr) !== String(A.addr) ? '住所を整える（全角・半角・文字の置き換え）' : '');
   h += row('電話', E(sh.phone), E(A.tel) + edTag('tel'), tel(sh.phone) !== tel(A.tel), '', String(sh.phone) !== String(A.tel) ? '電話番号を国内形式に変換' : '');
   }
   if (A.code) h += row('納品先コード', '', E(A.code), false);
+  {   // 受注伝票のほうの項目（Shopify には無いものは、SMILE 側だけ）
+    const po = String(s.id).replace(/\D/g, '');   // 得意先・担当・部門・倉庫は Shopify に対応する値が無いので、比較には出さない（伝票イメージにある）
+    const ext = EC.slipImage(Object.assign({}, s, { memo: memoOf(s) }), { cfg: store.cfg, items: M.items, cal, shipDate: shipOf(s), act, delivery: { code: A.code || '', name: A.name } }).ext;
+    h += row('客先注番', E(s.name), E(act ? P(act.rows[0], ['客先注番']) : po), false, '', String(s.name) !== po ? '注文番号の数字だけを入れる' : '');
+    h += row('運送・配送指定', E([o.shippingMethod ? '配送方法：' + o.shippingMethod : '', o.notes ? 'お客様メモ：' + o.notes : ''].filter(Boolean).join('／')), E([ext.carrier.missing ? '運送業者：（この確認用データにはありません）' : '運送業者：' + (ext.carrier.label || '—'), '配送指定日：' + (ext.deliveryDate || '指定なし'), '配達指定：' + (ext.deliveryKubun.label || 'なし'), ext.officeName ? '営業所止め：' + ext.officeName : ''].filter(Boolean).join('／')), false, act ? '' : '運送業者は、設定の値で取り込みます。お客様の希望日は入れません');
+  }
   // 商品：Shopify の行 ↔ SMILE の行（同じ順に並べる。商品名は対応表で品目に変わるので、違いは強調しない）
   const sl = o.lines, ml = act ? act.rows.map(x => ({ code: P(x, ['品目コード']), name: P(x, ['品目名', '品名']), qty: +P(x, ['数量']) || 0, amt: Math.round(+P(x, ['金額']) || 0) })) : s.lines.map(l => ({ code: l.code, name: l.name, qty: l.qty, amt: Math.round(l.amountNet) }));
   for (let i = 0; i < Math.max(sl.length, ml.length); i++) {
@@ -1731,7 +1760,7 @@ document.addEventListener('click', async e => {
   if (moreOpen && !e.target.closest('.morewrap') && $('moreMenu')) { moreOpen = false; $('moreMenu').hidden = true; }
   if (e.target.closest('[data-close]') || e.target.id === 'scrim') { if (mapDrawer && !closeMapDrawer()) return; openId = null; editId = null; editDraft = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
-  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; slipView = FLOW_UI() ? 'sum' : 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
+  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; slipView = 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
   const t = e.target.closest('[data-tab],[data-f],[data-v],[data-s],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
   if (!t) return;
   const d = t.dataset;
@@ -1815,6 +1844,8 @@ function reviewDeliveryEdit(s) {
   const dv = EC.deliveryFromOrder(s.order, store.cfg), diff = EC.diffDeliveryEdit(dv.auto, editDraft);
   if (!Object.keys(diff).length) { alert('変更がありません'); return; }
   const merged = Object.assign({}, dv.auto, diff), chk = EC.checkDeliveryEdit(merged, store.cfg);
+  const exCode = M.nouhin && M.nouhin[s.cust] && M.nouhin[s.cust].keys[dv.key];
+  if (exCode && diff.memo) chk.warns.push('既存の納品先（' + exCode + '）です。配達員向けメモは、取込では入りません（納品先マスタの取込は新規だけ）。SMILE の荷受け人名１に直接入れてください');
   const rows = Object.keys(diff).map(k => { const f = EC.EDIT_FIELDS.find(x => x.k === k); return '<tr><th>' + esc(f.label) + '</th><td>' + esc(dv.auto[k] || '（空）') + '</td><td style="background:#fff1c2;font-weight:600">' + esc(diff[k] || '（空）') + '</td></tr>'; }).join('');
   const ov = document.createElement('div');
   ov.id = 'editConfirm';
@@ -1885,7 +1916,7 @@ document.addEventListener('change', e => { const t = e.target; if (t.dataset && 
 // 対応表・設定：行クリック → ドロワー／ドロワーのボタン
 document.addEventListener('click', e => {
   const dv = e.target.closest('[data-dview]');
-  if (dv) { slipView = ['sum', 'cmp', 'image'].indexOf(dv.dataset.dview) >= 0 ? dv.dataset.dview : 'cmp'; renderDrawer(); return; }
+  if (dv) { slipView = dv.dataset.dview === 'image' ? 'image' : 'cmp'; renderDrawer(); return; }
   const t = e.target.closest('[data-mdact],[data-newrule],[data-mdclose],[data-rulelink],.rcard[data-maprule]'); if (!t) return;
   if (t.matches('.rcard[data-maprule]')) { if (!e.target.closest('input,button,select,a,label')) openRule(t.dataset.maprule); return; }
   if (t.dataset.rulelink !== undefined) { if (mapDrawer && !closeMapDrawer()) return; openRule(t.dataset.rulelink); return; }

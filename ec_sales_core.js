@@ -391,7 +391,7 @@
     // ---- 注文そのものの確認ポイント
     if (o.financial === 'pending') flag('warn', '入金待ち（' + (o.paymentMethod || '支払方法不明') + '）');
     else if (o.financial === 'refunded' || o.financial === 'partially_refunded') flag('warn', '返金あり（' + (o.refunded ? o.refunded.toLocaleString() + '円' : o.financial) + '）');
-    if (o.paymentMethod && !/^Shopify Payments$/.test(o.paymentMethod)) flag('info', '支払方法：' + o.paymentMethod);
+    if (o.paymentMethod && !/^shopify[ _]?payments$/i.test(o.paymentMethod)) flag('info', '支払方法：' + o.paymentMethod);
     if (o.notes) flag('warn', 'お客様メモ：' + o.notes.slice(0, 60));
     if (!o.ship.name) flag('error', '配送先の名前がありません');
     if (!o.ship.zip || !(o.ship.province || o.ship.city || o.ship.addr1)) flag('error', '配送先の住所が足りません');
@@ -556,14 +556,15 @@
       name: hasCo ? s.company : nm + '様', person: hasCo ? nm + '様' : '',
       zip: fmtZip(s.zip), addr1: a1, addr2: a2, tel: fmtPhone(s.phone || o.bill.phone || o.phone),
       key: EC.normName(hasCo ? s.company : nm) + '|' + EC.normZip(s.zip) + (hasCo ? '|' + EC.normName(nm) : ''),
+      memo: '',   // 配達員向けメモ（荷受け人名１に入る。画面で直接入れる。納品先の同じ・違うの判定には使わない）
       changed: changed
     };
     // 人が画面で直した納品先（o.deliveryEdit＝{項目:値}。SharedMasters の _ec_edits/<注文番号>.json）を重ねる。元の値は d.auto に残す
-    d.auto = { name: d.name, person: d.person, zip: d.zip, addr1: d.addr1, addr2: d.addr2, tel: d.tel };
+    d.auto = { name: d.name, person: d.person, memo: '', zip: d.zip, addr1: d.addr1, addr2: d.addr2, tel: d.tel };
     d.edited = [];
     if (o.deliveryEdit) {
       EC.EDIT_FIELDS.forEach(function (f) { if (o.deliveryEdit[f.k] != null && o.deliveryEdit[f.k] !== d.auto[f.k]) { d[f.k] = o.deliveryEdit[f.k]; d.edited.push(f.k); } });
-      if (d.edited.length) {
+      if (d.edited.some(function (k) { return k !== 'memo'; })) {   // メモだけの変更では、納品先の同じ・違うの判定（key）を変えない
         var bare = function (v) { return String(v || '').replace(/様$/, ''); };
         d.key = EC.normName(bare(d.name)) + '|' + EC.normZip(d.zip) + (d.person ? '|' + EC.normName(bare(d.person)) : '');
       }
@@ -572,7 +573,7 @@
     return d;
   };
   // 画面で直せる納品先の項目（k＝deliveryFromOrder の項目名）
-  EC.EDIT_FIELDS = [{ k: 'name', label: '納品先名', limit: 'name' }, { k: 'person', label: '荷受け人', limit: 'name' }, { k: 'zip', label: '郵便番号' },
+  EC.EDIT_FIELDS = [{ k: 'name', label: '納品先名', limit: 'name' }, { k: 'person', label: '荷受け人', limit: 'name' }, { k: 'memo', label: '配達員向けメモ', limit: 'name' }, { k: 'zip', label: '郵便番号' },
     { k: 'addr1', label: '住所１', limit: 'addr1' }, { k: 'addr2', label: '住所２', limit: 'addr2' }, { k: 'tel', label: '電話' }];
   // 保存する前の確認。戻り値 { errors:[文言], warns:[文言] }（errors があれば保存させない）
   EC.checkDeliveryEdit = function (v, cfg) {
@@ -583,7 +584,8 @@
     var td = digits(v.tel);
     if (v.tel && (td.length < 10 || td.length > 11)) warns.push('電話番号が10〜11桁ではありません');
     EC.EDIT_FIELDS.forEach(function (f) { if (f.limit && lim[f.limit] && EC.sjisLen(v[f.k]) > lim[f.limit]) warns.push(f.label + 'が長いため、SMILE で切れます（' + EC.sjisLen(v[f.k]) + 'バイト／上限 ' + lim[f.limit] + '）'); });
-    EC.charIssues(String(v.name || '') + String(v.person || '') + String(v.addr1 || '') + String(v.addr2 || '')).forEach(function (x) {
+    if (lim.name && v.memo && v.person && EC.sjisLen(String(v.person) + ' ' + String(v.memo)) > lim.name) warns.push('荷受け人＋配達員向けメモが長いため、SMILE の荷受け人名１で切れます（' + EC.sjisLen(String(v.person) + ' ' + String(v.memo)) + 'バイト／上限 ' + lim.name + '）');
+    EC.charIssues(String(v.name || '') + String(v.person || '') + String(v.memo || '') + String(v.addr1 || '') + String(v.addr2 || '')).forEach(function (x) {
       warns.push('「' + x.ch + '」は' + (x.kind === 'dep' ? '機種依存文字' : 'Shift-JISにない文字') + 'で、配送会社の取込で化ける可能性があります');
     });
     return { errors: errors, warns: warns };
@@ -671,7 +673,7 @@
     return fresh.map(function (f) {
       var o = new Array(header.length).fill('');
       var lim = (cfg && cfg.limits) || {}, cut = function (v) { return EC.cutBytes(v, lim.name); };
-      o[0] = f.cust; o[1] = f.code; o[2] = cut(f.d.name); o[3] = ''; o[4] = cut(f.d.person); o[5] = '';
+      o[0] = f.cust; o[1] = f.code; o[2] = cut(f.d.name); o[3] = ''; o[4] = cut([f.d.person, f.d.memo].filter(Boolean).join(' ')); o[5] = '';   // 荷受け人名１＝荷受け人＋配達員向けメモ
       o[6] = f.d.zip; o[7] = EC.cutBytes(f.d.addr1, lim.addr1); o[8] = EC.cutBytes(f.d.addr2, lim.addr2); o[9] = ''; o[10] = ''; o[11] = f.d.tel; o[12] = '';
       o[15] = '0'; o[38] = '0'; o[39] = '1'; o[40] = '1';
       return o;
@@ -698,7 +700,7 @@
           8: s.staff, 9: s.dept, 11: '0', 12: '1', 13: '1', 14: ship, 15: po, 16: cfg.warehouse, 17: l.code, 18: EC.cutBytes(l.name, lim.itemName),
           22: q2(l.qty), 23: l.unit, 24: q2(l.unitNet), 25: String(amt), 26: '0.00', 27: '0', 29: String(amt), 30: '0.0',
           31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: memo2,
-          45: '00000', 49: '0', 50: '0', 52: '0', 54: EC.cutBytes(s.memo, lim.memo), 56: '1', 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
+          45: '00000', 49: '0', 50: '0', 52: '0', 54: EC.cutBytes(s.memo, lim.memo), 56: cfg.carrierUse == null ? '1' : String(cfg.carrierUse), 58: '0000000', 59: '0', 60: '0', 71: '0', 93: '0',
           94: ship, 95: '0', 96: '1', 101: EC.cutBytes(l.name, lim.itemName), 105: ship, 106: made ? mfg : '0', 107: ship, 108: po, 109: made ? mfg : '0',
           110: made ? q2(l.qty) : '0.00', 111: l.teihai || '1', 112: '0'
         };
@@ -1244,6 +1246,20 @@
     if (!isFinite(n) || v === '' || v == null) return '';
     return n.toLocaleString('ja-JP', { minimumFractionDigits: dec || 0, maximumFractionDigits: dec == null ? 2 : dec });
   }
+  // 受注伝票の拡張項目の区分の名前。SMILE の受注明細出力に入っている名前と同じ（実データで確認：運送業者利用区分 1西濃・2トナミ・3第一貨物／配達指定区分 0当日中・1午前・2午後・3営業所止め）。設定（carrierUseNames・deliverySpecNames）で変えられる
+  var CARRIER = { '0': '利用なし', '1': '西濃利用', '2': 'トナミ利用', '3': '第一貨物利用' };
+  var DELIVERY_SPEC = { '0': '当日中', '1': '午前', '2': '午後', '3': '営業所止め' };
+  var TONAMI_SPEC = { '1': '期日指定', '2': '迄に着', '3': '必着', '4': '朝一着指定', '5': '朝一必着', '6': '午前着指定', '7': '午前必着', '8': '午後着指定', '9': '午前', '10': '午後', '11': '10時以降着', '12': '配達指定', '13': '日曜配送' };
+  // トナミ荷送人（SMILE のマスタの名前。トナミを使う注文のときだけ意味がある）。設定（tonamiShippers）で足せる。コードが 0000000 や空なら「なし」
+  var TONAMI_SHIPPERS = { '1203430': '㈱ミスミ メーカー直送品', '3685839': 'DCM eくらしONLINE' };
+  EC.tonamiShipper = function (c, cfg) { c = String(c == null ? '' : c).trim(); if (!c || /^0+$/.test(c)) return { code: '', name: '' }; return { code: c, name: Object.assign({}, TONAMI_SHIPPERS, (cfg || {}).tonamiShippers)[c] || '' }; };
+  // 第一貨物用：必着指定（1指定・2必着）・時間区分（1午前・2午後）。0 や空は「なし」
+  var DAIICHI_MUST = { '1': '指定', '2': '必着' }, DAIICHI_TIME = { '1': '午前', '2': '午後' };
+  EC.daiichiLabel = function (kind, c, cfg) { c = String(c == null ? '' : c).trim(); if (!c || /^0+$/.test(c)) return ''; return kubunLabel(kind === 'time' ? Object.assign({}, DAIICHI_TIME, (cfg || {}).daiichiTimeNames) : Object.assign({}, DAIICHI_MUST, (cfg || {}).daiichiMustNames), c); };
+  EC.tonamiSpecLabel = function (c, cfg) { return kubunLabel(Object.assign({}, TONAMI_SPEC, (cfg || {}).tonamiSpecNames), c); };
+  function kubunLabel(map, c) { c = String(c == null ? '' : c).trim(); return c === '' ? '' : c + (map[c] ? ':' + map[c] : ''); }
+  EC.carrierLabel = function (c, cfg) { return kubunLabel(Object.assign({}, CARRIER, (cfg || {}).carrierUseNames), c); };
+  EC.deliverySpecLabel = function (c, cfg) { return kubunLabel(Object.assign({}, DELIVERY_SPEC, (cfg || {}).deliverySpecNames), c); };
   EC.slipImage = function (s, o) {
     var cfg = o.cfg || {}, items = o.items || {}, act = o.act || null, P = EC.pick;
     var cinfo = (cfg.customers || {})[s.cust] || {}, wh = cfg.warehouse || '';
@@ -1290,7 +1306,18 @@
       nouki: act ? EC.fmtDate(P(r0, ['納期', '受注納期'])) : EC.fmtDate(ship), shipDate: act ? EC.fmtDate(P(r0, ['出荷予定日'])) : EC.fmtDate(ship),
       mfgDate: act ? '' : (lines.some(function (l) { return l.teihai.code === '1'; }) ? EC.fmtDate(mfg) : '')
     };
-    return { mode: act ? 'actual' : 'plan', head: head, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? P(r0, ['備考']) : (o.biko || ''), memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
+    // 拡張項目：取込前はアプリが作る値（運送業者＝設定、配送指定日などは指定なし）。取込後は SMILE の実際の値（古い形式の index に無いときは missing）
+    var carrierCode = act ? String(P(r0, ['運送業者利用区分'])).trim() : (cfg.carrierUse == null ? '1' : String(cfg.carrierUse));
+    var specCode = act ? String(P(r0, ['配達指定区分'])).trim() : '';
+    var ext = {
+      deliveryKubun: { code: specCode, label: EC.deliverySpecLabel(specCode, cfg) },
+      tonami: { code: act ? String(P(r0, ['配送指定（トナミ用）'])).trim() : '', label: act ? EC.tonamiSpecLabel(String(P(r0, ['配送指定（トナミ用）'])).trim(), cfg) : '' },
+      tonamiShipper: act ? EC.tonamiShipper(P(r0, ['トナミ荷送人コード']), cfg) : { code: '', name: '' },
+      daiichiMust: act ? EC.daiichiLabel('must', P(r0, ['必着指定(第一貨物用)']), cfg) : '', daiichiTime: act ? EC.daiichiLabel('time', P(r0, ['時間区分(第一貨物用)']), cfg) : '',
+      carrier: { code: carrierCode, label: EC.carrierLabel(carrierCode, cfg), missing: !!(act && carrierCode === '') },
+      deliveryDate: act ? EC.fmtDate(P(r0, ['配送指定日'])) : '', officeName: act ? String(P(r0, ['営業所止め名'])).trim() : ''
+    };
+    return { mode: act ? 'actual' : 'plan', head: head, ext: ext, lines: lines, total: { qty: fmtNum(qtySum, 2), amount: fmtNum(amtSum) }, biko: act ? P(r0, ['備考']) : (o.biko || ''), memo: act ? P(r0, ['社内メモ']) : (s.memo || '') };
   };
 
   /* ============================================================ 業務フロー（画面の見せ方）
@@ -1352,7 +1379,7 @@
     var pay = take(/^入金待ち|^返金あり|^支払方法：/), method = ord.paymentMethod || '', fin = ord.financial || '';
     if (fin === 'pending') add('warn', '入金待ちです', (method ? method + '。' : '') + 'SMILEに起票する前に、入金の状況を確認してください。');
     else if (fin === 'refunded' || fin === 'partially_refunded') add('warn', '返金があります', texts(pay));
-    else if (/^Shopify Payments$/.test(method)) add('ok', '支払方法：Shopify Payments（支払済み）', 'この注文は、SMILE起票後に総務の入金確認対象になります。');
+    else if (/^shopify[ _]?payments$/i.test(method)) add('ok', '支払方法：Shopify Payments（支払済み）', 'この注文は、SMILE起票後に総務の入金確認対象になります。');
     else if (method) add('warn', '支払方法を確認してください：' + method, 'Shopify Payments 以外です。入金の確認が必要かどうかを確認してください。');
 
     var dup = take(/^SMILE に同じ注文番号/);

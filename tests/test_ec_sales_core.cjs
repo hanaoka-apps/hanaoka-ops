@@ -964,6 +964,47 @@ t('SMILE の伝票イメージ：取込前（予定）', () => {
   const only2 = EC.slipImage(Object.assign({}, slip, { lines: [slip.lines[2]] }), { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }); assert.strictEqual(only2.head.mfgDate, '');
   assert.deepStrictEqual([EC.fmtDate('2026-10-28'), EC.fmtDate('20261028'), EC.fmtDate('261028'), EC.fmtDate('0'), EC.fmtDate('')], ['2026/10/28', '2026/10/28', '2026/10/28', '', '']);
 });
+t('配達員向けメモ：荷受け人名１に入る・納品先の判定には使わない・既存の編集の仕組みに乗る', () => {
+  const o = order(), base = EC.deliveryFromOrder(o, DEFAULT_CONFIG);
+  assert.strictEqual(base.memo, ''); assert.ok(EC.EDIT_FIELDS.some(f => f.k === 'memo'));
+  const withMemo = EC.deliveryFromOrder(Object.assign({}, o, { deliveryEdit: { memo: '午前中配達希望' } }), DEFAULT_CONFIG);
+  assert.strictEqual(withMemo.memo, '午前中配達希望'); assert.deepStrictEqual(withMemo.edited, ['memo']); assert.strictEqual(withMemo.key, base.key);   // メモだけなら、同じ納品先として扱う
+  const row = EC.nouhinRows([{ cust: '599801', code: '000900', d: withMemo }], L.nouhin, DEFAULT_CONFIG)[0];
+  assert.strictEqual(row[4], '午前中配達希望');   // 荷受け人名１（荷受け人が空なら、メモだけ）
+  const co = EC.deliveryFromOrder(Object.assign({}, o, { ship: Object.assign({}, o.ship, { company: '(株)テスト' }), deliveryEdit: { memo: '14-16時希望' } }), DEFAULT_CONFIG);
+  assert.strictEqual(EC.nouhinRows([{ cust: '599801', code: '000901', d: co }], L.nouhin, DEFAULT_CONFIG)[0][4], '中村達生様 14-16時希望');   // 荷受け人があれば、続ける
+  const long = EC.nouhinRows([{ cust: '599801', code: '000902', d: Object.assign({}, withMemo, { memo: 'あ'.repeat(30) }) }], L.nouhin, DEFAULT_CONFIG)[0][4];
+  assert.ok(EC.sjisLen(long) <= 48);   // 48バイトで切る
+  assert.deepStrictEqual(EC.diffDeliveryEdit(base.auto, Object.assign({}, base, { memo: '午前中配達希望' })), { memo: '午前中配達希望' });
+  assert.ok(EC.checkDeliveryEdit({ name: 'x様', person: '中村達生様', memo: 'あ'.repeat(24), zip: '745-0803', addr1: '山口県', tel: '' }, DEFAULT_CONFIG).warns.some(x => /荷受け人＋配達員向けメモが長い/.test(x)));
+});
+t('SMILE の伝票イメージ：拡張項目（運送業者・配送指定日）', () => {
+  const slip = { id: '1767', cust: '599802', orderDate: '2026-10-26', shipDate: '2026-10-28', memo: '花岡EC', lines: [{ code: 'FR', name: 'f', unit: '式', teihai: '2', qty: 1, unitNet: 1500, amountNet: 1500 }] };
+  const plan = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } });
+  assert.deepStrictEqual([plan.ext.carrier.code, plan.ext.carrier.label, plan.ext.carrier.missing, plan.ext.deliveryDate, plan.ext.deliveryKubun.label, plan.ext.officeName], ['1', '1:西濃利用', false, '', '', '']);   // 取込前＝西濃利用・配送指定日なし
+  assert.strictEqual(EC.juchuRows([Object.assign({ custName: 'x', staff: '1', dept: '2', deliveryCode: '1', delivery: { name: 'n' } }, slip)], require('../ec_sales_layouts.js').juchu, DEFAULT_CONFIG)[0][56], '1');   // 取込ファイルの運送業者利用区分と同じ
+  const cfg2 = Object.assign({}, DEFAULT_CONFIG, { carrierUse: '3' });
+  assert.strictEqual(EC.slipImage(slip, { cfg: cfg2, items: {}, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }).ext.carrier.code, '3'); assert.strictEqual(EC.juchuRows([Object.assign({ custName: 'x', staff: '1', dept: '2', deliveryCode: '1', delivery: { name: 'n' } }, slip)], require('../ec_sales_layouts.js').juchu, cfg2)[0][56], '3');   // 設定で変えられる
+  // 取込後：SMILE の実際の値（お客様の希望日が入っている注文など）。旧形式の index には列が無い
+  const row = { '受注№': '26846', '行': '1', '受注日付': '20261026', '納品先コード': '000812', '品目コード': 'FR', '品目名': 'f', '数量': '1.00', '単価': '1500.00', '金額': '1500', '客先注番': '1767', '運送業者利用区分': '3', '配送指定日': '20261030', '配達指定区分': '1', '営業所止め名': '' };
+  const act = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [row], juchuNo: '26846', deliveryCode: '000812' } });
+  assert.deepStrictEqual([act.ext.carrier.code, act.ext.carrier.label, act.ext.deliveryDate, act.ext.deliveryKubun.label], ['3', '3:第一貨物利用', '2026/10/30', '1:午前']);   // 区分の名前も出す（実データで確認した対応）
+  assert.deepStrictEqual([0, 1, 2, 3].map(c => EC.carrierLabel(c)), ['0:利用なし', '1:西濃利用', '2:トナミ利用', '3:第一貨物利用']); assert.deepStrictEqual([0, 1, 2, 3, 9].map(c => EC.deliverySpecLabel(c)), ['0:当日中', '1:午前', '2:午後', '3:営業所止め', '9']);
+  assert.deepStrictEqual([1, 9, 13].map(c => EC.tonamiSpecLabel(c)), ['1:期日指定', '9:午前', '13:日曜配送']); assert.strictEqual(EC.tonamiSpecLabel(''), '');
+  const tn = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '2', '配送指定（トナミ用）': '3' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual([tn.ext.carrier.label, tn.ext.tonami.label], ['2:トナミ利用', '3:必着']);
+  assert.deepStrictEqual([EC.tonamiShipper('1203430'), EC.tonamiShipper('0000000'), EC.tonamiShipper(''), EC.tonamiShipper('9999999')], [{ code: '1203430', name: '㈱ミスミ メーカー直送品' }, { code: '', name: '' }, { code: '', name: '' }, { code: '9999999', name: '' }]);   // 0000000 は荷送人なし
+  const tn2 = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '2', 'トナミ荷送人コード': '3685839' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual(tn2.ext.tonamiShipper, { code: '3685839', name: 'DCM eくらしONLINE' });
+  assert.deepStrictEqual([EC.daiichiLabel('must', 1), EC.daiichiLabel('must', 2), EC.daiichiLabel('time', 1), EC.daiichiLabel('time', 2), EC.daiichiLabel('must', 0), EC.daiichiLabel('time', '')], ['1:指定', '2:必着', '1:午前', '2:午後', '', '']);   // 第一貨物用（0・空は「なし」）
+  const dn = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '運送業者利用区分': '3', '必着指定(第一貨物用)': '2', '時間区分(第一貨物用)': '1' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual([dn.ext.carrier.label, dn.ext.daiichiMust, dn.ext.daiichiTime], ['3:第一貨物利用', '2:必着', '1:午前']);
+  assert.strictEqual(EC.carrierLabel(2, { carrierUseNames: { 2: 'トナミ運輸' } }), '2:トナミ運輸'); assert.strictEqual(EC.carrierLabel(''), '');
+  const none = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [Object.assign({}, row, { '配送指定日': '0', '運送業者利用区分': '1' })], juchuNo: '1', deliveryCode: '1' } });
+  assert.deepStrictEqual([none.ext.deliveryDate, none.ext.carrier.label], ['', '1:西濃利用']);   // 0 は「指定なし」
+  const old = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items: {}, act: { rows: [{ '受注№': '1', '行': '1', '品目コード': 'FR', '数量': '1', '金額': '1500' }], juchuNo: '1', deliveryCode: '1' } });
+  assert.strictEqual(old.ext.carrier.missing, true);   // 旧形式の index：無いものとして扱う（壊れない）
+});
 t('SMILE の伝票イメージ：取込後（実際の値）・旧形式の index', () => {
   const items = { FCART2x4BK: { name: 'FCART2x4 ブラック', unit: '台', teihai: '1' }, FR: { name: 'フレーム', unit: '式', teihai: '2' } };
   const slip = { id: '1767', name: '#1767', cust: '599802', orderDate: '2026-10-26', lines: [] };
@@ -1016,6 +1057,11 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
   assert.strictEqual(p.risky, true);
   assert.deepStrictEqual(lv(p).filter(x => !x.startsWith('ok:')), ['err:商品コードを特定できません', 'warn:金額を確認してください', 'err:配送先の情報を確認してください', 'warn:支払方法を確認してください：銀行振込', 'warn:同じ注文番号の伝票がSMILEにあります', 'warn:お客様メモ：置き配希望']);
   assert.ok(/キャスター交換セット/.test(p.items[0].detail) && /9091円/.test(p.items[1].detail));   // 元の確認事項は、詳細に入る（重複して出さない）
+  // Shopify の注文CSVの支払方法は shopify_payments（小文字・アンダースコア）で来る。Shopify Payments と同じ扱い（支払方法の確認事項を出さない）
+  const sp = EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'shopify_payments', financial: 'paid' } }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } });
+  assert.ok(sp.items.some(x => x.level === 'ok' && /Shopify Payments（支払済み）/.test(x.text))); assert.strictEqual(sp.risky, false);
+  assert.ok(!EC.buildSlip(order({ paymentMethod: 'shopify_payments' }), ctx).flags.some(x => /^支払方法：/.test(x.text)));
+  assert.ok(EC.buildSlip(order({ paymentMethod: '銀行振込' }), ctx).flags.some(x => /^支払方法：銀行振込/.test(x.text)));
   // 入金待ち・返金
   assert.ok(EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'Shopify Payments', financial: 'pending' } }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } }).items.some(x => x.level === 'warn' && x.text === '入金待ちです'));
   assert.ok(EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'Shopify Payments', financial: 'refunded' }, flags: [F('warn', '返金あり（1,000円）')] }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } }).items.some(x => x.text === '返金があります'));
