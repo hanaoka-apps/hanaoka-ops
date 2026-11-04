@@ -967,6 +967,12 @@ t('SMILE の伝票イメージ：取込前（予定）', () => {
   const only2 = EC.slipImage(Object.assign({}, slip, { lines: [slip.lines[2]] }), { cfg: DEFAULT_CONFIG, items, cal, shipDate: '2026-10-28', delivery: { code: '1', name: 'x' } }); assert.strictEqual(only2.head.mfgDate, '');
   assert.deepStrictEqual([EC.fmtDate('2026-10-28'), EC.fmtDate('20261028'), EC.fmtDate('261028'), EC.fmtDate('0'), EC.fmtDate('')], ['2026/10/28', '2026/10/28', '2026/10/28', '', '']);
 });
+t('必須項目（納品先名・住所１・郵便番号）は空にできない', () => {
+  assert.deepStrictEqual(EC.editFieldErrors({ name: '山田様', addr1: '山口県', zip: '745-0803' }), {});
+  assert.deepStrictEqual(Object.keys(EC.editFieldErrors({ name: ' ', addr1: '', zip: '123' })).sort(), ['addr1', 'name', 'zip']);
+  assert.ok(EC.editFieldErrors({ name: 'x', addr1: 'y', zip: '7450803' }).zip === undefined);   // ハイフンなしでもよい
+  assert.ok(EC.checkDeliveryEdit({ name: '', person: '', memo: '', zip: '745-0803', addr1: 'x', tel: '' }, DEFAULT_CONFIG).errors.length >= 1);   // 保存の確認でも止める
+});
 t('配達員向けメモ：荷受け人名１に入る・納品先の判定には使わない・既存の編集の仕組みに乗る', () => {
   const o = order(), base = EC.deliveryFromOrder(o, DEFAULT_CONFIG);
   assert.strictEqual(base.memo, ''); assert.ok(EC.EDIT_FIELDS.some(f => f.k === 'memo'));
