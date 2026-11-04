@@ -127,6 +127,16 @@ class T(unittest.TestCase):
         self.assertEqual(self.go([('#1', '#1 100円'), ('#2', '#2 12,800円'), ('#3', '#3 3,300円')], s2), 'none')
         self.assertEqual(s2.calls, [])   # 同じ注文は2回通知しない
 
+    def test_silent_backfill_records_without_notifying(self):
+        self.go([('#1', '#1 100円')], FakeSession())
+        s = FakeSession()
+        self.assertEqual(self.go([('#1', '#1 100円'), ('#2', '#2 200円'), ('#3', '#3 300円')], s, silent=True), 'seeded')
+        self.assertEqual(s.calls, [])   # 通知はしない
+        self.assertEqual(sorted(self.state()['orders']), ['#1', '#2', '#3'])   # 通知済みとして記録する
+        s2 = FakeSession()
+        self.assertEqual(self.go([('#1', '#1 100円'), ('#2', '#2 200円'), ('#3', '#3 300円'), ('#4', '#4 400円')], s2), 'sent')
+        self.assertEqual(s2.texts(), ['Shopify 新しい注文 1件：#4 400円'])   # 取り込んだ過去分は、あとから通知されない。新しい注文だけ通知
+
     def test_first_run_can_notify_when_not_silent(self):
         s = FakeSession()
         self.assertEqual(self.go([('A', '発注番号 A 100円')], s, first_run_silent=False), 'sent')
