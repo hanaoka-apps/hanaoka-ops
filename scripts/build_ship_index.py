@@ -15,7 +15,8 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
 運送会社のCSVの扱い:
   - つなぎの項目は「売上№」（西濃・第一貨物＝管理番号、トナミ＝指定No記号）。先頭の 0 は外して比べる（'037339' と '37339' は同じ）。空は除く。
   - 取得期間が重なる複数のファイルは、売上№ごとに「新しいファイルに載っているもの」を使う（1回抜けても前のファイルで補える。送り状を発行し直したときは新しい方）。
-  - 運送会社のCSVの電話・住所・お届け先の名前は索引に入れない（送り状番号・個数・重量・出荷日だけ）。
+  - 運送会社のCSVの電話は索引に入れない。お届け先の名前・郵便番号・住所・配達指定・記事（品名のメモ）は、伝票と見比べるために、送り状ごとに入れる
+    （n＝名前、z＝郵便番号、a＝住所、w＝配達指定、m＝記事。列は ship_config.json の cols の toName・toZip・toAddr・want・note）。
   - 送り先の住所は、SMILE のマスタから足す（下の「住所」）。電話・FAX は入れない。
 
 住所（出荷明細には住所の列が無い）:
@@ -36,7 +37,7 @@ SMILE の出荷明細（出荷明細出力.txt は 90MB 前後）と、運送会
       "carriers": { "<キー>": { "name", "kubun", "files", "rows", "from", "to", "newest"(UTC ISO) } },   … 運送会社データがいつからいつまで・いつ届いたか
       "ships":    [ { "no": 売上№, "date", "shipNo", "cust", "custName", "dest", "destName", "staff", "kubun", "want", "time", "ret",
                       "juchu": [受注№], "po": [客先注番], "lines": [[品目コード, 品目名, 数量, 受注№]],
-                      "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date" }] } ],
+                      "slips": [{ "c": 運送会社キー, "no": 送り状番号, "qty", "kg", "date", "n", "z", "a", "w", "m" }] } ],
       "juchu":    { "<受注№>": { "date", "due", "plan", "lines", "staff" } },
       "addr":     { "<得意先>|<納品先>": { "z": 郵便番号, "a": 住所 } },   … 送り先の住所（上の「住所」）
       "masters":  [{ "name", "modified"(UTC ISO), "rows" }],              … 住所を読んだマスタ（古さの警告には使わない）
@@ -192,20 +193,40 @@ def carrier_files(inbox, cdir):
     return [p for _m, _n, p in out]
 
 
+CARRIER_SINGLE = ['key', 'slip', 'date', 'qty', 'weight', 'toZip']        # 1つの列
+CARRIER_MULTI = ['toName', 'toAddr', 'want', 'note']                      # 複数の列をつなげるもの（名前１・２、住所１・２ など）
+
+
 def carrier_plan(conf, header):
-    """運送会社の cols（列の名前 or 位置）→ 位置。header=False なら cols は位置（数）、True なら見出しの名前。"""
+    """運送会社の cols（列の名前 or 位置）→ 位置。header=False なら cols は位置（数）、True なら見出しの名前。
+    toName・toAddr・want・note は、複数の列（リスト）。お届け先の名前・住所・郵便番号・配達指定・品名などの記事は、
+    伝票と見比べるための控え（送り状に載る内容）。電話は取らない。列が見つからないものは、無いものとして飛ばす。"""
     cols = conf['cols']
-    names = ['key', 'slip', 'date', 'qty', 'weight']
-    if not conf.get('header', True):
-        return {n: int(cols[n]) if cols.get(n) is not None else -1 for n in names}
     index = {}
-    for i, h in enumerate(header):
-        index.setdefault(norm(h), i)
-    plan = {n: index.get(norm(cols[n]), -1) if cols.get(n) else -1 for n in names}
-    for n in ('key', 'slip'):
-        if plan[n] < 0:
-            raise ValueError('必須の列がありません: ' + str(cols.get(n)))
+    if conf.get('header', True):
+        for i, h in enumerate(header):
+            index.setdefault(norm(h), i)
+
+    def pos(spec):
+        if spec is None or spec == '':
+            return -1
+        if not conf.get('header', True):
+            return int(spec)
+        return index.get(norm(spec), -1)
+    plan = {n: pos(cols.get(n)) for n in CARRIER_SINGLE}
+    for n in CARRIER_MULTI:
+        specs = cols.get(n) or []
+        plan[n] = [p for p in (pos(s) for s in (specs if isinstance(specs, list) else [specs])) if p >= 0]
+    if conf.get('header', True):
+        for n in ('key', 'slip'):
+            if plan[n] < 0:
+                raise ValueError('必須の列がありません: ' + str(cols.get(n)))
     return plan
+
+
+def join_cols(r, positions, sep=''):
+    """行 r の、positions の列の値を、空でないものだけ sep でつなぐ。"""
+    return sep.join(v for v in (r[p].strip() for p in positions if 0 <= p < len(r)) if v)
 
 
 def load_carrier(inbox, ckey, conf):
@@ -233,7 +254,7 @@ def load_carrier(inbox, ckey, conf):
         for r in it:
             def g(k):
                 p = plan.get(k, -1)
-                return r[p].strip() if 0 <= p < len(r) else ''
+                return r[p].strip() if isinstance(p, int) and 0 <= p < len(r) else ''
             rows_total += 1
             key, slip = norm_key(g('key')), unicodedata.normalize('NFKC', g('slip')).strip()
             if not slip:
@@ -245,7 +266,13 @@ def load_carrier(inbox, ckey, conf):
             if d:
                 dmin = d if not dmin or d < dmin else dmin
                 dmax = d if d > dmax else dmax
-            mine.setdefault(key, []).append({'c': ckey, 'no': slip, 'qty': num(g('qty')), 'kg': num(g('weight')), 'date': d})
+            rec = {'c': ckey, 'no': slip, 'qty': num(g('qty')), 'kg': num(g('weight')), 'date': d}
+            # 送り状に載るお届け先など（伝票と見比べる用）。n＝お届け先の名前、z＝郵便番号、a＝住所、w＝配達指定、m＝記事（品名のメモ）。電話は入れない
+            for k, v in (('n', join_cols(r, plan['toName'], ' ')), ('z', g('toZip')), ('a', join_cols(r, plan['toAddr'])),
+                         ('w', join_cols(r, plan['want'], ' ')), ('m', join_cols(r, plan['note'], ' / '))):
+                if v:
+                    rec[k] = v
+            mine.setdefault(key, []).append(rec)
         for key, recs in mine.items():
             best[key] = recs    # 古い順に読むので、あとのファイルが上書きする
     meta = {'name': conf.get('name', ckey), 'kubun': str(conf.get('kubun', '')), 'files': used, 'rows': rows_total, 'from': dmin, 'to': dmax, 'newest': newest}

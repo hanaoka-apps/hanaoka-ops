@@ -193,6 +193,7 @@ function card(s, i) {
     (s.ret ? '<span class="tag warn">返品</span>' : '') +
     (S.isDirect(CONF, s) ? '<span class="tag direct">直送</span>' : '') +
     (sib.length ? '<span class="tag ok">分納あり ' + (sib.length + 1) + '回</span>' : '') +
+    (S.diffCount(CONF, IDX, s) ? '<span class="tag warn" title="伝票と、運送会社に渡った送り状で、違うかもしれない項目があります（カードを押すと見比べられます）">送り状と違うかも</span>' : '') +
     '<span class="sc-no">売上№ ' + esc(s.no) + (s.shipNo ? '　出荷№ ' + esc(s.shipNo) : '') + '</span></div>' +
     '<div class="sc-slips">' + slipsHtml(s, st) + '</div>' +
     destHtml(s, i) +
@@ -265,6 +266,15 @@ async function openDetail(s) {
   }
 }
 function closeDetail() { $('detailPanel').hidden = true; $('detailBackdrop').hidden = true; document.body.classList.remove('np-open'); }
+// 伝票（SMILE）と送り状（運送会社のデータ）の見比べの表。違うかもしれない項目は黄色（表記ゆれで違って見えることもあるので、断定しない）
+function compareHtml(s, sl) {
+  const E = esc, rows = (sl.n || sl.a || sl.z || sl.w || sl.m) ? S.compareSlip(CONF, IDX, s, sl) : [], nd = rows.filter(r => r.st === 'diff').length;
+  let h = '<div class="cmp-one">' + slipLine(sl, s);
+  if (!rows.length) return h + '<div class="muted" style="margin-top:4px;font-size:12px">この送り状には、お届け先などの控えがありません（運送会社のデータが古い形か、引き継いだ番号です）。</div></div>';
+  h += '<table class="cmp-t"><thead><tr><th></th><th>伝票（SMILE）</th><th>送り状（' + E(S.carrierName(CONF, sl.c)) + '）</th><th></th></tr></thead><tbody>' +
+    rows.map(r => '<tr class="' + r.st + '"><th>' + E(r.k) + '</th><td>' + (E(r.a) || '<span class="muted">-</span>') + '</td><td>' + (E(r.b) || '<span class="muted">-</span>') + '</td><td class="cmp-m">' + ({ ok: '✓', diff: '違うかも', none: '', info: '' }[r.st] || '') + '</td></tr>').join('') + '</tbody></table>';
+  return h + (nd ? '<div class="alert warn">伝票と送り状で、違うかもしれない項目が ' + nd + ' 個あります。表記の違い（全角・半角、「様」、名前の切れ）のこともあるので、内容を見て確認してください。</div>' : '') + '</div>';
+}
 function detailHtml(s, d, gen) {
   const E = esc, Z = S.zen, F = S.fmtNum;
   const a = S.addrOf(IDX, s), za = S.zipAddr(a), st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
@@ -294,7 +304,7 @@ function detailHtml(s, d, gen) {
       (s.lines || []).map(l => '<tr><td>' + E(Z(l[0])) + '</td><td>' + E(Z(l[1])) + '</td><td class="n">' + E(F(l[2])) + '</td></tr>').join('') + '</tbody></table></div>';
   }
   h += '</div>';
-  h += '<h3 class="dt-h">送り状（運送会社のデータ）</h3>' + (s.slips && s.slips.length ? '<div class="dt-slips">' + s.slips.map(sl => slipLine(sl, s)).join('') + '</div>' : '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + E(st.text || '送り状番号はまだありません') + '</div>');
+  h += '<h3 class="dt-h">伝票と送り状の見比べ</h3>' + (s.slips && s.slips.length ? s.slips.map(sl => compareHtml(s, sl)).join('') : '<div class="slip-none' + (st.code === 'missing' || st.code === 'nodata' ? ' warn' : '') + '">' + E(st.text || '送り状番号はまだありません') + '</div>');
   return h;
 }
 

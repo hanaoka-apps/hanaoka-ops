@@ -174,6 +174,32 @@ t('伝票の詳細：合計・数の表示・表示用の文字', () => {
   assert.strictEqual(S.fmtNum(''), ''); assert.strictEqual(S.fmtNum('abc'), 'abc');
   assert.strictEqual(S.zen('ｷｬｽﾀｰ ＢＢ１'), 'キャスター BB1');
 });
+t('伝票と送り状の見比べ：同じ・違うかも・比べない', () => {
+  const idx = { ships: [], addr: { '100001|000010': { z: '123-0001', a: '架空県架空市新田町1-2-3' } } };
+  const conf = JSON.parse(JSON.stringify(CONF));
+  const sh = ship({ date: '2026-11-02', destName: '架空商事 本社', want: '2026-11-05', time: '午前', lines: [['A', 'ｷｬｽﾀｰ', '2', '9001']] });
+  const by = (rows, k) => rows.find(r => r.k === k);
+  // 全部同じ（表記ゆれ：㈱・様・全角ハイフン・丁目）
+  const ok = S.compareSlip(conf, idx, sh, { c: 'seino', no: '1', qty: '2', kg: '30', date: '2026-11-02', n: '架空商事 本社 山田様', z: '1230001', a: '架空県架空市新田町１－２－３', w: '配達指定【11月05日午前】', m: 'キャスター' });
+  assert.deepStrictEqual(ok.filter(r => r.st === 'diff'), []);
+  assert.strictEqual(by(ok, 'お届け先').st, 'ok'); assert.strictEqual(by(ok, '郵便番号').st, 'ok'); assert.strictEqual(by(ok, '住所').st, 'ok'); assert.strictEqual(by(ok, '配達指定').st, 'ok');
+  assert.strictEqual(by(ok, '個数').st, 'info'); assert.strictEqual(by(ok, '個数').b, '2個'); assert.strictEqual(by(ok, '品名（記事）').a, 'キャスター');
+  // 違う：名前・郵便番号・住所・配達指定（日付・午前午後）・出荷日
+  const ng = S.compareSlip(conf, idx, sh, { c: 'seino', no: '1', date: '2026-11-03', n: '別の会社', z: '9990001', a: '別県別市9-9-9', w: '配達指定【11月06日午後】' });
+  ['出荷日', 'お届け先', '郵便番号', '住所', '配達指定'].forEach(k => assert.strictEqual(by(ng, k).st, 'diff', k));
+  assert.strictEqual(by(S.compareSlip(conf, idx, sh, { c: 'seino', no: '1', w: '配達指定【11月05日午後】' }), '配達指定').st, 'diff');   // 午前と午後
+  // 名前の末尾が切れる・続きが付く程度は同じ
+  const ln = ship({ destName: 'ブライトンコーポレーション浦安ブライトンホテル東京ベイ' });
+  assert.strictEqual(by(S.compareSlip(conf, idx, ln, { c: 'seino', no: '1', n: 'ブライトンコーポレーション浦安ブライトンホテル東京ベ 購買課 様' }), 'お届け先').st, 'ok');
+  // 値が無い側は「比べない」。配達指定の列を設定していない会社（第一貨物）は、配達指定を比べない
+  const none = S.compareSlip(conf, { ships: [] }, sh, { c: 'tonami', no: '1' });
+  assert.strictEqual(by(none, 'お届け先').st, 'none'); assert.strictEqual(by(none, '住所').st, 'none');
+  assert.strictEqual(by(S.compareSlip(conf, idx, sh, { c: 'daiichi', no: '1', n: '架空商事 本社', a: '架空県架空市新田町1-2-3' }), '配達指定'), undefined);
+  // カードの印
+  const withDiff = Object.assign({}, sh, { slips: [{ c: 'seino', no: '1', n: '別の会社', date: '2026-11-02' }] });
+  assert.strictEqual(S.diffCount(conf, idx, withDiff), 2);   // お届け先と配達指定（送り状に配達指定が無い）
+  assert.strictEqual(S.diffCount(conf, idx, Object.assign({}, sh, { slips: [{ c: 'seino', no: '1', qty: '1' }] })), 0);   // お届け先などの控えが無い送り状は数えない
+});
 t('土日を除いた時間数', () => {
   assert.strictEqual(S.weekdayHours(jst(2026, 10, 30, 18), jst(2026, 11, 2, 8)), 14);       // 金 18:00 → 月 8:00（金の6時間＋月の8時間）
   assert.strictEqual(S.weekdayHours(jst(2026, 11, 2, 8), jst(2026, 11, 2, 9, 30)), 1.5);

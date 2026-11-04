@@ -124,7 +124,7 @@ class BuildShipIndexTest(unittest.TestCase):
         self.write_ships(); self.write_carriers()
         self.run_build()
         S = self.ships(self.read_index())
-        self.assertEqual(S['36683']['slips'], [{'c': 'daiichi', 'no': '40100000001', 'qty': '3', 'kg': '60', 'date': '2026-10-02'}])   # 見出しなしの CSV
+        self.assertEqual(S['36683']['slips'], [{'c': 'daiichi', 'no': '40100000001', 'qty': '3', 'kg': '60', 'date': '2026-10-02', 'a': '架空県架空市1-2-3'}])   # 見出しなしの CSV（住所は位置 2）
         self.assertEqual(S['36729']['slips'][0]['no'], '5910000002')                                                                  # トナミ（サブフォルダの CSV）
         self.assertEqual(S['36729']['slips'][0]['c'], 'tonami')
         self.assertEqual(S['37611']['slips'][0]['no'], '9072200002')                                                                  # 管理番号 '037611' の先頭の 0 を外して比べる
@@ -174,13 +174,38 @@ class BuildShipIndexTest(unittest.TestCase):
         self.assertEqual(res['carriers']['seino']['files'], 0)
         self.assertTrue(all(s['slips'] == [] for s in res['ships']))
 
-    def test_運送会社のCSVの電話や住所は索引に入れない(self):
+    def test_運送会社のCSVの電話は索引に入れない(self):
         self.write_ships(); self.write_carriers(); self.write_juchu()
         self.run_build()
         with open(os.path.join(self.dir, 'ship_index.json'), encoding='utf-8') as f:
             text = f.read()
-        self.assertNotIn('03-9999-0000', text)
-        self.assertNotIn('架空県架空市', text)
+        self.assertNotIn('03-9999-0000', text)      # 電話は入れない（お届け先の住所などは、伝票と見比べるために入れる）
+
+    def test_送り状にお届け先の名前_住所_配達指定_記事が入る(self):
+        self.write_ships()
+        seino_head = ['出荷予定日', '管理番号', 'お問合せ番号', '個数', '重量（Ｋ)', 'お届け先郵便番号', 'お届け先名称１', 'お届け先名称２', 'お届け先住所１', 'お届け先住所２',
+                      'お届け先電話番号', '輸送指示1', '記事１', '記事２']
+        self.write('_ship_inbox/seino/s.csv', csv_text([seino_head,
+            ['20261030', '37610', '9072200101', '4', '110', '1230001', '架空商事', '本社 山田様', '架空県架空市', '1-2-3', '03-9999-0000', '配達指定【11月05日午前】', 'ダンディ', 'ウンチン']]), 'cp932')
+        self.write('_ship_inbox/tonami/csv/z/t.csv', csv_text([
+            ['送り状No', '指定No記号', '出荷日', '個数', '重量', '荷受人名前1', '荷受人名前2', '荷受人電話番号', '荷受人郵便番号', '荷受人住所1', '荷受人住所2', '配達指定日', '配達指定区分名称', '摘要1'],
+            ['5910000002', '36729', '2026/10/05', '1', '70', '大阪ロジス', '', '06-0000-0000', '5400001', '大阪府大阪市', '1-1', '2026/10/07', '午後', 'メモ']]), 'cp932')
+        res, _ = self.run_build()
+        S = self.ships(res)
+        self.assertEqual(S['37610']['slips'][0], {'c': 'seino', 'no': '9072200101', 'qty': '4', 'kg': '110', 'date': '2026-10-30', 'n': '架空商事 本社 山田様', 'z': '1230001',
+                                                  'a': '架空県架空市1-2-3', 'w': '配達指定【11月05日午前】', 'm': 'ダンディ / ウンチン'})
+        self.assertEqual(S['36729']['slips'][0], {'c': 'tonami', 'no': '5910000002', 'qty': '1', 'kg': '70', 'date': '2026-10-05', 'n': '大阪ロジス', 'z': '5400001',
+                                                  'a': '大阪府大阪市1-1', 'w': '2026/10/07 午後', 'm': 'メモ'})
+        with open(os.path.join(self.dir, 'ship_index.json'), encoding='utf-8') as f:
+            text = f.read()
+        for phone in ('03-9999-0000', '06-0000-0000'):
+            self.assertNotIn(phone, text)
+
+    def test_お届け先の列が無いCSVでも読める(self):
+        self.write_ships()
+        self.write('_ship_inbox/seino/s.csv', csv_text([['出荷予定日', '管理番号', 'お問合せ番号', '個数', '重量（Ｋ)'], ['20261030', '37610', '9072200101', '4', '110']]), 'cp932')
+        res, _ = self.run_build()
+        self.assertEqual(self.ships(res)['37610']['slips'], [{'c': 'seino', 'no': '9072200101', 'qty': '4', 'kg': '110', 'date': '2026-10-30'}])
 
     # ---- 送り先の住所（納品先マスタ・得意先マスタ）
     DEST_HEAD = ['得意先ｺｰﾄﾞ', '得意先名', '納品先ｺｰﾄﾞ', '納品先名', '荷受け人名１', '郵便番号', '住所１', '住所２', '住所３', '電話番号', 'ＦＡＸ番号']
