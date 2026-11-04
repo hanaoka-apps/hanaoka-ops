@@ -111,7 +111,7 @@ function slipLine(sl, s, cls) {
   const url = S.trackingUrl(CONF, sl.c, sl.no);
   const detail = [sl.qty ? sl.qty + '個' : '', sl.kg && sl.kg !== '0' ? sl.kg + 'kg' : '', S.carrierName(CONF, sl.c) !== S.kubunName(CONF, s.kubun) ? S.carrierName(CONF, sl.c) : ''].filter(Boolean).join('・');
   return '<div class="slip' + (cls ? ' ' + cls : '') + '"><span class="slip-no">' + esc(sl.no) + '</span><button type="button" class="cbtn" data-act="copy" data-v="' + esc(sl.no) + '">コピー</button>' +
-    (url ? '<a class="track" href="' + esc(url) + '" target="_blank" rel="noopener">配送状況 ↗</a>' : '') +
+    (url ? '<a class="track" href="' + esc(url) + '" target="_blank" rel="noopener"' + (String((CONF.carriers[sl.c] || {}).tracking || '').indexOf('{no}') < 0 ? ' title="運送会社のページが開きます。番号をコピーして、貼り付けてください"' : '') + '>配送状況 ↗</a>' : '') +
     (detail ? '<span class="muted">' + esc(detail) + '</span>' : '') + '</div>';
 }
 function slipsHtml(s, st) {
@@ -143,19 +143,37 @@ function juchuHtml(s) {
   return s.juchu.map(no => {
     const j = S.juchuInfo(IDX, no);
     const info = j ? [j.date ? '受注 ' + fd(j.date) : '', j.due ? '納期 ' + fd(j.due) : '', j.plan ? '出荷予定 ' + fd(j.plan) : ''].filter(Boolean).join('　') : '';
-    return '<div><span class="lnk" data-act="q" data-v="' + esc(no) + '" title="この受注で探す">' + esc(no) + '</span>' + (info ? ' <span class="muted">' + esc(info) + '</span>' : '') + '</div>';
+    return '<div>' + esc(no) + (info ? ' <span class="muted">' + esc(info) + '</span>' : '') + '</div>';
   }).join('');
+}
+// 分納（同じ注文を分けて出荷）の表：この出荷も含めて、日付・売上№・運送会社・送り状番号・品目を並べる
+const BN_STATUS = { missing: '番号が見つかりません', nodata: '要確認', pending: '番号待ち', outside: '番号は取得期間外', none: '運送会社なし' };
+function bunnoHtml(s) {
+  const b = S.bunno(IDX, s, CONF);
+  if (!b) return '';
+  const rows = b.ships.map(x => {
+    const me = x === s, st = S.slipStatus(CONF, IDX, x);
+    const slips = x.slips && x.slips.length
+      ? x.slips.map(sl => '<span class="bn-slip">' + esc(sl.no) + '</span>' + (S.carrierName(CONF, sl.c) !== S.kubunName(CONF, x.kubun) ? ' <span class="muted">' + esc(S.carrierName(CONF, sl.c)) + '</span>' : '')).join('　')
+      : '<span class="muted">' + esc(BN_STATUS[st.code] || '') + '</span>';
+    const items = (x.lines || []).slice(0, 2).map(l => esc(l[1] || l[0]) + ' × ' + esc(l[2])).join('、') + ((x.lines || []).length > 2 ? ' ほか' : '');
+    return '<div class="bn-row' + (me ? ' me' : '') + '"><span class="bn-d">' + esc(fd(x.date)) + '</span><span class="bn-no">売上№ ' + esc(x.no) + '</span>' +
+      '<span class="bn-c">' + esc(S.kubunName(CONF, x.kubun)) + '</span><span class="bn-s">' + slips + '</span>' +
+      (me ? '<span class="tag info">この出荷</span>' : '') + (items ? '<div class="bn-i muted">' + items + '</div>' : '') + '</div>';
+  }).join('');
+  return '<div class="sc-bn"><div class="bn-t">分納あり：同じ注文の出荷（全 ' + b.total + ' 回）</div>' + rows + (b.hidden ? '<div class="muted">ほか ' + b.hidden + ' 件（日付の近いものを出しています）</div>' : '') + '</div>';
 }
 function card(s, i) {
   const st = S.slipStatus(CONF, IDX, s), key = S.carrierKeyOf(CONF, s.kubun);
-  const sib = S.siblings(IDX, s);
+  const sib = S.siblings(IDX, s, CONF);
   const want = [s.want ? fd(s.want) : '', s.time].filter(Boolean).join(' ');
   return '<div class="scard' + (st.code === 'missing' || st.code === 'nodata' ? ' attn' : '') + '" data-i="' + i + '">' +
     '<div class="sc-head"><b class="sc-date">' + esc(fd(s.date)) + '</b>' +
     '<span class="cr ' + (key ? carrierClass(key) : 'cr-none') + '">' + esc(S.kubunName(CONF, s.kubun)) + '</span>' +
     (st.code !== 'ok' ? '<span class="tag ' + (STATUS_TAG[st.code] || 'info') + '">' + esc({ missing: '見つからない', nodata: '要確認', pending: '番号待ち', outside: '取得期間外', none: '運送会社なし' }[st.code]) + '</span>' : '') +
     (s.ret ? '<span class="tag warn">返品</span>' : '') +
-    '<span class="sc-no">売上№ <span class="lnk" data-act="q" data-v="' + esc(s.no) + '">' + esc(s.no) + '</span>' + (s.shipNo ? '　出荷№ ' + esc(s.shipNo) : '') + '</span></div>' +
+    (sib.length ? '<span class="tag ok">分納あり ' + (sib.length + 1) + '回</span>' : '') +
+    '<span class="sc-no">売上№ ' + esc(s.no) + (s.shipNo ? '　出荷№ ' + esc(s.shipNo) : '') + '</span></div>' +
     '<div class="sc-slips">' + slipsHtml(s, st) + '</div>' +
     '<div class="sc-grid">' +
     '<div><span class="k">納品先</span>' + esc(s.destName || '-') + '</div>' +
@@ -166,7 +184,7 @@ function card(s, i) {
     '<div><span class="k">担当</span>' + esc(s.staff || '-') + '</div>' +
     '</div>' +
     '<div class="sc-lines" id="ln-' + i + '">' + linesHtml(s, i) + '</div>' +
-    (sib.length ? '<div class="sc-sib">同じ受注の別の出荷：' + sib.slice(0, 6).map(x => '<span class="lnk" data-act="q" data-v="' + esc(x.no) + '">' + esc(fd(x.date)) + ' 売上№' + esc(x.no) + '</span>').join('') + (sib.length > 6 ? 'ほか ' + (sib.length - 6) + ' 件' : '') + '</div>' : '') +
+    bunnoHtml(s) +
     '</div>';
 }
 

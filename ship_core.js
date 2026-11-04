@@ -99,10 +99,50 @@
   // 受注の要約（受注№ごと）。受注明細に無ければ null
   S.juchuInfo = function (idx, no) { return (idx.juchu || {})[no] || null; };
 
-  // 受注№ → 同じ受注の出荷（分けて出荷したときの、ほかの出荷）。ship は含めない
-  S.siblings = function (idx, ship) {
-    var set = {}; (ship.juchu || []).forEach(function (j) { set[j] = 1; });
-    return (idx.ships || []).filter(function (s) { return s !== ship && (s.juchu || []).some(function (j) { return set[j]; }); });
+  /* 分納：同じ注文を分けて出荷したときの、ほかの出荷（ship は含めない。日付の古い順）。
+   * SMILE は出荷のたびに新しい受注ができるので、同じ受注№だけでは足りない。次のどちらかが同じで、
+   * 出荷日が conf.bunno.windowDays（既定30日）以内のものを、同じ注文とみなす：
+   *   ・受注№が同じ  ・得意先が同じで、客先注番が同じ（客先注番が空のものは対象外）
+   * 同じ客先注番を長く使い回す得意先があるので、日数で区切る */
+  var DAY = 86400000;
+  function dayNum(iso) { var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / DAY : NaN; }
+  function bunnoIndex(idx) {
+    if (idx._bn) return idx._bn;
+    var po = {}, ju = {};
+    (idx.ships || []).forEach(function (s) {
+      (s.po || []).forEach(function (p) { if (p) (po[(s.cust || '') + '\u0001' + p] = po[(s.cust || '') + '\u0001' + p] || []).push(s); });
+      (s.juchu || []).forEach(function (j) { if (j) (ju[j] = ju[j] || []).push(s); });
+    });
+    var bn = { po: po, ju: ju };
+    Object.defineProperty(idx, '_bn', { value: bn, enumerable: false });
+    return bn;
+  }
+  S.siblings = function (idx, ship, conf) {
+    var win = +((conf && conf.bunno) || {}).windowDays; if (!(win > 0)) win = 30;
+    var bn = bunnoIndex(idx), seen = {}, out = [], d0 = dayNum(ship.date);
+    function take(list) {
+      (list || []).forEach(function (s) {
+        if (s === ship || s.no === ship.no || seen[s.no]) return;
+        if (!(Math.abs(dayNum(s.date) - d0) <= win)) return;
+        seen[s.no] = 1; out.push(s);
+      });
+    }
+    (ship.juchu || []).forEach(function (j) { take(bn.ju[j]); });
+    (ship.po || []).forEach(function (p) { if (p) take(bn.po[(ship.cust || '') + '\u0001' + p]); });
+    return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.no < b.no ? -1 : 1); });
+  };
+
+  // 分納の表（この出荷も含めて日付順）。多いときは、この出荷に日付の近いものを show 件（既定6）まで。分納でなければ null
+  S.bunno = function (idx, ship, conf) {
+    var sib = S.siblings(idx, ship, conf);
+    if (!sib.length) return null;
+    var show = +((conf && conf.bunno) || {}).show; if (!(show > 0)) show = 6;
+    var all = sib.concat([ship]), d0 = dayNum(ship.date);
+    var picked = all.length <= show ? all : all.slice().sort(function (a, b) {
+      return (a === ship ? -1 : b === ship ? 1 : 0) || Math.abs(dayNum(a.date) - d0) - Math.abs(dayNum(b.date) - d0);
+    }).slice(0, show);
+    picked.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.no < b.no ? -1 : 1); });
+    return { total: all.length, ships: picked, hidden: all.length - picked.length };
   };
 
   // 品目の行を、受注№ごとにまとめる（出荷に受注が複数あるとき）
