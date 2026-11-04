@@ -482,7 +482,7 @@ function renderDrawer() {
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
     (FLOW_UI() ? flowBoxHtml(s) : '') +
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
-    (FLOW_UI() ? '' : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
+    (FLOW_UI() ? judgeHtml(s) : flagsHtml(s)) + detailViewHtml(s, editBlockHtml(s, st, r, ship)) + (FLOW_UI() ? '' : editBlockHtml(s, st, r, ship)) +
     '';
   const FL = FLOW_UI();
   const okBtn = '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>' + (FL ? '確認OK（起票依頼待ちへ）' : 'OK にする') + '</button>';
@@ -523,28 +523,20 @@ let slipView = 'cmp'; // 開くたびに最初の画面へ（EC売上の5工程�
 function detailViewHtml(s, editBlock) {
   const FL = FLOW_UI(), view = editId === s.id ? 'cmp' : slipView;
   const chip = (k, l) => '<span class="chip' + (view === k ? ' active' : '') + '" data-dview="' + k + '">' + l + '</span>';
-  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + (FL ? chip('sum', '確認サマリー') : '') + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
+  const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
   // 「担当者が編集できる項目」は、どの画面でも同じ場所（いちばん下）に出す。確認サマリーでは summaryHtml の中に含む。納品先の修正ボタンは、比較の画面には元からあるので重ねない
   const grp = (btn) => FL ? '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (btn && stateOf(s) === 'new' && !smileActual(s) ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>' : '';
-  return tabs + (view === 'sum' && FL ? summaryHtml(s, editBlock) : view === 'cmp' ? compareHtml(s) + grp(false) : slipImageHtml(s) + grp(true));
+  return tabs + (view === 'image' ? slipImageHtml(s) + grp(true) : compareHtml(s) + grp(false));
 }
-// 確認サマリー：システムの判定結果 → SMILE起票予定の要約 → 伝票イメージの案内 → 担当者が編集できる項目
-function summaryHtml(s, editBlock) {
-  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s), st = stateOf(s), P = EC.pick;
+// システムの判定結果（タブの上に小さく出す）：確認が必要なもの（△・✗）は常に、問題なしの項目は「✓ 問題なし n項目」にまとめる（開くと意味つきで見られる）
+function judgeHtml(s) {
+  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key];
   const j = EC.judgeSlip(s, { cfg: store.cfg, delivery: { code: code || '', name: d.name, isNew: !code }, shipLabel: md(shipOf(s)) });
   const ico = { ok: '✓', warn: '△', err: '✗', info: '・' };
-  let h = '<div class="judge"><div class="jh">システムの判定結果</div>' + j.items.map(x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>').join('') + '</div>';
-  // 要約：取込前は「SMILE起票予定の内容」、取込後は「SMILEの実際の値」
-  const rows = act ? act.rows : null;
-  const net = rows ? rows.reduce((a, x) => a + Math.round(+P(x, ['金額']) || 0), 0) : j.summary.net, gross = rows ? Math.round(net * 1.1) : j.summary.gross;
-  const lines = rows ? rows.map(x => P(x, ['品目コード']) + ' ×' + (+P(x, ['数量']) || 0)).join('、') : j.summary.lines, cnt = rows ? rows.length : j.summary.count;
-  const dest = act ? esc(P(act.rows[0], ['納品先名']) || d.name) + (act.deliveryCode ? ' <span class="muted">' + esc(act.deliveryCode) + '</span>' : '') : esc(d.name) + ' ' + (code ? '<span class="muted">既存 ' + esc(code) + '</span>' : '<span class="tag new">新規（取込時に番号を決めます）</span>');
-  const kv = (k, v) => '<tr><th>' + k + '</th><td>' + v + '</td></tr>';
-  h += '<div class="sumbox"><div class="jh">' + (act ? 'SMILEの実際の値' + (M.indexInfo ? '（' + stamp(M.indexInfo.generatedAt) + ' 時点）' : '') : 'SMILE起票予定の内容') + '</div><table>' + kv('得意先', esc(j.summary.customer)) + kv('納品先', dest) + kv('商品明細', esc(lines || '（なし）')) + kv('税抜合計', yen(net)) + kv('税込合計', yen(gross)) + kv('出荷予定日', act ? esc(ymdText(P(act.rows[0], ['出荷予定日']))) : esc(md(shipOf(s)))) + '</table></div>';
-  h += j.risky ? '<div class="alert warn" style="margin-top:8px">確認が必要な項目があります。伝票の内容も確認してください。 <button class="btn sec sm" data-dview="image">SMILE伝票イメージを見る</button></div>'
-    : '<div class="slipok"><b>✓ SMILE伝票を作成できます</b><span class="muted">明細 ' + cnt + '行・税抜 ' + yen(net) + '・税込 ' + yen(gross) + '</span><button class="btn sec sm" data-dview="image">SMILE伝票イメージを見る</button></div>';
-  h += '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (st === 'new' && !act ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>';
-  return h;
+  const row = x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>';
+  const oks = j.items.filter(x => x.level === 'ok'), rest = j.items.filter(x => x.level !== 'ok');
+  return '<div class="judge"><div class="jh">システムの判定結果' + (j.risky ? '<button class="btn sec sm" data-dview="image" style="margin-left:10px">SMILE伝票イメージを見る</button>' : '') + '</div>' + rest.map(row).join('') +
+    (oks.length ? '<details class="jok"><summary><span class="ji" style="color:var(--green)">✓</span><b>問題なし ' + oks.length + '項目</b></summary>' + oks.map(row).join('') + '</details>' : '') + '</div>';
 }
 // 納品先マスタ（取込用）の枠：新規ならこの注文から作る登録内容、既存なら SMILE にすでにある登録内容（取込では変えない）、取込後は SMILE の実際の値
 function nouhinBlockHtml(s, d, code, act, it, pend) {
@@ -1770,7 +1762,7 @@ document.addEventListener('click', async e => {
   if (moreOpen && !e.target.closest('.morewrap') && $('moreMenu')) { moreOpen = false; $('moreMenu').hidden = true; }
   if (e.target.closest('[data-close]') || e.target.id === 'scrim') { if (mapDrawer && !closeMapDrawer()) return; openId = null; editId = null; editDraft = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
-  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; slipView = FLOW_UI() ? 'sum' : 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
+  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; slipView = 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
   const t = e.target.closest('[data-tab],[data-f],[data-v],[data-s],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
   if (!t) return;
   const d = t.dataset;
@@ -1926,7 +1918,7 @@ document.addEventListener('change', e => { const t = e.target; if (t.dataset && 
 // 対応表・設定：行クリック → ドロワー／ドロワーのボタン
 document.addEventListener('click', e => {
   const dv = e.target.closest('[data-dview]');
-  if (dv) { slipView = ['sum', 'cmp', 'image'].indexOf(dv.dataset.dview) >= 0 ? dv.dataset.dview : 'cmp'; renderDrawer(); return; }
+  if (dv) { slipView = dv.dataset.dview === 'image' ? 'image' : 'cmp'; renderDrawer(); return; }
   const t = e.target.closest('[data-mdact],[data-newrule],[data-mdclose],[data-rulelink],.rcard[data-maprule]'); if (!t) return;
   if (t.matches('.rcard[data-maprule]')) { if (!e.target.closest('input,button,select,a,label')) openRule(t.dataset.maprule); return; }
   if (t.dataset.rulelink !== undefined) { if (mapDrawer && !closeMapDrawer()) return; openRule(t.dataset.rulelink); return; }
