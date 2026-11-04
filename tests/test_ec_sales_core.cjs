@@ -162,18 +162,36 @@ t('配送会社で化けやすい文字：見えない文字・機種依存文�
   const bad = EC.buildSlip(order({ ship: { name: '\u{2A6B2}田', company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: '', phone: '09012345678' } }), ctx);
   assert.ok(bad.flags.some(f => f.level === 'warn' && /Shift-JISにない文字/.test(f.text)));
 });
-t('第一貨物の文字数：名称30字・住所は合計45字', () => {
+t('第一貨物の長さ：宛名30バイト（全角15字）・住所は合計60バイト（全角30字）。超えたら切れると知らせ、短縮案を出す', () => {
   const ship = (name, a2) => ({ name, company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: a2, phone: '09012345678' });
-  const ok = EC.buildSlip(order({ ship: ship('あ'.repeat(10), 'い'.repeat(20)) }), ctx);
+  const ok = EC.buildSlip(order({ ship: ship('あ'.repeat(10), 'い'.repeat(10)) }), ctx);   // 名称は「様」込みで全角11字・住所は 7+3+20 バイト
   assert.ok(!ok.flags.some(f => /第一貨物/.test(f.text)));
-  const bad = EC.buildSlip(order({ ship: ship('あ'.repeat(30), 'い'.repeat(40)) }), ctx);   // 名称31字（様込み）・住所 7+3+40字
-  assert.ok(bad.flags.some(f => /第一貨物.*名称/.test(f.text)) && bad.flags.some(f => /第一貨物.*合計45字/.test(f.text)));
+  const ok15 = EC.buildSlip(order({ ship: ship('あ'.repeat(14), 'い') }), ctx);               // 14字＋様＝15字（30バイト）はちょうど入る
+  assert.ok(!ok15.flags.some(f => /第一貨物.*宛名/.test(f.text)));
+  const bad = EC.buildSlip(order({ ship: ship('あ'.repeat(15), 'い'.repeat(40)) }), ctx);   // 16字（様込み）・住所は大きく超える
+  assert.ok(bad.flags.some(f => /第一貨物.*宛名が32バイト.*30バイト（全角15字）/.test(f.text)));
+  assert.ok(bad.flags.some(f => /第一貨物.*住所が合計.*60バイト（全角30字）/.test(f.text)));
 });
-t('西濃運輸（宅配）の文字数：名称16字・住所24字を超えたら知らせる', () => {
-  const long = EC.buildSlip(order({ ship: { name: 'あ'.repeat(16), company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: 'い'.repeat(25), phone: '09012345678' } }), ctx);
-  assert.ok(long.flags.some(f => /西濃運輸.*名称/.test(f.text)));        // 16字＋「様」＝17字
-  assert.ok(long.flags.some(f => /西濃運輸.*住所/.test(f.text)));
+t('西濃運輸（宅配）の長さ：宛名60バイト（全角30字）・住所は合計120バイト。全角16字でも警告しない（実際は切れない）', () => {
+  const ship = (name, a2) => ({ name, company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: '1-1', addr2: a2, phone: '09012345678' });
+  const mid = EC.buildSlip(order({ ship: ship('あ'.repeat(20), 'い'.repeat(25)) }), ctx);   // 宛名21字・住所は 7+3+50 バイト：どちらも収まる
+  assert.ok(!mid.flags.some(f => /西濃運輸/.test(f.text)));
+  const long = EC.buildSlip(order({ ship: ship('あ'.repeat(30), 'い'.repeat(60)) }), ctx);   // 宛名31字（様込み）・住所は合計 130 バイト
+  assert.ok(long.flags.some(f => /西濃運輸.*宛名が62バイト.*60バイト（全角30字）/.test(f.text)));
+  assert.ok(long.flags.some(f => /西濃運輸.*住所が合計.*120バイト/.test(f.text)));
   assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
+});
+t('宛名の短縮案：法人名を略す→空白を整える→後ろの語を省く（案を出すだけ）', () => {
+  assert.deepStrictEqual(EC.shortenName('山田 太郎様', 30), { text: '山田 太郎様', dropped: '', steps: [] });          // 収まるなら、そのまま
+  const a = EC.shortenName('株式会社フセラシ群馬営業所本社ビル', 30);                                                          // 34バイト→法人名を略すと30バイトで入る
+  assert.strictEqual(a.text, '(株)フセラシ群馬営業所本社ビル'); assert.deepStrictEqual(a.steps, ['法人名を略す']); assert.strictEqual(a.dropped, '');
+  const b = EC.shortenName('(株)フセラシ　　群馬営業所　　第二', 30);                                                          // 34バイト→空白を整えると28バイトで入る
+  assert.strictEqual(b.text, '(株)フセラシ 群馬営業所 第二'); assert.deepStrictEqual(b.steps, ['空白を1つに']);
+  const c = EC.shortenName('(株)フセラシ 群馬営業所 小久保所長様', 30);                                                       // 後ろの語を省く
+  assert.strictEqual(c.text, '(株)フセラシ群馬営業所'); assert.ok(c.dropped === '小久保所長様' && c.steps.includes('後ろの語を省く') && EC.sjisLen(c.text) <= 30);
+  const d = EC.shortenName('あ'.repeat(20), 30);                                                                              // 1語だけ長いときは、バイトで切る
+  assert.strictEqual(d.text, 'あ'.repeat(15)); assert.strictEqual(EC.sjisLen(d.text), 30);
+  assert.ok(EC.sjisLen(EC.shortenName('株式会社' + 'あ'.repeat(30), 30).text) <= 30);
 });
 t('商品名の揺れ（空白・×とx・大文字小文字）は同じ品目に当てる（API の商品名「FLAT CART 2×4」対応）', () => {
   const code = name => EC.mapLine({ name, qty: 1, price: 15400 }, DEFAULT_MAPPING, '2026-10-29').items.map(i => i.code + '×' + i.qty).join(',');
