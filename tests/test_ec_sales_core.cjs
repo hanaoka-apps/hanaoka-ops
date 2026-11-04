@@ -981,4 +981,22 @@ t('SMILE の伝票イメージ：取込後（実際の値）・旧形式の inde
   const o = EC.slipImage(slip, { cfg: DEFAULT_CONFIG, items, act: mkAct(old) });
   assert.deepStrictEqual(o.lines[0].seiban, { value: '', missing: true }); assert.strictEqual(o.lines[0].genUnit, null); assert.strictEqual(o.lines[0].teihai.code, '1'); assert.strictEqual(o.lines[0].nouki, ''); assert.strictEqual(o.head.nouki, '');
 });
+t('業務フロー：内部の状態を5工程に読み替える（ボールの所在と次の行動）', () => {
+  const me = { canImport: true, canConfirm: true }, other = { canImport: false, canConfirm: false };
+  const k = (st, rec, role) => { const x = EC.flowOf(st, rec, role || me); return [x.key, x.sub, x.who]; };
+  assert.deepStrictEqual(k('new'), ['p1', '確認前', 'あなた']); assert.deepStrictEqual(k('ok'), ['p1', 'OK済・起票依頼待ち', 'あなた']);   // 未確認とOK済は、どちらも「①注文を確認」（人の番）
+  assert.deepStrictEqual(k('importing', { status: 'importing' }), ['p2', '起票中', '専用機']); assert.deepStrictEqual(k('importing', { status: 'waiting' }), ['p3', '照合中', '専用機']);   // 突合待ちは「③起票結果の照合」
+  assert.deepStrictEqual(k('confirm'), ['p4', '確認待ち', 'あなた']);
+  assert.deepStrictEqual(k('exported'), ['p5', '起票済み', '']);   // 起票済みは最後の状態（確認OK済み）＝完了
+  assert.deepStrictEqual(k('smile'), ['p5', 'SMILE取込済', '']);
+  assert.deepStrictEqual([EC.flowOf('check', null, me).key, EC.flowOf('excluded', null, me).key], ['attn', 'other']);
+  assert.deepStrictEqual(EC.FLOW.map(x => x.num + x.label + ':' + x.kind), ['①注文を確認:human', '②SMILE起票:robot', '③起票結果の照合:robot', '④結果を確認:human', '⑤完了:none']);
+  // 権限による出し分け：取込担当者でない人には、取込を待っていると出す。確認OKは管理者だけ
+  assert.strictEqual(EC.flowOf('ok', null, other).who, '取込担当者'); assert.ok(/取込担当者が/.test(EC.flowOf('ok', null, other).next)); assert.ok(/「SMILEに取り込む」を押して/.test(EC.flowOf('ok', null, me).next));
+  assert.strictEqual(EC.flowOf('confirm', null, other).who, '管理者'); assert.ok(/管理者が/.test(EC.flowOf('confirm', null, other).next));
+  assert.ok(/あなた/.test(EC.flowOf('new', null, other).who) && /取込担当者が行います/.test(EC.flowOf('new', null, other).next));
+  assert.ok(EC.flowOf('importing', { status: 'importing' }, me).next.includes('現在行う操作はありません'));
+  // 起票待ちと起票中・照合中の区別は内部に残す（上部では ②③ に分けるだけ）
+  assert.strictEqual(EC.flowOf('importing', null, me).key, 'p2');
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

@@ -19,13 +19,15 @@ const STORE_KEY = PROFILE.storeKey || 'ec_sales_v1';
 const CONFIG_URL = PROFILE.configUrl || 'ec_sales_config.json';   // 業務の決まりごと（得意先・担当・品目・単価・納期など）はコードに書かず、ここから読む
 let CONF = null;                              // 読み込んだ設定（sharepoint / files / shopifyFiles / config / mapping）
 
-let msalInstance = null, account = null, driveId = null, isSoumu = false, isAdmin = false;
+let msalInstance = null, account = null, driveId = null, isSoumu = false, isAdmin = false, isOperator = false;
+const canImport = () => isAdmin || isOperator;   // 取込を依頼できる人＝管理者＋取込担当者（専用機側も同じ一覧で照合する）。確認OKは管理者だけ（isAdmin）
+const FLOW_UI = () => !!document.getElementById('flowBar');   // 5工程の画面（EC売上）。ふるさと納税など #flowBar が無い画面は、これまでの絞り込みのまま
 const M = { items: null, nouhin: null, smileCust: null, nyukin: null, stamps: {} };   // SMILE のマスタ・出力
 let orders = [], orderIndex = {}, slips = [], payTx = null, payouts = null;
 let store = null;
 const SORT_KEY = STORE_KEY + '_sort';   // 一覧の注文日の並び順（asc＝昇順・古い順／desc＝降順・新しい順）。この端末の表示の好みだけを覚える
 function loadSort() { try { return localStorage.getItem(SORT_KEY) === 'desc' ? 'desc' : 'asc'; } catch (e) { return 'asc'; } }
-let curTab = 'orders', curView = 'list', curFilter = 'new', curSort = loadSort();
+let curTab = 'orders', curView = 'list', curFilter = document.getElementById('flowBar') ? 'p1' : 'new', curSort = loadSort();
 const sel = new Set();
 
 /* ------------------------------------------------------------ 保存（この端末のブラウザ） */
@@ -361,6 +363,37 @@ function visible() {
 }
 
 /* ------------------------------------------------------------ 描画：受注チェック */
+// ---- 業務フロー（EC売上）：状態を5工程に読み替えて見せる（EcSales.flowOf）。絞り込みの値は p1〜p5・check（要対応）・excluded・all
+const flowRole = () => ({ canImport: canImport(), canConfirm: isAdmin });
+function flowOfSlip(s) { return EC.flowOf(stateOf(s), rec(s), flowRole()); }
+function matchFilter(s) {
+  if (curFilter === 'all') return true;
+  if (!FLOW_UI()) return stateOf(s) === curFilter;
+  if (curFilter === 'excluded') return stateOf(s) === 'excluded';
+  const k = flowOfSlip(s).key; return curFilter === 'check' ? k === 'attn' : k === curFilter;
+}
+function renderFlowBar(vis) {
+  const n = {}; vis.forEach(s => { const x = flowOfSlip(s), k = x.key === 'attn' ? 'check' : stateOf(s) === 'excluded' ? 'excluded' : x.key; n[k] = (n[k] || 0) + 1; });
+  const sub = x => x.kind === 'human' ? (x.key === 'p4' && !isAdmin ? '管理者の作業' : 'あなたの作業') : x.kind === 'robot' ? '専用機が処理' : '処理済み';
+  const tile = x => '<div class="ftile k-' + x.kind + (curFilter === x.key ? ' active' : '') + '" data-f="' + x.key + '" role="button" tabindex="0"><div class="ft-t"><span class="ft-n">' + x.num + '</span>' + esc(x.label) + (curFilter === x.key ? '<span class="ft-on">表示中</span>' : '') + '</div><div class="ft-s">' + sub(x) + '</div><div class="ft-c">' + (n[x.key] || 0) + '<small>件</small></div></div>';
+  const attn = n.check || 0;
+  $('flowBar').innerHTML = EC.FLOW.map(tile).join('<div class="farrow">→</div>') +
+    '<div class="ftile k-attn' + (attn ? ' hot' : '') + (curFilter === 'check' ? ' active' : '') + '" data-f="check" role="button" tabindex="0"><div class="ft-t">⚠ 要対応' + (curFilter === 'check' ? '<span class="ft-on">表示中</span>' : '') + '</div><div class="ft-s">' + (attn ? '確認が必要です' : '通常のフローの外') + '</div><div class="ft-c">' + attn + '<small>件</small></div></div>' +
+    '<details class="fmore"><summary>その他 ▾</summary><div class="fpop"><button class="btn sec sm' + (curFilter === 'excluded' ? ' on' : '') + '" data-f="excluded">対象外 ' + (n.excluded || 0) + '件</button><button class="btn sec sm' + (curFilter === 'all' ? ' on' : '') + '" data-f="all">すべて ' + vis.length + '件</button></div></details>';
+}
+// 一覧の「現在地」の欄／詳細の最上部
+function flowCell(s) {
+  const x = flowOfSlip(s), r = rec(s);
+  if (x.key === 'other') return '<span class="ph k-none">' + (stateOf(s) === 'excluded' ? '対象外' : '') + '</span>';
+  const who = x.kind === 'robot' ? '専用機が処理中' : x.kind === 'attn' ? (x.who === 'あなた' ? 'あなたの作業' : x.who + 'の作業') : x.kind === 'human' ? (x.who === 'あなた' || x.who.indexOf('あなた') === 0 ? 'あなたの作業' : x.who + 'の作業') : '';
+  return '<span class="ph k-' + x.kind + '">' + (x.num ? x.num + ' ' : '') + esc(x.label) + '</span>' + (who ? '<div class="muted">' + esc(who) + '</div>' : '') + (x.sub && x.key !== 'attn' ? '<div class="muted">' + esc(x.sub) + '</div>' : '');
+}
+function flowBoxHtml(s) {
+  const x = flowOfSlip(s);
+  if (x.key === 'other') return '';
+  const head = x.key === 'attn' ? '要対応' : x.num + ' ' + x.label;
+  return '<div class="flowbox k-' + x.kind + '"><div class="fb-h"><b>現在地：' + esc(head) + '</b>' + (x.sub ? '<span class="tag info">' + esc(x.sub) + '</span>' : '') + (x.who ? '<span class="fb-w">担当：' + esc(x.who) + '</span>' : '') + '</div>' + (x.next ? '<div class="fb-n">' + esc(x.next) + '</div>' : '<div class="fb-n">SMILEへの起票と結果確認が完了しています。</div>') + '</div>';
+}
 const FILTERS = [['new', '未確認'], ['ok', 'OK済（取込待ち）'], ['importing', '取込中・突合待ち'], ['confirm', '確認待ち'], ['check', '要確認'], ['exported', '起票済'], ['smile', 'SMILE取込済'], ['excluded', '対象外'], ['all', 'すべて']];
 const STATE_LABEL = { new: '未確認', ok: 'OK済', importing: '取込中', confirm: '確認待ち', check: '要確認', exported: '起票済', smile: 'SMILE取込済', excluded: '対象外' };
 function destTag(s) {
@@ -390,6 +423,7 @@ function rowHtml(s) {
   if (r && r.juchuNo && st === 'exported') act = '<div class="muted">受注№ ' + esc(r.juchuNo) + '</div>' + act;
   act += whoHtml(r);   // OKした人・確認OKした人
   return '<tr class="' + cls + '" data-row="' + s.id + '"><td>' + (canSel ? '<input type="checkbox" data-sel="' + s.id + '"' + (sel.has(s.id) ? ' checked' : '') + '>' : '') + '</td>' +
+    (FLOW_UI() ? '<td class="flowcell">' + flowCell(s) + '</td>' : '') +
     '<td><b>' + esc(s.name) + '</b><div class="muted">' + s.orderDate.slice(5).replace('-', '/') + ' ' + esc(s.order.createdTime) + '</div></td>' +
     '<td>' + who + '<div>' + (st === 'new' || st === 'ok' ? destTag(s) : '') + '</div></td>' +
     '<td class="items">' + items + '</td><td class="num">' + yen(s.order.total) + '</td>' +
@@ -397,23 +431,25 @@ function rowHtml(s) {
     '<td>' + (st === 'excluded' ? '' : '<input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (closed ? '<div class="closed">休業日です</div>' : '<div class="muted">' + md(ship) + (manual ? ' 手動' : '') + '</div>')) + '</td>' +
     '<td><div class="flags">' + (st === 'excluded' ? '<span class="tag info">' + esc(excludedText(s)) + '</span>' : flags) + '</div></td><td>' + act + '</td></tr>';
 }
-const THEAD = '<thead><tr><th><input type="checkbox" data-selall></th><th>注文</th><th>お客様・納品先</th><th>SMILEの明細（税抜）</th><th class="num">税込合計</th><th>得意先</th><th>出荷予定日</th><th>確認</th><th></th></tr></thead>';
+const THEAD0 = '<thead><tr><th><input type="checkbox" data-selall></th><th>注文</th><th>お客様・納品先</th><th>SMILEの明細（税抜）</th><th class="num">税込合計</th><th>得意先</th><th>出荷予定日</th><th>確認</th><th></th></tr></thead>';
+const THEAD = () => FLOW_UI() ? THEAD0.replace('</th><th>注文</th>', '</th><th>現在地</th><th>注文</th>') : THEAD0;
 function renderOrders() {
   const vis = visible(), count = k => vis.filter(s => k === 'all' || stateOf(s) === k).length;
+  if (FLOW_UI()) { $('chips').innerHTML = ''; renderFlowBar(vis); } else
   $('chips').innerHTML = FILTERS.map(([k, l]) => '<span class="chip' + (curFilter === k ? ' active' : '') + '" data-f="' + k + '">' + l + '<b>' + count(k) + '</b></span>').join('');
   $('cnt-orders').textContent = vis.filter(s => stateOf(s) === 'new').length;
   const dir = curSort === 'desc' ? -1 : 1;   // 注文日（同じ日は注文の時刻）の昇順・降順
-  const list = vis.filter(s => curFilter === 'all' || stateOf(s) === curFilter).sort((a, b) => dir * (a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : (a.order.createdTime > b.order.createdTime ? 1 : 0)) : (a.orderDate < b.orderDate ? -1 : 1)));
+  const list = vis.filter(matchFilter).sort((a, b) => dir * (a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : (a.order.createdTime > b.order.createdTime ? 1 : 0)) : (a.orderDate < b.orderDate ? -1 : 1)));
   const el = $('list');
   if (!orders.length) { el.innerHTML = '<div class="empty">' + (PROFILE.emptyOrders || 'Shopify の注文 CSV を上のボックスに入れると、ここに注文が並びます') + '</div>'; return; }
   if (!list.length) { el.innerHTML = '<div class="empty">この条件の注文はありません</div>'; return; }
   const warnNoSmile = (M.smileCust ? '' : '<div class="tag warn" style="margin-bottom:8px">SMILE の受注明細を読めていないため、取込済みの注文を見分けられません</div>') + confirmBulkHtml();
-  if (curView === 'list') { el.innerHTML = warnNoSmile + '<div style="overflow:auto"><table>' + THEAD + '<tbody>' + list.map(rowHtml).join('') + '</tbody></table></div>'; return; }
+  if (curView === 'list') { el.innerHTML = warnNoSmile + '<div style="overflow:auto"><table>' + THEAD() + '<tbody>' + list.map(rowHtml).join('') + '</tbody></table></div>'; return; }
   const groups = {};
   list.forEach(s => { const l = s.lines.find(x => x.kind === 'body') || s.lines[0]; const k = l ? l.code : '（商品なし）'; (groups[k] = groups[k] || { code: k, name: l ? l.name : '', list: [] }).list.push(s); });
-  el.innerHTML = warnNoSmile + '<div style="overflow:auto"><table>' + THEAD + '<tbody>' + Object.keys(groups).sort().map(k => {
+  el.innerHTML = warnNoSmile + '<div style="overflow:auto"><table>' + THEAD() + '<tbody>' + Object.keys(groups).sort().map(k => {
     const g = groups[k], newCount = g.list.filter(s => stateOf(s) === 'new' && !s.hasErr).length, dates = [...new Set(g.list.map(shipOf))].sort();
-    return '<tr class="gh"><td colspan="9"><div class="row"><span>' + esc(g.code) + ' <span class="muted">' + esc(g.name) + '</span></span><span class="tag info">' + g.list.length + '件</span><div class="grow"></div>' +
+    return '<tr class="gh"><td colspan="' + (FLOW_UI() ? 10 : 9) + '"><div class="row"><span>' + esc(g.code) + ' <span class="muted">' + esc(g.name) + '</span></span><span class="tag info">' + g.list.length + '件</span><div class="grow"></div>' +
       '<span class="muted">出荷予定日をまとめて</span><input type="date" data-gdate="' + esc(k) + '" value="' + (dates.length === 1 ? dates[0] : '') + '"><button class="btn sec sm" data-gset="' + esc(k) + '">変更</button>' +
       '<button class="btn sm" data-gok="' + esc(k) + '"' + (newCount ? '' : ' disabled') + '>問題のない ' + newCount + '件をOK</button></div></td></tr>' + g.list.map(rowHtml).join('');
   }).join('') + '</tbody></table></div>';
@@ -432,6 +468,7 @@ function renderDrawer() {
   const row = (k, v) => v ? '<dt>' + k + '</dt><dd>' + esc(v) + '</dd>' : '';
   dr.innerHTML = '<div class="row"><h2>' + esc(s.name) + '</h2><span class="tag ' + (st === 'ok' || st === 'exported' ? 'ok' : st === 'check' ? 'err' : st === 'importing' || st === 'confirm' ? 'warn' : 'info') + '">' + STATE_LABEL[st] + '</span><div class="grow"></div><button class="btn sec sm" data-close>閉じる ✕</button></div>' +
     '<div class="muted">' + s.orderDate + ' ' + esc(o.createdTime) + ' 受注／' + esc(store.cfg.customers[s.cust].name) + '</div>' +
+    (FLOW_UI() ? flowBoxHtml(s) : '') +
     (r && r.juchuNo ? '<h3>SMILE の受注</h3><dl>' + row('受注№', r.juchuNo) + '</dl>' : '') + checkHtml(r, st) +
     (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '') +
     detailViewHtml(s) +
@@ -440,14 +477,22 @@ function renderDrawer() {
     '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
     '<h3>出荷予定日</h3><div>' + (st === 'new' || st === 'ok' ? '<input type="date" class="dateinp' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : md(ship)) + '</div>' +
     '<div class="muted">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
-    '<div class="row" style="margin-top:18px">' + (st === 'new' ? '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>OK にする</button>' : (st === 'ok' || st === 'exported') ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') +
-    (st === 'confirm' ? (isAdmin ? '<button class="btn" data-act="confirmok" data-id="' + s.id + '">確認OK（起票済みにする）</button>' : '<span class="muted">確認OKは管理者が行います</span>') : '') +
-    (st === 'check' && isAdmin ? '<button class="btn" data-act="confirmed" data-id="' + s.id + '">SMILEを見て問題なし（起票済みにする）</button><button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>' : '') +
-    (st === 'new' || st === 'check' ? '<button class="btn sec" data-act="exclude" data-id="' + s.id + '">対象外にする</button>' : '') +
-    (st === 'excluded' && isManualExcluded(s) ? '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button><span class="muted">' + esc(excludedText(s)) + '</span>' : '') + '</div>' +
-    (st === 'check' ? '<div class="muted" style="margin-top:6px">取込の途中で止まっている可能性があります。SMILE で伝票を確認してから選んでください（この画面からの再取込はできません）。</div>' : '');
+    '';
+  const FL = FLOW_UI();
+  const okBtn = '<button class="btn" data-act="ok" data-id="' + s.id + '"' + (s.hasErr ? ' disabled' : '') + '>' + (FL ? '確認OK（起票依頼待ちへ）' : 'OK にする') + '</button>';
+  const undoBtn = '<button class="btn sec" data-act="undo" data-id="' + s.id + '">未確認に戻す</button>';
+  const exclBtn = '<button class="btn sec" data-act="exclude" data-id="' + s.id + '">対象外にする</button>';
+  let primary = '', more = [];
+  if (st === 'new') { primary = okBtn; more.push(exclBtn); }
+  else if (st === 'ok') { primary = '<span class="muted">' + (canImport() ? 'OK済です。画面下の「SMILEに取り込む」で、OK済の注文をまとめて起票を依頼します' : '取込担当者が起票を依頼します') + '</span>'; more.push(undoBtn); }
+  else if (st === 'exported') more.push(undoBtn);
+  else if (st === 'confirm') primary = isAdmin ? '<button class="btn" data-act="confirmok" data-id="' + s.id + '">確認OK（起票済みにする）</button>' : '<span class="muted">確認OKは管理者が行います</span>';
+  else if (st === 'check') { if (isAdmin) primary = '<button class="btn" data-act="confirmed" data-id="' + s.id + '">SMILEを見て問題なし（起票済みにする）</button>'; if (isAdmin) more.push(undoBtn); more.push(exclBtn); }
+  else if (st === 'excluded' && isManualExcluded(s)) { more.push(undoBtn); primary = '<span class="muted">' + esc(excludedText(s)) + '</span>'; }
+  const actions = '<div class="dr-actions"><div class="row" style="gap:8px">' + primary + '<div class="grow"></div>' + (more.length ? '<details class="more-dd"><summary class="btn sec">その他 ▾</summary><div class="more-pop">' + more.join('') + '</div></details>' : '') + '</div>' +
+    (st === 'check' ? '<div class="muted" style="margin-top:6px">取込の途中で止まっている可能性があります。SMILE で伝票を確認してから選んでください（この画面からの再取込はできません）。</div>' : '') + '</div>';
   const who = (r && (r.by || r.importBy || r.confirmedBy || r.reportedAt)) ? '<h3>操作した人</h3><dl>' + row('OK', EC.shortUser(r.by)) + row('取込を依頼', EC.shortUser(r.importBy)) + row('確認OK', EC.shortUser(r.confirmedBy)) + row('Teams報告', r.reportedAt ? stamp(r.reportedAt) : '') + '</dl>' : '';
-  dr.insertAdjacentHTML('beforeend', who + '<h3>履歴（誰がいつ何をしたか）</h3><div id="histBox" class="muted">読み込み中…</div>');
+  dr.insertAdjacentHTML('beforeend', who + '<h3>履歴（誰がいつ何をしたか）</h3><div id="histBox" class="muted">読み込み中…</div>' + actions);
   loadHistory(s.id);
 }
 // 要確認：SMILE の値とアプリの期待値を並べる
@@ -605,20 +650,22 @@ function renderOutbar() {
   const ok = okSlips();
   if (!ok.length && !(isAdmin && CONF && CONF.testImport)) { bar.hidden = true; return; }
   bar.hidden = false;
-  // 取込は管理者だけ（見た目の制限。専用機側でも管理者を照合する）
-  if (!isAdmin) { bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">（取込は管理者が行います）</span></div>'; return; }
+  // 取込は管理者と取込担当者だけ（見た目の制限。専用機側でも同じ一覧で照合する）
+  if (!canImport()) { bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">（取込は取込担当者が行います）</span></div>'; return; }
+  const staleBlock = isIndexStale() && !isAdmin;   // SMILEのデータが古いと二重取込の確認が当てにならない。管理者だけは、確認のうえ続けられる
   const p = planOut(), lines = ok.reduce((a, s) => a + s.lines.length, 0), bad = ok.filter(s => s.hasErr).length;
   bar.innerHTML = '<div><b>OK済 ' + ok.length + '件</b> <span class="muted">納品先の新規 ' + p.fresh.length + '件・受注 ' + lines + '行</span><div class="muted" style="font-size:11px' + (codeDecision.blocked ? ';color:var(--red)' : '') + '">新規の納品先：' + esc(codeDecision.blocked || codeDecision.reason) + '</div></div><div class="grow"></div>' +
     (!M.nouhin || !M.items ? '<span class="tag err">品目マスタ・納品先マスタを読めていません</span>' : '') + (bad ? '<span class="tag err">赤い確認事項のある注文が ' + bad + '件</span>' : '') +
-    '<button class="btn" id="o-import"' + (!ok.length || bad || !M.nouhin || !M.items || importBusy ? ' disabled' : '') + '>SMILEに取り込む</button>' +
-    '<span class="morewrap"><button class="hbtn" id="o-more" title="予備の操作（専用機が使えないとき）" aria-label="予備の操作">⋯</button>' +
+    (isIndexStale() ? '<span class="tag err">SMILEのデータが古いため、先に「SMILEの最新を取り込む」を押してください' + (isAdmin ? '（管理者は、確認のうえ続けられます）' : '') + '</span>' : '') +
+    '<button class="btn" id="o-import"' + (!ok.length || bad || !M.nouhin || !M.items || importBusy || staleBlock ? ' disabled' : '') + '>SMILEに取り込む</button>' +
+    (isAdmin ? '<span class="morewrap"><button class="hbtn" id="o-more" title="予備の操作（専用機が使えないとき）" aria-label="予備の操作">⋯</button>' +
     '<div id="moreMenu"' + (moreOpen ? '' : ' hidden') + '><div class="muted">専用機が使えないときだけ。ファイルを保存して、手で SMILE に取り込みます。</div>' +
     '<button class="btn sec sm" id="o-dest"' + (bad || !M.nouhin || !p.fresh.length ? ' disabled' : '') + '>納品先ファイルを保存（新規 ' + p.fresh.length + '件）</button>' +
     '<button class="btn sec sm" id="o-juchu"' + (bad || !M.nouhin || !M.items ? ' disabled' : '') + '>受注伝票ファイルを保存（' + ok.length + '伝票）</button>' +
     '<button class="btn sec sm" id="o-done"' + (ok.length ? '' : ' disabled') + ' title="手で SMILE に取り込んだら押してください">手で取り込んだので「起票済み」にする</button>' +
     (shared ? '<button class="btn sec sm" id="o-migrate" title="この端末のブラウザにだけある記録のうち、共有の履歴（リスト）に無い注文を、リストに追加します（何度押しても安全）">この端末の記録をリストに移す</button>' : '') +
     (CONF.testImport ? '<hr style="border:none;border-top:1px solid var(--line);width:100%;margin:2px 0"><div class="muted">専用機の試運転用。EC売上の東京（' + esc(CONF.testImport.customerCode) + '）に、テスト用の注文1件（客先注番 ' + esc(CONF.testImport.poPrefix) + '…）と新しい納品先（' + (CONF.testImport.codeMode === 'fixed' || !tempCfg() ? esc(CONF.testImport.deliveryCode) : '取込の直前に専用機が番号を決めます') + '）を登録します。終わったら SMILE で削除してください（入っている間は東京の売上・日報に載ります）。</div>' +
-      '<button class="btn sec sm" id="o-test"' + (importBusy ? ' disabled' : '') + '>テスト送信（仮データ1件）</button>' : '') + '</div></span>';
+      '<button class="btn sec sm" id="o-test"' + (importBusy ? ' disabled' : '') + '>テスト送信（仮データ1件）</button>' : '') + '</div></span>' : '');
 }
 let moreOpen = false, importBusy = false;
 function stampName() { const d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') + '_' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0'); }
@@ -833,13 +880,14 @@ async function rpaReady() {
   RpaQueue.init({ getToken: () => getToken(), getWriteToken: () => getWriteToken(), driveId: did });
 }
 async function loadAdmins() {
-  isAdmin = false;
+  isAdmin = false; isOperator = false;
   try {
     const did = await resolveDriveId();
     const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + did + '/root:/' + RI().adminsFile.split('/').map(encodeURIComponent).join('/') + ':/content', { headers: { Authorization: 'Bearer ' + await getToken() } });
     if (!r.ok) return;
     const o = await r.json(); adminsRaw = o; const list = Array.isArray(o) ? o : (o.admins || []), me = String(account && account.username || '').toLowerCase();
     isAdmin = !!me && list.some(m => String(m).toLowerCase() === me);
+    isOperator = !isAdmin && !!me && !Array.isArray(o) && (o.operators || []).some(m => String(m).toLowerCase() === me);
   } catch (e) { console.warn('管理者の一覧を読めません', e); }
 }
 function saveImp(imp) { save(); renderImportPanel(); renderOutbarIfOrders(); }
@@ -875,7 +923,7 @@ async function submitImport(o) {
 }
 
 async function startImport() {
-  if (!isAdmin || importBusy) return;
+  if (!canImport() || importBusy) return;
   await refreshCodeMode();   // 取込の直前に、専用機が仮の番号に対応しているかを確かめる
   if (codeDecision.blocked) { alert('取り込めません：' + codeDecision.blocked); return; }
   const p = planOut();
@@ -989,7 +1037,7 @@ async function onVerifyQueue(id, s) {
   imp.verifyState = s.state; renderImportPanel();
 }
 async function retryVerify(id) {
-  const imp = store.imports[id]; if (!imp || !isAdmin) return;
+  const imp = store.imports[id]; if (!imp || !canImport()) return;
   try { await rpaReady(); imp.verifyName = (await RpaQueue.request(RI().jobVerify, { app: 'EC売上（取込の確認）', requestedBy: account.username })).name; imp.phase = 'verify'; imp.message = ''; saveImp(imp); trackVerify(id); }
   catch (e) { alert('確認用の出力を依頼できませんでした。\n' + e.message); }
 }
@@ -1076,7 +1124,7 @@ function renderTestPanel() {
     if (fin && i.phase !== 'failed') body += '<div class="muted" style="margin-top:6px"><b>次に SMILE で削除するもの：</b>受注伝票（客先注番 ' + esc(c.po || '') + (tr && tr.juchuNo ? '／受注№ ' + esc(tr.juchuNo) : '') + '）' + (c.fresh ? '、<b>最終の納品先コード ' + esc(testDCode(tc, tr)) + '</b>（今回の送信で新規に登録）' : '') + '。<b>削除するまで、東京（' + esc(tc.customerCode || '') + '）の売上・日報に載ります。</b>テスト送信は製番・製造手配を作らない品目（手配区分2・在庫管理なし）だけを使っています。</div>';
     return '<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="imp" style="border:none"><b>テスト送信の結果</b>' + tag + steps + '<span class="muted">客先注番 ' + esc(c.po || '') + '・' + stamp(i.requestedAt) + ' 依頼・' + esc(i.batchId) + '</span>' +
       (i.message ? '<span class="' + (i.phase === 'done' ? 'muted' : 'bad') + '">' + esc(i.message) + '</span>' : '') + '<div class="grow"></div>' +
-      (i.phase === 'verifyFailed' && isAdmin ? '<button class="btn sec sm" data-impverify="' + esc(i.batchId) + '">確認だけやり直す</button>' : '') +
+      (i.phase === 'verifyFailed' && canImport() ? '<button class="btn sec sm" data-impverify="' + esc(i.batchId) + '">確認だけやり直す</button>' : '') +
       (fin ? '<button class="btn sec sm" data-impclose="' + esc(i.batchId) + '">閉じる</button>' : '') + '</div>' + body + '</div>';
   }).join('');
 }
@@ -1108,7 +1156,7 @@ function renderImportPanel() {
     return '<div class="imp">' + tag + steps + '<span><b>SMILE取込</b> 受注 ' + (c.slips || 0) + '伝票・納品先の新規 ' + (c.fresh || 0) + '件' + extra + '</span><span class="muted">' + esc(i.batchId) + '・' + stamp(i.requestedAt) + ' 依頼</span>' +
       (sum ? '<span>' + esc(sum) + '</span>' : '') + (i.message ? '<span class="' + (['failed', 'check', 'verifyFailed'].includes(i.phase) ? 'bad' : 'muted') + '">' + esc(i.message) + '</span>' : '') + reportHtml(i) +
       '<div class="grow"></div>' + (i.phase === 'confirm' && live.confirm && isAdmin ? '<button class="btn sm" data-impconfirm="' + esc(i.batchId) + '">確認待ち ' + live.confirm + '件をまとめて確認OK</button>' : '') +
-      (i.phase === 'verifyFailed' && isAdmin ? '<button class="btn sec sm" data-impverify="' + esc(i.batchId) + '">突合だけやり直す</button>' : '') +
+      (i.phase === 'verifyFailed' && canImport() ? '<button class="btn sec sm" data-impverify="' + esc(i.batchId) + '">突合だけやり直す</button>' : '') +
       (fin || i.phase === 'verifyFailed' ? '<button class="btn sec sm" data-impclose="' + esc(i.batchId) + '">閉じる</button>' : '') + '</div>';
   }).join('');
 }
@@ -1130,7 +1178,7 @@ function confirmWaitingIds(only) {
   return (only || Object.keys(store.orders)).filter(id => store.orders[id] && store.orders[id].status === 'confirm');
 }
 function confirmBulkHtml() {
-  if (curFilter !== 'confirm' || !isAdmin) return '';
+  if (curFilter !== (FLOW_UI() ? 'p4' : 'confirm') || !isAdmin) return '';
   const n = confirmWaitingIds().length;
   return n ? '<div class="row" style="margin-bottom:8px"><button class="btn" id="o-confirmall">確認待ち ' + n + '件をまとめて確認OK（起票済みにする）</button><span class="muted">SMILEの受注№・出荷予定日を見て、問題なければ押します</span></div>' : '';
 }
@@ -1205,11 +1253,20 @@ function shopifyAgeText() {
   const h = (Date.now() - Date.parse(m)) / 36e5, lim = (CONF.config && CONF.config.shopifyStaleHours) || 36;
   return ' ／ Shopify取得：' + agoText(h) + (h >= lim ? ' ⚠ 自動取得が止まっている可能性があります（専用機のタスクを確認）' : '');
 }
+// SMILEのデータが古いと、二重取込の確認が当てにならない。強い警告を出し、取込の操作も止める（管理者だけは確認のうえ続けられる）
+function renderStale() {
+  const el = $('staleBox'); if (!el) return;
+  if (!isIndexStale()) { el.hidden = true; return; }
+  const h = indexAgeHours(), at = M.indexInfo && M.indexInfo.generatedAt, d = at ? new Date(at) : null;
+  el.hidden = false;
+  el.innerHTML = '<div class="stale-in"><div><b>⚠ SMILEデータが古いため、安全に起票できません</b><div style="font-size:12px">二重取込の確認が、最新のSMILEに基づきません。最終取得：' + (d ? d.getFullYear() + '/' + twoDigits(d.getMonth() + 1) + '/' + twoDigits(d.getDate()) + ' ' + twoDigits(d.getHours()) + ':' + twoDigits(d.getMinutes()) : '—') + '（' + agoText(h) + '）</div></div><div class="grow"></div>' +
+    (canImport() ? '<button class="btn" id="stale-sync">SMILEの最新を取り込む</button>' : '<span style="font-size:12px">取込担当者に最新化を頼んでください</span>') + '</div>';
+}
 function isIndexStale() { const h = indexAgeHours(); return h != null && h >= (RI().staleHours || 6); }
 function agoText(h) { return h < 1 ? Math.max(1, Math.round(h * 60)) + '分前' : (h < 48 ? '約' + Math.round(h) + '時間前' : '約' + Math.round(h / 24) + '日前'); }
 let syncBusy = false;
 async function syncSmile() {
-  if (!isAdmin || syncBusy) return;
+  if (!canImport() || syncBusy) return;
   if (!confirm('SMILE から最新の受注・納品先を全件出力して、確認用ファイルを作り直します（約3分）。取込の前に行うと、二重取込の確認が最新になります。よろしいですか？')) return;
   syncBusy = true; $('btn-sync').disabled = true;
   const since = Date.now() - 5000;
@@ -1619,10 +1676,10 @@ function render() {
   if (!cal) cal = buildCal();
   ['orders', 'map', 'pay'].forEach(t => { $('p-' + t).hidden = (t !== curTab); });
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === curTab));
-  $('btn-sync').hidden = !isAdmin;
+  $('btn-sync').hidden = !canImport();
   document.querySelectorAll('[data-v]').forEach(e => e.classList.toggle('active', e.dataset.v === curView));
   document.querySelectorAll('[data-s]').forEach(e => e.classList.toggle('active', e.dataset.s === curSort));
-  renderOrders(); renderMap(); renderDrawer(); renderImportPanel(); renderSharedBanner();
+  renderOrders(); renderMap(); renderDrawer(); renderImportPanel(); renderSharedBanner(); renderStale();
   if (isSoumu) renderPay();
   if (curTab === 'pay') renderPayBar(); else renderOutbar();
 }
@@ -1633,7 +1690,7 @@ function setReady() {
   const stale = isIndexStale(), h = indexAgeHours();
   setStatus(M.indexMissing || stale ? 'loading' : 'ok', 'SMILEマスタ読込済（' + (bits.join('／') || '—') + ' 時点）' + (orders.length ? ' ／ Shopify注文 ' + orders.length + '件' : '') + shopifyAgeText() +
     (h != null ? ' ／ SMILEの最新データ：' + agoText(h) : '') +
-    (stale ? ' ⚠ 古いため、二重取込の確認が最新のSMILEに基づきません。' + (isAdmin ? '「SMILEの最新を取り込む」を押してから取り込んでください' : '管理者に最新化を頼んでください') : '') +
+    (stale ? ' ⚠ 古いため、二重取込の確認が最新のSMILEに基づきません。' + (canImport() ? '「SMILEの最新を取り込む」を押してから取り込んでください' : '取込担当者に最新化を頼んでください') : '') +
     (M.indexMissing ? ' ／ 軽量ファイルが無いので全件CSVを読んでいます（時間がかかります）' : ''));
 }
 
@@ -1704,6 +1761,8 @@ document.addEventListener('click', async e => {
   if (d.impreport) { const imp = store.imports[d.impreport]; if (imp && isAdmin) sendReport(imp, true); return; }
   switch (t.id) {
     case 'o-import': startImport(); break;
+    case 'stale-sync': syncSmile(); break;
+    case 'src-info': { const el = $('src-detail'); if (el) el.hidden = !el.hidden; break; }
     case 'o-migrate': moreOpen = false; migrateLocal(); break;
     case 'o-confirmall': confirmBulk(confirmWaitingIds()); break;
     case 'o-test': moreOpen = false; startTestImport(); break;
