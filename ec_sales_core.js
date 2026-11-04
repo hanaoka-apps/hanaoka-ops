@@ -577,6 +577,14 @@
   // 画面で直せる納品先の項目（k＝deliveryFromOrder の項目名）
   EC.EDIT_FIELDS = [{ k: 'name', label: '納品先名', limit: 'name' }, { k: 'person', label: '荷受け人', limit: 'name' }, { k: 'memo', label: '配達員向けメモ', limit: 'name' }, { k: 'zip', label: '郵便番号' },
     { k: 'addr1', label: '住所１', limit: 'addr1' }, { k: 'addr2', label: '住所２', limit: 'addr2' }, { k: 'tel', label: '電話' }];
+  // 必須の項目（空にできない）：納品先名・住所１・郵便番号（7桁）。戻り値 { 項目: 文言 }（空なら問題なし）
+  EC.editFieldErrors = function (v) {
+    var e = {};
+    if (!String(v.name || '').trim()) e.name = '納品先名は必須です';
+    if (!String(v.addr1 || '').trim()) e.addr1 = '住所１は必須です';
+    if (EC.normZip(v.zip).length !== 7) e.zip = '郵便番号は7桁の数字にしてください';
+    return e;
+  };
   // 保存する前の確認。戻り値 { errors:[文言], warns:[文言] }（errors があれば保存させない）
   EC.checkDeliveryEdit = function (v, cfg) {
     var errors = [], warns = [], lim = (cfg && cfg.limits) || {};

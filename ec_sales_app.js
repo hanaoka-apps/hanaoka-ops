@@ -500,6 +500,7 @@ function renderDrawer() {
   const who = (r && (r.by || r.importBy || r.confirmedBy || r.reportedAt)) ? '<h3>操作した人</h3><dl>' + row('OK', EC.shortUser(r.by)) + row('取込を依頼', EC.shortUser(r.importBy)) + row('確認OK', EC.shortUser(r.confirmedBy)) + row('Teams報告', r.reportedAt ? stamp(r.reportedAt) : '') + '</dl>' : '';
   dr.insertAdjacentHTML('beforeend', who + '<h3>履歴（誰がいつ何をしたか）</h3><div id="histBox" class="muted">読み込み中…</div>' + actions);
   loadHistory(s.id);
+  refreshEditErr();
 }
 // 要確認：SMILE の値とアプリの期待値を並べる
 // ---- 注文の詳細：Shopify（左・青）と SMILE（右・緑）を並べる。違う項目は黄色で強調する
@@ -520,13 +521,39 @@ function smileActual(s) {
 function ymdText(v) { const d = String(v || '').replace(/\D/g, ''); return d.length === 8 ? d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6) : d.length === 6 ? '20' + d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4) : '（なし）'; }
 // 注文の詳細：「見比べ」と「伝票イメージ」の切り替え（選んだほうは覚えておく。選んだことがなければ見比べ。納品先を直している間も見比べ）
 let slipView = 'cmp'; // 開くたびに最初の画面へ（EC売上の5工程画面は確認サマリー、そのほかは見比べ。切り替えは開いている間だけ）
+// ---- 直接編集：比較でも伝票イメージでも、値が出ている場所で直す。青の枠＝入力するとすぐ保存（社内メモ・出荷予定日）／黄色の枠＝「内容を確認する」で確認してから保存（納品先）。必須項目（納品先名・郵便番号・住所１）は空にできない
+const ED_REQUIRED = ['name', 'zip', 'addr1'];
+function memoCtl(s, st, r) {
+  const can = !(st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check');
+  return '<input type="text" class="ed-live" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="書き足すメモ（例：ブルー入荷待ち／入金確認済）"' + (can ? '' : ' disabled') + ' style="width:100%">' +
+    '<div class="sub">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b>' + (can ? '（入力すると、すぐ保存されます）' : '') + '</div>';
+}
+function shipCtl(s, st, r, ship, brief) {
+  if (!(st === 'new' || st === 'ok')) return esc(md(ship));
+  return '<input type="date" class="dateinp ed-live' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') +
+    (brief ? '' : '<div class="sub">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。空にすると自動の日付に戻ります。変えると、すぐ保存され、SMILE の納期・出荷予定日として取り込まれます</div>');
+}
+function edInput(s, d, k) {
+  const v = editDraft[k] == null ? '' : editDraft[k], changed = String(v) !== String(d.auto[k] == null ? '' : d.auto[k]);
+  return '<input type="text" class="ed-draft' + (changed ? ' changed' : '') + '" data-ed="' + k + '" data-last="' + esc(v) + '" value="' + esc(v) + '" style="width:100%"' + (ED_REQUIRED.indexOf(k) >= 0 ? ' required placeholder="必須"' : '') + '>' +
+    (changed ? '<div class="sub">元：' + esc(d.auto[k] || '（空）') + ' <button class="btn sec sm" data-act="edrev" data-id="' + s.id + '" data-k="' + k + '">この項目を元に戻す</button></div>' : '');
+}
+// 入力のたびに、必須の確認（赤い枠・メッセージ・「内容を確認する」を押せるか）
+function refreshEditErr() {
+  if (!editId || !editDraft) return;
+  const s = slips.find(x => x.id === editId); if (!s) return;
+  const d = EC.deliveryFromOrder(s.order, store.cfg), fe = EC.editFieldErrors(Object.assign({}, d.auto, editDraft));
+  document.querySelectorAll('[data-ed]').forEach(el => el.classList.toggle('ed-bad', !!fe[el.dataset.ed]));
+  const msg = document.getElementById('edMsg'); if (msg) msg.innerHTML = Object.keys(fe).map(k => '<div>' + esc(fe[k]) + '</div>').join('');
+  document.querySelectorAll('[data-act="edreview"]').forEach(b => { b.disabled = Object.keys(fe).length > 0; });
+}
 function detailViewHtml(s, editBlock) {
-  const FL = FLOW_UI(), view = editId === s.id ? 'cmp' : slipView;
+  const FL = FLOW_UI(), view = slipView;
   const chip = (k, l) => '<span class="chip' + (view === k ? ' active' : '') + '" data-dview="' + k + '">' + l + '</span>';
   const tabs = '<div class="row" style="gap:0;margin:16px 0 8px">' + chip('cmp', FL ? 'Shopifyとの比較' : 'Shopify と SMILE の見比べ') + chip('image', FL ? 'SMILE伝票イメージ' : 'SMILE の伝票イメージ') + '</div>';
-  // 「担当者が編集できる項目」は、どの画面でも同じ場所（いちばん下）に出す。確認サマリーでは summaryHtml の中に含む。納品先の修正ボタンは、比較の画面には元からあるので重ねない
-  const grp = (btn) => FL ? '<div class="editgrp"><h3 style="margin-top:0">担当者が編集できる項目</h3>' + (btn && stateOf(s) === 'new' && !smileActual(s) ? '<div style="margin:6px 0"><button class="btn sec sm" data-act="edstart" data-id="' + s.id + '">SMILE取込用の納品先を修正</button></div>' : '') + editBlock + '</div>' : '';
-  return tabs + (view === 'image' ? slipImageHtml(s) + grp(true) : compareHtml(s) + grp(false));
+  // 直せる項目は、比較でも伝票イメージでも、値が出ている場所で直す（別の枠は出さない）。FLOW_UI でない画面だけ、従来の枠
+  const grp = () => FL ? '' : '<div class="editgrp">' + editBlock + '</div>';
+  return tabs + (view === 'image' ? slipImageHtml(s) + grp() : compareHtml(s) + grp());
 }
 // システムの判定結果（タブの上に小さく出す）：確認が必要なもの（△・✗）は常に、問題なしの項目は「✓ 問題なし n項目」にまとめる（開くと意味つきで見られる）
 function judgeHtml(s) {
@@ -540,7 +567,12 @@ function judgeHtml(s) {
 }
 // 納品先マスタ（取込用）の枠：新規ならこの注文から作る登録内容、既存なら SMILE にすでにある登録内容（取込では変えない）、取込後は SMILE の実際の値
 function nouhinBlockHtml(s, d, code, act, it, pend) {
-  const P = EC.pick, E = esc, lim = (store.cfg.limits || {});
+  const P = EC.pick, E = esc, lim = (store.cfg.limits || {}), stNow = stateOf(s), editing = editId === s.id && stNow === 'new' && !act;
+  if (editing) {   // 直接編集：この枠の項目が黄色の入力欄になる
+    const iv = k => edInput(s, d, k);
+    return '<div class="sl-box editing"><div class="sl-bt">納品先マスタ（この内容で取り込みます' + (code ? '。既存の納品先です' : '') + '）</div><div class="sl-hd c3">' + it('納品先コード', code ? E(code) : pend('取込時に決定')) + it('納品先名 *', iv('name')) + it('荷受け人名１', iv('person')) +
+      it('配達員向けメモ', iv('memo')) + it('郵便番号 *', iv('zip')) + it('電話番号', iv('tel')) + '</div><div class="sl-hd c2">' + it('住所１ *', iv('addr1')) + it('住所２', iv('addr2')) + '</div>' + deliveryBarHtml(s, d, act, 'new', true) + '</div>';
+  }
   let title, v, hint = '';
   if (act && act.nouhin) {
     const n = act.nouhin; title = '納品先マスタ（SMILEの実際の値）';
@@ -557,7 +589,7 @@ function nouhinBlockHtml(s, d, code, act, it, pend) {
   const val = x => x ? E(x) : '<span class="muted">なし</span>';
   return '<div class="sl-box"><div class="sl-bt">' + title + '</div><div class="sl-hd c3">' +
     it('納品先コード', v.code ? E(v.code) : pend('取込時に決定'), v.code ? '' : ' ') + it('納品先名', val(v.name)) + it('荷受け人名１', val(v.p1)) +
-    it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint + '</div>';
+    it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint + (stNow === 'new' && !act ? deliveryBarHtml(s, d, act, stNow, false) : '') + '</div>';
 }
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
@@ -565,7 +597,7 @@ function slipImageHtml(s) {
   const opt = { cfg: store.cfg, items: M.items, cal, biko: PROFILE.biko ? PROFILE.biko(CONF) : '', shipDate: shipOf(s), delivery: { code: code || '', name: d.name, isNew: !code } };
   const img = EC.slipImage(sl, Object.assign({ act }, opt));
   const plan = act ? EC.slipImage(sl, opt) : null;   // 取込後は、アプリが作るはずだった内容と違う項目を黄色にする
-  const E = esc, H = img.head, PH = plan && plan.head;
+  const E = esc, H = img.head, PH = plan && plan.head, st0 = stateOf(s), r0 = rec(s), ship0 = shipOf(s);
   const df = (a, b) => plan && String(a) !== String(b) ? ' diff' : '';
   const pend = t => '<span class="sl-p">' + E(t) + '</span>';
   const cn = x => (x.code ? E(x.code) : '') + (x.name ? ' ' + E(x.name) : '');
@@ -577,7 +609,7 @@ function slipImageHtml(s) {
     '<div class="sl-hd c3">' + it('得意先', cn(H.customer), df(H.customer.code, PH && PH.customer.code)) + it('取引', E(H.torihiki)) + it('担当者', cn(H.staff)) + '</div>' +
     '<div class="sl-hd c3">' + it('部門', cn(H.dept)) + it('倉庫', cn(H.warehouse)) + '<div></div></div>' +
     '<div class="sl-hd c2">' + it('納品先', H.delivery.pending ? pend(H.delivery.text) + (H.delivery.name ? '　' + E(H.delivery.name) : '') : cn(H.delivery)) + it('客先注番', E(H.po), df(H.po, PH && PH.po)) + '</div>' +
-    '<div class="sl-hd c3">' + it('受注納期', E(H.nouki), df(H.nouki, PH && PH.nouki)) + it('出荷予定日', E(H.shipDate), df(H.shipDate, PH && PH.shipDate)) + it('製造納期', E(H.mfgDate || '')) + '</div>';
+    '<div class="sl-hd c3">' + it('受注納期', E(H.nouki), df(H.nouki, PH && PH.nouki)) + it('出荷予定日', act ? E(H.shipDate) : shipCtl(s, st0, r0, ship0, true), df(H.shipDate, PH && PH.shipDate)) + it('製造納期', E(H.mfgDate || '')) + '</div>';
   const col = [30, 96, 0, 98, 150, 52, 34, 78, 74, 86];
   h += '<div class="sl-tw"><table class="sl-t"><colgroup>' + col.map(w => '<col' + (w ? ' style="width:' + w + 'px"' : '') + '>').join('') + '</colgroup><thead><tr><th class="n">行</th><th>品目コード</th><th>品目名</th><th>手配区分</th><th>製番</th><th class="n">数量</th><th>単位</th><th class="n">単価(税抜)</th><th class="n">金額(税抜)</th><th>出荷予定日</th></tr></thead><tbody>';
   img.lines.forEach((l, i) => {
@@ -594,7 +626,7 @@ function slipImageHtml(s) {
   h += '</tbody></table></div>';
   if (plan && plan.lines.length !== img.lines.length) h += '<div class="alert warn" style="margin-top:6px">明細の行数が違います（アプリの予定 ' + plan.lines.length + '行／SMILE ' + img.lines.length + '行）</div>';
   h += '<div class="sl-sum">受注数量合計 <b' + (plan && plan.total.qty !== img.total.qty ? ' class="sl-vv diff"' : '') + '>' + E(img.total.qty) + '</b>合計金額（税抜） <b' + (plan && plan.total.amount !== img.total.amount ? ' class="sl-vv diff"' : '') + '>' + E(img.total.amount) + '</b></div>' +
-    '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
+    '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (act ? (img.memo ? it('社内メモ', E(img.memo)) : '') : it('社内メモ', memoCtl(s, st0, r0))) + '</div>' +
     // 拡張項目（SMILE の「受注伝票拡張項目」の画面）：運送業者・配送指定日など。取込後に、お客様の希望日が入っている注文などが分かる
     '<div class="sl-boxes">' + nouhinBlockHtml(s, d, code, act, it, pend) +
     '<div class="sl-box"><div class="sl-bt">拡張項目（受注伝票）</div><div class="sl-hd c3">' +
@@ -624,11 +656,7 @@ function compareHtml(s) {
     '<table class="cmp"><thead><tr><th></th><th class="hd shop">Shopify</th><th class="hd smile">SMILE' + (act ? '' : '（予定）') + '</th></tr></thead><tbody>';
   const edTag = k => d.edited.indexOf(k) >= 0 && !act ? '<div class="sub" style="color:#a8620a">手動で直した値（元：' + E(d.auto[k] || '（空）') + '）</div>' : '';
   if (editing) {
-    const inp = (k, label) => {
-      const v = editDraft[k] == null ? '' : editDraft[k], changed = String(v) !== String(d.auto[k] == null ? '' : d.auto[k]);
-      return '<input type="text" data-ed="' + k + '" value="' + E(v) + '" style="width:100%' + (changed ? ';background:#fff1c2' : '') + '">' +
-        (changed ? '<div class="sub">元：' + E(d.auto[k] || '（空）') + ' <button class="btn sec sm" data-act="edrev" data-id="' + s.id + '" data-k="' + k + '">この項目を元に戻す</button></div>' : '');
-    };
+    const inp = k => edInput(s, d, k);
     h += row('納品先名', E(sh.company || sh.name), inp('name'), false);
     h += row('荷受け人', E(sh.company ? sh.name : ''), inp('person'), false);
     h += row('配達員向けメモ', '', inp('memo') + '<div class="sub">SMILE の荷受け人名１に入ります（例：午前中配達希望／14-16時配達希望）。配達員の目に留まるためのメモで、納品先の同じ・違うの判定には使いません。<b>新規の納品先にだけ入ります</b></div>', false);
@@ -661,8 +689,8 @@ function compareHtml(s) {
   }
   const smileNet = ml.reduce((a, x) => a + x.amt, 0), smileGross = Math.round(smileNet * 1.1);
   h += row('金額（税込）', yen(o.total) + '<div class="sub">送料 ' + yen(o.shipping || 0) + (o.discountCode ? '／割引 ' + E(o.discountCode) : '') + '</div>', yen(smileGross) + '<div class="sub">税抜合計 ' + yen(smileNet) + ' の1.1倍</div>', Math.abs(smileGross - o.total) > 2);
-  h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : E(md(shipOf(s)) + ' 出荷予定（受注から ' + s.leadDays + ' 営業日）'), false);
-  h += row('メモ', E(o.notes || ''), E(act ? P(act.rows[0], ['社内メモ']) : memoOf(s)), false, act ? '社内メモ' : '社内メモ（取込予定）');
+  h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : (stNow === 'new' || stNow === 'ok' ? '出荷予定日 ' + shipCtl(s, stNow, rec(s), shipOf(s)) : E(md(shipOf(s)) + ' 出荷予定（受注から ' + s.leadDays + ' 営業日）')), false);
+  h += row('メモ', E(o.notes || ''), act ? E(P(act.rows[0], ['社内メモ'])) : '社内メモ（取込予定）' + memoCtl(s, stNow, rec(s)), false);
   h += row('支払', E(o.paymentMethod + '／' + o.financial), act ? '受注№ ' + E(act.juchuNo) : '', false);
   h += '</tbody></table>';
   if (FLc) {
@@ -670,6 +698,13 @@ function compareHtml(s) {
     h = h.replace('<!--CMPSUM-->', '<div class="cmpsum ' + (bad ? 'bad' : 'ok') + '">' + (bad ? '<b>✗ 確認が必要な不一致：' + bad + '件</b>（赤い項目）' : '<b>✓ 問題は見つかりませんでした</b>') +
       '<span class="muted">　自動変換された項目：' + uniq.length + '件</span>' + (uniq.length ? '<details style="margin-top:4px"><summary>変換の内容を見る</summary><ul style="margin:4px 0 0 18px;padding:0">' + uniq.map(x => '<li>' + E(x) + '</li>').join('') + '</ul></details>' : '') + '</div>');
   } else h = h.replace('<!--CMPSUM-->', '');
+  h += deliveryBarHtml(s, d, act, stNow, editing);
+  return h;
+}
+// 納品先を直す操作（比較の下と、伝票イメージの納品先の枠で共通）
+function deliveryBarHtml(s, d, act, stNow, editing) {
+  const E = esc; let h = '';
+  if (editing) h += '<div id="edMsg" class="ed-msg"></div><div class="muted" style="font-size:11px">黄色の枠＝「内容を確認する」で確認してから保存します（* は必須）。青の枠（社内メモ・出荷予定日）は、入力するとすぐ保存されます</div>';
   if (stNow === 'new' && !act) {
     if (editing) h += '<div class="row" style="margin:8px 0"><button class="btn" data-act="edreview" data-id="' + s.id + '">内容を確認する</button><button class="btn sec" data-act="edcancel" data-id="' + s.id + '">やめる（保存しない）</button><span class="muted">まだ保存されません。次の画面で確認してから保存します</span></div>';
     else h += '<div class="row" style="margin:8px 0"><button class="btn sec" data-act="edstart" data-id="' + s.id + '">納品先を直す</button>' +
@@ -1778,7 +1813,7 @@ document.addEventListener('click', async e => {
         mutate: id => { const r = store.orders[id]; if (!r) return false; r.status = 'exported'; r.exportedAt = now; r.exportedBy = who; r.confirmedBy = who; r.confirmedAt = now; r.manualConfirmed = true; delete r.checkMessage; return true; } });
       return;
     }
-    if (d.act === 'edstart') { slipView = 'cmp'; const dv = EC.deliveryFromOrder(s.order, store.cfg); editId = s.id; editDraft = {}; EC.EDIT_FIELDS.forEach(f => { editDraft[f.k] = dv[f.k] == null ? '' : dv[f.k]; }); renderDrawer(); return; }
+    if (d.act === 'edstart') { const dv = EC.deliveryFromOrder(s.order, store.cfg); editId = s.id; editDraft = {}; EC.EDIT_FIELDS.forEach(f => { editDraft[f.k] = dv[f.k] == null ? '' : dv[f.k]; }); renderDrawer(); return; }
     if (d.act === 'edcancel') { editId = null; editDraft = null; renderDrawer(); return; }
     if (d.act === 'edrev') { const dv = EC.deliveryFromOrder(s.order, store.cfg); editDraft[t.dataset.k] = dv.auto[t.dataset.k] || ''; renderDrawer(); return; }
     if (d.act === 'edzip') { await zipHint(s); return; }
@@ -1838,7 +1873,14 @@ document.addEventListener('click', async e => {
     case 'o-pay': outPay(); break;
   }
 });
-document.addEventListener('input', e => { const k = e.target.dataset && e.target.dataset.ed; if (k && editDraft) editDraft[k] = e.target.value; });
+document.addEventListener('input', e => { const k = e.target.dataset && e.target.dataset.ed; if (k && editDraft) { editDraft[k] = e.target.value; if (e.target.value.trim()) e.target.dataset.last = e.target.value; refreshEditErr(); } });
+// 必須項目は、空のまま確定させない（欄を出たときに、直前の値へ戻す）
+document.addEventListener('change', e => {
+  const t = e.target, k = t.dataset && t.dataset.ed;
+  if (!k || ED_REQUIRED.indexOf(k) < 0 || !editDraft || t.value.trim()) return;
+  t.value = t.dataset.last || ''; editDraft[k] = t.value; refreshEditErr();
+  const msg = document.getElementById('edMsg'); if (msg) msg.insertAdjacentHTML('afterbegin', '<div>必須項目は空にできません。元の値に戻しました</div>');
+});
 // 保存の前の確認の画面。変更前→変更後を並べて、「この内容で保存」を押したときだけ保存する
 function reviewDeliveryEdit(s) {
   const dv = EC.deliveryFromOrder(s.order, store.cfg), diff = EC.diffDeliveryEdit(dv.auto, editDraft);
