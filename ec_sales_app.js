@@ -555,9 +555,9 @@ function nouhinBlockHtml(s, d, code, act, it, pend) {
     v = { code: '', name: EC.cutBytes(d.name, lim.name), p1: EC.cutBytes([d.person, d.memo].filter(Boolean).join(' '), lim.name), p2: '', zip: d.zip, a1: EC.cutBytes(d.addr1, lim.addr1), a2: EC.cutBytes(d.addr2, lim.addr2), tel: d.tel };
   }
   const val = x => x ? E(x) : '<span class="muted">なし</span>';
-  return '<div class="muted" style="margin:8px 0 2px;font-size:11px">' + title + '</div><div class="sl-hd c3">' +
+  return '<div class="sl-box"><div class="sl-bt">' + title + '</div><div class="sl-hd c3">' +
     it('納品先コード', v.code ? E(v.code) : pend('取込時に決定'), v.code ? '' : ' ') + it('納品先名', val(v.name)) + it('荷受け人名１', val(v.p1)) +
-    it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint;
+    it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint + '</div>';
 }
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
@@ -596,11 +596,11 @@ function slipImageHtml(s) {
   h += '<div class="sl-sum">受注数量合計 <b' + (plan && plan.total.qty !== img.total.qty ? ' class="sl-vv diff"' : '') + '>' + E(img.total.qty) + '</b>合計金額（税抜） <b' + (plan && plan.total.amount !== img.total.amount ? ' class="sl-vv diff"' : '') + '>' + E(img.total.amount) + '</b></div>' +
     '<div class="sl-hd c1" style="margin-top:4px">' + it('備考', E(img.biko || '')) + (img.memo ? it('社内メモ', E(img.memo)) : '') + '</div>' +
     // 拡張項目（SMILE の「受注伝票拡張項目」の画面）：運送業者・配送指定日など。取込後に、お客様の希望日が入っている注文などが分かる
-    nouhinBlockHtml(s, d, code, act, it, pend) +
-    '<div class="muted" style="margin:8px 0 2px;font-size:11px">拡張項目</div><div class="sl-hd c3">' +
+    '<div class="sl-boxes">' + nouhinBlockHtml(s, d, code, act, it, pend) +
+    '<div class="sl-box"><div class="sl-bt">拡張項目（受注伝票）</div><div class="sl-hd c3">' +
     it('運送業者', img.ext.carrier.missing ? pend('（この確認用データにはありません）') : E(img.ext.carrier.label || '（不明）'), df(img.ext.carrier.code, plan && plan.ext.carrier.code)) +
     it('配送指定日', img.ext.deliveryDate ? E(img.ext.deliveryDate) : '<span class="muted">指定なし</span>', df(img.ext.deliveryDate, plan && plan.ext.deliveryDate)) +
-    it('配達指定', img.ext.deliveryKubun.label ? E(img.ext.deliveryKubun.label) : '<span class="muted">なし</span>', df(img.ext.deliveryKubun.code, plan && plan.ext.deliveryKubun.code)) + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + (img.ext.tonami.code ? it('トナミ指定', E(img.ext.tonami.label)) : '') + (img.ext.daiichiMust ? it('必着指定（第一貨物）', E(img.ext.daiichiMust)) : '') + (img.ext.daiichiTime ? it('時間区分（第一貨物）', E(img.ext.daiichiTime)) : '') + (img.ext.tonamiShipper.code ? it('トナミ荷送人', E(img.ext.tonamiShipper.code + (img.ext.tonamiShipper.name ? ' ' + img.ext.tonamiShipper.name : ''))) : '') + '</div>' +
+    it('配達指定', img.ext.deliveryKubun.label ? E(img.ext.deliveryKubun.label) : '<span class="muted">なし</span>', df(img.ext.deliveryKubun.code, plan && plan.ext.deliveryKubun.code)) + it('営業所止め', img.ext.officeName ? E(img.ext.officeName) : '<span class="muted">なし</span>') + (img.ext.tonami.code ? it('トナミ指定', E(img.ext.tonami.label)) : '') + (img.ext.daiichiMust ? it('必着指定（第一貨物）', E(img.ext.daiichiMust)) : '') + (img.ext.daiichiTime ? it('時間区分（第一貨物）', E(img.ext.daiichiTime)) : '') + (img.ext.tonamiShipper.code ? it('トナミ荷送人', E(img.ext.tonamiShipper.code + (img.ext.tonamiShipper.name ? ' ' + img.ext.tonamiShipper.name : ''))) : '') + '</div></div></div>' +
     (act ? '' : '<div class="muted" style="margin-top:8px;font-size:12px">薄い斜体の項目は、取込時に SMILE が付けます。手配区分が 1:繰返(製作) の行には製番が付きます</div>') + '</div>';
   return h;
 }
