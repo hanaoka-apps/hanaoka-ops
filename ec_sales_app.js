@@ -1798,7 +1798,7 @@ async function markShipReported(ids, on) {
   lastPushErr = null;
   const at = new Date().toISOString(), who = account && account.username;
   await commit({ ids, action: 'その他', detail: () => on ? '出荷報告済みにした' : '出荷報告済みを戻した',
-    mutate: id => { const r = store.orders[id]; if (!r) return false; if (on) { r.shipReportedAt = at; r.shipReportedBy = who; } else { delete r.shipReportedAt; delete r.shipReportedBy; } return true; } });
+    mutate: id => { const r = store.orders[id] = store.orders[id] || (() => { const s = slips.find(x => x.id === id); return s ? { cust: s.cust, orderDate: s.orderDate, net: s.netTotal } : {}; })(); if (on) { r.shipReportedAt = at; r.shipReportedBy = who; } else { delete r.shipReportedAt; delete r.shipReportedBy; } return true; } });
   await pushChain;
   if (lastPushErr) { const m = String(lastPushErr && lastPushErr.message || lastPushErr); lastPushErr = null;
     alert(['この端末には記録しましたが、共有のリストに保存できませんでした（他の人には反映されません）。', '注文のリストに、列「ShipReportedBy」「ShipReportedAt」が無い可能性があります。専用機に列の追加を依頼してください。', '', m.slice(0, 200)].join(String.fromCharCode(10))); }
