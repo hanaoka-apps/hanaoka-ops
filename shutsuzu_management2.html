@@ -739,7 +739,7 @@ body:not(.signed-in) .gate{display:flex}
 <section class="fcard form-grid" id="cardBasic"><div class="fch"><b>基本情報</b><span class="fcs">誰の・何台の出図か</span></div>
 <label for="ship_no">出図管理番号</label><input id="ship_no" type="text" readonly placeholder="自動採番（00001〜）">
 <label for="date">登録日</label><input id="date" type="date" readonly>
-<label for="kin_req_no">依頼ナンバー</label><input id="kin_req_no" type="text" placeholder="20260629-0001"><label for="customer">受注先 <span class="muted">*</span></label><input id="customer" type="text" required><label for="end_user">エンドユーザー</label><input id="end_user" type="text" placeholder="KAAS など">
+<label for="kin_req_no">依頼ナンバー</label><input id="kin_req_no" type="text" placeholder="20260629-0001"><label for="end_user">エンドユーザー <span class="muted">*</span></label><input id="end_user" type="text" placeholder="KAAS など"><label for="customer">受注先</label><input id="customer" type="text" placeholder="営業側の情報（分からなければ空でも可）">
 <label class="hid" for="product_name_free">品名</label><input class="hid" id="product_name_free" type="text">
 <label class="hid" for="model_free">型式</label><input class="hid" id="model_free" type="text">
 <label class="hid" for="destination">仕向地</label><input class="hid" id="destination" type="text">
@@ -2354,11 +2354,9 @@ function parseKintone(raw){
   /* 別アプリの書式：区分は「引き合い書/生産依頼書」の次の行。引き合い先の項目は無いので、
      引き合いルートで花岡車輌の次に出てくる会社を受注先の候補にする（画面で直せる）。 */
   if(!o.kind){const k=L.indexOf("引き合い書/生産依頼書");if(k>=0&&L[k+1]&&L[k+1].length<12)o.kind=L[k+1]}
-  if(!o.customer&&o.route){
-    const ps=o.route.split(/[→＞>]/).map(x=>trim(x)).filter(Boolean);
-    const k=ps.findIndex(x=>x.indexOf("花岡")<0);
-    if(k>=0)o.customer=ps[k];
-  }
+  /* 受注先は営業側の情報で、工場側ではエンドユーザーを表題にする（寒河江さん 11/5）。
+     引き合い先の項目が無い書式では、ユーザー名をそのまま受注先の欄にも入れる（画面で直せる）。 */
+  if(!o.customer&&o.user)o.customer=o.user;
 
   /* 見積り表 */
   i=L.findIndex(x=>/^機種[\s\t]+台数[\s\t]+販売金額/.test(x));
@@ -2384,7 +2382,10 @@ function parseKintone(raw){
       const qi=L.findIndex((x,k)=>k>ti&&x==="台数");
       const qty=qi>=0&&/^\d{1,4}$/.test(L[qi+1]||"")?L[qi+1]:"";
       const due=kAfterLabel(L,"希望納期")||"";
-      if(model)o.rows.push({model:model,dest:o.dest,qty:qty,due:due,note:""});
+      /* 営業側は正しい型式・品名が分からないことがある。「Hから始まる番号」は図番として扱い、
+         型式は空のまま取り込む（あとで出荷記録のために直す）。 */
+      const isZu=/^H\d{5,}/i.test(model);
+      if(model)o.rows.push({model:isZu?"":model,zu:isZu?model:"",dest:o.dest,qty:qty,due:due,note:""});
     }
   }
   o.total=o.rows.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0);
@@ -2425,10 +2426,11 @@ function kinRead(){
     '</div>';
   h+='<div style="margin-top:12px"><label style="font-size:12px;color:var(--muted);font-weight:700">'+
      '内訳の候補（見積り金額の表から）</label>'+
-     '<div class="ktwrap"><table class="ktbl"><thead><tr><th style="width:34%">機種→型式</th>'+
-     '<th style="width:22%">仕向地</th><th style="width:12%">台数</th><th style="width:32%">納期</th></tr></thead><tbody>'+
+     '<div class="ktwrap"><table class="ktbl"><thead><tr><th style="width:26%">機種→型式</th><th style="width:20%">図番</th>'+
+     '<th style="width:16%">仕向地</th><th style="width:10%">台数</th><th style="width:28%">納期</th></tr></thead><tbody>'+
      o.rows.map((r,i)=>'<tr>'+
        '<td><input class="k-model" value="'+esc(r.model)+'"></td>'+
+       '<td><input class="k-zu" value="'+esc(r.zu||"")+'"></td>'+
        '<td><input class="k-dest" value="'+esc(r.dest)+'"></td>'+
        '<td><input class="k-qty qt" value="'+esc(r.qty)+'"></td>'+
        '<td><input class="k-due" value="'+esc(r.due)+'"></td></tr>').join("")+
@@ -2458,23 +2460,25 @@ let KIN_GROUPS=null, KIN_HEADER=null;
 function groupKinRows(rows){
   const map=new Map();
   rows.forEach(r=>{
-    const key=trim(r.model)||"（機種未設定）";
+    const key=trim(r.model)||trim(r.zu)||"（機種未設定）";
     if(!map.has(key))map.set(key,[]);
     map.get(key).push(r);
   });
-  return [...map.entries()].map(([model,rs])=>({
-    model,rows:rs,total:rs.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0)
-  }));
+  return [...map.entries()].map(([key,rs])=>{
+    const model=rs.some(r=>trim(r.model))?key:"";   /* 型式が空で図番だけの機種は、型式を空のままにする */
+    return {key,model,rows:rs,total:rs.reduce((a,r)=>a+(parseInt(r.qty,10)||0),0)};
+  });
 }
 function kinApply(){
   if(!KIN)return;
   const gv=id=>{const e=$(id);return e?trim(e.value):""};
   const rows=[...$("kinPreview").querySelectorAll(".ktbl tbody tr")].map(tr=>({
     model:trim(tr.querySelector(".k-model").value),
+    zu   :trim(tr.querySelector(".k-zu").value),
     dest :trim(tr.querySelector(".k-dest").value),
     qty  :trim(tr.querySelector(".k-qty").value),
     due  :trim(tr.querySelector(".k-due").value)
-  })).filter(r=>r.model||r.dest||r.qty);
+  })).filter(r=>r.model||r.zu||r.dest||r.qty);
   if(!rows.length){toast("内訳の行がありません。機種・仕向地・台数を入れてから押してください。",true);return}
   KIN_HEADER={reqNo:gv("kin_no"),customer:gv("kin_cust"),endUser:gv("kin_user"),dest:gv("kin_dest")};
   KIN_GROUPS=groupKinRows(rows);
@@ -2491,7 +2495,7 @@ function renderKinGroups(){
     (h.endUser?('　エンドユーザー '+esc(h.endUser)):"")+
     '<br>この内容で<b>'+KIN_GROUPS.length+'件の出図</b>（機種ごと）を新規登録します。依頼ナンバーは全部の出図に共通で付きます。</div>';
   html+=KIN_GROUPS.map(g=>
-    '<div class="kgcard"><div class="kgtitle">'+esc(g.model)+'　<span class="muted">'+g.total+'台</span></div>'+
+    '<div class="kgcard"><div class="kgtitle">'+esc(g.model||g.key)+(g.model?'':' <span class="muted">（図番。型式はあとで入力）</span>')+'　<span class="muted">'+g.total+'台</span></div>'+
     '<div class="ktwrap"><table class="ktbl" style="margin-top:8px"><thead><tr>'+
     '<th style="width:40%">仕向地</th><th style="width:20%">台数</th><th style="width:40%">納期</th></tr></thead><tbody>'+
     g.rows.map(r=>'<tr><td>'+esc(r.dest||"—")+'</td><td>'+esc(r.qty||"")+'</td><td>'+esc(r.due||"—")+'</td></tr>').join("")+
@@ -2520,12 +2524,13 @@ async function kinCommit(){
       const e=norm({
         ship_no:pad5(String(n)),
         date:today(),
-        customer:KIN_HEADER.customer,
+        customer:KIN_HEADER.customer||KIN_HEADER.endUser,
         kin_req_no:KIN_HEADER.reqNo,
         end_user:KIN_HEADER.endUser,
         model:g.model,
+        drawing_no:[...new Set(g.rows.map(r=>trim(r.zu)).filter(Boolean))].join("・"),
         units:String(g.total||1),
-        meisai:g.rows.map(r=>({dest:r.dest,qty:r.qty,model:g.model,due:parseKinDue(r.due)})),
+        meisai:g.rows.map(r=>({dest:r.dest,qty:r.qty,model:g.model,zu:trim(r.zu),due:parseKinDue(r.due)})),
         note:KIN_HEADER.dest?("納品先 "+KIN_HEADER.dest):""
       });
       await spCreate(e);
@@ -3610,8 +3615,11 @@ function validate(e){
   /* 図面まわり（図番など）は登録時点で決まっていなくていい。
      登録に要るのは受注先・仕向地・型式だけ。 */
   const ms=(e.meisai||[]).filter(r=>r.dest||r.qty||r.zu||r.model);
-  let ok=!!(trim(e.customer)&&ms.length&&ms.some(r=>trim(r.dest))&&ms.some(r=>trim(r.model)));
-  let msg=ok?"":"必須項目（受注先・仕向地・型式）を入力してください。";
+  /* 工場側はエンドユーザーを表題にする。受注先は営業側の情報なので、どちらかあればよい。
+     型式は営業側で分からないことがあるので、図番があれば型式はあとでよい。 */
+  const who=trim(e.customer)||trim(e.end_user);
+  let ok=!!(who&&ms.length&&ms.some(r=>trim(r.dest))&&ms.some(r=>trim(r.model)||trim(r.zu)));
+  let msg=ok?"":"必須項目（受注先またはエンドユーザー・仕向地・型式または図番）を入力してください。";
   /* 銘板表示方法が「固定値」なら、その数値も必須。空のままだと
      資材側で自重が自動で作れず、出図まで気づけない。 */
   if(ok&&e.wt_method==="固定値"&&!trim(e.wt_fixed)){
@@ -3620,7 +3628,7 @@ function validate(e){
   }
   $("formWarn").style.display=ok?"none":"block";
   $("formWarn").textContent=msg;
-  $("customer").classList.toggle("invalid",!ok&&!trim(e.customer));
+  $("customer").classList.toggle("invalid",!ok&&!who);
   return ok;
 }
 /* 1台口の内訳に直接書いた車体番号を、できあがった製造番号明細（1台）へ入れる。
@@ -3737,7 +3745,7 @@ function rows(){const q=($("q").value||"").toLowerCase();let r=loadData().map((d
     const ni=s.info&&s.info.length>0,ns=s.spec.length>0;
     return sf==="any"?(ni||ns):sf==="info"?ni:ns});}const s=$("sortBy").value;r.sort((a,b)=>s==="ship_no_asc"?(parseInt(a.ship_no)||0)-(parseInt(b.ship_no)||0):s==="date_desc"?String(b.date).localeCompare(a.date):s==="customer_asc"?String(a.customer).localeCompare(b.customer,"ja"):String(b.createdAt).localeCompare(a.createdAt));return r}
 function renderList(){
-  const headers=["出図管理番号","登録日","受注先","品名","型式","図番","台数","行き先","図面","出図情報","仕様・手配"];
+  const headers=["出図管理番号","登録日","エンドユーザー（受注先）","品名","型式","図番","台数","行き先","図面","出図情報","仕様・手配"];
   let html='<table class="hist"><thead><tr>'+headers.map(h=>"<th>"+h+"</th>").join("")+"</tr></thead><tbody>";
   const r=rows();
   if(!r.length)html+='<tr><td colspan="11" class="muted">表示できるデータがありません。</td></tr>';
@@ -3764,7 +3772,8 @@ function renderList(){
     const n=DRIVE_ID?(()=>{const g=relatedGroups(d.drawing_no);return g.exact.length+g.same.length})():0;
     const cls=[d._i===editingIndex?"sel":"",o.inGroup?"kgi":""].filter(Boolean).join(" ");
     html+='<tr data-i="'+d._i+'"'+(cls?' class="'+cls+'"':'')+'>'+
-      '<td><b>'+esc(d.ship_no)+'</b></td><td>'+esc(d.date)+'</td><td>'+esc(d.customer)+'</td>'+
+      '<td><b>'+esc(d.ship_no)+'</b></td><td>'+esc(d.date)+'</td><td>'+esc(d.end_user||d.customer)+
+        (d.end_user&&d.customer&&d.end_user!==d.customer?'<div class="muted" style="font-size:11.5px">'+esc(d.customer)+'</div>':'')+'</td>'+
       '<td class="wrapc">'+esc(d.product_name)+'</td><td class="wrapc">'+esc(d.model)+'</td>'+
       '<td class="zu wrapc">'+esc(d.drawing_no)+'</td><td class="num">'+esc(d.units)+'</td>'+
       '<td class="dest">'+esc(destTxt)+'</td>'+
@@ -3787,7 +3796,7 @@ function detOpen(i){
   loadEntryToForm(i);
   setEditable(false);
   $("detNo").textContent="出図 "+(d.ship_no||"—");
-  $("detSub").textContent=[d.date,d.customer,d.product_name,d.model].filter(Boolean).join("　/　");
+  $("detSub").textContent=[d.date,d.end_user||d.customer,d.product_name,d.model||d.drawing_no].filter(Boolean).join("　/　");
   $("linkShukka").href="shukka_input.html?shutsuzu="+encodeURIComponent(d.ship_no||"");
   renderSiblings(d);
   renderMissing(d);
