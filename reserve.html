@@ -651,6 +651,7 @@ function applyHide(){ RESRC = ALLRES.filter(r => !hiddenByToggle(r)); }
 /* 管理者（占有情報の再構築など、誤って押されると困る道具を出す人）。URLに ?admin=1 を付けても出せる（切り分け用） */
 const ADMINS = ['t.fukuda@hanaokacorp.onmicrosoft.com', 't.fukuda@hanaoka-corp.co.jp'];
 const isAdmin = () => ADMINS.includes((currentAccount?.username || '').toLowerCase()) || /(\?|&)admin=1(&|$)/.test(location.search);
+let CAR_NOMAIL = [];  /* リソースメールが分からず一覧に出せない営業車の名前（管理の道具に出す） */
 let FETCH_MODE = '';  /* 履歴の取得：'server'（サーバー側で絞り込み）／'client'（全件取得）。管理画面に出す */
 let STATUS = [];
 
@@ -697,13 +698,25 @@ async function loadCarMaster(){
   if (!items.length) return [];
   const keys = Object.keys(items[0].fields || {});
   const kMail = pickKey(keys, RX_MAIL), kName = pickKey(keys, RX_NAME), kLoc = pickKey(keys, RX_LOC);
-  return items.map(it => {
+  const cars = items.map(it => {
     const f = it.fields || {};
     const raw = kLoc ? f[kLoc] : '';
     const loc = String((raw && typeof raw === 'object' ? (raw.Value || raw.LookupValue || '') : raw) || '');
     return { k:'car', n: String((kName && f[kName]) || f.Title || '(名称なし)'), loc: locOf(loc) || loc,
       mail: String((kMail && f[kMail]) || '').trim().toLowerCase() };
-  }).filter(c => c.mail).map(c => ({ ...c, key:'car:'+c.mail }));
+  });
+  /* マスターにリソースメールが無い車は、営業車の予約履歴（車両名→ResourceEmail）から補う。履歴には必ず両方入っている */
+  if (cars.some(c => !c.mail)) {
+    try {
+      const hid = await resolveList(CAR_HIST_NAME, CAR_HIST_FB);
+      const hist = hid ? await gGetAll(`/sites/${SITE_ID}/lists/${hid}/items?$expand=fields&$top=2000`) : [];
+      const map = new Map();
+      hist.forEach(it => { const f = it.fields || {}; if (f.VehicleName && f.ResourceEmail) map.set(String(f.VehicleName), String(f.ResourceEmail).trim().toLowerCase()); });
+      cars.forEach(c => { if (!c.mail && map.has(c.n)) c.mail = map.get(c.n); });
+    } catch {}
+  }
+  CAR_NOMAIL = cars.filter(c => !c.mail).map(c => c.n);   /* それでも分からない車（予約できないので一覧に出せない）。管理の道具に出す */
+  return cars.filter(c => c.mail).map(c => ({ ...c, key:'car:'+c.mail }));
 }
 function floorFromMail(mail){
   const local = String(mail || '').split('@')[0];
@@ -1001,6 +1014,12 @@ function startAutoRefresh(){
     if (document.querySelector('.modal.on') || document.hidden) return;
     try { await loadWeek(); } catch {}
   }, 5 * 60 * 1000);
+  if (!startAutoRefresh.vis) {
+    startAutoRefresh.vis = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && Date.now() - lastLoad > 60e3 && !document.querySelector('.modal.on')) loadWeek().catch(() => {});
+    });
+  }
 }
 async function loadWeek(){
   const seq = ++LOAD_SEQ;
@@ -1150,8 +1169,9 @@ function paintDupWarn(byKey, v0, v1){
              : 'どちらかの期間を調整するか取消してください。総務部までご連絡ください。'));
   }
   /* LockData は複数行テキスト（上限8000文字）。1区間あたり約62文字なので、未来の予約が約128件たまると保存できなくなる */
-  const fat = adm ? MACHINES.filter(m => (m.lock || '').length > 6000) : [];
-  if (fat.length) msgs.push(`占有情報が上限（8000文字）に近い機体があります：${esc(fat.map(m => m.n).join('、'))}。「占有情報を再構築」で古い分が整理されます。`);
+  const fat = MACHINES.filter(m => (m.lock || '').length > 6000);
+  if (fat.length) msgs.push(`予約の記録が上限に近い機体があります：${esc(fat.map(m => m.n).join('、'))}。`
+    + (adm ? '「占有情報を再構築」で古い分が整理されます。' : 'このままだと予約できなくなるので、総務部までご連絡ください。'));
   w.className = msgs.length ? 'on' + (dups.length ? '' : ' soft') : '';
   w.innerHTML = msgs.join('<br>');
   const b = el('dupFix'); if (b) b.onclick = openAdmin;
@@ -1277,7 +1297,7 @@ let adminLoading = null;
 function loadAdminJs(){
   if (window.ReserveAdmin) return Promise.resolve();
   return adminLoading || (adminLoading = new Promise((ok, ng) => {
-    const sc = document.createElement('script'); sc.src = 'reserve_admin.js?v=20261105';
+    const sc = document.createElement('script'); sc.src = 'reserve_admin.js?v=20261106';
     sc.onload = ok; sc.onerror = () => { adminLoading = null; ng(new Error('reserve_admin.js を読み込めませんでした')); };
     document.head.appendChild(sc);
   }));
@@ -1286,7 +1306,7 @@ function adminCtx(){
   return {
     gGet, gGetAll, gBatch, gPost, gPatchIf, getToken, SITE_ID, GRAPH_BASE, LIST_MASTER, HIST_NAME, LIST_HIST_OLD, LOCK_COL, RESV_COL, DAY, P, sleep,
     parseOcc, dumpOcc, prune, newToken, newSetId, openM,
-    listHist: () => LIST_HIST, machines: () => MACHINES, resources: () => ALLRES, status: () => STATUS, src: () => SRC, fetchMode: () => FETCH_MODE,
+    listHist: () => LIST_HIST, machines: () => MACHINES, carNoMail: () => CAR_NOMAIL, nameMapOk: () => !!NAMEMAP, nameMapTried: () => NAMEMAP_TRIED, resources: () => ALLRES, status: () => STATUS, src: () => SRC, fetchMode: () => FETCH_MODE,
     snack: showSnack, usage: (a, d) => UsageLog.log(a, d),
     reload: async () => { await loadMasters(); applyHide(); await loadWeek(); }
   };
@@ -1806,7 +1826,7 @@ function renderDemoSet(){
       ${canRemove ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="dsRemove('${r.rid}')">✕ 外す</button>` : `<span style="color:var(--muted);font-size:11px">終了済み</span>`}
     </div>`;
   }).join('');
-  const all = MACHINES.filter(m => m.resv && !m.ng && !members.some(x => x.mid === m.id) && !DS.busy.has(m.id));
+  const all = MACHINES.filter(m => m.resv && !m.ng && !m.part && !members.some(x => x.mid === m.id) && !DS.busy.has(m.id));
   const cats = [...new Set(all.map(m => m.cat))].sort();
   if (DS.addCat && !cats.includes(DS.addCat)) DS.addCat = '';
   const cand = DS.addCat ? all.filter(m => m.cat === DS.addCat) : all;
@@ -1967,12 +1987,14 @@ async function dsRemove(rid){
   const r = dsRid(rid); if (!r) return;
   if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は外せません'); return; }
   const m = MACHINES.find(x => x.id === r.mid), who = r.who ? `${r.who} さん` : '（依頼者不明）';
-  if (!confirm(`この予約から機体を外します。\n\n　デモ機：${m ? m.n : '#' + r.mid}\n　件名　：${r.t}\n　依頼者：${who}\n\n外すと枠が空き、他の人が予約できるようになります。`)) return;
+  const warn = (sameMe(r) ? '' : `\n⚠ あなたの予約ではありません（依頼者：${who}）。本人に確認してから外してください。`)
+    + (r.s <= Date.now() ? '\n⚠ すでに貸出が始まっています。戻ってきたのなら「返却済みに」を使ってください。' : '');
+  if (!confirm(`この予約から機体を外します。\n\n　デモ機：${m ? m.n : '#' + r.mid}\n　件名　：${r.t}\n　依頼者：${who}\n${warn}\n外すと枠が空き、他の人が予約できるようになります。`)) return;
   const res = await cancelDemoRow(r);
   if (!res.ok) { showSnack('外せませんでした：' + res.message); return; }
   UsageLog.log('demo_remove');
   await dsRefresh();
-  showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください（デモ機の画面の管理者機能）');
+  showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください（🔧 管理の道具）');
 }
 async function dsCancelAll(){
   const members = dsMembers().filter(r => r.e > Date.now() && CAP.lock); if (!members.length) return;

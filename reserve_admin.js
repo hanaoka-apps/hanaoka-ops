@@ -106,9 +106,11 @@
     const capOk = room.filter(r => r.cap != null).length;
     let h = `<div class="st-row">デモ機 <b>${demo.length}</b>台 ／ 営業車 <b>${car.length}</b>台 ／ 会議室 <b>${room.length}</b>室`
       + `<span class="cnt">（部品・予約対象外を除く。いま画面に出ている数）</span></div>`;
-    h += `<div class="st-row">営業車：メール未設定 ${car.filter(r => !r.mail).length}台 ／ リスト補完 ${viaList.length}台 ／ 読めず ${car.filter(r => src[r.key] === 'error').length}台</div>`;
+    const noMail = C.carNoMail ? C.carNoMail() : [];
+    h += `<div class="st-row">営業車：リソースメールが分からず出せない <span class="${noMail.length ? 'ng' : 'ok'}">${noMail.length}台</span>${noMail.length ? `（${esc(noMail.join('、'))}。営業車管理一覧にメールを入れてください）` : ''} ／ リスト補完 ${viaList.length}台 ／ 読めず ${car.filter(r => src[r.key] === 'error').length}台</div>`;
     h += `<div class="st-row">会議室：収容人数あり <span class="${capOk ? 'ok' : 'ng'}">${capOk}</span>室 ／ 読めず ${room.filter(r => src[r.key] === 'error').length}室`
       + (room.length && !capOk ? ` <span class="cnt">（Place.Read.All が未同意か、収容人数が未設定です）</span>` : '') + `</div>`;
+    if (C.nameMapTried && C.nameMapTried() && !C.nameMapOk()) h += `<div class="st-row ng">会議室の予約者名：社員名簿を読めませんでした（GroupMember.Read.All / User.Read.All の同意を確認してください）。予約者名が「使用中」になります</div>`;
     if (bad.length) h += `<div class="st-row ng">読めなかった：${esc(bad.map(r => r.n).join('、'))}</div>`;
     if (st.length) h += `<div class="st-row ng">${st.map(esc).join('<br>')}</div>`;
     else if (!bad.length) h += `<div class="st-row"><span class="ok">問題は出ていません</span></div>`;
