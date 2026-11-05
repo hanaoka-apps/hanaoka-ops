@@ -275,6 +275,38 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.match(by['6714'].hints.join(), /伝票№5925/);
 }
 
+// ---- 期首残高（販売の売掛残高一覧表）から積み上げる ----
+//   期首より前の差額（Amazon の 6,600 のように期首の残高で調整済みのもの）は出さない。
+//   期首の時点の違算 ＝ 期首の残高 − 回収予定日が期首以降の請求のうち期首までの売上
+{
+  const detail = [
+    sale('X1', '20251205', 10000, 1), tax('X1', '20251215', 1000, 1),        // 12/15締 → 1/10 期限
+    sale('X1', '20260310', 20000, 2), tax('X1', '20260315', 2000, 2),        // 3/15締 → 4/10 期限（期首より後）
+    sale('X1', '20260320', 5000, 3), sale('X1', '20260405', 5000, 3), tax('X1', '20260415', 1000, 3),   // 締めが期首をまたぐ → 5/10（日曜）→5/11
+  ];
+  const payments = [pay('X1', '20251101', 0), pay('X1', '20260113', 17600),   // 6,600 多く入金（期首の残高で調整済み）
+    pay('X1', '20260410', 22000), pay('X1', '20260511', 11000)];
+  const customers = [cust('X1'), cust('Y1')];
+  const opening = bal => ({ date: '2026-04-01', bal: { X1: bal, Y1: 5000 }, names: { Y1: '期首だけ' } });
+  const run = op => A.build({ detail, payments, customers, staff, opening: op }, { asof: '2026-05-20', today: '2026-05-20' });
+  const M = run(opening(27000));
+  const x = M.customers.X1;
+  assert.equal(x.periods[0].opening, true);
+  assert.equal(x.periods[0].notDue, 22000 + 5000, '3/15締の請求書と、4/15締のうち3/20の売上');
+  assert.equal(x.periods[0].diff, 0);
+  assert.equal(x.diff, 0, '期首より前の 6,600 は出さない');
+  assert.ok(x.periods.find(p => p.due === '2026-01-10').beforeOpening);
+  assert.equal(M.openingDate, '2026-04-01');
+  const x2 = run(opening(30000)).customers.X1;
+  assert.equal(x2.diff, 3000, '期首の時点で回収予定日を過ぎた残りがある');
+  assert.equal(x2.openPeriods[0].opening, true);
+  const y = M.customers.Y1;
+  assert.equal(y.diff, 5000, '期首に残高があり、そのあと動きがない得意先も出す');
+  const op = A.openingFromHanbai([['売掛残高一覧表'], ['対象期間:2026年 4月 1日～2026年10月31日'], [], [], ['コード'],
+    ['<902301>', 'Amazon', 219890, 274010, -54120, 49200, 4920, 54120, 0]]);
+  assert.deepEqual([op.date, op.to, op.bal['902301'], op.end['902301']], ['2026-04-01', '2026-10-31', 219890, 0]);
+}
+
 // ---- CSV：引用符の中のカンマ・改行、BOM ----
 {
   const rows = A.toObjects('﻿"a","b"\r\n"1,2","x""y"\r\n"3","改\n行"\r\n');
