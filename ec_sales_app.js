@@ -1856,7 +1856,7 @@ async function makeShipMail(items) {
   if (!items.length) return false;
   const rep = FurusatoShipReport.build({ items, conf: CONF });
   await loadXLSX();
-  const ws = XLSX.utils.aoa_to_sheet(rep.aoa); ws['!cols'] = rep.aoa[0].map((_, i) => (rep.widths[i] ? { wch: rep.widths[i] } : {}));
+  const ws = XLSX.utils.aoa_to_sheet(rep.aoa); ws['!cols'] = rep.aoa[0].map((_, i) => (rep.widths[i] ? { wch: rep.widths[i] } : undefined));   // 幅を決めない列は、空の指定を書かない（空だと、Excel が幅0＝隠れた列として開く）
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
   const b64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
   const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
