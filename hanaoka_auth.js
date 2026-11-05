@@ -43,6 +43,55 @@
   var CLIENT_ID = 'd338d61b-01dc-4c7c-ac6b-aecf7f30d716';
   var TENANT_ID = '3933e8a0-c945-4e97-ae67-c82131087cad';
 
+  /* ------------------------------------------------------------
+     利用ログ（usage_log.js）
+     サインインに成功したら usage_log.js を読み込んで、画面を開いたことを記録する。
+     各アプリは何もしなくてよい（詳しくは usage_log.js の先頭）。
+     サインインより前に起きたエラーも記録できるよう、ここで先に貯めておく。
+     ------------------------------------------------------------ */
+  var SELF_SRC = (document.currentScript && document.currentScript.src) || '';
+  var USAGE_LOG_VER = '20261105b';
+  window.__haErrors = window.__haErrors || [];
+  function keepEarlyError(msg) { if (!window.UsageLog && window.__haErrors.length < 5) window.__haErrors.push(msg); }
+  window.addEventListener('error', function (e) {
+    keepEarlyError((e.message || 'error') + (e.filename ? ' @' + String(e.filename).split('/').pop() + ':' + (e.lineno || '') : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason; keepEarlyError('promise: ' + ((r && (r.message || String(r))) || ''));
+  });
+  function startUsageLog(pca, acc) {
+    try {
+      if (!acc) return;
+      if (window.UsageLog) { window.UsageLog.auto(pca, acc); return; }
+      var s = document.createElement('script');
+      s.src = new URL('usage_log.js?v=' + USAGE_LOG_VER, SELF_SRC || window.location.href).href;
+      s.setAttribute('data-ha-auto', '');
+      s.onload = function () { if (window.UsageLog) window.UsageLog.auto(pca, acc); };
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) { /* 記録できなくてもアプリは止めない */ }
+  }
+
+  /* 利用状況（usage_stats.html）を見られる管理者。サイドバーのメニューの出し分けにも使う */
+  var USAGE_ADMIN_NAMES = ['福田剛史', '花岡雅', '石井絢子'];
+  var USAGE_ADMIN_MAILS = ['t.fukuda@hanaoka-corp.co.jp', 't.fukuda@hanaokacorp.onmicrosoft.com'];
+  function isUsageAdmin(acc) {
+    if (!acc) return false;
+    return USAGE_ADMIN_NAMES.indexOf(String(acc.name || '').replace(/[\s　]+/g, '')) >= 0
+      || USAGE_ADMIN_MAILS.indexOf(String(acc.username || '').toLowerCase()) >= 0;
+  }
+  /* MSAL を作る前に、この端末に保存されているアカウントを読む（メニューの出し分け用。判定の本体ではない） */
+  function cachedAccounts() {
+    var out = [];
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i) || '';
+        if (!/-login\.windows\.net-/.test(k)) continue;
+        try { var v = JSON.parse(localStorage.getItem(k) || 'null'); if (v && v.username) out.push(v); } catch (e) {}
+      }
+    } catch (e) {}
+    return out;
+  }
+
   function authUrl() { return new URL('auth.html', window.location.href).href; }
 
   /* ------------------------------------------------------------
@@ -155,6 +204,7 @@
       if (!acc) { done(); return null; }
       var r = await pca.acquireTokenSilent({ scopes: scopes, account: acc });
       if (r && r.account && pca.setActiveAccount) pca.setActiveAccount(r.account);
+      startUsageLog(pca, (r && r.account) || acc);
       /* 成功時は done() しない。アプリが自分でサインイン画面を消すまで
          ボタンは隠したまま（room_reserve などは消す前に通信を挟むため） */
       return (r && r.account) || acc;
@@ -174,6 +224,7 @@
     }
     var r = await pca.loginPopup({ scopes: scopes, redirectUri: authUrl() });
     if (pca.setActiveAccount) pca.setActiveAccount(r.account);
+    startUsageLog(pca, r.account);
     return r.account;
   }
 
@@ -187,6 +238,9 @@
     login: login,
     /* サインイン画面をもう一度見せるとき（サインアウト・読み込み失敗）に呼ぶ */
     done: done,
-    holdUntilError: holdUntilError
+    holdUntilError: holdUntilError,
+    startUsageLog: startUsageLog,
+    isUsageAdmin: isUsageAdmin,
+    cachedAccounts: cachedAccounts
   };
 })();

@@ -23,7 +23,7 @@
         { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'staff_schedule.html', l: '全社員の予定' },
         { f: 'reserve.html', l: '施設・備品予約' },
-        { f: 'usage_stats.html', l: '利用状況（管理者）' },
+        { f: 'usage_stats.html', l: '利用状況（管理者）', admin: true },   /* 管理者にだけ出す（showApp を参照） */
         { f: 'demo_reserve.html', l: 'デモ機' },
         { f: 'car_reserve.html',  l: '営業車' },
         { f: 'room_reserve.html', l: '会議室' },
@@ -61,6 +61,13 @@
   ];
 
   var cur = (location.pathname.split('/').pop() || 'ap_dashboard.html').toLowerCase();
+  /* 管理者用の項目（admin: true）は、この端末でサインインしている人が管理者のときだけ出す。
+     見た目の出し分けだけで、守りの本体は各画面とSharePointの権限（usage_stats.html を参照）。
+     開いている画面そのものは、管理者でなくても消さない（どこにいるか分からなくなるため） */
+  function showApp(a) {
+    if (!a.admin || a.f === cur) return true;
+    try { return !!(window.HanaokaAuth && HanaokaAuth.cachedAccounts().some(HanaokaAuth.isUsageAdmin)); } catch (e) { return false; }
+  }
 
   function isCur(a) { return a.f === cur || (a.alt || []).indexOf(cur) >= 0; }
   function currentGroup() {
@@ -167,7 +174,7 @@
         '<div class="hx-brand-name">' + b.name + '<small>' + b.sub + '</small></div>' +
       '</a>' +
       '<div class="hx-label">MENU</div>' +
-      g.apps.map(function (a) {
+      g.apps.filter(showApp).map(function (a) {
         /* gate：権限を確かめてから出す項目（画面側がクラスの hide を外す） */
         var gated = g.gate && g.gate.page === cur && a.f !== cur ? ' ' + g.gate.cls + ' hide' : '';
         return '<a class="hx-item' + (a.sub ? ' hx-sub' : '') + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
@@ -219,7 +226,7 @@
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
     injectStyle();
-    var html = '<div class="app-nav">' + g.apps.map(function (a) {
+    var html = '<div class="app-nav">' + g.apps.filter(showApp).map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
       return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + (a.sub ? '└ ' : '') + a.l + '</a>';
     }).join('') + '</div>';
