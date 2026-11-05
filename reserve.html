@@ -179,6 +179,7 @@
   .dbar:hover{filter:brightness(.95)} .dbar .tm{opacity:.85;font-size:10px;margin-right:3px;font-variant-numeric:tabular-nums}
   .dbar .wh{opacity:.7;font-size:10px;margin-left:4px}
   .nowline{position:absolute;top:0;bottom:0;width:0;border-left:2px solid var(--accent);z-index:4;pointer-events:none}
+  .mfilter.rf-off,.mfilter.open.rf-off{display:none !important}
   @media(max-width:820px){
     .only-phone{display:inline-block}
     .mfilter{display:none !important}
@@ -237,6 +238,12 @@
       <input type="search" id="q" placeholder="名前で絞り込み（例：PAL）" style="width:190px">
       <label class="chk" style="margin:0"><input type="checkbox" id="onlyres"> 予約のあるものだけ</label>
     </div>
+    <div class="mfilter" id="roomFilter" style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
+      <span class="lbl">会議室</span>
+      <select id="capSel" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font:inherit;font-size:12.5px"></select>
+      <select id="flrSel" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font:inherit;font-size:12.5px"></select>
+      <span class="cnt">収容人数・階で絞り込めます（会議室だけに効きます）</span>
+    </div>
     <div class="mfilter" style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
       <span class="lbl">保存</span><span id="presets"></span>
       <button class="fchip dash" id="savePreset">＋ いまの絞り込みを保存</button>
@@ -286,6 +293,9 @@
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:5px"><span class="lbl">種類</span><span id="sKinds"></span></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><span class="lbl">拠点</span><span id="sLocs"></span>
       <input type="search" id="sQ" placeholder="名前で絞り込み" style="width:150px;margin-left:auto"></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><span class="lbl">会議室</span>
+      <select id="sCap" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font:inherit;font-size:12.5px"></select>
+      <select id="sFlr" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font:inherit;font-size:12.5px"></select></div>
     <div style="margin-bottom:6px"><button class="act pri" id="sGo">🔍 この期間の空きを検索</button></div>
     <div id="seekRes" style="font-size:12.5px"></div>
   </div>
@@ -327,6 +337,8 @@
   <h3 id="dT"></h3>
   <div class="bd"><dl id="dB"></dl><div class="note" id="dN"></div></div>
   <div class="ft"><span class="msg" id="dMsg"></span>
+    <a class="act pri" id="dTeams" href="#" target="_blank" rel="noopener noreferrer" style="display:none"></a>
+    <a class="act" id="dMail" href="#" style="display:none">メールで聞く</a>
     <a class="act" id="dLink" href="#" style="display:none">デモ機の画面で編集・返却…</a>
     <button class="act" id="dEdit" style="display:none">予定を変更…</button>
     <button class="act dngr" id="dRemove" style="display:none">この車・会議室を外す</button>
@@ -662,7 +674,7 @@ async function loadRoomMaster(){
   return (list || []).filter(r => r.mail).map(r => {
     const mail = String(r.mail).trim().toLowerCase();
     return { key:'room:'+mail, k:'room', n:r.n || mail, mail, cap: r.cap > 0 ? r.cap : null,
-      loc: locOf(r.bld) || locOf(r.n), flr: r.flr || floorFromMail(mail) };
+      loc: locOf(r.bld) || locOf(r.n), flr: r.flr || floorFromMail(mail), bld: r.bld || '' };
   });
 }
 async function loadMasters(){
@@ -672,7 +684,10 @@ async function loadMasters(){
     loadCarMaster().catch(e => { STATUS.push('営業車の一覧が読めませんでした：' + e.message); return []; }),
     loadRoomMaster().catch(e => { STATUS.push('会議室の一覧が読めませんでした：' + e.message); return []; })
   ]);
-  const sortK = a => a.slice().sort((x, y) => locRank(x.loc) - locRank(y.loc));   /* 安定ソート：拠点内は元の順 */
+  const flrNum = f => { const m = String(f || '').match(/(\d+)/); return m ? Number(m[1]) : 99; };
+  /* 安定ソート：拠点の順。会議室は、拠点の中を 階（数値順）→ 名前 の順にする。ほかは元の順 */
+  const sortK = a => a.slice().sort((x, y) => locRank(x.loc) - locRank(y.loc)
+    || (x.k === 'room' && y.k === 'room' ? (flrNum(x.flr) - flrNum(y.flr) || x.n.localeCompare(y.n, 'ja', { numeric: true })) : 0));
   RESRC = [...sortK(d), ...sortK(c), ...sortK(r)];
 }
 
@@ -774,11 +789,18 @@ async function ensureNameMap(){
   try {
     const t = await getExtraToken(PEOPLE_SCOPES, false);
     if (!t) return;
-    const items = await gGetAll(`/groups/${GROUP_ID}/members/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName&$top=999`, null, t);
+    const items = await gGetAll(`/groups/${GROUP_ID}/members/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName,department&$top=999`, null, t);
     NAMEMAP = new Map();
     items.forEach(u => { const k = normName(u.displayName); if (!k) return;
-      NAMEMAP.set(k, NAMEMAP.has(k) ? null : { n:u.displayName, mail:String(u.mail || u.userPrincipalName || '').toLowerCase() }); });
+      NAMEMAP.set(k, NAMEMAP.has(k) ? null : { n:u.displayName, mail:String(u.mail || u.userPrincipalName || '').toLowerCase(), dep:String(u.department || '').trim() }); });
   } catch { NAMEMAP = null; }
+}
+/* getSchedule のエラーを日本語にする（会議室のアドレスを変えた直後などに出る） */
+function roomErrJa(msg){
+  const m = String(msg || '');
+  if (/Unable to resolve e-mail address/i.test(m)) return 'この会議室のアドレスが最近変わったため、予約を読めません（数時間から1日で自動的に直ります）';
+  if (/ErrorItemNotFound/i.test(m)) return 'この会議室の予定表を読む権限が足りません（総務部にご連絡ください）';
+  return m;
 }
 async function loadRoomEvents(f0, f1, rooms){
   if (!rooms.length) return [];
@@ -792,17 +814,17 @@ async function loadRoomEvents(f0, f1, rooms){
   const out = [], me = myMail();
   res.forEach((r, ci) => {
     const group = chunks[Number(r.id)] || chunks[ci] || [];
-    if (r.status !== 200 || !r.body || !Array.isArray(r.body.value)) { STATUS.push(`会議室 ${group.length}室の予約を読めませんでした`); return; }
+    if (r.status !== 200 || !r.body || !Array.isArray(r.body.value)) { group.forEach(x => { SRC[x.key] = 'error'; }); STATUS.push(`会議室 ${group.length}室の予約を読めませんでした`); return; }
     r.body.value.forEach((sc, i) => {
       const mail = String(sc.scheduleId || group[i]?.mail || '').toLowerCase();
       const room = group.find(x => x.mail === mail) || group[i];
       if (!room) return;
-      if (sc.error) { STATUS.push(`会議室「${room.n}」の予約を読めませんでした`); return; }
+      if (sc.error) { SRC[room.key] = 'error'; STATUS.push(`会議室「${room.n}」：${roomErrJa(sc.error.message || sc.error.responseCode || 'エラー')}`); return; }
       (sc.scheduleItems || []).forEach(it => {
         const s = pTZ(it.start), e = pTZ(it.end);
         if (isNaN(s) || isNaN(e) || e <= s || it.status === 'free') return;
         const p = NAMEMAP ? NAMEMAP.get(normName(it.subject)) : null;
-        out.push({ k:'room', key:room.key, mail:room.mail, s, e, t: p ? p.n : '使用中', who: p ? p.n : '', whoMail: p ? p.mail : '',
+        out.push({ k:'room', key:room.key, mail:room.mail, s, e, t: p ? p.n : '使用中', who: p ? p.n : '', whoMail: p ? p.mail : '', whoDep: p ? p.dep : '',
           dest:'', allDay: isWholeDay({ s, e }), mine: !!me && !!p && p.mail === me });
       });
     });
@@ -850,7 +872,7 @@ let curDay = dayTopMs(Date.now());
 let VIEW = 'week';                         /* 'week'（週表）または 'day'（その日の時間割）。スマホは日が基本 */
 let SRC = {};                              /* 営業車の取得元：'list'＝リストで補った／'error'＝読めず */
 const isPhone = () => window.matchMedia && window.matchMedia('(max-width: 820px)').matches;
-const S = { kinds: new Set(KIND_ORDER), locs: new Set(), q:'', onlyres:false, collapsed:new Set(), sel:new Map() };
+const S = { kinds: new Set(KIND_ORDER), locs: new Set(), q:'', onlyres:false, collapsed:new Set(), sel:new Map(), cap:0, flr:'' };   /* cap・flr は会議室だけに効く */
 let EVK = { demo:[], car:[], room:[] }, EVL = [];
 let LOAD_SEQ = 0, lastLoad = 0, refreshTimer = null, LOADED = null;
 const PRESET_KEY = 'hanaoka.reserve.presets.v1';
@@ -864,7 +886,7 @@ function readUrl(){
   if (k.length) S.kinds = new Set(k);
   const l = (u.get('loc') || '').split(',').map(x => x.trim()).filter(Boolean);
   if (l.length) S.locs = new Set(l);
-  S.q = u.get('q') || '';
+  S.q = u.get('q') || ''; S.cap = Number(u.get('cap')) || 0; S.flr = u.get('flr') || '';
   const d = u.get('d');
   if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { const ms = dateToMs(d); if (!isNaN(ms)) { curWeek = weekTopMs(ms); curDay = dayTopMs(ms); } }
   const v = u.get('v');
@@ -877,12 +899,15 @@ function writeUrl(){
   if (S.kinds.size !== KIND_ORDER.length) u.set('k', [...S.kinds].join(','));
   if (S.locs.size) u.set('loc', [...S.locs].join(','));
   if (S.q) u.set('q', S.q);
+  if (S.cap) u.set('cap', S.cap); if (S.flr) u.set('flr', S.flr);
   try { history.replaceState(null, '', location.pathname + '?' + u.toString()); } catch {}
 }
 function visibleRes(){
   const q = S.q.trim().toLowerCase();
-  return RESRC.filter(r => S.kinds.has(r.k) && (!S.locs.size || S.locs.has(r.loc)) && (!q || r.n.toLowerCase().includes(q)));
+  return RESRC.filter(r => S.kinds.has(r.k) && (!S.locs.size || S.locs.has(r.loc)) && (!q || r.n.toLowerCase().includes(q))
+    && (r.k !== 'room' || (roomOk(r, S.cap, S.flr))));
 }
+const roomOk = (r, cap, flr) => (!cap || (r.cap != null && r.cap >= cap)) && (!flr || r.flr === flr);
 
 /* ============================================================
    読み込み
@@ -972,6 +997,14 @@ function renderChips(){
   const locs = [...new Set([...LOCS, ...RESRC.map(r => r.loc).filter(Boolean)])];
   el('locs').innerHTML = locs.map(l => `<button class="fchip loc${S.locs.has(l) ? ' on' : ''}" data-l="${esc(l)}">${esc(l)}<span class="n">${RESRC.filter(r => r.loc === l).length}</span></button>`).join(' ')
     + (RESRC.some(r => !r.loc) ? ` <button class="fchip loc${S.locs.has('') ? ' on' : ''}" data-l="">拠点なし<span class="n">${RESRC.filter(r => !r.loc).length}</span></button>` : '');
+  /* 会議室の収容人数・階。実際の部屋から選択肢を作る（最大の1室しかない人数は出さない） */
+  const rooms = RESRC.filter(r => r.k === 'room');
+  const caps = [...new Set(rooms.map(r => r.cap).filter(c => c > 0))].sort((a, b) => a - b);
+  const capOpts = caps.filter((c, i) => i < caps.length - 1 || caps.length <= 2);
+  const flrs = [...new Set(rooms.map(r => r.flr).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+  el('capSel').innerHTML = `<option value="">収容人数の指定なし</option>` + capOpts.map(c => `<option value="${c}"${S.cap === c ? ' selected' : ''}>${c}人以上（${rooms.filter(r => r.cap >= c).length}室）</option>`).join('');
+  el('flrSel').innerHTML = `<option value="">すべての階</option>` + flrs.map(f => `<option value="${esc(f)}"${S.flr === f ? ' selected' : ''}>${esc(f)}（${rooms.filter(r => r.flr === f).length}室）</option>`).join('');
+  el('roomFilter').classList.toggle('rf-off', !S.kinds.has('room') || !rooms.length);
   el('presets').innerHTML = PRESETS.map((p, i) => `<button class="fchip" data-p="${i}" title="クリックで適用／右クリックで削除">⭐ ${esc(p.n)}</button>`).join(' ');
 }
 function weekDays(){ return Array.from({length:7}, (_,i) => curWeek + i*DAY); }
@@ -1122,6 +1155,8 @@ document.addEventListener('contextmenu', e => {
   if (p) { e.preventDefault(); if (confirm('この保存済みの絞り込みを削除しますか？')) { PRESETS.splice(Number(p.dataset.p), 1); savePresets(); renderChips(); } }
 });
 el('locAll').onclick = () => { S.locs = new Set(); writeUrl(); render(); };
+el('capSel').onchange = e => { S.cap = Number(e.target.value) || 0; UsageLog.log('filter_room', `cap:${S.cap} flr:${S.flr}`); writeUrl(); render(); };
+el('flrSel').onchange = e => { S.flr = e.target.value; UsageLog.log('filter_room', `cap:${S.cap} flr:${S.flr}`); writeUrl(); render(); };
 el('q').oninput = e => { S.q = e.target.value; writeUrl(); render(); };
 el('onlyres').onchange = render;
 el('savePreset').onclick = () => {
@@ -1164,10 +1199,12 @@ function openDetail(i){
   el('dT').textContent = ev.t;
   const rows = [
     ['種類', KIND[ev.k].n],
-    ['対象', `${esc(r ? r.n : ev.key)}${r && r.loc ? `（${esc(r.loc)}）` : ''}`],
+    ['対象', `${esc(r ? r.n : ev.key)}${r && r.cap ? ` <span class="badge free">${r.cap}人</span>` : ''}`],
+    ...(ev.k === 'room' && r ? [['場所', esc([r.bld || r.loc, r.flr].filter(Boolean).join(' ')) || '—']] : (r && r.loc ? [['拠点', esc(r.loc)]] : [])),
     ['期間', `${whole ? `${jFull(ev.s)} 〜 ${jFull(ev.e - 60e3)}（終日）` : `${jFull(ev.s)} 〜 ${jFull(ev.e)}`}`],
-    ['予約者', ev.who ? esc(ev.who) : '—']
+    ['予約者', ev.who ? `${esc(ev.who)}${ev.whoDep ? ` <span class="badge list" style="background:#eceffa;color:var(--primary-dk);border-color:#d3daf0">${esc(ev.whoDep)}</span>` : ''}` : (ev.k === 'room' ? '<span style="color:var(--muted)">予約者名を特定できませんでした</span>' : '—')]
   ];
+  if (ev.k === 'room' && ev.whoMail) rows.push(['題目', `<span id="dSubject">${roomTitleHtml(ev)}</span>`]);
   if (ev.k === 'demo') { rows.push(['顧客名', esc(ev.cust) || '—'], ['行き先', esc(ev.dest) || '—'], ['備考', esc(ev.notes) || '—']); }
   else if (ev.k === 'car') rows.push(['行き先', esc(ev.dest) || '—']);
   rows.push(['状態', `<b>${ev._dup ? '重複' : dsStatus(ev, Date.now())}</b> <span style="color:var(--muted);font-size:11px">日時から計算</span>`]);
@@ -1177,18 +1214,54 @@ function openDetail(i){
   el('dLink').style.display = ev.k === 'demo' ? '' : 'none';
   if (ev.k === 'demo') el('dLink').href = `demo_reserve.html?d=${jKey(ev.s)}&openSet=${encodeURIComponent(ev.setId || ('~' + ev.rid))}`;
   ['dEdit','dRemove','dDelete'].forEach(id => el(id).style.display = mine ? '' : 'none');
+  /* 会議室：予約者へ、Teams・メールで直接聞けるようにする（空けてほしいときなど） */
+  const ask = ev.k === 'room' && ev.whoMail && ev.whoMail !== myMail();
+  const msgTxt = `${jFull(ev.s)}〜${jHM(ev.e)} の ${r ? r.n : '会議室'} について`;
+  el('dTeams').style.display = ask ? '' : 'none'; el('dMail').style.display = ask ? '' : 'none';
+  if (ask) {
+    el('dTeams').textContent = `Teams で ${ev.who} さんに聞く`;
+    el('dTeams').href = `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(ev.whoMail)}&message=${encodeURIComponent(msgTxt)}`;
+    el('dMail').href = `mailto:${encodeURIComponent(ev.whoMail)}?subject=${encodeURIComponent(msgTxt)}`;
+  }
   el('dMsg').textContent = ev._dup ? '⚠ 同じ時間に重なっている予約があります' : ''; el('dMsg').className = 'msg' + (ev._dup ? ' ng' : '');
   el('dN').textContent = ev.k === 'demo'
     ? 'デモ機の編集（期間・件名）、返却済みにする、機体の追加・外し、取消は「デモ機の画面」で行います。'
     : mine ? 'あなたが主催した予定です。変更・削除できます（変更・削除は予約した車・会議室にも反映されます）。'
            : 'この予約は変更できません（予約した本人が Outlook か、この画面から変更できます）。';
   openM('mDet');
+  if (ev.k === 'room' && ev.whoMail && ev.title === undefined) loadRoomTitle(ev).then(() => { const sp = el('dSubject'); if (sp && DET === ev) sp.innerHTML = roomTitleHtml(ev); });
+}
+/* 題目（予定の件名）は、詳細を開いたときだけ予約者の予定表から読む。
+   ★会議室の予定表からは取れない★ 会議室側の件名は「予約者の名前」に置き換わっているため（だから予約者が分かる）。
+   ★予約者本人の予定表を getSchedule で読む★ 返る件名は、Outlook のスケジュールアシスタントで他の人の予定を見たときと同じ範囲
+     （予定表の共有設定どおり）。この画面が新しく見せる範囲を広げることはない。非公開の予定は出さない。
+   ★一覧には出さない★ 押した1件だけ読む。 */
+function roomTitleHtml(ev){
+  const muted = t => `<span style="color:var(--muted)">${t}</span>`;
+  if (ev.title === undefined) return muted('読み込み中…');
+  if (ev.title === null) return muted('予約者の予定表から読めませんでした（共有設定によっては表示されません）');
+  if (ev.title.priv) return muted('非公開の予定のため表示しません');
+  return ev.title.subject ? `<b>${esc(ev.title.subject)}</b>` : muted('件名がありません');
+}
+async function loadRoomTitle(ev){
+  try {
+    const [res] = await gBatch([{ method: 'POST', url: '/me/calendar/getSchedule', headers: { 'Content-Type': 'application/json', Prefer: 'outlook.timezone="UTC"' },
+      body: { schedules: [ev.whoMail], startTime: { dateTime: toUtcLocal(ev.s), timeZone: 'UTC' }, endTime: { dateTime: toUtcLocal(ev.e), timeZone: 'UTC' }, availabilityViewInterval: 30 } }]);
+    const sc = res && res.status === 200 && res.body && Array.isArray(res.body.value) ? res.body.value[0] : null;
+    /* 同じ時間帯に予定が複数あるときは、時刻がぴったり合うもの → 重なりが長いもの */
+    const items = (sc && !sc.error ? sc.scheduleItems || [] : []).map(it => ({ it, s: pTZ(it.start), e: pTZ(it.end) }))
+      .filter(x => !isNaN(x.s) && !isNaN(x.e) && x.e > ev.s && x.s < ev.e)
+      .map(x => ({ ...x, exact: x.s === ev.s && x.e === ev.e, ov: Math.min(x.e, ev.e) - Math.max(x.s, ev.s) }))
+      .sort((a, b) => (b.exact - a.exact) || (b.ov - a.ov));
+    const best = items[0];
+    ev.title = best ? { subject: String(best.it.subject || '').trim(), priv: !!best.it.isPrivate } : null;
+  } catch { ev.title = null; }
 }
 
 /* ============================================================
    空き検索（デモ機・営業車・会議室を縦に並べる）
    ============================================================ */
-const SK = { kinds:new Set(KIND_ORDER), locs:new Set(), q:'', sel:new Set(), data:null };
+const SK = { kinds:new Set(KIND_ORDER), locs:new Set(), q:'', sel:new Set(), data:null, cap:0, flr:'' };
 function sAllDayOn(){ return el('sAllDay').checked; }
 function paintSAllDay(){
   const on = sAllDayOn();
@@ -1219,7 +1292,7 @@ el('seekBtn').onclick = () => {
   el('sFrom').value = msToLocal(dayMs + 9*3600e3); el('sTo').value = msToLocal(dayMs + 17*3600e3);
   el('sFromD').value = msToDate(dayMs); el('sToD').value = msToDate(dayMs);
   el('sAllDay').checked = true; paintSAllDay();
-  SK.kinds = new Set(S.kinds); SK.locs = new Set(S.locs); SK.q = S.q; SK.sel = new Set(); SK.data = null;
+  SK.kinds = new Set(S.kinds); SK.locs = new Set(S.locs); SK.q = S.q; SK.sel = new Set(); SK.data = null; SK.cap = S.cap; SK.flr = S.flr; paintSeekRoomSel();
   el('sQ').value = SK.q; el('seekRes').innerHTML = '<div class="cnt">期間を入れて「検索」を押すと、空いているものが種類ごとに出ます。</div>';
   paintSeekChips(); paintSeekBar(); openM('mSeek');
 };
@@ -1248,8 +1321,9 @@ function paintSeek(){
   let h = `<div class="cnt" style="margin-bottom:4px">${jFull(d.s)} 〜 ${jFull(d.allDay ? d.e - 60e3 : d.e)}${d.allDay ? '（終日）' : ''}</div>`;
   if (d.bad.length) h += `<div class="none">取得に失敗：${esc(d.bad.join(' / '))}</div>`;
   KIND_ORDER.filter(k => SK.kinds.has(k)).forEach(k => {
-    const list = RESRC.filter(r => r.k === k && (!SK.locs.size || SK.locs.has(r.loc)) && (!q || r.n.toLowerCase().includes(q)));
-    const free = list.filter(r => !d.busy.has(r.key)), used = list.filter(r => d.busy.has(r.key));
+    const list = RESRC.filter(r => r.k === k && (!SK.locs.size || SK.locs.has(r.loc)) && (!q || r.n.toLowerCase().includes(q)) && (r.k !== 'room' || roomOk(r, SK.cap, SK.flr)));
+    const bad = list.filter(r => SRC[r.key] === 'error' && !d.busy.has(r.key));     /* 予約を読めなかったものは、「空き」とは言えない */
+    const free = list.filter(r => !d.busy.has(r.key) && SRC[r.key] !== 'error'), used = list.filter(r => d.busy.has(r.key));
     h += `<div class="sec"><h4><span class="dot" style="background:var(--k-${k})"></span>${KIND[k].n}<span class="cnt">空き ${free.length} / ${list.length}</span></h4>`;
     if (!list.length) h += `<div class="cnt">条件に合うものがありません</div>`;
     else if (!free.length) h += `<div class="none">この期間に空いているものはありません</div>`;
@@ -1260,6 +1334,7 @@ function paintSeek(){
     if (used.length) h += `<div class="chips" style="margin-top:6px"><b class="l">予約済み</b>` + used.map(r => {
       const b = d.busy.get(r.key);
       return `<span class="chip busy" title="${esc(b.t)}${b.who ? '（' + esc(b.who) + '）' : ''} ${jFull(b.s)}〜${jFull(b.e)}">${esc(r.n)}</span>`; }).join('') + `</div>`;
+    if (bad.length) h += `<div class="cnt" style="margin-top:6px;color:var(--danger)">予約を読めなかったため、空きを確認できません：${bad.map(r => esc(r.n)).join('、')}</div>`;
     h += `</div>`;
   });
   el('seekRes').innerHTML = h; paintSeekBar();
@@ -1278,6 +1353,16 @@ el('mSeek').addEventListener('click', e => {
   if (p && !p.classList.contains('busy')) { const id = p.dataset.pk; SK.sel.has(id) ? SK.sel.delete(id) : SK.sel.add(id); paintSeek(); }
 });
 el('sQ').oninput = e => { SK.q = e.target.value; paintSeek(); };
+function paintSeekRoomSel(){
+  const rooms = RESRC.filter(r => r.k === 'room');
+  const caps = [...new Set(rooms.map(r => r.cap).filter(c => c > 0))].sort((a, b) => a - b);
+  const capOpts = caps.filter((c, i) => i < caps.length - 1 || caps.length <= 2);
+  const flrs = [...new Set(rooms.map(r => r.flr).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+  el('sCap').innerHTML = `<option value="">収容人数の指定なし</option>` + capOpts.map(c => `<option value="${c}"${SK.cap === c ? ' selected' : ''}>${c}人以上</option>`).join('');
+  el('sFlr').innerHTML = `<option value="">すべての階</option>` + flrs.map(f => `<option value="${esc(f)}"${SK.flr === f ? ' selected' : ''}>${esc(f)}</option>`).join('');
+}
+el('sCap').onchange = e => { SK.cap = Number(e.target.value) || 0; paintSeek(); };
+el('sFlr').onchange = e => { SK.flr = e.target.value; paintSeek(); };
 el('seekClear').onclick = () => { SK.sel = new Set(); paintSeek(); };
 el('seekGo').onclick = () => {
   const d = SK.data; if (!d || !SK.sel.size) return;
