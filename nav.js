@@ -22,7 +22,8 @@
         { f: 'payment_schedule.html', l: '支払決済予定' },
         { f: 'my_schedule.html', l: '自分の予定' },
         { f: 'staff_schedule.html', l: '全社員の予定' },
-        { f: 'reserve.html', l: '予約' },
+        { f: 'reserve.html', l: '施設・備品予約' },
+        { f: 'usage_stats.html', l: '利用状況（管理者）' },
         { f: 'demo_reserve.html', l: 'デモ機' },
         { f: 'car_reserve.html',  l: '営業車' },
         { f: 'room_reserve.html', l: '会議室' },
@@ -201,7 +202,7 @@
   function loadHubSidebar() {
     if (document.getElementById('hubSidebar')) return;
     var sc = document.createElement('script');
-    sc.src = 'hub_sidebar.js?v=20261102';
+    sc.src = 'hub_sidebar.js?v=20261105';
     document.body.appendChild(sc);
   }
 

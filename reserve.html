@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>スケジュール 予約 | 花岡車輌</title>
+<title>スケジュール 施設・備品予約 | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="usage_log.js?v=20261105"></script>
 <script src="nav.js?v=20261020" defer></script>
 <link rel="icon" type="image/svg+xml" href="favicon_schedule.svg">
 <style>
@@ -170,12 +171,12 @@
 <body>
 
 <header>
-  <div class="logo">花岡車輌<span>スケジュール｜予約</span></div>
+  <div class="logo">花岡車輌<span>スケジュール｜施設・備品予約</span></div>
   <div class="user-info"><span id="user-name"></span></div>
 </header>
 
 <div id="login-view">
-  <h2>スケジュール｜予約</h2>
+  <h2>スケジュール｜施設・備品予約</h2>
   <p data-ha-login>花岡車輌株式会社の Microsoft アカウントでサインインしてください</p>
   <button id="login-btn" onclick="signIn()" data-ha-login>
     <svg width="18" height="18" viewBox="0 0 21 21" fill="none"><path d="M10 0H0v10h10V0z" fill="#F25022"/><path d="M21 0H11v10h10V0z" fill="#7FBA00"/><path d="M10 11H0v10h10V11z" fill="#00A4EF"/><path d="M21 11H11v10h10V11z" fill="#FFB900"/></svg>
@@ -780,6 +781,7 @@ async function showApp(){
   el('app-view').style.display   = 'block';
   el('user-name').textContent    = myName();
   loadPresets(); readUrl();
+  UsageLog.init({ page: 'reserve', msal: () => msalInstance, account: () => currentAccount }); UsageLog.log('open', [...S.kinds].join(',') + '|' + [...S.locs].join(','));
   el('q').value = S.q;
   el('prev').onclick = () => { curWeek -= WK; loadWeek(); };
   el('next').onclick = () => { curWeek += WK; loadWeek(); };
@@ -818,6 +820,7 @@ async function loadWeek(){
 }
 /* 種類のチップを増やしたとき、まだ読んでいない種類があれば読み込む */
 function ensureLoaded(){
+  UsageLog.log('filter', [...S.kinds].join(',') + '|' + [...S.locs].join(','));
   if (!LOADED || LOADED.week !== curWeek || [...S.kinds].some(k => !LOADED.kinds.has(k))) loadWeek(); else { writeUrl(); render(); }
 }
 function paintStatus(){
@@ -890,7 +893,7 @@ document.addEventListener('click', e => {
   const k = e.target.closest('.fchip[data-k]');
   if (k) { const v = k.dataset.k; S.kinds.has(v) ? S.kinds.delete(v) : S.kinds.add(v); if (!S.kinds.size) S.kinds.add(v); ensureLoaded(); return; }
   const l = e.target.closest('.fchip[data-l]');
-  if (l) { const v = l.dataset.l; S.locs.has(v) ? S.locs.delete(v) : S.locs.add(v); writeUrl(); render(); return; }
+  if (l) { const v = l.dataset.l; S.locs.has(v) ? S.locs.delete(v) : S.locs.add(v); UsageLog.log('filter', [...S.kinds].join(',') + '|' + [...S.locs].join(',')); writeUrl(); render(); return; }
   const p = e.target.closest('.fchip[data-p]');
   if (p) { const x = PRESETS[p.dataset.p]; if (x) { S.kinds = new Set(x.kinds); S.locs = new Set(x.locs); ensureLoaded(); } return; }
   const g = e.target.closest('.grp[data-g]');
@@ -948,6 +951,7 @@ el('trayGo').onclick = () => {
 let DET = null;
 function openDetail(i){
   const ev = EVL[i]; if (!ev) return;
+  UsageLog.log('detail', ev.k);
   DET = ev;
   const r = RESRC.find(x => x.key === ev.key);
   const whole = ev.allDay || isWholeDay(ev);
@@ -1017,6 +1021,7 @@ function paintSeekChips(){
 }
 el('sGo').onclick = runSeek;
 async function runSeek(){
+  UsageLog.log('seek', [...SK.kinds].join(',') + '|' + [...SK.locs].join(','));
   const { s, e, allDay } = seekRange();
   if (isNaN(s) || isNaN(e) || e <= s) { showSnack('開始と終了を入れてください（終了は開始より後）'); return; }
   SK.sel = new Set(); paintSeekBar();
@@ -1285,6 +1290,7 @@ el('bSave').onclick = async () => {
   BK.keys = failed;                                             /* 失敗したものだけ残す（もう一度押せる） */
   S.sel = new Map(); SK.sel = new Set(failed.filter(k => SK.sel.has(k)));
   await loadWeek(); if (el('mSeek').classList.contains('on')) paintSeek();
+  UsageLog.log('book', ['demo', 'car', 'room'].map(k => k + ':' + items.filter(r => r.k === k).length).join(' ') + ' ok:' + okAll + '/' + items.length);
   if (okAll === items.length) { showSnack(`${okAll}件を予約しました`); setTimeout(() => { closeM('mBook'); closeM('mSeek'); }, 900); }
   else paintBookItems();
 };
@@ -1345,7 +1351,7 @@ el('eSave').onclick = async () => {
     }
   }
   btn.disabled = false; await loadWeek();
-  showSnack('予定を変更しました'); closeM('mEvEdit');
+  UsageLog.log('edit_event'); showSnack('予定を変更しました'); closeM('mEvEdit');
 };
 el('dRemove').onclick = async () => {
   const ev = DET, my = ev && findMine(ev); if (!my) return;
@@ -1365,7 +1371,7 @@ el('dRemove').onclick = async () => {
     const r = await gSend(tok, 'PATCH', `/me/events/${my.id}`, { attendees: rest.map(a => ({ emailAddress: a.emailAddress, type: a.type })) });
     if (r.status !== 200) { msg.textContent = `外せませんでした（${r.status}）`; msg.className = 'msg ng'; return; }
   }
-  closeM('mDet'); await loadWeek(); showSnack(`「${name}」を外しました`);
+  UsageLog.log('remove_resource'); closeM('mDet'); await loadWeek(); showSnack(`「${name}」を外しました`);
 };
 el('dDelete').onclick = async () => {
   const ev = DET, my = ev && findMine(ev); if (!my) return;
@@ -1376,7 +1382,7 @@ el('dDelete').onclick = async () => {
   if (!tok) { msg.textContent = '予定の書き込み権限が取得できません。サインインし直してください'; msg.className = 'msg ng'; return; }
   const d = await gSend(tok, 'DELETE', `/me/events/${my.id}`);
   if (d.status >= 300) { msg.textContent = `削除できませんでした（${d.status}）`; msg.className = 'msg ng'; return; }
-  closeM('mDet'); await loadWeek(); showSnack('予定を削除しました');
+  UsageLog.log('delete_event'); closeM('mDet'); await loadWeek(); showSnack('予定を削除しました');
 };
 
 initMsal().catch(e => { console.error('MSAL初期化エラー:', e); showSnack('認証エラー: ' + (e.errorCode || e.message)); });

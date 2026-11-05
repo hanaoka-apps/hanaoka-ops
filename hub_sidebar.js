@@ -49,7 +49,7 @@
       { f: 'my_schedule.html',      l: '自分の予定',       ic: lineIcon('mine') },
       { f: 'staff_schedule.html',   l: '全員の予定',       ic: lineIcon('staff') },
       { f: 'org_directory.html',    l: '社内連絡先',       ic: lineIcon('contacts') },
-      { f: 'reserve.html',          l: '予約',             ic: lineIcon('book') },
+      { f: 'reserve.html',          l: '施設・備品予約',   ic: lineIcon('book') },
       { f: 'demo_reserve.html',     l: 'デモ機',           ic: lineIcon('demo') },
       { f: 'car_reserve.html',      l: '営業車',           ic: lineIcon('car') },
       { f: 'room_reserve.html',     l: '会議室',           ic: lineIcon('room') },
