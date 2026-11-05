@@ -8,7 +8,7 @@
    保存先：SharePoint のリスト「予約の利用ログ」（管理者が usage_stats.html で作る）。
    ・リストがない・権限がない・通信に失敗したときは、黙ってやめる（画面の動きには一切影響しない）。
    ・ページ本来のサインインには混ぜず、保存のたびに静かにトークンを取る（ポップアップは出さない）。
-   使い方：UsageLog.init({ page:'reserve'|'demo'|'car'|'room', msal:()=>msalInstance, account:()=>currentAccount });
+   使い方：UsageLog.init({ page:'reserve'|'demo'|'car'|'room'|'ship', msal:()=>msalInstance, account:()=>currentAccount, max:（任意）1回の画面表示あたりの上限 });
            UsageLog.log('open');  UsageLog.log('seek', '営業車,会議室');
    ============================================================ */
 (function () {
@@ -16,7 +16,7 @@
   const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
   const LIST_NAME = '予約の利用ログ';
   const VER = '20261105';
-  const MAX_PER_PAGE_VIEW = 80;                /* 1回の画面表示あたりの上限（暴走防止） */
+  const MAX_PER_PAGE_VIEW = 80;                /* 1回の画面表示あたりの上限（暴走防止）。init の max で画面ごとに変えられる */
   const SAME_WITHIN_MS = 20000;                /* 同じ操作をすぐ繰り返したら1回にまとめる */
   let cfg = null, listId, count = 0, recent = new Map();
 
@@ -50,11 +50,12 @@
   }
   window.UsageLog = {
     init(c) { cfg = c; count = 0; recent = new Map(); listId = undefined; },
-    log(action, detail) {
+    // opt.every＝同じ操作を続けても、そのたびに1回と数える（「お客様へ報告」を開いた回数のように、回数そのものを見たい操作）
+    log(action, detail, opt) {
       try {
-        if (!cfg || count >= MAX_PER_PAGE_VIEW) return;
+        if (!cfg || count >= (cfg.max || MAX_PER_PAGE_VIEW)) return;
         const key = action + '|' + (detail || ''), now = Date.now();
-        if (recent.has(key) && now - recent.get(key) < SAME_WITHIN_MS) return;
+        if (!(opt && opt.every) && recent.has(key) && now - recent.get(key) < SAME_WITHIN_MS) return;
         recent.set(key, now); count++;
         send(action, detail);
       } catch {}
