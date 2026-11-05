@@ -10,6 +10,9 @@ const LINES_SHOWN = 6;    // 1件のカードに出す品目の行数（これ�
 
 let CONF = null, IDX = null, msalInstance = null, account = null, driveId = null;
 let results = [], shown = 0;
+// 使われ方の記録（usage_log.js。管理者の集計画面 usage_stats.html で見る）。誰が・いつ・何をしたか、だけ。
+// 検索の言葉・お客様名・番号は記録しない（「言葉を入れた」という事実だけ）。記録できなくても、画面の動きには影響しない
+const ulog = (a, d, every) => { try { if (window.UsageLog) UsageLog.log(a, d, every ? { every: true } : undefined); } catch (e) { /* 記録の失敗で止めない */ } };
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -99,6 +102,10 @@ function doSearch() {
   $('list').innerHTML = '';
   try { history.replaceState(null, '', f.q.trim() ? '?q=' + encodeURIComponent(f.q.trim()) : location.pathname); } catch (e) { /* 履歴を触れない環境でも検索はできる */ }
   more();
+}
+function userSearch() {
+  const f = readFilters(); doSearch();
+  ulog('ship_search', '言葉=' + (f.q.trim() ? 'あり' : 'なし') + ',期間=' + (period || (f.from || f.to ? '日付指定' : 'なし')) + ',運送会社=' + (carrier || 'すべて') + ',状態=' + (f.status || 'すべて'));
 }
 function more() {
   const next = results.slice(shown, shown + PAGE);
@@ -213,7 +220,7 @@ function card(s, i) {
  * 文面は ship_config.json の notice。ここで直してから、コピー・メール作成（mailto：Outlook など、いつも使うメールのアプリが開く）。
  * 自動では送らない。担当者が中身を確認して使う。 */
 const MAIL_LIMIT = 8000;   // mailto の長さ（日本語は1文字が9文字ぶんになる。長すぎると、メールのアプリが開けない・途中で切ることがある）
-let noticeShip = null, noticeGenerated = '';
+let noticeShip = null, noticeGenerated = '', noticeInfo = null, noticeActed = false;
 function noticeOpts() { return { slipBlock: $('np-slipblock').checked, track: $('np-track').checked }; }
 function renderNotice(s) {
   const n = S.noticeText(CONF, IDX, s, noticeOpts()), warn = [];
@@ -223,40 +230,48 @@ function renderNotice(s) {
   $('np-warn').innerHTML = warn.map(m => '<div>⚠ ' + esc(m) + '</div>').join('');
   $('np-warn').hidden = !warn.length;
   $('np-slipblock').disabled = !n.hasSlipData;   // 送り状のデータ（お届け先など）が無いときは、選べない
-  $('np-subject').value = n.subject; $('np-text').value = n.body; noticeGenerated = n.body;
+  $('np-subject').value = n.subject; $('np-text').value = n.body; noticeGenerated = n.body; noticeInfo = n;
 }
-function openNotice(s) {
-  noticeShip = s;
+// 報告の文を使うときの選び方（記録用）：付けたか・外したか、本文を直したか
+function noticeUse() {
+  return '送り状の内容=' + ($('np-slipblock').disabled ? '選べない' : $('np-slipblock').checked ? '付ける' : '外す') + ',追跡URL=' + ($('np-track').checked ? '付ける' : '外す') + ',本文を直した=' + ($('np-text').value !== noticeGenerated ? 'はい' : 'いいえ');
+}
+function openNotice(s, from) {
+  noticeShip = s; noticeActed = false;
   $('np-slipblock').checked = true; $('np-track').checked = true;
   renderNotice(s);
   $('np-note').textContent = '住所は、SMILE の納品先マスタ（得意先マスタ）の、いまの内容です。出荷した時点の住所とは違うことがあります。「送り状に書かれている内容」は、運送会社のデータ（送り状）のとおりです。';
   $('noticePanel').hidden = false; $('noticeBackdrop').hidden = false;
   document.body.classList.add('np-open');
+  ulog('ship_notice_open', 'から=' + (from || 'カード') + ',送り状=' + (noticeInfo && noticeInfo.hasSlip ? 'あり' : 'なし'), true);
   $('np-text').focus();
 }
-function closeNotice() { $('noticePanel').hidden = true; $('noticeBackdrop').hidden = true; document.body.classList.remove('np-open'); }
+function closeNotice() { if (!$('noticePanel').hidden) ulog('ship_notice_close', '使った=' + (noticeActed ? 'はい' : 'いいえ'), true); $('noticePanel').hidden = true; $('noticeBackdrop').hidden = true; document.body.classList.remove('np-open'); }
 function wireNotice() {
   $('np-close').onclick = closeNotice; $('noticeBackdrop').onclick = closeNotice;
   $('dt-close').onclick = closeDetail; $('detailBackdrop').onclick = closeDetail;
   $('detailBody').addEventListener('click', async e => {   // パネルの中：分納の行で別の出荷へ、番号のコピー
     const a = e.target.closest('[data-act]'); if (!a) return;
-    if (a.dataset.act === 'detailno') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) { openDetail(s); $('detailBody').scrollTop = 0; } }
-    else if (a.dataset.act === 'notice-detail') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openNotice(s); }
+    if (a.dataset.act === 'detailno') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) { openDetail(s, '分納'); $('detailBody').scrollTop = 0; } }
+    else if (a.dataset.act === 'notice-detail') { const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openNotice(s, '伝票の詳細'); }
     else if (a.dataset.act === 'copy') await doCopy(a);
   });
   document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (!$('noticePanel').hidden) closeNotice(); if (!$('detailPanel').hidden) closeDetail(); });
   ['np-slipblock', 'np-track'].forEach(id => $(id).addEventListener('change', () => {   // 付ける・付けないを変えたら、文を作り直す（直した内容があるときは、確かめる）
     if (noticeShip && $('np-text').value !== noticeGenerated && !confirm('画面で直した内容が消えます。作り直しますか？')) { $(id).checked = !$(id).checked; return; }
+    ulog('ship_notice_opt', (id === 'np-slipblock' ? '送り状の内容=' : '追跡URL=') + ($(id).checked ? '付ける' : '外す'), true);
     if (noticeShip) renderNotice(noticeShip);
   }));
   $('np-copy').onclick = async () => {
     const b = $('np-copy'), t = b.textContent, ok = await copyText($('np-text').value);
+    if (ok) { noticeActed = true; ulog('ship_notice_copy', noticeUse(), true); }
     b.textContent = ok ? 'コピーしました' : 'コピーできません'; setTimeout(() => { b.textContent = t; }, 1500);
   };
   $('np-mail').onclick = () => {
     const subj = $('np-subject').value, body = $('np-text').value.replace(/\r?\n/g, '\r\n');
     const url = 'mailto:?subject=' + encodeURIComponent(subj) + '&body=' + encodeURIComponent(body);
-    if (url.length > MAIL_LIMIT) { $('np-note').textContent = '文が長いので、メールが途中で切れることがあります。「本文をコピー」で、メールに貼り付けてください。'; return; }
+    if (url.length > MAIL_LIMIT) { ulog('ship_notice_mail', noticeUse() + ',長すぎ=はい', true); $('np-note').textContent = '文が長いので、メールが途中で切れることがあります。「本文をコピー」で、メールに貼り付けてください。'; return; }
+    noticeActed = true; ulog('ship_notice_mail', noticeUse(), true);
     location.href = url;
   };
 }
@@ -273,7 +288,8 @@ async function loadDetail(force) {
   DETAIL = { details: o.details, generatedAt: o.generatedAt || '', slipFields: o.slipFields || null };
   return DETAIL;
 }
-async function openDetail(s) {
+async function openDetail(s, from) {
+  ulog('ship_detail', 'から=' + (from || 'カード'), true);
   $('detailBody').innerHTML = '<div class="muted" style="padding:20px">読み込み中…</div>';
   $('detailPanel').hidden = false; $('detailBackdrop').hidden = false; document.body.classList.add('np-open');
   try {
@@ -375,6 +391,7 @@ function renderMeta() {
 async function doCopy(a) {
   const ok = await copyText(a.dataset.v);
   if (a.classList.contains('copyable')) {
+    ulog('ship_copy_no', ok ? '' : 'コピーできなかった', true);
     a.dataset.msg = ok ? '✓ コピーしました' : 'コピーできません'; a.classList.add('copied');
     setTimeout(() => { a.classList.remove('copied'); delete a.dataset.msg; }, 1500);
     return;
@@ -390,14 +407,14 @@ async function copyText(t) {
   }
 }
 function wire() {
-  $('searchForm').onsubmit = e => { e.preventDefault(); doSearch(); };
+  $('searchForm').onsubmit = e => { e.preventDefault(); userSearch(); };
   let timer = null;
-  $('f-q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(doSearch, 250); });
-  ['f-from', 'f-to'].forEach(id => $(id).addEventListener('change', () => { period = ''; drawPeriods(); doSearch(); }));
-  $('f-status').addEventListener('change', doSearch);
+  $('f-q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(userSearch, 250); });
+  ['f-from', 'f-to'].forEach(id => $(id).addEventListener('change', () => { period = ''; drawPeriods(); userSearch(); }));
+  $('f-status').addEventListener('change', userSearch);
   $('carriers').addEventListener('click', e => {
     const c = e.target.closest('[data-carrier]'); if (!c) return;
-    carrier = c.dataset.carrier; drawCarriers(); doSearch();
+    carrier = c.dataset.carrier; drawCarriers(); userSearch();
   });
   $('btn-clear').onclick = () => { $('f-q').value = ''; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); $('f-q').focus(); };
   wireNotice();
@@ -406,31 +423,34 @@ function wire() {
     const c = e.target.closest('[data-period]'); if (!c) return;
     period = c.dataset.period; const p = PERIODS.find(x => x.k === period);
     $('f-from').value = p && p.days ? today(-p.days) : ''; $('f-to').value = '';
-    drawPeriods(); doSearch();
+    drawPeriods(); userSearch();
   });
   $('list').addEventListener('click', async e => {
     const a = e.target.closest('[data-act]');
     if (!a) {   // カードの空いているところを押したら、伝票の詳細を開く（リンク・ボタン・文字の選択中は開かない）
       const c = e.target.closest('.scard');
-      if (c && !e.target.closest('a, button, input, textarea, select') && !String(window.getSelection && window.getSelection()).trim()) { const s = results[+c.dataset.i]; if (s) openDetail(s); }
+      if (c && !e.target.closest('a, button, input, textarea, select') && !String(window.getSelection && window.getSelection()).trim()) { const s = results[+c.dataset.i]; if (s) openDetail(s, 'カード'); }
       return;
     }
     if (a.dataset.act === 'copy') {
       await doCopy(a);
     } else if (a.dataset.act === 'q') {
-      $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
+      $('f-q').value = a.dataset.v; $('f-from').value = ''; $('f-to').value = ''; carrier = ''; $('f-status').value = ''; period = ''; drawPeriods(); drawCarriers(); userSearch(); window.scrollTo({ top: 0, behavior: 'smooth' });
     } else if (a.dataset.act === 'detail') {
-      const s = results[+a.dataset.i]; if (s) openDetail(s);
+      const s = results[+a.dataset.i]; if (s) openDetail(s, '伝票ボタン');
     } else if (a.dataset.act === 'detailno') {
-      const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openDetail(s);
+      const s = IDX.ships.find(x => x.no === a.dataset.no); if (s) openDetail(s, '分納');
     } else if (a.dataset.act === 'notice') {
-      const s = results[+a.dataset.i]; if (s) openNotice(s);
+      const s = results[+a.dataset.i]; if (s) openNotice(s, 'カード');
     } else if (a.dataset.act === 'lines') {
       const s = results[+a.dataset.i]; if (!s) return;
       s._open = true; $('ln-' + a.dataset.i).innerHTML = linesHtml(s, a.dataset.i);
     }
   });
+  document.addEventListener('click', e => { const l = e.target.closest('a.track'); if (l) ulog('ship_track', '', true); });   // 配送状況（運送会社のページ）を開いた
+  const help = document.querySelector('a[href="ship_help.html"]'); if (help) help.addEventListener('click', () => ulog('ship_help', ''));
   $('btn-reload').onclick = async () => {
+    ulog('ship_reload', '');
     $('btn-reload').disabled = true; setStatus('loading', '読み込み中…');
     try { await loadIndex(); renderMeta(); doSearch(); setReady(); } catch (e) { setStatus('err', '読み込めませんでした：' + e.message); }
     $('btn-reload').disabled = false;
@@ -459,6 +479,7 @@ async function initAuth() {
     try { await loadIndex(); }
     catch (e) { console.warn(e); setStatus('err', '検索用のデータ（' + CONF.files.index + '）を読めません：' + e.message + '。専用機の定時実行がまだか、データが作られていません'); $('list').innerHTML = '<div class="empty">検索用のデータがありません</div>'; return; }
     renderMeta(); doSearch(); setReady();
+    if (window.UsageLog) { UsageLog.init({ page: 'ship', msal: () => msalInstance, account: () => account, max: 400 }); ulog('open', 'から=' + (q ? '他のアプリ（番号で検索）' : '直接')); }
     setInterval(() => { if (document.visibilityState === 'visible') { try { renderMeta(); } catch (e) { /* 注意の表示だけ */ } } }, 10 * 60 * 1000);   // 開きっぱなしでも、古さの警告を更新する
   };
   $('loginBtn').onclick = async () => {
