@@ -55,7 +55,7 @@
     }
     var rows = rowsOf(ctx), n = { wait: 0, check: 0, done: 0 };
     rows.forEach(function (x) { x.k = x.ship.state !== 'done' ? 'wait' : x.r && x.r.shipReportedAt ? 'done' : 'check'; n[x.k]++; });
-    if (cnt) cnt.textContent = n.wait + n.check;
+    if (cnt) cnt.textContent = n.check;   // 自分にボールがあるのは②（結果を確認＝報告する）だけ。①出荷待ちは運送会社・専用機の番
     if (!ctx.visible) return;
     var list = rows.filter(function (x) { return S.filter === 'all' || x.k === S.filter; });
     list.sort(function (a, b) {
