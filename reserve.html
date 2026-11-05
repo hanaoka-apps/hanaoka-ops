@@ -317,6 +317,40 @@
   <div class="ft"><span class="msg" id="eMsg"></span><button class="act" data-close="mEvEdit">キャンセル</button><button class="act pri" id="eSave">変更を保存</button></div>
 </div></div>
 
+<!-- デモ機：予約（セット）の詳細。機体の追加・外し、期間・件名の変更、返却、取消、複製を、この画面の中で行う -->
+<div class="modal" id="mDemoSet"><div class="card" style="max-width:580px">
+  <h3 id="dsTitle"></h3>
+  <div class="bd" id="dsBody"></div>
+  <div class="ft"><span class="msg" id="dsMsg"></span><button class="act" data-close="mDemoSet">閉じる</button></div>
+</div></div>
+
+<!-- デモ機：予約内容の編集（件名・顧客・行き先・備考は全機体に、期間はチェックした機体だけ） -->
+<div class="modal" id="mDemoEdit"><div class="card">
+  <h3>予約内容を編集する</h3>
+  <div class="bd"><div class="fm">
+    <div class="f"><span>予約件名（必須・全機体に共通）</span><input type="text" id="deTitle"></div>
+    <div class="f2">
+      <div class="f"><span>顧客名</span><input type="text" id="deCust"></div>
+      <div class="f"><span>行き先</span><input type="text" id="deDest"></div>
+    </div>
+    <div class="f"><span>備考</span><input type="text" id="deNotes" placeholder="返却期限など"></div>
+    <label class="chk"><input type="checkbox" id="deAllDay"> 終日（時刻を決めず、日付だけで押さえる）</label>
+    <div class="f2" id="deTimeRow">
+      <div class="f"><span>開始（JST）</span><input type="datetime-local" id="deFrom"></div>
+      <div class="f"><span>終了（JST）</span><input type="datetime-local" id="deTo"></div>
+    </div>
+    <div class="f2" id="deDateRow" style="display:none">
+      <div class="f"><span>開始日（JST）</span><input type="date" id="deFromD"></div>
+      <div class="f"><span>終了日（この日も含む）</span><input type="date" id="deToD"></div>
+    </div>
+    <div class="f"><span id="deMachinesLabel">期間を変える機体</span>
+      <div id="deMachines" style="max-height:190px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;padding:2px 0"></div></div>
+  </div>
+  <div class="note" id="deNote"></div>
+  <div id="deResult" style="margin-top:8px;display:flex;flex-direction:column;gap:3px;font-size:12px"></div></div>
+  <div class="ft"><span class="msg" id="deMsg"></span><button class="act" data-close="mDemoEdit">キャンセル</button><button class="act pri" id="deSave">変更を保存</button></div>
+</div></div>
+
 <div id="snackbar"></div>
 
 <script>
@@ -633,7 +667,7 @@ async function loadDemoEvents(f0, f1, keys){
       s: f.ReservationStart ? P(f.ReservationStart) : NaN, e: f.ReservationEnd ? P(f.ReservationEnd) : NaN,
       t: f.Title || '(件名なし)', who: f.RequesterName || '', whoMail: String(f.RequesterEmail || '').toLowerCase(),
       cust: f.CustomerName || '', dest: f.Destination || '', notes: f.Notes || '', setId: f.BookingSetId || '',
-      st: f.LoanStatus || '予約' };
+      st: f.LoanStatus || '予約', token: f.LockToken || '' };
   }).filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e) && r.st !== '取消' && overlaps(r, f0, f1) && (!want || want.has(r.key)))
     .map(r => ({ ...r, mine: !!me && r.whoMail === me, allDay: isWholeDay(r) }));
 }
@@ -952,6 +986,7 @@ let DET = null;
 function openDetail(i){
   const ev = EVL[i]; if (!ev) return;
   UsageLog.log('detail', ev.k);
+  if (ev.k === 'demo') { openDemoSet(ev); return; }          /* デモ機は、この画面の中で編集・返却・取消まで行う */
   DET = ev;
   const r = RESRC.find(x => x.key === ev.key);
   const whole = ev.allDay || isWholeDay(ev);
@@ -1293,6 +1328,371 @@ el('bSave').onclick = async () => {
   UsageLog.log('book', ['demo', 'car', 'room'].map(k => k + ':' + items.filter(r => r.k === k).length).join(' ') + ' ok:' + okAll + '/' + items.length);
   if (okAll === items.length) { showSnack(`${okAll}件を予約しました`); setTimeout(() => { closeM('mBook'); closeM('mSeek'); }, 900); }
   else paintBookItems();
+};
+
+/* ============================================================
+   デモ機：予約（セット）の詳細・編集・返却・取消・機体の追加・複製
+   ------------------------------------------------------------
+   デモ機の画面（demo_reserve.html）と同じ処理を、この画面の中で行う（画面を移動しない）。
+   ★占有（LockData）を守る順番は、デモ機の画面と同じ★
+     ・期間を変えるとき：①占有を広げる → ②履歴を直す → ③占有を縮める（履歴より占有が狭くなる瞬間を作らない）
+     ・取消すとき：①履歴を「取消」にする → ②占有から外す（逆にすると、二重予約が成立する隙間ができる）
+   「同じ予約」＝セットIDが同じ、または 依頼者・件名・期間が同じ。まとめて表示し、まとめて変更できる。
+   ============================================================ */
+const NONINDEX = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+const dsIsAllDay = r => { const a = toJ(r.s), b = toJ(r.e);
+  return a.getUTCHours() === 0 && a.getUTCMinutes() === 0 && ((b.getUTCHours() === 23 && b.getUTCMinutes() >= 59) || (b.getUTCHours() === 0 && b.getUTCMinutes() === 0)); };
+const dsStatus = (r, now) => r.st === '取消' ? '取消' : now < r.s ? '予約' : now > r.e ? '予約終了' : '貸出中';
+const bookingKey = r => `${String(r.whoMail || '').toLowerCase()}|${r.t}|${r.s}|${r.e}`;
+const sameMe = r => { const me = myMail(); return !!me && !!r.whoMail && String(r.whoMail).toLowerCase() === me; };
+let DS = { setId: null, pool: [], busy: new Set(), addSel: new Set(), addCat: '' };
+
+function groupMembers(anchor){
+  if (!anchor) return [];
+  const live = DS.pool.filter(x => x.st !== '取消');
+  const base = new Set(anchor.setId ? live.filter(x => x.setId === anchor.setId) : [anchor]);
+  const keys = new Set([...base].map(bookingKey));
+  live.forEach(x => { if (keys.has(bookingKey(x))) base.add(x); });
+  return [...base].filter(x => x.st !== '取消').sort((a, b) => a.mid - b.mid);
+}
+function anchorRow(id){
+  if (!id) return null;
+  if (String(id).startsWith('~')) return DS.pool.find(x => x.rid === String(id).slice(1)) || null;
+  return DS.pool.find(x => x.setId === id && x.st !== '取消') || DS.pool.find(x => x.setId === id) || null;
+}
+const dsMembers = () => groupMembers(anchorRow(DS.setId));
+function setRep(members){
+  if (!members.length) return null;
+  return Object.assign({}, members[0], { s: Math.min(...members.map(x => x.s)), e: Math.max(...members.map(x => x.e)) });
+}
+async function fetchSetRows(setId){
+  const flt = encodeURIComponent(`fields/BookingSetId eq '${String(setId).replace(/'/g, "''")}'`);
+  const items = await gGetAll(`/sites/${SITE_ID}/lists/${LIST_HIST}/items?$expand=fields&$top=500&$filter=${flt}`, NONINDEX);
+  return items.map(it => { const f = it.fields || {}, mid = Number(f.SourceEquipmentId) || 0;
+    return { k: 'demo', key: 'demo:' + mid, rid: it.id, mid, s: f.ReservationStart ? P(f.ReservationStart) : NaN, e: f.ReservationEnd ? P(f.ReservationEnd) : NaN,
+      t: f.Title || '(件名なし)', who: f.RequesterName || '', whoMail: String(f.RequesterEmail || '').toLowerCase(), cust: f.CustomerName || '', dest: f.Destination || '',
+      notes: f.Notes || '', setId: f.BookingSetId || '', st: f.LoanStatus || '予約', token: f.LockToken || '' }; })
+    .filter(r => r.mid && !isNaN(r.s) && !isNaN(r.e) && r.st !== '取消');
+}
+function dsMerge(rows){ const have = new Set(DS.pool.map(x => x.rid)); rows.forEach(r => { if (!have.has(r.rid)) DS.pool.push(r); }); }
+async function dsRefreshBusy(){
+  const rep = setRep(dsMembers()); DS.busy = new Set();
+  if (!rep) return;
+  try { (await loadDemoEvents(rep.s, rep.e)).forEach(e => DS.busy.add(e.mid)); } catch {}
+}
+async function openDemoSet(ev){
+  DS = { setId: ev.setId || ('~' + ev.rid), pool: EVK.demo.slice(), busy: new Set(), addSel: new Set(), addCat: '' };
+  if (!DS.pool.some(x => x.rid === ev.rid)) DS.pool.push(ev);
+  if (ev.setId) { try { dsMerge(await fetchSetRows(ev.setId)); } catch {} }
+  await dsRefreshBusy(); renderDemoSet(); openM('mDemoSet');
+}
+/* 操作のあと：週の表と、この予約の中身を最新にする */
+async function dsRefresh(){
+  await loadWeek();
+  DS.pool = EVK.demo.slice();
+  if (DS.setId && !String(DS.setId).startsWith('~')) { try { dsMerge(await fetchSetRows(DS.setId)); } catch {} }
+  await dsRefreshBusy(); renderDemoSet();
+}
+function renderDemoSet(){
+  const members = dsMembers();
+  if (!members.length) { closeM('mDemoSet'); return; }       /* 全機体を外し終えたら閉じる */
+  const rep = setRep(members), now = Date.now();
+  el('dsTitle').textContent = rep.t; el('dsMsg').textContent = ''; el('dsMsg').className = 'msg';
+  const removableCount = members.filter(r => r.e > now && CAP.lock).length;
+  const returnable = members.filter(r => r.s <= now && r.e > now && CAP.lock);
+  const rows = members.map(r => {
+    const m = MACHINES.find(x => x.id === r.mid);
+    const canRemove = r.e > now && CAP.lock, canReturn = r.s <= now && r.e > now && CAP.lock;
+    const own = (r.s !== rep.s || r.e !== rep.e) ? `<span style="color:var(--warning);font-size:11px">この機体は ${jFull(r.s)} 〜 ${jFull(r.e)}</span>` : '';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <span style="flex:1;min-width:120px">${esc(m ? m.n : '#' + r.mid)} ${own}</span>
+      <span style="color:var(--muted);font-size:11px">${dsStatus(r, now)}</span>
+      ${canReturn ? `<button class="act go" style="padding:2px 8px;font-size:12px" title="いま返却されたことにして、残りの期間を空けます" onclick="dsReturn(['${r.rid}'])">返却済みに</button>` : ''}
+      ${canRemove ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="dsRemove('${r.rid}')">✕ 外す</button>` : `<span style="color:var(--muted);font-size:11px">終了済み</span>`}
+    </div>`;
+  }).join('');
+  const all = MACHINES.filter(m => m.resv && !m.ng && !members.some(x => x.mid === m.id) && !DS.busy.has(m.id));
+  const cats = [...new Set(all.map(m => m.cat))].sort();
+  if (DS.addCat && !cats.includes(DS.addCat)) DS.addCat = '';
+  const cand = DS.addCat ? all.filter(m => m.cat === DS.addCat) : all;
+  const mixed = members.length > 1 && (!rep.setId || members.some(x => (x.setId || '') !== rep.setId));
+  el('dsBody').innerHTML = `
+    ${mixed ? '<div class="cnt" style="margin-bottom:6px">件名・依頼者・期間が同じ予約を、1つの予約としてまとめて表示しています。</div>' : ''}
+    <dl style="display:grid;grid-template-columns:80px 1fr;gap:7px 10px;margin:0">
+      <dt style="color:var(--muted)">予約期間</dt><dd style="margin:0">${jFull(rep.s)} 〜 ${jFull(rep.e)}${dsIsAllDay(rep) ? '（終日）' : ''}</dd>
+      <dt style="color:var(--muted)">顧客名</dt><dd style="margin:0">${esc(rep.cust) || '—'}</dd>
+      <dt style="color:var(--muted)">行き先</dt><dd style="margin:0">${esc(rep.dest) || '—'}</dd>
+      <dt style="color:var(--muted)">依頼者</dt><dd style="margin:0">${rep.who ? esc(rep.who) : '—'}</dd>
+      <dt style="color:var(--muted)">備考</dt><dd style="margin:0">${esc(rep.notes) || '—'}</dd>
+    </dl>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b>機体（${members.length}台）</b>
+      ${CAP.lock ? `<button class="act" style="padding:2px 8px;font-size:12px" onclick="dsEdit()">予約内容を編集…（期間・件名など）</button>` : ''}
+      ${returnable.length ? `<button class="act go" style="padding:2px 8px;font-size:12px" onclick="dsReturnAll()">全機体を返却済みにする</button>` : ''}
+      ${removableCount ? `<button class="act dngr" style="padding:2px 8px;font-size:12px" onclick="dsCancelAll()">この予約を丸ごと取消す</button>` : ''}
+    </div>
+    <div>${rows}</div>
+    <div style="position:sticky;top:0;background:#fff;z-index:2;margin-top:10px;padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <b style="margin-right:2px">機体を追加</b>
+      <select id="dsAddCat" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px"><option value="">所有先: すべて</option>
+        ${cats.map(c => `<option value="${esc(c)}"${c === DS.addCat ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <button class="act pri" ${DS.addSel.size ? '' : 'disabled'} onclick="dsAdd()">追加する（${DS.addSel.size}）</button>
+      <button class="act" onclick="dsDup()">複製…</button>
+    </div>
+    <div id="dsAddChips" style="max-height:170px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:5px;padding:6px 0 2px">
+      ${cand.length ? cand.map(m => `<span class="chip${DS.addSel.has(m.id) ? ' on' : ''}" data-mid="${m.id}">${esc(m.n)}</span>`).join('') : '<span class="cnt">この期間に空いている機体はありません</span>'}
+    </div>`;
+  el('dsAddCat').onchange = e => { DS.addCat = e.target.value; renderDemoSet(); };
+  el('dsBody').querySelectorAll('#dsAddChips .chip').forEach(c => { c.onclick = () => { const id = Number(c.dataset.mid); DS.addSel.has(id) ? DS.addSel.delete(id) : DS.addSel.add(id); renderDemoSet(); }; });
+}
+
+/* ---- 占有情報の書き換え ---- */
+async function lockEdit(m, fn){
+  const url = `/sites/${SITE_ID}/lists/${LIST_MASTER}/items/${m.itemId}`;
+  for (let n = 1; n <= 4; n++){
+    const it = await gGet(`${url}?$expand=fields`);
+    const live = prune(parseOcc((it.fields || {})[LOCK_COL] || ''), Date.now());
+    const out = fn(live);
+    if (out.abort) return out.abort;
+    const r = await gPatchIf(`${url}/fields`, { [LOCK_COL]: dumpOcc(out.next) }, it['@odata.etag']);
+    if (r.status === 412) { await sleep(60*n + Math.random()*80); continue; }
+    if (r.status === 429) { await sleep((r.retryAfter||3)*1000); n--; continue; }
+    if (r.status >= 500)  { await sleep(400*n); continue; }
+    if (r.status !== 200) return { ok:false, reason:'LOCK_FAILED', status:r.status };
+    return { ok:true, extra: out.extra || null };
+  }
+  return { ok:false, reason:'BUSY' };
+}
+/* 1行（1機体）を変更する。patch={title,cust,dest,notes}、range={s,e}（期間を変えるときだけ） */
+async function modifyRow(r, patch, range){
+  if (r.st === '取消') return { ok:false, message:'取消済みの予約は変更できません' };
+  const fields = {};
+  if (patch) {
+    if (patch.title != null && patch.title !== r.t)     fields.Title = patch.title;
+    if (patch.cust  != null && patch.cust  !== r.cust)  fields.CustomerName = patch.cust;
+    if (patch.dest  != null && patch.dest  !== r.dest)  fields.Destination = patch.dest;
+    if (patch.notes != null && patch.notes !== r.notes) fields.Notes = patch.notes;
+  }
+  const rangeChanged = !!range && (range.s !== r.s || range.e !== r.e);
+  const histUrl = `/sites/${SITE_ID}/lists/${LIST_HIST}/items/${r.rid}/fields`;
+  if (!rangeChanged) {
+    if (!Object.keys(fields).length) return { ok:true, nochange:true };
+    const pr = await gPatchIf(histUrl, fields, null);
+    return pr.status === 200 ? { ok:true } : { ok:false, message:`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）` };
+  }
+  const m = MACHINES.find(x => x.id === r.mid);
+  if (!m) return { ok:false, message:'機体が見つかりません' };
+  const newS = range.s, newE = range.e;
+  if (!(newE > newS)) return { ok:false, message:'終了が開始より後になるようにしてください' };
+  if (!(newS <= r.e && newE >= r.s)) return moveRowFar(r, m, fields, newS, newE, histUrl);   /* 別の日へ丸ごと移す */
+  const uS = Math.min(r.s, newS), uE = Math.max(r.e, newE);
+  let tok = r.token || '', created = false;
+  const find = live => live.findIndex(x => tok ? x.token === tok : (x.s === r.s && x.e === r.e));
+  const s1 = await lockEdit(m, live => {                                      /* ① 占有を合算の期間に広げる（重なれば、ここで止まる） */
+    const idx = find(live);
+    const hit = live.find((x, i) => i !== idx && overlaps(x, newS, newE));
+    if (hit) return { abort: { ok:false, reason:'CONFLICT', conflict:hit } };
+    const next = live.slice();
+    if (idx >= 0) { tok = live[idx].token; next[idx] = { token: tok, s:uS, e:uE }; }
+    else { tok = tok || newToken(); created = true; next.push({ token: tok, s:uS, e:uE }); }
+    return { next };
+  });
+  if (!s1.ok) return s1;
+  fields.ReservationStart = new Date(newS).toISOString();                      /* ② 履歴を新しい期間に */
+  fields.ReservationEnd   = new Date(newE).toISOString();
+  if (created && CAP.token) fields.LockToken = tok;
+  let pr;
+  try { pr = await gPatchIf(histUrl, fields, null); } catch (err) { pr = { status: 0, body: { error: { message: err.message } } }; }
+  if (pr.status !== 200) {
+    await lockEdit(m, live => {                                                /* 占有を元に戻す（戻せなくても安全側） */
+      const idx = live.findIndex(x => x.token === tok);
+      if (idx < 0) return { abort: { ok:true } };
+      const next = live.slice(); if (created) next.splice(idx, 1); else next[idx] = { token: tok, s:r.s, e:r.e };
+      return { next };
+    }).catch(() => {});
+    return { ok:false, message:`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）` };
+  }
+  let freed = true;
+  if (uS !== newS || uE !== newE) {                                            /* ③ 占有を新しい期間まで縮める */
+    const s3 = await lockEdit(m, live => {
+      const idx = live.findIndex(x => x.token === tok);
+      if (idx < 0) return { abort: { ok:true } };
+      const next = live.slice(); next[idx] = { token: tok, s:newS, e:newE };
+      return { next };
+    }).catch(() => ({ ok:false }));
+    freed = !!s3.ok;
+  }
+  return { ok:true, freed };
+}
+/* 元の期間と重ならない日へ丸ごと移す：新しい期間の占有を別に追加 → 履歴を書き換え → 元の占有を外す */
+async function moveRowFar(r, m, fields, newS, newE, histUrl){
+  const tmp = newToken();
+  const isOld = x => r.token ? x.token === r.token : (x.s === r.s && x.e === r.e && x.token !== tmp);
+  const s1 = await lockEdit(m, live => {
+    const hit = live.find(x => !isOld(x) && overlaps(x, newS, newE));
+    if (hit) return { abort: { ok:false, reason:'CONFLICT', conflict:hit } };
+    return { next: [...live, { token: tmp, s:newS, e:newE }] };
+  });
+  if (!s1.ok) return s1;
+  fields.ReservationStart = new Date(newS).toISOString();
+  fields.ReservationEnd   = new Date(newE).toISOString();
+  if (CAP.token) fields.LockToken = tmp;
+  let pr;
+  try { pr = await gPatchIf(histUrl, fields, null); } catch (err) { pr = { status: 0, body: { error: { message: err.message } } }; }
+  if (pr.status !== 200) {
+    await lockEdit(m, live => ({ next: live.filter(x => x.token !== tmp) })).catch(() => {});
+    return { ok:false, message:`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）` };
+  }
+  const s3 = await lockEdit(m, live => ({ next: live.filter(x => x.token === tmp || !isOld(x)) })).catch(() => ({ ok:false }));
+  return { ok:true, freed: !!s3.ok };
+}
+function editReasonJa(r){
+  if (r.reason === 'CONFLICT')    return `新しい期間に、この機体の他の予約が入っています（${jFull(r.conflict.s)}〜${jFull(r.conflict.e)}）`;
+  if (r.reason === 'BUSY')        return '他の方が操作中でした。もう一度お試しください';
+  if (r.reason === 'LOCK_FAILED') return `占有情報を更新できませんでした（${r.status || ''}）`;
+  return r.message || '変更できませんでした';
+}
+/* 取消（1行）：①履歴を「取消」に ②占有から外す。この順番を変えてはいけない */
+async function cancelDemoRow(r){
+  const m = MACHINES.find(x => x.id === r.mid);
+  try {
+    const fields = { LoanStatus: '取消' };
+    if (CAP.cancel) { fields.CancelledByEmail = currentAccount?.username || ''; fields.CancelledByName = myName(); fields.CancelledAt = new Date().toISOString(); }
+    const pr = await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${r.rid}/fields`, fields, null);
+    if (pr.status !== 200) return { ok:false, message:`履歴の更新に失敗しました（${pr.status} ${pr.body?.error?.message || ''}）` };
+    let freed = true;
+    if (m) { const now = Date.now(); freed = r.token ? await releaseBy(m, x => x.token === r.token, now) : await releaseBy(m, x => x.s === r.s && x.e === r.e, now); }
+    return { ok:true, freed };
+  } catch (err) { return { ok:false, message: err.message }; }
+}
+const dsOthers = rows => [...new Set(rows.filter(r => !sameMe(r)).map(r => r.who || '（依頼者不明）'))];
+const dsRid = rid => dsMembers().find(x => x.rid === rid);
+
+async function dsRemove(rid){
+  const r = dsRid(rid); if (!r) return;
+  if (!(r.e > Date.now() && CAP.lock)) { showSnack('終了済みの予約は外せません'); return; }
+  const m = MACHINES.find(x => x.id === r.mid), who = r.who ? `${r.who} さん` : '（依頼者不明）';
+  if (!confirm(`この予約から機体を外します。\n\n　デモ機：${m ? m.n : '#' + r.mid}\n　件名　：${r.t}\n　依頼者：${who}\n\n外すと枠が空き、他の人が予約できるようになります。`)) return;
+  const res = await cancelDemoRow(r);
+  if (!res.ok) { showSnack('外せませんでした：' + res.message); return; }
+  UsageLog.log('demo_remove');
+  await dsRefresh();
+  showSnack(res.freed ? '機体を外しました' : '外しましたが、枠の解放に失敗しました。総務部で「占有情報を再構築」を実行してください（デモ機の画面の管理者機能）');
+}
+async function dsCancelAll(){
+  const members = dsMembers().filter(r => r.e > Date.now() && CAP.lock); if (!members.length) return;
+  const rep = members[0], others = dsOthers(members);
+  let q = `この予約をすべて取消します。\n\n　件名　：${rep.t}\n　期間　：${jFull(rep.s)} 〜 ${jFull(rep.e)}\n　機体数：${members.length}台\n`;
+  if (others.length) q += `\n★これはあなたの予約ではありません（依頼者：${others.join('、')}）。ご本人に確認済みですか？★\n`;
+  if (!confirm(q + '\n取消すと全ての枠が空き、他の人が予約できるようになります。')) return;
+  let ok = 0, ng = 0;
+  for (let i = 0; i < members.length; i++) { showSnack(`取消中... (${i}/${members.length})`); const res = await cancelDemoRow(members[i]); if (res.ok) ok++; else ng++; }
+  UsageLog.log('demo_cancel', String(ok));
+  await dsRefresh(); showSnack(`${ok}台を取消しました` + (ng ? ` / 失敗 ${ng}件` : ''));
+}
+async function dsAdd(){
+  let setId = DS.setId; const members = dsMembers(), rep = setRep(members); if (!rep) return;
+  const targets = [...DS.addSel].map(id => MACHINES.find(m => m.id === id)).filter(Boolean); if (!targets.length) return;
+  const details = { title: rep.t, cust: rep.cust, dest: rep.dest, notes: rep.notes };
+  if (String(setId).startsWith('~')) {                        /* セットIDの無い予約は、先に今の機体へ新しいセットIDを付けてまとめる */
+    if (!CAP.setId) { showSnack('この環境では機体を追加できません（BookingSetId列がありません）'); return; }
+    const nid = newSetId();
+    for (const x of members.filter(x => !x.setId)) { try { await gPatchIf(`/sites/${SITE_ID}/lists/${LIST_HIST}/items/${x.rid}/fields`, { BookingSetId: nid }, null); } catch {} }
+    setId = nid; DS.setId = nid;
+  }
+  let ok = 0;
+  for (const m of targets) { const r = await reserveDemo({ machine:m, s:rep.s, e:rep.e, setId, details }); if (r.ok) ok++; else showSnack(`${m.n} の追加に失敗しました（${r.reason || ''}）`); }
+  DS.addSel = new Set(); UsageLog.log('demo_add', String(ok));
+  await dsRefresh(); if (ok) showSnack(`${ok}台を追加しました`);
+}
+/* 複製：同じ機体・件名・顧客名・行き先・備考で、別の期間にもう一度まとめて予約する（期間は予約画面の中で書き換える） */
+function dsDup(){
+  const members = dsMembers(), rep = setRep(members); if (!rep) return;
+  closeM('mDemoSet'); UsageLog.log('demo_dup');
+  openBook(members.map(x => 'demo:' + x.mid), rep.s, rep.e, dsIsAllDay(rep));
+  el('bTitle').value = rep.t; el('bCust').value = rep.cust; el('bDest').value = rep.dest; el('bNotes').value = rep.notes;
+}
+/* 返却済みにする：いまの時刻（分単位）で終了にして、残りの期間を空ける */
+async function dsReturnAll(){ await dsReturn(dsMembers().filter(x => x.s <= Date.now() && x.e > Date.now()).map(x => x.rid)); }
+async function dsReturn(rids){
+  const now = Math.floor(Date.now() / 60000) * 60000;
+  const rows = rids.map(dsRid).filter(r => r && r.st !== '取消' && r.s < now && r.e > now);
+  if (!rows.length) { showSnack('返却済みにできる予約がありません（貸出中のものだけ対象です）'); return; }
+  const names = rows.map(r => { const m = MACHINES.find(x => x.id === r.mid); return m ? m.n : '#' + r.mid; }), others = dsOthers(rows);
+  let q = `次の機体を、いま（${jFull(now)}）返却されたことにします。\n\n　${names.slice(0, 8).join('\n　')}${names.length > 8 ? `\n　ほか${names.length - 8}台` : ''}\n\n　件名：${rows[0].t}\n`;
+  if (others.length) q += `\n★これはあなたの予約ではありません（依頼者：${others.join('、')}）。ご本人に確認済みですか？★\n`;
+  if (!confirm(q + '\n残りの予約期間は空き、他の人が予約できるようになります。')) return;
+  let ok = 0, ng = 0, notFreed = 0;
+  for (let i = 0; i < rows.length; i++) { showSnack(`返却処理中... (${i}/${rows.length})`);
+    try { const res = await modifyRow(rows[i], null, { s: rows[i].s, e: now }); if (res.ok) { ok++; if (res.freed === false) notFreed++; } else ng++; } catch { ng++; } }
+  UsageLog.log('demo_return', String(ok));
+  await dsRefresh();
+  showSnack(`${ok}台を返却済みにしました` + (ng ? ` / 失敗 ${ng}件` : '') + (notFreed ? '（枠の解放に失敗したものがあります。総務部にご連絡ください）' : ''));
+}
+
+/* ---- 予約内容の編集 ---- */
+let DE = { rids: [], rep: null };
+const deAllDayOn = () => el('deAllDay').checked;
+function paintDeAllDay(){ const on = deAllDayOn(); el('deTimeRow').style.display = on ? 'none' : ''; el('deDateRow').style.display = on ? '' : 'none'; }
+el('deAllDay').addEventListener('change', paintDeAllDay);
+linkDateTimePair('deFrom', 'deTo'); linkDatePair('deFromD', 'deToD');
+function fillDeRange(s, e, allDay){
+  el('deAllDay').checked = !!allDay;
+  el('deFrom').value = msToLocal(allDay ? s + 9*3600e3 : s); el('deTo').value = msToLocal(allDay ? s + 17*3600e3 : e);
+  el('deFromD').value = msToDate(s);
+  const d = toJ(e), mid = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
+  el('deToD').value = msToDate(allDay && mid ? e - DAY : e); paintDeAllDay();
+}
+function deRange(){
+  if (deAllDayOn()) { const a = dateToMs(el('deFromD').value), b = dateToMs(el('deToD').value); return { s:a, e: isNaN(b) ? NaN : b + DAY }; }
+  return { s: localToMs(el('deFrom').value), e: localToMs(el('deTo').value) };
+}
+function dsEdit(){
+  const rows = dsMembers(); if (!rows.length) return;
+  const rep = setRep(rows); DE = { rids: rows.map(r => r.rid), rep };
+  el('deTitle').value = rep.t; el('deCust').value = rep.cust; el('deDest').value = rep.dest; el('deNotes').value = rep.notes;
+  fillDeRange(rep.s, rep.e, dsIsAllDay(rep));
+  el('deMachinesLabel').textContent = rows.length > 1 ? `期間を変える機体（チェックした機体だけ。件名などは全${rows.length}台に反映）` : '機体';
+  el('deMachines').innerHTML = rows.map(r => { const m = MACHINES.find(x => x.id === r.mid), same = r.s === rep.s && r.e === rep.e;
+    return `<label class="chk" style="margin:0;flex-wrap:wrap;align-items:baseline;column-gap:6px"><input type="checkbox" data-rid="${r.rid}"${same ? ' checked' : ''}> <span>${esc(m ? m.n : '#' + r.mid)}</span>
+      <span class="cnt">${jFull(r.s)} 〜 ${jFull(r.e)}${same ? '' : '（期間が違う機体）'}</span></label>`; }).join('');
+  el('deNote').innerHTML = '<b>早く返ってきたとき</b>は終了を前に、<b>遅れるとき</b>は終了を後ろに直してください（機体の「返却済みに」ボタンなら、いまの時刻で終了にできます）。別の日へ丸ごと移すこともできます。新しい期間に、その機体の他の予約が入っているとできません。';
+  el('deMsg').textContent = ''; el('deMsg').className = 'msg'; el('deResult').innerHTML = ''; el('deSave').disabled = !CAP.lock;
+  openM('mDemoEdit');
+}
+el('deSave').onclick = async () => {
+  const msg = el('deMsg'), btn = el('deSave'), box = el('deResult');
+  const title = el('deTitle').value.trim();
+  if (!title) { msg.textContent = '予約件名を入力してください'; msg.className = 'msg ng'; return; }
+  const rows = DE.rids.map(id => dsMembers().find(x => x.rid === id)).filter(Boolean), rep = DE.rep;
+  const { s, e } = deRange();
+  if (isNaN(s) || isNaN(e)) { msg.textContent = deAllDayOn() ? '開始日と終了日を入力してください' : '開始と終了を入力してください'; msg.className = 'msg ng'; return; }
+  if (e <= s) { msg.textContent = deAllDayOn() ? '終了日は開始日と同じか、それより後にしてください' : '終了が開始より後になるようにしてください'; msg.className = 'msg ng'; return; }
+  const patch = { title, cust: el('deCust').value.trim(), dest: el('deDest').value.trim(), notes: el('deNotes').value.trim() };
+  const periodChanged = !(s === rep.s && e === rep.e);
+  const checked = new Set([...document.querySelectorAll('#deMachines input[type=checkbox]:checked')].map(c => c.dataset.rid));
+  const rangeFor = r => (periodChanged && checked.has(r.rid)) ? { s, e } : null;
+  if (!rows.filter(r => rangeFor(r) || patch.title !== r.t || patch.cust !== r.cust || patch.dest !== r.dest || patch.notes !== r.notes).length) { msg.textContent = '変更がありません'; msg.className = 'msg ng'; return; }
+  const others = dsOthers(rows), ended = rows.filter(r => rangeFor(r) && r.e <= Date.now());
+  let q = `予約内容を変更します。\n\n　件名　：${title}\n`;
+  if (periodChanged) q += `　期間　：${jFull(rep.s)}〜${jFull(rep.e)}\n　　　　　→ ${jFull(s)}〜${jFull(e)}（${rows.filter(r => checked.has(r.rid)).length}台）\n`;
+  if (others.length) q += `\n★これはあなたの予約ではありません（依頼者：${others.join('、')}）。ご本人に確認済みですか？★\n`;
+  if (ended.length) q += `\n★すでに終了している予約の期間を変更します（${ended.length}台）。★\n`;
+  if (!confirm(q + '\nよろしいですか？')) return;
+  btn.disabled = true; box.innerHTML = ''; let ok = 0, ng = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i], m = MACHINES.find(x => x.id === r.mid), nm = m ? m.n : '#' + r.mid; msg.textContent = `保存中... (${i}/${rows.length}) ${nm}`; msg.className = 'msg';
+    let line;
+    try { const res = await modifyRow(r, patch, rangeFor(r));
+      if (res.ok) { ok++; line = `<span style="color:var(--success)">✓ ${esc(nm)}${res.nochange ? '（変更なし）' : ''}</span>` + (res.freed === false ? ' <span style="color:var(--warning)">— 枠の縮小に失敗しました。総務部にご連絡ください</span>' : ''); }
+      else { ng++; line = `<span style="color:var(--danger)">✗ ${esc(nm)} — ${esc(editReasonJa(res))}</span>`; }
+    } catch (err) { ng++; line = `<span style="color:var(--danger)">✗ ${esc(nm)} — エラー: ${esc(err.message)}</span>`; }
+    box.insertAdjacentHTML('beforeend', `<div>${line}</div>`);
+  }
+  btn.disabled = false; msg.textContent = `${ok}/${rows.length}台を変更しました`; msg.className = 'msg' + (ng === 0 ? ' ok' : ok === 0 ? ' ng' : '');
+  UsageLog.log('demo_edit', `${ok}/${rows.length}`);
+  await dsRefresh();
+  if (ng === 0) { showSnack('予約内容を変更しました'); setTimeout(() => closeM('mDemoEdit'), 700); }
 };
 
 /* ============================================================
