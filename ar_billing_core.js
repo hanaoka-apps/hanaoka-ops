@@ -317,7 +317,9 @@
       //   期首より前の差額は、期首の残高にまとめて調整してあることがある（Amazon の 6,600 など）ので、
       //   それより前の請求・入金は判定に使わず、「期首の残高 − 期首以降が回収予定日の請求のうち期首までの売上」を
       //   期首の時点の違算（＝期首の残り）として最初に置く
-      const op = opening && !reason ? opening : null;
+      //   特別請求だけで判定する得意先（JAL など）は、SMILE の売上を後から特別請求書にまとめて請求するので、
+      //   期首の残高のうちどれが期首以降に請求されるかがわからない → これまでどおり特別請求書と入金の積み上げで見る
+      const op = opening && !reason && !c.specialOnly ? opening : null;
       const opBal = op ? num(op.bal[c.code]) : 0;
       if (op) {
         const before = l => l.date && l.date < op.date;
