@@ -73,11 +73,13 @@
           ship: { name: (r['お届け先名'] || '').trim(), company: (r['お届け先会社名・部門'] || '').trim(), zip: (r['お届け先郵便番号'] || '').trim(), province: a.province, city: a.city, addr1: a.rest, addr2: (r['お届け先建物名'] || '').trim(), phone: (r['お届け先電話番号'] || '').trim() },
           bill: { name: '', company: '', zip: '', province: '', city: '', addr1: '', addr2: '', phone: '' }, phone: '',
           juchuNo: (r['受注番号'] || '').trim(), slipNo: (r['送り状番号'] || '').trim(), donorNo: FS.donorNo(r['備考']),
-          wantDate: (r['配達希望日'] || '').trim(), wantTime: (r['配達時間帯'] || '').trim(), request: req, fileRows: 0
+          wantDate: (r['配達希望日'] || '').trim(), wantTime: (r['配達時間帯'] || '').trim(), request: req, fileRows: 0,
+          csvRows: []   // 元の CSV の行（サイネックスへの出荷報告の Excel に、そのまま並べる）
         };
         list.push(o);
       }
       o.fileRows++;
+      o.csvRows.push({ no: String(raw['No.'] == null ? '' : raw['No.']).trim(), cells: Object.keys(raw).map(function (k) { return FS.unwrap(raw[k]); }) });
       o.lines.push({ name: code + ' ' + nameRaw, sku: code, qty: qty, price: 0, discount: 0, shipped: '' });
     });
     list.forEach(function (o) { FS.priceOrder(o, conf.mapping); });

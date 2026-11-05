@@ -1803,8 +1803,45 @@ async function markShipReported(ids, on) {
   if (lastPushErr) { const m = String(lastPushErr && lastPushErr.message || lastPushErr); lastPushErr = null;
     alert(['この端末には記録しましたが、共有のリストに保存できませんでした（他の人には反映されません）。', '注文のリストに、列「ShipReportedBy」「ShipReportedAt」が無い可能性があります。専用機に列の追加を依頼してください。', '', m.slice(0, 200)].join(String.fromCharCode(10))); }
 }
+// サイネックスへの出荷報告：Excel を作り、添付した Outlook の下書きを自分のメールボックスに作る（送信は人が押す）。
+// 下書きを作れない（権限がない等）ときは、Excel をダウンロードして、メールは手で作る
+const MAIL_SCOPES = ['Mail.ReadWrite'];
+async function getMailToken() {
+  try { return (await msalInstance.acquireTokenSilent({ scopes: MAIL_SCOPES, account })).accessToken; }
+  catch { return (await msalInstance.acquireTokenPopup({ scopes: MAIL_SCOPES })).accessToken; }
+}
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'; s.onload = ok; s.onerror = () => ng(new Error('Excel の部品を読み込めません')); document.head.appendChild(s); });
+}
+async function makeShipMail(items) {
+  if (!items.length) return false;
+  const rep = FurusatoShipReport.build({ items, conf: CONF });
+  await loadXLSX();
+  const ws = XLSX.utils.aoa_to_sheet(rep.aoa); ws['!cols'] = rep.aoa[0].map((_, i) => (rep.widths[i] ? { wch: rep.widths[i] } : {}));
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  const b64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+  const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  try {
+    const r = await fetch('https://graph.microsoft.com/v1.0/me/messages', { method: 'POST', headers: { Authorization: 'Bearer ' + await getMailToken(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: rep.subject, body: { contentType: 'HTML', content: rep.bodyHtml },
+        toRecipients: rep.to.map(a => ({ emailAddress: { address: a } })), ccRecipients: rep.cc.map(a => ({ emailAddress: { address: a } })),
+        attachments: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: rep.fileName, contentType: XLSX_TYPE, contentBytes: b64 }] }) });
+    if (!r.ok) throw new Error('Graph ' + r.status);
+    const m = await r.json();
+    if (m.webLink) window.open(m.webLink, '_blank', 'noopener');
+    alert('Outlook に下書きを作りました（' + rep.count + '行・' + rep.orders + '件）。\n内容を確認して、送信してください。\n件名：' + rep.subject);
+    return true;
+  } catch (e) {
+    console.warn('下書きを作れません', e);
+    const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    download(rep.fileName, u8, XLSX_TYPE);
+    alert('Outlook の下書きは作れませんでした（メールの権限がない可能性があります）。\nExcel をダウンロードしたので、メールに添付して送ってください。\n宛先：' + rep.to.join('、') + '\nCc：' + rep.cc.join('、') + '\n件名：' + rep.subject);
+    return true;
+  }
+}
 function shipCtx() {
-  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported,
+  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }
 function render() {
