@@ -304,7 +304,8 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.equal(y.diff, 5000, '期首に残高があり、そのあと動きがない得意先も出す');
   const so = A.build({ detail, payments, customers, staff, opening: opening(27000), settings: [{ cust: 'X1', mode: '特別請求のみ' }] },
     { asof: '2026-05-20', today: '2026-05-20' }).customers.X1;
-  assert.ok(!so.periods.some(p => p.opening), '特別請求だけで判定する得意先は期首残高を使わない');
+  assert.ok(!so.periods.some(p => p.opening), '特別請求だけで判定する得意先は期首の残りを置かない');
+  assert.equal(so.diff, 0, '期首より前の差は見ず、期首から 0 で積み上げる');
   const op = A.openingFromHanbai([['売掛残高一覧表'], ['対象期間:2026年 4月 1日～2026年10月31日'], [], [], ['コード'],
     ['<902301>', 'Amazon', 219890, 274010, -54120, 49200, 4920, 54120, 0]]);
   assert.deepEqual([op.date, op.to, op.bal['902301'], op.end['902301']], ['2026-04-01', '2026-10-31', 219890, 0]);
