@@ -17,7 +17,7 @@
      名前を自分で決めたいアプリは UsageLog.init({ page:'reserve', msal, account }) を先に呼ぶ
      （そのときは open もアプリが自分で記録する。施設・備品予約・出荷・配送がこの形）。
 
-   ★記録しない画面★ EXCLUDE（FUJIN と Sales HUB。別の担当者が作っている）。
+   ★記録しない画面★ EXCLUDE（FUJIN と Sales HUB は別の担当者が作っているため。集計画面も）。
 
    保存先：SharePoint のリスト「HUBの利用ログ」（管理者が usage_stats.html で作る）。
    ・リストがない・権限がない・通信に失敗したときは、黙ってやめる（画面の動きには一切影響しない）。
@@ -28,12 +28,13 @@
   if (window.UsageLog) return;
   const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
   const LIST_NAME = 'HUBの利用ログ';
-  const VER = '20261105b';
+  const VER = '20261105c';
   const MAX_PER_PAGE_VIEW = 80;                /* 1回の画面表示あたりの上限（暴走防止）。init の max で画面ごとに変えられる */
   const SAME_WITHIN_MS = 20000;                /* 同じ操作をすぐ繰り返したら1回にまとめる */
   const MAX_ERRORS = 5;                        /* 1回の画面表示あたりのエラーの記録数 */
   const AUTO_OPEN_WAIT_MS = 1500;              /* アプリが自分で init するのを待つ時間（その場合は自動の open を出さない） */
-  const EXCLUDE = [/^fujin\//i, /^sales_dashboard$/i];
+  /* 集計画面（usage_stats）は、管理者が見るたびに数が増えるだけなので記録しない */
+  const EXCLUDE = [/^fujin\//i, /^sales_dashboard$/i, /^usage_stats$/i];
 
   let cfg = null, manual = false, listId, count = 0, errCount = 0, recent = new Map();
   let tok = null, tokExp = 0;                  /* 画面を閉じるときは待てないので、トークンを先に持っておく */

@@ -50,7 +50,7 @@
      サインインより前に起きたエラーも記録できるよう、ここで先に貯めておく。
      ------------------------------------------------------------ */
   var SELF_SRC = (document.currentScript && document.currentScript.src) || '';
-  var USAGE_LOG_VER = '20261105b';
+  var USAGE_LOG_VER = '20261105c';
   window.__haErrors = window.__haErrors || [];
   function keepEarlyError(msg) { if (!window.UsageLog && window.__haErrors.length < 5) window.__haErrors.push(msg); }
   window.addEventListener('error', function (e) {
@@ -72,7 +72,7 @@
   }
 
   /* 利用状況（usage_stats.html）を見られる管理者。サイドバーのメニューの出し分けにも使う */
-  var USAGE_ADMIN_NAMES = ['福田剛史', '花岡雅', '石井絢子'];
+  var USAGE_ADMIN_NAMES = ['福田剛史', '花岡雅', '花岡尚'];
   var USAGE_ADMIN_MAILS = ['t.fukuda@hanaoka-corp.co.jp', 't.fukuda@hanaokacorp.onmicrosoft.com'];
   function isUsageAdmin(acc) {
     if (!acc) return false;
