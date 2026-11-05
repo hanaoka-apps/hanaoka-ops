@@ -75,7 +75,14 @@ async function graphGet(url) {
   if (!r.ok) throw new Error('Graph ' + r.status + ': ' + url);
   return r.json();
 }
-async function resolveDriveId() {
+// 同時に何か所から呼ばれても、ドライブの検索は1回だけ（最初の読み込みを並べて進めるため）
+let driveP = null;
+function resolveDriveId() {
+  if (driveId) return Promise.resolve(driveId);
+  if (!driveP) driveP = resolveDriveId0().catch(e => { driveP = null; throw e; });
+  return driveP;
+}
+async function resolveDriveId0() {
   if (driveId) return driveId;
   try {
     const nm = CONF.sharepoint.driveName, re = new RegExp(nm, 'i');
@@ -99,6 +106,18 @@ async function fetchCsv(name) {
   const r = await fetch(dl);
   if (!r.ok) throw new Error('取得失敗 ' + r.status + ': ' + name);
   return { text: decodeCsv(await r.arrayBuffer()), modified: meta.lastModifiedDateTime || '' };
+}
+// 画面を開いたとき、設定の読み込みを待たずに、あとで使うファイルを先に読み始める（順番に読むと、待ち時間が足し算になるため）。
+// 読んだ結果は、あとで loadMasters／syncFromList が受け取る（読めなかったときも、そこで今までどおり扱う）
+const PRE = {};
+function prefetchCsv(name) { const p = fetchCsv(name); p.catch(() => {}); PRE[name] = p; }
+function fetchCsvPre(name) { const p = PRE[name]; if (p) { delete PRE[name]; return p; } return fetchCsv(name); }
+let EARLY = null, EARLY_ROWS = null;
+function startEarly() {
+  sharedInit();
+  prefetchCsv(CONF.files.index);
+  EARLY = { edits: loadEdits(), cal: loadCalendar(), orders: loadOrdersStep() };
+  if (shared) { EARLY_ROWS = (async () => { if (!shared.siteId) await shared.connect(); return shared.loadAll(); })(); EARLY_ROWS.catch(() => {}); }
 }
 // SharedMasters に同名の設定ファイルがあれば、リポジトリのものより優先（コードを変えずに決まりごとを直せる）
 async function loadSharedConfig() {
@@ -158,7 +177,8 @@ function stamp(iso) { if (!iso) return ''; const d = new Date(iso); return (d.ge
 // 無い・読めないときだけ全件CSVを読む（重いので、画面にそのことを出す）
 async function loadMasters() {
   const failed = [];
-  await loadEdits();
+  const early = EARLY; EARLY = null;   // 画面を開いたときに先に読み始めたもの（あれば）
+  await (early ? early.edits : loadEdits());
   const F = (r, names) => EC.pick(r, names);
   const applyItems = objs => {
     M.items = {};
@@ -194,7 +214,7 @@ async function loadMasters() {
   let idx = null;
   M.indexMissing = false; M.indexInfo = null; M.smileIdx = null;
   try {
-    const r = await fetchCsv(CONF.files.index);
+    const r = await fetchCsvPre(CONF.files.index);
     idx = JSON.parse(r.text);
     if (!idx || !idx.generatedAt || !idx.items || !idx.nouhin || !idx.orders) idx = null;
   } catch (e) { console.warn(CONF.files.index, e); }
@@ -222,8 +242,14 @@ async function loadMasters() {
     ]);
     if (isSoumu) await job('nyukin', CONF.files.nyukin, t => applyNyukin(EC.parseAuto(t)));
   }
-  await loadCalendar();
-  // 自動取得ファイル（あれば）。ふるさと納税は、専用機が解凍した注文CSVを PROFILE.loadOrders で読む
+  await (early ? early.cal : loadCalendar());
+  failed.push(...await (early ? early.orders : loadOrdersStep()));
+  return failed;
+}
+// 注文の自動取得（あれば）。読めなかったものの名前の一覧を返す
+async function loadOrdersStep() {
+  const failed = [];
+  // ふるさと納税は、専用機が解凍した注文CSVを PROFILE.loadOrders で読む
   if (PROFILE.loadOrders) {
     try {
       await PROFILE.loadOrders({
@@ -435,8 +461,6 @@ const THEAD0 = '<thead><tr><th><input type="checkbox" data-selall></th><th>注�
 const THEAD = () => FLOW_UI() ? THEAD0.replace('</th><th>注文</th>', '</th><th>現在地</th><th>注文</th>') : THEAD0;
 function renderOrders() {
   const vis = visible(), count = k => vis.filter(s => k === 'all' || stateOf(s) === k).length;
-  if (FLOW_UI()) { $('chips').innerHTML = ''; renderFlowBar(vis); } else
-  $('chips').innerHTML = FILTERS.map(([k, l]) => '<span class="chip' + (curFilter === k ? ' active' : '') + '" data-f="' + k + '">' + l + '<b>' + count(k) + '</b></span>').join('');
   // タブの数字：自分にボールがある件数。①＝確認前（取込担当者は OK済・起票依頼待ちも）、③＝確認待ち（確認OKを押せる管理者だけ）。業務フローの絵を使わない画面では、従来どおり未確認の件数
   if (FLOW_UI()) {
     const role = flowRole(), p1 = vis.filter(s => { const k = stateOf(s); return k === 'new' || (k === 'ok' && role.canImport); }).length, p3 = role.canConfirm ? vis.filter(s => stateOf(s) === 'confirm').length : null;
@@ -445,6 +469,9 @@ function renderOrders() {
     c.title = 'あなたの作業の件数です。① 注文を確認（OK・取込）' + (p3 === null ? '' : '／③ 結果を確認（確認OK）');
     c.classList.toggle('hot', p1 + (p3 || 0) > 0);
   } else $('cnt-orders').textContent = vis.filter(s => stateOf(s) === 'new').length;
+  if (curTab !== 'orders') return;   // 見えていないタブの一覧は作らない（タブを切り替えたときに、見えるタブだけ作る）
+  if (FLOW_UI()) { $('chips').innerHTML = ''; renderFlowBar(vis); } else
+  $('chips').innerHTML = FILTERS.map(([k, l]) => '<span class="chip' + (curFilter === k ? ' active' : '') + '" data-f="' + k + '">' + l + '<b>' + count(k) + '</b></span>').join('');
   const dir = curSort === 'desc' ? -1 : 1;   // 注文日（同じ日は注文の時刻）の昇順・降順
   const list = vis.filter(matchFilter).sort((a, b) => dir * (a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : (a.order.createdTime > b.order.createdTime ? 1 : 0)) : (a.orderDate < b.orderDate ? -1 : 1)));
   const el = $('list');
@@ -764,6 +791,7 @@ async function refreshCodeMode() {
 // forceReal＝専用機を使わない手動の取込ファイル（「⋯」メニュー）。仮の番号は専用機が置き換えるものなので、手動の取込には使わず本当のコードを決める
 function planOut(forceReal) {
   const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); s.memo = memoOf(s); });
+  if (!ok.length) return { ok, fresh: [], master: M.nouhin || null };   // OK済が無いときは、納品先マスタ全体の複製（重い）は要らない
   const master = M.nouhin ? JSON.parse(JSON.stringify(M.nouhin)) : null;
   if (!master) return { ok, fresh: [], master: null };
   const fresh = EC.planDeliveries(ok, master, store.cfg, { reuse: true, temp: forceReal ? null : tempCfg() });
@@ -846,8 +874,9 @@ async function syncFromList(o) {
   if (!shared || syncingShared) return false;
   syncingShared = true;
   try {
-    if (!shared.siteId) await shared.connect();
-    const rows = await shared.loadAll();
+    let rows;
+    if (o.first && EARLY_ROWS) { const p = EARLY_ROWS; EARLY_ROWS = null; rows = await p; }   // 画面を開いたときに先に読み始めたもの
+    else { if (!shared.siteId) await shared.connect(); rows = await shared.loadAll(); }
     const wasOffline = sharedState === 'offline';
     const m = EC.mergeFromList(store.orders, rows, sharedPending());
     store.orders = m.orders; sharedRows = rows; sharedState = 'ok'; save();
@@ -1718,6 +1747,12 @@ function mapRulesHtml() {
   return out || '<div class="empty">当てはまるルールがありません</div>';
 }
 function renderMap() {
+  // タブの数字（対応表にない商品の種類）は、見えていないときも更新する。表の中身は、見えるときだけ作る
+  const un = {};
+  slips.forEach(s => { if (stateOf(s) === 'excluded' || s.inSmile || stateOf(s) === 'exported') return; s.flags.forEach(f => { if (f.text.startsWith('対応表にない商品：')) { const k = f.text.slice(9); un[k] = (un[k] || 0) + 1; } }); });
+  const keys = Object.keys(un);
+  $('cnt-map').textContent = keys.length;
+  if (curTab !== 'map') return;
   const m = store.mapping, S = EcSettings, ed = canEditSettings(), c = store.cfg, info = settingsInfo;
   // 共有の状態
   let st = '';
@@ -1740,11 +1775,7 @@ function renderMap() {
   // 対応表
   $('map-add').hidden = !ed; $('map-reset').hidden = !ed;
   $('rules').innerHTML = mapRulesHtml();
-  // 対応表にない商品
-  const un = {};
-  slips.forEach(s => { if (stateOf(s) === 'excluded' || s.inSmile || stateOf(s) === 'exported') return; s.flags.forEach(f => { if (f.text.startsWith('対応表にない商品：')) { const k = f.text.slice(9); un[k] = (un[k] || 0) + 1; } }); });
-  const keys = Object.keys(un);
-  $('cnt-map').textContent = keys.length;
+  // 対応表にない商品（un・keys は、上で数えたもの）
   $('unmapped').innerHTML = keys.length ? '<h2>対応表にない商品（' + keys.length + '種）</h2>' + keys.map(k => '<div><span class="tag err">' + un[k] + '件</span> ' + esc(k) + ' <button class="btn sec sm" data-try="' + esc(k) + '">判定を見る</button>' + (ed ? ' <button class="btn sec sm" data-newrule="' + esc(k) + '">ルールを足す</button>' : '') + '</div>').join('') + '<div class="muted" style="margin-top:6px">ルールを足すと、該当の注文が自動で直ります。' + (ed ? '' : '足すのは担当者が行います。') + '</div>' : '<h2>対応表にない商品</h2><div class="muted">ありません</div>';
 }
 function tryHtml(name, mapping) {
@@ -2075,12 +2106,12 @@ async function initAuth() {
     $('sp-user').textContent = n; $('sp-avatar').textContent = (n || '?').charAt(0);
     wireDrop('orders', 'orders'); wireDrop('payouts', 'payouts'); wireDrop('tx', 'tx');
     setStatus('loading', 'SharePoint（SharedMasters）から読み込み中…');
-    isSoumu = await soumuHasAccess();
+    startEarly();   // マスタ・注文・休業日・共有の履歴は、設定を待たずに先に読み始める
+    // 総務の権限の確認と、管理者→対応表・設定は、互いに待たずに進める（設定は管理者の一覧を使うので、この2つは順番）
+    [isSoumu] = await Promise.all([soumuHasAccess(), loadAdmins().then(() => loadSettings())]);
     $('tab-pay').hidden = !isSoumu || !!PROFILE.noPay;
-    await loadAdmins();
-    await loadSettings();   // 対応表・設定（SharedMasters の共有ファイル）
     const failed = await loadMasters();
-    sharedInit(); await syncFromList({ first: true, noRender: true });   // 共有の履歴（リスト）を読んで、この端末の記録を復元する
+    await syncFromList({ first: true, noRender: true });   // 共有の履歴（リスト）を読んで、この端末の記録を復元する
     recompute(); render();
     Object.keys(store.imports).forEach(id => { if (['queued', 'importing', 'verify'].includes(store.imports[id].phase)) trackImport(id); });
     codeDecision = EC.deliveryCodeMode((CONF.rpaImport || {}).tempCodes, null); refreshCodeMode();   // 専用機の稼働の印で、新規の納品先のコードの決め方を判定する

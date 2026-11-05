@@ -165,7 +165,7 @@ const recOk = { status: 'ok', by: 'u1@example.com', at: '2026-10-21T01:00:00.000
     assert.ok(!/山田|03-0000/.test(logBody));
     // アプリが作る項目そのもの（orderFields）に、名前・住所・電話の欄が無い
     const keys = Object.keys(EC.orderFields('1801', Object.assign({}, recOk, { juchuNo: '9', memoNote: 'm', shipDate: '2026-10-22' })));
-    assert.deepStrictEqual(keys.sort(), ['BatchId', 'ConfirmAt', 'ConfirmBy', 'CustomerCode', 'ImportAt', 'ImportBy', 'MemoNote', 'NetTotal', 'OkAt', 'OkBy', 'OrderDate', 'ReportedAt', 'ShipDate', 'ShipDateManual', 'SmileOrderNo', 'Status', 'Title']);
+    assert.deepStrictEqual(keys.sort(), ['BatchId', 'ConfirmAt', 'ConfirmBy', 'CustomerCode', 'ImportAt', 'ImportBy', 'MemoNote', 'NetTotal', 'OkAt', 'OkBy', 'OrderDate', 'ReportedAt', 'ShipDate', 'ShipDateManual', 'ShipReportedAt', 'ShipReportedBy', 'SmileOrderNo', 'Status', 'Title']);
   });
   await t('リストに接続できない場合：読み込み・書き込みが例外になり、呼び出し側が localStorage だけで動き続けられる（isUnavailable）', async () => {
     const g = fakeGraph(), s = mk(g); await s.connect();
