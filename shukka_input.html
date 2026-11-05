@@ -295,6 +295,8 @@ body.in .gate{display:none}
     <label id="groupTitle" style="margin-bottom:3px">出図</label>
     <div class="hint" id="groupSub" style="margin:0 0 14px"></div>
     <div id="groupStatus"></div>
+    <button type="button" class="plain" id="btnSnBulkGroup" style="margin-top:12px"
+      title="製造番号がまだ入っていない車両に、開始番号から連番で入れます。">製造番号をまとめて入れる</button>
     <div id="groupTable" style="margin-top:16px;overflow-x:auto"></div>
 
     <div class="toolsec" style="margin-top:16px">
@@ -319,6 +321,8 @@ body.in .gate{display:none}
 
     <div class="wtalert" id="wtAlert" style="display:none"></div>
 
+    <button type="button" class="plain" id="btnSnBulkList" style="margin-bottom:12px"
+      title="製造番号がまだ入っていない車両に、開始番号から連番で入れます。チェックを付けていれば、その台だけです。">製造番号をまとめて入れる</button>
     <button type="button" class="plain" id="btnDestChange" style="margin-bottom:12px"
       title="チェックした台の仕向地を変えて、変更前・変更後・理由を記録します。">仕向地を変更（選んだ台のみ）</button>
 
@@ -457,6 +461,15 @@ body.in .gate{display:none}
   <div class="npnoprint" style="display:flex;gap:9px;margin-top:14px">
     <button type="button" class="plain" id="btnCdClose">閉じる</button>
     <button type="button" id="btnCdPrint">印刷する</button>
+  </div>
+</div></div>
+
+<div class="np" id="snbWrap"><div class="npbox">
+  <div id="snbBody"></div>
+  <div style="display:flex;gap:9px;margin-top:14px">
+    <button type="button" class="plain" id="btnSnbClose">閉じる</button>
+    <button type="button" class="sub" id="btnSnbPreview">割り当てを見る</button>
+    <button type="button" id="btnSnbSave" disabled>この内容で登録</button>
   </div>
 </div></div>
 
@@ -1664,6 +1677,114 @@ async function saveSn(u){
     btn.disabled=false;btn.textContent="登録する";
   }
 }
+/* ---- 製造番号をまとめて入れる ----
+   製造番号がまだ（未定-…）の車両に、開始番号から連番で入れる。
+   途中で他の出図が挟まって番号が飛ぶことがあるので、すでに使われている
+   番号は飛ばして次に進める（飛ばした番号は画面に出す）。
+   アプリが勝手に番号を決めることはせず、「割り当てを見る」で確認してから登録する。 */
+let SNB={targets:[],plan:null};
+function snbTargets(){
+  const us=((LIST_CTX&&LIST_CTX.units)||[]).filter(u=>isPlaceholderSn(u.sn));
+  const pick=(SEL&&SEL.size)?us.filter(u=>SEL.has(u.id)):us;
+  const key=u=>{const m=/^未定-(.*)-(\d+)$/.exec(trim(u.sn));return m?[m[1],parseInt(m[2],10)]:[String(u.sn),0]};
+  return pick.slice().sort((a,b)=>{const x=key(a),y=key(b);
+    return x[0]!==y[0]?x[0].localeCompare(y[0]):x[1]-y[1]});
+}
+function openSnBulk(){
+  clearErr();
+  const t=snbTargets();
+  if(!t.length){showErr("製造番号がまだ入っていない車両がありません。");return}
+  SNB={targets:t,plan:null};
+  const chosen=(SEL&&SEL.size)?"チェックした":"製造番号が未登録の";
+  $("snbBody").innerHTML=
+    '<h3>製造番号をまとめて入れる　'+chosen+t.length+'台</h3>'+
+    '<div class="bulk"><div class="bd">'+
+      '<div class="f"><span>開始番号（全社共通の5桁）</span>'+
+        '<input id="snbStart" type="text" inputmode="numeric" placeholder="00000" maxlength="5" style="text-align:center"></div>'+
+      '<label class="bchk" style="display:flex;gap:8px;align-items:center;font-weight:400;font-size:15px">'+
+        '<input id="snbSkip" type="checkbox" checked style="width:auto;margin:0">すでに使われている番号は飛ばす</label>'+
+    '</div></div>'+
+    '<div id="snbPrev" class="hint" style="margin-top:10px">開始番号を入れて「割り当てを見る」を押してください。登録はまだされません。</div>';
+  $("btnSnbSave").disabled=true;
+  $("snbWrap").classList.add("on");
+  $("snbStart").addEventListener("input",()=>{$("snbStart").value=digits($("snbStart").value).slice(0,5);SNB.plan=null;$("btnSnbSave").disabled=true});
+  setTimeout(()=>$("snbStart").focus(),50);
+}
+async function snbBuildPlan(){
+  const start=digits($("snbStart").value);
+  if(start.length!==5)throw new Error("開始番号を5桁の数字で入れてください。");
+  const skip=$("snbSkip").checked,t=SNB.targets,lo=parseInt(start,10);
+  if(lo+t.length-1>99999)throw new Error("5桁の範囲（99999）を超えます。開始番号を小さくしてください。");
+  const hi=Math.min(99999,lo+t.length+300);
+  const pad=n=>String(n).padStart(5,"0");
+  const q="/sites/"+SITE_ID+"/lists/"+UNITS_ID+"/items?expand=fields&$top=999"+
+    "&$filter=fields/Title ge '"+pad(lo)+"' and fields/Title le '"+pad(hi)+"'";
+  const hits=await gAll(q,PREF);
+  const mine=new Set(t.map(u=>u.id));
+  const used=new Map();
+  hits.forEach(it=>{const f=it.fields||{};
+    if(/^\d{5}$/.test(f.Title||"")&&!mine.has(it.id))used.set(parseInt(f.Title,10),f)});
+  let cur=lo;const rows=[],skipped=[];let conflict=false;
+  for(const u of t){
+    while(skip&&used.has(cur)){skipped.push(cur);cur++}
+    if(cur>99999)throw new Error("5桁の範囲（99999）を超えます。開始番号を小さくしてください。");
+    const clash=used.get(cur);
+    if(clash)conflict=true;
+    rows.push({u:u,sn:pad(cur),clash:clash||null});
+    cur++;
+  }
+  return {rows:rows,skipped:skipped.map(pad),conflict:conflict};
+}
+function snbRender(plan){
+  const sk=plan.skipped.length
+    ? '<div class="npmiss" style="margin:8px 0"><b>使用済みのため飛ばした番号：</b>'+esc(plan.skipped.join("・"))+'</div>':"";
+  const cf=plan.conflict
+    ? '<div class="npmiss" style="margin:8px 0"><b>⚠ 使用済みの番号に当たっています。</b>「すでに使われている番号は飛ばす」を入れるか、開始番号を変えてください。</div>':"";
+  $("snbPrev").innerHTML=sk+cf+
+    '<table class="nptbl" style="margin-top:6px"><thead><tr><th>製造番号</th><th>車体番号</th><th>仕向地</th></tr></thead><tbody>'+
+    plan.rows.map(r=>'<tr><td'+(r.clash?' class="ng"':'')+'><b>'+esc(r.sn)+'</b>'+
+      (r.clash?'（出図 '+esc(r.clash.ShutsuzuNo||"")+' で使用済み）':'')+'</td>'+
+      '<td>'+esc(trim(valOf(r.u,"car"))&&valOf(r.u,"car")!=="なし"?valOf(r.u,"car"):"—")+'</td>'+
+      '<td>'+esc(r.u.dest||"")+'</td></tr>').join("")+'</tbody></table>'+
+    '<div class="hint" style="margin-top:8px">'+plan.rows.length+'台に '+esc(plan.rows[0].sn)+' 〜 '+esc(plan.rows[plan.rows.length-1].sn)+' を入れます。</div>';
+}
+async function snbPreview(){
+  const b=$("btnSnbPreview");b.disabled=true;b.textContent="確認しています…";
+  try{
+    const plan=await snbBuildPlan();
+    SNB.plan=plan;snbRender(plan);
+    $("btnSnbSave").disabled=!!plan.conflict;
+  }catch(e){
+    SNB.plan=null;$("btnSnbSave").disabled=true;
+    $("snbPrev").textContent=(e&&e.message&&!/^\[/.test(e.message))?e.message:"確認できませんでした。電波の状態を確かめてもう一度お試しください。";
+    console.error(e);
+  }finally{b.disabled=false;b.textContent="割り当てを見る"}
+}
+async function snbSave(){
+  if(!SNB.plan)return;
+  const b=$("btnSnbSave");b.disabled=true;b.textContent="登録しています…";
+  try{
+    /* 見たあとに他の人が同じ番号を使っていないか、登録の直前にもう一度確かめる */
+    const again=await snbBuildPlan();
+    const same=JSON.stringify(again.rows.map(r=>[r.u.id,r.sn]))===JSON.stringify(SNB.plan.rows.map(r=>[r.u.id,r.sn]));
+    if(!same||again.conflict){
+      SNB.plan=again;snbRender(again);
+      showErr("確認したあとで番号の使われ方が変わりました。割り当てを見直したので、もう一度確認してから登録してください。");
+      b.disabled=!!again.conflict;b.textContent="この内容で登録";return;
+    }
+    const r=await patchMany(SNB.plan.rows.map(x=>({id:x.u.id,body:{Title:x.sn}})));
+    const okIds=new Set(r.ok.map(c=>c.id));
+    SNB.plan.rows.forEach(x=>{if(okIds.has(x.u.id))x.u.sn=x.sn});
+    $("snbWrap").classList.remove("on");
+    SEL=new Set();
+    renderList();renderGroupSummary();
+    if(r.ng.length)showErr(r.ok.length+"台に入れましたが、"+r.ng.length+"台は登録できませんでした。もう一度「製造番号をまとめて入れる」を押してください。");
+    else showOk(r.ok.length+"台に製造番号 "+SNB.plan.rows[0].sn+" 〜 "+SNB.plan.rows[SNB.plan.rows.length-1].sn+" を登録しました。");
+  }catch(e){
+    console.error(e);
+    showErr("登録できませんでした。電波の状態を確かめてもう一度お試しください。");
+  }finally{b.textContent="この内容で登録";b.disabled=!SNB.plan||!!SNB.plan.conflict}
+}
 /* ---- 1台の中身（読むだけ） ---- */
 function openOne(u){
   $("oneSn").textContent=isPlaceholderSn(u.sn)?"製造番号 未登録":u.sn;
@@ -1770,6 +1891,11 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("btnCdClose").onclick=()=>$("cdWrap").classList.remove("on");
   $("btnCdPrint").onclick=()=>window.print();
   $("btnDestChange").onclick=openDestChange;
+  $("btnSnBulkList").onclick=openSnBulk;
+  $("btnSnBulkGroup").onclick=openSnBulk;
+  $("btnSnbClose").onclick=()=>$("snbWrap").classList.remove("on");
+  $("btnSnbPreview").onclick=snbPreview;
+  $("btnSnbSave").onclick=snbSave;
   $("btnDestClose").onclick=()=>$("destWrap").classList.remove("on");
   $("btnDestSave").onclick=saveDestChange;
   $("btnSelYet").onclick=()=>{selSet(u=>!valOf(u,CUR_TAB==="ym"?"ym":"date"));noteApply()};
