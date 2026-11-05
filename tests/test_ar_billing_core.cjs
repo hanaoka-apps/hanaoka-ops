@@ -311,6 +311,19 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.deepEqual([op.date, op.to, op.bal['902301'], op.end['902301']], ['2026-04-01', '2026-10-31', 219890, 0]);
 }
 
+// ---- 違算の内訳：入金の付け替えで回ごとの差が打ち消し合っても、残っている請求書を出す ----
+{
+  const detail = [sale('T1', '20260301', 100, 0),
+    sale('T1', '20260405', 1000, 1), tax('T1', '20260415', 100, 1),       // 1,100 → 5/11（5/10 が日曜）
+    sale('T1', '20260505', 2000, 2), tax('T1', '20260515', 200, 2)];      // 2,200 → 6/10
+  const payments = [pay('T1', '20260101', 0), pay('T1', '20260511', 5000),     // 別の得意先の入金をいったんここに入れた
+    pay('T1', '20260610', 2200), pay('T1', '20260610', -5000)];          // 取り消して付け替え
+  const M = A.build({ detail, payments, customers: [cust('T1')], staff }, { asof: '2026-07-01', today: '2026-07-01' });
+  const c = M.customers.T1;
+  assert.equal(c.diff, 1100);
+  assert.deepEqual(c.openPeriods.map(p => [p.invoices[0].no, p.open]), [['1', 1100]], '請求額がぴったりの請求書を出す');
+}
+
 // ---- CSV：引用符の中のカンマ・改行、BOM ----
 {
   const rows = A.toObjects('﻿"a","b"\r\n"1,2","x""y"\r\n"3","改\n行"\r\n');

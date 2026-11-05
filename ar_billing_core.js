@@ -364,9 +364,29 @@
       c.periods = periods;
       const J = periods.filter(p => p.judged);
       c.diff = J.length ? J[J.length - 1].cum : 0;
-      // 今の違算の内訳：累計が最後に 0 だった回より後で、差が出ている回
-      let lastZero = -1; J.forEach((p, i) => { if (p.cum === 0) lastZero = i; });
-      c.openPeriods = J.slice(lastZero + 1).filter(p => p.diff !== 0);
+      // 今の違算の内訳：どの請求書（回）が残っているか。p.open にその回の残りの額を入れる
+      //   入金の付け替え（別の得意先コードへの移動・取消）があると、回ごとの差がプラスとマイナスで打ち消し合うので、
+      //   回の差ではなく違算の合計から割り当てる。
+      //   未入金：違算の合計とぴったり同じ請求額の回があればその回。なければ新しい回から順に、合計に届くまで
+      //   過入金：差がマイナスの回を新しいほうから順に
+      J.forEach(p => { delete p.open; });
+      const pick = [];
+      if (c.diff > 0) {
+        const cand = J.filter(p => p.amount > 0).reverse();
+        const exact = cand.find(p => p.amount === c.diff);
+        if (exact) pick.push([exact, c.diff]);
+        else {
+          let r = c.diff;
+          for (const p of cand) { if (r <= 0) break; const v = Math.min(p.amount, r); pick.push([p, v]); r -= v; }
+          if (r > 0 && pick.length) pick[pick.length - 1][1] += r;
+        }
+      } else if (c.diff < 0) {
+        let r = -c.diff;
+        for (const p of J.filter(p => p.diff < 0).reverse()) { if (r <= 0) break; const v = Math.min(-p.diff, r); pick.push([p, -v]); r -= v; }
+        if (r > 0 && pick.length) pick[pick.length - 1][1] -= r;
+      }
+      pick.forEach(([p, v]) => { p.open = v; });
+      c.openPeriods = pick.map(x => x[0]).sort((a, b) => a.bound < b.bound ? -1 : a.bound > b.bound ? 1 : 0);
       c.oldestDue = c.openPeriods.length ? c.openPeriods[0].due : "";
       c.daysOver = c.oldestDue ? daysBetween(c.oldestDue, asof) : 0;
       c.status = c.diff > 0 ? "未入金" : c.diff < 0 ? "過入金" : "";
