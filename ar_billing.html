@@ -509,6 +509,10 @@ const FILES = {
   customers: { name:'得意先マスタ.csv', label:'得意先マスタ' },
   staff:     { name:'担当者マスタ.csv', label:'担当者マスタ' },
 };
+// 期首残高：販売の「売掛残高一覧表」（Excel。期間は 期首〜前月末）。
+//   期首の売掛残高から積み上げて違算を見る（期首より前の差額は、期首の残高にまとめて調整してあることがあるため）。
+//   会計照合の「販売」にもそのまま使う。なければ、データの最初からの積み上げで判定する
+const OPENING_FILE='売掛残高一覧表.xlsx';
 
 // 書き込む先（SharedMasters と同じサイトのリスト）。1 件 ＝ 1 行。
 //   絞り込みに使う値だけ列にして、中身は Data 列に JSON で入れる。
@@ -531,7 +535,8 @@ const listIds={}, listErr={};
 let specialErr='';
 let msalInstance=null, account=null, driveId=null;
 let SRC={};          // 読み込んだ行（キーは FILES と同じ）
-let SRCINFO={};      // ファイルの更新日時
+let SRCINFO={};
+let openingErr='';      // ファイルの更新日時
 let M=null;          // ARCore.build の結果
 let asofOverride=''; // 判定日を手で変えたとき
 let selCode='';
@@ -711,13 +716,30 @@ async function fetchFile(fname){
   if(!r.ok) throw new Error(`${fname}: ${r.status}`);
   return { text:decodeText(await r.arrayBuffer()), modified:meta.lastModifiedDateTime };
 }
+async function fetchBuf(fname){
+  const did=await resolveDriveId();
+  const meta=await graphGet(`/drives/${did}/root:/${encodeURIComponent(fname)}`);
+  const r=await fetch(meta['@microsoft.graph.downloadUrl']);
+  if(!r.ok) throw new Error(`${fname}: ${r.status}`);
+  return { buf:await r.arrayBuffer(), modified:meta.lastModifiedDateTime };
+}
+function setOpening(rows,info,name){
+  const op=ARCore.openingFromHanbai(rows);
+  if(!op){ SRC.opening=null; openingErr=name+' の期間（〇年〇月〇日～）が読めませんでした'; return; }
+  SRC.opening=op; SRCINFO.opening=info; openingErr='';
+  if(!rcFiles.rcH||rcFiles.rcH.auto) rcFiles.rcH={name,rows,auto:true};   // 会計照合の「販売」にも使う
+}
+async function loadOpening(){
+  try{ const r=await fetchBuf(OPENING_FILE); setOpening(await readSheetRows(r.buf),{modified:r.modified,from:'SharePoint'},OPENING_FILE); }
+  catch(e){ console.warn(OPENING_FILE,e); }
+}
 async function loadAll(){
   setStatus('loading','SharePoint（SharedMasters）から読み込み中…',true);
   const missing=[];
   await Promise.all(Object.entries(FILES).map(async([k,f])=>{
     try{ const r=await fetchFile(f.name); SRC[k]=ARCore.toObjects(r.text); SRCINFO[k]={modified:r.modified,from:'SharePoint'}; }
     catch(e){ console.warn(f.name,e); if(!SRC[k]) missing.push(f.name); }
-  }).concat([loadSpecials(),loadFollows(),loadSettings()]));
+  }).concat([loadSpecials(),loadFollows(),loadSettings(),loadOpening()]));
   if(!SRC.detail||!SRC.customers){
     setStatus('error','読み込めませんでした: '+esc(missing.join('、'))+'　右上の「ファイルを選ぶ」で手元のファイルからも開けます。'); return;
   }
@@ -729,6 +751,10 @@ document.getElementById('fileBtn').onclick=()=>document.getElementById('fileInpu
 document.getElementById('fileInput').onchange=async e=>{
   const files=[...e.target.files]; let n=0;
   for(const f of files){
+    if(/売掛残高一覧表/.test(f.name)&&/\.xlsx?$/i.test(f.name)){
+      try{ setOpening(await readSheetRows(await f.arrayBuffer()),{modified:new Date(f.lastModified).toISOString(),from:'手元のファイル'},f.name); n++; }catch(err){ alert(err.message); }
+      continue;
+    }
     const key=Object.keys(FILES).find(k=>f.name.includes(FILES[k].name.replace(/\.(csv|txt)$/,'')));
     if(!key) continue;
     SRC[key]=ARCore.toObjects(decodeText(await f.arrayBuffer())); SRCINFO[key]={modified:new Date(f.lastModified).toISOString(),from:'手元のファイル'}; n++;
@@ -753,7 +779,8 @@ function summaryText(){
   const mod=k=>SRCINFO[k]&&SRCINFO[k].modified?new Date(SRCINFO[k].modified).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
   const sp=(SRC.specials||[]).filter(x=>x.status!=='取消').length;
   return `請求明細 ${md(M.dataStart)}〜${md(M.dataEnd)}（${mod('detail')}更新）　入金明細 ${SRC.payments?md(M.payStart)+'〜'+md(M.payEnd)+'（'+mod('payments')+'更新）':'なし'}　特別請求 ${sp}件`
-    +[specialErr,followErr,settingErr].filter(Boolean).map(e=>'　<b>'+esc(e)+'</b>').join('');
+    +`　期首残高 ${SRC.opening?ymdJ(SRC.opening.date)+' 〜（'+mod('opening')+'更新）':'なし'}`
+    +[specialErr,followErr,settingErr,openingErr].filter(Boolean).map(e=>'　<b>'+esc(e)+'</b>').join('');
 }
 document.getElementById('asofInput').onchange=e=>{ asofOverride=e.target.value; if(M) rebuild(); };
 
@@ -775,8 +802,14 @@ function pillOf(c){
   if(c.periods.some(p=>p.judged)) return '<span class="pill ok">入金済</span>';
   return '';
 }
+// 期首の残り（販売の売掛残高一覧表の期首残高のうち、期首より前が回収予定日の分）
+function openingLabel(p){ return `期首の残り（${md(p.due)}時点）`; }
+function openingTitle(p){ return `${ymdJ(p.due)} の売掛残高 ${yen(p.openingBal)} 円 − 回収予定日が期首以降の請求 ${yen(p.notDue)} 円`; }
+// 回の請求書の名前（テキスト）
+function pInvText(p){ return p.opening?openingLabel(p):p.invoices.map(v=>v.label).join('・'); }
 function periodState(p,c){
   if(c.excludeReason) return '<span class="pill na">対象外</span>';
+  if(p.beforeOpening) return '<span class="pill na" title="期首より前の差額は、期首の残高にまとめて見ています">期首より前</span>';
   if(p.partial) return '<span class="pill na" title="データの最初の日より前の売上を含むため、請求額がわかりません">判定なし</span>';
   if(!p.usable) return '<span class="pill na" title="入金明細の期間より前のため判定しません">判定なし</span>';
   if(!p.judged) return p.paid?`<span class="pill wait">一部入金</span>`:`<span class="pill wait">入金待ち</span>`;
@@ -1062,8 +1095,8 @@ function renderDetail(){
     <div class="tw"><table>
       <thead><tr><th>対象の請求書</th><th>回収予定日</th><th class="num">差額</th><th>対応状況</th><th></th></tr></thead>
       <tbody>${open.map(p=>{ const f=fuOf(c,p); return `<tr>
-        <td>${p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a>`).join(' ')}</td>
-        <td>${ymdJ(p.due)}</td><td class="num neg">${yen(p.diff)}</td><td>${fpill(fOne(f))}${f&&f.expected?` <span class="muted">入金予定 ${md(f.expected)}</span>`:''}</td>
+        <td>${p.opening?`<span title="${esc(openingTitle(p))}">${esc(openingLabel(p))}</span>`:p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a>`).join(' ')}</td>
+        <td>${p.opening?'—':ymdJ(p.due)}</td><td class="num neg">${yen(p.diff)}</td><td>${fpill(fOne(f))}${f&&f.expected?` <span class="muted">入金予定 ${md(f.expected)}</span>`:''}</td>
         <td class="num"><button class="btn" data-fu="${esc(c.code)}|${esc(p.due)}">${f?'直す':'フォローを書く'}</button></td></tr>`; }).join('')}</tbody></table></div>`;
 
   const recentInv=[...c.invoiceList].reverse();
@@ -1085,7 +1118,8 @@ function renderDetail(){
   // 回収予定日ごと（新しい順）
   const P=[...c.periods].reverse();
   const prow=P.map((p,i)=>{
-    const invs=p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a> <span class="muted">${v.special?md(v.close)+'請求':md(v.close)+'締'}</span>`).join('<br>');
+    const invs=p.opening?`${esc(openingLabel(p))}<div class="reason">${esc(openingTitle(p))}</div>`
+      :p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a> <span class="muted">${v.special?md(v.close)+'請求':md(v.close)+'締'}</span>`).join('<br>');
     const pays=p.payments.map(x=>`<tr class="sub"><td colspan="3">${ymdJ(x.date)}　${esc(x.kind)}${x.memo?'　'+esc(x.memo):''}${x.due?'　決済 '+ymdJ(x.due):''}</td><td class="num">${yen(x.amount)}</td><td colspan="3"></td></tr>`).join('');
     return `<tr class="click${p.judged&&p.diff!==0?' gaprow':''}" data-p="${i}">
       <td>${ymdJ(p.due)}${p.bound!==p.due?`<div class="reason">休日のため ${md(p.bound)} まで</div>`:''}${p.invoices.some(v=>v.rule)?`<div class="reason">追記の条件で ${md(p.invoices.find(v=>v.rule).baseDue)} から後ろへ</div>`:''}</td>
@@ -1497,9 +1531,9 @@ function loadXlsx(){
   return new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
     sc.onload=res; sc.onerror=()=>rej(new Error('Excel を読む部品を読み込めませんでした')); document.head.appendChild(sc); });
 }
-async function readSheetRows(file){
+async function readSheetRows(src){   // File か ArrayBuffer
   await loadXlsx();
-  const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+  const wb=XLSX.read(src instanceof ArrayBuffer?src:await src.arrayBuffer(),{type:'array'});
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:null});
 }
 ['rcK','rcH'].forEach(id=>document.getElementById(id).onchange=async e=>{
@@ -1519,7 +1553,7 @@ function renderRecon(){
       ・会計：SMILE 会計の「内訳残高一覧表」（科目 124 売掛金）。内訳コードは販売の得意先コードの上4桁<br>
       ・販売：SMILE 販売の「売掛残高一覧表」（同じ期間）。得意先コードの上4桁でまとめて会計と比べます<br>
       ファイルはこの画面の中で読むだけで、どこにも保存しません。
-      ${rcFiles.rcK?'<br>✓ 会計：'+esc(rcFiles.rcK.name):''}${rcFiles.rcH?'<br>✓ 販売：'+esc(rcFiles.rcH.name):''}</div></div>`;
+      ${rcFiles.rcK?'<br>✓ 会計：'+esc(rcFiles.rcK.name):''}${rcFiles.rcH?'<br>✓ 販売：'+esc(rcFiles.rcH.name)+(rcFiles.rcH.auto?'（SharedMasters の期首残高のファイル。選び直すこともできます）':''):''}</div></div>`;
     return;
   }
   const t=RC.tot, A=RC.items.filter(i=>i.affects&&!i.excluded), B=RC.items.filter(i=>!i.affects), X=RC.items.filter(i=>i.excluded);
@@ -1615,7 +1649,7 @@ function renderGap(){
           <span class="muted" style="font-size:12px">　${esc(c.staffName)}　${esc(c.closeLabel)}・${esc(c.termsLabel)}</span>
           ${c.termsNote?`<div class="reason">${esc(c.termsNote)}</div>`:''}</td>
           <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td><td colspan="2">${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`
-        +c.openPeriods.map(p=>`<tr class="prow"><td>${ymdJ(p.due)}<div class="reason">${p.invoices.map(v=>esc(v.label)).join('・')}</div></td>
+        +c.openPeriods.map(p=>`<tr class="prow"><td>${ymdJ(p.due)}<div class="reason">${esc(pInvText(p))}</div></td>
           <td class="num">${ARCore.daysBetween(p.due,M.asof)}日</td><td class="num">${yen(p.amount)}</td><td class="num">${yen(p.paid)}</td>
           <td class="num ${p.diff>0?'neg':''}">${yen(p.diff)}</td><td>${fuCell(fuOf(c,p))}</td>
           <td><button class="btn" data-fu="${esc(c.code)}|${esc(p.due)}">記入</button></td></tr>`).join('')).join('')}
@@ -1657,7 +1691,7 @@ function openFollowForm(code,due){
   document.getElementById('invBody').innerHTML=`
     <div class="inv-head"><div><h2>違算のフォロー　${esc(c.name)}</h2>
       <div class="meta"><span>得意先 ${esc(c.code)}</span><span>担当 ${esc(c.staffName)}</span><span>回収予定日 ${ymdJ(due)}</span>
-        ${p?`<span>請求書 ${p.invoices.map(v=>esc(v.label)).join('・')}</span>`:''}</div></div>
+        ${p?`<span>${p.opening?'':'請求書 '}${esc(pInvText(p))}</span>`:''}</div></div>
       ${p?`<div class="inv-tot"><span>請求額</span><b>${yen(p.amount)}</b><span>入金額</span><b>${yen(p.paid)}</b><span>差額</span><b class="${p.diff>0?'neg':''}">${yen(p.diff)}</b></div>`:''}</div>
     <div class="form">
       <label>過失責任<select id="uResp">${opt(RESP,f&&f.resp,'選んでください')}</select></label>
@@ -1699,7 +1733,7 @@ function openFollowForm(code,due){
 document.getElementById('csvBtn').onclick=()=>{
   const rows=[['拠点','得意先コード','得意先','担当','締め','回収条件','支払条件追記','回収予定日','経過日数','請求書','請求額','入金額','差額','得意先の違算額','状態','過失責任','原因・内容','対策','入金予定日','フォローの状態','最終更新']];
   gapRows().forEach(c=>c.openPeriods.forEach((p,i)=>{ const f=fuOf(c,p)||{};
-    rows.push([c.base,c.code,c.name,c.staffName,c.closeLabel,c.termsLabel,c.termsNote,p.due,ARCore.daysBetween(p.due,M.asof),p.invoices.map(v=>v.label).join('・'),
+    rows.push([c.base,c.code,c.name,c.staffName,c.closeLabel,c.termsLabel,c.termsNote,p.due,ARCore.daysBetween(p.due,M.asof),pInvText(p),
       p.amount,p.paid,p.diff,i===0?Math.abs(c.diff):'',i===0?c.status:'',f.resp||'',f.cause||'',f.measure||'',f.expected||'',f.status||'未記入',
       f.updatedBy?f.updatedBy+' '+(f.updatedAt||'').slice(0,10):'']); }));
   downloadCsv(`違算一覧_${M.asof}.csv`,rows);

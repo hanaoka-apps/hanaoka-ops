@@ -159,6 +159,8 @@
     const asof = opt.asof || (payEnd && payEnd < today ? payEnd : today);
     // 入金明細がない期間の請求は判定できない（入金を見ていないのに未入金と出てしまう）
     const judgeFrom = payStart === "9999-99-99" ? asof : payStart;
+    // 期首残高 { date:"YYYY-MM-DD"（期首の日）, bal:{ 得意先ｺｰﾄﾞ: 期首の売掛残高 } }（販売の売掛残高一覧表から）
+    const opening = src.opening && src.opening.date && src.opening.bal ? src.opening : null;
 
     const C = {};   // 請求先ｺｰﾄﾞ → 請求先
     function getC(code, nameHint) {
@@ -236,6 +238,8 @@
     });
 
     Object.keys(specialOnly).forEach(code => { getC(code).specialOnly = specialOnly[code]; });
+    // 期首に残高があるのに、そのあと請求も入金もない得意先（期首の残りだけが違算になる）
+    if (opening) Object.keys(opening.bal).forEach(code => { if (num(opening.bal[code])) getC(code, (opening.names || {})[code]); });
     specials.forEach(sp => {
       const c = getC(sp.cust, sp.custName);
       const net = num(sp.net), tax = num(sp.tax);
@@ -309,19 +313,45 @@
       const mid = (a, b) => addDays(a, Math.floor(daysBetween(a, b) / 2));
       let cum = 0, started = false;
       const periods = [];
+      // 期首残高（販売の売掛残高一覧表の期首の残高）があるときは、そこから積み上げる。
+      //   期首より前の差額は、期首の残高にまとめて調整してあることがある（Amazon の 6,600 など）ので、
+      //   それより前の請求・入金は判定に使わず、「期首の残高 − 期首以降が回収予定日の請求のうち期首までの売上」を
+      //   期首の時点の違算（＝期首の残り）として最初に置く
+      const op = opening && !reason ? opening : null;
+      const opBal = op ? num(op.bal[c.code]) : 0;
+      if (op) {
+        const before = l => l.date && l.date < op.date;
+        let notDue = 0;
+        invs.forEach(inv => {
+          if (inv.excluded || inv.amount === 0) return;
+          if (inv.bound && inv.bound < op.date) return;     // 期首より前が回収予定日 → 期首の残りに入る
+          if (inv.close && inv.close < op.date) { notDue += inv.amount; return; }   // 期首より前に締めた請求書
+          (inv.lines || []).forEach(l => { if (before(l)) notDue += l.net + l.tax; });   // 締めが期首をまたぐ（20日締めの 3/21〜3/31 など）
+        });
+        c.unbilled.forEach(l => { if (before(l)) notDue += l.net + l.tax; });
+        const d = opBal - notDue;
+        const day = addDays(op.date, -1);
+        const p0 = { bound: day, due: day, from: "", to: day, invoices: [], opening: true, openingBal: opBal, notDue,
+          amount: d, paid: 0, diff: d, payments: [], partial: false, judged: true, usable: true };
+        cum = d; started = true; p0.cum = cum;
+        periods.push(p0);
+      }
       bounds.forEach((b, i) => {
         const g = groups[b];
         const amt = g.reduce((s, x) => s + x.amount, 0);
         const firstDue = g.map(x => x.due).sort()[0];
-        const lo = i ? mid(bounds[i - 1], b) : addDays(b, -60);
+        let lo = i ? mid(bounds[i - 1], b) : addDays(b, -60);
         const hi = i < bounds.length - 1 ? mid(b, bounds[i + 1]) : "9999-12-31";
+        const beforeOp = op && b < op.date;
+        if (op && !beforeOp && lo < addDays(op.date, -1)) lo = addDays(op.date, -1);   // 期首より前の入金は期首の残高に入っている
         const ps = c.payments.filter(p => p.date > lo && p.date <= hi);
         const paid = ps.reduce((s, p) => s + p.amount, 0);
-        const partial = g.some(x => x.partial);
+        const partial = !op && g.some(x => x.partial);
         // 追記の条件（N 日後振込）がある得意先は、データより前の請求が N 日遅れで入ってくるので、その分あとから判定する
-        const usable = !reason && !partial && lo >= (i ? addDays(judgeFrom, -1) : addDays(judgeFrom, 45)) && b >= addDays(judgeFrom, ruleDays);
+        const usable = op ? !beforeOp
+          : !reason && !partial && lo >= (i ? addDays(judgeFrom, -1) : addDays(judgeFrom, 45)) && b >= addDays(judgeFrom, ruleDays);
         const judged = usable && asof >= b;
-        const p = { bound: b, due: firstDue, from: lo, to: hi, invoices: g, amount: amt, paid, diff: amt - paid, payments: ps, partial, judged, usable };
+        const p = { bound: b, due: firstDue, from: lo, to: hi, invoices: g, amount: amt, paid, diff: amt - paid, payments: ps, partial, judged, usable, beforeOpening: !!beforeOp };
         if (judged) { cum += p.diff; started = true; }
         p.cum = started ? cum : null;
         periods.push(p);
@@ -347,7 +377,7 @@
       c.paidTotal = c.payments.reduce((s, p) => s + p.amount, 0);
     });
 
-    return { customers: C, list: Object.values(C), dataStart, dataEnd, payStart, payEnd, asof, today, judgeFrom };
+    return { customers: C, list: Object.values(C), dataStart, dataEnd, payStart, payEnd, asof, today, judgeFrom, openingDate: opening ? opening.date : "" };
   }
 
   // ============================================================
@@ -389,6 +419,13 @@
       g.pre += row.pre; g.pay += row.pay; g.sales += row.sales; g.bal += row.bal; g.custs.push(row);
     });
     return { period: periodOf(rows), byCode: out };
+  }
+  // 販売の売掛残高一覧表 → 期首残高 { date:期首の日, bal:{ 得意先ｺｰﾄﾞ: 期首の残高 }, to:最後の日, end:{ 得意先ｺｰﾄﾞ: 最後の日の残高 } }
+  function openingFromHanbai(rows) {
+    const H = parseHanbai(rows); if (!H.period.from) return null;
+    const bal = {}, end = {}, names = {};
+    Object.values(H.byCode).forEach(g => g.custs.forEach(x => { bal[x.cust] = x.pre; end[x.cust] = x.bal; names[x.cust] = x.name; }));
+    return { date: H.period.from, to: H.period.to, bal, end, names };
   }
   // ctx: { payments:[入金明細の行], customers:[得意先マスタの行] } … 手がかりを探すのに使う（なくてもよい）
   function reconcile(kaikeiRows, hanbaiRows, ctx) {
@@ -456,7 +493,7 @@
   // 明細の行を見分けるキー（伝票№は年をまたぐと同じ番号が出るので日付も入れる）
   function lineKey(l) { return l.date + "|" + l.slip + "|" + l.row; }
 
-  const API = { reconcile, parseKaikei, parseHanbai, lineKey, parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
+  const API = { reconcile, parseKaikei, parseHanbai, openingFromHanbai, lineKey, parseTermsNote, ruleLabel, denLabel, parseCSV, toObjects, build, addMonths, nextBusinessDay, fromSmile, daysBetween, cycleMonths, baseOf, BASES };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.ARCore = API;
 })(typeof window !== "undefined" ? window : this);
