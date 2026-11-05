@@ -437,7 +437,14 @@ function renderOrders() {
   const vis = visible(), count = k => vis.filter(s => k === 'all' || stateOf(s) === k).length;
   if (FLOW_UI()) { $('chips').innerHTML = ''; renderFlowBar(vis); } else
   $('chips').innerHTML = FILTERS.map(([k, l]) => '<span class="chip' + (curFilter === k ? ' active' : '') + '" data-f="' + k + '">' + l + '<b>' + count(k) + '</b></span>').join('');
-  $('cnt-orders').textContent = vis.filter(s => stateOf(s) === 'new').length;
+  // タブの数字：自分にボールがある件数。①＝確認前（取込担当者は OK済・起票依頼待ちも）、③＝確認待ち（確認OKを押せる管理者だけ）。業務フローの絵を使わない画面では、従来どおり未確認の件数
+  if (FLOW_UI()) {
+    const role = flowRole(), p1 = vis.filter(s => { const k = stateOf(s); return k === 'new' || (k === 'ok' && role.canImport); }).length, p3 = role.canConfirm ? vis.filter(s => stateOf(s) === 'confirm').length : null;
+    const c = $('cnt-orders');
+    c.textContent = '① ' + p1 + (p3 === null ? '' : '　③ ' + p3);
+    c.title = 'あなたの作業の件数です。① 注文を確認（OK・取込）' + (p3 === null ? '' : '／③ 結果を確認（確認OK）');
+    c.classList.toggle('hot', p1 + (p3 || 0) > 0);
+  } else $('cnt-orders').textContent = vis.filter(s => stateOf(s) === 'new').length;
   const dir = curSort === 'desc' ? -1 : 1;   // 注文日（同じ日は注文の時刻）の昇順・降順
   const list = vis.filter(matchFilter).sort((a, b) => dir * (a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : (a.order.createdTime > b.order.createdTime ? 1 : 0)) : (a.orderDate < b.orderDate ? -1 : 1)));
   const el = $('list');
