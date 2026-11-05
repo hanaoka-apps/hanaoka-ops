@@ -17,7 +17,7 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   slips: () => slips, stateOf: s => recs[s.id].status, rec: s => recs[s.id], loadJson: async () => idx, rerender: () => EcShipTab.render(ctx), markReported: (ids, on) => calls.push([ids, on]) };
 (async () => {
   EcShipTab.render(ctx); await new Promise(r => setTimeout(r, 20));
-  assert.strictEqual(String(cnt.textContent), '2');   // ①＋②（まだ終わっていない注文）
+  assert.strictEqual(String(cnt.textContent), '1');   // 人のボールがある②（結果を確認）だけ。①出荷待ちは数えない
   const tiles = [...box.innerHTML.matchAll(/data-sf="(\w+)"[^>]*>.*?<div class="ft-c">(\d+)/g)].map(m => m[1] + ':' + m[2]);
   assert.deepStrictEqual(tiles, ['wait:1', 'check:1', 'done:1']);
   handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'check' } } : null } }); await new Promise(r => setTimeout(r, 5));
