@@ -16,14 +16,18 @@
   }
   function stamp(iso) { if (!iso) return ''; var d = new Date(iso); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 
-  function load(ctx) {
+  // later＝タブを開く前に、裏で先に読んでおく（大きいファイルなので、初めてタブを開くときに待たされないように）。画面を開いた直後は避けて、少し待ってから読む
+  function load(ctx, later) {
     if (S.idx || S.loading) return;
     S.loading = true; S.error = '';
-    ctx.loadJson(ctx.conf.files.shipIndex).then(function (idx) {
-      S.idx = idx; S.lookup = ctx.EC.shipLookup(idx);
-    }).catch(function (e) {
-      console.warn('ship_index', e); S.error = '出荷のデータ（' + ctx.conf.files.shipIndex + '）を読めません：' + (e && e.message || e);
-    }).then(function () { S.loading = false; ctx.rerender(); });
+    var run = function () {
+      ctx.loadJson(ctx.conf.files.shipIndex).then(function (idx) {
+        S.idx = idx; S.lookup = ctx.EC.shipLookup(idx);
+      }).catch(function (e) {
+        console.warn('ship_index', e); S.error = '出荷のデータ（' + ctx.conf.files.shipIndex + '）を読めません：' + (e && e.message || e);
+      }).then(function () { S.loading = false; ctx.rerender(); });
+    };
+    if (later) setTimeout(run, 1500); else run();
   }
 
   function rowsOf(ctx) {
@@ -42,7 +46,7 @@
     var box = ctx.box, cnt = ctx.cnt;
     if (!box) return;
     if (!S.from) { var d0 = new Date(); d0.setDate(d0.getDate() - 30); S.from = d0.getFullYear() + '-' + String(d0.getMonth() + 1).padStart(2, '0') + '-' + String(d0.getDate()).padStart(2, '0'); }
-    if (ctx.visible) load(ctx);
+    if (ctx.visible) load(ctx); else if (!S.error) load(ctx, true);
     if (!S.wired) { wire(ctx); S.wired = true; }
     if (!S.lookup) {
       if (cnt) cnt.textContent = '0';
