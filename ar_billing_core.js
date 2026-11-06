@@ -394,16 +394,21 @@
       //   ・あとの回の差が、残っている違算とぴったり反対の額（翌月に差し引いて払った・上乗せして払ったなど）
       //   違算の合計（c.diff）は、残っている違算の合計
       periods.forEach(p => { delete p.open; delete p.moved; delete p.merged; p.fixes = []; });
-      // 期首まわり（期首の残りと、期首から2か月以内が回収予定日の回）は1件にまとめて、別の枠にする。
-      //   前の期の差がまとめて出やすく、入金消込の違算表でも別に扱っているため
-      const early = opening ? addMonths(opening.date, 2, 1) : "";
-      const isOld = p => !!opening && (p.opening || p.due < early);
+      // 期首まわり（3/31 の残高の残り）は別の枠にする。前の期の差がまとめて出やすく、入金消込の違算表でも別に扱っているため
+      const isOld = p => !!opening && !!p.opening;
       const items = [];
       let oldItem = null;
       const take = (p, amt, what) => {   // p の入金のうち amt を、残っている違算の解消に回す
+        let hit = [];
         const it = items.find(it => it.r && it.r === amt && it.p !== p);
-        if (!it) return false;
-        it.r = 0; it.p.fixes.push({ by: what, at: p.due, amount: amt });
+        if (it) hit = [it];
+        else {   // 古い違算から順に足した額とぴったり同じなら、まとめて解消（付け替えの入金伝票など）
+          let sum = 0;
+          for (const x of items) { if (!x.r || x.p === p) continue; sum += x.r; hit.push(x); if (sum === amt) break; }
+          if (sum !== amt || hit.length < 2) hit = [];
+        }
+        if (!hit.length) return false;
+        hit.forEach(x => { x.p.fixes.push({ by: what, at: p.due, amount: x.r }); x.r = 0; });
         p.moved = (p.moved || 0) + amt; p.paid -= amt; p.diff += amt;
         return true;
       };
