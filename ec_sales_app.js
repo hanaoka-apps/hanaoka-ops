@@ -312,6 +312,15 @@ function wireDrop(key, kind) {
 const EDIT_DIR = '_ec_edits';
 let EDITS = {};            // { 注文番号: { fields, orig, updatedAt, updatedBy } }
 let editId = null, editDraft = null;
+// 納品先の直しを、書き換えたまま保存していないか（直し始めの値＝いまの納品先の値と比べる）。閉じる・別の注文を開く・ページを離れるときに、確かめる
+function editDirty() {
+  if (!editId || !editDraft) return false;
+  const s = slips.find(x => x.id === editId); if (!s) return false;
+  const dv = EC.deliveryFromOrder(s.order, store.cfg), v = x => String(x == null ? '' : x);
+  return EC.EDIT_FIELDS.some(f => v(editDraft[f.k]) !== v(dv[f.k]));
+}
+function confirmDiscardEdit() { return !editDirty() || confirm('保存していない直しがあります。閉じますか？\n\n［OK］直しを捨てて閉じる\n［キャンセル］戻って、直しを続ける（「内容を確認する」→「この内容で保存する」で保存できます）'); }
+window.addEventListener('beforeunload', e => { if (editDirty()) { e.preventDefault(); e.returnValue = ''; } });
 const orderNo = id => String(id).replace(/\D/g, '');
 async function loadEdits() {
   EDITS = {};
@@ -1571,8 +1580,9 @@ function proposedMapping(d) {
   m.rules.splice(Math.max(0, Math.min(d.pos, m.rules.length)), 0, rule);
   return { mapping: m, rule };
 }
-function openRule(id) { openId = null; editId = null; editDraft = null; mapDrawer = { kind: 'rule', id, mode: 'view' }; renderDrawer(); }
+function openRule(id) { if (!confirmDiscardEdit()) return; openId = null; editId = null; editDraft = null; mapDrawer = { kind: 'rule', id, mode: 'view' }; renderDrawer(); }
 function startNewRule(word) {
+  if (!confirmDiscardEdit()) return;
   openId = null; editId = null; editDraft = null; curTab = 'map';
   mapDrawer = { kind: 'rule', id: null, mode: 'edit', isNew: true, draft: ruleDraft({ id: 'r' + Date.now(), scope: 'option', label: word || '', words: word ? [word] : [], match: 'contains' }, store.mapping.rules.length) };
   render();
@@ -1924,9 +1934,9 @@ function setReady() {
 
 document.addEventListener('click', async e => {
   if (moreOpen && !e.target.closest('.morewrap') && $('moreMenu')) { moreOpen = false; $('moreMenu').hidden = true; }
-  if (e.target.closest('[data-close]') || e.target.id === 'scrim') { if (mapDrawer && !closeMapDrawer()) return; openId = null; editId = null; editDraft = null; renderDrawer(); return; }
+  if (e.target.closest('[data-close]') || e.target.id === 'scrim') { if (mapDrawer && !closeMapDrawer()) return; if (!confirmDiscardEdit()) return; openId = null; editId = null; editDraft = null; renderDrawer(); return; }
   const tr = e.target.closest('tr[data-row]');
-  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { editId = null; editDraft = null; slipView = 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
+  if (tr && !e.target.closest('input,button,select,a,label')) { mapDrawer = null; if (openId !== tr.dataset.row) { if (!confirmDiscardEdit()) return; editId = null; editDraft = null; slipView = 'cmp'; } openId = tr.dataset.row; renderDrawer(); return; }
   const t = e.target.closest('[data-tab],[data-f],[data-v],[data-s],[data-act],[data-gset],[data-gok],[data-ov],[data-ovdel],[data-mv],[data-rdel],[data-try],button');
   if (!t) return;
   const d = t.dataset;
@@ -2078,7 +2088,7 @@ document.addEventListener('change', e => {
   if (t.id === 'f-from' || t.id === 'f-q') { render(); return; }
   if (t.id === 'pay-from') { renderPay(); return; }
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && mapDrawer) { closeMapDrawer(); return; } if (e.key === 'Escape' && openId) { openId = null; renderDrawer(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && mapDrawer) { closeMapDrawer(); return; } if (e.key === 'Escape' && openId) { if (!confirmDiscardEdit()) return; editId = null; editDraft = null; openId = null; renderDrawer(); } });
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'try-name') tryName(t.value);
