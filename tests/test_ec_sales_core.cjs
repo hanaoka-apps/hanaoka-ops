@@ -116,8 +116,29 @@ t('納品先の入力不足は受注チェックの要確認に出る', () => {
   const noName = EC.buildSlip(order({ ship: { name: '', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: 'x', addr2: '', phone: '09012345678' } }), ctx);
   assert.ok(noName.flags.some(f => f.level === 'error'));
   const long = EC.buildSlip(order({ ship: { name: '山田', company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: 'あ'.repeat(30), addr2: '', phone: '09012345678' } }), ctx);
-  assert.ok(long.flags.some(f => /住所２が長い/.test(f.text)));
+  // 住所２が48バイトを超えても、住所１に余裕があれば、区切りを後ろへ動かして収める（警告は出さず、動かしたことを知らせる）
+  assert.ok(!long.flags.some(f => f.level === 'warn' && /SMILE に入りません/.test(f.text)));
+  assert.ok(long.flags.some(f => f.level === 'info' && /区切りました/.test(f.text)));
+  const tooLong = EC.buildSlip(order({ ship: { name: '山田', company: '', zip: '1000001', province: '東京都', city: '千代田区', addr1: 'あ'.repeat(45), addr2: '', phone: '09012345678' } }), ctx);
+  assert.ok(tooLong.flags.some(f => f.level === 'warn' && /住所が長すぎて SMILE に入りません/.test(f.text)));
   assert.strictEqual(EC.buildSlip(order(), ctx).flags.filter(f => f.level !== 'info').length, 0);
+});
+t('住所の区切り：住所２が入らないときだけ、収まる自然な位置へ動かす（住所１の頭は今のまま・数字の途中は避ける）', () => {
+  const lim = { addr1: 48, addr2: 48 };
+  // 入るときは、今までどおり（都道府県＋市区町村 ｜ 残り）
+  const same = EC.balanceAddress('東京都千代田区', '千代田1-1', 48, 48);
+  assert.deepStrictEqual([same.addr1, same.addr2, same.moved], ['東京都千代田区', '千代田1-1', false]);
+  // 実例：住所２が71バイト。「・」の前で区切ると、どちらも48バイトに収まる
+  const r = EC.balanceAddress('栃木県宇都宮市', '鶴田町1964-142 プレステージ・ウイングコート206（浅井 康之介　様ご依頼）', lim.addr1, lim.addr2);
+  assert.ok(r.moved && r.over === 0 && EC.sjisLen(r.addr1) <= 48 && EC.sjisLen(r.addr2) <= 48);
+  assert.strictEqual(r.addr1 + r.addr2, '栃木県宇都宮市鶴田町1964-142 プレステージ・ウイングコート206（浅井 康之介　様ご依頼）');
+  assert.ok(r.addr2.startsWith('・'));
+  // 数字の途中では切らない（ほかに位置があるとき）
+  const d = EC.balanceAddress('東京都千代田区', '千代田1丁目2番3号' + 'あ'.repeat(30) + '12345678901234567890', 48, 48);
+  assert.ok(!/\d$/.test(d.addr1) || !/^\d/.test(d.addr2));
+  // 合計が96バイトを超えるときは動かさず、超過を返す
+  const o = EC.balanceAddress('東京都千代田区', 'あ'.repeat(45), 48, 48);
+  assert.ok(!o.moved && o.over > 0);
 });
 t('対応表の「言葉」判定：含む・始まる・ちょうど・単位つき数量・記号は文字として扱う', () => {
   const m = { leadDays: 2, rules: [
