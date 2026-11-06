@@ -81,7 +81,11 @@ HanaokaAuth.done();
   **画面の中身（件名・顧客名・金額・検索の言葉など）は記録しない**
 - 保存先は SharePoint のリスト「HUBの利用ログ」（日時の列にインデックス付き）。古い記録は `usage_stats.html` の「古い記録を消す」で1年分だけ残す
 - 記録できない（リストが無い・権限が無い・通信失敗）ときは黙ってやめる。アプリの動きには影響しない
-- **FUJIN（`fujin/`）と Sales HUB（`sales_dashboard.html`）は記録しない**（別の担当者が作っているため。`usage_log.js` の `EXCLUDE`）
+- **FUJIN と Sales HUB も記録する**（2026-11-06 から。どちらも共通サインインを使っていないので、それぞれのサインインの後で始める：
+  FUJIN は `scripts/auth_wrapper.py` の showApp、Sales HUB は `sales_dashboard.html` の `startUsageLog`）。
+  この2つは業務上とくに重要なので、画面（FUJIN のタブ・Sales HUB の左メニュー）の切り替えも `nav` として記録し、
+  `usage_stats.html` に専用のカード（よく使われている画面・日ごと・利用者ごと）を出す
+- 記録しないのは集計画面（`usage_stats.html`）だけ（`usage_log.js` の `EXCLUDE`）
 - 新しいアプリを作ったら、`usage_stats.html` の `APP_NAMES` に表示名を足す（足さなくても画面のタイトルで出る）
 
 ## デザイン（見た目）

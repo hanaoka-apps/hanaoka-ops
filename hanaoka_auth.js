@@ -50,7 +50,7 @@
      サインインより前に起きたエラーも記録できるよう、ここで先に貯めておく。
      ------------------------------------------------------------ */
   var SELF_SRC = (document.currentScript && document.currentScript.src) || '';
-  var USAGE_LOG_VER = '20261105c';
+  var USAGE_LOG_VER = '20261106';
   window.__haErrors = window.__haErrors || [];
   function keepEarlyError(msg) { if (!window.UsageLog && window.__haErrors.length < 5) window.__haErrors.push(msg); }
   window.addEventListener('error', function (e) {

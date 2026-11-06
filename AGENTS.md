@@ -11,8 +11,10 @@ GitHub Pages でそのまま社内に配信されるので、**`main` に入っ�
 2. **利用ログには画面の中身を記録しない。** 件名・顧客名・金額・検索の言葉などは入れない。
    ボタンの使われ方などを知りたいときだけ `UsageLog.log('操作名', '補足')` を足す（README「利用ログ」）。
 3. **FUJIN（`fujin/`）と Sales HUB（`sales_dashboard.html`）は別の担当者（室長・部長）が作っている。**
-   利用ログの対象外。直す必要があるときは、作業を頼んだ人に確認してから。
-   `fujin/FUJIN.html` は毎日 `scripts/fujin_shell.template.html` から作り直されるので、直すならテンプレートも直す。
+   直す必要があるときは、作業を頼んだ人に確認してから。
+   この2つは共通サインインを使っていないので、利用ログはそれぞれのサインインの後で始めている
+   （FUJIN は `scripts/auth_wrapper.py` の showApp、Sales HUB は `startUsageLog`）。サインインの作りを変えるときは消さない。
+   `fujin/FUJIN.html` は毎日 `scripts/fujin_shell.template.html` と `scripts/auth_wrapper.py` から作り直されるので、直すならそちらも直す。
 4. **見た目は共通ファイル `hanaoka_theme.css` の変数を使う。** 色を直接書かない。ロゴは紺の角丸＋白い線（`favicon_*.svg`）。
 5. **アプリはリポジトリのルートに置く**（フォルダに入れるとサインインの戻り先 `auth.html` が見つからない）。
 6. **JS・CSS を直したら、読み込んでいる画面の `?v=` を上げる**（ブラウザに古いファイルが残らないように）。
