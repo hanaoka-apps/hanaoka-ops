@@ -934,9 +934,10 @@ async function pushOrder(id, action, detail, noLog) {
   const r = store.orders[id]; if (!r) return;
   fillMeta(id);
   const log = action && !noLog ? EC.logRow({ action, orderNo: id, actor: account && account.username, batchId: r.batchId, detail }) : null;
-  if (!sharedOnline()) { if (r.status || sharedRows[EC.orderNo(id)]) sharedPending()[id] = true; if (log) sharedPendingLogs().push(log); save(); renderSharedBanner(); return; }
+  const worth = !!(r.status || r.shipReportedAt || sharedRows[EC.orderNo(id)]);   // 状態が無くても、出荷報告済みの印があれば、リストに書く（共有する）
+  if (!sharedOnline()) { if (worth) sharedPending()[id] = true; if (log) sharedPendingLogs().push(log); save(); renderSharedBanner(); return; }
   try {
-    if (r.status || sharedRows[EC.orderNo(id)]) {
+    if (worth) {
       await shared.upsert(id, EC.orderFields(id, r));
       sharedRows[EC.orderNo(id)] = Object.assign({}, sharedRows[EC.orderNo(id)], EC.orderFields(id, r));
       delete sharedPending()[id];
@@ -946,7 +947,7 @@ async function pushOrder(id, action, detail, noLog) {
   } catch (e) {
     lastPushErr = e;
     if (log) sharedPendingLogs().push(log);
-    if (r.status) sharedPending()[id] = true;
+    if (r.status || r.shipReportedAt) sharedPending()[id] = true;
     sharedOffline(e);
   }
   save(); renderSharedBanner();
@@ -1022,6 +1023,12 @@ function whoHtml(r) {
 }
 
 // 管理者：この端末の記録のうち、リストに無い注文だけをリストに移す（何度押しても安全）
+// 今までの不具合で、リストに書けず、この端末にだけ残っている「出荷報告済み」の印を、共有のリストに書く（画面を開いたとき1回。何度やっても同じ結果）
+function healShipReports() {
+  if (!sharedOnline()) return;
+  const ids = Object.keys(store.orders).filter(id => { const r = store.orders[id]; return r && r.shipReportedAt && !sharedRows[EC.orderNo(id)] && !sharedPending()[id]; });
+  ids.forEach(id => { queuePush(id, null, null); });
+}
 async function migrateLocal() {
   if (!isAdmin) return;
   if (!sharedOnline()) { alert('共有の履歴に接続できないため、移せません'); return; }
@@ -2123,6 +2130,7 @@ async function initAuth() {
     const failed = await loadMasters();
     await syncFromList({ first: true, noRender: true });   // 共有の履歴（リスト）を読んで、この端末の記録を復元する
     recompute(); render();
+    healShipReports();
     Object.keys(store.imports).forEach(id => { if (['queued', 'importing', 'verify'].includes(store.imports[id].phase)) trackImport(id); });
     codeDecision = EC.deliveryCodeMode((CONF.rpaImport || {}).tempCodes, null); refreshCodeMode();   // 専用機の稼働の印で、新規の納品先のコードの決め方を判定する
     setInterval(() => { if (document.visibilityState === 'visible') refreshCodeMode(); }, 60 * 1000);

@@ -1301,7 +1301,7 @@
   };
   // この端末の記録のうち、リストに無い注文（状態があるもの）。管理者の「この端末の記録をリストに移す」の対象。何度押しても同じ結果
   EC.migrationPlan = function (local, rows) {
-    return Object.keys(local || {}).filter(function (id) { var r = local[id]; return r && r.status && r.status !== 'excluded' && !rows[EC.orderNo(id)]; });
+    return Object.keys(local || {}).filter(function (id) { var r = local[id]; return r && ((r.status && r.status !== 'excluded') || r.shipReportedAt) && !rows[EC.orderNo(id)]; });
   };
 
   // 軽量ファイル（ec_smile_index.json）の表 { cols, rows } → 見出しをキーにしたオブジェクトの配列
