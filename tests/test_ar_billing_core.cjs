@@ -75,20 +75,20 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   // 9/10 には 100,000 しか入らず、9/30 に残り 10,000（9/10 と 10/13 の中間 9/26 より後）
   const late = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000)] }), { today: '2026-10-06' });
   const c = late.customers['200001'];
-  assert.equal(c.periods[0].diff, 0, '次の回の入金を充てたので差は 0');
+  assert.equal(c.periods[0].diff, 10000, '回の差はそのまま');
   assert.equal(c.periods[0].judged, true);
   assert.equal(c.periods[1].bound, '2026-10-13');
   assert.equal(c.periods[1].judged, false, '10/13 はまだ来ていない');
   assert.equal(c.diff, 0, '9/30 の入金は次の回の範囲だが、残っている差に先に充てる');
-  assert.equal(c.periods[0].lateApplied, 10000);
-  assert.equal(c.periods[1].carried, 10000);
+  assert.equal(c.periods[0].fixes.length, 1, '9/30 の入金 10,000 で解消');
+  assert.equal(c.periods[1].moved, 10000, '次の回の入金から 10,000 を前の違算に回した');
   // 入金が 9/30 に来る前（9/20 時点）は未入金 10,000
   const mid = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000)] }), { asof: '2026-09-20', today: '2026-09-20' });
   assert.equal(mid.customers['200001'].diff, 10000);
   // 10/13 を過ぎて 220,000 が入れば、累計 0 で解消
   const after = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000), pay('200001', '20261013', 220000)] }), { today: '2026-10-20' });
   const c2 = after.customers['200001'];
-  assert.equal(c2.periods[1].diff, -10000, '10/13 を過ぎたら、回ごとの差はこれまでどおり');
+  assert.equal(c2.periods[1].diff, 0, '9/30 の 10,000 は前の違算に回したので、10/13 の回は差なし');
   assert.equal(c2.diff, 0);
   assert.equal(c2.openPeriods.length, 0);
   assert.equal(c2.resolved.length, 1, '解消した違算として残る');
@@ -311,10 +311,11 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.ok(x.periods.find(p => p.due === '2026-01-10').beforeOpening);
   assert.equal(M.openingDate, '2026-04-01');
   const x2 = run(opening(30000)).customers.X1;
-  assert.equal(x2.diff, 3000, '期首の時点で回収予定日を過ぎた残りがある');
-  assert.equal(x2.openPeriods[0].opening, true);
+  assert.equal(x2.diffOld, 3000, '期首の時点で回収予定日を過ぎた残りがある（期首まわりの枠）');
+  assert.equal(x2.diff, 0, '期首まわりは違算の合計とは別');
+  assert.equal(x2.oldPeriods[0].opening, true);
   const y = M.customers.Y1;
-  assert.equal(y.diff, 5000, '期首に残高があり、そのあと動きがない得意先も出す');
+  assert.equal(y.diffOld, 5000, '期首に残高があり、そのあと動きがない得意先も出す');
   const so = A.build({ detail, payments, customers, staff, opening: opening(27000), settings: [{ cust: 'X1', mode: '特別請求のみ' }] },
     { asof: '2026-05-20', today: '2026-05-20' }).customers.X1;
   assert.ok(!so.periods.some(p => p.opening), '特別請求だけで判定する得意先は期首の残りを置かない');
@@ -335,6 +336,25 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   const c = M.customers.T1;
   assert.equal(c.diff, 1100);
   assert.deepEqual(c.openPeriods.map(p => [p.invoices[0].no, p.open]), [['1', 1100]], '請求額がぴったりの請求書を出す');
+}
+
+// ---- 違算は回ごとに1件。あとの同じ額の入金で、その回の違算を解消（入金消込の違算表と同じ見方） ----
+{
+  const detail = [sale('Y1', '20260601', 1, 0),
+    sale('Y1', '20260705', 100000, 1), tax('Y1', '20260715', 10000, 1),     // 8/10 期限 110,000
+    sale('Y1', '20260805', 200000, 2), tax('Y1', '20260815', 20000, 2),     // 9/10 期限 220,000
+    sale('Y1', '20260905', 300000, 3), tax('Y1', '20260915', 30000, 3)];    // 10/13 期限 330,000
+  const payments = [pay('Y1', '20260301', 0),
+    pay('Y1', '20260810', 79475),                        // 8月は 30,525 足りない
+    pay('Y1', '20260910', 136026), pay('Y1', '20260910', 30525),   // 9月：8月分 30,525 が別に入金。9月分は 83,974 足りない
+    pay('Y1', '20261013', 354992), pay('Y1', '20261013', 83974)];  // 10月：9月分 83,974 が入金。10月分は 24,992 多い
+  const c = A.build({ detail, payments, customers: [cust('Y1')], staff }, { asof: '2026-11-01', today: '2026-11-01' }).customers.Y1;
+  assert.deepEqual(c.openPeriods.map(p => [p.due, p.open]), [['2026-10-10', -24992]], '8月・9月は解消、10月の過入金だけ残る');
+  assert.equal(c.diff, -24992);
+  // 入れて取り消した入金（同じ額のプラスとマイナス）は数えない
+  const c2 = A.build({ detail, payments: payments.concat([pay('Y1', '20260815', 500000), pay('Y1', '20260920', -500000)]), customers: [cust('Y1')], staff },
+    { asof: '2026-11-01', today: '2026-11-01' }).customers.Y1;
+  assert.equal(c2.diff, -24992);
 }
 
 // ---- CSV：引用符の中のカンマ・改行、BOM ----
