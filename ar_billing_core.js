@@ -335,9 +335,14 @@
         c.unbilled.forEach(l => { if (before(l)) notDue += l.net + l.tax; });
         const d = opBal - notDue;
         const day = addDays(op.date, -1);
-        const p0 = { bound: day, due: day, from: "", to: day, invoices: [], opening: true, openingBal: opBal, notDue,
-          amount: d, paid: 0, diff: d, payments: [], partial: false, judged: true, usable: true };
-        cum = d; started = true; p0.cum = cum;
+        // 期首以降が回収予定日の請求がない得意先（請求も入金も止まっている支店など）は、期首以降の入金をこの行に充てる
+        //   （付け替えの入金伝票が、どの回にも入らず消えないように）
+        const noLater = !bounds.some(b => b >= op.date);
+        const ps0 = noLater ? c.payments.filter(p => p.date >= op.date) : [];
+        const paid0 = ps0.reduce((s, p) => s + p.amount, 0);
+        const p0 = { bound: day, due: day, from: "", to: noLater ? "9999-12-31" : day, invoices: [], opening: true, openingBal: opBal, notDue,
+          amount: d, paid: paid0, diff: d - paid0, payments: ps0, partial: false, judged: true, usable: true };
+        cum = d - paid0; started = true; p0.cum = cum;
         periods.push(p0);
       }
       bounds.forEach((b, i) => {
@@ -360,7 +365,21 @@
         p.cum = started ? cum : null;
         periods.push(p);
       });
-      // まだ回収予定日が来ていない回のあとに入った入金（前払い・早めの入金）
+      // 違算が残っているときに、次の回（回収予定日がまだ）に入った入金は、先に古い差に充てる。
+      //   締め後に入れた付け替えの入金伝票（10/31 付けなど）が、次の回の期限まで反映されないのを防ぐ。
+      //   充てた分は次の回の入金から引くので、合計は変わらない
+      const lastJ = [...periods].reverse().find(p => p.judged);
+      const nextP = periods.find(p => !p.judged && p.usable && !p.beforeOpening && !p.opening);
+      if (lastJ && nextP && cum) {
+        const P = nextP.payments.filter(p => p.date <= asof).reduce((s, p) => s + p.amount, 0);
+        if (P && Math.sign(P) === Math.sign(cum)) {
+          const x = Math.sign(cum) * Math.min(Math.abs(P), Math.abs(cum));
+          lastJ.lateApplied = (lastJ.lateApplied || 0) + x; lastJ.paid += x; lastJ.diff -= x; lastJ.cum -= x;
+          nextP.carried = x; nextP.paid -= x; nextP.diff += x;
+          cum -= x;
+          periods.slice(periods.indexOf(lastJ) + 1).forEach(p => { if (p.cum != null) p.cum = cum; });
+        }
+      }
       c.periods = periods;
       const J = periods.filter(p => p.judged);
       c.diff = J.length ? J[J.length - 1].cum : 0;
