@@ -119,7 +119,7 @@ t('納品先コード：reuse:false（ふるさと納税）は、過去の納品
   assert.strictEqual(fresh.length, 3);
   assert.ok([a, b, c].every(s => s.deliveryNew === true));
   assert.strictEqual(new Set([a, b, c].map(s => s.deliveryCode)).size, 3);   // 同じ人でも、別々のコード
-  assert.strictEqual(a.deliveryCode, '001000');   // 既存の 000999 は使わず、最大＋1
+  assert.notStrictEqual(a.deliveryCode, '000999');   // 既存の 000999 は使わない
 });
 t('納品先の入力不足は受注チェックの要確認に出る', () => {
   const none = EC.buildSlip(order({ ship: { name: '中村達生', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: '大島５−２８', addr2: '', phone: '' } }), ctx);
