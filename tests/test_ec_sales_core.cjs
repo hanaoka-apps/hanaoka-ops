@@ -139,11 +139,16 @@ t('住所の区切り：住所２が入らないときだけ、収まる自然�
   // 入るときは、今までどおり（都道府県＋市区町村 ｜ 残り）
   const same = EC.balanceAddress('東京都千代田区', '千代田1-1', 48, 48);
   assert.deepStrictEqual([same.addr1, same.addr2, same.moved], ['東京都千代田区', '千代田1-1', false]);
-  // 実例：住所２が71バイト。「・」の前で区切ると、どちらも48バイトに収まる
-  const r = EC.balanceAddress('栃木県宇都宮市', '鶴田町1964-142 プレステージ・ウイングコート206（浅井 康之介　様ご依頼）', lim.addr1, lim.addr2);
-  assert.ok(r.moved && r.over === 0 && EC.sjisLen(r.addr1) <= 48 && EC.sjisLen(r.addr2) <= 48);
-  assert.strictEqual(r.addr1 + r.addr2, '栃木県宇都宮市鶴田町1964-142 プレステージ・ウイングコート206（浅井 康之介　様ご依頼）');
-  assert.ok(r.addr2.startsWith('・'));
+  // 例（架空の住所）：住所２が48バイトを超える。建物名の前（空白）で区切り、建物名のカタカナを半角にすると、どちらも48バイトに収まる（SMILE で人が直した形と同じ）
+  const r = EC.balanceAddress('東京都千代田区', '丸の内10-20-30 サンプルハイツ・ウイングコート206（山田 太郎　様ご依頼）', lim.addr1, lim.addr2);
+  assert.ok(r.moved && r.half && r.over === 0 && EC.sjisLen(r.addr1) <= 48 && EC.sjisLen(r.addr2) <= 48);
+  assert.strictEqual(r.addr1, '東京都千代田区丸の内10-20-30');
+  assert.strictEqual(r.addr2, 'ｻﾝﾌﾟﾙﾊｲﾂ･ｳｲﾝｸﾞｺｰﾄ206（山田 太郎　様ご依頼）');
+  // 半角にしなくても、自然な位置で収まるときは、全角のまま
+  const f = EC.balanceAddress('東京都千代田区', '千代田1-1 あおぞらビル' + '東'.repeat(16) + '（3階）', 48, 48);
+  assert.ok(f.moved && !f.half);
+  // 半角カナ：濁点・半濁点は別の1字になる
+  assert.strictEqual(EC.toHalfKana('ガギパピヴ・ー・ァッ漢字A'), 'ｶﾞｷﾞﾊﾟﾋﾟｳﾞ･ｰ･ｧｯ漢字A');
   // 数字の途中では切らない（ほかに位置があるとき）
   const d = EC.balanceAddress('東京都千代田区', '千代田1丁目2番3号' + 'あ'.repeat(30) + '12345678901234567890', 48, 48);
   assert.ok(!/\d$/.test(d.addr1) || !/^\d/.test(d.addr2));

@@ -399,7 +399,7 @@
     var dv = EC.deliveryFromOrder(o, cfg), lim = cfg.limits || {};
     if (!dv.tel) flag('warn', '電話番号がありません');
     if (lim.name && EC.sjisLen(dv.name) > lim.name) flag('warn', '納品先名が SMILE に入りません（' + EC.sjisLen(dv.name) + 'バイト・上限 ' + lim.name + '）。超えた ' + (EC.sjisLen(dv.name) - lim.name) + 'バイトは切れます');
-    if (dv.addrMoved) flag('info', '住所が長いため、SMILE の2行（各 ' + lim.addr2 + 'バイト）に収まるよう、住所１を長めに区切りました（住所１ ' + EC.sjisLen(dv.addr1) + '・住所２ ' + EC.sjisLen(dv.addr2) + 'バイト）。区切りの位置は、画面で直せます');
+    if (dv.addrMoved) flag('info', '住所が長いため、SMILE の2行（各 ' + lim.addr2 + 'バイト）に収まるよう、' + (dv.addrHalf ? '区切りを動かし、カタカナを半角にしました' : '住所１を長めに区切りました') + '（住所１ ' + EC.sjisLen(dv.addr1) + '・住所２ ' + EC.sjisLen(dv.addr2) + 'バイト）。区切りの位置は、画面で直せます');
     if (dv.addrOver > 0) flag('warn', '住所が長すぎて SMILE に入りません（合計 ' + dv.addrTotal + 'バイト・住所１と住所２で ' + ((lim.addr1 || 0) + (lim.addr2 || 0)) + 'バイトまで）。超えた ' + dv.addrOver + 'バイトは切れます。画面で住所を短くしてください');
     else {
       if (lim.addr1 && EC.sjisLen(dv.addr1) > lim.addr1) flag('warn', '住所１が SMILE に入りません（' + EC.sjisLen(dv.addr1) + 'バイト・上限 ' + lim.addr1 + '）。超えた分は切れます');
@@ -543,39 +543,63 @@
   function fmtZip(z) { var d = digits(z); return d.length === 7 ? d.slice(0, 3) + '-' + d.slice(3) : (z || ''); }
 
   // 配送先 → 納品先マスタの項目。個人は「お名前様」、会社は 納品先名＝会社名・荷受け人名１＝担当者様
+  /* 全角カタカナ → 半角カナ（濁点・半濁点は別の1字になる：ガ→ｶﾞ）。住所が SMILE の48バイトに入らないときの、短くする手段
+   * （SMILE のマスタでは、半角カナがよく使われる。送り状では、運送会社が全角にそろえる） */
+  var KANA_FULL = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンァィゥェォッャュョー・';
+  var KANA_HALF = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜｦﾝｧｨｩｪｫｯｬｭｮｰ･';
+  EC.toHalfKana = function (s) {
+    return Array.from(String(s == null ? '' : s)).map(function (c) {
+      if (!/[ァ-ヺー・]/.test(c)) return c;
+      var d = c.normalize('NFD'), k = KANA_FULL.indexOf(d.charAt(0));
+      if (k < 0) return c;
+      return KANA_HALF.charAt(k) + (d.length > 1 ? (d.charAt(1) === '゙' ? 'ﾞ' : d.charAt(1) === '゚' ? 'ﾟ' : '') : '');
+    }).join('');
+  };
   /* 住所を、SMILE の住所１・住所２（各 max1・max2 バイト）に収まるように区切る。
-   * 初めは「住所１＝都道府県＋市区町村、住所２＝残り」。住所２が入らないときだけ、住所１に余裕があれば、区切りを後ろへ動かす（動かして収まるときだけ。住所１の頭は今のまま）。
+   * 初めは「住所１＝都道府県＋市区町村、住所２＝残り」。住所２が入らないときだけ、住所１に余裕があれば、区切りを後ろへ動かす（住所１の頭は今のまま）。
    * 区切りは、収まる位置のうち、自然なところを選ぶ：空白・（ の前 ＞ ・ の前 ＞ 漢字とカナの境目。数字の途中は、ほかに無いときだけ。
-   * 戻り値 { addr1, addr2, moved, total, over }（over＝動かしても収まらない超過バイト。0なら収まる） */
+   * 自然な位置（空白・（ の前）で収まらないときは、カタカナを半角にして（建物名など）、自然な位置で収める。それでも無ければ、半角にせず、途中の位置で区切る。
+   * 戻り値 { addr1, addr2, moved, half（半角にしたか）, total, over }（over＝動かしても収まらない超過バイト。0なら収まる） */
   EC.balanceAddress = function (a1, a2, max1, max2) {
     a1 = String(a1 || ''); a2 = String(a2 || '');
-    var keep = { addr1: a1, addr2: a2, moved: false, total: EC.sjisLen(a1) + EC.sjisLen(a2), over: 0 };
+    var keep = { addr1: a1, addr2: a2, moved: false, half: false, total: EC.sjisLen(a1) + EC.sjisLen(a2), over: 0 };
     if (!max1 || !max2) return keep;
-    var ok1 = EC.sjisLen(a1) <= max1, ok2 = EC.sjisLen(a2) <= max2;
-    if (ok1 && ok2) return keep;
-    var over = keep.total - (max1 + max2);
-    if (over > 0) { keep.over = over; return keep; }
-    var chars = Array.from(a1 + a2), n = chars.length, pre = [0], i;
-    for (i = 0; i < n; i++) pre.push(pre[i] + EC.sjisLen(chars[i]));
-    var total = pre[n], minCut = ok1 ? Array.from(a1).length : 0, best = -1, bestScore = -2;
+    if (EC.sjisLen(a1) <= max1 && EC.sjisLen(a2) <= max2) return keep;
     var isDigit = function (c) { return /[0-9０-９]/.test(c || ''); }, isKata = function (c) { return /[゠-ヿ]/.test(c || ''); }, isKanji = function (c) { return /[一-鿿]/.test(c || ''); };
-    var score = function (k) {
-      var p = chars[k - 1], q = chars[k];
-      if (q == null) return 4;
-      if (/[\s　]/.test(p) || /[\s　]/.test(q) || /[（(【\[「]/.test(q)) return 5;
-      if (q === '・') return 3;
-      if ((isKata(p) && isKanji(q)) || (isKanji(p) && isKata(q))) return 2;
-      if (isDigit(p) && isDigit(q)) return -1;
-      return 0;
-    };
-    for (i = minCut; i <= n; i++) {
-      var b1 = pre[i]; if (b1 > max1) break;
-      if (total - b1 > max2) continue;
-      var sc = score(i); if (sc >= bestScore) { best = i; bestScore = sc; }
+    // 1つの文字列版（x1＋x2）で、いちばん自然な区切りを探す。{ l1, l2, score, total } か null
+    function cutBest(x1, x2) {
+      var chars = Array.from(x1 + x2), n = chars.length, pre = [0], i;
+      for (i = 0; i < n; i++) pre.push(pre[i] + EC.sjisLen(chars[i]));
+      var total = pre[n]; if (total > max1 + max2) return { fail: true, total: total };
+      var minCut = EC.sjisLen(x1) <= max1 ? Array.from(x1).length : 0, best = -1, bestScore = -2;
+      var score = function (k) {
+        var p = chars[k - 1], q = chars[k];
+        if (q == null) return 4;
+        if (/[\s　]/.test(p) || /[\s　]/.test(q) || /[（(【\[「]/.test(q)) return 5;
+        if (q === '・' || q === '･') return 3;
+        if ((isKata(p) && isKanji(q)) || (isKanji(p) && isKata(q))) return 2;
+        if (isDigit(p) && isDigit(q)) return -1;
+        return 0;
+      };
+      for (i = minCut; i <= n; i++) {
+        var b1 = pre[i]; if (b1 > max1) break;
+        if (total - b1 > max2) continue;
+        var sc = score(i); if (sc >= bestScore) { best = i; bestScore = sc; }
+      }
+      if (best < 0) return { fail: true, total: total };
+      return { l1: chars.slice(0, best).join('').replace(/[\s　]+$/, ''), l2: chars.slice(best).join('').replace(/^[\s　]+/, ''), score: bestScore, total: total };
     }
-    if (best < 0) return keep;
-    var l1 = chars.slice(0, best).join('').replace(/[\s　]+$/, ''), l2 = chars.slice(best).join('').replace(/^[\s　]+/, '');
-    return { addr1: l1, addr2: l2, moved: l1 !== a1, total: total, over: 0 };
+    var h1 = EC.toHalfKana(a1), h2 = EC.toHalfKana(a2), full = cutBest(a1, a2), half = (h1 !== a1 || h2 !== a2) ? cutBest(h1, h2) : null, pick = null, isHalf = false;
+    // 優先：①全角のまま自然な位置 ②半角にして自然な位置 ③全角のまま途中の位置 ④半角にして途中の位置
+    if (full && !full.fail && full.score >= 4) pick = full;
+    else if (half && !half.fail && half.score >= 4) { pick = half; isHalf = true; }
+    else if (full && !full.fail) pick = full;
+    else if (half && !half.fail) { pick = half; isHalf = true; }
+    if (!pick) {
+      var t0 = Math.min(keep.total, half ? half.total : keep.total);
+      keep.over = Math.max(0, t0 - (max1 + max2)); return keep;
+    }
+    return { addr1: pick.l1, addr2: pick.l2, moved: pick.l1 !== a1 || isHalf, half: isHalf, total: pick.total, over: 0 };
   };
   EC.deliveryFromOrder = function (o, cfg) {
     var fix = function (v) { return EC.cleanText(v, cfg); }, changed = [];
@@ -599,7 +623,7 @@
       zip: fmtZip(s.zip), addr1: a1, addr2: a2, tel: fmtPhone(s.phone || o.bill.phone || o.phone),
       key: EC.normName(hasCo ? s.company : nm) + '|' + EC.normZip(s.zip) + (hasCo ? '|' + EC.normName(nm) : ''),
       memo: '',   // 配達員向けメモ（荷受け人名１に入る。画面で直接入れる。納品先の同じ・違うの判定には使わない）
-      changed: changed, addrMoved: !!bal.moved, addrTotal: bal.total, addrOver: bal.over
+      changed: changed, addrMoved: !!bal.moved, addrHalf: !!bal.half, addrTotal: bal.total, addrOver: bal.over
     };
     // 人が画面で直した納品先（o.deliveryEdit＝{項目:値}。SharedMasters の _ec_edits/<注文番号>.json）を重ねる。元の値は d.auto に残す
     d.auto = { name: d.name, person: d.person, memo: '', zip: d.zip, addr1: d.addr1, addr2: d.addr2, tel: d.tel };
