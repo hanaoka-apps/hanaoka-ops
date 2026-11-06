@@ -293,6 +293,10 @@
   <div class="section-title">📊 今月の支払サマリー</div>
   <div class="summary-grid" id="summary-grid"></div>
 
+  <!-- 源泉徴収：この月の支払で預かった源泉税（経費の仕訳の 預り金 000317 のマイナスの行）。翌月10日に納める -->
+  <div class="section-title">🧾 源泉徴収（この月の支払で預かった税・翌月10日納付）</div>
+  <div id="wh-panel" class="table-wrap" style="padding:12px 16px;font-size:13px;margin-bottom:24px">読み込み中...</div>
+
   <!-- 相殺対象先（マスタ・月に依存しない） -->
   <div class="section-title">🔁 相殺対象先（自動支払対象外・手動で正味確定）</div>
   <div id="offset-panel" class="table-wrap" style="padding:12px 16px;font-size:13px;color:var(--muted);margin-bottom:24px">読み込み中...</div>
@@ -523,7 +527,12 @@ async function buildFieldMap() {
 
   const colData = await graphGet(`/sites/${AP_SITE_ID}/lists/${list.id}/columns`);
   colData.value.forEach(c => { fieldMap[c.displayName] = c.name; });
+  // 仕訳（AP_PaymentSlip）：源泉徴収のカードに使う
+  const sl = listsData.value.find(l => l.displayName === 'AP_PaymentSlip');
+  if (sl) { window._slId = sl.id; const sc = await graphGet(`/sites/${AP_SITE_ID}/lists/${sl.id}/columns`); sc.value.forEach(c => { slMap[c.displayName] = c.name; }); }
 }
+let slMap = {}, slAll = [];
+const sv = (fields, d) => { const k = slMap[d]; return k ? (fields[k] ?? '') : ''; };
 
 function fv(fields, displayName) {
   const key = fieldMap[displayName];
@@ -547,6 +556,10 @@ async function loadData() {
         : null;
     }
 
+    // 仕訳（源泉徴収のカード）
+    slAll = [];
+    if (window._slId) { let n2 = `/sites/${AP_SITE_ID}/lists/${window._slId}/items?$expand=fields&$top=500`;
+      while (n2) { const d2 = await graphGet(n2); slAll = slAll.concat(d2.value || []); n2 = d2['@odata.nextLink'] ? d2['@odata.nextLink'].replace(GRAPH_BASE, '') : null; } }
     // 全件保持（仕分けセクションは月に依存せず全期間で未仕分けを出す）
     allInv = items;
     // 選択月でフィルタ
@@ -574,6 +587,7 @@ function renderAll() {
   renderUnassigned();
   renderCards();
   renderSummary();
+  renderWithholding();
   renderAlerts();
   renderTable();
 }
@@ -817,6 +831,34 @@ function renderCards() {
 }
 
 // サマリーカード
+// 源泉徴収：この月（対象年月）の請求書で、仕訳に 預り金（000317）のマイナスの行があるもの＝支払から差し引いて預かった源泉税
+//   報酬（税理士・弁護士・司法書士など）と 非居住者（海外送金）に分け、拠点（本社・工場）ごとに。支給額は差し引く前の税抜（源泉の計算のもと）
+function renderWithholding() {
+  const el = document.getElementById('wh-panel'); if (!el) return;
+  if (!window._slId) { el.textContent = '仕訳（AP_PaymentSlip）を読めませんでした'; return; }
+  const byInv = {}; slAll.forEach(it => { const k = String(sv(it.fields, '請求書ID') || ''); if (k) (byInv[k] = byInv[k] || []).push(it.fields); });
+  const c6 = v => String(v || '').trim().padStart(6, '0'), yen = n => Math.round(n).toLocaleString();
+  const rows = [];
+  monthItems.forEach(it => { const f = it.fields; if (fv(f, 'アーカイブフラグ') === true) return;
+    const ls = byInv[String(it.id)] || [], wh = ls.filter(l => c6(sv(l, '勘定科目コード')) === '000317' && (+sv(l, '金額_税込') || 0) < 0);
+    if (!wh.length) return;
+    const tax = -wh.reduce((s, l) => s + (+sv(l, '金額_税込') || 0), 0), base = ls.filter(l => (+sv(l, '金額_税込') || 0) > 0).reduce((s, l) => s + (+sv(l, '金額_税抜') || 0), 0);
+    const cat = fv(f, '支払区分') || '', loc = cat.startsWith('工場') ? '工場' : '本社', abroad = fv(f, '支払手段') === '海外送金';
+    rows.push({ id: it.id, kind: abroad ? '非居住者' : '報酬', loc, round: fv(f, '支払日区分') || '', payee: fv(f, '支払先名') || '', base, tax, pay: +fv(f, '金額_税込') || 0, src: cat.endsWith('仕入') ? '仕入' : '経費' }); });
+  if (!rows.length) { el.innerHTML = '<span style="color:var(--muted)">この月の支払で源泉徴収したものはありません（仕訳に 預り金 000317 のマイナスの行がある請求書を集めます）</span>'; return; }
+  const ORD = { '10日': 1, '20日': 2, '月末': 3 }, kinds = ['報酬', '非居住者'], locs = ['本社', '工場'];
+  rows.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || locs.indexOf(a.loc) - locs.indexOf(b.loc) || (ORD[a.round] || 9) - (ORD[b.round] || 9) || a.payee.localeCompare(b.payee, 'ja'));
+  const sum = (a, k) => a.reduce((s, r) => s + r[k], 0), ppl = a => new Set(a.map(r => r.payee)).size;
+  const T = sum(rows, 'tax');
+  const tiles = [['源泉税の合計', '¥' + yen(T), `${rows.length}件・${ppl(rows)}人`]].concat(kinds.filter(k => rows.some(r => r.kind === k)).map(k => { const a = rows.filter(r => r.kind === k); return [k === '報酬' ? '報酬（税理士等）C' : '非居住者 D', '¥' + yen(sum(a, 'tax')), `支給額 ¥${yen(sum(a, 'base'))}・${ppl(a)}人`]; }))
+    .concat(locs.filter(l => rows.some(r => r.loc === l)).map(l => { const a = rows.filter(r => r.loc === l); return [`うち ${l}`, '¥' + yen(sum(a, 'tax')), `${a.length}件`]; }));
+  el.innerHTML = `<div class="summary-grid" style="margin-bottom:10px">${tiles.map(t => `<div class="summary-card"><div class="s-label">${t[0]}</div><div class="s-value">${t[1]}</div><div class="s-sub">${t[2]}</div></div>`).join('')}</div>
+    <table><thead><tr><th>区分</th><th>拠点</th><th>支払回</th><th>支払先</th><th style="text-align:right">支給額（税抜）</th><th style="text-align:right">源泉税</th><th style="text-align:right">支払額</th><th>元</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${r.kind}</td><td>${r.loc}</td><td>${r.round}</td><td>${String(r.payee).replace(/</g, '&lt;')}</td><td class="amount-cell">¥${yen(r.base)}</td><td class="amount-cell"><b>¥${yen(r.tax)}</b></td><td class="amount-cell">¥${yen(r.pay)}</td><td>${r.src}</td></tr>`).join('')}
+    <tr style="font-weight:700;background:#f4f6fa"><td colspan="4">合計（${ppl(rows)}人）</td><td class="amount-cell">¥${yen(sum(rows, 'base'))}</td><td class="amount-cell">¥${yen(T)}</td><td class="amount-cell">¥${yen(sum(rows, 'pay'))}</td><td></td></tr></tbody></table>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">経費・仕入の請求書の仕訳で、預り金（000317）を差し引いた行を集めています。支給額は差し引く前の税抜の合計（源泉の計算のもと）。翌月10日に「源泉所得税」で納付します。</div>`;
+}
+
 function renderSummary() {
   const totalAmt    = allItems.reduce((s, it) => s + (parseFloat(fv(it.fields, '金額_税込')) || 0), 0);
   const paid        = allItems.filter(it => fv(it.fields, '支払ステータス') === '支払済').length;
