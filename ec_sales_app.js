@@ -450,7 +450,7 @@ function rowHtml(s) {
   act += whoHtml(r);   // OKした人・確認OKした人
   return '<tr class="' + cls + '" data-row="' + s.id + '"><td>' + (canSel ? '<input type="checkbox" data-sel="' + s.id + '"' + (sel.has(s.id) ? ' checked' : '') + '>' : '') + '</td>' +
     (FLOW_UI() ? '<td class="flowcell">' + flowCell(s) + '</td>' : '') +
-    '<td><b>' + esc(s.name) + '</b><div class="muted">' + s.orderDate.slice(5).replace('-', '/') + ' ' + esc(s.order.createdTime) + '</div></td>' +
+    '<td><b>' + esc(s.name) + '</b><div class="muted">' + s.orderDate.slice(5).replace('-', '/') + ' ' + esc(s.order.createdTime) + '</div>' + (s.order.juchuNo ? '<div class="muted" title="サイネックスの CSV の「受注番号」（並びは、この順）">受注 ' + esc(s.order.juchuNo) + '</div>' : '') + '</td>' +
     '<td>' + who + '<div>' + (st === 'new' || st === 'ok' ? destTag(s) : '') + '</div></td>' +
     '<td class="items">' + items + '</td><td class="num">' + yen(s.order.total) + '</td>' +
     '<td><span class="tag ' + (s.cust === store.cfg.earlyCustomer ? 'tokyo' : 'info') + '">' + esc(store.cfg.customers[s.cust].short) + '</span></td>' +
@@ -473,7 +473,15 @@ function renderOrders() {
   if (FLOW_UI()) { $('chips').innerHTML = ''; renderFlowBar(vis); } else
   $('chips').innerHTML = FILTERS.map(([k, l]) => '<span class="chip' + (curFilter === k ? ' active' : '') + '" data-f="' + k + '">' + l + '<b>' + count(k) + '</b></span>').join('');
   const dir = curSort === 'desc' ? -1 : 1;   // 注文日（同じ日は注文の時刻）の昇順・降順
-  const list = vis.filter(matchFilter).sort((a, b) => dir * (a.orderDate === b.orderDate ? (a.order.createdTime < b.order.createdTime ? -1 : (a.order.createdTime > b.order.createdTime ? 1 : 0)) : (a.orderDate < b.orderDate ? -1 : 1)));
+  // 並び：注文日 → 注文の時刻 → 受注番号（ふるさと納税。サイネックスの CSV の受注番号。受け取った Excel と同じ並びになる）。受注番号が無いもの（EC売上）は、そのまま
+  const juchuNum = s => { const v = s.order.juchuNo; return /^\d+$/.test(v || '') ? Number(v) : null; };
+  const cmpOrder = (a, b) => {
+    if (a.orderDate !== b.orderDate) return a.orderDate < b.orderDate ? -1 : 1;
+    if (a.order.createdTime !== b.order.createdTime) return a.order.createdTime < b.order.createdTime ? -1 : 1;
+    const x = juchuNum(a), y = juchuNum(b);
+    return x != null && y != null && x !== y ? (x < y ? -1 : 1) : 0;
+  };
+  const list = vis.filter(matchFilter).sort((a, b) => dir * cmpOrder(a, b));
   const el = $('list');
   if (!orders.length) { el.innerHTML = '<div class="empty">' + (PROFILE.emptyOrders || 'Shopify の注文 CSV を上のボックスに入れると、ここに注文が並びます') + '</div>'; return; }
   if (!list.length) { el.innerHTML = '<div class="empty">この条件の注文はありません</div>'; return; }
