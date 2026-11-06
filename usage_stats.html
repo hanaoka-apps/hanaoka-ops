@@ -42,6 +42,21 @@
   .msg{font-size:12px}.msg.ng{color:var(--danger)}.msg.ok{color:var(--success)}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:13px}
   #snackbar{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 20px;border-radius:6px;font-size:13px;display:none;z-index:999}
+  /* 利用者ごと：行を押すとその人の詳細（#userModal） */
+  #byUser tr{cursor:pointer} #byUser tr:hover td{background:#eef2fb}
+  .apptag{display:inline-block;background:#eef0ff;color:#23268f;border-radius:9px;padding:1px 8px;font-size:11px;margin:1px 4px 1px 0;white-space:nowrap}
+  .apptag b{font-weight:700;margin-left:3px}
+  #userModal{position:fixed;inset:0;background:rgba(20,26,34,.45);display:none;align-items:flex-start;justify-content:center;z-index:300;padding:28px 14px;overflow:auto}
+  #userModal.on{display:flex}
+  #userModal .panel{background:#fff;border-radius:12px;max-width:880px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,.28);padding:16px 18px}
+  #userModal .head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:6px}
+  #userModal .head b{font-size:17px} #userModal .head .spacer{flex:1}
+  #userModal .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:10px 0}
+  #userModal .kpi{background:#f8f9fc;border-radius:8px;padding:8px 10px} #userModal .kpi .l{font-size:11px;color:var(--muted)} #userModal .kpi .v{font-size:16px;font-weight:700;margin-top:2px}
+  #userModal h5{font-size:12.5px;margin:14px 0 4px;color:var(--text)}
+  .hours{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;align-items:end;height:60px;margin-top:4px}
+  .hours span{background:#7aa8d8;border-radius:2px 2px 0 0;min-height:1px}
+  .hours-l{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;font-size:9.5px;color:var(--muted);text-align:center}
 </style>
 <link rel="stylesheet" href="reserve_theme.css?v=20261009">
 </head>
@@ -117,9 +132,12 @@
 
     <div class="card2"><h4>日ごとの利用<span class="cnt">開いた回数</span></h4><div id="daily" style="font-size:12px"></div></div>
 
-    <div class="card2"><h4>利用者ごと<span class="cnt">古い画面を使っている人は、切り替えの前に声をかける相手です</span></h4>
-      <table class="t"><thead><tr><th>氏名</th><th>使った画面</th><th class="n">操作数</th><th class="n">うち古い画面</th><th>最後の利用</th></tr></thead><tbody id="byUser"></tbody></table></div>
+    <div class="card2"><h4>利用者ごと<span class="cnt">行を押すと、その人がどのアプリ・画面をいつ使っているかが見られます。古い画面（デモ機・営業車・会議室の旧画面）を使っている人は、切り替えの前に声をかける相手です</span></h4>
+      <table class="t"><thead><tr><th>氏名</th><th>よく使うアプリ（開いた回数）</th><th class="n">開いた回数</th><th class="n">見ていた時間</th><th class="n">アプリ数</th><th class="n">うち古い画面</th><th>最後の利用</th></tr></thead><tbody id="byUser"></tbody></table></div>
   </div>
+
+  <!-- 利用者の詳細（利用者ごとの行を押したとき。openUser） -->
+  <div id="userModal"><div class="panel" id="userPanel"></div></div>
 </div>
 <div id="snackbar"></div>
 
@@ -373,12 +391,86 @@ function render(){
   const day = new Map(); ROWS.filter(r => r.Action === 'open').forEach(r => { const d = jDate(r.EventTime); day.set(d, (day.get(d) || 0) + 1); });
   const max = Math.max(1, ...day.values());
   el('daily').innerHTML = [...day.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 31).map(([d, n]) => `<div>${d.slice(5)} <span class="bar2" style="width:${Math.round(n / max * 220)}px"></span> ${n}</div>`).join('') || '<span class="cnt">まだ記録がありません</span>';
-  const um = new Map(); ROWS.forEach(r => { const k = r.UserMail || '(不明)'; if (!um.has(k)) um.set(k, { name: r.UserName || k, pages: new Set(), n: 0, old: 0, last: '' });
-    const u = um.get(k); u.pages.add(r.Page); u.n++; if (OLD_PAGES.includes(r.Page)) u.old++; if (r.EventTime > u.last) u.last = r.EventTime; });
-  const nameOf = k => (PAGES.find(p => p[0] === k) || [k, k])[1];
-  el('byUser').innerHTML = [...um.values()].sort((a, b) => b.n - a.n).map(u => `<tr><td>${esc(u.name)}</td><td>${[...u.pages].map(p => `<span class="tag ${p}">${esc(nameOf(p).replace(/（.*）/, ''))}</span>`).join('')}</td><td class="n">${u.n}</td><td class="n">${u.old || '—'}</td><td>${jFull(u.last)}</td></tr>`).join('')
-    || '<tr><td colspan="5" style="color:var(--muted)">まだ記録がありません</td></tr>';
+  renderUsers();
 }
+
+/* ---------- 利用者ごと（HUBのアプリ全体）と、押したときの詳細 ---------- */
+let TITLES = new Map();   // ページ名 → 記録された画面のタイトル（APP_NAMES に無いアプリの表示名）
+const appLabel = k => APP_NAMES[k] || TITLES.get(k) || k;
+const secOf = r => r.Action === 'leave' ? (Number(String(r.Detail).replace(/^sec=/, '')) || 0) : 0;
+const mins = s => s >= 3600 ? (s / 3600).toFixed(1) + '時間' : Math.round(s / 60) + '分';
+function renderUsers(){
+  TITLES = new Map(); ROWS.forEach(r => { if (r.Action === 'open') { const t = kv(r.Detail).title; if (t) TITLES.set(appKey(r.Page), t); } });
+  const um = new Map();
+  ROWS.forEach(r => { const k = r.UserMail || '(不明)';
+    if (!um.has(k)) um.set(k, { mail: k, name: r.UserName || k, open: 0, sec: 0, old: 0, last: '', apps: new Map() });
+    const u = um.get(k), a = appKey(r.Page);
+    if (r.Action === 'open') { u.open++; u.apps.set(a, (u.apps.get(a) || 0) + 1); }
+    if (!u.apps.has(a)) u.apps.set(a, 0);
+    u.sec += secOf(r); if (OLD_PAGES.includes(r.Page)) u.old++; if (r.EventTime > u.last) u.last = r.EventTime; });
+  el('byUser').innerHTML = [...um.values()].sort((a, b) => b.open - a.open || b.sec - a.sec).map(u => {
+    const top = [...u.apps.entries()].filter(x => x[1]).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    return `<tr data-u="${esc(u.mail)}" title="押すと ${esc(u.name)} さんの詳細"><td>${esc(u.name)}</td>`
+      + `<td>${top.map(([k, n]) => `<span class="apptag">${esc(appLabel(k))}<b>${n}</b></span>`).join('') || '<span class="cnt">—</span>'}</td>`
+      + `<td class="n">${u.open}</td><td class="n">${u.sec ? mins(u.sec) : '—'}</td><td class="n">${u.apps.size}</td>`
+      + `<td class="n">${u.old || '—'}</td><td>${jFull(u.last)}</td></tr>`; }).join('')
+    || '<tr><td colspan="7" style="color:var(--muted)">まだ記録がありません</td></tr>';
+}
+el('byUser').addEventListener('click', e => { const tr = e.target.closest('tr[data-u]'); if (tr) openUser(tr.dataset.u); });
+
+function openUser(mail){
+  const rows = ROWS.filter(r => (r.UserMail || '(不明)') === mail);
+  if (!rows.length) return;
+  const name = rows[0].UserName || mail;
+  const opens = rows.filter(r => r.Action === 'open');
+  const sec = rows.reduce((s, r) => s + secOf(r), 0);
+  const tbl = (head, trs, empty) => trs.length ? `<table class="t"><thead><tr>${head.map((h, i) => `<th${i ? ' class="n"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${trs.join('')}</tbody></table>` : `<div class="cnt">${empty}</div>`;
+  const times = rows.map(r => r.EventTime).sort();
+
+  // アプリごと
+  const am = new Map(); rows.forEach(r => { const k = appKey(r.Page); if (!am.has(k)) am.set(k, { open: 0, sec: 0, err: 0, last: '' });
+    const a = am.get(k); if (r.Action === 'open') a.open++; a.sec += secOf(r); if (r.Action === 'error') a.err++; if (r.EventTime > a.last) a.last = r.EventTime; });
+  const appRows = [...am.entries()].sort((a, b) => b[1].open - a[1].open || b[1].sec - a[1].sec).map(([k, a]) =>
+    `<tr><td>${esc(appLabel(k))}</td><td class="n">${a.open}</td><td class="n">${a.sec ? mins(a.sec) : '—'}</td><td class="n">${a.err || '—'}</td><td class="n">${jFull(a.last)}</td></tr>`);
+
+  // よく使う画面（FUJIN のタブ・Sales HUB のメニューなど）と、そのほかの操作
+  const nm = new Map(); rows.filter(r => r.Action === 'nav').forEach(r => { const k = appLabel(appKey(r.Page)) + '｜' + (r.Detail || ''); nm.set(k, (nm.get(k) || 0) + 1); });
+  const navRows = [...nm.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, n]) => `<tr><td>${esc(k)}</td><td class="n">${n}</td></tr>`);
+  const om = new Map(); rows.filter(r => !['open', 'leave', 'nav', 'error'].includes(r.Action)).forEach(r => {
+    const k = appLabel(appKey(r.Page)) + '｜' + (ACTION_JA[r.Action] || r.Action); om.set(k, (om.get(k) || 0) + 1); });
+  const opRows = [...om.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, n]) => `<tr><td>${esc(k)}</td><td class="n">${n}</td></tr>`);
+
+  // 使う時間帯（開いた回数を時刻ごとに）と、日ごと（直近14日）
+  const hours = Array(24).fill(0); opens.forEach(r => hours[jst(r.EventTime).getUTCHours()]++);
+  const hmax = Math.max(1, ...hours);
+  const day = new Map(); opens.forEach(r => { const d = jDate(r.EventTime); day.set(d, (day.get(d) || 0) + 1); });
+  const days = Array.from({ length: 14 }, (_, i) => jDate(new Date(Date.now() - i * 864e5).toISOString()));
+  const dmax = Math.max(1, ...days.map(d => day.get(d) || 0));
+
+  // 最近の操作（新しい順に30件）
+  const recent = rows.slice().sort((a, b) => b.EventTime.localeCompare(a.EventTime)).slice(0, 30).map(r => {
+    const d = r.Action === 'leave' ? mins(secOf(r)) + ' 見ていた' : r.Action === 'open' ? ({ hub: 'HUBから', direct: 'ブックマーク等から', reload: '再読み込み', other: 'ほかのサイトから' }[kv(r.Detail).from] || (String(kv(r.Detail).from || '').startsWith('app:') ? 'ほかのアプリから' : '')) : (r.Detail || '');
+    return `<tr><td>${jFull(r.EventTime)}</td><td>${esc(appLabel(appKey(r.Page)))}</td><td>${esc(ACTION_JA[r.Action] || r.Action)}</td><td style="word-break:break-all">${esc(d)}</td></tr>`; });
+
+  el('userPanel').innerHTML =
+    `<div class="head"><b>${esc(name)}</b><span class="cnt">${esc(mail)}</span><span class="spacer"></span><span class="cnt">${DAYS}日間</span>`
+    + `<button class="act" id="userClose">閉じる</button></div>`
+    + `<div class="kpis">${[['開いた回数', opens.length + '回'], ['見ていた時間', sec ? mins(sec) : '—'], ['使ったアプリ', am.size + '個'],
+        ['スマホから', pct(opens.filter(r => r.Device === 'phone').length, opens.length)], ['使い始め', jFull(times[0])], ['最後の利用', jFull(times[times.length - 1])]]
+        .map(([l, v]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('')}</div>`
+    + `<h5>アプリごと</h5>` + tbl(['アプリ', '開いた', '見ていた時間', 'エラー', '最後'], appRows, '—')
+    + `<div class="grid2" style="margin-top:4px"><div><h5>よく使う画面（FUJIN のタブ・Sales HUB のメニューなど）</h5>` + tbl(['アプリ｜画面', '回数'], navRows, '画面の切り替えの記録はありません') + `</div>`
+    + `<div><h5>そのほかの操作</h5>` + tbl(['アプリ｜操作', '回数'], opRows, 'ありません') + `</div></div>`
+    + `<div class="grid2"><div><h5>使う時間帯（開いた回数）</h5><div class="hours">${hours.map(n => `<span style="height:${Math.round(n / hmax * 100)}%" title="${n}回"></span>`).join('')}</div>`
+    + `<div class="hours-l">${hours.map((_, h) => `<span>${h % 3 ? '' : h}</span>`).join('')}</div></div>`
+    + `<div><h5>日ごとの開いた回数（直近14日）</h5><div style="font-size:11.5px">${days.map(d => `<div>${d.slice(5)} <span class="bar2" style="width:${Math.round((day.get(d) || 0) / dmax * 160)}px"></span> ${day.get(d) || ''}</div>`).join('')}</div></div></div>`
+    + `<h5>最近の操作（新しい順に30件）</h5>` + tbl(['日時', 'アプリ', '操作', '補足'], recent, '—');
+  el('userModal').classList.add('on');
+  el('userClose').onclick = closeUser;
+}
+function closeUser(){ el('userModal').classList.remove('on'); }
+el('userModal').addEventListener('click', e => { if (e.target === el('userModal')) closeUser(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeUser(); });
 // 記録の Detail（「から=カード,送り状=あり」のような形）を、項目ごとに分ける
 const kv = d => Object.fromEntries(String(d || '').split(',').filter(Boolean).map(x => { const i = x.indexOf('='); return i < 0 ? [x, ''] : [x.slice(0, i), x.slice(i + 1)]; }));
 const pct = (n, d) => d ? Math.round(n / d * 100) + '%' : '—';
