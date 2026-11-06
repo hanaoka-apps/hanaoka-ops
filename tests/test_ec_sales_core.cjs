@@ -110,6 +110,17 @@ t('納品先コード：既存を再利用・新規は最大＋1・飛び番を�
   assert.strictEqual(a.deliveryCode, '000999'); assert.strictEqual(b.deliveryCode, '001001'); assert.strictEqual(c.deliveryCode, '001001'); assert.strictEqual(d.deliveryCode, '001002');
   assert.strictEqual(fresh.length, 2);
 });
+t('納品先コード：reuse:false（ふるさと納税）は、過去の納品先も・同じ人の続けての注文も、すべて新規にする', () => {
+  const master = EC.indexDeliveryMaster([
+    { '得意先ｺｰﾄﾞ': '599802', '納品先ｺｰﾄﾞ': '000999', '納品先名': '浅井 豊様', '郵便番号': '478-0001', '荷受け人名１': '' }], DEFAULT_CONFIG);
+  const mk = (id, name, zip) => EC.buildSlip(order({ id, name: '#' + id, ship: { name, company: '', zip, province: '東京都', city: '千代田区', addr1: '1-1', addr2: '', phone: '' } }), ctx);
+  const a = mk('1', '浅井豊', '478-0001'), b = mk('2', '新規太郎', '100-0001'), c = mk('3', '新規太郎', '100-0001');
+  const fresh = EC.planDeliveries([a, b, c], master, DEFAULT_CONFIG, { reuse: false });
+  assert.strictEqual(fresh.length, 3);
+  assert.ok([a, b, c].every(s => s.deliveryNew === true));
+  assert.strictEqual(new Set([a, b, c].map(s => s.deliveryCode)).size, 3);   // 同じ人でも、別々のコード
+  assert.notStrictEqual(a.deliveryCode, '000999');   // 既存の 000999 は使わない
+});
 t('納品先の入力不足は受注チェックの要確認に出る', () => {
   const none = EC.buildSlip(order({ ship: { name: '中村達生', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: '大島５−２８', addr2: '', phone: '' } }), ctx);
   assert.ok(none.flags.some(f => f.level === 'warn' && /電話番号/.test(f.text)));
