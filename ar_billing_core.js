@@ -364,7 +364,9 @@
         let lo = i ? mid(bounds[i - 1], b) : addDays(b, -60);
         const hi = i < bounds.length - 1 ? mid(b, bounds[i + 1]) : "9999-12-31";
         const beforeOp = op && b < op.date;
-        if (op && !beforeOp && lo < addDays(op.date, -1)) lo = addDays(op.date, -1);   // 期首より前の入金は期首の残高に入っている
+        // 期首残高があるときは、期首より後の最初の回は期首の翌日からの入金を全部見る（入金後出荷の前払いなど、
+        //   回収予定日の60日より前の入金も取りこぼさない）。期首より前の入金は期首の残高に入っている
+        if (op && !beforeOp && (lo < addDays(op.date, -1) || !bounds.slice(0, i).some(x => x >= op.date))) lo = addDays(op.date, -1);
         const ps = c.payments.filter(p => p.date > lo && p.date <= hi);
         const paid = sumPaid(ps);
         const partial = !op && g.some(x => x.partial);
@@ -411,6 +413,18 @@
           Object.entries(bySlip).forEach(([k, amt]) => { if (amt) take(p, amt, `${k.slice(5, 10).replace("-", "/")} の入金伝票${k.split("|")[1]} ${amt.toLocaleString()}`); });
         }
         if (!p.judged || !p.diff) return;
+        // 多く入った分が、先の回（まだ期限前でもよい）の請求書とぴったり同じ額なら、その請求の早めの入金としてそちらに回す
+        if (p.diff < 0) {
+          const x = -p.diff;
+          const q = periods.slice(periods.indexOf(p) + 1).find(q => !q.beforeOpening && q.usable
+            && (q.invoices.some(v => v.amount === x) || q.amount - q.paid === x));
+          if (q) {
+            const v = q.invoices.find(v => v.amount === x);
+            p.paid -= x; p.diff += x; q.paid += x; q.diff -= x; q.early = (q.early || 0) + x;
+            p.fixes.push({ by: `${v ? v.label : (q.due || "").slice(5).replace("-", "/") + " の回"} の早めの入金 ${x.toLocaleString()} を含む`, at: p.due, amount: x });
+            return;
+          }
+        }
         if (isOld(p)) {   // 期首まわりは1件にまとめる（最初の行に寄せる）
           if (oldItem) { oldItem.r += p.diff; oldItem.p.merged.push(p); p.fixes.push({ by: "期首まわりにまとめた", at: p.due, amount: p.diff }); }
           else { oldItem = { p, r: p.diff, old: true }; p.merged = []; items.push(oldItem); }

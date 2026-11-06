@@ -357,6 +357,17 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   assert.equal(c2.diff, -24992);
 }
 
+// ---- 早めの入金：多く入った分が先の請求とぴったり同じなら、その請求の入金として回す ----
+{
+  const detail = [sale('E1', '20260601', 1, 0),
+    sale('E1', '20260705', 20000, 1), tax('E1', '20260715', 2000, 1),     // 8/10 期限 22,000
+    sale('E1', '20260805', 30000, 2), tax('E1', '20260815', 3000, 2)];    // 9/10 期限 33,000
+  const payments = [pay('E1', '20260301', 0), pay('E1', '20260810', 22000), pay('E1', '20260812', 33000)];  // 8/12 に 9月分を早めに入金
+  const c = A.build({ detail, payments, customers: [cust('E1')], staff }, { asof: '2026-08-31', today: '2026-08-31' }).customers.E1;
+  assert.equal(c.diff, 0, '先の請求の早めの入金は過入金にしない');
+  assert.equal(c.periods[1].early, 33000);
+}
+
 // ---- CSV：引用符の中のカンマ・改行、BOM ----
 {
   const rows = A.toObjects('﻿"a","b"\r\n"1,2","x""y"\r\n"3","改\n行"\r\n');
