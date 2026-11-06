@@ -222,7 +222,8 @@
       if (no === "0" || no === "") { c.unbilled.push(line); return; }
       const inv = c.invoices[no] || (c.invoices[no] = { no, lines: [], net: 0, tax: 0, taxDate: "", firstDate: "9999-99-99", lastDate: "" });
       inv.lines.push(line); inv.net += line.net; inv.tax += line.tax;
-      if (line.taxKind === "消費税" && line.tax) inv.taxDate = line.date;
+      // 締日は消費税の行の日付（1枚の請求書に消費税の行が2つあるとき：月をまたいだ売上の分が前の月末で入っているなど は、遅いほう）
+      if (line.taxKind === "消費税" && line.tax && line.date > inv.taxDate) inv.taxDate = line.date;
       if (line.date < inv.firstDate) inv.firstDate = line.date;
       if (line.date > inv.lastDate) inv.lastDate = line.date;
     });
@@ -342,7 +343,12 @@
           if (inv.excluded || inv.amount === 0) return;
           if (inv.bound && inv.bound < op.date) return;     // 期首より前が回収予定日 → 期首の残りに入る
           if (inv.close && inv.close < op.date) { notDue += inv.amount; return; }   // 期首より前に締めた請求書
-          (inv.lines || []).forEach(l => { if (before(l)) notDue += l.net + l.tax; });   // 締めが期首をまたぐ（20日締めの 3/21〜3/31 など）
+          // 締めが期首をまたぐ（20日締めの 3/21〜3/31 など）は、期首までの売上だけ
+          //   特別請求は伝票ごとの消費税がないが、SMILE では期首までの締めで消費税を計上済みなので、税抜の割合で消費税も足す
+          const pre = (inv.lines || []).filter(before);
+          const preNet = pre.reduce((s, l) => s + l.net, 0);
+          notDue += pre.reduce((s, l) => s + l.net + (l.tax || 0), 0);
+          if (inv.special && inv.net && preNet) notDue += Math.round(inv.tax * preNet / inv.net);
         });
         c.unbilled.forEach(l => { if (before(l)) notDue += l.net + l.tax; });
         const d = opBal - notDue;
