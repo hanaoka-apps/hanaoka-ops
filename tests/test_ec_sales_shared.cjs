@@ -151,6 +151,17 @@ const recOk = { status: 'ok', by: 'u1@example.com', at: '2026-10-21T01:00:00.000
     assert.strictEqual(log[2].Title, 'OK #1801'); assert.strictEqual(log[2].OrderNo, '1801');
     assert.ok(g.calls.filter(c => c.method === 'PATCH').length === 0);                         // 履歴は書き換えない
   });
+  await t('出荷報告済みの印（ShipReportedBy・ShipReportedAt）も、リストに書く。状態の無い記録でも、行が作られ、印が入る', async () => {
+    const g = fakeGraph(), s = mk(g); await s.connect();
+    const rec = { cust: '599801', orderDate: '2026-10-20', net: 14000, shipReportedAt: '2026-11-06T08:00:00.000Z', shipReportedBy: 'u1@example.com' };
+    await s.upsert('1811', EC.orderFields('1811', rec));
+    const sent = g.calls.filter(c => c.method === 'POST').pop().body.fields;
+    assert.strictEqual(sent.ShipReportedBy, 'u1@example.com'); assert.ok(/^2026-11-06/.test(sent.ShipReportedAt));
+    // 報告を戻す（空にする）ときも、書き換えられる
+    await s.upsert('1811', EC.orderFields('1811', Object.assign({}, rec, { shipReportedAt: undefined, shipReportedBy: undefined })));
+    const patch = g.calls.filter(c => c.method === 'PATCH').map(c => JSON.stringify(c.body)).join('');
+    assert.ok(/ShipReportedBy/.test(patch));
+  });
   await t('個人情報を書かない：お客様の名前・住所・電話の項目を渡しても、リストには送らない', async () => {
     const g = fakeGraph(), s = mk(g); await s.connect();
     const bad = Object.assign({}, EC.orderFields('1801', recOk), { CustomerName: '山田花子', Address: '東京都千代田区千代田1-1', Phone: '03-1234-5678', Note: 'お客様メモ' });

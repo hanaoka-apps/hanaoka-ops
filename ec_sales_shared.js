@@ -12,7 +12,7 @@
 (function (root) {
   'use strict';
   var GRAPH = 'https://graph.microsoft.com/v1.0';
-  var ORDER_COLS = ['Title', 'OrderDate', 'CustomerCode', 'Status', 'BatchId', 'SmileOrderNo', 'ShipDate', 'ShipDateManual', 'MemoNote', 'NetTotal', 'OkBy', 'OkAt', 'ImportBy', 'ImportAt', 'ConfirmBy', 'ConfirmAt', 'ReportedAt', 'Note'];
+  var ORDER_COLS = ['Title', 'OrderDate', 'CustomerCode', 'Status', 'BatchId', 'SmileOrderNo', 'ShipDate', 'ShipDateManual', 'MemoNote', 'NetTotal', 'OkBy', 'OkAt', 'ImportBy', 'ImportAt', 'ConfirmBy', 'ConfirmAt', 'ReportedAt', 'ShipReportedBy', 'ShipReportedAt', 'Note'];   // ShipReportedBy／At＝出荷チェックの「報告済み」の印（共有のために、リストに書く）
   var LOG_COLS = ['Title', 'LogTime', 'Actor', 'OrderNo', 'Action', 'BatchId', 'Detail'];
   var LOG_WRITABLE = LOG_COLS.slice();
   var ORDER_WRITABLE = ORDER_COLS.filter(function (c) { return c !== 'Note'; });   // Note は人が手で書く欄。アプリは書かない（個人情報を入れない）
