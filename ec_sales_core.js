@@ -1459,7 +1459,11 @@
     else if (method) add('warn', '支払方法を確認してください：' + method, 'Shopify Payments 以外です。入金の確認が必要かどうかを確認してください。');
 
     var dup = take(/^SMILE に同じ注文番号/);
-    if (dup.length) add('warn', '同じ注文番号の伝票がSMILEにあります', '二重起票になっていないか確認してください。');
+    // 取込のあと（取込中・確認待ち・要確認・起票済み・SMILE取込済）は、SMILE に伝票があるのが当然。警告にしない（二重起票の確認は、取込のあとの照合で、受注№が1つかを見ている）
+    if (dup.length) {
+      if (/^(importing|confirm|check|exported|smile)$/.test(o.state || '')) add('ok', 'この注文の伝票が SMILE に入っています（取込済み）');
+      else add('warn', '同じ注文番号の伝票がSMILEにあります', '二重起票になっていないか確認してください。');
+    }
 
     flags.forEach(function (f) { if (used.indexOf(f) < 0) add(f.level === 'error' ? 'err' : f.level === 'warn' ? 'warn' : 'info', f.text); });
     var risky = items.some(function (x) { return x.level === 'err' || x.level === 'warn'; });

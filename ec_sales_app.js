@@ -616,7 +616,7 @@ function detailViewHtml(s, editBlock) {
 // システムの判定結果（タブの上に小さく出す）：確認が必要なもの（△・✗）は常に、問題なしの項目は「✓ 問題なし n項目」にまとめる（開くと意味つきで見られる）
 function judgeHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && reuseCode(s, d);
-  const j = EC.judgeSlip(s, { cfg: store.cfg, delivery: { code: code || '', name: d.name, isNew: !code }, shipLabel: md(shipOf(s)) });
+  const j = EC.judgeSlip(s, { cfg: store.cfg, delivery: { code: code || '', name: d.name, isNew: !code }, shipLabel: md(shipOf(s)), state: stateOf(s) });
   const ico = { ok: '✓', warn: '△', err: '✗', info: '・' };
   const row = x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>';
   const oks = j.items.filter(x => x.level === 'ok'), rest = j.items.filter(x => x.level !== 'ok');

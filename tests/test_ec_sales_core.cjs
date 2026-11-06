@@ -1121,6 +1121,10 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
   const p = EC.judgeSlip(prob, { cfg: DEFAULT_CONFIG, delivery: { code: '000123' }, shipLabel: '11/06' });
   assert.strictEqual(p.risky, true);
   assert.deepStrictEqual(lv(p).filter(x => !x.startsWith('ok:')), ['err:商品コードを特定できません', 'warn:金額を確認してください', 'err:配送先の情報を確認してください', 'warn:支払方法を確認してください：銀行振込', 'warn:同じ注文番号の伝票がSMILEにあります', 'warn:お客様メモ：置き配希望']);
+  // 取込のあと（要確認など）は、SMILE に伝票があるのは当然。「二重起票」の警告にしない
+  const pc = EC.judgeSlip(prob, { cfg: DEFAULT_CONFIG, delivery: { code: '000123' }, shipLabel: '11/06', state: 'check' });
+  assert.ok(pc.items.some(x => x.level === 'ok' && /SMILE に入っています/.test(x.text)));
+  assert.ok(!pc.items.some(x => /二重|同じ注文番号の伝票がSMILE/.test(x.text + (x.detail || ''))));
   assert.ok(/キャスター交換セット/.test(p.items[0].detail) && /9091円/.test(p.items[1].detail));   // 元の確認事項は、詳細に入る（重複して出さない）
   // Shopify の注文CSVの支払方法は shopify_payments（小文字・アンダースコア）で来る。Shopify Payments と同じ扱い（支払方法の確認事項を出さない）
   const sp = EC.judgeSlip(Object.assign({}, base, { order: { paymentMethod: 'shopify_payments', financial: 'paid' } }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } });
