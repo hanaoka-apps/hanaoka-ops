@@ -121,6 +121,11 @@ t('納品先コード：reuse:false（ふるさと納税）は、過去の納品
   assert.strictEqual(new Set([a, b, c].map(s => s.deliveryCode)).size, 3);   // 同じ人でも、別々のコード
   assert.notStrictEqual(a.deliveryCode, '000999');   // 既存の 000999 は使わない
 });
+t('この端末の記録をリストに移す対象：状態が無くても、出荷報告済みの印がある記録を含める', () => {
+  const local = { '2630985': { cust: '341401', shipReportedAt: '2026-11-06T08:00:00Z', shipReportedBy: 'u@x' }, '2630986': { cust: '341401' }, '2630987': { status: 'ok' }, '2630988': { status: 'ok', shipReportedAt: '2026-11-06T08:00:00Z' } };
+  const plan = EC.migrationPlan(local, { '2630988': { Title: '2630988' } });
+  assert.deepStrictEqual(plan.sort(), ['2630985', '2630987']);   // 印だけの記録も入る・何もない記録は入らない・リストにあるものは入らない
+});
 t('納品先の入力不足は受注チェックの要確認に出る', () => {
   const none = EC.buildSlip(order({ ship: { name: '中村達生', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: '大島５−２８', addr2: '', phone: '' } }), ctx);
   assert.ok(none.flags.some(f => f.level === 'warn' && /電話番号/.test(f.text)));
