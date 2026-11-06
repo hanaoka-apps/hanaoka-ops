@@ -261,6 +261,18 @@
     // ---- 請求先ごとに、回収予定日の回（period）を作って違算を判定 ----
     Object.values(C).forEach(c => {
       c.payments.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+      // 入れて取り消した入金（同じ種類で、プラスとマイナスが同じ額の組。例：5/31 に入れて 6/30 に取消）は、
+      //   回ごとの違算を作らないように、両方とも入金の計算から外す（一覧には出す）
+      c.payments.forEach(x => { delete x.void; });
+      //   期首残高があるときは、期首以降の入金どうしだけ（期首より前の入金は、もう期首の残高に入っている）
+      const afterOp = x => !opening || x.date >= opening.date;
+      c.payments.filter(x => x.amount < 0 && x.attr !== "調整" && afterOp(x)).forEach(n => {
+        const cand = c.payments.filter(x => !x.void && x !== n && x.amount === -n.amount && x.kind === n.kind && afterOp(x));
+        if (!cand.length) return;
+        const near = cand.sort((a, b) => Math.abs(daysBetween(a.date, n.date)) - Math.abs(daysBetween(b.date, n.date)))[0];
+        n.void = near.void = true;
+      });
+      const sumPaid = ps => ps.reduce((s, p) => s + (p.void ? 0 : p.amount), 0);
       c.unbilled.sort((a, b) => a.date < b.date ? -1 : 1);
       const invs = Object.values(c.invoices);
       invs.forEach(inv => {
@@ -339,7 +351,7 @@
         //   （付け替えの入金伝票が、どの回にも入らず消えないように）
         const noLater = !bounds.some(b => b >= op.date);
         const ps0 = noLater ? c.payments.filter(p => p.date >= op.date) : [];
-        const paid0 = ps0.reduce((s, p) => s + p.amount, 0);
+        const paid0 = sumPaid(ps0);
         const p0 = { bound: day, due: day, from: "", to: noLater ? "9999-12-31" : day, invoices: [], opening: true, openingBal: opBal, notDue,
           amount: d, paid: paid0, diff: d - paid0, payments: ps0, partial: false, judged: true, usable: true };
         cum = d - paid0; started = true; p0.cum = cum;
@@ -354,7 +366,7 @@
         const beforeOp = op && b < op.date;
         if (op && !beforeOp && lo < addDays(op.date, -1)) lo = addDays(op.date, -1);   // 期首より前の入金は期首の残高に入っている
         const ps = c.payments.filter(p => p.date > lo && p.date <= hi);
-        const paid = ps.reduce((s, p) => s + p.amount, 0);
+        const paid = sumPaid(ps);
         const partial = !op && g.some(x => x.partial);
         // 追記の条件（N 日後振込）がある得意先は、データより前の請求が N 日遅れで入ってくるので、その分あとから判定する
         const usable = op ? !beforeOp
@@ -365,47 +377,67 @@
         p.cum = started ? cum : null;
         periods.push(p);
       });
-      // 違算が残っているときに、次の回（回収予定日がまだ）に入った入金は、先に古い差に充てる。
-      //   締め後に入れた付け替えの入金伝票（10/31 付けなど）が、次の回の期限まで反映されないのを防ぐ。
-      //   充てた分は次の回の入金から引くので、合計は変わらない
-      const lastJ = [...periods].reverse().find(p => p.judged);
-      const nextP = periods.find(p => !p.judged && p.usable && !p.beforeOpening && !p.opening);
-      if (lastJ && nextP && cum) {
-        const P = nextP.payments.filter(p => p.date <= asof).reduce((s, p) => s + p.amount, 0);
-        if (P && Math.sign(P) === Math.sign(cum)) {
-          const x = Math.sign(cum) * Math.min(Math.abs(P), Math.abs(cum));
-          lastJ.lateApplied = (lastJ.lateApplied || 0) + x; lastJ.paid += x; lastJ.diff -= x; lastJ.cum -= x;
-          nextP.carried = x; nextP.paid -= x; nextP.diff += x;
-          cum -= x;
-          periods.slice(periods.indexOf(lastJ) + 1).forEach(p => { if (p.cum != null) p.cum = cum; });
-        }
-      }
       c.periods = periods;
       const J = periods.filter(p => p.judged);
-      c.diff = J.length ? J[J.length - 1].cum : 0;
-      // 今の違算の内訳：どの請求書（回）が残っているか。p.open にその回の残りの額を入れる
-      //   入金の付け替え（別の得意先コードへの移動・取消）があると、回ごとの差がプラスとマイナスで打ち消し合うので、
-      //   回の差ではなく違算の合計から割り当てる。
-      //   未入金：違算の合計とぴったり同じ請求額の回があればその回。なければ新しい回から順に、合計に届くまで
-      //   過入金：差がマイナスの回を新しいほうから順に
-      J.forEach(p => { delete p.open; });
-      const pick = [];
-      if (c.diff > 0) {
-        const cand = J.filter(p => p.amount > 0).reverse();
-        const exact = cand.find(p => p.amount === c.diff);
-        if (exact) pick.push([exact, c.diff]);
-        else {
-          let r = c.diff;
-          for (const p of cand) { if (r <= 0) break; const v = Math.min(p.amount, r); pick.push([p, v]); r -= v; }
-          if (r > 0 && pick.length) pick[pick.length - 1][1] += r;
+      // ---- 違算を回ごとに1件ずつ持つ（入金消込の違算表と同じ見方） ----
+      //   回ごとの差（請求額 − その回の入金）を1件の違算にして、あとで次のどれかがあれば解消にする
+      //   ・あとの入金（1行、または同じ伝票№の合計）が、残っている違算とぴったり同じ額
+      //     （未入金なら同じ額の入金、過入金なら同じ額のマイナスの入金）。回収予定日前の回の入金でも、今日までに入っていれば充てる
+      //   ・あとの回の差が、残っている違算とぴったり反対の額（翌月に差し引いて払った・上乗せして払ったなど）
+      //   違算の合計（c.diff）は、残っている違算の合計
+      periods.forEach(p => { delete p.open; delete p.moved; delete p.merged; p.fixes = []; });
+      // 期首まわり（期首の残りと、期首から2か月以内が回収予定日の回）は1件にまとめて、別の枠にする。
+      //   前の期の差がまとめて出やすく、入金消込の違算表でも別に扱っているため
+      const early = opening ? addMonths(opening.date, 2, 1) : "";
+      const isOld = p => !!opening && (p.opening || p.due < early);
+      const items = [];
+      let oldItem = null;
+      const take = (p, amt, what) => {   // p の入金のうち amt を、残っている違算の解消に回す
+        const it = items.find(it => it.r && it.r === amt && it.p !== p);
+        if (!it) return false;
+        it.r = 0; it.p.fixes.push({ by: what, at: p.due, amount: amt });
+        p.moved = (p.moved || 0) + amt; p.paid -= amt; p.diff += amt;
+        return true;
+      };
+      periods.forEach(p => {
+        if (p.beforeOpening || !p.usable) return;
+        if (p.judged || p.payments.length) {
+          const used = new Set();
+          p.payments.filter(x => x.date <= asof && !x.void).forEach(x => {
+            if (x.amount && x.attr !== "調整" && take(p, x.amount, `${x.date.slice(5).replace("-", "/")} の入金 ${x.amount.toLocaleString()}`)) used.add(x);
+          });
+          const bySlip = {};
+          p.payments.filter(x => x.date <= asof && !x.void && !used.has(x)).forEach(x => { const k = x.date + "|" + x.slip; bySlip[k] = (bySlip[k] || 0) + x.amount; });
+          Object.entries(bySlip).forEach(([k, amt]) => { if (amt) take(p, amt, `${k.slice(5, 10).replace("-", "/")} の入金伝票${k.split("|")[1]} ${amt.toLocaleString()}`); });
         }
-      } else if (c.diff < 0) {
-        let r = -c.diff;
-        for (const p of J.filter(p => p.diff < 0).reverse()) { if (r <= 0) break; const v = Math.min(-p.diff, r); pick.push([p, -v]); r -= v; }
-        if (r > 0 && pick.length) pick[pick.length - 1][1] -= r;
+        if (!p.judged || !p.diff) return;
+        if (isOld(p)) {   // 期首まわりは1件にまとめる（最初の行に寄せる）
+          if (oldItem) { oldItem.r += p.diff; oldItem.p.merged.push(p); p.fixes.push({ by: "期首まわりにまとめた", at: p.due, amount: p.diff }); }
+          else { oldItem = { p, r: p.diff, old: true }; p.merged = []; items.push(oldItem); }
+          return;
+        }
+        const it = items.find(it => it.r && it.r === -p.diff);
+        if (it) { it.r = 0; it.p.fixes.push({ by: `${p.opening ? "期首" : (p.due || "").slice(5).replace("-", "/") + " の回"}の差 ${p.diff.toLocaleString()}`, at: p.due, amount: p.diff }); p.fixes.push({ by: "前の違算と打ち消し", at: p.due, amount: p.diff }); return; }
+        // ほぼ同じ額で反対の差（入金の月ずれ。差が 1% か 1,000 円以内）は、前の違算に足して残りだけにする
+        const near = items.find(it => it.r && Math.sign(it.r) === -Math.sign(p.diff) && !it.old
+          && Math.abs(it.r + p.diff) <= Math.max(1000, Math.abs(it.r) * 0.01));
+        if (near) { near.r += p.diff; p.fixes.push({ by: "前の違算と月ずれで打ち消し", at: p.due, amount: p.diff }); return; }
+        items.push({ p, r: p.diff });
+      });
+      // 残った違算どうしで、ぴったり反対の額は打ち消す。全部足して 0 なら全部解消
+      for (let changed = true; changed;) {
+        changed = false;
+        const L = items.filter(it => it.r);
+        for (const a of L) { const b = L.find(b => b !== a && b.r && b.r === -a.r); if (a.r && b) { a.r = 0; b.r = 0; changed = true; } }
       }
-      pick.forEach(([p, v]) => { p.open = v; });
-      c.openPeriods = pick.map(x => x[0]).sort((a, b) => a.bound < b.bound ? -1 : a.bound > b.bound ? 1 : 0);
+      if (items.some(it => it.r) && items.reduce((s, it) => s + it.r, 0) === 0) items.forEach(it => { it.r = 0; });
+      items.forEach(it => { if (it.r) it.p.open = it.r; });
+      const openAll = items.filter(it => it.r).map(it => it.p);
+      c.openPeriods = openAll.filter(p => !isOld(p));
+      c.oldPeriods = openAll.filter(p => isOld(p));   // 期首まわり（1件にまとめてある）
+      c.diff = c.openPeriods.reduce((s, p) => s + p.open, 0);
+      c.diffOld = c.oldPeriods.reduce((s, p) => s + p.open, 0);
+      c.netDiff = c.diff + c.diffOld;
       c.oldestDue = c.openPeriods.length ? c.openPeriods[0].due : "";
       c.daysOver = c.oldestDue ? daysBetween(c.oldestDue, asof) : 0;
       c.status = c.diff > 0 ? "未入金" : c.diff < 0 ? "過入金" : "";
