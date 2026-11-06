@@ -75,18 +75,31 @@ assert.equal(A.baseOf({ '部門名': 'ｿﾘｭｰｼｮﾝ営業部', '売上�
   // 9/10 には 100,000 しか入らず、9/30 に残り 10,000（9/10 と 10/13 の中間 9/26 より後）
   const late = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000)] }), { today: '2026-10-06' });
   const c = late.customers['200001'];
-  assert.equal(c.periods[0].diff, 10000);
+  assert.equal(c.periods[0].diff, 0, '次の回の入金を充てたので差は 0');
   assert.equal(c.periods[0].judged, true);
   assert.equal(c.periods[1].bound, '2026-10-13');
   assert.equal(c.periods[1].judged, false, '10/13 はまだ来ていない');
-  assert.equal(c.diff, 10000, '9/30 の入金は次の回に入るので、判定済みの累計は 10,000 のまま');
+  assert.equal(c.diff, 0, '9/30 の入金は次の回の範囲だが、残っている差に先に充てる');
+  assert.equal(c.periods[0].lateApplied, 10000);
+  assert.equal(c.periods[1].carried, 10000);
+  // 入金が 9/30 に来る前（9/20 時点）は未入金 10,000
+  const mid = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000)] }), { asof: '2026-09-20', today: '2026-09-20' });
+  assert.equal(mid.customers['200001'].diff, 10000);
   // 10/13 を過ぎて 220,000 が入れば、累計 0 で解消
   const after = A.build(Object.assign({}, base, { payments: [pay('200001', '20260401', 0), pay('200001', '20260910', 100000), pay('200001', '20260930', 10000), pay('200001', '20261013', 220000)] }), { today: '2026-10-20' });
   const c2 = after.customers['200001'];
-  assert.equal(c2.periods[1].diff, -10000);
+  assert.equal(c2.periods[1].diff, -10000, '10/13 を過ぎたら、回ごとの差はこれまでどおり');
   assert.equal(c2.diff, 0);
   assert.equal(c2.openPeriods.length, 0);
   assert.equal(c2.resolved.length, 1, '解消した違算として残る');
+}
+
+// ---- 期首以降に請求がない得意先：期首以降の入金（付け替えの入金伝票）を期首の残りに充てる ----
+{
+  const M = A.build({ detail: [sale('K1', '20261101', 100, 0)], payments: [pay('K1', '20250401', 0), pay('K1', '20261031', 410400)],
+    customers: [cust('K1')], staff, opening: { date: '2026-04-01', bal: { K1: 410400 } } }, { asof: '2026-11-06', today: '2026-11-06' });
+  assert.equal(M.customers.K1.diff, 0);
+  assert.equal(M.customers.K1.periods[0].paid, 410400);
 }
 
 // ---- 数日遅れの入金（連休明けなど）は、中間までならその回の入金として解消 ----
