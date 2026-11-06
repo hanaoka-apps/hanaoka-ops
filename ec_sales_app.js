@@ -422,10 +422,12 @@ function flowBoxHtml(s) {
 }
 const FILTERS = [['new', '未確認'], ['ok', 'OK済（取込待ち）'], ['importing', '取込中・突合待ち'], ['confirm', '確認待ち'], ['check', '要確認'], ['exported', '起票済'], ['smile', 'SMILE取込済'], ['excluded', '対象外'], ['all', 'すべて']];
 const STATE_LABEL = { new: '未確認', ok: 'OK済', importing: '取込中', confirm: '確認待ち', check: '要確認', exported: '起票済', smile: 'SMILE取込済', excluded: '対象外' };
+// SMILE の納品先マスタに、同じ納品先（名前・郵便番号）があれば、そのコード。設定 deliveryReuse が false のとき（ふるさと納税）は、過去の納品先があっても使わない（毎回すべて新規に登録する）
+const reuseCode = (s, d) => { if (store.cfg.deliveryReuse === false) return ''; const m = M.nouhin && M.nouhin[s.cust]; return (m && m.keys[d.key]) || ''; };
 function destTag(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust];
   if (!m) return '';
-  const code = m.keys[d.key];
+  const code = reuseCode(s, d);
   return code ? '<span class="tag info">既存 ' + code + '</span>' : '<span class="tag new">新規</span>';
 }
 let openId = null;
@@ -530,7 +532,7 @@ function renderDrawer() {
   const s = openId && slips.find(x => x.id === openId);
   if (!s) { dr.hidden = sc.hidden = true; return; }
   dr.hidden = sc.hidden = false; dr.classList.add('wide');
-  const o = s.order, st = stateOf(s), d = EC.deliveryFromOrder(o, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key];
+  const o = s.order, st = stateOf(s), d = EC.deliveryFromOrder(o, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && reuseCode(s, d);
   const ship = shipOf(s), r = rec(s);
   const row = (k, v) => v ? '<dt>' + k + '</dt><dd>' + esc(v) + '</dd>' : '';
   dr.innerHTML = '<div class="row"><h2>' + esc(s.name) + '</h2><span class="tag ' + (st === 'ok' || st === 'exported' ? 'ok' : st === 'check' ? 'err' : st === 'importing' || st === 'confirm' ? 'warn' : 'info') + '">' + STATE_LABEL[st] + '</span><div class="grow"></div><button class="btn sec sm" data-close>閉じる ✕</button></div>' +
@@ -613,7 +615,7 @@ function detailViewHtml(s, editBlock) {
 }
 // システムの判定結果（タブの上に小さく出す）：確認が必要なもの（△・✗）は常に、問題なしの項目は「✓ 問題なし n項目」にまとめる（開くと意味つきで見られる）
 function judgeHtml(s) {
-  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key];
+  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && reuseCode(s, d);
   const j = EC.judgeSlip(s, { cfg: store.cfg, delivery: { code: code || '', name: d.name, isNew: !code }, shipLabel: md(shipOf(s)) });
   const ico = { ok: '✓', warn: '△', err: '✗', info: '・' };
   const row = x => '<div class="jr jr-' + x.level + '"><span class="ji">' + ico[x.level] + '</span><div><b>' + esc(x.text) + '</b>' + (x.detail ? '<div class="jd">' + esc(x.detail) + '</div>' : '') + '</div></div>';
@@ -648,7 +650,7 @@ function nouhinBlockHtml(s, d, code, act, it, pend) {
     it('荷受け人名２', val(v.p2)) + it('郵便番号', val(v.zip)) + it('電話番号', val(v.tel)) + '</div><div class="sl-hd c2">' + it('住所１', val(v.a1)) + it('住所２', val(v.a2)) + '</div>' + hint + (stNow === 'new' && !act ? deliveryBarHtml(s, d, act, stNow, false) : '') + '</div>';
 }
 function slipImageHtml(s) {
-  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && m.keys[d.key], act = smileActual(s);
+  const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && reuseCode(s, d), act = smileActual(s);
   const sl = Object.assign({}, s, { memo: memoOf(s) });
   const opt = { cfg: store.cfg, items: M.items, cal, biko: PROFILE.biko ? PROFILE.biko(CONF) : '', shipDate: shipOf(s), delivery: { code: code || '', name: d.name, isNew: !code } };
   const img = EC.slipImage(sl, Object.assign({ act }, opt));
@@ -802,7 +804,7 @@ function planOut(forceReal) {
   if (!ok.length) return { ok, fresh: [], master: M.nouhin || null };   // OK済が無いときは、納品先マスタ全体の複製（重い）は要らない
   const master = M.nouhin ? JSON.parse(JSON.stringify(M.nouhin)) : null;
   if (!master) return { ok, fresh: [], master: null };
-  const fresh = EC.planDeliveries(ok, master, store.cfg, { reuse: true, temp: forceReal ? null : tempCfg() });
+  const fresh = EC.planDeliveries(ok, master, store.cfg, { reuse: store.cfg.deliveryReuse !== false, temp: forceReal ? null : tempCfg() });
   return { ok, fresh, master };
 }
 function renderOutbar() {
@@ -2008,7 +2010,7 @@ function reviewDeliveryEdit(s) {
   const dv = EC.deliveryFromOrder(s.order, store.cfg), diff = EC.diffDeliveryEdit(dv.auto, editDraft);
   if (!Object.keys(diff).length) { alert('変更がありません'); return; }
   const merged = Object.assign({}, dv.auto, diff), chk = EC.checkDeliveryEdit(merged, store.cfg);
-  const exCode = M.nouhin && M.nouhin[s.cust] && M.nouhin[s.cust].keys[dv.key];
+  const exCode = reuseCode(s, dv);
   if (exCode && diff.memo) chk.warns.push('既存の納品先（' + exCode + '）です。配達員向けメモは、取込では入りません（納品先マスタの取込は新規だけ）。SMILE の荷受け人名１に直接入れてください');
   const rows = Object.keys(diff).map(k => { const f = EC.EDIT_FIELDS.find(x => x.k === k); return '<tr><th>' + esc(f.label) + '</th><td>' + esc(dv.auto[k] || '（空）') + '</td><td style="background:#fff1c2;font-weight:600">' + esc(diff[k] || '（空）') + '</td></tr>'; }).join('');
   const ov = document.createElement('div');
