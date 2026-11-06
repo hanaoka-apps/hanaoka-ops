@@ -313,6 +313,14 @@
   .seg button{border:none;background:var(--surface);padding:6px 12px;font-size:12.5px;font-weight:600;color:var(--sub);cursor:pointer;font-family:inherit}
   .seg button+button{border-left:1px solid var(--line-strong)}
   .seg button.on{background:var(--navy);color:#fff}
+  /* 違算一覧の拠点：Excel のシートを選ぶ感覚のチップ */
+  .btabs{display:flex;gap:6px;flex-wrap:wrap}
+  .btabs button{border:1px solid var(--line-strong);background:var(--surface);color:var(--sub);border-radius:999px;padding:5px 12px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;display:inline-flex;gap:6px;align-items:center}
+  .btabs button b{font-weight:700;color:var(--navy)}
+  .btabs button.on{background:var(--navy);border-color:var(--navy);color:#fff}
+  .btabs button.on b{color:#fff}
+  .btabs button .n{font-size:11px;opacity:.8}
+  .basetag{display:inline-block;font-size:11px;font-weight:600;color:var(--sub);border:1px solid var(--line);border-radius:4px;padding:0 6px;margin-left:6px}
   .gbody{padding:16px 20px 40px;display:flex;flex-direction:column;gap:16px}
   .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
   .basehead{display:flex;align-items:center;gap:10px}
@@ -473,7 +481,7 @@
     <!-- 違算一覧 -->
     <section class="view gview" id="viewGap">
       <div class="gbar">
-        <label>拠点<select id="gBase"></select></label>
+        <label>拠点<input type="hidden" id="gBase" value=""><div class="btabs" id="gBaseTabs"></div></label>
         <label>担当者<select id="gStaff"></select></label>
         <label>種類<div class="seg" id="gKind"><button data-k="" class="on">すべて</button><button data-k="未入金">未入金</button><button data-k="過入金">過入金</button></div></label>
         <label>フォロー<select id="gFollow">
@@ -831,7 +839,7 @@ function fillFilters(){
   const bases=ARCore.BASES.filter(b=>M.list.some(c=>c.base===b));
   const staffs=[...new Set(M.list.map(c=>c.staffName).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
   const opt=(v,l)=>`<option value="${esc(v)}">${esc(l)}</option>`;
-  for(const id of ['fBase','gBase']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+bases.map(b=>opt(b,b)).join(''); el.value=cur; }
+  for(const id of ['fBase']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+bases.map(b=>opt(b,b)).join(''); el.value=cur; }
   for(const id of ['fStaff','gStaff']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+staffs.map(s=>opt(s,s)).join(''); el.value=cur; }
 }
 ['search','fBase','fStaff','fShow'].forEach(id=>document.getElementById(id).addEventListener('input',renderList));
@@ -1638,7 +1646,16 @@ function gapRows(){
     &&(!base||c.base===base)&&(!st||c.staffName===st)&&(!gKind||c.status===gKind)
     &&(!q||norm(c.code+c.name+c.short).includes(q))
     &&(!fs||c.openPeriods.some(p=>fuState(fuOf(c,p))===fs)))
-    .sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff));
+    .sort((a,b)=>a.code<b.code?-1:a.code>b.code?1:0);   // 得意先コード順（違算表と同じ並び）
+}
+// 拠点のチップ（件数は、拠点以外の絞り込みをかけたときの違算の得意先の数）
+function renderBaseTabs(){
+  const el=document.getElementById('gBaseTabs'), inp=document.getElementById('gBase'); if(!el||!M) return;
+  const cur=inp.value; inp.value=''; const all=gapRows(); inp.value=cur;
+  const bases=ARCore.BASES.filter(b=>M.list.some(c=>c.base===b&&isGap(c))||b===cur);
+  const btn=(v,l,n)=>`<button type="button" data-b="${esc(v)}" class="${cur===v?'on':''}"><b>${esc(l)}</b><span class="n">${n}</span></button>`;
+  el.innerHTML=btn('','すべて',all.length)+bases.map(b=>btn(b,b,all.filter(c=>c.base===b).length)).join('');
+  el.querySelectorAll('button').forEach(b=>b.onclick=()=>{ inp.value=b.dataset.b; renderGap(); });
 }
 function renderGap(){
   const el=document.getElementById('gapBody');
@@ -1654,13 +1671,16 @@ function renderGap(){
     ${kpi('過入金',over.length+' 件',yen(-sum(over))+' 円','over')}
     ${kpi('フォロー未記入',items.filter(x=>!x.f).length+' 件',`入金予定日を過ぎた ${items.filter(x=>fuState(x.f)==='late').length} 件・総務確認済 ${items.filter(x=>fuState(x.f)==='done').length} 件`,items.some(x=>!x.f)?'under':'ok')}
   </div>`;
-  for(const b of ARCore.BASES){
-    const G=L.filter(c=>c.base===b); if(!G.length) continue;
+  renderBaseTabs();
+  // 拠点を選んでいないときは、拠点に分けずに得意先コード順で1つの表にする
+  const selBase=document.getElementById('gBase').value;
+  for(const b of [selBase||'すべての拠点']){
+    const G=[...L].sort((x,y)=>x.code<y.code?-1:x.code>y.code?1:0); if(!G.length) continue;
     html+=`<div class="panel"><h3 class="basehead">${esc(b)} <small>${G.length}件</small>
       <span class="tot">未入金 <b>${yen(sum(G.filter(c=>c.diff>0)))}</b>　過入金 <b>${yen(-sum(G.filter(c=>c.diff<0)))}</b></span></h3>
       <div class="tw"><table><thead><tr><th>回収予定日</th><th class="num">経過</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th>フォロー（原因・過失責任・入金予定日）</th><th></th></tr></thead><tbody>
       ${G.map(c=>`<tr class="crow click" data-c="${esc(c.code)}"><td colspan="4"><span class="mono muted" style="font-size:12px">${esc(c.code)}</span> <b>${esc(c.name)}</b>
-          <span class="muted" style="font-size:12px">　${esc(c.staffName)}　${esc(c.closeLabel)}・${esc(c.termsLabel)}</span>
+          ${selBase?'':`<span class="basetag">${esc(c.base)}</span>`}<span class="muted" style="font-size:12px">　${esc(c.staffName)}　${esc(c.closeLabel)}・${esc(c.termsLabel)}</span>
           ${c.termsNote?`<div class="reason">${esc(c.termsNote)}</div>`:''}</td>
           <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td><td colspan="2">${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`
         +c.openPeriods.map(p=>`<tr class="prow"><td>${ymdJ(p.due)}<div class="reason">${esc(pInvText(p))}</div></td>
@@ -1690,7 +1710,7 @@ function oldPanel(){
   if(!M||!M.openingDate) return '';
   const base=document.getElementById('gBase').value, st=document.getElementById('gStaff').value, q=norm(document.getElementById('gSearch').value);
   const O=M.list.filter(c=>!c.excludeReason&&c.diffOld&&(!base||c.base===base)&&(!st||c.staffName===st)&&(!q||norm(c.code+c.name+c.short).includes(q)))
-    .sort((a,b)=>Math.abs(b.diffOld)-Math.abs(a.diffOld));
+    .sort((a,b)=>a.code<b.code?-1:a.code>b.code?1:0);
   if(!O.length) return '';
   const to=ARCore.addMonths(M.openingDate,2,1);
   return `<div class="panel"><h3>期首まわりの差 <small>${O.length}件　${ymdJ(ARCore.addMonths(M.openingDate,-1,30))} の残高の残りと、回収予定日が ${ymdJ(to)} より前の差を、得意先ごとに1件にまとめたもの。違算の件数・合計には入れていません</small></h3>
