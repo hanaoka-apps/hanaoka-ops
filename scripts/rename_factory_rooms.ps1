@@ -110,6 +110,11 @@ foreach ($name in $Retired) {
   Write-Host "  廃止      $($m.DisplayName) <$($m.PrimarySmtpAddress)>（アドレス帳から隠した・会議室の一覧 $($inLists.Count) 件から外した）"
 }
 
-if ($ng) { Write-Host "`n★ $ng 室が特定できませんでした。上の行を見て、スクリプトの「今の名前」を直してください。" }
+if ($ng) {
+  Write-Host "`n★ $ng 室が特定できませんでした。工場の部屋（room-fac-）をすべて出します。今の名前を確かめてください。"
+  $rooms | Where-Object { "$($_.PrimarySmtpAddress)" -like 'room-fac-*' -or "$($_.PrimarySmtpAddress)" -like 'factory*' } |
+    Sort-Object { "$($_.PrimarySmtpAddress)" } |
+    ForEach-Object { Write-Host "    $($_.PrimarySmtpAddress)  …  $($_.DisplayName)" }
+}
 if (-not $Apply) { Write-Host "`n確認のみです。書き込むときは -Apply を付けて実行してください。" }
 Write-Host "Outlook とアプリに新しい名前が出るまで、数時間〜1日かかることがあります。"
