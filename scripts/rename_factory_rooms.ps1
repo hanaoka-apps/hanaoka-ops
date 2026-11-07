@@ -5,7 +5,7 @@
   そのまま読んでいる。だから、ここで Outlook 側の表示名を変えれば、アプリの一覧も変わる。
   メールアドレスは変えない（変えると、数時間〜1日 空き情報が読めなくなるため）。
 
-    3F  第一研修室（大） → ROOM G-1
+    3F  第二研修室（大） → ROOM G-1
     3F  第一研修室（小） → ROOM G-2
     3F  特別会議室       → ROOM A
     3F  応接室           → ROOM H
@@ -34,7 +34,7 @@ Connect-ExchangeOnline -ShowBanner:$false
 
 # 今の名前 → 新しい名前。今の名前は「含まれていればよい」（前に「工場」などが付いていても拾う）
 $Renames = @(
-  @{ Old = '第一研修室（大）'; New = 'ROOM G-1'; Floor = 3 }
+  @{ Old = '第二研修室（大）'; New = 'ROOM G-1'; Floor = 3 }
   @{ Old = '第一研修室（小）'; New = 'ROOM G-2'; Floor = 3 }
   @{ Old = '特別会議室';       New = 'ROOM A';   Floor = 3 }
   @{ Old = '応接室';           New = 'ROOM H';   Floor = 3 }
