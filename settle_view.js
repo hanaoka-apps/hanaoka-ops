@@ -171,6 +171,19 @@
           return '<tr><td style="white-space:nowrap">' + esc(a.Date || '') + (a.SlipNo ? '<div class="s">' + esc(a.SlipNo) + '</div>' : '') + '</td><td>' + esc(a.ItemName || '') + (a.Spec ? ' <span class="s">' + esc(a.Spec) + '</span>' : '') + (a.Note ? '<div class="s">' + esc(a.Note) + '</div>' : '') + '</td>' +
             '<td class="n">' + (a.Qty != null && a.Qty !== '' ? esc(String(a.Qty)) + esc(a.Unit || '') : '') + '</td><td class="n">' + (a.UnitPrice != null && a.UnitPrice !== '' ? yen(a.UnitPrice) : '') + '</td><td class="n">' + yen(a.Amount) + '</td><td style="font-size:11.5px">' + esc(a.TaxRate || '') + '</td></tr>'; }).join('') +
         '<tr><td colspan="4"><b>合計</b></td><td class="n"><b>' + yen(tot) + '</b></td><td></td></tr></table>'; }
+    // 仕入：SMILE の受入明細（支払管理アプリが決裁に回すときに渡す）。rcv：[{d 日付, s 伝票№, i 品名, sp 型番, q 数量, u 単位, p 単価, e 税抜, f 付加価値率%, dp 部門, k 取引区分}]
+    //   付加価値率は、率のある行の税抜で重みを付けた平均もカードに出す
+    function rcvHtml(x) { var it = x.rcv || [], tot = it.reduce(function (s, a) { return s + (+a.e || 0); }, 0);
+      var fw = it.filter(function (a) { return a.f != null && a.f !== ''; }), fe = fw.reduce(function (s, a) { return s + (+a.e || 0); }, 0), favg = fe ? fw.reduce(function (s, a) { return s + (+a.e || 0) * (+a.f || 0); }, 0) / fe : null;
+      var dt8 = function (v) { v = String(v || ''); return /^\d{8}$/.test(v) ? v.slice(4, 6).replace(/^0/, '') + '/' + v.slice(6).replace(/^0/, '') : v; };
+      return '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px"><b style="font-size:15px">SMILE の受入明細</b><span class="s">' + esc(x.payee) + '・' + it.length + '行・税抜</span><span style="flex:1"></span><button class="svdr-x">✕</button></div>' +
+        '<div class="svsum"><div class="pay"><div class="l">支払金額（税込）</div><div class="v">' + yen(x.amount) + '<small> 円</small></div></div>' +
+        '<div><div class="l">受入（税抜）</div><div class="v">' + yen(tot) + '</div><div class="s">' + it.length + '行' + (x.smile && x.smile.incl ? '・税込 ' + yen(x.smile.incl) : '') + '</div></div>' +
+        '<div><div class="l">付加価値率（平均）</div><div class="v">' + (favg == null ? '—' : (Math.round(favg * 10) / 10) + '%') + '</div><div class="s">' + (fw.length ? '率のある ' + fw.length + '行・税抜で重み付け' : '率のある行なし') + '</div></div></div>' +
+        '<table class="ln"><tr><th>日付</th><th>品名</th><th class="n">数量</th><th class="n">単価</th><th class="n">税抜</th><th class="n">付加%</th></tr>' + it.map(function (a) {
+          return '<tr><td style="white-space:nowrap">' + esc(dt8(a.d)) + (a.s ? '<div class="s">' + esc(a.s) + '</div>' : '') + '</td><td>' + esc(a.i || '') + (a.sp ? ' <span class="s">' + esc(a.sp) + '</span>' : '') + (a.dp || a.k ? '<div class="s">' + esc([a.dp, a.k].filter(Boolean).join('・')) + '</div>' : '') + '</td>' +
+            '<td class="n">' + (a.q != null && a.q !== '' ? esc(String(a.q)) + esc(a.u || '') : '') + '</td><td class="n">' + (a.p != null && a.p !== '' ? yen(a.p) : '') + '</td><td class="n">' + yen(a.e) + '</td><td class="n">' + (a.f != null && a.f !== '' ? esc(String(a.f)) + '%' : '') + '</td></tr>'; }).join('') +
+        '<tr><td colspan="4"><b>合計</b></td><td class="n"><b>' + yen(tot) + '</b></td><td class="n">' + (favg == null ? '' : '<b>' + (Math.round(favg * 10) / 10) + '%</b>') + '</td></tr></table>'; }
     // 明細の上のカード（支払管理アプリと同じ）：支払金額（税込・税抜）／請求書の明細／仕訳（明細と同じ 税込・税抜 で）／差
     function sumCards(x, j, tot) { var inc = j.amount === '税込', ls = x.lines || [], has = ls.some(function (l) { return l.rate || l.excl; });
       var lIn = ls.reduce(function (s, l) { return s + (+l.amount || 0); }, 0), lEx = ls.reduce(function (s, l) { return s + (+l.excl || 0); }, 0), lTx = ls.reduce(function (s, l) { return s + (+l.tax || 0); }, 0);
@@ -182,7 +195,7 @@
     // ドロワー：バーにホバーで開く・クリックで固定・Esc で閉じる。幅は右の列（内容）にそろえ、請求書 PDF との境まで
     function wireDrawer(dt, x) { var d = dt.querySelector('.svdr'); if (!d) return; var bar = d.querySelector('.svdr-bar'), p = d.querySelector('.svdr-p'), t = null;
       var fitW = function () { var wd = dt.classList.contains('wide'), di = wd ? dt.querySelector('.di') : dt, w = Math.round(bar.getBoundingClientRect().left - di.getBoundingClientRect().left - (wd ? 0 : 8)); if (w > 220) p.style.width = w + 'px'; };
-      var set = function (on) { clearTimeout(t); ui.dOpen = on; if (on) { fitW(); p.innerHTML = itemsHtml(x); var xb = p.querySelector('.svdr-x'); if (xb) xb.onclick = function () { ui.dPin = false; bar.classList.remove('pin'); set(false); }; } d.classList.toggle('open', on); };
+      var set = function (on) { clearTimeout(t); ui.dOpen = on; if (on) { fitW(); p.innerHTML = x.items && (x.items.items || []).length ? itemsHtml(x) : rcvHtml(x); var xb = p.querySelector('.svdr-x'); if (xb) xb.onclick = function () { ui.dPin = false; bar.classList.remove('pin'); set(false); }; } d.classList.toggle('open', on); };
       bar.onmouseenter = function () { clearTimeout(t); t = setTimeout(function () { set(true); }, 120); };
       d.onmouseleave = function () { if (ui.dPin) return; clearTimeout(t); t = setTimeout(function () { set(false); }, 300); };
       d.onmouseenter = function () { if (ui.dOpen) clearTimeout(t); };
@@ -263,8 +276,8 @@
       var wireIb = function () { var m = q('.tsum .more'); if (m) m.onclick = function () { setIt('ln'); }; };
       dt.querySelectorAll('[data-it]').forEach(function (b) { b.onclick = function () { setIt(b.dataset.it); }; }); wireIb();
       if ((x.invoices || []).length) showPdf(x, ui.pdf[x._k] || x.invoices[0]);
-      var hasIt = !!(x.items && (x.items.items || []).length); dt.classList.toggle('hasit', hasIt);
-      if (hasIt) { dt.insertAdjacentHTML('beforeend', '<div class="svdr"><button class="svdr-bar" title="ホバーで開く・クリックで固定（Esc で閉じる）">請求書の明細（' + x.items.items.length + '行）</button><div class="svdr-p"></div></div>'); wireDrawer(dt, x); }
+      var hasIt = !!(x.items && (x.items.items || []).length), hasRcv = !hasIt && !!(x.rcv && x.rcv.length); dt.classList.toggle('hasit', hasIt || hasRcv);
+      if (hasIt || hasRcv) { dt.insertAdjacentHTML('beforeend', '<div class="svdr"><button class="svdr-bar" title="ホバーで開く・クリックで固定（Esc で閉じる）">' + (hasIt ? '請求書の明細（' + x.items.items.length + '行）' : 'SMILE の受入明細（' + x.rcv.length + '行）') + '</button><div class="svdr-p"></div></div>'); wireDrawer(dt, x); }
     }
     // 税区分ごとの合計（「内容」に出す。行ごとは「仕訳明細」タブ）
     function taxSum(ls) { var g = {}, ord = [];

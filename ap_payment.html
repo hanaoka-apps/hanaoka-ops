@@ -468,6 +468,10 @@ async function sendToSettle(round,dept){
       [F(SB,'支払総額')]:total,[F(SB,'件数')]:rows.length,[F(SB,'照合の鍵')]:hash,[F(SB,'支払指図ID')]:rows.map(p=>p.id).join(','),[F(SB,'回した人')]:acct.name||acct.username,[F(SB,'回した日時')]:new Date().toISOString()}});
     // 2. 明細（口座を除く）と請求書のコピー
     const pubRows=[],files=[],done={};let n=0;
+    // 仕入：SMILE の受入明細（取り込みのときに残した BILLS/SMILE取込/YYYY-MM/受入明細.json）。決裁画面の右端のドロワーに、仕入先ごとの行を出す
+    const RCVJ=rows.some(p=>pv(p,'元')==='仕入（SMILE取込）')?await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(`/BILLS/SMILE取込/${ym.replace('/','-')}/受入明細.json`)}:/content`,null,null,true).then(b=>b.text()).then(t=>JSON.parse(t).rows||{}).catch(()=>null):null;
+    const rcvOf=code=>{const v=RCVJ&&(RCVJ[String(code||'').padStart(6,'0')]||RCVJ[code]);if(!v||!(v.items||[]).length)return undefined;
+      return v.items.map(it=>({d:String(it.date||''),s:it.slip||'',i:it.item||'',sp:it.spec||'',q:it.qty,u:it.unit||'',p:it.price,e:+it.excl||0,f:it.fuka,dp:it.dept||'',k:it.kind||''}));};
     // 経費は支払指図（＝請求書）ごとに1行（同じ支払先でもまとめない）、仕入は仕入先ごと（振込とでんさいなどを1行に）
     const groups={};rows.forEach(p=>{const k=pv(p,'元')==='経費'?'#'+p.id:payeeKey(p);(groups[k]=groups[k]||[]).push(p);});
     const invOf=(p)=>{const src=pv(p,'元')||'';if(src==='仕入（SMILE取込）'){const code=pv(p,'支払先コード');return INV.items.filter(x=>(iv(x.f,'支払区分')||'').endsWith('仕入')&&(iv(x.f,'対象年月')||'')===ym&&String(iv(x.f,'支払先コード')||'').trim()===code&&iv(x.f,'アーカイブフラグ')!==true);}
@@ -503,6 +507,7 @@ async function sendToSettle(round,dept){
         smile:sp?{incl:+g('税込仕入額')||0,balance:+g('今回支払残高')||0,carry:+g('繰越残高')||0,held:+g('保留した繰越')||0}:undefined,
         note:notes.join(' ／ '),flag:!!(sp&&g('コメント'))||!!ni,invoices:inv,
         items:src==='経費'?invItemsOf(invOf(p0)):undefined,   // 請求書の明細（決裁画面の右端のドロワー）
+        rcv:src==='仕入（SMILE取込）'?rcvOf(pv(p0,'支払先コード')):undefined,   // 仕入：SMILE の受入明細（付加価値率つき・同じドロワー）
         sortKey:src==='経費'?[(exLines&&exLines.slice().sort((a,b)=>b.amount-a.amount)[0]||{}).genre||'',pv(p0,'支払先名')||''].join('|'):'',
         bankChange:(pv(p0,'支払手段')==='総合振込'&&bankPrev&&bankPrev!==bankNow)?`${pv(p0,'銀行コード')}-${pv(p0,'支店コード')} ****${String(pv(p0,'口座番号')||'').slice(-4)}`:'',
         prepaid:ps.some(p=>pv(p,'支払状態')==='先行支払済')});}
