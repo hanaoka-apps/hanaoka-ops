@@ -367,6 +367,26 @@
     left = left.filter(function (ig) { return !take(ig, function (g) { return rA(g) === Math.round(ig.amt) && (!ig.date || !g.date || ig.date === g.date); }); });
     left.forEach(function (ig) { if (!(ig.date && take(ig, function (g) { return g.date === ig.date; }))) out.push({ r: null, i: ig }); });
     rs.filter(function (g) { return !used.has(g); }).forEach(function (r) { out.push({ r: r, i: null }); });
+    // ④ 伝票№・日付で当たらなかった分は、行の金額（と数量）で1行ずつ当てる。請求書の日付が出荷日で、SMILE は月末にまとめて受け入れる先など（日進医療器。2026-11-07）
+    //   当たった行は1行ずつの組（byLine：請求書の日付は違ってよい）。残った行は元の伝票ごとに「受入だけ」「請求書だけ」へ戻す
+    var lr = out.filter(function (o) { return o.r && !o.i; }), li = out.filter(function (o) { return o.i && !o.r; });
+    if (lr.length && li.length) {
+      var amtR = function (x) { return Math.round((+x.excl || 0) + (tin ? (+x.tax || 0) : 0)); };
+      var pr = [], pi = [], usedR = new Set(), usedI = new Set(), pairs = [];
+      lr.forEach(function (o) { o.r.lines.forEach(function (x) { pr.push({ x: x, g: o.r }); }); });
+      li.forEach(function (o) { o.i.lines.forEach(function (x) { pi.push({ x: x, g: o.i }); }); });
+      pi.forEach(function (b, bi) {
+        var am = Math.round(+b.x.Amount || 0); if (!am) return;
+        var k = pr.findIndex(function (a, ai) { return !usedR.has(ai) && amtR(a.x) === am && (b.x.Qty == null || b.x.Qty === '' || a.x.qty == null || +a.x.qty === +b.x.Qty); });
+        if (k >= 0) { usedR.add(k); usedI.add(bi); pairs.push({ a: pr[k], b: b }); } });
+      if (pairs.length) {
+        out = out.filter(function (o) { return lr.indexOf(o) < 0 && li.indexOf(o) < 0; });
+        pairs.forEach(function (p) { out.push({ byLine: true, r: { slip: p.a.g.slip, date: p.a.g.date, dept: p.a.g.dept, lines: [p.a.x] }, i: { slip: p.b.g.slip, date: p.b.g.date, lines: [p.b.x], amt: +p.b.x.Amount || 0 } }); });
+        var rest = function (pool, usedSet) { var m = new Map(); pool.forEach(function (e, k) { if (usedSet.has(k)) return; if (!m.has(e.g)) m.set(e.g, []); m.get(e.g).push(e.x); }); return m; };
+        rest(pr, usedR).forEach(function (ls, g) { out.push({ r: { slip: g.slip, date: g.date, dept: g.dept, lines: ls }, i: null }); });
+        rest(pi, usedI).forEach(function (ls, g) { out.push({ r: null, i: { slip: g.slip, date: g.date, lines: ls, amt: ls.reduce(function (s, x) { return s + (+x.Amount || 0); }, 0) } }); });
+      }
+    }
     out.forEach(function (o) { o.ra = o.r ? rA(o.r) : null; o.ia = o.i ? Math.round(o.i.amt) : null; o.diff = o.r && o.i ? o.ia - o.ra : null;
       o.st = !o.r ? '請求書だけ' : !o.i ? '受入だけ' : Math.abs(o.diff) <= 1 ? '一致' : '金額が違う'; o.date = (o.r && o.r.date) || (o.i && o.i.date) || ''; });
     out.sort(function (a, b) { return a.date.localeCompare(b.date) || String((a.r || a.i).slip).localeCompare(String((b.r || b.i).slip)); });
