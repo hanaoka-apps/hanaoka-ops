@@ -359,9 +359,17 @@ function mk(x){
   return r;}
 // 自分が担当の段（いちばん後ろ）。後ろの段の担当は、前の段の人が休み・急ぎのとき、その段を飛ばして自分の段まで済ませられる
 const myIdx=r=>{let k=-1;r.steps.forEach((s,i)=>{if((s.members||[]).some(n=>sameName(me(),n)))k=i;});return k;};
-function canAct(r){if(!r||r.done||r.reading)return false;const s=r.steps[r.step];return !!s&&((s.members||[]).some(n=>sameName(me(),n))||myIdx(r)>r.step||isSub());}
-const myStepAt=(r)=>{const s=r.steps[r.step];return !!s&&(s.members||[]).some(n=>sameName(me(),n));};
-function stepName(r,i){const s=r.steps[i];return s?`${i+1}段目 ${s.label}（${(s.members||[]).map(n=>String(n).split(/[\s　]/)[0]).join('・')}）`:'';}
+// 段の全員が確認する段（expense.rules の steps の all。本社＝安部・碓井、工場＝春日・石井）：今の段に入ってから OK した人。戻した・差し戻し・確定を戻したで、その段はやり直し
+function doneBy(r){const out=[];for(let i=r.log.length-1;i>=0;i--){const e=r.log[i];if(['戻した','確定を戻した','差戻し','前の段へ戻した'].includes(e.act))break;
+    if((e.act==='OK'||e.act==='確定')&&e.step!==r.step)break;if(e.act==='OK'&&e.step===r.step&&!e.sub&&!e.skip&&e.by&&!out.some(n=>sameName(n,e.by)))out.push(e.by);}return out;}
+const restOf=r=>{const s=r.steps[r.step];if(!s||!s.all)return [];const d=doneBy(r);return (s.members||[]).filter(n=>!d.some(x=>sameName(x,n)));};
+const firstName=n=>String(n).split(/[\s　]/)[0];
+function canAct(r){if(!r||r.done||r.reading)return false;const s=r.steps[r.step];if(!s)return false;
+  if((s.members||[]).some(n=>sameName(me(),n)))return !s.all||restOf(r).some(n=>sameName(me(),n))||isSub();   // 全員の段で自分が済んでいたら、もう自分の番ではない
+  return myIdx(r)>r.step||isSub();}
+const myStepAt=(r)=>{const s=r.steps[r.step];return !!s&&(s.members||[]).some(n=>sameName(me(),n))&&(!s.all||restOf(r).some(n=>sameName(me(),n)));};
+function stepName(r,i){const s=r.steps[i];if(!s)return '';const base=`${i+1}段目 ${s.label}（${(s.members||[]).map(firstName).join('・')}）`;
+  if(!s.all||i!==r.step||r.done)return base;const d=doneBy(r);return d.length?`${base} ${d.map(firstName).join('・')} 済`:base;}
 function lockOf(r){   // 決裁に回した支払指図に入っていれば、その状態
   const pi=PIS.find(p=>String(fv(L.pi,p,'元請求書ID')||'').split(',').includes(r.id));if(!pi)return '';
   const bid=String(fv(L.pi,pi,'決裁バッチ')||'');const b=bid&&SBS.find(s=>s.id===bid);const s=b?fv(L.sb,b.f,'状態'):'';return LOCKED.includes(s)?s:'';}
@@ -1090,7 +1098,8 @@ async function okRow(){let r=cur();if(!r||!canAct(r)||r.reading)return;const btn
   {const fx=issuesOf(r).filter(x=>x.sev==='fix');if(fx.length){render();snack('要修正が残っています：'+fx[0].t,true);return;}}
   // 自分の段なら1つ進める。後ろの段の担当なら、前の段を飛ばして自分の段まで済ませる。どちらでもなければ代理（その段だけ）
   const k=myIdx(r),own=myStepAt(r),skipTo=!own&&k>r.step?k:r.step,skipped=[];for(let i=r.step;i<skipTo;i++)skipped.push(stepName(r,i));
-  const sub=!own&&!skipped.length,next=skipTo+1,last=next>=r.steps.length,nChk=issuesOf(r).filter(x=>x.sev==='check').length;
+  const rest=own?restOf(r).filter(n=>!sameName(me(),n)):[];   // 全員の段：自分のほかにまだ済んでいない人
+  const sub=!own&&!skipped.length,next=rest.length?r.step:skipTo+1,last=!rest.length&&next>=r.steps.length,nChk=issuesOf(r).filter(x=>x.sev==='check').length;
   if(last&&newPats(r).length){snack('会計の実績に無い付け方の行があります。碓井さん・福田さんが「✔ 確かめた」を押してから確定します',true);return;}
   if(skipped.length&&!confirm(`${skipped.join('・')} を飛ばして、あなたの段（${stepName(r,skipTo)}）まで済ませます。\n休み・急ぎのときに使います。記録に残ります。よろしいですか？`))return;
   if(sub&&!confirm(`${stepName(r,r.step)} の番です。代理で OK しますか？`))return;
@@ -1098,11 +1107,11 @@ async function okRow(){let r=cur();if(!r||!canAct(r)||r.reading)return;const btn
   const o={[V.step]:next,[V.hold]:false,[V.cby]:me(),[V.cat]:new Date().toISOString()};
   Object.assign(o,toFields(L.inv,{'仕分け済':true,'差戻し理由':''}));
   if(last)Object.assign(o,toFields(L.inv,{'支払ステータス':'確定済（ロック）','入力者':me()}));else if(r.status==='差戻し')Object.assign(o,toFields(L.inv,{'支払ステータス':'確認待'}));
-  const memo=[skipped.length?skipped.join('・')+' を飛ばした':'',nChk?`要確認 ${nChk}件を確かめた`:''].filter(Boolean).join('／');
+  const memo=[skipped.length?skipped.join('・')+' を飛ばした':'',nChk?`要確認 ${nChk}件を確かめた`:'',rest.length?`あと ${rest.map(firstName).join('・')}`:''].filter(Boolean).join('／');
   try{await patchInv(r,o,{act:last?'確定':'OK',step:skipTo,sub,skip:skipped.length?r.step:undefined,memo});
     if(last)await registerBank(r);
     buildItems();const nx=a.slice(i+1).concat(a.slice(0,i)).map(x=>items.find(y=>y.id===x.id)).find(y=>y&&canAct(y)&&!y.hold);
-    draft=null;hdrDraft=null;cmDraft=null;if(nx){openOne(nx.id);}else{st.view='list';}snack(last?`✔ 確定しました（${r.payee}）`:`✔ OK（${r.payee}）→ ${stepName(r,next)}`);render();}catch(e){snack('保存エラー: '+e.message,true);}}
+    draft=null;hdrDraft=null;cmDraft=null;if(nx){openOne(nx.id);}else{st.view='list';}snack(last?`✔ 確定しました（${r.payee}）`:rest.length?`✔ OK（${r.payee}）→ あと ${rest.map(firstName).join('・')} の確認`:`✔ OK（${r.payee}）→ ${stepName(r,next)}`);render();}catch(e){snack('保存エラー: '+e.message,true);}}
 // 確定した経費の振込先を、振込先マスタ（AP_VendorBank）に入れる。同じ支払先がもうあれば何もしない（口座は自動で変えない）
 async function registerBank(r){
   if(r.method!=='総合振込'||masterBankOf(r)||!bankFull(r.bk))return;
