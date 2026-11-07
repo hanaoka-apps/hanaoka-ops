@@ -229,7 +229,8 @@
       var cr = card.getBoundingClientRect(), rr = rv.getBoundingClientRect();
       var above = rr.top - cr.top, below = cr.bottom - rr.bottom;
       rv.style.height = Math.max(420, viewH - above - below - 24) + 'px';
-      if (!placed && box) { placed = true; box.scrollTop += card.getBoundingClientRect().top - box.getBoundingClientRect().top - 8; }
+      // 開いたときは一番上から（申請の見出し・承認のボタンが見えるように。前は明細のカードまで自動でスクロールしていた。ユーザー 2026-11-07）
+      if (!placed && box) { placed = true; box.scrollTop = 0; }
     }
     window.addEventListener('resize', function () { if (document.body.contains(el)) fit(); });
     function rowsHtml() {
