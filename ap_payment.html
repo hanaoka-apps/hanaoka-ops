@@ -107,7 +107,17 @@ function msg(t){$('status').textContent=t;}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function yen(n){return (Math.round(Number(n)||0)).toLocaleString('ja-JP');}
 const man=n=>Math.round((+n||0)/10000).toLocaleString('ja-JP')+'万';
-function logOut(t){const el=$('log');if(!el)return;el.style.display='block';el.textContent=t;}
+function logOut(t){const el=$('log');if(el){el.style.display='block';el.textContent=t;}const bm=$('busyMsg');if(bm)bm.textContent=t;}
+// 作っている間（決裁に回す・支払指図を作る）は、画面の真ん中に進み具合を出し、ほかの操作と画面の移動を止める（途中で離れると、途中までで止まる）
+let BUSY=null;
+function busyGuard(e){e.preventDefault();e.returnValue='';}
+function busyOn(title){if(BUSY)return;BUSY=document.createElement('div');
+  BUSY.style.cssText='position:fixed;inset:0;z-index:999;background:rgba(20,24,60,.35);display:flex;align-items:center;justify-content:center;padding:16px';
+  BUSY.innerHTML=`<div role="alertdialog" aria-live="polite" style="background:#fff;border-radius:12px;padding:22px 26px;width:min(520px,100%);box-shadow:0 12px 40px rgba(0,0,0,.25)">
+    <div style="font-weight:700;font-size:16px">⏳ ${esc(title)}</div><div id="busyMsg" style="margin-top:10px;font-size:13px;color:#3a4252;min-height:1.4em">準備しています...</div>
+    <div style="margin-top:12px;font-size:12.5px;color:#b54708;font-weight:600">終わるまで、この画面を閉じたり、ほかの画面に移ったり、読み込み直したりしないでください（途中で止まります）</div></div>`;
+  document.body.appendChild(BUSY);window.addEventListener('beforeunload',busyGuard);}
+function busyOff(){if(!BUSY)return;BUSY.remove();BUSY=null;window.removeEventListener('beforeunload',busyGuard);}
 
 async function showApp(){
   $('login-view').style.display='none';$('app-view').style.display='block';$('who').textContent=acct.name||acct.username;ME=String(acct.username||'').toLowerCase();
@@ -325,7 +335,8 @@ let GENERATING=false;
 async function generate(){
   if(GENERATING){snack('いま支払指図を作っています。終わるまで待ってください',true);return;}
   GENERATING=true;const gb=$('bGen');if(gb){gb.disabled=true;gb.textContent='⏳ 作っています…';}
-  try{await generateRun();}finally{GENERATING=false;const b=$('bGen');if(b){b.disabled=false;b.textContent='▶ 支払指図を作る・更新する';}}}
+  busyOn('支払指図を作っています');
+  try{await generateRun();}finally{busyOff();GENERATING=false;const b=$('bGen');if(b){b.disabled=false;b.textContent='▶ 支払指図を作る・更新する';}}}
 async function generateRun(){
   const ym=month(),due=st.round,log=[];
   const lockedDept=new Set(deptsOf(due).filter(d=>{const b=batchOf(due,d);return b&&LOCKED.includes(sbv(b,'状態'));}));
@@ -458,7 +469,7 @@ async function sendToSettle(round,dept){
   const noInv=noInvoiceOf(rows,ym),noWhy=noInv.filter(x=>!x.why);
   if(noWhy.length){snack(`請求書も理由も無い仕入先があります：${noWhy.map(x=>x.name).join('、')}（仕入の確認で請求書を置くか、理由を書いてください）`,true);return;}
   if(!confirm(`${ym} ${round}払い・${dept} の支払 ${rows.length}件（${yen(total)} 円）を決裁に回します。\n\n`+(noInv.length?`⚠ 請求書なしの仕入先 ${noInv.length}社（理由を決裁の明細に出します）\n${noInv.map(x=>`・${x.name}：${x.why}`).join('\n')}\n\n`:'')+`・この時点の内容で固定します（照合の鍵）\n・明細（口座番号・名義を除く）と請求書 PDF のコピーを、ワークフローの受付フォルダに置きます\n・そのあと「支払決済」の申請画面が開くので、内容と経路を確かめて申請してください`))return;
-  logOut('決裁に回す準備をしています...');let made=null;   // 作った決裁バッチ（途中で失敗したら取り下げに戻す）
+  busyOn(`${dept}の支払を決裁に回しています`);logOut('決裁に回す準備をしています...');let made=null;   // 作った決裁バッチ（途中で失敗したら取り下げに戻す）
   try{
     const prev=b=>prevRows(round,dept,b),p1=prev(1),p2=prev(2),hash=await hashOf(rows);
     // 前月の振込先（変わった先だけ 銀行コード＋下4桁 を見せる）
@@ -545,12 +556,13 @@ async function sendToSettle(round,dept){
       methods:Object.entries(byM).map(([m,v])=>`${m} ${yen(v)}`).join('\n'),snapshot:[{name:`明細_${ym.replace('/','')}_${round}_${dept}.json`,key:pubKey,size:pubBlob.size}],invoices:files}};
     const preKey=`settle-prefill-${b.id}.json`;await wfPut(preKey,new Blob([JSON.stringify(prefill)],{type:'application/json'}));
     // 準備に時間がかかったあとの新しいタブは、ブラウザがポップアップとして止めることがある → 止められたら、カードの「申請画面を開く」を押してもらう
+    busyOff();   // ここまでで中身はそろった（申請画面は新しいタブ）
     const w=window.open(`wf_app.html?new=SETTLE&prefill=${encodeURIComponent(preKey)}`,'_blank');
     logOut(`決裁バッチ ${b.id} を作りました（明細 ${pubRows.length}件・請求書 ${files.length}枚）。`+(w?'申請画面を開きました。内容と経路を確かめて「申請」を押してください（押すまでワークフローには載りません）'
       :'⚠ ブラウザが申請画面（新しいタブ）を止めました。下の「'+dept+'」の「▶ 申請画面を開く」を押してください'));
     if(!w)snack(`ブラウザが申請画面を止めました。「${dept}」の「▶ 申請画面を開く」を押してください`,true);
     await reload();
-  }catch(e){
+  }catch(e){busyOff();
     // 途中で失敗したバッチは「申請前」で残ると申請画面が開けない（中身が無い）→ 取り下げに戻して、もう一度「決裁に回す」ができるように
     if(made&&made.id){try{await gpatch(`/sites/${AP_SITE}/lists/${SB.id}/items/${made.id}/fields`,{[F(SB,'状態')]:'取り下げ'});
       for(const p of PI.items.filter(p=>pv(p,'決裁バッチ')===String(made.id)))await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${p.id}/fields`,{[F(PI,'決裁バッチ')]:''});}catch(e2){console.warn(e2);}}
