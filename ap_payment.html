@@ -399,7 +399,9 @@ function fileKey(name){const safe=name.replace(/["*:<>?/\\|#%~&{}\u0000-\u001f]/
 // 受付フォルダ（WF_Upload/自分/）に置く。無ければフローに作ってもらう（wf_app と同じ「フォルダ準備」）
 async function wfPut(key,blob){const d=wfDrive('WF_Upload');if(!d)throw new Error('ワークフローの添付の置き場所（files.drives）が読めません');
   const put=()=>blob.size<4*1024*1024?call('PUT',`/drives/${d}/root:/${encPath(ME,key)}:/content`,blob,blob.type||'application/octet-stream'):wfPutLarge(d,key,blob);
-  try{return await put();}catch(e){if(e.status!==403&&e.status!==404)throw e;await ensureUploadFolder();return await put();}}
+  for(let i=0;;i++){try{return await put();}catch(e){
+    if((e.status===429||e.status===503||e.status===504)&&i<3){await new Promise(r=>setTimeout(r,2000*(i+1)));continue;}   // 混み合い：少し待ってやり直す
+    if(e.status!==403&&e.status!==404)throw e;await ensureUploadFolder();return await put();}}}
 async function wfPutLarge(d,key,blob){const s=await gpost(`/drives/${d}/root:/${encPath(ME,key)}:/createUploadSession`,{item:{'@microsoft.graph.conflictBehavior':'replace'}});
   const CH=327680*16;for(let i=0;i<blob.size;i+=CH){const end=Math.min(i+CH,blob.size);const r=await fetch(s.uploadUrl,{method:'PUT',headers:{'Content-Range':`bytes ${i}-${end-1}/${blob.size}`},body:blob.slice(i,end)});if(!r.ok)throw new Error('アップロード '+r.status);}}
 let folderReady=null;
@@ -456,7 +458,7 @@ async function sendToSettle(round,dept){
   const noInv=noInvoiceOf(rows,ym),noWhy=noInv.filter(x=>!x.why);
   if(noWhy.length){snack(`請求書も理由も無い仕入先があります：${noWhy.map(x=>x.name).join('、')}（仕入の確認で請求書を置くか、理由を書いてください）`,true);return;}
   if(!confirm(`${ym} ${round}払い・${dept} の支払 ${rows.length}件（${yen(total)} 円）を決裁に回します。\n\n`+(noInv.length?`⚠ 請求書なしの仕入先 ${noInv.length}社（理由を決裁の明細に出します）\n${noInv.map(x=>`・${x.name}：${x.why}`).join('\n')}\n\n`:'')+`・この時点の内容で固定します（照合の鍵）\n・明細（口座番号・名義を除く）と請求書 PDF のコピーを、ワークフローの受付フォルダに置きます\n・そのあと「支払決済」の申請画面が開くので、内容と経路を確かめて申請してください`))return;
-  logOut('決裁に回す準備をしています...');
+  logOut('決裁に回す準備をしています...');let made=null;   // 作った決裁バッチ（途中で失敗したら取り下げに戻す）
   try{
     const prev=b=>prevRows(round,dept,b),p1=prev(1),p2=prev(2),hash=await hashOf(rows);
     // 前月の振込先（変わった先だけ 銀行コード＋下4桁 を見せる）
@@ -464,7 +466,7 @@ async function sendToSettle(round,dept){
     const lastBank={};PI.items.filter(p=>pv(p,'決済月')===ym1&&pv(p,'支払手段')==='総合振込').forEach(p=>lastBank[payeeKey(p)]=[pv(p,'銀行コード'),pv(p,'支店コード'),pv(p,'口座番号')].join('|'));
     const spById={};SP.items.forEach(x=>spById[String(x.id)]=x.f);
     // 1. 決裁バッチを作る
-    const b=await gpost(`/sites/${AP_SITE}/lists/${SB.id}/items`,{fields:{Title:`${ym} ${round} ${dept}`,[F(SB,'決済月')]:ym,[F(SB,'支払日区分')]:round,[F(SB,'部門')]:dept,[F(SB,'状態')]:'申請前',
+    const b=made=await gpost(`/sites/${AP_SITE}/lists/${SB.id}/items`,{fields:{Title:`${ym} ${round} ${dept}`,[F(SB,'決済月')]:ym,[F(SB,'支払日区分')]:round,[F(SB,'部門')]:dept,[F(SB,'状態')]:'申請前',
       [F(SB,'支払総額')]:total,[F(SB,'件数')]:rows.length,[F(SB,'照合の鍵')]:hash,[F(SB,'支払指図ID')]:rows.map(p=>p.id).join(','),[F(SB,'回した人')]:acct.name||acct.username,[F(SB,'回した日時')]:new Date().toISOString()}});
     // 2. 明細（口座を除く）と請求書のコピー
     const pubRows=[],files=[],done={};let n=0;
@@ -537,8 +539,15 @@ async function sendToSettle(round,dept){
       :'⚠ ブラウザが申請画面（新しいタブ）を止めました。下の「'+dept+'」の「▶ 申請画面を開く」を押してください'));
     if(!w)snack(`ブラウザが申請画面を止めました。「${dept}」の「▶ 申請画面を開く」を押してください`,true);
     await reload();
-  }catch(e){snack('決裁に回せませんでした：'+e.message,true);logOut('エラー：'+e.message);}}
-async function reopen(id){window.open(`wf_app.html?new=SETTLE&prefill=${encodeURIComponent(`settle-prefill-${id}.json`)}`,'_blank');}
+  }catch(e){
+    // 途中で失敗したバッチは「申請前」で残ると申請画面が開けない（中身が無い）→ 取り下げに戻して、もう一度「決裁に回す」ができるように
+    if(made&&made.id){try{await gpatch(`/sites/${AP_SITE}/lists/${SB.id}/items/${made.id}/fields`,{[F(SB,'状態')]:'取り下げ'});
+      for(const p of PI.items.filter(p=>pv(p,'決裁バッチ')===String(made.id)))await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${p.id}/fields`,{[F(PI,'決裁バッチ')]:''});}catch(e2){console.warn(e2);}}
+    snack('決裁に回せませんでした：'+e.message+'（もう一度「決裁に回す」を押してください）',true);logOut('エラー：'+e.message);await reload().catch(()=>{});}}
+// 申請画面を開く：受付フォルダに中身（settle-prefill）が無ければ、開かずに知らせる（決裁に回す途中で止まったもの）
+async function reopen(id){const key=`settle-prefill-${id}.json`,d=wfDrive('WF_Upload');
+  if(d){try{await call('GET',`/drives/${d}/root:/${encPath(ME,key)}`);}catch(e){if(e.status===404){snack('このバッチは決裁に回す途中で止まっていて、中身がありません。「やめる（取り下げ）」を押してから、もう一度「決裁に回す」を押してください',true);return;}}}
+  window.open(`wf_app.html?new=SETTLE&prefill=${encodeURIComponent(key)}`,'_blank');}
 async function dropBatch(id){if(!confirm('この決裁バッチをやめます（取り下げ）。支払指図はそのまま残り、もう一度「決裁に回す」ことができます。よろしいですか？'))return;
   await gpatch(`/sites/${AP_SITE}/lists/${SB.id}/items/${id}/fields`,{[F(SB,'状態')]:'取り下げ'});
   for(const p of PI.items.filter(p=>pv(p,'決裁バッチ')===String(id)))await gpatch(`/sites/${AP_SITE}/lists/${PI.id}/items/${p.id}/fields`,{[F(PI,'決裁バッチ')]:''});
