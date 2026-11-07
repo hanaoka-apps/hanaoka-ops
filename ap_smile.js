@@ -343,6 +343,62 @@
     return out;
   }
 
-  root.APSmile = { setRules: setRules, deptGroupOf: deptGroupOf, deptNameMap: deptNameMap, allocateDept: allocateDept, payRoundOf: payRoundOf, splitLines: splitLines, transferFeeOf: function (t, feeKbn) { return transferFee(t, { feeKbn: feeKbn }); }, parseCSV: parseCSV, readVendorMaster: readVendorMaster, read9055: read9055, readReceipts: readReceipts, readPayList: readPayList,
+  /* ---- 明細の照合（受入明細 9521 ⇔ 請求書の明細）：仕入の画面と、決裁に回すとき（支払）で同じ計算 ----
+     伝票ごとに突き合わせる：①伝票№が同じ ②金額（と日付）が同じ ③日付が同じ。残ったものは「受入だけ」「請求書だけ」
+     rcv：受入明細の行（readReceipts の items）、invs：[{items:{amount:'税込'|'税抜', items:[{Date, SlipNo, ItemName, Qty, Unit, UnitPrice, Amount}]}}] */
+  function slipN(s) { return String(s || '').normalize('NFKC').replace(/\D/g, '').replace(/^0+/, ''); }
+  // 日付を YYYY-MM-DD に（SMILE は 20260914、請求書は 2026/9/14・26.09.14 など）
+  function dN(s) { var t = String(s || '').normalize('NFKC').trim(), m = t.match(/^(\d{4})(\d{2})(\d{2})$/) || t.match(/(\d{2,4})\D+(\d{1,2})\D+(\d{1,2})/); if (!m) return '';
+    return (m[1].length === 2 ? '20' + m[1] : m[1]) + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0'); }
+  function itemsOf(x) { return x && x.items && Array.isArray(x.items.items) ? x.items.items : []; }
+  function matchItems(rcv, invs) {
+    var gR = {}, gI = {}, tin = null;
+    invs.forEach(function (v) { if (tin === null && itemsOf(v).length) tin = (v.items && v.items.amount) === '税込'; });
+    // 9521 の「消費税等」の行（税抜 0）は、税抜で比べるときは除く
+    (rcv || []).filter(function (x) { return tin || !(+x.excl === 0 && /消費税/.test(x.item || '')); }).forEach(function (x) {
+      var k = slipN(x.slip) || ('d' + dN(x.date)), g = gR[k] = gR[k] || { slip: x.slip || '', date: dN(x.date), dept: x.dept || '', lines: [] }; g.lines.push(x); });
+    invs.forEach(function (v) { itemsOf(v).forEach(function (x) {
+      var k = slipN(x.SlipNo) || ('d' + dN(x.Date)), g = gI[k] = gI[k] || { slip: x.SlipNo || '', date: dN(x.Date), lines: [], amt: 0 }; g.lines.push(x); g.amt += +x.Amount || 0; }); });
+    var rA = function (g) { return Math.round(g.lines.reduce(function (s, x) { return s + (+x.excl || 0) + (tin ? (+x.tax || 0) : 0); }, 0)); };
+    var rs = Object.keys(gR).map(function (k) { return gR[k]; }), used = new Set(), out = [];
+    var take = function (ig, pred) { var r = rs.find(function (g) { return !used.has(g) && pred(g); }); if (!r) return false; used.add(r); out.push({ r: r, i: ig }); return true; };
+    var sameSlip = function (a, b) { var s = slipN(a), t = slipN(b); return !!s && !!t && (s === t || (s.length >= 4 && t.length >= 4 && (s.endsWith(t) || t.endsWith(s)))); };
+    var left = Object.keys(gI).map(function (k) { return gI[k]; }).filter(function (ig) { return !take(ig, function (g) { return sameSlip(g.slip, ig.slip); }); });
+    left = left.filter(function (ig) { return !take(ig, function (g) { return rA(g) === Math.round(ig.amt) && (!ig.date || !g.date || ig.date === g.date); }); });
+    left.forEach(function (ig) { if (!(ig.date && take(ig, function (g) { return g.date === ig.date; }))) out.push({ r: null, i: ig }); });
+    rs.filter(function (g) { return !used.has(g); }).forEach(function (r) { out.push({ r: r, i: null }); });
+    out.forEach(function (o) { o.ra = o.r ? rA(o.r) : null; o.ia = o.i ? Math.round(o.i.amt) : null; o.diff = o.r && o.i ? o.ia - o.ra : null;
+      o.st = !o.r ? '請求書だけ' : !o.i ? '受入だけ' : Math.abs(o.diff) <= 1 ? '一致' : '金額が違う'; o.date = (o.r && o.r.date) || (o.i && o.i.date) || ''; });
+    out.sort(function (a, b) { return a.date.localeCompare(b.date) || String((a.r || a.i).slip).localeCompare(String((b.r || b.i).slip)); });
+    return { groups: out, tin: !!tin };
+  }
+  // 受入の単価：受注単価（受注の無い仕入は 0）が無ければ 税抜 ÷ 数量。小数は2桁まで
+  function rcvPrice(a) { return +a.price > 0 ? +a.price : (+a.qty ? Math.round(+a.excl / +a.qty * 100) / 100 : null); }
+
+  /* ---- 売先（受注№ → 得意先・納品先）：SMILE の受注明細出力.csv（SharedMasters・毎晩）から引く ----
+     ファイルは大きい（約90MB・2023年から）ので全部は読まない。新しい受注ほど後ろにあるので、後ろから 8MB ずつ範囲を指定して読み、
+     要る受注№が全部見つかったらやめる（最大 48MB）。区切りをまたぐ行を落とさないよう、前の塊と 64KB 重ねて読む
+     get：Graph の GET（JSON を返す）、drive：SharedMasters のドライブ、cache：受注№ → {tokui, nohin}（見つからなければ null） */
+  function jno(s) { return String(s == null ? '' : s).replace(/"/g, '').trim().replace(/^0+/, ''); }
+  async function juchuLookup(get, drive, nos, cache) {
+    var need = new Set(Array.from(nos).map(jno).filter(function (n) { return n && !(n in cache); })); if (!need.size) return cache;
+    var meta = await get('/drives/' + drive + '/root:/' + encodeURIComponent('受注明細出力.csv')), url = meta['@microsoft.graph.downloadUrl'], size = +meta.size || 0; if (!url || !size) return cache;
+    // 文字コード：今の受注明細出力.csv は UTF-8（BOM 付き）。先頭が BOM でなく、UTF-8 で読めない字があれば Shift_JIS
+    var bytes = async function (a, b) { return new Uint8Array(await (await fetch(url, { headers: { Range: 'bytes=' + a + '-' + b } })).arrayBuffer()); };
+    var h0 = await bytes(0, 65535), bom = h0[0] === 0xEF && h0[1] === 0xBB && h0[2] === 0xBF;
+    var enc = bom || !new TextDecoder('utf-8').decode(h0.slice(0, 60000)).includes('�') ? 'utf-8' : 'shift_jis';
+    var cell = function (s) { return String(s || '').replace(/^﻿/, '').replace(/^"|"$/g, '').trim(); }, hd = new TextDecoder(enc).decode(h0).split(/\r?\n/)[0].split('\t').map(cell);
+    var iNo = hd.indexOf('受注№'), iT = hd.indexOf('得意先名略称'), iN = hd.indexOf('納品先名'); if (iNo < 0) return cache;
+    var CH = 8 * 1024 * 1024, OV = 65536, end = size - 1;
+    for (var k = 0; k < 6 && end > 0 && need.size; k++) {
+      var start = Math.max(0, end - CH + 1), ls = new TextDecoder(enc).decode(await bytes(start, Math.min(size - 1, end + OV))).split(/\r?\n/); if (start > 0) ls.shift();
+      ls.forEach(function (l) { var c = l.split('\t'), n = jno(c[iNo]); if (n && need.has(n)) { cache[n] = { tokui: cell(c[iT]), nohin: iN >= 0 ? cell(c[iN]) : '' }; need.delete(n); } });
+      end = start - 1;
+    }
+    need.forEach(function (n) { cache[n] = null; });   // 見つからなかった（古い受注など）。何度も探さない
+    return cache;
+  }
+
+  root.APSmile = { slipN: slipN, dN: dN, itemsOf: itemsOf, matchItems: matchItems, rcvPrice: rcvPrice, jno: jno, juchuLookup: juchuLookup, setRules: setRules, deptGroupOf: deptGroupOf, deptNameMap: deptNameMap, allocateDept: allocateDept, payRoundOf: payRoundOf, splitLines: splitLines, transferFeeOf: function (t, feeKbn) { return transferFee(t, { feeKbn: feeKbn }); }, parseCSV: parseCSV, readVendorMaster: readVendorMaster, read9055: read9055, readReceipts: readReceipts, readPayList: readPayList,
     splitBySetting: splitBySetting, transferFee: transferFee, dueDate: dueDate, compute: compute, receiptGroupOf: receiptGroupOf };
 })(typeof window !== 'undefined' ? window : this);

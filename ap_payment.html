@@ -9,7 +9,7 @@
 <title>支払（決裁・出力） | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="ap_smile.js?v=20261027"></script>
+<script src="ap_smile.js?v=20261107"></script>
 <script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261021" defer></script>
 <script src="ap_month.js?v=20261106"></script>
@@ -43,7 +43,7 @@ details>summary{cursor:pointer;color:var(--sub);font-size:12.5px;font-weight:600
 #snackbar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 20px;border-radius:6px;font-size:13px;display:none;z-index:99;white-space:pre-wrap}
 @media (max-width:600px){main{padding:10px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261022"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261107"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view" style="display:none;padding:60px;text-align:center"><h2 style="color:#1a5fa8">支払（決裁・出力）</h2><button data-ha-login class="pri" onclick="signIn()">サインイン</button></div>
@@ -472,8 +472,18 @@ async function sendToSettle(round,dept){
     const pubRows=[],files=[],done={};let n=0;
     // 仕入：SMILE の受入明細（取り込みのときに残した BILLS/SMILE取込/YYYY-MM/受入明細.json）。決裁画面の右端のドロワーに、仕入先ごとの行を出す
     const RCVJ=rows.some(p=>pv(p,'元')==='仕入（SMILE取込）')?await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(`/BILLS/SMILE取込/${ym.replace('/','-')}/受入明細.json`)}:/content`,null,null,true).then(b=>b.text()).then(t=>JSON.parse(t).rows||{}).catch(()=>null):null;
-    const rcvOf=code=>{const v=RCVJ&&(RCVJ[String(code||'').padStart(6,'0')]||RCVJ[code]);if(!v||!(v.items||[]).length)return undefined;
-      return v.items.map(it=>({d:String(it.date||''),s:it.slip||'',i:it.item||'',sp:it.spec||'',q:it.qty,u:it.unit||'',p:it.price,e:+it.excl||0,f:it.fuka,dp:it.dept||'',k:it.kind||''}));};
+    const rcvRaw=code=>{const v=RCVJ&&(RCVJ[String(code||'').padStart(6,'0')]||RCVJ[code]);return v&&(v.items||[]).length?v.items:null;};
+    // 売先（受注№ → 得意先・納品先）：この決裁に入る仕入先の受注№だけを、SMILE の受注明細出力.csv から引く（仕入の画面の印刷と同じ）
+    const JU={};if(RCVJ){const nos=new Set();rows.filter(p=>pv(p,'元')==='仕入（SMILE取込）').forEach(p=>(rcvRaw(pv(p,'支払先コード'))||[]).forEach(it=>{if(it.order)nos.add(it.order);}));
+      if(nos.size){logOut('売先（得意先・納品先）を SMILE の受注明細から引いています...');await APSmile.juchuLookup(gget,SM_DRIVE,nos,JU).catch(e=>console.warn('売先を引けません',e));}}
+    const rcvOf=code=>{const its=rcvRaw(code);if(!its)return undefined;
+      return its.map(it=>{const j=it.order?JU[APSmile.jno(it.order)]:null;return {d:String(it.date||''),s:it.slip||'',i:it.item||'',sp:it.spec||'',q:it.qty,u:it.unit||'',p:it.price,e:+it.excl||0,f:it.fuka,dp:it.dept||'',k:it.kind||'',o:it.order||'',t:j?j.tokui:'',n:j?j.nohin:''};});};
+    // 照合（受入明細 ⇔ 請求書の明細）：仕入の画面と同じ計算（ap_smile.js）。伝票ごとの組と、それぞれの行
+    const matchOf=p0=>{const its=rcvRaw(pv(p0,'支払先コード')),invs=invOf(p0).map(x=>{let j=null;try{j=JSON.parse(iv(x.f,'請求書の明細')||'null');}catch{}return {items:j};}).filter(v=>APSmile.itemsOf(v).length);
+      if(!its||!invs.length)return undefined;const m=APSmile.matchItems(its,invs);
+      return {tin:m.tin,g:m.groups.map(o=>({st:o.st,d:o.date,s:o.r?o.r.slip:o.i.slip,is:o.i&&o.r&&o.i.slip&&APSmile.slipN(o.i.slip)!==APSmile.slipN(o.r.slip)?o.i.slip:'',dp:o.r?o.r.dept:'',ra:o.ra,ia:o.ia,df:o.diff,
+        r:(o.r?o.r.lines:[]).map(a=>({i:a.item||'',sp:a.spec||'',q:a.qty,u:a.unit||'',p:APSmile.rcvPrice(a),a:(+a.excl||0)+(m.tin?(+a.tax||0):0)})),
+        v:(o.i?o.i.lines:[]).map(b=>({i:b.ItemName||'',q:b.Qty,u:b.Unit||'',p:b.UnitPrice,a:+b.Amount||0}))}))};};
     // 経費は支払指図（＝請求書）ごとに1行（同じ支払先でもまとめない）、仕入は仕入先ごと（振込とでんさいなどを1行に）
     const groups={};rows.forEach(p=>{const k=pv(p,'元')==='経費'?'#'+p.id:payeeKey(p);(groups[k]=groups[k]||[]).push(p);});
     const invOf=(p)=>{const src=pv(p,'元')||'';if(src==='仕入（SMILE取込）'){const code=pv(p,'支払先コード');return INV.items.filter(x=>(iv(x.f,'支払区分')||'').endsWith('仕入')&&(iv(x.f,'対象年月')||'')===ym&&String(iv(x.f,'支払先コード')||'').trim()===code&&iv(x.f,'アーカイブフラグ')!==true);}
@@ -509,7 +519,8 @@ async function sendToSettle(round,dept){
         smile:sp?{incl:+g('税込仕入額')||0,balance:+g('今回支払残高')||0,carry:+g('繰越残高')||0,held:+g('保留した繰越')||0}:undefined,
         note:notes.join(' ／ '),flag:!!(sp&&g('コメント'))||!!ni,invoices:inv,
         items:src==='経費'?invItemsOf(invOf(p0)):undefined,   // 請求書の明細（決裁画面の右端のドロワー）
-        rcv:src==='仕入（SMILE取込）'?rcvOf(pv(p0,'支払先コード')):undefined,   // 仕入：SMILE の受入明細（付加価値率つき・同じドロワー）
+        rcv:src==='仕入（SMILE取込）'?rcvOf(pv(p0,'支払先コード')):undefined,   // 仕入：SMILE の受入明細（付加価値率・受注№・得意先・納品先つき）
+        mt:src==='仕入（SMILE取込）'?matchOf(p0):undefined,   // 仕入：照合（受入明細 ⇔ 請求書の明細）
         sortKey:src==='経費'?[(exLines&&exLines.slice().sort((a,b)=>b.amount-a.amount)[0]||{}).genre||'',pv(p0,'支払先名')||''].join('|'):'',
         bankChange:(pv(p0,'支払手段')==='総合振込'&&bankPrev&&bankPrev!==bankNow)?`${pv(p0,'銀行コード')}-${pv(p0,'支店コード')} ****${String(pv(p0,'口座番号')||'').slice(-4)}`:'',
         prepaid:ps.some(p=>pv(p,'支払状態')==='先行支払済')});}
