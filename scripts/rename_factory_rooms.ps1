@@ -13,6 +13,10 @@
     工場 1F 商談A・商談B は廃止
   頭の「工場 3F」は本社の部屋（頭に「本社」が付いている）と書き方をそろえるために付ける。
 
+  本社の部屋も同じ書き方にそろえる（2026-11-07 追加）：
+    本社 3F会議室（LD-3） → 本社 3F LD-3   … 「会議室」と括弧を外す
+  この形に当てはまらない本社の部屋は、変えずに「★対象外」と出す。
+
   廃止の2室は消さない。-Retire を付けたときだけ「アドレス帳に出さない」にして、
   会議室の一覧（RoomList）から外す。予定表と予約の記録は残るので、あとで戻せる。
 
@@ -33,15 +37,17 @@ $ErrorActionPreference = 'Stop'
 Import-Module ExchangeOnlineManagement
 Connect-ExchangeOnline -ShowBanner:$false
 
-# 今の名前 → 新しい名前。今の名前は「含まれていればよい」（前に「工場」などが付いていても拾う）
+# 部屋はメールアドレスで決める（アドレスは変えないので、名前が何度変わっても同じ部屋に当たる）。
+# 2026-11-07 に「工場」なしの ROOM G-1 などで一度書き込んだが、頭に「工場 3F」を付け直すことにした。
+# Old は画面に出すための元の名前。
 $Renames = @(
-  @{ Old = '第二研修室（大）'; New = '工場 3F ROOM G-1'; Floor = 3 }
-  @{ Old = '第一研修室（小）'; New = '工場 3F ROOM G-2'; Floor = 3 }
-  @{ Old = '特別会議室';       New = '工場 3F ROOM A';   Floor = 3 }
-  @{ Old = '応接室';           New = '工場 3F ROOM H';   Floor = 3 }
-  @{ Old = '第一会議室';       New = '工場 1F ROOM L';   Floor = 1 }
+  @{ Mail = 'room-fac-3f-03@hanaoka-corp.co.jp'; Old = '第二研修室（大）'; New = '工場 3F ROOM G-1'; Floor = 3 }
+  @{ Mail = 'room-fac-3f-02@hanaoka-corp.co.jp'; Old = '第一研修室（小）'; New = '工場 3F ROOM G-2'; Floor = 3 }
+  @{ Mail = 'room-fac-3f-01@hanaoka-corp.co.jp'; Old = '特別会議室';       New = '工場 3F ROOM A';   Floor = 3 }
+  @{ Mail = 'room-fac-3f-04@hanaoka-corp.co.jp'; Old = '応接室';           New = '工場 3F ROOM H';   Floor = 3 }
+  @{ Mail = 'room-fac-1f-01@hanaoka-corp.co.jp'; Old = '第一会議室';       New = '工場 1F ROOM L';   Floor = 1 }
 )
-$Retired = @('商談A', '商談B')
+$Retired = @('room-fac-1f-02@hanaoka-corp.co.jp', 'room-fac-1f-03@hanaoka-corp.co.jp')   # 商談A・商談B
 
 # 全角・半角、空白、括弧の違いで取りこぼさないようにそろえる
 function Norm([string]$s) {
@@ -52,26 +58,18 @@ function Norm([string]$s) {
 $rooms = @(Get-EXOMailbox -RecipientTypeDetails RoomMailbox -ResultSize Unlimited -Properties DisplayName, PrimarySmtpAddress, HiddenFromAddressListsEnabled)
 Write-Host "会議室のメールボックス: $($rooms.Count) 室`n"
 
-function Find-Room([string]$name, [string]$new) {
-  $key = Norm $name
-  $hit = @($rooms | Where-Object { (Norm $_.DisplayName).Contains($key) })
-  # 本社にも同じ名前の部屋があるときは、工場のアドレス（factory-）を優先する
-  if ($hit.Count -gt 1) {
-    $fac = @($hit | Where-Object { "$($_.PrimarySmtpAddress)" -like 'factory*' })
-    if ($fac.Count -ge 1) { $hit = $fac }
-  }
-  # 名前を変えたあとにもう一度実行したとき用
-  if ($hit.Count -eq 0 -and $new) { $hit = @($rooms | Where-Object { (Norm $_.DisplayName) -eq (Norm $new) }) }
+function Find-Room([string]$mail) {
+  $hit = @($rooms | Where-Object { "$($_.PrimarySmtpAddress)" -eq $mail })
   return , $hit
 }
 
 $ng = 0
+Write-Host '工場'
 foreach ($r in $Renames) {
-  $hit = Find-Room $r.Old $r.New
+  $hit = Find-Room $r.Mail
   if ($hit.Count -ne 1) {
     $ng++
-    $c = if ($hit.Count) { ($hit | ForEach-Object { "$($_.DisplayName) <$($_.PrimarySmtpAddress)>" }) -join ' / ' } else { '見つからない' }
-    Write-Host "  ★止めます  「$($r.Old)」に当たる部屋が $($hit.Count) 室: $c"
+    Write-Host "  ★止めます  元「$($r.Old)」<$($r.Mail)> が見つからない"
     continue
   }
   $m = $hit[0]
@@ -85,16 +83,40 @@ foreach ($r in $Renames) {
   }
 }
 
-Write-Host ''
-$roomLists = @(Get-DistributionGroup -RecipientTypeDetails RoomList -ResultSize Unlimited)
-foreach ($name in $Retired) {
-  $hit = Find-Room $name $null
-  if ($hit.Count -ne 1) {
-    $c = if ($hit.Count) { ($hit | ForEach-Object { "$($_.DisplayName) <$($_.PrimarySmtpAddress)>" }) -join ' / ' } else { '見つからない（もう片付いている？）' }
-    Write-Host "  廃止      「$name」: $c"
+# ---- 本社：「本社 3F会議室（LD-3）」→「本社 3F LD-3」（工場と書き方をそろえる） ----
+# 「会議室」と括弧を外す。括弧の中（LD-3 など）が新しい名前になる。
+# アプリは予定の場所に書かれた「LD-3」やアドレス（room-3f-ld3@）でも部屋を見分けるので、
+# 古い名前で入っている予約も、これまでどおりその部屋の予約として出る。
+Write-Host "`n本社"
+$hq = @($rooms | Where-Object { $_.DisplayName -like '本社*' } | Sort-Object { "$($_.PrimarySmtpAddress)" })
+foreach ($m in $hq) {
+  $cur = "$($m.DisplayName)"
+  $mt = [regex]::Match($cur, '^本社\s*(\d+)\s*[FＦ]\s*会議室\s*[（(]\s*(.+?)\s*[)）]\s*$')
+  if (-not $mt.Success) {
+    $already = $cur -match '^本社 \d+F \S'
+    Write-Host ("  {0}  '{1}' <{2}>" -f $(if ($already) { 'そのまま' } else { '★対象外' }), $cur, $m.PrimarySmtpAddress)
+    if (-not $already) { $ng++ }
     continue
   }
+  $kc = [Text.NormalizationForm]::FormKC                 # 全角の数字・英字・記号を半角にそろえる
+  $new = "本社 $($mt.Groups[1].Value.Normalize($kc))F $($mt.Groups[2].Value.Normalize($kc))"
+  if ($Apply) {
+    Set-Mailbox -Identity $m.PrimarySmtpAddress -DisplayName $new
+    Write-Host "  更新      '$cur' → '$new' <$($m.PrimarySmtpAddress)>"
+  } else {
+    Write-Host "  変更予定  '$cur' → '$new' <$($m.PrimarySmtpAddress)>"
+  }
+}
+$others = @($rooms | Where-Object { $_.DisplayName -notlike '本社*' -and "$($_.PrimarySmtpAddress)" -notlike 'room-fac-*' })
+foreach ($m in $others) { Write-Host "  ★対象外  '$($m.DisplayName)' <$($m.PrimarySmtpAddress)>（本社でも工場でもない名前）"; $ng++ }
+
+Write-Host ''
+$roomLists =@(Get-DistributionGroup -RecipientTypeDetails RoomList -ResultSize Unlimited)
+foreach ($mail in $Retired) {
+  $hit = Find-Room $mail
+  if ($hit.Count -ne 1) { Write-Host "  廃止      <$mail> が見つからない（もう片付いている？）"; continue }
   $m = $hit[0]
+  if ($m.HiddenFromAddressListsEnabled) { Write-Host "  そのまま  $($m.DisplayName) <$mail>（もうアドレス帳から隠してある）"; continue }
   $inLists = @($roomLists | Where-Object {
     @(Get-DistributionGroupMember -Identity $_.Identity -ResultSize Unlimited | Where-Object { "$($_.PrimarySmtpAddress)" -eq "$($m.PrimarySmtpAddress)" }).Count
   })
@@ -112,8 +134,8 @@ foreach ($name in $Retired) {
 }
 
 if ($ng) {
-  Write-Host "`n★ $ng 室が特定できませんでした。工場の部屋（room-fac-）をすべて出します。今の名前を確かめてください。"
-  $rooms | Where-Object { "$($_.PrimarySmtpAddress)" -like 'room-fac-*' -or "$($_.PrimarySmtpAddress)" -like 'factory*' } |
+  Write-Host "`n★ $ng 室は名前を変えていません（★の行）。会議室をすべて出します。"
+  $rooms |
     Sort-Object { "$($_.PrimarySmtpAddress)" } |
     ForEach-Object { Write-Host "    $($_.PrimarySmtpAddress)  …  $($_.DisplayName)" }
 }
