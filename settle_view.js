@@ -38,6 +38,9 @@
     '.sv .pdf{flex:1 1 auto!important;min-height:300px;border:1px dashed var(--line);border-radius:8px;margin-top:6px;background:#fafbfd;display:flex;align-items:center;justify-content:center;color:var(--sub);overflow:hidden}.sv .pdf iframe{width:100%;height:100%;min-height:300px;border:0}.sv .pdf .imgv{width:100%;height:100%;overflow:auto;text-align:center}' +
     '.sv button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer;font:inherit}.sv button.pri{background:var(--pri);border-color:var(--pri);color:#fff}.sv .chip.on{background:var(--pri);color:#fff;border-color:var(--pri)}' +
     // 請求書の明細（AI が読んだもの）：右端の縦のバー → ドロワー（右の列にかぶせる・PDF との境まで）。燃料の単価の表（サマリー）
+    '.sv .pdf.tbl table.ln tr:not(.h1):not(.h2) td{border-bottom:1px solid #eef0f4}.sv .pdf.tbl table.ln tr:not(.h1):not(.h2):hover td{box-shadow:inset 0 0 0 999px rgba(35,38,143,.06)}' +
+    '.sv .kd{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:4px;margin-right:4px;vertical-align:1px}.sv .kd.sp{background:#e8f0fe;color:#1d4ed8}.sv .kd.ex{background:#e7f6ec;color:#067647}' +
+    '.sv .rl tr.kgrp td{position:sticky;top:0;z-index:1;background:#eef2f8;font-size:12px;font-weight:700;color:#3a4252;padding:5px 8px;cursor:default}.sv .rl tr.kgrp .s2{font-weight:400;color:var(--sub);margin-left:6px}.sv .rl tr[data-k]:not(.sel):hover{background:#f5f7fc}' +
     '.sv .dstrip{display:none}.sv .dt.tblmode .dstrip{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:6px 10px;margin-bottom:6px;border:1px solid var(--line);border-radius:8px;background:#fafbfd;font-size:13px}' +
     '.sv .dstrip .pn{font-size:16px;font-weight:700}.sv .dstrip .am{font-size:18px;font-weight:700}.sv .dstrip .s2{font-size:12px;color:var(--sub)}.sv .dt.wide.tblmode .db{grid-template-columns:minmax(0,1fr)}.sv .dt.wide.tblmode .di{display:none}' +
     '.sv .pdf.tbl table.ln tr.h1 th{position:sticky;top:-10px;z-index:3;background:#fff;box-shadow:0 1px 0 var(--line)}.sv .pdf.tbl table.ln tr.h2 th{position:sticky;top:12px;z-index:3;background:#fff;box-shadow:0 1px 0 var(--line)}' +
@@ -110,11 +113,14 @@
       if (o.onState) o.onState({ ok: ok, total: rows.length, hold: hold }); }
     function list() { var a = rows.slice();
       if (ui.q) a = a.filter(function (x) { return (x.payee + ' ' + (x.note || '')).indexOf(ui.q) >= 0; });
+      if (ui.only === 'sp' || ui.only === 'ex') a = a.filter(function (x) { return (x.kind === '経費') === (ui.only === 'ex'); });
       if (ui.only === 'flag') a = a.filter(function (x) { return tags(x).length; });
       if (ui.only === 'unck') a = a.filter(function (x) { return S.checks[x._k] !== 'ok'; });
       if (ui.only === 'hold') a = a.filter(function (x) { return S.checks[x._k] === 'hold'; });
       if (ui.sort === 'amount') a.sort(function (x, y) { return y.amount - x.amount; });
       else if (ui.sort === 'diff') a.sort(function (x, y) { return (y.amount - (y.prev1 || 0)) - (x.amount - (x.prev1 || 0)); });
+      // 仕入と経費は分けて並べる（一覧に見出しを付ける。中の順は選んだ並び）。Array.sort は安定なので、上の並びを保つ
+      var kOrd = function (x) { return x.kind === '経費' ? 1 : 0; }; a.sort(function (x, y) { return kOrd(x) - kOrd(y); });
       return a; }
     function render() {
       var ok = rows.filter(function (x) { return S.checks[x._k] === 'ok'; }).length;
@@ -228,7 +234,7 @@
       if (ui.dPin) { bar.classList.add('pin'); set(true); } }
     function review(pane) {
       pane.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><input type="search" class="q" placeholder="支払先・備考で検索" value="' + esc(ui.q) + '" style="border:1px solid var(--line);border-radius:6px;padding:4px 8px">' +
-        '<select class="fo">' + [['', 'すべて'], ['flag', '特記・気づきだけ'], ['unck', '未確認だけ'], ['hold', '保留だけ']].map(function (v) { return '<option value="' + v[0] + '"' + (ui.only === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select>' +
+        '<select class="fo">' + [['', 'すべて'], ['sp', '仕入だけ'], ['ex', '経費だけ'], ['flag', '特記・気づきだけ'], ['unck', '未確認だけ'], ['hold', '保留だけ']].map(function (v) { return '<option value="' + v[0] + '"' + (ui.only === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select>' +
         '<select class="fs">' + [['amount', '金額の大きい順'], ['diff', '前月からの増加が大きい順'], ['no', '総務が回した順']].map(function (v) { return '<option value="' + v[0] + '"' + (ui.sort === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select><span class="cnt" style="font-size:12px;color:var(--sub);align-self:center"></span><button class="lt" title="たたむと請求書を広く見られます（左の帯にマウスを乗せると一覧が出ます）">' + (MINI.on ? '› 一覧を出す' : '‹ 一覧をたたむ') + '</button></div>' +
         '<div class="rv' + (MINI.on ? ' mini' : '') + '"><div class="rstrip" title="マウスを乗せると明細の一覧が出ます（クリックで固定して出す）"><span>›</span><span class="vt">明細の一覧</span><span class="pos"></span></div><div class="rl"><table><tbody class="tb"></tbody></table></div><div class="dt"></div></div>';
       pane.querySelector('.q').oninput = function (e) { ui.q = e.target.value.trim(); rowsHtml(); detail(); };
@@ -262,9 +268,12 @@
       var a = list(), tb = el.querySelector('.tb'); if (!tb) return;
       if (!a.some(function (x) { return x._k === ui.sel; })) ui.sel = a.length ? (a.filter(function (x) { return !S.checks[x._k]; })[0] || a[0])._k : null;
       el.querySelector('.cnt').textContent = a.length + '件　' + yen(a.reduce(function (s, x) { return s + x.amount; }, 0)) + '円　確認OK ' + a.filter(function (x) { return S.checks[x._k] === 'ok'; }).length + '／' + a.length;
-      tb.innerHTML = a.map(function (x) { var c = S.checks[x._k];
-        return '<tr class="' + (x._k === ui.sel ? 'sel ' : '') + (c || '') + '" data-k="' + esc(x._k) + '"><td style="width:24px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
-          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] || NOTES[nk(x)] ? ' 💬' : '') + '</div><div class="s">' + mth(x.method) + esc(x.genre || '') + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
+      var two = a.some(function (x) { return x.kind === '経費'; }) && a.some(function (x) { return x.kind !== '経費'; }), lastK = null;
+      var kHead = function (x) { var k = x.kind === '経費' ? '経費' : '仕入', b = a.filter(function (y) { return (y.kind === '経費' ? '経費' : '仕入') === k; });
+        return '<tr class="kgrp"><td colspan="3"><span class="kd ' + (k === '経費' ? 'ex' : 'sp') + '">' + k + '</span>' + (k === '仕入' ? '仕入（SMILE）' : '経費') + '<span class="s2">' + b.length + '件・' + yen(b.reduce(function (s, y) { return s + y.amount; }, 0)) + '円</span></td></tr>'; };
+      tb.innerHTML = a.map(function (x) { var c = S.checks[x._k], k = x.kind === '経費' ? '経費' : '仕入', hd = two && k !== lastK ? kHead(x) : ''; lastK = k;
+        return hd + '<tr class="' + (x._k === ui.sel ? 'sel ' : '') + (c || '') + '" data-k="' + esc(x._k) + '"><td style="width:24px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
+          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] || NOTES[nk(x)] ? ' 💬' : '') + '</div><div class="s"><span class="kd ' + (x.kind === '経費' ? 'ex' : 'sp') + '">' + (x.kind === '経費' ? '経費' : '仕入') + '</span>' + mth(x.method) + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
           '<td class="n"><b>' + yen(x.amount) + '</b><div class="s">' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</div></td></tr>'; }).join('') || '<tr><td style="color:var(--sub);padding:12px">該当する明細はありません</td></tr>';
       tb.querySelectorAll('tr[data-k]').forEach(function (tr) { tr.onclick = function () { ui.sel = tr.dataset.k; var rv = el.querySelector('.rv'); if (rv) rv.classList.remove('peek'); rowsHtml(); detail(); }; });
       var s = tb.querySelector('tr.sel'), rl = el.querySelector('.rl'); if (s && rl) { var top = s.offsetTop, bot = top + s.offsetHeight; if (top < rl.scrollTop) rl.scrollTop = top; else if (bot > rl.scrollTop + rl.clientHeight) rl.scrollTop = bot - rl.clientHeight; }
