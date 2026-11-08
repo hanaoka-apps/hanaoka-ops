@@ -104,6 +104,8 @@ button.lk{border:0;background:none;color:var(--pri);font-weight:700;padding:4px 
 .osum .amt{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums}.osum .amt small{font-size:13px;color:var(--sub);font-weight:600}.osum .prev{font-size:12px;color:var(--sub)}
 .osum .meta{grid-column:1/-1;display:flex;gap:18px;flex-wrap:wrap;font-size:13px;border-top:1px solid var(--line);padding-top:8px;margin-top:6px}.osum .meta i{font-style:normal;color:var(--sub);font-size:12px;margin-right:6px}
 .bds{margin-top:4px}.bd{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px;margin:0 4px 2px 0;background:#eef0ff;color:var(--pri)}.bd.ok{background:var(--down-l);color:var(--down)}.bd.ng{background:#fdecee;color:#c0283c}.bd.warn{background:#fdf3dc;color:#9a6200}
+.oside{container-type:inline-size}.ocx{display:flex;flex-direction:column;gap:6px}.ocx-i{display:flex;flex-direction:column;gap:6px}.ocx-i .iss{margin-top:0}
+@container (min-width:700px){.ocx{display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,38%);gap:10px;align-items:start}}
 .iss-b{grid-column:3;display:flex;gap:12px;flex-wrap:wrap}.iss-b:empty{display:none}.iss{display:grid;grid-template-columns:22px auto minmax(0,1fr);gap:10px;align-items:start;border-radius:10px;padding:9px 12px;margin-top:6px;font-size:13px}
 .iss .ico{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:800;font-size:12px;margin-top:1px}.iss .lv{font-size:11px;font-weight:800;border-radius:999px;padding:1px 8px;margin-top:2px;white-space:nowrap}.iss .d{color:#5a6080;font-size:12.5px;margin-top:1px}
 .iss.fix{background:#fdf0f1}.iss.fix .ico{background:#e0475b}.iss.fix .lv{background:#fff;color:#c0283c;box-shadow:inset 0 0 0 1px #f2b8bf}
@@ -761,12 +763,22 @@ function issuesOf(r){
     else if(full&&m&&!sameBank(b,m))chk('振込先が振込先マスタと違います',`マスタ：${bankText(m)}／請求書：${bankText(b)}。口座は自動で変えません。電話などで確かめてください`);
     else if(full&&!m)chk('初めての振込先です','銀行・支店のコードと口座を確かめてください（確定すると振込先マスタに登録します）');}
   alertsOf(r).forEach(a=>{if(a.k==='口座'||a.k==='初めての振込先')return;
-    if(a.k==='AI'){const s=a.t,i=s.indexOf('。');if(i>0&&i<s.length-1)chk(s.slice(0,i+1),s.slice(i+1));else chk(s,'');}
+    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''];out.push({sev:'check',t:td[0],d:td[1],ai:true});}
     else if(a.k==='読み取り失敗')inf('AI が読み取れませんでした','請求書を見て、支払先・金額・仕訳を入れてください');
     else if(a.k==='初めて'){}   // 上の「初めての支払先」の印と特記事項に出ている
     else if(a.k==='前月より増')inf('前月より増えています',a.t);
     else chk({'仕入では？':'仕入の請求書かもしれません','二重？':'二重請求かもしれません','拠点':'拠点と仕訳の部門が合いません'}[a.k]||a.k,a.t);});
+  out.forEach(x=>x.at=issAt(x,h));
   const ord={fix:0,check:1,info:2};return out.sort((x,y)=>ord[x.sev]-ord[y.sev]);}
+// 気づきを出す場所：その中身のカードの横（狭いときは下）。AI のコメントは言葉で振り分ける。どこにも当たらないものは「その他の気づき」
+function issAt(x,h){const t=x.t+' '+(x.d||''),bk=h.method==='総合振込';
+  if(x.jr||/^(仕訳|科目|内訳|会計の実績)/.test(x.t))return 'lines';
+  if(/^(振込先|初めての振込先)/.test(x.t))return bk?'bank':'hdr';
+  if(!x.ai)return /^AI が読み取れ/.test(x.t)?'gen':'hdr';
+  if(/口座|振込先|銀行|支店/.test(t))return bk?'bank':'gen';
+  if(/科目|仕訳|税率|税区分|部門|決裁メモ|摘要|内訳|消費税|非課税|課税/.test(t))return 'lines';
+  if(/金額|請求額|支払日|引落|対象年月|支払方法|請求No|登録番号|支払先/.test(t))return 'hdr';
+  return 'gen';}
 function whyNot(r){if(r.done)return '';if(r.reading)return 'AI が読み取り中です';if(!canAct(r))return `${stepName(r,r.step)} の番です`;
   const f=issuesOf(r).find(x=>x.sev==='fix');return f?'要修正：'+f.t:'';}
 // 支払日：口座振替・納税は実際にお金が出る引落予定日（支払回は報告する回）。それ以外は支払回の日
@@ -863,11 +875,14 @@ function drawOne(){
   const badges=[pm==null&&!r.reading&&h.amount?'<span class="bd">初めての支払先</span>':'',r.wf?`<span class="bd ok">WF ${esc(r.wf)}（社長決裁済み）</span>`:'',r.failed?'<span class="bd ng">読み取り失敗</span>':'',
     r.status==='先行支払済'?'<span class="bd">先行支払済</span>':'',r.hold?'<span class="bd warn">⏸ 保留中</span>':'',dirty?'<span class="bd warn">未保存の直しあり</span>':''].join('');
   // 気づき
-  const shown=iss,LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']};
-  const issCard=`<div class="oc" id="oIss"><div class="oh"><b>AIの気づき</b><span class="ocnt">${iss.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></div>
+  const LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']},gen=iss.filter(x=>(x.at||'gen')==='gen');
+  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
+  const wrapI=(card,at)=>{const l=iss.filter(x=>x.at===at);return card&&l.length?`<div class="ocx">${card}<div class="ocx-i">${l.map(issOne).join('')}</div></div>`:card;};
+  const issCard=!gen.length&&!(r.reject&&!r.done)?'':`<div class="oc" id="oIss"><div class="oh"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></div>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
-    ${shown.map((x,xi)=>`<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`).join('')||'<div class="none">気づきはありません</div>'}
-    ${TEACH.rid===r.id?teachHtml():''}</div>`;
+    ${gen.map(issOne).join('')}
+    </div>`;
+  const teachCard=TEACH.rid===r.id?`<div class="oc" id="oTeach">${teachHtml()}</div>`:'';
   // 先に登録した請求書（PDF なし）がある：そちらに付ける
   const pre=ed?preOf(r):null;
   const preCard=pre?`<div class="oc" style="border-color:var(--warn);background:var(--warn-l,#fff7e6)"><div class="oh"><b>先に登録した請求書があります</b><span class="bd warn">PDF なし</span></div>
@@ -944,6 +959,10 @@ function drawOne(){
   const npN=lastStep&&!r.done?newPats(r).length:0,okLabel=lastStep?'✔ 確定・次へ':'✔ OK・次へ',okNote=skipN?`${skipN}段飛ばして${lastStep?'確定します':'進めます'}`:'';
   const more=`<select id="dMore" title="その他の操作"><option value="">その他の操作…</option>${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed&&!r.reading&&window.APAI?'<option value="reread">AI で読み直す（支払内容・仕訳を作り直す）</option>':''}${ed?'<option value="merge">ほかの受付とまとめる（1件の請求書）</option><option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
   const nIt=(invItemsOf(r)||{items:[]}).items.length;
+  const sumCard=`<div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}${iss.length&&!r.reading?`<a href="#" class="bd ${nFix?'ng':iss.some(x=>x.sev==='check')?'warn':''}" id="oIssGo" title="下の「AIの気づき」へ">気づき ${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?l+' '+n:'';}).filter(Boolean).join('・')} ↓</a>`:''}</div></div>
+          <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
+          <div class="meta"><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>払う月</i>${esc(h.ym||'—')}</span>${['口座振替','納税'].includes(h.method)&&h.debit&&h.round?`<span><i>報告する回</i>${esc(h.ym.replace('/','年')+'月 '+h.round+'払い')}</span>`:''}<span><i>登録番号</i>${esc(h.regNo||'—')}</span>${h.code?`<span><i>SMILE コード</i>${esc(h.code)}</span>`:''}
+            ${ed&&!eh?'<button class="lk" id="oEditH2" style="margin-left:auto">✎ 支払内容を直す</button>':''}</div></div>`;
   $('pane').innerHTML=`<div class="one ${FULLR?'ap-full':''}">
     <div class="onebar"><button id="oFull" title="全画面で確かめる（Esc で戻る）">${FULLR?'✕ 全画面をやめる':'⛶ 全画面'}</button><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
       <span class="stp ${r.done?'done':''}">${r.done?'✔ 確定':esc(stepName(r,r.step))}</span>
@@ -953,11 +972,7 @@ function drawOne(){
       <div class="oside">
 
 
-        <div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}${iss.length&&!r.reading?`<a href="#" class="bd ${nFix?'ng':iss.some(x=>x.sev==='check')?'warn':''}" id="oIssGo" title="下の「AIの気づき」へ">気づき ${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?l+' '+n:'';}).filter(Boolean).join('・')} ↓</a>`:''}</div></div>
-          <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
-          <div class="meta"><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>払う月</i>${esc(h.ym||'—')}</span>${['口座振替','納税'].includes(h.method)&&h.debit&&h.round?`<span><i>報告する回</i>${esc(h.ym.replace('/','年')+'月 '+h.round+'払い')}</span>`:''}<span><i>登録番号</i>${esc(h.regNo||'—')}</span>${h.code?`<span><i>SMILE コード</i>${esc(h.code)}</span>`:''}
-            ${ed&&!eh?'<button class="lk" id="oEditH2" style="margin-left:auto">✎ 支払内容を直す</button>':''}</div></div>
-        ${preCard}${hdrCard}${deptCard}${bankCard}${tkCard}${lnCard}${issCard}${logCard}
+        ${wrapI(sumCard,'hdr')}${preCard}${hdrCard}${deptCard}${wrapI(bankCard,'bank')}${tkCard}${wrapI(lnCard,'lines')}${teachCard}${issCard}${logCard}
       </div></div>`}
     <div class="onefoot"><input type="text" id="oCm" placeholder="コメントを入力（メモとして保存されます。全員に見えます）" value="${esc(cmDraft??r.note)}" ${ed||r.done?'':'disabled'}>
       <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):npN&&ed?`<b style="color:var(--warn)">会計の実績に無い付け方 ${npN}件：気づきの「✔ 確かめた」を押すと確定できます</b>`:r.done?'':'Enter：OK・次へ　←→：前・次　H：保留'}</span>
@@ -982,7 +997,7 @@ function wireOne(r){
   on('oTk',()=>{st.editTk=st.editTk===r.id?null:r.id;drawOne();});
   on('tkSave',()=>{const on1=$('tkOn').checked,tx=$('tkTx').value.trim();st.editTk=null;act(r,{},'特記事項を保存しました',{act:'特記',on:on1,text:tx,memo:(on1?'特記にする':'特記から外す')+(tx?'：'+tx.slice(0,40):''),step:r.step});});
   on('tkAuto',()=>{st.editTk=null;act(r,{},'自動の判定に戻しました',{act:'特記',on:undefined,text:'',auto:true,memo:'自動の判定に戻す',step:r.step});});
-  on('oAll',()=>{st.allIss=!st.allIss;drawOne();});{const g=$('oIssGo');if(g)g.onclick=e=>{e.preventDefault();const t=$('oIss');if(t)t.scrollIntoView({behavior:'smooth',block:'start'});};}wireTeach(r);on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditH2',()=>{st.editHdr=true;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
+  on('oAll',()=>{st.allIss=!st.allIss;drawOne();});{const g=$('oIssGo');if(g)g.onclick=e=>{e.preventDefault();const t=document.querySelector('.oside .iss');if(t)t.scrollIntoView({behavior:'smooth',block:'center'});};}wireTeach(r);on('oEditH',()=>{st.editHdr=!st.editHdr;drawOne();});on('oEditH2',()=>{st.editHdr=true;drawOne();});on('oEditB',()=>{st.editBank=!st.editBank;drawOne();});
   on('oDocs',()=>{const m=$('oDocsM');m.hidden=!m.hidden;});
   const cm=$('oCm');if(cm)cm.oninput=()=>{cmDraft=cm.value;const s=$('oSave');if(s)s.disabled=!isDirty(r);};
   const mo=$('dMore');if(mo)mo.onchange=()=>{const v=mo.value;mo.value='';if(v==='hold')act(r,{[V.hold]:!r.hold},r.hold?'保留を外しました':'保留にしました',{act:r.hold?'保留を外す':'保留',step:r.step});else if(v==='back')backRow(r);else more(r,v);};
