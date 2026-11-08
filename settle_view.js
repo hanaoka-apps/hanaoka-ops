@@ -82,11 +82,14 @@
   function mth(m, big) { if (!m) return ''; var c = MCOL[m] || MCOL[String(m).split(/[・ ]/)[0]] || ['#5b6478', '#eceff4'];
     return '<span class="mth' + (big ? ' big' : '') + '" style="color:' + c[0] + ';background:' + c[1] + ';border-color:' + c[0] + '33">' + esc(m) + '</span>'; }
   // 前月・前々月との比べ：金額と差（円・%）を並べる
+  function gross(x) { return Math.round((+x.amount || 0) + (+x.fee || 0)); }
   function cmp(x) {
     var d = function (a, b) { if (!b) return '<td class="n" style="color:#c3c9d6">—</td>'; var v = a - b, p = Math.round(v / b * 100);
       return '<td class="n ' + (v > 0 ? 'd-up' : v < 0 ? 'd-down' : '') + '">' + (v > 0 ? '+' : v < 0 ? '−' : '±') + yen(Math.abs(v)) + '<small>（' + (p > 0 ? '+' : '') + p + '%）</small></td>'; };
     return '<table class="cmp"><tr><th></th><th class="n">金額</th><th class="n">今回との差</th></tr>' +
-      '<tr class="now"><td>今回</td><td class="n">' + yen(x.amount) + '</td><td></td></tr>' +
+      (x.fee ? '<tr class="now"><td>支払額</td><td class="n">' + yen(gross(x)) + '</td><td class="n" style="font-size:11px;color:var(--sub)">SMILE・請求書と比べる額</td></tr>' +
+        '<tr><td>今回の振込額</td><td class="n">' + yen(x.amount) + '</td><td class="n" style="font-size:11px;color:var(--sub)">手数料 ' + yen(x.fee) + ' 円（先方負担）を引く</td></tr>'
+        : '<tr class="now"><td>今回</td><td class="n">' + yen(x.amount) + '</td><td></td></tr>') +
       '<tr><td>前月</td><td class="n">' + (x.prev1 ? yen(x.prev1) : '—') + '</td>' + d(x.amount, x.prev1) + '</tr>' +
       '<tr><td>前々月</td><td class="n">' + (x.prev2 ? yen(x.prev2) : '—') + '</td>' + d(x.amount, x.prev2) + '</tr></table>'; }
   // 補足メモ：承認・差し戻しのコメントの「【明細】」の下の「・支払先 金額円【保留】：メモ」を、支払先＋金額で明細につなぐ
@@ -188,7 +191,7 @@
       var fw = it.filter(function (a) { return a.f != null && a.f !== ''; }), fe = fw.reduce(function (s, a) { return s + (+a.e || 0); }, 0), favg = fe ? fw.reduce(function (s, a) { return s + (+a.e || 0) * (+a.f || 0); }, 0) / fe : null;
       var dt8 = function (v) { v = String(v || ''); return /^\d{8}$/.test(v) ? v.slice(4, 6).replace(/^0/, '') + '/' + v.slice(6).replace(/^0/, '') : v; };
       return '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px"><b style="font-size:15px">SMILE の受入明細</b><span class="s">' + esc(x.payee) + '・' + it.length + '行・税抜</span><span style="flex:1"></span><button class="svdr-x">✕</button></div>' +
-        '<div class="svsum"><div class="pay"><div class="l">支払金額（税込）</div><div class="v">' + yen(x.amount) + '<small> 円</small></div></div>' +
+        '<div class="svsum"><div class="pay"><div class="l">支払額（税込）</div><div class="v">' + yen(gross(x)) + '<small> 円</small></div>' + (x.fee ? '<div class="s">振込 ' + yen(x.amount) + '（手数料 ' + yen(x.fee) + ' 先方負担を引く）</div>' : '') + '</div>' +
         '<div><div class="l">受入（税抜）</div><div class="v">' + yen(tot) + '</div><div class="s">' + it.length + '行' + (x.smile && x.smile.incl ? '・税込 ' + yen(x.smile.incl) : '') + '</div></div>' +
         '<div><div class="l">付加価値率（平均）</div><div class="v">' + (favg == null ? '—' : (Math.round(favg * 10) / 10) + '%') + '</div><div class="s">' + (fw.length ? '率のある ' + fw.length + '行・税抜で重み付け' : '率のある行なし') + '</div></div></div>' +
         // 受入伝票（日付・伝票№・品名・数量・単価・税抜）と受注伝票（受注№・売先・付加価値率）を縦の線で分ける
@@ -218,8 +221,8 @@
     // 明細の上のカード（支払管理アプリと同じ）：支払金額（税込・税抜）／請求書の明細／仕訳（明細と同じ 税込・税抜 で）／差
     function sumCards(x, j, tot) { var inc = j.amount === '税込', ls = x.lines || [], has = ls.some(function (l) { return l.rate || l.excl; });
       var lIn = ls.reduce(function (s, l) { return s + (+l.amount || 0); }, 0), lEx = ls.reduce(function (s, l) { return s + (+l.excl || 0); }, 0), lTx = ls.reduce(function (s, l) { return s + (+l.tax || 0); }, 0);
-      var lsT = Math.round(inc ? lIn : lEx), d = Math.round(tot - lsT), ok = Math.round(lIn) === Math.round(x.amount || 0);
-      return '<div class="svsum"><div class="pay"><div class="l">支払金額（税込）</div><div class="v">' + yen(x.amount) + '<small> 円</small></div><div class="s">' + (has ? '税抜 ' + yen(lEx) + '・消費税 ' + yen(lTx) : '') + '</div></div>' +
+      var lsT = Math.round(inc ? lIn : lEx), d = Math.round(tot - lsT), ok = Math.round(lIn) === gross(x);
+      return '<div class="svsum"><div class="pay"><div class="l">支払額（税込）</div><div class="v">' + yen(gross(x)) + '<small> 円</small></div><div class="s">' + (has ? '税抜 ' + yen(lEx) + '・消費税 ' + yen(lTx) : '') + (x.fee ? (has ? '<br>' : '') + '振込 ' + yen(x.amount) + '（手数料 ' + yen(x.fee) + ' 先方負担を引く）' : '') + '</div></div>' +
         '<div><div class="l">請求書の明細（' + (inc ? '税込' : '税抜') + '）</div><div class="v">' + yen(tot) + '</div><div class="s">' + (j.items || []).length + '行</div></div>' +
         (ls.length ? '<div><div class="l">仕訳（' + (inc ? '税込' : '税抜') + '）</div><div class="v">' + yen(lsT) + '</div><div class="s">' + ls.length + '行' + (ok ? '・✔ 支払金額と一致' : '') + '</div></div>' +
           '<div class="' + (Math.abs(d) <= 1 ? 'good' : 'bad') + '"><div class="l">差（明細 − 仕訳）</div><div class="v">' + (Math.abs(d) <= 1 ? '✔ 0' : (d > 0 ? '+' : '') + yen(d)) + '</div></div>' : '') + '</div>'; }
@@ -286,7 +289,7 @@
       var c = S.checks[x._k], row = function (k, v) { return v == null || v === '' ? '' : '<div class="k">' + k + '</div><div>' + v + '</div>'; };
       var sm = x.smile || {}, txl = (x.lines || []).some(function (l) { return l.rate; });
       var kvH = '<div class="kv">' + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
-          row('SMILE の額', sm.incl != null ? '税込仕入額 ' + yen(sm.incl) + (sm.carry ? '／繰越 ' + yen(sm.carry) : '') + (sm.held ? '（保留 ' + yen(sm.held) + '・3月末に整理）' : '') : '') +
+          row('SMILE の額', sm.incl != null ? '税込仕入額 ' + yen(sm.incl) + (Math.round(sm.incl) === gross(x) ? ' <b style="color:var(--down)">✔ 支払額と一致</b>' : '') + (sm.carry ? '／繰越 ' + yen(sm.carry) : '') + (sm.held ? '（保留 ' + yen(sm.held) + '・3月末に整理）' : '') : '') +
           row('振込先の変更', x.bankChange ? '<b style="color:var(--up)">' + esc(x.bankChange) + '</b>' : '') + row('備考', esc(x.note)) + '</div>';
       var ibHtml = function () { return txl && ui.itab === 'ln' ? linesHtml(x.lines) : kvH + (txl ? taxSum(x.lines) : linesHtml(x.lines)); };
       dt.innerHTML = '<div class="dn"><button class="p">◀ 前へ</button><span style="color:var(--sub)">' + (i + 1) + ' ／ ' + a.length + '</span><button class="n">次へ ▶</button><span class="sp"></span>' + (c ? '<span class="tag ' + (c === 'ok' ? 't-ok' : 't-new') + '">' + (c === 'ok' ? '✔ 確認OK' : '⏸ 保留') + '</span>' : '') + '</div>' +
@@ -298,8 +301,8 @@
         '<div class="ib">' + ibHtml() + '</div>' +
         notesHtml(NOTES[nk(x)]) + '<textarea class="cm" placeholder="' + (o.onChange ? 'この明細の補足メモ（ほかの人にも見えます）' : 'この明細の補足メモ（承認のときにまとめて送り、次の人・社長にも見えます）') + '" style="' + (S.comments[x._k] ? '' : 'display:none;') + 'width:100%;height:52px;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:8px">' + esc(S.comments[x._k] || '') + '</textarea></div>' +
         '<div class="dl"><div class="dstrip"><span class="pn">' + esc(x.payee) + '</span>' + mth(x.method, true) + '<span class="s2">' + esc(x.due ? '期日 ' + x.due : x.payDate ? '支払日 ' + x.payDate : '') + '</span>' +
-          '<span>今回 <span class="am">' + yen(x.amount) + '</span> 円</span><span class="s2">前月 ' + (x.prev1 ? yen(x.prev1) : '—') + '・前々月 ' + (x.prev2 ? yen(x.prev2) : '—') + '</span>' +
-          (sm.incl != null ? '<span class="s2">SMILE 税込仕入額 ' + yen(sm.incl) + '</span>' : '') + (x.note ? '<span class="s2" style="flex-basis:100%">備考：' + esc(x.note) + '</span>' : '') + '</div>' +
+          '<span>' + (x.fee ? '支払額' : '今回') + ' <span class="am">' + yen(gross(x)) + '</span> 円' + (x.fee ? '<span class="s2">（振込 ' + yen(x.amount) + '・手数料 ' + yen(x.fee) + ' 先方負担を引く）</span>' : '') + '</span><span class="s2">前月 ' + (x.prev1 ? yen(x.prev1) : '—') + '・前々月 ' + (x.prev2 ? yen(x.prev2) : '—') + '</span>' +
+          (sm.incl != null ? '<span class="s2">SMILE 税込仕入額 ' + yen(sm.incl) + (Math.round(sm.incl) === gross(x) ? ' <b style="color:var(--down)">✔ 一致</b>' : '') + '</span>' : '') + (x.note ? '<span class="s2" style="flex-basis:100%">備考：' + esc(x.note) + '</span>' : '') + '</div>' +
         '<div class="chips">' + (x.invoices || []).map(function (k, j) { return '<button class="chip' + (ui.pdf[x._k] === k ? ' on' : '') + '" data-pdf="' + esc(k) + '" style="margin:0 4px 4px 0">📄 請求書 ' + (j + 1) + '</button>'; }).join('') +
           tabsOf(x).map(function (t) { return '<button class="chip' + (ui.pdf[x._k] === t.k ? ' on' : '') + '" data-pdf="' + t.k + '" style="margin:0 4px 4px 0">' + t.l + '</button>'; }).join('') + '</div>' +
         '<div class="pdf">' + ((x.invoices || []).length || tabsOf(x).length ? '読み込み中...' : '請求書の添付はありません') + '</div></div></div>' +
