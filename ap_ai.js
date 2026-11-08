@@ -307,6 +307,13 @@
     else { try { d = JSON.parse(r.text); } catch (e) { err = 'AI の答えを読めませんでした'; } }
     const loc = job.location === '工場' ? '工場' : '本社';
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '' }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
+    // 向きが違うページ（横向き・逆さ）：AI が rotate で答えたら、ファイルを回して同じ場所に保存する（ap_intake.js の APDoc.rotateFile）
+    if (d && Array.isArray(d.rotate) && d.rotate.length && window.APDoc && APDoc.rotateFile) {
+      const by = {}; d.rotate.forEach(x => { const fi = (+x.file || 1) - 1, pg = +x.page || 1, dg = +x.deg; if (fs[fi] && [90, 180, 270].includes(dg)) (by[fi] = by[fi] || { pages: {} }).pages[pg] = dg; });
+      for (const fi of Object.keys(by)) { const rot = by[fi], nm = fs[fi].name;
+        try { await APDoc.rotateFile(ctx, `${job.moved ? '/BILLS/processed' : '/BILLS/incoming'}/${nm}`, rot); rec.comments.push(`向きを直して保存しました（${Object.entries(rot.pages).map(([p, g]) => `${p}ページ 右に${g}°`).join('・')}）`); }
+        catch (e) { rec.comments.push(`向きが違うページがありますが、直せませんでした（${e.message}）。画面の「⟳ 向きを直す」で直してください`); } }
+    }
     const pc = d && d.header && /^\d{6}$/.test(String(d.header.PayeeCode || '')) ? String(d.header.PayeeCode) : '';
     if (job.inbox && pc) rec.comments.unshift(`AI の候補：${pc}`);
     const doc = { v: 3, ap_code: job.apCode, invoice_id: String(job.invoiceId || ''), category: job.category || '', status: d ? (d.status === '読取失敗' ? '読取失敗' : 'AI確認済') : '読取失敗',

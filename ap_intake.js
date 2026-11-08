@@ -217,5 +217,56 @@
   const view = (url, path) => isImg(path)
     ? `<div class="imgv" style="width:100%;height:100%;overflow:auto;background:#525659;text-align:center"><img src="${url}" alt="請求書の画像" style="max-width:100%;height:auto;cursor:zoom-in;background:#fff" onclick="this.style.maxWidth=this.style.maxWidth==='none'?'100%':'none';this.style.cursor=this.style.maxWidth==='none'?'zoom-out':'zoom-in'"></div>`
     : `<iframe src="${url}"></iframe>`;
-  window.APDoc = { ACCEPT: 'application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif', kind, prep, isImg, view, DOC_EXT };
+  // ---------- 向きを直す（回転）：PDF はページの回転を変える（pdf-lib）、画像は描き直す。同じ場所に上書きして保存 ----------
+  //   rot：{ all: 90 } 全体、または { pages: { 1: 90, 3: 180 } } ページごと（1 から。時計回りの角度）。画像は all か pages[1]
+  const PDFLIB = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+  let libP = null;
+  const pdfLib = () => libP || (libP = new Promise((ok, ng) => { if (window.PDFLib) return ok(window.PDFLib); const sc = document.createElement('script'); sc.src = PDFLIB; sc.onload = () => ok(window.PDFLib); sc.onerror = () => { libP = null; ng(new Error('PDF を回す部品を読めませんでした')); }; document.head.appendChild(sc); }));
+  const isPdfPath = p => /\.pdf$/i.test(String(p || '').split('?')[0]);
+  async function rotateBlob(blob, path, rot) {
+    if (isPdfPath(path)) {
+      const L = await pdfLib(), doc = await L.PDFDocument.load(await blob.arrayBuffer(), { ignoreEncryption: true });
+      doc.getPages().forEach((pg, i) => { const d = rot.all || (rot.pages && rot.pages[i + 1]) || 0; if (d) pg.setRotation(L.degrees((((pg.getRotation().angle || 0) + d) % 360 + 360) % 360)); });
+      return new Blob([await doc.save()], { type: 'application/pdf' });
+    }
+    const d = ((rot.all || (rot.pages && rot.pages[1]) || 0) % 360 + 360) % 360; if (!d) return blob;
+    const bmp = await createImageBitmap(blob), sw = d % 180 !== 0, c = document.createElement('canvas');
+    c.width = sw ? bmp.height : bmp.width; c.height = sw ? bmp.width : bmp.height;
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.translate(c.width / 2, c.height / 2); g.rotate(d * Math.PI / 180); g.drawImage(bmp, -bmp.width / 2, -bmp.height / 2); bmp.close && bmp.close();
+    const type = /\.png$/i.test(path) ? 'image/png' : 'image/jpeg';
+    return await new Promise((ok, ng) => c.toBlob(b => b ? ok(b) : ng(new Error('画像を回せませんでした')), type, 0.9));
+  }
+  async function pageCount(blob, path) { if (!isPdfPath(path)) return 1; const L = await pdfLib(); return (await L.PDFDocument.load(await blob.arrayBuffer(), { ignoreEncryption: true })).getPageCount(); }
+  // ファイルの場所：受付直後は incoming、処理後は processed。今あるほうを返す
+  async function locate(ctx, path) {
+    const p0 = String(path || '').split('?')[0].replace(/^\/Shared Documents/i, '').replace(/^\/Documents/i, '');
+    const alt = /\/incoming\//i.test(p0) ? p0.replace(/\/incoming\//i, '/processed/') : p0.replace(/\/processed\//i, '/incoming/');
+    for (const p of [p0, alt]) { try { await ctx.call('GET', `/sites/${ctx.site}/drive/root:${encodeURI(p)}`); return p; } catch (e) { } }
+    throw new Error('ファイルが見つかりません：' + p0.split('/').pop());
+  }
+  async function rotateFile(ctx, path, rot) {
+    const p = await locate(ctx, path), blob = await ctx.call('GET', `/sites/${ctx.site}/drive/root:${encodeURI(p)}:/content`, null, null, true);
+    const nb = await rotateBlob(blob, p, rot);
+    await ctx.call('PUT', `/sites/${ctx.site}/drive/root:${encodeURI(p)}:/content`, nb, nb.type);
+    return p;
+  }
+  // 画面：「⟳ 向きを直す ▾」。開いたときにページ数を数えて、2ページ以上ならページごとのボタンも出す
+  function rotMenu(id) { return `<details class="pmenu rotm" id="${id}"><summary title="請求書の向きを直して保存します（全体・ページごと）">⟳ 向きを直す ▾</summary><div class="rotb">開いています…</div></details>`; }
+  function wireRot(ctx, id, getPath, onDone) {
+    const d = document.getElementById(id); if (!d) return;
+    const btns = k => `<span class="rk"><button data-rk="${k}" data-rd="270" title="左に90°">⟲</button><button data-rk="${k}" data-rd="90" title="右に90°">⟳</button><button data-rk="${k}" data-rd="180" title="180°（逆さ）">↻180</button></span>`;
+    d.ontoggle = async () => {
+      if (!d.open) return; const b = d.querySelector('.rotb'), path = getPath();
+      if (!path) { b.textContent = '請求書のファイルがありません'; return; }
+      let n = 1; try { const p = await locate(ctx, path); n = await pageCount(await ctx.call('GET', `/sites/${ctx.site}/drive/root:${encodeURI(p)}:/content`, null, null, true), p); } catch (e) { b.textContent = e.message; return; }
+      b.innerHTML = `<div class="rr"><b>${n > 1 ? `全体（${n}ページ）` : '全体'}</b>${btns('all')}</div>` + (n > 1 ? Array.from({ length: n }, (_, i) => `<div class="rr"><span>${i + 1}ページ</span>${btns(i + 1)}</div>`).join('') : '') + '<div class="rn">押すとすぐ保存します（元に戻すときは逆に回す）</div>';
+      b.querySelectorAll('[data-rk]').forEach(x => x.onclick = async () => {
+        const k = x.dataset.rk, deg = +x.dataset.rd, rot = k === 'all' ? { all: deg } : { pages: { [k]: deg } };
+        b.querySelectorAll('button').forEach(y => y.disabled = true); x.textContent = '…';
+        try { await rotateFile(ctx, getPath(), rot); d.open = false; onDone && onDone(null); }
+        catch (e) { onDone && onDone(e); b.querySelectorAll('button').forEach(y => y.disabled = false); }
+      });
+    };
+  }
+  window.APDoc = { ACCEPT: 'application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif', kind, prep, isImg, view, DOC_EXT, rotateBlob, rotateFile, locate, pageCount, rotMenu, wireRot };
 })();
