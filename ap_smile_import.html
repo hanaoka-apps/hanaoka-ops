@@ -774,15 +774,19 @@ function carryCard(){const ym=month(),pm=prevMonth(ym),pl=a=>String(af(a,'調整
 //   締め：払う月の前の月（10月払い＝9月の売上）。ファイルは大きい（約11MB）ので、相殺先を開いたときに1回だけ読む
 let SALES={ym:null,p:null,by:{},err:''};
 function salesYm(){return prevMonth(month());}
+// 1行を区切る（"…" の中の区切り・"" はそのまま。"3,950" のような額で割らない）
+function splitRow(l,sep){if(l.indexOf('"')<0)return l.split(sep);const out=[];let cur='',q=false;
+  for(let i=0;i<l.length;i++){const ch=l[i];if(q){if(ch==='"'){if(l[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=ch;}else if(ch==='"')q=true;else if(ch===sep){out.push(cur);cur='';}else cur+=ch;}
+  out.push(cur);return out;}
 async function loadSales(){const ym=salesYm();if(SALES.ym===ym&&SALES.p)return SALES.p;SALES={ym,p:null,by:{},err:''};
   const want=new Set(Object.values(OFFSET).flatMap(o=>o&&o.cust||[]));
   SALES.p=(async()=>{if(MOCK||!want.size)return;
     try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent('請求明細出力.txt')}:/content`,null,null,true),buf=await b.arrayBuffer();
       let t=new TextDecoder('utf-8').decode(buf);if(t.slice(0,3000).includes('�'))t=new TextDecoder('shift_jis').decode(buf);
-      const L=t.replace(/^﻿/,'').split(/\r?\n/),sep=L[0].includes('\t')?'\t':',',cell=v=>String(v||'').replace(/^"|"$/g,'').trim(),hd=L[0].split(sep).map(cell);
+      const L=t.replace(/^﻿/,'').split(/\r?\n/),sep=L[0].includes('\t')?'\t':',',cell=v=>String(v||'').trim(),hd=splitRow(L[0],sep).map(cell);
       const iB=hd.indexOf('請求先ｺｰﾄﾞ'),iD=hd.indexOf('伝票日付'),iA=hd.indexOf('売上金額'),iN=hd.indexOf('請求書番号'),iM=hd.indexOf('得意先名称１'),ym8=ym.replace('/','');
       if(iB<0||iD<0||iA<0)throw new Error('請求明細出力.txt の列が読めません');
-      for(let k=1;k<L.length;k++){const c=L[k].split(sep);if(c.length<=iA)continue;const bc=cell(c[iB]);if(!want.has(bc))continue;if(cell(c[iD]).replace(/\D/g,'').slice(0,6)!==ym8)continue;
+      for(let k=1;k<L.length;k++){if(!L[k])continue;const c=splitRow(L[k],sep);if(c.length<=iA)continue;const bc=cell(c[iB]);if(!want.has(bc))continue;if(cell(c[iD]).replace(/\D/g,'').slice(0,6)!==ym8)continue;
         const v=Math.round(+cell(c[iA]).replace(/,/g,'')||0),o=SALES.by[bc]||(SALES.by[bc]={amt:0,name:cell(c[iM]),bills:{}});o.amt+=v;const no=cell(c[iN]);o.bills[no]=(o.bills[no]||0)+v;}}
     catch(e){SALES.err=e.message;}})();
   return SALES.p;}
@@ -804,7 +808,7 @@ function offsetHtml(r,ed){const o=offsetOf(r),ym=salesYm();
   return `<div class="sec box ${r.offsetChecked?'':'warn'}"><h4>相殺先（売買相殺）${r.offsetChecked?' <span class="mst ok">✔ 確認済み</span>':''}<span class="sp"></span><span class="s">${lab}（SMILE の請求明細）</span></h4>
     ${o.err?`<div style="color:var(--up);font-size:13px">売上を読めませんでした：${esc(o.err)}</div>`:''}
     <table class="mt"><tr><th>請求先</th><th class="n">売上（税込）</th><th>請求書№</th></tr>
-      ${o.rows.map(x=>`<tr><td>${esc(x.code)} ${esc(x.name)}</td><td class="n">${yen(x.amt)}</td><td style="font-size:12px">${Object.keys(x.bills).map(esc).join('・')}</td></tr>`).join('')||`<tr><td colspan="3" class="s">${lab}はありません（${o.cust.length}コード）</td></tr>`}
+      ${o.rows.map(x=>`<tr><td>${esc(x.code)} ${esc(x.name)}</td><td class="n">${yen(x.amt)}</td><td style="font-size:12px;white-space:normal">${(k=>k.slice(0,3).map(esc).join('・')+(k.length>3?` ほか${k.length-3}件`:''))(Object.keys(x.bills))}</td></tr>`).join('')||`<tr><td colspan="3" class="s">${lab}はありません（${o.cust.length}コード）</td></tr>`}
       <tr class="mg"><td>売上の合計</td><td class="n">${yen(o.sales)}</td><td></td></tr></table>
     <div style="font-size:13px;margin-top:6px">支払額 <b>${yen(r.amount)}</b> ／ 相殺の目安（支払額と売上の少ない方）<b>${yen(o.plan)}</b>${o.cur?` ／ いまの分け方の相殺 <b>${yen(o.cur)}</b>`:''}</div>
     ${ed?`<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
