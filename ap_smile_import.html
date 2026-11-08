@@ -88,7 +88,7 @@ details>summary{cursor:pointer;color:var(--sub);font-size:12.5px;font-weight:600
 @media (max-width:900px){.review{grid-template-columns:1fr;height:auto}.rlist{max-height:40vh}.vs{grid-template-columns:1fr}.dact .keys{display:none}}
 @media (max-width:600px){main{padding:10px}.big{font-size:26px}}
 </style>
-<link rel="stylesheet" href="ap_theme.css?v=20261108j"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
+<link rel="stylesheet" href="ap_theme.css?v=20261108k"><!-- ハブ・営業日報・ワークフローと同じ見た目（左のサイドバーは nav.js） -->
 </head>
 <body>
 <div id="login-view"><h2 style="color:#1a5fa8">仕入（SMILE）</h2><p data-ha-login style="color:#6b7a99">花岡車輌の Microsoft アカウントでサインインしてください</p><button data-ha-login class="pri big-btn" onclick="signIn()">サインイン</button></div>
@@ -384,9 +384,9 @@ function render(){
   $('groups').innerHTML=GROUPS.map(g=>`<button class="${g===st.g?'on':''}" data-g="${g}">${g}${g==='全社'||!rows.length?'':'　'+man(totalsOf(rows.filter(r=>inGroup(r,g)),g).pay)}</button>`).join('')
     +''   /* 仕入は月末払いだけ（10日・20日は無い）ので、支払回の切り替えは出さない */;
   const a=rowsG(),n=a.filter(needsCheck),ok=n.filter(r=>r.checked).length;
-  $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='imp'?'on':''}" data-tab="imp">📥 取り込み${calc?'（未保存）':''}</button><button class="${st.tab==='inb'?'on':''}" data-tab="inb">📨 請求書を渡す${INBX.length?'（'+INBX.length+'）':''}</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（${ok}／${n.length}）</button></div>`
+  $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='imp'?'on':''}" data-tab="imp">📥 取り込み${calc?'（未保存）':''}</button><button class="${st.tab==='inb'?'on':''}" data-tab="inb">📨 請求書を渡す${INBX.length?'（'+INBX.length+'）':''}</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（${ok}／${n.length}）</button><button class="${st.tab==='off'?'on':''}" data-tab="off">🔁 相殺</button></div>`
     +`<div id="pane"></div>`;
-  if(st.tab==='imp')drawImport();else if(st.tab==='inb')drawInbox();else if(st.tab==='sum')drawSummary();else drawReview();
+  if(st.tab==='imp')drawImport();else if(st.tab==='inb')drawInbox();else if(st.tab==='sum')drawSummary();else if(st.tab==='off')drawOffset();else drawReview();
   if(!document.querySelector('.ap-full'))document.body.classList.remove('ap-lock');
   drawApprove();}
 
@@ -820,6 +820,36 @@ async function setOffset(r,x){const o=offsetOf(r),ym=salesYm();
   const ls=withOffset(r,x),same=JSON.stringify(ls.map(l=>[l.method,+l.amount,+l.site||0]))===JSON.stringify(r.calcLines.map(l=>[l.method,+l.amount,+l.site||0]));
   const prev=String(r.reason||'').split('／').filter(t=>t&&!/^売買相殺/.test(t)),why=[...prev,...(x?[`売買相殺 ${yen(x)}：${ym.replace('/','年')}月締めの売上 ${yen(o.sales)}（${o.rows.map(y=>y.name||y.code).join('・')}）`]:[])].join('／');
   await act(r,{'分け方の上書き':same?'':JSON.stringify(ls),'変えた理由':same?'':why,'相殺の確認':true,'確認済み':false},x?`${yen(x)} を相殺にしました`:'相殺をやめました');}
+// ---------- 🔁 相殺：●月締めの相殺の一覧（相殺先ごと。支払が無い相殺先も出す）（2026-11-08） ----------
+function offsetRows(){const byCode={};rows.forEach(r=>byCode[r.code]=r);
+  return Object.entries(OFFSET).map(([code,o])=>{const r=byCode[code],sales=(o.cust||[]).map(c=>({code:c,...(SALES.by[c]||{amt:0,name:'',bills:{}})})).filter(x=>x.amt),st1=sales.reduce((t,x)=>t+x.amt,0);
+    const pay=r?Math.max(0,r.amount):0,cur=r?linesOf(r).filter(l=>l.method==='相殺').reduce((t,l)=>t+(+l.amount||0),0):0;
+    return {code,name:r?r.name:o.name,r,sales,sales1:st1,pay,plan:Math.min(pay,st1),cur,checked:!!(r&&r.offsetChecked),noCust:!(o.cust||[]).length,
+      state:!r||!pay?'支払なし':r.offsetChecked?(cur?'相殺する':'相殺しない'):'未確認'};})
+    .sort((a,b)=>(b.cur-a.cur)||(b.sales1-a.sales1)||a.code.localeCompare(b.code));}
+function drawOffset(){const ym=salesYm(),lab=`${ym.replace('/','年')}月締めの相殺（${month().replace('/','年')}月払い）`;
+  if(SALES.ym!==ym||!SALES.done){loadSales().then(()=>{SALES.done=true;if(st.tab==='off')drawOffset();});}
+  const L=offsetRows(),ready=SALES.ym===ym&&SALES.done,sum=k=>L.reduce((t,x)=>t+(x[k]||0),0);
+  const pill=x=>x.state==='相殺する'?'<span class="mst warn">相殺する</span>':x.state==='相殺しない'?'<span class="mst ok">相殺しない</span>':x.state==='未確認'?'<span class="mst ng">未確認</span>':'<span class="s">支払なし</span>';
+  $('pane').innerHTML=`<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h2 style="margin:0">🔁 ${esc(lab)}</h2><span class="sp" style="flex:1"></span>
+      <button id="offCp">📋 Excel 用にコピー</button><button id="offPr">🖨 印刷</button></div>
+    <div class="s" style="margin:6px 0 10px">相殺先（AP_OffsetVendor）ごとに、つないだ請求先の ${esc(ym.replace('/','年'))}月の売上（SMILE の請求明細）と、仕入の支払額。目安＝支払額と売上の少ない方。相殺する額は仕入の確認で決めます（行を押すとその仕入先へ）${SALES.err?`<br><b style="color:var(--up)">売上を読めませんでした：${esc(SALES.err)}</b>`:''}</div>
+    <div class="top" style="margin-bottom:10px">
+      <div class="card"><h2>相殺する額</h2><div class="big">${yen(sum('cur'))}<small> 円</small></div><div class="s">${L.filter(x=>x.cur).length}社</div></div>
+      <div class="card"><h2>未確認</h2><div class="big" style="color:${L.some(x=>x.state==='未確認')?'var(--up)':'var(--down)'}">${L.filter(x=>x.state==='未確認').length}<small> 社</small></div><div class="s">支払がある相殺先のうち、相殺するか決めていないもの</div></div>
+      <div class="card"><h2>相殺先</h2><div class="big">${L.length}<small> 社</small></div><div class="s">支払あり ${L.filter(x=>x.pay).length}社・売上あり ${L.filter(x=>x.sales1).length}社</div></div></div>
+    <div style="overflow-x:auto"><table class="mt offt"><tr><th>仕入先</th><th>売上のある請求先</th><th class="n">売上（税込）</th><th class="n">支払額</th><th class="n">相殺の目安</th><th class="n">相殺する額</th><th class="n">相殺後に払う額</th><th>状態</th></tr>
+      ${L.map(x=>`<tr ${x.r?`data-sel="${esc(x.code)}" style="cursor:pointer"`:''}><td><b>${esc(x.name)}</b><div class="s">${esc(x.code)}${x.noCust?'・<span style="color:var(--up)">相殺得意先コードなし</span>':''}</div></td>
+        <td style="font-size:12px;white-space:normal">${ready?(x.sales.map(y=>`${esc(y.name||y.code)} ${yen(y.amt)}`).join('<br>')||'<span class="s">売上なし</span>'):'…'}</td>
+        <td class="n">${ready?yen(x.sales1):'…'}</td><td class="n">${x.pay?yen(x.pay):'—'}</td><td class="n">${ready&&x.pay?yen(x.plan):'—'}</td>
+        <td class="n"><b>${x.cur?yen(x.cur):'—'}</b>${ready&&x.pay&&x.checked&&x.cur!==x.plan?`<div class="s" style="color:var(--warn)">目安と違う</div>`:''}</td><td class="n">${x.pay?yen(x.pay-x.cur):'—'}</td><td>${pill(x)}</td></tr>`).join('')||'<tr><td colspan="8" class="s">相殺先がありません（AP_OffsetVendor）</td></tr>'}
+      <tr class="mg"><td colspan="2">合計</td><td class="n">${ready?yen(sum('sales1')):'…'}</td><td class="n">${yen(sum('pay'))}</td><td class="n">${ready?yen(sum('plan')):'…'}</td><td class="n">${yen(sum('cur'))}</td><td class="n">${yen(sum('pay')-sum('cur'))}</td><td></td></tr></table></div></div>`;
+  const tsv=()=>[['仕入先コード','仕入先','売上（税込）','支払額','相殺の目安','相殺する額','相殺後に払う額','状態','売上のある請求先'].join('\t')]
+    .concat(L.map(x=>[x.code,x.name,x.sales1,x.pay,x.pay?x.plan:'',x.cur,x.pay?x.pay-x.cur:'',x.state,x.sales.map(y=>`${y.code} ${y.name} ${y.amt}`).join(' / ')].join('\t'))).join('\n');
+  $('offCp').onclick=async()=>{try{await navigator.clipboard.writeText(tsv());snack('コピーしました（Excel に貼れます）');}catch(e){snack('コピーできませんでした',true);}};
+  $('offPr').onclick=()=>{const w=window.open('','_blank');if(!w){snack('印刷の画面を開けませんでした（ポップアップを許可してください）',true);return;}
+    const tb=$('pane').querySelector('table.offt').outerHTML.replace(/ data-sel="[^"]*"/g,'');
+    w.document.write(`<!doctype html><meta charset="utf-8"><title>${esc(lab)}</title><style>body{font-family:sans-serif;font-size:11px;margin:16px}h1{font-size:15px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:3px 5px;vertical-align:top}th{background:#eee}.n{text-align:right;white-space:nowrap}.s{color:#666;font-size:10px}.mg td{font-weight:bold;background:#f6f6f6}@page{size:A4 landscape;margin:10mm}</style><h1>${esc(lab)}</h1><div style="margin-bottom:6px">出力 ${new Date().toLocaleString('ja-JP')}・目安＝支払額と売上の少ない方</div>${tb}<script>onload=()=>print()<\/script>`);w.document.close();};}
 // 次月調整のサマリーの横：今月の相殺先
 function offsetCard(){const rs=rowsG().filter(r=>r.offsetVendor&&needsCheck(r));if(!rs.length)return '';
   if(SALES.ym!==salesYm()||!SALES.done){loadSales().then(()=>{SALES.done=true;if(st.tab==='sum')render();});}
