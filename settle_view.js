@@ -39,6 +39,7 @@
     '.sv button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer;font:inherit}.sv button.pri{background:var(--pri);border-color:var(--pri);color:#fff}.sv .chip.on{background:var(--pri);color:#fff;border-color:var(--pri)}' +
     // 請求書の明細（AI が読んだもの）：右端の縦のバー → ドロワー（右の列にかぶせる・PDF との境まで）。燃料の単価の表（サマリー）
     '.sv .pdf.tbl table.ln tr:not(.h1):not(.h2) td{border-bottom:1px solid #eef0f4}.sv .pdf.tbl table.ln tr:not(.h1):not(.h2):hover td{box-shadow:inset 0 0 0 999px rgba(35,38,143,.06)}' +
+    '.sv .plist{width:100%;border-collapse:collapse;font-size:13px}.sv .plist th{font-size:11.5px;color:var(--sub);text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);font-weight:600}.sv .plist th.n,.sv .plist td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.sv .plist td{padding:5px 8px;border-bottom:1px solid #eef0f5;vertical-align:top}.sv .plist tr[data-k]{cursor:pointer}.sv .plist tr[data-k]:hover td{background:#f5f7ff}.sv .plist tr.pg td{background:#eef2f8;font-size:12px;font-weight:700;color:#3a4252}.sv .plist .s{font-size:11px;color:var(--sub)}' +
     '.sv .kd{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:4px;margin-right:4px;vertical-align:1px}.sv .kd.sp{background:#e8f0fe;color:#1d4ed8}.sv .kd.ex{background:#e7f6ec;color:#067647}' +
     '.sv .rl tr.kgrp td{position:sticky;top:0;z-index:1;background:#eef2f8;font-size:12px;font-weight:700;color:#3a4252;padding:5px 8px;cursor:default}.sv .rl tr.kgrp .s2{font-weight:400;color:var(--sub);margin-left:6px}.sv .rl tr[data-k]:not(.sel):hover{background:#f5f7fc}' +
     '.sv .dstrip{display:none}.sv .dt.tblmode .dstrip{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:6px 10px;margin-bottom:6px;border:1px solid var(--line);border-radius:8px;background:#fafbfd;font-size:13px}' +
@@ -164,8 +165,21 @@
         '<div class="box"><h4>支払方法の内訳</h4><table>' + Object.keys(bm).map(function (m) { return '<tr><td>' + esc(m) + '</td><td class="n">' + yen(bm[m]) + '</td></tr>'; }).join('') + '</table>' +
           (Object.keys(due).length ? '<h4 style="margin-top:10px">でんさいの期日</h4><table>' + Object.keys(due).sort().map(function (d) { return '<tr><td>' + esc(d) + '</td><td class="n">' + yen(due[d]) + '</td></tr>'; }).join('') + '</table>' : '') + '</div>' +
         '<div class="box"><h4>特記・気づき（' + flagged.length + '件）</h4><div class="flags">' + (flagged.length ? flagged.map(function (x) { return '<div class="flag" data-k="' + esc(x._k) + '"><span class="why">' + tags(x).map(function (t) { return esc(t[0]); }).join('・') + '</span><span class="who">' + esc(x.payee) + '</span><b>' + yen(x.amount) + '</b></div>'; }).join('') : '<div style="color:var(--sub)">ありません</div>') + '</div></div></div>';
+      pane.insertAdjacentHTML('beforeend', payeeListHtml());
       if (snap.fuel && (snap.fuel.rows || []).length) pane.insertAdjacentHTML('beforeend', fuelHtml(snap.fuel));
-      pane.querySelectorAll('.flag').forEach(function (f) { f.onclick = function () { ui.sel = f.dataset.k; ui.tab = 'rev'; ui.only = ''; render(); }; });
+      pane.querySelectorAll('.flag,.plist tr[data-k]').forEach(function (f) { f.onclick = function () { ui.sel = f.dataset.k; ui.tab = 'rev'; ui.only = ''; render(); }; });
+    }
+    // 取引先一覧（サマリー）：仕入・経費に分けて、金額の大きい順。行を押すとその明細へ（ユーザー 2026-11-08）
+    function payeeListHtml() {
+      var grp = [['仕入', rows.filter(function (x) { return x.kind !== '経費'; })], ['経費', rows.filter(function (x) { return x.kind === '経費'; })]].filter(function (g) { return g[1].length; });
+      var tr = function (x) { var c = S.checks[x._k];
+        return '<tr data-k="' + esc(x._k) + '"><td style="width:22px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
+          '<td><b>' + esc(x.payee) + '</b>' + tags(x).map(function (t) { return ' <span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</td><td>' + mth(x.method) + '</td>' +
+          '<td class="n"><b>' + yen(x.amount) + '</b>' + (x.fee ? '<div class="s">手数料 ' + yen(x.fee) + ' を引いた振込額</div>' : '') + '</td><td class="n" style="color:var(--sub)">' + (x.prev1 ? yen(x.prev1) : '—') + '</td><td class="n">' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</td>' +
+          '<td style="font-size:12px;color:var(--sub)">' + esc(x.due ? '期日 ' + x.due : x.payDate || '') + '</td></tr>'; };
+      return '<div class="box" style="margin-top:12px"><h4>取引先一覧（' + rows.length + '件）<span style="font-weight:400;font-size:12px;color:var(--sub);margin-left:8px">行を押すと明細へ</span></h4><div style="overflow-x:auto"><table class="plist"><tr><th></th><th>支払先</th><th>方法</th><th class="n">金額</th><th class="n">前月</th><th class="n">前月との差</th><th>期日・支払日</th></tr>' +
+        grp.map(function (g) { var a = g[1].slice().sort(function (x, y) { return y.amount - x.amount; });
+          return '<tr class="pg"><td colspan="7"><span class="kd ' + (g[0] === '経費' ? 'ex' : 'sp') + '">' + g[0] + '</span>' + (g[0] === '仕入' ? '仕入（SMILE）' : '経費') + '<span style="font-weight:400;color:var(--sub);margin-left:6px">' + a.length + '件・' + yen(a.reduce(function (t, x) { return t + x.amount; }, 0)) + '円</span></td></tr>' + a.map(tr).join(''); }).join('') + '</table></div></div>';
     }
     // 燃料の単価（1Lあたり・拠点ごと・払う月）。fuel：{yms:['2026/09',…], rows:[{loc, fuel, cells:{ym:{lo,hi,sq}}}]}（呼ぶ側が作る）
     function fuelHtml(fu) {
