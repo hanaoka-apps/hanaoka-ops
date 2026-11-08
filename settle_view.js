@@ -138,6 +138,8 @@
         '<button class="fs-t" title="' + (full ? '元の画面に戻す（Esc）' : 'このカードだけを画面いっぱいに出す') + '" style="margin-bottom:4px">' + (full ? '✕ 全画面を閉じる' : '⛶ 全画面') + '</button></div><div class="pane"></div></div>';
       var pane = el.querySelector('.pane');
       if (ui.tab === 'sum') summary(pane); else review(pane);
+      // 全画面のサマリーは中だけスクロール（全画面は外側が動かないので、取引先一覧の下が見えなかった）
+      if (ui.tab === 'sum' && full) { pane.style.overflowY = 'auto'; pane.style.maxHeight = Math.max(200, window.innerHeight - pane.getBoundingClientRect().top - 12) + 'px'; }
       el.querySelectorAll('[data-t]').forEach(function (b) { b.onclick = function () { ui.tab = b.dataset.t; render(); }; });
       el.querySelector('.fs-t').onclick = function () { FULL.set(!FULL.on); render(); };
       el.querySelectorAll('[data-part]').forEach(function (b) { b.onclick = function () { var pt = (o.parts || [])[+b.dataset.part]; if (pt && !pt.cur) pt.open(); }; });
