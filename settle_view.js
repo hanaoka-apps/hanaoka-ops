@@ -83,6 +83,9 @@
   function mth(m, big) { if (!m) return ''; var c = MCOL[m] || MCOL[String(m).split(/[・ ]/)[0]] || ['#5b6478', '#eceff4'];
     return '<span class="mth' + (big ? ' big' : '') + '" style="color:' + c[0] + ';background:' + c[1] + ';border-color:' + c[0] + '33">' + esc(m) + '</span>'; }
   // 前月・前々月との比べ：金額と差（円・%）を並べる
+  function whatOf(x) { var seen = {}, out = [];
+    (x.lines || []).forEach(function (l) { var t = String(l.memo || '').trim() || String(l.note || '').replace(/^No\.\S+\s*/, '').trim(); if (t && !seen[t]) { seen[t] = 1; out.push(t); } });
+    return out; }
   function gross(x) { return Math.round((+x.amount || 0) + (+x.fee || 0)); }
   function cmp(x) {
     var d = function (a, b) { if (!b) return '<td class="n" style="color:#c3c9d6">—</td>'; var v = a - b, p = Math.round(v / b * 100);
@@ -174,7 +177,7 @@
       var grp = [['仕入', rows.filter(function (x) { return x.kind !== '経費'; })], ['経費', rows.filter(function (x) { return x.kind === '経費'; })]].filter(function (g) { return g[1].length; });
       var tr = function (x) { var c = S.checks[x._k];
         return '<tr data-k="' + esc(x._k) + '"><td style="width:22px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
-          '<td><b>' + esc(x.payee) + '</b>' + tags(x).map(function (t) { return ' <span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</td><td>' + mth(x.method) + '</td>' +
+          '<td><b>' + esc(x.payee) + '</b>' + tags(x).map(function (t) { return ' <span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + (x.kind === '経費' && whatOf(x).length ? '<div class="s" style="color:#3a4252">' + whatOf(x).map(esc).join('・') + '</div>' : '') + '</td><td>' + mth(x.method) + '</td>' +
           '<td class="n"><b>' + yen(x.amount) + '</b>' + (x.fee ? '<div class="s">手数料 ' + yen(x.fee) + ' を引いた振込額</div>' : '') + '</td><td class="n" style="color:var(--sub)">' + (x.prev1 ? yen(x.prev1) : '—') + '</td><td class="n">' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</td>' +
           '<td style="font-size:12px;color:var(--sub)">' + esc(x.due ? '期日 ' + x.due : x.payDate || '') + '</td></tr>'; };
       return '<div class="box" style="margin-top:12px"><h4>取引先一覧（' + rows.length + '件）<span style="font-weight:400;font-size:12px;color:var(--sub);margin-left:8px">行を押すと明細へ</span></h4><div style="overflow-x:auto"><table class="plist"><tr><th></th><th>支払先</th><th>方法</th><th class="n">金額</th><th class="n">前月</th><th class="n">前月との差</th><th>期日・支払日</th></tr>' +
@@ -290,7 +293,7 @@
         return '<tr class="kgrp"><td colspan="3"><span class="kd ' + (k === '経費' ? 'ex' : 'sp') + '">' + k + '</span>' + (k === '仕入' ? '仕入（SMILE）' : '経費') + '<span class="s2">' + b.length + '件・' + yen(b.reduce(function (s, y) { return s + y.amount; }, 0)) + '円</span></td></tr>'; };
       tb.innerHTML = a.map(function (x) { var c = S.checks[x._k], k = x.kind === '経費' ? '経費' : '仕入', hd = two && k !== lastK ? kHead(x) : ''; lastK = k;
         return hd + '<tr class="' + (x._k === ui.sel ? 'sel ' : '') + (c || '') + '" data-k="' + esc(x._k) + '"><td style="width:24px;text-align:center">' + (c === 'ok' ? '<span style="color:var(--down)">✔</span>' : c === 'hold' ? '<span style="color:var(--warn)">⏸</span>' : '<span style="color:#c3c9d6">□</span>') + '</td>' +
-          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] || NOTES[nk(x)] ? ' 💬' : '') + '</div><div class="s"><span class="kd ' + (x.kind === '経費' ? 'ex' : 'sp') + '">' + (x.kind === '経費' ? '経費' : '仕入') + '</span>' + mth(x.method) + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
+          '<td><div class="nm">' + esc(x.payee) + (S.comments[x._k] || NOTES[nk(x)] ? ' 💬' : '') + '</div>' + (x.kind === '経費' && whatOf(x)[0] ? '<div class="s" style="white-space:normal;color:#3a4252">' + esc(whatOf(x)[0].length > 40 ? whatOf(x)[0].slice(0, 40) + '…' : whatOf(x)[0]) + '</div>' : '') + '<div class="s"><span class="kd ' + (x.kind === '経費' ? 'ex' : 'sp') + '">' + (x.kind === '経費' ? '経費' : '仕入') + '</span>' + mth(x.method) + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></td>' +
           '<td class="n"><b>' + yen(x.amount) + '</b><div class="s">' + (x.prev1 ? diff(x.amount, x.prev1) : '') + '</div></td></tr>'; }).join('') || '<tr><td style="color:var(--sub);padding:12px">該当する明細はありません</td></tr>';
       tb.querySelectorAll('tr[data-k]').forEach(function (tr) { tr.onclick = function () { ui.sel = tr.dataset.k; var rv = el.querySelector('.rv'); if (rv) rv.classList.remove('peek'); rowsHtml(); detail(); }; });
       var s = tb.querySelector('tr.sel'), rl = el.querySelector('.rl'); if (s && rl) { var top = s.offsetTop, bot = top + s.offsetHeight; if (top < rl.scrollTop) rl.scrollTop = top; else if (bot > rl.scrollTop + rl.clientHeight) rl.scrollTop = bot - rl.clientHeight; }
@@ -302,7 +305,8 @@
       if (!x) { dt.innerHTML = '<div style="padding:16px;color:var(--sub)">左の一覧から選んでください</div>'; return; }
       var c = S.checks[x._k], row = function (k, v) { return v == null || v === '' ? '' : '<div class="k">' + k + '</div><div>' + v + '</div>'; };
       var sm = x.smile || {}, txl = (x.lines || []).some(function (l) { return l.rate; });
-      var kvH = '<div class="kv">' + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
+      var wt = whatOf(x);
+      var kvH = '<div class="kv">' + (wt.length ? '<div class="k">何の支払か</div><div style="grid-column:2/-1"><b style="font-size:14.5px;line-height:1.6">' + wt.map(esc).join('<br>') + '</b></div>' : '') + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
           row('SMILE の額', sm.incl != null ? '税込仕入額 ' + yen(sm.incl) + (Math.round(sm.incl) === gross(x) ? ' <b style="color:var(--down)">✔ 支払額と一致</b>' : '') + (sm.carry ? '／繰越 ' + yen(sm.carry) : '') + (sm.held ? '（保留 ' + yen(sm.held) + '・3月末に整理）' : '') : '') +
           row('振込先の変更', x.bankChange ? '<b style="color:var(--up)">' + esc(x.bankChange) + '</b>' : '') + row('備考', esc(x.note)) + '</div>';
       var ibHtml = function () { return txl && ui.itab === 'ln' ? linesHtml(x.lines) : kvH + (txl ? taxSum(x.lines) : linesHtml(x.lines)); };
