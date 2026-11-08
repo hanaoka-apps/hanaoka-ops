@@ -957,7 +957,7 @@ function drawOne(){
     ${r.log.map(l=>`<div>${esc(fmtTime(l.at))} ${esc(l.by)}：${esc(l.act)}${l.step!=null?`（${l.step+1}段目）`:''}${l.sub?'【代理】':''}${l.memo?' — '+esc(l.memo):''}</div>`).join('')}</div></details>`;
   const toIdx=!myStepAt(r)&&myIdx(r)>r.step?myIdx(r):r.step,skipN=toIdx-r.step,lastStep=toIdx>=r.steps.length-1;
   const npN=lastStep&&!r.done?newPats(r).length:0,okLabel=lastStep?'✔ 確定・次へ':'✔ OK・次へ',okNote=skipN?`${skipN}段飛ばして${lastStep?'確定します':'進めます'}`:'';
-  const more=`<select id="dMore" title="その他の操作"><option value="">その他の操作…</option>${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed&&!r.reading&&window.APAI?'<option value="reread">AI で読み直す（支払内容・仕訳を作り直す）</option>':''}${ed?'<option value="merge">ほかの受付とまとめる（1件の請求書）</option><option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
+  const more=`<select id="dMore" title="その他の操作"><option value="">その他の操作…</option>${(ed||r.done)&&!r.reading?'<option value="recur">🔁 毎月の支払に登録する（リース・定額）</option>':''}${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed&&!r.reading&&window.APAI?'<option value="reread">AI で読み直す（支払内容・仕訳を作り直す）</option>':''}${ed?'<option value="merge">ほかの受付とまとめる（1件の請求書）</option><option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
   const nIt=(invItemsOf(r)||{items:[]}).items.length;
   const sumCard=`<div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}${iss.length&&!r.reading?`<a href="#" class="bd ${nFix?'ng':iss.some(x=>x.sev==='check')?'warn':''}" id="oIssGo" title="下の「AIの気づき」へ">気づき ${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?l+' '+n:'';}).filter(Boolean).join('・')} ↓</a>`:''}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
@@ -1159,6 +1159,7 @@ async function mergeInto(r,o){
     if(nr)await rereadByAI(nr);}
   catch(e){msg('');snack('まとめられませんでした：'+e.message,true);}}
 async function more(r,v){
+  if(v==='recur'){toRecurring(r);return;}
   if(v==='attach'){const ai=$('oAttachIn');if(ai)ai.click();return;}
   if(v==='merge'){mergeDialog(r);return;}
   if(v==='reread'){if(!confirm('AI で読み直して、支払内容・仕訳（決裁メモも）・AI の気づきを作り直します。手で直した仕訳は書き換わります（コメント欄は残ります）。よろしいですか？'))return;
@@ -1192,6 +1193,16 @@ async function attachDocs(r,files){
     const nr=items.find(x=>x.id===r.id);
     if(nr&&window.APAI&&canAct(nr)&&confirm('付けた請求書で AI に読み直させますか？\n\n・OK：支払内容・仕訳（決裁メモも）・AI の気づきを、請求書から作り直します（手で入れた仕訳は書き換わります）\n・キャンセル：ファイルを付けるだけ（今の内容のまま）'))await rereadByAI(nr,{replace:true});}
   catch(e){msg('');snack('付けられませんでした：'+e.message,true);}}
+// 毎月の支払（AP_RecurringPayment）に登録：この請求書の内容を入れた登録の画面を新しいタブで開く（保存は向こうで人が押す）
+//   決裁メモ・摘要に「n/m回」があれば、翌月から残り m−n 回。この請求書は今月分としてこのまま進める（二重にならないよう翌月から）
+function toRecurring(r){const {h,ls}=viewOf(r),txt=ls.map(l=>(l.memo||'')+' '+(l.note||'')).join(' '),m=txt.normalize('NFKC').match(/(\d+)\s*\/\s*(\d+)\s*回/);
+  const [y,mo]=(h.ym||month()).split('/').map(Number),nx=ymOf(new Date(y,mo,1)),n=m?+m[1]:0,tot=m?+m[2]:0;
+  const pre={title:(h.payee||r.payee)+(ls[0]&&ls[0].aname?' '+ls[0].aname:''),payee:h.payee||r.payee,code:h.code||'',method:h.method||'総合振込',cat:h.loc==='工場'?'工場経費':'本社経費',
+    daytype:h.round||'月末',freq:'毎月',start:nx,total:tot&&tot>n?String(tot-n):'',doc:pdfPaths(r)[0]||'',loc:h.loc,
+    note:`経費の請求書から作成（${h.ym||month()} ${h.payee||r.payee}${m?`・${n}/${tot}回まで払い済み`:''}）`,
+    lines:ls.map(l=>({kcode:l.acode,kname:l.aname,ucode:l.sub||'',bcode:l.dept||'',rate:l.rate,excl:+l.excl||0,tax:+l.tax||0,incl:+l.incl||0,memo:l.memo||l.note||''}))};
+  try{localStorage.setItem('ap.recurring.prefill',JSON.stringify(pre));}catch(e){snack('登録の画面に渡せませんでした（ブラウザの保存が使えません）',true);return;}
+  window.open('ap_recurring.html?prefill=1','_blank');snack('毎月の支払の登録画面を開きました。内容を確かめて「保存」してください');}
 // ---------- 先に登録した請求書（毎月の支払・手入力・複製。PDF なし）に、あとで AI が読んだ請求書を付ける ----------
 //   同じ払う月・同じ支払先（コードか名前）で PDF の無い請求書があれば、確認の画面で知らせる。ボタンで PDF をそちらに付け、読んだ方は対象外（まとめた）にする
 //   金額と仕訳は「読み取った方（請求書の内容）」か「先に登録した方」かを選ぶ
