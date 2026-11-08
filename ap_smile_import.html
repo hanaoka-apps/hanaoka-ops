@@ -168,7 +168,7 @@ async function resolveLists(){
   SMR=JSON.parse(it.fields.Value||'{}');S.setRules(SMR);
   // 相殺先（設計書 v2.5 3-7）：計算どおりに出したうえで、相殺の有無を確かめないと OK できない
   OFFSET={};try{const ov=await ovP;
-    (ov.value||[]).forEach(x=>{const f=x.fields||{};if(f.OffsetFlag!==false&&f.VendorCode)OFFSET[String(f.VendorCode).trim().padStart(6,'0')]=f.VendorName||true;});}
+    (ov.value||[]).forEach(x=>{const f=x.fields||{};if(f.OffsetFlag!==false&&f.VendorCode)OFFSET[String(f.VendorCode).trim().padStart(6,'0')]={name:f.VendorName||'',cust:String(f.OffsetCustomerCode||'').split(/[,\s、]+/).filter(Boolean)};});}
   catch(e){snack('相殺先リスト（AP_OffsetVendor）を読めませんでした：'+e.message,true);}}
 const F=(o,d)=>o.fmap[d]||d, fv=(o,f,d)=>f[F(o,d)];
 function toFields(o,obj){const r={};for(const k in obj)r[F(o,k)]=obj[k];return r;}
@@ -515,7 +515,7 @@ function drawSummary(){
       ${ms.map(m=>{const v=m==='振込'?t[m]-t.fee:t[m];return `<tr><td>${m}${m==='振込'?'<span style="font-size:11px;color:var(--sub)">（手数料 '+yen(t.fee)+' を引いた後）</span>':m==='調整'?'<span style="font-size:11px;color:var(--sub)">（端数の精算）</span>':''}</td><td class="n">${yen(v)}</td><td style="width:35%"><div class="bar"><i style="width:${t.pay?Math.max(0,Math.round(v/t.pay*100)):0}%"></i></div></td></tr>`;}).join('')}</table>`:'<div style="color:var(--sub)">部門ごとの額は受入の内訳で按分しています。方法の内訳は「全社」で見てください。</div>'}</div>
     <div class="card"><h2>気づき（${flagged.length}件）</h2><div class="flags">${flagged.length?flagged.map(o=>`<div class="flag" data-sel="${o.r.code}"><span class="why">${o.f.map(x=>esc(x[0])).join('・')}</span><span class="who">${esc(o.r.name)}</span><span class="amt">${yen(o.r.amount)}</span></div>`).join(''):'<div style="color:var(--sub)">ありません</div>'}</div></div>
   </div>
-  ${invCard(a)}${carryCard()}
+  ${invCard(a)}${carryCard()}${offsetCard()}
   <div class="card"><h2>でんさいの支払期日別</h2>${dues.length?`<table><tr><th>期日</th><th class="n">金額</th></tr>${dues.map(([d,v])=>`<tr><td>${esc(d)}</td><td class="n">${yen(v)}</td></tr>`).join('')}</table>`:'<div style="color:var(--sub)">ありません</div>'}</div>`;
   if(st.g==='全社')h+=`<div class="card"><h2>部門別（受入の内訳で按分）</h2><table><tr><th>部門</th><th class="n">当月</th><th class="n">前月</th><th class="n">差</th></tr>
     ${GROUPS.slice(1).map(g=>{const v=totalsOf(rows.filter(r=>inGroup(r,g)),g).pay,p=pv.reduce((s,x)=>s+Math.max(0,x.byGroup[g]||0),0);return `<tr><td><a href="#" data-g="${g}">${g}</a></td><td class="n">${yen(v)}</td><td class="n">${p?yen(p):'—'}</td><td class="n">${diffHtml(v,p)}</td></tr>`;}).join('')}</table></div>`;
@@ -769,6 +769,61 @@ function carryCard(){const ym=month(),pm=prevMonth(ym),pl=a=>String(af(a,'調整
     <table class="mt"><tr><th></th><th>調整した月 → 調整する月</th><th>仕入先</th><th>拠点</th><th class="n">税込</th><th class="n">税抜</th><th>受入伝票№</th><th>理由</th><th>状態</th></tr>
     ${T(late,'<span class="mst ng">過ぎている</span>')}${T(inM.filter(a=>!late.includes(a)),'<span class="mst warn">先月の調整分</span>')}${T(out,'<span class="mst ok">次月調整</span>')}${T(later,'<span class="s">先の月</span>')}</table></div>`;}
 
+// ---------- 相殺（売買相殺）：相殺先の請求先の、同じ締めの売上を SMILE の請求明細出力.txt（SharedMasters）から出す（2026-11-08） ----------
+//   決め方：相殺額 ＝ 支払額 と 売上の合計 の少ない方（10月払いの山善＝全額相殺・東正車輌＝売上 43,450 を相殺、で確かめた）
+//   締め：払う月の前の月（10月払い＝9月の売上）。ファイルは大きい（約11MB）ので、相殺先を開いたときに1回だけ読む
+let SALES={ym:null,p:null,by:{},err:''};
+function salesYm(){return prevMonth(month());}
+async function loadSales(){const ym=salesYm();if(SALES.ym===ym&&SALES.p)return SALES.p;SALES={ym,p:null,by:{},err:''};
+  const want=new Set(Object.values(OFFSET).flatMap(o=>o&&o.cust||[]));
+  SALES.p=(async()=>{if(MOCK||!want.size)return;
+    try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent('請求明細出力.txt')}:/content`,null,null,true),buf=await b.arrayBuffer();
+      let t=new TextDecoder('utf-8').decode(buf);if(t.slice(0,3000).includes('�'))t=new TextDecoder('shift_jis').decode(buf);
+      const L=t.replace(/^﻿/,'').split(/\r?\n/),sep=L[0].includes('\t')?'\t':',',cell=v=>String(v||'').replace(/^"|"$/g,'').trim(),hd=L[0].split(sep).map(cell);
+      const iB=hd.indexOf('請求先ｺｰﾄﾞ'),iD=hd.indexOf('伝票日付'),iA=hd.indexOf('売上金額'),iN=hd.indexOf('請求書番号'),iM=hd.indexOf('得意先名称１'),ym8=ym.replace('/','');
+      if(iB<0||iD<0||iA<0)throw new Error('請求明細出力.txt の列が読めません');
+      for(let k=1;k<L.length;k++){const c=L[k].split(sep);if(c.length<=iA)continue;const bc=cell(c[iB]);if(!want.has(bc))continue;if(cell(c[iD]).replace(/\D/g,'').slice(0,6)!==ym8)continue;
+        const v=Math.round(+cell(c[iA]).replace(/,/g,'')||0),o=SALES.by[bc]||(SALES.by[bc]={amt:0,name:cell(c[iM]),bills:{}});o.amt+=v;const no=cell(c[iN]);o.bills[no]=(o.bills[no]||0)+v;}}
+    catch(e){SALES.err=e.message;}})();
+  return SALES.p;}
+function offsetOf(r){const o=OFFSET[r.code];if(!o)return null;const cust=o.cust||[];
+  const rows=cust.map(c=>({code:c,...(SALES.by[c]||{amt:0,name:'',bills:{}})})).filter(x=>x.amt),sales=rows.reduce((t,x)=>t+x.amt,0);
+  const cur=linesOf(r).filter(l=>l.method==='相殺').reduce((t,l)=>t+(+l.amount||0),0),plan=Math.max(0,Math.min(Math.max(0,r.amount),sales));
+  return {cust,rows,sales,cur,plan,ready:SALES.ym===salesYm()&&SALES.p&&!SALES.loading,err:SALES.err};}
+// 相殺の行を入れた分け方（振込 → でんさい の順に減らす）
+function withOffset(r,x){const all=linesOf(r),cur=all.filter(l=>l.method==='相殺').reduce((t,l)=>t+(+l.amount||0),0);
+  const ls=all.filter(l=>l.method!=='相殺').map(l=>({method:l.method,amount:+l.amount||0,site:l.site,...(l.due?{due:l.due}:{})}));
+  if(cur){const t=ls.find(l=>l.method==='振込'||l.method==='でんさい');if(t)t.amount+=cur;else ls.unshift({method:'振込',amount:cur,site:0});}   // 前の相殺をいったん支払に戻す
+  let rest=x;
+  ['振込','でんさい','現金','口座振替','海外送金'].forEach(m=>ls.filter(l=>l.method===m).forEach(l=>{const d=Math.min(rest,Math.max(0,l.amount));l.amount-=d;rest-=d;}));
+  const out=ls.filter(l=>+l.amount);if(x)out.push({method:'相殺',amount:x,site:0});return out;}
+function offsetHtml(r,ed){const o=offsetOf(r),ym=salesYm();
+  if(!o.cust.length)return `<div class="sec box warn"><h4>相殺先（売買相殺）</h4><div style="font-size:13px">相殺得意先コード（AP_OffsetVendor）が入っていないので、売上を出せません。相殺するときは分け方に「相殺」の行を入れてください。</div>${ed?`<label style="display:block;margin-top:4px"><input type="checkbox" id="cOff" ${r.offsetChecked?'checked':''}> 相殺の有無を確認した</label>`:''}</div>`;
+  if(SALES.ym!==ym||!SALES.done){loadSales().then(()=>{SALES.done=true;if(st.sel===r.code)drawDetail();if(st.tab==='sum')render();});return '<div class="sec box warn"><h4>相殺先（売買相殺）</h4><div style="font-size:13px;color:var(--sub)">売上（SMILE の請求明細）を読んでいます…</div></div>';}
+  const lab=`${ym.replace('/','年')}月締めの売上`;
+  return `<div class="sec box ${r.offsetChecked?'':'warn'}"><h4>相殺先（売買相殺）${r.offsetChecked?' <span class="mst ok">✔ 確認済み</span>':''}<span class="sp"></span><span class="s">${lab}（SMILE の請求明細）</span></h4>
+    ${o.err?`<div style="color:var(--up);font-size:13px">売上を読めませんでした：${esc(o.err)}</div>`:''}
+    <table class="mt"><tr><th>請求先</th><th class="n">売上（税込）</th><th>請求書№</th></tr>
+      ${o.rows.map(x=>`<tr><td>${esc(x.code)} ${esc(x.name)}</td><td class="n">${yen(x.amt)}</td><td style="font-size:12px">${Object.keys(x.bills).map(esc).join('・')}</td></tr>`).join('')||`<tr><td colspan="3" class="s">${lab}はありません（${o.cust.length}コード）</td></tr>`}
+      <tr class="mg"><td>売上の合計</td><td class="n">${yen(o.sales)}</td><td></td></tr></table>
+    <div style="font-size:13px;margin-top:6px">支払額 <b>${yen(r.amount)}</b> ／ 相殺の目安（支払額と売上の少ない方）<b>${yen(o.plan)}</b>${o.cur?` ／ いまの分け方の相殺 <b>${yen(o.cur)}</b>`:''}</div>
+    ${ed?`<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+      ${o.plan?`<button class="pri" data-offgo="${o.plan}">目安どおり ${yen(o.plan)} を相殺する</button>`:''}
+      <span>額を入れて：<input type="number" id="offAmt" placeholder="相殺する額" style="width:120px"> <button id="offSet">相殺する</button></span>
+      <button id="offNo">${o.cur?'相殺をやめる（全額払う）':'相殺しない（確認した）'}</button></div>`:''}</div>`;}
+async function setOffset(r,x){const o=offsetOf(r),ym=salesYm();
+  if(!x&&!o.cur){await act(r,{'相殺の確認':true,'確認済み':false},'相殺しないで確認しました');return;}   // 分け方はそのまま
+  const ls=withOffset(r,x),same=JSON.stringify(ls.map(l=>[l.method,+l.amount,+l.site||0]))===JSON.stringify(r.calcLines.map(l=>[l.method,+l.amount,+l.site||0]));
+  const prev=String(r.reason||'').split('／').filter(t=>t&&!/^売買相殺/.test(t)),why=[...prev,...(x?[`売買相殺 ${yen(x)}：${ym.replace('/','年')}月締めの売上 ${yen(o.sales)}（${o.rows.map(y=>y.name||y.code).join('・')}）`]:[])].join('／');
+  await act(r,{'分け方の上書き':same?'':JSON.stringify(ls),'変えた理由':same?'':why,'相殺の確認':true,'確認済み':false},x?`${yen(x)} を相殺にしました`:'相殺をやめました');}
+// 次月調整のサマリーの横：今月の相殺先
+function offsetCard(){const rs=rowsG().filter(r=>r.offsetVendor&&needsCheck(r));if(!rs.length)return '';
+  if(SALES.ym!==salesYm()||!SALES.done){loadSales().then(()=>{SALES.done=true;if(st.tab==='sum')render();});}
+  return `<div class="card"><h2>相殺先（${rs.length}社）　<span style="font-weight:400;font-size:13px">${esc(salesYm().replace('/','年'))}月締めの売上と、相殺する額。行を押すとその仕入先の確認へ</span></h2>
+    <table class="mt"><tr><th>仕入先</th><th class="n">支払額</th><th class="n">売上</th><th class="n">相殺の目安</th><th class="n">いまの相殺</th><th>状態</th></tr>
+    ${rs.map(r=>{const o=offsetOf(r);return `<tr data-sel="${esc(r.code)}" style="cursor:pointer"><td>${esc(r.name)}</td><td class="n">${yen(r.amount)}</td><td class="n">${SALES.done?yen(o.sales):'…'}</td><td class="n">${SALES.done?yen(o.plan):'…'}</td><td class="n">${o.cur?yen(o.cur):'—'}</td>
+      <td>${r.offsetChecked?'<span class="mst ok">✔ 確認済み</span>':'<span class="mst warn">未確認</span>'}${!o.cust.length?' <span class="s">得意先コードなし</span>':''}</td></tr>`;}).join('')}</table></div>`;}
+
 // ---------- 明細の照合（受入明細 9521 ⇔ 請求書の明細）----------
 // 受入明細は取り込みのときに BILLS/SMILE取込/YYYY-MM/受入明細.json に残す。請求書の明細は AI が読んだもの（AP_Invoice の 請求書の明細）
 // 伝票ごとに突き合わせる：①伝票№が同じ ②金額（と日付）が同じ ③日付が同じ。残ったものは「受入だけ」「請求書だけ」
@@ -938,8 +993,7 @@ function drawDetail(){
       ${r.invoices.length?judgeHtml(r,ed):''}
       ${needsCheck(r)&&!r.invoices.length?noInvHtml(r,ed):''}
       ${alertsHtml(r)}
-      ${r.offsetVendor?`<div class="sec box warn"><h4>相殺先（AP_OffsetVendor）</h4><div style="font-size:13px">支払額は請求額（計算どおり）で出しています。相殺があるときは、分け方に「相殺」の行を入れ、支払の行を減らしてから確かめてください。</div>
-        ${ed?`<label style="display:block;margin-top:4px"><input type="checkbox" id="cOff" ${r.offsetChecked?'checked':''}> 相殺の有無を確認した</label>`:r.offsetChecked?'<div>✔ 確認済み</div>':''}</div>`:''}
+      ${r.offsetVendor?offsetHtml(r,ed):''}
       <div class="sec"><h4>分け方 <span style="font-weight:400">— マスタの決まり：${esc(r.rule||'')}</span></h4>
         <table class="sp-t"><tr><th>方法</th><th class="n">金額</th><th>サイト</th><th>期日</th><th></th></tr>
         ${lines.map((l,k)=>{const due=l.method==='でんさい'?S.dueDate(dash(month()),+l.site):'';
@@ -1010,6 +1064,9 @@ function wireDetail(r){
     draft=nz.length?nz:base;drawDetail();$('reason').value=reason;};
   on('bFix',()=>withDiff('調整',`請求書との端数差 ${r.invDiff>0?'+':''}${r.invDiff} 円を調整`));
   on('bOff',()=>withDiff('相殺','売買相殺（相殺通知の額）'));
+  document.querySelectorAll('[data-offgo]').forEach(b=>b.onclick=()=>{const x=+b.dataset.offgo;if(confirm(`${yen(x)} 円を相殺にして、支払を ${yen(r.amount-x)} 円にします。よろしいですか？`))setOffset(r,x);});
+  on('offSet',()=>{const x=Math.round(+$('offAmt').value||0);if(!(x>0)){snack('相殺する額を入れてください',true);return;}if(x>r.amount){snack('支払額より多くは相殺できません',true);return;}setOffset(r,x);});
+  on('offNo',()=>setOffset(r,0));
   document.querySelectorAll('[data-dk]').forEach(e=>e.onchange=()=>{const dd=dLines(r),k=+e.dataset.dk,f=e.dataset.df;dd[k][f]=f==='method'?e.value:(+e.value||0);
     if(f==='method'&&e.value==='でんさい'&&!dd[k].site)dd[k].site=(r.calcLines.find(l=>l.site)||{}).site||0;drawDetail();});
   document.querySelectorAll('[data-ddel]').forEach(e=>e.onclick=()=>{dLines(r).splice(+e.dataset.ddel,1);drawDetail();});
