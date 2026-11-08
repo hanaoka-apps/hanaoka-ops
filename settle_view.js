@@ -121,7 +121,7 @@
     function state() { var ok = rows.filter(function (x) { return S.checks[x._k] === 'ok'; }).length, hold = rows.filter(function (x) { return S.checks[x._k] === 'hold'; }).length;
       if (o.onState) o.onState({ ok: ok, total: rows.length, hold: hold }); }
     function list() { var a = rows.slice();
-      if (ui.q) a = a.filter(function (x) { return (x.payee + ' ' + (x.note || '')).indexOf(ui.q) >= 0; });
+      if (ui.q) { var nq = function (s) { return String(s == null ? '' : s).normalize('NFKC').toLowerCase().replace(/[\s　]/g, '').replace(/[ぁ-ゖ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 96); }); }, q = nq(ui.q); a = a.filter(function (x) { return nq(x.payee + ' ' + (x.note || '')).indexOf(q) >= 0; }); }   // 全角・半角のカナなどを区別しない
       if (ui.only === 'sp' || ui.only === 'ex') a = a.filter(function (x) { return (x.kind === '経費') === (ui.only === 'ex'); });
       if (ui.only === 'flag') a = a.filter(function (x) { return tags(x).length; });
       if (ui.only === 'unck') a = a.filter(function (x) { return S.checks[x._k] !== 'ok'; });
