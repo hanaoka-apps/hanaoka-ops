@@ -75,7 +75,9 @@
     (x.tags || []).forEach(function (a) { t.push(a); });   // 呼ぶ側の気づき [[文字, 't-new' など], …]
     return t; }
   var MINI = { on: (function () { try { return localStorage.getItem('settle.listMini') === '1'; } catch (e) { return false; } })(), set: function (v) { this.on = v; try { localStorage.setItem('settle.listMini', v ? '1' : ''); } catch (e) {} } };
-  var FULL = { on: (function () { try { return localStorage.getItem('settle.full') === '1'; } catch (e) { return false; } })(), set: function (v) { this.on = v; try { localStorage.setItem('settle.full', v ? '1' : ''); } catch (e) {} } };
+  // 全画面は覚えない（開くたびに通常の画面から。ユーザー 2026-11-08）。全画面から承認して次のパートを開くときだけ続ける（carry）
+  var FULL = { on: false, carry: false, set: function (v) { this.on = v; } };
+  try { localStorage.removeItem('settle.full'); } catch (e) {}
   var MEM = {};   // storeKey → 画面の状態（描き直しても選んだ明細・請求書を保つ）
   // 支払方法：色分けした札（big＝詳細の見出し用）
   var MCOL = { '振込': ['#1a5fa8', '#e3edf9'], '総合振込': ['#1a5fa8', '#e3edf9'], 'でんさい': ['#7a3db8', '#f1e8fb'], '手形': ['#7a3db8', '#f1e8fb'], '口座振替': ['#1e8449', '#e3f4e8'],
@@ -109,7 +111,7 @@
   function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 
   function mount(el, o) {
-    css();
+    css(); if (!FULL.carry) FULL.on = false; FULL.carry = false;
     var snap = o.snap, rows = (snap.rows || []).map(function (x, i) { return Object.assign({ _k: keyOf(x, i) }, x); });
     // o.state を渡すと、確認OK・保留・コメントはそれを使い、変わるたびに o.onChange(state) を呼ぶ（ハナオカ：SharePoint に保存して共有）。無ければ今までどおりブラウザに残す
     var NOTES = prevNotes(o.history || [], o.nameOf || function (x) { return x; });
@@ -143,7 +145,7 @@
       el.querySelectorAll('[data-t]').forEach(function (b) { b.onclick = function () { ui.tab = b.dataset.t; render(); }; });
       el.querySelector('.fs-t').onclick = function () { FULL.set(!FULL.on); render(); };
       el.querySelectorAll('[data-part]').forEach(function (b) { b.onclick = function () { var pt = (o.parts || [])[+b.dataset.part]; if (pt && !pt.cur) pt.open(); }; });
-      if (el.querySelector('.fx') && o.onApprove) el.querySelector('.fx').onclick = function () { if (confirm('このパートを' + (o.approveLabel || '承認') + 'します。よろしいですか？（コメント・補足メモも一緒に送ります）')) o.onApprove(); };
+      if (el.querySelector('.fx') && o.onApprove) el.querySelector('.fx').onclick = function () { if (confirm('このパートを' + (o.approveLabel || '承認') + 'します。よろしいですか？（コメント・補足メモも一緒に送ります）')) { FULL.carry = true; o.onApprove(); } };
       else if (el.querySelector('.fx')) el.querySelector('.fx').onclick = function () { FULL.set(false); render(); var bt = document.getElementById('bOk'); if (bt) bt.scrollIntoView({ block: 'center' }); };
     }
     // パートのタブ（本社分＝総務・国内営業・ソリューション）。2つ以上届いているときだけ
