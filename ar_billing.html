@@ -540,6 +540,34 @@ const LISTS = {
     {name:'Status',text:{}}, DATA_COL ] },
 };
 const listIds={}, listErr={};
+// 支払管理（仕入）の売買相殺：相殺先（AP_OffsetVendor）の相殺得意先コード ＝ この画面の請求先。仕入の確認で決めた相殺の額を出す（2026-11-08）
+//   相殺の入金伝票が SMILE に入るまでは未入金に見えるので、見間違えないように。支払管理のサイトを読めない人には出さない
+const AP_SITE='hanaokacorp.sharepoint.com,d80378dd-76a4-43f0-b939-1af66345d19d,8eaeb70b-2495-4029-affb-eabe80e021bb';
+let OFFS={}, offErr='';
+async function loadOffsets(){
+  OFFS={}; offErr='';
+  try{
+    const all=async url=>{const out=[];while(url){const d=await graphGet(url);out.push(...(d.value||[]));url=d['@odata.nextLink']?d['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0',''):null;}return out;};
+    const ov=await all(`/sites/${AP_SITE}/lists/AP_OffsetVendor/items?$expand=fields&$top=200`);
+    const V={};ov.forEach(x=>{const f=x.fields||{};if(f.OffsetFlag===false||!f.VendorCode)return;V[String(f.VendorCode).trim().padStart(6,'0')]={name:f.VendorName||'',cust:String(f.OffsetCustomerCode||'').split(/[,\s、]+/).filter(Boolean)};});
+    const d=new Date(),from=`${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}`,ymBack=(ym,n)=>{const [y,m]=ym.split('/').map(Number),t=new Date(y,m-1-n,1);return `${t.getFullYear()}/${String(t.getMonth()+1).padStart(2,'0')}`;};
+    const sp=await all(`/sites/${AP_SITE}/lists/AP_SmilePay/items?$expand=fields&$top=500&$filter=${encodeURIComponent(`fields/PayYM ge '${ymBack(from,3)}'`)}`).catch(async()=>await all(`/sites/${AP_SITE}/lists/AP_SmilePay/items?$expand=fields&$top=500`));
+    sp.forEach(x=>{const f=x.fields||{},vc=String(f.VendorCode||'').padStart(6,'0'),v=V[vc];if(!v||!v.cust.length||String(f.PayYM||'')<ymBack(from,3))return;
+      let ls=[];try{ls=JSON.parse(f.SplitOverride||f.CalcLines||'[]')||[];}catch(e){}
+      const amt=ls.filter(l=>l.method==='相殺').reduce((t,l)=>t+(+l.amount||0),0);if(!amt&&!f.OffsetChecked)return;
+      const o={vendor:vc,vendorName:v.name||f.VendorName||'',ym:f.PayYM,amount:Math.round(amt),checked:!!f.OffsetChecked,cust:v.cust};
+      v.cust.forEach(c=>{(OFFS[c]=OFFS[c]||[]).push(o);});});
+    Object.values(OFFS).forEach(a=>a.sort((x,y)=>String(y.ym).localeCompare(String(x.ym))));
+  }catch(e){offErr=e.message;console.warn('支払管理の相殺を読めませんでした',e);}
+}
+// 相殺の締め：払う月の前の月の売上（10月払い ＝ 9月締め）
+const offClose=ym=>{const [y,m]=String(ym).split('/').map(Number),t=new Date(y,m-2,1);return `${t.getFullYear()}年${t.getMonth()+1}月締め`;};
+function offTag(c){const a=(OFFS[c.code]||[]).filter(o=>o.amount);if(!a.length)return '';const o=a[0];
+  return ` <span class="pill" style="background:#f1e8fb;color:#7a3db8" title="支払管理（仕入）で ${esc(o.vendorName)}（${esc(o.vendor)}）の ${esc(o.ym)} 払いを ${yen(o.amount)} 円 売買相殺（${esc(offClose(o.ym))}の売上と）">相殺予定 ${yen(o.amount)}</span>`;}
+function offPanel(c){const a=OFFS[c.code]||[];if(!a.length)return '';
+  return `<div class="more-note" style="background:#f7f1fd;border:1px solid #e4d4f5;border-radius:8px;padding:8px 10px;margin-bottom:8px">
+    <b style="color:#7a3db8">支払管理（仕入）の売買相殺</b>　<span class="muted">相殺の入金伝票が SMILE に入るまでは、未入金に見えることがあります</span>
+    ${a.map(o=>`<div style="margin-top:3px">${esc(o.ym)} 払い（${esc(offClose(o.ym))}の売上と）：仕入先 <b>${esc(o.vendorName)}</b>（${esc(o.vendor)}）　${o.amount?`<b>${yen(o.amount)} 円を相殺</b>`:'相殺しない（総務が確認済み）'}${o.cust.length>1?`<span class="muted">　同じ仕入先の請求先 ${o.cust.length} 件のどれかで相殺</span>`:''}</div>`).join('')}</div>`;}
 let specialErr='';
 let msalInstance=null, account=null, driveId=null;
 let SRC={};          // 読み込んだ行（キーは FILES と同じ）
@@ -747,7 +775,7 @@ async function loadAll(){
   await Promise.all(Object.entries(FILES).map(async([k,f])=>{
     try{ const r=await fetchFile(f.name); SRC[k]=ARCore.toObjects(r.text); SRCINFO[k]={modified:r.modified,from:'SharePoint'}; }
     catch(e){ console.warn(f.name,e); if(!SRC[k]) missing.push(f.name); }
-  }).concat([loadSpecials(),loadFollows(),loadSettings(),loadOpening()]));
+  }).concat([loadSpecials(),loadFollows(),loadSettings(),loadOpening(),loadOffsets()]));
   if(!SRC.detail||!SRC.customers){
     setStatus('error','読み込めませんでした: '+esc(missing.join('、'))+'　右上の「ファイルを選ぶ」で手元のファイルからも開けます。'); return;
   }
@@ -1115,6 +1143,7 @@ function renderDetail(){
 
   if(c.diffOld&&!c.excludeReason) sec1+=`<div class="more-note">別に、期首まわりの差 ${yen(c.diffOld)} 円（${(c.oldPeriods||[]).map(oldText).join('・')}）があります。
     違算・フォローの画面の下の「期首まわりの差」に出ています。</div>`;
+  sec1=offPanel(c)+sec1;
   const recentInv=[...c.invoiceList].reverse();
   const sec2=recentInv.length?`<div class="tw"><table>
       <thead><tr><th>請求書</th><th>締日</th><th class="num">請求額</th><th>回収予定日</th><th>入金状況</th></tr></thead>
@@ -1679,7 +1708,7 @@ function renderGap(){
     html+=`<div class="panel"><h3 class="basehead">${esc(b)} <small>${G.length}件</small>
       <span class="tot">未入金 <b>${yen(sum(G.filter(c=>c.diff>0)))}</b>　過入金 <b>${yen(-sum(G.filter(c=>c.diff<0)))}</b></span></h3>
       <div class="tw"><table><thead><tr><th>回収予定日</th><th class="num">経過</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th>フォロー（原因・過失責任・入金予定日）</th><th></th></tr></thead><tbody>
-      ${G.map(c=>`<tr class="crow click" data-c="${esc(c.code)}"><td colspan="4"><span class="mono muted" style="font-size:12px">${esc(c.code)}</span> <b>${esc(c.name)}</b>
+      ${G.map(c=>`<tr class="crow click" data-c="${esc(c.code)}"><td colspan="4"><span class="mono muted" style="font-size:12px">${esc(c.code)}</span> <b>${esc(c.name)}</b>${offTag(c)}
           ${selBase?'':`<span class="basetag">${esc(c.base)}</span>`}<span class="muted" style="font-size:12px">　${esc(c.staffName)}　${esc(c.closeLabel)}・${esc(c.termsLabel)}</span>
           ${c.termsNote?`<div class="reason">${esc(c.termsNote)}</div>`:''}</td>
           <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td><td colspan="2">${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`
