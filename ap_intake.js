@@ -146,8 +146,8 @@
         // 請求書の明細（確認の全画面で受入明細・仕訳と比べる）。列が無ければ入れない
         if (IV.fmap['請求書の明細'] && (r.items || []).length) patch[fi('請求書の明細')] = JSON.stringify({ amount: r.items_amount || '', items: r.items });
         patch.AIStatus = r.status === '読取失敗' ? '読取失敗' : 'AI確認済';
-        // 仕入は 1ファイル＝請求書1通（2026-11-09 決まり）：2通以上あれば行を足さずに止め、分けて渡し直してもらう（経費の税納付などは今までどおり2件に）
-        if (/仕入$/.test(f[fi('支払区分')] || r.category || '') && (r.extra || []).length) {
+        // 1ファイル＝請求書1通（2026-11-09 決まり。仕入も経費も。源泉所得税・住民税も別々のファイルで渡す）：2通以上あれば行を足さずに止め、分けて渡し直してもらう
+        if ((r.extra || []).length) {
           const one = h => `${h.InvoiceNo ? 'No.' + h.InvoiceNo + ' ' : ''}${h.PayeeName || ''} ${yen(h.AmountInclTax)}円`.trim();
           cmt.unshift(`${MULTI_MARK}：${[H].concat(r.extra.map(x => x.header || {})).map(one).join('・')}。1通ずつのファイルに分けて渡し直してください（このファイルは「🗑 取り消す」で消してください）`);
           patch.AIStatus = '読取失敗'; r.extra = [];
