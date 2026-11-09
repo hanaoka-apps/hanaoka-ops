@@ -325,7 +325,7 @@
           row('SMILE の額', sm.incl != null ? '税込仕入額 ' + yen(sm.incl) + (Math.round(sm.incl) === gross(x) ? ' <b style="color:var(--down)">✔ 支払額と一致</b>' : '') + (sm.carry ? '／繰越 ' + yen(sm.carry) : '') + (sm.held ? '（保留 ' + yen(sm.held) + '・3月末に整理）' : '') : '') +
           row('振込先の変更', x.bankChange ? '<b style="color:var(--up)">' + esc(x.bankChange) + '</b>' : '') + row('備考', esc(x.note)) + '</div>';
       var ibHtml = function () { return txl && ui.itab === 'ln' ? linesHtml(x.lines) : kvH + (txl ? taxSum(x.lines) : linesHtml(x.lines)); };
-      dt.innerHTML = '<div class="dn"><button class="p">◀ 前へ</button><span style="color:var(--sub)">' + (i + 1) + ' ／ ' + a.length + '</span><button class="n">次へ ▶</button><span class="sp"></span>' + (c ? '<span class="tag ' + (c === 'ok' ? 't-ok' : 't-new') + '">' + (c === 'ok' ? '✔ 確認OK' : '⏸ 保留') + '</span>' : '') + '</div>' +
+      dt.innerHTML = '<div class="dn"><button class="p">◀ 前へ</button><span style="color:var(--sub)">' + (i + 1) + ' ／ ' + a.length + '</span><button class="n"' + (i >= a.length - 1 ? ' disabled' : '') + '>次へ ▶</button><span class="sp"></span>' + (c ? '<span class="tag ' + (c === 'ok' ? 't-ok' : 't-new') + '">' + (c === 'ok' ? '✔ 確認OK' : '⏸ 保留') + '</span>' : '') + '</div>' +
         '<div class="db"><div class="di"><div class="hd"><div style="min-width:0"><div style="font-size:12px;color:var(--sub)">' + esc(x.genre || '') + (x.no ? '・' + esc(x.no) : '') + '</div><h3 style="margin:2px 0 6px;font-size:18px">' + esc(x.payee) + '</h3>' +
           '<div class="mrow">' + mth(x.method, true) + '<span class="when">' + esc(x.due ? '期日 ' + x.due : x.payDate ? '支払日 ' + x.payDate : '') + '</span>' + tags(x).map(function (t) { return '<span class="tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }).join('') + '</div></div>' +
           cmp(x) + '</div>' +
@@ -339,10 +339,13 @@
         '<div class="chips">' + (x.invoices || []).map(function (k, j) { return '<button class="chip' + (ui.pdf[x._k] === k ? ' on' : '') + '" data-pdf="' + esc(k) + '" style="margin:0 4px 4px 0">📄 請求書 ' + (j + 1) + '</button>'; }).join('') +
           tabsOf(x).map(function (t) { return '<button class="chip' + (ui.pdf[x._k] === t.k ? ' on' : '') + '" data-pdf="' + t.k + '" style="margin:0 4px 4px 0">' + t.l + '</button>'; }).join('') + '</div>' +
         '<div class="pdf">' + ((x.invoices || []).length || tabsOf(x).length ? '読み込み中...' : '請求書の添付はありません') + '</div></div></div>' +
-        '<div class="da">' + (o.canAct ? '<button class="h">⏸ 保留</button><button class="c">💬 補足メモ</button><span class="sp"></span><span style="font-size:11.5px;color:var(--sub)">Enter：OK・次へ　←→：前・次　H：保留</span><button class="pri ok" style="font-size:15px;padding:7px 20px">✔ OK・次へ</button>'
+        '<div class="da">' + (o.canAct ? '<button class="h">⏸ 保留</button><button class="c">💬 補足メモ</button><span class="sp"></span><span style="font-size:11.5px;color:var(--sub)">Enter：OK・次へ　←→：前・次　H：保留</span>' + (function () { var nOk = rows.filter(function (y) { return S.checks[y._k] === 'ok'; }).length, rest = rows.length - nOk;
+            return rest ? '<button class="pri ok" style="font-size:15px;padding:5px 20px;line-height:1.25">✔ OK・次へ<small style="display:block;font-size:11px;font-weight:500;opacity:.9">確認 ' + nOk + '／' + rows.length + '・あと ' + rest + ' 件</small></button>'
+              : '<button class="pri fin" style="font-size:15px;padding:5px 20px;line-height:1.25;background:var(--down,#1e8449);border-color:var(--down,#1e8449)">✔ 完了 → ' + esc(o.approveLabel || '承認') + 'へ<small style="display:block;font-size:11px;font-weight:500;opacity:.9">確認 ' + nOk + '／' + rows.length + '・すべて確認しました</small></button>'; })()
           : '<span style="font-size:12px;color:var(--sub)">あなたの番になると「確認OK」を付けられます</span>') + '</div>';
       var q = function (s) { return dt.querySelector(s); };
       q('.p').onclick = function () { go(-1); }; q('.n').onclick = function () { go(1); };
+      if (q('.fin')) q('.fin').onclick = finish;
       if (q('.ok')) { q('.ok').onclick = function () { mark('ok'); }; q('.h').onclick = function () { mark('hold'); }; q('.c').onclick = function () { dt.classList.remove('tblmode'); q('.cm').style.display = ''; q('.cm').focus(); }; }
       q('.cm').oninput = function (e) { S.comments[x._k] = e.target.value; persist(); };
       dt.querySelectorAll('[data-pdf]').forEach(function (b) { b.onclick = function () { showPdf(x, b.dataset.pdf); }; });
@@ -395,9 +398,14 @@
         put(b2, u ? docHtml(u, key) : "請求書を開けませんでした"); });
     }
     function go(d) { var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }), n = a[Math.min(a.length - 1, Math.max(0, i + d))]; if (n) { ui.sel = n._k; rowsHtml(); detail(); } }
+    // すべて確認したら：承認へ（全画面の「すべて確認しました → このパートを承認する」と同じ）。承認できない画面では、下の承認のボタンへ
+    function finish() {
+      if (o.onApprove) { if (confirm('このパートを' + (o.approveLabel || '承認') + 'します。よろしいですか？（コメント・補足メモも一緒に送ります）')) { FULL.carry = true; o.onApprove(); } return; }
+      FULL.set(false); render(); var bt = document.getElementById('bOk'); if (bt) bt.scrollIntoView({ block: 'center' });
+    }
     function mark(v) { if (!o.canAct) return; var a = list(), i = a.findIndex(function (x) { return x._k === ui.sel; }); if (i < 0) return;
       S.checks[ui.sel] = v; persist();
-      var nx = a.slice(i + 1).filter(function (x) { return !S.checks[x._k]; })[0] || a[i + 1]; if (nx) ui.sel = nx._k;
+      var nx = a.slice(i + 1).filter(function (x) { return !S.checks[x._k]; })[0] || a.filter(function (x) { return !S.checks[x._k]; })[0] || a[i + 1]; if (nx) ui.sel = nx._k;   // 最後まで来たら、まだの明細に戻る
       render(); }
     el.addEventListener('keydown', function (e) {
       if (ui.tab !== 'rev' || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.ctrlKey || e.altKey || e.metaKey) return;
