@@ -222,9 +222,9 @@ async function loadInvoices(){
     const code0=String(iv(f,'支払先コード')||'').trim(),rn=String(iv(f,'登録番号')||'').trim();if(code0&&/^T\d{13}$/.test(rn))REGNO[rn]=code0;if(code0&&(iv(f,'対象年月')||'')===pym)PINV[code0]=1;   // 前月に請求書があった仕入先（今月まだ無ければ「忘れていそう」）
       // 登録番号 → 仕入先（過去に付けたもの。受信トレイの当てに使う）
     if((iv(f,'対象年月')||'')!==ym||iv(f,'アーカイブフラグ')===true)return;const code=code0;
-    if(!code){INBX.push({id:String(it.id),f,payee:iv(f,'支払先名')||'',title:f.Title||'',amount:+iv(f,'金額_税込')||0,regNo:rn,doc:String(iv(f,'DOCコード')||''),ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',
+    if(!code){INBX.push({id:String(it.id),f,payee:iv(f,'支払先名')||'',title:f.Title||'',amount:+iv(f,'金額_税込')||0,regNo:rn,no:iv(f,'請求NO')||'',log:parseJ(f.CheckLog,[])||[],doc:String(iv(f,'DOCコード')||''),ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',
       bank:{code:String(f.PayeeBankCode||''),bcode:String(f.PayeeBranchCode||''),no:String(f.PayeeAcctNo||''),name:String(f.PayeeBankName||''),holder:String(f.PayeeAcctHolder||'')}});return;}
-    (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',amount:+iv(f,'金額_税込')||0,excl:+iv(f,'金額_税抜')||0,doc:String(iv(f,'DOCコード')||''),items:parseJ(iv(f,'請求書の明細'),null),
+    (INV[code]=INV[code]||[]).push({id:it.id,name:iv(f,'支払先名')||'',no:iv(f,'請求NO')||'',regNo:rn,amount:+iv(f,'金額_税込')||0,excl:+iv(f,'金額_税抜')||0,doc:String(iv(f,'DOCコード')||''),items:parseJ(iv(f,'請求書の明細'),null),
       ai:f[V3.ai]||'',com:String(f[V3.com]||''),by:f[V3.by]||'',at:f[V3.at]||'',log:parseJ(f.CheckLog,[])||[]});});
   DOCN={};[...Object.values(INV).flat(),...INBX].forEach(x=>{const k=String(x.doc||'').split('\n')[0].trim();if(k)DOCN[k]=(DOCN[k]||0)+1;});
   if(INBX.length)setTimeout(()=>matchInbox(),0);}   // 受信トレイ：今月の支払先リストがあれば仕入先を当てる（リストを取り込んだ後も、ここで当たる）
@@ -1349,8 +1349,49 @@ function alertsHtml(r){const act=r.aiAll.filter(a=>!a.ok),done=r.aiAll.filter(a=
 // 請求書の印：1つのファイルから何件もできた（何社分もまとめたスキャン）・同じ仕入先に同じ金額の請求書がもう1枚ある（二重かも）
 function invMarks(x,list){const m=[],k=String(x.doc||'').split('\n')[0].trim();
   if(k&&DOCN[k]>1)m.push(['まとめたスキャン（'+DOCN[k]+'件）','1つのファイルから '+DOCN[k]+' 件の請求書ができています。添付が別の会社の請求書かもしれません。1社ずつのファイルを置き直したら、こちらは取り消してください']);
-  if(x.amount&&(list||[]).some(y=>y!==x&&String(y.id)!==String(x.id)&&Math.round(y.amount)===Math.round(x.amount)&&(!x.no||!y.no||x.no===y.no)))m.push(['二重？','同じ仕入先に同じ金額の請求書がもう1枚あります。同じものなら片方を取り消してください']);
-  return m.map(([t,h])=>` <span class="mst warn" title="${esc(h)}">${esc(t)}</span>`).join('');}
+  const dn=dupsOf(x).length;
+  return m.map(([t,h])=>` <span class="mst warn" title="${esc(h)}">${esc(t)}</span>`).join('')+(dn?` <button type="button" class="mst warn" data-dupcmp="${esc(x.id)}" style="cursor:pointer;border:0" title="同じ相手・同じ金額の請求書がもう${dn}枚あります。並べて見て、同じものなら片方を取り消してください">⇔ 二重？並べて見る</button>`:'');}
+// ---------- 二重の確認（2026-11-09）：同じ相手（仕入先・登録番号・支払先名のどれか）で同じ金額（請求No が両方あれば同じ）の請求書。「仕入先が決まらない」と「付けた」をまたいで見る ----------
+//   「⇔ 並べて見る」で2枚を横に並べ、違う所に色を付ける。同じならその場で片方を取り消す。別のものなら「二重ではない」を確認の記録（CheckLog）に残し、印を出さない
+const pkey=s=>String(s||'').normalize('NFKC').replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|㈱|㈲|[\s　・.,、。]/g,'');
+function allInv(){return [...INBX.map(x=>({x,code:'',name:x.payee||x.title})),...Object.entries(INV).flatMap(([c,xs])=>xs.map(x=>({x,code:c,name:x.name})))];}
+const notDup=(a,b)=>(a.log||[]).some(e=>e.act==='二重ではない'&&String(e.other)===String(b.id))||(b.log||[]).some(e=>e.act==='二重ではない'&&String(e.other)===String(a.id));
+function dupsOf(x){if(!x||!Math.round(x.amount||0))return [];const all=allInv(),me0=all.find(o=>String(o.x.id)===String(x.id));if(!me0)return [];
+  return all.filter(o=>{const y=o.x;if(String(y.id)===String(x.id)||Math.round(y.amount)!==Math.round(x.amount))return false;if(x.no&&y.no&&x.no!==y.no)return false;
+    const same=(me0.code&&o.code&&me0.code===o.code)||(x.regNo&&y.regNo&&x.regNo===y.regNo)||(pkey(me0.name)&&pkey(me0.name)===pkey(o.name));
+    return same&&!notDup(x,y);});}
+let DUPC=null;
+function openDup(id,k){const all=allInv(),a=all.find(o=>String(o.x.id)===String(id));if(!a)return;const ds=dupsOf(a.x);if(!ds.length){snack('二重の候補はもうありません');return;}
+  k=Math.min(k||0,ds.length-1);const b=ds[k];DUPC={id,k};
+  let dl=$('dupDlg');if(!dl){dl=document.createElement('div');dl.id='dupDlg';dl.className='slipdlg';document.body.appendChild(dl);}
+  const C=monthList(),lockOf=o=>o.code&&(rows.find(r=>r.code===o.code)||{}).checked;
+  const F2=[['受け付け',o=>fmtTime(o.x.at)+'　'+(o.x.by||'')],['支払先（AI が読んだ）',o=>o.name||'—'],['請求No',o=>o.x.no||'—'],['登録番号',o=>o.x.regNo||'—'],['金額',o=>yen(o.x.amount)+' 円'],
+    ['仕入先',o=>o.code?`${(C[o.code]||{}).name||o.code}（${o.code}）`:'まだ決まっていない'],['ファイル',o=>String(o.x.doc||'').split('\n').map(p=>p.split('/').pop()).join('・')]];
+  const col=(o,side)=>`<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px"><table class="mt" style="font-size:12.5px">${F2.map(([l,fn])=>{const v=fn(o),w=fn(side===0?b:a),df=v!==w&&l!=='ファイル'&&l!=='受け付け';
+      return `<tr><th style="white-space:nowrap;width:120px">${esc(l)}</th><td style="white-space:normal;${df?'background:var(--warn-l);font-weight:700':''}">${esc(v)}</td></tr>`;}).join('')}</table>
+    <div class="pdf" id="dupv${side}" style="height:calc(100vh - 330px);min-height:360px;margin:0;background:#525659;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff">読み込み中...</div>
+    <div style="display:flex;gap:8px;align-items:center">${lockOf(o)?'<span style="font-size:12px;color:var(--sub)">🔒 確認OK 済みの仕入先（取り消すときは確認の画面で「確認を外す」）</span>':`<button data-dupdrop="${esc(o.x.id)}">🗑 こちらを取り消す</button>`}</div></div>`;
+  dl.innerHTML=`<div class="slipbox" style="width:min(1500px,100%);padding:0 0 12px"><div class="sh" style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)"><b>⇔ 二重かどうか並べて見る</b>
+      ${ds.length>1?`<span style="font-size:12px;color:var(--sub)">候補 ${ds.length}枚：</span>${ds.map((_,i)=>`<button data-dupk="${i}" class="${i===k?'on':''}" style="padding:1px 8px">${i+1}</button>`).join('')}`:''}
+      <span style="font-size:12px;color:var(--sub)">色が付いている所が違います</span><span style="flex:1"></span><button id="dupNo" title="同じ相手・同じ金額だが別の請求書（毎月同じ額など）。この2枚には二重の印を出しません">別の請求書（二重ではない）</button><button id="dupX">閉じる ✕</button></div>
+    <div style="display:flex;gap:14px;padding:12px 14px">${col(a,0)}${col(b,1)}</div></div>`;dl.hidden=false;
+  const close=()=>{dl.hidden=true;dl.innerHTML='';DUPC=null;};dl.onclick=e=>{if(e.target===dl)close();};$('dupX').onclick=close;
+  dl.querySelectorAll('[data-dupk]').forEach(x=>x.onclick=()=>openDup(id,+x.dataset.dupk));
+  [a,b].forEach(async(o,side)=>{const p=String(o.x.doc||'').split('\n')[0].trim(),key=`${o.x.id}#0`;if(!p){const v=$('dupv'+side);if(v)v.textContent='PDF の場所がありません';return;}
+    if(!pdfCache[key]){const u=await docBlob(p);if(u)pdfCache[key]=u;}const v=$('dupv'+side);if(v&&!dl.hidden)v.innerHTML=pdfCache[key]?APDoc.view(pdfCache[key],p):'PDF を開けませんでした';});
+  dl.querySelectorAll('[data-dupdrop]').forEach(x=>x.onclick=async()=>{const o=[a,b].find(o=>String(o.x.id)===x.dataset.dupdrop);if(!o)return;
+    await dropInvoice(o.x.id,`${o.x.no?'No.'+o.x.no+' ':''}${o.name} ${yen(o.x.amount)}（二重）`);if(!allInv().some(z=>String(z.x.id)===String(o.x.id)))close();});
+  $('dupNo').onclick=async()=>{if(!confirm(`「${a.name} ${yen(a.x.amount)}」の2枚は別の請求書として、二重の印を出さないようにします。よろしいですか？`))return;
+    try{const at=new Date().toISOString();for(const [p,q] of [[a,b],[b,a]]){const lg=(p.x.log||[]).concat([{act:'二重ではない',other:String(q.x.id),by:me(),at}]);
+        await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${p.x.id}/fields`,{CheckLog:JSON.stringify(lg)});p.x.log=lg;}
+      snack('二重ではない、と記録しました');close();await loadInvoices();render();}catch(e){snack('記録できませんでした：'+e.message,true);}};}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-dupcmp]');if(b){e.preventDefault();e.stopPropagation();openDup(b.dataset.dupcmp,0);}},true);
+document.addEventListener('keydown',e=>{const d=$('dupDlg');if(e.key==='Escape'&&d&&!d.hidden){e.stopImmediatePropagation();d.hidden=true;d.innerHTML='';DUPC=null;}},true);
+// 並べ替え（請求書を渡す）：受け付け順・支払先順・金額順
+const SORTS=[['at','受け付け順'],['name','支払先順'],['amt','金額順']];
+function sortInv(a,k,nameOf){const nm=o=>pkey(nameOf(o));return k==='name'?a.slice().sort((x,y)=>nm(x).localeCompare(nm(y),'ja')||Math.round(y.amount||y.x&&y.x.amount||0)-Math.round(x.amount||x.x&&x.x.amount||0))
+  :k==='amt'?a.slice().sort((x,y)=>((y.x||y).amount||0)-((x.x||x).amount||0)):a;}
+const sortSeg=(key,cur)=>`<span style="font-size:12px;color:var(--sub);margin-left:8px">並び：</span><span class="seg">${SORTS.map(([k,l])=>`<button type="button" data-${key}="${k}" class="${(cur||'at')===k?'on':''}">${l}</button>`).join('')}</span>`;
 // 請求書を取り消す（間違えて置いた・二重・まとめたスキャン）。消さずにアーカイブにする（一覧・照合・支払指図から外れる。SharePoint には残る）
 async function dropInvoice(id,label){const why=prompt(`「${label}」の請求書を取り消します（一覧から外れます。ファイルと記録は残ります）。\n理由：`,'二重に置いた・まとめたスキャンのため');
   if(why===null)return;
@@ -1387,7 +1428,7 @@ function expCardHtml(open){const a=expLike(open);if(!a.length)return '';const n=
   return `<div class="card" style="border-color:#c9cdf0"><h2>経費らしいもの（${a.length}）<span style="font-size:12px;color:var(--sub);font-weight:400;margin-left:8px">今月の支払先リストに無く、AI が経費（運送・派遣・電気・保守など）と見た請求書。拠点を確かめて、まとめて経費に回せます</span></h2>
     <div style="overflow-x:auto"><table><tr><th style="width:28px"></th><th>支払先（AI が読んだ）</th><th class="n">金額</th><th>拠点</th><th>AI の見立て</th></tr>
     ${a.map(o=>`<tr${o.dup?' style="background:var(--warn-l)"':''}><td><input type="checkbox" data-exon="${o.x.id}" ${o.on?'checked':''}></td>
-      <td style="white-space:normal"><b>${esc(o.x.payee||o.x.title)}</b>${o.dup?' <span class="tag t-up">二重？同じ請求書がもう1件</span>':''}<div><a href="#" data-ibpdf="${esc(o.x.id)}" style="font-size:12px">📄 請求書を見る</a></div></td>
+      <td style="white-space:normal"><b>${esc(o.x.payee||o.x.title)}</b>${o.dup?` <button type="button" class="tag t-up" data-dupcmp="${esc(o.x.id)}" style="cursor:pointer;border:0">⇔ 二重？並べて見る</button>`:''}<div><a href="#" data-ibpdf="${esc(o.x.id)}" style="font-size:12px">📄 請求書を見る</a></div></td>
       <td class="n">${yen(o.x.amount)}</td>
       <td><select data-exloc="${o.x.id}">${['工場','本社'].map(l=>`<option ${o.loc===l?'selected':''}>${l}</option>`).join('')}</select></td>
       <td style="white-space:normal;font-size:12px;color:var(--sub);max-width:520px">${esc(o.why.slice(0,140))}</td></tr>`).join('')}</table></div>
@@ -1428,9 +1469,9 @@ function drawInbox(){
         <div class="ho-row"><span class="ho-k">複数</span><span class="seg">${[[0,'別々の請求書'],[1,'1件にまとめる']].map(([v,l])=>`<button type="button" data-ibmg="${v}" class="${+MERGE_UP===v?'on':''}">${l}</button>`).join('')}</span><span class="ho-m">${MERGE_UP?'置いたファイルを1件の請求書として受け付けます':''}</span></div>
         <div class="ho-note">1つのファイルに請求書1通にしてください（2通以上入っていると受け付けません。まとめてスキャンしたものは1通ずつに分けてから渡してください）。今月のリストに無いものは「経費に回す」へ</div>
       </div></div></div>
-    ${expCardHtml(open)}<div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span> <button id="ibRetry" style="font-size:12px;padding:1px 8px" title="読み取りに失敗した請求書を、AI にもう一度読ませる（4件ずつ順番に）">🔄 もう一度読む（${fail.length}件）</button>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}</h2>
+    ${expCardHtml(open)}<div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span> <button id="ibRetry" style="font-size:12px;padding:1px 8px" title="読み取りに失敗した請求書を、AI にもう一度読ませる（4件ずつ順番に）">🔄 もう一度読む（${fail.length}件）</button>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}${sortSeg('ibs',st.ibs)}</h2>
       <table><tr><th>受け付け</th><th>請求書（AI が読んだ支払先）</th><th class="n">金額</th><th>仕入先</th><th></th></tr>
-      ${[...reading,...fail,...open].map(x=>{const m=x.ai==='AI確認済'&&!busyX(x)&&nC?matchOne(x,C):null,cs=m&&m.cands?m.cands:[];
+      ${[...reading,...fail,...sortInv(open,st.ibs,x=>x.payee||x.title)].map(x=>{const m=x.ai==='AI確認済'&&!busyX(x)&&nC?matchOne(x,C):null,cs=m&&m.cands?m.cands:[];
         const opts=cs.map(c=>`<option value="${c}">${esc(C[c].name)}（${c}）— ${esc(m.why[c].join('・'))}</option>`).join('')+`<option value="" disabled>──── 今月のリストから ────</option>`+Object.values(C).filter(v=>!cs.includes(v.code)).sort((a,b)=>a.name.localeCompare(b.name,'ja')).map(v=>`<option value="${v.code}">${esc(v.name)}（${v.code}）</option>`).join('');
         return `<tr><td style="font-size:12px">${esc(fmtTime(x.at))}<div style="color:var(--sub)">${esc(x.by)}</div></td>
           <td style="white-space:normal"><b>${esc(x.payee||x.title)}</b>${x.regNo?`<div style="font-size:11.5px;color:var(--sub)">${esc(x.regNo)}</div>`:''}<div><a href="#" data-ibpdf="${esc(x.id)}" style="font-size:12px">📄 請求書を見る</a>${invMarks(x,null)}</div></td>
@@ -1459,6 +1500,8 @@ function drawInbox(){
   document.querySelectorAll('[data-lkdrop]').forEach(b=>b.onclick=()=>{const x=linkedList().find(o=>String(o.x.id)===b.dataset.lkdrop);if(x)dropInvoice(x.x.id,`${x.x.no?'No.'+x.x.no+' ':''}${x.x.name||x.vname} ${yen(x.x.amount)}`);});
   document.querySelectorAll('[data-lkpdf]').forEach(a=>a.onclick=e=>{e.preventDefault();const o=linkedList().find(o=>String(o.x.id)===a.dataset.lkpdf);if(o)docPopup(o.x,`${o.x.name||'請求書'}　${yen(o.x.amount)} 円 → ${o.vname}（${o.code}）`);});
   document.querySelectorAll('[data-lkf]').forEach(b=>b.onclick=()=>{st.lkf=b.dataset.lkf;drawInbox();});
+  document.querySelectorAll('[data-ibs]').forEach(b=>b.onclick=()=>{st.ibs=b.dataset.ibs;drawInbox();});
+  document.querySelectorAll('[data-lks]').forEach(b=>b.onclick=()=>{st.lks=b.dataset.lks;drawInbox();});
   document.querySelectorAll('[data-ibpdf]').forEach(a=>a.onclick=e=>{e.preventDefault();const x=INBX.find(i=>i.id===a.dataset.ibpdf);if(x)docPopup(x,`${x.payee||x.title||'請求書'}　${yen(x.amount)} 円`);});
   drawIupl();}
 // 今月「請求書を渡す」から仕入先に付けた請求書（AI コメントの「仕入先：○○（コード）に付けました（決め手）」で見分ける。新しく受け付けた順）
@@ -1466,10 +1509,10 @@ function linkedList(){const C=monthList(),out=[];
   Object.entries(INV).forEach(([code,xs])=>xs.forEach(x=>{const m=String(x.com||'').match(/仕入先：(.*?)（(\d{6})）に付けました（([^）]*)）/);if(!m)return;
     const why=m[3],auto=!/^人が/.test(why),rr=rows.find(r=>r.code===code);out.push({x,code,vname:(C[code]||{}).name||m[1]||code,why,auto,inList:!!C[code],lock:!!(rr&&rr.checked)});}));
   return out.sort((a,b)=>String(b.x.at||'').localeCompare(String(a.x.at||'')));}
-function linkedHtml(C){const all=linkedList();if(!all.length)return '';const f=st.lkf||'auto',ls=f==='auto'?all.filter(o=>o.auto):all,nA=all.filter(o=>o.auto).length;
+function linkedHtml(C){const all=linkedList();if(!all.length)return '';const f=st.lkf||'auto',ls=sortInv(f==='auto'?all.filter(o=>o.auto):all,st.lks,o=>o.vname),nA=all.filter(o=>o.auto).length;
   const opts=Object.values(C).sort((a,b)=>a.name.localeCompare(b.name,'ja')).map(v=>`<option value="${v.code}">${esc(v.name)}（${v.code}）</option>`).join('');
   return `<div class="card"><h2>付けた請求書（${all.length}）　<span style="font-size:12px;color:var(--sub);font-weight:400">ここで渡した請求書を、どの仕入先に付けたか。違っていたら、その場で付け直す・外す・取り消す</span></h2>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="seg">${[['auto',`AI が自動で付けた ${nA}`],['all',`すべて ${all.length}`]].map(([k,l])=>`<button type="button" data-lkf="${k}" class="${f===k?'on':''}">${l}</button>`).join('')}</span></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="seg">${[['auto',`AI が自動で付けた ${nA}`],['all',`すべて ${all.length}`]].map(([k,l])=>`<button type="button" data-lkf="${k}" class="${f===k?'on':''}">${l}</button>`).join('')}</span>${sortSeg('lks',st.lks).replace('支払先順','仕入先順')}</div>
     <table><tr><th>受け付け</th><th>請求書（AI が読んだ支払先）</th><th class="n">金額</th><th>付けた仕入先</th><th>決め手</th><th>付け直す</th><th></th></tr>
     ${ls.map(o=>{const x=o.x;return `<tr><td style="font-size:12px">${esc(fmtTime(x.at))}<div style="color:var(--sub)">${esc(x.by)}</div></td>
       <td style="white-space:normal"><b>${esc(x.name||'—')}</b>${x.no?`<div style="font-size:11.5px;color:var(--sub)">No.${esc(x.no)}</div>`:''}<div><a href="#" data-lkpdf="${esc(x.id)}" style="font-size:12px">📄 請求書を見る</a>${invMarks(x,INV[o.code])}</div></td>
