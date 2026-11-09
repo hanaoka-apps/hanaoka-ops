@@ -137,12 +137,14 @@
       el.classList.toggle('sv-full', full); lock(full);
       el.innerHTML = '<div class="sv">' + partsHtml() + '<div class="tabs"><button data-t="sum" class="' + (ui.tab === 'sum' ? 'on' : '') + '">📊 サマリー</button><button data-t="rev" class="' + (ui.tab === 'rev' ? 'on' : '') + '">📄 明細（確認 ' + ok + '／' + rows.length + '）</button>' +
         '<span class="sp"></span>' + (full && done ? '<button class="pri fx" style="margin-bottom:4px">' + (o.onApprove ? '✔ すべて確認しました → このパートを承認する' : '✔ すべて確認しました → 閉じて承認へ') + '</button>' : '') +
+        (o.noReport ? '' : '<button class="fs-p" title="支払明細表（経費・仕入の画面と同じ形）を印刷・PDF に" style="margin-bottom:4px">🖨 支払明細表</button>') +
         '<button class="fs-t" title="' + (full ? '元の画面に戻す（Esc）' : 'このカードだけを画面いっぱいに出す') + '" style="margin-bottom:4px">' + (full ? '✕ 全画面を閉じる' : '⛶ 全画面') + '</button></div><div class="pane"></div></div>';
       var pane = el.querySelector('.pane');
       if (ui.tab === 'sum') summary(pane); else review(pane);
       // 全画面のサマリーは中だけスクロール（全画面は外側が動かないので、取引先一覧の下が見えなかった）
       if (ui.tab === 'sum' && full) { pane.style.overflowY = 'auto'; pane.style.maxHeight = Math.max(200, window.innerHeight - pane.getBoundingClientRect().top - 12) + 'px'; }
       el.querySelectorAll('[data-t]').forEach(function (b) { b.onclick = function () { ui.tab = b.dataset.t; render(); }; });
+      if (el.querySelector('.fs-p')) el.querySelector('.fs-p').onclick = function () { printReport(snap); };
       el.querySelector('.fs-t').onclick = function () { FULL.set(!FULL.on); render(); };
       el.querySelectorAll('[data-part]').forEach(function (b) { b.onclick = function () { var pt = (o.parts || [])[+b.dataset.part]; if (pt && !pt.cur) pt.open(); }; });
       if (el.querySelector('.fx') && o.onApprove) el.querySelector('.fx').onclick = function () { if (confirm('このパートを' + (o.approveLabel || '承認') + 'します。よろしいですか？（コメント・補足メモも一緒に送ります）')) { FULL.carry = true; o.onApprove(); } };
@@ -412,5 +414,120 @@
       if (c === 'hold' || m) out.push('・' + x.payee + ' ' + yen(x.amount) + '円' + (c === 'hold' ? '【保留】' : '') + (m ? '：' + m : '')); });
     return out.length ? '【明細】\n' + out.join('\n') : '';
   }
-  root.SettleView = { mount: mount, comment: comment };
+  // ---------- 支払明細表（印刷・PDF）：申請の明細（snap）から、経費の画面・仕入の画面の「支払明細表」と同じ形で作る（2026-11-09） ----------
+  //   経費：No・証憑・特記・会社名・科目・部門・税抜・消費税・税込・請求書計・取引先計・方法・決済日・振込・口座振替・でんさい・備考・前月・前々月・確認、最下部に拠点別の計
+  //   仕入：支払明細(買掛)（本社）・支払明細シート(工場)。最後にまとめ（支払方法×拠点・区分・特記事項／仕入の合計・でんさいの期日別）
+  //   この機能より前に回した申請は、科目コード・部門・SMILE の数字が無いので空欄になる
+  function printReport(snap) {
+    var w = window.open('', '_blank'); if (!w) { alert('新しいタブを開けませんでした（ポップアップを許可してください）'); return; }
+    var b = snap.batch || {}, rows = snap.rows || [], ym = String(b.ym || ''), y = +ym.slice(0, 4), m = +ym.slice(5, 7), last = new Date(y, m, 0).getDate();
+    var rd = b.round || '月末', day = rd === '10日' ? 10 : rd === '20日' ? 20 : last, payDay = y + '/' + m + '/' + day, made = new Date().toLocaleDateString('ja-JP');
+    var lbl = y + '年' + m + '月分(' + m + '/' + day + ' 支払)', dept = b.dept || '';
+    var cv = function (v) { return v == null || v === '' ? '' : typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString('ja-JP') : String(v)) : esc(String(v)); };
+    var stamp = '<div class="st"><div class="t">社長</div><div class="t">総務</div><div class="t">総務</div><div class="t">担当</div><div class="bx"></div><div class="bx"></div><div class="bx"></div><div class="bx"></div></div>';
+    var hd = function (t, sub) { return '<div class="hd"><div><h1>' + esc(t) + '</h1><div class="m">' + esc(sub) + '</div></div>' + stamp + '</div>'; };
+    var N = function (s) { return String(s || '').normalize('NFKC').replace(/株式会社|有限会社|\(株\)|\(有\)|㈱|㈲|[\s　・.]/g, ''); };
+    var LOC = { '002240': '名古屋', '002230': '大阪' }, c6 = function (c) { return String(c || '').trim().padStart(6, '0'); }, sh = function (c) { return String(c || '').replace(/^0+/, ''); };
+    var MTH = function (mt) { return /振込/.test(mt) ? '振込' : /口座振替/.test(mt) ? '口振' : /でんさい/.test(mt) ? 'でんさい' : mt || ''; };
+    var out = [];
+    // ---- 経費 ----
+    var ex = rows.filter(function (r) { return r.kind === '経費'; });
+    var exSum = {}, exTot = 0;
+    if (ex.length) {
+      var payeeTot = {}, seen = {}; ex.forEach(function (r) { var k = N(r.payee); payeeTot[k] = (payeeTot[k] || 0) + r.amount; });
+      var trs = [], no = 0, tIncl = 0, tBank = 0, tDr = 0, tDen = 0, loc = {};
+      ex.forEach(function (r) {
+        var ls = r.lines && r.lines.length ? r.lines : [null], mt = MTH(r.method), pk = N(r.payee), first = !seen[pk]; seen[pk] = 1;
+        ls.forEach(function (l, i) {
+          no++; var incl = l ? +l.amount || 0 : r.amount, lc = LOC[c6(l && l.dc)] || '本社'; tIncl += incl;
+          exSum[mt] = exSum[mt] || {}; exSum[mt][lc] = (exSum[mt][lc] || 0) + incl; loc[lc] = loc[lc] || { bank: 0, dr: 0, den: 0, incl: 0 }; loc[lc].incl += incl;
+          var pt = i === 0 && first ? payeeTot[pk] : 0;
+          if (pt) { if (mt === '振込') { tBank += pt; loc[lc].bank += pt; } else if (mt === '口振') { tDr += pt; loc[lc].dr += pt; } else if (mt === 'でんさい') { tDen += pt; loc[lc].den += pt; } }
+          var c = [no, i === 0 && r.invoices && r.invoices.length ? '有' : '', i === 0 && r.tk && r.tk.length ? '特' : '', r.payee, l ? +sh(l.ac) || sh(l.ac) : '', l ? l.genre || '' : '', l ? +sh(l.dc) || sh(l.dc) : '', l ? l.dn || '' : '',
+            l ? (l.excl != null ? +l.excl : '') : '', l ? (l.tax != null ? +l.tax : '') : '', incl, i === 0 ? r.amount : '', pt || '', mt, i === 0 ? String(r.payDate || r.due || payDay).replace(/-/g, '/') : '',
+            pt && mt === '振込' ? pt : '', pt && mt === '口振' ? pt : '', pt && mt === 'でんさい' ? pt : '', l ? (l.memo || l.note || '') : (r.note || ''),
+            i === 0 && r.prev1 ? Math.round(r.prev1 / 100) / 10 : '', i === 0 && r.prev2 ? Math.round(r.prev2 / 100) / 10 : '', i === 0 ? '確定' : ''];
+          var NUM = [8, 9, 10, 11, 12, 15, 16, 17, 19, 20];
+          trs.push('<tr class="' + (i === 0 ? 'iv' : '') + '">' + c.map(function (v, k) { return '<td class="' + (NUM.indexOf(k) >= 0 ? 'r' : k === 18 ? 'nt' : '') + '">' + cv(v) + '</td>'; }).join('') + '</tr>');
+        });
+      });
+      exTot = ex.reduce(function (t, r) { return t + r.amount; }, 0);
+      var foot = function (lab, incl, bk, dr, dn, all) { return '<tr' + (all ? '' : ' class="sub"') + '><td colspan="10" class="r">' + esc(lab) + '</td><td class="r">' + cv(incl) + '</td><td class="r">' + (all ? cv(exTot) : '') + '</td><td class="r">' + (all ? cv(exTot) : '') + '</td><td colspan="2"></td><td class="r">' + cv(bk) + '</td><td class="r">' + cv(dr) + '</td><td class="r">' + cv(dn) + '</td><td colspan="4"></td></tr>'; };
+      var head = ['No,', '証憑', '特記', '会社名', '科目CD', '科目', '部門CD', '部門', '税抜', '消費税', '税込', '請求書計', '取引先計', '方法', '決済日', '振込', '口座振替', 'でんさい', '備考', '前月', '前々月', '確認'];
+      var side = dept === '工場' ? '工場' : dept === '総務' ? '本社' : dept;
+      out.push('<section>' + hd('<経費-' + side + '>' + lbl + ' ' + (dept === '工場' ? '工場' : '本社') + '支払明細表', '支払日：' + payDay + '　作成日：' + made + '（決裁に回した内容から）') +
+        '<table><colgroup>' + [3, 2.6, 2.6, 13, 3.2, 6.5, 3.4, 5, 6, 5, 6, 6, 6, 3.4, 5.6, 6, 6, 4, 14, 3.2, 3.2, 4].map(function (x) { return '<col style="width:' + x + '%">'; }).join('') + '</colgroup>' +
+        '<thead><tr><th colspan="3"></th><th colspan="10">請求内容</th><th colspan="6">支払方法</th><th colspan="3">確定高実績（千円）</th></tr><tr>' + head.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr></thead>' +
+        '<tbody>' + trs.join('') + '</tbody><tfoot>' + foot('合計', tIncl, tBank, tDr, tDen, true) +
+        ['本社', '名古屋', '大阪'].filter(function (lc) { return loc[lc]; }).map(function (lc) { return foot(lc + ' 計', loc[lc].incl, loc[lc].bank, loc[lc].dr, loc[lc].den, false); }).join('') + '</tfoot></table></section>');
+    }
+    // ---- 仕入 ----
+    var spr = rows.filter(function (r) { return r.kind !== '経費'; }), SUM = { 本社: {}, 工場: {} };
+    var add = function (sd, k, v) { SUM[sd][k] = (SUM[sd][k] || 0) + (+v || 0); };
+    if (spr.length) {
+      var GR = ['国内営業', 'ソリューション', '工場'];
+      var build = function (sideName, title) {
+        var mine = function (g) { return sideName === '工場' ? g === '工場' : g !== '工場'; }, no = 0, trs = [];
+        spr.forEach(function (r) {
+          var s0 = r.sp || { pay: r.amount, bank: /振込/.test(r.method) ? r.amount : 0, den: /でんさい/.test(r.method) ? r.amount : 0, parts: {}, main: dept };
+          var parts = Object.keys(s0.parts || {}).filter(function (g) { return s0.parts[g]; }).map(function (g) { return [g, s0.parts[g]]; });
+          if (!parts.length) parts = [[s0.main || dept || '国内営業', s0.incl || r.amount]];
+          if (!parts.some(function (x) { return mine(x[0]); })) return;
+          no++; var own = mine(s0.main || dept), ratio = s0.incl ? (s0.excl || 0) / s0.incl : 1 / 1.1;
+          parts.sort(function (a, c) { return (mine(c[0]) - mine(a[0])) || (GR.indexOf(a[0]) - GR.indexOf(c[0])); });
+          var mth = [s0.bank ? '振' : '', s0.den ? 'で' : '', s0.cash ? '現金' : '', s0.ovs ? '海外' : '', s0.dr ? '口振' : ''].filter(Boolean).join('/');
+          if (own) { add(sideName, '支払高', r.amount); add(sideName, '振込', s0.bank); add(sideName, 'でんさい', s0.den); add(sideName, '相殺', s0.off); add(sideName, '調整', s0.adj); add(sideName, '手数料', s0.fee); add(sideName, '社', 1); }
+          parts.forEach(function (pv, i) {
+            var g = pv[0], v = pv[1], lst = i === parts.length - 1, cross = !mine(g) || !own, exv = Math.round(v * ratio);
+            var c = [no, r.invoices && r.invoices.length ? '有' : '', r.payee + (parts.length > 1 ? '/' + g + '分' : ''), +r.no || r.no, g, i === 0 && s0.bal != null ? s0.bal : '', cross ? '' : exv, '', lst && s0.adj && own ? s0.adj : '', cross ? '' : exv, cross ? '' : v - exv,
+              lst && own && s0.off ? s0.off : '', lst && own && s0.fee ? s0.fee : '', cross ? (sideName === '工場' ? '本社計上' : '工場計上') : v, lst ? s0.rule || '' : '', lst && s0.site ? s0.site : '', lst ? mth : '',
+              lst && own ? s0.bank : '', lst && own ? s0.den : '', lst && s0.due ? s0.due : '', lst ? (s0.by ? '✔ ' + s0.by : '') : '', lst ? (r.note || '') : ''];
+            var NUM = [5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 18];
+            trs.push('<tr class="' + (i === 0 ? 'iv' : '') + '">' + c.map(function (x, k) { return '<td class="' + (NUM.indexOf(k) >= 0 ? 'r' : k === 21 ? 'nt' : '') + '">' + (i > 0 && k < 2 ? '' : cv(x)) + '</td>'; }).join('') + '</tr>');
+          });
+        });
+        if (!trs.length) return '';
+        var S0 = SUM[sideName], head = ['No,', '証憑', '会社名', 'コード', '部門', '月末買掛金残高(smile)', '請求書高', '先方', '当方', '確定高', '消費税', '相殺', '手数料', '支払高', '取決', 'でんさいサイト', '方法', '振込', 'でんさい', 'でんさい期日', '確認', '備考'];
+        var tot = ['', '', '合計（決裁の部門がこの表の仕入先）', '', '', '', '', '', S0.調整 || '', '', '', S0.相殺 || '', S0.手数料 || '', S0.支払高 || 0, '', '', '', S0.振込 || 0, S0.でんさい || 0, '', '', ''];
+        var ws = [2.6, 2.6, 13, 3.6, 5, 6, 6, 3.4, 3.4, 6, 5, 4.6, 4, 6, 8, 3.2, 3.4, 6, 6, 5.4, 4, 10], wt = ws.reduce(function (a, c) { return a + c; }, 0), NUMT = [5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 18];
+        return '<section>' + hd(title, '作成：' + made + '（決裁に回した内容から）') + '<table><colgroup>' + ws.map(function (x) { return '<col style="width:' + (x / wt * 100).toFixed(2) + '%">'; }).join('') + '</colgroup>' +
+          '<thead><tr>' + head.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' + trs.join('') + '</tbody><tfoot><tr>' + tot.map(function (x, k) { return '<td class="' + (NUMT.indexOf(k) >= 0 ? 'r' : '') + '">' + cv(x) + '</td>'; }).join('') + '</tr></tfoot></table></section>';
+      };
+      var pd = new Date(y, m - 2, 1), pl = pd.getFullYear() + '年' + (pd.getMonth() + 1) + '月分(' + m + '/末日支払)';
+      out.push(build('本社', '<買掛>' + pl + ' 本社支払明細表'), build('工場', pd.getFullYear() + '.' + (pd.getMonth() + 1) + '月度(' + m + '/末日)分 工場支払明細表'));
+    }
+    // ---- まとめ ----
+    var mr = [];
+    if (ex.length) {
+      var LOCS = ['本社', '名古屋', '大阪'], MS = ['振込', '口振', 'でんさい', '納税', '現金', '海外'].filter(function (x) { return exSum[x]; }).concat(Object.keys(exSum).filter(function (x) { return ['振込', '口振', 'でんさい', '納税', '現金', '海外'].indexOf(x) < 0; }));
+      mr.push(['<支払方法>'], ['', '', '本社', '名古屋', '大阪', 'TOTAL']);
+      MS.forEach(function (mt) { var o = exSum[mt] || {}; mr.push(['', mt].concat(LOCS.map(function (lc) { return o[lc] || 0; })).concat([LOCS.reduce(function (t, lc) { return t + (o[lc] || 0); }, 0)])); });
+      mr.push(['', 'TOTAL'].concat(LOCS.map(function (lc) { return MS.reduce(function (t, mt) { return t + ((exSum[mt] || {})[lc] || 0); }, 0); })).concat([exTot]), ['', '前月', '', '', '', snap.prevTotal || ''], []);
+      mr.push(['<区分>'], ['', (dept === '工場' ? '工場' : dept === '総務' ? '本社' : dept) + '(経費)', exTot], ['', '合計', exTot], []);
+      mr.push(['<特記事項>'], ['支払先名', '', '支払高', '科目', '備考']);
+      ex.filter(function (r) { return r.tk && r.tk.length; }).forEach(function (r) { mr.push([r.payee, '', r.amount, (r.lines && r.lines[0] && r.lines[0].genre) || '', r.tk.join(' ／ ')]); });
+    }
+    if (spr.length) {
+      if (mr.length) mr.push([]);
+      mr.push(['<仕入>'], ['', '本社(買掛)', '工場', '合計']);
+      ['支払高', '振込', 'でんさい', '相殺', '調整', '手数料'].forEach(function (k) { mr.push([k, SUM.本社[k] || 0, SUM.工場[k] || 0, (SUM.本社[k] || 0) + (SUM.工場[k] || 0)]); });
+      mr.push(['仕入先（社）', SUM.本社.社 || 0, SUM.工場.社 || 0, (SUM.本社.社 || 0) + (SUM.工場.社 || 0)], []);
+      var byDue = {}; spr.forEach(function (r) { var s0 = r.sp; if (s0 && s0.den) { var d = s0.due || '（期日なし）'; byDue[d] = (byDue[d] || 0) + s0.den; } });
+      if (Object.keys(byDue).length) { mr.push(['<でんさいの期日別>']); Object.keys(byDue).sort().forEach(function (d) { mr.push([d, byDue[d]]); }); }
+    }
+    var cell = function (r, i) { return r && r[i] != null ? cv(r[i]) : ''; };
+    out.push('<section>' + hd(lbl + ' 支払明細表まとめ（' + (dept || '') + '）', '作成：' + made + '（決裁に回した内容から）') + '<table class="ma">' +
+      mr.map(function (r) { return !r.length ? '<tr class="sp"><td colspan="6"></td></tr>' : r.length === 1 ? '<tr><th colspan="6" class="l">' + cell(r, 0) + '</th></tr>' : '<tr>' + [0, 1, 2, 3, 4, 5].map(function (i) { return '<td class="' + (typeof r[i] === 'number' ? 'r' : '') + '">' + cell(r, i) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></section>');
+    var css = '@page{size:A4 landscape;margin:7mm}body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;margin:0;font-size:8.5px}section{page-break-after:always}section:last-child{page-break-after:auto}' +
+      '.hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #000;padding-bottom:3px;margin-bottom:5px}.hd h1{font-size:14px;margin:0}.m{font-size:9.5px;color:#333}' +
+      '.st{display:grid;grid-template-columns:repeat(4,46px);border:1px solid #000}.st div{border-left:1px solid #000;text-align:center}.st div:nth-child(4n+1){border-left:0}.st .t{font-size:9px;border-bottom:1px solid #000}.st .bx{height:40px}' +
+      'table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:1px solid #777;padding:1.5px 3px;vertical-align:top;overflow-wrap:anywhere}th{background:#e8e8e8;font-weight:600}' +
+      'td.r{text-align:right;white-space:nowrap}.nt{font-size:8px}tr.iv td{border-top:1.4px solid #000}tfoot td{font-weight:700;background:#f2f2f2;border-top:2px solid #000}tfoot tr.sub td{font-weight:600;background:#fafafa;border-top:1px solid #777}thead{display:table-header-group}tr{page-break-inside:avoid}' +
+      'table.ma{width:auto;min-width:60%;font-size:10px}table.ma td,table.ma th{padding:3px 8px}table.ma th.l{text-align:left;background:#f2f2f2}tr.sp td{border:0;height:6px}.np{margin:8px 0;font-size:12px}@media print{.np{display:none}}';
+    var file = '支払明細表（' + (dept || '') + '・' + rd + '） - ' + y + String(m).padStart(2, '0') + day;
+    w.document.open(); w.document.write('<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>' + esc(file) + '</title><style>' + css + '</style></head><body><div class="np"><button onclick="print()">🖨 印刷する</button> 印刷の画面で「PDF に保存」も選べます（A4 横）</div>' + out.filter(Boolean).join('') + '</body></html>');
+    w.document.close(); w.focus(); setTimeout(function () { try { w.print(); } catch (e) { } }, 400);
+  }
+
+  root.SettleView = { mount: mount, comment: comment, printReport: printReport };
 })(typeof window !== 'undefined' ? window : this);

@@ -473,6 +473,12 @@ function tokkiOfInv(x){const f=x.f,log=(()=>{try{return JSON.parse(f.CheckLog||'
   const why=!last?'初めての支払先':dm>N?`${dm}か月ぶり（前回 ${last}）`:'';if(!why)return '';
   const l0=(SL.byInv[String(x.id)]||[])[0],memo=l0?((SL.fmap['決裁メモ']?l0[F(SL,'決裁メモ')]:'')||l0[F(SL,'摘要')]||''):'';
   return why+(memo?'：'+memo:'');}
+// 仕入の支払明細表の1行に要るもの（ap_smile_import の smileBook と同じ考え方）。決裁画面の「印刷・PDF」で使う
+function spBookOf(g){let ls=[],dd={};try{ls=JSON.parse(g('分け方の上書き')||g('分け方（計算）')||'[]')||[];}catch(e){}try{dd=JSON.parse(g('部門内訳')||'{}')||{};}catch(e){}
+  const sum=m=>ls.filter(l=>l.method===m).reduce((t,l)=>t+(+l.amount||0),0),fo=g('手数料の上書き'),fee=fo!==''&&fo!=null?(+fo||0):(+g('振込手数料（計算）')||0);
+  return {excl:+g('税抜仕入額')||0,tax:+g('消費税額')||0,incl:+g('税込仕入額')||0,bal:+g('今回支払残高')||0,pay:+g('支払額')||0,bank:sum('振込')-fee,den:sum('でんさい'),off:sum('相殺'),adj:sum('調整'),
+    cash:sum('現金'),ovs:sum('海外送金'),dr:sum('口座振替'),fee,rule:g('分け方の決まり')||'',site:(ls.find(l=>l.method==='でんさい'&&l.site)||{}).site||'',
+    due:[...new Set(ls.filter(l=>l.method==='でんさい'&&l.due).map(l=>l.due))].join(' '),by:g('確認済み')?String(g('確認者')||'').split(/[\s　]/)[0]:'',main:g('決裁の部門')||'',parts:dd.byGroup||{}};}
 async function fuelTable(){
   const pts=[],ymOf=(d,plus)=>{const m=String(d||'').match(/(\d{4})\D(\d{1,2})/);if(!m)return '';const x=new Date(+m[1],+m[2]-1+(plus||0),1);return `${x.getFullYear()}/${String(x.getMonth()+1).padStart(2,'0')}`;};
   const pn=s=>String(s||'').normalize('NFKC').replace(/株式会社|有限会社|\(株\)|\(有\)|㈱|[\s・.]/g,''),appKey=new Set();
@@ -526,6 +532,8 @@ async function sendToSettle(round,dept){
     // 経費は支払指図（＝請求書）ごとに1行（同じ支払先でもまとめない）、仕入は仕入先ごと（振込とでんさいなどを1行に）
     const groups={};rows.forEach(p=>{const k=pv(p,'元')==='経費'?'#'+p.id:payeeKey(p);(groups[k]=groups[k]||[]).push(p);});
     await tkLoad();   // 特記事項の自動の判定に、請求Quick の決裁メモも使う
+    const BMN=await (async()=>{try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/smile_bumon.csv')}:/content`,null,null,true);
+      const o={};parseCSV(new TextDecoder('utf-8').decode(await b.arrayBuffer())).slice(1).forEach(x=>{if(x[0])o[String(x[0]).trim().padStart(6,'0')]=x[1]||'';});return o;}catch(e){return {};}})();
     const invOf=(p)=>{const src=pv(p,'元')||'';if(src==='仕入（SMILE取込）'){const code=pv(p,'支払先コード');return INV.items.filter(x=>(iv(x.f,'支払区分')||'').endsWith('仕入')&&(iv(x.f,'対象年月')||'')===ym&&String(iv(x.f,'支払先コード')||'').trim()===code&&iv(x.f,'アーカイブフラグ')!==true);}
       const ids=String(pv(p,'元請求書ID')||'').split(',').filter(Boolean);return INV.items.filter(x=>ids.includes(String(x.id)));};
     const keys=Object.keys(groups);
@@ -547,7 +555,7 @@ async function sendToSettle(round,dept){
           // 仕訳の明細：科目・税区分（税込／税抜・税率・課／共）・税抜・消費税も渡す（決裁する人が税区分を見られるように）
           (SL.byInv[String(x.id)]||[]).forEach(l=>{const g=d=>l[F(SL,d)],rate=normRate(g('税率区分'),g('税区分')),acct=g('勘定科目コード')||'',dept=g('部門コード')||'';
             // memo：決裁メモ（社長・室長向け）を主に、摘要（note）は小さく
-            exLines.push({genre:g('勘定科目名')||'',amount:+g('金額_税込')||0,note:sl+(g('摘要')||''),memo:SL.fmap['決裁メモ']?(g('決裁メモ')||''):'',tm:g('税区分')||'',rate,kind:taxKindOf(EXR.journal||{},rate,dept,acct),excl:+g('金額_税抜')||0,tax:+g('消費税')||0});});
+            exLines.push({genre:g('勘定科目名')||'',amount:+g('金額_税込')||0,note:sl+(g('摘要')||''),memo:SL.fmap['決裁メモ']?(g('決裁メモ')||''):'',tm:g('税区分')||'',rate,kind:taxKindOf(EXR.journal||{},rate,dept,acct),excl:+g('金額_税抜')||0,tax:+g('消費税')||0,ac:acct,dc:dept,dn:BMN[String(dept).trim().padStart(6,'0')]||''});});
           const lg=(()=>{try{return JSON.parse(x.f.CheckLog||'[]');}catch{return [];}})().filter(e=>e.act==='OK'||e.act==='確定').map(e=>String(e.by||'').split(/[\s　]/)[0]);
           {const t=tokkiOfInv(x);if(t)tks.push(t);}
           if(lg.length)notes.push('確認：'+lg.join('→'));if(x.f.CheckNote)notes.push('総務：'+x.f.CheckNote);if(x.f.WfRequestNo)notes.push('ワークフロー '+x.f.WfRequestNo+'（社長決裁済み）');}
@@ -558,6 +566,7 @@ async function sendToSettle(round,dept){
         lines:exLines||(ps.length>1?ps.map(p=>({genre:pv(p,'支払手段')==='総合振込'?'振込':pv(p,'支払手段'),amount:+pv(p,'支払額')||0,note:pv(p,'期日')?'期日 '+pv(p,'期日'):''})):undefined),
         due:ps.map(p=>pv(p,'期日')).filter(Boolean)[0]||'',payDate:pv(p0,'実支払日')||'',prev1:src==='経費'?prevOf(pl1,p0,amount):(p1[k]||0),prev2:src==='経費'?prevOf(pl2,p0,amount):(p2[k]||0),
         smile:sp?{incl:+g('税込仕入額')||0,balance:+g('今回支払残高')||0,carry:+g('繰越残高')||0,held:+g('保留した繰越')||0}:undefined,
+        sp:sp?spBookOf(g):undefined,
         note:notes.join(' ／ '),tk:tks.length?tks:undefined,flag:!!(sp&&g('コメント'))||!!ni,invoices:inv,
         items:src==='経費'?invItemsOf(invOf(p0)):undefined,   // 請求書の明細（決裁画面の右端のドロワー）
         rcv:src==='仕入（SMILE取込）'?rcvOf(pv(p0,'支払先コード')):undefined,   // 仕入：SMILE の受入明細（付加価値率・受注№・得意先・納品先つき）
