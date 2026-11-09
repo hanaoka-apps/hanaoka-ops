@@ -434,6 +434,40 @@ function Invoke-Notify($Def, $Request) {
   }
 }
 
+# Shopify への送り状番号の登録(type: fulfill。EC売上の ec_shopify_fulfill)：依頼の params(orders・dryRun・notify)で scripts/shopify_fulfill.py を動かす。PAD は使わない。
+# 取込と同じ人(管理者・取込担当者)の依頼だけ受け付ける。結果は SharedMasters\_ec_fulfill\<batchId>\result.json(注文ごと)。
+# Shopify の Client ID・Client secret は専用機の環境変数(SHOPIFY_FULFILL_CLIENT_ID / SHOPIFY_FULFILL_CLIENT_SECRET)だけに置く。ログ・エラー文に出さない。
+function Invoke-Fulfill($Def, $Request) {
+  if (-not (Test-ImportAdmin ([string]$Request.requestedBy))) { throw 'Shopify への登録を頼める人(管理者・取込担当者)ではありません' }
+  $orders = @($Request.params.orders | Where-Object { $null -ne $_ })
+  if ($orders.Count -eq 0) { throw '登録する注文(params.orders)がありません' }
+  if ($orders.Count -gt 50) { throw '一度に登録できるのは50件までです' }
+  $batchId = [string]$Request.batchId
+  if ($batchId -notmatch '^[A-Za-z0-9_\-]{1,80}$') { throw "batchId が正しくありません: $batchId" }
+  $script = 'shopify_fulfill.py'
+  if ($Def.script) { $script = [string]$Def.script }
+  if ($script -notmatch '^[A-Za-z0-9_]+\.py$') { throw "スクリプト名が正しくありません: $script" }
+  # 常駐スクリプトの起動後にユーザー環境変数を設定した場合も、再ログオンなしで使えるようにする(値はログに出さない)
+  foreach ($envName in @('SHOPIFY_SHOP', 'SHOPIFY_FULFILL_CLIENT_ID', 'SHOPIFY_FULFILL_CLIENT_SECRET', 'SHOPIFY_API_VERSION')) {
+    if (-not [Environment]::GetEnvironmentVariable($envName, 'Process')) {
+      $u = [Environment]::GetEnvironmentVariable($envName, 'User')
+      if ($u) { [Environment]::SetEnvironmentVariable($envName, $u, 'Process') }
+    }
+  }
+  foreach ($envName in @('SHOPIFY_SHOP', 'SHOPIFY_FULFILL_CLIENT_ID', 'SHOPIFY_FULFILL_CLIENT_SECRET')) {
+    if (-not [Environment]::GetEnvironmentVariable($envName, 'Process')) { throw "専用機の環境変数 $envName が未設定です(手順は scripts/rpa_setup/ec_shopify_fulfill_setup.md)" }
+  }
+  [Environment]::SetEnvironmentVariable('SHARED_MASTERS_DIR', $SharedMastersPath, 'Process')   # 結果の置き場(秘密ではない)
+  New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+  $inPath = Join-Path $WorkDir ('fulfill_{0}.json' -f [Guid]::NewGuid().ToString('N'))
+  try {
+    Write-JsonFile $inPath ([pscustomobject]@{ orders = $orders; dryRun = [bool]$Request.params.dryRun; notify = if ($null -eq $Request.params.notify) { $true } else { [bool]$Request.params.notify } })
+    Invoke-RepoPython $script '' @('--input', ('"{0}"' -f $inPath), '--batch', $batchId) -ShowOutput
+  } finally {
+    Remove-Item -LiteralPath $inPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # 旧方式の合図ファイルを sales_master の依頼に変換する(合図ファイル自体はジョブ完了まで残す)
 function Convert-LegacyRequest {
   if (-not (Test-Path -LiteralPath $LegacyRequestPath)) { return }
@@ -1004,11 +1038,12 @@ function Invoke-NextJob {
   try { $defs = Get-JobDefinitions } catch { Write-Log "ジョブ定義を読めません: $($_.Exception.Message)" }
   $isImport = [bool]($defs -and $defs.jobs.$jobName -and $defs.jobs.$jobName.type -eq 'import')
   $isNotify = [bool]($defs -and $defs.jobs.$jobName -and $defs.jobs.$jobName.type -eq 'notify')
+  $isFulfill = [bool]($defs -and $defs.jobs.$jobName -and $defs.jobs.$jobName.type -eq 'fulfill')
 
   # 同じジョブの依頼をまとめて実行中にする(取込は依頼ごとに別の仕事なので、先頭の1件だけ)
   $batch = @()
   foreach ($item in $items) {
-    if (($isImport -or $isNotify) -and $batch.Count -ge 1) { break }   # 取込・報告は依頼ごとに別の仕事なので、1件ずつ
+    if (($isImport -or $isNotify -or $isFulfill) -and $batch.Count -ge 1) { break }   # 取込・報告・Shopify への登録は依頼ごとに別の仕事なので、1件ずつ
     try { $req = Read-JsonFile $item.FullName } catch { continue }
     if ([string]$req.job -eq $jobName) { $batch += [pscustomobject]@{ Path = $item.FullName; Request = $req } }
   }
@@ -1040,6 +1075,9 @@ function Invoke-NextJob {
     } elseif ($def.type -eq 'notify') {
       # Teams への報告。SMILE も PAD も使わない
       Invoke-Notify $def $running[0].Request
+    } elseif ($def.type -eq 'fulfill') {
+      # Shopify への送り状番号の登録。SMILE も PAD も使わない
+      Invoke-Fulfill $def $running[0].Request
     } else {
       if ($def.after -and $AfterJobs -notcontains [string]$def.after) { throw "未対応の後処理です: $($def.after)" }
       $steps = @(Get-JobSteps $def)
@@ -1066,7 +1104,7 @@ function Invoke-NextJob {
   } catch {
     $errorMessage = $_.Exception.Message
     # 取込の依頼が Invoke-EcImport に入る前に落ちたとき(ジョブ定義を取れない等)も、result.json を書いて取込フォルダを残さない(SMILEには触っていない)
-    if (-not $isNotify -and ($isImport -or [string]$running[0].Request.batchId)) {
+    if (-not $isNotify -and -not $isFulfill -and ($isImport -or [string]$running[0].Request.batchId)) {
       try { Complete-ImportWithoutResult ([string]$running[0].Request.batchId) 'failed' ("取込を始める前にエラーが出ました(SMILEには触っていません): " + $errorMessage) $false } catch { Write-Log "result.json を書けませんでした: $($_.Exception.Message)" }
     }
   }

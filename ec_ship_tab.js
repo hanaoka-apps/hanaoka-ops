@@ -77,7 +77,7 @@
       return '<a href="' + esc(ctx.conf.shipSearchUrl || 'ship_search.html') + '?q=' + encodeURIComponent(key) + '" target="_blank" rel="noopener">出荷検索で見る</a>';
     };
     var todo = list.filter(function (x) { return x.k === 'check'; });
-    if (ctx.canReport && todo.length && S.filter === 'check') html += '<div class="row" style="margin-bottom:8px;gap:8px">' + (ctx.mailDraft ? '<button class="btn" id="ship-mail">📧 報告メールを作る（Excel を添付した下書き・' + todo.length + '件）</button>' : '') + '<button class="btn ' + (ctx.mailDraft ? 'sec ' : '') + 'sm" id="ship-rep-all">表示中の ' + todo.length + '件を、まとめて「' + esc(rl.btn) + '」</button></div>';
+    if (ctx.canReport && todo.length && S.filter === 'check') html += '<div class="row" style="margin-bottom:8px;gap:8px">' + (ctx.fulfill ? '<button class="btn" id="ship-fulfill">🚚 Shopify に自動で登録する（' + todo.length + '件）</button>' : '') + (ctx.mailDraft ? '<button class="btn" id="ship-mail">📧 報告メールを作る（Excel を添付した下書き・' + todo.length + '件）</button>' : '') + '<button class="btn ' + (ctx.mailDraft || ctx.fulfill ? 'sec ' : '') + 'sm" id="ship-rep-all">表示中の ' + todo.length + '件を、まとめて「' + esc(rl.btn) + '」</button></div>';
     html += list.length ? '<div style="overflow:auto"><table class="shiptbl"><thead><tr><th>受注日</th><th>注文</th><th>お客様</th><th>受注№</th><th>状態</th><th>出荷日</th><th>運送会社・送り状番号</th><th></th></tr></thead><tbody>' + list.map(function (x) {
       var sh = x.ship, st = sh.state === 'done' ? '<span class="tag ok">送り状番号あり</span>' : sh.state === 'noslip' ? '<span class="tag warn">出荷伝票あり・送り状待ち</span>' : '<span class="tag info">出荷伝票なし</span>';
       var slips = sh.slips.map(function (sl) { return '<div><span class="muted">' + esc(sl.carrier) + '</span> <b>' + esc(sl.fmt) + '</b> <button class="btn sec sm" data-copy="' + esc(sl.no) + '" title="送り状番号をコピー（' + esc(sl.no) + '）">コピー</button></div>'; }).join('');
@@ -96,6 +96,13 @@
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(v).then(done, function () { window.prompt('コピーしてください', v); }); else window.prompt('コピーしてください', v); return; }
       var rp = e.target.closest('[data-rep]'); if (rp) { e.stopPropagation(); ctx.markReported([rp.dataset.rep], true); return; }
       var un = e.target.closest('[data-unrep]'); if (un) { e.preventDefault(); e.stopPropagation(); ctx.markReported([un.dataset.unrep], false); return; }
+      if (e.target.closest('#ship-fulfill')) {
+        e.stopPropagation();
+        var fitems = rowsOf(ctx).filter(function (x) { return x.ship.state === 'done' && !(x.r && x.r.shipReportedAt); }).map(function (x) { return { id: x.s.id, ship: x.ship, name: x.s.name }; });
+        var fb = e.target.closest('#ship-fulfill'); fb.disabled = true;
+        Promise.resolve(ctx.fulfill.run(fitems)).catch(function (er) { alert('Shopify への登録でエラーが出ました：' + (er && er.message || er)); }).then(function () { ctx.rerender(); });
+        return;
+      }
       if (e.target.closest('#ship-mail')) {
         e.stopPropagation();
         var items = rowsOf(ctx).filter(function (x) { return x.ship.state === 'done' && !(x.r && x.r.shipReportedAt); });

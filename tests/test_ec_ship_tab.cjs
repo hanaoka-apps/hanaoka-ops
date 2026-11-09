@@ -23,6 +23,13 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'check' } } : null } }); await new Promise(r => setTimeout(r, 5));
   assert(box.innerHTML.includes('data-rep="1001"') && box.innerHTML.includes('907-228-3622') && box.innerHTML.includes('data-copy="9072283622"') && box.innerHTML.includes('登録した'));
   assert(!box.innerHTML.includes('data-rep="1002"'));
+  // 自動登録のボタン：ctx.fulfill があるときだけ出る。押すと、報告待ち（②）の注文と送り状を渡す
+  assert(!box.innerHTML.includes('id="ship-fulfill"'));
+  const fcalls = []; ctx.fulfill = { run: async items => { fcalls.push(items); return true; } }; EcShipTab.render(ctx);
+  assert(box.innerHTML.includes('id="ship-fulfill"') && box.innerHTML.includes('Shopify に自動で登録する（1件）'));
+  handlers.click({ target: { closest: s => s === '#ship-fulfill' ? { disabled: false } : null }, stopPropagation() {} }); await new Promise(r => setTimeout(r, 5));
+  assert.strictEqual(fcalls.length, 1); assert.deepStrictEqual(fcalls[0].map(x => x.id), ['1001']); assert.strictEqual(fcalls[0][0].ship.slips[0].no, '9072283622');
+  ctx.fulfill = null; EcShipTab.render(ctx);
   handlers.click({ target: { closest: s => s === '[data-rep]' ? { dataset: { rep: '1001' } } : null }, stopPropagation() {} });
   assert.deepStrictEqual(calls[0], [['1001'], true]);
   handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'done' } } : null } }); await new Promise(r => setTimeout(r, 5));
