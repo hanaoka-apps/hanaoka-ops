@@ -1905,8 +1905,111 @@ async function makeShipMail(items) {
     return true;
   }
 }
+/* ------------------------------------------------------------ 出荷チェック：Shopify に送り状番号を自動で登録する
+   「Shopify に自動で登録する」→ 確認の画面（注文・運送会社・送り状番号／お客様への通知）→ 専用機に依頼（ジョブ ec_shopify_fulfill）→ 結果（SharedMasters/_ec_fulfill/<batchId>/result.json）。
+   成功（done）と、すでにあった（already）注文は、「Shopify に登録済み」にする（確認のみのときは、しない）。
+   画面を閉じても、専用機の処理は続く。もう一度押すと、登録済み（already）と確かめられて、「登録済み」になる。
+   約束事：scripts/rpa_setup/ec_shopify_fulfill_setup.md */
+const FUL_STATUS = { done: ['登録しました', 'ok'], already: ['すでに登録されています', 'ok'], skipped: ['人が登録してください', 'warn'], error: ['エラー', 'err'] };
+function fulfillOverlay(html) {
+  let ov = document.getElementById('fulfillDlg');
+  if (!ov) {
+    ov = document.createElement('div'); ov.id = 'fulfillDlg';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,26,61,.5);z-index:70;display:flex;align-items:center;justify-content:center;padding:16px';
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:760px;width:100%;padding:20px 24px;max-height:90vh;overflow:auto">' + html + '</div>';
+  return ov;
+}
+function fulfillClose() { const ov = document.getElementById('fulfillDlg'); if (ov) ov.remove(); }
+function fulfillTable(rows) {
+  return '<table style="width:100%;border-collapse:collapse;margin:8px 0"><thead><tr><th style="text-align:left">注文</th><th style="text-align:left">運送会社</th><th style="text-align:left">送り状番号</th><th style="text-align:left">結果</th></tr></thead><tbody>' +
+    rows.map(r => '<tr><td><b>#' + esc(r.id) + '</b></td><td>' + esc(r.carrier || '') + '</td><td>' + esc(r.fmt || '') + '</td><td>' + (r.html || '') + '</td></tr>').join('') + '</tbody></table>';
+}
+// 確認の画面。選んだ答えを返す：{ run: true/false, dryRun, notify }。やめるときは null
+function fulfillConfirm(plan, fconf) {
+  return new Promise(resolve => {
+    const rows = plan.orders.map(o => ({ id: o.id, carrier: o.carrier, fmt: o.fmt, html: '<span class="muted">登録します</span>' }))
+      .concat(plan.skipped.map(s => ({ id: s.id, html: '<span class="tag warn">対象外</span> ' + esc(s.reason) })));
+    const ov = fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">Shopify に送り状番号を登録します</h2>' +
+      '<div class="muted">専用機が、Shopify の注文を「発送済み」にして、運送会社・送り状番号・追跡URLを付けます（いまの手作業と同じ内容）。</div>' +
+      fulfillTable(rows) +
+      '<label style="display:block;margin:8px 0"><input type="checkbox" id="ful-notify" checked> お客様に、Shopify から<b>発送通知メール</b>を送る（いまの手作業と同じ。外すと、お客様には届きません）</label>' +
+      '<div class="muted" style="margin:4px 0 10px">最初は「確認のみ」で、Shopify に何も書き込まずに、結果だけを見られます。</div>' +
+      '<div class="row" style="gap:8px;justify-content:flex-end"><button class="btn sec" id="ful-cancel">やめる</button><button class="btn sec" id="ful-dry">確認のみ（書き込まない）</button>' +
+      '<button class="btn" id="ful-go"' + (plan.orders.length ? '' : ' disabled') + '>登録する（' + plan.orders.length + '件）</button></div>');
+    const done = v => { fulfillClose(); resolve(v); };
+    ov.querySelector('#ful-cancel').onclick = () => done(null);
+    ov.querySelector('#ful-dry').onclick = () => done({ dryRun: true, notify: ov.querySelector('#ful-notify').checked });
+    ov.querySelector('#ful-go').onclick = () => {
+      const notify = ov.querySelector('#ful-notify').checked;
+      if (!confirm(plan.orders.length + '件を、Shopify で発送済みにします。' + (notify ? '\nお客様に、発送通知メールが届きます。' : '\nお客様への通知メールは、送りません。') + '\nよろしいですか？')) return;
+      done({ dryRun: false, notify });
+    };
+  });
+}
+// 専用機の結果を待つ（依頼の処理が終わるまで。閉じるボタンで画面だけ閉じられる＝処理は続く）
+function fulfillWait(name, batchId) {
+  return new Promise((resolve, reject) => {
+    let stop = null, closed = false;
+    const ov = fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">Shopify に登録しています…</h2><div id="ful-status" class="muted">専用機に依頼しました。</div>' +
+      '<div class="muted" style="margin:8px 0">この画面を閉じても、専用機の処理は続きます（もう一度押すと、結果を確かめて、「登録済み」にします）。</div>' +
+      '<div class="row" style="justify-content:flex-end"><button class="btn sec" id="ful-hide">画面を閉じる</button></div>');
+    ov.querySelector('#ful-hide').onclick = () => { closed = true; if (stop) stop(); fulfillClose(); resolve(null); };
+    rpaReady().then(() => {
+      stop = RpaQueue.watch(name, s => {
+        if (closed) return;
+        const el = document.getElementById('ful-status');
+        if (s.state === 'pending') { if (el) el.textContent = '順番を待っています' + (s.ahead ? '（前に ' + s.ahead + '件）' : '') + '。' + RpaQueue.workerWarning(s); return; }
+        if (s.state === 'running') { if (el) el.textContent = '専用機が、Shopify に登録しています…'; return; }
+        if (s.state === 'done') { resolve({ ok: true }); return; }
+        if (s.state === 'failed') { resolve({ ok: false, error: s.error || '理由は分かりません' }); return; }
+        if (s.state === 'timeout') { resolve({ ok: false, error: '時間内に終わりませんでした（専用機が動いているか確認してください）' }); }
+      }, { intervalMs: 5 * 1000, timeoutMs: 15 * 60 * 1000 });
+    }).catch(reject);
+  });
+}
+async function runShopifyFulfill(items) {
+  const F = CONF.shipReport && CONF.shipReport.fulfill;
+  if (!F) { alert('この画面では、Shopify への自動登録は使えません'); return false; }
+  if (!canImport()) { alert('Shopify への登録は、管理者と取込担当者が行えます'); return false; }
+  const plan = EC.fulfillPlan(items, F);
+  if (!plan.orders.length && !plan.skipped.length) return false;
+  const pick = await fulfillConfirm(plan, F);
+  if (!pick) return false;
+  const batchId = EC.fulfillBatchId();
+  await rpaReady();
+  const params = { orders: plan.orders.map(o => ({ id: o.id, company: o.company, number: o.number, url: o.url || '' })), dryRun: pick.dryRun, notify: pick.notify };
+  const req = await RpaQueue.request(F.job, { app: 'EC売上（Shopify登録）', requestedBy: account && account.username, batchId, params });
+  const out = await fulfillWait(req.name, batchId);
+  if (!out) return false;   // 画面を閉じた（処理は続いている）
+  if (!out.ok) { fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">登録できませんでした</h2><div class="alert err">' + esc(out.error) + '</div>' +
+    '<div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" id="ful-ok">閉じる</button></div>').querySelector('#ful-ok').onclick = fulfillClose; return false; }
+  // 結果のファイルは、専用機から OneDrive 経由で届くので、少し遅れることがある（最大 約1分、待つ）
+  let res = null;
+  for (let i = 0; i < 20 && !(res && Array.isArray(res.results)); i++) {
+    try { res = await RpaQueue.readJson((F.resultDir || '_ec_fulfill') + '/' + batchId + '/result.json'); } catch (e) { res = null; }
+    if (!(res && Array.isArray(res.results))) await new Promise(r => setTimeout(r, 3000));
+  }
+  if (!res || !Array.isArray(res.results)) {
+    fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">結果を読めませんでした</h2><div class="alert warn">専用機の処理は終わっていますが、結果のファイルを読めません。Shopify の管理画面で確かめてください（もう一度押すと、登録済みかどうかを確かめられます）。</div>' +
+      '<div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" id="ful-ok">閉じる</button></div>').querySelector('#ful-ok').onclick = fulfillClose;
+    return false;
+  }
+  const byId = {}; plan.orders.forEach(o => { byId[o.id] = o; });
+  const okIds = res.results.filter(r => (r.status === 'done' || r.status === 'already') && byId[r.id]).map(r => byId[r.id].key);   // 記録のキー（アプリの中の注文の印）に戻す
+  if (!res.dryRun && okIds.length) await markShipReported(okIds, true);   // 登録できた注文は「Shopify に登録済み」にする（共有のリストにも書く）
+  const rows = res.results.map(r => { const st = FUL_STATUS[r.status] || [r.status, 'info'], o = byId[r.id] || {}; return { id: r.id, carrier: o.carrier, fmt: o.fmt, html: '<span class="tag ' + st[1] + '">' + esc(res.dryRun && r.status === 'done' ? '確認のみ' : st[0]) + '</span> ' + esc(r.message || '') }; })
+    .concat(plan.skipped.map(s => ({ id: s.id, html: '<span class="tag warn">対象外</span> ' + esc(s.reason) })));
+  const summary = res.dryRun ? '確認のみです。Shopify には、何も書き込んでいません。' : (okIds.length + '件を「Shopify に登録済み」にしました。') + (res.ok && !plan.skipped.length ? '' : ' 残りは、内容を見て、管理画面で登録してください。');
+  fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">' + (res.dryRun ? '確認のみの結果' : '登録の結果') + '</h2><div class="muted">' + esc(summary) + '</div>' + fulfillTable(rows) +
+    '<div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" id="ful-ok">閉じる</button></div>').querySelector('#ful-ok').onclick = fulfillClose;
+  return okIds.length > 0;
+}
+
 function shipCtx() {
   return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
+    fulfill: (CONF.shipReport && CONF.shipReport.fulfill && CONF.shipReport.fulfill.enabled === true && canImport()) ? { run: runShopifyFulfill } : null,   // enabled が true のときだけ、ボタンを出す（専用機の準備ができてから true にする）
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }
 function render() {

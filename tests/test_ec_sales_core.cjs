@@ -126,6 +126,22 @@ t('この端末の記録をリストに移す対象：状態が無くても、�
   const plan = EC.migrationPlan(local, { '2630988': { Title: '2630988' } });
   assert.deepStrictEqual(plan.sort(), ['2630985', '2630987']);   // 印だけの記録も入る・何もない記録は入らない・リストにあるものは入らない
 });
+t('Shopify への自動登録：頼む中身（番号が1つの注文だけ。分納・対象外の運送会社・番号なしは人が登録する）', () => {
+  const F = { company: { seino: '西濃運輸', daiichi: '第一貨物' }, tracking: { seino: 'https://t.example.co.jp/?no={no}', daiichi: 'https://d.example.co.jp/?k={no}' } };
+  const ship = (...s) => ({ slips: s.map(([c, no]) => ({ c, no, carrier: c === 'seino' ? '西濃' : c, fmt: no })) });
+  const plan = EC.fulfillPlan([
+    { id: '#1772', ship: ship(['seino', '9072284252']) },
+    { id: '1773', ship: ship(['seino', '9072284253'], ['seino', '9072284254']) },
+    { id: '1774', ship: ship(['tonami', '123456789']) },
+    { id: '1775', ship: ship() },
+    { id: '1776', ship: ship(['daiichi', '258712340002']) }], F);
+  assert.deepStrictEqual(plan.orders.map(o => [o.id, o.company, o.number]), [['1772', '西濃運輸', '9072284252'], ['1776', '第一貨物', '258712340002']]);
+  assert.strictEqual(plan.orders[0].url, 'https://t.example.co.jp/?no=9072284252');   // 番号はハイフンなし
+  assert.deepStrictEqual(plan.skipped.map(s => s.id), ['1773', '1774', '1775']);
+  assert.ok(/分納/.test(plan.skipped[0].reason) && /対象外/.test(plan.skipped[1].reason) && /まだ/.test(plan.skipped[2].reason));
+  const b = EC.fulfillBatchId(new Date(2026, 10, 10, 9, 5, 7), 'ab12');
+  assert.strictEqual(b, 'ful-20261110T090507-ab12'); assert.ok(/^[A-Za-z0-9_\-]{1,80}$/.test(b));   // 専用機が受け付ける形
+});
 t('納品先の入力不足は受注チェックの要確認に出る', () => {
   const none = EC.buildSlip(order({ ship: { name: '中村達生', company: '', zip: '745-0803', province: '山口県', city: '周南市', addr1: '大島５−２８', addr2: '', phone: '' } }), ctx);
   assert.ok(none.flags.some(f => f.level === 'warn' && /電話番号/.test(f.text)));

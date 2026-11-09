@@ -1505,6 +1505,33 @@
     };
   };
 
+  /* 出荷チェックの「Shopify に登録する」：専用機に頼む中身（ec_shopify_fulfill の params.orders）を作る。
+   * items＝[{ id（注文番号）, ship（EC.shipOf の結果） }]、fconf＝設定の shipReport.fulfill（company＝運送会社キー→Shopify の運送会社名、tracking＝追跡URLの型 {no}）
+   * 番号が1つだけの注文を自動の対象にする。送り状が複数（分納）・まだ無い・運送会社が対象外は、skipped に理由を入れる（管理画面で人が登録する） */
+  EC.fulfillPlan = function (items, fconf) {
+    fconf = fconf || {};
+    var orders = [], skipped = [], company = fconf.company || {}, tracking = fconf.tracking || {};
+    (items || []).forEach(function (it) {
+      var id = String(it.id == null ? '' : it.id).replace(/\D/g, ''), slips = (it.ship && it.ship.slips) || [];
+      if (!id) return;
+      if (!slips.length) { skipped.push({ id: id, reason: 'まだ送り状番号がありません' }); return; }
+      if (slips.length > 1) { skipped.push({ id: id, reason: '送り状が複数（分納）です。管理画面で、手作業で登録してください' }); return; }
+      var sl = slips[0], name = company[sl.c], no = String(sl.no || '').replace(/\D/g, '');
+      if (!name) { skipped.push({ id: id, reason: '運送会社「' + (sl.carrier || sl.c) + '」は、自動登録の対象外です' }); return; }
+      if (!no) { skipped.push({ id: id, reason: '送り状番号が読めません' }); return; }
+      var o = { id: id, key: it.id, company: name, number: no, carrier: sl.carrier || sl.c, fmt: sl.fmt || no };   // key＝アプリの中の注文の印（記録のキー）。専用機には、数字だけの id を渡す
+      var u = tracking[sl.c]; if (u) o.url = String(u).replace('{no}', encodeURIComponent(no));
+      orders.push(o);
+    });
+    return { orders: orders, skipped: skipped };
+  };
+  // 依頼の batchId（英数字・_・- だけ）。同じ batchId の依頼は、まとめられる（二重に頼まない）
+  EC.fulfillBatchId = function (now, rand) {
+    var d = now || new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+    var s = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + 'T' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    return 'ful-' + s + '-' + String(rand == null ? Math.random().toString(36).slice(2, 6) : rand).replace(/[^A-Za-z0-9]/g, '').slice(0, 6);
+  };
+
   EC.indexObjects = function (tbl) {
     if (!tbl || !tbl.cols || !tbl.rows) return [];
     return tbl.rows.map(function (r) { var o = {}; tbl.cols.forEach(function (c, i) { o[c] = r[i] == null ? '' : r[i]; }); return o; });
