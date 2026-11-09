@@ -52,6 +52,7 @@ EC売上アプリの出荷チェックで「Shopify に登録する」を押す�
 
 3. `requests` が入っていること（読み取り用と同じ）。スクリプトは、毎回 GitHub の main から取得されるので、置く作業は要りません。
 4. ジョブ定義 `scripts/rpa_jobs.json` の `ec_shopify_fulfill`（type: fulfill）が、GitHub の main にあること。
+5. **準備ができたら、`ec_sales_config.json` の `shipReport.fulfill.enabled` を `true` にする**（それまでは、アプリにボタンが出ない。最初の試しは、確認のみから）。
 
 ## 4. アプリからの頼み方・結果
 

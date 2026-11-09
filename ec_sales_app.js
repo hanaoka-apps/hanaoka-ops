@@ -2009,7 +2009,7 @@ async function runShopifyFulfill(items) {
 
 function shipCtx() {
   return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
-    fulfill: (CONF.shipReport && CONF.shipReport.fulfill && canImport()) ? { run: runShopifyFulfill } : null,
+    fulfill: (CONF.shipReport && CONF.shipReport.fulfill && CONF.shipReport.fulfill.enabled === true && canImport()) ? { run: runShopifyFulfill } : null,   // enabled が true のときだけ、ボタンを出す（専用機の準備ができてから true にする）
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }
 function render() {
