@@ -283,6 +283,30 @@
     return { payYm: payYm, rows: rows, totals: t, checks: checks };
   }
 
+  /* 締め前（2026-11-09）：支払一覧表は SMILE で締めないと出ない。締める前に 受入リスト・9055・仕入先マスタで受入をチェックする
+     行＝受入のある仕入先。amount は受入（税込）＝画面の表示と部門の按分だけに使う（支払額はまだ決まらない。保存は 0）
+     rule は PRE_RULE（締め前の印。締め後の取り込みで、締め前にチェックした受入と比べる） */
+  var PRE_RULE = '締め前（受入）';
+  function computePre(opt) {
+    var p55 = opt.p9055, ms = opt.master || {}, rc = opt.receipts ? opt.receipts.rows : {};
+    var rows = [], checks = [], nameMap = p55 ? deptNameMap(p55) : {};
+    Object.keys(rc).sort().forEach(function (code) {
+      var R = rc[code], P = p55 ? p55[code] : null, v = ms[code];
+      if (!Math.round(R.incl || 0)) return;
+      var row = { code: code, name: R.name || (P && P.name) || (v && v.name) || '', deptCode: P ? P.deptCode : '', deptName: P ? P.deptName : '',
+        prevBalance: P ? P.balance : 0, paid: 0, carry: 0, listIncl: R.incl, listBalance: 0, balance9055: P ? P.balance : null, receiptIncl: R.incl,
+        byDept: R.byDept, receiptItems: R.items, payDate: '', payRound: '月末', feeKbn: v ? v.feeKbn : '', base: 0, offset: 0, other: 0, amount: R.incl,
+        rule: PRE_RULE, transfer: 0, densai: 0, fee: 0, transferNet: 0, otherPay: 0, otherMethod: '', adjustAmt: 0, carryHeld: 0,
+        offsetVendor: !!(opt.offsetVendors && opt.offsetVendors[code]), terms: v ? v.terms : '', densaiKind: '', site: 0, due: '', overridden: false, notes: [], pre: true };
+      var al = allocateDept(row, nameMap); row.deptByGroup = al.byGroup; row.mainDept = al.main;
+      if (!v) row.notes.push('仕入先マスタにない');
+      rows.push(row);
+      row.notes.forEach(function (n) { checks.push({ code: code, name: row.name, note: n }); });
+    });
+    var t = { count: rows.length, amount: rows.reduce(function (s, r) { return s + r.amount; }, 0) };
+    return { payYm: opt.payYm || '', rows: rows, totals: t, checks: checks, pre: true };
+  }
+
   // ---- 決裁の部門（決まりの deptGroups：部門コードの先頭 prefix か、コードの一覧 codes。上から順に当てる） ----
   function deptGroupOf(deptCode) {
     var c = String(deptCode || ''), gs = rules().deptGroups;
@@ -421,6 +445,6 @@
     return cache;
   }
 
-  root.APSmile = { slipN: slipN, dN: dN, itemsOf: itemsOf, matchItems: matchItems, rcvPrice: rcvPrice, jno: jno, juchuLookup: juchuLookup, setRules: setRules, deptGroupOf: deptGroupOf, deptNameMap: deptNameMap, allocateDept: allocateDept, payRoundOf: payRoundOf, splitLines: splitLines, transferFeeOf: function (t, feeKbn) { return transferFee(t, { feeKbn: feeKbn }); }, parseCSV: parseCSV, readVendorMaster: readVendorMaster, read9055: read9055, readReceipts: readReceipts, readPayList: readPayList,
+  root.APSmile = { PRE_RULE: PRE_RULE, computePre: computePre, slipN: slipN, dN: dN, itemsOf: itemsOf, matchItems: matchItems, rcvPrice: rcvPrice, jno: jno, juchuLookup: juchuLookup, setRules: setRules, deptGroupOf: deptGroupOf, deptNameMap: deptNameMap, allocateDept: allocateDept, payRoundOf: payRoundOf, splitLines: splitLines, transferFeeOf: function (t, feeKbn) { return transferFee(t, { feeKbn: feeKbn }); }, parseCSV: parseCSV, readVendorMaster: readVendorMaster, read9055: read9055, readReceipts: readReceipts, readPayList: readPayList,
     splitBySetting: splitBySetting, transferFee: transferFee, dueDate: dueDate, compute: compute, receiptGroupOf: receiptGroupOf };
 })(typeof window !== 'undefined' ? window : this);

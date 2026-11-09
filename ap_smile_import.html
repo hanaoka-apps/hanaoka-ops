@@ -14,7 +14,7 @@
 <script src="ap_intake.js?v=20261108r"></script>
 <script src="ap_ai.js?v=20261109a"></script>
 <script src="rpa_queue.js"></script>
-<script src="ap_smile.js?v=20261109a"></script>
+<script src="ap_smile.js?v=20261109b"></script>
 <script src="nav.js?v=20261021" defer></script>
 <script src="ap_month.js?v=20261106"></script>
 <style>
@@ -255,11 +255,17 @@ async function onFiles(list){
       const data=k==='payList'?S.readPayList(rows):k==='p9055'?S.read9055(rows):k==='receipts'?S.readReceipts(rows):S.readVendorMaster(rows);
       FILES[k]={file,data,rows:rows.length-1};
     }catch(e){snack(file.name+'：'+e.message,true);}}
+  {const p0=FILES.payList&&FILES.payList.data,r0=FILES.receipts&&FILES.receipts.data;
+    if(p0&&p0.closeYm&&r0&&r0.to&&ymDigits(p0.closeYm)!==ymDigits(r0.to)){FILES.payList=null;snack(`支払一覧表は ${p0.title||p0.closeYm} のもの（受入より前の締め）なので使いません。締め前として受入をチェックします`);}
+    if(!FILES.payList&&r0&&r0.to){const c=ymDigits(r0.to),ym=ymOf(new Date(+c.slice(0,4),+c.slice(4,6),1));if(ym!==month()){setMonth(ym);calc=null;st.sel=null;await loadSaved();}}}
   const pl=FILES.payList&&FILES.payList.data;
   if(pl&&pl.closeYm){const ym=ymOf(new Date(+pl.closeYm.slice(0,4),+pl.closeYm.slice(5,7),1));   // 締め月の翌月＝決済月
     if(ym!==month()){setMonth(ym);calc=null;st.sel=null;await loadSaved();}}
   recalc();st.tab='imp';render();}
-const allFiles=()=>Object.values(FILES).every(Boolean);
+// 締め前（支払一覧表なし）：受入リスト・月次支払明細表・仕入先マスタの3つで受入をチェックする（2026-11-09）
+const PRE_RULE=S.PRE_RULE,isPre=()=>!!(calc&&calc.pre),ymDigits=s=>String(s||'').replace(/\D/g,'').slice(0,6);
+const closeYmOf=ym=>{const [y,m]=ym.split('/').map(Number),x=new Date(y,m-2,1);return `${x.getFullYear()}${String(x.getMonth()+1).padStart(2,'0')}`;};
+const allFiles=()=>isPre()?!!(FILES.receipts&&FILES.master&&FILES.p9055):Object.values(FILES).every(Boolean);
 function fileInfo(k){const x=FILES[k];if(!x)return '';const d=x.data;
   if(k==='payList')return `${d.title||'締め日不明'}・${Object.keys(d.rows).length}社`;
   if(k==='receipts')return `${fmtD(d.from)}〜${fmtD(d.to)}・${x.rows}行`;
@@ -274,6 +280,7 @@ function adjustFor(){const ym=month(),m={};const add=(c,v)=>{m[c]=m[c]||{other:0
 
 // ---------- 計算と1行 ----------
 function recalc(){
+  if(!FILES.payList&&FILES.master&&FILES.receipts){calc=S.computePre({p9055:FILES.p9055&&FILES.p9055.data,receipts:FILES.receipts.data,master:FILES.master.data,payYm:dash(month()),offsetVendors:OFFSET});return;}
   if(!FILES.payList||!FILES.master){calc=null;return;}
   calc=S.compute({payList:FILES.payList.data,p9055:FILES.p9055&&FILES.p9055.data,receipts:FILES.receipts&&FILES.receipts.data,
     master:FILES.master.data,payYm:dash(month()),adjust:adjustFor(),offsetVendors:OFFSET});}
@@ -290,23 +297,27 @@ function buildRows(){
       amount:+g('支払額')||0,rule:g('分け方の決まり')||'',calcLines:lines,feeKbn:g('手数料区分')||'',calcFee:+g('振込手数料（計算）')||0,
       notes:String(g('気づき')||'').split('\n').filter(Boolean),status:g('取り込みの状態')||'',prevPay:g('前回の支払額'),carryHeld:+g('保留した繰越')||0};};
   if(calc){
-    const pl=FILES.payList.data.rows;
+    const pl=FILES.payList?FILES.payList.data.rows:{};
     calc.rows.forEach(c=>{seen[c.code]=1;const sv=saved[c.code]||null,p=pl[c.code]||{};
       const r={code:c.code,name:c.name,payDate:c.payDate,payRound:c.payRound,
         smile:{prevBalance:c.prevBalance,paid:c.paid,discount:p.discount||0,carry:c.carry,excl:p.excl||0,tax:p.tax||0,incl:c.listIncl,balance:c.listBalance},
         bal9055:c.balance9055,rcvIncl:c.receiptIncl,byDept:c.byDept,byGroup:c.deptByGroup,mainDept:c.mainDept,
-        amount:c.amount,rule:c.rule,calcLines:S.splitLines(c,null,dash(month())),feeKbn:c.feeKbn,calcFee:c.fee,notes:c.notes.slice(),saved:sv,carryHeld:c.carryHeld};
-      r.status=!sv?'新規':Math.round(+pf(r,'支払額'))===Math.round(r.amount)?'変化なし':'金額が変わった';
+        amount:c.amount,rule:c.rule,calcLines:c.pre?[]:S.splitLines(c,null,dash(month())),feeKbn:c.feeKbn,calcFee:c.fee,notes:c.notes.slice(),saved:sv,carryHeld:c.carryHeld};
+      // 締め前にチェックした受入（保存した 受入税込）と比べる。締め後は 支払一覧表の税込仕入額＝受入 も見る（締めを解いて直し、締め直したときも）
+      const svR=sv?pf(r,'受入税込'):null,rcvSame=svR==null||svR===''||Math.round(+svR)===Math.round(+r.rcvIncl||0),wasPre=!!sv&&pf(r,'分け方の決まり')===PRE_RULE;
+      r.status=!sv?'新規':wasPre?(calc.pre?(rcvSame?'変化なし':'金額が変わった'):(rcvSame&&Math.round(+r.smile.incl||0)===Math.round(+r.rcvIncl||0)?'締めて一致':'受入が変わった'))
+        :Math.round(+pf(r,'支払額'))===Math.round(r.amount)&&rcvSame?'変化なし':'金額が変わった';
       r.prevPay=sv?+pf(r,'支払額'):null;out.push(r);});
     Object.keys(saved).forEach(code=>{if(seen[code])return;const r=fromSaved(code,saved[code]);r.saved=saved[code];r.status='なくなった';r.prevPay=r.amount;r.amount=0;r.calcLines=[];r.byGroup={};out.push(r);});
   }else Object.keys(saved).sort().forEach(code=>{const r=fromSaved(code,saved[code]);r.saved=saved[code];out.push(r);});
   out.forEach(r=>{
+    r.pre=r.rule===PRE_RULE&&r.status!=='なくなった';if(r.pre){r.calcLines=[];r.rcvIncl=+r.rcvIncl||0;r.amount=r.rcvIncl;}   // 締め前：金額は受入（税込）。支払額はまだ無い（保存は 0）
     r.override=r.saved?parseJ(pf(r,'分け方の上書き'),null):null;
     r.reason=r.saved?(pf(r,'変えた理由')||''):'';r.feeOverride=r.saved?(pf(r,'手数料の上書き')||''):'';
     r.checked=!!(r.saved&&pf(r,'確認済み'));r.checkedBy=r.saved?pf(r,'確認者')||'':'';r.comment=r.saved?pf(r,'コメント')||'':'';
     r.hold=!!(r.saved&&pf(r,'保留'));r.noInvReason=String((r.saved?pf(r,'請求書なしの理由'):(prevSaved[r.code]?fv(L.pay,prevSaved[r.code].f,'請求書なしの理由'):''))||'');r.prevHadInv=!!PINV[r.code];r.needReview=!!(r.saved&&pf(r,'見直しが要る'));
     r.offsetVendor=!!OFFSET[r.code];r.offsetChecked=!!(r.saved&&pf(r,'相殺の確認'));
-    if(calc&&r.status==='金額が変わった'){r.checked=false;r.offsetChecked=false;if(r.override)r.needReview=true;}
+    if(calc&&(r.status==='金額が変わった'||r.status==='受入が変わった'||(r.status==='締めて一致'&&r.offsetVendor))){r.checked=false;r.offsetChecked=false;if(r.override)r.needReview=true;}
     r.lastMonth=prevSaved[r.code]?+fv(L.pay,prevSaved[r.code].f,'支払額'):null;
     // 請求書：SMILE の額（支払額）と請求書の合計の差。保留した繰越は SMILE の額に入れない
     r.invoices=INV[r.code]||[];r.invTotal=r.invoices.reduce((s,x)=>s+x.amount,0);
@@ -324,9 +335,9 @@ function feeOf(r){if(r.feeOverride!==''&&r.feeOverride!=null)return +r.feeOverri
   if(!(r.override&&r.override.length))return r.calcFee;
   return S.transferFeeOf(linesOf(r).filter(l=>l.method==='振込').reduce((s,l)=>s+l.amount,0),r.feeKbn);}
 const linesSum=r=>linesOf(r).reduce((s,l)=>s+(+l.amount||0),0);
-function splitOk(r){const s=linesSum(r);return s===r.amount||(r.amount<0&&s===0);}
+function splitOk(r){if(r.pre)return true;const s=linesSum(r);return s===r.amount||(r.amount<0&&s===0);}
 // 確認が要る行＝何か SMILE に戻すものがある（支払・相殺・調整）
-const needsCheck=r=>r.status!=='なくなった'&&linesOf(r).some(l=>+l.amount);
+const needsCheck=r=>r.status!=='なくなった'&&(r.pre?!!Math.round(r.rcvIncl||0):linesOf(r).some(l=>+l.amount));
 // 請求書の添付忘れ：払うのに請求書が無い（理由も無い）。理由（毎月来ない先など）は翌月の取り込みで引き継ぐ
 const invMissing=r=>needsCheck(r)&&!r.invoices.length&&!r.noInvReason;
 function invProgress(a){const n=a.filter(needsCheck),has=n.filter(r=>r.invoices.length),why=n.filter(r=>!r.invoices.length&&r.noInvReason),miss=n.filter(invMissing);
@@ -336,14 +347,14 @@ function missText(miss){const by={};miss.forEach(r=>(by[r.mainDept||'国内営�
   return `【${month()} 払い 仕入】請求書がまだ届いていない仕入先（${miss.length}社）\n`+Object.entries(by).map(([g,a])=>`■${g}\n`+a.sort((x,y)=>(y.prevHadInv-x.prevHadInv)||(y.amount-x.amount)).map(r=>`・${r.name}（${r.code}）${yen(r.amount)}円${r.prevHadInv?'　※前月はありました':''}`).join('\n')).join('\n');}
 // タグ（一覧・サマリーの気づき）
 function tagsOf(r,full){const t=[];
-  if(r.status==='新規'&&calc)t.push(['新規','t-pri']);if(r.status==='金額が変わった')t.push(['金額が変わった','t-up']);if(r.status==='なくなった')t.push(['なくなった','t-new']);
+  if(r.status==='新規'&&calc)t.push(['新規','t-pri']);if(r.status==='金額が変わった')t.push(['金額が変わった','t-up']);if(r.status==='受入が変わった')t.push(['締め前から受入が変わった','t-up']);if(r.status==='なくなった')t.push(['なくなった','t-new']);
   if(r.offsetVendor)t.push([r.offsetChecked?'相殺先（確認済）':'相殺先','t-flag']);
   if(needsCheck(r)){if(!r.invoices.length)t.push(r.noInvReason?['請求書なし（理由あり）','t-new']:r.prevHadInv?['請求書なし・前月はあった','t-up']:['請求書なし','t-up']);else if(r.invReading)t.push(['AI 読み取り中','t-pri']);
     else{const jt=judgeTag(r);if(jt){if(jt[0]!=='✔ 一致')t.push(jt);}else if(r.invDiff)t.push([`請求書と差 ${r.invDiff>0?'+':''}${yen(r.invDiff)}`,Math.abs(r.invDiff)<100?'t-new':'t-up']);}
     const co=carryOf(r);if(co.inA.length)t.push(['先月の調整分','t-new']);if(co.outA.length)t.push(['次月調整','t-flag']);}
   if(r.invFailed)t.push(['読み取り失敗','t-up']);if(r.bankAlert)t.push(['口座','t-up']);
   if(r.carryHeld&&full)t.push(['繰越保留','t-new']);   // ほぼ全社に付くので一覧には出さない（確認画面とサマリーで見る）if(r.needReview)t.push(['分け方の見直し','t-up']);
-  if(r.lastMonth&&r.amount-r.lastMonth>=3000000&&r.amount>=r.lastMonth*2)t.push([`前月の${Math.round(r.amount/r.lastMonth*10)/10}倍`,'t-up']);
+  if(!r.pre&&r.lastMonth&&r.amount-r.lastMonth>=3000000&&r.amount>=r.lastMonth*2)t.push([`前月の${Math.round(r.amount/r.lastMonth*10)/10}倍`,'t-up']);
   return t;}
 function totalsOf(list,g){const t={pay:0,振込:0,でんさい:0,相殺:0,調整:0,現金:0,海外送金:0,口座振替:0,fee:0,held:0,n:0};
   list.forEach(r=>{if(g&&g!=='全社'){t.pay+=Math.max(0,(r.byGroup||{})[g]||0);return;}
@@ -352,11 +363,21 @@ function totalsOf(list,g){const t={pay:0,振込:0,でんさい:0,相殺:0,調整
 // ---------- 照合 ----------
 function checkList(){
   if(!calc)return null;const out=[],cs=calc.checks;
+  if(calc.pre){const rc=FILES.receipts.data,nm=calc.rows.filter(r=>r.notes.includes('仕入先マスタにない'));
+    out.push({ok:'info',label:'締め前の取り込み（支払一覧表はまだ）',detail:'受入をチェックしてから SMILE を締め、「締め後：4点を取り込む」で支払一覧表と一致を確かめます'});
+    out.push({ok:ymDigits(rc.to)===closeYmOf(month())&&ymDigits(rc.from)===closeYmOf(month()),label:'受入が決済月の前月（締め月）の分',detail:`受入 ${fmtD(rc.from)}〜${fmtD(rc.to)}`});
+    out.push({ok:!!FILES.p9055,label:'月次支払明細表（9055）がある',detail:FILES.p9055?'':'部門が分かりません'});
+    out.push({ok:!nm.length,label:'仕入先マスタにある',detail:nm.map(r=>r.name).join('・')});
+    out.push({ok:'info',label:`受入のある仕入先 ${calc.rows.length}社・受入（税込）${yen(calc.totals.amount)}`});return out;}
   const cnt=re=>calc.rows.filter(r=>r.notes.some(n=>re.test(n)));
   const pl=FILES.payList.data,rc=FILES.receipts&&FILES.receipts.data;
   if(rc){const m=String(rc.to||'').slice(0,6),cm=(pl.closeYm||'').replace('-','');
     out.push({ok:m===cm&&String(rc.from||'').slice(0,6)===cm,label:'締め月がそろっている',detail:`支払一覧表 ${pl.title||'?'}／受入 ${fmtD(rc.from)}〜${fmtD(rc.to)}`});}
   else out.push({ok:'info',label:'月次受入リストがありません（税込仕入額の照合と部門の内訳ができません）'});
+  // 締め前にチェックした受入と、締め後の支払一覧表（税込仕入額）・受入リストが一致するか（締めを解いて直し、締め直したときも）
+  {const wp=rows.filter(r=>r.status==='締めて一致'||r.status==='受入が変わった'),ch=wp.filter(r=>r.status==='受入が変わった');
+    if(wp.length)out.push({ok:!ch.length,label:'締め前にチェックした受入 ＝ 支払一覧表の税込仕入額 ＝ 受入リスト',
+      detail:ch.length?ch.map(r=>`${r.name}（チェック時 ${yen(pf(r,'受入税込'))}／受入 ${yen(r.rcvIncl)}／一覧 ${yen(r.smile.incl)}）`).join('・')+' → 確認OKを外して見直します':`${wp.length}社一致（確認OKはそのまま。相殺先は相殺の確認から）`});}
   if(FILES.p9055){const a=cnt(/前回支払残高が 9055 と違う|9055 にない/);out.push({ok:!a.length,label:'前回支払残高（支払一覧表 と 月次支払明細表）',detail:a.length?a.map(r=>r.name).join('・'):`${calc.rows.length}社一致`});}
   else out.push({ok:'info',label:'月次支払明細表がありません（前回支払残高の照合と部門ができません）'});
   if(rc){const a=cnt(/税込仕入額が受入リストと違う/);out.push({ok:!a.length,label:'税込仕入額（支払一覧表 と 月次受入リスト）',detail:a.length?a.map(r=>r.name).join('・'):`${calc.rows.length}社一致`});}
@@ -413,11 +434,13 @@ function drawImport(){
       <b>${y0}年${m0}月払い</b><span style="font-size:13px;color:var(--sub)">（${close.getMonth()+1}月${close.getDate()}日締め）</span>
       <span style="flex:1"></span>
       <button class="lk" id="bNow" ${busy?'disabled':''} style="font-size:12px">今あるファイルで取り込む</button>
-      <button class="pri" id="bRpa" ${busy?'disabled':''} title="RPA 専用機が SMILE から前月締めの支払一覧表・月次支払明細表・月次受入リスト・仕入先マスタを出し直し、読み込んで照合します（数分）。決済月は読み込んだ締め月の翌月に切り替わります">${busy?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む'}</button></div>
+      <button class="pri" id="bRpaPre" ${busy?'disabled':''} title="締める前：RPA 専用機が SMILE から前月締めの月次受入リスト・月次支払明細表・仕入先マスタを出し直して読み込みます（支払一覧表は締めないと出ません）。受入と請求書を照合してチェックします">${busy&&RPA.mode==='pre'?'⏳ 取り込み中…':RPA_LBL.pre}</button>
+      <button class="pri" id="bRpa" ${busy?'disabled':''} title="締めた後：RPA 専用機が SMILE から前月締めの4点（支払一覧表・月次支払明細表・月次受入リスト・仕入先マスタ）を出し直して読み込み、締め前にチェックした受入と支払一覧表が一致するかを確かめます。締めを解いて直し、締め直したときも、もう一度押します">${busy&&RPA.mode!=='pre'?'⏳ 取り込み中…':RPA_LBL.post}</button></div>
+      <div style="margin-top:6px;font-size:12px;color:var(--sub)">① 締める前：受入を取り込み、請求書と照合してチェック → ② SMILE で締める → ③ 締めた後：4点を取り込み、支払一覧表と締め前の受入の一致を確かめて固める（合わない仕入先は確認OKが外れます）</div>
       <div id="rpst" style="margin-top:8px">${rpaStatusHtml()}</div>
       <div class="files" style="margin-top:8px">${Object.keys(KIND_LABEL).map(k=>{const x=FILES[k];return `<div class="file ${x?'ok':''}"><div class="k">${KIND_LABEL[k]}</div><div style="font-weight:600">${x?'✔ '+esc(x.file.name):'—'}</div><div class="k">${x?esc(fileInfo(k)):''}</div><div data-smt="${k}">${smAgeHtml(k)}</div></div>`;}).join('')}</div>
       <details style="margin-top:8px;font-size:13px"><summary style="cursor:pointer;color:var(--sub)">ファイルを手で置く（RPA を使わないとき）</summary>
-        <label class="drop" id="drop" style="margin-top:6px">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">支払一覧表.csv（または 販売_支払一覧表.xlsx）／ 月次支払明細表.csv ／ 月次受入リスト.csv ／ 仕入先マスタ.csv</span>
+        <label class="drop" id="drop" style="margin-top:6px">📂 ここに4つのファイルをまとめてドラッグ（またはクリックして選ぶ）<br><span style="font-size:12px">支払一覧表.csv（または 販売_支払一覧表.xlsx。締め前は無しで）／ 月次支払明細表.csv ／ 月次受入リスト.csv ／ 仕入先マスタ.csv</span>
         <input type="file" id="file-in" multiple accept=".csv,.xlsx,.xls"></label></details>
       <div style="margin-top:6px;font-size:12px;color:var(--sub)">SMILE を直したら、もう一度取り込めば読み直せます（確認・分け方・コメントは残ります）。請求書は「📨 請求書を渡す」へ</div></div>`;
   if(calc){const c={新規:0,金額が変わった:0,変化なし:0,なくなった:0};rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);const ng=(list||[]).filter(x=>x.ok===false).length;
@@ -432,7 +455,7 @@ function drawImport(){
   ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
   d.addEventListener('drop',ev=>onFiles(ev.dataTransfer.files));$('file-in').onchange=e=>{onFiles(e.target.files);e.target.value='';};
   if($('bSave'))$('bSave').onclick=saveImport;
-  if($('bRpa'))$('bRpa').onclick=rpaStart;if($('bNow'))$('bNow').onclick=()=>smLoad(0);}
+  if($('bRpa'))$('bRpa').onclick=()=>rpaStart('post');if($('bRpaPre'))$('bRpaPre').onclick=()=>rpaStart('pre');if($('bNow'))$('bNow').onclick=()=>smLoad(0);}
 
 // ---------- SMILE から最新を取り込む（RPA 専用機：rpa_queue.js、ジョブは smile.rules の rpa.job）----------
 // 依頼 → 順番待ち → SMILE から出力 → 4ファイルが新しくなるのを待つ → 読み込む → 照合して保存（保存の前に確かめる）
@@ -441,21 +464,25 @@ const RPA_KEY='ap.rpa.purchase';
 let RPA=(()=>{try{return JSON.parse(localStorage.getItem(RPA_KEY)||'null');}catch{return null;}})(),rpaStop=null;
 // rpa_queue.js は `const RpaQueue`（window には載らない）ので、名前で見る
 const RQ=()=>MOCK?MOCK.rpa:(typeof RpaQueue!=='undefined'?RpaQueue:null);
+const RPA_LBL={pre:'▶ 締め前：受入を取り込む',post:'▶ 締め後：4点を取り込む'};
 const rpaBusy=()=>!!(RPA&&['依頼','順番待ち','出力中','同期待ち','読み込み中'].includes(RPA.phase));
 function rpaSet(o){RPA=Object.assign(RPA||{},o);try{localStorage.setItem(RPA_KEY,JSON.stringify(RPA));}catch{}const el=$('rpst');if(el)el.innerHTML=rpaStatusHtml();
-  const b=$('bRpa'),n=$('bNow'),box=$('rpaBox');if(b){b.disabled=rpaBusy();b.textContent=rpaBusy()?'⏳ SMILE から取り込み中…':'▶ SMILE から最新を取り込む';}if(n)n.disabled=rpaBusy();if(box)box.classList.toggle('busy',rpaBusy());}
+  const b=$('bRpa'),b2=$('bRpaPre'),n=$('bNow'),box=$('rpaBox'),bz=rpaBusy(),pre=RPA&&RPA.mode==='pre';
+  if(b){b.disabled=bz;b.textContent=bz&&!pre?'⏳ 取り込み中…':RPA_LBL.post;}if(b2){b2.disabled=bz;b2.textContent=bz&&pre?'⏳ 取り込み中…':RPA_LBL.pre;}if(n)n.disabled=rpaBusy();if(box)box.classList.toggle('busy',rpaBusy());}
 function rpaStatusHtml(){if(!RPA||!RPA.phase)return '';const min=RPA.at?Math.floor((Date.now()-Date.parse(RPA.at))/60000):0;
   if(rpaBusy())return `<div class="upl"><span class="spin"></span><div style="flex:1;min-width:0"><b>${esc(RPA.text||RPA.phase)}</b><div class="fn">${min}分経過・画面を閉じても、次に開いたときに続きから見ます</div></div></div>`;
   const ng=RPA.phase==='失敗';return `<div class="upl ${ng?'ng':'ok'}"><span>${ng?'⚠':'✓'}</span><div style="flex:1">${esc(RPA.text||RPA.phase)}</div><button class="lk" id="rpX" onclick="RPA=null;try{localStorage.removeItem('${RPA_KEY}')}catch(e){};this.closest('.upl').remove()">閉じる</button></div>`;}
-async function rpaStart(){
-  const cfg=SMR.rpa||{};if(!cfg.job){snack('smile.rules に rpa（RPA の設定）がありません（Provision-SmileAP.ps1 -Apply -ResetRules）',true);return;}
+async function rpaStart(mode){
+  const cfg=SMR.rpa||{},pre=mode==='pre',job=pre?(cfg.jobPre||'ap_purchase_pre'):cfg.job;if(!cfg.job){snack('smile.rules に rpa（RPA の設定）がありません（Provision-SmileAP.ps1 -Apply -ResetRules）',true);return;}
   if(!RQ()){snack('RPA の部品（rpa_queue.js）が読めません',true);return;}
   // SMILE の条件パターンで、いつも前月締め（今日から見て）で出る。読み込むと決済月はその翌月に切り替わる
   const now=new Date(),cl=new Date(now.getFullYear(),now.getMonth(),0);
-  if(!confirm(`SMILE から前月締め（${cl.getMonth()+1}月${cl.getDate()}日締め＝${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')} 払い）の仕入のファイルを出し直して取り込みます（数分かかります）。よろしいですか？`))return;
-  rpaSet({phase:'依頼',text:'RPA 専用機に頼んでいます…',at:new Date().toISOString(),ym:month(),name:''});
+  const lbl=`前月締め（${cl.getMonth()+1}月${cl.getDate()}日締め＝${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')} 払い）`;
+  if(!confirm(pre?`締め前：SMILE から${lbl}の月次受入リスト・月次支払明細表・仕入先マスタを出し直して取り込みます（数分かかります）。支払一覧表は締めた後に取り込みます。よろしいですか？`
+    :`締め後：SMILE から${lbl}の4点（支払一覧表・月次支払明細表・月次受入リスト・仕入先マスタ）を出し直して取り込みます（数分かかります）。SMILE の締めは済んでいますか？`))return;
+  rpaSet({phase:'依頼',text:'RPA 専用機に頼んでいます…',at:new Date().toISOString(),ym:month(),name:'',mode:pre?'pre':'post'});
   try{RQ().init({getToken:token,driveId:SM_DRIVE});
-    const r=await RQ().request(cfg.job,{app:'支払管理 仕入（SMILE）',requestedBy:(acct&&acct.username)||'',params:{payYm:month()}});
+    const r=await RQ().request(job,{app:'支払管理 仕入（SMILE）',requestedBy:(acct&&acct.username)||'',params:{payYm:month()}});
     rpaSet({name:r.name,phase:'順番待ち',text:r.deduped?'すでに同じ依頼が順番待ちです。いっしょに待ちます':'RPA 専用機の受付待ち'});rpaWatch();}
   catch(e){rpaSet({phase:'失敗',text:'頼めませんでした（SharedMasters に書く権限が要ります）：'+e.message});}}
 function rpaWatch(){if(!RPA||!RPA.name||rpaStop)return;const cfg=SMR.rpa||{},since=Date.parse(RPA.at);
@@ -471,7 +498,7 @@ function rpaWatch(){if(!RPA||!RPA.name||rpaStop)return;const cfg=SMR.rpa||{},sin
 // 出力が終わったら、4ファイルの更新が SharedMasters に届くのを待ってから読む（同期の遅れ）
 async function smMeta(name){try{return await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(name)}?$select=lastModifiedDateTime,size`);}catch(e){return null;}}
 async function rpaWaitFiles(since){rpaSet({phase:'同期待ち',text:'出力できました。ファイルが届くのを待っています…'});
-  const names=Object.values((SMR.rpa||{}).files||{}),end=Date.now()+10*60000;
+  const names=Object.entries((SMR.rpa||{}).files||{}).filter(([k])=>!(RPA&&RPA.mode==='pre'&&k==='payList')).map(([,n])=>n),end=Date.now()+10*60000;
   while(Date.now()<end){const ms=await Promise.all(names.map(smMeta));
     if(ms.every(m=>m&&Date.parse(m.lastModifiedDateTime)>since)){await smLoad(since);return;}
     await new Promise(r=>setTimeout(r,MOCK?500:15000));}
@@ -479,8 +506,8 @@ async function rpaWaitFiles(since){rpaSet({phase:'同期待ち',text:'出力で�
 // SharedMasters の4ファイルを読んで、手で置いたときと同じ処理（onFiles）に渡す。照合がすべて合えば保存の確認まで進める
 async function smLoad(since){const cfg=SMR.rpa||{};const files=cfg.files||{};if(!Object.keys(files).length){snack('smile.rules に rpa.files がありません',true);return;}
   rpaSet({phase:'読み込み中',text:'ファイルを読み込んでいます…',at:(RPA&&RPA.at)||new Date().toISOString()});
-  const list=[],miss=[],old=[];
-  for(const [k,n] of Object.entries(files)){const m=await smMeta(n);if(!m){miss.push(n);continue;}
+  const list=[],miss=[],old=[],pre=!!(since&&RPA&&RPA.mode==='pre');Object.keys(FILES).forEach(k=>FILES[k]=null);   // 締め前の RPA は支払一覧表を読まない（今あるファイルで取り込むときは、受入と締めがそろわない支払一覧表を onFiles で外す）
+  for(const [k,n] of Object.entries(files)){if(pre&&k==='payList')continue;const m=await smMeta(n);if(!m){miss.push(n);continue;}
     if(!since&&Date.now()-Date.parse(m.lastModifiedDateTime)>3*86400000)old.push(`${n}（${fmtTime(m.lastModifiedDateTime)}）`);
     try{const b=await call('GET',`/drives/${SM_DRIVE}/root:/${encodeURIComponent(n)}:/content`,null,null,true);list.push(new File([b],n,{lastModified:Date.parse(m.lastModifiedDateTime)}));}catch(e){miss.push(n);}}
   if(miss.length){rpaSet({phase:'失敗',text:'SharedMasters にないファイルがあります：'+miss.join('・')});return;}
@@ -502,7 +529,7 @@ function drawSummary(){
   const ms=['振込','でんさい','相殺','調整','現金','海外送金','口座振替'].filter(m=>t[m]);
   const byDue={};a.forEach(r=>linesOf(r).forEach(l=>{if(l.method!=='でんさい')return;const d=l.due||'（期日なし）';byDue[d]=(byDue[d]||0)+l.amount;}));
   const dues=Object.entries(byDue).sort((x,y)=>x[0].localeCompare(y[0]));
-  let h=`<div class="sumbar"><span class="sp"></span><details class="pmenu"><summary title="確認がすべて終わってから使います">🖨 印刷 ▾</summary><div>
+  let h=`${a.some(r=>r.pre)?'<div class="card" style="border-color:#efd3ad;background:var(--warn-l)"><b>締め前</b>：金額は今月の受入（税込）です（支払額は SMILE を締めて「締め後：4点を取り込む」をすると決まります）</div>':''}<div class="sumbar"><span class="sp"></span><details class="pmenu"><summary title="確認がすべて終わってから使います">🖨 印刷 ▾</summary><div>
       <div class="pmh">仕入明細（払う仕入先をまとめて・1社1ページ）</div>${['全部','本社','工場'].map(s=>`<button data-prt="${s}">${s==='本社'?'本社のみ（国内営業＋ソリューション）':s==='工場'?'工場のみ':'全部'}</button>`).join('')}
       <div class="pmh">支払明細表（今の形・A4 横・押印欄つき）</div><button id="bXp">PDF（印刷）</button><button id="bXl">📤 Excel</button>
       <div class="pmn">${ok===n.length?'✔ 確認がすべて終わっています':`確認OK ${ok}／${n.length}。確認が終わってから使います`}</div></div></details></div>
@@ -1031,7 +1058,7 @@ function drawDetail(){
   const myAdj=adjs.filter(x=>af(x,'仕入先コード')===r.code);
   const reasonOk=!(r.override&&r.override.length)||r.reason;
   const why=!ed?(calc?'取り込みを保存すると確認できます':''):!needsCheck(r)?'支払なし（確認は不要）':!splitOk(r)||draft?'分け方の合計を支払額に合わせて保存してください':!reasonOk?'分け方を変えた理由を書いてください'
-    :(r.offsetVendor&&!r.offsetChecked)?'相殺先です。相殺の有無を確認してください':(!r.invoices.length&&!r.comment&&!r.noInvReason)?'請求書がありません。請求書を置くか、「請求書なしで払う理由」を書いてください':judgeBlock(r);
+    :(r.offsetVendor&&!r.offsetChecked&&!r.pre)?'相殺先です。相殺の有無を確認してください':(!r.invoices.length&&!r.comment&&!r.noInvReason)?'請求書がありません。請求書を置くか、「請求書なしで払う理由」を書いてください':judgeBlock(r);
   el.innerHTML=`<div class="dnav"><button id="dPrev">◀ 前へ</button><span class="pos">${i+1} ／ ${a.length}</span><button id="dNext">次へ ▶</button><span class="vsw"><button data-vsw="0" class="${st.mfull?'':'on'}" title="${st.mfull?'Esc でも戻れます':''}">📄 請求書と確認</button><button data-vsw="1" class="${st.mfull?'on':''}" title="SMILE の受入伝票と請求書の明細を、伝票ごとに画面全体で突き合わせる（本社・工場の小計）">⇔ 明細の照合${(()=>{const k=judge(r).k;return k==='side'||k==='diff'?' <i class="vdot" title="合っていません"></i>':'';})()}</button></span><span class="sp"></span><details class="pmenu"><summary title="この仕入先の受入明細と支払の合計を印刷（PDF にも保存できます）">🖨 仕入明細を印刷 ▾</summary><div>${['全部','本社','工場'].map(s=>`<button data-dprt="${s}">${s==='本社'?'本社（国内営業＋ソリューション）':s}</button>`).join('')}</div></details>
       ${r.checked?`<span class="tag t-ok">✔ 確認OK ${esc(r.checkedBy)}</span>`:r.hold?'<span class="tag t-new">⏸ 保留</span>':''}</div>
     <div class="dbody"><div class="dsplit">
@@ -1047,12 +1074,12 @@ function drawDetail(){
           <div>${tagsOf(r,1).map(t=>`<span class="tag ${t[1]}" style="margin:0 4px 0 0">${esc(t[0])}</span>`).join('')}</div></div>
         <div style="text-align:right"><div class="big" style="font-size:26px">${yen(r.amount)}<small> 円</small></div><div style="font-size:13px;color:var(--sub)">前月 ${r.lastMonth?yen(r.lastMonth):'—'}　${r.lastMonth?diffHtml(r.amount,r.lastMonth):''}</div></div></div>
       <div class="vs">
-        <div><div class="l">SMILE の額（支払額）</div><div class="v">${yen(r.amount)}</div><div class="s">税込仕入額 ${yen(sm.incl)}${sm.carry?`<br>繰越 ${yen(sm.carry)}（${r.carryHeld?'保留：3月末に整理':'端数：今回で精算'}）`:''}${r.status==='金額が変わった'&&r.prevPay!=null?`<br>前回の取り込み ${yen(r.prevPay)}`:''}</div></div>
+        <div><div class="l">${r.pre?'SMILE の受入（税込・締め前）':'SMILE の額（支払額）'}</div><div class="v">${yen(r.amount)}</div><div class="s">税込仕入額 ${yen(sm.incl)}${sm.carry?`<br>繰越 ${yen(sm.carry)}（${r.carryHeld?'保留：3月末に整理':'端数：今回で精算'}）`:''}${r.status==='金額が変わった'&&r.prevPay!=null?`<br>前回の取り込み ${yen(r.prevPay)}`:''}</div></div>
         <div><div class="l">請求書（${r.invoices.length}枚）</div><div class="v">${r.invoices.length?(r.invReading?'読み取り中':yen(r.invTotal)):'—'}</div><div class="s">${r.invoices.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} ${x.ai==='受付'?'（AI 読み取り中）':x.ai==='読取失敗'?'（読み取り失敗）':yen(x.amount)}${invMarks(x,r.invoices)}${x.ai!=='受付'&&!r.checked?` <button class="lk" data-iunl="${x.id}" title="この仕入先から外して「仕入先が決まらない」に戻す（付け間違い）" style="padding:0 4px">↩ 外す</button><button class="lk" data-idrop="${x.id}" title="この請求書を取り消す（二重・間違い）" style="padding:0 4px">🗑 取り消す</button>${x.doc?`<br><button class="lk" data-ifix="${x.id}" title="読み取りの違うところを AI に伝えて直す（原本を見て直します）" style="padding:0 4px">💬 AI と直す</button><button class="lk" data-irr="${x.id}" title="AI にもう一度はじめから読ませる（人が直した明細は上書き）" style="padding:0 4px">🔄 読み直す</button>`:''}`:''}`).join('<br>')||'まだ置いていません'}</div></div>
         ${(()=>{const j=judge(r),t=JLAB[j.k],c=j.k==='ok'?'good':j.k==='side'||j.k==='diff'?'bad':'';
-          return `<div class="${c}"><div class="l">判定（くわしくは下の照合）</div><div class="v" style="font-size:16px">${!r.invoices.length?'請求書なし':j.k==='read'?'読み取り中':j.k==='load'?'読み込み中':t?esc(t[0]):'—'}</div><div class="s">${j.k==='diff'&&j.cause?esc(CAUSES[j.cause])+'<br>':''}${d?`支払額との差（税込）${d>0?'+':''}${yen(d)}${Math.abs(d)<100?'（端数）':''}`:''}</div></div>`;})()}
+          return `<div class="${c}"><div class="l">判定（くわしくは下の照合）</div><div class="v" style="font-size:16px">${!r.invoices.length?'請求書なし':j.k==='read'?'読み取り中':j.k==='load'?'読み込み中':t?esc(t[0]):'—'}</div><div class="s">${j.k==='diff'&&j.cause?esc(CAUSES[j.cause])+'<br>':''}${d?`${r.pre?'受入':'支払額'}との差（税込）${d>0?'+':''}${yen(d)}${Math.abs(d)<100?'（端数）':''}`:''}</div></div>`;})()}
       </div>
-      ${ed&&d?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${Math.abs(d)<100?`<button id="bFix">請求書どおりに払い、差 ${yen(-d)} を調整にする</button>`:''}${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}</div>`:''}
+      ${ed&&d&&!r.pre?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${Math.abs(d)<100?`<button id="bFix">請求書どおりに払い、差 ${yen(-d)} を調整にする</button>`:''}${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}</div>`:''}
       ${FIX.id&&r.invoices.some(x=>String(x.id)===FIX.id)?fixHtml(r):''}
       ${r.invoices.length?judgeHtml(r,ed):''}
       ${needsCheck(r)&&!r.invoices.length?noInvHtml(r,ed):''}
@@ -1416,36 +1443,37 @@ function linkedHtml(C){const all=linkedList();if(!all.length)return '';const f=s
 function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
 async function saveImport(){
   if(!calc||!allFiles())return;const ym=month(),list=checkList(),ng=list.filter(c=>c.ok===false);
-  const cnt={};rows.forEach(r=>cnt[r.status]=(cnt[r.status]||0)+1);
-  if(!confirm(`${ym} の仕入を保存します（${rows.length}社：新規 ${cnt.新規||0}・金額が変わった ${cnt.金額が変わった||0}・なくなった ${cnt.なくなった||0}）。`+
+  const cnt={};rows.forEach(r=>cnt[r.status]=(cnt[r.status]||0)+1);const pre=isPre();
+  if(!confirm(`${ym} の仕入を${pre?'締め前（受入のチェック）として':''}保存します（${rows.length}社：新規 ${cnt.新規||0}・金額が変わった ${cnt.金額が変わった||0}・なくなった ${cnt.なくなった||0}`+
+    (cnt.締めて一致||cnt.受入が変わった?`・締め前と一致 ${cnt.締めて一致||0}・受入が変わった ${cnt.受入が変わった||0}`:'')+`）。`+
     (ng.length?`\n\n⚠ 照合で合わないものが ${ng.length} 件あります：\n`+ng.map(c=>'・'+c.label).join('\n'):'')+`\n\n金額が変わった仕入先は「確認済み」を外します。`))return;
   $('bSave').disabled=true;const pg=$('prog');pg.style.display='';
   try{
     const folder=`/BILLS/SMILE取込/${dash(ym)}`,ts=stamp(),files=[];
-    for(const k of Object.keys(FILES)){const x=FILES[k];const name=ts+'_'+x.file.name.replace(/[#%*<>?/\\{|}:"]/g,'_');
+    for(const k of Object.keys(FILES)){const x=FILES[k];if(!x)continue;const name=ts+'_'+x.file.name.replace(/[#%*<>?/\\{|}:"]/g,'_');
       try{await gputFile(`${folder}/${name}`,x.file);files.push({kind:KIND_LABEL[k],name:x.file.name,path:`${folder}/${name}`,rows:x.rows});}
       catch(e){if(!confirm(`原本（${x.file.name}）を保存できませんでした：${e.message}\n続けますか？`))throw e;files.push({kind:KIND_LABEL[k],name:x.file.name,path:'',rows:x.rows});}}
     // 受入明細（9521 の行）を仕入先ごとに残す。確認の全画面で請求書の明細と1行ずつ比べる（取り込み直すたびに上書き）
     const rc=FILES.receipts.data;try{await gputFile(`${folder}/受入明細.json`,new Blob([JSON.stringify({ym,from:rc.from,to:rc.to,at:new Date().toISOString(),rows:rc.rows})],{type:'application/json'}),'application/json');RCV={ym:null};}
     catch(e){console.warn('受入明細を保存できませんでした',e);}
-    const t=totalsOf(rows,'全社'),pl=FILES.payList.data;
+    const t=totalsOf(rows,'全社'),pl=FILES.payList?FILES.payList.data:{};
     const changes=rows.filter(r=>r.status!=='変化なし').map(r=>({code:r.code,name:r.name,status:r.status,prev:r.prevPay,now:r.amount}));
-    const imp=await gpost(`/sites/${AP_SITE}/lists/${L.imp.id}/items`,{fields:toFields(L.imp,{Title:`${ym} 仕入の取り込み ${ts}`,'決済月':ym,'締め日':pl.title||'',
+    const imp=await gpost(`/sites/${AP_SITE}/lists/${L.imp.id}/items`,{fields:toFields(L.imp,{Title:`${ym} 仕入の取り込み ${ts}`,'決済月':ym,'締め日':pre?`${closeYmOf(ym).slice(0,4)}/${closeYmOf(ym).slice(4)} 締め（締め前・受入のみ）`:pl.title||'',
       '取り込んだ人':me(),'取り込み日時':new Date().toISOString(),'ファイル':JSON.stringify(files),'原本の保存先':folder,'仕入先数':rows.filter(r=>r.status!=='なくなった').length,
       '今回支払残高':pl.total?pl.total.balance:null,'払う額':t.pay,'振込':t.振込-t.fee,'振込手数料':t.fee,'でんさい':t.でんさい,'手形':0,
-      '照合の不一致':ng.length,'照合と気づき':JSON.stringify(list),'変化の件数':changes.length,'前回からの変化':JSON.stringify(changes),'状態':'取り込み済'})});
+      '照合の不一致':ng.length,'照合と気づき':JSON.stringify(list),'変化の件数':changes.length,'前回からの変化':JSON.stringify(changes),'状態':pre?'締め前':'取り込み済'})});
     let n=0;
     for(const r of rows){n++;pg.firstElementChild.style.width=Math.round(n/rows.length*100)+'%';msg(`保存中 ${n}/${rows.length}`);
       const ls=r.calcLines,tr=ls.filter(l=>l.method==='振込').reduce((s,l)=>s+l.amount,0),dl=ls.find(l=>l.method==='でんさい');
       const o={Title:`${ym} ${r.code} ${r.name}`,'決済月':ym,'仕入先コード':r.code,'仕入先名':r.name,'支払日区分':r.payRound,'支払予定日':r.payDate||'','取り込みの状態':r.status,'取り込みID':String(imp.id),'気づき':r.notes.join('\n')};
       if(r.status!=='なくなった')Object.assign(o,{'前回支払残高':r.smile.prevBalance,'今回支払額':r.smile.paid,'値引調整額':r.smile.discount,'繰越残高':r.smile.carry,
         '税抜仕入額':r.smile.excl,'消費税額':r.smile.tax,'税込仕入額':r.smile.incl,'今回支払残高':r.smile.balance,
-        '部門内訳':JSON.stringify({byDept:r.byDept,byGroup:r.byGroup}),'決裁の部門':r.mainDept,'支払額':r.amount,'分け方の決まり':r.rule,
+        '部門内訳':JSON.stringify({byDept:r.byDept,byGroup:r.byGroup}),'決裁の部門':r.mainDept,'支払額':r.pre?0:r.amount,'分け方の決まり':r.rule,
         '分け方（計算）':JSON.stringify(ls),'保留した繰越':r.carryHeld||0,'振込（計算）':tr,'でんさい（計算）':dl?dl.amount:0,'でんさいか手形か':dl?'でんさい':'','サイト':dl?(+dl.site||0):0,'期日':dl?dl.due||'':'',
         '手数料区分':r.feeKbn||'','振込手数料（計算）':r.calcFee||0});
       else Object.assign(o,{'支払額':0,'分け方（計算）':'[]','振込（計算）':0,'でんさい（計算）':0,'振込手数料（計算）':0});
       if(r.bal9055!=null)o['9055前回残高']=r.bal9055;if(r.rcvIncl!=null)o['受入税込']=r.rcvIncl;if(r.prevPay!=null)o['前回の支払額']=r.prevPay;
-      if(r.status!=='変化なし')Object.assign(o,{'確認済み':false,'確認者':'','確認日時':'','相殺の確認':false,'見直しが要る':!!(r.override&&r.override.length)&&r.status!=='新規'});
+      if(!(r.status==='変化なし'||(r.status==='締めて一致'&&!r.offsetVendor)))Object.assign(o,{'確認済み':false,'確認者':'','確認日時':'','相殺の確認':false,'見直しが要る':!!(r.override&&r.override.length)&&r.status!=='新規'&&!r.pre});
       if(!r.saved&&r.noInvReason&&L.pay.fmap['請求書なしの理由'])o['請求書なしの理由']=r.noInvReason;   // 毎月請求書が来ない先：前月の理由を引き継ぐ
       if(r.saved)await gpatch(`/sites/${AP_SITE}/lists/${L.pay.id}/items/${r.saved.id}/fields`,toFields(L.pay,o));
       else await gpost(`/sites/${AP_SITE}/lists/${L.pay.id}/items`,{fields:toFields(L.pay,o)});}
@@ -1459,12 +1487,13 @@ async function saveImport(){
 function drawApprove(){
   const n=rows.filter(needsCheck),ok=n.filter(r=>r.checked).length,h=n.filter(r=>r.hold).length,all=n.length>0&&ok===n.length;
   const ORD=['国内営業','ソリューション','工場'],ds=[...new Set(n.map(r=>r.mainDept||'国内営業'))].sort((a,b)=>(ORD.indexOf(a)+1||9)-(ORD.indexOf(b)+1||9));
+  const anyPre=rows.some(r=>r.pre);
   const per=ds.map(d=>{const a=n.filter(r=>(r.mainDept||'国内営業')===d),k=a.filter(r=>r.checked).length;return {d,n:a.length,k,done:k===a.length};}),ready=per.filter(x=>x.done).map(x=>x.d);
   $('approve').innerHTML=!rows.length?'<span class="prog">まだ取り込んでいません</span>':calc?'<span class="prog">取り込みを保存すると確認できます</span>'
     :`<span class="prog">確認OK ${ok} / ${n.length} 社${h?`　<b style="color:var(--warn)">保留 ${h} 社</b>`:''}</span>
       ${per.map(x=>`<span class="prog" style="margin-left:6px;${x.done?'color:var(--down,#1e7a4f);font-weight:700':''}">${esc(x.d)} ${x.k}/${x.n}${x.done?' ✔':''}</span>`).join('')}
       ${all?'':`<span class="rest">あと ${n.length-ok} 社${h?`（うち保留 ${h} 社）`:''}</span>`}
-      <a href="ap_payment.html?month=${encodeURIComponent(month())}"><button class="pri" ${ready.length?'':'disabled'} title="${all?'すべての部門の確認が済みました':ready.length?`${ready.join('・')} は確認が済んでいます。支払指図を作ると、確認が済んだ部門から決裁に回せます`:'どれか1つの部門の仕入先を全部「確認OK」にすると進めます'}">${all||!ready.length?'支払指図を作る（支払一覧へ）→':`${ready.join('・')} の支払指図を作る →`}</button></a>`;}
+      ${anyPre?`<button class="pri" disabled title="受入のチェックが済んだら SMILE で締め、「📥 取り込み」の「締め後：4点を取り込む」をしてください">締め前：SMILE を締めて 4点を取り込むと支払指図を作れます</button>`:`<a href="ap_payment.html?month=${encodeURIComponent(month())}"><button class="pri" ${ready.length?'':'disabled'} title="${all?'すべての部門の確認が済みました':ready.length?`${ready.join('・')} は確認が済んでいます。支払指図を作ると、確認が済んだ部門から決裁に回せます`:'どれか1つの部門の仕入先を全部「確認OK」にすると進めます'}">${all||!ready.length?'支払指図を作る（支払一覧へ）→':`${ready.join('・')} の支払指図を作る →`}</button></a>`}`;}
 
 // ---------- 操作 ----------
 document.addEventListener('click',e=>{
