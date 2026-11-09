@@ -174,7 +174,11 @@
         };
         await addLines(id, r.lines);
         // 1枚で2件（税納付の住民税など）：同じ PDF・同じ区分で行を足す
-        for (const x of (r.extra || [])) {
+        //   読み直したとき（もう一度読む・読み直す）に2件目をまた足さないよう、足した行の番号を元の行の CheckLog に残し、2回目からは足さない（2026-11-09）
+        let lg0 = []; try { lg0 = JSON.parse(f.CheckLog || '[]') || []; } catch (e) {}
+        const ex0 = (lg0.filter(e => e.act === '1枚で2件目以降').pop() || {}).ids || [], exNew = [];
+        for (const [k, x] of (r.extra || []).entries()) {
+          if (ex0[k]) continue;   // もう足してある（人が取り消したものも、足し直さない）
           const XH = x.header || {}, nf = { Title: XH.PayeeName || '（追加）' };
           const s = (d, v) => { if (v !== undefined && v !== null && v !== '') nf[fi(d)] = v; };
           s('支払区分', cat); s('支払先名', XH.PayeeName); s('対象年月', XH.TargetMonth || f[fi('対象年月')]); s('仕分け済', true); s('支払ステータス', '確認待');
@@ -183,7 +187,11 @@
           s('金額_税込', +XH.AmountInclTax || 0); s('金額_税抜', +XH.AmountExclTax || 0); s('消費税', +XH.Tax || 0); s('DOCコード', docs.join('\n'));
           Object.assign(nf, { AIStatus: 'AI確認済', AIComment: (x.comments || []).join('\n'), RegisteredBy: f.RegisteredBy || '', RegisteredAt: f.RegisteredAt || new Date().toISOString(), SiteLocation: loc, ExpenseStep: 0 });
           const c = await call('POST', `/sites/${site}/lists/${IV.id}/items`, { fields: nf });
-          await addLines(String(c.id), x.lines);
+          await addLines(String(c.id), x.lines); exNew[k] = String(c.id);
+        }
+        if (exNew.length) {
+          const ids = (r.extra || []).map((_, k) => ex0[k] || exNew[k] || '');
+          await call('PATCH', `/sites/${site}/lists/${IV.id}/items/${id}/fields`, { CheckLog: JSON.stringify(lg0.concat([{ act: '1枚で2件目以降', ids, at: new Date().toISOString() }])) }).catch(() => {});
         }
         await done(); applied++;
       } catch (e) { errors.push(`${name}：${e.message}`); }
