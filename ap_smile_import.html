@@ -12,7 +12,7 @@
 <script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <script src="ap_intake.js?v=20261108r"></script>
-<script src="ap_ai.js?v=20261108r"></script>
+<script src="ap_ai.js?v=20261109a"></script>
 <script src="rpa_queue.js"></script>
 <script src="ap_smile.js?v=20261109a"></script>
 <script src="nav.js?v=20261021" defer></script>
@@ -944,6 +944,35 @@ async function rereadItems(r,x){let d;try{d=await docFiles(x.doc);}catch(e){snac
   await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,{[V3.ai]:'受付'});x.ai='受付';snack('AI が明細を読んでいます（20〜30秒）');drawDetail();
   readByAI([{apCode:d.code,invoiceId:String(x.id),category:r.mainDept==='工場'?'工場仕入':'本社仕入',location:r.mainDept==='工場'?'工場':'本社',targetYm:month(),vendorCode:r.code,vendorName:r.name,smileAmount:r.amount,
     files:d.files,pdfName:d.pdfName,moved:d.moved}]);}
+// ---------- 💬 AI と直す（仕入の請求書）：読み取りの違うところを人が伝え、AI が原本を見て明細・税抜を直して保存する（2026-11-09） ----------
+//   直したら 請求書の明細・金額_税抜・消費税 を書き換え、確認の記録（CheckLog）に {act:'AIと明細を直した'} を残す。次から気をつけることは「覚えたこと」（ai_memory.json）へ
+const FIX={id:null,msgs:[],busy:false,files:null};
+function fixHtml(r){const x=r.invoices.find(i=>String(i.id)===FIX.id);
+  return `<div class="teach" style="margin:8px 0"><div class="teach-h"><b>💬 AI と直す：${esc(x&&x.no?'No.'+x.no:x&&x.name||'請求書')}</b><span class="sp"></span><button class="lk" id="fxClose">閉じる</button></div>
+  <div class="teach-m">${FIX.msgs.map(m=>`<div class="tm ${m.role}">${m.role==='ai'?'<span class="who">AI</span>':''}<div>${esc(m.text).replace(/\n/g,'<br>')}</div></div>`).join('')}${FIX.busy?'<div class="tm ai"><span class="who">AI</span><div><span class="spin"></span> 原本を見ています…（20〜40秒）</div></div>':''}</div>
+  <div class="teach-i"><input type="text" id="fxIn" placeholder="例：消費税の行が明細に入っている" ${FIX.busy?'disabled':''}><button class="pri" id="fxSend" ${FIX.busy?'disabled':''}>送る</button></div>
+  <div style="font-size:11.5px;color:var(--sub);margin-top:4px">AI が請求書の原本を見て、明細・税抜を直して保存します（請求額・税込は変えません）。やり取りの要約は確認の記録に、次から気をつけることは「覚えたこと」に残ります</div></div>`;}
+async function sendFix(r){const i=$('fxIn'),text=(i&&i.value||'').trim();if(!text||FIX.busy)return;
+  const x=r.invoices.find(v=>String(v.id)===FIX.id);if(!x)return;
+  FIX.msgs.push({role:'me',text});FIX.busy=true;drawDetail();
+  try{if(!FIX.files)FIX.files=(await docFiles(x.doc)).files;
+    const c=sideCheck(r),sm=c&&c.has?`本社 ${yen(c.side.本社)} 円・工場 ${yen(c.side.工場)} 円（計 ${yen(c.tot)} 円）`:'';
+    const raw=(x.items&&Array.isArray(x.items.items))?x.items.items:[];
+    const a=await APAI.fixItems({call,site:AP_SITE},{payee:r.name,invoiceId:String(x.id),total:x.amount,excl:x.excl,itemsAmount:(x.items&&x.items.amount)||'',items:raw,smile:sm,
+      issue:'AI の読み取りの違うところを、人が下の会話で伝えます',history:FIX.msgs.slice(1),files:FIX.files});
+    const done=[];
+    if(a.changed&&(a.items||[]).length){const ia=a.itemsAmount||(x.items&&x.items.amount)||'',its=a.items,isum=Math.round(its.filter(o=>!APAI.taxRow(o)).reduce((t,o)=>t+(+o.Amount||0),0));
+      const ex=a.exclTotal>0&&a.exclTotal<=x.amount?a.exclTotal:ia==='税抜'&&isum>0&&isum<=x.amount?isum:Math.round(x.amount/1.1);
+      const lg=(x.log||[]).concat([{act:'AIと明細を直した',memo:[text,a.summary||''].filter(Boolean).join(' → ').slice(0,400),by:me(),at:new Date().toISOString()}]);
+      const p={[F(L.inv,'請求書の明細')]:JSON.stringify({amount:ia,items:its}),[F(L.inv,'金額_税抜')]:ex,CheckLog:JSON.stringify(lg)};if(L.inv.fmap['消費税'])p[F(L.inv,'消費税')]=x.amount-ex;
+      await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,p);
+      done.push(`明細 ${its.length}行・税抜 ${yen(ex)} 円${ex!==x.excl?`（前 ${yen(x.excl)}）`:''}`);}
+    const mem=(a.memory||[]).filter(m=>m.key&&m.fact);
+    if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.name})),me());
+    FIX.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});
+    if(done.length){await loadInvoices();}}
+  catch(e){FIX.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
+  FIX.busy=false;render();setTimeout(()=>{const n=$('fxIn');if(n)n.focus();},50);}
 // 全画面（支払決済アプリと同じ。Esc で戻る）
 let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
 function setFull(v){FULLR=v;try{localStorage.setItem('ap.review.full',v?'1':'');}catch{}const c=$('rvCard');if(c)c.classList.toggle('ap-full',v);document.body.classList.toggle('ap-lock',v);const b=$('bFull');if(b)b.textContent=v?'✕ 全画面をやめる':'⛶ 全画面';}
@@ -1019,11 +1048,12 @@ function drawDetail(){
         <div style="text-align:right"><div class="big" style="font-size:26px">${yen(r.amount)}<small> 円</small></div><div style="font-size:13px;color:var(--sub)">前月 ${r.lastMonth?yen(r.lastMonth):'—'}　${r.lastMonth?diffHtml(r.amount,r.lastMonth):''}</div></div></div>
       <div class="vs">
         <div><div class="l">SMILE の額（支払額）</div><div class="v">${yen(r.amount)}</div><div class="s">税込仕入額 ${yen(sm.incl)}${sm.carry?`<br>繰越 ${yen(sm.carry)}（${r.carryHeld?'保留：3月末に整理':'端数：今回で精算'}）`:''}${r.status==='金額が変わった'&&r.prevPay!=null?`<br>前回の取り込み ${yen(r.prevPay)}`:''}</div></div>
-        <div><div class="l">請求書（${r.invoices.length}枚）</div><div class="v">${r.invoices.length?(r.invReading?'読み取り中':yen(r.invTotal)):'—'}</div><div class="s">${r.invoices.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} ${x.ai==='受付'?'（AI 読み取り中）':x.ai==='読取失敗'?'（読み取り失敗）':yen(x.amount)}${invMarks(x,r.invoices)}${x.ai!=='受付'&&!r.checked?` <button class="lk" data-iunl="${x.id}" title="この仕入先から外して「仕入先が決まらない」に戻す（付け間違い）" style="padding:0 4px">↩ 外す</button><button class="lk" data-idrop="${x.id}" title="この請求書を取り消す（二重・間違い）" style="padding:0 4px">🗑 取り消す</button>`:''}`).join('<br>')||'まだ置いていません'}</div></div>
+        <div><div class="l">請求書（${r.invoices.length}枚）</div><div class="v">${r.invoices.length?(r.invReading?'読み取り中':yen(r.invTotal)):'—'}</div><div class="s">${r.invoices.map(x=>`${esc(x.no?'No.'+x.no:x.name||'請求書')} ${x.ai==='受付'?'（AI 読み取り中）':x.ai==='読取失敗'?'（読み取り失敗）':yen(x.amount)}${invMarks(x,r.invoices)}${x.ai!=='受付'&&!r.checked?` <button class="lk" data-iunl="${x.id}" title="この仕入先から外して「仕入先が決まらない」に戻す（付け間違い）" style="padding:0 4px">↩ 外す</button><button class="lk" data-idrop="${x.id}" title="この請求書を取り消す（二重・間違い）" style="padding:0 4px">🗑 取り消す</button>${x.doc?`<br><button class="lk" data-ifix="${x.id}" title="読み取りの違うところを AI に伝えて直す（原本を見て直します）" style="padding:0 4px">💬 AI と直す</button><button class="lk" data-irr="${x.id}" title="AI にもう一度はじめから読ませる（人が直した明細は上書き）" style="padding:0 4px">🔄 読み直す</button>`:''}`:''}`).join('<br>')||'まだ置いていません'}</div></div>
         ${(()=>{const j=judge(r),t=JLAB[j.k],c=j.k==='ok'?'good':j.k==='side'||j.k==='diff'?'bad':'';
           return `<div class="${c}"><div class="l">判定（くわしくは下の照合）</div><div class="v" style="font-size:16px">${!r.invoices.length?'請求書なし':j.k==='read'?'読み取り中':j.k==='load'?'読み込み中':t?esc(t[0]):'—'}</div><div class="s">${j.k==='diff'&&j.cause?esc(CAUSES[j.cause])+'<br>':''}${d?`支払額との差（税込）${d>0?'+':''}${yen(d)}${Math.abs(d)<100?'（端数）':''}`:''}</div></div>`;})()}
       </div>
       ${ed&&d?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${Math.abs(d)<100?`<button id="bFix">請求書どおりに払い、差 ${yen(-d)} を調整にする</button>`:''}${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}</div>`:''}
+      ${FIX.id&&r.invoices.some(x=>String(x.id)===FIX.id)?fixHtml(r):''}
       ${r.invoices.length?judgeHtml(r,ed):''}
       ${needsCheck(r)&&!r.invoices.length?noInvHtml(r,ed):''}
       ${alertsHtml(r)}
@@ -1065,6 +1095,13 @@ function wireDetail(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
   document.querySelectorAll('[data-ack]').forEach(b=>b.onclick=()=>{const a=r.aiAll[+b.dataset.ack];if(a)ackAlert(a);});
   document.querySelectorAll('[data-iunl]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.iunl);if(x)unlinkInvoice(x,r);});
+  document.querySelectorAll('[data-ifix]').forEach(b=>b.onclick=()=>{FIX.id===b.dataset.ifix?(FIX.id=null):Object.assign(FIX,{id:b.dataset.ifix,msgs:[{role:'ai',text:'どこが違いますか？\n例：「消費税の行が明細に入っている」「2枚目の明細が抜けている」「出張費は 9,000 円」'}],busy:false,files:null});drawDetail();setTimeout(()=>{const i=$('fxIn');if(i)i.focus();},50);});
+  document.querySelectorAll('[data-irr]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.irr);if(!x)return;
+    if(!confirm(`${x.no?'No.'+x.no:x.name||'請求書'} を AI にもう一度はじめから読ませます。人が直した明細・税抜は、新しい読み取りで上書きされます。よろしいですか？`))return;
+    if(FIX.id===String(x.id))FIX.id=null;rereadItems(r,x).catch(e=>snack('読めませんでした：'+e.message,true));});
+  if($('fxClose'))$('fxClose').onclick=()=>{FIX.id=null;drawDetail();};
+  if($('fxSend'))$('fxSend').onclick=()=>sendFix(r);
+  if($('fxIn'))$('fxIn').onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();e.stopPropagation();sendFix(r);}};
   document.querySelectorAll('[data-idrop]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.idrop);if(x)dropInvoice(x.id,(x.no?'No.'+x.no+' ':'')+(x.name||r.name)+' '+yen(x.amount));});
   document.querySelectorAll('[data-dprt]').forEach(b=>b.onclick=()=>printRcvReport([r.code],b.dataset.dprt));on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',confirmRow);on('dUn',()=>act(r,{'確認済み':false,'確認者':'','確認日時':''}));
   on('dHold',()=>act(r,{'保留':!r.hold,'確認済み':false}));on('dCmB',()=>{st.cmOpen=true;$('dCm').style.display='';$('dCm').focus();});

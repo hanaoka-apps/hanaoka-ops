@@ -183,6 +183,45 @@
     return JSON.parse(r.text);
   }
 
+  // ---- 仕入の請求書を AI と直す（会話。Sonnet・原本を添える）：読み取った明細・税抜を、人の指摘と原本で直す（2026-11-09） ----
+  const FIX_ITEM = { type: 'object', additionalProperties: false, required: ['Date', 'SlipNo', 'ItemName', 'Spec', 'Qty', 'Unit', 'UnitPrice', 'Amount', 'Note'], properties: {
+    Date: { type: 'string' }, SlipNo: { type: 'string' }, ItemName: { type: 'string' }, Spec: { type: 'string' }, Qty: { type: 'number' }, Unit: { type: 'string' }, UnitPrice: { type: 'number' }, Amount: { type: 'number' }, Note: { type: 'string' } } };
+  const FIX_SCHEMA = { type: 'object', additionalProperties: false, required: ['reply', 'changed', 'summary', 'itemsAmount', 'exclTotal', 'items', 'memory'], properties: {
+    reply: { type: 'string' }, changed: { type: 'boolean' }, summary: { type: 'string' }, itemsAmount: { type: 'string', enum: ['税抜', '税込', ''] }, exclTotal: { type: 'integer' },
+    items: { type: 'array', items: FIX_ITEM },
+    memory: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'fact'], properties: { key: { type: 'string' }, fact: { type: 'string' } } } } } };
+  async function fixItems(ctx, t) {
+    const s = await setup(ctx), R = s.raw || { mem: [] };
+    const sys = 'あなたは花岡車輌の総務で、仕入の請求書を AI が読み取った内容（明細・税抜）を、人と話しながら直す担当です。添付は請求書の原本です。\n' +
+      '- 人の言うことと原本を見比べて、読み取りの誤りを直す。原本に無いことは作らない。原本と人の言うことが食い違うときは、直さずに reply で確かめる\n' +
+      '- 直すときは changed=true。items に直した後の明細を全部（直さない行も含めて、原本の上から順に）入れる。itemsAmount は明細の金額が 税抜／税込 のどちらか。exclTotal は請求書の税抜の合計（印字があればその額。無ければ、税抜の明細ならその合計、税込なら 税込÷1.1）。請求額（税込）は変えない\n' +
+      '- 明細の決まり：小計・合計・消費税・前回繰越・入金の行は入れない（表の中に「消費税等10%」が1行で印字されていても入れない）。Date は YYYY-MM-DD、SlipNo は伝票No・納品書No、ItemName・Spec・Qty・Unit・UnitPrice・Amount・Note は原本どおり。無いものは文字なら ""、数量・単価なら 0\n' +
+      '- 直さないとき（聞き返す・確かめるだけ）は changed=false、items は空、exclTotal は 0、itemsAmount は ""\n' +
+      '- SMILE の受入（税抜）は参考。SMILE に合わせて数字を作らない（請求書の側が違うなら、そう reply で伝える）\n' +
+      '- summary：直したときに、何をどう直したかを1〜2文（確認の記録に残す）。直さないときは ""\n' +
+      '- memory：この仕入先の請求書を次に読むときに気をつけること（例 key「○○の請求書の消費税」fact「明細の表の中に消費税等10%の行がある。品目ではない」）。一度きりのことは入れない\n' +
+      '- reply は短い日本語（直したこと、または聞き返し）';
+    const mem = (R.mem || []).filter(m => !m.payee || nkey(m.payee) === nkey(t.payee)).map(m => `- ${m.key}：${m.fact}`).join('\n');
+    const its = t.items || [];
+    const ctxText = `## 仕入の請求書\n仕入先：${t.payee || ''}\n請求額（税込）：${yen(t.total)} 円\n今の税抜：${yen(t.excl)} 円\n明細の金額：${t.itemsAmount || '（不明）'}\n\n` +
+      `## 今の明細（AI が読んだもの。番号｜日付｜伝票No｜品名｜型番｜数量｜単位｜単価｜金額｜備考）\n` +
+      (its.length ? its.map((x, i) => `${i}｜${x.Date || ''}｜${x.SlipNo || ''}｜${x.ItemName || ''}｜${x.Spec || ''}｜${x.Qty ?? ''}｜${x.Unit || ''}｜${x.UnitPrice ?? ''}｜${x.Amount ?? ''}｜${x.Note || ''}`).join('\n') : '（明細なし）') +
+      `\n\n## SMILE の受入（税抜・参考）\n${t.smile || '（なし）'}` + (mem ? `\n\n## 覚えたこと（人が教えた事実）\n${mem}` : '') +
+      `\n\n## 相談のきっかけ\n${t.issue || '読み取りを直してください'}`;
+    const docs = []; for (const f of (t.files || [])) docs.push(docBlock(await b64(f.file), f.file.type, f.name));
+    if (docs.length) docs[docs.length - 1].cache_control = { type: 'ephemeral' };   // 会話のたびに原本を送るので、2回目から安く
+    const first = { role: 'user', content: docs.concat([{ type: 'text', text: ctxText }]) }, merged = [first];
+    (t.history || []).forEach(m => { const role = m.role === 'ai' ? 'assistant' : 'user', p = merged[merged.length - 1];
+      if (p.role === role) { if (Array.isArray(p.content)) p.content.push({ type: 'text', text: m.text }); else p.content += '\n\n' + m.text; } else merged.push({ role, content: m.text }); });
+    if (merged[merged.length - 1].role !== 'user') merged.push({ role: 'user', content: '続けてください' });
+    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 8000, system: sys, messages: merged,
+      output_config: { format: { type: 'json_schema', schema: FIX_SCHEMA } } };
+    const r = await ask(ctx, s, { title: 'ap.fixitems', caller: t.invoiceId || '' }, body);
+    if (r.status !== '完了') throw new Error(r.message || 'AI に聞けませんでした');
+    if (r.stop === 'max_tokens') throw new Error('AI の答えが長すぎて途中で切れました');
+    const a = JSON.parse(r.text); a.items = (a.items || []).map(normItem); return a;
+  }
+
   async function setup(ctx) {
     if (S) return S;
     const call = ctx.call, s = {};
@@ -216,6 +255,8 @@
     return t === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: t, data } } : { type: 'image', source: { type: 'base64', media_type: t, data } };
   }
   const yen = n => Math.round(+n || 0).toLocaleString('ja-JP');
+  // 明細の表の中に印字された「消費税等10%」の行（品目ではない。数量・単価のある品目は残す）。ap_smile.js の isTaxRow と同じ
+  const taxRow = x => /消費税|^\(?内税\)?/.test(String((x && x.ItemName) || '')) && !(+x.Qty > 0 && +x.UnitPrice > 0);
 
   // 返事 → result.json の1件分（ap_read.ps1 の Record と同じ：消費税・合計・検算はここで計算する）
   //   it：{items, amount}（請求書の明細と、その金額が 税抜／税込）。仕訳の無い仕入の請求書で、税抜・消費税を出すのに使う
@@ -235,7 +276,7 @@
     if (ls.length) { ex2 = ls.reduce((s, x) => s + x.AmountExclTax, 0); tx2 = ls.reduce((s, x) => s + x.Tax, 0); in2 = ex2 + tx2; }
     else {
       // 仕入（仕訳なし）：税抜は請求書の明細（税抜の明細ならその合計）から。無ければ 税込 ÷ 1.1（前は 税抜＝税込・消費税 0 にしていた）
-      in2 = tot;const isum = Math.round(((it && it.items) || []).reduce((s, x) => s + (+x.Amount || 0), 0));
+      in2 = tot;const isum = Math.round(((it && it.items) || []).filter(x => !taxRow(x)).reduce((s, x) => s + (+x.Amount || 0), 0));
       if (it && it.amount === '税抜' && isum > 0 && isum <= tot) ex2 = isum;
       else if (it && it.amount === '税込' && isum === tot) ex2 = Math.round(tot / 1.1);
       else ex2 = Math.round(tot / 1.1);
@@ -328,5 +369,5 @@
     return { ok: !!d, status: doc.status, message: err };
   }
 
-  window.APAI = { readInvoice, teach, journal, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
+  window.APAI = { readInvoice, teach, journal, fixItems, taxRow, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
 })();
