@@ -352,7 +352,9 @@
       system: [{ type: 'text', text: cfg.system }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
-    const r = await ask(ctx, s, job, body);
+    let r = await ask(ctx, s, job, body);
+    // 明細の多い請求書で答えが長すぎて切れた（max_tokens）：考える量を減らして（effort low）、答えに使える分を増やしてもう一度（2026-11-09）
+    if (r.status === '完了' && r.stop === 'max_tokens' && body.output_config.effort !== 'low') { msg(`明細が多いので読み直しています：${job.pdfName}`); body.output_config.effort = 'low'; r = await ask(ctx, s, job, body); }
     let d = null, err = '';
     if (r.status !== '完了') err = r.message || 'AI の読み取りに失敗しました';
     else if (r.stop === 'refusal') err = 'AI が読み取りを断りました（安全のための判断）';
