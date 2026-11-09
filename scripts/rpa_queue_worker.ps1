@@ -194,6 +194,15 @@ function Invoke-PadFlow($Def) {
   if ($outputs.Count -eq 0) { throw 'ジョブ定義に outputs がありません(完了を判断できないため)' }
   $timeoutMinutes = 20
   if ($Def.timeoutMinutes) { $timeoutMinutes = [int]$Def.timeoutMinutes }
+  # errorFile＝PADが「出力できない」と判断したときに理由を書くファイル(_rpa_queue\state\ の中のファイル名)。
+  # 書かれたら出力を待たずにすぐ失敗にする(例: 支払締めの前の支払一覧表。SMILE の画面は PAD が閉じてから書く)
+  $errorPath = $null
+  if ($Def.errorFile) {
+    $errorName = [string]$Def.errorFile
+    if ($errorName -notmatch '^[^\\/:*?"<>|]+\.txt$') { throw "ジョブ定義の errorFile が正しくありません: $errorName" }
+    $errorPath = Join-Path (Join-Path $QueueRoot 'state') $errorName
+    Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+  }
 
   # ファイルの更新日時は秒未満が丸められることがあるため、少し前を基準にする
   $startedAt = (Get-Date).AddSeconds(-2)
@@ -208,6 +217,18 @@ function Invoke-PadFlow($Def) {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 10
     Update-Heartbeat $flow
+    if ($errorPath -and (Test-Path -LiteralPath $errorPath)) {
+      $errorItem = Get-Item -LiteralPath $errorPath -ErrorAction SilentlyContinue
+      if ($errorItem -and $errorItem.LastWriteTime -ge $startedAt -and (Test-FileReadable $errorPath)) {
+        $reason = (Get-Content -LiteralPath $errorPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+        Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+        if ($reason) { $reason = $reason.Trim() }
+        if (-not $reason) { $reason = '(理由は書かれていませんでした)' }
+        if ($reason.Length -gt 300) { $reason = $reason.Substring(0, 300) }
+        Write-Log "PADフローが出力できないと報告しました: $flow : $reason"
+        throw "PADフローが出力できないと報告しました: $reason"
+      }
+    }
     $pending = @()
     $snapshot = @()
     foreach ($name in $outputs) {
@@ -1028,8 +1049,15 @@ function Invoke-NextJob {
         try {
           Invoke-PadFlow $steps[$i]
         } catch {
-          # 複数手順のジョブは、どの手順で止まったかを残す
-          if ($steps.Count -gt 1) { throw ("手順{0}/{1}（{2}）: {3}" -f ($i + 1), $steps.Count, $steps[$i].flow, $_.Exception.Message) }
+          # 複数手順のジョブは、どの手順で止まったかと、それより前の手順で更新済みのファイルを残す
+          # (例: ap_purchase は支払一覧表だけ失敗しても、仕入先マスタ・月次受入リスト・月次支払明細表は更新済み)
+          if ($steps.Count -gt 1) {
+            $doneFiles = @()
+            for ($j = 0; $j -lt $i; $j++) { $doneFiles += @($steps[$j].outputs) }
+            $doneNote = ''
+            if ($doneFiles.Count -gt 0) { $doneNote = '（{0} は更新済み）' -f ($doneFiles -join '・') }
+            throw ("手順{0}/{1}（{2}）: {3}{4}" -f ($i + 1), $steps.Count, $steps[$i].flow, $_.Exception.Message, $doneNote)
+          }
           throw
         }
       }
