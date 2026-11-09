@@ -350,7 +350,9 @@
   // 日付を YYYY-MM-DD に（SMILE は 20260914、請求書は 2026/9/14・26.09.14 など）
   function dN(s) { var t = String(s || '').normalize('NFKC').trim(), m = t.match(/^(\d{4})(\d{2})(\d{2})$/) || t.match(/(\d{2,4})\D+(\d{1,2})\D+(\d{1,2})/); if (!m) return '';
     return (m[1].length === 2 ? '20' + m[1] : m[1]) + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0'); }
-  function itemsOf(x) { return x && x.items && Array.isArray(x.items.items) ? x.items.items : []; }
+  // 明細の行。明細の欄に印字された「消費税等10%　2,700」の行を AI が明細として写すことがあるので除く（数量・単価のある品目は残す）（2026-11-09）
+  function isTaxRow(a) { return /消費税|^\(?内税\)?/.test(String((a && a.ItemName) || '')) && !(+a.Qty > 0 && +a.UnitPrice > 0); }
+  function itemsOf(x) { return x && x.items && Array.isArray(x.items.items) ? x.items.items.filter(function (a) { return !isTaxRow(a); }) : []; }
   function matchItems(rcv, invs) {
     var gR = {}, gI = {}, tin = null;
     invs.forEach(function (v) { if (tin === null && itemsOf(v).length) tin = (v.items && v.items.amount) === '税込'; });
