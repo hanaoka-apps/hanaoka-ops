@@ -1364,13 +1364,40 @@ async function unlinkInvoice(x,r){if(!confirm(`「${x.no?'No.'+x.no+' ':''}${x.n
   catch(e){snack('外せませんでした：'+e.message,true);}}
 // 経費に回す：今月の支払先リストに無い＝経費の請求書。経費として AI に読み直させる（仕訳を作る）→ 経費の確認待ちへ
 async function toExpense(x,loc){if(!confirm(`「${x.payee||x.title}」を${loc}の経費に回します（AI が経費として読み直し、経費の確認待ちに並びます）。よろしいですか？`))return;
-  let d;try{d=await docFiles(x.doc);}catch(e){snack(e.message,true);return;}
+  if(await moveToExpense(x,loc)){snack('経費に回しました。AI が経費として読み直しています（経費の画面の確認待ちに並びます）');await loadInvoices();render();}}
+async function moveToExpense(x,loc){
+  let d;try{d=await docFiles(x.doc);}catch(e){snack(e.message,true);return false;}
   const cat=loc==='工場'?'工場経費':'本社経費',f=toFields(L.inv,{'支払区分':cat});f[V3.loc]=loc;f[V3.ai]='受付';f.ExpenseStep=0;
   f[V3.com]='仕入の「請求書を渡す」から経費に回しました（今月の支払先リストに無いため）';   // 読み直しの答えが後ろに付く
   await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,f);
-  snack('経費に回しました。AI が経費として読み直しています（経費の画面の確認待ちに並びます）');await loadInvoices();render();
   APAI.readInvoice({call,site:AP_SITE},{apCode:d.code,invoiceId:x.id,category:cat,location:loc,targetYm:month(),files:d.files,pdfName:d.pdfName,moved:d.moved})
-    .then(()=>{aiChain=aiChain.then(async()=>{await APIntake.apply({call,site:AP_SITE,ym:month()}).catch(()=>{});});});}
+    .then(()=>{aiChain=aiChain.then(async()=>{await APIntake.apply({call,site:AP_SITE,ym:month()}).catch(()=>{});});});
+  return true;}
+// ---------- 経費らしいもの（仕入先が決まらない請求書のうち、AI が経費と見たもの）をまとめて経費に回す（2026-11-09） ----------
+//   決め方：AI のコメントに 経費・運搬費・派遣・電気料金 など（今月の支払先リストに無い・過去の仕訳が経費の科目）。拠点はコメントに 工場・鴻巣 があれば工場
+//   同じ登録番号（無ければ支払先名）・同じ金額がもう1件あるもの（二重に渡した）は、後のほうを外しておく（「🗑 取り消す」で消す）
+const EXP_RE=/経費|運搬費|運賃|派遣|労務費|電気料金|水道|ガス料金|廃棄|処分|警備|保守|雑費|福利厚生|修繕/,EXPSEL={};
+function expLike(open){const seen={};
+  return open.filter(x=>x.ai==='AI確認済'&&!String(x.com).includes(UNLINK_MARK)&&EXP_RE.test(x.com)).sort((a,b)=>String(a.at).localeCompare(String(b.at))).map(x=>{
+    const k=(x.regNo||String(x.payee||'').replace(/[\s　]/g,''))+'|'+Math.round(x.amount),dup=!!seen[k];seen[k]=1;
+    const why=(String(x.com).split(/\n+/).find(s=>EXP_RE.test(s))||'').replace(/^AI の候補：\S+\s*/,'');
+    const loc=/工場|鴻巣/.test(x.com)?'工場':'本社',o=EXPSEL[x.id]||{};
+    return {x,dup,why,loc:o.loc||loc,on:o.on!=null?o.on:!dup};});}
+function expCardHtml(open){const a=expLike(open);if(!a.length)return '';const n=a.filter(o=>o.on).length;
+  return `<div class="card" style="border-color:#c9cdf0"><h2>経費らしいもの（${a.length}）<span style="font-size:12px;color:var(--sub);font-weight:400;margin-left:8px">今月の支払先リストに無く、AI が経費（運送・派遣・電気・保守など）と見た請求書。拠点を確かめて、まとめて経費に回せます</span></h2>
+    <div style="overflow-x:auto"><table><tr><th style="width:28px"></th><th>支払先（AI が読んだ）</th><th class="n">金額</th><th>拠点</th><th>AI の見立て</th></tr>
+    ${a.map(o=>`<tr${o.dup?' style="background:var(--warn-l)"':''}><td><input type="checkbox" data-exon="${o.x.id}" ${o.on?'checked':''}></td>
+      <td style="white-space:normal"><b>${esc(o.x.payee||o.x.title)}</b>${o.dup?' <span class="tag t-up">二重？同じ請求書がもう1件</span>':''}<div><a href="#" data-ibpdf="${esc(o.x.id)}" style="font-size:12px">📄 請求書を見る</a></div></td>
+      <td class="n">${yen(o.x.amount)}</td>
+      <td><select data-exloc="${o.x.id}">${['工場','本社'].map(l=>`<option ${o.loc===l?'selected':''}>${l}</option>`).join('')}</select></td>
+      <td style="white-space:normal;font-size:12px;color:var(--sub);max-width:520px">${esc(o.why.slice(0,140))}</td></tr>`).join('')}</table></div>
+    <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button class="pri" id="exGo" ${n?'':'disabled'}>✔ 選んだ ${n}件を経費に回す</button>
+      <span style="font-size:12px;color:var(--sub)">AI が経費として読み直し、経費の画面の確認待ちに並びます（4件ずつ順番に。画面は開いたままに）。二重のものは外してあります（下の一覧の「🗑 取り消す」で消してください）</span></div></div>`;}
+async function expGo(open){const a=expLike(open).filter(o=>o.on);if(!a.length)return;
+  const by={工場:a.filter(o=>o.loc==='工場').length,本社:a.filter(o=>o.loc==='本社').length};
+  if(!confirm(`${a.length}件を経費に回します（工場 ${by.工場}件・本社 ${by.本社}件）。AI が経費として読み直し、経費の確認待ちに並びます。よろしいですか？`))return;
+  let ok=0;for(const o of a){msg(`経費に回しています ${ok+1}/${a.length}`);if(await moveToExpense(o.x,o.loc))ok++;delete EXPSEL[o.x.id];}
+  msg('');snack(`${ok}件を経費に回しました。AI が経費として読み直しています（経費の画面の確認待ちに並びます）`);await loadInvoices();render();}
 const IUPL={busy:false,total:0,done:0,cur:'',errs:[],result:''};
 function drawIupl(){const el=$('iupst');if(!el)return;const d=$('ibdrop');if(d)d.classList.toggle('busy',IUPL.busy);let h='';
   if(IUPL.busy){const pc=IUPL.total?Math.round(IUPL.done/IUPL.total*100):0;h=`<div class="upl"><span class="spin"></span><div style="flex:1;min-width:0"><b>受け付けています… ${Math.min(IUPL.done+1,IUPL.total)} / ${IUPL.total}</b><div class="fn">${esc(IUPL.cur)}</div><div class="progbar"><i style="width:${pc}%"></i></div></div></div>`;}
@@ -1401,7 +1428,7 @@ function drawInbox(){
         <div class="ho-row"><span class="ho-k">複数</span><span class="seg">${[[0,'別々の請求書'],[1,'1件にまとめる']].map(([v,l])=>`<button type="button" data-ibmg="${v}" class="${+MERGE_UP===v?'on':''}">${l}</button>`).join('')}</span><span class="ho-m">${MERGE_UP?'置いたファイルを1件の請求書として受け付けます':''}</span></div>
         <div class="ho-note">1つのファイルに1社の請求書にしてください（何社分もまとめたスキャンは分けられません）。今月のリストに無いものは「経費に回す」へ</div>
       </div></div></div>
-    <div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span> <button id="ibRetry" style="font-size:12px;padding:1px 8px" title="読み取りに失敗した請求書を、AI にもう一度読ませる（4件ずつ順番に）">🔄 もう一度読む（${fail.length}件）</button>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}</h2>
+    ${expCardHtml(open)}<div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span> <button id="ibRetry" style="font-size:12px;padding:1px 8px" title="読み取りに失敗した請求書を、AI にもう一度読ませる（4件ずつ順番に）">🔄 もう一度読む（${fail.length}件）</button>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}</h2>
       <table><tr><th>受け付け</th><th>請求書（AI が読んだ支払先）</th><th class="n">金額</th><th>仕入先</th><th></th></tr>
       ${[...reading,...fail,...open].map(x=>{const m=x.ai==='AI確認済'&&!busyX(x)&&nC?matchOne(x,C):null,cs=m&&m.cands?m.cands:[];
         const opts=cs.map(c=>`<option value="${c}">${esc(C[c].name)}（${c}）— ${esc(m.why[c].join('・'))}</option>`).join('')+`<option value="" disabled>──── 今月のリストから ────</option>`+Object.values(C).filter(v=>!cs.includes(v.code)).sort((a,b)=>a.name.localeCompare(b.name,'ja')).map(v=>`<option value="${v.code}">${esc(v.name)}（${v.code}）</option>`).join('');
@@ -1418,6 +1445,9 @@ function drawInbox(){
   document.querySelectorAll('[data-ibmg]').forEach(b=>b.onclick=()=>{MERGE_UP=b.dataset.ibmg==='1';drawInbox();});
   if($('ibGoImp'))$('ibGoImp').onclick=()=>{st.tab='imp';render();};
   if($('ibRetry'))$('ibRetry').onclick=()=>retryInbox(fail);
+  document.querySelectorAll('[data-exon]').forEach(c=>c.onchange=()=>{EXPSEL[c.dataset.exon]=Object.assign(EXPSEL[c.dataset.exon]||{},{on:c.checked});drawInbox();});
+  document.querySelectorAll('[data-exloc]').forEach(c=>c.onchange=()=>{EXPSEL[c.dataset.exloc]=Object.assign(EXPSEL[c.dataset.exloc]||{},{loc:c.value});});
+  if($('exGo'))$('exGo').onclick=()=>expGo(open);
   document.querySelectorAll('[data-ibset]').forEach(b=>b.onclick=async()=>{const x=INBX.find(i=>i.id===b.dataset.ibset),s=document.querySelector(`[data-ibsel="${x.id}"]`);if(!s||!s.value){snack('仕入先を選んでください',true);return;}
     try{await assignVendor(x,s.value,'人が選んだ');snack('仕入先に付けました');await loadInvoices();render();}catch(e){snack('付けられませんでした：'+e.message,true);}});
   document.querySelectorAll('[data-ibexp]').forEach(b=>b.onclick=()=>{const x=INBX.find(i=>i.id===b.dataset.ibexp),l=document.querySelector(`[data-ibloc="${x.id}"]`);toExpense(x,l?l.value:'本社');});
