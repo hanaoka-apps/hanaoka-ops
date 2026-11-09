@@ -295,17 +295,29 @@
     return { header: hh, lines: ls, comments: cm, validation: { InvoiceTotalInclTax: tot, LinesSumInclTax: in2, Diff: diff } };
   }
 
+  // 一度に頼むのは MAXC 件まで（2026-11-09）：何十件もまとめて渡すと、中継のフロー（同時 5 件・待ちの上限あり）があふれて、
+  //   受け付けられなかった依頼が「受付」のまま残り、5分で読み取り失敗になっていた。残りは順番待ちにする
+  const MAXC = 4; let running = 0; const waiting = [];
+  async function slot() { if (running < MAXC) { running++; return; } await new Promise(r => waiting.push(r)); running++; }
+  function release() { running--; const n = waiting.shift(); if (n) n(); }
   async function ask(ctx, s, job, body) {
-    const call = ctx.call;
     if (s.mock) return window.AP_MOCK.ai ? await window.AP_MOCK.ai(job, body) : { status: 'エラー', message: 'dev：AP_MOCK.ai がありません' };
+    await slot();
+    try { return await ask1(ctx, s, job, body); } finally { release(); }
+  }
+  async function ask1(ctx, s, job, body) {
+    const call = ctx.call;
     const it = await call('POST', `/sites/${s.wf}/lists/${s.aiList}/items`, { fields: { Title: job.title || 'ap.invoice', Status: '受付', Caller: `ap:${job.apCode || job.caller || ''}` } });
     const payload = { id: Number(it.id), body };
     if (body.fallbacks) payload.beta = 'server-side-fallback-2026-07-01';
-    await fetch(s.url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(payload) }).catch(() => {});
-    const t0 = Date.now();
+    const send = () => fetch(s.url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(payload) }).catch(() => {});
+    await send();
+    const t0 = Date.now(); let resent = 0;
     while (Date.now() - t0 < WAIT_MS) {
       await new Promise(r => setTimeout(r, POLL_MS));
       let f; try { f = (await call('GET', `/sites/${s.wf}/lists/${s.aiList}/items/${it.id}?$expand=fields`)).fields; } catch (e) { continue; }
+      // フローが動き出すと「処理中」になる。75秒たっても「受付」のまま＝中継が受け付けなかった → もう一度送る（2回まで。フローは「受付」でなければ何もしない）
+      if (f.Status === '受付' && resent < 2 && Date.now() - t0 > 75000 * (resent + 1)) { resent++; await send(); }
       if (f.Status === '完了') { const r = JSON.parse(f.ResultJson || '{}'); return { status: '完了', text: r.text || '', stop: r.stop_reason, model: r.model, usage: r.usage }; }
       if (f.Status === 'エラー') return { status: 'エラー', message: String(f.ResultMessage || '').slice(0, 300) };
     }

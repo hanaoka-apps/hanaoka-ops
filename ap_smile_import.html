@@ -12,7 +12,7 @@
 <script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <script src="ap_intake.js?v=20261108r"></script>
-<script src="ap_ai.js?v=20261109a"></script>
+<script src="ap_ai.js?v=20261109b"></script>
 <script src="rpa_queue.js"></script>
 <script src="ap_smile.js?v=20261109b"></script>
 <script src="nav.js?v=20261021" defer></script>
@@ -1320,6 +1320,13 @@ async function registerInbox(files){
     IUPL.done+=g.files.length;drawIupl();}
   IUPL.busy=false;IUPL.result=`<b>${jobs.length}件を受け付けました${groups.length===1&&list.length>1?`（${list.length}ファイルを1件に）`:''}。</b>AI が読んで、今月の支払先リストから仕入先を当てます（1件20〜30秒）`+(IUPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの：${IUPL.errs.map(esc).join('、')}</div>`:'');
   jobs.forEach(j=>AIRUN.add(j.invoiceId));await loadInvoices();render();readInboxByAI(jobs);}
+// 読み取り失敗をもう一度読む（受け付けたときと同じ頼み方。AI の依頼は ap_ai.js が4件ずつ順番に送る）
+async function retryInbox(list){if(!list.length)return;if(!confirm(`読み取りに失敗した ${list.length} 件を、AI にもう一度読ませます（4件ずつ順番に。1件20〜30秒）。よろしいですか？`))return;
+  const jobs=[];
+  for(const x of list){try{const d=await docFiles(x.doc);await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,{[V3.ai]:'受付'});
+      jobs.push({apCode:d.code,invoiceId:String(x.id),category:'本社仕入',location:'本社',targetYm:month(),inbox:true,candidates:candText(),files:d.files,pdfName:d.pdfName,moved:d.moved});}
+    catch(e){snack(`${x.title||x.id}：${e.message}`,true);}}
+  jobs.forEach(j=>AIRUN.add(j.invoiceId));await loadInvoices();render();readInboxByAI(jobs);}
 const candText=()=>{const C=Object.values(monthList());return C.length?C.sort((a,b)=>a.code.localeCompare(b.code)).map(v=>`${v.code} ${v.name} ${v.balance}`).join('\n'):'';};
 function readInboxByAI(jobs){if(!window.APAI||!jobs.length)return;
   jobs.forEach(j=>APAI.readInvoice({call,site:AP_SITE},j)
@@ -1392,7 +1399,7 @@ function drawInbox(){
         <div class="ho-row"><span class="ho-k">複数</span><span class="seg">${[[0,'別々の請求書'],[1,'1件にまとめる']].map(([v,l])=>`<button type="button" data-ibmg="${v}" class="${+MERGE_UP===v?'on':''}">${l}</button>`).join('')}</span><span class="ho-m">${MERGE_UP?'置いたファイルを1件の請求書として受け付けます':''}</span></div>
         <div class="ho-note">1つのファイルに1社の請求書にしてください（何社分もまとめたスキャンは分けられません）。今月のリストに無いものは「経費に回す」へ</div>
       </div></div></div>
-    <div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}</h2>
+    <div class="card"><h2>仕入先が決まらない（${open.length}）${reading.length?`　<span style="font-size:12px;color:var(--sub);font-weight:400">AI 読み取り中 ${reading.length}</span>`:''}${fail.length?`　<span style="font-size:12px;color:var(--up);font-weight:400">読み取り失敗 ${fail.length}</span> <button id="ibRetry" style="font-size:12px;padding:1px 8px" title="読み取りに失敗した請求書を、AI にもう一度読ませる（4件ずつ順番に）">🔄 もう一度読む（${fail.length}件）</button>`:''}${done?`　<span style="font-size:12px;color:var(--down);font-weight:400">今月 付けた ${done}件</span>`:''}</h2>
       <table><tr><th>受け付け</th><th>請求書（AI が読んだ支払先）</th><th class="n">金額</th><th>仕入先</th><th></th></tr>
       ${[...reading,...fail,...open].map(x=>{const m=x.ai==='AI確認済'&&!busyX(x)&&nC?matchOne(x,C):null,cs=m&&m.cands?m.cands:[];
         const opts=cs.map(c=>`<option value="${c}">${esc(C[c].name)}（${c}）— ${esc(m.why[c].join('・'))}</option>`).join('')+`<option value="" disabled>──── 今月のリストから ────</option>`+Object.values(C).filter(v=>!cs.includes(v.code)).sort((a,b)=>a.name.localeCompare(b.name,'ja')).map(v=>`<option value="${v.code}">${esc(v.name)}（${v.code}）</option>`).join('');
@@ -1408,6 +1415,7 @@ function drawInbox(){
   d.addEventListener('drop',ev=>registerInbox(ev.dataTransfer.files));$('ibfile').onchange=e=>{registerInbox(e.target.files);e.target.value='';};
   document.querySelectorAll('[data-ibmg]').forEach(b=>b.onclick=()=>{MERGE_UP=b.dataset.ibmg==='1';drawInbox();});
   if($('ibGoImp'))$('ibGoImp').onclick=()=>{st.tab='imp';render();};
+  if($('ibRetry'))$('ibRetry').onclick=()=>retryInbox(fail);
   document.querySelectorAll('[data-ibset]').forEach(b=>b.onclick=async()=>{const x=INBX.find(i=>i.id===b.dataset.ibset),s=document.querySelector(`[data-ibsel="${x.id}"]`);if(!s||!s.value){snack('仕入先を選んでください',true);return;}
     try{await assignVendor(x,s.value,'人が選んだ');snack('仕入先に付けました');await loadInvoices();render();}catch(e){snack('付けられませんでした：'+e.message,true);}});
   document.querySelectorAll('[data-ibexp]').forEach(b=>b.onclick=()=>{const x=INBX.find(i=>i.id===b.dataset.ibexp),l=document.querySelector(`[data-ibloc="${x.id}"]`);toExpense(x,l?l.value:'本社');});
