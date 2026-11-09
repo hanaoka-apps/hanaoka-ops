@@ -172,9 +172,18 @@
         '<div class="box"><h4>支払方法の内訳</h4><table>' + Object.keys(bm).map(function (m) { return '<tr><td>' + esc(m) + '</td><td class="n">' + yen(bm[m]) + '</td></tr>'; }).join('') + '</table>' +
           (Object.keys(due).length ? '<h4 style="margin-top:10px">でんさいの期日</h4><table>' + Object.keys(due).sort().map(function (d) { return '<tr><td>' + esc(d) + '</td><td class="n">' + yen(due[d]) + '</td></tr>'; }).join('') + '</table>' : '') + '</div>' +
         '<div class="box"><h4>特記・気づき（' + flagged.length + '件）</h4><div class="flags">' + (flagged.length ? flagged.map(function (x) { return '<div class="flag" data-k="' + esc(x._k) + '"><span class="why">' + tags(x).map(function (t) { return esc(t[0]); }).join('・') + '</span><span class="who">' + esc(x.payee) + '</span><b>' + yen(x.amount) + '</b></div>'; }).join('') : '<div style="color:var(--sub)">ありません</div>') + '</div></div></div>';
-      pane.insertAdjacentHTML('beforeend', payeeListHtml());
+      pane.insertAdjacentHTML('beforeend', tokkiListHtml() + payeeListHtml());
       if (snap.fuel && (snap.fuel.rows || []).length) pane.insertAdjacentHTML('beforeend', fuelHtml(snap.fuel));
-      pane.querySelectorAll('.flag,.plist tr[data-k]').forEach(function (f) { f.onclick = function () { ui.sel = f.dataset.k; ui.tab = 'rev'; ui.only = ''; render(); }; });
+      pane.querySelectorAll('.flag,.plist tr[data-k],.tklist tr[data-k]').forEach(function (f) { f.onclick = function () { ui.sel = f.dataset.k; ui.tab = 'rev'; ui.only = ''; render(); }; });
+    }
+    // 特記事項（サマリー・取引先一覧の上）：経費の「いつもと違う支払」（初めて・久しぶりの支払先、総務が付けた特記）。行を押すと明細へ（2026-11-09）
+    //   決裁に回すときに支払管理が rows[].tk に入れる（この機能より前に回した申請には無い）
+    function tokkiListHtml() {
+      var a = rows.filter(function (x) { return x.tk && x.tk.length; }).sort(function (x, y) { return y.amount - x.amount; });
+      if (!a.length) return '';
+      return '<div class="box" style="margin-top:12px"><h4>特記事項（' + a.length + '件）<span style="font-weight:400;font-size:12px;color:var(--sub);margin-left:8px">いつもと違う支払（初めて・久しぶりの支払先など）。行を押すと明細へ</span></h4><div style="overflow-x:auto"><table class="plist tklist"><tr><th>支払先</th><th>方法</th><th class="n">金額</th><th style="width:55%">特記の文</th></tr>' +
+        a.map(function (x) { return '<tr data-k="' + esc(x._k) + '"><td><b>' + esc(x.payee) + '</b></td><td>' + mth(x.method) + '</td><td class="n"><b>' + yen(x.amount) + '</b></td><td style="white-space:normal">' + x.tk.map(esc).join('<br>') + '</td></tr>'; }).join('') +
+        '</table></div></div>';
     }
     // 取引先一覧（サマリー）：仕入・経費に分けて、金額の大きい順。行を押すとその明細へ（ユーザー 2026-11-08）
     function payeeListHtml() {
@@ -310,7 +319,7 @@
       var c = S.checks[x._k], row = function (k, v) { return v == null || v === '' ? '' : '<div class="k">' + k + '</div><div>' + v + '</div>'; };
       var sm = x.smile || {}, txl = (x.lines || []).some(function (l) { return l.rate; });
       var wt = whatOf(x);
-      var kvH = '<div class="kv">' + (wt.length ? '<div class="k">何の支払か</div><div style="grid-column:2/-1"><b style="font-size:14.5px;line-height:1.6">' + wt.map(esc).join('<br>') + '</b></div>' : '') + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
+      var kvH = '<div class="kv">' + (x.tk && x.tk.length ? '<div class="k">特記事項</div><div style="grid-column:2/-1"><span class="tag t-flag" style="margin-right:6px">特記</span>' + x.tk.map(esc).join('<br>') + '</div>' : '') + (wt.length ? '<div class="k">何の支払か</div><div style="grid-column:2/-1"><b style="font-size:14.5px;line-height:1.6">' + wt.map(esc).join('<br>') + '</b></div>' : '') + row('振込手数料', x.fee ? yen(x.fee) + ' 円（先方負担）' : '') +
           row('SMILE の額', sm.incl != null ? '税込仕入額 ' + yen(sm.incl) + (Math.round(sm.incl) === gross(x) ? ' <b style="color:var(--down)">✔ 支払額と一致</b>' : '') + (sm.carry ? '／繰越 ' + yen(sm.carry) : '') + (sm.held ? '（保留 ' + yen(sm.held) + '・3月末に整理）' : '') : '') +
           row('振込先の変更', x.bankChange ? '<b style="color:var(--up)">' + esc(x.bankChange) + '</b>' : '') + row('備考', esc(x.note)) + '</div>';
       var ibHtml = function () { return txl && ui.itab === 'ln' ? linesHtml(x.lines) : kvH + (txl ? taxSum(x.lines) : linesHtml(x.lines)); };
