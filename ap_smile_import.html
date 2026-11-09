@@ -11,7 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
-<script src="ap_intake.js?v=20261109c"></script>
+<script src="ap_intake.js?v=20261109d"></script>
 <script src="ap_ai.js?v=20261109c"></script>
 <script src="rpa_queue.js"></script>
 <script src="ap_smile.js?v=20261109b"></script>
@@ -1199,14 +1199,44 @@ async function docBlob(doc){const path=String(doc||'').replace(/^\/Shared Docume
   const alt=/\/incoming\//i.test(path)?path.replace(/\/incoming\//i,'/processed/'):path.replace(/\/processed\//i,'/incoming/');
   for(const p of [path,alt]){try{return URL.createObjectURL(await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(p)}:/content`,null,null,true));}catch(e){}}return null;}
 function docPopup(x,title){const ds=docsOf(x);let d=$('docDlg');if(!d){d=document.createElement('div');d.id='docDlg';d.className='slipdlg';document.body.appendChild(d);}
-  d.innerHTML=`<div class="slipbox docbox"><div class="slipv"><div class="sh"><b>📄 ${esc(title)}</b><span class="sp"></span>${ds.length>1?ds.map((_,k)=>`<button data-dk="${k}" class="${k?'':'on'}">${k+1}枚目</button>`).join(''):''}${ds.length?APDoc.rotMenu('docRot'):''}<button id="docX">閉じる ✕</button></div>
+  d.innerHTML=`<div class="slipbox docbox"><div class="slipv"><div class="sh"><b>📄 ${esc(title)}</b><span class="sp"></span>${ds.length>1?ds.map((_,k)=>`<button data-dk="${k}" class="${k?'':'on'}">${k+1}枚目</button>`).join(''):''}${ds.length?APDoc.rotMenu('docRot'):''}${ds.length?'<button id="docSp" title="1つのファイルに請求書が2通以上あるとき、ページで分けて「請求書を渡す」に渡し直す（元の行は取り消す）">✂ ページで分ける</button>':''}<button id="docX">閉じる ✕</button></div>
+    <div id="docSpBox" hidden style="padding:10px 14px;border-bottom:1px solid var(--line);background:var(--warn-l);font-size:13px"></div>
     <div class="pdf" id="docv">${ds.length?'読み込み中...':'PDF の場所がありません'}</div></div></div>`;d.hidden=false;
   const close=()=>{d.hidden=true;d.innerHTML='';};d.onclick=e=>{if(e.target===d)close();};$('docX').onclick=close;
   const show=async k=>{const key=`${x.id}#${k}`,v=$('docv');if(!v)return;d.querySelectorAll('[data-dk]').forEach(b=>b.classList.toggle('on',+b.dataset.dk===k));
     if(!pdfCache[key]){v.textContent='読み込み中...';const u=await docBlob(ds[k]);if(u)pdfCache[key]=u;}
     const v2=$('docv');if(!v2||d.hidden)return;v2.innerHTML=pdfCache[key]?APDoc.view(pdfCache[key],ds[k]):'PDF を開けませんでした';};
   let curK=0;d.querySelectorAll('[data-dk]').forEach(b=>b.onclick=()=>{curK=+b.dataset.dk;show(curK);});if(ds.length)show(0);
-  APDoc.wireRot({call,site:AP_SITE},'docRot',()=>ds[curK],e=>{if(e){snack('回せませんでした：'+e.message,true);return;}delete pdfCache[`${x.id}#${curK}`];snack('向きを直して保存しました');show(curK);});}
+  APDoc.wireRot({call,site:AP_SITE},'docRot',()=>ds[curK],e=>{if(e){snack('回せませんでした：'+e.message,true);return;}delete pdfCache[`${x.id}#${curK}`];snack('向きを直して保存しました');show(curK);});
+  if($('docSp'))$('docSp').onclick=()=>splitPanel(x,ds[curK],close);}
+// ---------- ✂ ページで分ける（2026-11-09。決まり：1ファイル＝請求書1通）----------
+//   今見ている PDF をページの範囲で分けて、それぞれを「請求書を渡す」に渡し直す（AI が1通ずつ読み、仕入先を当てる）。同じファイルから作った行は取り消す（一覧から外れる。ファイルと記録は残る）
+async function splitPanel(x,path,closeDlg){const box=$('docSpBox');if(!box)return;
+  if(!/\.pdf$/i.test(path||'')){snack('PDF だけ分けられます（写真は1枚ずつ置き直してください）',true);return;}
+  box.hidden=false;box.innerHTML='ページ数を数えています…';
+  let blob,n;try{blob=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(await APDoc.locate({call,site:AP_SITE},path))}:/content`,null,null,true);n=await APDoc.pageCount(blob,path);}
+  catch(e){box.innerHTML='PDF を開けませんでした：'+esc(e.message);return;}
+  const key=String(path).trim(),same=allInv().filter(o=>String(o.x.doc||'').split('\n')[0].trim()===key),lock=same.filter(o=>o.code&&(rows.find(r=>r.code===o.code)||{}).checked);
+  box.innerHTML=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>✂ ${n}ページを分ける</b><span>1通ずつのページの範囲：</span><input id="spR" placeholder="例：1-10, 11-12" style="width:200px">
+      <button class="pri" id="spGo">分けて渡し直す</button><button id="spX">やめる</button></div>
+    <div style="margin-top:6px;color:var(--sub)">分けた PDF を「請求書を渡す」に置き、AI が1通ずつ読んで仕入先を当てます。このファイルから作った今の行（${same.length}行：${same.map(o=>`${esc(o.name)} ${yen(o.x.amount)}`).join('・')}）は取り消します。
+      渡さないページ（別会社あてなど）は範囲に入れなければ渡しません</div>${lock.length?`<div style="margin-top:6px;color:var(--up)">🔒 ${lock.map(o=>esc(o.name)).join('・')} の仕入先は確認OK 済みです。先に確認の画面で「確認を外す」をしてください</div>`:''}`;
+  $('spX').onclick=()=>{box.hidden=true;box.innerHTML='';};
+  $('spGo').onclick=async()=>{if(lock.length){snack('確認OK 済みの仕入先の請求書があります。先に確認を外してください',true);return;}
+    const rs=String($('spR').value||'').normalize('NFKC').split(/[,、\s]+/).filter(Boolean).map(t=>{const m=t.match(/^(\d+)(?:[-~〜](\d+))?$/);return m?[+m[1],+(m[2]||m[1])]:null;});
+    if(!rs.length||rs.some(r=>!r||r[0]<1||r[1]>n||r[0]>r[1])){snack(`ページの範囲を 1〜${n} で書いてください（例：1-10, 11-12）`,true);return;}
+    const used=new Set();for(const [a,b] of rs)for(let i=a;i<=b;i++){if(used.has(i)){snack(`${i}ページが2つの範囲に入っています`,true);return;}used.add(i);}
+    if(rs.length<2&&used.size===n){snack('分ける範囲を2つ以上にしてください',true);return;}
+    const skip=n-used.size;if(!confirm(`${n}ページを ${rs.length}つの PDF（${rs.map(([a,b])=>a===b?a:`${a}-${b}`).join('・')}ページ）に分けて「請求書を渡す」に渡し直します。${skip?`\n渡さないページが ${skip}ページあります。`:''}\nこのファイルから作った今の ${same.length}行は取り消します。よろしいですか？`))return;
+    box.innerHTML='<span class="spin"></span> 分けています…';
+    try{const parts=await APDoc.splitBlob(blob,rs),base=String(path).split('/').pop().replace(/^AP\w{16}_/,'').replace(/\.pdf$/i,'');
+      const files=parts.map((b,i)=>new File([b],`${base}_p${rs[i][0]}-${rs[i][1]}.pdf`,{type:'application/pdf'}));
+      if(IUPL.busy){snack('いま請求書を受け付けています。終わってからもう一度押してください',true);box.hidden=true;return;}
+      MERGE_UP=false;closeDlg();st.tab='inb';render();await registerInbox(files);
+      if(IUPL.errs.length){snack('渡し直せなかったファイルがあります（元の行は残しました）：'+IUPL.errs.join('、'),true);return;}
+      for(const o of same)await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${o.x.id}/fields`,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':`取り消し：ページで分けて渡し直した（${acct&&acct.name||''}）`}));
+      snack(`${files.length}つに分けて渡し直しました。元の ${same.length}行は取り消しました（AI が読んでいます）`);await loadInvoices();render();}
+    catch(e){snack('分けられませんでした：'+e.message,true);}};}
 document.addEventListener('keydown',e=>{const d=$('docDlg');if(e.key==='Escape'&&d&&!d.hidden){e.stopImmediatePropagation();d.hidden=true;d.innerHTML='';}},true);
 // ---------- 作業の保存 ----------
 async function patchRow(r,obj){const fields=toFields(L.pay,obj);await gpatch(`/sites/${AP_SITE}/lists/${L.pay.id}/items/${r.saved.id}/fields`,fields);Object.assign(r.saved.f,fields);}

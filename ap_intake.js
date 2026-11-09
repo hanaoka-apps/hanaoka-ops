@@ -251,6 +251,13 @@
     const type = /\.png$/i.test(path) ? 'image/png' : 'image/jpeg';
     return await new Promise((ok, ng) => c.toBlob(b => b ? ok(b) : ng(new Error('画像を回せませんでした')), type, 0.9));
   }
+  // ページで分ける（2026-11-09）：ranges＝[[1,10],[11,12]]（1から）。範囲ごとに新しい PDF（Blob）を返す
+  async function splitBlob(blob, ranges) {
+    const L = await pdfLib(), src = await L.PDFDocument.load(await blob.arrayBuffer(), { ignoreEncryption: true }), out = [];
+    for (const [a, b] of ranges) { const doc = await L.PDFDocument.create(), idx = []; for (let i = a; i <= b; i++) idx.push(i - 1);
+      (await doc.copyPages(src, idx)).forEach(p => doc.addPage(p)); out.push(new Blob([await doc.save()], { type: 'application/pdf' })); }
+    return out;
+  }
   async function pageCount(blob, path) { if (!isPdfPath(path)) return 1; const L = await pdfLib(); return (await L.PDFDocument.load(await blob.arrayBuffer(), { ignoreEncryption: true })).getPageCount(); }
   // ファイルの場所：受付直後は incoming、処理後は processed。今あるほうを返す
   async function locate(ctx, path) {
@@ -283,5 +290,5 @@
       });
     };
   }
-  window.APDoc = { ACCEPT: 'application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif', kind, prep, isImg, view, DOC_EXT, rotateBlob, rotateFile, locate, pageCount, rotMenu, wireRot };
+  window.APDoc = { ACCEPT: 'application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif', kind, prep, isImg, view, DOC_EXT, rotateBlob, rotateFile, locate, pageCount, splitBlob, rotMenu, wireRot };
 })();
