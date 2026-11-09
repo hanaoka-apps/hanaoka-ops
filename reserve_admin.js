@@ -5,7 +5,8 @@
    管理者にだけボタンが出る（reserve.html の IS_ADMIN）。管理者以外の画面では、このファイルを読み込まない。
    ・準備状況（マスター・履歴の列があるか）／不足している列の作成／新しい履歴リストの作成／表示名を日本語に
    ・既存の履歴に「予約セットID」を一括付与
-   ・予約対象の一括判定（部品・オプション・ショールーム機 → 予約対象＝いいえ）
+   ・予約対象の一括判定（部品・オプション → 予約対象＝いいえ）
+   ・予約対象外を戻す（予約対象＝いいえ になっている機体を選んで はい に戻す。ショールーム機を予約できるようにしたときに作った）
    ・占有情報（LockData）の再構築（履歴から作り直す）
    ・読み込み状況（デモ機・営業車・会議室が全部読めているか）
    中身は demo_reserve.html の同名の処理と同じ。呼び出し元（reserve.html）が、通信・定数・いまの一覧を ctx で渡す。
@@ -87,6 +88,7 @@
       `<div class="adm"><b>保守の道具</b>` +
       `<div class="st-row" style="gap:6px;flex-wrap:wrap">` +
         `<button class="act" data-a="parts">予約対象を一括判定…</button>` +
+        `<button class="act" data-a="restore">予約対象外を戻す…</button>` +
         `<button class="act" data-a="rebuild">占有情報を再構築</button>` +
         (histNew ? `<button class="act" data-a="names">表示名を日本語にする</button>` : '') +
         (K.setId ? `<button class="act" data-a="setid">既存の履歴に予約セットIDを一括付与</button>` : '') +
@@ -119,7 +121,7 @@
   }
 
   async function run(a) {
-    const fn = { mkcol: makeColumns, mklist: createHistList, names: fixDisplayNames, setid: backfillSetIds, parts: previewParts, rebuild: rebuildLocks }[a];
+    const fn = { mkcol: makeColumns, mklist: createHistList, names: fixDisplayNames, setid: backfillSetIds, parts: previewParts, restore: previewRestore, rebuild: rebuildLocks }[a];
     if (!fn) return;
     C.usage('admin_' + a);
     try { await fn(); } catch (e) { C.snack('エラー: ' + e.message); out(`<div class="msg ng">エラー：${esc(e.message)}</div>`); console.error(e); }
@@ -253,7 +255,7 @@
       .map(m => `<tr><td>${m.id}</td><td>${esc(m.n)}</td><td>${m.part ? '部品' : ''}${m.part && m.ng ? '+' : ''}${m.ng ? 'ショールーム機' : ''}</td></tr>`).join('');
     out(`<b>予約対象を いいえ にする候補：${cand.length}件</b>` + (cand.length
       ? `<div style="max-height:34vh;overflow:auto;margin-top:6px"><table class="adt"><thead><tr><th>#ID</th><th>デモ機名</th><th>理由</th></tr></thead><tbody>${rows}</tbody></table></div>`
-        + `<div class="cnt" style="margin:6px 0">判定はデモ機名のパターン（部品・オプション）と、区分がショールーム機のものです。誤判定があればここで気づけます。実行後も SharePoint の画面で個別に直せます。</div>`
+        + `<div class="cnt" style="margin:6px 0">判定はデモ機名のパターン（部品・オプション）です。誤判定があればここで気づけます。実行後も SharePoint の画面で個別に直せます。</div>`
         + `<button class="act pri" id="admPartsRun">この ${cand.length}件を「予約対象＝いいえ」にする</button> <span id="admPartsMsg" class="msg"></span>`
       : `<div class="cnt">対象はありません。すでに全件処理済みです。</div>`));
     const b = el('admPartsRun'); if (b) b.onclick = runParts;
@@ -267,6 +269,39 @@
       const bad = res.filter(r => r.status >= 300);
       msg.className = 'msg ' + (bad.length ? 'ng' : 'ok');
       msg.textContent = bad.length ? `成功 ${res.length - bad.length}件 / 失敗 ${bad.length}件（${bad[0].body?.error?.message || bad[0].status}）` : `${res.length}件を「予約対象＝いいえ」にしました`;
+      await C.reload();
+    } catch (e) { msg.className = 'msg ng'; msg.textContent = 'エラー: ' + e.message; }
+    finally { btn.disabled = false; }
+  }
+
+  /* ---------------- 予約対象外を戻す ----------------
+     「予約対象＝いいえ」になっている機体（部品を除く）を並べ、選んだものを「はい」に戻す。
+     ショールーム機は最初から選んだ状態にする（2026-11-09 に予約できるようにしたため）。 */
+  let RESTORE = [];
+  function previewRestore() {
+    if (!K.resv) { C.snack('IsReservable 列がありません'); return; }
+    RESTORE = C.machines().filter(m => m.resv === false && !m.part)
+      .sort((a, b) => a.cat.localeCompare(b.cat) || a.n.localeCompare(b.n));
+    const rows = RESTORE.map((m, i) => `<tr><td><input type="checkbox" data-ri="${i}"${/ショールーム/.test(m.cat) ? ' checked' : ''}></td><td>${m.id}</td><td>${esc(m.n)}</td><td>${esc(m.cat)}</td></tr>`).join('');
+    out(`<b>予約対象＝いいえ になっている機体（部品を除く）：${RESTORE.length}台</b>` + (RESTORE.length
+      ? `<div style="max-height:34vh;overflow:auto;margin-top:6px"><table class="adt"><thead><tr><th></th><th>#ID</th><th>デモ機名</th><th>区分</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        + `<div class="cnt" style="margin:6px 0">チェックした機体を「予約対象＝はい」に戻します。ショールーム機は最初からチェックしています。廃棄・故障などで予約させたくない機体は、チェックを外してください。</div>`
+        + `<button class="act pri" id="admRestoreRun">チェックした機体を予約できるようにする</button> <span id="admRestoreMsg" class="msg"></span>`
+      : `<div class="cnt">予約対象＝いいえ になっている機体はありません（部品を除く）。</div>`));
+    const b = el('admRestoreRun'); if (b) b.onclick = runRestore;
+  }
+  async function runRestore() {
+    const btn = el('admRestoreRun'), msg = el('admRestoreMsg');
+    const pick = [...document.querySelectorAll('#adminOut input[data-ri]')].filter(x => x.checked).map(x => RESTORE[Number(x.dataset.ri)]).filter(Boolean);
+    if (!pick.length) { msg.className = 'msg ng'; msg.textContent = '機体を選んでください'; return; }
+    if (!confirm(`${pick.length}台を「予約対象＝はい」に戻します。戻すと、誰でも予約できるようになります。`)) return;
+    btn.disabled = true; msg.className = 'msg'; msg.textContent = `${pick.length}台を更新中...`;
+    try {
+      const res = await C.gBatch(pick.map(m => ({ method: 'PATCH', url: `/sites/${C.SITE_ID}/lists/${C.LIST_MASTER}/items/${m.itemId}/fields`,
+        headers: { 'Content-Type': 'application/json' }, body: { [C.RESV_COL]: true } })));
+      const bad = res.filter(r => r.status >= 300);
+      msg.className = 'msg ' + (bad.length ? 'ng' : 'ok');
+      msg.textContent = bad.length ? `成功 ${res.length - bad.length}台 / 失敗 ${bad.length}台（${bad[0].body?.error?.message || bad[0].status}）` : `${res.length}台を予約できるようにしました`;
       await C.reload();
     } catch (e) { msg.className = 'msg ng'; msg.textContent = 'エラー: ' + e.message; }
     finally { btn.disabled = false; }
