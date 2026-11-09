@@ -11,7 +11,8 @@
         { f: 'ap_entry.html',          l: '手入力', sub: true },      // sub：上の項目（経費）の下に字下げして出す
         { f: 'ap_recurring.html',      l: '毎月の支払', sub: true },
         { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
-        { f: 'ap_payment.html',        l: '支払（決裁・出力）' }
+        { f: 'ap_payment.html',        l: '支払（決裁・出力）' },
+        { f: 'ap_guide.html',          l: '使い方' }          // 経費・仕入・支払の流れと帳票（2026-11-09）
       ]
     },
     {
@@ -126,6 +127,7 @@
     'ap_entry.html':         '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
     'ap_recurring.html':     '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
     'ap_payment.html':       '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>',
+    'ap_guide.html':         '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/>',
     // 会計
     'kaikei_dashboard.html': '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     'kaikei_monthly.html':   '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 13h7M9 17h4"/>',
