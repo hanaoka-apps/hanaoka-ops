@@ -1159,4 +1159,23 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
   const other = EC.judgeSlip(Object.assign({}, base, { flags: [F('info', '値引きあり：本体の税抜 5,000円 → 4,000円')] }), { cfg: DEFAULT_CONFIG, delivery: { code: '1' } });
   assert.ok(other.items.some(x => x.level === 'info' && /値引きあり/.test(x.text))); assert.strictEqual(other.risky, false);
 });
+t('受注日付：取込を押した日。16:00以降は翌営業日・休みの日は次の営業日', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG), D = (y, m, d, h, mi) => new Date(y, m - 1, d, h, mi);
+  assert.strictEqual(DEFAULT_CONFIG.slipCutoffTime, '16:00');
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 9, 0), DEFAULT_CONFIG, cal), '2026-11-10');      // 火曜の午前：その日
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 59), DEFAULT_CONFIG, cal), '2026-11-10');    // 締めの1分前：その日
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 16, 0), DEFAULT_CONFIG, cal), '2026-11-11');     // 16:00 ちょうどから：翌日
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 13, 16, 30), DEFAULT_CONFIG, cal), '2026-11-16');    // 金曜の夕方：土日を飛ばして月曜
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 14, 10, 0), DEFAULT_CONFIG, cal), '2026-11-16');     // 土曜（休み）：月曜
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 30), { slipCutoffTime: '15:00' }, cal), '2026-11-11');   // 締めは設定で変えられる
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 17, 0), {}, cal), '2026-11-11');                  // 設定がなければ 16:00
+});
+t('取込ファイル：受注日付は slipDate（なければ Shopify の注文日）', () => {
+  const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);
+  assert.strictEqual(EC.juchuRows([s], L.juchu, DEFAULT_CONFIG)[0][0], '20261015');   // 注文日 10/15（従来どおり）
+  s.slipDate = '2026-11-10';
+  const rows = EC.juchuRows([s], L.juchu, DEFAULT_CONFIG);
+  assert.ok(rows.every(r => r[0] === '20261110'));   // 全部の行が、押した日
+  assert.strictEqual(rows[0][14], EC.ymd(s.shipDate)); assert.strictEqual(rows[0][15], '1800');   // 出荷予定日・客先注番は変わらない
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

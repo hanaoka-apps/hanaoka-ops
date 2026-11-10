@@ -755,6 +755,15 @@
   };
 
   function q2(n) { return Number(n).toFixed(2); }
+  /* 受注伝票の日付（SMILE の「受注日付」）の自動の決め方：取込ボタンを押した日（Shopify の注文日ではない）。
+   * 入力の締め（cfg.slipCutoffTime・既定 16:00）以降は翌日、休みの日なら次の営業日。now は Date（なければ今）、cal は EC.makeCalendar の結果 */
+  EC.slipDateAuto = function (now, cfg, cal) {
+    var d = now || new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+    var day = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()), hm = p(d.getHours()) + ':' + p(d.getMinutes());
+    if (hm >= ((cfg && cfg.slipCutoffTime) || '16:00')) day = EC.addDays(day, 1);
+    return (cal || EC.makeCalendar(cfg)).onOrAfter(day);
+  };
+
   // 受注伝票（新規）。受注№ は仮番（取込画面で「新規に採番する」）。slips は deliveryCode / shipDate（最終）が入っていること
   EC.juchuRows = function (slips, header, cfg, cal) {
     cal = cal || EC.makeCalendar(cfg);
@@ -770,7 +779,7 @@
         var made = String(l.teihai) === '1';
         var amt = Math.round(l.amountNet);
         var set = {
-          0: EC.ymd(s.orderDate), 1: String(seq), 2: String(i + 1), 3: s.cust, 4: EC.cutBytes(s.custName, lim.custName), 6: s.deliveryCode, 7: EC.cutBytes(s.delivery.name, lim.name),
+          0: EC.ymd(s.slipDate || s.orderDate), 1: String(seq), 2: String(i + 1), 3: s.cust, 4: EC.cutBytes(s.custName, lim.custName), 6: s.deliveryCode, 7: EC.cutBytes(s.delivery.name, lim.name),
           8: s.staff, 9: s.dept, 11: '0', 12: '1', 13: '1', 14: ship, 15: po, 16: cfg.warehouse, 17: l.code, 18: EC.cutBytes(l.name, lim.itemName),
           22: q2(l.qty), 23: l.unit, 24: q2(l.unitNet), 25: String(amt), 26: '0.00', 27: '0', 29: String(amt), 30: '0.0',
           31: '0', 33: '10.00', 34: '0', 35: '0', 36: '0', 37: '0', 38: '0', 39: '0', 40: '0', 41: '0', 42: '00000', 44: memo2,
@@ -1374,7 +1383,7 @@
     var r0 = act ? act.rows[0] : null, d = o.delivery || {};
     var head = {
       juchuNo: act ? { value: act.juchuNo || '' } : { value: '', pending: true, text: '取込時に付与' },
-      orderDate: act ? EC.fmtDate(P(r0, ['受注日付'])) : EC.fmtDate(s.orderDate), taxRate: '10.00', juchuKubun: '確定', torihiki: '売掛',
+      orderDate: act ? EC.fmtDate(P(r0, ['受注日付'])) : EC.fmtDate(s.slipDate || s.orderDate), taxRate: '10.00', juchuKubun: '確定', torihiki: '売掛',
       customer: { code: s.cust, name: cinfo.name || '' }, staff: { code: cinfo.staff || '', name: cinfo.staffName || '' }, dept: { code: cinfo.dept || '', name: cinfo.deptName || '' },
       warehouse: { code: wh, name: cfg.warehouseName || '' },
       delivery: act ? { code: act.deliveryCode || '', name: P(r0, ['納品先名']) || d.name || '' } : (d.isNew ? { code: '', name: d.name || '', pending: true, text: '取込時に決定' } : { code: d.code || '', name: d.name || '' }),
