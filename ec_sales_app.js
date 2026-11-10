@@ -1949,10 +1949,10 @@ function fulfillConfirm(plan, fconf) {
   });
 }
 // 専用機の結果を待つ（依頼の処理が終わるまで。閉じるボタンで画面だけ閉じられる＝処理は続く）
-function fulfillWait(name, batchId) {
+function fulfillWait(name, batchId, dryRun) {
   return new Promise((resolve, reject) => {
     let stop = null, closed = false;
-    const ov = fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">Shopify に登録しています…</h2><div id="ful-status" class="muted">専用機に依頼しました。</div>' +
+    const ov = fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">' + (dryRun ? '確認のみ：Shopify の状態を確かめています…' : 'Shopify に登録しています…') + '</h2>' + (dryRun ? '<div class="alert info" style="margin:6px 0">確認のみです。Shopify には、何も書き込みません。</div>' : '') + '<div id="ful-status" class="muted">専用機に依頼しました。</div>' +
       '<div class="muted" style="margin:8px 0">この画面を閉じても、専用機の処理は続きます（もう一度押すと、結果を確かめて、「登録済み」にします）。</div>' +
       '<div class="row" style="justify-content:flex-end"><button class="btn sec" id="ful-hide">画面を閉じる</button></div>');
     ov.querySelector('#ful-hide').onclick = () => { closed = true; if (stop) stop(); fulfillClose(); resolve(null); };
@@ -1961,7 +1961,7 @@ function fulfillWait(name, batchId) {
         if (closed) return;
         const el = document.getElementById('ful-status');
         if (s.state === 'pending') { if (el) el.textContent = '順番を待っています' + (s.ahead ? '（前に ' + s.ahead + '件）' : '') + '。' + RpaQueue.workerWarning(s); return; }
-        if (s.state === 'running') { if (el) el.textContent = '専用機が、Shopify に登録しています…'; return; }
+        if (s.state === 'running') { if (el) el.textContent = dryRun ? '専用機が、Shopify の状態を確かめています（何も書き込みません）…' : '専用機が、Shopify に登録しています…'; return; }
         if (s.state === 'done') { resolve({ ok: true }); return; }
         if (s.state === 'failed') { resolve({ ok: false, error: s.error || '理由は分かりません' }); return; }
         if (s.state === 'timeout') { resolve({ ok: false, error: '時間内に終わりませんでした（専用機が動いているか確認してください）' }); }
@@ -1981,9 +1981,9 @@ async function runShopifyFulfill(items) {
   await rpaReady();
   const params = { orders: plan.orders.map(o => ({ id: o.id, company: o.company, number: o.number, url: o.url || '' })), dryRun: pick.dryRun, notify: pick.notify };
   const req = await RpaQueue.request(F.job, { app: 'EC売上（Shopify登録）', requestedBy: account && account.username, batchId, params });
-  const out = await fulfillWait(req.name, batchId);
+  const out = await fulfillWait(req.name, batchId, pick.dryRun);
   if (!out) return false;   // 画面を閉じた（処理は続いている）
-  if (!out.ok) { fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">登録できませんでした</h2><div class="alert err">' + esc(out.error) + '</div>' +
+  if (!out.ok) { fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">' + (pick.dryRun ? '確認できませんでした' : '登録できませんでした') + '</h2><div class="alert err">' + esc(out.error) + '</div>' +
     '<div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" id="ful-ok">閉じる</button></div>').querySelector('#ful-ok').onclick = fulfillClose; return false; }
   // 結果のファイルは、専用機から OneDrive 経由で届くので、少し遅れることがある（最大 約1分、待つ）
   let res = null;
