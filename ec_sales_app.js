@@ -387,6 +387,16 @@ function excludedText(s) {
 function isManualExcluded(s) { const r = rec(s); return !!(r && r.status === 'excluded' && !s.excluded); }
 function memoOf(s) { const r = rec(s); return EC.joinMemo(s.baseMemo || s.memo, r && r.memoNote, store.cfg); }
 function shipOf(s) { const r = rec(s); return (r && r.shipDate) || s.autoShip; }
+// 受注伝票の日付（SMILE の受注日付）：取込ボタンを押した日。取込済みなら、取り込んだ日。手動で変えていれば、その日（この端末に保存）。
+// 締め（slipCutoffTime・既定16:00）以降は翌営業日、休みの日は次の営業日。出荷予定日（受注から○営業日）の数え方は、これまでどおり Shopify の注文日から
+function slipAuto() { return EC.slipDateAuto(new Date(), store.cfg, cal); }
+function slipOf(s) {
+  const r = rec(s);
+  if (r && r.slipUsed) return r.slipUsed;
+  if (r && r.importAt && !(stateOf(s) === 'new' || stateOf(s) === 'ok')) return EC.slipDateAuto(new Date(r.importAt), store.cfg, cal);   // 他の人が取り込んだ注文：取込を押した時刻から求める
+  return (r && r.slipDate) || slipAuto();
+}
+function slipCutText() { return (store.cfg && store.cfg.slipCutoffTime) || '16:00'; }
 function fromDate() { return $('f-from').value || '0000-00-00'; }
 function visible() {
   const q = $('f-q').value.trim().toLowerCase(), from = fromDate();
@@ -514,10 +524,35 @@ function renderOrders() {
 function flagsHtml(s) {
   return (s.flags.length ? '<h3>確認すること</h3>' + s.flags.map(f => '<div class="alert ' + f.level + '">' + esc(f.text) + '</div>').join('') : '');
 }
+// 受注日付の入力（出荷予定日と同じ作り）。取込を押した日が自動で入る。ギリギリのときは、ここで変える
+function slipDateBlockHtml(s, st, r, ship) {
+  const v = slipOf(s), manual = !!(r && r.slipDate && !r.slipUsed), editable = st === 'new' || st === 'ok';
+  const ctl = editable ? '<input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-slip="' + s.id + '" value="' + v + '"> ' +
+    (manual ? '<button class="btn sec sm" data-act="slipauto" data-id="' + s.id + '">自動の日付（' + md(slipAuto()) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : esc(md(v));
+  return '<h3>受注日付（SMILE の受注伝票）</h3><div>' + ctl + '</div>' +
+    (editable ? '<div class="muted">取込ボタンを押した日です（' + esc(slipCutText()) + ' 以降は翌営業日）。ギリギリのときは、日付を変えられます。変えた日付で取り込まれます（この端末に保存）</div>' : '<div class="muted">取込ボタンを押した日です</div>') +
+    (editable && ship && ship < v ? '<div class="alert warn">出荷予定日が受注日付より前です。出荷予定日も見直してください</div>' : '');
+}
+// 伝票ふうの見出しの「受注日」：取込前は、ここで変えられる
+function slipCtl(s, st, r, text) {
+  if (!(st === 'new' || st === 'ok')) return esc(text);
+  const manual = !!(r && r.slipDate);
+  return '<div class="ship-out' + (manual ? ' manual' : '') + '"><input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-slip="' + s.id + '" value="' + slipOf(s) + '"> ' +
+    (manual ? '<button class="btn sec sm" data-act="slipauto" data-id="' + s.id + '">自動の日付（' + md(slipAuto()) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') + '</div>';
+}
+// 取込の確認に出す、受注日付のまとめ
+function slipDateNote(ok) {
+  const by = {}; ok.forEach(s => { by[s.slipDate] = (by[s.slipDate] || 0) + 1; });
+  const ds = Object.keys(by).sort(), early = ok.filter(s => s.shipDate && s.slipDate && s.shipDate < s.slipDate).length;
+  const man = ok.some(s => { const r = rec(s); return r && r.slipDate; });
+  return '受注日付：' + (ds.length === 1 ? md(ds[0]) : ds.map(d => md(d) + ' ' + by[d] + '件').join('、')) + (man ? '（手動で変えたものを含む）' : '（取込を押した日。' + slipCutText() + ' 以降は翌営業日）') + '\n' +
+    (early ? '⚠ 出荷予定日が受注日付より前の注文が ' + early + '件あります（出荷予定日を見直してください）\n' : '');
+}
 function editBlockHtml(s, st, r, ship) {
   return '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">' + ((s.baseMemo || s.memo) ? '基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。' : '基本は空です。書き足したいことがあれば入力します。') + '</div>' +
     '<input type="text" data-memo="' + s.id + '" value="' + esc((r && r.memoNote) || '') + '" placeholder="例：ブルー入荷待ち／入金確認済" style="width:100%"' + (st === 'exported' || st === 'smile' || st === 'excluded' || st === 'importing' || st === 'check' ? ' disabled' : '') + '>' +
     '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
+    slipDateBlockHtml(s, st, r, ship) +
     '<h3>出荷予定日</h3><div>' + (st === 'new' || st === 'ok' ? '<input type="date" class="dateinp' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : md(ship)) + '</div>' +
     '<div class="muted">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
     '';
@@ -660,7 +695,7 @@ function nouhinBlockHtml(s, d, code, act, it, pend) {
 }
 function slipImageHtml(s) {
   const d = EC.deliveryFromOrder(s.order, store.cfg), m = M.nouhin && M.nouhin[s.cust], code = m && reuseCode(s, d), act = smileActual(s);
-  const sl = Object.assign({}, s, { memo: memoOf(s) });
+  const sl = Object.assign({}, s, { memo: memoOf(s), slipDate: slipOf(s) });
   const opt = { cfg: store.cfg, items: M.items, cal, biko: PROFILE.biko ? PROFILE.biko(CONF) : '', shipDate: shipOf(s), delivery: { code: code || '', name: d.name, isNew: !code } };
   const img = EC.slipImage(sl, Object.assign({ act }, opt));
   const plan = act ? EC.slipImage(sl, opt) : null;   // 取込後は、アプリが作るはずだった内容と違う項目を黄色にする
@@ -675,7 +710,7 @@ function slipImageHtml(s) {
     : IMPD ? '<div class="sl-banner actual">SMILE に起票した内容' + (r0 && r0.juchuNo ? '　受注№ ' + E(r0.juchuNo) : '') + '</div>'
     : '<div class="sl-banner">取込後はこうなります（予定）　<span style="font-weight:400">いまアプリが作る取込内容のとおりです</span></div>';
   let h = '<div class="sl">' + banner +
-    '<div class="sl-hd c4">' + it('受注No', H.juchuNo.pending ? pend(H.juchuNo.text) : E(H.juchuNo.value || '（不明）')) + it('受注日', E(H.orderDate), df(H.orderDate, PH && PH.orderDate)) + it('税率', E(H.taxRate)) + it('受注区分', E(H.juchuKubun)) + '</div>' +
+    '<div class="sl-hd c4">' + it('受注No', H.juchuNo.pending ? pend(H.juchuNo.text) : E(H.juchuNo.value || '（不明）')) + it('受注日', act ? E(H.orderDate) : slipCtl(s, st0, r0, H.orderDate), df(H.orderDate, PH && PH.orderDate)) + it('税率', E(H.taxRate)) + it('受注区分', E(H.juchuKubun)) + '</div>' +
     '<div class="sl-hd c3">' + it('得意先', cn(H.customer), df(H.customer.code, PH && PH.customer.code)) + it('取引', E(H.torihiki)) + it('担当者', cn(H.staff)) + '</div>' +
     '<div class="sl-hd c3">' + it('部門', cn(H.dept)) + it('倉庫', cn(H.warehouse)) + '<div></div></div>' +
     '<div class="sl-hd c2">' + it('納品先', H.delivery.pending ? pend(H.delivery.text) + (H.delivery.name ? '　' + E(H.delivery.name) : '') : cn(H.delivery)) + it('客先注番', E(H.po), df(H.po, PH && PH.po)) + '</div>' +
@@ -809,7 +844,7 @@ async function refreshCodeMode() {
 }
 // forceReal＝専用機を使わない手動の取込ファイル（「⋯」メニュー）。仮の番号は専用機が置き換えるものなので、手動の取込には使わず本当のコードを決める
 function planOut(forceReal) {
-  const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); s.memo = memoOf(s); });
+  const ok = okSlips(); ok.forEach(s => { s.shipDate = shipOf(s); s.slipDate = slipOf(s); s.memo = memoOf(s); });
   if (!ok.length) return { ok, fresh: [], master: M.nouhin || null };   // OK済が無いときは、納品先マスタ全体の複製（重い）は要らない
   const master = M.nouhin ? JSON.parse(JSON.stringify(M.nouhin)) : null;
   if (!master) return { ok, fresh: [], master: null };
@@ -1000,7 +1035,7 @@ function setOk(s) {
   store.orders[s.id] = Object.assign(store.orders[s.id] || {}, { status: 'ok', by: account && account.username, at: new Date().toISOString(), cust: s.cust, orderDate: s.orderDate, net: s.netTotal });
   return true;
 }
-const UNDO_KEYS = ['excludeReason', 'excludedBy', 'excludedAt', 'status', 'exportedAt', 'exportedBy', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed', 'confirmedBy', 'confirmedAt', 'matchedAt', 'matchedShip', 'orderName', 'by', 'at', 'importBy', 'importAt', 'reportedAt', 'shipReportedAt', 'shipReportedBy'];
+const UNDO_KEYS = ['excludeReason', 'excludedBy', 'excludedAt', 'status', 'exportedAt', 'exportedBy', 'batchId', 'juchuNo', 'diffs', 'checkMessage', 'manualConfirmed', 'confirmedBy', 'confirmedAt', 'matchedAt', 'matchedShip', 'orderName', 'by', 'at', 'importBy', 'importAt', 'reportedAt', 'shipReportedAt', 'shipReportedBy', 'slipUsed'];
 
 // 1つのログだけを書く（注文の行は書かない）：テスト送信・報告の失敗など
 function logOnly(action, orderNo, batchId, detail) {
@@ -1095,7 +1130,7 @@ async function submitImport(o) {
     store.imports[id] = { batchId: id, orderIds: o.orderIds, phase: 'queued', queueName: req.name, requestedBy: account.username, requestedAt: batch.manifest.requestedAt,
       counts: c, expected: o.expected, message: '', test: !!o.test, needsReport: !o.test, requestedByName: account.name || '' };
     const nowIso = new Date().toISOString(), po = Object.keys(o.expected.orders)[0];
-    if (!o.test) o.orderIds.forEach(oid => Object.assign(store.orders[oid], { status: 'importing', batchId: id, importBy: account.username, importAt: nowIso }));
+    if (!o.test) o.orderIds.forEach(oid => Object.assign(store.orders[oid], { status: 'importing', batchId: id, importBy: account.username, importAt: nowIso, slipUsed: (o.slipDates || {})[oid] }));
     else logOnly('テスト送信', po, id, '客先注番 ' + po + '（' + o.counts.rows + '行）');   // テスト送信は EC_Log にだけ（EC_Order には書かない）
     save(); setReady(); render(); trackImport(id);
     if (!o.test) pushMany(o.orderIds, '取込依頼', () => 'バッチ ' + id);
@@ -1114,9 +1149,9 @@ async function startImport() {
   if (p.fresh.length) files.push({ name: 'nouhin.txt', rows: p.fresh.length, bytes: EC.encodeUtf16(EC.toSmileText(LAY.nouhin, EC.nouhinRows(p.fresh, LAY.nouhin, store.cfg))) });
   files.push({ name: 'juchu.txt', rows: jrows.length, slips: EC.slipCount(jrows, LAY.juchu), bytes: EC.encodeUtf16(EC.toSmileText(LAY.juchu, jrows)) });
   const net = p.ok.reduce((a, s) => a + s.netTotal, 0), gross = p.ok.reduce((a, s) => a + s.grossTotal, 0);
-  await submitImport({ files, tempCodes: EC.tempCodes(p.fresh), expected: EC.expectedImport(p.ok, p.fresh), orderIds: p.ok.map(s => s.id), counts: { fresh: p.fresh.length, slips: p.ok.length, rows: jrows.length, net, gross },
+  await submitImport({ files, slipDates: Object.fromEntries(p.ok.map(s => [s.id, s.slipDate])), tempCodes: EC.tempCodes(p.fresh), expected: EC.expectedImport(p.ok, p.fresh), orderIds: p.ok.map(s => s.id), counts: { fresh: p.fresh.length, slips: p.ok.length, rows: jrows.length, net, gross },
     confirmMsg: (isIndexStale() ? '⚠ SMILE の最新データが ' + agoText(indexAgeHours()) + 'です。二重取込の確認が古い可能性があります。先に「SMILEの最新を取り込む」を押すことをおすすめします。\n\n' : '') +
-      'SMILE に取り込みます。\n新規の納品先：' + codeDecision.reason + '\n\n今回の取込：' + p.ok.length + '件（うち納品先の新規 ' + p.fresh.length + '件）。SMILE に実際に登録されます（手配区分1の本体は製番が付きます）。\n受注伝票：' + p.ok.length + '伝票（' + jrows.length + '行）\n金額合計：税抜 ' + yen(net) + '／税込 ' + yen(gross) + '\n\n取込は RPA 専用機が行い、終わると自動で SMILE と突き合わせて、Teams に報告します。担当者が画面で確認OKを押すと起票済みになります。よろしいですか？' });
+      'SMILE に取り込みます。\n新規の納品先：' + codeDecision.reason + '\n\n今回の取込：' + p.ok.length + '件（うち納品先の新規 ' + p.fresh.length + '件）。SMILE に実際に登録されます（手配区分1の本体は製番が付きます）。\n受注伝票：' + p.ok.length + '伝票（' + jrows.length + '行）\n' + slipDateNote(p.ok) + '金額合計：税抜 ' + yen(net) + '／税込 ' + yen(gross) + '\n\n取込は RPA 専用機が行い、終わると自動で SMILE と突き合わせて、Teams に報告します。担当者が画面で確認OKを押すと起票済みになります。よろしいですか？' });
 }
 
 // テスト送信（管理者メニュー）：SMILE のテスト用得意先に仮の注文を1件。本番の注文・得意先（599801・599802）には触らない。
@@ -1170,7 +1205,7 @@ async function readImportResult(id) {
 function setOrders(imp, status, extra) {
   imp.orderIds.forEach(id => {
     const r = store.orders[id]; if (!r) return;
-    r.status = status; if (status === 'ok') delete r.batchId;
+    r.status = status; if (status === 'ok') { delete r.batchId; delete r.slipUsed; }
     Object.assign(r, extra || {});
   });
 }
@@ -2066,6 +2101,10 @@ document.addEventListener('click', async e => {
       if (!confirm('「' + s.name + '」の納品先を、Shopify の値に戻します（直した内容は消えます）。よろしいですか？')) return;
       const dv = EC.deliveryFromOrder(s.order, store.cfg); await saveDeliveryEdit(s, {}, dv.auto, '納品先の手動変更をすべて元に戻した'); return;
     }
+    if (d.act === 'slipauto') {
+      const r0 = store.orders[s.id]; if (!r0 || !r0.slipDate) return;
+      delete r0.slipDate; save(); render(); return;
+    }
     if (d.act === 'shipauto') {
       const r0 = store.orders[s.id]; if (!r0 || !r0.shipDate) return;
       delete r0.shipDate; save(); render();
@@ -2177,6 +2216,13 @@ document.addEventListener('change', e => {
     if (!t.value || t.value === s.autoShip) delete r.shipDate; else r.shipDate = t.value;
     save(); render();
     if (r.status) queuePush(s.id, '出荷予定日変更', r.shipDate ? r.shipDate + ' に変更' : '自動の日付に戻した');
+    return;
+  }
+  if (d.slip !== undefined) {
+    const s = slips.find(x => x.id === d.slip); if (!s) return;
+    const r = store.orders[s.id] = store.orders[s.id] || {};
+    if (!t.value || t.value === slipAuto()) delete r.slipDate; else r.slipDate = t.value;
+    save(); render();
     return;
   }
   if (d.memo !== undefined) {
