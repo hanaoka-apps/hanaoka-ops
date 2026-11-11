@@ -378,6 +378,7 @@
       if (d > days) days = d;
     });
     slip.leadDays = days || mapping.leadDays;
+    slip.stockDate = stockDate || '';
     // 受注の締め（cutoffTime）以降は翌日分。休みの日に入った受注は次の営業日に処理する
     var after = (o.createdTime || '') >= (cfg.cutoffTime || '24:00');
     slip.processDate = cal.onOrAfter(after ? EC.addDays(o.createdAt, 1) : o.createdAt);
@@ -755,12 +756,20 @@
   };
 
   function q2(n) { return Number(n).toFixed(2); }
+  /* 出荷予定日の自動の決め方（アプリ）：受注日付（SMILE の受注伝票の日付。base）から、品目ごとの日数（slip.leadDays）の営業日あと。
+   * 商品名に「次回発送 ○/○」の案内があれば、その日以降。buildSlip の shipDate（Shopify の注文日から数える）は、アプリでは使わない */
+  EC.shipDateAuto = function (slip, base, cal) {
+    var d = cal.add(base, slip.leadDays);
+    if (slip.stockDate) { var sd = cal.onOrAfter(slip.stockDate); if (sd > d) d = sd; }
+    return d;
+  };
+
   /* 受注伝票の日付（SMILE の「受注日付」）の自動の決め方：取込ボタンを押した日（Shopify の注文日ではない）。
-   * 入力の締め（cfg.slipCutoffTime・既定 16:00）以降は翌日、休みの日なら次の営業日。now は Date（なければ今）、cal は EC.makeCalendar の結果 */
+   * 入力の締め（設定の「締め時刻」cfg.cutoffTime・なければ 16:00）以降は翌日、休みの日なら次の営業日。now は Date（なければ今）、cal は EC.makeCalendar の結果 */
   EC.slipDateAuto = function (now, cfg, cal) {
     var d = now || new Date(), p = function (n) { return String(n).padStart(2, '0'); };
     var day = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()), hm = p(d.getHours()) + ':' + p(d.getMinutes());
-    if (hm >= ((cfg && cfg.slipCutoffTime) || '16:00')) day = EC.addDays(day, 1);
+    if (hm >= ((cfg && cfg.cutoffTime) || '16:00')) day = EC.addDays(day, 1);
     return (cal || EC.makeCalendar(cfg)).onOrAfter(day);
   };
 
