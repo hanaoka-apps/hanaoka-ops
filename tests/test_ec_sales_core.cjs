@@ -1185,6 +1185,22 @@ t('出荷予定日：受注日付から数える（取込が遅れても、受�
   s.stockDate = '2026-11-11';   // 数えた日（木）より前の案内なら、数えた日のまま
   assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-12');
 });
+t('日付の注意：受注日（SMILE）が元の受注日より前／出荷予定日が標準の営業日数に満たない', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG), W = (orderDate, slipDate, shipDate, lead) => EC.dateWarns({ orderDate, leadDays: lead }, slipDate, shipDate, cal);
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-12', 2), []);                          // 火に受注日 → 木：ちょうど2営業日
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-13', 2), []);                          // 多い分は注意しない
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-11', 2).map(x => x.k), ['short']);     // 1営業日：短い
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-10', 2).map(x => x.k), ['short']);     // 当日：短い
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-09', 2).map(x => x.k), ['neg']);       // 受注日より前（マイナス）
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-09', '2026-11-12', 2).map(x => x.k), ['before']);    // 受注日（SMILE）が元の受注日（Shopify／サイネックス）より前
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-09', '2026-11-08', 2).map(x => x.k), ['before', 'neg']);   // 両方
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-09', '2026-11-09', 2).map(x => x.k), ['before', 'short']);   // 出荷予定日が受注日と同じ日（当日）は「短い」
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-10', '2026-11-12', 2), []);                          // 元の受注日と同じ日は問題なし
+  assert.deepStrictEqual(W('2026-11-13', '2026-11-13', '2026-11-16', 2).map(x => x.k), ['short']);     // 金 → 月は1営業日（土日は数えない）
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-10', '2026-11-13', 5).map(x => x.k), ['short']);     // 品目の標準が5営業日なら、3営業日は短い
+  assert.ok(/2 営業日未満/.test(W('2026-11-08', '2026-11-10', '2026-11-11', 2)[0].text) && /元の受注日/.test(W('2026-11-10', '2026-11-09', '2026-11-12', 2)[0].text));
+  assert.deepStrictEqual(W('2026-11-08', '', '2026-11-11', 2), []);                                    // 受注日が未定なら、何も言わない
+});
 t('取込ファイル：受注日付は slipDate（なければ Shopify の注文日）', () => {
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);
   assert.strictEqual(EC.juchuRows([s], L.juchu, DEFAULT_CONFIG)[0][0], '20261015');   // 注文日 10/15（従来どおり）

@@ -764,6 +764,20 @@
     return d;
   };
 
+  /* 日付の注意（受注日（SMILE）と出荷予定日の関係）。slip＝{ orderDate（元の受注日＝Shopify の注文日／サイネックスのCSVの日付）, leadDays（標準の営業日数）}。
+   * 注意の配列 [{ k, short, text }] を返す（なければ空）。k：before＝受注日（SMILE）が元の受注日より前（ありえない）／neg＝出荷予定日が受注日（SMILE）より前／short＝標準の営業日数に満たない */
+  EC.dateWarns = function (slip, slipDate, shipDate, cal) {
+    var out = [], mdt = function (s) { return s ? (+s.slice(5, 7)) + '/' + (+s.slice(8, 10)) : ''; };
+    if (!slipDate) return out;
+    var lead = slip.leadDays == null ? 2 : slip.leadDays;
+    if (slip.orderDate && slipDate < slip.orderDate) out.push({ k: 'before', short: '受注日が元の受注日より前', text: '受注日（SMILE）' + mdt(slipDate) + ' が、元の受注日 ' + mdt(slip.orderDate) + ' より前です（ありえません。日付を見直してください）' });
+    if (shipDate) {
+      if (shipDate < slipDate) out.push({ k: 'neg', short: '出荷予定日が受注日より前', text: '出荷予定日 ' + mdt(shipDate) + ' が、受注日（SMILE）' + mdt(slipDate) + ' より前です（ありえません）' });
+      else if (shipDate < cal.add(slipDate, lead)) out.push({ k: 'short', short: '出荷予定日が' + lead + '営業日未満', text: '出荷予定日 ' + mdt(shipDate) + ' が、受注日（SMILE）から ' + lead + ' 営業日未満です（標準は ' + lead + ' 営業日）' });
+    }
+    return out;
+  };
+
   /* 受注伝票の日付（SMILE の「受注日付」）の自動の決め方：取込ボタンを押した日（Shopify の注文日ではない）。
    * 入力の締め（設定の「締め時刻」cfg.cutoffTime・なければ 16:00）以降は翌日、休みの日なら次の営業日。now は Date（なければ今）、cal は EC.makeCalendar の結果 */
   EC.slipDateAuto = function (now, cfg, cal) {
