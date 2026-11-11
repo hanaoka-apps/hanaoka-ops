@@ -539,11 +539,12 @@ function slipDateBlockHtml(s, st, r, ship) {
     (editable && ship && ship < v ? '<div class="alert warn">出荷予定日が受注日付より前です。出荷予定日も見直してください</div>' : '');
 }
 // 伝票ふうの見出しの「受注日」：取込前は、ここで変えられる
-function slipCtl(s, st, r, text) {
+function slipCtl(s, st, r, text, note) {
   if (!(st === 'new' || st === 'ok')) return esc(text);
   const manual = !!(r && r.slipDate);
   return '<div class="ship-out' + (manual ? ' manual' : '') + '"><input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-slip="' + s.id + '" value="' + slipOf(s) + '"> ' +
-    (manual ? '<button class="btn sec sm" data-act="slipauto" data-id="' + s.id + '">自動の日付（' + md(slipAuto()) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') + '</div>';
+    (manual ? '<button class="btn sec sm" data-act="slipauto" data-id="' + s.id + '">自動の日付（' + md(slipAuto()) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') +
+    (note ? '<div class="sub">取込ボタンを押した日（' + esc(slipCutText()) + ' 以降は翌営業日）。滑り込みで当日にしたいときは、ここで変えます。変えた日付で取り込まれます</div>' : '') + '</div>';
 }
 // 取込の確認に出す、受注日付のまとめ
 function slipDateNote(ok) {
@@ -804,7 +805,7 @@ function compareHtml(s) {
   }
   const smileNet = ml.reduce((a, x) => a + x.amt, 0), smileGross = Math.round(smileNet * 1.1);
   h += row('金額（税込）', yen(o.total) + '<div class="sub">送料 ' + yen(o.shipping || 0) + (o.discountCode ? '／割引 ' + E(o.discountCode) : '') + '</div>', yen(smileGross) + '<div class="sub">税抜合計 ' + yen(smileNet) + ' の1.1倍</div>', Math.abs(smileGross - o.total) > 2);
-  h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : (stNow === 'new' || stNow === 'ok' ? '出荷予定日 ' + shipCtl(s, stNow, rec(s), shipOf(s)) : E(md(shipOf(s)) + ' 出荷予定（受注から ' + s.leadDays + ' 営業日）')), false);
+  h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['受注日付'])) + ' 受注日／' + ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : (stNow === 'new' || stNow === 'ok' ? '受注日（SMILE） ' + slipCtl(s, stNow, rec(s), md(slipOf(s)), true) + '出荷予定日 ' + shipCtl(s, stNow, rec(s), shipOf(s)) : E(md(slipOf(s)) + ' 受注日／' + md(shipOf(s)) + ' 出荷予定（受注日付から ' + s.leadDays + ' 営業日）')), false);
   h += row('メモ', E(o.notes || ''), act ? E(P(act.rows[0], ['社内メモ'])) : '社内メモ（取込予定）' + memoCtl(s, stNow, rec(s)), false);
   h += row('支払', E(o.paymentMethod + '／' + o.financial), act ? '受注№ ' + E(act.juchuNo) : '', false);
   h += '</tbody></table>';
