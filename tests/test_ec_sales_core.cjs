@@ -1162,7 +1162,7 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
   assert.ok(other.items.some(x => x.level === 'info' && /値引きあり/.test(x.text))); assert.strictEqual(other.risky, false);
 });
 t('受注日付：取込を押した日。16:00以降は翌営業日・休みの日は次の営業日', () => {
-  const cal = EC.makeCalendar(DEFAULT_CONFIG), D = (y, m, d, h, mi) => new Date(y, m - 1, d, h, mi);
+  const cal = EC.makeCalendar(DEFAULT_CONFIG), D = (y, m, d, h, mi) => new Date(Date.UTC(y, m - 1, d, h - 9, mi));   // 日本時間の y/m/d h:mi（パソコンの地域に関係なく同じ結果）
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 9, 0), DEFAULT_CONFIG, cal), '2026-11-10');      // 火曜の午前：その日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 59), DEFAULT_CONFIG, cal), '2026-11-10');    // 締めの1分前：その日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 16, 0), DEFAULT_CONFIG, cal), '2026-11-11');     // 16:00 ちょうどから：翌日
@@ -1184,6 +1184,31 @@ t('出荷予定日：受注日付から数える（取込が遅れても、受�
   assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-16');
   s.stockDate = '2026-11-11';   // 数えた日（木）より前の案内なら、数えた日のまま
   assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-12');
+});
+t('受注日付：16:00 の線は日本時間（パソコンの時計の地域が違っても同じ）', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG);
+  // 日本時間 11/10 15:59 ＝ UTC 06:59、16:00 ＝ UTC 07:00（どの地域のパソコンでも、同じ瞬間は同じ判定）
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T06:59:00Z'), DEFAULT_CONFIG, cal), '2026-11-10');
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T07:00:00Z'), DEFAULT_CONFIG, cal), '2026-11-11');
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T16:00:00+09:00'), DEFAULT_CONFIG, cal), '2026-11-11');
+  // 日付の境目：日本時間 11/11 0:30（＝UTC 11/10 15:30）は、11/11 の午前
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T15:30:00Z'), DEFAULT_CONFIG, cal), '2026-11-11');
+});
+t('日付の注意：受注日（SMILE）が元の受注日より前／出荷予定日が標準の営業日数に満たない', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG), W = (orderDate, slipDate, shipDate, lead) => EC.dateWarns({ orderDate, leadDays: lead }, slipDate, shipDate, cal);
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-12', 2), []);                          // 火に受注日 → 木：ちょうど2営業日
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-13', 2), []);                          // 多い分は注意しない
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-11', 2).map(x => x.k), ['short']);     // 1営業日：短い
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-10', 2).map(x => x.k), ['short']);     // 当日：短い
+  assert.deepStrictEqual(W('2026-11-08', '2026-11-10', '2026-11-09', 2).map(x => x.k), ['neg']);       // 受注日より前（マイナス）
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-09', '2026-11-12', 2).map(x => x.k), ['before']);    // 受注日（SMILE）が元の受注日（Shopify／サイネックス）より前
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-09', '2026-11-08', 2).map(x => x.k), ['before', 'neg']);   // 両方
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-09', '2026-11-09', 2).map(x => x.k), ['before', 'short']);   // 出荷予定日が受注日と同じ日（当日）は「短い」
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-10', '2026-11-12', 2), []);                          // 元の受注日と同じ日は問題なし
+  assert.deepStrictEqual(W('2026-11-13', '2026-11-13', '2026-11-16', 2).map(x => x.k), ['short']);     // 金 → 月は1営業日（土日は数えない）
+  assert.deepStrictEqual(W('2026-11-10', '2026-11-10', '2026-11-13', 5).map(x => x.k), ['short']);     // 品目の標準が5営業日なら、3営業日は短い
+  assert.ok(/2 営業日未満/.test(W('2026-11-08', '2026-11-10', '2026-11-11', 2)[0].text) && /元の受注日/.test(W('2026-11-10', '2026-11-09', '2026-11-12', 2)[0].text));
+  assert.deepStrictEqual(W('2026-11-08', '', '2026-11-11', 2), []);                                    // 受注日が未定なら、何も言わない
 });
 t('取込ファイル：受注日付は slipDate（なければ Shopify の注文日）', () => {
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);

@@ -401,6 +401,9 @@ function slipOf(s) {
   if (r && r.importAt && !(stateOf(s) === 'new' || stateOf(s) === 'ok')) return EC.slipDateAuto(new Date(r.importAt), store.cfg, cal);   // 他の人が取り込んだ注文：取込を押した時刻から求める
   return (r && r.slipDate) || slipAuto();
 }
+// 日付の注意（取込前の注文だけ）：受注日（SMILE）が元の受注日より前／出荷予定日が短すぎる。止めはしない（確認画面にも出す）
+function dateWarns(s) { return EC.dateWarns(s, slipOf(s), shipOf(s), cal); }
+function dateWarnHtml(s) { return dateWarns(s).map(w => '<div class="alert warn">' + esc(w.text) + '</div>').join(''); }
 function slipCutText() { return (store.cfg && store.cfg.cutoffTime) || '16:00'; }
 function fromDate() { return $('f-from').value || '0000-00-00'; }
 function visible() {
@@ -460,7 +463,8 @@ function rowHtml(s) {
   const cls = [st, s.hasErr ? 'err' : (s.hasWarn ? 'warn' : '')].join(' ');
   const ship = shipOf(s), closed = ship && !cal.isBusinessDay(ship);
   const items = s.lines.length ? s.lines.map(l => '<div class="k-' + l.kind + '">' + esc(l.code) + ' ×' + l.qty + ' <span class="muted">' + yen(l.amountNet) + '</span></div>').join('') : '<span class="muted">（商品なし）</span>';
-  const flags = s.flags.map(f => '<span class="tag ' + f.level + '">' + esc(f.text) + '</span>').join('') + (r && r.memoNote ? '<span class="tag ok">社内メモ追記：' + esc(r.memoNote) + '</span>' : '');
+  const flags = s.flags.map(f => '<span class="tag ' + f.level + '">' + esc(f.text) + '</span>').join('') + (r && r.memoNote ? '<span class="tag ok">社内メモ追記：' + esc(r.memoNote) + '</span>' : '') +
+    (st === 'new' || st === 'ok' ? dateWarns(s).map(w => '<span class="tag warn">' + esc(w.short) + '</span>').join('') : '');
   const who = esc(s.order.ship.company || s.order.ship.name) + (s.order.ship.company ? '<div class="muted">' + esc(s.order.ship.name) + '</div>' : '');
   const canSel = st === 'new' || st === 'ok';
   let act = '';
@@ -536,7 +540,7 @@ function slipDateBlockHtml(s, st, r, ship) {
     (manual ? '<button class="btn sec sm" data-act="slipauto" data-id="' + s.id + '">自動の日付（' + md(slipAuto()) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : esc(md(v));
   return '<h3>受注日付（SMILE の受注伝票）</h3><div>' + ctl + '</div>' +
     (editable ? '<div class="muted">取込ボタンを押した日です（' + esc(slipCutText()) + ' 以降は翌営業日）。ギリギリのときは、日付を変えられます。変えた日付で取り込まれます（この端末に保存）</div>' : '<div class="muted">取込ボタンを押した日です</div>') +
-    (editable && ship && ship < v ? '<div class="alert warn">出荷予定日が受注日付より前です。出荷予定日も見直してください</div>' : '');
+    (editable ? dateWarnHtml(s) : '');
 }
 // 伝票ふうの見出しの「受注日」：取込前は、ここで変えられる
 function slipCtl(s, st, r, text, note) {
@@ -550,11 +554,13 @@ function slipCtl(s, st, r, text, note) {
 function slipDateNote(ok) {
   const by = {}; ok.forEach(s => { by[s.slipDate] = (by[s.slipDate] || 0) + 1; });
   const ships = ok.map(s => s.shipDate).filter(Boolean).sort();
-  const ds = Object.keys(by).sort(), early = ok.filter(s => s.shipDate && s.slipDate && s.shipDate < s.slipDate).length;
+  const ds = Object.keys(by).sort(), warns = ok.map(s => EC.dateWarns(s, s.slipDate, s.shipDate, cal)), wn = warns.filter(w => w.length).length;
+  const kinds = { before: '受注日が元の受注日より前', neg: '出荷予定日が受注日より前', short: '出荷予定日が標準の営業日数に満たない' };
+  const detail = Object.keys(kinds).map(k => { const n = warns.filter(w => w.some(x => x.k === k)).length; return n ? kinds[k] + ' ' + n + '件' : ''; }).filter(Boolean).join('／');
   const man = ok.some(s => { const r = rec(s); return r && r.slipDate; });
   return '受注日付：' + (ds.length === 1 ? md(ds[0]) : ds.map(d => md(d) + ' ' + by[d] + '件').join('、')) + (man ? '（手動で変えたものを含む）' : '（取込を押した日。' + slipCutText() + ' 以降は翌営業日）') + '\n' +
     (ships.length ? '出荷予定日：' + (ships[0] === ships[ships.length - 1] ? md(ships[0]) : md(ships[0]) + '〜' + md(ships[ships.length - 1])) + '（受注日付から数えます）\n' : '') +
-    (early ? '⚠ 出荷予定日が受注日付より前の注文が ' + early + '件あります（出荷予定日を見直してください）\n' : '');
+    (wn ? '⚠ 日付の注意：' + wn + '件（' + detail + '）。日付を見直してください' + '\n' : '');
 }
 function editBlockHtml(s, st, r, ship) {
   return '<h3>社内メモ（SMILE の受注伝票）</h3><div class="muted" style="margin-bottom:4px">' + ((s.baseMemo || s.memo) ? '基本は「' + esc(s.baseMemo || s.memo) + '」。続けて書き足したいことがあれば入力します。' : '基本は空です。書き足したいことがあれば入力します。') + '</div>' +
@@ -805,7 +811,7 @@ function compareHtml(s) {
   }
   const smileNet = ml.reduce((a, x) => a + x.amt, 0), smileGross = Math.round(smileNet * 1.1);
   h += row('金額（税込）', yen(o.total) + '<div class="sub">送料 ' + yen(o.shipping || 0) + (o.discountCode ? '／割引 ' + E(o.discountCode) : '') + '</div>', yen(smileGross) + '<div class="sub">税抜合計 ' + yen(smileNet) + ' の1.1倍</div>', Math.abs(smileGross - o.total) > 2);
-  h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['受注日付'])) + ' 受注日／' + ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : (stNow === 'new' || stNow === 'ok' ? '受注日（SMILE） ' + slipCtl(s, stNow, rec(s), md(slipOf(s)), true) + '出荷予定日 ' + shipCtl(s, stNow, rec(s), shipOf(s)) : E(md(slipOf(s)) + ' 受注日／' + md(shipOf(s)) + ' 出荷予定（受注日付から ' + s.leadDays + ' 営業日）')), false);
+  h += row('日付', E(s.orderDate + ' ' + o.createdTime + ' 受注'), act ? E(ymdText(P(act.rows[0], ['受注日付'])) + ' 受注日／' + ymdText(P(act.rows[0], ['納期'])) + ' 納期／' + ymdText(P(act.rows[0], ['出荷予定日'])) + ' 出荷予定') : (stNow === 'new' || stNow === 'ok' ? '受注日（SMILE） ' + slipCtl(s, stNow, rec(s), md(slipOf(s)), true) + '出荷予定日 ' + shipCtl(s, stNow, rec(s), shipOf(s)) + dateWarnHtml(s) : E(md(slipOf(s)) + ' 受注日／' + md(shipOf(s)) + ' 出荷予定（受注日付から ' + s.leadDays + ' 営業日）')), false);
   h += row('メモ', E(o.notes || ''), act ? E(P(act.rows[0], ['社内メモ'])) : '社内メモ（取込予定）' + memoCtl(s, stNow, rec(s)), false);
   h += row('支払', E(o.paymentMethod + '／' + o.financial), act ? '受注№ ' + E(act.juchuNo) : '', false);
   h += '</tbody></table>';
