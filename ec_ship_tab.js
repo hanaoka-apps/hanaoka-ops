@@ -42,6 +42,14 @@
     return out;
   }
 
+  // 出荷予定日：SMILE の受注の出荷予定日（取込の確認で突き合わせた値）。なければ、アプリが取り込んだ予定。①出荷待ちのまま過ぎていれば知らせる
+  function planCell(ctx, x) {
+    var p = (x.r && (x.r.matchedShip || x.r.shipDate)) || (ctx.shipPlan ? ctx.shipPlan(x.s) : '') || '';
+    if (!p) return '<span class="muted">—</span>';
+    var d = new Date(), today = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    return esc(p.slice(5).replace('-', '/')) + (x.k === 'wait' && p < today ? ' <span class="tag warn">過ぎています</span>' : '');
+  }
+
   function render(ctx) {
     var box = ctx.box, cnt = ctx.cnt;
     if (!box) return;
@@ -78,12 +86,12 @@
     };
     var todo = list.filter(function (x) { return x.k === 'check'; });
     if (ctx.canReport && todo.length && S.filter === 'check') html += '<div class="row" style="margin-bottom:8px;gap:8px">' + (ctx.fulfill ? '<button class="btn" id="ship-fulfill">🚚 Shopify に自動で登録する（' + todo.length + '件）</button>' : '') + (ctx.mailDraft ? '<button class="btn" id="ship-mail">📧 報告メールを作る（Excel を添付した下書き・' + todo.length + '件）</button>' : '') + '<button class="btn ' + (ctx.mailDraft || ctx.fulfill ? 'sec ' : '') + 'sm" id="ship-rep-all">表示中の ' + todo.length + '件を、まとめて「' + esc(rl.btn) + '」</button></div>';
-    html += list.length ? '<div style="overflow:auto"><table class="shiptbl"><thead><tr><th>受注日</th><th>注文</th><th>お客様</th><th>受注№</th><th>状態</th><th>出荷日</th><th>運送会社・送り状番号</th><th></th></tr></thead><tbody>' + list.map(function (x) {
+    html += list.length ? '<div style="overflow:auto"><table class="shiptbl"><thead><tr><th>受注日</th><th>注文</th><th>お客様</th><th>受注№</th><th>状態</th><th>出荷予定日</th><th>出荷日</th><th>運送会社・送り状番号</th><th></th></tr></thead><tbody>' + list.map(function (x) {
       var sh = x.ship, st = sh.state === 'done' ? '<span class="tag ok">送り状番号あり</span>' : sh.state === 'noslip' ? '<span class="tag warn">出荷伝票あり・送り状待ち</span>' : '<span class="tag info">出荷伝票なし</span>';
       var slips = sh.slips.map(function (sl) { return '<div><span class="muted">' + esc(sl.carrier) + '</span> <b>' + esc(sl.fmt) + '</b> <button class="btn sec sm" data-copy="' + esc(sl.no) + '" title="送り状番号をコピー（' + esc(sl.no) + '）">コピー</button></div>'; }).join('');
       var act = x.k === 'check' ? (ctx.canReport ? '<button class="btn sm" data-rep="' + esc(x.s.id) + '">' + esc(rl.btn) + '</button>' : '<span class="muted">担当者が押します</span>') : x.k === 'done' ? '<div class="muted">' + esc(rl.done) + ' ' + esc(((x.r.shipReportedBy || '').split('@')[0])) + ' ' + esc(stamp(x.r.shipReportedAt)) + '</div>' + (ctx.canReport ? '<a href="#" data-unrep="' + esc(x.s.id) + '" style="font-size:11px">戻す</a>' : '') : '';
       var who = x.s.order.ship.company || x.s.order.ship.name || '';
-      return '<tr data-row="' + esc(x.s.id) + '"><td>' + esc(x.s.orderDate.slice(5).replace('-', '/')) + '</td><td><b>' + esc(x.s.name) + '</b></td><td>' + esc(who) + '</td><td>' + esc((x.r && x.r.juchuNo) || sh.juchu[0] || '') + '</td><td>' + st + '</td><td>' + esc(sh.shipDate ? sh.shipDate.slice(5).replace('-', '/') : '') + (sh.shipNos.length ? '<div class="muted">出荷№ ' + esc(sh.shipNos.join('・')) + '</div>' : '') + '</td><td>' + (slips || '<span class="muted">—</span>') + '</td><td>' + act + '<div>' + link(x) + '</div></td></tr>';
+      return '<tr data-row="' + esc(x.s.id) + '"><td>' + esc(x.s.orderDate.slice(5).replace('-', '/')) + '</td><td><b>' + esc(x.s.name) + '</b></td><td>' + esc(who) + '</td><td>' + esc((x.r && x.r.juchuNo) || sh.juchu[0] || '') + '</td><td>' + st + '</td><td>' + planCell(ctx, x) + '</td><td>' + esc(sh.shipDate ? sh.shipDate.slice(5).replace('-', '/') : '') + (sh.shipNos.length ? '<div class="muted">出荷№ ' + esc(sh.shipNos.join('・')) + '</div>' : '') + '</td><td>' + (slips || '<span class="muted">—</span>') + '</td><td>' + act + '<div>' + link(x) + '</div></td></tr>';
     }).join('') + '</tbody></table></div>' : '<div class="empty">この条件の注文はありません</div>';
     box.innerHTML = html;
   }
