@@ -46,7 +46,7 @@
   function planCell(ctx, x) {
     var p = (x.r && (x.r.matchedShip || x.r.shipDate)) || (ctx.shipPlan ? ctx.shipPlan(x.s) : '') || '';
     if (!p) return '<span class="muted">—</span>';
-    var d = new Date(), today = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    var today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);   // 今日（日本時間）
     return esc(p.slice(5).replace('-', '/')) + (x.k === 'wait' && p < today ? ' <span class="tag warn">過ぎています</span>' : '');
   }
 

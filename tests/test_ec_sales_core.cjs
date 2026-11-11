@@ -1162,7 +1162,7 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
   assert.ok(other.items.some(x => x.level === 'info' && /値引きあり/.test(x.text))); assert.strictEqual(other.risky, false);
 });
 t('受注日付：取込を押した日。16:00以降は翌営業日・休みの日は次の営業日', () => {
-  const cal = EC.makeCalendar(DEFAULT_CONFIG), D = (y, m, d, h, mi) => new Date(y, m - 1, d, h, mi);
+  const cal = EC.makeCalendar(DEFAULT_CONFIG), D = (y, m, d, h, mi) => new Date(Date.UTC(y, m - 1, d, h - 9, mi));   // 日本時間の y/m/d h:mi（パソコンの地域に関係なく同じ結果）
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 9, 0), DEFAULT_CONFIG, cal), '2026-11-10');      // 火曜の午前：その日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 59), DEFAULT_CONFIG, cal), '2026-11-10');    // 締めの1分前：その日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 16, 0), DEFAULT_CONFIG, cal), '2026-11-11');     // 16:00 ちょうどから：翌日
@@ -1184,6 +1184,15 @@ t('出荷予定日：受注日付から数える（取込が遅れても、受�
   assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-16');
   s.stockDate = '2026-11-11';   // 数えた日（木）より前の案内なら、数えた日のまま
   assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-12');
+});
+t('受注日付：16:00 の線は日本時間（パソコンの時計の地域が違っても同じ）', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG);
+  // 日本時間 11/10 15:59 ＝ UTC 06:59、16:00 ＝ UTC 07:00（どの地域のパソコンでも、同じ瞬間は同じ判定）
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T06:59:00Z'), DEFAULT_CONFIG, cal), '2026-11-10');
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T07:00:00Z'), DEFAULT_CONFIG, cal), '2026-11-11');
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T16:00:00+09:00'), DEFAULT_CONFIG, cal), '2026-11-11');
+  // 日付の境目：日本時間 11/11 0:30（＝UTC 11/10 15:30）は、11/11 の午前
+  assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T15:30:00Z'), DEFAULT_CONFIG, cal), '2026-11-11');
 });
 t('日付の注意：受注日（SMILE）が元の受注日より前／出荷予定日が標準の営業日数に満たない', () => {
   const cal = EC.makeCalendar(DEFAULT_CONFIG), W = (orderDate, slipDate, shipDate, lead) => EC.dateWarns({ orderDate, leadDays: lead }, slipDate, shipDate, cal);

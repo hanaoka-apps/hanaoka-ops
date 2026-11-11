@@ -779,10 +779,11 @@
   };
 
   /* 受注伝票の日付（SMILE の「受注日付」）の自動の決め方：取込ボタンを押した日（Shopify の注文日ではない）。
-   * 入力の締め（設定の「締め時刻」cfg.cutoffTime・なければ 16:00）以降は翌日、休みの日なら次の営業日。now は Date（なければ今）、cal は EC.makeCalendar の結果 */
+   * 入力の締め（設定の「締め時刻」cfg.cutoffTime・なければ 16:00。日本時間）以降は翌日、休みの日なら次の営業日。now は Date（なければ今）、cal は EC.makeCalendar の結果 */
   EC.slipDateAuto = function (now, cfg, cal) {
-    var d = now || new Date(), p = function (n) { return String(n).padStart(2, '0'); };
-    var day = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()), hm = p(d.getHours()) + ':' + p(d.getMinutes());
+    // 日本時間（UTC+9。夏時間なし）で判定する。パソコンの時計の地域に関係なく、16:00 の線は日本時間
+    var d = new Date((now || new Date()).getTime() + 9 * 3600 * 1000), p = function (n) { return String(n).padStart(2, '0'); };
+    var day = d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()), hm = p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
     if (hm >= ((cfg && cfg.cutoffTime) || '16:00')) day = EC.addDays(day, 1);
     return (cal || EC.makeCalendar(cfg)).onOrAfter(day);
   };
