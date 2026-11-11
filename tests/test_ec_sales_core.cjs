@@ -40,8 +40,10 @@ t('営業日：2営業日後・週末・年末年始', () => {
   assert.strictEqual(c.prev('2026-10-19'), '2026-10-16');
 });
 t('受注の締め：15時以降は翌日分・休みの日は次の営業日から数える', () => {
-  const at = (date, time) => EC.buildSlip(order({ createdAt: date, createdTime: time }), ctx);
-  assert.strictEqual(DEFAULT_CONFIG.cutoffTime, '15:00');
+  // buildSlip の Shopify の注文時刻による数え方（アプリは、受注日付から数える EC.shipDateAuto を使う）。締めを 15:00 にして確かめる
+  const ctx15 = Object.assign({}, ctx, { cfg: Object.assign({}, DEFAULT_CONFIG, { cutoffTime: '15:00' }) });
+  const at = (date, time) => EC.buildSlip(order({ createdAt: date, createdTime: time }), ctx15);
+  assert.strictEqual(DEFAULT_CONFIG.cutoffTime, '16:00');   // 設定の「締め時刻」＝取込を押す入力の締め（受注日付が翌営業日になる）
   assert.strictEqual(at('2026-10-15', '14:59').shipDate, '2026-10-19');   // 木 → 当日処理 → +2営業日＝月
   assert.strictEqual(at('2026-10-15', '15:00').shipDate, '2026-10-20');   // 木15時 → 金処理 → 火
   assert.strictEqual(at('2026-10-16', '17:30').processDate, '2026-10-19'); // 金15時以降 → 月処理
@@ -1161,14 +1163,27 @@ t('システムの判定結果：意味つきで並べる（問題なし／確�
 });
 t('受注日付：取込を押した日。16:00以降は翌営業日・休みの日は次の営業日', () => {
   const cal = EC.makeCalendar(DEFAULT_CONFIG), D = (y, m, d, h, mi) => new Date(y, m - 1, d, h, mi);
-  assert.strictEqual(DEFAULT_CONFIG.slipCutoffTime, '16:00');
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 9, 0), DEFAULT_CONFIG, cal), '2026-11-10');      // 火曜の午前：その日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 59), DEFAULT_CONFIG, cal), '2026-11-10');    // 締めの1分前：その日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 16, 0), DEFAULT_CONFIG, cal), '2026-11-11');     // 16:00 ちょうどから：翌日
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 13, 16, 30), DEFAULT_CONFIG, cal), '2026-11-16');    // 金曜の夕方：土日を飛ばして月曜
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 14, 10, 0), DEFAULT_CONFIG, cal), '2026-11-16');     // 土曜（休み）：月曜
-  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 30), { slipCutoffTime: '15:00' }, cal), '2026-11-11');   // 締めは設定で変えられる
+  assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 15, 30), { cutoffTime: '15:00' }, cal), '2026-11-11');   // 締めは設定の「締め時刻」で変えられる
   assert.strictEqual(EC.slipDateAuto(D(2026, 11, 10, 17, 0), {}, cal), '2026-11-11');                  // 設定がなければ 16:00
+});
+t('出荷予定日：受注日付から数える（取込が遅れても、受注日付より前にならない）', () => {
+  const cal = EC.makeCalendar(DEFAULT_CONFIG), s = EC.buildSlip(order({ createdAt: '2026-11-05', createdTime: '00:06' }), ctx);   // Shopify の注文は 11/5（木）
+  assert.strictEqual(s.leadDays, 2); assert.strictEqual(s.stockDate, '');
+  assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-12');   // 11/10（火）に取込 → 2営業日あと＝木
+  assert.strictEqual(EC.shipDateAuto(s, '2026-11-11', cal), '2026-11-13');   // 16:00 以降で受注日付が11/11（水）→ 金
+  assert.strictEqual(EC.shipDateAuto(s, '2026-11-13', cal), '2026-11-17');   // 金 → 土日を飛ばして火
+  assert.ok(EC.shipDateAuto(s, '2026-11-10', cal) > '2026-11-10');
+  s.stockDate = '2026-11-20';   // 商品名に「次回発送 11/20」の案内がある
+  assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-20');   // その日以降に合わせる
+  s.stockDate = '2026-11-14';   // 土曜の案内 → 次の営業日（月）に合わせる
+  assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-16');
+  s.stockDate = '2026-11-11';   // 数えた日（木）より前の案内なら、数えた日のまま
+  assert.strictEqual(EC.shipDateAuto(s, '2026-11-10', cal), '2026-11-12');
 });
 t('取込ファイル：受注日付は slipDate（なければ Shopify の注文日）', () => {
   const s = EC.buildSlip(order(), ctx); s.deliveryCode = '000771'; s.delivery = EC.deliveryFromOrder(s.order);

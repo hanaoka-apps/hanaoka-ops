@@ -10,7 +10,7 @@ const idx = { generatedAt: new Date().toISOString(), carriers: { seino: { name: 
 ] };
 const mk = (id) => ({ id, name: '#' + id, cust: 'C', orderDate: today, order: { createdTime: today, ship: { name: 'お客様' + id } } });
 const slips = [mk('1001'), mk('1002'), mk('1003'), mk('1004')];
-const recs = { 1001: { status: 'exported', juchuNo: '9001' }, 1002: { status: 'exported', shipReportedAt: '2026-11-04T01:00:00Z', shipReportedBy: 'a@x' }, 1003: { status: 'confirm' }, 1004: { status: 'new' } };
+const recs = { 1001: { status: 'exported', juchuNo: '9001', matchedShip: '2026-11-13' }, 1002: { status: 'exported', shipReportedAt: '2026-11-04T01:00:00Z', shipReportedBy: 'a@x' }, 1003: { status: 'confirm', matchedShip: '2020-01-06' }, 1004: { status: 'new' } };
 const handlers = {}; const box = { innerHTML: '', addEventListener: (t, f) => { handlers[t] = f; } };
 const cnt = { textContent: '' }; const calls = [];
 const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録する', done: '登録済み', btn: '登録した' } }, box, cnt, visible: true, canReport: true,
@@ -20,6 +20,7 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   assert.strictEqual(String(cnt.textContent), '1');   // 人のボールがある②（結果を確認）だけ。①出荷待ちは数えない
   const tiles = [...box.innerHTML.matchAll(/data-sf="(\w+)"[^>]*>.*?<div class="ft-c">(\d+)/g)].map(m => m[1] + ':' + m[2]);
   assert.deepStrictEqual(tiles, ['wait:1', 'check:1', 'done:1']);
+  assert(/ftile[^"]*active" data-sf="check"/.test(box.innerHTML) && !/ftile[^"]*active" data-sf="(wait|done)"/.test(box.innerHTML));   // 開いたときの表示は「②結果を確認」（EC売上・ふるさと納税とも）
   handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'check' } } : null } }); await new Promise(r => setTimeout(r, 5));
   assert(box.innerHTML.includes('data-rep="1001"') && box.innerHTML.includes('907-228-3622') && box.innerHTML.includes('data-copy="9072283622"') && box.innerHTML.includes('登録した'));
   assert(!box.innerHTML.includes('data-rep="1002"'));
@@ -36,5 +37,10 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   assert(box.innerHTML.includes('登録済み a') && box.innerHTML.includes('data-unrep="1002"'));
   ctx.canReport = false; EcShipTab.render(ctx);
   assert(!box.innerHTML.includes('data-unrep'));
+  // 出荷予定日の列：SMILE の出荷予定日を出し、①出荷待ちのまま過ぎていれば知らせる
+  handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'check' } } : null } }); await new Promise(r => setTimeout(r, 5));
+  assert(box.innerHTML.includes('<th>出荷予定日</th>') && box.innerHTML.includes('11/13') && !box.innerHTML.includes('過ぎています'));
+  handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'wait' } } : null } }); await new Promise(r => setTimeout(r, 5));
+  assert(box.innerHTML.includes('01/06') && box.innerHTML.includes('過ぎています'));
   console.log('ok ship tab');
 })().catch(e => { console.error(e); process.exit(1); });

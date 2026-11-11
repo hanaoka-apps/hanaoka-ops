@@ -363,7 +363,12 @@ function recompute() {
   const smileOrders = M.smileCust || {};
   const ctx = { mapping: store.mapping, cfg: store.cfg, items: M.items || {}, smileOrders, cal };
   orders.forEach(o => { const e = EDITS[orderNo(o.id)]; o.deliveryEdit = e && e.fields && Object.keys(e.fields).length ? e.fields : null; });
-  slips = orders.map(o => { const s = BUILD_SLIP(o, ctx); s.autoShip = s.shipDate; s.baseMemo = s.memo; return s; });
+  slips = orders.map(o => {
+    const s = BUILD_SLIP(o, ctx);
+    Object.defineProperty(s, 'autoShip', { get() { return EC.shipDateAuto(s, slipOf(s), cal); }, configurable: true });   // 受注日付（取込を押した日）から数える
+    s.flags = s.flags.filter(f => !/分として処理$/.test(f.text));   // 「締め以降の受注は○/○分」は、Shopify の注文時刻の話。出荷予定日は受注日付から数えるので出さない
+    s.baseMemo = s.memo; return s;
+  });
   slips.forEach(s => { const e = EDITS[orderNo(s.id)]; if (s.order.deliveryEdit && e) s.flags.push({ level: 'info', text: '納品先を手動で直しています（' + Object.keys(e.fields).map(k => EC.EDIT_FIELDS.find(f => f.k === k).label).join('・') + '）' }); });
   slips.forEach(s => { s.hasErr = s.flags.some(f => f.level === 'error'); s.hasWarn = s.flags.some(f => f.level === 'warn'); });
 }
@@ -388,7 +393,7 @@ function isManualExcluded(s) { const r = rec(s); return !!(r && r.status === 'ex
 function memoOf(s) { const r = rec(s); return EC.joinMemo(s.baseMemo || s.memo, r && r.memoNote, store.cfg); }
 function shipOf(s) { const r = rec(s); return (r && r.shipDate) || s.autoShip; }
 // 受注伝票の日付（SMILE の受注日付）：取込ボタンを押した日。取込済みなら、取り込んだ日。手動で変えていれば、その日（この端末に保存）。
-// 締め（slipCutoffTime・既定16:00）以降は翌営業日、休みの日は次の営業日。出荷予定日（受注から○営業日）の数え方は、これまでどおり Shopify の注文日から
+// 締め（設定の「締め時刻」・既定16:00）以降は翌営業日、休みの日は次の営業日。出荷予定日（受注日付から○営業日）も、この日付から数える
 function slipAuto() { return EC.slipDateAuto(new Date(), store.cfg, cal); }
 function slipOf(s) {
   const r = rec(s);
@@ -396,7 +401,7 @@ function slipOf(s) {
   if (r && r.importAt && !(stateOf(s) === 'new' || stateOf(s) === 'ok')) return EC.slipDateAuto(new Date(r.importAt), store.cfg, cal);   // 他の人が取り込んだ注文：取込を押した時刻から求める
   return (r && r.slipDate) || slipAuto();
 }
-function slipCutText() { return (store.cfg && store.cfg.slipCutoffTime) || '16:00'; }
+function slipCutText() { return (store.cfg && store.cfg.cutoffTime) || '16:00'; }
 function fromDate() { return $('f-from').value || '0000-00-00'; }
 function visible() {
   const q = $('f-q').value.trim().toLowerCase(), from = fromDate();
@@ -543,9 +548,11 @@ function slipCtl(s, st, r, text) {
 // 取込の確認に出す、受注日付のまとめ
 function slipDateNote(ok) {
   const by = {}; ok.forEach(s => { by[s.slipDate] = (by[s.slipDate] || 0) + 1; });
+  const ships = ok.map(s => s.shipDate).filter(Boolean).sort();
   const ds = Object.keys(by).sort(), early = ok.filter(s => s.shipDate && s.slipDate && s.shipDate < s.slipDate).length;
   const man = ok.some(s => { const r = rec(s); return r && r.slipDate; });
   return '受注日付：' + (ds.length === 1 ? md(ds[0]) : ds.map(d => md(d) + ' ' + by[d] + '件').join('、')) + (man ? '（手動で変えたものを含む）' : '（取込を押した日。' + slipCutText() + ' 以降は翌営業日）') + '\n' +
+    (ships.length ? '出荷予定日：' + (ships[0] === ships[ships.length - 1] ? md(ships[0]) : md(ships[0]) + '〜' + md(ships[ships.length - 1])) + '（受注日付から数えます）\n' : '') +
     (early ? '⚠ 出荷予定日が受注日付より前の注文が ' + early + '件あります（出荷予定日を見直してください）\n' : '');
 }
 function editBlockHtml(s, st, r, ship) {
@@ -554,7 +561,7 @@ function editBlockHtml(s, st, r, ship) {
     '<div class="muted" style="margin-top:4px">取り込まれるメモ：<b>' + esc(memoOf(s)) + '</b></div>' +
     slipDateBlockHtml(s, st, r, ship) +
     '<h3>出荷予定日</h3><div>' + (st === 'new' || st === 'ok' ? '<input type="date" class="dateinp' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') : md(ship)) + '</div>' +
-    '<div class="muted">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
+    '<div class="muted">受注日付から ' + s.leadDays + ' 営業日。日付を変えると、SMILE の納期・出荷予定日として取り込まれます。</div>' +
     '';
 }
 // SMILE に起票したあと（③結果を確認・④完了）の注文か
@@ -633,7 +640,7 @@ function memoCtl(s, st, r) {
 function shipCtl(s, st, r, ship, brief) {
   if (!(st === 'new' || st === 'ok')) return esc(md(ship));
   return '<div class="ship-out' + (r && r.shipDate ? ' manual' : '') + '"><input type="date" class="dateinp ed-live' + (r && r.shipDate ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (r && r.shipDate ? '<button class="btn sec sm" data-act="shipauto" data-id="' + s.id + '">自動の日付（' + md(s.autoShip) + '）に戻す</button> <span class="tag warn">手動で変更</span>' : '') +
-    (brief ? '' : '<div class="sub">受注から ' + s.leadDays + ' 営業日' + (s.processDate !== s.orderDate ? '・' + md(s.processDate) + ' 分として処理' : '') + '。空にすると自動の日付に戻ります。変えると、すぐ保存され、SMILE の納期・出荷予定日として取り込まれます</div>') + '</div>';
+    (brief ? '' : '<div class="sub">受注日付から ' + s.leadDays + ' 営業日。空にすると自動の日付に戻ります。変えると、すぐ保存され、SMILE の納期・出荷予定日として取り込まれます</div>') + '</div>';
 }
 function edInput(s, d, k) {
   const v = editDraft[k] == null ? '' : editDraft[k], changed = String(v) !== String(d.auto[k] == null ? '' : d.auto[k]);
@@ -1669,8 +1676,8 @@ function renderMapDrawer() {
   if (md.kind === 'lead') {
     const d = md.draft;
     dr.innerHTML = '<div class="row"><h2>出荷予定日の決め方を編集</h2><div class="grow"></div>' + close + '</div>' +
-      '<h3>基本</h3><dl><dt>締め時刻</dt><dd><input type="time" data-md="cutoffTime" value="' + esc(d.cutoffTime) + '" style="width:120px"> 以降の受注は翌日分として処理</dd>' +
-      '<dt>既定の納期</dt><dd><input type="text" inputmode="numeric" data-md="leadDays" value="' + esc(d.leadDays) + '" style="width:70px"> 営業日（処理日から数える。品目ごとの日数は、各ルールの「納期」で決める）</dd></dl>' +
+      '<h3>基本</h3><dl><dt>締め時刻</dt><dd><input type="time" data-md="cutoffTime" value="' + esc(d.cutoffTime) + '" style="width:120px"> 以降に取込を押した受注は、受注日付を翌営業日にする</dd>' +
+      '<dt>既定の納期</dt><dd><input type="text" inputmode="numeric" data-md="leadDays" value="' + esc(d.leadDays) + '" style="width:70px"> 営業日（受注日付から数える。品目ごとの日数は、各ルールの「納期」で決める）</dd></dl>' +
       '<h3>期間の例外（在庫の都合など）</h3><div class="muted" style="margin-bottom:4px">品目コードは , 区切り。空なら全品目。</div>' +
       (d.overrides.map((o, i) => '<div class="row" style="margin-bottom:4px"><input type="date" data-md="from" data-oi="' + i + '" value="' + esc(o.from) + '"> 〜 <input type="date" data-md="to" data-oi="' + i + '" value="' + esc(o.to) + '"> <input type="text" inputmode="numeric" data-md="days" data-oi="' + i + '" value="' + esc(o.days) + '" style="width:56px"> 営業日 <input type="text" data-md="codes" data-oi="' + i + '" value="' + esc(o.codes) + '" placeholder="品目コード（空=全部）" size="26"><button class="btn sec sm" data-mdact="ovdel" data-oi="' + i + '">削除</button></div>').join('') || '<div class="muted">例外はありません</div>') +
       '<div style="margin-top:6px"><button class="btn sec sm" data-mdact="ovadd">＋ 例外を追加</button></div>' +
@@ -1827,8 +1834,8 @@ function renderMap() {
   // 納期
   const ov = (m.leadOverrides || []), cd = c.closedDates || [];
   $('leadBox').innerHTML = '<div class="row"><h2 style="margin:0">出荷予定日の決め方</h2><div class="grow"></div>' + (ed ? '<button class="btn sec sm" data-mdact="leadedit">編集</button>' : '') + '</div>' +
-    '<dl style="display:grid;grid-template-columns:130px 1fr;gap:4px 12px;margin:8px 0;font-size:13px"><dt class="muted">締め時刻</dt><dd style="margin:0">' + esc(c.cutoffTime || CONF.config.cutoffTime) + ' 以降の受注は翌日分として処理</dd>' +
-    '<dt class="muted">既定の納期</dt><dd style="margin:0">処理日から ' + m.leadDays + ' 営業日後（品目ごとの日数は、下の対応表の「納期」。複数の品目があるときは、いちばん長い日数）</dd>' +
+    '<dl style="display:grid;grid-template-columns:130px 1fr;gap:4px 12px;margin:8px 0;font-size:13px"><dt class="muted">締め時刻</dt><dd style="margin:0">' + esc(c.cutoffTime || CONF.config.cutoffTime) + ' 以降に取込を押した受注は、受注日付を翌営業日にする</dd>' +
+    '<dt class="muted">既定の納期</dt><dd style="margin:0">受注日付から ' + m.leadDays + ' 営業日後（品目ごとの日数は、下の対応表の「納期」。複数の品目があるときは、いちばん長い日数）</dd>' +
     '<dt class="muted">期間の例外</dt><dd style="margin:0">' + (ov.length ? ov.map(o => esc(o.from + ' 〜 ' + o.to) + '：' + o.days + '営業日（' + ((o.codes || []).length ? esc(o.codes.join(',')) : '全品目') + '）').join('<br>') : 'ありません') + '</dd>' +
     '<dt class="muted">個別の休み</dt><dd style="margin:0">' + (cd.length ? esc(cd.join('、')) : 'ありません') + '</dd></dl>';
   $('cal-status').textContent = calInfo;
@@ -2043,7 +2050,7 @@ async function runShopifyFulfill(items) {
 }
 
 function shipCtx() {
-  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
+  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, shipPlan: shipOf, canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
     fulfill: (CONF.shipReport && CONF.shipReport.fulfill && CONF.shipReport.fulfill.enabled === true && canImport()) ? { run: runShopifyFulfill } : null,   // enabled が true のときだけ、ボタンを出す（専用機の準備ができてから true にする）
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }
