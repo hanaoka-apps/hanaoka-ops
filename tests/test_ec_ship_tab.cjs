@@ -20,6 +20,7 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   assert.strictEqual(String(cnt.textContent), '1');   // 人のボールがある②（結果を確認）だけ。①出荷待ちは数えない
   const tiles = [...box.innerHTML.matchAll(/data-sf="(\w+)"[^>]*>.*?<div class="ft-c">(\d+)/g)].map(m => m[1] + ':' + m[2]);
   assert.deepStrictEqual(tiles, ['wait:1', 'check:1', 'done:1']);
+  assert(/ftile[^"]*active" data-sf="check"/.test(box.innerHTML) && !/ftile[^"]*active" data-sf="(wait|done)"/.test(box.innerHTML));   // 開いたときの表示は「②結果を確認」（EC売上・ふるさと納税とも）
   handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'check' } } : null } }); await new Promise(r => setTimeout(r, 5));
   assert(box.innerHTML.includes('data-rep="1001"') && box.innerHTML.includes('907-228-3622') && box.innerHTML.includes('data-copy="9072283622"') && box.innerHTML.includes('登録した'));
   assert(!box.innerHTML.includes('data-rep="1002"'));

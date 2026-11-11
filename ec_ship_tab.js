@@ -5,7 +5,7 @@
  * 使い方：EcShipTab.render(ctx)（ctx は ec_sales_app.js の shipCtx）／EcShipTab.reset()（データを読み直す） */
 (function (root) {
   'use strict';
-  var S = { idx: null, lookup: null, loading: false, error: '', filter: 'wait', sel: {}, q: '', from: '', wired: false };
+  var S = { idx: null, lookup: null, loading: false, error: '', filter: 'check', sel: {}, q: '', from: '', wired: false };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
   var STATES = ['confirm', 'exported', 'smile'];   // SMILE に受注が入っている注文（確認待ち・起票済み・SMILE取込済み）
 
