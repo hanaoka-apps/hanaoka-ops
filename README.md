@@ -10,7 +10,7 @@
 | 受付案件管理システム     | case_management.html | 業務センター         | FAX/電話受付の案件管理・進捗追跡 |
 | 売掛管理システム         | ar_management.html   | 経理                 | 売掛金の入金消込・名寄せ |
 | 請求・入金・違算（試作）  | ar_billing.html      | 営業・総務・業務センター | 得意先ごとの請求書（明細）と入金をいつでも見られる。回収予定日を過ぎて請求額と入金額が合わないもの（違算）を拠点別に一覧。読み取りだけ。データは SharePoint `SharedMasters` の `請求明細出力.txt` / `入金明細出力.csv` / `得意先マスタ.csv` / `担当者マスタ.csv`。計算は `ar_billing_core.js`（テスト `tests/test_ar_billing_core.cjs`） |
-| 価格・送料の早見（試作） | price_check.html     | 業務センター・営業本部 | 得意先・日付・届け先・型式と台数から、単価と送料を価格のルールで出す（決めた理由・注意点・前回の受注つき）。見積作成・受注伝票作成の土台。ルールは SharePoint のリスト `PR_定価` / `PR_得意先区分` / `PR_例外` / `PR_運賃` に置いて画面から直す。計算は `price_core.js`（テスト `tests/test_price_core.cjs`） |
+| 価格・送料の早見（試作） | price_check.html     | 業務センター・営業本部 | **まだ HUB には出していない（URL を知っている人だけ。公開してよくなったら hub_sidebar.js の MENU と hanaoka_hub.html のタイルに足す）。** 得意先・日付・届け先・型式と台数から、単価と送料を価格のルールで出す（決めた理由・注意点・前回の受注つき）。見積作成・受注伝票作成の土台。ルールは SharePoint のリスト `PR_定価` / `PR_得意先区分` / `PR_例外` / `PR_運賃` に置いて画面から直す。計算は `price_core.js`（テスト `tests/test_price_core.cjs`） |
 | 営業ダッシュボード       | sales_dashboard.html | 営業部全員           | 売上実績・前年対比・拠点別/担当者別の進捗可視化 |
 | 営業日報ダッシュボード   | sales_report_dashboard.html | 営業部全員     | 受注金額・売上金額・売先ジャンル別・機種別・機工商社別などを日報Excel相当で可視化 |
 | 営業目標エディタ         | targets_editor.html  | 営業部長＋指定幹部   | 月次目標・年間目標の編集（バージョン履歴管理） |
