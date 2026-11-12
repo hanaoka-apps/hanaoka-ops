@@ -64,6 +64,7 @@
       { f: 'task_board.html',        l: 'タスク管理',       ic: mark('favicon_task.svg') },
       { f: 'master_viewer.html',     l: 'マスタビューワー', ic: mark('favicon_master.svg') },
       { f: 'ec_viewer.html',         l: 'EC受注の状況',     ic: mark('favicon_ec.svg') },   // 営業向けの閲覧用（見るだけ）
+      { f: 'furusato_viewer.html',   l: 'ふるさと納税の状況', ic: mark('favicon_ec.svg') },   // ふるさと納税の閲覧用（見るだけ）
       { f: 'ship_search.html',       l: '出荷・配送',       ic: mark('favicon_ship.svg') },
       { f: 'usage_stats.html',       l: '利用状況',         ic: mark('favicon_usage.svg'), admin: true },   // 役員と福田さんだけ（isAdminHere）
       { label: '外部アプリ' },

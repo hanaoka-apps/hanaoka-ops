@@ -107,6 +107,25 @@ t('絞り込み：状況・期間・運送会社・担当タグ・遅れ', () =>
   assert.deepStrictEqual(F({ from: '2026-11-08', to: '2026-11-08' }), ['1776']);
   assert.deepStrictEqual(F({ stages: ['wait'], q: '見本' }), ['1700', '1774', '1776']);   // SMILE の納品先名（見本 太郎 様）にも当たる
 });
+t('ふるさと納税用：言葉の言い換え・追加の項目（検索・詳細）・報告済みの印で完了', () => {
+  const orders = [
+    sOrder({ id: '2631407', name: '2631407', createdAt: '2026-11-06', createdTime: '15:21', total: 0, detailExtra: [['寄附者番号', '9900112233'], ['配達希望日', '2026-11-20']], searchExtra: ['3174445', '9900112233'] }),
+    sOrder({ id: '2631408', name: '2631408', createdAt: '2026-11-06', createdTime: '15:21', total: 0 })
+  ];
+  const labels = { shopify: 'サイネックス受注', wait: '受注伝票作成済（出荷待ち）', shipped: '出荷済', done: 'サイネックス報告完了', cancelled: 'キャンセル' };
+  const n = V.applyReported(orders, { '2631407': { ShipReportedAt: '2026-11-10T01:00:00Z' }, '2631408': {}, '9': { ShipReportedAt: 'x' } });
+  assert.strictEqual(n, 1); assert.strictEqual(orders[0].fulfillment, 'fulfilled'); assert.strictEqual(orders[1].fulfillment, 'unfulfilled');
+  const rs = V.build({ shopifyOrders: orders, smileRows: [row('28000', '2631407', { '得意先コード': '341401' })], shipLookup: EC.shipLookup({ carriers: {}, ships: [] }), custCodes: ['341401'], today: '2026-11-12', labels });
+  const f = q => V.filter(rs, { q }).map(r => r.id);
+  assert.strictEqual(rs.find(r => r.id === '2631407').stage, 'done');         // 報告済み → 完了
+  assert.strictEqual(rs.find(r => r.id === '2631408').stage, 'shopify');      // SMILE に受注なし
+  assert.deepStrictEqual(f('報告完了'), ['2631407']);                         // 言い換えた状況の名前でも探せる
+  assert.deepStrictEqual(f('9900112233'), ['2631407']); assert.deepStrictEqual(f('3174445'), ['2631407']);   // 追加の項目（寄附者番号・サイネックスの受注番号）
+  assert.deepStrictEqual(f('2026-11-20'), ['2631407']);                       // 詳細の追加項目の値も、検索の対象
+  assert.strictEqual(V.stageLabel('done', labels), 'サイネックス報告完了'); assert.strictEqual(V.stageLabel('done'), 'Shopify登録済（完了）');
+  assert.strictEqual(rs.find(r => r.id === '2631407').shopify.extra.length, 2);
+  assert.strictEqual(V.applyReported([], null), 0);
+});
 t('日付の表し方', () => {
   assert.strictEqual(V.ymd('20261107'), '2026-11-07'); assert.strictEqual(V.ymd('2026-11-07 10:00'), '2026-11-07'); assert.strictEqual(V.ymd(''), '');
   assert.strictEqual(V.md('2026-11-07'), '11/7(土)'); assert.strictEqual(V.md('x'), '');

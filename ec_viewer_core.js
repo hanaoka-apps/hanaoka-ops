@@ -23,7 +23,11 @@
     { k: 'done', n: '④', label: 'Shopify登録済（完了）' }
   ];
   V.CANCELLED = { k: 'cancelled', n: '', label: 'キャンセル' };
-  V.stageLabel = function (k) { var s = V.STAGES.filter(function (x) { return x.k === k; })[0]; return s ? s.label : (k === 'cancelled' ? V.CANCELLED.label : ''); };
+  // labels＝画面ごとの言い換え（{ shopify, wait, shipped, done, cancelled }。ふるさと納税は「サイネックス…」）。なければ、既定の名前
+  V.stageLabel = function (k, labels) {
+    if (labels && labels[k]) return labels[k];
+    var s = V.STAGES.filter(function (x) { return x.k === k; })[0]; return s ? s.label : (k === 'cancelled' ? V.CANCELLED.label : '');
+  };
 
   V.todayJst = function (now) { return new Date((now || new Date()).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10); };
   V.ymd = function (s) {   // 20261107 → 2026-11-07（すでに 2026-11-07 ならそのまま）
@@ -103,7 +107,9 @@
       has: true, createdAt: o.createdAt || '', createdTime: o.createdTime || '', financial: o.financial || '', fulfillment: o.fulfillment || '', cancelledAt: o.cancelledAt || '',
       total: o.total || 0, refunded: o.refunded || 0, email: o.email || '', phone: a.phone || o.phone || '', shipName: a.name || '', shipCompany: a.company || '',
       zip: a.zip || '', address: [a.province, a.city, a.addr1, a.addr2].filter(Boolean).join(' '), billName: b.name || '', tags: String(o.tags || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean),
-      lines: (o.lines || []).map(function (l) { return { name: l.name, sku: l.sku, qty: l.qty }; }), notes: o.notes || ''
+      lines: (o.lines || []).map(function (l) { return { name: l.name, sku: l.sku, qty: l.qty }; }), notes: o.notes || '',
+      extra: o.detailExtra || [],     // 画面ごとの追加の項目 [[見出し, 値], …]（詳細に出す・検索の対象）
+      search: o.searchExtra || []     // 検索だけに使う言葉（番号など）
     };
   }
 
@@ -116,23 +122,32 @@
     (opts.shopifyOrders || []).forEach(function (o) { var id = digits(o.id); if (!id || byId[id]) return; byId[id] = shopifyInfo(o); ids.push(id); });
     Object.keys(smile).forEach(function (id) { if (!byId[id]) ids.push(id); });
     var out = ids.map(function (id) {
-      var sh = byId[id] || { has: false, lines: [], tags: [], fulfillment: '' }, sm = smile[id] || { has: false, juchuNos: [], lines: [], shipPlan: '', orderDate: '', nouki: '', dest: '' };
+      var sh = byId[id] || { has: false, lines: [], tags: [], extra: [], search: [], fulfillment: '' }, sm = smile[id] || { has: false, juchuNos: [], lines: [], shipPlan: '', orderDate: '', nouki: '', dest: '' };
       var r = { id: id, name: '#' + id, shopify: sh, smile: sm, ship: V.shipFor(opts.shipLookup, id, custCodes), noShopify: !sh.has };
       r.stage = V.stageOf(r);
       r.late = V.isLate(r, today);
       r.sortKey = (sh.createdAt ? sh.createdAt + ' ' + (sh.createdTime || '') : (sm.orderDate || '')) + ' ' + ('000000' + id).slice(-6);
-      var T = [r.name, id, sh.email, sh.phone, sh.shipName, sh.shipCompany, sh.billName, sh.address, sh.zip, sh.tags.join(' '), sh.notes, V.stageLabel(r.stage), r.late ? '遅れ 予定日を過ぎ' : '',
+      var T = [r.name, id, sh.email, sh.phone, sh.shipName, sh.shipCompany, sh.billName, sh.address, sh.zip, sh.tags.join(' '), sh.notes, V.stageLabel(r.stage, opts.labels), r.late ? '遅れ 予定日を過ぎ' : '',
         sm.juchuNos.join(' '), sm.dest, r.ship.shipNos.join(' ')];
       sh.lines.forEach(function (l) { T.push(l.name, l.sku); });
+      sh.extra.forEach(function (e) { T.push(e[1]); });
+      sh.search.forEach(function (x) { T.push(x); });
       sm.lines.forEach(function (l) { T.push(l.code, l.name); });
       r.ship.slips.forEach(function (s) { T.push(s.carrier, s.no, s.fmt); });
       r.text = V.norm(T.join(' '));
       r.flat = r.text.replace(/[-\s・]/g, '');
-      r.nums = [id, digits(sh.phone), digits(sh.zip)].concat(sm.juchuNos.map(digits), r.ship.shipNos.map(digits), r.ship.slips.map(function (s) { return digits(s.no); })).filter(Boolean).join(' ');
+      r.nums = [id, digits(sh.phone), digits(sh.zip)].concat(sh.search.map(digits), sh.extra.map(function (e) { return digits(e[1]); }), sm.juchuNos.map(digits), r.ship.shipNos.map(digits), r.ship.slips.map(function (s) { return digits(s.no); })).filter(Boolean).join(' ');
       return r;
     });
     out.sort(function (a, b) { return a.sortKey < b.sortKey ? 1 : a.sortKey > b.sortKey ? -1 : 0; });
     return out;
+  };
+
+  // 報告済みの印（共有の履歴リストの ShipReportedAt）がある注文を、「完了」にする。rows＝{ 注文番号: 項目 }。ふるさと納税用（Shopify の発送状況の代わり）
+  V.applyReported = function (orders, rows) {
+    var n = 0;
+    (orders || []).forEach(function (o) { var r = rows && rows[digits(o.id)]; if (r && r.ShipReportedAt) { o.fulfillment = 'fulfilled'; n++; } });
+    return n;
   };
 
   // 検索の言葉：空白（全角も）で区切る。すべてを含むものだけ。番号（数字とハイフンだけ）は、桁区切りのハイフンを無視して番号どうしで見る
