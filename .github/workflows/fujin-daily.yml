@@ -409,6 +409,25 @@ jobs:
           else
             BUILD_DT=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
             git commit -m "Auto build ${BUILD_DT}"
-            git push
-            echo "GitHub Pages へのプッシュ完了: ${BUILD_DT}"
+            # 同じタイミングで別の変更が main に入ると push が拒否されるため、
+            # 最新を取り込んで（fujin/ はこのビルドの出力を優先）最大5回やり直す
+            for i in 1 2 3 4 5; do
+              if git push; then
+                echo "GitHub Pages へのプッシュ完了: ${BUILD_DT}"
+                break
+              fi
+              if [ "$i" = 5 ]; then echo "[ERROR] push を5回やり直しても失敗"; exit 1; fi
+              echo "[WARN] push が拒否されました。最新を取り込んで再試行します (${i}/5)"
+              sleep $((i * 5))
+              git fetch origin main
+              BUILD_SHA=$(git rev-parse HEAD)
+              if ! git rebase -X theirs origin/main; then
+                # 取り込みで解決できないときは、最新の main にこのビルドの fujin/ だけを載せ直す（他の変更は消さない）
+                git rebase --abort || true
+                git reset --hard origin/main
+                git checkout "$BUILD_SHA" -- fujin/ .nojekyll
+                git add -A fujin/ .nojekyll
+                git diff --cached --quiet || git commit -m "Auto build ${BUILD_DT}"
+              fi
+            done
           fi
