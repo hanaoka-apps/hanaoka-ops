@@ -13,9 +13,9 @@
 数量の考え方(確定・仮説の区別は画面の「数字の出どころ」にも記載):
   入(供給)
     plan : 生産計画(K製番)の残。状態「手配確定」と「手配予定」を区別。計画日が過去で未完成=付け替え漏れ(当日中に先へずらすルール違反)
-    conf : 確定済み手配の残。社内/外注工程は 確定済_工程手配一覧 の最終工程行(M製番のみ。K製番は計画側で数える)、
-           購買品は item_history の確定発注残。納期が過去のものは「遅れ(実績未入力の可能性)」として
-           次の稼働日(本日が土日なら翌月曜)に置く。※FUJINが土日に手配したわけではなく、この画面の置き場所
+    conf : 確定済み手配の残。社内/外注工程は 確定済_工程手配一覧 の最終工程行(M・J製番。K製番は計画側で数える)、
+           購買品は item_history の確定発注残。納期が過去のものは「遅れ」として元の納期の列に置く
+           (表示期間より前は -1＝画面の「それ以前」列)。予測在庫では「まだ入る」とみなして本日に足す
     unc  : 所要量計算の未確定手配(未確定_購買手配データ、M製番の最終工程/購買行)。納期が過去のものは件数だけ警告
     実績 : 製造報告(K/M別)・受入
   出(需要)
@@ -103,6 +103,12 @@ def main():
     while nb.weekday() >= 5:
         nb += timedelta(days=1)
     LB = di[nb]
+
+    def pidx(d):
+        """過去の遅れを元の日付の列に置く。表示期間より前なら -1（画面の「それ以前」列）"""
+        if d < start:
+            return -1
+        return idx(d)
 
     def idx(d, clamp_past=True):
         """日付→列番号。過去(表示開始より前)は clamp_past なら本日扱いにせず None"""
@@ -195,7 +201,8 @@ def main():
             continue
         sb = g(r, "製番")
         due = pd(g(r, "手配納期(年月日）", "手配納期(年月日)"))
-        if "最終工程" in g(r, "最終工程区分") and sb.startswith("M"):
+        # 最終工程行のうち K製番は生産計画の行で数える。M（所要量）・J（受注）はここで数える
+        if "最終工程" in g(r, "最終工程区分") and not sb.startswith("K"):
             conf_proc[c].append({"d": due, "q": rem, "sb": sb, "who": nk(g(r, "手配先略称")), "proc": nk(g(r, "工程略称")),
                                  "od": pd(g(r, "手配日付（年月日）", "手配日付(年月日)")), "no": g(r, "手配番号"),
                                  "tq": qty, "done": done})
@@ -318,7 +325,7 @@ def main():
             d = r["d"] or today
             if d < today:
                 late["conf"] += r["q"]
-            i = LB if d < today else idx(d)
+            i = pidx(d) if d < today else idx(d)
             if i is not None:
                 ev.append([i, "conf", r["q"], {"sb": r["sb"], "who": r["who"], "late": d < today, "due": d.isoformat(),
                                                "od": r["od"].isoformat() if r["od"] else "", "no": r["no"], "tq": r["tq"], "done": r["done"]}])
@@ -329,7 +336,7 @@ def main():
                 continue
             if d < today:
                 late["conf"] += q
-            i = LB if d < today else idx(d)
+            i = pidx(d) if d < today else idx(d)
             if i is not None:
                 ev.append([i, "conf", q, {"sb": r.get("seiban", ""), "who": r.get("supplier", ""), "late": d < today, "due": d.isoformat(),
                                           "od": r.get("order_date", ""), "hat": r.get("hat_no", "")}])
@@ -348,7 +355,7 @@ def main():
                 if q <= 0:
                     continue
                 d0 = pd(o.get("shipment_date") or o.get("due")) or today
-                i = LB if d0 < today else idx(d0)
+                i = pidx(d0) if d0 < today else idx(d0)
                 if i is not None:
                     ev.append([i, "req", q, {"c": o.get("customer", ""), "no": o.get("order_no", ""), "due": o.get("due", ""), "late": d0 < today}])
             for s in it.get("sales", []):
@@ -370,7 +377,7 @@ def main():
                         ev.append([i, "req", rem * per, {"p": pa, "sb": p["sb"], "per": per, "src": "親の計画"}])
                 for r in conf_parent_use.get(pa, []):
                     d = r["d"] or today
-                    i = LB if d < today else idx(d)
+                    i = pidx(d) if d < today else idx(d)
                     if i is not None:
                         ev.append([i, "req", r["q"] * per, {"p": pa, "sb": r["sb"], "per": per, "src": "親の確定手配", "late": d < today, "due": d.isoformat()}])
                 for r in unc_parent_use.get(pa, []):
@@ -385,7 +392,7 @@ def main():
                     if q <= 0:
                         continue
                     d0 = pd(o.get("shipment_date") or o.get("due")) or today
-                    i = LB if d0 < today else idx(d0)
+                    i = pidx(d0) if d0 < today else idx(d0)
                     if i is not None:
                         ev.append([i, "ord", q * per, {"p": pa, "c": o.get("customer", ""), "no": o.get("order_no", ""), "q": q, "per": per, "due": o.get("due", "")}])
             for r in it.get("consumption", []):
