@@ -23,10 +23,12 @@
     { k: 'done', n: '④', label: 'Shopify登録済（完了）' }
   ];
   V.CANCELLED = { k: 'cancelled', n: '', label: 'キャンセル' };
+  // 元の注文のデータの範囲（Shopify は直近55日）より前で、元の注文がない注文：SMILE・出荷の一部しか結べないので、流れの状況には数えない
+  V.PAST = { k: 'past', n: '', label: '過去の注文' };
   // labels＝画面ごとの言い換え（{ shopify, wait, shipped, done, cancelled }。ふるさと納税は「サイネックス…」）。なければ、既定の名前
   V.stageLabel = function (k, labels) {
     if (labels && labels[k]) return labels[k];
-    var s = V.STAGES.filter(function (x) { return x.k === k; })[0]; return s ? s.label : (k === 'cancelled' ? V.CANCELLED.label : '');
+    var s = V.STAGES.filter(function (x) { return x.k === k; })[0]; return s ? s.label : (k === 'cancelled' ? V.CANCELLED.label : k === 'past' ? V.PAST.label : '');
   };
 
   V.todayJst = function (now) { return new Date((now || new Date()).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10); };
@@ -44,10 +46,12 @@
   /* 注文ごとの状況。r＝{ shopify:{has,fulfillment,cancelledAt,financial}, smile:{has}, ship:{ships,slips} }
    * キャンセル（Shopify でキャンセル・無効）→ cancelled、Shopify が発送済み → done（完了）、送り状番号あり → shipped、
    * SMILE に受注伝票あり、または出荷伝票あり（送り状番号はまだ）→ wait（受注伝票作成済＝出荷待ち）、それ以外（Shopify の注文だけ）→ shopify。
-   * Shopify に注文がない（古い注文は、Shopify のデータが直近の分だけ）ときは、done にはならず、出荷済までで止まる */
+   * 元の注文がなく、注文日が pastDays（Shopify は55日）より前の注文は past（過去の注文）。出荷伝票があっても送り状番号が残っていない（運送会社のデータは最近の分だけ）ので、
+   * 「出荷待ち」に数えると、済んだ注文が大量に混ざってしまう。元の注文がなく、日付が新しいものは、これまでどおり出荷済までで止まる（done にはならない） */
   V.stageOf = function (r) {
     var sh = r.shopify;
     if (sh && sh.has && (sh.cancelledAt || sh.financial === 'voided')) return 'cancelled';
+    if (r.past) return 'past';
     if (sh && sh.has && sh.fulfillment === 'fulfilled') return 'done';
     if (r.ship && r.ship.slips && r.ship.slips.length) return 'shipped';
     if ((r.ship && r.ship.ships && r.ship.ships.length) || (r.smile && r.smile.has)) return 'wait';
@@ -119,11 +123,14 @@
     opts = opts || {};
     var today = opts.today || V.todayJst(), custCodes = opts.custCodes || [];
     var smile = V.groupSmile(opts.smileRows, custCodes), byId = {}, ids = [];
+    var pastDays = opts.pastDays == null ? 55 : opts.pastDays;
+    var pastFrom = pastDays > 0 ? new Date(Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10)) - pastDays * 86400000).toISOString().slice(0, 10) : '';
     (opts.shopifyOrders || []).forEach(function (o) { var id = digits(o.id); if (!id || byId[id]) return; byId[id] = shopifyInfo(o); ids.push(id); });
     Object.keys(smile).forEach(function (id) { if (!byId[id]) ids.push(id); });
     var out = ids.map(function (id) {
       var sh = byId[id] || { has: false, lines: [], tags: [], extra: [], search: [], fulfillment: '' }, sm = smile[id] || { has: false, juchuNos: [], lines: [], shipPlan: '', orderDate: '', nouki: '', dest: '' };
       var r = { id: id, name: '#' + id, shopify: sh, smile: sm, ship: V.shipFor(opts.shipLookup, id, custCodes), noShopify: !sh.has };
+      r.past = !!pastFrom && r.noShopify && (sm.orderDate || '') < pastFrom;
       r.stage = V.stageOf(r);
       r.late = V.isLate(r, today);
       r.sortKey = (sh.createdAt ? sh.createdAt + ' ' + (sh.createdTime || '') : (sm.orderDate || '')) + ' ' + ('000000' + id).slice(-6);
@@ -181,7 +188,7 @@
   };
   V.counts = function (records) {
     var c = { all: records.length, late: 0 };
-    V.STAGES.concat([V.CANCELLED]).forEach(function (s) { c[s.k] = 0; });
+    V.STAGES.concat([V.CANCELLED, V.PAST]).forEach(function (s) { c[s.k] = 0; });
     records.forEach(function (r) { c[r.stage]++; if (r.late) c.late++; });
     return c;
   };
