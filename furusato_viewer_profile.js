@@ -11,12 +11,13 @@
     source: 'サイネックス',
     sourceWhy: '専用機が解凍した注文CSVがまだか、権限がない可能性があります',
     staleHours: 0,
+    pastDays: 60,   // 注文CSVは、新しいほうから読む（最大120フォルダ）。これより前で、注文CSVにない注文は「過去の注文」
     hasCancel: false, showTotal: false, noPrefix: '',
     labels: { shopify: 'サイネックス受注', wait: '受注伝票作成済（出荷待ち）', shipped: '出荷済', done: 'サイネックス報告完了', cancelled: 'キャンセル' },
     tileTitles: { shopify: '① サイネックス受注', wait: '② 受注伝票作成済<small>（出荷待ち）</small>', shipped: '③ 出荷済', done: '④ サイネックス報告完了' },
     stepTitles: { shopify: '① サイネックス受注', wait: '② 受注伝票作成済' + span('（出荷待ち）'), shipped: '③ 出荷済', done: '④ サイネックス報告完了' },
-    subs: { shopify: 'サイネックスから注文が届いた', wait: 'SMILE に受注伝票がある・出荷前', shipped: '送り状番号が出た', done: 'サイネックスへの出荷報告まで済み', doneUnknown: '報告済みの印を読めません（権限）', cancelled: '' },
-    noSourceTag: 'サイネックスの注文データなし（古い注文）', noSourceStep: 'サイネックスの注文データなし', unknownDoneStep: '不明（注文データなし）',
+    subs: { past: '60日より前（分かる分だけ表示）', shopify: 'サイネックスから注文が届いた', wait: 'SMILE に受注伝票がある・出荷前', shipped: '送り状番号が出た', done: 'サイネックスへの出荷報告まで済み', doneUnknown: '報告済みの印を読めません（権限）', cancelled: '' },
+    pastTag: '過去の注文（注文CSVの範囲外）', noSourceTag: 'サイネックスの注文データなし（古い注文）', noSourceStep: 'サイネックスの注文データなし', unknownDoneStep: '不明（注文データなし）',
     doneStep: '<b>報告済み</b><div class="muted">サイネックスへ出荷報告済み</div>',
     doneUnreadable: '報告済みかどうかは、権限がなく分かりません',
     cardTags: function () { return []; },
@@ -55,6 +56,6 @@
       '<li>空白で区切ると、<b>すべてを含む</b>注文だけが出ます。全角と半角・カタカナとひらがな・番号のハイフンは区別しません</li>\n' +
       '<li>「出荷予定日を過ぎている」は、出荷予定日を過ぎたのに、まだ出荷されていない注文です</li>\n</ul>\n' +
       '<h3>知っておくこと</h3>\n<ul>\n' +
-      '<li>サイネックスの注文は、専用機が解凍した注文 CSV（新しいほうから最大 120 フォルダ）から読んでいます。それより古い注文は、SMILE と出荷のデータだけで出ます</li>\n</ul>'
+      '<li>サイネックスの注文は、専用機が解凍した注文 CSV（新しいほうから最大 120 フォルダ）から読んでいます。60日より前で、CSV にない注文は「<b>過去の注文</b>」として、SMILE と出荷のデータで分かる分だけ出ます。上の4つの状況の件数には、数えません</li>\n</ul>'
   };
 })();

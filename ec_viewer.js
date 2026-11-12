@@ -78,7 +78,7 @@ async function loadAll() {
 }
 function rebuild() {
   const sm = SMILE ? EC.indexObjects(SMILE.idx.orders) : [];
-  RECS = V.build({ shopifyOrders: SRC ? SRC.orders : [], smileRows: sm, shipLookup: SHIP ? EC.shipLookup(SHIP) : null, custCodes: P.custCodes(CONF), today: today(), labels: P.labels });
+  RECS = V.build({ shopifyOrders: SRC ? SRC.orders : [], smileRows: sm, shipLookup: SHIP ? EC.shipLookup(SHIP) : null, custCodes: P.custCodes(CONF), today: today(), labels: P.labels, pastDays: P.pastDays });
 }
 function renderMeta(warn) {
   const w = (warn || []).slice();
@@ -102,16 +102,18 @@ function drawPeriods() {
 }
 function drawStages() {
   const base = V.filter(RECS, Object.assign({}, FS, { stages: [] })), c = V.counts(base);
-  const on = k => FS.stages.indexOf(k) >= 0;
-  const tile = (title, sub, n, kind, attr) => '<div class="ftile ' + kind + (attr.active ? ' active' : '') + '" ' + attr.data + ' role="button" tabindex="0"><div class="ft-t">' + title + (attr.active ? '<span class="ft-on">表示中</span>' : '') + '</div><div class="ft-s">' + sub + '</div><div class="ft-c">' + n + '<small>件</small></div></div>';
+  const on = k => FS.stages.indexOf(k) >= 0, none = !FS.stages.length && !FS.late;
+  const tile = (title, sub, n, kind, attr) => '<div class="ftile ' + kind + (attr.active ? ' active' : '') + '" ' + attr.data + ' role="button" tabindex="0" aria-pressed="' + (attr.active ? 'true' : 'false') + '"><div class="ft-t">' + title + (attr.active ? '<span class="ft-on">✓ 表示中</span>' : '') + '</div><div class="ft-s">' + sub + '</div><div class="ft-c">' + n + '<small>件</small></div></div>';
   const st = (k, title, kind, sub) => tile(title, sub == null ? P.subs[k] : sub, c[k], kind, { active: on(k), data: 'data-stage="' + k + '"' });
   const T = P.tileTitles, arrow = '<div class="farrow">→</div>';
   const doneSub = SRC && SRC.doneUnknown ? P.subs.doneUnknown : P.subs.done;
-  $('stages').innerHTML = '<div class="srow" style="margin-bottom:8px"><span class="chip' + (!FS.stages.length && !FS.late ? ' active' : '') + '" data-stage="">すべて ' + c.all + '件</span><span class="muted">状況のカードを押すと、その状況の注文だけが出ます（複数選べます）</span></div>' +
-    '<div class="flow">' + st('shopify', T.shopify, 'k-s1') + arrow + st('wait', T.wait, 'k-s2') + arrow + st('shipped', T.shipped, 'k-s3') + arrow + st('done', T.done, 'k-s4', doneSub) +
-    '<div class="fgap"></div>' +
+  const hasSel = !none;
+  $('stages').innerHTML = '<div class="flow-all">' + tile('すべて', hasSel ? 'ほかの状況も含めて、全部を表示' : '全部の状況を表示しています', c.all, 'k-all', { active: none, data: 'data-stage=""' }) +
+    '<div class="flow' + (hasSel ? ' has-sel' : '') + '">' + st('shopify', T.shopify, 'k-s1') + arrow + st('wait', T.wait, 'k-s2') + arrow + st('shipped', T.shipped, 'k-s3') + arrow + st('done', T.done, 'k-s4', doneSub) + '</div></div>' +
+    '<div class="flow flow-sub' + (hasSel ? ' has-sel' : '') + '"><div class="fsub-l">ほかの絞り込み</div>' +
     tile('⚠ 出荷予定日を過ぎている', '出荷待ちのまま予定日を超過', c.late, 'k-attn' + (c.late ? ' hot' : ''), { active: FS.late, data: 'data-late="1"' }) +
-    (P.hasCancel ? st('cancelled', 'キャンセル', 'k-cancel') : '') + '</div>';
+    (P.hasCancel ? st('cancelled', 'キャンセル', 'k-cancel') : '') +
+    (P.pastDays ? st('past', '過去の注文', 'k-past') : '') + '</div>';
 }
 function buildSelects() {
   const car = $('f-carrier'), tag = $('f-tag');
@@ -143,7 +145,8 @@ function slipHtml(sl) {
   return '<div><span class="muted">' + esc(sl.carrier) + '</span> <b>' + esc(sl.fmt) + '</b> <button class="btn sec sm" data-copy="' + esc(sl.no) + '" title="送り状番号をコピー">コピー</button>' + trackHtml(sl) + '</div>';
 }
 function stepsHtml(r) {
-  const sh = r.shopify, sm = r.smile, sp = r.ship, idx = { shopify: 0, wait: 1, shipped: 2, done: 3 }[r.stage];
+  const sh = r.shopify, sm = r.smile, sp = r.ship, known = sp.slips.length ? 2 : (sm.has || sp.ships.length) ? 1 : 0;
+  const idx = r.stage === 'past' ? known : { shopify: 0, wait: 1, shipped: 2, done: 3 }[r.stage];   // 過去の注文は、わかっている分（SMILE・送り状）まで色を付ける
   const cls = i => 'st' + (idx != null && i <= idx ? ' on' : '') + (i === idx ? (r.stage === 'done' ? ' done-all' : ' cur') : '');
   const v0 = sh.has ? esc(V.md(sh.createdAt)) + ' ' + esc(sh.createdTime) : '<span class="muted">' + esc(P.noSourceStep) + '</span>';
   let v1 = '—';
@@ -174,7 +177,7 @@ function cardHtml(r, i) {
   const who = sh.shipCompany ? sh.shipCompany + (sh.shipName ? '（' + sh.shipName + '）' : '') : (sh.shipName || r.smile.dest || '');
   const tags = [];
   if (r.late) tags.push('<span class="tag warn">出荷予定日を過ぎています</span>');
-  if (r.noShopify) tags.push('<span class="tag info">' + esc(P.noSourceTag) + '</span>');
+  if (r.noShopify) tags.push('<span class="tag info">' + esc(r.past ? P.pastTag : P.noSourceTag) + '</span>');
   if (P.cardTags) P.cardTags(sh).forEach(t => tags.push('<span class="tag warn">' + esc(t) + '</span>'));
   const nm = s => String(s || '').replace(/\s*-\s*オプションは注文しない$/, '');   // 商品名の「- オプションは注文しない」は、営業の方には要らない
   const lines = (sh.lines.length ? sh.lines.map(l => esc(nm(l.name)) + ' ×' + l.qty) : r.smile.lines.map(l => esc(l.code) + ' ' + esc(l.name) + ' ×' + l.qty)).slice(0, 4);

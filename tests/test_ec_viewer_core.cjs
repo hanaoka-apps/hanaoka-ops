@@ -41,10 +41,10 @@ t('状況：完了・出荷済・出荷待ち（受注伝票作成済）・Shopi
   assert.strictEqual(byId['1777'].stage, 'cancelled');
   assert.deepStrictEqual(V.STAGES.map(s => s.k), ['shopify', 'wait', 'shipped', 'done']);
 });
-t('Shopify の注文にない古い注文：SMILE・出荷から判定し、完了にはしない', () => {
-  assert.ok(byId['1700'] && byId['1700'].noShopify && byId['1700'].stage === 'wait');
+t('Shopify の注文がない注文：直近（55日以内）は出荷済まで／それより前は「過去の注文」（流れの件数に数えない）', () => {
+  assert.ok(byId['1700'] && byId['1700'].noShopify && byId['1700'].past && byId['1700'].stage === 'past');   // 2025/8 の注文。出荷伝票があっても送り状番号は残っていない
   const old = V.build({ shopifyOrders: [], smileRows: [row('27300', '1701')], shipLookup: EC.shipLookup({ carriers: { seino: { name: '西濃運輸' } }, ships: [{ no: 'S9', po: ['1701'], cust: '599802', date: '2026-10-01', slips: [{ c: 'seino', no: '9072281111' }] }] }), custCodes: CUST, today: '2026-11-11' });
-  assert.strictEqual(old[0].stage, 'shipped'); assert.ok(old[0].noShopify);
+  assert.strictEqual(old[0].stage, 'shipped'); assert.ok(old[0].noShopify && !old[0].past);   // 11/6 の受注：Shopify にはないが、新しいので過去にはしない
 });
 t('SMILE の受注：テスト送信・ほかの得意先は除く／受注№・日付・出荷予定日', () => {
   assert.ok(!byId['1780']);
@@ -62,8 +62,9 @@ t('出荷予定日を過ぎた「遅れ」：②受注伝票作成済（出荷�
 });
 t('件数：状況ごと', () => {
   const c = V.counts(recs);
-  assert.strictEqual(c.all, recs.length); assert.strictEqual(c.done, 1); assert.strictEqual(c.shipped, 1); assert.strictEqual(c.cancelled, 1);
-  assert.strictEqual(c.shopify + c.wait + c.shipped + c.done + c.cancelled, c.all);
+  assert.strictEqual(c.all, recs.length); assert.strictEqual(c.done, 1); assert.strictEqual(c.shipped, 1); assert.strictEqual(c.cancelled, 1); assert.strictEqual(c.past, 1);
+  assert.strictEqual(c.shopify + c.wait + c.shipped + c.done + c.cancelled + c.past, c.all);
+  assert.strictEqual(c.wait, 2);   // 過去の注文は、受注伝票作成済（出荷待ち）に数えない
 });
 t('並び：新しい注文から', () => {
   assert.strictEqual(recs[0].id, '1778');            // 11/11
@@ -105,7 +106,8 @@ t('絞り込み：状況・期間・運送会社・担当タグ・遅れ', () =>
   assert.deepStrictEqual(F({ late: true }), ['1774', '1776']);
   assert.deepStrictEqual(F({ from: '2026-11-08' }), ['1776', '1778']);                // 注文日が 11/8 以降
   assert.deepStrictEqual(F({ from: '2026-11-08', to: '2026-11-08' }), ['1776']);
-  assert.deepStrictEqual(F({ stages: ['wait'], q: '見本' }), ['1700', '1774', '1776']);   // SMILE の納品先名（見本 太郎 様）にも当たる
+  assert.deepStrictEqual(F({ stages: ['wait'], q: '見本' }), ['1774', '1776']);   // SMILE の納品先名（見本 太郎 様）にも当たる
+  assert.deepStrictEqual(F({ stages: ['past'] }), ['1700']);                                     // 過去の注文だけ
 });
 t('ふるさと納税用：言葉の言い換え・追加の項目（検索・詳細）・報告済みの印で完了', () => {
   const orders = [
@@ -125,6 +127,14 @@ t('ふるさと納税用：言葉の言い換え・追加の項目（検索・�
   assert.strictEqual(V.stageLabel('done', labels), 'サイネックス報告完了'); assert.strictEqual(V.stageLabel('done'), 'Shopify登録済（完了）');
   assert.strictEqual(rs.find(r => r.id === '2631407').shopify.extra.length, 2);
   assert.strictEqual(V.applyReported([], null), 0);
+});
+t('過去の注文：範囲は日数で変えられる（なしなら、すべて流れの状況）', () => {
+  const mk = pd => V.build({ shopifyOrders: shopify, smileRows, shipLookup: lookup, custCodes: CUST, today: '2026-11-11', pastDays: pd });
+  assert.strictEqual(mk(0).filter(r => r.stage === 'past').length, 0);                  // 0＝使わない（古い注文は、出荷伝票があれば出荷待ちのまま）
+  assert.strictEqual(mk(0).find(r => r.id === '1700').stage, 'wait');
+  assert.strictEqual(mk(60).filter(r => r.stage === 'past').length, 1);
+  assert.strictEqual(V.stageLabel('past'), '過去の注文'); assert.strictEqual(V.stageLabel('past', { past: '過去分' }), '過去分');
+  assert.ok(!byId['1700'].late);                                                        // 過去の注文は「遅れ」にしない
 });
 t('日付の表し方', () => {
   assert.strictEqual(V.ymd('20261107'), '2026-11-07'); assert.strictEqual(V.ymd('2026-11-07 10:00'), '2026-11-07'); assert.strictEqual(V.ymd(''), '');
