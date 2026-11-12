@@ -156,11 +156,11 @@ td.v-atp0{color:#94a3b8}
     <h3>この画面の数字の出どころ（毎朝6:30更新）</h3>
     <ul>
       <li>現在庫：有効在庫一覧表（全社）。品目名で突き合わせ。帳簿と実在庫がずれている品目があるため、「在庫確認」の印で確かめた人と日付を表示します。30日以内に確認のない品目を使う回答は「目安」です。</li>
-      <li>入：生産計画（K製番）／確定済み手配の残（M製番の工程手配・購買発注）／所要量計算の未確定手配。上の切り替えで、どこまで見込むかを変えられます。</li>
+      <li>入：生産計画（K製番。「予」＝まだ手配確定していない、印なし＝確定済み、「完成○」＝その計画の完成数）／確定済み手配の残（所要量・受注由来のM・J製番。計画を確定した分は計画の行で数える）／所要量計算の未確定手配（M・J製番の提案。計画は含まない）。完成実績は計画分（K）と所要量・受注分（M・J）を分けて表示。上の切り替えで、どこまで見込むかを変えられます。</li>
       <li>出：部品は親機種の組立による使用予定（所要量計算の考え方。親機種の在庫は差し引き済み）。完成品は受注残の出荷予定日。部品の「参考：親機種の受注×使用数」は計算に使いません。</li>
       <li>使用実績：部品は親機種の完組で使った数（親の製番・手配№）。完成品の出荷実績は売上伝票（売上№・出荷№）。数字をタップすると、その行の明細と合計が出ます。</li>
       <li>回答可能数：その日以降の予測在庫の最小値（先の出荷を食わない数）。型式の回答目安＝一番遅い部品が揃う日＋組立LT（品目マスタの累積LT・仮）。</li>
-      <li>警告：計画日を過ぎて未完成の計画（当日中に先へずらすルールの付け替え漏れ）、納期を過ぎた確定手配（実績未入力の可能性。予測では次の稼働日に入る扱い）、2週間先まで計画がない計画品。いずれも工場に確認してください。</li>
+      <li>警告：計画日を過ぎて未完成の計画（当日中に先へずらすルールの付け替え漏れ）、納期を過ぎても残っている確定手配（元の納期の列に「遅れ」で表示。予測では本日に入る扱い）、2週間先まで計画がない計画品。いずれも工場に確認してください。</li>
     </ul>
   </section>
 </div>
@@ -178,8 +178,8 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const fmt=n=>(n==null||isNaN(n))?'–':(Math.round(n)||0).toLocaleString('ja-JP');
 const WD=['日','月','火','水','木','金','土'];
 const DT=D.dates.map(s=>new Date(s+'T00:00:00')),T=D.today,N=D.dates.length;
-const md=i=>(DT[i].getMonth()+1)+'/'+DT[i].getDate();
-const mdw=i=>md(i)+'（'+WD[DT[i].getDay()]+'）';
+const md=i=>i<0?'それ以前':(DT[i].getMonth()+1)+'/'+DT[i].getDate();
+const mdw=i=>i<0?'表示期間より前（遅れ）':md(i)+'（'+WD[DT[i].getDay()]+'）';
 const KLAB={frame:'フレーム',handle:'ハンドル',caster:'キャスター',product:'完成品'};
 const MLAB=['予測在庫（在庫・実績だけ）','予測在庫（確定済みまで）','予測在庫（計画・所要量込み）'];
 let st={v:'model',mode:2,q:'',qty:1,sel:{}};
@@ -194,7 +194,9 @@ function calc(code){
   const r=D.items[code];if(!r)return null;
   const inF=new Array(N).fill(0),outF=new Array(N).fill(0),actIn=new Array(N).fill(0),useP=new Array(N).fill(0);
   for(const [i,t,q,x] of r.ev){
-    if(t==='actK'||t==='actM'||t==='rcv'){if(i<=T)actIn[i]+=q}
+    // 納期を過ぎて残っている確定手配・出荷／使用予定は、元の日付の列に表示し、予測では本日に入れる（まだ作る・まだ出る扱い）
+    if((t==='conf'||t==='req')&&x&&x.late&&i<T){if(t==='req')outF[T]+=q;else if(st.mode>=1)inF[T]+=q;continue}
+    if(t==='actK'||t==='actM'||t==='rcv'){if(i>=0&&i<=T)actIn[i]+=q}
     else if(t==='use'){if(i<=T)useP[i]+=q}
     else if(i>=T){
       if(t==='req')outF[i]+=q;
@@ -276,26 +278,36 @@ function warns(r){
 /* ---------- 台帳テーブル ---------- */
 function cols(code){
   const r=D.items[code],used=new Set(r.ev.map(e=>e[0]));
-  const out=[];for(let i=Math.max(0,T-7);i<N;i++){const w=DT[i].getDay();if((w===0||w===6)&&!used.has(i)&&i!==T)continue;out.push(i)}
+  const F=Math.max(0,T-7);const out=[];for(let i=F;i<N;i++){const w=DT[i].getDay();if((w===0||w===6)&&!used.has(i)&&i!==T)continue;out.push(i)}
+  if(r.ev.some(e=>e[0]<F&&e[3]&&e[3].late&&(e[1]==='conf'||e[1]==='req')))out.unshift(-1);
   return out;
+}
+// 表示列の最初より前の「遅れ」は -1（それ以前）の列にまとめる
+function colOf(code,i,x,t){const F=Math.max(0,T-7);return (i<F&&x&&x.late&&(t==='conf'||t==='req'))?-1:i;
 }
 function ledger(code,hit){
   const r=D.items[code],c=calc(code),C=cols(code);
-  const sum=types=>{const a={};for(const [i,t,q] of r.ev)if(types.includes(t))a[i]=(a[i]||0)+q;return a};
-  const plan=sum(['plan']),act=sum(['actK','actM','rcv']),conf=sum(['conf']),unc=sum(['unc']),req=sum(['req']),ord=sum(['ord']),use=sum(['use']);
+  const sum=types=>{const a={};for(const [i,t,q,x] of r.ev)if(types.includes(t)){const k=colOf(code,i,x,t);a[k]=(a[k]||0)+q}return a};
+  const plan=sum(['plan']),actK=sum(['actK']),actM=sum(['actM','rcv']),act=sum(['actK','actM','rcv']),conf=sum(['conf']),unc=sum(['unc']),req=sum(['req']),ord=sum(['ord']),use=sum(['use']);
   const firm={};for(const [i,t,q,x] of r.ev)if(t==='plan'&&x.firm)firm[i]=1;
+  const pdone={};for(const [i,t,q,x] of r.ev)if(t==='plan')pdone[i]=(pdone[i]||0)+(x.done||0);
   const miss={};for(const [i,t,q,x] of r.ev)if(t==='plan'&&i<T&&x.done<q)miss[i]=(miss[i]||0)+(q-x.done);
-  const lateC={};for(const [i,t,q,x] of r.ev)if((t==='conf'||t==='req')&&x.late)lateC[i]=1;
+  const lateC={};for(const [i,t,q,x] of r.ev)if((t==='conf'||t==='req')&&x.late)lateC[colOf(code,i,x,t)]=1;
   let plat=null;if(r.plating){plat={};for(const [i,t,q] of r.plating.ev)plat[i]=(plat[i]||0)+q}
-  const head=C.map(i=>`<th class="${i<T?'past':''}${i===T?' today':''}${i===hit?' hit':''}">${md(i)}<br>${WD[DT[i].getDay()]}${i===T?'・本日':''}</th>`).join('');
+  const head=C.map(i=>i<0?`<th class="past old">それ<br>以前</th>`:`<th class="${i<T?'past':''}${i===T?' today':''}${i===hit?' hit':''}">${md(i)}<br>${WD[DT[i].getDay()]}${i===T?'・本日':''}</th>`).join('');
   const row=(label,cls,fn,rk)=>`<tr data-r="${rk||''}"><td class="rl ${cls}">${label}</td>${C.map(i=>fn(i)).join('')}</tr>`;
   const cell=(i,v,cl,sign)=>v?`<td class="c ${i<T?'p ':''}${cl||''}" data-i="${i}">${sign||''}${fmt(v)}</td>`:`<td class="${i<T?'p ':''}z">·</td>`;
+  const blank=i=>`<td class="p"></td>`;
   const rows=[];const isP=r.kind==='caster';
   if(plat)rows.push(row('メッキ上がり（予定）','r-unc',i=>cell(i,plat[i],'v-unc'),'plat'));
-  if(!isP)rows.push(row('計画（K製番）','r-plan',i=>{if(!plan[i])return cell(i,0);const used=i>=T&&((firm[i]&&st.mode>=1)||st.mode>=2);return `<td class="c ${i<T?'p ':''}v-plan${(i>=T&&!used)?' soft':''}" data-i="${i}" title="${firm[i]?'手配確定':'手配予定'}">${fmt(plan[i])}${(firm[i]||i<T)?'':'<small style="font-weight:500">予</small>'}</td>`},'plan'));
-  rows.push(row(isP?'確定発注の入荷予定':'確定済み手配（所要量）','r-conf',i=>conf[i]?`<td class="c v-conf${lateC[i]?' v-late':''}" data-i="${i}" title="${lateC[i]?'納期を過ぎた確定手配（次の稼働日に置いています）':''}">${fmt(conf[i])}</td>`:cell(i,0),'conf'));
+  if(!isP)rows.push(row('計画（K製番）','r-plan',i=>{if(!plan[i])return cell(i,0);const used=i>=T&&((firm[i]&&st.mode>=1)||st.mode>=2);return `<td class="c ${i<T?'p ':''}v-plan${(i>=T&&!used)?' soft':''}" data-i="${i}" title="${firm[i]?'手配確定':'手配予定'}">${fmt(plan[i])}${(firm[i]||i<T)?'':'<small style="font-weight:500">予</small>'}${pdone[i]?`<br><small style="font-weight:600;color:var(--ink2)">完成${fmt(pdone[i])}</small>`:''}</td>`},'plan'));
+  rows.push(row(isP?'確定発注の入荷予定':'確定済み手配（所要量・受注分）','r-conf',i=>conf[i]?`<td class="c v-conf${lateC[i]?' v-late':''}" data-i="${i}" title="${lateC[i]?'納期を過ぎても残っている確定手配（予測在庫では本日に入る扱い）':''}">${fmt(conf[i])}${lateC[i]?'<br><small style="color:var(--crit);font-weight:800">遅れ</small>':''}</td>`:cell(i,0),'conf'));
   rows.push(row('未確定手配（所要量計算）','r-unc',i=>cell(i,unc[i],'v-unc'),'unc'));
-  rows.push(row(isP?'入荷実績':'完成実績','r-act',i=>{if(i>T)return `<td></td>`;if(miss[i]&&!act[i])return `<td class="c v-miss" data-i="${i}">未入力</td>`;return cell(i,act[i],miss[i]?'v-miss':'')},'act'));
+  if(isP)rows.push(row('入荷実績','r-act',i=>{if(i>T||i<0)return `<td></td>`;return cell(i,act[i])},'act'));
+  else{
+    rows.push(row('完成実績（計画分・K）','r-act',i=>{if(i>T||i<0)return `<td></td>`;if(miss[i]&&!actK[i])return `<td class="c v-miss" data-i="${i}">未入力</td>`;return cell(i,actK[i],miss[i]?'v-miss':'')},'actK'));
+    rows.push(row('完成実績（所要量・受注分）','r-act',i=>{if(i>T||i<0)return `<td></td>`;return cell(i,actM[i])},'actM'));
+  }
   rows.push(row(r.kind==='product'?'出荷予定（受注残）':'使用予定（親機種の組立）','r-out',i=>req[i]?`<td class="c v-out${lateC[i]?' v-late':''}" data-i="${i}">−${fmt(req[i])}</td>`:cell(i,0),'req'));
   if(r.kind!=='product')rows.push(row('参考：親機種の受注×使用数','r-ref',i=>ord[i]?`<td class="c r-ref" data-i="${i}">(${fmt(ord[i])})</td>`:cell(i,0),'ord'));
   rows.push(row(r.kind==='product'?'出荷実績（売上）':'使用実績（親機種の完組）','r-act',i=>i<=T?cell(i,use[i],'','−'):`<td></td>`,'use'));
@@ -385,9 +397,9 @@ function closeSheet(){$('sheet').classList.remove('on');$('scrim').classList.rem
 $('sclose').onclick=closeSheet;$('scrim').onclick=closeSheet;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSheet()});
 function openDay(code,i,rk){
   const r=D.items[code],c=calc(code),P=r.kind==='product';
-  const L={plat:'メッキ上がり（'+(r.plating?r.plating.name:'')+'）',plan:'計画（K製番）',planLate:'付け替え漏れの計画（元の計画日を過ぎて未完成）',act:P?'入荷実績':'完成実績',conf:P?'確定発注の入荷予定':'確定済み手配',unc:'未確定手配（所要量計算）',req:P?'出荷予定（受注残）':'使用予定（親機種の組立）',ord:'参考：親機種の受注（出荷予定）',use:P?'出荷実績（売上）':'使用実績（親機種の完組で使用）'};
+  const L={plat:'メッキ上がり（'+(r.plating?r.plating.name:'')+'）',plan:'計画（K製番）',planLate:'付け替え漏れの計画（元の計画日を過ぎて未完成）',act:P?'入荷実績':'完成実績',actK:'完成実績（計画分・K製番）',actM:'完成実績（所要量・受注分・M/J製番）',conf:P?'確定発注の入荷予定':'確定済み手配',unc:'未確定手配（所要量計算）',req:P?'出荷予定（受注残）':'使用予定（親機種の組立）',ord:'参考：親機種の受注（出荷予定）',use:P?'出荷実績（売上）':'使用実績（親機種の完組で使用）'};
   const by={};const put=(k,e)=>(by[k]=by[k]||[]).push(e);
-  for(const e of r.ev)if(e[0]===i){const t=e[1];put(t==='actK'||t==='actM'||t==='rcv'?'act':t,e)}
+  for(const e of r.ev)if(colOf(code,e[0],e[3],e[1])===i){const t=e[1];put(t==='rcv'?'actM':t,e);if(t==='actK'||t==='actM'||t==='rcv')put('act',e)}
   if(r.plating)for(const e of r.plating.ev)if(e[0]===i)put('plat',e);
   const per=x=>x.per&&x.per!==1?x.per:1;
   // 1行 = 見出し(誰/何) ・ 数量 ・ 伝票(1行)
@@ -408,18 +420,18 @@ function openDay(code,i,rk){
     const lim=8,body=es.slice(0,lim).map(([,t,q,x])=>line(t,q,x)).join(''),rest=es.slice(lim).map(([,t,q,x])=>line(t,q,x)).join('');
     return `<div class="sec${sub?' sub':''}"><h4><span>${esc(L[k])}${es.length>1?` <small>${es.length}件</small>`:''}</span><span class="tot">計 ${fmt(tot)}</span></h4>${body}${rest?`<div hidden class="restw">${rest}</div><button class="more">ほか${es.length-lim}件を表示</button>`:''}</div>`};
   // クリックした行に関係するものだけ出す
-  const show={plat:['plat'],plan:['plan','planLate'],conf:['conf'],unc:['unc'],act:['act','plan'],req:['req','ord'],ord:['ord'],use:['use']}[rk];
+  const show={plat:['plat'],plan:['plan','planLate'],conf:['conf'],unc:['unc'],act:['act'],actK:['actK','plan'],actM:['actM'],req:['req','ord'],ord:['ord'],use:['use']}[rk];
   let h='';
   if(!show){
-    h+=`<div class="li"><span>${MLAB[st.mode]}${i<T?'（逆算の参考値）':''}</span><span class="q">${fmt(c.bal[i])}</span>${i>=T?`<span class="m">回答可能数 ${fmt(c.atp[i])}</span>`:''}</div>`;
-    for(const k of ['plat','plan','planLate','act','conf','unc','req','use'])h+=sec(k);
+    if(i>=0)h+=`<div class="li"><span>${MLAB[st.mode]}${i<T?'（逆算の参考値）':''}</span><span class="q">${fmt(c.bal[i])}</span>${i>=T?`<span class="m">回答可能数 ${fmt(c.atp[i])}</span>`:''}</div>`;
+    for(const k of ['plat','plan','planLate','actK','actM','conf','unc','req','use'])h+=sec(k);
   }else{
     show.forEach((k,j)=>{h+=sec(k,j>0)});
-    if(rk==='act'&&!by.act&&i<=T)h=`<div class="empty">この日の${esc(L.act)}は入力されていません${by.plan?'（計画あり）':''}</div>`+h;
+    if(rk==='actK'&&!by.actK&&i<=T)h=`<div class="empty">この日の計画分の完成実績は入力されていません${by.plan?'（計画あり）':''}</div>`+h;
     if(rk==='use'&&!P)h+=`<div class="msg" style="color:var(--ink3)">部品は親機種を組み立てた時点で使用になります（売上ではありません）。製番がMは所要量計算による在庫補充分です。</div>`;
-    if(rk==='conf'&&by.conf&&by.conf.some(e=>e[3].late))h+=`<div class="msg" style="color:var(--ink3)">納期を過ぎた確定手配の残りは、この画面では次の稼働日に置いています（FUJINの手配日ではありません）。報告漏れなら完成報告を、まだ作るなら工場で納期の付け替えを。</div>`;
+    if(rk==='conf'&&by.conf&&by.conf.some(e=>e[3].late))h+=`<div class="msg" style="color:var(--ink3)">納期を過ぎても残っている確定手配です。元の納期の列に出しています（表示期間より前は「それ以前」の列）。予測在庫では「まだ作る」とみなして本日に入れています。報告漏れなら完成報告を、まだ作るなら工場で納期の付け替えを。</div>`;
   }
-  const RL={plat:'メッキ上がり',plan:'計画',conf:L.conf,unc:'未確定手配',act:L.act,req:L.req,ord:'参考 受注',use:L.use};
+  const RL={plat:'メッキ上がり',plan:'計画',conf:L.conf,unc:'未確定手配',act:L.act,actK:'完成実績（計画分）',actM:'完成実績（所要量・受注分）',req:L.req,ord:'参考 受注',use:L.use};
   openSheet(`${r.name} ・ ${mdw(i)}${RL[rk]?' ・ '+RL[rk]:''}`,h||'<div class="msg">この日のデータはありません</div>');
   document.querySelectorAll('#sbody .more').forEach(b=>b.onclick=()=>{b.previousElementSibling.hidden=false;b.remove()});
 }
