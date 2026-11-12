@@ -343,6 +343,11 @@ textarea.f-input{resize:vertical;min-height:58px;line-height:1.6}
       タグは複数付けられる。満了・更新など何年も先の日付はタスクではなく
       期限台帳（Data の deadlines）に置き、日が近づいたらタスクの一覧に出す。
       登録済みの行は「修正票」（取込票の op: "update"）でまとめて直せる。
+
+   5) 台帳の写しを書き出す（2026-11）
+      読み込み・保存のたびに 書類管理/_台帳の写し.json を書く。
+      取込エージェントは台帳を直接見られないので、これを読んで
+      人が直したこと・済んだタスク・つながりを知ってから新しい書類を読む。
    ============================================================ */
 
 /* ============================================================
@@ -583,6 +588,7 @@ async function load(reset){
 
     buildFilterOptions();
     render();
+    scheduleSnapshot();
     // 取込で失敗が出ていたら、その内容がステータスバーに出ているので上書きしない
     if (!anyFailed){
       setStatus(
@@ -697,6 +703,82 @@ async function saveDoc(doc, patchFields){
   await graph(`/sites/${siteId}/lists/${listId}/items/${doc.id}/fields`, {
     method: 'PATCH', body: JSON.stringify(fields)
   });
+  scheduleSnapshot();
+}
+
+/* ============================================================
+   台帳の写し（取込エージェントが読む）
+
+   ★取込エージェントは台帳を直接見られない★
+     エージェントは認証情報を持たず、同期フォルダに取込票を置くだけ。
+     そのままだと、人が画面で直した件名・メモ・済ませたタスク・
+     対象外にした書類・つないだ書類が、エージェントには見えない。
+     新しい書類を読むときに「この件はもう払い済み」「前回は対象外にした種類」
+     と判断できない。
+   そこで、読み込み・保存のたびに台帳の中身を
+     書類管理/_台帳の写し.json
+   に書き出す。同じ限定サイトの中なので見られる人は変わらない。
+   福田さんのPCには OneDrive で同期されるので、エージェントはそれを読む。
+
+   ・本文（fullText）は入れない。重くなるうえ、エージェントが書いたものが
+     _取込済 の取込票に残っている。原本PDFも 原本/ にある。
+   ・ここを直しても台帳には戻らない。直すときは修正票（op: update）。
+   ・保存が続くときは、最後の保存から数秒待ってまとめて1回だけ書く。
+   ・中身が前回と同じなら書かない（同期を無駄に動かさない）。
+   ・書き出せなくても画面の操作は止めない（見るだけの人は書けないことがある）。
+   ============================================================ */
+const SNAPSHOT_FILE = '_台帳の写し.json';
+const SNAPSHOT_WAIT_MS = 4000;
+let snapshotTimer = null, lastSnapshotBody = '';
+
+function scheduleSnapshot(){
+  clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(writeSnapshot, SNAPSHOT_WAIT_MS);
+}
+
+function snapshotOf(list){
+  const byId = new Map(list.map(x => [x.id, x]));
+  const rows = list.slice().sort((a, b) => Number(a.id) - Number(b.id)).map(x => {
+    const { fullText, fileWebUrl, ...data } = x.d || {};
+    // つながりは相手の行番号だけだと分かりにくいので、件名とファイル名を添える
+    if (Array.isArray(data.links)) data.links = data.links.map(l => {
+      const o = byId.get(l.id);
+      return o ? { ...l, title: o.title, fileName: o.fileName } : l;
+    });
+    return {
+      id: x.id, fileName: x.fileName, title: x.title,
+      company: x.company, docType: x.docType, category: x.category, sender: x.sender,
+      docDate: x.docDate, received: x.received, due: x.due, amount: x.amount,
+      status: x.status, taskStatus: x.taskStatus, taskKind: x.taskKind, threadId: x.threadId,
+      data,
+    };
+  });
+  return {
+    about: '書類管理の台帳の写し。アプリが読み込み・保存のたびに書き出す。取込エージェントが過去の書類を知るために読む。ここを直しても台帳には戻らない（直すときは修正票）。本文（fullText）は入れていない。',
+    count: rows.length,
+    docs: rows,
+  };
+}
+
+async function writeSnapshot(){
+  snapshotTimer = null;
+  if (!siteId || !docs.length) return;
+  try{
+    const core = snapshotOf(docs);
+    const cmp = JSON.stringify(core);
+    if (cmp === lastSnapshotBody) return;
+    const body = JSON.stringify({ writtenAt: new Date().toISOString(), ...core }, null, 1);
+    const tk = await getToken();
+    const r = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/drive/root:/${encodeURI(SP.root + '/' + SNAPSHOT_FILE)}:/content`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    lastSnapshotBody = cmp;
+  }catch(e){
+    console.warn('[書類管理] 台帳の写しを書き出せませんでした:', e.message);
+  }
 }
 
 /* ============================================================
