@@ -1231,7 +1231,7 @@
   EC.listStatus = function (app) { var p = STATUS_PAIRS.filter(function (x) { return x[0] === (app || 'new'); })[0]; return p ? p[1] : ''; };
   EC.appStatus = function (list) { var p = STATUS_PAIRS.filter(function (x) { return x[1] === list; })[0]; return p ? p[0] : ''; };
   // リストの操作（EC_Log.Action）の選択肢
-  EC.LOG_ACTIONS = ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'その他'];
+  EC.LOG_ACTIONS = ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', 'その他'];
   // 注文番号（Title）＝数字だけ（# なし）
   EC.orderNo = function (id) { return digits(id); };
   // 人の表示（メールの @ より前）
@@ -1310,6 +1310,20 @@
     var no = o.orderNo ? EC.orderNo(o.orderNo) : '';
     return { Title: (action + (no ? ' #' + no : '')).slice(0, 250), LogTime: o.now || new Date().toISOString(), Actor: o.actor || '', OrderNo: no, Action: action, BatchId: o.batchId || '', Detail: EC.scrubText(o.detail || '').slice(0, 1500) };
   };
+  /* 履歴の「操作」の表示名。画面の流れの名前（受注伝票起票依頼→受注伝票登録→出荷伝票起票確認→送り状NO確認→Shopify登録完了）にそろえる。
+   * 保存してある名前（Action）は変えない。リストの選択肢に無い新しい名前は、「その他」に詳細の頭に名前を付けて保存される（EcShared.appendLog）ので、ここで元の名前に戻して表示する。
+   * row＝リストの行 { Action, Detail }、doneLabel＝この画面の「登録完了」の名前。戻り値 { Action, Detail } */
+  EC.LOG_LABELS = { '取込依頼': '受注伝票起票依頼', '取込結果': '受注伝票登録' };
+  EC.logLabel = function (row, doneLabel) {
+    var a = String(row && row.Action || ''), d = String(row && row.Detail || '');
+    if (a === 'その他') {
+      var m = /^(Shopify登録完了|サイネックス報告完了)：([\s\S]*)$/.exec(d);
+      if (m) return { Action: m[1], Detail: m[2] };
+      if (d === '出荷報告済みにした') return { Action: doneLabel || 'Shopify登録完了', Detail: '（以前の記録：出荷報告済みにした）' };
+    }
+    return { Action: EC.LOG_LABELS[a] || a, Detail: d };
+  };
+
   // リストから読んだ行（{注文番号: 項目}）を、この端末の記録にあてはめる。リストが正。
   // pending＝この端末でまだリストに書けていない注文（上書きしない）。戻り値 { orders, fromList, localOnly:[id], kept:[id] }
   EC.mergeFromList = function (local, rows, pending) {
@@ -1436,7 +1450,7 @@
    *   要対応（要確認）と対象外は、フローの外。
    * role：{ canImport（取込を依頼できる＝管理者＋取込担当者）, canConfirm（確認OKを押せる＝管理者） } */
   EC.FLOW = [
-    { key: 'p1', num: '①', label: '注文を確認', kind: 'human' }, { key: 'p2', num: '②', label: 'SMILE起票中', kind: 'robot' },
+    { key: 'p1', num: '①', label: '受注伝票起票依頼', kind: 'human' }, { key: 'p2', num: '②', label: '受注伝票登録', kind: 'robot' },
     { key: 'p3', num: '③', label: '結果を確認', kind: 'human' }, { key: 'p4', num: '④', label: '完了', kind: 'none' }
   ];
   EC.flowOf = function (st, rec, role) {
