@@ -642,7 +642,7 @@ t('状態の対応表：アプリの状態 ↔ リストの Status（scripts/cre
   assert.strictEqual(EC.listStatus(undefined), '未確認');                   // 状態なし＝未確認
   assert.strictEqual(EC.listStatus('nonsense'), ''); assert.strictEqual(EC.appStatus('変な状態'), '');
   // ログの操作の選択肢も同じ（create_ec_lists.ps1 の $ActionChoices）
-  assert.deepStrictEqual(EC.LOG_ACTIONS, ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'その他']);
+  assert.deepStrictEqual(EC.LOG_ACTIONS, ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', 'その他']);
 });
 const fullRec = { status: 'exported', by: 'ok@example.com', at: '2026-10-21T01:00:00.000Z', cust: '599801', orderDate: '2026-10-20', net: 14000, batchId: 'ec-0123456789abcdef', juchuNo: '90001',
   shipDate: '2026-10-23', memoNote: 'ブルー入荷待ち', importBy: 'imp@example.com', importAt: '2026-10-21T02:00:00.000Z', confirmedBy: 'cf@example.com', confirmedAt: '2026-10-21T03:00:00.000Z', reportedAt: '2026-10-21T02:30:00.000Z' };
@@ -1119,7 +1119,7 @@ t('業務フロー：内部の状態を5工程に読み替える（ボールの�
   assert.deepStrictEqual(k('exported'), ['p4', '起票済み', '']);   // 起票済みは最後の状態（確認OK済み）＝完了
   assert.deepStrictEqual(k('smile'), ['p4', 'SMILE取込済', '']);
   assert.deepStrictEqual([EC.flowOf('check', null, me).key, EC.flowOf('excluded', null, me).key], ['attn', 'other']);
-  assert.deepStrictEqual(EC.FLOW.map(x => x.num + x.label + ':' + x.kind), ['①注文を確認:human', '②SMILE起票中:robot', '③結果を確認:human', '④完了:none']);
+  assert.deepStrictEqual(EC.FLOW.map(x => x.num + x.label + ':' + x.kind), ['①受注伝票起票依頼:human', '②受注伝票登録:robot', '③結果を確認:human', '④完了:none']);
   // 権限による出し分け：取込担当者でない人には、取込を待っていると出す。確認OKは管理者だけ
   assert.strictEqual(EC.flowOf('ok', null, other).who, '取込担当者'); assert.ok(/取込担当者が/.test(EC.flowOf('ok', null, other).next)); assert.ok(/「SMILEに取り込む」を押して/.test(EC.flowOf('ok', null, me).next));
   assert.strictEqual(EC.flowOf('confirm', null, other).who, '管理者'); assert.ok(/管理者が/.test(EC.flowOf('confirm', null, other).next));
@@ -1193,6 +1193,19 @@ t('受注日付：16:00 の線は日本時間（パソコンの時計の地域�
   assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T16:00:00+09:00'), DEFAULT_CONFIG, cal), '2026-11-11');
   // 日付の境目：日本時間 11/11 0:30（＝UTC 11/10 15:30）は、11/11 の午前
   assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T15:30:00Z'), DEFAULT_CONFIG, cal), '2026-11-11');
+});
+t('履歴の表示名：流れの名前にそろえる（保存した名前は変えない）', () => {
+  const L = (a, d, done) => EC.logLabel({ Action: a, Detail: d }, done);
+  assert.deepStrictEqual(L('取込依頼', 'バッチ ec-1'), { Action: '受注伝票起票依頼', Detail: 'バッチ ec-1' });
+  assert.deepStrictEqual(L('取込結果', 'x'), { Action: '受注伝票登録', Detail: 'x' });
+  assert.deepStrictEqual(L('確認OK', ''), { Action: '確認OK', Detail: '' });                                   // 対応のない名前はそのまま
+  assert.deepStrictEqual(L('その他', 'Shopify登録完了：アプリで自動登録'), { Action: 'Shopify登録完了', Detail: 'アプリで自動登録' });   // リストの選択肢に無くて「その他」で保存された分
+  assert.deepStrictEqual(L('その他', 'サイネックス報告完了：メール'), { Action: 'サイネックス報告完了', Detail: 'メール' });
+  assert.strictEqual(L('その他', '出荷報告済みにした', 'Shopify登録完了').Action, 'Shopify登録完了');          // 以前の記録（名前が「その他」だった分）も、見つけやすくする
+  assert.strictEqual(L('その他', '出荷報告済みにした', 'サイネックス報告完了').Action, 'サイネックス報告完了');
+  assert.strictEqual(L('その他', 'この端末の記録から移行').Action, 'その他');
+  assert.ok(EC.LOG_ACTIONS.includes('Shopify登録完了') && EC.LOG_ACTIONS.includes('サイネックス報告完了'));
+  assert.strictEqual(EC.logRow({ action: 'Shopify登録完了', orderNo: '1801' }).Action, 'Shopify登録完了');
 });
 t('日付の注意：受注日（SMILE）が元の受注日より前／出荷予定日が標準の営業日数に満たない', () => {
   const cal = EC.makeCalendar(DEFAULT_CONFIG), W = (orderDate, slipDate, shipDate, lead) => EC.dateWarns({ orderDate, leadDays: lead }, slipDate, shipDate, cal);

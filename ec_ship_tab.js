@@ -77,7 +77,7 @@
     };
     var html = '<div class="muted" style="margin-bottom:8px">出荷のデータ：更新 ' + esc(stamp(S.lookup.generatedAt)) + '（' + esc(ageText(S.lookup.generatedAt)) + '）／運送会社のデータ：' + esc(newest) + '　<span style="font-size:11px">（専用機が日中は毎時作ります。右上の「↻ 更新」で読み直し）</span></div>' +
       (age >= staleH ? '<div class="alert warn" style="margin-bottom:8px">出荷のデータが古くなっています（' + esc(ageText(S.lookup.generatedAt)) + '）。専用機の毎時の出力が止まっていないか確認してください</div>' : '') +
-      '<div class="flow" style="margin-bottom:10px">' + tile('wait', '① 出荷待ち', '出荷伝票の起票・配送業者へ依頼', n.wait, 'k-robot') + '<div class="farrow">→</div>' + tile('check', '② 結果を確認', '送り状№が出た。' + esc(rl.todo), n.check, 'k-human') + '<div class="farrow">→</div>' + tile('done', '③ 完了', esc(rl.done), n.done, 'k-none') + '</div>' +
+      '<div class="flow" style="margin-bottom:10px">' + tile('wait', '① 出荷伝票起票確認', '出荷伝票の起票・配送業者へ依頼', n.wait, 'k-robot') + '<div class="farrow">→</div>' + tile('check', '② 送り状NO確認', '送り状№が出た。' + esc(rl.todo), n.check, 'k-human') + '<div class="farrow">→</div>' + tile('done', '③ ' + esc(rl.doneTitle || 'Shopify登録完了'), esc(rl.done), n.done, 'k-none') + '</div>' +
       '<div class="row" style="margin-bottom:8px;gap:10px"><span class="chip' + (S.filter === 'all' ? ' active' : '') + '" data-sf="all">すべて ' + (n.wait + n.check + n.done) + '件</span><div class="grow"></div>' +
       '<label class="muted">受注日 <input type="date" id="ship-from" value="' + esc(S.from) + '"> 以降</label><input type="text" id="ship-q" placeholder="注文番号・お客様で検索" size="22" value="' + esc(S.q) + '"></div>';
     var link = function (x) {

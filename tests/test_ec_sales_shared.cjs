@@ -30,6 +30,7 @@ function fakeGraph(mode) {
     if (method === 'POST' && !id) {
       const f = JSON.parse(o.body).fields;
       if (mode.beforePost) { mode.beforePost(lists); mode.beforePost = null; }
+      if (m[1] === 'EC_Log' && (mode.rejectActions || []).includes(f.Action)) return resp(400, { error: 'invalid choice' });   // 「操作」の選択肢に無い名前は断る
       if (m[1] === 'EC_Order' && rows.some(r => r.fields.Title === f.Title)) return resp(400, { error: 'duplicate' });   // Title は重複不可
       const item = { id: String(seq++), fields: Object.assign({}, f) }; rows.push(item); return resp(201, item);
     }
@@ -136,6 +137,22 @@ const recOk = { status: 'ok', by: 'u1@example.com', at: '2026-10-21T01:00:00.000
     const r = await s.upsert('1801', EC.orderFields('1801', Object.assign({}, recOk, { memoNote: 'メモ' })));
     assert.strictEqual(r.result, 'updated');
     assert.strictEqual(g.lists.EC_Order.length, 1); assert.strictEqual(g.lists.EC_Order[0].fields.MemoNote, 'メモ');
+  });
+  await t('ログ：新しい操作名がリストの選択肢に無くて断られたら、「その他」にして名前を詳細に付けて書き直す（履歴は元の名前で出る）', async () => {
+    const g = fakeGraph({ rejectActions: ['Shopify登録完了'] }), s = mk(g); await s.connect();
+    await s.appendLog(EC.logRow({ action: 'Shopify登録完了', orderNo: '1801', actor: 'a@example.com', detail: 'アプリで自動登録', now: '2026-11-12T01:00:00.000Z' }));
+    await s.appendLog(EC.logRow({ action: 'OK', orderNo: '1801', actor: 'a@example.com', now: '2026-11-12T00:00:00.000Z' }));
+    const log = await s.loadLog('1801');
+    assert.strictEqual(log.length, 2); assert.strictEqual(log[0].Action, 'その他'); assert.strictEqual(log[0].Detail, 'Shopify登録完了：アプリで自動登録');
+    const shown = EC.logLabel(log[0], 'Shopify登録完了'); assert.deepStrictEqual(shown, { Action: 'Shopify登録完了', Detail: 'アプリで自動登録' });
+    assert.strictEqual(g.calls.filter(c => c.method === 'POST' && c.url.includes('EC_Log')).length, 3);   // 断られた1回＋書き直し1回＋OK
+    // 選択肢にあるリストなら、そのまま保存される
+    const g2 = fakeGraph(), s2 = mk(g2); await s2.connect();
+    await s2.appendLog(EC.logRow({ action: 'Shopify登録完了', orderNo: '1802', detail: 'x' }));
+    assert.strictEqual((await s2.loadLog('1802'))[0].Action, 'Shopify登録完了');
+    // 通信の失敗など（400 以外）は、そのまま失敗にする（あとで書き直せるよう、画面が覚える）
+    const g3 = fakeGraph({ status: 500 }), s3 = mk(g3);
+    await assert.rejects(() => s3.appendLog(EC.logRow({ action: 'Shopify登録完了', orderNo: '1803' })));
   });
   await t('ログ：1行追記（追記のみ）、注文ごとに新しい順で読める。電話・メール・郵便番号は伏せる', async () => {
     const g = fakeGraph(), s = mk(g); await s.connect();

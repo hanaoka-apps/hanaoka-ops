@@ -119,7 +119,13 @@
 
     // EC_Log に1行追記（追記のみ。消さない・直さない）
     api.appendLog = async function (fields) {
-      await req('POST', listPath(opt.logList) + '/items', { fields: clean(fields, LOG_WRITABLE) });
+      var f = clean(fields, LOG_WRITABLE);
+      try { await req('POST', listPath(opt.logList) + '/items', { fields: f }); }
+      catch (e) {
+        // 「操作」の選択肢に無い新しい名前だと、リストが断ることがある。「その他」にして、名前を詳細の頭に付けて書き直す（履歴の画面は、元の名前で出す）
+        if (!e || e.status !== 400 || !f.Action || f.Action === 'その他') throw e;
+        await req('POST', listPath(opt.logList) + '/items', { fields: Object.assign({}, f, { Action: 'その他', Detail: (f.Action + '：' + (f.Detail || '')).slice(0, 1000) }) });
+      }
     };
     // その注文の履歴（新しい順）
     api.loadLog = async function (no) {

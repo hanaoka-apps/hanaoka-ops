@@ -60,7 +60,7 @@ function Col-Number($name, $disp) { @{ name = $name; displayName = $disp; number
 
 # 状態・操作の選択肢は、アプリ（ec_sales.html）と同じ言葉にする
 $StatusChoices = @('未確認', 'OK済', '取込中', '突合待ち', '確認待ち', '起票済み', '要確認', '対象外')
-$ActionChoices = @('OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'その他')
+$ActionChoices = @('OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', 'その他')
 
 $Definitions = @(
   @{

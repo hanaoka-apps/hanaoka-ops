@@ -1067,6 +1067,7 @@ async function loadHistory(id) {
   const c = histCache[id];
   const draw = rows => {
     const b = $('histBox'); if (!b || openId !== id) return;
+    rows = rows.map(x => Object.assign({}, x, EC.logLabel(x, shipLogAction())));   // 画面の流れの名前にそろえる（保存した名前は変えない）
     b.innerHTML = rows.length ? '<table><tbody>' + rows.map(x => '<tr><td class="muted" style="white-space:nowrap">' + esc(stamp(x.LogTime)) + '</td><td>' + esc(EC.shortUser(x.Actor)) + '</td><td><b>' + esc(x.Action) + '</b>' + (x.Detail ? '<div class="muted">' + esc(x.Detail) + '</div>' : '') + '</td></tr>').join('') + '</tbody></table>' : '履歴はまだありません';
   };
   if (c && Date.now() - c.at < 30000) { draw(c.rows); return; }
@@ -1908,10 +1909,13 @@ function outPay() {
 /* ------------------------------------------------------------ 全体 */
 // 出荷チェック（ec_ship_tab.js）：受注を SMILE に起票した注文の、出荷伝票・送り状番号を、専用機が毎時作る ship_index.json から見せる
 // 出荷チェックの「報告済み」の印（EC＝Shopify に送り状№を登録した／ふるさと＝サイネックスに出荷報告した）。共有のリストに残る
-async function markShipReported(ids, on) {
+// 出荷チェックの「登録済み」の印の履歴の名前。EC売上は「Shopify登録完了」、ふるさと納税は「サイネックス報告完了」（設定 shipReport.logAction）
+function shipLogAction() { return (CONF.shipReport && CONF.shipReport.logAction) || 'Shopify登録完了'; }
+async function markShipReported(ids, on, opt) {
   lastPushErr = null;
   const at = new Date().toISOString(), who = account && account.username;
-  await commit({ ids, action: 'その他', detail: () => on ? '出荷報告済みにした' : '出荷報告済みを戻した',
+  const sr = CONF.shipReport || {};
+  await commit({ ids, action: on ? shipLogAction() : 'その他', detail: id => on ? ((opt && opt.detail && opt.detail(id)) || sr.logDetail || 'Shopify に登録済みにした（印を付けた）') : (sr.logUndo || '登録済みを戻した'),
     mutate: id => { const r = store.orders[id] = store.orders[id] || (() => { const s = slips.find(x => x.id === id); return s ? { cust: s.cust, orderDate: s.orderDate, net: s.netTotal } : {}; })(); if (on) { r.shipReportedAt = at; r.shipReportedBy = who; } else { delete r.shipReportedAt; delete r.shipReportedBy; } return true; } });
   await pushChain;
   if (lastPushErr) { const m = String(lastPushErr && lastPushErr.message || lastPushErr); lastPushErr = null;
@@ -2047,7 +2051,10 @@ async function runShopifyFulfill(items) {
   }
   const byId = {}; plan.orders.forEach(o => { byId[o.id] = o; });
   const okIds = res.results.filter(r => (r.status === 'done' || r.status === 'already') && byId[r.id]).map(r => byId[r.id].key);   // 記録のキー（アプリの中の注文の印）に戻す
-  if (!res.dryRun && okIds.length) await markShipReported(okIds, true);   // 登録できた注文は「Shopify に登録済み」にする（共有のリストにも書く）
+  if (!res.dryRun && okIds.length) {
+    const how = {}; res.results.forEach(r => { if (byId[r.id] && (r.status === 'done' || r.status === 'already')) how[byId[r.id].key] = r.status; });
+    await markShipReported(okIds, true, { detail: id => how[id] === 'already' ? 'すでに Shopify に登録されていた（印を付けた）' : 'アプリで自動登録（運送会社・送り状番号を Shopify に登録。お客様への通知：' + (res.notify === false ? 'なし' : 'あり') + '）' });
+  }   // 登録できた注文は「Shopify に登録済み」にする（共有のリストにも書く）
   const rows = res.results.map(r => { const st = FUL_STATUS[r.status] || [r.status, 'info'], o = byId[r.id] || {}; return { id: r.id, carrier: o.carrier, fmt: o.fmt, html: '<span class="tag ' + st[1] + '">' + esc(res.dryRun && r.status === 'done' ? '確認のみ' : st[0]) + '</span> ' + esc(r.message || '') }; })
     .concat(plan.skipped.map(s => ({ id: s.id, html: '<span class="tag warn">対象外</span> ' + esc(s.reason) })));
   const summary = res.dryRun ? '確認のみです。Shopify には、何も書き込んでいません。' : (okIds.length + '件を「Shopify に登録済み」にしました。') + (res.ok && !plan.skipped.length ? '' : ' 残りは、内容を見て、管理画面で登録してください。');
