@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EC売上の分析</title>
+<link rel="icon" type="image/svg+xml" href="favicon_ec.svg">
+<link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><!-- グラフ（ほかのダッシュボードと同じもの） -->
+<script src="hanaoka_auth.js"></script>
+<script src="usage_log.js?v=20261106"></script><!-- 使われ方の記録（管理者だけが見られる） -->
+<script src="ec_sales_core.js?v=32"></script>
+<script src="ec_dashboard_core.js?v=3"></script>
+<link rel="stylesheet" href="ec_dashboard.css?v=2">
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V14M10 20V10M16 20V6"/><path d="M3 21h18"/></svg></div>
+    <h1>EC売上の分析</h1>
+    <p>花岡車輌 業務アプリ</p>
+    <button id="loginBtn" data-ha-login>Microsoft アカウントでサインイン</button>
+    <div id="loginError"></div>
+    <div class="login-foot">EC（Shopify）の売上を、月別・商品別・地域別などで眺める画面です<br>売上は SMILE の確定した売上です。数字から作った一言コメントも付きます（見るだけの画面です）</div>
+  </div>
+</div>
+
+<header class="app-hdr">
+  <a class="hub-home" href="hanaoka_hub.html" title="HANAOKA HUBへ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>HUB</a>
+  <h1><span class="dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V14M10 20V10M16 20V6"/></svg></span>EC売上の分析</h1>
+  <div class="grow"></div>
+  <div class="userchip"><span class="avatar" id="sp-avatar"></span><span id="sp-user"></span></div>
+  <button class="hbtn" id="btn-reload" title="SharePoint のデータを読み直す">↻ 更新</button>
+</header>
+<div id="statusBar"><span id="sp-status">未サインイン</span></div>
+<div id="warnBox" hidden></div>
+
+<div class="wrap">
+  <details class="panel help" id="helpBox">
+    <summary><b>見方（「売上」とは・どの数字がどのデータか）</b></summary>
+    <p style="margin:6px 0 2px">各見出しの右の札で、その切り口がどのデータかが分かります。<span class="src s1">売上明細</span><span class="src s2">Shopify</span><span class="src s3">受注</span></p>
+    <table class="dt help-tbl">
+      <thead><tr><th>札</th><th>データ</th><th>日付の数え方</th><th>使っている切り口</th></tr></thead>
+      <tbody>
+        <tr><td><span class="src s1">売上明細</span></td><td>SMILE の<b>確定した売上</b>（SharedMasters の売上明細出力.csv・毎日更新）</td><td><b>売上日</b>（伝票日付＝出荷して売上になった日）の月・日</td><td>数字のカード（売上・件数・客単価・点数）／①月別／②商品別／③地域別／④曜日別（売上の日）／⑧送料</td></tr>
+        <tr><td><span class="src s2">Shopify</span></td><td>Shopify の注文（<b>直近55日分だけ</b>）</td><td>お客様が<b>注文した日時</b></td><td>④曜日別（注文した日）／⑤時間帯別／⑥新規とリピート／⑧値引き</td></tr>
+        <tr><td><span class="src s3">受注</span></td><td>SMILE の受注と、出荷のデータ</td><td><b>受注日</b>（Shopify の注文があれば、注文した日）</td><td>⑦出荷までの日数</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><b>売上</b>は、SMILE の確定した売上（売上明細）の金額（<b>税抜</b>）です。<b>送料も売上に入れて</b>います（商品別の表には、送料は入れていません）。消費税の行は入れていません</li>
+      <li><b>売上は、出荷して売上になった日で数える</b>ので、お客様が注文した日（Shopify・受注日）の月とは少しずれます。受注はあるのに、まだ出荷されていない注文は、売上に入りません（件数と金額を、カードの下に出しています）</li>
+      <li>1つの注文＝Shopify の注文番号ひとつ。分けて出荷した注文は、1件と数えます。訂正（マイナス）の伝票は、差し引いています。テスト送信は、数えていません</li>
+      <li>「前の月との比較」は、選んだ範囲と、そのすぐ前の同じ長さの期間を比べます。今月のように途中の月は、<b>先月の同じ日数まで</b>と比べます</li>
+      <li>コメントは、数字から自動で作った文です。件数が少ないときは、参考程度に見てください</li>
+      <li>メールアドレスは、リピートのお客様を見分けるためにだけ使い、画面には出しません</li>
+    </ul>
+  </details>
+
+  <div class="panel" id="rangePanel">
+    <div class="srow">
+      <b>範囲</b>
+      <div class="row" id="presets" style="gap:6px"></div>
+      <label class="muted">開始月 <input type="month" id="r-from"></label>
+      <span class="muted">～</span>
+      <label class="muted">終了月 <input type="month" id="r-to"></label>
+    </div>
+    <div class="muted" id="rangeNote" style="margin-top:8px"></div>
+  </div>
+
+  <div id="kpis" class="kpis"></div>
+  <div id="compareNote" class="muted"></div>
+  <div id="dataNote" class="muted"></div>
+
+  <div class="panel cmt-main" id="mainComment" hidden>
+    <h2>ひとこと</h2>
+    <ul id="mainCommentList"></ul>
+  </div>
+
+  <div id="sections"></div>
+</div>
+
+<script src="ec_dashboard.js?v=3"></script>
+</body>
+</html>
