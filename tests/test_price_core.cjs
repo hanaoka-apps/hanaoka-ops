@@ -198,6 +198,33 @@ assert.ok(/送料は 東京都あて（南関東・西濃運輸）、路線便�
 assert.ok(/個人宅あてなので2倍の 4,600円/.test(f.summary));
 assert.equal(f.checks.find(c => c.item === '個人宅').state, 'on');
 
+// --- 設定の行を人の言葉に・詳細ログの出どころ ---
+assert.equal(P.excSentence({ 型式: 'UDGLS', 対象の種類: '社名', 対象コード: 'G1', 対象名: '甲商事', 在庫口のみ: true, 掛率: 0.45, 適用開始日: '2026-01-01' }),
+  'UDGLS は、得意先社名「甲商事」あての在庫口の受注なら 定価の4.5掛。ランク・得意先の区分より優先します（例外の中では2番目（得意先社名））。（2026-01-01 から）');
+assert.ok(/すべての得意先あての50台以上なら 定価の4.5掛/.test(P.excSentence(data.exceptions[2])));
+assert.ok(/1,500円（決まった金額）/.test(P.excSentence(data.exceptions[4])));
+assert.ok(/自動では使いません/.test(P.excSentence(data.exceptions[5])));
+assert.ok(/台車はランクにかかわらず5.25掛。台車の在庫口あてなら4.5掛/.test(P.clsSentence(data.classes[2])));
+assert.ok(/在庫口です/.test(P.clsSentence(data.classes[0])));
+assert.ok(/本部経由で計算します/.test(P.clsSentence(data.classes[4])));
+assert.ok(/定価で売ります/.test(P.clsSentence(data.classes[6])));
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
+assert.equal(r.steps[0].refKind, 'price'); assert.equal(r.steps[0].ref, data.prices[1]);
+assert.equal(r.steps[2].refKind, 'cls'); assert.equal(r.steps[2].ref, data.classes[1]);
+r = P.unitPrice(data, { code: 'T1', qty: 60, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
+assert.equal(r.steps.find(s => s.label === '例外').ref, data.exceptions[2]);
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-28', customer: cust('H01', 'G3', '5.25掛(A)') });
+assert.equal(r.steps.find(s => s.label === '本部経由').ref, data.classes[4]);
+
+// --- 運賃表の点検 ---
+let fc = P.fareChecks(data.fares, '2026-11-11');
+assert.equal(fc[0].level, 'ng'); // 見本は3地域しかないので、入っていない県がある
+assert.ok(fc.some(c => c.level === 'warn' && /予定/.test(c.text)));
+assert.ok(fc.some(c => c.level === 'ok' && /路線便：同じ帯の重なりなし/.test(c.text)));
+fc = P.fareChecks(data.fares.concat([{ 種類: '路線便', 地域: '近畿', 上限: 40, 金額: 1000, 適用開始日: '2025-11-12' }, { 種類: '地域', 地域: '近畿2', 県: '大阪' }]), '2026-11-11');
+assert.ok(fc.some(c => c.level === 'ng' && /近畿の40kg（2025-11-12 から）が2行/.test(c.text)));
+assert.ok(fc.some(c => c.level === 'ng' && /大阪（近畿・近畿2）/.test(c.text)));
+
 // --- CSV・県 ---
 assert.deepEqual(P.parseCSV('﻿a,b\r\n"x,1","y""z"\r\n'), [['a', 'b'], ['x,1', 'y"z']]);
 assert.deepEqual(P.toObjects('受注№\t品目ｺｰﾄﾞ\n1\tT1\n', '\t'), [{ '受注№': '1', '品目ｺｰﾄﾞ': 'T1' }]);

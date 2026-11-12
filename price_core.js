@@ -298,17 +298,19 @@
     out.listFrom = ymd(row.適用開始日);
     out.explain.push("定価 " + yen(list) + "（" + ymd(row.適用開始日) + " から）");
     // 詳細ログ：段ごとに「何で・何掛・いくら」を残す（画面で ▲いくら と出すため）
-    out.steps = [{ label: "定価", detail: ymd(row.適用開始日) + " からの定価", amount: list, src: "定価リスト" }];
-    var addStep = function (label, detail, kk, src) {
-      out.steps.push({ label: label, detail: detail, k: kk, amount: kk === null || kk === undefined ? null : round(list * kk, ROUND_UNIT), src: src });
+    // ref・refKind：その段がどの設定の行から来たか（画面で「出どころ」を押すとその行が開く）
+    out.steps = [{ label: "定価", detail: ymd(row.適用開始日) + " からの定価", amount: list, src: "定価リスト", ref: row, refKind: "price" }];
+    var addStep = function (label, detail, kk, src, ref, refKind) {
+      out.steps.push({ label: label, detail: detail, k: kk, amount: kk === null || kk === undefined ? null : round(list * kk, ROUND_UNIT), src: src, ref: ref || null, refKind: refKind || "" });
     };
+    var methodRow = null;
     // 判定の表：使ったもの・使わなかったものを全部並べる（「使われていない」ことも確かめられるように）
     var chk = { 区分: [], 在庫価格: "未適用", 例外: null, 要確認: [] };
 
     var cust = ctx.customer || {};
     var rk = rankOf(cust.kakeName);
     var k = rk ? rk.k : null, rank = rk ? rk.rank : "";
-    if (rk) { out.explain.push("得意先のランク：" + (cust.kakeName || "") + " → " + pct(k)); addStep("ランク", cust.kakeName, k, "SMILE 得意先マスタ"); }
+    if (rk) { out.explain.push("得意先のランク：" + (cust.kakeName || "") + " → " + pct(k)); addStep("ランク", cust.kakeName, k, "SMILE 得意先マスタ", null, "rank"); }
     else out.warnings.push("得意先のランクが「" + (cust.kakeName || "なし") + "」なので、区分か例外で掛率を決めます");
     out.rankName = cust.kakeName || "";
 
@@ -320,9 +322,9 @@
     [cc.shaRow, cc.codeRow].forEach(function (c) { // 社名 → 得意先コード の順に上書き
       if (!c) return;
       var who = (c.対象の種類 === "得意先" ? "得意先" : "得意先社名「" + (c.対象名 || c.対象コード) + "」") + (c.商品の種類 && c.商品の種類 !== "全部" ? "・" + c.商品の種類 : "");
-      if (num(c.掛率) !== null) { k = num(c.掛率); out.explain.push(who + " の区分 → " + pct(k)); addStep("得意先の区分", who, k, "得意先の区分リスト"); chk.区分.push(who + " " + pct(k)); }
-      if (isStock && num(c.在庫口の掛率) !== null) { k = num(c.在庫口の掛率); out.explain.push(who + " の在庫口の掛率 → " + pct(k)); addStep("在庫価格", who + " の在庫口の掛率", k, "得意先の区分リスト"); chk.区分.push(who + " 在庫口" + pct(k)); }
-      if (c.計算方式 && c.計算方式 !== "通常") { method = c.計算方式; fareRegion = c.運賃込みの地域 || fareRegion; chk.区分.push(who + " " + c.計算方式); }
+      if (num(c.掛率) !== null) { k = num(c.掛率); out.explain.push(who + " の区分 → " + pct(k)); addStep("得意先の区分", who, k, "得意先の区分リスト", c, "cls"); chk.区分.push(who + " " + pct(k)); }
+      if (isStock && num(c.在庫口の掛率) !== null) { k = num(c.在庫口の掛率); out.explain.push(who + " の在庫口の掛率 → " + pct(k)); addStep("在庫価格", who + " の在庫口の掛率", k, "得意先の区分リスト", c, "cls"); chk.区分.push(who + " 在庫口" + pct(k)); }
+      if (c.計算方式 && c.計算方式 !== "通常") { method = c.計算方式; fareRegion = c.運賃込みの地域 || fareRegion; methodRow = c; chk.区分.push(who + " " + c.計算方式); }
       if (c.要確認 === true || c.要確認 === "はい") { out.warnings.push(who + " の区分は要確認：" + (c.メモ || "")); chk.要確認.push("得意先の区分"); }
     });
 
@@ -337,10 +339,10 @@
       out.exceptionLabel = exWho + (cond.length ? "・" + cond.join("・") : "");
       if (num(ex.金額) !== null) {
         price = num(ex.金額); out.explain.push(lead + " → " + yen(price));
-        out.steps.push({ label: "例外", detail: out.exceptionLabel + "（金額の決まり）", amount: price, src: "例外リスト" });
+        out.steps.push({ label: "例外", detail: out.exceptionLabel + "（金額の決まり）", amount: price, src: "例外リスト", ref: ex, refKind: "exc" });
         chk.例外 = out.exceptionLabel + " " + yen(price);
       } else if (num(ex.掛率) !== null) {
-        k = num(ex.掛率); out.explain.push(lead + " → " + pct(k)); addStep("例外", out.exceptionLabel, k, "例外リスト");
+        k = num(ex.掛率); out.explain.push(lead + " → " + pct(k)); addStep("例外", out.exceptionLabel, k, "例外リスト", ex, "exc");
         chk.例外 = out.exceptionLabel + " " + pct(k);
       }
       if (ex.要確認 === true || ex.要確認 === "はい") { out.warnings.push("使った例外は要確認：" + (ex.メモ || ex.出典 || "")); chk.要確認.push("例外"); }
@@ -364,8 +366,8 @@
         out.explain.push("本部経由：販社への見積単価 ＝ ÷0.93 を10円単位で切り上げ → " + yen(q));
         out.explain.push("本部からの受注単価 ＝ ×0.93 を1円単位で四捨五入 → " + yen(o) + "（受注の得意先コード・備考は区分のメモを見る）");
         out.quotePrice = q; out.orderPrice = o; out.price = q;
-        out.steps.push({ label: "本部経由", detail: "÷0.93 を10円単位で切り上げ（販社への見積）", amount: q, src: "得意先の区分リスト" });
-        out.steps.push({ label: "本部経由", detail: "×0.93 を1円単位で四捨五入（本部からの受注）", amount: o, src: "得意先の区分リスト", side: true });
+        out.steps.push({ label: "本部経由", detail: "÷0.93 を10円単位で切り上げ（販社への見積）", amount: q, src: "得意先の区分リスト", ref: methodRow, refKind: "cls" });
+        out.steps.push({ label: "本部経由", detail: "×0.93 を1円単位で四捨五入（本部からの受注）", amount: o, src: "得意先の区分リスト", side: true, ref: methodRow, refKind: "cls" });
         if (kind === "部品" && !ctx.withBody) {
           var b = round(list * 0.575, ROUND_UNIT);
           out.directPrice = b;
@@ -375,7 +377,7 @@
         out.warnings.push("RIDE・アタッチメントは販社と直接取引。Bランク・運賃は通常");
         price = round(list * 0.575, ROUND_UNIT); out.k = 0.575;
         out.explain.push("販社と直接：Bランク 5.75掛 → " + yen(price));
-        addStep("販社と直接", "RIDE・アタッチメントは Bランク", 0.575, "得意先の区分リスト");
+        addStep("販社と直接", "RIDE・アタッチメントは Bランク", 0.575, "得意先の区分リスト", methodRow, "cls");
         out.price = price;
       }
     } else if (method === "運賃込み") {
@@ -384,7 +386,7 @@
       else {
         out.price = price + f; out.fareIncluded = f; out.fareRegion = fareRegion || "近畿";
         out.explain.push("運賃込み（" + (fareRegion || "近畿") + "あて1台分 " + yen(f) + "）→ " + yen(out.price));
-        out.steps.push({ label: "運賃込み", detail: out.fareRegion + "あて1台分の運賃 ＋" + yen(f), amount: out.price, src: "運賃リスト" });
+        out.steps.push({ label: "運賃込み", detail: out.fareRegion + "あて1台分の運賃 ＋" + yen(f), amount: out.price, src: "得意先の区分リスト・運賃リスト", ref: methodRow, refKind: "cls" });
       }
     } else out.price = price;
     // 判定の表（画面にこの順で並べる）。state：on＝使った、off＝使っていない、warn＝気をつける
@@ -424,6 +426,77 @@
       out.notes.push("参考（" + (e.対象名 || e.対象の種類) + "）：" + (num(e.金額) !== null ? yen(num(e.金額)) : num(e.掛率) !== null ? pct(num(e.掛率)) : "") + " " + (e.メモ || "") + "［" + (e.出典 || "") + "］");
     });
     out.summary = summaryOf(out);
+    return out;
+  }
+
+  // ---------- 設定の行を人の言葉にする（一覧・編集・確認が必要の画面で使う） ----------
+  var EX_ORDER = { "得意先": "1番目（得意先コード）", "社名": "2番目（得意先社名）", "ランク": "3番目（ランク）", "全部": "4番目（全員）" };
+  function datesText(r) {
+    var a = r.適用開始日 ? ymd(r.適用開始日) + " から" : "", b = r.適用終了日 ? ymd(r.適用終了日) + " まで" : "";
+    return a || b ? "（" + a + (a && b ? "・" : "") + b + "）" : "";
+  }
+  function excSentence(e) {
+    if (!e) return "";
+    var code = e.型式 || "（型式なし）";
+    if (e.対象の種類 === "未整理") {
+      return code + "：エクセルの書き方「" + (e.対象名 || "") + "」のまま移した決まり" +
+        (num(e.掛率) !== null ? "（" + pct(num(e.掛率)) + "）" : num(e.金額) !== null ? "（" + yen(num(e.金額)) + "）" : "") +
+        "。どの得意先・条件かわからないので、自動では使いません。確かめて、得意先・社名・ランク・全員のどれかに直してください。";
+    }
+    var who = e.対象の種類 === "得意先" ? "得意先「" + (e.対象名 || "") + "」（" + (e.対象コード || "") + "）あて"
+      : e.対象の種類 === "社名" ? "得意先社名「" + (e.対象名 || e.対象コード || "") + "」あて"
+      : e.対象の種類 === "ランク" ? "ランク " + (e.対象コード || e.対象名 || "") + " の得意先あて"
+      : e.対象の種類 === "全部" ? "すべての得意先あて" : "（対象がわからない）";
+    var cond = [];
+    if (e.在庫口のみ === true || e.在庫口のみ === "はい") cond.push("在庫口の受注");
+    if (num(e.台数以上) !== null) cond.push(num(e.台数以上) + "台以上");
+    var val = num(e.金額) !== null ? yen(num(e.金額)) + "（決まった金額）" : num(e.掛率) !== null ? "定価の" + pct(num(e.掛率)) : "（掛率・金額が空）";
+    return code + " は、" + who + (cond.length ? "の" + cond.join("・") : "") + "なら " + val + "。" +
+      "ランク・得意先の区分より優先します（例外の中では" + (EX_ORDER[e.対象の種類] || "") + "）。" + datesText(e);
+  }
+  function clsSentence(c) {
+    if (!c) return "";
+    var who = c.対象の種類 === "得意先" ? "得意先「" + (c.対象名 || "") + "」（" + (c.対象コード || "") + "）" : "得意先社名「" + (c.対象名 || c.対象コード || "") + "」";
+    var kind = c.商品の種類 && c.商品の種類 !== "全部" ? c.商品の種類 + "は" : "";
+    var s = [];
+    if (c.在庫口 === true || c.在庫口 === "はい") s.push("在庫口です（あての受注は全部在庫価格）");
+    if (num(c.掛率) !== null) s.push(kind + (num(c.掛率) === 1 ? "定価で売ります" : "ランクにかかわらず" + pct(num(c.掛率))));
+    if (num(c.在庫口の掛率) !== null) s.push((c.商品の種類 && c.商品の種類 !== "全部" ? c.商品の種類 + "の" : "") + "在庫口あてなら" + pct(num(c.在庫口の掛率)));
+    if (c.計算方式 === "本部経由") s.push("本部経由で計算します（販社への見積は÷0.93を10円切り上げ、本部からの受注は×0.93を1円）");
+    if (c.計算方式 === "運賃込み") s.push("単価に" + (c.運賃込みの地域 || "決めた地域") + "あて1台分の運賃を含めます");
+    if (!s.length) s.push("決まりが入っていません");
+    return who + "は、" + s.join("。") + "。" + datesText(c);
+  }
+
+  // ---------- 運賃表の点検（人は間違えるので、システム側で抜け・重なりを見つける） ----------
+  // 返す：[{ level:"ng"|"warn"|"ok", text }]
+  function fareChecks(fares, date) {
+    var out = [], d = ymd(date || new Date().toISOString());
+    var regions = fares.filter(function (f) { return f.種類 === "地域"; });
+    // 県：どの地域にも入っていない・2つの地域に入っている
+    var seen = {};
+    regions.forEach(function (r) { String(r.県 || "").split(/[\s、,]+/).filter(Boolean).forEach(function (p) { (seen[p] = seen[p] || []).push(r.地域); }); });
+    var miss = PREFS.map(function (p) { return p.replace(/[都府県]$/, ""); }).filter(function (p) { return p !== "沖縄" && !seen[p]; });
+    var dup = Object.keys(seen).filter(function (p) { return seen[p].length > 1; });
+    out.push(miss.length ? { level: "ng", text: "どの地域にも入っていない県：" + miss.join("、") } : { level: "ok", text: "全部の県（沖縄をのぞく）がどれかの地域に入っている" });
+    out.push(dup.length ? { level: "ng", text: "2つ以上の地域に入っている県：" + dup.map(function (p) { return p + "（" + seen[p].join("・") + "）"; }).join("、") } : { level: "ok", text: "同じ県が2つの地域に入っていない" });
+    ["路線便", "ミニ便"].forEach(function (kind) {
+      var bad = [], noTable = [];
+      regions.forEach(function (r) {
+        var rows = fareRows(fares, kind, r.地域, d);
+        if (!rows.length) { noTable.push(r.地域); return; }
+        // 同じ上限・同じ適用開始日の行が2つ（どちらが使われるかわからない）
+        var key = {};
+        fares.forEach(function (f) { if (f.種類 === kind && f.地域 === r.地域) { var k = f.上限 + "|" + ymd(f.適用開始日); key[k] = (key[k] || 0) + 1; } });
+        Object.keys(key).forEach(function (k) { if (key[k] > 1) bad.push(r.地域 + "の" + k.split("|")[0] + (kind === "路線便" ? "kg" : "個") + "（" + k.split("|")[1] + " から）が2行"); });
+        // 重い帯ほど安くなっている（入れ間違いのおそれ）
+        for (var i = 1; i < rows.length; i++) if (num(rows[i].金額) < num(rows[i - 1].金額)) bad.push(r.地域 + "：" + rows[i].上限 + "が" + rows[i - 1].上限 + "より安い");
+      });
+      if (noTable.length) out.push({ level: "warn", text: kind + "の表がない地域：" + noTable.join("、") });
+      out.push(bad.length ? { level: "ng", text: kind + "：" + bad.join("／") } : { level: "ok", text: kind + "：同じ帯の重なりなし・重い帯ほど高い" });
+    });
+    var future = fares.filter(function (f) { return f.適用開始日 && ymd(f.適用開始日) > d; });
+    if (future.length) out.push({ level: "warn", text: "まだ効いていない（予定の）運賃の行が " + future.length + " 行あります（" + future.map(function (f) { return ymd(f.適用開始日); }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join("・") + " から）" });
     return out;
   }
 
@@ -533,7 +606,8 @@
     rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
-    summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence
+    summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,
+    excSentence: excSentence, clsSentence: clsSentence, fareChecks: fareChecks
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.PriceCore = API;
