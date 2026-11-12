@@ -172,6 +172,32 @@ f = P.freight(data, [{ code: 'NOW', qty: 1 }, { code: 'T1', qty: 1 }], { pref: '
 assert.ok(f.warnings.some(w => /重さがわからない/.test(w)));
 assert.equal(f.amount, 2300); // わかる分だけで出す
 
+// --- 説明の文章・判定の表・詳細ログ・前回の受注との見比べ ---
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
+const ck = Object.fromEntries(r.checks.map(c => [c.item, c]));
+assert.equal(ck['在庫価格'].state, 'on');
+assert.equal(ck['例外'].state, 'warn'); // 未整理の参考行がある
+assert.equal(ck['特別な計算'].state, 'off');
+assert.ok(/在庫口なので、在庫価格（4掛）を使いました/.test(r.summary));
+assert.ok(/旧定価のままの得意先なら 11,360円/.test(r.summary));
+assert.deepEqual(r.steps.map(s => s.amount), [31300, 15650, 12520]); // 定価 → ランク → 在庫価格
+assert.equal(P.compareOrder(r, { date: '20261109', price: 11360 }), 'old');
+assert.equal(P.compareOrder(r, { date: '20261109', price: 12520 }), 'same');
+assert.equal(P.compareOrder(r, { date: '20261020', price: 11360 }), 'before');
+assert.equal(P.compareOrder(r, { date: '20261109', price: 9999 }), 'diff');
+assert.ok(/旧定価の 11,360円/.test(P.compareSentence(r, [{ date: '20261109', price: 11360 }])));
+r = P.unitPrice(data, { code: 'T1', qty: 60, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
+assert.ok(/「全員・50台以上」の例外（4.5掛）が登録されているため、ランクより例外を優先しました/.test(r.summary));
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-28', customer: cust('H01', 'G3', '5.25掛(A)') });
+assert.ok(/本部経由の得意先なので、販社への見積は 16,040円/.test(r.summary));
+assert.equal(r.checks.find(c => c.item === '特別な計算').text, '本部経由');
+r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-10-29', customer: cust('C4', 'G4', 'その他') });
+assert.ok(/決まった金額が登録されているため/.test(r.summary) && /運賃込みの得意先なので/.test(r.summary));
+f = P.freight(data, [{ code: 'T1', qty: 1 }, { code: 'OP/X', qty: 1 }], { pref: '東京都', date: '2026-11-11', personal: true });
+assert.ok(/送料は 東京都あて（南関東・西濃運輸）、路線便（合計40kg）で 2,300円 です。オプションは本体と一緒なので/.test(f.summary), f.summary);
+assert.ok(/個人宅あてなので2倍の 4,600円/.test(f.summary));
+assert.equal(f.checks.find(c => c.item === '個人宅').state, 'on');
+
 // --- CSV・県 ---
 assert.deepEqual(P.parseCSV('﻿a,b\r\n"x,1","y""z"\r\n'), [['a', 'b'], ['x,1', 'y"z']]);
 assert.deepEqual(P.toObjects('受注№\t品目ｺｰﾄﾞ\n1\tT1\n', '\t'), [{ '受注№': '1', '品目ｺｰﾄﾞ': 'T1' }]);
