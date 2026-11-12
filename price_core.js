@@ -320,15 +320,22 @@
 
     if (method === "本部経由") {
       // 業務内容まとめ（2026-04）：台車本体は本部経由。台車＋部品なら部品も本部経由（Aランク÷0.93）。
-      // 部品だけ・RIDE とアタッチメントは販社と直接（Bランク、運賃は通常）
-      var direct = /^RIDE/i.test(ctx.code) || /(^|[\/-])RA($|[\/-])/i.test(ctx.code) || (kind === "部品" && !ctx.withBody);
+      // RIDE とアタッチメントは販社と直接（Bランク、運賃は通常）。
+      // 部品だけは「販社と直接でもよい」だが、本部あての受注（2026-11）では部品だけでも本部経由で切っていたので、
+      // 本部経由を出したうえで、販社から直接来たときの金額も並べる
+      var direct = /^RIDE/i.test(ctx.code) || /(^|[\/-])RA($|[\/-])/i.test(ctx.code);
       if (!direct) {
         var q = ceil(price / 0.93, 10), o = round(q * 0.93, 1);
         out.explain.push("本部経由：販社への見積単価 ＝ ÷0.93 を10円単位で切り上げ → " + yen(q));
         out.explain.push("本部からの受注単価 ＝ ×0.93 を1円単位で四捨五入 → " + yen(o) + "（受注の得意先コード・備考は区分のメモを見る）");
         out.quotePrice = q; out.orderPrice = o; out.price = q;
+        if (kind === "部品" && !ctx.withBody) {
+          var b = round(list * 0.575, ROUND_UNIT);
+          out.directPrice = b;
+          out.warnings.push("部品だけの注文：販社から直接来たときは Bランク 5.75掛 → " + yen(b) + "（運賃は通常）");
+        }
       } else {
-        out.warnings.push("部品だけ・RIDE・アタッチメントは販社と直接取引。Bランク・運賃は通常（台車と一緒なら部品も本部経由）");
+        out.warnings.push("RIDE・アタッチメントは販社と直接取引。Bランク・運賃は通常");
         price = round(list * 0.575, ROUND_UNIT); out.k = 0.575;
         out.explain.push("販社と直接：Bランク 5.75掛 → " + yen(price));
         out.price = price;
@@ -341,6 +348,24 @@
         out.explain.push("運賃込み（" + (fareRegion || "近畿") + "あて1台分 " + yen(f) + "）→ " + yen(out.price));
       }
     } else out.price = price;
+
+    // 改定の切り替えは得意先ごとにずれる（2026-11 の受注の多くはまだ旧定価だった）。
+    // 定価が変わってから半年は、改定前の定価で計算した金額も並べる
+    if (!ctx._noOld && out.price !== null && out.price !== undefined) {
+      var prevRows = priceHistory(data.prices, ctx.code).filter(function (p) { return num(p.定価) !== null && ymd(p.適用開始日) < ymd(row.適用開始日); });
+      var since = new Date(ymd(row.適用開始日)), now = new Date(date);
+      if (prevRows.length && (now - since) / 86400000 <= 183) {
+        var dayBefore = new Date(since.getTime() - 86400000).toISOString().slice(0, 10);
+        var old = unitPrice(data, Object.assign({}, ctx, { date: dayBefore, _noOld: true }));
+        if (old.price !== null && old.price !== undefined && old.price !== out.price) {
+          out.oldPrice = old.price; out.oldOrderPrice = old.orderPrice;
+          out.oldListPrice = old.listPrice; out.revisedOn = ymd(row.適用開始日);
+          out.notes.push("改定前の定価（" + yen(old.listPrice) + "）のままなら " + yen(old.price) +
+            (old.orderPrice !== undefined && old.orderPrice !== null ? "（本部受注 " + yen(old.orderPrice) + "）" : "") +
+            "。改定の切り替えは得意先ごとに違うので、前回の受注と見比べる");
+        }
+      }
+    }
 
     if (isStock) out.notes.push("見積書には在庫価格を載せず「御社在庫品」と書く");
     relatedNotes(data.exceptions, ctx.code).forEach(function (e) {

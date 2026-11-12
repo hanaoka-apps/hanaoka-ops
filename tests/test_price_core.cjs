@@ -70,6 +70,13 @@ assert.equal(r.price, 15650); // 31300×0.5=15650（10円単位）
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-01', customer: cust('C1', 'G9', '5.25掛(A)') });
 assert.equal(r.price, 14910); // 28400×0.525=14910（10円単位。各社価格表の100円単位なら14900）
 
+// --- 改定から半年は、改定前の定価での金額も並べる ---
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
+assert.equal(r.oldPrice, 14200); // 28400×0.5
+assert.equal(r.revisedOn, '2026-11-01');
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2027-06-01', customer: cust('C1', 'G9', "5掛(A')") });
+assert.equal(r.oldPrice, undefined);
+
 // --- 在庫口の得意先コード → 社名の在庫口の掛率 ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
 assert.equal(r.isStock, true);
@@ -112,8 +119,10 @@ assert.equal(r.quotePrice, 16040); // 14910÷0.93=16032.3 → 16040
 assert.equal(r.orderPrice, 14917); // 16040×0.93=14917.2 → 14917
 // 部品だけなら販社と直接・Bランク
 r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-11-11', customer: cust('H01', 'G3', '5.25掛(A)') });
-assert.equal(r.price, 9950); // 17300×0.575=9947.5 → 9950
-assert.ok(r.warnings.some(w => /直接取引/.test(w)));
+// 部品だけでも本部あてなら本部経由。販社から直接来たときの Bランクも並べる
+assert.equal(r.quotePrice, 9770);
+assert.equal(r.directPrice, 9950); // 17300×0.575=9947.5 → 9950
+assert.ok(r.warnings.some(w => /販社から直接/.test(w)));
 // 台車と一緒なら部品も本部経由（Aランク÷0.93）
 r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-11-11', customer: cust('H01', 'G3', '5.25掛(A)'), withBody: true });
 assert.equal(r.quotePrice, 9770); // 17300×0.525=9082.5 → 9080、÷0.93=9763.4 → 9770
