@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EC受注の状況</title>
+<link rel="icon" type="image/svg+xml" href="favicon_ec.svg">
+<link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
+<script src="usage_log.js?v=20261106"></script><!-- 使われ方の記録（管理者だけが見られる） -->
+<script src="ec_sales_core.js?v=32"></script>
+<script src="ship_core.js?v=13"></script>
+<script src="ec_viewer_core.js?v=1"></script>
+<link rel="stylesheet" href="ec_viewer.css?v=1">
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/><path d="M8.5 11h5"/></svg></div>
+    <h1>EC受注の状況</h1>
+    <p>花岡車輌 業務アプリ</p>
+    <button id="loginBtn" data-ha-login>Microsoft アカウントでサインイン</button>
+    <div id="loginError"></div>
+    <div class="login-foot">EC（Shopify）の注文が、いまどこまで進んだかを探します<br>お客様からの問い合わせの確認用です（見るだけの画面です）</div>
+  </div>
+</div>
+
+<header class="app-hdr">
+  <a class="hub-home" href="hanaoka_hub.html" title="HANAOKA HUBへ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>HUB</a>
+  <h1><span class="dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg></span>EC受注の状況</h1>
+  <div class="grow"></div>
+  <div class="userchip"><span class="avatar" id="sp-avatar"></span><span id="sp-user"></span></div>
+  <button class="hbtn" id="btn-reload" title="SharePoint のデータを読み直す">↻ 更新</button>
+</header>
+<div id="statusBar"><span id="sp-status">未サインイン</span></div>
+<div id="warnBox" hidden></div>
+
+<div class="wrap">
+  <details class="panel help" id="helpBox">
+    <summary><b>見方（注文の状況）</b></summary>
+    <ul>
+      <li><b>① Shopify受注</b>：Shopify に注文が入った。SMILE の受注伝票は、まだ</li>
+      <li><b>② 受注伝票作成済（出荷待ち）</b>：SMILE に受注伝票ができた。出荷予定日が決まっていて、まだ出荷されていない（出荷伝票ができて、送り状番号を待っている状態も含みます）</li>
+      <li><b>③ 出荷済</b>：送り状番号が出た。Shopify への登録は、まだ</li>
+      <li><b>④ Shopify登録済（完了）</b>：Shopify に送り状番号を登録して、お客様に発送のお知らせが届いた</li>
+      <li><b>キャンセル</b>：Shopify でキャンセルになった注文</li>
+    </ul>
+    <h3>探し方</h3>
+    <ul>
+      <li>注文番号・お客様の名前・会社・電話・メール・住所・送り状番号・SMILE の受注№・商品名・担当（川島など）を、そのまま入れて探せます</li>
+      <li>空白で区切ると、<b>すべてを含む</b>注文だけが出ます（例：<code>山田 大阪</code>）。全角と半角・カタカナとひらがな・番号のハイフンは区別しません</li>
+      <li>「出荷予定日を過ぎている」は、出荷予定日を過ぎたのに、まだ出荷されていない注文です</li>
+    </ul>
+    <h3>知っておくこと</h3>
+    <ul>
+      <li>Shopify の注文は、<b>直近 55 日分</b>です。それより古い注文は、SMILE と出荷のデータだけで出ます（Shopify の状況は分かりません）</li>
+      <li>Shopify の発送状況は、毎時取得しています。Shopify で発送済みにしても、反映まで<b>最大 1 時間</b>ほどかかります（画面上の「更新」の時刻を見てください）</li>
+    </ul>
+  </details>
+
+  <div class="panel">
+    <form id="searchForm" class="srow" autocomplete="off">
+      <input type="search" id="f-q" placeholder="注文番号・お客様名・電話・メール・住所・送り状番号・受注№・商品名など（空白で区切ると、すべてを含むものだけ）" aria-label="検索">
+      <button class="btn" type="submit">検索</button>
+      <button class="btn sec" type="button" id="btn-clear">クリア</button>
+    </form>
+    <div class="srow filters"><div class="row" id="stages" style="gap:6px"></div></div>
+    <div class="srow filters">
+      <div class="row" id="periods" style="gap:6px"></div>
+      <label class="muted">注文日 <input type="date" id="f-from"> ～ <input type="date" id="f-to"></label>
+      <label class="muted">運送会社 <select id="f-carrier"></select></label>
+      <label class="muted">担当 <select id="f-tag"></select></label>
+    </div>
+  </div>
+
+  <div id="summary" class="muted"></div>
+  <div id="list"></div>
+  <div id="moreBox" hidden><button class="btn sec" id="btn-more">さらに表示</button></div>
+</div>
+
+<script src="ec_viewer.js?v=1"></script>
+</body>
+</html>
