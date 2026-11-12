@@ -467,6 +467,46 @@
     return out;
   }
 
+  // ---------- 品目マスタとの照合（エクセルの型式 → SMILE の品目コード） ----------
+  // 表記ゆれをならす：全角半角・大文字小文字・ハイフンや空白・小さいカナ
+  var SMALLK = { "ァ": "ア", "ィ": "イ", "ゥ": "ウ", "ェ": "エ", "ォ": "オ", "ャ": "ヤ", "ュ": "ユ", "ョ": "ヨ", "ッ": "ツ", "ヮ": "ワ" };
+  function normCode(s) {
+    return String(s || "").normalize("NFKC").toUpperCase().replace(/[ァィゥェォャュョッヮ]/g, function (c) { return SMALLK[c]; })
+      .replace(/[\s\-‐－ー―・\/／_.()（）]/g, "");
+  }
+  // エクセルのメモ書きが型式の欄に入ったもの（「1000台～」「2014.12.15付見積もり」「5,000＋700」など）
+  function looksLikeMemo(code) {
+    var c = String(code || "");
+    return (/[ぁ-んァ-ヶ一-龥]/.test(c) && (/\d/.test(c) || c.length > 8)) ||
+      /[～〜＋+=＝円]|^\d+(GB|TB|m|台|個)|^[(（]|付見積|原価|パック|セット|ロット/.test(c);
+  }
+  // items: { 品目ｺｰﾄﾞ: { name, kakaku } }。返す：{ kind, code?, cands? }
+  //   ok＝品目マスタにある / norm＝書き方違いで1つに決まる / kakaku＝価格表記載名で1つに決まる /
+  //   multi＝候補が複数 / memo＝メモ書きらしい / unknown＝わからない
+  function matchItemCode(code, items, index) {
+    if (items[code]) return { kind: "ok", code: code };
+    index = index || buildItemIndex(items);
+    var n = normCode(code);
+    if (index.byCode[n] && index.byCode[n].length === 1) return { kind: "norm", code: index.byCode[n][0] };
+    var k = index.byKakaku[n] || [];
+    // 枝番（/E 輸出・/T 特注・/C キャスター変更など）のない品目コードを先に見る
+    var plain = k.filter(function (c) { return c.indexOf("/") < 0; });
+    if (plain.length === 1) return { kind: "kakaku", code: plain[0], cands: k };
+    if (k.length === 1) return { kind: "kakaku", code: k[0], cands: k };
+    if (k.length > 1) return { kind: "multi", cands: (plain.length ? plain : k).slice(0, 8) };
+    if (looksLikeMemo(code)) return { kind: "memo" };
+    return { kind: "unknown" };
+  }
+  function buildItemIndex(items) {
+    var byCode = {}, byKakaku = {};
+    Object.keys(items).forEach(function (c) {
+      (byCode[normCode(c)] = byCode[normCode(c)] || []).push(c);
+      var kk = items[c] && items[c].kakaku;
+      if (kk) (byKakaku[normCode(kk)] = byKakaku[normCode(kk)] || []).push(c);
+    });
+    return { byCode: byCode, byKakaku: byKakaku };
+  }
+
   // ---------- 設定の行を人の言葉にする（一覧・編集・確認が必要の画面で使う） ----------
   var EX_ORDER = { "得意先": "1番目（得意先コード）", "社名": "2番目（得意先社名）", "ランク": "3番目（ランク）", "全部": "4番目（全員）" };
   function datesText(r) {
@@ -646,7 +686,8 @@
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,
-    excSentence: excSentence, clsSentence: clsSentence, fareChecks: fareChecks, fareQuote: fareQuote, fareRows: fareRows
+    excSentence: excSentence, clsSentence: clsSentence, fareChecks: fareChecks, fareQuote: fareQuote, fareRows: fareRows,
+    normCode: normCode, looksLikeMemo: looksLikeMemo, matchItemCode: matchItemCode, buildItemIndex: buildItemIndex
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.PriceCore = API;

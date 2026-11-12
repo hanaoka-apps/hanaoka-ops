@@ -243,6 +243,20 @@ assert.equal(q.quoteAmount, 3120);
 q = P.fareQuote(data, { pref: '北海道', kg: 10, date: '2026-11-11' });
 assert.ok(/どの地域にも入っていません/.test(q.warnings.join()));
 
+// --- 品目マスタとの照合 ---
+const IT = { UDL15: { kakaku: 'UDL150' }, 'UDL15/E': { kakaku: 'UDL150' }, 'UDL15/T': { kakaku: 'UDL150' }, PKACRS: { kakaku: '' }, 'PKACRS-GS': { kakaku: '' },
+  APABT2: { kakaku: 'PABT2' }, NPABT2: { kakaku: 'PABT2' }, 'NPABT2/C': { kakaku: 'PABT2' }, LVC75: {}, ﾀﾞﾝﾃﾞｨ: {} };
+assert.equal(P.matchItemCode('UDL15', IT).kind, 'ok');
+assert.deepEqual(P.matchItemCode('PKA-CRS-GS', IT), { kind: 'norm', code: 'PKACRS-GS' });
+assert.equal(P.matchItemCode('lvc-75', IT).code, 'LVC75');
+const m1 = P.matchItemCode('UDL150', IT); assert.equal(m1.kind, 'kakaku'); assert.equal(m1.code, 'UDL15');
+const m2 = P.matchItemCode('PABT2', IT); assert.equal(m2.kind, 'multi'); assert.deepEqual(m2.cands, ['APABT2', 'NPABT2']);
+assert.equal(P.matchItemCode('1000台～', IT).kind, 'memo');
+assert.equal(P.matchItemCode('2014.12.15付見積もり', IT).kind, 'memo');
+assert.equal(P.matchItemCode('5,000＋700＝5700', IT).kind, 'memo');
+assert.equal(P.matchItemCode('EX:135', IT).kind, 'unknown');
+assert.equal(P.normCode('ﾀﾞﾝﾃﾞｨ'), P.normCode('ダンデイ'));
+
 // --- CSV・県 ---
 assert.deepEqual(P.parseCSV('﻿a,b\r\n"x,1","y""z"\r\n'), [['a', 'b'], ['x,1', 'y"z']]);
 assert.deepEqual(P.toObjects('受注№\t品目ｺｰﾄﾞ\n1\tT1\n', '\t'), [{ '受注№': '1', '品目ｺｰﾄﾞ': 'T1' }]);

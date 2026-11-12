@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261112f"></script>
+<script src="price_core.js?v=20261112g"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -77,6 +77,7 @@
   .tl li.now::before{background:var(--green);border-color:var(--green)} .tl li.plan::before{background:var(--navy-soft);border-color:var(--navy)}
   .tl .d{font-weight:700;font-variant-numeric:tabular-nums} .tl .p{font-size:16px;font-weight:800;margin:0 8px;font-variant-numeric:tabular-nums}
   .tl .chg{font-size:12px;color:var(--sub)} .tl .act{float:right}
+  .banner{background:var(--amber-soft);border:1px solid var(--orange);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   /* ---- 運送会社の色（テーマの色から）とロゴ。西濃＝青、第一貨物＝緑、トナミ＝オレンジ、ミニ便＝紫 ---- */
   :root{--c-seino:var(--cyan);--c-daiichi:var(--green);--c-tonami:var(--orange);--c-mini:var(--purple);--c-other:var(--mute)}
   .seino{--cc:var(--c-seino)} .daiichi{--cc:var(--c-daiichi)} .tonami{--cc:var(--c-tonami)} .mini{--cc:var(--c-mini)} .other,.none{--cc:var(--c-other)}
@@ -263,6 +264,7 @@
       <div class="navgrp">送料の決まり</div>
       <button class="navi" data-view="fare"><span class="no">⑤</span>運賃<span class="cnt" id="cnt-fare" hidden></span></button>
       <div class="navgrp">運用</div>
+      <button class="navi" data-view="match">品目マスタとの照合<span class="cnt" id="cnt-match" hidden></span></button>
       <button class="navi" data-view="import">最初のデータの取り込み</button>
     </nav>
 
@@ -305,6 +307,7 @@
 
     <!-- ===== ルールの一覧（定価・得意先の区分・例外・運賃で共通） ===== -->
     <section class="view" id="view-check"></section>
+    <section class="view" id="view-match"></section>
     <section class="view" id="view-price"></section>
     <section class="view" id="view-rank"></section>
     <section class="view" id="view-cls"></section>
@@ -376,7 +379,7 @@ const listIds={};
 
 let msalInstance=null, account=null, driveId=null;
 const RULES={price:[],cls:[],exc:[],fare:[]};   // { spId, data }
-let CUST=[], CUSTMAP={}, ITEMS={}, ITEMKEY={}, ORDERS=[], ordersInfo='';
+let CUST=[], CUSTMAP={}, ITEMS={}, ITEMKEY={}, ITEMINFO={}, ORDERS=[], ordersInfo='';
 // 探すときの表記ゆれをならす：全角・半角、大文字・小文字、ハイフン・空白、小さいカナ（ﾀﾞﾝﾃﾞｲ と ダンディ、UDA-LS と UDALS）
 const SMALL={'ァ':'ア','ィ':'イ','ゥ':'ウ','ェ':'エ','ォ':'オ','ャ':'ヤ','ュ':'ユ','ョ':'ヨ','ッ':'ツ','ヮ':'ワ'};
 const norm=s=>String(s||'').normalize('NFKC').toUpperCase().replace(/[ァィゥェォャュョッヮ]/g,c=>SMALL[c]).replace(/[\s\-‐－ー―・/／_.()（）]/g,'');
@@ -551,10 +554,15 @@ async function loadAll(){
   const errs=[];
   const pr=loadRules();
   const pc=fetchText(FILES.customers).then(t=>{ CUST=PriceCore.toObjects(t).map(PriceCore.customerFromMaster).filter(c=>c.code&&!/^[×✕]/.test(c.name)); CUSTMAP={}; CUST.forEach(c=>CUSTMAP[c.code]=c); }).catch(e=>errs.push('得意先マスタ：'+e.message));
-  const pi=fetchText(FILES.items).then(t=>{ ITEMS={}; ITEMKEY={};
-    PriceCore.toObjects(t).forEach(o=>{ const c=o['品目ｺｰﾄﾞ']; if(!c) return; ITEMS[c]=o['品目名']||'';
+  const pi=fetchText(FILES.items).then(t=>{ ITEMS={}; ITEMKEY={}; ITEMINFO={};
+    // 「改廃項目」は同じ名前の列が2つ（コードと名前）あるので、列の位置で読む
+    const rows=PriceCore.parseCSV(t), H=rows[0]||[], ix=n=>H.indexOf(n), last=n=>H.lastIndexOf(n);
+    const I={code:ix('品目ｺｰﾄﾞ'),name:ix('品目名'),dai:ix('大分類名'),chu:ix('中分類名'),sho:ix('小分類名'),kakaku:ix('価格表記載名名'),kaihai:last('改廃項目'),souko:ix('基準倉庫名'),kata:ix('型番'),wt:ix('重量')};
+    rows.slice(1).forEach(r=>{ const c=r[I.code]; if(!c) return; const g=k=>I[k]>=0?(r[I[k]]||''):'';
+      ITEMS[c]=g('name');
+      ITEMINFO[c]={name:g('name'),dai:g('dai'),chu:g('chu'),sho:g('sho'),kakaku:g('kakaku'),kaihai:g('kaihai'),souko:g('souko'),wt:g('wt')};
       // 品目ｺｰﾄﾞ・品目名・価格表記載名のどれでも探せるように、表記ゆれをならした文字を持っておく
-      ITEMKEY[c]=norm(c+' '+(o['品目名']||'')+' '+(o['価格表記載名名']||'')+' '+(o['型番']||'')); }); }).catch(e=>errs.push('品目マスタ：'+e.message));
+      ITEMKEY[c]=norm(c+' '+g('name')+' '+g('kakaku')+' '+g('kata')+' '+g('dai')+' '+g('chu')); }); }).catch(e=>errs.push('品目マスタ：'+e.message));
   const po=fetchRecentOrders().then(r=>{ ORDERS=r.rows; ordersInfo=ORDERS.length?`受注明細 ${ORDERS[ORDERS.length-1].date}〜${ORDERS[0].date}`:''; }).catch(e=>{ console.warn(e); errs.push('受注明細（前回の受注は出ません）'); });
   const miss=await pr; await Promise.all([pc,pi,po]);
   const cnt=Object.keys(LISTS).map(k=>`${LISTS[k].label} ${RULES[k].length}行`).join('・');
@@ -567,6 +575,7 @@ function updateCounts(){
   Object.keys(LISTS).forEach(k=>{ const n=RULES[k].filter(r=>r.data.要確認===true).length, e=document.getElementById('cnt-'+k);
     e.hidden=!n; e.textContent=n; e.title=`要確認 ${n}行`; });
   const c=checkItems().count, e=document.getElementById('cnt-check'); e.hidden=!c; e.textContent=c; e.title=`確認が必要 ${c}件（未整理の例外をのぞく）`;
+  if(Object.keys(ITEMINFO).length){ const mc=matchResult().count, me=document.getElementById('cnt-match'); me.hidden=!mc; me.textContent=mc; me.title=`品目マスタにない型式 ${mc}件`; }
 }
 // 定価リストの型式（候補の「定価あり」の判定と、品目マスタにない型式の品名に使う）
 let PRICED=new Map();
@@ -901,7 +910,7 @@ function renderCheckView(){
 }
 // 設定の行を人の言葉に（③ 得意先の区分・④ 例外）
 function sayOf(key,d){ return key==='exc'?PriceCore.excSentence(d):key==='cls'?PriceCore.clsSentence(d):''; }
-function renderRuleViews(){ Object.keys(LISTS).forEach(renderRuleView); renderRankView(); renderCheckView(); }
+function renderRuleViews(){ Object.keys(LISTS).forEach(renderRuleView); renderRankView(); renderCheckView(); renderMatchView(); }
 function renderRuleView(key){
   if(key==='price') return renderPriceView();
   if(key==='fare') return renderFareView();
@@ -926,6 +935,114 @@ function renderRuleView(key){
   el.querySelector('[data-new]').onclick=()=>openEdit(key,null);
   el.querySelectorAll('tr[data-id]').forEach(tr=>tr.onclick=()=>openEdit(key,RULES[key].find(r=>r.spId===tr.dataset.id)));
 }
+// ---------- 品目マスタとの照合：エクセルの型式を SMILE の品目コードにそろえる ----------
+// 開くたびに最新の品目マスタと照合する。直す・消すは、選んでボタンを押したときだけ（確認つき）
+function matchResult(){
+  const items=ITEMINFO, idx=PriceCore.buildItemIndex(items);
+  const codes=new Map();
+  ['price','exc'].forEach(k=>RULES[k].forEach(r=>{ const c=r.data.型式; if(!c) return; if(!codes.has(c)) codes.set(c,{price:[],exc:[]}); codes.get(c)[k].push(r); }));
+  const out={norm:[],kakaku:[],multi:[],memo:[],unknown:[],ok:0};
+  codes.forEach((rows,code)=>{ const m=PriceCore.matchItemCode(code,items,idx);
+    if(m.kind==='ok'){ out.ok++; return; }
+    out[m.kind].push(Object.assign({from:code,rows},m)); });
+  ['norm','kakaku','multi','memo','unknown'].forEach(k=>out[k].sort((a,b)=>(b.rows.exc.length+b.rows.price.length)-(a.rows.exc.length+a.rows.price.length)||(a.from<b.from?-1:1)));
+  out.count=out.norm.length+out.kakaku.length+out.multi.length+out.memo.length+out.unknown.length;
+  return out;
+}
+function curPriceText(rows){ const s=priceStatus(rows.price,today()); return s.cur?yen(s.cur.data.定価)+'円':rows.price.length?'（定価なし）':'－'; }
+function itemDesc(code){ const i=ITEMINFO[code]; if(!i) return ''; return `${i.name}${i.dai?`（${i.dai}${i.chu?'・'+i.chu:''}）`:''}${i.kaihai&&i.kaihai!=='販売中'?` <span class="pill warn">${esc(i.kaihai)}</span>`:''}`; }
+async function renameCodes(pairs){
+  // pairs: [{from,to}]。定価と例外の行の型式を直す。品名は品目マスタの名前にそろえ、メモに元の書き方を残す
+  const now=new Date().toISOString(), who=account&&account.name||'';
+  const reqs=[];
+  for(const key of ['price','exc']){
+    const id=await findList(key); if(!id) continue;
+    pairs.forEach(p=>RULES[key].filter(r=>r.data.型式===p.from).forEach(r=>{
+      const d=Object.assign({},r.data,{型式:p.to,更新者:who,更新日時:now});
+      if(key==='price') d.品名=ITEMS[p.to]||d.品名;
+      d.メモ=((d.メモ||'')+` ／エクセルの型式「${p.from}」を品目コード「${p.to}」に直した（${now.slice(0,10)}）`).replace(/^ ／/,'');
+      reqs.push({method:'PATCH',url:`/sites/${SITE_ID}/lists/${id}/items/${r.spId}/fields`,headers:{'Content-Type':'application/json'},body:fieldsOf(key,d)}); }));
+  }
+  return batchRun(reqs);
+}
+async function deleteCodes(codes){
+  const reqs=[];
+  for(const key of ['price','exc']){
+    const id=await findList(key); if(!id) continue;
+    RULES[key].filter(r=>codes.includes(r.data.型式)).forEach(r=>reqs.push({method:'DELETE',url:`/sites/${SITE_ID}/lists/${id}/items/${r.spId}`}));
+  }
+  return batchRun(reqs);
+}
+async function afterMatchChange(res,msg){
+  setStatus('loading','読み直しています…',true);
+  RULES.price=await readList('price')||[]; RULES.exc=await readList('exc')||[];
+  fillCodeList(); updateCounts(); renderRuleViews(); renderMatchView(); recalc();
+  setStatus(res.failed.length?'error':'',`${msg}：${res.done}行${res.failed.length?`。できなかった行 ${res.failed.length}：${esc(res.failed.slice(0,2).join(' / '))}（直す権限がないかもしれません）`:''}`);
+}
+function renderMatchView(){
+  const el=document.getElementById('view-match'); if(!el) return;
+  if(!Object.keys(ITEMINFO).length){ el.innerHTML='<h2>品目マスタとの照合</h2><div class="card muted">品目マスタを読めていません。上の「更新」で読み直してください。</div>'; return; }
+  const m=matchResult();
+  const imp=x=>`定価 ${x.rows.price.length}行${x.rows.exc.length?`・例外 ${x.rows.exc.length}行`:''}`;
+  const dup=to=>PRICED.has(to)?' <span class="pill warn" title="直すと、同じ品目コードの定価の行が重なります。商品の詳細で古い方を消してください">すでに定価あり</span>':'';
+  const oneTable=(list,why)=>list.length?`<table class="t"><thead><tr><th><input type="checkbox" data-all checked></th><th>エクセルの型式</th><th>→ SMILE の品目コード</th><th>品目名（分類）</th><th>今の定価</th><th>直す行</th></tr></thead><tbody>
+      ${list.map(x=>`<tr><td><input type="checkbox" data-pick value="${esc(x.from)}" data-to="${esc(x.code)}" ${PRICED.has(x.code)?'':'checked'}></td><td>${esc(x.from)}</td><td><b>${esc(x.code)}</b>${dup(x.code)}</td><td>${itemDesc(x.code)}</td><td class="num">${curPriceText(x.rows)}</td><td class="small">${imp(x)}</td></tr>`).join('')}</tbody></table>`:'<div class="small ok">✅ ありません</div>';
+  el.innerHTML=`<h2>品目マスタとの照合</h2>
+    <p class="lead">定価・例外の「型式」を、SMILE の<b>品目コード</b>にそろえます。エクセルの型式（UDL150 など）と SMILE の品目コード（UDL15 など）が違うと、早見で「定価なし」になります。開くたびに最新の品目マスタと照らし合わせます。直す・消すは、選んでボタンを押したときだけ行います（例外の行も一緒に直します）。</p>
+    <div class="card"><div class="stats">
+      <div class="stat"><div class="n">${m.ok}</div><div class="l">✅ 品目マスタにある型式</div></div>
+      <div class="stat"><div class="n">${m.norm.length+m.kakaku.length}</div><div class="l">直す候補（品目コードが1つに決まる）</div></div>
+      <div class="stat"><div class="n">${m.multi.length}</div><div class="l">候補が複数（選んでもらう）</div></div>
+      <div class="stat"><div class="n">${m.memo.length}</div><div class="l">メモ書きらしい（消す候補）</div></div>
+      <div class="stat"><div class="n">${m.unknown.length}</div><div class="l">わからない（人が決める）</div></div></div></div>
+    <div class="card" id="mNorm"><h3>① 直す候補（品目コードが1つに決まる） <span class="pill">${m.norm.length+m.kakaku.length}</span></h3>
+      <div class="small muted">書き方の違い（ハイフン・全角など）か、SMILE の「価格表記載名」で1つに決まったもの。枝番（/E 輸出・/T 特注・/C キャスター変更など）のない品目コードを選んでいます。「すでに定価あり」は、直すと定価の行が重なるので最初は外してあります。</div>
+      ${oneTable(m.norm.concat(m.kakaku))}
+      ${m.norm.length+m.kakaku.length?'<div class="tools" style="margin-top:8px"><button class="btn pri" data-apply="mNorm">選んだものを品目コードに直す</button></div>':''}</div>
+    <div class="card" id="mMulti"><h3>② 候補が複数（どれか選ぶ） <span class="pill">${m.multi.length}</span></h3>
+      <div class="small muted">価格表記載名が同じ品目コードがいくつかあるもの（例：PABT2 → APABT2／NPABT2）。正しいものを選んでください。決められないものは「直さない」のままで大丈夫です。</div>
+      ${m.multi.length?`<table class="t"><thead><tr><th>エクセルの型式</th><th>→ SMILE の品目コード</th><th>今の定価</th><th>直す行</th></tr></thead><tbody>${m.multi.map(x=>`<tr><td>${esc(x.from)}</td><td><select data-multi="${esc(x.from)}"><option value="">（直さない）</option>${x.cands.map(c=>`<option value="${esc(c)}">${esc(c)}　${esc(ITEMS[c]||'')}${ITEMINFO[c]&&ITEMINFO[c].kaihai&&ITEMINFO[c].kaihai!=='販売中'?'（'+esc(ITEMINFO[c].kaihai)+'）':''}${PRICED.has(c)?'（すでに定価あり）':''}</option>`).join('')}</select></td><td class="num">${curPriceText(x.rows)}</td><td class="small">${imp(x)}</td></tr>`).join('')}</tbody></table>
+        <div class="tools" style="margin-top:8px"><button class="btn pri" data-apply="mMulti">選んだものを品目コードに直す</button></div>`:'<div class="small ok">✅ ありません</div>'}</div>
+    <div class="card" id="mMemo"><h3>③ メモ書きらしい（消す候補） <span class="pill">${m.memo.length}</span></h3>
+      <div class="small muted">エクセルのメモ（「1000台～」「2014.12.15付見積もり」「5,000＋700」など）が型式の欄に入ったもの。消すと、その型式の定価の行と例外の行が消えます（SharePoint のごみ箱から戻せます）。必要なものはチェックを外してください。</div>
+      ${m.memo.length?`<table class="t"><thead><tr><th><input type="checkbox" data-all></th><th>型式の欄の文字</th><th>今の定価</th><th>消す行</th><th>出典</th></tr></thead><tbody>${m.memo.map(x=>`<tr><td><input type="checkbox" data-pick value="${esc(x.from)}"></td><td>${esc(x.from)}</td><td class="num">${curPriceText(x.rows)}</td><td class="small">${imp(x)}</td><td class="small muted">${esc((x.rows.price[0]||x.rows.exc[0]).data.出典||'')}</td></tr>`).join('')}</tbody></table>
+        <div class="tools" style="margin-top:8px"><button class="btn danger" data-del="mMemo">選んだものを消す</button></div>`:'<div class="small ok">✅ ありません</div>'}</div>
+    <div class="card" id="mUnknown"><h3>④ わからない（人が決める） <span class="pill">${m.unknown.length}</span></h3>
+      <div class="small muted">品目マスタで見つからないもの。SMILE の品目コードがわかれば入れて「直す」、いらなければ「消す」。わからないものはそのままで大丈夫です（早見では使われないだけです）。</div>
+      ${m.unknown.length?`<table class="t"><thead><tr><th>エクセルの型式</th><th>今の定価</th><th>直す行</th><th>SMILE の品目コード</th><th></th></tr></thead><tbody>${m.unknown.map(x=>`<tr><td>${esc(x.from)}</td><td class="num">${curPriceText(x.rows)}</td><td class="small">${imp(x)}</td>
+        <td><input data-uk="${esc(x.from)}" placeholder="品目コード" style="width:150px"><span class="small muted" data-ukname></span></td><td style="white-space:nowrap"><button class="btn" data-ukfix="${esc(x.from)}">直す</button> <button class="btn danger" data-ukdel="${esc(x.from)}">消す</button></td></tr>`).join('')}</tbody></table>`:'<div class="small ok">✅ ありません</div>'}</div>`;
+  // チェックをまとめて付け外す
+  el.querySelectorAll('[data-all]').forEach(a=>a.onchange=()=>a.closest('table').querySelectorAll('[data-pick]').forEach(c=>c.checked=a.checked));
+  el.querySelectorAll('[data-apply]').forEach(b=>b.onclick=async()=>{
+    const box=document.getElementById(b.dataset.apply);
+    const pairs=b.dataset.apply==='mMulti'?[...box.querySelectorAll('[data-multi]')].filter(s=>s.value).map(s=>({from:s.dataset.multi,to:s.value}))
+      :[...box.querySelectorAll('[data-pick]:checked')].map(c=>({from:c.value,to:c.dataset.to}));
+    if(!pairs.length) return alert('直すものを選んでください');
+    if(!confirm(`${pairs.length}件の型式を品目コードに直します（定価と例外の行）。よろしいですか？\n例：${pairs.slice(0,3).map(p=>p.from+' → '+p.to).join('、')}`)) return;
+    b.disabled=true; setStatus('loading','型式を直しています…',true);
+    try{ await afterMatchChange(await renameCodes(pairs),'品目コードに直しました'); }catch(e){ setStatus('error','直せませんでした：'+esc(e.message)); b.disabled=false; }
+  });
+  el.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+    const codes=[...document.getElementById(b.dataset.del).querySelectorAll('[data-pick]:checked')].map(c=>c.value);
+    if(!codes.length) return alert('消すものを選んでください');
+    if(!confirm(`${codes.length}件の型式の、定価と例外の行を消します。よろしいですか？（SharePoint のごみ箱から戻せます）`)) return;
+    b.disabled=true; setStatus('loading','消しています…',true);
+    try{ await afterMatchChange(await deleteCodes(codes),'消しました'); }catch(e){ setStatus('error','消せませんでした：'+esc(e.message)); b.disabled=false; }
+  });
+  // わからない：品目コードを入れると品目名を出し、品目マスタにあれば直せる
+  el.querySelectorAll('[data-uk]').forEach(inp=>inp.oninput=()=>{ const c=resolveCode(inp.value), s=inp.parentElement.querySelector('[data-ukname]'); s.innerHTML=ITEMS[c]!==undefined?'　'+itemDesc(c):inp.value?'　品目マスタにありません':''; });
+  el.querySelectorAll('[data-ukfix]').forEach(b=>b.onclick=async()=>{
+    const from=b.dataset.ukfix, to=resolveCode(el.querySelector(`[data-uk="${CSS.escape(from)}"]`).value);
+    if(ITEMS[to]===undefined) return alert('品目マスタにある品目コードを入れてください');
+    if(!confirm(`「${from}」を品目コード「${to}」（${ITEMS[to]}）に直します。よろしいですか？`)) return;
+    try{ await afterMatchChange(await renameCodes([{from,to}]),'品目コードに直しました'); }catch(e){ setStatus('error','直せませんでした：'+esc(e.message)); }
+  });
+  el.querySelectorAll('[data-ukdel]').forEach(b=>b.onclick=async()=>{
+    const from=b.dataset.ukdel; if(!confirm(`「${from}」の定価と例外の行を消します。よろしいですか？（SharePoint のごみ箱から戻せます）`)) return;
+    try{ await afterMatchChange(await deleteCodes([from]),'消しました'); }catch(e){ setStatus('error','消せませんでした：'+esc(e.message)); }
+  });
+}
+
 // ---------- 運送会社：色とロゴ（ロゴは出荷・配送の画面と同じ logos/ のもの） ----------
 const CARRIER={ '西濃運輸':{cls:'seino',logo:'logos/seino.svg'}, '第一貨物':{cls:'daiichi',logo:'logos/daiichi.png'}, 'トナミ運輸':{cls:'tonami',logo:'logos/tonami.png'}, 'ミニ便':{cls:'mini',logo:''} };
 const carrierCls=n=>(CARRIER[n]||{}).cls||'other';
@@ -1181,32 +1298,42 @@ function renderPriceView(){
   productGroups().forEach((rows,code)=>{
     const s=priceStatus(rows,date), any=rows.slice().sort((a,b)=>a.data.適用開始日<b.data.適用開始日?1:-1)[0].data;
     const ex=excOfCode(code), exN=ex.filter(r=>r.data.対象の種類!=='未整理').length, noteN=ex.length-exN;
-    list.push({code,rows,s,name:any.品名||ITEMS[code]||'',kind:any.商品の種類||'',kg:rows.map(r=>r.data.運賃の重量kg).find(v=>v!=null),
-      exN,noteN,check:rows.some(r=>r.data.要確認===true)});
+    const info=ITEMINFO[code];
+    list.push({code,rows,s,name:(info&&info.name)||any.品名||'',kind:any.商品の種類||'',kg:rows.map(r=>r.data.運賃の重量kg).find(v=>v!=null),
+      info,dai:info?info.dai||'（分類なし）':'品目マスタにない',exN,noteN,check:rows.some(r=>r.data.要確認===true)});
   });
   const t=norm(st.q);
+  const dais=[...new Set(list.map(x=>x.dai))].sort((a,b)=>a==='品目マスタにない'?1:b==='品目マスタにない'?-1:a<b?-1:1);
+  const notInMaster=list.filter(x=>!x.info).length;
   const shown=list.filter(x=>{
     if(st.chk&&!x.check) return false;
+    if(st.dai&&x.dai!==st.dai) return false;
     if(st.f==='plan'&&!x.s.plan.length) return false;
     if(st.f==='rev'&&x.s.priced.length<2) return false;
     if(st.f==='wonly'&&x.s.priced.length) return false;
     if(st.f==='nokg'&&x.kg!=null) return false;
     return !t||norm(x.code+' '+x.name+' '+(ITEMKEY[x.code]||'')).includes(t);
-  }).sort((a,b)=>a.code<b.code?-1:1);
+  }).sort((a,b)=>(a.info?0:1)-(b.info?0:1)||(a.dai<b.dai?-1:a.dai>b.dai?1:0)||(a.code<b.code?-1:1));
   const cur=x=>x.s.cur?x.s.cur.data:null;
-  el.innerHTML=`<h2>① 定価</h2><p class="lead">単価の1段目。商品ごとに、今日の時点で有効な定価を出します。行を押すと、その商品の改定の履歴（タイムライン）・運賃の重さ・この商品の例外が開きます。改定のときは古い行を消さず「改定を足す」で新しい適用開始日の行を足します。</p>
-    <div class="tools"><input type="search" value="${esc(st.q)}" placeholder="探す（型式・品名）" data-q>
+  el.innerHTML=`<h2>① 定価</h2><p class="lead">単価の1段目。商品（SMILE の品目コード）ごとに、今日の時点で有効な定価を出します。品目名・分類・改廃は SMILE の品目マスタのものです。行を押すと、改定の履歴（タイムライン）・運賃の重さ・この商品の例外が開きます。改定のときは古い行を消さず「改定を足す」で新しい適用開始日の行を足します。</p>
+    ${notInMaster&&Object.keys(ITEMINFO).length?`<div class="banner">⚠ 品目マスタにない型式が <b>${notInMaster}件</b> あります（エクセルの書き方のままの型式やメモ書き）。早見では「定価なし」になります。<button class="btn" data-go="match">品目マスタとの照合へ</button></div>`:''}
+    <div class="tools"><input type="search" value="${esc(st.q)}" placeholder="探す（品目コード・品目名・分類）" data-q>
+      <select data-dai><option value="">すべての分類</option>${dais.map(d=>`<option ${st.dai===d?'selected':''}>${esc(d)}</option>`).join('')}</select>
       <select data-f><option value="">すべての商品</option><option value="plan" ${st.f==='plan'?'selected':''}>🔵 改定の予定がある</option><option value="rev" ${st.f==='rev'?'selected':''}>改定の履歴がある</option><option value="wonly" ${st.f==='wonly'?'selected':''}>定価なし（重さだけ）</option><option value="nokg" ${st.f==='nokg'?'selected':''}>運賃の重さが未登録</option></select>
       <label class="cb" style="padding:0"><input type="checkbox" data-chk ${st.chk?'checked':''}>要確認だけ</label>
       <span class="muted small">${shown.length}商品${shown.length>500?'（先頭500件を表示）':''}</span><span class="grow"></span>
       <button class="btn pri" data-new>＋ 商品を足す</button></div>
-    <div class="scroll"><table class="t"><thead><tr><th>型式</th><th>品名</th><th class="num">今の定価</th><th>いつから</th><th>状態</th><th>種類</th><th class="num">運賃kg</th><th class="num">改定</th><th class="num">例外</th></tr></thead>
+    <div class="scroll"><table class="t"><thead><tr><th>品目コード</th><th>品目名（SMILE）</th><th>分類</th><th class="num">今の定価</th><th>いつから</th><th>状態</th><th>改廃</th><th class="num">運賃kg</th><th class="num">改定</th><th class="num">例外</th></tr></thead>
     <tbody>${shown.slice(0,500).map(x=>{ const c=cur(x);
       const stHtml=x.s.priced.length?`${c?`<span class="st now">${ST_LABEL.now}</span>`:'<span class="st past">まだ有効な定価なし</span>'}${x.s.plan.length?` <span class="st plan">${ST_LABEL.plan} ${esc(x.s.plan[0].data.適用開始日)}〜</span>`:''}`:`<span class="st wonly">定価なし（重さだけ）</span>`;
-      return `<tr class="editrow" data-code="${esc(x.code)}"><td><b>${esc(x.code)}</b>${x.check?' <span class="pill warn">要確認</span>':''}</td><td>${esc(x.name)}</td>
-        <td class="num"><b>${c?yen(c.定価):''}</b></td><td>${c?esc(c.適用開始日):''}</td><td>${stHtml}</td><td>${esc(x.kind)}</td>
+      const kh=x.info?(x.info.kaihai==='販売中'?'<span class="small muted">販売中</span>':`<span class="pill warn">${esc(x.info.kaihai||'－')}</span>`):'';
+      return `<tr class="editrow${x.info?'':' unsorted'}" data-code="${esc(x.code)}"><td><b>${esc(x.code)}</b>${x.check?' <span class="pill warn">要確認</span>':''}${x.info?'':' <span class="pill warn">品目マスタにない</span>'}</td><td>${esc(x.name)}</td>
+        <td class="small">${x.info?esc(x.info.dai)+(x.info.chu?'<br><span class="muted">'+esc(x.info.chu)+'</span>':''):''}</td>
+        <td class="num"><b>${c?yen(c.定価):''}</b></td><td>${c?esc(c.適用開始日):''}</td><td>${stHtml}</td><td>${kh}</td>
         <td class="num">${x.kg??'<span class="muted">－</span>'}</td><td class="num">${x.s.priced.length>1?(x.s.priced.length-1)+'回':''}</td>
-        <td class="num">${x.exN?x.exN+'件':''}${x.noteN?` <span class="muted">＋参考${x.noteN}</span>`:''}</td></tr>`; }).join('')||'<tr><td colspan="9" class="muted">商品がありません</td></tr>'}</tbody></table></div>`;
+        <td class="num">${x.exN?x.exN+'件':''}${x.noteN?` <span class="muted">＋参考${x.noteN}</span>`:''}</td></tr>`; }).join('')||'<tr><td colspan="10" class="muted">商品がありません</td></tr>'}</tbody></table></div>`;
+  el.querySelector('[data-dai]').onchange=e=>{ st.dai=e.target.value; renderPriceView(); };
+  el.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goView(b.dataset.go));
   const qi=el.querySelector('[data-q]'); qi.oninput=()=>{ st.q=qi.value; clearTimeout(st.t); st.t=setTimeout(()=>{ renderPriceView(); const n=document.querySelector('#view-price [data-q]'); n.focus(); n.setSelectionRange(n.value.length,n.value.length); },250); };
   el.querySelector('[data-f]').onchange=e=>{ st.f=e.target.value; renderPriceView(); };
   el.querySelector('[data-chk]').onchange=e=>{ st.chk=e.target.checked; renderPriceView(); };
@@ -1236,7 +1363,12 @@ function openProduct(code){
     <dl class="kv"><dt>商品の種類</dt><dd>${esc(d.商品の種類||'')}</dd>
       <dt>運賃の重さ</dt><dd>${rows.map(r=>r.data.運賃の重量kg).find(v=>v!=null)??'<span class="muted">未登録（送料が出ません）</span>'}${rows.map(r=>r.data.運賃の重量kg).find(v=>v!=null)!=null?' kg（運賃表の重量帯。実際の重さとは違う）':''}</dd>
       <dt>出典</dt><dd>${esc(d.出典||'')}</dd>
-      <dt>品目マスタ</dt><dd>${ITEMS[code]!==undefined?esc(ITEMS[code]):'<span class="muted">品目マスタにない型式</span>'}</dd></dl>
+      ${ITEMINFO[code]?`<dt>品目名（SMILE）</dt><dd><b>${esc(ITEMINFO[code].name)}</b></dd>
+        <dt>分類</dt><dd>${esc([ITEMINFO[code].dai,ITEMINFO[code].chu,ITEMINFO[code].sho].filter(Boolean).join(' ＞ '))}</dd>
+        <dt>価格表記載名</dt><dd>${esc(ITEMINFO[code].kakaku||'')}</dd>
+        <dt>改廃</dt><dd>${ITEMINFO[code].kaihai==='販売中'?'販売中':`<span class="pill warn">${esc(ITEMINFO[code].kaihai||'－')}</span>`}</dd>
+        <dt>基準倉庫</dt><dd>${esc(ITEMINFO[code].souko||'')}</dd>`
+      :`<dt>品目マスタ</dt><dd><span class="pill warn">品目マスタにない型式</span> <button class="linkbtn" data-gomatch>品目マスタとの照合へ</button></dd>`}</dl>
     <div class="sub3"><b>定価の改定の履歴</b>（古い順）</div>
     ${tl?`<ul class="tl">${tl}</ul>`:'<div class="small muted">定価がありません（運賃の重さだけの商品）。</div>'}
     ${wonly.length&&s.priced.length?`<div class="small muted">ほかに「運賃の重さだけ」の行が ${wonly.length} 行あります。</div>`:''}
@@ -1244,6 +1376,7 @@ function openProduct(code){
     <div class="dlg-foot"><button class="btn pri" id="pRev">＋ 改定を足す</button><button class="btn" id="pExc">＋ この商品の例外を足す</button><span class="grow"></span><button class="btn" id="pClose">閉じる</button></div>`;
   const modal=document.getElementById('modal'); modal.classList.add('show');
   document.getElementById('pClose').onclick=()=>{ modal.classList.remove('show'); dlg.classList.remove('wide'); };
+  dlg.querySelectorAll('[data-gomatch]').forEach(b=>b.onclick=()=>{ modal.classList.remove('show'); dlg.classList.remove('wide'); goView('match'); });
   document.getElementById('pRev').onclick=()=>openEdit('price',null,{prefill:{型式:code,品名:d.品名||ITEMS[code]||'',商品の種類:d.商品の種類||'',運賃の重量kg:rows.map(r=>r.data.運賃の重量kg).find(v=>v!=null)??null,出典:d.出典||'',適用開始日:''},title:`${code} の改定を足す（新しい定価と適用開始日）`,after:back,cancel:back});
   document.getElementById('pExc').onclick=()=>openEdit('exc',null,{prefill:{型式:code,適用開始日:today()},after:back,cancel:back});
   dlg.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEdit('price',RULES.price.find(r=>r.spId===b.dataset.edit),{after:back,cancel:back}));
