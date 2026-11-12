@@ -22,6 +22,8 @@ GitHub Pages でそのまま社内に配信されるので、**`main` に入っ�
    - HUB の左メニュー：`hub_sidebar.js` の `MENU`
    - HUB の「仕事を始める」のタイル：`hanaoka_hub.html`
    - 利用状況の表示名：`usage_stats.html` の `APP_NAMES`
+8. **価格・送料の早見（`price_check.html`・`price_core.js`）を触るときは、先に `PRICE_CHECK_HANDOVER.md` を読む。**
+   このアプリの変更は、main に直接入れず、**必ずブランチを作って PR を出し、依頼者の了承をもらってからマージする。**
 
 ## 変更の出し方
 
