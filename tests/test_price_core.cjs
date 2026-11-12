@@ -123,6 +123,10 @@ r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-11-11', customer: cust('
 assert.equal(r.quotePrice, 9770);
 assert.equal(r.directPrice, 9950); // 17300×0.575=9947.5 → 9950
 assert.ok(r.warnings.some(w => /販社から直接/.test(w)));
+// 販社（掛率名「その他」）でも本部経由なら Aランクを元にする
+r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-28', customer: cust('H02', 'G3', 'その他') });
+assert.equal(r.quotePrice, 16040); assert.equal(r.orderPrice, 14917);
+assert.ok(r.explain.some(e => /Aランク（5.25掛）を元にする/.test(e)));
 // 台車と一緒なら部品も本部経由（Aランク÷0.93）
 r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-11-11', customer: cust('H01', 'G3', '5.25掛(A)'), withBody: true });
 assert.equal(r.quotePrice, 9770); // 17300×0.525=9082.5 → 9080、÷0.93=9763.4 → 9770

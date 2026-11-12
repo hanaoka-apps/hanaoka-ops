@@ -381,6 +381,11 @@
       if (ex.要確認 === true || ex.要確認 === "はい") { out.warnings.push("使った例外は要確認：" + (ex.メモ || ex.出典 || "")); chk.要確認.push("例外"); }
       out.exception = ex;
     }
+    // 本部経由の得意先（販社の掛率名は「その他」が多い）は、業務内容まとめのとおり Aランク（5.25掛）を元にする
+    if (price === null && k === null && method === "本部経由") {
+      k = 0.525; out.explain.push("本部経由の得意先なので Aランク（5.25掛）を元にする");
+      addStep("本部経由", "Aランク（5.25掛）を元にする", k, "得意先の区分リスト", methodRow, "cls");
+    }
     if (price === null) {
       if (k === null) { out.warnings.push("掛率が決まりません（ランク・区分・例外のどれもない）"); return out; }
       price = round(list * k, ROUND_UNIT);

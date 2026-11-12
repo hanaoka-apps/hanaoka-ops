@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261112e"></script>
+<script src="price_core.js?v=20261112f"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -496,10 +496,13 @@ async function fetchRecentOrders(){
   const body=new TextDecoder(enc).decode(await part(from,size-1));
   const lines=body.split(/\r?\n/); if(from>0) lines.shift();   // 途中から始まる1行目は捨てる
   const ix=n=>H.indexOf(n);
-  const I={date:ix('受注日付'),no:ix('受注№'),cust:ix('得意先ｺｰﾄﾞ'),code:ix('品目ｺｰﾄﾞ'),qty:ix('数量'),price:ix('単価'),dest:ix('納品先名')};
+  const I={date:ix('受注日付'),no:ix('受注№'),cust:ix('得意先ｺｰﾄﾞ'),code:ix('品目ｺｰﾄﾞ'),qty:ix('数量'),price:ix('単価'),dest:ix('納品先名'),dept:ix('部門名'),dai:ix('大分類名')};
   const out=[];
   lines.forEach(l=>{ if(!l) return; const c=(PriceCore.parseCSV(l,'\t')[0]||[]); if(c.length<H.length-10) return;
-    out.push({date:c[I.date],no:c[I.no],cust:c[I.cust],code:c[I.code],qty:Number(c[I.qty])||0,price:Number(c[I.price])||0,dest:c[I.dest]}); });
+    const dept=c[I.dept]||'', dai=c[I.dai]||'';
+    // GSE（ソリューション営業部・空港〜の商品）はこのアプリの対象外なので印を付けておく
+    out.push({date:c[I.date],no:c[I.no],cust:c[I.cust],code:c[I.code],qty:Number(c[I.qty])||0,price:Number(c[I.price])||0,dest:c[I.dest],
+      gse:dept==='ｿﾘｭｰｼｮﾝ営業部'||/空港|GSE/.test(dai)}); });
   out.sort((a,b)=>a.date<b.date?1:-1);
   return {rows:out,modified:meta.lastModifiedDateTime};
 }
@@ -803,12 +806,13 @@ function checkItems(){
   const uns=RULES.exc.filter(r=>r.data.対象の種類==='未整理');
   const price=RULES.price.filter(r=>r.data.要確認===true);
   // 定価はあるのに運賃の重さがない商品（送料が出ない）。直近の受注で売れている順
-  const sold={}; ORDERS.forEach(o=>{ if(o.code&&o.code!=='FR') sold[o.code]=(sold[o.code]||0)+1; });
+  const sold={}; ORDERS.forEach(o=>{ if(o.code&&o.code!=='FR'&&!o.gse) sold[o.code]=(sold[o.code]||0)+1; });
   const nokg=[]; productGroups().forEach((rows,code)=>{ if(rows.some(r=>PriceCore.num(r.data.定価)!==null)&&!rows.some(r=>r.data.運賃の重量kg!=null)) nokg.push({code,n:sold[code]||0}); });
   nokg.sort((a,b)=>b.n-a.n);
-  // 掛率が決まらない得意先：ランク（掛率名）では決まらず、区分の掛率もなく、直近に受注がある
-  const ordCnt={}; ORDERS.forEach(o=>{ ordCnt[o.cust]=(ordCnt[o.cust]||0)+1; });
-  const noRank=CUST.filter(c=>ordCnt[c.code]&&!PriceCore.rankOf(c.kakeName)&&!data.classes.some(k=>PriceCore.num(k.掛率)!==null&&((k.対象の種類==='得意先'&&k.対象コード===c.code)||(k.対象の種類==='社名'&&k.対象コード&&k.対象コード===c.shaCode))))
+  // 掛率が決まらない得意先：ランク（掛率名）では決まらず、区分の掛率もなく、直近に（GSE 以外の）受注がある。
+  // GSE は個別見積なので、社内（花岡車輌・99〜）は売り先ではないので外す
+  const ordCnt={}; ORDERS.forEach(o=>{ if(!o.gse&&o.code!=='FR') ordCnt[o.cust]=(ordCnt[o.cust]||0)+1; });
+  const noRank=CUST.filter(c=>ordCnt[c.code]&&!/^99/.test(c.code)&&!/花岡車輌/.test(c.shaName+c.name)&&!PriceCore.rankOf(c.kakeName)&&!data.classes.some(k=>(PriceCore.num(k.掛率)!==null||k.計算方式==='本部経由')&&((k.対象の種類==='得意先'&&k.対象コード===c.code)||(k.対象の種類==='社名'&&k.対象コード&&k.対象コード===c.shaCode))))
     .map(c=>({c,n:ordCnt[c.code]})).sort((a,b)=>b.n-a.n);
   const fare=PriceCore.fareChecks(data.fares,date);
   return {cls,exc,uns,price,nokg,noRank,fare,count:cls.length+exc.length+price.length+noRank.length+fare.filter(f=>f.level==='ng').length};
@@ -850,7 +854,7 @@ function renderCheckView(){
     <h3 class="sub3" style="font-size:15px;margin:18px 0 8px">確認が必要 <span class="pill ${k.count?'warn':''}">${k.count}件</span></h3>
     <div class="card"><h3>⑤ 運賃表の点検（システムが自動で確かめています）</h3><ul class="plain">${k.fare.map(f=>`<li class="${f.level}">${lv[f.level]} ${esc(f.text)}</li>`).join('')}</ul></div>
     <div class="card"><h3>② 掛率が決まらない得意先 <span class="pill ${k.noRank.length?'warn':''}">${k.noRank.length}件</span></h3>
-      <div class="small muted">SMILE の掛率名が「その他」や空で、③ 得意先の区分にも掛率がない得意先のうち、直近に受注があるもの。早見で「掛率が決まりません」になります。SMILE の掛率名を直すか、③ に掛率を足してください。</div>
+      <div class="small muted">SMILE の掛率名が「その他」や空で、③ 得意先の区分にも掛率がない得意先のうち、直近に（GSE 以外の）受注があるもの（社内はのぞく）。早見で「掛率が決まりません」になります。SMILE の掛率名を直すか、③ に掛率を足してください。</div>
       ${k.noRank.length?`<table class="t"><thead><tr><th>得意先</th><th>社名</th><th>掛率名</th><th>掛率備考</th><th class="num">直近の受注</th><th></th></tr></thead><tbody>${k.noRank.slice(0,100).map(x=>`<tr><td>${esc(x.c.code)}　${esc(x.c.name)}</td><td>${esc(x.c.shaName)}</td><td>${esc(x.c.kakeName||'（空）')}</td><td class="small">${esc(x.c.kakeMemo||'')}</td><td class="num">${x.n}行</td>
         <td><button class="btn" data-addcls="${esc(x.c.code)}">③ に足す</button></td></tr>`).join('')}</tbody></table>`:'<div class="small ok">✅ ありません</div>'}</div>
     <div class="card"><h3>③ 得意先の区分の要確認 <span class="pill ${k.cls.length?'warn':''}">${k.cls.length}件</span></h3>${table('cls',k.cls,'ありません')}</div>
