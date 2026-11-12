@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261112a"></script>
+<script src="price_core.js?v=20261112b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -80,6 +80,11 @@
   .sugg{position:absolute;left:0;right:0;top:100%;z-index:20;background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);max-height:320px;overflow:auto;display:none}
   .sugg div{padding:6px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--line)}
   .sugg div:hover,.sugg div.on{background:var(--navy-soft)}
+  .codesugg{position:fixed;left:0;top:0;right:auto;width:440px;max-height:380px}
+  .sugg .sec{padding:5px 10px 3px;font-size:11px;font-weight:700;color:var(--mute);background:var(--bg);cursor:default;border-bottom:1px solid var(--line)}
+  .sugg .sec:hover{background:var(--bg)}
+  .sugg .tag{float:right;font-size:11px;color:var(--sub)}
+  .linkbtn{border:none;background:none;color:var(--navy);font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;padding:0}
   .custinfo{margin-top:10px;font-size:12.5px;display:flex;flex-wrap:wrap;gap:6px 16px}
   .pill{display:inline-block;border-radius:10px;padding:1px 8px;font-size:11.5px;font-weight:700;background:var(--bg);color:var(--sub)}
   .pill.stock{background:var(--green-soft);color:var(--green-ink)}
@@ -168,6 +173,9 @@
             <label class="f">得意先（コード・名前・社名で探す）<input id="custQ" type="search" autocomplete="off" placeholder="例）得意先コード、名前、社名の一部"></label>
             <div class="sugg" id="custSugg"></div>
           </div>
+          <label class="f">得意先を選ばずにランクで見る<select id="cRank" title="お客様が決まる前に、ランクだけで単価の目安を見るとき">
+            <option value="">（得意先で決める）</option><option>5掛(A')</option><option>5.25掛(A)</option><option>5.5掛(B')</option><option>5.75掛(B)</option>
+            <option>7掛(ユーザー)</option><option>7.5掛(ユーザー)</option><option>8掛(ユーザー)</option><option value="10掛(定価)">定価</option></select></label>
           <label class="f">日付（見積日・受注日）<input id="cDate" type="date"></label>
           <label class="f">届け先の県<select id="cPref"></select></label>
           <label class="cb"><input id="cPersonal" type="checkbox">個人宅あて</label>
@@ -181,9 +189,9 @@
           <thead><tr><th style="width:190px">型式</th><th style="width:80px">台数</th><th style="min-width:280px">品名・決めた理由</th><th class="num">定価</th><th class="num">単価</th><th class="num">金額</th><th>前回の受注</th><th></th></tr></thead>
           <tbody></tbody>
         </table></div>
-        <datalist id="codeList"></datalist>
+        <div class="sugg codesugg" id="codeSugg"></div>
         <div class="tools" style="margin-top:8px"><button class="btn" id="addLine">＋ 行を足す</button>
-          <span class="muted small">型式は SMILE の品目コード（例：UDALS、UDGLS、OP/DAPB）。前回の受注は SharedMasters の受注明細（直近の分）から探します</span></div>
+          <span class="muted small">型式は SMILE の品目コード（例：UDALS、UDGLS、OP/DAPB）。欄を押すと、得意先がよく買う商品・例外のある商品から順に候補が出ます。前回の受注は SharedMasters の受注明細（直近の分）から探します</span></div>
         <div class="total" id="totalBox"></div>
       </div>
       <div class="card">
@@ -263,7 +271,10 @@ const listIds={};
 
 let msalInstance=null, account=null, driveId=null;
 const RULES={price:[],cls:[],exc:[],fare:[]};   // { spId, data }
-let CUST=[], CUSTMAP={}, ITEMS={}, ORDERS=[], ordersInfo='';
+let CUST=[], CUSTMAP={}, ITEMS={}, ITEMKEY={}, ORDERS=[], ordersInfo='';
+// 探すときの表記ゆれをならす：全角・半角、大文字・小文字、ハイフン・空白、小さいカナ（ﾀﾞﾝﾃﾞｲ と ダンディ、UDA-LS と UDALS）
+const SMALL={'ァ':'ア','ィ':'イ','ゥ':'ウ','ェ':'エ','ォ':'オ','ャ':'ヤ','ュ':'ユ','ョ':'ヨ','ッ':'ツ','ヮ':'ワ'};
+const norm=s=>String(s||'').normalize('NFKC').toUpperCase().replace(/[ァィゥェォャュョッヮ]/g,c=>SMALL[c]).replace(/[\s\-‐－ー―・/／_.()（）]/g,'');
 let curCust=null;
 let LINES=[{code:'',qty:1}];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -432,7 +443,10 @@ async function loadAll(){
   const errs=[];
   const pr=loadRules();
   const pc=fetchText(FILES.customers).then(t=>{ CUST=PriceCore.toObjects(t).map(PriceCore.customerFromMaster).filter(c=>c.code&&!/^[×✕]/.test(c.name)); CUSTMAP={}; CUST.forEach(c=>CUSTMAP[c.code]=c); }).catch(e=>errs.push('得意先マスタ：'+e.message));
-  const pi=fetchText(FILES.items).then(t=>{ ITEMS={}; PriceCore.toObjects(t).forEach(o=>{ if(o['品目ｺｰﾄﾞ']) ITEMS[o['品目ｺｰﾄﾞ']]=o['品目名']||''; }); }).catch(e=>errs.push('品目マスタ：'+e.message));
+  const pi=fetchText(FILES.items).then(t=>{ ITEMS={}; ITEMKEY={};
+    PriceCore.toObjects(t).forEach(o=>{ const c=o['品目ｺｰﾄﾞ']; if(!c) return; ITEMS[c]=o['品目名']||'';
+      // 品目ｺｰﾄﾞ・品目名・価格表記載名のどれでも探せるように、表記ゆれをならした文字を持っておく
+      ITEMKEY[c]=norm(c+' '+(o['品目名']||'')+' '+(o['価格表記載名名']||'')+' '+(o['型番']||'')); }); }).catch(e=>errs.push('品目マスタ：'+e.message));
   const po=fetchRecentOrders().then(r=>{ ORDERS=r.rows; ordersInfo=ORDERS.length?`受注明細 ${ORDERS[ORDERS.length-1].date}〜${ORDERS[0].date}`:''; }).catch(e=>{ console.warn(e); errs.push('受注明細（前回の受注は出ません）'); });
   const miss=await pr; await Promise.all([pc,pi,po]);
   const cnt=Object.keys(LISTS).map(k=>`${LISTS[k].label} ${RULES[k].length}行`).join('・');
@@ -445,11 +459,62 @@ function updateCounts(){
   Object.keys(LISTS).forEach(k=>{ const n=RULES[k].filter(r=>r.data.要確認===true).length, e=document.getElementById('cnt-'+k);
     e.hidden=!n; e.textContent=n; e.title=`要確認 ${n}行`; });
 }
+// 定価リストの型式（候補の「定価あり」の判定と、品目マスタにない型式の品名に使う）
+let PRICED=new Map();
 function fillCodeList(){
-  const codes=new Map();
-  RULES.price.forEach(r=>{ if(r.data.型式) codes.set(r.data.型式,r.data.品名||ITEMS[r.data.型式]||''); });
-  document.getElementById('codeList').innerHTML=[...codes].sort().map(([c,n])=>`<option value="${esc(c)}">${esc(n)}</option>`).join('');
+  PRICED=new Map();
+  RULES.price.forEach(r=>{ const d=r.data; if(!d.型式) return;
+    const cur=PRICED.get(d.型式)||{name:'',priced:false};
+    PRICED.set(d.型式,{name:cur.name||d.品名||'',priced:cur.priced||PriceCore.num(d.定価)!==null}); });
 }
+
+// ---------- 型式の候補：得意先がよく買う → 例外のある → その他 ----------
+function codeCandidates(term){
+  const t=norm(term), data=ruleData(), max=40, out=[], seen=new Set();
+  const nameOf=c=>ITEMS[c]||(PRICED.get(c)||{}).name||'';
+  const hit=c=>!t||norm(c).includes(t)||(ITEMKEY[c]||norm(c+' '+nameOf(c))).includes(t);
+  const push=(sec,c,tag)=>{ if(seen.has(c)||!hit(c)) return; seen.add(c); out.push({sec,code:c,name:nameOf(c),tag}); };
+  if(curCust){
+    const mine={}, sha={};
+    ORDERS.forEach(o=>{ if(!o.code||o.code==='FR') return;
+      if(o.cust===curCust.code) mine[o.code]=(mine[o.code]||0)+1;
+      else if(curCust.shaCode&&CUSTMAP[o.cust]&&CUSTMAP[o.cust].shaCode===curCust.shaCode) sha[o.code]=(sha[o.code]||0)+1; });
+    Object.entries(mine).sort((a,b)=>b[1]-a[1]).slice(0,20).forEach(([c,n])=>push('この得意先がよく買う',c,`直近 ${n}回`));
+    Object.entries(sha).sort((a,b)=>b[1]-a[1]).slice(0,15).forEach(([c,n])=>push(`同じ社名（${curCust.shaName}）がよく買う`,c,`直近 ${n}回`));
+    const isStock=PriceCore.customerClass(data.classes,curCust,'全部',document.getElementById('cDate').value||today()).isStock;
+    data.exceptions.forEach(e=>{
+      const mineEx=(e.対象の種類==='得意先'&&e.対象コード===curCust.code)||(e.対象の種類==='社名'&&e.対象コード&&e.対象コード===curCust.shaCode);
+      if(!mineEx||!e.型式) return;
+      if(e.在庫口のみ===true&&!isStock) return;
+      push('この得意先の例外がある',e.型式,e.在庫口のみ===true?'在庫品':(PriceCore.num(e.金額)!==null?'金額の決まり':'特価'));
+    });
+  }
+  if(t){
+    [...PRICED.keys()].sort().forEach(c=>{ if(out.length<max) push('定価のある商品',c,''); });
+    Object.keys(ITEMS).sort().forEach(c=>{ if(out.length<max&&!PRICED.has(c)) push('品目マスタ（定価なし）',c,'定価なし'); });
+  }
+  return out.slice(0,max);
+}
+let CS={inp:null,list:[],on:-1};
+function showCodeSugg(inp){
+  const box=document.getElementById('codeSugg');
+  CS.inp=inp; CS.list=codeCandidates(inp.value); CS.on=-1;
+  if(!CS.list.length){ box.style.display='none'; return; }
+  let html='', sec='';
+  CS.list.forEach((x,i)=>{ if(x.sec!==sec){ sec=x.sec; html+=`<div class="sec">${esc(sec)}</div>`; }
+    html+=`<div data-i="${i}"><b>${esc(x.code)}</b>　${esc(x.name)}${x.tag?`<span class="tag">${esc(x.tag)}</span>`:''}</div>`; });
+  box.innerHTML=html;
+  const r=inp.getBoundingClientRect(), h=Math.min(380,window.innerHeight-r.bottom-12);
+  box.style.left=r.left+'px'; box.style.top=(h>160?r.bottom+2:Math.max(8,r.top-382))+'px'; box.style.maxHeight=(h>160?h:380)+'px';
+  box.style.display='block';
+}
+function hideCodeSugg(){ document.getElementById('codeSugg').style.display='none'; CS.inp=null; }
+function pickCode(i){
+  const x=CS.list[i], inp=CS.inp; if(!x||!inp) return;
+  const row=+inp.closest('tr').dataset.i; LINES[row].code=x.code; inp.value=x.code; hideCodeSugg(); recalc();
+}
+function markCodeSugg(){ document.querySelectorAll('#codeSugg [data-i]').forEach(d=>d.classList.toggle('on',+d.dataset.i===CS.on));
+  const on=document.querySelector('#codeSugg .on'); if(on) on.scrollIntoView({block:'nearest'}); }
 
 // ============================================================
 // 早見
@@ -457,20 +522,24 @@ function fillCodeList(){
 function initCalc(){
   document.getElementById('cDate').value=today();
   document.getElementById('cPref').innerHTML='<option value="">（選ぶ）</option>'+PriceCore.PREFS.map(p=>`<option>${p}</option>`).join('');
-  ['cDate','cPref','cPersonal','cStock'].forEach(id=>document.getElementById(id).addEventListener('change',recalc));
+  ['cDate','cPref','cPersonal','cStock','cRank'].forEach(id=>document.getElementById(id).addEventListener('change',recalc));
+  const cbox=document.getElementById('codeSugg');
+  cbox.addEventListener('mousedown',e=>{ const d=e.target.closest('[data-i]'); if(d){ e.preventDefault(); pickCode(+d.dataset.i); } });
+  document.addEventListener('scroll',()=>{ if(CS.inp) hideCodeSugg(); },true);
   document.getElementById('addLine').onclick=()=>{ LINES.push({code:'',qty:1}); renderLines(); };
   const q=document.getElementById('custQ'), sg=document.getElementById('custSugg');
   let hits=[], on=-1;
   const show=()=>{ sg.innerHTML=hits.map((c,i)=>`<div data-i="${i}" class="${i===on?'on':''}"><b>${esc(c.code)}</b>　${esc(c.name)}　<span class="muted">${esc(c.shaName)}・${esc(c.kakeName||'掛率名なし')}</span></div>`).join(''); sg.style.display=hits.length?'block':'none'; };
-  q.addEventListener('input',()=>{ const s=q.value.trim().toLowerCase(); on=-1;
-    hits=!s?[]:CUST.filter(c=>c.code.startsWith(s)||(c.name+c.fullName+c.shaName).toLowerCase().includes(s)).slice(0,30); show(); });
+  q.addEventListener('input',()=>{ const s=norm(q.value); on=-1;
+    if(curCust){ curCust=null; recalc(); }   // 書き直したら、選んだ得意先は外す
+    hits=!s?[]:CUST.filter(c=>c.code.startsWith(s)||norm(c.name+c.fullName+c.shaName).includes(s)).slice(0,30); show(); });
   q.addEventListener('keydown',e=>{ if(!hits.length) return;
     if(e.key==='ArrowDown'){ on=Math.min(hits.length-1,on+1); show(); e.preventDefault(); }
     else if(e.key==='ArrowUp'){ on=Math.max(0,on-1); show(); e.preventDefault(); }
     else if(e.key==='Enter'&&on>=0){ pickCust(hits[on]); e.preventDefault(); } });
   sg.addEventListener('mousedown',e=>{ const d=e.target.closest('[data-i]'); if(d) pickCust(hits[+d.dataset.i]); });
   q.addEventListener('blur',()=>setTimeout(()=>sg.style.display='none',150));
-  const pickCust=c=>{ curCust=c; q.value=`${c.code}　${c.name}`; sg.style.display='none'; hits=[];
+  const pickCust=c=>{ curCust=c; q.value=`${c.code}　${c.name}`; sg.style.display='none'; hits=[]; document.getElementById('cRank').value='';
     const pref=PriceCore.prefOf(c.address); if(pref&&!document.getElementById('cPref').value) document.getElementById('cPref').value=pref;
     recalc(); };
   renderLines();
@@ -478,17 +547,37 @@ function initCalc(){
 function renderLines(){
   const tb=document.querySelector('#lineTbl tbody');
   tb.innerHTML=LINES.map((l,i)=>`<tr data-i="${i}">
-    <td><input list="codeList" value="${esc(l.code)}" data-f="code" style="width:170px" placeholder="型式"></td>
+    <td><input value="${esc(l.code)}" data-f="code" style="width:170px" placeholder="型式・品名で探す" autocomplete="off"></td>
     <td><input type="number" min="0" step="1" value="${esc(l.qty)}" data-f="qty" style="width:70px"></td>
     <td class="res"></td><td class="num lp"></td><td class="num up"></td><td class="num am"></td><td class="prev"></td>
     <td><button class="btn" data-del="${i}" title="この行を消す">×</button></td></tr>`).join('');
   tb.querySelectorAll('input').forEach(inp=>inp.addEventListener('change',e=>{
     const i=+e.target.closest('tr').dataset.i, f=e.target.dataset.f;
-    LINES[i][f]=f==='qty'?Number(e.target.value)||0:e.target.value.trim().toUpperCase().replace('2X4','2x4');
+    LINES[i][f]=f==='qty'?Number(e.target.value)||0:resolveCode(e.target.value);
     if(f==='code') e.target.value=LINES[i].code;
     recalc(); }));
+  // 型式の欄：押すと候補、打つと絞り込み、↑↓と Enter で選ぶ
+  tb.querySelectorAll('input[data-f="code"]').forEach(inp=>{
+    inp.addEventListener('focus',()=>showCodeSugg(inp));
+    inp.addEventListener('input',()=>showCodeSugg(inp));
+    inp.addEventListener('blur',()=>setTimeout(()=>{ if(CS.inp===inp) hideCodeSugg(); },150));
+    inp.addEventListener('keydown',e=>{
+      if(!CS.list.length||CS.inp!==inp) return;
+      if(e.key==='ArrowDown'){ CS.on=Math.min(CS.list.length-1,CS.on+1); markCodeSugg(); e.preventDefault(); }
+      else if(e.key==='ArrowUp'){ CS.on=Math.max(0,CS.on-1); markCodeSugg(); e.preventDefault(); }
+      else if(e.key==='Enter'&&CS.on>=0){ pickCode(CS.on); e.preventDefault(); }
+      else if(e.key==='Escape') hideCodeSugg(); });
+  });
   tb.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{ LINES.splice(+b.dataset.del,1); if(!LINES.length) LINES.push({code:'',qty:1}); renderLines(); });
   recalc();
+}
+// 打った文字を品目ｺｰﾄﾞにする（UDA-LS → UDALS、fcart2x4bk → FCART2x4BK）。決まらなければそのまま
+function resolveCode(v){
+  const s=String(v||'').trim(); if(!s) return '';
+  if(ITEMS[s]!==undefined||PRICED.has(s)) return s;
+  const n=norm(s), all=new Set([...Object.keys(ITEMS),...PRICED.keys()]);
+  const same=[...all].filter(c=>norm(c)===n);
+  return same.length===1?same[0]:s.toUpperCase();
 }
 function li(arr,cls){ return arr&&arr.length?`<ul class="${cls}">${arr.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''; }
 function recalc(){
@@ -496,6 +585,7 @@ function recalc(){
   const date=document.getElementById('cDate').value||today();
   const pref=document.getElementById('cPref').value, personal=document.getElementById('cPersonal').checked, forceStock=document.getElementById('cStock').checked;
   const data=ruleData();
+  const rankName=curCust?'':document.getElementById('cRank').value;
   if(curCust){
     const cc=PriceCore.customerClass(data.classes,curCust,'全部',date);
     const pills=[`<span class="pill navy">${esc(curCust.kakeName||'掛率名なし')}</span>`];
@@ -504,8 +594,13 @@ function recalc(){
     rows.filter(c=>c.計算方式&&c.計算方式!=='通常').forEach(c=>pills.push(`<span class="pill warn">${esc(c.計算方式)}</span>`));
     info.innerHTML=`${pills.join(' ')}<span>社名：${esc(curCust.shaName)}（${esc(curCust.shaCode)}）</span><span>担当：${esc(curCust.staff)}</span>`+
       (curCust.kakeMemo?`<span class="muted">掛率備考：${esc(curCust.kakeMemo)}</span>`:'')+
-      (rows.length?`<span class="muted">区分 ${rows.length}行</span>`:'');
-  } else info.innerHTML='<span class="muted">得意先を選ぶと、ランク・在庫口・特別な計算方式を出します。</span>';
+      (rows.length?`<span class="muted">区分 ${rows.length}行</span>`:'')+
+      ' <button class="linkbtn" id="custClear">得意先を外す</button>';
+    document.getElementById('custClear').onclick=()=>{ curCust=null; document.getElementById('custQ').value=''; recalc(); };
+  } else if(rankName) info.innerHTML=`<span class="pill navy">${esc(rankName==='10掛(定価)'?'定価':rankName)}</span><span class="muted">得意先を選ばずに、ランクだけで出しています（在庫口・得意先ごとの例外・特別な計算方式は入りません）。</span>`;
+  else info.innerHTML='<span class="muted">得意先を選ぶと、ランク・在庫口・特別な計算方式を出します。得意先が決まる前は「ランクで見る」で目安を出せます。</span>';
+  // 単価の計算に使う得意先（ランクだけのときは、ランクだけを持つ仮の得意先）
+  const who=curCust||(rankName?{code:'',shaCode:'',name:'ランク '+rankName,kakeName:rankName}:null);
 
   let total=0, totalOrder=0, logis=false;
   // 同じ注文に本体（部品・オプション以外）があるか（本部経由で部品も本部経由にするため）
@@ -515,9 +610,16 @@ function recalc(){
     const l=LINES[+tr.dataset.i]; const q=s=>tr.querySelector(s);
     ['.res','.lp','.up','.am','.prev'].forEach(s=>q(s).innerHTML='');
     if(!l.code) return;
-    const name=ITEMS[l.code]||'';
-    if(!curCust){ q('.res').innerHTML=`${esc(name)}<div class="muted small">得意先を選んでください</div>`; return; }
-    const r=PriceCore.unitPrice(data,{code:l.code,qty:l.qty||1,date,customer:curCust,forceStock,withBody});
+    const name=ITEMS[l.code]||(PRICED.get(l.code)||{}).name||'';
+    if(!who){
+      // 得意先が決まる前：定価だけ出す
+      const p=PriceCore.listPriceRow(data.prices,l.code,date);
+      q('.res').innerHTML=`<b>${esc(name||(p&&p.品名)||'')}</b>${p&&p.商品の種類?` <span class="pill">${esc(p.商品の種類)}</span>`:''}`+
+        `<div class="muted small">${p?'単価は、得意先を選ぶか「ランクで見る」を選ぶと出ます':(ITEMS[l.code]!==undefined?'定価リストに定価がない商品です':'品目マスタにも定価リストにもない型式です')}</div>`;
+      q('.lp').textContent=p?yen(p.定価):'';
+      return;
+    }
+    const r=PriceCore.unitPrice(data,{code:l.code,qty:l.qty||1,date,customer:who,forceStock,withBody});
     q('.res').innerHTML=`<b>${esc(r.name||name)}</b>${r.kind?` <span class="pill">${esc(r.kind)}</span>`:''}${r.isStock?' <span class="pill stock">在庫価格</span>':''}${li(r.explain,'why')}${li(r.warnings,'warns')}${li(r.notes,'why notes')}`;
     q('.lp').textContent=yen(r.listPrice);
     if(r.price!=null){
@@ -528,7 +630,8 @@ function recalc(){
       q('.am').textContent=yen(amt);
       if(r.orderPrice!=null){ logis=true; totalOrder+=r.orderPrice*(l.qty||0); } else totalOrder+=amt;
     }
-    // 前回の受注（同じ得意先・同じ型式）
+    // 前回の受注（同じ得意先・同じ型式）。ランクだけで見ているときは出さない
+    if(!curCust){ q('.prev').innerHTML='<span class="muted">得意先を選ぶと出ます</span>'; return; }
     const prev=ORDERS.filter(o=>o.cust===curCust.code&&o.code===l.code).slice(0,3);
     const prevSha=prev.length?[]:ORDERS.filter(o=>o.code===l.code&&CUSTMAP[o.cust]&&CUSTMAP[o.cust].shaCode===curCust.shaCode).slice(0,2);
     // 今の定価より前の受注は「改定前」。同じ定価の期間で単価が違えば「違う」（特価・適用漏れ・ルールの誤りに気づくため）
