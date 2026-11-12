@@ -24,6 +24,17 @@ def normalize_code(value: object) -> str:
     return unicodedata.normalize("NFKC", str(value or "")).strip().upper()
 
 
+def lookup(table: dict, code: object):
+    """品目コードで原価表を引く。無ければ先頭ゼロを落としたコードで引く。
+    Excel 経由の .txt 出力は 04020310007 → 4020310007 のように先頭ゼロが消えるため（2026-11-12 実データで確認）。"""
+    key = normalize_code(code)
+    if key in table:
+        return table[key]
+    if key[:1] == "0" and key.isdigit():
+        return table.get(key.lstrip("0"))
+    return None
+
+
 def source_rows(path: Path):
     if path.suffix.lower() == ".xlsx":
         from openpyxl import load_workbook
@@ -132,14 +143,14 @@ def merge(path: Path, destination: Path) -> tuple[str, int, int]:
     for row in items.get("rows", []):
         if row.get("y") != ym:
             continue
-        current = costs.get(normalize_code(row.get("i")))
+        current = lookup(costs, row.get("i"))
         if current is None:
             continue
         total = current["total"]
         row["st"] = total
         row["mt"] = current["material"]
         row["ot"] = current["labor"] + current["outsourcing"] + current["expense"]
-        row["previous_standard_cost"] = prior.get(normalize_code(row.get("i")), {}).get("total")
+        row["previous_standard_cost"] = (lookup(prior, row.get("i")) or {}).get("total")
         sales, quantity = row.get("a"), row.get("q")
         if total > 0 and sales is not None and quantity is not None:
             row["va"] = round(sales - total * quantity)
