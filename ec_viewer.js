@@ -106,11 +106,17 @@ function drawPeriods() {
 function drawStages() {
   const base = V.filter(RECS, Object.assign({}, FS, { stages: [] })), c = V.counts(base);
   const on = k => FS.stages.indexOf(k) >= 0;
-  let h = '<span class="chip' + (!FS.stages.length && !FS.late ? ' active' : '') + '" data-stage="">すべて<span class="n">' + c.all + '</span></span>';
-  V.STAGES.forEach(s => { h += '<span class="chip' + (on(s.k) ? ' active' : '') + '" data-stage="' + s.k + '">' + s.n + ' ' + esc(s.label) + '<span class="n">' + c[s.k] + '</span></span>'; });
-  h += '<span class="chip' + (on('cancelled') ? ' active' : '') + '" data-stage="cancelled">キャンセル<span class="n">' + c.cancelled + '</span></span>';
-  h += '<span class="chip late' + (FS.late ? ' active' : '') + '" data-late="1" title="出荷予定日を過ぎたのに、まだ出荷されていない注文">⚠ 出荷予定日を過ぎている<span class="n">' + c.late + '</span></span>';
-  $('stages').innerHTML = h;
+  const tile = (k, title, sub, n, kind, attr) => '<div class="ftile ' + kind + (attr.active ? ' active' : '') + '" ' + attr.data + ' role="button" tabindex="0"><div class="ft-t">' + title + (attr.active ? '<span class="ft-on">表示中</span>' : '') + '</div><div class="ft-s">' + sub + '</div><div class="ft-c">' + n + '<small>件</small></div></div>';
+  const st = (k, title, sub, kind) => tile(k, title, sub, c[k], kind, { active: on(k), data: 'data-stage="' + k + '"' });
+  const S = V.STAGES, arrow = '<div class="farrow">→</div>';
+  $('stages').innerHTML = '<div class="srow" style="margin-bottom:8px"><span class="chip' + (!FS.stages.length && !FS.late ? ' active' : '') + '" data-stage="">すべて ' + c.all + '件</span><span class="muted">状況のカードを押すと、その状況の注文だけが出ます（複数選べます）</span></div>' +
+    '<div class="flow">' + st('shopify', S[0].n + ' ' + esc(S[0].label), 'Shopify に注文が入った', 'k-s1') + arrow +
+    st('wait', S[1].n + ' 受注伝票作成済<small>（出荷待ち）</small>', 'SMILE に受注伝票がある・出荷前', 'k-s2') + arrow +
+    st('shipped', S[2].n + ' ' + esc(S[2].label), '送り状番号が出た', 'k-s3') + arrow +
+    st('done', S[3].n + ' Shopify登録済<small>（完了）</small>', 'Shopify に登録・お客様に通知済み', 'k-s4') +
+    '<div class="fgap"></div>' +
+    tile('late', '⚠ 出荷予定日を過ぎている', '出荷待ちのまま予定日を超過', c.late, 'k-attn' + (c.late ? ' hot' : ''), { active: FS.late, data: 'data-late="1"' }) +
+    st('cancelled', 'キャンセル', 'Shopify でキャンセル', 'k-cancel') + '</div>';
 }
 function buildSelects() {
   const car = $('f-carrier'), tag = $('f-tag');
