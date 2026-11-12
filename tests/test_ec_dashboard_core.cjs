@@ -1,5 +1,5 @@
 // node tests/test_ec_dashboard_core.cjs
-// EC売上の分析（ec_dashboard_core.js）：月別・商品別・地域別・曜日別・時間帯・新規とリピート・出荷日数・前の期間との比較・コメントの文。
+// EC売上の分析（ec_dashboard_core.js）：売上明細（確定した売上）の読み込み・月別・商品別・地域別・曜日別・時間帯・新規とリピート・出荷日数・前の期間との比較・コメントの文。
 // 架空のお客様・架空の住所・架空の金額だけを使う（実データは入れない）
 const assert = require('assert');
 const D = require('../ec_dashboard_core.js');
@@ -25,6 +25,20 @@ const smileRows = [].concat(
   [row('1008', '20261104', 'D1', ...FC, 1, 13000, { '得意先コード': '341401' })],
   [row('1009', '20261105', 'D1', ...FC, 1, 13000)]
 );
+const srow = (slip, po, date, dest, code, name, qty, amt, over) => Object.assign({ '売上№': slip, '伝票日付': date, '明細区分': '0', '得意先ｺｰﾄﾞ': '599802', '納品先ｺｰﾄﾞ': dest, '品目ｺｰﾄﾞ': code, '品目名': name,
+  '数量': String(qty), '金額': String(amt), '客先注番': po, '返品区分': '0' }, over || {});
+const taxRow = (slip, po, date, amt) => srow(slip, po, date, 'D1', '', '消費税等（課税対象額 ' + amt * 10 + '）', 0, amt, { '明細区分': '1' });
+const salesRows = [].concat(
+  [srow('U1', '1001', '20261002', 'D1', ...FC, 2, 26000), srow('U1', '1001', '20261002', 'D1', ...FR, 1, 1500), taxRow('U1', '1001', '20261002', 2750)],     // 27500 東京都
+  [srow('U2', '#1002', '20261005', 'D2', ...FC, 1, 13000), srow('U2', '#1002', '20261005', 'D2', ...FR, 1, 1500)],                                         // 14500 大阪府（客先注番に # がつく）
+  [srow('U3', '1003', '20261009', 'D1', ...TC, 1, 5000), srow('U3', '1003', '20261009', 'D1', ...FR, 1, 1500)],                                            // 分納：1枚目
+  [srow('U3b', '1003', '20261011', 'D1', ...TC, 1, 5000)],                                                                                                // 分納：2枚目（同じ注文）→ 合わせて 11500
+  [srow('U4', '1004', '20261020', 'D3', ...FC, 1, 13000)],                                                                                                // 13000 愛知県・送料なし
+  [srow('U5', '1005', '20261103', 'D1', ...TC, 1, 5000), srow('U5', '1005', '20261103', 'D1', ...FR, 1, 1500)],                                            // 6500
+  [srow('U6', '1006', '20261110', 'D2', ...FC, 1, 13000), srow('U6', '1006', '20261110', 'D2', ...FR, 1, 1500)],                                          // 14500
+  [srow('UT', 'TEST1007', '20261104', 'D1', ...FC, 1, 13000)],                                                                                            // テスト送信は除く
+  [srow('UX', '1008', '20261104', 'D1', ...FC, 1, 13000, { '得意先ｺｰﾄﾞ': '341401' })]                                                                      // EC 以外の得意先は除く
+);
 const nouhinRows = [
   { '得意先コード': '599802', '納品先コード': 'D1', '住所１': '〒100-0001 東京都千代田区千代田1-1' }, { '得意先コード': '599802', '納品先コード': 'D2', '住所１': '大阪府大阪市北区梅田1-1' },
   { '得意先コード': '599802', '納品先コード': 'D3', '住所１': '愛知県名古屋市中区栄1-1' }, { '得意先コード': '599802', '納品先コード': 'D4', '住所１': '' }
@@ -42,8 +56,9 @@ const shipLookup = { byPo: {
   '1001': [{ no: 'S1', date: '2026-10-03', cust: '599802' }], '1002': [{ no: 'S2', date: '2026-10-06', cust: '599802' }],
   '1004': [{ no: 'S4', date: '2026-10-21', cust: '341401' }],   // ほかの得意先の出荷は引かない
   '1005': [{ no: 'S5', date: '2026-11-04', cust: '599802' }], '1006': [{ no: 'S6', date: '2026-11-10', cust: '599802' }] } };
-const model = D.build({ smileRows, nouhinRows, shopifyOrders, shipLookup, custCodes: CUST, today: TODAY });
-const byId = Object.fromEntries(model.orders.map(o => [o.id, o]));
+const model = D.build({ salesRows, smileRows, nouhinRows, shopifyOrders, shipLookup, custCodes: CUST, today: TODAY });
+const byId = Object.fromEntries(model.orders.map(o => [o.id, o]));            // SMILE の受注
+const sold = Object.fromEntries(D.orderize(model.sales).map(o => [o.id, o]));   // 売上（注文ごと）
 
 t('日付の小道具：日本時間の今日・月のずらし・月末', () => {
   assert.strictEqual(D.todayJst(new Date('2026-11-11T16:00:00Z')), '2026-11-12');   // UTC の夕方は、日本では翌日
@@ -64,24 +79,57 @@ t('都道府県：郵便番号が先頭でも読める／地方', () => {
   assert.strictEqual(D.regionOf('大阪府'), '関西'); assert.strictEqual(D.regionOf('沖縄県'), '九州・沖縄'); assert.strictEqual(D.regionOf('東京都'), '関東'); assert.strictEqual(D.regionOf(''), '不明');
   assert.strictEqual(D.REGIONS.reduce((a, g) => a + g.prefs.length, 0), 47);   // 47都道府県がもれなく入っている
 });
-t('注文のまとめ：テスト・ほかの得意先・キャンセルを除く／送料は別に数える', () => {
+t('売上（売上明細）：消費税の行・テスト・ほかの得意先を除く／分納は1注文／送料は別に数える', () => {
+  assert.strictEqual(model.sales.length, 7);   // 伝票 U1・U2・U3・U3b・U4・U5・U6
+  assert.deepStrictEqual(Object.keys(sold).sort(), ['1001', '1002', '1003', '1004', '1005', '1006']);
+  assert.ok(!sold['1007'] && !sold['1008'] && !sold['1009']);
+  assert.strictEqual(sold['1001'].amount, 27500); assert.strictEqual(sold['1001'].goods, 26000); assert.strictEqual(sold['1001'].freight, 1500); assert.strictEqual(sold['1001'].qty, 2);   // 消費税の行（2750円）は入らない
+  assert.strictEqual(sold['1004'].freight, 0); assert.strictEqual(sold['1004'].amount, 13000);
+  assert.strictEqual(sold['1002'].id, '1002');   // 客先注番の # は取る
+  assert.strictEqual(sold['1003'].amount, 11500); assert.strictEqual(sold['1003'].date, '2026-10-09'); assert.strictEqual(sold['1003'].qty, 2);   // 分納の2枚をまとめる
+  assert.strictEqual(model.sales[0].month, '2026-10'); assert.strictEqual(model.sales[0].date, '2026-10-02');
+});
+t('SMILE の受注：キャンセルを除く／まだ売上になっていない受注', () => {
   assert.deepStrictEqual(model.orders.map(o => o.id), ['1001', '1002', '1003', '1004', '1005', '1006']);
   assert.ok(!byId['1009'] && !byId['TEST1007'] && !byId['1008']);
   assert.strictEqual(model.info.cancelledOut, 1);
-  assert.strictEqual(byId['1001'].amount, 27500); assert.strictEqual(byId['1001'].goods, 26000); assert.strictEqual(byId['1001'].freight, 1500); assert.strictEqual(byId['1001'].qty, 2);
-  assert.strictEqual(byId['1004'].freight, 0); assert.strictEqual(byId['1004'].amount, 13000);
-  assert.strictEqual(byId['1001'].month, '2026-10');
+  assert.strictEqual(model.info.notSold, 0);
+  const m = D.build({ salesRows, smileRows: smileRows.concat([row('3001', '20261111', 'D1', ...FC, 1, 13000, { '客先注番': '1011' })]), nouhinRows, shopifyOrders, custCodes: CUST });
+  assert.strictEqual(m.info.notSold, 1); assert.strictEqual(m.info.notSoldAmount, 13000);   // 受注はあるが、まだ売上伝票がない（出荷前）
+});
+t('売上明細の見出しの書き方の違い・訂正（マイナス）の行・月またぎの分納', () => {
+  const zen = [{ '売上No': 'Z1', '伝票日付': '2026/10/03', '明細区分': '0', '得意先コード': '599801', '納品先コード': 'D1', '品目コード': 'AAA', '品目名': 'ｻﾝﾌﾟﾙ', '数量': '2.00', '金額': '3,000', '客先注番': '#9001' },
+    { '売上No': 'Z2', '伝票日付': '2026/10/04', '明細区分': '0', '得意先コード': '599801', '納品先コード': 'D1', '品目コード': 'AAA', '品目名': 'ｻﾝﾌﾟﾙ', '数量': '-1.00', '金額': '-1,500', '客先注番': '#9001' }];
+  const m = D.build({ salesRows: zen, nouhinRows, custCodes: CUST });   // 全角の「売上No」「コード」でも読める・金額のカンマも読める
+  assert.strictEqual(m.sales.length, 2); assert.strictEqual(m.sales[0].amount, 3000); assert.strictEqual(m.sales[1].amount, -1500);
+  assert.strictEqual(m.sales[0].lines[0].name, 'サンプル');
+  assert.strictEqual(D.summary(m.sales).sales, 1500); assert.strictEqual(D.summary(m.sales).count, 1); assert.strictEqual(D.summary(m.sales).qty, 1);   // 訂正は差し引いて、1注文
+  const two = D.build({ salesRows: [srow('M1', '5001', '20261028', 'D1', ...FC, 1, 13000), srow('M2', '5001', '20261102', 'D1', ...FC, 1, 13000)], nouhinRows, custCodes: CUST });
+  const bm = D.byMonth(two.sales, '2026-10', '2026-11'); assert.deepStrictEqual(bm.map(x => x.sales), [13000, 13000]); assert.deepStrictEqual(bm.map(x => x.count), [1, 1]);   // 売上の月は、伝票日付の月（確定した月）
+  assert.strictEqual(D.summary(two.sales).count, 1);   // 月をまたぐ範囲では、同じ注文は1件
+});
+t('売上明細の絞り込み：EC の得意先の行だけを取り出す（4MBずつ・区切りをまたいでも欠けない・文字コードの見分け）', () => {
+  const head = ['売上№', '伝票日付', '得意先ｺｰﾄﾞ', '品目名'].map(h => '"' + h + '"').join(',');
+  const lines = []; for (let i = 0; i < 200; i++) lines.push(['"U' + i + '"', '"20261001"', '"' + (i % 5 === 0 ? '599802' : '341401') + '"', '"品目' + i + '"'].join(','));
+  const text = '\ufeff' + head + '\r\n' + lines.join('\r\n') + '\r\n';
+  const buf = new TextEncoder().encode(text);
+  const a = D.extractSalesLines(buf, ['599801', '599802'], { chunk: 37 });   // 小さな区切りで何度もまたがせる
+  const rows = a.split('\n'); assert.strictEqual(rows[0], head); assert.strictEqual(rows.length, 1 + 40);   // 見出し＋40行
+  assert.ok(rows.slice(1).every(r => r.indexOf('599802') >= 0)); assert.strictEqual(rows[1], lines[0]);
+  assert.strictEqual(D.extractSalesLines(buf, ['599802']), D.extractSalesLines(buf, ['599802'], { chunk: 1 << 20 }));   // 区切りの大きさに依らない
+  assert.strictEqual(D.extractSalesLines(buf.buffer, ['000000']), head + '\n');   // ArrayBuffer でも読める・該当なしなら見出しだけ
+  assert.ok(D.extractSalesLines(new TextEncoder().encode('"伝票日付","得意先ｺｰﾄﾞ"\n"1","599802"'), ['599802']).endsWith('"1","599802"'));   // 最後の行に改行がなくても取れる
 });
 t('商品名：半角カナを全角にして見せる／送料は商品に入れない', () => {
-  assert.strictEqual(byId['1001'].lines.length, 1); assert.strictEqual(byId['1001'].lines[0].name, 'フラットカート ブルー');
-  assert.strictEqual(byId['1003'].lines[0].name, 'テーブルコンテナ');
+  assert.strictEqual(sold['1001'].lines.length, 1); assert.strictEqual(sold['1001'].lines[0].name, 'フラットカート ブルー');
+  assert.strictEqual(sold['1003'].lines[0].name, 'テーブルコンテナ');
 });
 t('地域：納品先から都道府県（住所なしは不明）', () => {
-  assert.strictEqual(byId['1001'].pref, '東京都'); assert.strictEqual(byId['1001'].region, '関東'); assert.strictEqual(byId['1002'].region, '関西'); assert.strictEqual(byId['1004'].pref, '愛知県');
-  const m = D.build({ smileRows: [row('2001', '20261101', 'D4', ...FC, 1, 13000)], nouhinRows, custCodes: CUST });
-  assert.strictEqual(m.orders[0].pref, ''); assert.strictEqual(m.orders[0].region, '不明');
-  const m2 = D.build({ smileRows: [row('2002', '20261101', 'D4', ...FC, 1, 13000)], nouhinRows, shopifyOrders: [sh('2002', '2026-11-01', '10:00', 'z@example.com', 1, 0, { ship: { province: '福岡県' } })], custCodes: CUST });
-  assert.strictEqual(m2.orders[0].pref, '福岡県');   // 納品先で分からないときは、Shopify の届け先の県
+  assert.strictEqual(sold['1001'].pref, '東京都'); assert.strictEqual(sold['1001'].region, '関東'); assert.strictEqual(sold['1002'].region, '関西'); assert.strictEqual(sold['1004'].pref, '愛知県');
+  const m = D.build({ salesRows: [srow('N1', '2001', '20261101', 'D4', ...FC, 1, 13000)], nouhinRows, custCodes: CUST });
+  assert.strictEqual(m.sales[0].pref, ''); assert.strictEqual(m.sales[0].region, '不明');
+  const m2 = D.build({ salesRows: [srow('N2', '2002', '20261101', 'D4', ...FC, 1, 13000)], nouhinRows, shopifyOrders: [sh('2002', '2026-11-01', '10:00', 'z@example.com', 1, 0, { ship: { province: '福岡県' } })], custCodes: CUST });
+  assert.strictEqual(m2.sales[0].pref, '福岡県');   // 納品先で分からないときは、Shopify の届け先の県
 });
 t('出荷までの日数：Shopify の注文日（なければ受注日）から、いちばん早い出荷日まで。ほかの得意先の出荷は引かない', () => {
   assert.strictEqual(byId['1001'].shipDays, 2);   // 10/1 の注文 → 10/3 出荷（SMILE の受注日 10/2 ではなく Shopify の注文日から）
@@ -120,25 +168,25 @@ t('範囲のあらかじめの選び方', () => {
   assert.deepStrictEqual(D.preset('all', TODAY, '2025-04'), { from: '2025-04', to: '2026-11' }); assert.deepStrictEqual(D.preset('6m', TODAY), { from: '2026-06', to: '2026-11' });
 });
 t('数字のカード：売上・件数・客単価・1注文あたりの点数', () => {
-  const s = D.summary(model.orders.filter(o => o.month === '2026-10'));
+  const s = D.summary(model.sales.filter(o => o.month === '2026-10'));
   assert.strictEqual(s.count, 4); assert.strictEqual(s.sales, 27500 + 14500 + 11500 + 13000); assert.strictEqual(s.freight, 4500); assert.strictEqual(s.goods, 62000);
   assert.strictEqual(s.qty, 2 + 1 + 2 + 1); assert.strictEqual(s.avg, 66500 / 4); assert.strictEqual(s.avgQty, 6 / 4);
   const z = D.summary([]); assert.strictEqual(z.avg, 0); assert.strictEqual(z.avgQty, 0);
 });
 t('月別：月の数だけ並ぶ（注文のない月は 0）', () => {
-  const a = D.byMonth(model.orders, '2026-09', '2026-11');
+  const a = D.byMonth(model.sales, '2026-09', '2026-11');
   assert.deepStrictEqual(a.map(x => x.month), ['2026-09', '2026-10', '2026-11']);
   assert.deepStrictEqual(a.map(x => x.count), [0, 4, 2]); assert.deepStrictEqual(a.map(x => x.sales), [0, 66500, 21000]);
 });
 t('商品別：売上順・台数・注文数・構成比（送料は入れない）', () => {
-  const list = D.byProduct(model.orders);
+  const list = D.byProduct(model.sales);
   assert.strictEqual(list[0].code, 'FC-BLUE'); assert.strictEqual(list[0].qty, 5); assert.strictEqual(list[0].sales, 26000 + 13000 + 13000 + 13000); assert.strictEqual(list[0].orders, 4);
   assert.strictEqual(list[1].code, 'TC'); assert.strictEqual(list[1].qty, 3); assert.strictEqual(list[1].sales, 15000);
   assert.ok(!list.some(x => x.code === 'FR'));
   assert.ok(Math.abs(list.reduce((a, x) => a + x.share, 0) - 100) < 1e-9);
 });
 t('地域別：件数・構成比・都道府県／住所不明は分けて数える', () => {
-  const g = D.byRegion(model.orders);   // 10月と11月の全注文：東京3（1001・1003・1005）・大阪2・愛知1
+  const g = D.byRegion(model.sales);   // 10月と11月の全注文：東京3（1001・1003・1005）・大阪2・愛知1
   assert.strictEqual(g.regions[0].name, '関東'); assert.strictEqual(g.regions[0].count, 3); assert.strictEqual(g.regions[0].share, 50);
   assert.strictEqual(g.regions[1].name, '関西'); assert.strictEqual(g.regions[1].count, 2); assert.strictEqual(g.regions[2].name, '中部');
   assert.strictEqual(g.prefs[0].name, '東京都'); assert.strictEqual(g.prefs[0].sales, 27500 + 11500 + 6500); assert.strictEqual(g.prefs.length, 3); assert.strictEqual(g.unknown, 0);
@@ -170,12 +218,12 @@ t('出荷までの日数：区切り・平均・真ん中・未出荷', () => {
   const k = D.byShipDays([{ shipDays: 0 }, { shipDays: 5 }, { shipDays: 12 }]); assert.deepStrictEqual(k.buckets.map(x => x.count), [1, 0, 0, 0, 1, 1]); assert.strictEqual(k.median, 5);
 });
 t('送料と値引き', () => {
-  const f = D.freightInfo(model.orders, model.shop);
+  const f = D.freightInfo(model.sales, model.shop);
   assert.strictEqual(f.freight, 1500 * 5); assert.strictEqual(f.charged, 5); assert.strictEqual(f.free, 1); assert.strictEqual(f.avgCharged, 1500);
   assert.strictEqual(f.discountOrders, 1); assert.strictEqual(f.discountTotal, 1000); assert.strictEqual(f.codes[0].code, 'SAMPLE10'); assert.strictEqual(f.shopCount, 4);
 });
 t('前の期間との差：商品ごと', () => {
-  const cur = model.orders.filter(o => o.month === '2026-11'), prev = model.orders.filter(o => o.date <= '2026-10-12');
+  const cur = model.sales.filter(o => o.month === '2026-11'), prev = model.sales.filter(o => o.date <= '2026-10-12');
   const d = D.productDelta(cur, prev);
   assert.strictEqual(d[0].code, 'FC-BLUE'); assert.strictEqual(d[0].dSales, 13000 - 39000); assert.strictEqual(d[0].dQty, -2); assert.strictEqual(d[0].prevQty, 3);
   assert.strictEqual(D.productDelta([], prev).length, 2);   // 今は何も売れていない商品も、差に出る
@@ -220,15 +268,17 @@ t('コメント（商品・地域）', () => {
 });
 t('コメント（曜日・時間帯・リピート・出荷・送料）', () => {
   const a = D.analyze(model, { from: '2026-11', to: '2026-11' }, TODAY), c = a.comments;
-  assert.strictEqual(c.weekday[0], '注文が 3件と少ないので、傾向は参考程度に見てください。');
-  assert.ok(c.weekday[1].startsWith('注文は月曜と水曜に多い傾向です（全体の 100%）')); assert.ok(c.weekday.some(x => x.startsWith('土日の注文は、全体の 0%')));
+  assert.strictEqual(c.weekdayShop[0], '注文が 3件と少ないので、傾向は参考程度に見てください。');   // Shopify：注文した日の曜日
+  assert.ok(c.weekdayShop[1].startsWith('注文は月曜と水曜に多い傾向です（全体の 100%）')); assert.ok(c.weekdayShop.some(x => x.startsWith('土日の注文は、全体の 0%')));
+  assert.strictEqual(c.weekday[0], '注文が 2件と少ないので、傾向は参考程度に見てください。');   // 売上明細：売上の日（出荷した日）の曜日（11/3 と 11/10 はどちらも火曜）
+  assert.ok(c.weekday[1].startsWith('売上の日（出荷した日）は火曜と')); assert.ok(c.weekday.some(x => x.startsWith('土日の売上は、全体の 0%')));
   assert.ok(c.hour.some(x => x.includes('夜（18〜23時） が 67%')), c.hour.join('|'));
   assert.ok(c.repeat[0].includes('リピート') && c.repeat[0].includes('1件、全体の 33%')); assert.ok(c.repeat.some(x => x.includes('直近55日')));
   assert.ok(c.ship[0].includes('平均 1.5日') && c.ship[0].includes('100% の注文は、2日以内'), c.ship[0]);
   assert.ok(c.freight[0].includes('送料は 3,000円（売上の 14.3%）'), c.freight[0]); assert.ok(c.freight.some(x => x.includes('3件のうち 1件で使われ')));
   // 少ないデータ・何もないとき
   const none = D.analyze(model, { from: '2026-05', to: '2026-05' }, TODAY).comments;
-  assert.ok(none.weekday[0].includes('Shopify の注文がありません')); assert.ok(none.hour[0].includes('Shopify の注文がありません')); assert.ok(none.repeat[0].includes('Shopify の注文がありません'));
+  assert.ok(none.weekdayShop[0].includes('Shopify の注文がありません')); assert.strictEqual(none.weekday[0], 'この期間は、売上がありません。'); assert.ok(none.hour[0].includes('Shopify の注文がありません')); assert.ok(none.repeat[0].includes('Shopify の注文がありません'));
   assert.strictEqual(none.sales[0], 'この期間は、注文がありません。'); assert.strictEqual(none.ship[0], 'この期間は、出荷が確認できた注文がありません。');
 });
 t('曜日：十分な件数があれば注意書きは出ず、少ない曜日にも触れる', () => {
@@ -238,10 +288,10 @@ t('曜日：十分な件数があれば注意書きは出ず、少ない曜日�
 });
 t('分析まとめ：画面が使う形（月ごとの送料も）', () => {
   const a = D.analyze(model, { from: '2026-09', to: '2026-11' }, TODAY);
-  assert.deepStrictEqual(Object.keys(a.comments).sort(), ['freight', 'hour', 'monthly', 'products', 'region', 'repeat', 'sales', 'ship', 'weekday']);
+  assert.deepStrictEqual(Object.keys(a.comments).sort(), ['freight', 'hour', 'monthly', 'products', 'region', 'repeat', 'sales', 'ship', 'weekday', 'weekdayShop']);
   assert.strictEqual(a.series.length, 3); assert.deepStrictEqual(a.frSeries.map(x => x.freight), [0, 4500, 3000]); assert.strictEqual(a.shopCount, 4);
   assert.strictEqual(a.period.cur.end, TODAY);
-  const e = D.analyze({ orders: [], shop: [] }, { from: '2026-11', to: '2026-11' }, TODAY);   // データが何もなくても止まらない
+  const e = D.analyze({ sales: [], orders: [], shop: [] }, { from: '2026-11', to: '2026-11' }, TODAY);   // データが何もなくても止まらない
   assert.strictEqual(e.cur.count, 0); assert.strictEqual(e.series.length, 1);
 });
 
