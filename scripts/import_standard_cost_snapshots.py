@@ -167,7 +167,20 @@ def main() -> int:
 
     # standard-cost フォルダの現存ファイルを正とする。過去に取り込まれた後で
     # フォルダから無くなった月を残すと、原価未作成月にも付加価値が表示される。
-    available_months = {parse(source)[0] for source in args.sources}
+    # 同じ月に複数の形式がある場合は .txt（SMILE の出力）を優先し、無ければ .csv、最後に .xlsx。
+    # 例：standard_cost_202608.xlsx と standard_cost_202608.txt が並んだら .txt を採用する。
+    priority = {".txt": 0, ".csv": 1, ".xlsx": 2}
+    by_month: dict[str, Path] = {}
+    for source in args.sources:
+        ym = parse(source)[0]
+        best = by_month.get(ym)
+        if best is None or priority.get(source.suffix.lower(), 9) < priority.get(best.suffix.lower(), 9):
+            by_month[ym] = source
+    skipped = [s for s in args.sources if by_month.get(parse(s)[0]) is not s]
+    for s in skipped:
+        print(f"[INFO] {s.name}: 同じ月の {by_month[parse(s)[0]].name} を優先するため取り込みません")
+    args.sources = [by_month[ym] for ym in sorted(by_month)]
+    available_months = set(by_month)
     output = json.loads(args.destination.read_text(encoding="utf-8"))
     analysis = output.get("item_analysis")
     if isinstance(analysis, dict):

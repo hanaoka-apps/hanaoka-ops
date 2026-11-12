@@ -1690,16 +1690,21 @@ async function loadTanaCosts(){
     if(!r.ok) throw new Error('標準原価を読めません（HTTP '+r.status+'）');
     const j=await r.json(), h=((j||{}).item_analysis||{}).standard_cost_history||{}, ms=Object.keys(h).sort();
     if(!ms.length) throw new Error('標準原価の月別データがありません');
-    const m=ms[ms.length-1], map=new Map(); for(const [c,v] of Object.entries(h[m]||{})) map.set(_ck(c),{inv:Number(v&&v.inventory_unit_cost)||0, std:Number(v&&v.total)||0});
-    TCOST.map=map; TCOST.month=m; TCOST.err=''; })();
+    // 品目ごとに全月の単価を持ち、基準月に単価が無ければ前の月→後の月の順に探す（2026-11-12）
+    const map=new Map(); for(const ym of ms) for(const [c,v] of Object.entries(h[ym]||{})){ const k=_ck(c); let e=map.get(k); if(!e){ e={}; map.set(k,e); } e[ym]={inv:Number(v&&v.inventory_unit_cost)||0, std:Number(v&&v.total)||0}; }
+    TCOST.map=map; TCOST.months=ms; TCOST.month=baseCostMonth(ms); TCOST.err=''; })();
   try{ await TCOST.loading; }catch(e){ TCOST.err=e.message; throw e; } finally{ TCOST.loading=null; }
 }
-function unitCost(code){ if(!TCOST.map) return null; const v=TCOST.map.get(_ck(code)); if(!v) return null; const u=TCOST.kind==='std'?v.std:v.inv; return u>0?u:null; }
+// 基準月＝棚卸の帳簿基準日の月（無ければ最新月）。その月に原価表が無ければ、それ以前で一番新しい月
+function baseCostMonth(ms){ ms=ms||TCOST.months||[]; if(!ms.length) return ''; const d=(typeof LEDGER_META!=='undefined'&&LEDGER_META&&LEDGER_META.date)?LEDGER_META.date.replace(/-/g,'').slice(0,6):''; if(!d) return ms[ms.length-1]; const le=ms.filter(m=>m<=d); return le.length?le[le.length-1]:ms[0]; }
+function costOrder(){ const ms=TCOST.months||[], b=baseCostMonth(ms); return [b].concat(ms.filter(m=>m<b).reverse(), ms.filter(m=>m>b)); }
+function costPick(code){ if(!TCOST.map) return null; const e=TCOST.map.get(_ck(code)); if(!e) return null; for(const ym of costOrder()){ const v=e[ym]; if(!v) continue; const u=TCOST.kind==='std'?v.std:v.inv; if(u>0) return {u, ym}; } return null; }
+function unitCost(code){ const p=costPick(code); return p?p.u:null; }
 // 登録一覧・帳簿在庫との確認で単価を出す（単価が登録されていない品目を見つける用）。開いたときに自動で読み込む
 function ensureCosts(after){ if(TCOST.map||TCOST.err) return; if(TCOST.loading) return; document.querySelectorAll('.tl-cost-note').forEach(e=>e.textContent='単価を読み込んでいます…'); loadTanaCosts().then(after,after); }
-function priceCell(code){ if(!TCOST.map) return `<span style="color:#cbd5e1">${TCOST.err?'—':'…'}</span>`; const u=unitCost(code); return u==null?'<span style="color:#b91c1c;font-weight:700;background:#fee2e2;border-radius:4px;padding:0 5px">未登録</span>':yen0(u); }
+function priceCell(code){ if(!TCOST.map) return `<span style="color:#cbd5e1">${TCOST.err?'—':'…'}</span>`; const p=costPick(code); if(!p) return '<span style="color:#b91c1c;font-weight:700;background:#fee2e2;border-radius:4px;padding:0 5px">未登録</span>'; const b=baseCostMonth(); return yen0(p.u)+(p.ym!==b?`<br><small style="color:#a16207;white-space:nowrap" title="基準月に単価が無いため${p.ym.slice(0,4)}年${Number(p.ym.slice(4))}月の原価表を使用">${Number(p.ym.slice(4))}月の単価</small>`:''); }
 function costNote(){ const t=TCOST.map?`単価＝${costLabel()}`:(TCOST.err?'単価を読めませんでした：'+TCOST.err:'単価を読み込んでいます…'); document.querySelectorAll('.tl-cost-note').forEach(e=>e.textContent=t); }
-function costLabel(){ return TCOST.month?`${TCOST.month.slice(0,4)}年${Number(TCOST.month.slice(4))}月の標準原価表（${TCOST.kind==='std'?'積上原価計':'在庫評価単価'}）`:''; }
+function costLabel(){ const b=baseCostMonth(); return b?`${b.slice(0,4)}年${Number(b.slice(4))}月の標準原価表（${TCOST.kind==='std'?'積上原価計':'在庫評価単価'}）。無い品目は前の月→後の月の単価`:''; }
 function whAmounts(){ const m=new Map(); if(!TCOST.map) return m; for(const a of whItems()){ const u=unitCost(a.code), r=m.get(a.wh)||{amt:0,miss:0}; if(u==null){ if(a.total) r.miss++; } else r.amt+=u*a.total; m.set(a.wh,r); } return m; }
 const yen0=v=>v==null?'—':Math.round(v).toLocaleString('ja-JP');
 function whSummary(){
