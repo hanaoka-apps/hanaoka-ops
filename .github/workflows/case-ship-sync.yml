@@ -1,0 +1,64 @@
+name: Case ship sync
+
+# 案件管理アプリ：受注番号のある案件に、出荷・送り状の記録をタイムラインへ自動で入れる。
+#   1) 受注伝票の索引 juchu_index.json を作る（受注明細が前回から変わっていなければ何もしない）
+#   2) ship_index.json（専用機が毎時20分ごろ作る）を見て、案件のタイムラインに「📦 出荷」「🚚 送り状発行」を書く
+# 平日 8:35〜19:35（日本時間）に1時間ごと。受注伝票の索引だけは毎日 1:00 にも作る（SMILE の受注明細は 0 時ごろ更新）。
+#
+# SYNC_MODE が dry-run の間は、タイムラインに書かずに「書く予定」だけをログに出す（試し運転）。
+# 確かめてから write に変える。
+env:
+  SYNC_MODE: dry-run
+
+on:
+  schedule:
+    - cron: '35 23 * * 0-4'    # 日本時間 平日 8:35
+    - cron: '35 0-10 * * 1-5'  # 日本時間 平日 9:35〜19:35
+    - cron: '0 16 * * *'       # 日本時間 毎日 1:00（受注伝票の索引）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'write＝書き込む／initial＝初回（すでにある分をまとめて入れる。Teams に通知しない）／dry-run＝書く予定だけ出す'
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, initial, write]
+
+concurrency:
+  group: case-ship-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install msal requests
+
+      - name: 受注伝票の索引を作る
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: python scripts/build_juchu_index.py
+
+      - name: 出荷・送り状をタイムラインに入れる
+        if: github.event.schedule != '0 16 * * *'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          MODE: ${{ github.event.inputs.mode || env.SYNC_MODE }}
+        run: |
+          if [ "$MODE" = "write" ]; then python scripts/case_ship_sync.py
+          elif [ "$MODE" = "initial" ]; then python scripts/case_ship_sync.py --initial
+          else python scripts/case_ship_sync.py --dry-run; fi
