@@ -270,6 +270,39 @@
     return out;
   }
 
+  // 運賃テスト：県・重さ（または個数）だけで、どの決まりを使っていくらかを出す（⑤ 運賃の画面で使う）
+  // opt: { pref, kg, count, mode:"路線便"|"ミニ便", personal, logis, date }
+  function fareQuote(data, opt) {
+    var out = { amount: null, explain: [], warnings: [], rule: null };
+    var date = opt.date, reg = regionOfPref(data.fares, opt.pref);
+    if (!opt.pref) { out.warnings.push("県を選んでください"); return out; }
+    if (/沖縄/.test(opt.pref)) { out.warnings.push("沖縄・離島は西濃の個別運賃（原価÷0.8 を百の位で切り上げ）。都度見積"); return out; }
+    if (!reg) { out.warnings.push("この県はどの地域にも入っていません：" + opt.pref); return out; }
+    out.explain.push(opt.pref + " → 地域「" + reg.region + "」・運送会社「" + (opt.personal ? "西濃運輸（個人宅）" : opt.mode === "ミニ便" ? "第一貨物（ミニ便）" : reg.carrier) + "」");
+    if (opt.mode === "ミニ便") {
+      var n = num(opt.count);
+      if (!(n > 0)) { out.warnings.push("個数を入れてください"); return out; }
+      var m = bandFare(fareRows(data.fares, "ミニ便", reg.region, date), n);
+      if (!m) { out.warnings.push("ミニ便は9個までです（それより多いときは路線便）"); return out; }
+      out.amount = num(m.金額); out.rule = { kind: "ミニ便", region: reg.region, band: num(m.上限), from: ymd(m.適用開始日) };
+      out.explain.push("ミニ便・" + reg.region + "・" + m.上限 + "個までの運賃 → " + yen(out.amount) + "（" + ymd(m.適用開始日) + " からの表）");
+    } else {
+      var kg = num(opt.kg);
+      if (!(kg > 0)) { out.warnings.push("重さ（kg）を入れてください"); return out; }
+      var rows = fareRows(data.fares, "路線便", reg.region, date), r = routeFare(rows, kg);
+      if (!r) { out.warnings.push("路線便の表がありません：" + reg.region); return out; }
+      out.amount = r.amount; out.rule = { kind: "路線便", region: reg.region, parts: r.parts, from: rows.length ? ymd(rows[0].適用開始日) : "" };
+      var top = rows.length ? num(rows[rows.length - 1].上限) : 0;
+      out.explain.push("路線便・" + reg.region + "・" + kg + "kg → " + (kg > top ? top + "kgを超えるので " : "") + r.parts.map(function (p) { return p.replace("帯", "以下の帯"); }).join("＋") + " → " + yen(r.amount));
+    }
+    if (opt.personal) { out.amount *= 2; out.explain.push("個人宅なので2倍 → " + yen(out.amount)); }
+    if (opt.logis) {
+      out.quoteAmount = ceil(out.amount / 0.93, 10); out.orderAmount = round(out.quoteAmount * 0.93, 1);
+      out.explain.push("本部経由：販社への見積 ÷0.93 を10円切り上げ → " + yen(out.quoteAmount) + "（本部からの受注 " + yen(out.orderAmount) + "）");
+    }
+    return out;
+  }
+
   // 1台分の運賃（「運賃込み」の得意先に使う）
   function unitFare(data, code, region, date) {
     var p = listPriceRow(data.prices, code, date, true);
@@ -465,7 +498,8 @@
     if (c.計算方式 === "本部経由") s.push("本部経由で計算します（販社への見積は÷0.93を10円切り上げ、本部からの受注は×0.93を1円）");
     if (c.計算方式 === "運賃込み") s.push("単価に" + (c.運賃込みの地域 || "決めた地域") + "あて1台分の運賃を含めます");
     if (!s.length) s.push("決まりが入っていません");
-    return who + "は、" + s.join("。") + "。" + datesText(c);
+    var tail = (num(c.掛率) !== null || num(c.在庫口の掛率) !== null) ? "ランク（SMILE）より優先します。ただし商品ごとの ④ 例外があるときは、例外を優先します。" : "";
+    return who + "は、" + s.join("。") + "。" + tail + datesText(c);
   }
 
   // ---------- 運賃表の点検（人は間違えるので、システム側で抜け・重なりを見つける） ----------
@@ -607,7 +641,7 @@
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,
-    excSentence: excSentence, clsSentence: clsSentence, fareChecks: fareChecks
+    excSentence: excSentence, clsSentence: clsSentence, fareChecks: fareChecks, fareQuote: fareQuote, fareRows: fareRows
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.PriceCore = API;

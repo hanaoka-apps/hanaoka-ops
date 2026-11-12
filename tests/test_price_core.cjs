@@ -225,6 +225,20 @@ fc = P.fareChecks(data.fares.concat([{ 種類: '路線便', 地域: '近畿', �
 assert.ok(fc.some(c => c.level === 'ng' && /近畿の40kg（2025-11-12 から）が2行/.test(c.text)));
 assert.ok(fc.some(c => c.level === 'ng' && /大阪（近畿・近畿2）/.test(c.text)));
 
+// --- 運賃テスト ---
+let q = P.fareQuote(data, { pref: '大阪府', kg: 35, date: '2026-11-11' });
+assert.equal(q.amount, 2900); assert.ok(/40kg以下の帯/.test(q.explain.join()));
+q = P.fareQuote(data, { pref: '東京都', kg: 480, date: '2026-11-11' });
+assert.equal(q.amount, 9000 + 3900); assert.ok(/400kgを超えるので/.test(q.explain.join()));
+q = P.fareQuote(data, { pref: '東京都', kg: 40, date: '2027-05-01' });
+assert.equal(q.amount, 2500); // 将来の改定が効く日付
+q = P.fareQuote(data, { pref: '東京都', mode: 'ミニ便', count: 2, date: '2026-11-11', personal: true });
+assert.equal(q.amount, 2200);
+q = P.fareQuote(data, { pref: '大阪府', kg: 35, date: '2026-11-11', logis: true });
+assert.equal(q.quoteAmount, 3120);
+q = P.fareQuote(data, { pref: '北海道', kg: 10, date: '2026-11-11' });
+assert.ok(/どの地域にも入っていません/.test(q.warnings.join()));
+
 // --- CSV・県 ---
 assert.deepEqual(P.parseCSV('﻿a,b\r\n"x,1","y""z"\r\n'), [['a', 'b'], ['x,1', 'y"z']]);
 assert.deepEqual(P.toObjects('受注№\t品目ｺｰﾄﾞ\n1\tT1\n', '\t'), [{ '受注№': '1', '品目ｺｰﾄﾞ': 'T1' }]);
