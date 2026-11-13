@@ -190,6 +190,31 @@
     return { amount: total, parts: parts };
   }
 
+  // ---------- 組立出荷（修理品預り・デモなど。折りたためない出荷）----------
+  // 型式は全角・半角・スペース・ハイフンがばらばらなので、そろえてから照合する（例：「Ｄ Ａ-Ｌ Ｓ-Ｇ Ｂ」＝「DALSGB」＝「DA-LS-GB」）
+  function asmKey(s) { return String(s || "").normalize("NFKC").toUpperCase().replace(/[\s\-‐‑–—−]+/g, ""); }
+  // その日に効いている、組立出荷の重さの行（同じ型式は適用開始日が一番新しいもの）
+  function assemblyRow(rows, code, date) {
+    var key = asmKey(code), best = null;
+    (rows || []).forEach(function (r) {
+      if (asmKey(r.型式) !== key) return;
+      if (r.適用開始日 && ymd(r.適用開始日) > ymd(date)) return;
+      if (!best || ymd(r.適用開始日) > ymd(best.適用開始日)) best = r;
+    });
+    return best;
+  }
+  // 計算のしかた：「単品運賃×台数」（初期値）／「初めの1台＋追加分」（PC-90：1台目150kg、2台目以降は60kgずつ足した重さで1回引く）
+  function assemblyFare(routeRows, row, qty) {
+    var w = num(row.重さkg), extra = num(row.追加の重さkg) || 0, how = row.計算のしかた || "単品運賃×台数";
+    if (w === null) return null;
+    if (how === "初めの1台＋追加分") {
+      var kg = w + extra * Math.max(qty - 1, 0), r = routeFare(routeRows, kg);
+      return r ? { amount: r.amount, kg: kg, how: how, text: w + "kg＋" + extra + "kg×" + Math.max(qty - 1, 0) + " ＝ " + kg + "kg → " + r.parts.join("＋") } : null;
+    }
+    var u = routeFare(routeRows, w);
+    return u ? { amount: u.amount * qty, kg: w, unit: u.amount, how: how, text: "1台 " + w + "kg → " + yen(u.amount) + " × " + qty + "台" } : null;
+  }
+
   function isOption(code) { return /^OP\//i.test(String(code || "")); }
   // 部品のまとめコード：「DANDY/P」「D.LIFT/P」「P.D/P」「P/UDA50-JK」のように /P を含むもの
   function isPartBundle(code) { return /\/P$|^P\//i.test(String(code || "")); }
@@ -198,6 +223,9 @@
   function freight(data, lines, opt) {
     var out = { amount: null, explain: [], warnings: [] };
     var date = opt.date;
+    // 出荷のしかたが「組立出荷」の行は、組立出荷の重さの表で、1台ずつ別に計算する
+    var asmLines = lines.filter(function (l) { return l.ship === "組立出荷" && l.code && l.qty > 0; });
+    lines = lines.filter(function (l) { return l.ship !== "組立出荷"; });
     var reg = regionOfPref(data.fares, opt.pref);
     if (!opt.pref) { out.warnings.push("届け先の県を入れると送料を出します"); return out; }
     if (/沖縄/.test(opt.pref)) { out.warnings.push("沖縄・離島は西濃の個別運賃（原価÷0.8 を百の位で切り上げ）。都度見積"); return out; }
@@ -220,11 +248,26 @@
       if (w === null) unknown.push(x.l.code); else kg += w * x.l.qty;
     });
     if (parts) count += 1;
-    if (!count) return out;
+    var asmAmt = 0;
+    if (asmLines.length) {
+      var routeRows = fareRows(data.fares, "路線便", reg.region, date);
+      out.assembly = [];
+      asmLines.forEach(function (l) {
+        var row = assemblyRow(data.assembly, l.code, date);
+        if (!row) { out.warnings.push("組立出荷の重さがわかりません：" + l.code + "（「組立出荷の重さ」に行を足してください）"); return; }
+        var a = assemblyFare(routeRows, row, l.qty);
+        if (!a) { out.warnings.push("組立出荷の運賃が出せません：" + l.code + "（重さ・運賃表を確かめてください）"); return; }
+        asmAmt += a.amount;
+        out.assembly.push({ code: l.code, qty: l.qty, kg: a.kg, how: a.how, amount: a.amount });
+        out.explain.push("組立出荷 " + l.code + "：" + a.text + " ＝ " + yen(a.amount));
+      });
+    }
+    if (!count && !out.assembly) return out;
+    if (!count && !out.assembly.length) return out;
     if (optInBody) out.explain.push("オプションは本体と一緒なので本体の運賃に含める");
     if (parts) out.warnings.push("部品のまとめコード（○○/P）は大きさで決める：小さければミニ便、箱が大きければ路線便10kg（1,700円前後）");
     var carrier = opt.personal ? "西濃運輸" : reg.carrier;
-    if (small && count <= 9) {
+    if (small && count > 0 && count <= 9) {
       var mini = fareRows(data.fares, "ミニ便", reg.region, date);
       var m = bandFare(mini, count);
       if (m) {
@@ -233,15 +276,18 @@
         carrier = opt.personal ? "西濃運輸" : "第一貨物";
       }
     }
-    if (out.amount === null) {
+    if (out.amount === null && count > 0) {
       if (unknown.length) out.warnings.push("運賃の重さがわからない商品があります：" + unknown.join("、") + "（重さを入れてください）");
-      if (kg <= 0) return out;
-      var rows = fareRows(data.fares, "路線便", reg.region, date);
-      var r = routeFare(rows, kg);
-      if (!r) { out.warnings.push("運賃表がありません：" + reg.region); return out; }
-      out.amount = r.amount;
-      out.explain.push("路線便（" + reg.region + "・合計" + kg + "kg → " + r.parts.join("＋") + "）" + yen(r.amount));
+      if (kg <= 0 && !(out.assembly && out.assembly.length)) return out;
+      var rows = kg <= 0 ? [] : fareRows(data.fares, "路線便", reg.region, date);
+      if (kg > 0) {
+        var r = routeFare(rows, kg);
+        if (!r) { out.warnings.push("運賃表がありません：" + reg.region); return out; }
+        out.amount = r.amount;
+        out.explain.push("路線便（" + reg.region + "・合計" + kg + "kg → " + r.parts.join("＋") + "）" + yen(r.amount));
+      }
     }
+    if (asmAmt > 0) out.amount = (out.amount || 0) + asmAmt;
     if (opt.personal) { out.amount *= 2; out.explain.push("個人宅なので2倍 → " + yen(out.amount)); }
     if (opt.logis) {
       var q = ceil(out.amount / 0.93, 10);
@@ -251,11 +297,13 @@
     out.carrier = carrier; out.region = reg.region; out.kg = kg;
     if (carrier === "トナミ運輸") out.warnings.push("トナミ運輸は土曜の配達・集荷なし");
     // 判定の表と説明の文章
-    var how = m && out.explain[0] && /^ミニ便/.test(out.explain[0]) ? "ミニ便（" + count + "個）" : "路線便（合計" + kg + "kg）";
+    var how = m && out.explain[0] && /^ミニ便/.test(out.explain[0]) ? "ミニ便（" + count + "個）" : (count > 0 ? "路線便（合計" + kg + "kg）" : "");
+    if (asmAmt > 0) how += (how ? "と" : "") + "組立出荷（" + out.assembly.length + "品目）";
     out.method = how;
     out.checks = [
       { item: "届け先", state: "on", text: opt.pref + " → " + reg.region + "・" + carrier },
       { item: "運び方", state: "on", text: how },
+      { item: "組立出荷", state: asmLines.length ? "on" : "off", text: asmLines.length ? asmLines.map(function (l) { return l.code + " " + l.qty + "台"; }).join("、") + "（組立出荷の重さの表）" : "なし" },
       { item: "オプション", state: optInBody ? "on" : "off", text: optInBody ? "本体の運賃に含めた" : "なし" },
       { item: "重さがわからない商品", state: unknown.length ? "warn" : "off", text: unknown.length ? unknown.join("、") + "（わかる分だけで計算）" : "なし" },
       { item: "部品のまとめコード", state: parts ? "warn" : "off", text: parts ? "あり（大きさで人が決める）" : "なし" },
@@ -685,7 +733,7 @@
   var API = {
     parseCSV: parseCSV, toObjects: toObjects, customerFromMaster: customerFromMaster, PREFS: PREFS, prefOf: prefOf,
     num: num, round: round, ceil: ceil, ymd: ymd, yen: yen, pct: pct,
-    roundUnit: roundUnit, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
+    roundUnit: roundUnit, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,

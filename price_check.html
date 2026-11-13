@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261113a"></script>
+<script src="price_core.js?v=20261113b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -317,6 +317,7 @@
       <button class="navi" data-view="exc"><span class="no">④</span>例外<span class="cnt" id="cnt-exc" hidden></span></button>
       <div class="navgrp">送料の決まり</div>
       <button class="navi" data-view="fare"><span class="no">⑤</span>運賃<span class="cnt" id="cnt-fare" hidden></span></button>
+      <button class="navi" data-view="asm" title="修理品の預かり・デモなど、組み立てたまま出荷する商品の重さ"><span class="no">⑤-2</span>組立出荷の重さ<span class="cnt" id="cnt-asm" hidden></span></button>
       <div class="navgrp">運用</div>
       <button class="navi" data-view="match">品目マスタとの照合<span class="cnt" id="cnt-match" hidden></span></button>
       <button class="navi" data-view="import">まとめて入れる</button>
@@ -345,7 +346,7 @@
       <div class="card">
         <h3>明細</h3>
         <div style="overflow-x:auto"><table class="t" id="lineTbl">
-          <thead><tr><th style="width:190px">型式</th><th style="width:80px">台数</th><th>品名</th><th class="num">定価</th><th class="num">単価</th><th class="num">金額</th><th>前回の受注</th><th></th></tr></thead>
+          <thead><tr><th style="width:190px">型式</th><th style="width:80px">台数</th><th style="width:130px">出荷のしかた</th><th>品名</th><th class="num">定価</th><th class="num">単価</th><th class="num">金額</th><th>前回の受注</th><th></th></tr></thead>
           <tbody></tbody>
         </table></div>
         <div class="sugg codesugg" id="codeSugg"></div>
@@ -368,6 +369,7 @@
     <section class="view" id="view-cls"></section>
     <section class="view" id="view-exc"></section>
     <section class="view" id="view-fare"></section>
+    <section class="view" id="view-asm"></section>
 
     <!-- ===== 最初のデータの取り込み ===== -->
     <section class="view" id="view-import">
@@ -429,11 +431,16 @@ const LISTS = {
     code:r=>r.地域, start:r=>r.適用開始日, title:r=>`${r.種類} ${r.地域} ${r.上限??''}`,
     cols:[['種類','種類'],['地域','地域'],['上限','上限（kg・個）'],['金額','金額','yen'],['運送会社','運送会社'],['県','県・決まり'],['適用開始日','適用開始日']],
     fields:[['種類','select',['地域','路線便','ミニ便','決まり']],['地域','text'],['県','textarea'],['運送会社','text'],['上限','number'],['金額','number'],['適用開始日','date'],['適用終了日','date']] },
+  asm: { name:'PR_組立出荷重量', label:'組立出荷の重さ', file:'組立出荷重量.json', optional:true,
+    lead:'修理品の預かり・デモなど、組み立てたまま出荷する商品の重さ（工場の新品は段ボール梱包で、定価リストの重さを使います）。1行＝1型式。計算のしかたは「単品運賃×台数」（初期値）か「初めの1台＋追加分」（PC-90：1台目の重さに、2台目から追加の重さを足す）。型式の全角・半角・スペース・ハイフンのちがいは、自動でそろえて探します。',
+    code:r=>r.型式, start:r=>r.適用開始日, title:r=>`${r.型式} ${r.適用開始日||''}`,
+    cols:[['型式','型式'],['重さkg','重さ（kg）'],['計算のしかた','計算のしかた'],['追加の重さkg','追加の重さ（kg）'],['適用開始日','適用開始日'],['メモ','メモ']],
+    fields:[['型式','text'],['重さkg','number'],['計算のしかた','select',['単品運賃×台数','初めの1台＋追加分']],['追加の重さkg','number'],['適用開始日','date'],['メモ','textarea']] },
 };
 const listIds={};
 
 let msalInstance=null, account=null, driveId=null;
-const RULES={price:[],cls:[],exc:[],fare:[]};   // { spId, data }
+const RULES={price:[],cls:[],exc:[],fare:[],asm:[]};   // { spId, data }
 let CUST=[], CUSTMAP={}, ITEMS={}, ITEMKEY={}, ITEMINFO={}, ORDERS=[], ordersInfo='';
 // 探すときの表記ゆれをならす：全角・半角、大文字・小文字、ハイフン・空白、小さいカナ（ﾀﾞﾝﾃﾞｲ と ダンディ、UDA-LS と UDALS）
 const SMALL={'ァ':'ア','ィ':'イ','ゥ':'ウ','ェ':'エ','ォ':'オ','ャ':'ヤ','ュ':'ユ','ョ':'ヨ','ッ':'ツ','ヮ':'ワ'};
@@ -598,12 +605,12 @@ async function fetchRecentOrders(){
 async function loadRules(){
   const miss=[];
   await Promise.all(Object.keys(LISTS).map(async k=>{
-    try{ const r=await readList(k); if(r===null){ miss.push(LISTS[k].label); RULES[k]=[]; } else RULES[k]=r; }
-    catch(e){ console.warn(k,e); miss.push(LISTS[k].label+'（読めません）'); RULES[k]=[]; }
+    try{ const r=await readList(k); if(r===null){ if(!LISTS[k].optional) miss.push(LISTS[k].label); RULES[k]=[]; } else RULES[k]=r; }
+    catch(e){ console.warn(k,e); if(!LISTS[k].optional) miss.push(LISTS[k].label+'（読めません）'); RULES[k]=[]; }
   }));
   return miss;
 }
-function ruleData(){ return { prices:RULES.price.map(r=>r.data), classes:RULES.cls.map(r=>r.data), exceptions:RULES.exc.map(r=>r.data), fares:RULES.fare.map(r=>r.data) }; }
+function ruleData(){ return { prices:RULES.price.map(r=>r.data), classes:RULES.cls.map(r=>r.data), exceptions:RULES.exc.map(r=>r.data), fares:RULES.fare.map(r=>r.data), assembly:RULES.asm.map(r=>r.data) }; }
 async function loadAll(){
   setStatus('loading','SharePoint から読み込み中…',true);
   const errs=[];
@@ -726,12 +733,13 @@ function renderLines(){
   tb.innerHTML=LINES.map((l,i)=>`<tr data-i="${i}" class="mainrow">
     <td><input value="${esc(l.code)}" data-f="code" style="width:140px" placeholder="型式・品名で探す" autocomplete="off"></td>
     <td><input type="number" min="0" step="1" value="${esc(l.qty)}" data-f="qty" style="width:60px"></td>
+    <td><select data-f="ship" title="工場の新品は段ボール梱包。修理品の預かり・デモなどは組立出荷"><option${l.ship==='組立出荷'?'':' selected'}>段ボール梱包</option><option${l.ship==='組立出荷'?' selected':''}>組立出荷</option></select></td>
     <td class="res"></td><td class="num lp"></td><td class="num up"></td><td class="num am"></td><td class="prev"></td>
     <td><button class="btn" data-del="${i}" title="この行を消す">×</button></td></tr>
-    <tr class="dtrow"><td colspan="8" class="detail"></td></tr>`).join('');
-  tb.querySelectorAll('input[data-f]').forEach(inp=>inp.addEventListener('change',e=>{
+    <tr class="dtrow"><td colspan="9" class="detail"></td></tr>`).join('');
+  tb.querySelectorAll('[data-f]').forEach(inp=>inp.addEventListener('change',e=>{
     const i=+e.target.closest('tr').dataset.i, f=e.target.dataset.f;
-    LINES[i][f]=f==='qty'?Number(e.target.value)||0:resolveCode(e.target.value);
+    LINES[i][f]=f==='qty'?Number(e.target.value)||0:f==='ship'?e.target.value:resolveCode(e.target.value);
     if(f==='code') e.target.value=LINES[i].code;
     recalc(); }));
   // 型式の欄：押すと候補、打つと絞り込み、↑↓と Enter で選ぶ
@@ -979,7 +987,7 @@ function renderRuleView(key){
     if(!st.q) return true;
     return JSON.stringify(d).toLowerCase().includes(st.q.toLowerCase()); });
   const shown=rows.slice(0,500);
-  const NO={cls:'③ ',exc:'④ ',fare:'⑤ '}, STEP={cls:'単価の3段目。',exc:'単価の4段目。',fare:'送料の決まり。'};
+  const NO={cls:'③ ',exc:'④ ',fare:'⑤ ',asm:'⑤-2 '}, STEP={cls:'単価の3段目。',exc:'単価の4段目。',fare:'送料の決まり。',asm:'送料の決まり。'};
   el.innerHTML=`<h2>${esc((NO[key]||'')+L.label)}</h2><p class="lead">${esc((STEP[key]||'')+L.lead)}</p>
     <div class="tools"><input type="search" value="${esc(st.q)}" placeholder="探す（型式・名前・コード）" data-q>
       <label class="cb" style="padding:0"><input type="checkbox" data-chk ${st.chk?'checked':''}>要確認だけ</label>
@@ -1752,6 +1760,7 @@ const IMP_ID={
   cls:['対象の種類','対象コード','商品の種類','適用開始日'],
   exc:['型式','対象の種類','対象コード','対象名','在庫口のみ','台数以上','適用開始日'],
   fare:['種類','地域','上限','適用開始日'],
+  asm:['型式','適用開始日'],
 };
 const IMP_SKIP=['更新者','更新日時'];
 function impVal(v){ return v===undefined||v===''?null:v; }
