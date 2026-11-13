@@ -393,6 +393,7 @@
       <button class="navi active" data-view="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>ホーム</button>
       <button class="navi" data-view="cust"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21V7l8-4 8 4v14"/><path d="M9 21v-6h6v6"/><path d="M9 10h.01M15 10h.01"/></svg>得意先</button>
       <button class="navi" data-view="inv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h16v18l-3-2-2 2-3-2-3 2-2-2-3 2z"/><path d="M8 8h8M8 12h8M8 16h4"/></svg>請求一覧</button>
+      <button class="navi" data-view="pay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18M7 15h3"/></svg>入金一覧</button>
       <button class="navi" data-view="gap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/></svg>違算・フォロー<span class="cnt" id="gapCnt" hidden></span></button>
       <div class="navgrp">管理メニュー</div>
       <button class="navi" data-view="sp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M12 11v6M9 14h6"/></svg>特別請求</button>
@@ -432,6 +433,18 @@
           <h3>請求一覧 <small id="iMeta"></small></h3>
           <div class="ibar"><input id="iSearch" type="search" placeholder="得意先名・コード・請求書番号" autocomplete="off"><div class="ptabs" id="iTabs"></div></div>
           <div class="tw" id="iBody"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 入金一覧 -->
+    <section class="view hview" id="viewPay">
+      <div class="hwrap">
+        <div class="panel">
+          <h3>入金一覧 <small id="pMeta"></small></h3>
+          <div class="ibar"><input id="pSearch" type="search" placeholder="得意先名・コード・伝票№・備考" autocomplete="off"><div class="ptabs" id="pTabs"></div></div>
+          <div class="ibar"><div class="ptabs" id="pKinds"></div></div>
+          <div class="tw" id="pBody"></div>
         </div>
       </div>
     </section>
@@ -879,6 +892,7 @@ function setView(v){
   document.querySelectorAll('.navi').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
   document.getElementById('viewHome').classList.toggle('active',v==='home');
   document.getElementById('viewInv').classList.toggle('active',v==='inv');
+  document.getElementById('viewPay').classList.toggle('active',v==='pay');
   if(v==='home') renderRecent();
   document.getElementById('viewCust').classList.toggle('active',v==='cust');
   document.getElementById('viewGap').classList.toggle('active',v==='gap');
@@ -886,14 +900,14 @@ function setView(v){
   document.getElementById('viewRecon').classList.toggle('active',v==='recon');
   if(v==='recon') renderRecon();
 }
-function render(){ setView(view); renderHome(); renderInv(); renderList(); renderDetail(); renderGap(); renderSpList(); }
+function render(){ setView(view); renderHome(); renderInv(); renderPay(); renderList(); renderDetail(); renderGap(); renderSpList(); }
 ['spSearch','spShowCancel'].forEach(id=>document.getElementById(id).addEventListener('input',renderSpList));
 
 // URL の # で得意先を開く（例：ar_billing.html#c=110201）。営業にリンクで渡せるように
 function readHash(){
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.get('c')&&M.customers[h.get('c')]){ selCode=h.get('c'); view='cust'; document.getElementById('viewCust').classList.add('show-detail'); }
-  else if(['home','cust','inv','gap','sp','recon'].includes(h.get('v'))) view=h.get('v');
+  else if(['home','cust','inv','pay','gap','sp','recon'].includes(h.get('v'))) view=h.get('v');
 }
 window.addEventListener('hashchange',()=>{ if(!M) return; readHash(); render(); });
 function writeHash(){
@@ -1072,6 +1086,55 @@ function renderInv(){
       <td><a class="inv-link" data-c="${esc(c.code)}" data-no="${esc(v.no)}">${esc(v.label)}</a></td>
       <td class="num">${yen(v.amount)}</td><td>${ymdJ(v.due)||'—'}</td><td>${invState(c,v)}</td></tr>`).join('')}</tbody></table>`
     :'<div class="empty">該当する請求書がありません</div>';
+  wireRows(body);
+}
+
+// ============================================================
+// 入金一覧（入金明細を入金伝票ごとに1行。月と種類で絞る）
+// ============================================================
+let pMonth='', pKind='';
+document.getElementById('pSearch').addEventListener('input',()=>renderPay());
+function renderPay(){
+  const body=document.getElementById('pBody');
+  if(!M){ body.innerHTML=''; return; }
+  // 入金伝票（得意先×日付×伝票№）ごとにまとめる
+  const G={};
+  M.list.forEach(c=>c.payments.forEach(p=>{
+    const k=c.code+'|'+p.date+'|'+p.slip;
+    const g=G[k]||(G[k]={c,date:p.date,slip:p.slip,rows:[],total:0,furi:0,adj:0,kinds:new Set(),memo:[],void:false});
+    g.rows.push(p); g.total+=p.amount; g.kinds.add(p.kind);
+    if(p.attr==='調整') g.adj+=p.amount; else g.furi+=p.amount;
+    if(p.memo&&!g.memo.includes(p.memo)) g.memo.push(p.memo);
+    if(p.void) g.void=true;
+  }));
+  const all=Object.values(G);
+  // 月のチップ：新しい月から6か月分＋すべて
+  const months=[...new Set(all.map(g=>g.date.slice(0,7)))].sort().reverse().slice(0,6);
+  if(pMonth===''&&months.length) pMonth=months[0];
+  const inMonth=g=>pMonth==='all'||g.date.slice(0,7)===pMonth;
+  const mName=m=>`${+m.slice(5,7)}月`;
+  document.getElementById('pTabs').innerHTML=months.map(m=>`<button class="ptab${m===pMonth?' on':''}" data-m="${m}">${m.slice(0,4)}年${mName(m)} (${all.filter(g=>g.date.slice(0,7)===m).length})</button>`).join('')
+    +`<button class="ptab${pMonth==='all'?' on':''}" data-m="all">すべて (${all.length})</button>`;
+  document.querySelectorAll('#pTabs .ptab').forEach(b=>b.onclick=()=>{ pMonth=b.dataset.m; renderPay(); });
+  const KINDS=[['','すべて'],['振込','振込'],['相殺','相殺'],['調整','手数料・割引・販促'],['でんさい','でんさい'],['マイナス','マイナス（取消・付け替え）']];
+  const kindOk=g=>!pKind||(pKind==='調整'?g.adj!==0:pKind==='マイナス'?g.total<0||g.rows.some(r=>r.amount<0):g.kinds.has(pKind));
+  const base=all.filter(inMonth);
+  document.getElementById('pKinds').innerHTML=KINDS.map(([k,l])=>`<button class="ptab${k===pKind?' on':''}" data-k="${k}">${l}</button>`).join('');
+  document.querySelectorAll('#pKinds .ptab').forEach(b=>b.onclick=()=>{ pKind=b.dataset.k; renderPay(); });
+  const q=norm(document.getElementById('pSearch').value);
+  const L=base.filter(g=>kindOk(g)&&(!q||norm(g.c.code+g.c.name+g.c.short+g.slip+g.memo.join(' ')).includes(q)))
+    .sort((a,b)=>b.date.localeCompare(a.date)||a.c.code.localeCompare(b.c.code));
+  const sum=L.reduce((s,g)=>s+g.total,0);
+  document.getElementById('pMeta').textContent=`${L.length.toLocaleString()} 件　合計 ${yen(sum)} 円`+(L.length>400?'（先頭400件を表示。検索で絞ってください）':'');
+  body.innerHTML=L.length?`<table>
+    <thead><tr><th>入金日</th><th>得意先</th><th>伝票№</th><th>内訳</th><th class="num">入金</th><th class="num">手数料・割引など</th><th class="num">合計</th><th>備考</th></tr></thead>
+    <tbody>${L.slice(0,400).map(g=>`<tr class="click" data-c="${esc(g.c.code)}"><td>${ymdJ(g.date)}</td>
+      <td><b>${esc(g.c.short||g.c.name)}</b><div class="reason">${esc(g.c.code)}${g.c.base?'　'+esc(g.c.base):''}</div></td>
+      <td class="mono">${esc(g.slip)}</td>
+      <td style="font-size:12px;line-height:1.7">${g.rows.map(r=>`<span style="white-space:nowrap;margin-right:10px">${esc(r.kind)} <span class="muted">${yen(r.amount)}</span></span>`).join(' ')}${g.void?'<div class="reason">入れて取り消した組（違算の計算には入れない）</div>':''}</td>
+      <td class="num">${yen(g.furi)}</td><td class="num">${g.adj?yen(g.adj):''}</td><td class="num"><b>${yen(g.total)}</b></td>
+      <td class="muted" style="max-width:260px">${esc(g.memo.join('・'))}</td></tr>`).join('')}</tbody></table>`
+    :'<div class="empty">該当する入金がありません</div>';
   wireRows(body);
 }
 
