@@ -94,9 +94,27 @@ class Graph:
         return self._req('PATCH', url, body)
 
 
+ORDER_RANGE_MAX = 30
+RANGE_RE = re.compile(r'(\d{4,})\s*[〜~ー−–—‐-]\s*(?:[A-Za-z]{1,3}\s*-?\s*)?(\d{2,})(?!\d)')
+
+
 def nos_of(s):
+    """受注番号の欄 → 受注№。「27410〜27412」「J-27410〜J-27412」「27410〜12」は続き番号（30件まで）。
+    アプリ（case_management.html の orderNosOf）と同じ読み方。変えるときは両方"""
     t = unicodedata.normalize('NFKC', str(s or ''))
-    return sorted({x.lstrip('0') for x in re.findall(r'\d{4,}', t)})
+    out = set()
+
+    def rng(m):
+        a, b = m.group(1), m.group(2)
+        end = a[:len(a) - len(b)] + b if len(b) < len(a) else b
+        x, y = int(a), int(end)
+        if not (x < y <= x + ORDER_RANGE_MAX):
+            return m.group(0)
+        out.update(str(i) for i in range(x, y + 1))
+        return ' '
+    t = RANGE_RE.sub(rng, t)
+    out.update(x.lstrip('0') for x in re.findall(r'\d{4,}', t))
+    return sorted(x for x in out if x)
 
 
 def dt(s):
@@ -177,6 +195,12 @@ def main():
             if p:
                 by_po.setdefault((s.get('cust') or '', p), []).append(s)
     log('出荷 %d 件（%s 作成）' % (len(idx.get('ships', [])), idx.get('generatedAt')))
+    # 受注の索引（受注データにある番号か。無い番号＝入力間違いの疑いは、完了候補の判定で数えない）
+    try:
+        juchu = g.get('/drives/%s/root:/juchu_index.json:/content' % DRIVE_ID).get('juchu') or {}
+    except RuntimeError as e:
+        log('［注意］受注の索引を読めませんでした（受注番号は全部数えます）：%s' % str(e)[:120])
+        juchu = None
 
     # 対象の案件：受注番号があり、未完了か、完了にして30日以内（完了の日は Modified で近似）
     cases = [dict(v['fields'], _id=v['id']) for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=CaseId,Status,OrderNumber,Modified,LastAction)&$top=999' % (SITE, CASES))]
@@ -193,9 +217,20 @@ def main():
             targets.append((c, nos, sh))
     log('受注番号のある対象の案件 %d 件のうち、出荷のある案件 %d 件' % (sum(1 for c in cases if nos_of(c.get('OrderNumber')) and c.get('Status') != 'アーカイブ'), len(targets)))
 
-    n_ship = n_slip = n_case = n_notify = 0
+    n_ship = n_slip = n_case = n_notify = n_part = 0
     for c, nos, sh in targets:
         cid = c['CaseId']
+        open_case = (c.get('Status') or '') != '完了'
+        # 完了候補は、紐づいた受注が全部出荷してから。途中は「一部出荷（1/3）」
+        known = [n for n in nos if n in by_j or juchu is None or n in juchu]
+        done_n = sum(1 for n in known if n in by_j)
+        all_done = done_n == len(known)
+        any_slip = any(s.get('slips') for s, _ in sh)
+        all_nocar = all(str(s.get('kubun') or '') in NO_CARRIER for s, _ in sh)
+        cand = (CAND_SLIP if any_slip else (CAND_NONE if all_nocar else '')) if all_done else '一部出荷（%d/%d）' % (done_n, len(known))
+        last = c.get('LastAction') or ''
+        # すでに完了候補になっている案件で、まだの受注があると分かったとき（範囲の読み取りで番号が増えたなど）は、一部出荷に戻す
+        fix = open_case and not all_done and last.startswith('出荷済み（') and last != cand
         q = quote("fields/CaseId eq '%s'" % cid.replace("'", "''"))
         have = {(v['fields'].get('Title') or '') for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=Title)&$filter=%s&$top=999' % (SITE, EVENTS, q))}
         new = []
@@ -220,16 +255,18 @@ def main():
                                                                      '（過去分の記録）' if past else ''),
                             '_kind': 'slip', '_ship': s, '_past': past})
         if not new:
+            if fix:
+                n_part += 1
+                if a.dry_run:
+                    log('［試し］%s：完了候補 → %s に戻す予定' % (cid, cand))
+                else:
+                    g.patch('/sites/%s/lists/%s/items/%s/fields' % (SITE, CASES, c['_id']), {'LastAction': cand})
             continue
         n_case += 1
         n_ship += sum(1 for e in new if e['_kind'] == 'ship')
         n_slip += sum(1 for e in new if e['_kind'] == 'slip')
         n_notify += sum(1 for e in new if e['_kind'] == 'slip' and not e['_past'])
-        open_case = (c.get('Status') or '') != '完了'
-        # 完了候補：送り状が出た（または運送会社を使わずに出荷した）
-        any_slip = any(s.get('slips') for s, _ in sh)
-        all_nocar = all(str(s.get('kubun') or '') in NO_CARRIER for s, _ in sh)
-        cand = CAND_SLIP if any_slip else (CAND_NONE if all_nocar else '')
+        # 完了候補：受注が全部出荷して、送り状が出た（または運送会社を使わずに出荷した）。途中は「一部出荷（n/m）」
         if a.dry_run:
             log('［試し］%s：出荷 %d・送り状 %d を書く予定%s' % (cid, sum(1 for e in new if e['_kind'] == 'ship'), sum(1 for e in new if e['_kind'] == 'slip'),
                                                     ('、完了候補「%s」' % cand) if open_case and cand else ''))
@@ -244,7 +281,7 @@ def main():
             if cand:
                 patch['LastAction'] = cand
             g.patch('/sites/%s/lists/%s/items/%s/fields' % (SITE, CASES, c['_id']), patch)
-    log('%s：案件 %d 件に、出荷 %d・送り状 %d（うち通知の対象 %d）' % ('試し（書いていない）' if a.dry_run else '書いた', n_case, n_ship, n_slip, n_notify))
+    log('%s：案件 %d 件に、出荷 %d・送り状 %d（うち通知の対象 %d）。完了候補から一部出荷に戻した案件 %d 件' % ('試し（書いていない）' if a.dry_run else '書いた', n_case, n_ship, n_slip, n_notify, n_part))
 
 
 if __name__ == '__main__':
