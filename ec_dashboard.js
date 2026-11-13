@@ -1,5 +1,6 @@
 'use strict';
-/* EC売上の分析（月別を基本に、切り口を変えて眺める画面）。見るだけで、書き込みはしない。
+/* 売上の分析（EC・ふるさと納税）：月別を基本に、切り口を変えて眺める画面。見るだけで、書き込みはしない。
+ * 「対象」を EC／ふるさと納税／合計で切り替える（最初は EC）。得意先コードで分ける：EC＝ec_sales_config.json、ふるさと納税＝furusato_config.json の config.customers。
  * 「売上」は SMILE の確定した売上（売上明細出力.csv）。売上明細で作れない切り口は、Shopify の直近55日分・SMILE の受注から作る（どの切り口がどのデータかは、画面の各見出しの札に出す）。
  * 集計と、数字から作るコメントは ec_dashboard_core.js（EcDashboard）。ここは、読み込み・範囲の選択・表とグラフの表示だけ。
  * データはすべて SharedMasters（読み取りのみ）：売上明細出力.csv（約65MB。EC の得意先の行だけ先に絞って読む）／SMILE の受注と納品先（ec_smile_index.json）／Shopify の注文（ec_shopify_orders.csv・直近55日分）／出荷（ship_index.json）。
@@ -11,7 +12,7 @@ const SALES_FILE = '売上明細出力.csv';   // SMILE の確定した売上（
 let SC = null, ECC = null, msalInstance = null, account = null, driveId = null;
 let SALES = null, SMILE = null, SHOPIFY = null, SHIP = null;   // 読み込んだデータ（SALES＝売上明細）
 let MODEL = null;                                  // D.build の結果（注文・Shopify の注文・補足）
-let RANGE = null, PRESET = '3m';
+let RANGE = null, PRESET = '3m', TARGET = 'ec', FURU = [], CUR = null;   // FURU＝ふるさと納税の得意先コード、CUR＝いま描いている分析
 const CH = {};                                     // 描いたグラフ
 
 // 使われ方の記録（usage_log.js）。誰が・いつ・何をしたか、だけ。画面の中身（金額・商品・お客様）は記録しない
@@ -83,15 +84,17 @@ async function loadAll() {
   if (!SALES) warn.push('売上明細（' + ((ECC.files || {}).sales || SALES_FILE) + '）を読めませんでした（ファイルがない・読む権限がない・形が違う、のどれかです）。売上の数字が出せません');
   if (!SMILE) warn.push('SMILE の受注（' + ((ECC.files || {}).index || 'ec_smile_index.json') + '）を読めません。地域別の都道府県と、出荷までの日数が出ません');
   if (!SHOPIFY) warn.push('Shopify の注文を読めませんでした。曜日別・時間帯別・新規とリピート・値引きが出ません（専用機の毎時の取得がまだか、権限がない可能性があります）');
+  if (!FURU.length) warn.push('ふるさと納税の得意先（furusato_config.json）を読めません。「ふるさと納税」と「合計」は出ません');
   if (!SHIP) warn.push('出荷のデータ（' + SC.files.index + '）を読めません。「出荷までの日数」が出ません');
   return warn;
 }
-function custCodes() { return Object.keys(((ECC.config || {}).customers) || {}); }
+function ecCodes() { return Object.keys(((ECC.config || {}).customers) || {}); }
+function custCodes() { return ecCodes().concat(FURU); }   // 売上明細から取り出す得意先（EC＋ふるさと納税）
 function rebuild() {
   const idx = SMILE ? SMILE.idx : null;
   MODEL = D.build({
     salesRows: SALES ? SALES.rows : [], smileRows: idx ? EC.indexObjects(idx.orders) : [], nouhinRows: idx && idx.nouhin ? EC.indexObjects(idx.nouhin) : [],
-    shopifyOrders: SHOPIFY ? SHOPIFY.orders : [], shipLookup: SHIP ? EC.shipLookup(SHIP) : null, custCodes: custCodes(), today: today()
+    shopifyOrders: SHOPIFY ? SHOPIFY.orders : [], shipLookup: SHIP ? EC.shipLookup(SHIP) : null, shipIndex: SHIP, custGroups: [{ k: 'ec', codes: ecCodes() }, { k: 'furusato', codes: FURU }], today: today()
   });
 }
 function renderMeta(warn) {
@@ -112,6 +115,9 @@ function setReady() {
 
 /* ------------------------------------------------------------ 範囲 */
 const PRESETS = [{ k: 'thisMonth', label: '今月' }, { k: '3m', label: '直近3か月' }, { k: '6m', label: '直近6か月' }, { k: 'year', label: '今年' }, { k: 'lastYear', label: '昨年' }, { k: 'all', label: '全期間' }];
+function drawTargets() {
+  $('targets').innerHTML = D.TARGETS.filter(t => t.k === 'ec' || FURU.length).map(t => '<span class="chip' + (TARGET === t.k ? ' active' : '') + '" data-target="' + t.k + '">' + esc(t.label) + '</span>').join('');
+}
 function drawPresets() {
   $('presets').innerHTML = PRESETS.map(p => '<span class="chip' + (PRESET === p.k ? ' active' : '') + '" data-preset="' + p.k + '">' + p.label + '</span>').join('');
   $('r-from').value = RANGE.from; $('r-to').value = RANGE.to;
@@ -127,7 +133,10 @@ function table(cols, rows, opt) {
 }
 function comments(list) { return list && list.length ? '<div class="cmt"><ul>' + list.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : ''; }
 const SRC = { sales: ['売上明細', 's1', '確定した売上（売上日）'], shop: ['Shopify', 's2', '直近55日分（注文日）'], order: ['受注', 's3', 'SMILE の受注（受注日）'] };
-const srcTag = k => '<span class="src ' + SRC[k][1] + '" title="' + esc(SRC[k][2]) + '">' + SRC[k][0] + '</span>';
+const srcTag = k => { const s = SRC[k], only = k === 'shop' && CUR && CUR.shopScope === 'ecOnly'; return '<span class="src ' + s[1] + '" title="' + esc(s[2] + (only ? '（EC の分だけ）' : '')) + '">' + s[0] + (only ? '（ECのみ）' : '') + '</span>'; };
+// ふるさと納税には Shopify のデータがない：グラフは出さず、札で示す
+const noShop = (id, title, a) => ({ html: '<div class="panel" id="sec-' + id + '"><h2>' + esc(title) + srcTag('shop') + '</h2><div class="empty">' + esc(a.who) + 'には、このデータ（Shopify の注文）がありません。EC を選ぶと見られます。</div></div>', draw: () => {} });
+const ecOnlyNote = a => a.shopScope === 'ecOnly' ? 'EC の分だけです（ふるさと納税は含みません）。' : '';
 function section(id, title, note, chartId, tableHtml, cmt, extra, src) {
   return '<div class="panel" id="sec-' + id + '"><h2>' + esc(title) + (src || []).map(srcTag).join('') + '</h2>' + (note ? '<p class="sec-note">' + esc(note) + '</p>' : '') + comments(cmt) + (extra || '') +
     '<div class="sec-body"><div class="chartbox">' + (chartId ? '<canvas id="' + chartId + '"></canvas>' : '') + '</div><div>' + tableHtml + '</div></div></div>';
@@ -171,9 +180,11 @@ function renderKpis(a) {
 function renderDataNote(a) {
   const i = MODEL.info, t = [];
   if (i.salesTo) t.push('売上明細は ' + md(i.salesTo) + ' の分まで（売上日で数えています）');
-  if (i.notSold) t.push('受注はあるが、まだ売上になっていない（出荷前の）注文が ' + i.notSold + '件（受注の金額で約 ' + D.yenShort(i.notSoldAmount) + '）あります。売上には入っていません');
-  if (i.waiting) t.push('Shopify に注文があって、まだ SMILE に受注伝票がない注文が ' + i.waiting + '件あります');
-  if (i.shopFrom) t.push('Shopify の注文データ：' + md(i.shopFrom) + '～' + md(i.shopTo) + '（曜日・時間帯・新規とリピート・値引きは、この期間だけ）');
+  const ns = TARGET === 'all' ? { count: i.notSold, amount: i.notSoldAmount } : (i.notSoldBy || {})[TARGET] || { count: 0, amount: 0 };
+  if (ns.count) t.push(a.who + 'の、受注はあるが、まだ売上になっていない（出荷前の）注文が ' + ns.count + '件（受注の金額で約 ' + D.yenShort(ns.amount) + '）あります。売上には入っていません');
+  if (i.waiting && a.shopAvailable) t.push('Shopify に注文があって、まだ SMILE に受注伝票がない EC の注文が ' + i.waiting + '件あります');
+  if (i.shopFrom && a.shopAvailable) t.push('Shopify の注文データ：' + md(i.shopFrom) + '～' + md(i.shopTo) + '（時間帯・新規とリピート・値引き・曜日の「注文した日」は、この期間の EC の分だけ' + (a.shopScope === 'ecOnly' ? '。ふるさと納税には、この切り口がありません' : '') + '）');
+  if (!a.shopAvailable) t.push('ふるさと納税には Shopify のデータがないので、時間帯別・新規とリピート・値引きは出ません');
   $('dataNote').innerHTML = t.map(x => '・' + esc(x)).join('<br>');
 }
 function renderMain(a) {
@@ -215,31 +226,36 @@ function secRegion(a, c) {
 }
 const shopNote = a => 'Shopify の注文 ' + n0(a.shopCount) + '件から数えています（Shopify の注文は直近55日分だけで、お客様が注文した日時です）。';
 function secWeekday(a, c) {
-  const rows = a.weekday, sh = a.weekdayShop;
-  const html = table([{ h: '曜日', f: r => r.name + '曜' }, { h: '売上の件数', f: r => n0(r.count) }, { h: '割合', f: r => pc(r.share) }, { h: '売上（税抜）', f: r => n0(r.sales) },
-    { h: '注文した件数', f: r => n0(sh[r.wd === 0 ? 6 : r.wd - 1].count) }, { h: '割合', f: r => pc(sh[r.wd === 0 ? 6 : r.wd - 1].share) }], rows, {});
-  const note = '2つの見方があります。「売上の日」は、売上明細の伝票日付の曜日＝出荷して売上になった日です。「注文した日」は、お客様が Shopify で注文した曜日です（直近55日分・Shopify の注文 ' + n0(a.shopCount) + '件）。グラフは、それぞれの割合（%）です。';
-  const cmt = a.comments.weekdayShop.concat(a.comments.weekday);
-  return { html: section('weekday', '④ 曜日別', note, 'ch-weekday', html, cmt, '', ['sales', 'shop']), draw: () => {
-    draw('weekday', 'ch-weekday', { type: 'bar', data: { labels: rows.map(r => r.name), datasets: [
-      { label: '売上の日（出荷した日）', data: rows.map(r => Math.round(r.share * 10) / 10), backgroundColor: c.navy },
-      { label: '注文した日（Shopify・直近55日）', data: rows.map(r => Math.round(sh[r.wd === 0 ? 6 : r.wd - 1].share * 10) / 10), backgroundColor: c.orange }] },
-      options: barOpts(c, { legend: true, yTicks: { callback: v => v + '%' }, tip: { label: x => x.dataset.label + ' ' + x.raw + '%' } }) });
+  const rows = a.weekday, sh = a.weekdayShop, hasShop = a.shopAvailable, shRow = r => sh[r.wd === 0 ? 6 : r.wd - 1], eco = a.shopScope === 'ecOnly' ? 'EC のみ・' : '';
+  const cols = [{ h: '曜日', f: r => r.name + '曜' }, { h: '売上の件数', f: r => n0(r.count) }, { h: '割合', f: r => pc(r.share) }, { h: '売上（税抜）', f: r => n0(r.sales) }];
+  if (hasShop) cols.push({ h: '注文した件数', f: r => n0(shRow(r).count) }, { h: '割合', f: r => pc(shRow(r).share) });
+  const html = table(cols, rows, {});
+  const note = hasShop
+    ? '2つの見方があります。「売上の日」は、売上明細の伝票日付の曜日＝出荷して売上になった日です。「注文した日」は、お客様が Shopify で注文した曜日です（' + eco + '直近55日分・Shopify の注文 ' + n0(a.shopCount) + '件）。' + (a.shopScope === 'ecOnly' ? '「注文した日」は EC の分だけです（ふるさと納税は含みません）。' : '') + 'グラフは、それぞれの割合（%）です。'
+    : '「売上の日」は、売上明細の伝票日付の曜日＝出荷して売上になった日です。ふるさと納税には、注文した日（Shopify）のデータがありません。グラフは割合（%）です。';
+  const cmt = hasShop ? a.comments.weekdayShop.concat(a.comments.weekday) : a.comments.weekday;
+  return { html: section('weekday', '④ 曜日別', note, 'ch-weekday', html, cmt, '', hasShop ? ['sales', 'shop'] : ['sales']), draw: () => {
+    const ds = [{ label: '売上の日（出荷した日）', data: rows.map(r => Math.round(r.share * 10) / 10), backgroundColor: c.navy }];
+    if (hasShop) ds.push({ label: '注文した日（Shopify・' + eco + '直近55日）', data: rows.map(r => Math.round(shRow(r).share * 10) / 10), backgroundColor: c.orange });
+    draw('weekday', 'ch-weekday', { type: 'bar', data: { labels: rows.map(r => r.name), datasets: ds },
+      options: barOpts(c, { legend: ds.length > 1, yTicks: { callback: v => v + '%' }, tip: { label: x => x.dataset.label + ' ' + x.raw + '%' } }) });
   } };
 }
 function secHour(a, c) {
+  if (!a.shopAvailable) return noShop('hour', '⑤ 時間帯別', a);
   const rows = a.hours, bands = a.bands;
   const html = table([{ h: '時間の帯', f: r => r.label }, { h: '件数', f: r => n0(r.count) }, { h: '割合', f: r => pc(r.share) }], bands, {});
-  return { html: section('hour', '⑤ 時間帯別', shopNote(a), 'ch-hour', html, a.comments.hour, '', ['shop']), draw: () => {
+  return { html: section('hour', '⑤ 時間帯別', ecOnlyNote(a) + shopNote(a), 'ch-hour', html, a.comments.hour, '', ['shop']), draw: () => {
     draw('hour', 'ch-hour', { type: 'bar', data: { labels: rows.map(r => r.hour + '時'), datasets: [{ label: '件数', data: rows.map(r => r.count), backgroundColor: c.cyan }] },
       options: barOpts(c, { yTicks: { precision: 0 }, tip: { label: x => n0(x.raw) + '件' } }) });
   } };
 }
 function secRepeat(a, c) {
+  if (!a.shopAvailable) return noShop('repeat', '⑥ 新規とリピート', a);
   const g = a.repeat, nm = { 'new': '新規（初めて）', repeat: 'リピート', unknown: 'メールなし（不明）' };
   const rows = ['new', 'repeat', 'unknown'].filter(k => g[k].count).map(k => ({ k, name: nm[k], count: g[k].count, share: g[k].share, sales: g[k].sales, avg: g[k].avg }));
   const html = table([{ h: '区分', f: r => r.name }, { h: '件数', f: r => n0(r.count) }, { h: '割合', f: r => r.k === 'unknown' ? '' : pc(r.share) }, { h: '客単価', f: r => n0(r.avg) }], rows, {});
-  const note = shopNote(a) + 'リピート＝同じメールアドレスで、前にも注文がある。メールは見分けるためにだけ使い、画面には出しません。';
+  const note = ecOnlyNote(a) + shopNote(a) + 'リピート＝同じメールアドレスで、前にも注文がある。メールは見分けるためにだけ使い、画面には出しません。';
   return { html: section('repeat', '⑥ 新規とリピート', note, 'ch-repeat', html, a.comments.repeat, '', ['shop']), draw: () => {
     draw('repeat', 'ch-repeat', { type: 'doughnut', data: { labels: rows.map(r => r.name), datasets: [{ data: rows.map(r => r.count), backgroundColor: rows.map(r => r.k === 'new' ? c.navy : r.k === 'repeat' ? c.green : c.mute) }] },
       options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }, tooltip: { callbacks: { label: x => x.label + ' ' + n0(x.raw) + '件' } } } } });
@@ -249,7 +265,7 @@ function secShip(a, c) {
   const s = a.ship;
   const kv = '<dl class="kv2"><dt>出荷が確認できた注文</dt><dd>' + n0(s.shipped) + '件</dd><dt>平均</dt><dd>' + (s.shipped ? (Math.round(s.avg * 10) / 10) + '日' : '―') + '</dd><dt>真ん中の値</dt><dd>' + (s.shipped ? s.median + '日' : '―') + '</dd><dt>いちばん長い</dt><dd>' + (s.shipped ? s.max + '日' : '―') + '</dd><dt>出荷がまだ確認できない</dt><dd>' + n0(s.notShipped) + '件</dd></dl>';
   const html = kv + table([{ h: '受注から出荷まで', f: r => r.label }, { h: '件数', f: r => n0(r.count) }, { h: '割合', f: r => pc(r.share) }], s.buckets, {});
-  return { html: section('ship', '⑦ 出荷までの日数', 'SMILE の受注（受注日が選んだ範囲の ' + n0(a.shipCount) + '件）について、お客様が注文した日（Shopify の注文があるとき。なければ SMILE の受注日）から、出荷日（出荷のデータ）までの日数です。売上日ではなく受注日で数えるので、上の売上の数字とは件数が合いません。', 'ch-ship', html, a.comments.ship, '', ['order']), draw: () => {
+  return { html: section('ship', '⑦ 出荷までの日数', 'SMILE の受注（受注日が選んだ範囲の ' + n0(a.shipCount) + '件）について、お客様が注文した日（Shopify の注文があるとき。なければ SMILE の受注日）から、出荷日（出荷のデータ）までの日数です。売上日ではなく受注日で数えるので、上の売上の数字とは件数が合いません。出荷のデータは ' + md(MODEL.info.shipFrom) + ' 以降の分だけ残っているので、それより前の受注は数えません。', 'ch-ship', html, a.comments.ship, '', ['order']), draw: () => {
     draw('ship', 'ch-ship', { type: 'bar', data: { labels: s.buckets.map(b => b.label), datasets: [{ label: '件数', data: s.buckets.map(b => b.count), backgroundColor: c.orange }] },
       options: barOpts(c, { yTicks: { precision: 0 }, tip: { label: x => n0(x.raw) + '件（' + pc(s.buckets[x.dataIndex].share) + '）' } }) });
   } };
@@ -257,9 +273,9 @@ function secShip(a, c) {
 function secFreight(a, c) {
   const f = a.freight, fs = a.frSeries;
   const monthTbl = table([{ h: '月', f: r => D.monthLabelY(r.month) }, { h: '送料', f: r => n0(r.freight) }, { h: '売上に対する割合', f: r => pc(r.share) }], fs.slice().reverse(), {});
-  const codes = f.shopCount ? '<h3 class="mini">値引きコード（Shopify・税込）</h3>' + table([{ h: 'コード', f: r => r.code, name: true }, { h: '使われた注文', f: r => n0(r.count) + '件' }, { h: '値引き額', f: r => n0(r.amount) }], f.codes, { empty: '値引きコードを使った注文はありません' }) : '';
-  const note = '送料は、売上明細の運賃（品目 FR・税抜）です。値引きは、Shopify の注文（直近55日分）の値引きコードと値引き額です。';
-  return { html: section('freight', '⑧ 送料・値引き', note, 'ch-freight', monthTbl + codes, a.comments.freight, '', ['sales', 'shop']), draw: () => {
+  const codes = a.shopAvailable && f.shopCount ? '<h3 class="mini">値引きコード（Shopify・税込）</h3>' + table([{ h: 'コード', f: r => r.code, name: true }, { h: '使われた注文', f: r => n0(r.count) + '件' }, { h: '値引き額', f: r => n0(r.amount) }], f.codes, { empty: '値引きコードを使った注文はありません' }) : '';
+  const note = '送料は、売上明細の運賃（品目 FR・税抜）です。' + (a.shopAvailable ? '値引きは、Shopify の注文（直近55日分' + (a.shopScope === 'ecOnly' ? '・EC の分だけ' : '') + '）の値引きコードと値引き額です。' : 'ふるさと納税には、値引き（Shopify）のデータがありません。');
+  return { html: section('freight', '⑧ 送料・値引き', note, 'ch-freight', monthTbl + codes, a.comments.freight, '', a.shopAvailable ? ['sales', 'shop'] : ['sales']), draw: () => {
     draw('freight', 'ch-freight', { type: 'bar', data: { labels: fs.map(r => D.monthLabel(r.month)), datasets: [
       { type: 'bar', label: '送料（万円）', data: fs.map(r => r.freight), backgroundColor: c.purple, yAxisID: 'y', order: 2 },
       { type: 'line', label: '売上に対する割合', data: fs.map(r => Math.round(r.share * 10) / 10), borderColor: c.orange, backgroundColor: c.orange, yAxisID: 'y1', tension: .25, order: 1, pointRadius: 3 }] },
@@ -270,9 +286,10 @@ function secFreight(a, c) {
 
 function render() {
   if (!MODEL) return;
-  const a = D.analyze(MODEL, RANGE, today()), c = COL();
+  const a = D.analyze(MODEL, RANGE, today(), TARGET), c = COL();
+  CUR = a;
   const pr = a.period;
-  $('rangeNote').textContent = D.monthLabelY(pr.from) + '～' + D.monthLabelY(pr.to) + '（' + pr.n + 'か月）';
+  $('rangeNote').textContent = '対象：' + a.who + '　' + D.monthLabelY(pr.from) + '～' + D.monthLabelY(pr.to) + '（' + pr.n + 'か月）';
   renderKpis(a); renderDataNote(a); renderMain(a);
   const secs = [secMonthly(a, c), secProducts(a, c), secRegion(a, c), secWeekday(a, c), secHour(a, c), secRepeat(a, c), secShip(a, c), secFreight(a, c)];
   Object.keys(CH).forEach(k => { CH[k].destroy(); delete CH[k]; });
@@ -282,6 +299,7 @@ function render() {
 
 /* ------------------------------------------------------------ 操作 */
 function wire() {
+  $('targets').addEventListener('click', e => { const c = e.target.closest('[data-target]'); if (!c || c.dataset.target === TARGET) return; TARGET = c.dataset.target; ulog('ec_dashboard_target', TARGET, true); drawTargets(); render(); });
   $('presets').addEventListener('click', e => { const c = e.target.closest('[data-preset]'); if (!c) return; ulog('ec_dashboard_range', 'あらかじめ', true); setPreset(c.dataset.preset); });
   ['r-from', 'r-to'].forEach(id => $(id).addEventListener('change', () => {
     const f = $('r-from').value, t = $('r-to').value; if (!/^\d{4}-\d{2}$/.test(f) || !/^\d{4}-\d{2}$/.test(t)) return;
@@ -306,12 +324,13 @@ async function initAuth() {
     $('loginScreen').style.display = 'none';
     try { SC = await (await fetch('ship_config.json', { cache: 'no-cache' })).json(); ECC = await (await fetch('ec_sales_config.json', { cache: 'no-cache' })).json(); }
     catch (e) { setStatus('err', '設定ファイル（ship_config.json・ec_sales_config.json）を読めません'); return; }
+    try { FURU = Object.keys((((await (await fetch('furusato_config.json', { cache: 'no-cache' })).json()).config || {}).customers) || {}); } catch (e) { FURU = []; }   // ふるさと納税の得意先コード
     const n = account.name || account.username;
     $('sp-user').textContent = n; $('sp-avatar').textContent = (n || '?').charAt(0);
     setStatus('loading', 'SharePoint（SharedMasters）から読み込み中…');
     let warn = [];
     try { warn = await loadAll(); } catch (e) { console.warn(e); setStatus('err', '読み込めませんでした：' + e.message); return; }
-    rebuild(); RANGE = D.preset(PRESET, today(), MODEL.info.firstMonth); drawPresets(); wire(); renderMeta(warn); render(); setReady();
+    rebuild(); RANGE = D.preset(PRESET, today(), MODEL.info.firstMonth); drawTargets(); drawPresets(); wire(); renderMeta(warn); render(); setReady();
     if (window.UsageLog) { UsageLog.init({ page: 'ec_dashboard', msal: () => msalInstance, account: () => account, max: 400 }); ulog('open', ''); }
     setInterval(() => { if (document.visibilityState === 'visible') { try { renderMeta(warn); } catch (e) { /* 注意の表示だけ */ } } }, 10 * 60 * 1000);
   };

@@ -1,7 +1,10 @@
-/* EC売上の分析（ec_dashboard.html）の計算部品。画面とは別にして、node でテストできるようにしてある。
+/* 売上の分析（ec_dashboard.html・EC とふるさと納税）の計算部品。画面とは別にして、node でテストできるようにしてある。
  * 月別・商品別・地域別・曜日別・時間帯別・新規とリピート・出荷までの日数・送料と値引きを集計し、
  * 数字から日本語のコメント（文）を作る。データは読むだけ（書き込みなし）。
  *
+ * 「対象」：EC（得意先 599801・599802＝Shopify の注文）・ふるさと納税（341401）・合計。得意先コードで分ける。
+ *   Shopify から作る切り口（時間帯・新規とリピート・値引き・曜日の注文した日）は EC だけ（ふるさと納税には作れない・合計は EC の分だけ）
+ *   注文の単位：EC は客先注番（Shopify の注文番号）、ふるさと納税は売上の伝票（客先注番が空だったり、同じ番号が複数の伝票に付くため）
  * 「売上」の決め方（SMILE の確定した売上）
  *   ・売上明細出力.csv（SMILE が毎日書き出す）の、EC の得意先（599801・599802）の行。明細区分 0（商品の明細）の金額（税抜）を、伝票日付（売上日＝出荷して売上になった日）の月で数える
  *   ・送料（品目コード FR・運賃）も売上に含める（商品別の表には入れない）。消費税の行（明細区分 1）は入れない。訂正（マイナス）の行は差し引く
@@ -106,22 +109,36 @@
 
   function normHead(h) { return String(h == null ? '' : h).normalize('NFKC').replace(/\s+/g, ''); }
 
+  /* ---------- 対象（EC・ふるさと納税・合計）
+   * 売上明細・SMILE の受注・出荷は、得意先コードで分ける。EC＝Shopify の注文（客先注番に Shopify の注文番号が入る）。
+   * ふるさと納税は客先注番が空だったり、同じ番号がたくさんの伝票に付いたりするので、伝票（売上№）・受注№を注文の単位にする。 */
+  D.TARGETS = [{ k: 'ec', label: 'EC' }, { k: 'furusato', label: 'ふるさと納税' }, { k: 'all', label: '合計' }];
+  D.targetLabel = function (k) { var t = D.TARGETS.filter(function (x) { return x.k === k; })[0]; return t ? t.label : ''; };
+  D.ofTarget = function (list, target) { return !target || target === 'all' ? list : list.filter(function (o) { return o.kind === target; }); };
+  // 得意先コードの組：[{ k: 'ec', codes: [...] }, { k: 'furusato', codes: [...] }]。custCodes（EC のコード）だけ渡されたときは、EC だけ
+  function groupsOf(opts) {
+    var g = opts.custGroups && opts.custGroups.length ? opts.custGroups : [{ k: 'ec', codes: opts.custCodes || [] }], kind = {}, all = [];
+    g.forEach(function (x) { (x.codes || []).forEach(function (c) { kind[c] = x.k; all.push(c); }); });
+    return { kind: kind, all: all, empty: !all.length };
+  }
+
   /* 売上明細の行 → 売上伝票ごとのまとめ（売上№ごと）。rows＝{ 見出し: 値 } の配列（見出しの半角・全角の違いは無視する）
-   * 1件＝{ slipNo, id（客先注番の数字）, date（伝票日付）, month, amount（税抜・送料込み）, goods, freight, qty, lines, pref, region } */
-  function buildSales(rows, cust, nouhin, shopById) {
+   * 1件＝{ slipNo, kind, id（EC は客先注番の数字）, juchu（受注№の数字）, date（伝票日付）, month, amount（税抜・送料込み）, goods, freight, qty, lines, pref, region } */
+  function buildSales(rows, grp, nouhin, shopById) {
     var map = {}, keys = [];
     (rows || []).forEach(function (row) {
       var m = {}; Object.keys(row).forEach(function (k) { var n = normHead(k); if (!(n in m)) m[n] = row[k]; });
       var f = function (name) { var v = m[normHead(name)]; return v == null ? '' : String(v).trim(); };
-      var c = f('得意先コード'); if (cust.length && cust.indexOf(c) < 0) return;
+      var c = f('得意先コード'); if (!grp.empty && !grp.kind[c]) return;
+      var kind = grp.kind[c] || 'ec';
       var kubun = f('明細区分'); if (kubun !== '' && kubun !== '0') return;   // 消費税の行は除く
       var code = f('品目コード'), name = norm(f('品目名'));
       if (!code && /^消費税/.test(name)) return;
       var po = f('客先注番'); if (/^#?test/i.test(po)) return;   // テスト送信は除く
       var d = D.ymd(f('伝票日付')); if (!d) return;
-      var id = digits(po), no = f('売上№'), key = no || (d + '|' + id);
+      var id = kind === 'ec' ? digits(po) : '', no = f('売上№'), key = no || (d + '|' + id + '|' + digits(f('受注№')));
       var g = map[key];
-      if (!g) { g = map[key] = { slipNo: no, id: id, cust: c, date: d, dest: f('納品先コード'), lines: {} }; keys.push(key); }
+      if (!g) { g = map[key] = { slipNo: no, kind: kind, id: id, juchu: digits(f('受注№')), cust: c, date: d, dest: f('納品先コード'), lines: {} }; keys.push(key); }
       var lk = code || name, l = g.lines[lk] = g.lines[lk] || { code: code, names: {}, qty: 0, amt: 0 };
       if (name) l.names[name] = (l.names[name] || 0) + 1;
       l.qty += num(f('数量')); l.amt += num(f('金額'));
@@ -135,20 +152,20 @@
         var best = '', n = 0; Object.keys(l.names).forEach(function (x) { if (l.names[x] > n) { n = l.names[x]; best = x; } });
         lines.push({ code: l.code || lk, name: best || l.code, qty: l.qty, amt: l.amt });
       });
-      var sh = shopById[g.id], pref = nouhin[g.cust + '|' + g.dest] || (sh && sh.ship ? D.prefOf(sh.ship.province) : '');
-      return { slipNo: g.slipNo, id: g.id, date: g.date, month: g.date.slice(0, 7), amount: goods + freight, goods: goods, freight: freight, qty: qty, lines: lines, pref: pref, region: pref ? D.regionOf(pref) : D.UNKNOWN };
+      var sh = g.kind === 'ec' ? shopById[g.id] : null, pref = nouhin[g.cust + '|' + g.dest] || (sh && sh.ship ? D.prefOf(sh.ship.province) : '');
+      return { slipNo: g.slipNo, kind: g.kind, id: g.id, juchu: g.juchu, date: g.date, month: g.date.slice(0, 7), amount: goods + freight, goods: goods, freight: freight, qty: qty, lines: lines, pref: pref, region: pref ? D.regionOf(pref) : D.UNKNOWN };
     });
     out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.slipNo < b.slipNo ? -1 : a.slipNo > b.slipNo ? 1 : 0); });
     return out;
   }
 
-  // 同じ注文（客先注番）の売上伝票をひとつにまとめる（分納で伝票が2枚になった注文を、1件と数えるため）。日付は、いちばん早い伝票の日
+  // 同じ注文の売上伝票をひとつにまとめる（EC は客先注番が同じ＝同じ注文。分納で伝票が2枚になった注文を1件と数える。ふるさと納税は伝票ごと）。日付は、いちばん早い伝票の日
   D.orderize = function (recs) {
     var map = {}, out = [];
     recs.forEach(function (o, i) {
-      var k = o.id ? 'o' + o.id : o.slipNo ? 's' + o.slipNo : 'i' + i, g = map[k];
+      var k = o.kind === 'furusato' ? 'f' + (o.slipNo || 'i' + i) : o.id ? 'o' + o.id : o.slipNo ? 's' + o.slipNo : 'i' + i, g = map[k];
       if (!g) {
-        g = map[k] = { id: o.id, slipNo: o.slipNo, date: o.date, month: o.month, amount: 0, goods: 0, freight: 0, qty: 0, lines: [], pref: o.pref, region: o.region, shipDays: o.shipDays == null ? null : o.shipDays };
+        g = map[k] = { id: o.id, kind: o.kind, slipNo: o.slipNo, date: o.date, month: o.month, amount: 0, goods: 0, freight: 0, qty: 0, lines: [], pref: o.pref, region: o.region, shipDays: o.shipDays == null ? null : o.shipDays };
         out.push(g);
       } else {
         if (o.date < g.date) { g.date = o.date; g.month = o.month; }
@@ -160,12 +177,13 @@
   };
 
   /* ============================================================ データをまとめる */
-  /* opts＝{ salesRows（売上明細出力.csv を { 見出し: 値 } にしたもの。EC の得意先の行だけでよい）, smileRows（ec_smile_index.json の orders を { 列名: 値 } にしたもの）,
-   *         nouhinRows（同じく nouhin）, shopifyOrders（EcSales.groupShopifyOrders の結果）, shipLookup（EcSales.shipLookup の結果）, custCodes（EC の得意先コード）, today }
-   * 戻り値＝{ sales（売上伝票・確定した売上）, orders（SMILE の受注。出荷までの日数に使う）, shop（Shopify の注文・キャンセルを除く）, info } */
+  /* opts＝{ salesRows（売上明細出力.csv を { 見出し: 値 } にしたもの。EC・ふるさと納税の得意先の行だけでよい）, smileRows（ec_smile_index.json の orders を { 列名: 値 } にしたもの）,
+   *         nouhinRows（同じく nouhin）, shopifyOrders（EcSales.groupShopifyOrders の結果）, shipLookup（EcSales.shipLookup の結果）, shipIndex（ship_index.json そのもの）,
+   *         custGroups（[{ k:'ec', codes }, { k:'furusato', codes }]）または custCodes（EC のコード）, today }
+   * 戻り値＝{ sales（売上伝票・確定した売上）, orders（SMILE の受注。出荷までの日数に使う）, shop（Shopify の注文・EC だけ・キャンセルを除く）, info } */
   D.build = function (opts) {
     opts = opts || {};
-    var cust = opts.custCodes || [], nouhin = {}, shopById = {}, cancelled = {};
+    var grp = groupsOf(opts), nouhin = {}, shopById = {}, cancelled = {};
     (opts.nouhinRows || []).forEach(function (r) {
       var k = String(r['得意先コード'] || '').trim() + '|' + String(r['納品先コード'] || '').trim();
       var p = D.prefOf(r['住所１']); if (p && !nouhin[k]) nouhin[k] = p;
@@ -179,39 +197,46 @@
     });
 
     // 売上（売上明細）
-    var sales = buildSales(opts.salesRows, cust, nouhin, shopById), soldIds = {};
-    sales.forEach(function (s) { if (s.id) soldIds[s.id] = 1; });
+    var sales = buildSales(opts.salesRows, grp, nouhin, shopById), soldKeys = {};
+    function soldKey(kind, id, juchu) { return kind === 'ec' ? 'ec:' + id : 'f:' + juchu; }
+    sales.forEach(function (s) { var k = soldKey(s.kind, s.id, s.juchu); if (k !== 'ec:' && k !== 'f:') soldKeys[k] = 1; });
+
+    // 出荷：EC は客先注番（注文番号）、ふるさと納税は受注№で引く。出荷のデータは、ある日（from）より前の分が残っていない
+    var ships = opts.shipLookup, shipFrom = (opts.shipIndex && opts.shipIndex.from) || '', byJuchu = {};
+    ((opts.shipIndex && opts.shipIndex.ships) || []).forEach(function (s) { (s.juchu || []).forEach(function (j) { var k = digits(j); if (k) (byJuchu[k] = byJuchu[k] || []).push(s); }); });
+    function earliest(list, cust) {
+      var ds = (list || []).filter(function (s) { return !s.cust || s.cust === cust; }).map(function (s) { return String(s.date || '').slice(0, 10); }).filter(Boolean).sort();
+      return ds[0] || '';
+    }
 
     // SMILE の受注（出荷までの日数・まだ売上になっていない受注に使う）
     var map = {}, ids = [];
     (opts.smileRows || []).forEach(function (r) {
       var c = String(r['得意先コード'] || '').trim();
-      if (cust.length && cust.indexOf(c) < 0) return;
-      var po = String(r['客先注番'] || '').trim();
-      if (!po || /^test/i.test(po)) return;
-      var id = digits(po); if (!id) return;
-      var g = map[id];
-      if (!g) { g = map[id] = { id: id, cust: c, dates: [], amt: 0 }; ids.push(id); }
+      if (!grp.empty && !grp.kind[c]) return;
+      var kind = grp.kind[c] || 'ec', po = String(r['客先注番'] || '').trim();
+      if (/^test/i.test(po)) return;
+      var id = kind === 'ec' ? digits(po) : digits(r['受注№']); if (!id) return;
+      var key = kind + ':' + id, g = map[key];
+      if (!g) { g = map[key] = { id: id, kind: kind, cust: c, dates: [], amt: 0 }; ids.push(key); }
       var d = D.ymd(r['受注日付']); if (d) g.dates.push(d);
       g.amt += num(r['金額']);
     });
-    var ships = opts.shipLookup, orders = [], cancelledOut = 0;
-    ids.forEach(function (id) {
-      var g = map[id];
-      if (cancelled[id]) { cancelledOut++; return; }
+    var orders = [], cancelledOut = 0;
+    ids.forEach(function (key) {
+      var g = map[key], id = g.id;
+      if (g.kind === 'ec' && cancelled[id]) { cancelledOut++; return; }
       var ds = g.dates.slice().sort(), date = ds[0] || ''; if (!date) return;
-      var sh = shopById[id], shipDate = '';
-      if (ships && ships.byPo && ships.byPo[id]) {
-        var ds2 = ships.byPo[id].filter(function (s) { return !s.cust || s.cust === g.cust; }).map(function (s) { return String(s.date || '').slice(0, 10); }).filter(Boolean).sort();
-        shipDate = ds2[0] || '';
-      }
+      var sh = g.kind === 'ec' ? shopById[id] : null;
+      var shipDate = g.kind === 'ec' ? earliest(ships && ships.byPo && ships.byPo[id], g.cust) : earliest(byJuchu[id], g.cust);
       // 出荷までの日数の起点：お客様が注文した日（Shopify の注文があれば）。なければ SMILE の受注日付
       var from = sh && sh.createdAt ? sh.createdAt : date;
-      orders.push({ id: id, date: date, month: date.slice(0, 7), amount: g.amt, shipDate: shipDate, startDate: from, shipDays: shipDate ? Math.max(0, D.diffDays(from, shipDate)) : null });
+      orders.push({ id: id, kind: g.kind, date: date, month: date.slice(0, 7), amount: g.amt, shipDate: shipDate, startDate: from, shipDays: shipDate ? Math.max(0, D.diffDays(from, shipDate)) : null,
+        noShipData: !shipDate && !!shipFrom && from < shipFrom });   // 出荷のデータが残っていない古い注文は、出荷が分からない
     });
     orders.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : 1); });
 
-    // Shopify の注文（キャンセルを除く）：注文した日時から数える。同じメールが前にも注文していれば「リピート」
+    // Shopify の注文（EC だけ・キャンセルを除く）：注文した日時から数える。同じメールが前にも注文していれば「リピート」
     var shop = shopAll.map(function (o) {
       var total = num(o.total), tax = num(o.taxes);
       return {
@@ -224,14 +249,17 @@
     var seen = {};
     shop.forEach(function (o) { if (!o.email) { o.unknownMail = true; return; } if (seen[o.email]) o.repeat = true; seen[o.email] = 1; });
 
-    var inSmile = {}; orders.forEach(function (o) { inSmile[o.id] = 1; });
+    var inSmile = {}; orders.forEach(function (o) { if (o.kind === 'ec') inSmile[o.id] = 1; });
     var waiting = shop.filter(function (o) { return !inSmile[o.id]; }).length;   // Shopify にあって、まだ SMILE に受注伝票がない注文
-    var notSold = orders.filter(function (o) { return !soldIds[o.id]; });          // 受注はあるが、まだ売上になっていない（出荷前）注文
+    var salesFrom = sales.length ? sales[0].date : '';
+    // 受注はあるが、まだ売上になっていない（出荷前）注文。売上明細が始まる前の古い受注は、数えない
+    var notSold = orders.filter(function (o) { return !soldKeys[soldKey(o.kind, o.id, o.id)] && (!salesFrom || o.date >= salesFrom); });
     var sd = shop.map(function (o) { return o.date; }).sort();
+    function notSoldOf(kind) { var a = notSold.filter(function (o) { return !kind || o.kind === kind; }); return { count: a.length, amount: sum(a, function (o) { return o.amount; }) }; }
     return { sales: sales, orders: orders, shop: shop, info: {
-      cancelledOut: cancelledOut, shopCancelled: Object.keys(cancelled).length, waiting: waiting, notSold: notSold.length, notSoldAmount: sum(notSold, function (o) { return o.amount; }),
+      cancelledOut: cancelledOut, shopCancelled: Object.keys(cancelled).length, waiting: waiting, notSold: notSold.length, notSoldAmount: sum(notSold, function (o) { return o.amount; }), notSoldBy: { ec: notSoldOf('ec'), furusato: notSoldOf('furusato') },
       shopFrom: sd[0] || '', shopTo: sd[sd.length - 1] || '', firstMonth: sales.length ? sales[0].month : '', lastMonth: sales.length ? sales[sales.length - 1].month : '',
-      salesTo: sales.length ? sales[sales.length - 1].date : ''
+      salesTo: sales.length ? sales[sales.length - 1].date : '', salesFrom: salesFrom, shipFrom: shipFrom
     } };
   };
 
@@ -358,6 +386,8 @@
   // 出荷までの日数（0日・1日・2日・3日・4〜7日・8日以上）
   D.SHIP_BUCKETS = [{ k: '0', label: '当日', from: 0, to: 0 }, { k: '1', label: '1日', from: 1, to: 1 }, { k: '2', label: '2日', from: 2, to: 2 }, { k: '3', label: '3日', from: 3, to: 3 }, { k: '4-7', label: '4〜7日', from: 4, to: 7 }, { k: '8+', label: '8日以上', from: 8, to: 9999 }];
   D.byShipDays = function (orders) {
+    var outOfRange = orders.filter(function (o) { return o.noShipData; }).length;
+    orders = orders.filter(function (o) { return !o.noShipData; });
     var shipped = orders.filter(function (o) { return o.shipDays != null; }), days = shipped.map(function (o) { return o.shipDays; }).sort(function (a, b) { return a - b; });
     var total = shipped.length;
     var buckets = D.SHIP_BUCKETS.map(function (b) {
@@ -365,7 +395,7 @@
       return { k: b.k, label: b.label, count: c, share: pct(c, total) };
     });
     var mid = days.length ? (days.length % 2 ? days[(days.length - 1) / 2] : (days[days.length / 2 - 1] + days[days.length / 2]) / 2) : 0;
-    return { buckets: buckets, shipped: total, notShipped: orders.length - total, avg: total ? sum(days) / total : 0, median: mid, max: days.length ? days[days.length - 1] : 0,
+    return { buckets: buckets, shipped: total, notShipped: orders.length - total, outOfRange: outOfRange, avg: total ? sum(days) / total : 0, median: mid, max: days.length ? days[days.length - 1] : 0,
       within: function (n) { return days.filter(function (d) { return d <= n; }).length; } };
   };
   // 送料と値引き
@@ -389,14 +419,14 @@
   function pcInt(x) { return Math.round(x) + '%'; }
 
   // 売上の前の期間との比べ方。cur・prev＝D.summary の結果、deltas＝D.productDelta の結果、p＝D.period の結果
-  D.commentSales = function (cur, prev, deltas, p) {
-    var L = p.labels, out = [];
+  D.commentSales = function (cur, prev, deltas, p, who) {
+    var L = p.labels, out = [], T = who ? who + 'の' : '';
     if (!cur.count && !prev.count) return ['この期間は、注文がありません。'];
-    if (!prev.count) return [L.cur + 'の売上は ' + D.yenShort(cur.sales) + '（' + cur.count + '件）です。' + L.prev + 'は注文がないため、比べられません。'];
+    if (!prev.count) return [T + L.cur + 'の売上は ' + D.yenShort(cur.sales) + '（' + cur.count + '件）です。' + L.prev + 'は注文がないため、比べられません。'];
     var c = chg(cur.sales, prev.sales), up = c.up;
     var tail = p.partial ? '（' + L.prev + 'の同じ日数までと比べています）' : '';
-    if (c.flat) out.push(L.cur + 'の売上は、' + L.prev + 'とほぼ同じです（' + D.yenShort(prev.sales) + ' → ' + D.yenShort(cur.sales) + '）。' + tail);
-    else out.push(L.cur + 'の売上は' + L.prev + 'より ' + c.pct + '% ' + (up ? '増えています' : '減っています') + '（' + D.yenShort(prev.sales) + ' → ' + D.yenShort(cur.sales) + '）。' + tail);
+    if (c.flat) out.push(T + L.cur + 'の売上は、' + L.prev + 'とほぼ同じです（' + D.yenShort(prev.sales) + ' → ' + D.yenShort(cur.sales) + '）。' + tail);
+    else out.push(T + L.cur + 'の売上は' + L.prev + 'より ' + c.pct + '% ' + (up ? '増えています' : '減っています') + '（' + D.yenShort(prev.sales) + ' → ' + D.yenShort(cur.sales) + '）。' + tail);
     // 主な理由：売上の差がいちばん大きい商品（全体の増減と同じ向きのもの）
     var total = cur.goods - prev.goods;
     if (!c.flat && c.pct >= 3 && deltas && deltas.length) {
@@ -417,14 +447,14 @@
     return out;
   };
 
-  D.commentMonthly = function (series, p) {
-    var out = [], full = series.filter(function (s) { return !(p.partial && s.month === p.to); });
+  D.commentMonthly = function (series, p, who) {
+    var T = who ? who + 'の' : '', out = [], full = series.filter(function (s) { return !(p.partial && s.month === p.to); });
     var has = series.filter(function (s) { return s.count > 0; });
     if (!has.length) return ['この期間は、注文がありません。'];
-    if (has.length === 1 && series.length === 1) return ['この期間の売上は ' + D.yenShort(has[0].sales) + '（' + has[0].count + '件）です。'];
+    if (has.length === 1 && series.length === 1) return [T + 'この期間の売上は ' + D.yenShort(has[0].sales) + '（' + has[0].count + '件）です。'];
     var pool = full.filter(function (s) { return s.count > 0; }); if (pool.length < 2) pool = has;
     var hi = pool.slice().sort(function (a, b) { return b.sales - a.sales; })[0], lo = pool.slice().sort(function (a, b) { return a.sales - b.sales; })[0];
-    out.push('売上がいちばん多かったのは ' + D.monthLabelY(hi.month) + '（' + D.yenShort(hi.sales) + '・' + hi.count + '件）です。' + (lo.month !== hi.month ? 'いちばん少なかったのは ' + D.monthLabelY(lo.month) + '（' + D.yenShort(lo.sales) + '）です。' : ''));
+    out.push(T + '売上がいちばん多かったのは ' + D.monthLabelY(hi.month) + '（' + D.yenShort(hi.sales) + '・' + hi.count + '件）です。' + (lo.month !== hi.month ? 'いちばん少なかったのは ' + D.monthLabelY(lo.month) + '（' + D.yenShort(lo.sales) + '）です。' : ''));
     if (full.length >= 3) {   // 終わった月の、直近3か月の流れ
       var a = full.slice(-3), up = a[2].sales > a[1].sales && a[1].sales > a[0].sales, dn = a[2].sales < a[1].sales && a[1].sales < a[0].sales;
       if (up) out.push('終わった月だけで見ると、直近の3か月は、売上が続けて増えています。');
@@ -434,33 +464,34 @@
     return out;
   };
 
-  D.commentProducts = function (list) {
+  D.commentProducts = function (list, who) {
+    var T = who ? who + 'の' : '';
     if (!list.length) return ['この期間は、商品の売上がありません。'];
     var out = [], a = list[0], b = list[1];
-    out.push('売れ筋は ' + a.name + '（売上の ' + pcInt(a.share) + '・' + r0(a.qty) + '台）' + (b ? '、次が ' + b.name + '（' + pcInt(b.share) + '・' + r0(b.qty) + '台）' : '') + ' です。');
+    out.push(T + '売れ筋は ' + a.name + '（売上の ' + pcInt(a.share) + '・' + r0(a.qty) + '台）' + (b ? '、次が ' + b.name + '（' + pcInt(b.share) + '・' + r0(b.qty) + '台）' : '') + ' です。');
     if (list.length >= 4) { var t3 = sum(list.slice(0, 3), function (x) { return x.share; }); out.push('上位3つで、商品の売上の ' + pcInt(t3) + ' を占めています。'); }
     return out;
   };
 
-  D.commentRegion = function (g) {
+  D.commentRegion = function (g, who) {
     if (!g.known) return ['この期間は、届け先が分かる注文がありません。'];
     var out = [], r = g.regions, a = r[0], b = r[1], p = g.prefs[0];
-    out.push(a.name + 'の注文が ' + pcInt(a.share) + ' を占め' + (b ? '、次は ' + b.name + ' で ' + pcInt(b.share) + ' です' : 'ています') + '。');
+    out.push((who ? who + 'は、' : '') + a.name + 'の注文が ' + pcInt(a.share) + ' を占め' + (b ? '、次は ' + b.name + ' で ' + pcInt(b.share) + ' です' : 'ています') + '。');
     if (p) out.push('都道府県では ' + p.name + ' がいちばん多く（' + p.count + '件・' + pcInt(p.share) + '）、' + g.prefs.length + '都道府県から注文があります。');
     if (g.unknown) out.push('届け先の住所が分からない注文 ' + g.unknown + '件は、数えていません。');
     return out;
   };
 
   // kind＝'sales'（売上明細の売上の日＝出荷した日）か 'shop'（Shopify の注文した日。直近55日分だけ）
-  D.commentWeekday = function (days, kind) {
-    var isSales = kind === 'sales', n = sum(days, function (d) { return d.count; });
+  D.commentWeekday = function (days, kind, who) {
+    var T = who ? who + 'の' : '', isSales = kind === 'sales', n = sum(days, function (d) { return d.count; });
     if (!n) return [isSales ? 'この期間は、売上がありません。' : 'この期間は、Shopify の注文がありません（Shopify の注文は直近55日分だけです）。'];
-    var out = [], who = isSales ? '売上の日（出荷した日）は' : '注文は';
+    var out = [], subj = T + (isSales ? '売上の日（出荷した日）は' : '注文は');
     if (n < 20) out.push('注文が ' + n + '件と少ないので、傾向は参考程度に見てください。');
     var s = days.slice().sort(function (a, b) { return b.count - a.count; }), top = s[0], sec = s[1];
     if (top.count === 0) return out;
     var two = pcInt(top.share + sec.share);
-    out.push(who + top.name + '曜と' + sec.name + '曜に多い傾向です（全体の ' + two + '）。');
+    out.push(subj + top.name + '曜と' + sec.name + '曜に多い傾向です（全体の ' + two + '）。');
     var low = s[s.length - 1];
     if (low.count < top.count) out.push(low.name + '曜は少なめです（' + pcInt(low.share) + '）。');
     var we = days.filter(function (d) { return d.wd === 0 || d.wd === 6; }), wp = sum(we, function (d) { return d.share; });
@@ -468,19 +499,21 @@
     return out;
   };
 
-  D.commentHour = function (hours, bands) {
+  D.commentHour = function (hours, bands, who) {
+    var T = who ? who + 'の' : '';
     var n = sum(hours, function (x) { return x.count; });
     if (!n) return ['この期間は、Shopify の注文がありません（Shopify の注文は直近55日分だけです）。'];
     var out = [], top = hours.slice().sort(function (a, b) { return b.count - a.count; })[0], tb = bands.slice().sort(function (a, b) { return b.count - a.count; })[0];
     if (n < 20) out.push('注文が ' + n + '件と少ないので、傾向は参考程度に見てください。');
-    out.push('注文は ' + top.hour + '時台がいちばん多く（' + top.count + '件・' + pcInt(top.share) + '）、時間の帯では ' + tb.label + ' が ' + pcInt(tb.share) + ' です。');
+    out.push(T + '注文は ' + top.hour + '時台がいちばん多く（' + top.count + '件・' + pcInt(top.share) + '）、時間の帯では ' + tb.label + ' が ' + pcInt(tb.share) + ' です。');
     return out;
   };
 
-  D.commentRepeat = function (g) {
+  D.commentRepeat = function (g, who) {
+    var T = who ? who + 'の' : '';
     if (!g.known) return ['この期間は、Shopify の注文がありません（Shopify の注文は直近55日分だけです）。'];
     var out = [];
-    out.push('リピート（同じメールアドレスで、前にも注文がある）のお客様の注文は ' + g.repeat.count + '件、全体の ' + pcInt(g.repeat.share) + ' です。');
+    out.push(T + 'リピート（同じメールアドレスで、前にも注文がある）のお客様の注文は ' + g.repeat.count + '件、全体の ' + pcInt(g.repeat.share) + ' です。');
     if (g['new'].count >= 3 && g.repeat.count >= 3) {
       var c = chg(g.repeat.avg, g['new'].avg);
       if (c && !c.flat) out.push('1注文あたりの金額は、リピートが ' + D.yenShort(g.repeat.avg) + '、新規が ' + D.yenShort(g['new'].avg) + ' で、リピートのほうが ' + (c.up ? '高め' : '低め') + 'です。');
@@ -489,22 +522,27 @@
     return out;
   };
 
-  D.commentShip = function (s) {
+  D.commentShip = function (s, who) {
+    var T = who ? who + 'の' : '';
     if (!s.shipped) return ['この期間は、出荷が確認できた注文がありません。'];
     var out = [], w2 = s.within(2);
-    out.push('受注から出荷までは、平均 ' + (Math.round(s.avg * 10) / 10) + '日（真ん中の値は ' + s.median + '日）です。' + pcInt(pct(w2, s.shipped)) + ' の注文は、2日以内に出荷されています。');
+    out.push(T + '受注から出荷までは、平均 ' + (Math.round(s.avg * 10) / 10) + '日（真ん中の値は ' + s.median + '日）です。' + pcInt(pct(w2, s.shipped)) + ' の注文は、2日以内に出荷されています。');
     var slow = s.shipped - s.within(7);
     if (slow > 0) out.push('出荷まで8日以上かかった注文が ' + slow + '件あります（いちばん長いもので ' + s.max + '日）。');
     if (s.notShipped > 0) out.push('出荷がまだ確認できない注文が ' + s.notShipped + '件あります。');
+    if (s.outOfRange > 0) out.push('出荷のデータが残っていない古い注文 ' + s.outOfRange + '件は、数えていません。');
     return out;
   };
 
-  D.commentFreight = function (f, orders) {
+  D.commentFreight = function (f, orders, who, shopNote) {
     if (!orders) return [];
+    var T = who ? who + 'の' : '';
     var out = [];
     if (!f.charged && !f.free) return ['この期間は、注文がありません。'];
-    out.push('送料は ' + D.yenShort(f.freight) + '（売上の ' + pc(f.share) + '）です。送料をいただいた注文は ' + f.charged + '件、送料のない（無料などの）注文は ' + f.free + '件です。');
+    out.push(T + '送料は ' + D.yenShort(f.freight) + '（売上の ' + pc(f.share) + '）です。送料をいただいた注文は ' + f.charged + '件、送料のない（無料などの）注文は ' + f.free + '件です。');
+    if (!f.charged) out.push('送料をいただいた注文は、この期間にありません。');
     if (f.charged) out.push('送料をいただいた注文の、1件あたりの送料は ' + D.yenShort(f.avgCharged) + ' です。');
+    if (shopNote) out.push(shopNote);
     if (f.shopCount) {
       if (f.discountOrders) out.push('値引きコードは、Shopify の注文 ' + f.shopCount + '件のうち ' + f.discountOrders + '件で使われ、値引きは合計 ' + D.yenShort(f.discountTotal) + '（税込）です。');
       else out.push('Shopify の注文 ' + f.shopCount + '件の中に、値引きコードを使った注文はありません。');
@@ -513,20 +551,27 @@
   };
 
   /* ============================================================ まとめて作る（画面はこれを呼ぶ） */
-  D.analyze = function (model, range, today) {
-    var p = D.period(range, today), orders = D.pick(model.sales, p.cur), prevOrders = D.pick(model.sales, p.prev);   // 売上（売上明細・売上日で数える）
-    var shop = D.pickShop(model.shop, p.cur), shipOrders = D.pick(model.orders, p.cur);                             // Shopify は注文日、出荷までの日数は受注日で数える
+  /* target＝'ec'（EC）・'furusato'（ふるさと納税）・'all'（合計）。Shopify から作る切り口（時間帯・新規とリピート・値引き・曜日の注文した日）は EC だけ：
+   *   ふるさと納税→作れない（shopAvailable=false）、合計→EC の分だけ（shopScope='ecOnly'）。 */
+  D.analyze = function (model, range, today, target) {
+    target = target || 'ec';
+    var who = D.targetLabel(target), shopAvailable = target !== 'furusato', shopScope = target === 'furusato' ? 'none' : target === 'all' ? 'ecOnly' : 'ec';
+    var p = D.period(range, today), sales = D.ofTarget(model.sales, target), orders = D.pick(sales, p.cur), prevOrders = D.pick(sales, p.prev);   // 売上（売上明細・売上日で数える）
+    var shop = shopAvailable ? D.pickShop(model.shop, p.cur) : [], shipOrders = D.pick(D.ofTarget(model.orders, target), p.cur);                        // Shopify は注文日、出荷までの日数は受注日で数える
     var cur = D.summary(orders), prev = D.summary(prevOrders), deltas = D.productDelta(orders, prevOrders);
     var series = D.byMonth(orders, p.from, p.to), products = D.byProduct(orders), region = D.byRegion(orders);
     var wd = D.byWeekday(D.orderize(orders)), wdShop = D.byWeekday(shop), hours = D.byHour(shop), bands = D.hourBands(hours), rep = D.byRepeat(shop), ship = D.byShipDays(shipOrders), fr = D.freightInfo(orders, shop);
     // 月ごとの送料（グラフ用）
     var frSeries = series.map(function (s) { return { month: s.month, freight: s.freight, share: pct(s.freight, s.sales) }; });
+    var ecWho = target === 'all' ? 'EC' : who, shopNote = shopScope === 'ecOnly' ? '値引きは EC の分だけです（ふるさと納税は含みません）。' : '';
     return {
+      target: target, who: who, shopAvailable: shopAvailable, shopScope: shopScope,
       period: p, cur: cur, prev: prev, series: series, products: products, region: region, weekday: wd, weekdayShop: wdShop, hours: hours, bands: bands, repeat: rep, ship: ship, freight: fr, frSeries: frSeries,
       shopCount: shop.length, shipCount: shipOrders.length,
       comments: {
-        sales: D.commentSales(cur, prev, deltas, p), monthly: D.commentMonthly(series, p), products: D.commentProducts(products), region: D.commentRegion(region),
-        weekday: D.commentWeekday(wd, 'sales'), weekdayShop: D.commentWeekday(wdShop, 'shop'), hour: D.commentHour(hours, bands), repeat: D.commentRepeat(rep), ship: D.commentShip(ship), freight: D.commentFreight(fr, orders)
+        sales: D.commentSales(cur, prev, deltas, p, who), monthly: D.commentMonthly(series, p, who), products: D.commentProducts(products, who), region: D.commentRegion(region, who),
+        weekday: D.commentWeekday(wd, 'sales', who), weekdayShop: shopAvailable ? D.commentWeekday(wdShop, 'shop', 'EC') : [], hour: shopAvailable ? D.commentHour(hours, bands, 'EC') : [],
+        repeat: shopAvailable ? D.commentRepeat(rep, 'EC') : [], ship: D.commentShip(ship, who), freight: D.commentFreight(fr, orders, who, shopNote)
       }
     };
   };
