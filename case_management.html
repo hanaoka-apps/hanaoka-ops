@@ -763,6 +763,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 }
 .reg-modal-close:hover { color: var(--text); }
 .reg-modal-body { padding: 16px 18px; }
+/* 紙のFAXの取り込み・AI読み取りの状況 */
+.pf-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; font-size: 12px; }
+.pf-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-row input[type=datetime-local] { font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface2); color: var(--text); }
+.fp-box { flex-shrink: 0; max-height: 190px; overflow-y: auto; margin: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; background: var(--surface2); font-size: 11.5px; }
+.fp-h { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-weight: 700; white-space: nowrap; }
+.fp-h small { font-weight: 400; color: var(--text-muted); margin-left: auto; }
+.fp-i { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-top: 1px solid var(--border); }
+.fp-i .st { flex-shrink: 0; font-weight: 600; }
+.fp-i .tm { color: var(--text-muted); }
 .reg-section-label {
   font-size: 10px; color: var(--text-muted); text-transform: uppercase;
   letter-spacing: 0.05em; font-weight: 500;
@@ -1104,6 +1114,28 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
   </div>
 </div>
 <!-- マージ候補モーダル（同じ案件と思われる組を並べ、その場で統合／候補から外す） -->
+<!-- 紙のFAXを取り込む（スキャンしたPDF → FAX_PDFStorage/Incoming。あとはいつものFAXと同じくAIが読んで受信トレイに入る） -->
+<div class="reg-modal-overlay" id="paperFaxModal" onclick="closePaperFaxModal()">
+  <div class="reg-modal" onclick="event.stopPropagation()" style="width:600px;max-width:96vw">
+    <div class="reg-modal-header">
+      <span class="reg-modal-title">📥 紙のFAXを取り込む</span>
+      <button class="reg-modal-close" onclick="closePaperFaxModal()">✕</button>
+    </div>
+    <div class="reg-modal-body">
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.7;margin-bottom:10px">
+        複合機から紙で出たFAXをスキャンしたPDFを選んでください。<strong>1通（1件のFAX）につき1つのPDF</strong>にしてください（何通も1つのPDFにすると1件として入ります）。<br>
+        取り込むと、いつものFAXと同じようにAIが読み（20分以内）、この受信トレイに入ります。それまでは一覧の上に「AI読み取り待ち」と出ます。
+      </div>
+      <input type="file" id="paperFaxFiles" accept="application/pdf,.pdf" multiple onchange="paperFaxPicked(this.files)" style="font-size:12px;margin-bottom:10px">
+      <div id="paperFaxRows"></div>
+      <div id="paperFaxMsg" style="font-size:12px;margin-top:8px"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <button class="btn" onclick="closePaperFaxModal()">やめる</button>
+        <button class="btn btn-primary" id="paperFaxGo" onclick="uploadPaperFax()" disabled>取り込む</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="reg-modal-overlay" id="mergeSuggestModal" onclick="closeMergeSuggest()">
   <div class="reg-modal" onclick="event.stopPropagation()" style="width:1180px;max-width:96vw">
     <div class="reg-modal-header">
@@ -1215,12 +1247,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <div class="panel-header" style="flex-shrink:0;">
             <span class="panel-header-title">未振り分けの受信</span>
             <span class="panel-count" id="triageCount">0件</span>
+            <button class="btn" onclick="openPaperFaxModal()" style="margin-left:auto;padding:3px 9px;font-size:11px" title="複合機から紙で出たFAXをスキャンしたPDFを取り込みます。AIが読んで受信トレイに入ります">📥 紙のFAXを取り込む</button>
           </div>
           <div class="search-row" style="flex-shrink:0;">
             <input class="search-input" id="triageSearchInput" type="text" placeholder="検索（取引先・案件名・FAX番号・内容）..." oninput="filterTriage()">
           </div>
           <!-- 経路の絞り込み（FAX／HP問い合わせ／ARU／AUTOPILOT）。中身はJSが描画する -->
           <div class="route-row" id="triageRouteRow"></div>
+          <!-- AI読み取りの状況（Incoming／_staging にある FAX と、紙から取り込んだものの進み具合）。無いときは出さない -->
+          <div id="faxPending" class="fp-box" style="display:none"></div>
           <div class="case-list" id="triageList" style="flex:1;overflow-y:auto;min-height:80px;">
             <div class="loading-spinner">読み込み中...</div>
           </div>
@@ -1564,6 +1599,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="detail-header" style="padding:6px 16px;display:flex;align-items:center;justify-content:space-between">
           <div style="display:flex;align-items:center;gap:10px">
             <button class="btn" onclick="backToListMode()" style="padding:4px 12px;font-size:12px;flex-shrink:0;font-weight:600">← 一覧</button>
+            <span class="case-nav" style="display:inline-flex;align-items:center;gap:2px;flex-shrink:0">
+              <button class="btn" id="casePrevBtn" onclick="stepCase(-1)" style="padding:4px 9px;font-size:12px;font-weight:700" title="一覧の1つ前の案件">＜</button>
+              <span id="caseNavHint" class="muted" style="font-size:11px;min-width:54px;text-align:center;white-space:nowrap"></span>
+              <button class="btn" id="caseNextBtn" onclick="stepCase(1)" style="padding:4px 9px;font-size:12px;font-weight:700" title="一覧の次の案件">＞</button>
+            </span>
             <span class="detail-id-label" id="detailCaseId" style="white-space:nowrap;font-size:12px">-</span>
             <span class="detail-company" id="detailCompany" style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">-</span>
           </div>
@@ -1942,6 +1982,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
           <p class="help-p">毎日最初に確認するタブです。AIが自動処理したFAX・HP問い合わせ・メールが一覧に表示されます。上部の検索ボックスで取引先名・内容などから、経路のボタン（📠 FAX／🌐 HP／🔷 ARU／🤖 AMR／📧 Mail）で入口ごとに絞り込めます。</p>
           <div class="help-callout info"><strong>📧 Mail</strong>は営業窓口（salestyo@）宛ての社外メールです（社内からのメール・CCだけのメールは入りません）。20分ごとに取り込みます。PDFが添付されたメールは、右側に本文とPDFを並べて表示します（右上のボタンで「左右に並べる／本文の下に出す」を切り替えられます）。</div>
           <div class="help-callout info">FAX受信後、AIによるOCR処理が完了するまで最大 <strong>5〜10分</strong> かかります。届いたはずのFAXが表示されない場合は少し待ってから「更新」を押してください。</div>
+          <div class="help-h3">📥 紙のFAXを取り込む</div>
+          <p class="help-p">メールの障害などで、複合機から<strong>紙で出たFAX</strong>は、スキャンしてPDFにすれば受信トレイに入れられます。</p>
+          <ol class="help-ol">
+            <li>紙をスキャンしてPDFにする（<strong>1通につき1つのPDF</strong>。何通も1つにすると1件として入ります）</li>
+            <li>受信トレイの見出しの <strong>「📥 紙のFAXを取り込む」</strong> → PDFを選ぶ（まとめて選べます）</li>
+            <li>それぞれの<strong>受信日時</strong>を入れる（紙に印字された受信時刻。受信トレイの受信日時になります）→「取り込む」</li>
+          </ol>
+          <p class="help-p">取り込むと、一覧の上の「AI読み取りの状況」に <strong>⏳ AI読み取り待ち → 🤖 AI読み取り中 → 📝 受信トレイに登録中</strong> と進み具合が出ます。読み終わると（20分以内）いつものFAXと同じように一覧に入り、状況の欄から消えます。メールで届いたFAXの読み取り待ちも、ここに出ます。</p>
+          <div class="help-callout info">障害が直ったあと、複合機が同じFAXをメールで送り直すことがあります。同じFAXが2件入っていたら、片方をアーカイブしてください。</div>
           <div class="help-h3">FAX詳細の確認手順</div>
           <ol class="help-ol">
             <li>左のリストからFAXをクリック → 詳細画面に切り替わります</li>
@@ -1998,7 +2047,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="help-section">
           <div class="help-h2"><span class="hn">5</span> 案件管理（対応の入力）</div>
           <p class="help-p">案件詳細は3カラム構成です。<strong>左：案件情報・操作 / 中央：タイムライン / 右：FAX原本PDF</strong>。</p>
-          <div class="help-callout tip">案件詳細を見ているとき、画面の左端の細いバー <strong>「☰ 一覧」</strong> に<strong>マウスを乗せる</strong>（またはクリックする）と、案件一覧（今の絞り込み・並び順のまま）が横から出てきます。別の案件を選ぶとそのまま切り替わり、「← 一覧」に戻らなくても移れます（マウスを外すか、Esc・外側のクリックで閉じる）。</div>
+          <div class="help-callout tip">案件詳細を見ているとき、画面の左端の細いバー <strong>「☰ 一覧」</strong> に<strong>マウスを乗せる</strong>（またはクリックする）と、案件一覧（今の絞り込み・並び順のまま）が横から出てきます。別の案件を選ぶとそのまま切り替わり、「← 一覧」に戻らなくても移れます（マウスを外すか、Esc・外側のクリックで閉じる）。<br>「← 一覧」の横の <strong>＜ ＞</strong> で、一覧の前後の案件へ順に移れます（案件一覧から開いたときは今の絞り込み・並び順、マイ案件から開いたときはマイ案件の並び。真ん中の数字は何件目か）。完了にして一覧から外れた案件でも、＞ で次の案件へ進めます。</div>
           <div class="help-h3">左パネル（変更は自動保存）</div>
           <ul class="help-ul">
             <li><strong>ステータス</strong>：いまボールが誰の所にあるか（所在）を選ぶ</li>
@@ -3975,7 +4024,7 @@ function renderCaseList() {
       const dateStr = formatCaseDate(c);
       const caseName = c.Title || '';
       return `
-        <tr class="${c.CaseId === currentCaseId ? 'active' : ''}" onclick="selectCase('${c.CaseId}')">
+        <tr class="${c.CaseId === currentCaseId ? 'active' : ''}" onclick="caseNavFrom='list';selectCase('${c.CaseId}')">
           <td class="td-dot">${dot}</td>
           <td class="td-date">${dateStr}</td>
           <td class="td-company">${escapeHtml(c.CompanyName || '-')}</td>
@@ -4477,6 +4526,7 @@ function mineCases() {
 function setMineFocus(key) { mineFocus = (mineFocus === key) ? '' : key; renderMine(); }
 function openCaseFromMine(caseId) {
   switchMainTab('case');
+  caseNavFrom = 'mine';
   selectCase(caseId);
 }
 // タブの件数（自分の案件のうち、注文書・期限・催促の件数）
@@ -4603,6 +4653,36 @@ function backToListMode() {
   document.getElementById('caseSubTabs').style.display = 'flex';
   renderCaseList();
 }
+// ---- 案件詳細：＜ ＞（開いた一覧の順＝案件一覧なら絞り込み・並び順のまま、マイ案件ならマイ案件の並びのまま）----
+//   完了・アーカイブで今の案件が一覧から外れても、＞ で「その次にあった案件」へ進める（caseNavIdx を覚えておく）
+let caseNavFrom = 'list', caseNavIdx = -1;
+function mineOrderedList() {
+  const groups = MINE_GROUPS.map(g => ({ ...g, items: [] }));
+  mineCases().forEach(c => groups.find(g => g.test(c)).items.push(c));
+  groups.forEach(g => g.items.sort(compareMine));
+  return groups.filter(g => !mineFocus || g.key === mineFocus).flatMap(g => g.items);
+}
+function getCaseNavList() { return caseNavFrom === 'mine' ? mineOrderedList() : getFilteredCases(); }
+function updateCaseNav() {
+  const list = getCaseNavList();
+  const i = list.findIndex(x => x.CaseId === currentCaseId);
+  if (i >= 0) caseNavIdx = i;
+  const hint = document.getElementById('caseNavHint');
+  if (hint) {
+    hint.textContent = i >= 0 ? `${i + 1} / ${list.length}` : `- / ${list.length}`;
+    hint.title = (caseNavFrom === 'mine' ? 'マイ案件' : '案件一覧（今の絞り込み・並び順）') + 'の中の何件目か';
+  }
+  const prev = document.getElementById('casePrevBtn'), next = document.getElementById('caseNextBtn');
+  const at = i >= 0 ? i : caseNavIdx - 0.5;   // 一覧から外れたときは、前にいた場所の手前として扱う
+  if (prev) prev.disabled = !list.length || at <= 0;
+  if (next) next.disabled = !list.length || at >= list.length - 1;
+}
+function stepCase(d) {
+  const list = getCaseNavList();
+  const i = list.findIndex(x => x.CaseId === currentCaseId);
+  const to = i >= 0 ? list[i + d] : list[d > 0 ? caseNavIdx : caseNavIdx - 1];
+  if (to) selectCase(to.CaseId);
+}
 function selectCase(caseId) {
   currentCaseId = caseId;
   const c = cases.find(x => x.CaseId === caseId);
@@ -4618,6 +4698,7 @@ function selectCase(caseId) {
   dc.style.display = 'flex';
   document.getElementById('detailCaseId').textContent = c.CaseId + (c.OrderNumber ? ' / 受注: ' + c.OrderNumber : '');
   document.getElementById('detailCompany').textContent = c.CompanyName || '-';
+  updateCaseNav();
   const _arcBtn = document.getElementById('headerArchiveBtn');
   if (_arcBtn) _arcBtn.textContent = (c.Status === 'アーカイブ') ? '↩ アーカイブ解除' : '🗂 アーカイブ';
   // インライン編集フィールドの初期化
@@ -5546,6 +5627,7 @@ async function loadTriageList(force) {
     // ★軽量取得を使う（下のJS側フィルタは従来と同じなので表示結果は変わらない）
     const items = await fetchTriageEventItems(force);
     // 未仕訳の受信イベント（FAX受信＋HP/ARU/AUTOPILOT問い合わせ）を抽出
+    refreshFaxPending();   // AI読み取りの状況（裏で）
     triageItems = items
       .filter(e => {
         const isUntriaged = !e.SortKubun || e.SortKubun === '未仕訳';
@@ -5753,6 +5835,133 @@ function backToTriageList() {
   resetTriageViewer();
   renderTriageList();
 }
+// ============================================================
+// 紙のFAXを取り込む（メールの障害などで複合機から紙で出たFAX）
+//   スキャンしたPDFを FAX_PDFStorage/Incoming に「受信日時のファイル名」（YYYYMMDDHHMMSSmmm.pdf）で置くだけ。
+//   あとはいつものFAXと同じ流れ（AIが読む → Results → Power Automate が受信トレイに登録 → PDFは Inbox へ）。
+//   受信日時（EventDate）はファイル名から決まる（FAX OCR の write_result.py）。
+// AI読み取りの状況：Incoming＝読み取り待ち、_staging＝読み取り中、Results に .result.json＝受信トレイに登録中。
+//   取り込んだものはブラウザに覚えておき（fax-paper-pending-v1）、Inbox に移ったら（＝登録済み）一覧から外して受信トレイを読み直す。
+// ============================================================
+const PF_KEY = 'fax-paper-pending-v1';
+let pfPicked = [], pfTimer = null, pfBusy = false;
+function pfLoad() { try { return JSON.parse(localStorage.getItem(PF_KEY) || '[]'); } catch (_) { return []; } }
+function pfSave(a) { try { localStorage.setItem(PF_KEY, JSON.stringify(a.slice(-100))); } catch (_) {} }
+function pfLocalInput(d) { const z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; }
+function pfNameTime(base) {   // 20261113093000123 → 11/13 09:30
+  const m = String(base).match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  return m ? `${+m[2]}/${+m[3]} ${m[4]}:${m[5]}` : base;
+}
+function openPaperFaxModal() {
+  pfPicked = [];
+  const f = document.getElementById('paperFaxFiles'); if (f) f.value = '';
+  document.getElementById('paperFaxMsg').textContent = '';
+  renderPaperFaxRows();
+  document.getElementById('paperFaxModal').classList.add('open');
+}
+function closePaperFaxModal() { if (!pfBusy) document.getElementById('paperFaxModal').classList.remove('open'); }
+function paperFaxPicked(files) {
+  const now = pfLocalInput(new Date());
+  Array.from(files || []).forEach(file => {
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return;
+    pfPicked.push({ file, when: now });
+  });
+  document.getElementById('paperFaxFiles').value = '';
+  renderPaperFaxRows();
+}
+function renderPaperFaxRows() {
+  const box = document.getElementById('paperFaxRows');
+  box.innerHTML = pfPicked.length ? `<div class="reg-label" style="margin-bottom:4px">受信日時（FAXが届いた日時。紙に印字された受信時刻を入れてください。分まででかまいません）</div>`
+    + pfPicked.map((p, i) => `<div class="pf-row"><span class="nm" title="${escapeHtml(p.file.name)}">📄 ${escapeHtml(p.file.name)}</span>`
+      + `<input type="datetime-local" value="${p.when}" onchange="pfPicked[${i}].when=this.value">`
+      + `<button class="btn" onclick="pfPicked.splice(${i},1);renderPaperFaxRows()" style="padding:2px 8px;font-size:11px" title="外す">✕</button></div>`).join('')
+    : '<div style="font-size:12px;color:var(--text-muted)">まだPDFが選ばれていません（いくつでもまとめて選べます）</div>';
+  document.getElementById('paperFaxGo').disabled = !pfPicked.length;
+}
+async function uploadPaperFax() {
+  if (pfBusy || !pfPicked.length) return;
+  const msg = document.getElementById('paperFaxMsg');
+  if (pfPicked.some(p => !p.when)) { msg.textContent = '受信日時が空のものがあります'; return; }
+  pfBusy = true;
+  const go = document.getElementById('paperFaxGo');
+  go.disabled = true;
+  const done = [], failed = [];
+  try {
+    const sid = await getSiteId(), driveId = await getFaxDriveId();
+    for (let i = 0; i < pfPicked.length; i++) {
+      const p = pfPicked[i];
+      msg.textContent = `取り込み中… ${i + 1} / ${pfPicked.length}`;
+      const head = p.when.replace(/[-:T]/g, '').slice(0, 12) + '00';   // YYYYMMDDHHMM ＋ 秒は00
+      let ok = false, err = '';
+      // 末尾3桁（ミリ秒の欄）を変えて、同じ名前があれば別の番号にする（同じ分に何通あっても重ならない）
+      for (let n = 0; n < 20 && !ok && !err; n++) {
+        const base = head + String((Date.now() + n * 37) % 1000).padStart(3, '0');
+        const token = await getToken();
+        const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/drives/${driveId}/root:/Incoming/${base}.pdf:/content?@microsoft.graph.conflictBehavior=fail`,
+          { method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/pdf' }, body: p.file });
+        if (res.ok) { ok = true; done.push({ base, at: Date.now() }); p.ok = true; }
+        else if (res.status !== 409) err = String(res.status);
+      }
+      if (!ok) failed.push(p.file.name + (err ? '（' + err + '）' : ''));
+    }
+  } catch (e) { failed.push(e && e.message || 'エラー'); }
+  pfSave(pfLoad().concat(done));
+  try { if (window.UsageLog) UsageLog.log('紙FAX取り込み', String(done.length)); } catch (_) {}
+  pfBusy = false;
+  if (failed.length) {
+    pfPicked = pfPicked.filter(p => !p.ok);
+    renderPaperFaxRows();
+    msg.innerHTML = `<span style="color:var(--danger)">${done.length}件は取り込みました。取り込めなかったもの：${escapeHtml(failed.join('、'))}</span>`;
+  } else {
+    document.getElementById('paperFaxModal').classList.remove('open');
+  }
+  refreshFaxPending();
+}
+// AI読み取りの状況を読み直す（読み取り待ちがあるあいだ、受信トレイを開いていれば1分ごと）
+async function refreshFaxPending() {
+  const box = document.getElementById('faxPending');
+  if (!box) return;
+  const items = [];
+  try {
+    const sid = await getSiteId(), driveId = await getFaxDriveId();
+    const list = async folder => {
+      try { return (await graphGetAll(`/sites/${sid}/drives/${driveId}/root:/${folder}:/children?$select=name,lastModifiedDateTime&$top=200`)).value || []; }
+      catch (_) { return []; }
+    };
+    const exists = async path => { try { await graphGet(`/sites/${sid}/drives/${driveId}/root:/${path}?$select=id`); return true; } catch (_) { return false; } };
+    const [inc, stg] = await Promise.all([list('Incoming'), list('_staging')]);
+    const dayAgo = Date.now() - 24 * 3600e3;
+    const seen = new Map();
+    const add = (b, st) => { if (!seen.has(b)) { const x = { base: b, st }; seen.set(b, x); items.push(x); } };
+    inc.filter(f => /\.pdf$/i.test(f.name)).forEach(f => add(f.name.replace(/\.pdf$/i, ''), 'wait'));
+    // _staging には処理し終えた古いものが残ることがあるので、24時間以内に動いたものだけ
+    stg.filter(f => /\.pdf$/i.test(f.name) && new Date(f.lastModifiedDateTime) > dayAgo).forEach(f => add(f.name.replace(/\.pdf$/i, ''), 'read'));
+    // 紙から取り込んだもの：Incoming・_staging から消えたら、登録中か登録済みかを見る
+    const keep = [];
+    let finished = 0;
+    for (const m of pfLoad()) {
+      if (seen.has(m.base)) { seen.get(m.base).paper = true; keep.push(m); continue; }
+      if (Date.now() - m.at > 3 * 24 * 3600e3) continue;   // 3日たっても見つからないものは忘れる
+      if (await exists(`Inbox/${m.base}.pdf`) || await exists(`Results/${m.base}.done.json`)) { finished++; continue; }
+      keep.push(m);
+      add(m.base, await exists(`Results/${m.base}.result.json`) ? 'reg' : 'wait');
+      seen.get(m.base).paper = true;
+    }
+    pfSave(keep);
+    if (finished && typeof loadTriageList === 'function') loadTriageList(true);
+  } catch (e) { console.warn('[refreshFaxPending]', e && e.message); }
+  items.sort((a, b) => String(a.base).localeCompare(String(b.base)));
+  const ST = { wait: '⏳ AI読み取り待ち', read: '🤖 AI読み取り中', reg: '📝 受信トレイに登録中' };
+  box.style.display = items.length ? '' : 'none';
+  box.innerHTML = items.length ? `<div class="fp-h">AI読み取りの状況 ${items.length}件<small>読み終わると下の一覧に入ります（20分以内）</small></div>`
+    + items.map(x => `<div class="fp-i"><span class="st">${ST[x.st]}</span><span class="tm">${escapeHtml(pfNameTime(x.base))} 受信</span>${x.paper ? '<span class="badge badge-amber">紙から取り込み</span>' : ''}</div>`).join('') : '';
+  clearTimeout(pfTimer);
+  if (items.length) pfTimer = setTimeout(function tick() {
+    const tv = document.getElementById('triageWrapper');
+    if (tv && tv.style.display !== 'none' && !document.hidden) refreshFaxPending();
+    else pfTimer = setTimeout(tick, 60000);
+  }, 60000);
+}
 // ---- 受信トレイ：前へ・次へ（一覧に出ている順＝経路・検索で絞り込んだ後の並び）----
 function getTriageVisibleList() {
   const q = normJa(document.getElementById('triageSearchInput')?.value || '');
@@ -5827,7 +6036,7 @@ function renderListDrawer() {
   const shown = list.slice(0, ldCaseLimit);
   body.innerHTML = shown.length ? shown.map(c => {
     const na = isNewArrival(c);
-    return `<div class="ld-row${c.CaseId === currentCaseId ? ' active' : ''}" onclick="closeListDrawer();selectCase('${escJsAttr(c.CaseId)}')">
+    return `<div class="ld-row${c.CaseId === currentCaseId ? ' active' : ''}" onclick="closeListDrawer();caseNavFrom='list';selectCase('${escJsAttr(c.CaseId)}')">
       <div class="l1">${getStatusDotHtml(c.Status, na)}<span class="co">${escapeHtml(c.CompanyName || '-')}</span>${getStatusBadge(c.Status, na, c)}</div>
       <div class="l2">${escapeHtml(formatCaseDate(c))}　${escapeHtml(c.Title || '')}</div></div>`;
   }).join('') + (list.length > shown.length
