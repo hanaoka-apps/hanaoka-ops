@@ -1449,6 +1449,20 @@
    *   ① 注文を確認（人：内容確認 → OK → 「SMILEに取り込む」で起票を依頼）→ ② SMILE起票中（専用機：起票と、起票結果の照合）→ ③ 結果を確認（人：確認OK）→ ④ 完了
    *   要対応（要確認）と対象外は、フローの外。
    * role：{ canImport（取込を依頼できる＝管理者＋取込担当者）, canConfirm（確認OKを押せる＝管理者） } */
+  /* 注文の状態（画面のどの段階か）。s＝buildSlip の戻り値、r＝この注文の記録（なければ null）。
+   * 人が手で「対象外」にした注文でも、SMILE に同じ注文番号の伝票が入った（手入力など）ら、SMILE取込済（smile）として扱う。
+   * そうしないと、手入力した注文が、出荷チェック（送り状番号の確認・Shopify への登録）に回らない。
+   * キャンセル等の自動の対象外は、そのまま対象外 */
+  EC.stateOf = function (s, r) {
+    if (s.excluded) return 'excluded';
+    if (r && r.status === 'excluded') return s.inSmile ? 'smile' : 'excluded';   // 人が手で対象外にした
+    if (r && r.status === 'exported') return 'exported';
+    if (r && r.status === 'waiting') return 'importing';   // 突合待ち（取込中の仲間）
+    if (r && (r.status === 'importing' || r.status === 'confirm' || r.status === 'check')) return r.status;   // 取込の途中・要確認は、SMILEに伝票があっても取込済み扱いにしない
+    if (s.inSmile) return 'smile';
+    return r && r.status === 'ok' ? 'ok' : 'new';
+  };
+
   EC.FLOW = [
     { key: 'p1', num: '①', label: '受注伝票起票依頼', kind: 'human' }, { key: 'p2', num: '②', label: '受注伝票登録', kind: 'robot' },
     { key: 'p3', num: '③', label: '結果を確認', kind: 'human' }, { key: 'p4', num: '④', label: '完了', kind: 'none' }

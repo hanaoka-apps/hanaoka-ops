@@ -367,22 +367,15 @@ function recompute() {
     const s = BUILD_SLIP(o, ctx);
     Object.defineProperty(s, 'autoShip', { get() { return EC.shipDateAuto(s, slipOf(s), cal); }, configurable: true });   // 受注日付（取込を押した日）から数える
     s.flags = s.flags.filter(f => !/分として処理$/.test(f.text));   // 「締め以降の受注は○/○分」は、Shopify の注文時刻の話。出荷予定日は受注日付から数えるので出さない
+    const r0 = store.orders[s.id];
+    if (r0 && r0.status === 'excluded' && s.inSmile && !s.excluded) s.flags.push({ level: 'info', text: '手動で対象外にしましたが、SMILE に同じ注文番号の伝票が入ったので、SMILE取込済として扱います（出荷チェックに回ります）' });
     s.baseMemo = s.memo; return s;
   });
   slips.forEach(s => { const e = EDITS[orderNo(s.id)]; if (s.order.deliveryEdit && e) s.flags.push({ level: 'info', text: '納品先を手動で直しています（' + Object.keys(e.fields).map(k => EC.EDIT_FIELDS.find(f => f.k === k).label).join('・') + '）' }); });
   slips.forEach(s => { s.hasErr = s.flags.some(f => f.level === 'error'); s.hasWarn = s.flags.some(f => f.level === 'warn'); });
 }
 function rec(s) { return store.orders[s.id] || null; }
-function stateOf(s) {
-  if (s.excluded) return 'excluded';
-  const r = rec(s);
-  if (r && r.status === 'excluded') return 'excluded';   // 人が手で対象外にした
-  if (r && r.status === 'exported') return 'exported';
-  if (r && r.status === 'waiting') return 'importing';   // 突合待ち（取込中の仲間）
-  if (r && (r.status === 'importing' || r.status === 'confirm' || r.status === 'check')) return r.status;   // 取込の途中・要確認は、SMILEに伝票があっても取込済み扱いにしない
-  if (s.inSmile) return 'smile';
-  return r && r.status === 'ok' ? 'ok' : 'new';
-}
+function stateOf(s) { return EC.stateOf(s, rec(s)); }   // 決め方は ec_sales_core.js の EC.stateOf（テストあり）
 // 対象外の理由（キャンセル等の自動のもの、または人が手で外したもの）。対象外でなければ ''
 function excludedText(s) {
   if (s.excluded) return s.excluded;
