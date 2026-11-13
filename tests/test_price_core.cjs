@@ -214,6 +214,34 @@ assert.ok(f.warnings.some(w => /組立出荷の重さがわかりません/.test
 f = P.freight(data, [{ code: 'AS1', qty: 1, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11', personal: true });
 assert.equal(f.amount, 11600);
 
+// --- JANコード：13桁と検算の数字、バーコードの並び ---
+assert.equal(P.janCheckDigit('400638133393'), 1);
+assert.ok(P.janValid('4006381333931'));
+assert.ok(P.janValid(' 4006381333931 '));
+assert.ok(!P.janValid('4006381333932')); // 検算の数字がちがう
+assert.ok(!P.janValid('400638133393')); // 12桁
+assert.ok(!P.janValid('40063813339310')); // 14桁
+assert.ok(!P.janValid('４００６３８１３３３９３１')); // 全角
+assert.ok(!P.janValid(''));
+const bits = P.ean13Bits('4006381333931');
+assert.equal(bits.length, 95);
+assert.equal(bits.slice(0, 3), '101'); assert.equal(bits.slice(45, 50), '01010'); assert.equal(bits.slice(92), '101'); // 左右と真ん中のガード
+assert.equal(bits.slice(3, 10), '0001101'); // 2桁目の0（左のLの形）
+assert.equal(bits.slice(10, 17), '0100111'); // 3桁目の0（Gの形。先頭の4は L G L L G G）
+assert.equal(bits.slice(50, 57), '1000010'); // 8桁目の3：右側は、Lの形の白黒を入れ替えた R の形
+assert.equal(P.ean13Bits('4006381333932'), null);
+assert.ok(/^<svg[^>]*aria-label="JAN 4006381333931"/.test(P.ean13Svg('4006381333931')));
+assert.equal(P.ean13Svg('123'), '');
+// 定価リストの行にJANを付ける計画：型式のそろえ・改定の履歴の全部の行・正しくないJAN・定価にない型式
+const pr = [{ spId: '1', data: { 型式: 'DA-LS', 適用開始日: '2026-01-01' } }, { spId: '2', data: { 型式: 'DA-LS', 適用開始日: '2026-11-01' } },
+  { spId: '3', data: { 型式: 'UDGLS', 適用開始日: '2026-01-01', JANコード: '4006381333931' } }];
+let jp = P.janPlan(pr, [{ 型式: 'ＤＡ－ＬＳ', JANコード: '4006381333931' }, { 型式: 'UDG-LS', JANコード: '4006381333931' },
+  { 型式: 'ZZZ', JANコード: '4006381333931' }, { 型式: 'BAD', JANコード: '4006381333932' }]);
+assert.equal(jp.set.length, 2); assert.equal(jp.same, 1); assert.deepEqual(jp.missing, ['ZZZ']); assert.equal(jp.invalid.length, 1);
+assert.equal(jp.set[0].next.JANコード, '4006381333931'); assert.equal(jp.set[0].next.適用開始日, '2026-01-01'); // ほかの項目はそのまま
+jp = P.janPlan(pr, [{ 型式: 'DA-LS', JANコード: '4006381333931' }, { 型式: 'DALS', JANコード: '4580132430013' }]);
+assert.deepEqual(jp.conflict, ['DALS']); assert.equal(jp.set.length, 0); // 同じ型式に別のJANが2つなら入れない
+
 // --- 説明の文章・判定の表・詳細ログ・前回の受注との見比べ ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
 const ck = Object.fromEntries(r.checks.map(c => [c.item, c]));
