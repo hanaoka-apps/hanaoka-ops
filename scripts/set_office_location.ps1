@@ -5,6 +5,8 @@
   同じ部署でも人によって勤務地が違うことがある（総務部など）ので、人ごとに入れる。
   誰がどこかは Entra にだけ置き、HTML やリポジトリには書かない。
   対象は 有効・ライセンスあり・メンバー のアカウント（共有PCは除く。ページと同じ）。
+  勤務地は「本社」「工場」だけ。役員も「本社」で入れる（役員かどうかは部署＝役員で判定する。
+  組織図・予定表・HANAOKA LINK は部署で役員を分ける）。「役員」と書いた行は「本社」として書き込む。
 
   必要なもの
     PowerShell 7 (pwsh) と Microsoft Graph PowerShell (Microsoft.Graph.Users)
@@ -74,6 +76,7 @@ $byUpn = @{}; $users | ForEach-Object { $byUpn[$_.UserPrincipalName.ToLower()] =
 foreach ($r in (Import-Csv $MapFile -Encoding utf8)) {
   $new = "$($r.新しい勤務地)".Trim()
   if (-not $new) { continue }
+  if ($new -eq '役員') { $new = '本社'; Write-Host "  （役員は勤務地「本社」で入れます）$($r.表示名)" }
   $u = $byUpn["$($r.UPN)".Trim().ToLower()]
   if (-not $u) { Write-Host "  見つからない  $($r.表示名) <$($r.UPN)>（飛ばします）"; continue }
   $cur = "$($u.OfficeLocation)".Trim()
