@@ -198,6 +198,8 @@
   .fu .meta{color:var(--sub)}
   .fu .late{color:var(--red-ink);font-weight:700}
   tr.crow td{background:var(--bg);border-bottom:none;padding-top:10px}
+  .iptable td{vertical-align:top}
+  .iptable tr.ipgrp td{border-top:2px solid var(--line-strong)}
   tr.prow td:first-child{padding-left:22px}
   .hist{padding:4px 20px 12px;font-size:12px;color:var(--sub);max-height:160px;overflow:auto}
   .hist div{padding:3px 0;border-bottom:1px dashed var(--line)}
@@ -1222,14 +1224,34 @@ function renderList(){
   document.querySelectorAll('#list .row').forEach(r=>r.onclick=()=>openCust(r.dataset.c));
   const sel=document.querySelector('#list .row.sel'); if(sel) sel.scrollIntoView({block:'nearest'});
 }
+// 請求と入金を並べた表（回収予定日の回ごと。入金は入金伝票ごとに1行、内訳と合計。最後に状況と差）
+function invPayTable(c,limit){
+  const P=c.periods.filter(p=>!p.beforeOpening&&(p.invoices.length||p.payments.length)).slice(-(limit||6)).reverse();
+  if(!P.length) return '<div class="empty">請求も入金もありません</div>';
+  const rows=P.map(p=>{
+    const G={}; p.payments.forEach(x=>{ const k=x.date+'|'+x.slip; const g=G[k]||(G[k]={date:x.date,slip:x.slip,rows:[],total:0,memo:[],void:false}); g.rows.push(x); g.total+=x.amount; if(x.memo&&!g.memo.includes(x.memo)) g.memo.push(x.memo); if(x.void) g.void=true; });
+    const pays=Object.values(G).sort((a,b)=>a.date.localeCompare(b.date));
+    const sub=pays.length>1?1:0, n=Math.max(1,pays.length+sub);
+    const rest=p.open!=null?p.open:p.judged?p.diff:p.amount-p.paid;
+    const solved=p.judged&&p.open==null&&p.diff!==0;   // 差が出たが、あとの入金などで解消した回
+    const st=(p.opening?'<span class="pill na">期首</span>':solved?'<span class="pill ok">解消</span>':periodState(p,c))+(rest&&(p.open!=null||!p.judged)?`<div class="${rest>0?'neg':''}" style="font-weight:700;margin-top:2px">${rest>0?'残り ':'多い '}${yen(Math.abs(rest))}</div>`:'')
+      +((p.fixes||[]).length?`<div class="reason">${esc(p.fixes.map(x=>x.by).join('・'))}</div>`:'')+(p.moved?`<div class="reason">うち ${yen(p.moved)} は前の違算に充当</div>`:'')+(p.early?`<div class="reason">前の回の早めの入金 ${yen(p.early)} を含む</div>`:'');
+    const inv=p.opening?`<td rowspan="${n}" colspan="2">期首の残り</td>`:`<td rowspan="${n}">${p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a>`).join('<br>')}</td><td rowspan="${n}">${p.invoices.map(v=>ymdJ(v.close)).join('<br>')}</td>`;
+    const head=`${inv}<td rowspan="${n}" class="num">${yen(p.amount)}</td><td rowspan="${n}">${p.opening?'—':ymdJ(p.due)}</td>`;
+    const payCells=g=>`<td>${ymdJ(g.date)}</td><td class="mono">${esc(g.slip)}</td><td style="font-size:12px">${g.rows.map(r=>`<span style="white-space:nowrap;margin-right:8px">${esc(r.kind)} <span class="muted">${yen(r.amount)}</span></span>`).join(' ')}</td><td class="num">${yen(g.total)}</td><td class="muted" style="font-size:12px">${esc(g.memo.join('・'))}${g.void?'（取消の組）':''}</td>`;
+    const stCell=`<td rowspan="${n}">${st}</td>`;
+    if(!pays.length) return `<tr class="ipgrp">${head}<td colspan="5" class="muted">入金なし</td>${stCell}</tr>`;
+    return pays.map((g,i)=>`<tr${i===0?' class="ipgrp"':''}>${i===0?head:''}${payCells(g)}${i===0?stCell:''}</tr>`).join('')
+      +(sub?`<tr><td colspan="3" class="num muted">入金の合計</td><td class="num"><b>${yen(pays.reduce((t,g)=>t+g.total,0))}</b></td><td></td></tr>`:'');
+  }).join('');
+  return `<div class="tw"><table class="iptable"><thead><tr><th>請求書</th><th>締日</th><th class="num">請求額</th><th>回収予定日</th><th>入金日</th><th>伝票№</th><th>内訳</th><th class="num">入金額</th><th>備考</th><th>入金状況</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 // 一覧から得意先を押したときのポップアップ（画面を移らずに中身を見る。詳しくは「得意先の画面を開く」）
 function openCustPop(code){
   const c=M&&M.customers[code]; if(!c) return;
   const asof=M.asof;
   const open=c.openPeriods.concat(c.oldPeriods||[]);
   const upcoming=c.periods.filter(p=>!p.judged&&p.usable&&!p.beforeOpening&&!p.opening&&p.invoices.length&&p.amount-p.paid>0);
-  const invs=[...c.invoiceList].reverse().slice(0,6);
-  const pays=[...c.payments].reverse().slice(0,10);
   const chip=(k,v)=>v?`<span><i class="muted">${k}</i> ${esc(v)}</span>`:'';
   document.querySelector('#invModal .inv').classList.remove('sheetmode');
   document.getElementById('invBody').innerHTML=`
@@ -1243,14 +1265,8 @@ function openCustPop(code){
         ${open.map(p=>`<tr><td>${p.opening?'—':ymdJ(p.due)}</td><td>${esc(p.opening?oldText(p):pInvText(p))}</td><td class="num neg">${yen(p.open)}</td><td>${p.open>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td><td>${fuCell(fuOf(c,p))}</td></tr>`).join('')}
         ${upcoming.map(p=>`<tr><td>${ymdJ(p.due)}</td><td>${p.invoices.map(v=>`<a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a>`).join(' ')}</td><td class="num">${yen(p.amount-p.paid)}</td><td>${p.paid?'<span class="pill wait">一部入金</span>':'<span class="pill wait">入金待ち</span>'}</td><td></td></tr>`).join('')}
       </tbody></table></div>`:'<div class="empty">違算も入金待ちもありません</div>'}
-      <h4 style="margin:14px 0 6px">直近の請求</h4>
-      ${invs.length?`<div class="tw"><table><thead><tr><th>請求書</th><th>締日</th><th class="num">請求額</th><th>回収予定日</th><th>入金状況</th></tr></thead><tbody>
-        ${invs.map(v=>`<tr><td><a class="inv-link" data-no="${esc(v.no)}">${esc(v.label)}</a></td><td>${ymdJ(v.close)}</td><td class="num">${yen(v.amount)}</td><td>${ymdJ(v.due)||'—'}</td><td>${invState(c,v)}</td></tr>`).join('')}
-      </tbody></table></div>`:'<div class="empty">請求書がありません</div>'}
-      <h4 style="margin:14px 0 6px">直近の入金</h4>
-      ${pays.length?`<div class="tw"><table><thead><tr><th>入金日</th><th>伝票№</th><th>種類</th><th class="num">金額</th><th>備考</th></tr></thead><tbody>
-        ${pays.map(p=>`<tr><td>${ymdJ(p.date)}</td><td class="mono">${esc(p.slip)}</td><td>${esc(p.kind)}</td><td class="num">${yen(p.amount)}</td><td class="muted">${esc(p.memo||'')}${p.void?'（取消の組）':''}</td></tr>`).join('')}
-      </tbody></table></div>`:'<div class="empty">入金がありません</div>'}
+      <h4 style="margin:14px 0 6px">請求と入金 <small class="muted" style="font-weight:400">回収予定日ごと・新しい順（直近6回）</small></h4>
+      ${invPayTable(c)}
     </div>
     <div class="inv-foot"><button class="btn" id="cpOpen" style="margin-right:auto">得意先の画面を開く</button><button class="btn pri" id="fClose">閉じる</button></div>`;
   const modal=document.getElementById('invModal'); modal.classList.add('show'); modal.scrollTop=0;
