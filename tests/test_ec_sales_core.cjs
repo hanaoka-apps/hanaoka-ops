@@ -1194,6 +1194,17 @@ t('受注日付：16:00 の線は日本時間（パソコンの時計の地域�
   // 日付の境目：日本時間 11/11 0:30（＝UTC 11/10 15:30）は、11/11 の午前
   assert.strictEqual(EC.slipDateAuto(new Date('2026-11-10T15:30:00Z'), DEFAULT_CONFIG, cal), '2026-11-11');
 });
+t('注文の状態：手で対象外にしても、SMILE に同じ注文番号の伝票が入ったら、SMILE取込済として扱う（出荷チェックに回す）', () => {
+  const S = o => Object.assign({ excluded: '', inSmile: false }, o), R = st => ({ status: st });
+  assert.strictEqual(EC.stateOf(S({}), null), 'new'); assert.strictEqual(EC.stateOf(S({}), R('ok')), 'ok');
+  assert.strictEqual(EC.stateOf(S({ inSmile: true }), null), 'smile'); assert.strictEqual(EC.stateOf(S({ inSmile: true }), R('ok')), 'smile');
+  assert.strictEqual(EC.stateOf(S({}), R('excluded')), 'excluded');                              // 手で対象外にして、SMILE にまだ伝票がない
+  assert.strictEqual(EC.stateOf(S({ inSmile: true }), R('excluded')), 'smile');                  // 手入力で SMILE に伝票が入った → SMILE取込済（出荷チェックへ）
+  assert.strictEqual(EC.stateOf(S({ excluded: 'キャンセル済み' }), null), 'excluded');            // 自動の対象外（キャンセルなど）は、そのまま
+  assert.strictEqual(EC.stateOf(S({ excluded: 'キャンセル済み', inSmile: true }), R('excluded')), 'excluded');
+  ['importing', 'confirm', 'check', 'exported'].forEach(st => assert.strictEqual(EC.stateOf(S({ inSmile: true }), R(st)), st));   // 取込の途中・起票済みは、そのまま
+  assert.strictEqual(EC.stateOf(S({ inSmile: true }), R('waiting')), 'importing');
+});
 t('履歴の表示名：流れの名前にそろえる（保存した名前は変えない）', () => {
   const L = (a, d, done) => EC.logLabel({ Action: a, Detail: d }, done);
   assert.deepStrictEqual(L('取込依頼', 'バッチ ec-1'), { Action: '受注伝票起票依頼', Detail: 'バッチ ec-1' });
