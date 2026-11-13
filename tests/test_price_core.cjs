@@ -66,9 +66,14 @@ assert.equal(P.listPriceRow(data.prices, 'T1', '2025-12-31'), null);
 
 // --- 標準のランク：定価×掛率を100円単位で四捨五入 ---
 let r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
-assert.equal(r.price, 15650); // 31300×0.5=15650（10円単位）
+assert.equal(r.price, 15700); // 31300×0.5=15650 → 15700（11月1日から100円単位）
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-01', customer: cust('C1', 'G9', '5.25掛(A)') });
 assert.equal(r.price, 14910); // 28400×0.525=14910（10円単位。各社価格表の100円単位なら14900）
+
+// --- 丸めの単位は日付で切り替わる（10月31日まで10円、11月1日から100円） ---
+assert.equal(P.roundUnit('2026-10-31'), 10);
+assert.equal(P.roundUnit('2026/11/01'), 100);
+assert.equal(P.roundUnit('2027-03-01'), 100);
 
 // --- 改定から半年は、改定前の定価での金額も並べる ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
@@ -80,20 +85,20 @@ assert.equal(r.oldPrice, undefined);
 // --- 在庫口の得意先コード → 社名の在庫口の掛率 ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
 assert.equal(r.isStock, true);
-assert.equal(r.price, 12520); // 31300×0.4=12520
+assert.equal(r.price, 12500); // 31300×0.4=12520 → 12500
 assert.ok(r.notes.some(n => /御社在庫品/.test(n)));
 // 同じ社名でも通常の支店は仕切り。営業の指示なら在庫価格
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('C2', 'G1', "5掛(A')") });
-assert.equal(r.price, 15650);
+assert.equal(r.price, 15700);
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('C2', 'G1', "5掛(A')"), forceStock: true });
-assert.equal(r.price, 12520);
+assert.equal(r.price, 12500);
 
 // --- 商品の種類で掛率が変わる社名（台車はA、台車以外はB） ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('C3', 'G2', 'その他') });
 assert.equal(r.k, 0.525);
 r = P.unitPrice(data, { code: 'L1', qty: 1, date: '2026-11-11', customer: cust('C3', 'G2', 'その他') });
 assert.equal(r.k, 0.575);
-assert.equal(r.price, 58310); // 101400×0.575=58305 → 58310
+assert.equal(r.price, 58300); // 101400×0.575=58305 → 58300（100円単位）
 
 // --- 例外：台数の条件は大きいほうから。まだ効いていない行は使わない ---
 r = P.unitPrice(data, { code: 'T1', qty: 60, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
@@ -120,8 +125,8 @@ assert.equal(r.orderPrice, 14917); // 16040×0.93=14917.2 → 14917
 // 部品だけなら販社と直接・Bランク
 r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-11-11', customer: cust('H01', 'G3', '5.25掛(A)') });
 // 部品だけでも本部あてなら本部経由。販社から直接来たときの Bランクも並べる
-assert.equal(r.quotePrice, 9770);
-assert.equal(r.directPrice, 9950); // 17300×0.575=9947.5 → 9950
+assert.equal(r.quotePrice, 9800);
+assert.equal(r.directPrice, 9900); // 17300×0.575=9947.5 → 9900（100円単位）
 assert.ok(r.warnings.some(w => /販社から直接/.test(w)));
 // 販社（掛率名「その他」）でも本部経由なら Aランクを元にする
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-28', customer: cust('H02', 'G3', 'その他') });
@@ -129,8 +134,8 @@ assert.equal(r.quotePrice, 16040); assert.equal(r.orderPrice, 14917);
 assert.ok(r.explain.some(e => /Aランク（5.25掛）を元にする/.test(e)));
 // 台車と一緒なら部品も本部経由（Aランク÷0.93）
 r = P.unitPrice(data, { code: 'PB', qty: 1, date: '2026-11-11', customer: cust('H01', 'G3', '5.25掛(A)'), withBody: true });
-assert.equal(r.quotePrice, 9770); // 17300×0.525=9082.5 → 9080、÷0.93=9763.4 → 9770
-assert.equal(r.orderPrice, 9086);
+assert.equal(r.quotePrice, 9800); // 17300×0.525=9082.5 → 9100、÷0.93=9784.9 → 9800（100円単位で切り上げ）
+assert.equal(r.orderPrice, 9114); // 9800×0.93=9114
 
 // --- 運賃込み（近畿あて1台分を足す）・金額の例外 ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-29', customer: cust('C4', 'G4', 'その他') });
@@ -183,13 +188,13 @@ assert.equal(ck['在庫価格'].state, 'on');
 assert.equal(ck['例外'].state, 'warn'); // 未整理の参考行がある
 assert.equal(ck['特別な計算'].state, 'off');
 assert.ok(/在庫口なので、在庫価格（4掛）を使いました/.test(r.summary));
-assert.ok(/旧定価のままの得意先なら 11,360円/.test(r.summary));
-assert.deepEqual(r.steps.map(s => s.amount), [31300, 15650, 12520]); // 定価 → ランク → 在庫価格
-assert.equal(P.compareOrder(r, { date: '20261109', price: 11360 }), 'old');
-assert.equal(P.compareOrder(r, { date: '20261109', price: 12520 }), 'same');
-assert.equal(P.compareOrder(r, { date: '20261020', price: 11360 }), 'before');
+assert.ok(/旧定価のままの得意先なら 11,400円/.test(r.summary));
+assert.deepEqual(r.steps.map(s => s.amount), [31300, 15700, 12500]); // 定価 → ランク → 在庫価格
+assert.equal(P.compareOrder(r, { date: '20261109', price: 11400 }), 'old');
+assert.equal(P.compareOrder(r, { date: '20261109', price: 12500 }), 'same');
+assert.equal(P.compareOrder(r, { date: '20261020', price: 11400 }), 'before');
 assert.equal(P.compareOrder(r, { date: '20261109', price: 9999 }), 'diff');
-assert.ok(/旧定価の 11,360円/.test(P.compareSentence(r, [{ date: '20261109', price: 11360 }])));
+assert.ok(/旧定価の 11,400円/.test(P.compareSentence(r, [{ date: '20261109', price: 11400 }])));
 r = P.unitPrice(data, { code: 'T1', qty: 60, date: '2026-11-11', customer: cust('C1', 'G9', "5掛(A')") });
 assert.ok(/「全員・50台以上」の例外（4.5掛）が登録されているため、ランクより例外を優先しました/.test(r.summary));
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-10-28', customer: cust('H01', 'G3', '5.25掛(A)') });

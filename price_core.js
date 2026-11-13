@@ -63,7 +63,9 @@
     return String(target || "").replace(/’/g, "'").split(/[・,、\/ ]+/).some(function (t) { return t === rank; });
   }
 
-  var ROUND_UNIT = 10; // 単価の丸め（SMILE の受注と同じ10円単位）
+  // 単価の丸め：2026-10-31 までは10円単位、2026-11-01 から100円単位（各社価格表・見積書・SMILE の受注伝票）
+  var ROUND_CHANGE_DATE = "2026-11-01";
+  function roundUnit(date) { return ymd(date) >= ROUND_CHANGE_DATE ? 100 : 10; }
 
   // ---------- 定価 ----------
   // 定価が空の行（運賃の重さだけの行）は、定価を探すときは飛ばす
@@ -319,6 +321,7 @@
   function unitPrice(data, ctx) {
     var out = { code: ctx.code, explain: [], warnings: [], notes: [], price: null };
     var date = ymd(ctx.date);
+    var ru = roundUnit(ctx._roundDate || date); // 旧定価で並べるときも、見積日の丸めにそろえる
     var row = listPriceRow(data.prices, ctx.code, date);
     if (!row) {
       var hist = priceHistory(data.prices, ctx.code);
@@ -334,7 +337,7 @@
     // ref・refKind：その段がどの設定の行から来たか（画面で「出どころ」を押すとその行が開く）
     out.steps = [{ label: "定価", detail: ymd(row.適用開始日) + " からの定価", amount: list, src: "定価リスト", ref: row, refKind: "price" }];
     var addStep = function (label, detail, kk, src, ref, refKind) {
-      out.steps.push({ label: label, detail: detail, k: kk, amount: kk === null || kk === undefined ? null : round(list * kk, ROUND_UNIT), src: src, ref: ref || null, refKind: refKind || "" });
+      out.steps.push({ label: label, detail: detail, k: kk, amount: kk === null || kk === undefined ? null : round(list * kk, ru), src: src, ref: ref || null, refKind: refKind || "" });
     };
     var methodRow = null;
     // 判定の表：使ったもの・使わなかったものを全部並べる（「使われていない」ことも確かめられるように）
@@ -388,10 +391,10 @@
     }
     if (price === null) {
       if (k === null) { out.warnings.push("掛率が決まりません（ランク・区分・例外のどれもない）"); return out; }
-      price = round(list * k, ROUND_UNIT);
-      out.explain.push("単価 ＝ 定価 × " + pct(k) + " を" + ROUND_UNIT + "円単位で四捨五入 → " + yen(price));
+      price = round(list * k, ru);
+      out.explain.push("単価 ＝ 定価 × " + pct(k) + " を" + ru + "円単位で四捨五入 → " + yen(price));
     }
-    out.k = k; out.isStock = isStock; out.method = method; out.basePrice = price;
+    out.roundUnit = ru; out.k = k; out.isStock = isStock; out.method = method; out.basePrice = price;
 
     if (method === "本部経由") {
       // 業務内容まとめ（2026-04）：台車本体は本部経由。台車＋部品なら部品も本部経由（Aランク÷0.93）。
@@ -400,20 +403,20 @@
       // 本部経由を出したうえで、販社から直接来たときの金額も並べる
       var direct = /^RIDE/i.test(ctx.code) || /(^|[\/-])RA($|[\/-])/i.test(ctx.code);
       if (!direct) {
-        var q = ceil(price / 0.93, 10), o = round(q * 0.93, 1);
-        out.explain.push("本部経由：販社への見積単価 ＝ ÷0.93 を10円単位で切り上げ → " + yen(q));
+        var q = ceil(price / 0.93, ru), o = round(q * 0.93, 1);
+        out.explain.push("本部経由：販社への見積単価 ＝ ÷0.93 を" + ru + "円単位で切り上げ → " + yen(q));
         out.explain.push("本部からの受注単価 ＝ ×0.93 を1円単位で四捨五入 → " + yen(o) + "（受注の得意先コード・備考は区分のメモを見る）");
         out.quotePrice = q; out.orderPrice = o; out.price = q;
-        out.steps.push({ label: "本部経由", detail: "÷0.93 を10円単位で切り上げ（販社への見積）", amount: q, src: "得意先の区分リスト", ref: methodRow, refKind: "cls" });
+        out.steps.push({ label: "本部経由", detail: "÷0.93 を" + ru + "円単位で切り上げ（販社への見積）", amount: q, src: "得意先の区分リスト", ref: methodRow, refKind: "cls" });
         out.steps.push({ label: "本部経由", detail: "×0.93 を1円単位で四捨五入（本部からの受注）", amount: o, src: "得意先の区分リスト", side: true, ref: methodRow, refKind: "cls" });
         if (kind === "部品" && !ctx.withBody) {
-          var b = round(list * 0.575, ROUND_UNIT);
+          var b = round(list * 0.575, ru);
           out.directPrice = b;
           out.warnings.push("部品だけの注文：販社から直接来たときは Bランク 5.75掛 → " + yen(b) + "（運賃は通常）");
         }
       } else {
         out.warnings.push("RIDE・アタッチメントは販社と直接取引。Bランク・運賃は通常");
-        price = round(list * 0.575, ROUND_UNIT); out.k = 0.575;
+        price = round(list * 0.575, ru); out.k = 0.575;
         out.explain.push("販社と直接：Bランク 5.75掛 → " + yen(price));
         addStep("販社と直接", "RIDE・アタッチメントは Bランク", 0.575, "得意先の区分リスト", methodRow, "cls");
         out.price = price;
@@ -447,7 +450,7 @@
       var since = new Date(ymd(row.適用開始日)), now = new Date(date);
       if (prevRows.length && (now - since) / 86400000 <= 183) {
         var dayBefore = new Date(since.getTime() - 86400000).toISOString().slice(0, 10);
-        var old = unitPrice(data, Object.assign({}, ctx, { date: dayBefore, _noOld: true }));
+        var old = unitPrice(data, Object.assign({}, ctx, { date: dayBefore, _roundDate: date, _noOld: true }));
         if (old.price !== null && old.price !== undefined && old.price !== out.price) {
           out.oldPrice = old.price; out.oldOrderPrice = old.orderPrice;
           out.oldListPrice = old.listPrice; out.revisedOn = ymd(row.適用開始日);
@@ -598,10 +601,10 @@
       } else if (r.rankName) {
         s.push("得意先のランク（" + r.rankName + "）どおり、定価の" + pct(r.k) + "です。");
       }
-      s.push("単価は、定価 " + yen(r.listPrice) + " × " + pct(r.k) + " を" + ROUND_UNIT + "円単位で四捨五入して " + yen(r.basePrice) + " です。");
+      s.push("単価は、定価 " + yen(r.listPrice) + " × " + pct(r.k) + " を" + (r.roundUnit || 10) + "円単位で四捨五入して " + yen(r.basePrice) + " です。");
     }
     if (r.method === "本部経由" && r.quotePrice !== undefined) {
-      s.push("本部経由の得意先なので、販社への見積は " + yen(r.quotePrice) + "（÷0.93 を10円単位で切り上げ）、本部からの受注は " + yen(r.orderPrice) + " です。");
+      s.push("本部経由の得意先なので、販社への見積は " + yen(r.quotePrice) + "（÷0.93 を" + (r.roundUnit || 10) + "円単位で切り上げ）、本部からの受注は " + yen(r.orderPrice) + " です。");
       if (r.directPrice !== undefined) s.push("部品だけの注文が販社から直接来たときは、Bランクの " + yen(r.directPrice) + " です。");
     } else if (r.method === "本部経由") {
       s.push("RIDE・アタッチメントは販社と直接の取引なので、Bランクの " + yen(r.price) + " です。");
@@ -682,7 +685,7 @@
   var API = {
     parseCSV: parseCSV, toObjects: toObjects, customerFromMaster: customerFromMaster, PREFS: PREFS, prefOf: prefOf,
     num: num, round: round, ceil: ceil, ymd: ymd, yen: yen, pct: pct,
-    rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
+    roundUnit: roundUnit, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,
