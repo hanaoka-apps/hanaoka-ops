@@ -1,0 +1,1423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HANAOKA LINK</title>
+<!--
+  HANAOKA LINK（日報・お知らせ）
+  ------------------------------------------------------------
+  TUNAG の代わり。日報（部署ごとの入力項目）・タイムライン・コメント・スタンプ・既読・お知らせ。
+  データは SharePoint サイト /sites/hanaoka-link のリスト（LINK_日報 など）に置く。
+  見られる人は SharePoint の権限で守る（全社／総務／幹部で、リストとファイルの置き場を分けている）。
+    全社 … 社員全員　総務 … グループ「LINK 総務日報」（総務部・役員）　幹部 … M365 グループ HL-幹部
+  土台（サイト・リスト・権限）を作るスクリプトは別リポジトリ（nippo-board の provision/Provision-Link.ps1）。
+  必要な権限：業務アプリの Sites.ReadWrite.All・User.Read.All（委任・管理者の同意済み）
+  見本データで画面を確かめるとき：hanaoka_link.html?demo=1（サインインせずに架空のデータで動く。書き込みはしない）
+-->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
+<link rel="icon" type="image/svg+xml" href="favicon_link.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
+<style>
+/* 色は共通ファイル hanaoka_theme.css の変数を使う。ここで決めるのはスタンプ・アイコンの色分けだけ */
+:root{
+  --st1:var(--navy); --st2:var(--green); --st3:#1f8fd0; --st4:#b5338a; --st5:var(--amber); --st6:#1f7a8c; --st7:var(--purple); --st8:var(--red);
+  --av1:var(--navy); --av2:var(--green); --av3:var(--amber); --av4:var(--purple); --av5:#1f8fd0; --av6:#c2255c;
+}
+*{box-sizing:border-box}
+html,body{height:100%;max-width:100%}
+body{overflow-x:hidden}
+@supports (overflow-x:clip){html,body{overflow-x:clip}}
+body:has(#modal-root .mbg){overflow:hidden}
+body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:14px;line-height:1.65}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:40;background:var(--surface)}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--navy);outline-offset:2px}
+.num{font-family:var(--font);font-variant-numeric:tabular-nums}
+.icon{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* header */
+.hdr{position:sticky;top:env(safe-area-inset-top,0px);z-index:30;background:var(--surface);border-bottom:1px solid var(--line-strong)}
+.hdr-in{max-width:1240px;margin:0 auto;display:flex;align-items:center;gap:16px;height:56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.logo{display:flex;align-items:center;gap:10px;font-family:var(--font);font-weight:800;font-size:16px;letter-spacing:.01em;white-space:nowrap}
+.logo-mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#23268f 0%,#3b3fd0 100%);box-shadow:0 4px 12px rgba(35,38,143,.3);color:#fff;display:grid;place-items:center;font-size:13px}
+.logo-txt{letter-spacing:.06em;font-weight:500}
+.logo-txt b{color:var(--navy);font-weight:700}
+.proto{font-size:11px;font-weight:500;color:var(--navy);border:1px solid var(--navy);border-radius:999px;padding:0 8px;letter-spacing:.06em}
+.nav{display:flex;gap:4px;margin-left:12px}
+.nav a{display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px;color:var(--sub);text-decoration:none;font-weight:500;white-space:nowrap}
+.nav a:hover{background:var(--bg);color:var(--txt)}
+.nav a[aria-current="page"]{color:var(--txt);background:var(--navy-soft)}
+.badge{min-width:18px;height:18px;border-radius:9px;background:var(--navy);color:var(--surface);font-size:11px;display:inline-grid;place-items:center;padding:0 5px;font-weight:700}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.me{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--sub)}
+.me b{color:var(--txt);font-weight:500}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;padding:7px 14px;font-weight:500;white-space:nowrap}
+.btn:hover{background:var(--bg)}
+.btn-primary{background:var(--navy);border-color:var(--navy);color:var(--surface)}
+.btn-primary:hover{background:var(--navy);filter:brightness(1.07)}
+.btn-ghost{border-color:transparent;background:transparent}
+.btn-sm{padding:4px 10px;font-size:13px}
+
+/* layout */
+.wrap{max-width:1240px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 96px}
+.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:24px;align-items:start}
+.side{position:sticky;top:calc(env(safe-area-inset-top,0px) + 76px);display:flex;flex-direction:column;gap:20px}
+.side h4{margin:0 0 6px;font-size:11px;letter-spacing:.1em;color:var(--sub);font-weight:500}
+.side-list{display:flex;flex-direction:column;gap:2px}
+.side-list button{display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:0;background:transparent;padding:7px 10px;border-radius:8px;color:var(--txt)}
+.side-list button:hover{background:var(--surface)}
+.side-list button[aria-pressed="true"]{background:var(--surface);box-shadow:var(--shadow);font-weight:700}
+.side-list .cnt{font-size:12px;color:var(--sub)}
+.main{min-width:0;display:flex;flex-direction:column;gap:20px}
+.chips-m{display:none;gap:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+.chip{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:5px 12px;font-size:13px;white-space:nowrap}
+.chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:var(--surface)}
+
+.note-proto{font-size:12px;color:var(--sub);display:flex;gap:8px;align-items:center}
+
+/* banners */
+.banner{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:14px 16px}
+.banner.remind{border-color:var(--navy);background:var(--navy-soft)}
+.banner .grow{flex:1;min-width:200px}
+.banner h3{margin:0;font-size:15px;font-family:var(--font)}
+.banner p{margin:2px 0 0;color:var(--sub);font-size:13px}
+.ai-tag{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--navy);background:var(--navy-soft);border-radius:4px;padding:1px 7px}
+.digest-stats{display:flex;gap:18px;flex-wrap:wrap}
+.digest-stats div{display:flex;flex-direction:column}
+.digest-stats .v{font-size:20px;font-weight:500;line-height:1.2}
+.digest-stats .l{font-size:11px;color:var(--sub)}
+
+/* lanes */
+.lane{background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:14px 0 6px}
+.lane-head{display:flex;align-items:center;gap:8px 10px;padding:0 16px 10px;flex-wrap:wrap}
+.lane-head>div{min-width:0}
+.lane-icon{width:44px;height:44px;border-radius:10px;display:grid;place-items:center;font-family:var(--font);font-weight:700;color:#fff;background:var(--navy);font-size:17px;flex:none}
+.lane-icon.feat{background:var(--green)}
+.lane-icon.feat .icon{width:22px;height:22px}
+.mtitle,.mpill{display:none}
+/* TUNAG-style card body */
+.did{font-size:13px;color:var(--sub)}
+.did .dl{color:var(--navy);font-weight:700}
+.kf h6{margin:0;font-size:13px;font-weight:700;color:var(--txt)}
+.kf div{font-size:13px}
+.kf b{font-weight:500}
+.cmedia{display:grid;gap:6px}
+.cmedia.n2{grid-template-columns:1fr 1fr}
+.cm{position:relative;display:block;border-radius:10px;overflow:hidden;aspect-ratio:1/0.9;background:var(--bg)}
+.cmedia.n1 .cm{aspect-ratio:16/9}
+.cm img,.cm video{width:100%;height:100%;object-fit:cover;display:block}
+.cm .play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,.6);display:grid;place-items:center}
+.cm .play .icon{fill:#fff;stroke:none;width:16px;height:16px;margin-left:2px}
+.cmore{position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.6);color:#fff;font-size:13px;font-weight:700;border-radius:999px;padding:3px 12px}
+.seemore{margin-left:auto;color:var(--navy);font-weight:700;font-size:13px}
+.card-foot{gap:8px}
+.lane-head h2{margin:0;font-size:15px;font-family:var(--font);font-weight:700}
+.lane-head .sub{font-size:12px;color:var(--sub)}
+.lane-head .sub b{color:var(--txt)}
+.lane-head .unread{margin-left:auto;font-size:12px;color:var(--navy);font-weight:700}
+.forme{position:absolute;top:-9px;left:12px;display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;background:var(--navy);color:var(--surface);border-radius:999px;padding:1px 8px}
+.forme .icon{width:11px;height:11px}
+.row{padding-top:12px}
+.cmt .b.is-new{box-shadow:inset 3px 0 0 var(--navy)}
+.iconbtn[data-stk][aria-pressed="true"],.iconbtn[data-emoji][aria-pressed="true"]{background:var(--navy-soft);color:var(--navy)}
+.iconbtn[data-stk][aria-pressed="true"] .icon,.iconbtn[data-emoji][aria-pressed="true"] .icon{fill:none}
+/* detail: phone-app style header, post nav, composer */
+.dtop{gap:10px;padding:10px 12px}
+.dtop .ttl{font-size:17px}
+.closeround{width:40px;height:40px;border-radius:50%;border:1px solid var(--line-strong);background:var(--surface);display:grid;place-items:center;flex:none;box-shadow:var(--shadow)}
+.closeround .icon{width:20px;height:20px}
+.postnav{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;background:var(--navy);color:var(--surface);padding:6px 8px;font-size:13px}
+.postnav button{border:0;background:transparent;color:inherit;display:inline-flex;align-items:center;gap:2px;padding:4px 6px;border-radius:6px;font-weight:500}
+.postnav button:last-child{justify-self:end}
+.postnav button:disabled{opacity:.35;cursor:default}
+.postnav .num{font-size:13px}
+.reads{justify-content:flex-end;border-top:1px solid var(--line-strong);padding-top:12px}
+.reads .rl{color:var(--navy);font-size:14px;font-weight:500}
+.cdel{margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.dellink{border:0;background:transparent;color:var(--red);display:inline-flex;align-items:center;gap:4px;padding:2px 0;font-size:13px}
+.dellink .icon{width:15px;height:15px}
+.btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+.cfoot{flex-direction:column;align-items:stretch;gap:8px;background:var(--bg)}
+.cbox{border:1px solid var(--line-strong);border-radius:16px;background:var(--surface);padding:8px 10px 4px;display:flex;flex-direction:column;gap:2px}
+.cbox .composer textarea{border:0;padding:6px 4px;background:transparent;min-height:36px}
+.cbox .composer textarea:focus{outline:none}
+.ctools{display:flex;align-items:center;gap:2px}
+.ctools .iconbtn .icon{width:20px;height:20px}
+.sendbtn{margin-left:auto;border:0;background:transparent;color:var(--navy);width:40px;height:36px;display:grid;place-items:center;border-radius:8px}
+.sendbtn .icon{width:22px;height:22px;fill:currentColor;stroke:none}
+.sendbtn:hover{background:var(--bg)}
+.emosheet{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;padding:6px;background:var(--surface);border:1px solid var(--line-strong);border-radius:10px}
+.emosheet button{border:0;background:transparent;font-size:22px;padding:4px 0;border-radius:6px}
+.emosheet button:hover{background:var(--bg)}
+@media (max-width:860px){
+  #modal-root .mbg{justify-content:stretch}
+  #modal-root .mwrap,#modal-root .modal{max-height:none;height:100%;border-radius:0}
+  #modal-root .mwrap{height:100vh;height:100dvh}
+  .dtop{padding-top:calc(10px + env(safe-area-inset-top,0px))}
+}
+.cmt .b.plain{background:transparent;padding-left:4px}
+.sticker{margin-top:4px;display:inline-block}
+.sticker img{width:120px;height:120px;object-fit:contain;display:block}
+.sticker.txt{color:#fff;font-family:var(--font);font-weight:700;font-size:22px;padding:14px 22px;border-radius:16px;transform:rotate(-3deg);box-shadow:0 3px 0 rgba(0,0,0,.18)}
+.stksheet{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:8px;max-height:220px;overflow-y:auto;padding:8px;background:var(--bg);border-radius:10px;overscroll-behavior:contain}
+.stksheet button{border:0;background:transparent;border-radius:10px;padding:4px;display:grid;place-items:center;min-height:76px;transition:transform .1s}
+.stksheet button:hover{background:var(--surface);transform:scale(1.05)}
+.stksheet button img{width:68px;height:68px;object-fit:contain}
+.stksheet button.txt{color:#fff;font-family:var(--font);font-weight:700;font-size:13px;min-height:52px;align-self:center}
+.row{display:flex;gap:12px;overflow-x:auto;padding:4px 16px 12px;scroll-snap-type:x mandatory;scrollbar-width:thin;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.card{flex:0 0 284px;scroll-snap-align:start;text-align:left;border:1px solid var(--line-strong);background:var(--surface);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;position:relative;transition:border-color .15s,box-shadow .15s}
+.card:hover{border-color:var(--navy);box-shadow:var(--shadow)}
+.card.is-unread::after{content:"";position:absolute;top:12px;right:12px;width:8px;height:8px;border-radius:50%;background:var(--navy)}
+.who{display:flex;align-items:center;gap:8px}
+.av{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:12px;font-weight:700;flex:none}
+.av.lg{width:40px;height:40px;font-size:15px}
+.av.xs{width:22px;height:22px;font-size:10px;border:2px solid var(--surface);margin-left:-6px}
+.who .n{font-weight:700;font-size:13px;line-height:1.3}
+.who .t{font-size:11px;color:var(--sub)}
+.metrics{display:flex;flex-wrap:wrap;gap:6px}
+.metric{background:var(--bg);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--sub)}
+.metric b{color:var(--txt);font-weight:500}
+.excerpt{font-size:13px;color:var(--txt);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-line;min-height:5.2em}
+.card-foot{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--sub);margin-top:auto}
+.card-foot .sp{margin-left:auto;display:flex;gap:10px}
+.card-foot span{display:inline-flex;align-items:center;gap:3px}
+.mini-stamps{display:flex;gap:4px;flex-wrap:wrap}
+.empty{padding:40px 16px;text-align:center;color:var(--sub);background:var(--surface);border:1px dashed var(--line-strong);border-radius:12px}
+
+/* stamps */
+.stamp{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:1px 7px;font-size:11px;font-weight:700;color:#fff;font-family:var(--font);letter-spacing:.02em;line-height:1.7;white-space:nowrap}
+.stamp .c{font-family:var(--font);font-weight:500;opacity:.9}
+.stamp-btn{border:2px solid transparent;cursor:pointer;font-size:12px;padding:2px 9px}
+.stamp-btn[aria-pressed="true"]{border-color:var(--txt);box-shadow:0 0 0 2px var(--surface) inset}
+.palette{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:10px;background:var(--bg);border-radius:10px}
+.palette button{border:0;padding:10px 4px;border-radius:8px;font-size:13px;transform:rotate(var(--r,0deg));transition:transform .12s}
+.palette button:hover{transform:rotate(0) scale(1.06)}
+
+/* modal */
+.mbg{position:fixed;inset:0;z-index:50;background:rgba(10,16,22,.55);display:grid;place-items:center;padding:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(16px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.modal{background:var(--surface);border-radius:14px;width:min(640px,100%);max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);min-height:0;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);position:relative}
+.modal-top{display:flex;align-items:center;gap:8px;padding:10px 12px 10px 18px;border-bottom:1px solid var(--line-strong)}
+.modal-top .ttl{font-family:var(--font);font-weight:700;font-size:15px}
+.modal-top .ctr{font-size:12px;color:var(--sub)}
+.modal-top .r{margin-left:auto;display:flex;gap:4px}
+.modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:18px;display:flex;flex-direction:column;gap:16px}
+.modal-top,.modal-foot{flex:none}
+.modal-foot{border-top:1px solid var(--line-strong);padding:12px 18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.iconbtn{width:34px;height:34px;border-radius:8px;border:0;background:transparent;display:grid;place-items:center;color:var(--sub)}
+.iconbtn:hover{background:var(--bg);color:var(--txt)}
+.iconbtn[aria-pressed="true"]{color:var(--navy)}
+.iconbtn[aria-pressed="true"] .icon{fill:currentColor}
+.fld h5{margin:0 0 2px;font-size:12px;color:var(--sub);font-weight:500;letter-spacing:.04em}
+.fld .val{white-space:pre-line}
+.fld .big{font-size:20px}
+.vchips{display:flex;flex-wrap:wrap;gap:6px}
+.vchip{font-size:12px;border-radius:999px;padding:2px 10px;background:var(--navy-soft);color:var(--navy);font-weight:500}
+.reads{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--sub)}
+.reads .avs{display:flex;padding-left:6px}
+.cmts{display:flex;flex-direction:column;gap:12px}
+.cmt{display:flex;gap:10px}
+.cmt .b{background:var(--bg);border-radius:10px;padding:8px 12px;min-width:0;flex:1}
+.cmt .b .h{font-size:12px;color:var(--sub)}
+.cmt .b .h b{color:var(--txt)}
+.cmt .b p{margin:2px 0 0;white-space:pre-line;overflow-wrap:anywhere}
+.mention{color:var(--navy);font-weight:700}
+.composer{position:relative;display:flex;gap:8px;align-items:flex-end}
+.composer textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line-strong);border-radius:10px;padding:8px 12px;background:var(--surface);min-height:40px;max-height:120px}
+.mlist{position:absolute;bottom:calc(100% + 4px);left:0;background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);width:240px;max-height:220px;overflow:auto;z-index:3}
+.mlist button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;padding:7px 10px;text-align:left}
+.mlist button:hover,.mlist button.on{background:var(--bg)}
+.navarrow{position:absolute;top:50%;transform:translateY(-50%);width:38px;height:38px;border-radius:50%;border:1px solid var(--line-strong);background:var(--surface);display:grid;place-items:center;box-shadow:var(--shadow);z-index:2}
+.navarrow:disabled{opacity:.35;cursor:default}
+.mwrap{position:relative;width:min(640px,100%);max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);display:flex;min-height:0}
+.mwrap .modal{width:100%}
+.mwrap .navarrow.l{left:-54px}.mwrap .navarrow.r{right:-54px}
+.files{display:flex;gap:8px;flex-wrap:wrap}
+.file{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);border-radius:8px;padding:4px 10px;font-size:12px;background:var(--surface)}
+.file:hover{border-color:var(--navy)}
+.att{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.thumb{border:1px solid var(--line-strong);border-radius:8px;padding:0;overflow:hidden;background:var(--bg);width:150px;height:100px;max-width:100%}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.cmt .thumb{width:120px;height:80px}
+.cfiles{display:flex;gap:6px;flex-wrap:wrap}
+.cfiles:empty{display:none}
+.cf{position:relative;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);border-radius:8px;padding:3px 28px 3px 6px;font-size:12px;background:var(--bg);max-width:100%}
+.cf img{width:36px;height:36px;object-fit:cover;border-radius:4px}
+.cf>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.cf button{position:absolute;right:2px;top:50%;transform:translateY(-50%);border:0;background:transparent;width:24px;height:24px;display:grid;place-items:center;color:var(--sub)}
+label.iconbtn{cursor:pointer}
+.thumb.vid{position:relative;width:180px;height:110px}
+.thumb.vid video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.thumb .play{position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);width:38px;height:38px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;display:grid;place-items:center}
+.thumb .play .icon{fill:#fff;stroke:none;width:18px;height:18px;margin-left:2px}
+.thumb .vname{position:absolute;left:0;right:0;bottom:0;padding:3px 8px;font-size:11px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.65));text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb video{max-width:100%;max-height:85%;border-radius:8px;background:#000;cursor:auto}
+.lock{display:inline-flex;align-items:center;gap:3px;color:var(--amber);font-weight:700}
+.lock .icon{width:13px;height:13px}
+.viewer{display:flex;align-items:center;gap:6px}
+.viewer .nm{white-space:nowrap;font-size:12px}
+@media (max-width:1100px){.viewer .nm{display:none}}
+.viewer select{border:1px solid var(--line-strong);border-radius:8px;padding:4px 8px;background:var(--bg);font-size:12px;max-width:230px}
+.stamp-img{background:transparent;padding:0 2px;color:var(--txt)}
+.stamp-img img{height:22px;width:auto;display:block}
+.stamp-img .c{color:var(--sub)}
+.stamp-btn.stamp-img{border:2px solid var(--line-strong);background:var(--surface)}
+.stamp-btn.stamp-img img{height:26px}
+.stamp-btn.stamp-img[aria-pressed="true"]{border-color:var(--txt)}
+.palette .stamp-img img{height:42px;margin:0 auto}
+.palwrap{display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--bg);border-radius:10px}
+.palwrap .palette{padding:0;background:transparent}
+.pal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--sub);flex-wrap:wrap}
+.sform{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line-strong);padding-top:10px}
+.sform input[type=text]{border:1px solid var(--line-strong);border-radius:8px;padding:6px 10px;background:var(--surface);max-width:240px}
+.sw{width:20px;height:20px;border-radius:5px;display:inline-block}
+.sform .seg label{padding:5px}
+.lb{position:fixed;inset:0;z-index:80;background:rgba(5,8,12,.86);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;cursor:zoom-out}
+.lb img{max-width:100%;max-height:85%;border-radius:8px}
+.lb span{color:#fff;font-size:13px}
+.pill.a-all{background:var(--navy-soft);color:var(--navy)}
+.pill.a-exec{background:color-mix(in srgb,var(--red) 15%,transparent);color:var(--red)}
+.pill.a-hq{background:color-mix(in srgb,var(--amber) 18%,transparent);color:var(--amber)}
+.pill.a-factory{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
+
+/* form */
+.form{display:flex;flex-direction:column;gap:16px}
+.frow{display:flex;flex-direction:column;gap:6px}
+.frow label,.frow .lbl{font-size:13px;font-weight:500}
+.req{color:var(--navy);font-size:11px;margin-left:4px}
+.sync-line{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+.dot-ok{width:8px;height:8px;border-radius:50%;background:var(--green)}
+.adm-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:10px}
+.kpi{background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.kpi .v{font-size:24px;font-weight:500;line-height:1.2}
+.kpi .l{font-size:12px;color:var(--sub)}
+.kpi.is-warn{border-color:var(--amber);box-shadow:inset 3px 0 0 var(--amber)}
+.kpi.is-bad{border-color:var(--red);box-shadow:inset 3px 0 0 var(--red)}
+table.adm td{font-size:13px}
+.rolebox{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:170px}
+.rolechk{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line-strong);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;background:var(--surface);white-space:nowrap}
+.rolechk input{margin:0;accent-color:var(--navy)}
+.rolechk:has(input:checked){background:var(--navy-soft);border-color:var(--navy);color:var(--navy);font-weight:700}
+.rolefix{display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:var(--sub);background:var(--bg);border-radius:999px;padding:3px 10px}
+.rolefix .icon{width:12px;height:12px}
+.rlog{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;font-size:13px}
+.rlog li{display:flex;gap:8px;flex-wrap:wrap}
+.rlog .num{color:var(--sub);min-width:70px}
+table.adm td:nth-child(-n+5){white-space:nowrap}
+.miss{color:var(--red);font-weight:700}
+.muted{color:var(--sub)}
+.gchips{display:flex;flex-wrap:wrap;gap:4px;min-width:140px}
+.gchip{font-size:11px;border-radius:4px;padding:1px 7px;background:var(--navy-soft);color:var(--navy);font-weight:500;white-space:nowrap}
+.issues{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;min-width:220px}
+.issues li{border-left:3px solid var(--line-strong);padding-left:8px;font-size:12px;line-height:1.4}
+.issues li b{display:block;font-weight:700}
+.issues li span{color:var(--sub)}
+.issues .i-bad{border-color:var(--red)}.issues .i-bad b{color:var(--red)}
+.issues .i-warn{border-color:var(--amber)}.issues .i-warn b{color:var(--amber)}
+.issues .i-info b{color:var(--sub);font-weight:500}
+.fixed-sender{display:flex;align-items:center;gap:10px;border:1px solid var(--line-strong);border-radius:8px;padding:8px 12px;background:var(--bg)}
+.fixed-sender span{font-size:12px;color:var(--sub)}
+.multi-hint{font-size:11px;font-weight:400;color:var(--sub);margin-left:8px}
+.frow input[type=text],.frow input[type=number],.frow input[type=date],.frow select,.frow textarea{border:1px solid var(--line-strong);border-radius:8px;padding:8px 10px;background:var(--surface);width:100%}
+.frow textarea{min-height:110px;resize:vertical}
+.frow .unitwrap{display:flex;align-items:center;gap:8px}
+.frow .unitwrap input{max-width:140px}
+.frow .err{color:var(--red);font-size:12px}
+.frow input.bad{border-color:var(--red)}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.pick{display:flex;flex-wrap:wrap;gap:6px}
+.pick label{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);border-radius:999px;padding:5px 12px;font-size:13px;font-weight:400;cursor:pointer;background:var(--surface)}
+.pick input{position:absolute;opacity:0;pointer-events:none}
+.pick label:has(input:checked){background:var(--navy);border-color:var(--navy);color:var(--surface)}
+.pick label:has(input:focus-visible){outline:2px solid var(--navy);outline-offset:2px}
+.purpose{background:var(--bg);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--sub)}
+.purpose b{color:var(--txt)}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.toolbar .hint{font-size:12px;color:var(--sub);margin-left:auto}
+.voice{border:1px dashed var(--navy);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--navy-soft)}
+.voice textarea{min-height:80px;border:1px solid var(--line-strong);border-radius:8px;padding:8px 10px;background:var(--surface);resize:vertical}
+
+/* pages */
+.page-head{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.page-head h1{margin:0;font-family:var(--font);font-size:22px;text-wrap:balance}
+.page-head p{margin:2px 0 0;color:var(--sub);font-size:13px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line-strong);overflow-x:auto;scrollbar-width:none}
+.tabs button{border:0;background:transparent;padding:10px 14px;color:var(--sub);font-weight:500;border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button[aria-selected="true"]{color:var(--txt);border-bottom-color:var(--navy)}
+.panel{background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:18px}
+.panel h3{margin:0 0 10px;font-family:var(--font);font-size:16px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:14px}
+.sum-card{border:1px solid var(--line-strong);border-radius:12px;padding:14px 16px;background:var(--surface);display:flex;flex-direction:column;gap:8px}
+.sum-card h4{margin:0;font-family:var(--font);font-size:15px;display:flex;align-items:center;gap:8px}
+.sum-card ul{margin:0;padding-left:1.2em}
+.sum-card .kpis{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--sub)}
+.sum-card .kpis b{font-size:17px;color:var(--txt);font-weight:500;display:block;line-height:1.2}
+.pill{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:1px 9px;white-space:nowrap}
+.pill.p-hot{background:var(--navy-soft);color:var(--navy)}
+.pill.p-q{background:var(--navy-soft);color:var(--navy)}
+.pill.p-demo{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
+.pill.p-done{background:var(--bg);color:var(--sub)}
+.pill.must{background:var(--navy);color:var(--surface)}
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line-strong);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-strong);vertical-align:top}
+th{background:var(--bg);font-weight:500;color:var(--sub);font-size:12px;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.clip div{max-width:280px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-line}
+.bars{display:flex;flex-direction:column;gap:8px}
+.bar{display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr) 40px;gap:10px;align-items:center;font-size:13px}
+.bar .track{height:10px;background:var(--bg);border-radius:5px;overflow:hidden}
+.bar .fill{height:100%;background:var(--navy);border-radius:5px}
+.bar .fill.acc{background:var(--navy)}
+.bar .lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.voices{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.voices li{border-left:3px solid var(--line-strong);padding:2px 0 2px 10px;font-size:13px}
+.voices li small{color:var(--sub);display:block}
+.chart svg{width:100%;height:auto;display:block}
+.chart text{fill:var(--sub);font-size:11px;font-family:var(--font)}
+.chart .gl{stroke:var(--line-strong);stroke-width:1}
+.chart .b{fill:var(--navy)}
+.chart .b.zero{fill:var(--line-strong)}
+.ai-text{white-space:pre-line;line-height:1.85}
+.notice{display:flex;flex-direction:column;gap:10px}
+.notice .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.notice h3{margin:0;font-size:16px;font-family:var(--font)}
+.notice .meta{font-size:12px;color:var(--sub)}
+.notice p{margin:0;white-space:pre-line}
+.progress{height:6px;border-radius:3px;background:var(--bg);overflow:hidden}
+.progress div{height:100%;background:var(--green)}
+.ctrls{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:12px}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg label{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;background:var(--surface)}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg label:has(input:checked){border-color:var(--navy);background:var(--navy-soft);font-weight:700}
+.seg label:has(input:focus-visible){outline:2px solid var(--navy)}
+.csvbox{width:100%;min-height:140px;font-family:var(--font);font-size:12px;border:1px solid var(--line-strong);border-radius:8px;padding:8px;background:var(--bg)}
+
+/* toasts */
+.toasts{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:70;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
+.toast{background:var(--txt);color:var(--bg);border-radius:10px;padding:10px 14px;font-size:13px;box-shadow:var(--shadow);max-width:340px;display:flex;gap:8px;align-items:flex-start;animation:tin .2s ease-out}
+.toast .tm{font-size:11px;font-weight:700;letter-spacing:.06em;opacity:.7;display:block}
+@keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+
+/* bottom nav + fab (phone) */
+.bnav{display:none}
+.fab{display:none}
+@media (max-width: 860px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .side{display:none}
+  .chips-m{display:flex}
+  .nav,.me .nm,.hdr .btn-post{display:none}
+  .bnav{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;position:fixed;left:max(14px,env(safe-area-inset-left,0px));right:max(14px,env(safe-area-inset-right,0px));bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:30;background:color-mix(in srgb,var(--surface) 82%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line-strong);border-radius:999px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
+  .bnav a{border-radius:999px}
+  .bnav a[aria-current="page"]{background:var(--bg)}
+  .hdr{background:color-mix(in srgb,var(--surface) 88%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+  .hdr-in{height:64px}
+  .logo{display:none}
+  .hdr-right{display:contents}
+  .me{order:-1;position:relative}
+  .me .av{width:44px;height:44px;font-size:16px;box-shadow:0 0 0 3px var(--surface),0 0 0 4px var(--line-strong)}
+  .viewer{position:absolute;inset:0;opacity:0}
+  .viewer select{width:44px;height:44px;max-width:none}
+  .mtitle{display:block;font-family:var(--font);font-weight:700;font-size:24px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mpill{display:flex;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);box-shadow:var(--shadow);padding:2px}
+  .mpill button{width:42px;height:38px;border:0;background:transparent;display:grid;place-items:center;border-radius:999px}
+  .mpill .icon{width:20px;height:20px}
+  .lane{border-radius:0;border-left:0;border-right:0;margin-inline:calc(-1 * max(16px,env(safe-area-inset-left,0px)))}
+  .row{scroll-snap-type:x mandatory;padding-inline:16px;scroll-padding-inline:16px}
+  .card{scroll-snap-align:center}
+  .bnav a{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 6px;font-size:11px;color:var(--sub);text-decoration:none;position:relative}
+  .bnav a[aria-current="page"]{color:var(--navy)}
+  .bnav .icon{width:20px;height:20px}
+  .bnav .badge{position:absolute;top:4px;left:calc(50% + 6px)}
+  .fab{display:flex;position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(92px + env(safe-area-inset-bottom,0px));z-index:31;border-radius:999px;padding:12px 18px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+  .toasts{bottom:calc(150px + env(safe-area-inset-bottom,0px))}
+  .mwrap .navarrow{display:none}
+  .mbg{padding:0;display:flex;flex-direction:column;justify-content:flex-end}
+  .modal,.mwrap{width:100%;max-height:92vh;max-height:92dvh;border-radius:14px 14px 0 0}
+  .modal-foot{padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+  .hdr-in{gap:10px}
+  .logo{font-size:15px}
+  .viewer select{max-width:128px}
+  .lane-head .unread{margin-left:0}
+  .lane-head [data-readall]{margin-left:auto}
+  .card{flex-basis:84vw;max-width:360px}
+  .grid2{grid-template-columns:minmax(0,1fr)}
+  .bar{grid-template-columns:minmax(0,110px) minmax(0,1fr) 34px}
+}
+</style>
+</head>
+<body>
+
+<header class="hdr"><div class="hdr-in">
+  <div class="logo"><span class="logo-mark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span><span class="logo-txt">HANAOKA <b>LINK</b></span> <span class="proto" id="protoBadge" hidden>見本</span></div>
+  <nav class="nav" id="nav"></nav>
+  <div class="mtitle" id="mtitle"></div>
+  <div class="mpill"><button data-goto="notices" aria-label="お知らせ"><svg class="icon"><use href="#i-bell"/></svg></button><button data-search aria-label="検索"><svg class="icon"><use href="#i-search"/></svg></button></div>
+  <div class="hdr-right">
+    <button class="btn btn-primary btn-post" data-act="compose"><svg class="icon"><use href="#i-pen"/></svg>日報を書く</button>
+    <div class="me" id="me"></div>
+  </div>
+</div></header>
+
+<main class="wrap" id="view"></main>
+<nav class="bnav" id="bnav"></nav>
+<button class="btn btn-primary fab" data-act="compose"><svg class="icon"><use href="#i-pen"/></svg>日報を書く</button>
+<div id="modal-root"></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+  <symbol id="i-cmt" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-mark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-l" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-r" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+  <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9.5h.01M15 9.5h.01"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2-7z"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M20 11l-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="i-stamp"viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 1 6 0c0 2-1.5 3-1.5 5v2h4a2 2 0 0 1 2 2v2H4.5v-2a2 2 0 0 1 2-2h4V9C10.5 7 9 6 9 4z"/><path d="M5 19h14"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13"/></symbol>
+  <symbol id="i-play"viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-team"viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5A5 5 0 0 1 22 19"/></symbol>
+</svg>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ic=(n,cls='')=>`<svg class="icon ${cls}"><use href="#i-${n}"/></svg>`;
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=rng(20261112); const pick=a=>a[Math.floor(R()*a.length)]; const rint=(a,b)=>a+Math.floor(R()*(b-a+1));
+/* 見本モード（?demo=1）：サインインせずに架空のデータで動く。SharePoint には何も書かない */
+const DEMO=/[?&]demo=1/.test(location.search);
+const LOAD=Date.now(); const BASE=DEMO?new Date(2026,10,12,18,30).getTime():Date.now(); const now=()=>BASE+(Date.now()-LOAD);
+const pad2=n=>String(n).padStart(2,'0');
+const ymd=d=>`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+const addDays=(s,n)=>{const d=new Date(s+'T00:00:00');d.setDate(d.getDate()+n);return ymd(d)};
+const TODAY=ymd(new Date(now())); const TL_FROM=addDays(TODAY,DEMO?-1:-2);   // タイムラインに出す日（今日と、その前の日）
+const THIS_MONTH=TODAY.slice(0,7); const LAST_MONTH=addDays(THIS_MONTH+'-01',-1).slice(0,7);
+const monthLabel=ym=>`${+ym.slice(0,4)}年${+ym.slice(5)}月`;
+const store={get(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
+
+/* ---------- attachments ---------- */
+const FILES={};let fseq=1;
+function regFile(f){const o={...f,id:'f'+(fseq++)};FILES[o.id]=o;return o}
+function ph(label,color){const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420"><rect width="640" height="420" fill="${color}"/><rect x="40" y="250" width="560" height="120" fill="#ffffff" opacity=".14"/><circle cx="520" cy="110" r="46" fill="#ffffff" opacity=".22"/><path d="M40 330 L200 190 L320 300 L420 220 L600 360 L40 360Z" fill="#ffffff" opacity=".2"/><text x="320" y="225" font-family="sans-serif" font-size="34" font-weight="700" fill="#ffffff" text-anchor="middle">${label}</text><text x="320" y="265" font-family="sans-serif" font-size="16" fill="#ffffff" opacity=".8" text-anchor="middle">（ダミー写真）</text></svg>`;return 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)}
+function readFiles(list){return Promise.all([...(list||[])].map(f=>new Promise(res=>{const o=regFile({name:f.name,size:f.size,type:f.type,img:/^image\//.test(f.type),video:/^video\//.test(f.type)});o.file=f;if(o.video){try{o.url=URL.createObjectURL(f)}catch(e){}res(o)}else if(o.img&&f.size<8e6){const r=new FileReader();r.onload=()=>{o.url=r.result;res(o)};r.onerror=()=>res(o);r.readAsDataURL(f)}else res(o)})))}
+const isMedia=f=>(f.img&&(f.url||f.itemId))||f.video;
+/* SharePoint に置いた写真・動画は、表示するときに一時的な URL を取りに行く（data-hyd） */
+const srcAttr=f=>f.url?`src="${f.url}"`:`data-hyd="${f.id}"`;
+function filesHTML(fs){if(!fs||!fs.length)return '';const imgs=fs.filter(isMedia),docs=fs.filter(f=>!isMedia(f));
+  return `<div class="att">${imgs.length?`<div class="thumbs">${imgs.map(f=>f.video?`<button class="thumb vid" data-lb="${f.id}" aria-label="動画 ${esc(f.name)}を再生">${(f.url||f.itemId)?`<video ${srcAttr(f)} muted preload="metadata"></video>`:`<img src="${f.poster}" alt="">`}<span class="play">${ic('play')}</span><span class="vname">${esc(f.name)}</span></button>`:`<button class="thumb" data-lb="${f.id}" aria-label="${esc(f.name)}を拡大"><img ${srcAttr(f)} alt="${esc(f.name)}"></button>`).join('')}</div>`:''}${docs.length?`<div class="files">${docs.map(f=>`<button class="file" data-file="${f.id}">${ic('clip')}${esc(f.name)}</button>`).join('')}</div>`:''}</div>`}
+async function lightbox(id){const f=FILES[id];if(!f.url&&f.itemId){try{await Store.fileUrl(f)}catch(e){toast('ファイルを開けませんでした');return}}const d=document.createElement('div');d.className='lb';d.dataset.lbclose='';
+  d.innerHTML=f.video?(f.url?`<video ${srcAttr(f)} controls autoplay playsinline></video><span>${esc(f.name)} ・ 外側をクリックで閉じる</span>`:`<img src="${f.poster}" alt="${esc(f.name)}"><span>${esc(f.name)} ・ 見本の動画のため再生できません。自分で動画を添付すると再生できます</span>`)
+   :`<img ${srcAttr(f)} alt="${esc(f.name)}"><span>${esc(f.name)} ・ クリックで閉じる</span>`;document.body.appendChild(d)}
+
+/* ---------- master data (all dummy) ---------- */
+/* 社員。本番では起動時に M365 から読み込む（id＝UPN の小文字）。見本モードだけ架空の13人 */
+let ME='u1';
+const MEMBERS=(!DEMO?[]:[
+ ['u1','田中 誠','sales'],['u2','佐藤 健太','sales'],['u3','鈴木 大輔','sales'],['u4','高橋 翔','sales'],
+ ['u5','伊藤 美咲','center'],['u6','渡辺 恵','center'],['u7','山本 由香','mfg'],['u8','中村 浩二','mfg'],
+ ['u9','小林 拓也','tech'],['u10','加藤 隆','qa'],['u11','吉田 早苗','ga'],['u12','山口 彩','plan'],['u13','松本 一郎','exec']
+]).map((m,i)=>({id:m[0],name:m[1],dept:m[2],loc:['mfg','qa'].includes(m[2])?'工場':'本社',exec:m[2]==='exec',president:m[0]==='u13',admin:m[0]==='u11',av:`var(--av${i%6+1})`}));
+const M=Object.fromEntries(MEMBERS.map(m=>[m.id,m]));
+/* 投稿者が名簿にいない（退職した人など）ときの代わり */
+function ensureMember(id,name){if(!M[id]){const m={id,name:name||id.split('@')[0],dept:'',loc:'',exec:false,president:false,admin:false,av:'var(--av1)',gone:true};MEMBERS.push(m);M[id]=m}return M[id]}
+const CV=['「偽りのない」誠実な心','「おかげさまで」謙虚な心','「ごめんなさい」反省の心','「ありがとう」感謝の心','「やってみよう」挑戦する心','「認め合う」称賛の心'];
+const F={
+ date:{k:'date',label:'日報日付',type:'date'},
+ cv:{k:'cv',label:'今日の全社VALUE(行動指針)',type:'multi',opts:CV},
+ note:{k:'note',label:'備考・学び・気づき・共有事項',type:'textarea',req:true},
+ work:{k:'work',label:'今日の業務内容',type:'textarea',req:true},
+};
+const DEPTS={
+ sales:{name:'営業本部',short:'営',fields:[F.date,{k:'visits',label:'訪問件数',type:'number',unit:'件',req:true},F.cv,{k:'dv',label:'今日の部署VALUE',type:'multi',opts:['お客様の話をしっかり聞き、熱い想いを引き出す','製品に愛着をもち、熱意をもって提案をする','スピード感をもって、お客様の熱い想いに応える','始めの一歩は「まずはやってみよう」の気持ち']},F.note],
+   purpose:'お客様のためになっているか、部署のVISION・VALUEに沿っているかを振り返り、1日の学び・気づきを共有してください。'},
+ center:{name:'全社業務センター',short:'業',fields:[F.date,{k:'orders',label:'受注入力件数',type:'number',unit:'件',req:true},{k:'quotes',label:'見積もり回答件数',type:'number',unit:'件',req:true},{k:'pending',label:'当日未処理件数',type:'number',unit:'件',req:true},{k:'help',label:'業務センター内ヘルプ数',type:'number',unit:'件'},F.work,F.cv,{...F.note,label:'備考・学び・気づき',req:false}],
+   purpose:'お客様と会社の橋渡し役として、今日の処理状況と気づきを共有してください。'},
+ mfg:{name:'製造部',short:'製',fields:[F.date,F.work,F.cv,{k:'dv',label:'今日の部署VALUE',type:'multi',opts:['QDの約束：確実な「品質」「納期」で製品を提供する','仲間意識：誰にでも気持ちの良いあいさつをする']},{...F.note,label:'備考・学び・気づき',req:false}],purpose:'今日の業務と気づきを共有してください。'},
+ tech:{name:'技術部',short:'技',fields:[F.date,F.work,F.cv,{...F.note,label:'備考・学び・気づき',req:false}],purpose:'今日の業務と気づきを共有してください。'},
+ qa:{name:'品質管理部',short:'品',fields:[F.date,F.work,F.cv,{...F.note,label:'備考・学び・気づき',req:false}],purpose:'今日の業務と気づきを共有してください。'},
+ ga:{name:'総務部',short:'総',fields:[F.date,F.work,F.cv,{...F.note,label:'備考・学び・気づき',req:false}],purpose:'今日の業務と気づきを共有してください。'},
+ plan:{name:'販売企画室',short:'企',fields:[F.date,F.work,F.cv,{...F.note,label:'備考・学び・気づき',req:false}],purpose:'今日の業務と気づきを共有してください。'},
+ order:{name:'受注・生産日報',short:'受',fields:[F.date,{...F.note,label:'補足',req:false}],purpose:'全社の受注・売上・生産実績のファイルを添付してください。',attachReq:true},
+ kintai:{name:'勤怠・在宅報告',short:'勤',fields:[F.date,{k:'place',label:'拠点',type:'select',opts:['本社','大阪支店','名古屋営業所','工場','在宅']},{k:'note',label:'勤怠・在宅の内容',type:'textarea',req:true}],purpose:'当日の勤怠（遅刻・早退・休み）と在宅勤務を、拠点ごとに報告してください。'},
+ kaizen:{name:'カイゼン',short:'改',fields:[F.date,{k:'theme',label:'テーマ',type:'text',req:true},{k:'note',label:'内容・効果',type:'textarea',req:true}],purpose:'日々のカイゼン活動を投稿してください。'},
+ kanbu:{name:'幹部用日報',short:'幹',fields:[F.date,{k:'state',label:'今日の部署の状態',type:'select',opts:['○','△','×']},F.cv,{k:'note',label:'対応内容',type:'textarea',req:true},{k:'figure',label:'数字（受注・売上など）',type:'text'}],purpose:'部署の状態と対応内容を、幹部の間で共有してください。'},
+};
+/* 日報の種類ごとの「置き場（見られる人）」と「書ける人」
+     area   … all＝社員全員 / soumu＝総務部・役員 / kanbu＝HL-幹部（SharePoint のリストを分けて権限で守る）
+     posters… 書ける部署。any＝だれでも、kanbu＝HL-幹部の人 */
+const FORM_RULE={sales:['all',['sales']],center:['all',['center']],order:['all',['center']],mfg:['all',['mfg']],tech:['all',['tech']],qa:['all',['qa']],ga:['soumu',['ga']],plan:['all',['plan']],kintai:['all','any'],kaizen:['all','any'],kanbu:['kanbu','kanbu']};
+Object.entries(FORM_RULE).forEach(([k,[area,posters]])=>{DEPTS[k].area=area;DEPTS[k].posters=posters});
+const DORDER=Object.keys(DEPTS);
+// 公開範囲：総務部日報は総務部メンバーと役員のみ／幹部用日報は HL-幹部 のみ
+DEPTS.ga.vis={depts:['ga'],exec:true,label:'総務部メンバーと役員のみ閲覧'};
+DEPTS.kanbu.vis={depts:[],exec:true,kanbu:true,label:'幹部のみ閲覧'};
+const canPost=(k,u=ME)=>{const r=DEPTS[k].posters;if(r==='any')return true;if(r==='kanbu')return isKanbu(u);return r.includes(M[u].dept)};
+const myForms=()=>DORDER.filter(k=>canPost(k));
+const formName=k=>{const n=(DEPTS[k]||{name:k}).name;return /日報|報告|カイゼン/.test(n)?n:n+' 日報'};
+// 本番では、見られない区分のデータはそもそも読み込めない（SharePoint の権限）。見本モードだけ画面で絞る
+const canSeePost=(p,u=ME)=>{if(!DEMO)return true;const v=DEPTS[p.dept].vis;return !v||p.user===u||(v.depts||[]).includes(M[u].dept)||(v.exec&&M[u].exec)||(v.kanbu&&isKanbu(u))};
+const svgUri=s=>'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(s);
+const STAMPS=[['nice','ナイス！','--st1','-4deg'],['thx','ありがとう','--st2','3deg'],['sasuga','さすが','--st3','-2deg'],['try','やってみよう','--st4','4deg'],['ok','了解です','--st5','-3deg'],['fight','がんばれ','--st6','2deg'],['wow','すごい','--st7','-5deg'],['cheer','応援してます','--st8','3deg']].map(s=>({id:s[0],label:s[1],c:`var(${s[2]})`,r:s[3]}));
+// 画像のオリジナルスタンプ（例）
+STAMPS.push({id:'gj',label:'グッジョブ',r:'-6deg',img:svgUri('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80"><rect x="4" y="6" width="112" height="68" rx="34" fill="#F6C343" stroke="#17212B" stroke-width="4"/><text x="60" y="52" font-family="sans-serif" font-size="30" font-weight="900" fill="#17212B" text-anchor="middle">GJ!</text><path d="M14 20l5 4-5 4" fill="none" stroke="#17212B" stroke-width="3"/></svg>')});
+STAMPS.push({id:'kansha',label:'感謝（はんこ）',r:'8deg',img:svgUri('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" fill="#fff" stroke="#D6336C" stroke-width="5"/><circle cx="40" cy="40" r="27" fill="none" stroke="#D6336C" stroke-width="1.5"/><text x="40" y="49" font-family="serif" font-size="22" font-weight="700" fill="#D6336C" text-anchor="middle">感謝</text></svg>')});
+// オリジナルキャラクター「台車くん」のスタンプ（例）
+function mascot(text,color,eyes){
+  const E={smile:'<circle cx="62" cy="92" r="6" fill="#17212B"/><circle cx="98" cy="92" r="6" fill="#17212B"/><circle cx="64" cy="90" r="2" fill="#fff"/><circle cx="100" cy="90" r="2" fill="#fff"/>',
+   wink:'<circle cx="62" cy="92" r="6" fill="#17212B"/><circle cx="64" cy="90" r="2" fill="#fff"/><path d="M90 93 Q98 85 106 93" fill="none" stroke="#17212B" stroke-width="4" stroke-linecap="round"/>',
+   happy:'<path d="M54 94 Q62 84 70 94" fill="none" stroke="#17212B" stroke-width="4" stroke-linecap="round"/><path d="M90 94 Q98 84 106 94" fill="none" stroke="#17212B" stroke-width="4" stroke-linecap="round"/>',
+   star:'<path d="M62 84l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z" fill="#17212B"/><path d="M98 84l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z" fill="#17212B"/>'}[eyes];
+  const fs=text.length>5?17:21;
+  return svgUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160"><rect x="8" y="6" width="144" height="40" rx="20" fill="#fff" stroke="#17212B" stroke-width="4"/><text x="80" y="${fs>18?34:33}" font-family="sans-serif" font-size="${fs}" font-weight="900" fill="${color}" text-anchor="middle">${text}</text><path d="M70 45 L80 58 L90 45" fill="#fff" stroke="#17212B" stroke-width="4" stroke-linejoin="round"/><rect x="68" y="42" width="24" height="6" fill="#fff"/><path d="M128 84 L148 62" stroke="#17212B" stroke-width="6" stroke-linecap="round"/><rect x="28" y="66" width="104" height="62" rx="14" fill="${color}" stroke="#17212B" stroke-width="4"/>${E}<circle cx="48" cy="106" r="6" fill="#FF8FA3" opacity=".8"/><circle cx="112" cy="106" r="6" fill="#FF8FA3" opacity=".8"/><path d="M70 106 Q80 117 90 106" fill="none" stroke="#17212B" stroke-width="4" stroke-linecap="round"/><circle cx="52" cy="138" r="11" fill="#3B4A5A" stroke="#17212B" stroke-width="4"/><circle cx="108" cy="138" r="11" fill="#3B4A5A" stroke="#17212B" stroke-width="4"/><circle cx="52" cy="138" r="3" fill="#fff"/><circle cx="108" cy="138" r="3" fill="#fff"/></svg>`)}
+[['m-thx','ありがとう','#F08C3A','happy'],['m-otsu','おつかれさま','#3D8BD9','smile'],['m-ok','了解です！','#3BA55C','wink'],['m-nice','ナイス！','#E8456B','star'],['m-ganbaro','がんばろう','#8E5BD9','smile'],['m-sumimasen','すみません','#7A8794','happy']]
+  .forEach(([id,t,c,e],i)=>STAMPS.push({id,label:t+'（台車くん）',r:(i%2?'3deg':'-3deg'),img:mascot(t,c,e)}));
+const ST=Object.fromEntries(STAMPS.map(s=>[s.id,s]));
+const stampFace=s=>s.img?`<img src="${s.img}" alt="${esc(s.label)}">`:esc(s.label);
+const stampBg=s=>s.img?'transparent':s.c;
+const SCOLORS=['--st1','--st2','--st3','--st4','--st5','--st6','--st7','--st8'];
+const PRODUCTS=['電動台車','パレットレベラー','フラットカート','リフト台車','アシストカート','けん引トレーラー'];
+const CUSTOMERS=['東和物流様','北辰食品様','みなと機工様','中央倉庫様','さくら精密様','大和運輸様','青葉製作所様','西浜港湾サービス様'];
+
+/* ---------- posts ---------- */
+let seq=1; const posts=[];
+function randStamps(){const o={};STAMPS.forEach(s=>{if(R()<.35){o[s.id]=MEMBERS.filter(()=>R()<.25).map(m=>m.id)}});Object.keys(o).forEach(k=>{if(!o[k].length)delete o[k]});return o}
+function mk(user,dept,date,hh,mm,fields,extra={}){
+  const [y,mo,d]=date.split('-').map(Number);
+  const p={id:'p'+(seq++),user,dept,date,ts:new Date(y,mo-1,d,hh,mm).getTime(),fields,stamps:extra.stamps??randStamps(),comments:extra.comments||[],readBy:extra.readBy??MEMBERS.filter(m=>m.id!==user&&R()<.6).map(m=>m.id),bookmarked:false,files:extra.files||[]};
+  posts.push(p);return p;
+}
+// generated history (Oct 1 - Nov 11) for sales members
+const ACTS=['の納品に立ち会い。','のデモを実施。反応は良好。','の見積を提出。','について打ち合わせ。','の引き合いを1件いただいた。','のメンテナンス相談を受けた。'];
+const LEARN=['次回は導入事例の資料を持参する。','現場の動線を事前に確認しておくべきだった。','納期回答の早さが受注の決め手になりそう。','担当者の上司にも同席してもらえるよう調整する。','デモ機の予約は早めに押さえておく。'];
+function bizDays(from,to){const out=[];const d=new Date(from);const e=new Date(to);while(d<=e){const w=d.getDay();if(w&&w<6)out.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`);d.setDate(d.getDate()+1)}return out}
+/* 見本モードの架空の日報（本番では SharePoint から読み込む） */
+if(DEMO){
+bizDays('2026-10-01','2026-11-10').forEach(day=>{['u1','u2','u3','u4'].forEach(u=>{
+  if(R()<.08)return; const v=rint(0,4); const lines=[];
+  for(let i=0;i<v;i++)lines.push(pick(CUSTOMERS)+'\n'+pick(PRODUCTS)+pick(ACTS));
+  if(!v)lines.push('終日社内。見積作成と展示会準備。');
+  lines.push(pick(LEARN));
+  mk(u,'sales',day,rint(16,19),rint(0,59),{date:day,visits:v,cv:[pick(CV)].concat(R()<.4?[pick(CV)]:[]).filter((x,i,a)=>a.indexOf(x)===i),dv:pick(DEPTS.sales.fields[3].opts),note:lines.join('\n\n')},{readBy:MEMBERS.filter(m=>m.id!==u).map(m=>m.id)});
+})});
+// yesterday
+mk('u1','sales','2026-11-11',18,12,{date:'2026-11-11',visits:3,cv:[CV[4]],dv:DEPTS.sales.fields[3].opts[1],note:'大和運輸様\nけん引トレーラーの見積を提出。\n\nさくら精密様\nアシストカートのデモを実施。反応は良好で、来月の予算化を検討中とのこと。\n\n青葉製作所様\n定期訪問。メンテナンスの相談を受けた。'},{comments:[{user:'u13',text:'さくら精密様、予算化まで追いかけてください。',ts:new Date(2026,10,11,19,2).getTime()},{user:'u2',text:'',sticker:'m-otsu',ts:new Date(2026,10,11,19,30).getTime()}]});
+mk('u2','sales','2026-11-11',17,40,{date:'2026-11-11',visits:2,cv:[CV[0]],dv:DEPTS.sales.fields[3].opts[0],note:'中央倉庫様\nフラットカート10台の追加注文の相談。\n\n西浜港湾サービス様\nけん引トレーラーの更新時期をヒアリング。来春で検討中。'});
+mk('u5','center','2026-11-11',18,0,{date:'2026-11-11',orders:4,quotes:9,pending:5,help:1,work:'受注入力\n見積回答\n納期回答',cv:[CV[3]],note:'特注品の見積依頼が続いています。'});
+// today
+mk('u2','sales',TODAY,17,45,{date:TODAY,visits:2,cv:[CV[4]],dv:DEPTS.sales.fields[3].opts[0],note:'東和物流様\n電動台車3台の納品に立ち会い。残りの注文はレイアウト変更が決まってからとのこと。\n\nみなと機工様 展示会1日目\n来場者は多め。パレットレベラーの引き合いが1件。来週デモ機を貸し出す予定です。'},
+ {comments:[{user:'u4',text:'@佐藤 健太 デモ機の日程、こちらの貸出と重ならないよう調整しましょう。',ts:new Date(2026,10,12,18,10).getTime()},{user:'u3',text:'貸出用のデモ機、倉庫のこの位置に置いてあります。',ts:new Date(2026,10,12,18,22).getTime(),files:[regFile({name:'貸出用デモ機.jpg',img:true,url:ph('貸出用デモ機','#2C4A63')})]},{user:'u7',text:'',sticker:'m-nice',ts:new Date(2026,10,12,18,40).getTime()},{user:'u13',text:'',sticker:'kansha',ts:new Date(2026,10,12,18,52).getTime()}],
+  files:[regFile({name:'展示会ブース.jpg',img:true,url:ph('展示会ブース','#C8460D')}),regFile({name:'ブース全景.jpg',img:true,url:ph('ブース全景','#8A4B14')}),regFile({name:'納品立ち会い.jpg',img:true,url:ph('納品立ち会い','#2B7A4B')}),regFile({name:'パレットレベラー.jpg',img:true,url:ph('パレットレベラー','#1F7A8C')}),regFile({name:'来場者の様子.jpg',img:true,url:ph('来場者の様子','#6741D9')}),regFile({name:'デモ機貸出予定.xlsx'})]});
+mk('u3','sales',TODAY,17,10,{date:TODAY,visits:1,cv:[CV[0]],dv:DEPTS.sales.fields[3].opts[2],note:'中部産業フェア（2日目）\n午後から来場者が増え、フラットカートの見積依頼を1件いただいた。\n来年は会場が戻るので、集客は回復しそうとの話。\n仕入先の値上げ前で、駆け込みの注文が増えているそうです。'});
+mk('u4','sales',TODAY,16,20,{date:TODAY,visits:2,cv:[CV[1],CV[4]],dv:DEPTS.sales.fields[3].opts[1],note:'北辰食品様\nリフト台車について打ち合わせ。ニーズには合っているが、650kgの荷物をどう載せるかが課題。デモ日程を調整し、貸し出し後に購入を検討とのこと。\n\n午後は社内展示会の搬入作業。区画が狭いので見せ方を工夫したい。デモ走行の動画を撮ったので共有します。'},{comments:[{user:'u2',text:'@田中 誠 北辰食品様は以前ご担当でしたよね。これまでの経緯を高橋さんに共有してもらえますか？',ts:new Date(2026,10,12,18,15).getTime()}],files:[regFile({name:'デモ走行.mp4',video:true,poster:ph('デモ走行（動画）','#6741D9')})]});
+mk('u5','center',TODAY,18,5,{date:TODAY,orders:5,quotes:5,pending:3,help:2,work:'受注入力\n見積回答\n電話対応\n納期回答\nHP問い合わせ',cv:[CV[1],CV[3]],note:'特注品の注文が何件か来ています。スムーズに入力できるよう確認します。\n基幹システムの納期回答がもっとスムーズになると助かります。'});
+mk('u6','center',TODAY,17,50,{date:TODAY,orders:1,quotes:18,pending:12,help:4,work:'電話問い合わせ対応\n受注分の納期回答\n業務センター打ち合わせ 11:00〜12:15\n店頭販売対応',cv:[CV[5],CV[4]],note:'見積依頼が集中して未処理が12件残りました。明日午前に優先して回答します。'});
+mk('u7','mfg',TODAY,17,40,{date:TODAY,work:'出荷業務（空港向け 12台）\n銘板打刻\n部品在庫引当\n発注処理\nトラック手配',cv:[CV[0],CV[3]],dv:DEPTS.mfg.fields[3].opts[0],note:'パーツ梱包のため、事務所業務を早めに終えて現場に行きたい。木箱梱包の依頼が来ています。'});
+mk('u8','mfg',TODAY,17,20,{date:TODAY,work:'資材発注\n納期確認・回答\n受け入れ・納品対応\n仕入先との打ち合わせ',cv:[CV[2]],dv:DEPTS.mfg.fields[3].opts[1],note:'課長が午後外出のため、納期回答を代わりに対応しました。'});
+mk('u9','tech',TODAY,17,0,{date:TODAY,work:'図面修正（リフト台車 特注仕様）\n部品表の作成',cv:[CV[4]],note:'特注仕様の問い合わせが増えています。標準化できる部分を整理したい。'});
+mk('u10','qa',TODAY,16,50,{date:TODAY,work:'検査・成績書の作成\nフレーム工場の溶接確認',cv:[CV[0]],note:'溶接ビードのばらつきを確認。来週、作業者と一緒に基準を見直します。'});
+mk('u11','ga',TODAY,17,30,{date:TODAY,work:'勤怠チェック\n年末調整の案内準備\n来客対応',cv:[CV[3]],note:'年末調整の提出期限を全社に案内予定です。'});
+mk('u12','plan',TODAY,16,40,{date:TODAY,work:'カタログデータ作成\nホテル向け資料作成',cv:[CV[4]],note:'1月発行のカタログ、レイアウト案を3つ作成。イメージボードと見比べて絞り込みます。'});
+// 部署VALUEは複数選択：サンプルを配列にそろえ、いくつかは2つ選んだ状態にする
+posts.forEach((p,i)=>{const v=p.fields.dv;if(typeof v==='string'){const opts=DEPTS[p.dept].fields.find(f=>f.k==='dv').opts;p.fields.dv=[v];if(i%3===0){const o=opts.find(x=>x!==v);if(o)p.fields.dv.push(o)}}});
+// today's posts mostly unread by me
+posts.filter(p=>p.date===TODAY).forEach((p,i)=>{if(i%3)p.readBy=p.readBy.filter(x=>x!==ME);else if(!p.readBy.includes(ME))p.readBy.push(ME)});
+}
+
+const SENDERS={president:'社長',company:'会社',ga:'総務部',sales:'営業本部',center:'全社業務センター',mfg:'製造部',tech:'技術部',qa:'品質管理部',plan:'販売企画室'};
+// 発信できる名義：社長は社長名義のみ（固定）／総務部は「会社」「総務部」／それ以外は自部署のみ。個人名義はなし
+const allowedSenders=u=>M[u].president?['president']:M[u].dept==='ga'?['company','ga']:DEPTS[M[u].dept]?[M[u].dept]:[];
+const senderName=n=>n.sender&&n.sender!=='me'?SENDERS[n.sender]:M[n.from].name;
+const AUD={all:{label:'全社宛',total:57},exec:{label:'幹部のみ',total:8},hq:{label:'本社のみ',total:31},factory:{label:'工場のみ',total:26}};
+/* 本番では宛先の人数を名簿から数える（幹部は HL-幹部 の人数が分かったときだけ） */
+function countAudience(){if(DEMO)return;const real=MEMBERS.filter(m=>!m.gone);AUD.all.total=real.length;AUD.hq.total=real.filter(m=>m.loc==='本社').length;AUD.factory.total=real.filter(m=>m.loc==='工場').length;AUD.exec.total=real.filter(m=>isKanbu(m.id)).length||AUD.exec.total}
+// 幹部＝M365グループ「HL-幹部」のメンバー（管理画面のチェックで切り替え）
+const isKanbu=u=>M[u].exec||(typeof M365!=='undefined'&&M365[u]&&M365[u].groups.includes('HL-幹部'));
+const canSee=(n,u)=>n.from===u||n.aud==='all'||(n.aud==='exec'&&isKanbu(u))||(n.aud==='hq'&&M[u].loc==='本社')||(n.aud==='factory'&&M[u].loc==='工場');
+const notices=!DEMO?[]:[
+ {id:'n1',sender:'ga',aud:'all',must:true,title:'年末調整書類の提出について',from:'u11',ts:new Date(2026,10,10,9,0).getTime(),body:'今年の年末調整の書類を配布しました。\n11月28日（金）までに総務部へ提出してください。\n扶養の変更がある方は、早めに相談をお願いします。',read:41,readers:[],files:[{name:'年末調整の手引き.pdf'}]},
+ {id:'n2',sender:'ga',aud:'factory',must:true,title:'工場内の安全確認について（安全衛生委員会）',from:'u11',ts:new Date(2026,10,6,8,30).getTime(),body:'フォークリフト通路の白線を引き直しました。通路への仮置きは禁止です。\n朝礼で写真を確認してください。',read:19,readers:[],files:[{name:'通路の白線.jpg',img:true,url:ph('通路の白線','#2B7A4B')}]},
+ {id:'n3',sender:'sales',aud:'hq',must:false,title:'10月の展示会実績報告',from:'u2',ts:new Date(2026,10,5,17,0).getTime(),body:'10月は展示会3件に出展しました。来場者は合計約1,200名、引き合いは14件です。詳細は営業本部の日報を参照してください。',read:24,readers:['u1'],files:[{name:'展示会実績_10月.xlsx'}]},
+ {id:'n6',sender:'company',aud:'exec',must:false,title:'12月の幹部会の日程変更について',from:'u11',ts:new Date(2026,10,12,9,30).getTime(),body:'12月の幹部会は、第2金曜（12日）から第3金曜（19日）に変更します。\n会場は本社2階の会議室です。',read:5,readers:[],files:[]},
+ {id:'n4',sender:'president',aud:'exec',must:true,title:'今週の重点事項',from:'u13',ts:new Date(2026,10,9,8,0).getTime(),body:'年末の駆け込み需要に備えて、見積回答のスピードを最優先にしてください。\n各部の進捗は金曜の幹部会で確認します。',read:6,readers:['u13'],files:[]},
+ {id:'n5',sender:'ga',aud:'hq',must:false,title:'本社 会議室の予約ルール変更',from:'u11',ts:new Date(2026,10,11,10,0).getTime(),body:'12月から、本社会議室の予約はOutlookの会議室予約に統一します。',read:12,readers:[],files:[{name:'会議室予約の手順.pdf'}]},
+].map(n=>({...n,files:n.files.map(regFile)}));
+const VIEWERS=['u1','u11','u13','u7'];
+
+/* ---------- helpers ---------- */
+const WD='日月火水木金土';
+const fmtD=s=>{const [y,m,d]=s.split('-').map(Number);return `${y}年${m}月${d}日(${WD[new Date(y,m-1,d).getDay()]})`};
+function rel(ts){const m=Math.floor((now()-ts)/60000);if(m<1)return 'たった今';if(m<60)return m+'分前';if(m<1440)return Math.floor(m/60)+'時間前';const d=new Date(ts);return `${d.getMonth()+1}月${d.getDate()}日`}
+const av=(u,cls='')=>`<span class="av ${cls}" style="background:${M[u].av}" title="${esc(M[u].name)}">${esc(M[u].name[0])}</span>`;
+const stampCount=p=>Object.values(p.stamps).reduce((a,b)=>a+b.length,0);
+// 未読：自分の部署の日報で、3日以内のものだけ（件数バッジには数えない）
+const daysAgo=d=>Math.round((new Date(TODAY)-new Date(d))/864e5);
+const isUnread=p=>p.user!==ME&&canPost(p.dept)&&daysAgo(p.date)<3&&!p.readBy.includes(ME);
+// 自分宛て：自分の日報へのコメント、または自分へのメンションで、まだ見ていないもの
+const forMeC=(p,c)=>c.user!==ME&&!(c.seen||[]).includes(ME)&&(p.user===ME||c.text.includes('@'+M[ME].name));
+const forMe=p=>p.comments.some(c=>forMeC(p,c));
+const forMeCount=()=>posts.filter(p=>canSeePost(p)).reduce((a,p)=>a+p.comments.filter(c=>forMeC(p,c)).length,0);
+const mainText=p=>p.fields.note||p.fields.work||'';
+const numFields=p=>DEPTS[p.dept].fields.filter(f=>f.type==='number'&&p.fields[f.k]!==undefined&&p.fields[f.k]!=='');
+function toast(msg,tag){const t=document.createElement('div');t.className='toast';t.innerHTML=`<div>${tag?`<span class="tm">${esc(tag)}</span>`:''}${esc(msg)}</div>`;$('#toasts').appendChild(t);setTimeout(()=>t.remove(),4200)}
+const teams=msg=>{if(DEMO)toast(msg+'（見本のため実際には送信しません）','TEAMS通知')};   // Teams への通知は次の段階で（今は何もしない）
+
+/* ---------- state + routing ---------- */
+const state={view:'timeline',filter:'all',dept:null,list:[],aiTab:'today',nv:ME,naud:'any',exp:{scope:'mine',period:LAST_MONTH,dept:'all',from:LAST_MONTH+'-01',to:addDays(THIS_MONTH+'-01',-1),ai:true}};
+const VIEWS=[['timeline','タイムライン','home'],['notices','お知らせ','bell'],['ai','AI分析','spark'],['export','出力','down'],['admin','ユーザー管理','team']];
+const navViews=()=>VIEWS.filter(v=>v[0]!=='admin'||M[ME].admin);
+function route(){const h=location.hash.slice(1);state.view=VIEWS.some(v=>v[0]===h)?h:'timeline';render()}
+window.addEventListener('hashchange',route);
+
+function renderChrome(){const pb=$('#protoBadge');if(pb)pb.hidden=!DEMO;
+  const unreadNotice=notices.filter(n=>n.must&&canSee(n,ME)&&!n.readers.includes(ME)).length;const fm=forMeCount();
+  const link=(v,mobile)=>`<a href="#${v[0]}" ${state.view===v[0]?'aria-current="page"':''}>${ic(v[2])}<span>${v[1]}</span>${v[0]==='notices'&&unreadNotice?`<span class="badge num">${unreadNotice}</span>`:''}${v[0]==='timeline'&&fm?`<span class="badge num" title="自分宛てのメンション・コメント">${fm}</span>`:''}</a>`;
+  $('#nav').innerHTML=navViews().map(v=>link(v)).join('');
+  $('#bnav').innerHTML=navViews().map(v=>link(v,true)).join('');
+  $('#mtitle').textContent=(VIEWS.find(v=>v[0]===state.view)||VIEWS[0])[1];
+  if(!DEMO){$('#me').innerHTML=`<span class="nm">${esc(M[ME].name)}</span>${av(ME)}`}else $('#me').innerHTML=`<label class="viewer" title="見本用：見る人を切り替えて、公開範囲や宛先の違いを確認できます"><span class="nm">表示中（見本）</span><select id="viewer">${VIEWERS.map(u=>`<option value="${u}" ${u===ME?'selected':''}>${esc(whoLabel(u))}</option>`).join('')}</select></label>${av(ME)}`;
+}
+function render(){renderChrome();({timeline:renderTimeline,notices:renderNotices,ai:renderAI,export:renderExport,admin:renderAdmin})[state.view]();}
+
+/* ---------- timeline ---------- */
+function visiblePosts(){
+  return posts.filter(p=>p.date>=TL_FROM&&canSeePost(p)).filter(p=>{
+    if(state.dept&&p.dept!==state.dept)return false;
+    if(state.filter==='unread')return isUnread(p);
+    if(state.filter==='forme')return forMe(p);
+    if(state.filter==='bookmark')return p.bookmarked;
+    if(state.filter==='mine')return p.user===ME;
+    return true;});
+}
+const fmtTs=ts=>{const d=new Date(ts);return `${d.getMonth()+1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`};
+const DCOL={sales:'var(--av1)',center:'var(--av5)',mfg:'var(--av3)',tech:'var(--av4)',qa:'var(--av2)',ga:'var(--av6)',plan:'var(--st1)'};
+function card(p,lane){
+  const top=Object.entries(p.stamps).sort((a,b)=>b[1].length-a[1].length).slice(0,2);
+  const media=p.files.filter(isMedia);const nf=numFields(p).slice(0,2);
+  return `<button class="card ${isUnread(p)?'is-unread':''}" data-open="${p.id}" data-lane="${lane}">${forMe(p)?`<span class="forme">${ic('bell')}自分宛て</span>`:''}
+   <div class="who">${av(p.user,'lg')}<div><div class="n">${esc(M[p.user].name)}</div><div class="t">${lane==='feat'||p.date!==TODAY?fmtTs(p.ts):rel(p.ts)}</div></div></div>
+   <div class="did"><span class="dl">${formName(p.dept)}</span>で今日の振り返りをしました！</div>
+   <div class="kf"><h6>日報日付</h6><div>${fmtD(p.date)}</div></div>
+   ${nf.map(f=>`<div class="kf"><h6>${esc(f.label)}</h6><div><b class="num">${p.fields[f.k]}</b>${f.unit||''}</div></div>`).join('')}
+   ${media.length?`<div class="cmedia n${Math.min(2,media.length)}">${media.slice(0,2).map((f,i)=>`<span class="cm">${f.video?`${(f.url||f.itemId)?`<video ${srcAttr(f)} muted preload="metadata"></video>`:`<img src="${f.poster}" alt="">`}<span class="play">${ic('play')}</span>`:`<img ${srcAttr(f)} alt="${esc(f.name)}">`}${i===1&&media.length>2?`<span class="cmore">他${media.length-2}枚</span>`:''}</span>`).join('')}</div>`:`<div class="excerpt">${esc(mainText(p))}</div>`}
+   <div class="card-foot"><span>${ic('cmt')}<span class="num">${p.comments.length}</span></span><div class="mini-stamps">${top.map(([k,v])=>`<span class="stamp ${ST[k].img?'stamp-img':''}" style="background:${stampBg(ST[k])}">${stampFace(ST[k])}<span class="c">${v.length}</span></span>`).join('')}</div><span class="seemore">詳細を見る</span></div>
+  </button>`;
+}
+function noticeCard(n){return `<button class="card ncard" data-goto="notices">
+   <div class="who">${av(n.from,'lg')}<div><div class="n">${esc(M[n.from].name)}</div><div class="t">${fmtTs(n.ts)}</div></div>${n.must?'<span class="pill must" style="margin-left:auto">必読</span>':''}</div>
+   <div class="did"><span class="dl">${esc(senderName(n))}${n.sender&&n.sender!=='me'?'より':''}</span>お知らせを投稿しました</div>
+   <div class="kf"><h6>表題</h6><div>${esc(n.title)}</div></div>
+   ${(()=>{const m=n.files.filter(isMedia)[0];return m?`<div class="cmedia n1"><span class="cm"><img ${m.poster&&!m.url&&!m.itemId?`src="${m.poster}"`:srcAttr(m)} alt="${esc(m.name)}"></span></div>`:`<div class="excerpt">${esc(n.body)}</div>`})()}
+   <div class="card-foot"><span class="pill a-${n.aud}">${AUD[n.aud].label}</span><span class="seemore">詳細を見る</span></div></button>`}
+function renderTimeline(){
+  const vis=visiblePosts();
+  const P=posts.filter(p=>canSeePost(p));
+  const today=P.filter(p=>p.date===TODAY);
+  const mine=today.some(p=>p.user===ME);
+  const cnt={all:P.filter(p=>p.date>=TL_FROM).length,forme:forMeCount(),unread:P.filter(p=>p.date>=TL_FROM&&isUnread(p)).length,bookmark:P.filter(p=>p.bookmarked).length,mine:P.filter(p=>p.date>=TL_FROM&&p.user===ME).length};
+  const F2=[['all','すべて'],['forme','自分宛て'],['unread','部署の未読'],['bookmark','ブックマーク'],['mine','自分の投稿']];
+  const sales=today.filter(p=>p.dept==='sales');const deals=extractDeals().filter(d=>d.date===TODAY).length;
+  const pend=today.filter(p=>p.dept==='center').reduce((a,p)=>a+(+p.fields.pending||0),0);
+  state.lists={};
+  const showFeat=state.filter==='all'&&!state.dept;
+  const feat=showFeat?P.filter(p=>p.date>=addDays(TODAY,-6)&&p.date<=TODAY).map(p=>({p,s:stampCount(p)+p.comments.length*3+p.files.length})).sort((a,b)=>b.s-a.s).slice(0,8).map(x=>x.p):[];
+  const featN=showFeat?notices.filter(n=>canSee(n,ME)&&n.must):[];
+  state.lists.feat=feat.map(p=>p.id);
+  const featLane=feat.length?`<section class="lane"><div class="lane-head"><span class="lane-icon feat">${ic('spark')}</span><div><h2>注目を集めた投稿</h2><div class="sub">${fmtD(addDays(TODAY,-6)).replace(/\(.\)/,'')}〜${fmtD(TODAY).replace(/\(.\)/,'')}の投稿 <b class="num">${feat.length+featN.length}</b>件 ・ スタンプとコメントが多い順</div></div></div><div class="row">${featN.map(noticeCard).join('')}${feat.map(p=>card(p,'feat')).join('')}</div></section>`:'';
+  const lanes=DORDER.map(d=>{const ps=vis.filter(p=>p.dept===d).sort((a,b)=>b.ts-a.ts);if(!ps.length)return '';state.lists[d]=ps.map(p=>p.id);
+    const tc=ps.filter(p=>p.date===TODAY).length,uc=ps.filter(isUnread).length;
+    return `<section class="lane"><div class="lane-head"><span class="lane-icon" style="background:${DCOL[d]}">${DEPTS[d].short}</span><div><h2>${formName(d)}</h2><div class="sub">今日の投稿 <b class="num">${tc}</b>件${DEPTS[d].vis?` ・ <span class="lock">${ic('lock')}${DEPTS[d].vis.label}</span>`:''}</div></div>${uc?`<span class="unread">未読 ${uc}</span><button class="btn btn-sm" data-readall="${d}">すべて既読にする</button>`:''}</div><div class="row">${ps.map(p=>card(p,d)).join('')}</div></section>`}).join('');
+  state.list=Object.values(state.lists).flat();
+  $('#view').innerHTML=`<div class="layout">
+   <aside class="side">
+    <div><h4>表示</h4><div class="side-list">${F2.map(f=>`<button data-filter="${f[0]}" aria-pressed="${state.filter===f[0]}"><span>${f[1]}</span><span class="cnt num">${cnt[f[0]]}</span></button>`).join('')}</div></div>
+    <div><h4>部署</h4><div class="side-list"><button data-dept="" aria-pressed="${!state.dept}">すべての部署</button>${DORDER.map(d=>`<button data-dept="${d}" aria-pressed="${state.dept===d}"><span>${DEPTS[d].name}</span></button>`).join('')}</div></div>
+    <div><h4>必読のお知らせ</h4><div class="side-list">${notices.filter(n=>n.must&&canSee(n,ME)).map(n=>`<button data-goto="notices"><span>${esc(n.title)}</span>${n.readers.includes(ME)?'':'<span class="badge">!</span>'}</button>`).join('')}</div></div>
+    <div><h4>ナレッジ共有</h4><div class="side-list"><button data-teams-km><span>ワイワイガヤガヤ<br><small style="color:var(--sub)">Teamsのチャネルへ移行</small></span>${ic('team')}</button></div></div>
+   </aside>
+   <div class="main">
+    ${DEMO?`<div class="note-proto">見本モードです。表示はすべて架空のデータで、投稿やスタンプはこのブラウザ内だけで動きます。</div>`:''}
+    <div class="chips-m">${F2.map(f=>`<button class="chip" data-filter="${f[0]}" aria-pressed="${state.filter===f[0]}">${f[1]} ${cnt[f[0]]}</button>`).join('')}${DORDER.map(d=>`<button class="chip" data-dept="${state.dept===d?'':d}" aria-pressed="${state.dept===d}">${DEPTS[d].name}</button>`).join('')}</div>
+    ${mine?'':`<div class="banner remind"><div class="grow"><h3>今日の日報がまだです</h3><p>下書きは自動で保存されます。話した内容から項目を埋めることもできます。</p></div><button class="btn btn-primary" data-act="compose">${ic('pen')}日報を書く</button></div>`}
+    <div class="banner"><div class="grow"><span class="ai-tag">${ic('spark')}AI 今日のまとめ</span><h3 style="margin-top:6px">全社の日報 ${today.length}件から要点をまとめました</h3></div>
+     <div class="digest-stats"><div><span class="v num">${sales.reduce((a,p)=>a+(+p.fields.visits||0),0)}</span><span class="l">営業の訪問件数</span></div><div><span class="v num">${deals}</span><span class="l">引き合い・見積の話題</span></div><div><span class="v num">${pend}</span><span class="l">業務センター未処理</span></div></div>
+     <a class="btn" href="#ai">詳しく見る</a></div>
+    ${featLane}
+    ${lanes||`<div class="empty">条件に合う日報はありません。</div>`}
+   </div></div>`;
+}
+
+/* ---------- detail modal ---------- */
+let cur=null;let cfiles=[];let drawnFor=null;
+const cfilesHTML=()=>cfiles.map((f,i)=>`<span class="cf">${f.img&&f.url?`<img ${srcAttr(f)} alt="">`:ic(f.video?'play':'clip')}<span>${esc(f.name)}</span><button data-rmfile="${i}" aria-label="${esc(f.name)}を外す">${ic('x')}</button></span>`).join('');
+function openPost(id){if(id!==cur){cfiles=[];drawnFor=null;stkOpen=false;emoOpen=false;delAsk=null}cur=id;const p=posts.find(x=>x.id===id);if(!p.readBy.includes(ME)&&p.user!==ME){p.readBy.push(ME);Store.act(p,'read')}Store.loadReads(p);
+  p.comments.forEach(c=>{if(forMeC(p,c))c._new=true;c.seen=c.seen||[];if(!c.seen.includes(ME))c.seen.push(ME)});Store.saveSeen(p);drawDetail();renderChrome();}
+function drawDetail(palette=false){
+  const p=posts.find(x=>x.id===cur);const i=state.list.indexOf(cur);const n=state.list.length;
+  const fields=DEPTS[p.dept].fields.map(f=>{const v=p.fields[f.k];if(v===undefined||v===''||(Array.isArray(v)&&!v.length))return '';
+    if(f.type==='date')return `<div class="fld"><h5>${f.label}</h5><div class="val">${fmtD(v)}</div></div>`;
+    if(f.type==='number')return `<div class="fld"><h5>${f.label}</h5><div class="val"><span class="big num">${esc(v)}</span> ${f.unit||''}</div></div>`;
+    if(f.type==='multi')return `<div class="fld"><h5>${f.label}</h5><div class="vchips">${v.map(x=>`<span class="vchip">${esc(x)}</span>`).join('')}</div></div>`;
+    return `<div class="fld"><h5>${f.label}</h5><div class="val">${esc(v)}</div></div>`}).join('');
+  const stamps=Object.entries(p.stamps).map(([k,v])=>`<button class="stamp stamp-btn ${ST[k].img?'stamp-img':''}" style="background:${stampBg(ST[k])}" data-stamp="${k}" aria-pressed="${v.includes(ME)}" title="${esc(ST[k].label+'：'+v.map(u=>M[u].name).join('、'))}">${stampFace(ST[k])}<span class="c">${v.length}</span></button>`).join('');
+  const usage={};posts.forEach(x=>Object.entries(x.stamps).forEach(([k,v])=>usage[k]=(usage[k]||0)+v.length));
+  const sorted=[...STAMPS].sort((a,b)=>(usage[b.id]||0)-(usage[a.id]||0));
+  const sform=`<div class="sform"><div class="frow"><label for="sf-text">スタンプの文字（8文字まで）</label><input type="text" id="sf-text" maxlength="8" placeholder="例：神対応"></div>
+   <div class="frow"><span class="lbl">色</span><div class="seg">${SCOLORS.map((c,i)=>`<label title="色${i+1}"><input type="radio" name="sfc" value="${c}" ${i===0?'checked':''}><span class="sw" style="background:var(${c})"></span></label>`).join('')}</div></div>
+   <div class="frow"><label for="sf-img">または画像から作る（写真・イラスト）</label><input type="file" id="sf-img" accept="image/*"></div>
+   <div class="err" id="e-sf" hidden></div>
+   <div class="toolbar"><button class="btn btn-sm btn-primary" data-screate>作成する</button><button class="btn btn-sm" data-scancel>やめる</button><span class="hint">作ったスタンプは全員のパレットに追加されます</span></div></div>`;
+  const reads=p.readBy.slice(0,8);
+  const keep=drawnFor===cur?((document.getElementById('cmt-in')||{}).value||''):'';
+  $('#modal-root').innerHTML=`<div class="mbg" data-close><div class="mwrap">
+   <button class="navarrow l" data-nav="-1" ${i<=0?'disabled':''} aria-label="前の日報">${ic('l')}</button>
+   <div class="modal" role="dialog" aria-modal="true" aria-label="日報の詳細">
+    <div class="modal-top dtop"><button class="closeround" data-close aria-label="閉じる">${ic('x')}</button><span class="ttl">${formName(p.dept)}</span><div class="r">
+     <button class="iconbtn" data-bm aria-pressed="${p.bookmarked}" aria-label="ブックマーク">${ic('mark')}</button></div></div>
+    <div class="postnav"><button data-nav="-1" ${i<=0?'disabled':''}>${ic('l')}前の投稿</button><span class="num">${i+1}/${n}</span><button data-nav="1" ${i>=n-1?'disabled':''}>次の投稿${ic('r')}</button></div>
+    <div class="modal-body" id="mbody">
+     <div class="who">${av(p.user,'lg')}<div><div class="n" style="font-size:15px">${esc(M[p.user].name)}</div><div class="t">${formName(p.dept)}で今日の振り返りをしました ・ ${rel(p.ts)}</div></div></div>
+     ${fields}
+     ${filesHTML(p.files)}
+     <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${stamps}<button class="btn btn-sm" data-pal>${ic('smile')}スタンプ</button></div>
+      ${palette?`<div class="palwrap"><div class="pal-head"><span>よく使われている順</span>${M[ME].admin?`<button class="btn btn-sm" data-sform>＋ オリジナルスタンプを作る（管理者）</button>`:`<span>オリジナルスタンプは管理者が追加します</span>`}</div><div class="palette">${sorted.map(s=>`<button class="stamp ${s.img?'stamp-img':''}" style="background:${stampBg(s)};--r:${s.r}" data-stamp="${s.id}" title="${esc(s.label)}">${stampFace(s)}</button>`).join('')}</div>${stampForm?sform:''}</div>`:''}
+     </div>
+     <div class="reads"><span class="avs">${reads.map(u=>av(u,'xs')).join('')}</span><span class="rl">既読 <span class="num">${p.readBy.length}</span>人</span></div>
+     <div class="cmts">${p.comments.map((c,ci)=>`<div class="cmt">${av(c.user)}<div class="b ${c._new?'is-new':''} ${c.sticker?'plain':''}"><div class="h"><b>${esc(M[c.user].name)}</b> ・ ${rel(c.ts)}</div>${c.sticker&&ST[c.sticker]?`<div class="sticker ${ST[c.sticker].img?'':'txt'}" style="${ST[c.sticker].img?'':`background:${ST[c.sticker].c}`}" title="${esc(ST[c.sticker].label)}">${stampFace(ST[c.sticker])}</div>`:''}${c.text?`<p>${hl(c.text)}</p>`:''}${filesHTML(c.files)}
+       ${c.user===ME?`<div class="cdel">${delAsk===ci?`<span>このコメントを削除しますか？</span><button class="btn btn-sm danger" data-delcmt="${ci}">削除する</button><button class="btn btn-sm" data-delno>やめる</button>`:`<button class="dellink" data-delask="${ci}">${ic('trash')}削除</button>`}</div>`:''}</div></div>`).join('')}</div>
+    </div>
+    <div class="modal-foot cfoot">${stkOpen?`<div class="stksheet" aria-label="スタンプを選んで送信">${sorted.map(s=>`<button class="${s.img?'':'txt'}" style="${s.img?'':`background:${s.c}`}" data-sendstk="${s.id}" title="${esc(s.label)}を送る">${stampFace(s)}</button>`).join('')}</div>`:''}
+     ${emoOpen?`<div class="emosheet">${EMOJI.map(e=>`<button data-emo="${e}">${e}</button>`).join('')}</div>`:''}
+     <div class="cfiles" id="cfiles">${cfilesHTML()}</div>
+     <div class="cbox"><div class="composer"><textarea id="cmt-in" rows="1" placeholder="コメントする"></textarea><div class="mlist" id="mlist" hidden></div></div>
+     <div class="ctools">
+      <button class="iconbtn" data-emoji aria-pressed="${emoOpen}" aria-label="絵文字" title="絵文字">${ic('smile')}</button>
+      <button class="iconbtn" data-stk aria-pressed="${stkOpen}" aria-label="スタンプを送る" title="スタンプ">${ic('stamp')}</button>
+      <label class="iconbtn" for="cmt-img" title="写真・動画">${ic('image')}</label><input type="file" id="cmt-img" multiple accept="image/*,video/*" hidden>
+      <label class="iconbtn" for="cmt-file" title="資料">${ic('file')}</label><input type="file" id="cmt-file" multiple accept=".pdf,.xlsx,.xls,.docx,.doc,.pptx,.csv,.txt" hidden>
+      <button class="sendbtn" data-send aria-label="送信">${ic('send')}</button></div></div></div>
+   </div>
+   <button class="navarrow r" data-nav="1" ${i>=n-1?'disabled':''} aria-label="次の日報">${ic('r')}</button>
+  </div></div>`;
+  if(keep)$('#cmt-in').value=keep;drawnFor=cur;
+  bindSwipe($('.modal'));
+}
+function hl(t){let s=esc(t);MEMBERS.forEach(m=>{s=s.split('@'+esc(m.name)).join(`<span class="mention">@${esc(m.name)}</span>`)});return s}
+function closeModal(){$('#modal-root').innerHTML='';cur=null;if(state.view==='timeline')renderTimeline();}
+function navPost(d){const i=state.list.indexOf(cur)+d;if(i>=0&&i<state.list.length)openPost(state.list[i]);}
+function bindSwipe(el){let x0=null;el.addEventListener('touchstart',e=>{x0=e.touches[0].clientX},{passive:true});el.addEventListener('touchend',e=>{if(x0===null)return;const dx=e.changedTouches[0].clientX-x0;if(Math.abs(dx)>70&&!e.target.closest('textarea'))navPost(dx<0?1:-1);x0=null})}
+let stampForm=false;let stkOpen=false;let emoOpen=false;let delAsk=null;
+const EMOJI=['😊','😄','👍','🙏','👏','🎉','✨','💪','🙇','💦','😢','❗','⭐','🔥','👀','✅'];
+function sendSticker(id){const p=posts.find(x=>x.id===cur);const c={user:ME,text:'',sticker:id,ts:now(),seen:[ME]};p.comments.push(c);Store.act(p,'comment',{sticker:id},c);stkOpen=false;drawDetail();$('#mbody').scrollTop=1e6;
+  if(p.user!==ME)teams(`${M[p.user].name}さんに「${ST[id].label}」スタンプが届いたことを通知しました`);}
+function redrawKeep(pal){const sc=$('#mbody').scrollTop;drawDetail(pal);$('#mbody').scrollTop=sc}
+async function createStamp(){if(!M[ME].admin)return;if(!DEMO&&$('#sf-img').files.length){toast('画像のスタンプは次の段階で対応します。今は文字のスタンプを作れます');return}const text=$('#sf-text').value.trim();const fi=$('#sf-img').files;const color=document.querySelector('[name=sfc]:checked').value;
+  if(!text&&!fi.length){const e=$('#e-sf');e.hidden=false;e.textContent='文字を入れるか、画像を選んでください。';return}
+  let img=null;if(fi.length){const [f]=await readFiles(fi);if(!f.url){const e=$('#e-sf');e.hidden=false;e.textContent='画像を読み込めませんでした。別の画像を選んでください。';return}img=f.url}
+  const s={id:DEMO?'c'+Date.now():'x_'+(text||fi[0].name),label:text||fi[0].name.replace(/\.[^.]+$/,''),c:`var(${color})`,r:(Math.round(Math.random()*10)-5)+'deg',img};STAMPS.push(s);ST[s.id]=s;
+  if(!DEMO)Store.addStamp(s);stampForm=false;redrawKeep(true);toast(`オリジナルスタンプ「${s.label}」を作りました。全員のパレットに追加されます。`);}
+function toggleStamp(k){const p=posts.find(x=>x.id===cur);const a=p.stamps[k]||(p.stamps[k]=[]);const j=a.indexOf(ME);if(j>=0){a.splice(j,1);Store.unstamp(p,k)}else{a.push(ME);Store.act(p,'stamp',{sticker:k})}if(!a.length)delete p.stamps[k];const sc=$('#mbody').scrollTop;drawDetail(false);$('#mbody').scrollTop=sc;}
+function sendComment(){const ta=$('#cmt-in');const t=ta.value.trim();if(!t&&!cfiles.length)return;const p=posts.find(x=>x.id===cur);const c={user:ME,text:t,ts:now(),files:cfiles,seen:[ME]};p.comments.push(c);Store.act(p,'comment',{body:t,files:cfiles,mentions:MEMBERS.filter(m=>t.includes('@'+m.name)).map(m=>m.id)},c);cfiles=[];ta.value='';
+  const men=MEMBERS.filter(m=>t.includes('@'+m.name));drawDetail();$('#mbody').scrollTop=1e6;
+  if(men.length)teams(men.map(m=>m.name+'さん').join('、')+'にメンション通知を送りました');else if(p.user!==ME)teams(M[p.user].name+'さんにコメント通知を送りました');}
+function mentionUI(){const ta=$('#cmt-in');const ml=$('#mlist');const m=ta.value.slice(0,ta.selectionStart).match(/@([^\s@]*)$/);
+  if(!m){ml.hidden=true;return}const q=m[1];const list=MEMBERS.filter(x=>x.id!==ME&&x.name.replace(' ','').includes(q.replace(' ',''))).slice(0,6);
+  if(!list.length){ml.hidden=true;return}ml.hidden=false;ml.innerHTML=list.map(x=>`<button data-mention="${x.id}">${av(x.id)}<span>${esc(x.name)}<br><small style="color:var(--sub)">${esc((DEPTS[x.dept]||{name:'役員'}).name)}</small></span></button>`).join('');}
+function insertMention(id){const ta=$('#cmt-in');const pos=ta.selectionStart;const before=ta.value.slice(0,pos).replace(/@([^\s@]*)$/,'@'+M[id].name+' ');ta.value=before+ta.value.slice(pos);$('#mlist').hidden=true;ta.focus();ta.selectionStart=ta.selectionEnd=before.length;}
+
+/* ---------- compose ---------- */
+let cdept='sales';let draftNote='';
+function draftKey(d){return 'nippo-draft-'+d}
+function openCompose(dept){cdept=dept||cdept;const dr=store.get(draftKey(cdept));draftNote=dr?'前回の下書きを復元しました。':'';drawCompose(dr||{date:TODAY});}
+function fieldHTML(f,v){
+  const id='f-'+f.k;const req=f.req?'<span class="req">必須</span>':'';
+  if(f.type==='date')return `<div class="frow"><label for="${id}">${f.label}</label><input type="date" id="${id}" name="${f.k}" value="${esc(v||TODAY)}"></div>`;
+  if(f.type==='number')return `<div class="frow"><label for="${id}">${f.label}${req}</label><div class="unitwrap"><input type="number" id="${id}" name="${f.k}" min="0" step="1" inputmode="numeric" value="${esc(v??'')}"><span>${f.unit||''}</span></div><div class="err" id="e-${f.k}" hidden></div></div>`;
+  if(f.type==='multi')return `<div class="frow"><span class="lbl">${f.label}<span class="multi-hint">複数選択できます</span></span><div class="pick">${f.opts.map((o,i)=>`<label><input type="checkbox" name="${f.k}" value="${esc(o)}" ${(v||[]).includes(o)?'checked':''}>${esc(o)}</label>`).join('')}</div></div>`;
+  if(f.type==='text')return `<div class="frow"><label for="${id}">${f.label}${req}</label><input type="text" id="${id}" name="${f.k}" value="${esc(v||'')}"><div class="err" id="e-${f.k}" hidden></div></div>`;
+  if(f.type==='select')return `<div class="frow"><label for="${id}">${f.label}</label><select id="${id}" name="${f.k}"><option value="">選択してください</option>${f.opts.map(o=>`<option ${v===o?'selected':''}>${esc(o)}</option>`).join('')}</select></div>`;
+  return `<div class="frow"><label for="${id}">${f.label}${req}</label><textarea id="${id}" name="${f.k}">${esc(v||'')}</textarea><div class="err" id="e-${f.k}" hidden></div></div>`;
+}
+function drawCompose(vals){
+  const D=DEPTS[cdept];const nums=D.fields.filter(f=>f.type==='number');
+  $('#modal-root').innerHTML=`<div class="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="日報を書く">
+   <div class="modal-top"><span class="ttl">日報を書く</span><div class="r"><button class="iconbtn" data-close-c aria-label="閉じる">${ic('x')}</button></div></div>
+   <div class="modal-body"><form class="form" id="cform" novalidate>
+    <div class="frow"><label for="c-dept">日報の種類</label><select id="c-dept">${(DEMO?DORDER:myForms()).map(d=>`<option value="${d}" ${d===cdept?'selected':''}>${formName(d)}</option>`).join('')}</select></div>
+    <div class="purpose"><b>この日報の目的</b><br>${esc(D.purpose)}<br><b>公開範囲</b>：${D.vis?`<span class="lock">${ic('lock')}${D.vis.label}</span>`:'全社に公開'}</div>
+    <div class="toolbar"><button type="button" class="btn btn-sm" data-voice>${ic('mic')}話して入力</button><button type="button" class="btn btn-sm" data-copyprev>${ic('copy')}前回の内容をコピー</button><span class="hint" id="draft-hint">${esc(draftNote||'入力内容は自動で下書き保存されます')}</span></div>
+    <div id="voice" hidden></div>
+    ${D.fields.filter(f=>f.type==='date').map(f=>fieldHTML(f,vals[f.k])).join('')}
+    ${nums.length?`<div class="grid2">${nums.map(f=>fieldHTML(f,vals[f.k])).join('')}</div>`:''}
+    ${D.fields.filter(f=>!['date','number'].includes(f.type)).map(f=>fieldHTML(f,vals[f.k])).join('')}
+    <div class="frow"><label for="c-files">写真・動画・資料の添付</label><input type="file" id="c-files" multiple accept="image/*,video/*,.pdf,.xlsx,.xls,.docx,.doc,.pptx,.csv"><span class="meta" style="font-size:12px;color:var(--sub)">スマホでは、その場で撮影した写真や動画も添付できます</span></div>
+   </form></div>
+   <div class="modal-foot"><button class="btn" data-close-c>あとで書く</button><button class="btn btn-primary" data-submit>${ic('send')}投稿する</button></div>
+  </div></div>`;
+}
+function readForm(){const fm=$('#cform');const o={};DEPTS[cdept].fields.forEach(f=>{if(f.type==='multi')o[f.k]=[...fm.querySelectorAll(`input[name="${f.k}"]:checked`)].map(x=>x.value);else{const el=fm.querySelector(`[name="${f.k}"]`);o[f.k]=el?el.value:''}});return o}
+function saveDraft(){store.set(draftKey(cdept),readForm());const h=$('#draft-hint');if(h){const d=new Date();h.textContent=`下書きを保存しました ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`}}
+function validate(o){let ok=true;DEPTS[cdept].fields.forEach(f=>{const e=$('#e-'+f.k);if(!e)return;let msg='';const v=o[f.k];
+  if(f.type==='number'){if(v===''){if(f.req)msg='件数を入力してください（なければ 0）。'}else if(!/^\d+$/.test(v))msg='0以上の整数で入力してください。マイナスや小数は入力できません。'}
+  else if(f.req&&!String(v).trim())msg='この項目は必須です。';
+  e.hidden=!msg;e.textContent=msg;const inp=$('#f-'+f.k);if(inp)inp.classList.toggle('bad',!!msg);if(msg)ok=false});return ok}
+async function submitPost(){const o=readForm();if(!validate(o)){const bad=document.querySelector('.err:not([hidden])');bad&&bad.scrollIntoView({block:'center',behavior:'smooth'});return}
+  const files=await readFiles($('#c-files').files);
+  if(DEPTS[cdept].attachReq&&!files.length){toast('この日報はファイルの添付が必要です');return}
+  DEPTS[cdept].fields.forEach(f=>{if(f.type==='number'&&o[f.k]!=='')o[f.k]=+o[f.k]});
+  const p={id:'p'+(seq++),user:ME,dept:cdept,date:o.date||TODAY,ts:now(),fields:o,stamps:{},comments:[],readBy:[],bookmarked:false,files};
+  if(!DEMO){const btn=$('[data-submit]');const label=btn.innerHTML;btn.disabled=true;btn.textContent='投稿しています…';
+    try{await Store.post(p)}catch(e){console.error(e);btn.disabled=false;btn.innerHTML=label;toast('投稿できませんでした。通信を確かめて、もう一度押してください。（入力は下書きに残っています）');return}}
+  posts.push(p);
+  store.del(draftKey(cdept));$('#modal-root').innerHTML='';state.filter='all';state.dept=null;
+  if(state.view!=='timeline')location.hash='timeline';else renderTimeline();
+  toast('日報を投稿しました');teams(`${DEPTS[cdept].name}チャネルに「${M[ME].name}さんが日報を投稿しました」と通知しました`);
+  setTimeout(()=>{const c=document.querySelector(`[data-open="${p.id}"]`);c&&c.scrollIntoView({block:'nearest',inline:'start',behavior:'smooth'});c&&(c.style.borderColor='var(--navy)')},60);}
+function copyPrev(){const prev=posts.filter(p=>p.user===ME&&p.dept===cdept).sort((a,b)=>b.ts-a.ts)[0];if(!prev){toast('この日報の過去の投稿がありません');return}
+  const v={...prev.fields,date:TODAY};drawCompose(v);$('#draft-hint').textContent=`${fmtD(prev.date)}の内容をコピーしました`;saveDraft();}
+const SAMPLE_VOICE='今日は2件訪問しました。午前は中央倉庫様でフラットカートの追加注文の打ち合わせ、10台で見積を出す予定です。午後は北辰食品様にリフト台車のデモ機を持って行って、反応は良かったです。来週もう一度伺います。担当者の上司にも同席してもらえるようにお願いしました。';
+function voicePanel(){const v=$('#voice');v.hidden=!v.hidden;if(v.hidden)return;
+  v.innerHTML=`<div class="voice"><span class="lbl" style="font-weight:500">話した内容（スマホのキーボードのマイクで音声入力できます）</span><textarea id="voice-in">${esc(SAMPLE_VOICE)}</textarea><div class="toolbar"><button type="button" class="btn btn-sm btn-primary" data-aifill>${ic('spark')}AIで項目に振り分け</button><span class="hint">件数・顧客ごとの内容・学びに分けて入力します</span></div></div>`;}
+function aiFill(){const t=$('#voice-in').value;const D=DEPTS[cdept];const o=readForm();
+  const n=t.match(/(\d+)\s*件\s*訪問|訪問\s*(\d+)\s*件/);if(n&&D.fields.some(f=>f.k==='visits'))o.visits=n[1]||n[2];
+  const sents=t.split(/。/).map(s=>s.trim()).filter(Boolean).filter(s=>!/^今日は\d+件訪問/.test(s));
+  const blocks=[];let curB=null;sents.forEach(s0=>{const s=s0.replace(/^(午前|午後|朝|夕方)は/,'');const c=s.match(/([^\s、。]+?様)/);if(c){curB={c:c[1],l:[]};blocks.push(curB);curB.l.push(s.replace(c[1],'').replace(/^(で|に|へ|の|と)/,'').trim()||s)}else if(curB&&!/上司|次回|気づ|学/.test(s))curB.l.push(s);else blocks.push({c:null,l:[s]})});
+  const body=blocks.map(b=>b.c?`${b.c}\n${b.l.map(x=>'・'+x).join('\n')}`:`【学び・気づき】\n・${b.l.join('')}`).join('\n\n');
+  const key=D.fields.some(f=>f.k==='note')?'note':'work';o[key]=body;
+  if(/デモ|挑戦|やって/.test(t)&&o.cv&&!o.cv.includes(CV[4]))o.cv=[...o.cv,CV[4]];
+  drawCompose(o);saveDraft();$('#draft-hint').textContent='AIが項目に振り分けました。内容を確認してから投稿してください。';toast('話した内容を項目に振り分けました','AI');}
+
+/* ---------- notices ---------- */
+const whoLabel=u=>`${M[u].name}（${M[u].president?'社長':M[u].exec?'幹部':(DEPTS[M[u].dept]||{name:''}).name}・${M[u].loc}${M[u].admin?'・管理者':''}）`;
+function renderNotices(){
+  const v=state.nv;const vis=notices.filter(n=>canSee(n,v));
+  const unread=n=>n.must&&!n.readers.includes(v);
+  const list=vis.filter(n=>state.naud==='any'||n.aud===state.naud).sort((a,b)=>(unread(b)-unread(a))||(b.ts-a.ts));
+  const tabs=[['any','すべて',vis.length],...Object.entries(AUD).map(([k,a])=>[k,a.label,vis.filter(n=>n.aud===k).length])];
+  $('#view').innerHTML=`<div class="stack" style="max-width:840px;margin:0 auto">
+   <div class="page-head"><div><h1>お知らせ</h1><p>宛先（全社・幹部・本社・工場）に入っている人にだけ表示されます。必読は確認するまで上に残ります。</p></div><button class="btn btn-primary" data-ncompose style="margin-left:auto">${ic('pen')}お知らせを作成</button></div>
+   ${!DEMO?'':`<div class="panel" style="padding:12px 16px"><div class="frow"><span class="lbl" style="font-size:12px;color:var(--sub)">見本用：見る人を切り替えて、宛先ごとの表示の違いを確認できます</span><div class="seg">${VIEWERS.map(u=>`<label><input type="radio" name="nv" value="${u}" data-nv ${v===u?'checked':''}>${esc(whoLabel(u))}</label>`).join('')}</div></div></div>`}
+   <div class="tabs" role="tablist">${tabs.map(t=>`<button role="tab" data-naud="${t[0]}" aria-selected="${state.naud===t[0]}">${t[1]} <span class="num" style="color:var(--sub)">${t[2]}</span></button>`).join('')}</div>
+   ${list.length?list.map(n=>{const tot=AUD[n.aud].total;const pct=Math.round(n.read/tot*100);const own=n.sender&&n.sender!=='me';return `<article class="panel notice">
+    <div class="top"><span class="pill a-${n.aud}">${AUD[n.aud].label}</span>${n.must?'<span class="pill must">必読</span>':''}<h3>${esc(n.title)}</h3></div>
+    <div class="meta"><b style="color:var(--txt)">${esc(senderName(n))}${own?'より':''}</b>${own?` ・ 投稿：${esc(M[n.from].name)}`:''} ・ ${rel(n.ts)}</div>
+    <p>${esc(n.body)}</p>
+    ${filesHTML(n.files)}
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:180px"><div class="progress"><div style="width:${pct}%"></div></div><div class="meta" style="margin-top:4px">確認済み <span class="num">${n.read}</span> / <span class="num">${tot}</span>人（<span class="num">${pct}</span>%）</div></div>
+     ${n.readers.includes(v)?`<span class="pill p-demo">確認済み</span>`:`<button class="btn btn-primary btn-sm" data-ack="${n.id}">確認しました</button>`}
+     ${n.from===v||n.must?`<button class="btn btn-sm" data-remind="${n.id}">${ic('bell')}未確認の人にリマインド</button>`:''}</div>
+   </article>`}).join(''):`<div class="empty">この宛先のお知らせはありません。</div>`}
+   ${notices.length-vis.length?`<p class="meta" style="color:var(--sub);margin:0">${esc(M[v].name)}さんは宛先に入っていないお知らせが ${notices.length-vis.length}件あります（表示されません）。</p>`:''}
+  </div>`;
+}
+function openNoticeCompose(){
+  $('#modal-root').innerHTML=`<div class="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="お知らせを作成">
+   <div class="modal-top"><span class="ttl">お知らせを作成</span><div class="r"><button class="iconbtn" data-close-n aria-label="閉じる">${ic('x')}</button></div></div>
+   <div class="modal-body"><form class="form" id="nform" novalidate>
+    <div class="frow"><span class="lbl">発信元</span>${(()=>{const al=allowedSenders(state.nv);return al.length>1?`<div class="seg">${al.map((k,i)=>`<label><input type="radio" name="sender" value="${k}" ${i===0?'checked':''}>${esc(SENDERS[k])}</label>`).join('')}</div>`:`<div class="fixed-sender"><input type="hidden" name="sender" value="${al[0]}"><b>${esc(SENDERS[al[0]])}</b><span>${M[state.nv].president?'社長名義で固定':'所属部署の名義で固定'}</span></div>`})()}<span class="meta" style="color:var(--sub);font-size:12px">お知らせは部署などの名義で出します（個人名義はありません）。表示は「${esc(SENDERS[allowedSenders(state.nv)[0]])}より」となり、投稿者名は小さく添えられます。選べる名義は、M365のユーザー情報（所属部署・役職）から自動で決まります。</span></div>
+    <div class="frow"><span class="lbl">宛先</span><div class="seg">${Object.entries(AUD).map(([k,a],i)=>`<label><input type="radio" name="aud" value="${k}" ${i===0?'checked':''}>${a.label}（<span class="num">${a.total}</span>人）</label>`).join('')}</div></div>
+    <div class="frow"><div class="seg"><label><input type="checkbox" name="must" id="n-must">必読にする（全員の確認状況を記録します）</label></div></div>
+    <div class="frow"><label for="n-title">タイトル<span class="req">必須</span></label><input type="text" id="n-title" name="title"><div class="err" id="e-ntitle" hidden></div></div>
+    <div class="frow"><label for="n-body">本文<span class="req">必須</span></label><textarea id="n-body" name="body"></textarea><div class="err" id="e-nbody" hidden></div></div>
+    <div class="frow"><label for="n-files">写真・資料の添付</label><input type="file" id="n-files" multiple></div>
+   </form></div>
+   <div class="modal-foot"><button class="btn" data-close-n>キャンセル</button><button class="btn btn-primary" data-nsubmit>${ic('send')}お知らせを出す</button></div>
+  </div></div>`;
+}
+async function submitNotice(){const fm=$('#nform');const title=$('#n-title').value.trim(),body=$('#n-body').value.trim();
+  $('#e-ntitle').hidden=!!title;$('#e-ntitle').textContent='タイトルを入力してください。';$('#e-nbody').hidden=!!body;$('#e-nbody').textContent='本文を入力してください。';if(!title||!body)return;
+  const aud=fm.querySelector('[name=aud]:checked').value,sender=(fm.querySelector('[name=sender]:checked')||fm.querySelector('[name=sender]')).value,must=$('#n-must').checked;
+  if(!allowedSenders(state.nv).includes(sender)){toast('この名義ではお知らせを出せません');return}
+  const files=await readFiles($('#n-files').files);
+  const n={id:'n'+Date.now(),sender,aud,must,title,body,from:state.nv,ts:now(),read:1,readers:[state.nv],files};
+  if(!DEMO){const btn=$('[data-nsubmit]');const label=btn.innerHTML;btn.disabled=true;btn.textContent='出しています…';
+    try{await Store.notice(n)}catch(e){console.error(e);btn.disabled=false;btn.innerHTML=label;toast('お知らせを出せませんでした。通信を確かめて、もう一度押してください。');return}}
+  notices.push(n);
+  $('#modal-root').innerHTML='';state.naud='any';render();toast('お知らせを出しました');
+  teams(`${sender==='me'?M[state.nv].name+'さん':SENDERS[sender]}から${AUD[aud].label}（${AUD[aud].total}人）へ${must?'必読の':''}お知らせを通知しました`);}
+
+/* ---------- AI ---------- */
+function extractDeals(){
+  const out=[];posts.filter(p=>p.dept==='sales'&&p.date>=addDays(TODAY,-14)).forEach(p=>{
+    (p.fields.note||'').split(/\n\s*\n/).forEach(b=>{const c=b.match(/([^\s、。\n]+様)/);const pr=PRODUCTS.find(x=>b.includes(x));if(!c||!pr)return;
+      let st=null;if(/引き合い/.test(b))st=['引き合い','p-hot','見積を提出する'];else if(/見積/.test(b))st=['見積提出','p-q','回答期限を確認する'];else if(/デモ|貸し出/.test(b))st=['デモ調整','p-demo','デモ日程を確定する'];else if(/納品/.test(b))st=['納品済','p-done','追加注文をフォローする'];else if(/打ち合わせ|相談/.test(b))st=['商談中','p-q','提案資料を送る'];
+      if(st)out.push({date:p.date,user:p.user,cust:c[1],prod:pr,st,line:b.replace(c[1],'').replace(/\n/g,' ').trim().slice(0,46),pid:p.id})})});
+  return out.sort((a,b)=>b.date.localeCompare(a.date));
+}
+function aiToday(){
+  const today=posts.filter(p=>p.date===TODAY&&canSeePost(p));
+  return `<div class="stack"><p class="meta" style="margin:0;color:var(--sub)">${fmtD(TODAY)} 18:30時点の日報から、部署ごとのまとめを作りました。幹部用日報の下書きとして使えます。</p><div class="cols">${DORDER.map(d=>{const ps=today.filter(p=>p.dept===d);if(!ps.length)return '';
+   const D=DEPTS[d];const nf=D.fields.filter(f=>f.type==='number');const total=MEMBERS.filter(m=>m.dept===d).length;
+   const kpi=`<div class="kpis"><div><b class="num">${ps.length}/${total}</b>投稿</div>${nf.map(f=>`<div><b class="num">${ps.reduce((a,p)=>a+(+p.fields[f.k]||0),0)}</b>${esc(f.label.replace('業務センター内',''))}</div>`).join('')}</div>`;
+   let comment='';if(d==='sales'){const k=extractDeals().filter(x=>x.date===TODAY);comment=`引き合い・見積・デモの話題が${k.length}件ありました。展示会からの引き合いが中心です。`}
+   else if(d==='center'){const pn=ps.reduce((a,p)=>a+(+p.fields.pending||0),0);comment=`当日未処理が合計${pn}件で、昨日より多めです。見積依頼が一人に集中しているため、分担の見直しが必要かもしれません。`}
+   else comment='通常どおりの業務です。';
+   return `<div class="sum-card"><h4><span class="lane-icon" style="width:26px;height:26px;font-size:11px">${D.short}</span>${D.name}</h4>${kpi}<div>${esc(comment)}</div><ul>${ps.map(p=>`<li>${esc(M[p.user].name)}：${esc(mainText(p).split('\n').filter(Boolean).slice(0,2).join(' ').slice(0,52))}</li>`).join('')}</ul><div><button class="btn btn-sm" data-draft="${d}">${ic('pen')}幹部用日報の下書きにする</button></div></div>`}).join('')}</div></div>`;
+}
+function aiDeals(){const ds=extractDeals();
+  return `<div class="stack"><p class="meta" style="margin:0;color:var(--sub)">直近2週間の営業日報の「備考」から、顧客名・製品・状況を自動で取り出した一覧です。新しく投稿された日報も自動で追加されます。</p>
+  <div class="tbl-wrap"><table><thead><tr><th>日付</th><th>担当</th><th>顧客</th><th>製品</th><th>状況</th><th>日報の記載</th><th>次のアクション（AI提案）</th><th></th></tr></thead><tbody>
+  ${ds.map(x=>`<tr><td class="num" style="white-space:nowrap">${x.date.slice(5).replace('-','/')}</td><td style="white-space:nowrap">${esc(M[x.user].name)}</td><td style="white-space:nowrap"><b>${esc(x.cust)}</b></td><td style="white-space:nowrap">${esc(x.prod)}</td><td><span class="pill ${x.st[1]}">${x.st[0]}</span></td><td class="clip"><div>${esc(x.line)}</div></td><td style="white-space:nowrap">${x.st[2]}</td><td><button class="btn btn-sm" data-hub>HubSpotへ</button></td></tr>`).join('')}
+  </tbody></table></div></div>`}
+function aiVoice(){const ps=posts.filter(p=>p.date>=addDays(TODAY,-30)&&canSeePost(p));const counts=PRODUCTS.map(pr=>({pr,n:ps.filter(p=>mainText(p).includes(pr)).length})).sort((a,b)=>b.n-a.n);const mx=Math.max(...counts.map(c=>c.n),1);
+  const V=!DEMO?Object.fromEntries(counts.filter(c=>c.n).slice(0,3).map(c=>[c.pr,ps.filter(p=>mainText(p).includes(c.pr)).slice(0,2).map(p=>{const ln=mainText(p).split(/[\n。]/).find(x=>x.includes(c.pr))||'';return ln.trim().slice(0,60)+'（'+M[p.user].name+'）'})])):{'パレットレベラー':['展示会で引き合い。来週デモ機を貸し出し予定（佐藤）','荷物の載せ方が課題になりやすい（AIの傾向分析）'],'リフト台車':['650kgの荷物をどう載せるかが課題（高橋）','特注仕様の問い合わせが増えている（技術部 小林）'],'フラットカート':['展示会で見積依頼（鈴木）','10台規模の追加注文の相談（佐藤）']};
+  return `<div class="cols"><div class="panel"><h3>製品ごとの言及数（直近1か月）</h3><div class="bars">${counts.map((c,i)=>`<div class="bar"><span class="lab">${esc(c.pr)}</span><div class="track"><div class="fill ${i===0?'acc':''}" style="width:${c.n/mx*100}%"></div></div><span class="num" style="text-align:right">${c.n}</span></div>`).join('')}</div></div>
+  <div class="panel"><h3>現場の声（販売企画室・技術部向け）</h3><ul class="voices">${Object.entries(V).map(([k,v])=>v.map(t=>`<li>${esc(t)}<small>${esc(k)}</small></li>`).join('')).join('')}</ul></div></div>`}
+function monthStats(uid,ym){const ps=posts.filter(p=>p.user===uid&&p.date.startsWith(ym)&&p.dept==='sales').sort((a,b)=>a.date.localeCompare(b.date));
+  const visits=ps.reduce((a,p)=>a+(+p.fields.visits||0),0);const st=ps.reduce((a,p)=>a+stampCount(p),0);const cm=ps.reduce((a,p)=>a+p.comments.length,0);
+  const cv={};ps.forEach(p=>(p.fields.cv||[]).forEach(v=>cv[v]=(cv[v]||0)+1));const cust={};ps.forEach(p=>CUSTOMERS.forEach(c=>{if(mainText(p).includes(c))cust[c]=(cust[c]||0)+1}));
+  const prod={};ps.forEach(p=>PRODUCTS.forEach(c=>{if(mainText(p).includes(c))prod[c]=(prod[c]||0)+1}));
+  const learn={};ps.forEach(p=>LEARN.forEach(l=>{if(mainText(p).includes(l))learn[l]=(learn[l]||0)+1}));
+  return {ps,visits,st,cm,cv,cust,prod,learn};}
+function aiMonthly(){const RM=DEMO?'2026-10':LAST_MONTH;const s=monthStats(ME,RM);if(!s.ps.length)return `<div class="empty">${monthLabel(RM)}の営業本部の日報がまだありません。月次レポートは、営業本部の日報（訪問件数）から作ります。</div>`;const days=bizDays(RM+'-01',addDays(addDays(RM+'-01',32).slice(0,7)+'-01',-1));const byDay=Object.fromEntries(s.ps.map(p=>[p.date,+p.fields.visits||0]));
+  const mx=Math.max(4,...Object.values(byDay));const W=640,H=170,pl=28,pb=22,pt=10;const bw=(W-pl-8)/days.length;
+  const y=v=>pt+(H-pt-pb)*(1-v/mx);
+  const svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="10月の日別訪問件数"><g>${[0,2,4].filter(v=>v<=mx).map(v=>`<line class="gl" x1="${pl}" x2="${W-4}" y1="${y(v)}" y2="${y(v)}"/><text x="${pl-6}" y="${y(v)+4}" text-anchor="end">${v}</text>`).join('')}</g>
+   ${days.map((d,i)=>{const v=byDay[d];const x=pl+i*bw+bw*.18;const h=v===undefined?0:(H-pt-pb)*(v/mx);return `${v===undefined?`<rect class="b zero" x="${x}" y="${y(0)-2}" width="${bw*.64}" height="2"/>`:`<rect class="b ${v?'':'zero'}" x="${x}" y="${v?y(v):y(0)-2}" width="${bw*.64}" height="${v?h:2}" rx="2"><title>${d} ${v}件</title></rect>`}${i%5===0?`<text x="${x+bw*.32}" y="${H-6}" text-anchor="middle">${+d.slice(8)}日</text>`:''}`}).join('')}</svg>`;
+  const top=o=>Object.entries(o).sort((a,b)=>b[1]-a[1]);const cvs=top(s.cv);const cmx=Math.max(1,...cvs.map(c=>c[1]));
+  const tc=top(s.cust).slice(0,3).map(c=>c[0]);const tp=top(s.prod)[0];const tl=top(s.learn).slice(0,3).map(c=>c[0]);
+  const text=`10月は${s.ps.length}日分の日報を投稿し、訪問は合計${s.visits}件（1日平均${(s.visits/Math.max(1,s.ps.length)).toFixed(1)}件）でした。\nよく訪問したのは${tc.join('、')}です。話題に一番多く出た製品は${tp?tp[0]:'—'}（${tp?tp[1]:0}日）でした。\n日報には${s.st}個のスタンプと${s.cm}件のコメントが付いています。\n全社VALUEでは${cvs[0]?cvs[0][0]:''}を最も多く選んでいます。`;
+  return `<div class="stack"><div class="page-head" style="align-items:center"><div><h3 style="margin:0;font-family:var(--font)">${esc(M[ME].name)}さんの10月の振り返り</h3><p>先月の自分の日報から自動で作成。面談や評価の材料に使えます。</p></div><button class="btn btn-sm" data-goexp style="margin-left:auto">${ic('down')}この月の日報を出力</button></div>
+   <div class="digest-stats panel" style="padding:14px 18px"><div><span class="v num">${s.ps.length}</span><span class="l">投稿日数</span></div><div><span class="v num">${s.visits}</span><span class="l">訪問件数</span></div><div><span class="v num">${(s.visits/Math.max(1,s.ps.length)).toFixed(1)}</span><span class="l">1日平均</span></div><div><span class="v num">${s.st}</span><span class="l">もらったスタンプ</span></div><div><span class="v num">${s.cm}</span><span class="l">コメント</span></div></div>
+   <div class="panel"><h3><span class="ai-tag">${ic('spark')}AI要約</span></h3><div class="ai-text">${esc(text)}</div>${tl.length?`<h4 style="margin:14px 0 4px;font-size:13px">繰り返し書いている学び</h4><ul style="margin:0;padding-left:1.2em">${tl.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>`:''}</div>
+   <div class="cols"><div class="panel chart"><h3>日別の訪問件数</h3>${svg}</div>
+   <div class="panel"><h3>選んだ全社VALUE</h3><div class="bars">${cvs.map(([k,v])=>`<div class="bar"><span class="lab" title="${esc(k)}">${esc(k)}</span><div class="track"><div class="fill" style="width:${v/cmx*100}%"></div></div><span class="num" style="text-align:right">${v}</span></div>`).join('')}</div></div></div></div>`}
+function renderAI(){const T=[['today','今日の部署まとめ'],['deals','案件の自動抽出'],['voice','製品の声'],['monthly','個人の月次レポート']];
+  $('#view').innerHTML=`<div class="stack"><div class="page-head"><div><h1>AI分析</h1><p>${DEMO?'日報の内容をAIが読み取ってまとめます。見本では架空の日報から作っています。':'日報の内容から自動でまとめます（試験版：決まった言い回しを手がかりにした簡易な読み取りです。本格的なAIは次の段階）。'}</p></div></div>
+   <div class="tabs" role="tablist">${T.map(t=>`<button role="tab" data-aitab="${t[0]}" aria-selected="${state.aiTab===t[0]}">${t[1]}</button>`).join('')}</div>
+   <div>${({today:aiToday,deals:aiDeals,voice:aiVoice,monthly:aiMonthly})[state.aiTab]()}</div></div>`;}
+
+/* ---------- export ---------- */
+function expRows(){const e=state.exp;let ps=posts.filter(p=>canSeePost(p));
+  if(e.scope==='mine')ps=ps.filter(p=>p.user===ME);else if(e.scope==='dept')ps=ps.filter(p=>p.dept===M[ME].dept);
+  if(e.scope==='all'&&e.dept!=='all')ps=ps.filter(p=>p.dept===e.dept);
+  if(e.period==='custom')ps=ps.filter(p=>p.date>=e.from&&p.date<=e.to);else ps=ps.filter(p=>p.date.startsWith(e.period));
+  ps.sort((a,b)=>a.date.localeCompare(b.date)||a.ts-b.ts);
+  const depts=[...new Set(ps.map(p=>p.dept))];const cols=[];depts.forEach(d=>DEPTS[d].fields.forEach(f=>{if(f.k!=='date'&&!cols.some(c=>c.label===f.label))cols.push(f)}));
+  const head=['日報日付','部署','氏名',...cols.map(c=>c.label),'スタンプ数','コメント数','既読数'];
+  const rows=ps.map(p=>[p.date,DEPTS[p.dept].name,M[p.user].name,...cols.map(c=>{const f=DEPTS[p.dept].fields.find(x=>x.label===c.label);const v=f?p.fields[f.k]:'';return Array.isArray(v)?v.join(' / '):(v??'')}),stampCount(p),p.comments.length,p.readBy.length]);
+  return {head,rows,ps};}
+const csvCell=v=>{const s=String(v??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+function renderExport(){const e=state.exp;const {head,rows,ps}=expRows();const ym=e.period==='custom'?`${e.from}〜${e.to}`:monthLabel(e.period);
+  const s=e.scope==='mine'&&e.period!=='custom'?monthStats(ME,e.period):null;
+  $('#view').innerHTML=`<div class="stack"><div class="page-head"><div><h1>日報の出力</h1><p>条件を選んで、日報をCSV（Excelで開けます）にまとめて出力します。</p></div></div>
+   <div class="panel"><form class="ctrls" id="expform">
+    <div class="frow"><span class="lbl">対象</span><div class="seg">${[['mine','自分の日報'],['dept',`所属部署（${(DEPTS[M[ME].dept]||{name:'役員'}).name}）`],['all','全社（見られる範囲）']].map(o=>`<label><input type="radio" name="scope" value="${o[0]}" ${e.scope===o[0]?'checked':''}>${o[1]}</label>`).join('')}</div></div>
+    <div class="frow"><span class="lbl">期間</span><div class="seg">${[[LAST_MONTH,`先月（${+LAST_MONTH.slice(5)}月）`],[THIS_MONTH,`今月（${+THIS_MONTH.slice(5)}月）`],['custom','期間を指定']].map(o=>`<label><input type="radio" name="period" value="${o[0]}" ${e.period===o[0]?'checked':''}>${o[1]}</label>`).join('')}</div>
+     ${e.period==='custom'?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="date" id="ex-from" name="from" value="${e.from}" style="max-width:170px"> 〜 <input type="date" id="ex-to" name="to" value="${e.to}" style="max-width:170px"></div>`:''}</div>
+    ${e.scope==='all'?`<div class="frow"><label for="ex-dept">日報の種類</label><select id="ex-dept" name="dept"><option value="all">すべて</option>${DORDER.map(d=>`<option value="${d}" ${e.dept===d?'selected':''}>${formName(d)}</option>`).join('')}</select></div>`:''}
+    <div class="frow"><span class="lbl">オプション</span><div class="seg"><label><input type="checkbox" name="ai" ${e.ai?'checked':''}>AIの月次まとめを付ける</label></div></div>
+   </form></div>
+   ${e.ai&&s&&s.ps.length?`<div class="panel"><h3><span class="ai-tag">${ic('spark')}AI月次まとめ</span> ${ym}</h3><div class="ai-text">${esc(`${M[ME].name}さん：投稿${s.ps.length}日、訪問${s.visits}件。よく訪問した顧客は${Object.entries(s.cust).sort((a,b)=>b[1]-a[1]).slice(0,3).map(c=>c[0]).join('、')}。CSVの先頭行にこのまとめを入れて出力します。`)}</div></div>`:''}
+   <div class="panel stack"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3 style="margin:0">プレビュー</h3><span class="meta" style="color:var(--sub)"><span class="num">${rows.length}</span>件 ・ ${ym}</span>
+     <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" data-dl ${rows.length?'':'disabled'}>${ic('down')}CSVをダウンロード</button><button class="btn" data-copycsv ${rows.length?'':'disabled'}>${ic('copy')}CSVをコピー</button></div></div>
+    ${rows.length?`<div class="tbl-wrap"><table><thead><tr>${head.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.slice(0,8).map(r=>`<tr>${r.map((c,i)=>`<td class="${i>2?'clip':''}" style="${i<3?'white-space:nowrap':''}"><div>${esc(c)}</div></td>`).join('')}</tr>`).join('')}</tbody></table></div>${rows.length>8?`<div class="meta" style="color:var(--sub)">先頭8件を表示しています。出力には${rows.length}件すべてが入ります。</div>`:''}`:`<div class="empty">この条件の日報はありません。</div>`}
+    <textarea class="csvbox" id="csvbox" hidden readonly aria-label="CSVの内容"></textarea>
+   </div></div>`;}
+/* ---------- admin: M365 user info ---------- */
+// M365（Entra ID）の登録情報（ダミー）。実際の登録の持ち方（2026-11-13 確認）に合わせている：
+// 部署欄には拠点・工場名が入る／勤務地は「本社」「工場」／役職はほぼ空欄／権限はアプリ用のセキュリティグループで判定
+/* 本番では起動時に、読み込んだ社員の部署・勤務地から作る */
+const M365=!DEMO?{}:{
+ u1:{dept:'東京営業',title:'',office:'本社',groups:[]},
+ u2:{dept:'ソリューション営業部',title:'',office:'本社',groups:['HL-幹部']},
+ u3:{dept:'名古屋',title:'',office:'本社',groups:[]},
+ u4:{dept:'大阪',title:'',office:'本社',groups:[]},
+ u5:{dept:'全社業務センター',title:'',office:'本社',groups:[]},
+ u6:{dept:'全社業務センター',title:'一般',office:'本社',groups:[]},
+ u7:{dept:'第一工場',title:'',office:'工場',groups:[]},
+ u8:{dept:'第三工場',title:'',office:'',groups:[]},
+ u9:{dept:'技術部',title:'',office:'工場',groups:[]},
+ u10:{dept:'品質管理部',title:'',office:'工場',groups:[]},
+ u11:{dept:'総務部',title:'',office:'本社',groups:['HL-アプリ管理者']},
+ u12:{dept:'販売企画室',title:'',office:'本社',groups:[]},
+ u13:{dept:'役員',title:'',office:'本社',groups:['HL-社長','HL-幹部']},
+};
+const CANON={...Object.fromEntries(DORDER.map(d=>[DEPTS[d].name,d])),'役員':'exec'};
+// 部署欄の読み替え（拠点・工場 → アプリの部署）
+const ALIAS={'東京営業':'sales','大阪':'sales','名古屋':'sales','ソリューション営業部':'sales','第一工場':'mfg','第二工場':'mfg','第三工場':'mfg','工場':'mfg'};
+// 日報はないが、閲覧・リアクションはできる部署
+const VIEW_ONLY={'CSエンジニアリング室':'日報なし（閲覧・スタンプ・コメントのみ）'};
+const ROLES=[['HL-社長','社長名義のお知らせ（1人に固定）'],['HL-幹部','「幹部のみ」のお知らせ・幹部用日報の閲覧'],['HL-アプリ管理者','オリジナルスタンプ作成・ユーザー管理']];
+const EXCLUDED=[['共有アカウント','工場共有1〜4・本社共有01','個人を特定できないため対象外'],['退職者','サインイン停止・削除したアカウント','自動で対象外'],['会議室・営業車・受付用','会議室、営業車、FAX・問い合わせ受信など','人ではないため対象外'],['ゲスト','社外の方','招待した人だけ対象（閲覧範囲を個別に設定）']];
+function userIssues(id){const u=M365[id];const out=[];
+  if(!u.dept)out.push(['bad','部署が未登録','所属部署の日報・名義が決まりません']);
+  else if(!CANON[u.dept]&&!ALIAS[u.dept]&&!VIEW_ONLY[u.dept])out.push(['bad',`不明な部署「${u.dept}」`,'読み替えルールの追加が必要です']);
+  if(!u.office)out.push(['bad','勤務地が未登録','本社・工場あてのお知らせが届きません']);
+  else if(!['本社','工場'].includes(u.office))out.push(['warn',`勤務地「${u.office}」`,'「本社」か「工場」に直してください']);
+  return out;}
+const appDept=u=>{const k=CANON[u.dept]||ALIAS[u.dept];return k?(k==='exec'?'役員':DEPTS[k].name):VIEW_ONLY[u.dept]?u.dept:null};
+const EDIT_ROLES=[{g:'HL-幹部',label:'幹部'},{g:'HL-アプリ管理者',label:'管理者'}];
+const ROLE_LOG=[];
+function setRole(uid,g,on,el){if(!DEMO){el.checked=!on;toast('権限の変更は、今は M365 管理センターで行ってください（アプリからの変更は次の段階で対応します）');return}const u=M365[uid];const has=u.groups.includes(g);if(on===has)return;
+  if(g==='HL-アプリ管理者'&&!on){const left=MEMBERS.filter(m=>m.id!==uid&&M365[m.id].groups.includes(g)).length;
+    if(!left){el.checked=true;toast('管理者が1人もいなくなるため外せません。先にほかの人を管理者にしてください。');return}}
+  if(on)u.groups.push(g);else u.groups=u.groups.filter(x=>x!==g);
+  if(g==='HL-アプリ管理者')M[uid].admin=on;
+  const d=new Date(now());ROLE_LOG.push({t:`${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`,by:ME,uid,g,add:on});
+  toast(`${M[uid].name}さんを「${g}」${on?'に追加':'から外'}しました（本番ではM365のグループに反映。見本のため実際には変更しません）`);
+  if(!M[ME].admin){state.view='timeline';try{history.replaceState(null,'','#timeline')}catch(e){}render();toast('自分を管理者から外したため、ユーザー管理の画面を閉じました');return}
+  renderChrome();renderAdmin();}
+function renderAdmin(){
+  if(!M[ME].admin){$('#view').innerHTML=`<div class="empty">ユーザー管理はアプリ管理者（HL-アプリ管理者）だけが見られます。${DEMO?'見本では右上の「表示中」を吉田 早苗さん（総務・管理者）に切り替えてください。':''}</div>`;return}
+  const ids=MEMBERS.map(m=>m.id);const iss=Object.fromEntries(ids.map(id=>[id,userIssues(id)]));
+  const need=ids.filter(id=>iss[id].length);
+  const cnt=k=>ids.filter(id=>iss[id].some(x=>x[1].startsWith(k))).length;
+  const list=state.admFilter==='need'?need:ids;
+  const grpCount=g=>ids.filter(id=>M365[id].groups.includes(g)).length;
+  $('#view').innerHTML=`<div class="stack">
+   <div class="page-head"><div><h1>ユーザー管理</h1><p>M365（Entra ID）の登録情報を毎日自動で取り込み、アプリの部署・宛先・権限を決めます。修正はM365側で行うと、次の同期で反映されます。</p></div>
+    <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-sync>${ic('down')}今すぐ同期</button><a class="btn" href="https://admin.microsoft.com/" target="_blank" rel="noopener">M365管理センターを開く</a></div></div>
+   <div class="sync-line"><span class="dot-ok"></span>${DEMO?'最終同期：2026年11月12日 18:00 ・ 見本のため架空のデータです（項目の持ち方は実際のM365に合わせています）':'M365 の登録情報を、この画面を開いたときに読み込んでいます（権限グループの変更は M365 管理センターで行います）'}</div>
+   <div class="adm-kpis">
+    <div class="kpi"><span class="v num">${ids.length}</span><span class="l">アプリの利用者</span></div>
+    <div class="kpi ${need.length?'is-warn':''}"><span class="v num">${need.length}</span><span class="l">要対応のユーザー</span></div>
+    <div class="kpi ${cnt('部署が未登録')+cnt('不明な部署')?'is-bad':''}"><span class="v num">${cnt('部署が未登録')+cnt('不明な部署')}</span><span class="l">部署が未登録・不明</span></div>
+    <div class="kpi ${cnt('勤務地')?'is-bad':''}"><span class="v num">${cnt('勤務地')}</span><span class="l">勤務地が未登録・不正</span></div>
+    <div class="kpi"><span class="v num">${ids.filter(id=>ALIAS[M365[id].dept]).length}</span><span class="l">拠点名から部署を読み替え</span></div>
+   </div>
+   <div class="panel stack"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3 style="margin:0">ユーザー一覧</h3>
+     <div class="seg" style="margin-left:auto"><label><input type="radio" name="admf" value="all" data-admf ${state.admFilter!=='need'?'checked':''}>すべて（${ids.length}）</label><label><input type="radio" name="admf" value="need" data-admf ${state.admFilter==='need'?'checked':''}>要対応のみ（${need.length}）</label></div></div>
+    <div class="tbl-wrap"><table class="adm"><thead><tr><th>氏名</th><th>M365の部署</th><th>アプリでの部署</th><th>勤務地</th><th>お知らせの宛先</th><th>権限（M365グループ）</th><th>出せる名義</th><th>状態</th></tr></thead><tbody>
+    ${list.map(id=>{const u=M365[id];const ad=appDept(u);const is=iss[id];return `<tr>
+      <td style="white-space:nowrap"><div class="who">${av(id)}<b>${esc(M[id].name)}</b></div></td>
+      <td>${u.dept?esc(u.dept):'<span class="miss">未登録</span>'}</td>
+      <td style="white-space:nowrap">${ad?esc(ad):'<span class="miss">判定できない</span>'}</td>
+      <td style="white-space:nowrap">${u.office?esc(u.office):'<span class="miss">未登録</span>'}</td>
+      <td style="white-space:nowrap">全社${u.office==='本社'?'・本社':u.office==='工場'?'・工場':''}${u.groups.includes('HL-幹部')?'・幹部':''}</td>
+      <td><div class="rolebox">
+        ${u.groups.includes('HL-社長')?`<span class="rolefix" title="社長は固定です">${ic('lock')}社長</span>`:''}
+        ${EDIT_ROLES.map(r=>`<label class="rolechk"><input type="checkbox" data-role="${r.g}" data-uid="${id}" ${u.groups.includes(r.g)?'checked':''}>${r.label}</label>`).join('')}
+      </div></td>
+      <td style="white-space:nowrap">${allowedSenders(id).map(s=>SENDERS[s]).join('・')||'<span class="miss">なし</span>'}</td>
+      <td>${is.length?`<ul class="issues">${is.map(x=>`<li class="i-${x[0]}"><b>${esc(x[1])}</b><span>${esc(x[2])}</span></li>`).join('')}</ul>`:'<span class="pill p-demo">問題なし</span>'}</td></tr>`}).join('')}
+    </tbody></table></div></div>
+   <div class="cols">
+    <div class="panel"><h3>部署の決め方</h3><p class="meta" style="color:var(--sub);margin:0 0 10px;font-size:12px">M365の部署欄に入っている拠点・工場名を、アプリの部署に読み替えます。拠点名は絞り込みや集計に使えるよう残します。</p>
+     <div class="tbl-wrap"><table><thead><tr><th>M365の部署欄</th><th>アプリでの部署</th></tr></thead><tbody>
+      <tr><td>東京営業・大阪・名古屋・ソリューション営業部</td><td>営業本部</td></tr>
+      <tr><td>第一工場・第二工場・第三工場・工場</td><td>製造部</td></tr>
+      <tr><td>全社業務センター・技術部・品質管理部・総務部・販売企画室・役員</td><td>そのまま</td></tr>
+      ${Object.entries(VIEW_ONLY).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}
+     </tbody></table></div></div>
+    <div class="panel"><h3>宛先と権限の決め方</h3><p class="meta" style="color:var(--sub);margin:0 0 10px;font-size:12px">本社・工場は勤務地の欄で、少人数の権限だけアプリ用のセキュリティグループで判定します。</p>
+     <div class="tbl-wrap"><table><thead><tr><th>判定に使うもの</th><th>人数</th><th>アプリでの意味</th></tr></thead><tbody>
+      <tr><td>勤務地「本社」</td><td class="num">${ids.filter(id=>M365[id].office==='本社').length}</td><td>「本社のみ」の宛先（大阪・名古屋の営業所を含む）</td></tr>
+      <tr><td>勤務地「工場」</td><td class="num">${ids.filter(id=>M365[id].office==='工場').length}</td><td>「工場のみ」の宛先</td></tr>
+      <tr><td>部署「総務部」</td><td class="num">${ids.filter(id=>M365[id].dept==='総務部').length}</td><td>「会社」「総務部」名義のお知らせ・総務部日報の閲覧</td></tr>
+      ${ROLES.map(r=>`<tr><td><span class="gchip">${r[0]}</span></td><td class="num">${grpCount(r[0])}</td><td>${r[1]}</td></tr>`).join('')}
+     </tbody></table></div></div>
+    <div class="panel"><h3>権限の変更履歴</h3><p class="meta" style="color:var(--sub);margin:0 0 10px;font-size:12px">ユーザー一覧のチェックで変えた内容です。本番では、M365のグループにそのまま反映し、履歴も残ります。</p>
+     ${ROLE_LOG.length?`<ul class="rlog">${ROLE_LOG.slice().reverse().map(l=>`<li><span class="num">${l.t}</span><b>${esc(M[l.by].name)}</b>が<b>${esc(M[l.uid].name)}</b>を「${esc(l.g)}」${l.add?'に追加':'から外しました'}</li>`).join('')}</ul>`:'<div class="muted" style="font-size:13px">まだ変更はありません。</div>'}</div>
+    <div class="panel"><h3>アプリの対象外にするアカウント</h3>
+     <div class="tbl-wrap"><table><thead><tr><th>種類</th><th>例</th><th>扱い</th></tr></thead><tbody>${EXCLUDED.map(r=>`<tr><td style="white-space:nowrap">${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('')}</tbody></table></div></div>
+   </div></div>`;}
+function buildCSV(){const e=state.exp;const {head,rows}=expRows();let lines=[];const s=e.scope==='mine'&&e.period!=='custom'?monthStats(ME,e.period):null;
+  if(e.ai&&s&&s.ps.length)lines.push(csvCell(`AI月次まとめ：投稿${s.ps.length}日、訪問${s.visits}件、スタンプ${s.st}個`),'');
+  lines.push(head.map(csvCell).join(','));rows.forEach(r=>lines.push(r.map(csvCell).join(',')));return '﻿'+lines.join('\r\n');}
+
+/* ---------- events ---------- */
+document.addEventListener('click',e=>{
+  const lb=e.target.closest('.lb');if(lb){if(e.target.tagName!=='VIDEO'){lb.querySelectorAll('video').forEach(v=>v.pause());lb.remove()}return}
+  const t=e.target.closest('button,a,[data-close]');if(!t)return;
+  if(t.matches('[data-act="compose"]')){const mf=DEMO?DORDER:myForms();if(!mf.length){toast('書ける日報がありません');return}openCompose(mf.includes(M[ME].dept)?M[ME].dept:mf[0]);return}
+  if(t.dataset.open){if(t.dataset.lane&&state.lists&&state.lists[t.dataset.lane])state.list=state.lists[t.dataset.lane];openPost(t.dataset.open);return}
+  if(t.hasAttribute('data-sync')){if(DEMO){toast('M365から最新の登録情報を取り込みました（見本のため架空のデータのままです）');return}location.reload();return}
+  if(t.hasAttribute('data-search')){toast('検索は次の段階で対応します');return}
+  if(t.dataset.filter!==undefined){state.filter=t.dataset.filter;renderTimeline();return}
+  if(t.dataset.readall){let n=0;posts.filter(p=>p.dept===t.dataset.readall&&isUnread(p)).forEach(p=>{p.readBy.push(ME);Store.act(p,'read');n++});renderTimeline();toast(`${DEPTS[t.dataset.readall].name}の日報${n}件を既読にしました`);return}
+  if(t.dataset.dept!==undefined){state.dept=t.dataset.dept||null;renderTimeline();return}
+  if(t.dataset.goto){location.hash=t.dataset.goto;return}
+  if(t.hasAttribute('data-close')&&(t.tagName==='BUTTON'||e.target===t)){closeModal();return}
+  if(t.dataset.nav){navPost(+t.dataset.nav);return}
+  if(t.hasAttribute('data-bm')){const p=posts.find(x=>x.id===cur);p.bookmarked=!p.bookmarked;t.setAttribute('aria-pressed',p.bookmarked);toast(p.bookmarked?'ブックマークに追加しました':'ブックマークを外しました');return}
+  if(t.hasAttribute('data-pal')){stampForm=false;redrawKeep(!document.querySelector('.palette'));return}
+  if(t.hasAttribute('data-stk')){stkOpen=!stkOpen;emoOpen=false;const pal=!!document.querySelector('.palette');redrawKeep(pal);return}
+  if(t.hasAttribute('data-emoji')){emoOpen=!emoOpen;stkOpen=false;redrawKeep(!!document.querySelector('.palette'));return}
+  if(t.dataset.emo){const ta=$('#cmt-in');const s=ta.selectionStart??ta.value.length;ta.value=ta.value.slice(0,s)+t.dataset.emo+ta.value.slice(ta.selectionEnd??s);ta.focus();ta.selectionStart=ta.selectionEnd=s+t.dataset.emo.length;return}
+  if(t.dataset.delask!==undefined){delAsk=+t.dataset.delask;redrawKeep(!!document.querySelector('.palette'));return}
+  if(t.hasAttribute('data-delno')){delAsk=null;redrawKeep(!!document.querySelector('.palette'));return}
+  if(t.dataset.delcmt!==undefined){const p=posts.find(x=>x.id===cur);const c=p.comments[+t.dataset.delcmt];if(c&&c.user===ME){p.comments.splice(+t.dataset.delcmt,1);Store.unact(p,c)}delAsk=null;redrawKeep(!!document.querySelector('.palette'));toast('コメントを削除しました');return}
+  if(t.dataset.sendstk){sendSticker(t.dataset.sendstk);return}
+  if(t.hasAttribute('data-sform')){stampForm=!stampForm;redrawKeep(true);const i=$('#sf-text');i&&i.focus();return}
+  if(t.hasAttribute('data-scancel')){stampForm=false;redrawKeep(true);return}
+  if(t.hasAttribute('data-screate')){createStamp();return}
+  if(t.dataset.stamp){toggleStamp(t.dataset.stamp);return}
+  if(t.hasAttribute('data-send')){sendComment();return}
+  if(t.dataset.mention){insertMention(t.dataset.mention);return}
+  if(t.hasAttribute('data-close-c')){$('#modal-root').innerHTML='';toast('下書きを保存しました');return}
+  if(t.hasAttribute('data-submit')){submitPost();return}
+  if(t.hasAttribute('data-copyprev')){copyPrev();return}
+  if(t.hasAttribute('data-voice')){voicePanel();return}
+  if(t.hasAttribute('data-aifill')){aiFill();return}
+  if(t.dataset.ack){const n=notices.find(x=>x.id===t.dataset.ack);n.readers.push(state.nv);n.read++;Store.ack(n);render();toast('確認済みにしました');return}
+  if(t.dataset.remind){const n=notices.find(x=>x.id===t.dataset.remind);teams(`${AUD[n.aud].label}のうち未確認の${AUD[n.aud].total-n.read}人に「${n.title}」のリマインドを送りました`);return}
+  if(t.dataset.naud){state.naud=t.dataset.naud;renderNotices();return}
+  if(t.hasAttribute('data-ncompose')){openNoticeCompose();return}
+  if(t.hasAttribute('data-close-n')){$('#modal-root').innerHTML='';return}
+  if(t.hasAttribute('data-nsubmit')){submitNotice();return}
+  if(t.dataset.rmfile!==undefined){cfiles.splice(+t.dataset.rmfile,1);$('#cfiles').innerHTML=cfilesHTML();return}
+  if(t.dataset.lb){lightbox(t.dataset.lb);return}
+  if(t.dataset.file){const f=FILES[t.dataset.file];if(DEMO){toast(`本番では「${f.name}」を開きます（SharePointに保存）`);return}Store.openFile(f);return}
+  if(t.hasAttribute('data-teams-km')){toast('ワイワイガヤガヤのナレッジ共有は、Teamsの「ナレッジ共有」チャネルに移行する想定です（今は案内だけです）','TEAMS');return}
+  if(t.dataset.aitab){state.aiTab=t.dataset.aitab;renderAI();return}
+  if(t.dataset.draft){toast('幹部用日報への下書きは次の段階で対応します','AI');return}
+  if(t.hasAttribute('data-hub')){toast('HubSpot への登録は次の段階で対応します');return}
+  if(t.hasAttribute('data-goexp')){state.exp.scope='mine';state.exp.period=DEMO?'2026-10':LAST_MONTH;location.hash='export';return}
+  if(t.hasAttribute('data-dl')){if(DEMO){toast('見本の画面ではダウンロードできないため、「CSVをコピー」をお使いください。');return}const b=new Blob([buildCSV()],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`日報_${state.exp.period==='custom'?state.exp.from+'_'+state.exp.to:state.exp.period}.csv`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);return}
+  if(t.hasAttribute('data-copycsv')){const csv=buildCSV();const box=$('#csvbox');
+    const fallback=()=>{box.hidden=false;box.value=csv.slice(1);box.focus();box.select();toast('コピーできなかったため、下の欄に表示しました。選択してコピーしてください。')};
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(csv.slice(1)).then(()=>toast(`${expRows().rows.length}件のCSVをコピーしました。Excelに貼り付けできます。`)).catch(fallback)}else fallback();return}
+});
+document.addEventListener('input',e=>{
+  if(e.target.id==='cmt-in'){mentionUI();e.target.style.height='auto';e.target.style.height=Math.min(120,e.target.scrollHeight)+'px';return}
+  if(e.target.closest('#cform')&&e.target.id!=='c-dept'&&e.target.id!=='c-files'){saveDraft()}
+});
+document.addEventListener('change',e=>{
+  if(e.target.id==='c-dept'){saveDraft();openCompose(e.target.value);return}
+  if(e.target.id==='cmt-file'||e.target.id==='cmt-img'){const inp=e.target;readFiles(inp.files).then(fs=>{cfiles.push(...fs);$('#cfiles').innerHTML=cfilesHTML();inp.value=''});return}
+  if(e.target.dataset.role){setRole(e.target.dataset.uid,e.target.dataset.role,e.target.checked,e.target);return}
+  if(e.target.hasAttribute('data-admf')){state.admFilter=e.target.value;renderAdmin();return}
+  if(e.target.hasAttribute('data-nv')||e.target.id==='viewer'){ME=state.nv=e.target.value;state.naud='any';state.filter='all';state.dept=null;cur=null;$('#modal-root').innerHTML='';render();toast(`${whoLabel(ME)}として表示しています`);return}
+  const f=e.target.closest('#expform');if(f){const n=e.target.name;if(n==='ai')state.exp.ai=e.target.checked;else state.exp[n]=e.target.value;if(n==='scope'&&e.target.value!=='all')state.exp.dept='all';renderExport();}
+});
+document.addEventListener('keydown',e=>{
+  const lb=document.querySelector('.lb');if(lb){if(e.key==='Escape')lb.remove();return}
+  if(!cur||!$('#modal-root').innerHTML)return;
+  if(e.target.id==='cmt-in'){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();sendComment()}if(e.key==='Escape')$('#mlist').hidden=true;return}
+  if(e.key==='Escape')closeModal();if(e.key==='ArrowRight')navPost(1);if(e.key==='ArrowLeft')navPost(-1);
+});
+/* ============================================================
+   SharePoint とのやりとり（本番）
+   ------------------------------------------------------------
+   置き場：サイト /sites/hanaoka-link（SITE）
+     日報   LINK_日報 / LINK_日報_総務 / LINK_日報_幹部
+     反応   LINK_反応 / …_総務 / …_幹部（コメント・スタンプ・既読・お知らせの確認。1件1行）
+     お知らせ LINK_お知らせ / LINK_お知らせ_幹部
+     添付   ライブラリ LINK_添付 のフォルダ 全社 / 総務 / 幹部
+   見られない区分のリストは、権限が無いので一覧に出てこない＝読み込まない。
+   書き込みは「自分が作った行だけ直せる」設定なので、ほかの人の行は消せない。
+   見本モード（DEMO）では何もしない。
+   ============================================================ */
+const SITE='hanaokacorp.sharepoint.com,01d1ee65-8d94-4ec9-b491-ab492fe3928f,8f58d873-c5fa-4a0a-8080-c0161cf10d2a';
+const GRAPH='https://graph.microsoft.com/v1.0';
+const SCOPES=['User.Read','User.Read.All','Sites.ReadWrite.All'];
+const GROUP_IDS={president:'0d7c0b59-2ba0-46aa-8180-1226722081f9',kanbu:'85b63d8e-1b6f-4cc1-99b5-f9ce16bfcb1d',admin:'6e2a618f-6a3a-435f-b51a-b3afbe4df891'};
+const AREA={
+  all:  {post:'LINK_日報',     act:'LINK_反応',     notice:'LINK_お知らせ',     folder:'全社'},
+  soumu:{post:'LINK_日報_総務',act:'LINK_反応_総務',                         folder:'総務'},
+  kanbu:{post:'LINK_日報_幹部',act:'LINK_反応_幹部',notice:'LINK_お知らせ_幹部',folder:'幹部'},
+};
+const LOAD_DAYS=62, READ_DAYS=4, NOTICE_DAYS=120;   // 読み込む期間（日報・コメント／既読／お知らせ）
+const PREFER={Prefer:'HonorNonIndexedQueriesWarningMayFailRandomly'};
+let pca=null, account=null;
+const SEEN_KEY='link-seen';
+const seenSet=new Set(store.get(SEEN_KEY)||[]);
+
+const Store={
+  lists:{}, drive:null, areas:[], groupsKnown:false,
+  async token(){const r=await pca.acquireTokenSilent({scopes:SCOPES,account});return r.accessToken},
+  async g(method,url,body,headers,retry=1){
+    const h={Authorization:'Bearer '+await this.token(),...(headers||{})};let b=body;
+    if(body&&!(body instanceof Blob)&&!(body instanceof ArrayBuffer)){h['Content-Type']='application/json';b=JSON.stringify(body)}
+    const r=await fetch(url.startsWith('http')?url:GRAPH+url,{method,headers:h,body:b});
+    if((r.status===429||r.status===503)&&retry>0){await new Promise(z=>setTimeout(z,(+r.headers.get('Retry-After')||2)*1000));return this.g(method,url,body,headers,retry-1)}
+    if(r.status===204)return null;
+    const txt=await r.text();let j=null;try{j=txt?JSON.parse(txt):null}catch(e){}
+    if(!r.ok){const e=new Error((j&&j.error&&j.error.message)||('HTTP '+r.status));e.status=r.status;throw e}
+    return j;
+  },
+  async all(url,headers){let out=[],n=url;while(n){const j=await this.g('GET',n,null,headers);out=out.concat(j.value||[]);n=j['@odata.nextLink']}return out},
+  listUrl(name){const id=this.lists[name];if(!id)throw new Error(`リスト「${name}」が見つかりません`);return `/sites/${SITE}/lists/${id}`},
+  items(name,filter,select){return this.all(`${this.listUrl(name)}/items?$expand=fields($select=${select})&$top=500${filter?'&$filter='+encodeURIComponent(filter):''}`,PREFER)},
+
+  /* ---------- 起動：社員・権限・データを読み込む ---------- */
+  async boot(){
+    const me=await this.g('GET','/me?$select=id,displayName,userPrincipalName');
+    ME=me.userPrincipalName.toLowerCase();
+    // 社員（有効・ライセンスあり・メンバー。共有アカウントは外す。組織図と同じ考え方）
+    const users=await this.all('/users?$select=id,displayName,userPrincipalName,department,officeLocation,jobTitle,accountEnabled,userType,assignedLicenses,employeeType&$top=999');
+    let i=0;
+    users.filter(u=>u.userType==='Member'&&u.accountEnabled&&(u.assignedLicenses||[]).length&&u.employeeType!=='共有PC'&&(u.department||'').trim()&&!/共有|共用/.test(u.displayName||''))
+      .sort((a,b)=>(a.displayName||'').localeCompare(b.displayName||'','ja'))
+      .forEach(u=>{
+        const id=u.userPrincipalName.toLowerCase(),raw=(u.department||'').trim(),office=(u.officeLocation||'').trim();
+        const dept=CANON[raw]||ALIAS[raw]||(VIEW_ONLY[raw]?'cs':'');
+        const m={id,name:(u.displayName||'').trim(),dept,loc:raw==='役員'?'本社':(['本社','工場'].includes(office)?office:''),exec:raw==='役員',president:false,admin:false,av:`var(--av${(i++)%6+1})`};
+        MEMBERS.push(m);M[id]=m;M365[id]={dept:raw,title:(u.jobTitle||'').trim(),office,groups:[]};
+      });
+    if(!M[ME]){ensureMember(ME,me.displayName);M365[ME]={dept:'',title:'',office:'',groups:[]}}
+    // 自分の権限グループ（読めないときは、見られるリストから判断する）
+    try{const r=await this.g('POST','/me/checkMemberGroups',{groupIds:Object.values(GROUP_IDS)});const ids=r.value||[];
+      const gs=M365[ME].groups;if(ids.includes(GROUP_IDS.president)){gs.push('HL-社長');M[ME].president=true}
+      if(ids.includes(GROUP_IDS.kanbu))gs.push('HL-幹部');if(ids.includes(GROUP_IDS.admin)){gs.push('HL-アプリ管理者');M[ME].admin=true}
+      this.groupsKnown=true}catch(e){console.warn('グループを読めませんでした',e)}
+    // 幹部の人数（読めれば）。宛先の人数の表示にだけ使う
+    try{const ms=await this.all(`/groups/${GROUP_IDS.kanbu}/members?$select=userPrincipalName&$top=999`);ms.forEach(x=>{const id=(x.userPrincipalName||'').toLowerCase();if(M365[id]&&!M365[id].groups.includes('HL-幹部'))M365[id].groups.push('HL-幹部')})}catch(e){}
+    // 見られるリスト
+    (await this.all(`/sites/${SITE}/lists?$select=id,displayName&$top=200`)).forEach(l=>this.lists[l.displayName]=l.id);
+    this.areas=Object.keys(AREA).filter(a=>this.lists[AREA[a].post]);
+    if(!this.groupsKnown&&this.areas.includes('kanbu'))M365[ME].groups.push('HL-幹部');
+    if(this.lists['LINK_添付'])this.drive=(await this.g('GET',`${this.listUrl('LINK_添付')}/drive?$select=id`)).id;
+    await Promise.all([this.loadStamps(),...this.areas.map(a=>this.loadArea(a))]);
+    posts.sort((a,b)=>b.ts-a.ts);
+  },
+  async loadStamps(){
+    if(!this.lists['LINK_スタンプ'])return;
+    const its=await this.items('LINK_スタンプ','','Title,Kind,Color,ImagePath,SortOrder,Active');
+    its.map(x=>x.fields).filter(f=>f.Active!==false).sort((a,b)=>(a.SortOrder||0)-(b.SortOrder||0)).forEach((f,i)=>{
+      const id='x_'+f.Title;if(ST[id])return;
+      const s={id,label:f.Title,c:f.Color||'var(--st1)',r:(i%2?'3deg':'-3deg'),img:f.Kind==='image'&&f.ImagePath?f.ImagePath:null};STAMPS.push(s);ST[id]=s});
+  },
+  async loadArea(area){
+    const A=AREA[area],since=addDays(TODAY,-LOAD_DAYS);
+    const POSTF='Title,Dept,ReportDate,AuthorUPN,Body,Data,Files',ACTF='Kind,Target,AuthorUPN,Body,Sticker,Files,Mentions,Created';
+    const [ps,cs,ss,as,rs,ns]=await Promise.all([
+      this.items(A.post,`fields/ReportDate ge '${since}'`,POSTF),
+      this.items(A.act,`fields/Kind eq 'comment' and fields/Created ge '${since}T00:00:00Z'`,ACTF),
+      this.items(A.act,`fields/Kind eq 'stamp' and fields/Created ge '${since}T00:00:00Z'`,ACTF),
+      A.notice?this.items(A.act,`fields/Kind eq 'ack' and fields/Created ge '${addDays(TODAY,-NOTICE_DAYS)}T00:00:00Z'`,ACTF):[],
+      this.items(A.act,`fields/Kind eq 'read' and fields/Created ge '${addDays(TODAY,-READ_DAYS)}T00:00:00Z'`,ACTF),
+      A.notice&&this.lists[A.notice]?this.items(A.notice,`fields/Created ge '${addDays(TODAY,-NOTICE_DAYS)}T00:00:00Z'`,'Title,Sender,Audience,Must,AuthorUPN,Body,Files'):[],
+    ]);
+    const byPost={};
+    ps.forEach(it=>{const p=this.toPost(area,it);if(!p)return;posts.push(p);byPost[it.id]=p});
+    const byNotice={};
+    ns.forEach(it=>{const n=this.toNotice(area,it);notices.push(n);byNotice[it.id]=n});
+    const tgt=f=>{const m=/^(post|notice):(\d+)$/.exec(f.Target||'');return m?(m[1]==='post'?byPost[m[2]]:byNotice[m[2]]):null};
+    cs.forEach(it=>{const f=it.fields,p=tgt(f);if(!p||!p.comments)return;const user=ensureMember((f.AuthorUPN||'').toLowerCase()).id;
+      p.comments.push({id:it.id,user,text:f.Body||'',sticker:f.Sticker||'',files:this.files(f.Files),ts:Date.parse(it.createdDateTime),seen:(user===ME||seenSet.has(area+':'+it.id))?[ME]:[]})});
+    ss.forEach(it=>{const f=it.fields,p=tgt(f);if(!p||!p.stamps||!ST[f.Sticker])return;const user=ensureMember((f.AuthorUPN||'').toLowerCase()).id;
+      const a=p.stamps[f.Sticker]||(p.stamps[f.Sticker]=[]);if(!a.includes(user))a.push(user);if(user===ME)p.myStamps[f.Sticker]=it.id});
+    rs.forEach(it=>{const f=it.fields,p=tgt(f);if(!p||!p.readBy)return;const user=(f.AuthorUPN||'').toLowerCase();if(!p.readBy.includes(user))p.readBy.push(user)});
+    as.forEach(it=>{const f=it.fields,n=tgt(f);if(!n||!n.readers)return;const user=(f.AuthorUPN||'').toLowerCase();if(!n.readers.includes(user)){n.readers.push(user);n.read=n.readers.length}});
+    Object.values(byPost).forEach(p=>p.comments.sort((a,b)=>a.ts-b.ts));
+  },
+  files(json){try{return (JSON.parse(json||'[]')||[]).map(regFile)}catch(e){return []}},
+  toPost(area,it){
+    const f=it.fields;if(!DEPTS[f.Dept])return null;let data={};try{data=JSON.parse(f.Data||'{}')}catch(e){}
+    const user=ensureMember((f.AuthorUPN||'').toLowerCase()).id;
+    const date=data.date||(f.ReportDate?ymd(new Date(f.ReportDate)):TODAY);
+    return {id:area+':'+it.id,area,itemId:it.id,user,dept:f.Dept,date,ts:Date.parse(it.createdDateTime),fields:{...data,date},stamps:{},myStamps:{},comments:[],readBy:[],bookmarked:false,files:this.files(f.Files)};
+  },
+  toNotice(area,it){
+    const f=it.fields,from=ensureMember((f.AuthorUPN||'').toLowerCase()).id;
+    return {id:area+':'+it.id,area,itemId:it.id,isNotice:true,sender:f.Sender,aud:f.Audience||'all',must:!!f.Must,title:f.Title||'',body:f.Body||'',from,ts:Date.parse(it.createdDateTime),readers:[from],read:1,files:this.files(f.Files)};
+  },
+
+  /* ---------- 書き込み ---------- */
+  async upload(list,folder){
+    const out=[];
+    for(const f of (list||[])){
+      if(f.itemId||!f.file){out.push(this.meta(f));continue}
+      const safe=f.name.replace(/[\\/:*?"<>|#%]/g,'_');
+      const path=`${folder}/${TODAY.slice(0,7)}/${Date.now().toString(36)}${Math.random().toString(36).slice(2,6)}_${safe}`;
+      const enc=path.split('/').map(encodeURIComponent).join('/');
+      let item;
+      if(f.file.size<4*1024*1024){item=await this.g('PUT',`/drives/${this.drive}/root:/${enc}:/content`,f.file,{'Content-Type':f.type||'application/octet-stream'})}
+      else{ // 大きいファイル（動画など）は分けて送る
+        const s=await this.g('POST',`/drives/${this.drive}/root:/${enc}:/createUploadSession`,{item:{'@microsoft.graph.conflictBehavior':'rename'}});
+        const CH=327680*16;let pos=0;
+        while(pos<f.file.size){const end=Math.min(pos+CH,f.file.size);const r=await fetch(s.uploadUrl,{method:'PUT',headers:{'Content-Range':`bytes ${pos}-${end-1}/${f.file.size}`},body:f.file.slice(pos,end)});
+          if(!r.ok&&r.status!==202)throw new Error('アップロードに失敗しました（'+r.status+'）');if(r.status===200||r.status===201)item=await r.json();pos=end}
+      }
+      f.itemId=item.id;f.webUrl=item.webUrl;out.push(this.meta(f));
+    }
+    return out;
+  },
+  meta(f){return {name:f.name,type:f.type||'',img:!!f.img,video:!!f.video,itemId:f.itemId,webUrl:f.webUrl||''}},
+  async post(p){
+    const area=DEPTS[p.dept].area,A=AREA[area];
+    if(!this.lists[A.post])throw new Error('この日報の置き場に書き込む権限がありません');
+    const files=await this.upload(p.files,A.folder);
+    const it=await this.g('POST',`${this.listUrl(A.post)}/items`,{fields:{Title:`${formName(p.dept)} ${p.date} ${M[ME].name}`,Dept:p.dept,ReportDate:p.date,AuthorUPN:ME,Body:String(p.fields.note||p.fields.work||'').slice(0,60000),Data:JSON.stringify(p.fields),Files:JSON.stringify(files)}});
+    p.id=area+':'+it.id;p.area=area;p.itemId=it.id;p.myStamps={};
+  },
+  async notice(n){
+    const area=n.aud==='exec'?'kanbu':'all',A=AREA[area];
+    if(!this.lists[A.notice])throw new Error('この宛先のお知らせを出す権限がありません');
+    const files=await this.upload(n.files,A.folder);
+    const it=await this.g('POST',`${this.listUrl(A.notice)}/items`,{fields:{Title:n.title,Sender:n.sender,Audience:n.aud,Must:!!n.must,AuthorUPN:ME,Body:n.body,Files:JSON.stringify(files)}});
+    n.id=area+':'+it.id;n.area=area;n.itemId=it.id;n.isNotice=true;
+  },
+  act(target,kind,extra={},local){
+    if(DEMO||!target||!target.itemId)return;
+    const A=AREA[target.area];
+    (async()=>{
+      const files=extra.files&&extra.files.length?await this.upload(extra.files,A.folder):[];
+      const it=await this.g('POST',`${this.listUrl(A.act)}/items`,{fields:{Title:kind,Kind:kind,Target:`${target.isNotice?'notice':'post'}:${target.itemId}`,AuthorUPN:ME,Body:extra.body||'',Sticker:extra.sticker||'',Files:JSON.stringify(files),Mentions:(extra.mentions||[]).join(';')}});
+      if(kind==='stamp'&&target.myStamps)target.myStamps[extra.sticker]=it.id;
+      if(local)local.id=it.id;
+    })().catch(e=>{console.error(e);toast(kind==='read'?'既読を記録できませんでした':'保存できませんでした。通信を確かめて、もう一度試してください。')});
+  },
+  ack(n){this.act(n,'ack')},
+  addStamp(s){this.g('POST',`${this.listUrl('LINK_スタンプ')}/items`,{fields:{Title:s.label,Kind:'text',Color:s.c,SortOrder:100+STAMPS.length,Active:true}}).catch(e=>{console.error(e);toast('スタンプを保存できませんでした（管理者の権限が必要です）')})},
+  unstamp(p,k){if(DEMO||!p.myStamps)return;const id=p.myStamps[k];delete p.myStamps[k];if(id)this.g('DELETE',`${this.listUrl(AREA[p.area].act)}/items/${id}`).catch(e=>{console.error(e);toast('スタンプを外せませんでした')})},
+  unact(p,c){if(DEMO||!c.id)return;this.g('DELETE',`${this.listUrl(AREA[p.area].act)}/items/${c.id}`).catch(e=>{console.error(e);toast('コメントを削除できませんでした')})},
+  // 古い日報（既読を読み込んでいない期間）を開いたときだけ、その日報の既読を読む
+  loadReads(p){
+    if(DEMO||!p.itemId||p._reads||p.date>=addDays(TODAY,-READ_DAYS+1))return;p._reads=true;
+    this.items(AREA[p.area].act,`fields/Target eq 'post:${p.itemId}' and fields/Kind eq 'read'`,'AuthorUPN').then(rs=>{
+      rs.forEach(it=>{const u=(it.fields.AuthorUPN||'').toLowerCase();if(!p.readBy.includes(u))p.readBy.push(u)});
+      if(cur===p.id)redrawKeep(!!document.querySelector('.palette'));}).catch(e=>console.warn(e));
+  },
+  saveSeen(p){if(DEMO)return;p.comments.forEach(c=>{if(c.id)seenSet.add(p.area+':'+c.id)});store.set(SEEN_KEY,[...seenSet].slice(-3000))},
+  // 写真・動画の一時的な URL（1時間ほど有効）
+  async fileUrl(f){if(f.url)return f.url;const j=await this.g('GET',`/drives/${this.drive}/items/${f.itemId}?select=id,webUrl,@microsoft.graph.downloadUrl`);f.url=j['@microsoft.graph.downloadUrl'];f.webUrl=j.webUrl;return f.url},
+  async openFile(f){const w=window.open('about:blank','_blank');try{if(!f.webUrl)await this.fileUrl(f);if(w)w.location=f.webUrl;else location.href=f.webUrl}catch(e){if(w)w.close();toast('ファイルを開けませんでした')}},
+};
+// 画面に出た写真・動画（data-hyd）の URL を取りに行く
+if(!DEMO)new MutationObserver(()=>{document.querySelectorAll('[data-hyd]:not([data-hyding])').forEach(el=>{el.setAttribute('data-hyding','');const f=FILES[el.dataset.hyd];if(!f)return;
+  Store.fileUrl(f).then(u=>{el.src=u}).catch(()=>{el.alt='読み込めませんでした'})})}).observe(document.body,{childList:true,subtree:true});
+
+/* ---------- 起動 ---------- */
+async function loadLive(){
+  $('#view').innerHTML='<div class="empty">読み込み中…</div>';
+  try{
+    await Store.boot();
+    HanaokaAuth.done();
+    state.nv=ME;countAudience();
+    route();
+  }catch(e){
+    console.error(e);HanaokaAuth.done();
+    $('#view').innerHTML=`<div class="empty">読み込めませんでした。時間をおいて開き直してください。続くときは総務へ連絡してください。<br><small>${esc(e.message)}</small></div>`;
+  }
+}
+async function startLive(){
+  pca=new msal.PublicClientApplication(HanaokaAuth.msalConfig());
+  await pca.initialize();
+  await pca.handleRedirectPromise();
+  account=await HanaokaAuth.restore(pca,SCOPES);
+  if(account){await loadLive();return}
+  $('#view').innerHTML=`<div class="empty signin"><p>HANAOKA LINK を使うには、会社の Microsoft アカウントでサインインしてください。</p><button class="btn btn-primary" id="signInBtn" data-ha-login>Microsoftでサインイン</button><p id="signErr" class="muted"></p></div>`;
+  $('#signInBtn').onclick=async()=>{const b=$('#signInBtn');b.disabled=true;
+    try{account=await HanaokaAuth.login(pca,SCOPES);await loadLive()}catch(e){$('#signErr').textContent='サインインできませんでした：'+e.message;b.disabled=false}};
+}
+if(DEMO)route();else startLive();
+</script>
+</body>
+</html>
