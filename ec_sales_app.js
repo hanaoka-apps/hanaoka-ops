@@ -1979,6 +1979,24 @@ function fulfillTable(rows) {
   return '<table style="width:100%;border-collapse:collapse;margin:8px 0"><thead><tr><th style="text-align:left">注文</th><th style="text-align:left">運送会社</th><th style="text-align:left">送り状番号</th><th style="text-align:left">結果</th></tr></thead><tbody>' +
     rows.map(r => '<tr><td><b>#' + esc(r.id) + '</b></td><td>' + esc(r.carrier || '') + '</td><td>' + esc(r.fmt || '') + '</td><td>' + (r.html || '') + '</td></tr>').join('') + '</tbody></table>';
 }
+// 結果の1行：Shopify に「未登録」か「登録済み」かが、はっきり分かる文にする。登録済みなら、登録されている送り状番号を出す
+function fmtNo(no) { const d = String(no || '').replace(/\D/g, ''); return d.length === 10 ? d.slice(0, 3) + '-' + d.slice(3, 6) + '-' + d.slice(6) : String(no || ''); }
+function fulfillRow(r, o, res) {
+  const tag = (t, k) => '<span class="tag ' + k + '">' + esc(t) + '</span> ';
+  const reg = (r.registered || []).map(fmtNo).join('、');
+  let html;
+  if (r.status === 'already') html = tag('登録済み', 'ok') + esc('Shopify に、送り状番号 ' + (reg || o.fmt || '') + ' で登録されています');
+  else if (r.status === 'skipped' && reg) html = tag('番号が違います', 'warn') + esc('Shopify には、別の送り状番号 ' + reg + ' が登録されています（アプリの番号は ' + (o.fmt || '') + '）。管理画面で確認してください');
+  else if (res.dryRun && r.status === 'done') html = r.action === 'update'
+    ? tag('番号が未登録', 'warn') + esc('Shopify は発送済みですが、送り状番号が入っていません。「登録する」で、番号が入ります')
+    : tag('未登録', 'warn') + esc('Shopify には、まだ登録されていません。「登録する」で、発送済みになり、送り状番号が入ります');
+  else { const st = FUL_STATUS[r.status] || [r.status, 'info']; html = tag(st[0], st[1]) + esc(r.message || ''); }
+  return { id: r.id, carrier: o.carrier, fmt: o.fmt, html };
+}
+function fulfillCounts(results) {
+  const n = k => results.filter(r => k(r)).length, un = n(r => r.status === 'done'), ok = n(r => r.status === 'already'), other = results.length - un - ok;
+  return '　未登録 ' + un + '件・登録済み ' + ok + '件' + (other ? '・そのほか ' + other + '件' : '');
+}
 // 確認の画面。選んだ答えを返す：{ run: true/false, dryRun, notify }。やめるときは null
 function fulfillConfirm(plan, fconf) {
   return new Promise(resolve => {
@@ -2055,16 +2073,16 @@ async function runShopifyFulfill(items) {
     const how = {}; res.results.forEach(r => { if (byId[r.id] && (r.status === 'done' || r.status === 'already')) how[byId[r.id].key] = r.status; });
     await markShipReported(okIds, true, { detail: id => how[id] === 'already' ? 'すでに Shopify に登録されていた（印を付けた）' : 'アプリで自動登録（運送会社・送り状番号を Shopify に登録。お客様への通知：' + (res.notify === false ? 'なし' : 'あり') + '）' });
   }   // 登録できた注文は「Shopify に登録済み」にする（共有のリストにも書く）
-  const rows = res.results.map(r => { const st = FUL_STATUS[r.status] || [r.status, 'info'], o = byId[r.id] || {}; return { id: r.id, carrier: o.carrier, fmt: o.fmt, html: '<span class="tag ' + st[1] + '">' + esc(res.dryRun && r.status === 'done' ? '確認のみ' : st[0]) + '</span> ' + esc(r.message || '') }; })
+  const rows = res.results.map(r => fulfillRow(r, byId[r.id] || {}, res))
     .concat(plan.skipped.map(s => ({ id: s.id, html: '<span class="tag warn">対象外</span> ' + esc(s.reason) })));
-  const summary = res.dryRun ? '確認のみです。Shopify には、何も書き込んでいません。' : (okIds.length + '件を「Shopify に登録済み」にしました。') + (res.ok && !plan.skipped.length ? '' : ' 残りは、内容を見て、管理画面で登録してください。');
+  const summary = res.dryRun ? '確認のみです。Shopify には、何も書き込んでいません。' + fulfillCounts(res.results) : (okIds.length + '件を「Shopify に登録済み」にしました。') + (res.ok && !plan.skipped.length ? '' : ' 残りは、内容を見て、管理画面で登録してください。');
   fulfillOverlay('<h2 style="margin:0 0 6px;font-size:16px">' + (res.dryRun ? '確認のみの結果' : '登録の結果') + '</h2><div class="muted">' + esc(summary) + '</div>' + fulfillTable(rows) +
     '<div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" id="ful-ok">閉じる</button></div>').querySelector('#ful-ok').onclick = fulfillClose;
   return okIds.length > 0;
 }
 
 function shipCtx() {
-  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, shipPlan: shipOf, canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
+  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, shipPlan: shipOf, shopifyState: s => (CONF.shipReport && CONF.shipReport.fulfill && s.order && s.order.fulfillment) || '', canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
     fulfill: (CONF.shipReport && CONF.shipReport.fulfill && CONF.shipReport.fulfill.enabled === true && canImport()) ? { run: runShopifyFulfill } : null,   // enabled が true のときだけ、ボタンを出す（専用機の準備ができてから true にする）
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }

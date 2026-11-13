@@ -245,8 +245,11 @@ def clean_number(value):
     return s if NUMBER_RE.match(s) else None
 
 
-def result(order_id, status, action, message):
-    return {'id': order_id, 'status': status, 'action': action, 'message': message}
+def result(order_id, status, action, message, registered=None):
+    r = {'id': order_id, 'status': status, 'action': action, 'message': message}
+    if registered:
+        r['registered'] = sorted(registered)   # Shopify にいま登録されている送り状番号（画面に出す。お客様の情報は入らない）
+    return r
 
 
 def user_errors_text(node):
@@ -289,7 +292,7 @@ def process_order(client, item, notify, dry_run):
             if t.get('number'):
                 have.add(clean_number(t['number']) or str(t['number']))
     if number in have:
-        return result(oid, 'already', 'none', 'この送り状番号は、すでに登録されています')
+        return result(oid, 'already', 'none', 'Shopify に、送り状番号 {} で登録済みです'.format(number), registered=have)
 
     fos = [fo for fo in ((order.get('fulfillmentOrders') or {}).get('nodes') or [])]
     open_fos = [fo for fo in fos if str(fo.get('status') or '').upper() in OPEN_STATUSES]
@@ -299,9 +302,9 @@ def process_order(client, item, notify, dry_run):
         if len(open_fos) > 1:
             return result(oid, 'skipped', 'none', '発送の指示が複数あります（管理画面で、人が発送してください）')
         if fulfillments:
-            return result(oid, 'skipped', 'none', '一部が発送済みで、残りがあります（管理画面で確認してください）')
+            return result(oid, 'skipped', 'none', '一部が発送済みで、残りがあります（管理画面で確認してください）', registered=have)
         if dry_run:
-            return result(oid, 'done', 'create', '【確認のみ】発送済みにして、送り状番号を登録します')
+            return result(oid, 'done', 'create', '【確認のみ】Shopify には、まだ登録されていません（登録すると、発送済みになり、送り状番号が入ります）')
         data = client.execute(FULFILL_CREATE, {'fulfillment': {
             'notifyCustomer': bool(notify),
             'trackingInfo': info,
@@ -319,9 +322,9 @@ def process_order(client, item, notify, dry_run):
             return result(oid, 'skipped', 'none', '発送が複数あります（管理画面で、人が確認してください）')
         f = fulfillments[0]
         if any(t.get('number') for t in (f.get('trackingInfo') or [])):
-            return result(oid, 'skipped', 'none', '別の送り状番号がすでに登録されています（管理画面で確認してください）')
+            return result(oid, 'skipped', 'none', 'Shopify には、別の送り状番号（{}）が登録されています（管理画面で確認してください）'.format('、'.join(sorted(have))), registered=have)
         if dry_run:
-            return result(oid, 'done', 'update', '【確認のみ】発送済みの注文に、送り状番号を追加します')
+            return result(oid, 'done', 'update', '【確認のみ】Shopify は発送済みですが、送り状番号が入っていません（登録すると、番号が入ります）')
         data = client.execute(TRACKING_UPDATE, {'id': f['id'], 'info': info, 'notify': bool(notify)})
         err = user_errors_text(data.get('fulfillmentTrackingInfoUpdate'))
         if err:

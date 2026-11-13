@@ -50,6 +50,14 @@
     return esc(p.slice(5).replace('-', '/')) + (x.k === 'wait' && p < today ? ' <span class="tag warn">過ぎています</span>' : '');
   }
 
+  // Shopify の発送状況（専用機が毎時取る注文データ）。いま Shopify で、発送済みか未発送か（EC売上だけ。ふるさと納税には出さない）
+  function shopTag(ctx, x) {
+    var f = ctx.shopifyState ? ctx.shopifyState(x.s) : '';
+    if (!f) return '';
+    var t = f === 'fulfilled' ? '<span class="tag ok">Shopify：登録済み（発送済み）</span>' : f === 'partial' ? '<span class="tag warn">Shopify：一部だけ発送済み</span>' : '<span class="tag warn">Shopify：未登録</span>';
+    return '<div style="margin-top:3px" title="Shopify の発送状況（毎時の取得なので、最大1時間ほど遅れます）">' + t + '</div>';
+  }
+
   function render(ctx) {
     var box = ctx.box, cnt = ctx.cnt;
     if (!box) return;
@@ -91,7 +99,7 @@
       var slips = sh.slips.map(function (sl) { return '<div><span class="muted">' + esc(sl.carrier) + '</span> <b>' + esc(sl.fmt) + '</b> <button class="btn sec sm" data-copy="' + esc(sl.no) + '" title="送り状番号をコピー（' + esc(sl.no) + '）">コピー</button></div>'; }).join('');
       var act = x.k === 'check' ? (ctx.canReport ? '<button class="btn sm" data-rep="' + esc(x.s.id) + '">' + esc(rl.btn) + '</button>' : '<span class="muted">担当者が押します</span>') : x.k === 'done' ? '<div class="muted">' + esc(rl.done) + ' ' + esc(((x.r.shipReportedBy || '').split('@')[0])) + ' ' + esc(stamp(x.r.shipReportedAt)) + '</div>' + (ctx.canReport ? '<a href="#" data-unrep="' + esc(x.s.id) + '" style="font-size:11px">戻す</a>' : '') : '';
       var who = x.s.order.ship.company || x.s.order.ship.name || '';
-      return '<tr data-row="' + esc(x.s.id) + '"><td>' + esc(x.s.orderDate.slice(5).replace('-', '/')) + '</td><td><b>' + esc(x.s.name) + '</b></td><td>' + esc(who) + '</td><td>' + esc((x.r && x.r.juchuNo) || sh.juchu[0] || '') + '</td><td>' + st + '</td><td>' + planCell(ctx, x) + '</td><td>' + esc(sh.shipDate ? sh.shipDate.slice(5).replace('-', '/') : '') + (sh.shipNos.length ? '<div class="muted">出荷№ ' + esc(sh.shipNos.join('・')) + '</div>' : '') + '</td><td>' + (slips || '<span class="muted">—</span>') + '</td><td>' + act + '<div>' + link(x) + '</div></td></tr>';
+      return '<tr data-row="' + esc(x.s.id) + '"><td>' + esc(x.s.orderDate.slice(5).replace('-', '/')) + '</td><td><b>' + esc(x.s.name) + '</b></td><td>' + esc(who) + '</td><td>' + esc((x.r && x.r.juchuNo) || sh.juchu[0] || '') + '</td><td>' + st + shopTag(ctx, x) + '</td><td>' + planCell(ctx, x) + '</td><td>' + esc(sh.shipDate ? sh.shipDate.slice(5).replace('-', '/') : '') + (sh.shipNos.length ? '<div class="muted">出荷№ ' + esc(sh.shipNos.join('・')) + '</div>' : '') + '</td><td>' + (slips || '<span class="muted">—</span>') + '</td><td>' + act + '<div>' + link(x) + '</div></td></tr>';
     }).join('') + '</tbody></table></div>' : '<div class="empty">この条件の注文はありません</div>';
     box.innerHTML = html;
   }
