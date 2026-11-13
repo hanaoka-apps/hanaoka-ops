@@ -118,6 +118,8 @@ class Tests(unittest.TestCase):
         self.assertEqual(s.kinds().count('update'), 0)
         self.assertEqual(out['results'][0]['action'], 'create')
         self.assertIn('確認のみ', out['results'][0]['message'])
+        self.assertIn('まだ登録されていません', out['results'][0]['message'])      # 未登録だと、はっきり分かる
+        self.assertNotIn('registered', out['results'][0])
         self.assertTrue(out['dryRun'])
 
     def test_already_registered_is_skipped_without_writing(self):
@@ -125,6 +127,8 @@ class Tests(unittest.TestCase):
         r = run(s)['results'][0]
         self.assertEqual((r['status'], r['action']), ('already', 'none'))
         self.assertEqual(s.kinds(), ['token', 'order'])
+        self.assertEqual(r['registered'], ['9072284252'])                 # Shopify に登録されている番号が結果に入る
+        self.assertIn('9072284252', r['message']); self.assertIn('登録済み', r['message'])
 
     def test_add_tracking_to_fulfilled_order_without_number(self):
         s = FakeSession({'1772': order('1772', fos=['CLOSED'], fulfillments=[fulfilled([])])})
@@ -139,6 +143,8 @@ class Tests(unittest.TestCase):
         s = FakeSession({'1772': order('1772', fos=['CLOSED'], fulfillments=[fulfilled(['1111111111'])])})
         r = run(s)['results'][0]
         self.assertEqual(r['status'], 'skipped')
+        self.assertEqual(r['registered'], ['1111111111'])                 # 別の番号が、すでに登録されている（画面に出す）
+        self.assertIn('1111111111', r['message'])
         self.assertNotIn('create', s.kinds())
         self.assertNotIn('update', s.kinds())
 

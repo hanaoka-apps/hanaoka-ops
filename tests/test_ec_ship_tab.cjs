@@ -14,6 +14,7 @@ const recs = { 1001: { status: 'exported', juchuNo: '9001', matchedShip: '2026-1
 const handlers = {}; const box = { innerHTML: '', addEventListener: (t, f) => { handlers[t] = f; } };
 const cnt = { textContent: '' }; const calls = [];
 const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録する', done: '登録済み', btn: '登録した' } }, box, cnt, visible: true, canReport: true,
+  shopifyState: s => ({ 1001: 'fulfilled', 1002: 'unfulfilled' }[s.id] || ''),
   slips: () => slips, stateOf: s => recs[s.id].status, rec: s => recs[s.id], loadJson: async () => idx, rerender: () => EcShipTab.render(ctx), markReported: (ids, on) => calls.push([ids, on]) };
 (async () => {
   EcShipTab.render(ctx); await new Promise(r => setTimeout(r, 20));
@@ -42,5 +43,11 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   assert(box.innerHTML.includes('<th>出荷予定日</th>') && box.innerHTML.includes('11/13') && !box.innerHTML.includes('過ぎています'));
   handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'wait' } } : null } }); await new Promise(r => setTimeout(r, 5));
   assert(box.innerHTML.includes('01/06') && box.innerHTML.includes('過ぎています'));
+  // Shopify の現在の状況：登録済み（発送済み）／未登録を、一覧に出す（Shopify の注文がない画面では出さない）
+  handlers.click({ target: { closest: s => s === '[data-sf]' ? { dataset: { sf: 'all' } } : null } }); await new Promise(r => setTimeout(r, 5));
+  assert(box.innerHTML.includes('Shopify：登録済み（発送済み）') && box.innerHTML.includes('Shopify：未登録'));
+  assert.strictEqual(box.innerHTML.split('Shopify：登録済み（発送済み）').length - 1, 1);   // 1001 だけ
+  ctx.shopifyState = null; EcShipTab.render(ctx);
+  assert(!box.innerHTML.includes('Shopify：登録済み') && !box.innerHTML.includes('Shopify：未登録'));
   console.log('ok ship tab');
 })().catch(e => { console.error(e); process.exit(1); });
