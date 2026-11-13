@@ -48,6 +48,12 @@ const data = {
     { 種類: 'ミニ便', 地域: '南関東', 上限: 1, 金額: 600, 適用開始日: '2025-12-05' },
     { 種類: 'ミニ便', 地域: '南関東', 上限: 2, 金額: 1100, 適用開始日: '2025-12-05' },
   ],
+  assembly: [
+    { 型式: 'AS1', 重さkg: 170, 計算のしかた: '単品運賃×台数', 適用開始日: '2026-01-01' },
+    { 型式: 'Ｄ Ａ-Ａ Ｓ', 重さkg: 90, 適用開始日: '2026-01-01' }, // 全角・スペースまじり
+    { 型式: 'PC-X', 重さkg: 150, 計算のしかた: '初めの1台＋追加分', 追加の重さkg: 60, 適用開始日: '2026-01-01' },
+    { 型式: 'AS1', 重さkg: 250, 適用開始日: '2027-01-01' }, // まだ効いていない
+  ],
 };
 const cust = (code, shaCode, kakeName) => ({ code, shaCode, kakeName, name: code });
 
@@ -180,6 +186,33 @@ assert.ok(f.warnings.some(w => /まとめコード/.test(w)));
 f = P.freight(data, [{ code: 'NOW', qty: 1 }, { code: 'T1', qty: 1 }], { pref: '東京都', date: '2026-11-11' });
 assert.ok(f.warnings.some(w => /重さがわからない/.test(w)));
 assert.equal(f.amount, 2300); // わかる分だけで出す
+
+// --- 組立出荷：組立出荷の重さの表で、単品運賃×台数 ---
+assert.equal(P.asmKey('Ｄ Ａ-Ａ Ｓ'), 'DAAS');
+assert.equal(P.asmKey('da-as'), 'DAAS'); // ハイフン・大文字小文字・全角半角のちがいはそろえる
+f = P.freight(data, [{ code: 'AS1', qty: 2, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11' });
+assert.equal(f.amount, 5800 * 2); // 170kg → 250kg帯5,800円 × 2台
+assert.equal(f.assembly[0].kg, 170);
+f = P.freight(data, [{ code: 'da-as', qty: 3, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11' });
+assert.equal(f.amount, 3900 * 3); // 全角・スペース・小文字がちがっても同じ型式
+// PC-90のような「初めの1台＋追加分」：重さを足して1回引く（150＋60×2＝270kg → 400kg帯）
+f = P.freight(data, [{ code: 'PC-X', qty: 3, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11' });
+assert.equal(f.amount, 9000);
+assert.equal(f.assembly[0].kg, 270);
+// 段ボール梱包の行と一緒なら、足し合わせる。出荷のしかたを入れなければ、これまでどおり
+f = P.freight(data, [{ code: 'T1', qty: 1 }, { code: 'AS1', qty: 2, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11' });
+assert.equal(f.amount, 2300 + 5800 * 2);
+f = P.freight(data, [{ code: 'T1', qty: 1, ship: '段ボール梱包' }], { pref: '東京都', date: '2026-11-11' });
+assert.equal(f.amount, 2300);
+// 適用開始日で切り替わる／重さの行がなければ知らせる
+f = P.freight(data, [{ code: 'AS1', qty: 1, ship: '組立出荷' }], { pref: '東京都', date: '2027-02-01' });
+assert.equal(f.amount, 5800); // 250kg → 250kg帯
+f = P.freight(data, [{ code: 'NOPE', qty: 1, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11' });
+assert.equal(f.amount, null);
+assert.ok(f.warnings.some(w => /組立出荷の重さがわかりません/.test(w)));
+// 個人宅は2倍
+f = P.freight(data, [{ code: 'AS1', qty: 1, ship: '組立出荷' }], { pref: '東京都', date: '2026-11-11', personal: true });
+assert.equal(f.amount, 11600);
 
 // --- 説明の文章・判定の表・詳細ログ・前回の受注との見比べ ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
