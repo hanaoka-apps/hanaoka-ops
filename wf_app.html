@@ -798,7 +798,7 @@ let deepLinkDone = false;
 function openDeepLink() {
   if (deepLinkDone) return; deepLinkDone = true;
   const no = new URLSearchParams(location.search).get('req'); if (!no) return;
-  const pick = (view, pred) => { const t = st.tasks.filter(pred).sort((a, b) => b.id - a.id)[0]; if (t) { st.view = view; st.sel = 't' + t.id; return true; } };
+  const pick = (view, pred) => { const t = st.tasks.filter(pred).sort((a, b) => b.id - a.id)[0]; if (t) { st.view = view; st.sel = 't' + t.id; if (view === 'inbox') st.sub = isCircTodo(t) ? 'circ' : 'do'; return true; } };
   if (pick('inbox', t => t.RequestNo === no && (isInbox(t) || isPostTodo(t) || isCircTodo(t)))) return;
   if (st.myReqs.some(r => r.RequestNo === no)) { st.view = 'mine'; st.sel = 'r' + no; return; }
   if (pick('involved', t => t.RequestNo === no)) return;
@@ -891,9 +891,11 @@ const askReq = t => visibleReqs().find(r => r.FormCode === 'HIRE' && !['却下',
   || (st.tasks || []).filter(x => x.StepType !== '依頼' && x.FormCode === 'HIRE' && !['却下', '取下げ', '引き戻し'].includes(x.RequestStatus))
     .map(x => ({ RequestNo: x.RequestNo, Status: x.RequestStatus || '申請中', s: pj(x.SnapshotJson, {}) })).find(x => ((x.s.data || {})._contract || {}).key === t.RequestNo);
 const isAskTodo = t => t.StepType === '依頼' && t.Status === '処理待ち' && !hiddenTasks.has(t.id) && !askReq(t);
-/* 「自分の対応待ち」＝承認・決裁／後処理／回覧（未確認）。種類は上の切り替え（st.sub）で絞る */
-const SUBS = [{ k: '', label: 'すべて' }, { k: 'approve', label: '承認・決裁', f: isInbox }, { k: 'ask', label: '申請の依頼', f: isAskTodo }, { k: 'post', label: '後処理', f: isPostTodo }, { k: 'circ', label: '回覧', f: isCircTodo }];
-const todoTasks = sub => { const x = SUBS.find(o => o.k === (sub || '')); return st.tasks.filter(t => x && x.f ? x.f(t) : isInbox(t) || isAskTodo(t) || isPostTodo(t) || isCircTodo(t)); };
+/* 「自分の対応待ち」は2つに分ける（st.sub）：やること＝承認・決裁／申請の依頼／後処理（自分が動く）、確認だけ＝回覧（見て「確認しました」を押すだけ）。
+   選んでいないとき・選んだほうが空になったときは、やることがあれば「やること」、無くて回覧だけあれば「確認だけ」を出す */
+const SUBS = [{ k: 'do', label: 'やること', f: t => isInbox(t) || isAskTodo(t) || isPostTodo(t), none: 'やることはありません 🎉' }, { k: 'circ', label: '確認だけ（回覧）', f: isCircTodo, none: '確認だけのものはありません' }];
+const todoTasks = sub => { const x = SUBS.find(o => o.k === (sub || '')); return st.tasks.filter(t => x ? x.f(t) : SUBS.some(o => o.f(t))); };
+const curSub = () => st.sub && todoTasks(st.sub).length ? st.sub : (todoTasks('do').length || !todoTasks('circ').length ? 'do' : 'circ');
 
 /* サイドメニューのアイコン（線の絵。HUB と同じ太さ） */
 const NAV_ICONS = {
@@ -2058,7 +2060,7 @@ function itemsForView() {
   const byNewest = (a, b) => String(b._sort || '').localeCompare(String(a._sort || ''));
   switch (st.view) {
     // 承認・決裁 → 後処理 → 回覧 の順、その中は新しい順
-    case 'inbox': { const rank = t => isInbox(t) || isAskTodo(t) ? 0 : isPostTodo(t) ? 1 : 2; return todoTasks(st.sub).map(t => taskItem(t)).sort((a, b) => rank(a.t) - rank(b.t) || byNewest(a, b)); }
+    case 'inbox': { const rank = t => isInbox(t) || isAskTodo(t) ? 0 : isPostTodo(t) ? 1 : 2; return todoTasks(curSub()).map(t => taskItem(t)).sort((a, b) => rank(a.t) - rank(b.t) || byNewest(a, b)); }
     case 'mine':  return st.myReqs.map(r => reqItem(r)).sort(byNewest);
     case 'all':   return (st.allReqs || []).map(r => reqItem(r)).sort(byNewest);
     case 'involved': {
@@ -2153,7 +2155,7 @@ function filtersHtml(all) {
   const forms = [...new Set(all.map(i => i.f.form))].map(c => `<option value="${esc(c)}" ${flt.form === c ? 'selected' : ''}>${esc(formName(c))}</option>`).join('');
   const rank = x => { const i = STATE_ORDER.indexOf(x); return i < 0 ? 99 : i; };
   const sts = [...new Set(all.map(i => i.f.status).filter(Boolean))].sort((a, b) => rank(a) - rank(b)).map(s => `<option ${flt.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('');
-  const subs = st.view === 'inbox' ? `<div class="subs">${SUBS.map(x => { const n = todoTasks(x.k).length; return `<button data-sub="${x.k}" class="${(st.sub || '') === x.k ? 'on' : ''}">${esc(x.label)}<span>${n}</span></button>`; }).join('')}</div>` : '';
+  const subs = st.view === 'inbox' ? `<div class="subs">${SUBS.map(x => { const n = todoTasks(x.k).length; return `<button data-sub="${x.k}" class="${curSub() === x.k ? 'on' : ''}">${esc(x.label)}<span>${n}</span></button>`; }).join('')}</div>` : '';
   const dated = flt.from || flt.to;
   return `<div class="filters">${subs}
     <input class="q" id="fQ" type="search" placeholder="🔍 件名・申請番号・申請者・内容で探す" value="${esc(flt.q)}">
@@ -2166,7 +2168,7 @@ function filtersHtml(all) {
 }
 function renderListView(main) {
   const all = itemsForView();
-  const empty = { inbox: st.sub ? `${SUBS.find(x => x.k === st.sub).label}の対応待ちはありません` : '対応待ちはありません 🎉', mine: 'まだ申請はありません', involved: '関わった申請はありません', all: '申請はありません' }[st.view];
+  const empty = { inbox: SUBS.find(x => x.k === curSub()).none, mine: 'まだ申請はありません', involved: '関わった申請はありません', all: '申請はありません' }[st.view];
   main.innerHTML = `<div class="list">${filtersHtml(all)}<div class="rows" id="rows"></div></div>
                     <div class="ltgl" id="ltgl"></div><div class="detail" id="detail"></div>`;
   // 一覧をたたむのは、申請を開いて右を広く見たいときだけ。メニューを切り替えたら開いた状態から始める（たたんだままだと空の画面に見えるため）
