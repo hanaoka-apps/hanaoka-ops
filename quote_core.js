@@ -68,6 +68,9 @@
     return { code: "", via: "" };
   }
 
+  // 枝番つきの品目コード（うしろに /C・/T・/TEL など）。OP/〜・P/〜・R/〜（オプション・部品・修理）は枝番ではない
+  function isVariant(code) { return /^(?!OP\/|P\/|R\/).+\/[A-Za-z0-9]{1,4}$/i.test(String(code || "")); }
+
   // ---------- 単価 ----------
   // その単価の決め手を、短いことばにする（行の下に出す）
   function whyText(r) {
@@ -104,6 +107,14 @@
         out.noRule = true; out.unit = num(line.price);
         out.name = line.name || (it && it.name) || "";
         out.warnings.push("定価リストにない型式です：" + out.code + "（単価を入れてください）");
+      } else if (rc.via && isVariant(out.code)) {
+        // 枝番つき（SLLSC/C＝キャスター変更、RIDE/T＝特注 など）は、元の型式とは値段が違う。
+        // 元の型式の定価では計算しない（2026-11 の受注で、枝番つきは元の型式の単価と1件も合わなかった）。
+        // 元の型式の単価は参考として見せ、送料の重さには元の型式を使う
+        var rr = P.unitPrice(data, { code: rc.code, qty: qty || 1, date: ctx.priceDate, customer: ctx.customer || {}, withBody: !!ctx.withBody });
+        out.variantOf = rc.code; out.refPrice = rr.price === undefined ? null : rr.price;
+        out.noRule = true; out.unit = num(line.price);
+        out.name = line.name || (it && it.name) || "";
       } else {
         var r = P.unitPrice(data, { code: rc.code, qty: qty || 1, date: ctx.priceDate, customer: ctx.customer || {}, withBody: !!ctx.withBody });
         var has = r.price !== null && r.price !== undefined;
@@ -283,7 +294,7 @@
   }
 
   var API = { REASONS: REASONS, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
-    buildIndex: buildIndex, resolveCode: resolveCode, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
+    buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   else root.QuoteCore = API;
