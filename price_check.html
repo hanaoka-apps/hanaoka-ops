@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261114a"></script>
+<script src="price_core.js?v=20261114b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -309,6 +309,7 @@
       <div class="navgrp">管理</div>
       <button class="navi" data-view="check">ルールの状況<span class="cnt" id="cnt-check" hidden></span></button>
       <button class="navi" data-view="custprice" title="得意先・ランクを選ぶと、全部の商品がいくらで出るかを一覧にして、PDF・Excelで出せます">価格表</button>
+      <button class="navi" data-view="revision" title="定価を変えたとき、ランク別の単価と利益率・実績がどう変わるかを試算します（試算だけで、リストは変わりません）">価格改定の検討</button>
       <button class="navi" data-view="series" title="型式・シリーズごとに、A'・A・B'・B の単価と定価を並べて見ます">型式・ランク別の価格</button>
       <!-- 単価が決まる順番（早見の詳細ログ・使い方のページと同じ番号）に並べる -->
       <div class="navgrp">価格の決まり（決まる順）</div>
@@ -319,6 +320,7 @@
       <div class="navgrp">送料の決まり</div>
       <button class="navi" data-view="fare"><span class="no">⑤</span>運賃<span class="cnt" id="cnt-fare" hidden></span></button>
       <button class="navi" data-view="asm" title="修理品の預かり・デモなど、組み立てたまま出荷する商品の重さ"><span class="no">⑤-2</span>組立出荷の重さ<span class="cnt" id="cnt-asm" hidden></span></button>
+      <button class="navi" data-view="cost" title="利益率を出すための原価（社内だけ）"><span class="no">⑥</span>原価<span class="cnt" id="cnt-cost" hidden></span></button>
       <div class="navgrp">運用</div>
       <button class="navi" data-view="match">品目マスタとの照合<span class="cnt" id="cnt-match" hidden></span></button>
       <button class="navi" data-view="import">まとめて入れる</button>
@@ -382,6 +384,8 @@
     <section class="view" id="view-exc"></section>
     <section class="view" id="view-fare"></section>
     <section class="view" id="view-asm"></section>
+    <section class="view" id="view-cost"></section>
+    <section class="view" id="view-revision"></section>
 
     <!-- ===== 最初のデータの取り込み ===== -->
     <section class="view" id="view-import">
@@ -454,11 +458,16 @@ const LISTS = {
     code:r=>r.型式, start:r=>r.適用開始日, title:r=>`${r.型式} ${r.適用開始日||''}`,
     cols:[['型式','型式'],['重さkg','重さ（kg）'],['計算のしかた','計算のしかた'],['追加の重さkg','追加の重さ（kg）'],['適用開始日','適用開始日'],['メモ','メモ']],
     fields:[['型式','text'],['重さkg','number'],['計算のしかた','select',['単品運賃×台数','初めの1台＋追加分']],['追加の重さkg','number'],['適用開始日','date'],['メモ','textarea']] },
+  cost: { name:'PR_原価', label:'原価', file:'原価.json', optional:true,
+    lead:'利益率を出すための原価（税抜・1台あたり）。1行＝1型式。社内だけで使い、見積書・価格表には載りません。最新の原価はあとで FUJIN から入れる予定で、それまではここに入れた値を使います。同じ型式で適用開始日が新しい行があれば、その日から新しい原価になります。',
+    code:r=>r.型式, start:r=>r.適用開始日, title:r=>`${r.型式} ${r.適用開始日||''}`,
+    cols:[['型式','型式'],['原価','原価','yen'],['適用開始日','適用開始日'],['出典','出典'],['メモ','メモ']],
+    fields:[['型式','text'],['原価','number'],['適用開始日','date'],['出典','text'],['メモ','textarea']] },
 };
 const listIds={};
 
 let msalInstance=null, account=null, driveId=null;
-const RULES={price:[],cls:[],exc:[],fare:[],asm:[]};   // { spId, data }
+const RULES={price:[],cls:[],exc:[],fare:[],asm:[],cost:[]};   // { spId, data }
 let CUST=[], CUSTMAP={}, ITEMS={}, ITEMKEY={}, ITEMINFO={}, ORDERS=[], ordersInfo='';
 // 探すときの表記ゆれをならす：全角・半角、大文字・小文字、ハイフン・空白、小さいカナ（ﾀﾞﾝﾃﾞｲ と ダンディ、UDA-LS と UDALS）
 const SMALL={'ァ':'ア','ィ':'イ','ゥ':'ウ','ェ':'エ','ォ':'オ','ャ':'ヤ','ュ':'ユ','ョ':'ヨ','ッ':'ツ','ヮ':'ワ'};
@@ -628,7 +637,7 @@ async function loadRules(){
   }));
   return miss;
 }
-function ruleData(){ return { prices:RULES.price.map(r=>r.data), classes:RULES.cls.map(r=>r.data), exceptions:RULES.exc.map(r=>r.data), fares:RULES.fare.map(r=>r.data), assembly:RULES.asm.map(r=>r.data) }; }
+function ruleData(){ return { prices:RULES.price.map(r=>r.data), classes:RULES.cls.map(r=>r.data), exceptions:RULES.exc.map(r=>r.data), fares:RULES.fare.map(r=>r.data), costs:RULES.cost.map(r=>r.data), assembly:RULES.asm.map(r=>r.data) }; }
 async function loadAll(){
   setStatus('loading','SharePoint から読み込み中…',true);
   const errs=[];
@@ -922,15 +931,24 @@ function recalc(){
     fparts.push(`<div class="small" style="margin:4px 0"><b>${esc(l.code)}</b>　${fare!=null?yen(fare)+'円':'－'}${f&&f.carrier?`　<span class="muted">${esc(f.carrier)}${f.region?'・'+esc(f.region):''}</span>`:''}<div class="exp"><span>${esc(l.fareManual!=null?'運賃を自分で決めています':(f&&f.summary)||'定価リストにない型式なので、運賃を自分で書いてください')}</span></div></div>`);
   });
   fb.innerHTML=nLine?fparts.join('')+li([...warn],'warns')+`<div class="small muted" style="margin-top:6px">決まり：運賃は行ごとに出します。同じ商品の複数台は 1台の重さ×台数（段ボール梱包）、組立出荷は 1台の運賃×台数／400kgを超えた分は400kg＋残り／部品・輸入品だけで9個まではミニ便／個人宅は2倍・西濃／沖縄・離島は都度見積。</div>`:'<span class="muted">明細を入れると出します。</span>';
+  // 利益率（社内の画面だけ。見積書には載せない）：原価リスト（PR_原価）にある型式だけ
+  let mAmt=0, mCost=0, mNo=0;
+  document.querySelectorAll('#lineTbl tbody tr.mainrow').forEach(tr=>{
+    const l=LINES[+tr.dataset.i], c=l._calc; if(!l.code||!(l.qty>0)||!c||c.unit==null||c.free) return;
+    const cr=PriceCore.costRow(data.costs,l.code,date), m=cr?PriceCore.margin(c.unit,Number(cr.原価)):null;
+    if(m==null){ mNo++; return; }
+    mAmt+=c.amt; mCost+=Number(cr.原価)*l.qty; c.cost=Number(cr.原価); c.margin=m;
+    tr.querySelector('.up').insertAdjacentHTML('beforeend',`<div class="small ${m<0?'diff':'muted'}" title="（単価−原価）÷単価。社内用。見積書には載りません">利益率 <b>${pctText(m)}</b>（原価 ${yen(c.cost)}）</div>`); });
   const QL=LINES.filter(l=>l._calc&&l._calc.unit!=null).map(l=>({amt:l._calc.amt,fare:l._calc.fare}));
   const fareOnly=LINES.filter(l=>l._calc&&l._calc.unit==null&&l._calc.fare!=null).map(l=>({amt:0,fare:l._calc.fare}));
   const qt=PriceCore.quoteTotals(QL.concat(fareOnly));
   const tb=document.getElementById('totalBox');
-  tb.innerHTML=total||qt.fareTotal?`<span>商品 <b>${yen(qt.subtotal)}</b> 円</span><span>運賃 <b>${yen(qt.fareTotal)}</b> 円</span><span>小計（税抜） <b>${yen(qt.beforeTax)}</b> 円</span><span>消費税（10%） <b>${yen(qt.tax)}</b> 円</span><span>合計（税込） <b>${yen(qt.total)}</b> 円</span>${logis?`<span class="muted">本部からの受注は商品 ${yen(totalOrder)} 円</span>`:''}`:'';
+  tb.innerHTML=total||qt.fareTotal?`<span>商品 <b>${yen(qt.subtotal)}</b> 円</span><span>運賃 <b>${yen(qt.fareTotal)}</b> 円</span><span>小計（税抜） <b>${yen(qt.beforeTax)}</b> 円</span><span>消費税（10%） <b>${yen(qt.tax)}</b> 円</span><span>合計（税込） <b>${yen(qt.total)}</b> 円</span>${logis?`<span class="muted">本部からの受注は商品 ${yen(totalOrder)} 円</span>`:''}${mAmt?`<span class="muted" title="社内用。見積書には載りません">利益率（原価がある商品のみ） <b>${pctText((mAmt-mCost)/mAmt)}</b>${mNo?`（原価がない ${mNo}行は除く）`:''}</span>`:''}`:'';
 }
 
 // ---------- 見積書を出す（印刷してPDFにする）・Excel用（CSV） ----------
 // お客様に出るのは、型式・品名・数量・単価・金額、運賃の行、備考だけ。値引き・掛率・手修正の印・利益率は載せない
+function pctText(m){ return (Math.round(m*1000)/10).toFixed(1)+'%'; }
 function quoteData(){
   const rows=[]; let any=false;
   LINES.forEach(l=>{ const c=l._calc; if(!l.code||!(l.qty>0)||!c) return;
@@ -1061,6 +1079,7 @@ function sayOf(key,d){ return key==='exc'?PriceCore.excSentence(d):key==='cls'?P
 function renderRuleViews(){ Object.keys(LISTS).forEach(renderRuleView); renderRankView(); renderCheckView(); renderMatchView();
   // 得意先の価格表は重いので、開いているときだけ描き直す（ルールが変わったら計算し直す）
   if(VIEWSTATE.series&&document.getElementById('view-series').classList.contains('active')) renderSeriesView();
+  if(VIEWSTATE.revision&&document.getElementById('view-revision').classList.contains('active')) renderRevisionView();
   if(VIEWSTATE.custprice){ VIEWSTATE.custprice.cache=null; if(document.getElementById('view-custprice').classList.contains('active')) renderCustPriceView(); } }
 function renderRuleView(key){
   if(key==='price') return renderPriceView();
@@ -1073,7 +1092,7 @@ function renderRuleView(key){
     if(!st.q) return true;
     return JSON.stringify(d).toLowerCase().includes(st.q.toLowerCase()); });
   const shown=rows.slice(0,500);
-  const NO={cls:'③ ',exc:'④ ',fare:'⑤ ',asm:'⑤-2 '}, STEP={cls:'単価の3段目。',exc:'単価の4段目。',fare:'送料の決まり。',asm:'送料の決まり。'};
+  const NO={cls:'③ ',exc:'④ ',fare:'⑤ ',asm:'⑤-2 ',cost:'⑥ '}, STEP={cls:'単価の3段目。',exc:'単価の4段目。',fare:'送料の決まり。',asm:'送料の決まり。',cost:'利益率の元。'};
   el.innerHTML=`<h2>${esc((NO[key]||'')+L.label)}</h2><p class="lead">${esc((STEP[key]||'')+L.lead)}</p>
     <div class="tools"><input type="search" value="${esc(st.q)}" placeholder="探す（型式・名前・コード）" data-q>
       <label class="cb" style="padding:0"><input type="checkbox" data-chk ${st.chk?'checked':''}>要確認だけ</label>
@@ -1929,6 +1948,92 @@ function renderSeriesView(){
     setTimeout(()=>{ e.target.textContent='表をコピー（エクセルに貼れる）'; },2500); };
 }
 
+// ---------- 価格改定の検討：定価を変えたときの、ランク別の単価・利益率・実績への影響を試算する（リストは変えない） ----------
+let FACTS_ROWS=null, FACTS_ERR='', FACTS_LOADING=false;
+async function loadFacts(){
+  // Sales HUB と同じ SharedMasters の dashboard_facts.json（売上明細）を読む。必要な列だけ残す
+  if(FACTS_LOADING) return; FACTS_LOADING=true; FACTS_ERR='';
+  try{ const j=JSON.parse(await fetchText('dashboard_facts.json'));
+    FACTS_ROWS=(j.rows||[]).filter(r=>r&&r[23]!==2).map(r=>{ const a=[]; a[0]=r[0]; a[18]=r[18]; a[20]=r[20]; a[21]=r[21]; a[23]=r[23]; return a; }); }
+  catch(e){ FACTS_ERR=e.message||String(e); FACTS_ROWS=null; }
+  FACTS_LOADING=false; if(document.getElementById('view-revision').classList.contains('active')) renderRevisionView();
+}
+function revFromYm(){ const d=new Date(); d.setMonth(d.getMonth()-11); return d.getFullYear()*100+d.getMonth()+1; }   // 直近12か月（今月を含む）
+function revCompute(st){
+  const data=ruleData(), rows=[], from=revFromYm(), sales=FACTS_ROWS?PriceCore.salesByItem(FACTS_ROWS,from):{};
+  const base=[];
+  productGroups().forEach((prs,code)=>{
+    const lp=PriceCore.listPriceRow(data.prices,code,st.date); if(!lp||lp.定価==null||lp.定価==='') return;
+    const info=ITEMINFO[code], dai=info?info.dai||'（分類なし）':'品目マスタにない';
+    base.push({code,lp,dai,name:(info&&info.name)||lp.品名||''});
+  });
+  // 新しい定価
+  const rateOf=b=>st.mode==='all'?st.rate:st.mode==='dai'?(Number(st.daiRate[b.dai])||0):0;
+  base.forEach(b=>{ const old=Number(b.lp.定価), pin=st.pin[b.code];
+    b.old=old; b.neu=st.mode==='pin'?(pin!=null&&pin!==''&&!isNaN(pin)?Number(pin):old):PriceCore.reviseList(old,rateOf(b),st.unit); });
+  const newRows=base.filter(b=>b.neu!==b.old).map(b=>Object.assign({},b.lp,{定価:b.neu,適用開始日:st.date,出典:'試算'}));
+  const data2=Object.assign({},data,{prices:data.prices.concat(newRows)});
+  base.forEach(b=>{
+    const cr=PriceCore.costRow(data.costs,b.code,st.date), cost=cr?Number(cr.原価):null;
+    const pr=(d,kn)=>PriceCore.unitPrice(d,{code:b.code,qty:1,date:st.date,customer:{code:'',shaCode:'',shaName:'',name:'',kakeName:kn}}).price;
+    const before=SERIES_RANKS.map(([,kn])=>pr(data,kn)), after=b.neu===b.old?before:SERIES_RANKS.map(([,kn])=>pr(data2,kn));
+    const sl=sales[PriceCore.asmKey(b.code)]||null;
+    rows.push({code:b.code,name:b.name,dai:b.dai,old:b.old,neu:b.neu,cost,before,after,qty:sl?sl.qty:null,amt:sl?sl.amt:null});
+  });
+  rows.sort((a,b)=>(a.dai<b.dai?-1:a.dai>b.dai?1:0)||(a.code<b.code?-1:1));
+  return rows;
+}
+function renderRevisionView(){
+  const el=document.getElementById('view-revision');
+  const st=VIEWSTATE.revision=VIEWSTATE.revision||{mode:'all',rate:0,unit:100,date:today(),daiRate:{},pin:{},q:'',dai:'',chg:false,openPin:''};
+  if(FACTS_ROWS===null&&!FACTS_LOADING&&!FACTS_ERR) loadFacts();
+  const all=revCompute(st), tq=norm(st.q), dais=[...new Set(all.map(x=>x.dai))].sort();
+  const shown=all.filter(x=>(!st.dai||x.dai===st.dai)&&(!st.chg||x.neu!==x.old)&&(!tq||norm(x.code+' '+x.name+' '+(ITEMKEY[x.code]||'')).includes(tq)));
+  // まとめ（表示している商品について）
+  const chgN=shown.filter(x=>x.neu!==x.old).length, withS=shown.filter(x=>x.amt!=null);
+  const sum=withS.reduce((a,x)=>{ const ratio=x.neu/x.old; a.amt+=x.amt; a.amt2+=x.amt*ratio; if(x.cost!=null){ a.cAmt+=x.amt; a.cAmt2+=x.amt*ratio; a.cost+=x.cost*x.qty; } return a; },{amt:0,amt2:0,cAmt:0,cAmt2:0,cost:0});
+  const yy=v=>v==null?'－':yen(v), arrow=(a,b)=>a===b?`<span>${yy(a)}</span>`:`<span class="muted">${yy(a)} →</span> <b>${yy(b)}</b>`;
+  const factsMsg=FACTS_LOADING?'実績を読み込み中…':FACTS_ERR?`実績を読めませんでした：${esc(FACTS_ERR)}`:FACTS_ROWS?`実績：直近12か月（${revFromYm()}〜）の売上（返品を除く）。Sales HUB と同じ dashboard_facts.json`:'';
+  const modeBox=st.mode==='all'?`<label class="f">定価を変える率（％）<input type="number" step="0.1" id="rvRate" value="${st.rate}" style="width:90px"></label>`
+    :st.mode==='dai'?`<div class="small muted">分類ごとの率（％）を入れます（空は0％）。</div><div class="tools" style="flex-wrap:wrap;gap:6px 14px">${dais.map(d=>`<label class="f" style="flex-direction:row;align-items:center;gap:6px">${esc(d)}<input type="number" step="0.1" data-dairate="${esc(d)}" value="${esc(st.daiRate[d]??'')}" style="width:70px"></label>`).join('')}</div>`
+    :`<div class="small muted">下の表の「新しい定価」に、変えたい型式だけ金額を入れます（空は今のまま）。</div>`;
+  el.innerHTML=`<h2>価格改定の検討</h2><p class="lead">定価を変えたとき、<b>A'・A・B'・B の単価</b>と<b>利益率</b>、直近12か月の<b>実績</b>（売上・台数）への影響を試算します。ここでの数字は<b>試算だけ</b>で、定価リストは変わりません。利益率は、原価（⑥ 原価）がある商品だけ出ます。</p>
+    <div class="card"><div class="tools" style="flex-wrap:wrap;gap:8px 16px">
+      <label class="f">変え方<select id="rvMode"><option value="all" ${st.mode==='all'?'selected':''}>全商品を一律に</option><option value="dai" ${st.mode==='dai'?'selected':''}>分類ごとに</option><option value="pin" ${st.mode==='pin'?'selected':''}>ピンポイント（型式ごとに金額）</option></select></label>
+      <label class="f">新しい定価の丸め<select id="rvUnit">${[[0,'そのまま（1円）'],[10,'10円'],[100,'100円'],[1000,'1,000円']].map(([v,t])=>`<option value="${v}" ${st.unit===v?'selected':''}>${t}</option>`).join('')}</select></label>
+      <label class="f">改定日（この日の価格で比べる）<input type="date" id="rvDate" value="${esc(st.date)}"></label></div>
+      <div style="margin-top:8px">${modeBox}</div></div>
+    <div class="costats"><div class="cstat"><b>${shown.length}</b><span>商品（表示中）</span></div><div class="cstat"><b>${chgN}</b><span>定価が変わる商品</span></div>
+      <div class="cstat"><b>${withS.length?yen(sum.amt2-sum.amt):'－'}</b><span>実績の売上の増減（概算）</span></div>
+      <div class="cstat"><b>${sum.cAmt?pctText((sum.cAmt-sum.cost)/sum.cAmt)+' → '+pctText((sum.cAmt2-sum.cost)/sum.cAmt2):'－'}</b><span>実績の利益率（原価がある商品）</span></div></div>
+    <div class="small muted" style="margin:-4px 0 8px">${factsMsg}　概算は「実績の売上 × 新旧の定価の比」で、台数は変わらない前提です（値上げで台数が減る影響は入っていません）。</div>
+    <div class="card"><div class="tools"><input type="search" id="rvQ" value="${esc(st.q)}" placeholder="商品を探す（型式・品名）">
+      <select id="rvDai"><option value="">分類：すべて</option>${dais.map(d=>`<option ${d===st.dai?'selected':''}>${esc(d)}</option>`).join('')}</select>
+      <label class="cb" style="padding:0"><input type="checkbox" id="rvChg" ${st.chg?'checked':''}>変わる商品だけ</label><span class="grow"></span><button class="btn" id="rvCopy">表をコピー（エクセルに貼れる）</button></div></div>
+    <div class="card" style="padding:0;overflow-x:auto"><table class="cptbl"><thead><tr><th>型式</th><th>品名・分類</th><th class="num">定価</th>${SERIES_RANKS.map(([k])=>`<th class="num">${esc(k)}　単価・利益率</th>`).join('')}<th class="num">原価</th><th class="num">実績（台数・平均単価）</th></tr></thead>
+      <tbody>${shown.slice(0,300).map(x=>`<tr><td><b>${esc(x.code)}</b></td><td>${esc(x.name)}<div class="small muted">${esc(x.dai)}</div></td>
+        <td class="num">${st.mode==='pin'?`<input type="number" data-pin="${esc(x.code)}" value="${esc(st.pin[x.code]??'')}" placeholder="${x.old}" style="width:96px"><div class="small muted">今 ${yy(x.old)}</div>`:arrow(x.old,x.neu)}</td>
+        ${x.after.map((a,i)=>{ const b=x.before[i], m0=PriceCore.margin(b,x.cost), m1=PriceCore.margin(a,x.cost);
+          return `<td class="num">${arrow(b,a)}${x.cost!=null&&m1!=null?`<div class="small ${m1<0?'diff':'muted'}">${m0!=null&&a!==b?pctText(m0)+' → ':''}${pctText(m1)}</div>`:''}</td>`; }).join('')}
+        <td class="num">${yy(x.cost)}</td><td class="num">${x.qty!=null?`${x.qty.toLocaleString('ja-JP')}台<div class="small muted">${yen(x.amt/x.qty)}</div>`:'<span class="muted">－</span>'}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">ありません</td></tr>'}</tbody></table></div>
+    ${shown.length>300?`<div class="small muted">先頭の300商品を出しています（探す・分類で絞れます）。上のまとめは表示中の全商品の合計です。</div>`:''}`;
+  const rr=()=>renderRevisionView();
+  const keepFocus=(id,fn)=>{ const n=document.getElementById(id); if(!n) return; n.oninput=()=>{ fn(n); clearTimeout(st.t); st.t=setTimeout(()=>{ rr(); const m=document.getElementById(id); if(m){ m.focus(); try{ m.setSelectionRange(m.value.length,m.value.length); }catch(e){} } },400); }; };
+  el.querySelector('#rvMode').onchange=e=>{ st.mode=e.target.value; rr(); };
+  el.querySelector('#rvUnit').onchange=e=>{ st.unit=Number(e.target.value); rr(); };
+  el.querySelector('#rvDate').onchange=e=>{ st.date=e.target.value||today(); rr(); };
+  el.querySelector('#rvDai').onchange=e=>{ st.dai=e.target.value; rr(); };
+  el.querySelector('#rvChg').onchange=e=>{ st.chg=e.target.checked; rr(); };
+  keepFocus('rvQ',n=>{ st.q=n.value; }); keepFocus('rvRate',n=>{ st.rate=Number(n.value)||0; });
+  el.querySelectorAll('[data-dairate]').forEach(n=>n.onchange=()=>{ st.daiRate[n.dataset.dairate]=n.value; rr(); });
+  el.querySelectorAll('[data-pin]').forEach(n=>n.onchange=()=>{ st.pin[n.dataset.pin]=n.value; rr(); });
+  el.querySelector('#rvCopy').onclick=async e=>{
+    const L=['型式','品名','分類','今の定価','新しい定価',...SERIES_RANKS.map(r=>r[0]+'（今）'),...SERIES_RANKS.map(r=>r[0]+'（新）'),'原価','実績台数','実績売上'];
+    const lines=[L.join('\t')].concat(shown.map(x=>[x.code,x.name,x.dai,x.old,x.neu,...x.before.map(v=>v??''),...x.after.map(v=>v??''),x.cost??'',x.qty??'',x.amt??''].join('\t')));
+    try{ await navigator.clipboard.writeText(lines.join('\n')); e.target.textContent='コピーしました'; }catch(err){ e.target.textContent='コピーできませんでした'; }
+    setTimeout(()=>{ e.target.textContent='表をコピー（エクセルに貼れる）'; },2500); };
+}
+
 // ---------- まとめて入れる：ファイルの中身と今のリストを見比べて、違いだけを入れる ----------
 // 行の「同じもの」の見分け方（この項目が同じなら同じ行とみなし、ほかの項目の違いを「変わる」とする）
 const IMP_ID={
@@ -1937,6 +2042,7 @@ const IMP_ID={
   exc:['型式','対象の種類','対象コード','対象名','在庫口のみ','台数以上','適用開始日'],
   fare:['種類','地域','上限','適用開始日'],
   asm:['型式','適用開始日'],
+  cost:['型式','適用開始日'],
 };
 const IMP_SKIP=['更新者','更新日時'];
 function impVal(v){ return v===undefined||v===''?null:v; }
@@ -2044,6 +2150,7 @@ document.querySelectorAll('.navi').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+b.dataset.view));
   if(b.dataset.view==='custprice') renderCustPriceView();
   if(b.dataset.view==='series') renderSeriesView();
+  if(b.dataset.view==='revision') renderRevisionView();
 });
 initCalc(); initImport(); initJanImport();
 init();
