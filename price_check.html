@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261113c"></script>
+<script src="price_core.js?v=20261114a"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -305,7 +305,7 @@
   <div id="statusBar"><span id="statusText">準備中…</span></div>
   <main>
     <nav class="side" id="sideNav">
-      <button class="navi active" data-view="calc" title="価格・送料テストとしても使えます（ルールを直したらここで試す）">早見<span class="ext">テスト</span></button>
+      <button class="navi active" data-view="calc" title="得意先・商品を入れて、単価と運賃を出し、直して、見積書にします">見積</button>
       <div class="navgrp">管理</div>
       <button class="navi" data-view="check">ルールの状況<span class="cnt" id="cnt-check" hidden></span></button>
       <button class="navi" data-view="custprice" title="得意先を選ぶと、全部の商品がいくらで出るかを一覧にします">得意先の価格表</button>
@@ -325,8 +325,8 @@
 
     <!-- ===== 早見 ===== -->
     <section class="view active" id="view-calc">
-      <h2>単価と送料を出す</h2>
-      <p class="lead">得意先・日付・届け先・商品を入れると、価格のルールから単価と送料を出し、決めた理由と注意点を並べます。最後に決めるのは人です。</p>
+      <h2>見積を作る</h2>
+      <p class="lead">得意先・日付・届け先・商品を入れると、価格のルールから単価と運賃を出し、決めた理由と注意点を並べます。直したいところを直して、そのまま見積書にします。最後に決めるのは人です。</p>
       <div class="card">
         <div class="grid">
           <div class="custbox" style="grid-column:span 2">
@@ -344,18 +344,28 @@
         <div class="custinfo" id="custInfo"></div>
       </div>
       <div class="card">
+        <h3>見積書の内容</h3>
+        <div class="grid">
+          <label class="f" style="grid-column:span 2">件名<input id="qSubject" type="text" placeholder="例）台車のお見積り"></label>
+          <label class="f">有効期限<input id="qValid" type="date"></label>
+        </div>
+        <label class="f" style="margin-top:8px">備考（自由に書けます。そのまま見積書に載ります）<textarea id="qNote" rows="3" placeholder="例）納期は受注後2週間です。特注品は別途お見積りです。"></textarea></label>
+      </div>
+      <div class="card">
         <h3>明細</h3>
         <div style="overflow-x:auto"><table class="t" id="lineTbl">
-          <thead><tr><th style="width:190px">型式</th><th style="width:80px">台数</th><th style="width:130px">出荷のしかた</th><th>品名</th><th class="num">定価</th><th class="num">単価</th><th class="num">金額</th><th>前回の受注</th><th></th></tr></thead>
+          <thead><tr><th style="width:190px">型式</th><th style="width:80px">台数</th><th style="width:130px">出荷のしかた</th><th>品名</th><th class="num">定価</th><th style="width:80px">値引き（％）</th><th class="num">単価</th><th style="width:110px">単価を直す</th><th class="num">金額</th><th class="num">運賃（直せます）</th><th>前回の受注</th><th></th></tr></thead>
           <tbody></tbody>
         </table></div>
         <div class="sugg codesugg" id="codeSugg"></div>
         <div class="tools" style="margin-top:8px"><button class="btn" id="addLine">＋ 行を足す</button>
           <span class="muted small">型式は SMILE の品目コード（例：UDALS、UDGLS、OP/DAPB）。欄を押すと、得意先がよく買う商品・例外のある商品から順に候補が出ます。前回の受注は SharedMasters の受注明細（直近の分）から探します</span></div>
         <div class="total" id="totalBox"></div>
+        <div class="tools" style="margin-top:10px"><button class="btn pri" id="quotePrint">見積書を出す（PDF）</button><button class="btn" id="quoteCsv">Excel用（CSV）で出す</button>
+          <span class="muted small">見積書には、型式・品名・数量・単価・金額、運賃の行、備考だけが載ります（値引き・掛率・手修正の印は載りません）。</span></div>
       </div>
       <div class="card">
-        <h3>送料</h3>
+        <h3>運賃（行ごと）</h3>
         <div id="fareBox" class="small muted">届け先の県と明細を入れると出します。</div>
       </div>
     </section>
@@ -715,6 +725,8 @@ function initCalc(){
   document.getElementById('lineTbl').addEventListener('click',e=>{
     const b=e.target.closest('[data-ref]'); if(b) return openRef(REFS[+b.dataset.ref]);
     const g=e.target.closest('[data-goview]'); if(g) goView(g.dataset.goview); });
+  document.getElementById('lineTbl').addEventListener('change',e=>{ const t=e.target; if(t.dataset&&t.dataset.f==='name'){ LINES[+t.closest('tr').dataset.i].name=t.value; recalc(); } });
+  document.getElementById('quotePrint').onclick=quotePrint; document.getElementById('quoteCsv').onclick=quoteCsv;
   document.getElementById('addLine').onclick=()=>{ LINES.push({code:'',qty:1}); renderLines(); };
   const q=document.getElementById('custQ'), sg=document.getElementById('custSugg');
   let hits=[], on=-1;
@@ -740,12 +752,18 @@ function renderLines(){
     <td><input value="${esc(l.code)}" data-f="code" style="width:140px" placeholder="型式・品名で探す" autocomplete="off"></td>
     <td><input type="number" min="0" step="1" value="${esc(l.qty)}" data-f="qty" style="width:60px"></td>
     <td><select data-f="ship" title="工場の新品は段ボール梱包。修理品の預かり・デモなどは組立出荷"><option${l.ship==='組立出荷'?'':' selected'}>段ボール梱包</option><option${l.ship==='組立出荷'?' selected':''}>組立出荷</option></select></td>
-    <td class="res"></td><td class="num lp"></td><td class="num up"></td><td class="num am"></td><td class="prev"></td>
+    <td class="res"></td><td class="num lp"></td>
+    <td><input type="number" min="0" max="100" step="any" value="${esc(l.disc??'')}" data-f="disc" style="width:64px" title="値引きの％（空なら値引きなし）"></td>
+    <td class="num up"></td>
+    <td><input type="number" min="0" step="any" value="${esc(l.manual??'')}" data-f="manual" style="width:92px" placeholder="自分で決める" title="単価を直接決めるとき。値引きより優先します"></td>
+    <td class="num am"></td>
+    <td class="num fr"><div class="frc"></div><input type="number" min="0" step="any" value="${esc(l.fareManual??'')}" data-f="fareManual" style="width:84px" placeholder="自分で決める" title="運賃を直接決めるとき"></td>
+    <td class="prev"></td>
     <td><button class="btn" data-del="${i}" title="この行を消す">×</button></td></tr>
-    <tr class="dtrow"><td colspan="9" class="detail"></td></tr>`).join('');
+    <tr class="dtrow"><td colspan="13" class="detail"></td></tr>`).join('');
   tb.querySelectorAll('[data-f]').forEach(inp=>inp.addEventListener('change',e=>{
     const i=+e.target.closest('tr').dataset.i, f=e.target.dataset.f;
-    LINES[i][f]=f==='qty'?Number(e.target.value)||0:f==='ship'?e.target.value:resolveCode(e.target.value);
+    LINES[i][f]=f==='qty'?Number(e.target.value)||0:f==='ship'?e.target.value:(f==='disc'||f==='manual'||f==='fareManual')?(e.target.value===''?null:Number(e.target.value)):resolveCode(e.target.value);
     if(f==='code') e.target.value=LINES[i].code;
     recalc(); }));
   // 型式の欄：押すと候補、打つと絞り込み、↑↓と Enter で選ぶ
@@ -837,9 +855,20 @@ function recalc(){
   document.querySelectorAll('#lineTbl tbody tr.mainrow').forEach(tr=>{
     const l=LINES[+tr.dataset.i]; const q=s=>tr.querySelector(s);
     const dt=tr.nextElementSibling.querySelector('.detail');
-    ['.res','.lp','.up','.am','.prev'].forEach(s=>q(s).innerHTML=''); dt.innerHTML=''; tr.nextElementSibling.hidden=true;
+    ['.res','.lp','.up','.am','.prev','.frc'].forEach(s=>q(s).innerHTML=''); dt.innerHTML=''; tr.nextElementSibling.hidden=true;
+    l._calc=null;
     if(!l.code) return;
     const name=ITEMS[l.code]||(PRICED.get(l.code)||{}).name||'';
+    // 定価リストにない型式（特注品・部品など）：品名と単価を自分で書く手入力の行
+    if(!PriceCore.listPriceRow(data.prices,l.code,date)){
+      const unit=l.manual!=null?l.manual:null, amt=unit!=null?unit*(l.qty||0):null;
+      q('.res').innerHTML=`<input data-f="name" value="${esc(l.name||name)}" placeholder="品名を書く" style="width:150px"> <span class="pill">手入力</span><div class="muted small">定価リストにない型式です。品名と「単価を直す」を書くと、見積に入ります（定価・利益率・単価の決まりは出ません）。</div>`;
+      q('.lp').textContent='－';
+      q('.up').innerHTML=unit!=null?`<b>${yen(unit)}</b>`:'<span class="muted">未定</span>';
+      if(amt!=null){ q('.am').textContent=yen(amt); total+=amt; }
+      l._calc={unit,amt,name:l.name||name,free:true};
+      return;
+    }
     if(!who){
       // 得意先が決まる前：定価だけ出す
       const p=PriceCore.listPriceRow(data.prices,l.code,date);
@@ -858,8 +887,10 @@ function recalc(){
     tr.nextElementSibling.hidden=false;
     q('.lp').textContent=yen(r.listPrice);
     if(r.price!=null){
-      const amt=r.price*(l.qty||0); total+=amt;
-      q('.up').innerHTML=`<b>${yen(r.price)}</b>`+(r.orderPrice!=null?`<div class="small muted">本部受注 ${yen(r.orderPrice)}</div>`:'')+
+      // 見積の単価：自分で決めた単価 ＞ 値引き（％）を引いた単価 ＞ ルールどおりの単価
+      const unit=l.manual!=null?l.manual:PriceCore.discountedUnit(r.price,l.disc,date), amt=unit*(l.qty||0); total+=amt;
+      l._calc={unit,amt,name:l.name||r.name||name,free:false};
+      q('.up').innerHTML=`<b>${yen(unit)}</b>`+(unit!==r.price?`<div class="small muted">ルールどおり ${yen(r.price)}</div>`:'')+(l.manual!=null?' <span class="pill warn">手修正</span>':l.disc?' <span class="pill warn">値引き</span>':'')+(r.orderPrice!=null?`<div class="small muted">本部受注 ${yen(r.orderPrice)}</div>`:'')+
         (r.oldPrice!=null?`<div class="small muted" title="改定前の定価のままの得意先もあるため">旧定価なら ${yen(r.oldPrice)}</div>`:'')+
         (r.directPrice!=null?`<div class="small muted">販社直接なら ${yen(r.directPrice)}</div>`:'');
       q('.am').textContent=yen(amt);
@@ -874,23 +905,69 @@ function recalc(){
       :prevSha.length?'<span class="muted">同じ社名：</span><br>'+prevSha.map(o=>`${esc(fmtDate(o.date))}　${yen(o.price)}<span class="muted">（${esc((CUSTMAP[o.cust]||{}).name||o.cust)}）</span>`).join('<br>'):'<span class="muted">直近の受注なし</span>';
   });
 
-  // 送料
+  // 運賃は行ごとに出す（見積書でも、商品ごとに別の行になる）
   const fb=document.getElementById('fareBox');
-  const lines=LINES.filter(l=>l.code&&l.qty>0);
-  let fareAmt=null;
-  if(!lines.length){ fb.innerHTML='<span class="muted">明細を入れると出します。</span>'; }
-  else{
-    const isLogis=!!curCust&&data.classes.some(c=>c.計算方式==='本部経由'&&((c.対象の種類==='社名'&&c.対象コード===curCust.shaCode)||(c.対象の種類==='得意先'&&c.対象コード===curCust.code)));
-    const f=PriceCore.freight(data,lines,{pref,date,personal,logis:isLogis});
-    fareAmt=f.quoteAmount??f.amount;
-    fb.innerHTML=(f.amount!=null?`<div class="result"><b>${yen(fareAmt)}円</b>　<span class="muted">${esc(f.carrier||'')}${f.region?'・'+esc(f.region):''}</span></div>
-        <div class="exp"><b class="lbl">説明</b><span>${esc(f.summary||'')}</span></div>`:'')+li(f.warnings,'warns')+
-      (f.checks?`<div class="judge"><b class="lbl">判定</b>${chipsHtml(f.checks)}</div>`:'')+
-      `<details class="log"><summary>詳細ログ・送料の決まり</summary>${li(f.explain,'why')}
-        <div class="small muted" style="margin-top:6px">決まり：同じ商品の複数台は1台の重さ×台数／オプションは本体の運賃に含める／400kgを超えた分は400kg＋残り／部品・輸入品だけで9個まではミニ便／個人宅は2倍・西濃／沖縄・離島は都度見積／リフト・レベラーは10台以上でも元払いにならない</div></details>`;
-  }
+  const isLogis=!!curCust&&data.classes.some(c=>c.計算方式==='本部経由'&&((c.対象の種類==='社名'&&c.対象コード===curCust.shaCode)||(c.対象の種類==='得意先'&&c.対象コード===curCust.code)));
+  const fparts=[], warn=new Set(); let nLine=0;
+  document.querySelectorAll('#lineTbl tbody tr.mainrow').forEach(tr=>{
+    const l=LINES[+tr.dataset.i], cell=tr.querySelector('.frc'); if(!l.code||!(l.qty>0)){ return; } nLine++;
+    let fare=null, f=null;
+    if(l.fareManual!=null) fare=l.fareManual;
+    else if(PriceCore.listPriceRow(data.prices,l.code,date,true)){ f=PriceCore.freight(data,[{code:l.code,qty:l.qty,ship:l.ship}],{pref,date,personal,logis:isLogis}); fare=f.quoteAmount??f.amount; }
+    if(l._calc) l._calc.fare=fare; else l._calc={unit:null,amt:null,name:l.name||ITEMS[l.code]||'',free:false,fare};
+    cell.innerHTML=fare!=null?`<b>${yen(fare)}</b>`+(l.fareManual!=null?' <span class="pill warn">手修正</span>':''):'<span class="muted">出ません</span>';
+    if(f){ (f.warnings||[]).forEach(w=>warn.add(w)); }
+    fparts.push(`<div class="small" style="margin:4px 0"><b>${esc(l.code)}</b>　${fare!=null?yen(fare)+'円':'－'}${f&&f.carrier?`　<span class="muted">${esc(f.carrier)}${f.region?'・'+esc(f.region):''}</span>`:''}<div class="exp"><span>${esc(l.fareManual!=null?'運賃を自分で決めています':(f&&f.summary)||'定価リストにない型式なので、運賃を自分で書いてください')}</span></div></div>`);
+  });
+  fb.innerHTML=nLine?fparts.join('')+li([...warn],'warns')+`<div class="small muted" style="margin-top:6px">決まり：運賃は行ごとに出します。同じ商品の複数台は 1台の重さ×台数（段ボール梱包）、組立出荷は 1台の運賃×台数／400kgを超えた分は400kg＋残り／部品・輸入品だけで9個まではミニ便／個人宅は2倍・西濃／沖縄・離島は都度見積。</div>`:'<span class="muted">明細を入れると出します。</span>';
+  const QL=LINES.filter(l=>l._calc&&l._calc.unit!=null).map(l=>({amt:l._calc.amt,fare:l._calc.fare}));
+  const fareOnly=LINES.filter(l=>l._calc&&l._calc.unit==null&&l._calc.fare!=null).map(l=>({amt:0,fare:l._calc.fare}));
+  const qt=PriceCore.quoteTotals(QL.concat(fareOnly));
   const tb=document.getElementById('totalBox');
-  tb.innerHTML=total?`<span>商品 <b>${yen(total)}</b> 円</span>${fareAmt!=null?`<span>送料 <b>${yen(fareAmt)}</b> 円</span><span>合計（税抜） <b>${yen(total+fareAmt)}</b> 円</span>`:''}${logis?`<span class="muted">本部からの受注は商品 ${yen(totalOrder)} 円</span>`:''}`:'';
+  tb.innerHTML=total||qt.fareTotal?`<span>商品 <b>${yen(qt.subtotal)}</b> 円</span><span>運賃 <b>${yen(qt.fareTotal)}</b> 円</span><span>小計（税抜） <b>${yen(qt.beforeTax)}</b> 円</span><span>消費税（10%） <b>${yen(qt.tax)}</b> 円</span><span>合計（税込） <b>${yen(qt.total)}</b> 円</span>${logis?`<span class="muted">本部からの受注は商品 ${yen(totalOrder)} 円</span>`:''}`:'';
+}
+
+// ---------- 見積書を出す（印刷してPDFにする）・Excel用（CSV） ----------
+// お客様に出るのは、型式・品名・数量・単価・金額、運賃の行、備考だけ。値引き・掛率・手修正の印・利益率は載せない
+function quoteData(){
+  const rows=[]; let any=false;
+  LINES.forEach(l=>{ const c=l._calc; if(!l.code||!(l.qty>0)||!c) return;
+    if(c.unit!=null){ rows.push({kind:'item',code:l.code,name:c.name,qty:l.qty,unit:c.unit,amt:c.amt}); any=true; }
+    if(c.fare!=null) rows.push({kind:'fare',code:l.code,name:'運賃（'+(c.name||l.code)+'）',qty:1,unit:c.fare,amt:c.fare}); });
+  const tot=PriceCore.quoteTotals(rows.map(r=>r.kind==='item'?{amt:r.amt,fare:0}:{amt:0,fare:r.amt}));
+  const cust=curCust?(curCust.shaName&&curCust.shaName!==curCust.name?curCust.shaName+' '+curCust.name:curCust.name):'';
+  return {rows,tot,any,cust,date:document.getElementById('cDate').value||today(),valid:document.getElementById('qValid').value,
+    subject:document.getElementById('qSubject').value.trim(),note:document.getElementById('qNote').value.trim(),pref:document.getElementById('cPref').value};
+}
+function quotePrint(){
+  const q=quoteData(); if(!q.rows.length){ alert('見積に入れる明細がありません（単価が出ている行か、単価を自分で決めた行が必要です）。'); return; }
+  const n=v=>Math.round(v).toLocaleString('ja-JP'), d=s=>s?s.replace(/^(\d+)-(\d+)-(\d+)$/,(m,y,mo,da)=>`${y}年${+mo}月${+da}日`):'';
+  const td='padding:8px 10px;border-bottom:1px solid #dfe4ef;';
+  const rows=q.rows.map(r=>`<tr style="${r.kind==='fare'?'color:#8a90a8':''}"><td style="${td}">${r.kind==='fare'?'':esc(r.code)}</td><td style="${td}">${esc(r.name)}</td><td style="${td}text-align:right">${n(r.qty)}</td><td style="${td}text-align:right">${n(r.unit)}</td><td style="${td}text-align:right">${n(r.amt)}</td></tr>`).join('');
+  const html=`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>御見積書</title><style>
+    @page{size:A4;margin:14mm} body{font-family:"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;color:#161a3d;margin:0;padding:24px;font-size:13px}
+    .head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #23268f;padding-bottom:10px}
+    h1{margin:0;font-size:26px;color:#23268f}.r{text-align:right;color:#8a90a8;line-height:1.7;font-size:12px}
+    table{border-collapse:collapse;width:100%;margin-top:16px} th{background:#f4f6fb;color:#8a90a8;font-weight:500;text-align:left;padding:8px 10px}
+    .tot{margin-top:14px;text-align:right;line-height:2} .tot b{font-size:18px;color:#23268f} .note{margin-top:18px;background:#f4f6fb;border-radius:8px;padding:10px 14px;line-height:1.8;white-space:pre-wrap}
+    .bar{margin-bottom:12px;color:#8a90a8} @media print{.bar{display:none}}</style></head><body>
+    <div class="bar">このページを印刷（Ctrl＋P）して、送信先を「PDFに保存」にするとPDFになります。</div>
+    <div class="head"><div><h1>御見積書</h1><div style="font-size:16px;margin-top:6px">${esc(q.cust)}${q.cust?'　御中':''}</div></div>
+    <div class="r"><div>見積日　${esc(d(q.date))}</div>${q.valid?`<div>有効期限　${esc(d(q.valid))}</div>`:''}<div>花岡車輌株式会社</div></div></div>
+    ${q.subject?`<div style="margin-top:12px">件名：${esc(q.subject)}</div>`:''}
+    <table><thead><tr><th>型式</th><th>品名</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:right">金額</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="tot"><div>小計（運賃込み）　${n(q.tot.beforeTax)}円</div><div>消費税（10%）　${n(q.tot.tax)}円</div><div>合計　<b>${n(q.tot.total)}円</b></div></div>
+    ${q.note?`<div class="note"><b>備考</b>\n${esc(q.note)}</div>`:''}</body></html>`;
+  const w=window.open('','_blank'); if(!w){ alert('見積書のページを開けませんでした（ポップアップを許可してください）。'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+function quoteCsv(){
+  const q=quoteData(); if(!q.rows.length){ alert('見積に入れる明細がありません（単価が出ている行か、単価を自分で決めた行が必要です）。'); return; }
+  const c=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const lines=[['御見積書'],['宛名',q.cust],['見積日',q.date],['有効期限',q.valid],['件名',q.subject],[],['型式','品名','数量','単価','金額'],
+    ...q.rows.map(r=>[r.kind==='fare'?'':r.code,r.name,r.qty,r.unit,r.amt]),[],['小計（運賃込み）','','','',q.tot.beforeTax],['消費税（10%）','','','',q.tot.tax],['合計','','','',q.tot.total],[],['備考',q.note]];
+  const blob=new Blob(['\ufeff'+lines.map(r=>r.map(c).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='見積_'+q.date+'.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
 
 // ============================================================

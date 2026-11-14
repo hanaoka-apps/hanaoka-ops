@@ -274,6 +274,21 @@
     return out;
   }
 
+  // ---------- 見積 ----------
+  // 値引き（％）を引いた単価。見積日の丸め（11月1日から100円）にそろえる。値引きなしなら、そのまま
+  function discountedUnit(base, discPct, date) {
+    var d = num(discPct);
+    if (base === null || base === undefined || !d) return base;
+    return round(base * (1 - d / 100), roundUnit(date));
+  }
+  // 見積の合計。lines: [{ amt(商品の金額), fare(運賃。なければ空) }]。消費税は切り捨て
+  function quoteTotals(lines, taxRate) {
+    var sub = 0, fare = 0;
+    lines.forEach(function (l) { sub += num(l.amt) || 0; fare += num(l.fare) || 0; });
+    var rate = taxRate === undefined ? 0.1 : taxRate, tax = Math.floor((sub + fare) * rate + 1e-9);
+    return { subtotal: sub, fareTotal: fare, beforeTax: sub + fare, tax: tax, total: sub + fare + tax };
+  }
+
   function isOption(code) { return /^OP\//i.test(String(code || "")); }
   // 部品のまとめコード：「DANDY/P」「D.LIFT/P」「P.D/P」「P/UDA50-JK」のように /P を含むもの
   function isPartBundle(code) { return /\/P$|^P\//i.test(String(code || "")); }
@@ -792,7 +807,7 @@
   var API = {
     parseCSV: parseCSV, toObjects: toObjects, customerFromMaster: customerFromMaster, PREFS: PREFS, prefOf: prefOf,
     num: num, round: round, ceil: ceil, ymd: ymd, yen: yen, pct: pct,
-    roundUnit: roundUnit, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
+    roundUnit: roundUnit, discountedUnit: discountedUnit, quoteTotals: quoteTotals, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,

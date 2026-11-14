@@ -242,6 +242,17 @@ assert.equal(jp.set[0].next.JANコード, '4006381333931'); assert.equal(jp.set[
 jp = P.janPlan(pr, [{ 型式: 'DA-LS', JANコード: '4006381333931' }, { 型式: 'DALS', JANコード: '4580132430013' }]);
 assert.deepEqual(jp.conflict, ['DALS']); assert.equal(jp.set.length, 0); // 同じ型式に別のJANが2つなら入れない
 
+// --- 見積：値引き（％）と合計 ---
+assert.equal(P.discountedUnit(23000, 3, '2026-11-20'), 22300); // 23000×0.97=22310 → 100円単位
+assert.equal(P.discountedUnit(23000, 3, '2026-10-20'), 22310); // 10月までは10円単位
+assert.equal(P.discountedUnit(23000, 0, '2026-11-20'), 23000);
+assert.equal(P.discountedUnit(23000, '', '2026-11-20'), 23000);
+assert.equal(P.discountedUnit(null, 5, '2026-11-20'), null);
+let qt = P.quoteTotals([{ amt: 86500, fare: 3800 }, { amt: 223000, fare: 11200 }, { amt: 576000, fare: 12000 }, { amt: 15000, fare: null }]);
+assert.equal(qt.subtotal, 900500); assert.equal(qt.fareTotal, 27000); assert.equal(qt.beforeTax, 927500);
+assert.equal(qt.tax, 92750); assert.equal(qt.total, 1020250);
+assert.equal(P.quoteTotals([{ amt: 1005, fare: 0 }]).tax, 100); // 消費税は切り捨て
+
 // --- 説明の文章・判定の表・詳細ログ・前回の受注との見比べ ---
 r = P.unitPrice(data, { code: 'T1', qty: 1, date: '2026-11-11', customer: cust('S01', 'G1', "5掛(A')") });
 const ck = Object.fromEntries(r.checks.map(c => [c.item, c]));
