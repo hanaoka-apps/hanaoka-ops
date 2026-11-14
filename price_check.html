@@ -308,7 +308,8 @@
       <button class="navi active" data-view="calc" title="得意先・商品を入れて、単価と運賃を出し、直して、見積書にします">見積</button>
       <div class="navgrp">管理</div>
       <button class="navi" data-view="check">ルールの状況<span class="cnt" id="cnt-check" hidden></span></button>
-      <button class="navi" data-view="custprice" title="得意先を選ぶと、全部の商品がいくらで出るかを一覧にします">得意先の価格表</button>
+      <button class="navi" data-view="custprice" title="得意先・ランクを選ぶと、全部の商品がいくらで出るかを一覧にして、PDF・Excelで出せます">価格表</button>
+      <button class="navi" data-view="series" title="型式・シリーズごとに、A'・A・B'・B の単価と定価を並べて見ます">型式・ランク別の価格</button>
       <!-- 単価が決まる順番（早見の詳細ログ・使い方のページと同じ番号）に並べる -->
       <div class="navgrp">価格の決まり（決まる順）</div>
       <button class="navi" data-view="price"><span class="no">①</span>定価<span class="cnt" id="cnt-price" hidden></span></button>
@@ -373,6 +374,7 @@
     <!-- ===== ルールの一覧（定価・得意先の区分・例外・運賃で共通） ===== -->
     <section class="view" id="view-check"></section>
     <section class="view" id="view-custprice"></section>
+    <section class="view" id="view-series"></section>
     <section class="view" id="view-match"></section>
     <section class="view" id="view-price"></section>
     <section class="view" id="view-rank"></section>
@@ -1058,6 +1060,7 @@ function renderCheckView(){
 function sayOf(key,d){ return key==='exc'?PriceCore.excSentence(d):key==='cls'?PriceCore.clsSentence(d):''; }
 function renderRuleViews(){ Object.keys(LISTS).forEach(renderRuleView); renderRankView(); renderCheckView(); renderMatchView();
   // 得意先の価格表は重いので、開いているときだけ描き直す（ルールが変わったら計算し直す）
+  if(VIEWSTATE.series&&document.getElementById('view-series').classList.contains('active')) renderSeriesView();
   if(VIEWSTATE.custprice){ VIEWSTATE.custprice.cache=null; if(document.getElementById('view-custprice').classList.contains('active')) renderCustPriceView(); } }
 function renderRuleView(key){
   if(key==='price') return renderPriceView();
@@ -1799,6 +1802,7 @@ function renderCustPriceView(){
   const tools=`<div class="tools"><input type="search" id="cpQ" value="${esc(st.q)}" placeholder="商品を探す（型式・品名）">
       <select id="cpDai"><option value="">分類：すべて</option>${dais.map(d=>`<option ${d===st.dai?'selected':''}>${esc(d)}</option>`).join('')}</select>
       <span class="muted small">${shown.length}商品</span><span class="grow"></span><button class="btn" id="cpCopy">表をコピー（エクセルに貼れる）</button></div>`;
+  const outCard=cpOutCard(st,rows,dais);
   const yenOr=v=>v==null?'－':yen(v);
   const tr=x=>{ const r=x.r, w=CP_WHY[x.why];
     const price=r.method==='本部経由'&&r.quotePrice!=null?`${yen(r.quotePrice)}<div class="small muted">本部受注 ${yenOr(r.orderPrice)}</div>`:r.fareIncluded?`${yen(r.price)}<div class="small muted">運賃 ${yen(r.fareIncluded)} 込み</div>`:yenOr(r.price);
@@ -1810,7 +1814,7 @@ function renderCustPriceView(){
         ${(r.notes||[]).length?`<ul class="plain small">${r.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul>`:''}
         <div class="tools" style="margin-top:6px">${(r.steps||[]).filter(s=>s.ref&&s.refKind&&s.refKind!=='price').map((s,i)=>`<button class="btn" data-ref="${i}">「${esc(s.label)}」の設定を開く</button>`).join('')}<button class="linkbtn" data-prod="${esc(x.code)}">① 定価・商品の詳細 ↗</button></div></td></tr>`:''}`; };
   const MAX=400;
-  el.innerHTML=lead+head+pickHtml+stats+tools+`<div class="card" style="padding:0;overflow-x:auto"><table class="cptbl"><thead><tr><th>型式</th><th>品名・分類</th><th class="num">定価</th><th class="num">掛率</th><th class="num">単価</th><th>決め手</th></tr></thead>
+  el.innerHTML=lead+head+pickHtml+outCard+stats+tools+`<div class="card" style="padding:0;overflow-x:auto"><table class="cptbl"><thead><tr><th>型式</th><th>品名・分類</th><th class="num">定価</th><th class="num">掛率</th><th class="num">単価</th><th>決め手</th></tr></thead>
     <tbody>${shown.slice(0,MAX).map(tr).join('')||'<tr><td colspan="6" class="muted">ありません</td></tr>'}</tbody></table></div>
     ${shown.length>MAX?`<div class="small muted">先頭の${MAX}商品を出しています（探す・分類で絞れます）</div>`:''}`;
   bindCp(el,st,shown);
@@ -1822,6 +1826,7 @@ function bindCp(el,st,shown){
   const dt=el.querySelector('#cpDate'); if(dt) dt.onchange=()=>{ st.date=dt.value||today(); rr(); };
   const ch=el.querySelector('#cpChange'); if(ch) ch.onclick=()=>{ st.pick=!st.pick; rr(); const n=document.getElementById('cpCustQ'); if(n) n.focus(); };
   const tc=el.querySelector('#cpToCalc'); if(tc) tc.onclick=()=>{ const c=CUSTMAP[st.cust]; if(!c) return; goView('calc'); curCust=c; const q=document.getElementById('custQ'); if(q) q.value=`${c.code}　${c.name}`; document.getElementById('cRank').value=''; document.getElementById('cDate').value=st.date; recalc(); };
+  bindCpOut(el,st);
   if(!shown) return;
   const q=el.querySelector('#cpQ'); q.oninput=()=>{ st.q=q.value; clearTimeout(st.t); st.t=setTimeout(()=>{ rr(); const n=document.getElementById('cpQ'); n.focus(); n.setSelectionRange(n.value.length,n.value.length); },300); };
   el.querySelector('#cpDai').onchange=e=>{ st.dai=e.target.value; rr(); };
@@ -1837,6 +1842,92 @@ function bindCp(el,st,shown){
 }
 // ③④ の商社から、その商社の得意先の価格表を開く
 function openCustPrice(code){ const st=VIEWSTATE.custprice=VIEWSTATE.custprice||{cust:'',cq:'',date:today(),q:'',dai:'',why:'',open:null}; st.cust=code; st.cq=''; st.pick=false; st.open=null; st.why=''; goView('custprice'); renderCustPriceView(); }
+
+// ---------- 価格表の出力（PDF・Excel）：分類にチェックを付けて出す。原価・掛率・決め手は載せない ----------
+function janOf(code){ const r=RULES.price.find(x=>x.data.型式===code&&String(x.data.JANコード||'').trim()); return r?String(r.data.JANコード).trim():''; }
+function cpOutRows(st){
+  const rows=cpCompute(st)||[]; const sel=st.sel;
+  return rows.filter(x=>x.r.price!=null&&(!sel||sel.has(x.dai))).map(x=>({code:x.code,name:x.name,dai:x.dai,jan:janOf(x.code),list:x.r.listPrice,unit:x.r.method==='本部経由'&&x.r.quotePrice!=null?x.r.quotePrice:x.r.price}));
+}
+function cpOutCard(st,rows,dais){
+  const sel=st.sel, on=d=>!sel||sel.has(d), n=(d)=>rows.filter(x=>x.dai===d&&x.r.price!=null).length;
+  const cnt=cpOutRows(st).length;
+  return `<div class="card"><h3 style="margin:0 0 6px">価格表として出す</h3>
+    <div class="small muted" style="margin-bottom:6px">出す分類にチェックを付けます（単価が決まらない商品は出しません）。原価・掛率・「決め手」は載りません。JANコードがある商品はバーコードが付きます。</div>
+    <div class="tools" style="flex-wrap:wrap;gap:4px 14px">${dais.map(d=>`<label class="cb"><input type="checkbox" data-outdai="${esc(d)}" ${on(d)?'checked':''}>${esc(d)}（${n(d)}）</label>`).join('')}</div>
+    <div class="tools" style="margin-top:8px"><button class="linkbtn" id="cpAll">全部にチェック</button><button class="linkbtn" id="cpNone">全部外す</button><span class="grow"></span>
+      <span class="small muted">${cnt}商品</span><button class="btn pri" id="cpPdf" ${cnt?'':'disabled'}>価格表を出す（PDF）</button><button class="btn" id="cpCsv" ${cnt?'':'disabled'}>Excel用（CSV）</button></div></div>`;
+}
+function bindCpOut(el,st){
+  const dais=[...el.querySelectorAll('[data-outdai]')].map(x=>x.dataset.outdai);
+  const set=()=>{ st.sel=new Set([...el.querySelectorAll('[data-outdai]')].filter(x=>x.checked).map(x=>x.dataset.outdai)); renderCustPriceView(); };
+  el.querySelectorAll('[data-outdai]').forEach(x=>x.onchange=set);
+  el.querySelector('#cpAll').onclick=()=>{ st.sel=null; renderCustPriceView(); };
+  el.querySelector('#cpNone').onclick=()=>{ st.sel=new Set(); renderCustPriceView(); };
+  el.querySelector('#cpPdf').onclick=()=>cpPrint(st);
+  el.querySelector('#cpCsv').onclick=()=>cpCsv(st);
+}
+function cpPrint(st){
+  const c=CUSTMAP[st.cust], rows=cpOutRows(st); if(!c||!rows.length) return;
+  const n=v=>v==null?'':Math.round(v).toLocaleString('ja-JP'), d=s=>s.replace(/^(\d+)-(\d+)-(\d+)$/,(m,y,mo,da)=>`${y}年${+mo}月${+da}日`);
+  const groups=new Map(); rows.forEach(r=>{ if(!groups.has(r.dai)) groups.set(r.dai,[]); groups.get(r.dai).push(r); });
+  const td='padding:5px 8px;border-bottom:1px solid #dfe4ef;vertical-align:middle;';
+  const body=[...groups].map(([dai,rs])=>`<tr class="g"><td colspan="5">${esc(dai)}</td></tr>`+rs.map(r=>`<tr><td style="${td}"><b>${esc(r.code)}</b></td><td style="${td}">${esc(r.name)}</td>
+    <td style="${td}">${r.jan?PriceCore.ean13Svg(r.jan,{module:1,height:26})+`<div class="jn">${esc(r.jan)}</div>`:''}</td><td style="${td}text-align:right">${n(r.list)}</td><td style="${td}text-align:right"><b>${n(r.unit)}</b></td></tr>`).join('')).join('');
+  const html=`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>価格表</title><style>
+    @page{size:A4;margin:12mm} body{font-family:"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;color:#161a3d;margin:0;padding:20px;font-size:12px}
+    .head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #23268f;padding-bottom:8px}
+    h1{margin:0;font-size:22px;color:#23268f}.r{text-align:right;color:#8a90a8;line-height:1.6}
+    table{border-collapse:collapse;width:100%;margin-top:12px} th{background:#f4f6fb;color:#8a90a8;font-weight:500;text-align:left;padding:6px 8px}
+    tr{page-break-inside:avoid} tr.g td{background:#f4f6fb;font-weight:700;color:#23268f;padding:6px 8px} .jn{font-size:9px;color:#8a90a8;letter-spacing:.5px}
+    .bar{margin-bottom:10px;color:#8a90a8} @media print{.bar{display:none}}</style></head><body>
+    <div class="bar">このページを印刷（Ctrl＋P）して、送信先を「PDFに保存」にするとPDFになります。</div>
+    <div class="head"><div><h1>価格表</h1><div style="font-size:15px;margin-top:4px">${esc(c.name)}　御中</div></div><div class="r"><div>${esc(d(st.date))} 時点（税抜・円）</div><div>花岡車輌株式会社</div></div></div>
+    <table><thead><tr><th>型式</th><th>品名</th><th>JAN</th><th style="text-align:right">定価</th><th style="text-align:right">お取引価格</th></tr></thead><tbody>${body}</tbody></table></body></html>`;
+  const w=window.open('','_blank'); if(!w){ alert('価格表のページを開けませんでした（ポップアップを許可してください）。'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+function cpCsv(st){
+  const c=CUSTMAP[st.cust], rows=cpOutRows(st); if(!c||!rows.length) return;
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const lines=[['価格表'],['得意先',c.name],['日付',st.date],[],['分類','型式','品名','JAN','定価','お取引価格'],...rows.map(r=>[r.dai,r.code,r.name,r.jan?"'"+r.jan:'',r.list,r.unit])];
+  const blob=new Blob(['﻿'+lines.map(r=>r.map(q).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='価格表_'+c.code+'_'+st.date+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ---------- 型式・ランク別の価格：A'・A・B'・B と定価を並べる（得意先ごとの区分・例外は入れない、ランクだけの単価） ----------
+const SERIES_RANKS=[["A'","5掛(A')"],["A","5.25掛(A)"],["B'","5.5掛(B')"],["B","5.75掛(B)"]];
+function renderSeriesView(){
+  const el=document.getElementById('view-series'), st=VIEWSTATE.series=VIEWSTATE.series||{q:'',dai:'',date:today()};
+  const data=ruleData(), t=norm(st.q), rows=[];
+  productGroups().forEach((prs,code)=>{
+    const lp=PriceCore.listPriceRow(data.prices,code,st.date); if(!lp) return;
+    const info=ITEMINFO[code], name=(info&&info.name)||lp.name||'', dai=info?info.dai||'（分類なし）':'品目マスタにない';
+    if(st.dai&&dai!==st.dai) return;
+    if(t&&!norm(code+' '+name+' '+(ITEMKEY[code]||'')).includes(t)) return;
+    const rs=SERIES_RANKS.map(([,kn])=>PriceCore.unitPrice(data,{code,qty:1,date:st.date,customer:{code:'',shaCode:'',shaName:'',name:'',kakeName:kn}}));
+    rows.push({code,name,dai,list:rs[0].listPrice,pr:rs.map(r=>r.price),jan:janOf(code)});
+  });
+  rows.sort((a,b)=>(a.dai<b.dai?-1:a.dai>b.dai?1:0)||(a.code<b.code?-1:1));
+  const dais=[...new Set([...productGroups().keys()].map(c=>{ const i=ITEMINFO[c]; return i?i.dai||'（分類なし）':'品目マスタにない'; }))].sort();
+  const MAX=400, yy=v=>v==null?'－':yen(v);
+  el.innerHTML=`<h2>型式・ランク別の価格</h2><p class="lead">型式（シリーズ）を探して、<b>A'・A・B'・B の単価と定価</b>を並べて見ます。得意先ごとの区分・例外は入れていません（得意先ごとは「価格表」で見ます）。</p>
+    <div class="card"><div class="tools"><input type="search" id="srQ" value="${esc(st.q)}" placeholder="型式・品名を探す" style="min-width:260px">
+      <select id="srDai"><option value="">分類：すべて</option>${dais.map(d=>`<option ${d===st.dai?'selected':''}>${esc(d)}</option>`).join('')}</select>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px">日付<input type="date" id="srDate" value="${esc(st.date)}"></label>
+      <span class="muted small">${rows.length}商品</span><span class="grow"></span><button class="btn" id="srCopy">表をコピー（エクセルに貼れる）</button></div></div>
+    <div class="card" style="padding:0;overflow-x:auto"><table class="cptbl"><thead><tr><th>型式</th><th>品名・分類</th>${SERIES_RANKS.map(([k])=>`<th class="num">${esc(k)}</th>`).join('')}<th class="num">定価</th><th>JAN</th></tr></thead>
+      <tbody>${rows.slice(0,MAX).map(x=>`<tr><td><b>${esc(x.code)}</b></td><td>${esc(x.name)}<div class="small muted">${esc(x.dai)}</div></td>${x.pr.map(v=>`<td class="num">${yy(v)}</td>`).join('')}<td class="num">${yy(x.list)}</td><td class="small">${esc(x.jan)}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">ありません</td></tr>'}</tbody></table></div>
+    ${rows.length>MAX?`<div class="small muted">先頭の${MAX}商品を出しています（探す・分類で絞れます）</div>`:''}`;
+  const rr=()=>renderSeriesView();
+  const q=el.querySelector('#srQ'); q.oninput=()=>{ st.q=q.value; clearTimeout(st.t); st.t=setTimeout(()=>{ rr(); const n=document.getElementById('srQ'); n.focus(); n.setSelectionRange(n.value.length,n.value.length); },300); };
+  el.querySelector('#srDai').onchange=e=>{ st.dai=e.target.value; rr(); };
+  el.querySelector('#srDate').onchange=e=>{ st.date=e.target.value||today(); rr(); };
+  el.querySelector('#srCopy').onclick=async e=>{
+    const lines=[['型式','品名','分類',...SERIES_RANKS.map(r=>r[0]),'定価','JAN'].join('\t')].concat(rows.map(x=>[x.code,x.name,x.dai,...x.pr.map(v=>v??''),x.list??'',x.jan].join('\t')));
+    try{ await navigator.clipboard.writeText(lines.join('\n')); e.target.textContent='コピーしました'; }catch(err){ e.target.textContent='コピーできませんでした'; }
+    setTimeout(()=>{ e.target.textContent='表をコピー（エクセルに貼れる）'; },2500); };
+}
 
 // ---------- まとめて入れる：ファイルの中身と今のリストを見比べて、違いだけを入れる ----------
 // 行の「同じもの」の見分け方（この項目が同じなら同じ行とみなし、ほかの項目の違いを「変わる」とする）
@@ -1952,6 +2043,7 @@ document.querySelectorAll('.navi').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.navi').forEach(x=>x.classList.toggle('active',x===b));
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+b.dataset.view));
   if(b.dataset.view==='custprice') renderCustPriceView();
+  if(b.dataset.view==='series') renderSeriesView();
 });
 initCalc(); initImport(); initJanImport();
 init();
