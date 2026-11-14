@@ -99,6 +99,21 @@ c = Q.compute(data, doc({ lines: [{ code: 'UDL25/C', qty: 2, price: 80000 }] }),
 assert.equal(c.lines[0].amount, 160000);
 assert.equal(c.lines[0].changed, false);
 
+// --- 送料の重さ：定価は読み替えた型式の行、重さは入れた品目コードの行、と分かれているとき ---
+const data3 = Object.assign({}, data, { prices: data.prices.concat([
+  { 型式: 'T2', 品名: '見本台車2', 定価: 20000, 適用開始日: '2026-01-01', 商品の種類: '台車', 運賃の重量kg: null }, // 定価だけ（重さなし）
+  { 型式: 'T2S', 品名: '', 定価: null, 適用開始日: '2026-01-01', 商品の種類: '台車', 運賃の重量kg: 30 },           // 重さだけ
+]) });
+const env3 = { items: Object.assign({}, items, { T2S: { name: '見本台車2', kakaku: 'T2' } }), index: Q.buildIndex(data3.prices) };
+c = Q.compute(data3, doc({ lines: [{ code: 'T2S', qty: 1 }] }), env3);
+assert.equal(c.lines[0].unit, 11500); // T2 の定価 20000×0.575
+assert.equal(c.fare.amount, 2300);    // T2S の重さ 30kg → 40kg の帯
+assert.ok(!c.checks.some(x => /重さがわからない/.test(x.text)));
+// 価格表の型式（T2）で入れても、同じ価格表記載名を持つ品目コード（T2S）の重さを使う
+c = Q.compute(data3, doc({ lines: [{ code: 'T2', qty: 1 }] }), { items: env3.items, index: env3.index });
+assert.equal(c.lines[0].unit, 11500);
+assert.equal(c.fare.amount, 2300);
+
 // --- 新しい取引先（ランクなし）：ルールでは決まらないので、入れた単価になる ---
 c = Q.compute(data, doc({ cust: { name: '新しいお客さま', isNew: true }, lines: [{ code: 'T1', qty: 1, price: 24000 }] }), env);
 assert.equal(c.lines[0].unit, 24000);

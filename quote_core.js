@@ -71,6 +71,16 @@
   // 枝番つきの品目コード（うしろに /C・/T・/TEL など）。OP/〜・P/〜・R/〜（オプション・部品・修理）は枝番ではない
   function isVariant(code) { return /^(?!OP\/|P\/|R\/).+\/[A-Za-z0-9]{1,4}$/i.test(String(code || "")); }
 
+  // 価格表記載名 → その名前を持つ品目コード（枝番つきは除く）。送料の重さを探すのに使う
+  function kakakuIndex(items) {
+    var m = {};
+    Object.keys(items || {}).forEach(function (c) {
+      var it = items[c]; if (!it || !it.kakaku || isVariant(c)) return;
+      var k = key(it.kakaku); (m[k] = m[k] || []).push(c);
+    });
+    return m;
+  }
+
   // ---------- 単価 ----------
   // その単価の決め手を、短いことばにする（行の下に出す）
   function whyText(r) {
@@ -164,7 +174,19 @@
 
     // 送料
     var dest = doc.dest || {}, logis = lines.some(function (l) { return l.base && l.base.method === "本部経由" && l.base.quotePrice !== null; });
-    var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) { return { code: l.listCode, qty: l.qty, ship: l.ship }; });
+    // 送料の重さは、入れた品目コードの行にあればそれを使う。なければ読み替えた型式の行。
+    // （定価は UDL250 の行、重さは UDL25 の行、というように分かれていることがある）
+    var hasWeight = function (c) { var r = c && P.listPriceRow(data.prices, c, priceDate, true); return !!r && num(r.運賃の重量kg) !== null; };
+    //  ① 入れたコードの行 → ② 読み替えた型式の行 → ③ 同じ価格表記載名を持つ品目コードの行（UDL250 と入れたときの UDL25）
+    var kk = env._kk || (env._kk = kakakuIndex(env.items));
+    var fareCode = function (l) {
+      var own = index.any[key(l.code)];
+      if (own && hasWeight(own)) return own;
+      if (hasWeight(l.listCode)) return l.listCode;
+      var alt = (kk[key(l.listCode)] || []).map(function (c) { return index.any[key(c)]; }).filter(hasWeight)[0];
+      return alt || l.listCode;
+    };
+    var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) { return { code: fareCode(l), qty: l.qty, ship: l.ship }; });
     var f = { amount: null, explain: [], warnings: [] };
     if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
     var rule = f.amount === null || f.amount === undefined ? null : (logis && f.quoteAmount !== undefined ? (kind === "order" ? f.orderAmount : f.quoteAmount) : f.amount);
