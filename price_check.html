@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon_price.svg"><!-- 値札 -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="price_core.js?v=20261113b"></script>
+<script src="price_core.js?v=20261113c"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css のトークンだけを使う。ここに色の値は書かない */
@@ -385,6 +385,12 @@
           同じ行かどうかは、定価は「型式・適用開始日」、区分は「対象・商品の種類・適用開始日」、例外は「型式・対象・条件・適用開始日」、運賃は「種類・地域・上限・適用開始日」で見分けます。</div>
       </div>
       <div id="impDiff"></div>
+      <div class="card" id="janCard">
+        <h3>JANコードをまとめて入れる</h3>
+        <div class="small muted">ファイル（JSON：<code>[{"型式":"…","JANコード":"…"}]</code>）を選ぶと、定価リストの同じ型式の行にJANコードを入れます（型式の全角・半角・スペース・ハイフンのちがいはそろえて探します。定価を改定した履歴の行にも、同じJANを入れます）。13桁と検算の数字が合わないものと、定価リストにない型式は、入れずに知らせます。</div>
+        <div class="tools" style="margin-top:8px"><label class="f">ファイル<input type="file" id="janFile" accept=".json"></label></div>
+        <div id="janOut" style="margin-top:8px"></div>
+      </div>
       <div class="log" id="impLog" style="margin-top:10px;display:none"></div>
     </section>
   </main>
@@ -414,8 +420,8 @@ const LISTS = {
   price: { name:'PR_定価', label:'定価', file:'定価.json',
     lead:'型式ごとの定価と、運賃の重さ。改定のときは行を消さず、新しい適用開始日の行を足します（見積の日付で古い定価も引けるように）。定価が空の行は「運賃の重さだけ」の行です。',
     code:r=>r.型式, start:r=>r.適用開始日, title:r=>`${r.型式} ${r.適用開始日||''}`,
-    cols:[['型式','型式'],['品名','品名'],['定価','定価','yen'],['適用開始日','適用開始日'],['商品の種類','種類'],['運賃の重量kg','運賃kg'],['出典','出典']],
-    fields:[['型式','text'],['品名','text'],['定価','number'],['適用開始日','date'],['商品の種類','select',KINDS],['運賃の重量kg','number'],['重量の確からしさ','number'],['出典','text'],['メモ','textarea']] },
+    cols:[['型式','型式'],['品名','品名'],['定価','定価','yen'],['適用開始日','適用開始日'],['商品の種類','種類'],['運賃の重量kg','運賃kg'],['JANコード','JANコード'],['出典','出典']],
+    fields:[['型式','text'],['品名','text'],['定価','number'],['適用開始日','date'],['商品の種類','select',KINDS],['運賃の重量kg','number'],['重量の確からしさ','number'],['JANコード','text'],['出典','text'],['メモ','textarea']] },
   cls: { name:'PR_得意先区分', label:'得意先の区分', file:'得意先の区分.json',
     lead:'SMILE の掛率名（ランク）だけでは決まらない得意先の決まり。在庫口の得意先コード、商品の種類で掛率が変わる社名、本部経由、運賃込みなど。ランクそのものは SMILE の得意先マスタが正です。',
     code:r=>r.対象コード, start:r=>r.適用開始日, title:r=>`${r.対象の種類}:${r.対象名||r.対象コード} ${r.商品の種類||''}`,
@@ -1625,6 +1631,8 @@ function openEdit(key,row,opt){
   document.getElementById('eClose').onclick=()=>{ modal.classList.remove('show'); if(opt.cancel) opt.cancel(); };
   document.getElementById('eSave').onclick=async()=>{
     const nd=formData();
+    if(key==='price'&&String(nd.JANコード||'').trim()&&!PriceCore.janValid(nd.JANコード)){ document.getElementById('eErr').textContent='JANコードは13桁の数字で、最後の1桁（検算の数字）が合っている必要があります。'; return; }
+    if(key==='price') nd.JANコード=String(nd.JANコード||'').trim();
     nd.更新者=account&&account.name||''; nd.更新日時=new Date().toISOString();
     try{
       const id=await ensureList(key); if(!id) return;
@@ -1834,6 +1842,33 @@ function initImport(){
 }
 
 // ============================================================
+// JANコードのまとめて取り込み（定価リストの同じ型式の行に入れる）
+function initJanImport(){
+  const inp=document.getElementById('janFile'), out=document.getElementById('janOut'); let plan=null;
+  const names=a=>esc(a.slice(0,30).join('、'))+(a.length>30?` ほか${a.length-30}件`:'');
+  inp.onchange=async()=>{
+    plan=null; const f=inp.files[0]; if(!f){ out.innerHTML=''; return; }
+    try{ const arr=JSON.parse(await f.text()); if(!Array.isArray(arr)) throw new Error('行の並び（配列）ではありません');
+      plan=PriceCore.janPlan(RULES.price,arr);
+      out.innerHTML=`<div>ファイル ${arr.length}行 → <b>入れる ${plan.set.length}行</b>（定価リストの行。すでに同じJAN：${plan.same}行）</div>
+        ${plan.invalid.length?`<div class="small" style="color:var(--red-ink)">JANが正しくない：${plan.invalid.length}行（${names(plan.invalid.map(d=>d.型式))}）</div>`:''}
+        ${plan.conflict.length?`<div class="small" style="color:var(--red-ink)">同じ型式に別のJANが2つ以上あるので、入れません：${names(plan.conflict)}</div>`:''}
+        ${plan.missing.length?`<div class="small muted">定価リストにない型式（入れません）：${plan.missing.length}件　${names(plan.missing)}</div>`:''}
+        <div class="tools" style="margin-top:8px"><button class="btn pri" id="janRun" ${plan.set.length?'':'disabled'}>JANコードを入れる（${plan.set.length}行）</button><span class="small muted" id="janLog"></span></div>`;
+      document.getElementById('janRun').onclick=async()=>{
+        if(!confirm(`定価リストの ${plan.set.length}行に、JANコードを入れます。よいですか？`)) return;
+        const lg=document.getElementById('janLog'), btn=document.getElementById('janRun'); btn.disabled=true;
+        try{ const id=await ensureList('price'); if(!id){ lg.textContent='リストが見つかりません'; return; }
+          const now=new Date().toISOString(), who=(account&&account.name||'')+'（JANをまとめて入れる）';
+          const res=await batchRun(plan.set.map(c=>({method:'PATCH',url:`/sites/${SITE_ID}/lists/${id}/items/${c.row.spId}/fields`,headers:{'Content-Type':'application/json'},body:fieldsOf('price',Object.assign({},c.next,{更新者:who,更新日時:now}))})),(d,t,fl)=>{ lg.textContent=`${d}/${t}${fl?`（失敗 ${fl}）`:''}`; });
+          lg.textContent=`${res.done}行に入れました${res.failed.length?`。できなかった行 ${res.failed.length}：${res.failed.slice(0,3).join(' / ')}`:''}`;
+          RULES.price=await readList('price')||[]; renderRuleViews(); inp.value=''; plan=null;
+        }catch(e){ lg.textContent='止まりました：'+e.message; } };
+    }catch(e){ out.innerHTML=`<div class="card warn">読めません：${esc(e.message)}</div>`; }
+  };
+}
+
+// ============================================================
 // 画面の切り替え
 // ============================================================
 document.querySelectorAll('.navi').forEach(b=>b.onclick=()=>{
@@ -1841,7 +1876,7 @@ document.querySelectorAll('.navi').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+b.dataset.view));
   if(b.dataset.view==='custprice') renderCustPriceView();
 });
-initCalc(); initImport();
+initCalc(); initImport(); initJanImport();
 init();
 </script>
 </body>

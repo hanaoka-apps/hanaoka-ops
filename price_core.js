@@ -215,6 +215,65 @@
     return u ? { amount: u.amount * qty, kg: w, unit: u.amount, how: how, text: "1台 " + w + "kg → " + yen(u.amount) + " × " + qty + "台" } : null;
   }
 
+  // ---------- JANコード（13桁のバーコード） ----------
+  // 最後の1桁は検算の数字：左から1桁目から12桁目まで、奇数番目×1・偶数番目×3 の合計の、10に足りない数
+  function janCheckDigit(d12) {
+    var sum = 0;
+    for (var i = 0; i < 12; i++) sum += Number(d12.charAt(i)) * (i % 2 ? 3 : 1);
+    return (10 - (sum % 10)) % 10;
+  }
+  function janValid(jan) {
+    var s = String(jan === null || jan === undefined ? "" : jan).trim();
+    return /^\d{13}$/.test(s) && janCheckDigit(s) === Number(s.charAt(12));
+  }
+  // バーコードの黒白の並び（95本分。1＝黒）。左の余白と右の余白は含まない
+  var EAN_L = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
+  var EAN_G = ["0100111", "0110011", "0011011", "0100001", "0011101", "0111001", "0000101", "0010001", "0001001", "0010111"];
+  var EAN_PARITY = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG", "LGGLLG", "LGGGLL", "LGLGLG", "LGLGGL", "LGGLGL"];
+  function ean13Bits(jan) {
+    var s = String(jan).trim();
+    if (!janValid(s)) return null;
+    var par = EAN_PARITY[Number(s.charAt(0))], bits = "101";
+    for (var i = 1; i <= 6; i++) bits += (par.charAt(i - 1) === "L" ? EAN_L : EAN_G)[Number(s.charAt(i))];
+    bits += "01010";
+    for (var j = 7; j <= 12; j++) bits += EAN_L[Number(s.charAt(j))].replace(/[01]/g, function (c) { return c === "0" ? "1" : "0"; });
+    return bits + "101";
+  }
+  // バーコードの絵（SVG の文字）。JANが正しくなければ空
+  function ean13Svg(jan, opt) {
+    var bits = ean13Bits(jan); if (!bits) return "";
+    opt = opt || {};
+    var m = opt.module || 1.2, h = opt.height || 34, q = 9, w = (95 + q * 2) * m, x = "";
+    for (var i = 0; i < bits.length; ) {
+      if (bits.charAt(i) !== "1") { i++; continue; }
+      var j = i; while (j < bits.length && bits.charAt(j) === "1") j++;
+      x += '<rect x="' + ((q + i) * m).toFixed(2) + '" y="0" width="' + ((j - i) * m).toFixed(2) + '" height="' + h + '"/>';
+      i = j;
+    }
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w.toFixed(2) + " " + h + '" width="' + w.toFixed(0) + '" height="' + h + '" fill="#000" role="img" aria-label="JAN ' + String(jan).trim() + '">' + x + "</svg>";
+  }
+  // 定価リストの行に JANコード を付ける計画：型式は全角・半角・スペース・ハイフンをそろえて探し、同じ型式の全部の行（定価の改定の履歴）に同じJANを付ける
+  // incoming: [{型式, JANコード}]。戻り：{ set:[{row, next}], same, missing:[型式], invalid:[行], conflict:[型式] }
+  function janPlan(priceRows, incoming) {
+    var byKey = {};
+    priceRows.forEach(function (r) { var k = asmKey(r.data.型式); if (k) (byKey[k] = byKey[k] || []).push(r); });
+    var seen = {}, out = { set: [], same: 0, missing: [], invalid: [], conflict: [] };
+    incoming.forEach(function (d) {
+      var jan = String(d.JANコード === null || d.JANコード === undefined ? "" : d.JANコード).trim(), k = asmKey(d.型式);
+      if (!janValid(jan)) { out.invalid.push(d); return; }
+      if (seen[k] !== undefined) { if (seen[k] !== jan && out.conflict.indexOf(d.型式) < 0) out.conflict.push(d.型式); return; }
+      seen[k] = jan;
+      var rows = byKey[k];
+      if (!rows) { out.missing.push(d.型式); return; }
+      rows.forEach(function (r) {
+        if (String(r.data.JANコード || "").trim() === jan) out.same++;
+        else out.set.push({ row: r, next: Object.assign({}, r.data, { JANコード: jan }) });
+      });
+    });
+    out.conflict.forEach(function (c) { var k = asmKey(c); out.set = out.set.filter(function (x) { return asmKey(x.row.data.型式) !== k; }); });
+    return out;
+  }
+
   function isOption(code) { return /^OP\//i.test(String(code || "")); }
   // 部品のまとめコード：「DANDY/P」「D.LIFT/P」「P.D/P」「P/UDA50-JK」のように /P を含むもの
   function isPartBundle(code) { return /\/P$|^P\//i.test(String(code || "")); }
@@ -733,7 +792,7 @@
   var API = {
     parseCSV: parseCSV, toObjects: toObjects, customerFromMaster: customerFromMaster, PREFS: PREFS, prefOf: prefOf,
     num: num, round: round, ceil: ceil, ymd: ymd, yen: yen, pct: pct,
-    roundUnit: roundUnit, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
+    roundUnit: roundUnit, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,
