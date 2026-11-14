@@ -95,6 +95,8 @@
     }
     return {
       demo: false,
+      // Graph をそのまま呼ぶ（AI の中継が、ワークフローのサイトのリストを読み書きするのに使う）
+      call: function (method, url, body) { return method === "GET" ? get(url) : send(method, url, body); },
       // 価格のルール（読むだけ）。返す：{ prices, classes, exceptions, fares, assembly, costs }
       loadRules: async function () {
         var out = {}, keys = Object.keys(RULE_LISTS);

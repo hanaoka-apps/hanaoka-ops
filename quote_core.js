@@ -179,14 +179,15 @@
   function checksOf(data, doc, lines, fare, index, items) {
     var out = [], seen = {};
     var add = function (level, text) { if (!text || seen[text]) return; seen[text] = 1; out.push({ level: level, text: text }); };
-    var cust = doc.cust;
-    if (!cust || !(cust.name || cust.code)) add("warn", "取引先を選んでください");
+    var cust = doc.cust, noCust = !cust || !(cust.name || cust.code);
+    if (noCust) add("warn", "取引先を選んでください");
     else if (cust.isNew) add("info", "新しい取引先です。ランクがないので、単価は入れた金額になります");
     if (!lines.length) add("warn", "商品を1行入れてください");
     lines.forEach(function (l) {
       var nm = l.code || l.name || "（名前なし）";
       if (!(l.qty > 0)) add("warn", nm + " の数量を入れてください");
-      if (l.unit === null) add("warn", nm + " の単価が入っていません");
+      // 取引先がまだのときは、定価のある品の単価は出せなくて当たり前なので、言わない（取引先を選べば出る）
+      if (l.unit === null && !(noCust && l.listCode)) add("warn", nm + " の単価が入っていません");
       if (l.changed && !l.reason) add("warn", nm + " の単価を変えた理由を選んでください");
       else if (l.changed) add("info", nm + " の単価を基本から変えています（" + l.reason + "）");
       if (l.base && l.base.isStock) add("info", nm + " は在庫価格です。見積書には「御社在庫品」と書きます");
@@ -210,6 +211,8 @@
     });
     if (!(doc.dest && doc.dest.pref) && lines.some(function (l) { return l.listCode; })) add("info", "届け先の県を入れると送料が出ます");
     fare.warnings.forEach(function (w) { if (!/届け先の県/.test(w)) add("info", w); });
+    // AI が読み取ったときの注意（quote_ai.js）。取引先を選んだら、取引先の注意は出さない
+    ((doc.ai && doc.ai.notes) || []).forEach(function (n) { if (!(n.k === "cust" && cust && (cust.name || cust.code))) add("info", n.text); });
     if (fare.changed) add("info", "送料を基本（" + (fare.rule === null ? "なし" : fmt(fare.rule)) + "）から変えています");
     return out;
   }
