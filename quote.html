@@ -8,8 +8,9 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261114a"></script>
-<script src="quote_store.js?v=20261114a"></script>
+<script src="quote_core.js?v=20261115a"></script>
+<script src="quote_store.js?v=20261115a"></script>
+<script src="quote_ai.js?v=20261115a"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
   /* 色・角丸・影・フォントは hanaoka_theme.css の変数だけを使う。ここに色の値は書かない */
@@ -53,7 +54,16 @@
   .dochead .no{color:var(--sub)}
   .dochead select{width:auto;padding:3px 8px;font-size:12px}
   .from{font-size:12px;color:var(--sub);margin-left:auto}
-  .aibox{border:1px dashed var(--line-strong);border-radius:8px;padding:10px 14px;color:var(--mute);font-size:13px;margin:8px 0 2px}
+  .aibox{border:1px dashed var(--line-strong);border-radius:8px;padding:10px 12px;margin:8px 0 2px}
+  .aibox.over{border-color:var(--navy);background:var(--navy-soft)}
+  .aibox textarea{border:0;padding:2px;resize:vertical;min-height:38px;background:none}
+  .aibox textarea:focus{outline:none}
+  .airow{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--sub);margin-top:4px;flex-wrap:wrap}
+  .airow .sp{flex:1}
+  .aidone{display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap}
+  .aisrc{white-space:pre-wrap;font-size:12px;color:var(--sub);background:var(--bg);border-radius:8px;padding:10px 12px;margin-top:8px;max-height:180px;overflow:auto}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line-strong);border-top-color:var(--navy);border-radius:50%;animation:sp 0.8s linear infinite;vertical-align:-2px}
+  @keyframes sp{to{transform:rotate(360deg)}}
   .sec{padding:14px 0;border-top:1px solid var(--line)}
   .sec:first-of-type{border-top:0}
   .lab{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub);margin-bottom:8px}
@@ -237,13 +247,14 @@ let msalInstance = null, account = null, store = null;
 let DATA = null, ENV = null, CUST = [], CUSTMAP = {}, ITEMS = {}, SET = QuoteStore.DEFAULT_SETTINGS, HEADS = [];
 let custRows = [], itemRows = [];
 let DOC = null, COMP = null, dirty = false, openLine = -1, fareOpen = false;
+let AI = null, aiFiles = [], aiBusy = false, aiOpen = false, aiSrcOpen = false;
 
 // ---------- はじまり ----------
 async function init() {
   $('loginBtn').onclick = login;
   if (PARAMS.has('demo')) {
     await new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'quote_demo.js?v=20261114a'; s.onload = ok; s.onerror = ng; document.head.appendChild(s); });
-    account = QuoteDemo.user; store = QuoteStore.demo(QuoteDemo); $('demoBadge').hidden = false;
+    account = QuoteDemo.user; store = QuoteStore.demo(QuoteDemo); AI = QuoteAI.mock(QuoteDemo); $('demoBadge').hidden = false;
     return start();
   }
   if (typeof msal === 'undefined') return loginError('サインインの部品を読み込めませんでした。もう一度開いてください。');
@@ -262,7 +273,7 @@ async function getToken() {
   try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
   catch { return (await msalInstance.acquireTokenPopup({ scopes: SCOPES })).accessToken; }
 }
-function startReal() { store = QuoteStore.create({ getToken, P, confirm: m => confirm(m) }); return start(); }
+function startReal() { store = QuoteStore.create({ getToken, P, confirm: m => confirm(m) }); AI = QuoteAI.relay({ call: store.call }); return start(); }
 
 async function start() {
   $('loginScreen').style.display = 'none'; $('app').style.display = 'block';
@@ -321,10 +332,10 @@ function newDoc() {
   if (PARAMS.get('case')) { DOC.caseId = PARAMS.get('case'); DOC.from = '案件 ' + DOC.caseId; }
   const c = CUSTMAP[PARAMS.get('customer') || ''];
   if (c) pickCustomer(c, true);
-  openLine = -1; fareOpen = false; dirty = false;
+  openLine = -1; fareOpen = false; dirty = false; aiFiles = []; aiOpen = false; aiSrcOpen = false;
   renderForm(); refresh();
 }
-function openDoc(d) { DOC = d; if (!DOC.lines || !DOC.lines.length) DOC.lines = [{ code: '', qty: 1 }]; openLine = -1; fareOpen = false; dirty = false; renderForm(); refresh(); view('edit'); }
+function openDoc(d) { aiFiles = []; aiOpen = false; aiSrcOpen = false; DOC = d; if (!DOC.lines || !DOC.lines.length) DOC.lines = [{ code: '', qty: 1 }]; openLine = -1; fareOpen = false; dirty = false; renderForm(); refresh(); view('edit'); }
 function touch() { dirty = true; }
 function pickCustomer(c, quiet) {
   DOC.cust = { code: c.code, name: c.name, fullName: c.fullName, shaCode: c.shaCode, shaName: c.shaName, kakeName: c.kakeName };
@@ -342,7 +353,7 @@ function renderForm() {
       <select id="fStatus">${Q.STATUSES.map(s => `<option${s === DOC.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
       ${DOC.from ? `<span class="from">${esc(DOC.from)} から</span>` : ''}
     </div>
-    <div class="aibox">メール・FAX・注文書を貼ると下の欄が埋まる機能は、このあと足します</div>
+    <div class="aibox" id="aiBox">${aiBoxHtml()}</div>
 
     <div class="sec">
       <div class="lab"><span class="n">1</span>誰に</div>
@@ -408,7 +419,57 @@ function renderForm() {
   bind('fShowList', el => DOC.showList = el.checked, 'change'); bind('fNotes', el => DOC.notes = el.value);
   $('addLine').onclick = () => { DOC.lines.push({ code: '', qty: 1 }); touch(); renderLines(); refresh(); focusLine(DOC.lines.length - 1); };
   $('printBtn').onclick = printSheet; $('saveBtn').onclick = () => save(); $('copyBtn').onclick = copyDoc;
+  bindAiBox();
   renderLines();
+}
+
+// ---------- AIに任せる（いちばん上の箱） ----------
+// AI は読み取るだけ。当てはめるのは QuoteAI.apply、値段はルール。読み取ったあとは、ふつうの入力と同じ
+function aiBoxHtml() {
+  if (aiBusy) return `<div class="aidone"><span class="spin"></span>読み取っています…（1分ほどかかることがあります）</div>`;
+  if (DOC.ai && !aiOpen) return `<div class="aidone"><span class="pill">AIが読み取りました</span><span class="hint">内容を確かめてください</span><span class="sp" style="flex:1"></span>
+      <button class="link" id="aiSrc">${aiSrcOpen ? '文面を閉じる' : '元の文面を見る'}</button>${DOC.ai.notes.length ? '<button class="link" id="aiOk">確認しました</button>' : ''}<button class="link" id="aiAgain">もう一度読み取る</button></div>
+      ${aiSrcOpen ? `<div class="aisrc">${esc(DOC.ai.text || '（文面なし）')}${DOC.ai.files.length ? '\n添付：' + esc(DOC.ai.files.join('、')) : ''}</div>` : ''}`;
+  return `<textarea id="aiText" rows="2" placeholder="メール・FAX・注文書の文面を貼ると、下の欄が埋まります（ファイルはここに置けます）"></textarea>
+    <div class="airow"><span id="aiFiles">${aiFiles.length ? '添付：' + esc(aiFiles.map(f => f.name).join('、')) + ' <button class="link" id="aiClear">外す</button>' : ''}</span><span class="sp"></span>
+      <label class="link">ファイルを選ぶ<input type="file" id="aiFile" multiple accept=".pdf,image/*" hidden></label>
+      <button class="btn sm" id="aiGo">読み取る</button></div>`;
+}
+function drawAiBox() { $('aiBox').innerHTML = aiBoxHtml(); bindAiBox(); }
+function bindAiBox() {
+  const box = $('aiBox'), on = (id, f) => { const el = $(id); if (el) el.onclick = f; };
+  on('aiGo', runAI);
+  on('aiClear', () => { aiFiles = []; keepText(drawAiBox); });
+  on('aiSrc', () => { aiSrcOpen = !aiSrcOpen; drawAiBox(); });
+  on('aiOk', () => { DOC.ai.notes = []; touch(); drawAiBox(); refresh(); });
+  on('aiAgain', () => { aiOpen = true; drawAiBox(); $('aiText').value = DOC.ai.text || ''; $('aiText').focus(); });
+  if ($('aiFile')) $('aiFile').onchange = e => addAiFiles(e.target.files);
+  box.ondragover = e => { e.preventDefault(); box.classList.add('over'); };
+  box.ondragleave = () => box.classList.remove('over');
+  box.ondrop = e => { e.preventDefault(); box.classList.remove('over'); if (!$('aiText')) { aiOpen = true; drawAiBox(); } addAiFiles(e.dataTransfer.files); };
+}
+function keepText(f) { const v = $('aiText') ? $('aiText').value : ''; f(); if ($('aiText')) $('aiText').value = v; }
+function addAiFiles(list) {
+  const ok = [...list].filter(f => /pdf|image\//.test(f.type) || /\.(pdf|png|jpe?g|webp)$/i.test(f.name));
+  if (ok.length < list.length) toast('PDF と画像だけ読めます');
+  aiFiles = aiFiles.concat(ok); keepText(drawAiBox);
+}
+const b64 = f => new Promise((ok, ng) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = () => ng(r.error); r.readAsDataURL(f); });
+async function runAI() {
+  const text = $('aiText').value.trim();
+  if (!text && !aiFiles.length) return toast('文面を貼るか、ファイルを置いてください');
+  if (aiFiles.reduce((s, f) => s + f.size, 0) > 20 * 1024 * 1024) return toast('ファイルが大きすぎます（合わせて20MBまで）');
+  const used = DOC.cust || Q.usedLines(DOC).length;
+  if (used && !confirm('今の取引先・商品・届け先を、読み取った内容で置きかえます。よろしいですか？')) return;
+  aiBusy = true; drawAiBox();
+  try {
+    const files = []; for (const f of aiFiles) files.push({ data: await b64(f), type: f.type, name: f.name });
+    const r = await AI.read({ text, files, today: today(), kind: DOC.kind }, account.name || account.username || '');
+    const a = QuoteAI.apply(DOC, r, { custRows, itemRows, prefOf: P.prefOf, prefs: P.PREFS, today: today() });
+    DOC = a.doc; DOC.ai = { at: new Date().toISOString(), by: account.name || '', text: text.slice(0, 8000), files: aiFiles.map(f => f.name), notes: a.notes };
+    aiBusy = false; aiOpen = false; aiFiles = []; openLine = -1; touch(); renderForm(); refresh();
+    if (a.custQuery && $('custQ')) { $('custQ').value = a.custQuery; $('custQ').focus(); $('custQ').dispatchEvent(new Event('input')); }
+  } catch (e) { console.error(e); aiBusy = false; drawAiBox(); if ($('aiText')) $('aiText').value = text; toast(e.message || 'AI の読み取りに失敗しました'); }
 }
 
 function renderLines() {
