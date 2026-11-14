@@ -1,0 +1,287 @@
+// 見積・受注（quote.html）の計算。画面は持たない（テスト：node tests/test_quote_core.cjs）
+//   単価と送料そのものは price_core.js が出す。ここは「書類」としてのまとめ：
+//   品目コードの読み替え・単価を変えたときの記録・合計・確認すること・番号・保存する形
+(function (root) {
+  "use strict";
+  var P = (typeof module !== "undefined" && module.exports) ? require("./price_core.js") : root.PriceCore;
+  var num = P.num, ymd = P.ymd, key = P.asmKey;
+
+  // 単価を変えたときに選ぶ理由（あとで設定のリストから読めるようにする）
+  var REASONS = ["1ランク上げ", "数量", "競合", "新規開拓", "継続の特価", "上長の了承", "その他"];
+  var STATUSES = ["下書き", "提出済み", "受注", "失注"];
+  var TAX_RATE = 0.1;
+
+  function fmt(v) { return v === null || v === undefined || v === "" ? "" : Math.round(v).toLocaleString("ja-JP"); }
+  // 0.575 → 「5.75掛」
+  function kake(k) { return k === null || k === undefined ? "" : String(Math.round(k * 1000) / 100) + "掛"; }
+  // SMILE の掛率名「5.75掛(B)」→「Bランク」
+  function rankLabel(kakeName) {
+    var r = P.rankOf(kakeName);
+    if (!r || !r.rank) return "";
+    return /^[A-Z]'?$/.test(r.rank) ? r.rank + "ランク" : r.rank;
+  }
+
+  // 探すときの表記ゆれをならす（全角・半角、大文字・小文字、ハイフン・空白、小さいカナ）
+  var SMALL = { "ァ": "ア", "ィ": "イ", "ゥ": "ウ", "ェ": "エ", "ォ": "オ", "ャ": "ヤ", "ュ": "ユ", "ョ": "ヨ", "ッ": "ツ", "ヮ": "ワ" };
+  function norm(s) {
+    return String(s || "").normalize("NFKC").toUpperCase().replace(/[ァィゥェォャュョッヮ]/g, function (c) { return SMALL[c]; })
+      .replace(/[\s\-‐－ー―・\/／_.()（）]/g, "");
+  }
+  // 一覧から探す。空白で区切った言葉が全部入っているものを、先頭が合うものから順に n 件
+  //   rows: [{ key: ならした文字, head: 先頭で比べる文字, ... }]
+  function search(rows, q, n) {
+    var words = String(q || "").split(/[\s　]+/).map(norm).filter(Boolean);
+    if (!words.length) return [];
+    var hit = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i], ok = true;
+      for (var j = 0; j < words.length; j++) if (r.key.indexOf(words[j]) < 0) { ok = false; break; }
+      if (!ok) continue;
+      var h = r.head || r.key, w = words[0];
+      hit.push({ row: r, score: h === w ? 0 : h.indexOf(w) === 0 ? 1 : 2 });
+    }
+    hit.sort(function (a, b) { return a.score - b.score || a.row.key.length - b.row.key.length; });
+    return hit.slice(0, n || 8).map(function (x) { return x.row; });
+  }
+
+  // ---------- 品目コードの読み替え ----------
+  // 定価リストの型式を、ならした名前で引けるようにする。priced＝定価がある型式、any＝重さだけの行も含む
+  function buildIndex(prices) {
+    var priced = {}, any = {};
+    (prices || []).forEach(function (p) {
+      var k = key(p.型式); if (!k) return;
+      if (!any[k]) any[k] = p.型式;
+      if (num(p.定価) !== null && !priced[k]) priced[k] = p.型式;
+    });
+    return { priced: priced, any: any };
+  }
+  // 入れた型式・品目コードから、定価リストの型式を決める。
+  //   ① そのまま（書き方違いはそろえる）→ ② 品目マスタの「価格表記載名」（UDL25 → UDL250）
+  //   items: { 品目ｺｰﾄﾞ: { name, kakaku } }。返す：{ code, via, noPrice }
+  function resolveCode(code, items, index) {
+    var k = key(code);
+    if (!k) return { code: "", via: "" };
+    if (index.priced[k]) return { code: index.priced[k], via: "" };
+    var it = items && items[code], kk = it && it.kakaku ? key(it.kakaku) : "";
+    if (kk && index.priced[kk]) return { code: index.priced[kk], via: "価格表記載名" };
+    if (index.any[k]) return { code: index.any[k], via: "", noPrice: true };
+    return { code: "", via: "" };
+  }
+
+  // ---------- 単価 ----------
+  // その単価の決め手を、短いことばにする（行の下に出す）
+  function whyText(r) {
+    if (!r || r.price === null || r.price === undefined) return "";
+    var s;
+    if (r.exception) {
+      s = "特価（" + (r.exceptionLabel || "") + "）";
+      if (num(r.exception.金額) === null && r.k !== null && r.k !== undefined) s = "定価 " + fmt(r.listPrice) + " × " + s + " " + kake(r.k);
+    } else {
+      var label = r.isStock ? "在庫価格" : (r.classText && r.classText.length ? "この取引先の決まり" : (rankLabel(r.rankName) || "掛率"));
+      s = "定価 " + fmt(r.listPrice) + " × " + label + " " + kake(r.k);
+    }
+    if (r.method === "本部経由" && r.quotePrice !== undefined && r.quotePrice !== null) s += " ÷0.93（本部経由）";
+    if (r.method === "運賃込み" && r.fareIncluded !== undefined && r.fareIncluded !== null) s += " ＋運賃 " + fmt(r.fareIncluded);
+    return s;
+  }
+
+  // 明細の1行を計算する。
+  //   line: { code, name, qty, unitName, price(手で入れた単価), manual, ov:{ price, k, reason, memo }, lead, note, ship }
+  //   ctx : { customer, priceDate, kind:"quote"|"order", items, index, withBody }
+  function priceLine(data, line, ctx) {
+    var qty = Math.max(0, num(line.qty) || 0);
+    var out = { code: line.code || "", listCode: "", via: "", name: line.name || "", qty: qty, unitName: line.unitName || "台",
+      manual: !!line.manual, base: null, unit: null, amount: null, changed: false, reason: "", memo: "", cost: null,
+      lead: line.lead || "", note: line.note || "", ship: line.ship || "", warnings: [] };
+    var ov = line.ov || {};
+    if (out.manual || !out.code) {
+      out.manual = true; out.unit = num(line.price); out.name = line.name || line.code || "";
+    } else {
+      var rc = resolveCode(out.code, ctx.items, ctx.index);
+      out.listCode = rc.code; out.via = rc.via;
+      var it = ctx.items && ctx.items[out.code];
+      if (!rc.code) {
+        out.noRule = true; out.unit = num(line.price);
+        out.name = line.name || (it && it.name) || "";
+        out.warnings.push("定価リストにない型式です：" + out.code + "（単価を入れてください）");
+      } else {
+        var r = P.unitPrice(data, { code: rc.code, qty: qty || 1, date: ctx.priceDate, customer: ctx.customer || {}, withBody: !!ctx.withBody });
+        var has = r.price !== null && r.price !== undefined;
+        // 本部経由の取引先は、見積は販社への単価、受注伝票は本部からの受注単価
+        var basePrice = !has ? null : (ctx.kind === "order" && r.orderPrice !== undefined && r.orderPrice !== null ? r.orderPrice : r.price);
+        out.base = { price: basePrice, list: r.listPrice === undefined ? null : r.listPrice, k: r.k === undefined ? null : r.k,
+          why: whyText(r), method: r.method || "", isStock: !!r.isStock, explain: r.explain || [], notes: r.notes || [],
+          quotePrice: r.quotePrice === undefined ? null : r.quotePrice, orderPrice: r.orderPrice === undefined ? null : r.orderPrice,
+          oldPrice: r.oldPrice === undefined ? null : r.oldPrice, listFrom: r.listFrom || "" };
+        out.name = line.name || r.name || (it && it.name) || "";
+        (r.warnings || []).forEach(function (w) { out.warnings.push(w); });
+        if (num(ov.price) !== null) out.unit = num(ov.price);
+        else if (num(ov.k) !== null && out.base.list !== null) out.unit = P.round(out.base.list * num(ov.k), P.roundUnit(ctx.priceDate));
+        else out.unit = basePrice;
+        if (basePrice === null) { out.noRule = true; if (out.unit === null) out.unit = num(line.price); }
+        out.changed = basePrice !== null && out.unit !== null && out.unit !== basePrice;
+        if (out.changed) { out.reason = ov.reason || ""; out.memo = ov.memo || ""; }
+        var c = P.costRow(data.costs || [], rc.code, ctx.priceDate);
+        out.cost = c ? num(c.原価) : null;
+      }
+    }
+    out.amount = out.unit === null ? null : out.unit * qty;
+    return out;
+  }
+
+  // ---------- 書類ぜんたい ----------
+  // 定価を選ぶ日：納期（出荷の予定日）があればその日、なければ見積日
+  function priceDateOf(doc) { return ymd(doc.shipDate) || ymd(doc.date); }
+  function usedLines(doc) {
+    return (doc.lines || []).filter(function (l) { return l && (l.code || l.name || num(l.price) !== null); });
+  }
+
+  // doc: { kind, date, shipDate, cust, dest:{ name, pref, personal }, lines, fareManual }
+  // env: { items, index }。返す：{ lines, fare, totals, margin, checks, priceDate }
+  function compute(data, doc, env) {
+    var priceDate = priceDateOf(doc), cust = doc.cust || null, kind = doc.kind === "order" ? "order" : "quote";
+    var src = usedLines(doc);
+    var index = env.index || buildIndex(data.prices);
+    var isBody = function (l) {
+      if (l.manual || !l.code) return false;
+      var rc = resolveCode(l.code, env.items, index); if (!rc.code) return false;
+      var row = P.listPriceRow(data.prices, rc.code, priceDate, true);
+      return !!row && row.商品の種類 !== "部品" && !P.isOption(rc.code);
+    };
+    var withBody = src.some(isBody);
+    var lines = src.map(function (l) { return priceLine(data, l, { customer: cust || {}, priceDate: priceDate, kind: kind, items: env.items, index: index, withBody: withBody }); });
+
+    // 送料
+    var dest = doc.dest || {}, logis = lines.some(function (l) { return l.base && l.base.method === "本部経由" && l.base.quotePrice !== null; });
+    var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) { return { code: l.listCode, qty: l.qty, ship: l.ship }; });
+    var f = { amount: null, explain: [], warnings: [] };
+    if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
+    var rule = f.amount === null || f.amount === undefined ? null : (logis && f.quoteAmount !== undefined ? (kind === "order" ? f.orderAmount : f.quoteAmount) : f.amount);
+    var manualFare = num(doc.fareManual);
+    var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule,
+      carrier: f.carrier || "", region: f.region || "", kg: f.kg || 0, how: f.method || "", explain: f.explain || [], warnings: f.warnings || [] };
+
+    // 合計（消費税は切り捨て）
+    var sub = 0; lines.forEach(function (l) { sub += l.amount || 0; });
+    var fa = fare.amount || 0, tax = Math.floor((sub + fa) * TAX_RATE + 1e-9);
+    var totals = { subtotal: sub, fare: fa, beforeTax: sub + fa, tax: tax, total: sub + fa + tax };
+
+    // 利益率（原価がわかる行だけ。社内だけで見る）
+    var sales = 0, cost = 0, n = 0;
+    lines.forEach(function (l) { if (l.cost !== null && l.amount !== null && l.qty > 0) { sales += l.amount; cost += l.cost * l.qty; n++; } });
+    var margin = n && sales > 0 ? { rate: (sales - cost) / sales, lines: n, all: n === lines.length } : null;
+
+    return { lines: lines, fare: fare, totals: totals, margin: margin, priceDate: priceDate,
+      checks: checksOf(data, doc, lines, fare, index, env.items) };
+  }
+
+  // 確認すること（画面ではここにだけ注意を出す）。level：warn＝直してから出す、info＝知っておく
+  function checksOf(data, doc, lines, fare, index, items) {
+    var out = [], seen = {};
+    var add = function (level, text) { if (!text || seen[text]) return; seen[text] = 1; out.push({ level: level, text: text }); };
+    var cust = doc.cust;
+    if (!cust || !(cust.name || cust.code)) add("warn", "取引先を選んでください");
+    else if (cust.isNew) add("info", "新しい取引先です。ランクがないので、単価は入れた金額になります");
+    if (!lines.length) add("warn", "商品を1行入れてください");
+    lines.forEach(function (l) {
+      var nm = l.code || l.name || "（名前なし）";
+      if (!(l.qty > 0)) add("warn", nm + " の数量を入れてください");
+      if (l.unit === null) add("warn", nm + " の単価が入っていません");
+      if (l.changed && !l.reason) add("warn", nm + " の単価を変えた理由を選んでください");
+      else if (l.changed) add("info", nm + " の単価を基本から変えています（" + l.reason + "）");
+      if (l.base && l.base.isStock) add("info", nm + " は在庫価格です。見積書には「御社在庫品」と書きます");
+      // 「単価を入れてください」で足りる注意は重ねて出さない（確認することを増やさない）
+      l.warnings.forEach(function (w) { if (!/定価リストにない型式|ランクが「|掛率が決まりません/.test(w)) add("info", w); });
+    });
+    // 価格の改定：納期で定価を選ぶので、またぐときと、近いときに知らせる
+    var d0 = ymd(doc.date), d1 = priceDateOf(doc), crossed = [], soon = {};
+    lines.forEach(function (l) {
+      if (!l.listCode) return;
+      var hist = P.priceHistory(data.prices, l.listCode).filter(function (p) { return num(p.定価) !== null; });
+      hist.forEach(function (p) {
+        var s = ymd(p.適用開始日);
+        if (s > d0 && s <= d1) crossed.push({ code: l.code, from: s });
+        else if (s > d1 && daysBetween(d1, s) <= 120) soon[s] = 1;
+      });
+    });
+    if (crossed.length) add("info", "納期が価格の改定日（" + crossed[0].from + "）より後なので、新しい定価で出しています");
+    Object.keys(soon).sort().slice(0, 1).forEach(function (s) {
+      add("info", s + " に定価が変わります。出荷がその日より後なら、納期を入れてください");
+    });
+    if (!(doc.dest && doc.dest.pref) && lines.some(function (l) { return l.listCode; })) add("info", "届け先の県を入れると送料が出ます");
+    fare.warnings.forEach(function (w) { if (!/届け先の県/.test(w)) add("info", w); });
+    if (fare.changed) add("info", "送料を基本（" + (fare.rule === null ? "なし" : fmt(fare.rule)) + "）から変えています");
+    return out;
+  }
+  function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+
+  // ---------- 見積書に載せる行 ----------
+  // 返す：[{ name, note, unit, qty, unitName, amount, list, lead }]。送料は最後に1行
+  function sheetRows(doc, comp) {
+    var rows = comp.lines.map(function (l) {
+      return { name: l.manual ? (l.name || l.code) : (l.code + (l.name && l.name !== l.code ? "　" + l.name : "")), note: l.note,
+        unit: l.unit, qty: l.qty, unitName: l.unitName, amount: l.amount, list: doc.showList && l.base ? l.base.list : null, lead: l.lead };
+    });
+    if (comp.fare.amount) {
+      var pref = doc.dest && doc.dest.pref ? "（" + doc.dest.pref + "送り）" : "";
+      rows.push({ name: "送料" + pref, note: "", unit: comp.fare.amount, qty: 1, unitName: "一式", amount: comp.fare.amount, list: null, lead: "" });
+    }
+    return rows;
+  }
+
+  // ---------- 番号 ----------
+  // 見積は Q、受注伝票は J。「Q261114-003」＝ 2026年11月14日の3件目。existing：その日までに使った番号
+  function nextNumber(kind, date, existing) {
+    var d = ymd(date).replace(/-/g, "").slice(2), head = (kind === "order" ? "J" : "Q") + d + "-", max = 0;
+    (existing || []).forEach(function (no) {
+      if (String(no).indexOf(head) !== 0) return;
+      var n = parseInt(String(no).slice(head.length), 10);
+      if (n > max) max = n;
+    });
+    return head + String(max + 1).padStart(3, "0");
+  }
+
+  // ---------- 保存する形 ----------
+  // 入れた内容（doc）に、そのとき計算した結果（snap）を添えて残す。
+  // あとでルールが変わっても、出した見積の金額と「なぜその値段だったか」が変わらないように
+  function toRecord(doc, comp, who, now) {
+    var snap = {
+      priceDate: comp.priceDate, totals: comp.totals,
+      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg },
+      margin: comp.margin ? comp.margin.rate : null,
+      lines: comp.lines.map(function (l) {
+        return { code: l.code, listCode: l.listCode, name: l.name, qty: l.qty, unitName: l.unitName, unit: l.unit, amount: l.amount,
+          list: l.base ? l.base.list : null, basePrice: l.base ? l.base.price : null, baseWhy: l.base ? l.base.why : "",
+          changed: l.changed, reason: l.reason, memo: l.memo, manual: l.manual || !!l.noRule, cost: l.cost };
+      })
+    };
+    var cust = doc.cust || {};
+    var data = Object.assign({}, doc, { snap: snap, savedBy: who || "", savedAt: now || "", v: 1 });
+    return {
+      fields: { Title: doc.no || "", Kind: doc.kind === "order" ? "受注" : "見積", Status: doc.status || "下書き",
+        Customer: String(cust.fullName || cust.name || "").slice(0, 250), CustomerCode: cust.code || "", CaseId: doc.caseId || "",
+        DocDate: ymd(doc.date), Total: comp.totals.total, Subject: String(doc.title || "").slice(0, 250), Owner: doc.staff || who || "",
+        Data: JSON.stringify(data) },
+      data: data
+    };
+  }
+  // 新しい書類の初期値
+  function blank(kind, today, staff) {
+    return { no: "", kind: kind === "order" ? "order" : "quote", status: "下書き", date: today, shipDate: "", cust: null, toName: "", honor: "御中",
+      dest: { name: "", pref: "", personal: false }, lines: [{ code: "", qty: 1 }], fareManual: null,
+      title: "", expiry: "発行後1ヶ月", pay: "従来通り", notes: "", showList: false, dept: "", staff: staff || "", caseId: "", from: "" };
+  }
+  // 複製：番号・状態・日付を新しくする（内容はそのまま）
+  function duplicate(doc, today, staff) {
+    var d = JSON.parse(JSON.stringify(doc));
+    delete d.snap; delete d.savedBy; delete d.savedAt; delete d.spId;
+    d.no = ""; d.status = "下書き"; d.date = today; d.staff = staff || d.staff; d.copiedFrom = doc.no || "";
+    return d;
+  }
+
+  var API = { REASONS: REASONS, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+    buildIndex: buildIndex, resolveCode: resolveCode, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
+    compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  else root.QuoteCore = API;
+})(typeof window !== "undefined" ? window : this);
