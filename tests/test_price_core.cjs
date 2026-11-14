@@ -344,4 +344,22 @@ assert.equal(P.prefOf('北海道札幌市'), '北海道');
 const cm = P.customerFromMaster({ '得意先ｺｰﾄﾞ': '1', '得意先名略称': '甲', '得意先社名ｺｰﾄﾞ': 'G1', '掛率名': "5掛(A')" });
 assert.equal(cm.shaCode, 'G1'); assert.equal(cm.kakeName, "5掛(A')");
 
+// --- 原価・利益率・価格改定の試算 ---
+const costs = [{ 型式: 'AB-1', 原価: 5000, 適用開始日: '2026-01-01' }, { 型式: 'AB-1', 原価: 5500, 適用開始日: '2026-12-01' }, { 型式: 'Z9', 原価: '', 適用開始日: '2026-01-01' }];
+assert.equal(P.costRow(costs, 'ab1', '2026-11-20').原価, 5000);   // 表記ゆれをそろえて探す・日付に有効な最新
+assert.equal(P.costRow(costs, 'AB-1', '2026-12-05').原価, 5500);
+assert.equal(P.costRow(costs, 'AB-1', '2025-12-31'), null);       // 適用前
+assert.equal(P.costRow(costs, 'Z9', '2026-11-20'), null);         // 原価が空の行は使わない
+assert.equal(P.margin(10000, 7000), 0.3);
+assert.equal(P.margin(null, 7000), null); assert.equal(P.margin(0, 1), null); assert.equal(P.margin(10000, null), null);
+assert.equal(P.reviseList(12345, 5, 100), 13000);                  // 12962.25 → 100円単位
+assert.equal(P.reviseList(10000, 10, 0), 11000);
+assert.equal(P.reviseList(10000, -10, 10), 9000);
+assert.equal(P.reviseList(null, 5, 100), null);
+const sb = P.salesByItem([[202511, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'AB-1', '', 3, 30000, 10000, 1],
+  [202511, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'ab1', '', 2, 21000, 10500, 1],
+  [202511, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'AB-1', '', -1, -10000, 10000, 2],   // 返品は除く
+  [202401, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'AB-1', '', 9, 90000, 10000, 1]], 202411);   // 古い分は除く
+assert.deepEqual(sb, { AB1: { qty: 5, amt: 51000 } });
+
 console.log('ok test_price_core');

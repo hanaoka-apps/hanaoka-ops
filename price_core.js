@@ -274,6 +274,42 @@
     return out;
   }
 
+  // ---------- 原価・利益率・価格改定の試算 ----------
+  // 原価リスト（PR_原価）：型式と適用開始日。日付に有効な最新の行を使う（型式は全角・半角・ハイフンのちがいをそろえて探す）
+  function costRow(costs, code, date) {
+    var d = ymd(date), k = asmKey(code), best = null;
+    for (var i = 0; i < (costs || []).length; i++) {
+      var c = costs[i];
+      if (num(c.原価) === null || asmKey(c.型式) !== k) continue;
+      if (ymd(c.適用開始日) > d) continue;
+      if (!best || ymd(c.適用開始日) > ymd(best.適用開始日)) best = c;
+    }
+    return best;
+  }
+  // 利益率＝（売値−原価）÷売値。売値か原価がないとき null
+  function margin(price, cost) {
+    if (price === null || price === undefined || cost === null || cost === undefined || !(price > 0)) return null;
+    return (price - cost) / price;
+  }
+  // 定価の改定案：定価 ×（1＋率％）を unit 円単位で四捨五入（unit が 0 や空ならそのまま）
+  function reviseList(list, ratePct, unit) {
+    if (list === null || list === undefined) return null;
+    var v = list * (1 + (Number(ratePct) || 0) / 100), u = Number(unit) || 0;
+    return u > 0 ? Math.round(v / u) * u : Math.round(v);
+  }
+  // 売上の実績（dashboard_facts.json の rows）を型式ごとに足す。fromYm 以降（例 202511）。返品（kind=2）と数量0以下は除く
+  // 行の並び：0 年月, 18 品目コード, 20 数量, 21 金額, 23 種別（2＝返品）
+  function salesByItem(rows, fromYm) {
+    var m = {};
+    (rows || []).forEach(function (r) {
+      if (!r || Number(r[0]) < fromYm || r[23] === 2) return;
+      var q = Number(r[20]), a = Number(r[21]); if (!(q > 0) || isNaN(a)) return;
+      var k = asmKey(r[18]); if (!k) return;
+      var o = m[k] || (m[k] = { qty: 0, amt: 0 }); o.qty += q; o.amt += a;
+    });
+    return m;
+  }
+
   // ---------- 見積 ----------
   // 値引き（％）を引いた単価。見積日の丸め（11月1日から100円）にそろえる。値引きなしなら、そのまま
   function discountedUnit(base, discPct, date) {
@@ -807,7 +843,7 @@
   var API = {
     parseCSV: parseCSV, toObjects: toObjects, customerFromMaster: customerFromMaster, PREFS: PREFS, prefOf: prefOf,
     num: num, round: round, ceil: ceil, ymd: ymd, yen: yen, pct: pct,
-    roundUnit: roundUnit, discountedUnit: discountedUnit, quoteTotals: quoteTotals, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
+    roundUnit: roundUnit, costRow: costRow, margin: margin, reviseList: reviseList, salesByItem: salesByItem, discountedUnit: discountedUnit, quoteTotals: quoteTotals, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,
