@@ -202,6 +202,13 @@
   table.cptbl{width:100%;border-collapse:collapse;font-size:13px}
   table.cptbl th{position:sticky;top:0;background:var(--bg);text-align:left;font-size:11.5px;color:var(--sub);padding:7px 10px;border-bottom:1px solid var(--line-strong)}
   table.cptbl th.num{text-align:right}
+  .fbtn{border:1px solid transparent;background:transparent;color:var(--sub);border-radius:6px;padding:0 5px;font-size:12px;cursor:pointer;line-height:18px}
+  .fbtn:hover{background:var(--line)} .fbtn.on{background:var(--navy);color:var(--surface)}
+  .cmenu{position:absolute;z-index:50;width:260px;background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);padding:10px;font-size:13px}
+  .cmenu .cm-sort,.cmenu .cm-act,.cmenu .cm-go{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}
+  .cmenu .cm-list{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 8px;margin:6px 0}
+  .cmenu .cm-list label{display:flex;gap:6px;padding:2px 0;white-space:nowrap}
+  .cmenu input[type=search],.cmenu input[type=number]{width:100%;box-sizing:border-box} .cmenu .cm-r{display:flex;gap:6px;align-items:center}
   table.cptbl td{padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   tr.cprow{cursor:pointer} tr.cprow:hover td{background:var(--bg)} tr.cprow.open td{background:var(--navy-soft)}
   tr.cpdetail td{background:var(--surface);padding:10px 14px 14px}
@@ -1769,14 +1776,61 @@ function openEdit(key,row,opt){
 // ============================================================
 // ---------- 得意先の価格表：ルールから、この得意先に全商品がいくらで出るかを一覧にする ----------
 // 「今の設定がどうなっているか」を、業務センターの各社価格表と同じ形で見るための画面。直すのは ③④ の画面で行う
-// 表の見出しを押して並び替える（▲小さい順・▼大きい順。もう一度押すと元の並びに戻る）
+// 表の見出し：名前を押すと並び替え（▲小さい順・▼大きい順・もう一度で元の並び）、「▾」を押すと Excel のように並び替えと絞り込み
+const FLT_EMPTY='（空）';
+function colShow(d,x){ const v=d.get(x); if(v==null||v==='') return FLT_EMPTY; return d.show?d.show(v,x):String(v); }
+function colFilterOn(st,key){ const f=(st.flt||{})[key]; return !!f&&!!(f.vals||f.text||f.min!=null||f.max!=null); }
+function fltCount(st){ return Object.keys(st.flt||{}).filter(k=>colFilterOn(st,k)).length; }
+function applyColFilters(rows,st,skip){
+  const fl=st.flt||{}, defs=st.defs||{};
+  return rows.filter(x=>Object.keys(fl).every(k=>{
+    if(k===skip||!colFilterOn(st,k)||!defs[k]) return true;
+    const d=defs[k], f=fl[k], v=d.get(x);
+    if(f.vals) return f.vals.includes(colShow(d,x));
+    if(f.text) return norm(String(v==null?'':v)).includes(norm(f.text));
+    const n=typeof v==='number'?v:null;
+    if(f.min!=null&&(n==null||n<f.min)) return false; if(f.max!=null&&(n==null||n>f.max)) return false; return true; }));
+}
 function sortTh(label,key,st,opt){
-  opt=opt||{}; const on=st.sort===key, mark=on?(st.dir==='desc'?' ▼':' ▲'):' <span class="muted">▾</span>';
-  return `<th data-sort="${key}" class="${opt.num?'num ':''}sortable${on?' on':''}" title="${esc(opt.title||'押すと並び替え')}" style="cursor:pointer;user-select:none">${label}${mark}</th>`;
+  opt=opt||{}; const on=st.sort===key, fo=colFilterOn(st,key);
+  return `<th data-sort="${key}" class="${opt.num?'num ':''}sortable${on?' on':''}" title="${esc(opt.title||'名前を押すと並び替え、▾で絞り込み')}" style="cursor:pointer;user-select:none">${label}${on?(st.dir==='desc'?' ▼':' ▲'):''} <button type="button" class="fbtn${fo?' on':''}" data-f="${key}" title="並び替え・絞り込み">▾</button></th>`;
+}
+function fltClearBtn(st){ const n=fltCount(st); return n?`<button class="linkbtn" data-fltclear="1">列の絞り込みを全部外す（${n}列）</button>`:''; }
+let CMENU=null;
+function closeColMenu(){ if(CMENU){ CMENU.remove(); CMENU=null; } }
+document.addEventListener('mousedown',e=>{ if(CMENU&&!CMENU.contains(e.target)&&!(e.target.closest&&e.target.closest('.fbtn'))) closeColMenu(); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeColMenu(); });
+function openColMenu(btn,st,key,rr){
+  closeColMenu(); const d=st.defs[key]; st.flt=st.flt||{}; const cur=st.flt[key]||{};
+  let body=`<div class="cm-sort"><button class="btn" data-o="asc">▲ 小さい順</button><button class="btn" data-o="desc">▼ 大きい順</button><button class="linkbtn" data-o="">並び替えを戻す</button></div>`;
+  if(d.type==='enum'){
+    const vals=[...new Set(applyColFilters(st.rowsAll,st,key).map(x=>colShow(d,x)))].sort((a,b)=>a.localeCompare(b,'ja')), chosen=cur.vals?new Set(cur.vals):null;
+    body+=`<input type="search" class="cm-q" placeholder="探す"><div class="cm-list">${vals.map(v=>`<label class="cb"><input type="checkbox" data-v="${esc(v)}" ${!chosen||chosen.has(v)?'checked':''}>${esc(v)}</label>`).join('')}</div>
+      <div class="cm-act"><button class="linkbtn" data-all="1">全部にチェック</button><button class="linkbtn" data-all="0">全部外す</button></div>`;
+  } else if(d.type==='text') body+=`<input type="search" class="cm-t" value="${esc(cur.text||'')}" placeholder="含む言葉">`;
+  else body+=`<div class="cm-r"><input type="number" step="any" class="cm-min" value="${cur.min??''}" placeholder="以上"> 〜 <input type="number" step="any" class="cm-max" value="${cur.max??''}" placeholder="以下"></div>`;
+  body+=`<div class="cm-go"><button class="btn pri" data-apply="1">適用</button><button class="btn" data-clear="1">この列の絞り込みを外す</button></div>`;
+  const m=document.createElement('div'); m.className='cmenu'; m.innerHTML=body; document.body.appendChild(m); CMENU=m;
+  const r=btn.getBoundingClientRect(); m.style.top=(window.scrollY+r.bottom+4)+'px'; m.style.left=Math.max(8,Math.min(window.scrollX+r.left,window.scrollX+document.documentElement.clientWidth-272))+'px';
+  const done=()=>{ closeColMenu(); rr(); };
+  m.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{ if(b.dataset.o){ st.sort=key; st.dir=b.dataset.o; } else { st.sort=''; st.dir=''; } done(); });
+  const q=m.querySelector('.cm-q'); if(q) q.oninput=()=>{ const t=norm(q.value); m.querySelectorAll('.cm-list label').forEach(l=>{ l.style.display=!t||norm(l.textContent).includes(t)?'':'none'; }); };
+  m.querySelectorAll('[data-all]').forEach(b=>b.onclick=()=>m.querySelectorAll('.cm-list label').forEach(l=>{ if(l.style.display!=='none') l.querySelector('input').checked=b.dataset.all==='1'; }));
+  m.querySelector('[data-clear]').onclick=()=>{ delete st.flt[key]; done(); };
+  m.querySelector('[data-apply]').onclick=()=>{
+    if(d.type==='enum'){ const all=[...m.querySelectorAll('.cm-list input')], on=all.filter(i=>i.checked).map(i=>i.dataset.v);
+      if(on.length===all.length) delete st.flt[key]; else st.flt[key]={vals:on}; }
+    else if(d.type==='text'){ const t=m.querySelector('.cm-t').value.trim(); if(t) st.flt[key]={text:t}; else delete st.flt[key]; }
+    else { const mn=m.querySelector('.cm-min').value, mx=m.querySelector('.cm-max').value; if(mn===''&&mx==='') delete st.flt[key]; else st.flt[key]={min:mn===''?null:Number(mn),max:mx===''?null:Number(mx)}; }
+    done(); };
+  const first=m.querySelector('.cm-q,.cm-t,.cm-min'); if(first) first.focus();
 }
 function bindSort(el,st,first,rr){
-  el.querySelectorAll('th[data-sort]').forEach(th=>th.onclick=()=>{ const k=th.dataset.sort, f=first[k]||'asc', o=f==='asc'?'desc':'asc';
+  el.querySelectorAll('th[data-sort]').forEach(th=>th.onclick=e=>{
+    if(e.target.closest('.fbtn')){ e.stopPropagation(); openColMenu(e.target.closest('.fbtn'),st,th.dataset.sort,rr); return; }
+    const k=th.dataset.sort, f=first[k]||'asc', o=f==='asc'?'desc':'asc';
     if(st.sort!==k){ st.sort=k; st.dir=f; } else if(st.dir===f){ st.dir=o; } else { st.sort=''; st.dir=''; } rr(); });
+  const c=el.querySelector('[data-fltclear]'); if(c) c.onclick=()=>{ st.flt={}; rr(); };
 }
 function sortBy(rows,st,get,dflt){
   if(!st.sort||!get[st.sort]) return rows.sort(dflt);
@@ -1793,6 +1847,8 @@ const CP_SORTS={   // 並び替え：[名前, 比べ方]。分類の「品目マ
   listDesc:['定価の高い順',(a,b)=>(b.r.listPrice??-1)-(a.r.listPrice??-1)||(a.code<b.code?-1:1)],
 };
 const CP_GET={code:x=>x.code,name:x=>x.name||null,dai:x=>x.dai,chu:x=>x.chu||null,list:x=>x.r.listPrice,k:x=>x.r.k,unit:x=>x.r.price,stock:x=>x.stock,why:x=>CP_WHY[x.why][0]};
+const CP_DEFS={code:{type:'text',get:x=>x.code},name:{type:'text',get:x=>x.name},dai:{type:'enum',get:x=>x.dai},chu:{type:'enum',get:x=>x.chu},list:{type:'num',get:x=>x.r.listPrice},
+  k:{type:'enum',get:x=>x.r.k,show:v=>fmtKake(v)},unit:{type:'num',get:x=>x.r.price},stock:{type:'num',get:x=>x.stock},why:{type:'enum',get:x=>CP_WHY[x.why][0]}};
 const CP_FIRST={list:'desc',k:'desc',unit:'desc',stock:'desc'};
 const CP_WHY={exc:['例外','warn'],cls:['区分','navy'],stock:['在庫価格','stock'],rank:['ランク',''],via:['本部経由','navy'],incl:['運賃込み','incl'],none:['決まらない','red']};
 function cpWhy(r){
@@ -1867,7 +1923,8 @@ function renderCustPriceView(){
   const rows=cpCompute(st);
   const counts={}; Object.keys(CP_WHY).forEach(k=>counts[k]=rows.filter(x=>x.why===k).length);
   const tq=norm(st.q), dais=[...new Set(rows.map(x=>x.dai))];
-  const shown=rows.filter(x=>(!st.dai||x.dai===st.dai)&&(!st.why||(st.why==='notrank'?x.why!=='rank':x.why===st.why))&&(!tq||norm(x.code+' '+x.name+' '+(ITEMKEY[x.code]||'')).includes(tq)));
+  let shown=rows.filter(x=>(!st.dai||x.dai===st.dai)&&(!st.why||(st.why==='notrank'?x.why!=='rank':x.why===st.why))&&(!tq||norm(x.code+' '+x.name+' '+(ITEMKEY[x.code]||'')).includes(tq)));
+  st.defs=CP_DEFS; st.rowsAll=shown.slice(); shown=applyColFilters(shown,st);
   sortBy(shown,st,CP_GET,CP_SORTS.series[1]);
   const hasStock=shown.some(x=>x.stock!=null);
   const cc=PriceCore.customerClass(ruleData().classes,c,'台車',st.date);
@@ -1879,7 +1936,7 @@ function renderCustPriceView(){
       ${Object.keys(CP_WHY).filter(k=>counts[k]).map(k=>`<button class="cstat${st.why===k?' on':''}${k==='none'?' warn':''}" data-why="${k}"><b>${counts[k]}</b><span>${esc(CP_WHY[k][0])}${k==='rank'?'どおり':k==='none'?'（掛率）':'で決まる'}</span></button>`).join('')}</div>`;
   const tools=`<div class="tools"><input type="search" id="cpQ" value="${esc(st.q)}" placeholder="商品を探す（型式・品名）">
       <select id="cpDai"><option value="">分類：すべて</option>${dais.map(d=>`<option ${d===st.dai?'selected':''}>${esc(d)}</option>`).join('')}</select>
-      <span class="muted small">${shown.length}商品</span><span class="grow"></span><button class="btn" id="cpCopy">表をコピー（エクセルに貼れる）</button></div>`;
+      <span class="muted small">${shown.length}商品</span>${fltClearBtn(st)}<span class="grow"></span><button class="btn" id="cpCopy">表をコピー（エクセルに貼れる）</button></div>`;
   const outCard=cpOutCard(st,rows,dais);
   const yenOr=v=>v==null?'－':yen(v);
   const tr=x=>{ const r=x.r, w=CP_WHY[x.why];
@@ -1996,7 +2053,7 @@ const SR_SORTS={series:['シリーズ順（分類・型式）',(a,b)=>(a.dai<b.d
 const SERIES_RANKS=[["A'","5掛(A')"],["A","5.25掛(A)"],["B'","5.5掛(B')"],["B","5.75掛(B)"]];
 function renderSeriesView(){
   const el=document.getElementById('view-series'), st=VIEWSTATE.series=VIEWSTATE.series||{q:'',dai:'',date:today()};
-  const data=ruleData(), t=norm(st.q), rows=[], shas=stockShas(data,st.date);
+  const data=ruleData(), t=norm(st.q), shas=stockShas(data,st.date); let rows=[];
   productGroups().forEach((prs,code)=>{
     const lp=PriceCore.listPriceRow(data.prices,code,st.date); if(!lp) return;
     const info=ITEMINFO[code], name=(info&&info.name)||lp.name||'', dai=info?info.dai||'（分類なし）':'品目マスタにない';
@@ -2007,6 +2064,9 @@ function renderSeriesView(){
   });
   const SR_GET={code:x=>x.code,name:x=>x.name||null,dai:x=>x.dai,chu:x=>x.chu||null,stock:x=>x.stock?x.stock.price:null,list:x=>x.list,jan:x=>x.jan||null};
   SERIES_RANKS.forEach(([k],i)=>SR_GET['r'+i]=x=>x.pr[i]);
+  st.defs={code:{type:'text',get:x=>x.code},name:{type:'text',get:x=>x.name},dai:{type:'enum',get:x=>x.dai},chu:{type:'enum',get:x=>x.chu},stock:{type:'num',get:x=>x.stock?x.stock.price:null},list:{type:'num',get:x=>x.list},jan:{type:'text',get:x=>x.jan}};
+  SERIES_RANKS.forEach((r,i)=>st.defs['r'+i]={type:'num',get:x=>x.pr[i]});
+  st.rowsAll=rows.slice(); rows=applyColFilters(rows,st);
   sortBy(rows,st,SR_GET,SR_SORTS.series[1]);
   const dais=[...new Set([...productGroups().keys()].map(c=>{ const i=ITEMINFO[c]; return i?i.dai||'（分類なし）':'品目マスタにない'; }))].sort();
   const MAX=400, yy=v=>v==null?'－':yen(v);
@@ -2014,7 +2074,7 @@ function renderSeriesView(){
     <div class="card"><div class="tools"><input type="search" id="srQ" value="${esc(st.q)}" placeholder="型式・品名を探す" style="min-width:260px">
       <select id="srDai"><option value="">分類：すべて</option>${dais.map(d=>`<option ${d===st.dai?'selected':''}>${esc(d)}</option>`).join('')}</select>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">日付<input type="date" id="srDate" value="${esc(st.date)}"></label>
-      <span class="muted small">${rows.length}商品</span><span class="grow"></span><button class="btn" id="srCopy">表をコピー（エクセルに貼れる）</button></div></div>
+      <span class="muted small">${rows.length}商品</span>${fltClearBtn(st)}<span class="grow"></span><button class="btn" id="srCopy">表をコピー（エクセルに貼れる）</button></div></div>
     <div class="card" style="padding:0;overflow-x:auto"><table class="cptbl"><thead><tr>${sortTh('型式','code',st)}${sortTh('品名','name',st)}${sortTh('分類','dai',st)}${sortTh('シリーズ','chu',st,{title:'中分類（シリーズ）。押すと並び替え'})}${SERIES_RANKS.map(([k],i)=>sortTh(esc(k),'r'+i,st,{num:1})).join('')}${sortTh('最安販価（在庫価格）','stock',st,{num:1,title:'在庫口の掛率がある社名のうち、いちばん安い在庫価格'})}${sortTh('定価','list',st,{num:1})}${sortTh('JAN','jan',st)}</tr></thead>
       <tbody>${rows.slice(0,MAX).map(x=>`<tr><td><b>${esc(x.code)}</b></td><td>${esc(x.name)}</td><td class="small">${esc(x.dai)}</td><td class="small">${esc(x.chu)}</td>${x.pr.map(v=>`<td class="num">${yy(v)}</td>`).join('')}<td class="num">${x.stock?`${yy(x.stock.price)}<div class="small muted">${esc(x.stock.who)} ${esc(fmtKake(x.stock.k))}</div>`:'<span class="muted">－</span>'}</td><td class="num">${yy(x.list)}</td><td class="small">${esc(x.jan)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">ありません</td></tr>'}</tbody></table></div>
     ${rows.length>MAX?`<div class="small muted">先頭の${MAX}商品を出しています（探す・分類で絞れます）</div>`:''}`;
@@ -2083,7 +2143,10 @@ function renderRevisionView(){
   const st=VIEWSTATE.revision=VIEWSTATE.revision||{mode:'all',rate:0,unit:100,date:today(),daiRate:{},pin:{},q:'',dai:'',chg:false,openPin:''};
   if(FACTS_ROWS===null&&!FACTS_LOADING&&!FACTS_ERR) loadFacts();
   const all=revCompute(st), tq=norm(st.q), dais=[...new Set(all.map(x=>x.dai))].sort();
-  const shown=all.filter(x=>(!st.dai||x.dai===st.dai)&&(!st.chg||x.neu!==x.old)&&(!tq||norm(x.code+' '+x.name+' '+(ITEMKEY[x.code]||'')).includes(tq)));
+  let shown=all.filter(x=>(!st.dai||x.dai===st.dai)&&(!st.chg||x.neu!==x.old)&&(!tq||norm(x.code+' '+x.name+' '+(ITEMKEY[x.code]||'')).includes(tq)));
+  st.defs={code:{type:'text',get:x=>x.code},name:{type:'text',get:x=>x.name},dai:{type:'enum',get:x=>x.dai},chu:{type:'enum',get:x=>x.chu},old:{type:'num',get:x=>x.old},stock:{type:'num',get:x=>x.stock1},
+    a:{type:'num',get:x=>x.after[0]},b:{type:'num',get:x=>x.after[3]},cost:{type:'num',get:x=>x.cost},qty:{type:'num',get:x=>x.qty},avg:{type:'num',get:x=>x.avg0},am:{type:'num',get:x=>x.am1==null?null:Math.round(x.am1*1000)/10},impact:{type:'num',get:x=>x.impact}};
+  st.rowsAll=shown.slice(); shown=applyColFilters(shown,st);
   sortBy(shown,st,REV_GET,REV_SORTS.series[1]);
   // まとめ（表示している商品について）
   const chgN=shown.filter(x=>x.neu!==x.old).length, withS=shown.filter(x=>x.amt!=null);
@@ -2105,7 +2168,7 @@ function renderRevisionView(){
     <div class="small muted" style="margin:-4px 0 8px">${factsMsg}　概算は「実績の売上 × 新旧の定価の比」で、台数は変わらない前提です（値上げで台数が減る影響は入っていません）。</div>
     <div class="card"><div class="tools"><input type="search" id="rvQ" value="${esc(st.q)}" placeholder="商品を探す（型式・品名）">
       <select id="rvDai"><option value="">分類：すべて</option>${dais.map(d=>`<option ${d===st.dai?'selected':''}>${esc(d)}</option>`).join('')}</select>
-      <label class="cb" style="padding:0"><input type="checkbox" id="rvChg" ${st.chg?'checked':''}>変わる商品だけ</label><span class="grow"></span><button class="btn" id="rvCopy">表をコピー（エクセルに貼れる）</button></div></div>
+      <label class="cb" style="padding:0"><input type="checkbox" id="rvChg" ${st.chg?'checked':''}>変わる商品だけ</label>${fltClearBtn(st)}<span class="grow"></span><button class="btn" id="rvCopy">表をコピー（エクセルに貼れる）</button></div></div>
     <div class="card" style="padding:0;overflow-x:auto"><table class="cptbl"><thead><tr>${sortTh('型式','code',st)}${sortTh('品名','name',st)}${sortTh('分類','dai',st)}${sortTh('シリーズ','chu',st)}${sortTh('定価','old',st,{num:1})}${sortTh('最安販価（在庫価格）','stock',st,{num:1,title:'在庫口の掛率がある社名のうち、いちばん安い在庫価格（改定後の定価で計算）'})}${sortTh("A'",'a',st,{num:1,title:"A' ランクの単価（改定後）"})}${sortTh('B','b',st,{num:1,title:'B ランクの単価（改定後）'})}${sortTh('原価','cost',st,{num:1})}${sortTh('年間売上数量','qty',st,{num:1,title:'直近12か月の売上台数'})}${sortTh('平均単価','avg',st,{num:1,title:'実績の売上÷台数。改定後は、定価の比で変わる前提'})}${sortTh('平均単価の利益率','am',st,{num:1,title:'平均単価に対する利益率（改定後）'})}${sortTh('インパクト','impact',st,{num:1,title:'実績の売上の増減（概算）。押すと、増減の大きい順'})}</tr></thead>
       <tbody>${shown.slice(0,300).map(x=>{ const mg=(p,c)=>c!=null&&p!=null?`<div class="small ${PriceCore.margin(p,c)<0?'diff':'muted'}">${pctText(PriceCore.margin(p,c))}</div>`:'';
         return `<tr><td><b>${esc(x.code)}</b></td><td>${esc(x.name)}</td><td class="small">${esc(x.dai)}</td><td class="small">${esc(x.chu)}</td>
