@@ -83,6 +83,22 @@ assert.ok(c.checks.some(x => x.level === 'warn' && /単価が入っていませ�
 c = Q.compute(data, doc({ lines: [{ code: 'ZZZ', qty: 2, price: 1000 }] }), env);
 assert.equal(c.lines[0].amount, 2000);
 
+// --- 枝番つき（/C・/T など）は、元の型式の定価で計算しない。元の型式の単価は参考、送料の重さは元の型式 ---
+const items2 = Object.assign({}, items, { 'UDL25/C': { name: 'リフト UDL-250 キャスター変更', kakaku: 'UDL250' } });
+const env2 = { items: items2, index: env.index };
+assert.ok(Q.isVariant('UDL25/C') && Q.isVariant('RIDE/T') && Q.isVariant('SUS25/TEL'));
+assert.ok(!Q.isVariant('OP/JB') && !Q.isVariant('P/0000000217') && !Q.isVariant('UDL25'));
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25/C', qty: 1 }] }), env2);
+assert.equal(c.lines[0].unit, null);
+assert.equal(c.lines[0].variantOf, 'UDL250');
+assert.equal(c.lines[0].refPrice, 75900);
+assert.equal(c.lines[0].base, null);
+assert.equal(c.fare.amount, 3900); // 元の型式の重さ 60kg
+assert.ok(c.checks.some(x => x.level === 'warn' && /UDL25\/C の単価が入っていません/.test(x.text)));
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25/C', qty: 2, price: 80000 }] }), env2);
+assert.equal(c.lines[0].amount, 160000);
+assert.equal(c.lines[0].changed, false);
+
 // --- 新しい取引先（ランクなし）：ルールでは決まらないので、入れた単価になる ---
 c = Q.compute(data, doc({ cust: { name: '新しいお客さま', isNew: true }, lines: [{ code: 'T1', qty: 1, price: 24000 }] }), env);
 assert.equal(c.lines[0].unit, 24000);
