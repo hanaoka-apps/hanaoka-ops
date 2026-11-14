@@ -286,6 +286,32 @@
     }
     return best;
   }
+  // 原価のまとめて取り込みの計画：定価リストにある型式の分だけ入れる（型式は表記ゆれをそろえて探す）
+  // incoming: [{型式, 原価}]。同じ型式で原価が2つ以上あるものは入れず conflict で知らせる。
+  // 戻り：{ add:[data], chg:[{row, next}], same, missing:[型式], conflict:[型式], invalid:[行] }
+  function costPlan(priceRows, costRows, incoming, date, source) {
+    var canon = {};
+    priceRows.forEach(function (r) { var k = asmKey(r.data.型式); if (k && !canon[k]) canon[k] = r.data.型式; });
+    var vals = {}, order = [], out = { add: [], chg: [], same: 0, missing: [], conflict: [], invalid: [] };
+    incoming.forEach(function (d) {
+      var k = asmKey(d.型式), v = num(d.原価);
+      if (!k || v === null || v <= 0) { out.invalid.push(d); return; }
+      if (!vals[k]) { vals[k] = { name: d.型式, v: [] }; order.push(k); }
+      if (vals[k].v.indexOf(v) < 0) vals[k].v.push(v);
+    });
+    order.forEach(function (k) {
+      var o = vals[k];
+      if (!canon[k]) { out.missing.push(o.name); return; }
+      if (o.v.length > 1) { out.conflict.push(o.name); return; }
+      var next = { 型式: canon[k], 原価: o.v[0], 適用開始日: date, 出典: source || "" };
+      var cur = costRows.filter(function (r) { return asmKey(r.data.型式) === k && ymd(r.data.適用開始日) === ymd(date); })[0];
+      if (!cur) out.add.push(next);
+      else if (num(cur.data.原価) === o.v[0]) out.same++;
+      else out.chg.push({ row: cur, next: Object.assign({}, cur.data, next) });
+    });
+    return out;
+  }
+
   // 利益率＝（売値−原価）÷売値。売値か原価がないとき null
   function margin(price, cost) {
     if (price === null || price === undefined || cost === null || cost === undefined || !(price > 0)) return null;
@@ -843,7 +869,7 @@
   var API = {
     parseCSV: parseCSV, toObjects: toObjects, customerFromMaster: customerFromMaster, PREFS: PREFS, prefOf: prefOf,
     num: num, round: round, ceil: ceil, ymd: ymd, yen: yen, pct: pct,
-    roundUnit: roundUnit, costRow: costRow, margin: margin, reviseList: reviseList, salesByItem: salesByItem, discountedUnit: discountedUnit, quoteTotals: quoteTotals, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
+    roundUnit: roundUnit, costRow: costRow, costPlan: costPlan, margin: margin, reviseList: reviseList, salesByItem: salesByItem, discountedUnit: discountedUnit, quoteTotals: quoteTotals, janValid: janValid, janCheckDigit: janCheckDigit, ean13Bits: ean13Bits, ean13Svg: ean13Svg, janPlan: janPlan, asmKey: asmKey, assemblyRow: assemblyRow, assemblyFare: assemblyFare, rankOf: rankOf, rankMatches: rankMatches, listPriceRow: listPriceRow, priceHistory: priceHistory,
     customerClass: customerClass, findException: findException, regionOfPref: regionOfPref,
     freight: freight, unitFare: unitFare, unitPrice: unitPrice, isOption: isOption, isPartBundle: isPartBundle,
     summaryOf: summaryOf, compareOrder: compareOrder, compareSentence: compareSentence,

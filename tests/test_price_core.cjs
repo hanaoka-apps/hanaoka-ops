@@ -362,4 +362,16 @@ const sb = P.salesByItem([[202511, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
   [202401, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'AB-1', '', 9, 90000, 10000, 1]], 202411);   // 古い分は除く
 assert.deepEqual(sb, { AB1: { qty: 5, amt: 51000 } });
 
+// --- 原価の取り込み計画 ---
+const pRows = [{ data: { 型式: 'AB-1', 定価: 10000 } }, { data: { 型式: 'AB-1', 定価: 11000, 適用開始日: '2026-11-01' } }, { data: { 型式: 'CD2', 定価: 5000 } }];
+const cRows = [{ data: { 型式: 'CD2', 原価: 2000, 適用開始日: '2026-11-01' } }];
+const cp = P.costPlan(pRows, cRows, [{ 型式: 'ab1', 原価: 4000 }, { 型式: 'CD-2', 原価: 2000 }, { 型式: 'XX', 原価: 100 }, { 型式: 'AB-1', 原価: 4000 },
+  { 型式: 'Q1', 原価: 1 }, { 型式: 'Q1', 原価: 2 }, { 型式: 'BAD', 原価: '' }], '2026-11-01', '見本');
+assert.deepEqual(cp.add, [{ 型式: 'AB-1', 原価: 4000, 適用開始日: '2026-11-01', 出典: '見本' }]);
+assert.equal(cp.same, 1); assert.deepEqual(cp.missing, ['XX', 'Q1']); assert.equal(cp.invalid.length, 1); assert.deepEqual(cp.conflict, []);
+const cp2 = P.costPlan([{ data: { 型式: 'Q1' } }], [], [{ 型式: 'Q1', 原価: 1 }, { 型式: 'q1', 原価: 2 }], '2026-11-01');
+assert.deepEqual(cp2.conflict, ['Q1']); assert.equal(cp2.add.length, 0);
+const cp3 = P.costPlan(pRows, cRows, [{ 型式: 'CD2', 原価: 2500 }], '2026-11-01');
+assert.equal(cp3.chg.length, 1); assert.equal(cp3.chg[0].next.原価, 2500);
+
 console.log('ok test_price_core');
