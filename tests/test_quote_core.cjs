@@ -294,4 +294,35 @@ assert.equal(c.fare.reason, '');
   assert.equal(r.lines[0].prev, undefined);
 }
 
+// --- 在庫価格にする（営業の指示）と、この型式のほかの決まり ---
+{
+  const d3 = Object.assign({}, data, {
+    classes: data.classes.concat([{ 対象の種類: '社名', 対象コード: 'G9', 対象名: '見本商事', 在庫口の掛率: 0.45, 適用開始日: '2026-01-01' }]),
+    exceptions: [
+      { 型式: 'UDL250', 対象の種類: '全部', 台数以上: 10, 金額: 60000, 適用開始日: '2026-01-01' },
+      { 型式: 'UDL250', 対象の種類: '得意先', 対象コード: 'C9', 対象名: 'べつの会社', 掛率: 0.5, 適用開始日: '2026-01-01', メモ: '見本のメモ' },
+      { 型式: 'UDL250', 対象の種類: '得意先', 対象コード: 'C8', 対象名: '終わった決まり', 掛率: 0.4, 適用開始日: '2026-01-01', 適用終了日: '2026-06-30' },
+    ],
+  });
+  let r = Q.compute(d3, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), env);
+  assert.equal(r.lines[0].unit, 75900);
+  assert.equal(r.lines[0].stockPrice, 59400); // 132000×0.45。見せるだけで、単価は変えない
+  assert.deepEqual(r.lines[0].others.map(o => [o.price, o.text]), [[60000, '全員・10台以上：決まった金額'], [66000, 'べつの会社：5掛']]); // 終わった決まりは出さない
+  assert.equal(r.lines[0].others[1].memo, '見本のメモ');
+  r = Q.compute(d3, doc({ lines: [{ code: 'UDL250', qty: 1, stock: true }] }), env);
+  assert.equal(r.lines[0].unit, 59400);
+  assert.equal(r.lines[0].stock, true);
+  assert.equal(r.lines[0].changed, false); // ルールどおりなので「変えた」にはしない
+  assert.equal(r.lines[0].stockPrice, undefined);
+  assert.equal(Q.toRecord(doc({}), r, '', '').data.snap.lines[0].stock, true);
+  // 10台以上なら例外が使われ、ほかの決まりからは外れる
+  r = Q.compute(d3, doc({ lines: [{ code: 'UDL250', qty: 10 }] }), env);
+  assert.equal(r.lines[0].unit, 60000);
+  assert.deepEqual(r.lines[0].others.map(o => o.price), [66000]);
+  // 決まりがなければ何も出ない
+  r = Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), env);
+  assert.equal(r.lines[0].stockPrice, undefined);
+  assert.deepEqual(r.lines[0].others, []);
+}
+
 console.log('ok test_quote_core');

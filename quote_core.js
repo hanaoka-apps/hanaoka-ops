@@ -128,6 +128,25 @@
     return s;
   }
 
+  // その型式の例外のうち、今回の計算で使わなかったものを、短いことばと金額にする（多くても6つ。同じ金額はまとめる）
+  function otherRules(exceptions, code, date, list, used, basePrice) {
+    var out = [], seen = {}, d = ymd(date), ru = P.roundUnit(date);
+    (exceptions || []).forEach(function (e) {
+      if (e.型式 !== code || e === used) return;
+      if (e.適用開始日 && ymd(e.適用開始日) > d) return;
+      if (e.適用終了日 && ymd(e.適用終了日) < d) return;
+      var price = num(e.金額) !== null ? num(e.金額) : (num(e.掛率) !== null ? P.round(list * num(e.掛率), ru) : null);
+      if (price === null || price === basePrice || seen[price]) return;
+      seen[price] = 1;
+      var who = e.対象の種類 === "全部" ? "全員" : e.対象の種類 === "ランク" ? "ランク " + (e.対象コード || e.対象名 || "") : e.対象の種類 === "未整理" ? "まだ整理していない行「" + (e.対象名 || "") + "」" : (e.対象名 || e.対象コード || "");
+      var cond = [];
+      if (e.在庫口のみ === true || e.在庫口のみ === "はい") cond.push("在庫口");
+      if (num(e.台数以上) !== null) cond.push(num(e.台数以上) + "台以上");
+      out.push({ price: price, text: who + (cond.length ? "・" + cond.join("・") : "") + "：" + (num(e.金額) !== null ? "決まった金額" : kake(num(e.掛率))), memo: e.メモ || "" });
+    });
+    return out.slice(0, 6);
+  }
+
   // 明細の1行を計算する。
   //   line: { code, name, qty, unitName, price(手で入れた単価), manual, ov:{ price, k, reason, memo }, lead, note, ship }
   //   ctx : { customer, priceDate, kind:"quote"|"order", items, index, withBody }
@@ -156,14 +175,22 @@
         out.noRule = true; out.unit = num(line.price);
         out.name = line.name || (it && it.name) || "";
       } else {
-        var r = P.unitPrice(data, { code: rc.code, qty: qty || 1, date: ctx.priceDate, customer: ctx.customer || {}, withBody: !!ctx.withBody });
+        var ask = { code: rc.code, qty: qty || 1, date: ctx.priceDate, customer: ctx.customer || {}, withBody: !!ctx.withBody };
+        // 「在庫価格にする」（営業の指示）を選んだ行は、在庫口あてと同じ決まりで計算する
+        var r = P.unitPrice(data, Object.assign({}, ask, { forceStock: !!line.stock }));
         var has = r.price !== null && r.price !== undefined;
+        var priceOf = function (x) { return x.price === null || x.price === undefined ? null : (ctx.kind === "order" && x.orderPrice !== undefined && x.orderPrice !== null ? x.orderPrice : x.price); };
         // 本部経由の取引先は、見積は販社への単価、受注伝票は本部からの受注単価
         var basePrice = !has ? null : (ctx.kind === "order" && r.orderPrice !== undefined && r.orderPrice !== null ? r.orderPrice : r.price);
         out.base = { price: basePrice, list: r.listPrice === undefined ? null : r.listPrice, k: r.k === undefined ? null : r.k,
           why: whyText(r), method: r.method || "", isStock: !!r.isStock, explain: r.explain || [], notes: r.notes || [], steps: r.steps || [],
           quotePrice: r.quotePrice === undefined ? null : r.quotePrice, orderPrice: r.orderPrice === undefined ? null : r.orderPrice,
           oldPrice: r.oldPrice === undefined ? null : r.oldPrice, listFrom: r.listFrom || "" };
+        out.stock = !!line.stock;
+        // 在庫価格にすると単価が変わる品は、その金額を参考に見せる（選ぶのは人）
+        if (has && !r.isStock) { var rs = priceOf(P.unitPrice(data, Object.assign({}, ask, { forceStock: true }))); if (rs !== null && rs !== basePrice) out.stockPrice = rs; }
+        // この型式の、ほかの例外の決まり（今回は使わなかったもの。別の取引先あて・台数の条件つき・まだ整理していない行など）
+        if (out.base.list !== null) out.others = otherRules(data.exceptions, rc.code, ctx.priceDate, out.base.list, r.exception, basePrice);
         out.name = line.name || r.name || (it && it.name) || "";
         (r.warnings || []).forEach(function (w) { out.warnings.push(w); });
         if (num(ov.price) !== null) out.unit = num(ov.price);
@@ -355,7 +382,7 @@
       lines: comp.lines.map(function (l) {
         return { code: l.code, listCode: l.listCode, name: l.name, qty: l.qty, unitName: l.unitName, unit: l.unit, amount: l.amount,
           list: l.base ? l.base.list : null, basePrice: l.base ? l.base.price : null, baseWhy: l.base ? l.base.why : "",
-          changed: l.changed, reason: l.reason, wrong: !!l.wrong, memo: l.memo, prev: l.prev ? l.prev.unit : null, manual: l.manual || !!l.noRule, cost: l.cost };
+          changed: l.changed, reason: l.reason, wrong: !!l.wrong, memo: l.memo, prev: l.prev ? l.prev.unit : null, stock: !!l.stock, manual: l.manual || !!l.noRule, cost: l.cost };
       })
     };
     var cust = doc.cust || {};
