@@ -194,4 +194,42 @@ assert.deepEqual(Q.search(list, '', 8), []);
   }
 }
 
+// --- 変えたときの2択：「アプリの計算が違う」は理由として残り、保存する形にも入る ---
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 1, ov: { price: 70000, reason: Q.WRONG, memo: '見本の決まり' } }] }), env);
+assert.equal(c.lines[0].wrong, true);
+assert.ok(!c.checks.some(x => x.level === 'warn'));
+assert.ok(c.checks.some(x => /アプリの計算が違う/.test(x.text)));
+assert.equal(Q.toRecord(doc({}), c, '見本 太郎', '').data.snap.lines[0].wrong, true);
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 1, ov: { price: 70000, reason: '数量' } }] }), env);
+assert.equal(c.lines[0].wrong, false);
+// 送料も同じ：変えたら理由を選ぶ
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0 }), env);
+assert.ok(c.checks.some(x => x.level === 'warn' && /送料を変えた理由/.test(x.text)));
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0, fareReason: Q.WRONG }), env);
+assert.equal(c.fare.wrong, true);
+assert.ok(!c.checks.some(x => x.level === 'warn'));
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareReason: Q.WRONG }), env); // 変えていなければ理由は残さない
+assert.equal(c.fare.reason, '');
+
+// --- 計算のしくみ：6つの段と、その組み合わせでの働き ---
+{
+  let f = Q.flow(data, null);
+  assert.deepEqual(f.map(s => s.key), ['price', 'rank', 'cls', 'exc', 'round', 'fare']);
+  assert.ok(f.every(s => s.state === '' && s.result.length === 0));
+  f = Q.flow(data, Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }] }), env));
+  const by = {}; f.forEach(s => by[s.key] = s);
+  assert.equal(by.price.state, 'used');
+  assert.ok(by.price.result.some(t => /UDL250 と読み替え/.test(t)));
+  assert.ok(by.price.result.some(t => /定価 132,000/.test(t)));
+  assert.equal(by.rank.state, 'used'); // ランクで決まった
+  assert.equal(by.cls.state, 'skip');
+  assert.equal(by.exc.state, 'skip');
+  assert.ok(by.round.result.some(t => /75,900/.test(t)));
+  assert.equal(by.fare.state, 'used');
+  // 定価リストにない型式
+  f = Q.flow(data, Q.compute(data, doc({ lines: [{ code: 'ZZZ', qty: 1 }] }), env));
+  assert.equal(f[0].state, 'skip');
+  assert.ok(/定価リストにない/.test(f[0].result[0]));
+}
+
 console.log('ok test_quote_core');

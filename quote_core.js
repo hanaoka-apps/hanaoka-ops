@@ -8,6 +8,8 @@
 
   // 単価を変えたときに選ぶ理由（あとで設定のリストから読めるようにする）
   var REASONS = ["1ランク上げ", "数量", "競合", "新規開拓", "継続の特価", "上長の了承", "その他"];
+  // 変えた理由の大もとの2択：今回だけ特別（上の理由から選ぶ）か、アプリの計算が違う（ルールを直す対象）か
+  var WRONG = "アプリの計算が違う", ONCE = "今回だけ特別";
   var STATUSES = ["下書き", "提出済み", "受注", "失注"];
   var TAX_RATE = 0.1;
 
@@ -133,7 +135,7 @@
         // 本部経由の取引先は、見積は販社への単価、受注伝票は本部からの受注単価
         var basePrice = !has ? null : (ctx.kind === "order" && r.orderPrice !== undefined && r.orderPrice !== null ? r.orderPrice : r.price);
         out.base = { price: basePrice, list: r.listPrice === undefined ? null : r.listPrice, k: r.k === undefined ? null : r.k,
-          why: whyText(r), method: r.method || "", isStock: !!r.isStock, explain: r.explain || [], notes: r.notes || [],
+          why: whyText(r), method: r.method || "", isStock: !!r.isStock, explain: r.explain || [], notes: r.notes || [], steps: r.steps || [],
           quotePrice: r.quotePrice === undefined ? null : r.quotePrice, orderPrice: r.orderPrice === undefined ? null : r.orderPrice,
           oldPrice: r.oldPrice === undefined ? null : r.oldPrice, listFrom: r.listFrom || "" };
         out.name = line.name || r.name || (it && it.name) || "";
@@ -143,7 +145,7 @@
         else out.unit = basePrice;
         if (basePrice === null) { out.noRule = true; if (out.unit === null) out.unit = num(line.price); }
         out.changed = basePrice !== null && out.unit !== null && out.unit !== basePrice;
-        if (out.changed) { out.reason = ov.reason || ""; out.memo = ov.memo || ""; }
+        if (out.changed) { out.reason = ov.reason || ""; out.memo = ov.memo || ""; out.wrong = out.reason === WRONG; }
         var c = P.costRow(data.costs || [], rc.code, ctx.priceDate);
         out.cost = c ? num(c.原価) : null;
       }
@@ -196,8 +198,11 @@
     if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
     var rule = f.amount === null || f.amount === undefined ? null : (logis && f.quoteAmount !== undefined ? (kind === "order" ? f.orderAmount : f.quoteAmount) : f.amount);
     var manualFare = num(doc.fareManual);
-    var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule,
+    var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule, reason: "",
       carrier: f.carrier || "", region: f.region || "", kg: f.kg || 0, how: f.method || "", explain: f.explain || [], warnings: f.warnings || [] };
+
+    if (fare.changed) fare.reason = doc.fareReason || "";
+    fare.wrong = fare.reason === WRONG;
 
     // 合計（消費税は切り捨て）
     var sub = 0; lines.forEach(function (l) { sub += l.amount || 0; });
@@ -227,6 +232,7 @@
       // 取引先がまだのときは、定価のある品の単価は出せなくて当たり前なので、言わない（取引先を選べば出る）
       if (l.unit === null && !(noCust && l.listCode)) add("warn", nm + " の単価が入っていません");
       if (l.changed && !l.reason) add("warn", nm + " の単価を変えた理由を選んでください");
+      else if (l.wrong) add("info", nm + " の単価は「アプリの計算が違う」として記録します（あとでルールを見直します）");
       else if (l.changed) add("info", nm + " の単価を基本から変えています（" + l.reason + "）");
       if (l.base && l.base.isStock) add("info", nm + " は在庫価格です。見積書には「御社在庫品」と書きます");
       // 「単価を入れてください」で足りる注意は重ねて出さない（確認することを増やさない）
@@ -251,7 +257,9 @@
     fare.warnings.forEach(function (w) { if (!/届け先の県/.test(w)) add("info", w); });
     // AI が読み取ったときの注意（quote_ai.js）。取引先を選んだら、取引先の注意は出さない
     ((doc.ai && doc.ai.notes) || []).forEach(function (n) { if (!(n.k === "cust" && cust && (cust.name || cust.code))) add("info", n.text); });
-    if (fare.changed) add("info", "送料を基本（" + (fare.rule === null ? "なし" : fmt(fare.rule)) + "）から変えています");
+    if (fare.changed && !fare.reason) add("warn", "送料を変えた理由を選んでください（今回だけ特別／アプリの計算が違う）");
+    else if (fare.wrong) add("info", "送料は「アプリの計算が違う」として記録します（あとでルールを見直します）");
+    else if (fare.changed) add("info", "送料を基本（" + (fare.rule === null ? "なし" : fmt(fare.rule)) + "）から変えています");
     return out;
   }
   function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
@@ -288,12 +296,12 @@
   function toRecord(doc, comp, who, now) {
     var snap = {
       priceDate: comp.priceDate, totals: comp.totals,
-      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg },
+      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, reason: comp.fare.reason, wrong: comp.fare.wrong, carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg },
       margin: comp.margin ? comp.margin.rate : null,
       lines: comp.lines.map(function (l) {
         return { code: l.code, listCode: l.listCode, name: l.name, qty: l.qty, unitName: l.unitName, unit: l.unit, amount: l.amount,
           list: l.base ? l.base.list : null, basePrice: l.base ? l.base.price : null, baseWhy: l.base ? l.base.why : "",
-          changed: l.changed, reason: l.reason, memo: l.memo, manual: l.manual || !!l.noRule, cost: l.cost };
+          changed: l.changed, reason: l.reason, wrong: !!l.wrong, memo: l.memo, manual: l.manual || !!l.noRule, cost: l.cost };
       })
     };
     var cust = doc.cust || {};
@@ -320,7 +328,52 @@
     return d;
   }
 
-  var API = { REASONS: REASONS, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  // ---------- 計算のしくみ（画面で、今のルールがどう働くかを見せる） ----------
+  // 6つの段を、上から順に返す。comp（取引先と商品を1つ入れて計算した結果）を渡すと、
+  // その組み合わせで各段がどう働いたか（state・result）も入る。
+  //   state："used"＝単価を決めた段／"over"＝当てはまったが、あとの段が優先された／"skip"＝当てはまらない／""＝試していない
+  function flow(data, comp) {
+    var prices = (data && data.prices) || [], pricedSet = {}, weightSet = {};
+    prices.forEach(function (p) { if (num(p.定価) !== null) pricedSet[key(p.型式)] = 1; if (num(p.運賃の重量kg) !== null) weightSet[key(p.型式)] = 1; });
+    var nPriced = Object.keys(pricedSet).length, nWeight = Object.keys(pricedSet).filter(function (k) { return weightSet[k]; }).length;
+    var steps = [
+      { key: "price", title: "定価を選ぶ", rule: "定価リストから、型式と日付で選びます。日付は、納期（出荷の予定日）があればその日、なければ見積日です。品目コードが定価リストにないときは、品目マスタの「価格表記載名」で読み替えます。", stat: "定価のある型式 " + nPriced + " 件" },
+      { key: "rank", title: "ランクの掛け率", rule: "得意先マスタ（SMILE）のランクで掛け率が決まります。ここが基本です。", stat: "" },
+      { key: "cls", title: "この取引先の決まり", rule: "取引先ごと・社名ごとに、ランクと違う掛け率や、計算の方式（本部経由・運賃込み・在庫口）を決めています。ランクより優先します。", stat: ((data && data.classes) || []).length + " 件" },
+      { key: "exc", title: "例外（特価）", rule: "型式ごとの特別な掛け率・金額です。ランクとこの取引先の決まりより優先します。例外どうしでは、得意先 → 社名 → ランク → 全員 の順に細かいほうを使います。", stat: ((data && data.exceptions) || []).length + " 件" },
+      { key: "round", title: "単価にする", rule: "定価 × 掛け率 を 100円単位で四捨五入します（2026-11-01 より前の日付は 10円単位）。本部経由の取引先は、見積は ÷0.93 の切り上げ、受注は ×0.93 です。", stat: "" },
+      { key: "fare", title: "送料", rule: "型式ごとの重さ × 台数 を足して、届け先の県の地域と運賃表から決めます。400kg を超えたら分けて計算します。部品だけで 9個以内ならミニ便、個人宅は 2倍、沖縄は都度見積です。", stat: "重さが入っている型式 " + nWeight + " ／ " + nPriced + " 件" }
+    ];
+    steps.forEach(function (s) { s.state = ""; s.result = []; });
+    var l = comp && comp.lines && comp.lines[0];
+    if (!l) return steps;
+    var by = {}; steps.forEach(function (s) { by[s.key] = s; s.state = "skip"; });
+    var where = { "定価": "price", "ランク": "rank", "得意先の区分": "cls", "在庫価格": "cls", "本部経由": "cls", "例外": "exc" };
+    var b = l.base, st = (b && b.steps) || [], last = "";
+    if (l.listCode && l.via) by.price.result.push(l.code + " は、品目マスタの価格表記載名から " + l.listCode + " と読み替えました");
+    st.forEach(function (x) {
+      var s = by[where[x.label]]; if (!s) return;
+      s.state = s.key === "price" ? "used" : "over";
+      if (s.key !== "price") last = s.key;
+      s.result.push(x.label === "定価" ? "定価 " + fmt(x.amount) + "（" + x.detail + "）"
+        : (x.detail || x.label) + (x.k !== null && x.k !== undefined ? " → " + kake(x.k) : "") + (x.amount !== null && x.amount !== undefined ? "（定価に掛けると " + fmt(x.amount) + "）" : ""));
+    });
+    if (last && b && b.price !== null) by[last].state = "used";
+    if (!st.length) by.price.result.push(l.variantOf ? l.variantOf + " の枝番つきです。元の型式とは値段が違うので、自動では決めません（単価を入れます）"
+      : l.noRule || !l.listCode ? "定価リストにない型式です（単価を入れます）" : "");
+    if (b && b.price !== null) {
+      by.round.state = "used";
+      (b.explain || []).forEach(function (e) { if (/^単価 ＝|^本部経由|^本部からの|^販社と直接|^運賃込み/.test(e)) by.round.result.push(e); });
+      by.round.result.push("この組み合わせの単価：" + fmt(b.price));
+    } else if (st.length) by.round.result.push("掛け率が決まらないので、単価は出ません（単価を入れます）");
+    var f = comp.fare || {};
+    if (f.rule !== null && f.rule !== undefined) { by.fare.state = "used"; (f.explain || []).forEach(function (e) { by.fare.result.push(e); }); by.fare.result.push("この組み合わせの送料：" + fmt(f.rule)); }
+    else (f.warnings || []).concat(f.explain || []).forEach(function (e) { by.fare.result.push(e); });
+    steps.forEach(function (s) { s.result = s.result.filter(Boolean); });
+    return steps;
+  }
+
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

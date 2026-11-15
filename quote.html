@@ -8,7 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261115d"></script>
+<script src="quote_core.js?v=20261115e"></script>
 <script src="quote_store.js?v=20261115a"></script>
 <script src="quote_ai.js?v=20261115b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
@@ -166,6 +166,23 @@
   #modal label{font-size:12px;color:var(--sub);display:block;margin:10px 0 3px}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--txt);color:var(--surface);padding:9px 18px;border-radius:8px;font-size:13px;display:none;z-index:60}
 
+  /* 計算のしくみ */
+  .rules{max-width:860px;margin:0 auto;padding:4px 20px 60px}
+  .tryrow{display:flex;gap:8px;flex-wrap:wrap}
+  .tryrow>*{flex:1 1 130px;min-width:0}
+  .tryrow>.sug{flex:2 1 200px}
+  .tryrow>#rQty{flex:0 0 70px}
+  .step{display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px;margin-top:10px;background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 18px;border-left:4px solid transparent}
+  .step.used{border-left-color:var(--navy)}
+  .step.skip>.n,.step.skip .st,.step.skip .sr{opacity:.55}
+  .step .st{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .step .sr{font-size:13px;color:var(--sub);margin-top:2px}
+  .step .res{margin-top:6px;padding:6px 10px;background:var(--navy-soft);border-radius:8px;font-size:13px}
+  .step.over .res,.step.skip .res{background:var(--bg);color:var(--sub)}
+  .step details{margin-top:8px}
+  .rlist{margin-top:6px}
+  .rlist input{max-width:320px;margin-bottom:4px}
+  .rlist .it{font-size:12px;padding:6px 0;border-top:1px solid var(--line)}
   @media (max-width:900px){ .edit{grid-template-columns:1fr} .side{position:static} }
   @media print{
     @page{size:A4;margin:8mm}
@@ -196,6 +213,7 @@
     <div class="tabs">
       <button class="tab on" data-view="edit">作る</button>
       <button class="tab" data-view="list">一覧</button>
+      <button class="tab" data-view="rules">計算のしくみ</button>
     </div>
     <span class="sp"></span>
     <span class="badge" id="demoBadge" hidden>見本のデータ</span>
@@ -221,6 +239,21 @@
       <select id="lstatus"><option value="">状態：すべて</option></select>
     </div>
     <div class="card" style="padding:6px 12px"><table class="tbl"><thead><tr><th>番号</th><th>日付</th><th>取引先</th><th>件名</th><th class="num">合計（税込）</th><th>状態</th><th>担当</th></tr></thead><tbody id="lbody"></tbody></table><div class="empty" id="lempty" hidden></div></div>
+  </div>
+
+
+  <div id="vRules" class="rules" hidden>
+    <div class="card">
+      <div class="lab">単価と送料は、下の ①〜⑥ の順に決まります。取引先と型式を入れると、その組み合わせでどの段が働いたかが分かります。</div>
+      <div class="tryrow">
+        <div class="sug"><input type="text" id="rCust" placeholder="取引先"></div>
+        <div class="sug"><input type="text" id="rCode" placeholder="型式"></div>
+        <input type="number" id="rQty" class="num" min="1" title="数量">
+        <select id="rPref" title="届け先の県"></select>
+        <input type="date" id="rDate" title="この日の定価で計算します">
+      </div>
+    </div>
+    <div id="rFlow"></div>
   </div>
 </div>
 
@@ -320,10 +353,70 @@ function bindShell() {
 }
 function view(v) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.view === v));
-  $('vEdit').hidden = v !== 'edit'; $('vList').hidden = v !== 'list';
-  if (v === 'list') refreshList(); else fitSheet();
+  $('vEdit').hidden = v !== 'edit'; $('vList').hidden = v !== 'list'; $('vRules').hidden = v !== 'rules';
+  if (v === 'list') refreshList(); else if (v === 'rules') openRules(); else fitSheet();
 }
 function leaveOk() { return !dirty || confirm('保存していない内容があります。このまま進めますか？'); }
+
+// ---------- 計算のしくみ ----------
+// 今のルールがどう働くかを、6つの段で見せる。文は quote_core.js の flow と price_core.js の文（決まりを文にしたもの）をそのまま使う
+let RT = null, rOpen = {}, rBound = false;
+function openRules() {
+  if (!RT) {
+    // 最初に開いたときは、今作っている見積の内容を入れておく
+    const l = Q.usedLines(DOC)[0] || {};
+    RT = { cust: DOC.cust && !DOC.cust.isNew ? DOC.cust : null, code: l.code || '', qty: l.qty || 1, pref: DOC.dest.pref || '', date: Q.priceDateOf(DOC) || today() };
+  }
+  if (!rBound) {
+    rBound = true;
+    $('rPref').innerHTML = '<option value="">届け先の県</option>' + P.PREFS.map(p => `<option>${p}</option>`).join('');
+    suggest($('rCust'), q => Q.search(custRows, q, 8).map(r => ({ label: r.c.fullName || r.c.name, sub: (Q.rankLabel(r.c.kakeName) || r.c.kakeName) + '　' + r.c.code, pick: () => { RT.cust = r.c; $('rCust').value = r.c.fullName || r.c.name; renderRules(); } })));
+    suggest($('rCode'), q => Q.search(itemRows, q, 8).map(r => ({ label: r.code, sub: (r.name || '') + (r.priced ? '' : '　定価なし'), pick: () => { RT.code = r.code; $('rCode').value = r.code; renderRules(); } })));
+    $('rCust').addEventListener('input', e => { if (!e.target.value.trim() && RT.cust) { RT.cust = null; renderRules(); } });
+    $('rCode').addEventListener('input', e => { RT.code = e.target.value.trim(); renderRules(); });
+    $('rQty').oninput = e => { RT.qty = Number(e.target.value) || 1; renderRules(); };
+    $('rPref').onchange = e => { RT.pref = e.target.value; renderRules(); };
+    $('rDate').onchange = e => { RT.date = e.target.value || today(); renderRules(); };
+    $('rFlow').addEventListener('toggle', e => { const k = e.target.dataset && e.target.dataset.k; if (k) { rOpen[k] = e.target.open; if (e.target.open) fillRuleList(k); } }, true);
+    $('rFlow').addEventListener('input', e => { const k = e.target.dataset.q; if (k) fillRuleList(k, e.target.value); });
+  }
+  $('rCust').value = RT.cust ? (RT.cust.fullName || RT.cust.name) : ''; $('rCode').value = RT.code; $('rQty').value = RT.qty; $('rPref').value = RT.pref; $('rDate').value = RT.date;
+  renderRules();
+}
+function rulesComp() {
+  if (!RT.code) return null;
+  return Q.compute(DATA, Object.assign(Q.blank('quote', RT.date, ''), { cust: RT.cust, dest: { name: '', pref: RT.pref, personal: false }, lines: [{ code: RT.code, qty: RT.qty || 1 }] }), ENV);
+}
+function renderRules() {
+  const comp = rulesComp(), steps = Q.flow(DATA, comp);
+  const said = { used: s => /rank|cls|exc/.test(s.key) ? 'ここで掛け率が決まった' : '使った', over: () => 'あとの段が優先', skip: () => '当てはまらない' };
+  const more = { price: '定価の移り変わりを見る', cls: '今入っている決まりを見る', exc: '今入っている決まりを見る' };
+  $('rFlow').innerHTML = steps.map((s, i) => `<div class="step ${s.state}">
+    <span class="n">${i + 1}</span>
+    <div>
+      <div class="st"><b>${esc(s.title)}</b>${s.state ? `<span class="${s.state === 'used' ? 'pill' : s.state === 'over' ? 'pill warn' : 'hint'}">${said[s.state](s)}</span>` : ''}<span class="hint">${esc(s.stat)}</span></div>
+      <div class="sr">${esc(s.rule)}</div>
+      ${s.result.map(r => `<div class="res">${esc(r)}</div>`).join('')}
+      ${more[s.key] && (s.key !== 'price' || (comp && comp.lines[0].listCode)) ? `<details data-k="${s.key}"${rOpen[s.key] ? ' open' : ''}><summary><span class="link">${more[s.key]}</span></summary><div class="rlist" id="rl_${s.key}"></div></details>` : ''}
+    </div></div>`).join('');
+  Object.keys(rOpen).forEach(k => { if (rOpen[k]) fillRuleList(k); });
+}
+// 段の中の「今入っている決まり」。件数が多いので、探す欄で絞る（例外は、選んだ型式のものを先に出す）
+function fillRuleList(k, q) {
+  const box = $('rl_' + k); if (!box) return;
+  if (k === 'price') {
+    const code = rulesComp().lines[0].listCode;
+    box.innerHTML = P.priceHistory(DATA.prices, code).filter(p => P.num(p.定価) !== null).map(p => `<div class="it">${esc(P.ymd(p.適用開始日))} から　${yen(P.num(p.定価))}</div>`).join('');
+    return;
+  }
+  const rows = k === 'cls' ? DATA.classes : DATA.exceptions, say = k === 'cls' ? P.clsSentence : P.excSentence;
+  const comp = rulesComp(), def = k === 'exc' && comp && comp.lines[0].listCode ? comp.lines[0].listCode : '';
+  if (q === undefined) { const old = box.querySelector('input'); q = old ? old.value : def; }
+  const nq = Q.norm(q), hit = rows.map(r => ({ text: say(r), memo: [r.メモ, r.出典].filter(Boolean).join('／') })).filter(x => !nq || Q.norm(x.text + ' ' + x.memo).includes(nq));
+  if (!box.querySelector('input')) box.innerHTML = `<input type="text" data-q="${k}" value="${esc(q)}" placeholder="取引先・型式で絞る"><div></div>`;
+  box.lastElementChild.innerHTML = (hit.slice(0, 30).map(x => `<div class="it">${esc(x.text)}${x.memo ? `<div class="hint">メモ：${esc(x.memo)}</div>` : ''}</div>`).join('') || '<div class="it hint">当てはまる決まりはありません</div>')
+    + (hit.length > 30 ? `<div class="it hint">ほか ${hit.length - 30} 件。上の欄で絞ってください</div>` : '');
+}
 
 // ---------- 書類を開く ----------
 function newDoc() {
@@ -496,11 +589,14 @@ const lineEl = i => $('lines').querySelector(`.line[data-i="${i}"]`);
 function focusLine(i) { const el = lineEl(i); if (el) el.querySelector('[data-f=code]').focus(); }
 function detailHtml(l) {
   const ov = l.ov || {};
+  // まず2択：今回だけ特別（理由を選ぶ）／アプリの計算が違う（ルールを直す人に届く）
+  const kind = ov.reason === Q.WRONG ? 'wrong' : (ov.once || Q.REASONS.includes(ov.reason)) ? 'once' : '';
   return `<div class="detail">
     <div><label>今回の単価</label><input type="number" class="num" data-o="price" value="${esc(ov.price ?? '')}" placeholder="金額で決める"></div>
     <div><label>または掛け率（例 0.55）</label><input type="number" class="num" data-o="k" value="${esc(ov.k ?? '')}" step="0.005" placeholder="掛け率で決める"></div>
-    <div class="wide"><label>変えた理由</label><div class="chips">${Q.REASONS.map(r => `<button class="chip${ov.reason === r ? ' on' : ''}" data-reason="${esc(r)}">${esc(r)}</button>`).join('')}</div></div>
-    <div class="wide"><label>ひとこと（社内だけ）</label><input type="text" data-o="memo" value="${esc(ov.memo ?? '')}"></div>
+    <div class="wide"><label>基本の単価から変えるのは</label><div class="chips"><button class="chip${kind === 'once' ? ' on' : ''}" data-kind="once">${Q.ONCE}</button><button class="chip${kind === 'wrong' ? ' on' : ''}" data-kind="wrong">${Q.WRONG}</button></div></div>
+    ${kind === 'once' ? `<div class="wide"><label>理由</label><div class="chips">${Q.REASONS.map(r => `<button class="chip${ov.reason === r ? ' on' : ''}" data-reason="${esc(r)}">${esc(r)}</button>`).join('')}</div></div>` : ''}
+    <div class="wide"><label>${kind === 'wrong' ? '正しくはどう決まりますか（わかる範囲で。ルールを直す人が読みます）' : 'ひとこと（社内だけ）'}</label><input type="text" data-o="memo" value="${esc(ov.memo ?? '')}"></div>
     <div><label>見積書に載せる補足</label><input type="text" data-f="note" value="${esc(l.note ?? '')}" placeholder="例：特価"></div>
     <div><label>納期（見積書に載ります）</label><input type="text" data-f="lead" value="${esc(l.lead ?? '')}" placeholder="例：受注後約2〜3週間後出荷"></div>
     <div class="wide"><button class="link" data-a="reset">基本の単価に戻す</button></div>
@@ -525,6 +621,7 @@ document.addEventListener('click', e => {
   if (a === 'del') { DOC.lines.splice(i, 1); if (!DOC.lines.length) DOC.lines.push({ code: '', qty: 1 }); openLine = -1; }
   else if (a === 'open') openLine = openLine === i ? -1 : i;
   else if (a === 'reset') { l.ov = null; }
+  else if (e.target.dataset.kind) { l.ov = l.ov || {}; const k = e.target.dataset.kind, was = l.ov.reason === Q.WRONG ? 'wrong' : l.ov.once ? 'once' : ''; l.ov.once = k === 'once' && was !== 'once'; l.ov.reason = k === 'wrong' && was !== 'wrong' ? Q.WRONG : (k === 'once' && Q.REASONS.includes(l.ov.reason) ? l.ov.reason : ''); }
   else if (e.target.dataset.reason) { l.ov = l.ov || {}; l.ov.reason = l.ov.reason === e.target.dataset.reason ? '' : e.target.dataset.reason; }
   else return;
   touch(); renderLines(); refresh();
@@ -570,14 +667,19 @@ function refresh() {
   // 送料
   const f = COMP.fare, how = [f.carrier, f.region, f.kg ? f.kg + 'kg' : ''].filter(Boolean).join('・');
   $('fare').innerHTML = fareOpen
-    ? `送料 <input type="number" class="num" id="fareIn" value="${esc(DOC.fareManual ?? (f.rule ?? ''))}"> <span class="hint">基本 ${f.rule === null ? 'なし' : yen(f.rule)}${how ? '（' + esc(how) + '）' : ''}</span> <button class="link" id="fareReset">基本に戻す</button>`
-    : `送料 <b>${f.amount === null ? '—' : yen(f.amount)}</b> <span class="hint">${f.changed ? `基本 ${f.rule === null ? 'なし' : yen(f.rule)} から変更` : esc(how)}</span> <button class="link" id="fareEdit">変える</button>`;
+    ? `送料 <input type="number" class="num" id="fareIn" value="${esc(DOC.fareManual ?? (f.rule ?? ''))}"> <span class="hint">基本 ${f.rule === null ? 'なし' : yen(f.rule)}${how ? '（' + esc(how) + '）' : ''}</span> <button class="link" id="fareReset">基本に戻す</button>${fareWhy()}`
+    : `送料 <b>${f.amount === null ? '—' : yen(f.amount)}</b> <span class="hint">${f.changed ? `基本 ${f.rule === null ? 'なし' : yen(f.rule)} から変更` : esc(how)}</span> <button class="link" id="fareEdit">変える</button>${f.changed ? fareWhy() : ''}`;
   if (fareOpen) {
     $('fareIn').oninput = e => { DOC.fareManual = e.target.value === '' ? null : Number(e.target.value); touch(); refreshSide(); };
-    $('fareReset').onclick = () => { DOC.fareManual = null; fareOpen = false; touch(); refresh(); };
+    $('fareReset').onclick = () => { DOC.fareManual = null; DOC.fareReason = ''; fareOpen = false; touch(); refresh(); };
   } else $('fareEdit').onclick = () => { fareOpen = true; refresh(); $('fareIn').focus(); };
+  $('fare').querySelectorAll('[data-fk]').forEach(b => b.onclick = () => { DOC.fareReason = DOC.fareReason === b.dataset.fk ? '' : b.dataset.fk; touch(); refresh(); if (fareOpen) $('fareIn').focus(); });
   $('condCur').textContent = [DOC.title, '期限 ' + DOC.expiry, DOC.notes ? '備考あり' : '備考なし'].filter(Boolean).join('・');
   refreshSide();
+}
+// 送料を変えたときの2択（単価と同じ）
+function fareWhy() {
+  return `<span class="chips">${[Q.ONCE, Q.WRONG].map(r => `<button class="chip${DOC.fareReason === r ? ' on' : ''}" data-fk="${r}">${r}</button>`).join('')}</span>`;
 }
 function whyHtml(c, i) {
   const open = `<button class="link" data-a="open">${openLine === i ? '閉じる' : (c.base && c.base.price !== null ? '変える' : '補足・納期')}</button>`;
