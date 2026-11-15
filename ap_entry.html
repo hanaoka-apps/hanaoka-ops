@@ -239,8 +239,9 @@
 </div>
 
 <div class="modal-overlay" id="delete-modal">
-  <div class="modal"><h3>⚠ 削除の確認</h3><p id="delete-msg"></p>
-    <div class="modal-actions"><button class="btn-secondary" onclick="closeDelete()">キャンセル</button><button class="btn-danger" onclick="confirmDelete()">削除する</button></div>
+  <div class="modal"><h3>対象外にする</h3><p id="delete-msg"></p>
+    <input id="delete-why" placeholder="理由（重複・誤り・今月払わない など）" style="width:100%;margin-top:10px;padding:8px;border:1px solid var(--border,#ccc);border-radius:6px;font-size:14px">
+    <div class="modal-actions"><button class="btn-secondary" onclick="closeDelete()">キャンセル</button><button class="btn-danger" onclick="confirmDelete()">対象外にする</button></div>
   </div>
 </div>
 <div id="snackbar"></div>
@@ -547,7 +548,7 @@ async function loadList(){
     while(n2){ const d=await graphRequest('GET',n2); ls=ls.concat(d.value||[]); n2=d['@odata.nextLink']?d['@odata.nextLink'].replace(GRAPH_BASE,''):null; }
     lineCount={}; linesByInv={};
     ls.forEach(it=>{ const k=String(lv(it.fields,'請求書ID')||''); if(!k) return; lineCount[k]=(lineCount[k]||0)+1; (linesByInv[k]=linesByInv[k]||[]).push(it.id); });
-    allEntries=hs.filter(it=>hv(it.fields,'対象年月')===month);
+    allEntries=hs.filter(it=>hv(it.fields,'対象年月')===month&&hv(it.fields,'アーカイブフラグ')!==true);   // 対象外にしたものは出さない（経費の画面と同じ）
     renderList(); msg.textContent=`${allEntries.length}請求書`;
   }catch(e){ msg.textContent='エラー'; showSnack('取得エラー: '+e.message,true); }
 }
@@ -567,20 +568,24 @@ function renderList(){
       <td style="font-size:11px;color:var(--muted)">${it.id}</td>
       <td>${docCell}</td>
       <td><span class="s-badge s-${st.replace(/[（）()]/g,'')}">${st}</span></td>
-      <td><button class="icon-del" onclick="openDelete('${it.id}','${(hv(f,'支払先名')||'').replace(/'/g,'')}')">🗑</button></td>
+      <td><button class="icon-del" title="対象外にする" onclick="openDelete('${it.id}','${(hv(f,'支払先名')||'').replace(/'/g,'')}')">🗑</button></td>
     </tr>`;
   }).join('');
 }
-function openDelete(id,name){ pendingDelete=id; const nl=lineCount[String(id)]||0; document.getElementById('delete-msg').textContent=`「${name}」（${nl}明細）を削除しますか？ヘッダと明細をまとめて削除します。`; document.getElementById('delete-modal').classList.add('show'); }
+function openDelete(id,name){ pendingDelete=id; const nl=lineCount[String(id)]||0; document.getElementById('delete-msg').textContent=`「${name}」（${nl}明細）を対象外にします。一覧と支払から外れますが、記録は残ります。`; document.getElementById('delete-why').value=''; document.getElementById('delete-modal').classList.add('show'); }
 function closeDelete(){ pendingDelete=null; document.getElementById('delete-modal').classList.remove('show'); }
 async function confirmDelete(){
   const id=pendingDelete;
   try{
-    const kids=linesByInv[String(id)]||[];
-    for(const k of kids){ await graphRequest('DELETE',`/sites/${AP_SITE_ID}/lists/${listIdL}/items/${k}`); }
-    await graphRequest('DELETE',`/sites/${AP_SITE_ID}/lists/${listIdH}/items/${id}`);
-    showSnack(`削除しました（明細${kids.length}件＋ヘッダ）`); closeDelete(); await loadList();
-  }catch(e){ showSnack('削除エラー: '+e.message,true); }
+    // 消さずに「対象外」の印を付ける（経費の画面の「対象外にする」と同じ列）。明細はそのまま残す
+    const why=document.getElementById('delete-why').value.trim();
+    if(!why){ showSnack('理由を入れてください',true); return; }
+    const kf=fmapH['アーカイブフラグ'], kr=fmapH['アーカイブ理由'];
+    if(!kf) throw new Error('列「アーカイブフラグ」が見つかりません');
+    const body={[kf]:true}; if(kr) body[kr]=why;
+    await graphRequest('PATCH',`/sites/${AP_SITE_ID}/lists/${listIdH}/items/${id}/fields`,body);
+    showSnack('対象外にしました'); closeDelete(); await loadList();
+  }catch(e){ showSnack('エラー: '+e.message,true); }
 }
 
 function showSnack(msg,err=false){ const el=document.getElementById('snackbar'); el.textContent=msg; el.style.background=err?'#c0392b':'#323232'; el.style.display='block'; setTimeout(()=>el.style.display='none',4000); }
