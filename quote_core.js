@@ -7,7 +7,7 @@
   var num = P.num, ymd = P.ymd, key = P.asmKey;
 
   // 単価を変えたときに選ぶ理由（あとで設定のリストから読めるようにする）
-  var REASONS = ["1ランク上げ", "数量", "競合", "新規開拓", "継続の特価", "上長の了承", "その他"];
+  var REASONS = ["1ランク上げ", "数量", "競合", "新規開拓", "継続の特価", "価格改定前の見積", "上長の了承", "その他"];
   // 変えた理由の大もとの2択：今回だけ特別（上の理由から選ぶ）か、アプリの計算が違う（ルールを直す対象）か
   var WRONG = "アプリの計算が違う", ONCE = "今回だけ特別";
   var STATUSES = ["下書き", "提出済み", "受注", "失注"];
@@ -155,8 +155,9 @@
   }
 
   // ---------- 書類ぜんたい ----------
-  // 定価を選ぶ日：納期（出荷の予定日）があればその日、なければ見積日
-  function priceDateOf(doc) { return ymd(doc.shipDate) || ymd(doc.date); }
+  // 定価を選ぶ日：見積日（受注伝票なら受注日）。出荷の予定日では選ばない。
+  // 2026-06〜11 の受注では、10月に受けて11月以降に出荷した分の9割近くが、受注日の定価（改定前）だった
+  function priceDateOf(doc) { return ymd(doc.date); }
   function usedLines(doc) {
     return (doc.lines || []).filter(function (l) { return l && (l.code || l.name || num(l.price) !== null); });
   }
@@ -238,20 +239,22 @@
       // 「単価を入れてください」で足りる注意は重ねて出さない（確認することを増やさない）
       l.warnings.forEach(function (w) { if (!/定価リストにない型式|ランクが「|掛率が決まりません/.test(w)) add("info", w); });
     });
-    // 価格の改定：納期で定価を選ぶので、またぐときと、近いときに知らせる
-    var d0 = ymd(doc.date), d1 = priceDateOf(doc), crossed = [], soon = {};
+    // 価格の改定：定価は見積日で選ぶ。改定が近いとき・改定してすぐのときに知らせる
+    var d1 = priceDateOf(doc), soon = {}, just = {};
     lines.forEach(function (l) {
       if (!l.listCode) return;
       var hist = P.priceHistory(data.prices, l.listCode).filter(function (p) { return num(p.定価) !== null; });
-      hist.forEach(function (p) {
+      hist.forEach(function (p, i) {
         var s = ymd(p.適用開始日);
-        if (s > d0 && s <= d1) crossed.push({ code: l.code, from: s });
-        else if (s > d1 && daysBetween(d1, s) <= 120) soon[s] = 1;
+        if (s > d1 && daysBetween(d1, s) <= 120) soon[s] = 1;
+        else if (i > 0 && s <= d1 && daysBetween(s, d1) <= 60) just[s] = 1;
       });
     });
-    if (crossed.length) add("info", "納期が価格の改定日（" + crossed[0].from + "）より後なので、新しい定価で出しています");
     Object.keys(soon).sort().slice(0, 1).forEach(function (s) {
-      add("info", s + " に定価が変わります。出荷がその日より後なら、納期を入れてください");
+      add("info", s + " に定価が変わります。この見積は、見積日の定価（今の定価）で出しています");
+    });
+    Object.keys(just).sort().slice(-1).forEach(function (s) {
+      add("info", s + " に定価が変わりました。改定前に出した見積の分は、単価を変えて、理由に「価格改定前の見積」を選んでください");
     });
     if (!(doc.dest && doc.dest.pref) && lines.some(function (l) { return l.listCode; })) add("info", "届け先の県を入れると送料が出ます");
     fare.warnings.forEach(function (w) { if (!/届け先の県/.test(w)) add("info", w); });
@@ -358,7 +361,7 @@
     prices.forEach(function (p) { if (num(p.定価) !== null) pricedSet[key(p.型式)] = 1; if (num(p.運賃の重量kg) !== null) weightSet[key(p.型式)] = 1; });
     var nPriced = Object.keys(pricedSet).length, nWeight = Object.keys(pricedSet).filter(function (k) { return weightSet[k]; }).length;
     var steps = [
-      { key: "price", title: "定価を選ぶ", rule: "定価リストから、型式と日付で選びます。日付は、納期（出荷の予定日）があればその日、なければ見積日です。品目コードが定価リストにないときは、品目マスタの「価格表記載名」で読み替えます。", stat: "定価のある型式 " + nPriced + " 件" },
+      { key: "price", title: "定価を選ぶ", rule: "定価リストから、型式と日付で選びます。日付は見積日です（出荷の予定日では選びません）。品目コードが定価リストにないときは、品目マスタの「価格表記載名」で読み替えます。", stat: "定価のある型式 " + nPriced + " 件" },
       { key: "rank", title: "ランクの掛け率", rule: "得意先マスタ（SMILE）のランクで掛け率が決まります。ここが基本です。", stat: "" },
       { key: "cls", title: "この取引先の決まり", rule: "取引先ごと・社名ごとに、ランクと違う掛け率や、計算の方式（本部経由・運賃込み・在庫口）を決めています。ランクより優先します。", stat: ((data && data.classes) || []).length + " 件" },
       { key: "exc", title: "例外（特価）", rule: "型式ごとの特別な掛け率・金額です。ランクとこの取引先の決まりより優先します。例外どうしでは、得意先 → 社名 → ランク → 全員 の順に細かいほうを使います。", stat: ((data && data.exceptions) || []).length + " 件" },
