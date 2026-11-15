@@ -52,6 +52,7 @@
         { f: 'payroll_detail.html',   l: '支給控除一覧表' },
         { f: 'payroll_leave.html',    l: '年次有給休暇管理' },
         { f: 'payroll_people.html',   l: '人事情報' },
+        { f: 'org_chart.html',        l: '組織計画' },
         { f: 'payroll_overtime.html', l: '時間外確認' }
       ],
       also: ['payroll_upload.html'],
@@ -140,6 +141,7 @@
     'payroll_detail.html':   '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
     'payroll_leave.html':    '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m9 15 2 2 4-4"/>',
     'payroll_people.html':   '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.4 0 4 1.8 4 4.5"/>',
+    'org_chart.html':        '<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>',
     'payroll_overtime.html': '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M10 2h4"/>'
   };
   // グループごとの名前とマーク（サイドバーの上）

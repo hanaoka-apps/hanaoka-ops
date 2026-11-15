@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>組織計画</title>
+<!--
+  組織計画（役員限定）：年齢入りの組織図を「直せる」ようにしたもの。
+  ------------------------------------------------------------
+  できること
+    ・人の修正（氏名・所属・生年・入社年・退職年・役職の履歴・備考）。年齢は「年 − 生年」で自動計算
+    ・案を複数持てる（現状／理想案…）。「新しい案」は今の案をコピーして作る
+    ・増員枠（採用枠）：所属・役職・人数・開始年・年齢の幅・求める人物
+    ・役職ごとの役割（求める人物・職務）。人や役職をクリックすると右に出る。右でそのまま直せる
+    ・人ごとの役割メモ／追加の役割（例：松島さん＝国内営業部長の職務）
+    ・55歳（賃金制度：昇給表がゾーン3に切替）・60歳（定年）の強調
+  保存先（ブラウザではなく SharePoint）
+    executive-workspace ／ 給与データ／組織計画／org_plan.json（給与の人事情報と同じ場所・同じ権限）
+    保存のたびに、読み込み時と中身が変わっていないかを確かめ、初回は backup/ にも控えを置く。
+    SharePoint 側にもバージョン履歴が残る。手元用に JSON の書き出し／読み込みもある。
+  ★個人情報（氏名・年齢）はこのファイルに書かない。データは SharePoint の org_plan.json だけにある。
+  ★?demo=1 を付けると、架空のデータで試せる（サインイン不要・保存されない）。
+-->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f7f7f5; --panel:#fff; --border:#e3e2de; --text:#1f1e1c; --muted:#767468; --accent:#23268f;
+    --warn:#b03636; --ok:#2f6b3a;
+    --a1:#7fa6c9; --a2:#5b8c85; --a3:#8f9aa8; --a4:#b0705a; --a5:#7a4b4b; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Hiragino Sans","Yu Gothic",sans-serif; font-size:14px; line-height:1.5; display:flex; flex-direction:column; overflow:hidden; }
+  .hide { display:none !important; }
+  #gate { padding:80px 24px; text-align:center; overflow:auto; flex:1; }
+  #gate .btn, .btn { font:inherit; font-size:13px; padding:6px 14px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text); cursor:pointer; }
+  .btn.pri, #gate .btn { border-color:var(--accent); background:var(--accent); color:#fff; }
+  .btn.sm { padding:2px 9px; font-size:12px; }
+  .btn.danger { color:var(--warn); border-color:var(--warn); }
+  #gateError { color:var(--warn); margin-top:14px; font-size:13px; white-space:pre-wrap; }
+  #appRoot { display:flex; flex-direction:column; flex:1; min-height:0; }
+  .warn-banner { background:#b0363611; border-bottom:1px solid var(--border); padding:6px 20px; font-size:12px; flex-shrink:0; }
+  header.top { padding:10px 20px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid var(--border); flex-shrink:0; }
+  header.top h1 { font-size:16px; margin:0 6px 0 0; }
+  select, input, textarea { font:inherit; font-size:13px; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text); }
+  textarea { width:100%; resize:vertical; }
+  .spacer { flex:1; }
+  #status { font-size:12px; color:var(--muted); }
+  #status.dirty { color:var(--warn); font-weight:600; }
+  .bar { padding:8px 20px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; flex-shrink:0; }
+  .tab, .mode { border:1px solid var(--border); background:var(--panel); color:var(--text); padding:4px 12px; border-radius:999px; cursor:pointer; font-size:13px; }
+  .tab.on, .mode.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .sep { width:1px; height:20px; background:var(--border); margin:0 6px; }
+  .yrv { font-size:17px; font-weight:700; color:var(--accent); min-width:60px; }
+  .work { display:flex; flex:1; min-height:0; }
+  main { flex:1; min-width:0; overflow:auto; padding:14px 20px 40px; }
+  aside#panel { width:420px; flex-shrink:0; border-left:1px solid var(--border); background:var(--panel); overflow:auto; padding:14px 16px 40px; display:none; }
+  aside#panel.open { display:block; }
+  @media (max-width:900px){ aside#panel.open { position:fixed; top:0; right:0; bottom:0; width:min(100%,430px); z-index:40; box-shadow:-6px 0 24px #0003; } }
+  .sum { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:12px; }
+  .sc { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:8px 12px; }
+  .sc b { display:block; font-size:21px; } .sc span { font-size:12px; color:var(--muted); }
+  .dist { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:8px 14px; margin-bottom:12px; }
+  .drow { display:flex; align-items:center; gap:8px; margin:2px 0; font-size:12px; } .drow .l { width:56px; color:var(--muted); } .drow .b { height:12px; border-radius:3px; }
+  .leg { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:0 0 10px; } .leg i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); gap:12px; align-items:start; }
+  .dc { background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .dc h2 { margin:0; padding:7px 12px; font-size:14px; background:var(--accent); color:#fff; display:flex; justify-content:space-between; align-items:center; }
+  .dc h2 small { font-weight:400; opacity:.85; }
+  .dc h2 button { background:#fff2; color:#fff; border:1px solid #fff6; border-radius:5px; font-size:11px; cursor:pointer; padding:1px 7px; }
+  .p { display:grid; grid-template-columns:1fr auto; gap:2px 8px; padding:7px 12px; border-top:1px solid var(--border); align-items:center; cursor:pointer; }
+  .p:hover { background:color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+  .p.sel { background:color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+  .nm { font-weight:600; }
+  .chip { display:inline-block; font-size:11.5px; padding:0 8px; border-radius:999px; border:1px solid var(--border); color:var(--muted); margin-left:4px; }
+  .chip:hover { border-color:var(--accent); color:var(--accent); }
+  .rn { font-size:11.5px; color:var(--muted); }
+  .age { font-size:22px; font-weight:700; text-align:right; line-height:1; } .age small { font-size:11px; font-weight:400; color:var(--muted); }
+  .tags { grid-column:1/3; display:flex; flex-wrap:wrap; gap:4px; }
+  .tag { font-size:11px; padding:0 7px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  .tag.r { border-color:var(--warn); color:var(--warn); } .tag.n { border-style:dashed; }
+  .slot { background:color-mix(in srgb, var(--accent) 4%, var(--panel)); border-top:1px dashed var(--accent); }
+  .slot .nm { font-weight:500; color:var(--accent); }
+  .tw { overflow:auto; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th, td { border:1px solid var(--border); padding:3px 6px; text-align:center; white-space:nowrap; }
+  th { background:var(--bg); position:sticky; top:0; z-index:2; }
+  td.l, th.l { text-align:left; position:sticky; left:0; background:var(--panel); z-index:1; } th.l { z-index:3; background:var(--bg); }
+  tr.dh td { background:var(--bg); font-weight:700; text-align:left; }
+  tr[data-pid] { cursor:pointer; } tr[data-pid]:hover td { background:color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+  .cur { outline:2px solid var(--accent); outline-offset:-2px; }
+  td small { display:block; color:var(--muted); font-size:10px; }
+  .issues { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:10px 16px; margin-top:16px; font-size:13px; }
+  .issues h3 { margin:0 0 4px; font-size:14px; } .issues li { margin:3px 0; } .issues a { color:var(--accent); cursor:pointer; text-decoration:underline; }
+  /* パネル */
+  .ph { display:flex; align-items:center; gap:8px; margin-bottom:8px; } .ph h3 { margin:0; font-size:16px; flex:1; }
+  .ptabs { display:flex; gap:4px; margin-bottom:10px; }
+  .sec { margin:12px 0; } .sec h4 { margin:0 0 4px; font-size:13px; color:var(--accent); }
+  .sec ul { margin:2px 0 0; padding-left:18px; } .sec li { margin:2px 0; }
+  .sec .gh { font-weight:600; font-size:12.5px; margin-top:6px; }
+  .und li { color:var(--warn); }
+  .defbox { border:1px solid var(--border); border-radius:10px; padding:8px 12px; margin-bottom:10px; }
+  .frm label { display:block; font-size:12px; color:var(--muted); margin:8px 0 2px; }
+  .frm input, .frm select { width:100%; }
+  .frm .row { display:flex; gap:6px; align-items:center; margin-bottom:4px; } .frm .row input:first-child { width:84px; flex-shrink:0; }
+  .frm .row2 { display:flex; gap:8px; } .frm .row2 > div { flex:1; }
+  .muted { color:var(--muted); font-size:12px; }
+  .cardgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .rc { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:10px 14px; cursor:pointer; } .rc:hover { border-color:var(--accent); }
+  .rc h3 { margin:0 0 4px; font-size:14px; }
+  #empty { padding:60px 24px; text-align:center; flex:1; overflow:auto; }
+</style>
+<link rel="stylesheet" href="payroll_theme.css?v=20261004">
+<script src="nav.js?v=20261004" defer></script>
+</head>
+<body>
+<div id="gate">
+  <p data-ha-login id="gateMsg">役員限定のデータです。Microsoftアカウントでサインインしてください。</p>
+  <button data-ha-login class="btn" id="signInBtn">サインイン</button>
+  <div id="gateError"></div>
+</div>
+
+<div id="empty" class="hide">
+  <h2>まだ組織データがありません</h2>
+  <p class="muted">SharePoint（給与データ／組織計画）に org_plan.json がまだ無い状態です。<br>初回だけ、用意した org_plan.json を読み込むと、そのまま SharePoint に保存されます。</p>
+  <p><button class="btn pri" onclick="document.getElementById('fileIn').click()">org_plan.json を読み込む</button>
+     <button class="btn" onclick="E.startBlank()">空の状態から始める</button></p>
+</div>
+
+<div id="appRoot" class="hide">
+  <div class="warn-banner" id="banner">⚠ 従業員の個人情報（氏名・年齢）です。役員限定。保存先は SharePoint（給与データ／組織計画）。</div>
+  <header class="top">
+    <h1>組織計画</h1>
+    <select id="scSel" title="案"></select>
+    <button class="btn sm" onclick="E.scNew()">＋新しい案（コピー）</button>
+    <button class="btn sm" onclick="E.scRen()">案の名前</button>
+    <button class="btn sm danger" onclick="E.scDel()">案を削除</button>
+    <input id="scNote" placeholder="この案のメモ" style="width:240px" oninput="E.scNote(this.value)">
+    <div class="spacer"></div>
+    <span id="status"></span>
+    <button class="btn pri" id="saveBtn" onclick="E.save()">保存</button>
+    <button class="btn sm" onclick="E.exp()" title="手元用の控え（JSON）をダウンロード">書き出し</button>
+    <button class="btn sm" onclick="document.getElementById('fileIn').click()" title="JSONを読み込んで今のデータと入れ替える">読み込み</button>
+    <input type="file" id="fileIn" accept=".json,application/json" class="hide" onchange="E.imp(this)">
+  </header>
+  <div class="bar">
+    <span id="tabs"></span>
+    <span class="sep"></span>
+    <button class="mode on" data-m="chart">組織図</button>
+    <button class="mode" data-m="table">年齢推移表</button>
+    <button class="mode" data-m="slots">増員枠</button>
+    <button class="mode" data-m="roles">役職の役割</button>
+    <span class="sep"></span>
+    <span class="yrv" id="yv"></span>
+    <input type="range" id="ys" min="2025" max="2045" step="1" value="2026" style="width:200px">
+    <label class="muted"><input type="checkbox" id="hl" checked> 55歳・60歳を強調</label>
+    <label class="muted"><input type="checkbox" id="ghost"> 退職・未入社も薄く表示</label>
+    <span class="spacer"></span>
+    <button class="btn sm" onclick="E.addP()">＋人を追加</button>
+    <button class="btn sm" onclick="E.addSlot()">＋増員枠</button>
+  </div>
+  <div class="work">
+    <main id="main"></main>
+    <aside id="panel"></aside>
+  </div>
+</div>
+
+<script src="payroll_graph.js?v=20261004"></script>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const REMOTE = '組織計画/org_plan.json';
+const YMIN = 2025, YMAX = 2045;
+const VIEWS = [
+  ['all','全社',null], ['so','営業・業務センター',['営業','ソリューション','業務センター']],
+  ['s','営業',['営業']], ['sol','ソリューション',['ソリューション']], ['ops','業務センター',['業務センター']],
+  ['fac','工場・技術・品質',['工場・技術・品質']], ['mg','経営・総務',['経営・総務']] ];
+let DB = null, view = 'all', year = 2026, mode = 'chart', panel = null, dirty = false, demo = false;
+let lastKnown = null, backedUp = false, saveTimer = null, saving = false;
+
+const sc = () => DB.scenarios.find(s => s.id === DB.activeId) || DB.scenarios[0];
+const findP = id => sc().people.find(p => p.id === id);
+const findSlot = id => sc().slots.find(s => s.id === id);
+const findRole = k => DB.roleDefs.find(r => r.key === k);
+const uid = pre => pre + Math.random().toString(36).slice(2, 8);
+const tl = p => (p.titles || []).slice().sort((a, b) => a.from - b.from);
+function titleAt(p, y) { let t = null; for (const e of tl(p)) if (e.from <= y) t = e.title; return t; }
+const present = (p, y) => (p.join == null || y >= p.join) && (p.retire == null || y < p.retire);
+const ageAt = (p, y) => p.birth == null ? null : y - p.birth;
+const band = a => a == null ? '' : a < 30 ? 'a1' : a < 40 ? 'a2' : a < 50 ? 'a3' : a < 60 ? 'a4' : 'a5';
+function roleFor(title) {
+  if (!title) return null;
+  for (const r of DB.roleDefs) { if (!r.match) continue; try { if (new RegExp(r.match).test(title)) return r; } catch (e) {} }
+  return null;
+}
+function viewDepts() {
+  const v = VIEWS.find(x => x[0] === view); const names = DB.depts;
+  return names.filter(d => !v[2] || v[2].includes(d.group));
+}
+
+/* ---------- 保存 ---------- */
+function setStatus(t, cls) { const s = $('#status'); s.textContent = t; s.className = cls || ''; }
+function touch() {
+  dirty = true;
+  setStatus(demo ? 'デモ（保存されません）' : '未保存の変更あり…', 'dirty');
+  if (!demo) { clearTimeout(saveTimer); saveTimer = setTimeout(() => E.save(true), 4000); }
+}
+window.addEventListener('beforeunload', e => { if (dirty && !demo) { e.preventDefault(); e.returnValue = ''; } });
+const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0'); return d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + '_' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()); };
+
+/* ---------- 画面 ---------- */
+function stats(depts, y) {
+  const ps = []; depts.forEach(d => sc().people.filter(p => p.dept === d.name && present(p, y)).forEach(p => ps.push(p)));
+  const ages = ps.map(p => ageAt(p, y)).filter(a => a != null);
+  const slots = sc().slots.filter(s => depts.some(d => d.name === s.dept) && y >= s.from);
+  return { n: ps.length, avg: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null,
+    a55: ages.filter(a => a >= 55).length, a60: ages.filter(a => a >= 60).length, ages,
+    slots: slots.reduce((a, s) => a + (s.count || 0), 0), slotKinds: slots.length };
+}
+function renderBar() {
+  $('#tabs').innerHTML = VIEWS.map(v => `<button class="tab${v[0] === view ? ' on' : ''}" data-v="${v[0]}">${v[1]}</button>`).join(' ');
+  $('#scSel').innerHTML = DB.scenarios.map(s => `<option value="${esc(s.id)}"${s.id === DB.activeId ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+  $('#scNote').value = sc().note || '';
+  $('#yv').textContent = year + '年';
+  document.querySelectorAll('.mode').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+}
+function personRow(p, y) {
+  const a = ageAt(p, y), ok = present(p, y), t = titleAt(p, y), hl = $('#hl').checked;
+  const ev = (p.events || []).filter(e => e.y === y);
+  const tags = [];
+  if (hl && a != null && a >= 60) tags.push('<span class="tag r">60歳〜（定年）</span>');
+  else if (hl && a != null && a >= 55) tags.push('<span class="tag r">55歳〜（ゾーン3）</span>');
+  ev.forEach(e => tags.push(`<span class="tag r">${esc(e.t)}</span>`));
+  if (!ok && p.retire != null && y >= p.retire) tags.push('<span class="tag">退職</span>');
+  if (!ok && p.join != null && y < p.join) tags.push(`<span class="tag">${p.join}年入社</span>`);
+  if (p.flag || p.birth == null) tags.push('<span class="tag n">要確認</span>');
+  if (p.note) tags.push(`<span class="tag n" title="${esc(p.note)}">備考</span>`);
+  const sel = panel && panel.type === 'person' && panel.id === p.id ? ' sel' : '';
+  return `<div class="p${sel}${ok ? '' : ' off'}" data-pid="${esc(p.id)}" style="${ok ? '' : 'opacity:.4'}">
+    <div><span class="nm">${esc(p.name)}</span><span class="chip" data-role="${esc(p.id)}">${esc(t || '役職なし')}</span>
+    ${p.roleNote ? `<div class="rn">${esc(p.roleNote)}</div>` : ''}</div>
+    <div class="age" ${a != null && ok ? `style="color:var(--${band(a)})"` : ''}>${a == null ? '—' : a}<small>歳</small></div>
+    ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}</div>`;
+}
+function slotRow(s) {
+  const sel = panel && panel.type === 'slot' && panel.id === s.id ? ' sel' : '';
+  const ar = s.ageMin || s.ageMax ? `${s.ageMin || ''}〜${s.ageMax || ''}歳` : '';
+  return `<div class="p slot${sel}" data-sid="${esc(s.id)}"><div><span class="nm">＋採用枠</span><span class="chip">${esc(s.title || '')}</span>
+    <div class="rn">${esc(s.profile || '')}</div></div><div class="age" style="font-size:15px">${s.count ? s.count + '名' : '人数未定'}<small>${ar ? '<br>' + ar : ''}</small></div></div>`;
+}
+function renderMain() {
+  const depts = viewDepts();
+  let h = '';
+  if (mode === 'chart') h = chartHTML(depts);
+  else if (mode === 'table') h = tableHTML(depts);
+  else if (mode === 'slots') h = slotsHTML();
+  else h = rolesHTML();
+  $('#main').innerHTML = h;
+}
+function chartHTML(depts) {
+  const S = stats(depts, year), ghost = $('#ghost').checked;
+  const bands = [['〜29', 0, 29, 'a1'], ['30代', 30, 39, 'a2'], ['40代', 40, 49, 'a3'], ['50代', 50, 59, 'a4'], ['60〜', 60, 200, 'a5']];
+  const mx = Math.max(1, ...bands.map(b => S.ages.filter(a => a >= b[1] && a <= b[2]).length));
+  let h = `<div class="sum"><div class="sc"><b>${S.n}</b><span>人（${year}年）</span></div>
+    <div class="sc"><b>${S.avg == null ? '—' : S.avg.toFixed(1)}</b><span>平均年齢</span></div>
+    <div class="sc"><b>${S.a55}</b><span>55歳以上</span></div><div class="sc"><b>${S.a60}</b><span>60歳以上</span></div>
+    <div class="sc"><b>${S.slots}</b><span>増員枠（${S.slotKinds}件）</span></div></div>
+    <div class="dist">${bands.map(b => { const n = S.ages.filter(a => a >= b[1] && a <= b[2]).length; return `<div class="drow"><span class="l">${b[0]}</span><span class="b" style="width:${n / mx * 220}px;background:var(--${b[3]})"></span><span>${n}</span></div>`; }).join('')}</div>
+    <div class="grid">`;
+  depts.forEach(d => {
+    const ps = sc().people.filter(p => p.dept === d.name && (ghost || present(p, year)));
+    const n = ps.filter(p => present(p, year)).length;
+    const ages = ps.filter(p => present(p, year)).map(p => ageAt(p, year)).filter(a => a != null);
+    const avg = ages.length ? (ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1) : '—';
+    const sl = sc().slots.filter(s => s.dept === d.name && year >= s.from);
+    h += `<div class="dc"><h2><span>${esc(d.name)}</span><span><small>${n}人・平均${avg}歳</small> <button data-addp="${esc(d.name)}">＋人</button> <button data-adds="${esc(d.name)}">＋枠</button></span></h2>`;
+    h += ps.map(p => personRow(p, year)).join('') + sl.map(slotRow).join('');
+    if (!ps.length && !sl.length) h += '<div class="p"><span class="muted">（いません）</span></div>';
+    h += '</div>';
+  });
+  return h + '</div>' + issuesHTML();
+}
+function tableHTML(depts) {
+  const ys = []; for (let y = YMIN; y <= YMAX; y++) ys.push(y);
+  let h = '<div class="leg"><span><i style="background:var(--a1)"></i>〜29</span><span><i style="background:var(--a2)"></i>30代</span><span><i style="background:var(--a3)"></i>40代</span><span><i style="background:var(--a4)"></i>50代</span><span><i style="background:var(--a5)"></i>60〜</span><span>年齢の下の小さい字＝その年に役職が変わる／赤枠の数字＝55歳・60歳</span></div>';
+  h += `<div class="tw"><table><thead><tr><th class="l">氏名／${year}年の役職</th>${ys.map(y => `<th class="${y === year ? 'cur' : ''}">${y}</th>`).join('')}</tr></thead><tbody>`;
+  depts.forEach(d => {
+    h += `<tr class="dh"><td colspan="${ys.length + 1}">${esc(d.name)}</td></tr>`;
+    sc().people.filter(p => p.dept === d.name).forEach(p => {
+      h += `<tr data-pid="${esc(p.id)}"><td class="l"><b>${esc(p.name)}</b><small>${esc(titleAt(p, year) || '')}</small></td>`;
+      let prev = null;
+      ys.forEach(y => {
+        const ok = present(p, y), a = ageAt(p, y), t = titleAt(p, y);
+        let c = '';
+        if (ok && a != null) {
+          const hot = $('#hl').checked && (a === 55 || a === 60);
+          c = `<span style="color:var(--${band(a)});font-weight:700;${hot ? 'outline:2px solid var(--warn);padding:0 2px;border-radius:3px' : ''}">${a}</span>`;
+          if (t && t !== prev && prev !== null) c += `<small>${esc(t.replace(/MGR\d-\d|R\d-\d|^\d+$/g, '') || t).slice(0, 5)}</small>`;
+        } else if (p.retire === y) c = '<span class="muted">退</span>';
+        if (ok) prev = t;
+        h += `<td class="${y === year ? 'cur' : ''}">${c}</td>`;
+      });
+      h += '</tr>';
+    });
+  });
+  return h + '</tbody></table></div>' + issuesHTML();
+}
+function slotsHTML() {
+  const ss = sc().slots;
+  let h = `<p class="muted">案「${esc(sc().name)}」の増員枠。クリックで右に詳しく出ます（所属・役職・人数・開始年・年齢の幅・求める人物）。</p>`;
+  h += '<div class="tw"><table><thead><tr><th class="l">所属</th><th>役職・枠</th><th>人数</th><th>開始年</th><th>年齢</th><th class="l">求める人物</th></tr></thead><tbody>';
+  ss.forEach(s => { h += `<tr data-sid="${esc(s.id)}"><td class="l">${esc(s.dept)}</td><td>${esc(s.title)}</td><td>${s.count || '未定'}</td><td>${s.from || ''}</td><td>${s.ageMin || s.ageMax ? (s.ageMin || '') + '〜' + (s.ageMax || '') : ''}</td><td class="l" style="white-space:normal">${esc(s.profile)}</td></tr>`; });
+  if (!ss.length) h += '<tr><td colspan="6" class="muted">この案には増員枠がありません。右上の「＋増員枠」で追加。</td></tr>';
+  return h + '</tbody></table></div>';
+}
+function rolesHTML() {
+  let h = '<p class="muted">役職ごとの「求める人物」と「職務」。人や役職をクリックしたときに右に出る内容は、ここで決めたものです。カードをクリックで編集。</p><div class="cardgrid">';
+  DB.roleDefs.forEach(r => {
+    h += `<div class="rc" data-rkey="${esc(r.key)}"><h3>${esc(r.name)}</h3><div class="muted">求める人物 ${r.profile.length}項目・職務 ${r.groups.reduce((a, g) => a + g.items.length, 0)}項目${r.undecided.length ? '・未決 ' + r.undecided.length : ''}</div>
+      <ul style="margin:6px 0 0;padding-left:18px">${r.profile.slice(0, 3).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
+  });
+  return h + '</div><p><button class="btn" onclick="E.addRole()">＋役割を追加</button></p>';
+}
+function issuesHTML() {
+  const L = [];
+  sc().people.forEach(p => {
+    if (p.birth == null) L.push(`<a data-pid="${esc(p.id)}">${esc(p.name)}（${esc(p.dept)}）</a>：生年が未入力`);
+    else if (p.note) L.push(`<a data-pid="${esc(p.id)}">${esc(p.name)}（${esc(p.dept)}）</a>：${esc(p.note)}`);
+  });
+  if (!L.length) return '';
+  return `<div class="issues"><h3>要確認（${L.length}）</h3><ul>${L.map(x => `<li>${x}</li>`).join('')}</ul></div>`;
+}
+
+/* ---------- 右のパネル ---------- */
+function roleBlock(r, title) {
+  if (!r) return `<div class="defbox"><div class="muted">「${esc(title || '役職なし')}」の役割はまだ登録されていません。</div>
+    ${title ? `<p><button class="btn sm" onclick="E.newRoleFor('${esc(title).replace(/'/g, "\\'")}')">この役職の定義を作る</button></p>` : ''}</div>`;
+  let h = `<div class="defbox"><div style="display:flex;align-items:center"><b style="flex:1">${esc(r.name)}</b><button class="btn sm" onclick="E.openRole('${esc(r.key)}')">編集</button></div>`;
+  if (r.summary) h += `<p class="muted">${esc(r.summary)}</p>`;
+  if (r.profile.length) h += `<div class="sec"><h4>求める人物</h4><ul>${r.profile.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
+  if (r.groups.length) h += `<div class="sec"><h4>職務</h4>${r.groups.map(g => `<div class="gh">${esc(g.h)}</div><ul>${g.items.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`).join('')}</div>`;
+  if (r.undecided.length) h += `<div class="sec und"><h4>未決（どこの仕事にするか）</h4><ul>${r.undecided.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
+  if (r.notes) h += `<p class="muted">${esc(r.notes)}</p>`;
+  return h + '</div>';
+}
+function renderPanel() {
+  const el = $('#panel');
+  if (!panel) { el.className = ''; el.innerHTML = ''; return; }
+  el.className = 'open';
+  const close = '<button class="btn sm" onclick="E.close()">閉じる</button>';
+  if (panel.type === 'person') {
+    const p = findP(panel.id); if (!p) { E.close(); return; }
+    const t = titleAt(p, year), a = ageAt(p, year);
+    let h = `<div class="ph"><h3>${esc(p.name)}</h3>${close}</div>
+      <div class="muted">${esc(p.dept)}／${year}年：${esc(t || '役職なし')}${a != null ? '・' + a + '歳' : ''}</div>
+      <div class="ptabs"><button class="mode${panel.tab === 'role' ? ' on' : ''}" onclick="E.tab('role')">役職の役割</button><button class="mode${panel.tab === 'edit' ? ' on' : ''}" onclick="E.tab('edit')">この人を修正</button></div>`;
+    if (panel.tab === 'role') {
+      h += roleBlock(roleFor(t), t);
+      (p.roleKeys || []).forEach(k => { const r = findRole(k); if (r) h += roleBlock(r, ''); });
+      h += `<div class="frm"><label>この人の役割メモ（個人ごと）</label><textarea rows="3" placeholder="例：国内営業部の統括。次期部長候補" oninput="E.p('${esc(p.id)}','roleNote',this.value)">${esc(p.roleNote || '')}</textarea></div>`;
+    } else h += personForm(p);
+    el.innerHTML = h;
+  } else if (panel.type === 'role') {
+    const r = findRole(panel.key); if (!r) { E.close(); return; }
+    const duties = r.groups.map(g => '## ' + g.h + '\n' + g.items.join('\n')).join('\n\n');
+    el.innerHTML = `<div class="ph"><h3>役割を編集</h3>${close}</div><div class="frm">
+      <label>名前</label><input value="${esc(r.name)}" oninput="E.r('${esc(r.key)}','name',this.value)">
+      <label>この役職名に当てはめる条件（正規表現。例：部長 ／ 主任|班長）</label><input value="${esc(r.match)}" oninput="E.r('${esc(r.key)}','match',this.value)">
+      <label>ひとこと</label><textarea rows="2" oninput="E.r('${esc(r.key)}','summary',this.value)">${esc(r.summary)}</textarea>
+      <label>求める人物（1行1項目）</label><textarea rows="8" oninput="E.r('${esc(r.key)}','profile',this.value)">${esc(r.profile.join('\n'))}</textarea>
+      <label>職務（「## 見出し」の下に1行1項目）</label><textarea rows="12" oninput="E.r('${esc(r.key)}','duties',this.value)">${esc(duties)}</textarea>
+      <label>未決（1行1項目）</label><textarea rows="3" oninput="E.r('${esc(r.key)}','undecided',this.value)">${esc(r.undecided.join('\n'))}</textarea>
+      <label>メモ・出典</label><textarea rows="2" oninput="E.r('${esc(r.key)}','notes',this.value)">${esc(r.notes)}</textarea>
+      <p><button class="btn sm danger" onclick="E.delRole('${esc(r.key)}')">この役割を削除</button></p></div>`;
+  } else if (panel.type === 'slot') {
+    const s = findSlot(panel.id); if (!s) { E.close(); return; }
+    const k = esc(s.id);
+    el.innerHTML = `<div class="ph"><h3>増員枠</h3>${close}</div><div class="frm">
+      <label>所属</label><select onchange="E.s('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === s.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+      <label>役職・枠の名前</label><input value="${esc(s.title)}" oninput="E.s('${k}','title',this.value)">
+      <div class="row2"><div><label>人数（未定は0）</label><input type="number" min="0" value="${s.count == null ? '' : s.count}" oninput="E.s('${k}','count',this.value)"></div>
+      <div><label>開始年</label><input type="number" value="${s.from == null ? '' : s.from}" oninput="E.s('${k}','from',this.value)"></div></div>
+      <div class="row2"><div><label>年齢 から</label><input type="number" value="${s.ageMin == null ? '' : s.ageMin}" oninput="E.s('${k}','ageMin',this.value)"></div>
+      <div><label>年齢 まで</label><input type="number" value="${s.ageMax == null ? '' : s.ageMax}" oninput="E.s('${k}','ageMax',this.value)"></div></div>
+      <label>求める人物</label><textarea rows="5" oninput="E.s('${k}','profile',this.value)">${esc(s.profile)}</textarea>
+      <label>メモ</label><textarea rows="2" oninput="E.s('${k}','note',this.value)">${esc(s.note)}</textarea>
+      <p><button class="btn sm danger" onclick="E.delSlot('${k}')">この枠を削除</button></p></div>`;
+  }
+}
+function personForm(p) {
+  const k = esc(p.id), num = v => v == null ? '' : v;
+  let h = `<div class="frm"><label>氏名</label><input value="${esc(p.name)}" oninput="E.p('${k}','name',this.value)">
+    <label>所属</label><select onchange="E.p('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === p.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+    <div class="row2"><div><label>生年（西暦）</label><input type="number" value="${num(p.birth)}" oninput="E.p('${k}','birth',this.value)"></div>
+    <div><label>入社年（途中入社のみ）</label><input type="number" value="${num(p.join)}" oninput="E.p('${k}','join',this.value)"></div>
+    <div><label>退職年（この年から不在）</label><input type="number" value="${num(p.retire)}" oninput="E.p('${k}','retire',this.value)"></div></div>
+    <p><button class="btn sm" onclick="E.retireNow('${k}')">${year}年から退職扱いにする</button></p>
+    <label>役職の履歴（「この年から」その役職）</label>`;
+  tl(p).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.from}" onchange="E.tl('${k}',${i},'from',this.value)"><input value="${esc(e.title)}" onchange="E.tl('${k}',${i},'title',this.value)"><button class="btn sm" onclick="E.tlDel('${k}',${i})">×</button></div>`; });
+  h += `<p><button class="btn sm" onclick="E.tlAdd('${k}')">＋${year}年から役職変更</button></p><label>できごと（定年・役職定年・退職予定など）</label>`;
+  (p.events || []).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.y}" onchange="E.ev('${k}',${i},'y',this.value)"><input value="${esc(e.t)}" onchange="E.ev('${k}',${i},'t',this.value)"><button class="btn sm" onclick="E.evDel('${k}',${i})">×</button></div>`; });
+  h += `<p><button class="btn sm" onclick="E.evAdd('${k}')">＋できごと</button></p>
+    <label>追加の役割（その人だけの職務。役職とは別に右に出る）</label>
+    ${DB.roleDefs.map(r => `<label style="display:flex;gap:6px;align-items:center;color:var(--text);margin:2px 0"><input type="checkbox" style="width:auto" ${(p.roleKeys || []).includes(r.key) ? 'checked' : ''} onchange="E.rk('${k}','${esc(r.key)}',this.checked)">${esc(r.name)}</label>`).join('')}
+    <label>備考</label><textarea rows="3" oninput="E.p('${k}','note',this.value)">${esc(p.note || '')}</textarea>
+    <p><button class="btn sm danger" onclick="E.delP('${k}')">この人をこの案から削除</button></p></div>`;
+  return h;
+}
+
+/* ---------- 操作 ---------- */
+const num = v => v === '' || v == null ? null : Number(v);
+const E = {
+  rerender() { renderBar(); renderMain(); renderPanel(); },
+  after() { touch(); renderMain(); },
+  close() { panel = null; renderPanel(); renderMain(); },
+  tab(t) { panel.tab = t; renderPanel(); },
+  openRole(k) { panel = { type: 'role', key: k }; renderPanel(); },
+  p(id, f, v) { const p = findP(id); if (!p) return; p[f] = ['birth', 'join', 'retire'].includes(f) ? num(v) : v; if (f === 'dept') E.after(); else E.after(); },
+  retireNow(id) { findP(id).retire = year; touch(); renderMain(); renderPanel(); },
+  tl(id, i, f, v) { const p = findP(id), e = tl(p)[i]; if (f === 'from') e.from = Number(v); else e.title = v; touch(); renderMain(); renderPanel(); },
+  tlAdd(id) { const p = findP(id); p.titles = p.titles || []; p.titles.push({ from: year, title: titleAt(p, year) || '' }); touch(); renderMain(); renderPanel(); },
+  tlDel(id, i) { const p = findP(id), e = tl(p)[i]; p.titles = p.titles.filter(x => x !== e); touch(); renderMain(); renderPanel(); },
+  ev(id, i, f, v) { findP(id).events[i][f] = f === 'y' ? Number(v) : v; touch(); renderMain(); },
+  evAdd(id) { const p = findP(id); p.events = p.events || []; p.events.push({ y: year, t: '' }); touch(); renderPanel(); },
+  evDel(id, i) { findP(id).events.splice(i, 1); touch(); renderMain(); renderPanel(); },
+  rk(id, key, on) { const p = findP(id); p.roleKeys = (p.roleKeys || []).filter(x => x !== key); if (on) p.roleKeys.push(key); touch(); },
+  delP(id) { const p = findP(id); if (!confirm(p.name + ' をこの案から削除します（現状など他の案には残ります）。よろしいですか？')) return; sc().people = sc().people.filter(x => x.id !== id); panel = null; touch(); renderMain(); renderPanel(); },
+  addP(dept) {
+    const d = dept || (viewDepts()[0] || DB.depts[0]).name;
+    const p = { id: uid('p'), name: '新しい人', dept: d, birth: null, join: null, retire: null, titles: [], events: [], roleNote: '', roleKeys: [], note: '', flag: true };
+    sc().people.push(p); panel = { type: 'person', id: p.id, tab: 'edit' }; touch(); renderMain(); renderPanel();
+  },
+  addSlot(dept) {
+    const d = dept || (viewDepts()[0] || DB.depts[0]).name;
+    const s = { id: uid('s'), dept: d, title: '', count: 1, from: year, ageMin: null, ageMax: null, profile: '', note: '' };
+    sc().slots.push(s); panel = { type: 'slot', id: s.id }; touch(); renderMain(); renderPanel();
+  },
+  s(id, f, v) { const s = findSlot(id); s[f] = ['count', 'from', 'ageMin', 'ageMax'].includes(f) ? num(v) : v; E.after(); },
+  delSlot(id) { if (!confirm('この枠を削除します。よろしいですか？')) return; sc().slots = sc().slots.filter(x => x.id !== id); panel = null; touch(); renderMain(); renderPanel(); },
+  r(key, f, v) {
+    const r = findRole(key);
+    if (f === 'profile' || f === 'undecided') r[f] = v.split('\n').map(x => x.trim()).filter(Boolean);
+    else if (f === 'duties') { const gs = []; let g = null; v.split('\n').forEach(l => { l = l.trim(); if (!l) return; if (l.startsWith('##')) { g = { h: l.replace(/^#+\s*/, ''), items: [] }; gs.push(g); } else { if (!g) { g = { h: '', items: [] }; gs.push(g); } g.items.push(l); } }); r.groups = gs; }
+    else r[f] = v;
+    touch(); if (mode === 'roles') renderMain();
+  },
+  addRole() { const r = { key: uid('r'), name: '新しい役割', match: '', summary: '', profile: [], groups: [], undecided: [], notes: '' }; DB.roleDefs.push(r); touch(); panel = { type: 'role', key: r.key }; renderMain(); renderPanel(); },
+  newRoleFor(title) { const r = { key: uid('r'), name: title, match: '^' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', summary: '', profile: [], groups: [], undecided: [], notes: '' }; DB.roleDefs.push(r); touch(); panel = { type: 'role', key: r.key }; renderPanel(); },
+  delRole(key) { if (!confirm('この役割の定義を削除します。よろしいですか？')) return; DB.roleDefs = DB.roleDefs.filter(r => r.key !== key); DB.scenarios.forEach(s => s.people.forEach(p => p.roleKeys = (p.roleKeys || []).filter(k => k !== key))); panel = null; touch(); renderMain(); renderPanel(); },
+  scNew() { const n = prompt('新しい案の名前（今の案をコピーして作ります）', sc().name + ' のコピー'); if (!n) return; const c = JSON.parse(JSON.stringify(sc())); c.id = uid('sc'); c.name = n; c.note = ''; DB.scenarios.push(c); DB.activeId = c.id; panel = null; touch(); E.rerender(); },
+  scRen() { const n = prompt('案の名前', sc().name); if (!n) return; sc().name = n; touch(); renderBar(); },
+  scDel() { if (DB.scenarios.length < 2) { alert('案が1つだけのときは削除できません。'); return; } if (!confirm('案「' + sc().name + '」を削除します。元に戻せません（SharePointのバージョン履歴から戻せます）。よろしいですか？')) return; DB.scenarios = DB.scenarios.filter(s => s.id !== DB.activeId); DB.activeId = DB.scenarios[0].id; panel = null; touch(); E.rerender(); },
+  scNote(v) { sc().note = v; touch(); },
+  exp() { const b = new Blob([JSON.stringify(DB, null, 1)], { type: 'application/json' }), a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'org_plan_' + stamp() + '.json'; a.click(); },
+  imp(inp) {
+    const f = inp.files[0]; if (!f) return; const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const d = JSON.parse(rd.result); if (!d.scenarios || !d.roleDefs || !d.depts) throw new Error('組織計画のデータではありません');
+        if (DB && !confirm('今のデータをこのファイルの内容に入れ替えます。よろしいですか？（保存するまで SharePoint は変わりません）')) return;
+        DB = d; if (!DB.activeId) DB.activeId = DB.scenarios[0].id; panel = null; showApp(); touch();
+      } catch (e) { alert('読み込めませんでした：' + e.message); }
+      inp.value = '';
+    };
+    rd.readAsText(f);
+  },
+  startBlank() { DB = { v: 1, activeId: 'cur', depts: [{ name: '営業', group: '営業' }], roleDefs: [], scenarios: [{ id: 'cur', name: '現状（実際）', note: '', people: [], slots: [] }] }; showApp(); touch(); },
+  async save(auto) {
+    if (demo) { setStatus('デモ（保存されません）', 'dirty'); return; }
+    if (saving) return; saving = true; clearTimeout(saveTimer); setStatus('保存中…');
+    try {
+      const remote = await payrollGetFile(REMOTE, { allow404: true });
+      if (remote && lastKnown && remote.updated !== lastKnown) {
+        if (!confirm('読み込んだあとに、別の場所で組織計画が更新されています（' + remote.updated + '）。\nこのまま上書きすると、その変更は消えます（SharePointの履歴には残ります）。上書きしますか？')) { setStatus('保存を中止しました（未保存）', 'dirty'); saving = false; return; }
+      }
+      if (!backedUp && remote) { await payrollPutFile('組織計画/backup/org_plan_' + stamp() + '.json', remote); backedUp = true; }
+      DB.updated = new Date().toISOString();
+      await payrollPutFile(REMOTE, DB);
+      lastKnown = DB.updated; dirty = false;
+      const d = new Date(); setStatus('SharePointに保存済み ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'));
+    } catch (e) { setStatus('保存できませんでした：' + (e.message || e), 'dirty'); }
+    saving = false;
+  }
+};
+window.E = E;
+
+/* ---------- イベント ---------- */
+document.addEventListener('click', e => {
+  const t = e.target;
+  const tab = t.closest('.tab'); if (tab) { view = tab.dataset.v; E.rerender(); return; }
+  const md = t.closest('.mode[data-m]'); if (md) { mode = md.dataset.m; renderBar(); renderMain(); return; }
+  const ap = t.closest('[data-addp]'); if (ap) { e.stopPropagation(); E.addP(ap.dataset.addp); return; }
+  const as = t.closest('[data-adds]'); if (as) { e.stopPropagation(); E.addSlot(as.dataset.adds); return; }
+  const m = t.closest('#main'); if (!m) return;
+  const rk = t.closest('[data-rkey]'); if (rk) { E.openRole(rk.dataset.rkey); return; }
+  const si = t.closest('[data-sid]'); if (si) { panel = { type: 'slot', id: si.dataset.sid }; renderPanel(); renderMain(); return; }
+  const pi = t.closest('[data-pid]'); if (pi) { panel = { type: 'person', id: pi.dataset.pid, tab: 'role' }; renderPanel(); renderMain(); }
+});
+$('#scSel').addEventListener('change', e => { DB.activeId = e.target.value; panel = null; E.rerender(); });
+$('#ys').addEventListener('input', e => { year = Number(e.target.value); $('#yv').textContent = year + '年'; renderMain(); if (panel && panel.type === 'person') renderPanel(); });
+$('#hl').addEventListener('change', renderMain); $('#ghost').addEventListener('change', renderMain);
+
+/* ---------- 起動 ---------- */
+function showApp() {
+  $('#gate').classList.add('hide'); $('#empty').classList.add('hide'); $('#appRoot').classList.remove('hide');
+  if (demo) $('#banner').textContent = '⚠ デモ表示：すべて架空のデータです。保存されません。';
+  E.rerender();
+}
+function demoDB() {
+  const names = [['営業｜本社','営業','山田 太郎',1972,'部長'],['営業｜本社','営業','佐藤 花子',1985,'主任'],['営業｜大阪','営業','鈴木 一郎',1969,'支店長'],
+    ['ソリューション','ソリューション','高橋 健',1991,'課長'],['ソリューション','ソリューション','田中 美咲',1999,'MGR1-3'],['業務センター','業務センター','伊藤 大輔',1968,'センター長課長'],['業務センター','業務センター','渡辺 愛',2001,'MGR1-2']];
+  const people = names.map((n, i) => ({ id: 'd' + i, name: n[2], dept: n[0], birth: n[3], join: null, retire: i === 5 ? 2028 : null, titles: [{ from: 2025, title: n[4] }], events: i === 5 ? [{ y: 2028, t: '定年' }] : [], roleNote: '', roleKeys: [], note: '', flag: false }));
+  const base = JSON.parse(JSON.stringify(window.__seedRoles || []));
+  return { v: 1, activeId: 'cur', depts: [{ name: '営業｜本社', group: '営業' }, { name: '営業｜大阪', group: '営業' }, { name: 'ソリューション', group: 'ソリューション' }, { name: '業務センター', group: '業務センター' }],
+    roleDefs: [{ key: '部長', name: '部長', match: '部長', summary: '', profile: ['MVV遵守', '自ら考え、決断・行動ができる'], groups: [{ h: '数字・計画', items: ['部全体の数字管理'] }], undecided: ['（デモ）未決の例'], notes: '' },
+      { key: '課長', name: '課長', match: '課長|支店長', summary: '', profile: ['部下に明確に指示・指導ができる'], groups: [], undecided: [], notes: '' }],
+    scenarios: [{ id: 'cur', name: '現状（実際）', note: 'デモ', people, slots: [] },
+      { id: 'ideal', name: '理想案', note: '', people: JSON.parse(JSON.stringify(people)), slots: [{ id: 'ds1', dept: 'ソリューション', title: '一般職', count: 1, from: 2027, ageMin: 22, ageMax: 34, profile: '英語メイン（デモ）', note: '' }] }] };
+}
+async function loadFromSharePoint() {
+  const r = await payrollGetFile(REMOTE, { allow404: true });
+  if (!r) { $('#gate').classList.add('hide'); $('#empty').classList.remove('hide'); return; }
+  DB = r; lastKnown = r.updated || null; if (!DB.activeId) DB.activeId = DB.scenarios[0].id;
+  showApp(); setStatus('SharePointから読み込み済み');
+}
+function showGateError(e) {
+  $('#gateError').textContent = e.message || String(e);
+  $('#gateMsg').textContent = '役員限定のデータです。Microsoftアカウントでサインインしてください。';
+  $('#signInBtn').disabled = false;
+}
+async function boot() {
+  if (new URLSearchParams(location.search).get('demo') === '1') { demo = true; DB = demoDB(); showApp(); setStatus('デモ（保存されません）'); return; }
+  try {
+    const ok = await payrollInitAuth();
+    if (ok) await loadFromSharePoint();
+  } catch (e) { showGateError(e); }
+}
+$('#signInBtn').addEventListener('click', async () => {
+  $('#gateError').textContent = '';
+  try { await payrollSignIn(); await loadFromSharePoint(); } catch (e) { showGateError(e); }
+});
+boot();
+</script>
+</body>
+</html>
