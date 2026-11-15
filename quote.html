@@ -8,7 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261115i"></script>
+<script src="quote_core.js?v=20261115j"></script>
 <script src="quote_store.js?v=20261115b"></script>
 <script src="quote_ai.js?v=20261115b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
@@ -87,6 +87,7 @@
   .line .why{font-size:12px;color:var(--sub);margin:3px 0 0 2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   .line .why s{color:var(--mute)}
   .line .why .prev{color:var(--navy)}
+  .detail .other{font-size:12px;padding:2px 0}
   .price{padding:6px 2px}
   .del{border:0;background:none;color:var(--mute);cursor:pointer;font-size:16px;padding:0}
   .del:hover{color:var(--red)}
@@ -590,7 +591,7 @@ function renderLines() {
         <button class="del" data-a="del" title="この行を消す">×</button>
       </div>
       <div class="why" data-c="why"></div>
-      ${i === openLine ? detailHtml(l) : ''}
+      ${i === openLine ? detailHtml(l, i) : ''}
     </div>`).join('');
   DOC.lines.forEach((l, i) => {
     const inp = lineEl(i).querySelector('[data-f=code]');
@@ -600,8 +601,11 @@ function renderLines() {
 }
 const lineEl = i => $('lines').querySelector(`.line[data-i="${i}"]`);
 function focusLine(i) { const el = lineEl(i); if (el) el.querySelector('[data-f=code]').focus(); }
-function detailHtml(l) {
+function detailHtml(l, i) {
   const ov = l.ov || {};
+  // この型式の、ほかの例外の決まり（今回は使っていないもの）。計算した結果から取る
+  const c = COMP && COMP.lines[DOC.lines.slice(0, i).filter(x => x.code || x.name || P.num(x.price) !== null).length];
+  const others = c && c.code === (l.code || '') && c.others ? c.others : [];
   // まず2択：今回だけ特別（理由を選ぶ）／アプリの計算が違う（ルールを直す人に届く）
   const kind = ov.reason === Q.WRONG ? 'wrong' : (ov.once || Q.REASONS.includes(ov.reason)) ? 'once' : '';
   return `<div class="detail">
@@ -610,6 +614,7 @@ function detailHtml(l) {
     <div class="wide"><label>基本の単価から変えるのは</label><div class="chips"><button class="chip${kind === 'once' ? ' on' : ''}" data-kind="once">${Q.ONCE}</button><button class="chip${kind === 'wrong' ? ' on' : ''}" data-kind="wrong">${Q.WRONG}</button></div></div>
     ${kind === 'once' ? `<div class="wide"><label>理由</label><div class="chips">${Q.REASONS.map(r => `<button class="chip${ov.reason === r ? ' on' : ''}" data-reason="${esc(r)}">${esc(r)}</button>`).join('')}</div></div>` : ''}
     <div class="wide"><label>${kind === 'wrong' ? '正しくはどう決まりますか（必ずひとこと。ルールを直す人が読みます）' : 'ひとこと（社内だけ）'}</label><input type="text" data-o="memo" value="${esc(ov.memo ?? '')}"></div>
+    ${others.length ? `<div class="wide"><label>この型式の、ほかの決まり（今回は当てはまらないので使っていません）</label>${others.map(o => `<div class="other">${esc(o.text)} → ${yen(o.price)}　<button class="link" data-ex="${o.price}">この単価にする</button>${o.memo ? `<span class="hint">　${esc(o.memo)}</span>` : ''}</div>`).join('')}</div>` : ''}
     <div><label>見積書に載せる補足</label><input type="text" data-f="note" value="${esc(l.note ?? '')}" placeholder="例：特価"></div>
     <div><label>納期（見積書に載ります）</label><input type="text" data-f="lead" value="${esc(l.lead ?? '')}" placeholder="例：受注後約2〜3週間後出荷"></div>
     <div><label>出荷のしかた（送料の計算が変わります）</label><select data-f="ship"><option value="">段ボール梱包（ふつう）</option><option value="組立出荷"${l.ship === '組立出荷' ? ' selected' : ''}>組立出荷（修理品預り・デモなど）</option></select></div>
@@ -635,6 +640,8 @@ document.addEventListener('click', e => {
   if (a === 'del') { DOC.lines.splice(i, 1); if (!DOC.lines.length) DOC.lines.push({ code: '', qty: 1 }); openLine = -1; }
   else if (a === 'open') openLine = openLine === i ? -1 : i;
   else if (a === 'reset') { l.ov = null; }
+  else if (a === 'stock') { l.stock = !l.stock; }
+  else if (e.target.dataset.ex) { l.ov = Object.assign({}, l.ov, { price: Number(e.target.dataset.ex), k: null }); }
   else if (a === 'prev') {
     // 前回の受注単価にする。基本の単価がある行は「今回だけ特別・継続の特価」として記録に残る。ない行は、単価の欄に入れる
     const c = COMP.lines[DOC.lines.slice(0, i).filter(x => x.code || x.name || P.num(x.price) !== null).length];
@@ -710,13 +717,19 @@ function prevHtml(c) {
   const same = c.unit === p.unit;
   return `<span class="prev">${p.from === 'sha' ? '同じ社名の前回' : '前回の受注'} ${yen(p.unit)}（${esc(p.date)}）${same ? '・同じ' : ''}</span>${same ? '' : '<button class="link" data-a="prev">この単価にする</button>'}`;
 }
+// 在庫価格（営業の指示で、在庫口あてと同じ決まりにする）。単価が変わる品にだけ出す
+function stockHtml(c) {
+  if (c.stock) return '<button class="link" data-a="stock">在庫価格をやめる</button>';
+  if (c.stockPrice === undefined || c.changed) return '';
+  return `<span class="prev">在庫価格なら ${yen(c.stockPrice)}</span><button class="link" data-a="stock">在庫価格にする</button>`;
+}
 function whyHtml(c, i) {
   const open = `<button class="link" data-a="open">${openLine === i ? '閉じる' : (c.base && c.base.price !== null ? '変える' : '補足・納期')}</button>`;
-  if (c.changed) return `<s>基本 ${yen(c.base.price)}</s><span>→ 今回 ${yen(c.unit)}</span><span class="pill warn">${esc(c.reason || '理由を選んでください')}</span>${prevHtml(c)}${open}`;
-  if (c.base && c.base.price !== null) return `<span>${esc(c.base.why)}${c.via ? '（' + esc(c.listCode) + ' の定価）' : ''}</span>${prevHtml(c)}${open}`;
-  if (c.variantOf) return `<span>${esc(c.variantOf)} の枝番つき（キャスター変更・特注など）です。単価を入れてください${c.refPrice !== null ? '（' + esc(c.variantOf) + ' なら ' + yen(c.refPrice) + '）' : ''}</span>${prevHtml(c)}${open}`;
-  if (c.base && c.base.list !== null) return `<span>定価 ${yen(c.base.list)}。掛け率が決まらないので、単価を入れてください</span>${prevHtml(c)}${open}`;
-  return `<span>${c.manual ? '' : '定価リストにない品です。単価を入れてください'}</span>${prevHtml(c)}${open}`;
+  if (c.changed) return `<s>基本 ${yen(c.base.price)}</s><span>→ 今回 ${yen(c.unit)}</span><span class="pill warn">${esc(c.reason || '理由を選んでください')}</span>${prevHtml(c)}${stockHtml(c)}${open}`;
+  if (c.base && c.base.price !== null) return `<span>${esc(c.base.why)}${c.via ? '（' + esc(c.listCode) + ' の定価）' : ''}</span>${prevHtml(c)}${stockHtml(c)}${open}`;
+  if (c.variantOf) return `<span>${esc(c.variantOf)} の枝番つき（キャスター変更・特注など）です。単価を入れてください${c.refPrice !== null ? '（' + esc(c.variantOf) + ' なら ' + yen(c.refPrice) + '）' : ''}</span>${prevHtml(c)}${stockHtml(c)}${open}`;
+  if (c.base && c.base.list !== null) return `<span>定価 ${yen(c.base.list)}。掛け率が決まらないので、単価を入れてください</span>${prevHtml(c)}${stockHtml(c)}${open}`;
+  return `<span>${c.manual ? '' : '定価リストにない品です。単価を入れてください'}</span>${prevHtml(c)}${stockHtml(c)}${open}`;
 }
 function refreshSide() {
   COMP = Q.compute(DATA, DOC, ENV);
