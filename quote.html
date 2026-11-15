@@ -8,8 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261115h"></script>
-<script src="quote_store.js?v=20261115a"></script>
+<script src="quote_core.js?v=20261115i"></script>
+<script src="quote_store.js?v=20261115b"></script>
 <script src="quote_ai.js?v=20261115b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
@@ -86,6 +86,7 @@
   .line{padding:6px 0}
   .line .why{font-size:12px;color:var(--sub);margin:3px 0 0 2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   .line .why s{color:var(--mute)}
+  .line .why .prev{color:var(--navy)}
   .price{padding:6px 2px}
   .del{border:0;background:none;color:var(--mute);cursor:pointer;font-size:16px;padding:0}
   .del:hover{color:var(--red)}
@@ -296,7 +297,7 @@ let AI = null, aiFiles = [], aiBusy = false, aiOpen = false, aiSrcOpen = false;
 async function init() {
   $('loginBtn').onclick = login;
   if (PARAMS.has('demo')) {
-    await new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'quote_demo.js?v=20261114a'; s.onload = ok; s.onerror = ng; document.head.appendChild(s); });
+    await new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'quote_demo.js?v=20261115b'; s.onload = ok; s.onerror = ng; document.head.appendChild(s); });
     account = QuoteDemo.user; store = QuoteStore.demo(QuoteDemo); AI = QuoteAI.mock(QuoteDemo); $('demoBadge').hidden = false;
     return start();
   }
@@ -316,7 +317,7 @@ async function getToken() {
   try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
   catch { return (await msalInstance.acquireTokenPopup({ scopes: SCOPES })).accessToken; }
 }
-function startReal() { store = QuoteStore.create({ getToken, P, confirm: m => confirm(m) }); AI = QuoteAI.relay({ call: store.call }); return start(); }
+function startReal() { store = QuoteStore.create({ getToken, P, Q, confirm: m => confirm(m) }); AI = QuoteAI.relay({ call: store.call }); return start(); }
 
 async function start() {
   $('loginScreen').style.display = 'none'; $('app').style.display = 'block';
@@ -335,6 +336,8 @@ async function start() {
   status(errs.length ? '読めなかったもの：' + errs.join('、') : '', errs.length ? 'error' : '');
   $('lstatus').innerHTML = '<option value="">状態：すべて</option>' + Q.STATUSES.map(s => `<option>${s}</option>`).join('');
   bindShell();
+  // 前回の受注単価は、開いた後に裏で読む（受注明細が大きいので、最初は少し時間がかかる）
+  store.loadHistory().then(h => { if (h) { ENV.history = h; if (DOC) refresh(); } }).catch(e => console.warn('前回の受注単価', e));
   if (PARAMS.get('doc')) { try { return openDoc(await store.getDoc(PARAMS.get('doc'))); } catch (e) { toast('書類を開けませんでした'); } }
   newDoc();
 }
@@ -632,6 +635,13 @@ document.addEventListener('click', e => {
   if (a === 'del') { DOC.lines.splice(i, 1); if (!DOC.lines.length) DOC.lines.push({ code: '', qty: 1 }); openLine = -1; }
   else if (a === 'open') openLine = openLine === i ? -1 : i;
   else if (a === 'reset') { l.ov = null; }
+  else if (a === 'prev') {
+    // 前回の受注単価にする。基本の単価がある行は「今回だけ特別・継続の特価」として記録に残る。ない行は、単価の欄に入れる
+    const c = COMP.lines[DOC.lines.slice(0, i).filter(x => x.code || x.name || P.num(x.price) !== null).length];
+    if (!c || !c.prev) return;
+    if (c.base && c.base.price !== null) l.ov = Object.assign({}, l.ov, { price: c.prev.unit, k: null, once: true, reason: l.ov && Q.REASONS.includes(l.ov.reason) ? l.ov.reason : '継続の特価' });
+    else l.price = c.prev.unit;
+  }
   else if (e.target.dataset.kind) { l.ov = l.ov || {}; const k = e.target.dataset.kind, was = l.ov.reason === Q.WRONG ? 'wrong' : l.ov.once ? 'once' : ''; l.ov.once = k === 'once' && was !== 'once'; l.ov.reason = k === 'wrong' && was !== 'wrong' ? Q.WRONG : (k === 'once' && Q.REASONS.includes(l.ov.reason) ? l.ov.reason : ''); }
   else if (e.target.dataset.reason) { l.ov = l.ov || {}; l.ov.reason = l.ov.reason === e.target.dataset.reason ? '' : e.target.dataset.reason; }
   else return;
@@ -694,13 +704,19 @@ function fareWhy() {
   return `<span class="chips">${[Q.ONCE, Q.WRONG].map(r => `<button class="chip${DOC.fareReason === r ? ' on' : ''}" data-fk="${r}">${r}</button>`).join('')}</span>`
     + (DOC.fareReason === Q.WRONG ? `<input type="text" id="fareMemo" style="flex:1 1 100%;width:100%" value="${esc(DOC.fareMemo ?? '')}" placeholder="正しくはどう決まりますか（必ずひとこと。ルールを直す人が読みます）">` : '');
 }
+// 前回の受注単価（同じ取引先・同じ品目）。今の単価と違うときは、押すとその単価になる
+function prevHtml(c) {
+  const p = c.prev; if (!p) return '';
+  const same = c.unit === p.unit;
+  return `<span class="prev">${p.from === 'sha' ? '同じ社名の前回' : '前回の受注'} ${yen(p.unit)}（${esc(p.date)}）${same ? '・同じ' : ''}</span>${same ? '' : '<button class="link" data-a="prev">この単価にする</button>'}`;
+}
 function whyHtml(c, i) {
   const open = `<button class="link" data-a="open">${openLine === i ? '閉じる' : (c.base && c.base.price !== null ? '変える' : '補足・納期')}</button>`;
-  if (c.changed) return `<s>基本 ${yen(c.base.price)}</s><span>→ 今回 ${yen(c.unit)}</span><span class="pill warn">${esc(c.reason || '理由を選んでください')}</span>${open}`;
-  if (c.base && c.base.price !== null) return `<span>${esc(c.base.why)}${c.via ? '（' + esc(c.listCode) + ' の定価）' : ''}</span>${open}`;
-  if (c.variantOf) return `<span>${esc(c.variantOf)} の枝番つき（キャスター変更・特注など）です。単価を入れてください${c.refPrice !== null ? '（' + esc(c.variantOf) + ' なら ' + yen(c.refPrice) + '）' : ''}</span>${open}`;
-  if (c.base && c.base.list !== null) return `<span>定価 ${yen(c.base.list)}。掛け率が決まらないので、単価を入れてください</span>${open}`;
-  return `<span>${c.manual ? '' : '定価リストにない品です。単価を入れてください'}</span>${open}`;
+  if (c.changed) return `<s>基本 ${yen(c.base.price)}</s><span>→ 今回 ${yen(c.unit)}</span><span class="pill warn">${esc(c.reason || '理由を選んでください')}</span>${prevHtml(c)}${open}`;
+  if (c.base && c.base.price !== null) return `<span>${esc(c.base.why)}${c.via ? '（' + esc(c.listCode) + ' の定価）' : ''}</span>${prevHtml(c)}${open}`;
+  if (c.variantOf) return `<span>${esc(c.variantOf)} の枝番つき（キャスター変更・特注など）です。単価を入れてください${c.refPrice !== null ? '（' + esc(c.variantOf) + ' なら ' + yen(c.refPrice) + '）' : ''}</span>${prevHtml(c)}${open}`;
+  if (c.base && c.base.list !== null) return `<span>定価 ${yen(c.base.list)}。掛け率が決まらないので、単価を入れてください</span>${prevHtml(c)}${open}`;
+  return `<span>${c.manual ? '' : '定価リストにない品です。単価を入れてください'}</span>${prevHtml(c)}${open}`;
 }
 function refreshSide() {
   COMP = Q.compute(DATA, DOC, ENV);

@@ -85,6 +85,32 @@
     return m;
   }
 
+  // ---------- 前回の受注単価 ----------
+  // 受注明細から「取引先 × 品目 → いちばん新しい受注の単価」を作る。h：{ c:{ "得意先コード|品目": [単価, 日付] }, s:{ "社名コード|品目": … } }
+  // 2026-06〜11 の受注では、前回の受注がある行の 74％が前回と同じ単価だった（ルールにない特別単価も、定価のない部品も）
+  function historyNew() { return { c: {}, s: {} }; }
+  //   r: { date:"YYYY-MM-DD", cust, sha, code, qty, unit, ret:返品か }。運賃の行・返品・0円（サンプル）は入れない
+  function historyPush(h, r) {
+    var u = num(r.unit);
+    if (!r.code || r.code === "FR" || r.ret || !(num(r.qty) > 0) || u === null || u <= 0 || !r.cust) return;
+    var k = key(r.code), v = [u, ymd(r.date)];
+    var put = function (m, id) { if (!m[id] || m[id][1] <= v[1]) m[id] = v; };
+    put(h.c, r.cust + "|" + k);
+    if (r.sha) put(h.s, r.sha + "|" + k);
+  }
+  // 返す：{ unit, date, from:"cust"（同じ取引先）|"sha"（同じ社名） } か null
+  function prevOf(h, cust, codes) {
+    if (!h || !cust) return null;
+    var ks = []; (codes || []).forEach(function (c) { var k = key(c); if (k && ks.indexOf(k) < 0) ks.push(k); });
+    var find = function (m, id, from) {
+      if (!id) return null;
+      var best = null;
+      ks.forEach(function (k) { var v = (m || {})[id + "|" + k]; if (v && (!best || v[1] > best.date)) best = { unit: v[0], date: v[1], from: from }; });
+      return best;
+    };
+    return find(h.c, cust.code, "cust") || find(h.s, cust.shaCode, "sha");
+  }
+
   // ---------- 単価 ----------
   // その単価の決め手を、短いことばにする（行の下に出す）
   function whyText(r) {
@@ -194,6 +220,10 @@
       var alt = (kk[key(l.listCode)] || []).map(weighted).filter(Boolean)[0];
       return alt || l.listCode;
     };
+    // 前回の受注単価（同じ取引先・同じ品目。なければ同じ社名の別の支店）。参考に見せるだけで、単価は変えない
+    if (env.history && cust) lines.forEach(function (l) {
+      if (l.code) l.prev = prevOf(env.history, cust, [l.code, l.listCode].concat(kk[key(l.listCode || l.code)] || []));
+    });
     var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) { return { code: fareCode(l), qty: l.qty, ship: l.ship }; });
     var f = { amount: null, explain: [], warnings: [] };
     if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
@@ -325,7 +355,7 @@
       lines: comp.lines.map(function (l) {
         return { code: l.code, listCode: l.listCode, name: l.name, qty: l.qty, unitName: l.unitName, unit: l.unit, amount: l.amount,
           list: l.base ? l.base.list : null, basePrice: l.base ? l.base.price : null, baseWhy: l.base ? l.base.why : "",
-          changed: l.changed, reason: l.reason, wrong: !!l.wrong, memo: l.memo, manual: l.manual || !!l.noRule, cost: l.cost };
+          changed: l.changed, reason: l.reason, wrong: !!l.wrong, memo: l.memo, prev: l.prev ? l.prev.unit : null, manual: l.manual || !!l.noRule, cost: l.cost };
       })
     };
     var cust = doc.cust || {};
@@ -397,7 +427,7 @@
     return steps;
   }
 
-  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, historyNew: historyNew, historyPush: historyPush, prevOf: prevOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

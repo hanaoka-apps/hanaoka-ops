@@ -266,4 +266,32 @@ assert.equal(c.fare.reason, '');
   assert.equal(t.left, 0);
 }
 
+// --- 前回の受注単価 ---
+{
+  const h = Q.historyNew();
+  Q.historyPush(h, { date: '2026-08-01', cust: 'C1', sha: 'G9', code: 'UDL25', qty: 1, unit: 74000 });
+  Q.historyPush(h, { date: '2026-09-10', cust: 'C1', sha: 'G9', code: 'UDL25', qty: 2, unit: 72000 }); // 新しいほうが残る
+  Q.historyPush(h, { date: '2026-07-01', cust: 'C1', sha: 'G9', code: 'UDL25', qty: 2, unit: 70000 }); // 古いものは上書きしない
+  Q.historyPush(h, { date: '2026-10-01', cust: 'C1', sha: 'G9', code: 'FR', qty: 1, unit: 3900 });     // 運賃
+  Q.historyPush(h, { date: '2026-10-02', cust: 'C1', sha: 'G9', code: 'UDL25', qty: 1, unit: 0 });     // 0円（サンプル）
+  Q.historyPush(h, { date: '2026-10-03', cust: 'C1', sha: 'G9', code: 'UDL25', qty: 1, unit: 60000, ret: true }); // 返品
+  Q.historyPush(h, { date: '2026-09-20', cust: 'C2', sha: 'G9', code: 'T-1', qty: 1, unit: 16000 });   // 同じ社名の別の支店
+  assert.deepEqual(Q.prevOf(h, B, ['UDL25']), { unit: 72000, date: '2026-09-10', from: 'cust' });
+  assert.deepEqual(Q.prevOf(h, B, ['T1']), { unit: 16000, date: '2026-09-20', from: 'sha' }); // 書き方違いはそろえる・社名で探す
+  assert.equal(Q.prevOf(h, B, ['ZZZ']), null);
+  assert.equal(Q.prevOf(h, null, ['UDL25']), null);
+  const e3 = { items, index: env.index, history: h };
+  // 型式（UDL250）で入れても、品目コード（UDL25）の前回が出る。単価は変えない
+  let r = Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), e3);
+  assert.equal(r.lines[0].prev.unit, 72000);
+  assert.equal(r.lines[0].unit, 75900);
+  assert.equal(r.lines[0].changed, false);
+  assert.equal(Q.toRecord(doc({}), r, '', '').data.snap.lines[0].prev, 72000);
+  // 前回がなければ何も出ない
+  r = Q.compute(data, doc({ lines: [{ code: 'PB', qty: 1 }] }), e3);
+  assert.equal(r.lines[0].prev, null);
+  r = Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), env);
+  assert.equal(r.lines[0].prev, undefined);
+}
+
 console.log('ok test_quote_core');
