@@ -178,4 +178,20 @@ assert.deepEqual(Q.search(list, 'c1', 8).map(x => x.id), [1, 2]);
 assert.deepEqual(Q.search(list, '見本　東京', 8).map(x => x.id), [1]);
 assert.deepEqual(Q.search(list, '', 8), []);
 
+// --- 送料の重さ：定価の行はハイフンつき（T-2）、重さの行はハイフンなし（T2）でも、同じ型式として重さを使う ---
+{
+  const d2 = Object.assign({}, data, { prices: data.prices.concat([
+    { 型式: 'T-2', 品名: '見本台車2', 定価: 40000, 適用開始日: '2026-01-01', 商品の種類: '台車' },
+    { 型式: 'T2', 品名: '', 定価: null, 適用開始日: '2026-01-01', 商品の種類: '台車', 運賃の重量kg: 60 },
+  ]) });
+  const e2 = { items, index: Q.buildIndex(d2.prices) };
+  const base = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }] }), env);
+  for (const code of ['T-2', 'T2', 't-2']) {
+    const r = Q.compute(d2, doc({ lines: [{ code, qty: 2 }] }), e2);
+    assert.equal(r.lines[0].listCode, 'T-2');
+    assert.equal(r.fare.kg, 120);
+    assert.equal(r.fare.amount, base.fare.amount); // 60kg×2 で同じ送料
+  }
+}
+
 console.log('ok test_quote_core');
