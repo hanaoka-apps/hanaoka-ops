@@ -237,4 +237,30 @@ assert.equal(c.fare.reason, '');
   assert.ok(/定価リストにない/.test(f[0].result[0]));
 }
 
+// --- 見積書を出すまで あと○項目 ---
+{
+  const td = d => Q.todo(d, Q.compute(data, d, env));
+  let d = Object.assign(Q.blank('quote', '2026-11-14', '見本 太郎'), {});
+  let t = td(d);
+  assert.deepEqual(t.items.map(x => x.key), ['cust', 'lines', 'price', 'pref']); // 決まった4つ
+  assert.equal(t.left, 4);
+  d = doc({ lines: [{ code: 'UDL25', qty: 2 }] });
+  t = td(d);
+  assert.equal(t.left, 0);
+  assert.ok(t.notes.length === Q.compute(data, d, env).checks.filter(x => x.level !== 'warn').length); // 知っておくことは数に入れない
+  // 数量がない行は、その行の番号を返す
+  t = td(doc({ lines: [{ code: 'UDL25', qty: 2 }, { code: 'T1', qty: null }] }));
+  assert.deepEqual(t.items.filter(x => !x.done).map(x => [x.key, x.line]), [['lines', 1]]);
+  // 変えたときだけ「変えた理由」が出る。選ぶまで残る
+  t = td(doc({ lines: [{ code: 'UDL25', qty: 2, ov: { price: 70000 } }] }));
+  assert.deepEqual(t.items.filter(x => !x.done).map(x => [x.key, x.line]), [['reason', 0]]);
+  t = td(doc({ lines: [{ code: 'UDL25', qty: 2, ov: { price: 70000, reason: '数量' } }] }));
+  assert.equal(t.items.length, 5); assert.equal(t.left, 0);
+  t = td(doc({ lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0 }));
+  assert.deepEqual(t.items.filter(x => !x.done).map(x => x.key), ['fareReason']);
+  // 送料を手で入れたら、県がなくても「届け先の県」は済み
+  t = td(doc({ dest: { name: '', pref: '', personal: false }, lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0, fareReason: Q.ONCE }));
+  assert.equal(t.left, 0);
+}
+
 console.log('ok test_quote_core');

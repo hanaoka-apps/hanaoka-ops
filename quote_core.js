@@ -262,6 +262,27 @@
     else if (fare.changed) add("info", "送料を基本（" + (fare.rule === null ? "なし" : fmt(fare.rule)) + "）から変えています");
     return out;
   }
+  // 「見積書を出すまで あと○項目」。決まった4つ（取引先・商品と数量・単価・届け先の県）と、
+  // 単価や送料を変えたときだけ出る「変えた理由」。notes＝知っておくこと（直すものではないので、数に入れない）
+  //   返す：{ items:[{ key, label, done, line }], left, notes:[文] }。line＝直す行の番号（comp.lines の順。なければ -1）
+  function todo(doc, comp) {
+    var cust = doc.cust, lines = comp.lines, fare = comp.fare;
+    var first = function (f) { for (var i = 0; i < lines.length; i++) if (f(lines[i])) return i; return -1; };
+    var noQty = first(function (l) { return !(l.qty > 0); }), noUnit = first(function (l) { return l.unit === null; });
+    var needWhy = function (l) { return l.changed && (!l.reason || (l.wrong && !String(l.memo || "").trim())); };
+    var items = [
+      { key: "cust", label: "取引先", done: !!(cust && (cust.name || cust.code)), line: -1 },
+      { key: "lines", label: "商品と数量", done: lines.length > 0 && noQty < 0, line: noQty },
+      { key: "price", label: "単価", done: lines.length > 0 && noUnit < 0, line: noUnit },
+      { key: "pref", label: "届け先の県（送料）", done: !!(doc.dest && doc.dest.pref) || num(doc.fareManual) !== null, line: -1 }
+    ];
+    if (lines.some(function (l) { return l.changed; }) || fare.changed) {
+      var w = first(needWhy), fareNg = fare.changed && (!fare.reason || (fare.wrong && !String(fare.memo || "").trim()));
+      items.push({ key: w >= 0 || !fareNg ? "reason" : "fareReason", label: "変えた理由", done: w < 0 && !fareNg, line: w });
+    }
+    return { items: items, left: items.filter(function (x) { return !x.done; }).length,
+      notes: comp.checks.filter(function (c) { return c.level !== "warn"; }).map(function (c) { return c.text; }) };
+  }
   function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
 
   // ---------- 見積書に載せる行 ----------
@@ -373,7 +394,7 @@
     return steps;
   }
 
-  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
