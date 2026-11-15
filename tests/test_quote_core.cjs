@@ -63,15 +63,18 @@ assert.ok(c.checks.some(x => x.level === 'info' && /数量/.test(x.text)));
 c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 1, ov: { price: 75900 } }] }), env);
 assert.equal(c.lines[0].changed, false);
 
-// --- 定価は納期で選ぶ ---
+// --- 定価は見積日で選ぶ（出荷の予定日では選ばない） ---
 c = Q.compute(data, doc({ date: '2026-10-20', lines: [{ code: 'UDL250', qty: 1 }] }), env);
 assert.equal(c.priceDate, '2026-10-20');
 assert.equal(c.lines[0].unit, 69000); // 改定前の定価 120000×0.575
 assert.ok(c.checks.some(x => /2026-11-01 に定価が変わります/.test(x.text)));
 c = Q.compute(data, doc({ date: '2026-10-20', shipDate: '2026-11-10', lines: [{ code: 'UDL250', qty: 1 }] }), env);
-assert.equal(c.priceDate, '2026-11-10');
-assert.equal(c.lines[0].unit, 75900); // 納期が改定日より後 → 新しい定価
-assert.ok(c.checks.some(x => /新しい定価で出しています/.test(x.text)));
+assert.equal(c.priceDate, '2026-10-20');
+assert.equal(c.lines[0].unit, 69000); // 出荷が改定日より後でも、見積日の定価
+c = Q.compute(data, doc({ date: '2026-11-10', lines: [{ code: 'UDL250', qty: 1 }] }), env);
+assert.equal(c.lines[0].unit, 75900); // 見積日が改定日より後 → 新しい定価
+assert.ok(c.checks.some(x => /2026-11-01 に定価が変わりました/.test(x.text))); // 改定してすぐは知らせる
+assert.ok(Q.REASONS.includes('価格改定前の見積'));
 
 // --- 候補にない品：手入力の行 ---
 c = Q.compute(data, doc({ lines: [{ manual: true, name: '特注の台', price: 5000, qty: 3 }] }), env);
