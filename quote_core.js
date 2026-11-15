@@ -47,13 +47,15 @@
   // ---------- 品目コードの読み替え ----------
   // 定価リストの型式を、ならした名前で引けるようにする。priced＝定価がある型式、any＝重さだけの行も含む
   function buildIndex(prices) {
-    var priced = {}, any = {};
+    // same＝ならすと同じになる型式の書き方ぜんぶ（XA-BT2 と XABT2）。送料の重さを探すのに使う
+    var priced = {}, any = {}, same = {};
     (prices || []).forEach(function (p) {
       var k = key(p.型式); if (!k) return;
       if (!any[k]) any[k] = p.型式;
       if (num(p.定価) !== null && !priced[k]) priced[k] = p.型式;
+      var s = same[k] || (same[k] = []); if (s.indexOf(p.型式) < 0) s.push(p.型式);
     });
-    return { priced: priced, any: any };
+    return { priced: priced, any: any, same: same };
   }
   // 入れた型式・品目コードから、定価リストの型式を決める。
   //   ① そのまま（書き方違いはそろえる）→ ② 品目マスタの「価格表記載名」（UDL25 → UDL250）
@@ -179,11 +181,14 @@
     var hasWeight = function (c) { var r = c && P.listPriceRow(data.prices, c, priceDate, true); return !!r && num(r.運賃の重量kg) !== null; };
     //  ① 入れたコードの行 → ② 読み替えた型式の行 → ③ 同じ価格表記載名を持つ品目コードの行（UDL250 と入れたときの UDL25）
     var kk = env._kk || (env._kk = kakakuIndex(env.items));
+    //  どの段でも、ハイフンのあり・なしだけが違う書き方（XA-BT2 と XABT2）は同じ型式として探す
+    var weighted = function (c) { return ((index.same || {})[key(c)] || []).filter(hasWeight)[0]; };
     var fareCode = function (l) {
-      var own = index.any[key(l.code)];
-      if (own && hasWeight(own)) return own;
-      if (hasWeight(l.listCode)) return l.listCode;
-      var alt = (kk[key(l.listCode)] || []).map(function (c) { return index.any[key(c)]; }).filter(hasWeight)[0];
+      var own = weighted(l.code);
+      if (own) return own;
+      var list = weighted(l.listCode);
+      if (list) return list;
+      var alt = (kk[key(l.listCode)] || []).map(weighted).filter(Boolean)[0];
       return alt || l.listCode;
     };
     var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) { return { code: fareCode(l), qty: l.qty, ship: l.ship }; });
