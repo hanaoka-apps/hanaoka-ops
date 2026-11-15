@@ -221,8 +221,10 @@ function wire() {
   });
   $('stages').addEventListener('click', e => {
     const l = e.target.closest('[data-late]'); const c = e.target.closest('[data-stage]');
-    if (l) FS.late = !FS.late;
-    else if (c) { const k = c.dataset.stage; if (!k) { FS.stages = []; FS.late = false; } else { const i = FS.stages.indexOf(k); if (i >= 0) FS.stages.splice(i, 1); else FS.stages.push(k); } }
+    // 状況は1つだけ選ぶ（押したものだけを表示。同じものをもう一度押すと「すべて」に戻る）。
+    // 前は複数を足し合わせて選べたが、何が表示中なのか分かりにくく、外し忘れも起きた
+    if (l) { const was = FS.late; FS.stages = []; FS.late = !was; }
+    else if (c) { const k = c.dataset.stage, was = !FS.late && FS.stages.length === 1 && FS.stages[0] === k; FS.late = false; FS.stages = (!k || was) ? [] : [k]; }
     else return;
     ulog(P.page + '_filter', l ? '予定日超過' : '状況', true); doSearch();
   });
