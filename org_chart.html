@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>組織計画</title>
 <!--
-  組織計画（役員限定）：年齢入りの組織図を「直せる」ようにしたもの。
+  組織計画（社長・室長・専務だけ。専用サイトに保存）：年齢入りの組織図を「直せる」ようにしたもの。
   ------------------------------------------------------------
   できること
     ・人の修正（氏名・所属・生年・入社年・退職年・役職の履歴・備考）。年齢は「年 − 生年」で自動計算
@@ -15,7 +15,7 @@
     ・人ごとの役割メモ／追加の役割（例：松島さん＝国内営業部長の職務）
     ・55歳（賃金制度：昇給表がゾーン3に切替）・60歳（定年）の強調
   保存先（ブラウザではなく SharePoint）
-    executive-workspace ／ 給与データ／組織計画／org_plan.json（給与の人事情報と同じ場所・同じ権限）
+    専用のSharePointサイト（ORG_SITE_PATH）／組織計画／org_plan.json。見られるのはそのサイトのメンバーだけ
     保存のたびに、読み込み時と中身が変わっていないかを確かめ、初回は backup/ にも控えを置く。
     SharePoint 側にもバージョン履歴が残る。手元用に JSON の書き出し／読み込みもある。
   ★個人情報（氏名・年齢）はこのファイルに書かない。データは SharePoint の org_plan.json だけにある。
@@ -124,13 +124,13 @@
 
 <div id="empty" class="hide">
   <h2>まだ組織データがありません</h2>
-  <p class="muted">SharePoint（給与データ／組織計画）に org_plan.json がまだ無い状態です。<br>初回だけ、用意した org_plan.json を読み込むと、そのまま SharePoint に保存されます。</p>
+  <p class="muted">専用のSharePointサイト（組織計画）に org_plan.json がまだ無い状態です。<br>初回だけ、用意した org_plan.json を読み込むと、そのまま SharePoint に保存されます。</p>
   <p><button class="btn pri" onclick="document.getElementById('fileIn').click()">org_plan.json を読み込む</button>
      <button class="btn" onclick="E.startBlank()">空の状態から始める</button></p>
 </div>
 
 <div id="appRoot" class="hide">
-  <div class="warn-banner" id="banner">⚠ 従業員の個人情報（氏名・年齢）です。役員限定。保存先は SharePoint（給与データ／組織計画）。</div>
+  <div class="warn-banner" id="banner">⚠ 従業員の個人情報（氏名・年齢）です。社長・室長・専務だけ。保存先は専用のSharePointサイト。</div>
   <header class="top">
     <h1>組織計画</h1>
     <select id="scSel" title="案"></select>
@@ -173,6 +173,20 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const REMOTE = '組織計画/org_plan.json';
+/* 保存先は、社長・室長・専務だけが入る専用のSharePointサイト（給与データのサイトとは別）。
+   サイトを作ったら、そのURLの「hanaokacorp.sharepoint.com/sites/○○」を下の形で書く。
+   空のままだと、保存も読み込みもしない（うっかり別のサイトに個人情報を置かないため） */
+const ORG_SITE_PATH = '';   // 例：'hanaokacorp.sharepoint.com:/sites/org-plan'
+let _orgDrive = null;
+async function orgDriveId() {
+  if (!ORG_SITE_PATH) throw new Error('保存先のSharePointサイトがまだ設定されていません。専用サイトを作ってから設定します。');
+  if (_orgDrive) return _orgDrive;
+  const site = await graphGet('/sites/' + ORG_SITE_PATH);
+  const drive = await graphGet('/sites/' + site.id + '/drive');
+  return (_orgDrive = drive.id);
+}
+async function orgGetFile(rel, opts) { return graphGet('/drives/' + await orgDriveId() + '/root:/' + encodeURI(rel) + ':/content', opts); }
+async function orgPutFile(rel, obj) { return graphPutJSON('/drives/' + await orgDriveId() + '/root:/' + encodeURI(rel) + ':/content', obj); }
 const YMIN = 2025, YMAX = 2045;
 const VIEWS = [
   ['all','全社',null], ['so','営業・業務センター',['営業','ソリューション','業務センター']],
@@ -546,13 +560,13 @@ const E = {
     if (demo) { setStatus('デモ（保存されません）', 'dirty'); return; }
     if (saving) return; saving = true; clearTimeout(saveTimer); setStatus('保存中…');
     try {
-      const remote = await payrollGetFile(REMOTE, { allow404: true });
+      const remote = await orgGetFile(REMOTE, { allow404: true });
       if (remote && lastKnown && remote.updated !== lastKnown) {
         if (!confirm('読み込んだあとに、別の場所で組織計画が更新されています（' + remote.updated + '）。\nこのまま上書きすると、その変更は消えます（SharePointの履歴には残ります）。上書きしますか？')) { setStatus('保存を中止しました（未保存）', 'dirty'); saving = false; return; }
       }
-      if (!backedUp && remote) { await payrollPutFile('組織計画/backup/org_plan_' + stamp() + '.json', remote); backedUp = true; }
+      if (!backedUp && remote) { await orgPutFile('組織計画/backup/org_plan_' + stamp() + '.json', remote); backedUp = true; }
       DB.updated = new Date().toISOString();
-      await payrollPutFile(REMOTE, DB);
+      await orgPutFile(REMOTE, DB);
       lastKnown = DB.updated; dirty = false;
       const d = new Date(); setStatus('SharePointに保存済み ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'));
     } catch (e) { setStatus('保存できませんでした：' + (e.message || e), 'dirty'); }
@@ -595,7 +609,7 @@ function demoDB() {
       { id: 'ideal', name: '理想案', note: '', people: JSON.parse(JSON.stringify(people)), slots: [{ id: 'ds1', dept: 'ソリューション', title: '一般職', count: 1, from: 2027, ageMin: 22, ageMax: 34, profile: '英語メイン（デモ）', note: '' }] }] };
 }
 async function loadFromSharePoint() {
-  const r = await payrollGetFile(REMOTE, { allow404: true });
+  const r = await orgGetFile(REMOTE, { allow404: true });
   if (!r) { $('#gate').classList.add('hide'); $('#empty').classList.remove('hide'); return; }
   DB = migrate(r); lastKnown = r.updated || null; if (!DB.activeId) DB.activeId = DB.scenarios[0].id;
   showApp(); setStatus('SharePointから読み込み済み');
