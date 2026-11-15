@@ -181,6 +181,20 @@ const VIEWS = [
 let DB = null, view = 'all', year = 2026, mode = 'chart', panel = null, dirty = false, demo = false;
 let lastKnown = null, backedUp = false, saveTimer = null, saving = false;
 
+const GRADES = ['R1-1','R1-2','R1-3','R2','R3-1','R3-2','R4-1','R4-2','R5'];
+const gl = p => (p.grades || []).slice().sort((a, b) => a.from - b.from);
+function gradeAt(p, y) { let g = null; for (const e of gl(p)) if (e.from <= y) g = e.grade; return g; }
+/* 等級は役職とは別に持つ。古いデータ（役職名に MGR1-3 / R2-1 などが入っている）は、読み込み時に等級へ写す */
+function migrate(db) {
+  db.scenarios.forEach(sn => sn.people.forEach(p => {
+    if (p.grades) return; p.grades = []; let prev = null;
+    tl(p).forEach(e => { const m = /(?:MGR|R)\d(?:-\d)?/.exec(e.title || ''); const g = m ? m[0] : null; if (g && g !== prev) { p.grades.push({ from: e.from, grade: g }); prev = g; } });
+  }));
+  return db;
+}
+const ml = p => (p.moves || []).slice().sort((a, b) => a.from - b.from);
+function deptAt(p, y) { let d = p.dept; for (const e of ml(p)) if (e.from <= y) d = e.dept; return d; }
+const ageNote = (p, y) => p.birth != null && y != null ? `（${y - p.birth}歳）` : '';
 const sc = () => DB.scenarios.find(s => s.id === DB.activeId) || DB.scenarios[0];
 const findP = id => sc().people.find(p => p.id === id);
 const findSlot = id => sc().slots.find(s => s.id === id);
@@ -213,7 +227,7 @@ const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0');
 
 /* ---------- 画面 ---------- */
 function stats(depts, y) {
-  const ps = []; depts.forEach(d => sc().people.filter(p => p.dept === d.name && present(p, y)).forEach(p => ps.push(p)));
+  const ps = []; depts.forEach(d => sc().people.filter(p => deptAt(p, y) === d.name && present(p, y)).forEach(p => ps.push(p)));
   const ages = ps.map(p => ageAt(p, y)).filter(a => a != null);
   const slots = sc().slots.filter(s => depts.some(d => d.name === s.dept) && y >= s.from);
   return { n: ps.length, avg: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null,
@@ -233,16 +247,18 @@ function personRow(p, y) {
   const tags = [];
   if (hl && a != null && a >= 60) tags.push('<span class="tag r">60歳〜（定年）</span>');
   else if (hl && a != null && a >= 55) tags.push('<span class="tag r">55歳〜（ゾーン3）</span>');
-  ev.forEach(e => tags.push(`<span class="tag r">${esc(e.t)}</span>`));
-  if (ok) { const pt = titleAt(p, y - 1); if (t && pt && pt !== t && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 ${esc(pt)}→${esc(t)}</span>`); }
-  if (ok && p.retire != null) tags.push(`<span class="tag r">${p.retire}年 退職予定</span>`);
+  ev.forEach(e => tags.push(`<span class="tag r">${esc(e.t)}${ageNote(p, e.y)}</span>`));
+  if (ok) { const pt = titleAt(p, y - 1); if (t && pt && pt !== t && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 ${esc(pt)}→${esc(t)}${ageNote(p, y)}</span>`); }
+  if (ok) { const g = gradeAt(p, y), pg = gradeAt(p, y - 1); if (g && pg && g !== pg && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 等級 ${esc(pg)}→${esc(g)}${ageNote(p, y)}</span>`); }
+  if (ok) { const d = deptAt(p, y), pd = deptAt(p, y - 1); if (pd !== d && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 異動 ${esc(pd)}→${esc(d)}${ageNote(p, y)}</span>`); }
+  if (ok && p.retire != null) tags.push(`<span class="tag r">${p.retire}年 退職予定${ageNote(p, p.retire)}</span>`);
   if (!ok && p.retire != null && y >= p.retire) tags.push('<span class="tag">退職</span>');
   if (!ok && p.join != null && y < p.join) tags.push(`<span class="tag">${p.join}年入社</span>`);
   if (p.flag || p.birth == null) tags.push('<span class="tag n">要確認</span>');
   if (p.note) tags.push(`<span class="tag n" title="${esc(p.note)}">備考</span>`);
   const sel = panel && panel.type === 'person' && panel.id === p.id ? ' sel' : '';
   return `<div class="p${sel}${ok ? '' : ' off'}" data-pid="${esc(p.id)}" style="${ok ? '' : 'opacity:.4'}">
-    <div><span class="nm">${esc(p.name)}</span><span class="chip" data-role="${esc(p.id)}">${esc(t || '役職なし')}</span>
+    <div><span class="nm">${esc(p.name)}</span><span class="chip" data-role="${esc(p.id)}">${esc(t || '役職なし')}</span>${gradeAt(p, y) ? `<span class="chip" style="margin-left:2px">${esc(gradeAt(p, y))}</span>` : ''}
     ${p.roleNote ? `<div class="rn">${esc(p.roleNote)}</div>` : ''}</div>
     <div class="age" ${a != null && ok ? `style="color:var(--${band(a)})"` : ''}>${a == null ? '—' : a}<small>歳</small></div>
     ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}</div>`;
@@ -251,7 +267,7 @@ const urgBadge = s => s.urgency === '急募' ? '<span class="urg hot">急募</sp
 function slotRow(s) {
   const sel = panel && panel.type === 'slot' && panel.id === s.id ? ' sel' : '';
   const ar = s.ageMin || s.ageMax ? `${s.ageMin || ''}〜${s.ageMax || ''}歳` : '';
-  return `<div class="p slot${sel}" data-sid="${esc(s.id)}"><div><span class="nm">＋募集</span><span class="chip">${esc(s.title || '役職未定')}</span>${urgBadge(s)}
+  return `<div class="p slot${sel}" data-sid="${esc(s.id)}"><div><span class="nm">＋募集</span><span class="chip">${esc(s.title || '役職未定')}</span>${s.grade ? `<span class="chip" style="margin-left:2px">${esc(s.grade)}</span>` : ''}${urgBadge(s)}
     <div class="rn">${esc(s.profile || '')}</div></div><div class="age" style="font-size:15px">${s.count ? s.count + '名' : '人数未定'}<small>${ar ? '<br>' + ar : ''}</small></div></div>`;
 }
 function renderMain() {
@@ -274,7 +290,7 @@ function chartHTML(depts) {
     <div class="dist">${bands.map(b => { const n = S.ages.filter(a => a >= b[1] && a <= b[2]).length; return `<div class="drow"><span class="l">${b[0]}</span><span class="b" style="width:${n / mx * 220}px;background:var(--${b[3]})"></span><span>${n}</span></div>`; }).join('')}</div>
     <div class="grid">`;
   depts.forEach(d => {
-    const ps = sc().people.filter(p => p.dept === d.name && (ghost || present(p, year)));
+    const ps = sc().people.filter(p => deptAt(p, year) === d.name && (ghost || present(p, year)));
     const n = ps.filter(p => present(p, year)).length;
     const ages = ps.filter(p => present(p, year)).map(p => ageAt(p, year)).filter(a => a != null);
     const avg = ages.length ? (ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1) : '—';
@@ -292,7 +308,7 @@ function tableHTML(depts) {
   h += `<div class="tw"><table><thead><tr><th class="l">氏名／${year}年の役職</th>${ys.map(y => `<th class="${y === year ? 'cur' : ''}">${y}</th>`).join('')}</tr></thead><tbody>`;
   depts.forEach(d => {
     h += `<tr class="dh"><td colspan="${ys.length + 1}">${esc(d.name)}</td></tr>`;
-    sc().people.filter(p => p.dept === d.name).forEach(p => {
+    sc().people.filter(p => deptAt(p, year) === d.name).forEach(p => {
       h += `<tr data-pid="${esc(p.id)}"><td class="l"><b>${esc(p.name)}</b><small>${esc(titleAt(p, year) || '')}</small></td>`;
       let prev = null;
       ys.forEach(y => {
@@ -358,7 +374,7 @@ function renderPanel() {
     const p = findP(panel.id); if (!p) { E.close(); return; }
     const t = titleAt(p, year), a = ageAt(p, year);
     let h = `<div class="ph"><h3>${esc(p.name)}</h3>${close}</div>
-      <div class="muted">${esc(p.dept)}／${year}年：${esc(t || '役職なし')}${a != null ? '・' + a + '歳' : ''}</div>
+      <div class="muted">${esc(deptAt(p, year))}／${year}年：${esc(t || '役職なし')}${a != null ? '・' + a + '歳' : ''}</div>
       <div class="ptabs"><button class="mode${panel.tab === 'role' ? ' on' : ''}" onclick="E.tab('role')">役職の役割</button><button class="mode${panel.tab === 'edit' ? ' on' : ''}" onclick="E.tab('edit')">この人を修正</button></div>`;
     h += planForm(p);
     if (panel.tab === 'role') {
@@ -385,6 +401,7 @@ function renderPanel() {
     el.innerHTML = `<div class="ph"><h3>募集</h3>${close}</div><div class="frm">
       <label>所属</label><select onchange="E.s('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === s.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
       ${titleList()}<label>募集する役職</label><input list="titles" value="${esc(s.title)}" oninput="E.s('${k}','title',this.value)">
+      <label>等級（予定）</label><select onchange="E.s('${k}','grade',this.value)">${['', ...GRADES].map(g => `<option value="${g}"${(s.grade || '') === g ? ' selected' : ''}>${g || '（未設定）'}</option>`).join('')}</select>
       <label>緊急度</label><select onchange="E.s('${k}','urgency',this.value)">${['', '急募', 'ゆくゆく'].map(u => `<option value="${u}"${(s.urgency || '') === u ? ' selected' : ''}>${u || '（未設定）'}</option>`).join('')}</select>
       <div class="row2"><div><label>人数（未定は0）</label><input type="number" min="0" value="${s.count == null ? '' : s.count}" oninput="E.s('${k}','count',this.value)"></div>
       <div><label>開始年</label><input type="number" value="${s.from == null ? '' : s.from}" oninput="E.s('${k}','from',this.value)"></div></div>
@@ -405,22 +422,30 @@ function planForm(p) {
   const k = esc(p.id), t = titleAt(p, year), d60 = p.birth != null ? p.birth + 60 : '';
   return titleList() + `<div class="defbox frm"><b>役職・退職の予定</b>
     <label>昇格・役職変更：何年から、何の役職に（現在：${esc(t || 'なし')}）</label>
-    <div class="row"><input id="pq-y" type="number" value="${year}"><input id="pq-t" list="titles" placeholder="例：部長"><button class="btn sm pri" onclick="E.promote('${k}')">登録</button></div>
+    <div class="row"><input id="pq-y" type="number" value="${year}" oninput="E.hint('${k}','pq-y',this.value)"><input id="pq-t" list="titles" placeholder="例：部長"><span class="muted" id="pq-y-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.promote('${k}')">登録</button></div>
+    <label>等級の変更：何年から、どの等級に（現在：${esc(gradeAt(p, year) || 'なし')}）</label>
+    <div class="row"><input id="pq-gy" type="number" value="${year}" oninput="E.hint('${k}','pq-gy',this.value)"><input id="pq-g" list="grades" placeholder="例：R2"><span class="muted" id="pq-gy-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.gradeSet('${k}')">登録</button></div>
+    <datalist id="grades">${GRADES.map(g => `<option value="${g}">`).join('')}</datalist>
+    <label>部署移動：何年から、どの部署に（現在：${esc(deptAt(p, year))}）</label>
+    <div class="row"><input id="pq-my" type="number" value="${year}" oninput="E.hint('${k}','pq-my',this.value)"><select id="pq-md">${DB.depts.map(d => `<option${d.name === deptAt(p, year) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select><span class="muted" id="pq-my-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.moveSet('${k}')">登録</button></div>
     <label>退職予定：何年から不在にするか${d60 ? '（60歳になる年は ' + d60 + '年）' : ''}</label>
-    <div class="row"><input id="pq-r" type="number" value="${p.retire != null ? p.retire : d60}"><button class="btn sm pri" onclick="E.retirePlan('${k}')">退職予定にする</button>${p.retire != null ? `<button class="btn sm" onclick="E.retireClear('${k}')">取り消し</button>` : ''}</div></div>`;
+    <div class="row"><input id="pq-r" type="number" value="${p.retire != null ? p.retire : d60}" oninput="E.hint('${k}','pq-r',this.value)"><span class="muted" id="pq-r-a" style="white-space:nowrap">${ageNote(p, p.retire != null ? p.retire : d60).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.retirePlan('${k}')">退職予定にする</button>${p.retire != null ? `<button class="btn sm" onclick="E.retireClear('${k}')">取り消し</button>` : ''}</div></div>`;
 }
 function personForm(p) {
   const k = esc(p.id), num = v => v == null ? '' : v;
   let h = `<div class="frm"><label>氏名</label><input value="${esc(p.name)}" oninput="E.p('${k}','name',this.value)">
-    <label>所属</label><select onchange="E.p('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === p.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+    <label>最初の所属</label><select onchange="E.p('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === p.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+    <label>異動の履歴（「この年から」その部署）</label>${ml(p).map((e, i) => `<div class="row"><input type="number" value="${e.from}" onchange="E.mv('${k}',${i},'from',this.value)"><select onchange="E.mv('${k}',${i},'dept',this.value)">${DB.depts.map(d => `<option${d.name === e.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select><span class="muted" style="white-space:nowrap">${ageNote(p, e.from).replace(/[（）]/g, '')}</span><button class="btn sm" onclick="E.mvDel('${k}',${i})">×</button></div>`).join('')}
     <div class="row2"><div><label>生年（西暦）</label><input type="number" value="${num(p.birth)}" oninput="E.p('${k}','birth',this.value)"></div>
     <div><label>入社年（途中入社のみ）</label><input type="number" value="${num(p.join)}" oninput="E.p('${k}','join',this.value)"></div>
     <div><label>退職年（この年から不在）</label><input type="number" value="${num(p.retire)}" oninput="E.p('${k}','retire',this.value)"></div></div>
     <p><button class="btn sm" onclick="E.retireNow('${k}')">${year}年から退職扱いにする</button></p>
     <label>役職の履歴（「この年から」その役職）</label>`;
-  tl(p).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.from}" onchange="E.tl('${k}',${i},'from',this.value)"><input value="${esc(e.title)}" onchange="E.tl('${k}',${i},'title',this.value)"><button class="btn sm" onclick="E.tlDel('${k}',${i})">×</button></div>`; });
-  h += `<p><button class="btn sm" onclick="E.tlAdd('${k}')">＋${year}年から役職変更</button></p><label>できごと（定年・役職定年・退職予定など）</label>`;
-  (p.events || []).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.y}" onchange="E.ev('${k}',${i},'y',this.value)"><input value="${esc(e.t)}" onchange="E.ev('${k}',${i},'t',this.value)"><button class="btn sm" onclick="E.evDel('${k}',${i})">×</button></div>`; });
+  tl(p).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.from}" onchange="E.tl('${k}',${i},'from',this.value)"><input value="${esc(e.title)}" onchange="E.tl('${k}',${i},'title',this.value)"><span class="muted" style="white-space:nowrap">${ageNote(p, e.from).replace(/[（）]/g, '')}</span><button class="btn sm" onclick="E.tlDel('${k}',${i})">×</button></div>`; });
+  h += `<p><button class="btn sm" onclick="E.tlAdd('${k}')">＋${year}年から役職変更</button></p><label>等級の履歴（「この年から」その等級）</label>`;
+  gl(p).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.from}" onchange="E.gr('${k}',${i},'from',this.value)"><input list="grades" value="${esc(e.grade)}" onchange="E.gr('${k}',${i},'grade',this.value)"><span class="muted" style="white-space:nowrap">${ageNote(p, e.from).replace(/[（）]/g, '')}</span><button class="btn sm" onclick="E.grDel('${k}',${i})">×</button></div>`; });
+  h += `<datalist id="grades">${GRADES.map(g => `<option value="${g}">`).join('')}</datalist><p><button class="btn sm" onclick="E.grAdd('${k}')">＋${year}年から等級変更</button></p><label>できごと（定年・役職定年・退職予定など）</label>`;
+  (p.events || []).forEach((e, i) => { h += `<div class="row"><input type="number" value="${e.y}" onchange="E.ev('${k}',${i},'y',this.value)"><input value="${esc(e.t)}" onchange="E.ev('${k}',${i},'t',this.value)"><span class="muted" style="white-space:nowrap">${ageNote(p, e.y).replace(/[（）]/g, '')}</span><button class="btn sm" onclick="E.evDel('${k}',${i})">×</button></div>`; });
   h += `<p><button class="btn sm" onclick="E.evAdd('${k}')">＋できごと</button></p>
     <label>追加の役割（その人だけの職務。役職とは別に右に出る）</label>
     ${DB.roleDefs.map(r => `<label style="display:flex;gap:6px;align-items:center;color:var(--text);margin:2px 0"><input type="checkbox" style="width:auto" ${(p.roleKeys || []).includes(r.key) ? 'checked' : ''} onchange="E.rk('${k}','${esc(r.key)}',this.checked)">${esc(r.name)}</label>`).join('')}
@@ -463,6 +488,20 @@ const E = {
     const p = findP(id); p.titles = (p.titles || []).filter(x => x.from !== y); p.titles.push({ from: y, title: t });
     touch(); renderMain(); renderPanel();
   },
+  gradeSet(id) {
+    const y = Number($('#pq-gy').value), g = $('#pq-g').value.trim(); if (!y || !g) { alert('年と等級を入れてください'); return; }
+    const p = findP(id); p.grades = (p.grades || []).filter(x => x.from !== y); p.grades.push({ from: y, grade: g }); touch(); renderMain(); renderPanel();
+  },
+  gr(id, i, f, v) { const p = findP(id), e = gl(p)[i]; if (f === 'from') e.from = Number(v); else e.grade = v; touch(); renderMain(); renderPanel(); },
+  grAdd(id) { const p = findP(id); p.grades = p.grades || []; p.grades.push({ from: year, grade: gradeAt(p, year) || '' }); touch(); renderMain(); renderPanel(); },
+  grDel(id, i) { const p = findP(id), e = gl(p)[i]; p.grades = p.grades.filter(x => x !== e); touch(); renderMain(); renderPanel(); },
+  hint(id, inp, v) { const p = findP(id), el = document.getElementById(inp + '-a'); if (el) el.textContent = p && p.birth != null && v ? (Number(v) - p.birth) + '歳' : ''; },
+  moveSet(id) {
+    const y = Number($('#pq-my').value), d = $('#pq-md').value; if (!y) { alert('年を入れてください'); return; }
+    const p = findP(id); p.moves = (p.moves || []).filter(x => x.from !== y); p.moves.push({ from: y, dept: d }); touch(); renderMain(); renderPanel();
+  },
+  mv(id, i, f, v) { const p = findP(id), e = ml(p)[i]; if (f === 'from') e.from = Number(v); else e.dept = v; touch(); renderMain(); renderPanel(); },
+  mvDel(id, i) { const p = findP(id), e = ml(p)[i]; p.moves = p.moves.filter(x => x !== e); touch(); renderMain(); renderPanel(); },
   retirePlan(id) {
     const y = Number($('#pq-r').value); if (!y) { alert('年を入れてください'); return; }
     const p = findP(id); p.retire = y; p.events = (p.events || []).filter(e => e.t !== '退職予定'); p.events.push({ y, t: '退職予定' });
@@ -496,7 +535,7 @@ const E = {
       try {
         const d = JSON.parse(rd.result); if (!d.scenarios || !d.roleDefs || !d.depts) throw new Error('組織計画のデータではありません');
         if (DB && !confirm('今のデータをこのファイルの内容に入れ替えます。よろしいですか？（保存するまで SharePoint は変わりません）')) return;
-        DB = d; if (!DB.activeId) DB.activeId = DB.scenarios[0].id; panel = null; showApp(); touch();
+        DB = migrate(d); if (!DB.activeId) DB.activeId = DB.scenarios[0].id; panel = null; showApp(); touch();
       } catch (e) { alert('読み込めませんでした：' + e.message); }
       inp.value = '';
     };
@@ -558,7 +597,7 @@ function demoDB() {
 async function loadFromSharePoint() {
   const r = await payrollGetFile(REMOTE, { allow404: true });
   if (!r) { $('#gate').classList.add('hide'); $('#empty').classList.remove('hide'); return; }
-  DB = r; lastKnown = r.updated || null; if (!DB.activeId) DB.activeId = DB.scenarios[0].id;
+  DB = migrate(r); lastKnown = r.updated || null; if (!DB.activeId) DB.activeId = DB.scenarios[0].id;
   showApp(); setStatus('SharePointから読み込み済み');
 }
 function showGateError(e) {
@@ -567,7 +606,7 @@ function showGateError(e) {
   $('#signInBtn').disabled = false;
 }
 async function boot() {
-  if (new URLSearchParams(location.search).get('demo') === '1') { demo = true; DB = demoDB(); showApp(); setStatus('デモ（保存されません）'); return; }
+  if (new URLSearchParams(location.search).get('demo') === '1') { demo = true; DB = migrate(demoDB()); showApp(); setStatus('デモ（保存されません）'); return; }
   try {
     const ok = await payrollInitAuth();
     if (ok) await loadFromSharePoint();
