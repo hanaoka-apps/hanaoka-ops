@@ -66,5 +66,7 @@
   var settings = { company: "見本車輌株式会社", regNo: "T0-0000-0000-0000", bank: "見本銀行 見本支店 当座 0000000",
     offices: [{ name: "本社", zip: "000-0000", addr: "東京都見本区見本1-2-3", tel: "03-0000-0000", fax: "03-0000-0001" },
       { name: "大阪支店", zip: "000-0001", addr: "大阪府見本市見本4-5-6", tel: "06-0000-0000", fax: "06-0000-0001" }] };
-  root.QuoteDemo = { rules: rules, customers: customers, items: items, settings: settings, user: { name: "見本 太郎", username: "demo" } };
+  // 前回の受注単価（架空）。形は quote_core.js の historyNew と同じ
+  var history = { c: { "100101|LF25": [72000, "2026-09-18"], "100101|P/9001": [1800, "2026-10-02"], "100201|DCLS": [15200, "2026-08-21"] }, s: { "9001|LF25": [72000, "2026-09-18"], "9001|P/9001": [1800, "2026-10-02"], "9002|DCLS": [15200, "2026-08-21"] } };
+  root.QuoteDemo = { rules: rules, customers: customers, items: items, settings: settings, history: history, user: { name: "見本 太郎", username: "demo" } };
 })(typeof window !== "undefined" ? window : this);
