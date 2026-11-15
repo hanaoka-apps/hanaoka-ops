@@ -198,10 +198,10 @@
     if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
     var rule = f.amount === null || f.amount === undefined ? null : (logis && f.quoteAmount !== undefined ? (kind === "order" ? f.orderAmount : f.quoteAmount) : f.amount);
     var manualFare = num(doc.fareManual);
-    var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule, reason: "",
+    var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule, reason: "", memo: "",
       carrier: f.carrier || "", region: f.region || "", kg: f.kg || 0, how: f.method || "", explain: f.explain || [], warnings: f.warnings || [] };
 
-    if (fare.changed) fare.reason = doc.fareReason || "";
+    if (fare.changed) { fare.reason = doc.fareReason || ""; fare.memo = doc.fareMemo || ""; }
     fare.wrong = fare.reason === WRONG;
 
     // 合計（消費税は切り捨て）
@@ -232,7 +232,7 @@
       // 取引先がまだのときは、定価のある品の単価は出せなくて当たり前なので、言わない（取引先を選べば出る）
       if (l.unit === null && !(noCust && l.listCode)) add("warn", nm + " の単価が入っていません");
       if (l.changed && !l.reason) add("warn", nm + " の単価を変えた理由を選んでください");
-      else if (l.wrong) add("info", nm + " の単価は「アプリの計算が違う」として記録します（あとでルールを見直します）");
+      else if (l.wrong && !String(l.memo || "").trim()) add("warn", nm + " の単価：正しくはどう決まるかを、ひとこと書いてください（ルールを直す人が読みます）");
       else if (l.changed) add("info", nm + " の単価を基本から変えています（" + l.reason + "）");
       if (l.base && l.base.isStock) add("info", nm + " は在庫価格です。見積書には「御社在庫品」と書きます");
       // 「単価を入れてください」で足りる注意は重ねて出さない（確認することを増やさない）
@@ -258,7 +258,7 @@
     // AI が読み取ったときの注意（quote_ai.js）。取引先を選んだら、取引先の注意は出さない
     ((doc.ai && doc.ai.notes) || []).forEach(function (n) { if (!(n.k === "cust" && cust && (cust.name || cust.code))) add("info", n.text); });
     if (fare.changed && !fare.reason) add("warn", "送料を変えた理由を選んでください（今回だけ特別／アプリの計算が違う）");
-    else if (fare.wrong) add("info", "送料は「アプリの計算が違う」として記録します（あとでルールを見直します）");
+    else if (fare.wrong && !String(fare.memo || "").trim()) add("warn", "送料：正しくはどう決まるかを、ひとこと書いてください（ルールを直す人が読みます）");
     else if (fare.changed) add("info", "送料を基本（" + (fare.rule === null ? "なし" : fmt(fare.rule)) + "）から変えています");
     return out;
   }
@@ -296,7 +296,7 @@
   function toRecord(doc, comp, who, now) {
     var snap = {
       priceDate: comp.priceDate, totals: comp.totals,
-      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, reason: comp.fare.reason, wrong: comp.fare.wrong, carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg },
+      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, reason: comp.fare.reason, wrong: comp.fare.wrong, memo: comp.fare.memo || "", carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg },
       margin: comp.margin ? comp.margin.rate : null,
       lines: comp.lines.map(function (l) {
         return { code: l.code, listCode: l.listCode, name: l.name, qty: l.qty, unitName: l.unitName, unit: l.unit, amount: l.amount,

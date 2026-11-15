@@ -205,7 +205,12 @@ assert.equal(c.lines[0].wrong, false);
 // 送料も同じ：変えたら理由を選ぶ
 c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0 }), env);
 assert.ok(c.checks.some(x => x.level === 'warn' && /送料を変えた理由/.test(x.text)));
+// 「アプリの計算が違う」は、正しい決め方をひとこと書くまで確認に残る
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 1, ov: { price: 70000, reason: Q.WRONG } }] }), env);
+assert.ok(c.checks.some(x => x.level === 'warn' && /ひとこと/.test(x.text)));
 c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0, fareReason: Q.WRONG }), env);
+assert.ok(c.checks.some(x => x.level === 'warn' && /送料：正しくは/.test(x.text)));
+c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareManual: 0, fareReason: Q.WRONG, fareMemo: '見本の決まり' }), env);
 assert.equal(c.fare.wrong, true);
 assert.ok(!c.checks.some(x => x.level === 'warn'));
 c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2 }], fareReason: Q.WRONG }), env); // 変えていなければ理由は残さない
