@@ -289,6 +289,7 @@ function wire() {
   });
   document.addEventListener('click', e => { const l = e.target.closest('a.track'); if (l) ulog(P.page + '_track', '', true); });
   $('helpBox').addEventListener('toggle', () => { if ($('helpBox').open) ulog(P.page + '_help', ''); });
+  const hp = document.querySelector('a[href="ec_viewer_help.html"]'); if (hp) hp.addEventListener('click', () => ulog(P.page + '_helppage', ''));   // 使い方のページを開いた回数だけ
   $('btn-reload').onclick = async () => {
     ulog(P.page + '_reload', '');
     $('btn-reload').disabled = true; setStatus('loading', '読み込み中…');
@@ -309,7 +310,7 @@ async function initAuth() {
     catch (e) { setStatus('err', '設定ファイル（ship_config.json・' + P.configUrl + '）を読めません'); return; }
     const n = account.name || account.username;
     $('sp-user').textContent = n; $('sp-avatar').textContent = (n || '?').charAt(0);
-    $('helpBody').innerHTML = P.help;
+    $('helpBody').innerHTML = P.help + (P.helpReceipt && CONF.receipt && CONF.receipt.enabled === true ? P.helpReceipt : '');   // 領収証の説明は、領収証が有効なときだけ
     setStatus('loading', 'SharePoint（SharedMasters）から読み込み中…');
     drawPeriods(); wire();
     const q = new URLSearchParams(location.search).get('q'); if (q) $('f-q').value = q;
