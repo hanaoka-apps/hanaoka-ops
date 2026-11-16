@@ -364,7 +364,7 @@ assert.equal(c.fare.reason, '');
   // 新しい納品先は、名前を書くまで済まない
   od.order.dest = 'new'; r = Q.compute(data, od, e4);
   assert.ok(Q.todo(od, r).items.some(x => x.key === 'dest' && !x.done));
-  od.order.destName = '見本の新しい現場'; r = Q.compute(data, od, e4);
+  od.order.destName = '見本の新しい現場'; od.order.nd = { addr: '埼玉県見本市1-1', tel: '000-0000-0000' }; r = Q.compute(data, od, e4); // 名前・住所・電話がそろうと済む
   assert.ok(Q.todo(od, r).items.every(x => x.done));
   // 品目コードが決まらない行・倉庫が決まらない行
   const od2 = Object.assign(Q.blank('order', '2026-11-16', ''), { cust: B, shipDate: '2026-11-20', dest: { name: '', pref: '埼玉県', personal: false }, order: { dest: 'N1', destName: 'x' }, lines: [{ manual: true, name: '特注の台', price: 5000, qty: 1 }, { code: 'T1', qty: 1 }] });
@@ -422,6 +422,26 @@ assert.equal(c.fare.reason, '');
   assert.ok(parts.length >= 1);
   assert.equal(parts.reduce((s, p) => s + p.amount, 0), r.fare.rule);
   assert.equal(parts.reduce((s, p) => s + p.kg, 0), r.fare.kg);
+}
+
+// --- 受注伝票：運送会社は送料の地域から自動で入る／新しい納品先は名前・住所・電話がそろうまで残る ---
+{
+  const od = Object.assign(Q.blank('order', '2026-11-16', ''), { cust: B, shipDate: '2026-11-20', dest: { name: '', pref: '埼玉県', personal: false }, lines: [{ code: 'UDL250', qty: 1 }] });
+  od.order.dest = 'N1';
+  let r = Q.compute(data, od, env);
+  assert.equal(r.fare.carrier, '西濃運輸');
+  assert.equal(r.order.head.carrier, '西濃利用'); // 選んでいなければ、送料の運送会社
+  od.order.carrier = 'トナミ利用';
+  assert.equal(Q.compute(data, od, env).order.head.carrier, 'トナミ利用'); // 選んだらそちら
+  od.order.dest = 'new'; od.order.nd = { name: '見本の新しい現場' };
+  r = Q.compute(data, od, env);
+  let it = Q.todo(od, r).items.find(x => x.key === 'dest');
+  assert.equal(it.done, false);
+  assert.ok(/住所・電話がまだ/.test(it.label));
+  od.order.nd = { name: '見本の新しい現場', addr: '埼玉県見本市1-1', tel: '000-0000-0000' };
+  r = Q.compute(data, od, env);
+  assert.equal(Q.todo(od, r).items.find(x => x.key === 'dest').done, true);
+  assert.equal(r.order.head.nd.addr, '埼玉県見本市1-1');
 }
 
 console.log('ok test_quote_core');
