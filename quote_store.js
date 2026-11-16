@@ -22,7 +22,8 @@
   }
   // 得意先マスタ・品目マスタ（CSV）を、画面で使う形にする
   function customersFrom(text, P) {
-    return P.toObjects(text).map(P.customerFromMaster).filter(function (c) { return c.code && !/^[×✕☓]/.test(c.name) && !/^[×✕☓]/.test(c.fullName); });
+    // 「得意先名索引」（カナの読み）も持つ。ひらがなで探せるように
+    return P.toObjects(text).map(function (o) { var c = P.customerFromMaster(o); c.kana = o["得意先名索引"] || ""; return c; }).filter(function (c) { return c.code && !/^[×✕☓]/.test(c.name) && !/^[×✕☓]/.test(c.fullName); });
   }
   function itemsFrom(text, P) {
     var rows = P.parseCSV(text), H = rows[0] || [], ix = function (n) { return H.indexOf(n); };

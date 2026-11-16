@@ -26,8 +26,10 @@
 
   // 探すときの表記ゆれをならす（全角・半角、大文字・小文字、ハイフン・空白、小さいカナ）
   var SMALL = { "ァ": "ア", "ィ": "イ", "ゥ": "ウ", "ェ": "エ", "ォ": "オ", "ャ": "ヤ", "ュ": "ユ", "ョ": "ヨ", "ッ": "ツ", "ヮ": "ワ" };
+  // ひらがなはカタカナにそろえる（「やまぜん」で「ﾔﾏｾﾞﾝ」「ヤマゼン」が見つかるように。半角カナは NFKC で全角になる）
   function norm(s) {
-    return String(s || "").normalize("NFKC").toUpperCase().replace(/[ァィゥェォャュョッヮ]/g, function (c) { return SMALL[c]; })
+    return String(s || "").normalize("NFKC").replace(/[ぁ-ゖ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0x60); })
+      .toUpperCase().replace(/[ァィゥェォャュョッヮ]/g, function (c) { return SMALL[c]; })
       .replace(/[\s\-‐－ー―・\/／_.()（）]/g, "");
   }
   // 一覧から探す。空白で区切った言葉が全部入っているものを、先頭が合うものから順に n 件
