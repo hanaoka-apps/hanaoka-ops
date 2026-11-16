@@ -81,6 +81,13 @@
   .tag.r { border-color:var(--warn); color:var(--warn); } .tag.n { border-style:dashed; }
   .urg { display:inline-block; font-size:11px; font-weight:700; padding:0 8px; border-radius:999px; margin-left:4px; }
   .urg.hot { background:var(--warn); color:#fff; } .urg.soon { border:1px solid var(--accent); color:var(--accent); }
+  .dc.hot { border:3px solid var(--warn); } .dc.soon { border:3px solid var(--accent); }
+  .hirepill { background:#fff; color:var(--warn); font-weight:800; font-size:12px; padding:1px 10px; border-radius:999px; margin-right:6px; }
+  .p.slot { border-left:7px solid var(--accent); padding-top:10px; padding-bottom:10px; background:color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+  .p.slot.hot { border-left-color:var(--warn); background:color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+  .p.slot .nm { font-size:15px; font-weight:800; color:var(--accent); } .p.slot.hot .nm { color:var(--warn); }
+  .urg { font-size:13px !important; padding:1px 11px !important; }
+  .sc.hire { background:var(--warn); border-color:var(--warn); color:#fff; } .sc.hire span { color:#fff; }
   .slot { background:color-mix(in srgb, var(--accent) 4%, var(--panel)); border-top:1px dashed var(--accent); }
   .slot .nm { font-weight:500; color:var(--accent); }
   .tw { overflow:auto; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
@@ -160,6 +167,7 @@
     <span class="spacer"></span>
     <button class="btn sm pri" onclick="E.addSlot()">＋募集を追加</button>
     <button class="btn sm" onclick="E.addP()">＋社員を追加（既存の人）</button>
+    <button class="btn sm danger" onclick="E.purge()" title="表示中の年より前に退職した人を、この案から削除">退職済みを削除</button>
   </div>
   <div class="work">
     <main id="main"></main>
@@ -199,11 +207,21 @@ const GRADES = ['R1-1','R1-2','R1-3','R2','R3-1','R3-2','R4-1','R4-2','R5'];
 const gl = p => (p.grades || []).slice().sort((a, b) => a.from - b.from);
 function gradeAt(p, y) { let g = null; for (const e of gl(p)) if (e.from <= y) g = e.grade; return g; }
 /* 等級は役職とは別に持つ。古いデータ（役職名に MGR1-3 / R2-1 などが入っている）は、読み込み時に等級へ写す */
+const GCODE = /(?:MGR|R)\d(?:-\d)?/;
 function migrate(db) {
+  let changed = false;
   db.scenarios.forEach(sn => sn.people.forEach(p => {
-    if (p.grades) return; p.grades = []; let prev = null;
-    tl(p).forEach(e => { const m = /(?:MGR|R)\d(?:-\d)?/.exec(e.title || ''); const g = m ? m[0] : null; if (g && g !== prev) { p.grades.push({ from: e.from, grade: g }); prev = g; } });
+    if (!p.grades) { p.grades = []; let prev = null;
+      tl(p).forEach(e => { const m = GCODE.exec(e.title || ''); const g = m ? m[0] : null; if (g && g !== prev) { p.grades.push({ from: e.from, grade: g }); prev = g; } }); changed = true; }
+    /* 役職名に混ざっていた等級コード（MGR1-3 など）を取り除く。役職と等級が二重に「変更」と出ないようにする */
+    if (!db.titlesCleaned && p.titles && p.titles.some(e => GCODE.test(e.title || ''))) {
+      const out = []; let prev = null;
+      tl(p).forEach(e => { let t = (e.title || '').replace(GCODE, '').trim(); if (t !== prev) { out.push({ from: e.from, title: t }); prev = t; } });
+      p.titles = out; changed = true;
+    }
   }));
+  if (!db.titlesCleaned) { db.titlesCleaned = true; changed = true; }
+  db._migrated = changed;
   return db;
 }
 const ml = p => (p.moves || []).slice().sort((a, b) => a.from - b.from);
@@ -261,11 +279,11 @@ function personRow(p, y) {
   const tags = [];
   if (hl && a != null && a >= 60) tags.push('<span class="tag r">60歳〜（定年）</span>');
   else if (hl && a != null && a >= 55) tags.push('<span class="tag r">55歳〜（ゾーン3）</span>');
-  ev.forEach(e => tags.push(`<span class="tag r">${esc(e.t)}${ageNote(p, e.y)}</span>`));
+  ev.filter(e => !/退職予定/.test(e.t)).forEach(e => tags.push(`<span class="tag r">${esc(e.t)}${ageNote(p, e.y)}</span>`));
   if (ok) { const pt = titleAt(p, y - 1); if (t && pt && pt !== t && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 ${esc(pt)}→${esc(t)}${ageNote(p, y)}</span>`); }
   if (ok) { const g = gradeAt(p, y), pg = gradeAt(p, y - 1); if (g && pg && g !== pg && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 等級 ${esc(pg)}→${esc(g)}${ageNote(p, y)}</span>`); }
   if (ok) { const d = deptAt(p, y), pd = deptAt(p, y - 1); if (pd !== d && present(p, y - 1)) tags.push(`<span class="tag r">${y}年 異動 ${esc(pd)}→${esc(d)}${ageNote(p, y)}</span>`); }
-  if (ok && p.retire != null) tags.push(`<span class="tag r">${p.retire}年 退職予定${ageNote(p, p.retire)}</span>`);
+  if (ok) (p.events || []).filter(e => /退職予定/.test(e.t)).forEach(e => tags.push(`<span class="tag r">${esc(/\d/.test(e.t) ? e.t : e.y + '年 ' + e.t)}${ageNote(p, e.y)}</span>`));
   if (!ok && p.retire != null && y >= p.retire) tags.push('<span class="tag">退職</span>');
   if (!ok && p.join != null && y < p.join) tags.push(`<span class="tag">${p.join}年入社</span>`);
   if (p.flag || p.birth == null) tags.push('<span class="tag n">要確認</span>');
@@ -281,8 +299,8 @@ const urgBadge = s => s.urgency === '急募' ? '<span class="urg hot">急募</sp
 function slotRow(s) {
   const sel = panel && panel.type === 'slot' && panel.id === s.id ? ' sel' : '';
   const ar = s.ageMin || s.ageMax ? `${s.ageMin || ''}〜${s.ageMax || ''}歳` : '';
-  return `<div class="p slot${sel}" data-sid="${esc(s.id)}"><div><span class="nm">＋募集</span><span class="chip">${esc(s.title || '役職未定')}</span>${s.grade ? `<span class="chip" style="margin-left:2px">${esc(s.grade)}</span>` : ''}${urgBadge(s)}
-    <div class="rn">${esc(s.profile || '')}</div></div><div class="age" style="font-size:15px">${s.count ? s.count + '名' : '人数未定'}<small>${ar ? '<br>' + ar : ''}</small></div></div>`;
+  return `<div class="p slot${s.urgency === '急募' ? ' hot' : ''}${sel}" data-sid="${esc(s.id)}"><div><span class="nm">募集中：${esc(s.title || '役職未定')}</span>${s.grade ? `<span class="chip" style="margin-left:2px">${esc(s.grade)}</span>` : ''}${urgBadge(s)}
+    <div class="rn">${esc(s.profile || '')}</div></div><div class="age" style="font-size:19px;color:var(--${s.urgency === '急募' ? 'warn' : 'accent'})">${s.count ? s.count + '名' : '人数未定'}<small>${ar ? '<br>' + ar : ''}</small></div></div>`;
 }
 function renderMain() {
   const depts = viewDepts();
@@ -300,7 +318,7 @@ function chartHTML(depts) {
   let h = `<div class="sum"><div class="sc"><b>${S.n}</b><span>人（${year}年）</span></div>
     <div class="sc"><b>${S.avg == null ? '—' : S.avg.toFixed(1)}</b><span>平均年齢</span></div>
     <div class="sc"><b>${S.a55}</b><span>55歳以上</span></div><div class="sc"><b>${S.a60}</b><span>60歳以上</span></div>
-    <div class="sc"><b>${S.slots}</b><span>募集（${S.slotKinds}件）</span></div></div>
+    <div class="sc${S.slotKinds ? ' hire' : ''}"><b>${S.slots}</b><span>募集中（${S.slotKinds}件）</span></div></div>
     <div class="dist">${bands.map(b => { const n = S.ages.filter(a => a >= b[1] && a <= b[2]).length; return `<div class="drow"><span class="l">${b[0]}</span><span class="b" style="width:${n / mx * 220}px;background:var(--${b[3]})"></span><span>${n}</span></div>`; }).join('')}</div>
     <div class="grid">`;
   depts.forEach(d => {
@@ -309,8 +327,9 @@ function chartHTML(depts) {
     const ages = ps.filter(p => present(p, year)).map(p => ageAt(p, year)).filter(a => a != null);
     const avg = ages.length ? (ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1) : '—';
     const sl = sc().slots.filter(s => s.dept === d.name && year >= s.from);
-    h += `<div class="dc"><h2><span>${esc(d.name)}</span><span><small>${n}人・平均${avg}歳</small> <button data-adds="${esc(d.name)}">＋募集</button></span></h2>`;
-    h += ps.map(p => personRow(p, year)).join('') + sl.map(slotRow).join('');
+    const hc = sl.length ? (sl.some(x => x.urgency === '急募') ? ' hot' : ' soon') : '';
+    h += `<div class="dc${hc}"><h2><span>${esc(d.name)}</span><span>${sl.length ? `<span class="hirepill">募集 ${sl.reduce((a, x) => a + (x.count || 0), 0) || sl.length}名</span>` : ''}<small>${n}人・平均${avg}歳</small> <button data-adds="${esc(d.name)}">＋募集</button></span></h2>`;
+    h += sl.map(slotRow).join('') + ps.map(p => personRow(p, year)).join('');
     if (!ps.length && !sl.length) h += '<div class="p"><span class="muted">（いません）</span></div>';
     h += '</div>';
   });
@@ -477,6 +496,12 @@ const E = {
   tab(t) { panel.tab = t; renderPanel(); },
   openRole(k) { panel = { type: 'role', key: k }; renderPanel(); },
   p(id, f, v) { const p = findP(id); if (!p) return; p[f] = ['birth', 'join', 'retire'].includes(f) ? num(v) : v; if (f === 'dept') E.after(); else E.after(); },
+  purge() {
+    const gone = sc().people.filter(p => p.retire != null && p.retire <= year);
+    if (!gone.length) { alert(year + '年までに退職している人は、この案にいません。\n（年のスライダーを動かすと、基準の年が変わります）'); return; }
+    if (!confirm(year + '年までに退職している ' + gone.length + '人を、案「' + sc().name + '」から削除します。\n\n' + gone.map(p => p.name + '（' + deptAt(p, year) + '・' + p.retire + '年退職）').join('\n') + '\n\n他の案には残ります。元に戻すには、SharePointのバージョン履歴を使います。よろしいですか？')) return;
+    sc().people = sc().people.filter(p => !gone.includes(p)); panel = null; touch(); renderMain(); renderPanel();
+  },
   retireNow(id) { findP(id).retire = year; touch(); renderMain(); renderPanel(); },
   tl(id, i, f, v) { const p = findP(id), e = tl(p)[i]; if (f === 'from') e.from = Number(v); else e.title = v; touch(); renderMain(); renderPanel(); },
   tlAdd(id) { const p = findP(id); p.titles = p.titles || []; p.titles.push({ from: year, title: titleAt(p, year) || '' }); touch(); renderMain(); renderPanel(); },
@@ -518,10 +543,10 @@ const E = {
   mvDel(id, i) { const p = findP(id), e = ml(p)[i]; p.moves = p.moves.filter(x => x !== e); touch(); renderMain(); renderPanel(); },
   retirePlan(id) {
     const y = Number($('#pq-r').value); if (!y) { alert('年を入れてください'); return; }
-    const p = findP(id); p.retire = y; p.events = (p.events || []).filter(e => e.t !== '退職予定'); p.events.push({ y, t: '退職予定' });
+    const p = findP(id); p.retire = y; p.events = (p.events || []).filter(e => !/退職予定/.test(e.t)); p.events.push({ y, t: y + '年 退職予定' });
     touch(); renderMain(); renderPanel();
   },
-  retireClear(id) { const p = findP(id); p.retire = null; p.events = (p.events || []).filter(e => e.t !== '退職予定'); touch(); renderMain(); renderPanel(); },
+  retireClear(id) { const p = findP(id); p.retire = null; p.events = (p.events || []).filter(e => !/退職予定/.test(e.t)); touch(); renderMain(); renderPanel(); },
   hire(id) {
     const s = findSlot(id); if (!confirm('この募集を、社員（名前は後で入れる）に切り替えます。よろしいですか？')) return;
     const p = { id: uid('p'), name: '新しい人（採用）', dept: s.dept, birth: null, join: s.from, retire: null, titles: [{ from: s.from, title: s.title }], events: [], roleNote: s.profile || '', roleKeys: [], note: s.note || '', flag: true };
@@ -612,7 +637,7 @@ async function loadFromSharePoint() {
   const r = await orgGetFile(REMOTE, { allow404: true });
   if (!r) { $('#gate').classList.add('hide'); $('#empty').classList.remove('hide'); return; }
   DB = migrate(r); lastKnown = r.updated || null; if (!DB.activeId) DB.activeId = DB.scenarios[0].id;
-  showApp(); setStatus('SharePointから読み込み済み');
+  showApp(); setStatus('SharePointから読み込み済み'); if (DB._migrated) { delete DB._migrated; touch(); }
 }
 function showGateError(e) {
   $('#gateError').textContent = e.message || String(e);
