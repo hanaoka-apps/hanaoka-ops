@@ -162,4 +162,16 @@ t('印刷用の HTML：再発行・取消・見本（未発行）・社印・自
   assert.strictEqual(R.fileName(rec), '領収証_R-2026-00012');
 });
 
+t('収入印紙：基準の金額（設定）以上だけ。設定が空なら、判定しない（アプリは基準の値を持たない）', () => {
+  assert.strictEqual(R.stampNeeded(100000, 100000), true); assert.strictEqual(R.stampNeeded(99999, 100000), false); assert.strictEqual(R.stampNeeded(150000, 100000), true);
+  for (const th of [null, undefined, 0, -1, '', 'abc', NaN]) assert.strictEqual(R.stampNeeded(999999999, th), false, String(th));
+  assert.strictEqual(R.stampNeeded('120000', '100000'), true);
+});
+t('収入印紙の貼付欄：stampBox のときだけ印刷する', () => {
+  const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 150000, tax: 13636, issueDate: '2026-11-16', status: '発行済', reissueCount: 0 };
+  assert.ok(!/class="sb"/.test(R.printHtml(rec, R.SAMPLE_SETTINGS, {})));
+  const h = R.printHtml(rec, R.SAMPLE_SETTINGS, { stampBox: true });
+  assert.ok(/class="sb">収入印紙<br>貼付欄</.test(h));
+});
+
 console.log('ok receipt_core: ' + n + ' tests');
