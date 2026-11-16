@@ -155,6 +155,12 @@ button{cursor:pointer}
 .limn{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}.limn small{color:var(--sub);font-size:12px}
 .limst{font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px;white-space:nowrap}
 .limst.now{background:var(--green-soft);color:var(--green)}.limst.soon{background:var(--navy-soft);color:var(--navy)}.limst.end,.limst.off{background:var(--bg);color:var(--sub)}
+#upbar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:90;background:var(--txt);color:var(--surface);border-radius:12px;padding:10px 14px;display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;width:min(420px,calc(100vw - 32px));box-shadow:var(--shadow);font-size:13px}
+#upbar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#upbar em{font-style:normal;font-variant-numeric:tabular-nums}
+#upbar i{grid-column:1/-1;height:6px;border-radius:3px;background:rgba(255,255,255,.25);overflow:hidden}#upbar b{display:block;height:100%;width:0;background:var(--surface);transition:width .2s}
+.file .fname{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file .fsize{color:var(--sub);font-size:11px}
+.ficon{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 4px;border-radius:4px;color:#fff;font-size:10px;font-weight:800;letter-spacing:.02em}
+.ficon.word{background:#2b579a}.ficon.excel{background:#217346}.ficon.ppt{background:#c43e1c}.ficon.pdf{background:#d93025}
 .closeround{width:40px;height:40px;border-radius:50%;border:1px solid var(--line-strong);background:var(--surface);display:grid;place-items:center;flex:none;box-shadow:var(--shadow)}
 .closeround .icon{width:20px;height:20px}
 .postnav{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;background:var(--navy);color:var(--surface);padding:6px 8px;font-size:13px}
@@ -662,12 +668,47 @@ const store={get(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){retu
 const FILES={};let fseq=1;
 function regFile(f){const o={...f,id:'f'+(fseq++)};FILES[o.id]=o;return o}
 function ph(label,color){const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420"><rect width="640" height="420" fill="${color}"/><rect x="40" y="250" width="560" height="120" fill="#ffffff" opacity=".14"/><circle cx="520" cy="110" r="46" fill="#ffffff" opacity=".22"/><path d="M40 330 L200 190 L320 300 L420 220 L600 360 L40 360Z" fill="#ffffff" opacity=".2"/><text x="320" y="225" font-family="sans-serif" font-size="34" font-weight="700" fill="#ffffff" text-anchor="middle">${label}</text><text x="320" y="265" font-family="sans-serif" font-size="16" fill="#ffffff" opacity=".8" text-anchor="middle">（ダミー写真）</text></svg>`;return 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)}
-function readFiles(list){return Promise.all([...(list||[])].map(f=>new Promise(res=>{const o=regFile({name:f.name,size:f.size,type:f.type,img:/^image\//.test(f.type),video:/^video\//.test(f.type)});o.file=f;if(o.video){try{o.url=URL.createObjectURL(f)}catch(e){}res(o)}else if(o.img&&f.size<8e6){const r=new FileReader();r.onload=()=>{o.url=r.result;res(o)};r.onerror=()=>res(o);r.readAsDataURL(f)}else res(o)})))}
+/* 添付の決まり：写真は長い辺 1920px の JPEG に縮めて送る（1枚 300〜600KB ほど）。動画は 300MB まで */
+const IMG_MAX_EDGE=1920, IMG_QUALITY=0.82, VIDEO_MAX=300*1024*1024;
+const fmtSize=n=>!n?'':n<1024*1024?Math.max(1,Math.round(n/1024))+'KB':(n/1024/1024).toFixed(n<10*1024*1024?1:0)+'MB';
+async function shrinkImage(f){
+  // 縮めるのは写真（JPEG・HEIC・WebP）と、大きい PNG だけ。小さい PNG（画面の写しなど）・GIF はそのまま
+  if(!/^image\/(jpeg|png|webp|heic|heif)$/i.test(f.type))return f;
+  if(/png/i.test(f.type)&&f.size<1.5e6)return f;
+  if(/jpeg/i.test(f.type)&&f.size<400*1024)return f;
+  try{
+    const bmp=await createImageBitmap(f,{imageOrientation:'from-image'});   // スマホの写真の向きもそろえる
+    const sc=Math.min(1,IMG_MAX_EDGE/Math.max(bmp.width,bmp.height));const w=Math.round(bmp.width*sc),h=Math.round(bmp.height*sc);
+    const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(bmp,0,0,w,h);if(bmp.close)bmp.close();
+    const b=await new Promise(r=>c.toBlob(r,'image/jpeg',IMG_QUALITY));
+    if(!b||b.size>=f.size)return f;
+    return new File([b],f.name.replace(/\.[^.]+$/,'')+'.jpg',{type:'image/jpeg',lastModified:Date.now()});
+  }catch(e){console.warn('写真を縮められませんでした（そのまま送ります）',e);return f}
+}
+async function readFiles(list){const out=[];
+  for(const f0 of [...(list||[])]){
+    const isVid=/^video\//.test(f0.type);
+    if(isVid&&f0.size>VIDEO_MAX){toast(`「${f0.name}」は ${fmtSize(f0.size)} あり、動画の上限（300MB）を超えるため添付できません。短く切るか、画質を下げて撮り直してください`);continue}
+    const f=/^image\//.test(f0.type)?await shrinkImage(f0):f0;
+    const o=regFile({name:f.name,size:f.size,type:f.type,img:/^image\//.test(f.type),video:isVid,origSize:f0.size});o.file=f;
+    if(isVid||o.img){try{o.url=URL.createObjectURL(f)}catch(e){}}
+    out.push(o)}
+  return out}
+/* 送っている間の帯（画面の下）。text を null にすると消す */
+function upProgress(text,pct){let el=document.getElementById('upbar');if(text==null){if(el)el.remove();return}
+  if(!el){el=document.createElement('div');el.id='upbar';el.setAttribute('role','status');el.innerHTML='<span></span><i><b></b></i><em></em>';document.body.appendChild(el)}
+  el.querySelector('span').textContent=text;el.querySelector('b').style.width=Math.round((pct||0)*100)+'%';el.querySelector('em').textContent=Math.round((pct||0)*100)+'%'}
 const isMedia=f=>(f.img&&(f.url||f.itemId))||f.video;
 /* SharePoint に置いた写真・動画は、表示するときに一時的な URL を取りに行く（data-hyd） */
 const srcAttr=f=>f.url?`src="${f.url}"`:`data-hyd="${f.id}"`;
+/* 一覧・カードでは、SharePoint の縮小画像（サムネイル）を出す。動画も見本の画像だけ（再生は拡大したとき） */
+const thumbAttr=f=>f.url?`src="${f.url}"`:`data-hyd="${f.id}" data-thumb`;
+const vidThumb=f=>f.url?`<video src="${f.url}" muted preload="metadata"></video>`:f.itemId?`<img data-hyd="${f.id}" data-thumb alt="">`:`<img src="${f.poster}" alt="">`;
+/* 資料の種類のアイコン（Word・Excel・PowerPoint・PDF・CSV） */
+function docIcon(f){const e=(f.name.match(/\.([a-z0-9]+)$/i)||[])[1]||'';const t=/^docx?$/i.test(e)?['W','word']:/^(xlsx?|xlsm)$/i.test(e)?['X','excel']:/^csv$/i.test(e)?['CSV','excel']:/^pptx?$/i.test(e)?['P','ppt']:/^pdf$/i.test(e)?['PDF','pdf']:null;
+  return t?`<span class="ficon ${t[1]}">${t[0]}</span>`:ic('clip')}
 function filesHTML(fs){if(!fs||!fs.length)return '';const imgs=fs.filter(isMedia),docs=fs.filter(f=>!isMedia(f));
-  return `<div class="att">${imgs.length?`<div class="thumbs">${imgs.map(f=>f.video?`<button class="thumb vid" data-lb="${f.id}" aria-label="動画 ${esc(f.name)}を再生">${(f.url||f.itemId)?`<video ${srcAttr(f)} muted preload="metadata"></video>`:`<img src="${f.poster}" alt="">`}<span class="play">${ic('play')}</span><span class="vname">${esc(f.name)}</span></button>`:`<button class="thumb" data-lb="${f.id}" aria-label="${esc(f.name)}を拡大"><img ${srcAttr(f)} alt="${esc(f.name)}"></button>`).join('')}</div>`:''}${docs.length?`<div class="files">${docs.map(f=>`<button class="file" data-file="${f.id}">${ic('clip')}${esc(f.name)}</button>`).join('')}</div>`:''}</div>`}
+  return `<div class="att">${imgs.length?`<div class="thumbs">${imgs.map(f=>f.video?`<button class="thumb vid" data-lb="${f.id}" aria-label="動画 ${esc(f.name)}を再生">${vidThumb(f)}<span class="play">${ic('play')}</span><span class="vname">${esc(f.name)}</span></button>`:`<button class="thumb" data-lb="${f.id}" aria-label="${esc(f.name)}を拡大"><img ${thumbAttr(f)} alt="${esc(f.name)}"></button>`).join('')}</div>`:''}${docs.length?`<div class="files">${docs.map(f=>`<button class="file" data-file="${f.id}" title="${esc(f.name)}を開く">${docIcon(f)}<span class="fname">${esc(f.name)}</span>${f.size?`<small class="fsize num">${fmtSize(f.size)}</small>`:''}</button>`).join('')}</div>`:''}</div>`}
 /* 写真・動画の拡大表示。同じ投稿（コメント）の写真・動画が複数あるときは、
    左右にフリック・＜＞ボタン・キーボードの ←→ で次・前へ。閉じるのは ×・背景を押す・Esc */
 let LB=null;   // { list: 写真・動画の番号の並び, i: 今どれか }
@@ -1070,7 +1111,7 @@ function newsCard(w,lane){
    <div class="who">${av(w.user,'lg')}<div><div class="n">${esc(M[w.user].name)}</div><div class="t">${lane==='newsTab'||w.date!==TODAY?fmtTs(w.ts):rel(w.ts)}</div></div></div>
    <div class="ntags">${w.tags.map(t=>`<span class="ntag">#${esc(tagName(t))}</span>`).join('')}${w.products.map(t=>`<span class="ntag prod">${esc(tagName(t))}</span>`).join('')}</div>
    <h3 class="ntitle">${esc(w.title)}</h3>
-   ${media.length?`<div class="cmedia n${Math.min(2,media.length)}">${media.slice(0,2).map((f,i)=>`<span class="cm">${f.video?`${(f.url||f.itemId)?`<video ${srcAttr(f)} muted preload="metadata"></video>`:`<img src="${f.poster}" alt="">`}<span class="play">${ic('play')}</span>`:`<img ${srcAttr(f)} alt="${esc(f.name)}">`}${i===1&&media.length>2?`<span class="cmore">他${media.length-2}枚</span>`:''}</span>`).join('')}</div>`:`<div class="excerpt">${esc(w.body)}</div>`}
+   ${media.length?`<div class="cmedia n${Math.min(2,media.length)}">${media.slice(0,2).map((f,i)=>`<span class="cm">${f.video?`${vidThumb(f)}<span class="play">${ic('play')}</span>`:`<img ${thumbAttr(f)} alt="${esc(f.name)}">`}${i===1&&media.length>2?`<span class="cmore">他${media.length-2}枚</span>`:''}</span>`).join('')}</div>`:`<div class="excerpt">${esc(w.body)}</div>`}
    <div class="card-foot"><span>${ic('cmt')}<span class="num">${w.comments.length}</span></span><div class="mini-stamps">${top.map(([k,v])=>`<span class="stamp ${ST[k].img?'stamp-img':''}" style="background:${stampBg(ST[k])}">${stampFace(ST[k])}<span class="c">${v.length}</span></span>`).join('')}</div><span class="seemore">詳細を見る</span></div>
   </button>`;
 }
@@ -1085,7 +1126,7 @@ function card(p,lane){
    <div class="did"><span class="dl">${formName(p.dept)}</span>${didText(p.dept)}！</div>
    <div class="kf"><h6>日報日付</h6><div>${fmtD(p.date)}</div></div>
    ${nf.map(f=>`<div class="kf"><h6>${esc(f.label)}</h6><div><b class="num">${p.fields[f.k]}</b>${f.unit||''}</div></div>`).join('')}
-   ${media.length?`<div class="cmedia n${Math.min(2,media.length)}">${media.slice(0,2).map((f,i)=>`<span class="cm">${f.video?`${(f.url||f.itemId)?`<video ${srcAttr(f)} muted preload="metadata"></video>`:`<img src="${f.poster}" alt="">`}<span class="play">${ic('play')}</span>`:`<img ${srcAttr(f)} alt="${esc(f.name)}">`}${i===1&&media.length>2?`<span class="cmore">他${media.length-2}枚</span>`:''}</span>`).join('')}</div>`:`<div class="excerpt">${esc(mainText(p))}</div>`}
+   ${media.length?`<div class="cmedia n${Math.min(2,media.length)}">${media.slice(0,2).map((f,i)=>`<span class="cm">${f.video?`${vidThumb(f)}<span class="play">${ic('play')}</span>`:`<img ${thumbAttr(f)} alt="${esc(f.name)}">`}${i===1&&media.length>2?`<span class="cmore">他${media.length-2}枚</span>`:''}</span>`).join('')}</div>`:`<div class="excerpt">${esc(mainText(p))}</div>`}
    <div class="card-foot"><span>${ic('cmt')}<span class="num">${p.comments.length}</span></span><div class="mini-stamps">${top.map(([k,v])=>`<span class="stamp ${ST[k].img?'stamp-img':''}" style="background:${stampBg(ST[k])}">${stampFace(ST[k])}<span class="c">${v.length}</span></span>`).join('')}</div><span class="seemore">詳細を見る</span></div>
   </button>`;
 }
@@ -1093,7 +1134,7 @@ function noticeCard(n){return `<button class="card ncard" data-goto="notices">
    <div class="who">${av(n.from,'lg')}<div><div class="n">${esc(M[n.from].name)}</div><div class="t">${fmtTs(n.ts)}</div></div>${n.must?'<span class="pill must" style="margin-left:auto">必読</span>':''}</div>
    <div class="did"><span class="dl">${esc(senderName(n))}${n.sender&&n.sender!=='me'?'より':''}</span>お知らせを投稿しました</div>
    <div class="kf"><h6>表題</h6><div>${esc(n.title)}</div></div>
-   ${(()=>{const m=n.files.filter(isMedia)[0];return m?`<div class="cmedia n1"><span class="cm"><img ${m.poster&&!m.url&&!m.itemId?`src="${m.poster}"`:srcAttr(m)} alt="${esc(m.name)}"></span></div>`:`<div class="excerpt">${esc(n.body)}</div>`})()}
+   ${(()=>{const m=n.files.filter(isMedia)[0];return m?`<div class="cmedia n1"><span class="cm"><img ${m.poster&&!m.url&&!m.itemId?`src="${m.poster}"`:thumbAttr(m)} alt="${esc(m.name)}"></span></div>`:`<div class="excerpt">${esc(n.body)}</div>`})()}
    <div class="card-foot"><span class="pill a-${n.aud}">${AUD[n.aud].label}</span><span class="seemore">詳細を見る</span></div></button>`}
 function renderTimeline(){
   const vis=visiblePosts();
@@ -1270,7 +1311,8 @@ async function createStamp(){if(!canStamp(ME))return;if(!DEMO&&$('#sf-img').file
   if(!text&&!fi.length){err('文字を入れるか、画像を選んでください。');return}
   if(text&&STAMPS.some(s=>s.label===text)){err(`「${text}」はもうあります（消したスタンプも含む）。消したものなら、下の「消したスタンプ」から元に戻せます。`);return}
   const pr=readPeriod('sf');if(pr.bad){err('終了日は開始日より後にしてください。');return}
-  let img=null;if(fi.length){const [f]=await readFiles(fi);if(!f.url){err('画像を読み込めませんでした。別の画像を選んでください。');return}img=f.url}
+  let img=null;if(fi.length){const f={url:await new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.onerror=()=>r('');fr.readAsDataURL(fi[0])})};if(!f.url){   // スタンプの画像は縮めずにそのまま
+    err('画像を読み込めませんでした。別の画像を選んでください。');return}img=f.url}
   const s={id:DEMO?'c'+Date.now():'x_'+(text||fi[0].name),label:text||fi[0].name.replace(/\.[^.]+$/,''),c:`var(${color})`,r:(Math.round(Math.random()*10)-5)+'deg',img,custom:true,created:now(),active:true,start:pr.start,end:pr.end};
   if(!DEMO){const b=$('[data-screate]');b.disabled=true;try{await Store.addStamp(s)}catch(e){console.error(e);b.disabled=false;err('保存できませんでした（HL-スタンプ編集 か 管理者の権限が必要です）。もう一度押してください。');return}}
   STAMPS.push(s);ST[s.id]=s;
@@ -2069,9 +2111,11 @@ const Store={
 
   /* ---------- 書き込み ---------- */
   async upload(list,folder){
-    const out=[];
+    const out=[];const todo=(list||[]).filter(f=>!f.itemId&&f.file);let k=0;
+    try{
     for(const f of (list||[])){
       if(f.itemId||!f.file){out.push(this.meta(f));continue}
+      k++;const label=`添付を送っています${todo.length>1?`（${k}/${todo.length}）`:''}：${f.name}`;upProgress(label,0);
       const safe=f.name.replace(/[\\/:*?"<>|#%]/g,'_');
       const path=`${folder}/${TODAY.slice(0,7)}/${Date.now().toString(36)}${Math.random().toString(36).slice(2,6)}_${safe}`;
       const enc=path.split('/').map(encodeURIComponent).join('/');
@@ -2081,13 +2125,14 @@ const Store={
         const s=await this.g('POST',`/drives/${this.drive}/root:/${enc}:/createUploadSession`,{item:{'@microsoft.graph.conflictBehavior':'rename'}});
         const CH=327680*16;let pos=0;
         while(pos<f.file.size){const end=Math.min(pos+CH,f.file.size);const r=await fetch(s.uploadUrl,{method:'PUT',headers:{'Content-Range':`bytes ${pos}-${end-1}/${f.file.size}`},body:f.file.slice(pos,end)});
-          if(!r.ok&&r.status!==202)throw new Error('アップロードに失敗しました（'+r.status+'）');if(r.status===200||r.status===201)item=await r.json();pos=end}
+          if(!r.ok&&r.status!==202)throw new Error('アップロードに失敗しました（'+r.status+'）');if(r.status===200||r.status===201)item=await r.json();pos=end;upProgress(label,pos/f.file.size)}
       }
-      f.itemId=item.id;f.webUrl=item.webUrl;out.push(this.meta(f));
+      f.itemId=item.id;f.webUrl=item.webUrl;out.push(this.meta(f));upProgress(label,1);
     }
+    }finally{upProgress(null)}
     return out;
   },
-  meta(f){return {name:f.name,type:f.type||'',img:!!f.img,video:!!f.video,itemId:f.itemId,webUrl:f.webUrl||''}},
+  meta(f){return {name:f.name,type:f.type||'',img:!!f.img,video:!!f.video,itemId:f.itemId,webUrl:f.webUrl||'',size:f.size||0}},
   async post(p){
     const area=DEPTS[p.dept].area,A=AREA[area];
     if(!this.lists[A.post])throw new Error('この日報の置き場に書き込む権限がありません');
@@ -2162,11 +2207,13 @@ const Store={
   saveSeen(p){if(DEMO)return;p.comments.forEach(c=>{if(c.id)seenSet.add(p.area+':'+c.id)});store.set(SEEN_KEY,[...seenSet].slice(-3000))},
   // 写真・動画の一時的な URL（1時間ほど有効）
   async fileUrl(f){if(f.url)return f.url;const j=await this.g('GET',`/drives/${this.drive}/items/${f.itemId}?select=id,webUrl,@microsoft.graph.downloadUrl`);f.url=j['@microsoft.graph.downloadUrl'];f.webUrl=j.webUrl;return f.url},
+  // サムネイル（SharePoint が作る縮小画像。写真は約800px、動画は見本の画像）
+  async thumbUrl(f){if(f.thumb)return f.thumb;const j=await this.g('GET',`/drives/${this.drive}/items/${f.itemId}/thumbnails?select=large`);const u=j&&j.value&&j.value[0]&&j.value[0].large&&j.value[0].large.url;if(!u)throw new Error('サムネイルがありません');f.thumb=u;return u},
   async openFile(f){const w=window.open('about:blank','_blank');try{if(!f.webUrl)await this.fileUrl(f);if(w)w.location=f.webUrl;else location.href=f.webUrl}catch(e){if(w)w.close();toast('ファイルを開けませんでした')}},
 };
 // 画面に出た写真・動画（data-hyd）の URL を取りに行く
 if(!DEMO)new MutationObserver(()=>{document.querySelectorAll('[data-hyd]:not([data-hyding])').forEach(el=>{el.setAttribute('data-hyding','');const f=FILES[el.dataset.hyd];if(!f)return;
-  Store.fileUrl(f).then(u=>{el.src=u}).catch(()=>{el.alt='読み込めませんでした'})})}).observe(document.body,{childList:true,subtree:true});
+  (el.hasAttribute('data-thumb')?Store.thumbUrl(f).catch(()=>f.img?Store.fileUrl(f):Promise.reject()):Store.fileUrl(f)).then(u=>{el.src=u}).catch(()=>{el.alt='読み込めませんでした'})})}).observe(document.body,{childList:true,subtree:true});
 
 /* ---------- 起動 ---------- */
 async function loadLive(){
