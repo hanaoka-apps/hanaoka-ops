@@ -175,6 +175,14 @@
   // 利用ログ・履歴（EC_Log）に書く文。番号だけ。宛名・金額・お客様名は入れない
   R.logDetail = function (rec, what) { return (rec && rec.number ? rec.number : '') + (what ? ' ' + what : ''); };
 
+  /* ---------------------------------------------------------------- 収入印紙
+   * 収入印紙が必要な金額の場合は、電子（PDF）ではなく、印刷して印紙を貼って郵送する運用。基準の金額は、経理に確認した値を設定（ec_sales_config.json の receipt.stampNoticeAmount）に入れる。
+   * 設定が空（なし・0・数字でない）なら、判定しない（注意も印紙の欄も出ない）。アプリは、法的な判断をしない（基準の値を持たない）。 */
+  R.stampNeeded = function (amount, threshold) {
+    var t = Number(threshold);
+    return isFinite(t) && t > 0 && Number(amount) >= t;
+  };
+
   /* ---------------------------------------------------------------- 設定ファイル receipt_settings.json
    * SharedMasters に置く。実際の値は、リポジトリに入れない（公開のため）。下は、書き方の見本（架空の値）。 */
   R.SAMPLE_SETTINGS = {
@@ -194,7 +202,7 @@
 
   /* ---------------------------------------------------------------- 印刷用の HTML
    * rec＝{ number, orderNo, atena（敬称つき）, proviso, amount, tax, issueDate, status, reissueCount }
-   * settings＝receipt_settings.json の中身、opts＝{ stampSrc（社印の画像の data URL。なければ印なし）, reissue（true なら「再発行」を入れる）, preview（true なら「見本（未発行）」の透かし）, auto（true で、読み込み後に印刷を始める） }
+   * settings＝receipt_settings.json の中身、opts＝{ stampSrc（社印の画像の data URL。なければ印なし）, stampBox（true なら、収入印紙を貼る欄を印刷する。紙で出す分だけ）, reissue（true なら「再発行」を入れる）, preview（true なら「見本（未発行）」の透かし）, auto（true で、読み込み後に印刷を始める） }
    * A4 縦に1枚。値はすべてエスケープする。外のファイルは読まない（社印は data URL）。色は、印刷用の書類なので、ここだけ直接書く。 */
   R.printHtml = function (rec, settings, opts) {
     opts = opts || {}; rec = rec || {}; settings = settings || {};
@@ -222,6 +230,7 @@
       '.from .cn{font-size:14pt;font-weight:700;margin-bottom:1mm}.from .rg{margin-top:1mm}' +
       '.from img.stamp{position:absolute;right:2mm;top:-11mm;width:22mm;height:22mm;object-fit:contain;opacity:.92}' +
       '.fn{position:absolute;left:22mm;right:22mm;bottom:12mm;font-size:8.5pt;color:#555}' +
+      '.sb{position:absolute;left:22mm;bottom:38mm;width:34mm;height:34mm;border:1pt dashed #777;color:#777;font-size:9pt;text-align:center;display:flex;align-items:center;justify-content:center;line-height:1.6}' +
       '.wm{position:absolute;left:0;right:0;top:112mm;text-align:center;font-size:54pt;font-weight:700;color:rgba(179,38,30,.16);transform:rotate(-18deg);letter-spacing:.15em;pointer-events:none}';
     var h = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>領収証_' + e(rec.number || '未発行') + '</title><style>' + css + '</style></head><body><div class="sheet">';
     if (reissue) h += '<div class="rs">再発行' + (rec.reissueCount > 0 ? '（' + e(rec.reissueCount) + '回目）' : '') + '</div>';
@@ -235,6 +244,7 @@
     h += '<div class="from">' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '<div class="cn">' + e(c.name) + '</div>' +
       (c.zip || c.address ? '<div>' + (c.zip ? '〒' + e(c.zip) + '　' : '') + e(c.address) + '</div>' : '') + (c.tel ? '<div>TEL ' + e(c.tel) + '</div>' : '') +
       (c.registrationNo ? '<div class="rg">登録番号　' + e(c.registrationNo) + '</div>' : '') + '</div>';
+    if (opts.stampBox) h += '<div class="sb">収入印紙<br>貼付欄</div>';
     if (settings.footerNote) h += '<div class="fn">' + e(settings.footerNote) + '</div>';
     h += '</div>' + (opts.auto ? '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})<\/script>' : '') + '</body></html>';
     return h;

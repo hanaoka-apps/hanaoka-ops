@@ -217,7 +217,7 @@
       if (actives.length > 1) h += '<div class="rc-alert err">この注文に、有効な領収証が ' + actives.length + '枚あります（ほぼ同時に発行された可能性があります）。不要なほうを取り消してください。</div>';
       actives.forEach(function (a) {
         h += '<div class="rc-act"><b>発行済み</b>　' + E(a.number) + '　' + E(R.jaDate(a.issueDate)) + '　' + E(a.atena) + '　' + E(R.yen(a.amount)) + '（発行者 ' + E(who(a.issuedBy)) + '）' +
-          '<div class="muted">もう一度出すときは「再発行」です（再発行の回数が記録され、書類に「再発行」と入ります）。宛名や金額を変えるときは、元を取消にして、新しく発行します。</div>';
+          (needStamp(a.amount) ? '<div class="muted" style="color:var(--amber,#9a5b00)">' + E(STAMP_NOTE) + '</div>' : '') + '<div class="muted">もう一度出すときは「再発行」です（再発行の回数が記録され、書類に「再発行」と入ります）。宛名や金額を変えるときは、元を取消にして、新しく発行します。</div>';
         if (M.cancelId === a.id) {
           h += '<div class="row"><input type="text" id="rc-reason" placeholder="取り消す理由（任意）" maxlength="100" style="flex:1;min-width:200px;font:inherit;padding:6px 9px;border:1px solid var(--line-strong,#c9cde6);border-radius:7px">' +
             '<button type="button" class="btn" data-rc="cancel-ok" data-id="' + E(a.id) + '"' + (M.busy ? ' disabled' : '') + '>取り消す</button><button type="button" class="btn sec" data-rc="cancel-no">やめる</button></div>' +
@@ -271,7 +271,8 @@
     }
     function syncBreakdown() {
       var v = readForm(), el = document.getElementById('rc-bk'); if (!el) return v;
-      el.innerHTML = v.value.amount ? '消費税の内訳（10%）：税抜 <b>' + E(R.yen(v.value.net)) + '</b>　＋　消費税 <b>' + E(R.yen(v.value.tax)) + '</b>　＝　税込 <b>' + E(R.yen(v.value.amount)) + '</b>　<span class="muted">（税込 ÷ 1.1 を四捨五入して税抜を出し、残りを消費税にしています）</span>' : '';
+      el.innerHTML = (v.value.amount ? '消費税の内訳（10%）：税抜 <b>' + E(R.yen(v.value.net)) + '</b>　＋　消費税 <b>' + E(R.yen(v.value.tax)) + '</b>　＝　税込 <b>' + E(R.yen(v.value.amount)) + '</b>　<span class="muted">（税込 ÷ 1.1 を四捨五入して税抜を出し、残りを消費税にしています）</span>' : '') +
+        (needStamp(v.value.amount) ? '<div class="rc-alert warn" style="margin:6px 0 0">' + E(STAMP_NOTE) + '</div>' : '');
       return v;
     }
     function showErrors(v) {
@@ -279,6 +280,7 @@
       el.innerHTML = (v.errors.length ? '<div class="rc-alert err">' + v.errors.map(E).join('<br>') + '</div>' : '') + (v.warnings.length ? '<div class="rc-alert warn">' + v.warnings.map(E).join('<br>') + '</div>' : '');
     }
     function onInput(e) {
+      if (M && M.mode === 'doc' && e.target && e.target.id === 'rc-paper') { M.doc.paper = e.target.checked; draw(); return; }
       if (!M || M.mode !== 'form') return;
       if (e.target && /^rc-/.test(e.target.id || '')) {
         var v = syncBreakdown();
@@ -286,6 +288,9 @@
         showErrors({ errors: [], warnings: v.warnings });
       }
     }
+    // 収入印紙が必要な金額か（基準の金額は設定 receipt.stampNoticeAmount。空なら、判定しない）
+    function needStamp(amount) { return R.stampNeeded(amount, rcConf.stampNoticeAmount); }
+    var STAMP_NOTE = '収入印紙が必要な場合があります。この金額は、電子（PDF）ではなく、印刷して収入印紙を貼って郵送してください（印紙が要るかどうかは、経理に確認してください）';
     function docOptions(rec, extra) { return Object.assign({ stampSrc: SET && SET.stamp }, extra || {}); }
     function iframeHtml(html) { return '<div class="rc-docwrap" id="rc-wrap"><iframe class="rc-doc" id="rc-frame" title="領収証" srcdoc="' + E(html) + '"></iframe></div>'; }
     function fitDoc() {   // 書類（A4）を、画面の幅に合わせて縮めて見せる
@@ -300,17 +305,19 @@
       if (!SET || !SET.ok) { box.innerHTML = ''; return; }
       M.prev = true;
       var rec = { number: '', orderNo: M.o.no, atena: v.value.atena, proviso: v.value.proviso, amount: v.value.amount, tax: v.value.tax, issueDate: v.value.issueDate, status: R.STATUS.issued };
-      box.innerHTML = '<div class="muted" style="margin-top:10px">これは見本です（まだ発行していません）。「発行する」を押すと、番号が付いて、印刷・PDF にできます。</div>' + iframeHtml(R.printHtml(rec, SET.settings, docOptions(rec, { preview: true })));
+      box.innerHTML = '<div class="muted" style="margin-top:10px">これは見本です（まだ発行していません）。「発行する」を押すと、番号が付いて、印刷・PDF にできます。</div>' + iframeHtml(R.printHtml(rec, SET.settings, docOptions(rec, { preview: true, stampBox: needStamp(rec.amount) })));
       fitDoc();
     }
 
     // ---- 書類（発行したあと・再発行・控え）
-    function showDoc(rec, opt) { M.doc = { rec: rec, reissue: !!(opt && opt.reissue), view: !!(opt && opt.view) }; M.mode = 'doc'; draw(); }
+    function showDoc(rec, opt) { M.doc = { rec: rec, reissue: !!(opt && opt.reissue), view: !!(opt && opt.view), paper: true }; M.mode = 'doc'; draw(); }   // paper＝紙で出す（収入印紙が必要な金額のとき、貼付欄を付ける。初めは付ける）
     function docHtml() {
       var d = M.doc, voided = !R.isActive(d.rec);
       if (!SET || !SET.ok) return settingsHtml() + '<div class="rc-btns"><button type="button" class="btn sec" data-rc="back">戻る</button></div>';
+      var stamp = !voided && needStamp(d.rec.amount);
       return '<div class="muted">' + E(d.rec.number) + (d.reissue ? '（再発行）' : '') + (voided ? '（取消済み・控え）' : '') + '</div>' +
-        iframeHtml(R.printHtml(d.rec, SET.settings, docOptions(d.rec, { reissue: d.reissue }))) +
+        (stamp ? '<div class="rc-alert warn">' + E(STAMP_NOTE) + '<br><label><input type="checkbox" id="rc-paper"' + (d.paper !== false ? ' checked' : '') + '> 紙で出す（収入印紙の貼付欄を付けて印刷する）</label></div>' : '') +
+        iframeHtml(R.printHtml(d.rec, SET.settings, docOptions(d.rec, { reissue: d.reissue, stampBox: stamp && d.paper !== false }))) +
         '<div class="rc-btns">' + (voided ? '' : '<button type="button" class="btn" data-rc="print">印刷 ／ PDF に保存</button>') + '<button type="button" class="btn sec" data-rc="back">戻る</button></div>' +
         (voided ? '' : '<div class="muted" style="margin-top:6px">印刷の画面で、送信先を「PDF に保存」にすると、PDF のファイルになります（ファイル名の初めは「' + E(R.fileName(d.rec)) + '」）。PDF は、このアプリには保存されません（記録から、いつでも作り直せます）。</div>') + (SET.stampWarn ? '<div class="rc-alert warn">' + E(SET.stampWarn) + '</div>' : '');
     }
