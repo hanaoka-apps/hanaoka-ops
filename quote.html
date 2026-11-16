@@ -8,8 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261116a"></script>
-<script src="quote_store.js?v=20261116a"></script>
+<script src="quote_core.js?v=20261117a"></script>
+<script src="quote_store.js?v=20261117a"></script>
 <script src="quote_ai.js?v=20261115b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
@@ -192,7 +192,14 @@
   #modal label{font-size:12px;color:var(--sub);display:block;margin:10px 0 3px}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--txt);color:var(--surface);padding:9px 18px;border-radius:8px;font-size:13px;display:none;z-index:60}
 
-  /* 計算のしくみ */
+  /* 答え合わせ */
+  .ckGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin:12px 0}
+  .ck{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
+  .ck .t{font-size:12px;color:var(--sub)}
+  .ck .v{font-size:26px;font-weight:600;color:var(--navy);line-height:1.3}
+  .ck .s{font-size:12px;color:var(--sub)}
+  #vCheck .card+.card{margin-top:12px}
+  #ckMiss td,#ckMiss th{font-size:12px;white-space:nowrap}  /* 計算のしくみ */
   .rules{max-width:860px;margin:0 auto;padding:4px 20px 60px}
   .tryrow{display:flex;gap:8px;flex-wrap:wrap}
   .tryrow>*{flex:1 1 130px;min-width:0}
@@ -240,7 +247,7 @@
       <button class="tab on" data-view="edit">作る</button>
       <button class="tab" data-view="list">一覧</button>
       <button class="tab" data-view="rules">計算のしくみ</button>
-    </div>
+      <button class="tab" data-view="check">答え合わせ</button>    </div>
     <span class="sp"></span>
     <span class="badge" id="demoBadge" hidden>見本のデータ</span>
     <button class="link" id="setBtn">会社の情報</button>
@@ -283,7 +290,21 @@
     </div>
     <div id="rFlow"></div>
   </div>
-</div>
+
+  <div id="vCheck" class="list" hidden>
+    <div class="card">
+      <div class="lbar" style="margin:0">
+        <b>答え合わせ</b><span class="hint">アプリの決まりで出したものと、SMILE に入った実際の受注を比べます（その日より前の受注だけで決めるので、後の答えは使いません）</span>
+        <span class="sp" style="flex:1"></span>
+        <select id="ckDays"><option value="7">直近 7日</option><option value="30" selected>直近 30日</option><option value="90">直近 90日</option></select>
+      </div>
+      <div class="hint" id="ckStatus" style="margin-top:6px"></div>
+    </div>
+    <div class="ckGrid" id="ckCards"></div>
+    <div class="card" id="ckMine"></div>
+    <div class="card"><div class="lab" style="margin-bottom:6px">合わなかったもの</div><div class="chips" id="ckChips"></div>
+      <div style="overflow-x:auto;margin-top:8px"><table class="tbl" id="ckMiss"></table></div></div>
+  </div></div>
 
 <div id="modal"><div class="dlg" id="dlg"></div></div>
 <div id="toast"></div>
@@ -314,7 +335,7 @@ let AI = null, aiFiles = [], aiBusy = false, aiOpen = false, aiSrcOpen = false;
 async function init() {
   $('loginBtn').onclick = login;
   if (PARAMS.has('demo')) {
-    await new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'quote_demo.js?v=20261116a'; s.onload = ok; s.onerror = ng; document.head.appendChild(s); });
+    await new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'quote_demo.js?v=20261117a'; s.onload = ok; s.onerror = ng; document.head.appendChild(s); });
     account = QuoteDemo.user; store = QuoteStore.demo(QuoteDemo); AI = QuoteAI.mock(QuoteDemo); $('demoBadge').hidden = false;
     return start();
   }
@@ -384,8 +405,8 @@ function bindShell() {
 }
 function view(v) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.view === v));
-  $('vEdit').hidden = v !== 'edit'; $('vList').hidden = v !== 'list'; $('vRules').hidden = v !== 'rules';
-  if (v === 'list') refreshList(); else if (v === 'rules') openRules(); else fitSheet();
+  $('vEdit').hidden = v !== 'edit'; $('vList').hidden = v !== 'list'; $('vRules').hidden = v !== 'rules'; $('vCheck').hidden = v !== 'check';
+  if (v === 'list') refreshList(); else if (v === 'rules') openRules(); else if (v === 'check') openCheck(); else fitSheet();
 }
 function leaveOk() { return !dirty || confirm('保存していない内容があります。このまま進めますか？'); }
 
@@ -447,6 +468,87 @@ function fillRuleList(k, q) {
   if (!box.querySelector('input')) box.innerHTML = `<input type="text" data-q="${k}" value="${esc(q)}" placeholder="取引先・型式で絞る"><div></div>`;
   box.lastElementChild.innerHTML = (hit.slice(0, 30).map(x => `<div class="it">${esc(x.text)}${x.memo ? `<div class="hint">メモ：${esc(x.memo)}</div>` : ''}</div>`).join('') || '<div class="it hint">当てはまる決まりはありません</div>')
     + (hit.length > 30 ? `<div class="it hint">ほか ${hit.length - 30} 件。上の欄で絞ってください</div>` : '');
+}
+
+// ---------- 答え合わせ ----------
+// 受注明細（SMILE に入った実際の受注）を、アプリの決まりで出したものと比べる。受注明細は大きいので、開いたときに1回だけ読む
+let CK = null, ckBusy = false, ckField = '', ckBound = false;
+const CK_FIELDS = [
+  { k: 'price', label: '単価', unit: '行' }, { k: 'staff', label: '担当者', unit: '伝票' }, { k: 'dept', label: '部門', unit: '伝票' },
+  { k: 'dest', label: '納品先', unit: '伝票' }, { k: 'wh', label: '倉庫', unit: '行' }, { k: 'tehai', label: '手配区分', unit: '行' }];
+async function openCheck() {
+  if (!ckBound) { ckBound = true; $('ckDays').onchange = renderCheck; }
+  if (CK || ckBusy) return renderCheck();
+  ckBusy = true; $('ckStatus').innerHTML = '<span class="spin"></span> 受注明細を読んでいます（30秒ほどかかります）…';
+  try { CK = await store.loadOrders(); } catch (e) { $('ckStatus').textContent = '受注明細を読めませんでした：' + e.message; ckBusy = false; return; }
+  ckBusy = false; renderCheck();
+}
+const pctOf = (a, b) => b ? Math.round(a / b * 1000) / 10 + '％' : '－';
+async function renderCheck() {
+  if (!CK) return;
+  const days = +$('ckDays').value, from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  $('ckStatus').innerHTML = '<span class="spin"></span> 比べています…';
+  await new Promise(r => setTimeout(r, 30));
+  const res = Q.backtest(DATA, CK.rows, Object.assign({}, ENV, { customers: CUSTMAP }), { from });
+  const F = res.fields;
+  $('ckStatus').textContent = `${from} 以降の受注 ${res.orders} 件を比べました。単価は、雑コード（P/1 など）・IDO・修理・0円の行を除いています。` + (CK.at ? `　受注明細：${CK.at.slice(0, 16).replace('T', ' ')} の出力` : '');
+  const card = (t, v, s) => `<div class="ck"><div class="t">${t}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  $('ckCards').innerHTML =
+    card('単価（ルールか前回の受注単価）', pctOf(F.price.either, F.price.n), `${F.price.n} 行中 ${F.price.either} 行`) +
+    card('単価（ルールだけ）', pctOf(F.price.ok, F.price.n), `単価が出た ${F.price.priced} 行では ${pctOf(F.price.ok, F.price.priced)}`) +
+    card('担当者', pctOf(F.staff.ok, F.staff.n), `${F.staff.n} 伝票中 ${F.staff.ok}`) +
+    card('部門', pctOf(F.dept.ok, F.dept.n), `${F.dept.n} 伝票中 ${F.dept.ok}`) +
+    card('納品先（いちばん上の候補）', pctOf(F.dest.ok, F.dest.n), `候補のどれか ${pctOf(F.dest.inList, F.dest.n)}`) +
+    card('倉庫', pctOf(F.wh.ok, F.wh.n), `${F.wh.n} 行中 ${F.wh.ok}`) +
+    card('手配区分', pctOf(F.tehai.ok, F.tehai.n), `${F.tehai.n} 行中 ${F.tehai.ok}`);
+  CK.res = res;
+  const counts = {}; res.misses.forEach(m => counts[m.field] = (counts[m.field] || 0) + 1);
+  if (!ckField || !counts[ckField]) ckField = CK_FIELDS.map(f => f.k).find(k => counts[k]) || '';
+  $('ckChips').innerHTML = CK_FIELDS.filter(f => counts[f.k]).map(f => `<button class="chip${f.k === ckField ? ' on' : ''}" data-ck="${f.k}">${f.label} ${counts[f.k]}</button>`).join('') || '<span class="hint">合わなかったものはありません</span>';
+  $('ckChips').querySelectorAll('[data-ck]').forEach(b => b.onclick = () => { ckField = b.dataset.ck; renderCheck(); });
+  renderMisses();
+  renderMine();
+}
+function renderMisses() {
+  const rows = CK.res.misses.filter(m => m.field === ckField).sort((a, b) => a.date < b.date ? 1 : -1);
+  const f = CK_FIELDS.find(x => x.k === ckField) || {};
+  const val = v => typeof v === 'number' ? yen(v) : esc(v);
+  $('ckMiss').innerHTML = !rows.length ? '' : `<tr><th>受注日</th><th>受注№</th><th>取引先</th><th>品目</th><th>SMILE（実際）</th><th>アプリ</th></tr>` +
+    rows.slice(0, 200).map(m => { const c = CUSTMAP[m.cust]; return `<tr><td>${esc(m.date)}</td><td>${esc(m.no)}</td><td>${esc(c ? c.fullName || c.name : m.cust)}</td><td>${f.unit === '伝票' ? '' : esc(m.code)}</td><td>${val(m.actual)}</td><td>${val(m.app)}</td></tr>`; }).join('') +
+    (rows.length > 200 ? `<tr><td colspan="6" class="hint">ほか ${rows.length - 200} 件（新しい順に 200 件まで出しています）</td></tr>` : '');
+}
+// アプリで作った受注伝票を、SMILE に入った受注と見比べる（同じ取引先・受注日の前後で、品目がいちばん重なる伝票）
+async function renderMine() {
+  const heads = HEADS.filter(h => h.kind === 'order').sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 20);
+  if (!heads.length) { $('ckMine').innerHTML = '<div class="lab" style="margin:0">アプリで作った受注伝票</div><div class="hint">まだありません。受注伝票を作って保存すると、ここで SMILE の受注と見比べられます。</div>'; return; }
+  const by = {}; CK.rows.forEach(r => { if (r.code === 'FR' || r.ret) return; (by[r.cust] = by[r.cust] || {}); (by[r.cust][r.no] = by[r.cust][r.no] || []).push(r); });
+  const out = [];
+  for (const h of heads) {
+    let d; try { d = await store.getDoc(h.spId); } catch (e) { continue; }
+    const comp = Q.compute(DATA, d, ENV), od = comp.order; if (!od) continue;
+    const day = n => { const t = new Date(d.date); t.setDate(t.getDate() + n); return t.toISOString().slice(0, 10); };
+    const cands = Object.entries(by[od.head.cust] || {}).filter(([no, rs]) => rs[0].date >= day(-3) && rs[0].date <= day(21));
+    const codes = od.rows.filter(r => r.code && r.code !== 'FR').map(r => r.code);
+    let best = null, bestN = 0;
+    cands.forEach(([no, rs]) => { const n = rs.filter(r => codes.includes(r.code)).length; if (n > bestN) { bestN = n; best = rs; } });
+    const diffs = [];
+    if (best) {
+      const s0 = best[0];
+      if (od.head.staff && od.head.staff !== s0.staff) diffs.push(`担当者 ${od.head.staff} → ${s0.staff}`);
+      if (od.head.dest && od.head.dest !== 'new' && od.head.dest !== s0.dest) diffs.push(`納品先 ${od.head.dest} → ${s0.dest}`);
+      od.rows.filter(r => r.code && r.code !== 'FR').forEach(r => {
+        const s = best.find(x => x.code === r.code);
+        if (!s) { diffs.push(`${r.code} が SMILE にない`); return; }
+        if (P.num(s.qty) !== P.num(r.qty)) diffs.push(`${r.code} 数量 ${r.qty} → ${s.qty}`);
+        if (r.price !== null && P.num(s.unit) !== r.price) diffs.push(`${r.code} 単価 ${yen(r.price)} → ${yen(P.num(s.unit))}`);
+        if (r.wh && r.wh !== s.wh) diffs.push(`${r.code} 倉庫 ${r.wh} → ${s.wh}`);
+      });
+      best.filter(s => !codes.includes(s.code)).forEach(s => diffs.push(`${s.code} がアプリにない`));
+    }
+    out.push(`<tr><td>${esc(h.no)}</td><td>${esc(h.date)}</td><td>${esc(h.customer)}</td><td>${best ? esc(best[0].no) : '<span class="hint">まだ SMILE にない</span>'}</td><td>${!best ? '' : diffs.length ? diffs.map(esc).join('<br>') : '<span class="pill">全部同じ</span>'}</td></tr>`);
+  }
+  $('ckMine').innerHTML = `<div class="lab" style="margin:0 0 6px">アプリで作った受注伝票（新しい順に 20 件まで）</div>
+    <div style="overflow-x:auto"><table class="tbl"><tr><th>番号</th><th>受注日</th><th>取引先</th><th>SMILE の受注№</th><th>違い（アプリ → SMILE）</th></tr>${out.join('')}</table></div>`;
 }
 
 // ---------- 書類を開く ----------

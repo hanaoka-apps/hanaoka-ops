@@ -93,6 +93,33 @@
       if ((t.match(/�/g) || []).length > 5) { try { t = new TextDecoder("shift_jis").decode(buf); } catch (e) { /* そのまま */ } }
       return t.charCodeAt(0) === 0xFEFF ? t.slice(1) : t;
     }
+    // 受注明細出力.csv を少しずつ読み、1行ずつ onRow に渡す（1年半より前の受注は読まない）
+    async function eachOrderRow(meta, onRow) {
+      var r = await fetch(meta["@microsoft.graph.downloadUrl"]);
+      if (!r.ok) throw new Error("受注明細を読めませんでした");
+      var rd = r.body.getReader(), dec = new TextDecoder("utf-8"), buf = "", I = null;
+      var since = new Date(Date.now() - 550 * 86400000).toISOString().slice(0, 10);
+      var cell = function (s) { return String(s || "").replace(/^"|"$/g, ""); };
+      var take = function (line) {
+        var c = line.split("\t");
+        if (!I) { var H = c.map(cell), ix = function (n) { return H.indexOf(n); };
+          I = { date: ix("受注日付"), no: ix("受注№"), cust: ix("得意先ｺｰﾄﾞ"), sha: ix("得意先社名ｺｰﾄﾞ"), code: ix("品目ｺｰﾄﾞ"), qty: ix("数量"), unit: ix("単価"), kind: ix("取引区分名"),
+            staff: ix("担当者ｺｰﾄﾞ"), staffName: ix("担当者名"), dept: ix("部門ｺｰﾄﾞ"), deptName: ix("部門名"), dest: ix("納品先ｺｰﾄﾞ"), destName: ix("納品先名"),
+            wh: ix("倉庫ｺｰﾄﾞ"), whName: ix("倉庫名"), unitName: ix("数量単位"), tehai: ix("手配区分名") }; return; }
+        var d = cell(c[I.date]).replace(/\//g, "-"); if (/^\d{8}$/.test(d)) d = d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6);
+        if (d < since) return;
+        var g = function (k) { return I[k] >= 0 ? cell(c[I[k]]) : ""; };
+        onRow({ date: d, no: g("no"), cust: g("cust"), sha: g("sha"), code: g("code"), qty: g("qty"), unit: g("unit"), ret: /返品/.test(g("kind")),
+          staff: g("staff"), staffName: g("staffName"), dept: g("dept"), deptName: g("deptName"), dest: g("dest"), destName: g("destName"),
+          wh: g("wh"), whName: g("whName"), unitName: g("unitName"), tehai: g("tehai") });
+      };
+      for (;;) {
+        var x = await rd.read(); if (x.done) break;
+        buf += dec.decode(x.value, { stream: true });
+        var p; while ((p = buf.indexOf("\n")) >= 0) { take(buf.slice(0, p).replace(/\r$/, "")); buf = buf.slice(p + 1); }
+      }
+      if (buf) take(buf);
+    }
     return {
       demo: false,
       // Graph をそのまま呼ぶ（AI の中継が、ワークフローのサイトのリストを読み書きするのに使う）
@@ -111,33 +138,17 @@
         var Q = opt.Q, meta = await get("/drives/" + (await drive()) + "/root:/" + encodeURIComponent("受注明細出力.csv"));
         var stamp = String(meta.lastModifiedDateTime || "") + "|" + String(meta.size || "");
         try { var c = JSON.parse(localStorage.getItem(HIST_KEY) || "null"); if (c && c.stamp === stamp && c.data) return c.data; } catch (e) { /* 読み直す */ }
-        var r = await fetch(meta["@microsoft.graph.downloadUrl"]);
-        if (!r.ok) throw new Error("受注明細を読めませんでした");
-        var rd = r.body.getReader(), dec = new TextDecoder("utf-8"), buf = "", I = null, h = Q.historyNew();
-        var since = new Date(Date.now() - 550 * 86400000).toISOString().slice(0, 10); // 1年半より前の受注は見ない
-        var cell = function (s) { return String(s || "").replace(/^"|"$/g, ""); };
-        var take = function (line) {
-          var c = line.split("\t");
-          if (!I) { var H = c.map(cell), ix = function (n) { return H.indexOf(n); };
-            I = { date: ix("受注日付"), cust: ix("得意先ｺｰﾄﾞ"), sha: ix("得意先社名ｺｰﾄﾞ"), code: ix("品目ｺｰﾄﾞ"), qty: ix("数量"), unit: ix("単価"), kind: ix("取引区分名"),
-              staff: ix("担当者ｺｰﾄﾞ"), staffName: ix("担当者名"), dept: ix("部門ｺｰﾄﾞ"), deptName: ix("部門名"), dest: ix("納品先ｺｰﾄﾞ"), destName: ix("納品先名"),
-              wh: ix("倉庫ｺｰﾄﾞ"), whName: ix("倉庫名"), unitName: ix("数量単位"), tehai: ix("手配区分名") }; return; }
-          var d = cell(c[I.date]).replace(/\//g, "-"); if (/^\d{8}$/.test(d)) d = d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6);
-          if (d < since) return;
-          var g = function (k) { return I[k] >= 0 ? cell(c[I[k]]) : ""; };
-          Q.historyPush(h, { date: d, cust: g("cust"), sha: g("sha"), code: g("code"), qty: g("qty"), unit: g("unit"), ret: /返品/.test(g("kind")),
-            staff: g("staff"), staffName: g("staffName"), dept: g("dept"), deptName: g("deptName"), dest: g("dest"), destName: g("destName"),
-            wh: g("wh"), whName: g("whName"), unitName: g("unitName"), tehai: g("tehai") });
-        };
-        for (;;) {
-          var x = await rd.read(); if (x.done) break;
-          buf += dec.decode(x.value, { stream: true });
-          var p; while ((p = buf.indexOf("\n")) >= 0) { take(buf.slice(0, p).replace(/\r$/, "")); buf = buf.slice(p + 1); }
-        }
-        if (buf) take(buf);
+        var h = Q.historyNew();
+        await eachOrderRow(meta, function (r) { Q.historyPush(h, r); });
         Q.historyDone(h);
         try { localStorage.setItem(HIST_KEY, JSON.stringify({ stamp: stamp, data: h })); } catch (e) { /* 覚えられなくても動く */ }
         return h;
+      },
+      // 答え合わせ用：受注明細の行（1年半ぶん）。大きいので覚えておかない（開くたびに読む）
+      loadOrders: async function () {
+        var meta = await get("/drives/" + (await drive()) + "/root:/" + encodeURIComponent("受注明細出力.csv")), rows = [];
+        await eachOrderRow(meta, function (r) { rows.push(r); });
+        return { rows: rows, at: String(meta.lastModifiedDateTime || "") };
       },
       // 書類の一覧（中身は読まない）
       listDocs: async function () {
@@ -186,6 +197,7 @@
       loadCustomers: async function () { return d.customers; },
       loadItems: async function () { return d.items; },
       loadHistory: async function () { return d.history || null; },
+      loadOrders: async function () { return { rows: d.orders || [], at: "" }; },
       listDocs: async function () { return read().map(function (x) { return headOf(x.spId, x.fields); }); },
       getDoc: async function (spId) {
         var x = read().find(function (y) { return y.spId === spId; });

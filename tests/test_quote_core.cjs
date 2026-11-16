@@ -383,4 +383,31 @@ assert.equal(c.fare.reason, '');
   assert.equal(Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), e4).order, null);
 }
 
+// --- 答え合わせ：その日より前の受注だけで決めて、実際の受注と比べる ---
+{
+  assert.equal(Q.isPriceTarget('UDL25', 70000), true);
+  ['IDO', 'CASTER', 'P/1', 'P/PD', 'R/3', 'OTHER3', 'FR'].forEach(c => assert.equal(Q.isPriceTarget(c, 1000), false));
+  assert.equal(Q.isPriceTarget('P/0000000217', 1850), true); // ふつうの部品は比べる
+  assert.equal(Q.isPriceTarget('UDL25', 0), false);           // 0円は比べない
+  const R = (date, no, code, unit, staff, dest, wh) => ({ date, no, cust: 'C1', sha: 'G9', code, qty: 1, unit, staff, staffName: '', dept: 'B1', deptName: '', dest, destName: '', wh, whName: '', unitName: '台', tehai: '繰返(製作)' });
+  const rows = [
+    R('2026-10-01', '1', 'UDL25', 69000, 'S1', 'N1', 'W1'),
+    R('2026-10-05', '2', 'UDL25', 69000, 'S1', 'N1', 'W1'),   // ルールどおり（改定前の定価 120000 × 5.75掛）
+    R('2026-10-06', '3', 'UDL25', 66000, 'S2', 'N2', 'W2'),   // 単価・担当者・納品先・倉庫が違う
+    R('2026-10-07', '4', 'UDL25', 66000, 'S2', 'N1', 'W1'),   // 単価はルールと違うが、前回（66000）と同じ
+    R('2026-10-07', '4', 'IDO', 0, 'S2', 'N1', 'W1'),         // 比べない行
+  ];
+  rows.forEach((r, i) => r.no = r.no); // 並びはそのまま
+  const res = Q.backtest(data, rows, Object.assign({}, env, { customers: { C1: B } }), { from: '2026-10-05' });
+  assert.equal(res.orders, 3);
+  assert.deepEqual(res.fields.price, { n: 3, ok: 1, either: 2, priced: 3 });
+  assert.deepEqual(res.fields.staff, { n: 3, ok: 2 }); // 伝票2・4 は前回と同じ担当者
+  assert.deepEqual(res.fields.dest, { n: 3, ok: 2, inList: 2 }); // N2 は伝票3 で初めて使ったので、候補にない
+  assert.deepEqual(res.fields.wh, { n: 4, ok: 2 }); // IDO の行にも倉庫がある（IDO は前回がないので外れ）
+  assert.ok(res.misses.some(m => m.field === 'price' && m.no === '3' && m.actual === 66000));
+  // 1件目より前の受注がないときは「前回なし」
+  const r1 = Q.backtest(data, rows.slice(0, 1), Object.assign({}, env, { customers: { C1: B } }), {});
+  assert.ok(r1.misses.some(m => m.field === 'staff' && m.app === '（前回なし）'));
+}
+
 console.log('ok test_quote_core');

@@ -309,6 +309,75 @@
       order: kind === "order" ? orderOf(doc, lines, fare, env, kk) : null };
   }
 
+  // ---------- 答え合わせ（受注明細と比べる） ----------
+  // 値段を比べない行：雑コード（P/1・P/PD など）・IDO（拠点への移動）・CASTER・修理 R/・OTHER・サンプル。
+  // どれも受注入力のルールで「その都度の値段」「移動の伝票」と決まっているもの（2026-11 のチャットで確認）
+  function isPriceTarget(code, unit) {
+    var c = String(code || "");
+    if (!c || c === "FR" || !(num(unit) > 0)) return false;
+    if (/^(IDO|CASTER|OTHER\d*|SAMPLE|KUKO|FR\/)/i.test(c) || /^R\//i.test(c)) return false;
+    if (/^P\/([0-9]{1,2}|[A-Z]{1,3})$/i.test(c)) return false;
+    return true;
+  }
+  // 受注明細の行を、日付の古い順に1件ずつ「その時点までの受注だけ」で答え合わせする（あとの受注の答えは使わない）。
+  //   rows: [{ date, no, cust, sha, code, qty, unit, ret, staff, staffName, dept, deptName, dest, destName, wh, whName, unitName, tehai }]
+  //   opt: { from, to }（YYYY-MM-DD。この間の受注を採点する。それより前の受注は覚えるだけ）
+  //   返す：{ orders, fields:{ price, staff, dept, dest, wh, tehai }, misses:[{ field, date, no, cust, code, actual, app }] }
+  function backtest(data, rows, env, opt) {
+    opt = opt || {};
+    var from = ymd(opt.from) || "0000-00-00", to = ymd(opt.to) || "9999-99-99";
+    var h = historyNew(), F = { price: { n: 0, ok: 0, either: 0, priced: 0 }, staff: { n: 0, ok: 0 }, dept: { n: 0, ok: 0 },
+      dest: { n: 0, ok: 0, inList: 0 }, wh: { n: 0, ok: 0 }, tehai: { n: 0, ok: 0 } }, misses = [], orders = 0;
+    var miss = function (field, r, actual, app) { if (misses.length < 3000) misses.push({ field: field, date: ymd(r.date), no: r.no, cust: r.cust, code: r.code, actual: actual, app: app }); };
+    var sorted = rows.slice().sort(function (a, b) { var x = ymd(a.date), y = ymd(b.date); return x < y ? -1 : x > y ? 1 : (a.no < b.no ? -1 : a.no > b.no ? 1 : 0); });
+    var custs = env.customers || {};
+    for (var i = 0; i < sorted.length;) {
+      var j = i; while (j < sorted.length && sorted[j].no === sorted[i].no) j++;
+      var g = sorted.slice(i, j), d = ymd(g[0].date);
+      var prod = g.filter(function (r) { return r.code && r.code !== "FR" && num(r.qty) > 0 && !r.ret; });
+      if (d >= from && d <= to && prod.length) {
+        orders++;
+        var cust = custs[g[0].cust] || null, kc = (h.k || {})[g[0].cust] || null;
+        // 担当者・部門・納品先（伝票に1つ）
+        var r0 = g[0];
+        if (r0.staff) { F.staff.n++; var st = kc && kc.st ? kc.st[0] : ""; if (st === r0.staff) F.staff.ok++; else miss("staff", r0, r0.staff + " " + (r0.staffName || ""), st ? st + " " + kc.st[1] : "（前回なし）"); }
+        if (r0.dept) { F.dept.n++; var dp = kc && kc.dp ? kc.dp[0] : ""; if (dp === r0.dept) F.dept.ok++; else miss("dept", r0, r0.dept + " " + (r0.deptName || ""), dp ? dp + " " + kc.dp[1] : "（前回なし）"); }
+        if (r0.dest) {
+          F.dest.n++;
+          var ds = kc && kc.ds ? Object.keys(kc.ds).sort(function (a, b) { return kc.ds[b][1] - kc.ds[a][1]; }) : [];
+          if (ds[0] === r0.dest) F.dest.ok++; else miss("dest", r0, r0.dest + " " + (r0.destName || ""), ds[0] ? ds[0] + " " + kc.ds[ds[0]][0] : "（前回なし）");
+          if (ds.slice(0, 12).indexOf(r0.dest) >= 0) F.dest.inList++;
+        }
+        // 品目ごと：倉庫・手配区分
+        prod.forEach(function (r) {
+          var it = (h.i || {})[key(r.code)] || null;
+          if (r.wh) {
+            F.wh.n++;
+            var w = it && it.w ? Object.keys(it.w).sort(function (a, b) { return it.w[b][1] - it.w[a][1]; })[0] : "";
+            if (w === r.wh) F.wh.ok++; else miss("wh", r, r.wh + " " + (r.whName || ""), w ? w + " " + it.w[w][0] : "（前回なし）");
+          }
+          if (r.tehai) { F.tehai.n++; var t = it ? it.t || "" : ""; if (t === r.tehai) F.tehai.ok++; else miss("tehai", r, r.tehai, t || "（前回なし）"); }
+        });
+        // 単価：ルールの単価と、画面に出る前回の受注単価
+        var pt = prod.filter(function (r) { return isPriceTarget(r.code, r.unit); });
+        if (cust && pt.length) {
+          var doc = blank("order", d, ""); doc.cust = cust; doc.lines = pt.map(function (r) { return { code: r.code, qty: num(r.qty) }; });
+          var c = compute(data, doc, { items: env.items, index: env.index, history: h });
+          pt.forEach(function (r, k) {
+            var l = c.lines[k], act = num(r.unit), rule = l.unit !== null && !!l.base && l.unit === act, prev = !!l.prev && l.prev.unit === act;
+            F.price.n++; if (l.unit !== null && l.base) F.price.priced++;
+            if (rule) F.price.ok++;
+            if (rule || prev) F.price.either++;
+            else miss("price", r, act, (l.unit === null ? "（出ない）" : fmt(l.unit)) + (l.prev ? "　前回 " + fmt(l.prev.unit) : ""));
+          });
+        } else pt.forEach(function (r) { F.price.n++; miss("price", r, num(r.unit), "（得意先マスタにない）"); });
+      }
+      g.forEach(function (r) { historyPush(h, r); });
+      i = j;
+    }
+    return { orders: orders, fields: F, misses: misses };
+  }
+
   // ---------- 受注伝票（SMILE に入る並び） ----------
   // 入れた型式から、SMILE の品目コードを決める。
   //   ① 手で選んだコード → ② 入れたコードが品目マスタにある → ③ 価格表記載名が同じ品目コード（枝番なし）。
@@ -543,7 +612,7 @@
     return steps;
   }
 
-  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, backtest: backtest, isPriceTarget: isPriceTarget, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
