@@ -252,6 +252,19 @@ mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-
 .g-edge{stroke:var(--text-muted);stroke-width:1.2;opacity:.7}
 .g-edge.ai{stroke-dasharray:4 3}
 .g-label{font-size:11px;font-weight:700;fill:var(--text-muted);text-anchor:middle;pointer-events:none;paint-order:stroke;stroke:var(--bg);stroke-width:4px}
+.g-label.go{pointer-events:auto;cursor:pointer}
+.g-label.go:hover{fill:var(--navy)}
+.g-label.big{font-size:15px;fill:var(--text-main);stroke-width:5px;pointer-events:auto;cursor:pointer}
+.g-blob{cursor:pointer}
+.g-node.task circle{stroke:var(--red);stroke-width:2.5}
+.g-node.unc circle{stroke:var(--orange);stroke-width:2.5}
+.g-node text.cs{text-anchor:middle;font-size:11px;font-weight:600}
+.g-node text.cs.side{text-anchor:start}
+.g-node text.cs .sub{font-size:10px;font-weight:400;fill:var(--text-muted)}
+.g-crumb{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:12.5px}
+.g-crumb span{cursor:pointer;color:var(--navy);font-weight:600}
+.g-crumb span.cur{cursor:default;color:var(--text-main)}
+.g-crumb i{font-style:normal;color:var(--text-muted)}
 </style>
 </head>
 <body>
@@ -347,9 +360,9 @@ mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-
         <g id="gView"><g id="gBlobs"></g><g id="gEdges"></g><g id="gLabels"></g><g id="gNodes"></g></g>
       </svg>
       <div class="graph-bar">
-        <label><input type="checkbox" id="gSingles">つながりの無い書類も出す</label>
+        <div class="g-crumb" id="gCrumb"></div>
         <button id="gFit">全体を見る</button>
-        <span class="gb-note">丸を押すと書類を開く・ドラッグで動かす・ホイールで拡大　点線＝AIがつないだ</span>
+        <span class="gb-note" id="gHint"></span>
       </div>
       <div class="graph-tip" id="graphTip"></div>
       <div class="graph-empty" id="graphEmpty" style="display:none"></div>
@@ -1837,119 +1850,218 @@ function renderLinkPicker(){
 }
 
 /* ============================================================
-   つながり図
+   つながり図（3段で掘り下げる）
 
-   つながっている書類を、アメーバのようなかたまりで見せる。
-   ・丸1つが書類1件、線がつながり（点線は AI がつないだもの）
-   ・つながったひとかたまり（＝ひとつの件）ごとに色を変え、ぼかして輪郭を
-     立てる（SVG の goo フィルタ）。近い丸どうしが溶け合ってアメーバになる
-   ・位置は簡単なばねの計算で決める（外の部品は使わない）。落ち着いたあとも
-     ほんの少し揺らして、生き物っぽく見せる。図を離れたら計算を止める
+   1) 全体   ：カテゴリごとの大きなアメーバ。丸1つが書類1件で、つながりの
+                無い書類も全部入る。大きさ＝件数。押すとそのカテゴリへ
+   2) カテゴリ：その中の「件」（つながった書類のかたまり）ごとの小さなアメーバと、
+                ひとつだけの書類。かたまりを押すとその件へ、丸を押すと書類を開く
+   3) 件     ：その件の書類を、日付の古い順に左から右へ並べる。流れが線でたどれる。
+                カテゴリをまたいでつながっている書類も出す
+   ・上の戻り道（全体 › カテゴリ › 件）で前の段に戻る
+   ・ぼかしてから輪郭を立てる SVG のフィルタ（goo）で、近い丸どうしを溶け合わせる
+   ・位置は簡単なばねの計算（外の部品は使わない）。落ち着いたあともわずかに揺らす。
+     図を離れた・画面が隠れたときは計算を止める
+   ・段ごとに位置と見ている範囲を覚えておく（戻ったときに形が変わらない）
+   ・赤い縁＝やることが残っている、橙の縁＝未確認
    ・一覧の絞り込み（会社・カテゴリ・タグ・検索など）がそのまま効く
    ============================================================ */
 const G_COLORS = ['--purple', '--cyan', '--green', '--orange', '--red', '--navy', '--amber'];
-const G = { nodes: [], edges: [], comps: [], byId: new Map(), pos: new Map(), raf: 0, alpha: 0,
-            view: null, drag: null, focusId: null, frame: 0 };
+const G_CFG = {
+  top:  { sameRep: 700, otherRep: 7000, cohesion: .045, spring: 0,  cut: 250000, blobOpacity: .3 },
+  cat:  { sameRep: 900, otherRep: 5200,  cohesion: .012, spring: 62, cut: 160000, blobOpacity: .2 },
+  case: { fixed: true, blobOpacity: .14 },
+};
+const G = { level: { kind: 'top' }, nodes: [], edges: [], comps: [], byId: new Map(), pos: new Map(),
+            posBy: new Map(), viewBy: new Map(), raf: 0, alpha: 0, view: null, drag: null, focusId: null,
+            frame: 0, anim: 0, list: [] };
 const SVGNS = 'http://www.w3.org/2000/svg';
 function svgEl(tag, attrs){
   const e = document.createElementNS(SVGNS, tag);
   for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
   return e;
 }
+const catOf = d => d.category || 'その他';
+const gTitle = (s, n) => (s = s || '', s.length > n ? s.slice(0, n) + '…' : s);
+/* 件の段の並び位置。横に広い画面は左→右、狭い画面（スマホなど）は上→下 */
+function caseSpot(n, count){
+  if (G.caseVert) return { x: (n.order % 2 ? 1 : -1) * (count > 6 ? 18 : 0), y: n.order * 96 };
+  return { x: n.order * 190, y: (n.order % 2 ? 1 : -1) * (count > 6 ? 22 : 0) };
+}
+function levelKey(lv){ lv = lv || G.level; return lv.kind === 'top' ? 'top' : lv.kind === 'cat' ? 'cat:' + lv.cat : 'case:' + lv.ids[0]; }
 
-function renderGraph(list){
-  const ids = new Set(list.map(d => d.id));
-  const edges = [], seen = new Set(), deg = new Map();
-  for (const d of list){
+/* つながりの線（list の中だけ） */
+function graphEdges(pool){
+  const ids = new Set(pool.map(d => d.id)), seen = new Set(), edges = [];
+  for (const d of pool){
     for (const l of (d.d.links || [])){
       if (!ids.has(l.id) || l.id === d.id) continue;
       const k = d.id < l.id ? d.id + '|' + l.id : l.id + '|' + d.id;
       if (seen.has(k)) continue;
       seen.add(k);
       edges.push({ a: d.id, b: l.id, ai: l.by === 'AI' });
-      deg.set(d.id, (deg.get(d.id) || 0) + 1); deg.set(l.id, (deg.get(l.id) || 0) + 1);
     }
   }
-  const singles = document.getElementById('gSingles').checked;
-  const nodes = list.filter(d => deg.has(d.id) || singles).map(d => ({ id: d.id, doc: d, deg: deg.get(d.id) || 0 }));
-
-  // ひとかたまり（つながった書類の集まり）を求める
+  return edges;
+}
+/* つながったかたまりに分ける */
+function graphComponents(nodes, edges){
   const parent = new Map(nodes.map(n => [n.id, n.id]));
   const find = x => { while (parent.get(x) !== x){ parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
-  edges.forEach(e => parent.set(find(e.a), find(e.b)));
+  edges.forEach(e => { if (parent.has(e.a) && parent.has(e.b)) parent.set(find(e.a), find(e.b)); });
   const groups = new Map();
   nodes.forEach(n => { const r = find(n.id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(n); });
-  const comps = [...groups.values()].filter(g => g.length > 1).sort((a, b) => b.length - a.length);
-  comps.forEach((g, i) => {
-    const color = G_COLORS[i % G_COLORS.length];
-    g.forEach(n => { n.comp = i; n.color = color; });
-  });
-  nodes.forEach(n => { if (n.comp === undefined){ n.comp = -1; n.color = '--mute'; } });
+  return [...groups.values()];
+}
 
-  // 位置は前回のものを引き継ぐ（図を開き直しても形が変わらないように）
-  const W = document.getElementById('graphPanel').clientWidth || 800, H = document.getElementById('graphPanel').clientHeight || 600;
+function renderGraph(list){
+  G.list = list;
+  const lv = G.level;
+  let nodes = [], edges = [], comps = [];
+
+  if (lv.kind === 'top'){
+    const byCat = new Map();
+    list.forEach(d => { const c = catOf(d); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(d); });
+    const cats = [...byCat.keys()].sort((a, b) => byCat.get(b).length - byCat.get(a).length);
+    cats.forEach((c, i) => {
+      const g = byCat.get(c).map(d => ({ id: d.id, doc: d, deg: 0, comp: i, color: G_COLORS[i % G_COLORS.length] }));
+      g.key = c; g.label = `${c}（${g.length}件）`;
+      comps.push(g); nodes.push(...g);
+    });
+  } else if (lv.kind === 'cat'){
+    const pool = list.filter(d => catOf(d) === lv.cat);
+    edges = graphEdges(pool);
+    nodes = pool.map(d => ({ id: d.id, doc: d, deg: 0 }));
+    edges.forEach(e => { nodes.find(n => n.id === e.a).deg++; nodes.find(n => n.id === e.b).deg++; });
+    comps = graphComponents(nodes, edges).filter(g => g.length > 1).sort((a, b) => b.length - a.length);
+    comps.forEach((g, i) => {
+      const color = G_COLORS[i % G_COLORS.length];
+      g.forEach(n => { n.comp = i; n.color = color; });
+      const newest = g.slice().sort((a, b) => String(b.doc.docDate || b.doc.received).localeCompare(String(a.doc.docDate || a.doc.received)))[0];
+      g.key = g.map(n => n.id); g.label = `${gTitle(newest.doc.title, 18)}（${g.length}件）`;
+    });
+    nodes.forEach(n => { if (n.comp === undefined){ n.comp = -1; n.color = '--mute'; } });
+  } else {
+    // 件：最初の書類から、つながりをたどって集める（カテゴリはまたいでよい）
+    const byId = new Map(list.map(d => [d.id, d]));
+    const seen = new Set(), queue = lv.ids.filter(id => byId.has(id)).slice(0, 1);
+    while (queue.length){
+      const id = queue.shift(); if (seen.has(id)) continue; seen.add(id);
+      (byId.get(id).d.links || []).forEach(l => { if (byId.has(l.id) && !seen.has(l.id)) queue.push(l.id); });
+    }
+    const pool = [...seen].map(id => byId.get(id))
+      .sort((a, b) => String(a.docDate || a.received).localeCompare(String(b.docDate || b.received)));
+    edges = graphEdges(pool);
+    nodes = pool.map((d, i) => ({ id: d.id, doc: d, deg: 0, comp: 0, color: G_COLORS[0], order: i }));
+    edges.forEach(e => { nodes.find(n => n.id === e.a).deg++; nodes.find(n => n.id === e.b).deg++; });
+    if (nodes.length){ nodes.key = lv.ids; nodes.label = ''; comps = [nodes]; }
+  }
+
+  // 位置は段ごとに覚えておき、前回のものを引き継ぐ
+  const key = levelKey();
+  if (!G.posBy.has(key)) G.posBy.set(key, new Map());
+  G.pos = G.posBy.get(key);
+  const panel = document.getElementById('graphPanel');
+  const W = panel.clientWidth || 800, H = panel.clientHeight || 600;
+  G.caseVert = W < 760;
   let fresh = 0;
   const byId = new Map(nodes.map(n => [n.id, n]));
+  const nComp = Math.max(comps.length, 1);
   for (const n of nodes){
     let p = G.pos.get(n.id);
     if (!p){
-      const nb = edges.find(e => e.a === n.id || e.b === n.id);
-      const q = nb ? G.pos.get(nb.a === n.id ? nb.b : nb.a) : null;
-      p = q ? { x: q.x + (Math.random() - .5) * 40, y: q.y + (Math.random() - .5) * 40 }
-            : { x: W / 2 + (Math.random() - .5) * W * .8, y: H / 2 + (Math.random() - .5) * H * .8 };
+      if (lv.kind === 'case'){
+        p = caseSpot(n, nodes.length);
+      } else {
+        const nb = edges.find(e => e.a === n.id || e.b === n.id);
+        const q = nb ? G.pos.get(nb.a === n.id ? nb.b : nb.a) : null;
+        // かたまりごとに、円の上の別々の場所から始める（最初から散らばっているほうが早く落ち着く）
+        const ang = (n.comp >= 0 ? n.comp : nComp + Math.random() * 3) / nComp * Math.PI * 2;
+        const R = Math.min(W, H) * .32;
+        p = q ? { x: q.x + (Math.random() - .5) * 40, y: q.y + (Math.random() - .5) * 40 }
+              : { x: W / 2 + Math.cos(ang) * R + (Math.random() - .5) * 60, y: H / 2 + Math.sin(ang) * R + (Math.random() - .5) * 60 };
+      }
       p.vx = 0; p.vy = 0;
       G.pos.set(n.id, p); fresh++;
     }
     n.p = p;
   }
   G.nodes = nodes; G.edges = edges; G.comps = comps; G.byId = byId;
+  G.view = G.viewBy.get(key) || null;
 
   const empty = document.getElementById('graphEmpty');
   if (!nodes.length){
     empty.style.display = 'flex';
-    empty.innerHTML = edges.length || !list.length ? 'この絞り込みでは書類がありません'
-      : 'つながっている書類がまだありません<br><span style="font-size:12px">取込のときに AI がつなぐと、ここにかたまりで出ます</span>';
+    empty.innerHTML = lv.kind === 'top' ? 'この絞り込みでは書類がありません'
+      : 'この絞り込みでは、ここに出す書類がありません<br><span style="font-size:12px">上の「全体」で戻れます</span>';
   } else empty.style.display = 'none';
 
+  renderCrumb();
   buildGraphSvg();
-  if (fresh > 3){ for (let i = 0; i < 260; i++) graphTick(1 - i / 300); }   // 新しい丸が多いときは先に落ち着かせてから見せる
+  if (fresh > 3 && lv.kind !== 'case'){ for (let i = 0; i < 260; i++) graphTick(1 - i / 300); }   // 先に落ち着かせてから見せる
   if (!G.view || fresh > 3) graphFit();
   G.alpha = Math.max(G.alpha, fresh ? .6 : .15);
   graphStart();
 }
 
+function renderCrumb(){
+  const lv = G.level, el = document.getElementById('gCrumb');
+  const parts = [`<span class="${lv.kind === 'top' ? 'cur' : ''}" data-go="top">全体</span>`];
+  if (lv.kind !== 'top') parts.push(`<span class="${lv.kind === 'cat' ? 'cur' : ''}" data-go="cat">${esc(lv.cat)}</span>`);
+  if (lv.kind === 'case') parts.push(`<span class="cur">${esc(lv.label || 'この件')}</span>`);
+  el.innerHTML = parts.join('<i>›</i>');
+  const hint = { top: 'アメーバを押すと、そのカテゴリに入る', cat: '色のかたまり＝ひとつの件。押すとその件へ・灰色の丸＝つながりの無い書類',
+                 case: '左から日付の古い順。丸を押すと書類を開く' }[lv.kind];
+  document.getElementById('gHint').textContent = hint + '　赤い縁＝やること・橙＝未確認' + (lv.kind === 'top' ? '' : '　点線＝AIがつないだ');
+}
+
 function buildGraphSvg(){
+  const lv = G.level;
   const gB = document.getElementById('gBlobs'), gE = document.getElementById('gEdges'),
         gL = document.getElementById('gLabels'), gN = document.getElementById('gNodes');
   gB.innerHTML = gE.innerHTML = gL.innerHTML = gN.innerHTML = '';
+  const cfg = G_CFG[lv.kind];
 
-  // かたまりの「アメーバ」：色ごとに大きな丸と太い線を描き、まとめてぼかす
+  // アメーバ：かたまりごとに大きな丸と太い線を描き、まとめてぼかす
   G.comps.forEach((g, i) => {
-    const outer = svgEl('g', { opacity: .2 });
-    const inner = svgEl('g', { filter: 'url(#goo)', style: `fill:var(${g[0].color});stroke:var(${g[0].color})` });
-    g.forEach(n => { n.blob = svgEl('circle', { r: 26 + Math.min(n.deg, 4) * 3, 'stroke-width': 0 }); inner.appendChild(n.blob); });
-    G.edges.filter(e => G.byId.get(e.a)?.comp === i).forEach(e => {
-      e.blob = svgEl('line', { 'stroke-width': 34, 'stroke-linecap': 'round' }); inner.appendChild(e.blob);
-    });
+    const outer = svgEl('g', { opacity: cfg.blobOpacity });
+    const inner = svgEl('g', { filter: 'url(#goo)', style: `fill:var(${g[0].color});stroke:var(${g[0].color})`, class: lv.kind === 'case' ? '' : 'g-blob' });
+    inner.dataset.comp = i;
+    const r = lv.kind === 'top' ? 24 : lv.kind === 'cat' ? null : 34;
+    g.forEach(n => { n.blob = svgEl('circle', { r: r || 26 + Math.min(n.deg, 4) * 3, 'stroke-width': 0 }); inner.appendChild(n.blob); });
+    if (lv.kind !== 'top'){
+      G.edges.filter(e => G.byId.get(e.a)?.comp === i && G.byId.get(e.b)?.comp === i).forEach(e => {
+        e.blob = svgEl('line', { 'stroke-width': lv.kind === 'case' ? 50 : 34, 'stroke-linecap': 'round' }); inner.appendChild(e.blob);
+      });
+    }
     outer.appendChild(inner); gB.appendChild(outer);
-
-    // かたまりの名前：いちばん多いカテゴリと件数
-    const cnt = {}; g.forEach(n => { const c = n.doc.category || 'その他'; cnt[c] = (cnt[c] || 0) + 1; });
-    const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
-    g.label = svgEl('text', { class: 'g-label' }); g.label.textContent = `${top}（${g.length}件）`;
-    gL.appendChild(g.label);
+    if (g.label){
+      g.labelEl = svgEl('text', { class: 'g-label' + (lv.kind === 'top' ? ' big' : ' go') });
+      g.labelEl.dataset.comp = i;
+      g.labelEl.textContent = g.label;
+      gL.appendChild(g.labelEl);
+    }
   });
 
   G.edges.forEach(e => { e.el = svgEl('line', { class: 'g-edge' + (e.ai ? ' ai' : '') }); gE.appendChild(e.el); });
 
   G.nodes.forEach(n => {
-    const g = svgEl('g', { class: 'g-node' + (n.comp < 0 ? ' single' : '') + (n.id === G.focusId ? ' focus' : '') });
-    g.appendChild(svgEl('circle', { r: 5 + Math.min(n.deg, 5), style: `fill:var(${n.color})` }));
-    if (n.comp >= 0){
-      const t = svgEl('text', { x: 10, y: 3.5 });
-      const title = n.doc.title || '';
-      t.textContent = title.length > 14 ? title.slice(0, 14) + '…' : title;
-      g.appendChild(t);
+    const d = n.doc;
+    const cls = ['g-node'];
+    if (n.comp < 0) cls.push('single');
+    if (isOpenTask(d) && d.taskKind !== '確認') cls.push('task'); else if (d.status === '未確認') cls.push('unc');
+    if (n.id === G.focusId) cls.push('focus');
+    const g = svgEl('g', { class: cls.join(' ') });
+    const rad = lv.kind === 'top' ? 4.5 : lv.kind === 'case' ? 9 : 5 + Math.min(n.deg, 5);
+    g.appendChild(svgEl('circle', { r: rad, style: `fill:var(${n.color})` }));
+    if (lv.kind === 'cat' && n.comp >= 0){
+      const t = svgEl('text', { x: 10, y: 3.5 }); t.textContent = gTitle(d.title, 14); g.appendChild(t);
+    } else if (lv.kind === 'case'){
+      const vx = G.caseVert ? 16 : 0;
+      const t = svgEl('text', G.caseVert ? { y: 0, class: 'cs side' } : { y: 26, class: 'cs' });
+      const t1 = svgEl('tspan', { x: vx }); t1.textContent = gTitle(d.title, G.caseVert ? 20 : 16);
+      const t2 = svgEl('tspan', { x: vx, dy: 14, class: 'sub' }); t2.textContent = `${d.docDate || d.received || ''}　${d.docType || ''}`;
+      t.append(t1, t2); g.appendChild(t);
     }
     g.dataset.id = n.id;
     n.el = g; gN.appendChild(g);
@@ -1958,36 +2070,49 @@ function buildGraphSvg(){
 }
 
 function graphTick(alpha){
-  const N = G.nodes, a = alpha ?? G.alpha;
+  const N = G.nodes, a = alpha ?? G.alpha, lv = G.level, cfg = G_CFG[lv.kind];
   if (!N.length) return;
-  const W = document.getElementById('graphPanel').clientWidth || 800, H = document.getElementById('graphPanel').clientHeight || 600;
-  // 押し合い（丸どうしが重ならないように）
+  if (cfg.fixed){
+    // 件：日付順の並びに戻しながら、わずかに揺らす
+    for (const n of N){
+      if (G.drag && G.drag.node === n) continue;
+      const { x: tx, y: ty } = caseSpot(n, N.length);
+      n.p.vx = (n.p.vx + (tx - n.p.x) * .08) * .75; n.p.vy = (n.p.vy + (ty - n.p.y) * .08) * .75;
+      n.p.x += n.p.vx; n.p.y += n.p.vy;
+    }
+    return;
+  }
+  const panel = document.getElementById('graphPanel');
+  const W = panel.clientWidth || 800, H = panel.clientHeight || 600;
+  // 押し合い（丸どうしが重ならないように。別のかたまりどうしは強めに離す）
   for (let i = 0; i < N.length; i++){
     const p = N[i].p;
     for (let j = i + 1; j < N.length; j++){
       const q = N[j].p;
       let dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy;
       if (d2 < 1){ dx = Math.random() - .5; dy = Math.random() - .5; d2 = 1; }
-      if (d2 > 160000) continue;   // 遠いもの（400より先）は計算しない
+      if (d2 > cfg.cut) continue;   // 遠いものは計算しない
       const same = N[i].comp >= 0 && N[i].comp === N[j].comp;
-      const f = (same ? 900 : 5200) / d2 * a;   // 別のかたまりどうしは強めに離す
+      const f = (same ? cfg.sameRep : cfg.otherRep) / d2 * a;
       const d = Math.sqrt(d2);
       p.vx += dx / d * f; p.vy += dy / d * f; q.vx -= dx / d * f; q.vy -= dy / d * f;
     }
   }
   // つながりのばね
-  for (const e of G.edges){
-    const p = G.byId.get(e.a)?.p, q = G.byId.get(e.b)?.p; if (!p || !q) continue;
-    const dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = (d - 62) * .05 * a;
-    p.vx += dx / d * f; p.vy += dy / d * f; q.vx -= dx / d * f; q.vy -= dy / d * f;
+  if (cfg.spring){
+    for (const e of G.edges){
+      const p = G.byId.get(e.a)?.p, q = G.byId.get(e.b)?.p; if (!p || !q) continue;
+      const dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const f = (d - cfg.spring) * .05 * a;
+      p.vx += dx / d * f; p.vy += dy / d * f; q.vx -= dx / d * f; q.vy -= dy / d * f;
+    }
   }
   // かたまりの中心へ寄せる・全体を画面の中心へ寄せる
   const cx = W / 2, cy = H / 2;
   const cent = G.comps.map(g => { let x = 0, y = 0; g.forEach(n => { x += n.p.x; y += n.p.y; }); return { x: x / g.length, y: y / g.length }; });
   for (const n of N){
     const p = n.p;
-    if (n.comp >= 0){ const c = cent[n.comp]; p.vx += (c.x - p.x) * .012 * a; p.vy += (c.y - p.y) * .012 * a; }
+    if (n.comp >= 0){ const c = cent[n.comp]; p.vx += (c.x - p.x) * cfg.cohesion * a; p.vy += (c.y - p.y) * cfg.cohesion * a; }
     const k = n.comp >= 0 ? .006 : .012;
     p.vx += (cx - p.x) * k * a; p.vy += (cy - p.y) * k * a;
     if (G.drag && G.drag.node === n){ p.vx = p.vy = 0; continue; }
@@ -2000,7 +2125,7 @@ function graphPaint(){
   const v = G.view || { x: 0, y: 0, k: 1 };
   document.getElementById('gView').setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.k})`);
   // 引いて見ているときは書類の名前を隠す（重なって読めないため）。名前は丸に乗せると出る
-  document.getElementById('graphSvg').classList.toggle('far', v.k < .95);
+  document.getElementById('graphSvg').classList.toggle('far', G.level.kind === 'cat' && v.k < .95);
   for (const n of G.nodes){
     n.el.setAttribute('transform', `translate(${n.p.x},${n.p.y})`);
     if (n.blob){ n.blob.setAttribute('cx', n.p.x); n.blob.setAttribute('cy', n.p.y); }
@@ -2013,8 +2138,14 @@ function graphPaint(){
     }
   }
   for (const g of G.comps){
-    let x = 0, top = Infinity; g.forEach(n => { x += n.p.x; top = Math.min(top, n.p.y); });
-    g.label.setAttribute('x', x / g.length); g.label.setAttribute('y', top - 34);
+    if (!g.labelEl) continue;
+    let x = 0, y = 0, top = Infinity; g.forEach(n => { x += n.p.x; y += n.p.y; top = Math.min(top, n.p.y); });
+    if (G.level.kind === 'top'){
+      // カテゴリ名は拡大の具合によらず読める大きさにする
+      g.labelEl.setAttribute('x', x / g.length); g.labelEl.setAttribute('y', y / g.length + 5 / v.k);
+      g.labelEl.style.fontSize = (14 / v.k) + 'px'; g.labelEl.style.strokeWidth = (5 / v.k) + 'px';
+    }
+    else { g.labelEl.setAttribute('x', x / g.length); g.labelEl.setAttribute('y', top - 34); }
   }
 }
 
@@ -2026,9 +2157,10 @@ function graphStart(){
     G.raf = 0;
     if (currentView !== 'graph' || document.hidden) return;
     G.frame++;
-    if (G.alpha > .04 || G.drag){ graphTick(); G.alpha *= .985; graphPaint(); }
+    if (G.alpha > .04 || G.drag || G.anim){ graphTick(); G.alpha *= .985; graphPaint(); }
     else if (G.frame % 3 === 0){
-      for (const n of G.nodes){ if (n.comp >= 0){ n.p.vx += (Math.random() - .5) * .25; n.p.vy += (Math.random() - .5) * .25; } }
+      const amp = G.level.kind === 'top' ? .15 : .25;
+      for (const n of G.nodes){ if (n.comp >= 0){ n.p.vx += (Math.random() - .5) * amp; n.p.vy += (Math.random() - .5) * amp; } }
       graphTick(.04); graphPaint();
     }
     G.raf = requestAnimationFrame(step);
@@ -2044,38 +2176,83 @@ function graphFit(){
   if (!G.nodes.length){ G.view = { x: 0, y: 0, k: 1 }; return; }
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   G.nodes.forEach(n => { x0 = Math.min(x0, n.p.x); y0 = Math.min(y0, n.p.y); x1 = Math.max(x1, n.p.x); y1 = Math.max(y1, n.p.y); });
-  const pad = 90, k = Math.min(2, Math.max(.2, Math.min(W / (x1 - x0 + pad * 2), (H - 40) / (y1 - y0 + pad * 2))));
-  G.view = { k, x: W / 2 - (x0 + x1) / 2 * k, y: (H + 40) / 2 - (y0 + y1) / 2 * k };
+  if (G.level.kind === 'case'){
+    G.nodes.forEach(n => { const t = caseSpot(n, G.nodes.length); x0 = Math.min(x0, t.x); x1 = Math.max(x1, t.x); y0 = Math.min(y0, t.y); y1 = Math.max(y1, t.y); });
+    if (G.caseVert) x1 += 200;   // 縦に並べるときは、右側に件名が出る
+  }
+  const pad = G.level.kind === 'case' ? 120 : 90;
+  const k = Math.min(G.level.kind === 'case' ? 1.4 : 2, Math.max(.15, Math.min(W / (x1 - x0 + pad * 2), (H - 60) / (y1 - y0 + pad * 2))));
+  G.view = { k, x: W / 2 - (x0 + x1) / 2 * k, y: (H + 60) / 2 - (y0 + y1) / 2 * k };
   graphPaint();
 }
 
+/* 段を移る。押したところへ寄っていってから切り替える */
+function graphGo(level, at){
+  G.viewBy.set(levelKey(), G.view);
+  const done = () => {
+    G.anim = 0; G.level = level; G.focusId = null;
+    document.getElementById('graphTip').style.display = 'none';
+    renderGraph(G.list);
+  };
+  if (!at || !G.view){ done(); return; }
+  const panel = document.getElementById('graphPanel');
+  const from = { ...G.view }, k2 = from.k * 2.4;
+  const to = { k: k2, x: panel.clientWidth / 2 - at.x * k2, y: panel.clientHeight / 2 - at.y * k2 };
+  const t0 = performance.now(), ms = 320;
+  G.anim = 1;
+  const stepAnim = now => {
+    const t = Math.min(1, (now - t0) / ms), e = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    G.view = { k: from.k + (to.k - from.k) * e, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e };
+    graphPaint();
+    if (t < 1) requestAnimationFrame(stepAnim); else done();
+  };
+  requestAnimationFrame(stepAnim);
+}
+function graphDrill(compIdx){
+  const g = G.comps[compIdx]; if (!g) return;
+  let x = 0, y = 0; g.forEach(n => { x += n.p.x; y += n.p.y; });
+  const at = { x: x / g.length, y: y / g.length };
+  if (G.level.kind === 'top') graphGo({ kind: 'cat', cat: g.key }, at);
+  else if (G.level.kind === 'cat') graphGo({ kind: 'case', cat: G.level.cat, ids: g.key, label: g.label.replace(/（\d+件）$/, '') }, at);
+}
+
+/* 一覧の書類を押したとき：その書類が見える段に移って、丸に寄る */
 function graphFocus(id){
+  const d = docs.find(x => x.id === id); if (!d) return;
+  if (!(G.level.kind === 'cat' && G.level.cat === catOf(d)) && !(G.level.kind === 'case' && G.byId.has(id))){
+    G.viewBy.set(levelKey(), G.view);
+    G.level = { kind: 'cat', cat: catOf(d) };
+    renderGraph(G.list);
+  }
   const n = G.byId.get(id);
   G.focusId = id;
   G.nodes.forEach(m => m.el.classList.toggle('focus', m.id === id));
-  if (!n){ setStatus('この書類はつながりが無いので図に出ていません（「つながりの無い書類も出す」で出せます）', ''); return; }
+  if (!n) return;
   const panel = document.getElementById('graphPanel');
   const k = Math.max((G.view || { k: 1 }).k, 1.1);
   G.view = { k, x: panel.clientWidth / 2 - n.p.x * k, y: panel.clientHeight / 2 - n.p.y * k };
   graphPaint();
 }
 
-/* ドラッグ・拡大・ツールチップ */
+/* ドラッグ・拡大・ツールチップ・押したとき */
 (function wireGraph(){
   const svg = document.getElementById('graphSvg'), tip = document.getElementById('graphTip'), panel = document.getElementById('graphPanel');
   const toWorld = (cx, cy) => { const r = svg.getBoundingClientRect(), v = G.view; return { x: (cx - r.left - v.x) / v.k, y: (cy - r.top - v.y) / v.k }; };
   svg.addEventListener('pointerdown', e => {
-    const g = e.target.closest('.g-node');
+    if (G.anim) return;
+    const g = e.target.closest('.g-node'), b = e.target.closest('[data-comp]');
     svg.setPointerCapture(e.pointerId);
-    if (g){ G.drag = { node: G.byId.get(g.dataset.id), sx: e.clientX, sy: e.clientY, moved: false }; G.alpha = Math.max(G.alpha, .3); }
-    else { G.drag = { pan: true, sx: e.clientX, sy: e.clientY, vx: G.view.x, vy: G.view.y }; svg.classList.add('panning'); }
+    if (g) G.drag = { node: G.byId.get(g.dataset.id), sx: e.clientX, sy: e.clientY, moved: false };
+    else if (b && G.level.kind !== 'case') G.drag = { comp: Number(b.dataset.comp), pan: true, sx: e.clientX, sy: e.clientY, vx: G.view.x, vy: G.view.y };
+    else G.drag = { pan: true, sx: e.clientX, sy: e.clientY, vx: G.view.x, vy: G.view.y };
+    if (G.drag.pan) svg.classList.add('panning'); else G.alpha = Math.max(G.alpha, .3);
     graphStart();
   });
   svg.addEventListener('pointermove', e => {
     const d = G.drag;
     if (d){
       if (Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) > 4) d.moved = true;
-      if (d.pan){ G.view.x = d.vx + e.clientX - d.sx; G.view.y = d.vy + e.clientY - d.sy; graphPaint(); }
+      if (d.pan && d.moved){ G.view.x = d.vx + e.clientX - d.sx; G.view.y = d.vy + e.clientY - d.sy; graphPaint(); }
       else if (d.node && d.moved){ const w = toWorld(e.clientX, e.clientY); d.node.p.x = w.x; d.node.p.y = w.y; graphPaint(); }
       tip.style.display = 'none';
       return;
@@ -2084,26 +2261,37 @@ function graphFocus(id){
     if (!g){ tip.style.display = 'none'; return; }
     const n = G.byId.get(g.dataset.id); if (!n) return;
     const x = n.doc, r = panel.getBoundingClientRect();
-    tip.innerHTML = `<b>${esc(x.title)}</b><span>${esc(x.sender || '差出元不明')}${x.docDate ? ' ・ ' + x.docDate : ''} ・ ${esc(x.docType || '')}${n.deg ? ' ・ つながり' + n.deg + '件' : ''}</span>`;
+    const mark = isOpenTask(x) ? ` ・ タスク：${esc(x.taskStatus)}` : x.status === '未確認' ? ' ・ 未確認' : '';
+    tip.innerHTML = `<b>${esc(x.title)}</b><span>${esc(x.sender || '差出元不明')}${x.docDate ? ' ・ ' + x.docDate : ''} ・ ${esc(x.docType || '')}${n.deg ? ' ・ つながり' + n.deg + '件' : ''}${mark}</span>`;
     tip.style.display = 'block';
-    tip.style.left = Math.min(e.clientX - r.left + 14, r.width - 330) + 'px';
+    tip.style.left = Math.max(0, Math.min(e.clientX - r.left + 14, r.width - 330)) + 'px';
     tip.style.top = (e.clientY - r.top + 14) + 'px';
   });
-  const end = e => {
+  const end = () => {
     const d = G.drag; G.drag = null; svg.classList.remove('panning');
-    if (d && d.node && !d.moved) jumpToDoc(d.node.id);   // 丸を押した（動かしていない）→ 書類を開く
+    if (!d || d.moved) return;
+    if (d.node){
+      // 全体の段では、丸を押してもそのカテゴリに入る（丸が小さく、書類を開くには細かすぎる）
+      if (G.level.kind === 'top') graphDrill(d.node.comp);
+      else jumpToDoc(d.node.id);
+    } else if (d.comp !== undefined) graphDrill(d.comp);
   };
   svg.addEventListener('pointerup', end);
   svg.addEventListener('pointercancel', () => { G.drag = null; svg.classList.remove('panning'); });
   svg.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
   svg.addEventListener('wheel', e => {
     e.preventDefault();
+    if (!G.view) return;
     const r = svg.getBoundingClientRect(), v = G.view, f = Math.exp(-e.deltaY * .0015);
     const k = Math.min(4, Math.max(.15, v.k * f)), mx = e.clientX - r.left, my = e.clientY - r.top;
     G.view = { k, x: mx - (mx - v.x) * (k / v.k), y: my - (my - v.y) * (k / v.k) };
     graphPaint();
   }, { passive: false });
-  document.getElementById('gSingles').addEventListener('change', () => { G.view = null; render(); });
+  document.getElementById('gCrumb').addEventListener('click', e => {
+    const s = e.target.closest('[data-go]'); if (!s || s.classList.contains('cur')) return;
+    if (s.dataset.go === 'top') graphGo({ kind: 'top' });
+    else graphGo({ kind: 'cat', cat: G.level.cat });
+  });
   document.getElementById('gFit').addEventListener('click', graphFit);
 })();
 
