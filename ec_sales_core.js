@@ -1231,7 +1231,7 @@
   EC.listStatus = function (app) { var p = STATUS_PAIRS.filter(function (x) { return x[0] === (app || 'new'); })[0]; return p ? p[1] : ''; };
   EC.appStatus = function (list) { var p = STATUS_PAIRS.filter(function (x) { return x[1] === list; })[0]; return p ? p[0] : ''; };
   // リストの操作（EC_Log.Action）の選択肢
-  EC.LOG_ACTIONS = ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', 'その他'];
+  EC.LOG_ACTIONS = ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', '領収証発行', '領収証再発行', '領収証取消', 'その他'];
   // 注文番号（Title）＝数字だけ（# なし）
   EC.orderNo = function (id) { return digits(id); };
   // 人の表示（メールの @ より前）

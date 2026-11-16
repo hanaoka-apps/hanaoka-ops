@@ -49,5 +49,11 @@ const ctx = { EC, conf: { files: { shipIndex: 'x' }, shipReport: { todo: '登録
   assert.strictEqual(box.innerHTML.split('Shopify：登録済み（発送済み）').length - 1, 1);   // 1001 だけ
   ctx.shopifyState = null; EcShipTab.render(ctx);
   assert(!box.innerHTML.includes('Shopify：登録済み') && !box.innerHTML.includes('Shopify：未登録'));
+  // 領収証の札とボタン：ctx.receipt があるときだけ、注文の欄に札・操作の欄にボタンが出る（読めない人・ふるさと納税では ctx.receipt が null）
+  assert(!box.innerHTML.includes('rc-badge') && !box.innerHTML.includes('data-receipt'));
+  ctx.receipt = { badge: id => id === '1001' ? '<span class="tag ok rc-badge">領収証：発行済み</span>' : '', button: s => '<button data-receipt="' + s.id + '">領収証を発行</button>' }; EcShipTab.render(ctx);
+  assert.strictEqual(box.innerHTML.split('rc-badge').length - 1, 1); assert(box.innerHTML.includes('data-receipt="1001"') && box.innerHTML.includes('data-receipt="1002"') && box.innerHTML.includes('data-receipt="1003"'));
+  ctx.receipt = null; EcShipTab.render(ctx);
+  assert(!box.innerHTML.includes('data-receipt'));
   console.log('ok ship tab');
 })().catch(e => { console.error(e); process.exit(1); });

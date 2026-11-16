@@ -1,5 +1,6 @@
 'use strict';
-/* 注文の状況の閲覧画面（EC受注の状況 ec_viewer.html／ふるさと納税の状況 furusato_viewer.html）。見るだけで、書き込みはしない。
+/* 注文の状況の閲覧画面（EC受注の状況 ec_viewer.html／ふるさと納税の状況 furusato_viewer.html）。注文の状況は見るだけ（書き込みはしない）。
+ * 例外は、EC の領収証の発行・管理（プロフィールの receipt が true の画面だけ。receipt_ui.js）。記録は SharePoint のリスト EC_Receipt に書く（書き込みの権限は、押したときに初めて求める）。
  * 注文ごとに、元の注文（EC＝Shopify／ふるさと納税＝サイネックスの注文CSV）・SMILE の受注・出荷（送り状）を1つにまとめて、
  *   ① 受注 → ② 受注伝票作成済（出荷待ち） → ③ 出荷済 → ④ 完了（EC＝Shopify登録済／ふるさと納税＝サイネックス報告完了）
  * のどこまで進んだかを出す。状況の決め方・検索は ec_viewer_core.js（EcViewer）。
@@ -10,10 +11,12 @@
 const V = window.EcViewer, EC = window.EcSales, SS = window.ShipSearch, P = window.VIEWER_PROFILE;
 const SCOPES = ['User.Read', 'Sites.Read.All', 'Files.Read.All'];
 const PAGE = 40;   // 1回に出す件数
+const WRITE_SCOPES = ['Sites.ReadWrite.All'];   // 領収証の記録を書くときだけ使う（普段の閲覧は、読み取りのまま）
 
 let SC = null, CONF = null, msalInstance = null, account = null, driveId = null;
 let SHIP = null, SMILE = null, SRC = null;   // 読み込んだデータ（SRC＝{ orders, modified, doneUnknown }：元の注文）
 let RECS = [], FILT = [], shown = 0, LOADWARN = [];
+let RC = null;   // 領収証の部品（ReceiptUi）。EC の画面だけ。リストを読めない人には、ボタンも札も出ない
 const FS = { q: '', stages: [], from: '', to: '', carrier: '', tag: '', late: false };
 let period = '';
 
@@ -31,6 +34,10 @@ function ago(iso) { if (!iso) return ''; const m = Math.max(0, Math.round((Date.
 async function getToken() {
   try { return (await msalInstance.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
   catch { return (await msalInstance.acquireTokenPopup({ scopes: SCOPES })).accessToken; }
+}
+async function getWriteToken() {   // 領収証を発行・再発行・取消するとき、はじめて求める（初めての人には、同意の画面が出る）
+  try { return (await msalInstance.acquireTokenSilent({ scopes: WRITE_SCOPES, account })).accessToken; }
+  catch { return (await msalInstance.acquireTokenPopup({ scopes: WRITE_SCOPES })).accessToken; }
 }
 async function graphGet(url) {
   const r = await fetch('https://graph.microsoft.com/v1.0' + url, { headers: { Authorization: 'Bearer ' + await getToken() } });
@@ -82,6 +89,7 @@ async function loadAll() {
 function rebuild() {
   const sm = SMILE ? EC.indexObjects(SMILE.idx.orders) : [];
   RECS = V.build({ shopifyOrders: SRC ? SRC.orders : [], smileRows: sm, shipLookup: SHIP ? EC.shipLookup(SHIP) : null, custCodes: P.custCodes(CONF), today: today(), labels: P.labels, pastDays: P.pastDays });
+  if (RC && RC.available()) V.applyReceipts(RECS, RC.activeMap());   // 領収証の発行済みの印（検索の対象にもなる）
 }
 function renderMeta(warn) {
   const w = (warn || []).slice();
@@ -173,7 +181,43 @@ function detailHtml(r) {
     row('担当（タグ）', esc(sh.tags.join('、'))) + row('SMILE の納品先', esc(sm.dest)) +
     (P.detailStatus ? row(esc(P.source) + ' の状況', P.detailStatus(sh, { FIN, yen, esc })) : '') +
     sh.extra.map(e => row(esc(e[0]), esc(e[1]))).join('') +
-    row('SMILE の納期', sm.nouki ? esc(V.md(sm.nouki)) : '') + row('出荷№', esc(r.ship.shipNos.join('、'))) + row('お客様のメモ', esc(sh.notes)) + '</dl>';
+    receiptDetail(r) + row('SMILE の納期', sm.nouki ? esc(V.md(sm.nouki)) : '') + row('出荷№', esc(r.ship.shipNos.join('、'))) + row('お客様のメモ', esc(sh.notes)) + '</dl>';
+}
+/* ------------------------------------------------------------ 領収証（EC の画面だけ。receipt_ui.js）
+ * 札（「領収証：発行済み」）とボタン（「領収証を発行」）は、記録のリスト（EC_Receipt）を読めた人にだけ出す。読めない人（権限なし・リストなし）には、何も出ない（エラーも出さない）。 */
+const receiptOrder = r => ({ no: r.id, has: r.shopify.has, financial: r.shopify.financial, cancelledAt: r.shopify.cancelledAt, total: r.shopify.total, refunded: r.shopify.refunded,
+  shipCompany: r.shopify.shipCompany, shipName: r.shopify.shipName, billCompany: r.shopify.billCompany, billName: r.shopify.billName });
+const rcOn = () => !!(RC && P.receipt && RC.available());
+function receiptRow(r) {
+  if (!rcOn()) return '';
+  const b = RC.badge(r.id), btn = RC.button(receiptOrder(r));
+  return b || btn ? '<div class="rc-row">' + b + btn + '</div>' : '';
+}
+function receiptDetail(r) {
+  if (!rcOn()) return '';
+  const n = RC.note(receiptOrder(r));
+  return n ? '<dt>領収証</dt><dd>' + n + '</dd>' : '';
+}
+// 記録が変わったとき（発行・取消・読み直し）：札・ボタンと、検索の結果を描き直す。開いている詳細・「さらに表示」の件数は、そのまま
+function redrawKeep() {
+  if (!rcOn()) return;
+  V.applyReceipts(RECS, RC.activeMap());
+  const open = [...document.querySelectorAll('#list .oc')].filter(c => { const d = c.querySelector('.det'); return d && !d.hidden; }).map(c => FILT[+c.dataset.i] && FILT[+c.dataset.i].id);
+  FILT = V.filter(RECS, FS); shown = Math.max(0, shown - PAGE);
+  drawStages(); render();
+  document.querySelectorAll('#list .oc').forEach(c => { const r = FILT[+c.dataset.i], d = c.querySelector('.det'); if (r && d && open.indexOf(r.id) >= 0) d.hidden = false; });
+}
+function initReceipt() {
+  if (!P.receipt || !window.ReceiptUi || !CONF || !CONF.receipt || CONF.receipt.enabled !== true) return;   // 準備ができるまで（設定の enabled が true になるまで）は、何も出さない
+  RC = ReceiptUi.create({
+    conf: CONF, source: 'ec_viewer', EC,
+    getToken: w => w ? getWriteToken() : getToken(),
+    fetchFile: name => fetchFile(name),
+    user: () => ({ username: account && account.username, name: account && account.name }),
+    getOrder: no => { const r = RECS.find(x => x.id === no); return r ? receiptOrder(r) : null; },
+    ulog: n => ulog(P.page + '_' + n),
+    onChange: redrawKeep
+  });
 }
 function cardHtml(r, i) {
   const sh = r.shopify, st = r.stage;
@@ -191,7 +235,7 @@ function cardHtml(r, i) {
   return '<div class="oc s-' + st + '" data-i="' + i + '"><div class="oc-top"><span class="oc-no">' + esc(P.noPrefix) + esc(r.id) + '</span><span class="badge b-' + st + '">' + esc(V.stageLabel(st, P.labels)) + '</span>' + tags.join(' ') +
     '<span class="oc-who">' + esc(who) + '</span><span class="grow"></span><span class="oc-sub">' + (sh.has ? esc(V.md(sh.createdAt)) + ' ' + esc(sh.createdTime) + ' 注文' + (P.showTotal ? '　' + yen(sh.total) : '') : '') + '</span></div>' +
     body + '<div class="lines">' + lines.join('<span class="muted">／</span>') + (more > 0 ? '<span class="muted">　ほか ' + more + '行</span>' : '') + '</div>' +
-    '<div class="det" hidden>' + detailHtml(r) + '</div></div>';
+    receiptRow(r) + '<div class="det" hidden>' + detailHtml(r) + '</div></div>';
 }
 function render() {
   const n = FILT.length;
@@ -248,7 +292,7 @@ function wire() {
   $('btn-reload').onclick = async () => {
     ulog(P.page + '_reload', '');
     $('btn-reload').disabled = true; setStatus('loading', '読み込み中…');
-    try { LOADWARN = await loadAll(); rebuild(); renderMeta(LOADWARN); buildSelects(); doSearch(); setReady(); } catch (e) { setStatus('err', '読み込めませんでした：' + e.message); }
+    try { LOADWARN = await loadAll(); rebuild(); renderMeta(LOADWARN); buildSelects(); doSearch(); setReady(); if (RC) RC.reload(); } catch (e) { setStatus('err', '読み込めませんでした：' + e.message); }
     $('btn-reload').disabled = false;
   };
 }
@@ -272,6 +316,7 @@ async function initAuth() {
     try { LOADWARN = await loadAll(); } catch (e) { console.warn(e); setStatus('err', '読み込めませんでした：' + e.message); return; }
     rebuild(); renderMeta(LOADWARN); buildSelects(); doSearch(); setReady();
     if (window.UsageLog) { UsageLog.init({ page: P.page, msal: () => msalInstance, account: () => account, max: 400 }); ulog('open', 'から=' + (q ? '他のアプリ（番号で検索）' : '直接')); }
+    initReceipt();
     setInterval(() => { if (document.visibilityState === 'visible') { try { renderMeta(LOADWARN); } catch (e) { /* 注意の表示だけ */ } } }, 10 * 60 * 1000);
   };
   $('loginBtn').onclick = async () => {

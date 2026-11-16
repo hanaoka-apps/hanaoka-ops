@@ -25,6 +25,7 @@ const FLOW_UI = () => !!document.getElementById('flowBar');   // 5工程の画�
 const M = { items: null, nouhin: null, smileCust: null, nyukin: null, stamps: {} };   // SMILE のマスタ・出力
 let orders = [], orderIndex = {}, slips = [], payTx = null, payouts = null;
 let store = null;
+let RC = null;   // 領収証の部品（ReceiptUi）。設定の receipt.enabled が true で、記録のリスト（EC_Receipt）を読める人にだけ、ボタンと札が出る
 const SORT_KEY = STORE_KEY + '_sort';   // 一覧の注文日の並び順（asc＝昇順・古い順／desc＝降順・新しい順）。この端末の表示の好みだけを覚える
 function loadSort() { try { return localStorage.getItem(SORT_KEY) === 'desc' ? 'desc' : 'asc'; } catch (e) { return 'asc'; } }
 let curTab = 'orders', curView = 'list', curFilter = document.getElementById('flowBar') ? 'p1' : 'new', curSort = loadSort();
@@ -116,6 +117,16 @@ async function fetchCsv(name) {
   const buf = await r.arrayBuffer();
   tick(name, t0, Math.round(buf.byteLength / 1024) + 'KB');
   return { text: decodeCsv(buf), modified: meta.lastModifiedDateTime || '' };
+}
+// SharedMasters のファイルを、そのままの中身（バイト列）で読む（領収証の設定ファイル・社印の画像。サインインした人の権限で読む）
+async function fetchBuf(name) {
+  const did = await resolveDriveId();
+  const meta = await graphGet('/drives/' + did + '/root:/' + encodeURIComponent(name));
+  const dl = meta['@microsoft.graph.downloadUrl'];
+  if (!dl) throw new Error('downloadUrl がありません: ' + name);
+  const r = await fetch(dl);
+  if (!r.ok) throw new Error('取得失敗 ' + r.status + ': ' + name);
+  return { buf: await r.arrayBuffer() };
 }
 // 画面を開いたとき、設定の読み込みを待たずに、あとで使うファイルを先に読み始める（順番に読むと、待ち時間が足し算になるため）。
 // 読んだ結果は、あとで loadMasters／syncFromList が受け取る（読めなかったときも、そこで今までどおり扱う）
@@ -505,10 +516,41 @@ function rowHtml(s) {
     '<td class="items">' + items + '</td><td class="num">' + yen(s.order.total) + '</td>' +
     '<td><span class="tag ' + (s.cust === store.cfg.earlyCustomer ? 'tokyo' : 'info') + '">' + esc(store.cfg.customers[s.cust].short) + '</span></td>' +
     '<td>' + (st === 'excluded' ? '' : '<input type="date" class="dateinp' + (manual ? ' manual' : '') + '" data-ship="' + s.id + '" value="' + ship + '"> ' + (closed ? '<div class="closed">休業日です</div>' : '<div class="muted">' + md(ship) + (manual ? ' 手動' : '') + '</div>')) + '</td>' +
-    '<td><div class="flags">' + (st === 'excluded' ? '<span class="tag info">' + esc(excludedText(s)) + '</span>' : flags) + '</div></td><td>' + act + '</td></tr>';
+    '<td><div class="flags">' + (st === 'excluded' ? '<span class="tag info">' + esc(excludedText(s)) + '</span>' : flags) + rcBadge(s.id) + '</div></td><td>' + act + '</td></tr>';
 }
 const THEAD0 = '<thead><tr><th><input type="checkbox" data-selall></th><th>注文</th><th>お客様・納品先</th><th>SMILEの明細（税抜）</th><th class="num">税込合計</th><th>得意先</th><th>出荷予定日</th><th>確認</th><th></th></tr></thead>';
 const THEAD = () => FLOW_UI() ? THEAD0.replace('</th><th>注文</th>', '</th><th>現在地</th><th>注文</th>') : THEAD0;
+/* ------------------------------------------------------------ 領収証（receipt_ui.js。閲覧画面 ec_viewer.html と同じ部品・同じ記録）
+ * 注文の行に「領収証：発行済み」の札、詳細（ドロワー）と出荷チェックの行に「領収証を発行」のボタン。記録のリスト（EC_Receipt）を読めない人には、何も出ない（エラーも出さない）。
+ * ふるさと納税の画面には付けない（設定 receipt が無く、部品も読み込まない）。 */
+const rcOn = () => !!(RC && RC.available());
+const rcBadge = id => rcOn() ? RC.badge(id) : '';
+const rcOrder = s => { const o = s.order || {}, sh = o.ship || {}, bl = o.bill || {}; return { no: s.id, has: true, financial: o.financial, cancelledAt: o.cancelledAt, total: o.total, refunded: o.refunded, shipCompany: sh.company, shipName: sh.name, billCompany: bl.company, billName: bl.name }; };
+function rcBlockInner(s) {
+  const b = RC.badge(s.id), btn = RC.button(rcOrder(s)), n = RC.note(rcOrder(s));
+  return '<h3>領収証</h3><div class="rc-row">' + b + btn + '</div>' + (n ? '<div class="muted" style="margin-top:4px">' + n + '</div>' : '');
+}
+const rcBlock = s => rcOn() ? '<div id="rcBlock">' + rcBlockInner(s) + '</div>' : '';
+// 記録が変わったとき（発行・取消・読み直し）：札・ボタンだけを描き直す（開いているドロワーの入力は、そのまま）
+function rcRefresh() {
+  if (!rcOn()) return;
+  renderOrders();
+  if (window.EcShipTab && $('shipBox')) EcShipTab.render(shipCtx());
+  const s = openId && slips.find(x => x.id === openId), b = $('rcBlock');
+  if (s && b) b.innerHTML = rcBlockInner(s);
+}
+function initReceipt() {
+  if (!window.ReceiptUi || !CONF || !CONF.receipt || CONF.receipt.enabled !== true) return;   // 準備ができるまで（enabled が true になるまで）は、何も出さない
+  RC = ReceiptUi.create({
+    conf: CONF, source: 'ec_sales', EC,
+    getToken: () => getToken(),   // この画面は、最初から書き込みの権限（Sites.ReadWrite.All）で入っている
+    fetchFile: name => fetchBuf(name),
+    user: () => ({ username: account && account.username, name: account && account.name }),
+    getOrder: no => { const s = slips.find(x => EC.orderNo(x.id) === EC.orderNo(no)); return s ? rcOrder(s) : null; },
+    ulog: n => { try { if (window.UsageLog) UsageLog.log('ec_sales_' + n); } catch (e) { /* 記録の失敗で止めない */ } },   // 操作の名前だけ（宛名・金額・番号は送らない）
+    onChange: rcRefresh
+  });
+}
 function renderOrders() {
   const vis = visible(), count = k => vis.filter(s => k === 'all' || stateOf(s) === k).length;
   // タブの数字：自分にボールがある件数。①＝確認前（取込担当者は OK済・起票依頼待ちも）、③＝確認待ち（確認OKを押せる管理者だけ）。業務フローの絵を使わない画面では、従来どおり未確認の件数
@@ -633,7 +675,7 @@ function renderDrawer() {
   const actions = '<div class="dr-actions"><div class="row" style="gap:8px">' + primary + '<div class="grow"></div>' + (more.length ? '<details class="more-dd"><summary class="btn sec">その他 ▾</summary><div class="more-pop">' + more.join('') + '</div></details>' : '') + '</div>' +
     (st === 'check' ? '<div class="muted" style="margin-top:6px">取込の途中で止まっている可能性があります。SMILE で伝票を確認してから選んでください（この画面からの再取込はできません）。</div>' : '') + '</div>';
   const who = (r && (r.by || r.importBy || r.confirmedBy || r.reportedAt)) ? '<h3>操作した人</h3><dl>' + row('OK', EC.shortUser(r.by)) + row('取込を依頼', EC.shortUser(r.importBy)) + row('確認OK', EC.shortUser(r.confirmedBy)) + row('Teams報告', r.reportedAt ? stamp(r.reportedAt) : '') + '</dl>' : '';
-  dr.insertAdjacentHTML('beforeend', who + '<h3>履歴（誰がいつ何をしたか）</h3><div id="histBox" class="muted">読み込み中…</div>' + actions);
+  dr.insertAdjacentHTML('beforeend', who + rcBlock(s) + '<h3>履歴（誰がいつ何をしたか）</h3><div id="histBox" class="muted">読み込み中…</div>' + actions);
   loadHistory(s.id);
   refreshEditErr();
 }
@@ -2102,7 +2144,7 @@ async function runShopifyFulfill(items) {
 }
 
 function shipCtx() {
-  return { EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, shipPlan: shipOf, shopifyState: s => (CONF.shipReport && CONF.shipReport.fulfill && s.order && s.order.fulfillment) || '', canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
+  return { receipt: rcOn() ? { badge: id => RC.badge(id), button: s => RC.button(rcOrder(s)) } : null, EC, conf: CONF, box: $('shipBox'), cnt: $('cnt-ship'), visible: curTab === 'ship', slips: () => slips, stateOf, rec, shipPlan: shipOf, shopifyState: s => (CONF.shipReport && CONF.shipReport.fulfill && s.order && s.order.fulfillment) || '', canReport: canImport(), markReported: markShipReported, mailDraft: (window.FurusatoShipReport && CONF.shipReport && CONF.shipReport.mail) ? makeShipMail : null,
     fulfill: (CONF.shipReport && CONF.shipReport.fulfill && CONF.shipReport.fulfill.enabled === true && canImport()) ? { run: runShopifyFulfill } : null,   // enabled が true のときだけ、ボタンを出す（専用機の準備ができてから true にする）
     loadJson: async name => JSON.parse((await fetchCsv(name)).text), rerender: () => render() };
 }
@@ -2349,6 +2391,7 @@ async function initAuth() {
     await syncFromList({ first: true, noRender: true });   // 共有の履歴（リスト）を読んで、この端末の記録を復元する
     recompute(); render();
     healShipReports();
+    initReceipt();   // 領収証の記録を、裏で読み始める（読めない人には、何も出ない）
     Object.keys(store.imports).forEach(id => { if (['queued', 'importing', 'verify'].includes(store.imports[id].phase)) trackImport(id); });
     codeDecision = EC.deliveryCodeMode((CONF.rpaImport || {}).tempCodes, null); refreshCodeMode();   // 専用機の稼働の印で、新規の納品先のコードの決め方を判定する
     setInterval(() => { if (document.visibilityState === 'visible') refreshCodeMode(); }, 60 * 1000);
@@ -2370,6 +2413,7 @@ async function initAuth() {
     forceCal = true;   // 更新のときは、休業日も Outlook から読み直す
     let failed; try { failed = await loadMasters(); } finally { forceCal = false; }
     await loadSettings(); await syncFromList({ noRender: true }); recompute(); render();
+    if (RC) RC.reload();
     failed.length ? setStatus('err', '読み込めませんでした: ' + failed.join('、')) : setReady();
     $('btn-reload').disabled = false;
   };
