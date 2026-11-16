@@ -71,5 +71,21 @@
     k: { "100101": { d: "2026-10-02", st: ["901", "見本 太郎"], dp: ["91", "見本営業部"], ds: [["700001", "見本商事 東京倉庫", 12], ["700002", "見本建設 現場", 3]] },
       "100201": { d: "2026-08-21", st: ["902", "見本 花子"], dp: ["92", "見本支店"], ds: [["700101", "見本物産 本社", 5]] } },
     i: { LF25: { wh: ["000201", "見本工場第一"], u: "台", t: "繰返(製作)" }, "P/9001": { wh: ["000202", "見本工場第二"], u: "個", t: "繰返(以外)" }, DCLS: { wh: ["000201", "見本工場第一"], u: "台", t: "繰返(製作)" } } };
-  root.QuoteDemo = { rules: rules, customers: customers, items: items, settings: settings, history: history, user: { name: "見本 太郎", username: "demo" } };
+  // 答え合わせ用の受注明細（架空）。日付は今日から数えて作る
+  var day = function (n) { var t = new Date(Date.now() - n * 86400000); return t.toISOString().slice(0, 10); };
+  var O = function (n, no, cust, sha, code, qty, unit, staff, dept, dest, wh) {
+    return { date: day(n), no: no, cust: cust, sha: sha, code: code, qty: qty, unit: unit, ret: false, staff: staff, staffName: "見本 " + staff, dept: dept, deptName: "見本部門 " + dept,
+      dest: dest, destName: "見本納品先 " + dest, wh: wh, whName: "見本倉庫 " + wh, unitName: "台", tehai: "繰返(製作)" };
+  };
+  var orders = [
+    O(60, "9001", "100101", "9001", "LF25", 1, 75900, "901", "91", "700001", "000201"),
+    O(50, "9002", "100101", "9001", "LF25", 2, 72000, "901", "91", "700001", "000201"),
+    O(40, "9003", "100201", "9002", "DC-LS", 1, 16400, "902", "92", "700101", "000201"),
+    O(20, "9004", "100101", "9001", "LF25", 1, 72000, "901", "91", "700002", "000201"),
+    O(15, "9005", "100101", "9001", "P/9001", 4, 1800, "903", "91", "700001", "000202"),
+    O(10, "9006", "100201", "9002", "DC-LS", 3, 15200, "902", "92", "700101", "000203"),
+    O(5, "9007", "100101", "9001", "LF25", 1, 75900, "901", "91", "700001", "000201"),
+    O(3, "9008", "100101", "9001", "IDO", 1, 0, "901", "91", "700001", "000201")
+  ];
+  root.QuoteDemo = { rules: rules, customers: customers, items: items, settings: settings, history: history, orders: orders, user: { name: "見本 太郎", username: "demo" } };
 })(typeof window !== "undefined" ? window : this);
