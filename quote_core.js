@@ -328,6 +328,19 @@
     return out;
   }
 
+  // 送料の運送会社（地域で決まる）を、SMILE の「運送業者利用区分」の書き方にする。運送会社を選ばなければ、これが入る
+  function carrierOf(name) {
+    var s = String(name || "");
+    return /西濃/.test(s) ? "西濃利用" : /第一/.test(s) ? "第一貨物利用" : /トナミ/.test(s) ? "トナミ利用" : "";
+  }
+  // 新しい納品先（納品先マスタにない先）。SMILE に登録するのに要るのは 名前・郵便番号・住所・電話（荷受け人は任意）
+  function newDestOf(o) {
+    var n = o.nd || {};
+    var d = { name: String(n.name || o.destName || "").trim(), zip: String(n.zip || "").trim(), addr: String(n.addr || "").trim(), tel: String(n.tel || "").trim(), person: String(n.person || "").trim() };
+    d.missing = [["name", "名前"], ["addr", "住所"], ["tel", "電話"]].filter(function (x) { return !d[x[0]]; }).map(function (x) { return x[1]; });
+    return d;
+  }
+
   // ---------- 答え合わせ（受注明細と比べる） ----------
   // 値段を比べない行：雑コード（P/1・P/PD など）・IDO（拠点への移動）・CASTER・修理 R/・OTHER・サンプル。
   // どれも受注入力のルールで「その都度の値段」「移動の伝票」と決まっているもの（2026-11 のチャットで確認）
@@ -430,7 +443,8 @@
     var head = { date: ymd(doc.date), cust: cust.code || "", custName: cust.fullName || cust.name || "",
       dest: o.dest || "", destName: o.destName || "", newDest: o.dest === "new",
       staff: st ? st[0] : "", staffName: st ? st[1] : "", dept: dp ? dp[0] : "", deptName: dp ? dp[1] : "", learned: !!(kc && kc.st && !o.staff),
-      po: o.po || "", ship: ymd(doc.shipDate), carrier: o.carrier || "", dlvDate: ymd(o.dlvDate), dlv: o.dlv || "", memo: o.memo || "" };
+      po: o.po || "", ship: ymd(doc.shipDate), carrier: o.carrier || carrierOf(fare.carrier), carrierAuto: carrierOf(fare.carrier),
+      dlvDate: ymd(o.dlvDate), dlv: o.dlv || "", memo: o.memo || "", nd: o.dest === "new" ? newDestOf(o) : null };
     return { head: head, rows: rows, miss: miss, dests: (kc && kc.ds) || [] };
   }
 
@@ -498,7 +512,7 @@
     var od = comp.order;
     if (od) {
       var hd = od.head;
-      items.splice(1, 0, { key: "dest", label: "納品先", done: !!hd.dest && (hd.dest !== "new" || !!String(hd.destName).trim()), line: -1 });
+      items.splice(1, 0, { key: "dest", label: hd.nd ? "新しい納品先（" + (hd.nd.missing.length ? hd.nd.missing.join("・") + "がまだ" : "登録の依頼つき") + "）" : "納品先", done: !!hd.dest && (hd.dest !== "new" || !hd.nd.missing.length), line: -1 });
       items.push({ key: "ship", label: "出荷予定日", done: !!hd.ship, line: -1 });
       items.push({ key: "staff", label: "担当者・部門", done: !!hd.staff && !!hd.dept, line: -1 });
       if (od.miss.code >= 0) items.push({ key: "code", label: "品目コード", done: false, line: od.miss.code });
