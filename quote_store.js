@@ -8,7 +8,7 @@
   var SITE_ID = "hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23";
   var FALLBACK_DRIVE_ID = "b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
   var RULE_LISTS = { prices: "PR_定価", classes: "PR_得意先区分", exceptions: "PR_例外", fares: "PR_運賃", assembly: "PR_組立出荷重量", costs: "PR_原価" };
-  var DOC_LIST = "SD_書類", SET_LIST = "SD_設定", HIST_KEY = "quote_history_v1";
+  var DOC_LIST = "SD_書類", SET_LIST = "SD_設定", HIST_KEY = "quote_history_v2";
   var DATA_COL = { name: "Data", text: { allowMultipleLines: true, textType: "plain" } };
   // 一覧で絞り込み・並べ替えに使う値だけ列にして、中身は Data 列に JSON で入れる
   var DOC_COLS = [{ name: "Kind", text: {} }, { name: "Status", text: {} }, { name: "Customer", text: {} }, { name: "CustomerCode", text: {} },
@@ -119,10 +119,15 @@
         var take = function (line) {
           var c = line.split("\t");
           if (!I) { var H = c.map(cell), ix = function (n) { return H.indexOf(n); };
-            I = { date: ix("受注日付"), cust: ix("得意先ｺｰﾄﾞ"), sha: ix("得意先社名ｺｰﾄﾞ"), code: ix("品目ｺｰﾄﾞ"), qty: ix("数量"), unit: ix("単価"), kind: ix("取引区分名") }; return; }
+            I = { date: ix("受注日付"), cust: ix("得意先ｺｰﾄﾞ"), sha: ix("得意先社名ｺｰﾄﾞ"), code: ix("品目ｺｰﾄﾞ"), qty: ix("数量"), unit: ix("単価"), kind: ix("取引区分名"),
+              staff: ix("担当者ｺｰﾄﾞ"), staffName: ix("担当者名"), dept: ix("部門ｺｰﾄﾞ"), deptName: ix("部門名"), dest: ix("納品先ｺｰﾄﾞ"), destName: ix("納品先名"),
+              wh: ix("倉庫ｺｰﾄﾞ"), whName: ix("倉庫名"), unitName: ix("数量単位"), tehai: ix("手配区分名") }; return; }
           var d = cell(c[I.date]).replace(/\//g, "-"); if (/^\d{8}$/.test(d)) d = d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6);
           if (d < since) return;
-          Q.historyPush(h, { date: d, cust: cell(c[I.cust]), sha: cell(c[I.sha]), code: cell(c[I.code]), qty: cell(c[I.qty]), unit: cell(c[I.unit]), ret: /返品/.test(cell(c[I.kind])) });
+          var g = function (k) { return I[k] >= 0 ? cell(c[I[k]]) : ""; };
+          Q.historyPush(h, { date: d, cust: g("cust"), sha: g("sha"), code: g("code"), qty: g("qty"), unit: g("unit"), ret: /返品/.test(g("kind")),
+            staff: g("staff"), staffName: g("staffName"), dept: g("dept"), deptName: g("deptName"), dest: g("dest"), destName: g("destName"),
+            wh: g("wh"), whName: g("whName"), unitName: g("unitName"), tehai: g("tehai") });
         };
         for (;;) {
           var x = await rd.read(); if (x.done) break;
@@ -130,6 +135,7 @@
           var p; while ((p = buf.indexOf("\n")) >= 0) { take(buf.slice(0, p).replace(/\r$/, "")); buf = buf.slice(p + 1); }
         }
         if (buf) take(buf);
+        Q.historyDone(h);
         try { localStorage.setItem(HIST_KEY, JSON.stringify({ stamp: stamp, data: h })); } catch (e) { /* 覚えられなくても動く */ }
         return h;
       },
