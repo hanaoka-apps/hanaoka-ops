@@ -42,10 +42,12 @@
       var r = rows[i], ok = true;
       for (var j = 0; j < words.length; j++) if (r.key.indexOf(words[j]) < 0) { ok = false; break; }
       if (!ok) continue;
-      var h = r.head || r.key, w = words[0];
-      hit.push({ row: r, score: h === w ? 0 : h.indexOf(w) === 0 ? 1 : 2 });
+      // head は空白で区切って複数持てる（取引先は 名前 と カナの読み）。どれかの頭が合えば上に出す
+      var hs = String(r.head || r.key).split(" "), w = words[0];
+      hit.push({ row: r, score: hs.indexOf(w) >= 0 ? 0 : hs.some(function (h) { return h.indexOf(w) === 0; }) ? 1 : 2 });
     }
-    hit.sort(function (a, b) { return a.score - b.score || a.row.key.length - b.row.key.length; });
+    // 同じくらい合うものは、rank の大きいもの（取引先なら最近受注があったもの）→ 短いもの の順
+    hit.sort(function (a, b) { return a.score - b.score || (b.row.rank || 0) - (a.row.rank || 0) || a.row.key.length - b.row.key.length; });
     return hit.slice(0, n || 8).map(function (x) { return x.row; });
   }
 

@@ -452,6 +452,12 @@ assert.equal(c.fare.reason, '');
   const list = [{ key: Q.norm('C1 見本商事 ﾐﾎﾝｼｮｳｼﾞ'), head: Q.norm('見本商事') + ' ' + Q.norm('ﾐﾎﾝｼｮｳｼﾞ'), id: 1 }, { key: Q.norm('C2 べつの会社 ﾍﾞﾂﾉｶｲｼｬ'), head: '', id: 2 }];
   assert.deepEqual(Q.search(list, 'みほん', 8).map(x => x.id), [1]);
   assert.deepEqual(Q.search(list, 'ミホンショウジ', 8).map(x => x.id), [1]);
+  // 名前でもカナでも頭が合えば同じ扱い。同じくらい合うものは rank（最近の受注）の大きいほうを上に
+  const l2 = [
+    { key: Q.norm('ﾐﾎﾝｸﾘｴｲﾄ ﾐﾎﾝｸﾘｴｲﾄ'), head: Q.norm('ﾐﾎﾝｸﾘｴｲﾄ') + ' ' + Q.norm('ﾐﾎﾝｸﾘｴｲﾄ'), id: 1, rank: 20250101 },
+    { key: Q.norm('㈱見本 東京支店 ﾐﾎﾝﾄｳｷｮｳｼﾃﾝ'), head: Q.norm('㈱見本 東京支店') .replace(/ /g, '') + ' ' + Q.norm('ﾐﾎﾝﾄｳｷｮｳｼﾃﾝ'), id: 2, rank: 20261110 },
+  ];
+  assert.deepEqual(Q.search(l2, 'みほん', 8).map(x => x.id), [2, 1]);
 }
 
 console.log('ok test_quote_core');
