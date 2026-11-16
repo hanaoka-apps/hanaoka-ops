@@ -12,22 +12,34 @@
     try { dirs = (await api.graphGet('/drives/' + did + '/root:/' + enc(base) + ':/children?$select=name,folder&$top=200')).value || []; }
     catch (e) { api.setOrders([]); api.note('注文CSVのフォルダ（' + base + '）を読めませんでした：' + (e && e.message || e)); return; }
     dirs = dirs.filter(function (d) { return d.folder; }).sort(function (a, b) { return a.name < b.name ? 1 : -1; }).slice(0, 120);
-    for (var i = 0; i < dirs.length; i++) {
-      var folder = base + '/' + dirs[i].name;
-      var files = (await api.graphGet('/drives/' + did + '/root:/' + enc(folder) + ':/children?$select=name,file&$top=50')).value || [];
-      for (var j = 0; j < files.length; j++) {
-        var f = files[j]; if (!/\.csv$/i.test(f.name)) continue;
-        // ダウンロード用の URL は、ファイルごとに取る（EC売上の fetchCsv と同じ。一覧の $select には含めない）
-        var meta = await api.graphGet('/drives/' + did + '/root:/' + enc(folder + '/' + f.name)), dl = meta['@microsoft.graph.downloadUrl'];
-        if (!dl) { skipped++; continue; }
-        var r = await fetch(dl); if (!r.ok) { skipped++; continue; }
-        f.lastModifiedDateTime = meta.lastModifiedDateTime;
-        var stamp = FS.fileStamp(f.name);
-        if (!stamp) { var m = /^(\d{4})(\d{2})(\d{2})/.exec(dirs[i].name); stamp = m ? { date: m[1] + '-' + m[2] + '-' + m[3], time: '' } : { date: (f.lastModifiedDateTime || '').slice(0, 10), time: '' }; }
-        FS.parseOrders(FS.decode(await r.arrayBuffer()), stamp, conf).forEach(function (o) { if (!orders[o.id]) orders[o.id] = o; });   // 新しい順に読むので、先に入ったものが新しい
-        seen++;
+    // フォルダの中身を一覧にするのを、まとめて進める（1つずつ待たない）。順番（新しい順）は、あとで守る
+    var lists = await Promise.all(dirs.map(function (d) {
+      return api.graphGet('/drives/' + did + '/root:/' + enc(base + '/' + d.name) + ':/children?$select=name,file&$top=50').then(function (r) { return r.value || []; });
+    }));
+    var tasks = [];
+    dirs.forEach(function (d, i) { lists[i].forEach(function (f) { if (/\.csv$/i.test(f.name)) tasks.push({ dir: d.name, f: f }); }); });
+    // CSV の取り出しも、最大6つずつ、まとめて進める（ダウンロード用の URL は、ファイルごとに取る。EC売上の fetchCsv と同じ）
+    var got = new Array(tasks.length), next = 0;
+    async function worker() {
+      while (next < tasks.length) {
+        var i = next++, k = tasks[i];
+        try {
+          var meta = await api.graphGet('/drives/' + did + '/root:/' + enc(base + '/' + k.dir + '/' + k.f.name)), dl = meta['@microsoft.graph.downloadUrl'];
+          if (!dl) { got[i] = null; continue; }
+          var r = await fetch(dl); if (!r.ok) { got[i] = null; continue; }
+          got[i] = { modified: meta.lastModifiedDateTime, buf: await r.arrayBuffer() };
+        } catch (e) { got[i] = null; }
       }
     }
+    await Promise.all([0, 1, 2, 3, 4, 5].map(worker));
+    // 新しい順（フォルダ名の新しい順）に読む。同じ発注番号は、先に入ったほう（＝新しいほう）を使う
+    tasks.forEach(function (k, i) {
+      if (!got[i]) { skipped++; return; }
+      var stamp = FS.fileStamp(k.f.name);
+      if (!stamp) { var m = /^(\d{4})(\d{2})(\d{2})/.exec(k.dir); stamp = m ? { date: m[1] + '-' + m[2] + '-' + m[3], time: '' } : { date: (got[i].modified || '').slice(0, 10), time: '' }; }
+      FS.parseOrders(FS.decode(got[i].buf), stamp, conf).forEach(function (o) { if (!orders[o.id]) orders[o.id] = o; });
+      seen++;
+    });
     var list = Object.keys(orders).map(function (k) { return orders[k]; });
     api.setOrders(list);
     api.note('注文CSV：フォルダ ' + dirs.length + '個・CSV ' + seen + '件を読み、注文 ' + list.length + '件（' + base + '）' + (skipped ? '／読めなかったCSV ' + skipped + '件' : ''));

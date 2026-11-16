@@ -60,13 +60,16 @@ function decodeText(buf) {
   return t.replace(/^﻿/, '');
 }
 const API = () => ({ SC, CONF, EC, V, getToken, graphGet, resolveDriveId, fetchFile, decodeText, stamp });
+let LOADTIMES = '';   // 読み込みの内訳（遅いときの原因さがし用。状態の行に出す）
 async function loadAll() {
-  const warn = [], smileFile = P.smileFile(CONF);
+  const warn = [], smileFile = P.smileFile(CONF), t0 = performance.now(), ts = {};
+  const timed = (k, p) => { const t = performance.now(); return p.finally(() => { ts[k] = (performance.now() - t) / 1000; }); };
   const [ship, smile, src] = await Promise.allSettled([
-    fetchFile(SC.files.index).then(r => JSON.parse(decodeText(r.buf))),
-    fetchFile(smileFile).then(r => ({ idx: JSON.parse(decodeText(r.buf)), modified: r.modified })),
-    P.load(API())
+    timed('出荷', fetchFile(SC.files.index).then(r => JSON.parse(decodeText(r.buf)))),
+    timed('SMILE', fetchFile(smileFile).then(r => ({ idx: JSON.parse(decodeText(r.buf)), modified: r.modified }))),
+    timed(P.source, P.load(API()))
   ]);
+  LOADTIMES = '読み込み ' + ((performance.now() - t0) / 1000).toFixed(1) + '秒（' + Object.keys(ts).map(k => k + ' ' + ts[k].toFixed(1)).join('・') + '）'; console.log(LOADTIMES);
   SHIP = ship.status === 'fulfilled' && ship.value && Array.isArray(ship.value.ships) ? ship.value : null;
   SMILE = smile.status === 'fulfilled' && smile.value.idx && smile.value.idx.orders ? smile.value : null;
   SRC = src.status === 'fulfilled' && src.value && src.value.orders ? src.value : null;
@@ -91,7 +94,7 @@ function setReady() {
   if (SRC) p.push(P.source + (SRC.modified ? ' ' + stamp(SRC.modified) + '（' + ago(SRC.modified) + '）' : ''));
   if (SMILE) p.push('SMILE ' + stamp(SMILE.idx.generatedAt || SMILE.modified));
   if (SHIP) p.push('出荷 ' + stamp(SHIP.generatedAt));
-  setStatus(SRC || SMILE || SHIP ? 'ok' : 'err', 'データの更新：' + (p.join('／') || 'なし') + '　注文 ' + RECS.length + '件');
+  setStatus(SRC || SMILE || SHIP ? 'ok' : 'err', 'データの更新：' + (p.join('／') || 'なし') + '　注文 ' + RECS.length + '件　' + LOADTIMES);
 }
 
 /* ------------------------------------------------------------ 絞り込み・検索 */

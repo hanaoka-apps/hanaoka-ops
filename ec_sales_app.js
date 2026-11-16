@@ -98,14 +98,24 @@ function decodeCsv(buf) {
   if ((text.match(/�/g) || []).length > 5) { try { return new TextDecoder('shift_jis').decode(buf).replace(/^﻿/, ''); } catch (e) {} }
   return text;
 }
+// 読み込みの内訳：どの処理に何秒かかったか（「取得情報」に出す。遅いときの原因さがし用）
+const T0 = performance.now(), TIMES = [];
+function tick(label, t0, extra) { TIMES.push({ label, sec: (performance.now() - t0) / 1000, extra: extra || '' }); }
+function renderTimings() {
+  const el = document.getElementById('st-timing'); if (!el) return;
+  el.innerHTML = '<b>読み込みの内訳（秒）</b>：' + (TIMES.length ? TIMES.map(x => esc(x.label) + ' <b>' + x.sec.toFixed(1) + '</b>' + (x.extra ? '（' + esc(x.extra) + '）' : '')).join('　／　') : 'まだありません');
+}
 async function fetchCsv(name) {
+  const t0 = performance.now();
   const did = await resolveDriveId();
   const meta = await graphGet('/drives/' + did + '/root:/' + encodeURIComponent(name));
   const dl = meta['@microsoft.graph.downloadUrl'];
   if (!dl) throw new Error('downloadUrl がありません: ' + name);
   const r = await fetch(dl);
   if (!r.ok) throw new Error('取得失敗 ' + r.status + ': ' + name);
-  return { text: decodeCsv(await r.arrayBuffer()), modified: meta.lastModifiedDateTime || '' };
+  const buf = await r.arrayBuffer();
+  tick(name, t0, Math.round(buf.byteLength / 1024) + 'KB');
+  return { text: decodeCsv(buf), modified: meta.lastModifiedDateTime || '' };
 }
 // 画面を開いたとき、設定の読み込みを待たずに、あとで使うファイルを先に読み始める（順番に読むと、待ち時間が足し算になるため）。
 // 読んだ結果は、あとで loadMasters／syncFromList が受け取る（読めなかったときも、そこで今までどおり扱う）
@@ -131,10 +141,25 @@ async function loadSharedConfig() {
 // 会社カレンダー：Outlook の会社共通予定表（HUBのお知らせと同じ共有メールボックス）から休業日を読む。
 // 終日の予定で、件名に「休日・休業・祝」などを含むものを休業日とする（言葉は設定ファイル）。読み取りだけで書き込みはしない。
 let outlookClosed = [], calInfo = '';
+let forceCal = false;   // 「↻ 更新」のときだけ true（保存してある休業日を使わず、Outlook から読み直す）
+const CAL_TTL = 6 * 3600 * 1000;
 async function loadCalendar() {
   outlookClosed = []; calInfo = '';
-  const cc = CONF.calendar;
+  const cc = CONF.calendar, tc = performance.now();
   if (!cc || !cc.mailbox) { calInfo = '会社カレンダーの設定がありません'; return; }
+  const ckey = 'ec_cal_cache_v1:' + cc.mailbox + ':' + new Date().toISOString().slice(0, 7);
+  if (!forceCal) {
+    try {
+      const c = JSON.parse(localStorage.getItem(ckey) || 'null');
+      if (c && c.at && Date.now() - c.at < CAL_TTL && c.days) {
+        outlookClosed = Object.keys(c.days).sort(); window.__closedNames = c.days;
+        calInfo = 'Outlook の会社共通予定表から ' + outlookClosed.length + '日分の休業日を読み込みました（予定 ' + c.total + '件・うち終日 ' + c.allDay + '件。' + Math.max(1, Math.round((Date.now() - c.at) / 60000)) + '分前に読んだ内容を使っています。「↻ 更新」で読み直します）'
+          + ((c.matched || []).length ? '。休業として読んだ予定：' + c.matched.join('、') : '');
+        tick('会社の予定表（保存した内容）', tc);
+        return;
+      }
+    } catch (e) { /* 保存がなければ、Outlook から読む */ }
+  }
   try {
     const d0 = new Date(); d0.setDate(1); d0.setMonth(d0.getMonth() - (cc.monthsBack || 1));
     const d1 = new Date(); d1.setDate(1); d1.setMonth(d1.getMonth() + (cc.monthsAhead || 13));
@@ -158,6 +183,8 @@ async function loadCalendar() {
       url = data['@odata.nextLink'] || '';
     }
     outlookClosed = Object.keys(days).sort(); window.__closedNames = days;
+    tick('会社の予定表（Outlook）', tc, (n - 1) + 'ページ・予定 ' + total + '件');
+    try { localStorage.setItem(ckey, JSON.stringify({ at: Date.now(), days, total, allDay, matched: Object.keys(matched) })); } catch (e) { /* 保存できなくても、そのまま動く */ }
     calInfo = 'Outlook の会社共通予定表から ' + outlookClosed.length + '日分の休業日を読み込みました（予定 ' + total + '件・うち終日 ' + allDay + '件）' +
       (Object.keys(matched).length ? '。休業として読んだ予定：' + Object.keys(matched).join('、') : '。休業として読める予定はまだありません（件名に「' + (cc.closedWords || []).join('」「') + '」のどれかを含む終日の予定）');
   } catch (e) {
@@ -2174,7 +2201,7 @@ document.addEventListener('click', async e => {
   switch (t.id) {
     case 'o-import': startImport(); break;
     case 'stale-sync': syncSmile(); break;
-    case 'src-info': { const el = $('src-detail'); if (el) el.hidden = !el.hidden; break; }
+    case 'src-info': { const el = $('src-detail'); if (el) { el.hidden = !el.hidden; renderTimings(); } break; }
     case 'o-migrate': moreOpen = false; migrateLocal(); break;
     case 'o-confirmall': confirmBulk(confirmWaitingIds()); break;
     case 'o-test': moreOpen = false; startTestImport(); break;
@@ -2328,7 +2355,9 @@ async function initAuth() {
     resumeReports();   // 突合が済んでいて、まだ報告していない取込があれば、1回だけ報告する   // 開き直したら、待っている取込の続きを見る
     // 他の人が更新した内容を、定期的に反映する（画面が見えているときだけ）
     setInterval(() => { if (document.visibilityState === 'visible' && shared && !importBusy && !syncBusy) syncFromList({ quiet: true }); }, ((CONF.sharedHistory || {}).pollSeconds || 60) * 1000);
+    tick('画面が使えるまで（合計）', T0);
     if (failed.length) setStatus('err', '読み込めませんでした: ' + failed.join('、') + '（二重取込の確認・品目名の取得ができません）'); else setReady();
+    renderTimings(); console.table(TIMES);
   };
   $('loginBtn').onclick = async () => {
     try { $('loginError').style.display = 'none'; account = await HanaokaAuth.login(msalInstance, SCOPES); await window.enterApp(); }
@@ -2338,7 +2367,9 @@ async function initAuth() {
   $('btn-reload').onclick = async () => {
     $('btn-reload').disabled = true; setStatus('loading', '読み込み中…');
     if (window.EcShipTab) EcShipTab.reset();
-    const failed = await loadMasters(); await loadSettings(); await syncFromList({ noRender: true }); recompute(); render();
+    forceCal = true;   // 更新のときは、休業日も Outlook から読み直す
+    let failed; try { failed = await loadMasters(); } finally { forceCal = false; }
+    await loadSettings(); await syncFromList({ noRender: true }); recompute(); render();
     failed.length ? setStatus('err', '読み込めませんでした: ' + failed.join('、')) : setReady();
     $('btn-reload').disabled = false;
   };
