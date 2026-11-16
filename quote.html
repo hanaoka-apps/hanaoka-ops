@@ -8,7 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261117a"></script>
+<script src="quote_core.js?v=20261117b"></script>
 <script src="quote_store.js?v=20261117a"></script>
 <script src="quote_ai.js?v=20261115b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
@@ -192,7 +192,26 @@
   #modal label{font-size:12px;color:var(--sub);display:block;margin:10px 0 3px}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--txt);color:var(--surface);padding:9px 18px;border-radius:8px;font-size:13px;display:none;z-index:60}
 
-  /* 答え合わせ */
+  /* 右側の切り替えと、計算の内訳 */
+  .seg{display:flex;gap:4px;background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:4px;margin-bottom:12px}
+  .seg button{flex:1;border:0;background:none;padding:6px 10px;border-radius:8px;cursor:pointer;color:var(--sub);font-size:13px}
+  .seg button.on{background:var(--navy-soft);color:var(--navy);font-weight:600}
+  .bd{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 18px;font-size:13px}
+  .bd h3{font-size:13px;margin:14px 0 6px;color:var(--sub);font-weight:600}
+  .bd h3:first-child{margin-top:0}
+  .bd .it{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+  .bd .it b{font-size:14px}
+  .bd ol{margin:6px 0 0;padding-left:20px}
+  .bd li{margin:2px 0}
+  .bd .ng-btn{border:0;background:none;padding:0 0 0 6px;color:var(--mute);font-size:11px;cursor:pointer;text-decoration:underline}
+  .bd .ng-btn:hover{color:var(--red)}
+  .bd .eq{margin-top:6px;padding:5px 9px;background:var(--navy-soft);border-radius:8px;color:var(--navy)}
+  .bd .ng{color:var(--red)}
+  .bd .sub{color:var(--sub);font-size:12px}
+  .bd table{width:100%;border-collapse:collapse;margin-top:4px}
+  .bd td{padding:3px 0}
+  .bd td.r{text-align:right;font-variant-numeric:tabular-nums}
+  .bd tr.tot td{border-top:1px solid var(--line-strong);font-weight:600;padding-top:6px}
   .ckGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin:12px 0}
   .ck{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
   .ck .t{font-size:12px;color:var(--sub)}
@@ -220,7 +239,7 @@
   @media print{
     @page{size:A4;margin:8mm}
     body{background:var(--surface)}
-    .top,#status,.formCol,.inner,.todo,#vList,#toast,#modal{display:none!important}
+    .top,#status,.formCol,.inner,.todo,.seg,.bd,#vList,#toast,#modal{display:none!important}
     .edit{display:block;padding:0;max-width:none}
     .side{position:static}
     .sheetWrap{box-shadow:none;border-radius:0;height:auto!important;overflow:visible}
@@ -259,7 +278,9 @@
     <div class="card formCol" id="form"></div>
     <div class="side">
       <div class="todo" id="todo"></div>
+      <div class="seg" id="sideSeg"><button data-sv="sheet" class="on">見積書</button><button data-sv="why">計算の内訳</button></div>
       <div class="sheetWrap" id="sheetWrap"><div class="sheetScale" id="sheetScale"><div class="sheet" id="sheet"></div></div></div>
+      <div class="bd" id="whyBox" hidden></div>
       <div class="inner" id="inner"></div>
 
     </div>
@@ -948,7 +969,90 @@ function refreshSide() {
   const m = COMP.margin;
   $('inner').textContent = m ? `社内だけ：利益率 ${Math.round(m.rate * 100)}％${m.all ? '' : '（原価がわかる ' + m.lines + ' 行で計算）'}` : '';
   renderTodo();
+  renderSideView();
   fitSheet();
+}
+// ---------- 右側：見積書（受注伝票）と「計算の内訳」の切り替え ----------
+// 内訳は、なぜこの金額かを上から順に見せる：取引先の掛け率 → 商品ごとの単価 → 商品ごとの重さ → 送料 → 合計
+let sideView = 'sheet';
+function renderSideView() {
+  const seg = $('sideSeg');
+  seg.querySelector('[data-sv=sheet]').textContent = DOC.kind === 'order' ? 'SMILE の並び' : '見積書';
+  seg.querySelectorAll('button').forEach(b => { b.classList.toggle('on', b.dataset.sv === sideView); b.onclick = () => { sideView = b.dataset.sv; renderSideView(); fitSheet(); }; });
+  $('sheetWrap').hidden = sideView !== 'sheet';
+  $('whyBox').hidden = sideView !== 'why';
+  if (sideView === 'why') $('whyBox').innerHTML = breakdownHtml();
+}
+// 内訳のステップごとの「ここが違う」。押すと、そのステップを書き込んだ状態で「アプリの計算が違う」の記録を始める
+const ngBtn = (kind, li, step) => `<button class="ng-btn" data-ng="${kind}" data-li="${li}" data-step="${esc(step)}">ここが違う</button>`;
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('#whyBox [data-ng]'); if (!b) return;
+  const note = `「${b.dataset.step}」が違う：`;
+  if (b.dataset.ng === 'f') {
+    DOC.fareReason = Q.WRONG; DOC.fareMemo = DOC.fareMemo || note; fareOpen = true; touch(); refresh();
+    const el = $('fareIn'); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus({ preventScroll: true }); }
+    toast('正しい送料と、正しい決め方を書いてください');
+    return;
+  }
+  const i = docLineOf(+b.dataset.li), l = DOC.lines[i];
+  l.ov = Object.assign({}, l.ov, { reason: Q.WRONG, once: false, memo: (l.ov && l.ov.memo) || note });
+  openLine = i; touch(); renderLines(); refresh();
+  const el = lineEl(i).querySelector('[data-o=price]'); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus({ preventScroll: true }); }
+  toast('正しい単価と、正しい決め方を書いてください');
+});
+function breakdownHtml() {
+  const c = DOC.cust, L = COMP.lines, f = COMP.fare, t = COMP.totals;
+  const out = [];
+  // 1. 取引先
+  out.push('<h3>1. 取引先の掛け率</h3>');
+  if (!c) out.push('<div class="sub">取引先を選ぶと出ます</div>');
+  else {
+    const rk = P.rankOf(c.kakeName), cls = {};
+    L.forEach(l => ((l.base && l.base.steps) || []).forEach(s => { if (/得意先の区分|本部経由|在庫価格/.test(s.label)) cls[s.detail + (s.k != null ? ' → ' + Q.kake(s.k) : '')] = 1; }));
+    out.push(`<div><b>${esc(c.fullName || c.name)}</b>　${esc(c.kakeName || 'ランクなし')}${rk ? `（ランクの掛け率 ${Q.kake(rk.k)}）` : ''}</div>`);
+    Object.keys(cls).forEach(s => out.push(`<div class="sub">この取引先の決まり：${esc(s)}</div>`));
+  }
+  // 2. 商品ごと
+  out.push('<h3>2. 商品ごとの単価と重さ</h3>');
+  const hasBody = L.some(l => l.listCode && !l.isOption);
+  L.forEach((l, li) => {
+    const name = l.code ? l.code + (l.via ? `（${l.listCode} の定価で計算）` : '') : (l.name || '');
+    let body = '';
+    if (l.manual || !l.code) body = `<div class="sub">手で入れた品です</div>`;
+    else if (l.variantOf) body = `<div class="sub">${esc(l.variantOf)} の枝番つきなので、単価は手で入れます${l.refPrice !== null ? `（${esc(l.variantOf)} なら ${yen(l.refPrice)}）` : ''}</div>`;
+    else if (l.base) body = `<ol>${(l.base.explain || []).map(e => `<li>${esc(e)}${ngBtn('l', li, e)}</li>`).join('')}</ol>` + (l.base.price === null ? '<div class="ng">掛け率が決まらないので、単価は手で入れます</div>' : '');
+    else body = '<div class="sub">定価リストにない品なので、単価は手で入れます</div>';
+    if (l.changed) body += `<div class="sub">基本 ${yen(l.base.price)} から ${yen(l.unit)} に変えています（${esc(l.reason || '理由なし')}）</div>`;
+    if (l.prev) body += `<div class="sub">前回の受注：${yen(l.prev.unit)}（${esc(l.prev.date)}）</div>`;
+    let kg = '';
+    if (l.listCode && l.qty > 0) {
+      if (l.ship === '組立出荷') kg = '<div class="sub">送料：組立出荷の重さの表で計算</div>';
+      else if (l.isOption && hasBody) kg = '<div class="sub">送料：オプションは本体と一緒に送るので、重さに入れません</div>';
+      else if (l.kg === null || l.kg === undefined) kg = '<div class="ng">送料の重さがわかりません（送料に入っていません）</div>';
+      else kg = `<div class="sub">送料の重さ：1台 ${l.kg}kg × ${l.qty} ＝ ${l.kg * l.qty}kg${l.kgCode && l.kgCode !== l.listCode ? `（${esc(l.kgCode)} の重さ）` : ''}${ngBtn('f', -1, l.code + ' の重さ ' + l.kg + 'kg')}</div>`;
+    }
+    out.push(`<div class="it"><b>${esc(name)}</b>　${esc(l.qty)}${esc(l.unitName)}${body}${kg}
+      <div class="eq">${l.unit === null ? '単価がまだ決まっていません' : `${yen(l.unit)} × ${esc(l.qty)} ＝ ${yen(l.amount)}`}</div></div>`);
+  });
+  // 3. 送料
+  out.push('<h3>3. 送料</h3>');
+  if (!DOC.dest.pref) out.push('<div class="sub">届け先の県を入れると出ます</div>');
+  else {
+    out.push(`<div>${esc(DOC.dest.pref)} → 地域「${esc(f.region || '－')}」・${esc(f.carrier || '－')}${DOC.dest.personal ? '（個人宅）' : ''}${ngBtn('f', -1, DOC.dest.pref + ' は地域「' + (f.region || '') + '」・' + (f.carrier || ''))}</div>`);
+    if (f.kg) out.push(`<div class="sub">重さの合計：${f.kg}kg</div>`);
+    out.push(`<ol>${(f.explain || []).map(e => `<li>${esc(e)}${ngBtn('f', -1, e)}</li>`).join('')}</ol>`);
+    // 路線便は、重さの帯ごとの金額まで見せる（400kg を超えたら「400kg の運賃 ＋ 残りの重さの運賃」）
+    if (f.parts && f.parts.length) out.push(`<table>${f.parts.map(p => `<tr><td>${p.kg}kg → ${p.band}kg までの帯${ngBtn('f', -1, f.region + ' の ' + p.band + 'kg までの帯 ' + p.amount + '円')}</td><td class="r">${yen(p.amount)}</td></tr>`).join('')}${f.parts.length > 1 ? `<tr class="tot"><td>路線便の合計</td><td class="r">${yen(f.parts.reduce((s, p) => s + p.amount, 0))}</td></tr>` : ''}</table>`);
+    (f.warnings || []).forEach(w => out.push(`<div class="ng">${esc(w)}</div>`));
+    if (f.changed) out.push(`<div class="sub">基本 ${f.rule === null ? 'なし' : yen(f.rule)} から ${yen(f.amount)} に変えています（${esc(f.reason || '理由なし')}）</div>`);
+    out.push(`<div class="eq">送料 ${f.amount === null ? '－' : yen(f.amount)}</div>`);
+  }
+  // 4. 合計
+  out.push(`<h3>4. 合計</h3><table>
+    <tr><td>商品の合計</td><td class="r">${yen(t.subtotal)}</td></tr><tr><td>送料</td><td class="r">${yen(t.fare)}</td></tr>
+    <tr><td>税抜の合計</td><td class="r">${yen(t.beforeTax)}</td></tr><tr><td>消費税（10％・1円未満切り捨て）</td><td class="r">${yen(t.tax)}</td></tr>
+    <tr class="tot"><td>総計</td><td class="r">${yen(t.total)}</td></tr></table>`);
+  return out.join('');
 }
 // 右上の「見積書を出すまで あと○項目」。残っている項目を押すと、その欄に飛ぶ
 function renderTodo() {

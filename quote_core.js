@@ -283,13 +283,19 @@
     if (env.history && cust) lines.forEach(function (l) {
       if (l.code) l.prev = prevOf(env.history, cust, [l.code, l.listCode].concat(kk[key(l.listCode || l.code)] || []));
     });
-    var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) { return { code: fareCode(l), qty: l.qty, ship: l.ship }; });
+    var fl = lines.filter(function (l) { return l.listCode && l.qty > 0; }).map(function (l) {
+      // 「計算の内訳」で見せるため、行ごとに 送料に使った重さ（1台あたり）とその型式 を残す
+      var code = fareCode(l), row = P.listPriceRow(data.prices, code, priceDate, true);
+      l.kgCode = code; l.kg = row ? num(row.運賃の重量kg) : null; l.isOption = P.isOption(code);
+      return { code: code, qty: l.qty, ship: l.ship };
+    });
     var f = { amount: null, explain: [], warnings: [] };
     if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
     var rule = f.amount === null || f.amount === undefined ? null : (logis && f.quoteAmount !== undefined ? (kind === "order" ? f.orderAmount : f.quoteAmount) : f.amount);
     var manualFare = num(doc.fareManual);
     var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule, reason: "", memo: "",
-      carrier: f.carrier || "", region: f.region || "", kg: f.kg || 0, how: f.method || "", explain: f.explain || [], warnings: f.warnings || [] };
+      carrier: f.carrier || "", region: f.region || "", kg: f.kg || 0, how: f.method || "", explain: f.explain || [], warnings: f.warnings || [],
+      parts: routeParts(data, f, priceDate) };
 
     if (fare.changed) { fare.reason = doc.fareReason || ""; fare.memo = doc.fareMemo || ""; }
     fare.wrong = fare.reason === WRONG;
@@ -307,6 +313,19 @@
     return { lines: lines, fare: fare, totals: totals, margin: margin, priceDate: priceDate,
       checks: checksOf(data, doc, lines, fare, index, env.items),
       order: kind === "order" ? orderOf(doc, lines, fare, env, kk) : null };
+  }
+
+  // 路線便の運賃を、重さの帯ごとの金額に分ける（「計算の内訳」で見せる。計算は price_core.js の路線便と同じ：
+  // いちばん上の帯（400kg）を超えた分は、上の帯の運賃 ＋ 残りの重さの帯の運賃）。路線便でなければ []
+  function routeParts(data, f, date) {
+    if (!f || !f.region || !(f.kg > 0) || !(f.explain || []).some(function (e) { return /^路線便/.test(e); })) return [];
+    var rows = P.fareRows(data.fares || [], "路線便", f.region, date); if (!rows.length) return [];
+    var top = rows[rows.length - 1], topKg = num(top.上限), rest = f.kg, out = [];
+    while (rest > topKg) { out.push({ kg: topKg, band: topKg, amount: num(top.金額) }); rest -= topKg; }
+    if (rest > 0) {
+      for (var i = 0; i < rows.length; i++) if (rest <= num(rows[i].上限)) { out.push({ kg: rest, band: num(rows[i].上限), amount: num(rows[i].金額) }); break; }
+    }
+    return out;
   }
 
   // ---------- 答え合わせ（受注明細と比べる） ----------

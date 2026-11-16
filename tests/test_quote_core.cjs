@@ -410,4 +410,18 @@ assert.equal(c.fare.reason, '');
   assert.ok(r1.misses.some(m => m.field === 'staff' && m.app === '（前回なし）'));
 }
 
+// --- 計算の内訳：行ごとに、送料に使った重さ（1台あたり）とその型式が残る ---
+{
+  const r = Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 2 }, { code: 'PB', qty: 1 }] }), env);
+  assert.equal(r.lines[0].kg, 60);
+  assert.equal(r.lines[0].kgCode, 'UDL250');
+  assert.equal(r.lines[1].kg, 1);
+  assert.ok(r.fare.explain.length > 0);
+  // 路線便は、帯ごとの金額の合計が送料の基本と同じ
+  const parts = r.fare.parts;
+  assert.ok(parts.length >= 1);
+  assert.equal(parts.reduce((s, p) => s + p.amount, 0), r.fare.rule);
+  assert.equal(parts.reduce((s, p) => s + p.kg, 0), r.fare.kg);
+}
+
 console.log('ok test_quote_core');
