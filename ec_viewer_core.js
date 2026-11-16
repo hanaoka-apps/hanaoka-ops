@@ -110,7 +110,7 @@
     return {
       has: true, createdAt: o.createdAt || '', createdTime: o.createdTime || '', financial: o.financial || '', fulfillment: o.fulfillment || '', cancelledAt: o.cancelledAt || '',
       total: o.total || 0, refunded: o.refunded || 0, email: o.email || '', phone: a.phone || o.phone || '', shipName: a.name || '', shipCompany: a.company || '',
-      zip: a.zip || '', address: [a.province, a.city, a.addr1, a.addr2].filter(Boolean).join(' '), billName: b.name || '', tags: String(o.tags || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean),
+      zip: a.zip || '', address: [a.province, a.city, a.addr1, a.addr2].filter(Boolean).join(' '), billName: b.name || '', billCompany: b.company || '', tags: String(o.tags || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean),
       lines: (o.lines || []).map(function (l) { return { name: l.name, sku: l.sku, qty: l.qty }; }), notes: o.notes || '',
       extra: o.detailExtra || [],     // 画面ごとの追加の項目 [[見出し, 値], …]（詳細に出す・検索の対象）
       search: o.searchExtra || []     // 検索だけに使う言葉（番号など）
@@ -155,6 +155,18 @@
     var n = 0;
     (orders || []).forEach(function (o) { var r = rows && rows[digits(o.id)]; if (r && r.ShipReportedAt) { o.fulfillment = 'fulfilled'; n++; } });
     return n;
+  };
+
+  /* 領収証の発行済みの印（receipt_ui.js の activeMap＝{ 注文番号: 記録 }）を、注文に付ける。r.receipt＝有効な記録（なければ null）。
+   * 検索の対象にもする（「領収証」で、発行済みの注文だけが出る。領収証番号でも探せる）。何度呼んでも、同じ結果になる（検索用の文は、元の文に足し直す） */
+  V.applyReceipts = function (records, map) {
+    (records || []).forEach(function (r) {
+      if (r.text0 == null) { r.text0 = r.text; r.flat0 = r.flat; }
+      var a = map && map[digits(r.id)];
+      r.receipt = a || null;
+      if (a) { r.text = r.text0 + ' ' + V.norm('領収証 発行済み ' + (a.number || '')); r.flat = r.text.replace(/[-\s・]/g, ''); }
+      else { r.text = r.text0; r.flat = r.flat0; }
+    });
   };
 
   // 検索の言葉：空白（全角も）で区切る。すべてを含むものだけ。番号（数字とハイフンだけ）は、桁区切りのハイフンを無視して番号どうしで見る

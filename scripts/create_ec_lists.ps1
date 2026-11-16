@@ -1,9 +1,10 @@
 ﻿<#
-  EC売上アプリの履歴用 SharePoint リスト（EC_Order・EC_Log）を作る
+  EC売上アプリの履歴用 SharePoint リスト（EC_Order・EC_Log）と、領収証の記録のリスト（EC_Receipt）を作る
   ------------------------------------------------------------
   EC売上アプリは、注文の状態・確認OK・受注№・変更の記録を、各自のブラウザではなく
   SharePoint のリストに持つ。このスクリプトは、そのリストと列を作る（Microsoft Graph）。
   お客様の名前・住所・電話はリストに入れない（注文番号と状態・日時・人だけ）。
+  ただし、領収証の記録（EC_Receipt）だけは、領収証の宛名（お客様の名前や会社名）と金額が入る。そのため、営業と EC 担当だけが読み書きできる権限にする（下の手順 4）。
 
   リストを置くサイトと名前は ec_sales_config.json の sharepoint.lists から読む（このファイルには書かない）。
   何度実行しても安全（あるリストは作り直さず、足りない列だけを足す。消すことはしない）。
@@ -23,12 +24,18 @@
     4) 作ったあと（手作業）：リストの権限を、EC担当と管理者だけに絞る
          リスト右上の「設定」→「リストの設定」→「このリストに対するアクセス許可」→「アクセス許可の継承を停止」。
          （注文番号と状態が入る。サイト全員には見せない）
+         EC_Receipt も同じ手順で、権限を絞る。ただし EC_Receipt は、EC担当と管理者に加えて、**営業**（領収証を発行する人）も、読めて書ける（編集）権限にする。
+         （宛名と金額が入るので、サイト全員には見せない。閲覧画面を使う営業が、リストを読めないと、領収証のボタンも札も出ない）
+    5) 領収証を使い始める：SharedMasters に設定ファイル receipt_settings.json（社名・住所・電話・登録番号。書き方は README の「領収証」）と、社印の画像を置き、
+         ec_sales_config.json の receipt.enabled を true にする（PR → マージ）。テストのときは、receipt.list をテスト用の名前（例：EC_Receipt_Test）にして確かめ、
+         終わったら本番の名前（EC_Receipt）に戻す。テスト用のリストは、このスクリプトの -ReceiptList で名前を指定して作る（本番のリストに、テストの記録を書かない）。
 #>
 param(
   [switch]$Offline,
   [switch]$Apply,
   [string]$Config = (Join-Path $PSScriptRoot '..\ec_sales_config.json'),
-  [string]$TenantId
+  [string]$TenantId,
+  [string]$ReceiptList   # 領収証のリストの名前（省略すると、設定 receipt.list＝EC_Receipt）。テスト用のリストを作るときに指定する
 )
 $ErrorActionPreference = 'Stop'
 
@@ -60,7 +67,10 @@ function Col-Number($name, $disp) { @{ name = $name; displayName = $disp; number
 
 # 状態・操作の選択肢は、アプリ（ec_sales.html）と同じ言葉にする
 $StatusChoices = @('未確認', 'OK済', '取込中', '突合待ち', '確認待ち', '起票済み', '要確認', '対象外')
-$ActionChoices = @('OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', 'その他')
+$ActionChoices = @('OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', '領収証発行', '領収証再発行', '領収証取消', 'その他')
+$ReceiptStatusChoices = @('発行済', '取消')   # 領収証の状態（receipt_core.js の STATUS と同じ言葉）
+# 領収証のリストの名前：-ReceiptList があればそれ、なければ設定の receipt.list、なければ EC_Receipt
+$receiptName = if ($ReceiptList) { $ReceiptList } elseif ($conf.receipt -and $conf.receipt.list) { [string]$conf.receipt.list } else { 'EC_Receipt' }
 
 $Definitions = @(
   @{
@@ -98,6 +108,23 @@ $Definitions = @(
       (Col-Choice 'Action' '操作' $ActionChoices $true),
       (Col-Text 'BatchId' '取込バッチ'),
       (Col-Text 'Detail' '内容' $true)
+    )
+  },
+  @{
+    name    = $receiptName
+    comment = '領収証の発行の記録。1枚＝1行（タイトル列＝領収証番号 R-年-連番。項目の ID から、アプリが付ける）。宛名と金額が入るので、営業と EC 担当だけの権限にする'
+    columns = @(
+      (Col-Text 'OrderNo' '注文番号' $false $true),
+      (Col-Text 'Atena' '宛名'),
+      (Col-Text 'Proviso' '但し書き'),
+      (Col-Number 'Amount' '金額（税込）'),
+      (Col-Number 'Tax' '消費税'),
+      (Col-Date 'IssueDate' '発行日' $false),
+      (Col-Text 'IssuedBy' '発行した人'),
+      (Col-Choice 'Status' '状態' $ReceiptStatusChoices $true),
+      (Col-Number 'ReissueCount' '再発行回数'),
+      (Col-Text 'Note' 'メモ' $true),
+      (Col-Text 'Source' 'どの画面から')
     )
   }
 )
@@ -163,5 +190,5 @@ if ($Apply) {
     Write-Warning ("タイトル列を重複不可にできませんでした。リストの設定から手で行ってください: {0}" -f $_.Exception.Message)
   }
   Write-Host ''
-  Write-Host '次に手作業：リストの権限を、EC担当と管理者だけに絞ってください（手順はこのファイルの先頭）。'
+  Write-Host '次に手作業：リストの権限を、EC担当と管理者だけに絞ってください（領収証のリストは、営業も含めます。手順はこのファイルの先頭）。'
 }

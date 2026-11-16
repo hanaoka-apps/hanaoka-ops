@@ -642,7 +642,7 @@ t('状態の対応表：アプリの状態 ↔ リストの Status（scripts/cre
   assert.strictEqual(EC.listStatus(undefined), '未確認');                   // 状態なし＝未確認
   assert.strictEqual(EC.listStatus('nonsense'), ''); assert.strictEqual(EC.appStatus('変な状態'), '');
   // ログの操作の選択肢も同じ（create_ec_lists.ps1 の $ActionChoices）
-  assert.deepStrictEqual(EC.LOG_ACTIONS, ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', 'その他']);
+  assert.deepStrictEqual(EC.LOG_ACTIONS, ['OK', 'OK取消', '出荷予定日変更', '社内メモ追記', '取込依頼', '取込結果', '突合結果', '確認OK', '報告送信', '報告失敗', 'テスト送信', 'Shopify登録完了', 'サイネックス報告完了', '領収証発行', '領収証再発行', '領収証取消', 'その他']);
 });
 const fullRec = { status: 'exported', by: 'ok@example.com', at: '2026-10-21T01:00:00.000Z', cust: '599801', orderDate: '2026-10-20', net: 14000, batchId: 'ec-0123456789abcdef', juchuNo: '90001',
   shipDate: '2026-10-23', memoNote: 'ブルー入荷待ち', importBy: 'imp@example.com', importAt: '2026-10-21T02:00:00.000Z', confirmedBy: 'cf@example.com', confirmedAt: '2026-10-21T03:00:00.000Z', reportedAt: '2026-10-21T02:30:00.000Z' };

@@ -141,4 +141,29 @@ t('日付の表し方', () => {
   assert.strictEqual(V.md('2026-11-07'), '11/7(土)'); assert.strictEqual(V.md('x'), '');
   assert.strictEqual(V.todayJst(new Date('2026-11-10T15:30:00Z')), '2026-11-11');   // 日本時間
 });
+t('領収証：発行済みの印を付けると、「領収証」「発行済み」「領収証番号」で探せる。印を外せば元に戻る。何度呼んでも同じ', () => {
+  const rs = V.build({ shopifyOrders: shopify, smileRows, shipLookup: lookup, custCodes: CUST, today: '2026-11-11' });
+  const before = rs.map(r => r.text + '|' + r.flat);
+  const total = V.filter(rs, { q: '' }).length;
+  assert.strictEqual(V.filter(rs, { q: '領収証' }).length, 0);                                  // 印がないうちは、ひとつも出ない
+  const map = { '1773': { number: 'R-2026-00012', status: '発行済' }, '1778': { number: 'R-2026-00013', status: '発行済' } };
+  V.applyReceipts(rs, map); V.applyReceipts(rs, map);
+  assert.deepStrictEqual(V.filter(rs, { q: '領収証' }).map(r => r.id).sort(), ['1773', '1778']);
+  assert.deepStrictEqual(V.filter(rs, { q: '発行済み' }).map(r => r.id).sort(), ['1773', '1778']);
+  assert.deepStrictEqual(V.filter(rs, { q: 'r-2026-00012' }).map(r => r.id), ['1773']);
+  assert.deepStrictEqual(V.filter(rs, { q: 'R-2026-00013' }).map(r => r.id), ['1778']);
+  assert.deepStrictEqual(V.filter(rs, { q: 'りょうしゅうしょう' }).length, 0);
+  assert.deepStrictEqual(V.filter(rs, { q: '領収証 1773' }).map(r => r.id), ['1773']);          // ほかの言葉と一緒でも（すべてを含む）
+  assert.strictEqual(rs.find(r => r.id === '1773').receipt.number, 'R-2026-00012'); assert.strictEqual(rs.find(r => r.id === '1772').receipt, null);
+  assert.strictEqual(V.filter(rs, { q: '' }).length, total);
+  V.applyReceipts(rs, { '1773': map['1773'] });                                                  // 1778 の印がなくなった
+  assert.deepStrictEqual(V.filter(rs, { q: '領収証' }).map(r => r.id), ['1773']);
+  V.applyReceipts(rs, null);
+  assert.deepStrictEqual(rs.map(r => r.text + '|' + r.flat), before);                              // 元の検索の文に戻る
+  assert.ok(rs.every(r => r.receipt === null));
+});
+t('領収証：請求先の会社名も、注文の情報に入る（宛名の候補）', () => {
+  const rs = V.build({ shopifyOrders: [sOrder({ id: '1900', name: '#1900', bill: { name: '請求 花子', company: '請求先商事', phone: '' } })], smileRows: [], shipLookup: null, custCodes: CUST, today: '2026-11-11' });
+  assert.strictEqual(rs[0].shopify.billCompany, '請求先商事'); assert.strictEqual(rs[0].shopify.billName, '請求 花子');
+});
 console.log('ec_viewer_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));
