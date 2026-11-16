@@ -166,6 +166,25 @@ textarea.f-input{resize:vertical;min-height:58px;line-height:1.6}
 .modal-b ol{padding-left:20px}
 .modal-b li{margin-bottom:7px}
 .modal-b code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-size:11.5px;word-break:break-all}
+/* 見比べ（2つの書類を左右に並べる） */
+.modal.cmp{max-width:1500px;height:92vh;max-height:92vh}
+.cmp-why{padding:7px 16px;font-size:12px;color:#5B3A8E;background:var(--purple-soft);border-bottom:1px solid var(--border)}
+.cmp-grid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr}
+.cmp-col{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--border)}
+.cmp-col:last-child{border-right:none}
+.cmp-head{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.cmp-head .ch-role{font-size:10.5px;font-weight:700;color:var(--text-muted);letter-spacing:.04em}
+.cmp-head .ch-title{font-size:13px;font-weight:600;line-height:1.45;margin-top:1px}
+.cmp-head .ch-sub{font-size:11.5px;color:var(--text-muted);margin-top:2px}
+.cmp-pdf{flex:6;min-height:0;background:#525659;overflow-y:auto;position:relative}
+.cmp-info{flex:4;min-height:0;overflow-y:auto;padding:10px 12px;font-size:12px;line-height:1.7;border-top:3px solid var(--border)}
+.cmp-info .sec{margin-bottom:10px}
+.cmp-info .field{padding:3px 0}
+mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-weight:600}
+@media (max-width:760px){
+  .cmp-grid{grid-template-columns:1fr;overflow-y:auto}
+  .cmp-col{border-right:none;border-bottom:4px solid var(--border);min-height:80vh}
+}
 .setup-log{background:#1e2430;color:#c8d6e5;border-radius:6px;padding:10px 12px;font-size:11.5px;line-height:1.7;max-height:220px;overflow-y:auto;white-space:pre-wrap;font-family:Consolas,monospace;margin-top:10px}
 
 /* ===== タスクビュー（テーブル） ===== */
@@ -312,6 +331,19 @@ textarea.f-input{resize:vertical;min-height:58px;line-height:1.6}
       <div id="linkResults"></div>
     </div>
     <div class="modal-f"><button class="btn" onclick="closeModal('linkModal')">閉じる</button></div>
+  </div>
+</div>
+
+<!-- ========== 見比べ・モーダル（つながりの確認用） ========== -->
+<div class="modal-bg" id="cmpModal" onclick="if (event.target === this) closeCompare()">
+  <div class="modal cmp">
+    <div class="modal-h">2つの書類を見比べる<span class="x" onclick="closeCompare()">×</span></div>
+    <div id="cmpWhy"></div>
+    <div class="cmp-grid">
+      <div class="cmp-col" id="cmpLeft"></div>
+      <div class="cmp-col" id="cmpRight"></div>
+    </div>
+    <div class="modal-f" id="cmpFoot"></div>
   </div>
 </div>
 
@@ -1392,7 +1424,7 @@ function linksHtml(d){
     if (!other) return '';
     return `<div class="link-item ${isSugg ? 'suggest' : ''}">
       <div class="li-bar" style="${isSugg ? 'background:#7B4FBF' : ''}"></div>
-      <div class="li-main" onclick="openDoc('${other.id}')">
+      <div class="li-main" onclick="openCompare('${other.id}', ${isSugg ? 'true' : 'false'})" title="クリックで今の書類と並べて見比べる">
         <div class="li-title">${o.rel ? `<span style="color:var(--text-muted);font-weight:400">[${esc(o.rel)}] </span>` : ''}${esc(other.title)}</div>
         <div class="li-why">${esc(other.sender || '')}${other.docDate ? ' ・ ' + other.docDate : ''}${o.why ? ' ・ ' + esc(o.why) : ''}</div>
       </div>
@@ -1692,9 +1724,31 @@ function renderLinkPicker(){
 /* ============================================================
    PDF表示
    ============================================================ */
-async function showPdf(d){
-  const panel = document.getElementById('pdfPanel');
-  const myToken = ++pdfRenderToken;
+
+/* 原本PDFの中身を取ってくる。
+   見比べでは同じ原本を何度も開くので、直近の数件だけ手元に置いておく。
+   ★pdf.js に渡した ArrayBuffer は作業用のスレッドへ「移されて」空になる★
+     手元に置いた元を渡すと次から空のPDFになるので、渡すのは必ずコピー。 */
+const pdfCache = new Map();
+const PDF_CACHE_MAX = 6;
+async function fetchPdf(d){
+  const key = d.fileId || d.fileUrl;
+  if (pdfCache.has(key)) return pdfCache.get(key).slice(0);
+  const tk = await getToken();
+  // アイテムIDがあれば直接取る。無い古い行だけ、共有URL経由にフォールバックする。
+  const url = d.fileId
+    ? `https://graph.microsoft.com/v1.0/sites/${siteId}/drive/items/${d.fileId}/content`
+    : `https://graph.microsoft.com/v1.0/shares/${'u!' + btoa(unescape(encodeURIComponent(d.fileUrl))).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}/driveItem/content`;
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tk } });
+  if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+  const buf = await r.arrayBuffer();
+  pdfCache.set(key, buf);
+  if (pdfCache.size > PDF_CACHE_MAX) pdfCache.delete(pdfCache.keys().next().value);
+  return buf.slice(0);
+}
+
+/* panel の中に原本を描く。isStale() が true になったら（別の書類に移ったら）途中でやめる。 */
+async function renderPdfInto(panel, d, isStale){
   if (!d || (!d.fileId && !d.fileUrl)){
     panel.innerHTML = '<div class="pdf-msg">この書類にはPDFが登録されていません</div>';
     return;
@@ -1703,25 +1757,18 @@ async function showPdf(d){
       ${d.fileUrl ? `<button onclick="window.open('${esc(d.fileUrl)}','_blank')" style="margin-left:auto">別タブで開く</button>` : ''}</div>
     <div class="pdf-msg">原本を読み込み中…</div>`;
   try{
-    const tk = await getToken();
-    // アイテムIDがあれば直接取る。無い古い行だけ、共有URL経由にフォールバックする。
-    const url = d.fileId
-      ? `https://graph.microsoft.com/v1.0/sites/${siteId}/drive/items/${d.fileId}/content`
-      : `https://graph.microsoft.com/v1.0/shares/${'u!' + btoa(unescape(encodeURIComponent(d.fileUrl))).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}/driveItem/content`;
-    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tk } });
-    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
-    const buf = await r.arrayBuffer();
-    if (myToken !== pdfRenderToken) return;   // 連打で別の書類に移っていたら捨てる
+    const buf = await fetchPdf(d);
+    if (isStale()) return;   // 連打で別の書類に移っていたら捨てる
 
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    if (myToken !== pdfRenderToken) return;
+    if (isStale()) return;
     const wrap = document.createElement('div');
     wrap.className = 'pdf-pages';
     panel.querySelector('.pdf-msg').replaceWith(wrap);
-    const width = Math.max(320, panel.clientWidth - 40);
+    const width = Math.max(280, panel.clientWidth - 40);
     for (let p = 1; p <= pdf.numPages; p++){
       const page = await pdf.getPage(p);
-      if (myToken !== pdfRenderToken) return;
+      if (isStale()) return;
       const v1 = page.getViewport({ scale: 1 });
       const vp = page.getViewport({ scale: width / v1.width });
       const cv = document.createElement('canvas');
@@ -1730,11 +1777,130 @@ async function showPdf(d){
       await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
     }
   }catch(e){
-    if (myToken !== pdfRenderToken) return;
+    if (isStale()) return;
     panel.innerHTML = `<div class="pdf-msg">原本を表示できませんでした<br><span style="font-size:11.5px">${esc(e.message)}</span><br>
       ${d.fileUrl ? `<button onclick="window.open('${esc(d.fileUrl)}','_blank')" style="margin-top:14px;padding:6px 14px;border-radius:5px;border:1px solid #777;background:#4d5154;color:#eee;cursor:pointer">SharePointで開く</button>` : ''}</div>`;
   }
 }
+
+async function showPdf(d){
+  const myToken = ++pdfRenderToken;
+  await renderPdfInto(document.getElementById('pdfPanel'), d, () => myToken !== pdfRenderToken);
+}
+
+/* ============================================================
+   見比べ（つながりの確認）
+
+   ★「これ、つながっていませんか？」で相手を押すと、前は相手の書類へ
+     移っていた。見比べたいのに今の書類が消え、戻るのも手間だった★
+   今の書類を左、相手を右に並べ、それぞれ原本の下に読み取った内容を出す。
+   同じ識別番号には印を付ける。つなげる／違う もこの画面で決められる。
+   ============================================================ */
+let cmpToken = 0, cmpOtherId = null, cmpIsSugg = false;
+
+function openCompare(otherId, isSugg){
+  const d = docs.find(x => x.id === currentId);
+  const o = docs.find(x => x.id === otherId);
+  if (!d || !o) return;
+  cmpOtherId = otherId; cmpIsSugg = !!isSugg;
+  const myToken = ++cmpToken;
+  const stale = () => myToken !== cmpToken;
+
+  const linkInfo = cmpIsSugg
+    ? suggestLinks(d).find(s => s.id === otherId)
+    : (d.d.links || []).find(l => l.id === otherId);
+  const why = linkInfo && linkInfo.why ? linkInfo.why : '';
+  document.getElementById('cmpWhy').innerHTML = why
+    ? `<div class="cmp-why">${cmpIsSugg ? 'つながりの候補にした理由' : 'つないだ理由'}：${esc(why)}</div>` : '';
+
+  // 両方に出てくる識別番号（表記ゆれをならして比べる）
+  const keysOf = x => new Set((x.d.keys || []).map(normKey).filter(k => k.length >= 4));
+  const kd = keysOf(d), ko = keysOf(o);
+  const same = new Set([...kd].filter(k => ko.has(k)));
+
+  const colHtml = (x, role) => `
+    <div class="cmp-head">
+      <div class="ch-role">${role}</div>
+      <div class="ch-title">${esc(x.title)}</div>
+      <div class="ch-sub">${esc(x.sender || '差出元不明')}${x.docDate ? ' ・ ' + x.docDate : ''}${x.amount != null ? ' ・ ¥' + x.amount.toLocaleString('ja-JP') : ''} ・ ${esc(x.status)}</div>
+    </div>
+    <div class="cmp-pdf"></div>
+    <div class="cmp-info">${compareInfoHtml(x, same)}</div>`;
+
+  const L = document.getElementById('cmpLeft'), R = document.getElementById('cmpRight');
+  L.innerHTML = colHtml(d, '今の書類');
+  R.innerHTML = colHtml(o, cmpIsSugg ? 'つながりの候補' : 'つないだ書類');
+
+  document.getElementById('cmpFoot').innerHTML = `
+    <button class="btn" style="margin-right:auto" onclick="closeCompare(); openDoc('${o.id}')">右の書類に移る</button>
+    ${cmpIsSugg
+      ? `<button class="btn" onclick="compareAct('dismiss')">違う</button>
+         <button class="btn primary" onclick="compareAct('link')">つなげる</button>`
+      : `<button class="btn" onclick="compareAct('unlink')">つながりを外す</button>`}
+    <button class="btn" onclick="closeCompare()">閉じる</button>`;
+
+  document.getElementById('cmpModal').classList.add('show');
+  if (window.UsageLog) UsageLog.log('doc_compare', cmpIsSugg ? '候補' : 'つながり');   // 種類だけ（書類の中身は記録しない）
+  // 画面に出て幅が決まってから描く（幅に合わせて原本を縮めるため）
+  requestAnimationFrame(() => {
+    renderPdfInto(L.querySelector('.cmp-pdf'), d, stale);
+    renderPdfInto(R.querySelector('.cmp-pdf'), o, stale);
+  });
+}
+
+/* 原本の下に出す「読み取った内容」。左右で同じ並びにして見比べやすくする。 */
+function compareInfoHtml(x, same){
+  const v = x.d || {};
+  const typeDetail = v.docTypeDetail || (v.docType && v.docType !== x.docType ? v.docType : '');
+  const keys = (v.keys || []).map(k => same.has(normKey(k)) ? `<mark class="same" title="もう一方の書類にも同じ番号があります">${esc(k)}</mark>` : esc(k)).join(' / ');
+  const fields = [
+    ['会社', esc(x.company)],
+    ['書類種別', esc(x.docType + (typeDetail ? '（' + typeDetail + '）' : ''))],
+    ['差出元', esc(x.sender)],
+    ['担当・連絡先', esc(v.senderContact || '')],
+    ['文書日付', esc(x.docDate)],
+    ['受領日', esc(x.received)],
+    ['期限', esc(x.due)],
+    ['金額', x.amount != null ? '¥' + x.amount.toLocaleString('ja-JP') : ''],
+    ['識別番号', keys],
+    ['タスク', v.task && v.task.title ? esc(v.task.title) + `（${esc(x.taskStatus)}）` : ''],
+  ].filter(([, val]) => val);
+  const extra = v.extra && typeof v.extra === 'object' ? Object.entries(v.extra).filter(([, val]) => val !== '' && val != null) : [];
+  return `
+    ${v.summary ? `<div class="sec"><div class="sec-h">AIが読み取った内容</div><div class="box ai">${esc(v.summary)}</div></div>` : ''}
+    ${v.checkPoints ? `<div class="sec"><div class="sec-h">⚠ 要確認ポイント</div><div class="box warn">${esc(v.checkPoints)}</div></div>` : ''}
+    <div class="sec"><div class="sec-h">書類の情報</div>
+      ${fields.map(([k, val]) => `<div class="field"><div class="f-label">${esc(k)}</div><div class="f-value">${val}</div></div>`).join('')}
+      ${extra.length ? `<div class="sec-h" style="margin-top:8px">読み取ったその他の項目</div>` +
+        extra.map(([k, val]) => `<div class="field"><div class="f-label">${esc(k)}</div><div class="f-value">${esc(typeof val === 'object' ? JSON.stringify(val) : String(val))}</div></div>`).join('') : ''}
+    </div>`;
+}
+
+async function compareAct(act){
+  const id = cmpOtherId;
+  if (act === 'link'){
+    const s = suggestLinks(docs.find(x => x.id === currentId) || { d: {} }).find(x => x.id === id);
+    closeCompare();
+    await confirmLink(id, s ? s.why : '');
+  }else if (act === 'dismiss'){
+    closeCompare();
+    await dismissSuggest(id);
+  }else if (act === 'unlink'){
+    closeCompare();
+    await removeLink(id);
+  }
+}
+
+function closeCompare(){
+  cmpToken++;   // 描きかけの原本を止める
+  document.getElementById('cmpModal').classList.remove('show');
+  document.getElementById('cmpLeft').innerHTML = '';
+  document.getElementById('cmpRight').innerHTML = '';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('cmpModal').classList.contains('show')) closeCompare();
+});
 
 /* ============================================================
    セットアップ（台帳リスト＋原本ライブラリを作る）
