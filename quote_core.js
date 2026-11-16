@@ -11,6 +11,7 @@
   // 変えた理由の大もとの2択：今回だけ特別（上の理由から選ぶ）か、アプリの計算が違う（ルールを直す対象）か
   var WRONG = "アプリの計算が違う", ONCE = "今回だけ特別";
   var STATUSES = ["下書き", "提出済み", "受注", "失注"];
+  var ORDER_STATUSES = ["下書き", "SMILE入力待ち", "SMILEに入力済み", "取り消し"];
   var TAX_RATE = 0.1;
 
   function fmt(v) { return v === null || v === undefined || v === "" ? "" : Math.round(v).toLocaleString("ja-JP"); }
@@ -90,13 +91,43 @@
   // 2026-06〜11 の受注では、前回の受注がある行の 74％が前回と同じ単価だった（ルールにない特別単価も、定価のない部品も）
   function historyNew() { return { c: {}, s: {} }; }
   //   r: { date:"YYYY-MM-DD", cust, sha, code, qty, unit, ret:返品か }。運賃の行・返品・0円（サンプル）は入れない
+  //   受注伝票のために、次の2つも覚える（どちらも「実際にどう入力されているか」から決める。業務センターの入力の決まりをそのまま写す）
+  //     k：取引先ごとの いちばん新しい担当者・部門 と よく使う納品先　i：品目ごとの よく使う倉庫・単位・手配区分
+  //   r に足せるもの：staff, staffName, dept, deptName, dest, destName, wh, whName, unitName, tehai
   function historyPush(h, r) {
+    if (!r.code || r.code === "FR" || r.ret || !r.cust) return;
+    var d = ymd(r.date);
+    if (r.staff || r.dest) {
+      var kc = (h.k = h.k || {})[r.cust] || (h.k[r.cust] = { d: "", ds: {} });
+      if (r.staff && kc.d <= d) { kc.d = d; kc.st = [r.staff, r.staffName || ""]; kc.dp = [r.dept || "", r.deptName || ""]; }
+      if (r.dest) { var x = kc.ds[r.dest] || (kc.ds[r.dest] = ["", 0, ""]); x[1]++; if (x[2] <= d) { x[2] = d; x[0] = r.destName || x[0]; } }
+    }
+    if (r.wh) {
+      var ik = key(r.code), it = (h.i = h.i || {})[ik] || (h.i[ik] = { w: {} });
+      if (it.w) { var w = it.w[r.wh] || (it.w[r.wh] = [r.whName || "", 0]); w[1]++; }
+      if (r.unitName) it.u = r.unitName;
+      if (r.tehai) it.t = r.tehai;
+    }
     var u = num(r.unit);
-    if (!r.code || r.code === "FR" || r.ret || !(num(r.qty) > 0) || u === null || u <= 0 || !r.cust) return;
+    if (!(num(r.qty) > 0) || u === null || u <= 0) return;
     var k = key(r.code), v = [u, ymd(r.date)];
     var put = function (m, id) { if (!m[id] || m[id][1] <= v[1]) m[id] = v; };
     put(h.c, r.cust + "|" + k);
     if (r.sha) put(h.s, r.sha + "|" + k);
+  }
+  // 読み終わったら小さくする（ブラウザに覚えておくため）。納品先は取引先ごとに多い順に 12 まで、倉庫は品目ごとにいちばん多いもの
+  function historyDone(h) {
+    Object.keys(h.k || {}).forEach(function (c) {
+      var kc = h.k[c], ds = kc.ds || {};
+      kc.ds = Object.keys(ds).sort(function (a, b) { return ds[b][1] - ds[a][1] || (ds[a][2] < ds[b][2] ? 1 : -1); }).slice(0, 12)
+        .map(function (code) { return [code, ds[code][0], ds[code][1]]; });
+    });
+    Object.keys(h.i || {}).forEach(function (c) {
+      var it = h.i[c], w = it.w; if (!w) return;
+      var best = Object.keys(w).sort(function (a, b) { return w[b][1] - w[a][1]; })[0];
+      it.wh = best ? [best, w[best][0]] : null; delete it.w;
+    });
+    return h;
   }
   // 返す：{ unit, date, from:"cust"（同じ取引先）|"sha"（同じ社名） } か null
   function prevOf(h, cust, codes) {
@@ -154,7 +185,7 @@
     var qty = Math.max(0, num(line.qty) || 0);
     var out = { code: line.code || "", listCode: "", via: "", name: line.name || "", qty: qty, unitName: line.unitName || "台",
       manual: !!line.manual, base: null, unit: null, amount: null, changed: false, reason: "", memo: "", cost: null,
-      lead: line.lead || "", note: line.note || "", ship: line.ship || "", warnings: [] };
+      lead: line.lead || "", note: line.note || "", ship: line.ship || "", smile: line.smile || "", wh: line.wh || "", warnings: [] };
     var ov = line.ov || {};
     if (out.manual || !out.code) {
       out.manual = true; out.unit = num(line.price); out.name = line.name || line.code || "";
@@ -210,7 +241,8 @@
   // ---------- 書類ぜんたい ----------
   // 定価を選ぶ日：見積日（受注伝票なら受注日）。出荷の予定日では選ばない。
   // 2026-06〜11 の受注では、10月に受けて11月以降に出荷した分の9割近くが、受注日の定価（改定前）だった
-  function priceDateOf(doc) { return ymd(doc.date); }
+  // 見積から作った受注伝票は、元の見積の日で選ぶ（見積の単価をそのまま引き継ぐため）
+  function priceDateOf(doc) { return ymd(doc.priceDate) || ymd(doc.date); }
   function usedLines(doc) {
     return (doc.lines || []).filter(function (l) { return l && (l.code || l.name || num(l.price) !== null); });
   }
@@ -273,7 +305,45 @@
     var margin = n && sales > 0 ? { rate: (sales - cost) / sales, lines: n, all: n === lines.length } : null;
 
     return { lines: lines, fare: fare, totals: totals, margin: margin, priceDate: priceDate,
-      checks: checksOf(data, doc, lines, fare, index, env.items) };
+      checks: checksOf(data, doc, lines, fare, index, env.items),
+      order: kind === "order" ? orderOf(doc, lines, fare, env, kk) : null };
+  }
+
+  // ---------- 受注伝票（SMILE に入る並び） ----------
+  // 入れた型式から、SMILE の品目コードを決める。
+  //   ① 手で選んだコード → ② 入れたコードが品目マスタにある → ③ 価格表記載名が同じ品目コード（枝番なし）。
+  //   ③で2つ以上あるときは、v27（2027-01-01 の価格改定用）でないもの → 受注の実績があるもの の順
+  function smileCodeOf(l, env, kk) {
+    if (l.smile) return { code: l.smile, by: "手で選んだ" };
+    if (l.manual || !l.code) return { code: "", by: "" };
+    if (env.items && env.items[l.code]) return { code: l.code, by: "" };
+    var cands = (kk[key(l.listCode || l.code)] || []).slice();
+    if (!cands.length) return { code: "", by: "" };
+    var h = env.history || {}, used = function (c) { return !!(h.i && h.i[key(c)]); };
+    cands.sort(function (a, b) { return (/v27$/i.test(a) - /v27$/i.test(b)) || (used(b) - used(a)) || (a < b ? -1 : 1); });
+    return { code: cands[0], by: "価格表記載名", cands: cands };
+  }
+  // 返す：{ head, rows, miss:{ code, wh }（直す行の番号。なければ -1）, dests }
+  function orderOf(doc, lines, fare, env, kk) {
+    var h = env.history || {}, cust = doc.cust || {}, kc = (h.k || {})[cust.code] || null, o = doc.order || {};
+    var miss = { code: -1, wh: -1 }, rows = [];
+    lines.forEach(function (l, i) {
+      var s = smileCodeOf(l, env, kk), info = s.code ? (h.i || {})[key(s.code)] || null : null, it = s.code && env.items ? env.items[s.code] : null;
+      var wh = l.wh ? [l.wh, ""] : (info && info.wh) || null;
+      if (!s.code && miss.code < 0) miss.code = i;
+      if (s.code && !wh && miss.wh < 0) miss.wh = i;
+      rows.push({ line: i, code: s.code, by: s.by, cands: s.cands || [], name: (it && it.name) || l.name || "", qty: l.qty, unit: (info && info.u) || l.unitName,
+        price: l.unit, amount: l.amount, wh: wh ? wh[0] : "", whName: wh ? wh[1] : "", tehai: (info && info.t) || "", due: ymd(doc.shipDate) });
+    });
+    // 送料は、品目 FR・数量 1・単位「式」の行（6〜11月の伝票の 57％にある）。倉庫は1行目と同じ
+    if (fare.amount) rows.push({ line: -1, code: "FR", by: "", name: "運賃", qty: 1, unit: "式", price: fare.amount, amount: fare.amount,
+      wh: rows.length ? rows[0].wh : "", whName: rows.length ? rows[0].whName : "", tehai: "", due: ymd(doc.shipDate) });
+    var st = o.staff ? [o.staff, ""] : (kc && kc.st) || null, dp = o.dept ? [o.dept, ""] : (kc && kc.dp) || null;
+    var head = { date: ymd(doc.date), cust: cust.code || "", custName: cust.fullName || cust.name || "",
+      dest: o.dest || "", destName: o.destName || "", newDest: o.dest === "new",
+      staff: st ? st[0] : "", staffName: st ? st[1] : "", dept: dp ? dp[0] : "", deptName: dp ? dp[1] : "", learned: !!(kc && kc.st && !o.staff),
+      po: o.po || "", ship: ymd(doc.shipDate), carrier: o.carrier || "", dlvDate: ymd(o.dlvDate), dlv: o.dlv || "", memo: o.memo || "" };
+    return { head: head, rows: rows, miss: miss, dests: (kc && kc.ds) || [] };
   }
 
   // 確認すること（画面ではここにだけ注意を出す）。level：warn＝直してから出す、info＝知っておく
@@ -336,6 +406,16 @@
       { key: "price", label: "単価", done: lines.length > 0 && noUnit < 0, line: noUnit },
       { key: "pref", label: "届け先の県（送料）", done: !!(doc.dest && doc.dest.pref) || num(doc.fareManual) !== null, line: -1 }
     ];
+    // 受注伝票：納品先・出荷予定日・担当者が要る。品目コードと倉庫は、決まらない行があるときだけ
+    var od = comp.order;
+    if (od) {
+      var hd = od.head;
+      items.splice(1, 0, { key: "dest", label: "納品先", done: !!hd.dest && (hd.dest !== "new" || !!String(hd.destName).trim()), line: -1 });
+      items.push({ key: "ship", label: "出荷予定日", done: !!hd.ship, line: -1 });
+      items.push({ key: "staff", label: "担当者・部門", done: !!hd.staff && !!hd.dept, line: -1 });
+      if (od.miss.code >= 0) items.push({ key: "code", label: "品目コード", done: false, line: od.miss.code });
+      if (od.miss.wh >= 0) items.push({ key: "wh", label: "倉庫", done: false, line: od.miss.wh });
+    }
     if (lines.some(function (l) { return l.changed; }) || fare.changed) {
       var w = first(needWhy), fareNg = fare.changed && (!fare.reason || (fare.wrong && !String(fare.memo || "").trim()));
       items.push({ key: w >= 0 || !fareNg ? "reason" : "fareReason", label: "変えた理由", done: w < 0 && !fareNg, line: w });
@@ -396,10 +476,19 @@
     };
   }
   // 新しい書類の初期値
+  // 見積から受注伝票を作る。取引先・明細・単価・届け先・変えた理由はそのまま。定価は元の見積の日で選ぶ
+  function toOrder(quote, today, staff) {
+    var d = duplicate(quote, today, staff);
+    d.kind = "order"; d.status = ORDER_STATUSES[0]; d.quoteNo = quote.no || ""; d.priceDate = ymd(quote.date);
+    d.from = quote.no ? "見積 " + quote.no : d.from; delete d.copiedFrom; delete d.ai;
+    d.order = { dest: "", destName: "", po: "", carrier: "", dlvDate: "", dlv: "", memo: "", staff: "", dept: "" };
+    return d;
+  }
   function blank(kind, today, staff) {
-    return { no: "", kind: kind === "order" ? "order" : "quote", status: "下書き", date: today, shipDate: "", cust: null, toName: "", honor: "御中",
+    return { no: "", kind: kind === "order" ? "order" : "quote", status: kind === "order" ? ORDER_STATUSES[0] : STATUSES[0], date: today, shipDate: "", cust: null, toName: "", honor: "御中",
       dest: { name: "", pref: "", personal: false }, lines: [{ code: "", qty: 1 }], fareManual: null,
-      title: "", expiry: "発行後1ヶ月", pay: "従来通り", notes: "", showList: false, dept: "", staff: staff || "", caseId: "", from: "" };
+      title: "", expiry: "発行後1ヶ月", pay: "従来通り", notes: "", showList: false, dept: "", staff: staff || "", caseId: "", from: "",
+      order: kind === "order" ? { dest: "", destName: "", po: "", carrier: "", dlvDate: "", dlv: "", memo: "", staff: "", dept: "" } : undefined };
   }
   // 複製：番号・状態・日付を新しくする（内容はそのまま）
   function duplicate(doc, today, staff) {
@@ -454,7 +543,7 @@
     return steps;
   }
 
-  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, historyNew: historyNew, historyPush: historyPush, prevOf: prevOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

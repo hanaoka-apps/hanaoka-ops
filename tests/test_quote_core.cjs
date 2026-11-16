@@ -325,4 +325,62 @@ assert.equal(c.fare.reason, '');
   assert.deepEqual(r.lines[0].others, []);
 }
 
+// --- 受注伝票：受注明細から覚えるもの（担当者・部門・納品先・倉庫）と、SMILE に入る並び ---
+{
+  const h = Q.historyNew();
+  const push = (o) => Q.historyPush(h, Object.assign({ cust: 'C1', sha: 'G9', qty: 1, unit: 70000, unitName: '台', tehai: '繰返(製作)' }, o));
+  push({ date: '2026-08-01', code: 'UDL25', staff: 'S1', staffName: '見本 一郎', dept: 'B1', deptName: '見本部', dest: 'N1', destName: '見本倉庫', wh: 'W1', whName: '見本工場第一' });
+  push({ date: '2026-09-01', code: 'UDL25', staff: 'S2', staffName: '見本 二郎', dept: 'B2', deptName: '見本二部', dest: 'N1', destName: '見本倉庫（新）', wh: 'W1', whName: '見本工場第一' });
+  push({ date: '2026-07-01', code: 'UDL25', staff: 'S0', staffName: '古い人', dept: 'B0', deptName: '古い部', dest: 'N2', destName: '見本現場', wh: 'W2', whName: '見本工場第二' });
+  push({ date: '2026-09-02', code: 'UDL25', unit: 0, wh: 'W1', whName: '見本工場第一' }); // 0円でも倉庫は覚える
+  Q.historyDone(h);
+  assert.deepEqual(h.k.C1.st, ['S2', '見本 二郎']); // いちばん新しい担当者
+  assert.deepEqual(h.k.C1.dp, ['B2', '見本二部']);
+  assert.deepEqual(h.k.C1.ds, [['N1', '見本倉庫（新）', 2], ['N2', '見本現場', 1]]); // 多い順・名前は新しいもの
+  assert.deepEqual(h.i.UDL25.wh, ['W1', '見本工場第一']); // いちばん多い倉庫
+  assert.equal(h.c['C1|UDL25'][0], 70000); // 前回の単価は 0円を入れない
+  const e4 = { items, index: env.index, history: h };
+  const od = Q.toOrder(doc({ no: 'Q261114-001', date: '2026-10-20', lines: [{ code: 'UDL250', qty: 2 }] }), '2026-11-16', '見本 太郎');
+  assert.equal(od.kind, 'order');
+  assert.equal(od.quoteNo, 'Q261114-001');
+  assert.equal(od.priceDate, '2026-10-20');
+  let r = Q.compute(data, od, e4);
+  assert.equal(r.priceDate, '2026-10-20');
+  assert.equal(r.lines[0].unit, 69000); // 見積の日の定価（改定前）を引き継ぐ
+  const o = r.order;
+  assert.equal(o.rows[0].code, 'UDL25'); // 型式 UDL250 → SMILE の品目コード UDL25（価格表記載名）
+  assert.equal(o.rows[0].wh, 'W1');
+  assert.equal(o.rows[0].tehai, '繰返(製作)');
+  assert.equal(o.rows[1].code, 'FR'); // 送料の行
+  assert.equal(o.rows[1].price, r.fare.amount);
+  assert.equal(o.head.staff, 'S2');
+  assert.equal(o.head.date, '2026-11-16');
+  let t = Q.todo(od, r);
+  assert.deepEqual(t.items.filter(x => !x.done).map(x => x.key), ['dest', 'ship']);
+  od.order.dest = 'N1'; od.shipDate = '2026-11-20';
+  r = Q.compute(data, od, e4);
+  assert.equal(Q.todo(od, r).left, 0);
+  assert.equal(r.order.rows[0].due, '2026-11-20');
+  // 新しい納品先は、名前を書くまで済まない
+  od.order.dest = 'new'; r = Q.compute(data, od, e4);
+  assert.ok(Q.todo(od, r).items.some(x => x.key === 'dest' && !x.done));
+  od.order.destName = '見本の新しい現場'; r = Q.compute(data, od, e4);
+  assert.ok(Q.todo(od, r).items.every(x => x.done));
+  // 品目コードが決まらない行・倉庫が決まらない行
+  const od2 = Object.assign(Q.blank('order', '2026-11-16', ''), { cust: B, shipDate: '2026-11-20', dest: { name: '', pref: '埼玉県', personal: false }, order: { dest: 'N1', destName: 'x' }, lines: [{ manual: true, name: '特注の台', price: 5000, qty: 1 }, { code: 'T1', qty: 1 }] });
+  r = Q.compute(data, od2, e4);
+  t = Q.todo(od2, r);
+  assert.deepEqual(t.items.filter(x => !x.done).map(x => [x.key, x.line]), [['code', 0], ['wh', 1]]);
+  // 手で入れたら決まる
+  od2.lines[0].smile = 'X9'; od2.lines[0].wh = 'W2'; od2.lines[1].wh = 'W1';
+  r = Q.compute(data, od2, e4);
+  assert.equal(Q.todo(od2, r).left, 0);
+  assert.equal(r.order.rows[0].code, 'X9');
+  // v27（2027-01-01 の価格改定用）があっても、今は元の品目コードを選ぶ
+  const items2 = Object.assign({}, items, { UDL25v27: { name: 'リフト v27', kakaku: 'UDL250' } });
+  assert.equal(Q.smileCodeOf({ code: 'UDL250', listCode: 'UDL250' }, { items: items2, history: h }, { UDL250: ['UDL25v27', 'UDL25'] }).code, 'UDL25');
+  // 見積では作らない
+  assert.equal(Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), e4).order, null);
+}
+
 console.log('ok test_quote_core');
