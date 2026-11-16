@@ -444,4 +444,14 @@ assert.equal(c.fare.reason, '');
   assert.equal(r.order.head.nd.addr, '埼玉県見本市1-1');
 }
 
+// --- ひらがなで探す：ひらがな・カタカナ・半角カナをそろえる ---
+{
+  assert.equal(Q.norm('やまぜん'), Q.norm('ﾔﾏｾﾞﾝ'));
+  assert.equal(Q.norm('やまぜん'), Q.norm('ヤマゼン'));
+  assert.equal(Q.norm('きょうと'), Q.norm('キョウト'));
+  const list = [{ key: Q.norm('C1 見本商事 ﾐﾎﾝｼｮｳｼﾞ'), head: Q.norm('見本商事') + ' ' + Q.norm('ﾐﾎﾝｼｮｳｼﾞ'), id: 1 }, { key: Q.norm('C2 べつの会社 ﾍﾞﾂﾉｶｲｼｬ'), head: '', id: 2 }];
+  assert.deepEqual(Q.search(list, 'みほん', 8).map(x => x.id), [1]);
+  assert.deepEqual(Q.search(list, 'ミホンショウジ', 8).map(x => x.id), [1]);
+}
+
 console.log('ok test_quote_core');
