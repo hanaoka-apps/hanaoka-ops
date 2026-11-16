@@ -227,6 +227,31 @@ mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-
 .dl-date{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600}
 .dl-date.near{color:var(--amber)}
 .dl-date.over{color:var(--red)}
+
+/* ===== つながり図 ===== */
+.graph-panel{display:none;flex:1;position:relative;min-width:0;background:var(--bg);overflow:hidden}
+.main.graph-mode .graph-panel{display:block}
+.main.graph-mode .detail-panel,.main.graph-mode .pdf-panel{display:none}
+.graph-panel svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none;user-select:none}
+.graph-panel svg.panning{cursor:grabbing}
+.graph-bar{position:absolute;top:10px;left:12px;right:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text-muted);pointer-events:none}
+.graph-bar > *{pointer-events:auto}
+.graph-bar label{display:flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer}
+.graph-bar .gb-note{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:3px 8px}
+.graph-bar button{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer;color:var(--text-muted)}
+.graph-tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:7px 10px;font-size:12px;line-height:1.55;max-width:320px;display:none;z-index:5}
+.graph-tip b{display:block;font-size:12.5px}
+.graph-tip span{color:var(--text-muted)}
+.graph-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;text-align:center;line-height:1.9;pointer-events:none}
+.g-node{cursor:pointer}
+.g-node circle{stroke:#fff;stroke-width:1.5}
+.g-node text{font-size:10px;fill:var(--text-main);paint-order:stroke;stroke:var(--bg);stroke-width:3px;pointer-events:none}
+.g-node.single circle{opacity:.55}
+.graph-panel svg.far .g-node text{display:none}
+.g-node.focus circle{stroke:var(--red);stroke-width:3}
+.g-edge{stroke:var(--text-muted);stroke-width:1.2;opacity:.7}
+.g-edge.ai{stroke-dasharray:4 3}
+.g-label{font-size:11px;font-weight:700;fill:var(--text-muted);text-anchor:middle;pointer-events:none;paint-order:stroke;stroke:var(--bg);stroke-width:4px}
 </style>
 </head>
 <body>
@@ -252,6 +277,7 @@ mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-
         <div class="view-tab active" data-view="inbox">未確認<span class="cnt" id="cntInbox"></span></div>
         <div class="view-tab" data-view="task">タスク<span class="cnt" id="cntTask"></span></div>
         <div class="view-tab" data-view="ledger">期限台帳<span class="cnt" id="cntLedger"></span></div>
+        <div class="view-tab" data-view="graph">つながり図</div>
         <div class="view-tab" data-view="all">すべて<span class="cnt" id="cntAll"></span></div>
         <div class="view-tab" data-view="archive">アーカイブ<span class="cnt" id="cntArch"></span></div>
       </div>
@@ -307,6 +333,26 @@ mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-
     <!-- PDF -->
     <div class="pdf-panel" id="pdfPanel">
       <div class="pdf-msg">書類を選ぶとここに原本が表示されます</div>
+    </div>
+    <!-- つながり図 -->
+    <div class="graph-panel" id="graphPanel">
+      <svg id="graphSvg">
+        <defs>
+          <!-- ぼかしてから輪郭を立てると、近い丸どうしが溶け合ってアメーバのようになる -->
+          <filter id="goo" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="11" result="b"/>
+            <feColorMatrix in="b" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -8"/>
+          </filter>
+        </defs>
+        <g id="gView"><g id="gBlobs"></g><g id="gEdges"></g><g id="gLabels"></g><g id="gNodes"></g></g>
+      </svg>
+      <div class="graph-bar">
+        <label><input type="checkbox" id="gSingles">つながりの無い書類も出す</label>
+        <button id="gFit">全体を見る</button>
+        <span class="gb-note">丸を押すと書類を開く・ドラッグで動かす・ホイールで拡大　点線＝AIがつないだ</span>
+      </div>
+      <div class="graph-tip" id="graphTip"></div>
+      <div class="graph-empty" id="graphEmpty" style="display:none"></div>
     </div>
   </div>
 </div>
@@ -509,6 +555,9 @@ function setView(v){
   const m = document.getElementById('mainArea');
   m.classList.toggle('task-mode', v === 'task');
   m.classList.toggle('ledger-mode', v === 'ledger');
+  m.classList.toggle('graph-mode', v === 'graph');
+  if (v !== 'graph') graphStop();
+  else if (window.UsageLog) UsageLog.log('doc_graph', '');
   render();
 }
 
@@ -1128,6 +1177,7 @@ function render(){
   } else {
     document.getElementById('resultCount').textContent = `${list.length}件`;
     renderCards(list);
+    if (currentView === 'graph') renderGraph(list);
   }
   if (currentId && !list.some(d => d.id === currentId) && currentView !== 'task' && currentView !== 'ledger'){
     // 絞り込みで消えた場合は詳細も閉じる
@@ -1352,6 +1402,7 @@ function jumpToDoc(id){
    詳細
    ============================================================ */
 function openDoc(id){
+  if (currentView === 'graph'){ graphFocus(id); return; }   // 図では一覧の書類を押すと、その丸に寄る
   if (editing && !confirm('編集中の内容を破棄して移動しますか？')) return;
   editing = false; editBuf = null;
   currentId = id;
@@ -1784,6 +1835,277 @@ function renderLinkPicker(){
       </div>`).join('')
     : '<div class="empty">該当なし</div>';
 }
+
+/* ============================================================
+   つながり図
+
+   つながっている書類を、アメーバのようなかたまりで見せる。
+   ・丸1つが書類1件、線がつながり（点線は AI がつないだもの）
+   ・つながったひとかたまり（＝ひとつの件）ごとに色を変え、ぼかして輪郭を
+     立てる（SVG の goo フィルタ）。近い丸どうしが溶け合ってアメーバになる
+   ・位置は簡単なばねの計算で決める（外の部品は使わない）。落ち着いたあとも
+     ほんの少し揺らして、生き物っぽく見せる。図を離れたら計算を止める
+   ・一覧の絞り込み（会社・カテゴリ・タグ・検索など）がそのまま効く
+   ============================================================ */
+const G_COLORS = ['--purple', '--cyan', '--green', '--orange', '--red', '--navy', '--amber'];
+const G = { nodes: [], edges: [], comps: [], byId: new Map(), pos: new Map(), raf: 0, alpha: 0,
+            view: null, drag: null, focusId: null, frame: 0 };
+const SVGNS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs){
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  return e;
+}
+
+function renderGraph(list){
+  const ids = new Set(list.map(d => d.id));
+  const edges = [], seen = new Set(), deg = new Map();
+  for (const d of list){
+    for (const l of (d.d.links || [])){
+      if (!ids.has(l.id) || l.id === d.id) continue;
+      const k = d.id < l.id ? d.id + '|' + l.id : l.id + '|' + d.id;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      edges.push({ a: d.id, b: l.id, ai: l.by === 'AI' });
+      deg.set(d.id, (deg.get(d.id) || 0) + 1); deg.set(l.id, (deg.get(l.id) || 0) + 1);
+    }
+  }
+  const singles = document.getElementById('gSingles').checked;
+  const nodes = list.filter(d => deg.has(d.id) || singles).map(d => ({ id: d.id, doc: d, deg: deg.get(d.id) || 0 }));
+
+  // ひとかたまり（つながった書類の集まり）を求める
+  const parent = new Map(nodes.map(n => [n.id, n.id]));
+  const find = x => { while (parent.get(x) !== x){ parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  edges.forEach(e => parent.set(find(e.a), find(e.b)));
+  const groups = new Map();
+  nodes.forEach(n => { const r = find(n.id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(n); });
+  const comps = [...groups.values()].filter(g => g.length > 1).sort((a, b) => b.length - a.length);
+  comps.forEach((g, i) => {
+    const color = G_COLORS[i % G_COLORS.length];
+    g.forEach(n => { n.comp = i; n.color = color; });
+  });
+  nodes.forEach(n => { if (n.comp === undefined){ n.comp = -1; n.color = '--mute'; } });
+
+  // 位置は前回のものを引き継ぐ（図を開き直しても形が変わらないように）
+  const W = document.getElementById('graphPanel').clientWidth || 800, H = document.getElementById('graphPanel').clientHeight || 600;
+  let fresh = 0;
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  for (const n of nodes){
+    let p = G.pos.get(n.id);
+    if (!p){
+      const nb = edges.find(e => e.a === n.id || e.b === n.id);
+      const q = nb ? G.pos.get(nb.a === n.id ? nb.b : nb.a) : null;
+      p = q ? { x: q.x + (Math.random() - .5) * 40, y: q.y + (Math.random() - .5) * 40 }
+            : { x: W / 2 + (Math.random() - .5) * W * .8, y: H / 2 + (Math.random() - .5) * H * .8 };
+      p.vx = 0; p.vy = 0;
+      G.pos.set(n.id, p); fresh++;
+    }
+    n.p = p;
+  }
+  G.nodes = nodes; G.edges = edges; G.comps = comps; G.byId = byId;
+
+  const empty = document.getElementById('graphEmpty');
+  if (!nodes.length){
+    empty.style.display = 'flex';
+    empty.innerHTML = edges.length || !list.length ? 'この絞り込みでは書類がありません'
+      : 'つながっている書類がまだありません<br><span style="font-size:12px">取込のときに AI がつなぐと、ここにかたまりで出ます</span>';
+  } else empty.style.display = 'none';
+
+  buildGraphSvg();
+  if (fresh > 3){ for (let i = 0; i < 260; i++) graphTick(1 - i / 300); }   // 新しい丸が多いときは先に落ち着かせてから見せる
+  if (!G.view || fresh > 3) graphFit();
+  G.alpha = Math.max(G.alpha, fresh ? .6 : .15);
+  graphStart();
+}
+
+function buildGraphSvg(){
+  const gB = document.getElementById('gBlobs'), gE = document.getElementById('gEdges'),
+        gL = document.getElementById('gLabels'), gN = document.getElementById('gNodes');
+  gB.innerHTML = gE.innerHTML = gL.innerHTML = gN.innerHTML = '';
+
+  // かたまりの「アメーバ」：色ごとに大きな丸と太い線を描き、まとめてぼかす
+  G.comps.forEach((g, i) => {
+    const outer = svgEl('g', { opacity: .2 });
+    const inner = svgEl('g', { filter: 'url(#goo)', style: `fill:var(${g[0].color});stroke:var(${g[0].color})` });
+    g.forEach(n => { n.blob = svgEl('circle', { r: 26 + Math.min(n.deg, 4) * 3, 'stroke-width': 0 }); inner.appendChild(n.blob); });
+    G.edges.filter(e => G.byId.get(e.a)?.comp === i).forEach(e => {
+      e.blob = svgEl('line', { 'stroke-width': 34, 'stroke-linecap': 'round' }); inner.appendChild(e.blob);
+    });
+    outer.appendChild(inner); gB.appendChild(outer);
+
+    // かたまりの名前：いちばん多いカテゴリと件数
+    const cnt = {}; g.forEach(n => { const c = n.doc.category || 'その他'; cnt[c] = (cnt[c] || 0) + 1; });
+    const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    g.label = svgEl('text', { class: 'g-label' }); g.label.textContent = `${top}（${g.length}件）`;
+    gL.appendChild(g.label);
+  });
+
+  G.edges.forEach(e => { e.el = svgEl('line', { class: 'g-edge' + (e.ai ? ' ai' : '') }); gE.appendChild(e.el); });
+
+  G.nodes.forEach(n => {
+    const g = svgEl('g', { class: 'g-node' + (n.comp < 0 ? ' single' : '') + (n.id === G.focusId ? ' focus' : '') });
+    g.appendChild(svgEl('circle', { r: 5 + Math.min(n.deg, 5), style: `fill:var(${n.color})` }));
+    if (n.comp >= 0){
+      const t = svgEl('text', { x: 10, y: 3.5 });
+      const title = n.doc.title || '';
+      t.textContent = title.length > 14 ? title.slice(0, 14) + '…' : title;
+      g.appendChild(t);
+    }
+    g.dataset.id = n.id;
+    n.el = g; gN.appendChild(g);
+  });
+  graphPaint();
+}
+
+function graphTick(alpha){
+  const N = G.nodes, a = alpha ?? G.alpha;
+  if (!N.length) return;
+  const W = document.getElementById('graphPanel').clientWidth || 800, H = document.getElementById('graphPanel').clientHeight || 600;
+  // 押し合い（丸どうしが重ならないように）
+  for (let i = 0; i < N.length; i++){
+    const p = N[i].p;
+    for (let j = i + 1; j < N.length; j++){
+      const q = N[j].p;
+      let dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy;
+      if (d2 < 1){ dx = Math.random() - .5; dy = Math.random() - .5; d2 = 1; }
+      if (d2 > 160000) continue;   // 遠いもの（400より先）は計算しない
+      const same = N[i].comp >= 0 && N[i].comp === N[j].comp;
+      const f = (same ? 900 : 5200) / d2 * a;   // 別のかたまりどうしは強めに離す
+      const d = Math.sqrt(d2);
+      p.vx += dx / d * f; p.vy += dy / d * f; q.vx -= dx / d * f; q.vy -= dy / d * f;
+    }
+  }
+  // つながりのばね
+  for (const e of G.edges){
+    const p = G.byId.get(e.a)?.p, q = G.byId.get(e.b)?.p; if (!p || !q) continue;
+    const dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = (d - 62) * .05 * a;
+    p.vx += dx / d * f; p.vy += dy / d * f; q.vx -= dx / d * f; q.vy -= dy / d * f;
+  }
+  // かたまりの中心へ寄せる・全体を画面の中心へ寄せる
+  const cx = W / 2, cy = H / 2;
+  const cent = G.comps.map(g => { let x = 0, y = 0; g.forEach(n => { x += n.p.x; y += n.p.y; }); return { x: x / g.length, y: y / g.length }; });
+  for (const n of N){
+    const p = n.p;
+    if (n.comp >= 0){ const c = cent[n.comp]; p.vx += (c.x - p.x) * .012 * a; p.vy += (c.y - p.y) * .012 * a; }
+    const k = n.comp >= 0 ? .006 : .012;
+    p.vx += (cx - p.x) * k * a; p.vy += (cy - p.y) * k * a;
+    if (G.drag && G.drag.node === n){ p.vx = p.vy = 0; continue; }
+    p.vx *= .8; p.vy *= .8;
+    p.x += p.vx; p.y += p.vy;
+  }
+}
+
+function graphPaint(){
+  const v = G.view || { x: 0, y: 0, k: 1 };
+  document.getElementById('gView').setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.k})`);
+  // 引いて見ているときは書類の名前を隠す（重なって読めないため）。名前は丸に乗せると出る
+  document.getElementById('graphSvg').classList.toggle('far', v.k < .95);
+  for (const n of G.nodes){
+    n.el.setAttribute('transform', `translate(${n.p.x},${n.p.y})`);
+    if (n.blob){ n.blob.setAttribute('cx', n.p.x); n.blob.setAttribute('cy', n.p.y); }
+  }
+  for (const e of G.edges){
+    const p = G.byId.get(e.a)?.p, q = G.byId.get(e.b)?.p; if (!p || !q) continue;
+    for (const el of [e.el, e.blob]){
+      if (!el) continue;
+      el.setAttribute('x1', p.x); el.setAttribute('y1', p.y); el.setAttribute('x2', q.x); el.setAttribute('y2', q.y);
+    }
+  }
+  for (const g of G.comps){
+    let x = 0, top = Infinity; g.forEach(n => { x += n.p.x; top = Math.min(top, n.p.y); });
+    g.label.setAttribute('x', x / g.length); g.label.setAttribute('y', top - 34);
+  }
+}
+
+/* 動かし続ける。落ち着いたら（alpha が下がったら）ほんの少しだけ揺らす。
+   図を離れた・画面が隠れたときは止める（電池と CPU を食わないように） */
+function graphStart(){
+  if (G.raf) return;
+  const step = () => {
+    G.raf = 0;
+    if (currentView !== 'graph' || document.hidden) return;
+    G.frame++;
+    if (G.alpha > .04 || G.drag){ graphTick(); G.alpha *= .985; graphPaint(); }
+    else if (G.frame % 3 === 0){
+      for (const n of G.nodes){ if (n.comp >= 0){ n.p.vx += (Math.random() - .5) * .25; n.p.vy += (Math.random() - .5) * .25; } }
+      graphTick(.04); graphPaint();
+    }
+    G.raf = requestAnimationFrame(step);
+  };
+  G.raf = requestAnimationFrame(step);
+}
+function graphStop(){ if (G.raf){ cancelAnimationFrame(G.raf); G.raf = 0; } document.getElementById('graphTip').style.display = 'none'; }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && currentView === 'graph') graphStart(); });
+
+function graphFit(){
+  const panel = document.getElementById('graphPanel');
+  const W = panel.clientWidth || 800, H = panel.clientHeight || 600;
+  if (!G.nodes.length){ G.view = { x: 0, y: 0, k: 1 }; return; }
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  G.nodes.forEach(n => { x0 = Math.min(x0, n.p.x); y0 = Math.min(y0, n.p.y); x1 = Math.max(x1, n.p.x); y1 = Math.max(y1, n.p.y); });
+  const pad = 90, k = Math.min(2, Math.max(.2, Math.min(W / (x1 - x0 + pad * 2), (H - 40) / (y1 - y0 + pad * 2))));
+  G.view = { k, x: W / 2 - (x0 + x1) / 2 * k, y: (H + 40) / 2 - (y0 + y1) / 2 * k };
+  graphPaint();
+}
+
+function graphFocus(id){
+  const n = G.byId.get(id);
+  G.focusId = id;
+  G.nodes.forEach(m => m.el.classList.toggle('focus', m.id === id));
+  if (!n){ setStatus('この書類はつながりが無いので図に出ていません（「つながりの無い書類も出す」で出せます）', ''); return; }
+  const panel = document.getElementById('graphPanel');
+  const k = Math.max((G.view || { k: 1 }).k, 1.1);
+  G.view = { k, x: panel.clientWidth / 2 - n.p.x * k, y: panel.clientHeight / 2 - n.p.y * k };
+  graphPaint();
+}
+
+/* ドラッグ・拡大・ツールチップ */
+(function wireGraph(){
+  const svg = document.getElementById('graphSvg'), tip = document.getElementById('graphTip'), panel = document.getElementById('graphPanel');
+  const toWorld = (cx, cy) => { const r = svg.getBoundingClientRect(), v = G.view; return { x: (cx - r.left - v.x) / v.k, y: (cy - r.top - v.y) / v.k }; };
+  svg.addEventListener('pointerdown', e => {
+    const g = e.target.closest('.g-node');
+    svg.setPointerCapture(e.pointerId);
+    if (g){ G.drag = { node: G.byId.get(g.dataset.id), sx: e.clientX, sy: e.clientY, moved: false }; G.alpha = Math.max(G.alpha, .3); }
+    else { G.drag = { pan: true, sx: e.clientX, sy: e.clientY, vx: G.view.x, vy: G.view.y }; svg.classList.add('panning'); }
+    graphStart();
+  });
+  svg.addEventListener('pointermove', e => {
+    const d = G.drag;
+    if (d){
+      if (Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) > 4) d.moved = true;
+      if (d.pan){ G.view.x = d.vx + e.clientX - d.sx; G.view.y = d.vy + e.clientY - d.sy; graphPaint(); }
+      else if (d.node && d.moved){ const w = toWorld(e.clientX, e.clientY); d.node.p.x = w.x; d.node.p.y = w.y; graphPaint(); }
+      tip.style.display = 'none';
+      return;
+    }
+    const g = e.target.closest('.g-node');
+    if (!g){ tip.style.display = 'none'; return; }
+    const n = G.byId.get(g.dataset.id); if (!n) return;
+    const x = n.doc, r = panel.getBoundingClientRect();
+    tip.innerHTML = `<b>${esc(x.title)}</b><span>${esc(x.sender || '差出元不明')}${x.docDate ? ' ・ ' + x.docDate : ''} ・ ${esc(x.docType || '')}${n.deg ? ' ・ つながり' + n.deg + '件' : ''}</span>`;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(e.clientX - r.left + 14, r.width - 330) + 'px';
+    tip.style.top = (e.clientY - r.top + 14) + 'px';
+  });
+  const end = e => {
+    const d = G.drag; G.drag = null; svg.classList.remove('panning');
+    if (d && d.node && !d.moved) jumpToDoc(d.node.id);   // 丸を押した（動かしていない）→ 書類を開く
+  };
+  svg.addEventListener('pointerup', end);
+  svg.addEventListener('pointercancel', () => { G.drag = null; svg.classList.remove('panning'); });
+  svg.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+  svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = svg.getBoundingClientRect(), v = G.view, f = Math.exp(-e.deltaY * .0015);
+    const k = Math.min(4, Math.max(.15, v.k * f)), mx = e.clientX - r.left, my = e.clientY - r.top;
+    G.view = { k, x: mx - (mx - v.x) * (k / v.k), y: my - (my - v.y) * (k / v.k) };
+    graphPaint();
+  }, { passive: false });
+  document.getElementById('gSingles').addEventListener('change', () => { G.view = null; render(); });
+  document.getElementById('gFit').addEventListener('click', graphFit);
+})();
 
 /* ============================================================
    PDF表示
