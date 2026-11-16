@@ -180,6 +180,7 @@ textarea.f-input{resize:vertical;min-height:58px;line-height:1.6}
 .cmp-info{flex:4;min-height:0;overflow-y:auto;padding:10px 12px;font-size:12px;line-height:1.7;border-top:3px solid var(--border)}
 .cmp-info .sec{margin-bottom:10px}
 .cmp-info .field{padding:3px 0}
+.pill.ai-link{background:var(--purple-soft);color:#5B3A8E;font-weight:500;font-size:10px;vertical-align:1px}
 mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-weight:600}
 @media (max-width:760px){
   .cmp-grid{grid-template-columns:1fr;overflow-y:auto}
@@ -362,8 +363,9 @@ mark.same{background:#ffe58a;color:inherit;padding:0 2px;border-radius:2px;font-
       契約No・証券番号・登録番号・取引番号などを正規化して keys に入れておく。
       新しい書類が来たら keys の一致で候補を出す。番号が違っても
       「同じ差出元＋近い金額＋近い時期」で拾う。
-      提案 → 人が承認 → links に確定。申込書→契約書、発注書→請求書 のような
-      後日つながる書類を追える。
+      申込書→契約書、発注書→請求書 のような後日つながる書類を追える。
+      2026-11 から、つなぐのは取込エージェント（取込票の link）。人は確かめず、
+      違っていれば「外す」。画面の候補は同じ番号・同じ案件のものだけに絞った。
 
    3) 原本は消さない
       スキャン元のファイルは、取込エージェントが原本フォルダへのコピーを
@@ -615,19 +617,21 @@ async function load(reset){
     // 先に台帳を読む。取込の重複判定は、この読み込んだ一覧と突き合わせる。
     docs = await fetchAll();
 
-    const { n: added, u: updated, anyFailed } = await importQueue();
-    if (added) docs = await fetchAll();
+    const { n: added, u: updated, linked, linkWarn, errors } = await importQueue();
+    if (added || linked) docs = await fetchAll();
 
     buildFilterOptions();
     render();
     scheduleSnapshot();
-    // 取込で失敗が出ていたら、その内容がステータスバーに出ているので上書きしない
-    if (!anyFailed){
-      setStatus(
-        (added ? `新しい書類を${added}件取り込みました。 ` : '') +
-        (updated ? `${updated}件を修正票で直しました。 ` : '') +
-        `${docs.length}件の書類を読み込みました（${new Date().toLocaleTimeString('ja-JP')}）`, 'success');
-    }
+    // 取込の失敗・つなげなかったものがあれば、先頭に出す
+    const warn = linkWarn.length ? `つなげなかったもの${linkWarn.length}件：${linkWarn.slice(0, 2).join(' / ')}${linkWarn.length > 2 ? ' ほか' : ''}` : '';
+    const problems = [...errors, warn].filter(Boolean).join(' ／ ');
+    setStatus(
+      (problems ? problems + ' ／ ' : '') +
+      (added ? `新しい書類を${added}件取り込みました。 ` : '') +
+      (updated ? `${updated}件を修正票で直しました。 ` : '') +
+      (linked ? `AIが${linked}組をつなぎました。 ` : '') +
+      `${docs.length}件の書類を読み込みました（${new Date().toLocaleTimeString('ja-JP')}）`, problems ? 'error' : 'success');
   }catch(e){
     console.error(e);
     setStatus('読み込みに失敗しました: ' + e.message, 'error');
@@ -828,18 +832,23 @@ async function writeSnapshot(){
      常にサインインした人の権限。
    ============================================================ */
 async function importQueue(){
-  let n = 0, u = 0, anyFailed = false;
+  let n = 0, u = 0, linked = 0;
+  const linkWarn = [];
+  /* ★失敗の知らせは集めて最後にまとめて出す★
+     票ごとに出すと、次の票の「取込中…」で上書きされて消えていた */
+  const errors = [];
+  const none = { n: 0, u: 0, linked: 0, linkWarn: [], errors: [] };
   let queue;
   try{
     queue = await graphAll(`/sites/${siteId}/drive/root:/${encodeURI(SP.queueDir)}:/children?$select=id,name,file`);
   }catch(e){
-    if (e.status === 404) return { n: 0, u: 0, anyFailed: false };   // まだフォルダが無い＝取込待ちも無い
+    if (e.status === 404) return none;   // まだフォルダが無い＝取込待ちも無い
     throw e;
   }
   /* 名前順に処理する。修正票（後の日付）が、その書類を登録する取込票より
      先に処理されると「台帳に見つからない」になるため */
   const jsons = queue.filter(f => f.file && /\.json$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name));
-  if (!jsons.length) return { n: 0, u: 0, anyFailed: false };
+  if (!jsons.length) return none;
 
   for (const f of jsons){
     try{
@@ -871,12 +880,17 @@ async function importQueue(){
         }
       }
 
+      // つながり（link）は、票の中の書類を全部入れてからつなぐ（同じ票の中の書類どうしもつなげるように）
+      const lr = await applyQueueLinks(payload.items || []);
+      linked += lr.linked;
+      failed.push(...lr.failed);
+      linkWarn.push(...lr.warn);
+
       if (failed.length){
         // 失敗が残っている票は動かさない。直して更新すれば、入った分は
         // alreadyImported が弾くので、残りだけが入る。
         const head = failed.slice(0, 3).map(x => `${x.name}（${x.msg}）`).join(' / ');
-        setStatus(`${f.name}: ${failed.length}件が取り込めませんでした → ${head}${failed.length > 3 ? ' ほか' : ''}`, 'error');
-        anyFailed = true;
+        errors.push(`${f.name}: ${failed.length}件が取り込めませんでした → ${head}${failed.length > 3 ? ' ほか' : ''}`);
       } else {
         // 全部入った票だけ _取込済 へ退避（消さない。あとで何が来たか追える）
         await graph(`/sites/${siteId}/drive/items/${f.id}`, {
@@ -886,11 +900,38 @@ async function importQueue(){
       }
     }catch(e){
       console.error('取込票の処理に失敗', f.name, e);
-      setStatus(`取込票 ${f.name} を処理できませんでした: ${e.message}`, 'error');
-      anyFailed = true;
+      errors.push(`取込票 ${f.name} を処理できませんでした: ${e.message}`);
     }
   }
-  return { n, u, anyFailed };
+  return { n, u, linked, linkWarn, errors };
+}
+
+/* 取込票の link を当てる。
+     "link": [ { "fileName": "相手の原本のファイル名", "why": "なぜ同じ件か" } ]
+   新しく登録する行にも、修正票（op: update）の行にも書ける。
+   ・相手が台帳に無いときは、その1本だけ飛ばして知らせる（票は止めない。
+     つながりは後から足せるので、書類の登録まで止める理由はない）
+   ・もうつながっている／人が外した組み合わせは何もしない（何回当てても同じ結果）
+   ・保存に失敗したら、その票は _取込待ち に残す（更新を押し直せばつなぎ直す） */
+async function applyQueueLinks(items){
+  const byName = name => docs.find(x => x.fileName === String(name || '').split(/[\\/]/).pop());
+  const changed = new Set(), warn = [], failed = [];
+  let linked = 0;
+  for (const it of items){
+    if (!Array.isArray(it.link) || !it.link.length) continue;
+    const d = byName(it.fileName);
+    if (!d){ warn.push(`${it.fileName}（台帳に無いのでつなげませんでした）`); continue; }
+    for (const l of it.link){
+      const o = byName(l && l.fileName);
+      if (!o){ warn.push(`${it.fileName} → ${l && l.fileName}（相手が台帳に無い）`); continue; }
+      if (linkPair(d, o, l.why, 'AI')){ changed.add(d); changed.add(o); linked++; }
+    }
+  }
+  for (const doc of changed){
+    try{ await saveDoc(doc); }
+    catch(e){ failed.push({ name: doc.fileName, msg: 'つながりを保存できません: ' + e.message }); }
+  }
+  return { linked, warn, failed };
 }
 
 /* ============================================================
@@ -1425,7 +1466,7 @@ function linksHtml(d){
     return `<div class="link-item ${isSugg ? 'suggest' : ''}">
       <div class="li-bar" style="${isSugg ? 'background:#7B4FBF' : ''}"></div>
       <div class="li-main" onclick="openCompare('${other.id}', ${isSugg ? 'true' : 'false'})" title="クリックで今の書類と並べて見比べる">
-        <div class="li-title">${o.rel ? `<span style="color:var(--text-muted);font-weight:400">[${esc(o.rel)}] </span>` : ''}${esc(other.title)}</div>
+        <div class="li-title">${o.rel ? `<span style="color:var(--text-muted);font-weight:400">[${esc(o.rel)}] </span>` : ''}${esc(other.title)}${!isSugg && o.by === 'AI' ? ' <span class="pill ai-link" title="取込のときに AI がつないだもの。違えば「外す」">AIがつないだ</span>' : ''}</div>
         <div class="li-why">${esc(other.sender || '')}${other.docDate ? ' ・ ' + other.docDate : ''}${o.why ? ' ・ ' + esc(o.why) : ''}</div>
       </div>
       <div class="li-act">
@@ -1605,11 +1646,38 @@ async function addNote(){
 /* ============================================================
    つながり
 
-   識別子（keys）の一致を主、差出元・金額・時期の近さを従にして候補を出す。
-   スコアがしきい値を超えたものだけ「これ、つながっていませんか？」に出す。
-   人が「つなげる」を押したものだけが links に確定して残る。
+   ★つなぐのは基本 AI（取込エージェント）。人はいちいち確かめない（2026-11）★
+     取込エージェントが中身を読んで「同じ件」と判断したものは、取込票の
+     link に書く。アプリが両方の行につながりを入れる（by: 'AI'）。
+     違っていれば人が「外す」。外したものは dismissed に残し、二度とつながない。
+
+   「これ、つながっていませんか？」は、同じ識別番号（keys）か同じ案件（threadId）が
+   あるものだけに絞る。前は差出元・金額・時期の近さだけでも出していたが、
+   毎月のカード明細や銀行の通知が全部候補に出て、役に立たなかった。
+   差出元・金額・時期は並び順の手がかりにだけ使う。
    ============================================================ */
 const LINK_THRESHOLD = 3;
+
+/* 2つの行をつなぐ（両方の links に入れ、案件の印をそろえる）。
+   もうつながっている・人が外した組み合わせなら何もせず false。 */
+function linkPair(d, o, why, by){
+  if (!d || !o || d.id === o.id) return false;
+  if ((d.d.links || []).some(l => l.id === o.id)) return false;
+  if ((d.d.dismissed || []).includes(o.id) || (o.d.dismissed || []).includes(d.id)) return false;
+  // 前後関係は文書日付で決める（古い方が「前段」）
+  const dT = Date.parse(d.docDate || d.received || ''), oT = Date.parse(o.docDate || o.received || '');
+  const relForD = (!isNaN(dT) && !isNaN(oT)) ? (oT < dT ? '前段' : oT > dT ? '後続' : '同件') : '関連';
+  const relForO = relForD === '前段' ? '後続' : relForD === '後続' ? '前段' : relForD;
+  // スレッドをそろえる（どちらかが持っていればそれ、無ければ新規）
+  const tid = d.threadId || o.threadId || ('T' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5));
+  const at = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  d.d.links = d.d.links || []; o.d.links = o.d.links || [];
+  d.d.links.push({ id: o.id, rel: relForD, why: why || '', by, at });
+  o.d.links.push({ id: d.id, rel: relForO, why: why || '', by, at });
+  d.threadId = tid; o.threadId = tid;
+  delete d._blob; delete o._blob;
+  return true;
+}
 
 function normKey(s){
   return String(s).toUpperCase()
@@ -1631,6 +1699,8 @@ function suggestLinks(d){
     let score = 0; const why = [];
 
     const shared = (o.d.keys || []).map(normKey).filter(k => k.length >= 4 && myKeys.has(k));
+    const sameThread = !!(d.threadId && o.threadId && d.threadId === o.threadId);
+    if (!shared.length && !sameThread) continue;   // 番号も案件も共通でなければ候補にしない
     if (shared.length){ score += 3 * shared.length; why.push('同じ番号 ' + shared.slice(0, 2).join('・')); }
 
     if (d.sender && o.sender === d.sender){ score += 2; why.push('同じ差出元'); }
@@ -1659,19 +1729,10 @@ async function confirmLink(otherId, why){
   const d = docs.find(x => x.id === currentId);
   const o = docs.find(x => x.id === otherId);
   if (!d || !o) return;
-  // 前後関係は文書日付で決める（古い方が「前段」）
-  const dT = Date.parse(d.docDate || d.received || ''), oT = Date.parse(o.docDate || o.received || '');
-  const relForD = (!isNaN(dT) && !isNaN(oT)) ? (oT < dT ? '前段' : oT > dT ? '後続' : '同件') : '関連';
-  const relForO = relForD === '前段' ? '後続' : relForD === '後続' ? '前段' : relForD;
-
-  // スレッドをそろえる（どちらかが持っていればそれ、無ければ新規）
-  const tid = d.threadId || o.threadId || ('T' + Date.now().toString(36));
-
-  d.d.links = d.d.links || []; o.d.links = o.d.links || [];
-  d.d.links.push({ id: o.id, rel: relForD, why, by: account.name || account.username });
-  o.d.links.push({ id: d.id, rel: relForO, why, by: account.name || account.username });
-  d.threadId = tid; o.threadId = tid;
-  delete d._blob; delete o._blob;
+  // 人が手で外した組み合わせでも、手でつなぐときはつなげる
+  d.d.dismissed = (d.d.dismissed || []).filter(x => x !== o.id);
+  o.d.dismissed = (o.d.dismissed || []).filter(x => x !== d.id);
+  if (!linkPair(d, o, why, account.name || account.username)) return;
 
   try{
     setStatus('つながりを保存中…', 'loading');
@@ -1687,6 +1748,9 @@ async function removeLink(otherId){
   if (!d) return;
   d.d.links = (d.d.links || []).filter(l => l.id !== otherId);
   if (o) o.d.links = (o.d.links || []).filter(l => l.id !== currentId);
+  // 外した組み合わせは覚えておく（AI が取込のたびに同じものをつなぎ直さないように）
+  d.d.dismissed = [...new Set([...(d.d.dismissed || []), otherId])];
+  if (o) o.d.dismissed = [...new Set([...(o.d.dismissed || []), d.id])];
   delete d._blob; if (o) delete o._blob;
   try{ await saveDoc(d); if (o) await saveDoc(o); renderDetail(); render(); setStatus('つながりを外しました', 'success'); }
   catch(e){ setStatus('保存に失敗しました: ' + e.message, 'error'); }
