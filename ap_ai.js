@@ -375,20 +375,25 @@
     else { try { d = JSON.parse(r.text); } catch (e) { err = 'AI の答えを読めませんでした'; } }
     const loc = job.location === '工場' ? '工場' : '本社';
     // 仕訳の合計が請求書の総額と大きくずれた（2026-11-17）：明細が多く拠点・科目にまたがる請求書で、AI が仕訳を仮の行で返すことがある。
-    //   よく考える設定（effort high）で、総額に合わせて分けるよう頼んでもう一度だけ。ずれが小さくなった方を使う
-    const gap = x => { if (!x || !Array.isArray(x.lines) || !x.lines.length || !(+x.total > 0)) return 0; const v = record(x.header, x.lines, x.total, [], loc).validation; return Math.abs(v.Diff); };
-    const big = x => { const g = gap(x); return g > Math.max(1000, Math.round((+x.total || 0) * 0.01)); };
-    if (d && big(d)) {
-      const g1 = gap(d), lsum = Math.round(+d.total || 0) + ((record(d.header, d.lines, d.total, [], loc).validation.Diff) || 0);
-      msg(`仕訳が請求書の総額と合わないので作り直しています：${job.pdfName}`);
-      const b2 = JSON.parse(JSON.stringify(body)); b2.output_config.effort = 'high';
-      b2.messages[0].content[b2.messages[0].content.length - 1].text += ['', '', '## 前の答えの直し',
-        `前の答えでは仕訳の合計（税込）が ${yen(lsum)} 円で、請求書の総額 ${yen(d.total)} 円と合いませんでした。`,
-        '仕訳の行を仮の値・まとめただけの行にしないでください。請求書の明細を、宛先・拠点（工場・支店・営業所・本社など）と内容（科目）ごとに分けて行を作り、税率（10%・軽減8%）も分けて、仕訳の合計（税込）を請求書の総額に合わせてください。',
-        'どうしても分け方が決められない明細は、本社の行にまとめてもかまいません（合計は必ず合わせる）。迷った点は comments に書いてください。'].join('\n');
-      const r2 = await ask(ctx, s, job, b2);
-      let d2 = null; if (r2.status === '完了' && r2.stop === 'end_turn') { try { d2 = JSON.parse(r2.text); } catch (e) {} }
-      if (d2 && Array.isArray(d2.lines) && d2.lines.length && gap(d2) < g1) { d = d2; r = r2; }
+    //   読んだ明細（items）から、仕訳を決める相談（journal）と同じやり方で行を作り直す（文字だけ・PDF は送らない。数十秒で終わる）。
+    //   前は PDF ごと effort high で読み直させていて、13ページの請求書で答えが切れ（max_tokens）、3分近くかかって画面を離れると結果が残らなかった
+    const gap = x => { if (!x || !Array.isArray(x.lines) || !x.lines.length || !(+x.total > 0)) return 0; return Math.abs(record(x.header, x.lines, x.total, [], loc).validation.Diff); };
+    if (d && gap(d) > Math.max(1000, Math.round((+d.total || 0) * 0.01)) && Array.isArray(d.items) && d.items.length) {
+      msg(`仕訳が請求書の総額と合わないので、明細から作り直しています：${job.pdfName}`);
+      try {
+        const RT = { '課税10%': 0.1, '軽減8%': 0.08 }, tot = Math.round(+d.total || 0);
+        const a = await journal(ctx, { payee: (d.header && d.header.PayeeName) || job.vendorName || '', loc, invoiceId: job.invoiceId || job.apCode || '', issue: '仕訳の合計が請求書の総額と合いません。請求書の明細から行を作り直してください',
+          history: [], lines: d.lines.map(l => ({ acode: l.AccountCode, aname: l.AccountName, dept: l.DeptCode, rate: l.TaxRate, sub: l.SubCode, amount: Math.round(+l.AmountExclTax || 0) * (1 + (RT[l.TaxRate] || 0)), note: l.Description, memo: l.ApprovalNote })),
+          items: d.items, total: tot, itemsAmount: d.itemsAmount || '' });
+        const ex = a.amountBasis === '税抜', R0 = (s.raw && s.raw.km) || [];
+        const nl = (a.relines || []).map(n => { const rate = n.TaxRate || '課税10%', v = Math.round(+n.Amount || 0), tax = ex ? Math.floor(v * (RT[rate] || 0)) : Math.round(v * (RT[rate] || 0) / (1 + (RT[rate] || 0)));
+          const k = R0.find(x => String(x['科目コード']) === String(n.AccountCode));
+          return { AccountCode: n.AccountCode, AccountName: k ? k['科目名'] : '', DeptCode: n.DeptCode, SubCode: n.SubCode || '', TaxRate: rate, TaxMethod: '税込', AmountExclTax: ex ? v : v - tax, Tax: tax, Description: n.Description || '', ApprovalNote: n.ApprovalNote || '', LineConfidence: 70 }; });
+        let sum = nl.reduce((t, l) => t + l.AmountExclTax + l.Tax, 0); const df = tot - sum, big = nl.filter(l => RT[l.TaxRate]).sort((p, q) => (q.AmountExclTax + q.Tax) - (p.AmountExclTax + p.Tax))[0];
+        if (df && big && Math.abs(df) <= nl.length + 1) { big.Tax += df; sum = tot; }
+        if (nl.length && sum === tot && nl.every(l => l.AccountCode && l.AccountName)) { d.lines = nl; d.comments = (d.comments || []).concat([`仕訳は、読んだ明細から拠点・科目・税率ごとに作り直しました（${nl.length}行）。${a.summary || a.reply || ''}`]); }
+        else d.comments = (d.comments || []).concat([`仕訳を明細から作り直そうとしましたが、合計が合いませんでした。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]);
+      } catch (e) { d.comments = (d.comments || []).concat([`仕訳を明細から作り直せませんでした（${e.message}）。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]); }
     }
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '' }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
     // 向きが違うページ（横向き・逆さ）：AI が rotate で答えたら、ファイルを回して同じ場所に保存する（ap_intake.js の APDoc.rotateFile）
