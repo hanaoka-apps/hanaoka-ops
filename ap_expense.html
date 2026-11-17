@@ -819,10 +819,10 @@ async function sendJournal(r,text){if(TEACH.busy)return;
       if(!tot||sum!==tot||nl.some(l=>!l.acode||!l.aname)){TEACH.msgs.push({role:'ai',text:(a.reply||'')+`\n✖ AI が作った行（${nl.length}行・合計 ${yen(sum)} 円）が請求書の金額 ${yen(tot)} 円と合わない${nl.some(l=>!l.acode||!l.aname)?'か、科目が決まっていない行がある':''}ので、入れ替えませんでした。「もう一度、合計を ${yen(tot)} 円に合わせて分けて」と頼んでください`});}
       else{const before=ls.map(l=>`${l.aname||'—'} ${l.dept||''} ${yen(l.incl)}`).join('・');draft=nl;
         let ok=false;AIEDIT=true;try{ok=await saveAll(r,true);}finally{AIEDIT=false;}buildItems();r=cur()||r;
-        if(!ok){TEACH.msgs.push({role:'ai',text:'✖ 作り直した仕訳を保存できませんでした。もう一度頼んでください'});TEACH.busy=false;drawTeach();return;}
+        if(!ok){TEACH.msgs.push({role:'ai',text:'✖ 作り直した仕訳を保存できませんでした。もう一度頼んでください'});TEACH.busy=false;afterAI();return;}
         await patchInv(r,{},{act:'AIと仕訳を作り直した',memo:[a.summary||a.reply||'',`${nl.length}行 ${yen(sum)} 円`,`前：${before}`].filter(Boolean).join(' ／ ').slice(0,600),step:r.step}).catch(()=>{});
         TEACH.msgs.push({role:'ai',text:(a.reply||'')+`\n✔ 仕訳を ${nl.length} 行に作り直して保存しました（合計 ${yen(sum)} 円）：`+nl.map(l=>`${l.aname}・${l.dept}・${l.rate} ${yen(l.incl)}`).join('、')});}
-      TEACH.busy=false;drawTeach();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);return;}
+      TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);return;}
     if(a.decided)(a.lines||[]).forEach(n=>{const l=ls[n.index];if(!l)return;const was=`${l.aname}・${l.dept}・${l.rate}`;
       const k=KAMOKU.find(x=>x.code===n.AccountCode);if(n.AccountCode){l.acode=n.AccountCode;l.aname=k?k.name:l.aname;}
       if(n.DeptCode)l.dept=n.DeptCode;if(n.TaxRate&&n.TaxRate!==l.rate){l.rate=n.TaxRate;l.tax=rateTax(l.incl,l.rate);l.excl=l.incl-l.tax;}
@@ -834,7 +834,7 @@ async function sendJournal(r,text){if(TEACH.busy)return;
     if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.payee||''})),me());
     TEACH.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 仕訳を直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});}
   catch(e){TEACH.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
-  TEACH.busy=false;drawTeach();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
+  TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!text||TEACH.busy)return;
   if(TEACH.jr)return sendJournal(r,text);
   TEACH.msgs.push({role:'me',text});TEACH.busy=true;drawTeach();
@@ -848,7 +848,7 @@ async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!te
     if(done.length||mem.length)await patchInv(r,{},{act:'AI に教えた',memo:[text,...mem.map(m=>`${m.key}＝${m.fact}`)].join(' ／ ').slice(0,200),step:r.step}).catch(()=>{});
     TEACH.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 決裁メモを直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});}
   catch(e){TEACH.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
-  TEACH.busy=false;drawTeach();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
+  TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 function wireTeach(r){const iss=issuesOf(r),shown=iss;
   document.querySelectorAll('[data-teach]').forEach(b=>b.onclick=()=>{const x=shown[+b.dataset.teach];if(x)startTeach(r,x);});
   document.querySelectorAll('[data-ackpat]').forEach(b=>b.onclick=()=>{const k=b.dataset.ackpat;if(isDirty(r)){snack('先に下書き保存してください',true);return;}
@@ -857,6 +857,8 @@ function wireTeach(r){const iss=issuesOf(r),shown=iss;
   drawTeach();}
 // 相談の小窓（2026-11-17）：前は確認の画面の右の列（仕訳の下）に出していて、押しても見える所に出ず（明細と仕訳の画面では出ない）、
 //   送ると仕訳の保存で画面を描き直して閉じたように見えていた。画面の右下に浮かせ、画面の描き直しと別に描く。別の請求書・一覧に移ったら閉じる
+// AI が仕訳・決裁メモを直して保存したあと：後ろの確認の画面も描き直して、直した仕訳をすぐ見せる（2026-11-17。前は小窓だけ描き直していて、読み込み直すまで古い仕訳のままだった）
+function afterAI(){if(st.tab==='rev'&&st.view==='one'&&st.sel===TEACH.rid&&cur())drawOne();else drawTeach();}
 function drawTeach(){let el=$('teachPop');
   const r=TEACH.rid?items.find(x=>x.id===TEACH.rid):null,show=!!(r&&st.tab==='rev'&&st.view==='one'&&st.sel===TEACH.rid);
   if(!show){if(TEACH.rid&&!TEACH.busy&&!(r&&st.sel===TEACH.rid))TEACH.rid=null;if(el)el.hidden=true;return;}
