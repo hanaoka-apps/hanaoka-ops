@@ -39,7 +39,7 @@
       no: R.orderNo(o.no), financial: String(o.financial || '').toLowerCase(), cancelledAt: o.cancelledAt || '',
       total: Number(o.total) || 0, refunded: Number(o.refunded) || 0,
       shipCompany: oneLine(o.shipCompany), shipName: oneLine(o.shipName), billCompany: oneLine(o.billCompany), billName: oneLine(o.billName),
-      paidAt: validDate(String(o.paidAt || '').slice(0, 10)) ? String(o.paidAt).slice(0, 10) : '',   // Shopify の入金日（クレジットカード決済された日）。領収日の初期値
+      paidAt: validDate(String(o.paidAt || '').slice(0, 10)) ? String(o.paidAt).slice(0, 10) : '',   // Shopify の決済完了日（Paid at。お客様のカード決済が完了した日。当社の口座に振り込まれる日ではない）。領収日の初期値
       lines: (Array.isArray(o.lines) ? o.lines : []).map(function (l) { return { name: oneLine(l && l.name).replace(/\s*-\s*オプションは注文しない$/, ''), qty: Number(l && l.qty) || 1 }; }).filter(function (l) { return l.name; }),
       has: o.has !== false
     };
@@ -105,7 +105,7 @@
   };
 
   /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝商品が1種類ならその商品名（「○○ 代として」）、そうでなければ「商品代として」、
-   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）、領収日＝Shopify の入金日。opts＝{ now, proviso } */
+   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）、領収日＝Shopify の決済完了日。opts＝{ now, proviso } */
   R.defaults = function (o, opts) {
     opts = opts || {};
     var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o);

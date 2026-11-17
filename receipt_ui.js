@@ -275,7 +275,7 @@
         '<label for="rc-proviso">但し書き</label><div><input type="text" id="rc-proviso" maxlength="60" value="' + E(f.proviso) + '">' +
         ((M.provs || []).length ? '<div style="margin-top:4px">' + M.provs.map(function (x, i) { return '<span class="rc-chip" data-rc="prov" data-i="' + i + '" title="但し書きに入れる">' + E(x) + '</span>'; }).join('') + '<span class="muted">← 注文の商品名から選べます（取引の内容が分かる書き方にします）</span></div>' : '') + '</div>' +
         '<label for="rc-amount">金額（税込・円）</label><div class="in2"><input type="text" id="rc-amount" inputmode="numeric" style="width:160px" value="' + E(f.amount) + '"><span class="muted">発行できる上限 ' + E(R.yen(M.elig.max)) + '</span></div>' +
-        (hasPaid() ? '<label for="rc-paid">領収日</label><div class="in2"><input type="date" id="rc-paid" value="' + E(f.paidDate) + '"><span class="muted">お金（クレジットカード決済など）を受け取った日です。Shopify の入金日が入ります</span></div>' : '') +
+        (hasPaid() ? '<label for="rc-paid">領収日</label><div class="in2"><input type="date" id="rc-paid" value="' + E(f.paidDate) + '"><span class="muted">お客様のカード決済が完了した日です。Shopify の決済完了日（Paid at）が入ります。直せます</span></div>' : '') +
         '<label for="rc-date">発行日</label><div class="in2"><input type="date" id="rc-date" value="' + E(f.issueDate) + '"><span class="muted">書類を出す日です。初めは今日（日本時間）です。変えられます</span></div>' +
         (offices().length > 1 ? '<label for="rc-office">拠点</label><div class="in2">' + officeSelect('rc-office', f.office) + '<span class="muted">書類の住所・電話に使います</span></div>' : '') +
         '<label for="rc-note">メモ（社内用）</label><input type="text" id="rc-note" maxlength="200" value="' + E(f.note) + '" placeholder="書類には印刷されません（任意）">' +

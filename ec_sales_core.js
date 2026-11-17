@@ -149,7 +149,7 @@
         var created = (r['Created at'] || '');
         o.createdAt = created.slice(0, 10);
         o.createdTime = created.slice(11, 16);
-        o.paidAt = (r['Paid at'] || '').slice(0, 10);   // 入金日（クレジットカード決済された日）。領収証の領収日の初期値
+        o.paidAt = (r['Paid at'] || '').slice(0, 10);   // 決済完了日（Paid at。カード決済が完了した日）。領収証の領収日の初期値
         o.email = r['Email'] || '';
         o.financial = (r['Financial Status'] || '').toLowerCase();
         o.fulfillment = (r['Fulfillment Status'] || '').toLowerCase();
