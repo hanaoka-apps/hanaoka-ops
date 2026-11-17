@@ -32,13 +32,14 @@
   function oneLine(s) { return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/^[ \t]+|[ \t]+$/g, ''); }
 
   /* ---------------------------------------------------------------- 注文の情報（画面ごとに持っている形のちがいを、ここでそろえる）
-   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName, paidAt, lines:[{ name, qty }] }（Shopify の値）。 */
+   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName, paidAt, createdAt, lines:[{ name, qty }] }（Shopify の値）。 */
   R.orderInfo = function (o) {
     o = o || {};
     return {
       no: R.orderNo(o.no), financial: String(o.financial || '').toLowerCase(), cancelledAt: o.cancelledAt || '',
       total: Number(o.total) || 0, refunded: Number(o.refunded) || 0,
       shipCompany: oneLine(o.shipCompany), shipName: oneLine(o.shipName), billCompany: oneLine(o.billCompany), billName: oneLine(o.billName),
+      createdAt: validDate(String(o.createdAt || '').slice(0, 10)) ? String(o.createdAt).slice(0, 10) : '',   // 注文日。決済完了日が取れないときの、領収日の仮の初期値
       paidAt: validDate(String(o.paidAt || '').slice(0, 10)) ? String(o.paidAt).slice(0, 10) : '',   // Shopify の決済完了日（Paid at。お客様のカード決済が完了した日。当社の口座に振り込まれる日ではない）。領収日の初期値
       lines: (Array.isArray(o.lines) ? o.lines : []).map(function (l) { return { name: oneLine(l && l.name).replace(/\s*-\s*オプションは注文しない$/, ''), qty: Number(l && l.qty) || 1 }; }).filter(function (l) { return l.name; }),
       has: o.has !== false
@@ -105,13 +106,14 @@
   };
 
   /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝商品が1種類ならその商品名（「○○ 代として」）、そうでなければ「商品代として」、
-   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）、領収日＝Shopify の決済完了日。opts＝{ now, proviso } */
+   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）、領収日＝Shopify の決済完了日（取れなければ注文日）。opts＝{ now, proviso } */
   R.defaults = function (o, opts) {
     opts = opts || {};
-    var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o);
+    var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o), oi = R.orderInfo(o);
     return {
       atena: c[0] ? c[0].text : '', title: c[0] ? c[0].title : '様',
-      proviso: provs.length === 1 ? provs[0] : (opts.proviso || R.DEFAULT_PROVISO), amount: el.max || 0, issueDate: R.todayJst(opts.now), paidDate: R.orderInfo(o).paidAt,
+      proviso: provs.length === 1 ? provs[0] : (opts.proviso || R.DEFAULT_PROVISO), amount: el.max || 0, issueDate: R.todayJst(opts.now),
+      paidDate: oi.paidAt || oi.createdAt, paidFromOrderDate: !oi.paidAt && !!oi.createdAt,   // 決済完了日（Paid at）が取れないときは、注文日を仮に入れる（画面で知らせて、直せる）
       candidates: c, provisos: provs, max: el.max
     };
   };
@@ -142,7 +144,7 @@
     else if (date > today) warnings.push('発行日が、今日より先の日付です');
     var paid = String(form.paidDate || '').slice(0, 10);
     if (opts.paidColumn !== false) {
-      if (!validDate(paid)) errors.push('領収日（お金を受け取った日）を、日付で入れてください');
+      if (!validDate(paid)) errors.push('領収日（お客様のカード決済が完了した日）を、日付で入れてください');
       else if (paid > today) warnings.push('領収日が、今日より先の日付です');
       else if (validDate(date) && paid > date) warnings.push('領収日が、発行日より後の日付です');
     } else paid = '';

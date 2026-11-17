@@ -211,7 +211,10 @@ t('領収日：Shopify の入金日（なければ空）が初期値。記録と
   const o = { no: '1801', financial: 'paid', total: 11000, paidAt: '2026-11-10' };
   assert.strictEqual(R.defaults(o, { now: new Date('2026-11-17T01:00:00Z') }).paidDate, '2026-11-10');
   assert.strictEqual(R.defaults(o, { now: new Date('2026-11-17T01:00:00Z') }).issueDate, '2026-11-17');   // 発行日は今日
-  assert.strictEqual(R.defaults({ no: '1801', financial: 'paid', total: 11000 }).paidDate, '');
+  assert.strictEqual(R.defaults(o).paidFromOrderDate, false);
+  const g = R.defaults({ no: '1801', financial: 'paid', total: 11000, createdAt: '2026-11-09' });          // 決済完了日が取れないときは、注文日を仮に入れる（画面で知らせる）
+  assert.strictEqual(g.paidDate, '2026-11-09'); assert.strictEqual(g.paidFromOrderDate, true);
+  const none = R.defaults({ no: '1801', financial: 'paid', total: 11000 }); assert.strictEqual(none.paidDate, ''); assert.strictEqual(none.paidFromOrderDate, false);
   const rec = { number: 'R-2026-00012', orderNo: '1801', atena: 'A 様', proviso: 'x', amount: 11000, tax: 1000, issueDate: '2026-11-17', paidDate: '2026-11-10', issuedBy: 'a@example.com', status: '発行済' };
   const f = R.toFields(rec); assert.ok(/^2026-11-10T/.test(f.PaidDate) && /^2026-11-17T/.test(f.IssueDate));
   assert.strictEqual(R.fromItem({ id: '12', createdDateTime: '2026-11-17T01:00:00Z', fields: f }).paidDate, '2026-11-10');

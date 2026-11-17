@@ -525,7 +525,7 @@ const THEAD = () => FLOW_UI() ? THEAD0.replace('</th><th>注文</th>', '</th><th
  * ふるさと納税の画面には付けない（設定 receipt が無く、部品も読み込まない）。 */
 const rcOn = () => !!(RC && RC.available());
 const rcBadge = id => rcOn() ? RC.badge(id) : '';
-const rcOrder = s => { const o = s.order || {}, sh = o.ship || {}, bl = o.bill || {}; return { no: s.id, has: true, financial: o.financial, cancelledAt: o.cancelledAt, total: o.total, refunded: o.refunded, shipCompany: sh.company, shipName: sh.name, billCompany: bl.company, billName: bl.name, paidAt: o.paidAt, lines: o.lines }; };
+const rcOrder = s => { const o = s.order || {}, sh = o.ship || {}, bl = o.bill || {}; return { no: s.id, has: true, financial: o.financial, cancelledAt: o.cancelledAt, total: o.total, refunded: o.refunded, shipCompany: sh.company, shipName: sh.name, billCompany: bl.company, billName: bl.name, paidAt: o.paidAt, createdAt: o.createdAt, lines: o.lines }; };
 function rcBlockInner(s) {
   const b = RC.badge(s.id), btn = RC.button(rcOrder(s)), n = RC.note(rcOrder(s));
   return '<h3>領収証</h3><div class="rc-row">' + b + btn + '</div>' + (n ? '<div class="muted" style="margin-top:4px">' + n + '</div>' : '');

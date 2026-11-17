@@ -187,7 +187,7 @@ function detailHtml(r) {
  * 札（「領収証：発行済み」）とボタン（「領収証を発行」）は、記録のリスト（EC_Receipt）を読めた人にだけ出す。読めない人（権限なし・リストなし）には、何も出ない（エラーも出さない）。 */
 const receiptOrder = r => ({ no: r.id, has: r.shopify.has, financial: r.shopify.financial, cancelledAt: r.shopify.cancelledAt, total: r.shopify.total, refunded: r.shopify.refunded,
   shipCompany: r.shopify.shipCompany, shipName: r.shopify.shipName, billCompany: r.shopify.billCompany, billName: r.shopify.billName,
-  paidAt: r.shopify.paidAt, lines: r.shopify.lines });
+  paidAt: r.shopify.paidAt, createdAt: r.shopify.createdAt, lines: r.shopify.lines });
 const rcOn = () => !!(RC && P.receipt && RC.available());
 function receiptRow(r) {
   if (!rcOn()) return '';
