@@ -124,6 +124,7 @@
         try { ov = JSON.parse(utf8(f.buf)); } catch (pe) { out.warns.push('上書きの設定（' + name + '）の形が正しくありません（JSON として読めません）。見積アプリの会社の情報だけで続けます'); }
       } catch (e) { /* 上書きのファイルは、なくてもよい */ }
       var s = R.mergeSettings(comp, ov), c = R.checkSettings(s);
+      if (!s.stampFile && rcConf.stampFile) s.stampFile = String(rcConf.stampFile).trim();   // 社印の画像の名前は、設定ファイルになければ、ec_sales_config.json の receipt.stampFile を使う
       if (!c.ok) { out.err = comp ? '会社の設定に、足りない項目があります：' + c.missing.join('、') + '（見積アプリの会社の情報を確認してください）' : R.NO_COMPANY; SET = out; return out; }
       out.settings = s; out.ok = true; out.warns = out.warns.concat(c.warnings);
       if (s.stampFile) {
