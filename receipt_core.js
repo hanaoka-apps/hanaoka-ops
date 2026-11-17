@@ -32,13 +32,14 @@
   function oneLine(s) { return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/^[ \t]+|[ \t]+$/g, ''); }
 
   /* ---------------------------------------------------------------- 注文の情報（画面ごとに持っている形のちがいを、ここでそろえる）
-   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName }（Shopify の値）。 */
+   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName, lines:[{ name, qty }] }（Shopify の値）。 */
   R.orderInfo = function (o) {
     o = o || {};
     return {
       no: R.orderNo(o.no), financial: String(o.financial || '').toLowerCase(), cancelledAt: o.cancelledAt || '',
       total: Number(o.total) || 0, refunded: Number(o.refunded) || 0,
       shipCompany: oneLine(o.shipCompany), shipName: oneLine(o.shipName), billCompany: oneLine(o.billCompany), billName: oneLine(o.billName),
+      lines: (Array.isArray(o.lines) ? o.lines : []).map(function (l) { return { name: oneLine(l && l.name).replace(/\s*-\s*オプションは注文しない$/, ''), qty: Number(l && l.qty) || 1 }; }).filter(function (l) { return l.name; }),
       has: o.has !== false
     };
   };
@@ -91,15 +92,26 @@
     return list;
   };
 
-  /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝「商品代として」、
+  // 但し書きの候補（取引の内容が分かるように、Shopify の商品名から作る）。同じ名前は1つにまとめ、60文字までのものを、最大4つ
+  R.provisoCandidates = function (o) {
+    o = R.orderInfo(o);
+    var out = [], seen = {};
+    o.lines.forEach(function (l) {
+      var t = l.name + ' 代として';
+      if (seen[l.name] || t.length > 60) return; seen[l.name] = 1; out.push(t);
+    });
+    return out.slice(0, 4);
+  };
+
+  /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝商品が1種類ならその商品名（「○○ 代として」）、そうでなければ「商品代として」、
    * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）。opts＝{ now, proviso } */
   R.defaults = function (o, opts) {
     opts = opts || {};
-    var el = R.eligibility(o), c = R.candidates(o);
+    var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o);
     return {
       atena: c[0] ? c[0].text : '', title: c[0] ? c[0].title : '様',
-      proviso: opts.proviso || R.DEFAULT_PROVISO, amount: el.max || 0, issueDate: R.todayJst(opts.now),
-      candidates: c, max: el.max
+      proviso: provs.length === 1 ? provs[0] : (opts.proviso || R.DEFAULT_PROVISO), amount: el.max || 0, issueDate: R.todayJst(opts.now),
+      candidates: c, provisos: provs, max: el.max
     };
   };
 
@@ -272,7 +284,7 @@
     h += '<div class="co"><div class="cn"><div class="lg"><img class="logo" src="hanaoka_logo.png" alt=""></div>' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';
     h += '<div class="addr">' + (o.addr ? '〒' + e(o.zip) + ' ' + e(o.addr) : '') + '<br>' + (o.tel ? 'TEL:' + e(o.tel) : '') + (o.fax ? '　FAX:' + e(o.fax) : '') + '</div>';
     if (opts.staff) h += '<div class="kv2"><div>担当者<small>NAME</small></div><b>' + e(opts.staff) + '</b></div>';
-    h += '<table class="sum" style="margin-top:16px"><tr><th>領収金額（税込）<small>TOTAL AMOUNT</small></th><th>うち消費税<small>TAX（10%）</small></th><th>税抜<small>SUBTOTAL</small></th></tr>' +
+    h += '<table class="sum" style="margin-top:16px"><tr><th>合計（税込）<small>TOTAL AMOUNT</small></th><th>消費税額（10%）<small>TAX</small></th><th>10%対象（税抜）<small>SUBTOTAL</small></th></tr>' +
       '<tr><td>' + e(R.yen(rec.amount)) + '</td><td>' + e(R.yen(tax)) + '</td><td>' + e(R.yen(net)) + '</td></tr></table>';
     if (settings.regNo) h += '<div class="bank">登録番号｜' + e(settings.regNo) + '</div>';
     if (opts.stampBox) h += '<div class="sb">収入印紙<br>貼付欄</div>';

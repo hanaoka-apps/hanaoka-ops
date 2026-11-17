@@ -161,8 +161,8 @@ t('印刷用の HTML（見積書と同じ書式）：見出し・宛名・番号
   assert.ok(html.includes('<h2>領収証</h2><div class="en">RECEIPT</div>') && html.includes('<div class="cols">'));
   assert.ok(html.includes('領収証番号<small>RECEIPT #</small>') && html.includes('R-2026-00012') && html.includes('発行日<small>DATE</small>') && html.includes('2026年11月16日') && html.includes('但し書き<small>PROVISO</small>'));
   assert.ok(html.includes('備考<small>REMARKS</small>') && html.includes('ご注文番号　#1801'));
-  assert.ok(html.includes('TOTAL AMOUNT') && html.includes('TAX（10%）') && html.includes('SUBTOTAL'));
-  assert.ok(/<td>¥11,000<\/td><td>¥1,000<\/td><td>¥10,000<\/td>/.test(html));          // 領収金額（税込）・うち消費税・税抜
+  assert.ok(html.includes('合計（税込）<small>TOTAL AMOUNT') && html.includes('消費税額（10%）<small>TAX') && html.includes('10%対象（税抜）<small>SUBTOTAL'));   // 税率ごとの対象額と消費税額が分かる言葉
+  assert.ok(/<td>¥11,000<\/td><td>¥1,000<\/td><td>¥10,000<\/td>/.test(html));          // 合計（税込）・消費税額・10%対象（税抜）
   assert.ok(html.includes('サンプル商事株式会社') && html.includes('登録番号｜T0000000000000') && html.includes('〒000-0000 サンプル県サンプル市サンプル町0-0-0') && html.includes('TEL:000-000-0000　FAX:000-000-0001'));
   assert.ok(html.includes('担当者<small>NAME</small></div><b>見本 花子</b>') && html.includes('src="hanaoka_logo.png"'));
   assert.ok(html.includes('<span>&lt;b&gt;山田&lt;/b&gt; &amp; &quot;太郎&quot;</span><span>様</span>') && !html.includes('<b>山田'));
@@ -195,6 +195,21 @@ t('印刷用の HTML：再発行は備考に入る／取消・見本（未発行
   assert.ok(!/https?:\/\//.test(R.printHtml(rec, S, { reissue: true })));               // 外のサイトのファイルを読まない（ロゴはリポジトリの hanaoka_logo.png）
   assert.strictEqual(R.printHtml(rec, null, {}).includes('領収証'), true);
   assert.strictEqual(R.fileName(rec), '領収証_R-2026-00012');
+});
+
+t('但し書きの候補：Shopify の商品名から作る（同じ名前は1つ・60文字まで・最大4つ）。商品が1種類なら初期値にする', () => {
+  const o = { no: '1801', financial: 'paid', total: 11000, lines: [{ name: 'FLAT CART 2×4（ブラック）', qty: 1 }] };
+  assert.deepStrictEqual(R.provisoCandidates(o), ['FLAT CART 2×4（ブラック） 代として']);
+  assert.strictEqual(R.defaults(o).proviso, 'FLAT CART 2×4（ブラック） 代として');
+  const multi = Object.assign({}, o, { lines: [{ name: '商品A - オプションは注文しない', qty: 2 }, { name: '商品B', qty: 1 }, { name: '商品A', qty: 1 }] });
+  assert.deepStrictEqual(R.provisoCandidates(multi), ['商品A 代として', '商品B 代として']);   // 「オプションは注文しない」は除き、同じ名前は1つ
+  assert.strictEqual(R.defaults(multi, { proviso: '設定の但し書き' }).proviso, '設定の但し書き');    // 2種類以上は、設定の但し書き（なければ「商品代として」）
+  assert.strictEqual(R.defaults(multi).proviso, '商品代として');
+  assert.strictEqual(R.defaults(Object.assign({}, o, { lines: [] })).proviso, '商品代として');
+  assert.deepStrictEqual(R.provisoCandidates({ lines: [{ name: 'あ'.repeat(58), qty: 1 }, { name: 'い'.repeat(10), qty: 1 }] }), ['い'.repeat(10) + ' 代として']);   // 長すぎるもの（60文字超）は候補にしない
+  assert.strictEqual(R.provisoCandidates({}).length, 0); assert.strictEqual(R.provisoCandidates(null).length, 0);
+  assert.strictEqual(R.defaults(o).candidates.length, 0);
+  assert.ok(R.validate({ atena: 'A', title: '様', proviso: R.provisoCandidates(o)[0], amount: '11000', issueDate: '2026-11-17' }, { max: 11000 }).ok);
 });
 
 t('収入印紙：基準の金額（設定）以上だけ。設定が空なら、判定しない（アプリは基準の値を持たない）', () => {
