@@ -1249,4 +1249,34 @@ t('取込ファイル：受注日付は slipDate（なければ Shopify の注�
   assert.ok(rows.every(r => r[0] === '20261110'));   // 全部の行が、押した日
   assert.strictEqual(rows[0][14], EC.ymd(s.shipDate)); assert.strictEqual(rows[0][15], '1800');   // 出荷予定日・客先注番は変わらない
 });
+// ---- 突合待ちの引き継ぎ（取込した人の画面が閉じたとき）
+t('引き継ぎ：突合待ちで10分以上たち、この端末で追っていない注文だけが対象', () => {
+  const now = Date.parse('2026-11-17T05:00:00Z');
+  const orders = {
+    1: { status: 'waiting', importAt: '2026-11-17T04:00:00Z' },   // 対象
+    2: { status: 'waiting', importAt: '2026-11-17T04:55:00Z' },   // まだ5分
+    3: { status: 'confirm', importAt: '2026-11-17T04:00:00Z' },   // 突合済み
+    4: { status: 'waiting', importAt: '2026-11-17T04:00:00Z' },   // この端末で追っている
+    5: { status: 'waiting' }                                       // 取込の時刻がない
+  };
+  const imports = { a: { phase: 'verify', orderIds: ['4'] }, b: { phase: 'done', orderIds: ['1'] } };
+  assert.deepStrictEqual(EC.takeoverCandidates(orders, imports, now, 10), ['1']);
+});
+t('簡易の照合：受注№が1つで、税抜合計が合えば一致（受注№・出荷予定日を返す）', () => {
+  const objs = [
+    { '受注№': '27597', '客先注番': '1784', '得意先コード': '599802', '金額': '1,000', '出荷予定日': '20261119' },
+    { '受注№': '27597', '客先注番': '1784', '得意先コード': '599802', '金額': '500', '出荷予定日': '20261119' },
+    { '受注№': '27596', '客先注番': '1783', '得意先コード': '599802', '金額': '9999', '出荷予定日': '20261119' }
+  ];
+  const v = EC.lightVerify({ cust: '599802', net: 1500 }, '1784', objs);
+  assert.strictEqual(v.status, 'ok'); assert.strictEqual(v.juchuNo, '27597'); assert.strictEqual(v.shipDate, '2026-11-19');
+});
+t('簡易の照合：合計が違えば不一致、得意先が違う・無ければ missing（まだ待つ）', () => {
+  const objs = [{ '受注№': '27597', '客先注番': '1784', '得意先コード': '599802', '金額': '1000', '出荷予定日': '20261119' }];
+  const ng = EC.lightVerify({ cust: '599802', net: 1500 }, '1784', objs);
+  assert.strictEqual(ng.status, 'ng'); assert.strictEqual(ng.diffs[0].field, 'amount');
+  assert.strictEqual(EC.lightVerify({ cust: '111111', net: 1000 }, '1784', objs).status, 'missing');
+  assert.strictEqual(EC.lightVerify({ cust: '599802', net: 1000 }, '9999', objs).status, 'missing');
+  assert.strictEqual(EC.lightVerify({ cust: '599802' }, '1784', objs).status, 'ok');   // 金額を持たない注文は、金額を見ない
+});
 console.log('ec_sales_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));

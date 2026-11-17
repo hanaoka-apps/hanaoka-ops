@@ -1163,6 +1163,37 @@
     return c.confirm > 0 ? 'confirm' : (c.check > 0 ? 'check' : 'done');
   };
 
+  // 取込した人の画面が閉じて、突合待ちのまま止まった注文を、別の人の画面が引き継ぐための判定と簡易の照合。
+  // 引き継ぐ注文＝状態が突合待ち（waiting）で、取込から minutes 分以上たち、この端末で取込の続きを見ている注文ではないもの
+  EC.takeoverCandidates = function (orders, imports, nowMs, minutes) {
+    var busy = {};
+    Object.keys(imports || {}).forEach(function (k) {
+      var i = imports[k]; if (!i || i.test || ['queued', 'importing', 'verify'].indexOf(i.phase) < 0) return;
+      (i.orderIds || []).forEach(function (id) { busy[id] = 1; });
+    });
+    return Object.keys(orders || {}).filter(function (id) {
+      var r = orders[id], t = r && r.importAt ? Date.parse(r.importAt) : NaN;
+      return r && r.status === 'waiting' && !busy[id] && isFinite(t) && nowMs - t >= (minutes || 10) * 60000;
+    });
+  };
+  // 簡易の照合：SMILE の受注（客先注番＝注文番号・得意先コード）に、1つの受注№で入っていて、税抜の合計が注文の金額と合うか。
+  // 商品・数量・納品先などの細かい突き合わせは、期待値を持つ取込した人の画面でしかできない。見つからなければ missing（まだ待つ）
+  EC.lightVerify = function (rec, id, orderObjs) {
+    rec = rec || {};
+    var rows = (orderObjs || []).filter(function (r) {
+      if (digits(pick(r, ['客先注番'])) !== digits(id)) return false;
+      return !rec.cust || String(pick(r, ['得意先コード'])).trim() === String(rec.cust).trim();
+    });
+    if (!rows.length) return { status: 'missing', juchuNo: '', shipDate: '', diffs: [] };
+    var nos = {}, sum = 0, diffs = [];
+    rows.forEach(function (r) { var n = pick(r, ['受注№', '受注No']); if (n) nos[n] = 1; sum += Math.round(num(pick(r, ['金額']))); });
+    var list = Object.keys(nos);
+    if (list.length > 1) diffs.push({ field: 'juchuNo', label: '受注№', expected: '1つの伝票', actual: list.join('、') + '（複数の伝票に分かれています）' });
+    if (rec.net != null && Math.round(rec.net) !== sum) diffs.push({ field: 'amount', label: '税抜金額（合計）', expected: String(Math.round(rec.net)), actual: String(sum) });
+    var sd = ymdOf(pick(rows[0], ['出荷予定日']));
+    return { status: diffs.length ? 'ng' : 'ok', juchuNo: list[0] || '', shipDate: sd ? sd.slice(0, 4) + '-' + sd.slice(4, 6) + '-' + sd.slice(6) : '', diffs: diffs };
+  };
+
   // 報告に値を書いてよい項目（お客様の名前・住所・電話・社内メモは入れない。項目名だけ書く）
   var REPORT_VALUE_FIELDS = { code: 1, qty: 1, unit: 1, amount: 1, due: 1, shipDate: 1, deliveryCode: 1, rows: 1, juchuNo: 1 };
   // 要確認の理由（文字）。ラベルだけ、または 期待値→SMILEの値（個人情報でない項目だけ）

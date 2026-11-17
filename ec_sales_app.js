@@ -1535,6 +1535,34 @@ function watchReport(imp) {
     saveImp(imp);
   }, { intervalMs: RI().pollSeconds * 1000, timeoutMs: 30 * 60 * 1000 });
 }
+// 取込した人の画面が閉じて、突合待ちのまま止まった注文を、取込できる人（管理者・取込担当者）の画面が引き継いで進める。
+// SMILE の確認用ファイルを読むだけなので、何度やっても安全（取込はやり直さない）。細かい中身の突き合わせはできないので、受注の有無・受注№・税抜合計だけを見る
+let takeoverBusy = false;
+async function takeoverWaiting() {
+  if (takeoverBusy || !canImport() || !sharedOnline() || importBusy || syncBusy) return;
+  const ids = EC.takeoverCandidates(store.orders, store.imports, Date.now(), 10);
+  if (!ids.length) return;
+  takeoverBusy = true;
+  try {
+    const r = await fetchCsv(CONF.files.index), idx = JSON.parse(r.text), objs = EC.indexObjects(idx.orders), gen = Date.parse(idx.generatedAt);
+    let n = 0;
+    for (const id of ids) {
+      const rec = store.orders[id]; if (!rec || rec.status !== 'waiting' || sharedPending()[id]) continue;
+      if (!(gen >= Date.parse(rec.importAt))) continue;   // 確認用ファイルが取込より古い間は待つ
+      const v = EC.lightVerify(rec, id, objs); if (v.status === 'missing') continue;
+      try { const row = await shared.getRow(id); if (!row || row.fields.Status !== '突合待ち') continue; } catch (e) { sharedOffline(e); return; }   // 他の人がもう進めていたら、何もしない
+      rec.matchedAt = new Date().toISOString(); rec.juchuNo = v.juchuNo; if (v.shipDate && !rec.shipDate) rec.matchedShip = v.shipDate;
+      if (v.status === 'ok') { rec.status = 'confirm'; delete rec.diffs; delete rec.checkMessage; }
+      else { rec.status = 'check'; rec.diffs = v.diffs.slice(0, 40); rec.checkMessage = '取込した画面が閉じていたため、簡易の照合（受注№・税抜合計）だけを行いました。SMILE を見て判断してください'; }
+      n++;
+      queuePush(id, '突合結果', v.status === 'ok'
+        ? '一致（SMILE受注№ ' + v.juchuNo + '）※取込した画面が閉じていたため、別の画面が引き継いで簡易に照合（受注№・税抜合計）'
+        : '不一致：' + (EC.reportReasons({ diffs: v.diffs }).join('／') || '理由不明') + '※取込した画面が閉じていたため、別の画面が引き継いで簡易に照合');
+    }
+    if (n) { save(); recompute(); render(); }
+  } catch (e) { console.warn('突合待ちの引き継ぎ', e); }
+  finally { takeoverBusy = false; }
+}
 // 開き直したとき：突合が済んでいて、まだ報告していない取込を再開して1回だけ報告する
 async function resumeReports() {
   for (const imp of Object.values(store.imports)) {
@@ -2403,9 +2431,10 @@ async function initAuth() {
     Object.keys(store.imports).forEach(id => { if (['queued', 'importing', 'verify'].includes(store.imports[id].phase)) trackImport(id); });
     codeDecision = EC.deliveryCodeMode((CONF.rpaImport || {}).tempCodes, null); refreshCodeMode();   // 専用機の稼働の印で、新規の納品先のコードの決め方を判定する
     setInterval(() => { if (document.visibilityState === 'visible') refreshCodeMode(); }, 60 * 1000);
+    takeoverWaiting();   // 取込した人の画面が閉じて止まった「突合待ち」があれば、引き継いで進める
     resumeReports();   // 突合が済んでいて、まだ報告していない取込があれば、1回だけ報告する   // 開き直したら、待っている取込の続きを見る
     // 他の人が更新した内容を、定期的に反映する（画面が見えているときだけ）
-    setInterval(() => { if (document.visibilityState === 'visible' && shared && !importBusy && !syncBusy) syncFromList({ quiet: true }); }, ((CONF.sharedHistory || {}).pollSeconds || 60) * 1000);
+    setInterval(() => { if (document.visibilityState === 'visible' && shared && !importBusy && !syncBusy) syncFromList({ quiet: true }).then(ok => { if (ok) takeoverWaiting(); }); }, ((CONF.sharedHistory || {}).pollSeconds || 60) * 1000);
     tick('画面が使えるまで（合計）', T0);
     if (failed.length) setStatus('err', '読み込めませんでした: ' + failed.join('、') + '（二重取込の確認・品目名の取得ができません）'); else setReady();
     renderTimings(); console.table(TIMES);
