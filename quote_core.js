@@ -363,7 +363,7 @@
     opt = opt || {};
     var from = ymd(opt.from) || "0000-00-00", to = ymd(opt.to) || "9999-99-99";
     var h = historyNew(), F = { price: { n: 0, ok: 0, either: 0, priced: 0 }, staff: { n: 0, ok: 0 }, dept: { n: 0, ok: 0 },
-      dest: { n: 0, ok: 0, inList: 0 }, wh: { n: 0, ok: 0 }, tehai: { n: 0, ok: 0 } }, misses = [], orders = 0;
+      dest: { n: 0, ok: 0, inList: 0, same: { n: 0, ok: 0 }, other: { n: 0, ok: 0 } }, wh: { n: 0, ok: 0 }, tehai: { n: 0, ok: 0 } }, misses = [], orders = 0;
     var miss = function (field, r, actual, app) { if (misses.length < 3000) misses.push({ field: field, date: ymd(r.date), no: r.no, cust: r.cust, code: r.code, actual: actual, app: app }); };
     var sorted = rows.slice().sort(function (a, b) { var x = ymd(a.date), y = ymd(b.date); return x < y ? -1 : x > y ? 1 : (a.no < b.no ? -1 : a.no > b.no ? 1 : 0); });
     var custs = env.customers || {};
@@ -381,7 +381,13 @@
         if (r0.dest) {
           F.dest.n++;
           var ds = kc && kc.ds ? Object.keys(kc.ds).sort(function (a, b) { return kc.ds[b][1] - kc.ds[a][1]; }) : [];
-          if (ds[0] === r0.dest) F.dest.ok++; else miss("dest", r0, r0.dest + " " + (r0.destName || ""), ds[0] ? ds[0] + " " + kc.ds[ds[0]][0] : "（前回なし）");
+          // 商社・代理店のように毎回ちがう先へ送る取引先は、当てようがないので分けて数える。
+          //   いつも同じ：前の受注が2件以上あり、その半分以上が同じ納品先
+          var tot = ds.reduce(function (a, x) { return a + kc.ds[x][1]; }, 0), hit = ds[0] === r0.dest;
+          var grp = tot >= 2 && kc.ds[ds[0]][1] / tot >= 0.5 ? F.dest.same : F.dest.other;
+          grp.n++; if (hit) grp.ok++;
+          // 合わなかった一覧には、いつも同じ先の取引先だけ出す（直すべきところが見えるように）
+          if (hit) F.dest.ok++; else if (grp === F.dest.same) miss("dest", r0, r0.dest + " " + (r0.destName || ""), ds[0] ? ds[0] + " " + kc.ds[ds[0]][0] : "（前回なし）");
           if (ds.slice(0, 12).indexOf(r0.dest) >= 0) F.dest.inList++;
         }
         // 品目ごと：倉庫・手配区分
