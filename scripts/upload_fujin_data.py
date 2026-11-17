@@ -54,6 +54,14 @@ TARGETS = [
 ]
 
 
+# 閲覧制限フォルダ (2026-11 当日入力率): (ローカルパス, フォルダ, ファイル名)
+# フォルダは管理者が SharePoint 上で先に作り、継承を切って HL-幹部・石井絢子さんだけに閲覧権を付ける。
+# フォルダが無いときは「作らずに」スキップする(自動作成すると全員に見える権限を継承してしまうため)。
+RESTRICTED_TARGETS = [
+    (DATA / "same_day_rate.json", "restricted_same_day_rate", "same_day_rate.json"),
+]
+
+
 def get_token() -> str:
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -89,6 +97,35 @@ def upload_file(token: str, local_path: Path, sp_name: str) -> bool:
     if sp_name in ("value_analysis.json", "value_analysis_production_results.json"):
         verify_uploaded_file(token, local_path, url, size)
     print(f"  [OK] {sp_name} アップロード完了")
+    return True
+
+
+def upload_restricted_file(token: str, local_path: Path, folder: str, name: str) -> bool:
+    """閲覧制限フォルダへアップロード。フォルダが無ければ作らずにスキップ。"""
+    if not local_path.exists():
+        print(f"  [SKIP] {local_path.name} が無い(ビルド未生成)")
+        return False
+    enc_folder = requests.utils.quote(folder, safe="")
+    r = requests.get(
+        f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{enc_folder}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    if r.status_code == 404 or (r.ok and "folder" not in r.json()):
+        print(f"  [SKIP] 閲覧制限フォルダ {folder}/ が無いためアップロードしません(管理者がフォルダと権限を用意してください)")
+        return False
+    r.raise_for_status()
+    enc = enc_folder + "/" + requests.utils.quote(name, safe="")
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{enc}:/content"
+    with local_path.open("rb") as body:
+        r = requests.put(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            data=body,
+            timeout=600,
+        )
+        r.raise_for_status()
+    print(f"  [OK] {folder}/{name} アップロード完了(閲覧制限)")
     return True
 
 
@@ -183,7 +220,17 @@ def main():
         except Exception as e:
             failed += 1
             print(f"  [ERROR] {sp_name}: {e}")
-    print(f"完了: アップロード{ok} / 未生成スキップ{skipped} / 失敗{failed} (全{len(TARGETS)})")
+    for local_path, folder, name in RESTRICTED_TARGETS:
+        try:
+            if upload_restricted_file(token, local_path, folder, name):
+                ok += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            failed += 1
+            print(f"  [ERROR] {folder}/{name}: {e}")
+    total = len(TARGETS) + len(RESTRICTED_TARGETS)
+    print(f"完了: アップロード{ok} / 未生成スキップ{skipped} / 失敗{failed} (全{total})")
     # 実際のアップロード失敗(例外)があった時だけ異常終了。未生成ファイルは許容(ビルド差分のため)。
     if failed > 0:
         print(f"[ERROR] アップロード失敗 {failed} 件")

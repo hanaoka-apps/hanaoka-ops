@@ -471,6 +471,29 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[plan_ledger] 例外:", e); window._fujinPlanLedgerPromise = Promise.resolve(null); }
 
+    // ★ 2026-11 当日入力率(same_day_rate)。閲覧制限フォルダ restricted_same_day_rate/ に置き、
+    //   読めた人(HL-幹部・石井絢子さん)だけシェルに「当日入力率」メニューを出す。
+    //   見られる人の追加・削除は SharePoint のフォルダ権限で行う(コードに人名・グループは書かない)。
+    //   読めない(403/404)は正常系。null を返してメニューを出さない。
+    try {
+      var _SP_DRIVE_SD = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      window._fujinSameDayPromise = window._fujinMsal
+        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+        .then(function(r){
+          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE_SD + "/root:/restricted_same_day_rate/same_day_rate.json:/content",
+                       { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
+        })
+        .then(function(res){
+          if (!res.ok) { console.log("[same_day_rate] 閲覧対象外 (HTTP " + res.status + ")"); return null; }
+          return res.json();
+        })
+        .then(function(d){ window._fujinSameDay = d || null; return d || null; })
+        .catch(function(e){
+          console.warn("[same_day_rate] 取得 失敗:", (e && (e.errorCode || e.message)) || e);
+          return null;
+        });
+    } catch(e) { console.error("[same_day_rate] 例外:", e); window._fujinSameDayPromise = Promise.resolve(null); }
+
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示
