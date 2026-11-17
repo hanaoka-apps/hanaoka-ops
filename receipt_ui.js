@@ -260,7 +260,7 @@
       var d = R.defaults(M.o, { proviso: rcConf.proviso });
       if (replaceRec) { var sp = R.splitTitle(replaceRec.atena); d.atena = sp.name; d.title = sp.title; d.proviso = replaceRec.proviso; d.paidDate = replaceRec.paidDate || d.paidDate; d.amount = Math.min(replaceRec.amount, M.elig.max); }
       M.form = { atena: d.atena, title: d.title, proviso: d.proviso, amount: String(d.amount), issueDate: d.issueDate, paidDate: d.paidDate, note: '', office: '0' };
-      M.cands = d.candidates; M.provs = d.provisos || []; M.replaceOf = replaceRec || null; M.mode = 'form'; M.prev = false; M.msg = null; draw();
+      M.cands = d.candidates; M.provs = d.provisos || []; M.paidGuess = !!d.paidFromOrderDate && !(replaceRec && replaceRec.paidDate); M.replaceOf = replaceRec || null; M.mode = 'form'; M.prev = false; M.msg = null; draw();
     }
     function formHtml() {
       var f = M.form, c = M.cands || [];
@@ -275,7 +275,7 @@
         '<label for="rc-proviso">但し書き</label><div><input type="text" id="rc-proviso" maxlength="60" value="' + E(f.proviso) + '">' +
         ((M.provs || []).length ? '<div style="margin-top:4px">' + M.provs.map(function (x, i) { return '<span class="rc-chip" data-rc="prov" data-i="' + i + '" title="但し書きに入れる">' + E(x) + '</span>'; }).join('') + '<span class="muted">← 注文の商品名から選べます（取引の内容が分かる書き方にします）</span></div>' : '') + '</div>' +
         '<label for="rc-amount">金額（税込・円）</label><div class="in2"><input type="text" id="rc-amount" inputmode="numeric" style="width:160px" value="' + E(f.amount) + '"><span class="muted">発行できる上限 ' + E(R.yen(M.elig.max)) + '</span></div>' +
-        (hasPaid() ? '<label for="rc-paid">領収日</label><div class="in2"><input type="date" id="rc-paid" value="' + E(f.paidDate) + '"><span class="muted">お客様のカード決済が完了した日です。Shopify の決済完了日（Paid at）が入ります。直せます</span></div>' : '') +
+        (hasPaid() ? '<label for="rc-paid">領収日</label><div class="in2"><input type="date" id="rc-paid" value="' + E(f.paidDate) + '"><span class="muted">' + (M.paidGuess ? 'お客様のカード決済が完了した日です。決済完了日が取れないため、注文日を入れています。違うときは直してください' : 'お客様のカード決済が完了した日です。Shopify の決済完了日（Paid at）が入ります。直せます') + '</span></div>' : '') +
         '<label for="rc-date">発行日</label><div class="in2"><input type="date" id="rc-date" value="' + E(f.issueDate) + '"><span class="muted">書類を出す日です。初めは今日（日本時間）です。変えられます</span></div>' +
         (offices().length > 1 ? '<label for="rc-office">拠点</label><div class="in2">' + officeSelect('rc-office', f.office) + '<span class="muted">書類の住所・電話に使います</span></div>' : '') +
         '<label for="rc-note">メモ（社内用）</label><input type="text" id="rc-note" maxlength="200" value="' + E(f.note) + '" placeholder="書類には印刷されません（任意）">' +
