@@ -55,16 +55,22 @@ def order(name, lines, total='17050.0', **over):
         'discountCodes': [], 'paymentGatewayNames': ['shopify_payments'], 'shippingLine': {'title': '佐川急便'},
         'shippingAddress': addr('架空 太郎', '100-0001', '09012345678'), 'billingAddress': addr('架空 太郎', '100-0001', ''),
         'lineItems': {'pageInfo': {'hasNextPage': False, 'endCursor': None}, 'nodes': lines},
+        'transactions': [],
     }
     o.update(over)
     return o
 
 
 ORDERS = [
-    order('#9001', [line('FLATCART 2x4（ブラック） - オプションは注文しない', 1, '15400.0', 'FC')]),
+    order('#9001', [line('FLATCART 2x4（ブラック） - オプションは注文しない', 1, '15400.0', 'FC')],
+          transactions=[{'kind': 'SALE', 'status': 'SUCCESS', 'processedAt': '2026-10-15T03:30:10Z', 'createdAt': '2026-10-15T03:30:09Z'}]),
     order('#9002', [line('テーブルコンテナ', 2, '5000.0', 'TC', unful=0), line('バッグ', 1, '3000.0', '')], total='15500.0',
           displayFulfillmentStatus='FULFILLED', discountCodes=['WELCOME'], paymentGatewayNames=['shopify_payments', 'bank_deposit'],
-          cancelledAt='2026-10-16T01:00:00Z', displayFinancialStatus='PARTIALLY_REFUNDED', totalRefundedSet=mb('5000.0')),
+          cancelledAt='2026-10-16T01:00:00Z', displayFinancialStatus='PARTIALLY_REFUNDED', totalRefundedSet=mb('5000.0'),
+          transactions=[{'kind': 'AUTHORIZATION', 'status': 'SUCCESS', 'processedAt': '2026-10-14T01:00:00Z', 'createdAt': '2026-10-14T01:00:00Z'},
+                        {'kind': 'CAPTURE', 'status': 'FAILURE', 'processedAt': '2026-10-15T01:00:00Z', 'createdAt': '2026-10-15T01:00:00Z'},
+                        {'kind': 'CAPTURE', 'status': 'SUCCESS', 'processedAt': '2026-10-15T15:30:00Z', 'createdAt': '2026-10-15T15:30:00Z'},
+                        {'kind': 'REFUND', 'status': 'SUCCESS', 'processedAt': '2026-10-16T01:00:00Z', 'createdAt': '2026-10-16T01:00:00Z'}]),
 ]
 SUMMARY_KEYS = ['chargesGross', 'chargesFee', 'refundsFeeGross', 'refundsFee', 'adjustmentsGross', 'adjustmentsFee',
                 'advanceGross', 'advanceFees', 'reservedFundsGross', 'reservedFundsFee', 'retriedPayoutsGross', 'retriedPayoutsFee']
@@ -105,8 +111,9 @@ TXNS = [
 class FakeClient:
     """ShopifyClient の代わり。クエリの種類で応答を返す。ページングも再現する。"""
 
-    def __init__(self, orders=ORDERS, payouts=PAYOUTS, txns=TXNS, page=1):
+    def __init__(self, orders=ORDERS, payouts=PAYOUTS, txns=TXNS, page=1, reject_txn=False):
         self.orders, self.payouts, self.txns, self.page, self.calls = orders, payouts, txns, page, []
+        self.reject_txn = reject_txn   # True なら、「transactions」を含む注文の問い合わせを断る（項目が通らない場合の再現）
 
     def _page(self, items, after):
         i = int(after or 0)
@@ -119,7 +126,12 @@ class FakeClient:
         if 'MoreLines' in query:
             return {'order': {'lineItems': {'pageInfo': {'hasNextPage': False, 'endCursor': None}, 'nodes': [line('追加の行', 1, '100.0')]}}}
         if 'orders(' in query:
-            return {'orders': self._page(self.orders, v.get('after'))}
+            if self.reject_txn and 'transactions(' in query:
+                raise SF.FetchError("Field 'transactions' doesn't exist on type 'Order'")
+            page = self._page(self.orders, v.get('after'))
+            if 'transactions(' not in query:     # 問い合わせに無い項目は、本物の API と同じく返さない
+                page = dict(page, nodes=[{k: x for k, x in n.items() if k != 'transactions'} for n in page['nodes']])
+            return {'orders': page}
         if 'payouts(' in query:
             return {'shopifyPaymentsAccount': {'payouts': self._page(self.payouts, v.get('after'))}}
         return {'shopifyPaymentsAccount': {'balanceTransactions': self._page(self.txns, v.get('after'))}}
@@ -167,6 +179,8 @@ class RunTests(unittest.TestCase):
         self.assertEqual((a['Name'], a['Total'], a['Subtotal'], a['Shipping'], a['Taxes']), ('#9001', '17050', '15400', '1650', '1550'))
         self.assertEqual(a['Created at'], '2026-10-15 12:29:02 +0900')
         self.assertEqual((a['Financial Status'], a['Fulfillment Status']), ('paid', 'unfulfilled'))
+        self.assertEqual(a['Paid at'], '2026-10-15 12:30:10 +0900')                       # 決済完了日（SALE が成功した日時。日本時間）
+        self.assertEqual(b['Paid at'], '2026-10-16 00:30:00 +0900')                       # 承認（AUTHORIZATION）や失敗した CAPTURE は数えず、成功した CAPTURE の日時
         self.assertEqual(a['Lineitem fulfillment status'], 'pending')
         self.assertEqual((a['Shipping Zip'], a['Shipping Phone'], a['Billing Phone']), ("'100-0001", "'09012345678", ''))
         self.assertEqual((a['Shipping Province Name'], a['Shipping City'], a['Shipping Address1'], a['Shipping Address2']),
@@ -184,6 +198,29 @@ class RunTests(unittest.TestCase):
         self.assertEqual({k for k, v in c.items() if v != ''} - {'Name'},
                          {'Lineitem quantity', 'Lineitem name', 'Lineitem price', 'Lineitem requires shipping', 'Lineitem taxable',
                           'Lineitem fulfillment status', 'Lineitem discount', 'Vendor'})
+
+    def test_paid_at_is_empty_without_successful_sale(self):
+        o = ORDERS[0]
+        self.assertEqual(SF.paid_at(dict(o, transactions=[]), JST), '')
+        self.assertEqual(SF.paid_at(dict(o, transactions=None), JST), '')
+        self.assertEqual(SF.paid_at({k: v for k, v in o.items() if k != 'transactions'}, JST), '')          # 取引の項目がなくても落ちない
+        self.assertEqual(SF.paid_at(dict(o, transactions=[{'kind': 'SALE', 'status': 'PENDING', 'processedAt': '2026-10-15T03:30:10Z'}]), JST), '')
+        self.assertEqual(SF.paid_at(dict(o, transactions=[{'kind': 'sale', 'status': 'success', 'createdAt': '2026-10-15T03:30:10Z'}]), JST),
+                         '2026-10-15 12:30:10 +0900')                                                        # 小文字・processedAt なし（createdAt を使う）
+        two = [{'kind': 'SALE', 'status': 'SUCCESS', 'processedAt': '2026-10-17T00:00:00Z'}, {'kind': 'CAPTURE', 'status': 'SUCCESS', 'processedAt': '2026-10-16T00:00:00Z'}]
+        self.assertEqual(SF.paid_at(dict(o, transactions=two), JST), '2026-10-16 09:00:00 +0900')            # いちばん早い成功した支払い
+
+    def test_orders_query_asks_for_transactions(self):
+        self.assertIn('transactions(first: 10) { kind status processedAt createdAt }', SF.ORDERS_QUERY)
+        self.assertNotIn('transactions(', SF.ORDERS_QUERY_BASIC)
+
+    def test_order_fetch_continues_without_paid_at_when_transactions_field_is_rejected(self):
+        logs = []
+        SF.run(settings(self.tmp), client=FakeClient(reject_txn=True), log=logs.append, now=NOW)      # 注文の取得は止まらない
+        a, b, c = read_dicts(self.tmp + '/ec_shopify_orders.csv')
+        self.assertEqual((a['Name'], a['Total'], a['Paid at']), ('#9001', '17050', ''))               # 決済完了日だけ空（領収日は、注文日が仮に入る）
+        self.assertTrue(any('決済完了日' in m and 'transactions' in m for m in logs))
+        self.assertFalse(any('shpat_dummy' in m for m in logs))
 
     def test_payouts_and_transactions(self):
         self.go()
