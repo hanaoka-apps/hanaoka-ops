@@ -6,12 +6,12 @@
  *   const store = ReceiptStore.create({ getToken: async (write) => token, sitePath: 'xxx.sharepoint.com:/sites/yyy:', listName: 'EC_Receipt', logList: 'EC_Log' });
  *   await store.connect();                       // 読めなければ例外（store.isUnavailable(e) が true なら、画面は静かにボタンも札も隠す）
  *   const map = await store.loadAll();           // { 注文番号: [記録（新しい順）] }
- *   const r = await store.issue({ orderNo, atena, proviso, amount, tax, issueDate, note }, { user, source });   // { result:'created', rec } か { result:'exists', current }
+ *   const r = await store.issue({ orderNo, atena, proviso, amount, tax, issueDate, paidDate, note }, { user, source });   // { result:'created', rec } か { result:'exists', current }
  * getToken(true) は書き込み用（呼ぶ画面が、押したときに初めて書き込みの権限を求める）。getToken(false) は読み取り用。 */
 (function (root) {
   'use strict';
   var GRAPH = 'https://graph.microsoft.com/v1.0';
-  var COLS = ['Title', 'OrderNo', 'Atena', 'Proviso', 'Amount', 'Tax', 'IssueDate', 'IssuedBy', 'Status', 'ReissueCount', 'Note', 'Source'];
+  var COLS = ['Title', 'OrderNo', 'Atena', 'Proviso', 'Amount', 'Tax', 'IssueDate', 'PaidDate', 'IssuedBy', 'Status', 'ReissueCount', 'Note', 'Source'];   // PaidDate＝領収日（あとから足した列。なくても動く：api.hasPaidDate）
   var WRITABLE = COLS.slice();
   // 会社の情報は、見積アプリ（quote_store.js）と同じ場所（SharedMasters と同じサイトのリスト SD_設定、Title＝「会社」の行の Data）から、読むだけ
   var COMPANY_SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
@@ -20,7 +20,7 @@
   function create(opt) {
     var R = opt.R || root.ReceiptCore;
     var fetchFn = opt.fetchImpl || function () { return root.fetch.apply(root, arguments); };
-    var siteId = null, api = {};
+    var siteId = null, api = {}, cols = COLS.slice();
 
     async function req(method, path, body, write) {
       var token = await opt.getToken(!!write);
@@ -40,10 +40,10 @@
       return res.json();
     }
     function listPath(name) { return '/sites/' + siteId + '/lists/' + encodeURIComponent(name); }
-    function sel() { return 'expand=fields(select=' + COLS.join(',') + ')'; }
+    function sel() { return 'expand=fields(select=' + cols.join(',') + ')'; }
     function clean(fields) {
       var out = {};
-      Object.keys(fields).forEach(function (k) { if (WRITABLE.indexOf(k) >= 0 && fields[k] != null) out[k] = fields[k]; });
+      Object.keys(fields).forEach(function (k) { if (WRITABLE.indexOf(k) >= 0 && cols.indexOf(k) >= 0 && fields[k] != null) out[k] = fields[k]; });
       return out;
     }
 
@@ -54,6 +54,11 @@
       var site = await req('GET', '/sites/' + opt.sitePath + '?$select=id');
       siteId = site.id;
       await req('GET', listPath(opt.listName) + '?$select=id');
+      // 領収日の列（PaidDate）があるか。なければ、その列を使わずに動く（管理者が scripts/create_ec_lists.ps1 を実行すると、列が足される）
+      try {
+        var have = ((await req('GET', listPath(opt.listName) + '/columns?$select=name')).value || []).map(function (c) { return c.name; });
+        if (have.length && have.indexOf('PaidDate') < 0) cols = cols.filter(function (c) { return c !== 'PaidDate'; });
+      } catch (e) { /* 列の一覧を読めないときは、列があるものとして進む */ }
       return true;
     };
 
@@ -97,13 +102,13 @@
     }
 
     /* 発行：その注文に有効な記録がすでにあれば、作らない（{ result:'exists', current }）。作る直前に読み直す（同時に別の人が発行した場合に備える）。
-     * form＝{ orderNo, atena（敬称つき）, proviso, amount, tax, issueDate, note }、o＝{ user, source, now, ignoreId（差し替えで取り消す予定の記録の id。これは重複とみなさない） }
+     * form＝{ orderNo, atena（敬称つき）, proviso, amount, tax, issueDate（発行日）, paidDate（領収日）, note }、o＝{ user, source, now, ignoreId（差し替えで取り消す予定の記録の id。これは重複とみなさない） }
      * 項目を作ってから、その ID で領収証番号（Title）を付ける。番号が付かなかったら、E.code='NUMBER' の例外（記録は残る。次に開いたときも、同じ番号で出る）。 */
     api.issue = async function (form, o) {
       o = o || {};
       var cur = (await api.loadFor(form.orderNo)).filter(function (r) { return R.isActive(r) && r.id !== String(o.ignoreId || ''); });
       if (cur.length) return { result: 'exists', current: cur[0] };
-      var rec = { orderNo: form.orderNo, atena: form.atena, proviso: form.proviso, amount: form.amount, tax: form.tax, issueDate: form.issueDate, issuedBy: o.user || '', status: R.STATUS.issued, reissueCount: 0, note: form.note || '', source: o.source || '' };
+      var rec = { orderNo: form.orderNo, atena: form.atena, proviso: form.proviso, amount: form.amount, tax: form.tax, issueDate: form.issueDate, paidDate: form.paidDate || '', issuedBy: o.user || '', status: R.STATUS.issued, reissueCount: 0, note: form.note || '', source: o.source || '' };
       var made = await req('POST', listPath(opt.listName) + '/items', { fields: clean(R.toFields(rec)) }, true);   // Title は仮のまま作る
       var number = R.numberOf(made.id, R.yearJst(o.now));
       try { await patch(made.id, { Title: number }); }
@@ -168,6 +173,7 @@
     };
 
     Object.defineProperty(api, 'siteId', { get: function () { return siteId; } });
+    Object.defineProperty(api, 'hasPaidDate', { get: function () { return cols.indexOf('PaidDate') >= 0; } });
     return api;
   }
 

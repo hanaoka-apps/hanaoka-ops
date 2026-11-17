@@ -32,13 +32,14 @@
   function oneLine(s) { return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/^[ \t]+|[ \t]+$/g, ''); }
 
   /* ---------------------------------------------------------------- 注文の情報（画面ごとに持っている形のちがいを、ここでそろえる）
-   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName, lines:[{ name, qty }] }（Shopify の値）。 */
+   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName, paidAt, lines:[{ name, qty }] }（Shopify の値）。 */
   R.orderInfo = function (o) {
     o = o || {};
     return {
       no: R.orderNo(o.no), financial: String(o.financial || '').toLowerCase(), cancelledAt: o.cancelledAt || '',
       total: Number(o.total) || 0, refunded: Number(o.refunded) || 0,
       shipCompany: oneLine(o.shipCompany), shipName: oneLine(o.shipName), billCompany: oneLine(o.billCompany), billName: oneLine(o.billName),
+      paidAt: validDate(String(o.paidAt || '').slice(0, 10)) ? String(o.paidAt).slice(0, 10) : '',   // Shopify の入金日（クレジットカード決済された日）。領収日の初期値
       lines: (Array.isArray(o.lines) ? o.lines : []).map(function (l) { return { name: oneLine(l && l.name).replace(/\s*-\s*オプションは注文しない$/, ''), qty: Number(l && l.qty) || 1 }; }).filter(function (l) { return l.name; }),
       has: o.has !== false
     };
@@ -104,20 +105,20 @@
   };
 
   /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝商品が1種類ならその商品名（「○○ 代として」）、そうでなければ「商品代として」、
-   * 金額＝発行できる上限（支払済み−返金）、取引日（書類の日付）＝今日（日本時間）。opts＝{ now, proviso } */
+   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）、領収日＝Shopify の入金日。opts＝{ now, proviso } */
   R.defaults = function (o, opts) {
     opts = opts || {};
     var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o);
     return {
       atena: c[0] ? c[0].text : '', title: c[0] ? c[0].title : '様',
-      proviso: provs.length === 1 ? provs[0] : (opts.proviso || R.DEFAULT_PROVISO), amount: el.max || 0, issueDate: R.todayJst(opts.now),
+      proviso: provs.length === 1 ? provs[0] : (opts.proviso || R.DEFAULT_PROVISO), amount: el.max || 0, issueDate: R.todayJst(opts.now), paidDate: R.orderInfo(o).paidAt,
       candidates: c, provisos: provs, max: el.max
     };
   };
 
   /* ---------------------------------------------------------------- 入力の検査
-   * form＝{ atena（敬称なし）, title, proviso, amount, issueDate, note }、opts＝{ max（上限）, now }
-   * 戻り値＝{ ok, errors:[…（日本語）], warnings:[…], value:{ atena（敬称つき）, proviso, amount, net, tax, issueDate, note } }。
+   * form＝{ atena（敬称なし）, title, proviso, amount, issueDate（発行日）, paidDate（領収日）, note }、opts＝{ max（上限）, now, paidColumn（false なら、領収日を求めない＝記録のリストに領収日の列がないとき） }
+   * 戻り値＝{ ok, errors:[…（日本語）], warnings:[…], value:{ atena（敬称つき）, proviso, amount, net, tax, issueDate, paidDate, note } }。
    * 前の画面の入力検査は使いやすさのためだけ（守りは SharePoint の権限）。 */
   R.validate = function (form, opts) {
     form = form || {}; opts = opts || {};
@@ -137,10 +138,16 @@
     else if (amount > R.MAX_AMOUNT) errors.push('金額が大きすぎます（' + R.yen(R.MAX_AMOUNT) + ' まで）');
     else if (opts.max != null && amount > opts.max) errors.push('金額が、発行できる上限（' + R.yen(opts.max) + '）を超えています');
     var date = String(form.issueDate || '').slice(0, 10);
-    if (!validDate(date)) errors.push('取引日を、日付で入れてください');
-    else if (date > today) warnings.push('取引日が、今日より先の日付です');
+    if (!validDate(date)) errors.push('発行日を、日付で入れてください');
+    else if (date > today) warnings.push('発行日が、今日より先の日付です');
+    var paid = String(form.paidDate || '').slice(0, 10);
+    if (opts.paidColumn !== false) {
+      if (!validDate(paid)) errors.push('領収日（お金を受け取った日）を、日付で入れてください');
+      else if (paid > today) warnings.push('領収日が、今日より先の日付です');
+      else if (validDate(date) && paid > date) warnings.push('領収日が、発行日より後の日付です');
+    } else paid = '';
     var tx = isFinite(amount) && amount >= 1 ? R.splitTax(amount) : { net: 0, tax: 0 };
-    return { ok: !errors.length, errors: errors, warnings: warnings, value: { atena: R.joinAtena(name, title), proviso: proviso, amount: isFinite(amount) ? amount : 0, net: tx.net, tax: tx.tax, issueDate: date, note: note } };
+    return { ok: !errors.length, errors: errors, warnings: warnings, value: { atena: R.joinAtena(name, title), proviso: proviso, amount: isFinite(amount) ? amount : 0, net: tx.net, tax: tx.tax, issueDate: date, paidDate: paid, note: note } };
   };
 
   /* ---------------------------------------------------------------- 領収証番号
@@ -158,7 +165,7 @@
   R.toFields = function (rec) {
     var f = {
       Title: rec.number || R.PENDING_TITLE, OrderNo: R.orderNo(rec.orderNo), Atena: rec.atena, Proviso: rec.proviso,
-      Amount: Math.round(rec.amount), Tax: Math.round(rec.tax), IssueDate: DATE_NOON(rec.issueDate), IssuedBy: rec.issuedBy || '',
+      Amount: Math.round(rec.amount), Tax: Math.round(rec.tax), IssueDate: DATE_NOON(rec.issueDate), PaidDate: DATE_NOON(rec.paidDate), IssuedBy: rec.issuedBy || '',
       Status: rec.status || R.STATUS.issued, ReissueCount: rec.reissueCount || 0, Note: rec.note || '', Source: rec.source || ''
     };
     return f;
@@ -170,7 +177,7 @@
     var number = R.isNumber(f.Title) ? f.Title : R.numberOf(id, created ? R.yearJst(new Date(created)) : R.yearJst());   // 番号が付いていない行も、ID から同じ番号を出す
     return {
       id: id, number: number, numberPending: !R.isNumber(f.Title), orderNo: R.orderNo(f.OrderNo), atena: f.Atena || '', proviso: f.Proviso || '',
-      amount: Number(f.Amount) || 0, tax: Number(f.Tax) || 0, issueDate: String(f.IssueDate || '').slice(0, 10), issuedBy: f.IssuedBy || '',
+      amount: Number(f.Amount) || 0, tax: Number(f.Tax) || 0, issueDate: String(f.IssueDate || '').slice(0, 10), paidDate: String(f.PaidDate || '').slice(0, 10), issuedBy: f.IssuedBy || '',
       status: f.Status === R.STATUS.voided ? R.STATUS.voided : R.STATUS.issued, reissueCount: Number(f.ReissueCount) || 0, note: f.Note || '', source: f.Source || '', created: created
     };
   };
@@ -231,7 +238,7 @@
   R.NO_COMPANY = '会社の設定がありません（見積アプリの会社の情報を確認してください）';
 
   /* ---------------------------------------------------------------- 印刷用の HTML（見積書 quote.html と同じ書式）
-   * rec＝{ number, orderNo, atena（敬称つき）, proviso, amount, tax, issueDate, status, reissueCount }
+   * rec＝{ number, orderNo, atena（敬称つき）, proviso, amount, tax, issueDate（発行日）, paidDate（領収日。なければ、領収日の行も備考の一文も出さない）, status, reissueCount }
    * settings＝R.mergeSettings の戻り値、
    * opts＝{ office（使う拠点。なければ先頭）, staff（担当者の名前。発行した人）, stampSrc（社印の画像の data URL。なければ印なし）, stampBox（true なら、収入印紙を貼る欄を印刷する。紙で出す分だけ）,
    *         reissue（true なら、備考に「再発行」を入れる）, preview（true なら「見本（未発行）」の透かし）, auto（true で、読み込み後に印刷を始める） }
@@ -245,6 +252,7 @@
     var split = R.splitTitle(rec.atena);
     var mark = voided ? '取消' : opts.preview ? '見本（未発行）' : '';
     var remarks = [];
+    if (R.jaDate(rec.paidDate)) remarks.push(R.jaDate(rec.paidDate) + ' Shopify決済分として');
     if (opts.reissue) remarks.push('再発行' + (rec.reissueCount > 0 ? '（' + rec.reissueCount + '回目）' : ''));
     if (rec.orderNo) remarks.push('ご注文番号　#' + R.orderNo(rec.orderNo));
     var css = ':root{--surface:#ffffff;--bg:#f4f6fb;--line:#edf0f6;--line-strong:#dfe4ef;--txt:#161a3d;--sub:#8a90a8;--font:"Inter","Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic","Segoe UI",sans-serif}' +
@@ -278,7 +286,7 @@
     if (mark) h += '<div class="wm">' + e(mark) + '</div>';
     h += '<h2>領収証</h2><div class="en">RECEIPT</div><div class="cols"><div>';
     h += '<div class="to"><span>' + e(split.name) + '</span><span>' + e(split.title) + '</span></div>';
-    h += kv('取引日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
+    h += (R.jaDate(rec.paidDate) ? kv('領収日', 'PAYMENT DATE', R.jaDate(rec.paidDate)) : '') + kv('発行日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
     h += '<div class="remarks"><div>備考<small>REMARKS</small></div><div>' + e(remarks.join('\n')) + '</div></div>';
     h += '</div><div>';
     h += '<div class="co"><div class="cn"><div class="lg"><img class="logo" src="hanaoka_logo.png" alt=""></div>' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';

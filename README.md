@@ -194,9 +194,9 @@ HUB・営業日報と同じ見た目（白い背景のカード＋紺 `#23268f`�
   - リダイレクトURIは共通の `auth.html`（ap_* 系と同じ）。Azure側の追加登録は不要。
     ポップアップ認証のみ対応（iOS/Safariのリダイレクト方式は未対応。PC用の画面のため）
 
-- **領収証（EC。`receipt_ui.js` ほか）**：発行の記録は SharePoint のリスト `EC_Receipt`（EC売上の履歴 EC_Order・EC_Log と同じサイト）。列は `Title`（領収証番号）・`OrderNo`・`Atena`（宛名）・`Proviso`（但し書き）・`Amount`（税込）・`Tax`（消費税）・`IssueDate`・`IssuedBy`・`Status`（発行済／取消）・`ReissueCount`・`Note`・`Source`（どの画面から）。
+- **領収証（EC。`receipt_ui.js` ほか）**：発行の記録は SharePoint のリスト `EC_Receipt`（EC売上の履歴 EC_Order・EC_Log と同じサイト）。列は `Title`（領収証番号）・`OrderNo`・`Atena`（宛名）・`Proviso`（但し書き）・`Amount`（税込）・`Tax`（消費税）・`IssueDate`（発行日）・`PaidDate`（領収日＝実際に入金・決済された日。あとから足した列で、なくても動く）・`IssuedBy`・`Status`（発行済／取消）・`ReissueCount`・`Note`・`Source`（どの画面から）。
   - 作るのは SharePoint の管理者で、`pwsh -File scripts/create_ec_lists.ps1 -Apply`（何度実行しても安全。あるリストは壊さない）。**テストのときは、`-ReceiptList EC_Receipt_Test` のようにテスト用の名前で作り、`ec_sales_config.json` の `receipt.list` をその名前にして確かめる（本番のリストに、テストの記録を書かない）。** 作ったあと、**営業と EC 担当だけが読み書きできる権限**に絞る（リストの設定 →「このリストに対するアクセス許可」→「アクセス許可の継承を停止」。宛名と金額が入るので、サイト全員には見せない。閲覧画面を使う営業が読めないと、ボタンも札も出ない）。
-  - 書類の見た目：見積書（`quote.html`）と同じ書式（A4・1枚。見出し「領収証」＋英語の補足、宛名、発行日、領収証番号、但し書き、備考、会社のロゴと社名・住所・TEL・FAX、担当者（発行した人）、金額の表、登録番号）。ロゴは、リポジトリの `hanaoka_logo.png`（公開のもの）。
+  - 書類の見た目：見積書（`quote.html`）と同じ書式（A4・1枚。見出し「領収証」＋英語の補足、宛名、領収日（実際に入金・決済された日。Shopify の入金日 Paid at が初期値）、発行日（初めは今日）、領収証番号、但し書き（初めは Shopify の商品名。商品が1種類のとき）、備考（「○年○月○日 Shopify決済分として」・再発行・注文番号）、会社のロゴと社名・住所・TEL・FAX、担当者（発行した人）、金額の表、登録番号）。ロゴは、リポジトリの `hanaoka_logo.png`（公開のもの）。
   - 会社の情報（社名・登録番号・拠点の住所・電話・FAX）：**見積・受注アプリがすでに持っている設定を、そのまま読む**（読むだけ。新しく設定ファイルを作らない）。場所は、SharePoint のリスト `SD_設定` の「会社」の行（`quote_store.js` の `getSettings` と同じ。`{ company, regNo, bank, offices:[{ name, zip, addr, tel, fax }] }`）。拠点が複数あるときは、発行の画面で選べる（初めは先頭）。振込先（`bank`）は、領収証には出さない。登録番号が空のときは、書類に「登録番号」の行を出さず、画面に「登録番号が未設定です」と注意する（発行はできる）。会社の情報を直したいときは、見積・受注アプリの「会社の情報」で直す。
   - 社印：画像（PNG 推奨）を SharedMasters に置き、そのファイル名を `ec_sales_config.json` の `receipt.stampFile` に書く（いまは `receipt_stamp.png`）。画像そのものは、リポジトリに入れない（公開）。読めないときは、印なしで出して知らせる。
   - 設定ファイル（なくてもよい。「上書き」だけ）：SharedMasters に **`receipt_settings.json`** を置くと、社印の画像の名前（`stampFile`）、書類の下に入れる一文（`footerNote`）、拠点の置き換え（`offices`）ができる。社印の画像は、同じ場所に置く。実際の値と社印の画像は、リポジトリに入れない（公開）。見積アプリの設定も `receipt_settings.json` も読めないときだけ、発行の画面が「会社の設定がありません（見積アプリの会社の情報を確認してください）」と出して、発行を止める（記録の確認と取消はできる）。

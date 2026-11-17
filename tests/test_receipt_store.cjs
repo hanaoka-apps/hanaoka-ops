@@ -30,6 +30,10 @@ function fakeGraph(mode) {
     }
     const [p, q] = path.split('?'); const qs = new URLSearchParams(q || '');
     if (/^\/sites\/[^/]+:\/sites\/[^/]+:$/.test(p)) return resp(200, { id: 'SITE' });
+    if (p === '/sites/SITE/lists/EC_Receipt/columns') {     // 列の一覧。mode.noPaidCol＝領収日の列がまだないリスト
+      return resp(200, { value: ReceiptStore.COLS.filter(c => !(mode.noPaidCol && c === 'PaidDate')).map(name => ({ name })) });
+    }
+    if (mode.noPaidCol && /PaidDate/.test(decodeURIComponent(q || ''))) return resp(400, { error: 'Field not found' });
     let m = p.match(/^\/sites\/SITE\/lists\/(EC_Receipt|EC_Log)$/);
     if (m) return mode.noList === m[1] ? resp(404, {}) : resp(200, { id: m[1] });
     m = p.match(/^\/sites\/SITE\/lists\/(EC_Receipt|EC_Log)\/items(?:\/(\d+))?(\/fields)?$/);
@@ -38,6 +42,7 @@ function fakeGraph(mode) {
     if (mode.badColumns && method === 'GET' && name === 'EC_Receipt') return resp(400, { error: 'Field not found' });   // 列が足りない
     if (method === 'POST' && !id) {
       const f = JSON.parse(o.body).fields;
+      if (mode.noPaidCol && name === 'EC_Receipt' && 'PaidDate' in f) return resp(400, { error: 'Field not found' });
       if (mode.beforePost) { const f0 = mode.beforePost; mode.beforePost = null; f0(lists, seq); }
       if (name === 'EC_Log' && (mode.rejectActions || []).includes(f.Action)) return resp(400, { error: 'invalid choice' });
       if (mode.readOnly) return resp(403, {});
@@ -67,7 +72,7 @@ function mk(g, extra) {
   const s = ReceiptStore.create(Object.assign({ R, getToken: async w => { tokens.push(!!w); return 'tok'; }, fetchImpl: g.fetchImpl, sitePath: 'example.sharepoint.com:/sites/x:', listName: 'EC_Receipt', logList: 'EC_Log' }, extra));
   s.tokens = tokens; return s;
 }
-const form = (o) => Object.assign({ orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-16', note: '' }, o);
+const form = (o) => Object.assign({ orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-16', paidDate: '2026-11-10', note: '' }, o);
 const NOW = new Date('2026-11-16T01:00:00Z');
 
 (async () => {
@@ -114,7 +119,7 @@ const NOW = new Date('2026-11-16T01:00:00Z');
     const post = g.calls.find(c => c.method === 'POST').body.fields;
     assert.strictEqual(post.Title, R.PENDING_TITLE); assert.ok(Object.values(post).every(v => v !== null));
     assert.ok(g.calls.some(c => c.method === 'PATCH' && c.body.Title === 'R-2026-00001'));
-    assert.deepStrictEqual(Object.keys(post).sort(), ['Amount', 'Atena', 'IssueDate', 'IssuedBy', 'Note', 'OrderNo', 'Proviso', 'ReissueCount', 'Source', 'Status', 'Tax', 'Title']);   // 未知の項目は書かない
+    assert.deepStrictEqual(Object.keys(post).sort(), ['Amount', 'Atena', 'IssueDate', 'IssuedBy', 'Note', 'OrderNo', 'PaidDate', 'Proviso', 'ReissueCount', 'Source', 'Status', 'Tax', 'Title']);   // 未知の項目は書かない
     assert.ok(s.tokens.includes(true));                                    // 書き込みの権限
   });
 
@@ -235,6 +240,27 @@ const NOW = new Date('2026-11-16T01:00:00Z');
     assert.strictEqual(g2.lists.EC_Log[0].fields.Action, 'その他'); assert.strictEqual(g2.lists.EC_Log[0].fields.Detail, '領収証発行：R-2026-00001 発行');
     const s3 = ReceiptStore.create({ R, getToken: async () => 't', fetchImpl: g.fetchImpl, sitePath: 'example.sharepoint.com:/sites/x:', listName: 'EC_Receipt' });
     await s3.connect(); assert.strictEqual(await s3.appendLog(row), false);    // ログのリスト名がなければ、何もしない
+  });
+
+  await t('領収日：記録に残る（読み直しても同じ）／領収日の列があるか調べる（hasPaidDate）', async () => {
+    const g = fakeGraph(), s = mk(g); await s.connect();
+    assert.strictEqual(s.hasPaidDate, true);
+    const r = await s.issue(form(), { now: NOW });
+    assert.ok(/^2026-11-10T/.test(g.lists.EC_Receipt[0].fields.PaidDate) && /^2026-11-16T/.test(g.lists.EC_Receipt[0].fields.IssueDate));
+    assert.strictEqual(r.rec.paidDate, '2026-11-10'); assert.strictEqual((await s.loadFor('1801'))[0].paidDate, '2026-11-10');
+    assert.strictEqual((await s.loadAll())['1801'][0].paidDate, '2026-11-10');
+    const x = await s.replace(r.rec, form({ paidDate: '2026-11-11' }), { now: NOW });                // 出し直しでも、新しい領収日が残る
+    assert.strictEqual(x.rec.paidDate, '2026-11-11');
+  });
+  await t('領収日の列がまだないリスト：止まらずに動く（列を使わずに読み書き。hasPaidDate は false）', async () => {
+    const g = fakeGraph({ noPaidCol: true }), s = mk(g); await s.connect();
+    assert.strictEqual(s.hasPaidDate, false);
+    const r = await s.issue(form(), { now: NOW });                                                 // 領収日は、書かない（書くと 400 になるため）
+    assert.strictEqual(r.result, 'created'); assert.ok(!('PaidDate' in g.lists.EC_Receipt[0].fields));
+    const list = await s.loadFor('1801'); assert.strictEqual(list.length, 1); assert.strictEqual(list[0].paidDate, '');
+    assert.strictEqual(Object.keys(await s.loadAll()).length, 1);
+    const gx = fakeGraph({ noPaidCol: true, status: undefined });                                  // 列の一覧が読めなくても、接続はできる
+    assert.ok(await mk(gx).connect());
   });
 
   const row = (data, title) => ({ id: '1', fields: { Title: title || '会社', Data: typeof data === 'string' ? data : JSON.stringify(data) } });

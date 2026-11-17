@@ -166,4 +166,10 @@ t('領収証：請求先の会社名も、注文の情報に入る（宛名の�
   const rs = V.build({ shopifyOrders: [sOrder({ id: '1900', name: '#1900', bill: { name: '請求 花子', company: '請求先商事', phone: '' } })], smileRows: [], shipLookup: null, custCodes: CUST, today: '2026-11-11' });
   assert.strictEqual(rs[0].shopify.billCompany, '請求先商事'); assert.strictEqual(rs[0].shopify.billName, '請求 花子');
 });
+t('領収証：入金日（Shopify の Paid at）と商品の行も、注文の情報に入る（領収日・但し書きの初期値）', () => {
+  const rs = V.build({ shopifyOrders: [sOrder({ id: '1901', name: '#1901', paidAt: '2026-11-10', lines: [{ name: '商品A', sku: 'A1', qty: 2 }] })], smileRows: [], shipLookup: null, custCodes: CUST, today: '2026-11-11' });
+  assert.strictEqual(rs[0].shopify.paidAt, '2026-11-10'); assert.deepStrictEqual(rs[0].shopify.lines.map(l => l.name + '×' + l.qty), ['商品A×2']);
+  const r2 = V.build({ shopifyOrders: [sOrder({ id: '1902', name: '#1902' })], smileRows: [], shipLookup: null, custCodes: CUST, today: '2026-11-11' });
+  assert.strictEqual(r2[0].shopify.paidAt, '');
+});
 console.log('ec_viewer_core: ' + n + ' tests passed' + (process.exitCode ? ' (一部NG)' : ''));
