@@ -272,8 +272,13 @@
     }
     const cm = (comments || []).filter(x => x && String(x).trim());
     const tot = Math.round(+total || 0);
-    let ex2, tx2, in2;
-    if (ls.length) { ex2 = ls.reduce((s, x) => s + x.AmountExclTax, 0); tx2 = ls.reduce((s, x) => s + x.Tax, 0); in2 = ex2 + tx2; }
+    let ex2, tx2, in2, lin = 0;
+    // 仕訳のある請求書（経費）：金額は AI が読んだ請求書の総額（2026-11-17）。前は仕訳の合計を金額にしていて、AI が仕訳を仮の1行（837円など）で返すと金額まで 920 円になっていた
+    //   仕訳の合計が総額と合えば税抜・消費税も仕訳から。合わなければ、税抜は請求書の明細（税抜）の合計か 税込÷1.1。ずれは下の警告で知らせる
+    if (ls.length) { const le = ls.reduce((s, x) => s + x.AmountExclTax, 0), lt = ls.reduce((s, x) => s + x.Tax, 0); lin = le + lt;
+      if (!tot || lin === tot) { ex2 = le; tx2 = lt; in2 = lin; }
+      else { const isum = Math.round(((it && it.items) || []).filter(x => !taxRow(x)).reduce((s, x) => s + (+x.Amount || 0), 0));
+        in2 = tot; ex2 = it && it.amount === '税抜' && isum > 0 && isum <= tot ? isum : it && it.amount === '税込' && isum === tot ? Math.round(tot / 1.1) : Math.round(tot / 1.1); tx2 = tot - ex2; } }
     else {
       // 仕入（仕訳なし）：税抜は請求書の明細（税抜の明細ならその合計）から。無ければ 税込 ÷ 1.1（前は 税抜＝税込・消費税 0 にしていた）
       in2 = tot;const isum = Math.round(((it && it.items) || []).filter(x => !taxRow(x)).reduce((s, x) => s + (+x.Amount || 0), 0));
@@ -283,8 +288,8 @@
       tx2 = tot - ex2;
       if (tot && !(it && it.amount === '税抜' && isum > 0 && isum <= tot)) cm.push(`税抜 ${yen(ex2)} 円は 税込÷1.1 で出しました（請求書の税抜の印字と違えば直してください）`);
     }
-    const diff = in2 - tot;
-    if (ls.length && diff) cm.push(`仕訳の合計 ${yen(in2)} 円が請求書の総額 ${yen(tot)} 円と ${diff > 0 ? '+' : '−'}${yen(Math.abs(diff))} 円違います（端数か読み落とし）`);
+    const diff = ls.length ? lin - tot : in2 - tot;
+    if (ls.length && diff) cm.push(`仕訳の合計 ${yen(lin)} 円が請求書の総額 ${yen(tot)} 円と ${diff > 0 ? '+' : '−'}${yen(Math.abs(diff))} 円違います${tot ? '。金額は請求書の総額にしました。仕訳の行を直してください' : '（端数か読み落とし）'}`);
     const hh = {};
     ['PayeeName', 'RegistrationNo', 'InvoiceNo', 'InvoiceDate', 'DueDate', 'TargetMonth', 'PayDateType', 'PayMethod', 'DebitDate', 'AIConfidence', 'BankCode', 'BankName', 'BranchCode', 'BranchName', 'AcctType', 'AcctNo', 'AcctHolder'].forEach(k => { if (h && h[k] != null && h[k] !== '') hh[k] = String(h[k]); });
     const m = String(hh.DebitDate || '').match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
@@ -292,7 +297,7 @@
     if (hh.BankCode && !/^\d{4}$/.test(hh.BankCode)) delete hh.BankCode;
     if (hh.BranchCode && !/^\d{3}$/.test(hh.BranchCode)) delete hh.BranchCode;
     Object.assign(hh, { AmountExclTax: ex2, Tax: tx2, AmountInclTax: in2 });
-    return { header: hh, lines: ls, comments: cm, validation: { InvoiceTotalInclTax: tot, LinesSumInclTax: in2, Diff: diff } };
+    return { header: hh, lines: ls, comments: cm, validation: { InvoiceTotalInclTax: tot, LinesSumInclTax: ls.length ? lin : in2, Diff: diff } };
   }
 
   // 一度に頼むのは MAXC 件まで（2026-11-09）：何十件もまとめて渡すと、中継のフロー（同時 5 件・待ちの上限あり）があふれて、
@@ -361,6 +366,22 @@
     else if (r.stop === 'max_tokens') err = 'AI の答えが長すぎて途中で切れました';
     else { try { d = JSON.parse(r.text); } catch (e) { err = 'AI の答えを読めませんでした'; } }
     const loc = job.location === '工場' ? '工場' : '本社';
+    // 仕訳の合計が請求書の総額と大きくずれた（2026-11-17）：明細が多く拠点・科目にまたがる請求書で、AI が仕訳を仮の行で返すことがある。
+    //   よく考える設定（effort high）で、総額に合わせて分けるよう頼んでもう一度だけ。ずれが小さくなった方を使う
+    const gap = x => { if (!x || !Array.isArray(x.lines) || !x.lines.length || !(+x.total > 0)) return 0; const v = record(x.header, x.lines, x.total, [], loc).validation; return Math.abs(v.Diff); };
+    const big = x => { const g = gap(x); return g > Math.max(1000, Math.round((+x.total || 0) * 0.01)); };
+    if (d && big(d)) {
+      const g1 = gap(d), lsum = Math.round(+d.total || 0) + ((record(d.header, d.lines, d.total, [], loc).validation.Diff) || 0);
+      msg(`仕訳が請求書の総額と合わないので作り直しています：${job.pdfName}`);
+      const b2 = JSON.parse(JSON.stringify(body)); b2.output_config.effort = 'high';
+      b2.messages[0].content[b2.messages[0].content.length - 1].text += ['', '', '## 前の答えの直し',
+        `前の答えでは仕訳の合計（税込）が ${yen(lsum)} 円で、請求書の総額 ${yen(d.total)} 円と合いませんでした。`,
+        '仕訳の行を仮の値・まとめただけの行にしないでください。請求書の明細を、宛先・拠点（工場・支店・営業所・本社など）と内容（科目）ごとに分けて行を作り、税率（10%・軽減8%）も分けて、仕訳の合計（税込）を請求書の総額に合わせてください。',
+        'どうしても分け方が決められない明細は、本社の行にまとめてもかまいません（合計は必ず合わせる）。迷った点は comments に書いてください。'].join('\n');
+      const r2 = await ask(ctx, s, job, b2);
+      let d2 = null; if (r2.status === '完了' && r2.stop === 'end_turn') { try { d2 = JSON.parse(r2.text); } catch (e) {} }
+      if (d2 && Array.isArray(d2.lines) && d2.lines.length && gap(d2) < g1) { d = d2; r = r2; }
+    }
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '' }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
     // 向きが違うページ（横向き・逆さ）：AI が rotate で答えたら、ファイルを回して同じ場所に保存する（ap_intake.js の APDoc.rotateFile）
     if (d && Array.isArray(d.rotate) && d.rotate.length && window.APDoc && APDoc.rotateFile) {
