@@ -3926,7 +3926,23 @@ function ptable(rows){
   return '<table>'+rows.filter(r=>r).map(r=>
     '<tr><td class="k">'+esc(r[0])+'</td><td>'+esc(r[1]||"—")+'</td></tr>').join("")+'</table>';
 }
-function printBodyFor(d,perUnit){
+/* 製造番号・車体番号・製造年月は、資材が1台ごとに製造番号明細へ入れる。
+   出図マスタの古い列（SerialRange 等）はもう更新されないので、印刷は明細から集める。 */
+function unitsPrintInfo(items){
+  const snNum=f=>isPlaceholderSn(f.Title)?Infinity:(parseInt(String(f.Title).replace(/\D/g,""),10)||Infinity);
+  const fs=(items||[]).map(it=>it.fields||{}).sort((a,b)=>snNum(a)-snNum(b)||
+    String(a.BreakdownKey||"").localeCompare(String(b.BreakdownKey||""))||((a.UnitSeq||0)-(b.UnitSeq||0)));
+  const realSn=list=>list.filter(f=>trim(f.Title)&&!isPlaceholderSn(f.Title)).map(f=>f.Title);
+  const snText=list=>{
+    const r=realSn(list),yet=list.length-r.length,s=carSummaryText(r);
+    return s?(s+(yet?("　※未登録 "+yet+"台"):"")):(list.length?("未登録（"+list.length+"台）"):"");
+  };
+  const byBk={};fs.forEach(f=>{const k=f.BreakdownKey||"";(byBk[k]=byBk[k]||[]).push(f)});
+  const yms=[...new Set(fs.map(f=>trim(f.ManufactureYM).slice(0,7)).filter(Boolean))];
+  return {fs:fs,sn:snText(fs),car:carSummaryText(fs.map(f=>f.CarNo||"")),
+    ym:yms.map(ymJp).join("・"),snOfBk:bk=>snText(byBk[bk]||[])};
+}
+function printBodyFor(d,perUnit,ui){
   /* 図面はミリ表記だが、花岡の銘板はメートル表記。
      松川さんがそのまま打てるように、印刷はメートルで出す。
      寸法(m)が入っていればそれを、空ならミリから換算する。 */
@@ -3942,8 +3958,8 @@ function printBodyFor(d,perUnit){
     ["図番",d.drawing_no],["図面仕様番号",d.spec_no],
     ["寸法(m)",dim],["車両重量(kg)",d.vehicle_weight],
     ["最大積載量(kg)",d.capacity],["総台数",d.units],
-    ["車体番号",d.car_no],["製造番号",d.serial_no],
-    ["製造年月",d.manufacture_month?(ymJp(d.manufacture_month)+"（旧）"):""],
+    ["車体番号",ui?ui.car:d.car_no],["製造番号",ui?ui.sn:d.serial_no],
+    ["製造年月",ui?ui.ym:(d.manufacture_month?ymJp(d.manufacture_month):"")],
     ["表面処理",d.surface],
     ["銘板表示方法",d.wt_method+(d.wt_method==="固定値"&&d.wt_fixed?("（"+d.wt_fixed+"kg）"):"")],
     ["吹付表示",d.spray],["申請（空港）",d.application_airport],
@@ -3956,7 +3972,7 @@ function printBodyFor(d,perUnit){
        '<th>仕向地</th><th>台数</th><th>製造番号</th><th>図番</th>'+
        '<th>仕様・備考</th></tr></thead><tbody>'+
        mei.map(r=>'<tr><td>'+esc(r.dest)+'</td><td>'+esc(r.qty)+'</td><td>'+
-         esc(r.snTo&&r.snTo!==r.snFrom?(r.snFrom+"～"+r.snTo):r.snFrom)+'</td><td>'+
+         esc(ui&&r.bk?ui.snOfBk(r.bk):(r.snTo&&r.snTo!==r.snFrom?(r.snFrom+"～"+r.snTo):r.snFrom))+'</td><td>'+
          esc(g(r.zu,d.drawing_no))+'</td><td>'+
          esc(specWithAcc(r)).replace(/\n/g,"<br>")+'</td></tr>').join("")+'</tbody></table>';
   }
@@ -3968,7 +3984,10 @@ function printBodyFor(d,perUnit){
          esc(r.total)+'</td></tr>').join("")+'</tbody></table>';
   }
   if(perUnit){
-    const us=expandUnits(d);
+    const us=ui&&ui.fs.length
+      ? ui.fs.map(f=>({sn:isPlaceholderSn(f.Title)?"未登録":f.Title,car:trim(f.CarNo),
+          dest:f.Destination||f.DeliveryTo||"",spec:f.Remarks||""}))
+      : expandUnits(d);
     h+='<h2>1台ごとの一覧（'+us.length+'台）</h2>';
     if(!us.length){
       h+='<p class="phead">明細に製造番号が入っていないため、展開できません。</p>';
@@ -3981,24 +4000,30 @@ function printBodyFor(d,perUnit){
           /* 製造年月は1台ごとなので、ここには出さない（松川さんが1台ずつ決める） */
           d.drawing_no?("図番 "+d.drawing_no):""
         ].filter(Boolean).map(esc).join("　/　")+'</p>';
-      h+='<table><colgroup><col style="width:12mm"><col style="width:34mm">'+
-         '<col style="width:34mm"><col></colgroup>'+
-         '<thead><tr><th>#</th><th>製造番号</th><th>行き先</th><th>仕様・備考</th></tr></thead><tbody>'+
-         us.map((u,k)=>'<tr><td>'+(k+1)+'</td><td>'+esc(u.sn)+'</td><td>'+
-           esc(u.dest)+'</td><td>'+esc(u.spec)+'</td></tr>').join("")+'</tbody></table>';
+      h+='<table><colgroup><col style="width:10mm"><col style="width:24mm"><col style="width:32mm">'+
+         '<col style="width:26mm"><col></colgroup>'+
+         '<thead><tr><th>#</th><th>製造番号</th><th>車体番号</th><th>行き先</th><th>仕様・備考</th></tr></thead><tbody>'+
+         us.map((u,k)=>'<tr><td>'+(k+1)+'</td><td>'+esc(u.sn)+'</td><td>'+esc(u.car||"—")+'</td><td>'+
+           esc(u.dest)+'</td><td>'+esc(u.spec).replace(/\n/g,"<br>")+'</td></tr>').join("")+'</tbody></table>';
     }
   }
   return h;
 }
-function printRecord(){
+async function printRecord(){
   const d=(editingIndex>=0?loadData()[editingIndex]:null)||getEntry();
   if(!d||!d.ship_no){toast("印刷する内容がありません",true);return}
   /* 内訳は出図内訳リストが正なので、キャッシュではなく
      いま画面に出ているものをそのまま使う */
   d.meisai=readMeisai();
+  let ui=null;
+  if(d._id){
+    toast("製造番号を読み込んでいます…");
+    try{ui=unitsPrintInfo(await fetchUnits(d.ship_no))}
+    catch(e){console.warn("製造番号明細を読めませんでした",e);toast("製造番号を読めませんでした。製造番号なしで印刷します",true)}
+  }
   const area=$("printArea");
   area.className=$("printSize").value||"p-m";
-  area.innerHTML=printBodyFor(d,$("printPerUnit").checked);
+  area.innerHTML=printBodyFor(d,$("printPerUnit").checked,ui);
   window.print();
 }
 

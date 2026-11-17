@@ -227,6 +227,10 @@ body.in .gate{display:none}
 .nptbl th{text-align:left;font-size:11px;color:#777;border-bottom:1.5px solid var(--line);padding:5px 6px}
 .nptbl td{padding:7px 6px;border-bottom:1px solid #eef1f5}
 .nptbl td.ng{color:#b03060;font-weight:700}
+/* 銘板見出しは9列。用紙幅に収まるように少し詰める */
+.nptbl9{font-size:12px}
+.nptbl9 th,.nptbl9 td{padding:6px 4px}
+@media print{.nptbl9{font-size:10.5px}.nptbl9 th,.nptbl9 td{padding:4px 3px}}
 .skt input{width:100%;padding:8px 7px;font-size:14px;border:1px solid var(--line);
   border-radius:8px;background:#fff}
 .skt input[readonly]{background:var(--soft);color:#555}
@@ -651,6 +655,7 @@ function unitOf(it){const f=it.fields||{};return {
   id:it.id,sn:f.Title||"",car:f.CarNo||"",shipNo:f.ShutsuzuNo||"",
   model:f.Model||"",product:f.ProductName||"",customer:f.Customer||"",
   dest:f.DeliveryTo||f.Destination||"",zu:f.DrawingNo||"",specNo:f.SpecNo||"",
+  cap:f.Capacity==null?"":String(f.Capacity),
   date:(f.ShipDate||"").slice(0,10),
   weight:f.ActualWeight==null?"":String(f.ActualWeight),      /* 実重量 */
   nweight:f.NameplateWeight==null?"":String(f.NameplateWeight),/* 自重（吹付・銘板） */
@@ -864,7 +869,27 @@ async function loadShutsuzuInfo(shipNo){
       renderList();
     }
   }catch(e){ console.warn("出図の情報を読めませんでした",e); LIST_CTX.wt=null; SHUTSUZU_ITEM_CACHE=null }
+  await loadBreakdownDims(shipNo);
   renderWtAlert();renderToolBadges();renderGroupSummary();
+}
+/* 銘板見出しに要る寸法（全長×全幅×全高）と最大積載量は、技術部が出図内訳に入れている。
+   1台ごとの行（製造番号明細）には寸法が無いので、内訳キーで引く。 */
+async function loadBreakdownDims(shipNo){
+  if(LIST_CTX)LIST_CTX.dims={};
+  if(!BREAKDOWN_ID||!trim(shipNo)||!LIST_CTX)return;
+  try{
+    const items=await gAll("/sites/"+SITE_ID+"/lists/"+BREAKDOWN_ID+"/items?expand=fields&$top=999"+
+      "&$filter=fields/ShutsuzuNo eq '"+encodeURIComponent(trim(shipNo))+"'",PREF);
+    items.forEach(it=>{const f=it.fields||{};
+      LIST_CTX.dims[f.Title||""]={len:f.LengthMM,wid:f.WidthMM,hei:f.HeightMM,cap:f.Capacity}});
+  }catch(e){console.warn("内訳（寸法）を読めませんでした",e)}
+}
+/* 花岡の銘板はメートル表記（技術側の印刷と同じ 3.450 × 1.280 × 0.494 m） */
+const toM3=mm=>{const n=Number(mm);return isFinite(n)&&n>0?(n/1000).toFixed(3):""};
+function dimsOf(u){
+  const d=(LIST_CTX&&LIST_CTX.dims&&LIST_CTX.dims[u.bk])||{};
+  const L=toM3(d.len),W=toM3(d.wid),H=toM3(d.hei);
+  return {dim:(L&&W&&H)?(L+" × "+W+" × "+H+" m"):"",cap:trim(u.cap)||(d.cap==null?"":String(d.cap))};
 }
 function wtRule(){ return (LIST_CTX&&LIST_CTX.wt)||{method:"",fixed:"",spray:""} }
 /* 実重量から自重を自動で作る。ボタンではなく、実重量を打った瞬間に動く。
@@ -883,7 +908,11 @@ function autoFillNw(u){
 function npReadiness(){
   const us=(LIST_CTX&&LIST_CTX.units)||[];
   const needNw=wtRule().method!=="記載なし";
-  const miss=us.filter(u=>!trim(valOf(u,"ym"))||(needNw&&!trim(valOf(u,"nw")))).length;
+  const dimsReady=!!(LIST_CTX&&LIST_CTX.dims);
+  const miss=us.filter(u=>{
+    const dc=dimsReady?dimsOf(u):{dim:"-",cap:"-"};   /* 寸法を読み込む前は、寸法の不足を数えない */
+    return isPlaceholderSn(u.sn)||!trim(valOf(u,"ym"))||!dc.dim||!dc.cap||(needNw&&!trim(valOf(u,"nw")));
+  }).length;
   return {total:us.length,miss:miss};
 }
 function renderToolBadges(){
@@ -1085,14 +1114,18 @@ function npRows(){
   const needNw=(wtRule().method!=="記載なし");
   return t.map(u=>{
     const miss=[];
-    const ym=trim(valOf(u,"ym")), nw=trim(valOf(u,"nw"));
+    const ym=trim(valOf(u,"ym")), nw=trim(valOf(u,"nw")), dc=dimsOf(u);
+    if(isPlaceholderSn(u.sn))miss.push("製造番号");
     if(!ym)miss.push("製造年月");
+    if(!dc.dim)miss.push("寸法");
+    if(!dc.cap)miss.push("最大積載量");
     if(needNw&&!nw)miss.push("自重");
-    return {u:u,ym:ym,nw:nw,car:trim(valOf(u,"car")),miss:miss};
+    return {u:u,ym:ym,nw:nw,car:trim(valOf(u,"car")),dim:dc.dim,cap:dc.cap,miss:miss};
   });
 }
-function openNameplate(){
+async function openNameplate(){
   clearErr();
+  if(LIST_CTX&&!LIST_CTX.dims)await loadBreakdownDims(currentShipNo());
   const rows=npRows();
   if(!rows.length){showErr("対象の車両がありません。");return}
   const r=wtRule(), needNw=(r.method!=="記載なし");
@@ -1109,20 +1142,24 @@ function openNameplate(){
        Object.keys(kinds).map(k=>k+" が空："+kinds[k]+"台").join("　／　")+
        '<br>足りているぶんだけ下に出しています。埋めてからもう一度押してください。</div>';
   }
-  h+='<table class="nptbl"><thead><tr><th>製造番号</th><th>車体番号</th>'+
-     '<th>品名・型式</th><th>図番</th><th>製造年月</th><th>自重</th>'+
-     '<th>仕向地</th></tr></thead><tbody>'+
+  /* 列は寒河江さんの指定（11/18）：製造番号・車体番号・製造年月・品名・型式・図番・
+     全長×全幅×全高・最大積載量・自重。 */
+  const ng_=(cond,txt)=>'<td'+(cond?' class="ng"':'')+'>'+txt+'</td>';
+  h+='<table class="nptbl nptbl9"><thead><tr><th>製造番号</th><th>車体番号</th><th>製造年月</th>'+
+     '<th>品名</th><th>型式</th><th>図番</th><th>全長×全幅×全高</th><th>最大積載量</th><th>自重</th>'+
+     '</tr></thead><tbody>'+
    rows.map(x=>{
-     const u=x.u, bad=x.miss.length>0;
+     const u=x.u, noSn=isPlaceholderSn(u.sn);
      return '<tr>'+
-       '<td>'+esc(u.sn)+'</td>'+
+       ng_(noSn,noSn?"未登録":esc(u.sn))+
        '<td>'+esc(x.car||"—")+'</td>'+
-       '<td>'+esc([u.product,u.model].filter(Boolean).join("　"))+'</td>'+
-       '<td>'+esc(u.zu)+'</td>'+
-       '<td'+(!x.ym?' class="ng"':'')+'>'+(x.ym?esc(jpYm(x.ym)):"未入力")+'</td>'+
-       '<td'+((needNw&&!x.nw)?' class="ng"':'')+'>'+
-         (needNw?(x.nw?esc(x.nw)+"kg":"未入力"):"記載なし")+'</td>'+
-       '<td>'+esc(u.dest)+'</td>'+
+       ng_(!x.ym,x.ym?esc(jpYm(x.ym)):"未入力")+
+       '<td>'+esc(u.product||"—")+'</td>'+
+       '<td>'+esc(u.model||"—")+'</td>'+
+       '<td>'+esc(u.zu||"—")+'</td>'+
+       ng_(!x.dim,x.dim?esc(x.dim):"未入力")+
+       ng_(!x.cap,x.cap?esc(x.cap)+"kg":"未入力")+
+       ng_(needNw&&!x.nw,needNw?(x.nw?esc(x.nw)+"kg":"未入力"):"記載なし")+
      '</tr>';
    }).join("")+'</tbody></table>';
   if(DRAFT.size){
