@@ -402,7 +402,10 @@ assert.equal(c.fare.reason, '');
   assert.equal(res.orders, 3);
   assert.deepEqual(res.fields.price, { n: 3, ok: 1, either: 2, priced: 3 });
   assert.deepEqual(res.fields.staff, { n: 3, ok: 2 }); // 伝票2・4 は前回と同じ担当者
-  assert.deepEqual(res.fields.dest, { n: 3, ok: 2, inList: 2 }); // N2 は伝票3 で初めて使ったので、候補にない
+  // N2 は伝票3 で初めて使ったので、候補にない。
+  // 伝票2 は前の受注が1件だけなので「毎回ちがう」側、伝票3・4 は前の受注の半分以上が N1 なので「いつも同じ」側
+  assert.deepEqual(res.fields.dest, { n: 3, ok: 2, inList: 2, same: { n: 2, ok: 1 }, other: { n: 1, ok: 1 } });
+  assert.ok(res.misses.some(m => m.field === 'dest' && m.no === '3')); // いつも同じ側で外れたものは一覧に出る
   assert.deepEqual(res.fields.wh, { n: 4, ok: 2 }); // IDO の行にも倉庫がある（IDO は前回がないので外れ）
   assert.ok(res.misses.some(m => m.field === 'price' && m.no === '3' && m.actual === 66000));
   // 1件目より前の受注がないときは「前回なし」
