@@ -977,6 +977,8 @@ async function markExported() {
    復旧したら、この端末にだけある更新をリストに反映するか尋ねる（勝手に上書きしない）。
    お客様の名前・住所・電話はリストに書かない。 */
 let shared = null, sharedState = 'off', sharedRows = {}, syncingShared = false, pushChain = Promise.resolve();
+// リストへの書き込み中の注文（件数）と、リストを読んでいる間に書いた注文。読み直しで、書きかけの記録が古い内容に戻らないようにする
+const inflight = {}; let syncTouched = null;
 const histCache = {};
 function sharedPending() { return (store.pending = store.pending || {}); }
 function sharedPendingLogs() { return (store.pendingLogs = store.pendingLogs || []); }
@@ -1006,9 +1008,11 @@ async function syncFromList(o) {
   try {
     let rows;
     if (o.first && EARLY_ROWS) { const p = EARLY_ROWS; EARLY_ROWS = null; rows = await p; }   // 画面を開いたときに先に読み始めたもの
-    else { if (!shared.siteId) await shared.connect(); rows = await shared.loadAll(); }
+    else { syncTouched = {}; if (!shared.siteId) await shared.connect(); rows = await shared.loadAll(); }
     const wasOffline = sharedState === 'offline';
-    const m = EC.mergeFromList(store.orders, rows, sharedPending());
+    // 書き込み中・読んでいる間に書いた注文は、リストがまだ古いので、この端末の記録を残す（次の読み直しで、そろう）
+    const busy = Object.assign({}, sharedPending(), inflight, syncTouched || {});
+    const m = EC.mergeFromList(store.orders, rows, busy);
     store.orders = m.orders; sharedRows = rows; sharedState = 'ok'; save();
     renderSharedBanner();
     if (Object.keys(sharedPending()).length && (wasOffline || o.first)) await offerPushLocal();
@@ -1018,7 +1022,7 @@ async function syncFromList(o) {
     sharedOffline(e);
     if (!o.quiet && !(shared && shared.isUnavailable(e))) console.warn('共有の履歴の読み込みに失敗', e);
     return false;
-  } finally { syncingShared = false; }
+  } finally { syncingShared = false; syncTouched = null; }
 }
 // 復旧したとき：この端末にだけある更新を、リストに反映するか尋ねる
 async function offerPushLocal() {
@@ -1072,7 +1076,11 @@ async function pushOrder(id, action, detail, noLog) {
   }
   save(); renderSharedBanner();
 }
-function queuePush(id, action, detail) { pushChain = pushChain.then(() => pushOrder(id, action, detail)); return pushChain; }
+function queuePush(id, action, detail) {
+  inflight[id] = (inflight[id] || 0) + 1; if (syncTouched) syncTouched[id] = true;
+  pushChain = pushChain.then(() => pushOrder(id, action, detail)).catch(() => {}).then(() => { if (!--inflight[id]) delete inflight[id]; });
+  return pushChain;
+}
 
 // 状態が変わる操作の共通の入口。リストに接続できているときは、書く直前に Status を読み直して、想定外に変わっていたら
 // 上書きせず「他の人が更新しました」と出して読み直す（確認OKの二重押しなど）。expect(id)＝いまの状態として想定するリストの Status の配列
