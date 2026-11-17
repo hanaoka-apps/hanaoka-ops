@@ -21,6 +21,13 @@ function fakeGraph(mode) {
     if (mode.network) throw new TypeError('fetch failed');
     if (mode.status) return resp(mode.status, { error: 'x' });
     const path = url.replace('https://graph.microsoft.com/v1.0', '');
+    // 見積アプリの会社の情報（SD_設定）。mode.company＝行の並び（なければリストなし）
+    const cm = decodeURIComponent(path.split('?')[0]).match(/^\/sites\/([^/]+)\/lists\/SD_設定\/items$/);
+    if (cm) {
+      calls[calls.length - 1].companySite = cm[1];
+      if (method !== 'GET') return resp(405, {});
+      return mode.company ? resp(200, { value: mode.company }) : resp(404, {});
+    }
     const [p, q] = path.split('?'); const qs = new URLSearchParams(q || '');
     if (/^\/sites\/[^/]+:\/sites\/[^/]+:$/.test(p)) return resp(200, { id: 'SITE' });
     let m = p.match(/^\/sites\/SITE\/lists\/(EC_Receipt|EC_Log)$/);
@@ -228,6 +235,33 @@ const NOW = new Date('2026-11-16T01:00:00Z');
     assert.strictEqual(g2.lists.EC_Log[0].fields.Action, 'その他'); assert.strictEqual(g2.lists.EC_Log[0].fields.Detail, '領収証発行：R-2026-00001 発行');
     const s3 = ReceiptStore.create({ R, getToken: async () => 't', fetchImpl: g.fetchImpl, sitePath: 'example.sharepoint.com:/sites/x:', listName: 'EC_Receipt' });
     await s3.connect(); assert.strictEqual(await s3.appendLog(row), false);    // ログのリスト名がなければ、何もしない
+  });
+
+  const row = (data, title) => ({ id: '1', fields: { Title: title || '会社', Data: typeof data === 'string' ? data : JSON.stringify(data) } });
+  const COMP = { company: 'サンプル商事株式会社', regNo: 'T0000000000000', bank: '見本銀行', offices: [{ name: '本社', zip: '000-0000', addr: 'サンプル県0-0-0', tel: '000-000-0000', fax: '000-000-0001' }, { name: '第二工場', zip: '111-1111', addr: '別の県1-1-1', tel: '111-111-1111', fax: '' }] };
+  await t('会社の情報（見積アプリの SD_設定「会社」の行）：読み取りだけで読む。拠点が複数でもそのまま。ほかの行は無視', async () => {
+    const g = fakeGraph({ company: [row({ x: 1 }, '別の設定'), row(COMP)] }), s = mk(g);   // connect しなくても読める
+    const c = await s.loadCompany();
+    assert.deepStrictEqual(c, COMP); assert.strictEqual(c.offices.length, 2);
+    assert.deepStrictEqual(s.tokens, [false]);                                                  // 読み取り用の権限（write=false）
+    assert.ok(g.calls.every(x => x.method === 'GET') && g.calls[0].companySite === ReceiptStore.COMPANY_SITE_ID);   // 見積アプリと同じサイト・読むだけ
+    const m = R.mergeSettings(c, null); assert.ok(R.checkSettings(m).ok); assert.strictEqual(m.offices[1].name, '第二工場');
+  });
+  await t('会社の情報が読めない（リストなし・行なし・形が壊れている・配列・権限なし・ネットワーク）：null を返し、例外にしない', async () => {
+    for (const [label, mode] of [['リストなし', {}], ['行なし', { company: [row(COMP, '別の設定')] }], ['行が空', { company: [] }], ['JSON が壊れている', { company: [row('{こわれた')] }],
+      ['配列', { company: [row('[1,2]')] }], ['文字列', { company: [row('"abc"')] }], ['権限なし', { status: 403 }], ['ネットワーク', { network: true }]]) {
+      const g = fakeGraph(mode), s = mk(g);
+      assert.strictEqual(await s.loadCompany(), null, label);
+    }
+    const g = fakeGraph({ company: [row('')] });                                                 // Data が空の行は、空の設定（社名・住所なし＝足りない）
+    const c = await mk(g).loadCompany(); assert.deepStrictEqual(c, {});
+    assert.ok(!R.checkSettings(R.mergeSettings(c, null)).ok);
+    assert.ok(!R.checkSettings(R.mergeSettings(null, null)).ok);
+  });
+  await t('会社の情報：サイト・リスト名は差し替えられる（見積アプリの設定を、別の場所で確かめたいとき）', async () => {
+    const g = fakeGraph({ company: [row(COMP)] });
+    const s = ReceiptStore.create({ R, getToken: async () => 't', fetchImpl: g.fetchImpl, sitePath: 'example.sharepoint.com:/sites/x:', listName: 'EC_Receipt', companySiteId: 'TESTSITE' });
+    assert.deepStrictEqual(await s.loadCompany(), COMP); assert.strictEqual(g.calls[0].companySite, 'TESTSITE');
   });
 
   await t('EC.LOG_ACTIONS に、領収証の操作名が入っている（リストの選択肢・画面と同じ言葉）', async () => {

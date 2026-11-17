@@ -8,7 +8,8 @@
  *   await rc.ready;                      // リストが読めない（権限なし・リストなし・列が足りない）ときは、available() が false のまま。ボタンも札も出ない（エラーは出さない）
  *   rc.badge(no) / rc.button(order)      // 札・ボタンの HTML（読めないときは空）。ボタンの押下は、この部品が自分で受け取る（data-receipt）
  * 注文の情報（order）＝ { no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName }（Shopify の値）。
- * 設定ファイル receipt_settings.json（社名・住所・電話・登録番号）と社印の画像は、SharedMasters から、サインインした人の権限で読む。リポジトリには入れない。
+ * 会社の情報（社名・登録番号・拠点の住所・電話・FAX）は、見積アプリの設定（SharePoint の SD_設定）を、サインインした人の権限で読む（読むだけ）。
+ * 社印の画像などの上書きは、SharedMasters の設定ファイル receipt_settings.json（なくてもよい）。実際の値は、リポジトリに入れない。
  * 利用ログには、操作の名前だけを送る（宛名・金額・注文番号・お客様名は送らない）。 */
 (function (root) {
   'use strict';
@@ -116,19 +117,18 @@
     }
     async function loadSettings() {
       if (SET) return SET;
-      var name = rcConf.settingsFile || 'receipt_settings.json', out = { ok: false, err: '', settings: null, stamp: '', stampWarn: '' };
+      var name = rcConf.settingsFile || 'receipt_settings.json', out = { ok: false, err: '', settings: null, stamp: '', warns: [] };
+      var comp = store ? await store.loadCompany() : null, ov = null;   // 見積アプリの会社の情報（読めなければ null）
       try {
-        var f = await ctx.fetchFile(name), s;
-        try { s = JSON.parse(utf8(f.buf)); } catch (pe) { out.err = '領収証の設定（' + name + '）の形が正しくありません（JSON として読めません）'; SET = out; return out; }
-        var c = R.checkSettings(s);
-        if (!c.ok) { out.err = '領収証の設定（' + name + '）に、足りない項目があります：' + c.missing.join('、'); SET = out; return out; }
-        out.settings = s; out.ok = true;
-        if (s.stampFile) {
-          try { var sf = await ctx.fetchFile(String(s.stampFile)); out.stamp = dataUrl(sf.buf, String(s.stampFile)); }
-          catch (se) { out.stampWarn = '社印の画像（' + s.stampFile + '）を読めません。社印なしで出ます'; }
-        }
-      } catch (e) {
-        out.err = '領収証の設定がありません（SharedMasters に ' + name + ' が見つかりません、または読めません）';
+        var f = await ctx.fetchFile(name);
+        try { ov = JSON.parse(utf8(f.buf)); } catch (pe) { out.warns.push('上書きの設定（' + name + '）の形が正しくありません（JSON として読めません）。見積アプリの会社の情報だけで続けます'); }
+      } catch (e) { /* 上書きのファイルは、なくてもよい */ }
+      var s = R.mergeSettings(comp, ov), c = R.checkSettings(s);
+      if (!c.ok) { out.err = comp ? '会社の設定に、足りない項目があります：' + c.missing.join('、') + '（見積アプリの会社の情報を確認してください）' : R.NO_COMPANY; SET = out; return out; }
+      out.settings = s; out.ok = true; out.warns = out.warns.concat(c.warnings);
+      if (s.stampFile) {
+        try { var sf = await ctx.fetchFile(s.stampFile); out.stamp = dataUrl(sf.buf, s.stampFile); }
+        catch (se) { out.warns.push('社印の画像（' + s.stampFile + '）を読めません。社印なしで出ます'); }
       }
       SET = out; return out;
     }
@@ -177,13 +177,27 @@
     }
     function msgHtml() { return M.msg ? '<div class="rc-alert ' + M.msg.type + '">' + M.msg.html + '</div>' : ''; }
     function setMsg(type, text) { M.msg = text ? { type: type, html: E(text) } : null; }
+    function warnsHtml() { return SET && SET.ok ? SET.warns.map(function (w) { return '<div class="rc-alert warn">' + E(w) + '</div>'; }).join('') : ''; }
+    function offices() { return (SET && SET.ok && SET.settings.offices) || []; }
+    function officeAt(i) { return offices()[+i || 0] || offices()[0] || null; }
+    // 拠点が2つ以上のときだけ選べる（初めは先頭の拠点）。書類の住所・電話に使う
+    function officeSelect(id, cur) {
+      var l = offices(); if (l.length < 2) return '';
+      return '<select id="' + id + '" aria-label="拠点">' + l.map(function (o, i) { return '<option value="' + i + '"' + (String(i) === String(cur || 0) ? ' selected' : '') + '>' + E(o.name || o.addr) + '</option>'; }).join('') + '</select>';
+    }
+    // 書類の「担当者」＝発行した人。見本と新しく出すときは、いまの人。発行済みの再印刷は、記録の発行者
+    function staffName(rec) {
+      var u = ctx.user ? ctx.user() : null, mine = me();
+      if (!rec || !rec.issuedBy || rec.issuedBy === mine) return (u && u.name) || who(mine);
+      return who(rec.issuedBy);
+    }
     function settingsHtml() {
       if (!SET) return '<div class="rc-alert info">領収証の設定を読み込み中…</div>';
       var h = '';
       if (!SET.ok) {
         h += '<div class="rc-alert err">' + E(SET.err) + '<br>設定ができるまで、領収証の発行・再発行はできません（記録の確認と取消はできます）。</div>' +
-          '<details><summary>設定ファイルの書き方（管理者向け）</summary><div class="muted">SharedMasters に <b>' + E(rcConf.settingsFile || 'receipt_settings.json') + '</b> を置きます。値は、実際の会社のものに書き換えます（下は架空の見本です）。社印の画像は、同じ場所に置いて、stampFile にファイル名を書きます。リポジトリ（公開）には、実際の社名・住所・登録番号・社印を入れません。</div><pre>' + E(JSON.stringify(R.SAMPLE_SETTINGS, null, 2)) + '</pre></details>';
-      } else if (SET.stampWarn) h += '<div class="rc-alert warn">' + E(SET.stampWarn) + '</div>';
+          '<details><summary>会社の情報について（管理者向け）</summary><div class="muted">社名・登録番号・拠点の住所・電話・FAX は、見積・受注アプリの会社の情報（SharePoint のリスト SD_設定）から読みます。見積・受注アプリの「会社の情報」の設定を確かめてください。社印の画像などを足したいときだけ、SharedMasters に <b>' + E(rcConf.settingsFile || 'receipt_settings.json') + '</b> を置きます（なくても発行できます。下は架空の見本です）。リポジトリ（公開）には、実際の社名・住所・登録番号・社印を入れません。</div><pre>' + E(JSON.stringify(R.SAMPLE_SETTINGS, null, 2)) + '</pre></details>';
+      } else h += warnsHtml();
       return h;
     }
     function infoHtml() {
@@ -243,7 +257,7 @@
     function openForm(replaceRec) {
       var d = R.defaults(M.o, { proviso: rcConf.proviso });
       if (replaceRec) { var sp = R.splitTitle(replaceRec.atena); d.atena = sp.name; d.title = sp.title; d.proviso = replaceRec.proviso; d.amount = Math.min(replaceRec.amount, M.elig.max); }
-      M.form = { atena: d.atena, title: d.title, proviso: d.proviso, amount: String(d.amount), issueDate: d.issueDate, note: '' };
+      M.form = { atena: d.atena, title: d.title, proviso: d.proviso, amount: String(d.amount), issueDate: d.issueDate, note: '', office: '0' };
       M.cands = d.candidates; M.replaceOf = replaceRec || null; M.mode = 'form'; M.prev = false; M.msg = null; draw();
     }
     function formHtml() {
@@ -258,6 +272,7 @@
         '<label for="rc-proviso">但し書き</label><input type="text" id="rc-proviso" maxlength="60" value="' + E(f.proviso) + '">' +
         '<label for="rc-amount">金額（税込・円）</label><div class="in2"><input type="text" id="rc-amount" inputmode="numeric" style="width:160px" value="' + E(f.amount) + '"><span class="muted">発行できる上限 ' + E(R.yen(M.elig.max)) + '</span></div>' +
         '<label for="rc-date">発行日</label><div class="in2"><input type="date" id="rc-date" value="' + E(f.issueDate) + '"><span class="muted">初めは今日（日本時間）です。変えられます</span></div>' +
+        (offices().length > 1 ? '<label for="rc-office">拠点</label><div class="in2">' + officeSelect('rc-office', f.office) + '<span class="muted">書類の住所・電話に使います</span></div>' : '') +
         '<label for="rc-note">メモ（社内用）</label><input type="text" id="rc-note" maxlength="200" value="' + E(f.note) + '" placeholder="書類には印刷されません（任意）">' +
         '<div class="rc-bk" id="rc-bk"></div><div id="rc-errs" style="grid-column:1/-1"></div></div>' +
         '<div class="rc-btns"><button type="button" class="btn sec" data-rc="preview">プレビュー</button><button type="button" class="btn" data-rc="issue"' + (SET && SET.ok && !M.busy ? '' : ' disabled') + '>' + (M.replaceOf ? '取り消して、出し直す' : '発行する') + '</button><button type="button" class="btn sec" data-rc="back">やめる</button></div>' +
@@ -266,7 +281,7 @@
     }
     function readForm() {
       var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
-      M.form = { atena: g('rc-atena'), title: g('rc-title'), proviso: g('rc-proviso'), amount: g('rc-amount'), issueDate: g('rc-date'), note: g('rc-note') };
+      M.form = { atena: g('rc-atena'), title: g('rc-title'), proviso: g('rc-proviso'), amount: g('rc-amount'), issueDate: g('rc-date'), note: g('rc-note'), office: document.getElementById('rc-office') ? g('rc-office') : (M.form && M.form.office) || '0' };
       return R.validate(M.form, { max: M.elig.max });
     }
     function syncBreakdown() {
@@ -281,6 +296,7 @@
     }
     function onInput(e) {
       if (M && M.mode === 'doc' && e.target && e.target.id === 'rc-paper') { M.doc.paper = e.target.checked; draw(); return; }
+      if (M && M.mode === 'doc' && e.target && e.target.id === 'rc-office-doc') { M.doc.office = e.target.value; draw(); return; }
       if (!M || M.mode !== 'form') return;
       if (e.target && /^rc-/.test(e.target.id || '')) {
         var v = syncBreakdown();
@@ -291,7 +307,7 @@
     // 収入印紙が必要な金額か（基準の金額は設定 receipt.stampNoticeAmount。空なら、判定しない）
     function needStamp(amount) { return R.stampNeeded(amount, rcConf.stampNoticeAmount); }
     var STAMP_NOTE = '収入印紙が必要な場合があります。この金額は、電子（PDF）ではなく、印刷して収入印紙を貼って郵送してください（印紙が要るかどうかは、経理に確認してください）';
-    function docOptions(rec, extra) { return Object.assign({ stampSrc: SET && SET.stamp }, extra || {}); }
+    function docOptions(rec, extra, officeIdx) { return Object.assign({ stampSrc: SET && SET.stamp, staff: staffName(rec), office: officeAt(officeIdx) }, extra || {}); }
     function iframeHtml(html) { return '<div class="rc-docwrap" id="rc-wrap"><iframe class="rc-doc" id="rc-frame" title="領収証" srcdoc="' + E(html) + '"></iframe></div>'; }
     function fitDoc() {   // 書類（A4）を、画面の幅に合わせて縮めて見せる
       var w = document.getElementById('rc-wrap'), f = document.getElementById('rc-frame'); if (!w || !f) return;
@@ -305,21 +321,22 @@
       if (!SET || !SET.ok) { box.innerHTML = ''; return; }
       M.prev = true;
       var rec = { number: '', orderNo: M.o.no, atena: v.value.atena, proviso: v.value.proviso, amount: v.value.amount, tax: v.value.tax, issueDate: v.value.issueDate, status: R.STATUS.issued };
-      box.innerHTML = '<div class="muted" style="margin-top:10px">これは見本です（まだ発行していません）。「発行する」を押すと、番号が付いて、印刷・PDF にできます。</div>' + iframeHtml(R.printHtml(rec, SET.settings, docOptions(rec, { preview: true, stampBox: needStamp(rec.amount) })));
+      box.innerHTML = '<div class="muted" style="margin-top:10px">これは見本です（まだ発行していません）。「発行する」を押すと、番号が付いて、印刷・PDF にできます。</div>' + iframeHtml(R.printHtml(rec, SET.settings, docOptions(rec, { preview: true, stampBox: needStamp(rec.amount) }, M.form.office)));
       fitDoc();
     }
 
     // ---- 書類（発行したあと・再発行・控え）
-    function showDoc(rec, opt) { M.doc = { rec: rec, reissue: !!(opt && opt.reissue), view: !!(opt && opt.view), paper: true }; M.mode = 'doc'; draw(); }   // paper＝紙で出す（収入印紙が必要な金額のとき、貼付欄を付ける。初めは付ける）
+    function showDoc(rec, opt) { M.doc = { rec: rec, reissue: !!(opt && opt.reissue), view: !!(opt && opt.view), paper: true, office: (opt && opt.office) || '0' }; M.mode = 'doc'; draw(); }   // paper＝紙で出す（収入印紙が必要な金額のとき、貼付欄を付ける。初めは付ける）
     function docHtml() {
       var d = M.doc, voided = !R.isActive(d.rec);
       if (!SET || !SET.ok) return settingsHtml() + '<div class="rc-btns"><button type="button" class="btn sec" data-rc="back">戻る</button></div>';
       var stamp = !voided && needStamp(d.rec.amount);
       return '<div class="muted">' + E(d.rec.number) + (d.reissue ? '（再発行）' : '') + (voided ? '（取消済み・控え）' : '') + '</div>' +
+        (offices().length > 1 ? '<div class="rc-row"><span class="muted">拠点（書類の住所・電話）</span>' + officeSelect('rc-office-doc', d.office) + '</div>' : '') +
         (stamp ? '<div class="rc-alert warn">' + E(STAMP_NOTE) + '<br><label><input type="checkbox" id="rc-paper"' + (d.paper !== false ? ' checked' : '') + '> 紙で出す（収入印紙の貼付欄を付けて印刷する）</label></div>' : '') +
-        iframeHtml(R.printHtml(d.rec, SET.settings, docOptions(d.rec, { reissue: d.reissue, stampBox: stamp && d.paper !== false }))) +
+        iframeHtml(R.printHtml(d.rec, SET.settings, docOptions(d.rec, { reissue: d.reissue, stampBox: stamp && d.paper !== false }, d.office))) +
         '<div class="rc-btns">' + (voided ? '' : '<button type="button" class="btn" data-rc="print">印刷 ／ PDF に保存</button>') + '<button type="button" class="btn sec" data-rc="back">戻る</button></div>' +
-        (voided ? '' : '<div class="muted" style="margin-top:6px">印刷の画面で、送信先を「PDF に保存」にすると、PDF のファイルになります（ファイル名の初めは「' + E(R.fileName(d.rec)) + '」）。PDF は、このアプリには保存されません（記録から、いつでも作り直せます）。</div>') + (SET.stampWarn ? '<div class="rc-alert warn">' + E(SET.stampWarn) + '</div>' : '');
+        (voided ? '' : '<div class="muted" style="margin-top:6px">印刷の画面で、送信先を「PDF に保存」にすると、PDF のファイルになります（ファイル名の初めは「' + E(R.fileName(d.rec)) + '」）。PDF は、このアプリには保存されません（記録から、いつでも作り直せます）。</div>') + warnsHtml();
     }
     function doPrint() {
       var fr = document.getElementById('rc-frame'); if (!fr || !fr.contentWindow || !M.doc) return;
@@ -379,7 +396,7 @@
         M.msg = null; M.replaceOf = null;
         if (r.cancelFailed) { M.mode = 'doc'; M.doc = { rec: rec, reissue: false }; M.msg = { type: 'warn', html: E('新しい領収証 ' + rec.number + ' は発行できましたが、古い ' + rp.number + ' を取消にできませんでした。このあと、記録の画面で ' + rp.number + ' を取り消してください') }; draw(); return; }
         setMsg('ok', '発行しました（' + rec.number + '）。下の「印刷 ／ PDF に保存」で、PDF にできます');
-        showDoc(rec, { reissue: false });
+        showDoc(rec, { reissue: false, office: M.form && M.form.office });
       } catch (e) {
         M.busy = false;
         if (e && e.code === 'NUMBER') {
