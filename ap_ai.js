@@ -11,7 +11,7 @@
   const WF_SITE_PATH = 'hanaokacorp.sharepoint.com:/sites/msteams_7aab51:';
   const RES = '/BILLS/ai_result', MASTERS = '/BILLS/masters';
   const RATE = { '課税10%': 0.1, '軽減8%': 0.08 };
-  const WAIT_MS = 5 * 60 * 1000, POLL_MS = 3000;
+  const WAIT_MS = 5 * 60 * 1000, POLL_MS = 1500;   // 結果を見に行く間隔（2026-11-17：3秒→1.5秒。相談の返事を少しでも早く出す）
   let S = null;   // 一度読んだ設定・マスタ（ページを開いている間）
 
   function parseCSV(text) {
@@ -166,8 +166,12 @@
     const msgs = [{ role: 'user', content: ctxText }].concat((t.history || []).map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.text })));
     const merged = []; msgs.forEach(m => { const p = merged[merged.length - 1]; if (p && p.role === m.role) p.content += '\n\n' + m.content; else merged.push({ role: m.role, content: m.content }); });
     if (merged[merged.length - 1].role !== 'user') merged.push({ role: 'user', content: '続けてください' });
-    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 8000, system: sys, messages: merged,
-      output_config: { format: { type: 'json_schema', schema: JOURNAL_SCHEMA } } };
+    // 速さ（2026-11-17）：毎回同じ最初の材料（マスタ・実績・明細）は使い回す（キャッシュ）。ふつうの受け答えは考える量を減らす（effort low）。
+    //   行の作り直し（仕訳の合計が請求書と合わない・人が分けて／作り直してと頼んだ）のときだけ、いつもどおり考えさせる
+    if (merged[0].content === ctxText) merged[0].content = [{ type: 'text', text: ctxText, cache_control: { type: 'ephemeral' } }];
+    const lastMe = [...(t.history || [])].reverse().find(m => m.role !== 'ai'), heavy = (t.total && lsum !== Math.round(t.total)) || /分け|作り直|やり直/.test((lastMe && lastMe.text) || '') || /作り直/.test(t.issue || '');
+    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 8000, system: [{ type: 'text', text: sys, cache_control: { type: 'ephemeral' } }], messages: merged,
+      output_config: { effort: heavy ? 'medium' : 'low', format: { type: 'json_schema', schema: JOURNAL_SCHEMA } } };
     const r = await ask(ctx, s, { title: 'ap.journal', caller: t.invoiceId || '' }, body);
     if (r.status !== '完了') throw new Error(r.message || 'AI に聞けませんでした');
     if (r.stop === 'max_tokens') throw new Error('AI の答えが長すぎて途中で切れました');
