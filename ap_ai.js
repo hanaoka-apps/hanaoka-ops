@@ -120,10 +120,14 @@
     notes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'ApprovalNote'], properties: { index: { type: 'integer' }, ApprovalNote: { type: 'string' } } } },
     memory: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'fact'], properties: { key: { type: 'string' }, fact: { type: 'string' } } } } } };
   // ---- 仕訳を決める（会話。Sonnet）：科目・部門・税は AI が会計の実績から決める。決められないときは、人に「何の支払か」を聞く（科目は聞かない） ----
-  const JOURNAL_SCHEMA = { type: 'object', additionalProperties: false, required: ['reply', 'decided', 'summary', 'lines', 'memory'], properties: {
+  const JOURNAL_SCHEMA = { type: 'object', additionalProperties: false, required: ['reply', 'decided', 'summary', 'lines', 'relines', 'amountBasis', 'memory'], properties: {
     reply: { type: 'string' }, decided: { type: 'boolean' }, summary: { type: 'string' },
     lines: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'AccountCode', 'DeptCode', 'TaxRate', 'SubCode', 'ApprovalNote', 'reason'], properties: {
       index: { type: 'integer' }, AccountCode: { type: 'string' }, DeptCode: { type: 'string' }, TaxRate: { type: 'string', enum: ['課税10%', '軽減8%', '非課税', '対象外'] }, SubCode: { type: 'string' }, ApprovalNote: { type: 'string' }, reason: { type: 'string' } } } },
+    // 行の作り直し（2026-11-17）：仕訳の合計が請求書と合わない・人が分けてと頼んだとき。今の行を全部置き換える。Amount は amountBasis（明細の金額が税抜か税込か）で
+    relines: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['AccountCode', 'DeptCode', 'TaxRate', 'SubCode', 'Amount', 'Description', 'ApprovalNote', 'reason'], properties: {
+      AccountCode: { type: 'string' }, DeptCode: { type: 'string' }, TaxRate: { type: 'string', enum: ['課税10%', '軽減8%', '非課税', '対象外'] }, SubCode: { type: 'string' }, Amount: { type: 'integer' }, Description: { type: 'string' }, ApprovalNote: { type: 'string' }, reason: { type: 'string' } } } },
+    amountBasis: { type: 'string', enum: ['税抜', '税込', ''] },
     memory: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'fact'], properties: { key: { type: 'string' }, fact: { type: 'string' } } } } } };
   const nkey = s => String(s || '').normalize('NFKC').replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|[\s　・.,、。()（）]/g, '');
   // 支払先の会計の実績（摘要に支払先名が入っている行）：直近6か月を先に、新しい順
@@ -141,7 +145,8 @@
       '- 実績が無い・内容が違う・実績で付け方が割れていて決められないときは、決めずに（decided=false、lines は空）、人に支払の中身を聞く：何を買った／何のサービスか、どの拠点・部署で使うか、一回きりか毎月か、など。1回に1〜2問、短く\n' +
       '- 人の答えで決められたら decided=true、lines に直す行を入れる（index は行の番号、AccountCode は科目マスタの6桁、DeptCode は部門マスタの6桁、内訳が要る科目は SubCode、要らなければ ""。ApprovalNote は直さないなら ""）。reason に決めた理由（どの実績にそろえたか、実績が無いなら何から判断したか）を短く\n' +
       '- 決めたとき（decided=true）は summary に、この相談の要約を1〜3文で書く：AI が何を聞き、人がどう答え、それでどの科目・部門・税にしたか（例「名古屋で使うコピー用紙かを確認。人の答え：名古屋営業所の事務用。会計の実績どおり 消耗事務費・002240 にした」）。人に聞かずに決めたときは、どの実績にそろえたか。決めていないときは ""\n' +
-      '- 金額や行の分け方は変えない（人が決める）。行を分けた方がよいと思ったら reply で伝える\n' +
+      '- 金額や行の分け方は、ふだんは変えない（relines は空、amountBasis は ""）。ただし (1) 今の仕訳の合計が請求書の金額と合わないとき、(2) 人が「分けて」「作り直して」と頼んだときは、行を作り直す：relines に新しい行を全部入れる（今の行は全部置き換わる。lines は空、decided=true）。\n' +
+      '  請求書の明細を、宛先・拠点（明細の拠点の欄・宛先）×科目×税率ごとにまとめ、Amount はそのまとめた明細の金額の合計。amountBasis は明細の金額が税抜なら「税抜」、税込なら「税込」。明細は漏れなく・二重なく入れ、合計を請求書の金額に合わせる（消費税の数円の端数は画面で合わせる）。Description は摘要（例「大塚商会 大阪支店 ネット回線・保守 9月分」）。科目・部門・税・内訳は会計の実績にそろえて決め、reason に何をまとめたかを書く。人に金額や分け方を頼み返さない\n' +
       '- memory には、次から聞かずに済む「毎月変わらない事実」だけを入れる（例 key「契約番号 00-4049-0155」fact「名古屋営業所のネット回線」）。科目・部門・税そのもの、支払日・払う月、一度きりのことは入れない\n' +
       '- reply は短い日本語';
     const kmT = R.km.filter(x => x['科目コード']).map(x => `${x['科目コード']} ${x['科目名']}`).join('\n');
@@ -150,19 +155,22 @@
     const umT = Object.entries(ug).filter(([, g]) => g.length <= 30 && !g.some(x => x['内訳コード'] === '000000')).map(([k, g]) => `${k}：` + g.map(x => `${x['内訳コード']} ${x['略称'] || x['内訳名']}`).join(' / ')).join('\n');
     const histT = hist.slice(0, 40).map(x => `${x['年月']}｜${x['科目コード']} ${x['科目名']}｜部門 ${x['部門コード']}｜${x['税区分']}${x['内訳'] ? '｜内訳 ' + x['内訳'] : ''}｜${x['金額']}円｜${String(x['摘要'] || '').replace(/\s+/g, ' ').slice(0, 50)}`).join('\n');
     const mem = (R.mem || []).filter(m => !m.payee || nkey(m.payee) === nkey(t.payee)).map(m => `- ${m.key}：${m.fact}`).join('\n');
-    const ctxText = `## 請求書\n支払先：${t.payee || ''}\n拠点：${t.loc || ''}\n\n## 今の仕訳の行（番号｜科目｜部門｜税率｜内訳｜税込｜摘要｜決裁メモ）\n` +
+    const lsum = (t.lines || []).reduce((a, l) => a + (+l.amount || 0), 0);
+    const ctxText = `## 請求書\n支払先：${t.payee || ''}\n拠点：${t.loc || ''}\n請求書の金額（税込）：${t.total ? yen(t.total) + ' 円' : '不明'}\n今の仕訳の合計（税込）：${yen(lsum)} 円${t.total && lsum !== Math.round(t.total) ? '（請求書の金額と合っていない → 行を作り直す）' : ''}\n\n## 今の仕訳の行（番号｜科目｜部門｜税率｜内訳｜税込｜摘要｜決裁メモ）\n` +
       (t.lines || []).map((l, i) => `${i}｜${l.acode || ''} ${l.aname || ''}｜${l.dept || ''}｜${l.rate || ''}｜${l.sub || ''}｜${yen(l.amount)}｜${l.note || ''}｜${l.memo || ''}`).join('\n') +
-      (t.items && t.items.length ? `\n\n## 請求書の明細（AI が読んだもの）\n${t.items.slice(0, 40).map(x => `${x.Name || x.Description || ''}｜${x.Amount || ''}`).join('\n')}` : '') +
+      // 明細：品名・規格・拠点（Note）・税率・金額を全部（前は品名の欄名が違っていて金額だけ・40行までしか渡していなかった）
+      (t.items && t.items.length ? `\n\n## 請求書の明細（AI が読んだもの。金額は${t.itemsAmount || '税抜か税込か不明'}。日付｜伝票No｜品名｜規格｜拠点・備考｜税率｜金額）\n${t.items.filter(x => !taxRow(x)).slice(0, 300).map(x => `${x.Date || ''}｜${x.SlipNo || ''}｜${x.ItemName || x.Name || x.Description || ''}｜${x.Spec || ''}｜${x.Note || ''}｜${x.TaxRate || ''}｜${x.Amount == null ? '' : x.Amount}`).join('\n')}` : '') +
       `\n\n## この支払先の会計の実績（新しい順・最大40行${ymEnd ? `・最新 ${ymEnd}` : ''}）\n${histT || '（実績なし：初めての支払先か、摘要の書き方が違う）'}` +
       (mem ? `\n\n## 覚えたこと（人が教えた事実）\n${mem}` : '') +
       `\n\n## 科目マスタ\n${kmT}\n\n## 部門マスタ\n${bmT}\n\n## 内訳が要る科目\n${umT}\n\n## 相談のきっかけ\n${t.issue || '仕訳を決めてください'}`;
     const msgs = [{ role: 'user', content: ctxText }].concat((t.history || []).map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.text })));
     const merged = []; msgs.forEach(m => { const p = merged[merged.length - 1]; if (p && p.role === m.role) p.content += '\n\n' + m.content; else merged.push({ role: m.role, content: m.content }); });
     if (merged[merged.length - 1].role !== 'user') merged.push({ role: 'user', content: '続けてください' });
-    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 3000, system: sys, messages: merged,
+    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 8000, system: sys, messages: merged,
       output_config: { format: { type: 'json_schema', schema: JOURNAL_SCHEMA } } };
     const r = await ask(ctx, s, { title: 'ap.journal', caller: t.invoiceId || '' }, body);
     if (r.status !== '完了') throw new Error(r.message || 'AI に聞けませんでした');
+    if (r.stop === 'max_tokens') throw new Error('AI の答えが長すぎて途中で切れました');
     const a = JSON.parse(r.text); a.history = hist.length; return a;
   }
   async function teach(ctx, t) {
