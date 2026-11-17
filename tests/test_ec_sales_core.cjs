@@ -941,6 +941,13 @@ t('稼働の印（RpaQueue.health）：features を返す。印が古いと ok:f
   assert.strictEqual(await make(undefined).health().then(x => x && x.ok), false);                // 印なし（ファイルが無い）→ ok:false → real
 });
 
+t('Shopify の注文：入金日（Paid at）を日付で持つ（領収証の領収日の初期値）。なければ空', () => {
+  const csv = ['Name,Total,Created at,Paid at,Financial Status,Lineitem name,Lineitem quantity', '#1901,11000,2026-11-09 10:00:00 +0900,2026-11-10 12:34:56 +0900,paid,商品A,1', '#1901,,,,,商品B,1', '#1902,5000,2026-11-09 11:00:00 +0900,,pending,商品C,1'].join('\n') + '\n';
+  const O = EC.groupShopifyOrders(EC.parseObjects(csv));
+  assert.strictEqual(O.find(o => o.id === '1901').paidAt, '2026-11-10'); assert.strictEqual(O.find(o => o.id === '1902').paidAt, '');
+  assert.strictEqual(O.find(o => o.id === '1901').lines.length, 2);
+});
+
 /* ---------- 実データ（手元にあるときだけ） ---------- */
 const SM = 'C:/Users/tfuku/OneDrive - 花岡車輌 株式会社/花岡車輌 - SharedMasters/';
 const SH = 'C:/Users/tfuku/Downloads/FireShot/';

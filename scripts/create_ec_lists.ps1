@@ -120,6 +120,7 @@ $Definitions = @(
       (Col-Number 'Amount' '金額（税込）'),
       (Col-Number 'Tax' '消費税'),
       (Col-Date 'IssueDate' '発行日' $false),
+      (Col-Date 'PaidDate' '領収日' $false),
       (Col-Text 'IssuedBy' '発行した人'),
       (Col-Choice 'Status' '状態' $ReceiptStatusChoices $true),
       (Col-Number 'ReissueCount' '再発行回数'),

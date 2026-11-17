@@ -178,6 +178,7 @@
     }
     function msgHtml() { return M.msg ? '<div class="rc-alert ' + M.msg.type + '">' + M.msg.html + '</div>' : ''; }
     function setMsg(type, text) { M.msg = text ? { type: type, html: E(text) } : null; }
+    function hasPaid() { return !!(store && store.hasPaidDate); }   // 記録のリストに、領収日の列があるか
     function warnsHtml() { return SET && SET.ok ? SET.warns.map(function (w) { return '<div class="rc-alert warn">' + E(w) + '</div>'; }).join('') : ''; }
     function offices() { return (SET && SET.ok && SET.settings.offices) || []; }
     function officeAt(i) { return offices()[+i || 0] || offices()[0] || null; }
@@ -218,10 +219,10 @@
     // ---- 一覧（この注文の発行の記録と、できる操作）
     function recsTable() {
       if (!M.recs.length) return '';
-      return '<h3>発行の記録</h3><div style="overflow:auto"><table class="rc-tbl"><thead><tr><th>番号</th><th>取引日</th><th>宛名</th><th>金額（税込）</th><th>状態</th><th>発行者</th><th>どこから</th><th>メモ</th></tr></thead><tbody>' +
+      return '<h3>発行の記録</h3><div style="overflow:auto"><table class="rc-tbl"><thead><tr><th>番号</th><th>領収日</th><th>発行日</th><th>宛名</th><th>金額（税込）</th><th>状態</th><th>発行者</th><th>どこから</th><th>メモ</th></tr></thead><tbody>' +
         M.recs.map(function (r) {
           var v = !R.isActive(r);
-          return '<tr class="' + (v ? 'void' : '') + '"><td><b>' + E(r.number) + '</b></td><td>' + E(R.jaDate(r.issueDate)) + '</td><td>' + E(r.atena) + '</td><td class="num">' + E(R.yen(r.amount)) + '</td>' +
+          return '<tr class="' + (v ? 'void' : '') + '"><td><b>' + E(r.number) + '</b></td><td>' + E(R.jaDate(r.paidDate)) + '</td><td>' + E(R.jaDate(r.issueDate)) + '</td><td>' + E(r.atena) + '</td><td class="num">' + E(R.yen(r.amount)) + '</td>' +
             '<td class="st"><span class="tag ' + (v ? 'info' : 'ok') + '">' + E(r.status) + '</span>' + (v ? ' <a href="#" data-rc="viewvoid" data-id="' + E(r.id) + '">控えを見る</a>' : '') + (r.reissueCount ? ' <span class="muted">再発行 ' + r.reissueCount + '回</span>' : '') + '</td><td>' + E(who(r.issuedBy)) + '</td><td>' + E(r.source === 'ec_sales' ? 'EC売上アプリ' : r.source === 'ec_viewer' ? '閲覧画面' : r.source) + '</td><td class="muted">' + E(r.note) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
     }
@@ -254,17 +255,18 @@
       return h;
     }
 
-    // ---- 発行の画面（宛名・但し書き・金額・取引日）
+    // ---- 発行の画面（宛名・但し書き・金額・領収日・発行日）
     function openForm(replaceRec) {
       var d = R.defaults(M.o, { proviso: rcConf.proviso });
-      if (replaceRec) { var sp = R.splitTitle(replaceRec.atena); d.atena = sp.name; d.title = sp.title; d.proviso = replaceRec.proviso; d.amount = Math.min(replaceRec.amount, M.elig.max); }
-      M.form = { atena: d.atena, title: d.title, proviso: d.proviso, amount: String(d.amount), issueDate: d.issueDate, note: '', office: '0' };
+      if (replaceRec) { var sp = R.splitTitle(replaceRec.atena); d.atena = sp.name; d.title = sp.title; d.proviso = replaceRec.proviso; d.paidDate = replaceRec.paidDate || d.paidDate; d.amount = Math.min(replaceRec.amount, M.elig.max); }
+      M.form = { atena: d.atena, title: d.title, proviso: d.proviso, amount: String(d.amount), issueDate: d.issueDate, paidDate: d.paidDate, note: '', office: '0' };
       M.cands = d.candidates; M.provs = d.provisos || []; M.replaceOf = replaceRec || null; M.mode = 'form'; M.prev = false; M.msg = null; draw();
     }
     function formHtml() {
       var f = M.form, c = M.cands || [];
       var h = settingsHtml();
       if (M.elig.refundNote) h += '<div class="rc-alert warn">' + E(M.elig.refundNote) + '</div>';
+      if (!hasPaid()) h += '<div class="rc-alert warn">記録のリストに「領収日」の列がないため、領収日は書類に出ず、記録にも残りません。管理者に、scripts/create_ec_lists.ps1 を実行してもらってください（列が足されます）。</div>';
       if (M.replaceOf) h += '<div class="rc-alert info">' + E(M.replaceOf.number) + ' を取消にして、新しい番号で出し直します。</div>';
       h += '<div class="rc-form">' +
         '<label for="rc-atena">宛名</label><div><div class="in2"><input type="text" id="rc-atena" maxlength="60" value="' + E(f.atena) + '" placeholder="例：株式会社○○ ／ 山田 太郎"><select id="rc-title" aria-label="敬称">' +
@@ -273,7 +275,8 @@
         '<label for="rc-proviso">但し書き</label><div><input type="text" id="rc-proviso" maxlength="60" value="' + E(f.proviso) + '">' +
         ((M.provs || []).length ? '<div style="margin-top:4px">' + M.provs.map(function (x, i) { return '<span class="rc-chip" data-rc="prov" data-i="' + i + '" title="但し書きに入れる">' + E(x) + '</span>'; }).join('') + '<span class="muted">← 注文の商品名から選べます（取引の内容が分かる書き方にします）</span></div>' : '') + '</div>' +
         '<label for="rc-amount">金額（税込・円）</label><div class="in2"><input type="text" id="rc-amount" inputmode="numeric" style="width:160px" value="' + E(f.amount) + '"><span class="muted">発行できる上限 ' + E(R.yen(M.elig.max)) + '</span></div>' +
-        '<label for="rc-date">取引日</label><div class="in2"><input type="date" id="rc-date" value="' + E(f.issueDate) + '"><span class="muted">お金を受け取った日です。初めは今日（日本時間）です。変えられます</span></div>' +
+        (hasPaid() ? '<label for="rc-paid">領収日</label><div class="in2"><input type="date" id="rc-paid" value="' + E(f.paidDate) + '"><span class="muted">お客様のカード決済が完了した日です。Shopify の決済完了日（Paid at）が入ります。直せます</span></div>' : '') +
+        '<label for="rc-date">発行日</label><div class="in2"><input type="date" id="rc-date" value="' + E(f.issueDate) + '"><span class="muted">書類を出す日です。初めは今日（日本時間）です。変えられます</span></div>' +
         (offices().length > 1 ? '<label for="rc-office">拠点</label><div class="in2">' + officeSelect('rc-office', f.office) + '<span class="muted">書類の住所・電話に使います</span></div>' : '') +
         '<label for="rc-note">メモ（社内用）</label><input type="text" id="rc-note" maxlength="200" value="' + E(f.note) + '" placeholder="書類には印刷されません（任意）">' +
         '<div class="rc-bk" id="rc-bk"></div><div id="rc-errs" style="grid-column:1/-1"></div></div>' +
@@ -283,8 +286,8 @@
     }
     function readForm() {
       var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
-      M.form = { atena: g('rc-atena'), title: g('rc-title'), proviso: g('rc-proviso'), amount: g('rc-amount'), issueDate: g('rc-date'), note: g('rc-note'), office: document.getElementById('rc-office') ? g('rc-office') : (M.form && M.form.office) || '0' };
-      return R.validate(M.form, { max: M.elig.max });
+      M.form = { atena: g('rc-atena'), title: g('rc-title'), proviso: g('rc-proviso'), amount: g('rc-amount'), issueDate: g('rc-date'), paidDate: document.getElementById('rc-paid') ? g('rc-paid') : (M.form && M.form.paidDate) || '', note: g('rc-note'), office: document.getElementById('rc-office') ? g('rc-office') : (M.form && M.form.office) || '0' };
+      return R.validate(M.form, { max: M.elig.max, paidColumn: hasPaid() });
     }
     function syncBreakdown() {
       var v = readForm(), el = document.getElementById('rc-bk'); if (!el) return v;
@@ -322,7 +325,7 @@
       if (!v.ok) { box.innerHTML = ''; M.prev = false; return; }
       if (!SET || !SET.ok) { box.innerHTML = ''; return; }
       M.prev = true;
-      var rec = { number: '', orderNo: M.o.no, atena: v.value.atena, proviso: v.value.proviso, amount: v.value.amount, tax: v.value.tax, issueDate: v.value.issueDate, status: R.STATUS.issued };
+      var rec = { number: '', orderNo: M.o.no, atena: v.value.atena, proviso: v.value.proviso, amount: v.value.amount, tax: v.value.tax, issueDate: v.value.issueDate, paidDate: v.value.paidDate, status: R.STATUS.issued };
       box.innerHTML = '<div class="muted" style="margin-top:10px">これは見本です（まだ発行していません）。「発行する」を押すと、番号が付いて、印刷・PDF にできます。</div>' + iframeHtml(R.printHtml(rec, SET.settings, docOptions(rec, { preview: true, stampBox: needStamp(rec.amount) }, M.form.office)));
       fitDoc();
     }
@@ -380,10 +383,10 @@
       if (!v.ok) return;
       if (!SET || !SET.ok) { setMsg('err', SET ? SET.err : '設定を読み込み中です'); draw(); return; }
       var rp = M.replaceOf;
-      if (!confirm((rp ? rp.number + ' を取り消して、新しい領収証を発行します。\n' : '領収証を発行します。\n') + '\n宛名：' + v.value.atena + '\n但し書き：' + v.value.proviso + '\n金額：' + R.yen(v.value.amount) + '（税込）\n取引日：' + R.jaDate(v.value.issueDate) + '\n\nよろしいですか？')) return;
+      if (!confirm((rp ? rp.number + ' を取り消して、新しい領収証を発行します。\n' : '領収証を発行します。\n') + '\n宛名：' + v.value.atena + '\n但し書き：' + v.value.proviso + '\n金額：' + R.yen(v.value.amount) + '（税込）\n' + (v.value.paidDate ? '領収日：' + R.jaDate(v.value.paidDate) + '\n' : '') + '発行日：' + R.jaDate(v.value.issueDate) + '\n\nよろしいですか？')) return;
       M.busy = true;
       if (!(await needWrite())) return;
-      var data = { orderNo: M.o.no, atena: v.value.atena, proviso: v.value.proviso, amount: v.value.amount, tax: v.value.tax, issueDate: v.value.issueDate, note: v.value.note };
+      var data = { orderNo: M.o.no, atena: v.value.atena, proviso: v.value.proviso, amount: v.value.amount, tax: v.value.tax, issueDate: v.value.issueDate, paidDate: v.value.paidDate, note: v.value.note };
       var opt = { user: me(), source: ctx.source };
       try {
         var r = rp ? await store.replace(rp, data, opt) : await store.issue(data, opt);

@@ -108,7 +108,7 @@
   function shopifyInfo(o) {
     var a = o.ship || {}, b = o.bill || {};
     return {
-      has: true, createdAt: o.createdAt || '', createdTime: o.createdTime || '', financial: o.financial || '', fulfillment: o.fulfillment || '', cancelledAt: o.cancelledAt || '',
+      has: true, createdAt: o.createdAt || '', createdTime: o.createdTime || '', paidAt: o.paidAt || '', financial: o.financial || '', fulfillment: o.fulfillment || '', cancelledAt: o.cancelledAt || '',
       total: o.total || 0, refunded: o.refunded || 0, email: o.email || '', phone: a.phone || o.phone || '', shipName: a.name || '', shipCompany: a.company || '',
       zip: a.zip || '', address: [a.province, a.city, a.addr1, a.addr2].filter(Boolean).join(' '), billName: b.name || '', billCompany: b.company || '', tags: String(o.tags || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean),
       lines: (o.lines || []).map(function (l) { return { name: l.name, sku: l.sku, qty: l.qty }; }), notes: o.notes || '',

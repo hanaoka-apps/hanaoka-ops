@@ -65,12 +65,12 @@ t('宛名と敬称：分ける・つなぐ', () => {
 });
 
 t('入力の検査：正常（全角の数字・カンマ・円も受ける）', () => {
-  const v = R.validate({ atena: ' 山田 太郎 ', title: '様', proviso: '商品代として', amount: '１１，０００円', issueDate: '2026-11-16', note: '' }, { max: 11000, now: new Date('2026-11-16T01:00:00Z') });
+  const v = R.validate({ atena: ' 山田 太郎 ', title: '様', proviso: '商品代として', amount: '１１，０００円', issueDate: '2026-11-16', paidDate: '2026-11-10', note: '' }, { max: 11000, now: new Date('2026-11-16T01:00:00Z') });
   assert.ok(v.ok, v.errors.join()); assert.deepStrictEqual(v.warnings, []);
-  assert.deepStrictEqual(v.value, { atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, net: 10000, tax: 1000, issueDate: '2026-11-16', note: '' });
+  assert.deepStrictEqual(v.value, { atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, net: 10000, tax: 1000, issueDate: '2026-11-16', paidDate: '2026-11-10', note: '' });
 });
 t('入力の検査：上限を超えたら止める・0円・小数・文字・空・長すぎ・日付', () => {
-  const base = { atena: '山田 太郎', title: '様', proviso: '商品代として', amount: 1000, issueDate: '2026-11-16' };
+  const base = { atena: '山田 太郎', title: '様', proviso: '商品代として', amount: 1000, issueDate: '2026-11-16', paidDate: '2026-11-10' };
   const bad = (o, re, opts) => { const v = R.validate(Object.assign({}, base, o), Object.assign({ max: 5000 }, opts)); assert.ok(!v.ok, JSON.stringify(o)); assert.ok(v.errors.some(e => re.test(e)), v.errors.join()); };
   bad({ amount: 5001 }, /上限（¥5,000）を超えて/);
   bad({ amount: 0 }, /1円以上/);
@@ -83,13 +83,21 @@ t('入力の検査：上限を超えたら止める・0円・小数・文字・�
   bad({ atena: 'あ'.repeat(60) }, /宛名が長すぎ/);
   bad({ proviso: '' }, /但し書きを入れて/);
   bad({ proviso: 'あ'.repeat(61) }, /但し書きが長すぎ/);
-  bad({ issueDate: '2026-02-30' }, /取引日/);
-  bad({ issueDate: '' }, /取引日/);
+  bad({ issueDate: '2026-02-30' }, /発行日/);
+  bad({ issueDate: '' }, /発行日/);
+  bad({ paidDate: '' }, /領収日/);
+  bad({ paidDate: '2026-13-01' }, /領収日/);
   bad({ note: 'あ'.repeat(201) }, /メモが長すぎ/);
   assert.ok(R.validate(Object.assign({}, base, { amount: 5000 }), { max: 5000 }).ok);                                   // ちょうど上限は通る
   const w = R.validate(Object.assign({}, base, { issueDate: '2026-11-20' }), { max: 5000, now: new Date('2026-11-16T01:00:00Z') });
   assert.ok(w.ok && w.warnings.length === 1 && /今日より先/.test(w.warnings[0]));                                       // 先の日付は、止めず注意だけ
   assert.strictEqual(R.validate(Object.assign({}, base, { atena: '山田\n太郎' }), {}).value.atena, '山田 太郎 様');     // 改行は空白に
+  const np = R.validate(Object.assign({}, base, { paidDate: '' }), { max: 5000, paidColumn: false });                      // 記録のリストに領収日の列がないときは、領収日を求めない
+  assert.ok(np.ok && np.value.paidDate === '');
+  const wl = R.validate(Object.assign({}, base, { issueDate: '2026-11-10', paidDate: '2026-11-12' }), { max: 5000, now: new Date('2026-11-16T01:00:00Z') });
+  assert.ok(wl.ok && wl.warnings.some(x => /領収日が、発行日より後/.test(x)));                                          // 領収日が発行日より後なら、止めず注意
+  const wf = R.validate(Object.assign({}, base, { paidDate: '2026-11-20' }), { max: 5000, now: new Date('2026-11-16T01:00:00Z') });
+  assert.ok(wf.ok && wf.warnings.some(x => /領収日が、今日より先/.test(x)));
 });
 
 t('領収証番号：ID から作る連番。取消した番号は使い回さない（ID は増えるだけ）', () => {
@@ -102,7 +110,7 @@ t('領収証番号：ID から作る連番。取消した番号は使い回さ�
 t('リストの行との変換：項目名・日付は正午(UTC)・番号がまだ付いていない行も、ID から同じ番号を出す', () => {
   const rec = { number: 'R-2026-00012', orderNo: '#1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-16', issuedBy: 'a@example.com', status: '発行済', reissueCount: 0, note: '', source: 'ec_viewer' };
   const f = R.toFields(rec);
-  assert.deepStrictEqual(Object.keys(f).sort(), ['Amount', 'Atena', 'IssueDate', 'IssuedBy', 'Note', 'OrderNo', 'Proviso', 'ReissueCount', 'Source', 'Status', 'Tax', 'Title']);
+  assert.deepStrictEqual(Object.keys(f).sort(), ['Amount', 'Atena', 'IssueDate', 'IssuedBy', 'Note', 'OrderNo', 'PaidDate', 'Proviso', 'ReissueCount', 'Source', 'Status', 'Tax', 'Title']);   // 領収日が空なら PaidDate は null（書かない）
   assert.strictEqual(f.OrderNo, '1801'); assert.strictEqual(f.IssueDate, '2026-11-16T12:00:00Z'); assert.strictEqual(f.Status, '発行済');
   assert.strictEqual(R.toFields(Object.assign({}, rec, { number: '' })).Title, R.PENDING_TITLE);
   const back = R.fromItem({ id: '12', createdDateTime: '2026-11-16T01:00:00Z', fields: Object.assign({}, f, { Amount: 11000 }) });
@@ -159,7 +167,7 @@ t('印刷用の HTML（見積書と同じ書式）：見出し・宛名・番号
   const html = R.printHtml(rec, S, { staff: '見本 花子' });
   assert.ok(/^<!DOCTYPE html>/.test(html) && /@page\{size:A4;margin:8mm\}/.test(html));
   assert.ok(html.includes('<h2>領収証</h2><div class="en">RECEIPT</div>') && html.includes('<div class="cols">'));
-  assert.ok(html.includes('領収証番号<small>RECEIPT #</small>') && html.includes('R-2026-00012') && html.includes('取引日<small>DATE</small>') && html.includes('2026年11月16日') && html.includes('但し書き<small>PROVISO</small>'));
+  assert.ok(html.includes('領収証番号<small>RECEIPT #</small>') && html.includes('R-2026-00012') && html.includes('発行日<small>DATE</small>') && html.includes('2026年11月16日') && html.includes('但し書き<small>PROVISO</small>'));
   assert.ok(html.includes('備考<small>REMARKS</small>') && html.includes('ご注文番号　#1801'));
   assert.ok(/10%対象（税抜）<small>SUBTOTAL<\/small><\/th><th>消費税額（10%）<small>TAX<\/small><\/th><th>合計（税込）<small>TOTAL AMOUNT/.test(html));   // 税率ごとの対象額と消費税額が分かる言葉
   assert.ok(/<td>¥10,000<\/td><td>¥1,000<\/td><td>¥11,000<\/td>/.test(html));          // 10%対象（税抜）・消費税額・合計（税込）の順
@@ -197,6 +205,31 @@ t('印刷用の HTML：再発行は備考に入る／取消・見本（未発行
   assert.strictEqual(R.fileName(rec), '領収証_R-2026-00012');
 });
 
+t('領収日：Shopify の入金日（なければ空）が初期値。記録とも行き来できる', () => {
+  assert.strictEqual(R.orderInfo({ no: '1', paidAt: '2026-11-10 12:34:56 +0900' }).paidAt, '2026-11-10');
+  assert.strictEqual(R.orderInfo({ no: '1', paidAt: '' }).paidAt, ''); assert.strictEqual(R.orderInfo({ no: '1', paidAt: 'へん' }).paidAt, '');
+  const o = { no: '1801', financial: 'paid', total: 11000, paidAt: '2026-11-10' };
+  assert.strictEqual(R.defaults(o, { now: new Date('2026-11-17T01:00:00Z') }).paidDate, '2026-11-10');
+  assert.strictEqual(R.defaults(o, { now: new Date('2026-11-17T01:00:00Z') }).issueDate, '2026-11-17');   // 発行日は今日
+  assert.strictEqual(R.defaults({ no: '1801', financial: 'paid', total: 11000 }).paidDate, '');
+  const rec = { number: 'R-2026-00012', orderNo: '1801', atena: 'A 様', proviso: 'x', amount: 11000, tax: 1000, issueDate: '2026-11-17', paidDate: '2026-11-10', issuedBy: 'a@example.com', status: '発行済' };
+  const f = R.toFields(rec); assert.ok(/^2026-11-10T/.test(f.PaidDate) && /^2026-11-17T/.test(f.IssueDate));
+  assert.strictEqual(R.fromItem({ id: '12', createdDateTime: '2026-11-17T01:00:00Z', fields: f }).paidDate, '2026-11-10');
+  assert.strictEqual(R.fromItem({ id: '12', fields: { Title: 'R-2026-00012', Status: '発行済' } }).paidDate, '');    // 列がない・空の古い記録
+  assert.strictEqual(R.toFields(Object.assign({}, rec, { paidDate: '' })).PaidDate, null);
+});
+t('印刷用の HTML：領収日・発行日・備考の「○年○月○日 Shopify決済分として」。領収日がない古い記録は、その行を出さない', () => {
+  const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-17', paidDate: '2026-11-10', status: '発行済', reissueCount: 0 };
+  let h = R.printHtml(rec, S, {});
+  assert.ok(h.includes('領収日<small>PAYMENT DATE</small></div><div>2026年11月10日</div>') && h.includes('発行日<small>DATE</small></div><div>2026年11月17日</div>'));
+  assert.ok(h.indexOf('領収日<small>') < h.indexOf('発行日<small>'));                                    // 領収日、発行日の順
+  assert.ok(/<div>2026年11月10日 Shopify決済分として\nご注文番号　#1801<\/div>/.test(h));
+  h = R.printHtml(Object.assign({}, rec, { paidDate: '' }), S, {});
+  assert.ok(!/領収日/.test(h.replace(/<style>[\s\S]*<\/style>/, '')) && !/Shopify決済分/.test(h) && h.includes('発行日<small>DATE'));
+  h = R.printHtml(rec, S, { reissue: true });
+  assert.ok(/<div>2026年11月10日 Shopify決済分として\n再発行/.test(h));
+});
+
 t('但し書きの候補：Shopify の商品名から作る（同じ名前は1つ・60文字まで・最大4つ）。商品が1種類なら初期値にする', () => {
   const o = { no: '1801', financial: 'paid', total: 11000, lines: [{ name: 'FLAT CART 2×4（ブラック）', qty: 1 }] };
   assert.deepStrictEqual(R.provisoCandidates(o), ['FLAT CART 2×4（ブラック） 代として']);
@@ -209,7 +242,7 @@ t('但し書きの候補：Shopify の商品名から作る（同じ名前は1�
   assert.deepStrictEqual(R.provisoCandidates({ lines: [{ name: 'あ'.repeat(58), qty: 1 }, { name: 'い'.repeat(10), qty: 1 }] }), ['い'.repeat(10) + ' 代として']);   // 長すぎるもの（60文字超）は候補にしない
   assert.strictEqual(R.provisoCandidates({}).length, 0); assert.strictEqual(R.provisoCandidates(null).length, 0);
   assert.strictEqual(R.defaults(o).candidates.length, 0);
-  assert.ok(R.validate({ atena: 'A', title: '様', proviso: R.provisoCandidates(o)[0], amount: '11000', issueDate: '2026-11-17' }, { max: 11000 }).ok);
+  assert.ok(R.validate({ atena: 'A', title: '様', proviso: R.provisoCandidates(o)[0], amount: '11000', issueDate: '2026-11-17', paidDate: '2026-11-10' }, { max: 11000 }).ok);
 });
 
 t('収入印紙：基準の金額（設定）以上だけ。設定が空なら、判定しない（アプリは基準の値を持たない）', () => {
