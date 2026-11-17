@@ -245,8 +245,9 @@
       '.sheet .to span:first-child{word-break:break-all}.sheet .to span:last-child{font-weight:400;font-size:12px;white-space:nowrap}' +
       '.sheet .kv{display:grid;grid-template-columns:84px 1fr;border-bottom:1px solid var(--line-strong);padding:5px 0;align-items:end}' +
       '.sheet .kv small{display:block;font-size:8px;color:var(--sub);letter-spacing:.05em}' +
-      '.sheet .co{position:relative;font-size:15px;font-weight:600;margin:6px 0 2px}.sheet .co .cn{display:inline-block}.sheet .co img.logo{display:block;width:0;min-width:100%;height:auto;margin-bottom:6px}' +   /* ロゴの幅＝社名の幅（width:0;min-width:100% で、画像の大きさが枠の幅を決めないようにする） */
-      '.sheet .co img.stamp{position:absolute;right:6px;top:34px;width:64px;height:64px;object-fit:contain;mix-blend-mode:multiply;opacity:.92}' +
+      '.sheet .co{position:relative;font-size:15px;font-weight:600;margin:6px 0 2px}.sheet .co .cn{display:inline-block}' +   /* ロゴの見える部分の幅＝社名の幅。ロゴの画像（hanaoka_logo.png 879×367）は、まわりに透明の余白があり、見える部分は横 157〜700・縦 123〜288。その範囲だけを切り出して、枠（社名の幅）に合わせる */
+      '.sheet .co .lg{position:relative;width:100%;aspect-ratio:543/165;overflow:hidden;margin-bottom:6px}.sheet .co .lg img{position:absolute;left:-28.91%;top:-74.54%;width:161.88%;height:auto}' +
+      '.sheet .co img.stamp{position:absolute;right:6px;top:14px;width:64px;height:64px;object-fit:contain;mix-blend-mode:multiply;opacity:.92}' +
       '.sheet .addr{font-size:10.5px}' +
       '.sheet .kv2{display:grid;grid-template-columns:70px 1fr;margin-top:8px;align-items:end}.sheet .kv2 b{font-size:13px;text-align:center}.sheet .kv2 small{display:block;font-size:8px;color:var(--sub);letter-spacing:.05em}' +
       '.sheet .remarks{border:1.5px solid var(--txt);min-height:110px;margin-top:14px;padding:10px 12px;display:grid;grid-template-columns:62px 1fr;gap:8px;white-space:pre-wrap}.sheet .remarks small{font-size:8px;color:var(--sub);display:block}' +
@@ -268,7 +269,7 @@
     h += kv('発行日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
     h += '<div class="remarks"><div>備考<small>REMARKS</small></div><div>' + e(remarks.join('\n')) + '</div></div>';
     h += '</div><div>';
-    h += '<div class="co"><div class="cn"><img class="logo" src="hanaoka_logo.png" alt="">' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';
+    h += '<div class="co"><div class="cn"><div class="lg"><img class="logo" src="hanaoka_logo.png" alt=""></div>' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';
     h += '<div class="addr">' + (o.addr ? '〒' + e(o.zip) + ' ' + e(o.addr) : '') + '<br>' + (o.tel ? 'TEL:' + e(o.tel) : '') + (o.fax ? '　FAX:' + e(o.fax) : '') + '</div>';
     if (opts.staff) h += '<div class="kv2"><div>担当者<small>NAME</small></div><b>' + e(opts.staff) + '</b></div>';
     h += '<table class="sum" style="margin-top:16px"><tr><th>領収金額（税込）<small>TOTAL AMOUNT</small></th><th>うち消費税<small>TAX（10%）</small></th><th>税抜<small>SUBTOTAL</small></th></tr>' +
