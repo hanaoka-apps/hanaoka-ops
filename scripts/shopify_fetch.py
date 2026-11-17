@@ -358,17 +358,28 @@ LINE_FIELDS = '''
   originalUnitPriceSet { shopMoney { amount currencyCode } }
   totalDiscountSet { shopMoney { amount currencyCode } }
 '''
-ORDERS_QUERY = '''
+# 支払いの取引（決済完了日 Paid at を出すため）。この項目が通らなくても注文の取得は止めない（fetch_orders が、この項目なしでやり直す）
+TXN_FIELD = '''
+  transactions(first: 10) { kind status processedAt createdAt }
+'''
+
+
+def _orders_query(extra):
+    return '''
 query Orders($first: Int!, $after: String, $q: String, $lines: Int!) {
   orders(first: $first, after: $after, query: $q, sortKey: CREATED_AT) {
     pageInfo { hasNextPage endCursor }
     nodes {
-''' + ORDER_FIELDS + '''
+''' + ORDER_FIELDS + extra + '''
       lineItems(first: $lines) { pageInfo { hasNextPage endCursor } nodes { ''' + LINE_FIELDS + ''' } }
     }
   }
 }
 '''
+
+
+ORDERS_QUERY = _orders_query(TXN_FIELD)
+ORDERS_QUERY_BASIC = _orders_query('')   # 取引（決済完了日）なし
 MORE_LINES_QUERY = '''
 query MoreLines($id: ID!, $after: String, $lines: Int!) {
   order(id: $id) {
@@ -385,9 +396,19 @@ def since_date(days, tz, now=None):
 
 def fetch_orders(client, since, log=None):
     orders, after = [], None
+    query = ORDERS_QUERY
     while True:
-        data = client.execute(ORDERS_QUERY, {'first': ORDERS_PAGE, 'after': after, 'lines': LINES_PAGE,
-                                              'q': 'created_at:>=' + since})
+        variables = {'first': ORDERS_PAGE, 'after': after, 'lines': LINES_PAGE, 'q': 'created_at:>=' + since}
+        try:
+            data = client.execute(query, variables)
+        except FetchError as e:
+            if query is not ORDERS_QUERY or after is not None:
+                raise
+            # 取引（決済完了日）の項目が通らないときも、注文の取得は止めない。決済完了日なしで取り直す（領収日は、注文日が仮に入る）
+            if log:
+                log('決済完了日（transactions）を取れませんでした。決済完了日なしで注文を取得します: ' + str(e)[:200])
+            query = ORDERS_QUERY_BASIC
+            data = client.execute(query, variables)
         page = (data.get('orders') or {})
         for o in page.get('nodes') or []:
             li = o['lineItems']
@@ -459,6 +480,21 @@ def line_cols(l):
     }
 
 
+PAID_KINDS = ('SALE', 'CAPTURE')   # 支払いが成立した取引（カード決済の確定）
+
+
+def paid_at(o, tz):
+    """決済完了日時（管理画面のエクスポートの「Paid at」と同じ意味＝最初に成功した支払い（SALE か CAPTURE）の日時）。取れなければ空。
+    領収証の「領収日」の初期値に使う（お客様のカード決済が完了した日。当社の口座への振込日ではない）"""
+    ts = []
+    for t in o.get('transactions') or []:
+        if (t.get('kind') or '').upper() in PAID_KINDS and (t.get('status') or '').upper() == 'SUCCESS':
+            when = t.get('processedAt') or t.get('createdAt')
+            if when:
+                ts.append(parse_iso(when))
+    return min(ts).astimezone(tz).strftime('%Y-%m-%d %H:%M:%S %z') if ts else ''
+
+
 def fulfillment_text(v):
     v = status_text(v)
     return {'partially_fulfilled': 'partial'}.get(v, v)
@@ -477,7 +513,7 @@ def order_rows(orders, tz):
             'Taxes': amount(o.get('totalTaxSet')), 'Total': amount(o.get('totalPriceSet')),
             'Discount Code': ', '.join(o.get('discountCodes') or []), 'Discount Amount': amount(o.get('totalDiscountsSet')),
             'Shipping Method': (o.get('shippingLine') or {}).get('title') or '',
-            'Created at': fmt_datetime(o.get('createdAt'), tz),
+            'Created at': fmt_datetime(o.get('createdAt'), tz), 'Paid at': paid_at(o, tz),
             'Notes': o.get('note') or '', 'Cancelled at': fmt_datetime(o.get('cancelledAt'), tz),
             'Payment Method': ' + '.join(o.get('paymentGatewayNames') or []),
             'Refunded Amount': amount(o.get('totalRefundedSet')), 'Id': gid_tail(o.get('id')),

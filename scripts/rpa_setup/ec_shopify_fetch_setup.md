@@ -124,7 +124,8 @@ echo $LASTEXITCODE
 ## 作りの注意（実機で確認が必要な点）
 
 - このスクリプトは**架空のAPI応答だけでテスト**している（`tests\test_shopify_fetch.py`）。実トークンでの取得は未確認。最初の実行で、GraphQL の項目名の違い（Shopify 側のバージョンで変わる）が出たらログに「GraphQL エラー」として出る。
-- エクスポートの列のうち、API から取れない列は空欄：Paid at・Fulfilled at・Accepts Marketing・Payment Reference・Risk Level・Tax 1〜5・Card Brand・Card Source・Available On・Checkout・Bank Reference など。画面が使う列（README の EC売上の行、`EC.groupShopifyOrders` / `EC.groupPayouts`）は埋まる。
+- エクスポートの列のうち、API から取れない列は空欄：Fulfilled at・Accepts Marketing・Payment Reference・Risk Level・Tax 1〜5・Card Brand・Card Source・Available On・Checkout・Bank Reference など。画面が使う列（README の EC売上の行、`EC.groupShopifyOrders` / `EC.groupPayouts`）は埋まる。
+- `Paid at`（決済完了日）は、注文の取引（`transactions`）のうち、最初に成功した支払い（SALE か CAPTURE）の日時から付ける（領収証の「領収日」の初期値になる。当社の口座への振込日ではない）。取引の項目が通らないときも、注文の取得は止めず、`Paid at` だけ空にして、ログに「決済完了日（transactions）を取れませんでした」と出す（領収日は、注文日が仮に入る）。実機での最初の実行後、ログにこの行が出ていないか確かめる。
 - `Lineitem fulfillment status` は、その行の未出荷数が0なら `fulfilled`、そうでなければ `pending`。
 - 入金の列：`Fees` は入金に含まれる手数料の合計、`Total` は入金額（通帳に入る額）。
 - 取引は、入金そのもの（type=payout）・テスト取引は含めない。入金日は入金（payout）から付ける。期間より前の入金に属する取引は含めない。
