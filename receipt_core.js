@@ -32,13 +32,14 @@
   function oneLine(s) { return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/^[ \t]+|[ \t]+$/g, ''); }
 
   /* ---------------------------------------------------------------- 注文の情報（画面ごとに持っている形のちがいを、ここでそろえる）
-   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName }（Shopify の値）。 */
+   * 入力＝{ no, financial, cancelledAt, total, refunded, shipCompany, shipName, billCompany, billName, lines:[{ name, qty }] }（Shopify の値）。 */
   R.orderInfo = function (o) {
     o = o || {};
     return {
       no: R.orderNo(o.no), financial: String(o.financial || '').toLowerCase(), cancelledAt: o.cancelledAt || '',
       total: Number(o.total) || 0, refunded: Number(o.refunded) || 0,
       shipCompany: oneLine(o.shipCompany), shipName: oneLine(o.shipName), billCompany: oneLine(o.billCompany), billName: oneLine(o.billName),
+      lines: (Array.isArray(o.lines) ? o.lines : []).map(function (l) { return { name: oneLine(l && l.name).replace(/\s*-\s*オプションは注文しない$/, ''), qty: Number(l && l.qty) || 1 }; }).filter(function (l) { return l.name; }),
       has: o.has !== false
     };
   };
@@ -91,15 +92,26 @@
     return list;
   };
 
-  /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝「商品代として」、
-   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）。opts＝{ now, proviso } */
+  // 但し書きの候補（取引の内容が分かるように、Shopify の商品名から作る）。同じ名前は1つにまとめ、60文字までのものを、最大4つ
+  R.provisoCandidates = function (o) {
+    o = R.orderInfo(o);
+    var out = [], seen = {};
+    o.lines.forEach(function (l) {
+      var t = l.name + ' 代として';
+      if (seen[l.name] || t.length > 60) return; seen[l.name] = 1; out.push(t);
+    });
+    return out.slice(0, 4);
+  };
+
+  /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝商品が1種類ならその商品名（「○○ 代として」）、そうでなければ「商品代として」、
+   * 金額＝発行できる上限（支払済み−返金）、取引日（書類の日付）＝今日（日本時間）。opts＝{ now, proviso } */
   R.defaults = function (o, opts) {
     opts = opts || {};
-    var el = R.eligibility(o), c = R.candidates(o);
+    var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o);
     return {
       atena: c[0] ? c[0].text : '', title: c[0] ? c[0].title : '様',
-      proviso: opts.proviso || R.DEFAULT_PROVISO, amount: el.max || 0, issueDate: R.todayJst(opts.now),
-      candidates: c, max: el.max
+      proviso: provs.length === 1 ? provs[0] : (opts.proviso || R.DEFAULT_PROVISO), amount: el.max || 0, issueDate: R.todayJst(opts.now),
+      candidates: c, provisos: provs, max: el.max
     };
   };
 
@@ -125,8 +137,8 @@
     else if (amount > R.MAX_AMOUNT) errors.push('金額が大きすぎます（' + R.yen(R.MAX_AMOUNT) + ' まで）');
     else if (opts.max != null && amount > opts.max) errors.push('金額が、発行できる上限（' + R.yen(opts.max) + '）を超えています');
     var date = String(form.issueDate || '').slice(0, 10);
-    if (!validDate(date)) errors.push('発行日を、日付で入れてください');
-    else if (date > today) warnings.push('発行日が、今日より先の日付です');
+    if (!validDate(date)) errors.push('取引日を、日付で入れてください');
+    else if (date > today) warnings.push('取引日が、今日より先の日付です');
     var tx = isFinite(amount) && amount >= 1 ? R.splitTax(amount) : { net: 0, tax: 0 };
     return { ok: !errors.length, errors: errors, warnings: warnings, value: { atena: R.joinAtena(name, title), proviso: proviso, amount: isFinite(amount) ? amount : 0, net: tx.net, tax: tx.tax, issueDate: date, note: note } };
   };
@@ -245,15 +257,16 @@
       '.sheet .to span:first-child{word-break:break-all}.sheet .to span:last-child{font-weight:400;font-size:12px;white-space:nowrap}' +
       '.sheet .kv{display:grid;grid-template-columns:84px 1fr;border-bottom:1px solid var(--line-strong);padding:5px 0;align-items:end}' +
       '.sheet .kv small{display:block;font-size:8px;color:var(--sub);letter-spacing:.05em}' +
-      '.sheet .co{position:relative;font-size:15px;font-weight:600;margin:6px 0 2px}.sheet .co .cn{display:inline-block}.sheet .co img.logo{display:block;width:0;min-width:100%;height:auto;margin-bottom:6px}' +   /* ロゴの幅＝社名の幅（width:0;min-width:100% で、画像の大きさが枠の幅を決めないようにする） */
-      '.sheet .co img.stamp{position:absolute;right:6px;top:34px;width:64px;height:64px;object-fit:contain;mix-blend-mode:multiply;opacity:.92}' +
+      '.sheet .co{position:relative;font-size:15px;font-weight:600;margin:6px 0 2px}.sheet .co .cn{display:inline-block}' +   /* ロゴの見える部分の幅＝社名の幅。ロゴの画像（hanaoka_logo.png 879×367）は、まわりに透明の余白があり、見える部分は横 157〜700・縦 123〜288。その範囲だけを切り出して、枠（社名の幅）に合わせる */
+      '.sheet .co .lg{position:relative;width:100%;aspect-ratio:543/165;overflow:hidden;margin-bottom:6px}.sheet .co .lg img{position:absolute;left:-28.91%;top:-74.54%;width:161.88%;height:auto}' +
+      '.sheet .co img.stamp{position:absolute;right:6px;top:14px;width:64px;height:64px;object-fit:contain;mix-blend-mode:multiply;opacity:.92}' +
       '.sheet .addr{font-size:10.5px}' +
       '.sheet .kv2{display:grid;grid-template-columns:70px 1fr;margin-top:8px;align-items:end}.sheet .kv2 b{font-size:13px;text-align:center}.sheet .kv2 small{display:block;font-size:8px;color:var(--sub);letter-spacing:.05em}' +
       '.sheet .remarks{border:1.5px solid var(--txt);min-height:110px;margin-top:14px;padding:10px 12px;display:grid;grid-template-columns:62px 1fr;gap:8px;white-space:pre-wrap}.sheet .remarks small{font-size:8px;color:var(--sub);display:block}' +
       '.sheet table{width:100%;border-collapse:collapse}' +
       '.sheet th{background:var(--bg);border:1px solid var(--line-strong);font-weight:500;padding:4px 6px;font-size:11px}.sheet th small{display:block;font-size:8px;color:var(--sub);font-weight:400}' +
       '.sheet td{border:1px solid var(--line-strong);padding:7px 6px;vertical-align:bottom}' +
-      '.sheet .sum td{text-align:center;font-size:14px;padding:12px 6px 4px}.sheet .sum td:first-child{font-weight:600}' +
+      '.sheet .sum td{text-align:center;font-size:14px;padding:12px 6px 4px}.sheet .sum td:last-child{font-weight:600}' +
       '.sheet .bank{text-align:right;font-size:10.5px;margin-top:4px}' +
       '.sheet .ok{margin-top:22px;font-size:12px}' +
       '.sheet .sb{margin:14px 0 0 auto;width:112px;height:112px;border:1px dashed var(--sub);color:var(--sub);font-size:10px;text-align:center;display:flex;align-items:center;justify-content:center;line-height:1.6}' +
@@ -265,14 +278,14 @@
     if (mark) h += '<div class="wm">' + e(mark) + '</div>';
     h += '<h2>領収証</h2><div class="en">RECEIPT</div><div class="cols"><div>';
     h += '<div class="to"><span>' + e(split.name) + '</span><span>' + e(split.title) + '</span></div>';
-    h += kv('発行日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
+    h += kv('取引日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
     h += '<div class="remarks"><div>備考<small>REMARKS</small></div><div>' + e(remarks.join('\n')) + '</div></div>';
     h += '</div><div>';
-    h += '<div class="co"><div class="cn"><img class="logo" src="hanaoka_logo.png" alt="">' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';
+    h += '<div class="co"><div class="cn"><div class="lg"><img class="logo" src="hanaoka_logo.png" alt=""></div>' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';
     h += '<div class="addr">' + (o.addr ? '〒' + e(o.zip) + ' ' + e(o.addr) : '') + '<br>' + (o.tel ? 'TEL:' + e(o.tel) : '') + (o.fax ? '　FAX:' + e(o.fax) : '') + '</div>';
     if (opts.staff) h += '<div class="kv2"><div>担当者<small>NAME</small></div><b>' + e(opts.staff) + '</b></div>';
-    h += '<table class="sum" style="margin-top:16px"><tr><th>領収金額（税込）<small>TOTAL AMOUNT</small></th><th>うち消費税<small>TAX（10%）</small></th><th>税抜<small>SUBTOTAL</small></th></tr>' +
-      '<tr><td>' + e(R.yen(rec.amount)) + '</td><td>' + e(R.yen(tax)) + '</td><td>' + e(R.yen(net)) + '</td></tr></table>';
+    h += '<table class="sum" style="margin-top:16px"><tr><th>10%対象（税抜）<small>SUBTOTAL</small></th><th>消費税額（10%）<small>TAX</small></th><th>合計（税込）<small>TOTAL AMOUNT</small></th></tr>' +
+      '<tr><td>' + e(R.yen(net)) + '</td><td>' + e(R.yen(tax)) + '</td><td>' + e(R.yen(rec.amount)) + '</td></tr></table>';   // 国税庁のサンプル帳票と同じ並び（税抜 → 税額 → 合計）
     if (settings.regNo) h += '<div class="bank">登録番号｜' + e(settings.regNo) + '</div>';
     if (opts.stampBox) h += '<div class="sb">収入印紙<br>貼付欄</div>';
     h += '</div></div><div class="ok">上記、正に領収いたしました。</div>';
