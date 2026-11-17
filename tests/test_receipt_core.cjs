@@ -126,39 +126,74 @@ t('利用ログ・履歴には番号だけ：宛名・金額・注文番号は�
   assert.strictEqual(d, 'R-2026-00012 発行');
 });
 
-t('設定ファイルの検査：足りない項目を知らせる（社印と備考はなくてよい）', () => {
-  assert.ok(R.checkSettings(R.SAMPLE_SETTINGS).ok);
-  assert.ok(R.checkSettings({ company: R.SAMPLE_SETTINGS.company }).ok);
-  let c = R.checkSettings(null); assert.ok(!c.ok && c.missing.length);
-  c = R.checkSettings({ company: { name: 'サンプル商事株式会社', address: '', tel: ' ' } });
-  assert.ok(!c.ok); assert.deepStrictEqual(c.missing.map(s => s.split('（')[0]), ['company.address', 'company.tel', 'company.registrationNo']);
-  assert.ok(/^T0+$/.test(R.SAMPLE_SETTINGS.company.registrationNo) && /^0{3}-0{4}$/.test(R.SAMPLE_SETTINGS.company.zip));   // 見本は、架空の値（ゼロ）だけ
+// 見積アプリの会社の情報の形（SD_設定の「会社」の行）。値はすべて架空
+const COMP = { company: 'サンプル商事株式会社', regNo: 'T0000000000000', bank: '見本銀行 見本支店 当座 0000000',
+  offices: [{ name: '本社', zip: '000-0000', addr: 'サンプル県サンプル市サンプル町0-0-0', tel: '000-000-0000', fax: '000-000-0001' },
+    { name: '第二工場', zip: '111-1111', addr: '別の県別の市別町1-1-1', tel: '111-111-1111', fax: '' }] };
+const S = R.mergeSettings(COMP, null);
+
+t('会社の設定を合わせる：見積アプリの情報を読み、設定ファイルは上書きだけ（社印・備考・拠点）。振込先は持たない', () => {
+  assert.deepStrictEqual(S, { company: 'サンプル商事株式会社', regNo: 'T0000000000000', offices: COMP.offices.map(o => Object.assign({}, o)), stampFile: '', footerNote: '' });
+  assert.ok(!JSON.stringify(S).includes('見本銀行'));
+  const m = R.mergeSettings(COMP, { stampFile: 'stamp.png', footerNote: '備考の一文', company: '上書きされない社名', offices: [{ name: '上書き拠点', zip: '', addr: '住所X', tel: '', fax: '' }] });
+  assert.strictEqual(m.company, 'サンプル商事株式会社'); assert.strictEqual(m.stampFile, 'stamp.png'); assert.strictEqual(m.footerNote, '備考の一文');
+  assert.deepStrictEqual(m.offices.map(o => o.name), ['上書き拠点']);
+  assert.strictEqual(R.mergeSettings(COMP, { offices: [] }).offices.length, 2);           // 空の上書きは、見積アプリの拠点のまま
+  assert.strictEqual(R.mergeSettings(COMP, 'こわれた').offices.length, 2);
+  const x = R.mergeSettings({ company: ' 社 ', offices: [null, 5, { name: '', addr: '' }, { name: 'A', addr: '住所' }] }, null);
+  assert.strictEqual(x.company, '社'); assert.deepStrictEqual(x.offices, [{ name: 'A', zip: '', addr: '住所', tel: '', fax: '' }]);
+});
+t('会社の設定を確かめる：社名と住所は必須。登録番号が空なら、発行はできるが注意する。何もなければ、足りない', () => {
+  let c = R.checkSettings(S); assert.ok(c.ok && !c.warnings.length);
+  c = R.checkSettings(R.mergeSettings(Object.assign({}, COMP, { regNo: '' }), null)); assert.ok(c.ok && c.warnings.length === 1 && /登録番号が未設定です/.test(c.warnings[0]));
+  c = R.checkSettings(R.mergeSettings(null, null)); assert.ok(!c.ok); assert.deepStrictEqual(c.missing, ['社名', '拠点の住所']);
+  c = R.checkSettings(R.mergeSettings({ company: 'A', offices: [{ name: '本社' }] }, null)); assert.deepStrictEqual(c.missing, ['拠点の住所']);
+  c = R.checkSettings(null); assert.ok(!c.ok);
+  assert.ok(/^会社の設定がありません（見積アプリの会社の情報を確認してください）$/.test(R.NO_COMPANY));
+  // 設定ファイルの見本は、架空の値（ゼロ）だけ
+  assert.ok(/^0{3}-0{4}$/.test(R.SAMPLE_SETTINGS.offices[0].zip) && /^0{3}-0{3}-0{4}$/.test(R.SAMPLE_SETTINGS.offices[0].tel));
 });
 
-t('印刷用の HTML：宛名・金額・内訳・発行元・注文番号が出る／外から入った文字はエスケープする', () => {
+t('印刷用の HTML（見積書と同じ書式）：見出し・宛名・番号・但し書き・金額の表・会社・登録番号が出る／外から入った文字はエスケープする', () => {
   const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '<b>山田</b> & "太郎" 様', proviso: '商品代として<script>alert(1)</script>', amount: 11000, tax: 1000, issueDate: '2026-11-16', status: '発行済', reissueCount: 0 };
-  const html = R.printHtml(rec, R.SAMPLE_SETTINGS, {});
-  assert.ok(/^<!DOCTYPE html>/.test(html) && /size:A4 portrait/.test(html));
-  assert.ok(html.includes('領収証番号') && html.includes('R-2026-00012') && html.includes('2026年11月16日'));
-  assert.ok(html.includes('¥11,000') && html.includes('¥10,000') && html.includes('¥1,000') && html.includes('#1801'));
-  assert.ok(html.includes('サンプル商事株式会社') && html.includes('T0000000000000') && html.includes('〒000-0000'));
-  assert.ok(!html.includes('<b>山田') && html.includes('&lt;b&gt;山田&lt;/b&gt; &amp; &quot;太郎&quot;') && html.includes('<span class="tt">様</span>'));
+  const html = R.printHtml(rec, S, { staff: '見本 花子' });
+  assert.ok(/^<!DOCTYPE html>/.test(html) && /@page\{size:A4;margin:8mm\}/.test(html));
+  assert.ok(html.includes('<h2>領収証</h2><div class="en">RECEIPT</div>') && html.includes('<div class="cols">'));
+  assert.ok(html.includes('領収証番号<small>RECEIPT #</small>') && html.includes('R-2026-00012') && html.includes('発行日<small>DATE</small>') && html.includes('2026年11月16日') && html.includes('但し書き<small>PROVISO</small>'));
+  assert.ok(html.includes('備考<small>REMARKS</small>') && html.includes('ご注文番号　#1801'));
+  assert.ok(html.includes('TOTAL AMOUNT') && html.includes('TAX（10%）') && html.includes('SUBTOTAL'));
+  assert.ok(/<td>¥11,000<\/td><td>¥1,000<\/td><td>¥10,000<\/td>/.test(html));          // 領収金額（税込）・うち消費税・税抜
+  assert.ok(html.includes('サンプル商事株式会社') && html.includes('登録番号｜T0000000000000') && html.includes('〒000-0000 サンプル県サンプル市サンプル町0-0-0') && html.includes('TEL:000-000-0000　FAX:000-000-0001'));
+  assert.ok(html.includes('担当者<small>NAME</small></div><b>見本 花子</b>') && html.includes('src="hanaoka_logo.png"'));
+  assert.ok(html.includes('<span>&lt;b&gt;山田&lt;/b&gt; &amp; &quot;太郎&quot;</span><span>様</span>') && !html.includes('<b>山田'));
   assert.ok(!html.includes('<script>alert') && html.includes('&lt;script&gt;'));
-  assert.ok(!/再発行/.test(html) && !/class="wm"/.test(html) && !/<img/.test(html));        // 最初の発行では、再発行・透かし・印なし
+  assert.ok(!/再発行/.test(html.replace(/<style>[\s\S]*<\/style>/, '')) && !/class="wm"/.test(html) && !/class="stamp"/.test(html) && !/class="sb"/.test(html) && !/class="fn"/.test(html));   // 最初の発行：再発行・透かし・印・貼付欄・備考の一文は出ない
+  assert.ok(!html.includes('見本銀行'));                                                   // 振込先は出さない
 });
-t('印刷用の HTML：再発行・取消・見本（未発行）・社印・自動印刷・外の文字', () => {
-  const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-16', status: '発行済', reissueCount: 2 };
-  let h = R.printHtml(rec, R.SAMPLE_SETTINGS, { reissue: true });
-  assert.ok(h.includes('再発行（2回目）'));
-  h = R.printHtml(Object.assign({}, rec, { status: '取消' }), R.SAMPLE_SETTINGS, {});
-  assert.ok(/class="wm">取消</.test(h));
-  h = R.printHtml(Object.assign({}, rec, { number: '' }), R.SAMPLE_SETTINGS, { preview: true });
-  assert.ok(/class="wm">見本（未発行）</.test(h) && h.includes('発行すると付きます'));
-  h = R.printHtml(rec, R.SAMPLE_SETTINGS, { stampSrc: 'data:image/png;base64,AAAA"onerror="x' });
+t('印刷用の HTML：拠点を選べる・担当者なし・登録番号なし・備考の一文・社印', () => {
+  const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-16', status: '発行済', reissueCount: 0 };
+  let h = R.printHtml(rec, S, { office: S.offices[1] });
+  assert.ok(h.includes('〒111-1111 別の県別の市別町1-1-1') && h.includes('TEL:111-111-1111') && !h.includes('FAX:') && !h.includes('サンプル県サンプル市'));
+  assert.ok(R.printHtml(rec, S, {}).includes('〒000-0000'));                              // 指定がなければ、先頭の拠点
+  assert.ok(!/class="kv2"/.test(h));                                                      // 担当者が分からなければ、行を出さない
+  h = R.printHtml(rec, R.mergeSettings(Object.assign({}, COMP, { regNo: '' }), null), {});
+  assert.ok(!/登録番号/.test(h));                                                         // 登録番号が空なら、行を出さない
+  h = R.printHtml(rec, R.mergeSettings(COMP, { footerNote: '備考の一文<b>' }), {});
+  assert.ok(h.includes('<div class="fn">備考の一文&lt;b&gt;</div>'));
+  h = R.printHtml(rec, S, { stampSrc: 'data:image/png;base64,AAAA"onerror="x' });
   assert.ok(/<img class="stamp" alt="" src="data:image\/png;base64,AAAA&quot;onerror=&quot;x">/.test(h));
-  assert.ok(!/<script>/.test(R.printHtml(rec, R.SAMPLE_SETTINGS, {})) && /window\.print\(\)/.test(R.printHtml(rec, R.SAMPLE_SETTINGS, { auto: true })));
-  assert.ok(!/https?:\/\//.test(R.printHtml(rec, R.SAMPLE_SETTINGS, { reissue: true })));      // 外のファイルを読まない
-  assert.strictEqual(R.printHtml(rec, null, {}).includes('領収証'), true);                     // 設定が空でも落ちない
+});
+t('印刷用の HTML：再発行は備考に入る／取消・見本（未発行）の透かし／自動印刷／外のファイルを読まない／設定が空でも落ちない', () => {
+  const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 11000, tax: 1000, issueDate: '2026-11-16', status: '発行済', reissueCount: 2 };
+  let h = R.printHtml(rec, S, { reissue: true });
+  assert.ok(/<div>再発行（2回目）\nご注文番号　#1801<\/div>/.test(h));
+  h = R.printHtml(Object.assign({}, rec, { status: '取消' }), S, {});
+  assert.ok(/class="wm">取消</.test(h));
+  h = R.printHtml(Object.assign({}, rec, { number: '' }), S, { preview: true });
+  assert.ok(/class="wm">見本（未発行）</.test(h) && h.includes('発行すると付きます'));
+  assert.ok(!/<script>/.test(R.printHtml(rec, S, {})) && /window\.print\(\)/.test(R.printHtml(rec, S, { auto: true })));
+  assert.ok(!/https?:\/\//.test(R.printHtml(rec, S, { reissue: true })));               // 外のサイトのファイルを読まない（ロゴはリポジトリの hanaoka_logo.png）
+  assert.strictEqual(R.printHtml(rec, null, {}).includes('領収証'), true);
   assert.strictEqual(R.fileName(rec), '領収証_R-2026-00012');
 });
 
@@ -169,8 +204,8 @@ t('収入印紙：基準の金額（設定）以上だけ。設定が空なら�
 });
 t('収入印紙の貼付欄：stampBox のときだけ印刷する', () => {
   const rec = { number: 'R-2026-00012', orderNo: '1801', atena: '山田 太郎 様', proviso: '商品代として', amount: 150000, tax: 13636, issueDate: '2026-11-16', status: '発行済', reissueCount: 0 };
-  assert.ok(!/class="sb"/.test(R.printHtml(rec, R.SAMPLE_SETTINGS, {})));
-  const h = R.printHtml(rec, R.SAMPLE_SETTINGS, { stampBox: true });
+  assert.ok(!/class="sb"/.test(R.printHtml(rec, S, {})));
+  const h = R.printHtml(rec, S, { stampBox: true });
   assert.ok(/class="sb">収入印紙<br>貼付欄</.test(h));
 });
 

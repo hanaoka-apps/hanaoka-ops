@@ -13,6 +13,9 @@
   var GRAPH = 'https://graph.microsoft.com/v1.0';
   var COLS = ['Title', 'OrderNo', 'Atena', 'Proviso', 'Amount', 'Tax', 'IssueDate', 'IssuedBy', 'Status', 'ReissueCount', 'Note', 'Source'];
   var WRITABLE = COLS.slice();
+  // 会社の情報は、見積アプリ（quote_store.js）と同じ場所（SharedMasters と同じサイトのリスト SD_設定、Title＝「会社」の行の Data）から、読むだけ
+  var COMPANY_SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
+  var COMPANY_LIST = 'SD_設定', COMPANY_TITLE = '会社';
 
   function create(opt) {
     var R = opt.R || root.ReceiptCore;
@@ -63,6 +66,19 @@
         url = page['@odata.nextLink'] || '';
       }
       return R.groupByOrder(all);
+    };
+
+    // 見積アプリの会社の情報（{ company, regNo, bank, offices }）を読む。読み取りの権限（Sites.Read.All）で足りる。
+    // 読めない（権限なし・リストなし・行なし・形が壊れている・ネットワーク）ときは null（画面は「会社の設定がありません」と出す）。書き込みはしない
+    api.loadCompany = async function () {
+      try {
+        var site = opt.companySiteId || COMPANY_SITE_ID, list = opt.companyList || COMPANY_LIST;
+        var page = await req('GET', '/sites/' + site + '/lists/' + encodeURIComponent(list) + '/items?expand=fields(select=Title,Data)&$top=999');
+        var hit = (page.value || []).filter(function (it) { return it && it.fields && it.fields.Title === COMPANY_TITLE; })[0];
+        if (!hit) return null;
+        var d = JSON.parse(hit.fields.Data || '{}');
+        return d && typeof d === 'object' && !Array.isArray(d) ? d : null;
+      } catch (e) { return null; }
     };
 
     // その注文の記録（新しい順）。発行の直前に、最新を読み直すために使う
@@ -155,7 +171,7 @@
     return api;
   }
 
-  var ReceiptStore = { create: create, COLS: COLS };
+  var ReceiptStore = { create: create, COLS: COLS, COMPANY_SITE_ID: COMPANY_SITE_ID };
   root.ReceiptStore = ReceiptStore;
   if (typeof module !== 'undefined' && module.exports) module.exports = ReceiptStore;
 })(typeof window !== 'undefined' ? window : globalThis);
