@@ -83,8 +83,8 @@ t('入力の検査：上限を超えたら止める・0円・小数・文字・�
   bad({ atena: 'あ'.repeat(60) }, /宛名が長すぎ/);
   bad({ proviso: '' }, /但し書きを入れて/);
   bad({ proviso: 'あ'.repeat(61) }, /但し書きが長すぎ/);
-  bad({ issueDate: '2026-02-30' }, /発行日/);
-  bad({ issueDate: '' }, /発行日/);
+  bad({ issueDate: '2026-02-30' }, /取引日/);
+  bad({ issueDate: '' }, /取引日/);
   bad({ note: 'あ'.repeat(201) }, /メモが長すぎ/);
   assert.ok(R.validate(Object.assign({}, base, { amount: 5000 }), { max: 5000 }).ok);                                   // ちょうど上限は通る
   const w = R.validate(Object.assign({}, base, { issueDate: '2026-11-20' }), { max: 5000, now: new Date('2026-11-16T01:00:00Z') });
@@ -159,10 +159,10 @@ t('印刷用の HTML（見積書と同じ書式）：見出し・宛名・番号
   const html = R.printHtml(rec, S, { staff: '見本 花子' });
   assert.ok(/^<!DOCTYPE html>/.test(html) && /@page\{size:A4;margin:8mm\}/.test(html));
   assert.ok(html.includes('<h2>領収証</h2><div class="en">RECEIPT</div>') && html.includes('<div class="cols">'));
-  assert.ok(html.includes('領収証番号<small>RECEIPT #</small>') && html.includes('R-2026-00012') && html.includes('発行日<small>DATE</small>') && html.includes('2026年11月16日') && html.includes('但し書き<small>PROVISO</small>'));
+  assert.ok(html.includes('領収証番号<small>RECEIPT #</small>') && html.includes('R-2026-00012') && html.includes('取引日<small>DATE</small>') && html.includes('2026年11月16日') && html.includes('但し書き<small>PROVISO</small>'));
   assert.ok(html.includes('備考<small>REMARKS</small>') && html.includes('ご注文番号　#1801'));
-  assert.ok(html.includes('合計（税込）<small>TOTAL AMOUNT') && html.includes('消費税額（10%）<small>TAX') && html.includes('10%対象（税抜）<small>SUBTOTAL'));   // 税率ごとの対象額と消費税額が分かる言葉
-  assert.ok(/<td>¥11,000<\/td><td>¥1,000<\/td><td>¥10,000<\/td>/.test(html));          // 合計（税込）・消費税額・10%対象（税抜）
+  assert.ok(/10%対象（税抜）<small>SUBTOTAL<\/small><\/th><th>消費税額（10%）<small>TAX<\/small><\/th><th>合計（税込）<small>TOTAL AMOUNT/.test(html));   // 税率ごとの対象額と消費税額が分かる言葉
+  assert.ok(/<td>¥10,000<\/td><td>¥1,000<\/td><td>¥11,000<\/td>/.test(html));          // 10%対象（税抜）・消費税額・合計（税込）の順
   assert.ok(html.includes('サンプル商事株式会社') && html.includes('登録番号｜T0000000000000') && html.includes('〒000-0000 サンプル県サンプル市サンプル町0-0-0') && html.includes('TEL:000-000-0000　FAX:000-000-0001'));
   assert.ok(html.includes('担当者<small>NAME</small></div><b>見本 花子</b>') && html.includes('src="hanaoka_logo.png"'));
   assert.ok(html.includes('<span>&lt;b&gt;山田&lt;/b&gt; &amp; &quot;太郎&quot;</span><span>様</span>') && !html.includes('<b>山田'));

@@ -104,7 +104,7 @@
   };
 
   /* 発行の画面の初期値（書き換えられる）。宛名＝お届け先の会社名（なければ名前）、但し書き＝商品が1種類ならその商品名（「○○ 代として」）、そうでなければ「商品代として」、
-   * 金額＝発行できる上限（支払済み−返金）、発行日＝今日（日本時間）。opts＝{ now, proviso } */
+   * 金額＝発行できる上限（支払済み−返金）、取引日（書類の日付）＝今日（日本時間）。opts＝{ now, proviso } */
   R.defaults = function (o, opts) {
     opts = opts || {};
     var el = R.eligibility(o), c = R.candidates(o), provs = R.provisoCandidates(o);
@@ -137,8 +137,8 @@
     else if (amount > R.MAX_AMOUNT) errors.push('金額が大きすぎます（' + R.yen(R.MAX_AMOUNT) + ' まで）');
     else if (opts.max != null && amount > opts.max) errors.push('金額が、発行できる上限（' + R.yen(opts.max) + '）を超えています');
     var date = String(form.issueDate || '').slice(0, 10);
-    if (!validDate(date)) errors.push('発行日を、日付で入れてください');
-    else if (date > today) warnings.push('発行日が、今日より先の日付です');
+    if (!validDate(date)) errors.push('取引日を、日付で入れてください');
+    else if (date > today) warnings.push('取引日が、今日より先の日付です');
     var tx = isFinite(amount) && amount >= 1 ? R.splitTax(amount) : { net: 0, tax: 0 };
     return { ok: !errors.length, errors: errors, warnings: warnings, value: { atena: R.joinAtena(name, title), proviso: proviso, amount: isFinite(amount) ? amount : 0, net: tx.net, tax: tx.tax, issueDate: date, note: note } };
   };
@@ -266,7 +266,7 @@
       '.sheet table{width:100%;border-collapse:collapse}' +
       '.sheet th{background:var(--bg);border:1px solid var(--line-strong);font-weight:500;padding:4px 6px;font-size:11px}.sheet th small{display:block;font-size:8px;color:var(--sub);font-weight:400}' +
       '.sheet td{border:1px solid var(--line-strong);padding:7px 6px;vertical-align:bottom}' +
-      '.sheet .sum td{text-align:center;font-size:14px;padding:12px 6px 4px}.sheet .sum td:first-child{font-weight:600}' +
+      '.sheet .sum td{text-align:center;font-size:14px;padding:12px 6px 4px}.sheet .sum td:last-child{font-weight:600}' +
       '.sheet .bank{text-align:right;font-size:10.5px;margin-top:4px}' +
       '.sheet .ok{margin-top:22px;font-size:12px}' +
       '.sheet .sb{margin:14px 0 0 auto;width:112px;height:112px;border:1px dashed var(--sub);color:var(--sub);font-size:10px;text-align:center;display:flex;align-items:center;justify-content:center;line-height:1.6}' +
@@ -278,14 +278,14 @@
     if (mark) h += '<div class="wm">' + e(mark) + '</div>';
     h += '<h2>領収証</h2><div class="en">RECEIPT</div><div class="cols"><div>';
     h += '<div class="to"><span>' + e(split.name) + '</span><span>' + e(split.title) + '</span></div>';
-    h += kv('発行日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
+    h += kv('取引日', 'DATE', R.jaDate(rec.issueDate)) + kv('領収証番号', 'RECEIPT #', rec.number || '（発行すると付きます）') + kv('但し書き', 'PROVISO', rec.proviso);
     h += '<div class="remarks"><div>備考<small>REMARKS</small></div><div>' + e(remarks.join('\n')) + '</div></div>';
     h += '</div><div>';
     h += '<div class="co"><div class="cn"><div class="lg"><img class="logo" src="hanaoka_logo.png" alt=""></div>' + e(settings.company) + '</div>' + (opts.stampSrc ? '<img class="stamp" alt="" src="' + e(opts.stampSrc) + '">' : '') + '</div>';
     h += '<div class="addr">' + (o.addr ? '〒' + e(o.zip) + ' ' + e(o.addr) : '') + '<br>' + (o.tel ? 'TEL:' + e(o.tel) : '') + (o.fax ? '　FAX:' + e(o.fax) : '') + '</div>';
     if (opts.staff) h += '<div class="kv2"><div>担当者<small>NAME</small></div><b>' + e(opts.staff) + '</b></div>';
-    h += '<table class="sum" style="margin-top:16px"><tr><th>合計（税込）<small>TOTAL AMOUNT</small></th><th>消費税額（10%）<small>TAX</small></th><th>10%対象（税抜）<small>SUBTOTAL</small></th></tr>' +
-      '<tr><td>' + e(R.yen(rec.amount)) + '</td><td>' + e(R.yen(tax)) + '</td><td>' + e(R.yen(net)) + '</td></tr></table>';
+    h += '<table class="sum" style="margin-top:16px"><tr><th>10%対象（税抜）<small>SUBTOTAL</small></th><th>消費税額（10%）<small>TAX</small></th><th>合計（税込）<small>TOTAL AMOUNT</small></th></tr>' +
+      '<tr><td>' + e(R.yen(net)) + '</td><td>' + e(R.yen(tax)) + '</td><td>' + e(R.yen(rec.amount)) + '</td></tr></table>';   // 国税庁のサンプル帳票と同じ並び（税抜 → 税額 → 合計）
     if (settings.regNo) h += '<div class="bank">登録番号｜' + e(settings.regNo) + '</div>';
     if (opts.stampBox) h += '<div class="sb">収入印紙<br>貼付欄</div>';
     h += '</div></div><div class="ok">上記、正に領収いたしました。</div>';
