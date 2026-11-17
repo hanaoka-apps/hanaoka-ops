@@ -1352,7 +1352,7 @@ async function registerInbox(files){
   IUPL.busy=false;IUPL.result=`<b>${jobs.length}件を受け付けました${groups.length===1&&list.length>1?`（${list.length}ファイルを1件に）`:''}。</b>AI が読んで、今月の支払先リストから仕入先を当てます（1件20〜30秒）`+(IUPL.errs.length?`<div style="color:var(--up);margin-top:2px">受け付けられなかったもの：${IUPL.errs.map(esc).join('、')}</div>`:'');
   jobs.forEach(j=>AIRUN.add(j.invoiceId));await loadInvoices();render();readInboxByAI(jobs);}
 // 読み取り失敗をもう一度読む（受け付けたときと同じ頼み方。AI の依頼は ap_ai.js が4件ずつ順番に送る）
-async function retryInbox(list){if(!list.length)return;if(!confirm(`読み取りに失敗した ${list.length} 件を、AI にもう一度読ませます（4件ずつ順番に。1件20〜30秒）。よろしいですか？`))return;
+async function retryInbox(list){if(!list.length)return;if(!confirm(`${list.length} 件を AI にもう一度はじめから読ませます（4件ずつ順番に。1件20〜30秒）。よろしいですか？`))return;
   const jobs=[];
   for(const x of list){try{const d=await docFiles(x.doc);await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,{[V3.ai]:'受付'});
       jobs.push({apCode:d.code,invoiceId:String(x.id),category:'本社仕入',location:'本社',targetYm:month(),inbox:true,candidates:candText(),files:d.files,pdfName:d.pdfName,moved:d.moved});}
@@ -1417,6 +1417,39 @@ function openDup(id,k){const all=allInv(),a=all.find(o=>String(o.x.id)===String(
       snack('二重ではない、と記録しました');close();await loadInvoices();render();}catch(e){snack('記録できませんでした：'+e.message,true);}};}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-dupcmp]');if(b){e.preventDefault();e.stopPropagation();openDup(b.dataset.dupcmp,0);}},true);
 document.addEventListener('keydown',e=>{const d=$('dupDlg');if(e.key==='Escape'&&d&&!d.hidden){e.stopImmediatePropagation();d.hidden=true;d.innerHTML='';DUPC=null;}},true);
+// ---------- 🔍 見ながら選ぶ（2026-11-17）：AI が読めなかった・仕入先が決まらない請求書を、左に請求書・右に今月の支払先（工場・本社の金額つき）で選んで付ける ----------
+//   金額は SMILE の支払額を決裁の部門で分けたもの（本社＝国内営業＋ソリューション）。請求書の金額と合う仕入先を上に、次に請求書がまだ無い仕入先
+const PICK={x:null,q:'',noInv:true};
+function openPick(x){PICK.x=x;PICK.q='';let dl=$('pickDlg');if(!dl){dl=document.createElement('div');dl.id='pickDlg';dl.className='slipdlg';document.body.appendChild(dl);}
+  dl.innerHTML=`<style>#pickDlg .pdf{overflow:hidden;display:block;text-align:center;line-height:40px}#pickDlg .pdf iframe,#pickDlg .pdf img{width:100%;height:100%;object-fit:contain;border:0}
+    #pickDlg .pk tr.hit td{background:#eef8f2}#pickDlg .pk td,#pickDlg .pk th{padding:5px 8px;font-size:13px}#pickDlg .pk tbody tr:hover td{background:#f4f6fb}</style>
+    <div class="slipbox" style="width:min(1500px,100%);padding:0 0 12px"><div class="sh" style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)"><b>🔍 請求書を見ながら仕入先を選ぶ</b>
+      <span style="font-size:12.5px;color:var(--sub)">AI が読んだもの：${esc(x.payee||x.title||'—')}${x.regNo?'・'+esc(x.regNo):''}・${x.amount?yen(x.amount)+' 円':'金額なし'}</span><span style="flex:1"></span><button id="pkX">閉じる ✕</button></div>
+    <div style="display:flex;gap:14px;padding:12px 14px;align-items:stretch">
+      <div class="pdf" id="pkv" style="flex:1.1;min-width:0;height:calc(100vh - 170px);min-height:420px;margin:0;background:#525659;border-radius:6px;color:#fff">読み込み中...</div>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input id="pkQ" type="search" placeholder="仕入先・コードで探す（カナ・全角半角どちらでも）" style="flex:1;min-width:200px">
+          <label style="font-size:12.5px;white-space:nowrap"><input type="checkbox" id="pkN" ${PICK.noInv?'checked':''}> 請求書がまだ無い仕入先だけ</label></div>
+        <div style="font-size:12px;color:var(--sub)">金額は SMILE の支払額（工場・本社＝国内営業＋ソリューションに分けたもの）。請求書の金額と合う仕入先は緑で上に出します。行を選んで「付ける」</div>
+        <div id="pkL" style="flex:1;overflow:auto;border:1px solid var(--line);border-radius:8px;height:calc(100vh - 290px);min-height:300px"></div></div></div></div>`;
+  dl.hidden=false;const close=()=>{dl.hidden=true;dl.innerHTML='';PICK.x=null;};dl.onclick=e=>{if(e.target===dl)close();};$('pkX').onclick=close;
+  $('pkQ').oninput=e=>{PICK.q=e.target.value;pickList();};$('pkN').onchange=e=>{PICK.noInv=e.target.checked;pickList();};pickList();setTimeout(()=>{const q=$('pkQ');if(q)q.focus();},50);
+  (async()=>{const p=String(x.doc||'').split('\n')[0].trim(),key=`${x.id}#0`;if(!p){const v=$('pkv');if(v)v.textContent='PDF の場所がありません';return;}
+    if(!pdfCache[key]){const u=await docBlob(p);if(u)pdfCache[key]=u;}const v=$('pkv');if(v&&!dl.hidden)v.innerHTML=pdfCache[key]?APDoc.view(pdfCache[key],p):'PDF を開けませんでした';})();}
+function pickList(){const box=$('pkL'),x=PICK.x;if(!box||!x)return;const C=monthList(),nq=s=>String(s==null?'':s).normalize('NFKC').toLowerCase().replace(/[\s　]/g,'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+96)),q=nq(PICK.q),amt=Math.round(x.amount||0);
+  const near=v=>amt&&v&&Math.abs(v-amt)<=1;
+  let a=Object.values(C).map(v=>{const r=rows.find(z=>z.code===v.code)||{},g=r.byGroup||{},fac=Math.round(g['工場']||0),hon=Math.round((g['国内営業']||0)+(g['ソリューション']||0)),n=(r.invoices||[]).length;
+    return {code:v.code,name:v.name,fac,hon,tot:v.amount,n,hit:near(fac)||near(hon)||near(v.amount)||(r.smile&&near(Math.round(r.smile.incl||0)))};});
+  if(q)a=a.filter(o=>nq(o.name).includes(q)||o.code.includes(q));
+  if(PICK.noInv&&!q)a=a.filter(o=>!o.n||o.hit);
+  a.sort((p,r)=>(r.hit-p.hit)||((!!p.n)-(!!r.n))||p.name.localeCompare(r.name,'ja'));
+  box.innerHTML=`<table class="pk" style="width:100%;border-collapse:collapse"><thead><tr><th>仕入先</th><th class="n">工場</th><th class="n">本社</th><th>請求書</th><th></th></tr></thead><tbody>
+    ${a.map(o=>`<tr class="${o.hit?'hit':''}"><td style="white-space:normal"><b>${esc(o.name)}</b> <span style="font-size:11.5px;color:var(--sub)">${esc(o.code)}</span>${o.hit?' <span class="tag t-ok">金額が合う</span>':''}</td>
+      <td class="n">${o.fac?yen(o.fac):'—'}</td><td class="n">${o.hon?yen(o.hon):'—'}</td><td style="font-size:12px">${o.n?`${o.n}枚あり`:'<span style="color:var(--up)">まだ無い</span>'}</td>
+      <td><button class="pri" data-pkset="${esc(o.code)}" style="padding:2px 10px">付ける</button></td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--sub);padding:14px">見つかりません（「請求書がまだ無い仕入先だけ」を外すと全部出ます）</td></tr>'}</tbody></table>`;
+  box.querySelectorAll('[data-pkset]').forEach(b=>b.onclick=async()=>{const c=b.dataset.pkset,v=C[c];if(!confirm(`この請求書を「${v?v.name:c}（${c}）」に付けます。よろしいですか？`))return;
+    try{await assignVendor(x,c,'人が選んだ（請求書を見ながら）');const d=$('pickDlg');if(d){d.hidden=true;d.innerHTML='';}PICK.x=null;snack('仕入先に付けました');await loadInvoices();render();}catch(e){snack('付けられませんでした：'+e.message,true);}});}
+document.addEventListener('keydown',e=>{const d=$('pickDlg');if(e.key==='Escape'&&d&&!d.hidden){e.stopImmediatePropagation();d.hidden=true;d.innerHTML='';PICK.x=null;}},true);
 // 並べ替え（請求書を渡す）：受け付け順・支払先順・金額順
 const SORTS=[['at','受け付け順'],['name','支払先順'],['amt','金額順']];
 function sortInv(a,k,nameOf){const nm=o=>pkey(nameOf(o));return k==='name'?a.slice().sort((x,y)=>nm(x).localeCompare(nm(y),'ja')||Math.round(y.amount||y.x&&y.x.amount||0)-Math.round(x.amount||x.x&&x.x.amount||0))
@@ -1507,7 +1540,7 @@ function drawInbox(){
           <td style="white-space:normal"><b>${esc(x.payee||x.title)}</b>${x.regNo?`<div style="font-size:11.5px;color:var(--sub)">${esc(x.regNo)}</div>`:''}<div><a href="#" data-ibpdf="${esc(x.id)}" style="font-size:12px">📄 請求書を見る</a>${invMarks(x,null)}</div></td>
           <td class="n">${busyX(x)?'<span class="spin" title="AI が読んでいます"></span>':yen(x.amount)}</td>
           <td style="white-space:normal;min-width:260px">${failX(x)?(String(x.com).includes(APIntake.MULTI_MARK)?`<span style="color:var(--up)">${esc((String(x.com).split(/\n+/).find(s=>s.includes(APIntake.MULTI_MARK))||'').slice(0,160))}</span><br>`:'<span style="color:var(--up)">AI が読めませんでした。仕入先を選んでください</span><br>'):''}${busyX(x)?'<span style="color:var(--sub)">AI が読んでいます…</span>':nC?`<select data-ibsel="${x.id}" style="max-width:340px">${cs.length?'':'<option value="">（候補なし：今月のリストに無い＝経費かも）</option>'}${opts}</select>`:'<span style="color:var(--warn)">支払先リスト待ち</span>'}</td>
-          <td style="white-space:nowrap">${busyX(x)?'':`${nC?`<button class="pri" data-ibset="${x.id}">付ける</button> `:''}<button data-ibexp="${x.id}" title="今月の支払先リストに無い請求書は経費の可能性。経費として読み直して、経費の確認待ちへ">経費に回す</button> <select data-ibloc="${x.id}" style="width:auto"><option>本社</option><option>工場</option></select> <button class="lk" data-ibdrop="${x.id}" title="この請求書を取り消す（二重・間違い）">🗑</button>`}</td></tr>`;}).join('')||'<tr><td colspan="5" style="color:var(--sub);padding:14px">ありません（置いた請求書は、仕入先が決まると「確認」の仕入先の欄に付きます）</td></tr>'}</table>
+          <td style="white-space:nowrap">${busyX(x)?'':`${nC?`<button data-ibpick="${x.id}" title="請求書を見ながら、今月の支払先から選ぶ（工場・本社の金額つき）">🔍 見ながら選ぶ</button> <button class="pri" data-ibset="${x.id}">付ける</button> `:''}<button data-ibexp="${x.id}" title="今月の支払先リストに無い請求書は経費の可能性。経費として読み直して、経費の確認待ちへ">経費に回す</button> <select data-ibloc="${x.id}" style="width:auto"><option>本社</option><option>工場</option></select> <button class="lk" data-ibrr="${x.id}" title="AI にもう一度はじめから読ませる（読み取りがおかしいとき）">🔄</button><button class="lk" data-ibdrop="${x.id}" title="この請求書を取り消す（二重・間違い）">🗑</button>`}</td></tr>`;}).join('')||'<tr><td colspan="5" style="color:var(--sub);padding:14px">ありません（置いた請求書は、仕入先が決まると「確認」の仕入先の欄に付きます）</td></tr>'}</table>
       </div>${linkedHtml(C)}`;
   $('pane').innerHTML=h;
   const d=$('ibdrop');['dragenter','dragover'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
@@ -1515,6 +1548,8 @@ function drawInbox(){
   d.addEventListener('drop',ev=>registerInbox(ev.dataTransfer.files));$('ibfile').onchange=e=>{registerInbox(e.target.files);e.target.value='';};
   document.querySelectorAll('[data-ibmg]').forEach(b=>b.onclick=()=>{MERGE_UP=b.dataset.ibmg==='1';drawInbox();});
   if($('ibGoImp'))$('ibGoImp').onclick=()=>{st.tab='imp';render();};
+  document.querySelectorAll('[data-ibpick]').forEach(b=>b.onclick=()=>{const x=INBX.find(i=>i.id===b.dataset.ibpick);if(x)openPick(x);});
+  document.querySelectorAll('[data-ibrr]').forEach(b=>b.onclick=()=>{const x=INBX.find(i=>i.id===b.dataset.ibrr);if(x)retryInbox([x]);});
   if($('ibRetry'))$('ibRetry').onclick=()=>retryInbox(fail.filter(x=>!String(x.com).includes(APIntake.MULTI_MARK)));   // 2通入ったファイルは読み直しても同じ（分けて渡し直す）
   document.querySelectorAll('[data-exon]').forEach(c=>c.onchange=()=>{EXPSEL[c.dataset.exon]=Object.assign(EXPSEL[c.dataset.exon]||{},{on:c.checked});drawInbox();});
   document.querySelectorAll('[data-exloc]').forEach(c=>c.onchange=()=>{EXPSEL[c.dataset.exloc]=Object.assign(EXPSEL[c.dataset.exloc]||{},{loc:c.value});});
