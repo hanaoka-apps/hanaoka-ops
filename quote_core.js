@@ -428,6 +428,14 @@
   //   ③で2つ以上あるときは、上の v27 の決まり → 受注の実績があるもの の順
   var V27_FROM = "2027-01-01";
   function isV27(c) { return /v27/i.test(c || ""); }
+  // 同じ価格表記載名に v27 が2つ以上あるとき（サイレント版など）：入れたコードと同じ形のもの → 短いもの の順
+  function v27Order(code) {
+    var base = key(code || "");
+    return function (a, b) {
+      var ea = key(a.replace(/v27/i, "")) === base, eb = key(b.replace(/v27/i, "")) === base;
+      return (eb - ea) || (a.length - b.length);
+    };
+  }
   function smileCodeOf(l, env, kk, date) {
     if (l.smile) return { code: l.smile, by: "手で選んだ" };
     if (l.manual || !l.code) return { code: "", by: "" };
@@ -435,7 +443,7 @@
     if (items[l.code]) {
       // 2027年からは、入れた旧コードに同じ価格表記載名の v27 があればそちらにする（枝番つきは対象外）
       if (v27 && !isV27(l.code) && l.code.indexOf("/") < 0) {
-        var nw = (kk[key(items[l.code].kakaku || l.code)] || []).filter(function (c) { return isV27(c) && c.indexOf("/") < 0; });
+        var nw = (kk[key(items[l.code].kakaku || l.code)] || []).filter(function (c) { return isV27(c) && c.indexOf("/") < 0; }).sort(v27Order(l.code));
         if (nw.length) return { code: nw[0], by: "2027年からは v27", cands: [nw[0], l.code] };
       }
       return { code: l.code, by: "" };
@@ -443,8 +451,8 @@
     var cands = (kk[key(l.listCode || l.code)] || []).slice();
     if (!cands.length) return { code: "", by: "" };
     var h = env.history || {}, used = function (c) { return !!(h.i && h.i[key(c)]); };
-    var rank = function (c) { return isV27(c) === v27 ? 0 : 1; };
-    cands.sort(function (a, b) { return (rank(a) - rank(b)) || (used(b) - used(a)) || (a < b ? -1 : 1); });
+    var rank = function (c) { return isV27(c) === v27 ? 0 : 1; }, vo = v27Order(l.listCode || l.code);
+    cands.sort(function (a, b) { return (rank(a) - rank(b)) || (v27 && isV27(a) && isV27(b) ? vo(a, b) : 0) || (used(b) - used(a)) || (a < b ? -1 : 1); });
     return { code: cands[0], by: v27 && isV27(cands[0]) ? "2027年からは v27" : "価格表記載名", cands: cands };
   }
   // 返す：{ head, rows, miss:{ code, wh }（直す行の番号。なければ -1）, dests }
