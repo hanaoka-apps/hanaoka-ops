@@ -111,6 +111,74 @@ def _sf(s) -> float:
         return 0.0
 
 
+_BOM_CACHE = None
+
+
+def _load_bom_default():
+    """構成マスタ.csv から通常構成 (親 → [(子, 取数)]) を読む。消費・消費予定で共用。
+
+       2026-11-18 修正 (取数が謎の倍率で膨らむ件):
+         旧実装は同一(親,子)の行を「加算」していたため、SMILE構成マスタ出力の
+         重複行数 (親ごとに23/19/17件など) がそのまま倍率になっていた。
+         例: 完成13台 × 取数1 → 消費299 (=13×23)。
+         build_seiban_gantt.py / build_work_instructions.py と同じルールに統一:
+           - 同一(親,子)の重複行は先頭1件のみ採用 (雅さん指示 2026-05-14: 加算は誤り)
+           - 取数 = 分子 / 分母
+           - ﾀﾞﾐｰ構成区分 / 展開ｽﾄｯﾌﾟ区分 / 使用禁止日(当日以前) の行は除外
+           - 製番別構成 (製番列あり) は通常構成に混ぜない
+    """
+    global _BOM_CACHE
+    if _BOM_CACHE is not None:
+        return _BOM_CACHE
+    p_bom = SHARED / "構成マスタ.csv"
+    if not p_bom.exists():
+        print(f"[WARN] {p_bom.name} が見つかりません", file=sys.stderr)
+        _BOM_CACHE = {}
+        return _BOM_CACHE
+    delim_bom = _detect_delimiter(p_bom)
+    bom_pc = {}  # (parent, child) -> qty (先頭行の値)
+    n_rows = n_dup = n_invalid = n_seiban = 0
+    with open(p_bom, "r", encoding="utf-8-sig", errors="replace") as f:
+        reader = csv.DictReader(f, delimiter=delim_bom)
+        for row in reader:
+            g = lambda k: (row.get(k) or "").strip().strip('"')
+            parent = g("親品目ｺｰﾄﾞ") or g("親品目コード")
+            child = g("子品目ｺｰﾄﾞ") or g("子品目コード")
+            if not parent or not child:
+                continue
+            n_rows += 1
+            if g("ﾀﾞﾐｰ構成区分") not in ("", "0") or g("展開ｽﾄｯﾌﾟ区分") not in ("", "0"):
+                n_invalid += 1
+                continue
+            forbid = g("使用禁止日")
+            if forbid and forbid not in ("0", "00000000"):
+                f_date = _parse_yyyymmdd(forbid)
+                if f_date and f_date <= TODAY:
+                    n_invalid += 1
+                    continue
+            sb = g("製番")
+            if sb and sb not in ("0", "000000000000", "0000000000-00"):
+                n_seiban += 1
+                continue
+            key = (parent, child)
+            if key in bom_pc:
+                n_dup += 1
+                continue
+            num = _sf(g("取数(分子)") or g("取数（分子）") or 1)
+            den = _sf(g("取数(分母)") or g("取数（分母）") or 1) or 1.0
+            qty = num / den
+            if qty <= 0:
+                continue
+            bom_pc[key] = qty
+    bom = {}
+    for (parent, child), qty in bom_pc.items():
+        bom.setdefault(parent, []).append((child, qty))
+    print(f"[構成マスタ] {n_rows:,}行 → 通常構成(親,子) {len(bom_pc):,}ペア / {len(bom):,}親品目 "
+          f"(重複スキップ {n_dup:,} / 無効行 {n_invalid:,} / 製番別構成 {n_seiban:,} は除外)")
+    _BOM_CACHE = bom
+    return bom
+
+
 def load_receipts():
     """受入明細出力.csv を読み込み、品目コード単位にgroup化"""
     p = SHARED / "受入明細出力.csv"
@@ -342,27 +410,9 @@ def load_planned_consumption():
          構成マスタ: 親 → [(子, 取数)] (前述の load_consumption と同じBOM)
          → 計画の日付に 子部品が「消費予定」 として計上
     """
-    p_bom = SHARED / "構成マスタ.csv"
-    if not p_bom.exists():
+    bom = _load_bom_default()
+    if not bom:
         return {}
-    delim_bom = _detect_delimiter(p_bom)
-    bom_pc = {}
-    with open(p_bom, "r", encoding="utf-8-sig", errors="replace") as f:
-        reader = csv.DictReader(f, delimiter=delim_bom)
-        for row in reader:
-            parent = (row.get("親品目ｺｰﾄﾞ") or "").strip().strip('"')
-            child = (row.get("子品目ｺｰﾄﾞ") or "").strip().strip('"')
-            qty = _sf(row.get("取数(分子)"))
-            if not parent or not child or qty <= 0: continue
-            forbid = (row.get("使用禁止日") or "").strip().strip('"')
-            if forbid:
-                f_date = _parse_yyyymmdd(forbid)
-                if f_date and f_date <= TODAY: continue
-            key = (parent, child)
-            bom_pc[key] = bom_pc.get(key, 0) + qty
-    bom = {}
-    for (parent, child), qty in bom_pc.items():
-        bom.setdefault(parent, []).append((child, qty))
 
     # 生産計画を読み込み (load_production_plans と同じ条件: 未完成・未来)
     p_plan = SHARED / "生産計画出力.csv"
@@ -516,36 +566,10 @@ def load_consumption():
 
        誤差注意: 廃棄・歩留まり・流用は反映されない。あくまでBOM理論値。
     """
-    # 構成マスタを (親, 子) ペアで合算 (同じ親→同じ子が複数行登録されているケースが多いため)
-    # 雅さん 2026-05-23: 「消費が大量に重複」報告 → (親,子) ペア集約で解消
-    p_bom = SHARED / "構成マスタ.csv"
-    if not p_bom.exists():
-        print(f"[WARN] {p_bom.name} が見つかりません", file=sys.stderr)
+    # 構成マスタ: 重複行は1件のみ採用 (2026-11-18 修正。旧実装の加算が倍率の原因)
+    bom = _load_bom_default()
+    if not bom:
         return {}
-    delim_bom = _detect_delimiter(p_bom)
-    bom_pc = {}  # (parent, child) -> qty_total
-    n_bom_rows = 0
-    with open(p_bom, "r", encoding="utf-8-sig", errors="replace") as f:
-        reader = csv.DictReader(f, delimiter=delim_bom)
-        for row in reader:
-            parent = (row.get("親品目ｺｰﾄﾞ") or "").strip().strip('"')
-            child = (row.get("子品目ｺｰﾄﾞ") or "").strip().strip('"')
-            qty = _sf(row.get("取数(分子)"))
-            if not parent or not child or qty <= 0:
-                continue
-            forbid = (row.get("使用禁止日") or "").strip().strip('"')
-            if forbid:
-                f_date = _parse_yyyymmdd(forbid)
-                if f_date and f_date <= TODAY:
-                    continue
-            key = (parent, child)
-            bom_pc[key] = bom_pc.get(key, 0) + qty
-            n_bom_rows += 1
-    # 親 → [(子, 合算取数)] のリスト形式に変換
-    bom = {}
-    for (parent, child), qty in bom_pc.items():
-        bom.setdefault(parent, []).append((child, qty))
-    print(f"[構成マスタ] {n_bom_rows:,}行 → (親,子)ユニーク {len(bom_pc):,}ペア / {len(bom):,}親品目")
 
     # 製造指図明細を (製番, 親) でgroup化、報告済数量の最大値を「親の完成数」とみなす
     p_pro = SHARED / "製造指図出力.csv"
@@ -588,7 +612,7 @@ def load_consumption():
                     cur["tehai_no"] = tehai_no
                     cur["process_name"] = proc_name
 
-    # 子部品視点で消費レコードを生成 (qty_per_unit はすでに集約済み)
+    # 子部品視点で消費レコードを生成 (qty_per = 1台あたり取数)
     by_item = {}
     n_consumed = 0
     for (seiban, parent), info in parent_completion.items():

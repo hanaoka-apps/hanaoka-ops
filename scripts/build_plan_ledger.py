@@ -151,10 +151,19 @@ def main():
         stock_mtime = (DATA / "_stock_mtime.txt").read_text(encoding="utf-8").strip()[:16]
 
     # ---- BOM 親→子, 子→親
+    # 2026-11-18 修正: 同一(親,子)の重複行を加算していたため取数が重複行数倍に膨らんでいた。
+    # build_seiban_gantt.py 等と同じく 重複は先頭1件のみ / ダミー・展開ストップ除外 / 製番別構成は混ぜない。
     bom = defaultdict(dict)
     for r in read_dicts(DATA / "構成マスタ.csv"):
         pa, ch = g(r, "親品目ｺｰﾄﾞ"), g(r, "子品目ｺｰﾄﾞ")
         if not pa or not ch:
+            continue
+        if ch in bom[pa]:
+            continue
+        if g(r, "ﾀﾞﾐｰ構成区分") not in ("", "0") or g(r, "展開ｽﾄｯﾌﾟ区分") not in ("", "0"):
+            continue
+        sb = g(r, "製番")
+        if sb and sb not in ("0", "000000000000", "0000000000-00"):
             continue
         fb = pd(g(r, "使用禁止日"))
         if fb and fb <= today:
@@ -165,7 +174,7 @@ def main():
         num, den = sf(g(r, "取数(分子)")), sf(g(r, "取数(分母)")) or 1
         if num <= 0:
             continue
-        bom[pa][ch] = bom[pa].get(ch, 0) + num / den
+        bom[pa][ch] = num / den  # 先頭1件の取数 (加算しない)
     parents_of = defaultdict(dict)
     for pa, chs in bom.items():
         for ch, q in chs.items():
