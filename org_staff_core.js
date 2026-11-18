@@ -1,6 +1,7 @@
 /* 組織計画：人員の照合と年度開始直前の年齢。実データは置かない。 */
 (function (root) {
   'use strict';
+  const G = root.OrgGradeCore || (typeof require === 'function' ? require('./org_grade_core.js') : null);
   const copy = x => JSON.parse(JSON.stringify(x));
   const nameKey = x => String(x || '').normalize('NFKC').replace(/[\s　・]/g, '').replace(/髙/g, '高');
   const codeKey = x => String(x == null ? '' : x).trim().replace(/^0+(?=\d)/, '');
@@ -31,7 +32,8 @@
       return { staffId: String(p.id), empCode: String(p.EmpCode || ''), name: String(p.Title || ''),
         dept: String(p.UnitPath || ''), title: String(p.JobLabel || ''), kind: p.Kind, state: p.State || '在籍',
         birthDate: e ? dateKey(e.生年月日) : null, startDate: dateKey(p.StartDate) || (e ? dateKey(e.入社年月日) : null),
-        endDate: dateKey(p.EndDate), payrollAmbiguous: matches.length > 1 };
+        endDate: dateKey(p.EndDate), payrollSite: e ? String(e.拠点 || '') : '', payType: e ? String(e.給与種別名称 || '') : '',
+        gradeEvidence: e ? G.evidence(payroll, p.EmpCode, e.拠点, month) : null, payrollAmbiguous: matches.length > 1 };
     });
     if (!rows.length) throw new Error('対象となる人員がありません。更新を止めました。');
     if (new Set(rows.map(p => p.staffId)).size !== rows.length) throw new Error('人員表のIDが重複しています。更新を止めました。');
@@ -62,6 +64,14 @@
         if (r.birthDate) { p.birthDate = r.birthDate; p.birth = yearOf(r.birthDate); }
         if (r.startDate) p.join = yearOf(r.startDate);
         p.sourceState = r.state;
+        if (r.kind) p.employeeKind = r.kind;
+        if (r.gradeEvidence) {
+          const history = [...(p.hrGradeHistory || []), ...(p.hrGrade ? [p.hrGrade] : [])].filter(h => h.month !== r.gradeEvidence.month);
+          p.hrGradeHistory = [...new Map(history.map(h => [h.month, h])).values(), copy(r.gradeEvidence)].sort((a, b) => a.month.localeCompare(b.month));
+          p.hrGrade = copy(r.gradeEvidence);
+        }
+        if (r.payrollSite) p.payrollSite = r.payrollSite;
+        if (r.payType) p.payType = r.payType;
         if (baseline === sn) {
           p.actualHistory = (p.actualHistory || []).filter(h => h.year !== y);
           p.actualHistory.push({ year: y, dept: r.dept, title: r.title, state: r.state, startDate: r.startDate, endDate: r.endDate });
@@ -74,6 +84,7 @@
         if (baseline.people.some(p => !p.staffId && nameKey(p.name) === nameKey(r.name))) { notices.push('新しい人に一致する手入力の人がいるため、自動追加を保留しています。対応を確認してください。'); continue; }
         baseline.people.push({ id: 'staff_' + r.staffId, staffId: r.staffId, empCode: r.empCode, name: r.name,
           dept: r.dept, birth: yearOf(r.birthDate), birthDate: r.birthDate, join: yearOf(r.startDate), retire: null,
+          employeeKind: r.kind, hrGradeHistory: r.gradeEvidence ? [copy(r.gradeEvidence)] : [], hrGrade: r.gradeEvidence || null, payrollSite: r.payrollSite || '', payType: r.payType || '',
           titles: [], grades: [], moves: [], events: [], roleKeys: [], note: '', flag: false,
           actualHistory: [{ year: y, dept: r.dept, title: r.title, state: r.state, startDate: r.startDate, endDate: r.endDate }] });
       }
@@ -101,6 +112,14 @@
     if (h && h.state === '退職') p.retire = Math.min(p.retire == null ? Infinity : p.retire, h.year);
     else if (h && presentActual(h, year) && p.retire != null && p.retire <= year) p.retire = null;
     if (h && h.endDate && h.state === '退職予定') p.retire = yearOf(h.endDate) + 1;
+    if (p.hrGrade) {
+      const info = G.gradeInfo(p, year, true);
+      if (info.grade) {
+        p.grades = [...(p.grades || []).filter(x => x.from !== year), { from: year, grade: info.grade }];
+        const confirmed = (p.gradeStarts || []).find(x => x.grade === info.grade && x.from === (info.from ?? null) && (info.type !== 'source' || x.sourceSince === info.sinceMonth));
+        if (confirmed) p.gradeStarts.push({ ...confirmed, from: year, sourceSince: null });
+      }
+    }
     delete p.actualHistory;
     return p;
   }

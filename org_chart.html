@@ -105,6 +105,13 @@
   #staffMatches td:last-child { text-align:left; white-space:normal; min-width:360px; }
   #staffMatches select { display:inline-block; width:min(100%,460px); margin:2px 4px; }
   #staffSync summary { cursor:pointer; font-weight:600; }
+  .grade-controls { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:12px 0; }
+  .grade-controls label { display:grid; gap:4px; font-size:12px; }
+  .grade-controls input { max-width:180px; }
+  .grade-summary { display:flex; gap:6px; flex-wrap:wrap; margin:12px 0; }
+  .grade-edit { min-width:240px; max-width:340px; white-space:normal; text-align:left; }
+  #gradeView .tw { max-height:65vh; }
+  #gradeView h2 { margin-top:0; }
   /* パネル */
   .ph { display:flex; align-items:center; gap:8px; margin-bottom:8px; } .ph h3 { margin:0; font-size:16px; flex:1; }
   .ptabs { display:flex; gap:4px; margin-bottom:10px; }
@@ -163,6 +170,7 @@
     <button class="mode" data-m="table">年齢推移表</button>
     <button class="mode" data-m="slots">募集</button>
     <button class="mode" data-m="roles">役職の役割</button>
+    <button class="mode" data-m="grades">等級・年収</button>
     <span class="sep"></span>
     <span class="yrv" id="yv"></span>
     <input type="range" id="ys" min="2025" max="2045" step="1" value="2026" style="width:200px">
@@ -181,8 +189,10 @@
 </div>
 
 <script src="payroll_graph.js?v=20261004"></script>
-<script src="org_staff_core.js?v=20261118a"></script>
-<script src="org_staff.js?v=20261118a"></script>
+<script src="org_grade_core.js?v=20261118c"></script>
+<script src="org_staff_core.js?v=20261118c"></script>
+<script src="org_staff.js?v=20261118c"></script>
+<script src="org_grades.js?v=20261118c"></script>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -210,9 +220,9 @@ const VIEWS = [
 let DB = null, view = 'all', year = 2026, mode = 'chart', panel = null, dirty = false, demo = false;
 let lastKnown = null, backedUp = false, saveTimer = null, saving = false;
 
-const GRADES = ['R1-1','R1-2','R1-3','R2','R3-1','R3-2','R4-1','R4-2','R5'];
+const GRADES = OrgGradeCore.GRADES;
 const gl = p => (p.grades || []).slice().sort((a, b) => a.from - b.from);
-function gradeAt(p, y) { let g = null; for (const e of gl(p)) if (e.from <= y) g = e.grade; return g; }
+function gradeAt(p, y) { return OrgGradeCore.gradeInfo(p, y, sc().id === (DB.staffSync || {}).baselineId).grade; }
 /* 等級は役職とは別に持つ。古いデータ（役職名に MGR1-3 / R2-1 などが入っている）は、読み込み時に等級へ写す */
 const GCODE = /(?:MGR|R)\d(?:-\d)?/;
 function migrate(db) {
@@ -315,8 +325,10 @@ function renderMain() {
   if (mode === 'chart') h = chartHTML(depts);
   else if (mode === 'table') h = tableHTML(depts);
   else if (mode === 'slots') h = slotsHTML();
+  else if (mode === 'grades') h = OrgGrades.render(depts);
   else h = rolesHTML();
   $('#main').innerHTML = h;
+  if (mode === 'grades') OrgGrades.bind(depts);
 }
 function chartHTML(depts) {
   const S = stats(depts, year), ghost = $('#ghost').checked;
@@ -647,10 +659,10 @@ function showApp() {
 }
 function demoDB() {
   const names = [['営業｜本社','営業','見本 営業A',1972,'部長'],['営業｜本社','営業','見本 営業B',1985,'主任'],['営業｜大阪','営業','見本 営業C',1969,'支店長'],
-    ['ソリューション','ソリューション','見本 企画A',1991,'課長'],['ソリューション','ソリューション','見本 企画B',1999,'MGR1-3'],['業務センター','業務センター','見本 業務A',1968,'センター長課長'],['業務センター','業務センター','見本 業務B',2001,'MGR1-2']];
-  const people = names.map((n, i) => ({ id: 'd' + i, name: n[2], dept: n[0], birth: n[3], birthDate: `${n[3]}-${i % 2 ? '04-01' : '03-31'}`, join: null, retire: i === 5 ? 2028 : null, titles: [{ from: 2025, title: n[4] }], events: i === 5 ? [{ y: 2028, t: '定年' }] : [], roleNote: '', roleKeys: [], note: '', flag: false }));
+    ['ソリューション','ソリューション','見本 企画A',1991,'課長'],['ソリューション','ソリューション','見本 企画B',1999,'一般職'],['業務センター','業務センター','見本 業務A',1968,'センター長課長'],['業務センター','業務センター','見本 業務B',2001,'一般職']];
+  const people = names.map((n, i) => ({ id: 'd' + i, staffId: String(i + 1), empCode: '900' + i, grades: [{ from: 2025, grade: ['R3-2','R1-3','R3-2','R2','R1-3','R3-1','R1-2'][i] }], name: n[2], dept: n[0], birth: n[3], birthDate: `${n[3]}-${i % 2 ? '04-01' : '03-31'}`, join: null, retire: i === 5 ? 2028 : null, titles: [{ from: 2025, title: n[4] }], events: i === 5 ? [{ y: 2028, t: '定年' }] : [], roleNote: '', roleKeys: [], note: '', flag: false }));
   const base = JSON.parse(JSON.stringify(window.__seedRoles || []));
-  return { v: 1, activeId: 'cur', depts: [{ name: '営業｜本社', group: '営業' }, { name: '営業｜大阪', group: '営業' }, { name: 'ソリューション', group: 'ソリューション' }, { name: '業務センター', group: '業務センター' }],
+  return { v: 1, activeId: 'cur', staffSync: { baselineId: 'cur', autoAdd: false }, depts: [{ name: '営業｜本社', group: '営業' }, { name: '営業｜大阪', group: '営業' }, { name: 'ソリューション', group: 'ソリューション' }, { name: '業務センター', group: '業務センター' }],
     roleDefs: [{ key: '部長', name: '部長', match: '部長', summary: '', profile: ['MVV遵守', '自ら考え、決断・行動ができる'], groups: [{ h: '数字・計画', items: ['部全体の数字管理'] }], undecided: ['（デモ）未決の例'], notes: '' },
       { key: '課長', name: '課長', match: '課長|支店長', summary: '', profile: ['部下に明確に指示・指導ができる'], groups: [], undecided: [], notes: '' }],
     scenarios: [{ id: 'cur', name: '現状（実際）', note: 'デモ', people, slots: [] },

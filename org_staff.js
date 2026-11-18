@@ -1,14 +1,14 @@
 /* 組織計画専用。人員表と給与は読むだけ。取得した原本は保存しない。 */
 const OrgStaff = (() => {
   const C = OrgStaffCore;
-  const source = { rows: [], month: '', loaded: false, busy: false, message: '未接続', notices: [], timer: null, key: 0 };
+  const source = { revision: 0, rows: [], month: '', loaded: false, busy: false, message: '未接続', notices: [], timer: null, key: 0 };
   const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
   const groups = ['営業', 'ソリューション', '業務センター', '工場・技術・品質', '経営・総務', '人員表'];
   function demoSource() {
     const rows = demoDB().scenarios[0].people.map((p, i) => ({ id: i + 1, Title: p.name, EmpCode: '900' + i,
-      UnitPath: p.dept, JobLabel: (p.titles[0] || {}).title || '', Kind: '社員', State: '在籍' }));
-    const payroll = demoDB().scenarios[0].people.map((p, i) => ({ 年月: '2026-10', 従業員コード: '900' + i,
-      生年月日: `${p.birth}年${i % 2 ? 4 : 3}月${i % 2 ? 1 : 31}日` }));
+      UnitPath: p.dept, JobLabel: (p.titles[0] || {}).title || '', Kind: i === 0 ? '役員' : '社員', State: '在籍' }));
+    const payroll = ['2026-07', '2026-08', '2026-09', '2026-10'].flatMap(month => demoDB().scenarios[0].people.map((p, i) => ({ 年月: month, 従業員コード: '900' + i, 拠点: '本社', 給与種別名称: '月給者',
+      所属: ['R3-2', 'R1-3', 'R3-2', 'R2', 'R1-3', 'R3-1', 'R1-2'][i], 生年月日: `${p.birth}年${i % 2 ? 4 : 3}月${i % 2 ? 1 : 31}日` })));
     rows.push({ id: 99, Title: '見本 派遣', EmpCode: '', UnitPath: '営業｜本社', Kind: '派遣', State: '在籍' });
     return { persons: rows, payroll };
   }
@@ -37,11 +37,12 @@ const OrgStaff = (() => {
         catch { payroll = []; warning = '給与の人事情報を取得できません。年齢は前回の情報を保持し、未取得の人は未確認のままです。'; }
       }
       const result = C.roster(persons, payroll);
-      source.rows = result.rows; source.month = result.month; source.loaded = true;
+      source.revision++; source.rows = result.rows; source.month = result.month; source.loaded = true;
       source.message = (demo ? 'サンプル人員で確認：' : '人員表を確認：') + new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' }).format(new Date());
       source.notices = warning ? [warning] : [];
       if (result.rows.some(r => r.payrollAmbiguous)) source.notices.push('給与に同じ従業員コードが複数あります。その人の生年月日は補完していません。');
       apply();
+      if (mode === 'grades') renderMain();
     } catch { source.message = '取得できませんでした。権限・接続先を確認してください。前回の人員情報を保持しています。'; }
     finally { source.busy = false; render(); }
   }
@@ -60,7 +61,7 @@ const OrgStaff = (() => {
     if (!staffId) { delete p.staffId; delete p.empCode; delete p.actualHistory; touch(); E.rerender(); render(); return; }
     const r = source.rows.find(r => r.staffId === staffId);
     if (!r || sn.people.some(q => q !== p && String(q.staffId || '') === staffId)) { alert('同じ案の別の人と結び付いています。対応を確認してください。'); return; }
-    if (p.staffId && String(p.staffId) !== r.staffId) { delete p.birthDate; delete p.birth; delete p.actualHistory; }
+    if (p.staffId && String(p.staffId) !== r.staffId) { delete p.birthDate; delete p.birth; delete p.actualHistory; delete p.hrGrade; delete p.hrGradeHistory; delete p.payrollSite; delete p.payType; delete p.gradeStarts; delete p.employeeKind; }
     p.staffId = r.staffId; p.empCode = r.empCode; touch(); apply(); render();
   }
   function render() {
@@ -70,7 +71,7 @@ const OrgStaff = (() => {
     const options = '<option value="">（現状の案を選ぶ）</option>' + DB.scenarios.map(s => `<option value="${esc(s.id)}"${s.id === cfg.baselineId ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
     box.innerHTML = `<details${expanded ? ' open' : ''}><summary>人員表との連携：${esc(source.message)}</summary><div class="frm">
       <p>年齢は表示年度の開始直前（例：2026年度は2026/3/31）の満年齢です。生年月日がない人は未確認。人員は年度中の現状です。</p>
-      <p>現状の案は所属・役職・在籍状況も更新します。他の案は氏名・生年月日・入社年を更新し、所属・昇格・退職の計画を保持します。募集と派遣・シルバー・スポットは取り込みません。</p>
+      <p>現状の案は所属・役職・等級・在籍状況も更新します。他の案は氏名・生年月日・入社年を更新し、所属・昇格・退職の計画を保持します。募集と派遣・シルバー・スポットは取り込みません。</p>
       <label>現状として更新する案 <select id="staffBaseline"${baseline ? ' disabled' : ''}>${options}</select></label><button class="btn sm" id="staffSetBaseline"${baseline ? ' disabled' : ''}>この案を現状として更新する</button>
       <p><button class="btn sm" id="staffReload"${source.busy ? ' disabled' : ''}>人員を読み直す</button> <span class="muted">${source.month ? '生年月日の取得元：給与人事 ' + esc(source.month) : '給与人事：未取得'}。画面を開いたときと、編集中以外は5分ごとに確認。</span></p>
       ${source.notices.map(n => `<p class="muted">${esc(n)}</p>`).join('')}
@@ -78,7 +79,7 @@ const OrgStaff = (() => {
       <div id="staffMatches"></div>
       ${source.loaded && baseline ? `<p><button class="btn sm" id="staffEnable">${cfg.autoAdd ? '新しい人の自動追加を止める' : '対応確認を終え、新しい人の自動追加を始める'}</button><span class="muted"> 押すと未登録の在籍・退職予定・入社予定の人が現状の案に追加されます。将来案への追加は案ごとに選べます。</span></p>` : ''}
       <details><summary>部署の表示グループ</summary>${DB.depts.map((d, i) => `<label>${esc(d.name)} <select data-staff-group="${i}">${groups.map(g => `<option${g === d.group ? ' selected' : ''}>${esc(g)}</option>`).join('')}</select></label>`).join('')}</details>
-      <p class="muted">想定年収は今後の拡張項目です。今回は金額の取得・計算を行いません。</p>
+      <p class="muted">「等級・年収」で等級別の一覧、在級期間、給与と賞与月数による概算年収を確認できます。</p>
     </div></details>`;
     box.querySelector('#staffReload').onclick = refresh;
     box.querySelector('#staffSetBaseline').onclick = () => {
@@ -139,7 +140,7 @@ const OrgStaff = (() => {
   function start() {
     clearInterval(source.timer);
     refresh();
-    source.timer = setInterval(() => { if (!document.hidden && !dirty && !saving && !panel && !document.querySelector('#staffSync details[open]')) refresh(); }, 300000);
+    source.timer = setInterval(() => { if (!document.hidden && !dirty && !saving && !panel && !document.querySelector('#staffSync details[open]') && !document.querySelector('#gradeView details[open]') && !document.querySelector('#gradeView input:focus')) refresh(); }, 300000);
   }
   return { start, refresh, render, source };
 })();
