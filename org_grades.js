@@ -67,7 +67,7 @@ const OrgGrades = (() => {
   function render(depts) {
     const allowed = new Set(depts.map(d => d.name));
     const all = sc().people.filter(p => allowed.has(deptAt(p, year)) && present(p, year)).map(values);
-    const gradeNames = [...new Set([...G.GRADES, ...all.map(r => r.grade).filter(Boolean)])];
+    const gradeNames = [...new Set([...G.GRADES, ...all.map(r => r.grade).filter(Boolean)])].sort(G.compareGrades);
     let rows = all.filter(r => (!state.grade || (state.grade === '?' ? !r.grade : r.grade === state.grade)) && (!state.search || [r.p.name, deptAt(r.p, year)].join(' ').includes(state.search)));
     const val = r => state.sort === 'grade' ? (gradeNames.indexOf(r.grade) < 0 ? gradeNames.length : gradeNames.indexOf(r.grade)) : state.sort === 'name' ? r.p.name : state.sort === 'tenure' ? r.tenure.months : r.annual;
     rows.sort((a, b) => { const x = val(a), y = val(b); if (x == null || y == null) return (x == null) - (y == null); return (typeof x === 'number' ? x - y : x.localeCompare(y, 'ja')) * state.dir; });

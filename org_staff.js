@@ -9,7 +9,7 @@ const OrgStaff = (() => {
     const rows = demoDB().scenarios[0].people.map((p, i) => ({ id: i + 1, Title: p.name, EmpCode: '900' + i,
       UnitPath: depts[i], JobLabel: (p.titles[0] || {}).title || '', Kind: i === 0 ? '役員' : '社員', State: '在籍' }));
     const payroll = ['2026-07', '2026-08', '2026-09', '2026-10'].flatMap(month => demoDB().scenarios[0].people.map((p, i) => ({ 年月: month, 従業員コード: '900' + i, 拠点: '本社', 給与種別名称: '月給者',
-      所属: ['R3-2', 'R1-3', 'R3-2', 'R2', 'R1-3', 'R3-1', 'R1-2'][i], 生年月日: `${p.birth}年${i % 2 ? 4 : 3}月${i % 2 ? 1 : 31}日` })));
+      所属: ['MGR5-1', 'MGR1-3', 'MGR3-2', 'MGR2-1', 'R3-1', 'MGR4-1', 'MGR1-1'][i], 生年月日: `${p.birth}年${i % 2 ? 4 : 3}月${i % 2 ? 1 : 31}日` })));
     rows.push({ id: 99, Title: '見本 派遣', EmpCode: '', UnitPath: '営業｜本社', Kind: '派遣', State: '在籍' });
     return { persons: rows, payroll };
   }
