@@ -8,7 +8,7 @@
   組織計画（社長・室長・専務だけ。専用サイトに保存）：年齢入りの組織図を「直せる」ようにしたもの。
   ------------------------------------------------------------
   できること
-    ・人の修正（氏名・所属・生年・入社年・退職年・役職の履歴・備考）。年齢は「年 − 生年」で自動計算
+    ・人の修正（氏名・所属・生年・入社年・退職年・役職の履歴・備考）。年齢は表示年度の開始直前の3月31日時点の満年齢。生年月日が必要
     ・案を複数持てる（現状／理想案…）。「新しい案」は今の案をコピーして作る
     ・募集（急募・ゆくゆく）：所属・役職・人数・開始年・年齢の幅・求める人物
     ・役職ごとの役割（求める人物・職務）。人や役職をクリックすると右に出る。右でそのまま直せる
@@ -102,6 +102,9 @@
   td small.chg { color:var(--warn); font-weight:700; }
   .issues { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:10px 16px; margin-top:16px; font-size:13px; }
   .issues h3 { margin:0 0 4px; font-size:14px; } .issues li { margin:3px 0; } .issues a { color:var(--accent); cursor:pointer; text-decoration:underline; }
+  #staffMatches td:last-child { text-align:left; white-space:normal; min-width:360px; }
+  #staffMatches select { display:inline-block; width:min(100%,460px); margin:2px 4px; }
+  #staffSync summary { cursor:pointer; font-weight:600; }
   /* パネル */
   .ph { display:flex; align-items:center; gap:8px; margin-bottom:8px; } .ph h3 { margin:0; font-size:16px; flex:1; }
   .ptabs { display:flex; gap:4px; margin-bottom:10px; }
@@ -170,6 +173,7 @@
     <button class="btn sm" onclick="E.addP()">＋社員を追加（既存の人）</button>
     <button class="btn sm danger" onclick="E.purge()" title="表示中の年より前に退職した人を、この案から削除">退職済みを削除</button>
   </div>
+  <section id="staffSync" style="padding:12px 18px;border-bottom:1px solid var(--line);background:var(--surface)"></section>
   <div class="work">
     <main id="main"></main>
     <aside id="panel"></aside>
@@ -177,6 +181,8 @@
 </div>
 
 <script src="payroll_graph.js?v=20261004"></script>
+<script src="org_staff_core.js?v=20261118a"></script>
+<script src="org_staff.js?v=20261118a"></script>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -200,7 +206,7 @@ const YMIN = 2025, YMAX = 2045;
 const VIEWS = [
   ['all','全社',null], ['so','営業・業務センター',['営業','ソリューション','業務センター']],
   ['s','営業',['営業']], ['sol','ソリューション',['ソリューション']], ['ops','業務センター',['業務センター']],
-  ['fac','工場・技術・品質',['工場・技術・品質']], ['mg','経営・総務',['経営・総務']] ];
+  ['fac','工場・技術・品質',['工場・技術・品質']], ['mg','経営・総務',['経営・総務']], ['staff','人員表（グループ未設定）',['人員表']] ];
 let DB = null, view = 'all', year = 2026, mode = 'chart', panel = null, dirty = false, demo = false;
 let lastKnown = null, backedUp = false, saveTimer = null, saving = false;
 
@@ -226,17 +232,17 @@ function migrate(db) {
   return db;
 }
 const ml = p => (p.moves || []).slice().sort((a, b) => a.from - b.from);
-function deptAt(p, y) { let d = p.dept; for (const e of ml(p)) if (e.from <= y) d = e.dept; return d; }
-const ageNote = (p, y) => p.birth != null && y != null ? `（${y - p.birth}歳）` : '';
+function deptAt(p, y) { const h = OrgStaffCore.actualAt(p, y); let d = h ? h.dept : p.dept; for (const e of ml(p)) if (e.from <= y && (!h || e.from > h.year)) d = e.dept; return d; }
+const ageNote = (p, y) => ageAt(p, Number(y)) == null || y == null || y === '' ? '（年齢未確認）' : `（${ageAt(p, Number(y))}歳）`;
 const sc = () => DB.scenarios.find(s => s.id === DB.activeId) || DB.scenarios[0];
 const findP = id => sc().people.find(p => p.id === id);
 const findSlot = id => sc().slots.find(s => s.id === id);
 const findRole = k => DB.roleDefs.find(r => r.key === k);
 const uid = pre => pre + Math.random().toString(36).slice(2, 8);
 const tl = p => (p.titles || []).slice().sort((a, b) => a.from - b.from);
-function titleAt(p, y) { let t = null; for (const e of tl(p)) if (e.from <= y) t = e.title; return t; }
-const present = (p, y) => (p.join == null || y >= p.join) && (p.retire == null || y < p.retire);
-const ageAt = (p, y) => p.birth == null ? null : y - p.birth;
+function titleAt(p, y) { const h = OrgStaffCore.actualAt(p, y); let t = h ? h.title : null; for (const e of tl(p)) if (e.from <= y && (!h || e.from > h.year)) t = e.title; return t; }
+const present = (p, y) => { const h = OrgStaffCore.actualAt(p, y); return h ? OrgStaffCore.presentActual(h, y) && (y === h.year || p.retire == null || y < p.retire) : (p.join == null || y >= p.join) && (p.retire == null || y < p.retire); };
+const ageAt = (p, y) => OrgStaffCore.ageAt(p, y);
 const band = a => a == null ? '' : a < 30 ? 'a1' : a < 40 ? 'a2' : a < 50 ? 'a3' : a < 60 ? 'a4' : 'a5';
 function roleFor(title) {
   if (!title) return null;
@@ -271,7 +277,7 @@ function renderBar() {
   $('#tabs').innerHTML = VIEWS.map(v => `<button class="tab${v[0] === view ? ' on' : ''}" data-v="${v[0]}">${v[1]}</button>`).join(' ');
   $('#scSel').innerHTML = DB.scenarios.map(s => `<option value="${esc(s.id)}"${s.id === DB.activeId ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   $('#scNote').value = sc().note || '';
-  $('#yv').textContent = year + '年';
+  $('#yv').textContent = year + '年度・年齢は' + year + '/3/31';
   document.querySelectorAll('.mode').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
 }
 function personRow(p, y) {
@@ -287,7 +293,7 @@ function personRow(p, y) {
   if (ok) (p.events || []).filter(e => /退職予定/.test(e.t)).forEach(e => tags.push(`<span class="tag r">${esc(/\d/.test(e.t) ? e.t : e.y + '年 ' + e.t)}${ageNote(p, e.y)}</span>`));
   if (!ok && p.retire != null && y >= p.retire) tags.push('<span class="tag">退職</span>');
   if (!ok && p.join != null && y < p.join) tags.push(`<span class="tag">${p.join}年入社</span>`);
-  if (p.flag || p.birth == null) tags.push('<span class="tag n">要確認</span>');
+  if (p.flag || ageAt(p, y) == null) tags.push('<span class="tag n">要確認</span>');
   if (p.note) tags.push(`<span class="tag n" title="${esc(p.note)}">備考</span>`);
   const sel = panel && panel.type === 'person' && panel.id === p.id ? ' sel' : '';
   return `<div class="p${sel}${ok ? '' : ' off'}" data-pid="${esc(p.id)}" style="${ok ? '' : 'opacity:.4'}">
@@ -317,7 +323,7 @@ function chartHTML(depts) {
   const bands = [['〜29', 0, 29, 'a1'], ['30代', 30, 39, 'a2'], ['40代', 40, 49, 'a3'], ['50代', 50, 59, 'a4'], ['60〜', 60, 200, 'a5']];
   const mx = Math.max(1, ...bands.map(b => S.ages.filter(a => a >= b[1] && a <= b[2]).length));
   let h = `<div class="sum"><div class="sc"><b>${S.n}</b><span>人（${year}年）</span></div>
-    <div class="sc"><b>${S.avg == null ? '—' : S.avg.toFixed(1)}</b><span>平均年齢</span></div>
+    <div class="sc"><b>${S.avg == null ? '—' : S.avg.toFixed(1)}</b><span>平均年齢（判明${S.ages.length}/${S.n}人）</span></div>
     <div class="sc"><b>${S.a55}</b><span>55歳以上</span></div><div class="sc"><b>${S.a60}</b><span>60歳以上</span></div>
     <div class="sc${S.slotKinds ? ' hire' : ''}"><b>${S.slots}</b><span>募集中（${S.slotKinds}件）</span></div></div>
     <div class="dist">${bands.map(b => { const n = S.ages.filter(a => a >= b[1] && a <= b[2]).length; return `<div class="drow"><span class="l">${b[0]}</span><span class="b" style="width:${n / mx * 220}px;background:var(--${b[3]})"></span><span>${n}</span></div>`; }).join('')}</div>
@@ -384,7 +390,7 @@ function rolesHTML() {
 function issuesHTML() {
   const L = [];
   sc().people.forEach(p => {
-    if (p.birth == null) L.push(`<a data-pid="${esc(p.id)}">${esc(p.name)}（${esc(p.dept)}）</a>：生年が未入力`);
+    if (!OrgStaffCore.dateKey(p.birthDate)) L.push(`<a data-pid="${esc(p.id)}">${esc(p.name)}（${esc(p.dept)}）</a>：生年月日が未確認（連携の対応を確認してください）`);
     else if (p.note) L.push(`<a data-pid="${esc(p.id)}">${esc(p.name)}（${esc(p.dept)}）</a>：${esc(p.note)}`);
   });
   if (!L.length) return '';
@@ -457,7 +463,7 @@ function titleList() {
   return '<datalist id="titles">' + [...set].map(t => `<option value="${esc(t)}">`).join('') + '</datalist>';
 }
 function planForm(p) {
-  const k = esc(p.id), t = titleAt(p, year), d60 = p.birth != null ? p.birth + 60 : '';
+  const k = esc(p.id), t = titleAt(p, year), d60 = OrgStaffCore.dateKey(p.birthDate) ? Number(p.birthDate.slice(0, 4)) + 60 + (Number(p.birthDate.slice(5, 7)) > 3 ? 1 : 0) : '';
   return titleList() + `<div class="defbox frm"><b>役職・退職の予定</b>
     <label>昇格・役職変更：何年から、何の役職に（現在：${esc(t || 'なし')}）</label>
     <div class="row"><input id="pq-y" type="number" value="${year}" oninput="E.hint('${k}','pq-y',this.value)"><input id="pq-t" list="titles" placeholder="例：部長"><span class="muted" id="pq-y-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.promote('${k}')">登録</button></div>
@@ -466,7 +472,7 @@ function planForm(p) {
     <datalist id="grades">${GRADES.map(g => `<option value="${g}">`).join('')}</datalist>
     <label>部署移動：何年から、どの部署に（現在：${esc(deptAt(p, year))}）</label>
     <div class="row"><input id="pq-my" type="number" value="${year}" oninput="E.hint('${k}','pq-my',this.value)"><select id="pq-md">${DB.depts.map(d => `<option${d.name === deptAt(p, year) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select><span class="muted" id="pq-my-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.moveSet('${k}')">登録</button></div>
-    <label>退職予定：何年から不在にするか${d60 ? '（60歳になる年は ' + d60 + '年）' : ''}</label>
+    <label>退職予定：何年から不在にするか${d60 ? '（3/31時点で60歳になる年度は ' + d60 + '年）' : ''}</label>
     <div class="row"><input id="pq-r" type="number" value="${p.retire != null ? p.retire : d60}" oninput="E.hint('${k}','pq-r',this.value)"><span class="muted" id="pq-r-a" style="white-space:nowrap">${ageNote(p, p.retire != null ? p.retire : d60).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.retirePlan('${k}')">退職予定にする</button>${p.retire != null ? `<button class="btn sm" onclick="E.retireClear('${k}')">取り消し</button>` : ''}</div></div>`;
 }
 function historyBlock(p) {
@@ -486,10 +492,10 @@ function historyBlock(p) {
 }
 function personForm(p) {
   const k = esc(p.id), num = v => v == null ? '' : v;
-  let h = `<div class="frm"><label>氏名</label><input value="${esc(p.name)}" oninput="E.p('${k}','name',this.value)">
-    <label>最初の所属</label><select onchange="E.p('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === p.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
-    <div class="row2"><div><label>生年（西暦）</label><input type="number" value="${num(p.birth)}" oninput="E.p('${k}','birth',this.value)"></div>
-    <div><label>入社年（途中入社のみ）</label><input type="number" value="${num(p.join)}" oninput="E.p('${k}','join',this.value)"></div>
+  let h = `<div class="frm"><label>氏名</label><input ${p.staffId ? 'readonly title="人員表で更新します"' : ''} value="${esc(p.name)}" oninput="E.p('${k}','name',this.value)">
+    <p class="muted">${p.staffId ? '人員表と接続済み。氏名・生年月日・入社年は元データから更新します。現在の所属・役職は、現状の案だけ更新します。' : '手入力の人です。上の「人員表との連携」で対応を確認できます。'}</p><label>最初の所属</label><select onchange="E.p('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === p.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+    <div class="row2"><div><label>生年月日（年齢は各年度の3/31）</label><input type="date" ${p.staffId ? 'readonly' : ''} value="${esc(p.birthDate || '')}" onchange="E.p('${k}','birthDate',this.value)"><small class="muted">${!p.birthDate && p.birth ? '旧データの生年：' + p.birth + '年。月日がないため年齢は未確認。' : ''}</small></div>
+    <div><label>入社年（途中入社のみ）</label><input type="number" ${p.staffId ? 'readonly' : ''} value="${num(p.join)}" oninput="E.p('${k}','join',this.value)"></div>
     <div><label>退職年（この年から不在）</label><input type="number" value="${num(p.retire)}" oninput="E.p('${k}','retire',this.value)"></div></div>
     <p><button class="btn sm" onclick="E.retireNow('${k}')">${year}年から退職扱いにする</button></p>
     <label>できごと（定年・役職定年・退職予定など）</label>`;
@@ -505,12 +511,12 @@ function personForm(p) {
 /* ---------- 操作 ---------- */
 const num = v => v === '' || v == null ? null : Number(v);
 const E = {
-  rerender() { renderBar(); renderMain(); renderPanel(); },
+  rerender() { renderBar(); renderMain(); renderPanel(); OrgStaff.render(); },
   after() { touch(); renderMain(); },
   close() { panel = null; renderPanel(); renderMain(); },
   tab(t) { panel.tab = t; renderPanel(); },
   openRole(k) { panel = { type: 'role', key: k }; renderPanel(); },
-  p(id, f, v) { const p = findP(id); if (!p) return; p[f] = ['birth', 'join', 'retire'].includes(f) ? num(v) : v; if (f === 'dept') E.after(); else E.after(); },
+  p(id, f, v) { const p = findP(id); if (!p) return; if (p.staffId && ['name', 'birthDate', 'birth', 'join'].includes(f)) return; p[f] = ['birth', 'join', 'retire'].includes(f) ? num(v) : v; if (f === 'birthDate') { p.birthDate = OrgStaffCore.dateKey(v); p.birth = OrgStaffCore.yearOf(v); } if (f === 'dept') E.after(); else E.after(); },
   purge() {
     const gone = sc().people.filter(p => p.retire != null && p.retire <= year);
     if (!gone.length) { alert(year + '年までに退職している人は、この案にいません。\n（年のスライダーを動かすと、基準の年が変わります）'); return; }
@@ -549,7 +555,7 @@ const E = {
   gr(id, i, f, v) { const p = findP(id), e = gl(p)[i]; if (f === 'from') e.from = Number(v); else e.grade = v; touch(); renderMain(); renderPanel(); },
   grAdd(id) { const p = findP(id); p.grades = p.grades || []; p.grades.push({ from: year, grade: gradeAt(p, year) || '' }); touch(); renderMain(); renderPanel(); },
   grDel(id, i) { const p = findP(id), e = gl(p)[i]; p.grades = p.grades.filter(x => x !== e); touch(); renderMain(); renderPanel(); },
-  hint(id, inp, v) { const p = findP(id), el = document.getElementById(inp + '-a'); if (el) el.textContent = p && p.birth != null && v ? (Number(v) - p.birth) + '歳' : ''; },
+  hint(id, inp, v) { const p = findP(id), el = document.getElementById(inp + '-a'); if (el) el.textContent = p && v ? ageNote(p, Number(v)).replace(/[（）]/g, '') : ''; },
   moveSet(id) {
     const y = Number($('#pq-my').value), d = $('#pq-md').value; if (!y) { alert('年を入れてください'); return; }
     const p = findP(id); p.moves = (p.moves || []).filter(x => x.from !== y); p.moves.push({ from: y, dept: d }); touch(); renderMain(); renderPanel();
@@ -578,9 +584,9 @@ const E = {
   addRole() { const r = { key: uid('r'), name: '新しい役割', match: '', summary: '', profile: [], groups: [], undecided: [], notes: '' }; DB.roleDefs.push(r); touch(); panel = { type: 'role', key: r.key }; renderMain(); renderPanel(); },
   newRoleFor(title) { const r = { key: uid('r'), name: title, match: '^' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', summary: '', profile: [], groups: [], undecided: [], notes: '' }; DB.roleDefs.push(r); touch(); panel = { type: 'role', key: r.key }; renderPanel(); },
   delRole(key) { if (!confirm('この役割の定義を削除します。よろしいですか？')) return; DB.roleDefs = DB.roleDefs.filter(r => r.key !== key); DB.scenarios.forEach(s => s.people.forEach(p => p.roleKeys = (p.roleKeys || []).filter(k => k !== key))); panel = null; touch(); renderMain(); renderPanel(); },
-  scNew() { const n = prompt('新しい案の名前（今の案をコピーして作ります）', sc().name + ' のコピー'); if (!n) return; const c = JSON.parse(JSON.stringify(sc())); c.id = uid('sc'); c.name = n; c.note = ''; DB.scenarios.push(c); DB.activeId = c.id; panel = null; touch(); E.rerender(); },
+  scNew() { const n = prompt('新しい案の名前（今の案をコピーして作ります）', sc().name + ' のコピー'); if (!n) return; const c = JSON.parse(JSON.stringify(sc())); c.id = uid('sc'); c.name = n; c.note = ''; c.people = c.people.map(p => OrgStaffCore.planPerson(p, OrgStaffCore.fiscalYear(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date())))); DB.scenarios.push(c); DB.activeId = c.id; panel = null; touch(); E.rerender(); },
   scRen() { const n = prompt('案の名前', sc().name); if (!n) return; sc().name = n; touch(); renderBar(); },
-  scDel() { if (DB.scenarios.length < 2) { alert('案が1つだけのときは削除できません。'); return; } if (!confirm('案「' + sc().name + '」を削除します。元に戻せません（SharePointのバージョン履歴から戻せます）。よろしいですか？')) return; DB.scenarios = DB.scenarios.filter(s => s.id !== DB.activeId); DB.activeId = DB.scenarios[0].id; panel = null; touch(); E.rerender(); },
+  scDel() { if (DB.staffSync && DB.activeId === DB.staffSync.baselineId) { alert('人員表と連携する現状の案は削除できません。将来案を選んでください。'); return; } if (DB.scenarios.length < 2) { alert('案が1つだけのときは削除できません。'); return; } if (!confirm('案「' + sc().name + '」を削除します。元に戻せません（SharePointのバージョン履歴から戻せます）。よろしいですか？')) return; DB.scenarios = DB.scenarios.filter(s => s.id !== DB.activeId); DB.activeId = DB.scenarios[0].id; panel = null; touch(); E.rerender(); OrgStaff.render(); },
   scNote(v) { sc().note = v; touch(); },
   exp() { const b = new Blob([JSON.stringify(DB, null, 1)], { type: 'application/json' }), a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'org_plan_' + stamp() + '.json'; a.click(); },
   imp(inp) {
@@ -602,15 +608,17 @@ const E = {
     try {
       const remote = await orgGetFile(REMOTE, { allow404: true });
       if (remote && lastKnown && remote.updated !== lastKnown) {
+        if (auto) { setStatus('別の場所で更新されています。自動保存を止めました。読み直してから変更を確認してください。', 'dirty'); return; }
         if (!confirm('読み込んだあとに、別の場所で組織計画が更新されています（' + remote.updated + '）。\nこのまま上書きすると、その変更は消えます（SharePointの履歴には残ります）。上書きしますか？')) { setStatus('保存を中止しました（未保存）', 'dirty'); saving = false; return; }
       }
       if (!backedUp && remote) { await orgPutFile('組織計画/backup/org_plan_' + stamp() + '.json', remote); backedUp = true; }
       DB.updated = new Date().toISOString();
-      await orgPutFile(REMOTE, DB);
-      lastKnown = DB.updated; dirty = false;
-      const d = new Date(); setStatus('SharePointに保存済み ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'));
+      const sent = JSON.stringify(DB);
+      await orgPutFile(REMOTE, JSON.parse(sent));
+      lastKnown = JSON.parse(sent).updated; dirty = JSON.stringify(DB) !== sent;
+      const d = new Date(); setStatus(dirty ? '保存中に変更されました（未保存）' : 'SharePointに保存済み ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'), dirty ? 'dirty' : '');
     } catch (e) { setStatus('保存できませんでした：' + (e.message || e), 'dirty'); }
-    saving = false;
+    finally { saving = false; }
   }
 };
 window.E = E;
@@ -627,20 +635,20 @@ document.addEventListener('click', e => {
   const si = t.closest('[data-sid]'); if (si) { panel = { type: 'slot', id: si.dataset.sid }; renderPanel(); renderMain(); return; }
   const pi = t.closest('[data-pid]'); if (pi) { panel = { type: 'person', id: pi.dataset.pid, tab: 'role' }; renderPanel(); renderMain(); }
 });
-$('#scSel').addEventListener('change', e => { DB.activeId = e.target.value; panel = null; E.rerender(); });
-$('#ys').addEventListener('input', e => { year = Number(e.target.value); $('#yv').textContent = year + '年'; renderMain(); if (panel && panel.type === 'person') renderPanel(); });
+$('#scSel').addEventListener('change', e => { DB.activeId = e.target.value; panel = null; E.rerender(); OrgStaff.render(); });
+$('#ys').addEventListener('input', e => { year = Number(e.target.value); $('#yv').textContent = year + '年度・年齢は' + year + '/3/31'; renderMain(); if (panel && panel.type === 'person') renderPanel(); });
 $('#hl').addEventListener('change', renderMain); $('#ghost').addEventListener('change', renderMain);
 
 /* ---------- 起動 ---------- */
 function showApp() {
   $('#gate').classList.add('hide'); $('#empty').classList.add('hide'); $('#appRoot').classList.remove('hide');
-  if (demo) $('#banner').textContent = '⚠ デモ表示：すべて架空のデータです。保存されません。';
-  E.rerender();
+  if (demo) { $('#banner').style.fontWeight = '700'; $('#banner').textContent = '⚠ サンプルで動作確認中です。実際の社員・人員表・給与データは表示していません。保存されません。'; }
+  E.rerender(); OrgStaff.start();
 }
 function demoDB() {
-  const names = [['営業｜本社','営業','山田 太郎',1972,'部長'],['営業｜本社','営業','佐藤 花子',1985,'主任'],['営業｜大阪','営業','鈴木 一郎',1969,'支店長'],
-    ['ソリューション','ソリューション','高橋 健',1991,'課長'],['ソリューション','ソリューション','田中 美咲',1999,'MGR1-3'],['業務センター','業務センター','伊藤 大輔',1968,'センター長課長'],['業務センター','業務センター','渡辺 愛',2001,'MGR1-2']];
-  const people = names.map((n, i) => ({ id: 'd' + i, name: n[2], dept: n[0], birth: n[3], join: null, retire: i === 5 ? 2028 : null, titles: [{ from: 2025, title: n[4] }], events: i === 5 ? [{ y: 2028, t: '定年' }] : [], roleNote: '', roleKeys: [], note: '', flag: false }));
+  const names = [['営業｜本社','営業','見本 営業A',1972,'部長'],['営業｜本社','営業','見本 営業B',1985,'主任'],['営業｜大阪','営業','見本 営業C',1969,'支店長'],
+    ['ソリューション','ソリューション','見本 企画A',1991,'課長'],['ソリューション','ソリューション','見本 企画B',1999,'MGR1-3'],['業務センター','業務センター','見本 業務A',1968,'センター長課長'],['業務センター','業務センター','見本 業務B',2001,'MGR1-2']];
+  const people = names.map((n, i) => ({ id: 'd' + i, name: n[2], dept: n[0], birth: n[3], birthDate: `${n[3]}-${i % 2 ? '04-01' : '03-31'}`, join: null, retire: i === 5 ? 2028 : null, titles: [{ from: 2025, title: n[4] }], events: i === 5 ? [{ y: 2028, t: '定年' }] : [], roleNote: '', roleKeys: [], note: '', flag: false }));
   const base = JSON.parse(JSON.stringify(window.__seedRoles || []));
   return { v: 1, activeId: 'cur', depts: [{ name: '営業｜本社', group: '営業' }, { name: '営業｜大阪', group: '営業' }, { name: 'ソリューション', group: 'ソリューション' }, { name: '業務センター', group: '業務センター' }],
     roleDefs: [{ key: '部長', name: '部長', match: '部長', summary: '', profile: ['MVV遵守', '自ら考え、決断・行動ができる'], groups: [{ h: '数字・計画', items: ['部全体の数字管理'] }], undecided: ['（デモ）未決の例'], notes: '' },
