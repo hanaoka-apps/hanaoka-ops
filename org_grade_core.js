@@ -53,8 +53,11 @@
   }
   function salaryRow(row, month, site) {
     const detail = row.内訳 || {};
+    // 支給控除の原本は、支給がない項目を省略する。明細全体がない場合とは区別する。
+    const complete = amount(detail.支給合計) != null || amount(detail.課税支給合計) != null;
+    const item = key => Object.prototype.hasOwnProperty.call(detail, key) ? amount(detail[key]) : complete ? 0 : null;
     return { empCode: String(row.従業員コード || ''), site, month,
-      basic: amount(detail.基本給), role: amount(detail.役付手当) };
+      basic: item('基本給'), role: item('役付手当') };
   }
   function forecast(basic, role, bonusBase, bonusMonths, officer = false) {
     if (officer) { bonusBase = 0; bonusMonths = 0; }

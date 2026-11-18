@@ -50,10 +50,45 @@
   function actualAt(p, year) {
     return (p.actualHistory || []).filter(h => h.year <= year).sort((a, b) => b.year - a.year)[0] || null;
   }
-  function sync(db, rows, today) {
+  function departmentGroup(name) {
+    const d = String(name || '');
+    if (/^工場(?:\/|$)/.test(d)) return '工場・技術・品質';
+    if (d.includes('ソリューション')) return 'ソリューション';
+    if (d.includes('業務センター')) return '業務センター';
+    if (/^本社\/営業部(?:\/|$)/.test(d)) return '営業';
+    if (/^(役員|本社)(?:\/|$)/.test(d)) return '経営・総務';
+    return null;
+  }
+  const officialDepartment = name => /^(本社|工場|役員)(?:\/|$)/.test(String(name || ''));
+  function departmentAliases(db, rows) {
+    const pairs = new Map();
+    for (const sn of db.scenarios) for (const p of sn.people) {
+      const r = rows.find(r => r.staffId === String(p.staffId || ''));
+      if (!r || !p.dept || !r.dept || officialDepartment(p.dept)) continue;
+      if (!pairs.has(p.dept)) pairs.set(p.dept, []);
+      pairs.get(p.dept).push(r.dept.split('/'));
+    }
+    const aliases = { ...((db.staffSync || {}).deptAliases || {}) };
+    for (const [old, paths] of pairs) {
+      const common = paths[0].filter((part, i) => paths.every(path => path.slice(0, i + 1).join('/') === paths[0].slice(0, i + 1).join('/')));
+      if (common.length) aliases[old] = common.join('/');
+    }
+    return aliases;
+  }
+  function departmentAt(p, year, aliases = {}) {
+    const h = actualAt(p, year), source = p.sourceDept && p.sourceYear <= year;
+    let d = h ? h.dept : source ? p.sourceDept : p.dept;
+    const floor = h ? h.year : source ? p.sourceYear : null;
+    for (const move of (p.moves || []).slice().sort((a, b) => a.from - b.from)) {
+      if (move.from <= year && (floor == null || move.from > floor)) d = move.dept;
+    }
+    return aliases[d] || d;
+  }
+  function sync(db, rows, today, departments = []) {
     const next = copy(db), y = fiscalYear(today), notices = [];
     if (y == null) throw new Error('更新日を確認できません。');
     const baseline = next.scenarios.find(s => s.id === (next.staffSync || {}).baselineId);
+    next.staffSync = { ...next.staffSync, deptAliases: departmentAliases(next, rows) };
     for (const sn of next.scenarios) {
       const seen = new Set();
       for (const p of sn.people) {
@@ -66,6 +101,7 @@
         if (r.birthDate) { p.birthDate = r.birthDate; p.birth = yearOf(r.birthDate); }
         if (r.startDate) p.join = yearOf(r.startDate);
         p.sourceState = r.state;
+        p.sourceDept = r.dept; p.sourceYear = y;
         if (r.kind) p.employeeKind = r.kind;
         if (r.gradeEvidence) {
           const history = [...(p.hrGradeHistory || []), ...(p.hrGrade ? [p.hrGrade] : [])].filter(h => h.month !== r.gradeEvidence.month);
@@ -86,10 +122,15 @@
         if (baseline.people.some(p => !p.staffId && nameKey(p.name) === nameKey(r.name))) { notices.push('新しい人に一致する手入力の人がいるため、自動追加を保留しています。対応を確認してください。'); continue; }
         baseline.people.push({ id: 'staff_' + r.staffId, staffId: r.staffId, empCode: r.empCode, name: r.name,
           dept: r.dept, birth: yearOf(r.birthDate), birthDate: r.birthDate, join: yearOf(r.startDate), retire: null,
-          employeeKind: r.kind, hrGradeHistory: r.gradeEvidence ? [copy(r.gradeEvidence)] : [], hrGrade: r.gradeEvidence || null, payrollSite: r.payrollSite || '', payType: r.payType || '',
+          sourceDept: r.dept, sourceYear: y, employeeKind: r.kind, hrGradeHistory: r.gradeEvidence ? [copy(r.gradeEvidence)] : [], hrGrade: r.gradeEvidence || null, payrollSite: r.payrollSite || '', payType: r.payType || '',
           titles: [], grades: [], moves: [], events: [], roleKeys: [], note: '', flag: false,
           actualHistory: [{ year: y, dept: r.dept, title: r.title, state: r.state, startDate: r.startDate, endDate: r.endDate }] });
       }
+    }
+    for (const name of new Set([...rows.map(r => r.dept), ...departments].filter(Boolean))) {
+      let d = next.depts.find(d => d.name === name);
+      if (!d) { d = { name }; next.depts.push(d); }
+      d.group = departmentGroup(name) || d.group || '人員表';
     }
     if (baseline) {
       for (const p of baseline.people) for (const h of p.actualHistory || []) {
@@ -125,7 +166,7 @@
     delete p.actualHistory;
     return p;
   }
-  const api = { planPerson, nameKey, codeKey, dateKey, ageAt, yearOf, fiscalYear, eligible, roster, candidate, actualAt, presentActual, sync };
+  const api = { officialDepartment, departmentGroup, departmentAliases, departmentAt, planPerson, nameKey, codeKey, dateKey, ageAt, yearOf, fiscalYear, eligible, roster, candidate, actualAt, presentActual, sync };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.OrgStaffCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

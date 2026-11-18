@@ -106,3 +106,32 @@ test('自動追加の開始後でも、手入力と同名の新規人員は追�
   const result = C.sync(db, [row], '2026-11-18');
   assert.equal(result.db.scenarios[0].people.length, 1); assert.equal(result.notices.length, 1);
 });
+test('正式所属を将来案の基準にし、未来の異動と過去の記録を保持する', () => {
+  const db = database(), future = db.scenarios[1].people[0];
+  future.moves = [{ from: 2026, dept: '旧所属' }, { from: 2030, dept: '本社/営業部/大阪' }];
+  const before = structuredClone(future.moves);
+  const next = C.sync(db, [{ ...row, dept: '本社/営業部/東京' }], '2026-11-18').db;
+  const p = next.scenarios[1].people[0];
+  assert.equal(C.departmentAt(p, 2026), '本社/営業部/東京');
+  assert.equal(C.departmentAt(p, 2029), '本社/営業部/東京');
+  assert.equal(C.departmentAt(p, 2030), '本社/営業部/大阪');
+  assert.equal(C.departmentAt(p, 2025), '旧所属');
+  assert.deepEqual(p.moves, before);
+  assert.equal(next.depts.find(d => d.name === '本社/営業部/東京').group, '営業');
+});
+test('旧部門の募集・異動は確認できる正式な共通部門に対応し、拠点をまたぐ候補は決めない', () => {
+  const db = { depts: [], scenarios: [{ people: [
+    { staffId: '1', dept: '旧工場' }, { staffId: '2', dept: '旧工場' },
+    { staffId: '3', dept: '旧総務' }, { staffId: '4', dept: '旧総務' }
+  ] }] };
+  const aliases = C.departmentAliases(db, [
+    { staffId: '1', dept: '工場/製造部/第二工場/組立' }, { staffId: '2', dept: '工場/製造部/第二工場/溶接' },
+    { staffId: '3', dept: '本社/総務部' }, { staffId: '4', dept: '工場/工場総務' }
+  ]);
+  assert.equal(aliases.旧工場, '工場/製造部/第二工場');
+  assert.equal(aliases.旧総務, undefined);
+  assert.equal(C.departmentGroup('工場/技術部'), '工場・技術・品質');
+  assert.equal(C.departmentGroup('本社/営業部/ソリューション営業部'), 'ソリューション');
+  assert.equal(C.departmentGroup('本社/営業部/国内営業/全社業務センター'), '業務センター');
+  assert.equal(C.departmentGroup('本社/販売企画室'), '経営・総務');
+});
