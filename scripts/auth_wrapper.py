@@ -496,24 +496,32 @@ function _fujinStartAuth() {
         console.warn("[same_day_rate] グループ確認 失敗(メニューは出しません):", (e && (e.errorCode || e.message)) || e);
         return false;
       });
-      window._fujinSameDayCsvPromise = window._fujinSameDayAllowedPromise.then(function(ok){
-        if (!ok) return null;
-        return window._fujinMsal.acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
-          .then(function(r){
-            return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE_SD + "/root:/" + encodeURIComponent("受入明細出力.csv") + ":/content",
-                         { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
-          })
-          .then(function(res){
-            if (!res.ok) throw new Error("HTTP " + res.status);
-            var lm = res.headers.get("Last-Modified");
-            return res.text().then(function(t){ return { text: t, lastModified: lm }; });
-          })
-          .catch(function(e){ console.warn("[same_day_rate] CSV取得 失敗:", (e && (e.errorCode || e.message)) || e); return null; });
-      });
+      // 見られる人だけ SharedMasters の CSV を取る（受入明細出力.csv・製造実績明細出力.csv）。同じファイルは1回だけ取る。
+      var _sdCache = {};
+      window._fujinSameDayFetch = function(name){
+        if (_sdCache[name]) return _sdCache[name];
+        _sdCache[name] = window._fujinSameDayAllowedPromise.then(function(ok){
+          if (!ok) return null;
+          return window._fujinMsal.acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+            .then(function(r){
+              return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE_SD + "/root:/" + encodeURIComponent(name) + ":/content",
+                           { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
+            })
+            .then(function(res){
+              if (!res.ok) throw new Error("HTTP " + res.status);
+              var lm = res.headers.get("Last-Modified");
+              return res.text().then(function(t){ return { text: t, lastModified: lm }; });
+            })
+            .catch(function(e){ console.warn("[same_day_rate] " + name + " 取得 失敗:", (e && (e.errorCode || e.message)) || e); return null; });
+        });
+        return _sdCache[name];
+      };
+      window._fujinSameDayCsvPromise = window._fujinSameDayFetch("受入明細出力.csv");
     } catch(e) {
       console.error("[same_day_rate] 例外:", e);
       window._fujinSameDayAllowedPromise = Promise.resolve(false);
       window._fujinSameDayCsvPromise = Promise.resolve(null);
+      window._fujinSameDayFetch = function(){ return Promise.resolve(null); };
     }
 
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
