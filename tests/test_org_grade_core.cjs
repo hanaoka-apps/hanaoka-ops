@@ -116,3 +116,10 @@ test('残業平均は実績0を含み、欠損月・重複を除く', () => {
   assert.equal(avg.hours,15); assert.equal(avg.samples,2);
   assert.equal(G.overtimeAverage([], G.recentMonths('2026-10')).hours,null);
 });
+
+test('等級をMGR1から5へ並べ、専任職は同じ段階の後ろに配置する', () => {
+  const shuffled=['MGR5-1','R3-1','MGR1-2','MGR4-2','MGR3-2','MGR2-1','MGR1-1','R4-1','MGR1-3','MGR3-1','MGR4-1'];
+  assert.deepEqual(shuffled.sort(G.compareGrades),['MGR1-1','MGR1-2','MGR1-3','MGR2-1','MGR3-1','MGR3-2','R3-1','MGR4-1','MGR4-2','R4-1','MGR5-1']);
+  assert.equal(G.compareGrades('専門R3-1','MGR4-1')<0,true);
+  assert.equal(G.compareGrades('未確認','MGR5-1')>0,true);
+});

@@ -1,12 +1,22 @@
 /* 等級・在級期間・概算年収。実データや賃金の決まりは埋め込まない。 */
 (function (root) {
   'use strict';
-  const GRADES = ['R1-1', 'R1-2', 'R1-3', 'R2', 'R3-1', 'R3-2', 'R4-1', 'R4-2', 'R5'];
+  const GRADES = ['MGR1-1', 'MGR1-2', 'MGR1-3', 'MGR2-1', 'MGR3-1', 'MGR3-2', 'R3-1', 'R3-2', 'MGR4-1', 'MGR4-2', 'R4-1', 'R4-2', 'MGR5-1', 'R1-1', 'R1-2', 'R1-3', 'R2', 'R5'];
   const code = x => String(x == null ? '' : x).trim().replace(/^0+(?=\d)/, '');
   function grade(value) {
     const s = String(value || '').normalize('NFKC').replace(/[‐‑–—－]/g, '-').toUpperCase();
     const matches = [...s.matchAll(/(?:^|[^A-Z0-9-])((?:R|MGR)[1-5](?:-[1-3])?)(?![A-Z0-9-])/g)].map(m => m[1]);
     const unique = [...new Set(matches)]; return unique.length === 1 ? unique[0] : null;
+  }
+  // 原表記は変換せず、MGRと専任職のR表記を同じ段階の中に並べる。
+  function compareGrades(a, b) {
+    const rank = value => {
+      const m = /^(MGR|R)([1-5])(?:-([1-3]))?$/.exec(grade(value) || '');
+      return m ? Number(m[2])*100 + (m[1] === 'R' ? 20 : 0) + Number(m[3] || 0) : Infinity;
+    };
+    const x = rank(a), y = rank(b);
+    if (x !== y) return x < y ? -1 : 1;
+    return String(a || '').localeCompare(String(b || ''), 'ja', {numeric:true});
   }
   const monthNumber = s => /^\d{4}-(0[1-9]|1[0-2])$/.test(s || '') ? +s.slice(0, 4) * 12 + +s.slice(5, 7) - 1 : null;
   function monthEnd(s) { if (monthNumber(s) == null) return null; const d = new Date(Date.UTC(+s.slice(0, 4), +s.slice(5, 7), 0)); return d.toISOString().slice(0, 10); }
@@ -104,7 +114,7 @@
     return Number.isSafeInteger(annual) ? { annual, monthly, bonus } : { annual: null, monthly: null, bonus: null };
   }
   function payPlan(p, year) { return (p.payPlans || []).filter(e => e.from <= year).sort((a, b) => a.from - b.from).pop() || null; }
-  const api = { recentMonths, overtimeAverage, annualWorkDays, overtimeExempt, overtimeCost, GRADES, grade, evidence, gradeInfo, monthEnd, fullMonths, tenure, amount, salaryRow, forecast, payPlan };
+  const api = { compareGrades, recentMonths, overtimeAverage, annualWorkDays, overtimeExempt, overtimeCost, GRADES, grade, evidence, gradeInfo, monthEnd, fullMonths, tenure, amount, salaryRow, forecast, payPlan };
   root.OrgGradeCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
