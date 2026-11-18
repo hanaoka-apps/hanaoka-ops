@@ -378,7 +378,18 @@ assert.equal(c.fare.reason, '');
   assert.equal(r.order.rows[0].code, 'X9');
   // v27（2027-01-01 の価格改定用）があっても、今は元の品目コードを選ぶ
   const items2 = Object.assign({}, items, { UDL25v27: { name: 'リフト v27', kakaku: 'UDL250' } });
-  assert.equal(Q.smileCodeOf({ code: 'UDL250', listCode: 'UDL250' }, { items: items2, history: h }, { UDL250: ['UDL25v27', 'UDL25'] }).code, 'UDL25');
+  const kk2 = { UDL250: ['UDL25v27', 'UDL25'] }, e5 = { items: items2, history: h };
+  assert.equal(Q.smileCodeOf({ code: 'UDL250', listCode: 'UDL250' }, e5, kk2).code, 'UDL25');
+  assert.equal(Q.smileCodeOf({ code: 'UDL250', listCode: 'UDL250' }, e5, kk2, '2026-12-28').code, 'UDL25');
+  // 受注日が 2027-01-01 からは v27（旧コードは 2026-12-31 で使用禁止）
+  let s27 = Q.smileCodeOf({ code: 'UDL250', listCode: 'UDL250' }, e5, kk2, '2027-01-05');
+  assert.equal(s27.code, 'UDL25v27'); assert.equal(s27.by, '2027年からは v27');
+  // 旧コードを入れても、2027年からは同じ価格表記載名の v27 にする。旧コードは候補に残る
+  s27 = Q.smileCodeOf({ code: 'UDL25' }, e5, kk2, '2027-01-05');
+  assert.deepEqual([s27.code, s27.cands], ['UDL25v27', ['UDL25v27', 'UDL25']]);
+  assert.equal(Q.smileCodeOf({ code: 'UDL25' }, e5, kk2, '2026-12-31').code, 'UDL25');
+  // 事情があって旧コードで入れるときは、手で選んだものが勝つ
+  assert.equal(Q.smileCodeOf({ code: 'UDL25', smile: 'UDL25' }, e5, kk2, '2027-01-05').code, 'UDL25');
   // 見積では作らない
   assert.equal(Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1 }] }), e4).order, null);
 }

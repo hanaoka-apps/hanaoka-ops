@@ -423,23 +423,36 @@
   // ---------- 受注伝票（SMILE に入る並び） ----------
   // 入れた型式から、SMILE の品目コードを決める。
   //   ① 手で選んだコード → ② 入れたコードが品目マスタにある → ③ 価格表記載名が同じ品目コード（枝番なし）。
-  //   ③で2つ以上あるときは、v27（2027-01-01 の価格改定用）でないもの → 受注の実績があるもの の順
-  function smileCodeOf(l, env, kk) {
+  //   v27 の品目コード：旧コードは 2026-12-31 で使用禁止なので、受注日が 2027-01-01 からは v27 を選ぶ。
+  //   それより前は v27 でないものを選ぶ。合わないとき（旧コードで入れる事情があるなど）は ① で手で選ぶ。
+  //   ③で2つ以上あるときは、上の v27 の決まり → 受注の実績があるもの の順
+  var V27_FROM = "2027-01-01";
+  function isV27(c) { return /v27/i.test(c || ""); }
+  function smileCodeOf(l, env, kk, date) {
     if (l.smile) return { code: l.smile, by: "手で選んだ" };
     if (l.manual || !l.code) return { code: "", by: "" };
-    if (env.items && env.items[l.code]) return { code: l.code, by: "" };
+    var v27 = (ymd(date) || "") >= V27_FROM, items = env.items || {};
+    if (items[l.code]) {
+      // 2027年からは、入れた旧コードに同じ価格表記載名の v27 があればそちらにする（枝番つきは対象外）
+      if (v27 && !isV27(l.code) && l.code.indexOf("/") < 0) {
+        var nw = (kk[key(items[l.code].kakaku || l.code)] || []).filter(function (c) { return isV27(c) && c.indexOf("/") < 0; });
+        if (nw.length) return { code: nw[0], by: "2027年からは v27", cands: [nw[0], l.code] };
+      }
+      return { code: l.code, by: "" };
+    }
     var cands = (kk[key(l.listCode || l.code)] || []).slice();
     if (!cands.length) return { code: "", by: "" };
     var h = env.history || {}, used = function (c) { return !!(h.i && h.i[key(c)]); };
-    cands.sort(function (a, b) { return (/v27$/i.test(a) - /v27$/i.test(b)) || (used(b) - used(a)) || (a < b ? -1 : 1); });
-    return { code: cands[0], by: "価格表記載名", cands: cands };
+    var rank = function (c) { return isV27(c) === v27 ? 0 : 1; };
+    cands.sort(function (a, b) { return (rank(a) - rank(b)) || (used(b) - used(a)) || (a < b ? -1 : 1); });
+    return { code: cands[0], by: v27 && isV27(cands[0]) ? "2027年からは v27" : "価格表記載名", cands: cands };
   }
   // 返す：{ head, rows, miss:{ code, wh }（直す行の番号。なければ -1）, dests }
   function orderOf(doc, lines, fare, env, kk) {
     var h = env.history || {}, cust = doc.cust || {}, kc = (h.k || {})[cust.code] || null, o = doc.order || {};
     var miss = { code: -1, wh: -1 }, rows = [];
     lines.forEach(function (l, i) {
-      var s = smileCodeOf(l, env, kk), info = s.code ? (h.i || {})[key(s.code)] || null : null, it = s.code && env.items ? env.items[s.code] : null;
+      var s = smileCodeOf(l, env, kk, doc.date), info = s.code ? (h.i || {})[key(s.code)] || null : null, it = s.code && env.items ? env.items[s.code] : null;
       var wh = l.wh ? [l.wh, ""] : (info && info.wh) || null;
       if (!s.code && miss.code < 0) miss.code = i;
       if (s.code && !wh && miss.wh < 0) miss.wh = i;
