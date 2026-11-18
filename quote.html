@@ -8,8 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="price_core.js?v=20261114c"></script>
-<script src="quote_core.js?v=20261118c"></script>
-<script src="quote_store.js?v=20261117b"></script>
+<script src="quote_core.js?v=20261119a"></script>
+<script src="quote_store.js?v=20261119a"></script>
 <script src="quote_ai.js?v=20261115b"></script>
 <link rel="stylesheet" href="hanaoka_theme.css?v=20261004"><!-- 色・フォントは共通ファイル -->
 <style>
@@ -323,6 +323,7 @@
       </div>
     </div>
     <div id="rFlow"></div>
+    <div class="card" id="rWrong"></div>
   </div>
 
   <div id="vCheck" class="list" hidden>
@@ -427,7 +428,8 @@ function buildItemRows() {
     itemRows.push({ key: Q.norm(code + ' ' + name + ' ' + (extra || '')), head: Q.norm(code), code, name, priced: !!rc.code && !rc.noPrice });
   };
   DATA.prices.forEach(p => { if (P.num(p.定価) !== null) add(p.型式, p.品名 || (ITEMS[p.型式] || {}).name || ''); });
-  Object.keys(ITEMS).forEach(c => { const it = ITEMS[c]; if (!/使用禁止|廃番/.test(it.kaihai || '')) add(c, it.name, it.kakaku); });
+  // 雑コード（P/1 など）は候補に出さない（部品・オプションを雑コードで入れないため。どうしても要るときは「変える」の品目コードに手で入れる）
+  Object.keys(ITEMS).forEach(c => { const it = ITEMS[c]; if (!/使用禁止|廃番/.test(it.kaihai || '') && !Q.isZatsu(c)) add(c, it.name, it.kakaku); });
 }
 function status(text, cls) { $('status').textContent = text || ''; $('status').className = cls || ''; }
 function toast(text) { const t = $('toast'); t.textContent = text; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 2600); }
@@ -473,6 +475,28 @@ function openRules() {
   }
   $('rCust').value = RT.cust ? (RT.cust.fullName || RT.cust.name) : ''; $('rCode').value = RT.code; $('rQty').value = RT.qty; $('rPref').value = RT.pref; $('rDate').value = RT.date;
   renderRules();
+  if (!WR) loadWrongs();
+}
+// 「アプリの計算が違う」（ここが違う）と記録されたところの一覧。ルールを直す人が見る。保存した書類から集める
+let WR = null;
+async function loadWrongs() {
+  WR = []; $('rWrong').innerHTML = '<span class="spin"></span> 「ここが違う」の記録を集めています…';
+  let docs = [];
+  try { docs = await store.allDocs(); } catch (e) { $('rWrong').textContent = '書類を読めませんでした：' + e.message; WR = null; return; }
+  docs.forEach(d => {
+    let comp; try { comp = Q.compute(DATA, d, ENV); } catch (e) { return; }
+    Q.wrongsOf(d, comp).forEach(w => WR.push(Object.assign({ no: d.no || '', date: d.date || '', owner: d.owner || d.staff || '', spId: d.spId, cust: d.cust ? d.cust.fullName || d.cust.name || '' : '' }, w)));
+  });
+  WR.sort((a, b) => a.date < b.date ? 1 : -1);
+  renderWrongs();
+}
+function renderWrongs() {
+  const yv = v => v === null || v === undefined ? '－' : yen(v);
+  $('rWrong').innerHTML = `<div class="lbar" style="margin:0 0 6px"><b>「ここが違う」と記録されたところ</b><span class="hint">見積・受注で「アプリの計算が違う」を選んだもの。ルールを直す人が見ます</span><span class="sp" style="flex:1"></span><button class="btn" id="wrReload">読み直す</button></div>` +
+    (!WR.length ? '<div class="hint">まだありません。</div>' :
+      `<div style="overflow-x:auto"><table class="tbl"><tr><th>日付</th><th>番号</th><th>取引先</th><th>どこ</th><th>型式・県</th><th class="num">アプリ</th><th class="num">入れた値</th><th>正しくは（ひとこと）</th><th>作った人</th></tr>` +
+      WR.map(w => `<tr><td>${esc(w.date)}</td><td><a href="?doc=${encodeURIComponent(w.spId)}${PARAMS.has('demo') ? '&demo=1' : ''}">${esc(w.no)}</a></td><td>${esc(w.cust)}</td><td>${esc(w.where)}</td><td>${esc(w.code)}</td><td class="num">${yv(w.app)}</td><td class="num">${yv(w.set)}</td><td>${esc(w.memo)}</td><td>${esc(w.owner)}</td></tr>`).join('') + '</table></div>');
+  $('wrReload').onclick = loadWrongs;
 }
 function rulesComp() {
   if (!RT.code) return null;
@@ -749,12 +773,15 @@ const CARRIERS = ['', '西濃利用', '第一貨物利用', 'トナミ利用'], 
 function orderSecHtml() {
   const o = DOC.order, od = COMP && COMP.order, ds = od ? od.dests : [];
   const known = ds.some(d => d[0] === o.dest), autoCarrier = od ? od.head.carrierAuto : '';
+  // いつも同じ先へ送る取引先は、いつもの納品先を最初から選んでおく（商社など毎回ちがう取引先は空けておく）
+  const sel = o.dest || (od && od.head.destAuto ? od.head.dest : '');
   return `<div class="sec">
       <div class="lab"><span class="n">3</span>どこへ・いつ</div>
       <select id="oDest"><option value="">納品先を選ぶ${ds.length ? '（よく使う順）' : ''}</option>
-        ${ds.map(d => `<option value="${esc(d[0])}"${d[0] === o.dest ? ' selected' : ''}>${esc(d[0])}　${esc(d[1])}（${d[2]}回）</option>`).join('')}
+        ${ds.map(d => `<option value="${esc(d[0])}"${d[0] === sel ? ' selected' : ''}>${esc(d[0])}　${esc(d[1])}（${d[2]}回）</option>`).join('')}
         ${o.dest && o.dest !== 'new' && !known ? `<option value="${esc(o.dest)}" selected>${esc(o.dest)}　${esc(o.destName)}</option>` : ''}
         <option value="new"${o.dest === 'new' ? ' selected' : ''}>新しい納品先を書く</option></select>
+      ${!o.dest && sel ? '<div class="hint">この取引先がいつも使う納品先を入れました。違うときは選び直してください</div>' : ''}
       ${o.dest === 'new' ? newDestHtml(o) : ''}
       <div class="grid3 flds" style="margin-top:8px">
         <label><span>客先注番</span><input type="text" id="oPo" value="${esc(o.po)}" placeholder="お客様の注文番号"></label>
@@ -816,7 +843,7 @@ function bindOrderSec() {
 function orderLineHtml(l, c) {
   const r = COMP && COMP.order && c ? COMP.order.rows.find(x => x.line === COMP.lines.indexOf(c)) : null;
   const cands = r && r.cands && r.cands.length > 1 ? r.cands : [];
-  return `<div><label>SMILE の品目コード${r && r.code && !l.smile ? (r.by ? '（' + esc(r.by) + 'から）' : '') : ''}</label>
+  return `<div><label>SMILE の品目コード${r && r.code && !l.smile && r.by ? '（' + esc(r.by) + (/v27$/.test(r.by) ? '' : 'から') + '）' : ''}</label>
       <input type="text" data-f="smile" list="smileCands" value="${esc(l.smile || '')}" placeholder="${esc(r && r.code ? r.code : '品目コードを入れる')}">
       ${cands.length ? `<datalist id="smileCands">${cands.map(x => `<option value="${esc(x)}">`).join('')}</datalist><div class="hint">候補：${cands.map(esc).join('・')}</div>` : ''}</div>
     <div><label>倉庫コード${r && r.wh && !l.wh ? '（前回の受注から）' : ''}</label>

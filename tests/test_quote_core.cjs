@@ -355,8 +355,16 @@ assert.equal(c.fare.reason, '');
   assert.equal(o.rows[1].price, r.fare.amount);
   assert.equal(o.head.staff, 'S2');
   assert.equal(o.head.date, '2026-11-16');
+  // 前の受注3行のうち2行が N1（半分以上）なので、いつもの納品先 N1 を最初から入れる
+  assert.equal(h.k.C1.dn, 3);
+  assert.deepEqual([o.head.dest, o.head.destName, o.head.destAuto], ['N1', '見本倉庫（新）', true]);
   let t = Q.todo(od, r);
-  assert.deepEqual(t.items.filter(x => !x.done).map(x => x.key), ['dest', 'ship']);
+  assert.deepEqual(t.items.filter(x => !x.done).map(x => x.key), ['ship']);
+  // 毎回ちがう先へ送る取引先（半分に届かない）・前の受注が1行だけ は入れない
+  assert.equal(Q.sameDestOf({ ds: [['N1', '', 2], ['N2', '', 2], ['N3', '', 1]], dn: 5 }), null);
+  assert.equal(Q.sameDestOf({ ds: [['N1', '', 1]], dn: 1 }), null);
+  assert.deepEqual(Q.sameDestOf({ ds: [['N1', '', 2], ['N2', '', 2]] }), ['N1', '', 2]); // 合計がない古い覚え方でも動く（ちょうど半分は入れる）
+  assert.equal(Q.sameDestOf(null), null);
   od.order.dest = 'N1'; od.shipDate = '2026-11-20';
   r = Q.compute(data, od, e4);
   assert.equal(Q.todo(od, r).left, 0);
@@ -366,6 +374,22 @@ assert.equal(c.fare.reason, '');
   assert.ok(Q.todo(od, r).items.some(x => x.key === 'dest' && !x.done));
   od.order.destName = '見本の新しい現場'; od.order.nd = { addr: '埼玉県見本市1-1', tel: '000-0000-0000' }; r = Q.compute(data, od, e4); // 名前・住所・電話がそろうと済む
   assert.ok(Q.todo(od, r).items.every(x => x.done));
+  // 雑コード・キャスター変更・拠点の倉庫は、知っておくこと（数には入れない）に案内を出す
+  assert.equal(Q.isZatsu('P/1'), true); assert.equal(Q.isZatsu('P/PD'), true); assert.equal(Q.isZatsu('P/0000000217'), false); assert.equal(Q.isZatsu('UDL25'), false);
+  assert.deepEqual(Q.prodWhOf('000001'), ['000010', '本社生産依頼倉庫']); assert.equal(Q.prodWhOf('000105'), null);
+  const od3 = Object.assign(Q.blank('order', '2026-11-16', ''), { cust: B, shipDate: '2026-11-20', dest: { name: '', pref: '埼玉県', personal: false }, order: { dest: 'N1', destName: 'x' },
+    lines: [{ code: 'UDL25', qty: 1, smile: 'P/1', wh: '000001' }, { code: 'UDL25', qty: 1, smile: 'UDL25/C', wh: 'W1' }] });
+  r = Q.compute(data, od3, e4); t = Q.todo(od3, r);
+  assert.equal(t.left, 0);
+  assert.ok(t.notes.some(n => /雑コード（P\/1）/.test(n)));
+  assert.ok(t.notes.some(n => /キャスター変更/.test(n)));
+  assert.ok(t.notes.some(n => /000010 本社生産依頼倉庫/.test(n)));
+  // 「ここが違う」：アプリの計算が違う、と記録した単価・送料
+  const od4 = doc({ lines: [{ code: 'UDL250', qty: 1, ov: { price: 60000, reason: Q.WRONG, memo: 'この取引先は5掛' } }], fareManual: 0, fareReason: Q.WRONG, fareMemo: '送料はいただかない' });
+  const w4 = Q.wrongsOf(od4, Q.compute(data, od4, env));
+  assert.deepEqual(w4.map(w => [w.where, w.set, w.memo]), [['単価', 60000, 'この取引先は5掛'], ['送料', 0, '送料はいただかない']]);
+  assert.ok(w4[0].app > 0 && w4[1].app > 0);
+  assert.deepEqual(Q.wrongsOf(doc({ lines: [{ code: 'UDL250', qty: 1, ov: { price: 60000, reason: Q.ONCE } }] }), Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 1, ov: { price: 60000, reason: Q.ONCE } }] }), env)), []); // 今回だけ特別は入らない
   // 品目コードが決まらない行・倉庫が決まらない行
   const od2 = Object.assign(Q.blank('order', '2026-11-16', ''), { cust: B, shipDate: '2026-11-20', dest: { name: '', pref: '埼玉県', personal: false }, order: { dest: 'N1', destName: 'x' }, lines: [{ manual: true, name: '特注の台', price: 5000, qty: 1 }, { code: 'T1', qty: 1 }] });
   r = Q.compute(data, od2, e4);
