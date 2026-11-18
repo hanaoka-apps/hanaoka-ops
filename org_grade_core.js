@@ -57,18 +57,33 @@
     const complete = amount(detail.支給合計) != null || amount(detail.課税支給合計) != null;
     const item = key => Object.prototype.hasOwnProperty.call(detail, key) ? amount(detail[key]) : complete ? 0 : null;
     return { empCode: String(row.従業員コード || ''), site, month,
-      basic: item('基本給'), role: item('役付手当') };
+      basic: item('基本給'), role: item('役付手当'), sales: item('営業手当'),
+      overtimeHours: item('勤怠_普通残業'), overtimePay: item('普通残業') };
   }
-  function forecast(basic, role, bonusBase, bonusMonths, officer = false) {
+  function recentMonths(month, count = 3) {
+    const n = monthNumber(month); if (n == null) return [];
+    return Array.from({length: count}, (_, i) => { const v = n - count + 1 + i; return Math.floor(v / 12) + '-' + String(v % 12 + 1).padStart(2, '0'); });
+  }
+  function overtimeAverage(rows, months) {
+    const confirmed = months.map(m => rows.filter(r => r.month === m)).filter(r => r.length === 1 && r[0].overtimeHours != null).map(r => r[0].overtimeHours);
+    return { hours: confirmed.length ? confirmed.reduce((a,b) => a+b, 0) / confirmed.length : null, samples: confirmed.length, expected: months.length };
+  }
+  function overtimeCost(hours, rate, sales) {
+    const h = amount(hours), s = amount(sales);
+    if (h == null || s == null) return null;
+    const extra = Math.max(0, h - (s > 0 ? 20 : 0));
+    return extra === 0 ? 0 : amount(rate) == null ? null : Math.round(extra * amount(rate));
+  }
+  function forecast(basic, role, bonusBase, bonusMonths, officer = false, sales = 0, overtime = 0) {
     if (officer) { bonusBase = 0; bonusMonths = 0; }
-    const values = [basic, role, bonusBase, bonusMonths].map(amount);
+    const values = [basic, role, bonusBase, bonusMonths, sales, overtime].map(amount);
     if (values.some(x => x == null)) return { annual: null, monthly: null, bonus: null };
-    const [b, r, bb, bm] = values;
-    const bonus = Math.round(bb * bm), monthly = b + r, annual = Math.round(monthly * 12 + bonus);
+    const [b, r, bb, bm, s, o] = values;
+    const bonus = Math.round(bb * bm), monthly = b + r + s + o, annual = Math.round(monthly * 12 + bonus);
     return Number.isSafeInteger(annual) ? { annual, monthly, bonus } : { annual: null, monthly: null, bonus: null };
   }
   function payPlan(p, year) { return (p.payPlans || []).filter(e => e.from <= year).sort((a, b) => a.from - b.from).pop() || null; }
-  const api = { GRADES, grade, evidence, gradeInfo, monthEnd, fullMonths, tenure, amount, salaryRow, forecast, payPlan };
+  const api = { recentMonths, overtimeAverage, overtimeCost, GRADES, grade, evidence, gradeInfo, monthEnd, fullMonths, tenure, amount, salaryRow, forecast, payPlan };
   root.OrgGradeCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

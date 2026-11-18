@@ -55,7 +55,7 @@ test('賞与0月と不明を区別し、マイナスや非数値を計算しな�
 });
 test('給与原本から基本給と役付手当だけを抜き、欠損を0にしない', () => {
   const r = G.salaryRow({ 従業員コード: '0001', 氏名: '見本', 内訳: { 基本給: '300,000', 役付手当: 20000, 普通残業: 99999 } }, '2026-10', '本社');
-  assert.equal(r.basic, 300000); assert.equal(r.role, 20000); assert.ok(!JSON.stringify(r).includes('99999')); assert.ok(!('氏名' in r));
+  assert.equal(r.basic, 300000); assert.equal(r.role, 20000); assert.equal(r.overtimePay, 99999); assert.ok(!('氏名' in r));
   assert.equal(G.salaryRow({ 内訳: { 基本給: 300000 } }, '2026-10', '本社').role, null);
 });
 test('給与の想定は開始年度で切り替え、後の年度にも引き継ぐ', () => {
@@ -84,4 +84,20 @@ test('完全な給与明細で省略された支給項目は0、明細欠損や�
   assert.equal(G.salaryRow({ 内訳: {} }, '2026-10', '本社').role, null);
   assert.equal(G.salaryRow({ 内訳: { 支給合計: 300000, 役付手当: '不明' } }, '2026-10', '本社').role, null);
   assert.equal(G.salaryRow({ 内訳: { 支給合計: 0 } }, '2026-10', '本社').basic, 0);
+});
+
+test('営業手当と20時間超の追加分を重複なく年収に含める', () => {
+  assert.equal(G.overtimeCost(15, null, 40000), 0);
+  assert.equal(G.overtimeCost(20, 2000, 40000), 0);
+  assert.equal(G.overtimeCost(30, 2000, 40000), 20000);
+  assert.equal(G.overtimeCost(30, 2000, 0), 60000);
+  assert.equal(G.overtimeCost(30, null, 40000), null);
+  assert.equal(G.overtimeCost(null, 2000, 40000), null);
+  assert.equal(G.forecast(300000, 20000, 300000, 4, false, 40000, 20000).annual, 5760000);
+});
+test('残業平均は実績0を含み、欠損月・重複を除く', () => {
+  assert.deepEqual(G.recentMonths('2026-01'), ['2025-11','2025-12','2026-01']);
+  const avg = G.overtimeAverage([{month:'2026-08',overtimeHours:0},{month:'2026-10',overtimeHours:30}], G.recentMonths('2026-10'));
+  assert.equal(avg.hours,15); assert.equal(avg.samples,2);
+  assert.equal(G.overtimeAverage([], G.recentMonths('2026-10')).hours,null);
 });
