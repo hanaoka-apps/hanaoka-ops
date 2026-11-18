@@ -19,6 +19,26 @@
     const age = Number(year) - y - (m > 3 || (m === 3 && d > 31) ? 1 : 0);
     return age < 0 ? null : age;
   }
+  // 年齢は各年度の3月31日。雇用区分が確認できた対象者だけに定年を適用する。
+  function retirementYear(p) {
+    if (!['社員', '特定技能'].includes(p.employeeKind)) return null;
+    const dob = dateKey(p.birthDate);
+    return dob ? Number(dob.slice(0, 4)) + 65 + (Number(dob.slice(5, 7)) > 3 ? 1 : 0) : null;
+  }
+  function plannedRetirement(p) {
+    const automatic = retirementYear(p);
+    const h = (p.actualHistory || []).slice().sort((a,b) => b.year - a.year)[0];
+    // 旧案の退職年は定年の前提が混在しているため、確認済みの個別予定・実際の退職だけを別枠で残す。
+    const explicit = ['personal', 'actual'].includes(p.retireReason) || (h && h.state === '退職') ? p.retire : null;
+    if (!p.employeeKind) return p.retire ?? null;
+    return automatic == null ? explicit ?? null : explicit == null ? automatic : Math.min(explicit, automatic);
+  }
+  function present(p, year) {
+    const h = actualAt(p, year), retirement = plannedRetirement(p);
+    // 現在の在籍は人員表を正とし、定年による不在は将来の試算に適用する。
+    if (h && year === h.year) return presentActual(h, year);
+    return (h ? presentActual(h, year) : p.join == null || year >= p.join) && (retirement == null || year < retirement);
+  }
   const yearOf = x => { const d = dateKey(x); return d ? Number(d.slice(0, 4)) : null; };
   const fiscalYear = date => { const s = dateKey(date); return s ? Number(s.slice(0, 4)) - (Number(s.slice(5, 7)) < 4 ? 1 : 0) : null; };
   const eligible = p => ['社員', '契約', 'パート', '特定技能', '役員'].includes(p.Kind);
@@ -152,9 +172,9 @@
     const years = new Set(history.map(x => x.year));
     p.moves = [...(p.moves || []).filter(x => !years.has(x.from)), ...history.map(x => ({ from: x.year, dept: x.dept }))].sort((a, b) => a.from - b.from);
     p.titles = [...(p.titles || []).filter(x => !years.has(x.from)), ...history.map(x => ({ from: x.year, title: x.title }))].sort((a, b) => a.from - b.from);
-    if (h && h.state === '退職') p.retire = Math.min(p.retire == null ? Infinity : p.retire, h.year);
+    if (h && h.state === '退職') { p.retire = h.year; p.retireReason = 'actual'; }
     else if (h && presentActual(h, year) && p.retire != null && p.retire <= year) p.retire = null;
-    if (h && h.endDate && h.state === '退職予定') p.retire = yearOf(h.endDate) + 1;
+    if (h && h.endDate && h.state === '退職予定') { p.retire = yearOf(h.endDate) + 1; p.retireReason = 'actual'; }
     if (p.hrGrade) {
       const info = G.gradeInfo(p, year, true);
       if (info.grade) {
@@ -166,7 +186,7 @@
     delete p.actualHistory;
     return p;
   }
-  const api = { officialDepartment, departmentGroup, departmentAliases, departmentAt, planPerson, nameKey, codeKey, dateKey, ageAt, yearOf, fiscalYear, eligible, roster, candidate, actualAt, presentActual, sync };
+  const api = { retirementYear, plannedRetirement, present, officialDepartment, departmentGroup, departmentAliases, departmentAt, planPerson, nameKey, codeKey, dateKey, ageAt, yearOf, fiscalYear, eligible, roster, candidate, actualAt, presentActual, sync };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.OrgStaffCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

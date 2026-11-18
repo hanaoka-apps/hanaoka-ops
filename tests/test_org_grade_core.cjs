@@ -55,7 +55,7 @@ test('賞与0月と不明を区別し、マイナスや非数値を計算しな�
 });
 test('給与原本から基本給と役付手当だけを抜き、欠損を0にしない', () => {
   const r = G.salaryRow({ 従業員コード: '0001', 氏名: '見本', 内訳: { 基本給: '300,000', 役付手当: 20000, 普通残業: 99999 } }, '2026-10', '本社');
-  assert.equal(r.basic, 300000); assert.equal(r.role, 20000); assert.ok(!JSON.stringify(r).includes('99999')); assert.ok(!('氏名' in r));
+  assert.equal(r.basic, 300000); assert.equal(r.role, 20000); assert.equal(r.overtimePay, 99999); assert.ok(!('氏名' in r));
   assert.equal(G.salaryRow({ 内訳: { 基本給: 300000 } }, '2026-10', '本社').role, null);
 });
 test('給与の想定は開始年度で切り替え、後の年度にも引き継ぐ', () => {
@@ -84,4 +84,35 @@ test('完全な給与明細で省略された支給項目は0、明細欠損や�
   assert.equal(G.salaryRow({ 内訳: {} }, '2026-10', '本社').role, null);
   assert.equal(G.salaryRow({ 内訳: { 支給合計: 300000, 役付手当: '不明' } }, '2026-10', '本社').role, null);
   assert.equal(G.salaryRow({ 内訳: { 支給合計: 0 } }, '2026-10', '本社').basic, 0);
+});
+
+test('指定の所定時間・割増率・営業手当の金額控除で試算する', () => {
+  const input = {basic:280000,role:20000,sales:40000,workDays:240,hours:30};
+  const rate=300000/(240*475/60/12);
+  assert.equal(G.overtimeCost(input).rate,rate);
+  assert.equal(G.overtimeCost(input).cost,Math.max(0,Math.ceil(rate*1.25*30)-40000));
+  assert.equal(G.overtimeCost({...input,hours:20}).cost,Math.max(0,Math.ceil(rate*1.25*20)-40000));
+  const result=G.overtimeCost({...input,night:3,nightOvertime:4,holiday:5,holidayNight:6});
+  assert.equal(result.cost,Math.max(0,Math.ceil(rate*1.25*30)-40000)+Math.ceil(rate*.25*3)+Math.ceil(rate*1.5*4)+Math.ceil(rate*1.35*5)+Math.ceil(rate*1.6*6));
+  assert.equal(G.overtimeCost({...input,workDays:null}).cost,null);
+  assert.equal(G.overtimeCost({...input,hours:0,workDays:null}).cost,0);
+  assert.equal(G.overtimeCost({...input,exempt:true,workDays:null}).cost,0);
+  assert.equal(G.overtimeCost({...input,exempt:null}).cost,null);
+});
+test('R3・MGR3・専門MGR3以上と役員は残業対象外', () => {
+  assert.equal(G.overtimeExempt({},'R3-1',null,{}),true);
+  assert.equal(G.overtimeExempt({},'R5',null,{}),true);
+  assert.equal(G.overtimeExempt({},'R1-3',null,{}),false);
+  assert.equal(G.overtimeExempt({employeeKind:'役員'},'R1-3',null,{}),true);
+  assert.equal(G.overtimeExempt({},'MGR3-1',null,{}),true);
+  assert.equal(G.overtimeExempt({},'専門MGR3',null,{}),true);
+  assert.equal(G.overtimeExempt({},'専門MGR3-2',{overtimeExempt:false},{}),true);
+  assert.equal(G.annualWorkDays(2026),244);assert.equal(G.annualWorkDays(2027),245);
+  assert.equal(G.overtimeExempt({},'MGR3-1',null,{mgrLikeR:true}),true);
+});
+test('残業平均は実績0を含み、欠損月・重複を除く', () => {
+  assert.deepEqual(G.recentMonths('2026-01'), ['2025-11','2025-12','2026-01']);
+  const avg = G.overtimeAverage([{month:'2026-08',overtimeHours:0},{month:'2026-10',overtimeHours:30}], G.recentMonths('2026-10'));
+  assert.equal(avg.hours,15); assert.equal(avg.samples,2);
+  assert.equal(G.overtimeAverage([], G.recentMonths('2026-10')).hours,null);
 });

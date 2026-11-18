@@ -135,3 +135,21 @@ test('旧部門の募集・異動は確認できる正式な共通部門に対�
   assert.equal(C.departmentGroup('本社/営業部/国内営業/全社業務センター'), '業務センター');
   assert.equal(C.departmentGroup('本社/販売企画室'), '経営・総務');
 });
+
+test('65歳定年は社員・特定技能だけに適用し、旧案の異なる定年前提を統一', () => {
+  const p = {employeeKind:'社員',birthDate:'1965-04-01',retire:2026};
+  assert.equal(C.retirementYear(p),2031);
+  assert.equal(C.present(p,2030),true);assert.equal(C.present(p,2031),false);
+  for (const employeeKind of ['役員','契約','パート']) {
+    const other = {...p,employeeKind};assert.equal(C.retirementYear(other),null);assert.equal(C.present(other,2045),true);
+  }
+  assert.equal(C.retirementYear({...p,birthDate:'1965-03-31'}),2030);
+  assert.equal(C.retirementYear({...p,birthDate:null}),null);
+});
+test('現在の在籍・実際の退職と、確認済みの個別退職予定は定年から区別する', () => {
+  const p = {employeeKind:'社員',birthDate:'1950-01-01',actualHistory:[{year:2026,state:'在籍'}]};
+  assert.equal(C.present(p,2026),true);assert.equal(C.present(p,2027),false);
+  assert.equal(C.present({...p,actualHistory:[{year:2026,state:'退職'}]},2026),false);
+  const q = {employeeKind:'契約',birthDate:'1965-01-01',retire:2028,retireReason:'personal'};
+  assert.equal(C.present(q,2027),true);assert.equal(C.present(q,2028),false);
+});
