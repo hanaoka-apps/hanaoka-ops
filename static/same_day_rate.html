@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>当日入力率 - FUJIN</title>
-<!-- 当日入力率（受入）: データは scripts/build_same_day_rate.py → SharePoint 閲覧制限フォルダ restricted_same_day_rate/same_day_rate.json
-     → 親FUJINの window._fujinSameDay。フォルダを読めない人には親のメニュー自体が出ない（HL-幹部・石井絢子さん）。 -->
+<!-- 当日入力率（受入）: SharedMasters の 受入明細出力.csv を親FUJIN(auth_wrapper)が取得 → この画面で集計。
+     見られるのは HL-幹部 と 石井絢子さん（判定は auth_wrapper。対象外の人には親のメニュー自体が出ない）。 -->
 <style>
 :root{
   --bg:#f4f5f7;--panel:#fff;--line:#e5e7eb;--muted:#6b7280;--text:#1f2937;
@@ -359,23 +359,69 @@ window.closeM=closeM;
 $('#mbg').onclick=e=>{if(e.target.id==='mbg')closeM()};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeM()});
 // データ件数・生成日時
 const _m=D.meta||{};const _g=_m.generated_at?new Date(_m.generated_at):null;
-$('#dmeta').textContent=`受入明細 ${R.length.toLocaleString()}件 ・ 集計 ${_g?`${_g.getMonth()+1}/${_g.getDate()} ${String(_g.getHours()).padStart(2,'0')}:${String(_g.getMinutes()).padStart(2,'0')}`:'—'} ・ 遅れ＝入力日−入荷日`;
+$('#dmeta').textContent=`受入明細 ${R.length.toLocaleString()}件 ・ データ更新 ${_g?`${_g.getMonth()+1}/${_g.getDate()} ${String(_g.getHours()).padStart(2,'0')}:${String(_g.getMinutes()).padStart(2,'0')}`:'—'} ・ 遅れ＝入力日−入荷日`;
 let _init='monthly';try{const v=new URLSearchParams(location.hash.slice(1)).get('view');if(v)_init=v}catch(_){}
 showView(_init);
 }
 window.addEventListener('message',e=>{if(e.origin!==location.origin||e.data?.type!=='fujin_rate_show')return;if(window._sdrShow)window._sdrShow(e.data.view)});
+// ===== 受入明細出力.csv → 集計用データ（2026-11-18: 日次ビルドをやめ、画面内で計算） =====
+// 遅れ = 操作日付（入力した日）− 伝票日付（入荷した日）。暦日。
+// 本人／代理 = 担当者名とﾛｸﾞｲﾝ名の名字一致（「齋藤」と「斎藤 拓也」などの表記ゆれのため完全一致にしない）。
+// 月末の「消費税等」の行（明細区分＝消費税）は除く。
+const SDR_START='202604';  // 集計の開始月（年度の始め）
+const SDR_FACTORY={'鴻巣工場第一':'第一工場','鴻巣工場第二':'第二工場','鴻巣工場第三':'第三工場'};
+const SDR_COLS={slip_date:['伝票日付','受入日','入荷日'],op_date:['操作日付','入力日'],inputter:['ﾛｸﾞｲﾝ名','ログイン名'],
+  owner:['担当者名','仕入担当者名'],warehouse:['倉庫名'],supplier:['仕入先名略称','仕入先名１','仕入先名1','仕入先名'],
+  item_code:['品目ｺｰﾄﾞ','品目コード'],item_name:['品目名','品目'],qty:['受入数量','入荷数量','数量'],
+  unit:['入荷単位','受入単位','単位','数量単位'],po_no:['発注№','発注番号','発注No'],
+  rc_no:['受入№','受入番号','受入伝票№','受入伝票番号'],detail_kind:['明細区分名','明細区分']};
+const SDR_REQUIRED=['slip_date','op_date','inputter','owner'];
+function sdrCsv(t){const out=[];let row=[],f='',q=false;
+  for(let i=0;i<t.length;i++){const c=t[i];
+    if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+    else if(c==='"')q=true;else if(c===','){row.push(f);f=''}
+    else if(c==='\n'||c==='\r'){if(c==='\r'&&t[i+1]==='\n')i++;row.push(f);f='';if(row.length>1||row[0]!=='')out.push(row);row=[]}
+    else f+=c}
+  if(f!==''||row.length){row.push(f);out.push(row)}return out}
+const _sdrYmd=s=>{s=String(s||'').replace(/[^0-9]/g,'');if(s.length!==8)return null;const d=new Date(+s.slice(0,4),+s.slice(4,6)-1,+s.slice(6,8));return d.getMonth()===+s.slice(4,6)-1?d:null};
+const _sdrNorm=s=>String(s||'').replace(/[\s　]|\(.*?\)|（.*?）/g,'').replace(/齋/g,'斎');
+const _sdrSur=s=>_sdrNorm(String(s||'').trim().split(/[\s　]+/)[0]);
+const _sdrSelf=(o,l)=>{const a=_sdrNorm(l),sn=_sdrSur(o);return !!a&&!!sn&&a.startsWith(sn)};
+const _sdrInt=d=>d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+function sdrBuild(text,lastModified){
+  const now=new Date(),meta={generated_at:(lastModified?new Date(lastModified):now).toISOString(),status:'ok',start:SDR_START};
+  const all=sdrCsv(String(text||'').replace(/^﻿/,''));if(!all.length){meta.status='no_source';return {meta,rows:[]}}
+  const hd=all[0].map(h=>h.trim()),col={};
+  for(const k in SDR_COLS){const n=SDR_COLS[k].find(x=>hd.includes(x));col[k]=n==null?-1:hd.indexOf(n)}
+  const missing=SDR_REQUIRED.filter(k=>col[k]<0).map(k=>SDR_COLS[k][0]);
+  if(missing.length){meta.status='missing_columns';meta.missing=missing;return {meta,rows:[]}}
+  const dic={fac:new Map(),wh:new Map(),sup:new Map(),own:new Map(),inp:new Map(),item:new Map()};
+  const ix=(k,v)=>{const m=dic[k];if(!m.has(v))m.set(v,m.size);return m.get(v)};
+  const today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  let tax=0,bad=0,fut=0;const rows=[];
+  for(let n=1;n<all.length;n++){const r=all[n],g=k=>col[k]<0?'':String(r[col[k]]??'').trim();
+    const kind=g('detail_kind');if(kind==='消費税'||kind==='1'){tax++;continue}
+    const d0=_sdrYmd(g('slip_date')),d1=_sdrYmd(g('op_date'));if(!d0||!d1){bad++;continue}
+    const i0=_sdrInt(d0);if(String(i0).slice(0,6)<SDR_START||d0>today)continue;
+    const lag=Math.round((d1-d0)/864e5);if(lag<0)fut++;
+    const owner=g('owner'),login=g('inputter'),wh=g('warehouse'),qty=parseFloat(g('qty'))||0;
+    rows.push([i0,_sdrInt(d1),lag,ix('fac',SDR_FACTORY[wh]||'その他'),ix('wh',wh),ix('sup',g('supplier')),
+      ix('own',owner.replace(/[\s　]+/g,' ')),ix('inp',login),_sdrSelf(owner,login)?1:0,
+      g('item_code'),ix('item',g('item_name')),qty,g('unit'),g('po_no'),g('rc_no')])}
+  const D={};for(const k in dic)D[k]=[...dic[k].keys()];
+  Object.assign(meta,{row_count:rows.length,skipped_tax:tax,skipped_bad:bad,future_dated:fut,period_to:rows.reduce((m,r)=>Math.max(m,r[0]),0)||null});
+  D.meta=meta;D.rows=rows;return D}
+window._sdrBuild=sdrBuild;
 (function(){
   function fail(msg){const l=document.getElementById('loading');l.hidden=false;l.textContent=msg}
   function go(d){
     if(!d||!d.meta){fail('当日入力率のデータを取得できませんでした。');return}
     if(d.meta.status==='missing_columns'){fail('受入明細出力.csv に必要な列がありません：'+(d.meta.missing||[]).join('・')+'。RPAの出力項目を確認してください。');return}
-    if(d.meta.status==='no_source'||!(d.rows||[]).length){fail('受入明細のデータがまだありません（日次ビルドを確認してください）。');return}
+    if(d.meta.status==='no_source'||!(d.rows||[]).length){fail('受入明細のデータがまだありません（SharedMasters の 受入明細出力.csv を確認してください）。');return}
     try{_boot(d)}catch(e){console.error(e);fail('画面の表示中にエラーが発生しました：'+(e&&e.message||e))}
   }
-  let d=null;try{d=window.top&&window.top._fujinSameDay}catch(e){}
-  if(d){go(d);return}
-  let p=null;try{p=window.top&&window.top._fujinSameDayPromise}catch(e){}
-  if(p&&p.then){p.then(x=>x?go(x):fail('当日入力率は、閲覧を許可された人（幹部・指定者）だけが見られます。')).catch(()=>fail('当日入力率のデータ取得でエラーが発生しました。'))}
+  let p=null;try{p=window.top&&window.top._fujinSameDayCsvPromise}catch(e){}
+  if(p&&p.then){p.then(x=>x&&x.text!=null?go(sdrBuild(x.text,x.lastModified)):fail('当日入力率は、幹部と指定された人だけが見られます。（データを取得できなかった可能性もあります）')).catch(e=>{console.error(e);fail('当日入力率のデータ取得でエラーが発生しました。')})}
   else fail('このページはFUJIN本体（FUJIN.html）の「当日入力率」から開いてください。');
 })();
 </script>

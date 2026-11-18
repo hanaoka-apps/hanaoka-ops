@@ -471,28 +471,50 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[plan_ledger] 例外:", e); window._fujinPlanLedgerPromise = Promise.resolve(null); }
 
-    // ★ 2026-11 当日入力率(same_day_rate)。閲覧制限フォルダ restricted_same_day_rate/ に置き、
-    //   読めた人(HL-幹部・石井絢子さん)だけシェルに「当日入力率」メニューを出す。
-    //   見られる人の追加・削除は SharePoint のフォルダ権限で行う(コードに人名・グループは書かない)。
-    //   読めない(403/404)は正常系。null を返してメニューを出さない。
+    // ★ 2026-11 当日入力率。見られるのは M365 グループ HL-幹部 と 石井絢子さん。
+    //   メニューを出すか: /me/checkMemberGroups で HL-幹部 か確認(HUB の LINK と同じ方法)。読めなければ出さない。
+    //   データ: 見られる人だけ SharedMasters の 受入明細出力.csv を読み、画面(same_day_rate.html)で集計する。
+    //   ※ CSV 自体は FUJIN から毎日取っているデータで、隠す対象ではない。メニューの出し分けは見た目の制御。
     try {
       var _SP_DRIVE_SD = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
-      window._fujinSameDayPromise = window._fujinMsal
-        .acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
-        .then(function(r){
-          return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE_SD + "/root:/restricted_same_day_rate/same_day_rate.json:/content",
-                       { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
-        })
-        .then(function(res){
-          if (!res.ok) { console.log("[same_day_rate] 閲覧対象外 (HTTP " + res.status + ")"); return null; }
-          return res.json();
-        })
-        .then(function(d){ window._fujinSameDay = d || null; return d || null; })
-        .catch(function(e){
-          console.warn("[same_day_rate] 取得 失敗:", (e && (e.errorCode || e.message)) || e);
-          return null;
-        });
-    } catch(e) { console.error("[same_day_rate] 例外:", e); window._fujinSameDayPromise = Promise.resolve(null); }
+      var _SD_GROUP_KANBU = "85b63d8e-1b6f-4cc1-99b5-f9ce16bfcb1d";   // HL-幹部
+      var _SD_EXTRA_USERS = ["a.ishii@hanaokacorp.onmicrosoft.com"];    // HL-幹部 以外で見られる人(石井絢子さん)
+      var _sdUpn = String(account.username || "").toLowerCase();
+      window._fujinSameDayAllowedPromise = (_SD_EXTRA_USERS.indexOf(_sdUpn) >= 0
+        ? Promise.resolve(true)
+        : window._fujinMsal.acquireTokenSilent({ scopes: ["User.Read"], account: account })
+            .then(function(r){
+              return fetch("https://graph.microsoft.com/v1.0/me/checkMemberGroups", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + r.accessToken, "Content-Type": "application/json" },
+                body: JSON.stringify({ groupIds: [_SD_GROUP_KANBU] })
+              });
+            })
+            .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+            .then(function(d){ return ((d && d.value) || []).indexOf(_SD_GROUP_KANBU) >= 0; })
+      ).catch(function(e){
+        console.warn("[same_day_rate] グループ確認 失敗(メニューは出しません):", (e && (e.errorCode || e.message)) || e);
+        return false;
+      });
+      window._fujinSameDayCsvPromise = window._fujinSameDayAllowedPromise.then(function(ok){
+        if (!ok) return null;
+        return window._fujinMsal.acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+          .then(function(r){
+            return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE_SD + "/root:/" + encodeURIComponent("受入明細出力.csv") + ":/content",
+                         { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
+          })
+          .then(function(res){
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            var lm = res.headers.get("Last-Modified");
+            return res.text().then(function(t){ return { text: t, lastModified: lm }; });
+          })
+          .catch(function(e){ console.warn("[same_day_rate] CSV取得 失敗:", (e && (e.errorCode || e.message)) || e); return null; });
+      });
+    } catch(e) {
+      console.error("[same_day_rate] 例外:", e);
+      window._fujinSameDayAllowedPromise = Promise.resolve(false);
+      window._fujinSameDayCsvPromise = Promise.resolve(null);
+    }
 
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
