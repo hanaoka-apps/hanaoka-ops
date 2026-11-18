@@ -2930,6 +2930,40 @@ body.fullpanel #detail .dv-meta { font-size: 11px !important; }
 
 /* tiny */
 .mono{font-family:"SF Mono","Menlo","Courier New",monospace;font-size:11px}
+/* 受注詳細モーダル (山リストから移植 2026-11-18) */
+#orderDetailModal{position:fixed;top:0;left:0;right:0;bottom:0;z-index:99998;display:none}
+#orderDetailModal.show{display:block}
+#orderDetailModal .odm-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(15,23,42,.55)}
+#orderDetailModal .odm-box{position:absolute;top:4vh;left:50%;transform:translateX(-50%);width:92vw;max-width:920px;max-height:92vh;overflow-y:auto;background:#fff;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,0.25)}
+.odm-header{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:2}
+.odm-header h3{margin:0;font-size:15px;color:#1e3a8a;font-weight:700;display:flex;align-items:baseline;gap:10px}
+.odm-header h3 .ono{font-family:"SF Mono","Menlo",monospace;color:#1e40af;font-size:18px}
+.odm-header button{background:none;border:none;font-size:22px;cursor:pointer;color:#64748b;line-height:1;padding:4px 10px;border-radius:6px}
+.odm-header button:hover{background:#f1f5f9;color:#1e293b}
+.odm-content{padding:14px 18px 20px}
+.odm-section{margin-bottom:18px}
+.odm-section h4{margin:0 0 8px;font-size:11px;color:#64748b;letter-spacing:.06em;text-transform:uppercase;font-weight:700;border-bottom:1px solid #e5e7eb;padding-bottom:4px}
+.odm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:5px 14px;font-size:11.5px}
+.odm-grid > div{display:flex;gap:8px;padding:2px 0}
+.odm-grid .lbl{color:#64748b;min-width:96px;flex-shrink:0}
+.odm-grid .val{color:#1e293b;font-weight:600;word-break:break-all}
+.odm-grid .val.empty{color:#cbd5e1;font-weight:400}
+.odm-lines{width:100%;font-size:11px;border-collapse:collapse;margin-top:4px}
+.odm-lines th{background:#f1f5f9;padding:5px 8px;text-align:left;font-weight:700;color:#475569;border-bottom:1px solid #cbd5e1;font-size:10.5px;white-space:nowrap}
+.odm-lines td{padding:5px 8px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+.odm-lines .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.odm-lines .mono{font-family:"SF Mono","Menlo",monospace}
+.odm-empty{padding:24px;text-align:center;color:#94a3b8;font-size:12px;line-height:1.6}
+.odm-smile-hdr{background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:10px 14px;margin-bottom:14px}
+.odm-smile-hdr .odm-row1,.odm-smile-hdr .odm-row2{display:flex;gap:24px;flex-wrap:wrap;align-items:baseline;padding:3px 0}
+.odm-smile-hdr .odm-row1{border-bottom:1px dashed #cbd5e1;padding-bottom:8px;margin-bottom:6px}
+.odm-smile-hdr .kv{display:flex;align-items:baseline;gap:8px}
+.odm-smile-hdr .kv .lbl{font-size:11px;color:#64748b;font-weight:700;min-width:62px}
+.odm-smile-hdr .kv .val{font-size:12.5px;color:#1e293b;font-weight:600}
+.odm-smile-hdr .kv .val.mono{font-family:"SF Mono","Menlo",monospace}
+.odm-smile-hdr .kv .val.positive{color:#065f46;background:#d1fae5;padding:1px 6px;border-radius:3px;font-size:11px}
+.odm-smile-hdr .kv.lg .val{font-size:18px;color:#1e40af;font-weight:700}
+.odm-smile-hdr .kv.lg .lbl{font-size:11px}
 </style>
 </head>
 <body>
@@ -6322,7 +6356,251 @@ if(_modal && !_modal._bound){
   _modal.addEventListener("click", (e)=>{ if(e.target===_modal) closeCodeSearch(); });
   _modal._bound = true;
 }
+
+// ===== 受注詳細モーダル (2026-11-18 山リストから移植) =====
+// 出入り行の受注№セルは openOrderDetail() を呼ぶが、構成ツリー側に関数が無く ReferenceError で無反応だった。
+function _orderKey(item){
+  // item は {order_no, ...} のオブジェクト or 単純な文字列
+  if(typeof item === 'string') return item;
+  return item.order_no || item.orderNo || "";
+}
+// 全受注Nのリストをグローバルに保管 (HTMLにJSONを埋め込むより安全)
+let _currentOrderList = null;
+let _currentOrderSeiban = null;
+function openOrderDetail(orderNo, allList, seiban){
+  const modal = document.getElementById("orderDetailModal");
+  const titleEl = document.getElementById("odmOrderNo");
+  const contentEl = document.getElementById("odmContent");
+  const pickerEl = document.getElementById("odmOrderPicker");
+  titleEl.textContent = orderNo;
+  // リスト切替用に保持
+  if(allList){
+    _currentOrderList = allList;
+    _currentOrderSeiban = seiban;
+  } else {
+    _currentOrderList = null;
+    _currentOrderSeiban = null;
+  }
+  // 複数受注選択リンク
+  if(_currentOrderList && _currentOrderList.length > 1 && pickerEl){
+    pickerEl.innerHTML = `(製番${escapeHtml(_currentOrderSeiban||"")}の受注: ${
+      _currentOrderList.map((o,i) => {
+        const oNo = _orderKey(o);
+        const cust = (typeof o === 'object' ? (o.customer || '') : '');
+        const txt = cust ? `${oNo} <span style="color:#94a3b8">${escapeHtml(cust.slice(0,8))}</span>` : oNo;
+        return oNo === orderNo
+          ? `<b style="color:#1e40af">${escapeHtml(oNo)}</b>${cust?` <span style="color:#94a3b8">${escapeHtml(cust.slice(0,8))}</span>`:''}`
+          : `<span style="cursor:pointer;text-decoration:underline;color:#475569" onclick="_switchOrderInModal(${i})">${txt}</span>`;
+      }).join(' / ')
+    })`;
+  } else if(pickerEl){
+    pickerEl.innerHTML = "";
+  }
+  const ITEM_HISTORY = window.ITEM_HISTORY || {};
+  const d = (ITEM_HISTORY.sales_order_details || {})[orderNo];
+  if(!d){
+    // 完納済等で詳細明細なし → seiban_to_order の基本情報があればそれだけ表示
+    const summary = _currentOrderList ? _currentOrderList.find(o => _orderKey(o) === orderNo) : null;
+    if(summary && typeof summary === 'object'){
+      contentEl.innerHTML = _renderOrderSummary(summary, orderNo);
+    } else {
+      contentEl.innerHTML = `<div class="odm-empty">
+        受注 <b>${escapeHtml(orderNo)}</b> の詳細データは取り込まれていません。<br>
+        <span style="font-size:11px">※ FUJINでは「未完納」の受注のみ詳細を保持しています。<br>
+        完納済み・部分完納済みでもう動かない受注は SMILE で確認してください。</span>
+      </div>`;
+    }
+  } else {
+    contentEl.innerHTML = _renderOrderDetail(d);
+  }
+  modal.classList.add("show");
+}
+function _renderOrderSummary(s, orderNo){
+  // 完納済 (sales_order_details 未収録) の基本情報のみ表示
+  return `<div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;padding:8px 12px;border-radius:5px;margin-bottom:14px;font-size:11.5px;line-height:1.5">
+    ℹ <b>この受注は完納済み (または未完納外)</b> のため、明細詳細はFUJINで保持していません。<br>
+    <span style="font-size:10.5px">基本情報のみ表示します。明細は SMILE で確認してください。</span>
+  </div>
+  <div class="odm-smile-hdr">
+    <div class="odm-row1">
+      <div class="kv lg"><span class="lbl">受注No.</span><span class="val mono">${escapeHtml(orderNo)}</span></div>
+      <div class="kv"><span class="lbl">受注日付</span><span class="val">${escapeHtml(s.date||"-")}</span></div>
+      <div class="kv"><span class="lbl">受注納期</span><span class="val">${escapeHtml(s.due||"-")}</span></div>
+    </div>
+    <div class="odm-row2">
+      <div class="kv"><span class="lbl">得意先</span><span class="val">${escapeHtml(s.customer||"-")}</span></div>
+      <div class="kv"><span class="lbl">客先注番</span><span class="val mono">${escapeHtml(s.order_id||"-")}</span></div>
+    </div>
+  </div>
+  <div style="text-align:center;color:#94a3b8;font-size:11px;padding:20px">— 明細データなし —</div>`;
+}
+function openOrderDetailWithNone(seiban){
+  const modal = document.getElementById("orderDetailModal");
+  const titleEl = document.getElementById("odmOrderNo");
+  const contentEl = document.getElementById("odmContent");
+  const pickerEl = document.getElementById("odmOrderPicker");
+  titleEl.textContent = '—';
+  if(pickerEl) pickerEl.innerHTML = `(製番 ${escapeHtml(seiban)})`;
+  contentEl.innerHTML = `<div class="odm-empty">
+    製番 <b>${escapeHtml(seiban)}</b> に紐づく受注情報がFUJINに取り込まれていません。<br>
+    <span style="font-size:11px">※ 完納済み受注／受注を伴わない製番 (在庫補充など) の場合があります。<br>
+    詳細はSMILEで確認してください。</span>
+  </div>`;
+  modal.classList.add("show");
+}
+function _switchOrderInModal(idx){
+  if(!_currentOrderList || !_currentOrderList[idx]) return;
+  const oNo = _orderKey(_currentOrderList[idx]);
+  openOrderDetail(oNo, _currentOrderList, _currentOrderSeiban);
+}
+function closeOrderDetail(){
+  document.getElementById("orderDetailModal").classList.remove("show");
+  _currentOrderList = null;
+  _currentOrderSeiban = null;
+}
+function _odmKv(lbl, val, isMono){
+  const v = (val == null || val === "") ? `<span class="val empty">—</span>` : `<span class="val${isMono?' mono':''}">${escapeHtml(String(val))}</span>`;
+  return `<div><span class="lbl">${lbl}</span>${v}</div>`;
+}
+function jumpToTreeFromOrder(code){
+  if(!code) return;
+  closeOrderDetail();
+  setDetailFocus(code);
+}
+function _renderOrderDetail(d){
+  const h = d.header || {};
+  const ext = d.extended || {};
+  const lines = d.lines || [];
+  const ITEM_HISTORY = window.ITEM_HISTORY || {};
+  const asOf = ITEM_HISTORY.as_of || "—";
+  // ログインユーザー取得
+  // 1) window.parent._fujinUser (MSALオブジェクト直接参照)
+  // 2) _fujinUserBar の span[title] からUPNを読む（フォールバック）
+  // ※ iframe内なので window.parent が FUJIN.html ウィンドウ
+  const _u = (() => {
+    try {
+      if (window.parent && window.parent._fujinUser) return window.parent._fujinUser;
+      // _fujinUserBar DOM要素からUPNを読む（タイトル属性に fullName が入っている）
+      const bar = window.parent && window.parent.document
+                  && window.parent.document.getElementById('_fujinUserBar');
+      const span = bar && bar.querySelector('span[title]');
+      if (span) {
+        const upn = span.getAttribute('title');
+        if (upn && upn !== '認証済') return { username: upn, name: upn };
+      }
+    } catch(e) { /* cross-origin 等の例外は無視 */ }
+    return {};
+  })();
+  const _uRawName = _u.name || _u.displayName || _u.username || "";
+  // UPN (email形式) がそのまま name に入っている場合は @前部分を表示名として使う
+  const _uName = (_uRawName.indexOf('@') > 0) ? _uRawName.split('@')[0] : _uRawName;
+  const _uEmail = (_u.username && _u.username.indexOf('@') > 0) ? _u.username : (_u.mail || "");
+  const _uLabel = _uName
+    ? _uName + (_uEmail ? `<span style="color:#94a3b8;font-size:10px"> &lt;${escapeHtml(_uEmail)}&gt;</span>` : "")
+    : "—";
+  let html = "";
+  html += `<div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;padding:6px 10px;border-radius:5px;margin-bottom:12px;font-size:10.5px;line-height:1.5;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+    <span>⚠ <b>FUJIN取込データ (${escapeHtml(asOf)}時点)</b>。SMILEで直接編集された最新状態とは異なる可能性があります。</span>
+    ${_uLabel !== '—' ? `<span style="font-size:10.5px;color:#475569;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;padding:2px 8px;white-space:nowrap">👤 ${_uLabel}</span>` : ''}
+  </div>`;
+  html += `<div class="odm-smile-hdr">
+    <div class="odm-row1">
+      <div class="kv lg"><span class="lbl">受注No.</span><span class="val mono">${escapeHtml(h.order_no||"-")}</span></div>
+      <div class="kv"><span class="lbl">受注日付</span><span class="val">${escapeHtml(h.order_date||"-")}</span></div>
+      <div class="kv"><span class="lbl">受注区分</span><span class="val ${h.order_type==='確定'?'positive':''}">${escapeHtml(h.order_type||"-")}</span></div>
+    </div>
+    <div class="odm-row2">
+      <div class="kv"><span class="lbl">受注納期</span><span class="val">${escapeHtml(h.due_date||"-")}</span></div>
+      <div class="kv"><span class="lbl">出荷予定日</span><span class="val">${escapeHtml(h.shipment_date||"-")}</span></div>
+      <div class="kv"><span class="lbl">製造納期</span><span class="val">${escapeHtml(h.manufacture_date||"-")}</span></div>
+      <div class="kv"><span class="lbl">取引</span><span class="val">${escapeHtml(h.deal_type||"-")}</span></div>
+    </div>
+  </div>`;
+  html += `<div class="odm-section">
+    <h4>得意先 / 倉庫 / 担当 / 納品先</h4>
+    <div class="odm-grid">
+      ${_odmKv("得意先", h.customer_code ? `${h.customer_code} ${h.customer_name||h.customer_alias||""}` : (h.customer_name||h.customer_alias))}
+      ${_odmKv("倉庫", h.warehouse_code ? `${h.warehouse_code} ${h.warehouse_name||""}` : h.warehouse_name)}
+      ${_odmKv("客先注番", h.customer_po, true)}
+      ${_odmKv("担当者", h.staff_code ? `${h.staff_code} ${h.staff_name||""}` : h.staff_name)}
+      ${_odmKv("部門", h.dept_code ? `${h.dept_code} ${h.dept_name||""}` : h.dept_name)}
+      ${_odmKv("納品先", h.delivery_to_code ? `${h.delivery_to_code} ${h.delivery_to_name||""}` : h.delivery_to_name)}
+    </div>
+  </div>`;
+  html += `<div class="odm-section">
+    <h4>明細 (${lines.length}行) <span style="font-weight:400;font-size:10.5px;color:#64748b">— 品目コードをクリックで構成ツリーへ移動</span></h4>
+    <table class="odm-lines">
+      <thead><tr>
+        <th>#</th><th>品目コード</th><th>品目名 / 型番</th><th>製番</th>
+        <th class="num">受注数</th><th class="num">売上済</th><th class="num">残量</th>
+        <th>単位</th><th class="num">単価</th><th class="num">金額</th>
+        <th>納期</th><th>出荷予定</th><th>状態</th>
+      </tr></thead><tbody>`;
+  lines.forEach((l,i)=>{
+    const codeCell = l.code
+      ? `<td class="mono"><span style="color:#1e40af;text-decoration:underline;cursor:pointer" onclick="jumpToTreeFromOrder('${escapeHtml(l.code)}')" title="構成ツリーで開く">${escapeHtml(l.code)}</span></td>`
+      : `<td class="mono">-</td>`;
+    html += `<tr>
+      <td>${i+1}</td>
+      ${codeCell}
+      <td>${escapeHtml(l.name||"-")}${l.model?`<br><span style="color:#94a3b8;font-size:10px">${escapeHtml(l.model)}${l.drawing_no?' / 図'+escapeHtml(l.drawing_no):''}</span>`:""}</td>
+      <td class="mono">${escapeHtml(l.seiban||"-")}</td>
+      <td class="num">${Math.round(l.qty||0)}</td>
+      <td class="num">${Math.round(l.sold_qty||0)}</td>
+      <td class="num" style="color:#9a3412;font-weight:700">${Math.round(l.remaining_qty||0)}</td>
+      <td>${escapeHtml(l.unit||"")}</td>
+      <td class="num">${(l.unit_price||0).toLocaleString()}</td>
+      <td class="num">${(l.amount||0).toLocaleString()}</td>
+      <td class="mono">${escapeHtml(l.line_due||"-")}</td>
+      <td class="mono">${escapeHtml(l.line_shipment_date||"-")}</td>
+      <td><span style="font-size:10px;color:#9a3412;background:#ffedd5;padding:1px 5px;border-radius:3px;white-space:nowrap">${escapeHtml(l.complete||"未完納")}</span></td>
+    </tr>`;
+    if(l.line_remark){
+      html += `<tr><td></td><td colspan="12" style="color:#64748b;font-size:10.5px;padding-left:0">摘要: ${escapeHtml(l.line_remark)}</td></tr>`;
+    }
+  });
+  html += `</tbody></table></div>`;
+  const sum_qty = lines.reduce((a,l)=>a+(l.qty||0),0);
+  const sum_amt = lines.reduce((a,l)=>a+(l.amount||0),0);
+  const sum_rem = lines.reduce((a,l)=>a+(l.remaining_qty||0),0);
+  html += `<div class="odm-section">
+    <h4>合計</h4>
+    <div class="odm-grid">
+      ${_odmKv("受注数量", Math.round(sum_qty).toLocaleString())}
+      ${_odmKv("合計金額", "¥" + Math.round(sum_amt).toLocaleString())}
+      ${_odmKv("受注残数量", Math.round(sum_rem).toLocaleString())}
+    </div>
+  </div>`;
+  // 拡張項目 (配送指定など、ext)
+  const extKeys = Object.keys(ext || {});
+  if(extKeys.length){
+    html += `<div class="odm-section"><h4>拡張項目</h4><div class="odm-grid">
+      ${_odmKv("配送指定日", ext.delivery_designated_date)}
+      ${_odmKv("配達指定(西濃用)", ext.delivery_seino)}
+      ${_odmKv("社内メモ", ext.internal_memo)}
+      ${_odmKv("BS受注№", ext.bs_order_no, true)}
+    </div></div>`;
+  }
+  return html;
+}
+// ESCで閉じる
+document.addEventListener("keydown", e=>{
+  if(e.key === "Escape" && document.getElementById("orderDetailModal")?.classList.contains("show")){
+    closeOrderDetail();
+  }
+});
 </script>
+<!-- 受注詳細モーダル (雅さん 2026-05-24: 製番クリック→受注内容ポップアップ) -->
+<div id="orderDetailModal">
+  <div class="odm-overlay" onclick="closeOrderDetail()"></div>
+  <div class="odm-box">
+    <div class="odm-header">
+      <h3>受注詳細 <span class="ono" id="odmOrderNo"></span> <span id="odmOrderPicker" style="font-size:11px;font-weight:400;color:#64748b"></span></h3>
+      <button type="button" onclick="closeOrderDetail()" title="閉じる">×</button>
+    </div>
+    <div class="odm-content" id="odmContent"></div>
+  </div>
+</div>
 </body>
 </html>
 """
