@@ -28,12 +28,14 @@
     const latest = (payroll || []).filter(e => String(e.年月 || '') === month);
     const rows = persons.filter(eligible).map(p => {
       const matches = p.EmpCode ? latest.filter(e => codeKey(e.従業員コード) === codeKey(p.EmpCode)) : [];
-      const e = matches.length === 1 ? matches[0] : null;
+      // 拠点間でコードが重なる場合だけ、氏名の完全一致も確かめる。
+      const named = matches.length > 1 && nameKey(p.Title) ? matches.filter(e => nameKey(e.従業員名) === nameKey(p.Title)) : [];
+      const e = matches.length === 1 ? matches[0] : named.length === 1 ? named[0] : null;
       return { staffId: String(p.id), empCode: String(p.EmpCode || ''), name: String(p.Title || ''),
         dept: String(p.UnitPath || ''), title: String(p.JobLabel || ''), kind: p.Kind, state: p.State || '在籍',
         birthDate: e ? dateKey(e.生年月日) : null, startDate: dateKey(p.StartDate) || (e ? dateKey(e.入社年月日) : null),
         endDate: dateKey(p.EndDate), payrollSite: e ? String(e.拠点 || '') : '', payType: e ? String(e.給与種別名称 || '') : '',
-        gradeEvidence: e ? G.evidence(payroll, p.EmpCode, e.拠点, month) : null, payrollAmbiguous: matches.length > 1 };
+        gradeEvidence: e ? G.evidence(payroll, p.EmpCode, e.拠点, month) : null, payrollAmbiguous: matches.length > 1 && !e };
     });
     if (!rows.length) throw new Error('対象となる人員がありません。更新を止めました。');
     if (new Set(rows.map(p => p.staffId)).size !== rows.length) throw new Error('人員表のIDが重複しています。更新を止めました。');

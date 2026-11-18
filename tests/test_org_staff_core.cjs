@@ -39,6 +39,16 @@ test('同じコードが複数・給与取得なしでは生年月日を推測�
   assert.equal(C.roster(persons, [e, e]).rows[0].birthDate, null);
   assert.equal(C.roster(persons, []).rows[0].birthDate, null);
 });
+test('拠点間のコード重複は氏名も完全一致する一件だけを使う', () => {
+  const persons = [{ id: 1, Title: '見本 本社', Kind: '社員', EmpCode: '001' }];
+  const a = { 年月: '2026-10', 従業員コード: '1', 従業員名: '見本　本社', 拠点: '本社', 生年月日: '2000年4月1日' };
+  const b = { ...a, 従業員名: '見本 工場', 拠点: '工場', 生年月日: '1990年1月1日' };
+  const r = C.roster(persons, [a, b]).rows[0];
+  assert.equal(r.birthDate, '2000-04-01'); assert.equal(r.payrollSite, '本社'); assert.equal(r.payrollAmbiguous, false);
+  assert.equal(C.roster(persons, [a, { ...b, 従業員名: a.従業員名 }]).rows[0].birthDate, null);
+  assert.equal(C.roster([{ ...persons[0], EmpCode: '' }], [a]).rows[0].birthDate, null);
+  assert.equal(C.roster([{ ...persons[0], Title: '見本' }], [a, b]).rows[0].birthDate, null);
+});
 test('現状だけ所属・役職を記録し、将来案の予定と過去の所属を保持する', () => {
   const db = database(), before = structuredClone(db), result = C.sync(db, [row], '2026-11-18').db;
   assert.deepEqual(db, before);
