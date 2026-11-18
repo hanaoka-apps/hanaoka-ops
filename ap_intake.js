@@ -52,7 +52,11 @@
   }
   const text = async (call, site, path) => { const b = await call('GET', `/sites/${site}/drive/root:${encodeURI(path)}:/content`, null, null, true); return new TextDecoder('utf-8').decode(await b.arrayBuffer()); };
   // パスで指定して移す（同じ名前があれば失敗する → 呼び出し側で無視）
-  const move = (call, site, from, toDir) => call('PATCH', `/sites/${site}/drive/root:${encodeURI(from)}`, { parentReference: { path: `/drive/root:${toDir}` } });
+  const move = (call, site, from, toDir, name) => call('PATCH', `/sites/${site}/drive/root:${encodeURI(from)}`, Object.assign({ parentReference: { path: `/drive/root:${toDir}` } }, name ? { name } : {}));
+  // processed へ移すときのファイル名（2026-11-18）：元のファイル名（scan0001 など）ではなく「APコード_支払先_対象年月」にそろえる。読めなかったときは元の名前のまま
+  const docName = (p, H, i, n) => { const pre = (String(p).match(/^(AP\d{8}[A-Z0-9]{8})_/) || [])[1], ext = (String(p).match(/\.[A-Za-z0-9]+$/) || [''])[0];
+    const pay = String(H.PayeeName || '').replace(/[#%*<>?/\\{|}:"'~&]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 40), ym = String(H.TargetMonth || '').replace(/\D/g, '').slice(0, 6);
+    if (!pre || !pay || !ext) return ''; return `${pre}_${pay}${ym ? '_' + ym : ''}${n > 1 ? '_' + (i + 1) : ''}${ext}`; };
   const yen = n => Math.round(+n || 0).toLocaleString('ja-JP');
   const MULTI_MARK = '1つのファイルに請求書が2通以上あります';
 
@@ -137,8 +141,11 @@
         if (H.AmountInclTax != null) { patch[fi('金額_税込')] = +H.AmountInclTax || 0; patch[fi('金額_税抜')] = +H.AmountExclTax || 0; patch[fi('消費税')] = +H.Tax || 0; }
         // PDF：読み取り側が processed へ移していればそのまま。古い形は incoming → processed（移せなければ incoming のまま）
         const docs = [];
-        for (const p of (r.pdf_files || []).filter(Boolean)) {
+        const pf = (r.pdf_files || []).filter(Boolean);
+        for (const [i, p] of pf.entries()) {
           if (r.moved) { docs.push(`/Shared Documents${PROC}/${p}`); continue; }
+          const nn = r.status === '読取失敗' ? '' : docName(p, H, i, pf.length);
+          try { if (!nn) throw 0; await move(call, site, `${INC}/${p}`, PROC, nn); docs.push(`/Shared Documents${PROC}/${nn}`); continue; } catch (e) {}   // 同じ名前があるなどで付け替えられなければ、元の名前で移す
           try { await move(call, site, `${INC}/${p}`, PROC); docs.push(`/Shared Documents${PROC}/${p}`); }
           catch (e) { docs.push(`/Shared Documents${INC}/${p}`); }
         }
