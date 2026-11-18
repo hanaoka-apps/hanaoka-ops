@@ -388,6 +388,12 @@ assert.equal(c.fare.reason, '');
   s27 = Q.smileCodeOf({ code: 'UDL25' }, e5, kk2, '2027-01-05');
   assert.deepEqual([s27.code, s27.cands], ['UDL25v27', ['UDL25v27', 'UDL25']]);
   assert.equal(Q.smileCodeOf({ code: 'UDL25' }, e5, kk2, '2026-12-31').code, 'UDL25');
+  // 同じ価格表記載名に v27 が2つ（サイレント版など）あるときは、入れたコードと同じ形 → 短いもの
+  const items3 = { PA1: { kakaku: 'PA1' }, 'PA1-GS': { kakaku: 'PA1' }, PA1GSv27: { kakaku: 'PA1' }, PA1v27: { kakaku: 'PA1' } };
+  const kk3 = { PA1: ['PA1', 'PA1-GS', 'PA1GSv27', 'PA1v27'] }, e6 = { items: items3, history: h };
+  assert.equal(Q.smileCodeOf({ code: 'PA1' }, e6, kk3, '2027-01-05').code, 'PA1v27');
+  assert.equal(Q.smileCodeOf({ code: 'PA1-GS' }, e6, kk3, '2027-01-05').code, 'PA1GSv27');
+  assert.equal(Q.smileCodeOf({ code: 'X', listCode: 'PA1' }, e6, kk3, '2027-01-05').code, 'PA1v27');
   // 事情があって旧コードで入れるときは、手で選んだものが勝つ
   assert.equal(Q.smileCodeOf({ code: 'UDL25', smile: 'UDL25' }, e5, kk2, '2027-01-05').code, 'UDL25');
   // 見積では作らない
