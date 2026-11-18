@@ -136,6 +136,8 @@
     const hit = jr.filter(x => { const q = nkey(String(x['摘要'] || '').replace(/^\(\d+\)/, '').trim().split(/[\s　]/)[0]); return q.length >= 2 && (p.includes(q) || q.includes(p)); });
     return hit.sort((a, b) => String(b['伝票日付'] || b['年月']).localeCompare(String(a['伝票日付'] || a['年月'])));
   }
+  // 専門用語・ソフトの名前に、何のものかを添える（2026-11-18）：決裁メモ・特記事項は社長・室長が読む
+  const PLAIN = '- 専門用語・ソフトや機器の名前だけでは社長・室長に伝わらない。何のものかを先に書き、名前はかっこに入れる（例「動画編集ソフト（Adobe Premiere Pro）」「デザインソフト一式（Adobe CC コンプリートプラン）」「固定IP（外から社内の機器につなぐための決まったネットの住所）」）。説明は短く、同じ用語は1回だけ';
   async function journal(ctx, t) {
     const s = await setup(ctx), R = s.raw || { km: [], bm: [], um: [], jr: [], mem: [] };
     const hist = historyOf(R.jr, t.payee), ymEnd = hist.length ? hist[0]['年月'] : '';
@@ -148,6 +150,7 @@
       '- 金額や行の分け方は、ふだんは変えない（relines は空、amountBasis は ""）。ただし (1) 今の仕訳の合計が請求書の金額と合わないとき、(2) 人が「分けて」「作り直して」と頼んだときは、行を作り直す：relines に新しい行を全部入れる（今の行は全部置き換わる。lines は空、decided=true）。\n' +
       '  請求書の明細を、宛先・拠点（明細の拠点の欄・宛先）×科目×税率ごとにまとめ、Amount はそのまとめた明細の金額の合計。amountBasis は明細の金額が税抜なら「税抜」、税込なら「税込」。明細は漏れなく・二重なく入れ、合計を請求書の金額に合わせる（消費税の数円の端数は画面で合わせる）。Description は摘要（例「大塚商会 大阪支店 ネット回線・保守 9月分」）。科目・部門・税・内訳は会計の実績にそろえて決め、reason に何をまとめたかを書く。人に金額や分け方を頼み返さない\n' +
       '- memory には、次から聞かずに済む「毎月変わらない事実」だけを入れる（例 key「契約番号 00-4049-0155」fact「名古屋営業所のネット回線」）。科目・部門・税そのもの、支払日・払う月、一度きりのことは入れない\n' +
+      PLAIN + '（決裁メモ ApprovalNote を書くとき）\n' +
       '- reply は短い日本語';
     const kmT = R.km.filter(x => x['科目コード']).map(x => `${x['科目コード']} ${x['科目名']}`).join('\n');
     const bmT = R.bm.filter(x => x['部門名']).map(x => `${x['部門コード']} ${x['部門名']}`).join('\n');
@@ -182,6 +185,7 @@
     const sys = 'あなたは花岡車輌の総務で、経費の請求書の「決裁メモ」（社長・室長が決裁で読む、仕訳の行ごとの短い説明）を直す担当です。AI が請求書を読んだときにわからなかったこと（気づき）について、人が答えを教えてくれます。\n' +
       '- 人の答えをもとに、直す行の決裁メモ（ApprovalNote）を、今の書き方（拠点＋物件名・回数・ナンバーなど）を残したまま、わからなかった所だけ埋めて返す（notes。index は行の番号。直さない行は入れない）\n' +
       '- 次の請求書から同じことを聞かないように、覚えておくことを memory に入れる：key はナンバー・契約番号・品番など請求書に出てくる見分けの手がかり、fact はそれが何か（例 key「なにわ480あ1234」fact「大阪のエブリィ（リース車）」）。一般的すぎること・一度きりのことは入れない\n' +
+      PLAIN + '（決裁メモ ApprovalNote を書くとき）\n' +
       '- 答えがあいまいで決められないときは、notes と memory は空にして、reply で短く聞き返す\n- reply は短い日本語（直したこと・覚えたこと、または聞き返し）';
     const ctxText = `## 請求書\n支払先：${t.payee || ''}\n\n## 仕訳の行（番号｜科目｜税込｜決裁メモ｜摘要）\n` +
       (t.lines || []).map((l, i) => `${i}｜${l.aname || ''}｜${yen(l.amount)}｜${l.memo || ''}｜${l.note || ''}`).join('\n') + `\n\n## AI の気づき（わからなかったこと）\n${t.issue || ''}`;
@@ -366,7 +370,7 @@
       '', 'この請求書を読んで、決められた形で答えてください。'].join('\n');
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema: cfg.schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
@@ -421,5 +425,42 @@
     return { ok: !!d, status: doc.status, message: err };
   }
 
-  window.APAI = { readInvoice, teach, journal, fixItems, taxRow, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
+
+  // ---- 特記事項（2026-11-18）：今回の明細を、同じ支払先の前の月（最大12か月）の明細と比べ、毎月ではないもの（イレギュラー）をまとめる ----
+  //   履歴はアプリで読んだ請求書の明細だけ（使うほど増える）。それより前の月は決裁メモ（請求Quick・アプリ）で比べる
+  const TOKKI_SCHEMA = { type: 'object', additionalProperties: false, required: ['on', 'items', 'text'], properties: {
+    on: { type: 'boolean' },
+    items: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['label', 'amount'], properties: { label: { type: 'string' }, amount: { type: 'integer' } } } },
+    text: { type: 'string' } } };
+  async function tokki(ctx, t) {
+    const s = await setup(ctx);
+    const sys = 'あなたは花岡車輌の総務で、経費の支払明細書の「特記事項」（社長・室長が決裁で読む、いつもと違う支払の説明）を書く担当です。\n' +
+      '- 今回の請求書の明細を、同じ支払先の前の月の明細と比べ、前の月に無かったもの・いつもより大きく増えたもの（イレギュラー）だけを拾う。毎月あるもの（回線・保守・リース・使用量で毎月変わるものなど）は拾わない。年に1回の更新のように、前の年の同じ頃にあったものは「年1回の更新」と書く\n' +
+      '- items にイレギュラーの明細を、内容ごとにまとめて入れる。label は何か・どこか（例「ルーター別固定IP（大阪・名古屋）」）、amount はその税込の金額（整数）。明細の金額が税抜なら税率（10%・軽減8%）で税込に直す\n' +
+      '- text は「イレギュラー：〇〇 12,345円、〇〇 6,789円、計 19,134円」の形（計は items の合計。1つだけなら計は書かない）。理由・用途がわかれば短く添える\n' +
+      '- 前の月の明細が無いとき（初めての支払先・アプリで読む前の月）は、前の決裁メモと比べる。自動の判定が「初めての支払先」「Nか月ぶり」なら on=true にし、何の支払いかを1文で text に書く（例「初めての支払先：展示会の出展ブース代」）\n' +
+      '- イレギュラーが無く、初めて・久しぶりでもなければ on=false、items は空、text は ""\n' + PLAIN + '\n' +
+      '- 明細に無い金額を作らない。text は全体で120字くらいまで';
+    const RT = { '課税10%': 0.1, '軽減8%': 0.08 };
+    const row = x => `${x.Date || ''}｜${x.ItemName || x.Name || x.Description || ''}｜${x.Spec || ''}｜${x.Note || ''}｜${x.TaxRate || ''}｜${x.Amount == null ? '' : x.Amount}`;
+    // 前の月：品名・規格・拠点ごとにまとめる（明細の多い請求書でも長くしすぎない）
+    const pack = its => { const m = new Map(); its.filter(x => !taxRow(x)).forEach(x => { const k = [x.ItemName || x.Name || '', x.Spec || '', x.Note || '', x.TaxRate || ''].join('｜'); const o = m.get(k) || { k, a: 0, n: 0 }; o.a += +x.Amount || 0; o.n++; m.set(k, o); });
+      return [...m.values()].sort((a, b) => b.a - a.a).slice(0, 80).map(o => `${o.k}｜${Math.round(o.a)}${o.n > 1 ? `（${o.n}件）` : ''}`).join('\n'); };
+    const cur = (t.items || []).filter(x => !taxRow(x));
+    const ctxText = `## 支払先：${t.payee || ''}\n## 自動の判定：${t.why || 'なし（毎月の支払先）'}\n\n## 今回（払う月 ${t.ym || ''}・請求書の金額（税込）${t.total ? yen(t.total) + ' 円' : '不明'}・明細の金額は${t.itemsAmount || '税抜か税込か不明'}。日付｜品名｜規格｜拠点・備考｜税率｜金額）\n` +
+      cur.slice(0, 300).map(row).join('\n') +
+      ((t.prev || []).length ? '\n\n## 前の月の明細（同じ支払先。品名｜規格｜拠点・備考｜税率｜金額の合計）\n' + t.prev.slice(0, 12).map(p => `### ${p.ym}（金額は${p.amount || '不明'}）\n${pack(p.items || [])}`).join('\n') : '\n\n## 前の月の明細：なし（アプリで読んだ請求書がまだ無い）') +
+      ((t.memos || []).length ? '\n\n## 前の決裁メモ（払う月｜決裁メモ）\n' + t.memos.slice(0, 30).join('\n') : '');
+    const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 3000, system: [{ type: 'text', text: sys, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: ctxText }], output_config: { effort: 'low', format: { type: 'json_schema', schema: TOKKI_SCHEMA } } };
+    const r = await ask(ctx, s, { title: 'ap.tokki', caller: t.invoiceId || '' }, body);
+    if (r.status !== '完了') throw new Error(r.message || 'AI に聞けませんでした');
+    const a = JSON.parse(r.text);
+    // 計は AI の数字を使わず、items を足し直す
+    const its = (a.items || []).filter(x => x && x.label), tot = its.reduce((v, x) => v + (Math.round(+x.amount) || 0), 0);
+    let text = String(a.text || '').trim();
+    if (its.length > 1) text = /計\s*[\d,]+\s*円/.test(text) ? text.replace(/計\s*[\d,]+\s*円/, `計 ${yen(tot)}円`) : `${text}${text ? '、' : ''}計 ${yen(tot)}円`;
+    return { on: !!a.on && !!text, items: its, total: tot, text: a.on ? text : '' };
+  }
+  window.APAI = { readInvoice, teach, journal, tokki, fixItems, taxRow, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
 })();
