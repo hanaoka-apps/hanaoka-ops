@@ -206,8 +206,16 @@ body.value-analysis-standalone .content iframe {
 .app-switch-btn:focus-visible { outline:2px solid #fff; outline-offset:1px; }
 .app-switch-btn[aria-pressed="true"] { background:#fff; color:#1e40af; box-shadow:0 1px 3px rgba(0,0,0,.18); }
 .app-switch-btn[data-app="value"][aria-pressed="true"] { color:#0b2338; }
+/* 当日入力率 (2026-11-18): HL-幹部 と 石井絢子さんだけに出す（判定は auth_wrapper） */
+.app-switch-btn[data-app="rate"] { display:none; }
+body.can-rate .app-switch-btn[data-app="rate"] { display:flex; }
+.app-switch-btn .rate-icon { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; background:#fef3c7; font-size:13px; }
+.app-switch-btn .rate-lock { font-size:10px; font-weight:800; background:#fbbf24; color:#78350f; border-radius:999px; padding:1px 6px; margin-left:2px; }
+body.app-rate .tabbar .tab:not(.rtab), body.app-rate .return-btn { display:none !important; }
+body:not(.app-rate) header .tabbar .rtab { display:none; }
 /* 付加価値アプリ表示中は、生産管理(FUJIN)側のタブを隠す(付加価値アプリは画面内に自前のタブを持つ) */
 body.app-value .tabbar .tab:not(.vtab), body.app-value .return-btn { display:none !important; }
+body.app-value header .tabbar .rtab { display:none !important; }
 /* ===== 左メニュー (雅さん 2026-09-24: 上のタブ列を左へ。PC=細い列を常時表示/☰で展開、狭い画面=☰で重ねて表示) ===== */
 :root { --nav-w:84px; }
 body.nav-expanded { --nav-w:248px; }
@@ -780,6 +788,51 @@ function _fujinStartAuth() {
         });
     } catch(e) { console.error("[plan_ledger] 例外:", e); window._fujinPlanLedgerPromise = Promise.resolve(null); }
 
+    // ★ 2026-11 当日入力率。見られるのは M365 グループ HL-幹部 と 石井絢子さん。
+    //   メニューを出すか: /me/checkMemberGroups で HL-幹部 か確認(HUB の LINK と同じ方法)。読めなければ出さない。
+    //   データ: 見られる人だけ SharedMasters の 受入明細出力.csv を読み、画面(same_day_rate.html)で集計する。
+    //   ※ CSV 自体は FUJIN から毎日取っているデータで、隠す対象ではない。メニューの出し分けは見た目の制御。
+    try {
+      var _SP_DRIVE_SD = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
+      var _SD_GROUP_KANBU = "85b63d8e-1b6f-4cc1-99b5-f9ce16bfcb1d";   // HL-幹部
+      var _SD_EXTRA_USERS = ["a.ishii@hanaokacorp.onmicrosoft.com"];    // HL-幹部 以外で見られる人(石井絢子さん)
+      var _sdUpn = String(account.username || "").toLowerCase();
+      window._fujinSameDayAllowedPromise = (_SD_EXTRA_USERS.indexOf(_sdUpn) >= 0
+        ? Promise.resolve(true)
+        : window._fujinMsal.acquireTokenSilent({ scopes: ["User.Read"], account: account })
+            .then(function(r){
+              return fetch("https://graph.microsoft.com/v1.0/me/checkMemberGroups", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + r.accessToken, "Content-Type": "application/json" },
+                body: JSON.stringify({ groupIds: [_SD_GROUP_KANBU] })
+              });
+            })
+            .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+            .then(function(d){ return ((d && d.value) || []).indexOf(_SD_GROUP_KANBU) >= 0; })
+      ).catch(function(e){
+        console.warn("[same_day_rate] グループ確認 失敗(メニューは出しません):", (e && (e.errorCode || e.message)) || e);
+        return false;
+      });
+      window._fujinSameDayCsvPromise = window._fujinSameDayAllowedPromise.then(function(ok){
+        if (!ok) return null;
+        return window._fujinMsal.acquireTokenSilent({ scopes: ["Files.Read.All"], account: account })
+          .then(function(r){
+            return fetch("https://graph.microsoft.com/v1.0/drives/" + _SP_DRIVE_SD + "/root:/" + encodeURIComponent("受入明細出力.csv") + ":/content",
+                         { headers: { Authorization: "Bearer " + r.accessToken }, cache: "no-store" });
+          })
+          .then(function(res){
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            var lm = res.headers.get("Last-Modified");
+            return res.text().then(function(t){ return { text: t, lastModified: lm }; });
+          })
+          .catch(function(e){ console.warn("[same_day_rate] CSV取得 失敗:", (e && (e.errorCode || e.message)) || e); return null; });
+      });
+    } catch(e) {
+      console.error("[same_day_rate] 例外:", e);
+      window._fujinSameDayAllowedPromise = Promise.resolve(false);
+      window._fujinSameDayCsvPromise = Promise.resolve(null);
+    }
+
     // FUJIN本体の init() に「認証完了」を通知 (init()は遅延実行で待機している)
     try { window.dispatchEvent(new CustomEvent("_fujin_auth_ready", { detail: account })); } catch(_) {}
     // ページ右上にユーザー名・サインアウトボタンを表示
@@ -951,12 +1004,13 @@ window.addEventListener('_fujin_auth_ready', function () {
   <div class="app-switch" role="group" aria-label="表示するアプリ">
     <button type="button" class="app-switch-btn" data-app="production" aria-pressed="true" title="FUJIN（生産管理）：構成ツリー・手配確定・山リストなど"><img src="favicon-fujin.png" alt="">生産</button>
     <button type="button" class="app-switch-btn" data-app="value" aria-pressed="false" title="FUJIN付加価値アプリ：売上・仕入・在庫から付加価値を確認"><img src="favicon-value-analysis.png" alt="">付加価値</button>
+    <button type="button" class="app-switch-btn" data-app="rate" aria-pressed="false" title="受入・製造実績の当日入力率（幹部・指定者のみ）"><span class="rate-icon" aria-hidden="true">📈</span>当日入力率<span class="rate-lock">幹部</span></button>
   </div>
   <span class="page-title-wrap"><span class="page-title" id="page-title" aria-live="polite"></span><button type="button" class="page-info-btn" id="page-info-btn" aria-expanded="false" aria-controls="page-info" aria-label="このページの説明">i</button><span class="page-info" id="page-info" role="tooltip" hidden></span></span>
   <div class="brand-divider"></div>
   <nav class="tabbar" id="fujin-nav" aria-label="FUJINメニュー">
       <!-- スマホ幅では上の「生産｜付加価値」を畳むため、メニューの先頭で切り替える (2026-09-24) -->
-      <div class="nav-app-switch" role="group" aria-label="表示するアプリ"><button type="button" class="app-switch-btn" data-app="production" aria-pressed="true"><img src="favicon-fujin.png" alt="">生産</button><button type="button" class="app-switch-btn" data-app="value" aria-pressed="false"><img src="favicon-value-analysis.png" alt="">付加価値</button></div>
+      <div class="nav-app-switch" role="group" aria-label="表示するアプリ"><button type="button" class="app-switch-btn" data-app="production" aria-pressed="true"><img src="favicon-fujin.png" alt="">生産</button><button type="button" class="app-switch-btn" data-app="value" aria-pressed="false"><img src="favicon-value-analysis.png" alt="">付加価値</button><button type="button" class="app-switch-btn" data-app="rate" aria-pressed="false"><span class="rate-icon" aria-hidden="true">📈</span>当日入力率<span class="rate-lock">幹部</span></button></div>
       <!-- 付加価値アプリの画面切替 (2026-09-24 第2段階: アプリ内のタブを左メニューへ。iframeとpostMessageで連動) -->
       <button class="tab vtab" data-value-view="summary" title="全社・工場別の付加価値、推移、低付加価値品目、リードタイム"><span class="tab-icon">📊</span><span class="tab-label">日報・月次</span></button>
       <button class="tab vtab" data-value-view="items" title="品目別の付加価値率・標準原価・リードタイム"><span class="tab-icon">📦</span><span class="tab-label">品目別</span></button>
@@ -967,6 +1021,11 @@ window.addEventListener('_fujin_auth_ready', function () {
       <button class="tab vtab" data-value-view="labor" title="製品1台をつくるのにかかる時間（工数）をジャンル・製品・部品と手順まで分解"><span class="tab-icon">⏱</span><span class="tab-label">工数</span></button>
       <button class="tab vtab" data-value-view="kaigi" title="付加価値会議：重点機種の売上・平均単価・最安実売・標準原価・付加価値率"><span class="tab-icon">💹</span><span class="tab-label">付加価値会議</span></button>
       <button class="tab vtab" data-value-view="price" title="今年度の売価・原価の変化と、値上げシミュレーション（稟議用PDF・リンク）"><span class="tab-icon">💴</span><span class="tab-label">価格・値上げ</span></button>
+      <!-- 当日入力率の画面切替 (2026-11-17: 付加価値と同じく iframe と postMessage で連動) -->
+      <button class="tab rtab" data-rate-view="monthly" title="受入の当日入力率。工場・担当者・入力者・仕入先・明細で確認できます。"><span class="tab-icon">📦</span><span class="tab-label">受入実績</span></button>
+      <button class="tab rtab" data-rate-view="sei" title="製造実績の当日入力率（データ接続の準備中）。"><span class="tab-icon">🏭</span><span class="tab-label">製造実績</span></button>
+      <button class="tab rtab" data-rate-view="kaizen" title="対策の前後で、入力までの日数がどう変わったかを工場ごとに比べます。"><span class="tab-icon">📈</span><span class="tab-label">改善確認</span></button>
+      <button class="tab rtab" data-rate-view="def" title="当日入力率の計算方法・データの出どころ・見られる人。"><span class="tab-icon">📐</span><span class="tab-label">定義・前提</span></button>
       <button class="tab" data-tab="stock_detective" data-src="stock_detective.html" title="品目コードから構成ツリーを開き、現在庫・SMILE有効在庫を確認。出荷エラー時の原因究明にも。"><span class="tab-icon">🌲</span><span class="tab-label">構成ツリー</span></button>
       <button class="tab" data-tab="work" data-src="work_instruction.html" title="品目+製番(任意)でBOMを1台あたり取数で印刷・CSV出力する辞書ツール。"><span class="tab-icon">🖨</span><span class="tab-label">構成印刷</span></button>
       <button class="tab" data-tab="arrange" data-src="results_production.html" title="未確定手配のAI判定。FUJINの本丸。"><span class="tab-icon">⚡</span><span class="tab-label">手配確定</span></button>
@@ -1007,9 +1066,9 @@ window.addEventListener('_fujin_auth_ready', function () {
     <span class="i-icon">ℹ</span>
     <span class="meta-info-text">最終更新 11-18</span>
     <span class="meta-tip">
-      <b>データ基準日</b> 2026-11-18 02:10<br>
-      <b>現在庫基準日</b> 2026-11-18 03:06<br>
-      <b>統合版生成</b> 2026-11-18 02:13
+      <b>データ基準日</b> 2026-11-18 03:24<br>
+      <b>現在庫基準日</b> 2026-11-18 12:11<br>
+      <b>統合版生成</b> 2026-11-18 03:26
     </span>
   </span>
 </header>
@@ -1022,7 +1081,7 @@ window.addEventListener('_fujin_auth_ready', function () {
 
 <script>
 const frame = document.getElementById('main-frame');
-const tabs = document.querySelectorAll('.tab:not(.vtab)');  // 付加価値の画面切替(.vtab)は別扱い
+const tabs = document.querySelectorAll('.tab:not(.vtab):not(.rtab)');  // 付加価値の画面切替(.vtab)は別扱い
 const otherBtn = document.getElementById('other-btn');
 const otherMenu = document.getElementById('other-menu');
 const otherItems = document.querySelectorAll('.other-item');
@@ -1100,6 +1159,12 @@ function openTab(id, src, extra) {
       id = _lastProductionTab.id; src = _lastProductionTab.src; extra = null;
     }
   }
+  // 当日入力率は、データを読めると確認できた人だけ開く。確認前なら待ち、読めない人は生産へ回す。
+  if (id === 'same_day_rate' && !_rateAllowed) {
+    if (!_rateCheckDone) { _ratePending = [id, src, extra]; return; }
+    id = _lastProductionTab.id; src = _lastProductionTab.src; extra = null;
+    if (location.hash.indexOf('same_day_rate') >= 0) history.replaceState(null, '', '#tab=' + id);
+  }
   // 「戻るボタンの起点」と異なるタブに遷移する場合、戻る情報をクリア
   // (ただし stock_detective を経由したワンクリック内ではクリアしない)
   if (id !== 'stock_detective') {
@@ -1135,19 +1200,25 @@ function openTab(id, src, extra) {
 // ===== アプリ切替 (A: ロゴ横トグル / B: ロゴから左パネル) 2026-09-24 =====
 // 生産管理(FUJIN)で最後に開いていたタブを覚え、「生産」に戻したときに復帰する。
 let _lastProductionTab = { id: 'stock_detective', src: 'stock_detective.html' };
-function _currentAppOf(id) { return id === 'value_analysis' ? 'value' : 'production'; }
+function _currentAppOf(id) { return id === 'value_analysis' ? 'value' : id === 'same_day_rate' ? 'rate' : 'production'; }
 function _syncAppSwitch(id, src) {
   const app = _currentAppOf(id);
   if (app === 'production' && id && src) _lastProductionTab = { id, src };
   document.body.classList.toggle('app-value', app === 'value');
+  document.body.classList.toggle('app-rate', app === 'rate');
   document.querySelectorAll('.app-switch-btn').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.app === app)));
   const _activeEl = Array.from(tabs).find(t => t.dataset.tab === id) || Array.from(otherItems).find(t => t.dataset.tab === id);
   const _lbl = _activeEl ? (_activeEl.querySelector('.tab-label, .other-label') || _activeEl).textContent.trim() : '';
   const _pt = document.getElementById('page-title');
-  if (_pt) _pt.textContent = app === 'value' ? (_valueViewLabel() || 'FUJIN付加価値アプリ') : _lbl;
+  if (_pt) _pt.textContent = app === 'value' ? (_valueViewLabel() || 'FUJIN付加価値アプリ') : app === 'rate' ? (_rateViewLabel() || '当日入力率') : _lbl;
   _updatePageInfo();
 }
 function _switchApp(app) {
+  if (app === 'rate') {
+    if (!document.body.classList.contains('can-rate')) return;
+    _setRateView('monthly'); openTab('same_day_rate', 'same_day_rate.html');
+    return;
+  }
   if (app === 'value') {
     const valueItem = Array.from(otherItems).find(t => t.dataset.tab === 'value_analysis');
     if (valueItem?.dataset.src) { _setValueView('summary'); openTab('value_analysis', valueItem.dataset.src); }
@@ -1198,6 +1269,44 @@ window.addEventListener('message', e => {
   if (e.origin !== location.origin || e.source !== frame.contentWindow || e.data?.type !== 'fujin_value_view') return;
   if (e.data.active) _setValueView(e.data.active);
 });
+// ===== 当日入力率 (2026-11-17) =====
+// 表示できるか = HL-幹部 か 石井絢子さん か（auth_wrapper が window._fujinSameDayAllowedPromise に true/false を入れる）。
+// 対象外の人にはメニュー自体を出さない。
+let _rateCheckDone = false, _rateAllowed = false, _ratePending = null;
+const _rtabs = document.querySelectorAll('.rtab');
+function _rateViewLabel() { const a = document.querySelector('.rtab.active'); return a ? a.querySelector('.tab-label').textContent.trim() : ''; }
+function _setRateView(view) {
+  _rtabs.forEach(b => b.classList.toggle('active', b.dataset.rateView === view));
+  const _pt = document.getElementById('page-title');
+  if (_pt && document.body.classList.contains('app-rate')) _pt.textContent = _rateViewLabel() || '当日入力率';
+  _updatePageInfo();
+}
+_setRateView('monthly');
+_rtabs.forEach(b => b.addEventListener('click', () => {
+  if (_isNarrow()) _setNavOpen(false);
+  _setRateView(b.dataset.rateView);
+  try { frame.contentWindow.postMessage({ type:'fujin_rate_show', view:b.dataset.rateView }, location.origin); } catch (_) {}
+}));
+window.addEventListener('message', e => {
+  if (e.origin !== location.origin || e.source !== frame.contentWindow || e.data?.type !== 'fujin_rate_view') return;
+  if (e.data.active) _setRateView(e.data.active);
+});
+function _finishRateCheck(ok) {
+  if (_rateCheckDone) return;
+  _rateCheckDone = true; _rateAllowed = !!ok;
+  document.body.classList.toggle('can-rate', _rateAllowed);
+  const pending = _ratePending; _ratePending = null;
+  if (pending) openTab(pending[0], pending[1], pending[2]);
+}
+function _startRateCheck() {
+  const p = window._fujinSameDayAllowedPromise;
+  if (p && p.then) p.then(ok => _finishRateCheck(ok === true), () => _finishRateCheck(false));
+  else _finishRateCheck(false);
+}
+if (window._fujinAuthReady) _startRateCheck();
+else if (location.protocol === 'file:') _finishRateCheck(false);
+else window.addEventListener('_fujin_auth_ready', _startRateCheck, { once:true });
+setTimeout(() => _finishRateCheck(false), 30000);  // 取得が詰まった場合の保険（出さない側に倒す）
 // ===== ページ説明(ⓘ)と、広げた左メニューの1行説明 2026-09-24 =====
 // 説明文は各メニューの title 属性(従来のマウスオーバー説明)をそのまま使う。
 document.querySelectorAll('header .tabbar .tab').forEach(t => {
@@ -1213,6 +1322,8 @@ function _updatePageInfo() {
   if (!_infoBtn || !_infoBox) return;
   const el = document.body.classList.contains('app-value')
     ? document.querySelector('.vtab.active')
+    : document.body.classList.contains('app-rate')
+    ? document.querySelector('.rtab.active')
     : (document.querySelector('header .tabbar .tab.active:not(.vtab)') || document.querySelector('.other-item.active'));
   const desc = el ? (el.getAttribute('title') || '') : '';
   _infoBox.textContent = desc;
@@ -1349,6 +1460,7 @@ window.addEventListener('hashchange', () => {
     openTab(id, tab.dataset.src, codeMatch ? 'code=' + codeMatch[1] : null);
     return;
   }
+  if (id === 'same_day_rate') { _setRateView('monthly'); openTab(id, 'same_day_rate.html'); return; }
   if (id === 'value_analysis') {
     const valueAnalysis = Array.from(otherItems).find(t => t.dataset.tab === id);
     if (valueAnalysis?.dataset.src) openTab(id, valueAnalysis.dataset.src, standaloneMatch ? 'standalone=1' : null);
@@ -1410,6 +1522,8 @@ function init() {
     openTab(wantId, foundTab.dataset.src, extra);
     return;
   }
+  // 当日入力率（読めるか確認できるまで openTab 側で待つ）
+  if (wantId === 'same_day_rate') { _setRateView('monthly'); openTab(wantId, 'same_day_rate.html'); return; }
   // その他
   const foundOther = Array.from(otherItems).find(t => t.dataset.tab === wantId);
   if (foundOther && foundOther.dataset.src) {
