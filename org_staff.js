@@ -1,12 +1,13 @@
 /* 組織計画専用。人員表と給与は読むだけ。取得した原本は保存しない。 */
 const OrgStaff = (() => {
   const C = OrgStaffCore;
-  const source = { revision: 0, rows: [], month: '', loaded: false, busy: false, message: '未接続', notices: [], timer: null, key: 0 };
+  const source = { revision: 0, rows: [], departments: [], month: '', loaded: false, busy: false, message: '未接続', notices: [], timer: null, key: 0 };
   const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
   const groups = ['営業', 'ソリューション', '業務センター', '工場・技術・品質', '経営・総務', '人員表'];
   function demoSource() {
+    const depts = ['本社/営業部/国内営業/東京営業', '本社/営業部/国内営業/東京営業', '本社/営業部/国内営業/大阪', '本社/営業部/ソリューション営業部', '本社/営業部/ソリューション営業部', '本社/営業部/国内営業/全社業務センター', '本社/営業部/国内営業/全社業務センター'];
     const rows = demoDB().scenarios[0].people.map((p, i) => ({ id: i + 1, Title: p.name, EmpCode: '900' + i,
-      UnitPath: p.dept, JobLabel: (p.titles[0] || {}).title || '', Kind: i === 0 ? '役員' : '社員', State: '在籍' }));
+      UnitPath: depts[i], JobLabel: (p.titles[0] || {}).title || '', Kind: i === 0 ? '役員' : '社員', State: '在籍' }));
     const payroll = ['2026-07', '2026-08', '2026-09', '2026-10'].flatMap(month => demoDB().scenarios[0].people.map((p, i) => ({ 年月: month, 従業員コード: '900' + i, 拠点: '本社', 給与種別名称: '月給者',
       所属: ['R3-2', 'R1-3', 'R3-2', 'R2', 'R1-3', 'R3-1', 'R1-2'][i], 生年月日: `${p.birth}年${i % 2 ? 4 : 3}月${i % 2 ? 1 : 31}日` })));
     rows.push({ id: 99, Title: '見本 派遣', EmpCode: '', UnitPath: '営業｜本社', Kind: '派遣', State: '在籍' });
@@ -28,16 +29,18 @@ const OrgStaff = (() => {
     if (source.busy || !DB) return;
     source.busy = true; source.message = '読み込み中…'; render();
     try {
-      let persons, payroll = [], warning = '';
+      let persons, payroll = [], departments = [], warning = '';
       if (demo) ({ persons, payroll } = demoSource());
       else {
         const site = await graphGet('/sites/hanaokacorp.sharepoint.com:/sites/msteams_7aab51');
         persons = await readList(site.id, 'STF_Person');
+        try { departments = (await readList(site.id, 'STF_Unit')).filter(d => d.Active !== false && d.Path).map(d => String(d.Path)); }
+        catch { departments = []; }
         try { payroll = await payrollGetFile('history/employee_master.json'); if (!Array.isArray(payroll) || !payroll.length) throw new Error(); }
         catch { payroll = []; warning = '給与の人事情報を取得できません。年齢は前回の情報を保持し、未取得の人は未確認のままです。'; }
       }
       const result = C.roster(persons, payroll);
-      source.revision++; source.rows = result.rows; source.month = result.month; source.loaded = true;
+      source.revision++; source.rows = result.rows; source.departments = departments; source.month = result.month; source.loaded = true;
       source.message = (demo ? 'サンプル人員で確認：' : '人員表を確認：') + new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' }).format(new Date());
       source.notices = warning ? [warning] : [];
       if (result.rows.some(r => r.payrollAmbiguous)) source.notices.push('給与に同じ従業員コードが複数あります。その人の生年月日は補完していません。');
@@ -48,7 +51,7 @@ const OrgStaff = (() => {
   }
   function apply() {
     if (!source.loaded) return;
-    const result = C.sync(DB, source.rows, today());
+    const result = C.sync(DB, source.rows, today(), source.departments);
     source.notices = [...new Set([...source.notices, ...result.notices])];
     if (JSON.stringify(result.db) !== JSON.stringify(DB)) { DB = result.db; touch(); E.rerender(); }
   }

@@ -1,13 +1,14 @@
 /* 組織計画の「等級・年収」。給与原本は保存せず、手入力した試算条件だけを限定サイトへ保存する。 */
 const OrgGrades = (() => {
   const G = OrgGradeCore, C = OrgStaffCore;
-  const state = { grade: '', search: '', sort: 'grade', dir: 1, asOf: '', pay: [], payMonth: '', revision: -1, busy: false, message: '給与は未読込です。', generation: 0 };
+  const state = { grade: '', search: '', sort: 'grade', dir: 1, asOf: '', pay: [], payMonth: '', attemptedKey: '', busy: false, message: '人員情報の確認後、給与を自動で読み込みます。', generation: 0 };
   const yen = n => n == null ? '未確認' : Math.round(n).toLocaleString('ja-JP') + '円';
   const period = m => m == null ? '未確認' : Math.floor(m / 12) + '年' + (m % 12) + 'か月';
   const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
   const baseline = () => sc().id === (DB.staffSync || {}).baselineId;
+  const sourceKey = () => OrgStaff.source.revision + ':' + OrgStaff.source.month + ':' + [...new Set(OrgStaff.source.rows.map(p => p.payrollSite).filter(Boolean))].sort().join(',');
   function payFor(p) {
-    if (state.revision !== OrgStaff.source.revision || !p.empCode || !p.payrollSite || p.payType !== '月給者') return null;
+    if (state.payMonth !== OrgStaff.source.month || !p.empCode || !p.payrollSite) return null;
     const rows = state.pay.filter(r => C.codeKey(r.empCode) === C.codeKey(p.empCode) && r.site === p.payrollSite);
     if (rows.length !== 1 || C.fiscalYear(G.monthEnd(rows[0].month)) > year) return null;
     return rows[0];
@@ -19,30 +20,37 @@ const OrgGrades = (() => {
     const bonusBase = plan && plan.bonusBase != null ? G.amount(plan.bonusBase) : basic;
     const officer = p.employeeKind === '役員' || !!(plan && plan.isOfficer);
     const months = plan && plan.bonusMonths != null ? G.amount(plan.bonusMonths) : G.amount((sc().payAssumptions || {}).bonusMonths);
-    return { officer, p, grade: g.grade || '', info: g, tenure: G.tenure(p, g, state.asOf || today()), source, plan, basic, role, bonusBase, months, ...G.forecast(basic, role, bonusBase, months, officer) };
+    const annualizable = !!plan || p.payType === '月給者' || officer;
+    const forecast = annualizable ? G.forecast(basic, role, bonusBase, months, officer) : { annual:null, monthly:null, bonus:null };
+    return { officer, annualizable, p, grade: g.grade || '', info: g, tenure: G.tenure(p, g, state.asOf || today()), source, plan, basic, role, bonusBase, months, ...forecast };
+  }
+  function ensurePay() {
+    if (!state.busy && OrgStaff.source.loaded && G.monthEnd(OrgStaff.source.month) && state.attemptedKey !== sourceKey()) return loadPay();
   }
   async function loadPay() {
     if (state.busy) return;
     if (!G.monthEnd(OrgStaff.source.month) || !OrgStaff.source.loaded) { state.message = '先に「人員表との連携」で給与人事と人員の対応を確認してください。'; renderMain(); return; }
-    state.busy = true; state.message = '給与を読み込み中…'; if (mode === 'grades') renderMain();
-    const revision = OrgStaff.source.revision, month = OrgStaff.source.month, generation = ++state.generation;
+    const key = sourceKey(), month = OrgStaff.source.month, generation = ++state.generation;
+    state.attemptedKey = key; state.failedSites = []; state.busy = true; state.message = '給与を読み込み中…'; if (mode === 'grades') renderMain();
     try {
       let selected;
       if (demo) selected = OrgStaff.source.rows.map((p, i) => G.salaryRow({ 従業員コード: p.empCode, 内訳: { 基本給: 230000 + i * 10000, 役付手当: i % 3 * 10000 } }, month, p.payrollSite));
       else {
         const sites = [...new Set(OrgStaff.source.rows.map(p => p.payrollSite).filter(Boolean))];
         if (!sites.length || sites.some(s => !['本社', '工場'].includes(s))) throw new Error();
-        const parts = await Promise.all(sites.map(async site => {
+        const parts = await Promise.allSettled(sites.map(async site => {
           const raw = await payrollGetFile(`history/payroll_detail/${month}_${site}.json`, { allow404: true });
           if (!Array.isArray(raw)) throw new Error();
           return raw.map(r => G.salaryRow(r, month, site));
         }));
-        selected = parts.flat();
+        selected = parts.filter(p => p.status === 'fulfilled').flatMap(p => p.value);
+        if (!parts.some(p => p.status === 'fulfilled')) throw new Error();
+        state.failedSites = sites.filter((_, i) => parts[i].status === 'rejected');
       }
-      if (revision !== OrgStaff.source.revision || generation !== state.generation) { state.message = '人事情報が更新されました。給与を読み直してください。'; return; }
-      state.pay = selected; state.payMonth = month; state.revision = revision;
-      state.message = (demo ? '架空の給与です：' : '給与の基準月：') + month + '。基本給と役付手当のみ使用。';
-    } catch { state.pay = []; state.payMonth = ''; state.revision = -1; state.message = '給与を読めませんでした。閲覧権限・対象月のファイルを確認してください。手入力の試算条件は保持しています。'; }
+      if (key !== sourceKey() || generation !== state.generation) { state.message = '人事情報が更新されたため、給与を再確認します。'; return; }
+      state.pay = selected; state.payMonth = month;
+      state.message = (demo ? '架空の給与です：' : '給与の基準月：') + month + '。基本給と役付手当のみ使用。' + ((state.failedSites || []).length ? ' 一部の拠点を取得できませんでした。給与を読み直してください。' : '');
+    } catch { state.pay = []; state.payMonth = ''; state.message = '給与を読めませんでした。閲覧権限・対象月のファイルを確認してください。手入力の試算条件は保持しています。'; }
     finally { state.busy = false; if (mode === 'grades') renderMain(); }
   }
   function render(depts) {
@@ -62,19 +70,19 @@ const OrgGrades = (() => {
       <label>氏名・所属 <input id="gradeSearch" value="${esc(state.search)}" placeholder="絞り込み"></label>
       <label>在級期間の基準日 <input id="gradeAsOf" type="date" value="${esc(state.asOf || today())}"></label>
       <label>年間の賞与月数 <input id="gradeBonus" type="number" min="0" step="0.1" value="${bonus == null ? '' : bonus}" placeholder="例：4.0"></label>
-      <button class="btn" id="gradeApplyBonus">賞与月数を反映</button><button class="btn" id="gradeLoadPay"${state.busy ? ' disabled' : ''}>${demo ? 'サンプル給与を読み込む' : '給与を読み込む'}</button></div>
-      <p class="muted">${esc(state.message)}${state.payMonth && state.revision !== OrgStaff.source.revision ? ' 人事情報が更新されたため、読み込んだ給与は試算に使っていません。読み直してください。' : ''}</p>
+      <button class="btn" id="gradeApplyBonus">賞与月数を反映</button><button class="btn" id="gradeLoadPay"${state.busy ? ' disabled' : ''}>${demo ? 'サンプル給与を読み直す' : '給与を読み直す'}</button></div>
+      <p class="muted">${esc(state.message)}</p>
       <p>概算年収＝（基本給＋役職手当）×12＋賞与基準額×年間の賞与月数。賞与基準額の初期値は基本給です。役員は賞与なしで、（基本給＋役職手当）×12です。手当は給与原本の「役付手当」。残業・その他手当・税・社会保険料・年度途中の在籍月数は計算に含めません。</p>
       <div class="sum"><div class="sc"><b>${rows.length}人</b><span>表示中</span></div><div class="sc"><b>${yen(calculated.length ? total : null)}</b><span>概算年収合計（計算できた${calculated.length}/${rows.length}人分）</span></div><div class="sc"><b>${rows.length - calculated.length}人</b><span>試算条件が未確認</span></div></div>
       <div class="grade-summary">${[...gradeNames, ''].filter(g => all.some(r => r.grade === g)).map(g => { const list = all.filter(r => r.grade === g), counted = list.filter(r => r.annual != null); return `<button class="btn" data-gfilter="${esc(g || '?')}">${esc(g || '未確認')}：${list.length}人／年収${yen(counted.length ? counted.reduce((a, r) => a + r.annual, 0) : null)}（${counted.length}人分）</button>`; }).join(' ')}</div>
-      <p class="muted">給与から使うのは月給者のみです。日給・時給・給与種別未確認・未接続の人は、月額の想定を入力してください。将来年度に現在の給与を使う場合は、昇給を含めない据え置きの仮定です。</p>
+      <p class="muted">給与はこの画面を開くと自動取得します。日給・時給者も給与明細の基本給・役職手当を表示しますが、年収は月額の想定を入力するまで計算しません。給与明細に支給項目がない役職手当は0円です。賞与月数はご自身で設定してください。将来年度の給与は昇給を含めない据え置きの仮定です。</p>
       <div class="tw"><table><thead><tr><th class="l">氏名</th>${th('等級', 'grade')}<th>所属</th><th>年齢</th>${th('在級期間', 'tenure')}<th>基本給（月額）</th><th>役職手当（月額）</th><th>賞与基準額</th><th>賞与月数（年間）</th>${th('概算年収', 'annual')}<th>根拠・編集</th></tr></thead><tbody>
       ${rows.map((r, i) => {
         const fields = [['basic', '基本給（月額）', r.basic], ['role', '役職手当（月額）', r.role], ['bonusBase', '賞与基準額', r.bonusBase], ['bonusMonths', '年間賞与月数（空欄は案の共通値）', r.plan ? r.plan.bonusMonths : null]];
         const start = (r.p.gradeStarts || []).find(x => x.grade === r.grade && x.from === (r.info.from ?? null) && (r.info.type !== 'source' || x.sourceSince === r.info.sinceMonth));
         return `<tr data-grade-row="${i}"><td class="l"><b>${esc(r.p.name)}</b><br><button class="btn sm" data-pid="${esc(r.p.id)}">予定を開く</button></td><td>${esc(r.grade || '未確認')}<small>${r.info.type === 'source' ? '給与人事 ' + esc(r.info.month) : r.info.type === 'plan' ? esc(r.info.from) + '年の登録' : '人員の対応を確認'}</small></td><td>${esc(deptAt(r.p, year))}</td><td>${ageAt(r.p, year) ?? '未確認'}</td>
           <td>${period(r.tenure.months)}<small>${esc(r.tenure.label)}${r.tenure.since ? '<br>' + esc(r.tenure.since) + (r.tenure.through ? '〜' + esc(r.tenure.through) : 'から') : ''}</small></td>
-          <td>${yen(r.basic)}</td><td>${yen(r.role)}</td><td>${r.officer ? '対象外' : yen(r.bonusBase)}</td><td>${r.officer ? '役員・賞与なし' : r.months == null ? '未設定' : r.months + 'か月'}</td><td><b>${yen(r.annual)}</b><small>${r.annual != null ? '税・控除前の試算' : '金額・賞与月数を確認'}</small></td>
+          <td>${yen(r.basic)}</td><td>${yen(r.role)}</td><td>${r.officer ? '対象外' : yen(r.bonusBase)}</td><td>${r.officer ? '役員・賞与なし' : r.months == null ? '未設定' : r.months + 'か月'}</td><td><b>${yen(r.annual)}</b><small>${r.annual != null ? '税・控除前の試算' : !r.annualizable ? '月額の想定を入力' : r.basic != null && r.role != null && r.months == null ? '賞与月数を設定' : '金額・賞与月数を確認'}</small></td>
           <td><small>${r.plan ? esc(r.plan.from) + '年度からの手入力想定' : r.source ? esc(r.source.month) + '給与を据え置き' : '給与未接続・未確認'}</small>
           <details class="grade-edit"><summary>在級開始日・試算条件を編集</summary><div class="frm">
           <label>この等級の確認済み開始日<input data-grade-start type="date" value="${esc(start ? start.date : '')}"></label><button class="btn sm" data-grade-start-save>開始日を保存</button>
@@ -116,6 +124,8 @@ const OrgGrades = (() => {
     root.querySelector('#gradeLoadPay').onclick = loadPay;
     root.querySelectorAll('[data-gfilter]').forEach(b => b.onclick = () => { state.grade = b.dataset.gfilter; renderMain(); });
     root.querySelectorAll('[data-gsort]').forEach(b => b.onclick = () => { state.dir = state.sort === b.dataset.gsort ? -state.dir : 1; state.sort = b.dataset.gsort; renderMain(); });
+    ensurePay();
   }
-  return { render, bind, loadPay };
+  function scenarioChanged() { state.grade = ''; state.search = ''; }
+  return { render, bind, loadPay, ensurePay, scenarioChanged };
 })();

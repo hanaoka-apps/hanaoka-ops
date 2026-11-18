@@ -78,3 +78,10 @@ test('翌年度の等級が更新されても、前年度に確認した等級�
   assert.equal(G.tenure(next, prior, '2026-11-18').months, 3);
   assert.equal(G.tenure(next, current, '2027-11-18').months, 6);
 });
+test('完全な給与明細で省略された支給項目は0、明細欠損や不正値は未確認', () => {
+  const r = G.salaryRow({ 従業員コード: '1', 内訳: { 基本給: 300000, 支給合計: 300000 } }, '2026-10', '本社');
+  assert.equal(r.role, 0); assert.equal(r.basic, 300000);
+  assert.equal(G.salaryRow({ 内訳: {} }, '2026-10', '本社').role, null);
+  assert.equal(G.salaryRow({ 内訳: { 支給合計: 300000, 役付手当: '不明' } }, '2026-10', '本社').role, null);
+  assert.equal(G.salaryRow({ 内訳: { 支給合計: 0 } }, '2026-10', '本社').basic, 0);
+});

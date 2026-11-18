@@ -52,7 +52,8 @@
   .tab.on, .mode.on { background:var(--accent); color:#fff; border-color:var(--accent); }
   .sep { width:1px; height:20px; background:var(--border); margin:0 6px; }
   .yrv { font-size:17px; font-weight:700; color:var(--accent); min-width:60px; }
-  .work { display:flex; flex:1; min-height:0; }
+  .work { display:flex; flex:1; min-height:0; overflow:hidden; isolation:isolate; }
+  #staffSync { flex-shrink:0; max-height:45vh; overflow:auto; }
   main { flex:1; min-width:0; overflow:auto; padding:14px 20px 40px; }
   aside#panel { width:420px; flex-shrink:0; border-left:1px solid var(--border); background:var(--panel); overflow:auto; padding:14px 16px 40px; display:none; }
   aside#panel.open { display:block; }
@@ -111,6 +112,8 @@
   .grade-summary { display:flex; gap:6px; flex-wrap:wrap; margin:12px 0; }
   .grade-edit { min-width:240px; max-width:340px; white-space:normal; text-align:left; }
   #gradeView .tw { max-height:65vh; }
+  .age-table { max-height:65vh; }
+  #gradeView th.l, #gradeView td.l { min-width:130px; max-width:200px; white-space:normal; }
   #gradeView h2 { margin-top:0; }
   /* パネル */
   .ph { display:flex; align-items:center; gap:8px; margin-bottom:8px; } .ph h3 { margin:0; font-size:16px; flex:1; }
@@ -189,10 +192,10 @@
 </div>
 
 <script src="payroll_graph.js?v=20261004"></script>
-<script src="org_grade_core.js?v=20261118c"></script>
-<script src="org_staff_core.js?v=20261118d"></script>
-<script src="org_staff.js?v=20261118c"></script>
-<script src="org_grades.js?v=20261118c"></script>
+<script src="org_grade_core.js?v=20261118e"></script>
+<script src="org_staff_core.js?v=20261118e"></script>
+<script src="org_staff.js?v=20261118e"></script>
+<script src="org_grades.js?v=20261118e"></script>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -242,7 +245,8 @@ function migrate(db) {
   return db;
 }
 const ml = p => (p.moves || []).slice().sort((a, b) => a.from - b.from);
-function deptAt(p, y) { const h = OrgStaffCore.actualAt(p, y); let d = h ? h.dept : p.dept; for (const e of ml(p)) if (e.from <= y && (!h || e.from > h.year)) d = e.dept; return d; }
+function deptAt(p, y) { return OrgStaffCore.departmentAt(p, y, (DB.staffSync || {}).deptAliases); }
+const slotDept = s => ((DB.staffSync || {}).deptAliases || {})[s.dept] || s.dept;
 const ageNote = (p, y) => ageAt(p, Number(y)) == null || y == null || y === '' ? '（年齢未確認）' : `（${ageAt(p, Number(y))}歳）`;
 const sc = () => DB.scenarios.find(s => s.id === DB.activeId) || DB.scenarios[0];
 const findP = id => sc().people.find(p => p.id === id);
@@ -259,9 +263,24 @@ function roleFor(title) {
   for (const r of DB.roleDefs) { if (!r.match) continue; try { if (new RegExp(r.match).test(title)) return r; } catch (e) {} }
   return null;
 }
+function activeDepts() {
+  const names = new Set(sc().people.filter(p => mode === 'table' || $('#ghost').checked || present(p, year)).map(p => deptAt(p, year)).filter(Boolean));
+  if (mode === 'slots' || sc().id !== (DB.staffSync || {}).baselineId) {
+    sc().slots.filter(s => year >= s.from).forEach(s => names.add(slotDept(s)));
+  }
+  return [...names].map(name => ({ name, group: OrgStaffCore.departmentGroup(name) || (DB.depts.find(d => d.name === name) || {}).group || '人員表' }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric:true }));
+}
+function departmentOptions(selected) {
+  const current = ((DB.staffSync || {}).deptAliases || {})[selected] || selected;
+  let choices = DB.depts.filter(d => OrgStaffCore.officialDepartment(d.name));
+  if (!choices.length) choices = DB.depts;
+  const names = [...new Set([...choices.map(d => d.name), current].filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ja', {numeric:true}));
+  return names.map(name => `<option${name === current ? ' selected' : ''}>${esc(name)}</option>`).join('');
+}
 function viewDepts() {
-  const v = VIEWS.find(x => x[0] === view); const names = DB.depts;
-  return names.filter(d => !v[2] || v[2].includes(d.group));
+  const v = VIEWS.find(x => x[0] === view) || VIEWS[0];
+  return activeDepts().filter(d => !v[2] || v[2].includes(d.group));
 }
 
 /* ---------- 保存 ---------- */
@@ -278,13 +297,15 @@ const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0');
 function stats(depts, y) {
   const ps = []; depts.forEach(d => sc().people.filter(p => deptAt(p, y) === d.name && present(p, y)).forEach(p => ps.push(p)));
   const ages = ps.map(p => ageAt(p, y)).filter(a => a != null);
-  const slots = sc().slots.filter(s => depts.some(d => d.name === s.dept) && y >= s.from);
+  const slots = sc().slots.filter(s => depts.some(d => d.name === slotDept(s)) && y >= s.from);
   return { n: ps.length, avg: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null,
     a55: ages.filter(a => a >= 55).length, a60: ages.filter(a => a >= 60).length, ages,
     slots: slots.reduce((a, s) => a + (s.count || 0), 0), slotKinds: slots.length };
 }
 function renderBar() {
-  $('#tabs').innerHTML = VIEWS.map(v => `<button class="tab${v[0] === view ? ' on' : ''}" data-v="${v[0]}">${v[1]}</button>`).join(' ');
+  const available = activeDepts(), tabs = VIEWS.filter(v => !v[2] || available.some(d => v[2].includes(d.group)));
+  if (!tabs.some(v => v[0] === view)) view = 'all';
+  $('#tabs').innerHTML = tabs.map(v => `<button class="tab${v[0] === view ? ' on' : ''}" data-v="${v[0]}">${v[1]}</button>`).join(' ');
   $('#scSel').innerHTML = DB.scenarios.map(s => `<option value="${esc(s.id)}"${s.id === DB.activeId ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   $('#scNote').value = sc().note || '';
   $('#yv').textContent = year + '年度・年齢は' + year + '/3/31';
@@ -345,7 +366,7 @@ function chartHTML(depts) {
     const n = ps.filter(p => present(p, year)).length;
     const ages = ps.filter(p => present(p, year)).map(p => ageAt(p, year)).filter(a => a != null);
     const avg = ages.length ? (ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1) : '—';
-    const sl = sc().slots.filter(s => s.dept === d.name && year >= s.from);
+    const sl = sc().slots.filter(s => slotDept(s) === d.name && year >= s.from);
     const hc = sl.length ? (sl.some(x => x.urgency === '急募') ? ' hot' : ' soon') : '';
     h += `<div class="dc${hc}"><h2><span>${esc(d.name)}</span><span>${sl.length ? `<span class="hirepill">募集 ${sl.reduce((a, x) => a + (x.count || 0), 0) || sl.length}名</span>` : ''}<small>${n}人・平均${avg}歳</small> <button data-adds="${esc(d.name)}">＋募集</button></span></h2>`;
     h += sl.map(slotRow).join('') + ps.map(p => personRow(p, year)).join('');
@@ -357,7 +378,7 @@ function chartHTML(depts) {
 function tableHTML(depts) {
   const ys = []; for (let y = YMIN; y <= YMAX; y++) ys.push(y);
   let h = '<div class="leg"><span><i style="background:var(--a1)"></i>〜29</span><span><i style="background:var(--a2)"></i>30代</span><span><i style="background:var(--a3)"></i>40代</span><span><i style="background:var(--a4)"></i>50代</span><span><i style="background:var(--a5)"></i>60〜</span><span>年齢の下の小さい字＝その年に役職が変わる／赤枠の数字＝55歳・60歳</span></div>';
-  h += `<div class="tw"><table><thead><tr><th class="l">氏名／${year}年の役職</th>${ys.map(y => `<th class="${y === year ? 'cur' : ''}">${y}</th>`).join('')}</tr></thead><tbody>`;
+  h += `<div class="tw age-table"><table><thead><tr><th class="l">氏名／${year}年の役職</th>${ys.map(y => `<th class="${y === year ? 'cur' : ''}">${y}</th>`).join('')}</tr></thead><tbody>`;
   depts.forEach(d => {
     h += `<tr class="dh"><td colspan="${ys.length + 1}">${esc(d.name)}</td></tr>`;
     sc().people.filter(p => deptAt(p, year) === d.name).forEach(p => {
@@ -387,7 +408,7 @@ function slotsHTML() {
   const ss = sc().slots;
   let h = `<p class="muted">案「${esc(sc().name)}」の募集。クリックで右に詳しく出ます（募集する役職・急募かゆくゆくか・人数・開始年・年齢の幅・求める人物）。</p>`;
   h += '<div class="tw"><table><thead><tr><th class="l">所属</th><th>募集する役職</th><th>緊急度</th><th>人数</th><th>開始年</th><th>年齢</th><th class="l">求める人物</th></tr></thead><tbody>';
-  ss.forEach(s => { h += `<tr data-sid="${esc(s.id)}"><td class="l">${esc(s.dept)}</td><td>${esc(s.title)}</td><td>${urgBadge(s) || ''}</td><td>${s.count || '未定'}</td><td>${s.from || ''}</td><td>${s.ageMin || s.ageMax ? (s.ageMin || '') + '〜' + (s.ageMax || '') : ''}</td><td class="l" style="white-space:normal">${esc(s.profile)}</td></tr>`; });
+  ss.forEach(s => { h += `<tr data-sid="${esc(s.id)}"><td class="l">${esc(slotDept(s))}</td><td>${esc(s.title)}</td><td>${urgBadge(s) || ''}</td><td>${s.count || '未定'}</td><td>${s.from || ''}</td><td>${s.ageMin || s.ageMax ? (s.ageMin || '') + '〜' + (s.ageMax || '') : ''}</td><td class="l" style="white-space:normal">${esc(s.profile)}</td></tr>`; });
   if (!ss.length) h += '<tr><td colspan="7" class="muted">この案には募集がありません。上の「＋募集を追加」で追加。</td></tr>';
   return h + '</tbody></table></div>';
 }
@@ -455,7 +476,7 @@ function renderPanel() {
     const s = findSlot(panel.id); if (!s) { E.close(); return; }
     const k = esc(s.id);
     el.innerHTML = `<div class="ph"><h3>募集</h3>${close}</div><div class="frm">
-      <label>所属</label><select onchange="E.s('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === s.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+      <label>所属</label><select onchange="E.s('${k}','dept',this.value)">${departmentOptions(s.dept)}</select>
       ${titleList()}<label>募集する役職</label><input list="titles" value="${esc(s.title)}" oninput="E.s('${k}','title',this.value)">
       <label>等級（予定）</label><select onchange="E.s('${k}','grade',this.value)">${['', ...GRADES].map(g => `<option value="${g}"${(s.grade || '') === g ? ' selected' : ''}>${g || '（未設定）'}</option>`).join('')}</select>
       <label>緊急度</label><select onchange="E.s('${k}','urgency',this.value)">${['', '急募', 'ゆくゆく'].map(u => `<option value="${u}"${(s.urgency || '') === u ? ' selected' : ''}>${u || '（未設定）'}</option>`).join('')}</select>
@@ -483,7 +504,7 @@ function planForm(p) {
     <div class="row"><input id="pq-gy" type="number" value="${year}" oninput="E.hint('${k}','pq-gy',this.value)"><input id="pq-g" list="grades" placeholder="例：R2"><span class="muted" id="pq-gy-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.gradeSet('${k}')">登録</button></div>
     <datalist id="grades">${GRADES.map(g => `<option value="${g}">`).join('')}</datalist>
     <label>部署移動：何年から、どの部署に（現在：${esc(deptAt(p, year))}）</label>
-    <div class="row"><input id="pq-my" type="number" value="${year}" oninput="E.hint('${k}','pq-my',this.value)"><select id="pq-md">${DB.depts.map(d => `<option${d.name === deptAt(p, year) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select><span class="muted" id="pq-my-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.moveSet('${k}')">登録</button></div>
+    <div class="row"><input id="pq-my" type="number" value="${year}" oninput="E.hint('${k}','pq-my',this.value)"><select id="pq-md">${departmentOptions(deptAt(p, year))}</select><span class="muted" id="pq-my-a" style="white-space:nowrap">${ageNote(p, year).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.moveSet('${k}')">登録</button></div>
     <label>退職予定：何年から不在にするか${d60 ? '（3/31時点で60歳になる年度は ' + d60 + '年）' : ''}</label>
     <div class="row"><input id="pq-r" type="number" value="${p.retire != null ? p.retire : d60}" oninput="E.hint('${k}','pq-r',this.value)"><span class="muted" id="pq-r-a" style="white-space:nowrap">${ageNote(p, p.retire != null ? p.retire : d60).replace(/[（）]/g, '')}</span><button class="btn sm pri" onclick="E.retirePlan('${k}')">退職予定にする</button>${p.retire != null ? `<button class="btn sm" onclick="E.retireClear('${k}')">取り消し</button>` : ''}</div></div>`;
 }
@@ -499,13 +520,13 @@ function historyBlock(p) {
   G.forEach((e, i) => { h += row(e.from, `<input list="grades" value="${esc(e.grade)}" onchange="E.gr('${k}',${i},'grade',this.value)">`, `E.grDel('${k}',${i})`, `E.gr.bind(null,'${k}',${i})`); });
   h += '<label>部署移動</label>';
   const M = ml(p); if (!M.length) h += '<div class="muted">（なし）</div>';
-  M.forEach((e, i) => { h += row(e.from, `<select onchange="E.mv('${k}',${i},'dept',this.value)">${DB.depts.map(d => `<option${d.name === e.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`, `E.mvDel('${k}',${i})`, `E.mv.bind(null,'${k}',${i})`); });
+  M.forEach((e, i) => { h += row(e.from, `<select onchange="E.mv('${k}',${i},'dept',this.value)">${departmentOptions(e.dept)}</select>`, `E.mvDel('${k}',${i})`, `E.mv.bind(null,'${k}',${i})`); });
   return h + '</div>';
 }
 function personForm(p) {
   const k = esc(p.id), num = v => v == null ? '' : v;
   let h = `<div class="frm"><label>氏名</label><input ${p.staffId ? 'readonly title="人員表で更新します"' : ''} value="${esc(p.name)}" oninput="E.p('${k}','name',this.value)">
-    <p class="muted">${p.staffId ? '人員表と接続済み。氏名・生年月日・入社年は元データから更新します。現在の所属・役職は、現状の案だけ更新します。' : '手入力の人です。上の「人員表との連携」で対応を確認できます。'}</p><label>最初の所属</label><select onchange="E.p('${k}','dept',this.value)">${DB.depts.map(d => `<option${d.name === p.dept ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+    <p class="muted">${p.staffId ? '人員表と接続済み。氏名・生年月日・入社年は元データから更新します。現在の所属・役職は、現状の案だけ更新します。' : '手入力の人です。上の「人員表との連携」で対応を確認できます。'}</p><label>${p.staffId ? '所属の基準（人員表）' : '最初の所属'}</label><select ${p.staffId ? 'disabled' : ''} onchange="E.p('${k}','dept',this.value)">${departmentOptions(p.sourceDept || p.dept)}</select>
     <div class="row2"><div><label>生年月日（年齢は各年度の3/31）</label><input type="date" ${p.staffId ? 'readonly' : ''} value="${esc(p.birthDate || '')}" onchange="E.p('${k}','birthDate',this.value)"><small class="muted">${!p.birthDate && p.birth ? '旧データの生年：' + p.birth + '年。月日がないため年齢は未確認。' : ''}</small></div>
     <div><label>入社年（途中入社のみ）</label><input type="number" ${p.staffId ? 'readonly' : ''} value="${num(p.join)}" oninput="E.p('${k}','join',this.value)"></div>
     <div><label>退職年（この年から不在）</label><input type="number" value="${num(p.retire)}" oninput="E.p('${k}','retire',this.value)"></div></div>
@@ -647,7 +668,7 @@ document.addEventListener('click', e => {
   const si = t.closest('[data-sid]'); if (si) { panel = { type: 'slot', id: si.dataset.sid }; renderPanel(); renderMain(); return; }
   const pi = t.closest('[data-pid]'); if (pi) { panel = { type: 'person', id: pi.dataset.pid, tab: 'role' }; renderPanel(); renderMain(); }
 });
-$('#scSel').addEventListener('change', e => { DB.activeId = e.target.value; panel = null; E.rerender(); OrgStaff.render(); });
+$('#scSel').addEventListener('change', e => { DB.activeId = e.target.value; panel = null; OrgGrades.scenarioChanged(); E.rerender(); OrgStaff.render(); });
 $('#ys').addEventListener('input', e => { year = Number(e.target.value); $('#yv').textContent = year + '年度・年齢は' + year + '/3/31'; renderMain(); if (panel && panel.type === 'person') renderPanel(); });
 $('#hl').addEventListener('change', renderMain); $('#ghost').addEventListener('change', renderMain);
 
