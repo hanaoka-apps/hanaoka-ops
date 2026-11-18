@@ -8,7 +8,7 @@
   var SITE_ID = "hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23";
   var FALLBACK_DRIVE_ID = "b!JT-BVyiLrECvh59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8";
   var RULE_LISTS = { prices: "PR_定価", classes: "PR_得意先区分", exceptions: "PR_例外", fares: "PR_運賃", assembly: "PR_組立出荷重量", costs: "PR_原価" };
-  var DOC_LIST = "SD_書類", SET_LIST = "SD_設定", HIST_KEY = "quote_history_v2";
+  var DOC_LIST = "SD_書類", SET_LIST = "SD_設定", HIST_KEY = "quote_history_v3";
   var DATA_COL = { name: "Data", text: { allowMultipleLines: true, textType: "plain" } };
   // 一覧で絞り込み・並べ替えに使う値だけ列にして、中身は Data 列に JSON で入れる
   var DOC_COLS = [{ name: "Kind", text: {} }, { name: "Status", text: {} }, { name: "Customer", text: {} }, { name: "CustomerCode", text: {} },
@@ -156,6 +156,11 @@
         var id = await findList(DOC_LIST); if (!id) return [];
         return (await allItems(id, DOC_HEAD)).map(function (v) { return headOf(v.id, v.fields || {}); });
       },
+      // 書類の中身をまとめて読む（「ここが違う」の一覧用）
+      allDocs: async function () {
+        var id = await findList(DOC_LIST); if (!id) return [];
+        return (await allItems(id, "Title,Data")).map(function (v) { var d = {}; try { d = JSON.parse((v.fields || {}).Data || "{}"); } catch (e) { /* 読めない書類は飛ばす */ } d.spId = v.id; return d; });
+      },
       getDoc: async function (spId) {
         var id = await findList(DOC_LIST);
         var v = await get("/sites/" + SITE_ID + "/lists/" + id + "/items/" + spId + "?$expand=fields($select=Data)");
@@ -200,6 +205,7 @@
       loadHistory: async function () { return d.history || null; },
       loadOrders: async function () { return { rows: d.orders || [], at: "" }; },
       listDocs: async function () { return read().map(function (x) { return headOf(x.spId, x.fields); }); },
+      allDocs: async function () { return read().map(function (x) { var d = JSON.parse(x.fields.Data || "{}"); d.spId = x.spId; return d; }); },
       getDoc: async function (spId) {
         var x = read().find(function (y) { return y.spId === spId; });
         var doc = JSON.parse(x.fields.Data); doc.spId = spId; return doc;

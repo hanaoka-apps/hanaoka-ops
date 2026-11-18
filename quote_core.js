@@ -123,6 +123,7 @@
   function historyDone(h) {
     Object.keys(h.k || {}).forEach(function (c) {
       var kc = h.k[c], ds = kc.ds || {};
+      kc.dn = Object.keys(ds).reduce(function (a, x) { return a + ds[x][1]; }, 0); // 納品先の入った行の数（12 で切る前の合計）
       kc.ds = Object.keys(ds).sort(function (a, b) { return ds[b][1] - ds[a][1] || (ds[a][2] < ds[b][2] ? 1 : -1); }).slice(0, 12)
         .map(function (code) { return [code, ds[code][0], ds[code][1]]; });
     });
@@ -352,8 +353,28 @@
     var c = String(code || "");
     if (!c || c === "FR" || !(num(unit) > 0)) return false;
     if (/^(IDO|CASTER|OTHER\d*|SAMPLE|KUKO|FR\/)/i.test(c) || /^R\//i.test(c)) return false;
-    if (/^P\/([0-9]{1,2}|[A-Z]{1,3})$/i.test(c)) return false;
+    if (isZatsu(c)) return false;
     return true;
+  }
+  // 雑コード（P/1・P/PD など）。在庫が動かず、手配の候補にも出ないので、部品・オプションには使わない
+  //   （構成部品でない雑多なもの＝ステッカーなどだけに使う。2026-11 のチャットと室長のナレッジ）
+  function isZatsu(code) { return /^P\/([0-9]{1,2}|[A-Z]{1,3})$/i.test(String(code || "")); }
+  // 拠点の倉庫 → その拠点の生産依頼倉庫。拠点の在庫から売るとき、足りない分は生産依頼倉庫で受ける（室長のナレッジ）。
+  //   受注明細では、拠点の受注もほとんどは工場の倉庫から出ているので、初期値にはしない（案内だけ出す）
+  var PROD_WH = { "000001": ["000010", "本社生産依頼倉庫"], "000003": ["000030", "大阪生産依頼倉庫"], "000004": ["000040", "名古屋生産依頼倉庫"] };
+  function prodWhOf(wh) { return PROD_WH[String(wh || "")] || null; }
+  // キャスター変更（/C）の行。標準品のキャスターを使うときは、P/ のキャスターの行を 0円・「上記に取付」で足す
+  function isCasterChange(code) { return /\/C$/i.test(String(code || "")); }
+  // 「アプリの計算が違う」（ここが違う）と記録されたところ。ルールを直す人が見る一覧に使う
+  //   返す：[{ where:"単価"|"送料", code, app, set, memo }]
+  function wrongsOf(doc, comp) {
+    var out = [];
+    (comp.lines || []).forEach(function (l) {
+      if (l.wrong) out.push({ where: "単価", code: l.code, app: l.base ? l.base.price : null, set: l.unit, memo: l.memo || "" });
+    });
+    var f = comp.fare || {};
+    if (f.wrong) out.push({ where: "送料", code: (doc.dest && doc.dest.pref) || "", app: f.rule === undefined ? null : f.rule, set: f.amount === undefined ? null : f.amount, memo: f.memo || "" });
+    return out;
   }
   // 受注明細の行を、日付の古い順に1件ずつ「その時点までの受注だけ」で答え合わせする（あとの受注の答えは使わない）。
   //   rows: [{ date, no, cust, sha, code, qty, unit, ret, staff, staffName, dept, deptName, dest, destName, wh, whName, unitName, tehai }]
@@ -455,6 +476,14 @@
     cands.sort(function (a, b) { return (rank(a) - rank(b)) || (v27 && isV27(a) && isV27(b) ? vo(a, b) : 0) || (used(b) - used(a)) || (a < b ? -1 : 1); });
     return { code: cands[0], by: v27 && isV27(cands[0]) ? "2027年からは v27" : "価格表記載名", cands: cands };
   }
+  // いつも同じ先へ送る取引先の、いつもの納品先（[コード, 名前, 回数]）。前の受注が2行以上あり、その半分以上が同じ納品先のとき。
+  //   商社のように毎回ちがう先へ送る取引先は null（人が選ぶ）。答え合わせ（backtest）の「いつも同じ先」と同じ決め方
+  function sameDestOf(kc) {
+    var ds = (kc && kc.ds) || [];
+    if (!ds.length || !ds[0] || !ds[0][0]) return null;
+    var tot = kc.dn || ds.reduce(function (a, x) { return a + (x[2] || 0); }, 0);
+    return tot >= 2 && ds[0][2] / tot >= 0.5 ? ds[0] : null;
+  }
   // 返す：{ head, rows, miss:{ code, wh }（直す行の番号。なければ -1）, dests }
   function orderOf(doc, lines, fare, env, kk) {
     var h = env.history || {}, cust = doc.cust || {}, kc = (h.k || {})[cust.code] || null, o = doc.order || {};
@@ -471,8 +500,9 @@
     if (fare.amount) rows.push({ line: -1, code: "FR", by: "", name: "運賃", qty: 1, unit: "式", price: fare.amount, amount: fare.amount,
       wh: rows.length ? rows[0].wh : "", whName: rows.length ? rows[0].whName : "", tehai: "", due: ymd(doc.shipDate) });
     var st = o.staff ? [o.staff, ""] : (kc && kc.st) || null, dp = o.dept ? [o.dept, ""] : (kc && kc.dp) || null;
+    var ad = o.dest ? null : sameDestOf(kc);
     var head = { date: ymd(doc.date), cust: cust.code || "", custName: cust.fullName || cust.name || "",
-      dest: o.dest || "", destName: o.destName || "", newDest: o.dest === "new",
+      dest: o.dest || (ad ? ad[0] : ""), destName: o.dest ? o.destName || "" : ad ? ad[1] : "", destAuto: !!ad, newDest: o.dest === "new",
       staff: st ? st[0] : "", staffName: st ? st[1] : "", dept: dp ? dp[0] : "", deptName: dp ? dp[1] : "", learned: !!(kc && kc.st && !o.staff),
       po: o.po || "", ship: ymd(doc.shipDate), carrier: o.carrier || carrierOf(fare.carrier), carrierAuto: carrierOf(fare.carrier),
       dlvDate: ymd(o.dlvDate), dlv: o.dlv || "", memo: o.memo || "", nd: o.dest === "new" ? newDestOf(o) : null };
@@ -553,8 +583,15 @@
       var w = first(needWhy), fareNg = fare.changed && (!fare.reason || (fare.wrong && !String(fare.memo || "").trim()));
       items.push({ key: w >= 0 || !fareNg ? "reason" : "fareReason", label: "変えた理由", done: w < 0 && !fareNg, line: w });
     }
-    return { items: items, left: items.filter(function (x) { return !x.done; }).length,
-      notes: comp.checks.filter(function (c) { return c.level !== "warn"; }).map(function (c) { return c.text; }) };
+    var notes = comp.checks.filter(function (c) { return c.level !== "warn"; }).map(function (c) { return c.text; });
+    if (od) {
+      var z = od.rows.filter(function (r) { return isZatsu(r.code); }).map(function (r) { return r.code; });
+      if (z.length) notes.push("雑コード（" + z.join("・") + "）は、ステッカーなど構成部品でないものだけに使います。部品・オプションは P/・OP/ の品目コードで入れてください（雑コードだと在庫が動かず、手配にも出ません）");
+      if (od.rows.some(function (r) { return isCasterChange(r.code); })) notes.push("キャスター変更（/C）で標準品のキャスターを使うときは、そのキャスターを P/ の行で足して、単価 0円・「上記に取付」にします");
+      var pw = od.rows.map(function (r) { return prodWhOf(r.wh); }).filter(Boolean)[0];
+      if (pw) notes.push("拠点の倉庫から出す行があります。拠点の在庫で足りない分は " + pw[0] + " " + pw[1] + " で受けます（工場に作ってもらうため）");
+    }
+    return { items: items, left: items.filter(function (x) { return !x.done; }).length, notes: notes };
   }
   function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
 
@@ -676,7 +713,7 @@
     return steps;
   }
 
-  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, backtest: backtest, isPriceTarget: isPriceTarget, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, backtest: backtest, isPriceTarget: isPriceTarget, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, sameDestOf: sameDestOf, isZatsu: isZatsu, prodWhOf: prodWhOf, wrongsOf: wrongsOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
