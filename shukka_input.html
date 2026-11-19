@@ -231,6 +231,18 @@ body.in .gate{display:none}
 .nptbl9{font-size:12px}
 .nptbl9 th,.nptbl9 td{padding:6px 4px}
 @media print{.nptbl9{font-size:10.5px}.nptbl9 th,.nptbl9 td{padding:4px 3px}}
+/* 出荷台帳。列が多いので、ほかの小窓より広くする */
+.npbox.ldbox{max-width:1180px}
+.ldbar{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-bottom:10px}
+.ldbar label{margin:0;font-size:13px}
+.ldbar input[type=date]{width:auto;padding:8px 9px;font-size:14px}
+.ldbar button{width:auto;min-height:0;padding:8px 12px;font-size:13px}
+.ldbar #ldQ{flex:1 1 220px;width:auto;padding:8px 10px;font-size:14px}
+.ldtbl{font-size:12px}
+.ldtbl th,.ldtbl td{padding:6px 4px;white-space:nowrap}
+.ldtbl td.wrap{white-space:normal}
+.ldtbl tr.ldday td{border-top:1.5px solid #cfd6df}
+@media print{.ldtbl{font-size:10px}.ldtbl th,.ldtbl td{padding:3px 3px}}
 .skt input{width:100%;padding:8px 7px;font-size:14px;border:1px solid var(--line);
   border-radius:8px;background:#fff}
 .skt input[readonly]{background:var(--soft);color:#555}
@@ -290,6 +302,7 @@ body.in .gate{display:none}
     <button id="btnFind">さがす</button>
     <p class="hint">車体番号や、出図管理番号でも探せます。<br>
       出図管理番号（例 00007）を入れると、その出図の車両が全部出ます。</p>
+    <button type="button" class="plain" id="btnLedger" style="margin-top:6px">出荷台帳を見る（出荷日順の一覧）</button>
   </div>
 
   <div class="spin" id="spin">さがしています…</div>
@@ -457,6 +470,21 @@ body.in .gate{display:none}
   <div id="dwBody"></div>
   <div style="display:flex;gap:9px;margin-top:14px">
     <button type="button" class="plain" id="btnDwClose">閉じる</button>
+  </div>
+</div></div>
+
+<div class="np" id="ldWrap"><div class="npbox ldbox">
+  <div class="npnoprint ldbar">
+    <label>出荷日</label>
+    <input id="ldFrom" type="date"><span>〜</span><input id="ldTo" type="date">
+    <button type="button" class="plain" id="ldPrev">前の月</button>
+    <button type="button" class="plain" id="ldNext">次の月</button>
+    <input id="ldQ" type="text" placeholder="しぼりこみ（受注先・型式・製造番号など）">
+  </div>
+  <div id="ldBody"></div>
+  <div class="npnoprint" style="display:flex;gap:9px;margin-top:14px">
+    <button type="button" class="plain" id="btnLdClose">閉じる</button>
+    <button type="button" id="btnLdPrint">印刷する</button>
   </div>
 </div></div>
 
@@ -1223,6 +1251,75 @@ function openCarData(){
 }
 
 /* ============================================================
+   出荷台帳（仮）
+   ------------------------------------------------------------
+   手書き台帳（No.557）のように、出荷済みの車両を出荷日順に並べて見る・印刷する。
+   出荷日が入った製造番号明細がそのまま出荷記録。列は仮で、今の台帳の様式が
+   分かったら合わせる。エンドユーザーは明細に無いので出図マスタから引く。
+   ============================================================ */
+let LD_ROWS=[],LD_SHIP={};
+function ldMonthRange(base){
+  const d=base?new Date(base+"T00:00:00"):new Date();
+  const s=x=>x.toLocaleDateString("sv-SE");
+  return [s(new Date(d.getFullYear(),d.getMonth(),1)),s(new Date(d.getFullYear(),d.getMonth()+1,0))];
+}
+function openLedger(){
+  clearErr();
+  if(!$("ldFrom").value){const r=ldMonthRange();$("ldFrom").value=r[0];$("ldTo").value=r[1]}
+  $("ldWrap").classList.add("on");
+  loadLedger();
+}
+function ldShiftMonth(n){
+  const d=new Date(($("ldFrom").value||today())+"T00:00:00");
+  d.setMonth(d.getMonth()+n,1);
+  const r=ldMonthRange(d.toLocaleDateString("sv-SE"));
+  $("ldFrom").value=r[0];$("ldTo").value=r[1];
+  loadLedger();
+}
+async function loadLedger(){
+  const from=$("ldFrom").value,to=$("ldTo").value;
+  if(!from||!to||from>to){$("ldBody").innerHTML='<p class="hint">出荷日の期間を正しく入れてください。</p>';return}
+  $("ldBody").innerHTML='<p class="hint">読み込んでいます…</p>';
+  try{
+    const q="/sites/"+SITE_ID+"/lists/"+UNITS_ID+"/items?expand=fields&$top=999"+
+      "&$filter=fields/ShipDate ge '"+from+"T00:00:00Z' and fields/ShipDate le '"+to+"T23:59:59Z'";
+    const [items,masters]=await Promise.all([gAll(q,PREF),
+      SHUTSUZU_ID?gAll("/sites/"+SITE_ID+"/lists/"+SHUTSUZU_ID+"/items?expand=fields&$top=999",PREF):Promise.resolve([])]);
+    LD_SHIP={};
+    masters.forEach(it=>{const f=it.fields||{};LD_SHIP[trim(f.Title)]={user:f.EndUser||"",cust:f.Customer||""}});
+    LD_ROWS=items.map(unitOf).filter(u=>u.date).sort((a,b)=>a.date.localeCompare(b.date)||bySn(a,b));
+    renderLedger();
+  }catch(e){
+    console.error(e);
+    $("ldBody").innerHTML='<p class="hint">読み込めませんでした。電波の状態を確かめて、もう一度お試しください。</p>';
+  }
+}
+function ldWho(u){const m=LD_SHIP[trim(u.shipNo)]||{};return m.user||m.cust||u.customer||""}
+function renderLedger(){
+  const kw=trim($("ldQ").value).toLowerCase();
+  const rows=LD_ROWS.filter(u=>!kw||[u.sn,u.car,ldWho(u),u.customer,u.product,u.model,u.zu,u.dest,u.shipNo]
+    .join(" ").toLowerCase().includes(kw));
+  let h='<h3>出荷台帳　'+esc(jp($("ldFrom").value))+' 〜 '+esc(jp($("ldTo").value))+'　'+rows.length+'台</h3>';
+  if(!rows.length){$("ldBody").innerHTML=h+'<p class="hint">この期間に出荷済みの車両はありません。</p>';return}
+  h+='<div style="overflow-x:auto"><table class="nptbl ldtbl"><thead><tr><th>出荷日</th><th>製造番号</th><th>車体番号</th>'+
+     '<th>エンドユーザー（受注先）</th><th>品名</th><th>型式</th><th>図番</th><th>仕向地</th>'+
+     '<th>製造年月</th><th>自重</th><th>出図</th></tr></thead><tbody>';
+  let prev="";
+  rows.forEach(u=>{
+    const newDay=u.date!==prev;prev=u.date;
+    h+='<tr'+(newDay?' class="ldday"':'')+'>'+
+      '<td>'+(newDay?esc(jp(u.date)):'')+'</td>'+
+      '<td'+(isPlaceholderSn(u.sn)?' class="ng"':'')+'>'+(isPlaceholderSn(u.sn)?"未登録":esc(u.sn))+'</td>'+
+      '<td>'+esc(trim(u.car)||"—")+'</td>'+
+      '<td class="wrap">'+esc(ldWho(u)||"—")+'</td>'+
+      '<td>'+esc(u.product||"—")+'</td><td>'+esc(u.model||"—")+'</td><td>'+esc(u.zu||"—")+'</td>'+
+      '<td>'+esc(u.dest||"—")+'</td><td>'+esc(u.ym?jpYm(u.ym):"—")+'</td>'+
+      '<td>'+(u.nweight?esc(u.nweight)+"kg":"—")+'</td><td>'+esc(u.shipNo)+'</td></tr>';
+  });
+  $("ldBody").innerHTML=h+'</tbody></table></div>';
+}
+
+/* ============================================================
    仕向地変更
    ------------------------------------------------------------
    仕向地は1台ごとに持っている（Vol.3 第4節）ので、選んだ分だけ
@@ -1925,6 +2022,13 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("btnDrawings").onclick=openDrawings;
   $("btnDwClose").onclick=()=>$("dwWrap").classList.remove("on");
   $("btnCarData").onclick=openCarData;
+  $("btnLedger").onclick=openLedger;
+  $("btnLdClose").onclick=()=>$("ldWrap").classList.remove("on");
+  $("btnLdPrint").onclick=()=>window.print();
+  $("ldPrev").onclick=()=>ldShiftMonth(-1);
+  $("ldNext").onclick=()=>ldShiftMonth(1);
+  ["ldFrom","ldTo"].forEach(id=>$(id).addEventListener("change",loadLedger));
+  $("ldQ").addEventListener("input",renderLedger);
   $("btnCdClose").onclick=()=>$("cdWrap").classList.remove("on");
   $("btnCdPrint").onclick=()=>window.print();
   $("btnDestChange").onclick=openDestChange;
