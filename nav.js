@@ -5,13 +5,14 @@
     {
       key: 'ap',
       apps: [
-        { f: 'ap_dashboard.html',      l: 'ホーム' },
-        { f: 'ap_capture.html',        l: 'AI に渡す（撮る）' },   // スマホで請求書を撮って渡すだけの画面
+        // メニューは 経費・仕入・支払・使い方 だけ（2026-11-20）。ホームは左上のロゴから。手入力・毎月の支払・AI に渡す は経費を開いたときだけ下に出す
+        { f: 'ap_dashboard.html',      l: 'ホーム', home: true },     // home：メニューに出さず、ロゴの行き先にする
         { f: 'ap_expense.html',        l: '経費' },
-        { f: 'ap_entry.html',          l: '手入力', sub: true },      // sub：上の項目（経費）の下に字下げして出す
+        { f: 'ap_entry.html',          l: '手入力', sub: true },      // sub：上の項目（経費）の下に字下げして出す（経費のどれかを開いているときだけ）
         { f: 'ap_recurring.html',      l: '毎月の支払', sub: true },
-        { f: 'ap_smile_import.html',   l: '仕入（SMILE）' },
-        { f: 'ap_payment.html',        l: '支払（決裁・出力）' },
+        { f: 'ap_capture.html',        l: 'AI に渡す（撮る）', sub: true },   // スマホで請求書を撮って渡すだけの画面
+        { f: 'ap_smile_import.html',   l: '仕入' },
+        { f: 'ap_payment.html',        l: '支払' },
         { f: 'ap_guide.html',          l: '使い方' }          // 経費・仕入・支払の流れと帳票（2026-11-09）
       ]
     },
@@ -71,6 +72,13 @@
   }
 
   function isCur(a) { return a.f === cur || (a.alt || []).indexOf(cur) >= 0; }
+  /* メニューに出す項目（2026-11-20）：home は出さない。sub は、その親（すぐ上の sub でない項目）か同じ親の sub を開いているときだけ */
+  function menuApps(g) {
+    var out = [], par = null, kids = [];
+    var flush = function () { if (!par) return; var open = isCur(par) || kids.some(isCur); out.push(par); if (open) out.push.apply(out, kids); };
+    g.apps.filter(showApp).forEach(function (a) { if (a.home) return; if (a.sub) { kids.push(a); return; } flush(); par = a; kids = []; });
+    flush(); return out;
+  }
   function currentGroup() {
     for (var i = 0; i < GROUPS.length; i++) {
       if ((GROUPS[i].also || []).indexOf(cur) >= 0) return GROUPS[i];
@@ -171,12 +179,12 @@
     aside.className = 'hx-sidebar'; aside.id = 'hx-sidebar';
     aside.innerHTML =
       /* ロゴと下部の「HANAOKA HUB」から HUB へ戻れる（HUB の HANAOKA APPS は同じタブで開くため） */
-      '<a class="hx-brand" href="hanaoka_hub.html" title="HANAOKA HUB へ">' +
+      '<a class="hx-brand" href="' + ((g.apps.filter(function (a) { return a.home; })[0] || {}).f || 'hanaoka_hub.html') + '" title="' + (g.apps.some(function (a) { return a.home; }) ? b.name + 'のホームへ' : 'HANAOKA HUB へ') + '">' +
         '<div class="hx-mark">' + svg(b.mark) + '</div>' +
         '<div class="hx-brand-name">' + b.name + '<small>' + b.sub + '</small></div>' +
       '</a>' +
       '<div class="hx-label">MENU</div>' +
-      g.apps.filter(showApp).map(function (a) {
+      menuApps(g).map(function (a) {
         /* gate：権限を確かめてから出す項目（画面側がクラスの hide を外す） */
         var gated = g.gate && g.gate.page === cur && a.f !== cur ? ' ' + g.gate.cls + ' hide' : '';
         return '<a class="hx-item' + (a.sub ? ' hx-sub' : '') + (isCur(a) ? ' active' : '') + gated + '" href="' + a.f + '" data-file="' + a.f + '" title="' + a.l + '">' +
@@ -228,7 +236,7 @@
     var slot = document.getElementById('app-nav-slot');
     if (!slot) return;
     injectStyle();
-    var html = '<div class="app-nav">' + g.apps.filter(showApp).map(function (a) {
+    var html = '<div class="app-nav">' + menuApps(g).map(function (a) {
       var active = (a.f === cur) ? ' active' : '';
       return '<a data-file="' + a.f + '" class="' + active.trim() + '">' + (a.sub ? '└ ' : '') + a.l + '</a>';
     }).join('') + '</div>';
