@@ -522,6 +522,8 @@
         <label>フォロー<select id="gFollow">
           <option value="">すべて</option><option value="none">未記入</option><option value="late">入金予定日を過ぎた</option>
           <option value="wait">総務の確認待ち</option><option value="done">総務確認済</option></select></label>
+        <label>入金予定日<select id="gExp"><option value="">すべて</option></select></label>
+        <label>並べ替え<select id="gSort"><option value="code">得意先コード順</option><option value="exp">入金予定日の早い順</option><option value="due">回収予定日の古い順</option><option value="amt">差額の大きい順</option></select></label>
         <label>検索<input id="gSearch" type="search" placeholder="得意先名・コード"></label>
         <div class="grow"></div>
         <button class="btn" id="csvBtn">CSVに出す（会議資料用）</button>
@@ -906,7 +908,7 @@ function fillFilters(){
   for(const id of ['fStaff','gStaff']){ const el=document.getElementById(id),cur=el.value; el.innerHTML=opt('','すべて')+staffs.map(s=>opt(s,s)).join(''); el.value=cur; }
 }
 ['search','fBase','fStaff','fShow'].forEach(id=>document.getElementById(id).addEventListener('input',renderList));
-['gBase','gStaff','gSearch','gFollow'].forEach(id=>document.getElementById(id).addEventListener('input',renderGap));
+['gBase','gStaff','gSearch','gFollow','gExp','gSort'].forEach(id=>document.getElementById(id).addEventListener('input',renderGap));
 document.querySelectorAll('#gKind button').forEach(b=>b.onclick=()=>{ gKind=b.dataset.k; document.querySelectorAll('#gKind button').forEach(x=>x.classList.toggle('on',x===b)); renderGap(); });
 document.querySelectorAll('.navi').forEach(t=>t.onclick=()=>{ setView(t.dataset.view); writeHash(); });
 function setView(v){
@@ -1846,15 +1848,42 @@ function fuCell(f){
     ${f.cause?`<div class="cause">${esc(f.cause.length>80?f.cause.slice(0,80)+'…':f.cause)}</div>`:''}
     <div class="meta">${esc(f.updatedBy)} ${f.updatedAt?md(f.updatedAt.slice(0,10)):''}</div></div>`;
 }
+// 違算1件の入金予定日（フォローに書いたもの。なければ ''）
+function expOf(c,p){ const f=fuOf(c,p); return f&&f.expected||''; }
+// 入金予定日で絞ったときに見せる回（絞っていなければ全部）
+function gapPeriods(c){
+  const e=document.getElementById('gExp').value;
+  let P=c.openPeriods.filter(p=>!e||(e==='none'?!expOf(c,p):expOf(c,p)===e));
+  if(document.getElementById('gSort').value==='exp') P=[...P].sort((a,b)=>(expOf(c,a)||'9999').localeCompare(expOf(c,b)||'9999')||a.due.localeCompare(b.due));
+  return P;
+}
 function gapRows(){
   if(!M) return [];
   const base=document.getElementById('gBase').value, st=document.getElementById('gStaff').value, q=norm(document.getElementById('gSearch').value),
-        fs=document.getElementById('gFollow').value;
+        fs=document.getElementById('gFollow').value, srt=document.getElementById('gSort').value;
+  const key={
+    code:c=>c.code,
+    exp:c=>(gapPeriods(c).map(p=>expOf(c,p)).filter(Boolean).sort()[0]||'9999')+c.code,   // 入金予定日がない得意先は最後
+    due:c=>(gapPeriods(c)[0]||{}).due+c.code,
+    amt:c=>String(1e12-Math.abs(gapPeriods(c).reduce((s,p)=>s+pOpen(p),0))).padStart(14,'0')+c.code,
+  }[srt]||(c=>c.code);
   return M.list.filter(c=>isGap(c)
     &&(!base||c.base===base)&&(!st||c.staffName===st)&&(!gKind||c.status===gKind)
     &&(!q||norm(c.code+c.name+c.short).includes(q))
-    &&(!fs||c.openPeriods.some(p=>fuState(fuOf(c,p))===fs)))
-    .sort((a,b)=>a.code<b.code?-1:a.code>b.code?1:0);   // 得意先コード順（違算表と同じ並び）
+    &&(!fs||c.openPeriods.some(p=>fuState(fuOf(c,p))===fs))
+    &&gapPeriods(c).length)
+    .sort((a,b)=>key(a)<key(b)?-1:key(a)>key(b)?1:0);
+}
+// 表に出している回の差額の合計（入金予定日で絞ったときはその分だけ）
+function gSum(c){ return gapPeriods(c).reduce((s,p)=>s+pOpen(p),0); }
+function shownSum(G,sign){ return G.reduce((s,c)=>s+gapPeriods(c).map(pOpen).filter(v=>v*sign>0).reduce((a,b)=>a+b,0),0); }
+// 入金予定日の選択肢（フォローに書かれた日付と件数）
+function fillExpOptions(){
+  const sel=document.getElementById('gExp'), cur=sel.value, cnt={}; let none=0;
+  M.list.filter(isGap).forEach(c=>c.openPeriods.forEach(p=>{ const e=expOf(c,p); if(e) cnt[e]=(cnt[e]||0)+1; else none++; }));
+  sel.innerHTML='<option value="">すべて</option>'+Object.keys(cnt).sort().map(e=>`<option value="${e}">${ymdJ(e)}（${cnt[e]}件）${e<M.asof?'・過ぎた':''}</option>`).join('')
+    +`<option value="none">入金予定日なし（${none}件）</option>`;
+  sel.value=[...sel.options].some(o=>o.value===cur)?cur:'';
 }
 // 拠点のチップ（件数は、拠点以外の絞り込みをかけたときの違算の得意先の数）
 function renderBaseTabs(){
@@ -1868,6 +1897,7 @@ function renderBaseTabs(){
 function renderGap(){
   const el=document.getElementById('gapBody');
   if(!M){ el.innerHTML=''; return; }
+  fillExpOptions();
   const L=gapRows();
   const under=L.filter(c=>c.diff>0), over=L.filter(c=>c.diff<0);
   const sum=a=>a.reduce((s,c)=>s+c.diff,0);
@@ -1883,15 +1913,15 @@ function renderGap(){
   // 拠点を選んでいないときは、拠点に分けずに得意先コード順で1つの表にする
   const selBase=document.getElementById('gBase').value;
   for(const b of [selBase||'すべての拠点']){
-    const G=[...L].sort((x,y)=>x.code<y.code?-1:x.code>y.code?1:0); if(!G.length) continue;
+    const G=L; if(!G.length) continue;   // 並び順は gapRows（並べ替えの選択）のまま
     html+=`<div class="panel"><h3 class="basehead">${esc(b)} <small>${G.length}件</small>
-      <span class="tot">未入金 <b>${yen(sum(G.filter(c=>c.diff>0)))}</b>　過入金 <b>${yen(-sum(G.filter(c=>c.diff<0)))}</b></span></h3>
+      <span class="tot">未入金 <b>${yen(shownSum(G,1))}</b>　過入金 <b>${yen(-shownSum(G,-1))}</b></span></h3>
       <div class="tw"><table><thead><tr><th>回収予定日</th><th class="num">経過</th><th class="num">請求額</th><th class="num">入金額</th><th class="num">差額</th><th>フォロー（原因・過失責任・入金予定日）</th><th></th></tr></thead><tbody>
       ${G.map(c=>`<tr class="crow click" data-c="${esc(c.code)}"><td colspan="4"><span class="mono muted" style="font-size:12px">${esc(c.code)}</span> <b>${esc(c.name)}</b>${offTag(c)}
           ${selBase?'':`<span class="basetag">${esc(c.base)}</span>`}<span class="muted" style="font-size:12px">　${esc(c.staffName)}　${esc(c.closeLabel)}・${esc(c.termsLabel)}</span>
           ${c.termsNote?`<div class="reason">${esc(c.termsNote)}</div>`:''}</td>
-          <td class="num"><b class="${c.diff>0?'neg':''}">${yen(Math.abs(c.diff))}</b></td><td colspan="2">${c.diff>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`
-        +c.openPeriods.map(p=>`<tr class="prow"><td>${ymdJ(p.due)}<div class="reason">${esc(pInvText(p))}</div></td>
+          <td class="num"><b class="${gSum(c)>0?'neg':''}">${yen(Math.abs(gSum(c)))}</b></td><td colspan="2">${gSum(c)>0?'<span class="pill under">未入金</span>':'<span class="pill over">過入金</span>'}</td></tr>`
+        +gapPeriods(c).map(p=>`<tr class="prow"><td>${ymdJ(p.due)}<div class="reason">${esc(pInvText(p))}</div></td>
           <td class="num">${ARCore.daysBetween(p.due,M.asof)}日</td><td class="num">${yen(p.amount)}</td><td class="num">${yen(pPaidOpen(p))}</td>
           <td class="num ${pOpen(p)>0?'neg':''}">${yen(pOpen(p))}</td><td>${fuCell(fuOf(c,p))}</td>
           <td><button class="btn" data-fu="${esc(c.code)}|${esc(p.due)}">記入</button></td></tr>`).join('')).join('')}
