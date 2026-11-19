@@ -196,7 +196,7 @@ button.pkrow .v{background:var(--soft);border:1px solid var(--line);border-radiu
 .side h2{margin:0 0 2px;font-size:17px}
 #unitsSide{width:min(760px,94vw)}
 .uttable{width:100%;font-size:11.5px}
-.utrow{display:grid;grid-template-columns:19% 16% 21% 16% 12% 16%;width:100%}
+.utrow{display:grid;grid-template-columns:15% 14% 19% 14% 11% 13% 14%;width:100%}
 .utrow>div{padding:5px 4px;overflow-wrap:anywhere;word-break:break-word;
   min-width:0;border-bottom:1px solid #f0f0f2}
 .utrow.uthead{position:sticky;top:0;background:#fff;z-index:3}
@@ -343,6 +343,7 @@ table.hist tr.kgi td:first-child{box-shadow:inset 4px 0 0 #f0b5c0}
 .st{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;white-space:nowrap}
 .st.ok{background:#e8f6ee;color:#1b7346}
 .st.ng{background:#fff1d6;color:#9a6200;cursor:help}
+.st.prog{background:#eaf2fc;color:#2f5c96;cursor:help}
 .detmiss{margin-top:6px;font-size:12.5px;color:#9a6200;background:#fff8e6;border:1px solid #f1dca8;
   border-radius:8px;padding:5px 10px}
 .detmiss b{margin-right:4px}
@@ -704,6 +705,8 @@ body:not(.signed-in) .gate{display:flex}
   <div class="quiet">
     <button id="btnRefresh" class="ghost small">再表示</button>
     <button id="btnDrawings" class="ghost small">図面ライブラリ</button>
+    <button id="btnLedger" class="ghost small" title="出荷済みの車両を出荷日順に見る（出荷入力アプリが開きます）"
+      onclick="window.open('shukka_input.html?ledger=1','_blank','noopener')">出荷台帳 ↗</button>
   </div>
 </main>
 
@@ -2542,7 +2545,7 @@ async function kinCommit(){
       n++; created++;
       toast(created+" / "+KIN_GROUPS.length+" 件登録中…");
     }
-    renderList();updateBadges();
+    renderList();updateBadges();loadAllUnits();
     kinClose();
     toast(created+"件の出図を登録しました。各出図を開いて、表面処理・銘板表示方法などを確認してください。");
   }catch(err){
@@ -2671,7 +2674,7 @@ async function onSignedIn(){
      先に画面を出してしまうと、保存の段になって意味の分からない
      エラー（/sites/null/…）になるため。 */
   try{
-    await spInit(); await refreshFromServer(); loadAllBreakdowns(); await loadDrawings();
+    await spInit(); await refreshFromServer(); loadAllBreakdowns(); loadAllUnits(); await loadDrawings();
     document.body.classList.add("signed-in");
     renderList(); clearForm(); renderZumenBox(); toast("読み込みました");
   }catch(e){
@@ -3201,7 +3204,7 @@ function unitsTableHtml(items){
   if(!items.length)return '<p class="muted">この内訳の製造番号明細はまだありません。保存すると台数分の行ができます。</p>';
   const rows=items.slice().sort((a,b)=>String((a.fields||{}).Title||"").localeCompare(String((b.fields||{}).Title||"")));
   const head='<div class="utrow uthead"><div>製造番号</div><div>車体番号</div><div>品名・型式</div>'+
-    '<div>製造年月</div><div>自重</div><div>仕向地</div></div>';
+    '<div>製造年月</div><div>自重</div><div>仕向地</div><div>出荷日</div></div>';
   const body=rows.map(it=>{
     const f=it.fields||{};
     const sn=isPlaceholderSn(f.Title)?"未登録":(f.Title||"");
@@ -3213,6 +3216,7 @@ function unitsTableHtml(items){
       '<div'+(!ym?' class="ng"':'')+'>'+(ym?esc(ym):"未入力")+'</div>'+
       '<div'+(f.NameplateWeight==null?' class="ng"':'')+'>'+(f.NameplateWeight==null?"未入力":esc(f.NameplateWeight)+"kg")+'</div>'+
       '<div>'+esc(f.Destination||f.DeliveryTo||"")+'</div>'+
+      '<div>'+(f.ShipDate?esc(String(f.ShipDate).slice(0,10).replace(/-/g,"/")):'<span class="muted">未出荷</span>')+'</div>'+
     '</div>';
   }).join("");
   return '<div class="uttable">'+head+body+'</div>';
@@ -3421,6 +3425,32 @@ async function loadAllBreakdowns(){
     BD_ALL=m;
   }catch(e){console.warn("内訳の一括読み込みに失敗（一覧の入力状況は出ません）",e);BD_ALL=null}
   renderList();
+}
+/* 資材側の進み具合（製造番号・出荷）。製造番号明細を全出図ぶん1回で読み、出図ごとに数える。
+   読むのは件数を数える3列だけ（行が増えても重くならないように）。 */
+let UNITS_ALL=null;   /* 出図管理番号 → {n:台数, sn:製造番号を取った台数, ship:出荷した台数} */
+async function loadAllUnits(){
+  if(!LIST_UNITS_ID)return;
+  try{
+    const items=await gGetAll(`/sites/${SITE_ID}/lists/${LIST_UNITS_ID}/items?expand=fields($select=ShutsuzuNo,Title,ShipDate)&$top=999`,
+      {Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly"});
+    const m=new Map();
+    items.forEach(it=>{
+      const f=it.fields||{},k=trim(f.ShutsuzuNo);if(!k)return;
+      const c=m.get(k)||{n:0,sn:0,ship:0};
+      c.n++; if(trim(f.Title)&&!isPlaceholderSn(f.Title))c.sn++; if(f.ShipDate)c.ship++;
+      m.set(k,c);
+    });
+    UNITS_ALL=m;
+  }catch(e){console.warn("製造番号明細の一括読み込みに失敗（一覧の資材・出荷は出ません）",e);UNITS_ALL=null}
+  renderList();
+}
+function matBadge(shipNo){
+  if(!UNITS_ALL)return '<span class="st">…</span>';
+  const c=UNITS_ALL.get(trim(shipNo));
+  if(!c||!c.n)return '<span class="st">—</span>';
+  if(c.ship===c.n)return '<span class="st ok">出荷済 '+c.n+'台</span>';
+  return '<span class="st prog" title="製造番号を取った台数／出荷した台数">番号 '+c.sn+'/'+c.n+'・出荷 '+c.ship+'/'+c.n+'</span>';
 }
 function stBadge(miss,loading){
   if(loading)return '<span class="st">…</span>';
@@ -3693,6 +3723,7 @@ async function addOrUpdateEntry(){
         if(r.failed)msg+=`　※${r.failed}件が失敗（コンソール参照）`;
       }
       toast(msg,!!(r.failed||r.locked));
+      if(!r.cancelled&&!r.skipped)loadAllUnits();   /* 台数が変わると一覧の資材・出荷も変わる */
       if(!r.cancelled){
         try{await applySoloCarNos(e)}
         catch(errC){toast("車体番号の保存に失敗しました: "+(errC.message||errC),true);console.error(errC)}
@@ -3749,10 +3780,10 @@ function rows(){const q=($("q").value||"").toLowerCase();let r=loadData().map((d
     const ni=s.info&&s.info.length>0,ns=s.spec.length>0;
     return sf==="any"?(ni||ns):sf==="info"?ni:ns});}const s=$("sortBy").value;r.sort((a,b)=>s==="ship_no_asc"?(parseInt(a.ship_no)||0)-(parseInt(b.ship_no)||0):s==="date_desc"?String(b.date).localeCompare(a.date):s==="customer_asc"?String(a.customer).localeCompare(b.customer,"ja"):String(b.createdAt).localeCompare(a.createdAt));return r}
 function renderList(){
-  const headers=["出図管理番号","登録日","エンドユーザー（受注先）","品名","型式","図番","台数","行き先","図面","出図情報","仕様・手配"];
+  const headers=["出図管理番号","登録日","エンドユーザー（受注先）","品名","型式","図番","台数","行き先","図面","出図情報","仕様・手配","資材・出荷"];
   let html='<table class="hist"><thead><tr>'+headers.map(h=>"<th>"+h+"</th>").join("")+"</tr></thead><tbody>";
   const r=rows();
-  if(!r.length)html+='<tr><td colspan="11" class="muted">表示できるデータがありません。</td></tr>';
+  if(!r.length)html+='<tr><td colspan="12" class="muted">表示できるデータがありません。</td></tr>';
   /* 同じ依頼ナンバーの出図をまとめる。2件以上あるものだけ見出しを付ける */
   const byKin=new Map();
   if($("groupKin").checked)r.forEach(d=>{const k=trim(d.kin_req_no);if(k)byKin.set(k,(byKin.get(k)||[]).concat(d))});
@@ -3764,7 +3795,7 @@ function renderList(){
     if(done.has(k))return;
     done.add(k);
     const units=g.reduce((s,x)=>s+(unitCount(x.units)||0),0);
-    out.push({head:'<tr class="kgh"><td colspan="11">依頼ナンバー <b>'+esc(k)+'</b>　'+esc(g[0].customer||"")+
+    out.push({head:'<tr class="kgh"><td colspan="12">依頼ナンバー <b>'+esc(k)+'</b>　'+esc(g[0].customer||"")+
       '　<span class="muted">'+g.length+'出図・計'+units+'台</span></td></tr>'});
     g.forEach(x=>out.push({d:x,inGroup:true}));
   });
@@ -3782,7 +3813,8 @@ function renderList(){
       '<td class="zu wrapc">'+esc(d.drawing_no)+'</td><td class="num">'+esc(d.units)+'</td>'+
       '<td class="dest">'+esc(destTxt)+'</td>'+
       '<td>'+(n?'<span class="zn">'+n+'点</span>':'<span class="zn no">—</span>')+'</td>'+
-      (()=>{const s=rowStatus(d);return '<td>'+stBadge(s.info||[],!s.info)+'</td><td>'+stBadge(s.spec)+'</td>'})()+'</tr>';
+      (()=>{const s=rowStatus(d);return '<td>'+stBadge(s.info||[],!s.info)+'</td><td>'+stBadge(s.spec)+'</td>'})()+
+      '<td>'+matBadge(d.ship_no)+'</td></tr>';
   });
   $("listContainer").innerHTML=html+"</tbody></table>";
   updateBadges();
