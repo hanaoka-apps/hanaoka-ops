@@ -1,5 +1,5 @@
 /* ============================================================
- * FAX返信作成（β）— 受け取ったFAXのPDFに、画面でクリックした位置へ文字を書き込み、
+ * FAX返信作成 — 受け取ったFAXのPDFに、画面でクリックした位置へ文字を書き込み、
  *   元のPDFに文字を重ねた返信用PDFをブラウザだけで作る。
  *
  *   使い方：
@@ -270,7 +270,7 @@
     ov.className = 'fr-overlay';
     ov.innerHTML = `<div class="fr-modal">
       <div class="fr-head">
-        <span class="fr-title" title="${esc(o.title)}">✍ ${esc(o.title)}</span><span class="fr-beta">β</span>
+        <span class="fr-title" title="${esc(o.title)}">✍ ${esc(o.title)}</span>
         <span class="fr-fax"><span class="l">返信先FAX</span><span class="n">${esc(o.senderFax || '（不明）')}</span>
           <button class="fr-btn" data-act="copy"${o.senderFax ? '' : ' style="display:none"'}>コピー</button>
           ${o.onFaxEdit ? '<button class="fr-btn" data-act="faxedit" title="読み違いを直す（元の受信FAXの「送信元FAX」も直ります）">✎ 直す</button>' : ''}</span>
