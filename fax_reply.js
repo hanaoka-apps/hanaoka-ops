@@ -121,7 +121,9 @@
   .fr-stamp input,.fr-stamp select{border:1px solid #d5d8e5;border-radius:5px;padding:3px 6px;font-size:12px;min-width:0}
   .fr-hdl{position:absolute;z-index:4;width:10px;height:10px;margin:-6px 0 0 -6px;background:#fff;border:2px solid #d33;border-radius:2px;box-sizing:content-box}
   .fr-sdel{position:absolute;z-index:4;border:none;background:#c0392b;color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;cursor:pointer}
+  .fr-sdel.rot{background:#23268f}
   `;
+  const IMG_MAX_PX = 2000;          // 貼る画像の長い辺の上限（これより大きいスクリーンショットは縮める）
   function injectCss() {
     if (document.getElementById('fr-css')) return;
     const st = document.createElement('style'); st.id = 'fr-css'; st.textContent = CSS;
@@ -218,6 +220,32 @@
     });
     return { items, w: Math.max(w, fs * 4), h: Math.max(y - s.y1, fs) };
   }
+  // 貼った画像：x1,y1〜x2,y2 は画面で見えている四角（回した後）。rot は右回りの角度（0/90/180/270）
+  //   回していないときの画像の幅・高さ（画面上の点）
+  function imageSize(s) {
+    const w = Math.abs(s.x2 - s.x1), h = Math.abs(s.y2 - s.y1);
+    return (s.rot || 0) % 180 ? { w0: h, h0: w } : { w0: w, h0: h };
+  }
+  // 画像ファイル（貼り付け・選んだファイル）を読み、長い辺を IMG_MAX_PX までに縮めて JPEG にする（透明な所は白）
+  function readImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const k = Math.min(1, IMG_MAX_PX / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const cx = cv.getContext('2d');
+        cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h);
+        cx.drawImage(img, 0, 0, w, h);
+        resolve({ src: cv.toDataURL('image/jpeg', 0.9), pw: w, ph: h, origW: img.naturalWidth, origH: img.naturalHeight });
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした')); };
+      img.src = url;
+    });
+  }
   function shapeBox(s) {
     if (s.kind === 'stamp') { const r = s.d / 2; return { x1: s.x1 - r, y1: s.y1 - r, x2: s.x1 + r, y2: s.y1 + r }; }
     if (s.kind === 'done') { const L = doneLayout(s); return { x1: L.outer[0], y1: L.outer[1], x2: L.outer[2], y2: L.outer[3] }; }
@@ -228,7 +256,7 @@
   const isStampKind = s => s.kind === 'stamp' || s.kind === 'done' || s.kind === 'seal';
   // 「枠1・線2・丸1・データ印1」
   function shapeCountNote(list, sp) {
-    const names = [['rect', '枠'], ['line', '線'], ['ellipse', '丸'], ['stamp', 'データ印'], ['done', '完了'], ['seal', '社判']];
+    const names = [['rect', '枠'], ['line', '線'], ['ellipse', '丸'], ['stamp', 'データ印'], ['done', '完了'], ['seal', '社判'], ['image', '画像']];
     return names.map(([k, n]) => { const c = list.filter(s => s.kind === k).length; return c ? `${n}${sp}${c}` : ''; }).filter(Boolean).join('・');
   }
 
@@ -246,6 +274,7 @@
           ${o.onFaxEdit ? '<button class="fr-btn" data-act="faxedit" title="読み違いを直す（元の受信FAXの「送信元FAX」も直ります）">✎ 直す</button>' : ''}</span>
         <span class="fr-modes"><button class="fr-btn on" data-mode="text" title="クリックした所に文字を書く">Ａ 文字</button><button class="fr-btn" data-mode="textbox" title="クリックした所に、枠つき・白背景の文字（コメント）を書く">▭ テキストボックス</button><button class="fr-btn" data-mode="rect" title="ドラッグで四角い枠を描く">□ 枠</button><button class="fr-btn" data-mode="line" title="ドラッグで直線を描く（ほぼ水平・垂直なら真っすぐにそろえる。Shiftで必ずそろえる）">／ 線</button><button class="fr-btn" data-mode="ellipse" title="ドラッグで丸（楕円）を描く。Shiftで正円">◯ 丸</button><button class="fr-btn" data-mode="stamp" title="押したい所をクリックしてスタンプを押す（種類は右の選択、内容は右側で設定）">印 スタンプ</button></span>
         <select class="fr-lw fr-stype" title="スタンプの種類"><option value="data">データ印</option><option value="done">完了</option><option value="seal">社判（全部）</option><option value="sealshort">社判（住所・会社名）</option></select>
+        <button class="fr-btn" data-act="image" title="画像を貼る（スクリーンショットを撮ってから Ctrl+V でも貼れます）">🖼 画像</button><input type="file" accept="image/*" class="fr-imgfile" style="display:none">
         <select class="fr-lw fr-col" title="文字・枠・線・丸・社判の色"><option value="blue" selected>色：青</option><option value="black">色：黒</option><option value="red">色：赤</option></select>
         <select class="fr-lw fr-size" title="新しく書く文字の大きさ（このパソコンに覚えます）">${[8, 9, 10, 11, 12, 14, 16, 18].map(n => `<option value="${n}">文字：${n}pt</option>`).join('')}</select>
         <select class="fr-lw fr-width" title="枠・線の太さ"><option value="1">細</option><option value="1.5" selected>中</option><option value="2.5">太</option></select>
@@ -263,6 +292,7 @@
               <b>□ 枠／／ 線／◯ 丸</b>：ドラッグで描く（丸は Shift で正円）。<br>
               描いた枠・線・丸・データ印は<b>ドラッグで移動</b>（選んで矢印キーでも少しずつ動く）。クリックで選ぶと、<b>□ のつまみで大きさ</b>を変えられ、✕ で消せます。<br>
               <b>印 スタンプ</b>：右の選択で データ印／完了／社判（全部・住所と会社名だけ）を選び、押したい所をクリック（内容は下で設定）。<br>
+              <b>🖼 画像</b>：スクリーンショット（Win＋Shift＋S など）を撮って <b>Ctrl＋V</b> で貼るか、ボタンでファイルを選ぶ。ドラッグで移動、□ のつまみで大きさ（縦横の比は保つ）、<b>↻ 90°</b> で回す。※「続きを編集」では画像は戻らないので、貼り直してください。<br>
               色は上の「色」で選びます（最初は青。データ印・完了は赤）。<br>
               <b>↶ 元に戻す</b>：最後に書いたものを消します。<br>
               <b>画面の移動</b>：上の見出しをドラッグで移動、右下の角で大きさ変更（ダブルクリックで中央に戻る）。開いたまま裏の画面も見られます。<br>
@@ -450,7 +480,68 @@
         status('FAX番号を直しました');
       } catch (err) { status('FAX番号を保存できませんでした：' + err.message); }
     }
-    const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); ov.remove(); };
+    const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); document.removeEventListener('paste', onPaste); ov.remove(); };
+    // ---- 画像を貼る ----
+    // いま画面に見えているページの、見えている所の真ん中あたりに置く。大きさは 96dpi 相当、ページの幅の6割まで
+    async function addImage(file) {
+      if (!pages.length) return;
+      let im;
+      try { status('画像を読み込み中...'); im = await readImageFile(file); }
+      catch (err) { status(err.message); return; }
+      const wrap = $('.fr-pages'), wr = wrap.getBoundingClientRect();
+      const midY = wr.top + wr.height / 2;
+      let idx = pages.findIndex(p => { const r = p.div.getBoundingClientRect(); return r.top <= midY && r.bottom >= midY; });
+      if (idx < 0) idx = 0;
+      const pr = pages[idx].div.getBoundingClientRect();
+      const pw = pr.width / scale, ph = pr.height / scale;
+      let w = im.origW * 0.75, h = im.origH * 0.75;
+      const k = Math.min(1, (pw * 0.6) / w, (ph * 0.6) / h);
+      w *= k; h *= k;
+      // 見えている所の真ん中（ページの外にはみ出さないように）
+      const cx = Math.max(w / 2, Math.min(pw - w / 2, ((Math.max(pr.left, wr.left) + Math.min(pr.right, wr.right)) / 2 - pr.left) / scale));
+      const cy = Math.max(h / 2, Math.min(ph - h / 2, ((Math.max(pr.top, wr.top) + Math.min(pr.bottom, wr.bottom)) / 2 - pr.top) / scale));
+      const s = { id: nextId++, kind: 'image', page: idx, x1: cx - w / 2, y1: cy - h / 2, x2: cx + w / 2, y2: cy + h / 2, w: 0, rot: 0,
+                  src: im.src, pw: im.pw, ph: im.ph };
+      if (document.activeElement && document.activeElement.isContentEditable) document.activeElement.blur();
+      const prev = selShape;
+      shapes.push(s); history.push(s); selShape = s;
+      if (prev && prev.page !== idx) drawShapes(prev.page);
+      drawShapes(idx); refreshList();
+      status('画像を貼りました。ドラッグで移動、□ で大きさ、↻ 90° で回せます');
+    }
+    // Ctrl+V：画像が入っていれば貼る。文字の入力中に文字をコピーしてあるときは、ふつうの文字の貼り付けにする（Excel のコピーは文字と画像の両方が入るため）
+    function onPaste(e) {
+      if (closed) return;
+      const dt = e.clipboardData; if (!dt) return;
+      const a = document.activeElement;
+      const typing = a && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName));
+      if (typing && (dt.types || []).includes('text/plain')) return;
+      const item = [...(dt.items || [])].find(it => it.kind === 'file' && /^image\//.test(it.type));
+      const file = item && item.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      addImage(file);
+    }
+    document.addEventListener('paste', onPaste);
+    $('.fr-imgfile').addEventListener('change', e => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (f) addImage(f);
+    });
+    function rotateImage(s) {   // 右に90°。真ん中は動かさない
+      const cx = (s.x1 + s.x2) / 2, cy = (s.y1 + s.y2) / 2, w = Math.abs(s.x2 - s.x1), h = Math.abs(s.y2 - s.y1);
+      s.rot = ((s.rot || 0) + 90) % 360;
+      s.x1 = cx - h / 2; s.x2 = cx + h / 2; s.y1 = cy - w / 2; s.y2 = cy + w / 2;
+      // 回して縦横が入れ替わり、ページの外にはみ出したら中へ戻す（ページより大きいときは左上をそろえる）
+      const pg = pages[s.page];
+      if (pg) {
+        const pw = pg.div.clientWidth / scale, ph = pg.div.clientHeight / scale;
+        const dx = s.x1 < 0 ? -s.x1 : (s.x2 > pw ? Math.max(pw - s.x2, -s.x1) : 0);
+        const dy = s.y1 < 0 ? -s.y1 : (s.y2 > ph ? Math.max(ph - s.y2, -s.y1) : 0);
+        moveShape(s, dx, dy);
+      }
+      drawShapes(s.page);
+    }
     $('.fr-stype').addEventListener('change', () => { mode = 'stamp'; ov.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x.dataset.mode === 'stamp')); });
     ov.addEventListener('click', async e => {
       const act = e.target && e.target.dataset && e.target.dataset.act;
@@ -460,6 +551,7 @@
       if (act === 'close') { if (!hasWork() || confirm('書き込んだ内容は保存されません。閉じますか？')) close(); }
       if (act === 'copy') { try { await navigator.clipboard.writeText(o.senderFax); status('FAX番号をコピーしました'); } catch (_) { status('コピーできませんでした'); } }
       if (act === 'faxedit') await editFax();
+      if (act === 'image') $('.fr-imgfile').click();
       if (act === 'zoomin') { scale = Math.min(3, scale * 1.2); await renderAll(); }
       if (act === 'zoomout') { scale = Math.max(0.4, scale / 1.2); await renderAll(); }
       if (act === 'submit') await submit();
@@ -481,11 +573,12 @@
       (ini.boxes || []).forEach(b => { if (pages[b.page] && b.text) addBox(b.page, b.x, b.y, b.text, b.size, false,
         { color: b.color || 'black', bold: !!b.bold, underline: !!b.underline, boxed: !!b.boxed }); });
       (ini.shapes || []).forEach(x => {
-        if (!pages[x.page]) return;
+        if (!pages[x.page] || x.kind === 'image') return;   // 画像は記録に残していない
         const sh = Object.assign({}, x, { id: nextId++, w: x.w || 1.5 });
         shapes.push(sh); history.push(sh);
       });
       if ((ini.shapes || []).length) { pages.forEach((_, i) => drawShapes(i)); refreshList(); }
+      if (ini.images > 0) status(`前回貼った画像（${ini.images}枚）は戻せません。必要なら貼り直してください`);
       ensureFont().catch(() => {});   // フォントは裏で先に読んでおく
     } catch (err) {
       $('.fr-pages').innerHTML = `<div style="padding:40px;color:#c0392b">PDFを開けませんでした：${esc(err.message)}</div>`;
@@ -668,7 +761,8 @@
         if (s.kind === 'stamp') return stampSvg(s);
         if (s.kind === 'done') return doneSvg(s);
         if (s.kind === 'seal') return sealSvg(s);
-        const st = `stroke="${s === selShape ? SEL : colHex(s.color)}" stroke-width="${Math.max(1, s.w * scale)}" fill="none"`;
+        if (s.kind === 'image') return imageSvg(s);
+        const st =`stroke="${s === selShape ? SEL : colHex(s.color)}" stroke-width="${Math.max(1, s.w * scale)}" fill="none"`;
         const shape = s.kind === 'rect'
           ? a => `<rect x="${Math.min(s.x1, s.x2) * scale}" y="${Math.min(s.y1, s.y2) * scale}" width="${Math.abs(s.x2 - s.x1) * scale}" height="${Math.abs(s.y2 - s.y1) * scale}" ${a}/>`
           : s.kind === 'ellipse'
@@ -702,8 +796,17 @@
           + L.items.map(t => `<text x="${t.x0 * z}" y="${t.base * z}" font-size="${t.size * z}" fill="${col}" ${FF}>${esc(t.text)}</text>`).join('')
           + hitRect(s, shapeBox(s));
       };
+      // 画像：回していない向きで置いてから、真ん中を軸に回す。選んでいるときは橙の枠
+      const imageSvg = s => {
+        const z = scale, b = shapeBox(s), { w0, h0 } = imageSize(s);
+        const cx = (b.x1 + b.x2) / 2 * z, cy = (b.y1 + b.y2) / 2 * z;
+        return `<image href="${s.src}" x="${cx - w0 * z / 2}" y="${cy - h0 * z / 2}" width="${w0 * z}" height="${h0 * z}" preserveAspectRatio="none" transform="rotate(${s.rot || 0} ${cx} ${cy})"/>`
+          + (s === selShape ? `<rect x="${b.x1 * z}" y="${b.y1 * z}" width="${(b.x2 - b.x1) * z}" height="${(b.y2 - b.y1) * z}" fill="none" stroke="${SEL}" stroke-width="2" stroke-dasharray="6 3"/>` : '')
+          + hitRect(s, b);
+      };
       const onPage = shapes.filter(s => s.page === pageIdx).concat(temp ? [temp] : []);
-      pg.svg.innerHTML = onPage.filter(s => !isStampKind(s)).map(one).join('');
+      // 画像はいちばん下（その上に枠・線・文字・スタンプを重ねられる）
+      pg.svg.innerHTML = onPage.filter(s => s.kind === 'image').concat(onPage.filter(s => s.kind !== 'image' && !isStampKind(s))).map(one).join('');
       pg.svg2.innerHTML = onPage.filter(isStampKind).map(one).join('');
       // 押すと選ぶ（✕ 消す が出る）。そのままドラッグすると移動
       pg.div.querySelectorAll('svg .hit').forEach(h => h.addEventListener('mousedown', e => {
@@ -734,11 +837,19 @@
         btn.style.top = (bb.y1 * scale - 20) + 'px';
         btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); removeShape(s); });
         pg.div.appendChild(btn);
+        if (s.kind === 'image') {   // 画像は「↻ 90°」も出す（✕ 消す の下）
+          const rb = document.createElement('button');
+          rb.className = 'fr-sdel rot'; rb.textContent = '↻ 90°'; rb.title = '右に90°回す';
+          rb.style.left = (bb.x2 * scale + 4) + 'px';
+          rb.style.top = (bb.y1 * scale + 4) + 'px';
+          rb.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); rotateImage(s); });
+          pg.div.appendChild(rb);
+        }
         // 大きさを変えるつまみ：枠・丸は4隅、線は両端、データ印は右下（円周上）
         const r = s.d / 2, dg = Math.SQRT1_2;
         const bb2 = shapeBox(s);
         const hs = s.kind === 'stamp' ? [['r', s.x1 + r * dg, s.y1 + r * dg, 'nwse-resize']]
-          : (s.kind === 'done' || s.kind === 'seal') ? [['k', bb2.x2, bb2.y2, 'nwse-resize']]
+          : (s.kind === 'done' || s.kind === 'seal' || s.kind === 'image') ? [['k', bb2.x2, bb2.y2, 'nwse-resize']]
           : s.kind === 'line' ? [['x1y1', s.x1, s.y1, 'move'], ['x2y2', s.x2, s.y2, 'move']]
           : [['x1y1', s.x1, s.y1], ['x2y1', s.x2, s.y1], ['x2y2', s.x2, s.y2], ['x1y2', s.x1, s.y2]].map(h => {
               const left = h[1] === Math.min(s.x1, s.x2), top = h[2] === Math.min(s.y1, s.y2);
@@ -757,6 +868,10 @@
                 s.d = Math.max(20, Math.min(80, Math.hypot(x - s.x1, y - s.y1) * 2));
               } else if (key === 'k' && s.kind === 'done') {   // 完了：幅（約11〜70mm）
                 s.d = Math.max(30, Math.min(200, Math.abs(x - s.x1) * 2));
+              } else if (key === 'k' && s.kind === 'image') {   // 画像：左上は動かさず、縦横の比を保って大きさを変える
+                const ar = Math.abs(s.y2 - s.y1) / Math.max(Math.abs(s.x2 - s.x1), 0.01);
+                const w = Math.max(10, Math.max(x - s.x1, (y - s.y1) / ar));
+                s.x2 = s.x1 + w; s.y2 = s.y1 + w * ar;
               } else if (key === 'k') {   // 社判：右下の位置に合わせて字の大きさ（5〜20pt）
                 const L = sealLayout(s);
                 s.d = Math.max(5, Math.min(20, s.d * Math.max(0.1, (x - s.x1)) / L.w));
@@ -926,8 +1041,24 @@
           s.kind === 'stamp' ? { dMm: mm(s.d), top: s.top, date: s.date, bottom: s.bottom } : {},
           s.kind === 'done' ? { dMm: mm(s.d) } : {}, s.kind === 'seal' ? { size: s.d, lines: s.lines, bg: s.bg || 'none' } : {}));
       };
-      // 重なり順（画面と同じ）：枠・線・丸 → 文字・テキストボックス → スタンプ（いちばん上）
-      shapes.filter(s => !isStampKind(s)).forEach(drawShapePdf);
+      // 画像：画像の左下・右下・左上の3点を画面上で求めて PDF の座標に直し、その向き・大きさで置く（回したページでも見たまま）
+      const imgCache = new Map();
+      const drawImagePdf = async s => {
+        const { P, page } = conv(s.page);
+        let emb = imgCache.get(s.src);
+        if (!emb) { emb = await doc.embedJpg(s.src); imgCache.set(s.src, emb); }
+        const b = shapeBox(s), { w0, h0 } = imageSize(s), a = (s.rot || 0) * Math.PI / 180;
+        const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2;
+        const u = [Math.cos(a), Math.sin(a)], v = [-Math.sin(a), Math.cos(a)];   // 画像の横・縦の向き（画面上、y は下向き）
+        const bl = [cx - u[0] * w0 / 2 + v[0] * h0 / 2, cy - u[1] * w0 / 2 + v[1] * h0 / 2];
+        const p0 = P(bl[0], bl[1]), p1 = P(bl[0] + u[0] * w0, bl[1] + u[1] * w0), p2 = P(bl[0] - v[0] * h0, bl[1] - v[1] * h0);
+        page.drawImage(emb, { x: p0.x, y: p0.y, width: Math.hypot(p1.x - p0.x, p1.y - p0.y), height: Math.hypot(p2.x - p0.x, p2.y - p0.y),
+                              rotate: PDFLib.degrees(Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180 / Math.PI) });
+        shapesOut.push({ page: s.page + 1, kind: 'image', rot: s.rot || 0, x1Mm: mm(b.x1), y1Mm: mm(b.y1), x2Mm: mm(b.x2), y2Mm: mm(b.y2) });
+      };
+      // 重なり順（画面と同じ）：画像 → 枠・線・丸 → 文字・テキストボックス → スタンプ（いちばん上）
+      for (const s of shapes.filter(x => x.kind === 'image')) await drawImagePdf(s);
+      shapes.filter(s => s.kind !== 'image' && !isStampKind(s)).forEach(drawShapePdf);
       drawTexts();
       shapes.filter(isStampKind).forEach(drawShapePdf);
       const bytes = await doc.save();
@@ -939,7 +1070,9 @@
       const edit = {
         boxes: boxes.filter(b => b.text.trim()).map(b => ({ page: b.page, x: r2(b.x), y: r2(b.y), size: b.size, text: b.text,
                                                            color: b.color, bold: b.bold, underline: b.underline, boxed: b.boxed })),
-        shapes: shapes.map(x => {
+        // 画像は記録が重くなるので残さない（何枚あったかだけ残し、続きを編集のときに知らせる）
+        images: shapes.filter(x => x.kind === 'image').length,
+        shapes: shapes.filter(x => x.kind !== 'image').map(x => {
           const o2 = { kind: x.kind, page: x.page, x1: r2(x.x1), y1: r2(x.y1), x2: r2(x.x2), y2: r2(x.y2), w: x.w };
           ['color', 'd', 'top', 'date', 'bottom', 'lines', 'bg'].forEach(k => { if (x[k] !== undefined) o2[k] = x[k]; });
           return o2;
