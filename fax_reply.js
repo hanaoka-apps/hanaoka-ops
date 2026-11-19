@@ -294,7 +294,7 @@
               <b>□ 枠／／ 線／◯ 丸</b>：ドラッグで描く（丸は Shift で正円）。<br>
               描いた枠・線・丸・データ印は<b>ドラッグで移動</b>（選んで矢印キーでも少しずつ動く）。クリックで選ぶと、<b>□ のつまみで大きさ</b>を変えられ、✕ で消せます。<br>
               <b>印 スタンプ</b>：右の選択で データ印／完了／社判（全部・住所と会社名だけ）を選び、押したい所をクリック（内容は下で設定）。<br>
-              <b>🖼 画像</b>：スクリーンショット（Win＋Shift＋S など）を撮って <b>Ctrl＋V</b> で貼るか、ボタンでファイルを選ぶ。ドラッグで移動、□ のつまみで大きさ（縦横の比は保つ）、<b>↻ 90°</b> で回す。※「続きを編集」では画像は戻らないので、貼り直してください。<br>
+              <b>🖼 画像</b>：スクリーンショット（Win＋Shift＋S など）を撮って <b>Ctrl＋V</b> で貼るか、ボタンでファイルを選ぶ。置きたい所をクリックしてから Ctrl＋V なら、その場所に置きます。ドラッグで移動、□ のつまみで大きさ（縦横の比は保つ）、<b>↻ 90°</b> で回す。※「続きを編集」では画像は戻らないので、貼り直してください。<br>
               色は上の「色」で選びます（最初は青。データ印・完了は赤）。<br>
               <b>↶ 元に戻す</b>：最後に書いたものを消します。<br>
               <b>画面の移動</b>：上の見出しをドラッグで移動、右下の角で大きさ変更（ダブルクリックで中央に戻る）。開いたまま裏の画面も見られます。<br>
@@ -499,17 +499,23 @@
         status('FAX番号を直しました');
       } catch (err) { status('FAX番号を保存できませんでした：' + err.message); }
     }
-    const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); document.removeEventListener('paste', onPaste); ov.remove(); };
+    const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); document.removeEventListener('paste', onPaste); window.removeEventListener('focus', onWinFocus); ov.remove(); };
     // ---- 画像を貼る ----
-    // いま画面に見えているページの、見えている所の真ん中あたりに置く。大きさは 96dpi 相当、ページの幅の6割まで
-    async function addImage(file, how) {
+    // スクリーンショットを撮ったあと、この画面に戻るためにページをクリックすることが多い。
+    //   ほかの画面から戻ってきた直後のクリックでは文字を書き始めず、その場所を「画像を置く所」として覚える
+    let winFocusAt = 0, imgSpot = null;   // imgSpot：{ page, x, y, t }（縮尺1の画面上の点）
+    function onWinFocus() { winFocusAt = Date.now(); }
+    window.addEventListener('focus', onWinFocus);
+    // 置く場所：spot があればそこが左上（ページの外にはみ出さないように）。無ければ、いま見えているページの見えている所の真ん中。
+    //   大きさは 96dpi 相当、ページの幅・高さの6割まで
+    async function addImage(file, how, spot) {
       if (!pages.length) return;
       let im;
       try { status('画像を読み込み中...'); im = await readImageFile(file); }
       catch (err) { status(err.message); return; }
       const wrap = $('.fr-pages'), wr = wrap.getBoundingClientRect();
       const midY = wr.top + wr.height / 2;
-      let idx = pages.findIndex(p => { const r = p.div.getBoundingClientRect(); return r.top <= midY && r.bottom >= midY; });
+      let idx = spot && pages[spot.page] ? spot.page : pages.findIndex(p => { const r = p.div.getBoundingClientRect(); return r.top <= midY && r.bottom >= midY; });
       if (idx < 0) idx = 0;
       const pr = pages[idx].div.getBoundingClientRect();
       const pw = pr.width / scale, ph = pr.height / scale;
@@ -517,8 +523,9 @@
       const k = Math.min(1, (pw * 0.6) / w, (ph * 0.6) / h);
       w *= k; h *= k;
       // 見えている所の真ん中（ページの外にはみ出さないように）
-      const cx = Math.max(w / 2, Math.min(pw - w / 2, ((Math.max(pr.left, wr.left) + Math.min(pr.right, wr.right)) / 2 - pr.left) / scale));
-      const cy = Math.max(h / 2, Math.min(ph - h / 2, ((Math.max(pr.top, wr.top) + Math.min(pr.bottom, wr.bottom)) / 2 - pr.top) / scale));
+      const inside = (v, half, max) => Math.max(half, Math.min(max - half, v));
+      const cx = inside(spot && pages[spot.page] ? spot.x + w / 2 : ((Math.max(pr.left, wr.left) + Math.min(pr.right, wr.right)) / 2 - pr.left) / scale, w / 2, pw);
+      const cy = inside(spot && pages[spot.page] ? spot.y + h / 2 : ((Math.max(pr.top, wr.top) + Math.min(pr.bottom, wr.bottom)) / 2 - pr.top) / scale, h / 2, ph);
       const s = { id: nextId++, kind: 'image', page: idx, x1: cx - w / 2, y1: cy - h / 2, x2: cx + w / 2, y2: cy + h / 2, w: 0, rot: 0,
                   src: im.src, pw: im.pw, ph: im.ph };
       if (document.activeElement && document.activeElement.isContentEditable) document.activeElement.blur();
@@ -539,7 +546,14 @@
       const file = item && item.getAsFile();
       if (!file) return;
       e.preventDefault();
-      addImage(file, '貼り付け');
+      // 置く場所：クリックしてすぐ（まだ何も入力していない文字の欄がある）ならそのクリックした所、
+      //   ほかの画面から戻ってきたクリックの場所を覚えていれば（2分以内）そこ
+      let spot = null;
+      const fb = focusedBox();
+      if (fb && !fb.text.trim()) { spot = { page: fb.page, x: fb.x, y: fb.y + fb.size * 0.6 }; removeBox(fb); }   // 空の文字の欄は消す
+      else if (imgSpot && Date.now() - imgSpot.t < 120000) spot = imgSpot;
+      imgSpot = null;
+      addImage(file, '貼り付け', spot);
     }
     document.addEventListener('paste', onPaste);
     $('.fr-imgfile').addEventListener('change', e => {
@@ -641,6 +655,14 @@
           const at = ev => [(ev.clientX - r.left) / scale, (ev.clientY - r.top) / scale];
           e.preventDefault();
           if (selShape) { const p = selShape.page; selShape = null; drawShapes(p); }
+          // ほかの画面（スクリーンショットなど）から戻ってきた直後のクリック：文字は書かず、画像を置く所として覚える
+          if (Date.now() - winFocusAt < 700 && pendingSnip === null) {
+            const [x, y] = at(e);
+            imgSpot = { page: idx, x, y, t: Date.now() };
+            status('この画面に戻りました（文字は書いていません）。画像を貼るなら Ctrl＋V で、クリックした所に置きます');
+            return;
+          }
+          imgSpot = null;
           if (pendingSnip !== null) {   // 定型文を押したあとのクリック：そこに置く（テキストボックスのモードなら枠つき）
             const t = fillSnip(snippets[pendingSnip] || '');
             pendingSnip = null; renderSnips(); status('定型文を置きました。〇の所を直してください'); used('定型文');
