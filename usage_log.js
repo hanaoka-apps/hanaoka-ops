@@ -29,7 +29,7 @@
   if (window.UsageLog) return;
   const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';
   const LIST_NAME = 'HUBの利用ログ';
-  const VER = '20261106';
+  const VER = '20261119';
   const MAX_PER_PAGE_VIEW = 80;                /* 1回の画面表示あたりの上限（暴走防止）。init の max で画面ごとに変えられる */
   const SAME_WITHIN_MS = 20000;                /* 同じ操作をすぐ繰り返したら1回にまとめる */
   const MAX_ERRORS = 5;                        /* 1回の画面表示あたりのエラーの記録数 */
@@ -115,7 +115,9 @@
 
   function log(action, detail, opt) {
     try {
-      if (!cfg || cfg.off || count >= (cfg.max || MAX_PER_PAGE_VIEW)) return;
+      if (!cfg || cfg.off) return;
+      /* 上限は操作の記録だけ。見ていた時間（leave）は上限を超えても残す（1日中開いている画面で、時間が取れなくならないように） */
+      if (count >= (cfg.max || MAX_PER_PAGE_VIEW) && !(opt && opt.always)) return;
       const key = action + '|' + (detail || ''), now = Date.now();
       if (!(opt && opt.every) && recent.has(key) && now - recent.get(key) < SAME_WITHIN_MS) return;
       recent.set(key, now); count++;
@@ -127,7 +129,7 @@
   function onHide() {
     if (!shownAt) return;
     const sec = Math.round((Date.now() - shownAt) / 1000); shownAt = 0;
-    if (sec >= 3) log('leave', 'sec=' + sec, { every: true, now: true });
+    if (sec >= 3) log('leave', 'sec=' + sec, { every: true, now: true, always: true });
   }
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') onHide();

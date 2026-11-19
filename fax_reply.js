@@ -129,6 +129,8 @@
     const st = document.createElement('style'); st.id = 'fr-css'; st.textContent = CSS;
     document.head.appendChild(st);
   }
+  // 使われ方の記録（usage_log.js があるときだけ）。どの道具を何回使ったか、だけを残す。書いた文字・FAX番号・画像の中身は残さない
+  const uLog = (action, detail) => { try { if (window.UsageLog) window.UsageLog.log(action, detail || '', { every: true }); } catch (_) {} };
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   // ---- 図形の補助 ----
@@ -361,6 +363,21 @@
     // 枠・線：{ id, kind:'rect'|'line', page, x1, y1, x2, y2, w }（座標は文字と同じ「縮尺1の画面上の点」、w は線の太さpt）
     let mode = 'text', shapes = [], selShape = null;
     const history = [];   // 書いた順（元に戻す用）
+    // この編集で使った操作の回数（作成・閉じるときに1件だけ記録する）
+    const use = {};
+    const used = k => { use[k] = (use[k] || 0) + 1; };
+    const useNote = () => {
+      const c = {};
+      boxes.filter(b => b.text.trim()).forEach(b => {
+        const k = b.boxed ? 'テキストボックス' : '文字'; c[k] = (c[k] || 0) + 1;
+        if (b.bold) c['太字'] = (c['太字'] || 0) + 1;
+        if (b.underline) c['下線'] = (c['下線'] || 0) + 1;
+      });
+      const nm = { rect: '枠', line: '線', ellipse: '丸', stamp: 'データ印', done: '完了', seal: '社判', image: '画像' };
+      shapes.forEach(s => { const k = nm[s.kind] || s.kind; c[k] = (c[k] || 0) + 1; });
+      const a = Object.keys(c).map(k => k + c[k]).concat(Object.keys(use).map(k => k + use[k]));
+      return a.length ? a.join(' ') : 'なし';
+    };
     const hasWork = () => boxes.some(b => b.text.trim()) || shapes.length > 0;
     const onKey = e => {
       if (!selShape) return;
@@ -392,7 +409,7 @@
       stampCfg.sealBg = sealBgEl.value; saveSeal();
       if (selShape && selShape.kind === 'seal') { selShape.bg = sealBgEl.value; drawShapes(selShape.page); }
     });
-    sealEl.addEventListener('input', () => { stampCfg.seal = sealEl.value; saveSeal(); });
+    sealEl.addEventListener('input', () => { stampCfg.seal = sealEl.value; saveSeal(); use['社判の設定'] = 1; });
     // 社判を最初の内容に戻す（担当はデータ印の下段＝今の名前）
     ov.querySelector('[data-seal-reset]').addEventListener('click', () => {
       if (!confirm('社判の内容を初期値に戻しますか？\n（直した内容は消えます）')) return;
@@ -424,13 +441,13 @@
       const i = +row.dataset.i;
       if (e.target.closest('.x')) {
         if (!confirm('この定型文を消しますか？\n\n' + fillSnip(snippets[i]))) return;
-        snippets.splice(i, 1); saveSnippets(snippets); pendingSnip = null; renderSnips(); return;
+        snippets.splice(i, 1); saveSnippets(snippets); pendingSnip = null; renderSnips(); used('定型文を消す'); return;
       }
       const text = fillSnip(snippets[i]);
       const fb = focusedBox();
       if (fb) {   // 入力中：カーソルの所に入れる
         text.split('\n').forEach((l, k) => { if (k) document.execCommand('insertLineBreak'); if (l) document.execCommand('insertText', false, l); });
-        status('定型文を入れました。〇の所を直してください');
+        status('定型文を入れました。〇の所を直してください'); used('定型文');
         return;
       }
       pendingSnip = pendingSnip === i ? null : i;   // もう一度押すと取り消し
@@ -444,13 +461,13 @@
         const b = focusedBox() || [...boxes].reverse().find(x => x.text.trim());
         if (!b || !b.text.trim()) { status('登録する文字がありません。先に文字を書いてください'); return; }
         if (snippets.includes(b.text)) { status('同じ定型文がすでにあります'); return; }
-        snippets.push(b.text); saveSnippets(snippets); renderSnips(); status('定型文に登録しました');
+        snippets.push(b.text); saveSnippets(snippets); renderSnips(); status('定型文に登録しました'); used('定型文を登録');
       } else if (act === 'new') {
         nw.style.display = nw.style.display === 'none' ? '' : 'none'; if (nw.style.display === '') setTimeout(() => ta.focus(), 0);
       } else if (act === 'add') {
         const v = ta.value.replace(/\s+$/, '');
         if (!v.trim()) { status('登録する文を入れてください'); return; }
-        snippets.push(v); saveSnippets(snippets); ta.value = ''; nw.style.display = 'none'; renderSnips(); status('定型文に登録しました');
+        snippets.push(v); saveSnippets(snippets); ta.value = ''; nw.style.display = 'none'; renderSnips(); status('定型文に登録しました'); used('定型文を登録');
       } else if (act === 'reset') {
         if (!confirm('定型文を最初の状態に戻しますか？\n（自分で足した定型文は消えます）')) return;
         snippets = snipActive(); saveSnippets(snippets); pendingSnip = null; renderSnips(); status('定型文を初期に戻しました');
@@ -460,6 +477,7 @@
       el.value = stampCfg[el.dataset.st];
       el.addEventListener('input', () => {
         stampCfg[el.dataset.st] = el.dataset.st === 'd' ? +el.value : el.value.trim();
+        use['データ印の設定'] = 1;
         saveSeal();
       });
     });
@@ -474,6 +492,7 @@
       try {
         status('FAX番号を保存中...');
         await o.onFaxEdit(v);
+        used('FAX番号を直す');
         o.senderFax = v;
         $('.fr-fax .n').textContent = v || '（不明）';
         $('[data-act="copy"]').style.display = v ? '' : 'none';
@@ -483,7 +502,7 @@
     const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', onKey); document.removeEventListener('paste', onPaste); ov.remove(); };
     // ---- 画像を貼る ----
     // いま画面に見えているページの、見えている所の真ん中あたりに置く。大きさは 96dpi 相当、ページの幅の6割まで
-    async function addImage(file) {
+    async function addImage(file, how) {
       if (!pages.length) return;
       let im;
       try { status('画像を読み込み中...'); im = await readImageFile(file); }
@@ -504,7 +523,7 @@
                   src: im.src, pw: im.pw, ph: im.ph };
       if (document.activeElement && document.activeElement.isContentEditable) document.activeElement.blur();
       const prev = selShape;
-      shapes.push(s); history.push(s); selShape = s;
+      shapes.push(s); history.push(s); selShape = s; used('画像を' + (how || '貼り付け'));
       if (prev && prev.page !== idx) drawShapes(prev.page);
       drawShapes(idx); refreshList();
       status('画像を貼りました。ドラッグで移動、□ で大きさ、↻ 90° で回せます');
@@ -520,17 +539,17 @@
       const file = item && item.getAsFile();
       if (!file) return;
       e.preventDefault();
-      addImage(file);
+      addImage(file, '貼り付け');
     }
     document.addEventListener('paste', onPaste);
     $('.fr-imgfile').addEventListener('change', e => {
       const f = e.target.files && e.target.files[0];
       e.target.value = '';
-      if (f) addImage(f);
+      if (f) addImage(f, 'ファイル');
     });
     function rotateImage(s) {   // 右に90°。真ん中は動かさない
       const cx = (s.x1 + s.x2) / 2, cy = (s.y1 + s.y2) / 2, w = Math.abs(s.x2 - s.x1), h = Math.abs(s.y2 - s.y1);
-      s.rot = ((s.rot || 0) + 90) % 360;
+      s.rot = ((s.rot || 0) + 90) % 360; used('画像を回す');
       s.x1 = cx - h / 2; s.x2 = cx + h / 2; s.y1 = cy - w / 2; s.y2 = cy + w / 2;
       // 回して縦横が入れ替わり、ページの外にはみ出したら中へ戻す（ページより大きいときは左上をそろえる）
       const pg = pages[s.page];
@@ -548,12 +567,13 @@
       const md = e.target && e.target.dataset && e.target.dataset.mode;
       if (md) { mode = md; ov.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x.dataset.mode === md)); }
       if (act === 'undo') undo();
-      if (act === 'close') { if (!hasWork() || confirm('書き込んだ内容は保存されません。閉じますか？')) close(); }
+      if (act === 'close') { if (!hasWork() || confirm('書き込んだ内容は保存されません。閉じますか？')) { uLog('PDF編集:閉じる（作らずに）', useNote()); close(); } }
+      if (act === 'copy') used('FAX番号をコピー');
       if (act === 'copy') { try { await navigator.clipboard.writeText(o.senderFax); status('FAX番号をコピーしました'); } catch (_) { status('コピーできませんでした'); } }
       if (act === 'faxedit') await editFax();
       if (act === 'image') $('.fr-imgfile').click();
-      if (act === 'zoomin') { scale = Math.min(3, scale * 1.2); await renderAll(); }
-      if (act === 'zoomout') { scale = Math.max(0.4, scale / 1.2); await renderAll(); }
+      if (act === 'zoomin') { used('拡大'); scale = Math.min(3, scale * 1.2); await renderAll(); }
+      if (act === 'zoomout') { used('縮小'); scale = Math.max(0.4, scale / 1.2); await renderAll(); }
       if (act === 'submit') await submit();
     });
 
@@ -579,6 +599,7 @@
       });
       if ((ini.shapes || []).length) { pages.forEach((_, i) => drawShapes(i)); refreshList(); }
       if (ini.images > 0) status(`前回貼った画像（${ini.images}枚）は戻せません。必要なら貼り直してください`);
+      uLog('PDF編集:開く', o.initial ? '続きを編集' : '新規');
       ensureFont().catch(() => {});   // フォントは裏で先に読んでおく
     } catch (err) {
       $('.fr-pages').innerHTML = `<div style="padding:40px;color:#c0392b">PDFを開けませんでした：${esc(err.message)}</div>`;
@@ -622,7 +643,7 @@
           if (selShape) { const p = selShape.page; selShape = null; drawShapes(p); }
           if (pendingSnip !== null) {   // 定型文を押したあとのクリック：そこに置く（テキストボックスのモードなら枠つき）
             const t = fillSnip(snippets[pendingSnip] || '');
-            pendingSnip = null; renderSnips(); status('定型文を置きました。〇の所を直してください');
+            pendingSnip = null; renderSnips(); status('定型文を置きました。〇の所を直してください'); used('定型文');
             addBox(idx, at(e)[0], at(e)[1] - curSize() * 0.6, t, curSize(), true, { color: curColor(), boxed: mode === 'textbox' });
             return;
           }
@@ -903,8 +924,8 @@
     function undo() {
       while (history.length) {
         const it = history.pop();
-        if (it.kind) { if (shapes.includes(it)) { removeShape(it); return; } }
-        else if (boxes.includes(it)) { removeBox(it); return; }
+        if (it.kind) { if (shapes.includes(it)) { removeShape(it); used('元に戻す'); return; } }
+        else if (boxes.includes(it)) { removeBox(it); used('元に戻す'); return; }
       }
       status('元に戻すものがありません');
     }
@@ -1090,6 +1111,7 @@
         status('');
         if (o.onSubmit) {
           const r = await o.onSubmit(result, { close, status, panel: $('.fr-side-in') });
+          if (r !== false) uLog('PDF編集:作成', useNote());
           if (r !== false) close();
         } else close();
       } catch (err) {
@@ -1120,6 +1142,7 @@
   //   FaxReply.rotate({ pdfBytes, title, onSave: async (bytes, { before, after, changed }) => {...} })
   //   ページの /Rotate だけを変える（画質は変わらない）。before/after は各ページの回転角、changed は変えたページ番号（1始まり）
   async function rotate(opts) {
+    uLog('PDF回転:開く', '');
     injectCss();
     const o = Object.assign({ title: 'PDF' }, opts || {});
     const ov = document.createElement('div');
@@ -1176,7 +1199,7 @@
     }
     ov.addEventListener('click', async e => {
       const b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.act === 'cancel') { if (!add.some(Boolean) || confirm('回した向きは保存されません。やめますか？')) close(); return; }
+      if (b.dataset.act === 'cancel') { if (!add.some(Boolean) || confirm('回した向きは保存されません。やめますか？')) { uLog('PDF回転:やめる', `${base.length}ページ中${add.filter(Boolean).length}ページ回した`); close(); } return; }
       if (b.dataset.p && pdf) { const i = +b.closest('.fr-rot-cell').dataset.i; add[i] = (add[i] + +b.dataset.p) % 360; await draw(i); return; }
       if (b.dataset.all && pdf) {
         for (let i = 0; i < add.length; i++) add[i] = b.dataset.all === 'reset' ? 0 : (add[i] + +b.dataset.all) % 360;
@@ -1194,7 +1217,7 @@
           doc.getPages().forEach((p, i) => { if (add[i]) p.setRotation(degrees((base[i] + add[i]) % 360)); });
           const bytes = await doc.save();
           const r = o.onSave ? await o.onSave(bytes, { before: base.slice(), after: base.map((v, i) => (v + add[i]) % 360), changed }) : null;
-          if (r !== false) close();
+          if (r !== false) { uLog('PDF回転:保存', `${base.length}ページ中${changed.length}ページ（${[...new Set(changed.map(p => add[p - 1]))].map(a => a + '°').join('・')}）`); close(); }
         } catch (err) { console.error(err); status('保存できませんでした：' + err.message); }
         finally { b.disabled = false; }
       }
