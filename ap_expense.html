@@ -36,7 +36,8 @@ main{padding:16px 20px;display:grid;gap:14px;grid-template-columns:minmax(0,1fr)
 .memo.why{font-size:12px;color:var(--sub);align-items:flex-start}.memo.why>div{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;color:var(--ink,#222)}
 .lw{font-size:11.5px;padding:0 6px;border-radius:999px;background:#eef1f6;color:var(--sub);white-space:nowrap}.lw.ok{background:#e7f5ec;color:#2f7d4f}.lw.ng{background:#fff3dc;color:#8a5a00}
 .aimemo{margin-top:8px;font-size:12.5px;background:#f7f8fb;border-radius:8px;padding:8px 10px}.aimemo b{font-size:12.5px}
-#groups button.fin{color:#2f7d4f}#groups button.fin.on{color:#fff}
+.rounds button.fin{color:#2f7d4f}.rounds button.fin.on{color:#fff}
+#groups button{font-size:15px;font-weight:700;padding:6px 18px}.tabs{align-items:flex-end}.tabs .rounds{margin-bottom:4px}
 .onegrid.oitems.itpdf{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);overflow:hidden}.onegrid.oitems.itpdf .oitems-b{overflow-y:auto;min-height:0}
 @media (max-width:1200px){.onegrid.oitems.itpdf{grid-template-columns:1fr;overflow:visible}}
 #apDrw .drw-bg{position:fixed;inset:0;background:rgba(20,24,40,.25);z-index:965}
@@ -339,7 +340,10 @@ function prevMonth(ym){const [y,m]=ym.split('/').map(Number);return ymOf(new Dat
 
 async function showApp(){
   $('login-view').style.display='none';$('app-view').style.display='block';$('who').textContent=me();initMonth();
-  try{await resolveLists();await loadAll();buildItems();if(!st.round)st.round=defaultRound();}catch(e){msg('エラー');snack(e.message,true);console.error(e);}
+  try{await resolveLists();await loadAll();buildItems();
+    // 拠点（2026-11-20）：全拠点はやめて、本社か工場のどちらかで見る（作業は自分の拠点だけ。全拠点だと工場の分が本社に入っていても気づきにくい）。最後に選んだ拠点を覚える。無ければ工場の段の人は工場
+    if(!st.loc){let v='';try{v=localStorage.getItem('ap.exp.loc')||'';}catch(e){}st.loc=['本社','工場'].includes(v)?v:myLoc();}
+    if(!st.round)st.round=defaultRound();fitRound();}catch(e){msg('エラー');snack(e.message,true);console.error(e);}
   render();}
 async function loadAll(){
   msg('読み込み中...');PASTC=new Map();const ym=month();
@@ -525,15 +529,19 @@ function openDrawer(r){const old=$('apDrw');if(old){old.remove();return;}const a
   const o=el.querySelector('.drw-l .on');if(o)o.scrollIntoView({block:'center'});}
 // 最初に選ぶ支払回（2026-11-19）：工場の段だけの人は月末。ほかは、まだ確定していない請求書がある いちばん早い支払回（10日が終わっていれば20日）
 function defaultRound(){const mine=l=>stepsOf(l).some(s=>(s.members||[]).some(n=>sameName(me(),n)));
-  if(mine('工場')&&!mine('本社'))return '月末';
-  const a=items.filter(r=>r.ym===month());return ROUNDS.find(rd=>a.some(r=>r.round===rd&&!r.done))||'';}
+  // 工場の段の人も、上の 本社／工場 の拠点で決める（工場は月末だけ）
+  const a=items.filter(r=>r.ym===month()&&(!st.loc||r.loc===st.loc)),rs=roundsOf(st.loc);return rs.find(rd=>a.some(r=>r.round===rd&&!r.done))||rs[rs.length-1];}
+// 拠点ごとの支払回（2026-11-20）：工場は月末だけ、本社は 10日・20日・月末（工場に月末以外の請求書があればそれも出す）。「全回」はやめた
+const roundsOf=loc=>loc==='工場'?ROUNDS.filter(rd=>rd==='月末'||items.some(r=>r.loc==='工場'&&r.ym===month()&&r.round===rd)):ROUNDS;
+function fitRound(){const rs=roundsOf(st.loc);if(!rs.includes(st.round))st.round=defaultRound();}
 const roundDone=rd=>{const a=items.filter(r=>r.ym===month()&&r.round===rd&&(!st.loc||r.loc===st.loc));return a.length&&a.every(r=>r.done);};
 function render(){
   autoTokkiSoon();buildItems();if(st.tab!=='rev')drawTeach();
-  $('groups').innerHTML=[['','全拠点'],['本社','本社'],['工場','工場']].map(([k,l])=>`<button class="${st.loc===k?'on':''}" data-loc="${k}">${l}</button>`).join('')
-    +'<span style="width:10px"></span>'+[['','全回'],...ROUNDS.map(r=>[r,r])].map(([k,l])=>{const fin=k&&roundDone(k);return `<button class="${st.round===k?'on':''}${fin?' fin':''}" data-round="${k}" title="${fin?'この支払回は全部確定しました':''}">${l}${fin?' ✔':''}</button>`;}).join('');
+  // 導線（2026-11-20）：まず 本社か工場 → その中で 受信トレイ・サマリー・確認。支払回はサマリー・確認のタブの右（受信トレイは支払回に関係ない）
+  $('groups').innerHTML=[['本社','🏢 本社'],['工場','🏭 工場']].map(([k,l])=>`<button class="${st.loc===k?'on':''}" data-loc="${k}">${l}</button>`).join('');
+  const roundsHtml=st.tab==='inbox'?'':`<span style="flex:1"></span><div class="grp rounds">${roundsOf(st.loc).map(r=>[r,r]).map(([k,l])=>{const fin=k&&roundDone(k);return `<button class="${st.round===k?'on':''}${fin?' fin':''}" data-round="${k}" title="${fin?'この支払回は全部確定しました':''}">${l}${fin?' ✔':''}</button>`;}).join('')}</div>`;
   const box=inboxOf(),rv=items.filter(r=>inMonth(r)&&inScope(r)),dn=rv.filter(r=>r.done).length;
-  $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='inbox'?'on':''}" data-tab="inbox">📥 受信トレイ（${box.reading.length+box.failed.length}）</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（確定 ${dn}／${rv.length}）</button></div><div id="pane"></div>`;
+  $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='inbox'?'on':''}" data-tab="inbox">📥 受信トレイ（${box.reading.length+box.failed.length}）</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（確定 ${dn}／${rv.length}）</button>${roundsHtml}</div><div id="pane"></div>`;
   if(st.tab==='inbox')drawInbox();else if(st.tab==='sum')drawSummary();else drawReview();
   drawApprove();}
 
@@ -546,7 +554,8 @@ function drawInbox(){
   const b=inboxOf(),list=b[st.box]||[],who=stepLabelAll(0).replace(/^.*?（|）$/g,'');
   const wByM={};b.wait.forEach(r=>{const y=r.ym||month();wByM[y]=(wByM[y]||0)+1;});
   // 受け付け＝「AI に渡す」：左半分が渡し口（ドラッグ・クリック・スマホは撮影）、右に拠点・流れ・進み具合
-  const L0=UPL.loc||myLoc();
+  if(UPL.locOf!==st.loc){UPL.loc=st.loc;UPL.locOf=st.loc;}   // 受け付ける拠点：最初は上で選んでいる拠点（上を切り替えたらそれに合わせる。ここで選び直してもよい。2026-11-20）
+  const L0=UPL.loc||st.loc||myLoc();
   $('pane').innerHTML=`<div class="card ho"><div class="ho-grid">
       <label class="drop ho-drop" id="drop"><input type="file" id="file-in" accept="${APDoc.ACCEPT}" multiple>
         <span class="ho-ic"><svg viewBox="0 0 48 48" width="52" height="52" aria-hidden="true"><path d="M13 6h15l9 9v21a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="#fff" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M28 6v9h9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M15 23h12M15 29h8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="36" cy="36" r="9" fill="currentColor"/><path d="M36 31.5l1.3 3.2 3.2 1.3-3.2 1.3-1.3 3.2-1.3-3.2-3.2-1.3 3.2-1.3z" fill="#fff"/></svg></span>
@@ -809,7 +818,8 @@ function drawRows(){if(!$('tb'))return;
       <td style="font-size:12px">${r.done?'✔ 確定':esc(stepName(r,r.step))}</td>
       <td>${c('fix')?`<span class="sv fix">要修正 ${c('fix')}</span>`:''}${c('check')?`<span class="sv check">要確認 ${c('check')}</span>`:''}${c('info')?`<span class="sv info">参考 ${c('info')}</span>`:''}</td></tr>`;}).join('')
     ||`<tr><td colspan="6" style="color:var(--sub);padding:14px">${st.step==='mine'?'あなたの番の請求書はありません 🎉':'該当する請求書はありません'}</td></tr>`;}
-function openOne(id){st.sel=id;st.view='one';st.editHdr=false;st.editLines=null;st.editBank=false;st.allIss=false;draft=null;hdrDraft=null;cmDraft=null;drawReview();}
+function openOne(id){{const x=items.find(r=>r.id===id);if(x&&x.loc&&st.loc&&x.loc!==st.loc)st.loc=x.loc;if(x&&x.round&&st.round&&x.round!==st.round)st.round=x.round;}   // ほかの拠点の請求書を開いたら、その拠点に切り替える（一覧・前後が合うように）
+  st.sel=id;st.view='one';st.editHdr=false;st.editLines=null;st.editBank=false;st.allIss=false;draft=null;hdrDraft=null;cmDraft=null;drawReview();}
 const cur=()=>items.find(r=>r.id===st.sel)||null;
 const linesOf=r=>r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',sub:fv(L.sl,l.f,'内訳コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',
   excl:+fv(L.sl,l.f,'金額_税抜')||0,tax:+fv(L.sl,l.f,'消費税')||0,incl:+fv(L.sl,l.f,'金額_税込')||0,note:fv(L.sl,l.f,'摘要')||'',memo:fv(L.sl,l.f,'決裁メモ')||'',conf:+fv(L.sl,l.f,'AI信頼スコア')||0}));
@@ -1570,7 +1580,7 @@ document.addEventListener('click',e=>{
   const tb=e.target.closest('[data-tab]');if(tb){st.tab=tb.dataset.tab;draft=null;hdrDraft=null;render();return;}
   const bx=e.target.closest('[data-box]');if(bx){st.box=bx.dataset.box;render();return;}
   const wg=e.target.closest('[data-wgo]');if(wg){const y=wg.dataset.wgo;st.tab='rev';st.step='mine';st.view='list';if(y!==month()){setMonth(y);loadAll().then(render);}else render();return;}
-  const lc=e.target.closest('[data-loc]');if(lc){st.loc=lc.dataset.loc;render();return;}
+  const lc=e.target.closest('[data-loc]');if(lc){st.loc=lc.dataset.loc;try{localStorage.setItem('ap.exp.loc',st.loc);}catch(er){}st.round=defaultRound();render();return;}
   const rd=e.target.closest('[data-round]');if(rd){st.round=rd.dataset.round;render();return;}
   const sp=e.target.closest('[data-step]');if(sp){st.step=sp.dataset.step;draft=null;hdrDraft=null;drawReview();return;}
   const dg=e.target.closest('[data-dg]');if(dg){st.dg=dg.dataset.dg;drawReview();return;}
