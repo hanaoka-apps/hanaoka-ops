@@ -11,7 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="ap_intake.js?v=20261119"></script>
-<script src="ap_ai.js?v=20261119"></script>
+<script src="ap_ai.js?v=20261119b"></script>
 <script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261109" defer></script>
 <script src="ap_month.js?v=20261106"></script>
@@ -34,6 +34,16 @@ main{padding:16px 20px;display:grid;gap:14px;grid-template-columns:minmax(0,1fr)
 .memo.why{font-size:12px;color:var(--sub);align-items:flex-start}.memo.why>div{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;color:var(--ink,#222)}
 .lw{font-size:11.5px;padding:0 6px;border-radius:999px;background:#eef1f6;color:var(--sub);white-space:nowrap}.lw.ok{background:#e7f5ec;color:#2f7d4f}.lw.ng{background:#fff3dc;color:#8a5a00}
 .aimemo{margin-top:8px;font-size:12.5px;background:#f7f8fb;border-radius:8px;padding:8px 10px}.aimemo b{font-size:12.5px}
+#groups button.fin{color:#2f7d4f}#groups button.fin.on{color:#fff}
+.onegrid.oitems.itpdf{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);overflow:hidden}.onegrid.oitems.itpdf .oitems-b{overflow-y:auto;min-height:0}
+@media (max-width:1200px){.onegrid.oitems.itpdf{grid-template-columns:1fr;overflow:visible}}
+#apDrw .drw-bg{position:fixed;inset:0;background:rgba(20,24,40,.25);z-index:965}
+#apDrw .drw{position:fixed;left:0;top:0;bottom:0;width:min(380px,90vw);background:#fff;z-index:966;box-shadow:4px 0 24px rgba(20,24,60,.2);display:flex;flex-direction:column;padding:12px 12px 12px max(12px,env(safe-area-inset-left,0px))}
+.drw-h{display:flex;gap:8px;align-items:center;margin-bottom:8px}.drw-h span{color:var(--sub);font-size:12px}
+.drw-l{overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.drw-l button{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;text-align:left;padding:6px 8px;border:0;border-radius:6px;background:none;cursor:pointer;font-size:13px;color:inherit}
+.drw-l button:hover{background:#f2f4ff}.drw-l button.on{background:#e6ecfa;font-weight:600}
+.drw-l .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.drw-l small{display:block;color:var(--sub);font-size:11px;font-weight:400}.drw-l .n{font-variant-numeric:tabular-nums;font-size:12.5px}
 .top{display:grid;gap:14px;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1.6fr)}
 .big{font-size:32px;font-weight:700;letter-spacing:.5px}.big small{font-size:15px;font-weight:500;color:var(--sub)}
 .cmp{margin-top:6px;display:grid;grid-template-columns:auto auto 1fr;gap:2px 12px;font-size:13px;color:var(--sub)}
@@ -178,7 +188,7 @@ const LOCKED=['決裁中','決裁済み','出力済み'];
 let RULES=null,KAMOKU=[],BUMON=[],UCHI={},JOURNAL=null;
 let listClosed=(()=>{try{return localStorage.getItem('ap.review.list')==='closed';}catch{return false;}})();   // 確認モードの一覧をたたむ（ページ送りが中心）
 let INVMETA={},SQN=null,ALL=[],LINES={},VB={},SPM=[],PIS=[],SBS=[],items=[],draft=null,hdrDraft=null,cmDraft=null,pdfSel={},pdfCache={},acks={};
-const st={tab:'inbox',box:'reading',loc:'',round:'',step:'mine',q:'',sel:null,cmOpen:false,view:'list',editHdr:false,editBank:false,allIss:false,openLines:null,openLog:false};
+const st={itemsPdf:(()=>{try{return localStorage.getItem('ap.items.pdf')!=='0';}catch(e){return true;}})(),tab:'inbox',box:'reading',loc:'',round:'',step:'mine',q:'',sel:null,cmOpen:false,view:'list',editHdr:false,editBank:false,allIss:false,openLines:null,openLog:false};
 
 // ---------- 認証・Graph ----------
 async function boot(){
@@ -325,7 +335,7 @@ function prevMonth(ym){const [y,m]=ym.split('/').map(Number);return ymOf(new Dat
 
 async function showApp(){
   $('login-view').style.display='none';$('app-view').style.display='block';$('who').textContent=me();initMonth();
-  try{await resolveLists();await loadAll();}catch(e){msg('エラー');snack(e.message,true);console.error(e);}
+  try{await resolveLists();await loadAll();buildItems();if(!st.round)st.round=defaultRound();}catch(e){msg('エラー');snack(e.message,true);console.error(e);}
   render();}
 async function loadAll(){
   msg('読み込み中...');PASTC=new Map();const ym=month();
@@ -431,6 +441,7 @@ async function tokkiByAI(r,quiet){
     .concat((SQN||[]).filter(x=>jnorm(x.payee)===n&&x.memo).slice(-20).map(x=>`${x.pay||x.date}｜${x.memo}`));
   const au=tokkiAuto(r),why=au?String(au.text).split('：')[0]:'';
   try{const a=await APAI.tokki({call,site:AP_SITE},{payee:r.payee,ym,total:r.amount,invoiceId:r.id,items:it.items,itemsAmount:it.amount||'',why,memos:[...new Set(memos)],
+      curMemos:viewOf(r).ls.filter(l=>l.memo).map(l=>`${l.aname||''}｜${l.dept||''}｜${yen(l.incl)}円｜${l.memo}`),
       prev:prev.filter(x=>x.j&&Array.isArray(x.j.items)&&x.j.items.length).map(x=>({ym:x.ym,amount:x.j.amount||'',items:x.j.items}))});
     const cur=items.find(x=>x.id===r.id)||r,t0=tokkiOf(cur);if(t0.manual&&quiet)return false;   // 自動のときは、待っている間に人が直したものを上書きしない
     await patchInv(cur,{},{act:'特記',on:a.on,text:a.text,ai:true,memo:(a.on?'AI が特記をまとめた：'+a.text.slice(0,40):'AI：いつもと同じ（特記なし）'),step:cur.step});return true;}
@@ -498,10 +509,25 @@ const inScope=r=>(!st.loc||r.loc===st.loc)&&(!st.round||r.round===st.round);
 const inMonth=r=>r.ym===month()||(!r.ym&&!r.done);
 
 // ---------- 画面 ----------
+// 一覧の引き出し（2026-11-19）：1件の画面で、左から今の一覧（段・検索の絞り込みのまま）を出して、押すとその請求書へ
+function openDrawer(r){const old=$('apDrw');if(old){old.remove();return;}const a=listRows();
+  const el=document.createElement('div');el.id='apDrw';
+  el.innerHTML=`<div class="drw-bg"></div><div class="drw" role="dialog" aria-label="一覧"><div class="drw-h"><b>一覧</b><span>${a.length}件　${yen(a.reduce((t,x)=>t+x.amount,0))}円</span><span style="flex:1"></span><button class="lk" id="drwX">閉じる</button></div>
+    <div class="drw-l">${a.map(x=>`<button data-drw="${x.id}" class="${x.id===r.id?'on':''}"><span>${ST_ICON(x)}</span><span class="nm">${esc(x.payee||x.title||'（読み取り前）')}<small>${esc(x.round||'')}　${esc(x.loc||'')}</small></span><span class="n">${yen(x.amount)}</span></button>`).join('')||'<div style="color:var(--sub)">ありません</div>'}</div></div>`;
+  document.body.appendChild(el);
+  const esc1=e=>{if(e.key==='Escape'){e.stopPropagation();e.preventDefault();close();}},close=()=>{el.remove();document.removeEventListener('keydown',esc1,true);};
+  document.addEventListener('keydown',esc1,true);el.querySelector('.drw-bg').onclick=close;$('drwX').onclick=close;
+  el.querySelectorAll('[data-drw]').forEach(b=>b.onclick=()=>{const cr=cur();if(cr&&isDirty(cr)&&!confirm('保存していない直しがあります。捨てて移りますか？'))return;close();openOne(b.dataset.drw);});
+  const o=el.querySelector('.drw-l .on');if(o)o.scrollIntoView({block:'center'});}
+// 最初に選ぶ支払回（2026-11-19）：工場の段だけの人は月末。ほかは、まだ確定していない請求書がある いちばん早い支払回（10日が終わっていれば20日）
+function defaultRound(){const mine=l=>stepsOf(l).some(s=>(s.members||[]).some(n=>sameName(me(),n)));
+  if(mine('工場')&&!mine('本社'))return '月末';
+  const a=items.filter(r=>r.ym===month());return ROUNDS.find(rd=>a.some(r=>r.round===rd&&!r.done))||'';}
+const roundDone=rd=>{const a=items.filter(r=>r.ym===month()&&r.round===rd&&(!st.loc||r.loc===st.loc));return a.length&&a.every(r=>r.done);};
 function render(){
   autoTokkiSoon();buildItems();if(st.tab!=='rev')drawTeach();
   $('groups').innerHTML=[['','全拠点'],['本社','本社'],['工場','工場']].map(([k,l])=>`<button class="${st.loc===k?'on':''}" data-loc="${k}">${l}</button>`).join('')
-    +'<span style="width:10px"></span>'+[['','全回'],...ROUNDS.map(r=>[r,r])].map(([k,l])=>`<button class="${st.round===k?'on':''}" data-round="${k}">${l}</button>`).join('');
+    +'<span style="width:10px"></span>'+[['','全回'],...ROUNDS.map(r=>[r,r])].map(([k,l])=>{const fin=k&&roundDone(k);return `<button class="${st.round===k?'on':''}${fin?' fin':''}" data-round="${k}" title="${fin?'この支払回は全部確定しました':''}">${l}${fin?' ✔':''}</button>`;}).join('');
   const box=inboxOf(),rv=items.filter(r=>inMonth(r)&&inScope(r)),dn=rv.filter(r=>r.done).length;
   $('main').innerHTML=`<div class="tabs"><button class="${st.tab==='inbox'?'on':''}" data-tab="inbox">📥 受信トレイ（${box.reading.length+box.failed.length}）</button><button class="${st.tab==='sum'?'on':''}" data-tab="sum">📊 サマリー</button><button class="${st.tab==='rev'?'on':''}" data-tab="rev">📄 確認（確定 ${dn}／${rv.length}）</button></div><div id="pane"></div>`;
   if(st.tab==='inbox')drawInbox();else if(st.tab==='sum')drawSummary();else drawReview();
@@ -1069,12 +1095,14 @@ function drawOne(){
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
           <div class="meta"><span><i>支払日</i>${esc(payDayText(h))}</span><span><i>支払方法</i>${esc(h.method||'—')}</span><span><i>拠点</i>${esc(h.loc)}</span><span><i>請求No</i>${esc(h.invNo||'—')}</span><span><i>払う月</i>${esc(h.ym||'—')}</span>${['口座振替','納税'].includes(h.method)&&h.debit&&h.round?`<span><i>報告する回</i>${esc(h.ym.replace('/','年')+'月 '+h.round+'払い')}</span>`:''}<span><i>登録番号</i>${esc(h.regNo||'—')}</span>${h.code?`<span><i>SMILE コード</i>${esc(h.code)}</span>`:''}
             ${ed&&!eh?'<button class="lk" id="oEditH2" style="margin-left:auto">✎ 支払内容を直す</button>':''}</div></div>`;
+  // 請求書の場所（2026-11-19）：「請求書と確認」と「明細と仕訳」の両方で使う
+  const pdfIn=`${docs.length?`<div class="ochips">${APDoc.rotMenu('oRot')}${docs.length>1?docs.map((p,k)=>{const cur=pdfSel[r.id]&&docs.includes(pdfSel[r.id])?pdfSel[r.id]:docs[0],nm=p.split('/').pop().replace(/^AP\d{8}[A-Z0-9]{8}_/,'').replace(/\.[^.]+$/,'');return `<button class="chip ${p===cur?'on':''}" data-pdf="${esc(p)}" title="${esc(p.split('/').pop())}">📄 ${k+1}. ${esc(nm.length>22?nm.slice(0,22)+'…':nm)}</button>`;}).join(''):''}${ed||r.done?'<button class="chip" id="oAttach3" title="見積書・明細・領収書など、請求書のほかの資料（PDF・写真）も付けられます">📎 追加</button>':''}${ed?'<button class="chip" id="oDocX" title="今見ているファイルをこの支払から外します（ファイルは消さずに残します）">🗑 外す</button>':''}</div>`:''}<div class="pdf" id="pdfv">${docs.length?'読み込み中...':`<div style="text-align:center"><div style="margin-bottom:10px">請求書の PDF がありません</div>${ed||r.done?'<button class="pri" id="oAttach">📎 請求書（PDF・写真）を付ける</button><div style="font-size:12px;color:var(--sub);margin-top:6px">ここにドラッグしても付けられます</div>':''}</div>`}</div>`;
   $('pane').innerHTML=`<div class="one ${FULLR?'ap-full':''}">
-    <div class="onebar"><button id="oFull" title="全画面で確かめる（Esc で戻る）">${FULLR?'✕ 全画面をやめる':'⛶ 全画面'}</button><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
+    <div class="onebar"><button id="oDrw" title="一覧を左に出す（押すとその請求書へ）">☰ 一覧</button><button id="oFull" title="全画面で確かめる（Esc で戻る）">${FULLR?'✕ 全画面をやめる':'⛶ 全画面'}</button><button class="lk" id="oBack">‹ 一覧に戻る</button><button class="ic" id="dPrev" title="前へ（←）">‹</button><span class="pos">${i+1} / ${a.length}</span><button class="ic" id="dNext" title="次へ（→）">›</button>
       <span class="stp ${r.done?'done':''}">${r.done?'✔ 確定':esc(stepName(r,r.step))}</span>
       <span class="vsw"><button data-ovw="0" class="${st.items?'':'on'}">📄 請求書と確認</button><button data-ovw="1" class="${st.items?'on':''}" title="請求書の明細と仕訳を税率ごとに突き合わせる（Esc で戻る）">⇔ 明細と仕訳${nIt?`（${nIt}行）`:''}</button></span><span class="sp"></span>
       ${more}</div>
-    <input type="file" id="oAttachIn" accept="${APDoc.ACCEPT}" multiple hidden>${st.items?`<div class="onegrid oitems"><div class="oitems-b">${itemsTabHtml(r)}</div></div>`:`<div class="onegrid"><div class="opdf">${docs.length?`<div class="ochips">${APDoc.rotMenu('oRot')}${docs.length>1?docs.map((p,k)=>{const cur=pdfSel[r.id]&&docs.includes(pdfSel[r.id])?pdfSel[r.id]:docs[0],nm=p.split('/').pop().replace(/^AP\d{8}[A-Z0-9]{8}_/,'').replace(/\.[^.]+$/,'');return `<button class="chip ${p===cur?'on':''}" data-pdf="${esc(p)}" title="${esc(p.split('/').pop())}">📄 ${k+1}. ${esc(nm.length>22?nm.slice(0,22)+'…':nm)}</button>`;}).join(''):''}${ed||r.done?'<button class="chip" id="oAttach3" title="見積書・明細・領収書など、請求書のほかの資料（PDF・写真）も付けられます">📎 追加</button>':''}${ed?'<button class="chip" id="oDocX" title="今見ているファイルをこの支払から外します（ファイルは消さずに残します）">🗑 外す</button>':''}</div>`:''}<div class="pdf" id="pdfv">${docs.length?'読み込み中...':`<div style="text-align:center"><div style="margin-bottom:10px">請求書の PDF がありません</div>${ed||r.done?'<button class="pri" id="oAttach">📎 請求書（PDF・写真）を付ける</button><div style="font-size:12px;color:var(--sub);margin-top:6px">ここにドラッグしても付けられます</div>':''}</div>`}</div></div>
+    <input type="file" id="oAttachIn" accept="${APDoc.ACCEPT}" multiple hidden>${st.items?`<div class="onegrid oitems${st.itemsPdf===false?'':' itpdf'}">${st.itemsPdf===false?'':`<div class="opdf">${pdfIn}</div>`}<div class="oitems-b"><div style="display:flex;justify-content:flex-end;margin-bottom:4px"><button class="lk" id="oItPdf" title="明細と仕訳の横に請求書を並べる／隠す">${st.itemsPdf===false?'📄 請求書も並べる':'請求書を隠す'}</button></div>${itemsTabHtml(r)}</div></div>`:`<div class="onegrid"><div class="opdf">${pdfIn}</div>
       <div class="oside">
 
 
@@ -1088,7 +1116,8 @@ function wireOne(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
   on('oBack',()=>{if(isDirty(r)&&!confirm('保存していない直しがあります。捨てて一覧に戻りますか？'))return;draft=null;hdrDraft=null;cmDraft=null;st.view='list';document.body.classList.remove('ap-lock');drawReview();});
   on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',okRow);on('oSave',async()=>{if(await saveAll(r))render();});
-  on('oFull',()=>setFull(!FULLR));document.body.classList.toggle('ap-lock',FULLR);
+  on('oFull',()=>setFull(!FULLR));on('oDrw',()=>openDrawer(r));
+  on('oItPdf',()=>{st.itemsPdf=st.itemsPdf===false;try{localStorage.setItem('ap.items.pdf',st.itemsPdf?'1':'0');}catch(e){}drawOne();});document.body.classList.toggle('ap-lock',FULLR);
   document.querySelectorAll('[data-ovw]').forEach(b=>b.onclick=()=>{const v=b.dataset.ovw==='1';if(st.items!==v){st.items=v;drawOne();}});
   // 請求書を付ける：その他メニュー・PDF が無いときのボタン・PDF の場所へのドラッグ
   const ai=$('oAttachIn');if(ai)ai.onchange=e=>{const fs=[...e.target.files];e.target.value='';if(fs.length)attachDocs(r,fs);};
@@ -1133,7 +1162,7 @@ function wireOne(r){
   document.querySelectorAll('[data-pdf]').forEach(e=>e.onclick=()=>showPdf(r,e.dataset.pdf));
   {const gp=()=>{const ps=pdfPaths(r);return pdfSel[r.id]&&ps.includes(pdfSel[r.id])?pdfSel[r.id]:ps[0];};
     APDoc.wireRot({call,site:AP_SITE},'oRot',gp,e=>{if(e){snack('回せませんでした：'+e.message,true);return;}const p=gp();delete pdfCache[p];snack('向きを直して保存しました');showPdf(r,p);});}
-  const ps=pdfPaths(r);if(ps.length&&!st.items)showPdf(r,pdfSel[r.id]&&ps.includes(pdfSel[r.id])?pdfSel[r.id]:ps[0]);}
+  const ps=pdfPaths(r);if(ps.length&&(!st.items||st.itemsPdf!==false))showPdf(r,pdfSel[r.id]&&ps.includes(pdfSel[r.id])?pdfSel[r.id]:ps[0]);}
 function creditOf(m){const c=(RULES.journal&&RULES.journal.credit)||{};return c[m]||c['総合振込']||{};}
 const pdfPaths=r=>r.doc.split(/[\r\n;]+/).map(s=>s.trim()).filter(Boolean);
 const dLines=r=>draft||(draft=r.lines.map(l=>({id:l.id,acode:fv(L.sl,l.f,'勘定科目コード')||'',sub:fv(L.sl,l.f,'内訳コード')||'',aname:fv(L.sl,l.f,'勘定科目名')||'',dept:fv(L.sl,l.f,'部門コード')||'',tm:fv(L.sl,l.f,'税区分')||'税込',rate:fv(L.sl,l.f,'税率区分')||'課税10%',

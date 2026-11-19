@@ -442,7 +442,8 @@
       '- items にイレギュラーの明細を、内容ごとにまとめて入れる。label は何か・どこか（例「ルーター別固定IP（大阪・名古屋）」）、amount はその税込の金額（整数）。明細の金額が税抜なら税率（10%・軽減8%）で税込に直す\n' +
       '- text は「イレギュラー：〇〇 12,345円、〇〇 6,789円、計 19,134円」の形（計は items の合計。1つだけなら計は書かない）。理由・用途がわかれば短く添える\n' +
       '- 前の月の明細が無いとき（初めての支払先・アプリで読む前の月）は、前の決裁メモと比べる。自動の判定が「初めての支払先」「Nか月ぶり」なら on=true にし、何の支払いかを1文で text に書く（例「初めての支払先：展示会の出展ブース代」）\n' +
-      '- イレギュラーが無く、初めて・久しぶりでもなければ on=false、items は空、text は ""\n' + PLAIN + '\n' +
+      '- イレギュラーが無く、初めて・久しぶりでもなければ on=false、items は空、text は ""\n' +
+      '- 今回の仕訳の決裁メモ（人が確かめた説明）があれば、何の支払いか・どこの分かの言い方はそれに合わせる\n' + PLAIN + '\n' +
       '- 明細に無い金額を作らない。text は全体で120字くらいまで';
     const RT = { '課税10%': 0.1, '軽減8%': 0.08 };
     const row = x => `${x.Date || ''}｜${x.ItemName || x.Name || x.Description || ''}｜${x.Spec || ''}｜${x.Note || ''}｜${x.TaxRate || ''}｜${x.Amount == null ? '' : x.Amount}`;
@@ -453,7 +454,8 @@
     const ctxText = `## 支払先：${t.payee || ''}\n## 自動の判定：${t.why || 'なし（毎月の支払先）'}\n\n## 今回（払う月 ${t.ym || ''}・請求書の金額（税込）${t.total ? yen(t.total) + ' 円' : '不明'}・明細の金額は${t.itemsAmount || '税抜か税込か不明'}。日付｜品名｜規格｜拠点・備考｜税率｜金額）\n` +
       cur.slice(0, 300).map(row).join('\n') +
       ((t.prev || []).length ? '\n\n## 前の月の明細（同じ支払先。品名｜規格｜拠点・備考｜税率｜金額の合計）\n' + t.prev.slice(0, 12).map(p => `### ${p.ym}（金額は${p.amount || '不明'}）\n${pack(p.items || [])}`).join('\n') : '\n\n## 前の月の明細：なし（アプリで読んだ請求書がまだ無い）') +
-      ((t.memos || []).length ? '\n\n## 前の決裁メモ（払う月｜決裁メモ）\n' + t.memos.slice(0, 30).join('\n') : '');
+      ((t.memos || []).length ? '\n\n## 前の決裁メモ（払う月｜決裁メモ）\n' + t.memos.slice(0, 30).join('\n') : '') +
+      ((t.curMemos || []).length ? '\n\n## 今回の仕訳の決裁メモ（科目｜部門｜税込｜決裁メモ。人が確かめた説明）\n' + t.curMemos.slice(0, 40).join('\n') : '');
     const body = { model: (s.models && s.models.read) || 'claude-sonnet-5-5', max_tokens: 3000, system: [{ type: 'text', text: sys, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: ctxText }], output_config: { effort: 'low', format: { type: 'json_schema', schema: TOKKI_SCHEMA } } };
     const r = await ask(ctx, s, { title: 'ap.tokki', caller: t.invoiceId || '' }, body);
