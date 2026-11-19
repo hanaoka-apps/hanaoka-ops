@@ -157,6 +157,8 @@ async function reload(){
   SL.byInv={};sl.forEach(it=>{const k=String(it.fields[F(SL,'請求書ID')]||'');if(k)(SL.byInv[k]=SL.byInv[k]||[]).push(it.fields);});
   Object.values(SL.byInv).forEach(a=>a.sort((x,y)=>(+x[F(SL,'明細行番号')]||0)-(+y[F(SL,'明細行番号')]||0)));
   VB.byCode={};vb.forEach(it=>{const c=(it.fields[F(VB,'仕入先コード')]||'').trim();if(c)VB.byCode[c]=it.fields;});
+  // 支払先コードの無い振込先（経費の確定で登録したもの）：名前・登録番号で探す（経費の画面の masterBankOf と同じ。2026-11-19）
+  VB.noCode=vb.filter(it=>!(it.fields[F(VB,'仕入先コード')]||'').trim()&&it.fields[F(VB,'有効フラグ')]!==false).map(it=>({f:it.fields,n:nmN(it.fields[F(VB,'仕入先名')]),reg:String(it.fields[F(VB,'登録番号')]||'').trim()}));
   await syncBatches();msg('');render();}
 
 // ---------- 仕入先マスタ（でんさい番号・SMILE の仕入先名） ----------
@@ -190,6 +192,11 @@ function invBank(f){return f&&f.PayeeBankCode?{BankCode:f.PayeeBankCode||'',Bran
 // 全銀の受取人名は半角カナ（経費の画面で保存すれば半角になるが、AI の読み取りのまま確定したときのため）
 function hanKana(s){const m={'ガ':'ｶﾞ','ギ':'ｷﾞ','グ':'ｸﾞ','ゲ':'ｹﾞ','ゴ':'ｺﾞ','ザ':'ｻﾞ','ジ':'ｼﾞ','ズ':'ｽﾞ','ゼ':'ｾﾞ','ゾ':'ｿﾞ','ダ':'ﾀﾞ','ヂ':'ﾁﾞ','ヅ':'ﾂﾞ','デ':'ﾃﾞ','ド':'ﾄﾞ','バ':'ﾊﾞ','ビ':'ﾋﾞ','ブ':'ﾌﾞ','ベ':'ﾍﾞ','ボ':'ﾎﾞ','パ':'ﾊﾟ','ピ':'ﾋﾟ','プ':'ﾌﾟ','ペ':'ﾍﾟ','ポ':'ﾎﾟ','ヴ':'ｳﾞ','ア':'ｱ','イ':'ｲ','ウ':'ｳ','エ':'ｴ','オ':'ｵ','カ':'ｶ','キ':'ｷ','ク':'ｸ','ケ':'ｹ','コ':'ｺ','サ':'ｻ','シ':'ｼ','ス':'ｽ','セ':'ｾ','ソ':'ｿ','タ':'ﾀ','チ':'ﾁ','ツ':'ﾂ','テ':'ﾃ','ト':'ﾄ','ナ':'ﾅ','ニ':'ﾆ','ヌ':'ﾇ','ネ':'ﾈ','ノ':'ﾉ','ハ':'ﾊ','ヒ':'ﾋ','フ':'ﾌ','ヘ':'ﾍ','ホ':'ﾎ','マ':'ﾏ','ミ':'ﾐ','ム':'ﾑ','メ':'ﾒ','モ':'ﾓ','ヤ':'ﾔ','ユ':'ﾕ','ヨ':'ﾖ','ラ':'ﾗ','リ':'ﾘ','ル':'ﾙ','レ':'ﾚ','ロ':'ﾛ','ワ':'ﾜ','ヲ':'ｦ','ン':'ﾝ','ァ':'ｱ','ィ':'ｲ','ゥ':'ｳ','ェ':'ｴ','ォ':'ｵ','ッ':'ﾂ','ャ':'ﾔ','ュ':'ﾕ','ョ':'ﾖ','ー':'-','（':'(','）':')','　':' ','．':'.','・':'.','，':',','－':'-'};
   return String(s||'').normalize('NFKC').replace(/[\u3041-\u3096]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)).split('').map(c=>m[c]||c).join('').toUpperCase();}
+const nmN=s=>String(s||'').normalize('NFKC').replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|㈱|㈲|[\s　・.,、。]/g,'');
+function vbOf(f){return f?{BankCode:f[F(VB,'銀行コード')]||'',BranchCode:f[F(VB,'支店コード')]||'',AcctType:f[F(VB,'口座区分')]||'',AcctNo:f[F(VB,'口座番号')]||'',AcctHolder:f[F(VB,'口座名義カナ')]||''}:null;}
+// 経費の振込先：請求書の口座がそろっていればそれ。無ければ振込先マスタ（コード無し）を登録番号・名前で。それも無ければ請求書の口座（足りないまま）
+function expBank(f){const b=invBank(f);if(b&&b.BankCode&&b.BranchCode&&b.AcctNo)return b;
+  const reg=String(iv(f,'登録番号')||'').trim(),n=nmN(iv(f,'支払先名'));const e=(VB.noCode||[]).find(x=>(reg&&x.reg===reg)||(n&&x.n===n));return e?vbOf(e.f):b;}
 function vbSnap(code){const b=VB.byCode[code];if(!b)return {};return {BankCode:b[F(VB,'銀行コード')]||'',BranchCode:b[F(VB,'支店コード')]||'',AcctType:b[F(VB,'口座区分')]||'',AcctNo:b[F(VB,'口座番号')]||'',AcctHolder:b[F(VB,'口座名義カナ')]||''};}
 
 // ---------- 支払回 × 部門 ----------
@@ -360,7 +367,7 @@ async function generateRun(){
     const code=iv(f,'支払先コード')||'',name=iv(f,'支払先名')||'',method=iv(f,'支払手段')||'総合振込',loc=cat==='工場経費'?'工場':'本社';
     // 口座振替・納税（e-Tax）は、請求書の引落日（納付日）があればその日が支払日（会計仕訳の伝票日付）
     const pdate=DEBIT_METHODS.includes(method)?jstDay(iv(f,'引落予定日')):'';
-    add({code,name,method,amount:+iv(f,'金額_税込')||0,loc,dept:exDeptOf(x),ids:[String(x.id)],prepaid:pst==='先行支払済',ppdate:iv(f,'先行支払日')||'',pdate,due:'',source:'経費',key:(code||name)+'|'+method+'|#'+x.id,bank:invBank(f)});});
+    add({code,name,method,amount:+iv(f,'金額_税込')||0,loc,dept:exDeptOf(x),ids:[String(x.id)],prepaid:pst==='先行支払済',ppdate:iv(f,'先行支払日')||'',pdate,due:'',source:'経費',key:(code||name)+'|'+method+'|#'+x.id,bank:expBank(f)});});
   // 仕入：「仕入（SMILE）」で確認OKの仕入先。分け方（振込・でんさい・相殺・調整・現金・海外送金・口座振替）ごとに1行
   const MM={振込:'総合振込',でんさい:'でんさい',手形:'でんさい',相殺:'相殺',調整:'調整',現金:'現金',海外送金:'海外送金',口座振替:'口座振替'};
   const pj=s=>{try{return JSON.parse(s||'null');}catch{return null;}};let unchecked=0;
@@ -641,7 +648,7 @@ async function verifyRound(round){
       const blob=await call('GET',`/drives/${wfDrive('WF_Attach')}/root:/${encPath(yr,no,k)}:/content`,null,null,true);wfHash=JSON.parse(await blob.text()).batch.hash;}catch(e){}
     const bankNg=inB.filter(p=>pv(p,'支払手段')==='総合振込'&&pv(p,'支払状態')!=='先行支払済'&&(()=>{const c=pv(p,'支払先コード');
       // 照らし合わせる先：SMILE のコードがあれば振込先マスタ、無ければ（経費）元の請求書の振込先
-      let s=c&&VB.byCode[c]?vbSnap(c):null;if(!s&&pv(p,'元')==='経費'){const id=String(pv(p,'元請求書ID')||'').split(',')[0];const x=INV.items.find(i=>String(i.id)===id);if(x)s=invBank(x.f);}
+      let s=c&&VB.byCode[c]?vbSnap(c):null;if(!s&&pv(p,'元')==='経費'){const id=String(pv(p,'元請求書ID')||'').split(',')[0];const x=INV.items.find(i=>String(i.id)===id);if(x)s=expBank(x.f);}
       return s&&s.BankCode&&(s.BankCode!==pv(p,'銀行コード')||s.BranchCode!==pv(p,'支店コード')||s.AcctNo!==pv(p,'口座番号'));})());
     const ok=h===sbv(b,'照合の鍵')&&h===wfHash&&!bankNg.length;
     out.push({ok,label:`${d}：申請 ${no}（決裁済）`,detail:ok?'決裁した内容と一致':[h!==sbv(b,'照合の鍵')?'支払指図が決裁の後に変わっています':'',wfHash&&h!==wfHash?'申請に付けた明細と違います':'',!wfHash?'申請に付けた明細を読めません':'',bankNg.length?`振込先口座がマスタと変わりました（${bankNg.map(p=>pv(p,'支払先名')).join('・')}）`:''].filter(Boolean).join('／')});
