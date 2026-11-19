@@ -10,8 +10,8 @@
 <title>経費 | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="ap_intake.js?v=20261118"></script>
-<script src="ap_ai.js?v=20261118"></script>
+<script src="ap_intake.js?v=20261119"></script>
+<script src="ap_ai.js?v=20261119"></script>
 <script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261109" defer></script>
 <script src="ap_month.js?v=20261106"></script>
@@ -30,6 +30,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
 main{padding:16px 20px;display:grid;gap:14px;grid-template-columns:minmax(0,1fr)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0;overflow-x:auto}
 .card h2{font-size:14px;margin:0 0 10px;color:var(--sub);font-weight:600}
+#oLines>summary{position:sticky;top:-14px;z-index:3;background:var(--card,#fff);padding:4px 0}
+.memo.why{font-size:12px;color:var(--sub);align-items:flex-start}.memo.why>div{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;color:var(--ink,#222)}
+.lw{font-size:11.5px;padding:0 6px;border-radius:999px;background:#eef1f6;color:var(--sub);white-space:nowrap}.lw.ok{background:#e7f5ec;color:#2f7d4f}.lw.ng{background:#fff3dc;color:#8a5a00}
+.aimemo{margin-top:8px;font-size:12.5px;background:#f7f8fb;border-radius:8px;padding:8px 10px}.aimemo b{font-size:12.5px}
 .top{display:grid;gap:14px;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1.6fr)}
 .big{font-size:32px;font-weight:700;letter-spacing:.5px}.big small{font-size:15px;font-weight:500;color:var(--sub)}
 .cmp{margin-top:6px;display:grid;grid-template-columns:auto auto 1fr;gap:2px 12px;font-size:13px;color:var(--sub)}
@@ -324,7 +328,7 @@ async function showApp(){
   try{await resolveLists();await loadAll();}catch(e){msg('エラー');snack(e.message,true);console.error(e);}
   render();}
 async function loadAll(){
-  msg('読み込み中...');const ym=month();
+  msg('読み込み中...');PASTC=new Map();const ym=month();
   // AI の結果の取り込みは請求書・仕訳を書き換えるので、その2つは取り込みのあと。ほかのリストは同時に読む
   const others=Promise.all([fetchAll(L.vb),fetchAll(L.sp,`fields/${F(L.sp,'決済月')} eq '${ym}'`),fetchAll(L.pi,`fields/${F(L.pi,'決済月')} eq '${ym}'`),fetchAll(L.sb,`fields/${F(L.sb,'決済月')} eq '${ym}'`)]);others.catch(()=>{});
   await takeAI();
@@ -776,6 +780,34 @@ function knownPattern(payee,acode,dept){const q=jnorm(payee);if(!JOURNAL||q.leng
 function newPats(r){if(!JOURNAL){if(!JLOAD)JLOAD=loadJournal().then(()=>{if(st.view==='one')drawOne();}).catch(()=>{});return [];}
   const acked=new Set(r.log.filter(e=>e.act==='新しい付け方を確かめた').map(e=>e.key)),{h,ls}=viewOf(r);
   return ls.filter(l=>l.acode&&knownPattern(h.payee||r.payee,l.acode,l.dept)===false&&!acked.has(patKey(l)));}
+// ---------- 仕訳の行の「なぜ」（2026-11-19 引き算②）：AI の理由（CheckLog の AIの理由）と、過去の仕訳と比べた結果を行の横に ----------
+//   過去の仕訳：会計の実績（仕訳インデックス。支払先は摘要の先頭で見る）＋アプリで確かめた前の月の請求書。支払先ごとに覚えておく（読み込み直すと作り直す）
+let PASTC=new Map();
+function pastOf(r){const q=jnorm(r.payee||''),key=q+'|'+(r.ym||'')+'|'+(JOURNAL?JOURNAL.length:0);if(PASTC.has(key))return PASTC.get(key);
+  const c6=x=>String(x||'').trim().padStart(6,'0'),J=JOURNAL||[],head=m=>jnorm(String(m||'').replace(/^\(\d+\)/,'').trim().split(/[\s　]/)[0]);
+  let acc=q.length>=2?J.filter(x=>{const h=head(x.memo);return h.length>=2&&(q.includes(h)||h.includes(q));}):[];
+  if(!acc.length&&q.length>=2)acc=J.filter(x=>x.n.includes(q));
+  acc=acc.slice().sort((a,b)=>String(b.ym).localeCompare(String(a.ym)));
+  const app=ALL.filter(o=>o.id!==r.id&&jnorm(fv(L.inv,o.f,'支払先名'))===q&&(fv(L.inv,o.f,'対象年月')||'')<(r.ym||'9999')&&((+o.f.ExpenseStep||0)>=1||(fv(L.inv,o.f,'支払ステータス')&&fv(L.inv,o.f,'支払ステータス')!=='確認待')))
+    .map(o=>({ym:fv(L.inv,o.f,'対象年月')||'',round:fv(L.inv,o.f,'支払日区分')||'',lines:(LINES[o.id]||[]).map(x=>({kc:c6(fv(L.sl,x.f,'勘定科目コード')),kn:fv(L.sl,x.f,'勘定科目名')||'',dc:c6(fv(L.sl,x.f,'部門コード')),zn:fv(L.sl,x.f,'税区分')||fv(L.sl,x.f,'税率')||'',amt:+fv(L.sl,x.f,'金額_税込')||0,memo:fv(L.sl,x.f,'決裁メモ')||fv(L.sl,x.f,'摘要')||''}))}))
+    .filter(x=>x.lines.length).sort((a,b)=>b.ym.localeCompare(a.ym));
+  const all=acc.map(x=>({kc:c6(x.kc),kn:x.kn,dc:c6(x.dc),zn:x.zn})).concat(app.flatMap(x=>x.lines));
+  const v={acc,app,all,loaded:!!JOURNAL};PASTC.set(key,v);return v;}
+function lineVerdict(r,l){const c6=x=>String(x||'').trim().padStart(6,'0'),p=pastOf(r);
+  if(!p.all.length)return {k:p.loaded?'none':'wait',n:0};
+  const same=p.all.filter(x=>x.kc===c6(l.acode)&&x.dc===c6(l.dept)).length,sameK=p.all.filter(x=>x.kc===c6(l.acode)).length;
+  return same?{k:'same',n:same,of:p.all.length}:sameK?{k:'dept',n:sameK,of:p.all.length}:{k:'new',n:0,of:p.all.length};}
+function aiWhy(r,l){for(const e of (r.log||[]).slice().reverse()){if(e.act!=='AIの理由')continue;const ls=e.lines||[];
+  const m=ls.find(x=>x.acode===l.acode&&(!x.dept||x.dept===l.dept))||ls.find(x=>x.acode===l.acode);if(m)return m.why||'';}return '';}
+// AI のコメントのうち仕訳のこと（科目・税率・部門など）：要確認のカードにせず、仕訳のカードの「AI のメモ」に出す
+function aiSplit(r){const out={lines:[],other:[]};alertsOf(r).forEach(a=>{if(a.k!=='AI')return;const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''];
+  const x={sev:'check',t:td[0],d:td[1],ai:true};(issAt(x,viewOf(r).h)==='lines'?out.lines:out.other).push(x);});return out;}
+// 行の横の「なぜ」：AI の理由・過去と同じか・会計の実績に無い付け方なら ✔ 確かめた・🔍
+function lineWhy(r,l,k,ed){if(!l.acode)return '';const w=aiWhy(r,l),v=lineVerdict(r,l),np=newPats(r).some(x=>patKey(x)===patKey(l));
+  const tag=np?`<span class="lw ng">⚠ 会計の実績（直近6か月）に無い付け方</span>${acctChecker()&&(ed||r.done)?`<button class="lk" data-ackpat="${esc(patKey(l))}" title="確かめた記録を残すと確定できます">✔ 確かめた</button>`:''}`
+    :v.k==='same'?`<span class="lw ok">✔ 過去と同じ（${v.n}/${v.of}件）</span>`:v.k==='dept'?`<span class="lw ng">⚠ 科目は過去にあり・部門が違う</span>`:v.k==='new'?`<span class="lw ng">⚠ 過去に無い付け方</span>`:v.k==='none'?'<span class="lw">過去の仕訳なし</span>':'';
+  const low=l.conf&&l.conf<70&&v.k!=='same'?'<span class="lw ng">AI の自信が低い</span>':'';
+  return `<div class="memo why"><span>なぜ</span><div style="flex:1;min-width:0">${w?`🤖 ${esc(w)}`:v.k==='none'?'AI はマスタと品名から決めました':'<span style="color:var(--sub)">—</span>'} ${tag}${low}<button class="lk" data-hist="${k}" title="過去の仕訳を見る">🔍</button></div></div>`;}
 // 気づき：要修正（直さないと確認完了できない）／要確認（見て判断する。確認完了で「確かめた」と記録）／参考
 function issuesOf(r){
   if(r.reading)return [{sev:'info',t:'AI が読み取り中です',d:'読み取りが終わると、ここに気づきが出ます'}];
@@ -786,17 +818,19 @@ function issuesOf(r){
   if(!h.round)fix('支払回がありません','10日・20日・月末から選んでください');
   if(!h.method)fix('支払方法がありません','総合振込・口座振替などから選んでください');
   if(!ls.length)fix('仕訳がありません','「仕訳を確認」で入れてください（過去の仕訳から案も作れます）');
-  else{if(ls.some(l=>!l.acode))out.push({sev:'fix',t:'科目が決まっていない行があります',d:'「💬 AI と仕訳を決める」で、支払の中身を AI に答えてください',jr:true});
-    else if(ls.some(l=>l.conf&&l.conf<70))out.push({sev:'check',t:'AI が仕訳に自信のない行があります',d:'「💬 AI と仕訳を決める」で、支払の中身を AI に答えると決め直します',jr:true});
-    newPats(r).forEach(l=>out.push({sev:'check',t:'会計の実績に無い付け方です',d:`${l.aname}・部門 ${l.dept}・${l.rate}：碓井さん・福田さんが確かめてから確定します`,jr:true,ack:patKey(l)}));
-    {const u=ls.find(l=>l.acode&&uchiNeed(l.acode)&&!l.sub);if(u)fix('内訳が空の行があります',`${u.aname} は内訳が要ります。「仕訳を確認」で内訳を選んでください`);}
-    if(lsum!==h.amount)fix('仕訳の合計が金額と違います',`仕訳 ${yen(lsum)} 円／金額 ${yen(h.amount)} 円`);}
+  else{if(ls.some(l=>!l.acode))out.push({sev:'fix',t:'科目が決まっていない行があります',d:'仕訳のカードの「💬 AI と仕訳を決める」で、支払の中身を AI に答えてください',nb:true});
+    // 仕訳で確かめてほしいこと（2026-11-19）：会計の実績に無い付け方・AI の自信が低い行（過去と同じ付け方なら出さない）・AI の仕訳のメモ を1枚に。中身は仕訳の行の横に出す
+    {const np=newPats(r),low=ls.filter(l=>l.acode&&l.conf&&l.conf<70&&!np.some(x=>patKey(x)===patKey(l))&&lineVerdict(r,l).k!=='same'),am=aiSplit(r).lines;
+      const parts=[np.length?`会計の実績に無い付け方 ${np.length}行`:'',low.length?`AI の自信が低い行 ${low.length}行`:'',am.length?`AI のメモ ${am.length}件`:''].filter(Boolean);
+      if(parts.length)out.push({sev:'check',t:'仕訳で確かめてほしいことがあります',d:parts.join('・')+(np.length?'。会計の実績に無い付け方は、行の「✔ 確かめた」を押すと確定できます':'。仕訳の行の横を見てください'),nb:true});}
+    {const u=ls.find(l=>l.acode&&uchiNeed(l.acode)&&!l.sub);if(u)out.push({sev:'fix',t:'内訳が空の行があります',d:`${u.aname} は内訳が要ります。「仕訳を確認」で内訳を選んでください`,nb:true});}   // 手で選ぶもの（AI に教えるボタンは出さない）
+    if(lsum!==h.amount)out.push({sev:'fix',t:'仕訳の合計が金額と違います',d:`仕訳 ${yen(lsum)} 円／金額 ${yen(h.amount)} 円`,nb:true});}
   if(h.method==='総合振込'&&r.status!=='先行支払済'){const b=h.bk,m=masterBankOf(Object.assign({},r,{payee:h.payee,code:h.code,regNo:h.regNo})),full=bankFull(b);
     if(!full&&!m)fix('振込先が登録されていません','請求書の振込先を確認し、口座情報を入力してください');
     else if(full&&m&&!sameBank(b,m))chk('振込先が振込先マスタと違います',`マスタ：${bankText(m)}／請求書：${bankText(b)}。口座は自動で変えません。電話などで確かめてください`);
     else if(full&&!m)chk('初めての振込先です','銀行・支店のコードと口座を確かめてください（確定すると振込先マスタに登録します）');}
   alertsOf(r).forEach(a=>{if(a.k==='口座'||a.k==='初めての振込先')return;
-    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''];out.push({sev:'check',t:td[0],d:td[1],ai:true});}
+    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''],x={sev:'check',t:td[0],d:td[1],ai:true};if(issAt(x,h)!=='lines')out.push(x);}   // 仕訳のことは仕訳のカードの「AI のメモ」へ
     else if(a.k==='読み取り失敗')inf('AI が読み取れませんでした','請求書を見て、支払先・金額・仕訳を入れてください');
     else if(a.k==='初めて'){}   // 上の「初めての支払先」の印と特記事項に出ている
     else if(a.k==='前月より増')inf('前月より増えています',a.t);
@@ -852,6 +886,7 @@ async function sendJournal(r,text){if(TEACH.busy)return;
       else{const before=ls.map(l=>`${l.aname||'—'} ${l.dept||''} ${yen(l.incl)}`).join('・');draft=nl;
         let ok=false;AIEDIT=true;try{ok=await saveAll(r,true);}finally{AIEDIT=false;}buildItems();r=cur()||r;
         if(!ok){TEACH.msgs.push({role:'ai',text:'✖ 作り直した仕訳を保存できませんでした。もう一度頼んでください'});TEACH.busy=false;afterAI();return;}
+        await patchInv(r,{},{act:'AIの理由',memo:`${a.relines.length}行`,lines:a.relines.filter(n=>n.reason).map(n=>({acode:n.AccountCode||'',dept:n.DeptCode||'',why:String(n.reason).slice(0,200)}))}).catch(()=>{});
         await patchInv(r,{},{act:'AIと仕訳を作り直した',memo:[a.summary||a.reply||'',`${nl.length}行 ${yen(sum)} 円`,`前：${before}`].filter(Boolean).join(' ／ ').slice(0,600),step:r.step}).catch(()=>{});
         TEACH.msgs.push({role:'ai',text:(a.reply||'')+`\n✔ 仕訳を ${nl.length} 行に作り直して保存しました（合計 ${yen(sum)} 円）：`+nl.map(l=>`${l.aname}・${l.dept}・${l.rate} ${yen(l.incl)}`).join('、')});}
       TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);return;}
@@ -861,6 +896,7 @@ async function sendJournal(r,text){if(TEACH.busy)return;
       l.sub=n.SubCode||'';if(l.sub&&!uchiOf(l.acode).some(u=>u.code===l.sub))l.sub='';if(n.ApprovalNote)l.memo=n.ApprovalNote;
       const now=`${l.aname}・${l.dept}・${l.rate}`;done.push(`${n.index+1}行目 ${was===now?now+'（そのまま）':was+' → '+now}`);});
     if(done.length){AIEDIT=true;try{await saveAll(r,true);}finally{AIEDIT=false;}buildItems();r=cur()||r;
+      {const wl=(a.lines||[]).filter(n=>n.reason&&ls[n.index]).map(n=>({acode:n.AccountCode||ls[n.index].acode,dept:n.DeptCode||ls[n.index].dept,why:String(n.reason).slice(0,200)}));if(wl.length)await patchInv(r,{},{act:'AIの理由',memo:`${wl.length}行`,lines:wl}).catch(()=>{});}
       await patchInv(r,{},{act:'AIと仕訳を決めた',memo:[a.summary||a.reply||'',...done].filter(Boolean).join(' ／ ').slice(0,400),step:r.step}).catch(()=>{});}
     const mem=(a.memory||[]).filter(m=>m.key&&m.fact);
     if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.payee||''})),me());
@@ -940,12 +976,12 @@ function drawOne(){
     r.status==='先行支払済'?'<span class="bd">先行支払済</span>':'',r.hold?'<span class="bd warn">⏸ 保留中</span>':'',dirty?'<span class="bd warn">未保存の直しあり</span>':''].join('');
   // 気づき
   const LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']},gen=iss.filter(x=>(x.at||'gen')==='gen');
-  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
+  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading&&!x.nb?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
   const wrapI=(card,at)=>{const l=iss.filter(x=>x.at===at);return card&&l.length?`<div class="ocx">${card}<div class="ocx-i">${l.map(issOne).join('')}</div></div>`:card;};
-  const issCard=!gen.length&&!(r.reject&&!r.done)?'':`<div class="oc" id="oIss"><div class="oh"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></div>
+  const issCard=!gen.length&&!(r.reject&&!r.done)?'':`<details class="oc" id="oIss" ${gen.some(x=>x.sev==='fix')||(r.reject&&!r.done)?'open':''}><summary class="oh" style="cursor:pointer"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=gen.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></summary>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
     ${gen.map(issOne).join('')}
-    </div>`;
+    </details>`;
   const teachCard='';   // 相談は浮いた小窓（drawTeach）
   // 先に登録した請求書（PDF なし）がある：そちらに付ける
   const pre=ed?preOf(r):null;
@@ -1001,7 +1037,7 @@ function drawOne(){
   const ae=ed&&acctEditor();   // 科目・部門・税率・内訳を直接直せる人（ほかの人は AI と決める）
   const lOpen=st.openLines??true,le=ed&&(st.editLines===r.id||!!draft);
   const first=ls[0]?ls[0].aname+(ls.length>1?` ほか${ls.length-1}`:''):'';
-  const lnCard=`<details class="oc" id="oLines" ${lOpen?'open':''}><summary><b>仕訳を確認</b><span class="ocnt">（${ls.length}行）</span><span class="sp"></span><span class="sumr ${lsum!==h.amount?'ng':''}">${esc(first)}　${yen(lsum)}円</span><button class="lk" id="lHist" style="margin-left:10px" title="この支払先を、過去にどう仕訳しているか（会計の実績・アプリ）">🔍 過去の仕訳</button>${ed?`<button class="lk" id="lEdit" style="margin-left:10px" title="ふだんは AI が決めます。手で直すときだけ">${le?'閉じる':'✎ 編集'}</button>`:''}</summary>
+  const lnCard=`<details class="oc" id="oLines" ${lOpen?'open':''}><summary><b>仕訳を確認</b><span class="ocnt">（${ls.length}行）</span><span class="sp"></span><span class="sumr ${lsum!==h.amount?'ng':''}" title="貸方：${esc(creditOf(h.method).code||'—')}">${esc(first)}　${yen(lsum)}円 ${lsum===h.amount?'<span style="color:var(--down)">✔</span>':`<span style="color:var(--up)">⚠ 金額と ${yen(lsum-h.amount)} 違う</span>`}</span><button class="lk" id="lHist" style="margin-left:10px" title="この支払先を、過去にどう仕訳しているか（会計の実績・アプリ）">🔍 過去の仕訳</button>${ed?`<button class="lk" id="lEdit" style="margin-left:10px" title="ふだんは AI が決めます。手で直すときだけ">${le?'閉じる':'✎ 編集'}</button>`:''}</summary>
     <div class="lnw"><table class="ln-t"><tr><th style="width:20%;min-width:96px">科目</th><th style="width:17%;min-width:86px">部門</th><th style="min-width:60px">税</th><th style="min-width:78px">税率</th><th class="n" style="min-width:100px">税抜</th><th class="n" style="min-width:86px">消費税</th><th class="n" style="min-width:84px">税込</th><th style="width:30px"></th></tr>
     ${ls.map((l,k)=>le?`<tr class="l1"><td>${ae?`<input list="dl-kamoku" data-lk="${k}" data-lf="acct" value="${esc(l.aname)}" title="${esc(l.acode?'科目コード '+l.acode:'科目コードなし')}${l.conf&&l.conf<70?'（AI の自信が低い）':''}" ${l.conf&&l.conf<70?'style="background:var(--warn-l)"':''}>`:`<span title="${esc(l.acode?'科目コード '+l.acode:'')}" ${l.conf&&l.conf<70?'style="background:var(--warn-l)"':''}>${l.aname?esc(l.aname):'<b style="color:var(--up)">未決定</b>'}</span>`}</td>
         <td>${ae?`<select data-lk="${k}" data-lf="dept">${bopt(l.dept)}</select>`:esc(bname(l.dept))}</td><td><select data-lk="${k}" data-lf="tm">${['税込','税抜'].map(x=>`<option ${x===l.tm?'selected':''}>${x}</option>`).join('')}</select></td>
@@ -1010,18 +1046,18 @@ function drawOne(){
         <td class="n">${yen(l.incl)}</td><td><button data-ldel="${k}" style="padding:1px 7px" title="この行を消す">×</button></td></tr>
       <tr class="l2"><td colspan="8"><div class="memo">${uchiOf(l.acode).length&&!ae?(l.sub?`<span>内訳</span><b style="font-weight:500;white-space:nowrap">${esc(l.sub)} ${esc(uchiName(l.acode,l.sub))}</b>`:uchiNeed(l.acode)?'<span>内訳</span><b style="color:var(--up)">未選択</b>':''):uchiOf(l.acode).length?`<span>内訳</span><select class="uchi ${uchiNeed(l.acode)&&!l.sub?'ng':''}" data-lk="${k}" data-lf="sub"><option value="">${uchiNeed(l.acode)?'（選んでください）':''}</option>${uchiOf(l.acode).map(u=>`<option value="${esc(u.code)}" ${u.code===l.sub?'selected':''}>${esc(u.code)} ${esc(u.name)}</option>`).join('')}${l.sub&&!uchiOf(l.acode).some(u=>u.code===l.sub)?`<option selected value="${esc(l.sub)}">${esc(l.sub)}</option>`:''}</select>`:''}<span>摘要</span><input type="text" data-lk="${k}" data-lf="note" value="${esc(l.note)}" placeholder="支払先・内容・期間など（会計仕訳の摘要。全角40字まで）"></div>
         <div class="memo am"><span>決裁メモ</span><input type="text" data-lk="${k}" data-lf="memo" value="${esc(l.memo||'')}" placeholder="社長・室長が決裁で読む説明（何のお金か・誰／どこの分・回数など。例：本社エブリィ(37/84回)）"></div></td></tr>`
-      :`<tr class="l1"><td title="${esc(l.acode?'科目コード '+l.acode:'')}">${esc(l.aname)}</td><td>${esc(bname(l.dept))}</td><td>${esc(l.tm)}</td><td>${esc(l.rate)}</td><td class="n">${yen(l.excl)}</td><td class="n">${yen(l.tax)}</td><td class="n">${yen(l.incl)}</td><td><button class="lk" data-hist="${k}" title="この行の科目・部門が、過去の仕訳と同じかを見る" style="padding:0 2px">🔍</button></td></tr>
+      :`<tr class="l1"><td title="${esc(l.acode?'科目コード '+l.acode:'')}">${esc(l.aname)}</td><td>${esc(bname(l.dept))}</td><td>${esc(l.tm)}</td><td>${esc(l.rate)}</td><td class="n">${yen(l.excl)}</td><td class="n">${yen(l.tax)}</td><td class="n">${yen(l.incl)}</td><td></td></tr>
       <tr class="l2"><td colspan="8"><div class="memo">${l.sub?`<span>内訳</span><b style="font-weight:500;white-space:nowrap">${esc(l.sub)} ${esc(uchiName(l.acode,l.sub))}</b>`:uchiNeed(l.acode)?'<span>内訳</span><b style="color:var(--up)">未選択</b>':''}<span>摘要</span><b style="font-weight:500">${esc(l.note)||'—'}</b></div>
-        <div class="memo am"><span>決裁メモ</span><b style="font-weight:600">${esc(l.memo||'')||'—'}</b></div></td></tr>`).join('')}
-    <tr><td colspan="6"><b>合計</b> <span style="font-size:12px;color:var(--sub)">${lsum===h.amount?'金額と一致':`金額 ${yen(h.amount)} と ${yen(lsum-h.amount)} 違う`}</span>　<span style="font-size:12px;color:var(--sub)">貸方：${esc(creditOf(h.method).code||'—')}</span></td><td class="n"><b style="color:${lsum===h.amount?'var(--down)':'var(--up)'}">${yen(lsum)}</b></td><td></td></tr></table></div>
-    ${ed?`<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">${window.APAI?'<button class="pri" id="lAi" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>':''}${le?`<button id="lAdd">＋ 行を足す</button>${ae?'<button id="lSug">🔍 過去の仕訳から案を作る</button>':''}${draft?'<button id="lX">仕訳の直しを取り消す</button>':''}`:''}</div>`:''}<div id="sugBox"></div></details>`;
+        <div class="memo am"><span>決裁メモ</span><b style="font-weight:600">${esc(l.memo||'')||'—'}</b></div>${lineWhy(r,l,k,ed)}</td></tr>`).join('')}
+    </table></div>${(()=>{const am=aiSplit(r).lines;return am.length?`<div class="aimemo"><b>🤖 AI のメモ（仕訳）</b>${am.map(x=>`<div>・${esc(x.t)}${x.d?' '+esc(x.d):''}</div>`).join('')}</div>`:'';})()}
+    ${ed?`<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">${window.APAI?'<button class="pri" id="lAi" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>':''}${le?`<button id="lAdd">＋ 行を足す</button>${draft?'<button id="lX">仕訳の直しを取り消す</button>':''}`:''}</div>`:''}<div id="sugBox"></div></details>`;
   // 確認履歴
   const logCard=`<details class="oc" id="oLog" ${st.openLog?'open':''}><summary><b>確認履歴</b><span class="ocnt">（${r.log.length}件）</span></summary><div class="log">
     <div>受け付け：${esc(fmtTime(r.at))} ${esc(r.by)}${r.wf?`（ワークフロー ${esc(r.wf)}）`:''}・AI：${esc(r.ai||'—')}</div>
     ${r.log.map(l=>`<div>${esc(fmtTime(l.at))} ${esc(l.by)}：${esc(l.act)}${l.step!=null?`（${l.step+1}段目）`:''}${l.sub?'【代理】':''}${l.memo?' — '+esc(l.memo):''}</div>`).join('')}</div></details>`;
   const toIdx=!myStepAt(r)&&myIdx(r)>r.step?myIdx(r):r.step,skipN=toIdx-r.step,lastStep=toIdx>=r.steps.length-1;
   const npN=lastStep&&!r.done?newPats(r).length:0,okLabel=lastStep?'✔ 確定・次へ':'✔ OK・次へ',okNote=skipN?`${skipN}段飛ばして${lastStep?'確定します':'進めます'}`:'';
-  const more=`<select id="dMore" title="その他の操作"><option value="">その他の操作…</option>${(ed||r.done)&&!r.reading?'<option value="recur">🔁 毎月の支払に登録する（リース・定額）</option>':''}${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed&&!r.reading&&window.APAI?'<option value="reread">AI で読み直す（支払内容・仕訳を作り直す）</option>':''}${ed?'<option value="merge">ほかの受付とまとめる（1件の請求書）</option><option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
+  const more=`<select id="dMore" title="その他の操作"><option value="">その他の操作…</option>${(ed||r.done)&&!r.reading?'<option value="recur">🔁 毎月の支払に登録する（リース・定額）</option>':''}${ed?`<option value="hold">${r.hold?'⏸ 保留を外す':'⏸ 保留にする（あとで確かめる・H）'}</option>`:''}${ed&&r.step>0?'<option value="back">前の段へ戻す</option>':''}${ed&&!r.reading&&window.APAI?'<option value="reread">AI で読み直す（支払内容・仕訳を作り直す）</option>':''}${ed?'<option value="merge">ほかの受付とまとめる（1件の請求書）</option><option value="arch">対象外にする（重複・誤り）</option><option value="move">仕入の請求書として移す</option>':''}${r.done&&!lock?'<option value="unlock">確定を戻す</option>':''}${r.done&&!lock&&r.status!=='先行支払済'?'<option value="prepaid">先行支払済にする（急ぎ振込）</option>':''}${r.status==='先行支払済'&&!lock?'<option value="unprepaid">先行支払済を取り消す</option>':''}</select>`;
   const nIt=(invItemsOf(r)||{items:[]}).items.length;
   const sumCard=`<div class="oc osum"><div><div class="lab">支払先</div><div class="payee">${esc(h.payee||r.title||'（読み取り前）')}</div><div class="bds">${badges}${iss.length&&!r.reading?`<a href="#" class="bd ${nFix?'ng':iss.some(x=>x.sev==='check')?'warn':''}" id="oIssGo" title="下の「AIの気づき」へ">気づき ${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=iss.filter(x=>x.sev===k).length;return n?l+' '+n:'';}).filter(Boolean).join('・')} ↓</a>`:''}</div></div>
           <div class="amtc"><div class="lab">支払金額（税込）</div><div class="amt">${r.reading?'—':yen(h.amount)}<small> 円</small></div><div class="prev">前月 ${pm!=null?yen(pm):'—'} ${pm?diffHtml(h.amount,pm):''}</div></div>
@@ -1039,8 +1075,8 @@ function drawOne(){
         ${wrapI(sumCard,'hdr')}${preCard}${hdrCard}${deptCard}${wrapI(bankCard,'bank')}${tkCard}${ls.some(l=>parseFuel(l.memo).length)?'<details class="oc" id="oFuel"><summary><b>⛽ 燃料の単価（拠点ごと・払う月）</b></summary><div id="fuelCard" style="margin-top:6px;font-size:12.5px">読み込み中…</div></details>':''}${wrapI(lnCard,'lines')}${teachCard}${issCard}${logCard}
       </div></div>`}
     <div class="onefoot"><input type="text" id="oCm" placeholder="コメントを入力（メモとして保存されます。全員に見えます）" value="${esc(cmDraft??r.note)}" ${ed||r.done?'':'disabled'}>
-      <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):npN&&ed?`<b style="color:var(--warn)">会計の実績に無い付け方 ${npN}件：気づきの「✔ 確かめた」を押すと確定できます</b>`:r.done?'':'Enter：OK・次へ　←→：前・次　H：保留'}</span>
-      ${ed?`<button id="oHold" title="あとで確かめる（H）">${r.hold?'⏸ 保留を外す':'⏸ 保留'}</button>`:''}<button id="oSave" ${dirty?'':'disabled'}>下書き保存</button>${r.done?'':`<button class="pri big-btn" id="dOk" ${ed&&!r.reading&&(nFix===0||dirty)&&!npN?'':'disabled'} title="${esc(okNote)}">${esc(okLabel)}${okNote?`<small style="display:block;font-size:10.5px;font-weight:500;opacity:.85">${esc(okNote)}</small>`:''}</button>`}</div></div>`;
+      <span class="why">${lock?`${esc(lock)}の支払に入っています（直すときは差分の決裁）`:why?esc(why):npN&&ed?`<b style="color:var(--warn)">会計の実績に無い付け方 ${npN}件：仕訳の行の「✔ 確かめた」を押すと確定できます</b>`:r.done?'':'<span title="Enter：OK・次へ　←→：前・次　H：保留" style="cursor:help">⌨ キー操作</span>'}</span>
+      <button id="oSave" ${dirty?'':'disabled'}>下書き保存</button>${r.done?'':`<button class="pri big-btn" id="dOk" ${ed&&!r.reading&&(nFix===0||dirty)&&!npN?'':'disabled'} title="${esc(okNote)}">${esc(okLabel)}${okNote?`<small style="display:block;font-size:10.5px;font-weight:500;opacity:.85">${esc(okNote)}</small>`:''}</button>`}</div></div>`;
   wireOne(r);}
 function wireOne(r){
   const on=(id,fn)=>{const e=$(id);if(e)e.onclick=fn;};
@@ -1118,18 +1154,10 @@ async function histDialog(r,k){
   dlg.onclick=e=>{if(e.target===dlg)dlg.remove();};
   let J=[];try{J=await loadJournal();}catch(e){}
   const {ls}=viewOf(r),l=k==null?null:ls[k],pay=r.payee||'',q=jnorm(pay);
-  // 会計の実績：摘要の先頭（「(12)」のような番号は外す）が支払先と合うもの。合わなければ摘要に支払先名を含むもの
-  const head=m=>jnorm(String(m||'').replace(/^\(\d+\)/,'').trim().split(/[\s　]/)[0]);
-  let acc=q.length>=2?J.filter(x=>{const h=head(x.memo);return h.length>=2&&(q.includes(h)||h.includes(q));}):[];
-  if(!acc.length&&q.length>=2)acc=J.filter(x=>x.n.includes(q));
-  acc=acc.slice().sort((a,b)=>String(b.ym).localeCompare(String(a.ym)));
-  // アプリで確かめた仕訳：同じ支払先・前の月・1段目より先に進んだ／確定したもの
-  const app=ALL.filter(o=>o.id!==r.id&&jnorm(fv(L.inv,o.f,'支払先名'))===q&&(fv(L.inv,o.f,'対象年月')||'')<(r.ym||'9999')&&((+o.f.ExpenseStep||0)>=1||(fv(L.inv,o.f,'支払ステータス')&&fv(L.inv,o.f,'支払ステータス')!=='確認待')))
-    .map(o=>({ym:fv(L.inv,o.f,'対象年月')||'',round:fv(L.inv,o.f,'支払日区分')||'',lines:(LINES[o.id]||[]).map(x=>({kc:c6(fv(L.sl,x.f,'勘定科目コード')),kn:fv(L.sl,x.f,'勘定科目名')||'',dc:c6(fv(L.sl,x.f,'部門コード')),amt:+fv(L.sl,x.f,'金額_税込')||0,memo:fv(L.sl,x.f,'決裁メモ')||fv(L.sl,x.f,'摘要')||''}))}))
-    .filter(x=>x.lines.length).sort((a,b)=>b.ym.localeCompare(a.ym));
+  const P=pastOf(r),acc=P.acc,app=P.app;
   // 一言：科目・部門ごとの回数（会計の実績＋アプリ）
-  const all=acc.map(x=>({kc:c6(x.kc),kn:x.kn,dc:c6(x.dc)})).concat(app.flatMap(x=>x.lines));
-  const cnt={};all.forEach(x=>{const key=x.kc+'|'+x.dc;(cnt[key]=cnt[key]||{kc:x.kc,kn:x.kn,dc:x.dc,n:0}).n++;});
+  const all=P.all;
+  const cnt={};all.forEach(x=>{const key=x.kc+'|'+x.dc;(cnt[key]=cnt[key]||{kc:x.kc,kn:x.kn,dc:x.dc,zn:x.zn,n:0}).n++;});
   const top=Object.values(cnt).sort((a,b)=>b.n-a.n);
   let verdict='';
   if(!all.length)verdict=`<div class="box warn" style="font-size:13px">この支払先（${esc(pay)}）の過去の仕訳はありません。AI はマスタと品名から決めました</div>`;
@@ -1152,7 +1180,16 @@ async function histDialog(r,k){
     <h3 style="font-size:13.5px;margin:14px 0 4px">アプリで確かめた仕訳（前の月の請求書）</h3>
     ${appList.length?appList.map(x=>`<div style="margin:6px 0 2px;font-weight:600;font-size:12.5px">${esc(x.ym)} ${esc(x.round)}払い</div><table ${T}><tr><th>科目</th><th>部門</th><th class="n">税込</th><th>決裁メモ</th></tr>${x.lines.map(y=>`<tr${hit(y)}><td>${esc(y.kn)}</td><td>${esc(bn(y.dc))}</td><td class="n">${yen(y.amt)}</td><td style="font-size:11.5px">${esc(y.memo)}</td></tr>`).join('')}</table>`).join(''):'<div style="color:var(--sub);font-size:12.5px">まだありません（アプリで確かめた請求書が増えると出ます）</div>'}
     ${l?'<div style="font-size:11.5px;color:var(--sub);margin-top:8px">緑＝この行と同じ科目・部門、黄＝科目は同じで部門が違う</div>':''}</div></div>`;
-  $('histX').onclick=()=>dlg.remove();}
+  $('histX').onclick=()=>dlg.remove();
+  // この付け方を使う（科目・部門を直せる人だけ）：行の 🔍 はその行を、見出しの 🔍 は金額全部を1行の仕訳にする。保存は確認の画面で
+  const canUse=canAct(r)&&!r.done&&acctEditor()&&top.length;
+  if(canUse){const box=document.createElement('div');box.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
+    box.innerHTML=`<span style="font-size:12px;color:var(--sub);align-self:center">${l?'この行を':'仕訳を'}：</span>`+top.slice(0,4).map((t,i)=>`<button data-use="${i}" style="font-size:12px">${esc(t.kn||t.kc)}・${esc(bn(t.dc))}（${t.n}件）${l?'にする':'の1行にする'}</button>`).join('');
+    const v=dlg.querySelector('.box');(v||dlg.querySelector('h3')).insertAdjacentElement(v?'afterend':'beforebegin',box);
+    box.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>{const t=top[+b.dataset.use],km=(KAMOKU.find(x=>x.code===t.kc)||{}).name||t.kn,rate=rateOfZ(t.zn);
+      if(l){const dd=dLines(r),x=dd[k];if(!x)return;x.acode=t.kc;x.aname=km;x.dept=t.dc;x.sub='';x.rate=rate;x.tax=rateTax(x.incl,rate);x.excl=x.incl-x.tax;}
+      else{const amt=(hdrDraft||hdrOf(r)).amount,tax=rateTax(amt,rate);draft=[{id:'',acode:t.kc,aname:km,sub:'',dept:t.dc,tm:'税込',rate,excl:amt-tax,tax,incl:amt,note:(acc[0]&&acc[0].memo)||'',memo:''}];}
+      st.editLines=r.id;st.openLines=true;dlg.remove();drawOne();snack('仕訳に入れました。確かめて「下書き保存」か「OK」を押してください');});}}
 // ---------- 過去の仕訳（/BILLS/masters/仕訳インデックス.csv）から案 ----------
 async function loadJournal(){if(JOURNAL)return JOURNAL;
   const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI('/BILLS/masters/仕訳インデックス.csv')}:/content`,null,null,true);
@@ -1276,6 +1313,7 @@ async function more(r,v){
   if(v==='merge'){mergeDialog(r);return;}
   if(v==='reread'){if(!confirm('AI で読み直して、支払内容・仕訳（決裁メモも）・AI の気づきを作り直します。手で直した仕訳は書き換わります（コメント欄は残ります）。よろしいですか？'))return;
     draft=null;hdrDraft=null;await rereadByAI(r,{replace:true});render();return;}
+  if(v==='hold'){act(r,{[V.hold]:!r.hold},r.hold?'保留を外しました':'保留にしました',{act:r.hold?'保留を外す':'保留',step:r.step});return;}
   if(v==='arch'){const why=prompt('対象外にする理由（重複・誤り・今月払わない など）');if(!why)return;leaveCur(r);
     await act(r,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':why}),'対象外にしました',{act:'対象外にした',memo:why,step:r.step});}
   else if(v==='move'){const code=prompt('仕入の請求書として「仕入（SMILE）」へ移します。SMILE の仕入先コード（6桁）を入れてください');if(!code)return;

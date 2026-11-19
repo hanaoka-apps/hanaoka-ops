@@ -284,7 +284,7 @@
       const tx = l.Tax != null && l.Tax !== '' ? Math.round(+l.Tax) : Math.floor(ex * (RATE[l.TaxRate] || 0));
       ls.push({ LineNo: i, Location: String(l.DeptCode || '').startsWith('003') ? '工場' : loc,
         AccountName: l.AccountName || '', AccountCode: l.AccountCode || '', SubCode: l.SubCode || '', DeptCode: l.DeptCode || '',
-        TaxMethod: l.TaxMethod || '税込', TaxRate: l.TaxRate || '', AmountExclTax: ex, Tax: tx, AmountInclTax: ex + tx, Description: l.Description || '', ApprovalNote: l.ApprovalNote || '', LineConfidence: +l.LineConfidence || 0 });
+        TaxMethod: l.TaxMethod || '税込', TaxRate: l.TaxRate || '', AmountExclTax: ex, Tax: tx, AmountInclTax: ex + tx, Description: l.Description || '', ApprovalNote: l.ApprovalNote || '', LineConfidence: +l.LineConfidence || 0, Reason: l.Reason || '' });
     }
     const cm = (comments || []).filter(x => x && String(x).trim());
     const tot = Math.round(+total || 0);
@@ -368,9 +368,12 @@
       ...(job.candidates ? ['', '## 今月の支払先リスト（仕入先コード 名前 今回支払残高）', job.candidates] : []),
       ...(fs.length > 1 ? ['', `## 添付は  つのファイルですが、1枚の請求書です（ページが分かれたもの・明細が別紙のものなど）。全部を合わせて1件として読み、total・items・仕訳は全体で1つにしてください（extra に分けない）`] : []),
       '', 'この請求書を読んで、決められた形で答えてください。'].join('\n');
+    // 仕訳の行ごとの理由（2026-11-19）：答えの形（AP_Setting の ai.invoice）に Reason を足す。確認の画面で「なぜこの科目か」を行の横に出す
+    const schema = JSON.parse(JSON.stringify(cfg.schema || {})), li = schema.properties && schema.properties.lines && schema.properties.lines.items;
+    if (li && li.properties && !li.properties.Reason) { li.properties.Reason = { type: 'string' }; if (Array.isArray(li.required)) li.required.push('Reason'); }
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
-      output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema: cfg.schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
+      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
@@ -396,7 +399,7 @@
         const ex = a.amountBasis === '税抜', R0 = (s.raw && s.raw.km) || [];
         const nl = (a.relines || []).map(n => { const rate = n.TaxRate || '課税10%', v = Math.round(+n.Amount || 0), tax = ex ? Math.floor(v * (RT[rate] || 0)) : Math.round(v * (RT[rate] || 0) / (1 + (RT[rate] || 0)));
           const k = R0.find(x => String(x['科目コード']) === String(n.AccountCode));
-          return { AccountCode: n.AccountCode, AccountName: k ? k['科目名'] : '', DeptCode: n.DeptCode, SubCode: n.SubCode || '', TaxRate: rate, TaxMethod: '税込', AmountExclTax: ex ? v : v - tax, Tax: tax, Description: n.Description || '', ApprovalNote: n.ApprovalNote || '', LineConfidence: 70 }; });
+          return { AccountCode: n.AccountCode, AccountName: k ? k['科目名'] : '', DeptCode: n.DeptCode, SubCode: n.SubCode || '', TaxRate: rate, TaxMethod: '税込', AmountExclTax: ex ? v : v - tax, Tax: tax, Description: n.Description || '', ApprovalNote: n.ApprovalNote || '', LineConfidence: 70, Reason: n.reason || '' }; });
         let sum = nl.reduce((t, l) => t + l.AmountExclTax + l.Tax, 0); const df = tot - sum, big = nl.filter(l => RT[l.TaxRate]).sort((p, q) => (q.AmountExclTax + q.Tax) - (p.AmountExclTax + p.Tax))[0];
         if (df && big && Math.abs(df) <= nl.length + 1) { big.Tax += df; sum = tot; }
         if (nl.length && sum === tot && nl.every(l => l.AccountCode && l.AccountName)) { d.lines = nl; d.comments = (d.comments || []).concat([`仕訳は、読んだ明細から拠点・科目・税率ごとに作り直しました（${nl.length}行）。${a.summary || a.reply || ''}`]); }
