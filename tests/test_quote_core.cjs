@@ -325,6 +325,31 @@ assert.equal(c.fare.reason, '');
   assert.deepEqual(r.lines[0].others, []);
 }
 
+// --- 品目マスタの販売価格で定価リストを補う ---
+{
+  const its = {
+    UDL25: { name: 'リフト', kakaku: 'UDL250', std: 132000 },          // 読み替え先（UDL250）と同じ値段 → 足さない
+    UDL25G: { name: 'リフト 灰', kakaku: 'UDL250', std: 120000 },     // 読み替え先とちがう値段（色ちがい）→ 足す
+    'P/0000000999': { name: '見本部品', kakaku: '', std: 1500, dai: '部品' }, // 定価リストに無い → 足す
+    'P/1': { name: '雑', kakaku: '', std: 100 },                       // 雑コードは足さない
+    T1: { name: '見本台車', kakaku: '', std: 99999 },                   // 定価リストにそのままある → 足さない
+    'UDL25/SW': { name: 'リフト 特別', kakaku: 'UDL250', std: 150000 },   // 枝番つきで自分の値段がある → 足す
+  };
+  const rows = Q.itemPriceRows(its, data.prices, '2026-11-20');
+  assert.deepEqual(rows.map(r => r.型式).sort(), ['P/0000000999', 'UDL25/SW', 'UDL25G']);
+  const g = rows.find(r => r.型式 === 'UDL25G');
+  assert.deepEqual([g.定価, g.商品の種類, g.運賃の重量kg, g.出典], [120000, '台車以外', 60, '品目マスタ']); // 種類と重さは UDL250 から借りる
+  assert.equal(rows.find(r => r.型式 === 'P/0000000999').商品の種類, '部品');
+  // 足した行で単価が出る。内訳に「品目マスタの販売価格」と出る
+  const d2 = Object.assign({}, data, { prices: data.prices.concat(rows) }), e2 = { items: its, index: Q.buildIndex(d2.prices) };
+  const c2 = Q.compute(d2, doc({ lines: [{ code: 'UDL25G', qty: 1 }, { code: 'UDL25', qty: 1 }] }), e2);
+  assert.equal(c2.lines[0].unit, 69000);            // 120000 × 5.75掛
+  assert.equal(c2.lines[0].fromItem, true);
+  assert.ok(c2.lines[0].warnings.some(w => /品目マスタの販売価格/.test(w)));
+  assert.equal(c2.lines[1].fromItem, undefined);    // UDL25 は今までどおり定価リスト（UDL250）
+  assert.equal(c2.lines[1].listCode, 'UDL250');
+}
+
 // --- 受注伝票：受注明細から覚えるもの（担当者・部門・納品先・倉庫）と、SMILE に入る並び ---
 {
   const h = Q.historyNew();

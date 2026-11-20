@@ -55,14 +55,41 @@
   // 定価リストの型式を、ならした名前で引けるようにする。priced＝定価がある型式、any＝重さだけの行も含む
   function buildIndex(prices) {
     // same＝ならすと同じになる型式の書き方ぜんぶ（XA-BT2 と XABT2）。送料の重さを探すのに使う
-    var priced = {}, any = {}, same = {};
+    var priced = {}, any = {}, same = {}, fromItem = {};
     (prices || []).forEach(function (p) {
       var k = key(p.型式); if (!k) return;
       if (!any[k]) any[k] = p.型式;
-      if (num(p.定価) !== null && !priced[k]) priced[k] = p.型式;
+      if (num(p.定価) !== null && !priced[k]) { priced[k] = p.型式; if (p.出典 === ITEM_SRC) fromItem[k] = true; }
       var s = same[k] || (same[k] = []); if (s.indexOf(p.型式) < 0) s.push(p.型式);
     });
-    return { priced: priced, any: any, same: same };
+    return { priced: priced, any: any, same: same, fromItem: fromItem };
+  }
+  // 定価リストを、SMILE の品目マスタの販売価格（標準売上単価）で補う行を作る。足すのは次のどちらか：
+  //   ① 定価リストに無い品目（読み替え先にも定価がない）
+  //   ② 価格表記載名で読み替えた先の型式と、品目マスタの値段がちがう品目（色ちがいなど、別の値段の品目）
+  // 品目コードが定価リストにそのままある品目は足さない（定価リストは日付つきで、改定前の見積の値段も出せるため）。
+  //   返す：定価リストと同じ形の行（出典「品目マスタ」。日付は古く置き、どの日の見積にも使う）
+  var ITEM_SRC = "品目マスタ";
+  function itemPriceRows(items, prices, today) {
+    var idx = buildIndex(prices), out = [], d = ymd(today) || "9999-12-31";
+    var nowPrice = function (kata) {
+      var best = null;
+      (prices || []).forEach(function (p) { if (key(p.型式) === key(kata) && num(p.定価) !== null && ymd(p.適用開始日) <= d && (!best || ymd(best.適用開始日) <= ymd(p.適用開始日))) best = p; });
+      return best;
+    };
+    var rowOf = function (kata) { return (prices || []).filter(function (p) { return key(p.型式) === key(kata); }); };
+    Object.keys(items || {}).forEach(function (c) {
+      var it = items[c], std = it && num(it.std);
+      if (!(std > 0) || c === "FR" || isZatsu(c) || idx.priced[key(c)]) return;
+      var kk = it.kakaku ? key(it.kakaku) : "", mapped = kk && idx.priced[kk] && !isVariant(c) ? nowPrice(idx.priced[kk]) : null;
+      if (mapped && num(mapped.定価) === std) return; // 読み替えた先と同じ値段なら、定価リストのまま
+      // 商品の種類（掛け率が変わる）と送料の重さは、定価リストの同じ型式（価格表記載名）から借りる
+      var ref = kk ? rowOf(idx.any[kk] || "") : [], kind = "", kg = null;
+      ref.forEach(function (p) { if (!kind && p.商品の種類) kind = p.商品の種類; if (kg === null && num(p.運賃の重量kg) !== null) kg = num(p.運賃の重量kg); });
+      if (!kind) kind = /^(P|OP)\//i.test(c) || it.dai === "部品" ? "部品" : "台車以外";
+      out.push({ 型式: c, 品名: it.name || "", 定価: std, 適用開始日: "2000-01-01", 商品の種類: kind, 運賃の重量kg: kg, 出典: ITEM_SRC });
+    });
+    return out;
   }
   // 入れた型式・品目コードから、定価リストの型式を決める。
   //   ① そのまま（書き方違いはそろえる）→ ② 品目マスタの「価格表記載名」（UDL25 → UDL250）
@@ -197,6 +224,10 @@
     } else {
       var rc = resolveCode(out.code, ctx.items, ctx.index);
       out.listCode = rc.code; out.via = rc.via;
+      if (rc.code && ctx.index && ctx.index.fromItem && ctx.index.fromItem[key(rc.code)]) {
+        out.fromItem = true;
+        out.warnings.push(out.code + " は定価リストにないので、SMILE の品目マスタの販売価格を定価にしました");
+      }
       var it = ctx.items && ctx.items[out.code];
       if (!rc.code) {
         out.noRule = true; out.unit = num(line.price);
@@ -691,6 +722,7 @@
     var where = { "定価": "price", "ランク": "rank", "得意先の区分": "cls", "在庫価格": "cls", "本部経由": "cls", "例外": "exc" };
     var b = l.base, st = (b && b.steps) || [], last = "";
     if (l.listCode && l.via) by.price.result.push(l.code + " は、品目マスタの価格表記載名から " + l.listCode + " と読み替えました");
+    if (l.fromItem) by.price.result.push(l.code + " は定価リストにないので、SMILE の品目マスタの販売価格（" + fmt(l.base ? l.base.list : null) + "）を定価にしました");
     st.forEach(function (x) {
       var s = by[where[x.label]]; if (!s) return;
       s.state = s.key === "price" ? "used" : "over";
@@ -713,7 +745,7 @@
     return steps;
   }
 
-  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, backtest: backtest, isPriceTarget: isPriceTarget, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, sameDestOf: sameDestOf, isZatsu: isZatsu, prodWhOf: prodWhOf, wrongsOf: wrongsOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
+  var API = { REASONS: REASONS, WRONG: WRONG, ONCE: ONCE, flow: flow, todo: todo, backtest: backtest, isPriceTarget: isPriceTarget, historyNew: historyNew, historyPush: historyPush, historyDone: historyDone, prevOf: prevOf, ORDER_STATUSES: ORDER_STATUSES, toOrder: toOrder, smileCodeOf: smileCodeOf, sameDestOf: sameDestOf, isZatsu: isZatsu, itemPriceRows: itemPriceRows, prodWhOf: prodWhOf, wrongsOf: wrongsOf, STATUSES: STATUSES, TAX_RATE: TAX_RATE, fmt: fmt, kake: kake, rankLabel: rankLabel, norm: norm, search: search,
     buildIndex: buildIndex, resolveCode: resolveCode, isVariant: isVariant, whyText: whyText, priceLine: priceLine, priceDateOf: priceDateOf, usedLines: usedLines,
     compute: compute, sheetRows: sheetRows, nextNumber: nextNumber, toRecord: toRecord, blank: blank, duplicate: duplicate };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

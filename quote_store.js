@@ -28,12 +28,14 @@
   function itemsFrom(text, P) {
     var rows = P.parseCSV(text), H = rows[0] || [], ix = function (n) { return H.indexOf(n); };
     // 「改廃項目」は同じ名前の列が2つ（コードと名前）あるので、後ろのほう（名前）を読む
-    var I = { code: ix("品目ｺｰﾄﾞ"), name: ix("品目名"), dai: ix("大分類名"), kakaku: ix("価格表記載名名"), kaihai: H.lastIndexOf("改廃項目") };
+    // 「標準売上単価」は SMILE が受注の単価を出すときの元の値段（販売価格 × 得意先の掛率）
+    var I = { code: ix("品目ｺｰﾄﾞ"), name: ix("品目名"), dai: ix("大分類名"), kakaku: ix("価格表記載名名"), kaihai: H.lastIndexOf("改廃項目"), std: ix("標準売上単価") };
     var out = {};
     rows.slice(1).forEach(function (r) {
       var c = r[I.code]; if (!c) return;
       var g = function (k) { return I[k] >= 0 ? (r[I[k]] || "") : ""; };
-      out[c] = { name: g("name"), dai: g("dai"), kakaku: g("kakaku"), kaihai: g("kaihai") };
+      var std = Number(String(g("std")).replace(/,/g, ""));
+      out[c] = { name: g("name"), dai: g("dai"), kakaku: g("kakaku"), kaihai: g("kaihai"), std: std > 0 ? std : null };
     });
     return out;
   }
