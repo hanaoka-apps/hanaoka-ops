@@ -4,7 +4,7 @@ FAX の取引先の照合表 fax_relation_lookup.json を、SharedMasters の �
 
 使っているのは FAX専用機の FAX の読み取り（fax-incoming-ocr の lookup.py）と、メールの取り込み（web-inquiry-parse の wimail.py）。
 どちらも正規表現でレコードを取り出しているので、**出力の形を1文字も変えない**（以前の GitHub Actions の
-generate_fax_lookup.py と同じ規則・同じ並び・空白なし・UTF-8（BOM なし））。
+generate_fax_lookup.py（2026-11 に削除）と同じ規則・同じ並び・空白なし・UTF-8（BOM なし））。
 
 動かし方:
   RPA専用機の常駐スクリプト（rpa_queue_worker.ps1）が、後処理 build_fax_lookup として、毎回 GitHub の main から取得して実行する。
@@ -14,10 +14,10 @@ generate_fax_lookup.py と同じ規則・同じ並び・空白なし・UTF-8（B
   作るのは RPA専用機だけ（ほかの PC で作ると OneDrive で衝突したファイルができる）。
 
 モード（MODE。手で試すときは --mode で変えられる）:
-  compare … 比べるだけ。作った内容を本番のファイルと比べて、結果をログに書く。本番は書き換えない（移行の確認の期間）
+  compare … 比べるだけ。作った内容を本番のファイルと比べて、結果をログに書く。本番は書き換えない（手で確かめるとき）
   write   … 本番の fax_relation_lookup.json を置き換える
 
-規則（generate_fax_lookup.py と同じ）:
+規則（以前の generate_fax_lookup.py と同じ）:
   列：コード=0、正式名=1、略称=3、電話=10、FAX=11（得意先・仕入先とも同じ位置）。1行目は見出しなので読まない。正式名が空の行は入れない。
   文字コードは utf-8-sig を試して、だめなら cp932。
   {"relations":[{"c":..,"n":..,"a":..,"t":..,"f":..,"tp":"得意先|仕入先"},...],"updated":"YYYY-MM-DD HH:MM JST"}
@@ -45,7 +45,7 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-MODE = 'compare'   # 比べて同じだと確かめたら 'write' にする（PR で変える）
+MODE = 'write'   # 2026-11-20 に、Actions の出力と1バイトも違わないことを確かめて切り替えた
 
 CUSTOMERS_CSV = '得意先マスタ.csv'
 SUPPLIERS_CSV = '仕入先マスタ.csv'
