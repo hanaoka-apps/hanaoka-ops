@@ -375,7 +375,7 @@
     if (schema.properties && !schema.properties.scanIssue) { schema.properties.scanIssue = { type: 'string' }; if (Array.isArray(schema.required)) schema.required.push('scanIssue'); }
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「2ページ目が無い」）。読むのに困らなければ ""\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
