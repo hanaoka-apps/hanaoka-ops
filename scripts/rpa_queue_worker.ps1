@@ -18,7 +18,8 @@
     (steps があれば、各手順のPADフロー起動と出力待ちを順に行ってから after の処理。
      flow も steps も無いジョブは after の処理だけ)
   after には regenerate_facts(ダッシュボード用JSON)と build_ec_index(EC売上用の軽量ファイル ec_smile_index.json)と
-  build_ship_index(出荷・配送の検索用の軽量ファイル ship_index.json)が使える。
+  build_ship_index(出荷・配送の検索用の軽量ファイル ship_index.json)と build_fax_lookup(FAX の取引先の照合表 fax_relation_lookup.json)が使える。
+  afterMayFail: true を書いたジョブは、後処理が失敗してもジョブ自体は成功のままにする(ログに残す)。
   schedules に書いたジョブは、毎日その時刻に自分で依頼する(例: 1:00 に facts_only、1:10 に ec_index)。
     (URIで起動したPADフローは完了を待たずに戻るため、出力ファイルで完了を判断する)
 
@@ -438,9 +439,11 @@ function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '', [strin
 function Invoke-RegenerateFacts { Invoke-RepoPython 'regenerate_facts.py' }
 
 # 後処理(after)の名前 → 実行する関数。増やすときはここと Invoke-After に足す
-$AfterJobs = @('regenerate_facts', 'build_ec_index', 'build_ship_index')
+$AfterJobs = @('regenerate_facts', 'build_ec_index', 'build_ship_index', 'build_fax_lookup')
 function Invoke-After([string]$After) {
   switch ($After) {
+    # FAX の取引先の照合表 fax_relation_lookup.json を作る(得意先マスタ.csv・仕入先マスタ.csv から。止めたときの知らせはスクリプトが自分で送る)
+    'build_fax_lookup' { Invoke-RepoPython 'build_fax_lookup.py' }
     'regenerate_facts' { Invoke-RegenerateFacts }
     # EC売上用の軽量ファイル ec_smile_index.json を作る(受注明細出力・納品先マスタ・品目マスタ・入金明細出力から)
     # EC の得意先・テスト送信用の得意先は ec_sales_config.json から読む(スクリプトには埋め込まない)
@@ -1153,7 +1156,16 @@ function Invoke-NextJob {
           throw
         }
       }
-      if ($def.after) { Invoke-After ([string]$def.after) }
+      if ($def.after) {
+        # afterMayFail: true のジョブは、後処理が失敗してもジョブ自体は成功のままにする(ログには残す)
+        # (例: ap_purchase の後の FAX の照合表。仕入先マスタなどの出力は済んでいて、依頼した画面には成功と出したい)
+        if ($def.afterMayFail) {
+          try { Invoke-After ([string]$def.after) }
+          catch { Write-Log "後処理 $($def.after) が失敗しました(ジョブ $jobName は成功のまま): $($_.Exception.Message)" }
+        } else {
+          Invoke-After ([string]$def.after)
+        }
+      }
     }
   } catch {
     $errorMessage = $_.Exception.Message
