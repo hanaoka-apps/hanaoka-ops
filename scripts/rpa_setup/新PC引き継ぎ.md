@@ -40,6 +40,7 @@
 | 常駐スクリプト（入口） | `scripts/watch_regenerate_request.ps1` | タスクスケジューラーが起動するファイル。本体を呼ぶだけ |
 | アプリ用部品 | `rpa_queue.js` | 依頼の登録・状態の確認（使い方はファイル先頭のコメント） |
 | JSON生成 | `scripts/regenerate_facts.py` | `sales_master` / `facts_only` の後処理。`SHARED_MASTERS_DIR` 指定で同期フォルダを直接読み書きする（`AZURE_*` 不要）。`dashboard_facts.json`（Sales HUB・日報・価値ダッシュボード・目標エディター）、`hub_kpi_facts.json`（HANAOKA HUB）、`dashboard_visits.json`（Sales HUBの訪問実績）を作る |
+| FAX の取引先の照合表 | `scripts/build_fax_lookup.py` | 後処理 `build_fax_lookup`。`得意先マスタ.csv`・`仕入先マスタ.csv` から `fax_relation_lookup.json`（FAX専用機の FAX 読み取り・メール取り込みが使う）を作る。出力の形は1文字も変えない（FAX専用機が正規表現で読むため）。先頭の `MODE` が `compare` の間は本番と比べてログに書くだけ、`write` で本番を置き換える。件数が 10% 以上減ったら止める。ログは `%USERPROFILE%\fax_lookup.log`。止めたとき・CSV が今日の分でないときは、環境変数 `ALERT_TEAMS_WEBHOOK_URL`（Teams「自動処理アラート」）へ知らせる（未設定ならログだけ）。以前は GitHub Actions の `generate-fax-lookup.yml` が作っていた |
 | 定時の再作成 | `scripts/rpa_jobs.json` の `schedules` | 常駐スクリプトが毎日 **1:00** に `facts_only` を自分で依頼する（SMILEの業務予定「マスタ出力」が毎日 **0:00** に出力したCSVから作り直す）。PCが止まっていて時刻を過ぎても、その日のうちに起動すれば依頼する。依頼済みの記録は `%LOCALAPPDATA%\hanaoka-rpa\schedule_state.json` |
 | （GitHub Actions） | 2026-11-20 に削除 | 以前は `.github/workflows/regenerate-facts.yml`（手動の非常用）があった。この専用機の定時の再作成で足り、2026-10 から使われていなかったため消した。急ぎで作り直すときは、HUB の「更新をリクエスト」か `facts_only` の依頼で行う |
 | 旧方式の合図ファイル | `SharedMasters/_regenerate_request.json` | 移行用。置かれたら常駐スクリプトが `sales_master` の依頼として受け付け、ジョブ完了後に消す |
