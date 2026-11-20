@@ -371,9 +371,11 @@
     // 仕訳の行ごとの理由（2026-11-19）：答えの形（AP_Setting の ai.invoice）に Reason を足す。確認の画面で「なぜこの科目か」を行の横に出す
     const schema = JSON.parse(JSON.stringify(cfg.schema || {})), li = schema.properties && schema.properties.lines && schema.properties.lines.items;
     if (li && li.properties && !li.properties.Reason) { li.properties.Reason = { type: 'string' }; if (Array.isArray(li.required)) li.required.push('Reason'); }
+    // 写りの問題（2026-11-20）：端が切れている・ぼやけて読めない・ページが足りない など。あれば「⚠ 撮り直し」として AI のコメントに出す（請求書を渡す・受信トレイの一覧に印）
+    if (schema.properties && !schema.properties.scanIssue) { schema.properties.scanIssue = { type: 'string' }; if (Array.isArray(schema.required)) schema.required.push('scanIssue'); }
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「2ページ目が無い」）。読むのに困らなければ ""\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
@@ -406,6 +408,7 @@
         else d.comments = (d.comments || []).concat([`仕訳を明細から作り直そうとしましたが、合計が合いませんでした。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]);
       } catch (e) { d.comments = (d.comments || []).concat([`仕訳を明細から作り直せませんでした（${e.message}）。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]); }
     }
+    if (d && d.scanIssue) d.comments = (d.comments || []).concat([`⚠ 撮り直し：${d.scanIssue}`]);
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '' }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
     // 向きが違うページ（横向き・逆さ）：AI が rotate で答えたら、ファイルを回して同じ場所に保存する（ap_intake.js の APDoc.rotateFile）
     if (d && Array.isArray(d.rotate) && d.rotate.length && window.APDoc && APDoc.rotateFile) {
