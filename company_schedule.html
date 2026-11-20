@@ -8,7 +8,8 @@
 <link rel="icon" type="image/svg+xml" href="favicon_schedule.svg">
 <!-- 左メニューはHUBと同じ（nav.js が hub_sidebar.js を読み込んで作る） -->
 <script src="nav.js?v=20261014" defer></script>
-<script src="usage_log.js?v=20261119"></script><!-- 使われ方の記録（開いた・見ていた時間・エラーだけ。予定の中身は記録しない） -->
+<!-- 共通サインイン（サインインの戻り先は auth.html。使われ方の記録もここから自動で始まる。予定の中身は記録しない） -->
+<script src="hanaoka_auth.js?v=20261120"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -270,14 +271,8 @@
   </main>
 
 <script>
-const MSAL_CONFIG = {
-  auth: {
-    clientId:    'd338d61b-01dc-4c7c-ac6b-aecf7f30d716',
-    authority:   'https://login.microsoftonline.com/3933e8a0-c945-4e97-ae67-c82131087cad',
-    redirectUri: new URL('auth.html', window.location.href).href,
-  },
-  cache: { cacheLocation: 'localStorage' }, // HUBなど他のアプリと同じ保存先にして、サインイン状態を共有する
-};
+// 全アプリ共通のサインイン（hanaoka_auth.js）。HUB のサインインをそのまま使い、戻り先は auth.html
+const MSAL_CONFIG = HanaokaAuth.msalConfig();
 const SCOPES = ['User.Read', 'Calendars.Read', 'Calendars.Read.Shared'];
 const COMPANY_CALENDAR_MAIL = 'company-calendar@hanaoka-corp.co.jp';
 
@@ -371,23 +366,10 @@ async function initAuth() {
   msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalInstance.initialize();
   await msalInstance.handleRedirectPromise();
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    account = accounts[0];
-    msalInstance.setActiveAccount(account);
-    try {
-      // キャッシュされたセッションが有効か先に確認する。ページ読み込み時の
-      // 自動呼び出しからポップアップへフォールバックすると、ユーザー操作を
-      // 伴わないためブラウザに必ずブロックされる。
-      await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
-      onSignedIn();
-    } catch (e) {
-      console.warn('セッションが切れているため再サインインが必要です', e);
-      showSignedOutState();
-    }
-  } else {
-    showSignedOutState();
-  }
+  // 保存済みのサインインがまだ使えるかを先に確かめる（だめなら null。ポップアップは出さない）
+  account = await HanaokaAuth.restore(msalInstance, SCOPES);
+  if (account) onSignedIn();
+  else showSignedOutState();
 }
 
 function showSignedOutState() {
@@ -404,34 +386,16 @@ function showSignedOutState() {
 
 function onSignedIn() {
   document.getElementById('signInBtn').hidden = true;
-  try {   // 利用ログ（共通サインインを使っていない画面なので、サインインの後で自分で始める）
-    if (window.UsageLog && !window.__usageStarted) { window.__usageStarted = true; UsageLog.init({ page: 'company_schedule', msal: () => msalInstance, account: () => account }); UsageLog.log('open', ''); }
-  } catch (_) {}
+  // 利用ログは共通サインイン（hanaoka_auth.js）が自動で始める
   renderCalendar();
 }
 
-// SafariはMSALのポップアップと相性が悪いため、iOS/Safariはリダイレクト方式(HUBと同じ)
-function shouldUseRedirectFlow() {
-  const ua = navigator.userAgent;
-  const isIOS = /iPad|iPhone|iPod/.test(ua);
-  const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(ua);
-  return isIOS || isSafari;
-}
-
+// PC はポップアップ、iPhone・iPad・Safari はページ移動（戻り先は auth.html。auth.html がこの画面へ戻す）
 async function login() {
   const btn = document.getElementById('signInBtn');
   try {
     btn.disabled = true;
-    if (shouldUseRedirectFlow()) {
-      await msalInstance.loginRedirect({
-        scopes: SCOPES,
-        redirectUri: window.location.origin + window.location.pathname,
-      });
-      return;
-    }
-    const result = await msalInstance.loginPopup({ scopes: SCOPES });
-    account = result.account;
-    msalInstance.setActiveAccount(account);
+    account = await HanaokaAuth.login(msalInstance, SCOPES);
     onSignedIn();
   } catch (e) {
     console.error('サインイン失敗', e);
