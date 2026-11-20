@@ -201,7 +201,7 @@ def main():
         juchu = None
 
     # 対象の案件：受注番号があり、未完了か、完了にして30日以内（完了の日は Modified で近似）
-    cases = [dict(v['fields'], _id=v['id']) for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=CaseId,Status,OrderNumber,Modified,LastAction)&$top=999' % (SITE, CASES))]
+    cases = [dict(v['fields'], _id=v['id']) for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=CaseId,Status,OrderNumber,Modified,LastAction)&$top=4999' % (SITE, CASES))]
     targets = []
     for c in cases:
         nos = nos_of(c.get('OrderNumber'))
@@ -219,7 +219,7 @@ def main():
     # 以前は出荷のある案件ごとに1回ずつ問い合わせていて（約500回・索引の無い列での絞り込み）、毎回5分ほどかかっていた
     have_by_case = {}
     if targets:
-        for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=CaseId,Title)&$top=999' % (SITE, EVENTS)):
+        for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=CaseId,Title)&$top=4999' % (SITE, EVENTS)):
             f = v.get('fields') or {}
             t = f.get('Title') or ''
             if t.startswith('AUTO-'):
