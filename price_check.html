@@ -332,6 +332,7 @@
       <button class="navi" data-view="asm" title="修理品の預かり・デモなど、組み立てたまま出荷する商品の重さ"><span class="no">⑤-2</span>組立出荷の重さ<span class="cnt" id="cnt-asm" hidden></span></button>
       <button class="navi" data-view="cost" title="利益率を出すための原価（社内だけ）"><span class="no">⑥</span>原価<span class="cnt" id="cnt-cost" hidden></span></button>
       <div class="navgrp">運用</div>
+      <button class="navi" data-view="psheet" title="お客様に出す価格表に載せる商品"><span class="no">⑦</span>価格表の商品<span class="cnt" id="cnt-psheet" hidden></span></button>
       <button class="navi" data-view="match">品目マスタとの照合<span class="cnt" id="cnt-match" hidden></span></button>
       <button class="navi" data-view="import">まとめて入れる</button>
     </nav>
@@ -409,6 +410,7 @@
     <section class="view" id="view-fare"></section>
     <section class="view" id="view-asm"></section>
     <section class="view" id="view-cost"></section>
+    <section class="view" id="view-psheet"></section>
     <section class="view" id="view-revision"></section>
 
     <!-- ===== 最初のデータの取り込み ===== -->
@@ -494,11 +496,16 @@ const LISTS = {
     code:r=>r.型式, start:r=>r.適用開始日, title:r=>`${r.型式} ${r.適用開始日||''}`,
     cols:[['型式','型式'],['原価','原価','yen'],['適用開始日','適用開始日'],['出典','出典'],['メモ','メモ']],
     fields:[['型式','text'],['原価','number'],['適用開始日','date'],['出典','text'],['メモ','textarea']] },
+  psheet: { name:'PR_価格表の商品', label:'価格表の商品', file:'価格表の商品.json', optional:true,
+    lead:'お客様に出す価格表に載せる商品（見出しごと・並び順つき）。ふだんは「価格表」の画面で足す・外す・保存します。ここは一覧で見る・まとめて直すときに使います。',
+    code:r=>r.型式, start:r=>'', title:r=>`${r.見出し||''} ${r.型式}`,
+    cols:[['見出し','見出し'],['小見出し','小見出し'],['型式','型式'],['並び順','並び順'],['サイレントキャスター','サイレント'],['備考','備考']],
+    fields:[['型式','text'],['見出し','text'],['小見出し','text'],['並び順','number'],['サイレントキャスター','text'],['備考','text']] },
 };
 const listIds={};
 
 let msalInstance=null, account=null, driveId=null;
-const RULES={price:[],cls:[],exc:[],fare:[],asm:[],cost:[]};   // { spId, data }
+const RULES={price:[],cls:[],exc:[],fare:[],asm:[],cost:[],psheet:[]};   // { spId, data }
 let CUST=[], CUSTMAP={}, ITEMS={}, ITEMKEY={}, ITEMINFO={}, ORDERS=[], ordersInfo='';
 // 探すときの表記ゆれをならす：全角・半角、大文字・小文字、ハイフン・空白、小さいカナ（ﾀﾞﾝﾃﾞｲ と ダンディ、UDA-LS と UDALS）
 const SMALL={'ァ':'ア','ィ':'イ','ゥ':'ウ','ェ':'エ','ォ':'オ','ャ':'ヤ','ュ':'ユ','ョ':'ヨ','ッ':'ツ','ヮ':'ワ'};
@@ -1928,6 +1935,7 @@ function cpWhy(r){
 // 区分・例外が付いている得意先（何も入れていないときの候補）
 // 得意先は「社名」でひとまとめにする（ユニソルはユニソル、山善は山善。支社・出先は分けない）。社名がない得意先は1社ずつ
 let CPG=null, CPG_FOR=null;
+const CP_RANKS=[["A' ランク","5掛(A')"],['A ランク','5.25掛(A)'],["B' ランク",'5.5掛(B\')'],['B ランク','5.75掛(B)'],['ユーザー ランク（7掛）','7掛(ユーザー)'],['定価','10掛(定価)']];
 function cpGroups(){
   if(CPG&&CPG_FOR===CUST) return CPG;
   const m=new Map();
@@ -1938,6 +1946,9 @@ function cpGroups(){
     // 社名でまとめるときは、得意先コードごとの設定（在庫口など）を入れず、社名の区分とランクで出す
     g.rep=g.shaCode?{code:'',shaCode:g.shaCode,shaName:g.label,name:g.label,fullName:g.label,kakeName:g.kake,address:''}:g.members[0];
     g.main=g.members.find(c=>c.kakeName===g.kake)||g.members[0]; });
+  // ランクで出す（得意先を選ばず、ランクだけの単価）
+  CP_RANKS.forEach(([lab,kn])=>{ const rep={code:'',shaCode:'',shaName:lab,name:lab,fullName:lab,kakeName:kn,address:''};
+    m.set('R:'+kn,{key:'R:'+kn,label:lab,shaCode:'',members:[rep],kake:kn,mixed:false,rep,main:rep,isRank:true}); });
   CPG=m; CPG_FOR=CUST; return m;
 }
 function cpCust(st){ const g=cpGroups().get(st.cust); return g?g.rep:null; }
@@ -1980,6 +1991,8 @@ function renderCustPriceView(){
   const picker=`<div class="card"><div class="tools"><input type="search" id="cpCustQ" value="${esc(st.cq)}" placeholder="得意先（コード・名前・社名で探す）" style="min-width:280px">
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">日付<input type="date" id="cpDate" value="${esc(st.date)}"></label>
 </div>
+    <div class="small muted" style="margin:6px 0 4px">ランクで出す（得意先を決めずに、ランクだけの価格表）</div>
+    <div class="cpcands">${CP_RANKS.map(([lab,kn])=>`<button class="cpcand${st.cust==='R:'+kn?' on':''}" data-cust="R:${esc(kn)}"><b>${esc(lab)}</b><span>${esc(kn)}</span></button>`).join('')}</div>
     ${`<div class="small muted" style="margin:6px 0 4px">${t?`見つかった得意先（社名でまとめています・${cands.length>=24?'先頭24件':cands.length+'件'}）`:'③ 区分・④ 例外が付いている得意先（探すと全部の得意先から選べます）'}</div>
     <div class="cpcands">${cands.map(x=>`<button class="cpcand${x.key===st.cust?' on':''}" data-cust="${esc(x.key)}"><b>${esc(x.label)}</b><span>${x.shaCode?esc(x.members.length)+'得意先':esc(x.members[0].code)}${x.kake?'・'+esc(x.kake)+(x.mixed?'ほか':''):''}</span></button>`).join('')||'<span class="muted small">見つかりません</span>'}</div>`}</div>`;
   if(!c){ el.innerHTML=lead+picker; bindCp(el,st); return; }
@@ -1992,9 +2005,9 @@ function renderCustPriceView(){
   sortBy(shown,st,CP_GET,CP_SORTS.series[1]);
   const hasStock=shown.some(x=>x.stock!=null);
   const cc=PriceCore.customerClass(ruleData().classes,c,'台車',st.date);
-  const head=`<div class="card cphead"><div><div class="small muted">${g.shaCode?'社名':'得意先'}</div><h3 style="margin:0">${esc(g.label)}</h3>
+  const head=`<div class="card cphead"><div><div class="small muted">${g.isRank?'ランク':g.shaCode?'社名':'得意先'}</div><h3 style="margin:0">${esc(g.label)}</h3>
       <div class="small">${g.shaCode?`社名コード ${esc(g.shaCode)}（${g.members.length}得意先をまとめています）`:esc(c.code)}　ランク <b>${esc(g.kake||'なし')}</b>${g.mixed?' <span class="pill warn" title="同じ社名の中で得意先ごとにランクが違います。いちばん多いランクで出しています">ランクがまちまち</span>':''}${cc.isStock?' <span class="pill stock">在庫口</span>':''}</div></div>
-      <span class="grow"></span><button class="btn" id="cpToCalc">見積でこの得意先を使う</button><button class="linkbtn" id="cpChange">${st.pick?'選び直しをやめる':'得意先を選び直す'}</button></div>`;
+      <span class="grow"></span>${g.isRank?'':'<button class="btn" id="cpToCalc">見積でこの得意先を使う</button>'}<button class="linkbtn" id="cpChange">${st.pick?'選び直しをやめる':'得意先を選び直す'}</button></div>`;
   const stats=`<div class="costats"><button class="cstat${!st.why?' on':''}" data-why=""><b>${rows.length}</b><span>商品（${esc(st.date)} の定価）</span></button>
       <button class="cstat${st.why==='notrank'?' on':''}" data-why="notrank"><b>${rows.length-counts.rank}</b><span>ランクどおりでない</span></button>
       ${Object.keys(CP_WHY).filter(k=>counts[k]).map(k=>`<button class="cstat${st.why===k?' on':''}${k==='none'?' warn':''}" data-why="${k}"><b>${counts[k]}</b><span>${esc(CP_WHY[k][0])}${k==='rank'?'どおり':k==='none'?'（掛率）':'で決まる'}</span></button>`).join('')}</div>`;
@@ -2047,53 +2060,125 @@ function openCustPrice(code){ const st=VIEWSTATE.custprice=VIEWSTATE.custprice||
 // ---------- 価格表の出力（PDF・Excel）：分類にチェックを付けて出す。原価・掛率・決め手は載せない ----------
 function janOf(code){ const r=RULES.price.find(x=>x.data.型式===code&&String(x.data.JANコード||'').trim()); return r?String(r.data.JANコード).trim():''; }
 function cpOutRows(st){
-  const rows=cpCompute(st)||[]; const sel=st.sel;
-  return rows.filter(x=>x.r.price!=null&&(!sel||sel.has(x.dai))).map(x=>({code:x.code,name:x.name,dai:x.dai,jan:janOf(x.code),list:x.r.listPrice,unit:x.r.method==='本部経由'&&x.r.quotePrice!=null?x.r.quotePrice:x.r.price}));
+  const all=cpCompute(st)||[];
+  // 価格表の商品（保存したセット）で出すとき：☑の付いた商品だけを、見出しごとに並べる。分類で選ぶときは従来どおり
+  if(cpMode(st)==='set'){
+    const byCode=new Map(all.map(x=>[PriceCore.asmKey(x.code),x])), P=psState(st), out=[]; let skipped=0;
+    psGroups(st).forEach(gr=>gr.items.forEach(it=>{ if(P.off.has(it.code)) return;
+      const x=byCode.get(PriceCore.asmKey(it.code)); if(!x||x.r.price==null){ skipped++; return; }
+      out.push({code:x.code,name:x.name,dai:gr.head,head:gr.head,sub:gr.sub,jan:janOf(x.code),list:x.r.listPrice,stock:x.stock,silent:it.data.サイレントキャスター||'',memo:it.data.備考||'',
+        unit:x.r.method==='本部経由'&&x.r.quotePrice!=null?x.r.quotePrice:x.r.price}); }));
+    out.skipped=skipped; return out;
+  }
+  const sel=st.sel;
+  return all.filter(x=>x.r.price!=null&&(!sel||sel.has(x.dai))).map(x=>({code:x.code,name:x.name,dai:x.dai,head:x.dai,sub:'',jan:janOf(x.code),list:x.r.listPrice,stock:x.stock,silent:'',memo:'',unit:x.r.method==='本部経由'&&x.r.quotePrice!=null?x.r.quotePrice:x.r.price}));
+}
+// ---- 価格表の商品（SharePoint のリスト PR_価格表の商品）。画面で足す・外す → 「保存」で書く ----
+function cpMode(st){ return st.outMode||(RULES.psheet.length?'set':'dai'); }
+function psState(st){ return st.ps=st.ps||{off:new Set(),add:[],del:new Set(),open:false,newHead:false}; }
+// 見出し・小見出しごとにまとめる（並び順の小さい順）。保存前の「足す・外す」も反映する
+function psGroups(st){
+  const P=psState(st), items=[];
+  RULES.psheet.forEach(r=>{ if(r.data.型式&&!P.del.has(r.spId)) items.push({code:r.data.型式,spId:r.spId,data:r.data,order:Number(r.data.並び順)||0}); });
+  P.add.forEach(d=>items.push({code:d.型式,pending:true,data:d,order:Number(d.並び順)||1e9}));
+  items.sort((a,b)=>a.order-b.order);
+  const m=new Map(); items.forEach(it=>{ const k=(it.data.見出し||'')+'\u0001'+(it.data.小見出し||''); if(!m.has(k)) m.set(k,{key:k,head:it.data.見出し||'（見出しなし）',sub:it.data.小見出し||'',items:[]}); m.get(k).items.push(it); });
+  return [...m.values()];
 }
 function cpOutCard(st,rows,dais){
-  const sel=st.sel, on=d=>!sel||sel.has(d), n=(d)=>rows.filter(x=>x.dai===d&&x.r.price!=null).length;
-  const cnt=cpOutRows(st).length;
-  return `<div class="card"><h3 style="margin:0 0 6px">価格表として出す</h3>
-    <div class="small muted" style="margin-bottom:6px">出す分類にチェックを付けます（単価が決まらない商品は出しません）。原価・掛率・「決め手」は載りません。JANコードがある商品はバーコードが付きます。</div>
-    <div class="tools" style="flex-wrap:wrap;gap:4px 14px">${dais.map(d=>`<label class="cb"><input type="checkbox" data-outdai="${esc(d)}" ${on(d)?'checked':''}>${esc(d)}（${n(d)}）</label>`).join('')}</div>
-    <div class="tools" style="margin-top:8px"><button class="linkbtn" id="cpAll">全部にチェック</button><button class="linkbtn" id="cpNone">全部外す</button><span class="grow"></span>
-      <span class="small muted">${cnt}商品</span><button class="btn pri" id="cpPdf" ${cnt?'':'disabled'}>価格表を出す（PDF）</button><button class="btn" id="cpCsv" ${cnt?'':'disabled'}>Excel用（CSV）</button></div></div>`;
+  const mode=cpMode(st), cnt=cpOutRows(st), skipped=cnt.skipped||0;
+  const head=`<div class="tools" style="gap:14px"><label class="cb"><input type="radio" name="cpMode" value="set" ${mode==='set'?'checked':''}>価格表の商品（保存したセット）</label>
+    <label class="cb"><input type="radio" name="cpMode" value="dai" ${mode==='dai'?'checked':''}>分類で選ぶ（全商品から）</label></div>`;
+  let body='';
+  if(mode==='set'){
+    const P=psState(st), G=psGroups(st), pend=P.add.length+P.del.size, nAll=G.reduce((a,g)=>a+g.items.length,0);
+    const grpOpts=G.map((g,i)=>`<option value="${i}">${esc(g.head)}${g.sub?'｜'+esc(g.sub):''}</option>`).join('');
+    body=`<div class="small muted" style="margin:6px 0">出す商品に☑を付けます（☑は出すたびに選び直せます。保存はされません）。商品を足す・外したら「保存」を押すと、全員の価格表に反映されます。単価が決まらない商品は出しません。原価・掛率・「決め手」は載りません。</div>
+      <div class="pslist">${G.map((g,gi)=>`<details class="psgrp" ${P.open===true||P.open===gi||g.items.some(i=>i.pending)?'open':''}><summary><label class="cb" onclick="event.stopPropagation()"><input type="checkbox" data-psgrp="${gi}" ${g.items.every(i=>!P.off.has(i.code))?'checked':''}></label><b>${esc(g.head)}</b>${g.sub?`<span class="muted small">　${esc(g.sub)}</span>`:''}<span class="muted small">　${g.items.length}商品</span></summary>
+        <table class="t pstbl"><tbody>${g.items.map(it=>{ const gone=P.del.has(it.spId); return `<tr class="${it.pending?'pend':''}"><td style="width:28px"><input type="checkbox" data-psit="${esc(it.code)}" ${P.off.has(it.code)?'':'checked'}></td><td><b>${esc(it.code)}</b></td><td>${esc((ITEMINFO[it.code]&&ITEMINFO[it.code].name)||it.data.備考||'')}</td><td class="small muted">${it.pending?'（未保存）':''}</td><td style="width:40px"><button class="btn" data-psdel="${esc(it.code)}|${gi}" title="この商品を価格表の商品から外す">×</button></td></tr>`; }).join('')}</tbody></table></details>`).join('')||'<div class="muted small">まだ商品がありません。下で足すか、「まとめて入れる」で「価格表の商品.json」を入れてください。</div>'}</div>
+      <div class="tools" style="margin-top:8px;flex-wrap:wrap;gap:6px 8px"><input id="psCode" list="psCodes" placeholder="足す型式（品目コード・品名で探す）" style="min-width:240px" autocomplete="off">
+        <select id="psGrp">${grpOpts}<option value="new">（新しい見出しを作る）</option></select>
+        <span id="psNewBox" style="display:${P.newHead?'inline':'none'}"><input id="psNewHead" placeholder="見出し（例：ダンディ台車シリーズ（スチール製））" style="min-width:230px"> <input id="psNewSub" placeholder="小見出し（例：荷台寸法…）" style="min-width:200px"></span>
+        <button class="btn" id="psAdd">＋ 足す</button><span class="grow"></span>
+        <button class="btn pri" id="psSave" ${pend?'':'disabled'}>保存（足す ${P.add.length}・外す ${P.del.size}）</button>${pend?'<button class="linkbtn" id="psUndo">取り消す</button>':''}</div>
+      <datalist id="psCodes">${[...productGroups().keys()].slice(0,2000).map(c=>`<option value="${esc(c)}">${esc((ITEMINFO[c]&&ITEMINFO[c].name)||'')}</option>`).join('')}</datalist>
+      <div id="psMsg" class="small" style="margin-top:4px"></div>`;
+  } else {
+    const sel=st.sel, on=d=>!sel||sel.has(d), n=(d)=>rows.filter(x=>x.dai===d&&x.r.price!=null).length;
+    body=`<div class="small muted" style="margin:6px 0">出す分類にチェックを付けます（単価が決まらない商品は出しません）。原価・掛率・「決め手」は載りません。JANコードがある商品はバーコードが付きます。</div>
+      <div class="tools" style="flex-wrap:wrap;gap:4px 14px">${dais.map(d=>`<label class="cb"><input type="checkbox" data-outdai="${esc(d)}" ${on(d)?'checked':''}>${esc(d)}（${n(d)}）</label>`).join('')}</div>
+      <div class="tools" style="margin-top:6px"><button class="linkbtn" id="cpAll">全部にチェック</button><button class="linkbtn" id="cpNone">全部外す</button></div>`;
+  }
+  return `<div class="card"><h3 style="margin:0 0 6px">価格表として出す</h3>${head}${body}
+    <div class="tools" style="margin-top:8px"><span class="grow"></span><span class="small muted">${cnt.length}商品${skipped?`（定価・単価が出ない ${skipped}商品は除く）`:''}</span><button class="btn pri" id="cpPdf" ${cnt.length?'':'disabled'}>価格表を出す（PDF）</button><button class="btn" id="cpCsv" ${cnt.length?'':'disabled'}>Excel用（CSV）</button></div></div>`;
 }
 function bindCpOut(el,st){
-  const dais=[...el.querySelectorAll('[data-outdai]')].map(x=>x.dataset.outdai);
-  const set=()=>{ st.sel=new Set([...el.querySelectorAll('[data-outdai]')].filter(x=>x.checked).map(x=>x.dataset.outdai)); renderCustPriceView(); };
-  el.querySelectorAll('[data-outdai]').forEach(x=>x.onchange=set);
-  el.querySelector('#cpAll').onclick=()=>{ st.sel=null; renderCustPriceView(); };
-  el.querySelector('#cpNone').onclick=()=>{ st.sel=new Set(); renderCustPriceView(); };
+  const rr=()=>renderCustPriceView();
+  el.querySelectorAll('input[name="cpMode"]').forEach(x=>x.onchange=()=>{ st.outMode=x.value; rr(); });
+  if(cpMode(st)==='set'){
+    const P=psState(st), G=psGroups(st);
+    el.querySelectorAll('[data-psit]').forEach(x=>x.onchange=()=>{ if(x.checked) P.off.delete(x.dataset.psit); else P.off.add(x.dataset.psit); P.open=G.findIndex(g=>g.items.some(i=>i.code===x.dataset.psit)); rr(); });
+    el.querySelectorAll('[data-psgrp]').forEach(x=>x.onchange=()=>{ const gi=+x.dataset.psgrp; G[gi].items.forEach(i=>{ if(x.checked) P.off.delete(i.code); else P.off.add(i.code); }); P.open=gi; rr(); });
+    el.querySelectorAll('[data-psdel]').forEach(b=>b.onclick=()=>{ const [code,gi]=b.dataset.psdel.split('|'); const it=G[+gi].items.find(i=>i.code===code); if(!it) return;
+      if(it.pending) P.add=P.add.filter(d=>d!==it.data); else P.del.add(it.spId); P.open=+gi; rr(); });
+    const grp=el.querySelector('#psGrp'); if(grp) grp.onchange=()=>{ P.newHead=grp.value==='new'; el.querySelector('#psNewBox').style.display=P.newHead?'inline':'none'; };
+    const msg=el.querySelector('#psMsg');
+    el.querySelector('#psAdd').onclick=()=>{
+      const raw=el.querySelector('#psCode').value.trim(); if(!raw) return;
+      const code=resolveCode(raw); if(!productGroups().has(code)){ msg.innerHTML=`<span class="diff">「${esc(raw)}」は定価リストにない型式です。候補から選んでください。</span>`; return; }
+      if(G.some(g=>g.items.some(i=>i.code===code))){ msg.innerHTML=`<span class="diff">「${esc(code)}」はもう価格表の商品に入っています。</span>`; return; }
+      let head,sub,order;
+      if(grp.value==='new'){ head=el.querySelector('#psNewHead').value.trim(); sub=el.querySelector('#psNewSub').value.trim(); if(!head){ msg.innerHTML='<span class="diff">新しい見出しの名前を入れてください。</span>'; return; }
+        order=Math.max(0,...RULES.psheet.map(r=>Number(r.data.並び順)||0),...P.add.map(d=>Number(d.並び順)||0))+1; }
+      else { const g=G[+grp.value]; head=g.head==='（見出しなし）'?'':g.head; sub=g.sub; order=Math.max(...g.items.map(i=>i.order))+0.01*(1+P.add.filter(d=>d.見出し===head&&d.小見出し===sub).length); }
+      P.add.push({型式:code,見出し:head,小見出し:sub,並び順:order,サイレントキャスター:'',備考:''}); P.open=true; rr(); };
+    const sv=el.querySelector('#psSave'); if(sv) sv.onclick=async()=>{ sv.disabled=true; msg.textContent='保存しています…';
+      try{ const id=await ensureList('psheet'); if(!id){ msg.textContent='リストを作らなかったので、保存しませんでした。'; sv.disabled=false; return; }
+        const now=new Date().toISOString(), who=account&&account.name||'';
+        const reqs=[...[...P.del].map(spId=>({method:'DELETE',url:`/sites/${SITE_ID}/lists/${id}/items/${spId}`})),
+          ...P.add.map(d=>({method:'POST',url:`/sites/${SITE_ID}/lists/${id}/items`,headers:{'Content-Type':'application/json'},body:{fields:fieldsOf('psheet',Object.assign({},d,{更新者:who,更新日時:now}))}}))];
+        const res=await batchRun(reqs); if(res.failed.length) throw new Error(`${res.failed.length}件できませんでした：${res.failed.slice(0,2).join(' / ')}`);
+        RULES.psheet=await readList('psheet')||[]; P.add=[]; P.del=new Set(); updateCounts(); rr();
+      }catch(e){ msg.innerHTML=`<span class="diff">保存できませんでした（直す権限がないかもしれません）：${esc(e.message)}</span>`; sv.disabled=false; } };
+    const un=el.querySelector('#psUndo'); if(un) un.onclick=()=>{ P.add=[]; P.del=new Set(); rr(); };
+  } else {
+    el.querySelectorAll('[data-outdai]').forEach(x=>x.onchange=()=>{ st.sel=new Set([...el.querySelectorAll('[data-outdai]')].filter(x=>x.checked).map(x=>x.dataset.outdai)); rr(); });
+    el.querySelector('#cpAll').onclick=()=>{ st.sel=null; rr(); };
+    el.querySelector('#cpNone').onclick=()=>{ st.sel=new Set(); rr(); };
+  }
   el.querySelector('#cpPdf').onclick=()=>cpPrint(st);
   el.querySelector('#cpCsv').onclick=()=>cpCsv(st);
 }
 function cpPrint(st){
-  const g=cpGroups().get(st.cust), rows=cpOutRows(st); if(!g||!rows.length) return; const c={code:g.shaCode||g.members[0].code,name:g.label};
+  const g=cpGroups().get(st.cust), rows=cpOutRows(st); if(!g||!rows.length) return; const c={name:g.label};
   const n=v=>v==null?'':Math.round(v).toLocaleString('ja-JP'), d=s=>s.replace(/^(\d+)-(\d+)-(\d+)$/,(m,y,mo,da)=>`${y}年${+mo}月${+da}日`);
-  const groups=new Map(); rows.forEach(r=>{ if(!groups.has(r.dai)) groups.set(r.dai,[]); groups.get(r.dai).push(r); });
-  const td='padding:5px 8px;border-bottom:1px solid #dfe4ef;vertical-align:middle;';
-  const body=[...groups].map(([dai,rs])=>`<tr class="g"><td colspan="5">${esc(dai)}</td></tr>`+rs.map(r=>`<tr><td style="${td}"><b>${esc(r.code)}</b></td><td style="${td}">${esc(r.name)}</td>
-    <td style="${td}">${r.jan?PriceCore.ean13Svg(r.jan,{module:1,height:26})+`<div class="jn">${esc(r.jan)}</div>`:''}</td><td style="${td}text-align:right">${n(r.list)}</td><td style="${td}text-align:right"><b>${n(r.unit)}</b></td></tr>`).join('')).join('');
+  const hasStock=rows.some(r=>r.stock!=null), hasSil=rows.some(r=>r.silent), hasJan=rows.some(r=>r.jan);
+  const groups=new Map(); rows.forEach(r=>{ const k=r.head+'\u0001'+r.sub; if(!groups.has(k)) groups.set(k,{head:r.head,sub:r.sub,rows:[]}); groups.get(k).rows.push(r); });
+  const cols=3+(hasStock?1:0)+(hasSil?1:0)+(hasJan?1:0)+1;
+  let lastHead=null;
+  const body=[...groups.values()].map(gr=>{ const hd=gr.head!==lastHead?`<tr class="h"><td colspan="${cols}">${esc(gr.head)}</td></tr>`:''; lastHead=gr.head;
+    return hd+(gr.sub?`<tr class="s"><td colspan="${cols}">${esc(gr.sub)}</td></tr>`:'')+gr.rows.map(r=>`<tr><td><b>${esc(r.code)}</b>${r.name&&r.name!==r.code?`<div class="nm">${esc(r.name)}</div>`:''}</td>
+      ${hasJan?`<td>${r.jan?PriceCore.ean13Svg(r.jan,{module:1,height:24})+`<div class="jn">${esc(r.jan)}</div>`:''}</td>`:''}${hasStock?`<td class="r">${r.stock!=null?n(r.stock):''}</td>`:''}<td class="r"><b>${n(r.unit)}</b></td><td class="r">${n(r.list)}</td>${hasSil?`<td class="c">${esc(r.silent)}</td>`:''}<td class="m">${esc(r.memo)}</td></tr>`).join(''); }).join('');
   const html=`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>価格表</title><style>
     @page{size:A4;margin:12mm} body{font-family:"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;color:#161a3d;margin:0;padding:20px;font-size:12px}
-    .head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #23268f;padding-bottom:8px}
-    h1{margin:0;font-size:22px;color:#23268f}.r{text-align:right;color:#8a90a8;line-height:1.6}
-    table{border-collapse:collapse;width:100%;margin-top:12px} th{background:#f4f6fb;color:#8a90a8;font-weight:500;text-align:left;padding:6px 8px}
-    tr{page-break-inside:avoid} tr.g td{background:#f4f6fb;font-weight:700;color:#23268f;padding:6px 8px} .jn{font-size:9px;color:#8a90a8;letter-spacing:.5px}
-    .bar{margin-bottom:10px;color:#8a90a8} @media print{.bar{display:none}}</style></head><body>
+    h1{margin:0;text-align:center;font-size:22px;letter-spacing:.3em}
+    .top{display:flex;justify-content:space-between;align-items:flex-end;margin-top:14px;border-bottom:2px solid #161a3d;padding-bottom:4px}.to{font-size:16px;font-weight:700}.r2{text-align:right;color:#5b6180;line-height:1.5}
+    table{border-collapse:collapse;width:100%;margin-top:6px} th{background:#f4f6fb;color:#5b6180;font-weight:500;text-align:left;padding:5px 8px;border:1px solid #dfe4ef}
+    td{padding:5px 8px;border:1px solid #dfe4ef;vertical-align:middle} tr{page-break-inside:avoid} .r{text-align:right;white-space:nowrap}.c{text-align:center}.m{font-size:11px;color:#5b6180}.nm{font-size:10px;color:#5b6180}
+    tr.h td{background:#dbe4f7;font-weight:700;font-size:14px;color:#161a3d;border:0;padding:8px} tr.s td{background:#555a73;color:#fff;font-weight:700;font-size:11px;border:0} .jn{font-size:9px;color:#5b6180;letter-spacing:.5px}
+    .bar{margin-bottom:10px;color:#5b6180} @media print{.bar{display:none}}</style></head><body>
     <div class="bar">このページを印刷（Ctrl＋P）して、送信先を「PDFに保存」にするとPDFになります。</div>
-    <div class="head"><div><h1>価格表</h1><div style="font-size:15px;margin-top:4px">${esc(c.name)}　御中</div></div><div class="r"><div>${esc(d(st.date))} 時点（税抜・円）</div><div>花岡車輌株式会社</div></div></div>
-    <table><thead><tr><th>型式</th><th>品名</th><th>JAN</th><th style="text-align:right">定価</th><th style="text-align:right">お取引価格</th></tr></thead><tbody>${body}</tbody></table></body></html>`;
+    <h1>価格表</h1><div class="top"><div class="to">${esc(c.name)}　御中</div><div class="r2"><div>${esc(d(st.date))}</div><div>花岡車輌株式会社（税抜・円）</div></div></div>
+    <table><thead><tr><th>型式</th>${hasJan?'<th>JAN</th>':''}${hasStock?'<th class="r">在庫価格</th>':''}<th class="r">${g.isRank?'仕切り金額':'お取引価格'}</th><th class="r">定価</th>${hasSil?'<th class="c">サイレントキャスター</th>':''}<th>備考</th></tr></thead><tbody>${body}</tbody></table></body></html>`;
   const w=window.open('','_blank'); if(!w){ alert('価格表のページを開けませんでした（ポップアップを許可してください）。'); return; }
   w.document.open(); w.document.write(html); w.document.close();
 }
 function cpCsv(st){
-  const g=cpGroups().get(st.cust), rows=cpOutRows(st); if(!g||!rows.length) return; const c={code:g.shaCode||g.members[0].code,name:g.label};
+  const g=cpGroups().get(st.cust), rows=cpOutRows(st); if(!g||!rows.length) return; const code=g.shaCode||(g.members[0]&&g.members[0].code)||'rank';
   const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
-  const lines=[['価格表'],['得意先',c.name],['日付',st.date],[],['分類','型式','品名','JAN','定価','お取引価格'],...rows.map(r=>[r.dai,r.code,r.name,r.jan?"'"+r.jan:'',r.list,r.unit])];
+  const lines=[['価格表'],['宛名',g.label],['日付',st.date],[],['見出し','小見出し','型式','品名','JAN','在庫価格','お取引価格','定価','サイレントキャスター','備考'],...rows.map(r=>[r.head,r.sub,r.code,r.name,r.jan?"'"+r.jan:'',r.stock??'',r.unit,r.list,r.silent,r.memo])];
   const blob=new Blob(['﻿'+lines.map(r=>r.map(q).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='価格表_'+c.code+'_'+st.date+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='価格表_'+code+'_'+st.date+'.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
 
 // ---------- 型式・ランク別の価格：A'・A・B'・B と定価を並べる（得意先ごとの区分・例外は入れない、ランクだけの単価） ----------
@@ -2282,6 +2367,7 @@ const IMP_ID={
   fare:['種類','地域','上限','適用開始日'],
   asm:['型式','適用開始日'],
   cost:['型式','適用開始日'],
+  psheet:['型式','見出し'],
 };
 const IMP_SKIP=['更新者','更新日時'];
 function impVal(v){ return v===undefined||v===''?null:v; }
