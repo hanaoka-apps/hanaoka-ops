@@ -143,8 +143,31 @@ c = Q.compute(data, doc({ lines: [{ code: 'UDL25', qty: 2, note: '特価' }] }),
 let rows = Q.sheetRows(doc({ lines: [{ code: 'UDL25', qty: 2, note: '特価' }] }), c);
 assert.equal(rows.length, 2);
 assert.equal(rows[0].list, null); // 定価は「載せる」にしたときだけ
-assert.equal(rows[1].name, '送料（埼玉県送り）');
+assert.equal(rows[1].name, '送料（UDL25）'); // 送料は商品のすぐ下に、行ごとに載る
 assert.equal(rows[1].amount, 3900);
+// 送料は商品の行ごとに出して足す（価格・送料の早見と同じ）。2行なら、まとめた重さではなく、それぞれの送料の合計
+{
+  const two = doc({ lines: [{ code: 'UDL25', qty: 1 }, { code: 'T1', qty: 1 }] });
+  const c2 = Q.compute(data, two, env);
+  assert.deepEqual(c2.fare.lines.map(p => [p.code, p.amount]), [['UDL25', 3900], ['T1', 2300]]); // 60kg → 125kg の帯、40kg → 40kg の帯
+  assert.equal(c2.fare.amount, 6200);   // まとめると 100kg で 3900 だが、行ごとに足して 6200
+  assert.equal(c2.totals.fare, 6200);
+  const r2 = Q.sheetRows(two, c2);
+  assert.deepEqual(r2.map(r => !!r.fare), [false, true, false, true]); // 商品 → その送料 → 商品 → その送料
+  assert.deepEqual(r2.filter(r => r.fare).map(r => [r.name, r.amount]), [['送料（UDL25）', 3900], ['送料（T1）', 2300]]);
+  // 受注伝票では、行ごとの送料を足して運賃（FR）の1行にする
+  const o2 = Q.compute(data, Object.assign(Q.blank('order', '2026-11-16', ''), { cust: B, dest: { name: '', pref: '埼玉県', personal: false }, lines: two.lines }), env).order;
+  assert.deepEqual(o2.rows.filter(r => r.code === 'FR').map(r => r.price), [6200]);
+  // 送料を手で決めたときは、見積書の最後にまとめて1行
+  const c3 = Q.compute(data, Object.assign({}, two, { fareManual: 5000, fareReason: Q.ONCE }), env);
+  assert.deepEqual(Q.sheetRows(two, c3).filter(r => r.fare).map(r => [r.name, r.amount]), [['送料（埼玉県送り）', 5000]]);
+  // 本体と一緒のオプション（OP/〜）は、本体の送料に含める（0円で行は出さない）
+  const d4 = Object.assign({}, data, { prices: data.prices.concat([{ 型式: 'OP/X1', 品名: '見本オプション', 定価: 5000, 適用開始日: '2026-01-01', 商品の種類: '部品', 運賃の重量kg: 3 }]) });
+  const four = doc({ lines: [{ code: 'T1', qty: 1 }, { code: 'OP/X1', qty: 1 }] });
+  const c4 = Q.compute(d4, four, { items, index: Q.buildIndex(d4.prices) });
+  assert.deepEqual(c4.fare.lines.map(p => [p.code, p.amount]), [['T1', 2300], ['OP/X1', 0]]);
+  assert.equal(Q.sheetRows(four, c4).filter(r => r.fare).length, 1);
+}
 rows = Q.sheetRows(doc({ showList: true }), c);
 assert.equal(rows[0].list, 132000);
 
@@ -486,11 +509,14 @@ assert.equal(c.fare.reason, '');
   assert.equal(r.lines[0].kgCode, 'UDL250');
   assert.equal(r.lines[1].kg, 1);
   assert.ok(r.fare.explain.length > 0);
-  // 路線便は、帯ごとの金額の合計が送料の基本と同じ
-  const parts = r.fare.parts;
+  // 行ごと：リフト 120kg と部品 1kg は、それぞれの重さの帯（見本の運賃表にミニ便はない）。行ごとの送料の合計が送料の基本
+  assert.deepEqual(r.fare.lines.map(p => p.amount), [3900, 1700]);
+  assert.equal(r.fare.lines.reduce((s, p) => s + p.amount, 0), r.fare.rule);
+  // 路線便は、帯ごとの金額の合計が送料の基本と同じ（1行のとき）
+  const r1 = Q.compute(data, doc({ lines: [{ code: 'UDL250', qty: 2 }] }), env), parts = r1.fare.parts;
   assert.ok(parts.length >= 1);
-  assert.equal(parts.reduce((s, p) => s + p.amount, 0), r.fare.rule);
-  assert.equal(parts.reduce((s, p) => s + p.kg, 0), r.fare.kg);
+  assert.equal(parts.reduce((s, p) => s + p.amount, 0), r1.fare.rule);
+  assert.equal(parts.reduce((s, p) => s + p.kg, 0), r1.fare.kg);
 }
 
 // --- 受注伝票：運送会社は送料の地域から自動で入る／新しい納品先は名前・住所・電話がそろうまで残る ---

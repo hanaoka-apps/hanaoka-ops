@@ -323,15 +323,34 @@
       // 「計算の内訳」で見せるため、行ごとに 送料に使った重さ（1台あたり）とその型式 を残す
       var code = fareCode(l), row = P.listPriceRow(data.prices, code, priceDate, true);
       l.kgCode = code; l.kg = row ? num(row.運賃の重量kg) : null; l.isOption = P.isOption(code);
-      return { code: code, qty: l.qty, ship: l.ship };
+      return { l: l, req: { code: code, qty: l.qty, ship: l.ship } };
     });
-    var f = { amount: null, explain: [], warnings: [] };
-    if (fl.length) f = P.freight(data, fl, { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis });
-    var rule = f.amount === null || f.amount === undefined ? null : (logis && f.quoteAmount !== undefined ? (kind === "order" ? f.orderAmount : f.quoteAmount) : f.amount);
+    // 送料は商品の行ごとに出して足す（価格・送料の早見と同じ決まり。見積書でも行ごとに載る）。
+    // ただし、本体と一緒の見積のオプション（OP/〜）は本体の送料に含める（運賃表「台車1台にPB1個なら本体運賃のみ」）
+    var fopt = { pref: dest.pref || "", date: priceDate, personal: !!dest.personal, logis: logis };
+    var hasBodyLine = fl.some(function (x) { return !P.isOption(x.req.code) && !P.isPartBundle(x.req.code); });
+    var warns = [], per = fl.map(function (x) {
+      var ff = P.isOption(x.req.code) && hasBodyLine && x.req.ship !== "組立出荷"
+        ? { amount: 0, explain: ["オプションは本体と一緒なので、本体の送料に含める"], warnings: [], kg: 0 }
+        : P.freight(data, [x.req], fopt);
+      var amt = ff.amount === null || ff.amount === undefined ? null : (logis && ff.quoteAmount !== undefined ? (kind === "order" ? ff.orderAmount : ff.quoteAmount) : ff.amount);
+      (ff.warnings || []).forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); });
+      var lf = { code: x.l.code, amount: amt, carrier: ff.carrier || "", region: ff.region || "", kg: ff.kg || 0, how: ff.method || "", explain: ff.explain || [],
+        parts: routeParts(data, ff, priceDate).map(function (p) { p.code = x.l.code; return p; }) };
+      x.l.fare = lf;
+      return lf;
+    });
+    var got = per.filter(function (p) { return p.amount !== null; });
+    var rule = got.length ? got.reduce(function (s, p) { return s + p.amount; }, 0) : null;
+    // 運送会社は、送料がいちばん大きい行のもの（伝票に1つ）
+    var main = got.slice().sort(function (a, b) { return b.amount - a.amount; })[0] || per[0] || {};
     var manualFare = num(doc.fareManual);
     var fare = { rule: rule, amount: manualFare !== null ? manualFare : rule, changed: manualFare !== null && manualFare !== rule, reason: "", memo: "",
-      carrier: f.carrier || "", region: f.region || "", kg: f.kg || 0, how: f.method || "", explain: f.explain || [], warnings: f.warnings || [],
-      parts: routeParts(data, f, priceDate) };
+      carrier: main.carrier || "", region: (per.filter(function (p) { return p.region; })[0] || {}).region || "",
+      kg: per.reduce(function (s, p) { return s + (p.kg || 0); }, 0), how: per.length > 1 ? "行ごと（" + per.length + "行）" : (main.how || ""),
+      explain: per.length > 1 ? per.map(function (p) { return p.code + "：" + (p.explain.join("／") || "出ません"); }) : (main.explain || []),
+      // 路線便の重さの帯の内訳。行が2つ以上のときは、400kg を超えて帯が分かれた行だけ（ほかは上の文と同じなので）
+      warnings: warns, parts: per.length > 1 ? per.reduce(function (a, p) { return p.parts.length > 1 ? a.concat(p.parts) : a; }, []) : (main.parts || []), lines: per };
 
     if (fare.changed) { fare.reason = doc.fareReason || ""; fare.memo = doc.fareMemo || ""; }
     fare.wrong = fare.reason === WRONG;
@@ -627,15 +646,18 @@
   function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
 
   // ---------- 見積書に載せる行 ----------
-  // 返す：[{ name, note, unit, qty, unitName, amount, list, lead }]。送料は最後に1行
+  // 返す：[{ name, note, unit, qty, unitName, amount, list, lead }]。
+  // 送料は商品の行ごとに、その商品のすぐ下に1行（価格・送料の早見の見積書と同じ）。送料を手で変えたときは、最後にまとめて1行
   function sheetRows(doc, comp) {
-    var rows = comp.lines.map(function (l) {
-      return { name: l.manual ? (l.name || l.code) : (l.code + (l.name && l.name !== l.code ? "　" + l.name : "")), note: l.note,
-        unit: l.unit, qty: l.qty, unitName: l.unitName, amount: l.amount, list: doc.showList && l.base ? l.base.list : null, lead: l.lead };
+    var f = comp.fare, perLine = !f.changed && (f.lines || []).length > 0, rows = [];
+    comp.lines.forEach(function (l) {
+      rows.push({ name: l.manual ? (l.name || l.code) : (l.code + (l.name && l.name !== l.code ? "　" + l.name : "")), note: l.note,
+        unit: l.unit, qty: l.qty, unitName: l.unitName, amount: l.amount, list: doc.showList && l.base ? l.base.list : null, lead: l.lead });
+      if (perLine && l.fare && l.fare.amount) rows.push({ name: "送料（" + l.code + "）", note: "", unit: l.fare.amount, qty: 1, unitName: "一式", amount: l.fare.amount, list: null, lead: "", fare: true });
     });
-    if (comp.fare.amount) {
+    if (!perLine && f.amount) {
       var pref = doc.dest && doc.dest.pref ? "（" + doc.dest.pref + "送り）" : "";
-      rows.push({ name: "送料" + pref, note: "", unit: comp.fare.amount, qty: 1, unitName: "一式", amount: comp.fare.amount, list: null, lead: "" });
+      rows.push({ name: "送料" + pref, note: "", unit: f.amount, qty: 1, unitName: "一式", amount: f.amount, list: null, lead: "", fare: true });
     }
     return rows;
   }
@@ -658,7 +680,8 @@
   function toRecord(doc, comp, who, now) {
     var snap = {
       priceDate: comp.priceDate, totals: comp.totals,
-      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, reason: comp.fare.reason, wrong: comp.fare.wrong, memo: comp.fare.memo || "", carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg },
+      fare: { amount: comp.fare.amount, rule: comp.fare.rule, changed: comp.fare.changed, reason: comp.fare.reason, wrong: comp.fare.wrong, memo: comp.fare.memo || "", carrier: comp.fare.carrier, region: comp.fare.region, kg: comp.fare.kg,
+        lines: (comp.fare.lines || []).map(function (p) { return { code: p.code, amount: p.amount }; }) },
       margin: comp.margin ? comp.margin.rate : null,
       lines: comp.lines.map(function (l) {
         return { code: l.code, listCode: l.listCode, name: l.name, qty: l.qty, unitName: l.unitName, unit: l.unit, amount: l.amount,
