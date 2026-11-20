@@ -41,7 +41,7 @@
 | アプリ用部品 | `rpa_queue.js` | 依頼の登録・状態の確認（使い方はファイル先頭のコメント） |
 | JSON生成 | `scripts/regenerate_facts.py` | `sales_master` / `facts_only` の後処理。`SHARED_MASTERS_DIR` 指定で同期フォルダを直接読み書きする（`AZURE_*` 不要）。`dashboard_facts.json`（Sales HUB・日報・価値ダッシュボード・目標エディター）、`hub_kpi_facts.json`（HANAOKA HUB）、`dashboard_visits.json`（Sales HUBの訪問実績）を作る |
 | 定時の再作成 | `scripts/rpa_jobs.json` の `schedules` | 常駐スクリプトが毎日 **1:00** に `facts_only` を自分で依頼する（SMILEの業務予定「マスタ出力」が毎日 **0:00** に出力したCSVから作り直す）。PCが止まっていて時刻を過ぎても、その日のうちに起動すれば依頼する。依頼済みの記録は `%LOCALAPPDATA%\hanaoka-rpa\schedule_state.json` |
-| GitHub Actions | `.github/workflows/regenerate-facts.yml` | **手動実行専用**（非常用）。以前の定時実行（06:00 / 16:15）は、GitHubの定時実行が3〜7時間遅れて時刻どおりに動かなかったため止めた |
+| （GitHub Actions） | 2026-11-20 に削除 | 以前は `.github/workflows/regenerate-facts.yml`（手動の非常用）があった。この専用機の定時の再作成で足り、2026-10 から使われていなかったため消した。急ぎで作り直すときは、HUB の「更新をリクエスト」か `facts_only` の依頼で行う |
 | 旧方式の合図ファイル | `SharedMasters/_regenerate_request.json` | 移行用。置かれたら常駐スクリプトが `sales_master` の依頼として受け付け、ジョブ完了後に消す |
 
 ## ジョブを追加する
