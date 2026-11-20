@@ -23,8 +23,6 @@ import re
 import sys
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
-
 import urllib.error
 import urllib.request
 
@@ -217,6 +215,17 @@ def main():
             targets.append((c, nos, sh))
     log('受注番号のある対象の案件 %d 件のうち、出荷のある案件 %d 件' % (sum(1 for c in cases if nos_of(c.get('OrderNumber')) and c.get('Status') != 'アーカイブ'), len(targets)))
 
+    # タイムラインにすでにある自動の記録（AUTO-...）を、案件ごとにまとめて1回で読む。
+    # 以前は出荷のある案件ごとに1回ずつ問い合わせていて（約500回・索引の無い列での絞り込み）、毎回5分ほどかかっていた
+    have_by_case = {}
+    if targets:
+        for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=CaseId,Title)&$top=999' % (SITE, EVENTS)):
+            f = v.get('fields') or {}
+            t = f.get('Title') or ''
+            if t.startswith('AUTO-'):
+                have_by_case.setdefault(str(f.get('CaseId') or ''), set()).add(t)
+        log('タイムラインの自動の記録 %d 件を読んだ' % sum(len(x) for x in have_by_case.values()))
+
     n_ship = n_slip = n_case = n_notify = n_part = 0
     for c, nos, sh in targets:
         cid = c['CaseId']
@@ -231,8 +240,7 @@ def main():
         last = c.get('LastAction') or ''
         # すでに完了候補になっている案件で、まだの受注があると分かったとき（範囲の読み取りで番号が増えたなど）は、一部出荷に戻す
         fix = open_case and not all_done and last.startswith('出荷済み（') and last != cand
-        q = quote("fields/CaseId eq '%s'" % cid.replace("'", "''"))
-        have = {(v['fields'].get('Title') or '') for v in g.all('/sites/%s/lists/%s/items?$select=id&$expand=fields($select=Title)&$filter=%s&$top=999' % (SITE, EVENTS, q))}
+        have = have_by_case.get(str(cid), set())
         new = []
         for s, bunno in sh:
             kub = str(s.get('kubun') or '')
