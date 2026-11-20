@@ -11,7 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
-<script src="ap_intake.js?v=20261119"></script>
+<script src="ap_intake.js?v=20261120"></script>
 <script src="ap_ai.js?v=20261120b"></script>
 <script src="rpa_queue.js"></script>
 <script src="ap_smile.js?v=20261109b"></script>
@@ -341,7 +341,7 @@ function buildRows(){
     // AI のアラート：請求書ごとに1文ずつ。人が「確かめた」もの・請求書の合計で SMILE と合った「残高と違う」は片付いた側へ
     const sumOk=r.invDiff!=null&&Math.abs(r.invDiff)<=1;
     r.aiAll=r.invoices.flatMap(x=>x.com.split(/\n+/).map(s=>s.trim()).filter(s=>s&&!/^仕入先：.*に付けました/.test(s)).map(s=>{const key=alertKey(s),ok=(x.log||[]).find(e=>e.act==='アラートを確かめた'&&e.key===key);
-      return {x,s,key,kind:alertKind(s),ok:ok?`✔ ${ok.by||''} が確かめた`:sumOk&&BAL_ALERT.test(s)?'請求書の合計が SMILE の額と一致（自動）':''};}));
+      return {x,s,key,kind:alertKind(s,x),ok:ok?`✔ ${ok.by||''} が確かめた`:sumOk&&BAL_ALERT.test(s)?'請求書の合計が SMILE の額と一致（自動）':''};}));
     r.aiAlerts=r.aiAll.filter(a=>!a.ok&&a.kind==='act').map(a=>a.s);
     r.bankAlert=r.aiAlerts.some(s=>/口座/.test(s));});
   return out;}
@@ -1413,7 +1413,7 @@ function readInboxByAI(jobs){if(!window.APAI||!jobs.length)return;
 // AI のアラートの片付け
 //   ・「今回支払残高と一致しません」などは、AI が請求書を1枚ずつ読むので、2枚以上ある仕入先では出てしまう → 請求書の合計が SMILE の額と合えば自動で片付ける
 //   ・ほかは人が「✔ 確かめた」を押す。請求書の CheckLog（確認の記録）に {act:'アラートを確かめた', key, text, by, at} を残す
-const BAL_ALERT=/(支払残高|残高|請求額|合計).{0,40}(一致しません|違います|違い|差)|(一致しません|違います).{0,30}残高/;
+const BAL_ALERT=/(支払残高|残高|請求額|合計).{0,40}(一致しません|違います|違い|差|異な)|(一致しません|違います|異な).{0,30}残高/;
 function alertKey(s){let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))|0;return 'a'+(h>>>0).toString(36);}
 // まとめて確かめる（同じ内容の何枚分・要確認の全部）：請求書ごとに確認の記録へ残して、最後に1回だけ読み込み直す
 async function ackAlerts(list){if(!list.length)return;const byX=new Map();list.forEach(a=>{const k=String(a.x.id);if(!byX.has(k))byX.set(k,{x:a.x,a:[]});byX.get(k).a.push(a);});
@@ -1425,9 +1425,11 @@ async function ackAlert(a){const lg=(a.x.log||[]).concat([{act:'アラートを�
   catch(e){snack('付けられませんでした：'+e.message,true);}}
 // アラートの分け方（2026-11-20）：30件並ぶと人が見なくなる。人が確かめるもの（要確認）だけを上に、同じ内容は1つにまとめる。
 //   問題なし（一致の報告・AI の候補・添付が別紙）／仕入では関係ない（振込先口座・支払期日・支払回は マスタと決まりで決まる）／片付いた（拠点・区分は仕入先に付いて決まった）はたたむ
-function alertKind(s){const t=String(s);
+function alertKind(s,x){const t=String(s);
+  if(x&&x.ai==='AI確認済'&&/^AI の読み取りに失敗しました|読み取りが.{0,10}終わりません/.test(t))return 'resolved';   // 読み直して読めた（前の失敗の文が残っていた）
   if(/撮り直し/.test(t)&&/(添付|別紙|別添|明細書|ページ目のみ|枚)/.test(t))return 'info';
-  if(/(振込先|口座)(の記載|が記載|.{0,6}見当たり|.{0,4}無|.{0,4}なし)|支払期日|支払回|支払方法.{0,10}(未定|空欄|記載)/.test(t)&&!/(違|変わ|異な)/.test(t))return 'na';
+  if(/(振込先|口座)(の記載|が記載|.{0,6}見当たり|.{0,4}無|.{0,4}なし)|(銀行|支店)コード.{0,16}(記載なし|記載がありません|ありません)|支払期日|支払回|支払方法.{0,10}(未定|空欄|記載)/.test(t)&&!/(違|変わ|異な)/.test(t))return 'na';
+  if(/入金済|今回分には含まれ|税抜表示|外税|内税表示/.test(t)&&!/(確かめ|確認して|違|異な)/.test(t))return 'info';
   if(/(区分|拠点|宛名).{0,40}(工場|本社)|(工場|本社).{0,30}(区分|拠点)/.test(t))return 'resolved';
   if(/(添付|別紙|別添).{0,30}(枚|含まれ|ありません|ない)/.test(t))return 'info';
   if(/^AI の候補|一致して|と一致|で一致|一致しています|一致です|合っています/.test(t)&&!/(しません|ません|違|差が|不明|確かめ|確認して)/.test(t))return 'info';
@@ -1439,7 +1441,7 @@ function alertsHtml(r){const all=r.aiAll,act0=all.filter(a=>!a.ok&&a.kind==='act
   const one=g=>`<div style="font-size:13px;display:flex;gap:6px;align-items:baseline"><span style="flex:1">・${esc(g.a[0].s)}${g.a.length>1?` <span class="mst">${g.a.length}枚</span>`:''}</span><button class="lk" data-ackg="${esc(g.a.map(a=>all.indexOf(a)).join(','))}" title="確かめた（このアラートを片付ける。誰が押したか残ります）" style="padding:0 4px;white-space:nowrap">✔ 確かめた</button></div>`;
   const KL={info:'問題なし',na:'仕入では関係ない',resolved:'片付いた（仕入先に付いて決まった）'};
   return `<div class="sec box ${r.bankAlert||r.invFailed?'alert':grp.length?'warn':''}"><h4 style="display:flex;gap:8px;align-items:center">AI のアラート${grp.length?`（要確認 ${grp.length}件）`:'（確かめることはありません）'}<span style="flex:1"></span>${grp.length>1?`<button class="lk" data-ackg="${esc(act0.map(a=>all.indexOf(a)).join(','))}" style="font-size:12px;font-weight:400">✔ まとめて確かめた</button>`:''}</h4>${grp.map(one).join('')}
-    ${memo.length?`<details style="margin-top:6px"><summary style="font-size:12px;color:var(--sub);cursor:pointer">AI のメモ（問題なし・関係ない・片付いた ${memo.length}件）</summary>${memo.map(a=>`<div style="font-size:12px;color:var(--sub)">・${esc(a.s)} <span class="mst">${KL[a.kind]}</span></div>`).join('')}</details>`:''}
+    ${memo.length||done.length?`<details style="margin-top:6px"><summary style="font-size:12px;color:var(--sub);cursor:pointer">AI のメモ（問題なし・関係ない・片付いた ${memo.length+done.length}件）</summary>${memo.map(a=>`<div style="font-size:12px;color:var(--sub)">・${esc(a.s)} <span class="mst">${KL[a.kind]}</span></div>`).join('')}${done.map(a=>`<div style="font-size:12px;color:var(--sub)">・<s>${esc(a.s)}</s> <span style="color:var(--down)">${esc(a.ok)}</span></div>`).join('')}</details>`:''}
     ${r.invFailed?'<div style="font-size:13px">・読み取りに失敗した請求書があります（金額を手で入れてください）</div>':''}${r.bankAlert?'<div style="font-size:12px;color:var(--up);margin-top:4px">口座は自動で変えません。電話などで確かめ、口座の登録は別の手続きで</div>':''}
     ${done.length?`<details style="margin-top:6px"><summary style="font-size:12px;color:var(--sub);cursor:pointer">片付いたアラート ${done.length}件</summary>${done.map(a=>`<div style="font-size:12px;color:var(--sub)">・<s>${esc(a.s)}</s> <span style="color:var(--down)">${esc(a.ok)}</span></div>`).join('')}</details>`:''}</div>`;}
 // 請求書の印：1つのファイルから何件もできた（何社分もまとめたスキャン）・同じ仕入先に同じ金額の請求書がもう1枚ある（二重かも）

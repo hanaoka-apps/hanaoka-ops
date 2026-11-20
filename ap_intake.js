@@ -160,7 +160,9 @@
           patch.AIStatus = '読取失敗'; r.extra = [];
         }
         // 読み直し（replace_lines）は前の AI のコメントを新しい答えで置き換える（積み重ねない）
-        patch.AIComment = (r.replace_lines ? [] : [String(f.AIComment || '').trim()]).concat(cmt).filter(Boolean).join('\n');
+        // 読み直して読めたとき（2026-11-20）：前の「AI の読み取りに失敗しました…」は古いので残さない（前は読み直しても失敗のアラートが残っていた）
+        const oldC = r.replace_lines ? [] : String(f.AIComment || '').split(/\n+/).map(x => x.trim()).filter(x => x && !(r.status !== '読取失敗' && /^AI の読み取りに失敗しました/.test(x)));
+        patch.AIComment = oldC.concat(cmt).filter(Boolean).join('\n');
         // 仕訳の行ごとの理由（2026-11-19）：確認の記録（CheckLog）に {act:'AIの理由', lines:[{acode, dept, why}]}。確認の画面で行の横に出す（列は足さない）
         const why = (r.lines || []).filter(l => l && l.Reason).map(l => ({ no: l.LineNo, acode: l.AccountCode || '', dept: l.DeptCode || '', why: String(l.Reason).slice(0, 200) }));
         if (why.length) { let lg = []; try { lg = JSON.parse(f.CheckLog || '[]') || []; } catch (e) {}
