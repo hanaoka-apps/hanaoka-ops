@@ -42,7 +42,7 @@ CUST_NAME = '得意先マスタ.csv'
 OUT_NAME = 'juchu_index.json'
 DEFAULT_KEEP_DAYS = 400
 NO_DEST = '000000'   # 納品先コードが「納品先なし」（得意先そのものに送る）
-DRIVE_ID = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8"   # SharedMasters（generate_fax_lookup.py と同じ）
+DRIVE_ID = "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8"   # SharedMasters
 JST = timezone(timedelta(hours=9))
 
 # 受注明細から取る列（名前は NFKC にそろえて比べる。先頭が見出し）
