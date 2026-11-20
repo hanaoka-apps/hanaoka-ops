@@ -64,17 +64,40 @@ def get_site_id(token):
     return r.json()["id"]
 
 def download_csv(token):
-    r = requests.get(
-        f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{quote(CSV_FILE, safe='')}:/content",
-        headers={"Authorization": f"Bearer {token}"}, timeout=120)
-    r.raise_for_status()
+    # 専用機では OneDrive で同期した SharedMasters のフォルダ（環境変数 SHARED_MASTERS_DIR）から直接読む
+    local = os.environ.get("SHARED_MASTERS_DIR")
+    if local:
+        with open(os.path.join(local, CSV_FILE), "rb") as f:
+            content = f.read()
+    else:
+        r = requests.get(
+            f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{quote(CSV_FILE, safe='')}:/content",
+            headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        r.raise_for_status()
+        content = r.content
     try:
-        text = r.content.decode("utf-8-sig")
+        text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
-        text = r.content.decode("cp932", errors="replace")
+        text = content.decode("cp932", errors="replace")
     return list(csv.reader(io.StringIO(text)))
 
 def col(row, idx): return row[idx].strip() if len(row) > idx else ""
+
+def unchanged(current, fields):
+    """SharePoint の今の値（current）と、書こうとしている値（fields）がすべて同じか。
+    同じ行は書き直さない（毎日すべての行を書き直していたため、件数が多いと30分を超えて止まっていた）"""
+    for k, v in fields.items():
+        a = current.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            try:
+                if a is not None and a != "" and float(a) == float(v):
+                    continue
+            except (TypeError, ValueError):
+                pass
+            return False
+        if ("" if a is None else str(a).strip()) != ("" if v is None else str(v).strip()):
+            return False
+    return True
 
 def to_int(val):
     """社名コード（数値型列）用。変換できなければ None を返す"""
@@ -98,6 +121,7 @@ def get_list_items(token, site_id):
                 items[key] = {
                     "id": item["id"],
                     "use_flag": (item["fields"].get(F_USE) or "").strip(),
+                    "fields": item["fields"],
                 }
         url = data.get("@odata.nextLink")
     return items
@@ -135,7 +159,7 @@ def main():
     sp_map = get_list_items(token, site_id)
     print(f"[ok] SharePoint現行: {len(sp_map)} 件")
 
-    inserted = updated = flagged = 0
+    inserted = updated = flagged = same = 0
 
     for code, row in csv_map.items():
         desaki = col(row, COL_DESAKI)
@@ -157,6 +181,9 @@ def main():
             fields[F_SHACODE] = shacode_val
 
         if code in sp_map:
+            if unchanged(sp_map[code]["fields"], fields):
+                same += 1
+                continue
             try:
                 update_item(token, site_id, sp_map[code]["id"], fields)
                 updated += 1
@@ -185,7 +212,7 @@ def main():
             print(f"  [ERROR] {msg}")
             errors.append(msg)
 
-    print(f"\n[完了] INSERT {inserted} / UPDATE {updated} / 使用禁止フラグ {flagged} / エラー {len(errors)}")
+    print(f"\n[完了] INSERT {inserted} / UPDATE {updated} / 変わらず {same} / 使用禁止フラグ {flagged} / エラー {len(errors)}")
     if errors:
         for e in errors: print(f"  !! {e}")
         sys.exit(1)
