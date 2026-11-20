@@ -72,6 +72,11 @@ $EcImportCurrentDir = 'C:\RPA\ec_import\current'
 $HeartbeatPath     = Join-Path $QueueRoot 'heartbeat.json'
 $LogPath           = "$env:USERPROFILE\regenerate_watcher.log"
 $RepoRawBase       = 'https://raw.githubusercontent.com/hanaoka-apps/hanaoka-ops/main'
+# この常駐スクリプトが入っている hanaoka-ops の複製（scripts の1つ上）。Python と設定は、ここで main を取り込んで取り出す。
+# リポジトリが非公開になっても動くように、raw.githubusercontent.com からの取得は、複製から取り出せないときの予備だけにする。
+$RepoRoot          = Split-Path $PSScriptRoot -Parent
+# main の取り込み（git fetch）の間隔（秒）。ジョブのたびに何度も取りに行かない
+$RepoFetchSeconds  = 60
 $WorkDir           = "$env:TEMP\hanaoka-regenerate-watcher"
 $PollSeconds       = 30
 # done / failed の記録を残す日数
@@ -88,6 +93,55 @@ $script:JobDefsCache = $null
 $script:JobDefsCachedAt = [datetime]::MinValue
 $script:BadScheduleLogged = @{}
 $script:HeartbeatAt = [datetime]::MinValue
+$script:RepoFetchedAt = [datetime]::MinValue
+
+# ===== リポジトリのファイルを取り出す =====
+# 複製で main を取り込み（git fetch。間隔は $RepoFetchSeconds）、origin/main の中身をそのまま書き出す。
+# 取り込みに失敗したら、前回取り込んだ main を使う（ログに残す）。複製から取り出せないときだけ raw の URL を使う。
+# 非公開になったあとの git fetch のサインインは、この PC の Git の資格情報（Git Credential Manager）で行う。
+# トークンをこのファイルや環境変数に書かない。
+function Update-RepoMain {
+  if (-not $RepoRoot -or -not (Test-Path -LiteralPath (Join-Path $RepoRoot '.git'))) { return $false }
+  if (((Get-Date) - $script:RepoFetchedAt).TotalSeconds -lt $RepoFetchSeconds) { return $true }
+  # git の警告（標準エラー）を、このスクリプトの「止まる設定」でエラー扱いにしない
+  $prevPref = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { $out = (@(& git -C $RepoRoot fetch --quiet origin main 2>&1) | ForEach-Object { $_.ToString() }) -join ' '; $code = $LASTEXITCODE }
+  catch { $out = $_.Exception.Message; $code = 1 }
+  finally { $ErrorActionPreference = $prevPref }
+  if ($code -ne 0) {
+    Write-Log "main を取り込めませんでした。前回取り込んだ main を使います: $out"
+  }
+  $script:RepoFetchedAt = Get-Date
+  return $true
+}
+
+function Save-RepoBlob([string]$Rel, [string]$OutFile) {
+  # git show の出力を、文字コードを変えずにそのままファイルへ書く（PowerShell の文字列を通さない）
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'git'
+  $psi.Arguments = ('-C "{0}" show "origin/main:{1}"' -f $RepoRoot, ($Rel -replace '\\', '/'))
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $errTask = $proc.StandardError.ReadToEndAsync()
+  $fs = [System.IO.File]::Create($OutFile)
+  try { $proc.StandardOutput.BaseStream.CopyTo($fs) } finally { $fs.Close() }
+  $proc.WaitForExit()
+  if ($proc.ExitCode -ne 0) {
+    Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+    throw ("git show origin/main:{0} に失敗: {1}" -f $Rel, $errTask.Result.Trim())
+  }
+}
+
+function Get-RepoFile([string]$Rel, [string]$OutFile) {
+  if (Update-RepoMain) {
+    try { Save-RepoBlob $Rel $OutFile; return }
+    catch { Write-Log "複製の main から $Rel を取り出せませんでした（raw の URL を試します）: $($_.Exception.Message)" }
+  }
+  Invoke-WebRequest -Uri "$RepoRawBase/$Rel" -OutFile $OutFile -UseBasicParsing
+}
 
 # ログは記録用なので、書けなくても本来の処理は止めない。
 # (ほかのプロセスがログを開いている瞬間に書くと失敗し、以前はそれで常駐スクリプトごと止まった)
@@ -134,7 +188,7 @@ function Get-JobDefinitions {
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   $path = Join-Path $WorkDir ('rpa_jobs_{0:yyyyMMdd_HHmmss}.json' -f (Get-Date))
   try {
-    Invoke-WebRequest -Uri "$RepoRawBase/scripts/rpa_jobs.json" -OutFile $path -UseBasicParsing
+    Get-RepoFile 'scripts/rpa_jobs.json' $path
     return (Read-JsonFile $path)
   } catch {
     Write-Log "ジョブ定義をGitHubから取得できないため、手元の rpa_jobs.json を使います: $($_.Exception.Message)"
@@ -336,7 +390,7 @@ function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '', [strin
   $configIsTemp = $false
   try {
     # 常に最新版を取得してから実行する(手元に古いコピーを置いて動かさない)
-    Invoke-WebRequest -Uri "$RepoRawBase/scripts/$ScriptName" -OutFile $scriptPath -UseBasicParsing
+    Get-RepoFile "scripts/$ScriptName" $scriptPath
     $argText = '"{0}"' -f $scriptPath
     if ($ConfigFile) {
       $shared = Join-Path $SharedMastersPath ([System.IO.Path]::GetFileName($ConfigFile))
@@ -344,14 +398,14 @@ function Invoke-RepoPython([string]$ScriptName, [string]$ConfigFile = '', [strin
       else {
         $configPath = Join-Path $WorkDir "${base}_$stamp.config.json"
         $configIsTemp = $true
-        Invoke-WebRequest -Uri "$RepoRawBase/$ConfigFile" -OutFile $configPath -UseBasicParsing
+        Get-RepoFile $ConfigFile $configPath
         # 設定の indexAlsoConfigs(同じフォルダの別の設定ファイル。例: furusato_config.json)も、同じ作業フォルダに取得する
         $also = @((Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json).indexAlsoConfigs)
         foreach ($name in $also) {
           if (-not $name -or $name -notmatch '^[\w.-]+\.json$') { continue }
           $dir = [System.IO.Path]::GetDirectoryName($ConfigFile) -replace '\\', '/'
           $rel = if ($dir) { "$dir/$name" } else { $name }
-          Invoke-WebRequest -Uri "$RepoRawBase/$rel" -OutFile (Join-Path $WorkDir $name) -UseBasicParsing
+          Get-RepoFile $rel (Join-Path $WorkDir $name)
         }
       }
       $argText += ' --config "{0}"' -f $configPath
@@ -538,7 +592,7 @@ function Get-EcSalesConfig {
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   $path = Join-Path $WorkDir ('ec_sales_config_{0:yyyyMMdd_HHmmss}.json' -f (Get-Date))
   try {
-    Invoke-WebRequest -Uri "$RepoRawBase/ec_sales_config.json" -OutFile $path -UseBasicParsing
+    Get-RepoFile 'ec_sales_config.json' $path
     return (Read-JsonFile $path)
   } catch {
     Write-Log "ec_sales_config.json をGitHubから取得できないため、手元のファイルを使います: $($_.Exception.Message)"
