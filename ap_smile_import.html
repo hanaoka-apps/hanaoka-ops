@@ -1218,14 +1218,14 @@ function wireDetail(r){
   document.querySelectorAll('[data-ddel]').forEach(e=>e.onclick=()=>{dLines(r).splice(+e.dataset.ddel,1);drawDetail();});
   document.querySelectorAll('[data-pdf]').forEach(e=>e.onclick=()=>showPdf(r,e.dataset.pdf));
   if(canEdit(r)){const curX=()=>{const [iid,ks]=pdfKey(pdfSel[r.code]||'').split('#'),x=r.invoices.find(y=>String(y.id)===iid)||r.invoices[0];return x?{x,k:+ks||0}:null;};
-    const add=b=>popMenu(b,[
+    const add=b=>{const c0=curX(),rd=!!(c0&&subBusy(c0.x));popMenu(b,[
       {label:'📄 請求書として読む',sub:'AI が金額などを読み、照合に入ります（今までの「置く」と同じ）',fn:()=>pickFiles(fs=>addInvoices(r,fs))},
-      {label:'📎 資料として付けるだけ',sub:r.invoices.length?`納品書・別紙の明細など。照合には入れません（今見ている請求書 ${(()=>{const c=curX();return c&&c.x.no?'No.'+c.x.no:'';})()} に付けます）`:'先に請求書を置いてください',dis:!r.invoices.length,fn:()=>{const c=curX();if(c)pickFiles(fs=>attachSubDocs(r,c.x,fs));}}]);
+      {label:'📎 資料として付けるだけ',sub:r.invoices.length?(rd?SUBBUSY_MSG:`納品書・別紙の明細など。照合には入れません（今見ている請求書 ${c0&&c0.x.no?'No.'+c0.x.no:''} に付けます）`):'先に請求書を置いてください',dis:!r.invoices.length||rd,fn:()=>{const c=curX();if(c)pickFiles(fs=>attachSubDocs(r,c.x,fs));}}]);};
     on('dAdd',function(){add(this);});on('dAdd0',()=>pickFiles(fs=>addInvoices(r,fs)));
     on('dDocX',function(){const c=curX();if(!c)return;const {x,k}=c,ds=docsOf(x),lab=(x.no?'No.'+x.no+' ':'')+(x.name||r.name)+' '+yen(x.amount);
       if(r.checked){snack('確認OK 済みです。外すときは先に「確認を外す」を押してください',true);return;}
       popMenu(this,[
-        ...(ds.length>1&&k?[{label:'📎 このファイルだけ外す',sub:'請求書はそのまま。資料・別紙を付け間違えたとき（ファイルは消しません）',fn:()=>detachSubDoc(r,x,ds[k])}]:[]),
+        ...(ds.length>1&&k?[{label:'📎 このファイルだけ外す',sub:subBusy(x)?SUBBUSY_MSG:'請求書はそのまま。資料・別紙を付け間違えたとき（ファイルは消しません）',dis:subBusy(x),fn:()=>detachSubDoc(r,x,ds[k])}]:[]),
         {label:'↩ 受信トレイに戻す',sub:`別の仕入先の請求書だったとき。「${lab}」を「仕入先が決まらない」に戻します`,fn:()=>unlinkInvoice(x,r)},
         {label:'🗑 取り消す',sub:'二重に置いた・間違い。一覧・照合から外れます（ファイルと記録は残ります）',danger:true,fn:()=>dropInvoice(x.id,lab)}]);});
     const pv=$('pdfv');if(pv){['dragenter','dragover'].forEach(ev=>pv.addEventListener(ev,e=>{if(![...(e.dataTransfer.types||[])].includes('Files'))return;e.preventDefault();pv.classList.add('over');}));
@@ -1340,8 +1340,11 @@ function addInvoices(r,files){const list=[...files].filter(f=>APDoc.kind(f));if(
   MERGE_UP=list.length>1&&confirm(`${list.length}ファイルを置きます。\n\n1件の請求書にまとめますか？（ページが分かれた PDF・別紙の明細のとき）\n\nOK＝1件にまとめる　キャンセル＝別々の請求書`);
   registerInvoices(r,list);}
 const SUBDOC='資料を付けた';
+// 読み取り中（AIStatus＝受付）は付け外ししない（2026-11-24）：読み終わって取り込むとき DOCコード を AI に渡したファイルだけで書き直すので、
+//   途中で付けた資料は外れて incoming に残り、途中で外した資料は戻ってしまう
+const subBusy=x=>!!x&&x.ai==='受付',SUBBUSY_MSG='AI が読み終わってから使えます（読み取り中に付け外しすると、読み終わったときに元に戻ります）';
 const isSubDoc=(x,path)=>!!path&&(x.log||[]).some(e=>e.act===SUBDOC&&(e.paths||[]).includes(path));
-async function attachSubDocs(r,x,files){const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
+async function attachSubDocs(r,x,files){if(subBusy(x)){snack(SUBBUSY_MSG,true);return;}const list=[...files].filter(f=>APDoc.kind(f));if(!list.length){snack('PDF か画像（写真）を選んでください',true);return;}
   const ds=docsOf(x),code=((ds[0]||'').split('/').pop().match(/^(AP\d{8}[A-Z0-9]{8})_/)||[])[1]||apCode(),dir=((ds[0]||'').match(/^(.*)\/[^/]+$/)||[])[1]||'/Shared Documents/BILLS/processed',add=[];
   try{for(let i=0;i<list.length;i++){const f=list[i];msg('付けています... '+f.name);const d=await APDoc.prep(f);
       const base=d.base.replace(/[#%*<>?/\\{|}:"']/g,'_').replace(/\s+/g,' ').trim().slice(0,56),fname=`${code}_資料${Date.now().toString(36)}${i}_${base||'資料'}.${d.ext}`;
@@ -1351,7 +1354,7 @@ async function attachSubDocs(r,x,files){const list=[...files].filter(f=>APDoc.ki
     await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,{CheckLog:JSON.stringify(lg)});
     msg('');snack(`資料を付けました（${list.length}ファイル。照合には入れません）`);pdfSel[r.code]=`${x.id}#${ds.length}`;await loadInvoices();render();}
   catch(e){msg('');snack('付けられませんでした：'+e.message,true);}}
-async function detachSubDoc(r,x,path){const ds=docsOf(x),nm=path.split('/').pop();
+async function detachSubDoc(r,x,path){if(subBusy(x)){snack(SUBBUSY_MSG,true);return;}const ds=docsOf(x),nm=path.split('/').pop();
   if(!confirm(`このファイルを、この請求書から外しますか？\n\n${nm}\n\n・ファイルは消さずに残します（記録に名前を残します）\n・請求書の金額・照合はそのままです`))return;
   try{msg('外しています...');const lg=(x.log||[]).concat([{act:'資料を外した',paths:[path],text:nm.slice(0,200),by:acct&&acct.name||'',at:new Date().toISOString()}]);
     await gpatch(`/sites/${AP_SITE}/lists/${L.inv.id}/items/${x.id}/fields`,toFields(L.inv,{'DOCコード':ds.filter(p=>p!==path).join('\n')}));
