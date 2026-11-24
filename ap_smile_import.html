@@ -1667,7 +1667,10 @@ function drawIupl(){const el=$('iupst');if(!el)return;const d=$('ibdrop');if(d)d
 //   押すと小窓で 請求書（PDF）と中身。付ける・見ながら選ぶ・経費に回す・付け直す・外す・取り消す・並べて見る・回す／ページで分ける をそこで
 const SCAN_MARK='⚠ 撮り直し',locOfInv=x=>x.loc==='工場'||x.cat==='工場仕入'?'工場':'本社';
 function boardItems(){const C=monthList();return allInv().map(o=>({...o,vname:o.code?((C[o.code]||{}).name||o.code):'',lock:!!(o.code&&(rows.find(r=>r.code===o.code)||{}).checked)}));}
-function boardHtml(C,fx){const all=boardItems(),SM={};rows.forEach(r=>{if(r.invoices.length)Object.assign(SM,invSides(r));});
+// 探す（2026-11-24）：「この請求書、渡したかな？」を探す。仕入先名（カナ・ひらがな・全角半角は区別しない）・コード・請求No・金額（3桁以上の数字。カンマ・円は無視）
+function ibHit(){const q=String(st.ibQ||'').trim(),qd=q.replace(/[,，円¥\s]/g,''),num=/^\d{3,}$/.test(qd),qn=vnq(q);
+  return {q,inv:o=>!q||(num?String(Math.round(o.x.amount||0)).includes(qd)||String(o.code).includes(qd)||String(o.x.no||'').includes(qd):[o.name,o.vname,o.x.payee,o.x.title,o.code,o.x.no].some(t=>t&&vnq(t).includes(qn))),miss:(r,lc)=>!q||(num?r.code.includes(qd)||String(sideAmt(r,lc)).includes(qd):vnq(r.name).includes(qn)||r.code.includes(qd))};}
+function boardHtml(C,fx){const H=ibHit(),all=boardItems().filter(H.inv),SM={};rows.forEach(r=>{if(r.invoices.length)Object.assign(SM,invSides(r));});
   const sideOf=o=>{const v=o.code&&SM[String(o.x.id)];if(!v)return locOfInv(o.x);const w=v.replace(/\?/g,'');if(!w.includes('＋'))return w;const r=rows.find(z=>z.code===o.code);return r&&r.mainDept==='工場'?'工場':'本社';};
   const both=o=>{const v=o.code&&SM[String(o.x.id)];return !!v&&v.includes('＋');};
   const row=o=>{const x=o.x,busy=!o.code&&fx.busyX(x),fail=!o.code&&fx.failX(x),scan=String(x.com||'').split(/\n+/).some(t=>t.includes(SCAN_MARK)&&alertKind(t)!=='info'),exp=!o.code&&x.ai==='AI確認済'&&EXP_RE.test(x.com||''),dn=dupsOf(x).length;
@@ -1675,15 +1678,15 @@ function boardHtml(C,fx){const all=boardItems(),SM={};rows.forEach(r=>{if(r.invo
     const state=busy?'<span class="spin"></span> AI 読み取り中':fail?'<span style="color:var(--up)">⚠ 読み取り失敗</span>':o.code?`→ <b>${esc(o.vname)}</b>${o.lock?' <span style="color:#2f7d4f">✔ 確認OK</span>':''}`:cand?`候補：${esc(cand.name)}`:'<span style="color:var(--up)">仕入先まだ</span>';
     return `<div class="bd-row" data-ipk="${esc(x.id)}"><div class="bd-1"><b title="${esc(o.name||'')}">${esc(o.name||x.title||'（読み取り前）')}</b><span class="n">${busy?'—':yen(x.amount)}</span></div>
       <div class="bd-2"><span>${esc(String(fmtTime(x.at)).split(' ')[0])}　${esc(String(x.by||'').split(/[\s　]/)[0])}</span><span>${state}</span>${both(o)?'<span class="mst" title="1枚で本社・工場の両方の分">本社＋工場</span>':''}${scan?'<span class="mst warn" title="写りに問題があります。撮り直して渡し直してください">⚠ 撮り直し</span>':''}${exp?'<span class="mst">経費らしい</span>':''}${dn?`<span class="mst warn">⇔ 二重？</span>`:''}</div></div>`;};
-  const col=lc=>{const l=all.filter(o=>sideOf(o)===lc).sort((a,b)=>String(b.x.at||'').localeCompare(String(a.x.at||''))),todo=l.filter(o=>!o.code),dn=l.filter(o=>o.code),lim=a=>st.ibAll?a:a.slice(0,20);
+  const col=lc=>{const l=all.filter(o=>sideOf(o)===lc).sort((a,b)=>String(b.x.at||'').localeCompare(String(a.x.at||''))),todo=l.filter(o=>!o.code),dn=l.filter(o=>o.code),lim=a=>st.ibAll||H.q?a:a.slice(0,20);
     const grp=(t,a)=>a.length?`<div class="bd-g"><b>${t}</b><span>${a.length}件</span></div>${lim(a).map(row).join('')}${a.length>lim(a).length?`<button class="lk" data-iball style="margin:4px 8px">ほか ${a.length-lim(a).length}件を出す</button>`:''}`:'';
-    const p=invProgress(rows,[lc]),ms=p.miss.slice().sort((a,b)=>(b.prevHadInv-a.prevHadInv)||(sideAmt(b,lc)-sideAmt(a,lc))),mlim=st.ibAll?ms:ms.slice(0,8);
+    const p=invProgress(rows,[lc]),mAll=p.miss,ms=p.miss.filter(r=>H.miss(r,lc)).sort((a,b)=>(b.prevHadInv-a.prevHadInv)||(sideAmt(b,lc)-sideAmt(a,lc))),mlim=st.ibAll||H.q?ms:ms.slice(0,8);
     const mg=ms.length?`<div class="bd-g"><b style="color:var(--up)">請求書がまだ来ていない</b><span>${ms.length}社</span><span style="flex:1"></span><button class="lk" data-misscp="${lc}" style="padding:0" title="Teams などに貼って催促する文">📋 催促の文をコピー</button><button class="lk" data-missgo="${lc}" style="padding:0">確認で見る</button></div>`+
       mlim.map(r=>`<div class="bd-row" data-missel="${esc(r.code)}" data-missg="${lc}"><div class="bd-1"><b>${esc(r.name)}</b><span class="n">${yen(sideAmt(r,lc))}</span></div><div class="bd-2"><span>${esc(r.code)}${needSides(r).length>1?`・${lc}分${missSides(r,['本社','工場']).length===1?'（もう一方の拠点の分は届いています）':''}`:''}</span>${r.prevHadInv?'<span class="mst warn">前月はあった</span>':''}</div></div>`).join('')+
       (ms.length>mlim.length?`<button class="lk" data-iball style="margin:4px 8px">ほか ${ms.length-mlim.length}社を出す</button>`:'')
-      :p.n?'<div class="bd-g"><b style="color:#2f7d4f">✔ 請求書は揃っています</b></div>':'';
-    return `<div class="bd-col"><div class="bd-h">${lc==='工場'?'🏭 工場':'🏢 本社'}<span>${l.length}件</span>${p.n?`<span style="margin-left:auto" title="払う仕入先のうち、この拠点の請求書が届いている（または請求書なしの理由がある）数">請求書の揃い <b style="color:${ms.length?'var(--up)':'#2f7d4f'}">${p.n-ms.length}／${p.n}社</b></span>`:''}</div>${grp('仕入先まだ（要対応）',todo)}${mg}${grp('付けた',dn)}${l.length?'':'<div style="color:var(--sub);padding:8px">ありません</div>'}</div>`;};
-  return `<div class="card"><h2>取り込んだ請求書（今月）<span style="font-size:12px;color:var(--sub);font-weight:400;margin-left:8px">本社・工場の両方。「これ渡したっけ？」の確認に。押すと中身（請求書）を見て、付ける・経費に回す・取り消す ができます</span></h2><div class="board">${col('本社')}${col('工場')}</div></div>`;}
+      :p.n&&!mAll.length?'<div class="bd-g"><b style="color:#2f7d4f">✔ 請求書は揃っています</b></div>':'';
+    return `<div class="bd-col"><div class="bd-h">${lc==='工場'?'🏭 工場':'🏢 本社'}<span>${l.length}件</span>${p.n?`<span style="margin-left:auto" title="払う仕入先のうち、この拠点の請求書が届いている（または請求書なしの理由がある）数">請求書の揃い <b style="color:${mAll.length?'var(--up)':'#2f7d4f'}">${p.n-mAll.length}／${p.n}社</b></span>`:''}</div>${grp('仕入先まだ（要対応）',todo)}${mg}${grp('付けた',dn)}${l.length||ms.length?'':`<div style="color:var(--sub);padding:8px">${H.q?'見つかりません':'ありません'}</div>`}</div>`;};
+  return `<div class="card"><h2>取り込んだ請求書（今月）<span style="font-size:12px;color:var(--sub);font-weight:400;margin-left:8px">本社・工場の両方。「これ渡したっけ？」の確認に。押すと中身（請求書）を見て、付ける・経費に回す・取り消す ができます</span></h2><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px"><input id="ibQ" type="search" placeholder="🔍 この請求書、渡したかな？ 仕入先・金額・請求No で探す（例：〇〇工業、433129）" value="${esc(H.q)}" style="flex:1;min-width:240px;max-width:520px;padding:7px 10px" autocomplete="off">${H.q?`<span style="font-size:13px">${all.length?`請求書 ${all.length}件`:'<b style="color:var(--up)">渡した請求書には見つかりません</b>'}</span><button class="lk" id="ibQx">✕ 消す</button>`:''}</div><div class="board">${col('本社')}${col('工場')}</div></div>`;}
 // 仕入先を探す（2026-11-20）：漢字・カタカナ・ひらがな・全角半角・コード。カナは振込先マスタの口座名義カナでも当てる（漢字の名前をひらがなで探せる）
 const vnq=s=>String(s==null?'':s).normalize('NFKC').toLowerCase().replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|㈱|㈲|\(カ\)?|カ\)|[\s　・.,、。()（）]/g,'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+96));
 function vendorFind(qRaw,x,cs){const C=monthList(),q=vnq(qRaw),amt=Math.round((x&&x.amount)||0),near=v=>amt&&v&&Math.abs(v-amt)<=1,kana={};(VBK||[]).forEach(v=>{if(v.holder)kana[v.code]=vnq(v.holder);});
@@ -1752,7 +1755,7 @@ function drawInbox(){
         <div class="ho-note">1つのファイルに請求書1通にしてください（2通以上入っていると受け付けません。まとめてスキャンしたものは1通ずつに分けてから渡してください）。今月のリストに無いものは「経費に回す」へ</div>
       </div></div></div>
     ${expCardHtml(open)}${boardHtml(C,{busyX,failX})}`;
-  $('pane').innerHTML=h;
+  const qf=document.activeElement&&document.activeElement.id==='ibQ';$('pane').innerHTML=h;if(qf){const n=$('ibQ');if(n){n.focus();n.setSelectionRange(n.value.length,n.value.length);}}
   const d=$('ibdrop');['dragenter','dragover'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
   ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
   d.addEventListener('drop',ev=>registerInbox(ev.dataTransfer.files));$('ibfile').onchange=e=>{registerInbox(e.target.files);e.target.value='';};
@@ -1760,6 +1763,9 @@ function drawInbox(){
   if($('ibGoImp'))$('ibGoImp').onclick=()=>{st.tab='imp';render();};
   document.querySelectorAll('[data-ipk]').forEach(b=>b.onclick=()=>openIPeek(b.dataset.ipk));
   document.querySelectorAll('[data-iball]').forEach(b=>b.onclick=()=>{st.ibAll=true;drawInbox();});
+  {const qi=$('ibQ'),go=()=>{st.ibQ=qi.value;drawInbox();const n=$('ibQ');if(n){n.focus();n.setSelectionRange(n.value.length,n.value.length);}};   /* 日本語の変換中は描き直さない（変換が切れる） */
+    if(qi){qi.addEventListener('input',e=>{if(!e.isComposing)go();});qi.addEventListener('compositionend',go);}
+    const qx=$('ibQx');if(qx)qx.onclick=()=>{st.ibQ='';drawInbox();};}
   document.querySelectorAll('[data-misscp]').forEach(b=>b.onclick=async()=>{const lc=b.dataset.misscp;try{await navigator.clipboard.writeText(missText(invProgress(rows,[lc]).miss,[lc]));snack('コピーしました（Teams などに貼って催促できます）');}catch(e){snack('コピーできませんでした',true);}});
   document.querySelectorAll('[data-missgo]').forEach(b=>b.onclick=()=>{st.g=b.dataset.missgo;st.only='miss';st.tab='rev';render();});
   document.querySelectorAll('[data-missel]').forEach(b=>b.onclick=()=>{st.g=b.dataset.missg;st.only='';st.sel=b.dataset.missel;draft=null;st.tab='rev';render();});
