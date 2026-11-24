@@ -342,10 +342,21 @@
     for (d in row.byDept) { var grp = deptGroupOf(nameMap[d]); g[grp] = (g[grp] || 0) + row.byDept[d]; total += row.byDept[d]; }
     var out = {};
     if (!total) { out[deptGroupOf(row.deptCode)] = row.amount; return { byGroup: out, main: deptGroupOf(row.deptCode) }; }
-    var keys = Object.keys(g).sort(function (a, b) { return g[b] - g[a]; }), main = keys[0], sum = 0;
-    keys.forEach(function (k) { if (k === main) return; out[k] = Math.floor(row.amount * g[k] / total); sum += out[k]; });
-    out[main] = row.amount - sum;
-    return { byGroup: out, main: main };
+    var keys = Object.keys(g).sort(function (a, b) { return g[b] - g[a]; }), top = keys[0], sum = 0;
+    keys.forEach(function (k) { if (k === top) return; out[k] = Math.floor(row.amount * g[k] / total); sum += out[k]; });
+    out[top] = row.amount - sum;
+    return { byGroup: out, main: fixedMain(row.code, g) || top };
+  }
+  /* 決裁の部門を仕入先ごとに決めておく（2026-11-24。決まりの mainDeptByVendor：{ 仕入先コード: 部門 }）。
+     受入がいちばん多い部門ではなく、決めた部門にする（例：工場の受入が多くても本社の決裁の仕入先）。
+     ただし、その月に決めた部門の受入が無ければ使わない（本社の決裁の仕入先でも、工場の分だけの月は工場）。
+     本社（国内営業・ソリューション）で決めた部門に受入が無く、もう一方の本社の部門にあれば、本社の中で多い方 */
+  function fixedMain(code, g) {
+    var f = (rules().mainDeptByVendor || {})[String(code || '')]; if (!f || typeof f !== 'string') return '';
+    if (g[f] > 0) return f;
+    var HQ = ['国内営業', 'ソリューション']; if (HQ.indexOf(f) < 0) return '';
+    var hq = HQ.filter(function (k) { return g[k] > 0; }).sort(function (a, b) { return g[b] - g[a]; });
+    return hq[0] || '';
   }
   // 支払回：支払予定日が「…/末」なら月末、日付なら 10日／20日（それ以外は月末）
   function payRoundOf(payDate) {
