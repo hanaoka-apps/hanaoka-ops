@@ -846,7 +846,10 @@ function carryCard(){const ym=month(),pm=prevMonth(ym),pl=a=>String(af(a,'調整
 
 // ---------- 相殺（売買相殺）：相殺先の請求先の、同じ締めの売上を SMILE の請求明細出力.txt（SharedMasters）から出す（2026-11-08） ----------
 //   決め方：相殺額 ＝ 支払額 と 売上の合計 の少ない方（10月払いの山善＝全額相殺・東正車輌＝売上 43,450 を相殺、で確かめた）
-//   締め：払う月の前の月（10月払い＝9月の売上）。ファイルは大きい（約11MB）ので、相殺先を開いたときに1回だけ読む
+//   締め：払う月の前の月（10月払い＝9月締め）。ファイルは大きい（約11MB）ので、相殺先を開いたときに1回だけ読む
+//   どの売上を足すか（2026-11-24）：伝票日付の月ではなく、その月に締めた請求書（請求実績表の 純売上額（税込） と同じ。15日締めの得意先は 9/16〜10/15 が10月締め）。
+//     請求書番号は締め処理の回ごとの番号（例：№206＝10/15締め・№210＝10/31締め）なので、番号ごとの締め日＝その番号の一番遅い伝票日付（全得意先を通して）。
+//     締め日が対象の月に入る番号の行だけ足す。請求書番号 0 はまだ請求していない分なので入れない。売上金額は税込
 let SALES={ym:null,p:null,by:{},err:''};
 function salesYm(){return prevMonth(month());}
 // 1行を区切る（"…" の中の区切り・"" はそのまま。"3,950" のような額で割らない）
@@ -861,8 +864,12 @@ async function loadSales(){const ym=salesYm();if(SALES.ym===ym&&SALES.p)return S
       const L=t.replace(/^﻿/,'').split(/\r?\n/),sep=L[0].includes('\t')?'\t':',',cell=v=>String(v||'').trim(),hd=splitRow(L[0],sep).map(cell);
       const iB=hd.indexOf('請求先ｺｰﾄﾞ'),iD=hd.indexOf('伝票日付'),iA=hd.indexOf('売上金額'),iN=hd.indexOf('請求書番号'),iM=hd.indexOf('得意先名称１'),ym8=ym.replace('/','');
       if(iB<0||iD<0||iA<0)throw new Error('請求明細出力.txt の列が読めません');
-      for(let k=1;k<L.length;k++){if(!L[k])continue;const c=splitRow(L[k],sep);if(c.length<=iA)continue;const bc=cell(c[iB]);if(!want.has(bc))continue;if(cell(c[iD]).replace(/\D/g,'').slice(0,6)!==ym8)continue;
-        const v=Math.round(+cell(c[iA]).replace(/,/g,'')||0),o=SALES.by[bc]||(SALES.by[bc]={amt:0,name:cell(c[iM]),bills:{}});o.amt+=v;const no=cell(c[iN]);o.bills[no]=(o.bills[no]||0)+v;}}
+      const close={},hit=[];   // 請求書番号 → 締め日（一番遅い伝票日付）、相殺先の行
+      for(let k=1;k<L.length;k++){if(!L[k])continue;const c=splitRow(L[k],sep);if(c.length<=iA)continue;const d=cell(c[iD]).replace(/\D/g,'').slice(0,8),no=iN<0?'':cell(c[iN]).replace(/^0+(?=\d)/,'');
+        if(no&&no!=='0'&&d>(close[no]||''))close[no]=d;const bc=cell(c[iB]);if(want.has(bc))hit.push({bc,d,no,v:Math.round(+cell(c[iA]).replace(/,/g,'')||0),name:cell(c[iM])});}
+      hit.forEach(h=>{if(iN<0?h.d.slice(0,6)!==ym8:(!h.no||h.no==='0'||String(close[h.no]||'').slice(0,6)!==ym8))return;   /* 請求書番号の列が無い古いファイルは、前の決め方（伝票日付の月） */
+        const o=SALES.by[h.bc]||(SALES.by[h.bc]={amt:0,name:h.name,bills:{}});o.amt+=h.v;o.bills[h.no]=(o.bills[h.no]||0)+h.v;});
+      SALES.close=Object.entries(close).filter(([,d])=>d.slice(0,6)===ym8).map(([no,d])=>({no,d})).sort((a,b)=>a.d.localeCompare(b.d));}
     catch(e){SALES.err=e.message;}})();
   return SALES.p;}
 function offsetOf(r){const o=OFFSET[r.code];if(!o)return null;const cust=o.cust||[];
@@ -908,7 +915,7 @@ function drawOffset(){const ym=salesYm(),lab=`${ym.replace('/','年')}月締め�
   const pill=x=>x.state==='相殺する'?'<span class="mst warn">相殺する</span>':x.state==='相殺しない'?'<span class="mst ok">相殺しない</span>':x.state==='未確認'?'<span class="mst ng">未確認</span>':'<span class="s">支払なし</span>';
   $('pane').innerHTML=`<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h2 style="margin:0">🔁 ${esc(lab)}</h2><span class="sp" style="flex:1"></span>
       <button id="offCp">📋 Excel 用にコピー</button><button id="offPr">🖨 印刷</button></div>
-    <div class="s" style="margin:6px 0 10px">相殺先（AP_OffsetVendor）ごとに、つないだ請求先の ${esc(ym.replace('/','年'))}月の売上（SMILE の請求明細）と、仕入の支払額。目安＝支払額と売上の少ない方。相殺する額は仕入の確認で決めます（行を押すとその仕入先へ）${SALES.err?`<br><b style="color:var(--up)">売上を読めませんでした：${esc(SALES.err)}</b>`:''}</div>
+    <div class="s" style="margin:6px 0 10px">相殺先（AP_OffsetVendor）ごとに、つないだ請求先の ${esc(ym.replace('/','年'))}月締めの請求書の売上（SMILE の請求明細を請求書番号でまとめたもの。請求実績表の 純売上額（税込） と同じ）と、仕入の支払額。${SALES.close&&SALES.close.length?`締め：${SALES.close.map(c=>`№${esc(c.no)}（${esc(c.d.slice(4,6)+'/'+c.d.slice(6,8))}）`).join('・')}。`:''}目安＝支払額と売上の少ない方。相殺する額は仕入の確認で決めます（行を押すとその仕入先へ）${SALES.err?`<br><b style="color:var(--up)">売上を読めませんでした：${esc(SALES.err)}</b>`:''}</div>
     <div class="top" style="margin-bottom:10px">
       <div class="card"><h2>相殺する額</h2><div class="big">${yen(sum('cur'))}<small> 円</small></div><div class="s">${L.filter(x=>x.cur).length}社</div></div>
       <div class="card"><h2>未確認</h2><div class="big" style="color:${L.some(x=>x.state==='未確認')?'var(--up)':'var(--down)'}">${L.filter(x=>x.state==='未確認').length}<small> 社</small></div><div class="s">支払がある相殺先のうち、相殺するか決めていないもの</div></div>
