@@ -298,11 +298,15 @@
     else {
       // 仕入（仕訳なし）：税抜は請求書の明細（税抜の明細ならその合計）から。無ければ 税込 ÷ 1.1（前は 税抜＝税込・消費税 0 にしていた）
       in2 = tot;const isum = Math.round(((it && it.items) || []).filter(x => !taxRow(x)).reduce((s, x) => s + (+x.Amount || 0), 0));
-      if (it && it.amount === '税抜' && isum > 0 && isum <= tot) ex2 = isum;
+      // 印字の税抜の合計があれば、それを税抜にする（税込との比が 1.0〜1.1 のときだけ。2026-11-25）。明細の合計と違えば知らせる
+      const pe = Math.round(+(it && it.excl) || 0), peOk = pe > 0 && pe <= tot && tot <= Math.ceil(pe * 1.1) + 1;
+      if (peOk) { ex2 = pe;
+        if (it && it.amount === '税抜' && isum > 0 && isum !== pe) cm.push(`請求書の明細の合計 ${yen(isum)} 円が、税抜の合計の印字 ${yen(pe)} 円より ${yen(Math.abs(pe - isum))} 円${isum < pe ? '少ない（明細の読み落としかも）' : '多い（明細の読み過ぎかも）'}です。照合は印字の税抜で見ています。明細を確かめてください（「💬 AI と直す」で直せます）`); }
+      else if (it && it.amount === '税抜' && isum > 0 && isum <= tot) ex2 = isum;
       else if (it && it.amount === '税込' && isum === tot) ex2 = Math.round(tot / 1.1);
       else ex2 = Math.round(tot / 1.1);
       tx2 = tot - ex2;
-      if (tot && !(it && it.amount === '税抜' && isum > 0 && isum <= tot)) cm.push(`税抜 ${yen(ex2)} 円は 税込÷1.1 で出しました（請求書の税抜の印字と違えば直してください）`);
+      if (tot && !peOk && !(it && it.amount === '税抜' && isum > 0 && isum <= tot)) cm.push(`税抜 ${yen(ex2)} 円は 税込÷1.1 で出しました（請求書の税抜の印字と違えば直してください）`);
     }
     const diff = ls.length ? lin - tot : in2 - tot;
     if (ls.length && diff) cm.push(`仕訳の合計 ${yen(lin)} 円が請求書の総額 ${yen(tot)} 円と ${diff > 0 ? '+' : '−'}${yen(Math.abs(diff))} 円違います${tot ? '。金額は請求書の総額にしました。仕訳の行を直してください' : '（端数か読み落とし）'}`);
@@ -373,9 +377,11 @@
     if (li && li.properties && !li.properties.Reason) { li.properties.Reason = { type: 'string' }; if (Array.isArray(li.required)) li.required.push('Reason'); }
     // 写りの問題（2026-11-20）：端が切れている・ぼやけて読めない・ページが足りない など。あれば「⚠ 撮り直し」として AI のコメントに出す（請求書を渡す・受信トレイの一覧に印）
     if (schema.properties && !schema.properties.scanIssue) { schema.properties.scanIssue = { type: 'string' }; if (Array.isArray(schema.required)) schema.required.push('scanIssue'); }
+    // 税抜の合計の印字（2026-11-25）：明細を1行読み落としても、照合は印字の税抜で合うように。明細の合計と違えば気づきに出す（黒木製作所：10/06 の 8,500 円の行が抜けていた）
+    if (schema.properties && !schema.properties.exclTotal) { schema.properties.exclTotal = { type: 'integer' }; if (Array.isArray(schema.required)) schema.required.push('exclTotal'); }
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 税抜の合計（exclTotal）\n請求書に印字された税抜の合計（小計・税抜金額・御買上額など、消費税を足す前の合計）を円で書く。明細を足した額ではなく、印字の額を書く。印字が無ければ 0\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
@@ -409,7 +415,7 @@
       } catch (e) { d.comments = (d.comments || []).concat([`仕訳を明細から作り直せませんでした（${e.message}）。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]); }
     }
     if (d && d.scanIssue) d.comments = (d.comments || []).concat([`⚠ 撮り直し：${d.scanIssue}`]);
-    const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '' }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
+    const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '', excl: Math.round(+d.exclTotal || 0) }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
     // 向きが違うページ（横向き・逆さ）：AI が rotate で答えたら、ファイルを回して同じ場所に保存する（ap_intake.js の APDoc.rotateFile）
     if (d && Array.isArray(d.rotate) && d.rotate.length && window.APDoc && APDoc.rotateFile) {
       const by = {}; d.rotate.forEach(x => { const fi = (+x.file || 1) - 1, pg = +x.page || 1, dg = +x.deg; if (fs[fi] && [90, 180, 270].includes(dg)) (by[fi] = by[fi] || { pages: {} }).pages[pg] = dg; });
