@@ -416,7 +416,9 @@ function alertsOf(r){
   const n=jnorm(r.payee);
   if(n){const sp=(r.code&&SPM.find(s=>s.code===r.code))||SPM.find(s=>s.n&&(s.n===n||(n.length>=4&&(s.n.includes(n)||n.includes(s.n)))));
     if(sp)a.push({k:'仕入では？',t:`SMILE の仕入先「${sp.name}」（${sp.code}）に今月の仕入 ${yen(sp.incl)} 円があります。仕入の請求書なら「その他 → 仕入の請求書として移す」`,ack:true});
-    const dup=ALL.filter(o=>o.id!==r.id&&jnorm(fv(L.inv,o.f,'支払先名'))===n&&((r.invNo&&fv(L.inv,o.f,'請求NO')===r.invNo)||(r.amount&&+fv(L.inv,o.f,'金額_税込')===r.amount&&fv(L.inv,o.f,'対象年月')===r.ym)));
+    // 同じ請求No でも、払う月も金額も違えば二重とみない（2026-11-25：月が違っても同じ請求No を使う相手がいる）
+    const dup=ALL.filter(o=>{if(o.id===r.id||jnorm(fv(L.inv,o.f,'支払先名'))!==n)return false;const sameYm=fv(L.inv,o.f,'対象年月')===r.ym,sameAmt=r.amount&&+fv(L.inv,o.f,'金額_税込')===r.amount;
+      return (r.invNo&&fv(L.inv,o.f,'請求NO')===r.invNo&&(sameYm||sameAmt))||(sameAmt&&sameYm);});
     const notDup=dup.length&&(r.log||[]).some(e=>e.act==='重複ではない'&&dup.every(o=>String(e.key||'').split(',').includes(String(o.id))));
     if(dup.length&&!notDup)a.push({k:'二重？',t:`同じ支払先で${r.invNo&&dup.some(o=>fv(L.inv,o.f,'請求NO')===r.invNo)?'同じ請求No':'同じ月・同じ金額'}の請求書がほかに ${dup.length} 枚あります`,ack:true,
       dups:dup.map(o=>({id:String(o.id),payee:fv(L.inv,o.f,'支払先名')||'',no:fv(L.inv,o.f,'請求NO')||'',amt:+fv(L.inv,o.f,'金額_税込')||0,ym:fv(L.inv,o.f,'対象年月')||'',loc:o.f[V.loc]||''}))});}
@@ -576,7 +578,8 @@ function dupListHtml(){const gs=dupGroups();if(!gs.length)return '';
 async function pdfUrlOf(path){if(pdfCache[path])return pdfCache[path];const p0=path.split('?')[0].replace(/^\/Shared Documents/i,'').replace(/^\/Documents/i,'');
   const alt=/\/incoming\//i.test(p0)?p0.replace(/\/incoming\//i,'/processed/'):p0.replace(/\/processed\//i,'/incoming/');
   for(const q of [p0,alt]){try{const b=await call('GET',`/sites/${AP_SITE}/drive/root:${encodeURI(q)}:/content`,null,null,true);return (pdfCache[path]=URL.createObjectURL(b));}catch(e){}}return '';}
-function openDupCmp(key,k){const g=dupGroups().find(x=>x.key===key);if(!g){snack('重複の候補はもうありません');const dl=$('dupCmp');if(dl){dl.hidden=true;dl.innerHTML='';}return;}
+let DUPX=null;   // 確認の画面の「二重？」から開くとき、別の月の相手も入れた組（2026-11-25）
+function openDupCmp(key,k){const g=(DUPX&&DUPX.key===key?DUPX:null)||dupGroups().find(x=>x.key===key);if(!g){snack('重複の候補はもうありません');const dl=$('dupCmp');if(dl){dl.hidden=true;dl.innerHTML='';}return;}
   k=Math.max(1,Math.min(k||1,g.l.length-1));const a=g.l[0],b=g.l[k];
   let dl=$('dupCmp');if(!dl){dl=document.createElement('div');dl.id='dupCmp';dl.className='slipdlg';document.body.appendChild(dl);}
   const F2=[['拠点',o=>o.loc||'—'],['支払回',o=>o.round||'—'],['段',o=>o.done?'✔ 確定':stepName(o,o.step)],['受け付け',o=>fmtTime(o.at)+'　'+(o.by||'')],['支払先（AI が読んだ）',o=>o.payee||'—'],
@@ -597,7 +600,7 @@ function openDupCmp(key,k){const g=dupGroups().find(x=>x.key===key);if(!g){snack
   dl.querySelectorAll('[data-dupoff]').forEach(x=>x.onclick=async()=>{const o=g.l.find(z=>z.id===x.dataset.dupoff),other=o===a?b:a;
     if(!confirm(`「${o.payee||o.title}」${yen(o.amount)} 円（${o.loc}・${o.round||''}）を対象外にします（重複）。\n\nもう1件（${other.loc}・${other.round||''}）は残ります。よろしいですか？`))return;
     try{await patchInv(o,toFields(L.inv,{'アーカイブフラグ':true,'アーカイブ理由':`重複（#${other.id} ${other.loc}と同じ）`}),{act:'対象外にした',memo:`重複（#${other.id} ${other.loc}と同じ）`,step:o.step});snack('対象外にしました');await loadAll();render();}
-    catch(e){snack('対象外にできませんでした：'+e.message,true);return;}openDupCmp(key,1);});
+    catch(e){snack('対象外にできませんでした：'+e.message,true);return;}if(DUPX){DUPX=null;const d2=$('dupCmp');if(d2){d2.hidden=true;d2.innerHTML='';}}else openDupCmp(key,1);});
   $('dupcNo').onclick=async()=>{if(!confirm(`この${g.l.length}件は重複ではない、として一覧から外しますか？（確認の記録に残ります）`))return;
     try{for(const r of g.l)await patchInv(r,{},{act:'重複ではない',key,memo:`${g.l.length}件（${g.l.map(x=>x.loc+' '+(x.round||'')).join('・')}）`,step:r.step});snack('重複ではない、として外しました');}catch(e){snack('保存できませんでした：'+e.message,true);}close();render();};}
 // 拠点を移す（工場⇔本社）：確認の画面の「工場へ移す」と受信トレイの一覧から。区分・拠点を変えて確認の1段目へ、移した拠点の経費として AI が読み直す
@@ -1081,7 +1084,10 @@ async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!te
   TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 function wireTeach(r){const iss=issuesOf(r),shown=iss;
   document.querySelectorAll('[data-teach]').forEach(b=>b.onclick=()=>{const x=shown[+b.dataset.teach];if(x)startTeach(r,x);});
-  document.querySelectorAll('[data-dupcmp]').forEach(b=>b.onclick=()=>{const g=dupGroups().find(z=>z.l.some(x=>x.id===r.id));if(g)openDupCmp(g.key,1);else snack('並べる相手が今月の一覧に見つかりません（別の月の請求書かもしれません）',true);});
+  document.querySelectorAll('[data-dupcmp]').forEach(b=>b.onclick=()=>{const g=dupGroups().find(z=>z.l.some(x=>x.id===r.id));if(g){DUPX=null;openDupCmp(g.key,1);return;}
+    const ids=((issuesOf(r).find(x=>x.dups)||{}).dups||[]).map(o=>o.id),l=[r].concat(ids.map(id=>items.find(x=>String(x.id)===String(id))).filter(Boolean));
+    if(l.length<2){snack('並べる相手が見つかりません（対象外にした請求書かもしれません）',true);return;}
+    DUPX={l,key:l.map(x=>x.id).sort().join(',')};openDupCmp(DUPX.key,1);});
   document.querySelectorAll('[data-notdup]').forEach(b=>b.onclick=()=>{if(isDirty(r)){snack('先に下書き保存してください',true);return;}
     const key=[String(r.id),...b.dataset.notdup.split(',')].sort().join(',');act(r,{},'重複ではない、と記録しました',{act:'重複ではない',key,memo:'確認の画面で',step:r.step});});
   document.querySelectorAll('[data-ackai]').forEach(b=>b.onclick=()=>{if(isDirty(r)){snack('先に下書き保存してください',true);return;}
