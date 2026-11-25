@@ -102,7 +102,7 @@
         const set = (d, v) => { if (v !== undefined && v !== null && v !== '') patch[fi(d)] = v; };
         const setIfEmpty = (d, v) => { const cur = f[fi(d)]; if (cur === undefined || cur === null || cur === '') set(d, v); };
         const oldAmt = +f[fi('金額_税込')] || 0;
-        if (oldAmt && H.AmountInclTax != null && Math.round(oldAmt) !== Math.round(+H.AmountInclTax))
+        if (oldAmt && H.AmountInclTax != null && r.status !== '読取失敗' && Math.round(oldAmt) !== Math.round(+H.AmountInclTax))
           cmt.push(`受付の金額 ${yen(oldAmt)} 円と、請求書の読み取り ${yen(H.AmountInclTax)} 円が違います（請求書の額にしました）`);
         set('支払先名', H.PayeeName); set('登録番号', H.RegistrationNo); set('請求NO', H.InvoiceNo);
         setIfEmpty('支払先コード', H.PayeeCode); setIfEmpty('対象年月', H.TargetMonth);
@@ -139,7 +139,8 @@
         // 振込先（請求書から読んだもの。経費の支払先は振込先マスタに無いことが多い）。読めたものだけ入れる
         const BKF = { BankCode: 'PayeeBankCode', BankName: 'PayeeBankName', BranchCode: 'PayeeBranchCode', BranchName: 'PayeeBranchName', AcctType: 'PayeeAcctType', AcctNo: 'PayeeAcctNo', AcctHolder: 'PayeeAcctHolder', BankSource: 'PayeeBankSource' };
         Object.entries(BKF).forEach(([k, n]) => { if (H[k] != null && H[k] !== '' && !f[n]) patch[n] = k === 'AcctHolder' ? toHanKana(H[k]) : String(H[k]); });
-        if (H.AmountInclTax != null) { patch[fi('金額_税込')] = +H.AmountInclTax || 0; patch[fi('金額_税抜')] = +H.AmountExclTax || 0; patch[fi('消費税')] = +H.Tax || 0; }
+        // 読み取りに失敗したときは、前の金額を残す（2026-11-25。前は読み直しが失敗すると金額が 0 で上書きされていた）
+        if (H.AmountInclTax != null && r.status !== '読取失敗') { patch[fi('金額_税込')] = +H.AmountInclTax || 0; patch[fi('金額_税抜')] = +H.AmountExclTax || 0; patch[fi('消費税')] = +H.Tax || 0; }
         // PDF：読み取り側が processed へ移していればそのまま。古い形は incoming → processed（移せなければ incoming のまま）
         const docs = [];
         const pf = (r.pdf_files || []).filter(Boolean);
@@ -162,7 +163,7 @@
         }
         // 読み直し（replace_lines）は前の AI のコメントを新しい答えで置き換える（積み重ねない）
         // 読み直して読めたとき（2026-11-20）：前の「AI の読み取りに失敗しました…」は古いので残さない（前は読み直しても失敗のアラートが残っていた）
-        const oldC = r.replace_lines ? [] : String(f.AIComment || '').split(/\n+/).map(x => x.trim()).filter(x => x && !(r.status !== '読取失敗' && /^AI の読み取りに失敗しました/.test(x)));
+        const oldC = r.replace_lines && r.status !== '読取失敗' ? [] :   /* 失敗したときは前のコメントも残す */ String(f.AIComment || '').split(/\n+/).map(x => x.trim()).filter(x => x && !(r.status !== '読取失敗' && /^AI の読み取りに失敗しました/.test(x)));
         patch.AIComment = oldC.concat(cmt).filter(Boolean).join('\n');
         // 仕訳の行ごとの理由（2026-11-19）：確認の記録（CheckLog）に {act:'AIの理由', lines:[{acode, dept, why}]}。確認の画面で行の横に出す（列は足さない）
         const why = (r.lines || []).filter(l => l && l.Reason).map(l => ({ no: l.LineNo, acode: l.AccountCode || '', dept: l.DeptCode || '', why: String(l.Reason).slice(0, 200) }));
