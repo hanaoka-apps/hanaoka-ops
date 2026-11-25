@@ -12,7 +12,7 @@
 <script src="hanaoka_auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <script src="ap_intake.js?v=20261125"></script>
-<script src="ap_ai.js?v=20261120b"></script>
+<script src="ap_ai.js?v=20261125"></script>
 <script src="rpa_queue.js"></script>
 <script src="ap_smile.js?v=20261124a"></script>
 <script src="nav.js?v=20261120" defer></script>
@@ -660,8 +660,9 @@ function rcvGroup(it){const g=S.receiptGroupOf?S.receiptGroupOf(it):undefined;re
 const SIDE_TOL=1;
 function coverSplit(xs,val,tol){if(xs.length<3)return null;for(const c of xs){const o=xs.filter(z=>z!==c),sm=o.reduce((t,z)=>t+val(z),0);if(val(c)>0&&Math.abs(sm-val(c))<=tol*o.length)return {cover:c,parts:o};}return null;}
 // 請求書の税抜：①AI が読んだ明細が税抜ならその合計 ②保存された税抜（税込と違うとき。前は仕入で 税抜＝税込 が入っていた）③税込 ÷ 1.1（印を付ける）
-function invEx(x){const it=itemsOf(x),s=Math.round(it.reduce((t,a)=>t+(+a.Amount||0),0));
-  if(it.length&&x.items&&x.items.amount==='税抜'&&s>0&&s<=(x.amount||Infinity))return {v:s,est:false,src:'明細'};
+//   保存された税抜が明細の合計と違うときは、保存された税抜（請求書の税抜の合計の印字）を使う（2026-11-25。明細を読み落としても照合は合う。読み落としは AI のアラートで知らせる）
+function invEx(x){const it=itemsOf(x),s=Math.round(it.reduce((t,a)=>t+(+a.Amount||0),0)),sv=x.excl&&x.excl!==x.amount&&x.excl<=(x.amount||Infinity)?x.excl:0;
+  if(it.length&&x.items&&x.items.amount==='税抜'&&s>0&&s<=(x.amount||Infinity))return sv&&sv!==s?{v:sv,est:false,src:'印字',items:s}:{v:s,est:false,src:'明細'};
   if(x.excl&&x.excl!==x.amount)return {v:x.excl,est:false};
   return {v:Math.round((x.amount||0)/1.1),est:true};}
 function sideCheck(r){
@@ -1491,6 +1492,7 @@ async function ackAlert(a){const lg=(a.x.log||[]).concat([{act:'アラートを�
 // アラートの分け方（2026-11-20）：30件並ぶと人が見なくなる。人が確かめるもの（要確認）だけを上に、同じ内容は1つにまとめる。
 //   問題なし（一致の報告・AI の候補・添付が別紙）／仕入では関係ない（振込先口座・支払期日・支払回は マスタと決まりで決まる）／片付いた（拠点・区分は仕入先に付いて決まった）はたたむ
 function alertKind(s,x){const t=String(s),Q=/(確か|確認して|確認が必要|要確認|原本で)/;
+  if(/税抜の合計の印字/.test(t)&&x&&x.items){const sm=Math.round(itemsOf(x).reduce((a,b)=>a+(+b.Amount||0),0));if(x.excl&&Math.abs(sm-x.excl)<=1)return 'resolved';}   // 明細を直して印字の税抜と合った
   if(x&&x.ai==='AI確認済'&&/^AI の読み取りに失敗しました|読み取りが.{0,10}終わりません/.test(t))return 'resolved';   // 読み直して読めた（前の失敗の文が残っていた）
   // 仕入先の当て（支払先リスト・仕入先コード・残高との比べ）：仕入先に付いた請求書では片付いている（違えば照合の表で ≠ になる）
   if(/PayeeCode|支払先リスト|仕入先リスト|リストの|仕入先コード|支払先コード|同じ相手|同一の相手|仕入先として扱う|仕入先.{0,10}(候補|当て)/.test(t))return 'resolved';
