@@ -333,6 +333,9 @@ footer b{color:var(--goldDark)}
       </div>
     </div>
 
+    <!-- 月別原価の入力もれ（recompute が内容を入れる） -->
+    <div id="costGapNotice" style="display:none; margin:12px 0; padding:10px 14px; background:var(--paper); border:1px solid var(--amber); border-left:4px solid var(--amber); border-radius:10px; font-size:12px; line-height:1.6"></div>
+
     <!-- Charts -->
     <div class="chart-grid">
       <div class="chart-card full">
@@ -342,7 +345,7 @@ footer b{color:var(--goldDark)}
       </div>
       <div class="chart-card">
         <h3>原価 月別推移（円）</h3>
-        <div class="hint">原価入力タブの値を反映。月別原価が未設定の場合は機種共通原価を使用。</div>
+        <div class="hint">エディタの月別原価を反映。月別原価が未入力の月は標準原価で代用（上の注意欄に表示）。</div>
         <canvas id="chCost" height="160"></canvas>
       </div>
       <div class="chart-card">
@@ -947,12 +950,29 @@ function getRange(){
   const t = parseInt(document.getElementById("toYm").value   || "0");
   return [Math.min(f,t), Math.max(f,t)];
 }
-function getCostFor(code, ym){
+// 原価の取り出し。src は "monthly"（月別原価）／"standard"（標準原価で代用）／null（原価なし）
+function costInfo(code, ym){
   if (!COST_DATA) COST_DATA = { useMonthly:false, items:{} };
   const c = COST_DATA.items[code];
-  if (!c) return null;
-  if (COST_DATA.useMonthly && c.monthly && c.monthly[ym]) return c.monthly[ym];
-  return (c.cost && c.cost > 0) ? c.cost : null;
+  if (!c) return { cost:null, src:null };
+  if (COST_DATA.useMonthly && ym != null && c.monthly && c.monthly[ym]) return { cost:c.monthly[ym], src:"monthly" };
+  if (c.cost && c.cost > 0) return { cost:c.cost, src:"standard" };
+  return { cost:null, src:null };
+}
+function getCostFor(code, ym){ return costInfo(code, ym).cost; }
+// 期間累計は「月ごとに その月の原価 × その月の販売数」を積み上げる（月別原価を期間の数字にも反映）
+function periodCost(code, ymsInRange, agg){
+  const r = { rev:0, cogs:0, qty:0, stdMonths:[], missMonths:[] };
+  for (const ym of ymsInRange) {
+    const o = agg.byYmCode.get(ym + "|" + code);
+    if (!o || (o.qty === 0 && o.amt === 0)) continue;
+    const ci = costInfo(code, ym);
+    if (!ci.cost) { r.missMonths.push(ym); continue; }
+    r.rev += o.amt; r.cogs += ci.cost * o.qty; r.qty += o.qty;
+    if (COST_DATA.useMonthly && ci.src === "standard") r.stdMonths.push(ym);
+  }
+  r.avgCost = r.qty > 0 ? r.cogs / r.qty : null;
+  return r;
 }
 function getRowsInPeriod(){
   const [from, to] = getRange();
@@ -1038,18 +1058,17 @@ function recompute(){
   // ===== KPI =====
   let totQty = 0, totAmt = 0, totRev = 0, totCogs = 0;
   for (const r of rows) { totQty += r[IDX.qty]; totAmt += r[IDX.amount]; }
-  // 期間累計の付加価値（数量加重）
+  // 期間累計の付加価値（月ごとの原価 × 数量の積み上げ）
   for (const code of SELECTED_CODES) {
-    const cost = getCostFor(code, null);
-    const o = agg.byCode.get(code);
-    if (!o || !cost || cost <= 0) continue;
-    totRev += o.amt;
-    totCogs += cost * o.qty;
+    const pc = periodCost(code, ymsInRange, agg);
+    totRev += pc.rev;
+    totCogs += pc.cogs;
   }
+  const hasCostGap = renderCostGap(ymsInRange, agg);
   const overallMargin = totRev > 0 ? (totRev - totCogs) / totRev * 100 : null;
 
   setText("kpiMargin", overallMargin == null ? "—" : overallMargin.toFixed(1));
-  setText("kpiMarginSub", overallMargin == null ? "原価未入力" : `対象売上 ${fmtMan(totRev)}万円`);
+  setText("kpiMarginSub", overallMargin == null ? "原価未入力" : `対象売上 ${fmtMan(totRev)}万円${hasCostGap ? "（月別原価の未入力あり）" : ""}`);
   setText("kpiAmt", fmtMan(totAmt));
   setText("kpiAmtSub", `${labels.length}ヶ月 / ${SELECTED_CODES.size}機種`);
   setText("kpiMarginAmt", overallMargin == null ? "—" : fmtMan(totRev - totCogs));
@@ -1203,7 +1222,50 @@ function recompute(){
   });
 
   // ===== サマリーテーブル =====
-  renderSummaryTable(agg);
+  renderSummaryTable(agg, ymsInRange);
+}
+
+// 原価セル：月別原価の加重平均。未入力・標準で代用した月があれば分かるように印を付ける
+function costCell(r){
+  const pc = r.pc, lbl = a => a.map(ymToLabel).join("、");
+  if (r.cost == null) {
+    return r.qty > 0 ? '<span class="neg" style="font-weight:700">未入力</span>' : '<span class="muted">—</span>';
+  }
+  let h = fmtYen(r.cost);
+  if (pc.missMonths.length) h += ` <span class="neg" style="font-size:10px; font-weight:700" title="原価なし（除外）: ${lbl(pc.missMonths)}">⚠${pc.missMonths.length}ヶ月 原価なし</span>`;
+  if (pc.stdMonths.length)  h += ` <span class="warn" style="font-size:10px; font-weight:700" title="月別原価が未入力のため標準原価で代用: ${lbl(pc.stdMonths)}">※標準で代用${pc.stdMonths.length}ヶ月</span>`;
+  return h;
+}
+// 月別原価の入力もれの注意欄。表示期間・選択機種のうち、販売実績がある月だけを見る。ある場合は true
+function renderCostGap(ymsInRange, agg){
+  const el = document.getElementById("costGapNotice");
+  const nm = c => { const m = ITEM_MASTER.find(x => x.code === c); return m ? m.code : c; };
+  const lines = [];
+  for (const ym of ymsInRange) {
+    const std = [], miss = [];
+    for (const code of SELECTED_CODES) {
+      const o = agg.byYmCode.get(ym + "|" + code);
+      if (!o || (o.qty === 0 && o.amt === 0)) continue;
+      const ci = costInfo(code, ym);
+      if (!ci.cost) miss.push(code);
+      else if (COST_DATA.useMonthly && ci.src === "standard") std.push(code);
+    }
+    if (std.length || miss.length) lines.push({ ym, std, miss });
+  }
+  if (el) {
+    if (!lines.length) { el.style.display = "none"; el.innerHTML = ""; }
+    else {
+      const body = lines.map(l => {
+        const parts = [];
+        if (l.std.length)  parts.push(`標準原価で代用 <b>${l.std.length}機種</b>（${l.std.map(c => escHtml(nm(c))).join("、")}）`);
+        if (l.miss.length) parts.push(`<span class="neg"><b>原価なしで除外 ${l.miss.length}機種</b>（${l.miss.map(c => escHtml(nm(c))).join("、")}）</span>`);
+        return `<div style="margin-top:4px"><b>${ymToLabel(l.ym)}</b>：${parts.join(" ／ ")}</div>`;
+      }).join("");
+      el.innerHTML = `<div style="font-weight:700; color:var(--navy)">⚠ 月別原価が未入力の機種があります（${lines.length}ヶ月分）。付加価値率は標準原価で計算されています。</div>${body}<div style="margin-top:6px; color:var(--gray)">原価/目標エディタの「月別原価」に入力すると、ここから消えます。</div>`;
+      el.style.display = "block";
+    }
+  }
+  return lines.length > 0;
 }
 
 // 最安販売金額データ: code → 円
@@ -1211,19 +1273,20 @@ let MIN_PRICE_DATA = new Map();
 // ソート状態
 let _summarySort = { col: null, asc: true };
 
-function renderSummaryTable(agg){
+function renderSummaryTable(agg, ymsInRange){
   const tbody = document.querySelector("#summaryTbl tbody");
   const items = ITEM_MASTER.filter(m => SELECTED_CODES.has(m.code));
 
   // 機種ごとの集計データを生成
   const rows = items.map(m => {
     const o = agg.byCode.get(m.code) || { qty:0, amt:0 };
-    const cost = getCostFor(m.code, null);
+    const pc = periodCost(m.code, ymsInRange, agg);
+    const cost = pc.avgCost; // 月別原価の数量加重平均
     const minPrice = MIN_PRICE_DATA.get(m.code) || null;
     const avg = o.qty > 0 ? o.amt / o.qty : null;
-    const marginPct = (cost && cost > 0 && avg) ? (avg - cost) / avg * 100 : null;
-    const marginAmt = (cost && cost > 0 && o.qty > 0) ? (o.amt - cost * o.qty) : null;
-    return { m, qty:o.qty, amt:o.amt, avg, cost, min:minPrice, margin:marginPct, marginAmt };
+    const marginPct = pc.rev > 0 ? (pc.rev - pc.cogs) / pc.rev * 100 : null;
+    const marginAmt = pc.rev > 0 ? (pc.rev - pc.cogs) : null;
+    return { m, qty:o.qty, amt:o.amt, avg, cost, pc, rev:pc.rev, cogs:pc.cogs, min:minPrice, margin:marginPct, marginAmt };
   });
 
   // ソート適用
@@ -1250,7 +1313,7 @@ function renderSummaryTable(agg){
   });
 
   let totQty=0, totAmt=0, totRev=0, totCogs=0;
-  for (const r of rows) { totQty += r.qty; totAmt += r.amt; if (r.cost && r.cost > 0) { totRev += r.amt; totCogs += r.cost * r.qty; } }
+  for (const r of rows) { totQty += r.qty; totAmt += r.amt; totRev += r.rev; totCogs += r.cogs; }
   const tAvg = totQty > 0 ? totAmt / totQty : null;
   const tMargin = totRev > 0 ? (totRev - totCogs) / totRev * 100 : null;
 
@@ -1281,7 +1344,7 @@ function renderSummaryTable(agg){
       let catRows = "";
       for (const r of list) {
         cQty += r.qty; cAmt += r.amt;
-        if (r.cost && r.cost > 0) { cRev += r.amt; cCogs += r.cost * r.qty; }
+        cRev += r.rev; cCogs += r.cogs;
         const marginCls = r.margin == null ? "muted" : (r.margin >= 30 ? "pos" : r.margin >= 15 ? "warn" : "neg");
         // 最安販売金額 vs 平均単価の比較フラグ（平均が最安を下回ったら警告）
         const belowMin = (r.min && r.avg && r.avg < r.min);
@@ -1292,7 +1355,7 @@ function renderSummaryTable(agg){
           <td>${fmtMan(r.amt)}</td>
           <td class="${belowMin?'neg':''}">${r.avg == null ? "—" : fmtYen(r.avg)}${belowMin?' ⚠':''}</td>
           <td>${r.min == null ? '<span class="muted">未入力</span>' : fmtYen(r.min)}</td>
-          <td>${r.cost == null ? '<span class="muted">未入力</span>' : fmtYen(r.cost)}</td>
+          <td>${costCell(r)}</td>
           <td class="${marginCls}">${r.margin == null ? "—" : r.margin.toFixed(1)+"%"}</td>
           <td class="${marginCls}">${r.marginAmt == null ? "—" : fmtMan(r.marginAmt)}</td>
         </tr>`;
@@ -1323,7 +1386,7 @@ function renderSummaryTable(agg){
         <td>${fmtMan(r.amt)}</td>
         <td class="${belowMin?'neg':''}">${r.avg == null ? "—" : fmtYen(r.avg)}${belowMin?' ⚠':''}</td>
         <td>${r.min == null ? '<span class="muted">未入力</span>' : fmtYen(r.min)}</td>
-        <td>${r.cost == null ? '<span class="muted">未入力</span>' : fmtYen(r.cost)}</td>
+        <td>${costCell(r)}</td>
         <td class="${marginCls}">${r.margin == null ? "—" : r.margin.toFixed(1)+"%"}</td>
         <td class="${marginCls}">${r.marginAmt == null ? "—" : fmtMan(r.marginAmt)}</td>
       </tr>`;
