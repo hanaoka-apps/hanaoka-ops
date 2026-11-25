@@ -1,6 +1,6 @@
 /* ap_alerts.js — 請求書の AI のコメント（AIComment の1行ずつ）を、確認の画面でどう出すかに見分ける（経費・仕入で共通）
    決め方：2026-11-25 の「読み取りと気づき 棚卸し」で依頼者が選んだ表（話題ごとに 要修正／要確認／参考／出さない）
-   使い方：APAlerts.kind(文, { area: '経費' | '仕入', ai: AI の状態, linked: 仕入先に付いたか }) → 'fix' | 'act' | 'info' | 'hide'
+   使い方：APAlerts.kind(文, { area: '経費' | '仕入', ai: AI の状態, linked: 仕入先に付いたか, bankSame: 選んだ振込先が振込先マスタと同じか }) → 'fix' | 'act' | 'info' | 'hide'
      fix＝要修正（直すまで進めない） act＝要確認（上に出す。✔ 確かめた で片付ける） info＝参考（AI のメモにしまう） hide＝出さない（済んでいる・アプリが調べる）
    新しい指示の答えは、文の頭に印がある（【要確認・話題】【参考・話題】【要修正・話題】）。印があれば印のとおり、無い今までの文は言葉で見分ける */
 (function () {
@@ -12,7 +12,9 @@
   function kind(s, ctx) {
     ctx = ctx || {};
     const area = ctx.area === '仕入' ? '仕入' : '経費', g = tag(s), t = g.text;
-    if (g.level) return g.level === '要修正' ? 'fix' : g.level === '要確認' ? 'act' : 'info';
+    // 振込先が複数で1つを選んだ：選んだ口座が振込先マスタと同じなら、確かめることは無いので参考（2026-11-26 依頼者と決めた）
+    const pickedSame = ctx.bankSame && /複数|2つ|二つ|選んだ|採用/.test(t) && !/切れ|補い|補った|桁|判読|読めな|推測|違う|異な|債権譲渡|決済代行/.test(t);
+    if (g.level) return g.level === '要確認' && pickedSame ? 'info' : g.level === '要修正' ? 'fix' : g.level === '要確認' ? 'act' : 'info';
     // ── アプリが書き足す文（読み取りのとき）
     if (/^AI の読み取りに失敗しました|読み取りが.{0,10}終わりません/.test(t)) return ctx.ai === 'AI確認済' ? 'hide' : 'fix';   // 読み直して読めたあとの古い失敗の文は出さない
     if (/請求書が.{0,3}通以上|通以上あります|分けて渡し直/.test(t)) return 'fix';
@@ -44,6 +46,7 @@
     if (/(銀行|支店)コード/.test(t) && /(記載|印字|書かれ).{0,8}(なし|ない|ありません|無)|空欄|全銀/.test(t)) return 'hide';
     if (/振込先|口座|名義|銀行/.test(t) && !/振込手数料|振込料/.test(t)) {
       if (area === '仕入') return 'hide';
+      if (pickedSame) return 'info';
       if (/複数|選んだ|採用|切れ|補い|補った|桁|判読|読めな|推測|違|債権譲渡|決済代行/.test(t) && !/伏字|伏せ字|マスク/.test(t)) return 'act';
       return /(記載|印字).{0,10}(なし|ない|なく|ありません|無)|未記載|伏字|伏せ字|マスク|のみ/.test(t) ? 'hide' : 'info';
     }
