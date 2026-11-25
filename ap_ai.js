@@ -377,11 +377,10 @@
     if (li && li.properties && !li.properties.Reason) { li.properties.Reason = { type: 'string' }; if (Array.isArray(li.required)) li.required.push('Reason'); }
     // 写りの問題（2026-11-20）：端が切れている・ぼやけて読めない・ページが足りない など。あれば「⚠ 撮り直し」として AI のコメントに出す（請求書を渡す・受信トレイの一覧に印）
     if (schema.properties && !schema.properties.scanIssue) { schema.properties.scanIssue = { type: 'string' }; if (Array.isArray(schema.required)) schema.required.push('scanIssue'); }
-    // 税抜の合計の印字（2026-11-25）：明細を1行読み落としても、照合は印字の税抜で合うように。明細の合計と違えば気づきに出す（黒木製作所：10/06 の 8,500 円の行が抜けていた）
-    if (schema.properties && !schema.properties.exclTotal) { schema.properties.exclTotal = { type: 'integer' }; if (Array.isArray(schema.required)) schema.required.push('exclTotal'); }
+    // 税抜の合計の印字（exclTotal）を答えの形に足すのは止めた（2026-11-25：足したあと読み取りが全部失敗した）。record は exclTotal が無ければ今までどおり
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 税抜の合計（exclTotal）\n請求書に印字された税抜の合計（小計・税抜金額・御買上額など、消費税を足す前の合計）を円で書く。明細を足した額ではなく、印字の額を書く。印字が無ければ 0\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
