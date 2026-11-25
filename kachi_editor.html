@@ -10,6 +10,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Inter:wght@600;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="price_core.js?v=20261114c"></script><!-- 体系表の最安（在庫価格・A'）の計算に使う。価格・送料の早見と同じ -->
+<script src="taikei_min.js?v=20261125a"></script>
 <style>
 :root{
   --navy:#0e1a36; --navy2:#1a2649; --ink:#0b1530;
@@ -702,83 +704,24 @@ function renderStandard(){
 // 体系表のルールは SharePoint のリスト（PR_定価・PR_得意先区分・PR_例外）。価格・送料の早見と同じ計算（price_core.js）で出す。
 // 読むだけ。価格や掛率はこのファイルには書かない。
 // ============================================================
-let TAIKEI = null;       // { prices, classes, exceptions, fares, costs, assembly }
+let TAIKEI = null;       // 体系表のルール（読み込んだリスト）
 let TAIKEI_ERR = "";
 const TAIKEI_DATE = new Date().toISOString().slice(0, 10);
 const TAIKEI_CACHE = new Map();
-// 品目コード（SMILE）と体系表の型式の書き方が違うもの（「×10」「ハイフン」の違いだけのもの）。
-// 体系表に対応する型式が見つからないものは入れない（UDL15/SW・UDL25/SW・UDA50/SW・UDA35W/SW・UDA80/SW・HDLC/R・EEPトレ・BCC-ANA）
-const TAIKEI_ALIAS = {
-  'UXALSC':'UXA-LSC', 'UDL15':'UDL150', 'UDL25':'UDL250', 'UDA50':'UDA500', 'UDA80':'UDA800', 'UDA35W':'UDA350W',
-  'UDLV15':'UDLV150', 'UDLV25':'UDLV250', 'UDLV50':'UDLV500', 'UDLV15/SW':'UDLV150SW', 'UDLV50/SW':'UDLV500SW',
-};
-const TAIKEI_LISTS = { prices:'PR_定価', classes:'PR_得意先区分', exceptions:'PR_例外' };
+const TAIKEI_MANUAL = TaikeiMin.MANUAL; // 最安が台数別などで、自動では出さない機種
 async function loadTaikei(){
-  try {
-    const d = await graphFetch(`/sites/${SP.siteId}/lists?$select=id,displayName&$top=200`);
-    const lists = (d.value || []);
-    const out = { prices:[], classes:[], exceptions:[], fares:[], costs:[], assembly:[] };
-    for (const k of Object.keys(TAIKEI_LISTS)) {
-      const hit = lists.find(l => l.displayName === TAIKEI_LISTS[k]);
-      if (!hit) throw new Error(`SharePointのリスト「${TAIKEI_LISTS[k]}」が見つかりません`);
-      let url = `/sites/${SP.siteId}/lists/${hit.id}/items?$expand=fields($select=Data)&$top=999`;
-      while (url) {
-        const r = await graphFetch(url);
-        (r.value || []).forEach(v => { try { out[k].push(JSON.parse((v.fields || {}).Data || '{}')); } catch(e){} });
-        url = r['@odata.nextLink'] ? r['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0', '') : null;
-      }
-    }
-    TAIKEI = out; TAIKEI_ERR = ""; TAIKEI_CACHE.clear();
-  } catch(e) {
-    console.warn("体系表の読み込み失敗:", e);
-    TAIKEI = null; TAIKEI_ERR = e.message || String(e);
-  }
+  try { TAIKEI = await TaikeiMin.load(graphGet, SP.siteId); TAIKEI_ERR = ""; TAIKEI_CACHE.clear(); }
+  catch(e) { console.warn("体系表の読み込み失敗:", e); TAIKEI = null; TAIKEI_ERR = e.message || String(e); }
 }
-function taikeiStockShas(){
-  const seen = new Map();
-  (TAIKEI.classes || []).forEach(c => {
-    if (c.対象の種類 !== '社名' || !c.対象コード || PriceCore.num(c.在庫口の掛率) === null) return;
-    if (String(c.適用開始日 || '').slice(0, 10) > TAIKEI_DATE || (c.適用終了日 && String(c.適用終了日).slice(0, 10) < TAIKEI_DATE)) return;
-    if (!seen.has(c.対象コード)) seen.set(c.対象コード, c.対象名 || c.対象コード);
-  });
-  return [...seen].map(([shaCode, name]) => ({ shaCode, name }));
-}
-function taikeiStockSet(){
-  const m = new Map();
-  (TAIKEI.exceptions || []).forEach(d => {
-    if (d.対象の種類 !== '社名' || !d.対象コード || d.在庫口のみ !== true || !d.型式) return;
-    if (!m.has(d.対象コード)) m.set(d.対象コード, new Set());
-    m.get(d.対象コード).add(PriceCore.asmKey(d.型式));
-  });
-  return m;
-}
-// 戻り値：{ price, src:'在庫'|"A'", who, code(体系表の型式) } ／ 体系表に型式がない・価格がないときは null
 function taikeiMin(code){
   if (!TAIKEI) return null;
-  if (TAIKEI_CACHE.has(code)) return TAIKEI_CACHE.get(code);
-  const tc = TAIKEI_ALIAS[code] || code;
-  let res = null;
-  if (PriceCore.listPriceRow(TAIKEI.prices, tc, TAIKEI_DATE)) {
-    const shas = taikeiStockShas(), stockSet = taikeiStockSet();
-    let best = null;
-    shas.forEach(x => {
-      const set = stockSet.get(x.shaCode);
-      if (set && !set.has(PriceCore.asmKey(tc))) return; // その社名の在庫品でない型式には在庫価格を出さない
-      const r = PriceCore.unitPrice(TAIKEI, { code:tc, qty:1, date:TAIKEI_DATE, customer:{ code:'', shaCode:x.shaCode, shaName:x.name, name:x.name, kakeName:'' }, forceStock:true });
-      if (r.price != null && r.price > 0 && (best === null || r.price < best.price)) best = { price:r.price, who:x.name };
-    });
-    if (best) res = { price:best.price, src:'在庫', who:best.who, code:tc };
-    else {
-      const r = PriceCore.unitPrice(TAIKEI, { code:tc, qty:1, date:TAIKEI_DATE, customer:{ code:'', shaCode:'', shaName:'', name:'', kakeName:"5掛(A')" } });
-      if (r.price != null && r.price > 0) res = { price:r.price, src:"A'", who:"A'ランク", code:tc };
-    }
-  }
-  TAIKEI_CACHE.set(code, res);
-  return res;
+  if (!TAIKEI_CACHE.has(code)) TAIKEI_CACHE.set(code, TaikeiMin.minPrice(TAIKEI, code, TAIKEI_DATE));
+  return TAIKEI_CACHE.get(code);
 }
 function taikeiCell(code, curVal){
   if (TAIKEI_ERR) return `<span class="muted" title="${escapeHtml(TAIKEI_ERR)}">読込失敗</span>`;
   if (!TAIKEI) return '<span class="muted">読込中…</span>';
+  if (TAIKEI_MANUAL[code]) return `<span class="muted" title="体系表のリストに台数別の掛率が入っていないため、自動では出せません">手入力<br>${escapeHtml(TAIKEI_MANUAL[code])}</span>`;
   const t = taikeiMin(code);
   if (!t) return '<span class="muted" title="販売価格体系表（定価）に、この型式が見つからない、または価格がありません">体系表に型式なし</span>';
   const alias = t.code !== code ? `<div style="font-size:10px; color:var(--gray)">体系表の型式：${escapeHtml(t.code)}</div>` : '';

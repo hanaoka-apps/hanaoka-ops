@@ -11,6 +11,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
+<script src="price_core.js?v=20261114c"></script><!-- 体系表の最安（在庫価格・A'）を出す。価格・送料の早見と同じ計算 -->
+<script src="taikei_min.js?v=20261125a"></script>
 <style>
 :root{
   --navy:#0e1a36; --navy2:#1a2649; --ink:#0b1530;
@@ -1270,6 +1272,28 @@ function renderCostGap(ymsInRange, agg){
 
 // 最安販売金額データ: code → 円
 let MIN_PRICE_DATA = new Map();
+// 最安販売金額の出どころ（体系表から自動で出したもの）：code → "在庫" | "A'"。ないものは SharePoint に手入力した金額
+let MIN_PRICE_SRC = new Map();
+// 販売価格体系表の最安（在庫価格、なければA'）で、最安販売金額を上書きする。体系表を直すと、ここも自動で変わる。
+// 手入力の機種（FCART2x4・FCART2x4BK）、体系表に型式がない機種は、エディタで入れた金額のまま。
+// 体系表のリストはサインイン後に読み、10分は使い回す（自動同期は3分ごと）。読めなかったときは、エディタの金額のまま。
+let _taikeiData = null, _taikeiAt = 0;
+async function applyTaikeiMin(){
+  MIN_PRICE_SRC = new Map();
+  try {
+    if (!_taikeiData || Date.now() - _taikeiAt > 10 * 60 * 1000) { _taikeiData = await TaikeiMin.load(spGraphGet, SP_CONFIG.siteId); _taikeiAt = Date.now(); }
+    const date = new Date().toISOString().slice(0, 10);
+    for (const m of ITEM_MASTER) {
+      const t = TaikeiMin.minPrice(_taikeiData, m.code, date);
+      if (t) { MIN_PRICE_DATA.set(m.code, t.price); MIN_PRICE_SRC.set(m.code, t.src); }
+    }
+  } catch(e) { console.warn("体系表の最安を読めませんでした（エディタの金額を使います）:", e.message || e); }
+}
+function minCell(r){
+  if (r.min == null) return '<span class="muted">未入力</span>';
+  const src = MIN_PRICE_SRC.get(r.m.code);
+  return fmtYen(r.min) + (src ? `<span class="cd" title="販売価格体系表の最安（${src === "在庫" ? "在庫価格" : "在庫価格がないのでA'ランク"}）。体系表を直すと自動で変わります">体系表${src === "A'" ? "(A')" : ""}</span>` : "");
+}
 // ソート状態
 let _summarySort = { col: null, asc: true };
 
@@ -1354,7 +1378,7 @@ function renderSummaryTable(agg, ymsInRange){
           <td>${fmtQty(r.qty)}</td>
           <td>${fmtMan(r.amt)}</td>
           <td class="${belowMin?'neg':''}">${r.avg == null ? "—" : fmtYen(r.avg)}${belowMin?' ⚠':''}</td>
-          <td>${r.min == null ? '<span class="muted">未入力</span>' : fmtYen(r.min)}</td>
+          <td>${minCell(r)}</td>
           <td>${costCell(r)}</td>
           <td class="${marginCls}">${r.margin == null ? "—" : r.margin.toFixed(1)+"%"}</td>
           <td class="${marginCls}">${r.marginAmt == null ? "—" : fmtMan(r.marginAmt)}</td>
@@ -1385,7 +1409,7 @@ function renderSummaryTable(agg, ymsInRange){
         <td>${fmtQty(r.qty)}</td>
         <td>${fmtMan(r.amt)}</td>
         <td class="${belowMin?'neg':''}">${r.avg == null ? "—" : fmtYen(r.avg)}${belowMin?' ⚠':''}</td>
-        <td>${r.min == null ? '<span class="muted">未入力</span>' : fmtYen(r.min)}</td>
+        <td>${minCell(r)}</td>
         <td>${costCell(r)}</td>
         <td class="${marginCls}">${r.margin == null ? "—" : r.margin.toFixed(1)+"%"}</td>
         <td class="${marginCls}">${r.marginAmt == null ? "—" : fmtMan(r.marginAmt)}</td>
@@ -1826,6 +1850,7 @@ async function spLoadCosts(){
       }
     }
     if (hasMonthly) COST_DATA.useMonthly = true;
+    await applyTaikeiMin();
     COST_DATA.savedAt = new Date().toISOString();
     COST_DATA.source = "sharepoint";
     saveCostData();
@@ -2094,6 +2119,7 @@ async function spLoadCostsQuiet(){
     }
   }
   if (hasMonthly) COST_DATA.useMonthly = true;
+  await applyTaikeiMin();
   saveCostData();
   return true;
 }
