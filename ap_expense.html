@@ -12,6 +12,7 @@
 <script src="hanaoka_auth.js"></script>
 <script src="ap_intake.js?v=20261125b"></script>
 <script src="ap_ai.js?v=20261126"></script>
+<script src="ap_alerts.js?v=20261126"></script>
 <script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261120" defer></script>
 <script src="ap_month.js?v=20261106"></script>
@@ -411,7 +412,8 @@ function lockOf(r){   // 決裁に回した支払指図に入っていれば、�
 // 気づき：AI のコメント＋アプリで分かること（仕入の請求書では？・二重・前月比・口座・拠点）
 function alertsOf(r){
   const a=[];
-  r.aicom.split(/\n+/).map(s=>s.trim()).filter(Boolean).forEach(s=>a.push({k:'AI',t:s,ack:true}));
+  // AI のコメントの見分け（2026-11-26）：仕入と共通の決まり ap_alerts.js。出さないもの（済んでいる・アプリが調べる）は入れない
+  r.aicom.split(/\n+/).map(s=>s.trim()).filter(Boolean).forEach(s=>{const lv=window.APAlerts?APAlerts.kind(s,{area:'経費',ai:r.ai}):'act';if(lv!=='hide')a.push({k:'AI',t:window.APAlerts?APAlerts.tag(s).text:s,ack:true,lv});});
   if(r.failed)a.push({k:'読み取り失敗',t:'AI が読み取れませんでした。請求書を見て、支払先・金額・仕訳を入れてください',ack:false});
   const n=jnorm(r.payee);
   if(n){const sp=(r.code&&SPM.find(s=>s.code===r.code))||SPM.find(s=>s.n&&(s.n===n||(n.length>=4&&(s.n.includes(n)||n.includes(s.n)))));
@@ -507,7 +509,7 @@ function tagsOf(r){const t=[];
   if(r.wf)t.push(['WF '+r.wf,'t-ok']);if(!r.ym&&!r.reading)t.push(['対象年月なし','t-new']);
   if(!r.code&&!r.reading&&!r.done&&vendorCands(r.payee).length)t.push(['SMILE コードの候補あり','t-pri']);
   // 同じ種類の気づきは1つにまとめる（AI のコメントは行の数を添える：AI 4）
-  const ak={};alertsOf(r).filter(a=>a.k!=='読み取り失敗').forEach(a=>{const o=ak[a.k]||(ak[a.k]={n:0,cls:'t-flag'});o.n++;if(a.block||a.k==='二重？'||a.k==='仕入では？')o.cls='t-up';});
+  const ak={};alertsOf(r).filter(a=>a.k!=='読み取り失敗'&&!(a.k==='AI'&&a.lv==='info')).forEach(a=>{const o=ak[a.k]||(ak[a.k]={n:0,cls:'t-flag'});o.n++;if(a.block||a.k==='二重？'||a.k==='仕入では？')o.cls='t-up';});
   const KL={AI:'AI の指摘',口座:'口座を確かめる',初めて:'初めての支払先',拠点:'拠点が違う？','初めての振込先':'初めての振込先'};
   Object.entries(ak).forEach(([k,o])=>{const l=KL[k]||k;t.push([o.n>1?`${l} ${o.n}`:l,o.cls]);});
   if(!r.reading&&r.lines.length&&r.lsum!==r.amount)t.push(['仕訳と金額が違う','t-up']);if(!r.reading&&!r.lines.length)t.push(['仕訳なし','t-new']);
@@ -993,7 +995,7 @@ function issuesOf(r){
     else if(full&&m&&!sameBank(b,m))chk('振込先が振込先マスタと違います',`マスタ：${bankText(m)}／請求書：${bankText(b)}。口座は自動で変えません。電話などで確かめてください`);
     else if(full&&!m)chk('初めての振込先です','銀行・支店のコードと口座を確かめてください（確定すると振込先マスタに登録します）');}
   alertsOf(r).forEach(a=>{if(a.k==='口座'||a.k==='初めての振込先')return;
-    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''],key=aiIssKey(s),x={sev:'check',t:td[0],d:td[1],ai:true,aiKey:key};if(issAt(x,h)!=='lines'&&!aiIssDone(r,key))out.push(x);}   // 仕訳のことは仕訳のカードの「AI のメモ」へ
+    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''],key=aiIssKey(s),x={sev:a.lv==='fix'?'fix':a.lv==='info'?'info':'check',t:td[0],d:td[1],ai:true,aiKey:key,memo:a.lv==='info'};if(issAt(x,h)!=='lines'&&!aiIssDone(r,key))out.push(x);}   // 仕訳のことは仕訳のカードの「AI のメモ」へ
     else if(a.k==='読み取り失敗')inf('AI が読み取れませんでした','請求書を見て、支払先・金額・仕訳を入れてください');
     else if(a.k==='初めて'){}   // 上の「初めての支払先」の印と特記事項に出ている
     else if(a.k==='前月より増')inf('前月より増えています',a.t);
@@ -1001,7 +1003,7 @@ function issuesOf(r){
   out.forEach(x=>x.at=issAt(x,h));
   const ord={fix:0,check:1,info:2};return out.sort((x,y)=>ord[x.sev]-ord[y.sev]);}
 // 気づきを出す場所：その中身のカードの横（狭いときは下）。AI のコメントは言葉で振り分ける。どこにも当たらないものは「その他の気づき」
-function issAt(x,h){const t=x.t+' '+(x.d||''),bk=h.method==='総合振込';
+function issAt(x,h){const t=x.t+' '+(x.d||''),bk=h.method==='総合振込';if(x.memo)return 'memo';   /* 参考の AI のコメントは「AI のメモ」にまとめる */
   if(x.jr||/^(仕訳|科目|内訳|会計の実績)/.test(x.t))return 'lines';
   if(/^(振込先|初めての振込先)/.test(x.t))return bk?'bank':'hdr';
   if(!x.ai)return /^AI が読み取れ/.test(x.t)?'gen':'hdr';
@@ -1152,9 +1154,11 @@ function drawOne(){
   const LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']},gen=iss.filter(x=>(x.at||'gen')==='gen');
   const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}${x.dups?x.dups.map(o=>`<div class="d" style="margin-top:3px">相手：${esc(o.payee||'—')}・請求No ${esc(o.no||'—')}・${yen(o.amt)} 円・${esc(o.ym)} ${esc(o.loc)}</div>`).join(''):''}</div><div class="iss-b">${x.dups&&ed?`<button class="lk teach-b" data-dupcmp="1" title="2枚を横に並べて、違う所に色を付けます（重複なら片方を対象外に）">⇔ 並べて見る</button><button class="lk teach-b" data-notdup="${esc(x.dups.map(o=>o.id).join(','))}" title="別の請求書だった（記録に残り、この気づきは出なくなります）">二重ではない</button>`:''}${x.ackKey&&ed&&!r.reading?`<button class="lk teach-b" data-ackai="${esc(x.ackKey)}" data-ackait="${esc((x.t+'：'+(x.d||'')).slice(0,200))}" title="確かめた（この気づきを片付ける。誰が押したか残ります）">✔ 確かめた</button>`:''}${ed&&window.APAI&&x.sev!=='info'&&!r.reading&&!x.nb&&!x.app?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ai&&x.aiKey&&ed&&!r.reading?`<button class="lk teach-b" data-ackai="${esc(x.aiKey)}" data-ackait="${esc((x.t+(x.d||'')).slice(0,200))}" title="確かめた（この気づきを片付ける。誰が押したか残ります）">✔ 確かめた</button>`:''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
   const wrapI=(card,at)=>{const l=iss.filter(x=>x.at===at);return card&&l.length?`<div class="ocx">${card}<div class="ocx-i">${l.map(issOne).join('')}</div></div>`:card;};
-  const issCard=!gen.length&&!(r.reject&&!r.done)?'':`<details class="oc" id="oIss" ${gen.some(x=>x.sev==='fix')||(r.reject&&!r.done)?'open':''}><summary class="oh" style="cursor:pointer"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=gen.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></summary>
+  const memoI=iss.filter(x=>x.at==='memo');
+  const issCard=!gen.length&&!memoI.length&&!(r.reject&&!r.done)?'':`<details class="oc" id="oIss" ${gen.some(x=>x.sev==='fix')||(r.reject&&!r.done)?'open':''}><summary class="oh" style="cursor:pointer"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=gen.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></summary>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
     ${gen.map(issOne).join('')}
+    ${memoI.length?`<details style="margin-top:6px"><summary style="font-size:12px;color:var(--sub);cursor:pointer">AI のメモ（参考 ${memoI.length}件）</summary>${memoI.map(x=>`<div style="font-size:12px;color:var(--sub);padding:2px 0">・${esc(x.t)}${x.d?esc(x.d):''}</div>`).join('')}</details>`:''}
     </details>`;
   const teachCard='';   // 相談は浮いた小窓（drawTeach）
   // 先に登録した請求書（PDF なし）がある：そちらに付ける
