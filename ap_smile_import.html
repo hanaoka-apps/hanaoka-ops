@@ -1037,13 +1037,28 @@ async function rereadItems(r,x){let d;try{d=await docFiles(x.doc);}catch(e){snac
 //   直したら 請求書の明細・金額_税抜・消費税 を書き換え、確認の記録（CheckLog）に {act:'AIと明細を直した'} を残す。次から気をつけることは「覚えたこと」（ai_memory.json）へ
 const FIX={id:null,msgs:[],busy:false,files:null};
 function fixHtml(r){const x=r.invoices.find(i=>String(i.id)===FIX.id);
-  return `<div class="teach" style="margin:8px 0"><div class="teach-h"><b>💬 AI と直す：${esc(x&&x.no?'No.'+x.no:x&&x.name||'請求書')}</b><span class="sp"></span><button class="lk" id="fxClose">閉じる</button></div>
+  const min=!!($('fixPop')&&$('fixPop').classList.contains('min'));
+  return `<div class="teach"><div class="teach-h"><b>💬 AI と直す：${esc(x&&x.no?'No.'+x.no:x&&x.name||'請求書')}</b><span class="sp"></span><span style="font-size:12px;color:var(--sub);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name||'')}</span><button class="lk" id="fxMin">${min?'▲ 開く':'▼ たたむ'}</button><button class="lk" id="fxClose">閉じる</button></div>
   <div class="teach-m">${FIX.msgs.map(m=>`<div class="tm ${m.role}">${m.role==='ai'?'<span class="who">AI</span>':''}<div>${esc(m.text).replace(/\n/g,'<br>')}</div></div>`).join('')}${FIX.busy?'<div class="tm ai"><span class="who">AI</span><div><span class="spin"></span> 原本を見ています…（20〜40秒）</div></div>':''}</div>
   <div class="teach-i"><input type="text" id="fxIn" placeholder="例：消費税の行が明細に入っている" ${FIX.busy?'disabled':''}><button class="pri" id="fxSend" ${FIX.busy?'disabled':''}>送る</button></div>
-  <div style="font-size:11.5px;color:var(--sub);margin-top:4px">AI が請求書の原本を見て、明細・税抜を直して保存します（請求額・税込は変えません）。やり取りの要約は確認の記録に、次から気をつけることは「覚えたこと」に残ります</div></div>`;}
+  <div class="teach-n" style="font-size:11.5px;color:var(--sub);margin-top:4px">AI が請求書の原本を見て、明細・税抜を直して保存します（請求額・税込は変えません）。やり取りの要約は確認の記録に、次から気をつけることは「覚えたこと」に残ります</div></div>`;}
+// 浮いた小窓（経費の #teachPop と同じ形・位置）。確認の画面を描き直さないので、見ている場所が上に戻らない
+function drawFix(r){let el=$('fixPop');
+  const show=!!(FIX.id&&r&&st.tab==='rev'&&st.sel===r.code&&r.invoices.some(x=>String(x.id)===FIX.id));
+  if(!show){if(FIX.id&&!FIX.busy&&!(r&&r.invoices.some(x=>String(x.id)===FIX.id)))FIX.id=null;if(el)el.hidden=true;return;}
+  if(!el){el=document.createElement('div');el.id='fixPop';document.body.appendChild(el);
+    const css=document.createElement('style');css.textContent='#fixPop{position:fixed;right:18px;bottom:96px;z-index:960;width:min(520px,calc(100vw - 36px));background:#fff;border:1px solid var(--line,#dfe3ec);border-radius:12px;box-shadow:0 12px 36px rgba(20,24,60,.25);padding:12px 14px}#fixPop .teach{margin:0}#fixPop .teach-m{max-height:min(48vh,460px);overflow-y:auto}#fixPop.min .teach-m,#fixPop.min .teach-i,#fixPop.min .teach-n{display:none}';document.head.appendChild(css);}
+  const keep=FIX.busy?'':($('fxIn')||{}).value||'';el.hidden=false;el.innerHTML=fixHtml(r);
+  const m=el.querySelector('.teach-m');if(m)m.scrollTop=m.scrollHeight;
+  const i=$('fxIn');if(i){i.value=keep;i.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendFix(r);}};}
+  $('fxClose').onclick=()=>{FIX.id=null;el.hidden=true;};
+  $('fxMin').onclick=()=>{el.classList.toggle('min');drawFix(r);};
+  $('fxSend').onclick=()=>sendFix(r);}
+// 描き直すとき、確認の画面の右の列の見ている場所を保つ
+function keepScroll(fn){const d=document.querySelector('#detail .dinfo'),y=d?d.scrollTop:0;fn();const e=document.querySelector('#detail .dinfo');if(e)e.scrollTop=y;}
 async function sendFix(r){const i=$('fxIn'),text=(i&&i.value||'').trim();if(!text||FIX.busy)return;
   const x=r.invoices.find(v=>String(v.id)===FIX.id);if(!x)return;
-  FIX.msgs.push({role:'me',text});FIX.busy=true;drawDetail();
+  FIX.msgs.push({role:'me',text});FIX.busy=true;drawFix(r);
   try{if(!FIX.files)FIX.files=(await docFiles(x.doc)).files;
     const c=sideCheck(r),sm=c&&c.has?`本社 ${yen(c.side.本社)} 円・工場 ${yen(c.side.工場)} 円（計 ${yen(c.tot)} 円）`:'';
     const raw=(x.items&&Array.isArray(x.items.items))?x.items.items:[];
@@ -1059,9 +1074,11 @@ async function sendFix(r){const i=$('fxIn'),text=(i&&i.value||'').trim();if(!tex
     const mem=(a.memory||[]).filter(m=>m.key&&m.fact);
     if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.name})),me());
     FIX.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});
-    if(done.length){await loadInvoices();}}
+    if(done.length){await loadInvoices();FIX.changed=true;}}
   catch(e){FIX.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
-  FIX.busy=false;render();setTimeout(()=>{const n=$('fxIn');if(n)n.focus();},50);}
+  FIX.busy=false;
+  if(FIX.changed){FIX.changed=false;keepScroll(()=>render());}else drawFix(cur()||r);   // 明細を直したときだけ画面を描き直す（見ている場所は保つ）
+  setTimeout(()=>{const n=$('fxIn');if(n)n.focus();},50);}
 // 全画面（支払決済アプリと同じ。Esc で戻る）
 let FULLR=(()=>{try{return localStorage.getItem('ap.review.full')==='1';}catch{return false;}})();
 function setFull(v){FULLR=v;try{localStorage.setItem('ap.review.full',v?'1':'');}catch{}const c=$('rvCard');if(c)c.classList.toggle('ap-full',v);document.body.classList.toggle('ap-lock',v);const b=$('bFull');if(b)b.textContent=v?'✕ 全画面をやめる':'⛶ 全画面';}
@@ -1140,7 +1157,6 @@ function drawDetail(){
           return `<div class="${c}"><div class="l">判定（くわしくは下の照合）</div><div class="v" style="font-size:16px">${!r.invoices.length?'請求書なし':j.k==='read'?'読み取り中':j.k==='load'?'読み込み中':t?esc(t[0]):'—'}</div><div class="s">${j.k==='diff'&&j.cause?esc(CAUSES[j.cause])+'<br>':''}${d?`${r.pre?'受入':'支払額'}との差（税込）${d>0?'+':''}${yen(d)}${Math.abs(d)<100?'（端数）':''}`:''}</div></div>`;})()}${(()=>{const co=carryOf(r),sum=l=>l.reduce((t,a)=>t+(+af(a,'金額')||0),0),o=sum(co.outA),i2=sum(co.inA),has=co.outA.length||co.inA.length;   /* 次月調整（2026-11-20）：時々しか無いが、あるとかなり大事。無くても 0円 と出して見落とさない */return `<div style="${has?'border-color:#efd3ad;background:var(--warn-l)':''}"><div class="l">次月調整（今月）</div><div class="v">${yen(o)}<small style="font-size:12px"> 円</small></div><div class="s">${has?`税抜 ${yen(co.outA.reduce((t,a)=>t+exOfAdj(a),0))}・今月の調整 ${co.outA.length}件${co.inA.length?`・先月までの分 ${yen(i2)} 円（${co.inA.length}件）`:''}`:'ありません'}${ed?`<br><button class="lk" data-adjopen style="padding:0">＋ 次月調整を記録する</button>`:''}</div></div>`;})()}
       </div>
       ${ed&&d&&!r.pre?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-2px">${d<0?`<button id="bOff">差 ${yen(-d)} を相殺の行にする</button>`:''}</div>`:''}
-      ${FIX.id&&r.invoices.some(x=>String(x.id)===FIX.id)?fixHtml(r):''}
       ${r.invoices.length?judgeHtml(r,ed):''}
       ${needsCheck(r)&&!r.invoices.length?noInvHtml(r,ed):''}
       ${alertsHtml(r)}
@@ -1189,7 +1205,7 @@ function wireDetail(r){
     m.style.cssText=`position:fixed;left:${Math.max(8,Math.min(rc.left,innerWidth-240))}px;top:${rc.bottom+4}px;z-index:1000;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(20,24,60,.18);padding:6px;display:flex;flex-direction:column;gap:2px;min-width:220px`;
     [...box.querySelectorAll('button')].forEach(o=>{const it=document.createElement('button');it.className='lk';it.style.cssText='text-align:left;padding:6px 10px';it.textContent=o.textContent+'　'+(o.title||'').replace(/（.*$/,'');it.onclick=()=>{m.remove();o.click();};m.appendChild(it);});
     document.body.appendChild(m);{const h=m.getBoundingClientRect().height;if(rc.bottom+4+h>innerHeight)m.style.top=Math.max(8,rc.top-4-h)+'px';}const close=ev=>{if(!m.contains(ev.target)){m.remove();document.removeEventListener('click',close,true);}};setTimeout(()=>document.addEventListener('click',close,true),0);});
-  document.querySelectorAll('[data-ifix]').forEach(b=>b.onclick=()=>{FIX.id===b.dataset.ifix?(FIX.id=null):Object.assign(FIX,{id:b.dataset.ifix,msgs:[{role:'ai',text:'どこが違いますか？\n例：「消費税の行が明細に入っている」「2枚目の明細が抜けている」「出張費は 9,000 円」'}],busy:false,files:null});drawDetail();setTimeout(()=>{const i=$('fxIn');if(i)i.focus();},50);});
+  document.querySelectorAll('[data-ifix]').forEach(b=>b.onclick=()=>{FIX.id===b.dataset.ifix?(FIX.id=null):Object.assign(FIX,{id:b.dataset.ifix,msgs:[{role:'ai',text:'どこが違いますか？\n例：「消費税の行が明細に入っている」「2枚目の明細が抜けている」「出張費は 9,000 円」'}],busy:false,files:null});drawFix(r);setTimeout(()=>{const i=$('fxIn');if(i)i.focus();},50);});
   // 🧪 試し読み（2026-11-26）：指示の次の版を、今の版と並べて読む（保存しない。画面を ?trial=1 で開いたときだけ）
   document.querySelectorAll('[data-itrial]').forEach(b=>b.onclick=async()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.itrial);if(!x)return;
     try{const d=await docFiles(x.doc);await APAI.showTrial({call,site:AP_SITE,onMsg:msg},{apCode:d.code,invoiceId:String(x.id),category:r.mainDept==='工場'?'工場仕入':'本社仕入',location:r.mainDept==='工場'?'工場':'本社',targetYm:month(),vendorCode:r.code,vendorName:r.name,smileAmount:r.amount,files:d.files,pdfName:d.pdfName,moved:d.moved,title:'ap.trial'});}
@@ -1197,9 +1213,7 @@ function wireDetail(r){
   document.querySelectorAll('[data-irr]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.irr);if(!x)return;
     if(!confirm(`${x.no?'No.'+x.no:x.name||'請求書'} を AI にもう一度はじめから読ませます。人が直した明細・税抜は、新しい読み取りで上書きされます。よろしいですか？`))return;
     if(FIX.id===String(x.id))FIX.id=null;rereadItems(r,x).catch(e=>snack('読めませんでした：'+e.message,true));});
-  if($('fxClose'))$('fxClose').onclick=()=>{FIX.id=null;drawDetail();};
-  if($('fxSend'))$('fxSend').onclick=()=>sendFix(r);
-  if($('fxIn'))$('fxIn').onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();e.stopPropagation();sendFix(r);}};
+  drawFix(r);   // 「AI と直す」の小窓（ほかの仕入先に移ったら隠す）
   document.querySelectorAll('[data-idrop]').forEach(b=>b.onclick=()=>{const x=r.invoices.find(i=>String(i.id)===b.dataset.idrop);if(x)dropInvoice(x.id,(x.no?'No.'+x.no+' ':'')+(x.name||r.name)+' '+yen(x.amount));});
   document.querySelectorAll('[data-dprt]').forEach(b=>b.onclick=()=>printRcvReport([r.code],b.dataset.dprt));on('dPrev',()=>go(-1));on('dNext',()=>go(1));on('dOk',confirmRow);on('dUn',()=>act(r,{'確認済み':false,'確認者':'','確認日時':''}));
   on('dHold',()=>act(r,{'保留':!r.hold,'確認済み':false}));on('dCmB',()=>{st.cmOpen=true;$('dCm').style.display='';$('dCm').focus();});
