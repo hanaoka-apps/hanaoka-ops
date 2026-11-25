@@ -246,6 +246,9 @@
     const it = (st.value || []).find(x => x.fields && x.fields.Title === 'ai.invoice');
     if (!it) throw new Error('AP_Setting に ai.invoice がありません（Provision-SmileAP.ps1 -Apply）');
     s.cfg = JSON.parse(it.fields.Value || '{}');
+    // 指示の版（2026-11-26）：次の版は「🧪 試し読み」だけで使う（普段の読み取りは今の版）。前の版は切り替えたあと戻すための控え
+    const byKey = k => { const x = (st.value || []).find(y => y.fields && y.fields.Title === k); try { const o = x && x.fields.Value ? JSON.parse(x.fields.Value) : null; return o && o.system ? o : null; } catch (e) { return null; } };   /* 空（切り替えたあとの次の版）は無し */
+    s.cfgs = { cur: s.cfg, next: byKey('ai.invoice.next'), prev: byKey('ai.invoice.prev') };
     // マスタ
     const [km, bm, um, jr, sq] = await Promise.all(['smile_kamoku.csv', 'smile_bumon.csv', 'smile_uchiwake.csv', '仕訳インデックス.csv', '決裁メモ.csv'].map(n => csv(ctx, n).catch(() => [])));
     // アプリで確かめた決裁メモ（人が直したものも）を、請求Quick の分より新しい例として足す ／ 人が教えた「覚えたこと」
@@ -330,6 +333,24 @@
     await slot();
     try { return await ask1(ctx, s, job, body); } finally { release(); }
   }
+  // 中継のエラー（2026-11-26）：ResultMessage は中継のアクションの結果の並び（JSON・4000字まで）。前は先頭の300字だけで、
+  //   「fallbackか…ActionFailed」のように原因が見えなかった。Claude API の返したエラー（error.message）と状態コードを探して出す
+  function errText(raw) {
+    const s = String(raw || ''); let best = '';
+    try {
+      const walk = (o, name) => { if (!o || typeof o !== 'object' || best) return; if (Array.isArray(o)) { o.forEach(x => walk(x, name)); return; }
+        const nm = o.name || name, out = o.outputs || {}, b = out.body, e = b && typeof b === 'object' && b.error;
+        if (e && (e.message || e.type)) { best = `${nm ? nm + ' ' : ''}${out.statusCode || ''}：${e.type ? e.type + '：' : ''}${e.message || ''}`; return; }
+        Object.keys(o).forEach(k => walk(o[k], nm)); };
+      walk(JSON.parse(s), '');
+    } catch (e) {}
+    if (!best) {
+      const ms = [...s.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.){4,400})"/g)].map(x => x[1]).filter(x => !/^(An action failed|The execution of template action|Unable to process template)/.test(x));
+      const sc = s.match(/"statusCode"\s*:\s*(\d{3})/);
+      if (ms.length) best = (sc ? sc[1] + '：' : '') + ms[ms.length - 1];
+    }
+    return (best || s).replace(/\\n/g, ' ').slice(0, 400);
+  }
   async function ask1(ctx, s, job, body) {
     const call = ctx.call;
     const it = await call('POST', `/sites/${s.wf}/lists/${s.aiList}/items`, { fields: { Title: job.title || 'ap.invoice', Status: '受付', Caller: `ap:${job.apCode || job.caller || ''}` } });
@@ -344,7 +365,7 @@
       // フローが動き出すと「処理中」になる。75秒たっても「受付」のまま＝中継が受け付けなかった → もう一度送る（2回まで。フローは「受付」でなければ何もしない）
       if (f.Status === '受付' && resent < 2 && Date.now() - t0 > 75000 * (resent + 1)) { resent++; await send(); }
       if (f.Status === '完了') { const r = JSON.parse(f.ResultJson || '{}'); return { status: '完了', text: r.text || '', stop: r.stop_reason, model: r.model, usage: r.usage }; }
-      if (f.Status === 'エラー') return { status: 'エラー', message: String(f.ResultMessage || '').slice(0, 300) };
+      if (f.Status === 'エラー') { console.warn('AI の中継のエラー', f.ResultMessage); return { status: 'エラー', message: errText(f.ResultMessage) }; }
     }
     return { status: 'エラー', message: 'AI の読み取りが5分たっても終わりません' };
   }
@@ -358,7 +379,8 @@
 
   async function readInvoice(ctx, job) {
     const msg = ctx.onMsg || (() => {});
-    const s = await setup(ctx), cfg = s.cfg;
+    const s = await setup(ctx), cfg = job.ver && job.ver !== 'cur' ? s.cfgs[job.ver] : s.cfg, t0 = Date.now();
+    if (!cfg) throw new Error(`指示の${job.ver === 'next' ? '次の版（ai.invoice.next）' : '前の版（ai.invoice.prev）'}がまだありません`);
     // ファイル：1つ（file・pdfName）か、まとめた何ファイルか（files）。まとめたときは「1枚の請求書」と伝える
     const fs = job.files && job.files.length ? job.files : [{ file: job.file, name: job.pdfName }];
     const docs = []; for (const f of fs) docs.push(docBlock(await b64(f.file), f.file.type, f.name));
@@ -380,7 +402,7 @@
     // 税抜の合計の印字（exclTotal）を答えの形に足すのは止めた（2026-11-25：足したあと読み取りが全部失敗した）。record は exclTotal が無ければ今までどおり
     const body = { model: s.models.read || 'claude-sonnet-5-5', max_tokens: cfg.maxTokens || 16000, fallbacks: 'default',
       output_config: { effort: cfg.effort || 'medium', format: { type: 'json_schema', schema } },
-      system: [{ type: 'text', text: cfg.system }, { type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }, { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: cfg.system }, ...(/## 写りの問題/.test(cfg.system || '') ? [] : [{ type: 'text', text: '## 決裁メモ（ApprovalNote）・摘要の書き足し\n' + PLAIN.replace(/^- /, '') + '\n\n## 写りの問題（scanIssue）\n請求書の写りに問題があるときだけ、何が問題かを短く書く（例「右端が切れて金額が読めない」「ぼやけて口座番号が読めない」「途中のページが抜けていて合計が読めない」）。読むのに困らなければ ""。明細書が別紙・添付が別にある（このファイルに無い）は写りの問題ではないので書かない\n\n## 仕訳の行の理由（Reason）\nlines の各行の Reason に、その科目・部門にした理由を1文（40字くらいまで）で書く。何を手本にしたかがわかるように（例「過去の仕訳で毎月 通信費・本社」「過去の仕訳なし。品名がコピー用紙なので消耗事務費」「覚えたこと：なにわ480あ1234＝大阪のエブリィ」）' }]), { type: 'text', text: s.masters, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: docs.concat([{ type: 'text', text: info }]) }] };
     msg(`AI が読んでいます：${job.pdfName}`);
     let r = await ask(ctx, s, job, body);
@@ -416,7 +438,8 @@
     if (d && d.scanIssue) d.comments = (d.comments || []).concat([`⚠ 撮り直し：${d.scanIssue}`]);
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '', excl: Math.round(+d.exclTotal || 0) }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
     // 向きが違うページ（横向き・逆さ）：AI が rotate で答えたら、ファイルを回して同じ場所に保存する（ap_intake.js の APDoc.rotateFile）
-    if (d && Array.isArray(d.rotate) && d.rotate.length && window.APDoc && APDoc.rotateFile) {
+    if (job.dry && d && Array.isArray(d.rotate) && d.rotate.length) rec.comments.push(`（試し読みなので回していません）向きが違うページ：${d.rotate.map(x => `${x.file}番目 ${x.page}ページ 右に${x.deg}°`).join('・')}`);
+    if (!job.dry && d && Array.isArray(d.rotate) && d.rotate.length && window.APDoc && APDoc.rotateFile) {
       const by = {}; d.rotate.forEach(x => { const fi = (+x.file || 1) - 1, pg = +x.page || 1, dg = +x.deg; if (fs[fi] && [90, 180, 270].includes(dg)) (by[fi] = by[fi] || { pages: {} }).pages[pg] = dg; });
       for (const fi of Object.keys(by)) { const rot = by[fi], nm = fs[fi].name;
         try { await APDoc.rotateFile(ctx, `${job.moved ? '/BILLS/processed' : '/BILLS/incoming'}/${nm}`, rot); rec.comments.push(`向きを直して保存しました（${Object.entries(rot.pages).map(([p, g]) => `${p}ページ 右に${g}°`).join('・')}）`); }
@@ -431,6 +454,8 @@
       extra: d ? (d.extra || []).map(x => record(x.header, x.lines, x.total, x.comments, loc)) : [],
       processed_at: new Date().toISOString(), ai: { model: r.model || '', usage: r.usage || null, via: 'claude-api' },
       replace_lines: !!job.replaceLines };   // 読み直し：取り込みで前の仕訳を新しい答えで書き換える
+    // 試し読み：保存しない（result.json を置かない＝取り込まれない）。答えをそのまま返す
+    if (job.dry) { msg(''); return { ok: !!d, status: doc.status, message: err, doc, raw: d, ms: Date.now() - t0, model: r.model || '', usage: r.usage || null, ver: job.ver || 'cur' }; }
     await ctx.call('PUT', `/sites/${ctx.site}/drive/root:${encodeURI(`${RES}/${job.apCode}.result.json`)}:/content`, new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' }), 'application/json');
     msg('');
     return { ok: !!d, status: doc.status, message: err };
@@ -475,5 +500,48 @@
     if (its.length > 1) text = /計\s*[\d,]+\s*円/.test(text) ? text.replace(/計\s*[\d,]+\s*円/, `計 ${yen(tot)}円`) : `${text}${text ? '、' : ''}計 ${yen(tot)}円`;
     return { on: !!a.on && !!text, items: its, total: tot, text: a.on ? text : '' };
   }
-  window.APAI = { readInvoice, teach, journal, tokki, fixItems, taxRow, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
+  // ---- 🧪 試し読み（2026-11-26）：指示を変えるときは、次の版（ai.invoice.next）を本物の請求書で読んで、今の版の答えと並べて比べてから切り替える ----
+  //   保存しない（result.json を置かない・ファイルを回さない）。AI の費用は2回分かかる。使えるのは画面を ?trial=1 で開いたときだけ
+  const escT = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const verLabel = c => c ? String(c.version || c._label || (c._note || '').slice(0, 30) || '') : '';
+  async function trial(ctx, job) {
+    const s = await setup(ctx);
+    if (!s.cfgs.next) throw new Error('次の版（AP_Setting の ai.invoice.next）がまだありません。Set-AiInvoiceVersion.ps1 -Action Next で置いてください');
+    const one = async ver => { const t0 = Date.now(); try { return await readInvoice(ctx, Object.assign({}, job, { dry: true, ver })); } catch (e) { return { ok: false, status: '読取失敗', message: e.message, ms: Date.now() - t0, ver }; } };
+    const [cur, next] = await Promise.all([one('cur'), one('next')]);
+    return { cur, next, labels: { cur: verLabel(s.cfgs.cur), next: verLabel(s.cfgs.next) } };
+  }
+  function trialHtml(t) {
+    const H = x => (x && x.doc && x.doc.header) || {}, L = x => (x && x.doc && x.doc.lines) || [], C = x => (x && x.doc && x.doc.comments) || [], I = x => (x && x.doc && x.doc.items) || [];
+    const F = [['支払先', h => h.PayeeName], ['金額（税込）', h => h.AmountInclTax != null ? yen(h.AmountInclTax) + ' 円' : ''], ['税抜', h => h.AmountExclTax != null ? yen(h.AmountExclTax) + ' 円' : ''],
+      ['請求No', h => h.InvoiceNo], ['登録番号', h => h.RegistrationNo], ['支払方法', h => h.PayMethod], ['支払回', h => h.PayDateType], ['払う月', h => h.TargetMonth], ['引落日', h => String(h.DebitDate || '').slice(0, 10)],
+      ['振込先', h => [h.BankName, h.BankCode, h.BranchName, h.BranchCode, h.AcctType, h.AcctNo, h.AcctHolder].filter(Boolean).join(' ')], ['仕入先コード（候補）', h => h.PayeeCode]];
+    const lineTxt = l => `${l.AccountName || '—'}・${l.DeptCode || ''}・${l.TaxRate || ''}・${yen(l.AmountInclTax)}円`;
+    const col = (x, o, nm) => {
+      const h = H(x), ho = H(o), ls = L(x), lo = L(o).map(lineTxt), its = I(x), isum = its.reduce((a, b) => a + (+b.Amount || 0), 0);
+      const df = (a, b) => a !== b ? ' style="background:var(--warn-l,#fff3dc)"' : '';
+      return `<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="font-size:15px">${nm}</b><span style="font-size:12px;color:var(--sub)">${escT(x.label || '')}</span></div>
+        <div style="font-size:12.5px;color:var(--sub)">${x.ok ? '✔ 読めた' : '✖ 読めなかった'}・${Math.round((x.ms || 0) / 1000)}秒${x.model ? '・' + escT(x.model) : ''}${x.usage ? `・入力 ${yen(x.usage.input_tokens || 0)}／出力 ${yen(x.usage.output_tokens || 0)} トークン` : ''}</div>
+        ${x.message ? `<div style="font-size:12.5px;color:var(--up,#c0392b);white-space:pre-wrap">${escT(x.message)}</div>` : ''}
+        <table style="font-size:12.5px;border-collapse:collapse;width:100%">${F.map(([k, g]) => { const v = g(h) || '', w = g(ho) || ''; return `<tr><th style="text-align:left;white-space:nowrap;width:120px;color:var(--sub);font-weight:400;vertical-align:top;padding:2px 6px 2px 0">${k}</th><td${df(String(v), String(w))}>${escT(v) || '—'}</td></tr>`; }).join('')}</table>
+        <div><b style="font-size:13px">仕訳（${ls.length}行）</b>${ls.map(l => `<div style="font-size:12.5px;border-top:1px solid var(--line);padding:3px 0"${lo.includes(lineTxt(l)) ? '' : ' class="tdif"'}><span${lo.includes(lineTxt(l)) ? '' : ' style="background:var(--warn-l,#fff3dc)"'}>${escT(lineTxt(l))}</span>${l.Reason ? `<div style="color:var(--sub)">理由：${escT(l.Reason)}</div>` : ''}${l.ApprovalNote ? `<div style="color:var(--sub)">決裁メモ：${escT(l.ApprovalNote)}</div>` : ''}</div>`).join('') || '<div style="font-size:12.5px;color:var(--sub)">なし</div>'}</div>
+        <div style="font-size:12.5px"><b style="font-size:13px">明細</b>　${its.length}行・合計 ${yen(isum)} 円${x.doc && x.doc.items_amount ? '（' + escT(x.doc.items_amount) + '）' : ''}</div>
+        <div><b style="font-size:13px">コメント（${C(x).length}件）</b>${C(x).map(c => `<div style="font-size:12.5px;border-top:1px solid var(--line);padding:3px 0">・${escT(c)}</div>`).join('') || '<div style="font-size:12.5px;color:var(--sub)">なし</div>'}</div></div>`;
+    };
+    t.cur.label = t.labels.cur; t.next.label = t.labels.next;
+    return `<div style="display:flex;gap:16px;flex-wrap:wrap">${col(t.cur, t.next, '今の版')}${col(t.next, t.cur, '次の版')}</div>`;
+  }
+  async function showTrial(ctx, job) {
+    let dl = document.getElementById('apTrial');
+    if (!dl) { dl = document.createElement('div'); dl.id = 'apTrial'; document.body.appendChild(dl); }
+    dl.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(20,24,40,.45);display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow:auto';
+    const box = h => `<div style="background:var(--card,#fff);color:var(--ink,#1d2433);border-radius:10px;max-width:1400px;width:100%;padding:14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.25)"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><b style="font-size:16px">🧪 試し読み（保存しません）</b><span style="font-size:12px;color:var(--sub)">${escT(job.pdfName || '')}</span><span style="flex:1"></span><button type="button" id="apTrialX">閉じる ✕</button></div>${h}</div>`;
+    const wire = () => { const x = document.getElementById('apTrialX'); if (x) x.onclick = () => { dl.remove(); }; dl.onclick = e => { if (e.target === dl) dl.remove(); }; };
+    dl.innerHTML = box('<div style="padding:30px;text-align:center;color:var(--sub)">今の版と次の版で読んでいます（30秒〜1分。AI の費用は2回分かかります）…</div>'); wire();
+    try { const t = await trial(ctx, job); if (document.body.contains(dl)) { dl.innerHTML = box(trialHtml(t) + '<div style="font-size:12px;color:var(--sub);margin-top:10px">色が付いている所が、今の版と違う所です。どちらの答えも保存していません。</div>'); wire(); } }
+    catch (e) { if (document.body.contains(dl)) { dl.innerHTML = box(`<div style="color:var(--up,#c0392b);padding:20px">${escT(e.message)}</div>`); wire(); } }
+  }
+  const trialOn = (() => { try { if (/[?&]trial=1\b/.test(location.search)) localStorage.setItem('ap.trial', '1'); if (/[?&]trial=0\b/.test(location.search)) localStorage.removeItem('ap.trial'); return localStorage.getItem('ap.trial') === '1'; } catch (e) { return /[?&]trial=1\b/.test(location.search); } })();
+  window.APAI = { readInvoice, trial, showTrial, trialOn, errText, teach, journal, tokki, fixItems, taxRow, remember, loadMemory, _record: record, _mastersText: mastersText, _historyOf: historyOf };
 })();
