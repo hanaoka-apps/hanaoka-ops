@@ -171,6 +171,7 @@ table.cost-tbl{width:100%; border-collapse:collapse; font-size:12px; min-width:8
 .cost-tbl tbody td.margin.warn{color:var(--amber)}
 .cost-tbl tbody td.margin.neg{color:var(--red)}
 .cost-tbl tbody td.margin.muted{color:var(--gray)}
+.cost-tbl .muted{color:var(--gray)}
 .cost-tbl tbody td.status{font-size:11px; color:var(--gray); white-space:nowrap}
 .cost-tbl tbody td.status.dirty{color:var(--amber); font-weight:700}
 .cost-tbl tbody td.status.saved{color:var(--green); font-weight:700}
@@ -267,6 +268,7 @@ footer b{color:var(--goldDark)}
 <div class="toolbar">
   <button class="btn primary" id="saveBtn" disabled>💾 変更を保存（<span id="dirtyCount">0</span>件）</button>
   <button class="btn ghost" id="reloadBtn">🔄 SharePointから再読込</button>
+  <button class="btn" id="taikeiFillBtn" title="標準原価タブの「最安販売金額」に、体系表の最安（在庫価格、なければA'）をまとめて入力します（未保存の状態。確認してから保存）">📑 体系表の最安をまとめて入力</button>
   <button class="btn" id="initFromAvgBtn" title="期間平均単価×指定%で初期化">期間平均×<input type="number" id="initRatio" value="70" min="10" max="100" step="5" style="width:60px; margin:0 4px"/>%で初期化</button>
   <select id="targetFY" title="月別原価で対象FYを切替（4月開始）">
     <option value="2025">2025年度</option>
@@ -292,6 +294,7 @@ footer b{color:var(--goldDark)}
           <th class="r">期間平均単価(円)</th>
           <th>標準原価(円/台)</th>
           <th>最安販売金額(円/台)</th>
+          <th class="r" title="販売価格体系表の最安：在庫価格（社名ごとの在庫価格のうち最安）。なければA'ランクの価格">体系表の最安<br><span style="font-weight:400; font-size:10px">在庫価格→なければA'</span></th>
           <th class="r">付加価値率</th>
           <th>備考（改訂理由など）</th>
           <th>状態</th>
@@ -462,6 +465,7 @@ async function onLoginSuccess(){
   await loadAvgPrices();
   await loadAllItems();
   render();
+  loadTaikei().then(() => { if (currentMode === "standard") render(); }); // 体系表は読み込めたら標準原価タブに出す
 }
 
 function showApp(){
@@ -642,7 +646,7 @@ function renderStandard(){
   for (const cat of CAT_ORDER) {
     const items = ITEM_MASTER.filter(m => m.cat === cat);
     if (!items.length) continue;
-    html += `<tr class="cat-row"><td colspan="9" style="color:${CAT_COLOR[cat]}">▼ ${cat}（${items.length}機種）</td></tr>`;
+    html += `<tr class="cat-row"><td colspan="10" style="color:${CAT_COLOR[cat]}">▼ ${cat}（${items.length}機種）</td></tr>`;
     for (const m of items) {
       const it = getStandardItem(m.code);
       const itMin = getMinPriceItem(m.code);
@@ -670,6 +674,7 @@ function renderStandard(){
         <td class="r">${avg == null ? "—" : Math.round(avg).toLocaleString()}</td>
         <td class="input"><input type="number" min="0" step="100" data-code="${m.code}" data-ym="0" class="cost-input" value="${showCost}" placeholder="円/台"></td>
         <td class="input"><input type="number" min="0" step="100" data-code="${m.code}" class="minprice-input" value="${showMin}" placeholder="円/台" title="赤字承認の閾値"></td>
+        <td class="r">${taikeiCell(m.code, showMin)}</td>
         <td class="margin ${mCls}">${margin == null ? "—" : margin.toFixed(1) + "%"}</td>
         <td class="note"><input type="text" data-code="${m.code}" class="cost-note" value="${(showNote+'').replace(/"/g,'&quot;')}" placeholder="改訂理由など"></td>
         <td class="status ${sCls}">${status}</td>
@@ -687,6 +692,124 @@ function renderStandard(){
   tbody.querySelectorAll(".minprice-input").forEach(inp => {
     inp.addEventListener("input", () => onMinPriceInputChanged(inp));
   });
+  tbody.querySelectorAll(".taikei-use").forEach(btn => {
+    btn.addEventListener("click", () => taikeiUse(btn.dataset.code));
+  });
+}
+
+// ============================================================
+// 販売価格体系表の最安（在庫価格 → なければ A' ランクの価格）
+// 体系表のルールは SharePoint のリスト（PR_定価・PR_得意先区分・PR_例外）。価格・送料の早見と同じ計算（price_core.js）で出す。
+// 読むだけ。価格や掛率はこのファイルには書かない。
+// ============================================================
+let TAIKEI = null;       // { prices, classes, exceptions, fares, costs, assembly }
+let TAIKEI_ERR = "";
+const TAIKEI_DATE = new Date().toISOString().slice(0, 10);
+const TAIKEI_CACHE = new Map();
+// 品目コード（SMILE）と体系表の型式の書き方が違うもの（「×10」「ハイフン」の違いだけのもの）。
+// 体系表に対応する型式が見つからないものは入れない（UDL15/SW・UDL25/SW・UDA50/SW・UDA35W/SW・UDA80/SW・HDLC/R・EEPトレ・BCC-ANA）
+const TAIKEI_ALIAS = {
+  'UXALSC':'UXA-LSC', 'UDL15':'UDL150', 'UDL25':'UDL250', 'UDA50':'UDA500', 'UDA80':'UDA800', 'UDA35W':'UDA350W',
+  'UDLV15':'UDLV150', 'UDLV25':'UDLV250', 'UDLV50':'UDLV500', 'UDLV15/SW':'UDLV150SW', 'UDLV50/SW':'UDLV500SW',
+};
+const TAIKEI_LISTS = { prices:'PR_定価', classes:'PR_得意先区分', exceptions:'PR_例外' };
+async function loadTaikei(){
+  try {
+    const d = await graphFetch(`/sites/${SP.siteId}/lists?$select=id,displayName&$top=200`);
+    const lists = (d.value || []);
+    const out = { prices:[], classes:[], exceptions:[], fares:[], costs:[], assembly:[] };
+    for (const k of Object.keys(TAIKEI_LISTS)) {
+      const hit = lists.find(l => l.displayName === TAIKEI_LISTS[k]);
+      if (!hit) throw new Error(`SharePointのリスト「${TAIKEI_LISTS[k]}」が見つかりません`);
+      let url = `/sites/${SP.siteId}/lists/${hit.id}/items?$expand=fields($select=Data)&$top=999`;
+      while (url) {
+        const r = await graphFetch(url);
+        (r.value || []).forEach(v => { try { out[k].push(JSON.parse((v.fields || {}).Data || '{}')); } catch(e){} });
+        url = r['@odata.nextLink'] ? r['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0', '') : null;
+      }
+    }
+    TAIKEI = out; TAIKEI_ERR = ""; TAIKEI_CACHE.clear();
+  } catch(e) {
+    console.warn("体系表の読み込み失敗:", e);
+    TAIKEI = null; TAIKEI_ERR = e.message || String(e);
+  }
+}
+function taikeiStockShas(){
+  const seen = new Map();
+  (TAIKEI.classes || []).forEach(c => {
+    if (c.対象の種類 !== '社名' || !c.対象コード || PriceCore.num(c.在庫口の掛率) === null) return;
+    if (String(c.適用開始日 || '').slice(0, 10) > TAIKEI_DATE || (c.適用終了日 && String(c.適用終了日).slice(0, 10) < TAIKEI_DATE)) return;
+    if (!seen.has(c.対象コード)) seen.set(c.対象コード, c.対象名 || c.対象コード);
+  });
+  return [...seen].map(([shaCode, name]) => ({ shaCode, name }));
+}
+function taikeiStockSet(){
+  const m = new Map();
+  (TAIKEI.exceptions || []).forEach(d => {
+    if (d.対象の種類 !== '社名' || !d.対象コード || d.在庫口のみ !== true || !d.型式) return;
+    if (!m.has(d.対象コード)) m.set(d.対象コード, new Set());
+    m.get(d.対象コード).add(PriceCore.asmKey(d.型式));
+  });
+  return m;
+}
+// 戻り値：{ price, src:'在庫'|"A'", who, code(体系表の型式) } ／ 体系表に型式がない・価格がないときは null
+function taikeiMin(code){
+  if (!TAIKEI) return null;
+  if (TAIKEI_CACHE.has(code)) return TAIKEI_CACHE.get(code);
+  const tc = TAIKEI_ALIAS[code] || code;
+  let res = null;
+  if (PriceCore.listPriceRow(TAIKEI.prices, tc, TAIKEI_DATE)) {
+    const shas = taikeiStockShas(), stockSet = taikeiStockSet();
+    let best = null;
+    shas.forEach(x => {
+      const set = stockSet.get(x.shaCode);
+      if (set && !set.has(PriceCore.asmKey(tc))) return; // その社名の在庫品でない型式には在庫価格を出さない
+      const r = PriceCore.unitPrice(TAIKEI, { code:tc, qty:1, date:TAIKEI_DATE, customer:{ code:'', shaCode:x.shaCode, shaName:x.name, name:x.name, kakeName:'' }, forceStock:true });
+      if (r.price != null && r.price > 0 && (best === null || r.price < best.price)) best = { price:r.price, who:x.name };
+    });
+    if (best) res = { price:best.price, src:'在庫', who:best.who, code:tc };
+    else {
+      const r = PriceCore.unitPrice(TAIKEI, { code:tc, qty:1, date:TAIKEI_DATE, customer:{ code:'', shaCode:'', shaName:'', name:'', kakeName:"5掛(A')" } });
+      if (r.price != null && r.price > 0) res = { price:r.price, src:"A'", who:"A'ランク", code:tc };
+    }
+  }
+  TAIKEI_CACHE.set(code, res);
+  return res;
+}
+function taikeiCell(code, curVal){
+  if (TAIKEI_ERR) return `<span class="muted" title="${escapeHtml(TAIKEI_ERR)}">読込失敗</span>`;
+  if (!TAIKEI) return '<span class="muted">読込中…</span>';
+  const t = taikeiMin(code);
+  if (!t) return '<span class="muted" title="販売価格体系表（定価）に、この型式が見つからない、または価格がありません">体系表に型式なし</span>';
+  const alias = t.code !== code ? `<div style="font-size:10px; color:var(--gray)">体系表の型式：${escapeHtml(t.code)}</div>` : '';
+  const same = String(curVal) === String(t.price);
+  const btn = same ? '<span class="muted" style="font-size:10px">入力と同じ</span>' : `<button type="button" class="btn ghost taikei-use" data-code="${escapeHtml(code)}" style="padding:2px 8px; font-size:11px" title="最安販売金額に入力（未保存）">入れる</button>`;
+  return `<div><b>${t.price.toLocaleString()}</b> <span style="font-size:10px; color:var(--gray)">${t.src === '在庫' ? '在庫価格' : "A'（在庫価格なし）"}</span></div>
+    <div style="font-size:10px; color:var(--gray)">${t.src === '在庫' ? escapeHtml(t.who) : ''}</div>${alias}<div>${btn}</div>`;
+}
+function taikeiSet(code, price){
+  const key = "MP|" + code, orig = getMinPriceItem(code);
+  const origVal = orig ? (orig.fields.Amount || null) : null;
+  if (price === origVal) dirtyMap.delete(key);
+  else dirtyMap.set(key, { type:"minprice", code, value:price, note:"", original:orig });
+}
+function taikeiUse(code){
+  const t = taikeiMin(code); if (!t) return;
+  taikeiSet(code, t.price);
+  render();
+}
+function taikeiFillAll(){
+  if (!TAIKEI) { showToast(TAIKEI_ERR ? "体系表を読み込めませんでした: " + TAIKEI_ERR : "体系表を読み込み中です", "error"); return; }
+  const curOf = m => { const it = getMinPriceItem(m.code); return it ? (it.fields.Amount || null) : null; };
+  const targets = ITEM_MASTER.filter(m => { const t = taikeiMin(m.code); return t && t.price !== curOf(m); });
+  if (!targets.length) { showToast("体系表と同じ（または体系表に型式なし）です", "success"); return; }
+  const over = targets.filter(m => curOf(m) != null).length;
+  if (!confirm(`${targets.length}機種の最安販売金額を、体系表の値で入力します（保存はまだしません）。\nうち${over}機種は、今登録されている金額を上書きします。続けますか？`)) return;
+  for (const m of targets) taikeiSet(m.code, taikeiMin(m.code).price);
+  currentMode = "standard";
+  document.querySelectorAll('.mode-tab').forEach(b => b.classList.toggle('on', b.dataset.mode === "standard"));
+  render();
+  showToast(`${targets.length}機種を入力しました。内容を確認して「変更を保存」を押してください`, "success");
 }
 
 function onMinPriceInputChanged(inp){
@@ -992,12 +1115,14 @@ function bindUI(){
     };
   });
   document.getElementById('saveBtn').onclick = saveAll;
+  document.getElementById('taikeiFillBtn').onclick = taikeiFillAll;
   document.getElementById('reloadBtn').onclick = async () => {
     if (dirtyMap.size > 0 && !confirm("未保存の変更があります。再読込すると失われます。続行しますか？")) return;
     dirtyMap.clear();
     await loadAvgPrices();
     await loadAllItems();
     render();
+    loadTaikei().then(() => { if (currentMode === "standard") render(); });
     showToast("再読込しました", "success");
   };
   document.getElementById('targetFY').onchange = () => { if (currentMode === "monthly" || currentMode === "target") render(); };
