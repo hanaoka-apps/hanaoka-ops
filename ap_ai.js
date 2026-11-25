@@ -431,9 +431,35 @@
           return { AccountCode: n.AccountCode, AccountName: k ? k['科目名'] : '', DeptCode: n.DeptCode, SubCode: n.SubCode || '', TaxRate: rate, TaxMethod: '税込', AmountExclTax: ex ? v : v - tax, Tax: tax, Description: n.Description || '', ApprovalNote: n.ApprovalNote || '', LineConfidence: 70, Reason: n.reason || '' }; });
         let sum = nl.reduce((t, l) => t + l.AmountExclTax + l.Tax, 0); const df = tot - sum, big = nl.filter(l => RT[l.TaxRate]).sort((p, q) => (q.AmountExclTax + q.Tax) - (p.AmountExclTax + p.Tax))[0];
         if (df && big && Math.abs(df) <= nl.length + 1) { big.Tax += df; sum = tot; }
-        if (nl.length && sum === tot && nl.every(l => l.AccountCode && l.AccountName)) { d.lines = nl; d.comments = (d.comments || []).concat([`仕訳は、読んだ明細から拠点・科目・税率ごとに作り直しました（${nl.length}行）。${a.summary || a.reply || ''}`]); }
+        if (nl.length && sum === tot && nl.every(l => l.AccountCode && l.AccountName)) { d.lines = nl; d._remade = true; d.comments = (d.comments || []).concat([`仕訳は、読んだ明細から拠点・科目・税率ごとに作り直しました（${nl.length}行）。${a.summary || a.reply || ''}`]); }
         else d.comments = (d.comments || []).concat([`仕訳を明細から作り直そうとしましたが、合計が合いませんでした。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]);
       } catch (e) { d.comments = (d.comments || []).concat([`仕訳を明細から作り直せませんでした（${e.message}）。「💬 AI と仕訳を決める」で「拠点ごとに分けて」と頼んでください`]); }
+    }
+    // 仕訳の確かめ（2026-11-26・指示の版に journalCheck があるときだけ）：会計の実績がある支払先の経費は、読み取りで作った仕訳を
+    //   「仕訳を決める相談」（journal）と同じやり方で会計の実績と比べ、違う行は最初から直しておく（依頼者：相談すると直るなら、初めから直してほしい）。
+    //   人には聞かない。決めきれないときは直さない。直した行は【参考・科目】で知らせ、理由（Reason）も相談の答えにする
+    if (cfg.journalCheck && d && !d._remade && /経費/.test(job.category || '') && Array.isArray(d.lines) && d.lines.length) {
+      const R0 = s.raw || {}, payee = (d.header && d.header.PayeeName) || job.vendorName || '';
+      if (payee && historyOf(R0.jr || [], payee).length) {
+        try {
+          msg(`仕訳を会計の実績と比べています：${job.pdfName}`);
+          const RT = { '課税10%': 0.1, '軽減8%': 0.08 };
+          const a = await journal(ctx, { payee, loc, invoiceId: job.invoiceId || job.apCode || '', history: [],
+            issue: '読み取りで作った仕訳です。この支払先の会計の実績（いちばん新しい付け方）と比べて、科目・部門・税・内訳が違う行があれば直してください（decided=true・lines に直す行）。実績どおりなら decided=true で lines は空。人には聞かない。行の分け方・金額は変えない（relines は空）',
+            lines: d.lines.map(l => ({ acode: l.AccountCode, aname: l.AccountName, dept: l.DeptCode, rate: l.TaxRate, sub: l.SubCode, amount: Math.round(+l.AmountExclTax || 0) * (1 + (RT[l.TaxRate] || 0)), note: l.Description, memo: l.ApprovalNote })),
+            items: Array.isArray(d.items) ? d.items : [], total: Math.round(+d.total || 0), itemsAmount: d.itemsAmount || '' });
+          const done = [];
+          if (a && a.decided) (a.lines || []).forEach(n => { const l = d.lines[n.index]; if (!l) return; const was = `${l.AccountName}・${l.DeptCode}・${l.TaxRate}${l.SubCode ? '・' + l.SubCode : ''}`;
+            if (n.AccountCode) { const k = (R0.km || []).find(x => String(x['科目コード']) === String(n.AccountCode)); if (k) { l.AccountCode = n.AccountCode; l.AccountName = k['科目名']; } }
+            if (n.DeptCode) l.DeptCode = n.DeptCode;
+            if (n.TaxRate && n.TaxRate !== l.TaxRate) { l.TaxRate = n.TaxRate; l.Tax = null; }   // 税率が変われば消費税は計算し直す
+            if (n.SubCode != null) l.SubCode = n.SubCode;
+            if (n.ApprovalNote) l.ApprovalNote = n.ApprovalNote;
+            if (n.reason) l.Reason = String(n.reason);
+            const now = `${l.AccountName}・${l.DeptCode}・${l.TaxRate}${l.SubCode ? '・' + l.SubCode : ''}`; if (now !== was) done.push(`${n.index + 1}行目 ${was} → ${now}`); });
+          if (done.length) d.comments = (d.comments || []).concat([`【参考・科目】会計の実績と比べて仕訳を直しました：${done.join('、')}`]);
+        } catch (e) { console.warn('仕訳の確かめができませんでした', e); }
+      }
     }
     if (d && d.scanIssue) d.comments = (d.comments || []).concat([`⚠ 撮り直し：${d.scanIssue}`]);
     const rec = d ? record(d.header, d.lines, d.total, d.comments, loc, { items: Array.isArray(d.items) ? d.items : [], amount: d.itemsAmount || '', excl: Math.round(+d.exclTotal || 0) }) : record({}, [], 0, [`AI の読み取りに失敗しました：${err}。請求書を見て入れてください`], loc);
