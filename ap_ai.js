@@ -477,7 +477,8 @@
       pdf_files: fs.map(f => f.name), moved: !!job.moved, new: false, location: loc, received_at: '',
       header: rec.header, lines: rec.lines, comments: rec.comments, validation: rec.validation,
       items: d && Array.isArray(d.items) ? d.items.map(normItem) : [], items_amount: d && /^税(抜|込)$/.test(d.itemsAmount || '') ? d.itemsAmount : '',   // 請求書に印字された明細（受入明細・仕訳と比べる）
-      extra: d ? (d.extra || []).map(x => record(x.header, x.lines, x.total, x.comments, loc)) : [],
+      // 2通目以降（extra）：次の版の答えの形は 支払先・請求No・金額 だけ（2026-11-26。答えの形が複雑すぎて読み取りが止まらないように）。今の版の形（header・lines）も読める
+      extra: d ? (d.extra || []).map(x => record(x.header || { PayeeName: x.PayeeName || '', InvoiceNo: x.InvoiceNo || '' }, x.lines || [], x.total, x.comments || [], loc)) : [],
       processed_at: new Date().toISOString(), ai: { model: r.model || '', usage: r.usage || null, via: 'claude-api' },
       replace_lines: !!job.replaceLines };   // 読み直し：取り込みで前の仕訳を新しい答えで書き換える
     // 試し読み：保存しない（result.json を置かない＝取り込まれない）。答えをそのまま返す
