@@ -110,12 +110,13 @@
         if (METHODS.includes(H.PayMethod)) setIfEmpty('支払手段', H.PayMethod);
         if (CONF.includes(H.AIConfidence)) set('AI確信度', H.AIConfidence);
         if (H.DebitDate) set('引落予定日', H.DebitDate);
-        // 本社の経費で口座振替 → 引落日で支払回（expense.rules の debitEarlyRound：10〜19日→10日、20日〜月末→20日、翌月1〜9日→前の月の月末）。
+        // 本社の経費で口座振替 → 引落日で支払回（expense.rules の debitEarlyRound：10〜19日→10日、20日〜最終日の前日→20日、月の最終日→月末（last）、翌月1〜9日→前の月の月末）。
         //   その回の総務の決裁をもう回していたら、次の回で事後報告。仕訳の部門が工場・国内営業・ソリューションのものは、10〜31日の引落もその月の月末（月末の支払決済で説明）
         {
           const R = (await expenseRules(call, site)).debitEarlyRound, cat0 = f[fi('支払区分')] || r.category || '', loc0 = f.SiteLocation || (cat0.startsWith('工場') ? '工場' : '本社');
           const method = METHODS.includes(H.PayMethod) ? H.PayMethod : f[fi('支払手段')], dd = String(H.DebitDate || '').match(/(\d{4})-(\d{2})-(\d{2})/);
-          let hit = R && dd ? (R.byDay || []).find(b => +dd[3] >= b.from && +dd[3] <= b.to) : null;
+          const lastDay = dd ? new Date(+dd[1], +dd[2], 0).getDate() : 0;   // その月の最終日（2026-11-25：最終日の引落は月末払い）
+          let hit = R && dd ? ((+dd[3] === lastDay && (R.byDay || []).find(b => b.last)) || (R.byDay || []).find(b => !b.last && +dd[3] >= b.from && +dd[3] <= b.to)) : null;
           if (hit && EXPENSE.includes(cat0) && loc0 === R.loc && (R.methods || []).includes(method)) {
             const main = (r.lines || []).slice().sort((a, b) => (+b.AmountInclTax || 0) - (+a.AmountInclTax || 0))[0], dc = String((main && main.DeptCode) || '');
             if (!hit.prevMonth && ((R.exceptDeptPrefix || []).some(p => dc.startsWith(p)) || (R.exceptDepts || []).includes(dc))) hit = { round: '月末', dept: true };

@@ -10,7 +10,7 @@
 <title>経費 | 花岡車輌</title>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 <script src="hanaoka_auth.js"></script>
-<script src="ap_intake.js?v=20261120"></script>
+<script src="ap_intake.js?v=20261125"></script>
 <script src="ap_ai.js?v=20261120b"></script>
 <script src="ap_dept.js?v=20261028"></script>
 <script src="nav.js?v=20261120" defer></script>
@@ -962,6 +962,10 @@ function lineWhy(r,l,k,ed){if(!l.acode)return '';const w=aiWhy(r,l),v=lineVerdic
   const low=l.conf&&l.conf<70&&v.k!=='same'?'<span class="lw ng">AI の自信が低い</span>':'';
   return `<div class="memo why"><span>なぜ</span><div style="flex:1;min-width:0">${w?`🤖 ${esc(w)}`:v.k==='none'?'AI はマスタと品名から決めました':'<span style="color:var(--sub)">—</span>'} ${tag}${low}<button class="lk" data-hist="${k}" title="過去の仕訳を見る">🔍</button></div></div>`;}
 // 気づき：要修正（直さないと確認完了できない）／要確認（見て判断する。確認完了で「確かめた」と記録）／参考
+// AI の気づきを確かめた（2026-11-25）：確認の記録（CheckLog）に {act:'気づきを確かめた', key} を残すと、その気づきは出さない。key は気づきの文から作る（読み直して文が変われば、また出る）
+const AIISS='気づきを確かめた';
+function aiIssKey(s){let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))|0;return 'i'+(h>>>0).toString(36);}
+const aiIssDone=(r,key)=>(r.log||[]).some(e=>e.act===AIISS&&e.key===key);
 function issuesOf(r){
   if(r.reading)return [{sev:'info',t:'AI が読み取り中です',d:'読み取りが終わると、ここに気づきが出ます'}];
   const {h,ls,lsum}=viewOf(r),out=[],fix=(t,d)=>out.push({sev:'fix',t,d}),chk=(t,d)=>out.push({sev:'check',t,d}),inf=(t,d)=>out.push({sev:'info',t,d});
@@ -983,7 +987,7 @@ function issuesOf(r){
     else if(full&&m&&!sameBank(b,m))chk('振込先が振込先マスタと違います',`マスタ：${bankText(m)}／請求書：${bankText(b)}。口座は自動で変えません。電話などで確かめてください`);
     else if(full&&!m)chk('初めての振込先です','銀行・支店のコードと口座を確かめてください（確定すると振込先マスタに登録します）');}
   alertsOf(r).forEach(a=>{if(a.k==='口座'||a.k==='初めての振込先')return;
-    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''],x={sev:'check',t:td[0],d:td[1],ai:true};if(issAt(x,h)!=='lines')out.push(x);}   // 仕訳のことは仕訳のカードの「AI のメモ」へ
+    if(a.k==='AI'){const s=a.t,i=s.indexOf('。'),td=i>0&&i<s.length-1?[s.slice(0,i+1),s.slice(i+1)]:[s,''],key=aiIssKey(s),x={sev:'check',t:td[0],d:td[1],ai:true,aiKey:key};if(issAt(x,h)!=='lines'&&!aiIssDone(r,key))out.push(x);}   // 仕訳のことは仕訳のカードの「AI のメモ」へ
     else if(a.k==='読み取り失敗')inf('AI が読み取れませんでした','請求書を見て、支払先・金額・仕訳を入れてください');
     else if(a.k==='初めて'){}   // 上の「初めての支払先」の印と特記事項に出ている
     else if(a.k==='前月より増')inf('前月より増えています',a.t);
@@ -1017,7 +1021,7 @@ function teachHtml(){return `<div class="teach"><div class="teach-h"><b>${TEACH.
   <div style="font-size:11.5px;color:var(--sub);margin-top:4px">${TEACH.jr?'科目は答えなくて大丈夫です。何の支払か・どこで使うかを答えると、AI が会計の実績で科目・部門・税を決め、やり取りの要約を確認の記録に残します':'答えると、AI が決裁メモを直して保存し、ナンバーなどの手がかりを「覚えたこと」に残します（次の請求書から使います）'}</div></div>`;}
 function startTeach(r,x){
   if(x.jr){Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,jr:true,msgs:[]});sendJournal(r,'');return;}
-  Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,jr:false,
+  Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,jr:false,aiKey:x.ai&&x.aiKey||'',
   msgs:[{role:'ai',text:`${x.t}${x.d?'（'+x.d+'）':''}\nわかることを教えてください。決裁メモを直して、次から覚えます。`}]});drawTeach();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 // 仕訳を決める：AI が会計の実績で決める。決められなければ聞き返す。決まったら仕訳を直して保存し、相談の要約を確認の記録に残す
 const rateTax=(incl,rate)=>rate==='課税10%'?Math.round(incl*10/110):rate==='軽減8%'?Math.round(incl*8/108):0;
@@ -1067,11 +1071,15 @@ async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!te
     const mem=(a.memory||[]).filter(m=>m.key&&m.fact);
     if(mem.length)await APAI.remember({call,site:AP_SITE},mem.map(m=>({key:m.key,fact:m.fact,payee:r.payee||''})),me());
     if(done.length||mem.length)await patchInv(r,{},{act:'AI に教えた',memo:[text,...mem.map(m=>`${m.key}＝${m.fact}`)].join(' ／ ').slice(0,200),step:r.step}).catch(()=>{});
-    TEACH.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 決裁メモを直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')});}
+    const ackd=TEACH.aiKey&&(done.length||mem.length)&&!aiIssDone(r,TEACH.aiKey);   /* 教えた気づきはその場で片付ける（2026-11-25） */
+    if(ackd)await patchInv(r,{},{act:AIISS,key:TEACH.aiKey,memo:('AI に教えた：'+TEACH.issue).slice(0,200),step:r.step}).catch(()=>{});
+    TEACH.msgs.push({role:'ai',text:(a.reply||'')+(done.length?`\n✔ 決裁メモを直して保存しました：${done.join('、')}`:'')+(mem.length?`\n✔ 覚えました：${mem.map(m=>`${m.key}＝${m.fact}`).join('、')}`:'')+(ackd?'\n✔ この気づきは片付けました':'')});}
   catch(e){TEACH.msgs.push({role:'ai',text:'うまく聞けませんでした：'+e.message});}
   TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 function wireTeach(r){const iss=issuesOf(r),shown=iss;
   document.querySelectorAll('[data-teach]').forEach(b=>b.onclick=()=>{const x=shown[+b.dataset.teach];if(x)startTeach(r,x);});
+  document.querySelectorAll('[data-ackai]').forEach(b=>b.onclick=()=>{if(isDirty(r)){snack('先に下書き保存してください',true);return;}
+    act(r,{},'確かめた印を付けました',{act:AIISS,key:b.dataset.ackai,memo:b.dataset.ackait||'',step:r.step});});
   document.querySelectorAll('[data-ackpat]').forEach(b=>b.onclick=()=>{const k=b.dataset.ackpat;if(isDirty(r)){snack('先に下書き保存してください',true);return;}
     act(r,{},'確かめたことを記録しました',{act:'新しい付け方を確かめた',key:k,memo:k.replace(/\|/g,'・'),step:r.step});});
   const la=$('lAi');if(la)la.onclick=()=>startTeach(r,{t:'仕訳を決めてください',d:'',jr:true});
@@ -1129,7 +1137,7 @@ function drawOne(){
     r.status==='先行支払済'?'<span class="bd">先行支払済</span>':'',r.hold?'<span class="bd warn">⏸ 保留中</span>':'',dirty?'<span class="bd warn">未保存の直しあり</span>':''].join('');
   // 気づき
   const LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']},gen=iss.filter(x=>(x.at||'gen')==='gen');
-  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading&&!x.nb?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
+  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading&&!x.nb?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ai&&x.aiKey&&ed&&!r.reading?`<button class="lk teach-b" data-ackai="${esc(x.aiKey)}" data-ackait="${esc((x.t+(x.d||'')).slice(0,200))}" title="確かめた（この気づきを片付ける。誰が押したか残ります）">✔ 確かめた</button>`:''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
   const wrapI=(card,at)=>{const l=iss.filter(x=>x.at===at);return card&&l.length?`<div class="ocx">${card}<div class="ocx-i">${l.map(issOne).join('')}</div></div>`:card;};
   const issCard=!gen.length&&!(r.reject&&!r.done)?'':`<details class="oc" id="oIss" ${gen.some(x=>x.sev==='fix')||(r.reject&&!r.done)?'open':''}><summary class="oh" style="cursor:pointer"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=gen.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></summary>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
