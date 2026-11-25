@@ -417,7 +417,9 @@ function alertsOf(r){
   if(n){const sp=(r.code&&SPM.find(s=>s.code===r.code))||SPM.find(s=>s.n&&(s.n===n||(n.length>=4&&(s.n.includes(n)||n.includes(s.n)))));
     if(sp)a.push({k:'仕入では？',t:`SMILE の仕入先「${sp.name}」（${sp.code}）に今月の仕入 ${yen(sp.incl)} 円があります。仕入の請求書なら「その他 → 仕入の請求書として移す」`,ack:true});
     const dup=ALL.filter(o=>o.id!==r.id&&jnorm(fv(L.inv,o.f,'支払先名'))===n&&((r.invNo&&fv(L.inv,o.f,'請求NO')===r.invNo)||(r.amount&&+fv(L.inv,o.f,'金額_税込')===r.amount&&fv(L.inv,o.f,'対象年月')===r.ym)));
-    if(dup.length)a.push({k:'二重？',t:`同じ支払先で${r.invNo&&dup.some(o=>fv(L.inv,o.f,'請求NO')===r.invNo)?'同じ請求No':'同じ月・同じ金額'}の請求書がほかに ${dup.length} 枚あります`,ack:true});}
+    const notDup=dup.length&&(r.log||[]).some(e=>e.act==='重複ではない'&&dup.every(o=>String(e.key||'').split(',').includes(String(o.id))));
+    if(dup.length&&!notDup)a.push({k:'二重？',t:`同じ支払先で${r.invNo&&dup.some(o=>fv(L.inv,o.f,'請求NO')===r.invNo)?'同じ請求No':'同じ月・同じ金額'}の請求書がほかに ${dup.length} 枚あります`,ack:true,
+      dups:dup.map(o=>({id:String(o.id),payee:fv(L.inv,o.f,'支払先名')||'',no:fv(L.inv,o.f,'請求NO')||'',amt:+fv(L.inv,o.f,'金額_税込')||0,ym:fv(L.inv,o.f,'対象年月')||'',loc:o.f[V.loc]||''}))});}
   const al=RULES.alerts||{},pm=prevAmount(r);
   if(r.amount&&pm==null&&r.amount>=(al.newMin||100000))a.push({k:'初めて',t:`前月にない支払先です（${yen(r.amount)} 円）`,ack:false});
   if(pm&&r.amount-pm>=(al.upMin||50000)&&r.amount>=pm*(1+(al.upRate||0.3)))a.push({k:'前月より増',t:`前月 ${yen(pm)} 円 → ${yen(r.amount)} 円`,ack:false});
@@ -968,7 +970,7 @@ function aiIssKey(s){let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))|0
 const aiIssDone=(r,key)=>(r.log||[]).some(e=>e.act===AIISS&&e.key===key);
 function issuesOf(r){
   if(r.reading)return [{sev:'info',t:'AI が読み取り中です',d:'読み取りが終わると、ここに気づきが出ます'}];
-  const {h,ls,lsum}=viewOf(r),out=[],fix=(t,d)=>out.push({sev:'fix',t,d}),chk=(t,d)=>out.push({sev:'check',t,d}),inf=(t,d)=>out.push({sev:'info',t,d});
+  const {h,ls,lsum}=viewOf(r),out=[],fix=(t,d)=>out.push({sev:'fix',t,d,app:true}),chk=(t,d)=>out.push({sev:'check',t,d,app:true}),inf=(t,d)=>out.push({sev:'info',t,d,app:true});
   if(!h.payee)fix('支払先名がありません','請求書を見て入れてください（支払内容の「編集」）');
   if(!(h.amount>0))fix('金額がありません','請求書の税込の合計を入れてください');
   if(!h.ym)fix('対象年月（払う月）がありません','2026/10 の形で入れてください');
@@ -991,7 +993,7 @@ function issuesOf(r){
     else if(a.k==='読み取り失敗')inf('AI が読み取れませんでした','請求書を見て、支払先・金額・仕訳を入れてください');
     else if(a.k==='初めて'){}   // 上の「初めての支払先」の印と特記事項に出ている
     else if(a.k==='前月より増')inf('前月より増えています',a.t);
-    else chk({'仕入では？':'仕入の請求書かもしれません','二重？':'二重請求かもしれません','拠点':'拠点と仕訳の部門が合いません'}[a.k]||a.k,a.t);});
+    else{const key=aiIssKey(a.k+'|'+a.t);if(!aiIssDone(r,key))out.push({sev:'check',t:{'仕入では？':'仕入の請求書かもしれません','二重？':'二重請求かもしれません','拠点':'拠点と仕訳の部門が合いません'}[a.k]||a.k,d:a.t,app:true,ak:a.k,dups:a.dups||null,ackKey:a.k==='二重？'?'':key});}});
   out.forEach(x=>x.at=issAt(x,h));
   const ord={fix:0,check:1,info:2};return out.sort((x,y)=>ord[x.sev]-ord[y.sev]);}
 // 気づきを出す場所：その中身のカードの横（狭いときは下）。AI のコメントは言葉で振り分ける。どこにも当たらないものは「その他の気づき」
@@ -1021,7 +1023,8 @@ function teachHtml(){return `<div class="teach"><div class="teach-h"><b>${TEACH.
   <div style="font-size:11.5px;color:var(--sub);margin-top:4px">${TEACH.jr?'科目は答えなくて大丈夫です。何の支払か・どこで使うかを答えると、AI が会計の実績で科目・部門・税を決め、やり取りの要約を確認の記録に残します':'答えると、AI が決裁メモを直して保存し、ナンバーなどの手がかりを「覚えたこと」に残します（次の請求書から使います）'}</div></div>`;}
 function startTeach(r,x){
   if(x.jr){Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,jr:true,msgs:[]});sendJournal(r,'');return;}
-  Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}`,busy:false,jr:false,aiKey:x.ai&&x.aiKey||'',
+  const sib=items.filter(o=>o.id!==r.id&&o.ym===r.ym&&jnorm(o.payee)&&jnorm(o.payee)===jnorm(r.payee)).map(o=>`・請求No ${o.invNo||'—'}／${yen(o.amount)} 円／${o.loc}・${o.round||''}払い／${o.done?'確定済み':'確認中'}`);
+  Object.assign(TEACH,{rid:r.id,issue:`${x.t}${x.d?'\n'+x.d:''}${sib.length?`\n（アプリが知っていること：同じ支払先の今月のほかの請求書\n${sib.join('\n')}）`:''}`,busy:false,jr:false,aiKey:x.ai&&x.aiKey||'',
   msgs:[{role:'ai',text:`${x.t}${x.d?'（'+x.d+'）':''}\nわかることを教えてください。決裁メモを直して、次から覚えます。`}]});drawTeach();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 // 仕訳を決める：AI が会計の実績で決める。決められなければ聞き返す。決まったら仕訳を直して保存し、相談の要約を確認の記録に残す
 const rateTax=(incl,rate)=>rate==='課税10%'?Math.round(incl*10/110):rate==='軽減8%'?Math.round(incl*8/108):0;
@@ -1078,6 +1081,9 @@ async function sendTeach(r){const i=$('tIn'),text=(i&&i.value||'').trim();if(!te
   TEACH.busy=false;afterAI();setTimeout(()=>{const i=$('tIn');if(i)i.focus();},50);}
 function wireTeach(r){const iss=issuesOf(r),shown=iss;
   document.querySelectorAll('[data-teach]').forEach(b=>b.onclick=()=>{const x=shown[+b.dataset.teach];if(x)startTeach(r,x);});
+  document.querySelectorAll('[data-dupcmp]').forEach(b=>b.onclick=()=>{const g=dupGroups().find(z=>z.l.some(x=>x.id===r.id));if(g)openDupCmp(g.key,1);else snack('並べる相手が今月の一覧に見つかりません（別の月の請求書かもしれません）',true);});
+  document.querySelectorAll('[data-notdup]').forEach(b=>b.onclick=()=>{if(isDirty(r)){snack('先に下書き保存してください',true);return;}
+    const key=[String(r.id),...b.dataset.notdup.split(',')].sort().join(',');act(r,{},'重複ではない、と記録しました',{act:'重複ではない',key,memo:'確認の画面で',step:r.step});});
   document.querySelectorAll('[data-ackai]').forEach(b=>b.onclick=()=>{if(isDirty(r)){snack('先に下書き保存してください',true);return;}
     act(r,{},'確かめた印を付けました',{act:AIISS,key:b.dataset.ackai,memo:b.dataset.ackait||'',step:r.step});});
   document.querySelectorAll('[data-ackpat]').forEach(b=>b.onclick=()=>{const k=b.dataset.ackpat;if(isDirty(r)){snack('先に下書き保存してください',true);return;}
@@ -1137,7 +1143,7 @@ function drawOne(){
     r.status==='先行支払済'?'<span class="bd">先行支払済</span>':'',r.hold?'<span class="bd warn">⏸ 保留中</span>':'',dirty?'<span class="bd warn">未保存の直しあり</span>':''].join('');
   // 気づき
   const LV={fix:['!','要修正'],check:['▲','要確認'],info:['i','参考']},gen=iss.filter(x=>(x.at||'gen')==='gen');
-  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}</div><div class="iss-b">${ed&&window.APAI&&x.sev!=='info'&&!r.reading&&!x.nb?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ai&&x.aiKey&&ed&&!r.reading?`<button class="lk teach-b" data-ackai="${esc(x.aiKey)}" data-ackait="${esc((x.t+(x.d||'')).slice(0,200))}" title="確かめた（この気づきを片付ける。誰が押したか残ります）">✔ 確かめた</button>`:''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
+  const issOne=x=>{const xi=iss.indexOf(x);return `<div class="iss ${x.sev}"><span class="ico">${LV[x.sev][0]}</span><span class="lv">${LV[x.sev][1]}</span><div style="flex:1"><b>${esc(x.t)}</b>${x.d?`<div class="d">${esc(x.d)}</div>`:''}${x.dups?x.dups.map(o=>`<div class="d" style="margin-top:3px">相手：${esc(o.payee||'—')}・請求No ${esc(o.no||'—')}・${yen(o.amt)} 円・${esc(o.ym)} ${esc(o.loc)}</div>`).join(''):''}</div><div class="iss-b">${x.dups&&ed?`<button class="lk teach-b" data-dupcmp="1" title="2枚を横に並べて、違う所に色を付けます（重複なら片方を対象外に）">⇔ 並べて見る</button><button class="lk teach-b" data-notdup="${esc(x.dups.map(o=>o.id).join(','))}" title="別の請求書だった（記録に残り、この気づきは出なくなります）">二重ではない</button>`:''}${x.ackKey&&ed&&!r.reading?`<button class="lk teach-b" data-ackai="${esc(x.ackKey)}" data-ackait="${esc((x.t+'：'+(x.d||'')).slice(0,200))}" title="確かめた（この気づきを片付ける。誰が押したか残ります）">✔ 確かめた</button>`:''}${ed&&window.APAI&&x.sev!=='info'&&!r.reading&&!x.nb&&!x.app?(x.jr?`<button class="lk teach-b" data-teach="${xi}" title="支払の中身を答えると、AI が会計の実績で科目・部門・税を決めます">💬 AI と仕訳を決める</button>`:`<button class="lk teach-b" data-teach="${xi}" title="答えを教えると、AI が決裁メモを直して、次から覚えます">💬 AI に教える</button>`):''}${x.ai&&x.aiKey&&ed&&!r.reading?`<button class="lk teach-b" data-ackai="${esc(x.aiKey)}" data-ackait="${esc((x.t+(x.d||'')).slice(0,200))}" title="確かめた（この気づきを片付ける。誰が押したか残ります）">✔ 確かめた</button>`:''}${x.ack&&acctChecker()&&(ed||r.done)?`<button class="lk teach-b" data-ackpat="${esc(x.ack)}" title="会計の実績に無い付け方を確かめた（記録に残ります）">✔ 確かめた</button>`:''}</div></div>`;};
   const wrapI=(card,at)=>{const l=iss.filter(x=>x.at===at);return card&&l.length?`<div class="ocx">${card}<div class="ocx-i">${l.map(issOne).join('')}</div></div>`:card;};
   const issCard=!gen.length&&!(r.reject&&!r.done)?'':`<details class="oc" id="oIss" ${gen.some(x=>x.sev==='fix')||(r.reject&&!r.done)?'open':''}><summary class="oh" style="cursor:pointer"><b>その他の気づき</b><span class="ocnt">${gen.length}件</span>${[['fix','要修正'],['check','要確認'],['info','参考']].map(([k,l])=>{const n=gen.filter(x=>x.sev===k).length;return n?`<span class="sv ${k}">${l} ${n}件</span>`:'';}).join('')}<span class="sp"></span></summary>
     ${r.reject&&!r.done?`<div class="iss fix"><span class="ico">↩</span><span class="lv">差し戻し</span><div><b>${esc(r.reject)}</b></div></div>`:''}
