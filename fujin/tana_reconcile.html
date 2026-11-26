@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>棚卸 差異確認（Excel取込） - FUJIN</title>
+<!-- 棚卸 差異確認（2026-11）
+     工場が回答した「棚卸差異確認Excel」（シート：Excel全明細）を読み込み、
+     FUJINアプリの棚卸登録（SharePoint リスト FUJIN_棚卸入力）と突き合わせて、直す必要がある品目だけを洗い出す画面。
+     ・この画面は読むだけ。SharePoint には書き込まない（アプリへの反映は次の段階で追加する）。
+     ・Excel の中身はこの画面の中だけで使い、どこにも保存しない（作業ファイルは自分でダウンロードしたときだけ）。
+     ・FUJIN本体（棚卸モードの管理者画面「差異確認」タブ）から開く。サインインは FUJIN本体のものを使う。 -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
+<style>
+:root{--bg:#f4f5f7;--panel:#fff;--line:#e5e7eb;--muted:#64748b;--text:#1f2937;--teal:#0f766e;--teal-bg:#ccfbf1;
+  --warn:#b45309;--warn-bg:#fef3c7;--bad:#b91c1c;--bad-bg:#fee2e2;--info:#1d4ed8;--info-bg:#dbeafe;--ok:#15803d;--ok-bg:#dcfce7}
+*{box-sizing:border-box}
+html,body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;color:var(--text);background:var(--bg);font-size:13px}
+button,input,select{font-family:inherit;font-size:13px}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.wrap{padding:12px 14px;max-width:1600px;margin:0 auto}
+h1{font-size:17px;margin:0 0 4px;color:#115e59}
+.sub{color:var(--muted);font-size:12px;margin-bottom:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.card h2{font-size:14px;margin:0 0 8px;color:#115e59}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{border:1px solid #cbd5e1;background:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:700;color:#334155}
+.btn.p{background:var(--teal);border-color:var(--teal);color:#fff}
+.btn:disabled{opacity:.45;cursor:default}
+.note{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:#475569;font-size:12px;line-height:1.6}
+.msg{margin-top:8px;font-size:12px;line-height:1.7}
+.msg .e{color:var(--bad);font-weight:700}
+.msg .w{color:var(--warn);font-weight:700}
+.kpis{display:flex;gap:8px;flex-wrap:wrap}
+.kpi{border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:120px;cursor:pointer;background:#fff}
+.kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.kpi small{color:var(--muted)}
+.kpi.on{outline:2px solid var(--teal)}
+.tag{display:inline-block;border-radius:5px;padding:1px 6px;font-size:11.5px;font-weight:700;white-space:nowrap}
+.t-fix{background:var(--bad-bg);color:var(--bad)}
+.t-none{background:var(--ok-bg);color:var(--ok)}
+.t-hold{background:#e2e8f0;color:#334155}
+.t-check{background:var(--warn-bg);color:var(--warn)}
+.t-out{background:#f1f5f9;color:#64748b}
+.t-info{background:var(--info-bg);color:var(--info)}
+table{width:100%;border-collapse:collapse;background:#fff}
+th,td{border-bottom:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}
+th{background:#f8fafc;position:sticky;top:0;z-index:1;font-size:12px;color:#475569;white-space:nowrap}
+tr.g:hover td{background:#f8fafc}
+tr.d td{background:#fbfdff;font-size:12px}
+.warns div{color:var(--warn);font-size:11.5px;line-height:1.5}
+.warns div.i{color:var(--info)}
+.reason{max-width:280px;white-space:pre-wrap;color:#475569;font-size:12px}
+input.q{width:90px;text-align:right;padding:3px 5px;border:1px solid #cbd5e1;border-radius:6px}
+input.c{width:120px;padding:3px 5px;border:1px solid #cbd5e1;border-radius:6px}
+input.ov{background:#fff7ed;border-color:#fb923c}
+.orig{color:#94a3b8;font-size:11px}
+.tbl{max-height:70vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#0f172a;color:#fff;padding:8px 16px;border-radius:8px;display:none;z-index:50}
+.toast.err{background:var(--bad)}
+.steps{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.steps span{padding:4px 10px;border-radius:999px;background:#e2e8f0;color:#475569;font-weight:700;font-size:12px}
+.steps span.on{background:var(--teal);color:#fff}
+details summary{cursor:pointer;color:var(--teal);font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📦 棚卸 差異確認（Excel取込）</h1>
+  <div class="sub">工場が回答した「棚卸差異確認Excel」を読み込み、FUJINアプリの棚卸登録と突き合わせて、直す必要がある品目だけを洗い出します。<b>この画面はデータを読むだけで、どこにも書き込みません。</b></div>
+  <div class="steps"><span id="st1" class="on">① Excelを取込</span><span id="st2">② 自動判定</span><span id="st3">③ 確認・訂正・承認</span><span id="st4">④ 出力</span></div>
+
+  <div class="card">
+    <h2>① Excelを取込</h2>
+    <div class="row">
+      <label>棚卸期間 <select id="per"><option value="">読み込み中…</option></select></label>
+      <input type="file" id="file" accept=".xlsx,.xlsm">
+      <button class="btn" id="reload" title="アプリの棚卸登録・マスタを読み直す">アプリの登録を読み直す</button>
+    </div>
+    <div class="msg" id="loadMsg"></div>
+  </div>
+
+  <div class="card" id="judgeCard" style="display:none">
+    <h2>② 自動判定の結果</h2>
+    <div class="kpis" id="kpis"></div>
+    <div class="msg" id="judgeMsg"></div>
+    <details style="margin-top:8px"><summary>判定のしかた</summary><div class="note" style="margin-top:6px">
+      ・品目コード×倉庫ごとにまとめて判定します。FUJIN数量はExcelのQ列ではなく、<b>アプリの棚卸登録（取消を除いた合計）</b>を使います。<br>
+      ・全行「FUJINが正しい」→ 直さない。行を合計するとアプリと一致 → 直さない。<br>
+      ・「Excelが正しい」「両方誤り」だけ → Excel数量（両方誤りは訂正数量）の合計を確定数量にし、アプリと違えば<b>修正候補</b>。<br>
+      ・未回答・確認中 → 保留。回答の食い違い・集計条件の違い・別品目・FUJIN管理外・単位違い・品目コードなし → 確認対象。<br>
+      ・0と空欄は区別します（空欄は「回答なし」）。Excelの回答は原本として残し、この画面で直した値は別に持ちます。
+    </div></details>
+  </div>
+
+  <div class="card" id="listCard" style="display:none">
+    <h2>③ 確認・訂正・承認</h2>
+    <div class="row" style="margin-bottom:8px">
+      <select id="fSt"><option value="">判定：すべて</option></select>
+      <select id="fFac"><option value="">工場：すべて</option></select>
+      <select id="fWh"><option value="">倉庫：すべて</option></select>
+      <label><input type="checkbox" id="fWarn"> 警告ありだけ</label>
+      <label><input type="checkbox" id="fBase"> 基準倉庫と違うだけ</label>
+      <label><input type="checkbox" id="fMulti"> 複数行だけ</label>
+      <input id="fQ" placeholder="品目コード・品名・理由で絞り込み" style="width:220px;padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px">
+      <span id="fCnt" style="color:var(--muted)"></span>
+    </div>
+    <div class="note" style="margin-bottom:8px">確定数量・品目コード・倉庫はこの画面で直せます（直した値は橙色。元の値は下に小さく表示）。修正候補は内容を確かめて「承認」にチェックを入れてください。内容が変わると承認は外れます。行をクリックするとExcelの元の行が開きます。</div>
+    <div class="tbl"><table>
+      <thead><tr><th>品目コード</th><th>品目名</th><th>倉庫</th><th>ロケ</th><th>基準倉庫</th><th class="num">第一</th><th class="num">第二</th><th class="num">第三</th><th class="num">アプリ合計</th><th class="num">確定数量</th><th class="num">差（訂正数）</th><th>判定</th><th>回答（回答者）</th><th>差異の理由</th><th>警告</th><th style="min-width:64px">承認</th></tr></thead>
+      <tbody id="tb"></tbody>
+    </table></div>
+  </div>
+
+  <div class="card" id="outCard" style="display:none">
+    <h2>④ 出力</h2>
+    <div class="row">
+      <button class="btn p" id="oPlan">修正候補（承認済み）CSV</button>
+      <button class="btn" id="oCheck">確認が必要な一覧 CSV</button>
+      <button class="btn" id="oLog">判断記録 CSV（全行）</button>
+      <button class="btn" id="oApp">Excelに無いアプリ登録 CSV</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="wSave">作業ファイルを保存</button>
+      <label class="btn" style="font-weight:700">作業ファイルを読み込む<input type="file" id="wLoad" accept=".json" style="display:none"></label>
+    </div>
+    <div class="msg" id="outMsg"></div>
+    <div class="note" style="margin-top:8px">承認した修正候補をアプリの棚卸登録に「訂正」として反映する機能は、次の更新で追加します（反映できる人は限定します）。反映後は、今までどおり管理者画面の「SMILEフォーム突合・出力」から取込ファイルを出してFUJIN本体に取り込みます。作業ファイルには、この画面で直した値と承認だけが入ります（Excelの中身は入りません）。</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+// ---- 接続先（業務データではなく接続先の識別子。棚卸モード stock_detective.html と同じ） ----
+const TANA = {
+  site: "hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23",
+  inputList: "0857ec97-bb34-4d67-bd21-d8555cf99ff4",   // FUJIN_棚卸入力（読むだけ）
+  periodList: "c8f1396a-35f7-479e-b219-54eaff73c902",  // FUJIN_棚卸期間（読むだけ）
+  masterDrive: "b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8", // SharedMasters（読むだけ）
+};
+const G = "https://graph.microsoft.com/v1.0";
+const S_LIST = ["https://graph.microsoft.com/Lists.SelectedOperations.Selected"];
+const S_FILE = ["Files.Read.All"];
+const $ = id => document.getElementById(id);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(msg, err){ const t=$('toast'); t.textContent=msg; t.className='toast'+(err?' err':''); t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', err?4500:1800); }
+const fmt = v => v==null||v==='' ? '' : (Math.round(Number(v)*100)/100).toLocaleString('ja-JP');
+const fmtD = v => v==null ? '' : (v>0?'+':'')+fmt(v);
+
+// ---- 認証（FUJIN本体のサインインを使う） ----
+async function token(scopes){
+  let m=null; try{ m = window.top && window.top._fujinMsal; }catch(_){}
+  if(!m) throw new Error('FUJINにサインインしていません（FUJIN本体の棚卸モード→管理者画面「差異確認」から開いてください）');
+  const acc = m.getActiveAccount() || m.getAllAccounts()[0];
+  if(!acc) throw new Error('サインイン情報がありません');
+  try { return (await m.acquireTokenSilent({scopes, account:acc})).accessToken; }
+  catch(e){ return (await m.acquireTokenPopup({scopes, account:acc})).accessToken; }
+}
+async function gfetch(path, opt, scopes){
+  const tk = await token(scopes||S_LIST);
+  return fetch(path.startsWith('http')?path:G+path, Object.assign({cache:'no-store'}, opt||{}, {headers:Object.assign({Authorization:'Bearer '+tk,'Content-Type':'application/json'}, (opt&&opt.headers)||{})}));
+}
+async function listAll(listId, filter){
+  let url = `/sites/${TANA.site}/lists/${listId}/items?$expand=fields&$top=999` + (filter?`&$filter=${encodeURIComponent(filter)}`:'');
+  const out=[];
+  while(url){ const r=await gfetch(url,{headers:{Prefer:'HonorNonIndexedQueriesWarningMayFailRandomly'}}); if(!r.ok) throw new Error('リスト取得 '+r.status); const j=await r.json(); out.push(...(j.value||[])); url=j['@odata.nextLink']||null; }
+  return out;
+}
+function parseCsv(text){
+  const rows=[]; let row=[], f='', q=false;
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){f+='"';i++;} else q=false; } else f+=c; }
+    else if(c==='"') q=true; else if(c===','){row.push(f);f='';} else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';} else if(c!=='\r') f+=c; }
+  if(f!==''||row.length){row.push(f);rows.push(row);} return rows;
+}
+async function readMasterCsv(name){
+  const r = await gfetch(`/drives/${TANA.masterDrive}/root:/${encodeURIComponent(name)}:/content`, null, S_FILE);
+  if(!r.ok) throw new Error(name+' 取得 '+r.status);
+  const buf=await r.arrayBuffer(); let txt=new TextDecoder('utf-8').decode(buf);
+  if(txt.includes('�')){ try{ txt=new TextDecoder('shift_jis').decode(buf); }catch(_){} }
+  return parseCsv(txt.replace(/^﻿/,''));
+}
+
+// ==core-start==（判定の中身。画面に依存しない）
+const BASE_RULE_WH = new Set(['000105','000107']); // 鴻巣工場第一・第三は基準倉庫にしか登録しない（2026-10-01 花岡判断）
+const ANS = {'FUJINが正しい':'F','Excelが正しい':'E','両方誤り':'B','集計条件の違い':'S','別品目・コード違い':'C','FUJIN管理外':'X','確認中':'P'};
+const ST = {fix:'修正候補', none:'修正なし', hold:'保留', check:'確認対象', out:'対象外'};
+const ST_CLS = {fix:'t-fix', none:'t-none', hold:'t-hold', check:'t-check', out:'t-out'};
+const normH = s => String(s==null?'':s).replace(/<[^>]*>/g,'').replace(/[\s　]/g,'');
+const txt = v => v==null ? '' : String(v).trim();
+function numOrNull(v){ if(v==null) return null; if(typeof v==='number') return isFinite(v)?v:null; const s=String(v).replace(/[,，\s]/g,''); if(s==='') return null; const n=Number(s); return isFinite(n)?n:null; }
+const near = (a,b) => Math.abs(a-b) < 1e-6;
+// 単位の表記ゆれ（ｹ＝個、読みがなの付いた単位）をそろえる
+function normUnit(u){ let s=txt(u).normalize('NFKC'); s=s.replace(/ヶ|ケ/g,'個').replace(/(ダイ|ホン|ポン|ボン|マイ|コ|シキ)$/,'').replace(/㎏/g,'kg').replace(/^set$/i,'セット'); return s; }
+
+// Excel全明細シートの見出しを探す。見出しの名前で探し、列の位置には頼らない
+const COLS = [
+  ['fac',  h=>h==='工場', true],
+  ['line', h=>h==='原本行', true],
+  ['judge',h=>h==='判定'],
+  ['memo', h=>h==='覚書'],
+  ['place',h=>h==='場所'],
+  ['az',   h=>h==='AZコード'],
+  ['xq',   h=>h==='Excel数量', true],
+  ['xu',   h=>h==='単位', false, 0],
+  ['wh',   h=>h==='推定倉庫コード', true],
+  ['whn',  h=>h==='推定倉庫'],
+  ['code', h=>h==='FUJINコード', true],
+  ['fname',h=>h==='FUJIN品名'],
+  ['fq',   h=>h==='FUJIN数量', true],
+  ['fu',   h=>h==='単位', false, 1],
+  ['cat',  h=>h.startsWith('大分類')],
+  ['who',  h=>h.includes('担当者'), true],
+  ['ans',  h=>h.includes('正しい在庫'), true],
+  ['why',  h=>h.includes('差異の理由'), true],
+  ['fixq', h=>h.includes('訂正数量'), true],
+  ['ag',   h=>h.includes('確定数量')],
+];
+function mapHeader(hrow){
+  const H = hrow.map(normH), idx = {}, missing = [];
+  for(const [k,test,req,nth] of COLS){
+    const hits = H.map((h,i)=>test(h)?i:-1).filter(i=>i>=0);
+    const i = nth!=null ? (hits[nth]!=null?hits[nth]:-1) : (hits.length?hits[0]:-1);
+    idx[k]=i; if(i<0 && req) missing.push(k);
+  }
+  return {idx, missing};
+}
+const COL_LABEL = {fac:'工場',line:'原本行',xq:'Excel数量',wh:'推定倉庫コード',code:'FUJINコード',fq:'FUJIN数量',who:'担当者',ans:'正しい在庫',why:'差異の理由',fixq:'訂正数量'};
+
+// aoa: シートを行の配列にしたもの（1行目が見出し）。canonWh: 倉庫コードをマスタの形にそろえる関数
+function readRows(aoa, canonWh){
+  const {idx, missing} = mapHeader(aoa[0]||[]);
+  if(missing.length) return {error:'必要な列が見つかりません：'+missing.map(k=>COL_LABEL[k]||k).join('、')};
+  const g = (r,k) => idx[k]>=0 ? r[idx[k]] : null;
+  const rows = [];
+  for(let i=1;i<aoa.length;i++){
+    const r = aoa[i]||[]; const fac=txt(g(r,'fac')), line=txt(g(r,'line'));
+    if(!fac && !line) continue;
+    const ansRaw = txt(g(r,'ans'));
+    rows.push({
+      key: fac+'#'+line, sheetRow:i+1, fac, line,
+      judge:txt(g(r,'judge')), memo:txt(g(r,'memo')), place:txt(g(r,'place')), az:txt(g(r,'az')),
+      xq:numOrNull(g(r,'xq')), xu:txt(g(r,'xu')),
+      wh0:canonWh(txt(g(r,'wh'))), whn:txt(g(r,'whn')), code0:txt(g(r,'code')), fname:txt(g(r,'fname')),
+      fq:numOrNull(g(r,'fq')), fu:txt(g(r,'fu')), cat:txt(g(r,'cat')),
+      who:txt(g(r,'who')), ansRaw, ans:ANS[ansRaw]||(ansRaw?'?':''), why:txt(g(r,'why')),
+      fixq:numOrNull(g(r,'fixq')), ag:g(r,'ag'),
+    });
+  }
+  return {rows};
+}
+// Excelの確定数量（AG列）の式と同じ計算。キャッシュ値に頼らず、ここでも計算する
+function calcAG(r){
+  if(r.ans==='F') return r.fq!=null ? r.fq : 'FUJIN未照合';
+  if(r.ans==='E') return r.xq!=null ? r.xq : '';
+  if(r.ans==='B') return r.fixq!=null ? r.fixq : '数量未入力';
+  return '';
+}
+function unitDiff(r){ return r.xu && r.fu && normUnit(r.xu)!==normUnit(r.fu); }
+
+// ctx = {app: Map(wh|code -> {total, n}), item: Map(code -> 品目マスタ), wh: Map(code -> 倉庫), rowOv:{}, grpOv:{}}
+function judge(rows, ctx){
+  const groups = new Map(), nocode = [];
+  for(const r of rows){
+    const ov = ctx.rowOv[r.key]||{};
+    r.code = ov.code!=null ? ov.code : r.code0;
+    r.wh = ov.wh!=null ? ov.wh : r.wh0;
+    r.agCalc = calcAG(r);
+    r.agBad = (r.ag!=null && r.ag!=='' && String(r.ag)!==String(r.agCalc));
+    if(!r.code){ nocode.push(r); continue; }
+    const k = r.wh+'|'+r.code;
+    if(!groups.has(k)) groups.set(k, {key:k, code:r.code, wh:r.wh, rows:[]});
+    groups.get(k).rows.push(r);
+  }
+  const out = [];
+  for(const g of groups.values()) out.push(judgeGroup(g, ctx));
+  for(const r of nocode) out.push(judgeNoCode(r, ctx));
+  // Excelに出てこないアプリの登録（Excelに出てくる倉庫の分だけ）
+  const seenWh = new Set(out.map(g=>g.wh).filter(Boolean)), used = new Set(out.map(g=>g.key));
+  const appOnly = [];
+  for(const [k,a] of ctx.app){ const [wh,code]=k.split('|'); if(seenWh.has(wh) && !used.has(k) && a.n>0) appOnly.push({wh, code, total:a.total, name:a.name||''}); }
+  appOnly.sort((a,b)=>(a.code+a.wh).localeCompare(b.code+b.wh));
+  out.sort((a,b)=> (a.code||'\uffff').localeCompare(b.code||'\uffff') || String(a.wh).localeCompare(String(b.wh)) || String(a.key).localeCompare(String(b.key)));
+  return {groups:out, appOnly};
+}
+function itemInfo(ctx, code){ return ctx.item.get(code) || null; }
+function locOf(ctx, code, wh){ const w=ctx.wh.get(wh); if(w && w.kind==='外注') return ''; const it=itemInfo(ctx, code); const lo=it&&it.loc; return lo ? lo : '1'; }
+function judgeGroup(g, ctx){
+  const rows=g.rows, warns=[], infos=[];
+  const a = ctx.app.get(g.key); const app = a ? a.total : 0, hasApp = !!(a && a.n>0);
+  const it = itemInfo(ctx, g.code), w = ctx.wh.get(g.wh);
+  g.name = (it&&it.name) || rows[0].fname || (a&&a.name) || '';
+  g.app = app; g.hasApp = hasApp;
+  g.loc = locOf(ctx, g.code, g.wh);
+  g.base = it ? it.baseWh : '';
+  g.sumX = {}; for(const r of rows){ const f=r.fac||'?'; g.sumX[f]=(g.sumX[f]||0)+(r.xq||0); }
+  g.facs = [...new Set(rows.map(r=>r.fac))];
+  // 警告・情報
+  if(!it) warns.push('品目マスタに無い品目コード');
+  else if(it.stock==='行わない') infos.push('在庫管理をしない品目（品目マスタ）');
+  if(!g.wh) warns.push('倉庫コードが空');
+  else if(!w) warns.push('倉庫マスタに無い倉庫コード');
+  if(it && it.baseWh && g.wh && it.baseWh!==g.wh){
+    if(BASE_RULE_WH.has(g.wh) && BASE_RULE_WH.has(it.baseWh)) warns.push(`基準倉庫は ${it.baseWh}（第一・第三は基準倉庫に登録するルール）`);
+    else infos.push(`基準倉庫（${it.baseWh}）と違う倉庫`);
+  }
+  g.baseDiff = !!(it && it.baseWh && g.wh && it.baseWh!==g.wh);
+  const qs = [...new Set(rows.map(r=>r.fq).filter(v=>v!=null))];
+  if(qs.some(q=>!near(q, app))) warns.push(`Excel作成後にアプリの登録が変わった（Excel FUJIN数量 ${qs.map(fmt).join('/')} → 今 ${fmt(app)}）`);
+  if(rows.some(r=>r.agBad)) infos.push('Excelの確定数量（AG列）が回答と合わない行あり（この画面で計算し直しました）');
+  if(rows.length>1) infos.push(`同じ品目・倉庫がExcelに ${rows.length} 行（${g.facs.join('・')}）`);
+  if(it && rows.some(r=>r.fu && it.unit && normUnit(r.fu)!==normUnit(it.unit))) infos.push(`品目マスタの単位は「${it.unit}」`);
+  // 判定
+  const set = new Set(rows.map(r=>r.ans));
+  const sumX = rows.reduce((s,r)=>s+(r.xq||0),0);
+  let st, target=null, why='';
+  if(set.has('')){ st='hold'; why=`未回答 ${rows.filter(r=>!r.ans).length} 行`; }
+  else if(set.has('P')){ st='hold'; why='確認中'; }
+  else if(set.has('?')){ st='check'; why='回答の選択肢が想定外'; }
+  else if(set.has('S')||set.has('C')||set.has('X')){
+    if([...set].every(s=>s==='X') && it && it.stock==='行わない'){ st='out'; why='FUJIN管理外（在庫管理をしない品目）'; }
+    else { st='check'; why=[...set].filter(s=>'SCX'.includes(s)).map(s=>Object.keys(ANS).find(k=>ANS[k]===s)).join('・'); }
+  }
+  else if(set.size===1 && set.has('F')){ st='none'; target=app; why='FUJINが正しい'; }
+  else if(set.has('F')){
+    if(!set.has('B') && rows.every(r=>r.xq!=null) && near(sumX, app)){ st='none'; target=app; why='行を合計するとアプリと一致'; }
+    else { st='check'; why='同じ品目で回答が食い違い'; }
+  }
+  else { // E と B だけ
+    const lack = rows.filter(r=>(r.ans==='E'&&r.xq==null)||(r.ans==='B'&&r.fixq==null));
+    if(lack.length){ st='check'; why = lack.some(r=>r.ans==='B') ? '「両方誤り」なのに訂正数量が空' : 'Excel数量が空'; }
+    else if(rows.some(r=>r.ans==='E' && unitDiff(r))){ st='check'; why='単位が違う（Excel '+rows.map(r=>r.xu).filter(Boolean).join('/')+' ／ FUJIN '+(rows.find(r=>r.fu)||{}).fu+'）'; }
+    else { target = rows.reduce((s,r)=>s+(r.ans==='E'?r.xq:r.fixq),0); why = set.has('B') ? (set.has('E')?'Excel数量＋訂正数量の合計':'訂正数量') : 'Excelが正しい'; if(rows.length>1) warns.push('複数行の数量を合計しました（同じ現物の二重計上でないか確認）'); }
+  }
+  // この画面で確定数量を直した場合
+  const go = ctx.grpOv[g.key]||{};
+  g.autoSt = st; g.autoTarget = target; g.why = why;
+  if(go.qty!=null && go.qty!==''){ target = Number(go.qty); g.manual = true; if(st==='hold'||st==='check'||st==='out') why = why+' → 画面で確定数量を入力'; }
+  g.target = target;
+  if(target!=null){ g.diff = target - app; st = near(g.diff,0) ? 'none' : 'fix'; } else g.diff = null;
+  g.st = st; g.whyLabel = why;
+  g.warns = warns; g.infos = infos;
+  // 承認は「その時の確定数量とアプリ合計」と一緒に覚え、どちらかが変わったら外す
+  g.approved = !!(st==='fix' && go.ok && near(go.ok.target, target) && near(go.ok.app, app));
+  g.approvalStale = !!(go.ok && !g.approved && st==='fix');
+  return g;
+}
+function judgeNoCode(r, ctx){
+  const g = {key:'#'+r.key, code:'', wh:r.wh, rows:[r], name:r.fname||r.memo||'', app:null, hasApp:false, loc:'', base:'', facs:[r.fac], sumX:{[r.fac||'?']:r.xq||0}, warns:[], infos:[], target:null, diff:null};
+  if(r.az) g.infos.push('AZコード：'+r.az+(ctx.item.has(r.az)?'（品目マスタにあり）':''));
+  if(r.judge) g.infos.push('AI判定：'+r.judge);
+  if(!r.ans){ g.st='hold'; g.whyLabel='未回答'; }
+  else if(r.ans==='P'){ g.st='hold'; g.whyLabel='確認中'; }
+  else if(r.ans==='F'||r.ans==='X'){ g.st='out'; g.whyLabel=(r.ans==='F'?'FUJINが正しい':'FUJIN管理外')+'（FUJINコードなし）'; }
+  else { g.st='check'; g.whyLabel='FUJINコードが無い（コードを入れると判定し直します）'; }
+  g.autoSt=g.st; g.approved=false;
+  return g;
+}
+// ==core-end==
+
+// ---- 画面の状態 ----
+const S = {period:'', periods:[], appRaw:[], app:new Map(), item:new Map(), wh:new Map(), rows:null, fileName:'', res:null, rowOv:{}, grpOv:{}, kpi:'', open:new Set()};
+function meName(){ try{ const a=window.top._fujinUser; return (a&&(a.name||a.username))||''; }catch(_){ return ''; } }
+
+async function loadMasters(){
+  const [whRows, itRows] = await Promise.all([readMasterCsv('倉庫マスタ.csv'), readMasterCsv('品目マスタ.csv')]);
+  { const h=whRows[0].map(x=>x.trim()), ic=h.indexOf('倉庫ｺｰﾄﾞ'), inm=h.indexOf('倉庫名'), ik=h.indexOf('倉庫区分名'), ish=h.indexOf('ﾏｽﾀｰ検索表示区分名');
+    S.wh = new Map(); for(const x of whRows.slice(1)){ const c=(x[ic]||'').trim(); if(!c) continue; S.wh.set(c,{code:c, name:(x[inm]||'').trim(), kind:(x[ik]||'').includes('社内')?'社内':'外注', hidden:x[ish]==='非表示'}); } }
+  { const h=itRows[0].map(x=>x.trim()), I=n=>h.indexOf(n);
+    const ic=I('品目ｺｰﾄﾞ'), inm=I('品目名'), iu=I('単位'), is=I('在庫管理区分名'), ib=I('基準倉庫ｺｰﾄﾞ'), ibn=I('基準倉庫名'), il=I('基準ﾛｹｰｼｮﾝ'), ip=I('製品区分名'), ik=I('品目区分名'), ica=I('大分類名');
+    if(ic<0) throw new Error('品目マスタの形式が想定と違います');
+    S.item = new Map(); const v=(x,i)=>i>=0?(x[i]||'').trim():'';
+    for(const x of itRows.slice(1)){ const c=v(x,ic); if(!c) continue; S.item.set(c,{name:v(x,inm), unit:v(x,iu), stock:v(x,is), baseWh:v(x,ib), baseWhName:v(x,ibn), loc:v(x,il), prod:v(x,ip), kind:v(x,ik), cat:v(x,ica)}); } }
+}
+function canonWh(raw){
+  const value=String(raw==null?'':raw).trim(); if(!value) return '';
+  if(S.wh.has(value)) return value;
+  if(!/^\d+$/.test(value)) return value;
+  const compact=s=>String(s||'').replace(/^0+(?=\d)/,'');
+  const m=[...S.wh.keys()].filter(c=>/^\d+$/.test(c)&&compact(c)===compact(value));
+  return m.length===1 ? m[0] : value.padStart(6,'0');
+}
+async function loadPeriods(){
+  const items = await listAll(TANA.periodList);
+  S.periods = items.filter(i=>!String(i.fields.Title||'').startsWith('BOOK|')).map(i=>({id:i.fields.Title, status:i.fields.Status})).sort((a,b)=>String(b.id).localeCompare(String(a.id)));
+  const open = S.periods.find(p=>p.status==='受付中');
+  if(!S.period) S.period = open ? open.id : (S.periods[0]||{}).id || '';
+  $('per').innerHTML = S.periods.map(p=>`<option value="${esc(p.id)}" ${p.id===S.period?'selected':''}>${esc(p.id)}（${esc(p.status||'')}）</option>`).join('') || '<option value="">期間がありません</option>';
+}
+async function loadApp(){
+  if(!S.period){ S.appRaw=[]; S.app=new Map(); return; }
+  const items = await listAll(TANA.inputList, `fields/PeriodId eq '${S.period.replace(/'/g,"''")}'`);
+  S.appRaw = items.map(i=>{ const f=i.fields||{}; return {code:f.Title, wh:canonWh(f.WhCode), name:f.ItemName||'', qty:Number(f.Qty)||0, canceled:!!f.Canceled}; });
+  const m=new Map();
+  for(const x of S.appRaw){ if(x.canceled) continue; const k=x.wh+'|'+x.code; const a=m.get(k)||{total:0, n:0, name:x.name}; a.total+=x.qty; a.n++; m.set(k,a); }
+  S.app = m;
+}
+async function loadAll(){
+  $('loadMsg').innerHTML = 'マスタとアプリの棚卸登録を読み込んでいます…';
+  try{
+    await loadMasters(); await loadPeriods(); await loadApp();
+    $('loadMsg').innerHTML = `読み込みました：倉庫マスタ ${S.wh.size} 件・品目マスタ ${S.item.size.toLocaleString()} 件・棚卸期間「${esc(S.period)}」のアプリ登録 ${S.appRaw.filter(x=>!x.canceled).length.toLocaleString()} 件（品目×倉庫 ${S.app.size.toLocaleString()} 件）。` + (S.rows?'':'<br>Excel（棚卸差異確認Excel）を選んでください。');
+    if(S.rows) recompute();
+  }catch(e){ console.error(e); $('loadMsg').innerHTML = `<span class="e">読み込めませんでした：${esc(e.message||e)}</span>`; }
+}
+
+// ---- Excel ----
+async function readExcel(file){
+  if(typeof XLSX==='undefined') throw new Error('Excelを読む部品を読み込めませんでした（ネットワークを確認してください）');
+  const wb = XLSX.read(await file.arrayBuffer(), {type:'array'});
+  const sn = wb.SheetNames.find(n=>n.trim()==='Excel全明細');
+  if(!sn) throw new Error('「Excel全明細」シートがありません（シート：'+wb.SheetNames.join('、')+'）');
+  const ws = wb.Sheets[sn];
+  const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null, blankrows:false});
+  const res = readRows(aoa, canonWh);
+  if(res.error) throw new Error(res.error);
+  return res.rows;
+}
+$('file').onchange = async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  $('loadMsg').innerHTML='Excelを読み込んでいます…';
+  try{
+    if(!S.item.size) await loadAll();
+    S.rows = await readExcel(f); S.fileName=f.name;
+    const ans = S.rows.filter(r=>r.ans).length, who = {};
+    for(const r of S.rows) if(r.ans){ const k=r.who||'（担当者なし）'; who[k]=(who[k]||0)+1; }
+    const odd = S.rows.filter(r=>r.ans==='?').length, agBad = S.rows.filter(r=>r.ag!=null&&r.ag!==''&&String(r.ag)!==String(calcAG(r))).length;
+    $('loadMsg').innerHTML = `<b>${esc(f.name)}</b>：${S.rows.length.toLocaleString()} 行（回答済み ${ans.toLocaleString()} 行・未回答 ${(S.rows.length-ans).toLocaleString()} 行）`+
+      (ans?`<br>回答者別：${Object.entries(who).sort((a,b)=>b[1]-a[1]).map(([k,v])=>esc(k)+' '+v).join('、')}`:'')+
+      (odd?`<br><span class="w">「正しい在庫」に選択肢以外の値が ${odd} 行</span>`:'')+
+      (agBad?`<br><span class="w">確定数量（AG列）が回答と合わない行が ${agBad} 行（この画面で計算し直します）</span>`:'');
+    recompute();
+  }catch(err){ console.error(err); $('loadMsg').innerHTML = `<span class="e">${esc(err.message||err)}</span>`; }
+};
+$('per').onchange = async ()=>{ S.period=$('per').value; $('loadMsg').innerHTML='アプリの登録を読み込んでいます…'; try{ await loadApp(); $('loadMsg').innerHTML=`棚卸期間「${esc(S.period)}」のアプリ登録を読み込みました。`; recompute(); }catch(e){ $('loadMsg').innerHTML=`<span class="e">${esc(e.message)}</span>`; } };
+$('reload').onclick = loadAll;
+
+// ---- 判定と表示 ----
+function recompute(){
+  if(!S.rows) return;
+  S.res = judge(S.rows, {app:S.app, item:S.item, wh:S.wh, rowOv:S.rowOv, grpOv:S.grpOv});
+  ['st1','st2','st3','st4'].forEach((id,i)=>$(id).classList.toggle('on', true));
+  $('judgeCard').style.display=''; $('listCard').style.display=''; $('outCard').style.display='';
+  renderKpis(); fillFilters(); renderTable();
+}
+function renderKpis(){
+  const G=S.res.groups, c={}; for(const g of G) c[g.st]=(c[g.st]||0)+1;
+  const fixN=G.filter(g=>g.st==='fix'), okN=fixN.filter(g=>g.approved).length;
+  const card=(k,label,n,sub)=>`<div class="kpi ${S.kpi===k?'on':''}" data-k="${k}"><span class="tag ${ST_CLS[k]||'t-info'}">${label}</span><b>${(n||0).toLocaleString()}</b><small>${sub||''}</small></div>`;
+  $('kpis').innerHTML = card('fix',ST.fix,c.fix,`承認済み ${okN}`)+card('check',ST.check,c.check,'人の判断が必要')+card('hold',ST.hold,c.hold,'未回答・確認中')+card('none',ST.none,c.none,'アプリのままでよい')+card('out',ST.out,c.out,'管理外など')+
+    `<div class="kpi" data-k="apponly"><span class="tag t-info">Excelに無い登録</span><b>${S.res.appOnly.length.toLocaleString()}</b><small>0にはしません</small></div>`;
+  $('kpis').querySelectorAll('.kpi').forEach(el=>el.onclick=()=>{ const k=el.dataset.k; if(k==='apponly'){ exportAppOnly(); return; } S.kpi = S.kpi===k?'':k; $('fSt').value=S.kpi; renderKpis(); renderTable(); });
+  const warnN=G.filter(g=>g.warns.length).length, multi=G.filter(g=>g.rows.length>1).length;
+  $('judgeMsg').innerHTML = `品目×倉庫のまとまり ${G.length.toLocaleString()} 件（うち複数行 ${multi}・警告あり ${warnN}）。` + (fixN.length?` 修正候補の差の合計：${fmtD(fixN.reduce((s,g)=>s+g.diff,0))}`:'');
+}
+function fillFilters(){
+  const G=S.res.groups;
+  const keep=(id, opts, first)=>{ const v=$(id).value; $(id).innerHTML=`<option value="">${first}</option>`+opts.map(([k,l])=>`<option value="${esc(k)}">${esc(l)}</option>`).join(''); $(id).value=opts.some(o=>o[0]===v)?v:''; };
+  keep('fSt', Object.entries(ST), '判定：すべて'); if(S.kpi) $('fSt').value=S.kpi;
+  keep('fFac', [...new Set(G.flatMap(g=>g.facs))].filter(Boolean).sort().map(f=>[f,f]), '工場：すべて');
+  keep('fWh', [...new Set(G.map(g=>g.wh).filter(Boolean))].sort().map(w=>[w, w+' '+((S.wh.get(w)||{}).name||'')]), '倉庫：すべて');
+}
+['fSt','fFac','fWh','fWarn','fBase','fMulti'].forEach(id=>$(id).onchange=()=>{ if(id==='fSt'){ S.kpi=$('fSt').value; renderKpis(); } renderTable(); });
+$('fQ').oninput = ()=>{ clearTimeout($('fQ')._h); $('fQ')._h=setTimeout(renderTable,200); };
+function filtered(){
+  const st=$('fSt').value, fac=$('fFac').value, wh=$('fWh').value, q=$('fQ').value.trim().toLowerCase();
+  return S.res.groups.filter(g=>(!st||g.st===st)&&(!fac||g.facs.includes(fac))&&(!wh||g.wh===wh)&&(!$('fWarn').checked||g.warns.length)&&(!$('fBase').checked||g.baseDiff)&&(!$('fMulti').checked||g.rows.length>1)&&
+    (!q || (g.code+' '+g.name+' '+g.rows.map(r=>r.why+' '+r.memo+' '+r.az).join(' ')).toLowerCase().includes(q)));
+}
+const ansLabel = r => r.ansRaw ? esc(r.ansRaw) : '<span style="color:#94a3b8">未回答</span>';
+function renderTable(){
+  const list = filtered(), LIM=600, shown=list.slice(0,LIM);
+  $('fCnt').textContent = `${list.length.toLocaleString()} 件` + (list.length>LIM?`（先頭 ${LIM} 件を表示。絞り込んでください）`:'');
+  const facQ = (g,f) => g.sumX[f]!=null ? fmt(g.sumX[f]) : '';
+  $('tb').innerHTML = shown.map(g=>{
+    const go=S.grpOv[g.key]||{}, whN=(S.wh.get(g.wh)||{}).name||'';
+    const r0=g.rows[0], rov=S.rowOv[r0.key]||{};
+    const codeCell = g.code ? `<b>${esc(g.code)}</b>` : `<input class="c ${rov.code!=null?'ov':''}" data-rc="${esc(r0.key)}" placeholder="FUJINコード" value="${esc(rov.code||'')}">`;
+    const ansCell = g.rows.map(r=>`${ansLabel(r)}${r.who?`<span class="orig">（${esc(r.who)}）</span>`:''}`).join('<br>');
+    const whyCell = g.rows.map(r=>r.why).filter(Boolean).map(esc).join('<br>―<br>');
+    const qIn = (g.code && g.st!=='out') || go.qty!=null ? `<input class="q ${go.qty!=null&&go.qty!==''?'ov':''}" data-gq="${esc(g.key)}" value="${go.qty!=null&&go.qty!==''?esc(go.qty):(g.target!=null?g.target:'')}">${go.qty!=null&&go.qty!==''?`<div class="orig">自動：${g.autoTarget!=null?fmt(g.autoTarget):'—'}</div>`:''}` : (g.target!=null?fmt(g.target):'');
+    const ok = g.st==='fix' ? `<label style="white-space:nowrap"><input type="checkbox" data-ok="${esc(g.key)}" ${g.approved?'checked':''}> 承認</label>${g.approvalStale?'<div class="orig" style="color:var(--warn)">内容が変わったので承認を外しました</div>':''}` : '';
+    return `<tr class="g" data-k="${esc(g.key)}">
+      <td>${codeCell}</td><td>${esc(g.name)}</td>
+      <td>${g.wh?`${esc(g.wh)}<div class="orig">${esc(whN)}</div>`:'<span style="color:var(--bad)">なし</span>'}</td>
+      <td>${esc(g.loc)}</td><td>${g.base?esc(g.base):''}</td>
+      <td class="num">${facQ(g,'第一')}</td><td class="num">${facQ(g,'第二')}</td><td class="num">${facQ(g,'第三')}</td>
+      <td class="num">${g.code?fmt(g.app):''}${g.code&&!g.hasApp?'<div class="orig">登録なし</div>':''}</td>
+      <td class="num">${qIn}</td>
+      <td class="num" style="font-weight:700;color:${g.diff>0?'var(--teal)':g.diff<0?'var(--bad)':'inherit'}">${g.diff!=null&&!near(g.diff,0)?fmtD(g.diff):''}</td>
+      <td><span class="tag ${ST_CLS[g.st]}">${ST[g.st]}</span><div class="orig">${esc(g.whyLabel||'')}</div></td>
+      <td>${ansCell}</td><td class="reason">${whyCell}</td>
+      <td class="warns">${g.warns.map(w=>`<div>⚠ ${esc(w)}</div>`).join('')}${g.infos.map(w=>`<div class="i">ℹ ${esc(w)}</div>`).join('')}</td>
+      <td>${ok}</td></tr>` + (S.open.has(g.key) ? detailRows(g) : '');
+  }).join('') || '<tr><td colspan="16" style="color:#94a3b8;padding:14px">該当するものはありません</td></tr>';
+  bindTable();
+}
+function detailRows(g){
+  return `<tr class="d"><td colspan="16"><table><tr><th>工場#原本行</th><th>覚書</th><th>場所</th><th>AZコード</th><th class="num">Excel数量</th><th>単位</th><th>FUJINコード</th><th>倉庫</th><th class="num">ExcelのFUJIN数量</th><th>単位</th><th>回答</th><th class="num">訂正数量</th><th class="num">確定数量（計算）</th><th>回答者</th></tr>`+
+    g.rows.map(r=>{ const ov=S.rowOv[r.key]||{}; return `<tr><td>${esc(r.key)}</td><td>${esc(r.memo)}</td><td>${esc(r.place)}</td><td>${esc(r.az)}</td><td class="num">${fmt(r.xq)}</td><td>${esc(r.xu)}</td>
+      <td><input class="c ${ov.code!=null?'ov':''}" data-rc="${esc(r.key)}" value="${esc(ov.code!=null?ov.code:r.code0)}">${ov.code!=null?`<div class="orig">元：${esc(r.code0)||'（空）'}</div>`:''}</td>
+      <td><input class="c ${ov.wh!=null?'ov':''}" data-rw="${esc(r.key)}" value="${esc(ov.wh!=null?ov.wh:r.wh0)}" style="width:80px">${ov.wh!=null?`<div class="orig">元：${esc(r.wh0)||'（空）'}</div>`:''}</td>
+      <td class="num">${fmt(r.fq)}</td><td>${esc(r.fu)}</td><td>${ansLabel(r)}</td><td class="num">${fmt(r.fixq)}</td><td class="num">${esc(typeof r.agCalc==='number'?fmt(r.agCalc):r.agCalc)}${r.agBad?`<div class="orig" style="color:var(--warn)">Excel：${esc(r.ag)}</div>`:''}</td><td>${esc(r.who)}</td></tr>`; }).join('')+
+    `</table></td></tr>`;
+}
+function bindTable(){
+  $('tb').querySelectorAll('tr.g').forEach(tr=>tr.onclick=e=>{ if(e.target.closest('input,label,button')) return; const k=tr.dataset.k; S.open.has(k)?S.open.delete(k):S.open.add(k); renderTable(); });
+  $('tb').querySelectorAll('input[data-gq]').forEach(inp=>inp.onchange=()=>{ const k=inp.dataset.gq, v=inp.value.trim(); const go=S.grpOv[k]||(S.grpOv[k]={});
+    const g=S.res.groups.find(x=>x.key===k);
+    if(v===''|| (g && g.autoTarget!=null && numOrNull(v)!=null && near(numOrNull(v), g.autoTarget))) delete go.qty;
+    else { const n=numOrNull(v); if(n==null||n<0) { toast('0以上の数を入れてください', true); renderTable(); return; } go.qty=n; }
+    cleanOv(); recompute(); });
+  $('tb').querySelectorAll('input[data-ok]').forEach(cb=>cb.onchange=()=>{ const k=cb.dataset.ok, g=S.res.groups.find(x=>x.key===k); const go=S.grpOv[k]||(S.grpOv[k]={});
+    if(cb.checked && g) go.ok={target:g.target, app:g.app, by:meName(), at:new Date().toISOString()}; else delete go.ok; cleanOv(); recompute(); });
+  $('tb').querySelectorAll('input[data-rc]').forEach(inp=>inp.onchange=()=>setRowOv(inp.dataset.rc,'code',inp.value.trim()));
+  $('tb').querySelectorAll('input[data-rw]').forEach(inp=>inp.onchange=()=>setRowOv(inp.dataset.rw,'wh',canonWh(inp.value.trim())));
+}
+function setRowOv(key, f, v){
+  const r=S.rows.find(x=>x.key===key); if(!r) return;
+  const orig = f==='code'?r.code0:r.wh0; const o=S.rowOv[key]||(S.rowOv[key]={});
+  if(v===orig) delete o[f]; else { if(f==='code' && v && !S.item.has(v)) toast('品目マスタに無いコードです（そのまま使います）', true); o[f]=v; }
+  cleanOv(); recompute();
+}
+function cleanOv(){ for(const o of [S.rowOv,S.grpOv]) for(const k of Object.keys(o)) if(!Object.keys(o[k]).length) delete o[k]; }
+
+// ---- 出力 ----
+function csvCell(c){ const s=String(c==null?'':c); return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+function download(name, rows){ const t='﻿'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n')+'\r\n'; const b=new Blob([t],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000); }
+const stamp = ()=>new Date().toISOString().slice(0,10);
+const whName = c => (S.wh.get(c)||{}).name||'';
+const srcOf = g => g.rows.map(r=>r.key).join(' ');
+function exportPlan(){
+  const L=S.res.groups.filter(g=>g.st==='fix'&&g.approved);
+  if(!L.length) return toast('承認済みの修正候補がありません', true);
+  download(`棚卸差異_修正候補_${S.period}_${stamp()}.csv`, [['倉庫コード','倉庫名','ロケーション','品目コード','品目名','アプリ合計','確定数量','差（訂正数）','判定の理由','画面で数量を直した','Excelの行','回答者','差異の理由','警告','承認した人','承認日時']].concat(
+    L.map(g=>{ const go=S.grpOv[g.key]||{}; return [g.wh, whName(g.wh), g.loc, g.code, g.name, g.app, g.target, g.diff, g.whyLabel, g.manual?'はい':'', srcOf(g), [...new Set(g.rows.map(r=>r.who).filter(Boolean))].join('・'), g.rows.map(r=>r.why).filter(Boolean).join(' ／ '), g.warns.join(' ／ '), go.ok&&go.ok.by||'', go.ok&&go.ok.at||'']; })));
+  $('outMsg').textContent = `修正候補（承認済み）${L.length} 件を出力しました。`;
+}
+function exportCheck(){
+  const L=S.res.groups.filter(g=>g.st==='check'||g.st==='hold'||(g.st==='fix'&&!g.approved));
+  if(!L.length) return toast('確認が必要なものはありません');
+  download(`棚卸差異_確認が必要_${S.period}_${stamp()}.csv`, [['判定','理由','品目コード','品目名','倉庫コード','倉庫名','アプリ合計','確定数量','差','Excelの行','回答','回答者','差異の理由','警告','情報']].concat(
+    L.map(g=>[g.st==='fix'?'修正候補（未承認）':ST[g.st], g.whyLabel, g.code, g.name, g.wh, whName(g.wh), g.code?g.app:'', g.target, g.diff, srcOf(g), g.rows.map(r=>r.ansRaw||'未回答').join(' ／ '), [...new Set(g.rows.map(r=>r.who).filter(Boolean))].join('・'), g.rows.map(r=>r.why).filter(Boolean).join(' ／ '), g.warns.join(' ／ '), g.infos.join(' ／ ')])));
+  $('outMsg').textContent = `確認が必要な ${L.length} 件を出力しました。`;
+}
+function exportLog(){
+  const out=[['工場','原本行','覚書','場所','AZコード','Excel数量','Excel単位','FUJINコード（Excel）','FUJINコード（画面で直した値）','倉庫（Excel）','倉庫（画面で直した値）','ExcelのFUJIN数量','FUJIN単位','回答','回答者','差異の理由','訂正数量','確定数量（Excel）','確定数量（計算）','まとまりの判定','まとまりの理由','アプリ合計','まとまりの確定数量','差','承認']];
+  for(const g of S.res.groups) for(const r of g.rows){ const ov=S.rowOv[r.key]||{};
+    out.push([r.fac, r.line, r.memo, r.place, r.az, r.xq, r.xu, r.code0, ov.code!=null?ov.code:'', r.wh0, ov.wh!=null?ov.wh:'', r.fq, r.fu, r.ansRaw, r.who, r.why, r.fixq, r.ag, r.agCalc, g.st==='fix'?(g.approved?'修正候補（承認済み）':'修正候補（未承認）'):ST[g.st], g.whyLabel, g.code?g.app:'', g.target, g.diff, g.approved?'承認':'']); }
+  download(`棚卸差異_判断記録_${S.period}_${stamp()}.csv`, out);
+  $('outMsg').textContent = `判断記録 ${out.length-1} 行を出力しました。`;
+}
+function exportAppOnly(){
+  const L=S.res.appOnly; if(!L.length) return toast('Excelに無いアプリ登録はありません');
+  download(`棚卸差異_Excelに無いアプリ登録_${S.period}_${stamp()}.csv`, [['倉庫コード','倉庫名','品目コード','品目名','アプリ合計']].concat(L.map(a=>[a.wh, whName(a.wh), a.code, a.name||((S.item.get(a.code)||{}).name||''), a.total])));
+  $('outMsg').textContent = `Excelに無いアプリ登録 ${L.length} 件を出力しました（0にはしていません）。`;
+}
+$('oPlan').onclick=exportPlan; $('oCheck').onclick=exportCheck; $('oLog').onclick=exportLog; $('oApp').onclick=exportAppOnly;
+// 作業ファイル：画面で直した値と承認だけ（Excelの中身は入れない）
+$('wSave').onclick=()=>{
+  const data={kind:'fujin_tana_reconcile', version:1, period:S.period, excel:S.fileName, savedAt:new Date().toISOString(), savedBy:meName(), rowOv:S.rowOv, grpOv:S.grpOv};
+  const b=new Blob([JSON.stringify(data,null,1)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=`棚卸差異_作業ファイル_${S.period}_${new Date().toISOString().slice(0,16).replace(/[-:T]/g,'')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
+$('wLoad').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  try{ const d=JSON.parse(await f.text()); if(d.kind!=='fujin_tana_reconcile') throw new Error('この画面の作業ファイルではありません');
+    if(d.period && S.period && d.period!==S.period && !confirm(`作業ファイルの棚卸期間は「${d.period}」です。今は「${S.period}」です。読み込みますか？`)) return;
+    S.rowOv=d.rowOv||{}; S.grpOv=d.grpOv||{}; recompute(); toast('作業ファイルを読み込みました'+(d.savedBy?`（${d.savedBy}・${String(d.savedAt||'').slice(0,16).replace('T',' ')}）`:''));
+  }catch(err){ toast('読み込めません：'+err.message, true); } finally { e.target.value=''; }
+};
+
+loadAll();
+})();
+</script>
+</body>
+</html>
