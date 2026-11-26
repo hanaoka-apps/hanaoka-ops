@@ -7,7 +7,8 @@
 <!-- 棚卸 差異確認（2026-11）
      工場が回答した「棚卸差異確認Excel」（シート：Excel全明細）を読み込み、
      FUJINアプリの棚卸登録（SharePoint リスト FUJIN_棚卸入力）と突き合わせて、直す必要がある品目だけを洗い出す画面。
-     ・この画面は読むだけ。SharePoint には書き込まない（アプリへの反映は次の段階で追加する）。
+     ・承認した修正候補は「アプリに反映」で FUJIN_棚卸入力 に「訂正」として登録する（元の登録は消さない・書き換えない）。
+       反映できるのは決めた人だけ（REFLECTORS）。反映した回ごとにまとめて取り消せる。
      ・Excel の中身はこの画面の中だけで使い、どこにも保存しない（作業ファイルは自分でダウンロードしたときだけ）。
      ・FUJIN本体（棚卸モードの管理者画面「差異確認」タブ）から開く。サインインは FUJIN本体のものを使う。 -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
@@ -67,8 +68,8 @@ details summary{cursor:pointer;color:var(--teal);font-weight:700}
 <body>
 <div class="wrap">
   <h1>📦 棚卸 差異確認（Excel取込）</h1>
-  <div class="sub">工場が回答した「棚卸差異確認Excel」を読み込み、FUJINアプリの棚卸登録と突き合わせて、直す必要がある品目だけを洗い出します。<b>この画面はデータを読むだけで、どこにも書き込みません。</b></div>
-  <div class="steps"><span id="st1" class="on">① Excelを取込</span><span id="st2">② 自動判定</span><span id="st3">③ 確認・訂正・承認</span><span id="st4">④ 出力</span></div>
+  <div class="sub">工場が回答した「棚卸差異確認Excel」を読み込み、FUJINアプリの棚卸登録と突き合わせて、直す必要がある品目だけを洗い出し、承認したものをアプリの棚卸登録に「訂正」として反映します（元の登録は消しません）。</div>
+  <div class="steps"><span id="st1" class="on">① Excelを取込</span><span id="st2">② 自動判定</span><span id="st3">③ 確認・訂正・承認</span><span id="st4">④ 出力</span><span id="st5">⑤ アプリに反映</span></div>
 
   <div class="card">
     <h2>① Excelを取込</h2>
@@ -124,7 +125,17 @@ details summary{cursor:pointer;color:var(--teal);font-weight:700}
       <label class="btn" style="font-weight:700">作業ファイルを読み込む<input type="file" id="wLoad" accept=".json" style="display:none"></label>
     </div>
     <div class="msg" id="outMsg"></div>
-    <div class="note" style="margin-top:8px">承認した修正候補をアプリの棚卸登録に「訂正」として反映する機能は、次の更新で追加します（反映できる人は限定します）。反映後は、今までどおり管理者画面の「SMILEフォーム突合・出力」から取込ファイルを出してFUJIN本体に取り込みます。作業ファイルには、この画面で直した値と承認だけが入ります（Excelの中身は入りません）。</div>
+    <div class="note" style="margin-top:8px">作業ファイルには、この画面で直した値と承認だけが入ります（Excelの中身は入りません）。</div>
+  </div>
+
+  <div class="card" id="applyCard" style="display:none">
+    <h2>⑤ アプリに反映</h2>
+    <div class="note">承認した修正候補を、アプリの棚卸登録（期間：<b id="apPer"></b>）に<b>「訂正」</b>として登録します。数は「確定数量 − 今のアプリ合計」の差だけを足すので、元の登録は消えず、書き換えもしません。反映の直前にアプリの登録を読み直して差を計算し直すので、同じExcelをもう一度反映しても二重にはなりません。<br>
+      反映したあとは、今までどおり管理者画面の「SMILEフォーム突合・出力」（または集計）から取込ファイルを出して、FUJIN本体に取り込んでください。</div>
+    <div class="row" style="margin-top:8px"><button class="btn p" id="apGo">承認済みをアプリに反映</button><span id="apInfo" style="color:var(--muted)"></span></div>
+    <div class="msg" id="apMsg"></div>
+    <h2 style="margin-top:12px">反映した履歴</h2>
+    <div id="apHist" class="msg"></div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -274,7 +285,15 @@ function judge(rows, ctx){
     groups.get(k).rows.push(r);
   }
   const out = [];
+  // 画面で倉庫を変えた行の「移した元」。元の倉庫にExcelの行が残っていなければ、残る数量を決めるまとまりを作る
+  const moved = new Map();
+  for(const r of rows){ if(r.code && r.wh!==r.wh0 && r.wh0){ const k=r.wh0+'|'+r.code; if(!moved.has(k)) moved.set(k,[]); moved.get(k).push(r); } }
   for(const g of groups.values()) out.push(judgeGroup(g, ctx));
+  for(const [k,rs] of moved){
+    const g = out.find(x=>x.key===k);
+    if(g){ g.warns.push(`この倉庫から ${rs.map(r=>r.key).join('・')} を別の倉庫に移しました（確定数量が合っているか確認）`); continue; }
+    out.push(judgeMoveSrc(k, rs, ctx));
+  }
   for(const r of nocode) out.push(judgeNoCode(r, ctx));
   // Excelに出てこないアプリの登録（Excelに出てくる倉庫の分だけ）
   const seenWh = new Set(out.map(g=>g.wh).filter(Boolean)), used = new Set(out.map(g=>g.key));
@@ -346,6 +365,23 @@ function judgeGroup(g, ctx){
   g.approvalStale = !!(go.ok && !g.approved && st==='fix');
   return g;
 }
+function judgeMoveSrc(k, rs, ctx){
+  const [wh, code] = [k.slice(0,k.indexOf('|')), k.slice(k.indexOf('|')+1)];
+  const a = ctx.app.get(k), app = a ? a.total : 0, it = itemInfo(ctx, code);
+  const g = {key:k, code, wh, rows:[], moveSrc:true, name:(it&&it.name)||(a&&a.name)||rs[0].fname||'', app, hasApp:!!(a&&a.n>0), loc:locOf(ctx, code, wh), base:it?it.baseWh:'', facs:[], sumX:{}, warns:[], infos:[`${rs.map(r=>r.key).join('・')} を ${[...new Set(rs.map(r=>r.wh))].join('・')} に移した元の倉庫`]};
+  const go = ctx.grpOv[k]||{};
+  g.autoSt='check'; g.autoTarget=null; g.why='倉庫を移した元：ここに残る数量を確定数量に入れてください';
+  let target=null, st='check', why=g.why;
+  if(go.qty!=null && go.qty!==''){ target=Number(go.qty); g.manual=true; why='倉庫を移した元 → 画面で確定数量を入力'; }
+  else if(!g.hasApp){ st='none'; why='倉庫を移した元（アプリに登録なし）'; target=0; }
+  g.target=target;
+  if(target!=null){ g.diff=target-app; st = near(g.diff,0)?'none':'fix'; } else g.diff=null;
+  g.st=st; g.whyLabel=why;
+  g.approved = !!(st==='fix' && go.ok && near(go.ok.target, target) && near(go.ok.app, app));
+  g.approvalStale = !!(go.ok && !g.approved && st==='fix');
+  g.baseDiff = !!(g.base && g.base!==wh);
+  return g;
+}
 function judgeNoCode(r, ctx){
   const g = {key:'#'+r.key, code:'', wh:r.wh, rows:[r], name:r.fname||r.memo||'', app:null, hasApp:false, loc:'', base:'', facs:[r.fac], sumX:{[r.fac||'?']:r.xq||0}, warns:[], infos:[], target:null, diff:null};
   if(r.az) g.infos.push('AZコード：'+r.az+(ctx.item.has(r.az)?'（品目マスタにあり）':''));
@@ -391,7 +427,7 @@ async function loadPeriods(){
 async function loadApp(){
   if(!S.period){ S.appRaw=[]; S.app=new Map(); return; }
   const items = await listAll(TANA.inputList, `fields/PeriodId eq '${S.period.replace(/'/g,"''")}'`);
-  S.appRaw = items.map(i=>{ const f=i.fields||{}; return {code:f.Title, wh:canonWh(f.WhCode), name:f.ItemName||'', qty:Number(f.Qty)||0, canceled:!!f.Canceled}; });
+  S.appRaw = items.map(i=>{ const f=i.fields||{}, u=(i.createdBy&&i.createdBy.user)||{}; return {id:i.id, code:f.Title, wh:canonWh(f.WhCode), name:f.ItemName||'', qty:Number(f.Qty)||0, canceled:!!f.Canceled, memo:f.Memo||'', cid:f.ClientId||'', type:f.EntryType||'', by:u.displayName||'', mail:(u.email||'').toLowerCase(), at:i.createdDateTime}; });
   const m=new Map();
   for(const x of S.appRaw){ if(x.canceled) continue; const k=x.wh+'|'+x.code; const a=m.get(k)||{total:0, n:0, name:x.name}; a.total+=x.qty; a.n++; m.set(k,a); }
   S.app = m;
@@ -440,9 +476,9 @@ $('reload').onclick = loadAll;
 function recompute(){
   if(!S.rows) return;
   S.res = judge(S.rows, {app:S.app, item:S.item, wh:S.wh, rowOv:S.rowOv, grpOv:S.grpOv});
-  ['st1','st2','st3','st4'].forEach((id,i)=>$(id).classList.toggle('on', true));
-  $('judgeCard').style.display=''; $('listCard').style.display=''; $('outCard').style.display='';
-  renderKpis(); fillFilters(); renderTable();
+  ['st1','st2','st3','st4','st5'].forEach((id,i)=>$(id).classList.toggle('on', true));
+  $('judgeCard').style.display=''; $('listCard').style.display=''; $('outCard').style.display=''; $('applyCard').style.display='';
+  renderKpis(); fillFilters(); renderTable(); renderApply();
 }
 function renderKpis(){
   const G=S.res.groups, c={}; for(const g of G) c[g.st]=(c[g.st]||0)+1;
@@ -475,7 +511,7 @@ function renderTable(){
   const facQ = (g,f) => g.sumX[f]!=null ? fmt(g.sumX[f]) : '';
   $('tb').innerHTML = shown.map(g=>{
     const go=S.grpOv[g.key]||{}, whN=(S.wh.get(g.wh)||{}).name||'';
-    const r0=g.rows[0], rov=S.rowOv[r0.key]||{};
+    const r0=g.rows[0]||{}, rov=(r0.key&&S.rowOv[r0.key])||{};
     const codeCell = g.code ? `<b>${esc(g.code)}</b>` : `<input class="c ${rov.code!=null?'ov':''}" data-rc="${esc(r0.key)}" placeholder="FUJINコード" value="${esc(rov.code||'')}">`;
     const ansCell = g.rows.map(r=>`${ansLabel(r)}${r.who?`<span class="orig">（${esc(r.who)}）</span>`:''}`).join('<br>');
     const whyCell = g.rows.map(r=>r.why).filter(Boolean).map(esc).join('<br>―<br>');
@@ -569,6 +605,75 @@ $('wLoad').onchange=async e=>{
     S.rowOv=d.rowOv||{}; S.grpOv=d.grpOv||{}; recompute(); toast('作業ファイルを読み込みました'+(d.savedBy?`（${d.savedBy}・${String(d.savedAt||'').slice(0,16).replace('T',' ')}）`:''));
   }catch(err){ toast('読み込めません：'+err.message, true); } finally { e.target.value=''; }
 };
+
+// ---- ⑤ アプリに反映 ----
+// 反映できる人（サインインのアドレス）。2026-11 室長の指示：室長と石井さんだけ
+const REFLECTORS = ['m.hanaoka@hanaokacorp.onmicrosoft.com', 'm.hanaoka@hanaoka-corp.co.jp', 'a.ishii@hanaokacorp.onmicrosoft.com'];
+const RECON_TAG = '[差異確認 ';
+function meMail(){ try{ const a=window.top._fujinUser; return String((a&&a.username)||'').toLowerCase(); }catch(_){ return ''; } }
+function canReflect(){ return REFLECTORS.includes(meMail()); }
+function periodOpen(){ const p=S.periods.find(x=>x.id===S.period); return !!(p && p.status==='受付中'); }
+function approvedFix(){ return S.res ? S.res.groups.filter(g=>g.st==='fix' && g.approved && g.code && g.wh) : []; }
+function renderApply(){
+  if(!S.res) return;
+  $('apPer').textContent = S.period;
+  const L = approvedFix(), ok = canReflect(), open = periodOpen();
+  $('apGo').disabled = !(ok && open && L.length);
+  $('apGo').textContent = `承認済みをアプリに反映（${L.length} 件）`;
+  $('apInfo').innerHTML = !ok ? '反映できるのは決められた人だけです（この画面を開いている人には反映の権限がありません）' : !open ? '<span class="e">この棚卸期間は受付中ではないため反映できません（管理者画面の「棚卸期間」で受付を再開してください）</span>' : (L.length ? `増やす ${L.filter(g=>g.diff>0).length} 件・減らす ${L.filter(g=>g.diff<0).length} 件` : '承認済みの修正候補がありません（③で承認してください）');
+  renderHistory();
+}
+function batchId(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return `R${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; }
+function recFor(g, batch){
+  const who=[...new Set(g.rows.map(r=>r.who).filter(Boolean))].join('・'), why=g.rows.map(r=>r.why).filter(Boolean).join('／');
+  const src = g.moveSrc ? '倉庫移動の元' : g.rows.map(r=>r.key).join(' ');
+  const memo = `${RECON_TAG}${batch}] ${src}${who?' 回答者:'+who:''}${g.manual?' 画面で数量入力':''}${why?' 理由:'+why:''}`.slice(0,200);
+  const type = g.hasApp ? 'adjust' : (near(g.target,0) ? 'zero' : 'scan');
+  return {Title:g.code, WhCode:g.wh, WhName:(S.wh.get(g.wh)||{}).name||'', Loc:g.loc, ItemName:g.name||'', Qty:g.hasApp?g.diff:g.target, PeriodId:S.period, EntryType:type, Canceled:false, Memo:memo, ClientId:`recon|${batch}|${S.period}|${g.wh}|${g.code}`};
+}
+$('apGo').onclick = async ()=>{
+  if(!canReflect()) return toast('反映の権限がありません', true);
+  $('apGo').disabled = true; $('apMsg').textContent = 'アプリの登録を読み直して、差を計算し直しています…';
+  try{ await loadPeriods(); if(!periodOpen()) throw new Error('この棚卸期間は受付中ではありません'); await loadApp(); recompute(); }
+  catch(e){ $('apMsg').innerHTML=`<span class="e">${esc(e.message)}</span>`; renderApply(); return; }
+  const L = approvedFix();
+  if(!L.length){ $('apMsg').innerHTML='<span class="w">反映できる承認済みの修正候補がありません。アプリの登録が変わって承認が外れたものは、③で確かめて承認し直してください。</span>'; renderApply(); return; }
+  const byWh = {}; for(const g of L){ const k=g.wh+' '+((S.wh.get(g.wh)||{}).name||''); byWh[k]=(byWh[k]||0)+g.diff; }
+  if(!confirm(`期間「${S.period}」のアプリの棚卸登録に、訂正を ${L.length} 件登録します。\n\n倉庫ごとの増減：\n${Object.entries(byWh).map(([k,v])=>'・'+k+'：'+fmtD(v)).join('\n')}\n\n反映した回はあとでまとめて取り消せます。よろしいですか？`)){ $('apMsg').textContent=''; renderApply(); return; }
+  const batch = batchId(); let ok=0; const ng=[];
+  for(let i=0;i<L.length;i++){
+    const g=L[i], rec=recFor(g, batch);
+    $('apMsg').textContent = `登録しています… ${i+1} / ${L.length}`;
+    try{
+      const r = await gfetch(`/sites/${TANA.site}/lists/${TANA.inputList}/items`, {method:'POST', body:JSON.stringify({fields:rec})});
+      if(r.status===201) ok++; else ng.push(`${g.code}（${g.wh}）：${r.status}`);
+    }catch(e){ ng.push(`${g.code}（${g.wh}）：${e.message}`); }
+  }
+  try{ await loadApp(); recompute(); }catch(_){}
+  $('apMsg').innerHTML = `反映しました：${ok} 件（回：${esc(batch)}）` + (ng.length?`<br><span class="e">登録できなかったもの ${ng.length} 件：${ng.map(esc).join('、')}</span><br>もう一度「反映」を押すと、残りの分だけ登録し直します。`:'') + '<br>次は管理者画面の「SMILEフォーム突合・出力」から取込ファイルを出してください。';
+  toast(ng.length?`反映 ${ok} 件・失敗 ${ng.length} 件`:`反映しました（${ok} 件）`, !!ng.length);
+};
+function batches(){
+  const m = new Map();
+  for(const x of S.appRaw){ if(!String(x.memo).startsWith(RECON_TAG)) continue; const b=x.memo.slice(RECON_TAG.length, x.memo.indexOf(']')); const o=m.get(b)||{id:b, items:[], by:x.by, mail:x.mail, at:x.at}; o.items.push(x); m.set(b,o); }
+  return [...m.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id)));
+}
+function renderHistory(){
+  const B = batches(), me = meMail();
+  $('apHist').innerHTML = B.length ? `<table><tr><th>回</th><th>反映した人</th><th class="num">件数</th><th class="num">増減の合計</th><th>状態</th><th></th></tr>${B.map(b=>{ const live=b.items.filter(x=>!x.canceled); return `<tr><td>${esc(b.id)}</td><td>${esc(b.by)}</td><td class="num">${b.items.length}</td><td class="num">${fmtD(live.reduce((s,x)=>s+x.qty,0))}</td><td>${live.length?(live.length<b.items.length?`一部取消（残り ${live.length} 件）`:'反映中'):'取消済み'}</td><td>${live.length && canReflect() && (!b.mail || b.mail===me) ? `<button class="btn" data-bx="${esc(b.id)}">この回をまとめて取り消す</button>` : ''}</td></tr>`; }).join('')}</table><div class="orig">取り消しは、その回を反映した本人だけができます。</div>` : '<span style="color:var(--muted)">まだ反映していません</span>';
+  $('apHist').querySelectorAll('[data-bx]').forEach(b=>b.onclick=()=>cancelBatch(b.dataset.bx));
+}
+async function cancelBatch(id){
+  const b = batches().find(x=>x.id===id); if(!b) return;
+  const live = b.items.filter(x=>!x.canceled);
+  if(!confirm(`回「${id}」で反映した訂正 ${live.length} 件を取り消します（登録は消さずに「取消」にします）。よろしいですか？`)) return;
+  let ok=0; const ng=[];
+  for(let i=0;i<live.length;i++){ const x=live[i]; $('apMsg').textContent=`取り消しています… ${i+1} / ${live.length}`;
+    try{ const r = await gfetch(`/sites/${TANA.site}/lists/${TANA.inputList}/items/${x.id}/fields`, {method:'PATCH', body:JSON.stringify({Canceled:true, CancelNote:'差異確認の反映を取り消し（'+id+'）'})}); if(r.ok) ok++; else ng.push(`${x.code}：${r.status}`); }
+    catch(e){ ng.push(`${x.code}：${e.message}`); } }
+  try{ await loadApp(); recompute(); }catch(_){}
+  $('apMsg').innerHTML = `取り消しました：${ok} 件` + (ng.length?`<br><span class="e">取り消せなかったもの：${ng.map(esc).join('、')}</span>`:'');
+}
 
 loadAll();
 })();
