@@ -429,12 +429,27 @@ function payListHtml(ym) {
   rows.forEach(r => { const l = spans.at(-1); if (l && l.g === r.grp) l.n++; else spans.push({ g: r.grp, n: 1 }); });
   const cell = (v, r) => v == null || v === 0 ? '' : typeof v === 'number' ? (/(日数|時間|回数)$/.test(r.label) ? String(v) : yen(v)) : esc(v);
   const kc = r => PAY_KEY.test(r.label) ? ' key' : '';
-  return `<div class="card"><h2>${ymLabel(ym)}分 支給控除一覧表（${people.length}名）<span class="sp"></span><span class="small muted">支給日 ${esc(pr.payDate || '—')}　資料：${esc(pr.file || '—')}</span></h2>
+  return paySummaryHtml(ym, pr) + `<div class="card"><h2>${ymLabel(ym)}分 支給控除一覧表（${people.length}名）<span class="sp"></span><span class="small muted">支給日 ${esc(pr.payDate || '—')}　資料：${esc(pr.file || '—')}</span></h2>
   ${pr.rows?.length ? '' : '<p class="small muted">この月は合計の項目だけ持っています（健康保険・厚生年金などの内訳は、資料を取り込み直すと出ます）。</p>'}
   <div class="ptbl-wrap"><table class="ptbl"><thead><tr><th class="sticky c1" rowspan="2">No.</th><th class="sticky c2" rowspan="2">氏名</th>${spans.map(s => `<th class="grp g-${s.g}" colspan="${s.n}">${GN[s.g]}</th>`).join('')}</tr>
   <tr>${rows.map(r => `<th class="n g-${r.grp}${kc(r)}">${esc(r.label)}</th>`).join('')}</tr></thead>
   <tbody>${people.map((p, j) => `<tr><td class="sticky c1">${esc(p.code)}</td><td class="sticky c2">${esc(p.name)}</td>${rows.map(r => `<td class="n${kc(r)}">${cell(r.vals[j], r)}</td>`).join('')}</tr>`).join('')}
   <tr class="tot"><td class="sticky c1"></td><td class="sticky c2">合計</td>${rows.map(r => `<td class="n${kc(r)}">${r.total == null ? '' : cell(r.total, r)}</td>`).join('')}</tr></tbody></table></div></div>`;
+}
+// 先月との比べ：主な項目の今月・前月・差と、振込額が変わった人
+function paySummaryHtml(ym, pr) {
+  const pv = payroll(addMonth(ym, -1)), T = (p, k) => p ? (p.total[k] || 0) : null;
+  const items = [['人数', p => p ? p.people.length : null, 1], ['課税支給合計', p => T(p, 'taxable')], ['立替経費', p => T(p, 'tatekae')], ['社保控除合計', p => T(p, 'shaho')], ['所得税', p => T(p, 'shotoku')], ['住民税', p => T(p, 'jumin')], ['控除合計', p => T(p, 'deduct')], ['振込支給額', p => T(p, 'bank')]]
+    .map(([l, f, cnt]) => ({ l, a: f(pr), b: f(pv), cnt })).filter(x => x.a || x.b);
+  const dif = (a, b, cnt) => b == null ? '<span class="muted">—</span>' : a === b ? '<span class="muted">±0</span>' : `<span class="${a > b ? 'd-up' : 'd-down'}">${a > b ? '+' : '−'}${cnt ? Math.abs(a - b) : yen(Math.abs(a - b))}</span>`;
+  const byCode = new Map((pv?.people || []).map(p => [p.code, p]));
+  const changed = pv ? pr.people.map(p => ({ p, q: byCode.get(p.code) })).filter(x => !x.q || x.q.bank !== x.p.bank) : [];
+  const gone = pv ? pv.people.filter(q => !pr.people.some(p => p.code === q.code)) : [];
+  return `<div class="card"><h2>先月との比べ<span class="sp"></span><span class="small muted">${ymLabel(ym)}分 ／ ${ymLabel(addMonth(ym, -1))}分</span></h2>
+  ${!pv ? '<p class="small muted">前月の給与の資料がないので、比べられません。</p>' : ''}
+  <div class="top"><div><table><thead><tr><th>項目</th><th class="n">今月</th><th class="n">前月</th><th class="n">差</th></tr></thead><tbody>
+  ${items.map(x => `<tr${x.l === '振込支給額' ? ' class="tot"' : ''}><td>${x.l}</td><td class="n">${x.a == null ? '—' : x.cnt ? x.a + '名' : yen(x.a)}</td><td class="n muted">${x.b == null ? '—' : x.cnt ? x.b + '名' : yen(x.b)}</td><td class="n">${dif(x.a || 0, x.b, x.cnt)}</td></tr>`).join('')}</tbody></table></div>
+  <div><div class="small muted" style="margin-bottom:6px">振込額が変わった人</div>${!pv ? '<span class="small muted">—</span>' : changed.length || gone.length ? `<table><tbody>${changed.map(x => `<tr><td>${esc(x.p.name)}${x.q ? '' : ' <span class="tag t-new">今月から</span>'}</td><td class="n">${yen(x.p.bank)}</td><td class="n">${x.q ? dif(x.p.bank, x.q.bank) : ''}</td></tr>`).join('')}${gone.map(q => `<tr><td>${esc(q.name)} <span class="tag t-gray">今月はなし</span></td><td class="n">—</td><td class="n"><span class="d-down">−${yen(q.bank)}</span></td></tr>`).join('')}</tbody></table>` : '<span class="small muted">変わった人はいません（全員 前月と同じ振込額）</span>'}</div></div></div>`;
 }
 function payPeriod(key) { const [y, h] = key.split('-H').map(Number); const ms = [1, 2, 3, 4, 5, 6].map(i => `${y}-${String(i + (h === 2 ? 6 : 0)).padStart(2, '0')}`); return { y, h, ms, due: h === 1 ? `${y}-07-10` : `${y + 1}-01-20`, label: `${y}年 ${h === 1 ? '1〜6月' : '7〜12月'}支給分`, prev: h === 1 ? `${y - 1}-H2` : `${y}-H1`, next: h === 1 ? `${y}-H2` : `${y + 1}-H1` }; }
 function payGensenHtml(ym) {
