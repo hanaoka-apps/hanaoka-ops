@@ -85,6 +85,13 @@
   #sheet .it small{color:#444}
   #sheet .main-it{font-weight:700}
   #sheet .foot{margin-top:2mm;font-size:7.5pt;color:#444}
+  #sheet td.on{text-align:center;font-weight:700;white-space:nowrap;padding-left:.3mm;padding-right:.3mm}
+  #sheet td.wk{font-size:8pt}
+  /* 総務内の予定（パートの方の出社日・その日の業務） */
+  table.ed tr.sh-off td.dw{color:var(--danger)}
+  table.ed tr.sh-on td{background:#eef6f0}
+  table.ed td.ck{text-align:center;width:52px}
+  table.ed td.ck input{width:18px;height:18px;cursor:pointer}
   /* モーダル */
   .modal{position:fixed;inset:0;background:rgba(20,26,34,.45);display:none;align-items:center;justify-content:center;z-index:200;padding:14px}
   .modal.on{display:flex}
@@ -143,6 +150,8 @@
     <span class="spacer"></span>
     <button class="act" id="autoBtn" title="ルールから、この月の予定の案を作ります（いまの内容は置き換わります）">⚙ ルールから自動作成</button>
     <button class="act" id="saveBtn">💾 下書きを保存</button>
+    <select id="sheetMode" title="印刷の形を選びます" style="font-size:12.5px;padding:5px 6px;border:1px solid var(--border);border-radius:5px">
+      <option value="boss">社長用</option><option value="soumu">総務内用（出社・業務つき）</option></select>
     <button class="act" onclick="window.print()">🖨 印刷（A4）</button>
     <button class="act go" id="approveBtn">社長OK（承認済みにする）</button>
     <button class="act pri" id="publishBtn">📢 公開（全社スケジュールへ登録）</button>
@@ -180,8 +189,20 @@
       <tbody id="edBody"></tbody></table>
   </div>
 
+  <details class="card2" id="shiftCard">
+    <summary style="cursor:pointer;font-size:13.5px;font-weight:700;color:var(--primary)">総務内の予定（パートの方の出社日・その日の業務）　<span class="cnt" style="font-weight:400">総務の中だけで使います。全社スケジュールには公開しません。印刷は「総務内用」を選びます</span></summary>
+    <div style="margin-top:8px">
+      <table class="ed" style="max-width:760px"><thead><tr><th style="width:96px">日付</th><th style="width:52px;text-align:center">出社</th><th>業務（「／」で改行して印刷）</th></tr></thead>
+        <tbody id="shiftBody"></tbody></table>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <span class="cnt">社長OK・公開のあとでも直せます。</span>
+        <span class="spacer"></span><span class="msg" id="shiftMsg"></span>
+        <button class="act pri" id="shiftSave">総務内の予定を保存</button></div>
+    </div>
+  </details>
+
   <div class="card2">
-    <h4>印刷プレビュー（A4縦）<span class="cnt">社長に見せる資料です。「印刷」を押すと、この部分だけが印刷されます。</span></h4>
+    <h4>印刷プレビュー（A4縦）<span class="cnt" id="sheetNote">社長に見せる資料です。「印刷」を押すと、この部分だけが印刷されます。</span></h4>
     <div id="sheetWrap"><div id="sheet"></div></div>
   </div>
 </div>
@@ -293,6 +314,9 @@ let CAL = { holidays: new Set(), satWork: new Set(), names: new Map(), ok: false
 let LISTS = { items: null, month: null };
 let PAYROLL = JSON.parse(JSON.stringify(DEFAULT_PAYROLL)), PAYROLL_ID = null;
 let uidSeq = 1, dirty = false, LOADING = false;
+/* 総務内の予定：日付 → {id, on:出社するか, work:業務, orig}。支払決済スケジュールのリストに 区分(Kind)='shift' で1日1件保存する */
+let SHIFT = new Map(), shiftDirty = false;
+const shiftSig = s => JSON.stringify([!!s.on, s.work || '']);
 const ctx = () => ({ calHolidays: CAL.holidays, satWork: CAL.satWork });
 const ymLabel = ym => `${ym.slice(0, 4)}年${Number(ym.slice(5))}月`;
 const shiftYM = (ym, n) => { const d = new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5)) - 1 + n, 1)); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`; };
@@ -330,15 +354,21 @@ async function createLists(){
 }
 const NONINDEX = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
 async function loadMonthData(ym){
-  ITEMS = []; HEAD = { id: null, status: 'draft', approvedAt: '', approvedBy: '', publishedAt: '', publishedBy: '' };
+  ITEMS = []; SHIFT = new Map(); shiftDirty = false; HEAD = { id: null, status: 'draft', approvedAt: '', approvedBy: '', publishedAt: '', publishedBy: '' };
   if (!LISTS.items || !LISTS.month) return;
   const flt = encodeURIComponent(`fields/YM eq '${ym}'`);
   let rows;
   try { rows = await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.items}/items?$expand=fields&$top=500&$filter=${flt}`, NONINDEX); }
   catch (e) { if (e.status !== 400) throw e; rows = (await gGetAll(`/sites/${SITE_ID}/lists/${LISTS.items}/items?$expand=fields&$top=2000`)).filter(r => r.fields?.YM === ym); }
+  SHIFT = new Map();
   rows.forEach(r => {
     const f = r.fields || {};
-    const it = { uid: uidSeq++, id: r.id, date: f.ItemDate || '', title: f.Title || '', kind: f.Kind === 'sub' ? 'sub' : 'main', owner: f.Owner || '', memo: f.Memo || '', pubId: f.PublishedId || '', del: f.Deleted === '1' };
+    if (f.Kind === 'shift') {             /* 総務内の予定（1日1件）。公開する予定とは分けて持つ */
+      const s = { id: r.id, on: f.Memo === '出社', work: f.Title || '' }; s.orig = shiftSig(s);
+      if (f.ItemDate) SHIFT.set(f.ItemDate, s);
+      return;
+    }
+    const it ={ uid: uidSeq++, id: r.id, date: f.ItemDate || '', title: f.Title || '', kind: f.Kind === 'sub' ? 'sub' : 'main', owner: f.Owner || '', memo: f.Memo || '', pubId: f.PublishedId || '', del: f.Deleted === '1' };
     it.orig = sig(it); ITEMS.push(it);
   });
   let mrows;
@@ -420,8 +450,49 @@ function dayInfo(d){
 function sortedItems(){ return ITEMS.filter(i => !i.del).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'main' ? -1 : 1) || a.title.localeCompare(b.title, 'ja')); }
 function render(){
   el('monthLabel').textContent = ymLabel(YM);
-  paintHead(); renderEditor(); renderSheet(); renderPayroll(); paintStatus();
+  paintHead(); renderEditor(); renderShift(); renderSheet(); renderPayroll(); paintStatus();
 }
+/* ---- 総務内の予定（パートの方の出社日・その日の業務） ---- */
+function renderShift(){
+  const y = Number(YM.slice(0, 4)), m = Number(YM.slice(5)), n = R.lastDay(y, m);
+  let h = '';
+  for (let d = 1; d <= n; d++) {
+    const ds = R.ymd(y, m, d), di = dayInfo(ds), s = SHIFT.get(ds) || {};
+    h += `<tr class="${s.on ? 'sh-on' : ''}${di.off ? ' sh-off' : ''}" data-d="${ds}">
+      <td class="dw">${m}/${d}(${WD[di.w]})${di.label ? '・' + esc(di.label === '休' ? '休日' : di.label) : ''}</td>
+      <td class="ck"><input type="checkbox" data-sf="on"${s.on ? ' checked' : ''}></td>
+      <td><input type="text" data-sf="work" value="${esc(s.work || '')}" placeholder="${d === 1 ? '例：月末締め請求書／入金管理' : ''}"></td></tr>`;
+  }
+  el('shiftBody').innerHTML = h;
+}
+function shiftChanged(){ shiftDirty = true; el('shiftMsg').textContent = '※保存していません'; el('shiftMsg').className = 'msg ng'; }
+el('shiftBody').addEventListener('input', e => {
+  const tr = e.target.closest('tr[data-d]'), f = e.target.dataset.sf; if (!tr || !f) return;
+  const s = SHIFT.get(tr.dataset.d) || { id: null, on: false, work: '', orig: '' };
+  if (f === 'on') { s.on = e.target.checked; tr.classList.toggle('sh-on', s.on); } else s.work = e.target.value;
+  SHIFT.set(tr.dataset.d, s); shiftChanged(); renderSheet();
+});
+async function saveShift(){
+  for (const [date, s] of SHIFT) {
+    const empty = !s.on && !s.work.trim();
+    if (empty) {
+      if (s.id) { const r = await gSend('DELETE', `/sites/${SITE_ID}/lists/${LISTS.items}/items/${s.id}`); if (!r.ok && r.status !== 404) throw new Error(`${date} を消せませんでした（${r.status}）`); }
+      SHIFT.delete(date); continue;
+    }
+    const fields = { Title: s.work.trim(), ItemDate: date, YM, Kind: 'shift', Owner: '', Memo: s.on ? '出社' : '', PublishedId: '', Deleted: '' };
+    if (!s.id) { const r = await gSend('POST', `/sites/${SITE_ID}/lists/${LISTS.items}/items`, { fields }); if (!r.ok) throw new Error(`${date} を保存できませんでした（${r.status}）`); s.id = r.body.id; }
+    else if (shiftSig(s) !== s.orig) { const r = await gSend('PATCH', `/sites/${SITE_ID}/lists/${LISTS.items}/items/${s.id}/fields`, fields); if (!r.ok) throw new Error(`${date} を保存できませんでした（${r.status}）`); }
+    s.orig = shiftSig(s);
+  }
+}
+el('shiftSave').onclick = async () => {
+  if (!(await ensureLists())) return;
+  const msg = el('shiftMsg'), btn = el('shiftSave'); btn.disabled = true; msg.className = 'msg'; msg.textContent = '保存中...';
+  try { await saveShift(); shiftDirty = false; msg.className = 'msg ok'; msg.textContent = '保存しました'; showSnack('総務内の予定を保存しました'); renderShift(); renderSheet(); }
+  catch (e) { msg.className = 'msg ng'; msg.textContent = e.message; showSnack(e.message); }
+  btn.disabled = false;
+};
+el('sheetMode').onchange = () => renderSheet();
 function paintHead(){
   const st = HEAD.status;
   el('badge').innerHTML = `<span class="badge ${st}">${st === 'published' ? '公開済み' : st === 'approved' ? '社長OK（未公開）' : '下書き'}</span>`;
@@ -478,18 +549,25 @@ function renderSheet(){
   const y = Number(YM.slice(0, 4)), m = Number(YM.slice(5)), n = R.lastDay(y, m);
   const by = new Map(); sortedItems().forEach(i => { if (!by.has(i.date)) by.set(i.date, []); by.get(i.date).push(i); });
   const line = it => `<span class="it ${it.kind === 'main' ? 'main-it' : ''}">${it.kind === 'sub' ? '' : '★'}${esc(it.title)}${it.owner ? `<small>（担当：${esc(it.owner)}）</small>` : ''}${it.memo ? `<small>　${esc(it.memo)}</small>` : ''}</span>`;
+  const soumu = el('sheetMode').value === 'soumu';      /* 総務内用：出社・業務の列を足す（社長の印はなし） */
+  el('sheetNote').textContent = soumu ? '総務の中で使う形です（出社日・業務つき）。「印刷」を押すと、この部分だけが印刷されます。' : '社長に見せる資料です。「印刷」を押すと、この部分だけが印刷されます。';
+  const shCols = ds => { const s = SHIFT.get(ds) || {};
+    return `<td class="on">${s.on ? '出社' : ''}</td><td class="wk">${(s.work || '').split(/[／\n]/).map(t => t.trim()).filter(Boolean).map(esc).join('<br>')}</td>`; };
   let rows = '';
   for (let d = 1; d <= n; d++) {
     const ds = R.ymd(y, m, d), di = dayInfo(ds), its = by.get(ds) || [];
     const cls = (di.cls === 'hol' ? 'hol' : (di.w === 0 ? 'su we' : di.w === 6 ? 'we' : '')) + (di.work ? ' work' : '');
-    rows += `<tr class="${cls}"><td class="d">${m}/${d}(${WD[di.w]})</td><td class="k">${esc(di.label === '休' ? '休日' : di.label)}</td>
+    rows += `<tr class="${cls}"><td class="d">${m}/${d}(${WD[di.w]})</td><td class="k">${esc(di.label === '休' ? '休日' : di.label)}</td>${soumu ? shCols(ds) : ''}
       <td>${its.filter(i => i.kind === 'main').map(line).join('')}</td><td>${its.filter(i => i.kind === 'sub').map(line).join('')}</td></tr>`;
   }
   const lock = HEAD.status !== 'draft';
-  el('sheet').innerHTML = `<div class="hd"><div><h1>■${y}年${m}月 支払決済スケジュール</h1>
+  const cols = soumu
+    ? `<th style="width:15mm">日付</th><th style="width:12mm">区分</th><th style="width:11mm">出社</th><th style="width:38mm">業務</th><th style="width:52mm">本編（★＝決済など）</th><th>補足（準備・作業）</th>`
+    : `<th style="width:17mm">日付</th><th style="width:19mm">区分</th><th style="width:70mm">本編（★＝支払決済などの本編）</th><th>補足（準備・作業）</th>`;
+  el('sheet').innerHTML = `<div class="hd"><div><h1>■${y}年${m}月 支払決済スケジュール${soumu ? '（総務内）' : ''}</h1>
       <div class="sub">総務部　作成：${esc(myName())}　／　${lock ? `社長OK：${esc(HEAD.approvedAt.slice(0, 10).replace(/-/g, '/'))}` : '※社長確認前（案）'}</div></div>
-      <div class="stamp"><div>社長<i>印</i></div><div>総務<i>印</i></div></div></div>
-    <table><thead><tr><th style="width:17mm">日付</th><th style="width:19mm">区分</th><th style="width:70mm">本編（★＝支払決済などの本編）</th><th>補足（準備・作業）</th></tr></thead><tbody>${rows}</tbody></table>
+      ${soumu ? '' : '<div class="stamp"><div>社長<i>印</i></div><div>総務<i>印</i></div></div>'}</div>
+    <table><thead><tr>${cols}</tr></thead><tbody>${rows}</tbody></table>
     ${payrollBox(y, m)}
     <div class="foot">※社長の都合により決済日がズレる事がございます。　※営業日は土日・祝日・会社休日を除いて数えます（土曜出社日は数えません）。</div>`;
 }
@@ -699,7 +777,7 @@ async function reload(){
   LOADING = false; render();
 }
 async function goMonth(ym){
-  if (dirty && !confirm('保存していない変更があります。破棄して移動しますか？')) return;
+  if ((dirty || shiftDirty) && !confirm('保存していない変更があります。破棄して移動しますか？')) return;
   YM = ym; try { history.replaceState(null, '', location.pathname + '?m=' + ym); } catch {}
   await reload();
 }
@@ -710,7 +788,7 @@ async function showApp(){
   const q = new URLSearchParams(location.search).get('m'); if (q && /^\d{4}-\d{2}$/.test(q)) YM = q;
   el('prev').onclick = () => goMonth(shiftYM(YM, -1)); el('next').onclick = () => goMonth(shiftYM(YM, 1));
   el('thisMonth').onclick = () => { const d = new Date(Date.now() + 9*3600e3); goMonth(`${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`); };
-  window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', e => { if (dirty || shiftDirty) { e.preventDefault(); e.returnValue = ''; } });
   await reload();
 }
 initMsal().catch(e => { console.error('MSAL初期化エラー:', e); showSnack('認証エラー: ' + (e.errorCode || e.message)); });
