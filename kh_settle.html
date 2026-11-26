@@ -114,6 +114,21 @@ details.sh-sec[open] summary{margin-bottom:10px}
   .sh-cancel{flex:0 0 30%}.sh-save{flex:1}
 }
 label.btn.small{padding:1px 8px;font-size:12px;margin-left:6px}#busy{padding:40px;text-align:center;color:var(--sub)}
+/* 借入・利息計算書（印刷すると左メニュー・上下のバー・ボタンを出さない） */
+.loan-ttl{display:flex;align-items:flex-end;gap:12px}
+.loan-wrap{overflow:auto}.loan-tbl td,.loan-tbl th{white-space:nowrap}.loan-tbl td.small{white-space:normal;min-width:180px}
+table.loan-sum td{padding:4px 8px}
+@media print{header,.actbar,.tabs,.hx-sidebar,.noprint{display:none !important}main{padding:0}.loan-wrap{overflow:visible}.loan-tbl{font-size:10px}.loan-tbl td,.loan-tbl th{padding:2px 5px}.card{box-shadow:none !important}}
+/* 給与：支給控除一覧表（左の2列は固定、横に流れる） */
+.ptabs{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px}
+.ptbl-wrap{overflow:auto;max-height:70vh}
+.ptbl th,.ptbl td{white-space:nowrap}
+.ptbl .sticky{position:sticky;background:#fff;z-index:1}.ptbl thead .sticky{background:#f8f9fc;z-index:2}
+.ptbl .c1{left:0;min-width:64px}.ptbl .c2{left:64px;min-width:90px;box-shadow:inset -1px 0 0 var(--line)}
+.ptbl th.grp{text-align:center;font-size:11px}.ptbl .g-pay{color:var(--pri)}.ptbl .g-ded{color:var(--up)}.ptbl .g-out{color:var(--txt)}
+.ptbl .key{font-weight:700;background:#fafbfd}
+.ptbl tr.tot td{border-top:2px solid var(--line)}
+table.nofu{max-width:560px}
 #tabs{display:none}.hx-item .badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--up);color:#fff;font-size:11px;margin-left:auto;text-align:center}
 html:not(.kh-in) body{padding-left:0}html:not(.kh-in) .hx-sidebar{display:none}
 @media(max-width:1024px){.actbar{left:0;padding:10px 16px}main{padding:14px 16px 120px}}
@@ -204,7 +219,7 @@ async function start() {
 }
 const thisYm = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 async function reload() {
-  const [st, pe, rc, lo, pa, pr, se, bk] = await Promise.all(['KH_Setting', 'KH_Payee', 'KH_Recurring', 'KH_Loan', 'KH_Payment', 'KH_Payroll', 'KH_Settle', 'KH_BankTxn'].map(items));
+  const [st, pe, rc, lo, pa, pr, se, bk] = await Promise.all(['KH_Setting', 'KH_Payee', 'KH_Recurring', 'KH_Loan', 'KH_Payment', 'KH_Payroll', 'KH_Settle', 'KH_BankTxn'].map(n => n === 'KH_Payroll' ? items(n).catch(() => []) : items(n)));   // 給与は見られる人を絞っている（読めない人は空）
   R = J(st.find(x => x.fields.Title === 'kh.rules')?.fields.Value, null); if (!R) throw new Error('KH_Setting に kh.rules がありません（Provision-KH.ps1 -Apply）');
   const f = x => ({ id: x.id, ...x.fields });
   DB.payees = pe.map(f); DB.recurring = rc.map(f); DB.loans = lo.map(f);
@@ -221,7 +236,9 @@ async function saveSettle(ym) {
 function allYms() { return [...new Set([...DB.payments.map(p => p.ym), ...Object.keys(DB.payroll), ...Object.keys(DB.settle)])].filter(Boolean).sort(); }
 const payments = ym => DB.payments.filter(p => p.ym === ym).sort((a, b) => (a.sec === b.sec ? 0 : a.sec === 'other' ? -1 : 1) || a.order - b.order);
 const payroll = ym => DB.payroll[ym] || null;
-function itemsOf(ym) { const ps = payments(ym).map(p => ({ kind: 'pay', id: 'p' + p.id, p })); const pr = payroll(ym); if (pr) ps.push({ kind: 'salary', id: ym + '-salary', pr }); return ps; }
+// 給与（金額・個人別）を見られる人。サイトのメンバーは登録の人と役員だけなので、全員に出す（2026-11-27 決定。役員以外が入るときは、ここと KH_Payroll の権限で絞る）
+const canPay = () => ['fukuda', 'shitsucho', 'shacho', 'viewer'].includes(ROLE);
+function itemsOf(ym) { const ps = payments(ym).map(p => ({ kind: 'pay', id: 'p' + p.id, p })); const pr = canPay() ? payroll(ym) : null; if (pr) ps.push({ kind: 'salary', id: ym + '-salary', pr }); return ps; }
 const itemAmt = it => it.kind === 'salary' ? it.pr.total.bank : it.p.pay;
 const itemName = it => it.kind === 'salary' ? `給与（${it.pr.people.length}名）` : it.p.payee;
 const itemMethod = it => it.kind === 'salary' ? 'salary' : it.p.method;
@@ -248,7 +265,7 @@ function flags(ym) {
     if (p.method === 'tatekae') out.push({ id: it.id, why: '立替', who: p.payee, amt: p.pay, note: '役員の立替。給与で精算（口座からは出ない）' });
     if (p.method === 'furikomi' && !payeeOf(p.payee)?.AcctNo) out.push({ id: it.id, why: '口座', who: p.payee, amt: p.pay, note: '振込先の口座が未登録', warn: 1 });
   }
-  const pr = payroll(ym), pp = payroll(addMonth(ym, -1));
+  const pr = canPay() ? payroll(ym) : null, pp = canPay() ? payroll(addMonth(ym, -1)) : null;   // 給与は見られる人だけ
   if (pr && pp && pr.total.bank !== pp.total.bank) out.push({ id: ym + '-salary', why: '給与', who: '給与の振込額が前月と違う', amt: pr.total.bank, note: `前月 ${yen(pp.total.bank)}` });
   if (!pr && ROLE === 'fukuda') out.push({ why: '給与', who: '給与の資料がまだ', amt: 0, note: '給与支給控除一覧表を取り込む', tab: 'list', warn: 1 });
   const r = reconcile(ym), ng = r.rows.filter(x => x.io === 'out' && !x.m);
@@ -317,14 +334,16 @@ function render() {
   $('#status').innerHTML = STEPS.map(([k, v], i) => `<span class="st ${i === si ? (k === 'done' ? 'done' : 'on') : ''}">${v}${k === 'shitsucho' && st.SkipShitsucho ? '（不在で省く）' : ''}${k === 'shacho' && st.ShachoAbsent ? '（不在→室長が代理）' : ''}</span>`).join('<span class="muted">›</span>');
   const ng = reconcile(ym).rows.filter(x => !x.m).length;
   const tabs = [['list', '📋 今月の支払'], ['summary', '📊 サマリー'], ['review', '✅ 確認'], ['bank', '🏦 入出金・突合' + (ng ? `<span class="badge">${ng}</span>` : '')]];
+  tabs.push(['loan', '💴 借入・利息']);
+  if (canPay()) tabs.push(['payroll', '👥 給与']);
   if (ROLE === 'fukuda') tabs.push(['zengin', '📤 全銀'], ['master', '⚙ 支払先・定額・借入']);
   $('#tabs').innerHTML = tabs.map(([k, v]) => `<button class="${S.tab === k ? 'on' : ''}" data-tab="${k}">${v}</button>`).join('');
   renderSidebar(tabs);
-  ({ list: renderList, summary: renderSummary, review: renderReview, bank: renderBank, zengin: renderZengin, master: renderMaster })[S.tab](ym);
+  ({ list: renderList, summary: renderSummary, review: renderReview, bank: renderBank, loan: renderLoan, payroll: renderPayroll, zengin: renderZengin, master: renderMaster })[S.tab === 'payroll' && !canPay() ? (S.tab = 'summary') : S.tab](ym);
   renderBar(ym);
 }
 // 左メニュー（花岡車輌の支払管理と同じ .hx-sidebar。中身はこの画面のタブ）
-const IC = { list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', summary: '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>', review: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', bank: '<path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/>', zengin: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/>', master: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>', home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>', chev: '<path d="M15 18l-6-6 6-6"/>' };
+const IC = { loan: '<circle cx="12" cy="12" r="9"/><path d="M8 7l4 5 4-5M12 12v6M9 13h6M9 16h6"/>', payroll: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>', list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', summary: '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>', review: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', bank: '<path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/>', zengin: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/>', master: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>', home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>', chev: '<path d="M15 18l-6-6 6-6"/>' };
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${IC[k]}</svg>`;
 function renderSidebar(tabs) {
   const label = v => v.replace(/^\S+\s/, '').replace(/<span class="badge">(\d+)<\/span>/, '').trim(), badge = v => (v.match(/<span class="badge">(\d+)<\/span>/) || [])[1];
@@ -355,7 +374,7 @@ function renderListPhone(ym) {
       h += `<button class="mcard" data-open="${it.id}"><span class="mc-l"><b>${esc(p.payee)}</b><span class="small muted">${esc(p.kamoku)}・${esc(R.methods[p.method] || p.method)}</span>${p.memo ? `<span class="small muted mc-memo">${esc(p.memo)}</span>` : ''}<span class="mc-tags">${p.varies ? '<span class="tag t-up">金額を入れる</span>' : ''}${nf ? `<span class="tag t-ok">📎 ${nf}枚</span>` : ed && p.method !== 'tatekae' ? '<span class="tag t-gray">請求書なし</span>' : ''}${matchMark(r, it.id, p.method)}</span></span><span class="mc-r"><b>${yen(p.pay)}</b><span class="small muted">円</span></span></button>`; }
   }
   const pr = payroll(ym);
-  h += `<div class="mhead">給与（決裁済み・参考）</div>` + (pr ? `<button class="mcard" data-open="${ym}-salary"><span class="mc-l"><b>給与（${pr.people.length}名）</b><span class="small muted">支給日 ${esc(pr.payDate)}</span></span><span class="mc-r"><b>${yen(pr.total.bank)}</b><span class="small muted">円</span></span></button>` : '<div class="small muted" style="padding:8px 4px">給与の資料がまだありません</div>');
+  if (canPay()) h += `<div class="mhead">給与（決裁済み・参考）</div>` + (pr ? `<button class="mcard" data-open="${ym}-salary"><span class="mc-l"><b>給与（${pr.people.length}名）</b><span class="small muted">支給日 ${esc(pr.payDate)}</span></span><span class="mc-r"><b>${yen(pr.total.bank)}</b><span class="small muted">円</span></span></button>` : '<div class="small muted" style="padding:8px 4px">給与の資料がまだありません</div>');
   $('#main').innerHTML = `<div class="mlist">${h}</div>`;
 }
 function renderList(ym) {
@@ -370,7 +389,7 @@ function renderList(ym) {
     h += `<tr class="tot"><td colspan="6">${esc(lab)} 計</td><td class="n">${yen(sum(ps.map(it => it.p.pay)))}</td><td colspan="3"></td></tr>`;
   }
   const pr = payroll(ym);
-  h += `<tr class="sec"><td colspan="10">給与（決裁済み・参考）</td></tr>` + (pr ? `<tr class="row" data-open="${ym}-salary"><td>給与</td><td>${pr.people.length}名 <span class="tag t-ok">決裁済</span></td><td class="small">支給日 ${esc(pr.payDate)}　総支給 ${yen(pr.total.gross)}・控除 ${yen(pr.total.deduct)}</td><td class="n">${yen(pr.total.gross)}</td><td></td><td></td><td class="n"><b>${yen(pr.total.bank)}</b></td><td>給与振込</td><td class="n muted">${payroll(addMonth(ym, -1)) ? yen(payroll(addMonth(ym, -1)).total.bank) : '—'}</td><td>${matchMark(r, ym + '-salary', 'salary')}</td></tr>` : `<tr><td colspan="10" class="muted">給与の資料（給与支給控除一覧表）がまだありません</td></tr>`);
+  if (canPay()) h += `<tr class="sec"><td colspan="10">給与（決裁済み・参考）</td></tr>` + (pr ? `<tr class="row" data-open="${ym}-salary"><td>給与</td><td>${pr.people.length}名 <span class="tag t-ok">決裁済</span></td><td class="small">支給日 ${esc(pr.payDate)}　総支給 ${yen(pr.total.gross)}・控除 ${yen(pr.total.deduct)}</td><td class="n">${yen(pr.total.gross)}</td><td></td><td></td><td class="n"><b>${yen(pr.total.bank)}</b></td><td>給与振込</td><td class="n muted">${payroll(addMonth(ym, -1)) ? yen(payroll(addMonth(ym, -1)).total.bank) : '—'}</td><td>${matchMark(r, ym + '-salary', 'salary')}</td></tr>` : `<tr><td colspan="10" class="muted">給与の資料（給与支給控除一覧表）がまだありません</td></tr>`);
   h += `<tr class="tot"><td colspan="6">今月の支払 合計（立替は給与に含むので除く）</td><td class="n">${yen(totals(ym).all)}</td><td colspan="3"></td></tr></tbody></table>${its.length ? '' : `<p class="muted">この月の支払はまだありません。${ROLE === 'fukuda' ? '上の「○月を作る」で毎月定額を並べます。' : ''}</p>`}</div>`;
   $('#main').innerHTML = h;
 }
@@ -390,7 +409,104 @@ function renderSummary(ym) {
 
 const actingRole = ym => { const st = settle(ym); if (ROLE === 'shitsucho' && st.Status === 'shacho' && st.ShachoAbsent) return 'shacho'; return ROLE === st.Status ? ROLE : null; };
 // 確認：花岡車輌の支払決済と同じ画面（settle_view.js）。確認OK・保留・コメントは KH_Settle に段ごとに保存（室長と社長は別々）
-const SVM = { furikomi: '振込', jidou: '口座振替', nouzei: '納税', genkin: '現金', zumi: '支払済', tatekae: '立替（給与で精算）', salary: '給与振込' };
+// 👥 給与：①支給控除一覧表（個人別・月） ②源泉所得税（納期の特例：1〜6月支給分＝7/10、7〜12月支給分＝翌1/20 に納付）
+const PAY_LABEL = { taxable: '課税支給合計', tatekae: '立替経費', gross: '支給合計', shaho: '社保控除合計', shotoku: '所得税', jumin: '住民税', deduct: '控除合計', net: '差引支給額', bank: '振込支給額' };
+const PAY_KEY = /^(課税支給合計|非課税支給合計|支給合計|社保控除合計|その他控除合計|控除合計|差引支給額|振込支給額)$/;
+function payGroups(rows) {   // 列の見出しのまとまり：勤怠 → 支給（支給合計まで）→ 控除（控除合計まで）→ 支払
+  let g = 'pay'; const out = [];
+  for (const r of rows) {
+    const grp = /(日数|時間|回数)$/.test(r.label) ? 'att' : g;
+    out.push({ ...r, grp }); if (grp !== 'att') { if (r.label === '支給合計') g = 'ded'; else if (r.label === '控除合計') g = 'out'; }
+  }
+  return out;
+}
+function renderPayroll(ym) {
+  const sub = S.ptab || 'list';
+  const head = `<div class="card ptabs"><div class="seg"><button class="${sub === 'list' ? 'on' : ''}" data-ptab="list">支給控除一覧表（個人別）</button><button class="${sub === 'gensen' ? 'on' : ''}" data-ptab="gensen">源泉所得税（半年）</button></div><span class="small muted">給与はこのサイトのメンバー（登録の人・役員）だけが見られます</span></div>`;
+  $('#main').innerHTML = head + (sub === 'gensen' ? payGensenHtml(ym) : payListHtml(ym));
+}
+function payListHtml(ym) {
+  const pr = payroll(ym);
+  if (!pr) return `<div class="card"><p class="muted">${ymLabel(ym)}の給与の資料はまだありません。${ROLE === 'fukuda' ? '「今月の支払」の「👥 給与の資料を取り込む」から取り込みます。' : ''}</p></div>`;
+  const people = pr.people || [];
+  // 資料の行（rows）があればそのまま、無ければ（前の取り込み）合計の項目だけ
+  const rows = pr.rows?.length ? payGroups(pr.rows) : Object.keys(PAY_LABEL).filter(k => pr.total[k]).map(k => ({ label: PAY_LABEL[k], vals: people.map(p => p[k] || 0), total: pr.total[k], grp: /tatekae|taxable|gross/.test(k) ? 'pay' : /shaho|shotoku|jumin|deduct/.test(k) ? 'ded' : 'out' }));
+  const GN = { att: '勤怠', pay: '支給', ded: '控除', out: '支払' }, spans = [];
+  rows.forEach(r => { const l = spans.at(-1); if (l && l.g === r.grp) l.n++; else spans.push({ g: r.grp, n: 1 }); });
+  const cell = (v, r) => v == null || v === 0 ? '' : typeof v === 'number' ? (/(日数|時間|回数)$/.test(r.label) ? String(v) : yen(v)) : esc(v);
+  const kc = r => PAY_KEY.test(r.label) ? ' key' : '';
+  return paySummaryHtml(ym, pr) + `<div class="card"><h2>${ymLabel(ym)}分 支給控除一覧表（${people.length}名）<span class="sp"></span><span class="small muted">支給日 ${esc(pr.payDate || '—')}　資料：${esc(pr.file || '—')}</span></h2>
+  ${pr.rows?.length ? '' : '<p class="small muted">この月は合計の項目だけ持っています（健康保険・厚生年金などの内訳は、資料を取り込み直すと出ます）。</p>'}
+  <div class="ptbl-wrap"><table class="ptbl"><thead><tr><th class="sticky c1" rowspan="2">No.</th><th class="sticky c2" rowspan="2">氏名</th>${spans.map(s => `<th class="grp g-${s.g}" colspan="${s.n}">${GN[s.g]}</th>`).join('')}</tr>
+  <tr>${rows.map(r => `<th class="n g-${r.grp}${kc(r)}">${esc(r.label)}</th>`).join('')}</tr></thead>
+  <tbody>${people.map((p, j) => `<tr><td class="sticky c1">${esc(p.code)}</td><td class="sticky c2">${esc(p.name)}</td>${rows.map(r => `<td class="n${kc(r)}">${cell(r.vals[j], r)}</td>`).join('')}</tr>`).join('')}
+  <tr class="tot"><td class="sticky c1"></td><td class="sticky c2">合計</td>${rows.map(r => `<td class="n${kc(r)}">${r.total == null ? '' : cell(r.total, r)}</td>`).join('')}</tr></tbody></table></div></div>`;
+}
+// 先月との比べ：主な項目の今月・前月・差と、振込額が変わった人
+function paySummaryHtml(ym, pr) {
+  const pv = payroll(addMonth(ym, -1)), T = (p, k) => p ? (p.total[k] || 0) : null;
+  const items = [['人数', p => p ? p.people.length : null, 1], ['課税支給合計', p => T(p, 'taxable')], ['立替経費', p => T(p, 'tatekae')], ['社保控除合計', p => T(p, 'shaho')], ['所得税', p => T(p, 'shotoku')], ['住民税', p => T(p, 'jumin')], ['控除合計', p => T(p, 'deduct')], ['振込支給額', p => T(p, 'bank')]]
+    .map(([l, f, cnt]) => ({ l, a: f(pr), b: f(pv), cnt })).filter(x => x.a || x.b);
+  const dif = (a, b, cnt) => b == null ? '<span class="muted">—</span>' : a === b ? '<span class="muted">±0</span>' : `<span class="${a > b ? 'd-up' : 'd-down'}">${a > b ? '+' : '−'}${cnt ? Math.abs(a - b) : yen(Math.abs(a - b))}</span>`;
+  const byCode = new Map((pv?.people || []).map(p => [p.code, p]));
+  const changed = pv ? pr.people.map(p => ({ p, q: byCode.get(p.code) })).filter(x => !x.q || x.q.bank !== x.p.bank) : [];
+  const gone = pv ? pv.people.filter(q => !pr.people.some(p => p.code === q.code)) : [];
+  return `<div class="card"><h2>先月との比べ<span class="sp"></span><span class="small muted">${ymLabel(ym)}分 ／ ${ymLabel(addMonth(ym, -1))}分</span></h2>
+  ${!pv ? '<p class="small muted">前月の給与の資料がないので、比べられません。</p>' : ''}
+  <div class="top"><div><table><thead><tr><th>項目</th><th class="n">今月</th><th class="n">前月</th><th class="n">差</th></tr></thead><tbody>
+  ${items.map(x => `<tr${x.l === '振込支給額' ? ' class="tot"' : ''}><td>${x.l}</td><td class="n">${x.a == null ? '—' : x.cnt ? x.a + '名' : yen(x.a)}</td><td class="n muted">${x.b == null ? '—' : x.cnt ? x.b + '名' : yen(x.b)}</td><td class="n">${dif(x.a || 0, x.b, x.cnt)}</td></tr>`).join('')}</tbody></table></div>
+  <div><div class="small muted" style="margin-bottom:6px">振込額が変わった人</div>${!pv ? '<span class="small muted">—</span>' : changed.length || gone.length ? `<table><tbody>${changed.map(x => `<tr><td>${esc(x.p.name)}${x.q ? '' : ' <span class="tag t-new">今月から</span>'}</td><td class="n">${yen(x.p.bank)}</td><td class="n">${x.q ? dif(x.p.bank, x.q.bank) : ''}</td></tr>`).join('')}${gone.map(q => `<tr><td>${esc(q.name)} <span class="tag t-gray">今月はなし</span></td><td class="n">—</td><td class="n"><span class="d-down">−${yen(q.bank)}</span></td></tr>`).join('')}</tbody></table>` : '<span class="small muted">変わった人はいません（全員 前月と同じ振込額）</span>'}</div></div></div>`;
+}
+// 💴 借入・利息計算書（前の Excel「借入金・支払利息明細」と同じ形）：花岡車輌からの借入を1本ずつ ROUNDDOWN(元本×利率×その月の日数÷365)
+const loansOf = ym => DB.loans.filter(l => l.Active !== false && (!l.EndYM || l.EndYM >= ym)).sort((a, b) => (+a.Title || 0) - (+b.Title || 0) || (+a.id || 0) - (+b.id || 0));
+const loanInt = (l, ym) => Math.floor((l.Principal || 0) * (l.Rate || 0) * daysIn(ym) / R.interest.basis);
+function renderLoan(ym) {
+  const ls = loansOf(ym), p1 = addMonth(ym, -1), p2 = addMonth(ym, -2), star = ls.filter(l => l.Star);
+  const tot = m => sum(loansOf(m).map(l => loanInt(l, m))), P = sum(ls.map(l => l.Principal)), Ps = sum(star.map(l => l.Principal));
+  const paid = payments(ym).find(p => p.kamoku === R.interest.kamoku && norm(p.payee).includes(norm(R.interest.payee)));
+  const t0 = tot(ym), rates = [...new Set(ls.map(l => l.Rate))];
+  const row = (l, i) => `<tr><td>${esc(l.Title)}</td><td>${l.Star ? '★' : ''}</td><td>${esc(l.Usage || '')}</td><td class="n">${yen(l.Principal)}</td><td class="n">${((l.Rate || 0) * 100).toFixed(3)}%</td><td class="n">${daysIn(ym)}</td><td class="n"><b>${yen(loanInt(l, ym))}</b></td><td class="n muted">${yen(loanInt(l, p1))}</td><td class="n muted">${yen(loanInt(l, p2))}</td><td class="small">${esc(l.Memo || '')}</td></tr>`;
+  $('#main').innerHTML = `<div class="card loan-sheet"><div class="loan-ttl"><div><div class="small muted">${esc(R.company)}</div><h2 style="margin:2px 0 0">${ymLabel(ym)}度分　借入・利息計算書</h2></div><span class="sp"></span><button class="noprint" onclick="window.print()">🖨 印刷・PDF</button></div>
+  <div class="top" style="margin:12px 0">
+    <div><div class="small muted">今月の利息（${daysIn(ym)}日）</div><div class="big">${yen(t0)}<small> 円</small></div><div class="small muted">前月 ${yen(tot(p1))}（${daysIn(p1)}日）・前々月 ${yen(tot(p2))}（${daysIn(p2)}日）</div></div>
+    <div><table class="loan-sum"><tbody>
+      <tr><td>借入 ${ls.length}本の元本</td><td class="n">${yen(P)}</td></tr>
+      <tr><td>うち ★ 運転資金以外（${star.length}本）</td><td class="n">${yen(Ps)}</td></tr>
+      <tr class="tot"><td>運転資金（差）</td><td class="n">${yen(P - Ps)}</td></tr>
+      <tr><td>★ の利息</td><td class="n">${yen(sum(star.map(l => loanInt(l, ym))))}</td></tr></tbody></table></div>
+    <div><div class="small muted">今月の支払（${esc(R.interest.payee)}・${esc(R.interest.kamoku)}）</div><div style="margin-top:6px">${paid ? (paid.pay === t0 ? `<span class="tag t-ok">✔ 支払 ${yen(paid.pay)} と一致</span>` : `<span class="tag t-up">支払 ${yen(paid.pay)}・計算と ${yen(paid.pay - t0)} 違う</span>`) : '<span class="tag t-gray">この月の支払にまだ無い</span>'}</div><div class="small muted" style="margin-top:6px">利率 ${rates.map(r => ((r || 0) * 100).toFixed(3) + '%').join('・')}／1本ずつ 元本 × 利率 × 日数 ÷ ${R.interest.basis} を切り捨て</div></div>
+  </div>
+  <div class="loan-wrap"><table class="loan-tbl"><thead><tr><th>No.</th><th>★</th><th>用途</th><th class="n">元本</th><th class="n">利率</th><th class="n">日数</th><th class="n">利息</th><th class="n">前月</th><th class="n">前々月</th><th>摘要</th></tr></thead><tbody>${ls.map(row).join('')}
+  <tr class="tot"><td colspan="3">合計（${ls.length}本）</td><td class="n">${yen(P)}</td><td></td><td></td><td class="n">${yen(t0)}</td><td class="n">${yen(tot(p1))}</td><td class="n">${yen(tot(p2))}</td><td></td></tr>
+  <tr><td colspan="3">うち ★ 運転資金以外（${star.length}本）</td><td class="n">${yen(Ps)}</td><td></td><td></td><td class="n">${yen(sum(star.map(l => loanInt(l, ym))))}</td><td class="n">${yen(sum(star.map(l => loanInt(l, p1))))}</td><td class="n">${yen(sum(star.map(l => loanInt(l, p2))))}</td><td></td></tr></tbody></table></div>
+  <p class="small muted noprint">借入の増減（新しい借入・返済・利率の変更）は SharePoint の KH_Loan で直す。返済したら「使う」を外し、返済した年月を入れる。</p></div>`;
+}
+function payPeriod(key) { const [y, h] = key.split('-H').map(Number); const ms = [1, 2, 3, 4, 5, 6].map(i => `${y}-${String(i + (h === 2 ? 6 : 0)).padStart(2, '0')}`); return { y, h, ms, due: h === 1 ? `${y}-07-10` : `${y + 1}-01-20`, label: `${y}年 ${h === 1 ? '1〜6月' : '7〜12月'}支給分`, prev: h === 1 ? `${y - 1}-H2` : `${y}-H1`, next: h === 1 ? `${y}-H2` : `${y + 1}-H1` }; }
+function payGensenHtml(ym) {
+  const P = payPeriod(S.gp || `${ym.slice(0, 4)}-H${+ym.slice(5) <= 6 ? 1 : 2}`);
+  const mrows = P.ms.map(m => {
+    const pr = payroll(m), rw = payments(m).filter(p => p.gensen > 0);
+    return { m, pr, n: pr ? pr.people.filter(p => (p.taxable || p.gross) > 0).length : 0, pay: pr ? (pr.total.taxable || 0) : 0, tax: pr ? (pr.total.shotoku || 0) : 0, jumin: pr ? (pr.total.jumin || 0) : 0,
+      rn: rw.length, rpay: sum(rw.map(p => p.kakutei + p.tax)), rtax: sum(rw.map(p => p.gensen)), rw };
+  });
+  const T = k => sum(mrows.map(x => x[k])), total = T('tax') + T('rtax');
+  // 通帳：期間が終わったあとの税務署への Pay-easy の出金で、合計と同じ額
+  const end = P.ms.at(-1) + '-31', hit = DB.bank.find(b => b.io === 'out' && b.date > end && /ｾﾞｲﾑｼﾖ/.test(b.who + ' ' + b.desc) && b.amount === total);
+  const has = mrows.some(x => x.pr);
+  return `<div class="card"><h2>源泉所得税（納期の特例）<span class="sp"></span><button data-gp="${P.prev}">◀</button><b>${P.label}</b><button data-gp="${P.next}">▶</button></h2>
+  <div class="top" style="margin-bottom:12px"><div><div class="small muted">納める額（給与＋報酬）</div><div class="big">${yen(total)}<small> 円</small></div></div>
+  <div><div class="small muted">納付の期限</div><div class="big" style="font-size:22px">${P.due.replace(/-/g, '/')}</div><div class="small muted">所得税徴収高計算書（納期特例分）</div></div>
+  <div><div class="small muted">通帳</div><div style="margin-top:6px">${!has ? '<span class="muted">この期間の給与の資料がありません</span>' : hit ? `<span class="tag t-ok">✔ ${hit.date.replace(/-/g, '/')} に納付済み（${esc(hit.who || hit.desc)}）</span>` : `<span class="tag t-gray">まだ通帳に見当たりません</span>`}</div></div></div>
+  <table><thead><tr><th>月</th><th>支給日</th><th class="n">人員</th><th class="n">支給額（課税）</th><th class="n">所得税</th><th class="n">報酬（件）</th><th class="n">報酬の支払額</th><th class="n">報酬の源泉税</th>${T('jumin') ? '<th class="n">住民税</th>' : ''}</tr></thead><tbody>
+  ${mrows.map(x => `<tr><td>${+x.m.slice(5)}月</td><td>${x.pr ? esc(x.pr.payDate || '') : '<span class="muted">資料なし</span>'}</td><td class="n">${x.n || ''}</td><td class="n">${x.pay ? yen(x.pay) : ''}</td><td class="n">${x.tax ? yen(x.tax) : ''}</td><td class="n">${x.rn || ''}</td><td class="n">${x.rpay ? yen(x.rpay) : ''}</td><td class="n">${x.rtax ? yen(x.rtax) : ''}</td>${T('jumin') ? `<td class="n">${x.jumin ? yen(x.jumin) : ''}</td>` : ''}</tr>`).join('')}
+  <tr class="tot"><td colspan="2">合計</td><td class="n">${T('n')}</td><td class="n">${yen(T('pay'))}</td><td class="n">${yen(T('tax'))}</td><td class="n">${T('rn') || ''}</td><td class="n">${T('rpay') ? yen(T('rpay')) : ''}</td><td class="n">${T('rtax') ? yen(T('rtax')) : ''}</td>${T('jumin') ? `<td class="n">${yen(T('jumin'))}</td>` : ''}</tr></tbody></table>
+  <h2 style="margin-top:18px">納付書に写す欄</h2><table class="nofu"><thead><tr><th>区分</th><th class="n">人員</th><th class="n">支給額</th><th class="n">税額</th></tr></thead><tbody>
+  <tr><td>俸給・給料等</td><td class="n">${T('n')}</td><td class="n">${yen(T('pay'))}</td><td class="n">${yen(T('tax'))}</td></tr>
+  <tr><td>税理士等の報酬</td><td class="n">${T('rn') || ''}</td><td class="n">${T('rpay') ? yen(T('rpay')) : ''}</td><td class="n">${T('rtax') ? yen(T('rtax')) : ''}</td></tr>
+  <tr class="tot"><td>合計</td><td></td><td></td><td class="n">${yen(total)}</td></tr></tbody></table>
+  <p class="small muted">人員は毎月の支給人員の合計（延べ）。支給額は課税支給合計（立替経費などの非課税は入れない）。報酬は「今月の支払」で源泉税を入れた支払。${T('jumin') ? '住民税は特別徴収なら市区町村へ別に納める。' : ''}</p></div>`;
+}
+const SVM = { furikomi:'振込', jidou: '口座振替', nouzei: '納税', genkin: '現金', zumi: '支払済', tatekae: '立替（給与で精算）', salary: '給与振込' };
 function svRows(ym, view) {
   const st = settle(ym), other = view === 'shacho' ? 'shitsucho' : 'shacho', oc = (st.Comments[other] || {});
   return itemsOf(ym).map(it => {
@@ -467,8 +583,8 @@ function renderMaster() {
   const acct = p => p.AcctNo ? `${esc(p.BankKana)} ${esc(p.BranchKana)} ${p.AcctType === '2' ? '当座' : '普通'} ${esc(p.AcctNo)}` : '<span class="muted">—</span>';
   let h = `<div class="card"><h2>支払先（${DB.payees.length}）<span class="sp"></span><button data-payee="">＋ 支払先</button></h2><table><thead><tr><th>支払先</th><th>受取人名カナ</th><th>口座</th><th>手数料</th><th>通帳の名前</th></tr></thead><tbody>${DB.payees.sort((a, b) => String(a.Title).localeCompare(b.Title, 'ja')).map(p => `<tr class="row" data-payee="${p.id}"><td>${esc(p.Title)}${p.Active === false ? ' <span class="tag t-gray">使わない</span>' : ''}</td><td>${esc(p.NameKana)}</td><td>${acct(p)}</td><td>${esc(p.FeeBy || '')}</td><td class="small">${esc(p.BankKey || '')}</td></tr>`).join('')}</tbody></table></div>`;
   h += `<div class="card"><h2>毎月定額（${DB.recurring.length}）<span class="sp"></span><button data-rec="">＋ 毎月定額</button></h2><table><thead><tr><th>支払先</th><th>区分</th><th>摘要のひな形</th><th class="n">支払高</th><th>方法</th><th>期間</th><th></th></tr></thead><tbody>${DB.recurring.sort((a, b) => (a.SortNo || 0) - (b.SortNo || 0)).map(x => `<tr class="row" data-rec="${x.id}"><td>${esc(x.Payee)}${x.Active === false ? ' <span class="tag t-gray">使わない</span>' : ''}</td><td>${esc(x.Kamoku)}</td><td class="small w">${esc(x.MemoTpl)}</td><td class="n">${x.Calc === 'interest' ? '利息を計算' : yen((x.Kakutei || 0) + (x.Tax || 0) - (x.Gensen || 0) - (x.Fee || 0))}</td><td>${esc(R.methods[x.Method] || '')}</td><td class="small">${esc(x.StartYM || '')}〜${esc(x.EndYM || '')}${x.TotalNo ? `（${x.TotalNo}回）` : ''}</td><td>${x.Varies ? '<span class="tag t-up">毎月額が変わる</span>' : ''}</td></tr>`).join('')}</tbody></table><p class="small muted">摘要のひな形：{前月}・{当月}＝月の数字、{回}／{総回数}＝ローンなどの回数。</p></div>`;
-  const ls = DB.loans.filter(l => l.Active !== false), d = daysIn(S.ym), calc = l => Math.floor(l.Principal * l.Rate * d / R.interest.basis);
-  h += `<div class="card"><h2>借入（${ls.length}本・元本 ${yen(sum(ls.map(l => l.Principal)))}）　${ymLabel(S.ym)}の利息 ${yen(sum(ls.map(calc)))}（${d}日）</h2><table><thead><tr><th>No.</th><th>用途</th><th class="n">元本</th><th class="n">利率</th><th class="n">利息</th><th>摘要</th></tr></thead><tbody>${ls.sort((a, b) => (+a.Title || 0) - (+b.Title || 0)).map(l => `<tr><td>${esc(l.Title)}${l.Star ? ' ★' : ''}</td><td>${esc(l.Usage)}</td><td class="n">${yen(l.Principal)}</td><td class="n">${(l.Rate * 100).toFixed(3)}%</td><td class="n">${yen(calc(l))}</td><td class="small">${esc(l.Memo)}</td></tr>`).join('')}</tbody></table><p class="small muted">借入の増減は SharePoint の KH_Loan で直す（返済したら「使う」を外し、返済した年月を入れる）。</p></div>`;
+  const ls = loansOf(S.ym);
+  h += `<div class="card"><h2>借入（${ls.length}本・元本 ${yen(sum(ls.map(l => l.Principal)))}）<span class="sp"></span><button data-tab="loan">💴 借入・利息計算書を見る</button></h2><p class="small muted">1本ずつの元本・利率・利息は「借入・利息計算書」で見る。借入の増減は SharePoint の KH_Loan で直す（返済したら「使う」を外し、返済した年月を入れる）。</p></div>`;
   $('#main').innerHTML = h;
 }
 function renderBar(ym) {
@@ -672,12 +788,20 @@ async function importPayroll(file) {
     const people = cols.map(i => ({ code: String(a[ri][i]), name: String(a[ri + 1][i]).replace(/　/g, ' ') })), total = {};
     for (const r of a) { const k = PL[String(r[0]).trim()]; if (!k) continue; cols.forEach((i, j) => people[j][k] = Math.floor(+r[i] || 0)); total[k] = sum(people.map(p => p[k])); }
     if (!total.bank) throw new Error('振込支給額が読めません');
+    // 支給控除一覧表の行をすべて持つ（項目名 × 人）。給与の画面の表はこれで描く。値がひとつも無い行は持たない
+    const rows = [];
+    for (const r of a.slice(ri + 2)) {
+      const label = String(r[0] ?? '').replace(/\s+/g, '').trim(); if (!label) continue;
+      const vals = cols.map(i => { const v = r[i]; if (v === '' || v == null) return null; const n = Number(String(v).replace(/,/g, '')); return Number.isFinite(n) ? Math.round(n * 100) / 100 : String(v).trim(); });
+      if (vals.every(v => v == null || v === 0)) continue;
+      rows.push({ label, vals, total: vals.every(v => v == null || typeof v === 'number') ? Math.round(sum(vals) * 100) / 100 : null });
+    }
     const payDate = pd ? `${ymM[1]}-${pd[1].padStart(2, '0')}-${pd[2].padStart(2, '0')}` : '';
     if (DB.payroll[ym] && !confirm(`${ymLabel(ym)}の給与はもうあります。取り込み直しますか`)) return;
-    await putFile(`/KH/${ym}/給与_${file.name}`, file);
-    const f = { Title: ym, PayDate: payDate, FileName: file.name, BankTotal: total.bank, Tatekae: total.tatekae || 0, Data: JSON.stringify({ people, total }) };
+    await putFile(`/KH/給与/${ym}_${file.name}`, file);   // 原本は /KH/給与/ にまとめる
+    const f = { Title: ym, PayDate: payDate, FileName: file.name, BankTotal: total.bank, Tatekae: total.tatekae || 0, Data: JSON.stringify({ people, total, rows }) };
     if (DB.payroll[ym]) await setItem('KH_Payroll', DB.payroll[ym].id, f); else f.id = (await addItem('KH_Payroll', f)).id;
-    DB.payroll[ym] = { id: DB.payroll[ym]?.id || f.id, payDate, file: file.name, people, total };
+    DB.payroll[ym] = { id: DB.payroll[ym]?.id || f.id, payDate, file: file.name, people, total, rows };
     snack(`${ymLabel(ym)}の給与：${people.length}名・振込 ${yen(total.bank)} 円`); S.ym = ym; render();
   } catch (e) { snack('給与の取り込み：' + e.message, 1); }
 }
@@ -712,10 +836,12 @@ function recDialog(x) {
 
 document.addEventListener('click', async e => {
   if (e.target.closest('.sv')) return;   // 確認の画面（settle_view.js）は自分で操作を受ける
-  const t = e.target.closest('[data-tab],[data-open],[data-act],[data-flow],[data-addbank],[data-ignore],[data-unmatch],[data-zengin],[data-flag],[data-pdf],[data-payee],[data-rec],[data-sb]');
+  const t = e.target.closest('[data-tab],[data-ptab],[data-gp],[data-open],[data-act],[data-flow],[data-addbank],[data-ignore],[data-unmatch],[data-zengin],[data-flag],[data-pdf],[data-payee],[data-rec],[data-sb]');
   if (!t) return; const ym = S.ym;
   try {
     if (t.dataset.sb) return sbToggle();
+    if (t.dataset.ptab) { S.ptab = t.dataset.ptab; return render(); }
+    if (t.dataset.gp) { S.gp = t.dataset.gp; return render(); }
     if (t.dataset.tab) { e.preventDefault(); S.tab = t.dataset.tab; }
     else if (t.dataset.open) { const it = itemsOf(ym).find(i => i.id === t.dataset.open); if (editable(ym) && it?.kind === 'pay') return editDialog(it.p); svSel = t.dataset.open; S.tab = 'review'; }
     else if (t.dataset.act === 'add') return editDialog(null);
