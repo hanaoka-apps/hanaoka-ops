@@ -92,6 +92,10 @@
   table.ed tr.sh-on td{background:#eef6f0}
   table.ed td.ck{text-align:center;width:52px}
   table.ed td.ck input{width:18px;height:18px;cursor:pointer}
+  table.ed td.co{font-size:11.5px;line-height:1.5}
+  table.ed td.co span{display:block}
+  table.ed td.co .cm{font-weight:700}
+  table.ed td.co .cc{color:var(--muted)}
   /* モーダル */
   .modal{position:fixed;inset:0;background:rgba(20,26,34,.45);display:none;align-items:center;justify-content:center;z-index:200;padding:14px}
   .modal.on{display:flex}
@@ -192,7 +196,7 @@
   <details class="card2" id="shiftCard">
     <summary style="cursor:pointer;font-size:13.5px;font-weight:700;color:var(--primary)">総務内の予定（パートの方の出社日・その日の業務）　<span class="cnt" style="font-weight:400">総務の中だけで使います。全社スケジュールには公開しません。印刷は「総務内用」を選びます</span></summary>
     <div style="margin-top:8px">
-      <table class="ed" style="max-width:760px"><thead><tr><th style="width:96px">日付</th><th style="width:52px;text-align:center">出社</th><th>業務（「／」で改行して印刷）</th></tr></thead>
+      <table class="ed"><thead><tr><th style="width:96px">日付</th><th style="width:52px;text-align:center">出社</th><th style="width:38%">業務（「／」で改行して印刷）</th><th title="★＝支払決済の本編、灰色＝全社スケジュールのほかの予定。ここでは直せません">会社の予定（見るだけ・灰色＝全社スケジュール）</th></tr></thead>
         <tbody id="shiftBody"></tbody></table>
       <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
         <span class="cnt">社長OK・公開のあとでも直せます。</span>
@@ -310,7 +314,7 @@ function isAllowed(){
 let YM = (() => { const d = new Date(Date.now() + 9*3600e3); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`; })();
 let ITEMS = [];                       /* {uid,id,date,title,kind,owner,memo,pubId,del,orig} */
 let HEAD = { id: null, status: 'draft', approvedAt: '', approvedBy: '', publishedAt: '', publishedBy: '' };
-let CAL = { holidays: new Set(), satWork: new Set(), names: new Map(), ok: false };
+let CAL = { holidays: new Set(), satWork: new Set(), names: new Map(), events: new Map(), ok: false };
 let LISTS = { items: null, month: null };
 let PAYROLL = JSON.parse(JSON.stringify(DEFAULT_PAYROLL)), PAYROLL_ID = null;
 let uidSeq = 1, dirty = false, LOADING = false;
@@ -415,7 +419,7 @@ async function loadCalendarEvents(ym, withIds){
   return items.filter(e => !e.isCancelled).map(e => ({ id: e.id, subject: e.subject || '', start: String(e.start?.dateTime || '').slice(0, 10), end: String(e.end?.dateTime || '').slice(0, 10), allDay: !!e.isAllDay, categories: e.categories || [] }));
 }
 async function loadCalendar(ym){
-  CAL = { holidays: new Set(), satWork: new Set(), names: new Map(), ok: false };
+  CAL = { holidays: new Set(), satWork: new Set(), names: new Map(), events: new Map(), ok: false };
   try {
     const evs = await loadCalendarEvents(ym, false);
     evs.forEach(e => {
@@ -425,6 +429,7 @@ async function loadCalendar(ym){
       days.forEach(day => {
         if (/土曜出社/.test(e.subject)) CAL.satWork.add(day);
         else if (/休日|祝/.test(e.subject)) { CAL.holidays.add(day); CAL.names.set(day, e.subject); }
+        else { if (!CAL.events.has(day)) CAL.events.set(day, []); CAL.events.get(day).push(e.subject); }     /* 総務内の予定の横に出す */
       });
     });
     CAL.ok = true;
@@ -455,15 +460,24 @@ function render(){
 /* ---- 総務内の予定（パートの方の出社日・その日の業務） ---- */
 function renderShift(){
   const y = Number(YM.slice(0, 4)), m = Number(YM.slice(5)), n = R.lastDay(y, m);
+  const by = new Map(); sortedItems().forEach(i => { if (!by.has(i.date)) by.set(i.date, []); by.get(i.date).push(i); });
   let h = '';
   for (let d = 1; d <= n; d++) {
     const ds = R.ymd(y, m, d), di = dayInfo(ds), s = SHIFT.get(ds) || {};
     h += `<tr class="${s.on ? 'sh-on' : ''}${di.off ? ' sh-off' : ''}" data-d="${ds}">
       <td class="dw">${m}/${d}(${WD[di.w]})${di.label ? '・' + esc(di.label === '休' ? '休日' : di.label) : ''}</td>
       <td class="ck"><input type="checkbox" data-sf="on"${s.on ? ' checked' : ''}></td>
-      <td><input type="text" data-sf="work" value="${esc(s.work || '')}" placeholder="${d === 1 ? '例：月末締め請求書／入金管理' : ''}"></td></tr>`;
+      <td><input type="text" data-sf="work" value="${esc(s.work || '')}" placeholder="${d === 1 ? '例：月末締め請求書／入金管理' : ''}"></td>
+      <td class="co">${companyDay(ds, by.get(ds) || [])}</td></tr>`;
   }
   el('shiftBody').innerHTML = h;
+}
+/* その日の会社の予定：この月の支払決済予定（本編★・補足）と、全社スケジュールのほかの予定（灰色。公開済みの同じ予定は出さない） */
+function companyDay(ds, its){
+  const mine = new Set(its.map(i => R.subjectOf(i)));
+  const a = its.map(i => `<span class="${i.kind === 'main' ? 'cm' : ''}">${i.kind === 'main' ? '★' : ''}${esc(R.subjectOf(i))}</span>`);
+  const b = (CAL.events.get(ds) || []).filter(t => !mine.has(t)).map(t => `<span class="cc">${esc(t)}</span>`);
+  return a.concat(b).join('');
 }
 function shiftChanged(){ shiftDirty = true; el('shiftMsg').textContent = '※保存していません'; el('shiftMsg').className = 'msg ng'; }
 el('shiftBody').addEventListener('input', e => {
@@ -649,7 +663,7 @@ el('edBody').addEventListener('input', e => {
   const tr = e.target.closest('tr[data-u]'); if (!tr || !e.target.dataset.f) return;
   const it = ITEMS.find(x => x.uid === Number(tr.dataset.u)); if (!it) return;
   it[e.target.dataset.f] = e.target.value; markDirty();
-  renderSheet();
+  renderSheet(); renderShift();
   if (e.target.dataset.f === 'kind') tr.className = `${it.kind}${tr.classList.contains('off') ? ' off' : ''}`;
 });
 el('edBody').addEventListener('change', e => { if (e.target.dataset.f === 'date') renderEditor(); });     /* 日付を変えたら並べ直す */
