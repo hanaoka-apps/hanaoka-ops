@@ -61,6 +61,22 @@
   .formula { font-size:13px; line-height:1.9; }
   .formula b { font-weight:600; }
   .small-table td, .small-table th { padding:4px 8px; font-size:12.5px; }
+  /* ポップアップの中の表は見出しを固定しない（一覧の固定がかかって見出しが消えていた） */
+  #pop thead th { position:static; color:var(--muted); background:transparent; font-weight:600; border-bottom:1px solid var(--border); }
+  .small-table tr.strong td { font-weight:600; }
+  .small-table td.hit { color:var(--warn); font-weight:600; }
+  .comment { margin-top:8px; font-size:13px; line-height:1.7; }
+  .decide { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:10px; margin-top:14px; padding:12px 14px; border-radius:10px;
+    background:color-mix(in srgb, var(--accent) 5%, var(--panel)); align-items:start; }
+  .decide .lab { font-size:11.5px; color:var(--muted); margin-bottom:4px; }
+  .decide .big { font-size:17px; font-weight:600; font-variant-numeric:tabular-nums; }
+  select.big-select { font-size:15px; padding:5px 8px; }
+  .big-pill { font-size:13px; padding:4px 14px; }
+  @media (max-width:720px) { .decide { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
+  select.rank.changed { border:2px solid var(--accent); color:var(--accent); }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover, th.sorted { color:var(--accent); }
+  button:disabled { opacity:.4; cursor:default; }
   textarea { width:100%; min-height:60px; font:inherit; font-size:13px; padding:8px; border-radius:6px; border:1px solid var(--border); }
   /* 設定 */
   .set-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
@@ -231,7 +247,18 @@ function jump(p) {
   const a = RANKS.indexOf(prevRank(p)), b = RANKS.indexOf(rankOf(p));
   return a >= 0 && b >= 0 && Math.abs(a - b) >= 2;
 }
+/** 一覧に出す短い理由（詳しくはポップアップ） */
 function reasonOf(p, r) {
+  const a = [];
+  if (r.days) a.push('欠勤' + r.days + '日');
+  if (p.支給率 < 1) {
+    const kind = /休職/.test(p.支給率の理由 || '') ? '休職' : /試用/.test(p.支給率の理由 || '') ? '試用明け' : '日割り';
+    a.push(kind + ' ' + Math.round(p.支給率 * 100) + '%');
+  }
+  return a.join('・');
+}
+/** 詳しい理由（ポップアップ） */
+function reasonLong(p, r) {
   const a = [];
   if (r.days) a.push('欠勤' + r.days + '日' + (r.lateDays ? '（遅早' + p.遅早回数 + '回を含む）' : ''));
   if (p.支給率 < 1) a.push(p.支給率の理由 || ('日割り ' + p.支給率));
@@ -240,11 +267,30 @@ function reasonOf(p, r) {
 
 /* ---------------- 一覧 ---------------- */
 let siteFilter = '';
+let sortKey = '部署', sortDir = 1;   // 見出しを押すと並べ替え。「部署」のときだけ部署ごとの見出しを出す
+const SITE_ORDER = { '本社': 0, '工場': 1 };
+const gradeNum = g => { const m = /(\d)-(\d)/.exec(g || ''); return m ? Number(m[1]) * 10 + Number(m[2]) : 0; };
+function sorted(rows) {
+  const val = {
+    '氏名': p => p.氏名,
+    '決定ランク': p => { const i = RANKS.indexOf(rankOf(p)); return i < 0 ? 99 : i; },
+    '評価額': p => calc(p, rankOf(p), SET).hyoka,
+    '支給額': p => calc(p, rankOf(p), SET).pay,
+  }[sortKey];
+  return rows.slice().sort((a, b) => {
+    if (!val) {   // 部署順：拠点 → 部署 → 等級の高い順 → 社員番号
+      return (SITE_ORDER[a.拠点] ?? 9) - (SITE_ORDER[b.拠点] ?? 9) || String(a.部署).localeCompare(String(b.部署), 'ja')
+        || gradeNum(b.等級) - gradeNum(a.等級) || Number(a.社員番号) - Number(b.社員番号);
+    }
+    const x = val(a), y = val(b);
+    return (typeof x === 'string' ? x.localeCompare(y, 'ja') : x - y) * sortDir;
+  });
+}
 function filtered() {
   const dept = $('#deptSel').value, q = $('#nameSearch').value.trim(), only = $('#onlyNotOk').checked;
-  return DATA.対象者.filter(p =>
+  return sorted(DATA.対象者.filter(p =>
     (!siteFilter || p.拠点 === siteFilter) && (!dept || p.部署 === dept) &&
-    (!q || p.氏名.replace(/\s/g, '').includes(q.replace(/\s/g, ''))) && (!only || !DEC.OK[p.社員番号]));
+    (!q || p.氏名.replace(/\s/g, '').includes(q.replace(/\s/g, ''))) && (!only || !DEC.OK[p.社員番号])));
 }
 function render() {
   if (!DATA) return;
@@ -264,28 +310,32 @@ function render() {
 
   const rows = filtered();
   const edit = canEditRank();
-  let html = '<thead><tr><th>氏名</th><th>部署</th><th>等級</th><th>部門評価</th><th>前回</th><th>決定ランク</th><th class="num">評価額</th><th class="num">支給額</th><th>OK</th></tr></thead><tbody>';
+  const th = (key, lab, cls) => `<th class="sortable ${cls || ''} ${sortKey === key ? 'sorted' : ''}" data-sort="${key}">${lab}${sortKey === key && key !== '部署' ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+  let html = '<thead><tr>' + th('氏名', '氏名') + th('部署', '部署') + '<th>等級</th><th>部門評価</th><th>前回</th>'
+    + th('決定ランク', '決定ランク') + th('評価額', '評価額', 'num') + th('支給額', '支給額', 'num') + '<th>OK</th></tr></thead><tbody>';
   let curDept = null;
   rows.forEach(p => {
-    if (p.拠点 + p.部署 !== curDept) { curDept = p.拠点 + p.部署; html += `<tr class="dept-sep"><td colspan="9">${esc(p.拠点)}｜${esc(p.部署)}</td></tr>`; }
+    if (sortKey === '部署' && p.拠点 + p.部署 !== curDept) { curDept = p.拠点 + p.部署; html += `<tr class="dept-sep"><td colspan="9">${esc(p.拠点)}｜${esc(p.部署)}</td></tr>`; }
     const rk = rankOf(p), r = calc(p, rk, SET), why = reasonOf(p, r);
     const opts = ['<option value="">—</option>'].concat(RANKS.map(x => `<option ${x === rk ? 'selected' : ''}>${x}</option>`)).join('');
     const changed = DEC.ランク[p.社員番号] && DEC.ランク[p.社員番号] !== p.部門評価;
+    const tip = (changed ? '部門評価 ' + (p.部門評価 || '—') + ' から変更' : '') + (jump(p) ? '（前回から2段以上）' : '');
     html += `<tr class="row" data-code="${esc(p.社員番号)}">
       <td>${esc(p.氏名)}</td><td>${esc(p.部署)}</td><td>${esc(p.等級)}</td>
       <td>${esc(p.部門評価 || '—')}</td><td>${esc(prevRank(p) || '—')}</td>
-      <td><select class="rank ${jump(p) ? 'jump' : ''}" data-rank="${esc(p.社員番号)}" ${edit ? '' : 'disabled'} aria-label="決定ランク">${opts}</select>${changed ? ' <span class="note">変更</span>' : ''}</td>
+      <td><select class="rank ${changed ? 'changed' : ''} ${jump(p) ? 'jump' : ''}" data-rank="${esc(p.社員番号)}" ${edit ? '' : 'disabled'} aria-label="決定ランク" title="${esc(tip)}">${opts}</select></td>
       <td class="num">${yen(r.hyoka)}</td>
       <td class="num ${r.pay !== r.hyoka ? 'diff' : ''}">${yen(r.pay)}${why ? `<div class="reason">${esc(why)}</div>` : ''}</td>
       <td><span class="pill ${DEC.OK[p.社員番号] ? 'on' : ''}" data-ok="${esc(p.社員番号)}">${DEC.OK[p.社員番号] ? 'OK' : '未'}</span></td></tr>`;
   });
   $('#listTable').innerHTML = html + '</tbody>';
   renderBanners();
+  if (POP) openPop(POP, true);   // 開いているポップアップも新しい数字に
 }
 
 function renderBanners() {
   const fb = $('#fixBanner');
-  if (DEC.FIX) { fb.textContent = `FIX 済み（${fmtDate(DEC.FIX.日時)}・${DEC.FIX.誰}）。ランクと計算ルールは変えられません。`; fb.classList.remove('hide'); }
+  if (DEC.FIX) { fb.textContent = `FIX 済み（${fmtDate(DEC.FIX.日時)}・${shortName(DEC.FIX.誰)}）。ランクと計算ルールは変えられません。`; fb.classList.remove('hide'); }
   else fb.classList.add('hide');
   const diff = Object.keys(DATA.初期設定).filter(k => String(DATA.初期設定[k]) !== String(SET[k]));
   const rb = $('#ruleBanner');
@@ -296,43 +346,89 @@ function renderBanners() {
   fixBtn.textContent = DEC.FIX ? 'FIX を外す' : 'FIX（確定）';
 }
 const fmtDate = s => s ? new Date(s).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+const shortName = s => String(s || '').split('@')[0];   // メールアドレスは @ の前だけ出す
 
-$('#listTable').addEventListener('change', e => {
-  const code = e.target.dataset.rank;
-  if (!code) return;
+/* 決定ランク・OK の変更（一覧とポップアップで共通） */
+function setRank(code, after) {
   const p = DATA.対象者.find(x => x.社員番号 === code);
-  const before = rankOf(p), after = e.target.value;
+  const before = rankOf(p);
+  if (before === after) return;
   saveDecision(d => { if (after === p.部門評価 || !after) delete d.ランク[code]; else d.ランク[code] = after; },
     { 社員番号: code, 項目: '決定ランク', 前: before, 後: after });
-});
+}
+function toggleOk(code) {
+  if (ROLE === '閲覧') { toast('OK を付けられるのは社長と管理者です'); return; }
+  const on = !DEC.OK[code];
+  saveDecision(d => { if (on) d.OK[code] = { 誰: ME, 日時: new Date().toISOString() }; else delete d.OK[code]; },
+    { 社員番号: code, 項目: 'OK', 前: on ? '未' : 'OK', 後: on ? 'OK' : '未' });
+}
+
+$('#listTable').addEventListener('change', e => { if (e.target.dataset.rank) setRank(e.target.dataset.rank, e.target.value); });
 $('#listTable').addEventListener('click', e => {
-  const okc = e.target.dataset.ok;
-  if (okc) {
-    if (ROLE === '閲覧') { toast('OK を付けられるのは社長と管理者です'); return; }
-    const on = !DEC.OK[okc];
-    saveDecision(d => { if (on) d.OK[okc] = { 誰: ME, 日時: new Date().toISOString() }; else delete d.OK[okc]; },
-      { 社員番号: okc, 項目: 'OK', 前: on ? '未' : 'OK', 後: on ? 'OK' : '未' });
-    return;
+  const s = e.target.closest('[data-sort]');
+  if (s) {
+    if (sortKey === s.dataset.sort && s.dataset.sort !== '部署') sortDir = -sortDir;
+    else { sortKey = s.dataset.sort; sortDir = s.dataset.sort === '評価額' || s.dataset.sort === '支給額' ? -1 : 1; }
+    render(); return;
   }
+  if (e.target.dataset.ok) { toggleOk(e.target.dataset.ok); return; }
   if (e.target.closest('select')) return;
   const tr = e.target.closest('tr.row');
   if (tr) openPop(tr.dataset.code);
 });
 
 /* ---------------- ポップアップ ---------------- */
-function openPop(code) {
+let POP = null;   // 開いている人の社員番号
+function openPop(code, keepScroll) {
   const p = DATA.対象者.find(x => x.社員番号 === code);
   const rk = rankOf(p), r = calc(p, rk, SET), k = p.考課;
   const pct = v => (Math.round(v * 10000) / 100) + '%';
+  const list = filtered(), idx = list.findIndex(x => x.社員番号 === code);
+  const edit = canEditRank();
+  const opts = ['<option value="">—</option>'].concat(RANKS.map(x => `<option ${x === rk ? 'selected' : ''}>${x}</option>`)).join('');
+  const changed = DEC.ランク[code] && DEC.ランク[code] !== p.部門評価;
+  const why = reasonLong(p, r);
   let h = `<div class="box" role="dialog" aria-label="${esc(p.氏名)}の詳細">
-    <div style="display:flex;align-items:center;gap:10px"><h2>${esc(p.氏名)}</h2>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2>${esc(p.氏名)}</h2>
       <span class="note">${esc(p.拠点)}｜${esc(p.部署)}｜${esc(p.等級)}</span><div class="spacer"></div>
+      <span class="note">${idx + 1} / ${list.length}人</span>
+      <button id="popPrev" ${idx > 0 ? '' : 'disabled'} title="前の人（←）">← 前</button>
+      <button id="popNext" ${idx >= 0 && idx < list.length - 1 ? '' : 'disabled'} title="次の人（→）">次 →</button>
       <button id="popClose" aria-label="閉じる">閉じる</button></div>
+
+    <div class="decide">
+      <div><div class="lab">部門評価</div><div class="big">${esc(p.部門評価 || '—')}</div></div>
+      <div><div class="lab">前回</div><div class="big">${esc(prevRank(p) || '—')}</div></div>
+      <div><div class="lab">決定ランク</div>
+        <select id="popRank" class="rank big-select ${changed ? 'changed' : ''} ${jump(p) ? 'jump' : ''}" ${edit ? '' : 'disabled'} aria-label="決定ランク">${opts}</select></div>
+      <div><div class="lab">評価額</div><div class="big">${yen(r.hyoka)}</div></div>
+      <div><div class="lab">支給額</div><div class="big ${r.pay !== r.hyoka ? 'diff' : ''}">${yen(r.pay)}</div>${why ? `<div class="reason">${esc(why)}</div>` : ''}</div>
+      <div><div class="lab">社長OK</div><span id="popOk" class="pill big-pill ${DEC.OK[code] ? 'on' : ''}">${DEC.OK[code] ? 'OK' : '未'}</span></div>
+    </div>
 
     <h3>基本情報</h3>
     <div class="kv"><div>入社日 ${esc(p.入社日)}</div><div>勤続 ${esc(p.勤続 || '')}</div><div>年齢 ${esc(p.年齢 || '')}</div>
       <div>等級 ${esc(p.等級)}</div><div>基準内 ${yen(p.基準内)}円</div>
       <div style="grid-column:1/-1">直近の辞令 ${esc(p.辞令日)} ${esc((p.役職 || '').replace(/\s*を命ずる\s*$/, ''))}</div></div>
+
+    <h3>考課</h3>`;
+  if (k) {
+    h += `<table class="small-table"><thead><tr><th>項目</th><th class="num">一次</th><th class="num">二次</th><th class="num">三次</th></tr></thead><tbody>
+      ${k.項目.map(i => `<tr><td>${esc(i.項目)}</td>${i.点.map(v => `<td class="num">${v || '—'}</td>`).join('')}</tr>`).join('')}
+      <tr class="strong"><td>総点</td>${k.総点.map(v => `<td class="num">${v || '—'}</td>`).join('')}</tr>
+      <tr class="strong"><td>ランク</td><td class="num">${esc(k.一次 || '—')}</td><td class="num">${esc(k.二次 || '—')}</td><td class="num">${esc(k.三次 || '—')}</td></tr>
+      <tr><td>評定者</td>${k.評定者.map(v => `<td class="num">${esc(v || '—')}</td>`).join('')}</tr></tbody></table>`;
+    for (const [lab, lst] of Object.entries(k.コメント || {}))
+      if (lst.length) h += `<div class="comment"><b>${esc(lab)}</b>${lst.map(c => `<div>・${esc(c.段階)}（${esc(c.評定者 || '')}）${esc(c.コメント)}</div>`).join('')}</div>`;
+    if (k.社長コメント) h += `<div class="comment"><b>考課表の社長欄</b><div>${esc(k.社長コメント).replace(/\n/g, '<br>')}</div></div>`;
+  } else h += '<div class="note">考課表から読み取れていません（「対象外・確認」の読み取りエラーを確認）。決定ランクは上で直接選べます。</div>';
+
+  h += `<h3>ランクの履歴</h3><div style="font-size:13px">${(p.ランク履歴 || []).map(x => esc(x.回) + ' <b>' + esc(x.ランク) + '</b>').join('｜') || '—'}</div>
+
+    <h3>社長コメント</h3>
+    <textarea id="popComment" ${edit ? '' : 'disabled'} placeholder="評価の理由など">${esc(DEC.社長コメント[code] || '')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:6px"><button id="popSave" class="primary" ${edit ? '' : 'disabled'}>コメントを保存</button>
+      <span class="note" style="align-self:center">${esc(lastChange(code))}</span></div>
 
     <h3>評価額 ＝ 固定分 ＋ 考課分</h3>
     <div class="formula">固定分 ＝ 基準内 ${yen(p.基準内)} × ${r.fixM.toFixed(2)}か月 ＝ <b>${yen(r.fix)}</b><br>
@@ -347,36 +443,31 @@ function openPop(code) {
     <h3>算定期間の勤怠（給与の月別）</h3>
     <table class="small-table"><thead><tr><th></th>${p.月別勤怠.map(m => `<th class="num">${Number(m.月.slice(5))}月分</th>`).join('')}<th class="num">合計</th></tr></thead><tbody>
       ${[['欠勤日数', '欠勤'], ['遅早回数', '遅早'], ['有給日数', '有給']].map(([key, lab]) =>
-        `<tr><td>${lab}</td>${p.月別勤怠.map(m => `<td class="num">${m[key] == null ? '—' : m[key]}</td>`).join('')}<td class="num"><b>${p[key]}</b></td></tr>`).join('')}
+        `<tr><td>${lab}</td>${p.月別勤怠.map(m => `<td class="num ${key !== '有給日数' && m[key] ? 'hit' : ''}">${m[key] == null ? '—' : m[key]}</td>`).join('')}<td class="num"><b>${p[key]}</b></td></tr>`).join('')}
     </tbody></table>
     <div class="note">${esc(monthNote(p.月別勤怠[0] && p.月別勤怠[0].月))}</div>
-
-    <h3>考課</h3>`;
-  if (k) {
-    h += `<table class="small-table"><thead><tr><th>項目</th><th class="num">一次</th><th class="num">二次</th><th class="num">三次</th></tr></thead><tbody>
-      ${k.項目.map(i => `<tr><td>${esc(i.項目)}</td>${i.点.map(v => `<td class="num">${v || '—'}</td>`).join('')}</tr>`).join('')}
-      <tr><td><b>総点</b></td>${k.総点.map(v => `<td class="num"><b>${v || '—'}</b></td>`).join('')}</tr>
-      <tr><td>ランク</td><td class="num">${esc(k.一次 || '—')}</td><td class="num">${esc(k.二次 || '—')}</td><td class="num">${esc(k.三次 || '—')}</td></tr>
-      <tr><td>評定者</td>${k.評定者.map(v => `<td class="num">${esc(v || '—')}</td>`).join('')}</tr></tbody></table>`;
-    for (const [lab, lst] of Object.entries(k.コメント || {}))
-      if (lst.length) h += `<div style="margin-top:8px;font-size:13px"><b>${esc(lab)}</b>${lst.map(c => `<div>・${esc(c.段階)}（${esc(c.評定者 || '')}）${esc(c.コメント)}</div>`).join('')}</div>`;
-  } else h += '<div class="note">考課表から読み取れていません（「対象外・確認」の読み取りエラーを確認）。</div>';
-
-  h += `<h3>ランクの履歴</h3><div style="font-size:13px">${(p.ランク履歴 || []).map(x => esc(x.回) + ' ' + esc(x.ランク)).join('｜') || '—'}</div>
-    <h3>社長コメント</h3>
-    <textarea id="popComment" ${canEditRank() ? '' : 'disabled'} placeholder="評価の理由など">${esc(DEC.社長コメント[code] || '')}</textarea>
-    <div style="display:flex;gap:8px;margin-top:6px"><button id="popSave" class="primary" ${canEditRank() ? '' : 'disabled'}>コメントを保存</button>
-      <span class="note" style="align-self:center">${esc(lastChange(code))}</span></div>
   </div>`;
   const pop = $('#pop');
+  const y = pop.scrollTop;
   pop.innerHTML = h;
   pop.classList.remove('hide');
+  pop.scrollTop = keepScroll ? y : 0;
+  POP = code;
   $('#popClose').onclick = closePop;
   pop.onclick = e => { if (e.target === pop) closePop(); };
+  $('#popPrev').onclick = () => movePop(-1);
+  $('#popNext').onclick = () => movePop(1);
+  $('#popRank').onchange = e => setRank(code, e.target.value);
+  $('#popOk').onclick = () => toggleOk(code);
   $('#popSave').onclick = () => {
     const txt = $('#popComment').value;
     saveDecision(d => { if (txt) d.社長コメント[code] = txt; else delete d.社長コメント[code]; }, { 社員番号: code, 項目: '社長コメント', 前: '', 後: '（更新）' });
   };
+}
+function movePop(step) {
+  const list = filtered(), i = list.findIndex(x => x.社員番号 === POP);
+  const n = list[i + step];
+  if (n) openPop(n.社員番号);
 }
 /** 給与の「6月分」は 5/16〜6/15 の勤怠（締めは15日） */
 function monthNote(ym) {
@@ -384,12 +475,18 @@ function monthNote(ym) {
   const m = Number(ym.slice(5)), prev = m === 1 ? 12 : m - 1;
   return `「${m}月分」は ${prev}/16〜${m}/15 の勤怠です（給与の締めと同じ）。`;
 }
-function closePop() { $('#pop').classList.add('hide'); }
+function closePop() { $('#pop').classList.add('hide'); POP = null; }
 function lastChange(code) {
   const l = DEC.履歴.filter(x => x.社員番号 === code).slice(-1)[0];
-  return l ? `最終更新：${l.誰}（${fmtDate(l.日時)}）${l.項目} ${l.前 || ''}→${l.後 || ''}` : '';
+  return l ? `最終更新：${shortName(l.誰)}（${fmtDate(l.日時)}）${l.項目} ${l.前 || ''}→${l.後 || ''}` : '';
 }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closePop(); });
+document.addEventListener('keydown', e => {
+  if (!POP) return;
+  if (e.key === 'Escape') { closePop(); return; }
+  if (/^(TEXTAREA|SELECT|INPUT)$/.test(document.activeElement && document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft') movePop(-1);
+  if (e.key === 'ArrowRight') movePop(1);
+});
 
 /* ---------------- 計算ルール ---------------- */
 const NUM_FIELDS = [
@@ -457,7 +554,7 @@ function renderExcluded() {
     ${DATA.対象外.map(o => `<tr><td>${esc(o.社員番号)}</td><td>${esc(o.氏名)}</td><td>${esc(o.拠点)}</td><td>${esc(o.部署 || '')}</td><td>${esc(o.理由)}</td></tr>`).join('')}</tbody></table></div>
   <div class="set-section"><h2>変更の記録（新しい順）</h2>
     <table class="small-table"><thead><tr><th>日時</th><th>誰</th><th>社員</th><th>項目</th><th>前</th><th>後</th></tr></thead><tbody>
-    ${DEC.履歴.slice().reverse().slice(0, 300).map(l => `<tr><td>${fmtDate(l.日時)}</td><td>${esc(l.誰)}</td><td>${esc(nameOf(l.社員番号))}</td><td>${esc(l.項目)}</td><td>${esc(l.前)}</td><td>${esc(l.後)}</td></tr>`).join('')}</tbody></table></div>`;
+    ${DEC.履歴.slice().reverse().slice(0, 300).map(l => `<tr><td>${fmtDate(l.日時)}</td><td>${esc(shortName(l.誰))}</td><td>${esc(nameOf(l.社員番号))}</td><td>${esc(l.項目)}</td><td>${esc(l.前)}</td><td>${esc(l.後)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 const nameOf = c => (DATA.対象者.find(p => p.社員番号 === c) || { 氏名: c || '' }).氏名;
 
@@ -536,7 +633,7 @@ async function loadSeason(name) {
   const roles = DATA.権限 || {};
   ROLE = DEMO ? (new URLSearchParams(location.search).get('role') || '管理者')
     : (Object.keys(roles).length ? (roles[ME.toLowerCase()] || '閲覧') : '管理者');
-  $('#whoami').textContent = (DEMO ? '見本データ（保存しません）｜' : '') + (ME ? ME + '｜' : '') + ROLE + (Object.keys(roles).length || DEMO ? '' : '（権限が未設定のため全員が管理者）');
+  $('#whoami').textContent = (DEMO ? '見本データ（保存しません）｜' : '') + (ME ? shortName(ME) + '｜' : '') + ROLE + (Object.keys(roles).length || DEMO ? '' : '（権限が未設定のため全員が管理者）');
   fillDepts(); render();
 }
 async function loadDataAndShow() {
