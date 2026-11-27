@@ -458,14 +458,17 @@ function paySummaryHtml(ym, pr) {
   <div><div class="small muted" style="margin-bottom:6px">振込額が変わった人</div>${!pv ? '<span class="small muted">—</span>' : changed.length || gone.length ? `<table><tbody>${changed.map(x => `<tr><td>${esc(x.p.name)}${x.q ? '' : ' <span class="tag t-new">今月から</span>'}</td><td class="n">${yen(x.p.bank)}</td><td class="n">${x.q ? dif(x.p.bank, x.q.bank) : ''}</td></tr>`).join('')}${gone.map(q => `<tr><td>${esc(q.name)} <span class="tag t-gray">今月はなし</span></td><td class="n">—</td><td class="n"><span class="d-down">−${yen(q.bank)}</span></td></tr>`).join('')}</tbody></table>` : '<span class="small muted">変わった人はいません（全員 前月と同じ振込額）</span>'}</div></div></div>`;
 }
 // 💴 借入・利息計算書（前の Excel「借入金・支払利息明細」と同じ形）：花岡車輌からの借入を1本ずつ ROUNDDOWN(元本×利率×その月の日数÷365)
-const loansOf = ym => DB.loans.filter(l => l.Active !== false && (!l.EndYM || l.EndYM >= ym)).sort((a, b) => (+a.Title || 0) - (+b.Title || 0) || (+a.id || 0) - (+b.id || 0));
+// 借入日（KH_Loan.BorrowDate）が分かるものは、その月から数える。分からないものは前からあるものとして数える
+const loansOf = ym => DB.loans.filter(l => l.Active !== false && (!l.EndYM || l.EndYM >= ym) && (!l.BorrowDate || String(l.BorrowDate).slice(0, 7) <= ym)).sort((a, b) => (+a.Title || 0) - (+b.Title || 0) || (+a.id || 0) - (+b.id || 0));
+// 和暦を添える（2014-07-10 → H26.7.10）
+const wareki = d => { const [y, m, dd] = String(d).split('-').map(Number); const r = y > 2019 || (y === 2019 && m >= 5) ? ['R', y - 2018] : ['H', y - 1988]; return `${r[0]}${r[1]}.${m}.${dd}`; };
 const loanInt = (l, ym) => Math.floor((l.Principal || 0) * (l.Rate || 0) * daysIn(ym) / R.interest.basis);
 function renderLoan(ym) {
   const ls = loansOf(ym), p1 = addMonth(ym, -1), p2 = addMonth(ym, -2), star = ls.filter(l => l.Star);
   const tot = m => sum(loansOf(m).map(l => loanInt(l, m))), P = sum(ls.map(l => l.Principal)), Ps = sum(star.map(l => l.Principal));
   const paid = payments(ym).find(p => p.kamoku === R.interest.kamoku && norm(p.payee).includes(norm(R.interest.payee)));
   const t0 = tot(ym), rates = [...new Set(ls.map(l => l.Rate))];
-  const row = (l, i) => `<tr><td>${esc(l.Title)}</td><td>${l.Star ? '★' : ''}</td><td>${esc(l.Usage || '')}</td><td class="n">${yen(l.Principal)}</td><td class="n">${((l.Rate || 0) * 100).toFixed(3)}%</td><td class="n">${daysIn(ym)}</td><td class="n"><b>${yen(loanInt(l, ym))}</b></td><td class="n muted">${yen(loanInt(l, p1))}</td><td class="n muted">${yen(loanInt(l, p2))}</td><td class="small">${esc(l.Memo || '')}</td></tr>`;
+  const row = (l, i) => `<tr><td>${esc(l.Title)}</td><td>${l.Star ? '★' : ''}</td><td>${esc(l.Usage || '')}</td><td>${l.BorrowDate ? `${esc(String(l.BorrowDate).replace(/-/g, '/'))}<div class="small muted">${wareki(l.BorrowDate)}</div>` : ''}</td><td class="n">${yen(l.Principal)}</td><td class="n">${((l.Rate || 0) * 100).toFixed(3)}%</td><td class="n">${daysIn(ym)}</td><td class="n"><b>${yen(loanInt(l, ym))}</b></td><td class="n muted">${yen(loanInt(l, p1))}</td><td class="n muted">${yen(loanInt(l, p2))}</td><td class="small">${esc(l.Memo || '')}</td></tr>`;
   $('#main').innerHTML = `<div class="card loan-sheet"><div class="loan-ttl"><div><div class="small muted">${esc(R.company)}</div><h2 style="margin:2px 0 0">${ymLabel(ym)}度分　借入・利息計算書</h2></div><span class="sp"></span><button class="noprint" onclick="window.print()">🖨 印刷・PDF</button></div>
   <div class="top" style="margin:12px 0">
     <div><div class="small muted">今月の利息（${daysIn(ym)}日）</div><div class="big">${yen(t0)}<small> 円</small></div><div class="small muted">前月 ${yen(tot(p1))}（${daysIn(p1)}日）・前々月 ${yen(tot(p2))}（${daysIn(p2)}日）</div></div>
@@ -476,9 +479,9 @@ function renderLoan(ym) {
       <tr><td>★ の利息</td><td class="n">${yen(sum(star.map(l => loanInt(l, ym))))}</td></tr></tbody></table></div>
     <div><div class="small muted">今月の支払（${esc(R.interest.payee)}・${esc(R.interest.kamoku)}）</div><div style="margin-top:6px">${paid ? (paid.pay === t0 ? `<span class="tag t-ok">✔ 支払 ${yen(paid.pay)} と一致</span>` : `<span class="tag t-up">支払 ${yen(paid.pay)}・計算と ${yen(paid.pay - t0)} 違う</span>`) : '<span class="tag t-gray">この月の支払にまだ無い</span>'}</div><div class="small muted" style="margin-top:6px">利率 ${rates.map(r => ((r || 0) * 100).toFixed(3) + '%').join('・')}／1本ずつ 元本 × 利率 × 日数 ÷ ${R.interest.basis} を切り捨て</div></div>
   </div>
-  <div class="loan-wrap"><table class="loan-tbl"><thead><tr><th>No.</th><th>★</th><th>用途</th><th class="n">元本</th><th class="n">利率</th><th class="n">日数</th><th class="n">利息</th><th class="n">前月</th><th class="n">前々月</th><th>摘要</th></tr></thead><tbody>${ls.map(row).join('')}
-  <tr class="tot"><td colspan="3">合計（${ls.length}本）</td><td class="n">${yen(P)}</td><td></td><td></td><td class="n">${yen(t0)}</td><td class="n">${yen(tot(p1))}</td><td class="n">${yen(tot(p2))}</td><td></td></tr>
-  <tr><td colspan="3">うち ★ 運転資金以外（${star.length}本）</td><td class="n">${yen(Ps)}</td><td></td><td></td><td class="n">${yen(sum(star.map(l => loanInt(l, ym))))}</td><td class="n">${yen(sum(star.map(l => loanInt(l, p1))))}</td><td class="n">${yen(sum(star.map(l => loanInt(l, p2))))}</td><td></td></tr></tbody></table></div>
+  <div class="loan-wrap"><table class="loan-tbl"><thead><tr><th>No.</th><th>★</th><th>用途</th><th>借入日</th><th class="n">元本</th><th class="n">利率</th><th class="n">日数</th><th class="n">利息</th><th class="n">前月</th><th class="n">前々月</th><th>摘要</th></tr></thead><tbody>${ls.map(row).join('')}
+  <tr class="tot"><td colspan="4">合計（${ls.length}本）</td><td class="n">${yen(P)}</td><td></td><td></td><td class="n">${yen(t0)}</td><td class="n">${yen(tot(p1))}</td><td class="n">${yen(tot(p2))}</td><td></td></tr>
+  <tr><td colspan="4">うち ★ 運転資金以外（${star.length}本）</td><td class="n">${yen(Ps)}</td><td></td><td></td><td class="n">${yen(sum(star.map(l => loanInt(l, ym))))}</td><td class="n">${yen(sum(star.map(l => loanInt(l, p1))))}</td><td class="n">${yen(sum(star.map(l => loanInt(l, p2))))}</td><td></td></tr></tbody></table></div>
   <p class="small muted noprint">借入の増減（新しい借入・返済・利率の変更）は SharePoint の KH_Loan で直す。返済したら「使う」を外し、返済した年月を入れる。</p></div>`;
 }
 function payPeriod(key) { const [y, h] = key.split('-H').map(Number); const ms = [1, 2, 3, 4, 5, 6].map(i => `${y}-${String(i + (h === 2 ? 6 : 0)).padStart(2, '0')}`); return { y, h, ms, due: h === 1 ? `${y}-07-10` : `${y + 1}-01-20`, label: `${y}年 ${h === 1 ? '1〜6月' : '7〜12月'}支給分`, prev: h === 1 ? `${y - 1}-H2` : `${y}-H1`, next: h === 1 ? `${y}-H2` : `${y + 1}-H1` }; }
