@@ -87,6 +87,17 @@ assert.equal(a.neck.kind, 'frame');
 assert.equal(C.isoDay(a.ready), '2026-12-05');               // 部品がそろう日（ハンドル 12/1、キャスター 12/1）
 assert.equal(C.isoDay(a.ship), '2026-12-08');                // 12/5 は土曜。組立2営業日で 12/7(月)・12/8(火)
 
+// 1つの型式が2つのフレームを使う（トレー付き）：注残に同じ型式が X と Y の両方で出る → 両方を部品に入れる
+const sh2 = makeSheets();
+const base = sh2('注残・出荷明細');
+const O2 = (r, c) => { const m = { 5: { 0: 'X', 1: 46359, 2: 'MODEL-B', 3: '見本商事', 4: 1002, 5: 2, 6: 1, 7: 2 }, 6: { 0: 'Y', 1: 46359, 2: 'MODEL-B', 3: '見本商事', 4: 1002, 5: 2, 6: 2, 7: 4 } }; return m[r] && m[r][c] != null ? m[r][c] : base(r, c); };
+const FR2 = C.parseWorkbook(n => (n === '注残・出荷明細' ? O2 : sh2(n)));
+assert.deepEqual(FR2.models['MODEL-B'].frames, [{ frame: 'X', per: 1 }, { frame: 'Y', per: 2 }]);
+assert.equal(FR2.models['MODEL-B'].frame, 'X');
+const a2 = C.answer(FR2, null, 'MODEL-B', 1, t4);
+assert.deepEqual(a2.parts.map(p => p.frame).sort(), ['X', 'Y']);
+assert.equal(a2.parts.find(p => p.frame === 'Y').per, 2);
+
 // 見本データでも答えが出る
 const S = C.sample(new Date(2026, 10, 27));
 const b = C.answer(S.FR, S.PL, 'SAMPLE-200', 5, new Date(2026, 10, 27));
