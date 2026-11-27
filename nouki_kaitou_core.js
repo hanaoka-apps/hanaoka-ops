@@ -130,8 +130,11 @@
     var f = FR.frames[name];
     if (!f) return null;
     var T = todayIndex(FR.dates, today);
-    var a = T < FR.dates.length ? f.atp[T] : (f.after ? f.after.atp : null);
-    return { f: f, T: T, avail: a == null ? null : a, noStock: f.stock0 == null };
+    /* 起点日（例 12/1）より前は Excel が空欄にするので、起点日からの数字を使う */
+    var a = null;
+    for (var i = T; i < FR.dates.length && a == null; i++) a = f.atp[i];
+    if (a == null && f.after) a = f.after.atp;
+    return { f: f, T: T, avail: a, noStock: f.stock0 == null };
   }
   /* need 枚がそろう最初の日。{ date, after:true（期間の外）}。そろわなければ null */
   function frameEarliest(FR, name, need, today) {

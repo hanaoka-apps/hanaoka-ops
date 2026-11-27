@@ -54,6 +54,9 @@ assert.equal(C.frameInfo(FR, 'X', t4).avail, 0);
 assert.equal(C.isoDay(C.frameEarliest(FR, 'X', 3, t4).date), '2026-12-05');
 assert.equal(C.frameEarliest(FR, 'X', 6, t4), null);
 assert.ok(C.frameInfo(FR, 'Y', t1).noStock);
+// 起点日より前（Excel が空欄）は、起点日からの数字を使う
+FR.frames.X.atp[0] = null; FR.frames.X.atp[1] = null;
+assert.equal(C.frameInfo(FR, 'X', t1).avail, -5);
 
 // ---- FUJIN のデータ（ハンドル・キャスター） ----
 const PL = {
