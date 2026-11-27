@@ -66,6 +66,12 @@
   .small-table tr.strong td { font-weight:600; }
   .small-table td.hit { color:var(--warn); font-weight:600; }
   .comment { margin-top:8px; font-size:13px; line-height:1.7; }
+  .kouka-grid { display:grid; grid-template-columns:minmax(0, 1fr) 380px; gap:16px; align-items:start; }
+  @media (max-width:760px) { .kouka-grid { grid-template-columns:1fr; } }
+  .radar svg { width:100%; height:auto; display:block; overflow:visible; }
+  .radar { overflow:hidden; }
+  .radar-legend { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; font-size:12px; color:var(--muted); }
+  .radar-legend i { display:inline-block; width:12px; height:3px; border-radius:2px; vertical-align:middle; margin-right:4px; }
   .decide { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)) auto; gap:10px; margin-top:14px; padding:12px 14px; border-radius:10px;
     background:color-mix(in srgb, var(--accent) 5%, var(--panel)); align-items:start; }
   .decide .lab { font-size:11.5px; color:var(--muted); margin-bottom:4px; }
@@ -454,11 +460,12 @@ function openPop(code, keepScroll) {
 
     <h3>考課</h3>`;
   if (k) {
-    h += `<table class="small-table"><thead><tr><th>項目</th><th class="num">一次</th><th class="num">二次</th><th class="num">三次</th></tr></thead><tbody>
-      ${k.項目.map(i => `<tr><td>${esc(i.項目)}</td>${i.点.map(v => `<td class="num">${v || '—'}</td>`).join('')}</tr>`).join('')}
+    h += `<div class="kouka-grid"><div><table class="small-table"><thead><tr><th>項目</th><th class="num">一次</th><th class="num">二次</th><th class="num">三次</th></tr></thead><tbody>
+      ${k.項目.map(i => `<tr><td title="${esc(i.項目)}${i.満点 ? '（満点 ' + i.満点 + '）' : ''}">${esc(shortItem(i.項目, 18))}</td>${i.点.map(v => `<td class="num">${v || '—'}</td>`).join('')}</tr>`).join('')}
       <tr class="strong"><td>総点</td>${k.総点.map(v => `<td class="num">${v || '—'}</td>`).join('')}</tr>
       <tr class="strong"><td>ランク</td><td class="num">${esc(k.一次 || '—')}</td><td class="num">${esc(k.二次 || '—')}</td><td class="num">${esc(k.三次 || '—')}</td></tr>
-      <tr><td>評定者</td>${k.評定者.map(v => `<td class="num">${esc(v || '—')}</td>`).join('')}</tr></tbody></table>`;
+      <tr><td>評定者</td>${k.評定者.map(v => `<td class="num">${esc(v || '—')}</td>`).join('')}</tr></tbody></table></div>
+      <div>${radarSvg(k)}</div></div>`;
     for (const [lab, lst] of Object.entries(k.コメント || {}))
       if (lst.length) h += `<div class="comment"><b>${esc(lab)}</b>${lst.map(c => `<div>・${esc(c.段階)}（${esc(c.評定者 || '')}）${esc(c.コメント)}</div>`).join('')}</div>`;
     if (k.社長コメント) h += `<div class="comment"><b>考課表の社長欄</b><div>${esc(k.社長コメント).replace(/\n/g, '<br>')}</div></div>`;
@@ -528,6 +535,42 @@ function monthNote(ym) {
   if (!ym) return '';
   const m = Number(ym.slice(5)), prev = m === 1 ? 12 : m - 1;
   return `「${m}月分」は ${prev}/16〜${m}/15 の勤怠です（給与の締めと同じ）。`;
+}
+/** 長い項目名を短くする（全文は title で見せる） */
+function shortItem(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+/**
+ * 考課のレーダー図（SVG）。項目ごとに満点が違うので、満点に対する割合（A＝100%）で描く。
+ * 点数が入っている段階（一次・二次・三次）だけを重ねる。満点が分からない項目は軸にしない
+ */
+/** レーダー図の軸の名前：「1.常にお客様を…」のような文は番号だけ（全文は表とマウスで）、ほかは7文字まで */
+function axisLabel(s) {
+  const m = /^\s*(\d+)[.．]/.exec(s || '');
+  return m ? m[1] : shortItem(String(s || '').replace(/^【|】$/g, ''), 7);
+}
+function radarSvg(k) {
+  const axes = (k.項目 || []).filter(i => i.満点 > 0);
+  if (axes.length < 3) return '';
+  const S = 320, c = S / 2, R = 108, n = axes.length;
+  const pt = (i, f) => { const a = -Math.PI / 2 + 2 * Math.PI * i / n; return [c + R * f * Math.cos(a), c + R * f * Math.sin(a)]; };
+  const poly = f => axes.map((_, i) => pt(i, f).map(v => v.toFixed(1)).join(',')).join(' ');
+  const STAGES = [['一次', '#9aa1b9'], ['二次', '#4a7bd0'], ['三次', 'var(--accent)']];
+  let g = '';
+  [0.2, 0.4, 0.6, 0.8, 1].forEach(f => { g += `<polygon points="${poly(f)}" fill="none" stroke="var(--border)" stroke-width="1"/>`; });
+  axes.forEach((_, i) => { const [x, y] = pt(i, 1); g += `<line x1="${c}" y1="${c}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border)"/>`; });
+  const legend = [];
+  STAGES.forEach(([lab, col], s) => {
+    if (!k.総点 || !k.総点[s]) return;
+    const pts = axes.map((it, i) => pt(i, Math.max(0, Math.min(1, (it.点[s] || 0) / it.満点))).map(v => v.toFixed(1)).join(',')).join(' ');
+    g += `<polygon points="${pts}" fill="${col}" fill-opacity="${s === 2 ? .18 : .08}" stroke="${col}" stroke-width="${s === 2 ? 2.2 : 1.4}"/>`;
+    legend.push(`<span><i style="background:${col}"></i>${lab}${k.評定者 && k.評定者[s] ? '（' + esc(k.評定者[s]) + '）' : ''}</span>`);
+  });
+  axes.forEach((it, i) => {
+    const [x, y] = pt(i, 1.18);
+    const anchor = Math.abs(x - c) < 8 ? 'middle' : x > c ? 'start' : 'end';
+    g += `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="${anchor}" dominant-baseline="middle" font-size="12" fill="var(--text)"><title>${esc(it.項目)}（満点 ${it.満点}）</title>${esc(axisLabel(it.項目))}</text>`;
+  });
+  return `<div class="radar"><svg viewBox="-64 -4 ${S + 128} ${S + 8}" role="img" aria-label="考課のレーダー図（満点に対する割合）">${g}</svg>
+    <div class="radar-legend">${legend.join('')}</div><div class="note" style="text-align:center">外側の線が満点（A）。項目ごとの満点に対する割合</div></div>`;
 }
 function closePop() { saveCommentIfChanged(); $('#pop').classList.add('hide'); POP = null; }
 function lastChange(code) {
