@@ -131,13 +131,14 @@
 
 <div id="sheet" role="dialog" aria-modal="true"><div class="card"><div class="hd"><h2 id="sTitle"></h2><button class="btn ghost" id="sClose">閉じる</button></div><div id="sBody"></div></div></div>
 
-<script src="nouki_kaitou_core.js?v=20261127"></script>
+<script src="nouki_kaitou_core.js?v=20261127b"></script>
 <script>
 const NC = NoukiCore;
 /* 読むファイル（SharePoint）。ID は接続先の設定で、秘密ではない */
 const XL = { drive: 'b!2zhVauBZ1kGM729G1nO3DrG_OGxphilJmaisN71MVslM8PVBzr9XSIKtxeYBl27Z', item: '012XBDVSB5OZOUODIGRNGINK7LBNMM3WHD' }; // Teams「販売計画_管理表.xlsx」
 const PL_DRIVE = 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';                                            // FUJIN のデータ（plan_ledger.json）
-const SCOPES = ['User.Read', 'Files.Read.All'];
+const SITE_ID = 'hanaokacorp.sharepoint.com,57813f25-8b28-40ac-affa-1e7d06d56802,eb428e92-6c63-46a9-a144-f6a2283a2f23';  // SharedMasters のあるサイト
+const SCOPES = ['User.Read', 'Files.Read.All', 'Sites.Read.All'];
 const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 const $ = id => document.getElementById(id);
@@ -147,7 +148,7 @@ const md = d => d ? `${d.getMonth() + 1}/${d.getDate()}（${WD[d.getDay()]}）` 
 const mdS = d => d ? `${d.getMonth() + 1}/${d.getDate()}` : '';
 
 let pca = null, account = null;
-let S = { FR: null, PL: null, xlMeta: null, sample: false, errs: [], last: null, detail: null, today: new Date() };
+let S = { jd: {}, jdState: '', smDrive: null, FR: null, PL: null, xlMeta: null, sample: false, errs: [], last: null, detail: null, today: new Date() };
 
 /* ---------- サインインと読み込み ---------- */
 async function init() {
@@ -194,10 +195,40 @@ async function loadAll() {
   ];
   await Promise.all(jobs);
   afterLoad();
+  if (S.FR) enrichDates(S.FR.orders.map(o => o.no));
 }
+/* 受注入力日・納期：SMILE の受注明細出力.csv（SharedMasters・毎晩）から受注№で引く */
+async function smDrive() {
+  if (S.smDrive) return S.smDrive;
+  const d = await gget(`/sites/${SITE_ID}/drives?$select=id,name,webUrl&$top=100`);
+  const hit = (d.value || []).find(x => x.name === 'SharedMasters') || (d.value || []).find(x => /SharedMasters/i.test((x.name || '') + (x.webUrl || '')));
+  if (!hit) throw new Error('SharedMasters が見つかりません');
+  return (S.smDrive = hit.id);
+}
+async function enrichDates(nos) {
+  if (S.sample) return;
+  const need = [...new Set(nos.map(NC.jno))].filter(n => n && !(n in S.jd));
+  if (!need.length) return;
+  S.jdState = '読み込み中'; refreshOrderViews();
+  try {
+    const meta = await gget(`/drives/${await smDrive()}/root:/${encodeURIComponent('受注明細出力.csv')}`);
+    const url = meta['@microsoft.graph.downloadUrl'];
+    const bytes = async (a, b) => new Uint8Array(await (await fetch(url, { headers: { Range: `bytes=${a}-${b}` } })).arrayBuffer());
+    await NC.juchuDates(bytes, +meta.size || 0, need, S.jd);
+    S.jdState = '';
+  } catch (e) { S.jdState = '読めませんでした（' + e.message + '）'; }
+  refreshOrderViews();
+}
+function jdOf(o) { const x = S.jd[NC.jno(o.no)]; return x || {}; }
+function refreshOrderViews() {
+  if (S.detail) renderDetail(S.detail);
+  if ($('sheet').classList.contains('on') && S.sheetPart) showOrders(S.sheetPart);
+}
+
 function startSample() {
   const x = NC.sample(new Date());
-  Object.assign(S, { FR: x.FR, PL: x.PL, xlMeta: null, sample: true, errs: [], today: new Date() });
+  Object.assign(S, { FR: x.FR, PL: x.PL, xlMeta: null, sample: true, errs: [], today: new Date(), jd: {} });
+  x.FR.orders.forEach((o, i) => { const sh = o.ship || new Date(); S.jd[NC.jno(o.no)] = { od: new Date(sh.getFullYear(), sh.getMonth(), sh.getDate() - 20 - i), due: new Date(sh.getFullYear(), sh.getMonth(), sh.getDate() + 2) }; });
   showApp(); afterLoad();
   if (!$('qModel').value) { $('qModel').value = 'SAMPLE-200'; $('qQty').value = 10; ask(); }
 }
@@ -250,15 +281,20 @@ function ask() {
     <div class="scroll"><table><thead><tr><th>部品</th><th class="n">取数</th><th class="n">必要数</th><th class="n">あと出せる数</th><th class="n">あと何台分</th><th>${a.qty}台分がそろう日</th><th>注残</th><th>詳細</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="sub" style="margin-top:8px">「あと出せる数」＝今日から先で見込み在庫がいちばん少なくなるところ（その数までなら、ほかの注残に迷惑をかけずに出せる）。「あと何台分」＝それ ÷ 取数。</div></div>`;
   S.detail = null; renderChips();
+  enrichDates([].concat(...a.parts.map(p => p.orders.map(o => o.no))));
 }
 
 /* ---------- 注残の明細 ---------- */
+function orderTable(p) {
+  const rows = p.orders.map(o => { const j = jdOf(o); return `<tr><td>${esc(o.no)}</td><td>${md(j.od)}</td><td>${esc(o.cust)}</td><td>${esc(o.model)}</td>
+      <td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.per)}</td><td class="n">${fmt(o.need != null ? o.need : o.qty * o.per)}</td><td>${md(j.due)}</td><td>${md(o.ship)}</td><td>${esc(o.note || '')}</td></tr>`; }).join('');
+  const st = S.jdState ? `<div class="sub">受注入力日・納期：SMILE の受注明細を${esc(S.jdState)}</div>` : '';
+  return `${st}<div class="scroll"><table><thead><tr><th>受注No</th><th>受注入力日</th><th>得意先</th><th>型式</th><th class="n">数量</th><th class="n">取数</th><th class="n">必要数</th><th>納期</th><th>出荷予定日</th><th>備考</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="sub">注残はありません</td></tr>'}</tbody></table></div>`;
+}
 function showOrders(p) {
-  const rows = p.orders.map(o => `<tr><td>${md(o.ship)}</td><td>${esc(o.no)}</td><td>${esc(o.cust)}</td><td>${esc(o.model)}</td>
-      <td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.per)}</td><td class="n">${fmt(o.need != null ? o.need : o.qty * o.per)}</td><td>${esc(o.due || o.note || '')}</td></tr>`).join('');
+  S.sheetPart = p;
   const sum = p.orders.reduce((s, o) => s + (o.need != null ? o.need : o.qty * o.per), 0);
-  openSheet(`注残：${p.label}`, `<div class="sub">この部品を使う受注の残り（${p.orders.length}件・必要数 計 ${fmt(sum)}）。受注入力日・納期は${p.src === 'Excel' ? ' Excel にまだ無いので、次の更新で足します' : ' FUJIN のデータの納期を出しています'}。</div>
-    <div class="scroll"><table><thead><tr><th>出荷予定日</th><th>受注No</th><th>得意先</th><th>型式</th><th class="n">数量</th><th class="n">取数</th><th class="n">必要数</th><th>${p.src === 'Excel' ? '備考' : '納期'}</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="sub">注残はありません</td></tr>'}</tbody></table></div>`);
+  openSheet(`注残：${p.label}`, `<div class="sub">この部品を使う受注の残り（${p.orders.length}件・必要数 計 ${fmt(sum)}）。受注入力日・納期は SMILE の受注明細から受注Noで引いています。</div>${orderTable(p)}`);
 }
 function openSheet(t, h) { $('sTitle').textContent = t; $('sBody').innerHTML = h; $('sheet').classList.add('on'); }
 
@@ -302,8 +338,7 @@ function renderDetail(p) {
      <div class="sub" style="margin:4px 0 10px">${info}</div>
      <div class="scroll"><table class="grid"><thead><tr><th class="rl"></th>${head}</tr></thead><tbody>${body}</tbody></table></div></div>
      <div class="card"><div class="hd"><b>注残の明細（${p.orders.length}件）</b><button class="linkbtn" id="detOrd">大きく見る</button></div>
-     <div class="scroll"><table><thead><tr><th>出荷予定日</th><th>受注No</th><th>得意先</th><th>型式</th><th class="n">数量</th><th class="n">取数</th><th class="n">必要数</th></tr></thead><tbody>
-     ${p.orders.map(o => `<tr><td>${md(o.ship)}</td><td>${esc(o.no)}</td><td>${esc(o.cust)}</td><td>${esc(o.model)}</td><td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.per)}</td><td class="n">${fmt(o.need != null ? o.need : o.qty * o.per)}</td></tr>`).join('') || '<tr><td colspan="7" class="sub">注残はありません</td></tr>'}</tbody></table></div></div>`;
+     ${orderTable(p)}</div>`;
   $('detOrd').onclick = () => showOrders(p);
   document.querySelectorAll('#partChips .chip').forEach(b => b.setAttribute('aria-pressed', partsForChips()[+b.dataset.pc].label === S.detail.label));
 }

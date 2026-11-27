@@ -327,7 +327,45 @@
     return { FR: FR, PL: PL };
   }
 
-  return { norm: norm, xlDate: xlDate, isoDay: isoDay, fromIso: fromIso, addBizDays: addBizDays, fromSheetJS: fromSheetJS,
+  /* ============================================================
+     受注入力日・納期（Excel の注残には無いので、SMILE の 受注明細出力.csv から受注№で引く）
+     ファイルは大きい（約90MB）ので全部は読まない。新しい受注ほど後ろにあるので、後ろから 8MB ずつ読み、
+     要る受注№が全部見つかったらやめる（最大 48MB）。支払管理（ap_smile.js の juchuLookup）と同じ読み方。
+     bytes(a, b)：ファイルの a〜b バイト目を Uint8Array で返す関数。size：ファイルの大きさ
+     ============================================================ */
+  function jno(s) { return String(s == null ? '' : s).replace(/"/g, '').trim().replace(/^0+/, ''); }
+  function ymd(s) {
+    s = String(s || '').replace(/"/g, '').trim();
+    var m = s.match(/^(\d{4})[\/\-]?(\d{1,2})[\/\-]?(\d{1,2})$/);
+    if (!m || s === '00000000' || s === '99999999') return null;
+    return new Date(+m[1], +m[2] - 1, +m[3]);
+  }
+  async function juchuDates(bytes, size, nos, cache) {
+    var need = new Set(Array.from(nos).map(jno).filter(function (n) { return n && !(n in cache); }));
+    if (!need.size || !size) return cache;
+    var h0 = await bytes(0, Math.min(size - 1, 65535)), bom = h0[0] === 0xEF && h0[1] === 0xBB && h0[2] === 0xBF;
+    var enc = bom || new TextDecoder('utf-8').decode(h0.slice(0, 60000)).indexOf('\uFFFD') < 0 ? 'utf-8' : 'shift_jis';
+    var cell = function (x) { return String(x || '').replace(/^\uFEFF/, '').replace(/^"|"$/g, '').trim(); };
+    var hd = new TextDecoder(enc).decode(h0).split(/\r?\n/)[0].split('\t').map(cell);
+    var pick = function (names) { for (var i = 0; i < names.length; i++) { var k = hd.indexOf(names[i]); if (k >= 0) return k; } return -1; };
+    var iNo = pick(['受注№', '受注No', '受注NO']), iD = pick(['受注日付', '受注日']), iDue = pick(['納期', '受注納期']);
+    if (iNo < 0) return cache;
+    var CH = 8 * 1024 * 1024, OV = 65536, end = size - 1;
+    for (var k = 0; k < 6 && end > 0 && need.size; k++) {
+      var start = Math.max(0, end - CH + 1);
+      var ls = new TextDecoder(enc).decode(await bytes(start, Math.min(size - 1, end + OV))).split(/\r?\n/);
+      if (start > 0) ls.shift();
+      ls.forEach(function (l) {
+        var c = l.split('\t'), n = jno(c[iNo]);
+        if (n && need.has(n)) { cache[n] = { od: iD >= 0 ? ymd(c[iD]) : null, due: iDue >= 0 ? ymd(c[iDue]) : null }; need.delete(n); }
+      });
+      end = start - 1;
+    }
+    need.forEach(function (n) { cache[n] = null; });
+    return cache;
+  }
+
+  return { norm: norm, jno: jno, ymd: ymd, juchuDates: juchuDates, xlDate: xlDate, isoDay: isoDay, fromIso: fromIso, addBizDays: addBizDays, fromSheetJS: fromSheetJS,
            parseWorkbook: parseWorkbook, todayIndex: todayIndex, frameInfo: frameInfo, frameEarliest: frameEarliest,
            plCalc: plCalc, plEarliest: plEarliest, plOrders: plOrders, modelList: modelList, answer: answer, sample: sample,
            FRAME_CODES: FRAME_CODES, KLAB: KLAB };

@@ -89,4 +89,14 @@ const S = C.sample(new Date(2026, 10, 27));
 const b = C.answer(S.FR, S.PL, 'SAMPLE-200', 5, new Date(2026, 10, 27));
 assert.ok(b && b.parts.length === 4);
 assert.equal(C.modelList(S.FR, S.PL).length, 3);
-console.log('ok');
+// ---- 受注入力日・納期（受注明細出力.csv を後ろから読む） ----
+(async () => {
+  const csv = '\uFEFF受注日付\t受注№\t品目\t納期\n20261101\t000123\tA\t20261215\n20261105\t124\tB\t2026/12/20\n';
+  const buf = new TextEncoder().encode(csv);
+  const bytes = async (a, b) => buf.slice(a, b + 1);
+  const m = await C.juchuDates(bytes, buf.length, ['123', '124', '999'], {});
+  assert.equal(C.isoDay(m['123'].od), '2026-11-01');
+  assert.equal(C.isoDay(m['124'].due), '2026-12-20');
+  assert.equal(m['999'], null);
+  console.log('ok');
+})();
