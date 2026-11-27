@@ -66,7 +66,7 @@
   .small-table tr.strong td { font-weight:600; }
   .small-table td.hit { color:var(--warn); font-weight:600; }
   .comment { margin-top:8px; font-size:13px; line-height:1.7; }
-  .decide { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:10px; margin-top:14px; padding:12px 14px; border-radius:10px;
+  .decide { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)) auto; gap:10px; margin-top:14px; padding:12px 14px; border-radius:10px;
     background:color-mix(in srgb, var(--accent) 5%, var(--panel)); align-items:start; }
   .decide .lab { font-size:11.5px; color:var(--muted); margin-bottom:4px; }
   .decide .big { font-size:17px; font-weight:600; font-variant-numeric:tabular-nums; }
@@ -77,6 +77,18 @@
   th.sortable { cursor:pointer; user-select:none; }
   th.sortable:hover, th.sorted { color:var(--accent); }
   button:disabled { opacity:.4; cursor:default; }
+  td.sub { color:var(--muted); font-size:12px; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); align-items:center; }
+  .legend .sw { display:inline-block; width:14px; height:14px; border-radius:4px; vertical-align:-2px; margin-right:5px; }
+  .sw-changed { border:2px solid var(--accent); }
+  .sw-jump { background:color-mix(in srgb, var(--warn) 22%, var(--panel)); }
+  .sw-diff { background:var(--warn); }
+  .dept-sep .sum { float:right; font-weight:500; color:var(--muted); font-size:12px; }
+  .okbtn { font-weight:600; padding:6px 14px; }
+  .okbtn.on { background:color-mix(in srgb, var(--ok) 16%, var(--panel)); color:var(--ok); border-color:transparent; }
+  .lockmsg { margin-top:10px; padding:8px 12px; border-radius:8px; font-size:12.5px; background:color-mix(in srgb, var(--ok) 12%, var(--panel)); }
+  .decide-actions { display:flex; flex-direction:column; gap:6px; align-items:stretch; }
+  .decide-actions button { white-space:nowrap; }
   textarea { width:100%; min-height:60px; font:inherit; font-size:13px; padding:8px; border-radius:6px; border:1px solid var(--border); }
   /* 設定 */
   .set-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
@@ -136,8 +148,9 @@
     <button id="csvBtn">社労士に渡す一覧（CSV）</button>
     <button id="fixBtn" class="hide">FIX</button>
   </div>
+  <div class="legend"><span><i class="sw sw-changed"></i>部門評価から変えたランク</span><span><i class="sw sw-jump"></i>前回から2段以上動いたランク</span><span><i class="sw sw-diff"></i>評価額と違う支給額（欠勤・日割り）</span><span class="muted">行をクリックすると詳しい中身</span></div>
   <div class="scrollx"><table id="listTable"></table></div>
-  <div class="note">評価額＝固定分＋考課分（全員同じルール）。支給額＝評価額から欠勤の減額と日割り（試用明け・休職）を反映した、実際の振込額。行をクリックすると詳しい中身が見られます。前回から2段以上動いたランクは色が付きます。</div>
+  <div class="note">評価額＝固定分＋考課分（全員同じルール）。支給額＝評価額から欠勤の減額と日割り（試用明け・休職）を反映した、実際の振込額。</div>
 </main>
 
 <main id="vSettings" class="hide"></main>
@@ -269,21 +282,28 @@ function reasonLong(p, r) {
 let siteFilter = '';
 let sortKey = '部署', sortDir = 1;   // 見出しを押すと並べ替え。「部署」のときだけ部署ごとの見出しを出す
 const SITE_ORDER = { '本社': 0, '工場': 1 };
+const rankIdx = r => { const i = RANKS.indexOf(r); return i < 0 ? 99 : i; };   // A が先、ランクなしは最後
 const gradeNum = g => { const m = /(\d)-(\d)/.exec(g || ''); return m ? Number(m[1]) * 10 + Number(m[2]) : 0; };
 function sorted(rows) {
   const val = {
     '氏名': p => p.氏名,
-    '決定ランク': p => { const i = RANKS.indexOf(rankOf(p)); return i < 0 ? 99 : i; },
+    '決定ランク': p => rankIdx(rankOf(p)),
+    '部門評価': p => rankIdx(p.部門評価),
+    '前回': p => rankIdx(prevRank(p)),
+    '等級': p => -gradeNum(p.等級),   // 等級の高い順
+    '年齢': p => -(Number(p.年齢) || 0),   // 年上が先
+    '勤続': p => p.入社日 || '9999',   // 勤続の長い順（入社日の古い順）
+    'OK': p => (DEC.OK[p.社員番号] ? 1 : 0),   // 未確認が先
     '評価額': p => calc(p, rankOf(p), SET).hyoka,
     '支給額': p => calc(p, rankOf(p), SET).pay,
   }[sortKey];
+  // 部署順：拠点 → 部署 → 等級の高い順 → 社員番号（ほかの列で並べたときも、同じ値の中はこの順）
+  const deptCmp = (a, b) => (SITE_ORDER[a.拠点] ?? 9) - (SITE_ORDER[b.拠点] ?? 9) || String(a.部署).localeCompare(String(b.部署), 'ja')
+    || gradeNum(b.等級) - gradeNum(a.等級) || Number(a.社員番号) - Number(b.社員番号);
   return rows.slice().sort((a, b) => {
-    if (!val) {   // 部署順：拠点 → 部署 → 等級の高い順 → 社員番号
-      return (SITE_ORDER[a.拠点] ?? 9) - (SITE_ORDER[b.拠点] ?? 9) || String(a.部署).localeCompare(String(b.部署), 'ja')
-        || gradeNum(b.等級) - gradeNum(a.等級) || Number(a.社員番号) - Number(b.社員番号);
-    }
+    if (!val) return deptCmp(a, b);
     const x = val(a), y = val(b);
-    return (typeof x === 'string' ? x.localeCompare(y, 'ja') : x - y) * sortDir;
+    return (typeof x === 'string' ? x.localeCompare(y, 'ja') : x - y) * sortDir || deptCmp(a, b);
   });
 }
 function filtered() {
@@ -311,17 +331,28 @@ function render() {
   const rows = filtered();
   const edit = canEditRank();
   const th = (key, lab, cls) => `<th class="sortable ${cls || ''} ${sortKey === key ? 'sorted' : ''}" data-sort="${key}">${lab}${sortKey === key && key !== '部署' ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
-  let html = '<thead><tr>' + th('氏名', '氏名') + th('部署', '部署') + '<th>等級</th><th>部門評価</th><th>前回</th>'
-    + th('決定ランク', '決定ランク') + th('評価額', '評価額', 'num') + th('支給額', '支給額', 'num') + '<th>OK</th></tr></thead><tbody>';
+  let html = '<thead><tr>' + th('氏名', '氏名') + th('部署', '部署') + th('等級', '等級') + th('年齢', '年齢', 'num') + th('勤続', '勤続', 'num') + th('部門評価', '部門評価') + th('前回', '前回')
+    + th('決定ランク', '決定ランク') + th('評価額', '評価額', 'num') + th('支給額', '支給額', 'num') + th('OK', 'OK') + '</tr></thead><tbody>';
   let curDept = null;
+  const sums = {};
   rows.forEach(p => {
-    if (sortKey === '部署' && p.拠点 + p.部署 !== curDept) { curDept = p.拠点 + p.部署; html += `<tr class="dept-sep"><td colspan="9">${esc(p.拠点)}｜${esc(p.部署)}</td></tr>`; }
+    const r = calc(p, rankOf(p), SET), k = p.拠点 + p.部署;
+    const s = sums[k] = sums[k] || { n: 0, h: 0, pay: 0 };
+    s.n++; s.h += r.hyoka; s.pay += r.pay;
+  });
+  rows.forEach(p => {
+    if (sortKey === '部署' && p.拠点 + p.部署 !== curDept) {
+      curDept = p.拠点 + p.部署;
+      const s = sums[curDept];
+      html += `<tr class="dept-sep"><td colspan="11">${esc(p.拠点)}｜${esc(p.部署)}<span class="sum">${s.n}人　評価額 ${yen(s.h)}　支給額 ${yen(s.pay)}</span></td></tr>`;
+    }
     const rk = rankOf(p), r = calc(p, rk, SET), why = reasonOf(p, r);
     const opts = ['<option value="">—</option>'].concat(RANKS.map(x => `<option ${x === rk ? 'selected' : ''}>${x}</option>`)).join('');
     const changed = DEC.ランク[p.社員番号] && DEC.ランク[p.社員番号] !== p.部門評価;
     const tip = (changed ? '部門評価 ' + (p.部門評価 || '—') + ' から変更' : '') + (jump(p) ? '（前回から2段以上）' : '');
     html += `<tr class="row" data-code="${esc(p.社員番号)}">
-      <td>${esc(p.氏名)}</td><td>${esc(p.部署)}</td><td>${esc(p.等級)}</td>
+      <td>${esc(p.氏名)}</td><td>${esc(p.部署)}</td><td>${esc(gradeLabel(p.等級))}</td>
+      <td class="num sub">${esc(p.年齢 || '')}</td><td class="num sub">${esc(tenureShort(p.勤続))}</td>
       <td>${esc(p.部門評価 || '—')}</td><td>${esc(prevRank(p) || '—')}</td>
       <td><select class="rank ${changed ? 'changed' : ''} ${jump(p) ? 'jump' : ''}" data-rank="${esc(p.社員番号)}" ${edit ? '' : 'disabled'} aria-label="決定ランク" title="${esc(tip)}">${opts}</select></td>
       <td class="num">${yen(r.hyoka)}</td>
@@ -347,6 +378,10 @@ function renderBanners() {
 }
 const fmtDate = s => s ? new Date(s).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 const shortName = s => String(s || '').split('@')[0];   // メールアドレスは @ の前だけ出す
+/** 等級は辞令と同じ書き方で出す（データの「MGR1-2」→「R1-2」。専門・専任はそのまま。データは変えない） */
+/** 勤続は一覧では「41年」のように年だけ（詳しくはポップアップ） */
+const tenureShort = t => { const m = /(\d+)年/.exec(t || ''); return m ? m[1] + '年' : ''; };
+const gradeLabel = g => String(g || '').replace(/^MGR/, 'R');
 
 /* 決定ランク・OK の変更（一覧とポップアップで共通） */
 function setRank(code, after) {
@@ -358,6 +393,7 @@ function setRank(code, after) {
 }
 function toggleOk(code) {
   if (ROLE === '閲覧') { toast('OK を付けられるのは社長と管理者です'); return; }
+  if (DEC.FIX) { toast('FIX 済みのため変えられません'); return; }
   const on = !DEC.OK[code];
   saveDecision(d => { if (on) d.OK[code] = { 誰: ME, 日時: new Date().toISOString() }; else delete d.OK[code]; },
     { 社員番号: code, 項目: 'OK', 前: on ? '未' : 'OK', 後: on ? 'OK' : '未' });
@@ -388,9 +424,10 @@ function openPop(code, keepScroll) {
   const opts = ['<option value="">—</option>'].concat(RANKS.map(x => `<option ${x === rk ? 'selected' : ''}>${x}</option>`)).join('');
   const changed = DEC.ランク[code] && DEC.ランク[code] !== p.部門評価;
   const why = reasonLong(p, r);
+  const canOk = !DEC.FIX && ROLE !== '閲覧';
   let h = `<div class="box" role="dialog" aria-label="${esc(p.氏名)}の詳細">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2>${esc(p.氏名)}</h2>
-      <span class="note">${esc(p.拠点)}｜${esc(p.部署)}｜${esc(p.等級)}</span><div class="spacer"></div>
+      <span class="note">${esc(p.拠点)}｜${esc(p.部署)}｜${esc(gradeLabel(p.等級))}</span><div class="spacer"></div>
       <span class="note">${idx + 1} / ${list.length}人</span>
       <button id="popPrev" ${idx > 0 ? '' : 'disabled'} title="前の人（←）">← 前</button>
       <button id="popNext" ${idx >= 0 && idx < list.length - 1 ? '' : 'disabled'} title="次の人（→）">次 →</button>
@@ -403,12 +440,16 @@ function openPop(code, keepScroll) {
         <select id="popRank" class="rank big-select ${changed ? 'changed' : ''} ${jump(p) ? 'jump' : ''}" ${edit ? '' : 'disabled'} aria-label="決定ランク">${opts}</select></div>
       <div><div class="lab">評価額</div><div class="big">${yen(r.hyoka)}</div></div>
       <div><div class="lab">支給額</div><div class="big ${r.pay !== r.hyoka ? 'diff' : ''}">${yen(r.pay)}</div>${why ? `<div class="reason">${esc(why)}</div>` : ''}</div>
-      <div><div class="lab">社長OK</div><span id="popOk" class="pill big-pill ${DEC.OK[code] ? 'on' : ''}">${DEC.OK[code] ? 'OK' : '未'}</span></div>
+      <div><div class="lab">社長OK</div><div class="decide-actions">
+        <button id="popOk" class="okbtn ${DEC.OK[code] ? 'on' : ''}" ${canOk ? '' : 'disabled'}>${DEC.OK[code] ? 'OK 済み（取り消す）' : 'OK にする'}</button>
+        ${!DEC.OK[code] && idx >= 0 && idx < list.length - 1 ? `<button id="popOkNext" class="primary" ${canOk ? '' : 'disabled'}>OK して次へ →</button>` : ''}</div></div>
     </div>
+    ${DEC.FIX ? `<div class="lockmsg">FIX 済み（${fmtDate(DEC.FIX.日時)}・${esc(shortName(DEC.FIX.誰))}）のため、ランク・OK・コメントは変えられません。変えるときは管理者が一覧の「FIX を外す」を押します。</div>`
+      : ROLE === '閲覧' ? '<div class="lockmsg">閲覧のみの権限です。ランク・OK・コメントは社長と管理者が変えられます。</div>' : ''}
 
     <h3>基本情報</h3>
     <div class="kv"><div>入社日 ${esc(p.入社日)}</div><div>勤続 ${esc(p.勤続 || '')}</div><div>年齢 ${esc(p.年齢 || '')}</div>
-      <div>等級 ${esc(p.等級)}</div><div>基準内 ${yen(p.基準内)}円</div>
+      <div>等級 ${esc(gradeLabel(p.等級))}</div><div>基準内 ${yen(p.基準内)}円</div>
       <div style="grid-column:1/-1">直近の辞令 ${esc(p.辞令日)} ${esc((p.役職 || '').replace(/\s*を命ずる\s*$/, ''))}</div></div>
 
     <h3>考課</h3>`;
@@ -458,13 +499,26 @@ function openPop(code, keepScroll) {
   $('#popPrev').onclick = () => movePop(-1);
   $('#popNext').onclick = () => movePop(1);
   $('#popRank').onchange = e => setRank(code, e.target.value);
-  $('#popOk').onclick = () => toggleOk(code);
-  $('#popSave').onclick = () => {
-    const txt = $('#popComment').value;
-    saveDecision(d => { if (txt) d.社長コメント[code] = txt; else delete d.社長コメント[code]; }, { 社員番号: code, 項目: '社長コメント', 前: '', 後: '（更新）' });
+  $('#popOk').onclick = () => { saveCommentIfChanged(); toggleOk(code); };
+  if ($('#popOkNext')) $('#popOkNext').onclick = () => {
+    saveCommentIfChanged();
+    if (!DEC.OK[code]) toggleOk(code);
+    movePop(1, true);
   };
+  $('#popSave').onclick = () => saveCommentIfChanged(true);
 }
-function movePop(step) {
+/** 書きかけのコメントを保存する（保存ボタンを押さずに次へ進んでも消えないように） */
+function saveCommentIfChanged(force) {
+  const box = $('#popComment');
+  if (!POP || !box || box.disabled) return;
+  const code = POP, txt = box.value.trim(), before = (DEC.社長コメント[code] || '').trim();
+  if (txt === before && !force) return;
+  if (txt === before) { toast('変更はありません'); return; }
+  saveDecision(d => { if (txt) d.社長コメント[code] = txt; else delete d.社長コメント[code]; },
+    { 社員番号: code, 項目: '社長コメント', 前: before ? '（あり）' : '', 後: txt ? '（更新）' : '（削除）' });
+}
+function movePop(step, saved) {
+  if (!saved) saveCommentIfChanged();
   const list = filtered(), i = list.findIndex(x => x.社員番号 === POP);
   const n = list[i + step];
   if (n) openPop(n.社員番号);
@@ -475,7 +529,7 @@ function monthNote(ym) {
   const m = Number(ym.slice(5)), prev = m === 1 ? 12 : m - 1;
   return `「${m}月分」は ${prev}/16〜${m}/15 の勤怠です（給与の締めと同じ）。`;
 }
-function closePop() { $('#pop').classList.add('hide'); POP = null; }
+function closePop() { saveCommentIfChanged(); $('#pop').classList.add('hide'); POP = null; }
 function lastChange(code) {
   const l = DEC.履歴.filter(x => x.社員番号 === code).slice(-1)[0];
   return l ? `最終更新：${shortName(l.誰)}（${fmtDate(l.日時)}）${l.項目} ${l.前 || ''}→${l.後 || ''}` : '';
