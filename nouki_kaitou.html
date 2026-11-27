@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>納期回答（試作） — 花岡車輌</title>
+<link rel="icon" type="image/svg+xml" href="favicon_nouki.svg">
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="hanaoka_auth.js"></script>
+<link rel="stylesheet" href="hanaoka_theme.css?v=20261004">
+<!--
+  納期回答（試作）
+  ・型式と台数を入れると、フレーム・ハンドル・キャスターごとに「あと何台分あるか」「その台数がそろう日」を出す。
+  ・フレームは Teams の Excel「販売計画_管理表」（工場が入れる計画・実績と起点在庫）を、開くたびに読み直す。
+  ・ハンドル・キャスターは FUJIN の納期確認と同じデータ（plan_ledger.json）を読む。
+  ・読むだけ。書き込みはしない。ブラウザにも保存しない。
+  ・ゆくゆくは FUJIN の「納期確認」に入れる予定（FUJIN は室長の担当なので、入れるときは室長と相談）。
+  計算は nouki_kaitou_core.js（テスト tests/test_nouki_kaitou_core.cjs）。
+-->
+<style>
+  :root{ --navy-hi:#3b3fd0; --red-ink:color-mix(in srgb,var(--red) 75%,black); --green-ink:color-mix(in srgb,var(--green) 70%,black); }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--txt);font-size:14px;line-height:1.55}
+  button{font-family:inherit}
+  #loginScreen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
+  .login-card{background:var(--surface);border-radius:16px;padding:36px 40px;width:400px;max-width:92vw;box-shadow:var(--shadow);text-align:center}
+  .login-card h1{font-size:19px;margin:0 0 4px;color:var(--navy)}
+  .login-card p{color:var(--sub);font-size:13px;margin:0 0 20px}
+  .btn{border:none;border-radius:10px;cursor:pointer;background:var(--navy);color:#fff;font-weight:700;padding:10px 16px;font-size:14px}
+  .btn:hover{background:var(--navy-deep)}
+  .btn.ghost{background:var(--surface);color:var(--navy);border:1px solid var(--line-strong)}
+  .btn.ghost:hover{background:var(--navy-soft)}
+  .btn.wide{width:100%;margin-top:8px}
+  #loginError{display:none;margin-top:14px;color:var(--red-ink);font-size:13px;background:var(--red-soft);border-radius:8px;padding:10px;text-align:left;white-space:pre-wrap}
+  #app{display:none}
+  header{background:var(--surface);border-bottom:1px solid var(--line);padding:10px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;color:var(--navy)}
+  .tag{font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;background:var(--amber-soft);color:var(--amber)}
+  .src{font-size:12px;color:var(--sub);display:flex;gap:14px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  .src b{color:var(--txt);font-weight:600}
+  .tabs{display:flex;gap:6px;padding:12px 18px 0}
+  .tabs button{border:1px solid var(--line-strong);background:var(--surface);color:var(--sub);border-radius:10px 10px 0 0;padding:8px 16px;font-weight:700;cursor:pointer}
+  .tabs button[aria-selected=true]{background:var(--navy);color:#fff;border-color:var(--navy)}
+  main{padding:16px 18px 40px;max-width:1280px}
+  .card{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:14px}
+  .ask{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  .ask label{display:flex;flex-direction:column;font-size:12px;color:var(--sub);gap:4px;font-weight:600}
+  .ask input{font:inherit;font-size:16px;padding:9px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);color:var(--txt)}
+  #qModel{width:260px} #qQty{width:90px;text-align:right}
+  .sug{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .chip{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer;color:var(--txt)}
+  .chip:hover,.chip[aria-pressed=true]{background:var(--navy-soft);border-color:var(--navy);color:var(--navy)}
+  .chip small{color:var(--sub);margin-left:4px}
+  .big{font-size:20px;font-weight:800;margin:2px 0 6px}
+  .big.ok{color:var(--green-ink)} .big.ng{color:var(--red-ink)}
+  .sub{color:var(--sub);font-size:12.5px}
+  .kpis{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+  .kpi{background:var(--bg);border-radius:10px;padding:10px 14px;min-width:170px}
+  .kpi .l{font-size:11.5px;color:var(--sub);font-weight:600} .kpi .v{font-size:22px;font-weight:800} .kpi .v small{font-size:13px;color:var(--sub);font-weight:600}
+  table{border-collapse:collapse;width:100%}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;font-size:13px;white-space:nowrap}
+  th{font-size:11.5px;color:var(--sub);font-weight:700;background:var(--bg)}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  tr.neck td{background:var(--red-soft)}
+  .pill{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px}
+  .p-x{background:var(--navy-soft);color:var(--navy)} .p-f{background:var(--purple-soft);color:var(--purple)}
+  .p-ng{background:var(--red-soft);color:var(--red-ink)} .p-wn{background:var(--amber-soft);color:var(--amber)}
+  .linkbtn{border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;padding:3px 10px;cursor:pointer;font-weight:700;color:var(--navy);font-size:12px}
+  .linkbtn:hover{background:var(--navy-soft)}
+  .warn{background:var(--amber-soft);color:var(--amber);border-radius:8px;padding:8px 12px;font-size:12.5px;margin:6px 0}
+  .scroll{overflow-x:auto}
+  .grid td,.grid th{padding:5px 6px;font-size:12px;text-align:right}
+  .grid th.rl,.grid td.rl{text-align:left;position:sticky;left:0;background:var(--surface);z-index:1;min-width:150px}
+  .grid th.rl{background:var(--bg)}
+  .grid .past{color:var(--mute)} .grid .today{outline:2px solid var(--navy);outline-offset:-2px}
+  .grid .we{background:#f7f8fb} .grid .neg{color:var(--red-ink);font-weight:700;background:var(--red-soft)}
+  .grid tr.st td{font-weight:700} .grid tr.atp td{font-weight:700;color:var(--navy)}
+  #sheet{position:fixed;inset:0;background:rgba(22,26,61,.35);display:none;align-items:flex-start;justify-content:center;padding:40px 16px;z-index:50;overflow:auto}
+  #sheet.on{display:flex}
+  #sheet .card{max-width:980px;width:100%}
+  #sheet h2{margin:0 0 6px;font-size:16px;color:var(--navy)}
+  .hd{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  #msg{padding:16px 18px;color:var(--sub)}
+  .err{color:var(--red-ink)}
+</style>
+</head>
+<body>
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>納期回答（試作）</h1>
+    <p>型式と台数から、フレーム・ハンドル・キャスターの<br>「あと何台分」と「そろう日」を出します</p>
+    <button class="btn wide" id="loginBtn" data-ha-login>サインインして本物のデータを見る</button>
+    <button class="btn ghost wide" id="sampleBtn">見本データ（架空）で動きを見る</button>
+    <div id="loginError"></div>
+  </div>
+</div>
+
+<div id="app">
+  <header>
+    <h1>納期回答</h1><span class="tag">試作</span>
+    <div class="src" id="srcInfo"></div>
+    <button class="btn ghost" id="reloadBtn" title="Excel と FUJIN のデータを読み直す">↻ 読み直す</button>
+  </header>
+  <div class="tabs" role="tablist">
+    <button role="tab" data-tab="answer" aria-selected="true">納期回答（営業）</button>
+    <button role="tab" data-tab="detail" aria-selected="false">詳細（工場・営業）</button>
+  </div>
+  <div id="msg"></div>
+  <main>
+    <section id="tab-answer">
+      <div class="card">
+        <div class="ask">
+          <label>型式<input id="qModel" list="modelList" autocomplete="off" placeholder="例：UDALS"></label>
+          <label>台数<input id="qQty" type="number" min="1" value="1"></label>
+          <button class="btn" id="askBtn">調べる</button>
+        </div>
+        <datalist id="modelList"></datalist>
+        <div class="sug" id="sug"></div>
+      </div>
+      <div id="result"></div>
+    </section>
+    <section id="tab-detail" hidden>
+      <div class="card">
+        <div class="sub">部品を選ぶと、日ごとの「作る・出る・見込み在庫・あと何枚出せるか」と注残の明細を出します。</div>
+        <div class="sug" id="partChips"></div>
+      </div>
+      <div id="detail"></div>
+    </section>
+  </main>
+</div>
+
+<div id="sheet" role="dialog" aria-modal="true"><div class="card"><div class="hd"><h2 id="sTitle"></h2><button class="btn ghost" id="sClose">閉じる</button></div><div id="sBody"></div></div></div>
+
+<script src="nouki_kaitou_core.js?v=20261127"></script>
+<script>
+const NC = NoukiCore;
+/* 読むファイル（SharePoint）。ID は接続先の設定で、秘密ではない */
+const XL = { drive: 'b!2zhVauBZ1kGM729G1nO3DrG_OGxphilJmaisN71MVslM8PVBzr9XSIKtxeYBl27Z', item: '012XBDVSB5OZOUODIGRNGINK7LBNMM3WHD' }; // Teams「販売計画_管理表.xlsx」
+const PL_DRIVE = 'b!JT-BVyiLrECv-h59BtVoApKOQutjbKlGoUT2oig6LyO5ej8pUQ4QQIYH904CzeZ8';                                            // FUJIN のデータ（plan_ledger.json）
+const SCOPES = ['User.Read', 'Files.Read.All'];
+const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+const WD = ['日', '月', '火', '水', '木', '金', '土'];
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = v => v == null ? '—' : Math.round(v).toLocaleString('ja-JP');
+const md = d => d ? `${d.getMonth() + 1}/${d.getDate()}（${WD[d.getDay()]}）` : '—';
+const mdS = d => d ? `${d.getMonth() + 1}/${d.getDate()}` : '';
+
+let pca = null, account = null;
+let S = { FR: null, PL: null, xlMeta: null, sample: false, errs: [], last: null, detail: null, today: new Date() };
+
+/* ---------- サインインと読み込み ---------- */
+async function init() {
+  $('sampleBtn').onclick = () => startSample();
+  try {
+    pca = new msal.PublicClientApplication(HanaokaAuth.msalConfig());
+    await pca.initialize(); await pca.handleRedirectPromise();
+    account = await HanaokaAuth.restore(pca, SCOPES);
+    if (account) { showApp(); await loadAll(); }
+    $('loginBtn').onclick = async () => {
+      try { account = await HanaokaAuth.login(pca, SCOPES); showApp(); await loadAll(); }
+      catch (e) { HanaokaAuth.done(); if (e.errorCode !== 'user_cancelled') loginErr('サインインできませんでした：' + (e.errorCode || e.message)); }
+    };
+  } catch (e) { HanaokaAuth.done(); loginErr('サインインの準備ができませんでした：' + e.message); }
+}
+function loginErr(m) { const e = $('loginError'); e.textContent = m; e.style.display = 'block'; }
+function showApp() { $('loginScreen').style.display = 'none'; $('app').style.display = 'block'; }
+async function token() {
+  try { return (await pca.acquireTokenSilent({ scopes: SCOPES, account })).accessToken; }
+  catch (e) { return (await pca.acquireTokenPopup({ scopes: SCOPES })).accessToken; }
+}
+async function gget(path, as) {
+  const r = await fetch('https://graph.microsoft.com/v1.0' + path, { headers: { Authorization: 'Bearer ' + await token() }, cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status + (r.status === 403 || r.status === 401 ? '（見る権限がありません）' : r.status === 404 ? '（ファイルが見つかりません）' : ''));
+  return as === 'buf' ? r.arrayBuffer() : r.json();
+}
+function loadXlsxLib() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((ok, ng) => { const s = document.createElement('script'); s.src = XLSX_URL; s.onload = ok; s.onerror = () => ng(new Error('Excel を読む部品を読み込めませんでした')); document.head.appendChild(s); });
+}
+async function loadAll() {
+  S.sample = false; S.errs = []; S.today = new Date();
+  $('msg').innerHTML = '読み込み中…（Excel と FUJIN のデータ）';
+  const jobs = [
+    (async () => {
+      await loadXlsxLib();
+      S.xlMeta = await gget(`/drives/${XL.drive}/items/${XL.item}?$select=name,lastModifiedDateTime,lastModifiedBy,webUrl`);
+      const buf = await gget(`/drives/${XL.drive}/items/${XL.item}/content`, 'buf');
+      const wb = XLSX.read(buf, { type: 'array', cellFormula: false, cellHTML: false, cellStyles: false });
+      S.FR = NC.parseWorkbook(NC.fromSheetJS(XLSX, wb));
+    })().catch(e => { S.FR = null; S.errs.push('フレーム（Excel「販売計画_管理表」）を読めませんでした：' + e.message); }),
+    (async () => { S.PL = await gget(`/drives/${PL_DRIVE}/root:/plan_ledger.json:/content`); })()
+      .catch(e => { S.PL = null; S.errs.push('ハンドル・キャスター（FUJIN の納期確認のデータ）を読めませんでした：' + e.message); })
+  ];
+  await Promise.all(jobs);
+  afterLoad();
+}
+function startSample() {
+  const x = NC.sample(new Date());
+  Object.assign(S, { FR: x.FR, PL: x.PL, xlMeta: null, sample: true, errs: [], today: new Date() });
+  showApp(); afterLoad();
+  if (!$('qModel').value) { $('qModel').value = 'SAMPLE-200'; $('qQty').value = 10; ask(); }
+}
+function afterLoad() {
+  $('msg').innerHTML = S.errs.map(e => `<div class="err">⚠ ${esc(e)}</div>`).join('');
+  $('msg').style.display = S.errs.length ? 'block' : 'none';
+  const xl = S.sample ? '見本データ（架空）' : S.xlMeta ? `Excel 最終保存 <b>${esc(stamp(S.xlMeta.lastModifiedDateTime))}</b>${S.xlMeta.lastModifiedBy && S.xlMeta.lastModifiedBy.user ? '（' + esc(S.xlMeta.lastModifiedBy.user.displayName) + '）' : ''}` : 'Excel：読めていません';
+  const note = S.FR && S.FR.note && !S.sample ? `<span>${esc(S.FR.note)}</span>` : '';
+  const pl = S.PL ? `FUJIN 基準日 <b>${esc((S.PL.asOf || '').replace(/-/g, '/'))}</b>` : 'FUJIN：読めていません';
+  $('srcInfo').innerHTML = `<span>フレーム：${xl}</span>${note}<span>ハンドル・キャスター：${pl}</span>`;
+  $('reloadBtn').style.display = S.sample ? 'none' : '';
+  const list = NC.modelList(S.FR, S.PL);
+  $('modelList').innerHTML = list.map(m => `<option value="${esc(m.code)}">${esc(m.name)}</option>`).join('');
+  renderSug(); if ($('qModel').value) ask(); renderChips();
+}
+function stamp(iso) { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+
+/* ---------- 納期回答 ---------- */
+function renderSug() {
+  const q = NC.norm($('qModel').value), list = NC.modelList(S.FR, S.PL);
+  let hit = q ? list.filter(m => NC.norm(m.code).includes(q) || NC.norm(m.name).includes(q)) : [];
+  if (!q) { const many = {}; (S.FR ? S.FR.orders : []).forEach(o => many[o.model] = (many[o.model] || 0) + o.qty); hit = list.filter(m => many[m.code]).sort((a, b) => many[b.code] - many[a.code]); }
+  $('sug').innerHTML = hit.slice(0, 20).map(m => `<button class="chip" data-m="${esc(m.code)}">${esc(m.code)}${m.name ? `<small>${esc(m.name)}</small>` : ''}</button>`).join('') ||
+    (q ? '<span class="sub">当てはまる型式がありません</span>' : '');
+}
+function ask() {
+  const m = $('qModel').value.trim(), qty = Math.max(1, parseInt($('qQty').value, 10) || 1);
+  if (!m) { $('result').innerHTML = ''; return; }
+  const a = NC.answer(S.FR, S.PL, m, qty, S.today);
+  S.last = a;
+  if (!a) { $('result').innerHTML = `<div class="card"><div class="big ng">「${esc(m)}」が見つかりません</div><div class="sub">下の候補から選ぶか、型式を確かめてください。FUJIN の型式の部品にも、Excel の注残にも無い型式は出せません。</div></div>`; return; }
+  let head;
+  if (a.ng) head = `<div class="big ng">${a.qty}台は、表の期間内に部品がそろいません</div><div class="sub">工場に確認してください（ボトルネックの部品の計画が入っていない可能性があります）。</div>`;
+  else if (a.after) head = `<div class="big ng">${a.qty}台は、表の期間の後（${esc(a.parts.find(p => p.when && p.when.after).when.label)}）になります</div><div class="sub">工場に確認してください。</div>`;
+  else head = `<div class="big ok">${a.qty}台なら ${md(a.ship)} ごろ出荷できる見込み</div><div class="sub">部品がそろう日 ${md(a.ready)}${a.lt ? ` ＋ 組立 ${a.lt}営業日（FUJIN の型式の日数）` : ''}。工場の計画どおりに進んだ場合の目安です。</div>`;
+  const kp = `<div class="kpis">
+    <div class="kpi"><div class="l">今の見込みで あと</div><div class="v">${a.units == null ? '—' : fmt(a.units)}<small> 台分</small></div></div>
+    <div class="kpi"><div class="l">ボトルネック</div><div class="v" style="font-size:15px">${a.neck ? esc(a.neck.label) : '—'}</div></div>
+    <div class="kpi"><div class="l">型式</div><div class="v" style="font-size:15px">${esc(a.model)} <small>${esc(a.name)}</small></div></div></div>`;
+  const rows = a.parts.map((p, i) => `<tr class="${p === a.neck ? 'neck' : ''}">
+      <td><span class="pill ${p.src === 'Excel' ? 'p-x' : 'p-f'}">${p.src}</span> ${esc(p.label)}${p.noStock ? ' <span class="pill p-wn" title="引き当てタブの水色のセル（起点在庫）">起点在庫 未入力</span>' : ''}</td>
+      <td class="n">${fmt(p.per)}</td><td class="n">${fmt(p.need)}</td>
+      <td class="n">${fmt(p.avail)}</td><td class="n"><b>${p.units == null ? '—' : fmt(p.units)}</b></td>
+      <td>${p.when ? (p.when.after ? esc(p.when.label) : md(p.when.date)) : '<span class="pill p-ng">期間内なし</span>'}</td>
+      <td><button class="linkbtn" data-ord="${i}">${p.orders.length}件</button></td>
+      <td><button class="linkbtn" data-det="${i}">日ごと</button></td></tr>`).join('');
+  $('result').innerHTML = `<div class="card">${head}${kp}
+    ${a.notes.map(n => `<div class="warn">${esc(n)}</div>`).join('')}
+    ${a.parts.some(p => p.noStock) ? '<div class="warn">フレームの起点在庫（Excel「引き当て」タブの水色のセル）が空です。在庫 0 として計算しています。</div>' : ''}
+    <div class="scroll"><table><thead><tr><th>部品</th><th class="n">取数</th><th class="n">必要数</th><th class="n">あと出せる数</th><th class="n">あと何台分</th><th>${a.qty}台分がそろう日</th><th>注残</th><th>詳細</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="sub" style="margin-top:8px">「あと出せる数」＝今日から先で見込み在庫がいちばん少なくなるところ（その数までなら、ほかの注残に迷惑をかけずに出せる）。「あと何台分」＝それ ÷ 取数。</div></div>`;
+  S.detail = null; renderChips();
+}
+
+/* ---------- 注残の明細 ---------- */
+function showOrders(p) {
+  const rows = p.orders.map(o => `<tr><td>${md(o.ship)}</td><td>${esc(o.no)}</td><td>${esc(o.cust)}</td><td>${esc(o.model)}</td>
+      <td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.per)}</td><td class="n">${fmt(o.need != null ? o.need : o.qty * o.per)}</td><td>${esc(o.due || o.note || '')}</td></tr>`).join('');
+  const sum = p.orders.reduce((s, o) => s + (o.need != null ? o.need : o.qty * o.per), 0);
+  openSheet(`注残：${p.label}`, `<div class="sub">この部品を使う受注の残り（${p.orders.length}件・必要数 計 ${fmt(sum)}）。受注入力日・納期は${p.src === 'Excel' ? ' Excel にまだ無いので、次の更新で足します' : ' FUJIN のデータの納期を出しています'}。</div>
+    <div class="scroll"><table><thead><tr><th>出荷予定日</th><th>受注No</th><th>得意先</th><th>型式</th><th class="n">数量</th><th class="n">取数</th><th class="n">必要数</th><th>${p.src === 'Excel' ? '備考' : '納期'}</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="sub">注残はありません</td></tr>'}</tbody></table></div>`);
+}
+function openSheet(t, h) { $('sTitle').textContent = t; $('sBody').innerHTML = h; $('sheet').classList.add('on'); }
+
+/* ---------- 詳細（日ごと） ---------- */
+function partsForChips() {
+  const out = [];
+  if (S.FR) S.FR.frameOrder.forEach(n => out.push({ kind: 'frame', frame: n, label: 'フレーム ' + n, src: 'Excel' }));
+  if (S.last) S.last.parts.forEach(p => { if (p.kind !== 'frame') out.push(p); });
+  return out;
+}
+function renderChips() {
+  const ps = partsForChips();
+  $('partChips').innerHTML = ps.map((p, i) => `<button class="chip" data-pc="${i}" aria-pressed="${S.detail && S.detail.label === p.label}">${esc(p.label)}</button>`).join('') +
+    (S.last ? '' : '<span class="sub">　（ハンドル・キャスターは、納期回答で型式を調べると出ます）</span>');
+  if (S.detail) renderDetail(S.detail);
+}
+function renderDetail(p) {
+  S.detail = p;
+  const T0 = new Date(S.today.getFullYear(), S.today.getMonth(), S.today.getDate());
+  let dates, rows, info = '', orders;
+  if (p.kind === 'frame') {
+    const f = S.FR.frames[p.frame], T = NC.todayIndex(S.FR.dates, S.today), from = Math.max(0, T - 7);
+    dates = S.FR.dates.slice(from); const sl = a => a.slice(from);
+    rows = [['＋完成（全周ゴム）', sl(f.make), ''], [`－出荷（〜昨日は実績、今日から注残）`, sl(f.used).map((u, j) => from + j < T ? u : f.order[from + j]), ''],
+            ['＝見込み在庫', sl(f.stock), 'st'], ['あと何枚出せるか', sl(f.atp), 'atp']];
+    info = `起点日 <b>${md(f.start)}</b>・起点在庫 <b>${f.stock0 == null ? '未入力' : fmt(f.stock0)}</b>${f.after ? `・${esc(f.after.label)}の注残 ${fmt(f.after.order)}` : ''}`;
+    orders = S.FR.orders.filter(o => o.frame === p.frame);
+    p = Object.assign({}, p, { orders, src: 'Excel' });
+  } else {
+    const c = NC.plCalc(S.PL, p.code), T = S.PL.today, from = Math.max(0, T - 7);
+    dates = S.PL.dates.slice(from).map(NC.fromIso); const sl = a => a.slice(from);
+    rows = [['＋入る（計画・手配）', sl(c.inF), ''], ['－出る（親の組立で使う予定）', sl(c.outF), ''], ['＝見込み在庫', sl(c.bal), 'st'], ['あと何個出せるか', sl(c.atp), 'atp']];
+    const it = S.PL.items[p.code];
+    info = `品目 ${esc(p.code)}・今の在庫 <b>${fmt(it.stock)}</b>（FUJIN ${esc((S.PL.stockAsOf || '').replace(/-/g, '/'))} 時点）`;
+  }
+  const head = dates.map(d => { const w = d.getDay(), cls = (d < T0 ? 'past ' : '') + (d.getTime() === T0.getTime() ? 'today ' : '') + (w === 0 || w === 6 ? 'we' : ''); return `<th class="${cls}">${mdS(d)}<br>${WD[w]}</th>`; }).join('');
+  const body = rows.map(([l, vals, k]) => `<tr class="${k}"><td class="rl">${l}</td>${vals.map((v, j) => {
+      const d = dates[j], w = d.getDay(), cls = (d < T0 ? 'past ' : '') + (d.getTime() === T0.getTime() ? 'today ' : '') + (w === 0 || w === 6 ? 'we ' : '') + ((k && v != null && v < 0) ? 'neg' : '');
+      return `<td class="${cls}">${v == null || v === 0 && !k ? '' : fmt(v)}</td>`; }).join('')}</tr>`).join('');
+  $('detail').innerHTML = `<div class="card"><div class="hd"><h3 style="margin:0;color:var(--navy)">${esc(p.label)}</h3><span class="pill ${p.src === 'Excel' ? 'p-x' : 'p-f'}">${p.src === 'Excel' ? 'Excel（工場の計画）' : 'FUJIN（SMILE）'}</span></div>
+     <div class="sub" style="margin:4px 0 10px">${info}</div>
+     <div class="scroll"><table class="grid"><thead><tr><th class="rl"></th>${head}</tr></thead><tbody>${body}</tbody></table></div></div>
+     <div class="card"><div class="hd"><b>注残の明細（${p.orders.length}件）</b><button class="linkbtn" id="detOrd">大きく見る</button></div>
+     <div class="scroll"><table><thead><tr><th>出荷予定日</th><th>受注No</th><th>得意先</th><th>型式</th><th class="n">数量</th><th class="n">取数</th><th class="n">必要数</th></tr></thead><tbody>
+     ${p.orders.map(o => `<tr><td>${md(o.ship)}</td><td>${esc(o.no)}</td><td>${esc(o.cust)}</td><td>${esc(o.model)}</td><td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.per)}</td><td class="n">${fmt(o.need != null ? o.need : o.qty * o.per)}</td></tr>`).join('') || '<tr><td colspan="7" class="sub">注残はありません</td></tr>'}</tbody></table></div></div>`;
+  $('detOrd').onclick = () => showOrders(p);
+  document.querySelectorAll('#partChips .chip').forEach(b => b.setAttribute('aria-pressed', partsForChips()[+b.dataset.pc].label === S.detail.label));
+}
+function setTab(t) {
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === t));
+  $('tab-answer').hidden = t !== 'answer'; $('tab-detail').hidden = t !== 'detail';
+  if (t === 'detail' && !S.detail) { const ps = partsForChips(); if (ps.length) renderDetail(S.last && S.last.neck ? S.last.neck : ps[0]); }
+}
+
+/* ---------- 画面の操作 ---------- */
+$('askBtn').onclick = ask;
+$('qModel').addEventListener('input', renderSug);
+$('qModel').addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+$('qQty').addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+$('qQty').addEventListener('change', ask);
+$('sug').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { $('qModel').value = b.dataset.m; renderSug(); ask(); } };
+$('result').onclick = e => {
+  const o = e.target.closest('[data-ord]'), d = e.target.closest('[data-det]');
+  if (o) showOrders(S.last.parts[+o.dataset.ord]);
+  if (d) { setTab('detail'); renderDetail(S.last.parts[+d.dataset.det]); }
+};
+$('partChips').onclick = e => { const b = e.target.closest('[data-pc]'); if (b) renderDetail(partsForChips()[+b.dataset.pc]); };
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
+$('sClose').onclick = () => $('sheet').classList.remove('on');
+$('sheet').onclick = e => { if (e.target.id === 'sheet') $('sheet').classList.remove('on'); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('sheet').classList.remove('on'); });
+$('reloadBtn').onclick = () => loadAll();
+init();
+</script>
+</body>
+</html>
