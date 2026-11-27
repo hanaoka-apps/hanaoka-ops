@@ -116,7 +116,13 @@
     }
     /* 型式 → フレーム・取数（注残に出てきた組み合わせ） */
     var models = {};
-    orders.forEach(function (o) { if (o.model && !models[norm(o.model)]) models[norm(o.model)] = { model: o.model, frame: o.frame, per: o.per }; });
+    orders.forEach(function (o) {
+    if (!o.model) return;
+    var k = norm(o.model), m = models[k];
+    if (!m) m = models[k] = { model: o.model, frame: o.frame, per: o.per, frames: [] };
+    /* 同じ型式が複数のフレームを使う（例：DMBT2DX は DX のフレームと DMトレー）。フレームごとに取数を覚える */
+    if (!m.frames.some(function (x) { return x.frame === o.frame; })) m.frames.push({ frame: o.frame, per: o.per });
+  });
     return { dates: dates, frames: frames, frameOrder: order, orders: orders, models: models, note: note };
   }
 
@@ -229,7 +235,12 @@
       }
       parts.push(plPart(PL, code, per, kind, qty, cache));
     });
-    if (!frameDone && frM && FR && FR.frames[frM.frame]) parts.unshift(framePart(FR, frM.frame, frM.per, qty, today, null));
+    /* Excel の注残に出てくるフレームのうち、まだ部品に入っていないものを足す（トレー付きの型式は 2 つ以上になる） */
+  var covered = {};
+  parts.forEach(function (p) { if (p.frame) covered[p.frame] = true; });
+  if (frM && FR) (frM.frames || [{ frame: frM.frame, per: frM.per }]).slice().reverse().forEach(function (x) {
+    if (!covered[x.frame] && FR.frames[x.frame]) { parts.unshift(framePart(FR, x.frame, x.per, qty, today, null)); covered[x.frame] = true; }
+  });
     if (!parts.some(function (p) { return p.kind === 'frame'; })) notes.push('この型式のフレームが分かりません（Excel の注残にも FUJIN の型式の部品にも出てきません）');
     if (!M) notes.push('FUJIN の型式の部品に無いので、ハンドル・キャスターは出せません（フレームだけで判断しています）');
 
